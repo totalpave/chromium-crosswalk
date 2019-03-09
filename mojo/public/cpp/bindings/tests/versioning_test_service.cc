@@ -7,13 +7,14 @@
 #include <map>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/macros.h"
-#include "mojo/public/c/system/main.h"
 #include "mojo/public/cpp/bindings/strong_binding.h"
 #include "mojo/public/interfaces/bindings/tests/versioning_test_service.mojom.h"
-#include "services/shell/public/cpp/application_runner.h"
-#include "services/shell/public/cpp/interface_factory.h"
-#include "services/shell/public/cpp/shell_client.h"
+#include "services/service_manager/public/c/main.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
+#include "services/service_manager/public/cpp/service.h"
+#include "services/service_manager/public/cpp/service_runner.h"
 
 namespace mojo {
 namespace test {
@@ -94,33 +95,36 @@ class HumanResourceDatabaseImpl : public HumanResourceDatabase {
   StrongBinding<HumanResourceDatabase> strong_binding_;
 };
 
-class HumanResourceSystemServer
-    : public shell::ShellClient,
-      public InterfaceFactory<HumanResourceDatabase> {
+class HumanResourceSystemServer : public service_manager::Service {
  public:
-  HumanResourceSystemServer() {}
-
-  // shell::ShellClient implementation.
-  bool AcceptConnection(Connection* connection) override {
-    connection->AddInterface<HumanResourceDatabase>(this);
-    return true;
+  HumanResourceSystemServer() {
+    registry_.AddInterface<HumanResourceDatabase>(
+        base::Bind(&HumanResourceSystemServer::Create, base::Unretained(this)));
   }
 
-  // InterfaceFactory<HumanResourceDatabase> implementation.
-  void Create(Connection* connection,
-              InterfaceRequest<HumanResourceDatabase> request) override {
+  // service_manager::Service implementation.
+  void OnBindInterface(const service_manager::BindSourceInfo& source_info,
+                       const std::string& interface_name,
+                       mojo::ScopedMessagePipeHandle interface_pipe) override {
+    registry_.BindInterface(interface_name, std::move(interface_pipe));
+  }
+
+  void Create(HumanResourceDatabaseRequest request) {
     // It will be deleted automatically when the underlying pipe encounters a
     // connection error.
     new HumanResourceDatabaseImpl(std::move(request));
   }
+
+ private:
+  service_manager::BinderRegistry registry_;
 };
 
 }  // namespace versioning
 }  // namespace test
 }  // namespace mojo
 
-MojoResult MojoMain(MojoHandle request) {
-  mojo::ApplicationRunner runner(
+MojoResult ServiceMain(MojoHandle request) {
+  mojo::ServiceRunner runner(
       new mojo::test::versioning::HumanResourceSystemServer());
 
   return runner.Run(request);

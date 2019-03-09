@@ -5,16 +5,15 @@
 #ifndef CONTENT_COMMON_INPUT_EVENT_WITH_LATENCY_INFO_H_
 #define CONTENT_COMMON_INPUT_EVENT_WITH_LATENCY_INFO_H_
 
-#include "ui/events/latency_info.h"
-
-#include "content/common/input/web_input_event_traits.h"
-
-namespace blink {
-class WebGestureEvent;
-class WebMouseEvent;
-class WebMouseWheelEvent;
-class WebTouchEvent;
-}
+#include "base/compiler_specific.h"
+#include "base/logging.h"
+#include "content/common/content_export.h"
+#include "third_party/blink/public/platform/web_gesture_event.h"
+#include "third_party/blink/public/platform/web_mouse_wheel_event.h"
+#include "third_party/blink/public/platform/web_touch_event.h"
+#include "ui/events/blink/blink_event_util.h"
+#include "ui/events/blink/web_input_event_traits.h"
+#include "ui/latency/latency_info.h"
 
 namespace content {
 
@@ -29,18 +28,36 @@ class EventWithLatencyInfo {
   EventWithLatencyInfo(const T& e, const ui::LatencyInfo& l)
       : event(e), latency(l) {}
 
+  EventWithLatencyInfo(blink::WebInputEvent::Type type,
+                       int modifiers,
+                       base::TimeTicks time_stamp,
+                       const ui::LatencyInfo& l)
+      : event(type, modifiers, time_stamp), latency(l) {}
+
   EventWithLatencyInfo() {}
 
   bool CanCoalesceWith(const EventWithLatencyInfo& other)
       const WARN_UNUSED_RESULT {
-    return WebInputEventTraits::CanCoalesce(other.event, event);
+    if (other.event.GetType() != event.GetType())
+      return false;
+
+    DCHECK_EQ(sizeof(T), event.size());
+    DCHECK_EQ(sizeof(T), other.event.size());
+
+    return ui::CanCoalesce(other.event, event);
   }
 
   void CoalesceWith(const EventWithLatencyInfo& other) {
     // |other| should be a newer event than |this|.
     if (other.latency.trace_id() >= 0 && latency.trace_id() >= 0)
       DCHECK_GT(other.latency.trace_id(), latency.trace_id());
-    WebInputEventTraits::Coalesce(other.event, &event);
+
+    // New events get coalesced into older events, and the newer timestamp
+    // should always be preserved.
+    const base::TimeTicks time_stamp = other.event.TimeStamp();
+    ui::Coalesce(other.event, &event);
+    event.SetTimeStamp(time_stamp);
+
     // When coalescing two input events, we keep the oldest LatencyInfo
     // for Telemetry latency tests, since it will represent the longest
     // latency.

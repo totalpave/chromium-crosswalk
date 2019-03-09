@@ -54,16 +54,18 @@ std::string SearchTermsData::GetSuggestRequestIdentifier() const {
   return std::string();
 }
 
-std::string SearchTermsData::InstantExtendedEnabledParam(
-    bool for_search) const {
-  return std::string();
-}
-
-std::string SearchTermsData::ForceInstantResultsParam(
-    bool for_prerender) const {
-  return std::string();
-}
-
 std::string SearchTermsData::GoogleImageSearchSource() const {
   return std::string();
+}
+
+std::string SearchTermsData::GetYandexReferralID() const {
+  return std::string();
+}
+
+std::string SearchTermsData::GetMailRUReferralID() const {
+  return std::string();
+}
+
+size_t SearchTermsData::EstimateMemoryUsage() const {
+  return 0;
 }

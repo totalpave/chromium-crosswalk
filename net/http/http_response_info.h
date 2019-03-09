@@ -8,10 +8,10 @@
 #include <string>
 
 #include "base/time/time.h"
-#include "net/base/host_port_pair.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
+#include "net/base/proxy_server.h"
 #include "net/http/http_vary_data.h"
-#include "net/socket/next_proto.h"
 #include "net/ssl/ssl_info.h"
 
 namespace base {
@@ -29,20 +29,38 @@ class NET_EXPORT HttpResponseInfo {
  public:
   // Describes the kind of connection used to fetch this response.
   //
-  // NOTE: Please keep in sync with Net.HttpResponseInfo.ConnectionInfo
-  // histogram.  Because of that, and also because these values are persisted to
+  // NOTE: Please keep in sync with ConnectionInfo enum in
+  // tools/metrics/histograms/enum.xml.
+  // Because of that, and also because these values are persisted to
   // the cache, please make sure not to delete or reorder values.
   enum ConnectionInfo {
     CONNECTION_INFO_UNKNOWN = 0,
     CONNECTION_INFO_HTTP1_1 = 1,
     CONNECTION_INFO_DEPRECATED_SPDY2 = 2,
-    CONNECTION_INFO_SPDY3 = 3,
+    CONNECTION_INFO_DEPRECATED_SPDY3 = 3,
     CONNECTION_INFO_HTTP2 = 4,  // HTTP/2.
-    CONNECTION_INFO_QUIC1_SPDY3 = 5,
-    CONNECTION_INFO_HTTP2_14 = 6,  // HTTP/2 draft-14.
-    CONNECTION_INFO_HTTP2_15 = 7,  // HTTP/2 draft-15.
+    CONNECTION_INFO_QUIC_UNKNOWN_VERSION = 5,
+    CONNECTION_INFO_DEPRECATED_HTTP2_14 = 6,  // HTTP/2 draft-14.
+    CONNECTION_INFO_DEPRECATED_HTTP2_15 = 7,  // HTTP/2 draft-15.
     CONNECTION_INFO_HTTP0_9 = 8,
     CONNECTION_INFO_HTTP1_0 = 9,
+    CONNECTION_INFO_QUIC_32 = 10,
+    CONNECTION_INFO_QUIC_33 = 11,
+    CONNECTION_INFO_QUIC_34 = 12,
+    CONNECTION_INFO_QUIC_35 = 13,
+    CONNECTION_INFO_QUIC_36 = 14,
+    CONNECTION_INFO_QUIC_37 = 15,
+    CONNECTION_INFO_QUIC_38 = 16,
+    CONNECTION_INFO_QUIC_39 = 17,
+    CONNECTION_INFO_QUIC_40 = 18,
+    CONNECTION_INFO_QUIC_41 = 19,
+    CONNECTION_INFO_QUIC_42 = 20,
+    CONNECTION_INFO_QUIC_43 = 21,
+    CONNECTION_INFO_QUIC_99 = 22,
+    CONNECTION_INFO_QUIC_44 = 23,
+    CONNECTION_INFO_QUIC_45 = 24,
+    CONNECTION_INFO_QUIC_46 = 25,
+    CONNECTION_INFO_QUIC_47 = 26,
     NUM_OF_CONNECTION_INFOS,
   };
 
@@ -90,9 +108,7 @@ class NET_EXPORT HttpResponseInfo {
                bool response_truncated) const;
 
   // Whether QUIC is used or not.
-  bool DidUseQuic() const {
-    return connection_info == CONNECTION_INFO_QUIC1_SPDY3;
-  }
+  bool DidUseQuic() const;
 
   // The following is only defined if the request_time member is set.
   // If this resource was found in the cache, then this bool is set, and
@@ -120,15 +136,16 @@ class NET_EXPORT HttpResponseInfo {
   // True if the request was fetched over a SPDY channel.
   bool was_fetched_via_spdy;
 
-  // True if the npn was negotiated for this request.
-  bool was_npn_negotiated;
+  // True if ALPN was negotiated for this request.
+  bool was_alpn_negotiated;
 
   // True if the request was fetched via an explicit proxy.  The proxy could
   // be any type of proxy, HTTP or SOCKS.  Note, we do not know if a
   // transparent proxy may have been involved. If true, |proxy_server| contains
-  // the name of the proxy server that was used.
+  // the proxy server that was used.
+  // TODO(tbansal): crbug.com/653354. Remove |was_fetched_via_proxy|.
   bool was_fetched_via_proxy;
-  HostPortPair proxy_server;
+  ProxyServer proxy_server;
 
   // Whether the request use http proxy or server authentication.
   bool did_use_http_auth;
@@ -137,10 +154,15 @@ class NET_EXPORT HttpResponseInfo {
   // used since.
   bool unused_since_prefetch;
 
-  // True if this resource is stale and requires async revalidation.
+  // True if this resource is stale and needs async revalidation.
   // This value is not persisted by Persist(); it is only ever set when the
   // response is retrieved from the cache.
-  bool async_revalidation_required;
+  bool async_revalidation_requested;
+
+  // stale-while-revalidate, if any, will be honored until time given by
+  // |stale_revalidate_timeout|. This value is latched the first time
+  // stale-while-revalidate is used until the resource is revalidated.
+  base::Time stale_revalidate_timeout;
 
   // Remote address of the socket which fetched this resource.
   //
@@ -149,10 +171,10 @@ class NET_EXPORT HttpResponseInfo {
   // originally.  This is true even if the response was re-validated using a
   // different remote address, or if some of the content came from a byte-range
   // request to a different address.
-  HostPortPair socket_address;
+  IPEndPoint remote_endpoint;
 
   // Protocol negotiated with the server.
-  std::string npn_negotiated_protocol;
+  std::string alpn_negotiated_protocol;
 
   // The type of connection used for this response.
   ConnectionInfo connection_info;
@@ -186,10 +208,8 @@ class NET_EXPORT HttpResponseInfo {
   // The "Vary" header data for this response.
   HttpVaryData vary_data;
 
-  // Any metadata asociated with this resource's cached data.
+  // Any metadata associated with this resource's cached data.
   scoped_refptr<IOBufferWithSize> metadata;
-
-  static ConnectionInfo ConnectionInfoFromNextProto(NextProto next_proto);
 
   static std::string ConnectionInfoToString(ConnectionInfo connection_info);
 };

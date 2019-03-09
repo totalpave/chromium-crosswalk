@@ -2,15 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/android/infobars/simple_confirm_infobar_builder.h"
-
 #include <memory>
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/infobars/infobar_service.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
@@ -18,7 +15,8 @@
 #include "jni/SimpleConfirmInfoBarBuilder_jni.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/image/image.h"
-#include "ui/gfx/vector_icons_public.h"
+
+using base::android::JavaParamRef;
 
 namespace {
 
@@ -32,6 +30,7 @@ class SimpleConfirmInfoBarDelegate : public ConfirmInfoBarDelegate {
       const base::string16& message_str,
       const base::string16& primary_str,
       const base::string16& secondary_str,
+      const base::string16& link_text_str,
       bool auto_expire);
 
   ~SimpleConfirmInfoBarDelegate() override;
@@ -46,6 +45,8 @@ class SimpleConfirmInfoBarDelegate : public ConfirmInfoBarDelegate {
   base::string16 GetButtonLabel(InfoBarButton button) const override;
   bool Accept() override;
   bool Cancel() override;
+  base::string16 GetLinkText() const override;
+  bool LinkClicked(WindowOpenDisposition disposition) override;
 
  private:
   base::android::ScopedJavaGlobalRef<jobject> java_listener_;
@@ -54,6 +55,7 @@ class SimpleConfirmInfoBarDelegate : public ConfirmInfoBarDelegate {
   base::string16 message_str_;
   base::string16 primary_str_;
   base::string16 secondary_str_;
+  base::string16 link_text_str_;
   bool auto_expire_;
 
   DISALLOW_COPY_AND_ASSIGN(SimpleConfirmInfoBarDelegate);
@@ -66,12 +68,14 @@ SimpleConfirmInfoBarDelegate::SimpleConfirmInfoBarDelegate(
     const base::string16& message_str,
     const base::string16& primary_str,
     const base::string16& secondary_str,
+    const base::string16& link_text_str,
     bool auto_expire)
     : identifier_(identifier),
       icon_bitmap_(bitmap),
       message_str_(message_str),
       primary_str_(primary_str),
       secondary_str_(secondary_str),
+      link_text_str_(link_text_str),
       auto_expire_(auto_expire) {
   java_listener_.Reset(j_listener);
 }
@@ -96,7 +100,7 @@ bool SimpleConfirmInfoBarDelegate::ShouldExpire(
 
 void SimpleConfirmInfoBarDelegate::InfoBarDismissed() {
   Java_SimpleConfirmInfoBarBuilder_onInfoBarDismissed(
-      base::android::AttachCurrentThread(), java_listener_.obj());
+      base::android::AttachCurrentThread(), java_listener_);
 }
 
 base::string16 SimpleConfirmInfoBarDelegate::GetMessageText() const {
@@ -115,28 +119,39 @@ SimpleConfirmInfoBarDelegate::GetButtonLabel(InfoBarButton button) const {
 
 bool SimpleConfirmInfoBarDelegate::Accept() {
   return !Java_SimpleConfirmInfoBarBuilder_onInfoBarButtonClicked(
-      base::android::AttachCurrentThread(), java_listener_.obj(), true);
+      base::android::AttachCurrentThread(), java_listener_, true);
 }
 
 bool SimpleConfirmInfoBarDelegate::Cancel() {
   return !Java_SimpleConfirmInfoBarBuilder_onInfoBarButtonClicked(
-      base::android::AttachCurrentThread(), java_listener_.obj(), false);
+      base::android::AttachCurrentThread(), java_listener_, false);
+}
+
+base::string16 SimpleConfirmInfoBarDelegate::GetLinkText() const {
+  return link_text_str_;
+}
+
+bool SimpleConfirmInfoBarDelegate::LinkClicked(
+    WindowOpenDisposition disposition) {
+  return !Java_SimpleConfirmInfoBarBuilder_onInfoBarLinkClicked(
+      base::android::AttachCurrentThread(), java_listener_);
 }
 
 }  // anonymous namespace
 
 // Native JNI methods ---------------------------------------------------------
 
-void Create(JNIEnv* env,
-            const JavaParamRef<jclass>& j_caller,
-            const JavaParamRef<jobject>& j_tab,
-            jint j_identifier,
-            const JavaParamRef<jobject>& j_icon,
-            const JavaParamRef<jstring>& j_message,
-            const JavaParamRef<jstring>& j_primary,
-            const JavaParamRef<jstring>& j_secondary,
-            jboolean auto_expire,
-            const JavaParamRef<jobject>& j_listener) {
+void JNI_SimpleConfirmInfoBarBuilder_Create(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& j_tab,
+    jint j_identifier,
+    const JavaParamRef<jobject>& j_icon,
+    const JavaParamRef<jstring>& j_message,
+    const JavaParamRef<jstring>& j_primary,
+    const JavaParamRef<jstring>& j_secondary,
+    const JavaParamRef<jstring>& j_link_text,
+    jboolean auto_expire,
+    const JavaParamRef<jobject>& j_listener) {
   infobars::InfoBarDelegate::InfoBarIdentifier infobar_identifier =
       static_cast<infobars::InfoBarDelegate::InfoBarIdentifier>(j_identifier);
 
@@ -155,15 +170,15 @@ void Create(JNIEnv* env,
   base::string16 secondary_str = j_secondary.is_null()
       ? base::string16()
       : base::android::ConvertJavaStringToUTF16(env, j_secondary);
+  base::string16 link_text_str =
+      j_link_text.is_null()
+          ? base::string16()
+          : base::android::ConvertJavaStringToUTF16(env, j_link_text);
 
   InfoBarService* service = InfoBarService::FromWebContents(
       TabAndroid::GetNativeTab(env, j_tab)->web_contents());
   service->AddInfoBar(service->CreateConfirmInfoBar(
-      base::WrapUnique(new SimpleConfirmInfoBarDelegate(
+      std::make_unique<SimpleConfirmInfoBarDelegate>(
           j_listener, infobar_identifier, icon_bitmap, message_str, primary_str,
-          secondary_str, auto_expire))));
-}
-
-bool RegisterSimpleConfirmInfoBarBuilder(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+          secondary_str, link_text_str, auto_expire)));
 }

@@ -5,6 +5,8 @@
 #ifndef CC_TREES_PROXY_H_
 #define CC_TREES_PROXY_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <string>
 
@@ -13,22 +15,22 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "cc/base/cc_export.h"
-#include "cc/input/top_controls_state.h"
-#include "cc/scheduler/begin_frame_source.h"
+#include "cc/cc_export.h"
+#include "cc/input/browser_controls_state.h"
 #include "cc/trees/task_runner_provider.h"
+#include "components/viz/common/frame_sinks/begin_frame_source.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "url/gurl.h"
 
 namespace gfx {
 class Rect;
-class Vector2d;
 }
 
 namespace cc {
-class BeginFrameSource;
-class LayerTreeDebugState;
+class LayerTreeFrameSink;
 class LayerTreeMutator;
-class OutputSurface;
-struct RendererCapabilities;
+class PaintWorkletLayerPainter;
+class RenderFrameMetadataObserver;
 
 // Abstract interface responsible for proxying commands from the main-thread
 // side of the compositor over to the compositor implementation.
@@ -36,20 +38,17 @@ class CC_EXPORT Proxy {
  public:
   virtual ~Proxy() {}
 
-  virtual void FinishAllRendering() = 0;
-
   virtual bool IsStarted() const = 0;
+
+  // This function retruns true if the commits go directly to active tree by
+  // skipping commit to pending tree.
   virtual bool CommitToActiveTree() const = 0;
 
-  // Will call LayerTreeHost::OnCreateAndInitializeOutputSurfaceAttempted
-  // with the result of this function.
-  virtual void SetOutputSurface(OutputSurface* output_surface) = 0;
-
-  virtual void ReleaseOutputSurface() = 0;
+  virtual void SetLayerTreeFrameSink(
+      LayerTreeFrameSink* layer_tree_frame_sink) = 0;
+  virtual void ReleaseLayerTreeFrameSink() = 0;
 
   virtual void SetVisible(bool visible) = 0;
-
-  virtual const RendererCapabilities& GetRendererCapabilities() const = 0;
 
   virtual void SetNeedsAnimate() = 0;
   virtual void SetNeedsUpdateLayers() = 0;
@@ -57,32 +56,57 @@ class CC_EXPORT Proxy {
   virtual void SetNeedsRedraw(const gfx::Rect& damage_rect) = 0;
   virtual void SetNextCommitWaitsForActivation() = 0;
 
+  // Returns true if an animate or commit has been requested, and hasn't
+  // completed yet.
+  virtual bool RequestedAnimatePending() = 0;
+
   virtual void NotifyInputThrottledUntilCommit() = 0;
 
-  // Defers commits until it is reset. It is only supported when using a
-  // scheduler.
-  virtual void SetDeferCommits(bool defer_commits) = 0;
+  // Defers LayerTreeHost::BeginMainFrameUpdate and commits until it is
+  // reset. It is only supported when using a scheduler.
+  virtual void SetDeferMainFrameUpdate(bool defer_main_frame_update) = 0;
 
-  virtual void MainThreadHasStoppedFlinging() = 0;
+  // Defers commits until at most the given |timeout| period has passed,
+  // but continues to update the document lifecycle in
+  // LayerTreeHost::BeginMainFrameUpdate. If multiple calls are made when
+  // deferal is active the first |timeout| continues to apply.
+  virtual void StartDeferringCommits(base::TimeDelta timeout) = 0;
+
+  // Immediately stop deferring commits.
+  virtual void StopDeferringCommits() = 0;
 
   virtual bool CommitRequested() const = 0;
-  virtual bool BeginMainFrameRequested() const = 0;
 
   // Must be called before using the proxy.
-  virtual void Start(
-      std::unique_ptr<BeginFrameSource> external_begin_frame_source) = 0;
-  virtual void Stop() = 0;   // Must be called before deleting the proxy.
+  virtual void Start() = 0;
+  // Must be called before deleting the proxy.
+  virtual void Stop() = 0;
 
   virtual void SetMutator(std::unique_ptr<LayerTreeMutator> mutator) = 0;
 
+  virtual void SetPaintWorkletLayerPainter(
+      std::unique_ptr<PaintWorkletLayerPainter> painter) = 0;
+
   virtual bool SupportsImplScrolling() const = 0;
 
-  virtual void UpdateTopControlsState(TopControlsState constraints,
-                                      TopControlsState current,
-                                      bool animate) = 0;
+  virtual void UpdateBrowserControlsState(BrowserControlsState constraints,
+                                          BrowserControlsState current,
+                                          bool animate) = 0;
+
+  virtual void RequestBeginMainFrameNotExpected(bool new_state) = 0;
+
+  // See description in LayerTreeHost
+  virtual uint32_t GenerateChildSurfaceSequenceNumberSync() = 0;
 
   // Testing hooks
   virtual bool MainFrameWillHappenForTesting() = 0;
+
+  virtual void SetURLForUkm(const GURL& url) = 0;
+
+  virtual void ClearHistory() = 0;
+
+  virtual void SetRenderFrameObserver(
+      std::unique_ptr<RenderFrameMetadataObserver> observer) = 0;
 };
 
 }  // namespace cc

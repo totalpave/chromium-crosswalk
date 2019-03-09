@@ -17,25 +17,18 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/strings/string16.h"
+#include "base/strings/string_piece.h"
+#include "base/version.h"
 #include "base/win/scoped_handle.h"
-#include "chrome/installer/util/browser_distribution.h"
 #include "chrome/installer/util/util_constants.h"
 
 class WorkItemList;
-
-namespace base {
-class Version;
-}
 
 // This is a utility class that provides common installation related
 // utility methods that can be used by installer and also unit tested
 // independently.
 class InstallUtil {
  public:
-  // Get the path to this distribution's Active Setup registry entries.
-  // e.g. Software\Microsoft\Active Setup\Installed Components\<dist_guid>
-  static base::string16 GetActiveSetupPath(BrowserDistribution* dist);
-
   // Attempts to trigger the command that would be run by Active Setup for a
   // system-level Chrome. For use only when system-level Chrome is installed.
   static void TriggerActiveSetupCommand();
@@ -43,31 +36,21 @@ class InstallUtil {
   // Launches given exe as admin on Vista.
   static bool ExecuteExeAsAdmin(const base::CommandLine& cmd, DWORD* exit_code);
 
-  // Reads the uninstall command for Chromium from registry and returns it.
-  // If system_install is true the command is read from HKLM, otherwise
-  // from HKCU.
-  static base::CommandLine GetChromeUninstallCmd(
-      bool system_install,
-      BrowserDistribution::Type distribution_type);
+  // Reads the uninstall command for Chromium from the Windows registry and
+  // returns it. If |system_install| is true the command is read from HKLM,
+  // otherwise from HKCU. Returns an empty CommandLine if Chrome is not
+  // installed.
+  static base::CommandLine GetChromeUninstallCmd(bool system_install);
 
-  // Find the version of Chrome installed on the system by checking the
-  // Google Update registry key. Fills |version| with the version or a
-  // default-constructed Version if no version is found.
-  // system_install: if true, looks for version number under the HKLM root,
-  //                 otherwise looks under the HKCU.
-  static void GetChromeVersion(BrowserDistribution* dist,
-                               bool system_install,
-                               base::Version* version);
+  // Returns the version of Chrome registered with Google Update, or an invalid
+  // Version in case no such value could be found. |system_install| indicates
+  // whether HKLM (true) or HKCU (false) should be checked.
+  static base::Version GetChromeVersion(bool system_install);
 
-  // Find the last critical update (version) of Chrome. Fills |version| with the
-  // version or a default-constructed Version if no version is found. A critical
-  // update is a specially flagged version (by Google Update) that contains an
-  // important security fix.
-  // system_install: if true, looks for version number under the HKLM root,
-  //                 otherwise looks under the HKCU.
-  static void GetCriticalUpdateVersion(BrowserDistribution* dist,
-                                       bool system_install,
-                                       base::Version* version);
+  // Returns the last critical update (version) of Chrome, or an invalid Version
+  // in case no such value is found. A critical update is a specially flagged
+  // version (by Google Update) that contains an important security fix.
+  static base::Version GetCriticalUpdateVersion();
 
   // This function checks if the current OS is supported for Chromium.
   static bool IsOSSupported();
@@ -84,33 +67,28 @@ class InstallUtil {
                                       const base::string16* const launch_cmd,
                                       WorkItemList* install_list);
 
-  // Update the installer stage reported by Google Update.  |state_key_path|
-  // should be obtained via the state_key method of an InstallerState instance
-  // created before the machine state is modified by the installer.
-  static void UpdateInstallerStage(bool system_install,
-                                   const base::string16& state_key_path,
-                                   installer::InstallerStage stage);
-
   // Returns true if this installation path is per user, otherwise returns false
   // (per machine install, meaning: the exe_path contains the path to Program
   // Files).
-  static bool IsPerUserInstall(const base::FilePath& exe_path);
-
-  // Returns true if the installation represented by the pair of |dist| and
-  // |system_level| is a multi install.
-  static bool IsMultiInstall(BrowserDistribution* dist, bool system_install);
-
-  // Returns true if this is running setup process for Chrome SxS (as
-  // indicated by the presence of --chrome-sxs on the command line) or if this
-  // is running Chrome process from the Chrome SxS installation (as indicated
-  // by either --chrome-sxs or the executable path).
-  static bool IsChromeSxSProcess();
+  // TODO(grt): consider replacing all callers with direct use of
+  // InstallDetails.
+  static bool IsPerUserInstall();
 
   // Returns true if the sentinel file exists (or the path cannot be obtained).
   static bool IsFirstRunSentinelPresent();
 
+  // Test to see if a Start menu shortcut exists with the right toast activator
+  // CLSID registered.
+  static bool IsStartMenuShortcutWithActivatorGuidInstalled();
+
+  // Returns a string representation of |guid|.
+  static base::string16 String16FromGUID(const GUID& guid);
+
+  // Returns the toast activator registry path.
+  static base::string16 GetToastActivatorRegistryPath();
+
   // Populates |path| with EULA sentinel file path. Returns false on error.
-  static bool GetEULASentinelFilePath(base::FilePath* path);
+  static bool GetEulaSentinelFilePath(base::FilePath* path);
 
   // Deletes the registry key at path key_path under the key given by root_key.
   static bool DeleteRegistryKey(HKEY root_key,
@@ -180,23 +158,75 @@ class InstallUtil {
                                  const base::string16& arguments,
                                  base::CommandLine* command_line);
 
+  // Appends the installer switch that selects the current install mode (see
+  // install_static::InstallDetails).
+  static void AppendModeSwitch(base::CommandLine* command_line);
+
   // Returns a string in the form YYYYMMDD of the current date.
   static base::string16 GetCurrentDate();
 
   // Returns the highest Chrome version that was installed prior to a downgrade,
   // or an invalid Version if Chrome was not previously downgraded from a newer
   // version.
-  static base::Version GetDowngradeVersion(bool system_install,
-                                           const BrowserDistribution* dist);
+  static base::Version GetDowngradeVersion();
 
   // Adds or removes downgrade version registry value. This function should only
   // be used for Chrome install.
   static void AddUpdateDowngradeVersionItem(
-      bool system_install,
+      HKEY root,
       const base::Version* current_version,
       const base::Version& new_version,
-      const BrowserDistribution* dist,
       WorkItemList* list);
+
+  // Returns the registry key path and value name where the enrollment token is
+  // stored for machine level user cloud policies.
+  // Note that the value name was recently changed, we still need to return the
+  // old for some time until it's no longer in use.
+  // TODO(crbug.com/907589) : Remove |old_value_name| once no longer in use.
+  static void GetMachineLevelUserCloudPolicyEnrollmentTokenRegistryPath(
+      base::string16* key_path,
+      base::string16* value_name,
+      base::string16* old_value_name);
+
+  // Returns the registry key path and value name where the DM token is stored
+  // for machine level user cloud policies.
+  static void GetMachineLevelUserCloudPolicyDMTokenRegistryPath(
+      base::string16* key_path,
+      base::string16* value_name);
+
+  // Returns the token used to enroll this chrome instance for machine level
+  // user cloud policies.  Returns an empty string if this machine should not
+  // be enrolled.
+  static base::string16 GetMachineLevelUserCloudPolicyEnrollmentToken();
+
+  // Returns true if cloud management enrollment is mandatory.
+  static bool ShouldCloudManagementBlockOnFailure();
+
+  // Returns the localized name of the browser.
+  static base::string16 GetDisplayName();
+
+  // Returns the app description for shortcuts.
+  static base::string16 GetAppDescription();
+
+  // Returns the name of the browser's publisher.
+  static base::string16 GetPublisherName();
+
+  // Returns the name of Chrome's shortcut in the Start Menu (among other
+  // places).
+  static base::string16 GetShortcutName();
+
+  // Returns the name of the subdirectory in which Chrome's Start Menu shortcut
+  // was once placed. This remains purely to migrate old installs to the new
+  // style.
+  static base::string16 GetChromeShortcutDirNameDeprecated();
+
+  // Returns the name of the subdirectory in the Start Menu in which Chrome
+  // apps' shortcuts are placed.
+  static base::string16 GetChromeAppsShortcutDirName();
+
+  // Returns the long description of Chrome used when registering as a browser
+  // with Windows.
+  static base::string16 GetLongAppDescription();
 
   // A predicate that compares the program portion of a command line with a
   // given file path.  First, the file paths are compared directly.  If they do
@@ -204,39 +234,27 @@ class InstallUtil {
   // the same file.
   class ProgramCompare : public RegistryValuePredicate {
    public:
-    enum class ComparisonType {
-      // Evaluation compares existing files.
-      FILE,
-      // Evaluation compares existing files or directories.
-      FILE_OR_DIRECTORY,
-    };
-
-    // Constructs a ProgramCompare with FILE as ComparisonType.
     explicit ProgramCompare(const base::FilePath& path_to_match);
-
-    // Constructs a ProgramCompare with |comparison_type| as ComparisonType.
-    ProgramCompare(const base::FilePath& path_to_match,
-                   ComparisonType comparison_type);
-
     ~ProgramCompare() override;
     bool Evaluate(const base::string16& value) const override;
     bool EvaluatePath(const base::FilePath& path) const;
 
    protected:
-    static bool OpenForInfo(const base::FilePath& path,
-                            base::File* file,
-                            ComparisonType comparison_type);
+    static bool OpenForInfo(const base::FilePath& path, base::File* file);
     static bool GetInfo(const base::File& file,
                         BY_HANDLE_FILE_INFORMATION* info);
 
     base::FilePath path_to_match_;
     base::File file_;
     BY_HANDLE_FILE_INFORMATION file_info_;
-    ComparisonType comparison_type_;
 
    private:
     DISALLOW_COPY_AND_ASSIGN(ProgramCompare);
   };  // class ProgramCompare
+
+  // Converts a product GUID into a SQuished gUID that is used for MSI installer
+  // registry entries.
+  static base::string16 GuidToSquid(base::StringPiece16 guid);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(InstallUtil);

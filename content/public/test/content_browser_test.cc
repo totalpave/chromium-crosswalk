@@ -5,10 +5,10 @@
 #include "content/public/test/content_browser_test.h"
 
 #include "base/command_line.h"
-#include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
 #include "build/build_config.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_paths.h"
@@ -18,7 +18,7 @@
 #include "content/shell/browser/shell_browser_context.h"
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/common/shell_switches.h"
-#include "content/shell/renderer/layout_test/layout_test_content_renderer_client.h"
+#include "content/shell/renderer/web_test/web_test_content_renderer_client.h"
 #include "content/test/test_content_client.h"
 
 #if defined(OS_ANDROID)
@@ -26,27 +26,36 @@
 #endif
 
 #if defined(OS_MACOSX)
-#include "base/mac/scoped_nsautorelease_pool.h"
+#include "base/mac/foundation_util.h"
 #endif
 
 #if !defined(OS_CHROMEOS) && defined(OS_LINUX)
 #include "ui/base/ime/input_method_initializer.h"
 #endif
 
+#if defined(OS_CHROMEOS)
+#include "content/public/test/network_connection_change_simulator.h"
+#endif
+
+#if defined(USE_AURA) && defined(TOOLKIT_VIEWS)
+#include "ui/views/test/widget_test_api.h"  // nogncheck
+#endif
+
 namespace content {
 
 ContentBrowserTest::ContentBrowserTest() {
 #if defined(OS_MACOSX)
+  base::mac::SetOverrideAmIBundled(true);
+
   // See comment in InProcessBrowserTest::InProcessBrowserTest().
   base::FilePath content_shell_path;
-  CHECK(PathService::Get(base::FILE_EXE, &content_shell_path));
+  CHECK(base::PathService::Get(base::FILE_EXE, &content_shell_path));
   content_shell_path = content_shell_path.DirName();
   content_shell_path = content_shell_path.Append(
       FILE_PATH_LITERAL("Content Shell.app/Contents/MacOS/Content Shell"));
-  CHECK(PathService::Override(base::FILE_EXE, content_shell_path));
+  CHECK(base::PathService::Override(base::FILE_EXE, content_shell_path));
 #endif
-  base::FilePath content_test_data(FILE_PATH_LITERAL("content/test/data"));
-  CreateTestServer(content_test_data);
+  CreateTestServer(GetTestDataFilePath());
 }
 
 ContentBrowserTest::~ContentBrowserTest() {
@@ -54,8 +63,6 @@ ContentBrowserTest::~ContentBrowserTest() {
 
 void ContentBrowserTest::SetUp() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  command_line->AppendSwitch(switches::kContentBrowserTest);
-
   SetUpCommandLine(command_line);
 
 #if defined(OS_ANDROID)
@@ -66,8 +73,8 @@ void ContentBrowserTest::SetUp() {
     // setting a global that may be used after ContentBrowserTest is
     // destroyed.
     ContentRendererClient* old_client =
-        switches::IsRunLayoutTestSwitchPresent()
-            ? SetRendererClientForTesting(new LayoutTestContentRendererClient)
+        switches::IsRunWebTestsSwitchPresent()
+            ? SetRendererClientForTesting(new WebTestContentRendererClient)
             : SetRendererClientForTesting(new ShellContentRendererClient);
     // No-one should have set this value before we did.
     DCHECK(!old_client);
@@ -75,13 +82,20 @@ void ContentBrowserTest::SetUp() {
 #elif defined(OS_MACOSX)
   // See InProcessBrowserTest::PrepareTestCommandLine().
   base::FilePath subprocess_path;
-  PathService::Get(base::FILE_EXE, &subprocess_path);
+  base::PathService::Get(base::FILE_EXE, &subprocess_path);
   subprocess_path = subprocess_path.DirName().DirName();
   DCHECK_EQ(subprocess_path.BaseName().value(), "Contents");
   subprocess_path = subprocess_path.Append(
       "Frameworks/Content Shell Helper.app/Contents/MacOS/Content Shell Helper");
   command_line->AppendSwitchPath(switches::kBrowserSubprocessPath,
                                  subprocess_path);
+#endif
+
+#if defined(USE_AURA) && defined(TOOLKIT_VIEWS)
+  // https://crbug.com/695054: Ignore window activation/deactivation to make
+  // the Chrome-internal focus unaffected by OS events caused by running tests
+  // in parallel.
+  views::DisableActivationChangeHandlingForTests();
 #endif
 
   // LinuxInputMethodContextFactory has to be initialized.
@@ -105,10 +119,16 @@ void ContentBrowserTest::TearDown() {
 #endif
 }
 
-void ContentBrowserTest::RunTestOnMainThreadLoop() {
-  if (!switches::IsRunLayoutTestSwitchPresent()) {
+void ContentBrowserTest::PreRunTestOnMainThread() {
+#if defined(OS_CHROMEOS)
+  NetworkConnectionChangeSimulator network_change_simulator;
+  network_change_simulator.InitializeChromeosConnectionType();
+#endif
+
+  if (!switches::IsRunWebTestsSwitchPresent()) {
     CHECK_EQ(Shell::windows().size(), 1u);
     shell_ = Shell::windows()[0];
+    SetInitialWebContents(shell_->web_contents());
   }
 
 #if defined(OS_MACOSX)
@@ -119,23 +139,28 @@ void ContentBrowserTest::RunTestOnMainThreadLoop() {
   // deallocation via an autorelease pool (such as browser window closure and
   // browser shutdown). To avoid this, the following pool is recycled after each
   // time code is directly executed.
-  base::mac::ScopedNSAutoreleasePool pool;
+  pool_ = new base::mac::ScopedNSAutoreleasePool;
 #endif
 
   // Pump startup related events.
-  base::MessageLoopForUI::current()->RunUntilIdle();
+  DCHECK(base::MessageLoopCurrentForUI::IsSet());
+  base::RunLoop().RunUntilIdle();
 
 #if defined(OS_MACOSX)
-  pool.Recycle();
+  pool_->Recycle();
 #endif
 
-  SetUpOnMainThread();
+  pre_run_test_executed_ = true;
+}
 
-  RunTestOnMainThread();
+void ContentBrowserTest::PostRunTestOnMainThread() {
+  // This code is failing when the test is overriding PreRunTestOnMainThread()
+  // without the required call to ContentBrowserTest::PreRunTestOnMainThread().
+  // This is a common error causing a crash on MAC.
+  DCHECK(pre_run_test_executed_);
 
-  TearDownOnMainThread();
 #if defined(OS_MACOSX)
-  pool.Recycle();
+  pool_->Recycle();
 #endif
 
   for (RenderProcessHost::iterator i(RenderProcessHost::AllHostsIterator());
@@ -149,17 +174,17 @@ void ContentBrowserTest::RunTestOnMainThreadLoop() {
 Shell* ContentBrowserTest::CreateBrowser() {
   return Shell::CreateNewWindow(
       ShellContentBrowserClient::Get()->browser_context(),
-      GURL(url::kAboutBlankURL),
-      NULL,
-      gfx::Size());
+      GURL(url::kAboutBlankURL), nullptr, gfx::Size());
 }
 
 Shell* ContentBrowserTest::CreateOffTheRecordBrowser() {
   return Shell::CreateNewWindow(
       ShellContentBrowserClient::Get()->off_the_record_browser_context(),
-      GURL(url::kAboutBlankURL),
-      NULL,
-      gfx::Size());
+      GURL(url::kAboutBlankURL), nullptr, gfx::Size());
+}
+
+base::FilePath ContentBrowserTest::GetTestDataFilePath() {
+  return base::FilePath(FILE_PATH_LITERAL("content/test/data"));
 }
 
 }  // namespace content

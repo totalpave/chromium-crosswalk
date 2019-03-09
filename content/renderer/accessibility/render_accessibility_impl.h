@@ -5,27 +5,36 @@
 #ifndef CONTENT_RENDERER_ACCESSIBILITY_RENDER_ACCESSIBILITY_IMPL_H_
 #define CONTENT_RENDERER_ACCESSIBILITY_RENDER_ACCESSIBILITY_IMPL_H_
 
+#include <unordered_map>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "content/common/ax_content_node_data.h"
+#include "content/common/content_export.h"
 #include "content/public/renderer/render_accessibility.h"
 #include "content/public/renderer/render_frame_observer.h"
 #include "content/renderer/accessibility/blink_ax_tree_source.h"
-#include "third_party/WebKit/public/web/WebAXObject.h"
+#include "third_party/blink/public/web/web_ax_context.h"
+#include "third_party/blink/public/web/web_ax_object.h"
+#include "ui/accessibility/ax_relative_bounds.h"
 #include "ui/accessibility/ax_tree.h"
 #include "ui/accessibility/ax_tree_serializer.h"
-
-struct AccessibilityHostMsg_EventParams;
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace blink {
 class WebDocument;
 class WebNode;
-};
+}  // namespace blink
+
+namespace ui {
+struct AXActionData;
+struct AXEvent;
+}
 
 namespace content {
+
+class AXImageAnnotator;
 class RenderFrameImpl;
 
 // The browser process implements native accessibility APIs, allowing
@@ -35,7 +44,7 @@ class RenderFrameImpl;
 // on-screen keyboard should be shown.
 //
 // An instance of this class belongs to RenderFrameImpl. Accessibility is
-// initialized based on the AccessibilityMode of RenderFrameImpl; it lazily
+// initialized based on the ui::AXMode of RenderFrameImpl; it lazily
 // starts as Off or EditableTextOnly depending on the operating system, and
 // switches to Complete if assistive technology is detected or a flag is set.
 //
@@ -55,23 +64,31 @@ class CONTENT_EXPORT RenderAccessibilityImpl
  public:
   // Request a one-time snapshot of the accessibility tree without
   // enabling accessibility if it wasn't already enabled.
-  static void SnapshotAccessibilityTree(
-      RenderFrameImpl* render_frame,
-      AXContentTreeUpdate* response);
+  static void SnapshotAccessibilityTree(RenderFrameImpl* render_frame,
+                                        AXContentTreeUpdate* response,
+                                        ui::AXMode ax_mode);
 
-  explicit RenderAccessibilityImpl(RenderFrameImpl* render_frame);
+  RenderAccessibilityImpl(RenderFrameImpl* const render_frame, ui::AXMode mode);
   ~RenderAccessibilityImpl() override;
+
+  RenderFrameImpl* render_frame() { return render_frame_; }
 
   // RenderAccessibility implementation.
   int GenerateAXID() override;
-  void SetPdfTreeSource(PdfAXTreeSource* source) override;
+  void SetPluginTreeSource(PluginAXTreeSource* source) override;
+  void OnPluginRootNodeUpdated() override;
 
   // RenderFrameObserver implementation.
+  void DidCreateNewDocument() override;
+  void DidCommitProvisionalLoad(bool is_same_document_navigation,
+                                ui::PageTransition transition) override;
+  void AccessibilityModeChanged() override;
   bool OnMessageReceived(const IPC::Message& message) override;
 
   // Called when an accessibility notification occurs in Blink.
   void HandleWebAccessibilityEvent(const blink::WebAXObject& obj,
-                                   blink::WebAXEvent event);
+                                   ax::mojom::Event event);
+  void MarkWebAXObjectDirty(const blink::WebAXObject& obj, bool subtree);
 
   // Called when a new find in page result is highlighted.
   void HandleAccessibilityFindInPageResult(
@@ -84,18 +101,15 @@ class CONTENT_EXPORT RenderAccessibilityImpl
 
   void AccessibilityFocusedNodeChanged(const blink::WebNode& node);
 
-  // This can be called before deleting a RenderAccessibilityImpl instance due
-  // to the accessibility mode changing, as opposed to during frame destruction
-  // (when there'd be no point).
-  void DisableAccessibility();
+  void HandleAXEvent(const blink::WebAXObject& obj,
+                     ax::mojom::Event event,
+                     int action_request_id = -1);
 
-  void HandleAXEvent(const blink::WebAXObject& obj, ui::AXEvent event);
-
- protected:
   // Returns the main top-level document for this page, or NULL if there's
   // no view or frame.
   blink::WebDocument GetMainDocument();
 
+ protected:
   // Send queued events from the renderer to the browser.
   void SendPendingAccessibilityEvents();
 
@@ -104,36 +118,64 @@ class CONTENT_EXPORT RenderAccessibilityImpl
   // versions. If any have moved, send an IPC with the new locations.
   void SendLocationChanges();
 
-  // The RenderFrameImpl that owns us.
-  RenderFrameImpl* render_frame_;
-
  private:
+  struct DirtyObject {
+    blink::WebAXObject obj;
+    ax::mojom::EventFrom event_from;
+  };
+
   // RenderFrameObserver implementation.
   void OnDestruct() override;
 
   // Handlers for messages from the browser to the renderer.
-  void OnDoDefaultAction(int acc_obj_id);
-  void OnEventsAck();
+  void OnPerformAction(const ui::AXActionData& data);
+  void OnEventsAck(int ack_token);
   void OnFatalError();
-  void OnHitTest(gfx::Point point);
-  void OnSetAccessibilityFocus(int acc_obj_id);
   void OnReset(int reset_token);
-  void OnScrollToMakeVisible(int acc_obj_id, gfx::Rect subfocus);
-  void OnScrollToPoint(int acc_obj_id, gfx::Point point);
-  void OnSetScrollOffset(int acc_obj_id, gfx::Point offset);
-  void OnSetFocus(int acc_obj_id);
-  void OnSetSelection(int anchor_acc_obj_id,
-                      int anchor_offset,
-                      int focus_acc_obj_id,
-                      int focus_offset);
-  void OnSetValue(int acc_obj_id, base::string16 value);
-  void OnShowContextMenu(int acc_obj_id);
 
-  void AddPdfTreeToUpdate(AXContentTreeUpdate* update);
+  void OnHitTest(const gfx::Point& point,
+                 ax::mojom::Event event_to_fire,
+                 int action_request_id);
+  void OnLoadInlineTextBoxes(const blink::WebAXObject& obj);
+  void OnGetImageData(const blink::WebAXObject& obj, const gfx::Size& max_size);
+  void AddPluginTreeToUpdate(AXContentTreeUpdate* update);
+
+  // Creates and takes ownership of an instance of the class that automatically
+  // labels images for accessibility.
+  void CreateAXImageAnnotator();
+
+  // Automatically labels images for accessibility if the accessibility mode for
+  // this feature is turned on, otherwise stops automatic labeling and removes
+  // any automatic annotations that might have been added before.
+  void StartOrStopLabelingImages(ui::AXMode old_mode, ui::AXMode new_mode);
+
+  // Marks all AXObjects with the given role in the current tree dirty.
+  void MarkAllAXObjectsDirty(ax::mojom::Role role);
+
+  void Scroll(const blink::WebAXObject& target,
+              ax::mojom::Action scroll_action);
+  void ScrollPlugin(int id_to_make_visible);
+  ax::mojom::EventFrom GetEventFrom();
+  void ScheduleSendAccessibilityEventsIfNeeded();
+  void RecordImageMetrics(AXContentTreeUpdate* update);
+
+  // The RenderFrameImpl that owns us.
+  RenderFrameImpl* render_frame_;
+
+  // This keeps accessibility enabled as long as it lives.
+  std::unique_ptr<blink::WebAXContext> ax_context_;
+
+  // Manages the automatic image annotations, if enabled.
+  std::unique_ptr<AXImageAnnotator> ax_image_annotator_;
 
   // Events from Blink are collected until they are ready to be
   // sent to the browser.
-  std::vector<AccessibilityHostMsg_EventParams> pending_events_;
+  std::vector<ui::AXEvent> pending_events_;
+
+  // Objects that need to be re-serialized, the next time
+  // we send an event bundle to the browser - but don't specifically need
+  // an event fired.
+  std::vector<DirtyObject> dirty_objects_;
 
   // The adapter that exposes Blink's accessibility tree to AXTreeSerializer.
   BlinkAXTreeSource tree_source_;
@@ -145,14 +187,14 @@ class CONTENT_EXPORT RenderAccessibilityImpl
                            AXContentTreeData>;
   BlinkAXTreeSerializer serializer_;
 
-  using PdfAXTreeSerializer = ui::AXTreeSerializer<const ui::AXNode*,
-                                                   ui::AXNodeData,
-                                                   ui::AXTreeData>;
-  std::unique_ptr<PdfAXTreeSerializer> pdf_serializer_;
-  PdfAXTreeSource* pdf_tree_source_;
+  using PluginAXTreeSerializer = ui::AXTreeSerializer<const ui::AXNode*,
+                                                      ui::AXNodeData,
+                                                      ui::AXTreeData>;
+  std::unique_ptr<PluginAXTreeSerializer> plugin_serializer_;
+  PluginAXTreeSource* plugin_tree_source_;
 
   // Current location of every object, so we can detect when it moves.
-  base::hash_map<int, gfx::Rect> locations_;
+  std::unordered_map<int, ui::AXRelativeBounds> locations_;
 
   // The most recently observed scroll offset of the root document element.
   // TODO(dmazzoni): remove once https://bugs.webkit.org/show_bug.cgi?id=73460
@@ -166,9 +208,16 @@ class CONTENT_EXPORT RenderAccessibilityImpl
   // We need to return this token in the next IPC.
   int reset_token_;
 
+  // Whether we are processing a client-initiated action.
+  bool during_action_;
+
+  // Token to send with event messages so we know when they're acknowledged.
+  int ack_token_;
+
   // So we can queue up tasks to be executed later.
   base::WeakPtrFactory<RenderAccessibilityImpl> weak_factory_;
 
+  friend class AXImageAnnotatorTest;
   DISALLOW_COPY_AND_ASSIGN(RenderAccessibilityImpl);
 };
 

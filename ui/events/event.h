@@ -8,43 +8,52 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
+#include <vector>
 
+#include "base/callback.h"
 #include "base/compiler_specific.h"
-#include "base/event_types.h"
+#include "base/containers/flat_map.h"
 #include "base/gtest_prod_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/gesture_event_details.h"
 #include "ui/events/gestures/gesture_types.h"
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/events/keycodes/keyboard_codes.h"
-#include "ui/events/latency_info.h"
+#include "ui/events/platform_event.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "ui/latency/latency_info.h"
 
 namespace gfx {
 class Transform;
 }
 
 namespace ui {
+class CancelModeEvent;
+class Event;
 class EventTarget;
 class KeyEvent;
 class LocatedEvent;
 class MouseEvent;
 class MouseWheelEvent;
-class PointerEvent;
 class ScrollEvent;
 class TouchEvent;
-enum class DomCode;
-class Event;
-class MouseWheelEvent;
 
-using ScopedEvent = std::unique_ptr<Event>;
+enum class DomCode;
+
+using PointerId = int32_t;
 
 class EVENTS_EXPORT Event {
  public:
+  using Properties = base::flat_map<std::string, std::vector<uint8_t>>;
+
+  // Copies an arbitrary event. If you have a typed event (e.g. a MouseEvent)
+  // just use its copy constructor.
   static std::unique_ptr<Event> Clone(const Event& event);
 
   virtual ~Event();
@@ -61,20 +70,24 @@ class EVENTS_EXPORT Event {
     void set_result(int result) {
       event_->result_ = static_cast<EventResult>(result);
     }
+    void set_time_stamp(base::TimeTicks time) { event_->time_stamp_ = time; }
 
    private:
-    DispatcherApi();
     Event* event_;
 
     DISALLOW_COPY_AND_ASSIGN(DispatcherApi);
   };
 
-  const base::NativeEvent& native_event() const { return native_event_; }
+  const PlatformEvent& native_event() const { return native_event_; }
   EventType type() const { return type_; }
-  const std::string& name() const { return name_; }
   // time_stamp represents time since machine was booted.
   const base::TimeTicks time_stamp() const { return time_stamp_; }
   int flags() const { return flags_; }
+
+  // Returns a name for the event, typically used in logging/debugging. This is
+  // a convenience for EventTypeName(type()) (EventTypeName() is in
+  // event_utils).
+  const char* GetName() const;
 
   // This is only intended to be used externally by classes that are modifying
   // events in an EventRewriter.
@@ -91,6 +104,14 @@ class EVENTS_EXPORT Event {
   int source_device_id() const { return source_device_id_; }
   void set_source_device_id(int id) { source_device_id_ = id; }
 
+  // Sets the properties associated with this Event.
+  void SetProperties(const Properties& properties);
+
+  // Returns the properties associated with this event, which may be null.
+  // The properties are meant to provide a way to associate arbitrary key/value
+  // pairs with Events and not used by Event.
+  const Properties* properties() const { return properties_.get(); }
+
   // By default, events are "cancelable", this means any default processing that
   // the containing abstraction layer may perform can be prevented by calling
   // SetHandled(). SetHandled() or StopPropagation() must not be called for
@@ -105,6 +126,12 @@ class EVENTS_EXPORT Event {
   bool IsCommandDown() const { return (flags_ & EF_COMMAND_DOWN) != 0; }
   bool IsAltGrDown() const { return (flags_ & EF_ALTGR_DOWN) != 0; }
   bool IsCapsLockOn() const { return (flags_ & EF_CAPS_LOCK_ON) != 0; }
+
+  bool IsSynthesized() const { return (flags_ & EF_IS_SYNTHESIZED) != 0; }
+
+  bool IsCancelModeEvent() const {
+    return type_ == ET_CANCEL_MODE;
+  }
 
   bool IsKeyEvent() const {
     return type_ == ET_KEY_PRESSED || type_ == ET_KEY_RELEASED;
@@ -128,25 +155,16 @@ class EVENTS_EXPORT Event {
            type_ == ET_TOUCH_CANCELLED;
   }
 
-  bool IsPointerEvent() const {
-    return type_ == ET_POINTER_DOWN || type_ == ET_POINTER_MOVED ||
-           type_ == ET_POINTER_UP || type_ == ET_POINTER_CANCELLED ||
-           type_ == ET_POINTER_ENTERED || type_ == ET_POINTER_EXITED;
-  }
-
-  // Convenience methods to check pointer type of |this|. Returns false if
-  // |this| is not a PointerEvent.
-  bool IsMousePointerEvent() const;
-  bool IsTouchPointerEvent() const;
-
   bool IsGestureEvent() const {
     switch (type_) {
       case ET_GESTURE_SCROLL_BEGIN:
       case ET_GESTURE_SCROLL_END:
       case ET_GESTURE_SCROLL_UPDATE:
       case ET_GESTURE_TAP:
+      case ET_GESTURE_DOUBLE_TAP:
       case ET_GESTURE_TAP_CANCEL:
       case ET_GESTURE_TAP_DOWN:
+      case ET_GESTURE_TAP_UNCONFIRMED:
       case ET_GESTURE_BEGIN:
       case ET_GESTURE_END:
       case ET_GESTURE_TWO_FINGER_TAP:
@@ -157,7 +175,6 @@ class EVENTS_EXPORT Event {
       case ET_GESTURE_LONG_TAP:
       case ET_GESTURE_SWIPE:
       case ET_GESTURE_SHOW_PRESS:
-      case ET_GESTURE_WIN8_EDGE_SWIPE:
         // When adding a gesture event which is paired with an event which
         // occurs earlier, add the event to |IsEndingEvent|.
         return true;
@@ -190,12 +207,17 @@ class EVENTS_EXPORT Event {
   }
 
   bool IsScrollEvent() const {
-    // Flings can be GestureEvents too. EF_FROM_TOUCH determins if they're
+    // Flings can be GestureEvents too. EF_FROM_TOUCH determines if they're
     // Gesture or Scroll events.
     return type_ == ET_SCROLL ||
            ((type_ == ET_SCROLL_FLING_START ||
            type_ == ET_SCROLL_FLING_CANCEL) &&
            !(flags() & EF_FROM_TOUCH));
+  }
+
+  bool IsPinchEvent() const {
+    return type_ == ET_GESTURE_PINCH_BEGIN ||
+           type_ == ET_GESTURE_PINCH_UPDATE || type_ == ET_GESTURE_PINCH_END;
   }
 
   bool IsScrollGestureEvent() const {
@@ -215,8 +237,14 @@ class EVENTS_EXPORT Event {
 
   bool IsLocatedEvent() const {
     return IsMouseEvent() || IsScrollEvent() || IsTouchEvent() ||
-           IsGestureEvent() || IsPointerEvent();
+           IsGestureEvent();
   }
+
+  // Convenience methods to cast |this| to a CancelModeEvent.
+  // IsCancelModeEvent() must be true as a precondition to calling these
+  // methods.
+  CancelModeEvent* AsCancelModeEvent();
+  const CancelModeEvent* AsCancelModeEvent() const;
 
   // Convenience methods to cast |this| to a GestureEvent. IsGestureEvent()
   // must be true as a precondition to calling these methods.
@@ -243,11 +271,6 @@ class EVENTS_EXPORT Event {
   // methods.
   MouseWheelEvent* AsMouseWheelEvent();
   const MouseWheelEvent* AsMouseWheelEvent() const;
-
-  // Convenience methods to cast |this| to a PointerEvent. IsPointerEvent()
-  // must be true as a precondition to calling these methods.
-  PointerEvent* AsPointerEvent();
-  const PointerEvent* AsPointerEvent() const;
 
   // Convenience methods to cast |this| to a ScrollEvent. IsScrollEvent()
   // must be true as a precondition to calling these methods.
@@ -277,10 +300,15 @@ class EVENTS_EXPORT Event {
   void SetHandled();
   bool handled() const { return result_ != ER_UNHANDLED; }
 
+  // For debugging. Not a stable serialization format.
+  virtual std::string ToString() const;
+
  protected:
   Event(EventType type, base::TimeTicks time_stamp, int flags);
-  Event(const base::NativeEvent& native_event, EventType type, int flags);
+  Event(const PlatformEvent& native_event, EventType type, int flags);
   Event(const Event& copy);
+  Event& operator=(const Event& rhs);
+
   void SetType(EventType type);
   void set_cancelable(bool cancelable) { cancelable_ = cancelable; }
 
@@ -288,17 +316,14 @@ class EVENTS_EXPORT Event {
     time_stamp_ = time_stamp;
   }
 
-  void set_name(const std::string& name) { name_ = name; }
-
  private:
   friend class EventTestApi;
 
   EventType type_;
-  std::string name_;
   base::TimeTicks time_stamp_;
   LatencyInfo latency_;
   int flags_;
-  base::NativeEvent native_event_;
+  PlatformEvent native_event_;
   bool delete_native_event_;
   bool cancelable_;
   EventTarget* target_;
@@ -308,6 +333,8 @@ class EVENTS_EXPORT Event {
   // The device id the event came from, or ED_UNKNOWN_DEVICE if the information
   // is not available.
   int source_device_id_;
+
+  std::unique_ptr<Properties> properties_;
 };
 
 class EVENTS_EXPORT CancelModeEvent : public Event {
@@ -347,24 +374,32 @@ class EVENTS_EXPORT LocatedEvent : public Event {
     return root_location_;
   }
 
-  // Transform the locations using |inverted_root_transform|.
-  // This is applied to both |location_| and |root_location_|.
+  // Transform the locations using |inverted_root_transform| and
+  // |inverted_local_transform|. |inverted_local_transform| is only used if
+  // the event has a target.
   virtual void UpdateForRootTransform(
-      const gfx::Transform& inverted_root_transform);
+      const gfx::Transform& inverted_root_transform,
+      const gfx::Transform& inverted_local_transform);
 
-  template <class T> void ConvertLocationToTarget(T* source, T* target) {
+  template <class T>
+  void ConvertLocationToTarget(const T* source, const T* target) {
     if (!target || target == source)
       return;
     gfx::Point offset = gfx::ToFlooredPoint(location_);
     T::ConvertPointToTarget(source, target, &offset);
     gfx::Vector2d diff = gfx::ToFlooredPoint(location_) - offset;
-    location_= location_ - diff;
+    location_ = location_ - diff;
   }
+
+  // Event:
+  std::string ToString() const override;
 
  protected:
   friend class LocatedEventTestApi;
 
-  explicit LocatedEvent(const base::NativeEvent& native_event);
+  LocatedEvent(const LocatedEvent& copy);
+
+  explicit LocatedEvent(const PlatformEvent& native_event);
 
   // Create a new LocatedEvent which is identical to the provided model.
   // If source / target windows are provided, the model location will be
@@ -384,10 +419,17 @@ class EVENTS_EXPORT LocatedEvent : public Event {
                base::TimeTicks time_stamp,
                int flags);
 
+  // Location of the event relative to the target window and in the target
+  // window's coordinate space. If there is no target this is the same as
+  // |root_location_|. Native events may generate float values with sub-pixel
+  // precision.
   gfx::PointF location_;
 
-  // |location_| multiplied by an optional transformation matrix for
-  // rotations, animations and skews.
+  // Location of the event. What coordinate system this is in depends upon the
+  // phase of event dispatch. For client code (meaning EventHandlers) it is
+  // generally in screen coordinates, but early on it may be in pixels and
+  // relative to a display. Native events may generate float values with
+  // sub-pixel precision.
   gfx::PointF root_location_;
 };
 
@@ -395,34 +437,36 @@ class EVENTS_EXPORT LocatedEvent : public Event {
 // PointerEvents API.
 struct EVENTS_EXPORT PointerDetails {
  public:
-  PointerDetails() {}
-  explicit PointerDetails(EventPointerType pointer_type)
-      : pointer_type(pointer_type),
-        force(std::numeric_limits<float>::quiet_NaN()) {}
+  PointerDetails();
+  explicit PointerDetails(EventPointerType pointer_type,
+                          PointerId pointer_id = kUnknownPointerId);
   PointerDetails(EventPointerType pointer_type,
+                 PointerId pointer_id,
                  float radius_x,
                  float radius_y,
                  float force,
-                 float tilt_x,
-                 float tilt_y)
-      : pointer_type(pointer_type),
-        // If we aren't provided with a radius on one axis, use the
-        // information from the other axis.
-        radius_x(radius_x > 0 ? radius_x : radius_y),
-        radius_y(radius_y > 0 ? radius_y : radius_x),
-        force(force),
-        tilt_x(tilt_x),
-        tilt_y(tilt_y) {}
+                 float twist = 0.0f,
+                 float tilt_x = 0.0f,
+                 float tilt_y = 0.0f,
+                 float tangential_pressure = 0.0f);
+  PointerDetails(EventPointerType pointer_type,
+                 const gfx::Vector2d& pointer_offset,
+                 PointerId pointer_id = kUnknownPointerId);
+  PointerDetails(const PointerDetails& other);
 
   bool operator==(const PointerDetails& other) const {
-    return pointer_type == other.pointer_type &&
-           radius_x == other.radius_x &&
+    return pointer_type == other.pointer_type && radius_x == other.radius_x &&
            radius_y == other.radius_y &&
            (force == other.force ||
             (std::isnan(force) && std::isnan(other.force))) &&
-           tilt_x == other.tilt_x &&
-           tilt_y == other.tilt_y;
+           tilt_x == other.tilt_x && tilt_y == other.tilt_y &&
+           tangential_pressure == other.tangential_pressure &&
+           twist == other.twist && id == other.id && offset == other.offset;
   }
+
+  // A value for pointer id which means it needs to be initialized for all
+  // pointer types.
+  static const PointerId kUnknownPointerId;
 
   // The type of pointer device.
   EventPointerType pointer_type = EventPointerType::POINTER_TYPE_UNKNOWN;
@@ -442,14 +486,35 @@ struct EVENTS_EXPORT PointerDetails {
   // is towards the user. 0.0 if unknown.
   float tilt_x = 0.0;
   float tilt_y = 0.0;
+
+  // The normalized tangential pressure (or barrel pressure), typically set by
+  // an additional control of the stylus, which has a range of [-1,1], where 0
+  // is the neutral position of the control. Always 0 if the device does not
+  // support it.
+  float tangential_pressure = 0.0;
+
+  // The clockwise rotation of a pen stylus around its own major axis, in
+  // degrees in the range [0,359]. Always 0 if the device does not support it.
+  float twist = 0;
+
+  // An identifier that uniquely identifies a pointer during its lifetime.
+  PointerId id = 0;
+
+  // Only used by mouse wheel events. The amount to scroll. This is in multiples
+  // of kWheelDelta.
+  // Note: offset_.x() > 0/offset_.y() > 0 means scroll left/up.
+  gfx::Vector2d offset;
+
+  // If you add fields please update ui/events/mojo/event.mojom.
 };
 
 class EVENTS_EXPORT MouseEvent : public LocatedEvent {
  public:
-  explicit MouseEvent(const base::NativeEvent& native_event);
+  static const PointerId kMousePointerId;
 
-  // |pointer_event.IsMousePointerEvent()| must be true.
-  explicit MouseEvent(const PointerEvent& pointer_event);
+  // NOTE: On some platforms this will allow an event to be constructed from a
+  // void*, see PlatformEvent.
+  explicit MouseEvent(const PlatformEvent& native_event);
 
   // Create a new MouseEvent based on the provided model.
   // Uses the provided |type| and |flags| for the new event.
@@ -474,13 +539,30 @@ class EVENTS_EXPORT MouseEvent : public LocatedEvent {
     set_flags(flags);
   }
 
-  // Used for synthetic events in testing, gesture recognizer and Ozone
+  // Note: Use the ctor for MouseWheelEvent if type is ET_MOUSEWHEEL.
+  MouseEvent(EventType type,
+             const gfx::PointF& location,
+             const gfx::PointF& root_location,
+             base::TimeTicks time_stamp,
+             int flags,
+             int changed_button_flags,
+             const PointerDetails& pointer_details =
+                 PointerDetails(EventPointerType::POINTER_TYPE_MOUSE,
+                                kMousePointerId));
+
+  // DEPRECATED: Prefer constructor that takes gfx::PointF.
   MouseEvent(EventType type,
              const gfx::Point& location,
              const gfx::Point& root_location,
              base::TimeTicks time_stamp,
              int flags,
-             int changed_button_flags);
+             int changed_button_flags,
+             const PointerDetails& pointer_details =
+                 PointerDetails(EventPointerType::POINTER_TYPE_MOUSE,
+                                kMousePointerId));
+
+  MouseEvent(const MouseEvent& copy);
+  ~MouseEvent() override;
 
   // Conveniences to quickly test what button is down
   bool IsOnlyLeftMouseButton() const {
@@ -540,14 +622,10 @@ class EVENTS_EXPORT MouseEvent : public LocatedEvent {
   // Updates the button that changed.
   void set_changed_button_flags(int flags) { changed_button_flags_ = flags; }
 
-  // Event details common to MouseEvent and TouchEvent.
   const PointerDetails& pointer_details() const { return pointer_details_; }
-  void set_pointer_details(const PointerDetails& details) {
-    pointer_details_ = details;
-  }
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(EventTest, DoubleClickRequiresRelease);
+  FRIEND_TEST_ALL_PREFIXES(EventTest, DoubleClickRequiresUniqueTimestamp);
   FRIEND_TEST_ALL_PREFIXES(EventTest, SingleClickRightLeft);
 
   // Returns the repeat count based on the previous mouse click, if it is
@@ -560,12 +638,8 @@ class EVENTS_EXPORT MouseEvent : public LocatedEvent {
   // See description above getter for details.
   int changed_button_flags_;
 
+  // The most recent user-generated MouseEvent, used to detect double clicks.
   static MouseEvent* last_click_event_;
-
-  // We can create a MouseEvent for a native event more than once. We set this
-  // to true when the next event either has a different timestamp or we see a
-  // release signalling that the press (click) event was completed.
-  static bool last_click_complete_;
 
   // Structure for holding pointer details for implementing PointerEvents API.
   PointerDetails pointer_details_;
@@ -578,10 +652,11 @@ class EVENTS_EXPORT MouseWheelEvent : public MouseEvent {
   // See |offset| for details.
   static const int kWheelDelta;
 
-  explicit MouseWheelEvent(const base::NativeEvent& native_event);
+  explicit MouseWheelEvent(const PlatformEvent& native_event);
   explicit MouseWheelEvent(const ScrollEvent& scroll_event);
   MouseWheelEvent(const MouseEvent& mouse_event, int x_offset, int y_offset);
-  MouseWheelEvent(const MouseWheelEvent& mouse_wheel_event);
+  MouseWheelEvent(const MouseWheelEvent& copy);
+  ~MouseWheelEvent() override;
 
   template <class T>
   MouseWheelEvent(const MouseWheelEvent& model,
@@ -592,6 +667,14 @@ class EVENTS_EXPORT MouseWheelEvent : public MouseEvent {
   }
 
   // Used for synthetic events in testing and by the gesture recognizer.
+  MouseWheelEvent(const gfx::Vector2d& offset,
+                  const gfx::PointF& location,
+                  const gfx::PointF& root_location,
+                  base::TimeTicks time_stamp,
+                  int flags,
+                  int changed_button_flags);
+
+  // DEPRECATED: Prefer the constructor that takes gfx::PointF.
   MouseWheelEvent(const gfx::Vector2d& offset,
                   const gfx::Point& location,
                   const gfx::Point& root_location,
@@ -609,12 +692,12 @@ class EVENTS_EXPORT MouseWheelEvent : public MouseEvent {
   gfx::Vector2d offset_;
 };
 
+// NOTE: Pen (stylus) events use TouchEvent with POINTER_TYPE_PEN. They were
+// originally implemented as MouseEvent but switched to TouchEvent when UX
+// decided not to show hover effects for pen.
 class EVENTS_EXPORT TouchEvent : public LocatedEvent {
  public:
-  explicit TouchEvent(const base::NativeEvent& native_event);
-
-  // |pointer_event.IsTouchPointerEvent()| must be true.
-  explicit TouchEvent(const PointerEvent& pointer_event);
+  explicit TouchEvent(const PlatformEvent& native_event);
 
   // Create a new TouchEvent which is identical to the provided model.
   // If source / target windows are provided, the model location will be
@@ -622,51 +705,52 @@ class EVENTS_EXPORT TouchEvent : public LocatedEvent {
   template <class T>
   TouchEvent(const TouchEvent& model, T* source, T* target)
       : LocatedEvent(model, source, target),
-        touch_id_(model.touch_id_),
         unique_event_id_(model.unique_event_id_),
-        rotation_angle_(model.rotation_angle_),
         may_cause_scrolling_(model.may_cause_scrolling_),
         should_remove_native_touch_id_mapping_(false),
+        hovering_(false),
         pointer_details_(model.pointer_details_) {}
 
   TouchEvent(EventType type,
-             const gfx::Point& location,
-             int touch_id,
-             base::TimeTicks time_stamp);
+             const gfx::PointF& location,
+             const gfx::PointF& root_location,
+             base::TimeTicks time_stamp,
+             const PointerDetails& pointer_details,
+             int flags = 0);
 
+  // DEPRECATED: Prefer the constructor that takes gfx::PointF.
   TouchEvent(EventType type,
              const gfx::Point& location,
-             int flags,
-             int touch_id,
-             base::TimeTicks timestamp,
-             float radius_x,
-             float radius_y,
-             float angle,
-             float force);
+             base::TimeTicks time_stamp,
+             const PointerDetails& pointer_details,
+             int flags = 0);
 
   TouchEvent(const TouchEvent& copy);
 
   ~TouchEvent() override;
 
-  // The id of the pointer this event modifies.
-  int touch_id() const { return touch_id_; }
   // A unique identifier for this event.
   uint32_t unique_event_id() const { return unique_event_id_; }
 
-  float rotation_angle() const { return rotation_angle_; }
-
   void set_may_cause_scrolling(bool causes) { may_cause_scrolling_ = causes; }
   bool may_cause_scrolling() const { return may_cause_scrolling_; }
+
+  void set_hovering(bool hovering) { hovering_ = hovering; }
+  bool hovering() const { return hovering_; }
 
   void set_should_remove_native_touch_id_mapping(
       bool should_remove_native_touch_id_mapping) {
     should_remove_native_touch_id_mapping_ =
         should_remove_native_touch_id_mapping;
   }
+  bool should_remove_native_touch_id_mapping() const {
+    return should_remove_native_touch_id_mapping_;
+  }
 
   // Overridden from LocatedEvent.
   void UpdateForRootTransform(
-      const gfx::Transform& inverted_root_transform) override;
+      const gfx::Transform& inverted_root_transform,
+      const gfx::Transform& inverted_local_transform) override;
 
   // Marks the event as not participating in synchronous gesture recognition.
   void DisableSynchronousHandling();
@@ -674,26 +758,17 @@ class EVENTS_EXPORT TouchEvent : public LocatedEvent {
     return !!(result() & ER_DISABLE_SYNC_HANDLING);
   }
 
-  // Event details common to MouseEvent and TouchEvent.
   const PointerDetails& pointer_details() const { return pointer_details_; }
-  void set_pointer_details(const PointerDetails& pointer_details) {
-    pointer_details_ = pointer_details;
-  }
+  void SetPointerDetailsForTest(const PointerDetails& pointer_details);
+
+  float ComputeRotationAngle() const;
 
  private:
-  // Adjusts rotation_angle_ to within the acceptable range.
-  void FixRotationAngle();
-
-  // The identity (typically finger) of the touch starting at 0 and incrementing
-  // for each separable additional touch that the hardware can detect.
-  int touch_id_;
-
   // A unique identifier for the touch event.
+  // NOTE: this is *not* serialized over mojom, as the number is unique to
+  // a particular process, and as mojom may go cross process, to serialize could
+  // lead to conflicts.
   uint32_t unique_event_id_;
-
-  // Clockwise angle (in degrees) of the major axis from the X axis. Must be
-  // less than 180 and non-negative.
-  float rotation_angle_;
 
   // Whether the (unhandled) touch event will produce a scroll event (e.g., a
   // touchmove that exceeds the platform slop region, or a touchend that
@@ -704,50 +779,15 @@ class EVENTS_EXPORT TouchEvent : public LocatedEvent {
   // event id and the touch_id_. This should only be the case for
   // release and cancel events where the associated touch press event
   // created a mapping between the native id and the touch_id_.
+  // NOTE: this is not serialized, as it's generally unique to the source.
   bool should_remove_native_touch_id_mapping_;
+
+  // True for devices like some pens when they support hovering over
+  // digitizer and they send events while hovering.
+  bool hovering_;
 
   // Structure for holding pointer details for implementing PointerEvents API.
   PointerDetails pointer_details_;
-};
-
-class EVENTS_EXPORT PointerEvent : public LocatedEvent {
- public:
-  static const int32_t kMousePointerId;
-
-  // Returns true if a PointerEvent can be constructed from the given mouse or
-  // touch event. For example, PointerEvent does not support ET_MOUSEWHEEL or
-  // ET_MOUSE_CAPTURE_CHANGED.
-  static bool CanConvertFrom(const Event& event);
-
-  PointerEvent(const PointerEvent& pointer_event);
-  explicit PointerEvent(const MouseEvent& mouse_event);
-  explicit PointerEvent(const TouchEvent& touch_event);
-
-  PointerEvent(EventType type,
-               const gfx::Point& location,
-               const gfx::Point& root_location,
-               int flags,
-               int pointer_id,
-               const PointerDetails& pointer_details,
-               base::TimeTicks time_stamp);
-
-  int32_t pointer_id() const { return pointer_id_; }
-  const PointerDetails& pointer_details() const { return details_; }
-
- private:
-  int32_t pointer_id_;
-  PointerDetails details_;
-};
-
-// An interface that individual platforms can use to store additional data on
-// KeyEvent.
-//
-// Currently only used in mojo.
-class EVENTS_EXPORT ExtendedKeyEventData {
- public:
-  virtual ~ExtendedKeyEventData() {}
-
-  virtual ExtendedKeyEventData* Clone() const = 0;
 };
 
 // A KeyEvent is really two distinct classes, melded together due to the
@@ -790,18 +830,35 @@ class EVENTS_EXPORT ExtendedKeyEventData {
 //
 class EVENTS_EXPORT KeyEvent : public Event {
  public:
+  class KeyDispatcherApi {
+   public:
+    explicit KeyDispatcherApi(KeyEvent* event) : event_(event) {}
+
+    void set_async_callback(base::OnceCallback<void(bool, bool)> callback) {
+      event_->async_callback_ = std::move(callback);
+    }
+
+   private:
+    KeyEvent* event_;
+
+    DISALLOW_COPY_AND_ASSIGN(KeyDispatcherApi);
+  };
+
   // Create a KeyEvent from a NativeEvent. For Windows this native event can
   // be either a keystroke message (WM_KEYUP/WM_KEYDOWN) or a character message
   // (WM_CHAR). Other systems have only keystroke events.
-  explicit KeyEvent(const base::NativeEvent& native_event);
+  explicit KeyEvent(const PlatformEvent& native_event);
 
   // Create a KeyEvent from a NativeEvent but with mocked flags.
   // This method is necessary for Windows since MSG does not contain all flags.
-  KeyEvent(const base::NativeEvent& native_event, int event_flags);
+  KeyEvent(const PlatformEvent& native_event, int event_flags);
 
   // Create a keystroke event from a legacy KeyboardCode.
   // This should not be used in new code.
-  KeyEvent(EventType type, KeyboardCode key_code, int flags);
+  KeyEvent(EventType type,
+           KeyboardCode key_code,
+           int flags,
+           base::TimeTicks time_stamp = base::TimeTicks());
 
   // Create a fully defined keystroke event.
   KeyEvent(EventType type,
@@ -809,10 +866,15 @@ class EVENTS_EXPORT KeyEvent : public Event {
            DomCode code,
            int flags,
            DomKey key,
-           base::TimeTicks time_stamp);
+           base::TimeTicks time_stamp,
+           bool is_char = false);
 
   // Create a character event.
-  KeyEvent(base::char16 character, KeyboardCode key_code, int flags);
+  KeyEvent(base::char16 character,
+           KeyboardCode key_code,
+           DomCode code,
+           int flags,
+           base::TimeTicks time_stamp = base::TimeTicks());
 
   // Used for synthetic events with code of DOM KeyboardEvent (e.g. 'KeyA')
   // See also: ui/events/keycodes/dom/dom_values.txt
@@ -826,17 +888,6 @@ class EVENTS_EXPORT KeyEvent : public Event {
   KeyEvent& operator=(const KeyEvent& rhs);
 
   ~KeyEvent() override;
-
-  // TODO(erg): While we transition to mojo, we have to hack around a mismatch
-  // in our event types. Our ui::Events don't really have all the data we need
-  // to process key events, and we instead do per-platform conversions with
-  // native HWNDs or XEvents. And we can't reliably send those native data
-  // types across mojo types in a cross-platform way. So instead, we set the
-  // resulting data when read across IPC boundaries.
-  void SetExtendedKeyEventData(std::unique_ptr<ExtendedKeyEventData> data);
-  const ExtendedKeyEventData* extended_key_event_data() const {
-    return extended_key_event_data_.get();
-  }
 
   // This bypasses the normal mapping from keystroke events to characters,
   // which allows an I18N virtual keyboard to fabricate a keyboard event that
@@ -891,7 +942,7 @@ class EVENTS_EXPORT KeyEvent : public Event {
   bool IsUnicodeKeyCode() const;
 
   // Returns the DOM .code (physical key identifier) for a keystroke event.
-  DomCode code() const { return code_; };
+  DomCode code() const { return code_; }
   std::string GetCodeString() const;
 
   // Returns the DOM .key (layout meaning) for a keystroke event.
@@ -900,6 +951,12 @@ class EVENTS_EXPORT KeyEvent : public Event {
   // Normalizes flags_ so that it describes the state after the event.
   // (Native X11 event flags describe the state before the event.)
   void NormalizeFlags();
+
+  // Called if the event is handled asynchronously. If the returned callback is
+  // non-null, it *must* be run once async handling is complete. The argument
+  // to the callback indicates if the event was handled or not.
+  base::OnceCallback<void(bool, bool)> WillHandleAsync();
+  bool HasAsyncCallback() const { return !async_callback_.is_null(); }
 
  protected:
   friend class KeyEventTestApi;
@@ -910,6 +967,8 @@ class EVENTS_EXPORT KeyEvent : public Event {
  private:
   // Determine key_ on a keystroke event from code_ and flags().
   void ApplyLayout() const;
+
+  static bool IsRepeated(const KeyEvent& event);
 
   KeyboardCode key_code_;
 
@@ -937,33 +996,43 @@ class EVENTS_EXPORT KeyEvent : public Event {
   // it may be set only if and when GetCharacter() or GetDomKey() is called.
   mutable DomKey key_ = DomKey::NONE;
 
-  // Parts of our event handling require raw native events (see both the
-  // windows and linux implementations of web_input_event in content/). Because
-  // mojo instead serializes and deserializes events in potentially different
-  // processes, we need to have a mechanism to keep track of this data.
-  std::unique_ptr<ExtendedKeyEventData> extended_key_event_data_;
-
-  static bool IsRepeated(const KeyEvent& event);
+  base::OnceCallback<void(bool, bool)> async_callback_;
 
   static KeyEvent* last_key_event_;
+#if defined(USE_X11)
+  static KeyEvent* last_ibus_key_event_;
+#endif
 };
 
 class EVENTS_EXPORT ScrollEvent : public MouseEvent {
  public:
-  explicit ScrollEvent(const base::NativeEvent& native_event);
+  explicit ScrollEvent(const PlatformEvent& native_event);
+
   template <class T>
-  ScrollEvent(const ScrollEvent& model,
-              T* source,
-              T* target)
+  ScrollEvent(const ScrollEvent& model, T* source, T* target)
       : MouseEvent(model, source, target),
         x_offset_(model.x_offset_),
         y_offset_(model.y_offset_),
         x_offset_ordinal_(model.x_offset_ordinal_),
         y_offset_ordinal_(model.y_offset_ordinal_),
-        finger_count_(model.finger_count_){
-  }
+        finger_count_(model.finger_count_),
+        momentum_phase_(model.momentum_phase_),
+        scroll_event_phase_(model.scroll_event_phase_) {}
 
-  // Used for tests.
+  ScrollEvent(EventType type,
+              const gfx::PointF& location,
+              const gfx::PointF& root_location,
+              base::TimeTicks time_stamp,
+              int flags,
+              float x_offset,
+              float y_offset,
+              float x_offset_ordinal,
+              float y_offset_ordinal,
+              int finger_count,
+              EventMomentumPhase momentum_phase = EventMomentumPhase::NONE,
+              ScrollEventPhase phase = ScrollEventPhase::kNone);
+
+  // DEPRECATED: Prefer the constructor that takes gfx::PointF.
   ScrollEvent(EventType type,
               const gfx::Point& location,
               base::TimeTicks time_stamp,
@@ -972,7 +1041,12 @@ class EVENTS_EXPORT ScrollEvent : public MouseEvent {
               float y_offset,
               float x_offset_ordinal,
               float y_offset_ordinal,
-              int finger_count);
+              int finger_count,
+              EventMomentumPhase momentum_phase = EventMomentumPhase::NONE,
+              ScrollEventPhase phase = ScrollEventPhase::kNone);
+
+  ScrollEvent(const ScrollEvent& copy);
+  ~ScrollEvent() override;
 
   // Scale the scroll event's offset value.
   // This is useful in the multi-monitor setup where it needs to be scaled
@@ -984,6 +1058,11 @@ class EVENTS_EXPORT ScrollEvent : public MouseEvent {
   float x_offset_ordinal() const { return x_offset_ordinal_; }
   float y_offset_ordinal() const { return y_offset_ordinal_; }
   int finger_count() const { return finger_count_; }
+  EventMomentumPhase momentum_phase() const { return momentum_phase_; }
+  ScrollEventPhase scroll_event_phase() const { return scroll_event_phase_; }
+
+  // Event:
+  std::string ToString() const override;
 
  private:
   // Potential accelerated offsets.
@@ -994,6 +1073,13 @@ class EVENTS_EXPORT ScrollEvent : public MouseEvent {
   float y_offset_ordinal_;
   // Number of fingers on the pad.
   int finger_count_;
+
+  // For non-fling events, provides momentum information (e.g. for the case
+  // where the device provides continuous event updates during a fling).
+  EventMomentumPhase momentum_phase_ = EventMomentumPhase::NONE;
+
+  // Provides phase information if device can provide.
+  ScrollEventPhase scroll_event_phase_ = ScrollEventPhase::kNone;
 };
 
 class EVENTS_EXPORT GestureEvent : public LocatedEvent {
@@ -1015,7 +1101,7 @@ class EVENTS_EXPORT GestureEvent : public LocatedEvent {
       : LocatedEvent(model, source, target),
         details_(model.details_) {
   }
-
+  GestureEvent(const GestureEvent& copy);
   ~GestureEvent() override;
 
   const GestureEventDetails& details() const { return details_; }

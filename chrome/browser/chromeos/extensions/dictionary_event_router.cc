@@ -4,6 +4,7 @@
 
 #include "chrome/browser/chromeos/extensions/dictionary_event_router.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -49,12 +50,11 @@ void ExtensionDictionaryEventRouter::DispatchLoadedEventIfLoaded() {
     return;
   }
 
-  std::unique_ptr<base::ListValue> args(new base::ListValue());
   // The router will only send the event to extensions that are listening.
-  std::unique_ptr<extensions::Event> event(new extensions::Event(
+  auto event = std::make_unique<extensions::Event>(
       extensions::events::INPUT_METHOD_PRIVATE_ON_DICTIONARY_LOADED,
-      OnDictionaryLoaded::kEventName, std::move(args)));
-  event->restrict_to_browser_context = context_;
+      OnDictionaryLoaded::kEventName, std::make_unique<base::ListValue>(),
+      context_);
   router->BroadcastEvent(std::move(event));
 }
 
@@ -80,14 +80,13 @@ void ExtensionDictionaryEventRouter::OnCustomDictionaryChanged(
     removed_words->AppendString(word);
 
   std::unique_ptr<base::ListValue> args(new base::ListValue());
-  args->Append(added_words.release());
-  args->Append(removed_words.release());
+  args->Append(std::move(added_words));
+  args->Append(std::move(removed_words));
 
   // The router will only send the event to extensions that are listening.
-  std::unique_ptr<extensions::Event> event(new extensions::Event(
+  auto event = std::make_unique<extensions::Event>(
       extensions::events::INPUT_METHOD_PRIVATE_ON_DICTIONARY_CHANGED,
-      OnDictionaryChanged::kEventName, std::move(args)));
-  event->restrict_to_browser_context = context_;
+      OnDictionaryChanged::kEventName, std::move(args), context_);
   router->BroadcastEvent(std::move(event));
 }
 

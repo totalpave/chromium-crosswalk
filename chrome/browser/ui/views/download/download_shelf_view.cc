@@ -10,110 +10,42 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/download/download_item_model.h"
-#include "chrome/browser/download/download_stats.h"
 #include "chrome/browser/themes/theme_properties.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/view_ids.h"
-#include "chrome/browser/ui/views/bar_control_button.h"
 #include "chrome/browser/ui/views/download/download_item_view.h"
-#include "chrome/browser/ui/views/download/download_item_view_md.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "content/public/browser/download_item.h"
+#include "components/download/public/common/download_item.h"
+#include "components/strings/grit/components_strings.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/page_navigator.h"
-#include "grit/components_strings.h"
-#include "grit/theme_resources.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/theme_provider.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/vector_icons_public.h"
-#include "ui/resources/grit/ui_resources.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/image_button.h"
+#include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/controls/button/md_text_button.h"
-#include "ui/views/controls/image_view.h"
 #include "ui/views/controls/link.h"
 #include "ui/views/mouse_watcher_view_host.h"
 
-using content::DownloadItem;
+using download::DownloadItem;
 
 namespace {
 
-// Max number of download views we'll contain. Any time a view is added and
-// we already have this many download views, one is removed.
-const size_t kMaxDownloadViews = 15;
+// Padding above the content.
+constexpr int kTopPadding = 1;
 
-// Padding from left edge and first download view.
-const int kLeftPadding = 2;
-const int kStartPaddingMd = 4;
-
-// Padding from right edge and close button/show downloads link.
-const int kRightPadding = 10;
-const int kEndPaddingMd = 6;
-
-// Padding between the show all link and close button.
-const int kCloseAndLinkPadding = 14;
-const int kCloseAndLinkPaddingMd = 6;
-
-// Padding between the download views.
-const int kDownloadPadding = 10;
-
-// Padding between the top/bottom and the content.
-const int kTopBottomPadding = 2;
-
-// Padding between the icon and 'show all downloads' link
-const int kDownloadsTitlePadding = 4;
-
-// Border color.
-const SkColor kBorderColor = SkColorSetRGB(214, 214, 214);
-
-// New download item animation speed in milliseconds.
-const int kNewItemAnimationDurationMs = 800;
-
-// Shelf show/hide speed.
-const int kShelfAnimationDurationMs = 120;
-
-// Amount of time to delay if the mouse leaves the shelf by way of entering
-// another window. This is much larger than the normal delay as openning a
-// download is most likely going to trigger a new window to appear over the
-// button. Delay the time so that the user has a chance to quickly close the
-// other app and return to chrome with the download shelf still open.
-const int kNotifyOnExitTimeMS = 5000;
-
-int GetStartPadding() {
-  return ui::MaterialDesignController::IsModeMaterial() ? kStartPaddingMd
-                                                        : kLeftPadding;
-}
-
-int GetEndPadding() {
-  return ui::MaterialDesignController::IsModeMaterial() ? kEndPaddingMd
-                                                        : kRightPadding;
-}
-
-int GetCloseAndLinkPadding() {
-  return ui::MaterialDesignController::IsModeMaterial() ? kCloseAndLinkPaddingMd
-                                                        : kCloseAndLinkPadding;
-}
-
-int GetBetweenItemPadding() {
-  return ui::MaterialDesignController::IsModeMaterial() ? 0 : kDownloadPadding;
-}
-
-int GetTopPadding() {
-  return ui::MaterialDesignController::IsModeMaterial() ? 1 : kTopBottomPadding;
-}
-
-int GetBottomPadding() {
-  return ui::MaterialDesignController::IsModeMaterial() ? 0 : kTopBottomPadding;
-}
-
-// Sets size->width() to view's preferred width + size->width().s
+// Sets size->width() to view's preferred width + size->width().
 // Sets size->height() to the max of the view's preferred height and
 // size->height();
 void AdjustSize(views::View* view, gfx::Size* size) {
@@ -123,7 +55,7 @@ void AdjustSize(views::View* view, gfx::Size* size) {
 }
 
 int CenterPosition(int size, int target_size) {
-  return std::max((target_size - size) / 2, GetTopPadding());
+  return std::max((target_size - size) / 2, kTopPadding);
 }
 
 }  // namespace
@@ -132,69 +64,54 @@ DownloadShelfView::DownloadShelfView(Browser* browser, BrowserView* parent)
     : browser_(browser),
       new_item_animation_(this),
       shelf_animation_(this),
-      arrow_image_(nullptr),
       show_all_view_(nullptr),
-      show_all_view_md_(nullptr),
-      close_button_(nullptr),
+      close_button_(views::CreateVectorImageButton(this)),
       parent_(parent),
-      mouse_watcher_(new views::MouseWatcherViewHost(this, gfx::Insets()),
-                     this) {
+      mouse_watcher_(
+          std::make_unique<views::MouseWatcherViewHost>(this, gfx::Insets()),
+          this) {
   // Start out hidden: the shelf might be created but never shown in some
   // cases, like when installing a theme. See DownloadShelf::AddDownload().
   SetVisible(false);
+
+  show_all_view_ = views::MdTextButton::Create(
+      this, l10n_util::GetStringUTF16(IDS_SHOW_ALL_DOWNLOADS));
+  AddChildView(show_all_view_);
+
+  close_button_->SetAccessibleName(
+      l10n_util::GetStringUTF16(IDS_ACCNAME_CLOSE));
+  AddChildView(close_button_);
+
+  accessible_alert_ = new views::View();
+  AddChildView(accessible_alert_);
+
+  if (gfx::Animation::ShouldRenderRichAnimation()) {
+    new_item_animation_.SetSlideDuration(kNewItemAnimationDurationMs);
+    shelf_animation_.SetSlideDuration(kShelfAnimationDurationMs);
+  } else {
+    new_item_animation_.SetSlideDuration(0);
+    shelf_animation_.SetSlideDuration(0);
+  }
+
+  GetViewAccessibility().OverrideName(
+      l10n_util::GetStringUTF16(IDS_ACCNAME_DOWNLOADS_BAR));
+  GetViewAccessibility().OverrideRole(ax::mojom::Role::kGroup);
 
   mouse_watcher_.set_notify_on_exit_time(
       base::TimeDelta::FromMilliseconds(kNotifyOnExitTimeMS));
   set_id(VIEW_ID_DOWNLOAD_SHELF);
   parent->AddChildView(this);
-
-  ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-
-  arrow_image_ = new views::ImageView();
-  AddChildView(arrow_image_);
-  if (!ui::MaterialDesignController::IsModeMaterial()) {
-    arrow_image_->SetImage(rb.GetImageSkiaNamed(IDR_DOWNLOADS_FAVICON));
-
-    views::Link* show_all_view =
-        new views::Link(l10n_util::GetStringUTF16(IDS_SHOW_ALL_DOWNLOADS));
-    show_all_view->set_listener(this);
-    show_all_view_ = show_all_view;
-
-    close_button_ = new views::ImageButton(this);
-    close_button_->SetImage(views::CustomButton::STATE_NORMAL,
-                            rb.GetImageSkiaNamed(IDR_CLOSE_1));
-    close_button_->SetImage(views::CustomButton::STATE_HOVERED,
-                            rb.GetImageSkiaNamed(IDR_CLOSE_1_H));
-    close_button_->SetImage(views::CustomButton::STATE_PRESSED,
-                            rb.GetImageSkiaNamed(IDR_CLOSE_1_P));
-  } else {
-    show_all_view_md_ = views::MdTextButton::CreateMdButton(
-        this, l10n_util::GetStringUTF16(IDS_SHOW_ALL_DOWNLOADS_MD));
-    show_all_view_ = show_all_view_md_;
-
-    BarControlButton* close_button = new BarControlButton(this);
-    close_button->SetIcon(gfx::VectorIconId::BAR_CLOSE,
-                          base::Bind(&DownloadShelfView::GetTextColorForIconMd,
-                                     base::Unretained(this)));
-    close_button_ = close_button;
-  }
-  close_button_->SetAccessibleName(
-      l10n_util::GetStringUTF16(IDS_ACCNAME_CLOSE));
-  AddChildView(show_all_view_);
-  AddChildView(close_button_);
-
-  new_item_animation_.SetSlideDuration(kNewItemAnimationDurationMs);
-  shelf_animation_.SetSlideDuration(kShelfAnimationDurationMs);
 }
 
 DownloadShelfView::~DownloadShelfView() {
   parent_->RemoveChildView(this);
 }
 
-void DownloadShelfView::AddDownloadView(views::View* view) {
+void DownloadShelfView::AddDownloadView(DownloadItemView* view) {
   mouse_watcher_.Stop();
 
   DCHECK(view);
+  const bool was_empty = download_views_.empty();
   download_views_.push_back(view);
 
   // Insert the new view as the first child, so the logical child order matches
@@ -206,13 +123,16 @@ void DownloadShelfView::AddDownloadView(views::View* view) {
 
   new_item_animation_.Reset();
   new_item_animation_.Show();
+  if (was_empty && !shelf_animation_.is_animating() && visible()) {
+    // Force a re-layout of the parent to adjust height of shelf properly.
+    parent_->ToolbarSizeChanged(shelf_animation_.IsShowing());
+  }
 }
 
-void DownloadShelfView::DoAddDownload(DownloadItem* download) {
-  if (ui::MaterialDesignController::IsModeMaterial())
-    AddDownloadView(new DownloadItemViewMd(download, this));
-  else
-    AddDownloadView(new DownloadItemView(download, this));
+void DownloadShelfView::DoAddDownload(
+    DownloadUIModel::DownloadUIModelPtr download) {
+  AddDownloadView(
+      new DownloadItemView(std::move(download), this, accessible_alert_));
 }
 
 void DownloadShelfView::MouseMovedOutOfHost() {
@@ -229,39 +149,59 @@ void DownloadShelfView::RemoveDownloadView(View* view) {
   if (download_views_.empty())
     Close(AUTOMATIC);
   else if (CanAutoClose())
-    mouse_watcher_.Start();
+    mouse_watcher_.Start(GetWidget()->GetNativeWindow());
   Layout();
   SchedulePaint();
 }
 
+void DownloadShelfView::ConfigureButtonForTheme(views::MdTextButton* button) {
+  DCHECK(GetThemeProvider());
+
+  button->SetEnabledTextColors(
+      GetThemeProvider()->GetColor(ThemeProperties::COLOR_BOOKMARK_TEXT));
+  // For the normal theme, just use the default button bg color.
+  base::Optional<SkColor> bg_color;
+  if (!ThemeServiceFactory::GetForProfile(browser_->profile())
+          ->UsingDefaultTheme()) {
+    // For custom themes, we have to make up a background color for the
+    // button. Use a slight tint of the shelf background.
+    bg_color = color_utils::BlendTowardMaxContrast(
+        GetThemeProvider()->GetColor(ThemeProperties::COLOR_DOWNLOAD_SHELF),
+        0x10);
+  }
+  button->SetBgColorOverride(bg_color);
+}
+
 views::View* DownloadShelfView::GetDefaultFocusableChild() {
-  return download_views_.empty() ? show_all_view_ : download_views_.back();
+  if (!download_views_.empty())
+    return download_views_.back();
+
+  return show_all_view_;
 }
 
 void DownloadShelfView::OnPaintBorder(gfx::Canvas* canvas) {
-  canvas->FillRect(gfx::Rect(0, 0, width(), 1), kBorderColor);
+  canvas->FillRect(gfx::Rect(0, 0, width(), 1),
+                   GetThemeProvider()->GetColor(
+                       ThemeProperties::COLOR_TOOLBAR_CONTENT_AREA_SEPARATOR));
 }
 
 void DownloadShelfView::OpenedDownload() {
   if (CanAutoClose())
-    mouse_watcher_.Start();
+    mouse_watcher_.Start(GetWidget()->GetNativeWindow());
 }
 
 content::PageNavigator* DownloadShelfView::GetNavigator() {
   return browser_;
 }
 
-gfx::Size DownloadShelfView::GetPreferredSize() const {
-  gfx::Size prefsize(
-      GetEndPadding() + GetStartPadding() + GetCloseAndLinkPadding(), 0);
+gfx::Size DownloadShelfView::CalculatePreferredSize() const {
+  gfx::Size prefsize(kEndPadding + kStartPadding + kCloseAndLinkPadding, 0);
   AdjustSize(close_button_, &prefsize);
   AdjustSize(show_all_view_, &prefsize);
   // Add one download view to the preferred size.
-  if (!download_views_.empty()) {
+  if (!download_views_.empty())
     AdjustSize(*download_views_.begin(), &prefsize);
-    prefsize.Enlarge(GetBetweenItemPadding(), 0);
-  }
-  prefsize.Enlarge(0, GetTopPadding() + GetBottomPadding());
+  prefsize.Enlarge(0, kTopPadding);
   if (shelf_animation_.is_animating()) {
     prefsize.set_height(
         static_cast<int>(static_cast<double>(prefsize.height()) *
@@ -302,26 +242,17 @@ void DownloadShelfView::Layout() {
   // something to see.
   bool show_link_only = !CanFitFirstDownloadItem();
 
-  gfx::Size image_size = arrow_image_->GetPreferredSize();
   gfx::Size close_button_size = close_button_->GetPreferredSize();
   gfx::Size show_all_size = show_all_view_->GetPreferredSize();
   int max_download_x =
-      std::max<int>(0, width() - GetEndPadding() - close_button_size.width() -
-                           GetCloseAndLinkPadding() - show_all_size.width() -
-                           kDownloadsTitlePadding - image_size.width() -
-                           GetBetweenItemPadding());
-  int next_x = show_link_only ? GetStartPadding()
-                              : max_download_x + GetBetweenItemPadding();
-  // Align vertically with show_all_view_.
-  arrow_image_->SetBounds(next_x,
-                          CenterPosition(image_size.height(), height()),
-                          image_size.width(), image_size.height());
-  next_x += image_size.width() + kDownloadsTitlePadding;
+      std::max<int>(0, width() - kEndPadding - close_button_size.width() -
+                           kCloseAndLinkPadding - show_all_size.width());
+  int next_x = show_link_only ? kStartPadding : max_download_x;
   show_all_view_->SetBounds(next_x,
                             CenterPosition(show_all_size.height(), height()),
                             show_all_size.width(),
                             show_all_size.height());
-  next_x += show_all_size.width() + GetCloseAndLinkPadding();
+  next_x += show_all_size.width() + kCloseAndLinkPadding;
   close_button_->SizeToPreferredSize();
   close_button_->SetPosition(
       gfx::Point(next_x, CenterPosition(close_button_->height(), height())));
@@ -332,7 +263,7 @@ void DownloadShelfView::Layout() {
     return;
   }
 
-  next_x = GetStartPadding();
+  next_x = kStartPadding;
   for (auto ri = download_views_.rbegin(); ri != download_views_.rend(); ++ri) {
     gfx::Size view_size = (*ri)->GetPreferredSize();
 
@@ -358,28 +289,19 @@ void DownloadShelfView::Layout() {
   }
 }
 
-void DownloadShelfView::ViewHierarchyChanged(
-    const ViewHierarchyChangedDetails& details) {
-  View::ViewHierarchyChanged(details);
-  if (details.is_add)
-    UpdateColorsFromTheme();
-}
-
 bool DownloadShelfView::CanFitFirstDownloadItem() {
   if (download_views_.empty())
     return true;
 
-  gfx::Size image_size = arrow_image_->GetPreferredSize();
   gfx::Size close_button_size = close_button_->GetPreferredSize();
   gfx::Size show_all_size = show_all_view_->GetPreferredSize();
 
   // Let's compute the width available for download items, which is the width
   // of the shelf minus the "Show all downloads" link, arrow and close button
   // and the padding.
-  int available_width = width() - GetEndPadding() - close_button_size.width() -
-                        GetCloseAndLinkPadding() - show_all_size.width() -
-                        kDownloadsTitlePadding - image_size.width() -
-                        GetBetweenItemPadding() - GetStartPadding();
+  int available_width = width() - kEndPadding - close_button_size.width() -
+                        kCloseAndLinkPadding - show_all_size.width() -
+                        kStartPadding;
   if (available_width <= 0)
     return false;
 
@@ -388,26 +310,21 @@ bool DownloadShelfView::CanFitFirstDownloadItem() {
 }
 
 void DownloadShelfView::UpdateColorsFromTheme() {
-  if (show_all_view_ && close_button_ && GetThemeProvider()) {
-    set_background(views::Background::CreateSolidBackground(
-        GetThemeProvider()->GetColor(ThemeProperties::COLOR_TOOLBAR)));
+  if (!GetThemeProvider())
+    return;
 
-    if (ui::MaterialDesignController::IsModeMaterial()) {
-      show_all_view_md_->SetEnabledTextColors(
-          GetThemeProvider()->GetColor(ThemeProperties::COLOR_BOOKMARK_TEXT));
-    } else {
-      views::Link* show_all_view = static_cast<views::Link*>(show_all_view_);
-      show_all_view->SetBackgroundColor(background()->get_color());
-      show_all_view->SetEnabledColor(
-          GetThemeProvider()->GetColor(ThemeProperties::COLOR_BOOKMARK_TEXT));
+  ConfigureButtonForTheme(show_all_view_);
 
-      ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-      close_button_->SetBackground(
-          GetThemeProvider()->GetColor(ThemeProperties::COLOR_TAB_TEXT),
-          rb.GetImageSkiaNamed(IDR_CLOSE_1),
-          rb.GetImageSkiaNamed(IDR_CLOSE_1_MASK));
-    }
-  }
+  SetBackground(views::CreateSolidBackground(
+      GetThemeProvider()->GetColor(ThemeProperties::COLOR_DOWNLOAD_SHELF)));
+
+  views::SetImageFromVectorIcon(
+      close_button_, vector_icons::kCloseRoundedIcon,
+      DownloadItemView::GetTextColorForThemeProvider(GetThemeProvider()));
+}
+
+void DownloadShelfView::AddedToWidget() {
+  UpdateColorsFromTheme();
 }
 
 void DownloadShelfView::OnThemeChanged() {
@@ -436,21 +353,26 @@ bool DownloadShelfView::IsClosing() const {
   return shelf_animation_.IsClosing();
 }
 
-void DownloadShelfView::DoShow() {
+void DownloadShelfView::DoOpen() {
   SetVisible(true);
   shelf_animation_.Show();
 }
 
 void DownloadShelfView::DoClose(CloseReason reason) {
-  int num_in_progress = 0;
-  for (size_t i = 0; i < download_views_.size(); ++i) {
-    if (GetDownloadItemForView(i)->GetState() == DownloadItem::IN_PROGRESS)
-      ++num_in_progress;
-  }
-  RecordDownloadShelfClose(
-      download_views_.size(), num_in_progress, reason == AUTOMATIC);
   parent_->SetDownloadShelfVisible(false);
   shelf_animation_.Hide();
+}
+
+void DownloadShelfView::DoHide() {
+  SetVisible(false);
+  parent_->ToolbarSizeChanged(false);
+  parent_->SetDownloadShelfVisible(false);
+}
+
+void DownloadShelfView::DoUnhide() {
+  SetVisible(true);
+  parent_->ToolbarSizeChanged(true);
+  parent_->SetDownloadShelfVisible(true);
 }
 
 Browser* DownloadShelfView::browser() const {
@@ -465,7 +387,7 @@ void DownloadShelfView::Closed() {
   // When the close animation is complete, remove all completed downloads.
   size_t i = 0;
   while (i < download_views_.size()) {
-    DownloadItem* download = GetDownloadItemForView(i);
+    DownloadUIModel* download = download_views_[i]->model();
     DownloadItem::DownloadState state = download->GetState();
     bool is_transfer_done = state == DownloadItem::COMPLETE ||
                             state == DownloadItem::CANCELLED ||
@@ -479,23 +401,23 @@ void DownloadShelfView::Closed() {
       ++i;
     }
   }
+
+  // If we had keyboard focus, calling SetVisible(false) causes keyboard focus
+  // to be completely lost. To prevent this, we focus another view: the web
+  // contents. TODO(collinbaker): https://crbug.com/846466 Fix
+  // AccessiblePaneView::SetVisible or FocusManager to make this unnecessary.
+  auto* focus_manager = GetFocusManager();
+  if (focus_manager && Contains(focus_manager->GetFocusedView())) {
+    get_parent()->contents_web_view()->RequestFocus();
+  }
+
   SetVisible(false);
 }
 
 bool DownloadShelfView::CanAutoClose() {
   for (size_t i = 0; i < download_views_.size(); ++i) {
-    if (!GetDownloadItemForView(i)->GetOpened())
+    if (!download_views_[i]->model()->GetOpened())
       return false;
   }
   return true;
-}
-
-content::DownloadItem* DownloadShelfView::GetDownloadItemForView(size_t i) {
-  if (ui::MaterialDesignController::IsModeMaterial())
-    return static_cast<DownloadItemViewMd*>(download_views_[i])->download();
-  return static_cast<DownloadItemView*>(download_views_[i])->download();
-}
-
-SkColor DownloadShelfView::GetTextColorForIconMd() {
-  return DownloadItemViewMd::GetTextColorForThemeProvider(GetThemeProvider());
 }

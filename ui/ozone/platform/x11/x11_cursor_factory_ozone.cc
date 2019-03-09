@@ -21,12 +21,12 @@ PlatformCursor ToPlatformCursor(X11CursorOzone* cursor) {
 }
 
 // Gets default aura cursor bitmap/hotspot and creates a X11CursorOzone with it.
-scoped_refptr<X11CursorOzone> CreateAuraX11Cursor(int type) {
-  SkBitmap bitmap;
-  gfx::Point hotspot;
-  if (GetCursorBitmap(type, &bitmap, &hotspot)) {
+scoped_refptr<X11CursorOzone> CreateAuraX11Cursor(CursorType type) {
+  Cursor cursor(type);
+  SkBitmap bitmap = cursor.GetBitmap();
+  gfx::Point hotspot = cursor.GetHotspot();
+  if (!bitmap.isNull())
     return new X11CursorOzone(bitmap, hotspot);
-  }
   return nullptr;
 }
 
@@ -37,17 +37,24 @@ X11CursorFactoryOzone::X11CursorFactoryOzone()
 
 X11CursorFactoryOzone::~X11CursorFactoryOzone() {}
 
-PlatformCursor X11CursorFactoryOzone::GetDefaultCursor(int type) {
+PlatformCursor X11CursorFactoryOzone::GetDefaultCursor(CursorType type) {
   return ToPlatformCursor(GetDefaultCursorInternal(type).get());
 }
 
 PlatformCursor X11CursorFactoryOzone::CreateImageCursor(
     const SkBitmap& bitmap,
-    const gfx::Point& hotspot) {
+    const gfx::Point& hotspot,
+    float bitmap_dpi) {
   // There is a problem with custom cursors that have no custom data. The
   // resulting SkBitmap is empty and X crashes when creating a zero size cursor
   // image. Return invisible cursor here instead.
   if (bitmap.drawsNothing()) {
+    // The result of |invisible_cursor_| is owned by the caller, and will be
+    // Unref()ed by code far away. (Usually in web_cursor.cc in content, among
+    // others.) If we don't manually add another reference before we cast this
+    // to a void*, we can end up with |invisible_cursor_| being freed out from
+    // under us.
+    invisible_cursor_->AddRef();
     return ToPlatformCursor(invisible_cursor_.get());
   }
 
@@ -59,7 +66,8 @@ PlatformCursor X11CursorFactoryOzone::CreateImageCursor(
 PlatformCursor X11CursorFactoryOzone::CreateAnimatedCursor(
     const std::vector<SkBitmap>& bitmaps,
     const gfx::Point& hotspot,
-    int frame_delay_ms) {
+    int frame_delay_ms,
+    float bitmap_dpi) {
   X11CursorOzone* cursor = new X11CursorOzone(bitmaps, hotspot, frame_delay_ms);
   cursor->AddRef();
   return ToPlatformCursor(cursor);
@@ -74,8 +82,8 @@ void X11CursorFactoryOzone::UnrefImageCursor(PlatformCursor cursor) {
 }
 
 scoped_refptr<X11CursorOzone> X11CursorFactoryOzone::GetDefaultCursorInternal(
-    int type) {
-  if (type == kCursorNone)
+    CursorType type) {
+  if (type == CursorType::kNone)
     return invisible_cursor_;
 
   // TODO(kylechar): Use predefined X cursors here instead.
@@ -84,8 +92,8 @@ scoped_refptr<X11CursorOzone> X11CursorFactoryOzone::GetDefaultCursorInternal(
     // pointer cursor then invisible cursor if this fails.
     scoped_refptr<X11CursorOzone> cursor = CreateAuraX11Cursor(type);
     if (!cursor.get()) {
-      if (type != kCursorPointer) {
-        cursor = GetDefaultCursorInternal(kCursorPointer);
+      if (type != CursorType::kPointer) {
+        cursor = GetDefaultCursorInternal(CursorType::kPointer);
       } else {
         NOTREACHED() << "Failed to load default cursor bitmap";
       }

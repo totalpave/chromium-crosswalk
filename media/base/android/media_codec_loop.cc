@@ -8,26 +8,19 @@
 #include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/logging.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "media/base/android/sdk_media_codec_bridge.h"
-#include "media/base/audio_buffer.h"
-#include "media/base/audio_timestamp_helper.h"
+#include "base/single_thread_task_runner.h"
 #include "media/base/bind_to_current_loop.h"
 #include "media/base/timestamp_constants.h"
 
 namespace media {
+namespace {
 
 constexpr base::TimeDelta kDecodePollDelay =
     base::TimeDelta::FromMilliseconds(10);
 constexpr base::TimeDelta kNoWaitTimeout = base::TimeDelta::FromMicroseconds(0);
 constexpr base::TimeDelta kIdleTimerTimeout = base::TimeDelta::FromSeconds(1);
 
-static inline bool codec_flush_requires_destruction() {
-  // Return true if and only if Flush() isn't supported / doesn't work.
-  // Prior to JellyBean-MR2, flush() had several bugs (b/8125974, b/8347958) so
-  // we have to completely destroy and recreate the codec there.
-  return base::android::BuildInfo::GetInstance()->sdk_int() < 18;
-}
+}  // namespace
 
 MediaCodecLoop::InputData::InputData() {}
 
@@ -39,17 +32,25 @@ MediaCodecLoop::InputData::InputData(const InputData& other)
       subsamples(other.subsamples),
       presentation_time(other.presentation_time),
       is_eos(other.is_eos),
-      is_encrypted(other.is_encrypted) {}
+      encryption_scheme(other.encryption_scheme) {}
 
 MediaCodecLoop::InputData::~InputData() {}
 
-MediaCodecLoop::MediaCodecLoop(Client* client,
-                               std::unique_ptr<MediaCodecBridge> media_codec)
+MediaCodecLoop::MediaCodecLoop(
+    int sdk_int,
+    Client* client,
+    std::unique_ptr<MediaCodecBridge> media_codec,
+    scoped_refptr<base::SingleThreadTaskRunner> timer_task_runner,
+    bool disable_timer)
     : state_(STATE_READY),
       client_(client),
       media_codec_(std::move(media_codec)),
       pending_input_buf_index_(kInvalidBufferIndex),
+      sdk_int_(sdk_int),
+      disable_timer_(disable_timer),
       weak_factory_(this) {
+  if (timer_task_runner)
+    io_timer_.SetTaskRunner(timer_task_runner);
   // TODO(liberato): should this DCHECK?
   if (media_codec_ == nullptr)
     SetState(STATE_ERROR);
@@ -59,11 +60,15 @@ MediaCodecLoop::~MediaCodecLoop() {
   io_timer_.Stop();
 }
 
+void MediaCodecLoop::SetTestTickClock(const base::TickClock* test_tick_clock) {
+  test_tick_clock_ = test_tick_clock;
+}
+
 void MediaCodecLoop::OnKeyAdded() {
   if (state_ == STATE_WAITING_FOR_KEY)
     SetState(STATE_READY);
 
-  DoPendingWork();
+  ExpectWork();
 }
 
 bool MediaCodecLoop::TryFlush() {
@@ -76,7 +81,7 @@ bool MediaCodecLoop::TryFlush() {
   if (state_ == STATE_ERROR || state_ == STATE_DRAINED)
     return false;
 
-  if (codec_flush_requires_destruction())
+  if (CodecNeedsFlushWorkaround())
     return false;
 
   // Actually try to flush!
@@ -90,6 +95,13 @@ bool MediaCodecLoop::TryFlush() {
 
   SetState(STATE_READY);
   return true;
+}
+
+void MediaCodecLoop::ExpectWork() {
+  // Start / reset the timer, since we believe that progress can be made soon,
+  // even if not immediately.
+  ManageTimer(true);
+  DoPendingWork();
 }
 
 void MediaCodecLoop::DoPendingWork() {
@@ -132,7 +144,7 @@ bool MediaCodecLoop::ProcessOneInputBuffer() {
 }
 
 MediaCodecLoop::InputBuffer MediaCodecLoop::DequeueInputBuffer() {
-  DVLOG(2) << __FUNCTION__;
+  DVLOG(2) << __func__;
 
   // Do not dequeue a new input buffer if we failed with MEDIA_CODEC_NO_KEY.
   // That status does not return the input buffer back to the pool of
@@ -149,12 +161,11 @@ MediaCodecLoop::InputBuffer MediaCodecLoop::DequeueInputBuffer() {
   media::MediaCodecStatus status =
       media_codec_->DequeueInputBuffer(kNoWaitTimeout, &input_buf_index);
   switch (status) {
-    case media::MEDIA_CODEC_DEQUEUE_INPUT_AGAIN_LATER:
+    case media::MEDIA_CODEC_TRY_AGAIN_LATER:
       break;
 
     case media::MEDIA_CODEC_ERROR:
-      DLOG(ERROR) << __FUNCTION__
-                  << ": MEDIA_CODEC_ERROR from DequeInputBuffer";
+      DLOG(ERROR) << __func__ << ": MEDIA_CODEC_ERROR from DequeInputBuffer";
       SetState(STATE_ERROR);
       break;
 
@@ -190,14 +201,14 @@ void MediaCodecLoop::EnqueueInputBuffer(const InputBuffer& input_buffer) {
 
   media::MediaCodecStatus status = MEDIA_CODEC_OK;
 
-  if (input_data.is_encrypted) {
+  if (input_data.encryption_scheme.is_encrypted()) {
     // Note that input_data might not have a valid memory ptr if this is a
     // re-send of a buffer that was sent before decryption keys arrived.
 
     status = media_codec_->QueueSecureInputBuffer(
         input_buffer.index, input_data.memory, input_data.length,
         input_data.key_id, input_data.iv, input_data.subsamples,
-        input_data.presentation_time);
+        input_data.encryption_scheme, input_data.presentation_time);
 
   } else {
     status = media_codec_->QueueInputBuffer(
@@ -207,8 +218,7 @@ void MediaCodecLoop::EnqueueInputBuffer(const InputBuffer& input_buffer) {
 
   switch (status) {
     case MEDIA_CODEC_ERROR:
-      DLOG(ERROR) << __FUNCTION__
-                  << ": MEDIA_CODEC_ERROR from QueueInputBuffer";
+      DLOG(ERROR) << __func__ << ": MEDIA_CODEC_ERROR from QueueInputBuffer";
       client_->OnInputDataQueued(false);
       // Transition to the error state after running the completion cb, to keep
       // it in order if the client chooses to flush its queue.
@@ -224,6 +234,7 @@ void MediaCodecLoop::EnqueueInputBuffer(const InputBuffer& input_buffer) {
       // to send in nullptr for the source.  Note that the client doesn't
       // guarantee that the pointer will remain valid after we return anyway.
       pending_input_buf_data_.memory = nullptr;
+      client_->OnWaiting(WaitingReason::kNoDecryptionKey);
       SetState(STATE_WAITING_FOR_KEY);
       // Do not call OnInputDataQueued yet.
       break;
@@ -279,7 +290,8 @@ bool MediaCodecLoop::ProcessOneOutputBuffer() {
 
         media_codec_->ReleaseOutputBuffer(out.index, false);
 
-        client_->OnDecodedEos(out);
+        if (!client_->OnDecodedEos(out))
+          SetState(STATE_ERROR);
       } else {
         if (!client_->OnDecodedFrame(out))
           SetState(STATE_ERROR);
@@ -288,13 +300,12 @@ bool MediaCodecLoop::ProcessOneOutputBuffer() {
       did_work = true;
       break;
 
-    case MEDIA_CODEC_DEQUEUE_OUTPUT_AGAIN_LATER:
+    case MEDIA_CODEC_TRY_AGAIN_LATER:
       // Nothing to do.
       break;
 
     case MEDIA_CODEC_ERROR:
-      DLOG(ERROR) << __FUNCTION__
-                  << ": MEDIA_CODEC_ERROR from DequeueOutputBuffer";
+      DLOG(ERROR) << __func__ << ": MEDIA_CODEC_ERROR from DequeueOutputBuffer";
       SetState(STATE_ERROR);
       break;
 
@@ -308,9 +319,14 @@ bool MediaCodecLoop::ProcessOneOutputBuffer() {
 }
 
 void MediaCodecLoop::ManageTimer(bool did_work) {
+  if (disable_timer_)
+    return;
+
   bool should_be_running = true;
 
-  base::TimeTicks now = base::TimeTicks::Now();
+  // One might also use DefaultTickClock, but then ownership becomes harder.
+  base::TimeTicks now = (test_tick_clock_ ? test_tick_clock_->NowTicks()
+                                          : base::TimeTicks::Now());
   if (did_work || idle_time_begin_ == base::TimeTicks()) {
     idle_time_begin_ = now;
   } else {
@@ -336,6 +352,15 @@ void MediaCodecLoop::SetState(State new_state) {
 
 MediaCodecBridge* MediaCodecLoop::GetCodec() const {
   return media_codec_.get();
+}
+
+bool MediaCodecLoop::CodecNeedsFlushWorkaround() const {
+  // Return true if and only if Flush() isn't supported / doesn't work.
+  // Prior to JellyBean-MR2, flush() had several bugs (b/8125974, b/8347958) so
+  // we have to completely destroy and recreate the codec there.
+  // TODO(liberato): MediaCodecUtil implements the same function.  We should
+  // call that one, except that it doesn't compile outside of android right now.
+  return sdk_int_ < base::android::SDK_VERSION_JELLY_BEAN_MR2;
 }
 
 // static

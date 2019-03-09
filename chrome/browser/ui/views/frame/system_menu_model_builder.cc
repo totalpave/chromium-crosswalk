@@ -14,18 +14,18 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/models/simple_menu_model.h"
 
 #if defined(OS_CHROMEOS)
-#include "ash/common/session/session_state_delegate.h"
-#include "ash/common/wm_shell.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager.h"
+#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager_client.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "components/user_manager/user_info.h"
+#include "components/user_manager/user_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 #endif
 
@@ -35,14 +35,13 @@ namespace {
 // settings page.
 bool IsChromeSettingsAppOrPopupWindow(Browser* browser) {
   DCHECK(browser);
-  TabStripModel* tab_strip = browser->tab_strip_model();
-  DCHECK_EQ(1, tab_strip->count());
-  const GURL gurl(tab_strip->GetWebContentsAt(0)->GetURL());
-  if (gurl.SchemeIs(content::kChromeUIScheme) &&
-      gurl.host().find(chrome::kChromeUISettingsHost) != std::string::npos) {
-    return true;
-  }
-  return false;
+  content::WebContents* web_contents =
+      browser->tab_strip_model()->GetActiveWebContents();
+  if (!web_contents)
+    return false;
+  const GURL& gurl = web_contents->GetURL();
+  return gurl.SchemeIs(content::kChromeUIScheme) &&
+         gurl.host_piece() == chrome::kChromeUISettingsHost;
 }
 
 }  // namespace
@@ -79,6 +78,12 @@ void SystemMenuModelBuilder::BuildMenu(ui::SimpleMenuModel* model) {
 
 void SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow(
     ui::SimpleMenuModel* model) {
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+  model->AddItemWithStringId(IDC_MINIMIZE_WINDOW, IDS_MINIMIZE_WINDOW_MENU);
+  model->AddItemWithStringId(IDC_MAXIMIZE_WINDOW, IDS_MAXIMIZE_WINDOW_MENU);
+  model->AddItemWithStringId(IDC_RESTORE_WINDOW, IDS_RESTORE_WINDOW_MENU);
+  model->AddSeparator(ui::NORMAL_SEPARATOR);
+#endif
   model->AddItemWithStringId(IDC_NEW_TAB, IDS_NEW_TAB);
   model->AddItemWithStringId(IDC_RESTORE_TAB, IDS_RESTORE_TAB);
   if (chrome::CanOpenTaskManager()) {
@@ -89,6 +94,8 @@ void SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow(
   model->AddSeparator(ui::NORMAL_SEPARATOR);
   model->AddCheckItemWithStringId(IDC_USE_SYSTEM_TITLE_BAR,
                                   IDS_SHOW_WINDOW_DECORATIONS_MENU);
+  model->AddSeparator(ui::NORMAL_SEPARATOR);
+  model->AddItemWithStringId(IDC_CLOSE_WINDOW, IDS_CLOSE_WINDOW_MENU);
 #endif
   AppendTeleportMenu(model);
   // If it's a regular browser window with tabs, we don't add any more items,
@@ -115,10 +122,6 @@ void SystemMenuModelBuilder::BuildSystemMenuForAppOrPopupWindow(
   zoom_menu_contents_.reset(new ZoomMenuModel(&menu_delegate_));
   model->AddSubMenuWithStringId(IDC_ZOOM_MENU, IDS_ZOOM_MENU,
                                 zoom_menu_contents_.get());
-  encoding_menu_contents_.reset(new EncodingMenuModel(browser()));
-  model->AddSubMenuWithStringId(IDC_ENCODING_MENU,
-                                IDS_ENCODING_MENU,
-                                encoding_menu_contents_.get());
   if (browser()->is_app() && chrome::CanOpenTaskManager()) {
     model->AddSeparator(ui::NORMAL_SEPARATOR);
     model->AddItemWithStringId(IDC_TASK_MANAGER, IDS_TASK_MANAGER);
@@ -149,43 +152,40 @@ void SystemMenuModelBuilder::AddFrameToggleItems(ui::SimpleMenuModel* model) {
 void SystemMenuModelBuilder::AppendTeleportMenu(ui::SimpleMenuModel* model) {
 #if defined(OS_CHROMEOS)
   DCHECK(browser()->window());
-  // If there is no manager, we are not in the proper multi user mode.
-  if (chrome::MultiUserWindowManager::GetMultiProfileMode() !=
-          chrome::MultiUserWindowManager::MULTI_PROFILE_MODE_SEPARATED)
-    return;
 
   // Don't show the menu for incognito windows.
   if (browser()->profile()->IsOffTheRecord())
     return;
 
   // To show the menu we need at least two logged in users.
-  ash::SessionStateDelegate* delegate =
-      ash::WmShell::Get()->GetSessionStateDelegate();
-  int logged_in_users = delegate->NumberOfLoggedInUsers();
-  if (logged_in_users <= 1)
+  user_manager::UserManager* user_manager = user_manager::UserManager::Get();
+  const user_manager::UserList logged_in_users =
+      user_manager->GetLRULoggedInUsers();
+  if (logged_in_users.size() <= 1u)
     return;
 
   // If this does not belong to a profile or there is no window, or the window
   // is not owned by anyone, we don't show the menu addition.
-  chrome::MultiUserWindowManager* manager =
-      chrome::MultiUserWindowManager::GetInstance();
+  MultiUserWindowManagerClient* client =
+      MultiUserWindowManagerClient::GetInstance();
   const AccountId account_id =
       multi_user_util::GetAccountIdFromProfile(browser()->profile());
   aura::Window* window = browser()->window()->GetNativeWindow();
   if (!account_id.is_valid() || !window ||
-      !manager->GetWindowOwner(window).is_valid())
+      !client->GetWindowOwner(window).is_valid())
     return;
 
   model->AddSeparator(ui::NORMAL_SEPARATOR);
-  DCHECK(logged_in_users <= 3);
-  for (int user_index = 1; user_index < logged_in_users; ++user_index) {
-    const user_manager::UserInfo* user_info = delegate->GetUserInfo(user_index);
+  DCHECK_LE(logged_in_users.size(), 3u);
+  for (size_t user_index = 1; user_index < logged_in_users.size();
+       ++user_index) {
+    const user_manager::UserInfo* user_info = logged_in_users[user_index];
     model->AddItem(
         user_index == 1 ? IDC_VISIT_DESKTOP_OF_LRU_USER_2
                         : IDC_VISIT_DESKTOP_OF_LRU_USER_3,
-        l10n_util::GetStringFUTF16(IDS_VISIT_DESKTOP_OF_LRU_USER,
-                                   user_info->GetDisplayName(),
-                                   base::ASCIIToUTF16(user_info->GetEmail())));
+        l10n_util::GetStringFUTF16(
+            IDS_VISIT_DESKTOP_OF_LRU_USER, user_info->GetDisplayName(),
+            base::ASCIIToUTF16(user_info->GetDisplayEmail())));
   }
 #endif
 }

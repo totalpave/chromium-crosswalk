@@ -11,22 +11,24 @@
 #include "base/bind_helpers.h"
 #include "base/files/file_util.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/time/clock.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/chrome_app_sorting.h"
 #include "chrome/browser/extensions/test_extension_system.h"
+#include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/common/chrome_constants.h"
 #include "components/crx_file/id_util.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_value_store.h"
-#include "components/syncable_prefs/pref_service_mock_factory.h"
-#include "components/syncable_prefs/pref_service_syncable.h"
+#include "components/sync/model/string_ordinal.h"
+#include "components/sync_preferences/pref_service_mock_factory.h"
+#include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_pref_store.h"
 #include "extensions/browser/extension_pref_value_map.h"
@@ -36,43 +38,38 @@
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_constants.h"
-#include "sync/api/string_ordinal.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using content::BrowserThread;
 
 namespace extensions {
 
-namespace {
-
-// A TimeProvider which returns an incrementally later time each time
-// GetCurrentTime is called.
-class IncrementalTimeProvider : public ExtensionPrefs::TimeProvider {
+// A Clock which returns an incrementally later time each time Now() is called.
+class TestExtensionPrefs::IncrementalClock : public base::Clock {
  public:
-  IncrementalTimeProvider() : current_time_(base::Time::Now()) {
-  }
+  IncrementalClock() : current_time_(base::Time::Now()) {}
 
-  ~IncrementalTimeProvider() override {}
+  ~IncrementalClock() override {}
 
-  base::Time GetCurrentTime() const override {
+  base::Time Now() const override {
     current_time_ += base::TimeDelta::FromSeconds(10);
     return current_time_;
   }
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(IncrementalTimeProvider);
-
   mutable base::Time current_time_;
-};
 
-}  // namespace
+  DISALLOW_COPY_AND_ASSIGN(IncrementalClock);
+};
 
 TestExtensionPrefs::TestExtensionPrefs(
     const scoped_refptr<base::SequencedTaskRunner>& task_runner)
-    : task_runner_(task_runner), extensions_disabled_(false) {
+    : task_runner_(task_runner),
+      clock_(std::make_unique<IncrementalClock>()),
+      extensions_disabled_(false) {
   EXPECT_TRUE(temp_dir_.CreateUniqueTempDir());
-  preferences_file_ = temp_dir_.path().Append(chrome::kPreferencesFilename);
-  extensions_dir_ = temp_dir_.path().AppendASCII("Extensions");
+  preferences_file_ = temp_dir_.GetPath().Append(chrome::kPreferencesFilename);
+  extensions_dir_ = temp_dir_.GetPath().AppendASCII("Extensions");
   EXPECT_TRUE(base::CreateDirectory(extensions_dir_));
 
   ResetPrefRegistry();
@@ -86,6 +83,10 @@ ExtensionPrefs* TestExtensionPrefs::prefs() {
   return ExtensionPrefs::Get(&profile_);
 }
 
+TestingProfile* TestExtensionPrefs::profile() {
+  return &profile_;
+}
+
 PrefService* TestExtensionPrefs::pref_service() {
   return pref_service_.get();
 }
@@ -97,7 +98,7 @@ TestExtensionPrefs::pref_registry() {
 
 void TestExtensionPrefs::ResetPrefRegistry() {
   pref_registry_ = new user_prefs::PrefRegistrySyncable;
-  ExtensionPrefs::RegisterProfilePrefs(pref_registry_.get());
+  RegisterUserProfilePrefs(pref_registry_.get());
 }
 
 void TestExtensionPrefs::RecreateExtensionPrefs() {
@@ -109,28 +110,24 @@ void TestExtensionPrefs::RecreateExtensionPrefs() {
     // it to finish.
     pref_service_->CommitPendingWrite();
     base::RunLoop run_loop;
-    ASSERT_TRUE(
-        task_runner_->PostTaskAndReply(
-            FROM_HERE,
-            base::Bind(&base::DoNothing),
-            run_loop.QuitClosure()));
+    ASSERT_TRUE(task_runner_->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                                               run_loop.QuitClosure()));
     run_loop.Run();
   }
 
   extension_pref_value_map_.reset(new ExtensionPrefValueMap);
-  syncable_prefs::PrefServiceMockFactory factory;
+  sync_preferences::PrefServiceMockFactory factory;
   factory.SetUserPrefsFile(preferences_file_, task_runner_.get());
   factory.set_extension_prefs(
       new ExtensionPrefStore(extension_pref_value_map_.get(), false));
   pref_service_ = factory.CreateSyncable(pref_registry_.get());
   std::unique_ptr<ExtensionPrefs> prefs(ExtensionPrefs::Create(
-      &profile_, pref_service_.get(), temp_dir_.path(),
+      &profile_, pref_service_.get(), temp_dir_.GetPath(),
       extension_pref_value_map_.get(), extensions_disabled_,
       std::vector<ExtensionPrefsObserver*>(),
       // Guarantee that no two extensions get the same installation time
       // stamp and we can reliably assert the installation order in the tests.
-      std::unique_ptr<ExtensionPrefs::TimeProvider>(
-          new IncrementalTimeProvider())));
+      clock_.get()));
   ExtensionPrefsFactory::GetInstance()->SetInstanceForTesting(&profile_,
                                                               std::move(prefs));
   // Hack: After recreating ExtensionPrefs, the AppSorting also needs to be
@@ -144,6 +141,7 @@ scoped_refptr<Extension> TestExtensionPrefs::AddExtension(
   base::DictionaryValue dictionary;
   dictionary.SetString(manifest_keys::kName, name);
   dictionary.SetString(manifest_keys::kVersion, "0.1");
+  dictionary.SetInteger(manifest_keys::kManifestVersion, 2);
   return AddExtensionWithManifest(dictionary, Manifest::INTERNAL);
 }
 
@@ -191,17 +189,18 @@ std::string TestExtensionPrefs::AddExtensionAndReturnId(
   return extension->id();
 }
 
-void TestExtensionPrefs::AddExtension(Extension* extension) {
+void TestExtensionPrefs::AddExtension(const Extension* extension) {
   prefs()->OnExtensionInstalled(extension,
                                 Extension::ENABLED,
                                 syncer::StringOrdinal::CreateInitialOrdinal(),
                                 std::string());
 }
 
-PrefService* TestExtensionPrefs::CreateIncognitoPrefService() const {
+std::unique_ptr<PrefService> TestExtensionPrefs::CreateIncognitoPrefService()
+    const {
   return CreateIncognitoPrefServiceSyncable(
       pref_service_.get(),
-      new ExtensionPrefStore(extension_pref_value_map_.get(), true));
+      new ExtensionPrefStore(extension_pref_value_map_.get(), true), nullptr);
 }
 
 void TestExtensionPrefs::set_extensions_disabled(bool extensions_disabled) {

@@ -4,10 +4,11 @@
 
 #include "net/test/url_request/url_request_mock_data_job.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -66,7 +67,7 @@ GURL GetMockUrl(const std::string& scheme,
   url.append("?data=");
   url.append(data);
   url.append("&repeat=");
-  url.append(base::IntToString(data_repeat_count));
+  url.append(base::NumberToString(data_repeat_count));
   if (request_client_certificate)
     url += "&requestcert=1";
   return GURL(url);
@@ -74,8 +75,8 @@ GURL GetMockUrl(const std::string& scheme,
 
 class MockJobInterceptor : public URLRequestInterceptor {
  public:
-  MockJobInterceptor() {}
-  ~MockJobInterceptor() override {}
+  MockJobInterceptor() = default;
+  ~MockJobInterceptor() override = default;
 
   // URLRequestInterceptor implementation
   URLRequestJob* MaybeInterceptRequest(
@@ -108,16 +109,20 @@ URLRequestMockDataJob::URLRequestMockDataJob(URLRequest* request,
   }
 }
 
+void URLRequestMockDataJob::OverrideResponseHeaders(
+    const std::string& headers) {
+  headers_ = headers;
+}
+
 void URLRequestMockDataJob::Start() {
   // Start reading asynchronously so that all error reporting and data
   // callbacks happen as they would for network requests.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&URLRequestMockDataJob::StartAsync,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&URLRequestMockDataJob::StartAsync,
+                                weak_factory_.GetWeakPtr()));
 }
 
-URLRequestMockDataJob::~URLRequestMockDataJob() {
-}
+URLRequestMockDataJob::~URLRequestMockDataJob() = default;
 
 int URLRequestMockDataJob::ReadRawData(IOBuffer* buf, int buf_size) {
   int bytes_read =
@@ -127,15 +132,9 @@ int URLRequestMockDataJob::ReadRawData(IOBuffer* buf, int buf_size) {
   return bytes_read;
 }
 
-int URLRequestMockDataJob::GetResponseCode() const {
-  HttpResponseInfo info;
-  GetResponseInfoConst(&info);
-  return info.headers->response_code();
-}
-
 void URLRequestMockDataJob::ContinueWithCertificate(
-    X509Certificate* client_cert,
-    SSLPrivateKey* client_private_key) {
+    scoped_refptr<X509Certificate> client_cert,
+    scoped_refptr<SSLPrivateKey> client_private_key) {
   DCHECK(request_client_certificate_);
   NotifyHeadersComplete();
 }
@@ -150,11 +149,15 @@ void URLRequestMockDataJob::GetResponseInfo(HttpResponseInfo* info) {
 void URLRequestMockDataJob::GetResponseInfoConst(HttpResponseInfo* info) const {
   // Send back mock headers.
   std::string raw_headers;
-  raw_headers.append(
-      "HTTP/1.1 200 OK\n"
-      "Content-type: text/plain\n");
-  raw_headers.append(base::StringPrintf("Content-Length: %1d\n",
-                                        static_cast<int>(data_.length())));
+  if (headers_.has_value()) {
+    raw_headers = headers_.value();
+  } else {
+    raw_headers.append(
+        "HTTP/1.1 200 OK\n"
+        "Content-type: text/plain\n");
+    raw_headers.append(base::StringPrintf("Content-Length: %1d\n",
+                                          static_cast<int>(data_.length())));
+  }
   info->headers = new HttpResponseHeaders(HttpUtil::AssembleRawHeaders(
       raw_headers.c_str(), static_cast<int>(raw_headers.length())));
 }
@@ -183,9 +186,9 @@ void URLRequestMockDataJob::AddUrlHandlerForHostname(
   // Add |hostname| to URLRequestFilter for HTTP and HTTPS.
   URLRequestFilter* filter = URLRequestFilter::GetInstance();
   filter->AddHostnameInterceptor("http", hostname,
-                                 base::WrapUnique(new MockJobInterceptor()));
+                                 std::make_unique<MockJobInterceptor>());
   filter->AddHostnameInterceptor("https", hostname,
-                                 base::WrapUnique(new MockJobInterceptor()));
+                                 std::make_unique<MockJobInterceptor>());
 }
 
 // static

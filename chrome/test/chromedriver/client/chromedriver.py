@@ -2,13 +2,17 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import sys
 import platform
+import sys
+import util
 
 import command_executor
 from command_executor import Command
 from webelement import WebElement
 
+ELEMENT_KEY_W3C = "element-6066-11e4-a52e-4f735466cecf"
+ELEMENT_KEY = "ELEMENT"
+MAX_RETRY_COUNT = 3
 
 class ChromeDriverException(Exception):
   pass
@@ -20,11 +24,17 @@ class UnknownCommand(ChromeDriverException):
   pass
 class StaleElementReference(ChromeDriverException):
   pass
+class ElementNotVisible(ChromeDriverException):
+  pass
+class InvalidElementState(ChromeDriverException):
+  pass
 class UnknownError(ChromeDriverException):
   pass
 class JavaScriptError(ChromeDriverException):
   pass
 class XPathLookupError(ChromeDriverException):
+  pass
+class Timeout(ChromeDriverException):
   pass
 class NoSuchWindow(ChromeDriverException):
   pass
@@ -34,46 +44,115 @@ class ScriptTimeout(ChromeDriverException):
   pass
 class InvalidSelector(ChromeDriverException):
   pass
-class SessionNotCreatedException(ChromeDriverException):
+class SessionNotCreated(ChromeDriverException):
   pass
-class NoSuchSession(ChromeDriverException):
+class InvalidSessionId(ChromeDriverException):
   pass
 class UnexpectedAlertOpen(ChromeDriverException):
   pass
+class NoSuchAlert(ChromeDriverException):
+  pass
+class NoSuchCookie(ChromeDriverException):
+  pass
+class InvalidArgument(ChromeDriverException):
+  pass
+class ElementNotInteractable(ChromeDriverException):
+  pass
+class UnsupportedOperation(ChromeDriverException):
+  pass
 
-def _ExceptionForResponse(response):
+def _ExceptionForLegacyResponse(response):
   exception_class_map = {
-    6: NoSuchSession,
+    6: InvalidSessionId,
     7: NoSuchElement,
     8: NoSuchFrame,
     9: UnknownCommand,
     10: StaleElementReference,
+    11: ElementNotVisible,
+    12: InvalidElementState,
     13: UnknownError,
     17: JavaScriptError,
     19: XPathLookupError,
+    21: Timeout,
     23: NoSuchWindow,
     24: InvalidCookieDomain,
     26: UnexpectedAlertOpen,
+    27: NoSuchAlert,
     28: ScriptTimeout,
     32: InvalidSelector,
-    33: SessionNotCreatedException
+    33: SessionNotCreated,
+    60: ElementNotInteractable,
+    61: InvalidArgument,
+    62: NoSuchCookie,
+    405: UnsupportedOperation
   }
   status = response['status']
   msg = response['value']['message']
   return exception_class_map.get(status, ChromeDriverException)(msg)
 
+def _ExceptionForStandardResponse(response):
+  exception_map = {
+    'invalid session id' : InvalidSessionId,
+    'no such element': NoSuchElement,
+    'no such frame': NoSuchFrame,
+    'unknown command': UnknownCommand,
+    'stale element reference': StaleElementReference,
+    'element not interactable': ElementNotVisible,
+    'invalid element state': InvalidElementState,
+    'unknown error': UnknownError,
+    'javascript error': JavaScriptError,
+    'invalid selector': XPathLookupError,
+    'timeout': Timeout,
+    'no such window': NoSuchWindow,
+    'invalid cookie domain': InvalidCookieDomain,
+    'unexpected alert open': UnexpectedAlertOpen,
+    'no such alert': NoSuchAlert,
+    'script timeout': ScriptTimeout,
+    'invalid selector': InvalidSelector,
+    'session not created': SessionNotCreated,
+    'no such cookie': NoSuchCookie,
+    'invalid argument': InvalidArgument,
+    'element not interactable': ElementNotInteractable,
+    'unsupported operation': UnsupportedOperation,
+  }
+
+  error = response['value']['error']
+  msg = response['value']['message']
+  return exception_map.get(error, ChromeDriverException)(msg)
 
 class ChromeDriver(object):
   """Starts and controls a single Chrome instance on this machine."""
 
-  def __init__(self, server_url, chrome_binary=None, android_package=None,
-               android_activity=None, android_process=None,
-               android_use_running_app=None, chrome_switches=None,
-               chrome_extensions=None, chrome_log_path=None,
-               debugger_address=None, logging_prefs=None,
-               mobile_emulation=None, experimental_options=None,
-               download_dir=None):
+  retry_count = 0
+  retried_tests = []
+
+  def __init__(self, *args, **kwargs):
+    try:
+      self._InternalInit(*args, **kwargs)
+    except Exception as e:
+      if not e.message.startswith('timed out'):
+        raise
+      else:
+        if ChromeDriver.retry_count < MAX_RETRY_COUNT:
+          ChromeDriver.retry_count = ChromeDriver.retry_count + 1
+          ChromeDriver.retried_tests.append(kwargs.get('test_name'))
+          self._InternalInit(*args, **kwargs)
+        else:
+          raise
+
+  def _InternalInit(self, server_url, chrome_binary=None, android_package=None,
+      android_activity=None, android_process=None,
+      android_use_running_app=None, chrome_switches=None,
+      chrome_extensions=None, chrome_log_path=None,
+      debugger_address=None, logging_prefs=None,
+      mobile_emulation=None, experimental_options=None,
+      download_dir=None, network_connection=None,
+      send_w3c_capability=None, send_w3c_request=None,
+      page_load_strategy=None, unexpected_alert_behaviour=None,
+      devtools_events_to_log=None, accept_insecure_certs=None,
+      timeouts=None, test_name=None):
     self._executor = command_executor.CommandExecutor(server_url)
+    self.w3c_compliant = False
 
     options = {}
 
@@ -92,12 +171,17 @@ class ChromeDriver(object):
     elif chrome_binary:
       options['binary'] = chrome_binary
 
-    # TODO(samuong): speculative fix for crbug.com/611886
-    if (sys.platform.startswith('linux') and
-        platform.architecture()[0] == '32bit'):
+    if sys.platform.startswith('linux') and android_package is None:
       if chrome_switches is None:
         chrome_switches = []
+      # Workaround for crbug.com/611886.
       chrome_switches.append('no-sandbox')
+      # https://bugs.chromium.org/p/chromedriver/issues/detail?id=1695
+      chrome_switches.append('disable-gpu')
+
+    if chrome_switches is None:
+      chrome_switches = []
+    chrome_switches.append('force-color-profile=srgb')
 
     if chrome_switches:
       assert type(chrome_switches) is list
@@ -121,13 +205,18 @@ class ChromeDriver(object):
 
     if logging_prefs:
       assert type(logging_prefs) is dict
-      log_types = ['client', 'driver', 'browser', 'server', 'performance']
+      log_types = ['client', 'driver', 'browser', 'server', 'performance',
+        'devtools']
       log_levels = ['ALL', 'DEBUG', 'INFO', 'WARNING', 'SEVERE', 'OFF']
       for log_type, log_level in logging_prefs.iteritems():
         assert log_type in log_types
         assert log_level in log_levels
     else:
       logging_prefs = {}
+
+    if devtools_events_to_log:
+      assert type(devtools_events_to_log) is list
+      options['devToolsEventsToLog'] = devtools_events_to_log
 
     download_prefs = {}
     if download_dir:
@@ -137,16 +226,53 @@ class ChromeDriver(object):
         options['prefs']['download'] = {}
       options['prefs']['download']['default_directory'] = download_dir
 
+    if send_w3c_capability:
+      options['w3c'] = send_w3c_capability
+
     params = {
-      'desiredCapabilities': {
-        'chromeOptions': options,
+        'goog:chromeOptions': options,
         'loggingPrefs': logging_prefs
-      }
     }
 
+    if page_load_strategy:
+      assert type(page_load_strategy) is str
+      params['pageLoadStrategy'] = page_load_strategy
+
+    if unexpected_alert_behaviour:
+      assert type(unexpected_alert_behaviour) is str
+      if send_w3c_request:
+        params['unhandledPromptBehavior'] = unexpected_alert_behaviour
+      else:
+        params['unexpectedAlertBehaviour'] = unexpected_alert_behaviour
+
+    if network_connection:
+      params['networkConnectionEnabled'] = network_connection
+
+    if accept_insecure_certs is not None:
+      params['acceptInsecureCerts'] = accept_insecure_certs
+
+    if timeouts is not None:
+      params['timeouts'] = timeouts
+
+    if test_name is not None:
+      params['goog:testName'] = test_name
+
+    if send_w3c_request:
+      params = {'capabilities': {'alwaysMatch': params}}
+    else:
+      params = {'desiredCapabilities': params}
+
     response = self._ExecuteCommand(Command.NEW_SESSION, params)
-    self._session_id = response['sessionId']
-    self.capabilities = self._UnwrapValue(response['value'])
+    if len(response.keys()) == 1 and 'value' in response.keys():
+      self.w3c_compliant = True
+      self._session_id = response['value']['sessionId']
+      self.capabilities = self._UnwrapValue(response['value']['capabilities'])
+    elif isinstance(response['status'], int):
+      self.w3c_compliant = False
+      self._session_id = response['sessionId']
+      self.capabilities = self._UnwrapValue(response['value'])
+    else:
+      raise UnknownError("unexpected response")
 
   def _WrapValue(self, value):
     """Wrap value from client side for chromedriver side."""
@@ -156,18 +282,25 @@ class ChromeDriver(object):
         converted[key] = self._WrapValue(val)
       return converted
     elif isinstance(value, WebElement):
-      return {'ELEMENT': value._id}
+      if (self.w3c_compliant):
+        return {ELEMENT_KEY_W3C: value._id}
+      else:
+        return {ELEMENT_KEY: value._id}
     elif isinstance(value, list):
       return list(self._WrapValue(item) for item in value)
     else:
       return value
 
   def _UnwrapValue(self, value):
-    """Unwrap value from chromedriver side for client side."""
     if isinstance(value, dict):
-      if (len(value) == 1 and 'ELEMENT' in value
-          and isinstance(value['ELEMENT'], basestring)):
-        return WebElement(self, value['ELEMENT'])
+      if (self.w3c_compliant and len(value) == 1
+          and ELEMENT_KEY_W3C in value
+          and isinstance(
+            value[ELEMENT_KEY_W3C], basestring)):
+        return WebElement(self, value[ELEMENT_KEY_W3C])
+      elif (len(value) == 1 and ELEMENT_KEY in value
+            and isinstance(value[ELEMENT_KEY], basestring)):
+        return WebElement(self, value[ELEMENT_KEY])
       else:
         unwraped = {}
         for key, val in value.items():
@@ -181,8 +314,12 @@ class ChromeDriver(object):
   def _ExecuteCommand(self, command, params={}):
     params = self._WrapValue(params)
     response = self._executor.Execute(command, params)
-    if response['status'] != 0:
-      raise _ExceptionForResponse(response)
+    if (not self.w3c_compliant and 'status' in response
+        and response['status'] != 0):
+      raise _ExceptionForLegacyResponse(response)
+    elif (self.w3c_compliant and type(response['value']) is dict
+          and 'error' in response['value']):
+      raise _ExceptionForStandardResponse(response)
     return response
 
   def ExecuteCommand(self, command, params={}):
@@ -200,7 +337,7 @@ class ChromeDriver(object):
     return self.ExecuteCommand(Command.GET_CURRENT_WINDOW_HANDLE)
 
   def CloseWindow(self):
-    self.ExecuteCommand(Command.CLOSE)
+    return self.ExecuteCommand(Command.CLOSE)
 
   def Load(self, url):
     self.ExecuteCommand(Command.GET, {'url': url})
@@ -248,9 +385,11 @@ class ChromeDriver(object):
     return self.ExecuteCommand(
         Command.FIND_ELEMENTS, {'using': strategy, 'value': target})
 
-  def SetTimeout(self, type, timeout):
-    return self.ExecuteCommand(
-        Command.SET_TIMEOUT, {'type' : type, 'ms': timeout})
+  def GetTimeouts(self):
+    return self.ExecuteCommand(Command.GET_TIMEOUTS)
+
+  def SetTimeouts(self, params):
+    return self.ExecuteCommand(Command.SET_TIMEOUTS, params)
 
   def GetCurrentUrl(self):
     return self.ExecuteCommand(Command.GET_CURRENT_URL)
@@ -312,8 +451,20 @@ class ChromeDriver(object):
     params = {'x': x, 'y': y, 'scale': scale}
     self.ExecuteCommand(Command.TOUCH_PINCH, params)
 
+  def PerformActions(self, actions):
+    """
+    actions: a dictionary containing the specified actions users wish to perform
+    """
+    self.ExecuteCommand(Command.PERFORM_ACTIONS, actions)
+
+  def ReleaseActions(self):
+    self.ExecuteCommand(Command.RELEASE_ACTIONS)
+
   def GetCookies(self):
     return self.ExecuteCommand(Command.GET_COOKIES)
+
+  def GetNamedCookie(self, name):
+    return self.ExecuteCommand(Command.GET_NAMED_COOKIE, {'name': name})
 
   def AddCookie(self, cookie):
     self.ExecuteCommand(Command.ADD_COOKIE, {'cookie': cookie})
@@ -356,13 +507,33 @@ class ChromeDriver(object):
                                {'windowHandle': 'current'})
     return [size['width'], size['height']]
 
+  def GetWindowRect(self):
+    rect = self.ExecuteCommand(Command.GET_WINDOW_RECT)
+    return [rect['width'], rect['height'], rect['x'], rect['y']]
+
   def SetWindowSize(self, width, height):
-    self.ExecuteCommand(
+    return self.ExecuteCommand(
         Command.SET_WINDOW_SIZE,
         {'windowHandle': 'current', 'width': width, 'height': height})
 
+  def SetWindowRect(self, width, height, x, y):
+    return self.ExecuteCommand(
+        Command.SET_WINDOW_RECT,
+        {'width': width, 'height': height, 'x': x, 'y': y})
+
   def MaximizeWindow(self):
-    self.ExecuteCommand(Command.MAXIMIZE_WINDOW, {'windowHandle': 'current'})
+    return self.ExecuteCommand(Command.MAXIMIZE_WINDOW,
+                               {'windowHandle': 'current'})
+
+  def MinimizeWindow(self):
+    return self.ExecuteCommand(Command.MINIMIZE_WINDOW,
+                               {'windowHandle': 'current'})
+
+  def FullScreenWindow(self):
+    return self.ExecuteCommand(Command.FULLSCREEN_WINDOW)
+
+  def TakeScreenshot(self):
+    return self.ExecuteCommand(Command.SCREENSHOT)
 
   def Quit(self):
     """Quits the browser and ends the session."""
@@ -407,9 +578,45 @@ class ChromeDriver(object):
         'offline': conditions['offline']
     }
 
+  def GetNetworkConnection(self):
+    return self.ExecuteCommand(Command.GET_NETWORK_CONNECTION)
+
   def DeleteNetworkConditions(self):
     self.ExecuteCommand(Command.DELETE_NETWORK_CONDITIONS)
 
   def SetNetworkConnection(self, connection_type):
     params = {'parameters': {'type': connection_type}}
-    self.ExecuteCommand(Command.SET_NETWORK_CONNECTION, params)
+    return self.ExecuteCommand(Command.SET_NETWORK_CONNECTION, params)
+
+  def SendCommand(self, cmd, cmd_params):
+    params = {'parameters': {'cmd': cmd, 'params': cmd_params}};
+    return self.ExecuteCommand(Command.SEND_COMMAND, params)
+
+  def SendCommandAndGetResult(self, cmd, cmd_params):
+    params = {'cmd': cmd, 'params': cmd_params};
+    return self.ExecuteCommand(Command.SEND_COMMAND_AND_GET_RESULT, params)
+
+  def GetScreenOrientation(self):
+    screen_orientation = self.ExecuteCommand(Command.GET_SCREEN_ORIENTATION)
+    return {
+       'orientation': screen_orientation['orientation']
+    }
+
+  def SetScreenOrientation(self, orientation_type):
+    params = {'parameters': {'orientation': orientation_type}}
+    self.ExecuteCommand(Command.SET_SCREEN_ORIENTATION, params)
+
+  def DeleteScreenOrientationLock(self):
+    self.ExecuteCommand(Command.DELETE_SCREEN_ORIENTATION)
+
+  def SendKeys(self, *values):
+    typing = []
+    for value in values:
+      if isinstance(value, int):
+        value = str(value)
+      for i in range(len(value)):
+        typing.append(value[i])
+    self.ExecuteCommand(Command.SEND_KEYS_TO_ACTIVE_ELEMENT, {'value': typing})
+
+  def GenerateTestReport(self, message):
+    self.ExecuteCommand(Command.GENERATE_TEST_REPORT, {'message': message})

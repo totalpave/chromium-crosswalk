@@ -13,22 +13,30 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "base/optional.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "content/common/content_export.h"
-#include "content/common/service_worker/service_worker_status_code.h"
+#include "content/common/service_worker/service_worker_types.h"
+#include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
+#include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+namespace base {
+class Location;
+}
 
 namespace leveldb {
 class DB;
 class Env;
 class Status;
 class WriteBatch;
-}
+}  // namespace leveldb
 
 namespace content {
 
@@ -64,12 +72,17 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
     // the waiting version. Then transition to the active version. The stored
     // version may be in the ACTIVATED state or in the INSTALLED state.
     GURL script;
+    blink::mojom::ScriptType script_type;
+    blink::mojom::ServiceWorkerUpdateViaCache update_via_cache;
     int64_t version_id;
     bool is_active;
     bool has_fetch_handler;
     base::Time last_update_check;
-    std::vector<GURL> foreign_fetch_scopes;
-    std::vector<url::Origin> foreign_fetch_origins;
+    base::Time script_response_time;
+    base::Optional<blink::TrialTokenValidator::FeatureToTokensMap>
+        origin_trial_tokens;
+    blink::mojom::NavigationPreloadState navigation_preload_state;
+    std::set<uint32_t> used_features;
 
     // Not populated until ServiceWorkerStorage::StoreRegistration is called.
     int64_t resources_total_size_bytes;
@@ -102,11 +115,6 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
   // database. Returns OK if they are successfully read or not found.
   // Otherwise, returns an error.
   Status GetOriginsWithRegistrations(std::set<GURL>* origins);
-
-  // Reads origins that have one or more than one registration with at least one
-  // foreign fetch scope registered. Returns OK if they are successfully read or
-  // not found. Otherwise returns an error.
-  Status GetOriginsWithForeignFetchRegistrations(std::set<GURL>* origins);
 
   // Reads registrations for |origin| from the database. Returns OK if they are
   // successfully read or not found. Otherwise, returns an error.
@@ -161,6 +169,15 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
                              const GURL& origin,
                              const base::Time& time);
 
+  // Updates the navigation preload state for the specified registration.
+  // Returns OK if it's successfully updated. Otherwise, returns an error.
+  Status UpdateNavigationPreloadEnabled(int64_t registration_id,
+                                        const GURL& origin,
+                                        bool enable);
+  Status UpdateNavigationPreloadHeader(int64_t registration_id,
+                                       const GURL& origin,
+                                       const std::string& value);
+
   // Deletes a registration for |registration_id| and moves resource records
   // associated with it into the purgeable list. If deletion occurred, sets
   // |version_id| to the id of the version that was deleted and
@@ -173,11 +190,27 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
                             std::vector<int64_t>* newly_purgeable_resources);
 
   // Reads user data for |registration_id| and |user_data_names| from the
-  // database. Returns OK only if all keys are found; otherwise NOT_FOUND, and
-  // |user_data_values| will be empty.
+  // database and writes them to |user_data_values|. Returns OK only if all keys
+  // are found; otherwise NOT_FOUND, and |user_data_values| will be empty.
   Status ReadUserData(int64_t registration_id,
                       const std::vector<std::string>& user_data_names,
                       std::vector<std::string>* user_data_values);
+
+  // Reads user data for |registration_id| and |user_data_name_prefix| from the
+  // database and writes them to |user_data_values|. Returns OK if they are
+  // successfully read or not found.
+  Status ReadUserDataByKeyPrefix(int64_t registration_id,
+                                 const std::string& user_data_name_prefix,
+                                 std::vector<std::string>* user_data_values);
+
+  // Reads user keys and associated data for |registration_id| and
+  // |user_data_name_prefix| from the database and writes them to
+  // |user_data_map|. The map keys are stripped of |user_data_name_prefix|.
+  // Returns OK if they are successfully read or not found.
+  Status ReadUserKeysAndDataByKeyPrefix(
+      int64_t registration_id,
+      const std::string& user_data_name_prefix,
+      base::flat_map<std::string, std::string>* user_data_map);
 
   // Writes |name_value_pairs| into the database. Returns NOT_FOUND if the
   // registration specified by |registration_id| does not exist in the database.
@@ -192,11 +225,34 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
   Status DeleteUserData(int64_t registration_id,
                         const std::vector<std::string>& user_data_names);
 
+  // Deletes user data for |registration_id| and |user_data_name_prefixes| from
+  // the database. Returns OK if all are successfully deleted or not found in
+  // the database.
+  Status DeleteUserDataByKeyPrefixes(
+      int64_t registration_id,
+      const std::vector<std::string>& user_data_name_prefixes);
+
+  // Removes traces of deleted data on disk.
+  Status RewriteDB();
+
   // Reads user data for all registrations that have data with |user_data_name|
   // from the database. Returns OK if they are successfully read or not found.
   Status ReadUserDataForAllRegistrations(
       const std::string& user_data_name,
       std::vector<std::pair<int64_t, std::string>>* user_data);
+
+  // Reads user data for all registrations that have data with
+  // |user_data_name_prefix| from the database. Returns OK if they are
+  // successfully read or not found.
+  Status ReadUserDataForAllRegistrationsByKeyPrefix(
+      const std::string& user_data_name_prefix,
+      std::vector<std::pair<int64_t, std::string>>* user_data);
+
+  // Deletes user data for all registrations that have data with
+  // |user_data_name_prefix| from the database. Returns OK if all are
+  // successfully deleted or not found in the database.
+  Status DeleteUserDataForAllRegistrationsByKeyPrefix(
+      const std::string& user_data_name_prefix);
 
   // Resources should belong to one of following resource lists: uncommitted,
   // committed and purgeable.
@@ -268,13 +324,15 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
       const std::string& serialized,
       RegistrationData* out);
 
+  // Populates |batch| with operations to write |registration|. It does not
+  // actually write to db yet.
   void WriteRegistrationDataInBatch(const RegistrationData& registration,
                                     leveldb::WriteBatch* batch);
 
-  // Reads resource records for |version_id| from the database. Returns OK if
+  // Reads resource records for |registration| from the database. Returns OK if
   // it's successfully read or not found in the database. Otherwise, returns an
   // error.
-  Status ReadResourceRecords(int64_t version_id,
+  Status ReadResourceRecords(const RegistrationData& registration,
                              std::vector<ResourceRecord>* resources);
 
   // Parses |serialized| as a ResourceRecord object and pushes it into |out|.
@@ -334,18 +392,10 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
 
   bool IsOpen();
 
-  void Disable(
-      const tracked_objects::Location& from_here,
-      Status status);
-  void HandleOpenResult(
-      const tracked_objects::Location& from_here,
-      Status status);
-  void HandleReadResult(
-      const tracked_objects::Location& from_here,
-      Status status);
-  void HandleWriteResult(
-      const tracked_objects::Location& from_here,
-      Status status);
+  void Disable(const base::Location& from_here, Status status);
+  void HandleOpenResult(const base::Location& from_here, Status status);
+  void HandleReadResult(const base::Location& from_here, Status status);
+  void HandleWriteResult(const base::Location& from_here, Status status);
 
   const base::FilePath path_;
   std::unique_ptr<leveldb::Env> env_;
@@ -356,9 +406,9 @@ class CONTENT_EXPORT ServiceWorkerDatabase {
   int64_t next_avail_version_id_;
 
   enum State {
-    UNINITIALIZED,
-    INITIALIZED,
-    DISABLED,
+    DATABASE_STATE_UNINITIALIZED,
+    DATABASE_STATE_INITIALIZED,
+    DATABASE_STATE_DISABLED,
   };
   State state_;
 

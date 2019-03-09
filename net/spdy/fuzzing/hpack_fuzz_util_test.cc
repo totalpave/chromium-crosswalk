@@ -10,17 +10,15 @@
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
-#include "net/spdy/spdy_test_utils.h"
+#include "base/stl_util.h"
+#include "net/third_party/quiche/src/spdy/platform/api/spdy_string_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace net {
+namespace spdy {
 namespace test {
 
-using base::StringPiece;
 using std::map;
-using std::string;
-using test::a2b_hex;
 
 TEST(HpackFuzzUtilTest, GeneratorContextInitialization) {
   HpackFuzzUtil::GeneratorContext context;
@@ -55,18 +53,25 @@ TEST(HpackFuzzUtilTest, SampleExponentialRegression) {
 
 TEST(HpackFuzzUtilTest, ParsesSequenceOfHeaderBlocks) {
   char fixture[] =
-      "\x00\x00\x00\x05""aaaaa"
-      "\x00\x00\x00\x04""bbbb"
-      "\x00\x00\x00\x03""ccc"
-      "\x00\x00\x00\x02""dd"
-      "\x00\x00\x00\x01""e"
-      "\x00\x00\x00\x00"""
-      "\x00\x00\x00\x03""fin";
+      "\x00\x00\x00\x05"
+      "aaaaa"
+      "\x00\x00\x00\x04"
+      "bbbb"
+      "\x00\x00\x00\x03"
+      "ccc"
+      "\x00\x00\x00\x02"
+      "dd"
+      "\x00\x00\x00\x01"
+      "e"
+      "\x00\x00\x00\x00"
+      ""
+      "\x00\x00\x00\x03"
+      "fin";
 
   HpackFuzzUtil::Input input;
-  input.input.assign(fixture, arraysize(fixture) - 1);
+  input.input.assign(fixture, base::size(fixture) - 1);
 
-  StringPiece block;
+  SpdyStringPiece block;
 
   EXPECT_TRUE(HpackFuzzUtil::NextHeaderBlock(&input, &block));
   EXPECT_EQ("aaaaa", block);
@@ -86,16 +91,16 @@ TEST(HpackFuzzUtilTest, ParsesSequenceOfHeaderBlocks) {
 }
 
 TEST(HpackFuzzUtilTest, SerializedHeaderBlockPrefixes) {
-  EXPECT_EQ(string("\x00\x00\x00\x00", 4), HpackFuzzUtil::HeaderBlockPrefix(0));
-  EXPECT_EQ(string("\x00\x00\x00\x05", 4), HpackFuzzUtil::HeaderBlockPrefix(5));
-  EXPECT_EQ(string("\x4f\xb3\x0a\x91", 4),
-            HpackFuzzUtil::HeaderBlockPrefix(1337133713));
+  EXPECT_EQ(SpdyString("\x00\x00\x00\x00", 4),
+            HpackFuzzUtil::HeaderBlockPrefix(0));
+  EXPECT_EQ(SpdyString("\x00\x00\x00\x05", 4),
+            HpackFuzzUtil::HeaderBlockPrefix(5));
+  EXPECT_EQ("\x4f\xb3\x0a\x91", HpackFuzzUtil::HeaderBlockPrefix(1337133713));
 }
 
 TEST(HpackFuzzUtilTest, PassValidInputThroughAllStages) {
   // Example lifted from HpackDecoderTest.SectionD4RequestHuffmanExamples.
-  string input = a2b_hex("828684418cf1e3c2e5f23a6ba0ab90f4"
-                         "ff");
+  SpdyString input = SpdyHexDecode("828684418cf1e3c2e5f23a6ba0ab90f4ff");
 
   HpackFuzzUtil::FuzzerContext context;
   HpackFuzzUtil::InitializeFuzzerContext(&context);
@@ -113,37 +118,37 @@ TEST(HpackFuzzUtilTest, PassValidInputThroughAllStages) {
 
 TEST(HpackFuzzUtilTest, ValidFuzzExamplesRegressionTest) {
   base::FilePath source_root;
-  ASSERT_TRUE(PathService::Get(base::DIR_SOURCE_ROOT, &source_root));
+  ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &source_root));
 
   // Load the example fixtures versioned with the source tree.
   HpackFuzzUtil::Input input;
   ASSERT_TRUE(base::ReadFileToString(
       source_root.Append(FILE_PATH_LITERAL("net"))
-                 .Append(FILE_PATH_LITERAL("data"))
-                 .Append(FILE_PATH_LITERAL("spdy_tests"))
-                 .Append(FILE_PATH_LITERAL("examples_07.hpack")),
+          .Append(FILE_PATH_LITERAL("data"))
+          .Append(FILE_PATH_LITERAL("spdy_tests"))
+          .Append(FILE_PATH_LITERAL("examples_07.hpack")),
       &input.input));
 
   HpackFuzzUtil::FuzzerContext context;
   HpackFuzzUtil::InitializeFuzzerContext(&context);
 
-  StringPiece block;
+  SpdyStringPiece block;
   while (HpackFuzzUtil::NextHeaderBlock(&input, &block)) {
     // As these are valid examples, all fuzz stages should succeed.
-    EXPECT_TRUE(HpackFuzzUtil::RunHeaderBlockThroughFuzzerStages(
-        &context, block));
+    EXPECT_TRUE(
+        HpackFuzzUtil::RunHeaderBlockThroughFuzzerStages(&context, block));
   }
 }
 
 TEST(HpackFuzzUtilTest, FlipBitsMutatesBuffer) {
   char buffer[] = "testbuffer1234567890";
-  string unmodified(buffer, arraysize(buffer) - 1);
+  SpdyString unmodified(buffer, base::size(buffer) - 1);
 
   EXPECT_EQ(unmodified, buffer);
   HpackFuzzUtil::FlipBits(reinterpret_cast<uint8_t*>(buffer),
-                          arraysize(buffer) - 1, 1);
+                          base::size(buffer) - 1, 1);
   EXPECT_NE(unmodified, buffer);
 }
 
 }  // namespace test
-}  // namespace net
+}  // namespace spdy

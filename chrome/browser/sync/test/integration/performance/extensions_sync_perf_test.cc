@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "base/macros.h"
-#include "base/strings/stringprintf.h"
 #include "chrome/browser/sync/test/integration/extensions_helper.h"
 #include "chrome/browser/sync/test/integration/performance/sync_timing_helper.h"
 #include "chrome/browser/sync/test/integration/profile_sync_service_harness.h"
@@ -18,6 +17,8 @@ using extensions_helper::InstallExtension;
 using extensions_helper::InstallExtensionsPendingForSync;
 using extensions_helper::IsExtensionEnabled;
 using extensions_helper::UninstallExtension;
+using sync_timing_helper::PrintResult;
+using sync_timing_helper::TimeMutualSyncCycle;
 
 // TODO(braffert): Replicate these tests for apps.
 
@@ -54,13 +55,11 @@ void ExtensionsSyncPerfTest::AddExtensions(int profile, int num_extensions) {
 
 void ExtensionsSyncPerfTest::UpdateExtensions(int profile) {
   std::vector<int> extensions = GetInstalledExtensions(GetProfile(profile));
-  for (std::vector<int>::iterator it = extensions.begin();
-       it != extensions.end(); ++it) {
-    if (IsExtensionEnabled(GetProfile(profile), *it)) {
-      DisableExtension(GetProfile(profile), *it);
-    } else {
-      EnableExtension(GetProfile(profile), *it);
-    }
+  for (int extension : extensions) {
+    if (IsExtensionEnabled(GetProfile(profile), extension))
+      DisableExtension(GetProfile(profile), extension);
+    else
+      EnableExtension(GetProfile(profile), extension);
   }
 }
 
@@ -70,10 +69,8 @@ int ExtensionsSyncPerfTest::GetExtensionCount(int profile) {
 
 void ExtensionsSyncPerfTest::RemoveExtensions(int profile) {
   std::vector<int> extensions = GetInstalledExtensions(GetProfile(profile));
-  for (std::vector<int>::iterator it = extensions.begin();
-       it != extensions.end(); ++it) {
-    UninstallExtension(GetProfile(profile), *it);
-  }
+  for (int extension : extensions)
+    UninstallExtension(GetProfile(profile), extension);
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionsSyncPerfTest, P0) {
@@ -81,23 +78,19 @@ IN_PROC_BROWSER_TEST_F(ExtensionsSyncPerfTest, P0) {
   int num_default_extensions = GetExtensionCount(0);
   int expected_extension_count = num_default_extensions + kNumExtensions;
 
-  // TCM ID - 7563874.
   AddExtensions(0, kNumExtensions);
-  base::TimeDelta dt =
-      SyncTimingHelper::TimeMutualSyncCycle(GetClient(0), GetClient(1));
+  base::TimeDelta dt = TimeMutualSyncCycle(GetClient(0), GetClient(1));
   InstallExtensionsPendingForSync(GetProfile(1));
   ASSERT_EQ(expected_extension_count, GetExtensionCount(1));
-  SyncTimingHelper::PrintResult("extensions", "add_extensions", dt);
+  PrintResult("extensions", "add_extensions", dt);
 
-  // TCM ID - 7655397.
   UpdateExtensions(0);
-  dt = SyncTimingHelper::TimeMutualSyncCycle(GetClient(0), GetClient(1));
+  dt = TimeMutualSyncCycle(GetClient(0), GetClient(1));
   ASSERT_EQ(expected_extension_count, GetExtensionCount(1));
-  SyncTimingHelper::PrintResult("extensions", "update_extensions", dt);
+  PrintResult("extensions", "update_extensions", dt);
 
-  // TCM ID - 7567721.
   RemoveExtensions(0);
-  dt = SyncTimingHelper::TimeMutualSyncCycle(GetClient(0), GetClient(1));
+  dt = TimeMutualSyncCycle(GetClient(0), GetClient(1));
   ASSERT_EQ(num_default_extensions, GetExtensionCount(1));
-  SyncTimingHelper::PrintResult("extensions", "delete_extensions", dt);
+  PrintResult("extensions", "delete_extensions", dt);
 }

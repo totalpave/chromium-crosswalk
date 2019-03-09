@@ -7,20 +7,22 @@
 #include <stddef.h>
 
 #include "base/i18n/rtl.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
-#include "ui/accessibility/ax_view_state.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/gfx/geometry/insets.h"
+#include "ui/views/border.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/link.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/grid_layout.h"
-#include "ui/views/layout/layout_constants.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/client_view.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -75,7 +77,8 @@ MessageBoxView::InitParams::InitParams(const base::string16& message)
     : options(NO_OPTIONS),
       message(message),
       message_width(kDefaultMessageWidth),
-      inter_row_vertical_spacing(kRelatedControlVerticalSpacing) {}
+      inter_row_vertical_spacing(LayoutProvider::Get()->GetDistanceMetric(
+          DISTANCE_RELATED_CONTROL_VERTICAL)) {}
 
 MessageBoxView::InitParams::~InitParams() {
 }
@@ -121,17 +124,18 @@ void MessageBoxView::SetLink(const base::string16& text,
   } else {
     DCHECK(listener);
     if (!link_) {
-      link_ = new Link();
+      link_ = new Link(text);
       link_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    } else {
+      link_->SetText(text);
     }
-    link_->SetText(text);
     link_->set_listener(listener);
   }
   ResetLayoutManager();
 }
 
-void MessageBoxView::GetAccessibleState(ui::AXViewState* state) {
-  state->role = ui::AX_ROLE_ALERT;
+void MessageBoxView::GetAccessibleNodeData(ui::AXNodeData* node_data) {
+  node_data->role = ax::mojom::Role::kAlert;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -143,16 +147,21 @@ void MessageBoxView::ViewHierarchyChanged(
     if (prompt_field_)
       prompt_field_->SelectAll(true);
 
-    NotifyAccessibilityEvent(ui::AX_EVENT_ALERT, true);
+    NotifyAccessibilityEvent(ax::mojom::Event::kAlert, true);
   }
 }
 
 bool MessageBoxView::AcceleratorPressed(const ui::Accelerator& accelerator) {
-  // We only accepts Ctrl-C.
+  // We only accept Ctrl-C.
   DCHECK(accelerator.key_code() == 'C' && accelerator.IsCtrlDown());
 
   // We must not intercept Ctrl-C when we have a text box and it's focused.
   if (prompt_field_ && prompt_field_->HasFocus())
+    return false;
+
+  // Don't intercept Ctrl-C if we only use a single message label supporting
+  // text selection.
+  if (message_labels_.size() == 1u && message_labels_[0]->selectable())
     return false;
 
   ui::ScopedClipboardWriter scw(ui::CLIPBOARD_TYPE_COPY_PASTE);
@@ -175,7 +184,8 @@ void MessageBoxView::Init(const InitParams& params) {
     std::vector<base::string16> texts;
     SplitStringIntoParagraphs(params.message, &texts);
     for (size_t i = 0; i < texts.size(); ++i) {
-      Label* message_label = new Label(texts[i]);
+      Label* message_label =
+          new Label(texts[i], style::CONTEXT_MESSAGE_BOX_BODY_TEXT);
       // Avoid empty multi-line labels, which have a height of 0.
       message_label->SetMultiLine(!texts[i].empty());
       message_label->SetAllowCharacterBreak(true);
@@ -183,16 +193,22 @@ void MessageBoxView::Init(const InitParams& params) {
       message_labels_.push_back(message_label);
     }
   } else {
-    Label* message_label = new Label(params.message);
+    Label* message_label =
+        new Label(params.message, style::CONTEXT_MESSAGE_BOX_BODY_TEXT);
     message_label->SetMultiLine(true);
     message_label->SetAllowCharacterBreak(true);
     message_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     message_labels_.push_back(message_label);
   }
+  // Don't enable text selection if multiple labels are used, since text
+  // selection can't span multiple labels.
+  if (message_labels_.size() == 1u)
+    message_labels_[0]->SetSelectable(true);
 
   if (params.options & HAS_PROMPT_FIELD) {
-    prompt_field_ = new Textfield;
+    prompt_field_ = new Textfield();
     prompt_field_->SetText(params.default_prompt);
+    prompt_field_->SetAccessibleName(params.message);
   }
 
   inter_row_vertical_spacing_ = params.inter_row_vertical_spacing;
@@ -202,52 +218,76 @@ void MessageBoxView::Init(const InitParams& params) {
 
 void MessageBoxView::ResetLayoutManager() {
   // Initialize the Grid Layout Manager used for this dialog box.
-  GridLayout* layout = GridLayout::CreatePanel(this);
-  SetLayoutManager(layout);
+  GridLayout* layout =
+      SetLayoutManager(std::make_unique<views::GridLayout>(this));
 
   // Add the column set for the message displayed at the top of the dialog box.
-  const int message_column_view_set_id = 0;
-  ColumnSet* column_set = layout->AddColumnSet(message_column_view_set_id);
+  constexpr int kMessageViewColumnSetId = 0;
+  ColumnSet* column_set = layout->AddColumnSet(kMessageViewColumnSetId);
   column_set->AddColumn(GridLayout::FILL, GridLayout::FILL, 1,
                         GridLayout::FIXED, message_width_, 0);
 
+  const LayoutProvider* provider = LayoutProvider::Get();
+  gfx::Insets horizontal_insets =
+      provider->GetInsetsMetric(views::INSETS_DIALOG);
+  horizontal_insets.Set(0, horizontal_insets.left(), 0,
+                        horizontal_insets.right());
+
   // Column set for extra elements, if any.
-  const int extra_column_view_set_id = 1;
+  constexpr int kExtraViewColumnSetId = 1;
   if (prompt_field_ || checkbox_ || link_) {
-    column_set = layout->AddColumnSet(extra_column_view_set_id);
+    column_set = layout->AddColumnSet(kExtraViewColumnSetId);
+    column_set->AddPaddingColumn(0, horizontal_insets.left());
     column_set->AddColumn(GridLayout::FILL, GridLayout::FILL, 1,
                           GridLayout::USE_PREF, 0, 0);
+    column_set->AddPaddingColumn(0, horizontal_insets.right());
   }
 
-  const int kMaxScrollViewHeight = 400;
   views::View* message_contents = new views::View();
+  // We explicitly set insets on the message contents instead of the scroll view
+  // so that the scroll view borders are not capped by dialog insets.
+  message_contents->SetBorder(CreateEmptyBorder(horizontal_insets));
   message_contents->SetLayoutManager(
-      new views::BoxLayout(views::BoxLayout::kVertical, 0, 0, 0));
+      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
   for (size_t i = 0; i < message_labels_.size(); ++i)
     message_contents->AddChildView(message_labels_[i]);
   ScrollView* scroll_view = new views::ScrollView();
-  scroll_view->ClipHeightTo(0, kMaxScrollViewHeight);
+  scroll_view->ClipHeightTo(0, provider->GetDistanceMetric(
+                                   DISTANCE_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT));
+
   scroll_view->SetContents(message_contents);
-  layout->StartRow(0, message_column_view_set_id);
+  layout->StartRow(0, kMessageViewColumnSetId);
   layout->AddView(scroll_view);
 
+  views::DialogContentType trailing_content_type = views::TEXT;
   if (prompt_field_) {
     layout->AddPaddingRow(0, inter_row_vertical_spacing_);
-    layout->StartRow(0, extra_column_view_set_id);
+    layout->StartRow(0, kExtraViewColumnSetId);
     layout->AddView(prompt_field_);
+    trailing_content_type = views::CONTROL;
   }
 
   if (checkbox_) {
     layout->AddPaddingRow(0, inter_row_vertical_spacing_);
-    layout->StartRow(0, extra_column_view_set_id);
+    layout->StartRow(0, kExtraViewColumnSetId);
     layout->AddView(checkbox_);
+    trailing_content_type = views::TEXT;
   }
 
   if (link_) {
     layout->AddPaddingRow(0, inter_row_vertical_spacing_);
-    layout->StartRow(0, extra_column_view_set_id);
+    layout->StartRow(0, kExtraViewColumnSetId);
     layout->AddView(link_);
+    trailing_content_type = views::TEXT;
   }
+
+  gfx::Insets border_insets =
+      LayoutProvider::Get()->GetDialogInsetsForContentType(
+          views::TEXT, trailing_content_type);
+  // Horizontal insets have already been applied to the message contents and
+  // controls as padding columns. Only apply the missing vertical insets.
+  border_insets.Set(border_insets.top(), 0, border_insets.bottom(), 0);
+  SetBorder(CreateEmptyBorder(border_insets));
 }
 
 }  // namespace views

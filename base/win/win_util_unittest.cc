@@ -2,13 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <windows.h>
+#include "base/win/win_util.h"
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/scoped_native_library.h"
-#include "base/win/win_util.h"
-#include "base/win/windows_version.h"
+#include "base/stl_util.h"
+#include "base/strings/string16.h"
+#include "base/strings/string_util.h"
+#include "base/win/win_client_metrics.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
@@ -31,14 +33,10 @@ class ThreadLocaleSaver {
 
 }  // namespace
 
-// The test is somewhat silly, because the Vista bots some have UAC enabled
-// and some have it disabled. At least we check that it does not crash.
+// The test is somewhat silly, because some bots some have UAC enabled and some
+// have it disabled. At least we check that it does not crash.
 TEST(BaseWinUtilTest, TestIsUACEnabled) {
-  if (GetVersion() >= base::win::VERSION_VISTA) {
-    UserAccountControlIsEnabled();
-  } else {
-    EXPECT_TRUE(UserAccountControlIsEnabled());
-  }
+  UserAccountControlIsEnabled();
 }
 
 TEST(BaseWinUtilTest, TestGetUserSidString) {
@@ -63,17 +61,23 @@ TEST(BaseWinUtilTest, TestGetLoadedModulesSnapshot) {
   ASSERT_GT(original_snapshot_size, 0u);
   snapshot.clear();
 
-  // Load in a new module. Pick msvidc32.dll as it is present from WinXP to
-  // Win10 and yet rarely used.
-  const wchar_t dll_name[] = L"msvidc32.dll";
-  ASSERT_EQ(NULL, ::GetModuleHandle(dll_name));
+  // Load in a new module. Pick zipfldr.dll as it is present from WinXP to
+  // Win10, including ARM64 Win10, and yet rarely used.
+  const char16 dll_name[] = FILE_PATH_LITERAL("zipfldr.dll");
+  ASSERT_EQ(NULL, ::GetModuleHandle(as_wcstr(dll_name)));
 
   base::ScopedNativeLibrary new_dll((base::FilePath(dll_name)));
   ASSERT_NE(static_cast<HMODULE>(NULL), new_dll.get());
   ASSERT_TRUE(GetLoadedModulesSnapshot(::GetCurrentProcess(), &snapshot));
   ASSERT_GT(snapshot.size(), original_snapshot_size);
-  ASSERT_NE(snapshot.end(),
-            std::find(snapshot.begin(), snapshot.end(), new_dll.get()));
+  ASSERT_TRUE(base::ContainsValue(snapshot, new_dll.get()));
+}
+
+TEST(BaseWinUtilTest, TestUint32ToInvalidHandle) {
+  // Ensure that INVALID_HANDLE_VALUE is preserved when going to a 32-bit value
+  // and back on 64-bit platforms.
+  uint32_t invalid_handle = base::win::HandleToUint32(INVALID_HANDLE_VALUE);
+  EXPECT_EQ(INVALID_HANDLE_VALUE, base::win::Uint32ToHandle(invalid_handle));
 }
 
 }  // namespace win

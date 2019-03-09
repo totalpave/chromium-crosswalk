@@ -13,16 +13,16 @@ namespace bookmarks {
 namespace android {
 
 // See BookmarkId#getId
-long JavaBookmarkIdGetId(JNIEnv* env, jobject obj);
+long JavaBookmarkIdGetId(JNIEnv* env,
+                         const base::android::JavaRef<jobject>& obj);
 
 // See BookmarkId#getType
-int JavaBookmarkIdGetType(JNIEnv* env, jobject obj);
+int JavaBookmarkIdGetType(JNIEnv* env,
+                          const base::android::JavaRef<jobject>& obj);
 
 // See BookmarkId#createBookmarkId
 base::android::ScopedJavaLocalRef<jobject> JavaBookmarkIdCreateBookmarkId(
     JNIEnv* env, jlong id, jint type);
-
-bool RegisterBookmarkId(JNIEnv* env);
 
 }  // namespace android
 }  // namespace bookmarks

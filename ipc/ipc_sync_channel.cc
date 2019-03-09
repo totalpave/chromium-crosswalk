@@ -13,9 +13,11 @@
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/run_loop.h"
+#include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/synchronization/waitable_event_watcher.h"
 #include "base/threading/thread_local.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
@@ -23,12 +25,25 @@
 #include "ipc/ipc_logging.h"
 #include "ipc/ipc_message_macros.h"
 #include "ipc/ipc_sync_message.h"
+#include "mojo/public/cpp/bindings/sync_event_watcher.h"
 
-using base::TimeDelta;
-using base::TimeTicks;
 using base::WaitableEvent;
 
 namespace IPC {
+
+namespace {
+
+// A generic callback used when watching handles synchronously. Sets |*signal|
+// to true.
+void OnEventReady(bool* signal) {
+  *signal = true;
+}
+
+base::LazyInstance<std::unique_ptr<base::WaitableEvent>>::Leaky
+    g_pump_messages_event = LAZY_INSTANCE_INITIALIZER;
+
+}  // namespace
+
 // When we're blocked in a Send(), we need to process incoming synchronous
 // messages right away because it could be blocking our reply (either
 // directly from the same object we're calling, or indirectly through one or
@@ -49,6 +64,74 @@ namespace IPC {
 class SyncChannel::ReceivedSyncMsgQueue :
     public base::RefCountedThreadSafe<ReceivedSyncMsgQueue> {
  public:
+  // SyncChannel::WaitForReplyWithNestedMessageLoop may be re-entered, i.e. we
+  // may nest waiting message loops arbitrarily deep on the SyncChannel's
+  // thread. Every such operation has a corresponding WaitableEvent to be
+  // watched which, when signalled for IPC completion, breaks out of the loop.
+  // A reference to the innermost (i.e. topmost) watcher is held in
+  // |ReceivedSyncMsgQueue::top_send_done_event_watcher_|.
+  //
+  // NestedSendDoneWatcher provides a simple scoper which is used by
+  // WaitForReplyWithNestedMessageLoop to begin watching a new local "send done"
+  // event, preserving the previous topmost state on the local stack until the
+  // new inner loop is broken. If yet another subsequent nested loop is started
+  // therein the process is repeated again in the new inner stack frame, and so
+  // on.
+  //
+  // When this object is destroyed on stack unwind, the previous topmost state
+  // is swapped back into |ReceivedSyncMsgQueue::top_send_done_event_watcher_|,
+  // and its watch is resumed immediately.
+  class NestedSendDoneWatcher {
+   public:
+    NestedSendDoneWatcher(SyncChannel::SyncContext* context,
+                          base::RunLoop* run_loop,
+                          scoped_refptr<base::SequencedTaskRunner> task_runner)
+        : sync_msg_queue_(context->received_sync_msgs()),
+          outer_state_(sync_msg_queue_->top_send_done_event_watcher_),
+          event_(context->GetSendDoneEvent()),
+          callback_(
+              base::BindOnce(&SyncChannel::SyncContext::OnSendDoneEventSignaled,
+                             context,
+                             run_loop)),
+          task_runner_(std::move(task_runner)) {
+      sync_msg_queue_->top_send_done_event_watcher_ = this;
+      if (outer_state_)
+        outer_state_->StopWatching();
+      StartWatching();
+    }
+
+    ~NestedSendDoneWatcher() {
+      sync_msg_queue_->top_send_done_event_watcher_ = outer_state_;
+      if (outer_state_)
+        outer_state_->StartWatching();
+    }
+
+   private:
+    void Run(WaitableEvent* event) {
+      DCHECK(callback_);
+      std::move(callback_).Run(event);
+    }
+
+    void StartWatching() {
+      watcher_.StartWatching(
+          event_,
+          base::BindOnce(&NestedSendDoneWatcher::Run, base::Unretained(this)),
+          task_runner_);
+    }
+
+    void StopWatching() { watcher_.StopWatching(); }
+
+    ReceivedSyncMsgQueue* const sync_msg_queue_;
+    NestedSendDoneWatcher* const outer_state_;
+
+    base::WaitableEvent* const event_;
+    base::WaitableEventWatcher::EventCallback callback_;
+    base::WaitableEventWatcher watcher_;
+    scoped_refptr<base::SequencedTaskRunner> task_runner_;
+
+    DISALLOW_COPY_AND_ASSIGN(NestedSendDoneWatcher);
+  };
+
   // Returns the ReceivedSyncMsgQueue instance for this thread, creating one
   // if necessary.  Call RemoveContext on the same thread when done.
   static ReceivedSyncMsgQueue* AddContext() {
@@ -62,6 +145,14 @@ class SyncChannel::ReceivedSyncMsgQueue :
     rv->listener_count_++;
     return rv;
   }
+
+  // Prevents messages from being dispatched immediately when the dispatch event
+  // is signaled. Instead, |*dispatch_flag| will be set.
+  void BlockDispatch(bool* dispatch_flag) { dispatch_flag_ = dispatch_flag; }
+
+  // Allows messages to be dispatched immediately when the dispatch event is
+  // signaled.
+  void UnblockDispatch() { dispatch_flag_ = nullptr; }
 
   // Called on IPC thread when a synchronous message or reply arrives.
   void QueueMessage(const Message& msg, SyncChannel::SyncContext* context) {
@@ -81,8 +172,8 @@ class SyncChannel::ReceivedSyncMsgQueue :
     dispatch_event_.Signal();
     if (!was_task_pending) {
       listener_task_runner_->PostTask(
-          FROM_HERE, base::Bind(&ReceivedSyncMsgQueue::DispatchMessagesTask,
-                                this, base::RetainedRef(context)));
+          FROM_HERE, base::BindOnce(&ReceivedSyncMsgQueue::DispatchMessagesTask,
+                                    this, base::RetainedRef(context)));
     }
   }
 
@@ -100,12 +191,17 @@ class SyncChannel::ReceivedSyncMsgQueue :
     context->DispatchMessages();
   }
 
+  // Dispatches any queued incoming sync messages. If |dispatching_context| is
+  // not null, messages which target a restricted dispatch channel will only be
+  // dispatched if |dispatching_context| belongs to the same restricted dispatch
+  // group as that channel. If |dispatching_context| is null, all queued
+  // messages are dispatched.
   void DispatchMessages(SyncContext* dispatching_context) {
     bool first_time = true;
     uint32_t expected_version = 0;
     SyncMessageQueue::iterator it;
     while (true) {
-      Message* message = NULL;
+      Message* message = nullptr;
       scoped_refptr<SyncChannel::SyncContext> context;
       {
         base::AutoLock auto_lock(message_lock_);
@@ -116,7 +212,9 @@ class SyncChannel::ReceivedSyncMsgQueue :
         for (; it != message_queue_.end(); it++) {
           int message_group = it->context->restrict_dispatch_group();
           if (message_group == kRestrictDispatchGroup_None ||
-              message_group == dispatching_context->restrict_dispatch_group()) {
+              (dispatching_context &&
+               message_group ==
+                   dispatching_context->restrict_dispatch_group())) {
             message = it->message;
             context = it->context;
             it = message_queue_.erase(it);
@@ -127,7 +225,7 @@ class SyncChannel::ReceivedSyncMsgQueue :
         }
       }
 
-      if (message == NULL)
+      if (message == nullptr)
         break;
       context->OnDispatchMessage(*message);
       delete message;
@@ -151,18 +249,19 @@ class SyncChannel::ReceivedSyncMsgQueue :
 
     if (--listener_count_ == 0) {
       DCHECK(lazy_tls_ptr_.Pointer()->Get());
-      lazy_tls_ptr_.Pointer()->Set(NULL);
+      lazy_tls_ptr_.Pointer()->Set(nullptr);
+      sync_dispatch_watcher_.reset();
     }
   }
 
-  WaitableEvent* dispatch_event() { return &dispatch_event_; }
+  base::WaitableEvent* dispatch_event() { return &dispatch_event_; }
   base::SingleThreadTaskRunner* listener_task_runner() {
     return listener_task_runner_.get();
   }
 
   // Holds a pointer to the per-thread ReceivedSyncMsgQueue object.
-  static base::LazyInstance<base::ThreadLocalPointer<ReceivedSyncMsgQueue> >
-      lazy_tls_ptr_;
+  static base::LazyInstance<base::ThreadLocalPointer<ReceivedSyncMsgQueue>>::
+      DestructorAtExit lazy_tls_ptr_;
 
   // Called on the ipc thread to check if we can unblock any current Send()
   // calls based on a queued reply.
@@ -177,14 +276,6 @@ class SyncChannel::ReceivedSyncMsgQueue :
     }
   }
 
-  base::WaitableEventWatcher* top_send_done_watcher() {
-    return top_send_done_watcher_;
-  }
-
-  void set_top_send_done_watcher(base::WaitableEventWatcher* watcher) {
-    top_send_done_watcher_ = watcher;
-  }
-
  private:
   friend class base::RefCountedThreadSafe<ReceivedSyncMsgQueue>;
 
@@ -195,11 +286,28 @@ class SyncChannel::ReceivedSyncMsgQueue :
         dispatch_event_(base::WaitableEvent::ResetPolicy::MANUAL,
                         base::WaitableEvent::InitialState::NOT_SIGNALED),
         listener_task_runner_(base::ThreadTaskRunnerHandle::Get()),
-        task_pending_(false),
-        listener_count_(0),
-        top_send_done_watcher_(NULL) {}
+        sync_dispatch_watcher_(std::make_unique<mojo::SyncEventWatcher>(
+            &dispatch_event_,
+            base::Bind(&ReceivedSyncMsgQueue::OnDispatchEventReady,
+                       base::Unretained(this)))) {
+    sync_dispatch_watcher_->AllowWokenUpBySyncWatchOnSameThread();
+  }
 
-  ~ReceivedSyncMsgQueue() {}
+  ~ReceivedSyncMsgQueue() = default;
+
+  void OnDispatchEventReady() {
+    if (dispatch_flag_) {
+      *dispatch_flag_ = true;
+      return;
+    }
+
+    // We were woken up during a sync wait, but no specific SyncChannel is
+    // currently waiting. i.e., some other Mojo interface on this thread is
+    // waiting for a response. Since we don't support anything analogous to
+    // restricted dispatch on Mojo interfaces, in this case it's safe to
+    // dispatch sync messages for any context.
+    DispatchMessages(nullptr);
+  }
 
   // Holds information about a queued synchronous message or reply.
   struct QueuedMessage {
@@ -210,37 +318,56 @@ class SyncChannel::ReceivedSyncMsgQueue :
 
   typedef std::list<QueuedMessage> SyncMessageQueue;
   SyncMessageQueue message_queue_;
-  uint32_t message_queue_version_;  // Used to signal DispatchMessages to rescan
+
+  // Used to signal DispatchMessages to rescan
+  uint32_t message_queue_version_ = 0;
 
   std::vector<QueuedMessage> received_replies_;
 
-  // Set when we got a synchronous message that we must respond to as the
+  // Signaled when we get a synchronous message that we must respond to, as the
   // sender needs its reply before it can reply to our original synchronous
   // message.
-  WaitableEvent dispatch_event_;
+  base::WaitableEvent dispatch_event_;
   scoped_refptr<base::SingleThreadTaskRunner> listener_task_runner_;
   base::Lock message_lock_;
-  bool task_pending_;
-  int listener_count_;
+  bool task_pending_ = false;
+  int listener_count_ = 0;
 
-  // The current send done event watcher for this thread. Used to maintain
-  // a local global stack of send done watchers to ensure that nested sync
-  // message loops complete correctly.
-  base::WaitableEventWatcher* top_send_done_watcher_;
+  // The current NestedSendDoneWatcher for this thread, if we're currently
+  // in a SyncChannel::WaitForReplyWithNestedMessageLoop. See
+  // NestedSendDoneWatcher comments for more details.
+  NestedSendDoneWatcher* top_send_done_event_watcher_ = nullptr;
+
+  // If not null, the address of a flag to set when the dispatch event signals,
+  // in lieu of actually dispatching messages. This is used by
+  // SyncChannel::WaitForReply to restrict the scope of queued messages we're
+  // allowed to process while it's waiting.
+  bool* dispatch_flag_ = nullptr;
+
+  // Watches |dispatch_event_| during all sync handle watches on this thread.
+  std::unique_ptr<mojo::SyncEventWatcher> sync_dispatch_watcher_;
 };
 
-base::LazyInstance<base::ThreadLocalPointer<SyncChannel::ReceivedSyncMsgQueue> >
+base::LazyInstance<base::ThreadLocalPointer<
+    SyncChannel::ReceivedSyncMsgQueue>>::DestructorAtExit
     SyncChannel::ReceivedSyncMsgQueue::lazy_tls_ptr_ =
         LAZY_INSTANCE_INITIALIZER;
 
 SyncChannel::SyncContext::SyncContext(
     Listener* listener,
     const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+    const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
     WaitableEvent* shutdown_event)
-    : ChannelProxy::Context(listener, ipc_task_runner),
+    : ChannelProxy::Context(listener, ipc_task_runner, listener_task_runner),
       received_sync_msgs_(ReceivedSyncMsgQueue::AddContext()),
       shutdown_event_(shutdown_event),
-      restrict_dispatch_group_(kRestrictDispatchGroup_None) {
+      restrict_dispatch_group_(kRestrictDispatchGroup_None) {}
+
+void SyncChannel::SyncContext::OnSendDoneEventSignaled(
+    base::RunLoop* nested_loop,
+    base::WaitableEvent* event) {
+  DCHECK_EQ(GetSendDoneEvent(), event);
+  nested_loop->Quit();
 }
 
 SyncChannel::SyncContext::~SyncContext() {
@@ -249,9 +376,9 @@ SyncChannel::SyncContext::~SyncContext() {
 }
 
 // Adds information about an outgoing sync message to the context so that
-// we know how to deserialize the reply.  Returns a handle that's set when
-// the reply has arrived.
-void SyncChannel::SyncContext::Push(SyncMessage* sync_msg) {
+// we know how to deserialize the reply. Returns |true| if the message was added
+// to the context or |false| if it was rejected (e.g. due to shutdown.)
+bool SyncChannel::SyncContext::Push(SyncMessage* sync_msg) {
   // Create the tracking information for this message. This object is stored
   // by value since all members are pointers that are cheap to copy. These
   // pointers are cleaned up in the Pop() function.
@@ -260,12 +387,15 @@ void SyncChannel::SyncContext::Push(SyncMessage* sync_msg) {
   // OnObjectSignalled, another Send can happen which would stop the watcher
   // from being called.  The event would get watched later, when the nested
   // Send completes, so the event will need to remain set.
+  base::AutoLock auto_lock(deserializers_lock_);
+  if (reject_new_deserializers_)
+    return false;
   PendingSyncMsg pending(
       SyncMessage::GetMessageId(*sync_msg), sync_msg->GetReplyDeserializer(),
-      new WaitableEvent(base::WaitableEvent::ResetPolicy::MANUAL,
-                        base::WaitableEvent::InitialState::NOT_SIGNALED));
-  base::AutoLock auto_lock(deserializers_lock_);
+      new base::WaitableEvent(base::WaitableEvent::ResetPolicy::MANUAL,
+                              base::WaitableEvent::InitialState::NOT_SIGNALED));
   deserializers_.push_back(pending);
+  return true;
 }
 
 bool SyncChannel::SyncContext::Pop() {
@@ -275,7 +405,7 @@ bool SyncChannel::SyncContext::Pop() {
     PendingSyncMsg msg = deserializers_.back();
     delete msg.deserializer;
     delete msg.done_event;
-    msg.done_event = NULL;
+    msg.done_event = nullptr;
     deserializers_.pop_back();
     result = msg.send_result;
   }
@@ -286,18 +416,18 @@ bool SyncChannel::SyncContext::Pop() {
   // Send() call.  So check if we have any queued replies available that
   // can now unblock the listener thread.
   ipc_task_runner()->PostTask(
-      FROM_HERE, base::Bind(&ReceivedSyncMsgQueue::DispatchReplies,
-                            received_sync_msgs_.get()));
+      FROM_HERE, base::BindOnce(&ReceivedSyncMsgQueue::DispatchReplies,
+                                received_sync_msgs_));
 
   return result;
 }
 
-WaitableEvent* SyncChannel::SyncContext::GetSendDoneEvent() {
+base::WaitableEvent* SyncChannel::SyncContext::GetSendDoneEvent() {
   base::AutoLock auto_lock(deserializers_lock_);
   return deserializers_.back().done_event;
 }
 
-WaitableEvent* SyncChannel::SyncContext::GetDispatchEvent() {
+base::WaitableEvent* SyncChannel::SyncContext::GetDispatchEvent() {
   return received_sync_msgs_->dispatch_event();
 }
 
@@ -365,10 +495,13 @@ void SyncChannel::SyncContext::OnChannelError() {
 }
 
 void SyncChannel::SyncContext::OnChannelOpened() {
-  shutdown_watcher_.StartWatching(
-      shutdown_event_,
-      base::Bind(&SyncChannel::SyncContext::OnWaitableEventSignaled,
-                 base::Unretained(this)));
+  if (shutdown_event_) {
+    shutdown_watcher_.StartWatching(
+        shutdown_event_,
+        base::BindOnce(&SyncChannel::SyncContext::OnShutdownEventSignaled,
+                       base::Unretained(this)),
+        base::SequencedTaskRunnerHandle::Get());
+  }
   Context::OnChannelOpened();
 }
 
@@ -380,6 +513,7 @@ void SyncChannel::SyncContext::OnChannelClosed() {
 
 void SyncChannel::SyncContext::CancelPendingSends() {
   base::AutoLock auto_lock(deserializers_lock_);
+  reject_new_deserializers_ = true;
   PendingSyncMessageQueue::iterator iter;
   DVLOG(1) << "Canceling pending sends";
   for (iter = deserializers_.begin(); iter != deserializers_.end(); iter++) {
@@ -390,21 +524,12 @@ void SyncChannel::SyncContext::CancelPendingSends() {
   }
 }
 
-void SyncChannel::SyncContext::OnWaitableEventSignaled(WaitableEvent* event) {
-  if (event == shutdown_event_) {
-    // Process shut down before we can get a reply to a synchronous message.
-    // Cancel pending Send calls, which will end up setting the send done event.
-    CancelPendingSends();
-  } else {
-    // We got the reply, timed out or the process shutdown.
-    DCHECK_EQ(GetSendDoneEvent(), event);
-    base::MessageLoop::current()->QuitNow();
-  }
-}
+void SyncChannel::SyncContext::OnShutdownEventSignaled(WaitableEvent* event) {
+  DCHECK_EQ(event, shutdown_event_);
 
-base::WaitableEventWatcher::EventCallback
-    SyncChannel::SyncContext::MakeWaitableEventCallback() {
-  return base::Bind(&SyncChannel::SyncContext::OnWaitableEventSignaled, this);
+  // Process shut down before we can get a reply to a synchronous message.
+  // Cancel pending Send calls, which will end up setting the send done event.
+  CancelPendingSends();
 }
 
 // static
@@ -413,49 +538,47 @@ std::unique_ptr<SyncChannel> SyncChannel::Create(
     Channel::Mode mode,
     Listener* listener,
     const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+    const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
     bool create_pipe_now,
     base::WaitableEvent* shutdown_event) {
+  // TODO(tobiasjs): The shutdown_event object is passed to a refcounted
+  // Context object, and as a result it is not easy to ensure that it
+  // outlives the Context.  There should be some way to either reset
+  // the shutdown_event when it is destroyed, or allow the Context to
+  // control the lifetime of shutdown_event.
   std::unique_ptr<SyncChannel> channel =
-      Create(listener, ipc_task_runner, shutdown_event);
+      Create(listener, ipc_task_runner, listener_task_runner, shutdown_event);
   channel->Init(channel_handle, mode, create_pipe_now);
   return channel;
 }
 
 // static
 std::unique_ptr<SyncChannel> SyncChannel::Create(
-    std::unique_ptr<ChannelFactory> factory,
     Listener* listener,
     const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
-    bool create_pipe_now,
-    base::WaitableEvent* shutdown_event) {
-  std::unique_ptr<SyncChannel> channel =
-      Create(listener, ipc_task_runner, shutdown_event);
-  channel->Init(std::move(factory), create_pipe_now);
-  return channel;
-}
-
-// static
-std::unique_ptr<SyncChannel> SyncChannel::Create(
-    Listener* listener,
-    const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+    const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
     WaitableEvent* shutdown_event) {
-  return base::WrapUnique(
-      new SyncChannel(listener, ipc_task_runner, shutdown_event));
+  return base::WrapUnique(new SyncChannel(
+      listener, ipc_task_runner, listener_task_runner, shutdown_event));
 }
 
 SyncChannel::SyncChannel(
     Listener* listener,
     const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+    const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
     WaitableEvent* shutdown_event)
-    : ChannelProxy(new SyncContext(listener, ipc_task_runner, shutdown_event)) {
+    : ChannelProxy(new SyncContext(listener,
+                                   ipc_task_runner,
+                                   listener_task_runner,
+                                   shutdown_event)),
+      sync_handle_registry_(mojo::SyncHandleRegistry::current()) {
   // The current (listener) thread must be distinct from the IPC thread, or else
   // sending synchronous messages will deadlock.
   DCHECK_NE(ipc_task_runner.get(), base::ThreadTaskRunnerHandle::Get().get());
   StartWatching();
 }
 
-SyncChannel::~SyncChannel() {
-}
+SyncChannel::~SyncChannel() = default;
 
 void SyncChannel::SetRestrictDispatchChannelGroup(int group) {
   sync_context()->set_restrict_dispatch_group(group);
@@ -463,8 +586,7 @@ void SyncChannel::SetRestrictDispatchChannelGroup(int group) {
 
 scoped_refptr<SyncMessageFilter> SyncChannel::CreateSyncMessageFilter() {
   scoped_refptr<SyncMessageFilter> filter = new SyncMessageFilter(
-      sync_context()->shutdown_event(),
-      sync_context()->IsChannelSendThreadSafe());
+      sync_context()->shutdown_event());
   AddFilter(filter.get());
   if (!did_init())
     pre_init_sync_message_filters_.push_back(filter);
@@ -472,9 +594,10 @@ scoped_refptr<SyncMessageFilter> SyncChannel::CreateSyncMessageFilter() {
 }
 
 bool SyncChannel::Send(Message* message) {
-#ifdef IPC_MESSAGE_LOG_ENABLED
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
   std::string name;
-  Logging::GetInstance()->GetMessageText(message->type(), &name, message, NULL);
+  Logging::GetInstance()->GetMessageText(
+      message->type(), &name, message, nullptr);
   TRACE_EVENT1("ipc", "SyncChannel::Send", "name", name);
 #else
   TRACE_EVENT2("ipc", "SyncChannel::Send",
@@ -482,27 +605,27 @@ bool SyncChannel::Send(Message* message) {
                "line", IPC_MESSAGE_ID_LINE(message->type()));
 #endif
   if (!message->is_sync()) {
-    ChannelProxy::Send(message);
+    ChannelProxy::SendInternal(message);
     return true;
   }
 
+  SyncMessage* sync_msg = static_cast<SyncMessage*>(message);
+  bool pump_messages = sync_msg->ShouldPumpMessages();
+
   // *this* might get deleted in WaitForReply.
   scoped_refptr<SyncContext> context(sync_context());
-  if (context->shutdown_event()->IsSignaled()) {
-    DVLOG(1) << "shutdown event is signaled";
+  if (!context->Push(sync_msg)) {
+    DVLOG(1) << "Channel is shutting down. Dropping sync message.";
     delete message;
     return false;
   }
 
-  SyncMessage* sync_msg = static_cast<SyncMessage*>(message);
-  context->Push(sync_msg);
-  WaitableEvent* pump_messages_event = sync_msg->pump_messages_event();
-
-  ChannelProxy::Send(message);
+  ChannelProxy::SendInternal(message);
 
   // Wait for reply, or for any other incoming synchronous messages.
-  // *this* might get deleted, so only call static functions at this point.
-  WaitForReply(context.get(), pump_messages_event);
+  // |this| might get deleted, so only call static functions at this point.
+  scoped_refptr<mojo::SyncHandleRegistry> registry = sync_handle_registry_;
+  WaitForReply(registry.get(), context.get(), pump_messages);
 
   TRACE_EVENT_FLOW_END0(TRACE_DISABLED_BY_DEFAULT("ipc.flow"),
                         "SyncChannel::Send", context->GetSendDoneEvent());
@@ -510,99 +633,90 @@ bool SyncChannel::Send(Message* message) {
   return context->Pop();
 }
 
-void SyncChannel::WaitForReply(
-    SyncContext* context, WaitableEvent* pump_messages_event) {
+void SyncChannel::WaitForReply(mojo::SyncHandleRegistry* registry,
+                               SyncContext* context,
+                               bool pump_messages) {
   context->DispatchMessages();
-  while (true) {
-    WaitableEvent* objects[] = {
-      context->GetDispatchEvent(),
-      context->GetSendDoneEvent(),
-      pump_messages_event
-    };
 
-    unsigned count = pump_messages_event ? 3: 2;
-    size_t result = WaitableEvent::WaitMany(objects, count);
-    if (result == 0 /* dispatch event */) {
-      // We're waiting for a reply, but we received a blocking synchronous
-      // call.  We must process it or otherwise a deadlock might occur.
+  base::WaitableEvent* pump_messages_event = nullptr;
+  if (pump_messages) {
+    if (!g_pump_messages_event.Get()) {
+      g_pump_messages_event.Get() = std::make_unique<base::WaitableEvent>(
+          base::WaitableEvent::ResetPolicy::MANUAL,
+          base::WaitableEvent::InitialState::SIGNALED);
+    }
+    pump_messages_event = g_pump_messages_event.Get().get();
+  }
+
+  while (true) {
+    bool dispatch = false;
+    bool send_done = false;
+    bool should_pump_messages = false;
+    base::Closure on_send_done_callback = base::Bind(&OnEventReady, &send_done);
+    registry->RegisterEvent(context->GetSendDoneEvent(), on_send_done_callback);
+
+    base::Closure on_pump_messages_callback;
+    if (pump_messages_event) {
+      on_pump_messages_callback =
+          base::Bind(&OnEventReady, &should_pump_messages);
+      registry->RegisterEvent(pump_messages_event, on_pump_messages_callback);
+    }
+
+    const bool* stop_flags[] = { &dispatch, &send_done, &should_pump_messages };
+    context->received_sync_msgs()->BlockDispatch(&dispatch);
+    registry->Wait(stop_flags, 3);
+    context->received_sync_msgs()->UnblockDispatch();
+
+    registry->UnregisterEvent(context->GetSendDoneEvent(),
+                              on_send_done_callback);
+    if (pump_messages_event)
+      registry->UnregisterEvent(pump_messages_event, on_pump_messages_callback);
+
+    if (dispatch) {
+      // We're waiting for a reply, but we received a blocking synchronous call.
+      // We must process it to avoid potential deadlocks.
       context->GetDispatchEvent()->Reset();
       context->DispatchMessages();
       continue;
     }
 
-    if (result == 2 /* pump_messages_event */)
-      WaitForReplyWithNestedMessageLoop(context);  // Run a nested message loop.
+    if (should_pump_messages)
+      WaitForReplyWithNestedMessageLoop(context);  // Run a nested run loop.
 
     break;
   }
 }
 
 void SyncChannel::WaitForReplyWithNestedMessageLoop(SyncContext* context) {
-  base::WaitableEventWatcher send_done_watcher;
-
-  ReceivedSyncMsgQueue* sync_msg_queue = context->received_sync_msgs();
-  DCHECK(sync_msg_queue != NULL);
-
-  base::WaitableEventWatcher* old_send_done_event_watcher =
-      sync_msg_queue->top_send_done_watcher();
-
-  base::WaitableEventWatcher::EventCallback old_callback;
-  base::WaitableEvent* old_event = NULL;
-
-  // Maintain a local global stack of send done delegates to ensure that
-  // nested sync calls complete in the correct sequence, i.e. the
-  // outermost call completes first, etc.
-  if (old_send_done_event_watcher) {
-    old_callback = old_send_done_event_watcher->callback();
-    old_event = old_send_done_event_watcher->GetWatchedEvent();
-    old_send_done_event_watcher->StopWatching();
-  }
-
-  sync_msg_queue->set_top_send_done_watcher(&send_done_watcher);
-
-  send_done_watcher.StartWatching(context->GetSendDoneEvent(),
-                                  context->MakeWaitableEventCallback());
-
-  {
-    base::MessageLoop::ScopedNestableTaskAllower allow(
-        base::MessageLoop::current());
-    base::MessageLoop::current()->Run();
-  }
-
-  sync_msg_queue->set_top_send_done_watcher(old_send_done_event_watcher);
-  if (old_send_done_event_watcher && old_event) {
-    old_send_done_event_watcher->StartWatching(old_event, old_callback);
-  }
+  base::RunLoop nested_loop(base::RunLoop::Type::kNestableTasksAllowed);
+  ReceivedSyncMsgQueue::NestedSendDoneWatcher watcher(
+      context, &nested_loop, context->listener_task_runner());
+  nested_loop.Run();
 }
 
-void SyncChannel::OnWaitableEventSignaled(WaitableEvent* event) {
-  DCHECK(event == sync_context()->GetDispatchEvent());
-  // The call to DispatchMessages might delete this object, so reregister
-  // the object watcher first.
-  event->Reset();
-  dispatch_watcher_.StartWatching(event, dispatch_watcher_callback_);
+void SyncChannel::OnDispatchEventSignaled(base::WaitableEvent* event) {
+  DCHECK_EQ(sync_context()->GetDispatchEvent(), event);
+  sync_context()->GetDispatchEvent()->Reset();
+
+  StartWatching();
+
+  // NOTE: May delete |this|.
   sync_context()->DispatchMessages();
 }
 
 void SyncChannel::StartWatching() {
-  // Ideally we only want to watch this object when running a nested message
-  // loop.  However, we don't know when it exits if there's another nested
-  // message loop running under it or not, so we wouldn't know whether to
-  // stop or keep watching.  So we always watch it, and create the event as
-  // manual reset since the object watcher might otherwise reset the event
-  // when we're doing a WaitMany.
-  dispatch_watcher_callback_ =
-      base::Bind(&SyncChannel::OnWaitableEventSignaled,
-                  base::Unretained(this));
-  dispatch_watcher_.StartWatching(sync_context()->GetDispatchEvent(),
-                                  dispatch_watcher_callback_);
+  // |dispatch_watcher_| watches the event asynchronously, only dispatching
+  // messages once the listener thread is unblocked and pumping its task queue.
+  // The ReceivedSyncMsgQueue also watches this event and may dispatch
+  // immediately if woken up by a message which it's allowed to dispatch.
+  dispatch_watcher_.StartWatching(
+      sync_context()->GetDispatchEvent(),
+      base::BindOnce(&SyncChannel::OnDispatchEventSignaled,
+                     base::Unretained(this)),
+      sync_context()->listener_task_runner());
 }
 
 void SyncChannel::OnChannelInit() {
-  for (const auto& filter : pre_init_sync_message_filters_) {
-    filter->set_is_channel_send_thread_safe(
-        context()->IsChannelSendThreadSafe());
-  }
   pre_init_sync_message_filters_.clear();
 }
 

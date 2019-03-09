@@ -7,9 +7,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/logging.h"
 #include "chromeos/dbus/cryptohome/key.pb.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "components/user_manager/known_user.h"
+
+using chromeos::ChallengeResponseKey;
 
 namespace cryptohome {
 namespace {
@@ -18,19 +21,29 @@ namespace {
 const char kCryptohome[] = "cryptohome";
 
 const std::string GetCryptohomeId(const AccountId& account_id) {
-  // Guest/kiosk/managed/public accounts have empty GaiaId. Default to email.
-  if (account_id.GetGaiaId().empty())
-    return account_id.GetUserEmail();  // Migrated
+  switch (account_id.GetAccountType()) {
+    case AccountType::GOOGLE: {
+      if (GetGaiaIdMigrationStatus(account_id))
+        return account_id.GetAccountIdKey();
+      return account_id.GetUserEmail();  // Migrated.
+    }
+    case AccountType::ACTIVE_DIRECTORY: {
+      // Always use the account id key, authpolicyd relies on it!
+      return account_id.GetAccountIdKey();
+    }
+    case AccountType::UNKNOWN: {
+      // Guest/kiosk/managed/public accounts have empty GaiaId. Use email.
+      return account_id.GetUserEmail();  // Migrated.
+    }
+  }
 
-  if (GetGaiaIdMigrationStatus(account_id))
-    return account_id.GetGaiaIdKey();
-
-  return account_id.GetUserEmail();  // Migrated
+  NOTREACHED();
+  return account_id.GetUserEmail();
 }
 
 }  //  anonymous namespace
 
-Identification::Identification() {}
+Identification::Identification() = default;
 
 Identification::Identification(const AccountId& account_id)
     : id_(GetCryptohomeId(account_id)) {}
@@ -56,7 +69,7 @@ AccountId Identification::GetAccountId() const {
   // A LOT of tests start with --login_user <user>, and not registing this user
   // before. So we might have "known_user" entry without gaia_id.
   for (const AccountId& known_id : known_account_ids) {
-    if (!known_id.GetGaiaId().empty() && known_id.GetGaiaIdKey() == id_) {
+    if (known_id.HasAccountIdKey() && known_id.GetAccountIdKey() == id_) {
       return known_id;
     }
   }
@@ -67,8 +80,21 @@ AccountId Identification::GetAccountId() const {
     }
   }
 
-  return user_manager::known_user::GetAccountId(id_,
-                                                std::string() /* gaia_id */);
+  return user_manager::known_user::GetAccountId(id_, std::string() /* id */,
+                                                AccountType::UNKNOWN);
+}
+
+AccountIdentifier CreateAccountIdentifierFromAccountId(const AccountId& id) {
+  AccountIdentifier out;
+  out.set_account_id(GetCryptohomeId(id));
+  return out;
+}
+
+AccountIdentifier CreateAccountIdentifierFromIdentification(
+    const Identification& id) {
+  AccountIdentifier out;
+  out.set_account_id(id.id());
+  return out;
 }
 
 KeyDefinition::AuthorizationData::Secret::Secret() : encrypt(false),
@@ -115,8 +141,7 @@ KeyDefinition::AuthorizationData::AuthorizationData(
 KeyDefinition::AuthorizationData::AuthorizationData(
     const AuthorizationData& other) = default;
 
-KeyDefinition::AuthorizationData::~AuthorizationData() {
-}
+KeyDefinition::AuthorizationData::~AuthorizationData() = default;
 
 bool KeyDefinition::AuthorizationData::operator==(
     const AuthorizationData& other) const {
@@ -129,8 +154,7 @@ bool KeyDefinition::AuthorizationData::operator==(
   return true;
 }
 
-KeyDefinition::ProviderData::ProviderData() {
-}
+KeyDefinition::ProviderData::ProviderData() = default;
 
 KeyDefinition::ProviderData::ProviderData(const std::string& name)
     : name(name) {
@@ -160,8 +184,7 @@ void KeyDefinition::ProviderData::operator=(const ProviderData& other) {
   bytes.reset(other.bytes ? new std::string(*other.bytes) : NULL);
 }
 
-KeyDefinition::ProviderData::~ProviderData() {
-}
+KeyDefinition::ProviderData::~ProviderData() = default;
 
 bool KeyDefinition::ProviderData::operator==(const ProviderData& other) const {
   const bool has_number = number != nullptr;
@@ -175,31 +198,50 @@ bool KeyDefinition::ProviderData::operator==(const ProviderData& other) const {
          (!has_bytes || (*bytes == *other.bytes));
 }
 
-KeyDefinition::KeyDefinition() : type(TYPE_PASSWORD),
-                                 privileges(0),
-                                 revision(0) {
+bool KeyDefinition::Policy::operator==(const Policy& other) const {
+  return low_entropy_credential == other.low_entropy_credential &&
+         auth_locked == other.auth_locked;
 }
 
-KeyDefinition::KeyDefinition(const std::string& secret,
-                             const std::string& label,
-                             int /*AuthKeyPrivileges*/ privileges)
-    : type(TYPE_PASSWORD),
-      label(label),
-      privileges(privileges),
-      revision(0),
-      secret(secret) {
+bool KeyDefinition::Policy::operator!=(const Policy& other) const {
+  return !(*this == other);
 }
+
+KeyDefinition KeyDefinition::CreateForPassword(
+    const std::string& secret,
+    const std::string& label,
+    int /*AuthKeyPrivileges*/ privileges) {
+  KeyDefinition key_def;
+  key_def.type = TYPE_PASSWORD;
+  key_def.label = label;
+  key_def.privileges = privileges;
+  key_def.secret = secret;
+  return key_def;
+}
+
+KeyDefinition KeyDefinition::CreateForChallengeResponse(
+    const std::vector<ChallengeResponseKey>& challenge_response_keys,
+    const std::string& label,
+    int /*AuthKeyPrivileges*/ privileges) {
+  KeyDefinition key_def;
+  key_def.type = TYPE_CHALLENGE_RESPONSE;
+  key_def.label = label;
+  key_def.privileges = privileges;
+  key_def.challenge_response_keys = challenge_response_keys;
+  return key_def;
+}
+
+KeyDefinition::KeyDefinition() = default;
 
 KeyDefinition::KeyDefinition(const KeyDefinition& other) = default;
 
-KeyDefinition::~KeyDefinition() {
-}
+KeyDefinition::~KeyDefinition() = default;
 
 bool KeyDefinition::operator==(const KeyDefinition& other) const {
-  if (type != other.type ||
-      label != other.label ||
-      privileges != other.privileges ||
+  if (type != other.type || label != other.label ||
+      privileges != other.privileges || policy != other.policy ||
       revision != other.revision ||
+      challenge_response_keys != other.challenge_response_keys ||
       authorization_data.size() != other.authorization_data.size() ||
       provider_data.size() != other.provider_data.size()) {
     return false;
@@ -230,18 +272,6 @@ bool Authorization::operator==(const Authorization& other) const {
   return key == other.key && label == other.label;
 }
 
-MountParameters::MountParameters(bool ephemeral) : ephemeral(ephemeral) {
-}
-
-MountParameters::MountParameters(const MountParameters& other) = default;
-
-bool MountParameters::operator==(const MountParameters& other) const {
-  return ephemeral == other.ephemeral && create_keys == other.create_keys;
-}
-
-MountParameters::~MountParameters() {
-}
-
 bool GetGaiaIdMigrationStatus(const AccountId& account_id) {
   return user_manager::known_user::GetGaiaIdMigrationStatus(account_id,
                                                             kCryptohome);
@@ -253,12 +283,3 @@ void SetGaiaIdMigrationStatusDone(const AccountId& account_id) {
 }
 
 }  // namespace cryptohome
-
-namespace BASE_HASH_NAMESPACE {
-
-std::size_t hash<cryptohome::Identification>::operator()(
-    const cryptohome::Identification& cryptohome_id) const {
-  return hash<std::string>()(cryptohome_id.id());
-}
-
-}  // namespace BASE_HASH_NAMESPACE

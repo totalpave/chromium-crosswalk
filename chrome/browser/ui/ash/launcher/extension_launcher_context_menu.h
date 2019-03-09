@@ -9,36 +9,44 @@
 
 #include "base/macros.h"
 #include "chrome/browser/ui/ash/launcher/launcher_context_menu.h"
-
-class ChromeLauncherControllerImpl;
-
-namespace ash {
-struct ShelfItem;
-class WmShelf;
-}
+#include "extensions/common/constants.h"
 
 namespace extensions {
 class ContextMenuMatcher;
 }
 
-// Class for context menu which is shown for a regular extension item in the
-// shelf.
+// Context menu shown for an extension item in the shelf.
 class ExtensionLauncherContextMenu : public LauncherContextMenu {
  public:
-  ExtensionLauncherContextMenu(ChromeLauncherControllerImpl* controller,
+  ExtensionLauncherContextMenu(ChromeLauncherController* controller,
                                const ash::ShelfItem* item,
-                               ash::WmShelf* wm_shelf);
+                               int64_t display_id);
   ~ExtensionLauncherContextMenu() override;
 
+  // LauncherContextMenu overrides:
+  void GetMenuModel(GetMenuModelCallback callback) override;
+
   // ui::SimpleMenuModel::Delegate overrides:
-  bool IsItemForCommandIdDynamic(int command_id) const override;
-  base::string16 GetLabelForCommandId(int command_id) const override;
   bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
   void ExecuteCommand(int command_id, int event_flags) override;
 
  private:
-  void Init();
+  // Creates the actionable submenu for MENU_OPEN_NEW.
+  void CreateOpenNewSubmenu(ui::SimpleMenuModel* menu_model);
+
+  void BuildMenu(ui::SimpleMenuModel* menu_model);
+
+  // Helpers to get and set the launch type for the extension item.
+  extensions::LaunchType GetLaunchType() const;
+  void SetLaunchType(extensions::LaunchType launch_type);
+
+  // Helper to get the launch type string id.
+  int GetLaunchTypeStringId() const;
+
+  // The MenuModel used to control MENU_OPEN_NEW's icon, label, and
+  // execution when touchable app context menus are enabled.
+  std::unique_ptr<ui::SimpleMenuModel> open_new_submenu_model_;
 
   std::unique_ptr<extensions::ContextMenuMatcher> extension_items_;
 

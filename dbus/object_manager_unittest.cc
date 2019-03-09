@@ -13,6 +13,7 @@
 #include "base/bind.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "dbus/bus.h"
@@ -36,8 +37,8 @@ class ObjectManagerTest
   struct Properties : public PropertySet {
     Property<std::string> name;
     Property<int16_t> version;
-    Property<std::vector<std::string> > methods;
-    Property<std::vector<ObjectPath> > objects;
+    Property<std::vector<std::string>> methods;
+    Property<std::vector<ObjectPath>> objects;
 
     Properties(ObjectProxy* object_proxy,
                const std::string& interface_name,
@@ -75,7 +76,7 @@ class ObjectManagerTest
     options.dbus_task_runner = dbus_thread_->task_runner();
     test_service_.reset(new TestService(options));
     ASSERT_TRUE(test_service_->StartService());
-    ASSERT_TRUE(test_service_->WaitUntilServiceIsStarted());
+    test_service_->WaitUntilServiceIsStarted();
     ASSERT_TRUE(test_service_->HasDBusThread());
 
     // Create the client, using the D-Bus thread.
@@ -214,8 +215,8 @@ class ObjectManagerTest
   std::string last_name_value_;
   bool timeout_expired_;
 
-  std::vector<std::pair<ObjectPath, std::string> > added_objects_;
-  std::vector<std::pair<ObjectPath, std::string> > removed_objects_;
+  std::vector<std::pair<ObjectPath, std::string>> added_objects_;
+  std::vector<std::pair<ObjectPath, std::string>> removed_objects_;
   std::vector<std::string> updated_properties_;
 
   bool method_callback_called_;
@@ -225,12 +226,12 @@ class ObjectManagerTest
 TEST_F(ObjectManagerTest, InitialObject) {
   ObjectProxy* object_proxy = object_manager_->GetObjectProxy(
       ObjectPath("/org/chromium/TestObject"));
-  EXPECT_TRUE(object_proxy != NULL);
+  EXPECT_NE(nullptr, object_proxy);
 
   Properties* properties = static_cast<Properties*>(
       object_manager_->GetProperties(ObjectPath("/org/chromium/TestObject"),
                                      "org.chromium.TestInterface"));
-  EXPECT_TRUE(properties != NULL);
+  EXPECT_NE(nullptr, properties);
 
   EXPECT_EQ("TestService", properties->name.value());
   EXPECT_EQ(10, properties->version.value());
@@ -250,21 +251,21 @@ TEST_F(ObjectManagerTest, InitialObject) {
 TEST_F(ObjectManagerTest, UnknownObjectProxy) {
   ObjectProxy* object_proxy = object_manager_->GetObjectProxy(
       ObjectPath("/org/chromium/UnknownObject"));
-  EXPECT_TRUE(object_proxy == NULL);
+  EXPECT_EQ(nullptr, object_proxy);
 }
 
 TEST_F(ObjectManagerTest, UnknownObjectProperties) {
   Properties* properties = static_cast<Properties*>(
       object_manager_->GetProperties(ObjectPath("/org/chromium/UnknownObject"),
                                      "org.chromium.TestInterface"));
-  EXPECT_TRUE(properties == NULL);
+  EXPECT_EQ(nullptr, properties);
 }
 
 TEST_F(ObjectManagerTest, UnknownInterfaceProperties) {
   Properties* properties = static_cast<Properties*>(
       object_manager_->GetProperties(ObjectPath("/org/chromium/TestObject"),
                                      "org.chromium.UnknownService"));
-  EXPECT_TRUE(properties == NULL);
+  EXPECT_EQ(nullptr, properties);
 }
 
 TEST_F(ObjectManagerTest, GetObjects) {
@@ -313,12 +314,12 @@ TEST_F(ObjectManagerTest, SecondObject) {
 
   ObjectProxy* object_proxy = object_manager_->GetObjectProxy(
       ObjectPath("/org/chromium/SecondObject"));
-  EXPECT_TRUE(object_proxy != NULL);
+  EXPECT_NE(nullptr, object_proxy);
 
   Properties* properties = static_cast<Properties*>(
       object_manager_->GetProperties(ObjectPath("/org/chromium/SecondObject"),
                                      "org.chromium.TestInterface"));
-  EXPECT_TRUE(properties != NULL);
+  EXPECT_NE(nullptr, properties);
 
   std::vector<ObjectPath> object_paths = object_manager_->GetObjects();
   ASSERT_EQ(2U, object_paths.size());
@@ -348,12 +349,12 @@ TEST_F(ObjectManagerTest, RemoveSecondObject) {
 
   ObjectProxy* object_proxy = object_manager_->GetObjectProxy(
       ObjectPath("/org/chromium/SecondObject"));
-  EXPECT_TRUE(object_proxy == NULL);
+  EXPECT_EQ(nullptr, object_proxy);
 
   Properties* properties = static_cast<Properties*>(
       object_manager_->GetProperties(ObjectPath("/org/chromium/SecondObject"),
                                      "org.chromium.TestInterface"));
-  EXPECT_TRUE(properties == NULL);
+  EXPECT_EQ(nullptr, properties);
 
   object_paths = object_manager_->GetObjects();
   ASSERT_EQ(1U, object_paths.size());
@@ -404,10 +405,10 @@ TEST_F(ObjectManagerTest, PropertiesChangedAsObjectsReceived) {
   // after setting up the match rule for PropertiesChanged. We should process
   // the PropertiesChanged event right after that. If we don't receive it within
   // 2 seconds, then fail the test.
-  message_loop_.PostDelayedTask(
+  message_loop_.task_runner()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&ObjectManagerTest::PropertiesChangedTestTimeout,
-                 base::Unretained(this)),
+      base::BindOnce(&ObjectManagerTest::PropertiesChangedTestTimeout,
+                     base::Unretained(this)),
       base::TimeDelta::FromSeconds(2));
 
   while (last_name_value_ != "ChangedTestServiceName" && !timeout_expired_) {

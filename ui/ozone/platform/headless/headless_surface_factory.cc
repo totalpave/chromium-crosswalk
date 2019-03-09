@@ -8,21 +8,28 @@
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/threading/worker_pool.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/task/post_task.h"
+#include "build/build_config.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "ui/gfx/native_pixmap.h"
 #include "ui/gfx/skia_util.h"
 #include "ui/gfx/vsync_provider.h"
+#include "ui/gl/gl_surface_egl.h"
+#include "ui/ozone/common/egl_util.h"
+#include "ui/ozone/common/gl_ozone_egl.h"
+#include "ui/ozone/common/gl_surface_egl_readback.h"
 #include "ui/ozone/platform/headless/headless_window.h"
 #include "ui/ozone/platform/headless/headless_window_manager.h"
-#include "ui/ozone/public/native_pixmap.h"
 #include "ui/ozone/public/surface_ozone_canvas.h"
 
 namespace ui {
 
 namespace {
+
+const base::FilePath::CharType kDevNull[] = FILE_PATH_LITERAL("/dev/null");
 
 void WriteDataToFile(const base::FilePath& location, const SkBitmap& bitmap) {
   DCHECK(!location.empty());
@@ -35,7 +42,7 @@ void WriteDataToFile(const base::FilePath& location, const SkBitmap& bitmap) {
 // TODO(altimin): Find a proper way to capture rendering output.
 class FileSurface : public SurfaceOzoneCanvas {
  public:
-  FileSurface(const base::FilePath& location) : location_(location) {}
+  explicit FileSurface(const base::FilePath& location) : base_path_(location) {}
   ~FileSurface() override {}
 
   // SurfaceOzoneCanvas overrides:
@@ -45,16 +52,18 @@ class FileSurface : public SurfaceOzoneCanvas {
   }
   sk_sp<SkSurface> GetSurface() override { return surface_; }
   void PresentCanvas(const gfx::Rect& damage) override {
-    if (location_.empty())
+    if (base_path_.empty())
       return;
     SkBitmap bitmap;
-    bitmap.setInfo(surface_->getCanvas()->imageInfo());
+    bitmap.allocPixels(surface_->getCanvas()->imageInfo());
 
     // TODO(dnicoara) Use SkImage instead to potentially avoid a copy.
     // See crbug.com/361605 for details.
-    if (surface_->getCanvas()->readPixels(&bitmap, 0, 0)) {
-      base::WorkerPool::PostTask(
-          FROM_HERE, base::Bind(&WriteDataToFile, location_, bitmap), true);
+    if (surface_->getCanvas()->readPixels(bitmap, 0, 0)) {
+      base::PostTaskWithTraits(
+          FROM_HERE,
+          {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+          base::BindOnce(&WriteDataToFile, base_path_, bitmap));
     }
   }
   std::unique_ptr<gfx::VSyncProvider> CreateVSyncProvider() override {
@@ -62,31 +71,31 @@ class FileSurface : public SurfaceOzoneCanvas {
   }
 
  private:
-  base::FilePath location_;
+  base::FilePath base_path_;
   sk_sp<SkSurface> surface_;
 };
 
-class TestPixmap : public ui::NativePixmap {
+class TestPixmap : public gfx::NativePixmap {
  public:
-  TestPixmap(gfx::BufferFormat format) : format_(format) {}
+  explicit TestPixmap(gfx::BufferFormat format) : format_(format) {}
 
-  void* GetEGLClientBuffer() const override { return nullptr; }
   bool AreDmaBufFdsValid() const override { return false; }
-  size_t GetDmaBufFdCount() const override { return 0; }
   int GetDmaBufFd(size_t plane) const override { return -1; }
   int GetDmaBufPitch(size_t plane) const override { return 0; }
   int GetDmaBufOffset(size_t plane) const override { return 0; }
+  uint64_t GetDmaBufModifier(size_t plane) const override { return 0; }
   gfx::BufferFormat GetBufferFormat() const override { return format_; }
   gfx::Size GetBufferSize() const override { return gfx::Size(); }
+  uint32_t GetUniqueId() const override { return 0; }
   bool ScheduleOverlayPlane(gfx::AcceleratedWidget widget,
                             int plane_z_order,
                             gfx::OverlayTransform plane_transform,
                             const gfx::Rect& display_bounds,
-                            const gfx::RectF& crop_rect) override {
+                            const gfx::RectF& crop_rect,
+                            bool enable_blend,
+                            std::unique_ptr<gfx::GpuFence> gpu_fence) override {
     return true;
   }
-  void SetProcessingCallback(
-      const ProcessingCallback& processing_callback) override {}
   gfx::NativePixmapHandle ExportHandle() override {
     return gfx::NativePixmapHandle();
   }
@@ -99,35 +108,102 @@ class TestPixmap : public ui::NativePixmap {
   DISALLOW_COPY_AND_ASSIGN(TestPixmap);
 };
 
+class GLOzoneEGLHeadless : public GLOzoneEGL {
+ public:
+  GLOzoneEGLHeadless() = default;
+  ~GLOzoneEGLHeadless() override = default;
+
+  // GLOzone:
+  scoped_refptr<gl::GLSurface> CreateViewGLSurface(
+      gfx::AcceleratedWidget window) override {
+    // TODO(kylechar): Extend GLSurface implementation to write to PNG file.
+    return gl::InitializeGLSurface(
+        base::MakeRefCounted<GLSurfaceEglReadback>());
+  }
+
+  scoped_refptr<gl::GLSurface> CreateOffscreenGLSurface(
+      const gfx::Size& size) override {
+    return gl::InitializeGLSurface(
+        base::MakeRefCounted<gl::PbufferGLSurfaceEGL>(size));
+  }
+
+ protected:
+  // GLOzoneEGL:
+  intptr_t GetNativeDisplay() override { return EGL_DEFAULT_DISPLAY; }
+
+  bool LoadGLES2Bindings(gl::GLImplementation implementation) override {
+    return LoadDefaultEGLGLES2Bindings(implementation);
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(GLOzoneEGLHeadless);
+};
+
 }  // namespace
 
-HeadlessSurfaceFactory::HeadlessSurfaceFactory()
-    : HeadlessSurfaceFactory(nullptr) {}
+HeadlessSurfaceFactory::HeadlessSurfaceFactory(base::FilePath base_path)
+    : base_path_(base_path),
+      swiftshader_implementation_(std::make_unique<GLOzoneEGLHeadless>()) {
+  CheckBasePath();
+}
 
-HeadlessSurfaceFactory::HeadlessSurfaceFactory(
-    HeadlessWindowManager* window_manager)
-    : window_manager_(window_manager) {}
+HeadlessSurfaceFactory::~HeadlessSurfaceFactory() = default;
 
-HeadlessSurfaceFactory::~HeadlessSurfaceFactory() {}
+base::FilePath HeadlessSurfaceFactory::GetPathForWidget(
+    gfx::AcceleratedWidget widget) {
+  if (base_path_.empty() || base_path_ == base::FilePath(kDevNull))
+    return base_path_;
+
+  // Disambiguate multiple window output files with the window id.
+#if defined(OS_WIN)
+  std::string path = base::IntToString(reinterpret_cast<int>(widget)) + ".png";
+  std::wstring wpath(path.begin(), path.end());
+  return base_path_.Append(wpath);
+#else
+  return base_path_.Append(base::IntToString(widget) + ".png");
+#endif
+}
+
+std::vector<gl::GLImplementation>
+HeadlessSurfaceFactory::GetAllowedGLImplementations() {
+  return std::vector<gl::GLImplementation>{gl::kGLImplementationSwiftShaderGL};
+}
+
+GLOzone* HeadlessSurfaceFactory::GetGLOzone(
+    gl::GLImplementation implementation) {
+  switch (implementation) {
+    case gl::kGLImplementationEGLGLES2:
+    case gl::kGLImplementationSwiftShaderGL:
+      return swiftshader_implementation_.get();
+
+    default:
+      return nullptr;
+  }
+}
 
 std::unique_ptr<SurfaceOzoneCanvas>
 HeadlessSurfaceFactory::CreateCanvasForWidget(gfx::AcceleratedWidget widget) {
-  HeadlessWindow* window = window_manager_->GetWindow(widget);
-  return base::WrapUnique<SurfaceOzoneCanvas>(new FileSurface(window->path()));
+  return std::make_unique<FileSurface>(GetPathForWidget(widget));
 }
 
-bool HeadlessSurfaceFactory::LoadEGLGLES2Bindings(
-    AddGLLibraryCallback add_gl_library,
-    SetGLGetProcAddressProcCallback set_gl_get_proc_address) {
-  return false;
-}
-
-scoped_refptr<NativePixmap> HeadlessSurfaceFactory::CreateNativePixmap(
+scoped_refptr<gfx::NativePixmap> HeadlessSurfaceFactory::CreateNativePixmap(
     gfx::AcceleratedWidget widget,
     gfx::Size size,
     gfx::BufferFormat format,
     gfx::BufferUsage usage) {
   return new TestPixmap(format);
+}
+
+void HeadlessSurfaceFactory::CheckBasePath() const {
+  if (base_path_.empty())
+    return;
+
+  if (!DirectoryExists(base_path_) && !base::CreateDirectory(base_path_) &&
+      base_path_ != base::FilePath(kDevNull))
+    PLOG(FATAL) << "Unable to create output directory";
+
+  if (!base::PathIsWritable(base_path_))
+    PLOG(FATAL) << "Unable to write to output location";
 }
 
 }  // namespace ui

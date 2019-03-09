@@ -4,11 +4,14 @@
 
 #include "chromeos/dbus/fake_shill_profile_client.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/containers/adapters.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
@@ -23,6 +26,7 @@
 namespace chromeos {
 
 struct FakeShillProfileClient::ProfileProperties {
+  std::string path;               // Profile path
   base::DictionaryValue entries;  // Dictionary of Service Dictionaries
   base::DictionaryValue properties;  // Dictionary of Profile properties
 };
@@ -37,15 +41,11 @@ void PassDictionary(
 
 }  // namespace
 
-FakeShillProfileClient::FakeShillProfileClient() {
-}
+FakeShillProfileClient::FakeShillProfileClient() = default;
 
-FakeShillProfileClient::~FakeShillProfileClient() {
-  STLDeleteValues(&profiles_);
-}
+FakeShillProfileClient::~FakeShillProfileClient() = default;
 
-void FakeShillProfileClient::Init(dbus::Bus* bus) {
-}
+void FakeShillProfileClient::Init(dbus::Bus* bus) {}
 
 void FakeShillProfileClient::AddPropertyChangedObserver(
     const dbus::ObjectPath& profile_path,
@@ -65,18 +65,20 @@ void FakeShillProfileClient::GetProperties(
   if (!profile)
     return;
 
-  std::unique_ptr<base::DictionaryValue> properties(
-      profile->properties.DeepCopy());
-  base::ListValue* entry_paths = new base::ListValue;
-  properties->SetWithoutPathExpansion(shill::kEntriesProperty, entry_paths);
+  auto entry_paths = std::make_unique<base::ListValue>();
   for (base::DictionaryValue::Iterator it(profile->entries); !it.IsAtEnd();
        it.Advance()) {
     entry_paths->AppendString(it.key());
   }
 
+  std::unique_ptr<base::DictionaryValue> properties =
+      profile->properties.CreateDeepCopy();
+  properties->SetWithoutPathExpansion(shill::kEntriesProperty,
+                                      std::move(entry_paths));
+
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&PassDictionary, callback, base::Owned(properties.release())));
+      FROM_HERE, base::BindOnce(&PassDictionary, callback,
+                                base::Owned(properties.release())));
 }
 
 void FakeShillProfileClient::GetEntry(
@@ -96,8 +98,8 @@ void FakeShillProfileClient::GetEntry(
   }
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&PassDictionary, callback, base::Owned(entry->DeepCopy())));
+      FROM_HERE, base::BindOnce(&PassDictionary, callback,
+                                base::Owned(entry->DeepCopy())));
 }
 
 void FakeShillProfileClient::DeleteEntry(const dbus::ObjectPath& profile_path,
@@ -113,7 +115,7 @@ void FakeShillProfileClient::DeleteEntry(const dbus::ObjectPath& profile_path,
     return;
   }
 
-  base::StringValue profile_path_value("");
+  base::Value profile_path_value("");
   DBusThreadManager::Get()->GetShillServiceClient()->GetTestInterface()->
       SetServiceProperty(entry_path,
                          shill::kProfileProperty,
@@ -131,10 +133,16 @@ void FakeShillProfileClient::AddProfile(const std::string& profile_path,
   if (GetProfile(dbus::ObjectPath(profile_path), ErrorCallback()))
     return;
 
-  ProfileProperties* profile = new ProfileProperties;
-  profile->properties.SetStringWithoutPathExpansion(shill::kUserHashProperty,
-                                                    userhash);
-  profiles_[profile_path] = profile;
+  // If adding a shared profile, make sure there are no user profiles currently
+  // on the stack - this assumes there is at most one shared profile.
+  CHECK(profile_path != GetSharedProfilePath() || profiles_.empty())
+      << "Shared profile must be added before any user profile.";
+
+  auto profile = std::make_unique<ProfileProperties>();
+  profile->properties.SetKey(shill::kUserHashProperty, base::Value(userhash));
+  profile->path = profile_path;
+  profiles_.emplace_back(std::move(profile));
+
   DBusThreadManager::Get()->GetShillManagerClient()->GetTestInterface()->
       AddProfile(profile_path);
 }
@@ -145,7 +153,7 @@ void FakeShillProfileClient::AddEntry(const std::string& profile_path,
   ProfileProperties* profile = GetProfile(dbus::ObjectPath(profile_path),
                                           ErrorCallback());
   DCHECK(profile);
-  profile->entries.SetWithoutPathExpansion(entry_path, properties.DeepCopy());
+  profile->entries.SetKey(entry_path, properties.Clone());
   DBusThreadManager::Get()->GetShillManagerClient()->GetTestInterface()->
       AddManagerService(entry_path, true);
 }
@@ -197,7 +205,7 @@ bool FakeShillProfileClient::AddOrUpdateServiceImpl(
   service_properties->GetStringWithoutPathExpansion(shill::kProfileProperty,
                                                     &service_profile_path);
   if (service_profile_path.empty()) {
-    base::StringValue profile_path_value(profile_path);
+    base::Value profile_path_value(profile_path);
     service_test->SetServiceProperty(service_path,
                                      shill::kProfileProperty,
                                      profile_path_value);
@@ -207,53 +215,72 @@ bool FakeShillProfileClient::AddOrUpdateServiceImpl(
     return false;
   }
 
-  profile->entries.SetWithoutPathExpansion(service_path,
-                                           service_properties->DeepCopy());
+  profile->entries.SetKey(service_path, service_properties->Clone());
   return true;
 }
 
 void FakeShillProfileClient::GetProfilePaths(
     std::vector<std::string>* profiles) {
-  for (ProfileMap::iterator iter = profiles_.begin();
-       iter != profiles_.end(); ++iter) {
-    profiles->push_back(iter->first);
+  for (const auto& profile : profiles_)
+    profiles->push_back(profile->path);
+}
+
+void FakeShillProfileClient::GetProfilePathsContainingService(
+    const std::string& service_path,
+    std::vector<std::string>* profiles) {
+  for (const auto& profile : profiles_) {
+    if (profile->entries.FindKeyOfType(service_path,
+                                       base::Value::Type::DICTIONARY)) {
+      profiles->push_back(profile->path);
+    }
   }
 }
 
 bool FakeShillProfileClient::GetService(const std::string& service_path,
                                         std::string* profile_path,
                                         base::DictionaryValue* properties) {
+  DCHECK(profile_path);
+  DCHECK(properties);
+
   properties->Clear();
-  for (ProfileMap::const_iterator iter = profiles_.begin();
-       iter != profiles_.end(); ++iter) {
-    const ProfileProperties* profile = iter->second;
-    const base::DictionaryValue* entry;
-    if (!profile->entries.GetDictionaryWithoutPathExpansion(
-            service_path, &entry)) {
-      continue;
+  // Returns the entry added latest.
+  for (const auto& profile : base::Reversed(profiles_)) {
+    const base::Value* entry = profile->entries.FindKeyOfType(
+        service_path, base::Value::Type::DICTIONARY);
+    if (entry) {
+      *profile_path = profile->path;
+      *properties = static_cast<base::DictionaryValue&&>(entry->Clone());
+      return true;
     }
-    *profile_path = iter->first;
-    properties->MergeDictionary(entry);
-    return true;
   }
   return false;
 }
 
+bool FakeShillProfileClient::HasService(const std::string& service_path) {
+  for (const auto& profile : profiles_) {
+    if (profile->entries.FindKeyOfType(service_path,
+                                       base::Value::Type::DICTIONARY)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void FakeShillProfileClient::ClearProfiles() {
-  STLDeleteValues(&profiles_);
+  profiles_.clear();
 }
 
 FakeShillProfileClient::ProfileProperties* FakeShillProfileClient::GetProfile(
     const dbus::ObjectPath& profile_path,
     const ErrorCallback& error_callback) {
-  ProfileMap::const_iterator found = profiles_.find(profile_path.value());
-  if (found == profiles_.end()) {
-    if (!error_callback.is_null())
-      error_callback.Run("Error.InvalidProfile", "Invalid profile");
-    return NULL;
+  for (auto& profile : profiles_) {
+    if (profile->path == profile_path.value())
+      return profile.get();
   }
-
-  return found->second;
+  if (!error_callback.is_null())
+    error_callback.Run("Error.InvalidProfile", "Invalid profile");
+  return nullptr;
 }
 
 }  // namespace chromeos

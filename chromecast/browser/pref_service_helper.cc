@@ -6,17 +6,23 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/path_service.h"
+#include "build/build_config.h"
 #include "chromecast/base/cast_paths.h"
 #include "chromecast/base/pref_names.h"
+#include "chromecast/chromecast_buildflags.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service_factory.h"
 #include "components/prefs/pref_store.h"
-#include "content/public/browser/browser_thread.h"
+
+#if defined(OS_ANDROID) && !BUILDFLAG(USE_CHROMECAST_CDMS)
+#include "components/cdm/browser/media_drm_storage_impl.h"
+#endif  // defined(OS_ANDROID) && !BUILDFLAG(USE_CHROMECAST_CDMS)
 
 namespace chromecast {
 namespace shell {
@@ -31,7 +37,7 @@ void UserPrefsLoadError(PersistentPrefStore::PrefReadError* error_val,
 
 base::FilePath GetConfigPath() {
   base::FilePath config_path;
-  CHECK(PathService::Get(FILE_CAST_CONFIG, &config_path));
+  CHECK(base::PathService::Get(FILE_CAST_CONFIG, &config_path));
   return config_path;
 }
 
@@ -43,7 +49,6 @@ std::unique_ptr<PrefService> PrefServiceHelper::CreatePrefService(
   const base::FilePath config_path(GetConfigPath());
   VLOG(1) << "Loading config from " << config_path.value();
 
-  registry->RegisterBooleanPref(prefs::kEnableRemoteDebugging, false);
   registry->RegisterBooleanPref(prefs::kMetricsIsNewClientID, false);
   // Opt-in stats default to true to handle two different cases:
   //  1) Any crashes or UMA logs are recorded prior to setup completing
@@ -53,15 +58,18 @@ std::unique_ptr<PrefService> PrefServiceHelper::CreatePrefService(
   //     opts out, nothing further will be sent (honoring the user's setting).
   //  2) Dogfood users (see dogfood agreement).
   registry->RegisterBooleanPref(prefs::kOptInStats, true);
+  registry->RegisterListPref(prefs::kActiveDCSExperiments);
+  registry->RegisterDictionaryPref(prefs::kLatestDCSFeatures);
+
+#if defined(OS_ANDROID) && !BUILDFLAG(USE_CHROMECAST_CDMS)
+  cdm::MediaDrmStorageImpl::RegisterProfilePrefs(registry);
+#endif  // defined(OS_ANDROID) && !BUILDFLAG(USE_CHROMECAST_CDMS)
 
   RegisterPlatformPrefs(registry);
 
   PrefServiceFactory prefServiceFactory;
-  scoped_refptr<base::SequencedTaskRunner> task_runner =
-      JsonPrefStore::GetTaskRunnerForFile(
-          config_path,
-          content::BrowserThread::GetBlockingPool());
-  prefServiceFactory.SetUserPrefsFile(config_path, task_runner.get());
+  prefServiceFactory.set_user_prefs(
+      base::MakeRefCounted<JsonPrefStore>(config_path));
   prefServiceFactory.set_async(false);
 
   PersistentPrefStore::PrefReadError prefs_read_error =

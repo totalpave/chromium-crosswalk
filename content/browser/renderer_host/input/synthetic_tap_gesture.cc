@@ -5,8 +5,8 @@
 #include "content/browser/renderer_host/input/synthetic_tap_gesture.h"
 
 #include "base/logging.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
-#include "ui/events/latency_info.h"
+#include "third_party/blink/public/platform/web_input_event.h"
+#include "ui/latency/latency_info.h"
 
 namespace content {
 
@@ -32,8 +32,9 @@ SyntheticGesture::Result SyntheticTapGesture::ForwardInputEvents(
 
   DCHECK_NE(gesture_source_type_, SyntheticGestureParams::DEFAULT_INPUT);
 
-  if (!synthetic_pointer_)
-    synthetic_pointer_ = SyntheticPointer::Create(gesture_source_type_);
+  if (!synthetic_pointer_driver_)
+    synthetic_pointer_driver_ =
+        SyntheticPointerDriver::Create(gesture_source_type_);
 
   if (gesture_source_type_ == SyntheticGestureParams::TOUCH_INPUT ||
       gesture_source_type_ == SyntheticGestureParams::MOUSE_INPUT)
@@ -45,17 +46,28 @@ SyntheticGesture::Result SyntheticTapGesture::ForwardInputEvents(
                           : SyntheticGesture::GESTURE_RUNNING;
 }
 
+void SyntheticTapGesture::WaitForTargetAck(
+    base::OnceClosure callback,
+    SyntheticGestureTarget* target) const {
+  target->WaitForTargetAck(params_.GetGestureType(), gesture_source_type_,
+                           std::move(callback));
+}
+
+bool SyntheticTapGesture::AllowHighFrequencyDispatch() const {
+  return false;
+}
+
 void SyntheticTapGesture::ForwardTouchOrMouseInputEvents(
     const base::TimeTicks& timestamp, SyntheticGestureTarget* target) {
   switch (state_) {
     case PRESS:
-      synthetic_pointer_->Press(params_.position.x(), params_.position.y(),
-                                target, timestamp);
-      synthetic_pointer_->DispatchEvent(target, timestamp);
+      synthetic_pointer_driver_->Press(params_.position.x(),
+                                       params_.position.y());
+      synthetic_pointer_driver_->DispatchEvent(target, timestamp);
       // Release immediately if duration is 0.
       if (params_.duration_ms == 0) {
-        synthetic_pointer_->Release(0, target, timestamp);
-        synthetic_pointer_->DispatchEvent(target, timestamp);
+        synthetic_pointer_driver_->Release();
+        synthetic_pointer_driver_->DispatchEvent(target, timestamp);
         state_ = DONE;
       } else {
         start_time_ = timestamp;
@@ -64,15 +76,18 @@ void SyntheticTapGesture::ForwardTouchOrMouseInputEvents(
       break;
     case WAITING_TO_RELEASE:
       if (timestamp - start_time_ >= GetDuration()) {
-        synthetic_pointer_->Release(0, target, start_time_ + GetDuration());
-        synthetic_pointer_->DispatchEvent(target, start_time_ + GetDuration());
+        synthetic_pointer_driver_->Release();
+        synthetic_pointer_driver_->DispatchEvent(target,
+                                                 start_time_ + GetDuration());
         state_ = DONE;
       }
       break;
     case SETUP:
       NOTREACHED() << "State SETUP invalid for synthetic tap gesture.";
+      break;
     case DONE:
       NOTREACHED() << "State DONE invalid for synthetic tap gesture.";
+      break;
   }
 }
 

@@ -10,8 +10,12 @@
 
 #include "base/base64.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
+#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "chrome/common/chrome_switches.h"
+#include "content/public/common/content_features.h"
+#include "content/public/common/origin_util.h"
 
 // This is the default public key used for validating signatures.
 // TODO(iclelland): Provide a mechanism to allow for multiple signing keys.
@@ -24,7 +28,7 @@ static const uint8_t kDefaultPublicKey[] = {
 
 ChromeOriginTrialPolicy::ChromeOriginTrialPolicy()
     : public_key_(std::string(reinterpret_cast<const char*>(kDefaultPublicKey),
-                              arraysize(kDefaultPublicKey))) {
+                              base::size(kDefaultPublicKey))) {
   // Set the public key and disabled feature list for the origin trial key
   // manager, based on the command line flags which were passed to this process.
   // If the flags are not present, or are incorrectly formatted, the defaults
@@ -39,10 +43,18 @@ ChromeOriginTrialPolicy::ChromeOriginTrialPolicy()
       SetDisabledFeatures(command_line->GetSwitchValueASCII(
           switches::kOriginTrialDisabledFeatures));
     }
+    if (command_line->HasSwitch(switches::kOriginTrialDisabledTokens)) {
+      SetDisabledTokens(command_line->GetSwitchValueASCII(
+          switches::kOriginTrialDisabledTokens));
+    }
   }
 }
 
 ChromeOriginTrialPolicy::~ChromeOriginTrialPolicy() {}
+
+bool ChromeOriginTrialPolicy::IsOriginTrialsSupported() const {
+  return base::FeatureList::IsEnabled(features::kOriginTrials);
+}
 
 base::StringPiece ChromeOriginTrialPolicy::GetPublicKey() const {
   return base::StringPiece(public_key_);
@@ -51,6 +63,15 @@ base::StringPiece ChromeOriginTrialPolicy::GetPublicKey() const {
 bool ChromeOriginTrialPolicy::IsFeatureDisabled(
     base::StringPiece feature) const {
   return disabled_features_.count(feature.as_string()) > 0;
+}
+
+bool ChromeOriginTrialPolicy::IsTokenDisabled(
+    base::StringPiece token_signature) const {
+  return disabled_tokens_.count(token_signature.as_string()) > 0;
+}
+
+bool ChromeOriginTrialPolicy::IsOriginSecure(const GURL& url) const {
+  return content::IsOriginSecure(url);
 }
 
 bool ChromeOriginTrialPolicy::SetPublicKeyFromASCIIString(
@@ -74,5 +95,23 @@ bool ChromeOriginTrialPolicy::SetDisabledFeatures(
   for (const std::string& feature : features)
     new_disabled_features.insert(feature);
   disabled_features_.swap(new_disabled_features);
+  return true;
+}
+
+bool ChromeOriginTrialPolicy::SetDisabledTokens(
+    const std::string& disabled_token_list) {
+  std::set<std::string> new_disabled_tokens;
+  const std::vector<std::string> tokens =
+      base::SplitString(disabled_token_list, "|", base::TRIM_WHITESPACE,
+                        base::SPLIT_WANT_NONEMPTY);
+  for (const std::string& ascii_token : tokens) {
+    std::string token_signature;
+    if (!base::Base64Decode(ascii_token, &token_signature))
+      continue;
+    if (token_signature.size() != 64)
+      continue;
+    new_disabled_tokens.insert(token_signature);
+  }
+  disabled_tokens_.swap(new_disabled_tokens);
   return true;
 }

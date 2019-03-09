@@ -20,11 +20,10 @@ the Hangout Services component extension and the APIs it uses.
 // Populates UI elements with initial contents.
 function populate() {
   populateSinks();
-  MediaStreamTrack.getSources(populateSources);
+  navigator.mediaDevices.enumerateDevices().then(populateSources);
 }
 
-// Populates the select box with information on all sinks and the
-// currently selected sink.
+// Populates the select box with information on all sinks.
 function populateSinks() {
   var select = document.getElementById('select');
   while (select.length > 0)
@@ -36,32 +35,20 @@ function populateSinks() {
         option.text = sinks[i].sinkLabel + ' (' + sinks[i].sinkId + ')';
         select.add(option);
       }
-      getActiveSink(function(sinkId) {
-          select.value = sinkId;
-        });
     });
 }
 
-function populateSources(sources) {
+function populateSources(devices) {
   var select = document.getElementById('selectSource');
-  for (var i = 0; i < sources.length; ++i) {
-    var source = sources[i];
-    if (source.kind == 'audio') {
+  for (var i = 0; i < devices.length; ++i) {
+    var device = devices[i];
+    if (device.kind == 'audioinput') {
       var option = document.createElement('option');
-      option.value = source.id;
-      option.text = source.label + ' (' + source.id + ')';
+      option.value = device.deviceId;
+      option.text = device.label + ' (' + device.deviceId + ')';
       select.add(option);
     }
   }
-}
-
-// Sets the currently active sink to the one selected in the select
-// box.
-function setActiveSinkFromSelection() {
-  var select = document.getElementById('select');
-  setActiveSink(select.value, function() {
-      populateSinks();
-    });
 }
 
 function getAssociatedDeviceFromSelection() {
@@ -109,9 +96,8 @@ function browsertestRunAllTests() {
 <audio id="audio" src="long_audio.ogg" controls autoplay></audio>
 <br/>
 
-Audio output devices, along with currently selected device. Click to change:<br/>
-<select style="width:100%" id="select" size=10
-        onClick="setActiveSinkFromSelection()"></select>
+Audio output devices<br/>
+<select style="width:100%" id="select" size=10></select>
 <br/>
 
 Audio input devices. Click to get associated output device ID:<br/>

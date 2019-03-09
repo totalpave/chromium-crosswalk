@@ -8,9 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <queue>
-
 #include "base/compiler_specific.h"
+#include "base/containers/queue.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "ppapi/c/ppb_udp_socket.h"
@@ -26,32 +25,6 @@ namespace proxy {
 class ResourceMessageReplyParams;
 
 class PPAPI_PROXY_EXPORT UDPSocketResourceBase : public PluginResource {
- public:
-  // The maximum number of bytes that each
-  // PpapiPluginMsg_PPBUDPSocket_PushRecvResult message is allowed to carry.
-  static const int32_t kMaxReadSize;
-  // The maximum number of bytes that each PpapiHostMsg_PPBUDPSocket_SendTo
-  // message is allowed to carry.
-  static const int32_t kMaxWriteSize;
-
-  // The maximum number that we allow for setting
-  // PP_UDPSOCKET_OPTION_SEND_BUFFER_SIZE. This number is only for input
-  // argument sanity check, it doesn't mean the browser guarantees to support
-  // such a buffer size.
-  static const int32_t kMaxSendBufferSize;
-  // The maximum number that we allow for setting
-  // PP_UDPSOCKET_OPTION_RECV_BUFFER_SIZE. This number is only for input
-  // argument sanity check, it doesn't mean the browser guarantees to support
-  // such a buffer size.
-  static const int32_t kMaxReceiveBufferSize;
-
-  // The maximum number of received packets that we allow instances of this
-  // class to buffer.
-  static const size_t kPluginReceiveBufferSlots;
-  // The maximum number of buffers that we allow instances of this class to be
-  // sending before we block the plugin.
-  static const size_t kPluginSendBufferSlots;
-
  protected:
   UDPSocketResourceBase(Connection connection,
                         PP_Instance instance,
@@ -107,7 +80,7 @@ class PPAPI_PROXY_EXPORT UDPSocketResourceBase : public PluginResource {
 
   PP_NetAddress_Private bound_addr_;
 
-  std::queue<scoped_refptr<TrackedCallback>> sendto_callbacks_;
+  base::queue<scoped_refptr<TrackedCallback>> sendto_callbacks_;
 
   DISALLOW_COPY_AND_ASSIGN(UDPSocketResourceBase);
 };

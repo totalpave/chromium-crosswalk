@@ -6,24 +6,31 @@
 
 #include "components/os_crypt/os_crypt.h"
 
-#if defined(USE_LIBSECRET)
+#if defined(USE_LIBSECRET) || defined(USE_KEYRING) || defined(USE_KWALLET)
 #include "components/os_crypt/os_crypt_mocker_linux.h"
 #endif
 
 // static
-void OSCryptMocker::SetUpWithSingleton() {
+void OSCryptMocker::SetUp() {
 #if defined(OS_MACOSX)
-  OSCrypt::UseMockKeychain(true);
-#elif defined(USE_LIBSECRET)
-  OSCryptMockerLinux::SetUpWithSingleton();
+  OSCrypt::UseMockKeychainForTesting(true);
+#elif defined(USE_LIBSECRET) || defined(USE_KEYRING) || defined(USE_KWALLET)
+  OSCryptMockerLinux::SetUp();
 #endif
 }
+
+#if defined(OS_MACOSX)
+// static
+void OSCryptMocker::SetBackendLocked(bool locked) {
+  OSCrypt::UseLockedMockKeychainForTesting(locked);
+}
+#endif
 
 // static
 void OSCryptMocker::TearDown() {
 #if defined(OS_MACOSX)
-  OSCrypt::UseMockKeychain(false);
-#elif defined(USE_LIBSECRET)
+  OSCrypt::UseMockKeychainForTesting(false);
+#elif defined(USE_LIBSECRET) || defined(USE_KEYRING) || defined(USE_KWALLET)
   OSCryptMockerLinux::TearDown();
 #endif
 }

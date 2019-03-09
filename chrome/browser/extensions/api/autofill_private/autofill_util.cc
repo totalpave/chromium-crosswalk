@@ -7,23 +7,23 @@
 #include <stddef.h>
 
 #include <utility>
+#include <vector>
 
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/api/settings_private/prefs_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/autofill/country_combobox_model.h"
 #include "chrome/common/extensions/api/autofill_private.h"
 #include "chrome/common/pref_names.h"
 #include "components/autofill/core/browser/autofill_country.h"
 #include "components/autofill/core/browser/autofill_profile.h"
 #include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/country_combobox_model.h"
 #include "components/autofill/core/browser/credit_card.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/prefs/pref_service.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace autofill_private = extensions::api::autofill_private;
@@ -62,8 +62,8 @@ std::unique_ptr<std::vector<std::string>> GetValueList(
 std::unique_ptr<std::string> GetStringFromProfile(
     const autofill::AutofillProfile& profile,
     const autofill::ServerFieldType& type) {
-  return base::WrapUnique(
-      new std::string(base::UTF16ToUTF8(profile.GetRawInfo(type))));
+  return std::make_unique<std::string>(
+      base::UTF16ToUTF8(profile.GetRawInfo(type)));
 }
 
 autofill_private::AddressEntry ProfileToAddressEntry(
@@ -101,8 +101,8 @@ autofill_private::AddressEntry ProfileToAddressEntry(
   // Parse |label| so that it can be used to create address metadata.
   base::string16 separator =
       l10n_util::GetStringUTF16(IDS_AUTOFILL_ADDRESS_SUMMARY_SEPARATOR);
-  std::vector<base::string16> label_pieces;
-  base::SplitStringUsingSubstr(label, separator, &label_pieces);
+  std::vector<base::string16> label_pieces = base::SplitStringUsingSubstr(
+      label, separator, base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
 
   // Create address metadata and add it to |address|.
   std::unique_ptr<autofill_private::AutofillMetadata> metadata(
@@ -132,7 +132,8 @@ autofill_private::CountryEntry CountryToCountryEntry(
 }
 
 autofill_private::CreditCardEntry CreditCardToCreditCardEntry(
-    const autofill::CreditCard& credit_card) {
+    const autofill::CreditCard& credit_card,
+    const autofill::PersonalDataManager& personal_data) {
   autofill_private::CreditCardEntry card;
 
   // Add all credit card fields to the entry.
@@ -158,6 +159,11 @@ autofill_private::CreditCardEntry CreditCardToCreditCardEntry(
       credit_card.record_type() == autofill::CreditCard::LOCAL_CARD));
   metadata->is_cached.reset(new bool(
       credit_card.record_type() == autofill::CreditCard::FULL_SERVER_CARD));
+  // IsValid() checks if both card number and expiration date are valid.
+  // IsServerCard() checks whether there is a duplicated server card in
+  // |personal_data|.
+  metadata->is_migratable.reset(new bool(
+      credit_card.IsValid() && !personal_data.IsServerCard(&credit_card)));
   card.metadata = std::move(metadata);
 
   return card;
@@ -190,13 +196,15 @@ AddressEntryList GenerateAddressList(
 CountryEntryList GenerateCountryList(
     const autofill::PersonalDataManager& personal_data) {
   autofill::CountryComboboxModel model;
-  model.SetCountries(personal_data, base::Callback<bool(const std::string&)>());
-  const std::vector<autofill::AutofillCountry*>& countries = model.countries();
+  model.SetCountries(personal_data, base::Callback<bool(const std::string&)>(),
+                     g_browser_process->GetApplicationLocale());
+  const std::vector<std::unique_ptr<autofill::AutofillCountry>>& countries =
+      model.countries();
 
   CountryEntryList list;
 
-  for (size_t i = 0; i < countries.size(); ++i)
-    list.push_back(CountryToCountryEntry(countries[i]));
+  for (const auto& country : countries)
+    list.push_back(CountryToCountryEntry(country.get()));
 
   return list;
 }
@@ -208,7 +216,36 @@ CreditCardEntryList GenerateCreditCardList(
 
   CreditCardEntryList list;
   for (const autofill::CreditCard* card : cards)
-    list.push_back(CreditCardToCreditCardEntry(*card));
+    list.push_back(CreditCardToCreditCardEntry(*card, personal_data));
+
+  return list;
+}
+
+CreditCardEntryList GenerateLocalCreditCardList(
+    const autofill::PersonalDataManager& personal_data) {
+  const std::vector<autofill::CreditCard*>& all_cards =
+      personal_data.GetCreditCards();
+
+  CreditCardEntryList list;
+  for (const autofill::CreditCard* card : all_cards) {
+    // Keep only local and full server cards.
+    if (card->record_type() == autofill::CreditCard::LOCAL_CARD ||
+        card->record_type() == autofill::CreditCard::FULL_SERVER_CARD) {
+      list.push_back(CreditCardToCreditCardEntry(*card, personal_data));
+    }
+  }
+
+  return list;
+}
+
+CreditCardEntryList GenerateServerCreditCardList(
+    const autofill::PersonalDataManager& personal_data) {
+  const std::vector<autofill::CreditCard*>& server_cards =
+      personal_data.GetServerCreditCards();
+
+  CreditCardEntryList list;
+  for (const autofill::CreditCard* card : server_cards)
+    list.push_back(CreditCardToCreditCardEntry(*card, personal_data));
 
   return list;
 }

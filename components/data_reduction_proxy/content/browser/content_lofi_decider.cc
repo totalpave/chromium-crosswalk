@@ -6,12 +6,21 @@
 
 #include <string>
 
+#include "base/feature_list.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
+#include "components/data_reduction_proxy/content/common/header_util.h"
+#include "components/data_reduction_proxy/core/common/data_reduction_proxy_features.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_headers.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_params.h"
+#include "components/previews/core/previews_decider.h"
 #include "content/public/browser/resource_request_info.h"
+#include "content/public/common/resource_type.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_request_headers.h"
 #include "net/url_request/url_request.h"
+#include "url/gurl.h"
 
 namespace data_reduction_proxy {
 
@@ -19,73 +28,67 @@ ContentLoFiDecider::ContentLoFiDecider() {}
 
 ContentLoFiDecider::~ContentLoFiDecider() {}
 
-bool ContentLoFiDecider::IsUsingLoFiMode(const net::URLRequest& request) const {
-  const content::ResourceRequestInfo* request_info =
-      content::ResourceRequestInfo::ForRequest(&request);
-  // The Lo-Fi directive should not be added for users in the Lo-Fi field
-  // trial "Control" group. Check that the user is in a group that can get
-  // "q=low".
-  bool lofi_enabled_via_flag_or_field_trial =
-      params::IsLoFiOnViaFlags() || params::IsIncludedInLoFiEnabledFieldTrial();
-
-  // Return if the user is using Lo-Fi and not part of the "Control" group.
-  if (request_info)
-    return request_info->IsUsingLoFi() && lofi_enabled_via_flag_or_field_trial;
-  return false;
+// Static
+content::PreviewsState
+ContentLoFiDecider::DetermineCommittedServerPreviewsState(
+    DataReductionProxyData* data,
+    content::PreviewsState initial_state) {
+  if (!data) {
+    return initial_state &=
+           ~(content::SERVER_LITE_PAGE_ON | content::SERVER_LOFI_ON);
+  }
+  content::PreviewsState updated_state = initial_state;
+  if (!data->lite_page_received()) {
+    // Turn off LitePage bit.
+    updated_state &= ~(content::SERVER_LITE_PAGE_ON);
+  }
+  if (!data->lofi_policy_received()) {
+    // Turn off LoFi bit(s).
+    updated_state &= ~(content::SERVER_LOFI_ON);
+    if (data->used_data_reduction_proxy()) {
+      // Turn off Client LoFi bit also if using proxy but proxy did not
+      // request LoFi.
+      updated_state &= ~(content::CLIENT_LOFI_ON);
+    }
+  }
+  return updated_state;
 }
 
-bool ContentLoFiDecider::MaybeAddLoFiDirectiveToHeaders(
+void ContentLoFiDecider::MaybeSetAcceptTransformHeader(
     const net::URLRequest& request,
     net::HttpRequestHeaders* headers) const {
-  const content::ResourceRequestInfo* request_info =
+  content::ResourceRequestInfo* request_info =
       content::ResourceRequestInfo::ForRequest(&request);
 
   if (!request_info)
-    return false;
+    return;
 
-  // The Lo-Fi directive should not be added for users in the Lo-Fi field
-  // trial "Control" group. Check that the user is in a group that should
-  // get "q=low".
-  bool lofi_enabled_via_flag_or_field_trial =
-      params::IsLoFiOnViaFlags() || params::IsIncludedInLoFiEnabledFieldTrial();
+  content::ResourceType resource_type = request_info->GetResourceType();
+  content::PreviewsState previews_state = request_info->GetPreviewsState();
+  ::data_reduction_proxy::MaybeSetAcceptTransformHeader(
+      request.url(), resource_type, previews_state, headers);
+}
 
-  bool lofi_preview_via_flag_or_field_trial =
-      params::AreLoFiPreviewsEnabledViaFlags() ||
-      params::IsIncludedInLoFiPreviewFieldTrial();
+void ContentLoFiDecider::RemoveAcceptTransformHeader(
+    net::HttpRequestHeaders* headers) const {
+  headers->RemoveHeader(chrome_proxy_accept_transform_header());
+}
 
-  // User is not using Lo-Fi or is part of the "Control" group.
-  if (!request_info->IsUsingLoFi() || !lofi_enabled_via_flag_or_field_trial)
-    return false;
+bool ContentLoFiDecider::IsClientLoFiImageRequest(
+    const net::URLRequest& request) const {
+  content::ResourceRequestInfo* request_info =
+      content::ResourceRequestInfo::ForRequest(&request);
+  return request_info &&
+         request_info->GetResourceType() == content::RESOURCE_TYPE_IMAGE &&
+         (request_info->GetPreviewsState() & content::CLIENT_LOFI_ON);
+}
 
-  std::string header_value;
-
-  if (headers->HasHeader(chrome_proxy_header())) {
-    headers->GetHeader(chrome_proxy_header(), &header_value);
-    headers->RemoveHeader(chrome_proxy_header());
-    header_value += ", ";
-  }
-
-  // If in the preview field trial or the preview flag is enabled, only add the
-  // "q=preview" directive on main frame requests. Do not add Lo-Fi directives
-  // to other requests when previews are enabled.
-  if (lofi_preview_via_flag_or_field_trial) {
-    if (request.load_flags() & net::LOAD_MAIN_FRAME) {
-      if (params::AreLoFiPreviewsEnabledViaFlags()) {
-        header_value += chrome_proxy_lo_fi_ignore_preview_blacklist_directive();
-        header_value += ", ";
-      }
-      header_value += chrome_proxy_lo_fi_preview_directive();
-    }
-  } else if (!(request.load_flags() & net::LOAD_MAIN_FRAME)) {
-    // If previews are not enabled, add "q=low" for requests that are not main
-    // frame.
-    header_value += chrome_proxy_lo_fi_directive();
-  }
-
-  if (!header_value.empty())
-    headers->SetHeader(chrome_proxy_header(), header_value);
-
-  return true;
+bool ContentLoFiDecider::IsClientLoFiAutoReloadRequest(
+    const net::URLRequest& request) const {
+  content::ResourceRequestInfo* request_info =
+      content::ResourceRequestInfo::ForRequest(&request);
+  return request_info &&
+         (request_info->GetPreviewsState() & content::CLIENT_LOFI_AUTO_RELOAD);
 }
 
 bool ContentLoFiDecider::ShouldRecordLoFiUMA(

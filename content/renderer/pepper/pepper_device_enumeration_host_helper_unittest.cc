@@ -11,6 +11,8 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "content/renderer/pepper/pepper_device_enumeration_host_helper.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/host/host_message_context.h"
@@ -28,48 +30,68 @@ namespace content {
 
 namespace {
 
+std::vector<ppapi::DeviceRefData> TestEnumerationData() {
+  std::vector<ppapi::DeviceRefData> data;
+  ppapi::DeviceRefData data_item;
+  data_item.type = PP_DEVICETYPE_DEV_AUDIOCAPTURE;
+  data_item.name = "name_1";
+  data_item.id = "id_1";
+  data.push_back(data_item);
+  data_item.type = PP_DEVICETYPE_DEV_VIDEOCAPTURE;
+  data_item.name = "name_2";
+  data_item.id = "id_2";
+  data.push_back(data_item);
+
+  return data;
+}
+
 class TestDelegate : public PepperDeviceEnumerationHostHelper::Delegate,
                      public base::SupportsWeakPtr<TestDelegate> {
  public:
-  TestDelegate() : last_used_id_(0) {}
+  TestDelegate() : last_used_id_(0u) {}
 
-  ~TestDelegate() override { CHECK(callbacks_.empty()); }
+  ~TestDelegate() override { CHECK(monitoring_callbacks_.empty()); }
 
-  int EnumerateDevices(PP_DeviceType_Dev /* type */,
-                       const GURL& /* document_url */,
-                       const EnumerateDevicesCallback& callback) override {
+  void EnumerateDevices(PP_DeviceType_Dev /* type */,
+                        const DevicesCallback& callback) override {
+    callback.Run(TestEnumerationData());
+  }
+
+  size_t StartMonitoringDevices(PP_DeviceType_Dev /* type */,
+                                const DevicesCallback& callback) override {
     last_used_id_++;
-    callbacks_[last_used_id_] = callback;
+    monitoring_callbacks_[last_used_id_] = callback;
     return last_used_id_;
   }
 
-  void StopEnumerateDevices(int request_id) override {
-    std::map<int, EnumerateDevicesCallback>::iterator iter =
-        callbacks_.find(request_id);
-    CHECK(iter != callbacks_.end());
-    callbacks_.erase(iter);
+  void StopMonitoringDevices(PP_DeviceType_Dev /* type */,
+                             size_t subscription_id) override {
+    auto iter = monitoring_callbacks_.find(subscription_id);
+    CHECK(iter != monitoring_callbacks_.end());
+    monitoring_callbacks_.erase(iter);
   }
 
   // Returns false if |request_id| is not found.
-  bool SimulateEnumerateResult(
-      int request_id,
+  bool SimulateDevicesChanged(
+      size_t subscription_id,
       const std::vector<ppapi::DeviceRefData>& devices) {
-    std::map<int, EnumerateDevicesCallback>::iterator iter =
-        callbacks_.find(request_id);
-    if (iter == callbacks_.end())
+    auto iter = monitoring_callbacks_.find(subscription_id);
+    if (iter == monitoring_callbacks_.end())
       return false;
 
-    iter->second.Run(request_id, devices);
+    iter->second.Run(devices);
     return true;
   }
 
-  size_t GetRegisteredCallbackCount() const { return callbacks_.size(); }
+  size_t GetRegisteredCallbackCount() const {
+    return monitoring_callbacks_.size();
+  }
 
-  int last_used_id() const { return last_used_id_; }
+  size_t last_used_id() const { return last_used_id_; }
 
  private:
-  std::map<int, EnumerateDevicesCallback> callbacks_;
-  int last_used_id_;
+  std::map<size_t, DevicesCallback> monitoring_callbacks_;
+  size_t last_used_id_;
 
   DISALLOW_COPY_AND_ASSIGN(TestDelegate);
 };
@@ -124,6 +146,8 @@ class PepperDeviceEnumerationHostHelperTest : public testing::Test {
   ppapi::host::PpapiHost ppapi_host_;
   ppapi::host::ResourceHost resource_host_;
   PepperDeviceEnumerationHostHelper device_enumeration_;
+  base::test::ScopedTaskEnvironment
+      task_environment_;  // required for async calls to work.
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PepperDeviceEnumerationHostHelperTest);
@@ -140,25 +164,7 @@ TEST_F(PepperDeviceEnumerationHostHelperTest, EnumerateDevices) {
   ASSERT_TRUE(
       device_enumeration_.HandleResourceMessage(msg, &context, &result));
   EXPECT_EQ(PP_OK_COMPLETIONPENDING, result);
-
-  EXPECT_EQ(1U, delegate_.GetRegisteredCallbackCount());
-  int request_id = delegate_.last_used_id();
-
-  std::vector<ppapi::DeviceRefData> data;
-  ppapi::DeviceRefData data_item;
-  data_item.type = PP_DEVICETYPE_DEV_AUDIOCAPTURE;
-  data_item.name = "name_1";
-  data_item.id = "id_1";
-  data.push_back(data_item);
-  data_item.type = PP_DEVICETYPE_DEV_VIDEOCAPTURE;
-  data_item.name = "name_2";
-  data_item.id = "id_2";
-  data.push_back(data_item);
-  ASSERT_TRUE(delegate_.SimulateEnumerateResult(request_id, data));
-
-  // StopEnumerateDevices() should have been called since the EnumerateDevices
-  // message is not a persistent request.
-  EXPECT_EQ(0U, delegate_.GetRegisteredCallbackCount());
+  base::RunLoop().RunUntilIdle();
 
   // A reply message should have been sent to the test sink.
   ppapi::proxy::ResourceMessageReplyParams reply_params;
@@ -175,7 +181,7 @@ TEST_F(PepperDeviceEnumerationHostHelperTest, EnumerateDevices) {
   ASSERT_TRUE(ppapi::UnpackMessage<
       PpapiPluginMsg_DeviceEnumeration_EnumerateDevicesReply>(reply_msg,
                                                               &reply_data));
-  EXPECT_EQ(data, reply_data);
+  EXPECT_EQ(TestEnumerationData(), reply_data);
 }
 
 TEST_F(PepperDeviceEnumerationHostHelperTest, MonitorDeviceChange) {
@@ -183,10 +189,10 @@ TEST_F(PepperDeviceEnumerationHostHelperTest, MonitorDeviceChange) {
   SimulateMonitorDeviceChangeReceived(callback_id);
 
   EXPECT_EQ(1U, delegate_.GetRegisteredCallbackCount());
-  int request_id = delegate_.last_used_id();
+  size_t request_id = delegate_.last_used_id();
 
   std::vector<ppapi::DeviceRefData> data;
-  ASSERT_TRUE(delegate_.SimulateEnumerateResult(request_id, data));
+  ASSERT_TRUE(delegate_.SimulateDevicesChanged(request_id, data));
 
   // StopEnumerateDevices() shouldn't be called because the MonitorDeviceChange
   // message is a persistent request.
@@ -203,7 +209,7 @@ TEST_F(PepperDeviceEnumerationHostHelperTest, MonitorDeviceChange) {
   data_item.name = "name_2";
   data_item.id = "id_2";
   data.push_back(data_item);
-  ASSERT_TRUE(delegate_.SimulateEnumerateResult(request_id, data));
+  ASSERT_TRUE(delegate_.SimulateDevicesChanged(request_id, data));
   EXPECT_EQ(1U, delegate_.GetRegisteredCallbackCount());
 
   CheckNotifyDeviceChangeMessage(callback_id, data);
@@ -213,13 +219,13 @@ TEST_F(PepperDeviceEnumerationHostHelperTest, MonitorDeviceChange) {
 
   // StopEnumerateDevice() should have been called for the previous request.
   EXPECT_EQ(1U, delegate_.GetRegisteredCallbackCount());
-  int request_id2 = delegate_.last_used_id();
+  size_t request_id2 = delegate_.last_used_id();
 
   data_item.type = PP_DEVICETYPE_DEV_AUDIOCAPTURE;
   data_item.name = "name_3";
   data_item.id = "id_3";
   data.push_back(data_item);
-  ASSERT_TRUE(delegate_.SimulateEnumerateResult(request_id2, data));
+  ASSERT_TRUE(delegate_.SimulateDevicesChanged(request_id2, data));
 
   CheckNotifyDeviceChangeMessage(callback_id2, data);
 

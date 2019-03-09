@@ -8,14 +8,15 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "base/path_service.h"
 #include "base/sha1.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -26,11 +27,12 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/cloud_devices/common/cloud_devices_switches.h"
-#include "components/network_session_configurator/switches.h"
+#include "components/network_session_configurator/common/network_switches.h"
 #include "components/version_info/version_info.h"
 #include "content/public/common/content_paths.h"
 #include "content/public/common/content_switches.h"
 #include "google_apis/gaia/gaia_switches.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "ui/base/ui_base_switches.h"
 
 #if !defined(OS_MACOSX)
@@ -79,13 +81,13 @@ ServiceProcessRunningState GetServiceProcessRunningState(
   if (service_version_out)
     *service_version_out = version;
 
-  Version service_version(version);
+  base::Version service_version(version);
   // If the version string is invalid, treat it like an older version.
   if (!service_version.IsValid())
     return SERVICE_OLDER_VERSION_RUNNING;
 
   // Get the version of the currently *running* instance of Chrome.
-  Version running_version(version_info::GetVersionNumber());
+  const base::Version& running_version = version_info::GetVersion();
   if (!running_version.IsValid()) {
     NOTREACHED() << "Failed to parse version info";
     // Our own version is invalid. This is an error case. Pretend that we
@@ -93,12 +95,11 @@ ServiceProcessRunningState GetServiceProcessRunningState(
     return SERVICE_NEWER_VERSION_RUNNING;
   }
 
-  if (running_version.CompareTo(service_version) > 0) {
-    return SERVICE_OLDER_VERSION_RUNNING;
-  } else if (service_version.CompareTo(running_version) > 0) {
-    return SERVICE_NEWER_VERSION_RUNNING;
-  }
-  return SERVICE_SAME_VERSION_RUNNING;
+  int comp = running_version.CompareTo(service_version);
+  if (comp == 0)
+    return SERVICE_SAME_VERSION_RUNNING;
+  return comp > 0 ? SERVICE_OLDER_VERSION_RUNNING
+                  : SERVICE_NEWER_VERSION_RUNNING;
 }
 
 }  // namespace
@@ -108,8 +109,7 @@ ServiceProcessRunningState GetServiceProcessRunningState(
 // use the user-data-dir and the version as a scoping prefix.
 std::string GetServiceProcessScopedVersionedName(
     const std::string& append_str) {
-  std::string versioned_str;
-  versioned_str.append(version_info::GetVersionNumber());
+  std::string versioned_str = version_info::GetVersionNumber();
   versioned_str.append(append_str);
   return GetServiceProcessScopedName(versioned_str);
 }
@@ -144,7 +144,7 @@ bool GetServiceProcessData(std::string* version, base::ProcessId* pid) {
 // the user-data-dir itself as we have limits on the size of the lock names.
 std::string GetServiceProcessScopedName(const std::string& append_str) {
   base::FilePath user_data_dir;
-  PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
+  base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
 #if defined(OS_WIN)
   std::string user_data_dir_path = base::WideToUTF8(user_data_dir.value());
 #elif defined(OS_POSIX)
@@ -157,18 +157,19 @@ std::string GetServiceProcessScopedName(const std::string& append_str) {
 
 std::unique_ptr<base::CommandLine> CreateServiceProcessCommandLine() {
   base::FilePath exe_path;
-  PathService::Get(content::CHILD_PROCESS_EXE, &exe_path);
+  base::PathService::Get(content::CHILD_PROCESS_EXE, &exe_path);
   DCHECK(!exe_path.empty()) << "Unable to get service process binary name.";
   std::unique_ptr<base::CommandLine> command_line(
       new base::CommandLine(exe_path));
   command_line->AppendSwitchASCII(switches::kProcessType,
-                                  switches::kServiceProcess);
+                                  switches::kCloudPrintServiceProcess);
 
 #if defined(OS_WIN)
   command_line->AppendArg(switches::kPrefetchArgumentOther);
 #endif  // defined(OS_WIN)
 
   static const char* const kSwitchesToCopy[] = {
+    network::switches::kIgnoreUrlFetcherCertRequests,
     switches::kCloudPrintSetupProxy,
     switches::kCloudPrintURL,
     switches::kCloudPrintXmppEndpoint,
@@ -176,7 +177,6 @@ std::unique_ptr<base::CommandLine> CreateServiceProcessCommandLine() {
     switches::kEnableCloudPrintXps,
 #endif
     switches::kEnableLogging,
-    switches::kIgnoreUrlFetcherCertRequests,
     switches::kLang,
     switches::kLoggingLevel,
     switches::kLsoUrl,
@@ -188,8 +188,7 @@ std::unique_ptr<base::CommandLine> CreateServiceProcessCommandLine() {
   };
 
   command_line->CopySwitchesFrom(*base::CommandLine::ForCurrentProcess(),
-                                 kSwitchesToCopy,
-                                 arraysize(kSwitchesToCopy));
+                                 kSwitchesToCopy, base::size(kSwitchesToCopy));
   return command_line;
 }
 
@@ -276,12 +275,13 @@ bool ServiceProcessState::CreateSharedData() {
          version_info::GetVersionNumber().c_str(),
          version_info::GetVersionNumber().length());
   shared_data->service_process_pid = base::GetCurrentProcId();
-  shared_mem_service_data_.reset(shared_mem_service_data.release());
+  shared_mem_service_data_ = std::move(shared_mem_service_data);
   return true;
 }
 
-IPC::ChannelHandle ServiceProcessState::GetServiceProcessChannel() {
-  return ::GetServiceProcessChannel();
+mojo::NamedPlatformChannel::ServerName
+ServiceProcessState::GetServiceProcessServerName() {
+  return ::GetServiceProcessServerName();
 }
 
 #endif  // !OS_MACOSX

@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
@@ -20,27 +21,30 @@
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
+#include "chrome/browser/ui/user_manager.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/base/web_ui_browser_test.h"
+#include "components/account_id/account_id.h"
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/signin/core/common/profile_management_switches.h"
+#include "components/signin/core/browser/account_consistency_method.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "url/gurl.h"
 
-// This test verifies the Desktop implementation of Guest only.
-#if !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
+#if defined(OS_CHROMEOS)
+#error "This test verifies the Desktop implementation of Guest only."
+#endif
 
 namespace {
 
@@ -65,7 +69,7 @@ class WaitForHistoryTask : public history::HistoryDBTask {
   }
 
   void DoneRunOnMainThread() override {
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
  private:
@@ -79,7 +83,7 @@ void WaitForHistoryBackendToRun(Profile* profile) {
   std::unique_ptr<history::HistoryDBTask> task(new WaitForHistoryTask());
   history::HistoryService* history = HistoryServiceFactory::GetForProfile(
       profile, ServiceAccessType::EXPLICIT_ACCESS);
-  history->ScheduleDBTask(std::move(task), &task_tracker);
+  history->ScheduleDBTask(FROM_HERE, std::move(task), &task_tracker);
   content::RunMessageLoop();
 }
 
@@ -87,7 +91,7 @@ class EmptyAcceleratorHandler : public ui::AcceleratorProvider {
  public:
   // Don't handle accelerators.
   bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override {
+                                  ui::Accelerator* accelerator) const override {
     return false;
   }
 };
@@ -101,7 +105,7 @@ base::FilePath CreateTestingProfile(const std::string& name,
   base::FilePath profile_path =
       manager->user_data_dir().AppendASCII(relative_path);
   storage.AddProfile(profile_path, base::ASCIIToUTF16(name), std::string(),
-                     base::string16(), 0u, std::string());
+                     base::string16(), 0u, std::string(), EmptyAccountId());
 
   EXPECT_EQ(starting_number_of_profiles + 1u, storage.GetNumberOfProfiles());
   return profile_path;
@@ -115,7 +119,6 @@ class ProfileWindowBrowserTest : public InProcessBrowserTest {
   ~ProfileWindowBrowserTest() override {}
 
   Browser* OpenGuestBrowser();
-  void CloseBrowser(Browser* browser);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ProfileWindowBrowserTest);
@@ -128,7 +131,7 @@ Browser* ProfileWindowBrowserTest::OpenGuestBrowser() {
   // does incomplete initialization that would lead to
   // SystemUrlRequestContextGetter being leaked.
   content::WindowedNotificationObserver browser_creation_observer(
-      chrome::NOTIFICATION_BROWSER_WINDOW_READY,
+      chrome::NOTIFICATION_BROWSER_OPENED,
       content::NotificationService::AllSources());
   profiles::SwitchToGuestProfile(ProfileManager::CreateCallback());
 
@@ -150,14 +153,6 @@ Browser* ProfileWindowBrowserTest::OpenGuestBrowser() {
       TemplateURLServiceFactory::GetForProfile(guest));
 
   return browser;
-}
-
-void ProfileWindowBrowserTest::CloseBrowser(Browser* browser) {
-  content::WindowedNotificationObserver window_close_observer(
-      chrome::NOTIFICATION_BROWSER_CLOSED,
-      content::Source<Browser>(browser));
-  browser->window()->Close();
-  window_close_observer.Wait();
 }
 
 IN_PROC_BROWSER_TEST_F(ProfileWindowBrowserTest, OpenGuestBrowser) {
@@ -203,7 +198,7 @@ IN_PROC_BROWSER_TEST_F(ProfileWindowBrowserTest, GuestClearsCookies) {
   cookie = content::GetCookies(guest_profile, url);
   EXPECT_EQ("cookie1", cookie);
 
-  CloseBrowser(guest_browser);
+  CloseBrowserSynchronously(guest_browser);
 
   // Closing the browser has removed the cookie.
   cookie = content::GetCookies(guest_profile, url);
@@ -213,23 +208,62 @@ IN_PROC_BROWSER_TEST_F(ProfileWindowBrowserTest, GuestClearsCookies) {
 IN_PROC_BROWSER_TEST_F(ProfileWindowBrowserTest, GuestCannotSignin) {
   Browser* guest_browser = OpenGuestBrowser();
 
-  SigninManager* signin_manager = SigninManagerFactory::GetForProfile(
-      guest_browser->profile());
+  identity::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(guest_browser->profile());
 
-  // Guest profiles can't sign in without a SigninManager.
-  ASSERT_FALSE(signin_manager);
+  // Guest profiles can't sign in without a IdentityManager.
+  ASSERT_FALSE(identity_manager);
 }
 
 IN_PROC_BROWSER_TEST_F(ProfileWindowBrowserTest, GuestAppMenuLacksBookmarks) {
   EmptyAcceleratorHandler accelerator_handler;
   // Verify the normal browser has a bookmark menu.
   AppMenuModel model_normal_profile(&accelerator_handler, browser());
+  model_normal_profile.Init();
   EXPECT_NE(-1, model_normal_profile.GetIndexOfCommandId(IDC_BOOKMARKS_MENU));
 
   // Guest browser has no bookmark menu.
   Browser* guest_browser = OpenGuestBrowser();
   AppMenuModel model_guest_profile(&accelerator_handler, guest_browser);
   EXPECT_EQ(-1, model_guest_profile.GetIndexOfCommandId(IDC_BOOKMARKS_MENU));
+}
+
+IN_PROC_BROWSER_TEST_F(ProfileWindowBrowserTest, OpenBrowserWindowForProfile) {
+  Profile* profile = browser()->profile();
+  size_t num_browsers = BrowserList::GetInstance()->size();
+  profiles::OpenBrowserWindowForProfile(
+      ProfileManager::CreateCallback(), true, false, false, profile,
+      Profile::CreateStatus::CREATE_STATUS_INITIALIZED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(num_browsers + 1, BrowserList::GetInstance()->size());
+  EXPECT_FALSE(UserManager::IsShowing());
+}
+
+// TODO(crbug.com/935746): Test is flaky on Win and Linux.
+#if defined(OS_LINUX) || defined(OS_WIN)
+#define MAYBE_OpenBrowserWindowForProfileWithSigninRequired \
+  DISABLED_OpenBrowserWindowForProfileWithSigninRequired
+#else
+#define MAYBE_OpenBrowserWindowForProfileWithSigninRequired \
+  OpenBrowserWindowForProfileWithSigninRequired
+#endif
+IN_PROC_BROWSER_TEST_F(ProfileWindowBrowserTest,
+                       MAYBE_OpenBrowserWindowForProfileWithSigninRequired) {
+  Profile* profile = browser()->profile();
+  ProfileAttributesEntry* entry;
+  ASSERT_TRUE(g_browser_process->profile_manager()
+                  ->GetProfileAttributesStorage()
+                  .GetProfileAttributesWithPath(profile->GetPath(), &entry));
+  entry->SetIsSigninRequired(true);
+  size_t num_browsers = BrowserList::GetInstance()->size();
+  base::RunLoop run_loop;
+  UserManager::AddOnUserManagerShownCallbackForTesting(run_loop.QuitClosure());
+  profiles::OpenBrowserWindowForProfile(
+      ProfileManager::CreateCallback(), true, false, false, profile,
+      Profile::CreateStatus::CREATE_STATUS_INITIALIZED);
+  run_loop.Run();
+  EXPECT_EQ(num_browsers, BrowserList::GetInstance()->size());
+  EXPECT_TRUE(UserManager::IsShowing());
 }
 
 class ProfileWindowWebUIBrowserTest : public WebUIBrowserTest {
@@ -256,7 +290,6 @@ IN_PROC_BROWSER_TEST_F(ProfileWindowWebUIBrowserTest,
   base::RunLoop run_loop;
   profiles::CreateSystemProfileForUserManager(
       browser()->profile()->GetPath(),
-      profiles::USER_MANAGER_NO_TUTORIAL,
       profiles::USER_MANAGER_SELECT_PROFILE_NO_ACTION,
       base::Bind(&ProfileWindowWebUIBrowserTest::OnSystemProfileCreated,
                  base::Unretained(this),
@@ -280,7 +313,6 @@ IN_PROC_BROWSER_TEST_F(ProfileWindowWebUIBrowserTest,
   base::RunLoop run_loop;
   profiles::CreateSystemProfileForUserManager(
       expected_path,
-      profiles::USER_MANAGER_NO_TUTORIAL,
       profiles::USER_MANAGER_SELECT_PROFILE_NO_ACTION,
       base::Bind(&ProfileWindowWebUIBrowserTest::OnSystemProfileCreated,
                  base::Unretained(this),
@@ -289,8 +321,6 @@ IN_PROC_BROWSER_TEST_F(ProfileWindowWebUIBrowserTest,
   run_loop.Run();
 
   ui_test_utils::NavigateToURL(browser(), GURL(url_to_test));
-  EXPECT_TRUE(RunJavascriptTest(
-      "testPodFocused", new base::StringValue(expected_path.AsUTF8Unsafe())));
+  EXPECT_TRUE(RunJavascriptTest("testPodFocused",
+                                base::Value(expected_path.AsUTF8Unsafe())));
 }
-
-#endif  // !defined(OS_CHROMEOS) && !defined(OS_ANDROID)

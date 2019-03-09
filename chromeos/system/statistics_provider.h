@@ -10,26 +10,39 @@
 #include "base/memory/ref_counted.h"
 #include "chromeos/chromeos_export.h"
 
-namespace base {
-class TaskRunner;
-}
-
 namespace chromeos {
 namespace system {
 
 // Activation date key.
 CHROMEOS_EXPORT extern const char kActivateDateKey[];
 
+// The key that will be present in VPD if the device was enrolled in a domain
+// that blocks dev mode.
+CHROMEOS_EXPORT extern const char kBlockDevModeKey[];
 // The key that will be present in VPD if the device ever was enrolled.
 CHROMEOS_EXPORT extern const char kCheckEnrollmentKey[];
+
+// The key and values present in VPD to indicate if RLZ ping should be sent.
+CHROMEOS_EXPORT extern const char kShouldSendRlzPingKey[];
+CHROMEOS_EXPORT extern const char kShouldSendRlzPingValueFalse[];
+CHROMEOS_EXPORT extern const char kShouldSendRlzPingValueTrue[];
+
+// The key present in VPD that indicates the date after which the RLZ ping is
+// allowed to be sent. It is in the format of "yyyy-mm-dd".
+CHROMEOS_EXPORT extern const char kRlzEmbargoEndDateKey[];
 
 // Customization ID key.
 CHROMEOS_EXPORT extern const char kCustomizationIdKey[];
 
 // Developer switch value.
 CHROMEOS_EXPORT extern const char kDevSwitchBootKey[];
-CHROMEOS_EXPORT extern const char kDevSwitchBootValueVerified[];
 CHROMEOS_EXPORT extern const char kDevSwitchBootValueDev[];
+CHROMEOS_EXPORT extern const char kDevSwitchBootValueVerified[];
+
+// Firmware write protect switch value.
+CHROMEOS_EXPORT extern const char kFirmwareWriteProtectBootKey[];
+CHROMEOS_EXPORT extern const char kFirmwareWriteProtectBootValueOn[];
+CHROMEOS_EXPORT extern const char kFirmwareWriteProtectBootValueOff[];
 
 // Firmware type and associated values. The values are from crossystem output
 // for the mainfw_type key. Normal and developer correspond to Chrome OS
@@ -44,10 +57,11 @@ CHROMEOS_EXPORT extern const char kFirmwareTypeValueNormal[];
 // HWID key.
 CHROMEOS_EXPORT extern const char kHardwareClassKey[];
 
-// System vendor key.
-// The value is used to check if Chrome is running on a VM or a real Chrome OS
-// device. On QEMU VMs this value is QEMU.
-CHROMEOS_EXPORT extern const char kSystemVendorKey[];
+// Key/values reporting if Chrome OS is running in a VM or not. These values are
+// read from crossystem output. See crossystem source for VM detection logic.
+CHROMEOS_EXPORT extern const char kIsVmKey[];
+CHROMEOS_EXPORT extern const char kIsVmValueFalse[];
+CHROMEOS_EXPORT extern const char kIsVmValueTrue[];
 
 // OEM customization flag that permits exiting enterprise enrollment flow in
 // OOBE when 'oem_enterprise_managed' flag is set.
@@ -72,44 +86,57 @@ CHROMEOS_EXPORT extern const char kOffersGroupCodeKey[];
 // Release Brand Code key.
 CHROMEOS_EXPORT extern const char kRlzBrandCodeKey[];
 
-// Write protect switch value.
-CHROMEOS_EXPORT extern const char kWriteProtectSwitchBootKey[];
-CHROMEOS_EXPORT extern const char kWriteProtectSwitchBootValueOff[];
-CHROMEOS_EXPORT extern const char kWriteProtectSwitchBootValueOn[];
-
 // Regional data
 CHROMEOS_EXPORT extern const char kRegionKey[];
 CHROMEOS_EXPORT extern const char kInitialLocaleKey[];
 CHROMEOS_EXPORT extern const char kInitialTimezoneKey[];
 CHROMEOS_EXPORT extern const char kKeyboardLayoutKey[];
 
+// Serial number key (VPD v2+ devices, Samsung: caroline and later) for use in
+// tests. Outside of tests GetEnterpriseMachineID() is the backward-compatible
+// way to obtain the serial number.
+CHROMEOS_EXPORT extern const char kSerialNumberKeyForTest[];
+
 // This interface provides access to Chrome OS statistics.
 class CHROMEOS_EXPORT StatisticsProvider {
  public:
-  // Starts loading the machine statistics. File operations are performed on
-  // |file_task_runner|.
-  virtual void StartLoadingMachineStatistics(
-      const scoped_refptr<base::TaskRunner>& file_task_runner,
-      bool load_oem_manifest) = 0;
+  // Starts loading the machine statistics.
+  virtual void StartLoadingMachineStatistics(bool load_oem_manifest) = 0;
+
+  // Schedules |callback| on the current sequence when machine statistics are
+  // loaded. That can be immediately if machine statistics are already loaded.
+  virtual void ScheduleOnMachineStatisticsLoaded(
+      base::OnceClosure callback) = 0;
+
+  // GetMachineStatistic(), GetMachineFlag() and GetEnterpriseMachineId() will
+  // block if called before statistics have been loaded. To avoid this, call
+  // from a callback passed to ScheduleOnMachineStatisticsLoaded(). These
+  // methods are safe to call on any sequence. StartLoadingMachineStatistics()
+  // must be called before these methods.
 
   // Returns true if the named machine statistic (e.g. "hardware_class") is
-  // found and stores it in |result| (if provided). Probing for the existance of
+  // found and stores it in |result| (if provided). Probing for the existence of
   // a statistic by setting |result| to nullptr supresses the usual warning in
-  // case the statistic is not found. Safe to call from any thread except the
-  // task runner passed to Initialize() (e.g. FILE). This may block if called
-  // early before the statistics are loaded from disk.
-  // StartLoadingMachineStatistics() must be called before this.
+  // case the statistic is not found.
   virtual bool GetMachineStatistic(const std::string& name,
                                    std::string* result) = 0;
-
-  // Checks whether a machine statistic is present (without logging a warning).
-  bool HasMachineStatistic(const std::string& name);
 
   // Similar to GetMachineStatistic for boolean flags.
   virtual bool GetMachineFlag(const std::string& name, bool* result) = 0;
 
+  // Returns the machine serial number after examining a set of well-known
+  // keys. In case no serial is found an empty string is returned.
+  // Caveat: On older Samsung devices, the last letter is omitted from the
+  // serial number for historical reasons. This is fine.
+  // TODO(tnagel): Drop "Enterprise" from the method name and remove Samsung
+  // special casing after kevin EOL.
+  std::string GetEnterpriseMachineID();
+
   // Cancels any pending file operations.
   virtual void Shutdown() = 0;
+
+  // Returns true if the machine is a VM.
+  virtual bool IsRunningOnVm() = 0;
 
   // Get the Singleton instance.
   static StatisticsProvider* GetInstance();

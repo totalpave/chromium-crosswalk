@@ -6,10 +6,10 @@
 
 #include <stddef.h>
 
-#include <list>
+#include <utility>
 
 #include "base/bind.h"
-#include "base/strings/stringprintf.h"
+#include "base/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "media/capture/video/linux/v4l2_capture_delegate.h"
 
@@ -21,28 +21,21 @@
 
 namespace media {
 
-// USB VID and PID are both 4 bytes long.
-static const size_t kVidPidSize = 4;
+namespace {
 
-// /sys/class/video4linux/video{N}/device is a symlink to the corresponding
-// USB device info directory.
-static const char kVidPathTemplate[] =
-    "/sys/class/video4linux/%s/device/../idVendor";
-static const char kPidPathTemplate[] =
-    "/sys/class/video4linux/%s/device/../idProduct";
-
-static bool ReadIdFile(const std::string& path, std::string* id) {
-  char id_buf[kVidPidSize];
-  FILE* file = fopen(path.c_str(), "rb");
-  if (!file)
-    return false;
-  const bool success = fread(id_buf, kVidPidSize, 1, file) == 1;
-  fclose(file);
-  if (!success)
-    return false;
-  id->append(id_buf, kVidPidSize);
-  return true;
+int TranslatePowerLineFrequencyToV4L2(PowerLineFrequency frequency) {
+  switch (frequency) {
+    case PowerLineFrequency::FREQUENCY_50HZ:
+      return V4L2_CID_POWER_LINE_FREQUENCY_50HZ;
+    case PowerLineFrequency::FREQUENCY_60HZ:
+      return V4L2_CID_POWER_LINE_FREQUENCY_60HZ;
+    default:
+      // If we have no idea of the frequency, at least try and set it to AUTO.
+      return V4L2_CID_POWER_LINE_FREQUENCY_AUTO;
+  }
 }
+
+}  // namespace
 
 // Translates Video4Linux pixel formats to Chromium pixel formats.
 // static
@@ -53,35 +46,17 @@ VideoPixelFormat VideoCaptureDeviceLinux::V4l2FourCcToChromiumPixelFormat(
 
 // Gets a list of usable Four CC formats prioritized.
 // static
-std::list<uint32_t> VideoCaptureDeviceLinux::GetListOfUsableFourCCs(
+std::vector<uint32_t> VideoCaptureDeviceLinux::GetListOfUsableFourCCs(
     bool favour_mjpeg) {
   return V4L2CaptureDelegate::GetListOfUsableFourCcs(favour_mjpeg);
 }
 
-const std::string VideoCaptureDevice::Name::GetModel() const {
-  // |unique_id| is of the form "/dev/video2".  |file_name| is "video2".
-  const std::string dev_dir = "/dev/";
-  DCHECK_EQ(0, unique_id_.compare(0, dev_dir.length(), dev_dir));
-  const std::string file_name =
-      unique_id_.substr(dev_dir.length(), unique_id_.length());
-
-  const std::string vidPath =
-      base::StringPrintf(kVidPathTemplate, file_name.c_str());
-  const std::string pidPath =
-      base::StringPrintf(kPidPathTemplate, file_name.c_str());
-
-  std::string usb_id;
-  if (!ReadIdFile(vidPath, &usb_id))
-    return "";
-  usb_id.append(":");
-  if (!ReadIdFile(pidPath, &usb_id))
-    return "";
-
-  return usb_id;
-}
-
-VideoCaptureDeviceLinux::VideoCaptureDeviceLinux(const Name& device_name)
-    : v4l2_thread_("V4L2CaptureThread"), device_name_(device_name) {}
+VideoCaptureDeviceLinux::VideoCaptureDeviceLinux(
+    scoped_refptr<V4L2CaptureDevice> v4l2,
+    const VideoCaptureDeviceDescriptor& device_descriptor)
+    : device_descriptor_(device_descriptor),
+      v4l2_(std::move(v4l2)),
+      v4l2_thread_("V4L2CaptureThread") {}
 
 VideoCaptureDeviceLinux::~VideoCaptureDeviceLinux() {
   // Check if the thread is running.
@@ -100,50 +75,84 @@ void VideoCaptureDeviceLinux::AllocateAndStart(
 
   const int line_frequency =
       TranslatePowerLineFrequencyToV4L2(GetPowerLineFrequency(params));
-  capture_impl_ = new V4L2CaptureDelegate(
-      device_name_, v4l2_thread_.task_runner(), line_frequency);
+  capture_impl_ = std::make_unique<V4L2CaptureDelegate>(
+      v4l2_.get(), device_descriptor_, v4l2_thread_.task_runner(),
+      line_frequency);
   if (!capture_impl_) {
-    client->OnError(FROM_HERE, "Failed to create VideoCaptureDelegate");
+    client->OnError(VideoCaptureError::
+                        kDeviceCaptureLinuxFailedToCreateVideoCaptureDelegate,
+                    FROM_HERE, "Failed to create VideoCaptureDelegate");
     return;
   }
-  v4l2_thread_.message_loop()->PostTask(
+  v4l2_thread_.task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&V4L2CaptureDelegate::AllocateAndStart, capture_impl_,
-                 params.requested_format.frame_size.width(),
-                 params.requested_format.frame_size.height(),
-                 params.requested_format.frame_rate, base::Passed(&client)));
+      base::BindOnce(&V4L2CaptureDelegate::AllocateAndStart,
+                     capture_impl_->GetWeakPtr(),
+                     params.requested_format.frame_size.width(),
+                     params.requested_format.frame_size.height(),
+                     params.requested_format.frame_rate, std::move(client)));
+
+  for (auto& request : photo_requests_queue_)
+    v4l2_thread_.task_runner()->PostTask(FROM_HERE, std::move(request));
+  photo_requests_queue_.clear();
 }
 
 void VideoCaptureDeviceLinux::StopAndDeAllocate() {
   if (!v4l2_thread_.IsRunning())
     return;  // Wrong state.
-  v4l2_thread_.message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&V4L2CaptureDelegate::StopAndDeAllocate, capture_impl_));
+  v4l2_thread_.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&V4L2CaptureDelegate::StopAndDeAllocate,
+                                capture_impl_->GetWeakPtr()));
+  v4l2_thread_.task_runner()->DeleteSoon(FROM_HERE, capture_impl_.release());
   v4l2_thread_.Stop();
 
-  capture_impl_ = NULL;
+  capture_impl_ = nullptr;
+}
+
+void VideoCaptureDeviceLinux::TakePhoto(TakePhotoCallback callback) {
+  DCHECK(capture_impl_);
+  auto functor =
+      base::BindOnce(&V4L2CaptureDelegate::TakePhoto,
+                     capture_impl_->GetWeakPtr(), std::move(callback));
+  if (!v4l2_thread_.IsRunning()) {
+    // We have to wait until we get the device AllocateAndStart()ed.
+    photo_requests_queue_.push_back(std::move(functor));
+    return;
+  }
+  v4l2_thread_.task_runner()->PostTask(FROM_HERE, std::move(functor));
+}
+
+void VideoCaptureDeviceLinux::GetPhotoState(GetPhotoStateCallback callback) {
+  auto functor =
+      base::BindOnce(&V4L2CaptureDelegate::GetPhotoState,
+                     capture_impl_->GetWeakPtr(), std::move(callback));
+  if (!v4l2_thread_.IsRunning()) {
+    // We have to wait until we get the device AllocateAndStart()ed.
+    photo_requests_queue_.push_back(std::move(functor));
+    return;
+  }
+  v4l2_thread_.task_runner()->PostTask(FROM_HERE, std::move(functor));
+}
+
+void VideoCaptureDeviceLinux::SetPhotoOptions(
+    mojom::PhotoSettingsPtr settings,
+    SetPhotoOptionsCallback callback) {
+  auto functor = base::BindOnce(&V4L2CaptureDelegate::SetPhotoOptions,
+                                capture_impl_->GetWeakPtr(),
+                                std::move(settings), std::move(callback));
+  if (!v4l2_thread_.IsRunning()) {
+    // We have to wait until we get the device AllocateAndStart()ed.
+    photo_requests_queue_.push_back(std::move(functor));
+    return;
+  }
+  v4l2_thread_.task_runner()->PostTask(FROM_HERE, std::move(functor));
 }
 
 void VideoCaptureDeviceLinux::SetRotation(int rotation) {
   if (v4l2_thread_.IsRunning()) {
-    v4l2_thread_.message_loop()->PostTask(
-        FROM_HERE,
-        base::Bind(&V4L2CaptureDelegate::SetRotation, capture_impl_, rotation));
-  }
-}
-
-// static
-int VideoCaptureDeviceLinux::TranslatePowerLineFrequencyToV4L2(
-    PowerLineFrequency frequency) {
-  switch (frequency) {
-    case media::PowerLineFrequency::FREQUENCY_50HZ:
-      return V4L2_CID_POWER_LINE_FREQUENCY_50HZ;
-    case media::PowerLineFrequency::FREQUENCY_60HZ:
-      return V4L2_CID_POWER_LINE_FREQUENCY_60HZ;
-    default:
-      // If we have no idea of the frequency, at least try and set it to AUTO.
-      return V4L2_CID_POWER_LINE_FREQUENCY_AUTO;
+    v4l2_thread_.task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(&V4L2CaptureDelegate::SetRotation,
+                                  capture_impl_->GetWeakPtr(), rotation));
   }
 }
 

@@ -11,6 +11,7 @@
 
 goog.provide('cvox.AbstractEarcons');
 goog.provide('cvox.Earcon');
+goog.provide('cvox.EarconDescription');
 
 
 /**
@@ -47,12 +48,33 @@ cvox.Earcon = {
   WRAP_EDGE: 'wrap_edge',
 };
 
+/**
+ * Maps a earcon id to a message id description.
+ * Only add mappings for earcons used in ChromeVox Next. This map gets
+ * used to generate tutorial content.
+ * @type {Object<string, string>}
+ */
+cvox.EarconDescription = {
+  alert_modal: 'alert_modal_earcon_description',
+  alert_nonmodal: 'alert_nonmodal_earcon_description',
+  button: 'button_earcon_description',
+  check_off: 'check_off_earcon_description',
+  check_on: 'check_on_earcon_description',
+  editable_text: 'editable_text_earcon_description',
+  invalid_keypress: 'invalid_keypress_earcon_description',
+  link: 'link_earcon_description',
+  listbox: 'listbox_earcon_description',
+  page_start_loading: 'page_start_loading_earcon_description',
+  pop_up_button: 'pop_up_button_earcon_description',
+  slider: 'slider_earcon_description',
+  wrap: 'wrap_earcon_description',
+};
+
 
 /**
  * @constructor
  */
-cvox.AbstractEarcons = function() {
-};
+cvox.AbstractEarcons = function() {};
 
 
 /**
@@ -66,17 +88,17 @@ cvox.AbstractEarcons.enabled = true;
 /**
  * Plays the specified earcon sound.
  * @param {cvox.Earcon} earcon An earcon identifier.
+ * @param {Object=} opt_location A location associated with the earcon such as a
+ * control's bounding rectangle.
  */
-cvox.AbstractEarcons.prototype.playEarcon = function(earcon) {
-};
+cvox.AbstractEarcons.prototype.playEarcon = function(earcon, opt_location) {};
 
 
 /**
  * Cancels the specified earcon sound.
  * @param {cvox.Earcon} earcon An earcon identifier.
  */
-cvox.AbstractEarcons.prototype.cancelEarcon = function(earcon) {
-};
+cvox.AbstractEarcons.prototype.cancelEarcon = function(earcon) {};
 
 
 /**

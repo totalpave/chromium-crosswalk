@@ -4,16 +4,20 @@
 
 #include "chrome/browser/ui/webui/chromeos/login/app_launch_splash_screen_handler.h"
 
+#include <memory>
+#include <utility>
+
+#include "base/values.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_app_manager.h"
+#include "chrome/browser/chromeos/login/oobe_screen.h"
 #include "chrome/browser/chromeos/login/screens/network_error.h"
-#include "chrome/browser/ui/webui/chromeos/login/oobe_screen.h"
 #include "chrome/browser/ui/webui/chromeos/login/oobe_ui.h"
+#include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/network/network_state.h"
 #include "chromeos/network/network_state_handler.h"
 #include "components/login/localized_values_builder.h"
-#include "grit/chrome_unscaled_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/web_ui_util.h"
@@ -37,22 +41,20 @@ std::string GetNetworkName(const std::string& service_path) {
 namespace chromeos {
 
 AppLaunchSplashScreenHandler::AppLaunchSplashScreenHandler(
+    JSCallsContainer* js_calls_container,
     const scoped_refptr<NetworkStateInformer>& network_state_informer,
-    NetworkErrorModel* network_error_model)
-    : BaseScreenHandler(kJsScreenPath),
-      delegate_(NULL),
-      show_on_init_(false),
-      state_(APP_LAUNCH_STATE_LOADING_AUTH_FILE),
+    ErrorScreen* error_screen)
+    : BaseScreenHandler(kScreenId, js_calls_container),
       network_state_informer_(network_state_informer),
-      network_error_model_(network_error_model),
-      online_state_(false),
-      network_config_done_(false),
-      network_config_requested_(false) {
+      error_screen_(error_screen) {
+  set_call_js_prefix(kJsScreenPath);
   network_state_informer_->AddObserver(this);
 }
 
 AppLaunchSplashScreenHandler::~AppLaunchSplashScreenHandler() {
   network_state_informer_->RemoveObserver(this);
+  if (delegate_)
+    delegate_->OnDeletingSplashScreenView();
 }
 
 void AppLaunchSplashScreenHandler::DeclareLocalizedValues(
@@ -90,13 +92,12 @@ void AppLaunchSplashScreenHandler::Show(const std::string& app_id) {
   data.SetBoolean("shortcutEnabled",
                   !KioskAppManager::Get()->GetDisableBailoutShortcut());
 
-  // |data| will take ownership of |app_info|.
-  base::DictionaryValue *app_info = new base::DictionaryValue();
-  PopulateAppInfo(app_info);
-  data.Set("appInfo", app_info);
+  auto app_info = std::make_unique<base::DictionaryValue>();
+  PopulateAppInfo(app_info.get());
+  data.Set("appInfo", std::move(app_info));
 
   SetLaunchText(l10n_util::GetStringUTF8(GetProgressMessageFromState(state_)));
-  ShowScreenWithData(OobeScreen::SCREEN_APP_LAUNCH_SPLASH, &data);
+  ShowScreenWithData(kScreenId, &data);
 }
 
 void AppLaunchSplashScreenHandler::RegisterMessages() {
@@ -110,14 +111,11 @@ void AppLaunchSplashScreenHandler::RegisterMessages() {
               &AppLaunchSplashScreenHandler::HandleNetworkConfigRequested);
 }
 
-void AppLaunchSplashScreenHandler::PrepareToShow() {
-}
-
 void AppLaunchSplashScreenHandler::Hide() {
 }
 
 void AppLaunchSplashScreenHandler::ToggleNetworkConfig(bool visible) {
-  CallJS("toggleNetworkConfig", visible);
+  CallJS("login.AppLaunchSplashScreen.toggleNetworkConfig", visible);
 }
 
 void AppLaunchSplashScreenHandler::UpdateAppLaunchState(AppLaunchState state) {
@@ -150,48 +148,43 @@ void AppLaunchSplashScreenHandler::ShowNetworkConfigureUI() {
   const std::string network_path = network_state_informer_->network_path();
   const std::string network_name = GetNetworkName(network_path);
 
-  network_error_model_->SetUIState(NetworkError::UI_STATE_KIOSK_MODE);
-  network_error_model_->AllowGuestSignin(false);
-  network_error_model_->AllowOfflineLogin(false);
+  error_screen_->SetUIState(NetworkError::UI_STATE_KIOSK_MODE);
+  error_screen_->AllowGuestSignin(false);
+  error_screen_->AllowOfflineLogin(false);
 
   switch (state) {
     case NetworkStateInformer::CAPTIVE_PORTAL: {
-      network_error_model_->SetErrorState(NetworkError::ERROR_STATE_PORTAL,
-                                          network_name);
-      network_error_model_->FixCaptivePortal();
+      error_screen_->SetErrorState(NetworkError::ERROR_STATE_PORTAL,
+                                   network_name);
+      error_screen_->FixCaptivePortal();
 
       break;
     }
     case NetworkStateInformer::PROXY_AUTH_REQUIRED: {
-      network_error_model_->SetErrorState(NetworkError::ERROR_STATE_PROXY,
-                                          network_name);
+      error_screen_->SetErrorState(NetworkError::ERROR_STATE_PROXY,
+                                   network_name);
       break;
     }
     case NetworkStateInformer::OFFLINE: {
-      network_error_model_->SetErrorState(NetworkError::ERROR_STATE_OFFLINE,
-                                          network_name);
+      error_screen_->SetErrorState(NetworkError::ERROR_STATE_OFFLINE,
+                                   network_name);
       break;
     }
     case NetworkStateInformer::ONLINE: {
-      network_error_model_->SetErrorState(
-          NetworkError::ERROR_STATE_KIOSK_ONLINE, network_name);
+      error_screen_->SetErrorState(NetworkError::ERROR_STATE_KIOSK_ONLINE,
+                                   network_name);
       break;
     }
     default:
-      network_error_model_->SetErrorState(NetworkError::ERROR_STATE_OFFLINE,
-                                          network_name);
+      error_screen_->SetErrorState(NetworkError::ERROR_STATE_OFFLINE,
+                                   network_name);
       NOTREACHED();
       break;
   }
 
-  OobeScreen screen = OobeScreen::SCREEN_UNKNOWN;
-  OobeUI* oobe_ui = static_cast<OobeUI*>(web_ui()->GetController());
-  if (oobe_ui)
-    screen = oobe_ui->current_screen();
-
-  if (screen != OobeScreen::SCREEN_ERROR_MESSAGE)
-    network_error_model_->SetParentScreen(OobeScreen::SCREEN_APP_LAUNCH_SPLASH);
-  network_error_model_->Show();
+  if (GetCurrentScreen() != OobeScreen::SCREEN_ERROR_MESSAGE)
+    error_screen_->SetParentScreen(kScreenId);
+  error_screen_->Show();
 }
 
 bool AppLaunchSplashScreenHandler::IsNetworkReady() {
@@ -227,7 +220,7 @@ void AppLaunchSplashScreenHandler::PopulateAppInfo(
     app.name = l10n_util::GetStringUTF8(IDS_SHORT_PRODUCT_NAME);
 
   if (app.icon.isNull()) {
-    app.icon = *ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+    app.icon = *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
         IDR_PRODUCT_LOGO_128);
   }
 
@@ -236,16 +229,12 @@ void AppLaunchSplashScreenHandler::PopulateAppInfo(
 }
 
 void AppLaunchSplashScreenHandler::SetLaunchText(const std::string& text) {
-  CallJS("updateMessage", text);
+  CallJS("login.AppLaunchSplashScreen.updateMessage", text);
 }
 
 int AppLaunchSplashScreenHandler::GetProgressMessageFromState(
     AppLaunchState state) {
   switch (state) {
-    case APP_LAUNCH_STATE_LOADING_AUTH_FILE:
-    case APP_LAUNCH_STATE_LOADING_TOKEN_SERVICE:
-      // TODO(zelidrag): Add better string for this one than "Please wait..."
-      return IDS_SYNC_SETUP_SPINNER_TITLE;
     case APP_LAUNCH_STATE_PREPARING_NETWORK:
       return IDS_APP_START_NETWORK_WAIT_MESSAGE;
     case APP_LAUNCH_STATE_INSTALLING_APPLICATION:
@@ -254,6 +243,8 @@ int AppLaunchSplashScreenHandler::GetProgressMessageFromState(
       return IDS_APP_START_WAIT_FOR_APP_WINDOW_MESSAGE;
     case APP_LAUNCH_STATE_NETWORK_WAIT_TIMEOUT:
       return IDS_APP_START_NETWORK_WAIT_TIMEOUT_MESSAGE;
+    case APP_LAUNCH_STATE_SHOWING_NETWORK_CONFIGURE_UI:
+      return IDS_APP_START_SHOWING_NETWORK_CONFIGURE_UI_MESSAGE;
   }
   return IDS_APP_START_NETWORK_WAIT_MESSAGE;
 }

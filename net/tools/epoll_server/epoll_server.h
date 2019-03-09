@@ -47,7 +47,7 @@ class EpollAlarmCallbackInterface;
 class ReadPipeCallback;
 
 struct EpollEvent {
-  EpollEvent(int events, bool is_epoll_wait)
+  EpollEvent(int events)
       : in_events(events),
         out_ready_mask(0) {
   }
@@ -109,6 +109,10 @@ class EpollCallbackInterface {
   // Args:
   //  fd - the file descriptor which was registered.
   virtual void OnShutdown(EpollServer* eps, int fd) = 0;
+
+  // Summary:
+  //   Returns a name describing the class for use in debug/error reporting.
+  virtual std::string Name() const = 0;
 
   virtual ~EpollCallbackInterface() {}
 
@@ -400,6 +404,10 @@ class EpollServer {
   virtual void UnregisterAlarm(
       const EpollServer::AlarmRegToken& iterator_token);
 
+  virtual EpollServer::AlarmRegToken ReregisterAlarm(
+      EpollServer::AlarmRegToken iterator_token,
+      int64_t timeout_time_in_us);
+
   ////////////////////////////////////////
 
   // Summary:
@@ -471,18 +479,14 @@ class EpollServer {
 
   // Summary:
   //   Accessor for the current value of timeout_in_us.
-  int timeout_in_us() const { return timeout_in_us_; }
+  int timeout_in_us_for_test() const { return timeout_in_us_; }
 
   // Summary:
   // Returns true when the EpollServer() is being destroyed.
   bool in_shutdown() const { return in_shutdown_; }
 
-  // Summary:
-  //   A function for implementing the ready list. It invokes OnEvent for each
-  //   of the fd in the ready list, and takes care of adding them back to the
-  //   ready list if the callback requests it (by checking that out_ready_mask
-  //   is non-zero).
-  void CallReadyListCallbacks();
+  // Compatibility stub.
+  void Shutdown() {}
 
  protected:
   virtual void SetNonblocking(int fd);
@@ -631,6 +635,13 @@ class EpollServer {
                                                 int events_size);
 
   // Summary:
+  //   A function for implementing the ready list. It invokes OnEvent for each
+  //   of the fd in the ready list, and takes care of adding them back to the
+  //   ready list if the callback requests it (by checking that out_ready_mask
+  //   is non-zero).
+  void CallReadyListCallbacks();
+
+  // Summary:
   //   An internal function for implementing the ready list. It adds a fd's
   //   CBAndEventMask to the ready list. If the fd is already on the ready
   //   list, it is a no-op.
@@ -661,7 +672,7 @@ class EpollServer {
   };
 
 
-  // TOOD(sushantj): Having this hash_set is avoidable. We currently have it
+  // TODO(sushantj): Having this hash_set is avoidable. We currently have it
   // only so that we can enforce stringent checks that a caller can not register
   // the same alarm twice. One option is to have an implementation in which
   // this hash_set is used only in the debug mode.
@@ -1028,6 +1039,9 @@ class EpollAlarm : public EpollAlarmCallbackInterface {
 
   // If the alarm was registered, unregister it.
   void UnregisterIfRegistered();
+
+  // Reregisters the alarm at specified time.
+  void ReregisterAlarm(int64_t timeout_time_in_us);
 
   bool registered() const { return registered_; }
 

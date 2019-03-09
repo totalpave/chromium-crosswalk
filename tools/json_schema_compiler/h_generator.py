@@ -214,7 +214,7 @@ class _Generator(object):
       # static. On the other hand, those declared inline (e.g. in an object) do.
       maybe_static = '' if is_toplevel else 'static '
       (c.Append()
-        .Append('%sstd::string ToString(%s as_enum);' %
+        .Append('%sconst char* ToString(%s as_enum);' %
                 (maybe_static, classname))
         .Append('%s%s Parse%s(const std::string& as_string);' %
                 (maybe_static, classname, classname))
@@ -275,9 +275,8 @@ class _Generator(object):
           else:
             (c.Cblock(self._GenerateType(type_.additional_properties))
               .Append('std::map<std::string, %s> additional_properties;' %
-                  cpp_util.PadForGenerics(
                       self._type_helper.GetCppType(type_.additional_properties,
-                                                   is_in_container=True)))
+                                                   is_in_container=True))
             )
       (c.Eblock()
         .Append()

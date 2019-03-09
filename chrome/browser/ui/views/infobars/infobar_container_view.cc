@@ -4,59 +4,47 @@
 
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
 
-#include "chrome/browser/ui/infobar_container_delegate.h"
+#include "cc/paint/paint_flags.h"
+#include "cc/paint/paint_shader.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/infobars/infobar_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "ui/accessibility/ax_view_state.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/skia_util.h"
-#include "ui/views/view_targeter.h"
+#include "ui/gfx/skia_paint_util.h"
+#include "ui/views/bubble/bubble_border.h"
 
 namespace {
 
-// The content shadow is drawn in two stages. A darker, shorter shadow is
-// blended with a taller, lighter shadow. The heights are in dp.
-const int kSmallShadowHeight = 1;
-const int kLargeShadowHeight = 3;
-const SkAlpha kSmallShadowAlpha = 0x33;
-const SkAlpha kLargeShadowAlpha = 0x1A;
-
 class ContentShadow : public views::View {
  public:
-  ContentShadow() {
-    SetPaintToLayer(true);
-    layer()->SetFillsBoundsOpaquely(false);
-  }
-  ~ContentShadow() override {}
+  ContentShadow();
 
  protected:
   // views::View:
-  void OnPaint(gfx::Canvas* canvas) override {
-    // The first shader (small shadow) blurs from 0 to kSmallShadowHeight.
-    SkPaint paint;
-    paint.setShader(gfx::CreateGradientShader(
-        0, kSmallShadowHeight, SkColorSetA(SK_ColorBLACK, kSmallShadowAlpha),
-        SkColorSetA(SK_ColorBLACK, SK_AlphaTRANSPARENT)));
-    gfx::Rect small_shadow_bounds = GetLocalBounds();
-    small_shadow_bounds.set_height(kSmallShadowHeight);
-    canvas->DrawRect(small_shadow_bounds, paint);
-
-    // The second shader (large shadow) is solid from 0 to kSmallShadowHeight
-    // (blending with the first shader) and then blurs from kSmallShadowHeight
-    // to kLargeShadowHeight.
-    paint.setShader(gfx::CreateGradientShader(
-        kSmallShadowHeight, height(),
-        SkColorSetA(SK_ColorBLACK, kLargeShadowAlpha),
-        SkColorSetA(SK_ColorBLACK, SK_AlphaTRANSPARENT)));
-    canvas->DrawRect(GetLocalBounds(), paint);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ContentShadow);
+  gfx::Size CalculatePreferredSize() const override;
+  void OnPaint(gfx::Canvas* canvas) override;
 };
+
+ContentShadow::ContentShadow() {
+  SetPaintToLayer();
+  layer()->SetFillsBoundsOpaquely(false);
+}
+
+gfx::Size ContentShadow::CalculatePreferredSize() const {
+  return gfx::Size(0, views::BubbleBorder::GetBorderAndShadowInsets().height());
+}
+
+void ContentShadow::OnPaint(gfx::Canvas* canvas) {
+  // Outdent the sides to make the shadow appear uniform in the corners.
+  gfx::RectF container_bounds(parent()->GetLocalBounds());
+  View::ConvertRectToTarget(parent(), this, &container_bounds);
+  container_bounds.Inset(-views::BubbleBorder::kShadowBlur, 0);
+
+  views::BubbleBorder::DrawBorderAndShadow(gfx::RectFToSkRect(container_bounds),
+                                           &cc::PaintCanvas::drawRect, canvas);
+}
 
 }  // namespace
 
@@ -64,67 +52,63 @@ class ContentShadow : public views::View {
 const char InfoBarContainerView::kViewClassName[] = "InfoBarContainerView";
 
 InfoBarContainerView::InfoBarContainerView(Delegate* delegate)
-    : infobars::InfoBarContainer(delegate), content_shadow_(nullptr) {
+    : infobars::InfoBarContainer(delegate),
+      content_shadow_(new ContentShadow()) {
   set_id(VIEW_ID_INFO_BAR_CONTAINER);
-  if (ui::MaterialDesignController::IsModeMaterial()) {
-    content_shadow_ = new ContentShadow();
-    AddChildView(content_shadow_);
-  }
+  AddChildView(content_shadow_);
 }
 
 InfoBarContainerView::~InfoBarContainerView() {
   RemoveAllInfoBarsForDestruction();
 }
 
-gfx::Size InfoBarContainerView::GetPreferredSize() const {
-  int total_height;
-  int overlap = GetVerticalOverlap(&total_height);
-  total_height -= overlap;
+void InfoBarContainerView::Layout() {
+  int top = 0;
 
-  // No need to reserve space for the bottom bar's separator; the shadow is good
-  // enough.
-  if (ui::MaterialDesignController::IsModeMaterial())
-    total_height -= InfoBarContainerDelegate::kSeparatorLineHeight;
+  // Iterate over all infobars; the last child is the content shadow.
+  for (int i = 0; i < child_count() - 1; ++i) {
+    InfoBarView* child = static_cast<InfoBarView*>(child_at(i));
+    child->SetBounds(0, top, width(), child->computed_height());
+    top = child->bounds().bottom();
+  }
 
-  gfx::Size size(0, total_height);
-  for (int i = 0; i < child_count(); ++i)
-    size.SetToMax(gfx::Size(child_at(i)->GetPreferredSize().width(), 0));
-  return size;
+  // The shadow is positioned flush with the bottom infobar, with the separator
+  // there drawn by the shadow code (so we don't have to extend our bounds out
+  // to be able to draw it; see comments in CalculatePreferredSize() on why the
+  // shadow is drawn outside the container bounds).
+  content_shadow_->SetBounds(0, top, width(),
+                             content_shadow_->GetPreferredSize().height());
 }
 
 const char* InfoBarContainerView::GetClassName() const {
   return kViewClassName;
 }
 
-void InfoBarContainerView::Layout() {
-  int top = 0;
-
-  for (int i = 0; i < child_count(); ++i) {
-    if (child_at(i) == content_shadow_)
-      continue;
-
-    InfoBarView* child = static_cast<InfoBarView*>(child_at(i));
-    top -= child->arrow_height();
-    int child_height = child->total_height();
-
-    // Trim off the bottom bar's separator; the shadow is good enough.
-    // The last infobar is the second to last child overall (followed by
-    // |content_shadow_|).
-    if (ui::MaterialDesignController::IsModeMaterial() &&
-        i == child_count() - 2) {
-      child_height -= InfoBarContainerDelegate::kSeparatorLineHeight;
-    }
-    child->SetBounds(0, top, width(), child_height);
-    top += child_height;
-  }
-
-  if (ui::MaterialDesignController::IsModeMaterial())
-    content_shadow_->SetBounds(0, top, width(), kLargeShadowHeight);
+void InfoBarContainerView::GetAccessibleNodeData(ui::AXNodeData* node_data) {
+  node_data->role = ax::mojom::Role::kGroup;
+  node_data->SetName(l10n_util::GetStringUTF8(IDS_ACCNAME_INFOBAR_CONTAINER));
 }
 
-void InfoBarContainerView::GetAccessibleState(ui::AXViewState* state) {
-  state->role = ui::AX_ROLE_GROUP;
-  state->name = l10n_util::GetStringUTF16(IDS_ACCNAME_INFOBAR_CONTAINER);
+gfx::Size InfoBarContainerView::CalculatePreferredSize() const {
+  gfx::Size size;
+
+  // Iterate over all infobars; the last child is the content shadow.
+  for (int i = 0; i < child_count() - 1; ++i) {
+    const gfx::Size child_size = child_at(i)->GetPreferredSize();
+    size.Enlarge(0, child_size.height());
+    size.SetToMax(child_size);  // Only affects our width.
+  }
+
+  // Don't reserve space for the bottom shadow here.  Because the shadow paints
+  // to its own layer and this class doesn't, it can paint outside the size
+  // computed here.  Not including the shadow bounds means the browser will
+  // automatically lay out web content beginning below the bottom infobar
+  // (instead of below the shadow), and clicks in the shadow region will go to
+  // the web content instead of the infobars; both of these effects are
+  // desirable.  On the other hand, it also means the browser doesn't know the
+  // shadow is there and could lay out something atop it or size the window too
+  // small for it; but these are unlikely.
+  return size;
 }
 
 void InfoBarContainerView::PlatformSpecificAddInfoBar(
@@ -137,4 +121,23 @@ void InfoBarContainerView::PlatformSpecificAddInfoBar(
 void InfoBarContainerView::PlatformSpecificRemoveInfoBar(
     infobars::InfoBar* infobar) {
   RemoveChildView(static_cast<InfoBarView*>(infobar));
+}
+
+void InfoBarContainerView::PlatformSpecificInfoBarStateChanged(
+    bool is_animating) {
+  // If we just finished animating the removal of the previous top infobar, the
+  // new top infobar should now stop drawing a top separator.  In this case the
+  // previous top infobar is zero-sized but has not yet been removed from the
+  // container, so we'll have at least three children (two infobars and a
+  // shadow), and the new top infobar is child 1.  The conditional below
+  // won't exclude cases where we're adding rather than removing an infobar, but
+  // doing unnecessary work on the second infobar in those cases is harmless.
+  if (!is_animating && child_count() > 2) {
+    // Dropping the separator may change the height.
+    auto* infobar = static_cast<InfoBarView*>(child_at(1));
+    infobar->RecalculateHeight();
+
+    // We need to force a paint whether or not the height actually changed.
+    infobar->SchedulePaint();
+  }
 }

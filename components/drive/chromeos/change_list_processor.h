@@ -11,11 +11,10 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
-#include "components/drive/file_errors.h"
 #include "components/drive/file_errors.h"
 #include "url/gurl.h"
 
@@ -24,9 +23,9 @@ class CancellationFlag;
 }  // namespace base
 
 namespace google_apis {
-class AboutResource;
 class ChangeList;
 class FileList;
+class TeamDriveList;
 }  // namespace google_apis
 
 namespace drive {
@@ -42,13 +41,16 @@ class ResourceMetadata;
 // This object is copyable.
 class DirectoryFetchInfo {
  public:
-  DirectoryFetchInfo() : changestamp_(0) {}
+  DirectoryFetchInfo();
+  ~DirectoryFetchInfo();
+
   DirectoryFetchInfo(const std::string& local_id,
                      const std::string& resource_id,
-                     int64_t changestamp)
-      : local_id_(local_id),
-        resource_id_(resource_id),
-        changestamp_(changestamp) {}
+                     const std::string& start_page_token,
+                     const base::FilePath& root_entry_path,
+                     const base::FilePath& directory_path);
+
+  DirectoryFetchInfo(const DirectoryFetchInfo& other);
 
   // Returns true if the object is empty.
   bool empty() const { return local_id_.empty(); }
@@ -59,9 +61,15 @@ class DirectoryFetchInfo {
   // Resource ID of the directory.
   const std::string& resource_id() const { return resource_id_; }
 
-  // Changestamp of the directory. The changestamp is used to determine if
-  // the directory contents should be fetched.
-  int64_t changestamp() const { return changestamp_; }
+  // Start Page Token of the directory. The start page token is used to
+  // determine if the directory contents should be fetched.
+  const std::string& start_page_token() const { return start_page_token_; }
+
+  // The root path of the directory being fetched.
+  const base::FilePath& root_entry_path() const { return root_entry_path_; }
+
+  // The directory path that we are fetching. Used for logging.
+  const base::FilePath& directory_path() const { return directory_path_; }
 
   // Returns a string representation of this object.
   std::string ToString() const;
@@ -69,7 +77,9 @@ class DirectoryFetchInfo {
  private:
   const std::string local_id_;
   const std::string resource_id_;
-  const int64_t changestamp_;
+  const std::string start_page_token_;
+  const base::FilePath root_entry_path_;
+  const base::FilePath directory_path_;
 };
 
 // Class to represent a change list.
@@ -78,6 +88,7 @@ class ChangeList {
   ChangeList();  // For tests.
   explicit ChangeList(const google_apis::ChangeList& change_list);
   explicit ChangeList(const google_apis::FileList& file_list);
+  explicit ChangeList(const google_apis::TeamDriveList& team_drive_list);
   ~ChangeList();
 
   const std::vector<ResourceEntry>& entries() const { return entries_; }
@@ -89,17 +100,20 @@ class ChangeList {
     return &parent_resource_ids_;
   }
   const GURL& next_url() const { return next_url_; }
-  int64_t largest_changestamp() const { return largest_changestamp_; }
 
-  void set_largest_changestamp(int64_t largest_changestamp) {
-    largest_changestamp_ = largest_changestamp;
+  const std::string& new_start_page_token() const {
+    return new_start_page_token_;
+  }
+
+  void set_new_start_page_token(const std::string& start_page_token) {
+    new_start_page_token_ = start_page_token;
   }
 
  private:
   std::vector<ResourceEntry> entries_;
   std::vector<std::string> parent_resource_ids_;
   GURL next_url_;
-  int64_t largest_changestamp_;
+  std::string new_start_page_token_;
 
   DISALLOW_COPY_AND_ASSIGN(ChangeList);
 };
@@ -109,22 +123,38 @@ class ChangeList {
 // updates the resource metadata stored locally.
 class ChangeListProcessor {
  public:
-  ChangeListProcessor(ResourceMetadata* resource_metadata,
+  ChangeListProcessor(const std::string& team_drive_id,
+                      const base::FilePath& root_entry_path,
+                      ResourceMetadata* resource_metadata,
                       base::CancellationFlag* in_shutdown);
   ~ChangeListProcessor();
 
-  // Applies change lists or full resource lists to |resource_metadata_|.
+  // Applies user's change lists or full resource lists to
+  // |resource_metadata_|.
   //
   // |is_delta_update| determines the type of input data to process, whether
   // it is full resource lists (false) or change lists (true).
   //
   // Must be run on the same task runner as |resource_metadata_| uses.
-  FileError Apply(std::unique_ptr<google_apis::AboutResource> about_resource,
-                  ScopedVector<ChangeList> change_lists,
-                  bool is_delta_update);
+  // |start_page_token| is the start page token used to retrieve the change
+  // list.
+  // |root_resource_id| is the resource id to lookup the root folder of the
+  // changeslists in resource metadata.
+  FileError ApplyUserChangeList(
+      const std::string& start_page_token,
+      const std::string& root_resource_id,
+      std::vector<std::unique_ptr<ChangeList>> change_lists,
+      bool is_delta_update);
 
   // The set of changed files as a result of change list processing.
   const FileChange& changed_files() const { return *changed_files_; }
+
+  // The set of team drives changes as a result of change list processing.
+  // Note that a team drive change will appear in both changed_files() and
+  // changed_team_drives()
+  const FileChange& changed_team_drives() const {
+    return *changed_team_drives_;
+  }
 
   // Adds or refreshes the child entries from |change_list| to the directory.
   static FileError RefreshDirectory(
@@ -140,16 +170,31 @@ class ChangeListProcessor {
       const std::string& parent_resource_id);
 
  private:
+  class ChangeListToEntryMapUMAStats;
+
   typedef std::map<std::string /* resource_id */, ResourceEntry>
       ResourceEntryMap;
   typedef std::map<std::string /* resource_id */,
                    std::string /* parent_resource_id*/> ParentResourceIdMap;
 
+  // Common logic between ApplyTeamDriveChangeList and ApplyUserChangeList.
+  // Applies the |change_lists| to |resource_metadta_|.
+  FileError ApplyChangeListInternal(
+      std::vector<std::unique_ptr<ChangeList>> change_lists,
+      const std::string& start_page_token,
+      ResourceEntry* root,
+      ChangeListToEntryMapUMAStats* uma_stats);
+
+  // Converts the |change_lists| to |entry_map_| and |parent_resource_id_map_|,
+  // to be applied by ApplyEntryMap() later.
+  void ConvertChangeListsToMap(
+      std::vector<std::unique_ptr<ChangeList>> change_lists,
+      const std::string& start_page_token,
+      ChangeListToEntryMapUMAStats* uma_stats);
+
   // Applies the pre-processed metadata from entry_map_ onto the resource
-  // metadata. |about_resource| must not be null.
-  FileError ApplyEntryMap(
-      int64_t changestamp,
-      std::unique_ptr<google_apis::AboutResource> about_resource);
+  // metadata.
+  FileError ApplyEntryMap(const std::string& root_resource_id);
 
   // Apply |entry| to resource_metadata_.
   FileError ApplyEntry(const ResourceEntry& entry);
@@ -163,6 +208,9 @@ class ChangeListProcessor {
   ResourceEntryMap entry_map_;
   ParentResourceIdMap parent_resource_id_map_;
   std::unique_ptr<FileChange> changed_files_;
+  std::unique_ptr<FileChange> changed_team_drives_;
+  const std::string team_drive_id_;
+  const base::FilePath& root_entry_path_;
 
   DISALLOW_COPY_AND_ASSIGN(ChangeListProcessor);
 };

@@ -4,8 +4,12 @@
 
 #include "components/translate/content/renderer/translate_helper.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/feature_list.h"
+#include "base/json/string_escape.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
@@ -14,7 +18,6 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "components/translate/content/common/translate_messages.h"
 #include "components/translate/core/common/translate_constants.h"
 #include "components/translate/core/common/translate_metrics.h"
 #include "components/translate/core/common/translate_util.h"
@@ -23,24 +26,24 @@
 #include "content/public/common/url_constants.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
-#include "ipc/ipc_platform_file.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebElement.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebNode.h"
-#include "third_party/WebKit/public/web/WebScriptSource.h"
+#include "services/network/public/cpp/features.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/blink/public/common/loader/url_loader_factory_bundle.h"
+#include "third_party/blink/public/platform/web_isolated_world_info.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_language_detection_details.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_script_source.h"
 #include "url/gurl.h"
 #include "v8/include/v8.h"
 
-using base::ASCIIToUTF16;
 using blink::WebDocument;
-using blink::WebElement;
 using blink::WebLocalFrame;
-using blink::WebNode;
 using blink::WebScriptSource;
 using blink::WebSecurityOrigin;
 using blink::WebString;
 using blink::WebVector;
+using blink::WebLanguageDetectionDetails;
 
 namespace {
 
@@ -62,80 +65,33 @@ const char kAutoDetectionLanguage[] = "auto";
 // Isolated world sets following content-security-policy.
 const char kContentSecurityPolicy[] = "script-src 'self' 'unsafe-eval'";
 
-// Returns whether the page associated with |document| is a candidate for
-// translation.  Some pages can explictly specify (via a meta-tag) that they
-// should not be translated.
-// TODO(dglazkov): This logic should be moved into Blink.
-bool HasNoTranslateMeta(WebDocument* document) {
-  WebElement head = document->head();
-  if (head.isNull() || !head.hasChildNodes())
-    return false;
-
-  const WebString meta(ASCIIToUTF16("meta"));
-  const WebString name(ASCIIToUTF16("name"));
-  const WebString google(ASCIIToUTF16("google"));
-  const WebString value(ASCIIToUTF16("value"));
-  const WebString content(ASCIIToUTF16("content"));
-
-  for (WebNode child = head.firstChild(); !child.isNull();
-      child = child.nextSibling()) {
-    if (!child.isElementNode())
-      continue;
-    WebElement element = child.to<WebElement>();
-    // Check if a tag is <meta>.
-    if (!element.hasHTMLTagName(meta))
-      continue;
-    // Check if the tag contains name="google".
-    WebString attribute = element.getAttribute(name);
-    if (attribute.isNull() || attribute != google)
-      continue;
-    // Check if the tag contains value="notranslate", or content="notranslate".
-    attribute = element.getAttribute(value);
-    if (attribute.isNull())
-      attribute = element.getAttribute(content);
-    if (attribute.isNull())
-      continue;
-    if (base::LowerCaseEqualsASCII(base::StringPiece16(attribute),
-                                   "notranslate"))
-      return true;
-  }
-  return false;
-}
-
 }  // namespace
 
 namespace translate {
 
 ////////////////////////////////////////////////////////////////////////////////
 // TranslateHelper, public:
-//
 TranslateHelper::TranslateHelper(content::RenderFrame* render_frame,
                                  int world_id,
-                                 int extension_group,
                                  const std::string& extension_scheme)
     : content::RenderFrameObserver(render_frame),
-      page_seq_no_(0),
-      translation_pending_(false),
       world_id_(world_id),
-      extension_group_(extension_group),
       extension_scheme_(extension_scheme),
-      weak_method_factory_(this) {}
+      binding_(this),
+      weak_method_factory_(this) {
+  translate_task_runner_ = this->render_frame()->GetTaskRunner(
+      blink::TaskType::kInternalTranslation);
+}
 
 TranslateHelper::~TranslateHelper() {
 }
 
 void TranslateHelper::PrepareForUrl(const GURL& url) {
-  ++page_seq_no_;
-  Send(new ChromeFrameHostMsg_TranslateAssignedSequenceNumber(routing_id(),
-                                                              page_seq_no_));
+  // Navigated to a new url, reset current page translation.
+  ResetPage();
 }
 
 void TranslateHelper::PageCaptured(const base::string16& contents) {
-  PageCapturedImpl(page_seq_no_, contents);
-}
-
-void TranslateHelper::PageCapturedImpl(int page_seq_no,
-                                       const base::string16& contents) {
   // Get the document language as set by WebKit from the http-equiv
   // meta tag for "content-language".  This may or may not also
   // have a value derived from the actual Content-Language HTTP
@@ -146,17 +102,14 @@ void TranslateHelper::PageCapturedImpl(int page_seq_no,
   // relevant for things like langauge textbooks).  This distinction
   // shouldn't affect translation.
   WebLocalFrame* main_frame = render_frame()->GetWebFrame();
-  if (!main_frame || page_seq_no_ != page_seq_no)
+  if (!main_frame)
     return;
 
-  WebDocument document = main_frame->document();
-  std::string content_language = document.contentLanguage().utf8();
-  WebElement html_element = document.documentElement();
-  std::string html_lang;
-  // |html_element| can be null element, e.g. in
-  // BrowserTest.WindowOpenClose.
-  if (!html_element.isNull())
-    html_lang = html_element.getAttribute("lang").utf8();
+  WebDocument document = main_frame->GetDocument();
+  WebLanguageDetectionDetails web_detection_details =
+      WebLanguageDetectionDetails::CollectLanguageDetectionDetails(document);
+  std::string content_language = web_detection_details.content_language.Utf8();
+  std::string html_lang = web_detection_details.html_language.Utf8();
   std::string cld_language;
   bool is_cld_reliable;
   std::string language = DeterminePageLanguage(
@@ -167,14 +120,13 @@ void TranslateHelper::PageCapturedImpl(int page_seq_no,
 
   language_determined_time_ = base::TimeTicks::Now();
 
-  GURL url(document.url());
   LanguageDetectionDetails details;
   details.time = base::Time::Now();
-  details.url = url;
+  details.url = web_detection_details.url;
   details.content_language = content_language;
   details.cld_language = cld_language;
   details.is_cld_reliable = is_cld_reliable;
-  details.has_notranslate = HasNoTranslateMeta(&document);
+  details.has_notranslate = web_detection_details.has_no_translate_meta;
   details.html_root_language = html_lang;
   details.adopted_language = language;
 
@@ -182,20 +134,30 @@ void TranslateHelper::PageCapturedImpl(int page_seq_no,
   // translate-internals tab exists.
   details.contents = contents;
 
-  Send(new ChromeFrameHostMsg_TranslateLanguageDetermined(
-      routing_id(), details, !details.has_notranslate && !language.empty()));
+  // For the same render frame with the same url, each time when its texts are
+  // captured, it should be treated as a new page to do translation.
+  ResetPage();
+  mojom::PagePtr page;
+  binding_.Bind(
+      mojo::MakeRequest(&page),
+      main_frame->GetTaskRunner(blink::TaskType::kInternalTranslation));
+  GetTranslateHandler()->RegisterPage(
+      std::move(page), details, !details.has_notranslate && !language.empty());
 }
 
 void TranslateHelper::CancelPendingTranslation() {
   weak_method_factory_.InvalidateWeakPtrs();
-  translation_pending_ = false;
+  // Make sure to send the cancelled response back.
+  if (translate_callback_pending_) {
+    std::move(translate_callback_pending_)
+        .Run(true, source_lang_, target_lang_, TranslateErrors::NONE);
+  }
   source_lang_.clear();
   target_lang_.clear();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // TranslateHelper, protected:
-//
 bool TranslateHelper::IsTranslateLibAvailable() {
   return ExecuteScriptAndGetBoolResult(
       "typeof cr != 'undefined' && typeof cr.googleTranslate != 'undefined' && "
@@ -214,13 +176,16 @@ bool TranslateHelper::HasTranslationFailed() {
   return ExecuteScriptAndGetBoolResult("cr.googleTranslate.error", true);
 }
 
+int64_t TranslateHelper::GetErrorCode() {
+  int64_t error_code =
+      ExecuteScriptAndGetIntegerResult("cr.googleTranslate.errorCode");
+  DCHECK_LT(error_code, static_cast<int>(TranslateErrors::TRANSLATE_ERROR_MAX));
+  return error_code;
+}
+
 bool TranslateHelper::StartTranslation() {
-  std::string script = "cr.googleTranslate.translate('" +
-                       source_lang_ +
-                       "','" +
-                       target_lang_ +
-                       "')";
-  return ExecuteScriptAndGetBoolResult(script, false);
+  return ExecuteScriptAndGetBoolResult(
+      BuildTranslationScript(source_lang_, target_lang_), false);
 }
 
 std::string TranslateHelper::GetOriginalPageLanguage() {
@@ -238,9 +203,8 @@ void TranslateHelper::ExecuteScript(const std::string& script) {
   if (!main_frame)
     return;
 
-  WebScriptSource source = WebScriptSource(ASCIIToUTF16(script));
-  main_frame->executeScriptInIsolatedWorld(
-      world_id_, &source, 1, extension_group_);
+  WebScriptSource source = WebScriptSource(WebString::FromASCII(script));
+  main_frame->ExecuteScriptInIsolatedWorld(world_id_, source);
 }
 
 bool TranslateHelper::ExecuteScriptAndGetBoolResult(const std::string& script,
@@ -250,16 +214,15 @@ bool TranslateHelper::ExecuteScriptAndGetBoolResult(const std::string& script,
     return fallback;
 
   v8::HandleScope handle_scope(v8::Isolate::GetCurrent());
-  WebVector<v8::Local<v8::Value> > results;
-  WebScriptSource source = WebScriptSource(ASCIIToUTF16(script));
-  main_frame->executeScriptInIsolatedWorld(
-      world_id_, &source, 1, extension_group_, &results);
-  if (results.size() != 1 || results[0].IsEmpty() || !results[0]->IsBoolean()) {
+  WebScriptSource source = WebScriptSource(WebString::FromASCII(script));
+  v8::Local<v8::Value> result =
+      main_frame->ExecuteScriptInIsolatedWorldAndReturnValue(world_id_, source);
+  if (result.IsEmpty() || !result->IsBoolean()) {
     NOTREACHED();
     return fallback;
   }
 
-  return results[0]->BooleanValue();
+  return result.As<v8::Boolean>()->Value();
 }
 
 std::string TranslateHelper::ExecuteScriptAndGetStringResult(
@@ -268,20 +231,20 @@ std::string TranslateHelper::ExecuteScriptAndGetStringResult(
   if (!main_frame)
     return std::string();
 
-  v8::HandleScope handle_scope(v8::Isolate::GetCurrent());
-  WebVector<v8::Local<v8::Value> > results;
-  WebScriptSource source = WebScriptSource(ASCIIToUTF16(script));
-  main_frame->executeScriptInIsolatedWorld(
-      world_id_, &source, 1, extension_group_, &results);
-  if (results.size() != 1 || results[0].IsEmpty() || !results[0]->IsString()) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  v8::HandleScope handle_scope(isolate);
+  WebScriptSource source = WebScriptSource(WebString::FromASCII(script));
+  v8::Local<v8::Value> result =
+      main_frame->ExecuteScriptInIsolatedWorldAndReturnValue(world_id_, source);
+  if (result.IsEmpty() || !result->IsString()) {
     NOTREACHED();
     return std::string();
   }
 
-  v8::Local<v8::String> v8_str = results[0].As<v8::String>();
-  int length = v8_str->Utf8Length() + 1;
+  v8::Local<v8::String> v8_str = result.As<v8::String>();
+  int length = v8_str->Utf8Length(isolate) + 1;
   std::unique_ptr<char[]> str(new char[length]);
-  v8_str->WriteUtf8(str.get(), length);
+  v8_str->WriteUtf8(isolate, str.get(), length);
   return std::string(str.get());
 }
 
@@ -292,48 +255,71 @@ double TranslateHelper::ExecuteScriptAndGetDoubleResult(
     return 0.0;
 
   v8::HandleScope handle_scope(v8::Isolate::GetCurrent());
-  WebVector<v8::Local<v8::Value> > results;
-  WebScriptSource source = WebScriptSource(ASCIIToUTF16(script));
-  main_frame->executeScriptInIsolatedWorld(
-      world_id_, &source, 1, extension_group_, &results);
-  if (results.size() != 1 || results[0].IsEmpty() || !results[0]->IsNumber()) {
+  WebScriptSource source = WebScriptSource(WebString::FromASCII(script));
+  v8::Local<v8::Value> result =
+      main_frame->ExecuteScriptInIsolatedWorldAndReturnValue(world_id_, source);
+  if (result.IsEmpty() || !result->IsNumber()) {
     NOTREACHED();
     return 0.0;
   }
 
-  return results[0]->NumberValue();
+  return result.As<v8::Number>()->Value();
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// TranslateHelper, private:
-//
-bool TranslateHelper::OnMessageReceived(const IPC::Message& message) {
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(TranslateHelper, message)
-    IPC_MESSAGE_HANDLER(ChromeFrameMsg_TranslatePage, OnTranslatePage)
-    IPC_MESSAGE_HANDLER(ChromeFrameMsg_RevertTranslation, OnRevertTranslation)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-  return handled;
-}
-
-void TranslateHelper::OnTranslatePage(int page_seq_no,
-                                      const std::string& translate_script,
-                                      const std::string& source_lang,
-                                      const std::string& target_lang) {
+int64_t TranslateHelper::ExecuteScriptAndGetIntegerResult(
+    const std::string& script) {
   WebLocalFrame* main_frame = render_frame()->GetWebFrame();
-  if (!main_frame || page_seq_no_ != page_seq_no)
+  if (!main_frame)
+    return 0;
+
+  v8::HandleScope handle_scope(v8::Isolate::GetCurrent());
+  WebScriptSource source = WebScriptSource(WebString::FromASCII(script));
+  v8::Local<v8::Value> result =
+      main_frame->ExecuteScriptInIsolatedWorldAndReturnValue(world_id_, source);
+  if (result.IsEmpty() || !result->IsNumber()) {
+    NOTREACHED();
+    return 0;
+  }
+
+  return result.As<v8::Integer>()->Value();
+}
+
+// mojom::Page implementations.
+void TranslateHelper::Translate(
+    const std::string& translate_script,
+    network::mojom::URLLoaderFactoryPtr loader_factory_for_translate_script,
+    const std::string& source_lang,
+    const std::string& target_lang,
+    TranslateCallback callback) {
+  url::Origin translate_origin =
+      url::Origin::Create(GetTranslateSecurityOrigin());
+
+  if (base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    render_frame()->MarkInitiatorAsRequiringSeparateURLLoaderFactory(
+        translate_origin, std::move(loader_factory_for_translate_script));
+  }
+
+  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  if (!main_frame) {
+    // Cancelled.
+    std::move(callback).Run(true, source_lang, target_lang,
+                            TranslateErrors::NONE);
     return;  // We navigated away, nothing to do.
+  }
 
   // A similar translation is already under way, nothing to do.
-  if (translation_pending_ && target_lang_ == target_lang)
+  if (translate_callback_pending_ && target_lang_ == target_lang) {
+    // This request is ignored.
+    std::move(callback).Run(true, source_lang, target_lang,
+                            TranslateErrors::NONE);
     return;
+  }
 
   // Any pending translation is now irrelevant.
   CancelPendingTranslation();
 
   // Set our states.
-  translation_pending_ = true;
+  translate_callback_pending_ = std::move(callback);
 
   // If the source language is undetermined, we'll let the translate element
   // detect it.
@@ -343,17 +329,15 @@ void TranslateHelper::OnTranslatePage(int page_seq_no,
 
   ReportUserActionDuration(language_determined_time_, base::TimeTicks::Now());
 
-  GURL url(main_frame->document().url());
+  GURL url(main_frame->GetDocument().Url());
   ReportPageScheme(url.scheme());
 
   // Set up v8 isolated world with proper content-security-policy and
   // security-origin.
-  main_frame->setIsolatedWorldContentSecurityPolicy(
-      world_id_, WebString::fromUTF8(kContentSecurityPolicy));
-
-  GURL security_origin = GetTranslateSecurityOrigin();
-  main_frame->setIsolatedWorldSecurityOrigin(
-      world_id_, WebSecurityOrigin::create(security_origin));
+  blink::WebIsolatedWorldInfo info;
+  info.security_origin = WebSecurityOrigin::Create(translate_origin.GetURL());
+  info.content_security_policy = WebString::FromUTF8(kContentSecurityPolicy);
+  main_frame->SetIsolatedWorldInfo(world_id_, info);
 
   if (!IsTranslateLibAvailable()) {
     // Evaluate the script to add the translation related method to the global
@@ -362,13 +346,10 @@ void TranslateHelper::OnTranslatePage(int page_seq_no,
     DCHECK(IsTranslateLibAvailable());
   }
 
-  TranslatePageImpl(page_seq_no, 0);
+  TranslatePageImpl(0);
 }
 
-void TranslateHelper::OnRevertTranslation(int page_seq_no) {
-  if (page_seq_no_ != page_seq_no)
-    return;  // We navigated away, nothing to do.
-
+void TranslateHelper::RevertTranslation() {
   if (!IsTranslateLibAvailable()) {
     NOTREACHED();
     return;
@@ -379,15 +360,13 @@ void TranslateHelper::OnRevertTranslation(int page_seq_no) {
   ExecuteScript("cr.googleTranslate.revert()");
 }
 
-void TranslateHelper::CheckTranslateStatus(int page_seq_no) {
-  // If this is not the same page, the translation has been canceled.
-  if (page_seq_no_ != page_seq_no)
-    return;
-
+////////////////////////////////////////////////////////////////////////////////
+// TranslateHelper, private:
+void TranslateHelper::CheckTranslateStatus() {
   // First check if there was an error.
   if (HasTranslationFailed()) {
-    // TODO(toyoshim): Check |errorCode| of translate.js and notify it here.
-    NotifyBrowserTranslationFailed(TranslateErrors::TRANSLATION_ERROR);
+    NotifyBrowserTranslationFailed(
+        static_cast<translate::TranslateErrors::Type>(GetErrorCode()));
     return;  // There was an error.
   }
 
@@ -408,47 +387,50 @@ void TranslateHelper::CheckTranslateStatus(int page_seq_no) {
       actual_source_lang = source_lang_;
     }
 
-    if (!translation_pending_) {
+    if (!translate_callback_pending_) {
       NOTREACHED();
       return;
     }
-
-    translation_pending_ = false;
 
     // Check JavaScript performance counters for UMA reports.
     ReportTimeToTranslate(
         ExecuteScriptAndGetDoubleResult("cr.googleTranslate.translationTime"));
 
     // Notify the browser we are done.
-    render_frame()->Send(new ChromeFrameHostMsg_PageTranslated(
-        render_frame()->GetRoutingID(), actual_source_lang, target_lang_,
-        TranslateErrors::NONE));
+    std::move(translate_callback_pending_)
+        .Run(false, actual_source_lang, target_lang_, TranslateErrors::NONE);
     return;
   }
 
   // The translation is still pending, check again later.
-  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&TranslateHelper::CheckTranslateStatus,
-                            weak_method_factory_.GetWeakPtr(), page_seq_no),
+  translate_task_runner_->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&TranslateHelper::CheckTranslateStatus,
+                     weak_method_factory_.GetWeakPtr()),
       AdjustDelay(kTranslateStatusCheckDelayMs));
 }
 
-void TranslateHelper::TranslatePageImpl(int page_seq_no, int count) {
+void TranslateHelper::TranslatePageImpl(int count) {
   DCHECK_LT(count, kMaxTranslateInitCheckAttempts);
-  if (page_seq_no_ != page_seq_no)
-    return;
-
   if (!IsTranslateLibReady()) {
+    // There was an error during initialization of library.
+    TranslateErrors::Type error =
+        static_cast<translate::TranslateErrors::Type>(GetErrorCode());
+    if (error != TranslateErrors::NONE) {
+      NotifyBrowserTranslationFailed(error);
+      return;
+    }
+
     // The library is not ready, try again later, unless we have tried several
     // times unsuccessfully already.
     if (++count >= kMaxTranslateInitCheckAttempts) {
-      NotifyBrowserTranslationFailed(TranslateErrors::INITIALIZATION_ERROR);
+      NotifyBrowserTranslationFailed(TranslateErrors::TRANSLATION_TIMEOUT);
       return;
     }
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&TranslateHelper::TranslatePageImpl,
-                   weak_method_factory_.GetWeakPtr(), page_seq_no, count),
+        base::BindOnce(&TranslateHelper::TranslatePageImpl,
+                       weak_method_factory_.GetWeakPtr(), count),
         AdjustDelay(count * kTranslateInitCheckDelayMs));
     return;
   }
@@ -461,26 +443,51 @@ void TranslateHelper::TranslatePageImpl(int page_seq_no, int count) {
       ExecuteScriptAndGetDoubleResult("cr.googleTranslate.loadTime"));
 
   if (!StartTranslation()) {
-    NotifyBrowserTranslationFailed(TranslateErrors::TRANSLATION_ERROR);
+    CheckTranslateStatus();
     return;
   }
   // Check the status of the translation.
-  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&TranslateHelper::CheckTranslateStatus,
-                            weak_method_factory_.GetWeakPtr(), page_seq_no),
+  translate_task_runner_->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&TranslateHelper::CheckTranslateStatus,
+                     weak_method_factory_.GetWeakPtr()),
       AdjustDelay(kTranslateStatusCheckDelayMs));
 }
 
 void TranslateHelper::NotifyBrowserTranslationFailed(
     TranslateErrors::Type error) {
-  translation_pending_ = false;
+  DCHECK(translate_callback_pending_);
   // Notify the browser there was an error.
-  render_frame()->Send(new ChromeFrameHostMsg_PageTranslated(
-      render_frame()->GetRoutingID(), source_lang_, target_lang_, error));
+  std::move(translate_callback_pending_)
+      .Run(false, source_lang_, target_lang_, error);
+}
+
+const mojom::ContentTranslateDriverPtr& TranslateHelper::GetTranslateHandler() {
+  if (!translate_handler_) {
+    render_frame()->GetRemoteInterfaces()->GetInterface(
+        mojo::MakeRequest(&translate_handler_));
+  }
+
+  return translate_handler_;
+}
+
+void TranslateHelper::ResetPage() {
+  binding_.Close();
+  translate_callback_pending_.Reset();
+  CancelPendingTranslation();
 }
 
 void TranslateHelper::OnDestruct() {
   delete this;
+}
+
+/* static */
+std::string TranslateHelper::BuildTranslationScript(
+    const std::string& source_lang,
+    const std::string& target_lang) {
+  return "cr.googleTranslate.translate(" +
+         base::GetQuotedJSONString(source_lang) + "," +
+         base::GetQuotedJSONString(target_lang) + ")";
 }
 
 }  // namespace translate

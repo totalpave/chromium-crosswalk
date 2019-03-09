@@ -12,7 +12,7 @@
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_management_constants.h"
 #include "extensions/browser/pref_names.h"
-#include "extensions/common/extension.h"
+#include "extensions/common/extension_id.h"
 
 namespace policy {
 class MockConfigurationPolicyProvider;
@@ -60,6 +60,27 @@ class ExtensionManagementPrefUpdaterBase {
                             const std::string& permission);
   void RemoveBlockedPermission(const std::string& prefix,
                                const std::string& permission);
+
+  // Helper function for 'blocked_install_message' manipulation.
+  // |id| is extension ID.
+  void SetBlockedInstallMessage(const ExtensionId& id,
+                                const std::string& custom_error);
+
+  // Helper functions for 'runtime_blocked_hosts' manipulation. |prefix| can be
+  // kWildCard or a valid extension ID.
+  void UnsetPolicyBlockedHosts(const std::string& prefix);
+  void ClearPolicyBlockedHosts(const std::string& prefix);
+  void AddPolicyBlockedHost(const std::string& prefix, const std::string& host);
+  void RemovePolicyBlockedHost(const std::string& prefix,
+                               const std::string& host);
+
+  // Helper functions for 'runtime_allowed_hosts' manipulation. |prefix| can be
+  // kWildCard or a valid extension ID.
+  void UnsetPolicyAllowedHosts(const std::string& prefix);
+  void ClearPolicyAllowedHosts(const std::string& prefix);
+  void AddPolicyAllowedHost(const std::string& prefix, const std::string& host);
+  void RemovePolicyAllowedHost(const std::string& prefix,
+                               const std::string& host);
 
   // Helper functions for 'allowed_permissions' manipulation. |id| must be a
   // valid extension ID.
@@ -119,8 +140,7 @@ class ExtensionManagementPrefUpdater
   }
 
   virtual ~ExtensionManagementPrefUpdater() {
-    service_->SetManagedPref(pref_names::kExtensionManagement,
-                             TakePref().release());
+    service_->SetManagedPref(pref_names::kExtensionManagement, TakePref());
   }
 
  private:

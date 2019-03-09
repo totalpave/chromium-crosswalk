@@ -8,7 +8,7 @@
  */
 
 cr.define('cr.ui', function() {
-  /** @const */ var MenuButton = cr.ui.MenuButton;
+  /** @const */ const MenuButton = cr.ui.MenuButton;
 
   /**
    * Helper function for ContextMenuButton to find the first ancestor of the
@@ -17,7 +17,7 @@ cr.define('cr.ui', function() {
    * @return {HTMLElement} The found element or null if not found.
    */
   function getContextMenuTarget(button) {
-    var el = button;
+    let el = button;
     do {
       el = el.parentNode;
     } while (el && !('contextMenu' in el));
@@ -31,7 +31,7 @@ cr.define('cr.ui', function() {
    * @constructor
    * @extends {cr.ui.MenuButton}
    */
-  var ContextMenuButton = cr.ui.define('button');
+  const ContextMenuButton = cr.ui.define('button');
 
   ContextMenuButton.prototype = {
     __proto__: MenuButton.prototype,
@@ -42,7 +42,7 @@ cr.define('cr.ui', function() {
      * @type {cr.ui.Menu}
      */
     get menu() {
-      var target = getContextMenuTarget(this);
+      const target = getContextMenuTarget(this);
       return target && target.contextMenu;
     },
 
@@ -58,9 +58,10 @@ cr.define('cr.ui', function() {
       switch (e.type) {
         case 'mousedown':
           // Menu buttons prevent focus changes.
-          var target = getContextMenuTarget(this);
-          if (target)
+          const target = getContextMenuTarget(this);
+          if (target) {
             target.focus();
+          }
           break;
         case 'mouseup':
           // Stop mouseup to prevent selection changes.
@@ -76,17 +77,18 @@ cr.define('cr.ui', function() {
      * triggers command changes.
      * @param {boolean} shouldSetFocus Whether the menu should be focused after
      *     the menu is shown.
+     * @param {{x: number, y: number}=} opt_mousePos The position of the mouse
+     *     when shown (in screen coordinates).
+     * @override
      */
-    showMenu: function(shouldSetFocus) {
-      var self = this;
+    showMenu: function(shouldSetFocus, opt_mousePos) {
+      const self = this;
       window.setTimeout(function() {
-        MenuButton.prototype.showMenu.call(self, shouldSetFocus);
+        MenuButton.prototype.showMenu.call(self, shouldSetFocus, opt_mousePos);
       }, 0);
     }
   };
 
   // Export
-  return {
-    ContextMenuButton: ContextMenuButton
-  };
+  return {ContextMenuButton: ContextMenuButton};
 });

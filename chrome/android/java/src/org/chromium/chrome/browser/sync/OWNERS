@@ -1,4 +1,6 @@
-maxbogue@chromium.org
+file://components/sync/OWNERS
+
 nyquist@chromium.org
 yfriedman@chromium.org
-zea@chromium.org
+
+# COMPONENT: Services>Sync

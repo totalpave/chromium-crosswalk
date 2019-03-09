@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -68,13 +67,6 @@ class TooManyExamples(Parsing):
   pass
 
 
-class GotPathExpectedFilenameOnly(Parsing):
-  '''The 'filename' attribute of <output> and the 'file' attribute of <part>
-  must be bare filenames, not paths.
-  '''
-  pass
-
-
 class FileNotFound(Parsing):
   '''The resource file was not found.
   '''
@@ -99,11 +91,6 @@ class NoSuchTranslation(Base):
 class NotReady(Base):
   '''Attempt to use an object before it is ready, or attempt to translate
   an empty document.'''
-  pass
-
-
-class TooManyPlaceholders(Base):
-  '''Too many placeholders for elements of the same type.'''
   pass
 
 
@@ -138,4 +125,14 @@ class IdRangeOverlap(Base):
 
 class ReservedHeaderCollision(Base):
   '''Resource included with first 3 bytes matching reserved header.'''
+  pass
+
+
+class PlaceholderNotInsidePhNode(Base):
+  '''Placeholder formatters should be inside <ph> element.'''
+  pass
+
+
+class InvalidCharactersInsidePhNode(Base):
+  '''Invalid characters found inside <ph> element.'''
   pass

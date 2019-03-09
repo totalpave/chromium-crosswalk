@@ -68,8 +68,9 @@ Polymer({
    * @private
    */
   computeIssueClass_: function(issue) {
-    if (!issue)
+    if (!issue) {
       return '';
+    }
 
     return issue.isBlocking ? 'blocking' : 'non-blocking';
   },
@@ -115,7 +116,7 @@ Polymer({
    */
   onClickOptAction_: function(event) {
     this.fireIssueActionClick_(
-        /** @type {number} */(this.issue.secondaryActionType));
+        /** @type {number} */ (this.issue.secondaryActionType));
   },
 
   /**
@@ -128,14 +129,13 @@ Polymer({
     var defaultText = '';
     var secondaryText = '';
     if (this.issue) {
-      defaultText =
-          this.i18n(this.actionTypeToButtonTextResource_[
-              this.issue.defaultActionType]);
+      defaultText = this.i18n(
+          this.actionTypeToButtonTextResource_[this.issue.defaultActionType]);
 
       if (this.issue.secondaryActionType !== undefined) {
-        secondaryText =
-            this.i18n(this.actionTypeToButtonTextResource_[
-                this.issue.secondaryActionType]);
+        secondaryText = this.i18n(
+            this.actionTypeToButtonTextResource_[this.issue
+                                                     .secondaryActionType]);
       }
     }
 

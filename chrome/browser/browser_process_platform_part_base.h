@@ -8,13 +8,14 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "content/public/browser/content_browser_client.h"
 
 namespace base {
 class CommandLine;
 }
 
 namespace policy {
-class BrowserPolicyConnector;
+class ChromeBrowserPolicyConnector;
 }
 
 // A base class for platform-specific BrowserProcessPlatformPart
@@ -33,12 +34,12 @@ class BrowserProcessPlatformPartBase {
   virtual void StartTearDown();
 
   // Called from AttemptExitInternal().
-  virtual void AttemptExit();
+  virtual void AttemptExit(bool try_to_quit_application);
 
   // Called at the end of BrowserProcessImpl::PreMainMessageLoopRun().
   virtual void PreMainMessageLoopRun();
 
-  virtual std::unique_ptr<policy::BrowserPolicyConnector>
+  virtual std::unique_ptr<policy::ChromeBrowserPolicyConnector>
   CreateBrowserPolicyConnector();
 
  private:

@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/metrics/histogram_macros.h"
@@ -30,18 +31,18 @@
 #include "components/dom_distiller/core/url_constants.h"
 #include "components/dom_distiller/core/url_utils.h"
 #include "components/dom_distiller/core/viewer.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "grit/components_strings.h"
 #include "mojo/public/cpp/bindings/strong_binding.h"
 #include "net/base/url_util.h"
 #include "net/url_request/url_request.h"
-#include "services/shell/public/cpp/interface_provider.h"
-#include "services/shell/public/cpp/interface_registry.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace dom_distiller {
@@ -56,17 +57,21 @@ class DomDistillerViewerSource::RequestViewerHandle
   RequestViewerHandle(content::WebContents* web_contents,
                       const std::string& expected_scheme,
                       const std::string& expected_request_path,
-                      DistilledPagePrefs* distilled_page_prefs);
+                      DistilledPagePrefs* distilled_page_prefs,
+                      DistillerUIHandle* ui_handle);
   ~RequestViewerHandle() override;
 
   // content::WebContentsObserver implementation:
-  void DidNavigateMainFrame(
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void RenderProcessGone(base::TerminationStatus status) override;
   void WebContentsDestroyed() override;
   void DidFinishLoad(content::RenderFrameHost* render_frame_host,
                      const GURL& validated_url) override;
+  void OnInterfaceRequestFromFrame(
+      content::RenderFrameHost* render_frame_host,
+      const std::string& interface_name,
+      mojo::ScopedMessagePipeHandle* interface_pipe) override;
 
  private:
   // Sends JavaScript to the attached Viewer, buffering data if the viewer isn't
@@ -91,19 +96,32 @@ class DomDistillerViewerSource::RequestViewerHandle
   // Temporary store of pending JavaScript if the page isn't ready to receive
   // data from distillation.
   std::string buffer_;
+
+  // An object for accessing chrome-specific UI controls including external
+  // feedback and opening the distiller settings. Guaranteed to outlive this
+  // object.
+  DistillerUIHandle* distiller_ui_handle_;
+
+  service_manager::BinderRegistryWithArgs<content::RenderFrameHost*>
+      frame_interfaces_;
 };
 
 DomDistillerViewerSource::RequestViewerHandle::RequestViewerHandle(
     content::WebContents* web_contents,
     const std::string& expected_scheme,
     const std::string& expected_request_path,
-    DistilledPagePrefs* distilled_page_prefs)
+    DistilledPagePrefs* distilled_page_prefs,
+    DistillerUIHandle* ui_handle)
     : DomDistillerRequestViewBase(distilled_page_prefs),
       expected_scheme_(expected_scheme),
       expected_request_path_(expected_request_path),
-      waiting_for_page_ready_(true) {
+      waiting_for_page_ready_(true),
+      distiller_ui_handle_(ui_handle) {
   content::WebContentsObserver::Observe(web_contents);
   distilled_page_prefs_->AddObserver(this);
+
+  frame_interfaces_.AddInterface(
+      base::Bind(&CreateDistillerJavaScriptService, distiller_ui_handle_));
 }
 
 DomDistillerViewerSource::RequestViewerHandle::~RequestViewerHandle() {
@@ -122,13 +140,29 @@ void DomDistillerViewerSource::RequestViewerHandle::SendJavaScript(
   }
 }
 
-void DomDistillerViewerSource::RequestViewerHandle::DidNavigateMainFrame(
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
-  const GURL& navigation = details.entry->GetURL();
-  if (details.is_in_page || (navigation.SchemeIs(expected_scheme_.c_str()) &&
-                             expected_request_path_ == navigation.query())) {
+void DomDistillerViewerSource::RequestViewerHandle::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!navigation_handle->IsInMainFrame() || !navigation_handle->HasCommitted())
+    return;
+
+  const GURL& navigation = navigation_handle->GetURL();
+  bool expected_main_view_request =
+      navigation.SchemeIs(expected_scheme_) &&
+      expected_request_path_ == navigation.query();
+  if (navigation_handle->IsSameDocument() || expected_main_view_request) {
     // In-page navigations, as well as the main view request can be ignored.
+    if (expected_main_view_request) {
+      content::RenderFrameHost* render_frame_host =
+          navigation_handle->GetRenderFrameHost();
+      CHECK_EQ(0, render_frame_host->GetEnabledBindings());
+
+      // Tell the renderer that this is currently a distilled page.
+      mojom::DistillerPageNotifierServicePtr page_notifier_service;
+      render_frame_host->GetRemoteInterfaces()->GetInterface(
+          &page_notifier_service);
+      DCHECK(page_notifier_service);
+      page_notifier_service->NotifyIsDistillerPage();
+    }
     return;
   }
 
@@ -146,7 +180,7 @@ void DomDistillerViewerSource::RequestViewerHandle::WebContentsDestroyed() {
 
 void DomDistillerViewerSource::RequestViewerHandle::Cancel() {
   // No need to listen for notifications.
-  content::WebContentsObserver::Observe(NULL);
+  content::WebContentsObserver::Observe(nullptr);
 
   // Schedule the Viewer for deletion. Ensures distillation is cancelled, and
   // any pending data stored in |buffer_| is released.
@@ -178,6 +212,14 @@ void DomDistillerViewerSource::RequestViewerHandle::DidFinishLoad(
   // No need to Cancel() here.
 }
 
+void DomDistillerViewerSource::RequestViewerHandle::OnInterfaceRequestFromFrame(
+    content::RenderFrameHost* render_frame_host,
+    const std::string& interface_name,
+    mojo::ScopedMessagePipeHandle* interface_pipe) {
+  frame_interfaces_.TryBindInterface(interface_name, interface_pipe,
+                                     render_frame_host);
+}
+
 DomDistillerViewerSource::DomDistillerViewerSource(
     DomDistillerServiceInterface* dom_distiller_service,
     const std::string& scheme,
@@ -186,8 +228,7 @@ DomDistillerViewerSource::DomDistillerViewerSource(
       dom_distiller_service_(dom_distiller_service),
       distiller_ui_handle_(std::move(ui_handle)) {}
 
-DomDistillerViewerSource::~DomDistillerViewerSource() {
-}
+DomDistillerViewerSource::~DomDistillerViewerSource() {}
 
 std::string DomDistillerViewerSource::GetSource() const {
   return scheme_ + "://";
@@ -195,44 +236,38 @@ std::string DomDistillerViewerSource::GetSource() const {
 
 void DomDistillerViewerSource::StartDataRequest(
     const std::string& path,
-    int render_process_id,
-    int render_frame_id,
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
     const content::URLDataSource::GotDataCallback& callback) {
-  content::RenderFrameHost* render_frame_host =
-      content::RenderFrameHost::FromID(render_process_id, render_frame_id);
-  if (!render_frame_host)
+  content::WebContents* web_contents = wc_getter.Run();
+  if (!web_contents)
     return;
-  content::RenderViewHost* render_view_host =
-      render_frame_host->GetRenderViewHost();
-  DCHECK(render_view_host);
-  CHECK_EQ(0, render_view_host->GetEnabledBindings());
-
   if (kViewerCssPath == path) {
     std::string css = viewer::GetCss();
     callback.Run(base::RefCountedString::TakeString(&css));
     return;
-  } else if (kViewerLoadingImagePath == path) {
+  }
+  if (kViewerLoadingImagePath == path) {
     std::string image = viewer::GetLoadingImage();
     callback.Run(base::RefCountedString::TakeString(&image));
     return;
-  } else if (base::StartsWith(path, kViewerSaveFontScalingPath,
-                              base::CompareCase::SENSITIVE)) {
+  }
+  if (base::StartsWith(path, kViewerSaveFontScalingPath,
+                       base::CompareCase::SENSITIVE)) {
     double scale = 1.0;
-    if (base::StringToDouble(
-        path.substr(strlen(kViewerSaveFontScalingPath)), &scale)) {
+    if (base::StringToDouble(path.substr(strlen(kViewerSaveFontScalingPath)),
+                             &scale)) {
       dom_distiller_service_->GetDistilledPagePrefs()->SetFontScaling(scale);
     }
   }
-  content::WebContents* web_contents =
-      content::WebContents::FromRenderFrameHost(render_frame_host);
-  DCHECK(web_contents);
+
   // An empty |path| is invalid, but guard against it. If not empty, assume
   // |path| starts with '?', which is stripped away.
   const std::string path_after_query_separator =
       path.size() > 0 ? path.substr(1) : "";
   RequestViewerHandle* request_viewer_handle =
       new RequestViewerHandle(web_contents, scheme_, path_after_query_separator,
-                              dom_distiller_service_->GetDistilledPagePrefs());
+                              dom_distiller_service_->GetDistilledPagePrefs(),
+                              distiller_ui_handle_.get());
   std::unique_ptr<ViewerHandle> viewer_handle = viewer::CreateViewRequest(
       dom_distiller_service_, path, request_viewer_handle,
       web_contents->GetContainerBounds().size());
@@ -242,20 +277,6 @@ void DomDistillerViewerSource::StartDataRequest(
       url_utils::GetOriginalUrlFromDistillerUrl(current_url).spec(),
       dom_distiller_service_->GetDistilledPagePrefs()->GetTheme(),
       dom_distiller_service_->GetDistilledPagePrefs()->GetFontFamily());
-
-  // Add mojo service for JavaScript functionality. This is the receiving end
-  // of this particular service.
-  render_frame_host->GetInterfaceRegistry()->AddInterface(
-      base::Bind(&CreateDistillerJavaScriptService,
-          render_frame_host,
-          distiller_ui_handle_.get()));
-
-  // Tell the renderer that this is currently a distilled page.
-  mojom::DistillerPageNotifierServicePtr page_notifier_service;
-  render_frame_host->GetRemoteInterfaces()->GetInterface(
-      &page_notifier_service);
-  DCHECK(page_notifier_service);
-  page_notifier_service->NotifyIsDistillerPage();
 
   if (viewer_handle) {
     // The service returned a |ViewerHandle| and guarantees it will call
@@ -269,31 +290,25 @@ void DomDistillerViewerSource::StartDataRequest(
 
   // Place template on the page.
   callback.Run(base::RefCountedString::TakeString(&unsafe_page_html));
-};
+}
 
 std::string DomDistillerViewerSource::GetMimeType(
     const std::string& path) const {
-  if (kViewerCssPath == path) {
+  if (kViewerCssPath == path)
     return "text/css";
-  } else if (kViewerLoadingImagePath == path) {
+  if (kViewerLoadingImagePath == path)
     return "image/svg+xml";
-  }
   return "text/html";
 }
 
 bool DomDistillerViewerSource::ShouldServiceRequest(
-    const net::URLRequest* request) const {
-  return request->url().SchemeIs(scheme_.c_str());
+    const GURL& url,
+    content::ResourceContext* resource_context,
+    int render_process_id) const {
+  return url.SchemeIs(scheme_);
 }
 
-// TODO(nyquist): Start tracking requests using this method.
-void DomDistillerViewerSource::WillServiceRequest(
-    const net::URLRequest* request,
-    std::string* path) const {
-}
-
-std::string DomDistillerViewerSource::GetContentSecurityPolicyStyleSrc()
-    const {
+std::string DomDistillerViewerSource::GetContentSecurityPolicyStyleSrc() const {
   return "style-src 'self' https://fonts.googleapis.com;";
 }
 

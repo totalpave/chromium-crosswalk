@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/macros.h"
 #include "base/path_service.h"
@@ -27,7 +28,12 @@
 
 namespace {
 
-using TemplateURLScraperTest = InProcessBrowserTest;
+class TemplateURLScraperTest : public InProcessBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    host_resolver()->AddRule("*", "localhost");
+  }
+};
 
 class TemplateURLServiceLoader {
  public:
@@ -52,7 +58,7 @@ class TemplateURLServiceLoader {
 std::unique_ptr<net::test_server::HttpResponse> SendResponse(
     const net::test_server::HttpRequest& request) {
   base::FilePath test_data_dir;
-  PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
+  base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
   base::FilePath index_file = test_data_dir.AppendASCII("template_url_scraper")
                                            .AppendASCII("submit_handler")
                                            .AppendASCII("index.html");
@@ -67,7 +73,6 @@ std::unique_ptr<net::test_server::HttpResponse> SendResponse(
 }  // namespace
 
 IN_PROC_BROWSER_TEST_F(TemplateURLScraperTest, ScrapeWithOnSubmit) {
-  host_resolver()->AddRule("*.foo.com", "localhost");
   embedded_test_server()->RegisterRequestHandler(base::Bind(&SendResponse));
   ASSERT_TRUE(embedded_test_server()->Start());
 
@@ -81,15 +86,13 @@ IN_PROC_BROWSER_TEST_F(TemplateURLScraperTest, ScrapeWithOnSubmit) {
 
   // We need to substract the default pre-populated engines that the profile is
   // set up with.
-  size_t default_index = 0;
-  ScopedVector<TemplateURLData> prepopulate_urls =
+  std::vector<std::unique_ptr<TemplateURLData>> prepopulate_urls =
       TemplateURLPrepopulateData::GetPrepopulatedEngines(
-          browser()->profile()->GetPrefs(),
-          &default_index);
+          browser()->profile()->GetPrefs(), nullptr);
 
   EXPECT_EQ(prepopulate_urls.size(), all_urls.size());
 
-  std::string port(base::IntToString(embedded_test_server()->port()));
+  std::string port(base::NumberToString(embedded_test_server()->port()));
   ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
       browser(), GURL("http://www.foo.com:" + port + "/"), 1);
 

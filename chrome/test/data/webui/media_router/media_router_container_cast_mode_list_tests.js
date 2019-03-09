@@ -52,10 +52,23 @@ cr.define('media_router_container_cast_mode_list', function() {
       var fakeCastModeList = [];
 
       /**
-       * The list of CastModes to show with non-default modes only.
+       * The list of CastModes to show with non-PRESENTATION modes only.
        * @type {!Array<!media_router.CastMode>}
        */
-      var fakeCastModeListWithNonDefaultModesOnly = [];
+      var fakeCastModeListWithNonPresentationModesOnly = [];
+
+      /**
+       * The list of CastModes to show with PRESENTATION mode forced.
+       * @type {!Array<!media_router.CastMode>}
+       */
+      var fakeCastModeListWithPresentationModeForced = [];
+
+      /**
+       * The list of CastModes including local media, which is just local file
+       * at the moement.
+       * @type {!Array<!media_router.CastMode>}
+       */
+      var fakeCastModeListWithLocalMedia = [];
 
       /**
        * The blocking issue to show.
@@ -80,22 +93,30 @@ cr.define('media_router_container_cast_mode_list', function() {
         PolymerTest.clearBody();
         // Initialize a media-router-container before each test.
         container = document.createElement('media-router-container');
+        container.get = function(strName) {
+          return this.$[strName];
+        };
+
         document.body.appendChild(container);
 
         // Get common functions and variables.
-        var test_base = media_router_container_test_base.init(container);
+        var testBase = media_router_container_test_base.init(container);
 
-        checkCurrentView = test_base.checkCurrentView;
-        checkElementsVisibleWithId = test_base.checkElementsVisibleWithId;
-        checkElementText = test_base.checkElementText;
-        fakeBlockingIssue = test_base.fakeBlockingIssue;
-        fakeCastModeList = test_base.fakeCastModeList;
-        fakeCastModeListWithNonDefaultModesOnly =
-            test_base.fakeCastModeListWithNonDefaultModesOnly;
-        fakeNonBlockingIssue = test_base.fakeNonBlockingIssue;
-        fakeSinkList = test_base.fakeSinkList;
+        checkCurrentView = testBase.checkCurrentView;
+        checkElementsVisibleWithId = testBase.checkElementsVisibleWithId;
+        checkElementText = testBase.checkElementText;
+        fakeBlockingIssue = testBase.fakeBlockingIssue;
+        fakeCastModeList = testBase.fakeCastModeList;
+        fakeCastModeListWithNonPresentationModesOnly =
+            testBase.fakeCastModeListWithNonPresentationModesOnly;
+        fakeCastModeListWithPresentationModeForced =
+            testBase.fakeCastModeListWithPresentationModeForced;
+        fakeCastModeListWithLocalMedia =
+            testBase.fakeCastModeListWithLocalMedia;
+        fakeNonBlockingIssue = testBase.fakeNonBlockingIssue;
+        fakeSinkList = testBase.fakeSinkList;
 
-        container.castModeList = test_base.fakeCastModeList;
+        container.castModeList = testBase.fakeCastModeList;
 
         // Allow for the media router container to be created, attached, and
         // listeners registered in an afterNextRender() call.
@@ -104,18 +125,18 @@ cr.define('media_router_container_cast_mode_list', function() {
 
       // Container remains in auto mode even if the cast mode list changed.
       test('cast mode list updated in auto mode', function(done) {
-        assertEquals(media_router.AUTO_CAST_MODE.description,
-            container.headerText);
-        assertEquals(media_router.CastModeType.AUTO,
-            container.shownCastModeValue_);
+        assertEquals(
+            media_router.AUTO_CAST_MODE.description, container.headerText);
+        assertEquals(
+            media_router.CastModeType.AUTO, container.shownCastModeValue_);
         assertFalse(container.userHasSelectedCastMode_);
 
         container.castModeList = fakeCastModeList.slice(1);
         setTimeout(function() {
-          assertEquals(media_router.AUTO_CAST_MODE.description,
-              container.headerText);
-          assertEquals(media_router.CastModeType.AUTO,
-              container.shownCastModeValue_);
+          assertEquals(
+              media_router.AUTO_CAST_MODE.description, container.headerText);
+          assertEquals(
+              media_router.CastModeType.AUTO, container.shownCastModeValue_);
           assertFalse(container.userHasSelectedCastMode_);
           done();
         });
@@ -124,16 +145,16 @@ cr.define('media_router_container_cast_mode_list', function() {
       // Tests that |container| returns to SINK_LIST view and arrow drop icon
       // toggles after a cast mode is selected.
       test('select cast mode', function(done) {
-        container.castModeList = fakeCastModeListWithNonDefaultModesOnly;
+        container.castModeList = fakeCastModeListWithNonPresentationModesOnly;
 
-        MockInteractions.tap(container.$['container-header'].
-            $['arrow-drop-icon']);
+        MockInteractions.tap(
+            container.get('container-header').$['arrow-drop-icon']);
         checkCurrentView(media_router.MediaRouterView.CAST_MODE_LIST);
 
         setTimeout(function() {
-          var castModeList =
-              container.$$('#cast-mode-list').querySelectorAll('paper-item');
-          MockInteractions.tap(castModeList[2]);
+          var castModeList = container.$$('#cast-mode-list')
+                                 .querySelectorAll('button.selectable-item');
+          MockInteractions.tap(castModeList[1]);
           checkCurrentView(media_router.MediaRouterView.SINK_LIST);
           done();
         });
@@ -144,44 +165,48 @@ cr.define('media_router_container_cast_mode_list', function() {
       test('click drop down icon', function() {
         checkCurrentView(media_router.MediaRouterView.SINK_LIST);
 
-        MockInteractions.tap(container.$['container-header'].
-            $['arrow-drop-icon']);
+        MockInteractions.tap(
+            container.get('container-header').$['arrow-drop-icon']);
         checkCurrentView(media_router.MediaRouterView.CAST_MODE_LIST);
 
-        MockInteractions.tap(container.$['container-header'].
-            $['arrow-drop-icon']);
+        MockInteractions.tap(
+            container.get('container-header').$['arrow-drop-icon']);
         checkCurrentView(media_router.MediaRouterView.SINK_LIST);
       });
 
       // Tests the header text. Choosing a cast mode updates the header text.
-      test('header text with no default cast modes', function(done) {
-        assertEquals(loadTimeData.getString('selectCastModeHeaderText'),
+      test('header text with cast mode selected', function(done) {
+        assertEquals(
+            loadTimeData.getString('selectCastModeHeaderText'),
             container.i18n('selectCastModeHeaderText'));
 
         // The container is currently in auto cast mode, since we have not
         // picked a cast mode explicitly, and the sinks is not compatible
         // with exactly one cast mode.
-        assertEquals(media_router.AUTO_CAST_MODE.description,
-            container.headerText);
+        assertEquals(
+            media_router.AUTO_CAST_MODE.description, container.headerText);
         assertFalse(container.userHasSelectedCastMode_);
 
-        container.castModeList = fakeCastModeListWithNonDefaultModesOnly;
+        container.castModeList = fakeCastModeListWithNonPresentationModesOnly;
 
         // Switch to cast mode list view.
-        MockInteractions.tap(container.$['container-header'].
-            $['arrow-drop-icon']);
+        MockInteractions.tap(
+            container.get('container-header').$['arrow-drop-icon']);
         setTimeout(function() {
-          var castModeList =
-              container.$$('#cast-mode-list').querySelectorAll('paper-item');
-          assertEquals(fakeCastModeListWithNonDefaultModesOnly.length,
+          var castModeList = container.$$('#cast-mode-list')
+                                 .querySelectorAll('button.selectable-item');
+          assertEquals(
+              fakeCastModeListWithNonPresentationModesOnly.length,
               castModeList.length);
           for (var i = 0; i < castModeList.length; i++) {
             MockInteractions.tap(castModeList[i]);
+
             assertEquals(
-                fakeCastModeListWithNonDefaultModesOnly[i].description,
+                fakeCastModeListWithNonPresentationModesOnly[i].description,
                 container.headerText);
+
             checkElementText(
-                fakeCastModeListWithNonDefaultModesOnly[i].description,
+                fakeCastModeListWithNonPresentationModesOnly[i].description,
                 castModeList[i]);
           }
 
@@ -190,33 +215,53 @@ cr.define('media_router_container_cast_mode_list', function() {
       });
 
       // Tests the header text when updated with a cast mode list with a mix of
-      // default and non-default cast modes.
-      test('cast modes with one default mode', function(done) {
+      // PRESENTATION and non-PRESENTATION cast modes.
+      test('cast modes with one presentation mode', function(done) {
         container.castModeList = fakeCastModeList;
 
         // Switch to cast mode list view.
-        MockInteractions.tap(container.$['container-header'].
-            $['arrow-drop-icon']);
+        MockInteractions.tap(
+            container.get('container-header').$['arrow-drop-icon']);
         setTimeout(function() {
-          var castModeList =
-              container.$$('#cast-mode-list').querySelectorAll('paper-item');
+          var castModeList = container.$$('#cast-mode-list')
+                                 .querySelectorAll('button.selectable-item');
 
           for (var i = 0; i < fakeCastModeList.length; i++) {
             MockInteractions.tap(castModeList[i]);
             if (fakeCastModeList[i].type ==
-                media_router.CastModeType.DEFAULT) {
-              assertEquals(fakeCastModeList[i].description,
-                  container.headerText);
+                media_router.CastModeType.PRESENTATION) {
+              assertEquals(
+                  fakeCastModeList[i].description, container.headerText);
 
               checkElementText(fakeCastModeList[i].host, castModeList[i]);
             } else {
-              assertEquals(fakeCastModeList[i].description,
-                  container.headerText);
-              checkElementText(fakeCastModeList[i].description,
-                  castModeList[i]);
+              assertEquals(
+                  fakeCastModeList[i].description, container.headerText);
+              checkElementText(
+                  fakeCastModeList[i].description, castModeList[i]);
             }
           }
 
+          done();
+        });
+      });
+
+      // Tests that pseudo sinks are ignored for the purpose of computing
+      // which cast mode to show.
+      test('cast modes not affected by pseudo sink', function(done) {
+        assertEquals(
+            media_router.CastModeType.AUTO, container.shownCastModeValue_);
+        container.castModeList = fakeCastModeList;
+        var sink = new media_router.Sink(
+            'pseudo-sink-id', 'Pseudo sink', null, null,
+            media_router.SinkIconType.GENERIC, media_router.SinkStatus.ACTIVE,
+            /* DESKTOP */ 0x4);
+        sink.isPseudoSink = true;
+        container.allSinks = [sink];
+
+        setTimeout(function() {
+          assertEquals(
+              media_router.CastModeType.AUTO, container.shownCastModeValue_);
           done();
         });
       });
@@ -225,23 +270,22 @@ cr.define('media_router_container_cast_mode_list', function() {
       test('cast mode list state visibility', function(done) {
         container.showCastModeList_();
         setTimeout(function() {
-          checkElementsVisibleWithId(['cast-mode-list',
-                                      'container-header',
-                                      'device-missing']);
+          checkElementsVisibleWithId(
+              ['cast-mode-list', 'container-header', 'device-missing']);
 
-          // Set a non-blocking issue. The issue should stay hidden.
+          // Set a non-blocking issue. The issue should be visible.
           container.issue = fakeNonBlockingIssue;
           setTimeout(function() {
-            checkElementsVisibleWithId(['cast-mode-list',
-                                        'container-header',
-                                        'device-missing']);
+            checkElementsVisibleWithId([
+              'cast-mode-list', 'container-header', 'device-missing',
+              'issue-banner'
+            ]);
 
-            // Set a blocking issue. The issue should stay hidden.
+            // Set a blocking issue. The cast mode list should not be displayed.
             container.issue = fakeBlockingIssue;
             setTimeout(function() {
-              checkElementsVisibleWithId(['container-header',
-                                          'device-missing',
-                                          'issue-banner']);
+              checkElementsVisibleWithId(
+                  ['container-header', 'device-missing', 'issue-banner']);
               done();
             });
           });
@@ -252,30 +296,32 @@ cr.define('media_router_container_cast_mode_list', function() {
       // no longer exists in the list of cast modes, then switch back to auto
       // mode.
       test('cast mode list updated in selected cast mode', function(done) {
-        assertEquals(media_router.AUTO_CAST_MODE.description,
-            container.headerText);
-        assertEquals(media_router.CastModeType.AUTO,
-            container.shownCastModeValue_);
+        assertEquals(
+            media_router.AUTO_CAST_MODE.description, container.headerText);
+        assertEquals(
+            media_router.CastModeType.AUTO, container.shownCastModeValue_);
         assertFalse(container.userHasSelectedCastMode_);
 
-        MockInteractions.tap(container.$['container-header'].
-            $['arrow-drop-icon']);
+        MockInteractions.tap(
+            container.get('container-header').$['arrow-drop-icon']);
         setTimeout(function() {
-          var castModeList =
-                container.$$('#cast-mode-list')
-                    .querySelectorAll('paper-item');
+          var castModeList = container.$$('#cast-mode-list')
+                                 .querySelectorAll('button.selectable-item');
           MockInteractions.tap(castModeList[0]);
           setTimeout(function() {
-            assertEquals(fakeCastModeList[0].description,
-                container.headerText);
-            assertEquals(fakeCastModeList[0].type,
-                container.shownCastModeValue_);
+            assertEquals(fakeCastModeList[0].description, container.headerText);
+            assertEquals(
+                fakeCastModeList[0].type, container.shownCastModeValue_);
+
             assertTrue(container.userHasSelectedCastMode_);
+
             container.castModeList = fakeCastModeList.slice(1);
             setTimeout(function() {
-              assertEquals(media_router.AUTO_CAST_MODE.description,
+              assertEquals(
+                  media_router.AUTO_CAST_MODE.description,
                   container.headerText);
-              assertEquals(media_router.CastModeType.AUTO,
+              assertEquals(
+                  media_router.CastModeType.AUTO,
                   container.shownCastModeValue_);
               assertFalse(container.userHasSelectedCastMode_);
               done();
@@ -289,36 +335,67 @@ cr.define('media_router_container_cast_mode_list', function() {
       test('changing cast mode changes sink list', function(done) {
         container.allSinks = fakeSinkList;
 
-        MockInteractions.tap(container.$['container-header'].
-            $['arrow-drop-icon']);
+        MockInteractions.tap(
+            container.get('container-header').$['arrow-drop-icon']);
         setTimeout(function() {
-          var castModeList =
-                container.$$('#cast-mode-list')
-                    .querySelectorAll('paper-item');
+          var castModeList = container.$$('#cast-mode-list')
+                                 .querySelectorAll('button.selectable-item');
           MockInteractions.tap(castModeList[0]);
-          assertEquals(fakeCastModeList[0].description,
-              container.headerText);
+          assertEquals(fakeCastModeList[0].description, container.headerText);
 
           setTimeout(function() {
-            var sinkList =
-                container.shadowRoot.getElementById('sink-list')
-                    .querySelectorAll('paper-item');
-
-            // The sink list is empty because none of the sinks in
+            var sinkList = container.shadowRoot.getElementById('sink-list');
+            // The sink list is hidden because none of the sinks in
             // fakeSinkList is compatible with cast mode 0.
-            assertEquals(0, sinkList.length);
+            assertEquals('none', window.getComputedStyle(sinkList).display);
             MockInteractions.tap(castModeList[2]);
-            assertEquals(fakeCastModeList[2].description,
-                container.headerText);
+            assertEquals(fakeCastModeList[2].description, container.headerText);
 
             setTimeout(function() {
-              var sinkList =
-                  container.shadowRoot.getElementById('sink-list')
-                      .querySelectorAll('paper-item');
-              assertEquals(3, sinkList.length);
+              var sinkList = container.shadowRoot.getElementById('sink-list');
+              var sinkListElements =
+                  sinkList.querySelectorAll('button.selectable-item');
+              assertNotEquals(
+                  'none', window.getComputedStyle(sinkList).display);
+              assertEquals(3, sinkListElements.length);
               done();
             });
           });
+        });
+      });
+
+      // When a forced cast mode it set, it is used.
+      test('cast mode list respects forced mode', function(done) {
+        container.allSinks = [
+          new media_router.Sink(
+              'sink id 1', 'Sink 1', null, null, media_router.SinkIconType.CAST,
+              media_router.SinkStatus.ACTIVE, 0x1),
+          new media_router.Sink(
+              'sink id 2', 'Sink 2', null, null, media_router.SinkIconType.CAST,
+              media_router.SinkStatus.ACTIVE, 0x1 | 0x2),
+          new media_router.Sink(
+              'sink id 3', 'Sink 3', null, null, media_router.SinkIconType.CAST,
+              media_router.SinkStatus.ACTIVE, 0x2)
+        ];
+        container.castModeList = fakeCastModeListWithPresentationModeForced;
+        MockInteractions.tap(
+            container.$['container-header'].$['arrow-drop-icon']);
+        setTimeout(function() {
+          assertEquals(
+              media_router.CastModeType.PRESENTATION,
+              container.shownCastModeValue_);
+          assertEquals('Cast google.com', container.headerText);
+          assertFalse(container.userHasSelectedCastMode_);
+
+          var sinkList = container.shadowRoot.getElementById('sink-list')
+                             .querySelectorAll('button.selectable-item');
+
+          // The sink list contains only sinks compatible with PRESENTATION
+          // mode.
+          assertEquals(2, sinkList.length);
+          checkElementText('Sink 1', sinkList[0]);
+          checkElementText('Sink 2', sinkList[1]);
+          done();
         });
       });
 
@@ -327,47 +404,47 @@ cr.define('media_router_container_cast_mode_list', function() {
       // route.
       test('sink list in user selected cast mode', function(done) {
         var newSinks = [
-          new media_router.Sink('sink id 10', 'Sink 10', null, null,
-              media_router.SinkIconType.CAST,
-              media_router.SinkStatus.ACTIVE, 0x4 | 0x8),
-          new media_router.Sink('sink id 20', 'Sink 20', null, null,
-              media_router.SinkIconType.CAST,
-              media_router.SinkStatus.ACTIVE, 0x2 | 0x4 | 0x8),
-          new media_router.Sink('sink id 30', 'Sink 30', null, null,
-              media_router.SinkIconType.CAST,
-              media_router.SinkStatus.PENDING, 0x4 | 0x8),
+          new media_router.Sink(
+              'sink id 10', 'Sink 10', null, null,
+              media_router.SinkIconType.CAST, media_router.SinkStatus.ACTIVE,
+              0x4 | 0x8),
+          new media_router.Sink(
+              'sink id 20', 'Sink 20', null, null,
+              media_router.SinkIconType.CAST, media_router.SinkStatus.ACTIVE,
+              0x2 | 0x4 | 0x8),
+          new media_router.Sink(
+              'sink id 30', 'Sink 30', null, null,
+              media_router.SinkIconType.CAST, media_router.SinkStatus.PENDING,
+              0x4 | 0x8),
         ];
 
         container.allSinks = newSinks;
         container.routeList = [
-          new media_router.Route('id 1', 'sink id 30',
-                                 'Title 1', 1, false, false),
+          new media_router.Route(
+              'id 1', 'sink id 30', 'Title 1', 1, false, false),
         ];
 
         setTimeout(function() {
-          var sinkList =
-              container.shadowRoot.getElementById('sink-list')
-                  .querySelectorAll('paper-item');
+          var sinkList = container.shadowRoot.getElementById('sink-list')
+                             .querySelectorAll('button.selectable-item');
 
           // Since we haven't selected a cast mode, we don't filter sinks.
           assertEquals(3, sinkList.length);
 
-          MockInteractions.tap(container.$['container-header'].
-              $['arrow-drop-icon']);
+          MockInteractions.tap(
+              container.get('container-header').$['arrow-drop-icon']);
           setTimeout(function() {
             // Cast mode 1 is selected, and the sink list is filtered.
-            var castModeList =
-                container.$$('#cast-mode-list').querySelectorAll('paper-item');
+            var castModeList = container.$$('#cast-mode-list')
+                                   .querySelectorAll('button.selectable-item');
             MockInteractions.tap(castModeList[1]);
-            assertEquals(fakeCastModeList[1].description,
-                container.headerText);
-            assertEquals(fakeCastModeList[1].type,
-                container.shownCastModeValue_);
+            assertEquals(fakeCastModeList[1].description, container.headerText);
+            assertEquals(
+                fakeCastModeList[1].type, container.shownCastModeValue_);
 
             setTimeout(function() {
-              var sinkList =
-                  container.shadowRoot.getElementById('sink-list')
-                      .querySelectorAll('paper-item');
+              var sinkList = container.shadowRoot.getElementById('sink-list')
+                                 .querySelectorAll('button.selectable-item');
 
               // newSinks[0] got filtered out since it is not compatible with
               // cast mode 1.
@@ -387,17 +464,37 @@ cr.define('media_router_container_cast_mode_list', function() {
               // selected that cast mode.
               container.allSinks = [];
               setTimeout(function() {
-                assertEquals(fakeCastModeList[1].description,
-                    container.headerText);
-                assertEquals(fakeCastModeList[1].type,
-                    container.shownCastModeValue_);
-                var sinkList =
-                    container.shadowRoot.getElementById('sink-list')
-                        .querySelectorAll('paper-item');
-                assertEquals(0, sinkList.length);
+                assertEquals(
+                    fakeCastModeList[1].description, container.headerText);
+                assertEquals(
+                    fakeCastModeList[1].type, container.shownCastModeValue_);
+
+                // The sink list is hidden since there are no compatible sinks.
+                var sinkList = container.shadowRoot.getElementById('sink-list');
+                assertEquals('none', window.getComputedStyle(sinkList).display);
                 done();
               });
             });
+          });
+        });
+      });
+
+      // Tests that the header is set appropriately when files are selected
+      // one after the other.
+      test('cast to sink with existing route', function(done) {
+        container.castModeList = fakeCastModeListWithLocalMedia;
+
+        var fileName1 = 'file1';
+        var fileName2 = 'file2';
+
+        container.onFileDialogSuccess(fileName1);
+        setTimeout(function() {
+          assertTrue(container.headerText.includes(fileName1));
+          container.onFileDialogSuccess(fileName2);
+          setTimeout(function() {
+            assertTrue(container.headerText.includes(fileName2));
+            assertFalse(container.headerText.includes(fileName1));
+            done();
           });
         });
       });
@@ -407,41 +504,40 @@ cr.define('media_router_container_cast_mode_list', function() {
       // cast mode.
       test('cast to sink with existing route', function(done) {
         var newSinks = [
-          new media_router.Sink('sink id 10', 'Sink 10', null, null,
-              media_router.SinkIconType.CAST,
-              media_router.SinkStatus.ACTIVE, 0x2 | 0x4 | 0x8),
+          new media_router.Sink(
+              'sink id 10', 'Sink 10', null, null,
+              media_router.SinkIconType.CAST, media_router.SinkStatus.ACTIVE,
+              0x2 | 0x4 | 0x8),
         ];
 
         container.allSinks = newSinks;
         container.routeList = [
-          new media_router.Route('id 1', 'sink id 10',
-                                 'Title 1', 1, false, false),
+          new media_router.Route(
+              'id 1', 'sink id 10', 'Title 1', 1, false, false),
         ];
 
         setTimeout(function() {
-          var sinkList =
-              container.shadowRoot.getElementById('sink-list')
-                  .querySelectorAll('paper-item');
+          var sinkList = container.shadowRoot.getElementById('sink-list')
+                             .querySelectorAll('button.selectable-item');
 
-          MockInteractions.tap(container.$['container-header'].
-              $['arrow-drop-icon']);
+          MockInteractions.tap(
+              container.get('container-header').$['arrow-drop-icon']);
           setTimeout(function() {
             // Cast mode 1 is selected, and the sink list is filtered.
-            var castModeList =
-                container.$$('#cast-mode-list').querySelectorAll('paper-item');
+            var castModeList = container.$$('#cast-mode-list')
+                                   .querySelectorAll('button.selectable-item');
             MockInteractions.tap(castModeList[1]);
 
             setTimeout(function() {
-              var sinkList =
-                  container.shadowRoot.getElementById('sink-list')
-                      .querySelectorAll('paper-item');
+              var sinkList = container.shadowRoot.getElementById('sink-list')
+                                 .querySelectorAll('button.selectable-item');
 
               MockInteractions.tap(sinkList[0]);
               setTimeout(function() {
                 assertFalse(container.shadowRoot.getElementById('route-details')
-                            .shadowRoot
-                            .getElementById('start-casting-to-route-button')
-                            .hasAttribute('hidden'));
+                                .shadowRoot
+                                .getElementById('start-casting-to-route-button')
+                                .hasAttribute('hidden'));
                 done();
               });
             });

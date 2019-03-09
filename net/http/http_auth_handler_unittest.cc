@@ -6,11 +6,14 @@
 
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_task_environment.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
 #include "net/http/http_auth_challenge_tokenizer.h"
 #include "net/http/http_auth_handler_mock.h"
 #include "net/http/http_request_info.h"
+#include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source_type.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_entry.h"
 #include "net/log/test_net_log_util.h"
@@ -20,6 +23,8 @@
 namespace net {
 
 TEST(HttpAuthHandlerTest, NetLog) {
+  base::test::ScopedTaskEnvironment scoped_task_environment;
+
   GURL origin("http://www.example.com");
   std::string challenge = "Mock asdf";
   AuthCredentials credentials(base::ASCIIToUTF16("user"),
@@ -35,18 +40,18 @@ TEST(HttpAuthHandlerTest, NetLog) {
         TestCompletionCallback test_callback;
         HttpAuth::Target target =
             (k == 0) ? HttpAuth::AUTH_PROXY : HttpAuth::AUTH_SERVER;
-        NetLog::EventType event_type =
-            (k == 0) ? NetLog::TYPE_AUTH_PROXY : NetLog::TYPE_AUTH_SERVER;
+        NetLogEventType event_type = (k == 0) ? NetLogEventType::AUTH_PROXY
+                                              : NetLogEventType::AUTH_SERVER;
         HttpAuthChallengeTokenizer tokenizer(
             challenge.begin(), challenge.end());
         HttpAuthHandlerMock mock_handler;
         TestNetLog test_net_log;
-        BoundNetLog bound_net_log(
-            BoundNetLog::Make(&test_net_log, NetLog::SOURCE_NONE));
+        NetLogWithSource net_log(
+            NetLogWithSource::Make(&test_net_log, NetLogSourceType::NONE));
 
         SSLInfo empty_ssl_info;
         mock_handler.InitFromChallenge(&tokenizer, target, empty_ssl_info,
-                                       origin, bound_net_log);
+                                       origin, net_log);
         mock_handler.SetGenerateExpectation(async, rv);
         mock_handler.GenerateAuthToken(&credentials, &request,
                                        test_callback.callback(), &auth_token);

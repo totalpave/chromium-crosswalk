@@ -33,12 +33,12 @@ class MockObserver : public WarningService::Observer {
   MOCK_METHOD1(ExtensionWarningsChanged, void(const ExtensionIdSet&));
 };
 
-typedef ExtensionsTest WarningServiceTest;
+using WarningServiceTest = ExtensionsTest;
 
-const char* ext1_id = "extension1";
-const char* ext2_id = "extension2";
+const char ext1_id[] = "extension1";
+const char ext2_id[] = "extension2";
 const Warning::WarningType warning_1 = Warning::kNetworkDelay;
-const Warning::WarningType warning_2 = Warning::kNetworkConflict;
+const Warning::WarningType warning_2 = Warning::kRepeatedCacheFlushes;
 
 }  // namespace
 
@@ -80,7 +80,7 @@ TEST_F(WarningServiceTest, ClearWarnings) {
   EXPECT_CALL(observer, ExtensionWarningsChanged(affected_extensions));
   WarningSet warning_set;
   warning_set.insert(Warning::CreateNetworkDelayWarning(ext1_id));
-  warning_set.insert(Warning::CreateNetworkConflictWarning(ext2_id));
+  warning_set.insert(Warning::CreateRepeatedCacheFlushesWarning(ext2_id));
   warning_service.AddWarnings(warning_set);
   testing::Mock::VerifyAndClearExpectations(&warning_service);
 

@@ -15,17 +15,7 @@
 #include "base/macros.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-
-// This method exists on NSWindowDelegate on 10.7+.
-// To build on 10.6, we just need to declare it somewhere. We'll test
-// -[NSObject respondsToSelector] before calling it.
-#if !defined(MAC_OS_X_VERSION_10_7) || \
-    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_7
-@protocol NSWindowDelegateLion
-- (NSSize)window:(NSWindow*)window
-    willUseFullScreenContentSize:(NSSize)proposedSize;
-@end
-#endif
+#include "base/threading/thread_task_runner_handle.h"
 
 // Donates a testing implementation of [NSWindow toggleFullScreen:].
 @interface ToggleFullscreenDonorForWindow : NSObject
@@ -116,9 +106,11 @@ class ScopedFakeNSWindowFullscreen::Impl {
     [[NSNotificationCenter defaultCenter]
         postNotificationName:NSWindowWillStartLiveResizeNotification
                       object:window];
-    base::MessageLoopForUI::current()->PostTask(
-        FROM_HERE, base::Bind(&Impl::FinishEnterFullscreen,
-                              base::Unretained(this), fullscreen_content_size));
+    DCHECK(base::MessageLoopCurrentForUI::IsSet());
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&Impl::FinishEnterFullscreen, base::Unretained(this),
+                       fullscreen_content_size));
   }
 
   void FinishEnterFullscreen(NSSize fullscreen_content_size) {
@@ -154,9 +146,10 @@ class ScopedFakeNSWindowFullscreen::Impl {
         postNotificationName:NSWindowWillExitFullScreenNotification
                       object:window_];
 
-    base::MessageLoopForUI::current()->PostTask(
+    DCHECK(base::MessageLoopCurrentForUI::IsSet());
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&Impl::FinishExitFullscreen, base::Unretained(this)));
+        base::BindOnce(&Impl::FinishExitFullscreen, base::Unretained(this)));
   }
 
   void FinishExitFullscreen() {

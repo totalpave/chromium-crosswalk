@@ -7,11 +7,8 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
+#include "base/single_thread_task_runner.h"
 #include "content/shell/browser/shell_url_request_context_getter.h"
-
-namespace base {
-class MessageLoop;
-}
 
 namespace content {
 class BrowserContext;
@@ -34,7 +31,6 @@ class ShellURLRequestContextGetter
       bool ignore_certificate_errors,
       const base::FilePath& base_path,
       scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
       content::ProtocolHandlerMap* protocol_handlers,
       content::URLRequestInterceptorScopedVector request_interceptors,
       net::NetLog* net_log,

@@ -10,14 +10,20 @@
 #include <memory>
 #include <string>
 
-#include "base/callback_forward.h"
+#include "base/callback.h"
 #include "base/strings/string16.h"
 #include "base/time/time.h"
+#include "components/metrics/metrics_log_uploader.h"
 #include "components/metrics/metrics_reporting_default_state.h"
-#include "components/metrics/proto/system_profile.pb.h"
+#include "third_party/metrics_proto/system_profile.pb.h"
+#include "url/gurl.h"
 
 namespace base {
 class FilePath;
+}
+
+namespace ukm {
+class UkmService;
 }
 
 namespace metrics {
@@ -29,7 +35,8 @@ class MetricsService;
 // environment.
 class MetricsServiceClient {
  public:
-  virtual ~MetricsServiceClient() {}
+  MetricsServiceClient();
+  virtual ~MetricsServiceClient();
 
   // Returns the MetricsService instance that this client is associated with.
   // With the exception of testing contexts, the returned instance must be valid
@@ -37,16 +44,12 @@ class MetricsServiceClient {
   // implementation will own the MetricsService instance being returned).
   virtual MetricsService* GetMetricsService() = 0;
 
+  // Returns the UkmService instance that this client is associated with.
+  virtual ukm::UkmService* GetUkmService();
+
   // Registers the client id with other services (e.g. crash reporting), called
   // when metrics recording gets enabled.
   virtual void SetMetricsClientId(const std::string& client_id) = 0;
-
-  // Notifies the client that recording is disabled, so that other services
-  // (such as crash reporting) can clear any association with metrics.
-  virtual void OnRecordingDisabled() = 0;
-
-  // Whether there's an "off the record" (aka "Incognito") session active.
-  virtual bool IsOffTheRecordSessionActive() = 0;
 
   // Returns the product value to use in uploaded reports, which will be used to
   // set the ChromeUserMetricsExtension.product field. See comments on that
@@ -66,13 +69,14 @@ class MetricsServiceClient {
   // Returns the version of the application as a string.
   virtual std::string GetVersionString() = 0;
 
-  // Called by the metrics service when a log has been uploaded.
-  virtual void OnLogUploadComplete() = 0;
+  // Called by the metrics service when a new environment has been recorded.
+  // Takes the serialized environment as a parameter. The contents of
+  // |serialized_environment| are consumed by the call, but the caller maintains
+  // ownership.
+  virtual void OnEnvironmentUpdate(std::string* serialized_environment) {}
 
-  // Gathers metrics that will be filled into the system profile protobuf,
-  // calling |done_callback| when complete.
-  virtual void InitializeSystemProfileMetrics(
-      const base::Closure& done_callback) = 0;
+  // Called by the metrics service to record a clean shutdown.
+  virtual void OnLogCleanShutdown() {}
 
   // Called prior to a metrics log being closed, allowing the client to collect
   // extra histograms that will go in that log. Asynchronous API - the client
@@ -80,17 +84,23 @@ class MetricsServiceClient {
   virtual void CollectFinalMetricsForLog(
       const base::Closure& done_callback) = 0;
 
+  // Get the URL of the metrics server.
+  virtual GURL GetMetricsServerUrl();
+
+  // Get the fallback HTTP URL of the metrics server.
+  virtual GURL GetInsecureMetricsServerUrl();
+
   // Creates a MetricsLogUploader with the specified parameters (see comments on
   // MetricsLogUploader for details).
   virtual std::unique_ptr<MetricsLogUploader> CreateUploader(
-      const base::Callback<void(int)>& on_upload_complete) = 0;
+      const GURL& server_url,
+      const GURL& insecure_server_url,
+      base::StringPiece mime_type,
+      metrics::MetricsLogUploader::MetricServiceType service_type,
+      const MetricsLogUploader::UploadCallback& on_upload_complete) = 0;
 
   // Returns the standard interval between upload attempts.
   virtual base::TimeDelta GetStandardUploadInterval() = 0;
-
-  // Returns the name of a key under HKEY_CURRENT_USER that can be used to store
-  // backups of metrics data. Unused except on Windows.
-  virtual base::string16 GetRegistryBackupKey();
 
   // Called on plugin loading errors.
   virtual void OnPluginLoadingError(const base::FilePath& plugin_path) {}
@@ -109,6 +119,39 @@ class MetricsServiceClient {
 
   // Returns whether cellular logic is enabled for metrics reporting.
   virtual bool IsUMACellularUploadLogicEnabled();
+
+  // Returns true iff sync is in a state that allows UKM to be enabled.
+  // See //components/ukm/observers/sync_disable_observer.h for details.
+  virtual bool SyncStateAllowsUkm();
+
+  // Returns true iff sync is in a state that allows UKM to capture extensions.
+  // See //components/ukm/observers/sync_disable_observer.h for details.
+  virtual bool SyncStateAllowsExtensionUkm();
+
+  // Returns whether UKM notification listeners were attached to all profiles.
+  virtual bool AreNotificationListenersEnabledOnAllProfiles();
+
+  // Gets Chrome's package name in Android Chrome, or the host app's package
+  // name in Android WebView, or an empty string on other platforms.
+  virtual std::string GetAppPackageName();
+
+  // Gets the key used to sign metrics uploads. This will be used to compute an
+  // HMAC-SHA256 signature of an uploaded log.
+  virtual std::string GetUploadSigningKey();
+
+  // Sets the callback to run MetricsServiceManager::UpdateRunningServices.
+  void SetUpdateRunningServicesCallback(const base::Closure& callback);
+
+  // Notify MetricsServiceManager to UpdateRunningServices using callback.
+  void UpdateRunningServices();
+
+  // Checks if the user has forced metrics collection on via the override flag.
+  bool IsMetricsReportingForceEnabled();
+
+ private:
+  base::Closure update_running_services_;
+
+  DISALLOW_COPY_AND_ASSIGN(MetricsServiceClient);
 };
 
 }  // namespace metrics

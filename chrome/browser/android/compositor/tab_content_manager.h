@@ -7,10 +7,12 @@
 
 #include <jni.h>
 
+#include <map>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_weak_ref.h"
-#include "base/containers/hash_tables.h"
-#include "base/containers/scoped_ptr_hash_map.h"
+#include "base/android/scoped_java_ref.h"
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "cc/layers/ui_resource_layer.h"
@@ -19,7 +21,6 @@
 using base::android::ScopedJavaLocalRef;
 
 namespace cc {
-class CopyOutputResult;
 class Layer;
 }
 
@@ -27,7 +28,6 @@ namespace ui {
 class UIResourceProvider;
 }
 
-namespace chrome {
 namespace android {
 
 class ThumbnailLayer;
@@ -35,7 +35,8 @@ class ThumbnailLayer;
 // A native component of the Java TabContentManager class.
 class TabContentManager : public ThumbnailCacheObserver {
  public:
-  static TabContentManager* FromJavaObject(jobject jobj);
+  static TabContentManager* FromJavaObject(
+      const base::android::JavaRef<jobject>& jobj);
 
   TabContentManager(JNIEnv* env,
                     jobject obj,
@@ -54,9 +55,11 @@ class TabContentManager : public ThumbnailCacheObserver {
   // Get the live layer from the cache.
   scoped_refptr<cc::Layer> GetLiveLayer(int tab_id);
 
+  scoped_refptr<ThumbnailLayer> GetStaticLayer(int tab_id);
+
   // Get the static thumbnail from the cache, or the NTP.
-  scoped_refptr<ThumbnailLayer> GetStaticLayer(int tab_id,
-                                               bool force_disk_read);
+  scoped_refptr<ThumbnailLayer> GetOrCreateStaticLayer(int tab_id,
+                                                       bool force_disk_read);
 
   // Should be called when a tab gets a new live layer that should be served
   // by the cache to the CompositorView.
@@ -67,8 +70,6 @@ class TabContentManager : public ThumbnailCacheObserver {
   // make sure all live layers are detached.
   void DetachLiveLayer(int tab_id, scoped_refptr<cc::Layer> layer);
 
-  // Callback for when the thumbnail decompression for tab_id is done.
-  void OnFinishDecompressThumbnail(int tab_id, bool success, SkBitmap bitmap);
   // JNI methods.
   jboolean HasFullCachedThumbnail(
       JNIEnv* env,
@@ -77,7 +78,6 @@ class TabContentManager : public ThumbnailCacheObserver {
   void CacheTab(JNIEnv* env,
                 const base::android::JavaParamRef<jobject>& obj,
                 const base::android::JavaParamRef<jobject>& tab,
-                const base::android::JavaParamRef<jobject>& content_view_core,
                 jfloat thumbnail_scale);
   void CacheTabWithBitmap(JNIEnv* env,
                           const base::android::JavaParamRef<jobject>& obj,
@@ -90,28 +90,39 @@ class TabContentManager : public ThumbnailCacheObserver {
                            const base::android::JavaParamRef<jstring>& jurl);
   void UpdateVisibleIds(JNIEnv* env,
                         const base::android::JavaParamRef<jobject>& obj,
-                        const base::android::JavaParamRef<jintArray>& priority);
+                        const base::android::JavaParamRef<jintArray>& priority,
+                        jint primary_tab_id);
+  void NativeRemoveTabThumbnail(int tab_id);
   void RemoveTabThumbnail(JNIEnv* env,
                           const base::android::JavaParamRef<jobject>& obj,
                           jint tab_id);
-  void GetDecompressedThumbnail(JNIEnv* env,
-                                const base::android::JavaParamRef<jobject>& obj,
-                                jint tab_id);
   void OnUIResourcesWereEvicted();
+  void GetTabThumbnailWithCallback(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      jint tab_id,
+      const base::android::JavaParamRef<jobject>& j_callback);
 
   // ThumbnailCacheObserver implementation;
   void OnFinishedThumbnailRead(TabId tab_id) override;
 
  private:
   class TabReadbackRequest;
-  typedef base::hash_map<int, scoped_refptr<cc::Layer>> LayerMap;
-  typedef base::hash_map<int, scoped_refptr<ThumbnailLayer>> ThumbnailLayerMap;
-  typedef base::ScopedPtrHashMap<int, std::unique_ptr<TabReadbackRequest>>
-      TabReadbackRequestMap;
+  // TODO(bug 714384) check sizes and consider using base::flat_map if these
+  // layer maps are small.
+  using LayerMap = std::map<int, scoped_refptr<cc::Layer>>;
+  using ThumbnailLayerMap = std::map<int, scoped_refptr<ThumbnailLayer>>;
+  using TabReadbackRequestMap =
+      base::flat_map<int, std::unique_ptr<TabReadbackRequest>>;
 
   void PutThumbnailIntoCache(int tab_id,
                              float thumbnail_scale,
                              const SkBitmap& bitmap);
+
+  void TabThumbnailAvailableFromDisk(
+      base::android::ScopedJavaGlobalRef<jobject> j_callback,
+      bool result,
+      SkBitmap bitmap);
 
   std::unique_ptr<ThumbnailCache> thumbnail_cache_;
   ThumbnailLayerMap static_layer_cache_;
@@ -124,9 +135,6 @@ class TabContentManager : public ThumbnailCacheObserver {
   DISALLOW_COPY_AND_ASSIGN(TabContentManager);
 };
 
-bool RegisterTabContentManager(JNIEnv* env);
-
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_TAB_CONTENT_MANAGER_H_

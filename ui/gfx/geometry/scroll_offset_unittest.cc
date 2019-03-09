@@ -7,7 +7,7 @@
 #include <cmath>
 #include <limits>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/scroll_offset.h"
 
@@ -15,26 +15,26 @@ namespace gfx {
 
 TEST(ScrollOffsetTest, IsZero) {
   ScrollOffset zero(0, 0);
-  ScrollOffset nonzero(0.1, -0.1);
+  ScrollOffset nonzero(0.1f, -0.1f);
 
   EXPECT_TRUE(zero.IsZero());
   EXPECT_FALSE(nonzero.IsZero());
 }
 
 TEST(ScrollOffsetTest, Add) {
-  ScrollOffset f1(3.1, 5.1);
-  ScrollOffset f2(4.3, -1.3);
+  ScrollOffset f1(3.1f, 5.1f);
+  ScrollOffset f2(4.3f, -1.3f);
 
   const struct {
     ScrollOffset expected;
     ScrollOffset actual;
   } scroll_offset_tests[] = {
-    { ScrollOffset(3.1, 5.1), f1 + ScrollOffset() },
-    { ScrollOffset(3.1 + 4.3, 5.1f - 1.3), f1 + f2 },
-    { ScrollOffset(3.1 - 4.3, 5.1f + 1.3), f1 - f2 }
+    { ScrollOffset(3.1f, 5.1f), f1 + ScrollOffset() },
+    { ScrollOffset(3.1f + 4.3f, 5.1f - 1.3f), f1 + f2 },
+    { ScrollOffset(3.1f - 4.3f, 5.1f + 1.3f), f1 - f2 }
   };
 
-  for (size_t i = 0; i < arraysize(scroll_offset_tests); ++i)
+  for (size_t i = 0; i < base::size(scroll_offset_tests); ++i)
     EXPECT_EQ(scroll_offset_tests[i].expected.ToString(),
               scroll_offset_tests[i].actual.ToString());
 }
@@ -44,50 +44,50 @@ TEST(ScrollOffsetTest, Negative) {
     ScrollOffset expected;
     ScrollOffset actual;
   } scroll_offset_tests[] = {
-    { ScrollOffset(-0.3, -0.3), -ScrollOffset(0.3, 0.3) },
-    { ScrollOffset(0.3, 0.3), -ScrollOffset(-0.3, -0.3) },
-    { ScrollOffset(-0.3, 0.3), -ScrollOffset(0.3, -0.3) },
-    { ScrollOffset(0.3, -0.3), -ScrollOffset(-0.3, 0.3) }
+    { ScrollOffset(-0.3f, -0.3f), -ScrollOffset(0.3f, 0.3f) },
+    { ScrollOffset(0.3f, 0.3f), -ScrollOffset(-0.3f, -0.3f) },
+    { ScrollOffset(-0.3f, 0.3f), -ScrollOffset(0.3f, -0.3f) },
+    { ScrollOffset(0.3f, -0.3f), -ScrollOffset(-0.3f, 0.3f) }
   };
 
-  for (size_t i = 0; i < arraysize(scroll_offset_tests); ++i)
+  for (size_t i = 0; i < base::size(scroll_offset_tests); ++i)
     EXPECT_EQ(scroll_offset_tests[i].expected.ToString(),
               scroll_offset_tests[i].actual.ToString());
 }
 
 TEST(ScrollOffsetTest, Scale) {
-  double double_values[][4] = {
-    { 4.5, 1.2, 3.3, 5.6 },
-    { 4.5, -1.2, 3.3, 5.6 },
-    { 4.5, 1.2, 3.3, -5.6 },
-    { 4.5, 1.2, -3.3, -5.6 },
-    { -4.5, 1.2, 3.3, 5.6 },
-    { -4.5, 1.2, 0, 5.6 },
-    { -4.5, 1.2, 3.3, 0 },
-    { 4.5, 0, 3.3, 5.6 },
-    { 0, 1.2, 3.3, 5.6 }
+  float float_values[][4] = {
+    { 4.5f, 1.2f, 3.3f, 5.6f },
+    { 4.5f, -1.2f, 3.3f, 5.6f },
+    { 4.5f, 1.2f, 3.3f, -5.6f },
+    { 4.5f, 1.2f, -3.3f, -5.6f },
+    { -4.5f, 1.2f, 3.3f, 5.6f },
+    { -4.5f, 1.2f, 0, 5.6f },
+    { -4.5f, 1.2f, 3.3f, 0 },
+    { 4.5f, 0, 3.3f, 5.6f },
+    { 0, 1.2f, 3.3f, 5.6f }
   };
 
-  for (size_t i = 0; i < arraysize(double_values); ++i) {
-    ScrollOffset v(double_values[i][0], double_values[i][1]);
-    v.Scale(double_values[i][2], double_values[i][3]);
-    EXPECT_EQ(v.x(), double_values[i][0] * double_values[i][2]);
-    EXPECT_EQ(v.y(), double_values[i][1] * double_values[i][3]);
+  for (size_t i = 0; i < base::size(float_values); ++i) {
+    ScrollOffset v(float_values[i][0], float_values[i][1]);
+    v.Scale(float_values[i][2], float_values[i][3]);
+    EXPECT_EQ(v.x(), float_values[i][0] * float_values[i][2]);
+    EXPECT_EQ(v.y(), float_values[i][1] * float_values[i][3]);
   }
 
-  double single_values[][3] = {
-    { 4.5, 1.2, 3.3 },
-    { 4.5, -1.2, 3.3 },
-    { 4.5, 1.2, 3.3 },
-    { 4.5, 1.2, -3.3 },
-    { -4.5, 1.2, 3.3 },
-    { -4.5, 1.2, 0 },
-    { -4.5, 1.2, 3.3 },
-    { 4.5, 0, 3.3 },
-    { 0, 1.2, 3.3 }
+  float single_values[][3] = {
+    { 4.5f, 1.2f, 3.3f },
+    { 4.5f, -1.2f, 3.3f },
+    { 4.5f, 1.2f, 3.3f },
+    { 4.5f, 1.2f, -3.3f },
+    { -4.5f, 1.2f, 3.3f },
+    { -4.5f, 1.2f, 0 },
+    { -4.5f, 1.2f, 3.3f },
+    { 4.5f, 0, 3.3f },
+    { 0, 1.2f, 3.3f }
   };
 
-  for (size_t i = 0; i < arraysize(single_values); ++i) {
+  for (size_t i = 0; i < base::size(single_values); ++i) {
     ScrollOffset v(single_values[i][0], single_values[i][1]);
     v.Scale(single_values[i][2]);
     EXPECT_EQ(v.x(), single_values[i][0] * single_values[i][2]);

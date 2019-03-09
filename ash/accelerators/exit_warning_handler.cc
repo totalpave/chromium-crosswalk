@@ -4,16 +4,17 @@
 
 #include "ash/accelerators/exit_warning_handler.h"
 
-#include "ash/common/shell_window_ids.h"
-#include "ash/common/wm_shell.h"
+#include <memory>
+
+#include "ash/public/cpp/shell_window_ids.h"
+#include "ash/session/session_controller.h"
 #include "ash/shell.h"
-#include "ash/shell_delegate.h"
+#include "ash/strings/grit/ash_strings.h"
+#include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "grit/ash_strings.h"
-#include "ui/accessibility/ax_view_state.h"
-#include "ui/aura/window.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/canvas.h"
@@ -40,57 +41,46 @@ const int kVerticalMarginAroundText = 100;
 
 class ExitWarningWidgetDelegateView : public views::WidgetDelegateView {
  public:
-  ExitWarningWidgetDelegateView() : text_width_(0), width_(0), height_(0) {
-#ifdef OS_CHROMEOS
-    text_ = l10n_util::GetStringUTF16(IDS_ASH_SIGN_OUT_WARNING_POPUP_TEXT);
-    accessible_name_ = l10n_util::GetStringUTF16(
-        IDS_ASH_SIGN_OUT_WARNING_POPUP_TEXT_ACCESSIBLE);
-#else
-    text_ = l10n_util::GetStringUTF16(IDS_ASH_EXIT_WARNING_POPUP_TEXT);
-    accessible_name_ =
-        l10n_util::GetStringUTF16(IDS_ASH_EXIT_WARNING_POPUP_TEXT_ACCESSIBLE);
-#endif
+  ExitWarningWidgetDelegateView()
+      : text_(l10n_util::GetStringUTF16(IDS_ASH_SIGN_OUT_WARNING_POPUP_TEXT)),
+        accessible_name_(l10n_util::GetStringUTF16(
+            IDS_ASH_SIGN_OUT_WARNING_POPUP_TEXT_ACCESSIBLE)),
+        text_width_(0) {
     ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
     const gfx::FontList& font_list =
         rb.GetFontList(ui::ResourceBundle::LargeFont);
     text_width_ = gfx::GetStringWidth(text_, font_list);
-    width_ = text_width_ + kHorizontalMarginAroundText;
-    height_ = font_list.GetHeight() + kVerticalMarginAroundText;
+    SetPreferredSize(
+        gfx::Size(text_width_ + kHorizontalMarginAroundText,
+                  font_list.GetHeight() + kVerticalMarginAroundText));
     views::Label* label = new views::Label();
     label->SetText(text_);
     label->SetHorizontalAlignment(gfx::ALIGN_CENTER);
     label->SetFontList(font_list);
     label->SetEnabledColor(kTextColor);
-    label->SetDisabledColor(kTextColor);
     label->SetAutoColorReadabilityEnabled(false);
     label->SetSubpixelRenderingEnabled(false);
     AddChildView(label);
-    SetLayoutManager(new views::FillLayout);
-  }
-
-  gfx::Size GetPreferredSize() const override {
-    return gfx::Size(width_, height_);
+    SetLayoutManager(std::make_unique<views::FillLayout>());
   }
 
   void OnPaint(gfx::Canvas* canvas) override {
-    SkPaint paint;
-    paint.setStyle(SkPaint::kFill_Style);
-    paint.setColor(kWindowBackgroundColor);
-    canvas->DrawRoundRect(GetLocalBounds(), kWindowCornerRadius, paint);
+    cc::PaintFlags flags;
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(kWindowBackgroundColor);
+    canvas->DrawRoundRect(GetLocalBounds(), kWindowCornerRadius, flags);
     views::WidgetDelegateView::OnPaint(canvas);
   }
 
-  void GetAccessibleState(ui::AXViewState* state) override {
-    state->name = accessible_name_;
-    state->role = ui::AX_ROLE_ALERT;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override {
+    node_data->SetName(accessible_name_);
+    node_data->role = ax::mojom::Role::kAlert;
   }
 
  private:
   base::string16 text_;
   base::string16 accessible_name_;
   int text_width_;
-  int width_;
-  int height_;
 
   DISALLOW_COPY_AND_ASSIGN(ExitWarningWidgetDelegateView);
 };
@@ -106,25 +96,21 @@ ExitWarningHandler::~ExitWarningHandler() {
 }
 
 void ExitWarningHandler::HandleAccelerator() {
-  ShellDelegate* shell_delegate = Shell::GetInstance()->delegate();
   switch (state_) {
     case IDLE:
       state_ = WAIT_FOR_DOUBLE_PRESS;
       Show();
       StartTimer();
-      WmShell::Get()->RecordUserMetricsAction(UMA_ACCEL_EXIT_FIRST_Q);
+      base::RecordAction(base::UserMetricsAction("Accel_Exit_First_Q"));
       break;
     case WAIT_FOR_DOUBLE_PRESS:
       state_ = EXITING;
       CancelTimer();
       Hide();
-      WmShell::Get()->RecordUserMetricsAction(UMA_ACCEL_EXIT_SECOND_Q);
-      shell_delegate->Exit();
+      base::RecordAction(base::UserMetricsAction("Accel_Exit_Second_Q"));
+      Shell::Get()->session_controller()->RequestSignOut();
       break;
     case EXITING:
-      break;
-    default:
-      NOTREACHED();
       break;
   }
 }
@@ -150,7 +136,7 @@ void ExitWarningHandler::CancelTimer() {
 void ExitWarningHandler::Show() {
   if (widget_)
     return;
-  aura::Window* root_window = Shell::GetTargetRootWindow();
+  aura::Window* root_window = Shell::GetRootWindowForNewWindows();
   ExitWarningWidgetDelegateView* delegate = new ExitWarningWidgetDelegateView;
   gfx::Size rs = root_window->bounds().size();
   gfx::Size ps = delegate->GetPreferredSize();
@@ -162,18 +148,16 @@ void ExitWarningHandler::Show() {
   params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.accept_events = false;
   params.keep_on_top = true;
-  params.remove_standard_frame = true;
   params.delegate = delegate;
   params.bounds = bounds;
+  params.name = "ExitWarningWindow";
   params.parent =
-      Shell::GetContainer(root_window, kShellWindowId_SettingBubbleContainer);
-  widget_.reset(new views::Widget);
+      root_window->GetChildById(kShellWindowId_SettingBubbleContainer);
+  widget_ = std::make_unique<views::Widget>();
   widget_->Init(params);
-  widget_->SetContentsView(delegate);
-  widget_->GetNativeView()->SetName("ExitWarningWindow");
   widget_->Show();
 
-  delegate->NotifyAccessibilityEvent(ui::AX_EVENT_ALERT, true);
+  delegate->NotifyAccessibilityEvent(ax::mojom::Event::kAlert, true);
 }
 
 void ExitWarningHandler::Hide() {

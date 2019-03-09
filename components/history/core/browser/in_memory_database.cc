@@ -6,15 +6,14 @@
 
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 
 namespace history {
 
-InMemoryDatabase::InMemoryDatabase() : URLDatabase() {
-}
+InMemoryDatabase::InMemoryDatabase() {}
 
 InMemoryDatabase::~InMemoryDatabase() {
 }
@@ -69,7 +68,7 @@ bool InMemoryDatabase::InitFromDisk(const base::FilePath& history_name) {
   // Attach to the history database on disk.  (We can't ATTACH in the middle of
   // a transaction.)
   sql::Statement attach(GetDB().GetUniqueStatement("ATTACH ? AS history"));
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
   attach.BindString(0, history_name.value());
 #else
   attach.BindString(0, base::WideToUTF8(history_name.value()));
@@ -79,15 +78,31 @@ bool InMemoryDatabase::InitFromDisk(const base::FilePath& history_name) {
 
   // Copy URL data to memory.
   base::TimeTicks begin_load = base::TimeTicks::Now();
+
+  // Need to explicitly specify the column names here since databases on disk
+  // may or may not have a favicon_id column, but the in-memory one will never
+  // have it. Therefore, the columns aren't guaranteed to match.
+  //
+  // TODO(https://crbug.com/736136) Once we can guarantee that the favicon_id
+  // column doesn't exist with migration code, this can be replaced with the
+  // simpler:
+  //   "INSERT INTO urls SELECT * FROM history.urls WHERE typed_count > 0"
+  // which does not require us to keep the list of columns in sync. However,
+  // we may still want to keep the explicit columns as a safety measure.
   if (!db_.Execute(
-      "INSERT INTO urls SELECT * FROM history.urls WHERE typed_count > 0")) {
+      "INSERT INTO urls "
+      "(id, url, title, visit_count, typed_count, last_visit_time, hidden) "
+      "SELECT "
+      "id, url, title, visit_count, typed_count, last_visit_time, hidden "
+      "FROM history.urls WHERE typed_count > 0")) {
     // Unable to get data from the history database. This is OK, the file may
     // just not exist yet.
   }
   base::TimeTicks end_load = base::TimeTicks::Now();
   UMA_HISTOGRAM_MEDIUM_TIMES("History.InMemoryDBPopulate",
                              end_load - begin_load);
-  UMA_HISTOGRAM_COUNTS("History.InMemoryDBItemCount", db_.GetLastChangeCount());
+  UMA_HISTOGRAM_COUNTS_1M("History.InMemoryDBItemCount",
+                          db_.GetLastChangeCount());
 
   {
     // This calculation should be fast (since it's on an in-memory DB with
@@ -95,26 +110,25 @@ bool InMemoryDatabase::InitFromDisk(const base::FilePath& history_name) {
     sql::Statement visit_count(db_.GetUniqueStatement(
         "SELECT sum(visit_count) FROM urls"));
     if (visit_count.Step()) {
-      UMA_HISTOGRAM_COUNTS("History.InMemoryTypedUrlVisitCount",
-                           visit_count.ColumnInt(0));
+      UMA_HISTOGRAM_COUNTS_1M("History.InMemoryTypedUrlVisitCount",
+                              visit_count.ColumnInt(0));
     }
   }
 
   // Insert keyword search related URLs.
   begin_load = base::TimeTicks::Now();
-  if (!db_.Execute(
-      "INSERT OR IGNORE INTO urls SELECT u.id, u.url, u.title, u.visit_count, "
-      "u.typed_count, u.last_visit_time, u.hidden, u.favicon_id "
-      "FROM history.urls u JOIN history.keyword_search_terms kst "
-      "WHERE u.typed_count = 0 AND u.id = kst.url_id")) {
+  if (!db_.Execute("INSERT OR IGNORE INTO urls SELECT u.id, u.url, u.title, "
+                   "u.visit_count, u.typed_count, u.last_visit_time, u.hidden "
+                   "FROM history.urls u JOIN history.keyword_search_terms kst "
+                   "WHERE u.typed_count = 0 AND u.id = kst.url_id")) {
     // Unable to get data from the history database. This is OK, the file may
     // just not exist yet.
   }
   end_load = base::TimeTicks::Now();
   UMA_HISTOGRAM_MEDIUM_TIMES("History.InMemoryDBKeywordURLPopulate",
                              end_load - begin_load);
-  UMA_HISTOGRAM_COUNTS("History.InMemoryDBKeywordURLItemCount",
-                       db_.GetLastChangeCount());
+  UMA_HISTOGRAM_COUNTS_1M("History.InMemoryDBKeywordURLItemCount",
+                          db_.GetLastChangeCount());
 
   // Copy search terms to memory.
   begin_load = base::TimeTicks::Now();
@@ -127,8 +141,8 @@ bool InMemoryDatabase::InitFromDisk(const base::FilePath& history_name) {
   end_load = base::TimeTicks::Now();
   UMA_HISTOGRAM_MEDIUM_TIMES("History.InMemoryDBKeywordTermsPopulate",
                              end_load - begin_load);
-  UMA_HISTOGRAM_COUNTS("History.InMemoryDBKeywordTermsCount",
-                       db_.GetLastChangeCount());
+  UMA_HISTOGRAM_COUNTS_1M("History.InMemoryDBKeywordTermsCount",
+                          db_.GetLastChangeCount());
 
   // Detach from the history database on disk.
   if (!db_.Execute("DETACH history")) {
@@ -144,7 +158,7 @@ bool InMemoryDatabase::InitFromDisk(const base::FilePath& history_name) {
   return true;
 }
 
-sql::Connection& InMemoryDatabase::GetDB() {
+sql::Database& InMemoryDatabase::GetDB() {
   return db_;
 }
 

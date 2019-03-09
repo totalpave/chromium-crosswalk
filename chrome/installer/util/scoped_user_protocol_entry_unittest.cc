@@ -4,7 +4,6 @@
 
 #include "chrome/installer/util/scoped_user_protocol_entry.h"
 
-#include "base/memory/ptr_util.h"
 #include "base/strings/string16.h"
 #include "base/test/test_reg_util_win.h"
 #include "base/win/registry.h"
@@ -21,7 +20,8 @@ class ScopedUserProtocolEntryTest : public testing::Test {
   static const wchar_t kProtocolEntryFakeValue[];
 
   void SetUp() override {
-    registry_overrides_manager_.OverrideRegistry(HKEY_CURRENT_USER);
+    ASSERT_NO_FATAL_FAILURE(
+        registry_overrides_manager_.OverrideRegistry(HKEY_CURRENT_USER));
     ASSERT_FALSE(RegistryEntry(kProtocolEntryKeyPath, kProtocolEntryName,
                                base::string16())
                      .KeyExistsInRegistry(RegistryEntry::LOOK_IN_HKCU));
@@ -30,14 +30,14 @@ class ScopedUserProtocolEntryTest : public testing::Test {
   void CreateNewRegistryValue(const base::string16& key_path,
                               const base::string16& name,
                               const base::string16& value) {
-    ScopedVector<RegistryEntry> entries;
-    entries.push_back(new RegistryEntry(key_path, name, value));
+    std::vector<std::unique_ptr<RegistryEntry>> entries;
+    entries.push_back(std::make_unique<RegistryEntry>(key_path, name, value));
     ASSERT_TRUE(ShellUtil::AddRegistryEntries(HKEY_CURRENT_USER, entries));
   }
 
   void CreateScopedUserProtocolEntryAndVerifyRegistryValue(
       const base::string16& expected_entry_value) {
-    entry_ = base::WrapUnique(new ScopedUserProtocolEntry(L"http"));
+    entry_ = std::make_unique<ScopedUserProtocolEntry>(L"http");
     ASSERT_TRUE(RegistryEntry(kProtocolEntryKeyPath, kProtocolEntryName,
                               expected_entry_value)
                     .ExistsInRegistry(RegistryEntry::LOOK_IN_HKCU));

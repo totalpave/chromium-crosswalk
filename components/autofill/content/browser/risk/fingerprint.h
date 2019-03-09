@@ -20,14 +20,16 @@
 #include "base/callback_forward.h"
 #include "components/autofill/core/browser/autofill_client.h"
 
-class PrefService;
-
 namespace base {
 class Time;
 }
 
 namespace content {
 class WebContents;
+}
+
+namespace service_manager {
+class Connector;
 }
 
 namespace gfx {
@@ -57,7 +59,8 @@ void GetFingerprint(
     const base::Time& install_time,
     const std::string& app_locale,
     const std::string& user_agent,
-    const base::Callback<void(std::unique_ptr<Fingerprint>)>& callback);
+    const base::OnceCallback<void(std::unique_ptr<Fingerprint>)> callback,
+    service_manager::Connector* connector);
 
 }  // namespace risk
 }  // namespace autofill

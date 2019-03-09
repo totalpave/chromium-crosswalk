@@ -4,26 +4,51 @@
 
 package org.chromium.net;
 
-import android.os.ConditionVariable;
-import android.test.suitebuilder.annotation.SmallTest;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+import static org.chromium.net.CronetTestRule.getContext;
+
+import android.os.ConditionVariable;
+import android.support.test.filters.SmallTest;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
+import org.chromium.net.CronetTestRule.CronetTestFramework;
+import org.chromium.net.CronetTestRule.OnlyRunNativeCronet;
 import org.chromium.net.TestUrlRequestCallback.ResponseStep;
 import org.chromium.net.UrlRequest.Status;
 import org.chromium.net.UrlRequest.StatusListener;
+import org.chromium.net.impl.LoadState;
+import org.chromium.net.impl.UrlRequestBase;
 
 import java.io.IOException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 /**
- * Tests that {@link CronetUrlRequest#getStatus} works as expected.
+ * Tests that {@link org.chromium.net.impl.CronetUrlRequest#getStatus(StatusListener)} works as
+ * expected.
  */
-public class GetStatusTest extends CronetTestBase {
+@RunWith(BaseJUnit4ClassRunner.class)
+public class GetStatusTest {
+    @Rule
+    public final CronetTestRule mTestRule = new CronetTestRule();
+    @Rule
+    public ExpectedException thrown = ExpectedException.none();
+
     private CronetTestFramework mTestFramework;
 
     private static class TestStatusListener extends StatusListener {
-        boolean mOnStatusCalled = false;
+        boolean mOnStatusCalled;
         int mStatus = Integer.MAX_VALUE;
         private final ConditionVariable mBlock = new ConditionVariable();
 
@@ -39,28 +64,27 @@ public class GetStatusTest extends CronetTestBase {
             mBlock.close();
         }
     }
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        mTestFramework = startCronetTestFramework();
+    @Before
+    public void setUp() throws Exception {
+        mTestFramework = mTestRule.startCronetTestFramework();
         assertTrue(NativeTestServer.startNativeTestServer(getContext()));
     }
 
-    @Override
-    protected void tearDown() throws Exception {
+    @After
+    public void tearDown() throws Exception {
         NativeTestServer.shutdownNativeTestServer();
         mTestFramework.mCronetEngine.shutdown();
-        super.tearDown();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     public void testSimpleGet() throws Exception {
         String url = NativeTestServer.getEchoMethodURL();
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         callback.setAutoAdvance(false);
-        UrlRequest.Builder builder = new UrlRequest.Builder(
-                url, callback, callback.getExecutor(), mTestFramework.mCronetEngine);
+        UrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
+                url, callback, callback.getExecutor());
         UrlRequest urlRequest = builder.build();
         // Calling before request is started should give Status.INVALID,
         // since the native adapter is not created.
@@ -111,45 +135,31 @@ public class GetStatusTest extends CronetTestBase {
         assertEquals("GET", callback.mResponseAsString);
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     public void testInvalidLoadState() throws Exception {
         try {
-            Status.convertLoadState(LoadState.WAITING_FOR_APPCACHE);
+            UrlRequestBase.convertLoadState(LoadState.WAITING_FOR_APPCACHE);
             fail();
         } catch (IllegalArgumentException e) {
             // Expected because LoadState.WAITING_FOR_APPCACHE is not mapped.
         }
 
-        try {
-            Status.convertLoadState(-1);
-            fail();
-        } catch (AssertionError e) {
-            // Expected.
-        } catch (IllegalArgumentException e) {
-            // If assertions are disabled, an IllegalArgumentException should be thrown.
-            assertEquals("No request status found.", e.getMessage());
-        }
-
-        try {
-            Status.convertLoadState(16);
-            fail();
-        } catch (AssertionError e) {
-            // Expected.
-        } catch (IllegalArgumentException e) {
-            // If assertions are disabled, an IllegalArgumentException should be thrown.
-            assertEquals("No request status found.", e.getMessage());
-        }
+        thrown.expect(Throwable.class);
+        UrlRequestBase.convertLoadState(-1);
+        UrlRequestBase.convertLoadState(16);
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     // Regression test for crbug.com/606872.
     @OnlyRunNativeCronet
     public void testGetStatusForUpload() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
-        UrlRequest.Builder builder = new UrlRequest.Builder(NativeTestServer.getEchoBodyURL(),
-                callback, callback.getExecutor(), mTestFramework.mCronetEngine);
+        UrlRequest.Builder builder = mTestFramework.mCronetEngine.newUrlRequestBuilder(
+                NativeTestServer.getEchoBodyURL(), callback, callback.getExecutor());
 
         final ConditionVariable block = new ConditionVariable();
         // Use a separate executor for UploadDataProvider so the upload can be

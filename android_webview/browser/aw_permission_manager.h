@@ -8,35 +8,37 @@
 #include <memory>
 
 #include "base/callback_forward.h"
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "content/public/browser/permission_manager.h"
+#include "content/public/browser/permission_controller_delegate.h"
 
 namespace android_webview {
 
+class AwBrowserPermissionRequestDelegate;
 class LastRequestResultCache;
 
-class AwPermissionManager : public content::PermissionManager {
+class AwPermissionManager : public content::PermissionControllerDelegate {
  public:
   AwPermissionManager();
   ~AwPermissionManager() override;
 
-  // PermissionManager implementation.
+  // PermissionControllerDelegate implementation.
   int RequestPermission(
       content::PermissionType permission,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
+      bool user_gesture,
       const base::Callback<void(blink::mojom::PermissionStatus)>& callback)
       override;
   int RequestPermissions(
       const std::vector<content::PermissionType>& permissions,
       content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
+      bool user_gesture,
       const base::Callback<
           void(const std::vector<blink::mojom::PermissionStatus>&)>& callback)
       override;
-  void CancelPermissionRequest(int request_id) override;
   void ResetPermission(content::PermissionType permission,
                        const GURL& requesting_origin,
                        const GURL& embedding_origin) override;
@@ -44,20 +46,31 @@ class AwPermissionManager : public content::PermissionManager {
       content::PermissionType permission,
       const GURL& requesting_origin,
       const GURL& embedding_origin) override;
-  void RegisterPermissionUsage(content::PermissionType permission,
-                               const GURL& requesting_origin,
-                               const GURL& embedding_origin) override;
+  blink::mojom::PermissionStatus GetPermissionStatusForFrame(
+      content::PermissionType permission,
+      content::RenderFrameHost* render_frame_host,
+      const GURL& requesting_origin) override;
   int SubscribePermissionStatusChange(
       content::PermissionType permission,
+      content::RenderFrameHost* render_frame_host,
       const GURL& requesting_origin,
-      const GURL& embedding_origin,
       const base::Callback<void(blink::mojom::PermissionStatus)>& callback)
       override;
   void UnsubscribePermissionStatusChange(int subscription_id) override;
 
+ protected:
+  void CancelPermissionRequest(int request_id);
+  void CancelPermissionRequests();
+
  private:
-  struct PendingRequest;
-  using PendingRequestsMap = IDMap<PendingRequest, IDMapOwnPointer>;
+  class PendingRequest;
+  using PendingRequestsMap = base::IDMap<std::unique_ptr<PendingRequest>>;
+
+  virtual int GetRenderProcessID(content::RenderFrameHost* render_frame_host);
+  virtual int GetRenderFrameID(content::RenderFrameHost* render_frame_host);
+  virtual GURL LastCommittedOrigin(content::RenderFrameHost* render_frame_host);
+  virtual AwBrowserPermissionRequestDelegate* GetDelegate(int render_process_id,
+                                                          int render_frame_id);
 
   // The weak pointer to this is used to clean up any information which is
   // stored in the pending request or result cache maps. However, the callback
@@ -66,7 +79,7 @@ class AwPermissionManager : public content::PermissionManager {
   static void OnRequestResponse(
       const base::WeakPtr<AwPermissionManager>& manager,
       int request_id,
-      const base::Callback<void(blink::mojom::PermissionStatus)>& callback,
+      content::PermissionType permission,
       bool allowed);
 
   PendingRequestsMap pending_requests_;

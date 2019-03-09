@@ -6,9 +6,10 @@
 """Unittests for test_runner.py."""
 
 import collections
-import json
+import glob
+import logging
 import os
-import sys
+import subprocess
 import unittest
 
 import test_runner
@@ -96,116 +97,98 @@ class GetGTestFilterTest(TestCase):
         test_runner.get_gtest_filter(tests, invert=True), expected)
 
 
+class InstallXcodeTest(TestCase):
+  """Tests install_xcode."""
+
+  def setUp(self):
+    super(InstallXcodeTest, self).setUp()
+    self.mock(test_runner, 'xcode_select', lambda _: None)
+    self.mock(os.path, 'exists', lambda _: True)
+
+  def test_success(self):
+    self.assertTrue(test_runner.install_xcode('test_build', 'true', 'path'))
+
+  def test_failure(self):
+    self.assertFalse(test_runner.install_xcode('test_build', 'false', 'path'))
+
+
 class SimulatorTestRunnerTest(TestCase):
   """Tests for test_runner.SimulatorTestRunner."""
 
-  def test_app_not_found(self):
-    """Ensures AppNotFoundError is raised."""
-    def exists(path):
-      if path == 'fake-app':
-        return False
+  def setUp(self):
+    super(SimulatorTestRunnerTest, self).setUp()
+
+    def install_xcode(build, mac_toolchain_cmd, xcode_app_path):
       return True
 
-    def find_xcode(version):
-      return {'found': True}
+    self.mock(test_runner, 'get_current_xcode_info', lambda: {
+        'version': 'test version', 'build': 'test build', 'path': 'test/path'})
+    self.mock(test_runner, 'install_xcode', install_xcode)
+    self.mock(test_runner.subprocess, 'check_output',
+              lambda _: 'fake-bundle-id')
+    self.mock(os.path, 'abspath', lambda path: '/abs/path/to/%s' % path)
+    self.mock(os.path, 'exists', lambda _: True)
+    self.mock(test_runner.TestRunner, 'set_sigterm_handler',
+      lambda self, handler: 0)
 
-    def check_output(command):
-      return 'fake-bundle-id'
+  def test_app_not_found(self):
+    """Ensures AppNotFoundError is raised."""
 
-    self.mock(test_runner.os.path, 'exists', exists)
-    self.mock(test_runner.find_xcode, 'find_xcode', find_xcode)
-    self.mock(test_runner.subprocess, 'check_output', check_output)
+    self.mock(os.path, 'exists', lambda p: not p.endswith('fake-app'))
 
-    self.assertRaises(
-        test_runner.AppNotFoundError,
-        test_runner.SimulatorTestRunner,
+    with self.assertRaises(test_runner.AppNotFoundError):
+      test_runner.SimulatorTestRunner(
         'fake-app',
         'fake-iossim',
         'platform',
         'os',
         'xcode-version',
+        '', # Empty xcode-build
         'out-dir',
-    )
+      )
 
   def test_iossim_not_found(self):
     """Ensures SimulatorNotFoundError is raised."""
-    def exists(path):
-      if path == 'fake-iossim':
-        return False
-      return True
+    self.mock(os.path, 'exists', lambda p: not p.endswith('fake-iossim'))
 
-    def find_xcode(version):
-      return {'found': True}
-
-    def check_output(command):
-      return 'fake-bundle-id'
-
-    self.mock(test_runner.os.path, 'exists', exists)
-    self.mock(test_runner.find_xcode, 'find_xcode', find_xcode)
-    self.mock(test_runner.subprocess, 'check_output', check_output)
-
-    self.assertRaises(
-        test_runner.SimulatorNotFoundError,
-        test_runner.SimulatorTestRunner,
+    with self.assertRaises(test_runner.SimulatorNotFoundError):
+      test_runner.SimulatorTestRunner(
         'fake-app',
         'fake-iossim',
         'platform',
         'os',
         'xcode-version',
+        'xcode-build',
         'out-dir',
-    )
+      )
 
   def test_init(self):
     """Ensures instance is created."""
-    def exists(path):
-      return True
-
-    def find_xcode(version):
-      return {'found': True}
-
-    def check_output(command):
-      return 'fake-bundle-id'
-
-    self.mock(test_runner.os.path, 'exists', exists)
-    self.mock(test_runner.find_xcode, 'find_xcode', find_xcode)
-    self.mock(test_runner.subprocess, 'check_output', check_output)
-
     tr = test_runner.SimulatorTestRunner(
         'fake-app',
         'fake-iossim',
         'platform',
         'os',
         'xcode-version',
+        'xcode-build',
         'out-dir',
     )
 
-    self.failUnless(tr)
+    self.assertTrue(tr)
 
   def test_startup_crash(self):
     """Ensures test is relaunched once on startup crash."""
-    def exists(path):
-      return True
-
-    def find_xcode(version):
-      return {'found': True}
-
-    def check_output(command):
-      return 'fake-bundle-id'
-
     def set_up(self):
       return
 
     @staticmethod
-    def _run(command):
+    def _run(cmd, shards=None):
       return collections.namedtuple('result', ['crashed', 'crashed_test'])(
           crashed=True, crashed_test=None)
 
     def tear_down(self):
       return
 
-    self.mock(test_runner.os.path, 'exists', exists)
-    self.mock(test_runner.find_xcode, 'find_xcode', find_xcode)
-    self.mock(test_runner.subprocess, 'check_output', check_output)
     self.mock(test_runner.SimulatorTestRunner, 'set_up', set_up)
     self.mock(test_runner.TestRunner, '_run', _run)
     self.mock(test_runner.SimulatorTestRunner, 'tear_down', tear_down)
@@ -216,26 +199,108 @@ class SimulatorTestRunnerTest(TestCase):
         'platform',
         'os',
         'xcode-version',
+        'xcode-build',
         'out-dir',
     )
-    self.assertRaises(test_runner.AppLaunchError, tr.launch)
+    with self.assertRaises(test_runner.AppLaunchError):
+      tr.launch()
+
+  def test_run(self):
+    """Ensures the _run method is correct with test sharding."""
+    def shard_xctest(object_path, shards, test_cases=None):
+      return [['a/1', 'b/2'], ['c/3', 'd/4'], ['e/5']]
+
+    def run_tests(self, test_shard=None):
+      out = []
+      for test in test_shard:
+        testname = test.split('/')
+        out.append('Test Case \'-[%s %s]\' started.' %
+                   (testname[0], testname[1]))
+        out.append('Test Case \'-[%s %s]\' passed (0.1 seconds)' %
+                   (testname[0], testname[1]))
+      return (out, 0, 0)
+
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app',
+      'fake-iossim',
+      'platform',
+      'os',
+      'xcode-version',
+      'xcode-build',
+      'out-dir',
+    )
+    self.mock(test_runner, 'shard_xctest', shard_xctest)
+    self.mock(test_runner.SimulatorTestRunner, 'run_tests', run_tests)
+
+    tr.xctest_path = 'fake.xctest'
+    cmd = tr.get_launch_command()
+    result = tr._run(cmd=cmd, shards=3)
+    self.assertIn('a/1', result.passed_tests)
+    self.assertIn('b/2', result.passed_tests)
+    self.assertIn('c/3', result.passed_tests)
+    self.assertIn('d/4', result.passed_tests)
+    self.assertIn('e/5', result.passed_tests)
+
+  def test_run_with_system_alert(self):
+    """Ensures SystemAlertPresentError is raised when warning 'System alert
+      view is present, so skipping all tests' is in the output."""
+    with self.assertRaises(test_runner.SystemAlertPresentError):
+      tr = test_runner.SimulatorTestRunner(
+        'fake-app',
+        'fake-iossim',
+        'platform',
+        'os',
+        'xcode-version',
+        'xcode-build',
+        'out-dir',
+      )
+      tr.xctest_path = 'fake.xctest'
+      cmd = ['echo', 'System alert view is present, so skipping all tests!']
+      result = tr._run(cmd=cmd)
+
+  def test_get_launch_command(self):
+    """Ensures launch command is correct with test_filters, test sharding and
+      test_cases."""
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app',
+      'fake-iossim',
+      'platform',
+      'os',
+      'xcode-version',
+      'xcode-build',
+      'out-dir',
+    )
+    tr.xctest_path = 'fake.xctest'
+    # Cases test_filter is not empty, with empty/non-empty self.test_cases.
+    tr.test_cases = []
+    cmd = tr.get_launch_command(['a'], invert=False)
+    self.assertIn('-t', cmd)
+    self.assertIn('a', cmd)
+
+    tr.test_cases = ['a', 'b']
+    cmd = tr.get_launch_command(['a'], invert=False)
+    self.assertIn('-t', cmd)
+    self.assertIn('a', cmd)
+    self.assertNotIn('b', cmd)
+
+    # Cases test_filter is empty, with empty/non-empty self.test_cases.
+    tr.test_cases = []
+    cmd = tr.get_launch_command(test_filter=None, invert=False)
+    self.assertNotIn('-t', cmd)
+
+    tr.test_cases = ['a', 'b']
+    cmd = tr.get_launch_command(test_filter=None, invert=False)
+    self.assertIn('-t', cmd)
+    self.assertIn('a', cmd)
+    self.assertIn('b', cmd)
 
   def test_relaunch(self):
     """Ensures test is relaunched on test crash until tests complete."""
-    def exists(path):
-      return True
-
-    def find_xcode(version):
-      return {'found': True}
-
-    def check_output(command):
-      return 'fake-bundle-id'
-
     def set_up(self):
       return
 
     @staticmethod
-    def _run(command):
+    def _run(cmd, shards=None):
       result = collections.namedtuple(
           'result', [
               'crashed',
@@ -245,7 +310,7 @@ class SimulatorTestRunnerTest(TestCase):
               'passed_tests',
           ],
       )
-      if '-e' not in command:
+      if '-e' not in cmd:
         # First run, has no test filter supplied. Mock a crash.
         return result(
             crashed=True,
@@ -266,9 +331,6 @@ class SimulatorTestRunnerTest(TestCase):
     def tear_down(self):
       return
 
-    self.mock(test_runner.os.path, 'exists', exists)
-    self.mock(test_runner.find_xcode, 'find_xcode', find_xcode)
-    self.mock(test_runner.subprocess, 'check_output', check_output)
     self.mock(test_runner.SimulatorTestRunner, 'set_up', set_up)
     self.mock(test_runner.TestRunner, '_run', _run)
     self.mock(test_runner.SimulatorTestRunner, 'tear_down', tear_down)
@@ -279,11 +341,271 @@ class SimulatorTestRunnerTest(TestCase):
         'platform',
         'os',
         'xcode-version',
+        'xcode-build',
         'out-dir',
     )
     tr.launch()
-    self.failUnless(tr.summary['logs'])
+    self.assertTrue(tr.logs)
+
+
+class WprProxySimulatorTestRunnerTest(TestCase):
+  """Tests for test_runner.WprProxySimulatorTestRunner."""
+
+  def setUp(self):
+    super(WprProxySimulatorTestRunnerTest, self).setUp()
+
+    def install_xcode(build, mac_toolchain_cmd, xcode_app_path):
+      return True
+
+    self.mock(test_runner, 'get_current_xcode_info', lambda: {
+        'version': 'test version', 'build': 'test build', 'path': 'test/path'})
+    self.mock(test_runner, 'install_xcode', install_xcode)
+    self.mock(test_runner.subprocess, 'check_output',
+              lambda _: 'fake-bundle-id')
+    self.mock(os.path, 'abspath', lambda path: '/abs/path/to/%s' % path)
+    self.mock(os.path, 'exists', lambda _: True)
+    self.mock(test_runner.TestRunner, 'set_sigterm_handler',
+      lambda self, handler: 0)
+    self.mock(test_runner.SimulatorTestRunner, 'getSimulator',
+      lambda _: 'fake-id')
+    self.mock(test_runner.SimulatorTestRunner, 'deleteSimulator',
+      lambda a, b: True)
+    self.mock(test_runner.WprProxySimulatorTestRunner,
+      'copy_trusted_certificate', lambda a, b: True)
+
+  def test_replay_path_not_found(self):
+    """Ensures ReplayPathNotFoundError is raised."""
+
+    self.mock(os.path, 'exists', lambda p: not p.endswith('bad-replay-path'))
+
+    with self.assertRaises(test_runner.ReplayPathNotFoundError):
+      test_runner.WprProxySimulatorTestRunner(
+        'fake-app',
+        'fake-iossim',
+        'bad-replay-path',
+        'platform',
+        'os',
+        'wpr-tools-path',
+        'xcode-version',
+        'xcode-build',
+        'out-dir',
+      )
+
+  def test_wpr_tools_not_found(self):
+    """Ensures WprToolsNotFoundError is raised."""
+
+    self.mock(os.path, 'exists', lambda p: not p.endswith('bad-tools-path'))
+
+    with self.assertRaises(test_runner.WprToolsNotFoundError):
+      test_runner.WprProxySimulatorTestRunner(
+        'fake-app',
+        'fake-iossim',
+        'replay-path',
+        'platform',
+        'os',
+        'bad-tools-path',
+        'xcode-version',
+        'xcode-build',
+        'out-dir',
+      )
+
+  def test_init(self):
+    """Ensures instance is created."""
+    tr = test_runner.WprProxySimulatorTestRunner(
+        'fake-app',
+        'fake-iossim',
+        'replay-path',
+        'platform',
+        'os',
+        'wpr-tools-path',
+        'xcode-version',
+        'xcode-build',
+        'out-dir',
+      )
+
+    self.assertTrue(tr)
+
+  def run_wpr_test(self, test_filter=[], invert=False):
+    """Wrapper that mocks the _run method and returns its result."""
+    class FakeStdout:
+      def __init__(self):
+        self.line_index = 0
+        self.lines = [
+          'Test Case \'-[a 1]\' started.',
+          'Test Case \'-[a 1]\' has uninteresting logs.',
+          'Test Case \'-[a 1]\' passed (0.1 seconds)',
+          'Test Case \'-[b 2]\' started.',
+          'Test Case \'-[b 2]\' passed (0.1 seconds)',
+          'Test Case \'-[c 3]\' started.',
+          'Test Case \'-[c 3]\' has interesting failure info.',
+          'Test Case \'-[c 3]\' failed (0.1 seconds)',
+        ]
+
+      def readline(self):
+        if self.line_index < len(self.lines):
+          return_line = self.lines[self.line_index]
+          self.line_index += 1
+          return return_line
+        else:
+          return None
+
+    class FakeProcess:
+      def __init__(self):
+        self.stdout = FakeStdout()
+        self.returncode = 0
+
+      def stdout(self):
+        return self.stdout
+
+      def wait(self):
+        return
+
+    def popen(recipe_cmd, env, stdout, stderr):
+      return FakeProcess()
+
+    tr = test_runner.WprProxySimulatorTestRunner(
+        'fake-app',
+        'fake-iossim',
+        'replay-path',
+        'platform',
+        'os',
+        'wpr-tools-path',
+        'xcode-version',
+        'xcode-build',
+        'out-dir',
+    )
+    self.mock(test_runner.WprProxySimulatorTestRunner, 'wprgo_start',
+      lambda a,b: None)
+    self.mock(test_runner.WprProxySimulatorTestRunner, 'wprgo_stop',
+      lambda _: None)
+
+    self.mock(os.path, 'isfile', lambda _: True)
+    self.mock(glob, 'glob', lambda _: ["file1", "file2"])
+    self.mock(subprocess, 'Popen', popen)
+
+    tr.xctest_path = 'fake.xctest'
+    cmd = tr.get_launch_command(test_filter=test_filter, invert=invert)
+    return tr._run(cmd=cmd, shards=1)
+
+  def test_run_no_filter(self):
+    """Ensures the _run method can handle passed and failed tests."""
+    result = self.run_wpr_test()
+    self.assertIn('file1.a/1', result.passed_tests)
+    self.assertIn('file1.b/2', result.passed_tests)
+    self.assertIn('file1.c/3', result.failed_tests)
+    self.assertIn('file2.a/1', result.passed_tests)
+    self.assertIn('file2.b/2', result.passed_tests)
+    self.assertIn('file2.c/3', result.failed_tests)
+
+  def test_run_with_filter(self):
+    """Ensures the _run method works with a filter."""
+    result = self.run_wpr_test(test_filter=["file1"], invert=False)
+    self.assertIn('file1.a/1', result.passed_tests)
+    self.assertIn('file1.b/2', result.passed_tests)
+    self.assertIn('file1.c/3', result.failed_tests)
+    self.assertNotIn('file2.a/1', result.passed_tests)
+    self.assertNotIn('file2.b/2', result.passed_tests)
+    self.assertNotIn('file2.c/3', result.failed_tests)
+
+  def test_run_with_inverted_filter(self):
+    """Ensures the _run method works with an inverted filter."""
+    result = self.run_wpr_test(test_filter=["file1"], invert=True)
+    self.assertNotIn('file1.a/1', result.passed_tests)
+    self.assertNotIn('file1.b/2', result.passed_tests)
+    self.assertNotIn('file1.c/3', result.failed_tests)
+    self.assertIn('file2.a/1', result.passed_tests)
+    self.assertIn('file2.b/2', result.passed_tests)
+    self.assertIn('file2.c/3', result.failed_tests)
+
+class DeviceTestRunnerTest(TestCase):
+  def setUp(self):
+    super(DeviceTestRunnerTest, self).setUp()
+
+    def install_xcode(build, mac_toolchain_cmd, xcode_app_path):
+      return True
+
+    self.mock(test_runner, 'get_current_xcode_info', lambda: {
+        'version': 'test version', 'build': 'test build', 'path': 'test/path'})
+    self.mock(test_runner, 'install_xcode', install_xcode)
+    self.mock(test_runner.subprocess, 'check_output',
+              lambda _: 'fake-bundle-id')
+    self.mock(os.path, 'abspath', lambda path: '/abs/path/to/%s' % path)
+    self.mock(os.path, 'exists', lambda _: True)
+
+    self.tr = test_runner.DeviceTestRunner(
+        'fake-app',
+        'xcode-version',
+        'xcode-build',
+        'out-dir',
+    )
+    self.tr.xctestrun_data = {'TestTargetName':{}}
+
+  def test_with_test_filter_without_test_cases(self):
+    """Ensures tests in the run with test_filter and no test_cases."""
+    self.tr.set_xctest_filters(['a', 'b'], invert=False)
+    self.assertEqual(
+        self.tr.xctestrun_data['TestTargetName']['OnlyTestIdentifiers'],
+        ['a', 'b']
+    )
+
+  def test_invert_with_test_filter_without_test_cases(self):
+    """Ensures tests in the run invert with test_filter and no test_cases."""
+    self.tr.set_xctest_filters(['a', 'b'], invert=True)
+    self.assertEqual(
+        self.tr.xctestrun_data['TestTargetName']['SkipTestIdentifiers'],
+        ['a', 'b']
+    )
+
+  def test_with_test_filter_with_test_cases(self):
+    """Ensures tests in the run with test_filter and test_cases."""
+    self.tr.test_cases = ['a', 'b', 'c', 'd']
+    self.tr.set_xctest_filters(['a', 'b', 'irrelevant test'], invert=False)
+    self.assertEqual(
+        self.tr.xctestrun_data['TestTargetName']['OnlyTestIdentifiers'],
+        ['a', 'b']
+    )
+
+  def test_invert_with_test_filter_with_test_cases(self):
+    """Ensures tests in the run invert with test_filter and test_cases."""
+    self.tr.test_cases = ['a', 'b', 'c', 'd']
+    self.tr.set_xctest_filters(['a', 'b', 'irrelevant test'], invert=True)
+    self.assertEqual(
+        self.tr.xctestrun_data['TestTargetName']['OnlyTestIdentifiers'],
+        ['c', 'd']
+    )
+
+  def test_without_test_filter_without_test_cases(self):
+    """Ensures tests in the run with no test_filter and no test_cases."""
+    self.tr.set_xctest_filters(test_filter=None, invert=False)
+    self.assertIsNone(
+        self.tr.xctestrun_data['TestTargetName'].get('OnlyTestIdentifiers'))
+
+  def test_invert_without_test_filter_without_test_cases(self):
+    """Ensures tests in the run invert with no test_filter and no test_cases."""
+    self.tr.set_xctest_filters(test_filter=None, invert=True)
+    self.assertIsNone(
+        self.tr.xctestrun_data['TestTargetName'].get('OnlyTestIdentifiers'))
+
+  def test_without_test_filter_with_test_cases(self):
+    """Ensures tests in the run with no test_filter but test_cases."""
+    self.tr.test_cases = ['a', 'b', 'c', 'd']
+    self.tr.set_xctest_filters(test_filter=None, invert=False)
+    self.assertEqual(
+        self.tr.xctestrun_data['TestTargetName']['OnlyTestIdentifiers'],
+        ['a', 'b', 'c', 'd']
+    )
+
+  def test_invert_without_test_filter_with_test_cases(self):
+    """Ensures tests in the run invert with no test_filter but test_cases."""
+    self.tr.test_cases = ['a', 'b', 'c', 'd']
+    self.tr.set_xctest_filters(test_filter=None, invert=True)
+    self.assertEqual(
+        self.tr.xctestrun_data['TestTargetName']['OnlyTestIdentifiers'],
+        ['a', 'b', 'c', 'd']
+    )
 
 
 if __name__ == '__main__':
+  logging.basicConfig(format='[%(asctime)s:%(levelname)s] %(message)s',
+    level=logging.DEBUG, datefmt='%I:%M:%S')
   unittest.main()

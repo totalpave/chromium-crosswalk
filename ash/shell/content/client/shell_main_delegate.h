@@ -12,11 +12,6 @@
 #include "content/public/app/content_main_delegate.h"
 #include "content/shell/common/shell_content_client.h"
 
-namespace content {
-class ShellContentRendererClient;
-class ShellContentUtilityClient;
-}
-
 namespace ash {
 namespace shell {
 
@@ -30,12 +25,14 @@ class ShellMainDelegate : public content::ContentMainDelegate {
   bool BasicStartupComplete(int* exit_code) override;
   void PreSandboxStartup() override;
   content::ContentBrowserClient* CreateContentBrowserClient() override;
+  content::ContentUtilityClient* CreateContentUtilityClient() override;
 
  private:
   void InitializeResourceBundle();
 
   std::unique_ptr<ShellContentBrowserClient> browser_client_;
   content::ShellContentClient content_client_;
+  std::unique_ptr<content::ContentUtilityClient> utility_client_;
 
   DISALLOW_COPY_AND_ASSIGN(ShellMainDelegate);
 };

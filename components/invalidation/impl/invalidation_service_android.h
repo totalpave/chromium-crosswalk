@@ -14,9 +14,9 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
+#include "components/invalidation/impl/deprecated_invalidator_registrar.h"
 #include "components/invalidation/impl/invalidation_logger.h"
-#include "components/invalidation/impl/invalidator_registrar.h"
 #include "components/invalidation/public/invalidation_service.h"
 #include "components/keyed_service/core/keyed_service.h"
 
@@ -26,11 +26,9 @@ class InvalidationLogger;
 
 // This InvalidationService is used to deliver invalidations on Android.  The
 // Android operating system has its own mechanisms for delivering invalidations.
-class InvalidationServiceAndroid
-    : public base::NonThreadSafe,
-      public InvalidationService {
+class InvalidationServiceAndroid : public InvalidationService {
  public:
-  explicit InvalidationServiceAndroid(jobject context);
+  explicit InvalidationServiceAndroid();
   ~InvalidationServiceAndroid() override;
 
   // InvalidationService implementation.
@@ -49,7 +47,6 @@ class InvalidationServiceAndroid
   InvalidationLogger* GetInvalidationLogger() override;
   void RequestDetailedStatus(
       base::Callback<void(const base::DictionaryValue&)> caller) const override;
-  IdentityProvider* GetIdentityProvider() override;
 
   void Invalidate(JNIEnv* env,
                   const base::android::JavaParamRef<jobject>& obj,
@@ -62,8 +59,6 @@ class InvalidationServiceAndroid
   // This is used only by unit tests.
   void TriggerStateChangeForTest(syncer::InvalidatorState state);
 
-  static bool RegisterJni(JNIEnv* env);
-
  private:
   typedef std::map<invalidation::ObjectId, int64_t, syncer::ObjectIdLessThan>
       ObjectIdVersionMap;
@@ -75,7 +70,7 @@ class InvalidationServiceAndroid
   // Points to a Java instance of InvalidationService.
   base::android::ScopedJavaGlobalRef<jobject> java_ref_;
 
-  syncer::InvalidatorRegistrar invalidator_registrar_;
+  syncer::DeprecatedInvalidatorRegistrar invalidator_registrar_;
   syncer::InvalidatorState invalidator_state_;
 
   // The invalidation API spec allows for the possibility of redundant
@@ -86,6 +81,8 @@ class InvalidationServiceAndroid
   // The invalidation logger object we use to record state changes
   // and invalidations.
   InvalidationLogger logger_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(InvalidationServiceAndroid);
 };

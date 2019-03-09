@@ -4,22 +4,29 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/run_loop.h"
 #import "base/test/ios/wait_util.h"
-#include "ios/public/provider/web/web_ui_ios_controller.h"
-#include "ios/public/provider/web/web_ui_ios_controller_factory.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "ios/web/grit/ios_web_resources.h"
 #import "ios/web/public/navigation_manager.h"
+#import "ios/web/public/test/navigation_test_util.h"
+#import "ios/web/public/web_state/web_state.h"
+#include "ios/web/public/web_state/web_state_interface_provider.h"
 #include "ios/web/public/web_ui_ios_data_source.h"
+#include "ios/web/public/webui/web_ui_ios_controller.h"
+#include "ios/web/public/webui/web_ui_ios_controller_factory.h"
 #include "ios/web/test/grit/test_resources.h"
 #include "ios/web/test/mojo_test.mojom.h"
 #include "ios/web/test/test_url_constants.h"
 #import "ios/web/test/web_int_test.h"
-#import "ios/web/web_state/ui/crw_web_controller.h"
-#import "ios/web/web_state/web_state_impl.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
-#include "services/shell/public/cpp/interface_registry.h"
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace web {
 
@@ -27,6 +34,10 @@ namespace {
 
 // Hostname for test WebUI page.
 const char kTestWebUIURLHost[] = "testwebui";
+
+// Timeout in seconds to wait for a successful message exchange between native
+// code and a web page using Mojo.
+const NSTimeInterval kMessageTimeout = 5.0;
 
 // UI handler class which communicates with test WebUI page as follows:
 // - page sends "syn" message to |TestUIHandler|
@@ -36,8 +47,7 @@ const char kTestWebUIURLHost[] = "testwebui";
 // Once "fin" is received |IsFinReceived()| call will return true, indicating
 // that communication was successful. See test WebUI page code here:
 // ios/web/test/data/mojo_test.js
-class TestUIHandler : public TestUIHandlerMojo,
-                      public shell::InterfaceFactory<TestUIHandlerMojo> {
+class TestUIHandler : public TestUIHandlerMojo {
  public:
   TestUIHandler() {}
   ~TestUIHandler() override {}
@@ -47,16 +57,16 @@ class TestUIHandler : public TestUIHandlerMojo,
 
   // TestUIHandlerMojo overrides.
   void SetClientPage(TestPagePtr page) override { page_ = std::move(page); }
-  void HandleJsMessage(const mojo::String& message) override {
-    if (message.get() == "syn") {
+  void HandleJsMessage(const std::string& message) override {
+    if (message == "syn") {
       // Received "syn" message from WebUI page, send "ack" as reply.
       DCHECK(!syn_received_);
       DCHECK(!fin_received_);
       syn_received_ = true;
       NativeMessageResultMojoPtr result(NativeMessageResultMojo::New());
-      result->message = mojo::String::From("ack");
+      result->message = "ack";
       page_->HandleNativeMessage(std::move(result));
-    } else if (message.get() == "fin") {
+    } else if (message == "fin") {
       // Received "fin" from the WebUI page in response to "ack".
       DCHECK(syn_received_);
       DCHECK(!fin_received_);
@@ -66,13 +76,11 @@ class TestUIHandler : public TestUIHandlerMojo,
     }
   }
 
- private:
-  // shell::InterfaceFactory overrides.
-  void Create(shell::Connection* connection,
-              mojo::InterfaceRequest<TestUIHandlerMojo> request) override {
+  void BindTestUIHandlerMojoRequest(TestUIHandlerMojoRequest request) {
     bindings_.AddBinding(this, std::move(request));
   }
 
+ private:
   mojo::BindingSet<TestUIHandlerMojo> bindings_;
   TestPagePtr page_ = nullptr;
   // |true| if "syn" has been received.
@@ -92,14 +100,17 @@ class TestUI : public WebUIIOSController {
         web::WebUIIOSDataSource::Create(kTestWebUIURLHost);
 
     source->AddResourcePath("mojo_test.js", IDR_MOJO_TEST_JS);
-    source->AddResourcePath("ios/web/test/mojo_test.mojom",
-                            IDR_MOJO_TEST_MOJO_JS);
+    source->AddResourcePath("mojo_bindings.js", IDR_IOS_MOJO_BINDINGS_JS);
+    source->AddResourcePath("mojo_test.mojom.js", IDR_MOJO_TEST_MOJO_JS);
     source->SetDefaultResource(IDR_MOJO_TEST_HTML);
+    source->UseGzip();
 
     web::WebState* web_state = web_ui->GetWebState();
     web::WebUIIOSDataSource::Add(web_state->GetBrowserState(), source);
 
-    web_state->GetMojoInterfaceRegistry()->AddInterface(ui_handler);
+    web_state->GetWebStateInterfaceProvider()->registry()->AddInterface(
+        base::Bind(&TestUIHandler::BindTestUIHandlerMojoRequest,
+                   base::Unretained(ui_handler)));
   }
 };
 
@@ -111,12 +122,13 @@ class TestWebUIControllerFactory : public WebUIIOSControllerFactory {
       : ui_handler_(ui_handler) {}
 
   // WebUIIOSControllerFactory overrides.
-  WebUIIOSController* CreateWebUIIOSControllerForURL(
+  std::unique_ptr<WebUIIOSController> CreateWebUIIOSControllerForURL(
       WebUIIOS* web_ui,
       const GURL& url) const override {
-    DCHECK_EQ(url.scheme(), kTestWebUIScheme);
+    if (!url.SchemeIs(kTestWebUIScheme))
+      return nullptr;
     DCHECK_EQ(url.host(), kTestWebUIURLHost);
-    return new TestUI(web_ui, ui_handler_);
+    return std::make_unique<TestUI>(web_ui, ui_handler_);
   }
 
  private:
@@ -125,43 +137,79 @@ class TestWebUIControllerFactory : public WebUIIOSControllerFactory {
 };
 }  // namespace
 
-// A test fixture for verifying mojo comminication for WebUI.
+// A test fixture for verifying mojo communication for WebUI.
 class WebUIMojoTest : public WebIntTest {
  protected:
-  WebUIMojoTest()
-      : web_state_(new WebStateImpl(GetBrowserState())),
-        ui_handler_(new TestUIHandler()) {
-    web_state_->GetNavigationManagerImpl().InitializeSession(nil, nil, NO, 0);
-    WebUIIOSControllerFactory::RegisterFactory(
-        new TestWebUIControllerFactory(ui_handler_.get()));
+  void SetUp() override {
+    WebIntTest::SetUp();
+    @autoreleasepool {
+      ui_handler_ = std::make_unique<TestUIHandler>();
+      WebState::CreateParams params(GetBrowserState());
+      web_state_ = WebState::Create(params);
+      WebUIIOSControllerFactory::RegisterFactory(
+          new TestWebUIControllerFactory(ui_handler_.get()));
+    }
+  }
+
+  void TearDown() override {
+    @autoreleasepool {
+      // WebState owns CRWWebUIManager. When WebState is destroyed,
+      // CRWWebUIManager is autoreleased and will be destroyed upon autorelease
+      // pool purge. However in this test, WebTest destructor is called before
+      // PlatformTest, thus CRWWebUIManager outlives the WebThreadBundle.
+      // However, CRWWebUIManager owns a URLFetcherImpl, which DCHECKs that its
+      // destructor is called on UI web thread. Hence, URLFetcherImpl has to
+      // outlive the WebThreadBundle, since [NSThread mainThread] will not be
+      // WebThread::UI once WebThreadBundle is destroyed.
+      web_state_.reset();
+      ui_handler_.reset();
+    }
+
+    WebIntTest::TearDown();
   }
 
   // Returns WebState which loads test WebUI page.
-  WebStateImpl* web_state() { return web_state_.get(); }
+  WebState* web_state() { return web_state_.get(); }
   // Returns UI handler which communicates with WebUI page.
   TestUIHandler* test_ui_handler() { return ui_handler_.get(); }
 
  private:
-  std::unique_ptr<WebStateImpl> web_state_;
+  std::unique_ptr<WebState> web_state_;
   std::unique_ptr<TestUIHandler> ui_handler_;
 };
 
 // Tests that JS can send messages to the native code and vice versa.
-// TestUIHandler is used for communication and test suceeds only when
-// |TestUIHandler| sucessfully receives "ack" message from WebUI page.
+// TestUIHandler is used for communication and test succeeds only when
+// |TestUIHandler| successfully receives "ack" message from WebUI page.
 TEST_F(WebUIMojoTest, MessageExchange) {
-  web_state()->SetWebUsageEnabled(true);
-  web_state()->GetWebController().useMojoForWebUI = YES;
-  web_state()->GetView();  // WebState won't load URL without view.
-  NavigationManager::WebLoadParams load_params(GURL(
-      url::SchemeHostPort(kTestWebUIScheme, kTestWebUIURLHost, 0).Serialize()));
-  web_state()->GetNavigationManager()->LoadURLWithParams(load_params);
+  @autoreleasepool {
+    url::SchemeHostPort tuple(kTestWebUIScheme, kTestWebUIURLHost, 0);
+    GURL url(tuple.Serialize());
+    test::LoadUrl(web_state(), url);
+    // LoadIfNecessary is needed because the view is not created (but needed)
+    // when loading the page. TODO(crbug.com/705819): Remove this call.
+    web_state()->GetNavigationManager()->LoadIfNecessary();
 
-  // Wait until |TestUIHandler| receives "ack" message from WebUI page.
-  base::test::ios::WaitUntilCondition(^{
-    base::RunLoop().RunUntilIdle();
-    return test_ui_handler()->IsFinReceived();
-  });
+    // Wait until |TestUIHandler| receives "fin" message from WebUI page.
+    bool fin_received =
+        base::test::ios::WaitUntilConditionOrTimeout(kMessageTimeout, ^{
+          // Flush any pending tasks. Don't RunUntilIdle() because
+          // RunUntilIdle() is incompatible with mojo::SimpleWatcher's
+          // automatic arming behavior, which Mojo JS still depends upon.
+          //
+          // TODO(crbug.com/701875): Introduce the full watcher API to JS and
+          // get rid of this hack.
+          base::RunLoop loop;
+          base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                        loop.QuitClosure());
+          loop.Run();
+          return test_ui_handler()->IsFinReceived();
+        });
+
+    ASSERT_TRUE(fin_received);
+    EXPECT_FALSE(web_state()->IsLoading());
+    EXPECT_EQ(url, web_state()->GetLastCommittedURL());
+  }
 }
 
 }  // namespace web

@@ -11,12 +11,11 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/strings/string16.h"
+#include "base/values.h"
+#include "build/build_config.h"
+#include "printing/native_drawing_context.h"
 #include "printing/print_settings.h"
 #include "ui/gfx/native_widget_types.h"
-
-namespace base {
-class DictionaryValue;
-}
 
 namespace printing {
 
@@ -29,8 +28,8 @@ class PRINTING_EXPORT PrintingContext {
   // Printing context delegate.
   class Delegate {
    public:
-    Delegate() {};
-    virtual ~Delegate() {};
+    Delegate() {}
+    virtual ~Delegate() {}
 
     // Returns parent view to use for modal dialogs.
     virtual gfx::NativeView GetParentView() = 0;
@@ -50,7 +49,7 @@ class PRINTING_EXPORT PrintingContext {
 
   // Callback of AskUserForSettings, used to notify the PrintJobWorker when
   // print settings are available.
-  typedef base::Callback<void(Result)> PrintSettingsCallback;
+  using PrintSettingsCallback = base::OnceCallback<void(Result)>;
 
   // Asks the user what printer and format should be used to print. Updates the
   // context with the select device settings. The result of the call is returned
@@ -62,7 +61,7 @@ class PRINTING_EXPORT PrintingContext {
   virtual void AskUserForSettings(int max_pages,
                                   bool has_selection,
                                   bool is_scripted,
-                                  const PrintSettingsCallback& callback) = 0;
+                                  PrintSettingsCallback callback) = 0;
 
   // Selects the user's default printer and format. Updates the context with the
   // default device settings.
@@ -82,11 +81,14 @@ class PRINTING_EXPORT PrintingContext {
                                        int page_count) = 0;
 
   // Updates Print Settings. |job_settings| contains all print job
-  // settings information. |ranges| has the new page range settings.
-  Result UpdatePrintSettings(const base::DictionaryValue& job_settings);
+  // settings information.
+  Result UpdatePrintSettings(base::Value job_settings);
 
-  // Initializes with predefined settings.
-  virtual Result InitWithSettings(const PrintSettings& settings) = 0;
+#if defined(OS_CHROMEOS)
+  // Updates Print Settings.
+  Result UpdatePrintSettingsFromPOD(
+      std::unique_ptr<PrintSettings> job_settings);
+#endif
 
   // Does platform specific setup of the printer before the printing. Signal the
   // printer that a document is about to be spooled.
@@ -114,17 +116,20 @@ class PRINTING_EXPORT PrintingContext {
   virtual void ReleaseContext() = 0;
 
   // Returns the native context used to print.
-  virtual gfx::NativeDrawingContext context() const = 0;
+  virtual printing::NativeDrawingContext context() const = 0;
 
   // Creates an instance of this object. Implementers of this interface should
   // implement this method to create an object of their implementation.
   static std::unique_ptr<PrintingContext> Create(Delegate* delegate);
 
   void set_margin_type(MarginType type);
+  void set_is_modifiable(bool is_modifiable);
 
   const PrintSettings& settings() const {
     return settings_;
   }
+
+  int job_id() const { return job_id_; }
 
  protected:
   explicit PrintingContext(Delegate* delegate);
@@ -139,13 +144,16 @@ class PRINTING_EXPORT PrintingContext {
   PrintSettings settings_;
 
   // Printing context delegate.
-  Delegate* delegate_;
+  Delegate* const delegate_;
 
   // Is a print job being done.
   volatile bool in_print_job_;
 
   // Did the user cancel the print job.
   volatile bool abort_printing_;
+
+  // The job id for the current job. The value is 0 if no jobs are active.
+  int job_id_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PrintingContext);

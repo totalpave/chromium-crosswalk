@@ -8,12 +8,10 @@
 #include <string>
 
 #include "base/callback_forward.h"
-#include "content/public/common/speech_recognition_error.h"
 
 namespace content {
 
 class SpeechRecognitionEventListener;
-struct SpeechRecognitionResult;
 
 // Allows embedders to display the current state of recognition, for getting the
 // user's permission and for fetching optional request information.
@@ -25,7 +23,7 @@ class SpeechRecognitionManagerDelegate {
   // This is called on the IO thread.
   virtual void CheckRecognitionIsAllowed(
       int session_id,
-      base::Callback<void(bool ask_user, bool is_allowed)> callback) = 0;
+      base::OnceCallback<void(bool ask_user, bool is_allowed)> callback) = 0;
 
   // Checks whether the delegate is interested (returning a non nullptr ptr) or
   // not (returning nullptr) in receiving a copy of all sessions events.

@@ -18,17 +18,13 @@ sys.path.append(
     os.path.abspath(os.path.join(sys.path[0], '../../../google_apis')))
 import google_api_keys
 
-sys.path.append(os.path.abspath(os.path.join(
-    os.path.dirname(__file__), os.pardir)))
-from pylib.constants import host_paths
-
 
 PACKAGE = 'org.chromium.chrome'
 CLASSNAME = 'GoogleAPIKeys'
 
 
 def GetScriptName():
-  return os.path.relpath(__file__, host_paths.DIR_SOURCE_ROOT)
+  return os.path.relpath(__file__, build_utils.DIR_SOURCE_ROOT)
 
 
 def GenerateOutput(constant_definitions):
@@ -99,7 +95,6 @@ def _DoMain(argv):
 
   values = {}
   values['GOOGLE_API_KEY'] = google_api_keys.GetAPIKey()
-  values['GOOGLE_API_KEY_REMOTING'] = google_api_keys.GetAPIKeyRemoting()
   values['GOOGLE_API_KEY_PHYSICAL_WEB_TEST'] = (google_api_keys.
       GetAPIKeyPhysicalWebTest())
   values['GOOGLE_CLIENT_ID_MAIN'] = google_api_keys.GetClientID('MAIN')
@@ -126,4 +121,3 @@ def _DoMain(argv):
 
 if __name__ == '__main__':
   _DoMain(sys.argv[1:])
-

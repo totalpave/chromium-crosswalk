@@ -4,6 +4,7 @@
 
 #include "ppapi/proxy/serialized_var.h"
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "ipc/ipc_message_utils.h"
 #include "ppapi/c/pp_instance.h"
@@ -272,8 +273,8 @@ ReceiveSerializedVarVectorOutParam::ReceiveSerializedVarVectorOutParam(
 
 ReceiveSerializedVarVectorOutParam::~ReceiveSerializedVarVectorOutParam() {
   *output_count_ = static_cast<uint32_t>(vector_.size());
-  if (!vector_.size()) {
-    *output_ = NULL;
+  if (vector_.empty()) {
+    *output_ = nullptr;
     return;
   }
 

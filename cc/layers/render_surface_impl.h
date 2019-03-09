@@ -12,31 +12,29 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "cc/base/cc_export.h"
+#include "cc/cc_export.h"
+#include "cc/layers/draw_mode.h"
 #include "cc/layers/layer_collections.h"
-#include "cc/quads/render_pass.h"
-#include "cc/quads/shared_quad_state.h"
 #include "cc/trees/occlusion.h"
 #include "cc/trees/property_tree.h"
+#include "components/viz/common/quads/render_pass.h"
+#include "components/viz/common/quads/shared_quad_state.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/transform.h"
 
 namespace cc {
 
+class AppendQuadsData;
 class DamageTracker;
 class FilterOperations;
 class Occlusion;
-class RenderPassId;
-class RenderPassSink;
 class LayerImpl;
-class LayerIterator;
-
-struct AppendQuadsData;
+class LayerTreeImpl;
 
 class CC_EXPORT RenderSurfaceImpl {
  public:
-  explicit RenderSurfaceImpl(LayerImpl* owning_layer);
+  RenderSurfaceImpl(LayerTreeImpl* layer_tree_impl, uint64_t stable_id);
   virtual ~RenderSurfaceImpl();
 
   // Returns the RenderSurfaceImpl that this render surface contributes to. Root
@@ -53,6 +51,9 @@ class CC_EXPORT RenderSurfaceImpl {
   }
   float draw_opacity() const { return draw_properties_.draw_opacity; }
 
+  SkBlendMode BlendMode() const;
+  bool UsesDefaultBlendMode() const;
+
   void SetNearestOcclusionImmuneAncestor(const RenderSurfaceImpl* surface) {
     nearest_occlusion_immune_ancestor_ = surface;
   }
@@ -61,10 +62,7 @@ class CC_EXPORT RenderSurfaceImpl {
   }
 
   SkColor GetDebugBorderColor() const;
-  SkColor GetReplicaDebugBorderColor() const;
-
   float GetDebugBorderWidth() const;
-  float GetReplicaDebugBorderWidth() const;
 
   void SetDrawTransform(const gfx::Transform& draw_transform) {
     draw_properties_.draw_transform = draw_transform;
@@ -78,22 +76,6 @@ class CC_EXPORT RenderSurfaceImpl {
   }
   const gfx::Transform& screen_space_transform() const {
     return draw_properties_.screen_space_transform;
-  }
-
-  void SetReplicaDrawTransform(const gfx::Transform& replica_draw_transform) {
-    draw_properties_.replica_draw_transform = replica_draw_transform;
-  }
-  const gfx::Transform& replica_draw_transform() const {
-    return draw_properties_.replica_draw_transform;
-  }
-
-  void SetReplicaScreenSpaceTransform(
-      const gfx::Transform& replica_screen_space_transform) {
-    draw_properties_.replica_screen_space_transform =
-        replica_screen_space_transform;
-  }
-  const gfx::Transform& replica_screen_space_transform() const {
-    return draw_properties_.replica_screen_space_transform;
   }
 
   void SetIsClipped(bool is_clipped) {
@@ -115,6 +97,21 @@ class CC_EXPORT RenderSurfaceImpl {
     contributes_to_drawn_surface_ = contributes_to_drawn_surface;
   }
 
+  void set_has_contributing_layer_that_escapes_clip(
+      bool contributing_layer_escapes_clip) {
+    has_contributing_layer_that_escapes_clip_ = contributing_layer_escapes_clip;
+  }
+  bool has_contributing_layer_that_escapes_clip() const {
+    return has_contributing_layer_that_escapes_clip_;
+  }
+
+  void set_is_render_surface_list_member(bool is_render_surface_list_member) {
+    is_render_surface_list_member_ = is_render_surface_list_member;
+  }
+  bool is_render_surface_list_member() const {
+    return is_render_surface_list_member_;
+  }
+
   void CalculateContentRectFromAccumulatedContentRect(int max_texture_size);
   void SetContentRectToViewport();
   void SetContentRectForTesting(const gfx::Rect& rect);
@@ -130,6 +127,14 @@ class CC_EXPORT RenderSurfaceImpl {
     return accumulated_content_rect_;
   }
 
+  void increment_num_contributors() { num_contributors_++; }
+  void decrement_num_contributors() {
+    num_contributors_--;
+    DCHECK_GE(num_contributors_, 0);
+  }
+  void reset_num_contributors() { num_contributors_ = 0; }
+  int num_contributors() const { return num_contributors_; }
+
   const Occlusion& occlusion_in_content_space() const {
     return occlusion_in_content_space_;
   }
@@ -137,53 +142,59 @@ class CC_EXPORT RenderSurfaceImpl {
     occlusion_in_content_space_ = occlusion;
   }
 
-  LayerImplList& layer_list() { return layer_list_; }
-  void ClearLayerLists();
-
-  int OwningLayerId() const;
-  bool HasReplica() const;
-  const LayerImpl* ReplicaLayer() const;
-  LayerImpl* ReplicaLayer();
+  uint64_t id() const { return stable_id_; }
 
   LayerImpl* MaskLayer();
   bool HasMask() const;
+  bool HasMaskingContributingSurface() const;
 
-  LayerImpl* ReplicaMaskLayer();
-  bool HasReplicaMask() const;
+  const FilterOperations& Filters() const;
+  const FilterOperations& BackdropFilters() const;
+  const gfx::RRectF& BackdropFilterBounds() const;
+  gfx::PointF FiltersOrigin() const;
+  gfx::Transform SurfaceScale() const;
 
-  const FilterOperations& BackgroundFilters() const;
+  bool TrilinearFiltering() const;
 
   bool HasCopyRequest() const;
 
-  void ResetPropertyChangedFlag() { surface_property_changed_ = false; }
+  bool ShouldCacheRenderSurface() const;
+
+  void ResetPropertyChangedFlags();
   bool SurfacePropertyChanged() const;
   bool SurfacePropertyChangedOnlyFromDescendant() const;
+  bool AncestorPropertyChanged() const;
+  void NoteAncestorPropertyChanged();
+  bool HasDamageFromeContributingContent() const;
 
   DamageTracker* damage_tracker() const { return damage_tracker_.get(); }
+  gfx::Rect GetDamageRect() const;
 
-  RenderPassId GetRenderPassId();
-
-  void AppendRenderPasses(RenderPassSink* pass_sink);
-  void AppendQuads(RenderPass* render_pass,
-                   const gfx::Transform& draw_transform,
-                   const Occlusion& occlusion_in_content_space,
-                   SkColor debug_border_color,
-                   float debug_border_width,
-                   LayerImpl* mask_layer,
-                   AppendQuadsData* append_quads_data,
-                   RenderPassId render_pass_id);
+  std::unique_ptr<viz::RenderPass> CreateRenderPass();
+  void AppendQuads(DrawMode draw_mode,
+                   viz::RenderPass* render_pass,
+                   AppendQuadsData* append_quads_data);
 
   int TransformTreeIndex() const;
   int ClipTreeIndex() const;
+
+  void set_effect_tree_index(int index) { effect_tree_index_ = index; }
   int EffectTreeIndex() const;
+
+  const EffectNode* OwningEffectNode() const;
 
  private:
   void SetContentRect(const gfx::Rect& content_rect);
   gfx::Rect CalculateClippedAccumulatedContentRect();
+  gfx::Rect CalculateExpandedClipForFilters(
+      const gfx::Transform& target_to_surface);
+  void TileMaskLayer(viz::RenderPass* render_pass,
+                     viz::SharedQuadState* shared_quad_state,
+                     const gfx::Rect& unoccluded_content_rect);
 
-  const EffectNode* OwningEffectNode() const;
-
-  LayerImpl* owning_layer_;
+  LayerTreeImpl* layer_tree_impl_;
+  uint64_t stable_id_;
+  int effect_tree_index_;
 
   // Container for properties that render surfaces need to compute before they
   // can be drawn.
@@ -199,11 +210,6 @@ class CC_EXPORT RenderSurfaceImpl {
     // Transforms from the surface's own space to the viewport.
     gfx::Transform screen_space_transform;
 
-    // If the surface has a replica, these transform from the replica's space to
-    // the space of the target surface and the viewport.
-    gfx::Transform replica_draw_transform;
-    gfx::Transform replica_screen_space_transform;
-
     // This is in the surface's own space.
     gfx::Rect content_rect;
 
@@ -218,11 +224,15 @@ class CC_EXPORT RenderSurfaceImpl {
 
   // Is used to calculate the content rect from property trees.
   gfx::Rect accumulated_content_rect_;
+  int num_contributors_;
+  // Is used to decide if the surface is clipped.
+  bool has_contributing_layer_that_escapes_clip_ : 1;
   bool surface_property_changed_ : 1;
+  bool ancestor_property_changed_ : 1;
 
   bool contributes_to_drawn_surface_ : 1;
+  bool is_render_surface_list_member_ : 1;
 
-  LayerImplList layer_list_;
   Occlusion occlusion_in_content_space_;
 
   // The nearest ancestor target surface that will contain the contents of this
@@ -230,12 +240,6 @@ class CC_EXPORT RenderSurfaceImpl {
   const RenderSurfaceImpl* nearest_occlusion_immune_ancestor_;
 
   std::unique_ptr<DamageTracker> damage_tracker_;
-
-  // For LayerIteratorActions
-  int target_render_surface_layer_index_history_;
-  size_t current_layer_index_history_;
-
-  friend class LayerIterator;
 
   DISALLOW_COPY_AND_ASSIGN(RenderSurfaceImpl);
 };

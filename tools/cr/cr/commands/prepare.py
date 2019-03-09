@@ -23,7 +23,7 @@ class PrepareCommand(cr.Command):
     self.help = 'Prepares an output directory'
     self.description = ("""
         This does any preparation needed for the output directory, such as
-        running gyp.
+        running gn.
         """)
 
   def Run(self):
@@ -66,4 +66,3 @@ class PrepareOut(cr.Plugin, cr.Plugin.Type):
   def Prepare(self):
     """All PrepareOut plugins must override this method to do their work."""
     raise NotImplementedError('Must be overridden.')
-

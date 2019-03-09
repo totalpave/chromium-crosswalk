@@ -12,27 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "minidump/minidump_module_writer.h"
+
+#include <stddef.h>
 #include <string.h>
 
 #include <utility>
 
 #include "base/format_macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "gtest/gtest.h"
-#include "minidump/minidump_extensions.h"
 #include "minidump/minidump_file_writer.h"
-#include "minidump/minidump_module_writer.h"
 #include "minidump/test/minidump_file_writer_test_util.h"
 #include "minidump/test/minidump_string_writer_test_util.h"
 #include "minidump/test/minidump_writable_test_util.h"
 #include "snapshot/test/test_module_snapshot.h"
-#include "test/gtest_death_check.h"
+#include "test/gtest_death.h"
 #include "util/file/string_file.h"
 #include "util/misc/implicit_cast.h"
 #include "util/misc/uuid.h"
-#include "util/stdlib/pointer_container.h"
 
 namespace crashpad {
 namespace test {
@@ -40,10 +40,10 @@ namespace {
 
 void GetModuleListStream(const std::string& file_contents,
                          const MINIDUMP_MODULE_LIST** module_list) {
-  const size_t kDirectoryOffset = sizeof(MINIDUMP_HEADER);
-  const size_t kModuleListStreamOffset =
+  constexpr size_t kDirectoryOffset = sizeof(MINIDUMP_HEADER);
+  constexpr size_t kModuleListStreamOffset =
       kDirectoryOffset + sizeof(MINIDUMP_DIRECTORY);
-  const size_t kModulesOffset =
+  constexpr size_t kModulesOffset =
       kModuleListStreamOffset + sizeof(MINIDUMP_MODULE_LIST);
 
   ASSERT_GE(file_contents.size(), kModulesOffset);
@@ -54,8 +54,8 @@ void GetModuleListStream(const std::string& file_contents,
   ASSERT_NO_FATAL_FAILURE(VerifyMinidumpHeader(header, 1, 0));
   ASSERT_TRUE(directory);
 
-  ASSERT_EQ(kMinidumpStreamTypeModuleList, directory[0].StreamType);
-  EXPECT_EQ(kModuleListStreamOffset, directory[0].Location.Rva);
+  ASSERT_EQ(directory[0].StreamType, kMinidumpStreamTypeModuleList);
+  EXPECT_EQ(directory[0].Location.Rva, kModuleListStreamOffset);
 
   *module_list = MinidumpWritableAtLocationDescriptor<MINIDUMP_MODULE_LIST>(
       file_contents, directory[0].Location);
@@ -64,27 +64,27 @@ void GetModuleListStream(const std::string& file_contents,
 
 TEST(MinidumpModuleWriter, EmptyModuleList) {
   MinidumpFileWriter minidump_file_writer;
-  auto module_list_writer = base::WrapUnique(new MinidumpModuleListWriter());
+  auto module_list_writer = std::make_unique<MinidumpModuleListWriter>();
 
-  minidump_file_writer.AddStream(std::move(module_list_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
 
-  ASSERT_EQ(sizeof(MINIDUMP_HEADER) + sizeof(MINIDUMP_DIRECTORY) +
-                sizeof(MINIDUMP_MODULE_LIST),
-            string_file.string().size());
+  ASSERT_EQ(string_file.string().size(),
+            sizeof(MINIDUMP_HEADER) + sizeof(MINIDUMP_DIRECTORY) +
+                sizeof(MINIDUMP_MODULE_LIST));
 
   const MINIDUMP_MODULE_LIST* module_list = nullptr;
   ASSERT_NO_FATAL_FAILURE(
       GetModuleListStream(string_file.string(), &module_list));
 
-  EXPECT_EQ(0u, module_list->NumberOfModules);
+  EXPECT_EQ(module_list->NumberOfModules, 0u);
 }
 
 // If |expected_pdb_name| is not nullptr, |codeview_record| is used to locate a
 // CodeView record in |file_contents|, and its fields are compared against the
-// the |expected_pdb_*| values. If |expected_pdb_uuid| is supplied, the CodeView
+// |expected_pdb_*| values. If |expected_pdb_uuid| is supplied, the CodeView
 // record must be a PDB 7.0 link, otherwise, it must be a PDB 2.0 link. If
 // |expected_pdb_name| is nullptr, |codeview_record| must not point to anything.
 void ExpectCodeViewRecord(const MINIDUMP_LOCATION_DESCRIPTOR* codeview_record,
@@ -94,7 +94,7 @@ void ExpectCodeViewRecord(const MINIDUMP_LOCATION_DESCRIPTOR* codeview_record,
                           time_t expected_pdb_timestamp,
                           uint32_t expected_pdb_age) {
   if (expected_pdb_name) {
-    EXPECT_NE(0u, codeview_record->Rva);
+    EXPECT_NE(codeview_record->Rva, 0u);
 
     std::string observed_pdb_name;
     if (expected_pdb_uuid) {
@@ -103,11 +103,11 @@ void ExpectCodeViewRecord(const MINIDUMP_LOCATION_DESCRIPTOR* codeview_record,
           MinidumpWritableAtLocationDescriptor<CodeViewRecordPDB70>(
               file_contents, *codeview_record);
       ASSERT_TRUE(codeview_pdb70_record);
-      EXPECT_EQ(0,
-                memcmp(expected_pdb_uuid,
+      EXPECT_EQ(memcmp(expected_pdb_uuid,
                        &codeview_pdb70_record->uuid,
-                       sizeof(codeview_pdb70_record->uuid)));
-      EXPECT_EQ(expected_pdb_age, codeview_pdb70_record->age);
+                       sizeof(codeview_pdb70_record->uuid)),
+                0);
+      EXPECT_EQ(codeview_pdb70_record->age, expected_pdb_age);
 
       observed_pdb_name.assign(
           reinterpret_cast<const char*>(&codeview_pdb70_record->pdb_name[0]),
@@ -118,9 +118,9 @@ void ExpectCodeViewRecord(const MINIDUMP_LOCATION_DESCRIPTOR* codeview_record,
           MinidumpWritableAtLocationDescriptor<CodeViewRecordPDB20>(
               file_contents, *codeview_record);
       ASSERT_TRUE(codeview_pdb20_record);
-      EXPECT_EQ(static_cast<uint32_t>(expected_pdb_timestamp),
-                codeview_pdb20_record->timestamp);
-      EXPECT_EQ(expected_pdb_age, codeview_pdb20_record->age);
+      EXPECT_EQ(codeview_pdb20_record->timestamp,
+                static_cast<uint32_t>(expected_pdb_timestamp));
+      EXPECT_EQ(codeview_pdb20_record->age, expected_pdb_age);
 
       observed_pdb_name.assign(
           reinterpret_cast<const char*>(&codeview_pdb20_record->pdb_name[0]),
@@ -128,14 +128,14 @@ void ExpectCodeViewRecord(const MINIDUMP_LOCATION_DESCRIPTOR* codeview_record,
     }
 
     // Check for, and then remove, the NUL terminator.
-    EXPECT_EQ('\0', observed_pdb_name[observed_pdb_name.size() - 1]);
+    EXPECT_EQ(observed_pdb_name[observed_pdb_name.size() - 1], '\0');
     observed_pdb_name.resize(observed_pdb_name.size() - 1);
 
-    EXPECT_EQ(expected_pdb_name, observed_pdb_name);
+    EXPECT_EQ(observed_pdb_name, expected_pdb_name);
   } else {
     // There should be no CodeView record.
-    EXPECT_EQ(0u, codeview_record->DataSize);
-    EXPECT_EQ(0u, codeview_record->Rva);
+    EXPECT_EQ(codeview_record->DataSize, 0u);
+    EXPECT_EQ(codeview_record->Rva, 0u);
   }
 }
 
@@ -150,21 +150,21 @@ void ExpectMiscellaneousDebugRecord(
     uint32_t expected_debug_type,
     bool expected_debug_utf16) {
   if (expected_debug_name) {
-    EXPECT_NE(0u, misc_record->Rva);
+    EXPECT_NE(misc_record->Rva, 0u);
     const IMAGE_DEBUG_MISC* misc_debug_record =
         MinidumpWritableAtLocationDescriptor<IMAGE_DEBUG_MISC>(file_contents,
                                                                *misc_record);
     ASSERT_TRUE(misc_debug_record);
-    EXPECT_EQ(expected_debug_type, misc_debug_record->DataType);
-    EXPECT_EQ(expected_debug_utf16, misc_debug_record->Unicode != 0);
-    EXPECT_EQ(0u, misc_debug_record->Reserved[0]);
-    EXPECT_EQ(0u, misc_debug_record->Reserved[1]);
-    EXPECT_EQ(0u, misc_debug_record->Reserved[2]);
+    EXPECT_EQ(misc_debug_record->DataType, expected_debug_type);
+    EXPECT_EQ(misc_debug_record->Unicode != 0, expected_debug_utf16);
+    EXPECT_EQ(misc_debug_record->Reserved[0], 0u);
+    EXPECT_EQ(misc_debug_record->Reserved[1], 0u);
+    EXPECT_EQ(misc_debug_record->Reserved[2], 0u);
 
     // Check for the NUL terminator.
     size_t bytes_available =
         misc_debug_record->Length - offsetof(IMAGE_DEBUG_MISC, Data);
-    EXPECT_EQ('\0', misc_debug_record->Data[bytes_available - 1]);
+    EXPECT_EQ(misc_debug_record->Data[bytes_available - 1], '\0');
     std::string observed_data(
         reinterpret_cast<const char*>(misc_debug_record->Data));
 
@@ -182,14 +182,14 @@ void ExpectMiscellaneousDebugRecord(
 
     // Make sure that any padding bytes after the first NUL are also NUL.
     for (size_t index = bytes_used; index < bytes_available; ++index) {
-      EXPECT_EQ('\0', misc_debug_record->Data[index]);
+      EXPECT_EQ(misc_debug_record->Data[index], '\0');
     }
 
-    EXPECT_EQ(expected_debug_name, observed_data);
+    EXPECT_EQ(observed_data, expected_debug_name);
   } else {
     // There should be no miscellaneous debugging record.
-    EXPECT_EQ(0u, misc_record->DataSize);
-    EXPECT_EQ(0u, misc_record->Rva);
+    EXPECT_EQ(misc_record->DataSize, 0u);
+    EXPECT_EQ(misc_record->Rva, 0u);
   }
 }
 
@@ -213,43 +213,43 @@ void ExpectModule(const MINIDUMP_MODULE* expected,
                   const char* expected_debug_name,
                   uint32_t expected_debug_type,
                   bool expected_debug_utf16) {
-  EXPECT_EQ(expected->BaseOfImage, observed->BaseOfImage);
-  EXPECT_EQ(expected->SizeOfImage, observed->SizeOfImage);
-  EXPECT_EQ(expected->CheckSum, observed->CheckSum);
-  EXPECT_EQ(expected->TimeDateStamp, observed->TimeDateStamp);
-  EXPECT_EQ(implicit_cast<uint32_t>(VS_FFI_SIGNATURE),
-            observed->VersionInfo.dwSignature);
-  EXPECT_EQ(implicit_cast<uint32_t>(VS_FFI_STRUCVERSION),
-            observed->VersionInfo.dwStrucVersion);
-  EXPECT_EQ(expected->VersionInfo.dwFileVersionMS,
-            observed->VersionInfo.dwFileVersionMS);
-  EXPECT_EQ(expected->VersionInfo.dwFileVersionLS,
-            observed->VersionInfo.dwFileVersionLS);
-  EXPECT_EQ(expected->VersionInfo.dwProductVersionMS,
-            observed->VersionInfo.dwProductVersionMS);
-  EXPECT_EQ(expected->VersionInfo.dwProductVersionLS,
-            observed->VersionInfo.dwProductVersionLS);
-  EXPECT_EQ(expected->VersionInfo.dwFileFlagsMask,
-            observed->VersionInfo.dwFileFlagsMask);
-  EXPECT_EQ(expected->VersionInfo.dwFileFlags,
-            observed->VersionInfo.dwFileFlags);
-  EXPECT_EQ(expected->VersionInfo.dwFileOS, observed->VersionInfo.dwFileOS);
-  EXPECT_EQ(expected->VersionInfo.dwFileType, observed->VersionInfo.dwFileType);
-  EXPECT_EQ(expected->VersionInfo.dwFileSubtype,
-            observed->VersionInfo.dwFileSubtype);
-  EXPECT_EQ(expected->VersionInfo.dwFileDateMS,
-            observed->VersionInfo.dwFileDateMS);
-  EXPECT_EQ(expected->VersionInfo.dwFileDateLS,
-            observed->VersionInfo.dwFileDateLS);
-  EXPECT_EQ(0u, observed->Reserved0);
-  EXPECT_EQ(0u, observed->Reserved1);
+  EXPECT_EQ(observed->BaseOfImage, expected->BaseOfImage);
+  EXPECT_EQ(observed->SizeOfImage, expected->SizeOfImage);
+  EXPECT_EQ(observed->CheckSum, expected->CheckSum);
+  EXPECT_EQ(observed->TimeDateStamp, expected->TimeDateStamp);
+  EXPECT_EQ(observed->VersionInfo.dwSignature,
+            implicit_cast<uint32_t>(VS_FFI_SIGNATURE));
+  EXPECT_EQ(observed->VersionInfo.dwStrucVersion,
+            implicit_cast<uint32_t>(VS_FFI_STRUCVERSION));
+  EXPECT_EQ(observed->VersionInfo.dwFileVersionMS,
+            expected->VersionInfo.dwFileVersionMS);
+  EXPECT_EQ(observed->VersionInfo.dwFileVersionLS,
+            expected->VersionInfo.dwFileVersionLS);
+  EXPECT_EQ(observed->VersionInfo.dwProductVersionMS,
+            expected->VersionInfo.dwProductVersionMS);
+  EXPECT_EQ(observed->VersionInfo.dwProductVersionLS,
+            expected->VersionInfo.dwProductVersionLS);
+  EXPECT_EQ(observed->VersionInfo.dwFileFlagsMask,
+            expected->VersionInfo.dwFileFlagsMask);
+  EXPECT_EQ(observed->VersionInfo.dwFileFlags,
+            expected->VersionInfo.dwFileFlags);
+  EXPECT_EQ(observed->VersionInfo.dwFileOS, expected->VersionInfo.dwFileOS);
+  EXPECT_EQ(observed->VersionInfo.dwFileType, expected->VersionInfo.dwFileType);
+  EXPECT_EQ(observed->VersionInfo.dwFileSubtype,
+            expected->VersionInfo.dwFileSubtype);
+  EXPECT_EQ(observed->VersionInfo.dwFileDateMS,
+            expected->VersionInfo.dwFileDateMS);
+  EXPECT_EQ(observed->VersionInfo.dwFileDateLS,
+            expected->VersionInfo.dwFileDateLS);
+  EXPECT_EQ(observed->Reserved0, 0u);
+  EXPECT_EQ(observed->Reserved1, 0u);
 
-  EXPECT_NE(0u, observed->ModuleNameRva);
+  EXPECT_NE(observed->ModuleNameRva, 0u);
   base::string16 observed_module_name_utf16 =
       MinidumpStringAtRVAAsString(file_contents, observed->ModuleNameRva);
   base::string16 expected_module_name_utf16 =
       base::UTF8ToUTF16(expected_module_name);
-  EXPECT_EQ(expected_module_name_utf16, observed_module_name_utf16);
+  EXPECT_EQ(observed_module_name_utf16, expected_module_name_utf16);
 
   ASSERT_NO_FATAL_FAILURE(ExpectCodeViewRecord(&observed->CvRecord,
                                                file_contents,
@@ -267,15 +267,15 @@ void ExpectModule(const MINIDUMP_MODULE* expected,
 
 TEST(MinidumpModuleWriter, EmptyModule) {
   MinidumpFileWriter minidump_file_writer;
-  auto module_list_writer = base::WrapUnique(new MinidumpModuleListWriter());
+  auto module_list_writer = std::make_unique<MinidumpModuleListWriter>();
 
-  const char kModuleName[] = "test_executable";
+  static constexpr char kModuleName[] = "test_executable";
 
-  auto module_writer = base::WrapUnique(new MinidumpModuleWriter());
+  auto module_writer = std::make_unique<MinidumpModuleWriter>();
   module_writer->SetName(kModuleName);
 
   module_list_writer->AddModule(std::move(module_writer));
-  minidump_file_writer.AddStream(std::move(module_list_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -288,7 +288,7 @@ TEST(MinidumpModuleWriter, EmptyModule) {
   ASSERT_NO_FATAL_FAILURE(
       GetModuleListStream(string_file.string(), &module_list));
 
-  EXPECT_EQ(1u, module_list->NumberOfModules);
+  EXPECT_EQ(module_list->NumberOfModules, 1u);
 
   MINIDUMP_MODULE expected = {};
   ASSERT_NO_FATAL_FAILURE(ExpectModule(&expected,
@@ -306,36 +306,36 @@ TEST(MinidumpModuleWriter, EmptyModule) {
 
 TEST(MinidumpModuleWriter, OneModule) {
   MinidumpFileWriter minidump_file_writer;
-  auto module_list_writer = base::WrapUnique(new MinidumpModuleListWriter());
+  auto module_list_writer = std::make_unique<MinidumpModuleListWriter>();
 
-  const char kModuleName[] = "statically_linked";
-  const uint64_t kModuleBase = 0x10da69000;
-  const uint32_t kModuleSize = 0x1000;
-  const uint32_t kChecksum = 0x76543210;
-  const time_t kTimestamp = 0x386d4380;
-  const uint32_t kFileVersionMS = 0x00010002;
-  const uint32_t kFileVersionLS = 0x00030004;
-  const uint32_t kProductVersionMS = 0x00050006;
-  const uint32_t kProductVersionLS = 0x00070008;
-  const uint32_t kFileFlagsMask = VS_FF_DEBUG | VS_FF_PRERELEASE |
-                                  VS_FF_PATCHED | VS_FF_PRIVATEBUILD |
-                                  VS_FF_INFOINFERRED | VS_FF_SPECIALBUILD;
-  const uint32_t kFileFlags = VS_FF_PRIVATEBUILD | VS_FF_SPECIALBUILD;
-  const uint32_t kFileOS = VOS_DOS;
-  const uint32_t kFileType = VFT_DRV;
-  const uint32_t kFileSubtype = VFT2_DRV_KEYBOARD;
-  const char kPDBName[] = "statical.pdb";
-  const uint8_t kPDBUUIDBytes[16] =
+  static constexpr char kModuleName[] = "statically_linked";
+  constexpr uint64_t kModuleBase = 0x10da69000;
+  constexpr uint32_t kModuleSize = 0x1000;
+  constexpr uint32_t kChecksum = 0x76543210;
+  constexpr time_t kTimestamp = 0x386d4380;
+  constexpr uint32_t kFileVersionMS = 0x00010002;
+  constexpr uint32_t kFileVersionLS = 0x00030004;
+  constexpr uint32_t kProductVersionMS = 0x00050006;
+  constexpr uint32_t kProductVersionLS = 0x00070008;
+  constexpr uint32_t kFileFlagsMask = VS_FF_DEBUG | VS_FF_PRERELEASE |
+                                      VS_FF_PATCHED | VS_FF_PRIVATEBUILD |
+                                      VS_FF_INFOINFERRED | VS_FF_SPECIALBUILD;
+  constexpr uint32_t kFileFlags = VS_FF_PRIVATEBUILD | VS_FF_SPECIALBUILD;
+  constexpr uint32_t kFileOS = VOS_DOS;
+  constexpr uint32_t kFileType = VFT_DRV;
+  constexpr uint32_t kFileSubtype = VFT2_DRV_KEYBOARD;
+  static constexpr char kPDBName[] = "statical.pdb";
+  static constexpr uint8_t kPDBUUIDBytes[16] =
       {0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
        0x08, 0x19, 0x2a, 0x3b, 0x4c, 0x5d, 0x6e, 0x7f};
   UUID pdb_uuid;
   pdb_uuid.InitializeFromBytes(kPDBUUIDBytes);
-  const uint32_t kPDBAge = 1;
-  const uint32_t kDebugType = IMAGE_DEBUG_MISC_EXENAME;
-  const char kDebugName[] = "statical.dbg";
-  const bool kDebugUTF16 = false;
+  constexpr uint32_t kPDBAge = 1;
+  constexpr uint32_t kDebugType = IMAGE_DEBUG_MISC_EXENAME;
+  static constexpr char kDebugName[] = "statical.dbg";
+  constexpr bool kDebugUTF16 = false;
 
-  auto module_writer = base::WrapUnique(new MinidumpModuleWriter());
+  auto module_writer = std::make_unique<MinidumpModuleWriter>();
   module_writer->SetName(kModuleName);
   module_writer->SetImageBaseAddress(kModuleBase);
   module_writer->SetImageSize(kModuleSize);
@@ -354,19 +354,19 @@ TEST(MinidumpModuleWriter, OneModule) {
   module_writer->SetFileTypeAndSubtype(kFileType, kFileSubtype);
 
   auto codeview_pdb70_writer =
-      base::WrapUnique(new MinidumpModuleCodeViewRecordPDB70Writer());
+      std::make_unique<MinidumpModuleCodeViewRecordPDB70Writer>();
   codeview_pdb70_writer->SetPDBName(kPDBName);
   codeview_pdb70_writer->SetUUIDAndAge(pdb_uuid, kPDBAge);
   module_writer->SetCodeViewRecord(std::move(codeview_pdb70_writer));
 
   auto misc_debug_writer =
-      base::WrapUnique(new MinidumpModuleMiscDebugRecordWriter());
+      std::make_unique<MinidumpModuleMiscDebugRecordWriter>();
   misc_debug_writer->SetDataType(kDebugType);
   misc_debug_writer->SetData(kDebugName, kDebugUTF16);
   module_writer->SetMiscDebugRecord(std::move(misc_debug_writer));
 
   module_list_writer->AddModule(std::move(module_writer));
-  minidump_file_writer.AddStream(std::move(module_list_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -379,7 +379,7 @@ TEST(MinidumpModuleWriter, OneModule) {
   ASSERT_NO_FATAL_FAILURE(
       GetModuleListStream(string_file.string(), &module_list));
 
-  EXPECT_EQ(1u, module_list->NumberOfModules);
+  EXPECT_EQ(module_list->NumberOfModules, 1u);
 
   MINIDUMP_MODULE expected = {};
   expected.BaseOfImage = kModuleBase;
@@ -415,33 +415,33 @@ TEST(MinidumpModuleWriter, OneModule_CodeViewUsesPDB20_MiscUsesUTF16) {
   // alternatives, a PDB 2.0 link as the CodeView record and an IMAGE_DEBUG_MISC
   // record with UTF-16 data.
   MinidumpFileWriter minidump_file_writer;
-  auto module_list_writer = base::WrapUnique(new MinidumpModuleListWriter());
+  auto module_list_writer = std::make_unique<MinidumpModuleListWriter>();
 
-  const char kModuleName[] = "dinosaur";
-  const char kPDBName[] = "d1n05.pdb";
-  const time_t kPDBTimestamp = 0x386d4380;
-  const uint32_t kPDBAge = 1;
-  const uint32_t kDebugType = IMAGE_DEBUG_MISC_EXENAME;
-  const char kDebugName[] = "d1n05.dbg";
-  const bool kDebugUTF16 = true;
+  static constexpr char kModuleName[] = "dinosaur";
+  static constexpr char kPDBName[] = "d1n05.pdb";
+  constexpr time_t kPDBTimestamp = 0x386d4380;
+  constexpr uint32_t kPDBAge = 1;
+  constexpr uint32_t kDebugType = IMAGE_DEBUG_MISC_EXENAME;
+  static constexpr char kDebugName[] = "d1n05.dbg";
+  constexpr bool kDebugUTF16 = true;
 
-  auto module_writer = base::WrapUnique(new MinidumpModuleWriter());
+  auto module_writer = std::make_unique<MinidumpModuleWriter>();
   module_writer->SetName(kModuleName);
 
   auto codeview_pdb20_writer =
-      base::WrapUnique(new MinidumpModuleCodeViewRecordPDB20Writer());
+      std::make_unique<MinidumpModuleCodeViewRecordPDB20Writer>();
   codeview_pdb20_writer->SetPDBName(kPDBName);
   codeview_pdb20_writer->SetTimestampAndAge(kPDBTimestamp, kPDBAge);
   module_writer->SetCodeViewRecord(std::move(codeview_pdb20_writer));
 
   auto misc_debug_writer =
-      base::WrapUnique(new MinidumpModuleMiscDebugRecordWriter());
+      std::make_unique<MinidumpModuleMiscDebugRecordWriter>();
   misc_debug_writer->SetDataType(kDebugType);
   misc_debug_writer->SetData(kDebugName, kDebugUTF16);
   module_writer->SetMiscDebugRecord(std::move(misc_debug_writer));
 
   module_list_writer->AddModule(std::move(module_writer));
-  minidump_file_writer.AddStream(std::move(module_list_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -454,7 +454,7 @@ TEST(MinidumpModuleWriter, OneModule_CodeViewUsesPDB20_MiscUsesUTF16) {
   ASSERT_NO_FATAL_FAILURE(
       GetModuleListStream(string_file.string(), &module_list));
 
-  EXPECT_EQ(1u, module_list->NumberOfModules);
+  EXPECT_EQ(module_list->NumberOfModules, 1u);
 
   MINIDUMP_MODULE expected = {};
 
@@ -476,64 +476,64 @@ TEST(MinidumpModuleWriter, ThreeModules) {
   // its CodeView record, one with no CodeView record, and one with a PDB 2.0
   // link as its CodeView record.
   MinidumpFileWriter minidump_file_writer;
-  auto module_list_writer = base::WrapUnique(new MinidumpModuleListWriter());
+  auto module_list_writer = std::make_unique<MinidumpModuleListWriter>();
 
-  const char kModuleName0[] = "main";
-  const uint64_t kModuleBase0 = 0x100101000;
-  const uint32_t kModuleSize0 = 0xf000;
-  const char kPDBName0[] = "main";
-  const uint8_t kPDBUUIDBytes0[16] =
+  static constexpr char kModuleName0[] = "main";
+  constexpr uint64_t kModuleBase0 = 0x100101000;
+  constexpr uint32_t kModuleSize0 = 0xf000;
+  static constexpr char kPDBName0[] = "main";
+  static constexpr uint8_t kPDBUUIDBytes0[16] =
       {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
        0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
   UUID pdb_uuid_0;
   pdb_uuid_0.InitializeFromBytes(kPDBUUIDBytes0);
-  const uint32_t kPDBAge0 = 0;
+  constexpr uint32_t kPDBAge0 = 0;
 
-  const char kModuleName1[] = "ld.so";
-  const uint64_t kModuleBase1 = 0x200202000;
-  const uint32_t kModuleSize1 = 0x1e000;
+  static constexpr char kModuleName1[] = "ld.so";
+  constexpr uint64_t kModuleBase1 = 0x200202000;
+  constexpr uint32_t kModuleSize1 = 0x1e000;
 
-  const char kModuleName2[] = "libc.so";
-  const uint64_t kModuleBase2 = 0x300303000;
-  const uint32_t kModuleSize2 = 0x2d000;
-  const char kPDBName2[] = "libc.so";
-  const time_t kPDBTimestamp2 = 0x386d4380;
-  const uint32_t kPDBAge2 = 2;
+  static constexpr char kModuleName2[] = "libc.so";
+  constexpr uint64_t kModuleBase2 = 0x300303000;
+  constexpr uint32_t kModuleSize2 = 0x2d000;
+  static constexpr char kPDBName2[] = "libc.so";
+  constexpr time_t kPDBTimestamp2 = 0x386d4380;
+  constexpr uint32_t kPDBAge2 = 2;
 
-  auto module_writer_0 = base::WrapUnique(new MinidumpModuleWriter());
+  auto module_writer_0 = std::make_unique<MinidumpModuleWriter>();
   module_writer_0->SetName(kModuleName0);
   module_writer_0->SetImageBaseAddress(kModuleBase0);
   module_writer_0->SetImageSize(kModuleSize0);
 
   auto codeview_pdb70_writer_0 =
-      base::WrapUnique(new MinidumpModuleCodeViewRecordPDB70Writer());
+      std::make_unique<MinidumpModuleCodeViewRecordPDB70Writer>();
   codeview_pdb70_writer_0->SetPDBName(kPDBName0);
   codeview_pdb70_writer_0->SetUUIDAndAge(pdb_uuid_0, kPDBAge0);
   module_writer_0->SetCodeViewRecord(std::move(codeview_pdb70_writer_0));
 
   module_list_writer->AddModule(std::move(module_writer_0));
 
-  auto module_writer_1 = base::WrapUnique(new MinidumpModuleWriter());
+  auto module_writer_1 = std::make_unique<MinidumpModuleWriter>();
   module_writer_1->SetName(kModuleName1);
   module_writer_1->SetImageBaseAddress(kModuleBase1);
   module_writer_1->SetImageSize(kModuleSize1);
 
   module_list_writer->AddModule(std::move(module_writer_1));
 
-  auto module_writer_2 = base::WrapUnique(new MinidumpModuleWriter());
+  auto module_writer_2 = std::make_unique<MinidumpModuleWriter>();
   module_writer_2->SetName(kModuleName2);
   module_writer_2->SetImageBaseAddress(kModuleBase2);
   module_writer_2->SetImageSize(kModuleSize2);
 
   auto codeview_pdb70_writer_2 =
-      base::WrapUnique(new MinidumpModuleCodeViewRecordPDB20Writer());
+      std::make_unique<MinidumpModuleCodeViewRecordPDB20Writer>();
   codeview_pdb70_writer_2->SetPDBName(kPDBName2);
   codeview_pdb70_writer_2->SetTimestampAndAge(kPDBTimestamp2, kPDBAge2);
   module_writer_2->SetCodeViewRecord(std::move(codeview_pdb70_writer_2));
 
   module_list_writer->AddModule(std::move(module_writer_2));
 
-  minidump_file_writer.AddStream(std::move(module_list_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -546,7 +546,7 @@ TEST(MinidumpModuleWriter, ThreeModules) {
   ASSERT_NO_FATAL_FAILURE(
       GetModuleListStream(string_file.string(), &module_list));
 
-  EXPECT_EQ(3u, module_list->NumberOfModules);
+  EXPECT_EQ(module_list->NumberOfModules, 3u);
 
   MINIDUMP_MODULE expected = {};
 
@@ -651,11 +651,10 @@ void InitializeTestModuleSnapshotFromMinidumpModule(
 
 TEST(MinidumpModuleWriter, InitializeFromSnapshot) {
   MINIDUMP_MODULE expect_modules[3] = {};
-  const char* module_paths[arraysize(expect_modules)] = {};
-  const char* module_names[arraysize(expect_modules)] = {};
-  const char* module_pdbs[arraysize(expect_modules)] = {};
-  UUID uuids[arraysize(expect_modules)] = {};
-  uint32_t ages[arraysize(expect_modules)] = {};
+  const char* module_paths[base::size(expect_modules)] = {};
+  const char* module_pdbs[base::size(expect_modules)] = {};
+  UUID uuids[base::size(expect_modules)] = {};
+  uint32_t ages[base::size(expect_modules)] = {};
 
   expect_modules[0].BaseOfImage = 0x100101000;
   expect_modules[0].SizeOfImage = 0xf000;
@@ -666,9 +665,8 @@ TEST(MinidumpModuleWriter, InitializeFromSnapshot) {
   expect_modules[0].VersionInfo.dwProductVersionLS = 0x00070008;
   expect_modules[0].VersionInfo.dwFileType = VFT_APP;
   module_paths[0] = "/usr/bin/true";
-  module_names[0] = "true";
   module_pdbs[0] = "true";
-  const uint8_t kUUIDBytes0[16] =
+  static constexpr uint8_t kUUIDBytes0[16] =
       {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
   uuids[0].InitializeFromBytes(kUUIDBytes0);
@@ -683,9 +681,8 @@ TEST(MinidumpModuleWriter, InitializeFromSnapshot) {
   expect_modules[1].VersionInfo.dwProductVersionLS = 0x000f0000;
   expect_modules[1].VersionInfo.dwFileType = VFT_DLL;
   module_paths[1] = "/usr/lib/libSystem.B.dylib";
-  module_names[1] = "libSystem.B.dylib";
   module_pdbs[1] = "libSystem.B.dylib.pdb";
-  const uint8_t kUUIDBytes1[16] =
+  static constexpr uint8_t kUUIDBytes1[16] =
       {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
   uuids[1].InitializeFromBytes(kUUIDBytes1);
@@ -700,19 +697,18 @@ TEST(MinidumpModuleWriter, InitializeFromSnapshot) {
   expect_modules[2].VersionInfo.dwProductVersionLS = 0xbbbbcccc;
   expect_modules[2].VersionInfo.dwFileType = VFT_UNKNOWN;
   module_paths[2] = "/usr/lib/dyld";
-  module_names[2] = "dyld";
   module_pdbs[2] = "/usr/lib/dyld.pdb";
-  const uint8_t kUUIDBytes2[16] =
+  static constexpr uint8_t kUUIDBytes2[16] =
       {0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9, 0xf8,
        0xf7, 0xf6, 0xf5, 0xf4, 0xf3, 0xf2, 0xf1, 0xf0};
   uuids[2].InitializeFromBytes(kUUIDBytes2);
   ages[2] = 30;
 
-  PointerVector<TestModuleSnapshot> module_snapshots_owner;
+  std::vector<std::unique_ptr<TestModuleSnapshot>> module_snapshots_owner;
   std::vector<const ModuleSnapshot*> module_snapshots;
-  for (size_t index = 0; index < arraysize(expect_modules); ++index) {
-    TestModuleSnapshot* module_snapshot = new TestModuleSnapshot();
-    module_snapshots_owner.push_back(module_snapshot);
+  for (size_t index = 0; index < base::size(expect_modules); ++index) {
+    module_snapshots_owner.push_back(std::make_unique<TestModuleSnapshot>());
+    TestModuleSnapshot* module_snapshot = module_snapshots_owner.back().get();
     InitializeTestModuleSnapshotFromMinidumpModule(module_snapshot,
                                                    expect_modules[index],
                                                    module_paths[index],
@@ -722,11 +718,11 @@ TEST(MinidumpModuleWriter, InitializeFromSnapshot) {
     module_snapshots.push_back(module_snapshot);
   }
 
-  auto module_list_writer = base::WrapUnique(new MinidumpModuleListWriter());
+  auto module_list_writer = std::make_unique<MinidumpModuleListWriter>();
   module_list_writer->InitializeFromSnapshot(module_snapshots);
 
   MinidumpFileWriter minidump_file_writer;
-  minidump_file_writer.AddStream(std::move(module_list_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -735,7 +731,7 @@ TEST(MinidumpModuleWriter, InitializeFromSnapshot) {
   ASSERT_NO_FATAL_FAILURE(
       GetModuleListStream(string_file.string(), &module_list));
 
-  ASSERT_EQ(3u, module_list->NumberOfModules);
+  ASSERT_EQ(module_list->NumberOfModules, 3u);
 
   for (size_t index = 0; index < module_list->NumberOfModules; ++index) {
     SCOPED_TRACE(base::StringPrintf("index %" PRIuS, index));
@@ -755,10 +751,10 @@ TEST(MinidumpModuleWriter, InitializeFromSnapshot) {
 
 TEST(MinidumpModuleWriterDeathTest, NoModuleName) {
   MinidumpFileWriter minidump_file_writer;
-  auto module_list_writer = base::WrapUnique(new MinidumpModuleListWriter());
-  auto module_writer = base::WrapUnique(new MinidumpModuleWriter());
+  auto module_list_writer = std::make_unique<MinidumpModuleListWriter>();
+  auto module_writer = std::make_unique<MinidumpModuleWriter>();
   module_list_writer->AddModule(std::move(module_writer));
-  minidump_file_writer.AddStream(std::move(module_list_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(module_list_writer)));
 
   StringFile string_file;
   ASSERT_DEATH_CHECK(minidump_file_writer.WriteEverything(&string_file),

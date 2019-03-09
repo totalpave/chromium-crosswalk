@@ -6,11 +6,14 @@
 #define EXTENSIONS_SHELL_BROWSER_SHELL_EXTENSIONS_BROWSER_CLIENT_H_
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/browser/kiosk/kiosk_delegate.h"
 
 class PrefService;
 
@@ -18,14 +21,13 @@ namespace extensions {
 
 class ExtensionsAPIClient;
 
-// An ExtensionsBrowserClient that supports a single content::BrowserContent
+// An ExtensionsBrowserClient that supports a single content::BrowserContext
 // with no related incognito context.
+// Must be initialized via InitWithBrowserContext() once the BrowserContext is
+// created.
 class ShellExtensionsBrowserClient : public ExtensionsBrowserClient {
  public:
-  // |context| is the single BrowserContext used for IsValidContext() below.
-  // |pref_service| is used for GetPrefServiceForContext() below.
-  ShellExtensionsBrowserClient(content::BrowserContext* context,
-                               PrefService* pref_service);
+  ShellExtensionsBrowserClient();
   ~ShellExtensionsBrowserClient() override;
 
   // ExtensionsBrowserClient overrides:
@@ -57,10 +59,26 @@ class ShellExtensionsBrowserClient : public ExtensionsBrowserClient {
       const base::FilePath& directory_path,
       const std::string& content_security_policy,
       bool send_cors_header) override;
-  bool AllowCrossRendererResourceLoad(net::URLRequest* request,
+  base::FilePath GetBundleResourcePath(
+      const network::ResourceRequest& request,
+      const base::FilePath& extension_resources_path,
+      ComponentExtensionResourceInfo* resource_info) const override;
+  void LoadResourceFromResourceBundle(
+      const network::ResourceRequest& request,
+      network::mojom::URLLoaderRequest loader,
+      const base::FilePath& resource_relative_path,
+      const ComponentExtensionResourceInfo& resource_info,
+      const std::string& content_security_policy,
+      network::mojom::URLLoaderClientPtr client,
+      bool send_cors_header) override;
+  bool AllowCrossRendererResourceLoad(const GURL& url,
+                                      content::ResourceType resource_type,
+                                      ui::PageTransition page_transition,
+                                      int child_id,
                                       bool is_incognito,
                                       const Extension* extension,
-                                      InfoMap* extension_info_map) override;
+                                      const ExtensionSet& extensions,
+                                      const ProcessMap& process_map) override;
   PrefService* GetPrefServiceForContext(
       content::BrowserContext* context) override;
   void GetEarlyExtensionPrefsObservers(
@@ -70,13 +88,16 @@ class ShellExtensionsBrowserClient : public ExtensionsBrowserClient {
   std::unique_ptr<ExtensionHostDelegate> CreateExtensionHostDelegate() override;
   bool DidVersionUpdate(content::BrowserContext* context) override;
   void PermitExternalProtocolHandler() override;
+  bool IsInDemoMode() override;
+  bool IsScreensaverInDemoMode(const std::string& app_id) override;
   bool IsRunningInForcedAppMode() override;
+  bool IsAppModeForcedForApp(const ExtensionId& extension_id) override;
   bool IsLoggedInAsPublicAccount() override;
   ExtensionSystemProvider* GetExtensionSystemFactory() override;
-  void RegisterExtensionFunctions(
-      ExtensionFunctionRegistry* registry) const override;
-  void RegisterMojoServices(content::RenderFrameHost* render_frame_host,
-                            const Extension* extension) const override;
+  void RegisterExtensionInterfaces(service_manager::BinderRegistryWithArgs<
+                                       content::RenderFrameHost*>* registry,
+                                   content::RenderFrameHost* render_frame_host,
+                                   const Extension* extension) const override;
   std::unique_ptr<RuntimeAPIDelegate> CreateRuntimeAPIDelegate(
       content::BrowserContext* context) const override;
   const ComponentExtensionResourceManager*
@@ -91,22 +112,37 @@ class ShellExtensionsBrowserClient : public ExtensionsBrowserClient {
   bool IsMinBrowserVersionSupported(const std::string& min_version) override;
   ExtensionWebContentsObserver* GetExtensionWebContentsObserver(
       content::WebContents* web_contents) override;
+  ExtensionNavigationUIData* GetExtensionNavigationUIData(
+      net::URLRequest* request) override;
+  KioskDelegate* GetKioskDelegate() override;
+  bool IsLockScreenContext(content::BrowserContext* context) override;
+  std::string GetApplicationLocale() override;
+  std::string GetUserAgent() const override;
+
+  // |context| is the single BrowserContext used for IsValidContext().
+  // |pref_service| is used for GetPrefServiceForContext().
+  void InitWithBrowserContext(content::BrowserContext* context,
+                              PrefService* pref_service);
 
   // Sets the API client.
   void SetAPIClientForTest(ExtensionsAPIClient* api_client);
 
  private:
-  // The single BrowserContext for app_shell. Not owned.
-  content::BrowserContext* browser_context_;
+  // The single BrowserContext for app_shell. Not owned. Must be initialized
+  // when ready by calling InitWithBrowserContext().
+  content::BrowserContext* browser_context_ = nullptr;
 
-  // The PrefService for |browser_context_|. Not owned.
-  PrefService* pref_service_;
+  // The PrefService for |browser_context_|. Not owned. Must be initialized when
+  // ready by calling InitWithBrowserContext().
+  PrefService* pref_service_ = nullptr;
 
   // Support for extension APIs.
   std::unique_ptr<ExtensionsAPIClient> api_client_;
 
   // The extension cache used for download and installation.
   std::unique_ptr<ExtensionCache> extension_cache_;
+
+  std::unique_ptr<KioskDelegate> kiosk_delegate_;
 
   DISALLOW_COPY_AND_ASSIGN(ShellExtensionsBrowserClient);
 };

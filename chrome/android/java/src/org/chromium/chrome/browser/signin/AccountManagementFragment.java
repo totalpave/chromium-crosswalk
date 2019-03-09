@@ -11,53 +11,46 @@ import android.app.Dialog;
 import android.app.DialogFragment;
 import android.app.ProgressDialog;
 import android.content.Context;
-import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
-import android.graphics.Bitmap.Config;
 import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
-import android.graphics.Paint;
+import android.graphics.Point;
 import android.graphics.PorterDuff;
-import android.graphics.PorterDuffXfermode;
-import android.graphics.Rect;
-import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.UserManager;
 import android.preference.Preference;
-import android.preference.Preference.OnPreferenceClickListener;
+import android.preference.PreferenceCategory;
 import android.preference.PreferenceFragment;
 import android.preference.PreferenceScreen;
-import android.provider.Settings;
-import android.text.TextUtils;
-import android.util.Pair;
+import android.support.annotation.Nullable;
+import android.support.v4.app.FragmentActivity;
+import android.widget.ListView;
 
+import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeApplication;
-import org.chromium.chrome.browser.childaccounts.ChildAccountService;
+import org.chromium.chrome.browser.AppHooks;
+import org.chromium.chrome.browser.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromeBasePreference;
-import org.chromium.chrome.browser.preferences.ManagedPreferenceDelegate;
 import org.chromium.chrome.browser.preferences.PrefServiceBridge;
 import org.chromium.chrome.browser.preferences.Preferences;
 import org.chromium.chrome.browser.preferences.PreferencesLauncher;
 import org.chromium.chrome.browser.preferences.SyncPreference;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileAccountManagementMetrics;
-import org.chromium.chrome.browser.profiles.ProfileDownloader;
 import org.chromium.chrome.browser.signin.SignOutDialogFragment.SignOutDialogListener;
 import org.chromium.chrome.browser.signin.SigninManager.SignInStateObserver;
 import org.chromium.chrome.browser.sync.ProfileSyncService;
 import org.chromium.chrome.browser.sync.ProfileSyncService.SyncStateChangedListener;
 import org.chromium.chrome.browser.sync.ui.SyncCustomizationFragment;
-import org.chromium.sync.AndroidSyncSettings;
-import org.chromium.sync.signin.AccountManagerHelper;
-import org.chromium.sync.signin.ChromeSigninController;
+import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.signin.ChromeSigninController;
+import org.chromium.components.signin.GAIAServiceType;
 
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.List;
 
 /**
  * The settings screen with information and settings related to the user's accounts.
@@ -69,26 +62,19 @@ import java.util.HashMap;
  * Note: This can be triggered from a web page, e.g. a GAIA sign-in page.
  */
 public class AccountManagementFragment extends PreferenceFragment
-        implements SignOutDialogListener, ProfileDownloader.Observer,
-                SyncStateChangedListener, SignInStateObserver,
-                ConfirmManagedSyncDataDialog.Listener {
+        implements SignOutDialogListener, SyncStateChangedListener, SignInStateObserver,
+                   ConfirmManagedSyncDataDialog.Listener, ProfileDataCache.Observer {
+    private static final String TAG = "AcctManagementPref";
+
     public static final String SIGN_OUT_DIALOG_TAG = "sign_out_dialog_tag";
     private static final String CLEAR_DATA_PROGRESS_DIALOG_TAG = "clear_data_progress";
 
     /**
-     * The key for an integer value in
-     * {@link Preferences#EXTRA_SHOW_FRAGMENT_ARGUMENTS} bundle to
+     * The key for an integer value in arguments bundle to
      * specify the correct GAIA service that has triggered the dialog.
      * If the argument is not set, GAIA_SERVICE_TYPE_NONE is used as the origin of the dialog.
      */
     public static final String SHOW_GAIA_SERVICE_TYPE_EXTRA = "ShowGAIAServiceType";
-
-    /**
-     * Account name preferences will be ordered sequentially, starting with this "order" value.
-     * This ensures that the account name preferences appear in the correct location in the
-     * preference fragment. See account_management_preferences.xml for details.
-     */
-    private static final int FIRST_ACCOUNT_PREF_ORDER = 100;
 
     /**
      * SharedPreference name for the preference that disables signing out of Chrome.
@@ -97,94 +83,98 @@ public class AccountManagementFragment extends PreferenceFragment
      */
     private static final String SIGN_OUT_ALLOWED = "auto_signed_in_school_account";
 
-    private static final HashMap<String, Pair<String, Bitmap>> sToNamePicture =
-            new HashMap<String, Pair<String, Bitmap>>();
-
-    private static String sChildAccountId = null;
-    private static Bitmap sCachedBadgedPicture = null;
-
-    public static final String PREF_SIGN_OUT = "sign_out";
-    public static final String PREF_ADD_ACCOUNT = "add_account";
+    public static final String PREF_ACCOUNTS_CATEGORY = "accounts_category";
     public static final String PREF_PARENTAL_SETTINGS = "parental_settings";
     public static final String PREF_PARENT_ACCOUNTS = "parent_accounts";
     public static final String PREF_CHILD_CONTENT = "child_content";
-    public static final String PREF_CHILD_SAFE_SITES = "child_safe_sites";
+    public static final String PREF_CHILD_CONTENT_DIVIDER = "child_content_divider";
     public static final String PREF_GOOGLE_ACTIVITY_CONTROLS = "google_activity_controls";
+    public static final String PREF_GOOGLE_ACTIVITY_CONTROLS_DIVIDER =
+            "google_activity_controls_divider";
     public static final String PREF_SYNC_SETTINGS = "sync_settings";
+    public static final String PREF_SYNC_SETTINGS_DIVIDER = "sync_settings_divider";
+    public static final String PREF_SIGN_OUT = "sign_out";
+    public static final String PREF_SIGN_OUT_DIVIDER = "sign_out_divider";
 
-    private int mGaiaServiceType;
+    private @GAIAServiceType int mGaiaServiceType = GAIAServiceType.GAIA_SERVICE_TYPE_NONE;
 
-    private ArrayList<Preference> mAccountsListPreferences = new ArrayList<Preference>();
+    private Profile mProfile;
+    private String mSignedInAccountName;
+    private ProfileDataCache mProfileDataCache;
+    private @Nullable ProfileSyncService.SyncSetupInProgressHandle mSyncSetupInProgressHandle;
 
     @Override
     public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
 
-        // Prevent sync from starting if it hasn't already to give the user a chance to change
-        // their sync settings.
         ProfileSyncService syncService = ProfileSyncService.get();
         if (syncService != null) {
-            syncService.setSetupInProgress(true);
+            // Prevent sync settings changes from taking effect until the user leaves this screen.
+            mSyncSetupInProgressHandle = syncService.getSetupInProgressHandle();
         }
 
-        mGaiaServiceType = AccountManagementScreenHelper.GAIA_SERVICE_TYPE_NONE;
         if (getArguments() != null) {
             mGaiaServiceType =
                     getArguments().getInt(SHOW_GAIA_SERVICE_TYPE_EXTRA, mGaiaServiceType);
         }
 
-        AccountManagementScreenHelper.logEvent(
-                ProfileAccountManagementMetrics.VIEW,
-                mGaiaServiceType);
+        mProfile = Profile.getLastUsedProfile();
 
-        startFetchingAccountsInformation(getActivity(), Profile.getLastUsedProfile());
+        AccountManagementScreenHelper.logEvent(
+                ProfileAccountManagementMetrics.VIEW, mGaiaServiceType);
+
+        int avatarImageSize = getResources().getDimensionPixelSize(R.dimen.user_picture_size);
+        ProfileDataCache.BadgeConfig badgeConfig = null;
+        if (mProfile.isChild()) {
+            Bitmap badge =
+                    BitmapFactory.decodeResource(getResources(), R.drawable.ic_account_child_20dp);
+            int badgePositionX = getResources().getDimensionPixelOffset(R.dimen.badge_position_x);
+            int badgePositionY = getResources().getDimensionPixelOffset(R.dimen.badge_position_y);
+            int badgeBorderSize = getResources().getDimensionPixelSize(R.dimen.badge_border_size);
+            badgeConfig = new ProfileDataCache.BadgeConfig(
+                    badge, new Point(badgePositionX, badgePositionY), badgeBorderSize);
+        }
+        mProfileDataCache = new ProfileDataCache(getActivity(), avatarImageSize, badgeConfig);
+    }
+
+    @Override
+    public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+
+        ListView list = getView().findViewById(android.R.id.list);
+        list.setDivider(null);
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (mSyncSetupInProgressHandle != null) {
+            mSyncSetupInProgressHandle.close();
+        }
     }
 
     @Override
     public void onResume() {
         super.onResume();
-        SigninManager.get(getActivity()).addSignInStateObserver(this);
-        ProfileDownloader.addObserver(this);
+        SigninManager.get().addSignInStateObserver(this);
+        mProfileDataCache.addObserver(this);
         ProfileSyncService syncService = ProfileSyncService.get();
         if (syncService != null) {
             syncService.addSyncStateChangedListener(this);
         }
 
+        mProfileDataCache.update(AccountManagerFacade.get().tryGetGoogleAccountNames());
         update();
     }
 
     @Override
     public void onPause() {
         super.onPause();
-        SigninManager.get(getActivity()).removeSignInStateObserver(this);
-        ProfileDownloader.removeObserver(this);
+        SigninManager.get().removeSignInStateObserver(this);
+        mProfileDataCache.removeObserver(this);
         ProfileSyncService syncService = ProfileSyncService.get();
         if (syncService != null) {
             syncService.removeSyncStateChangedListener(this);
-        }
-    }
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-
-        // Allow sync to begin syncing if it hasn't yet.
-        ProfileSyncService syncService = ProfileSyncService.get();
-        if (syncService != null) {
-            syncService.setSetupInProgress(false);
-        }
-    }
-
-    /**
-     * Initiate fetching the user accounts data (images and the full name).
-     * Fetched data will be sent to observers of ProfileDownloader.
-     *
-     * @param profile Profile to use.
-     */
-    private static void startFetchingAccountsInformation(Context context, Profile profile) {
-        Account[] accounts = AccountManagerHelper.get(context).getGoogleAccounts();
-        for (int i = 0; i < accounts.length; i++) {
-            startFetchingAccountInformation(context, profile, accounts[i].name);
         }
     }
 
@@ -194,8 +184,8 @@ public class AccountManagementFragment extends PreferenceFragment
 
         if (getPreferenceScreen() != null) getPreferenceScreen().removeAll();
 
-        ChromeSigninController signInController = ChromeSigninController.get(context);
-        if (!signInController.isSignedIn()) {
+        mSignedInAccountName = ChromeSigninController.get().getSignedInAccountName();
+        if (mSignedInAccountName == null) {
             // The AccountManagementFragment can only be shown when the user is signed in. If the
             // user is signed out, exit the fragment.
             getActivity().finish();
@@ -204,18 +194,11 @@ public class AccountManagementFragment extends PreferenceFragment
 
         addPreferencesFromResource(R.xml.account_management_preferences);
 
-        String signedInAccountName =
-                ChromeSigninController.get(getActivity()).getSignedInAccountName();
-        String fullName = getCachedUserName(signedInAccountName);
-        if (TextUtils.isEmpty(fullName)) {
-            fullName = ProfileDownloader.getCachedFullName(Profile.getLastUsedProfile());
-        }
-        if (TextUtils.isEmpty(fullName)) fullName = signedInAccountName;
-
+        String fullName = mProfileDataCache.getProfileDataOrDefault(mSignedInAccountName)
+                                  .getFullNameOrEmail();
         getActivity().setTitle(fullName);
 
         configureSignOutSwitch();
-        configureAddAccountPreference();
         configureChildAccountPreferences();
         configureSyncSettings();
         configureGoogleActivityControls();
@@ -233,136 +216,95 @@ public class AccountManagementFragment extends PreferenceFragment
     }
 
     private void configureSignOutSwitch() {
-        boolean isChildAccount = ChildAccountService.isChildAccount();
-
         Preference signOutSwitch = findPreference(PREF_SIGN_OUT);
-        if (isChildAccount) {
+        if (mProfile.isChild()) {
             getPreferenceScreen().removePreference(signOutSwitch);
+            getPreferenceScreen().removePreference(findPreference(PREF_SIGN_OUT_DIVIDER));
         } else {
-            signOutSwitch.setEnabled(getSignOutAllowedPreferenceValue(getActivity()));
-            signOutSwitch.setOnPreferenceClickListener(new OnPreferenceClickListener() {
-                @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    if (!isVisible() || !isResumed()) return false;
+            signOutSwitch.setTitle(ChromeFeatureList.isEnabled(ChromeFeatureList.UNIFIED_CONSENT)
+                            ? R.string.sign_out_and_turn_off_sync
+                            : R.string.account_management_sign_out);
 
-                    if (ChromeSigninController.get(getActivity()).isSignedIn()
-                            && getSignOutAllowedPreferenceValue(getActivity())) {
-                        AccountManagementScreenHelper.logEvent(
-                                ProfileAccountManagementMetrics.TOGGLE_SIGNOUT,
-                                mGaiaServiceType);
+            signOutSwitch.setEnabled(getSignOutAllowedPreferenceValue());
+            signOutSwitch.setOnPreferenceClickListener(preference -> {
+                if (!isVisible() || !isResumed()) return false;
 
-                        String managementDomain =
-                                SigninManager.get(getActivity()).getManagementDomain();
-                        if (managementDomain != null) {
-                            // Show the 'You are signing out of a managed account' dialog.
-                            ConfirmManagedSyncDataDialog.showSignOutFromManagedAccountDialog(
-                                    AccountManagementFragment.this, getFragmentManager(),
-                                    getResources(), managementDomain);
-                        } else {
-                            // Show the 'You are signing out' dialog.
-                            SignOutDialogFragment signOutFragment = new SignOutDialogFragment();
-                            Bundle args = new Bundle();
-                            args.putInt(SHOW_GAIA_SERVICE_TYPE_EXTRA, mGaiaServiceType);
-                            signOutFragment.setArguments(args);
+                if (mSignedInAccountName != null && getSignOutAllowedPreferenceValue()) {
+                    AccountManagementScreenHelper.logEvent(
+                            ProfileAccountManagementMetrics.TOGGLE_SIGNOUT, mGaiaServiceType);
 
-                            signOutFragment.setTargetFragment(AccountManagementFragment.this, 0);
-                            signOutFragment.show(getFragmentManager(), SIGN_OUT_DIALOG_TAG);
-                        }
+                    String managementDomain = SigninManager.get().getManagementDomain();
+                    if (managementDomain != null) {
+                        // Show the 'You are signing out of a managed account' dialog.
 
-                        return true;
+                        // TODO(https://crbug.com/710657): Migrate to AccountManagementFragment to
+                        // extend android.support.v7.preference.Preference and remove this cast.
+                        FragmentActivity fragmentActivity = (FragmentActivity) getActivity();
+                        ConfirmManagedSyncDataDialog.showSignOutFromManagedAccountDialog(
+                                AccountManagementFragment.this,
+                                fragmentActivity.getSupportFragmentManager(), getResources(),
+                                managementDomain);
+                    } else {
+                        // Show the 'You are signing out' dialog.
+                        SignOutDialogFragment signOutFragment = new SignOutDialogFragment();
+                        Bundle args = new Bundle();
+                        args.putInt(SHOW_GAIA_SERVICE_TYPE_EXTRA, mGaiaServiceType);
+                        signOutFragment.setArguments(args);
+
+                        signOutFragment.setTargetFragment(AccountManagementFragment.this, 0);
+                        signOutFragment.show(getFragmentManager(), SIGN_OUT_DIALOG_TAG);
                     }
 
-                    return false;
+                    return true;
                 }
 
+                return false;
             });
         }
     }
 
     private void configureSyncSettings() {
+        Preference syncSettings = findPreference(PREF_SYNC_SETTINGS);
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.UNIFIED_CONSENT)) {
+            getPreferenceScreen().removePreference(syncSettings);
+            getPreferenceScreen().removePreference(findPreference(PREF_SYNC_SETTINGS_DIVIDER));
+            return;
+        }
         final Preferences preferences = (Preferences) getActivity();
-        final Account account = ChromeSigninController.get(getActivity()).getSignedInUser();
-        findPreference(PREF_SYNC_SETTINGS)
-                .setOnPreferenceClickListener(new OnPreferenceClickListener() {
-                    @Override
-                    public boolean onPreferenceClick(Preference preference) {
-                        if (!isVisible() || !isResumed()) return false;
+        syncSettings.setOnPreferenceClickListener(preference -> {
+            if (!isVisible() || !isResumed()) return false;
 
-                        if (ProfileSyncService.get() == null) return true;
+            if (ProfileSyncService.get() == null) return true;
 
-                        if (AndroidSyncSettings.isMasterSyncEnabled(preferences)) {
-                            Bundle args = new Bundle();
-                            args.putString(
-                                    SyncCustomizationFragment.ARGUMENT_ACCOUNT, account.name);
-                            preferences.startFragment(
-                                    SyncCustomizationFragment.class.getName(), args);
-                        } else {
-                            openSyncSettingsPage(preferences);
-                        }
-
-                        return true;
-                    }
-                });
+            preferences.startFragment(SyncCustomizationFragment.class.getName(), new Bundle());
+            return true;
+        });
     }
 
     private void configureGoogleActivityControls() {
         Preference pref = findPreference(PREF_GOOGLE_ACTIVITY_CONTROLS);
-        pref.setOnPreferenceClickListener(new OnPreferenceClickListener() {
-            @Override
-            public boolean onPreferenceClick(Preference preference) {
-                Activity activity = getActivity();
-                ((ChromeApplication) (activity.getApplicationContext()))
-                        .createGoogleActivityController()
-                        .openWebAndAppActivitySettings(activity,
-                                ChromeSigninController.get(activity).getSignedInAccountName());
-                RecordUserAction.record("Signin_AccountSettings_GoogleActivityControlsClicked");
-                return true;
-            }
-        });
-    }
-
-    private void configureAddAccountPreference() {
-        ChromeBasePreference addAccount = (ChromeBasePreference) findPreference(PREF_ADD_ACCOUNT);
-
-        if (ChildAccountService.isChildAccount()) {
-            getPreferenceScreen().removePreference(addAccount);
-        } else {
-            addAccount.setTitle(getResources().getString(
-                    R.string.account_management_add_account_title));
-            addAccount.setOnPreferenceClickListener(new OnPreferenceClickListener() {
-                @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    if (!isVisible() || !isResumed()) return false;
-
-                    AccountManagementScreenHelper.logEvent(
-                            ProfileAccountManagementMetrics.ADD_ACCOUNT,
-                            mGaiaServiceType);
-
-                    AccountAdder.getInstance().addAccount(
-                            getActivity(), AccountAdder.ADD_ACCOUNT_RESULT);
-
-                    // Return to the last opened tab if triggered from the content area.
-                    if (mGaiaServiceType != AccountManagementScreenHelper.GAIA_SERVICE_TYPE_NONE) {
-                        if (isAdded()) getActivity().finish();
-                    }
-
-                    return true;
-                }
-            });
-            addAccount.setManagedPreferenceDelegate(new ManagedPreferenceDelegate() {
-                @Override
-                public boolean isPreferenceControlledByPolicy(Preference preference) {
-                    return !canAddAccounts();
-                }
-            });
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.UNIFIED_CONSENT)) {
+            getPreferenceScreen().removePreference(pref);
+            getPreferenceScreen().removePreference(
+                    findPreference(PREF_GOOGLE_ACTIVITY_CONTROLS_DIVIDER));
+            return;
         }
+        if (mProfile.isChild()) {
+            pref.setSummary(R.string.sign_in_google_activity_controls_message_child_account);
+        }
+        pref.setOnPreferenceClickListener(preference -> {
+            Activity activity = getActivity();
+            AppHooks.get().createGoogleActivityController().openWebAndAppActivitySettings(
+                    activity, mSignedInAccountName);
+            RecordUserAction.record("Signin_AccountSettings_GoogleActivityControlsClicked");
+            return true;
+        });
     }
 
     private void configureChildAccountPreferences() {
         Preference parentAccounts = findPreference(PREF_PARENT_ACCOUNTS);
         Preference childContent = findPreference(PREF_CHILD_CONTENT);
-        Preference childSafeSites = findPreference(PREF_CHILD_SAFE_SITES);
-        if (ChildAccountService.isChildAccount()) {
+        if (mProfile.isChild()) {
             Resources res = getActivity().getResources();
             PrefServiceBridge prefService = PrefServiceBridge.getInstance();
 
@@ -380,76 +322,86 @@ public class AccountManagementFragment extends PreferenceFragment
                 parentText = res.getString(R.string.account_management_no_parental_data);
             }
             parentAccounts.setSummary(parentText);
-            parentAccounts.setSelectable(false);
 
-            final boolean unapprovedContentBlocked =
-                    prefService.getDefaultSupervisedUserFilteringBehavior()
-                    == PrefServiceBridge.SUPERVISED_USER_FILTERING_BLOCK;
-            final String contentText = res.getString(
-                    unapprovedContentBlocked ? R.string.account_management_child_content_approved
-                            : R.string.account_management_child_content_all);
-            childContent.setSummary(contentText);
-            childContent.setSelectable(false);
+            final int childContentSummary;
+            int defaultBehavior = prefService.getDefaultSupervisedUserFilteringBehavior();
+            if (defaultBehavior == PrefServiceBridge.SUPERVISED_USER_FILTERING_BLOCK) {
+                childContentSummary = R.string.account_management_child_content_approved;
+            } else if (prefService.isSupervisedUserSafeSitesEnabled()) {
+                childContentSummary = R.string.account_management_child_content_filter_mature;
+            } else {
+                childContentSummary = R.string.account_management_child_content_all;
+            }
+            childContent.setSummary(childContentSummary);
 
-            final String safeSitesText = res.getString(
-                    prefService.isSupervisedUserSafeSitesEnabled()
-                            ? R.string.text_on : R.string.text_off);
-            childSafeSites.setSummary(safeSitesText);
-            childSafeSites.setSelectable(false);
+            Drawable newIcon = ApiCompatibilityUtils.getDrawable(
+                    getResources(), R.drawable.ic_drive_site_white_24dp);
+            newIcon.mutate().setColorFilter(
+                    ApiCompatibilityUtils.getColor(getResources(), R.color.default_icon_color),
+                    PorterDuff.Mode.SRC_IN);
+            childContent.setIcon(newIcon);
         } else {
             PreferenceScreen prefScreen = getPreferenceScreen();
             prefScreen.removePreference(findPreference(PREF_PARENTAL_SETTINGS));
             prefScreen.removePreference(parentAccounts);
             prefScreen.removePreference(childContent);
-            prefScreen.removePreference(childSafeSites);
+            prefScreen.removePreference(findPreference(PREF_CHILD_CONTENT_DIVIDER));
         }
-    }
-
-    private void openSyncSettingsPage(Activity activity) {
-        // TODO(crbug/557784): This needs to actually take the user to a specific account settings
-        // page. There doesn't seem to be an obvious way to do that at the moment, but should update
-        // this when we figure that out.
-        Intent intent = new Intent(Settings.ACTION_SYNC_SETTINGS);
-        intent.putExtra(Settings.EXTRA_ACCOUNT_TYPES, new String[] {"com.google"});
-        activity.startActivity(intent);
     }
 
     private void updateAccountsList() {
-        PreferenceScreen prefScreen = getPreferenceScreen();
-        if (prefScreen == null) return;
+        PreferenceCategory accountsCategory =
+                (PreferenceCategory) findPreference(PREF_ACCOUNTS_CATEGORY);
+        if (accountsCategory == null) return;
 
-        for (int i = 0; i < mAccountsListPreferences.size(); i++) {
-            prefScreen.removePreference(mAccountsListPreferences.get(i));
-        }
-        mAccountsListPreferences.clear();
+        accountsCategory.removeAll();
 
-        final Preferences activity = (Preferences) getActivity();
-        Account[] accounts = AccountManagerHelper.get(activity).getGoogleAccounts();
-        int nextPrefOrder = FIRST_ACCOUNT_PREF_ORDER;
-
-        for (Account account : accounts) {
-            ChromeBasePreference pref = new ChromeBasePreference(activity);
-            pref.setSelectable(false);
+        List<Account> accounts = AccountManagerFacade.get().tryGetGoogleAccounts();
+        for (int i = 0; i < accounts.size(); i++) {
+            Account account = accounts.get(i);
+            Preference pref = new Preference(getActivity());
+            pref.setLayoutResource(R.layout.account_management_account_row);
             pref.setTitle(account.name);
+            pref.setIcon(mProfileDataCache.getProfileDataOrDefault(account.name).getImage());
 
-            boolean isChildAccount = ChildAccountService.isChildAccount();
+            pref.setOnPreferenceClickListener(
+                    preference -> SigninUtils.openSettingsForAccount(getActivity(), account));
 
-            pref.setIcon(new BitmapDrawable(getResources(),
-                    isChildAccount ? getBadgedUserPicture(account.name, getResources()) :
-                        getUserPicture(account.name, getResources())));
+            accountsCategory.addPreference(pref);
+        }
 
-            pref.setOrder(nextPrefOrder++);
-            prefScreen.addPreference(pref);
-            mAccountsListPreferences.add(pref);
+        if (!mProfile.isChild()) {
+            accountsCategory.addPreference(createAddAccountPreference());
         }
     }
 
-    // ProfileDownloader.Observer implementation:
+    private ChromeBasePreference createAddAccountPreference() {
+        ChromeBasePreference addAccountPreference = new ChromeBasePreference(getActivity());
+        addAccountPreference.setLayoutResource(R.layout.account_management_account_row);
+        addAccountPreference.setIcon(R.drawable.add_circle_blue);
+        addAccountPreference.setTitle(R.string.account_management_add_account_title);
+        addAccountPreference.setOnPreferenceClickListener(preference -> {
+            if (!isVisible() || !isResumed()) return false;
 
+            AccountManagementScreenHelper.logEvent(
+                    ProfileAccountManagementMetrics.ADD_ACCOUNT, mGaiaServiceType);
+
+            AccountAdder.getInstance().addAccount(getActivity(), AccountAdder.ADD_ACCOUNT_RESULT);
+
+            // Return to the last opened tab if triggered from the content area.
+            if (mGaiaServiceType != GAIAServiceType.GAIA_SERVICE_TYPE_NONE) {
+                if (isAdded()) getActivity().finish();
+            }
+
+            return true;
+        });
+        addAccountPreference.setManagedPreferenceDelegate(preference -> !canAddAccounts());
+        return addAccountPreference;
+    }
+
+    // ProfileDataCache.Observer implementation:
     @Override
-    public void onProfileDownloaded(String accountId, String fullName, String givenName,
-            Bitmap bitmap) {
-        updateUserNamePictureCache(accountId, fullName, bitmap);
+    public void onProfileDataUpdated(String accountId) {
         updateAccountsList();
     }
 
@@ -483,23 +435,24 @@ public class AccountManagementFragment extends PreferenceFragment
     public void onSignOutClicked() {
         // In case the user reached this fragment without being signed in, we guard the sign out so
         // we do not hit a native crash.
-        if (!ChromeSigninController.get(getActivity()).isSignedIn()) return;
+        if (!ChromeSigninController.get().isSignedIn()) return;
 
         final Activity activity = getActivity();
         final DialogFragment clearDataProgressDialog = new ClearDataProgressDialog();
-        SigninManager.get(activity).signOut(null, new SigninManager.WipeDataHooks() {
-            @Override
-            public void preWipeData() {
-                clearDataProgressDialog.show(
-                        activity.getFragmentManager(), CLEAR_DATA_PROGRESS_DIALOG_TAG);
-            }
-            @Override
-            public void postWipeData() {
-                if (clearDataProgressDialog.isAdded()) {
-                    clearDataProgressDialog.dismissAllowingStateLoss();
-                }
-            }
-        });
+        SigninManager.get().signOut(SignoutReason.USER_CLICKED_SIGNOUT_SETTINGS, null,
+                new SigninManager.WipeDataHooks() {
+                    @Override
+                    public void preWipeData() {
+                        clearDataProgressDialog.show(
+                                activity.getFragmentManager(), CLEAR_DATA_PROGRESS_DIALOG_TAG);
+                    }
+                    @Override
+                    public void postWipeData() {
+                        if (clearDataProgressDialog.isAdded()) {
+                            clearDataProgressDialog.dismissAllowingStateLoss();
+                        }
+                    }
+                });
         AccountManagementScreenHelper.logEvent(
                 ProfileAccountManagementMetrics.SIGNOUT_SIGNOUT,
                 mGaiaServiceType);
@@ -551,185 +504,19 @@ public class AccountManagementFragment extends PreferenceFragment
 
     /**
      * Open the account management UI.
-     * @param applicationContext An application context.
-     * @param profile A user profile.
      * @param serviceType A signin::GAIAServiceType that triggered the dialog.
      */
-    public static void openAccountManagementScreen(
-            Context applicationContext, Profile profile, int serviceType) {
-        Intent intent = PreferencesLauncher.createIntentForSettingsPage(applicationContext,
-                AccountManagementFragment.class.getName());
+    public static void openAccountManagementScreen(@GAIAServiceType int serviceType) {
         Bundle arguments = new Bundle();
         arguments.putInt(SHOW_GAIA_SERVICE_TYPE_EXTRA, serviceType);
-        intent.putExtra(Preferences.EXTRA_SHOW_FRAGMENT_ARGUMENTS, arguments);
-        applicationContext.startActivity(intent);
+        PreferencesLauncher.launchSettingsPage(
+                ContextUtils.getApplicationContext(), AccountManagementFragment.class, arguments);
     }
 
     /**
-     * Converts a square user picture to a round user picture.
-     * @param bitmap A bitmap to convert.
-     * @return A rounded picture bitmap.
-     */
-    public static Bitmap makeRoundUserPicture(Bitmap bitmap) {
-        if (bitmap == null) return null;
-
-        Bitmap output = Bitmap.createBitmap(
-                bitmap.getWidth(), bitmap.getHeight(), Config.ARGB_8888);
-        Canvas canvas = new Canvas(output);
-
-        final Paint paint = new Paint();
-        final Rect rect = new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
-
-        canvas.drawARGB(0, 0, 0, 0);
-        paint.setAntiAlias(true);
-        paint.setColor(0xFFFFFFFF);
-        canvas.drawCircle(bitmap.getWidth() * 0.5f, bitmap.getHeight() * 0.5f,
-                bitmap.getWidth() * 0.5f, paint);
-        paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_IN));
-        canvas.drawBitmap(bitmap, rect, rect, paint);
-        return output;
-    }
-
-    /**
-     * Creates a new image with the picture overlaid by the badge.
-     * @param userPicture A bitmap to overlay on.
-     * @param badge A bitmap to overlay with.
-     * @return A bitmap with the badge overlaying the {@code userPicture}.
-     */
-    private static Bitmap overlayChildBadgeOnUserPicture(
-            Bitmap userPicture, Bitmap badge, Resources resources) {
-        assert userPicture.getWidth() == resources.getDimensionPixelSize(R.dimen.user_picture_size);
-        int borderSize = resources.getDimensionPixelOffset(R.dimen.badge_border_size);
-        int badgeRadius = resources.getDimensionPixelOffset(R.dimen.badge_radius);
-
-        // Create a larger image to accommodate the badge which spills the original picture.
-        int badgedPictureWidth =
-                resources.getDimensionPixelOffset(R.dimen.badged_user_picture_width);
-        int badgedPictureHeight =
-                resources.getDimensionPixelOffset(R.dimen.badged_user_picture_height);
-        Bitmap badgedPicture = Bitmap.createBitmap(badgedPictureWidth, badgedPictureHeight,
-                Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(badgedPicture);
-        canvas.drawBitmap(userPicture, 0, 0, null);
-
-        // Cut a transparent hole through the background image.
-        // This will serve as a border to the badge being overlaid.
-        Paint paint = new Paint();
-        paint.setAntiAlias(true);
-        paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
-        int badgeCenterX = badgedPictureWidth - badgeRadius;
-        int badgeCenterY = badgedPictureHeight - badgeRadius;
-        canvas.drawCircle(badgeCenterX, badgeCenterY, badgeRadius + borderSize, paint);
-
-        // Draw the badge
-        canvas.drawBitmap(badge, badgeCenterX - badgeRadius, badgeCenterY - badgeRadius, null);
-        return badgedPicture;
-    }
-
-    /**
-     * Updates the user name and picture in the cache.
-     * @param accountId User's account id.
-     * @param fullName User name.
-     * @param bitmap User picture.
-     */
-    public static void updateUserNamePictureCache(
-            String accountId, String fullName, Bitmap bitmap) {
-        sChildAccountId = null;
-        sCachedBadgedPicture = null;
-        sToNamePicture.put(accountId,
-                new Pair<String, Bitmap>(fullName, makeRoundUserPicture(bitmap)));
-    }
-
-    /**
-     * @param accountId An account.
-     * @return A cached user name for a given account.
-     */
-    public static String getCachedUserName(String accountId) {
-        Pair<String, Bitmap> pair = sToNamePicture.get(accountId);
-        return pair != null ? pair.first : null;
-    }
-
-    /**
-     * Gets the user picture for the account from the cache, or returns the default picture if
-     * unavailable.
-     *
-     * @param accountId A child account.
-     * @return A user picture with badge for a given child account.
-     */
-    public static Bitmap getBadgedUserPicture(String accountId, Resources res) {
-        if (sChildAccountId != null) {
-            assert TextUtils.equals(accountId, sChildAccountId);
-            return sCachedBadgedPicture;
-        }
-        sChildAccountId = accountId;
-        Bitmap picture = getUserPicture(accountId, res);
-        Bitmap badge = BitmapFactory.decodeResource(res, R.drawable.ic_account_child);
-        sCachedBadgedPicture = overlayChildBadgeOnUserPicture(picture, badge, res);
-        return sCachedBadgedPicture;
-    }
-
-    /**
-     * Gets the user picture for the account from the cache, or returns the default picture if
-     * unavailable.
-     *
-     * @param accountId An account.
-     * @param resources The collection containing the application resources.
-     * @return A user picture for a given account.
-     */
-    public static Bitmap getUserPicture(String accountId, Resources resources) {
-        Pair<String, Bitmap> pair = sToNamePicture.get(accountId);
-        return pair != null ? pair.second : BitmapFactory.decodeResource(resources,
-                R.drawable.account_management_no_picture);
-    }
-
-    /**
-     * Initiate fetching of an image and a picture of a given account. Fetched data will be sent to
-     * observers of ProfileDownloader.
-     *
-     * @param context A context.
-     * @param profile A profile.
-     * @param accountName An account name.
-     */
-    public static void startFetchingAccountInformation(
-            Context context, Profile profile, String accountName) {
-        if (TextUtils.isEmpty(accountName)) return;
-        if (sToNamePicture.get(accountName) != null) return;
-
-        final int imageSidePixels =
-                context.getResources().getDimensionPixelOffset(R.dimen.user_picture_size);
-        ProfileDownloader.startFetchingAccountInfoFor(
-                context, profile, accountName, imageSidePixels, false);
-    }
-
-    /**
-     * Prefetch the primary account image and name.
-     *
-     * @param context A context to use.
-     * @param profile A profile to use.
-     */
-    public static void prefetchUserNamePicture(Context context, Profile profile) {
-        final String accountName = ChromeSigninController.get(context).getSignedInAccountName();
-        if (TextUtils.isEmpty(accountName)) return;
-        if (sToNamePicture.get(accountName) != null) return;
-
-        ProfileDownloader.addObserver(new ProfileDownloader.Observer() {
-            @Override
-            public void onProfileDownloaded(String accountId, String fullName, String givenName,
-                    Bitmap bitmap) {
-                if (TextUtils.equals(accountName, accountId)) {
-                    updateUserNamePictureCache(accountId, fullName, bitmap);
-                    ProfileDownloader.removeObserver(this);
-                }
-            }
-        });
-        startFetchingAccountInformation(context, profile, accountName);
-    }
-
-    /**
-     * @param context A context
      * @return Whether the sign out is not disabled due to a child/EDU account.
      */
-    private static boolean getSignOutAllowedPreferenceValue(Context context) {
+    private static boolean getSignOutAllowedPreferenceValue() {
         return ContextUtils.getAppSharedPreferences()
                 .getBoolean(SIGN_OUT_ALLOWED, true);
     }
@@ -737,10 +524,9 @@ public class AccountManagementFragment extends PreferenceFragment
     /**
      * Sets the sign out allowed preference value.
      *
-     * @param context A context
      * @param isAllowed True if the sign out is not disabled due to a child/EDU account
      */
-    public static void setSignOutAllowedPreferenceValue(Context context, boolean isAllowed) {
+    public static void setSignOutAllowedPreferenceValue(boolean isAllowed) {
         ContextUtils.getAppSharedPreferences()
                 .edit()
                 .putBoolean(SIGN_OUT_ALLOWED, isAllowed)

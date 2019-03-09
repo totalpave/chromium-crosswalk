@@ -6,13 +6,12 @@
 
 #include <memory>
 
-#import "base/mac/scoped_nsobject.h"
 #include "ios/web/public/app/web_main.h"
-#include "ios/web/public/web_client.h"
-#include "ios/web/public/web_state/web_state.h"
+#import "ios/web/public/web_client.h"
+#import "ios/web/public/web_state/web_state.h"
 #include "ios/web/shell/shell_browser_state.h"
 #include "ios/web/shell/shell_main_delegate.h"
-#include "ios/web/shell/shell_web_client.h"
+#import "ios/web/shell/shell_web_client.h"
 #import "ios/web/shell/view_controller.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -34,17 +33,19 @@
   _window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
   [self.window makeKeyAndVisible];
   self.window.backgroundColor = [UIColor whiteColor];
+  self.window.tintColor = [UIColor darkGrayColor];
 
   _delegate.reset(new web::ShellMainDelegate());
+
   web::WebMainParams params(_delegate.get());
-  _webMain.reset(new web::WebMain(params));
+  _webMain = std::make_unique<web::WebMain>(std::move(params));
 
   web::ShellWebClient* client =
       static_cast<web::ShellWebClient*>(web::GetWebClient());
   web::BrowserState* browserState = client->browser_state();
 
-  base::scoped_nsobject<ViewController> controller(
-      [[ViewController alloc] initWithBrowserState:browserState]);
+  ViewController* controller =
+      [[ViewController alloc] initWithBrowserState:browserState];
   self.window.rootViewController = controller;
   return YES;
 }

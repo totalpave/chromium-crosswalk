@@ -5,14 +5,15 @@
 var allTests = [
   function testLocation() {
     function assertOkButtonLocation(event) {
-      var okButton = rootNode.firstChild.firstChild;
+      var okButton = rootNode.find({ role: RoleType.BUTTON,
+                                     attributes: { name: 'Ok' }});
       assertTrue('location' in okButton);
 
       // We can't assert the left and top positions because they're
       // returned in global screen coordinates. Just check the width and
-      // height.
-      assertEq(300, okButton.location.width);
-      assertEq(400, okButton.location.height);
+      // height which may be clipped.
+      assertTrue(okButton.location.width <= 30);
+      assertTrue(okButton.location.height <= 30);
       chrome.test.succeed();
     };
 
@@ -24,11 +25,11 @@ var allTests = [
     assertTrue('width' in okButton.location, 'no width in location');
 
     rootNode.addEventListener(
-        EventType.childrenChanged, assertOkButtonLocation);
+        EventType.LAYOUT_COMPLETE, assertOkButtonLocation);
     chrome.tabs.executeScript({ 'code':
           'document.querySelector("button")' +
-          '.setAttribute("style", "position: absolute; left: 100; top: 200; ' +
-          'width: 300; height: 400;");' });
+          '.setAttribute("style", "position: absolute; left: 100; top: 150; ' +
+          'width: 300; height: 350;");' });
   }
 ];
 

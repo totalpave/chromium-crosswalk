@@ -13,7 +13,7 @@
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/base/locale_util.h"
-#include "chrome/browser/chromeos/login/screens/core_oobe_actor.h"
+#include "chrome/browser/chromeos/login/screens/core_oobe_view.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -21,6 +21,8 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/language/core/browser/pref_names.h"
+#include "components/language/core/common/locale_util.h"
 #include "components/login/localized_values_builder.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user.h"
@@ -37,17 +39,16 @@ const char kJsScreenPath[] = "login.TermsOfServiceScreen";
 namespace chromeos {
 
 TermsOfServiceScreenHandler::TermsOfServiceScreenHandler(
-    CoreOobeActor* core_oobe_actor)
-    : BaseScreenHandler(kJsScreenPath),
-      screen_(NULL),
-      core_oobe_actor_(core_oobe_actor),
-      show_on_init_(false),
-      load_error_(false) {
+    JSCallsContainer* js_calls_container,
+    CoreOobeView* core_oobe_view)
+    : BaseScreenHandler(kScreenId, js_calls_container),
+      core_oobe_view_(core_oobe_view) {
+  set_call_js_prefix(kJsScreenPath);
 }
 
 TermsOfServiceScreenHandler::~TermsOfServiceScreenHandler() {
   if (screen_)
-    screen_->OnActorDestroyed(this);
+    screen_->OnViewDestroyed(this);
 }
 
 void TermsOfServiceScreenHandler::RegisterMessages() {
@@ -84,12 +85,13 @@ void TermsOfServiceScreenHandler::Show() {
     return;
   }
 
-  const std::string locale =
+  std::string locale =
       ProfileHelper::Get()
           ->GetProfileByUserUnsafe(
               user_manager::UserManager::Get()->GetActiveUser())
           ->GetPrefs()
-          ->GetString(prefs::kApplicationLocale);
+          ->GetString(language::prefs::kApplicationLocale);
+  language::ConvertToActualUILocale(&locale);
 
   if (locale.empty() || locale == g_browser_process->GetApplicationLocale()) {
     // If the user has not chosen a UI locale yet or the chosen locale matches
@@ -140,9 +142,8 @@ void TermsOfServiceScreenHandler::OnLanguageChangedCallback(
     const locale_util::LanguageSwitchResult& result) {
   // Update the screen contents to the new locale.
   base::DictionaryValue localized_strings;
-  static_cast<OobeUI*>(web_ui()->GetController())
-      ->GetLocalizedStrings(&localized_strings);
-  core_oobe_actor_->ReloadContent(localized_strings);
+  GetOobeUI()->GetLocalizedStrings(&localized_strings);
+  core_oobe_view_->ReloadContent(localized_strings);
 
   DoShow();
 }
@@ -173,12 +174,12 @@ void TermsOfServiceScreenHandler::DoShow() {
   // Update the UI to show an error message or the Terms of Service.
   UpdateTermsOfServiceInUI();
 
-  ShowScreen(OobeScreen::SCREEN_TERMS_OF_SERVICE);
+  ShowScreen(kScreenId);
 }
 
 void TermsOfServiceScreenHandler::UpdateDomainInUI() {
   if (page_is_ready())
-    CallJS("setDomain", domain_);
+    CallJS("login.TermsOfServiceScreen.setDomain", domain_);
 }
 
 void TermsOfServiceScreenHandler::UpdateTermsOfServiceInUI() {
@@ -190,9 +191,9 @@ void TermsOfServiceScreenHandler::UpdateTermsOfServiceInUI() {
   // download is still in progress and the UI will be updated when the
   // OnLoadError() or the OnLoadSuccess() callback is called.
   if (load_error_)
-    CallJS("setTermsOfServiceLoadError");
+    CallJS("login.TermsOfServiceScreen.setTermsOfServiceLoadError");
   else if (!terms_of_service_.empty())
-    CallJS("setTermsOfService", terms_of_service_);
+    CallJS("login.TermsOfServiceScreen.setTermsOfService", terms_of_service_);
 }
 
 void TermsOfServiceScreenHandler::HandleBack() {

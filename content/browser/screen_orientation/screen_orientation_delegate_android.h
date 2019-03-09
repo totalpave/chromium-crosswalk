@@ -9,7 +9,7 @@
 
 #include "base/macros.h"
 #include "content/public/browser/screen_orientation_delegate.h"
-#include "third_party/WebKit/public/platform/modules/screen_orientation/WebScreenOrientationLockType.h"
+#include "third_party/blink/public/common/screen_orientation/web_screen_orientation_lock_type.h"
 
 namespace content {
 
@@ -21,18 +21,6 @@ class ScreenOrientationDelegateAndroid : public ScreenOrientationDelegate {
  public:
   ScreenOrientationDelegateAndroid();
   ~ScreenOrientationDelegateAndroid() override;
-
-  static bool Register(JNIEnv* env);
-
-  // Ask the ScreenOrientationListener (Java) to start accurately listening to
-  // the screen orientation. It keep track of the number of start request if it
-  // is already running an accurate listening.
-  static void StartAccurateListening();
-
-  // Ask the ScreenOrientationListener (Java) to stop accurately listening to
-  // the screen orientation. It will actually stop only if the number of stop
-  // requests matches the number of start requests.
-  static void StopAccurateListening();
 
   // ScreenOrientationDelegate:
   bool FullScreenRequired(WebContents* web_contents) override;

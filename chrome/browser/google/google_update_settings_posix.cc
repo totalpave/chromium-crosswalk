@@ -10,6 +10,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "base/task/lazy_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_paths.h"
 
@@ -18,6 +19,12 @@
 #endif
 
 namespace {
+
+base::LazySequencedTaskRunner g_collect_stats_consent_task_runner =
+    LAZY_SEQUENCED_TASK_RUNNER_INITIALIZER(
+        base::TaskTraits(base::MayBlock(),
+                         base::TaskPriority::USER_VISIBLE,
+                         base::TaskShutdownBehavior::BLOCK_SHUTDOWN));
 
 base::LazyInstance<std::string>::Leaky g_posix_client_id =
     LAZY_INSTANCE_INITIALIZER;
@@ -42,9 +49,17 @@ void SetConsentFilePermissionIfNeeded(const base::FilePath& consent_file) {
 }  // namespace
 
 // static
+base::SequencedTaskRunner*
+GoogleUpdateSettings::CollectStatsConsentTaskRunner() {
+  // TODO(fdoray): Use LazySequencedTaskRunner::GetRaw() here instead of
+  // .Get().get() when it's added to the API, http://crbug.com/730170.
+  return g_collect_stats_consent_task_runner.Get().get();
+}
+
+// static
 bool GoogleUpdateSettings::GetCollectStatsConsent() {
   base::FilePath consent_file;
-  PathService::Get(chrome::DIR_USER_DATA, &consent_file);
+  base::PathService::Get(chrome::DIR_USER_DATA, &consent_file);
   consent_file = consent_file.Append(kConsentToSendStats);
 
   if (!base::DirectoryExists(consent_file.DirName()))
@@ -64,11 +79,11 @@ bool GoogleUpdateSettings::GetCollectStatsConsent() {
 // static
 bool GoogleUpdateSettings::SetCollectStatsConsent(bool consented) {
 #if defined(OS_MACOSX)
-  crash_reporter::SetUploadsEnabled(consented);
+  crash_reporter::SetUploadConsent(consented);
 #endif
 
   base::FilePath consent_dir;
-  PathService::Get(chrome::DIR_USER_DATA, &consent_dir);
+  base::PathService::Get(chrome::DIR_USER_DATA, &consent_dir);
   if (!base::DirectoryExists(consent_dir))
     return false;
 

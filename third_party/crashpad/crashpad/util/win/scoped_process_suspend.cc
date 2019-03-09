@@ -14,6 +14,7 @@
 
 #include "util/win/scoped_process_suspend.h"
 
+#include <stddef.h>
 #include <winternl.h>
 
 #include "util/win/nt_internals.h"
@@ -34,10 +35,15 @@ ScopedProcessSuspend::ScopedProcessSuspend(HANDLE process) {
 ScopedProcessSuspend::~ScopedProcessSuspend() {
   if (process_) {
     NTSTATUS status = NtResumeProcess(process_);
-    if (!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status) &&
+        (!tolerate_termination_ || status != STATUS_PROCESS_IS_TERMINATING)) {
       NTSTATUS_LOG(ERROR, status) << "NtResumeProcess";
     }
   }
+}
+
+void ScopedProcessSuspend::TolerateTermination() {
+  tolerate_termination_ = true;
 }
 
 }  // namespace crashpad

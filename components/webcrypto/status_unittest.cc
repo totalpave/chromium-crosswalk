@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "components/webcrypto/status.h"
 #include "base/stl_util.h"
 #include "components/webcrypto/algorithm_dispatch.h"
 #include "components/webcrypto/algorithms/test_helpers.h"
 #include "components/webcrypto/crypto_data.h"
-#include "components/webcrypto/status.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithm.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithmParams.h"
-#include "third_party/WebKit/public/platform/WebCryptoKeyAlgorithm.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
 
 namespace webcrypto {
 
@@ -37,28 +37,28 @@ TEST(WebCryptoStatusTest, Basic) {
   status = Status::OperationError();
   EXPECT_TRUE(status.IsError());
   EXPECT_EQ("", status.error_details());
-  EXPECT_EQ(blink::WebCryptoErrorTypeOperation, status.error_type());
+  EXPECT_EQ(blink::kWebCryptoErrorTypeOperation, status.error_type());
 
   status = Status::DataError();
   EXPECT_TRUE(status.IsError());
   EXPECT_EQ("", status.error_details());
-  EXPECT_EQ(blink::WebCryptoErrorTypeData, status.error_type());
+  EXPECT_EQ(blink::kWebCryptoErrorTypeData, status.error_type());
 
   status = Status::ErrorUnsupported();
   EXPECT_TRUE(status.IsError());
   EXPECT_EQ("The requested operation is unsupported", status.error_details());
-  EXPECT_EQ(blink::WebCryptoErrorTypeNotSupported, status.error_type());
+  EXPECT_EQ(blink::kWebCryptoErrorTypeNotSupported, status.error_type());
 
   status = Status::ErrorJwkMemberMissing("kty");
   EXPECT_TRUE(status.IsError());
   EXPECT_EQ("The required JWK member \"kty\" was missing",
             status.error_details());
-  EXPECT_EQ(blink::WebCryptoErrorTypeData, status.error_type());
+  EXPECT_EQ(blink::kWebCryptoErrorTypeData, status.error_type());
 
   status = Status::ErrorJwkMemberWrongType("kty", "string");
   EXPECT_TRUE(status.IsError());
   EXPECT_EQ("The JWK member \"kty\" must be a string", status.error_details());
-  EXPECT_EQ(blink::WebCryptoErrorTypeData, status.error_type());
+  EXPECT_EQ(blink::kWebCryptoErrorTypeData, status.error_type());
 
   status = Status::ErrorJwkBase64Decode("n");
   EXPECT_TRUE(status.IsError());
@@ -66,7 +66,7 @@ TEST(WebCryptoStatusTest, Basic) {
       "The JWK member \"n\" could not be base64url decoded or contained "
       "padding",
       status.error_details());
-  EXPECT_EQ(blink::WebCryptoErrorTypeData, status.error_type());
+  EXPECT_EQ(blink::kWebCryptoErrorTypeData, status.error_type());
 }
 
 }  // namespace

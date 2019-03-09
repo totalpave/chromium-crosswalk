@@ -6,12 +6,21 @@ package org.chromium.mojo.bindings;
 
 import org.chromium.mojo.bindings.Callbacks.Callback1;
 import org.chromium.mojo.bindings.Interface.AbstractProxy.HandlerImpl;
+import org.chromium.mojo.bindings.interfacecontrol.QueryVersion;
+import org.chromium.mojo.bindings.interfacecontrol.RequireVersion;
+import org.chromium.mojo.bindings.interfacecontrol.RunInput;
+import org.chromium.mojo.bindings.interfacecontrol.RunMessageParams;
+import org.chromium.mojo.bindings.interfacecontrol.RunOrClosePipeInput;
+import org.chromium.mojo.bindings.interfacecontrol.RunOrClosePipeMessageParams;
+import org.chromium.mojo.bindings.interfacecontrol.RunOutput;
+import org.chromium.mojo.bindings.interfacecontrol.RunResponseMessageParams;
 import org.chromium.mojo.system.Core;
 import org.chromium.mojo.system.MessagePipeHandle;
 import org.chromium.mojo.system.MojoException;
 import org.chromium.mojo.system.Pair;
 
 import java.io.Closeable;
+import java.util.concurrent.Executor;
 
 /**
  * Base class for mojo generated interfaces.
@@ -99,12 +108,12 @@ public interface Interface extends ConnectionErrorHandler, Closeable {
             /**
              * The {@link ConnectionErrorHandler} that will be notified of errors.
              */
-            private ConnectionErrorHandler mErrorHandler = null;
+            private ConnectionErrorHandler mErrorHandler;
 
             /**
              * The currently known version of the interface.
              */
-            private int mVersion = 0;
+            private int mVersion;
 
             /**
              * Constructor.
@@ -186,15 +195,18 @@ public interface Interface extends ConnectionErrorHandler, Closeable {
             @Override
             public void queryVersion(final Callback1<Integer> callback) {
                 RunMessageParams message = new RunMessageParams();
-                message.reserved0 = 16;
-                message.reserved1 = 0;
-                message.queryVersion = new QueryVersion();
+                message.input = new RunInput();
+                message.input.setQueryVersion(new QueryVersion());
 
                 InterfaceControlMessagesHelper.sendRunMessage(getCore(), mMessageReceiver, message,
                         new Callback1<RunResponseMessageParams>() {
                             @Override
                             public void call(RunResponseMessageParams response) {
-                                mVersion = response.queryVersionResult.version;
+                                if (response.output != null
+                                        && response.output.which()
+                                                == RunOutput.Tag.QueryVersionResult) {
+                                    mVersion = response.output.getQueryVersionResult().version;
+                                }
                                 callback.call(mVersion);
                             }
                         });
@@ -210,10 +222,9 @@ public interface Interface extends ConnectionErrorHandler, Closeable {
                 }
                 mVersion = version;
                 RunOrClosePipeMessageParams message = new RunOrClosePipeMessageParams();
-                message.reserved0 = 16;
-                message.reserved1 = 0;
-                message.requireVersion = new RequireVersion();
-                message.requireVersion.version = version;
+                message.input = new RunOrClosePipeInput();
+                message.input.setRequireVersion(new RequireVersion());
+                message.input.getRequireVersion().version = version;
                 InterfaceControlMessagesHelper.sendRunOrClosePipeMessage(
                         getCore(), mMessageReceiver, message);
             }
@@ -308,6 +319,67 @@ public interface Interface extends ConnectionErrorHandler, Closeable {
     }
 
     /**
+     * A {@link MessageReceiverWithResponder} implementation that forwards all calls to the thread
+     * the ThreadSafeForwarder was created.
+     */
+    class ThreadSafeForwarder implements MessageReceiverWithResponder {
+
+        /**
+         * The {@link MessageReceiverWithResponder} that will receive a serialized message for
+         * each method call.
+         */
+        private final MessageReceiverWithResponder mMessageReceiver;
+
+        /**
+         * The {@link Executor} to forward all tasks to.
+         */
+        private final Executor mExecutor;
+
+        /**
+         * Constructor.
+         *
+         * @param core the Core implementation used to create pipes and access the async waiter.
+         * @param messageReceiver the message receiver to send message to.
+         */
+        public ThreadSafeForwarder(Core core, MessageReceiverWithResponder messageReceiver) {
+            mMessageReceiver = messageReceiver;
+            mExecutor = ExecutorFactory.getExecutorForCurrentThread(core);
+        }
+
+        /**
+         * @see org.chromium.mojo.bindings.MessageReceiver#close()
+         */
+        @Override
+        public void close() {
+            mExecutor.execute(() -> {
+                mMessageReceiver.close();
+            });
+        }
+
+        /**
+         * @see org.chromium.mojo.bindings.MessageReceiver#accept()
+         */
+        @Override
+        public boolean accept(Message message) {
+            mExecutor.execute(() -> {
+                mMessageReceiver.accept(message);
+            });
+            return true;
+        }
+
+        /**
+         * @see org.chromium.mojo.bindings.MessageReceiverWithResponder#acceptWithResponder()
+         */
+        @Override
+        public boolean acceptWithResponder(Message message, MessageReceiver responder) {
+            mExecutor.execute(() -> {
+                mMessageReceiver.acceptWithResponder(message, responder);
+            });
+            return true;
+        }
+    }
+
+    /**
      * The |Manager| object enables building of proxies and stubs for a given interface.
      *
      * @param <I> the type of the interface the manager can handle.
@@ -373,6 +445,32 @@ public interface Interface extends ConnectionErrorHandler, Closeable {
 
         public final InterfaceRequest<I> asInterfaceRequest(MessagePipeHandle handle) {
             return new InterfaceRequest<I>(handle);
+        }
+
+        /**
+         * Constructs a thread-safe Proxy forwarding the calls to the given message receiver.
+         * All calls can be performed from any thread and are posted to the {@link Executor} that
+         * is associated with the thread on which this method was called on.
+         *
+         * The original Proxy object is unbound.
+         */
+        public final P buildThreadSafeProxy(P proxy) {
+            HandlerImpl handlerImpl = (HandlerImpl) proxy.getProxyHandler();
+            Core core = handlerImpl.getCore();
+            int version = handlerImpl.getVersion();
+
+            Router router = new RouterImpl(handlerImpl.passHandle());
+            // Close the original proxy now that its handle has been passed.
+            proxy.close();
+
+            proxy = buildProxy(
+                core, new ThreadSafeForwarder(core, new AutoCloseableRouter(core, router)));
+            DelegatingConnectionErrorHandler handlers = new DelegatingConnectionErrorHandler();
+            handlers.addConnectionErrorHandler(proxy);
+            router.setErrorHandler(handlers);
+            router.start();
+            ((HandlerImpl) proxy.getProxyHandler()).setVersion(version);
+            return proxy;
         }
 
         /**

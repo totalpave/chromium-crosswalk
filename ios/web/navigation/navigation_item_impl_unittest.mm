@@ -2,20 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ios/web/navigation/navigation_item_impl.h"
+#import "ios/web/navigation/navigation_item_impl.h"
 
 #include <memory>
 
 #include "base/logging.h"
-#include "base/mac/scoped_nsobject.h"
-#include "base/strings/sys_string_conversions.h"
+#include "base/strings/utf_string_conversions.h"
+#include "ios/web/navigation/wk_navigation_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "testing/gtest_mac.h"
+#import "testing/gtest_mac.h"
 #include "testing/platform_test.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace web {
 namespace {
 
+const char kItemURLString[] = "http://init.test";
 static NSString* const kHTTPHeaderKey1 = @"key1";
 static NSString* const kHTTPHeaderKey2 = @"key2";
 static NSString* const kHTTPHeaderValue1 = @"value1";
@@ -25,7 +30,8 @@ class NavigationItemTest : public PlatformTest {
  protected:
   void SetUp() override {
     item_.reset(new web::NavigationItemImpl());
-    item_->SetURL(GURL("http://init.test"));
+    item_->SetOriginalRequestURL(GURL(kItemURLString));
+    item_->SetURL(GURL(kItemURLString));
     item_->SetTransitionType(ui::PAGE_TRANSITION_AUTO_BOOKMARK);
     item_->SetTimestamp(base::Time::Now());
     item_->AddHttpRequestHeaders(@{kHTTPHeaderKey1 : kHTTPHeaderValue1});
@@ -42,6 +48,24 @@ TEST_F(NavigationItemTest, Dummy) {
   item_->SetURL(url);
   EXPECT_TRUE(item_->GetURL().is_valid());
 }
+
+#ifndef NDEBUG
+// Tests that the debug description is as expected.
+TEST_F(NavigationItemTest, Description) {
+  item_->SetTitle(base::UTF8ToUTF16("Title"));
+  NSString* description = item_->GetDescription();
+  EXPECT_TRUE([description containsString:@"url:http://init.test/"]);
+  EXPECT_TRUE([description containsString:@"originalurl:http://init.test/"]);
+  EXPECT_TRUE([description containsString:@"title:Title"]);
+  EXPECT_TRUE([description containsString:@"transition:2"]);
+  EXPECT_TRUE([description containsString:@"userAgentType:MOBILE"]);
+  EXPECT_TRUE([description containsString:@"is_create_from_push_state: false"]);
+  EXPECT_TRUE([description containsString:@"has_state_been_replaced: false"]);
+  EXPECT_TRUE(
+      [description containsString:@"is_created_from_hash_change: false"]);
+  EXPECT_TRUE([description containsString:@"navigation_initiation_type: 0"]);
+}
+#endif
 
 // Tests that copied NavigationItemImpls create copies of data members that are
 // objects.
@@ -71,6 +95,9 @@ TEST_F(NavigationItemTest, Copy) {
   EXPECT_NSEQ([postData0 dataUsingEncoding:NSUTF8StringEncoding],
               copy.GetPostData());
   EXPECT_NSEQ(state0, copy.GetSerializedStateObject());
+
+  // Ensure that HTTP headers are still mutable after the copying.
+  copy.AddHttpRequestHeaders(@{});
 }
 
 // Tests whether |NavigationItem::AddHttpRequestHeaders()| adds the passed
@@ -107,6 +134,45 @@ TEST_F(NavigationItemTest, RemoveHttpRequestHeaderForKey) {
 
   item_->RemoveHttpRequestHeaderForKey(kHTTPHeaderKey2);
   EXPECT_FALSE(item_->GetHttpRequestHeaders());
+}
+
+// Tests the getter, setter, and copy constructor for the original request URL.
+TEST_F(NavigationItemTest, OriginalURL) {
+  GURL original_url = GURL(kItemURLString);
+  EXPECT_EQ(original_url, item_->GetOriginalRequestURL());
+  web::NavigationItemImpl copy(*item_);
+  GURL new_url = GURL("http://new_url.test");
+  item_->SetOriginalRequestURL(new_url);
+  EXPECT_EQ(new_url, item_->GetOriginalRequestURL());
+  EXPECT_EQ(original_url, copy.GetOriginalRequestURL());
+}
+
+// Tests the behavior of GetVirtualURL().
+TEST_F(NavigationItemTest, VirtualURLTest) {
+  // Ensure that GetVirtualURL() returns GetURL() when not set to a custom
+  // value.
+  GURL original_url = item_->GetURL();
+  EXPECT_EQ(original_url, item_->GetVirtualURL());
+  // Set the virtual URL and check that the correct value is reported and that
+  // GetURL() still reports the original URL.
+  GURL new_virtual_url = GURL("http://new_url.test");
+  item_->SetVirtualURL(new_virtual_url);
+  EXPECT_EQ(new_virtual_url, item_->GetVirtualURL());
+  EXPECT_EQ(original_url, item_->GetURL());
+}
+
+// Tests NavigationItemImpl::GetDisplayTitleForURL method.
+TEST_F(NavigationItemTest, GetDisplayTitleForURL) {
+  base::string16 title;
+
+  title = NavigationItemImpl::GetDisplayTitleForURL(GURL("http://foo.org/"));
+  EXPECT_EQ("foo.org", base::UTF16ToUTF8(title));
+
+  title = NavigationItemImpl::GetDisplayTitleForURL(GURL("file://foo.org/"));
+  EXPECT_EQ("file://foo.org/", base::UTF16ToUTF8(title));
+
+  title = NavigationItemImpl::GetDisplayTitleForURL(GURL("file://foo/1.gz"));
+  EXPECT_EQ("1.gz", base::UTF16ToUTF8(title));
 }
 
 }  // namespace

@@ -8,19 +8,26 @@
 #include <memory>
 
 #include "ash/ash_export.h"
+#include "ash/display/window_tree_host_manager.h"
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
+#include "base/time/time.h"
+#include "ui/aura/client/drag_drop_client.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/event_handler.h"
 #include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/wm/public/drag_drop_client.h"
 
 namespace gfx {
 class LinearAnimation;
+}
+
+namespace ui {
+class LocatedEvent;
 }
 
 namespace ash {
@@ -28,14 +35,11 @@ class DragDropTracker;
 class DragDropTrackerDelegate;
 class DragImageView;
 
-namespace test {
-class DragDropControllerTest;
-}
-
 class ASH_EXPORT DragDropController : public aura::client::DragDropClient,
                                       public ui::EventHandler,
                                       public gfx::AnimationDelegate,
-                                      public aura::WindowObserver {
+                                      public aura::WindowObserver,
+                                      public WindowTreeHostManager::Observer {
  public:
   DragDropController();
   ~DragDropController() override;
@@ -44,6 +48,8 @@ class ASH_EXPORT DragDropController : public aura::client::DragDropClient,
     should_block_during_drag_drop_ = should_block_during_drag_drop;
   }
 
+  void set_enabled(bool enabled) { enabled_ = enabled; }
+
   // Overridden from aura::client::DragDropClient:
   int StartDragAndDrop(const ui::OSExchangeData& data,
                        aura::Window* root_window,
@@ -51,10 +57,10 @@ class ASH_EXPORT DragDropController : public aura::client::DragDropClient,
                        const gfx::Point& screen_location,
                        int operation,
                        ui::DragDropTypes::DragEventSource source) override;
-  void DragUpdate(aura::Window* target, const ui::LocatedEvent& event) override;
-  void Drop(aura::Window* target, const ui::LocatedEvent& event) override;
   void DragCancel() override;
   bool IsDragDropInProgress() override;
+  void AddObserver(aura::client::DragDropClientObserver* observer) override;
+  void RemoveObserver(aura::client::DragDropClientObserver* observer) override;
 
   // Overridden from ui::EventHandler:
   void OnKeyEvent(ui::KeyEvent* event) override;
@@ -70,23 +76,31 @@ class ASH_EXPORT DragDropController : public aura::client::DragDropClient,
   // cancel animation. Caller take ownership of the returned object. Protected
   // for testing.
   virtual gfx::LinearAnimation* CreateCancelAnimation(
-      int duration,
+      base::TimeDelta duration,
       int frame_rate,
       gfx::AnimationDelegate* delegate);
 
+  // Exposed for tests to override.
+  virtual void DragUpdate(aura::Window* target, const ui::LocatedEvent& event);
+  virtual void Drop(aura::Window* target, const ui::LocatedEvent& event);
+
   // Actual implementation of |DragCancel()|. protected for testing.
-  virtual void DoDragCancel(int drag_cancel_animation_duration_ms);
+  virtual void DoDragCancel(base::TimeDelta drag_cancel_animation_duration);
 
  private:
-  friend class ash::test::DragDropControllerTest;
+  friend class DragDropControllerTest;
+  friend class DragDropControllerTestApi;
 
   // Overridden from gfx::AnimationDelegate:
   void AnimationEnded(const gfx::Animation* animation) override;
   void AnimationProgressed(const gfx::Animation* animation) override;
   void AnimationCanceled(const gfx::Animation* animation) override;
 
+  // WindowTreeHostManager::Observer:
+  void OnDisplayConfigurationChanging() override;
+
   // Helper method to start drag widget flying back animation.
-  void StartCanceledAnimation(int animation_duration_ms);
+  void StartCanceledAnimation(base::TimeDelta animation_duration);
 
   // Helper method to forward |pending_log_tap_| event to |drag_source_window_|.
   void ForwardPendingLongTap();
@@ -94,6 +108,7 @@ class ASH_EXPORT DragDropController : public aura::client::DragDropClient,
   // Helper method to reset everything.
   void Cleanup();
 
+  bool enabled_ = false;
   std::unique_ptr<DragImageView> drag_image_;
   gfx::Vector2d drag_image_offset_;
   const ui::OSExchangeData* drag_data_;
@@ -115,7 +130,7 @@ class ASH_EXPORT DragDropController : public aura::client::DragDropClient,
   // Only be used for tests.
   bool should_block_during_drag_drop_;
 
-  // Closure for quitting nested message loop.
+  // Closure for quitting nested run loop.
   base::Closure quit_closure_;
 
   std::unique_ptr<ash::DragDropTracker> drag_drop_tracker_;
@@ -126,6 +141,9 @@ class ASH_EXPORT DragDropController : public aura::client::DragDropClient,
   // Holds a synthetic long tap event to be sent to the |drag_source_window_|.
   // See comment in OnGestureEvent() on why we need this.
   std::unique_ptr<ui::GestureEvent> pending_long_tap_;
+
+  base::ObserverList<aura::client::DragDropClientObserver>::Unchecked
+      observers_;
 
   base::WeakPtrFactory<DragDropController> weak_factory_;
 

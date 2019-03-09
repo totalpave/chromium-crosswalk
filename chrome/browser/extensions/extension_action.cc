@@ -10,21 +10,19 @@
 #include "base/base64.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/values.h"
+#include "chrome/grit/theme_resources.h"
 #include "extensions/browser/extension_icon_image.h"
 #include "extensions/browser/extension_icon_placeholder.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_icon_set.h"
-#include "extensions/common/feature_switch.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
-#include "grit/theme_resources.h"
-#include "grit/ui_resources.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_utils.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/effects/SkGradientShader.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/canvas.h"
@@ -40,12 +38,6 @@
 
 namespace {
 
-// Returns the default icon image for extensions.
-gfx::Image GetDefaultIcon() {
-  return ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-      IDR_EXTENSIONS_FAVICON);
-}
-
 class GetAttentionImageSource : public gfx::ImageSkiaSource {
  public:
   explicit GetAttentionImageSource(const gfx::ImageSkia& icon)
@@ -56,7 +48,7 @@ class GetAttentionImageSource : public gfx::ImageSkiaSource {
     gfx::ImageSkiaRep icon_rep = icon_.GetRepresentation(scale);
     color_utils::HSL shift = {-1, 0, 0.5};
     return gfx::ImageSkiaRep(
-        SkBitmapOperations::CreateHSLShiftedBitmap(icon_rep.sk_bitmap(), shift),
+        SkBitmapOperations::CreateHSLShiftedBitmap(icon_rep.GetBitmap(), shift),
         icon_rep.scale());
   }
 
@@ -79,10 +71,15 @@ bool HasValue(const std::map<int, T>& map, int tab_id) {
 
 }  // namespace
 
+// static
 extension_misc::ExtensionIcons ExtensionAction::ActionIconSize() {
-  return ui::MaterialDesignController::IsModeMaterial()
-             ? extension_misc::EXTENSION_ICON_BITTY
-             : extension_misc::EXTENSION_ICON_ACTION;
+  return extension_misc::EXTENSION_ICON_BITTY;
+}
+
+// static
+gfx::Image ExtensionAction::FallbackIcon() {
+  return ui::ResourceBundle::GetSharedInstance().GetImageNamed(
+      IDR_EXTENSIONS_FAVICON);
 }
 
 const int ExtensionAction::kDefaultTabId = -1;
@@ -129,11 +126,12 @@ bool ExtensionAction::ParseIconFromCanvasDictionary(
     gfx::ImageSkia* icon) {
   for (base::DictionaryValue::Iterator iter(dict); !iter.IsAtEnd();
        iter.Advance()) {
-    const base::BinaryValue* image_data;
     std::string binary_string64;
     IPC::Message pickle;
-    if (iter.value().GetAsBinary(&image_data)) {
-      pickle = IPC::Message(image_data->GetBuffer(), image_data->GetSize());
+    if (iter.value().is_blob()) {
+      pickle = IPC::Message(
+          reinterpret_cast<const char*>(iter.value().GetBlob().data()),
+          iter.value().GetBlob().size());
     } else if (iter.value().GetAsString(&binary_string64)) {
       std::string binary_string;
       if (!base::Base64Decode(binary_string64, &binary_string))
@@ -149,12 +147,11 @@ bool ExtensionAction::ParseIconFromCanvasDictionary(
     CHECK(!bitmap.isNull());
 
     // Chrome helpfully scales the provided icon(s), but let's not go overboard.
-    const int kActionIconMaxSize = 10 * extension_misc::EXTENSION_ICON_ACTION;
+    const int kActionIconMaxSize = 10 * ActionIconSize();
     if (bitmap.drawsNothing() || bitmap.width() > kActionIconMaxSize)
       continue;
 
-    float scale =
-        static_cast<float>(bitmap.width()) / ExtensionAction::ActionIconSize();
+    float scale = static_cast<float>(bitmap.width()) / ActionIconSize();
     icon->AddRepresentation(gfx::ImageSkiaRep(bitmap, scale));
   }
   return true;
@@ -198,8 +195,7 @@ void ExtensionAction::UndoDeclarativeSetIcon(int tab_id,
                                              int priority,
                                              const gfx::Image& icon) {
   std::vector<gfx::Image>& icons = declarative_icon_[tab_id][priority];
-  for (std::vector<gfx::Image>::iterator it = icons.begin(); it != icons.end();
-       ++it) {
+  for (auto it = icons.begin(); it != icons.end(); ++it) {
     if (it->AsImageSkia().BackedBySameObjectAs(icon.AsImageSkia())) {
       icons.erase(it);
       return;
@@ -229,15 +225,9 @@ void ExtensionAction::ClearAllValuesForTab(int tab_id) {
   // which prevents me from cleaning everything up now.
 }
 
-extensions::IconImage* ExtensionAction::LoadDefaultIconImage(
-    const extensions::Extension& extension,
-    content::BrowserContext* browser_context) {
-  if (default_icon_ && !default_icon_image_) {
-    default_icon_image_.reset(new extensions::IconImage(
-        browser_context, &extension, *default_icon(), ActionIconSize(),
-        *GetDefaultIcon().ToImageSkia(), nullptr));
-  }
-  return default_icon_image_.get();
+void ExtensionAction::SetDefaultIconImage(
+    std::unique_ptr<extensions::IconImage> icon_image) {
+  default_icon_image_ = std::move(icon_image);
 }
 
 gfx::Image ExtensionAction::GetDefaultIconImage() const {
@@ -246,17 +236,18 @@ gfx::Image ExtensionAction::GetDefaultIconImage() const {
   if (default_icon_image_)
     return default_icon_image_->image();
 
+  return GetPlaceholderIconImage();
+}
+
+gfx::Image ExtensionAction::GetPlaceholderIconImage() const {
   if (placeholder_icon_image_.IsEmpty()) {
-    // If the extension action redesign is enabled, we use a special placeholder
-    // icon (with the first letter of the extension name) rather than the
-    // default (puzzle piece).
-    if (extensions::FeatureSwitch::extension_action_redesign()->IsEnabled()) {
-      placeholder_icon_image_ =
-          extensions::ExtensionIconPlaceholder::CreateImage(ActionIconSize(),
-                                                            extension_name_);
-    } else {
-      placeholder_icon_image_ = GetDefaultIcon();
-    }
+    // For extension actions, we use a special placeholder icon (with the first
+    // letter of the extension name) rather than the default (puzzle piece).
+    // Note that this is only if we can't find any better image (e.g. a product
+    // icon).
+    placeholder_icon_image_ =
+        extensions::ExtensionIconPlaceholder::CreateImage(ActionIconSize(),
+                                                          extension_name_);
   }
 
   return placeholder_icon_image_;
@@ -303,7 +294,6 @@ void ExtensionAction::Populate(const extensions::Extension& extension,
       extension.name();
   SetTitle(kDefaultTabId, title);
   SetPopupUrl(kDefaultTabId, manifest_data.default_popup_url);
-  set_id(manifest_data.id);
 
   // Initialize the specified icon set.
   if (!manifest_data.default_icon.empty()) {
@@ -330,6 +320,5 @@ int ExtensionAction::GetIconWidth(int tab_id) const {
 
   // If no icon has been set and there is no default icon, we need favicon
   // width.
-  return ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-          IDR_EXTENSIONS_FAVICON).Width();
+  return FallbackIcon().Width();
 }

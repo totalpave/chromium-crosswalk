@@ -4,13 +4,14 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/local_discovery/service_discovery_client_impl.h"
-#include "net/dns/dns_protocol.h"
+#include "net/dns/public/dns_protocol.h"
 #include "net/dns/record_rdata.h"
 
 namespace local_discovery {
@@ -37,25 +38,25 @@ std::unique_ptr<ServiceWatcher>
 ServiceDiscoveryClientImpl::CreateServiceWatcher(
     const std::string& service_type,
     const ServiceWatcher::UpdatedCallback& callback) {
-  return std::unique_ptr<ServiceWatcher>(
-      new ServiceWatcherImpl(service_type, callback, mdns_client_));
+  return std::make_unique<ServiceWatcherImpl>(service_type, callback,
+                                              mdns_client_);
 }
 
 std::unique_ptr<ServiceResolver>
 ServiceDiscoveryClientImpl::CreateServiceResolver(
     const std::string& service_name,
-    const ServiceResolver::ResolveCompleteCallback& callback) {
-  return std::unique_ptr<ServiceResolver>(
-      new ServiceResolverImpl(service_name, callback, mdns_client_));
+    ServiceResolver::ResolveCompleteCallback callback) {
+  return std::make_unique<ServiceResolverImpl>(
+      service_name, std::move(callback), mdns_client_);
 }
 
 std::unique_ptr<LocalDomainResolver>
 ServiceDiscoveryClientImpl::CreateLocalDomainResolver(
     const std::string& domain,
     net::AddressFamily address_family,
-    const LocalDomainResolver::IPAddressCallback& callback) {
-  return std::unique_ptr<LocalDomainResolver>(new LocalDomainResolverImpl(
-      domain, address_family, callback, mdns_client_));
+    LocalDomainResolver::IPAddressCallback callback) {
+  return std::make_unique<LocalDomainResolverImpl>(
+      domain, address_family, std::move(callback), mdns_client_);
 }
 
 ServiceWatcherImpl::ServiceWatcherImpl(
@@ -78,11 +79,9 @@ void ServiceWatcherImpl::Start() {
 ServiceWatcherImpl::~ServiceWatcherImpl() {
 }
 
-void ServiceWatcherImpl::DiscoverNewServices(bool force_update) {
+void ServiceWatcherImpl::DiscoverNewServices() {
   DCHECK(started_);
-  if (force_update)
-    services_.clear();
-  SendQuery(kInitialRequeryTimeSeconds, force_update);
+  SendQuery(kInitialRequeryTimeSeconds);
 }
 
 void ServiceWatcherImpl::SetActivelyRefreshServices(
@@ -96,14 +95,12 @@ void ServiceWatcherImpl::SetActivelyRefreshServices(
 
 void ServiceWatcherImpl::ReadCachedServices() {
   DCHECK(started_);
-  CreateTransaction(false /*network*/, true /*cache*/, false /*force refresh*/,
-                    &transaction_cache_);
+  CreateTransaction(false /*network*/, true /*cache*/, &transaction_cache_);
 }
 
 bool ServiceWatcherImpl::CreateTransaction(
     bool network,
     bool cache,
-    bool force_refresh,
     std::unique_ptr<net::MDnsTransaction>* transaction) {
   int transaction_flags = 0;
   if (network)
@@ -112,7 +109,6 @@ bool ServiceWatcherImpl::CreateTransaction(
   if (cache)
     transaction_flags |= net::MDnsTransaction::QUERY_CACHE;
 
-  // TODO(noamsml): Add flag for force_refresh when supported.
   if (transaction_flags) {
     *transaction = mdns_client_->CreateTransaction(
         net::dns_protocol::kTypePTR, service_type_, transaction_flags,
@@ -253,25 +249,25 @@ void ServiceWatcherImpl::AddService(const std::string& service) {
 void ServiceWatcherImpl::AddSRV(const std::string& service) {
   DCHECK(started_);
 
-  ServiceListenersMap::iterator it = services_.find(service);
+  auto it = services_.find(service);
   if (it != services_.end())
     it->second->set_has_srv(true);
 }
 
 void ServiceWatcherImpl::DeferUpdate(ServiceWatcher::UpdateType update_type,
                                      const std::string& service_name) {
-  ServiceListenersMap::iterator it = services_.find(service_name);
+  auto it = services_.find(service_name);
   if (it != services_.end() && !it->second->update_pending()) {
     it->second->set_update_pending(true);
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&ServiceWatcherImpl::DeliverDeferredUpdate,
-                              AsWeakPtr(), update_type, service_name));
+        FROM_HERE, base::BindOnce(&ServiceWatcherImpl::DeliverDeferredUpdate,
+                                  AsWeakPtr(), update_type, service_name));
   }
 }
 
 void ServiceWatcherImpl::DeliverDeferredUpdate(
     ServiceWatcher::UpdateType update_type, const std::string& service_name) {
-  ServiceListenersMap::iterator it = services_.find(service_name);
+  auto it = services_.find(service_name);
   if (it != services_.end()) {
     it->second->set_update_pending(false);
     if (!callback_.is_null())
@@ -282,7 +278,7 @@ void ServiceWatcherImpl::DeliverDeferredUpdate(
 void ServiceWatcherImpl::RemovePTR(const std::string& service) {
   DCHECK(started_);
 
-  ServiceListenersMap::iterator it = services_.find(service);
+  auto it = services_.find(service);
   if (it != services_.end()) {
     it->second->set_has_ptr(false);
     if (!it->second->has_ptr_or_srv()) {
@@ -296,7 +292,7 @@ void ServiceWatcherImpl::RemovePTR(const std::string& service) {
 void ServiceWatcherImpl::RemoveSRV(const std::string& service) {
   DCHECK(started_);
 
-  ServiceListenersMap::iterator it = services_.find(service);
+  auto it = services_.find(service);
   if (it != services_.end()) {
     it->second->set_has_srv(false);
     if (!it->second->has_ptr_or_srv()) {
@@ -316,28 +312,26 @@ void ServiceWatcherImpl::OnNsecRecord(const std::string& name,
 void ServiceWatcherImpl::ScheduleQuery(int timeout_seconds) {
   if (timeout_seconds <= kMaxRequeryTimeSeconds) {
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&ServiceWatcherImpl::SendQuery, AsWeakPtr(),
-                              timeout_seconds * 2 /*next_timeout_seconds*/,
-                              false /*force_update*/),
+        FROM_HERE,
+        base::BindOnce(&ServiceWatcherImpl::SendQuery, AsWeakPtr(),
+                       timeout_seconds * 2 /*next_timeout_seconds*/),
         base::TimeDelta::FromSeconds(timeout_seconds));
   }
 }
 
-void ServiceWatcherImpl::SendQuery(int next_timeout_seconds,
-                                   bool force_update) {
-  CreateTransaction(true /*network*/, false /*cache*/, force_update,
-                    &transaction_network_);
+void ServiceWatcherImpl::SendQuery(int next_timeout_seconds) {
+  CreateTransaction(true /*network*/, false /*cache*/, &transaction_network_);
   ScheduleQuery(next_timeout_seconds);
 }
 
-ServiceResolverImpl::ServiceResolverImpl(
-    const std::string& service_name,
-    const ResolveCompleteCallback& callback,
-    net::MDnsClient* mdns_client)
-    : service_name_(service_name), callback_(callback),
-      metadata_resolved_(false), address_resolved_(false),
-      mdns_client_(mdns_client) {
-}
+ServiceResolverImpl::ServiceResolverImpl(const std::string& service_name,
+                                         ResolveCompleteCallback callback,
+                                         net::MDnsClient* mdns_client)
+    : service_name_(service_name),
+      callback_(std::move(callback)),
+      metadata_resolved_(false),
+      address_resolved_(false),
+      mdns_client_(mdns_client) {}
 
 void ServiceResolverImpl::StartResolving() {
   address_resolved_ = false;
@@ -437,7 +431,7 @@ void ServiceResolverImpl::AlertCallbackIfReady() {
     srv_transaction_.reset();
     a_transaction_.reset();
     if (!callback_.is_null())
-      callback_.Run(STATUS_SUCCESS, service_staging_);
+      std::move(callback_).Run(STATUS_SUCCESS, service_staging_);
   }
 }
 
@@ -447,7 +441,7 @@ void ServiceResolverImpl::ServiceNotFound(
   srv_transaction_.reset();
   a_transaction_.reset();
   if (!callback_.is_null())
-    callback_.Run(status, ServiceDescription());
+    std::move(callback_).Run(status, ServiceDescription());
 }
 
 ServiceResolver::RequestStatus ServiceResolverImpl::MDnsStatusToRequestStatus(
@@ -488,11 +482,13 @@ net::IPAddress ServiceResolverImpl::RecordToIPAddress(
 LocalDomainResolverImpl::LocalDomainResolverImpl(
     const std::string& domain,
     net::AddressFamily address_family,
-    const IPAddressCallback& callback,
+    IPAddressCallback callback,
     net::MDnsClient* mdns_client)
-    : domain_(domain), address_family_(address_family), callback_(callback),
-      transactions_finished_(0), mdns_client_(mdns_client) {
-}
+    : domain_(domain),
+      address_family_(address_family),
+      callback_(std::move(callback)),
+      transactions_finished_(0),
+      mdns_client_(mdns_client) {}
 
 LocalDomainResolverImpl::~LocalDomainResolverImpl() {
   timeout_callback_.Cancel();
@@ -558,7 +554,7 @@ void LocalDomainResolverImpl::SendResolvedAddresses() {
   transaction_a_.reset();
   transaction_aaaa_.reset();
   timeout_callback_.Cancel();
-  callback_.Run(IsSuccess(), address_ipv4_, address_ipv6_);
+  std::move(callback_).Run(IsSuccess(), address_ipv4_, address_ipv6_);
 }
 
 }  // namespace local_discovery

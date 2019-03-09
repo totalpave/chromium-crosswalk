@@ -12,7 +12,7 @@ class ClientCertStoreWinTestDelegate {
  public:
   bool SelectClientCerts(const CertificateList& input_certs,
                          const SSLCertRequestInfo& cert_request_info,
-                         CertificateList* selected_certs) {
+                         ClientCertIdentityList* selected_certs) {
     return store_.SelectClientCertsForTesting(
         input_certs, cert_request_info, selected_certs);
   }
@@ -21,8 +21,8 @@ class ClientCertStoreWinTestDelegate {
   ClientCertStoreWin store_;
 };
 
-INSTANTIATE_TYPED_TEST_CASE_P(Win,
-                              ClientCertStoreTest,
-                              ClientCertStoreWinTestDelegate);
+INSTANTIATE_TYPED_TEST_SUITE_P(Win,
+                               ClientCertStoreTest,
+                               ClientCertStoreWinTestDelegate);
 
 }  // namespace net

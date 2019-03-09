@@ -12,15 +12,10 @@ const char kOzonePlatform[] = "ozone-platform";
 // Specify location for image dumps.
 const char kOzoneDumpFile[] = "ozone-dump-file";
 
-// Enable support for a single overlay plane.
-const char kOzoneTestSingleOverlaySupport[] =
-    "ozone-test-single-overlay-support";
+// Try to enable wayland input method editor.
+const char kEnableWaylandIme[] = "enable-wayland-ime";
 
-// Specifies the size of the primary display at initialization.
-const char kOzoneInitialDisplayBounds[] = "ozone-initial-display-bounds";
-
-// Specifies the physical display size in millimeters.
-const char kOzoneInitialDisplayPhysicalSizeMm[] =
-    "ozone-initial-display-physical-size-mm";
+// Enable explicit DMA-fences
+const char kEnableExplicitDmaFences[] = "enable-explicit-dma-fences";
 
 }  // namespace switches

@@ -4,7 +4,6 @@
 
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
 
-#include "base/command_line.h"
 #include "base/logging.h"
 #include "base/metrics/field_trial.h"
 #include "build/build_config.h"
@@ -12,23 +11,17 @@
 #include "chrome/browser/google/google_brand.h"
 #include "chrome/browser/google/google_url_tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/search/instant_service.h"
-#include "chrome/browser/search/instant_service_factory.h"
-#include "chrome/browser/search/search.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
 #include "components/google/core/browser/google_url_tracker.h"
-#include "components/google/core/browser/google_util.h"
-#include "components/omnibox/browser/omnibox_field_trial.h"
-#include "components/prefs/pref_service.h"
-#include "components/search/search.h"
+#include "components/google/core/common/google_util.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
+#include "rlz/buildflags/buildflags.h"
 #include "ui/base/device_form_factor.h"
 #include "url/gurl.h"
 
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
 #include "components/rlz/rlz_tracker.h"
 #endif
 
@@ -74,7 +67,7 @@ base::string16 UIThreadSearchTermsData::GetRlzParameterValue(
   DCHECK(!BrowserThread::IsThreadInitialized(BrowserThread::UI) ||
       BrowserThread::CurrentlyOn(BrowserThread::UI));
   base::string16 rlz_string;
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
   // For organic brandcodes do not use rlz at all. Empty brandcode usually
   // means a chromium install. This is ok.
   std::string brand;
@@ -109,7 +102,7 @@ std::string UIThreadSearchTermsData::GetSuggestClient() const {
   return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE ?
       "chrome" : "chrome-omni";
 #else
-  return search::IsInstantExtendedAPIEnabled() ? "chrome-omni" : "chrome";
+  return "chrome-omni";
 #endif
 }
 
@@ -123,16 +116,6 @@ std::string UIThreadSearchTermsData::GetSuggestRequestIdentifier() const {
   return "chrome-ext-ansg";
 }
 
-std::string UIThreadSearchTermsData::InstantExtendedEnabledParam(
-    bool for_search) const {
-  return search::InstantExtendedEnabledParam(for_search);
-}
-
-std::string UIThreadSearchTermsData::ForceInstantResultsParam(
-    bool for_prerender) const {
-  return search::ForceInstantResultsParam(for_prerender);
-}
-
 // It's acutally OK to call this method on any thread, but it's currently placed
 // in UIThreadSearchTermsData since SearchTermsData cannot depend on src/chrome
 // as it is shared with iOS.
@@ -142,7 +125,7 @@ std::string UIThreadSearchTermsData::GoogleImageSearchSource() const {
   if (version_info::IsOfficialBuild())
     version += " (Official)";
   version += " " + version_info::GetOSType();
-  std::string modifier(chrome::GetChannelString());
+  std::string modifier(chrome::GetChannelName());
   if (!modifier.empty())
     version += " " + modifier;
   return version;
@@ -152,4 +135,8 @@ std::string UIThreadSearchTermsData::GoogleImageSearchSource() const {
 void UIThreadSearchTermsData::SetGoogleBaseURL(const std::string& base_url) {
   delete google_base_url_;
   google_base_url_ = base_url.empty() ? NULL : new std::string(base_url);
+}
+
+size_t UIThreadSearchTermsData::EstimateMemoryUsage() const {
+  return 0;
 }

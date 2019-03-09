@@ -5,15 +5,15 @@
 #include "chrome/browser/chromeos/login/supervised/supervised_user_login_flow.h"
 
 #include "base/base64.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/values.h"
 #include "chrome/browser/chromeos/login/session/user_session_manager.h"
 #include "chrome/browser/chromeos/login/supervised/supervised_user_authentication.h"
 #include "chrome/browser/chromeos/login/supervised/supervised_user_constants.h"
-#include "chrome/browser/chromeos/login/supervised/supervised_user_creation_screen.h"
-#include "chrome/browser/chromeos/login/ui/login_display_host_impl.h"
+#include "chrome/browser/chromeos/login/ui/login_display_host_webui.h"
 #include "chrome/browser/chromeos/login/users/chrome_user_manager.h"
 #include "chrome/browser/chromeos/login/users/supervised_user_manager.h"
 #include "chrome/browser/chromeos/login/wizard_controller.h"
@@ -46,6 +46,10 @@ bool SupervisedUserLoginFlow::CanLockScreen() {
   return true;
 }
 
+bool SupervisedUserLoginFlow::CanStartArc() {
+  return false;
+}
+
 bool SupervisedUserLoginFlow::ShouldLaunchBrowser() {
   return data_loaded_;
 }
@@ -66,8 +70,7 @@ bool SupervisedUserLoginFlow::HandlePasswordChangeDetected() {
   return false;
 }
 
-void SupervisedUserLoginFlow::OnSyncSetupDataLoaded(
-    const std::string& token) {
+void SupervisedUserLoginFlow::OnSyncSetupDataLoaded(const std::string& token) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   ConfigureSync(token);
 }
@@ -138,9 +141,9 @@ void SupervisedUserLoginFlow::OnPasswordChangeDataLoaded(
   }
   base::Base64Decode(base64_signature, &signature);
   std::unique_ptr<base::DictionaryValue> data_copy(password_data->DeepCopy());
-  cryptohome::KeyDefinition key(password,
-                                kCryptohomeSupervisedUserKeyLabel,
-                                kCryptohomeSupervisedUserKeyPrivileges);
+  auto key = cryptohome::KeyDefinition::CreateForPassword(
+      password, kCryptohomeSupervisedUserKeyLabel,
+      kCryptohomeSupervisedUserKeyPrivileges);
 
   authenticator_ = ExtendedAuthenticator::Create(this);
   SupervisedUserAuthentication::Schema current_schema =
@@ -155,12 +158,10 @@ void SupervisedUserLoginFlow::OnPasswordChangeDataLoaded(
 
     VLOG(1) << "Adding new schema key";
     DCHECK(context_.GetKey()->GetLabel().empty());
-    authenticator_->AddKey(context_,
-                           key,
-                           false /* no key exists */,
-                           base::Bind(&SupervisedUserLoginFlow::OnNewKeyAdded,
-                                      weak_factory_.GetWeakPtr(),
-                                      Passed(&data_copy)));
+    authenticator_->AddKey(
+        context_, key, false /* no key exists */,
+        base::Bind(&SupervisedUserLoginFlow::OnNewKeyAdded,
+                   weak_factory_.GetWeakPtr(), Passed(&data_copy)));
   } else if (SupervisedUserAuthentication::SCHEMA_SALT_HASHED ==
              current_schema) {
     VLOG(1) << "Updating the key";
@@ -172,12 +173,9 @@ void SupervisedUserLoginFlow::OnPasswordChangeDataLoaded(
     // Just update the key.
     DCHECK_EQ(context_.GetKey()->GetLabel(), kCryptohomeSupervisedUserKeyLabel);
     authenticator_->UpdateKeyAuthorized(
-        context_,
-        key,
-        signature,
+        context_, key, signature,
         base::Bind(&SupervisedUserLoginFlow::OnPasswordUpdated,
-                   weak_factory_.GetWeakPtr(),
-                   Passed(&data_copy)));
+                   weak_factory_.GetWeakPtr(), Passed(&data_copy)));
   } else {
     NOTREACHED() << "Unsupported password schema";
   }
@@ -191,8 +189,7 @@ void SupervisedUserLoginFlow::OnNewKeyAdded(
   auth->StorePasswordData(account_id().GetUserEmail(), *password_data.get());
   auth->MarkKeyIncomplete(account_id().GetUserEmail(), true /* incomplete */);
   authenticator_->RemoveKey(
-      context_,
-      kLegacyCryptohomeSupervisedUserKeyLabel,
+      context_, kLegacyCryptohomeSupervisedUserKeyLabel,
       base::Bind(&SupervisedUserLoginFlow::OnOldKeyRemoved,
                  weak_factory_.GetWeakPtr()));
 }
@@ -254,13 +251,11 @@ void SupervisedUserLoginFlow::Finish() {
   UnregisterFlowSoon();
 }
 
-void SupervisedUserLoginFlow::LaunchExtraSteps(
-    Profile* profile) {
+void SupervisedUserLoginFlow::LaunchExtraSteps(Profile* profile) {
   profile_ = profile;
   ChromeUserManager::Get()->GetSupervisedUserManager()->LoadSupervisedUserToken(
-      profile,
-      base::Bind(&SupervisedUserLoginFlow::OnSyncSetupDataLoaded,
-                 weak_factory_.GetWeakPtr()));
+      profile, base::Bind(&SupervisedUserLoginFlow::OnSyncSetupDataLoaded,
+                          weak_factory_.GetWeakPtr()));
 }
 
 }  // namespace chromeos

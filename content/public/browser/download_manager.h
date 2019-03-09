@@ -34,33 +34,38 @@
 
 #include "base/callback.h"
 #include "base/files/file_path.h"
-#include "base/sequenced_task_runner_helpers.h"
+#include "base/sequenced_task_runner.h"
 #include "base/time/time.h"
-#include "content/public/browser/download_interrupt_reasons.h"
-#include "content/public/browser/download_item.h"
-#include "content/public/browser/download_url_parameters.h"
+#include "components/download/public/common/download_interrupt_reasons.h"
+#include "components/download/public/common/download_item.h"
+#include "components/download/public/common/download_stream.mojom-forward.h"
+#include "components/download/public/common/download_url_parameters.h"
+#include "components/download/public/common/input_stream.h"
+#include "content/common/content_export.h"
 #include "net/base/net_errors.h"
-#include "net/log/net_log.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "storage/browser/blob/blob_data_handle.h"
 
 class GURL;
 
-namespace url {
-class Origin;
-}
+namespace download {
+struct DownloadCreateInfo;
+class DownloadURLLoaderFactoryGetter;
+}  // namespace download
 
 namespace content {
 
 class BrowserContext;
-class ByteStreamReader;
 class DownloadManagerDelegate;
-class DownloadQuery;
-class DownloadRequestHandle;
-struct DownloadCreateInfo;
 
 // Browser's download manager: manages all downloads and destination view.
 class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
  public:
   ~DownloadManager() override {}
+
+  // Returns the task runner that's used for all download-related blocking
+  // tasks, such as file IO.
+  static scoped_refptr<base::SequencedTaskRunner> GetTaskRunner();
 
   // Sets/Gets the delegate for this DownloadManager. The delegate has to live
   // past its Shutdown method being called (by the DownloadManager).
@@ -77,19 +82,25 @@ class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
   // to the DownloadManager's collection of downloads.
   class CONTENT_EXPORT Observer {
    public:
-    // A DownloadItem was created. This item may be visible before the filename
-    // is determined; in this case the return value of GetTargetFileName() will
-    // be null.  This method may be called an arbitrary number of times, e.g.
-    // when loading history on startup.  As a result, consumers should avoid
-    // doing large amounts of work in OnDownloadCreated().  TODO(<whoever>):
-    // When we've fully specified the possible states of the DownloadItem in
-    // download_item.h, we should remove the caveat above.
-    virtual void OnDownloadCreated(
-        DownloadManager* manager, DownloadItem* item) {}
+    // A download::DownloadItem was created. This item may be visible before the
+    // filename is determined; in this case the return value of
+    // GetTargetFileName() will be null.  This method may be called an arbitrary
+    // number of times, e.g. when loading history on startup.  As a result,
+    // consumers should avoid doing large amounts of work in
+    // OnDownloadCreated().  TODO(<whoever>): When we've fully specified the
+    // possible states of the download::DownloadItem in download_item.h, we
+    // should remove the caveat above.
+    virtual void OnDownloadCreated(DownloadManager* manager,
+                                   download::DownloadItem* item) {}
 
-    // A SavePackage has successfully finished.
-    virtual void OnSavePackageSuccessfullyFinished(
-        DownloadManager* manager, DownloadItem* item) {}
+    // Called when the download manager intercepted a download navigation but
+    // didn't create the download item. Possible reasons:
+    // 1. |delegate| is null.
+    // 2. |delegate| doesn't allow the download.
+    virtual void OnDownloadDropped(DownloadManager* manager) {}
+
+    // Called when the download manager has finished loading the data.
+    virtual void OnManagerInitialized() {}
 
     // Called when the DownloadManager is being destroyed to prevent Observers
     // from calling back to a stale pointer.
@@ -99,7 +110,7 @@ class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
     virtual ~Observer() {}
   };
 
-  typedef std::vector<DownloadItem*> DownloadVector;
+  typedef std::vector<download::DownloadItem*> DownloadVector;
 
   // Add all download items to |downloads|, no matter the type or state, without
   // clearing |downloads| first.
@@ -107,12 +118,15 @@ class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
 
   // Called by a download source (Currently DownloadResourceHandler)
   // to initiate the non-source portions of a download.
-  // Returns the id assigned to the download.  If the DownloadCreateInfo
-  // specifies an id, that id will be used.
+  // If the DownloadCreateInfo specifies an id, that id will be used.
+  // If |url_loader_factory_getter| is provided, it can be used to issue
+  // parallel download requests.
   virtual void StartDownload(
-      std::unique_ptr<DownloadCreateInfo> info,
-      std::unique_ptr<ByteStreamReader> stream,
-      const DownloadUrlParameters::OnStartedCallback& on_started) = 0;
+      std::unique_ptr<download::DownloadCreateInfo> info,
+      std::unique_ptr<download::InputStream> stream,
+      scoped_refptr<download::DownloadURLLoaderFactoryGetter>
+          url_loader_factory_getter,
+      const download::DownloadUrlParameters::OnStartedCallback& on_started) = 0;
 
   // Remove downloads whose URLs match the |url_filter| and are within
   // the given time constraints - after remove_begin (inclusive) and before
@@ -123,13 +137,22 @@ class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
       base::Time remove_begin,
       base::Time remove_end) = 0;
 
-  // Remove all downloads will delete all downloads. The number of downloads
-  // deleted is returned back to the caller.
-  virtual int RemoveAllDownloads() = 0;
-
-  // See DownloadUrlParameters for details about controlling the download.
+  // See download::DownloadUrlParameters for details about controlling the
+  // download.
   virtual void DownloadUrl(
-      std::unique_ptr<DownloadUrlParameters> parameters) = 0;
+      std::unique_ptr<download::DownloadUrlParameters> parameters) = 0;
+
+  // For downloads of blob URLs, the caller can pass a BlobDataHandle object so
+  // that the blob will remain valid until the download starts. The
+  // BlobDataHandle will be attached to the associated URLRequest.
+  // If |blob_data_handle| is unspecified, and the blob URL cannot be mapped to
+  // a blob by the time the download request starts, then the download will
+  // fail.
+  virtual void DownloadUrl(
+      std::unique_ptr<download::DownloadUrlParameters> parameters,
+      std::unique_ptr<storage::BlobDataHandle> blob_data_handle,
+      scoped_refptr<network::SharedURLLoaderFactory>
+          blob_url_loader_factory) = 0;
 
   // Allow objects to observe the download creation process.
   virtual void AddObserver(Observer* observer) = 0;
@@ -139,7 +162,7 @@ class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
 
   // Called by the embedder, after creating the download manager, to let it know
   // about downloads from previous runs of the browser.
-  virtual DownloadItem* CreateDownloadItem(
+  virtual download::DownloadItem* CreateDownloadItem(
       const std::string& guid,
       uint32_t id,
       const base::FilePath& current_path,
@@ -151,17 +174,36 @@ class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
       const GURL& tab_referrer_url,
       const std::string& mime_type,
       const std::string& original_mime_type,
-      const base::Time& start_time,
-      const base::Time& end_time,
+      base::Time start_time,
+      base::Time end_time,
       const std::string& etag,
       const std::string& last_modified,
       int64_t received_bytes,
       int64_t total_bytes,
       const std::string& hash,
-      DownloadItem::DownloadState state,
-      DownloadDangerType danger_type,
-      DownloadInterruptReason interrupt_reason,
-      bool opened) = 0;
+      download::DownloadItem::DownloadState state,
+      download::DownloadDangerType danger_type,
+      download::DownloadInterruptReason interrupt_reason,
+      bool opened,
+      base::Time last_access_time,
+      bool transient,
+      const std::vector<download::DownloadItem::ReceivedSlice>&
+          received_slices) = 0;
+
+  // Enum to describe which dependency was initialized in PostInitialization.
+  enum DownloadInitializationDependency {
+    DOWNLOAD_INITIALIZATION_DEPENDENCY_NONE,
+    DOWNLOAD_INITIALIZATION_DEPENDENCY_HISTORY_DB,
+    DOWNLOAD_INITIALIZATION_DEPENDENCY_IN_PROGRESS_CACHE,
+  };
+
+  // Called when download manager has loaded all the data, once when the history
+  // db is initialized and once when the in-progress cache is initialized.
+  virtual void PostInitialization(
+      DownloadInitializationDependency dependency) = 0;
+
+  // Returns if the manager has been initialized and loaded all the data.
+  virtual bool IsManagerInitialized() const = 0;
 
   // The number of in progress (including paused) downloads.
   // Performance note: this loops over all items. If profiling finds that this
@@ -181,15 +223,27 @@ class CONTENT_EXPORT DownloadManager : public base::SupportsUserData::Data {
   // finish asynchronously after this method returns.
   virtual void CheckForHistoryFilesRemoval() = 0;
 
+  // Called when download history query completes. Call
+  // |load_history_downloads_cb| to load all the history downloads.
+  virtual void OnHistoryQueryComplete(
+      base::OnceClosure load_history_downloads_cb) = 0;
+
   // Get the download item for |id| if present, no matter what type of download
   // it is or state it's in.
   // DEPRECATED: Don't add new callers for GetDownload(uint32_t). Instead keep
-  // track of the GUID and use GetDownloadByGuid(), or observe the DownloadItem
-  // if you need to keep track of a specific download. (http://crbug.com/593020)
-  virtual DownloadItem* GetDownload(uint32_t id) = 0;
+  // track of the GUID and use GetDownloadByGuid(), or observe the
+  // download::DownloadItem if you need to keep track of a specific download.
+  // (http://crbug.com/593020)
+  virtual download::DownloadItem* GetDownload(uint32_t id) = 0;
 
   // Get the download item for |guid|.
-  virtual DownloadItem* GetDownloadByGuid(const std::string& guid) = 0;
+  virtual download::DownloadItem* GetDownloadByGuid(
+      const std::string& guid) = 0;
+
+  using GetNextIdCallback = base::OnceCallback<void(uint32_t)>;
+  // Called to get an ID for a new download. |callback| may be called
+  // synchronously.
+  virtual void GetNextId(GetNextIdCallback callback) = 0;
 };
 
 }  // namespace content

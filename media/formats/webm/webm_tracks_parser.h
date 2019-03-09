@@ -31,8 +31,7 @@ namespace media {
 // Parser for WebM Tracks element.
 class MEDIA_EXPORT WebMTracksParser : public WebMParserClient {
  public:
-  WebMTracksParser(const scoped_refptr<MediaLog>& media_log,
-                   bool ignore_text_tracks);
+  WebMTracksParser(MediaLog* media_log, bool ignore_text_tracks);
   ~WebMTracksParser() override;
 
   // Parses a WebM Tracks element in |buf|.
@@ -48,7 +47,7 @@ class MEDIA_EXPORT WebMTracksParser : public WebMParserClient {
   // If TrackEntry DefaultDuration field existed for the associated audio or
   // video track, returns that value converted from ns to base::TimeDelta with
   // precision not greater than |timecode_scale_in_us|. Defaults to
-  // kNoTimestamp().
+  // kNoTimestamp.
   base::TimeDelta GetAudioDefaultDuration(
       const double timecode_scale_in_us) const;
   base::TimeDelta GetVideoDefaultDuration(
@@ -126,7 +125,7 @@ class MEDIA_EXPORT WebMTracksParser : public WebMParserClient {
   std::set<int64_t> ignored_tracks_;
   std::string audio_encryption_key_id_;
   std::string video_encryption_key_id_;
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
 
   WebMAudioClient audio_client_;
   AudioDecoderConfig audio_decoder_config_;

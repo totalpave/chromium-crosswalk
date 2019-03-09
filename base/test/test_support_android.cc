@@ -36,29 +36,28 @@ struct RunState {
   bool should_quit;
 };
 
-RunState* g_state = NULL;
+RunState* g_state = nullptr;
 
 // A singleton WaitableEvent wrapper so we avoid a busy loop in
 // MessagePumpForUIStub. Other platforms use the native event loop which blocks
 // when there are no pending messages.
 class Waitable {
  public:
-  static Waitable* GetInstance() { return base::Singleton<Waitable>::get(); }
+  static Waitable* GetInstance() {
+    return base::Singleton<Waitable,
+                           base::LeakySingletonTraits<Waitable>>::get();
+  }
 
-   // Signals that there are more work to do.
-   void Signal() {
-     waitable_event_.Signal();
-   }
+  // Signals that there are more work to do.
+  void Signal() { waitable_event_.Signal(); }
 
-   // Blocks until more work is scheduled.
-   void Block() {
-     waitable_event_.Wait();
-   }
+  // Blocks until more work is scheduled.
+  void Block() { waitable_event_.Wait(); }
 
-   void Quit() {
-     g_state->should_quit = true;
-     Signal();
-   }
+  void Quit() {
+    g_state->should_quit = true;
+    Signal();
+  }
 
  private:
   friend struct base::DefaultSingletonTraits<Waitable>;
@@ -74,12 +73,16 @@ class Waitable {
 
 // The MessagePumpForUI implementation for test purpose.
 class MessagePumpForUIStub : public base::MessagePumpForUI {
+ public:
+  MessagePumpForUIStub() : base::MessagePumpForUI() { Waitable::GetInstance(); }
   ~MessagePumpForUIStub() override {}
 
-  void Start(base::MessagePump::Delegate* delegate) override {
-    NOTREACHED() << "The Start() method shouldn't be called in test, using"
-        " Run() method should be used.";
-  }
+  bool IsTestImplementation() const override { return true; }
+
+  // In tests, there isn't a native thread, as such RunLoop::Run() should be
+  // used to run the loop instead of attaching and delegating to the native
+  // loop. As such, this override ignores the Attach() request.
+  void Attach(base::MessagePump::Delegate* delegate) override {}
 
   void Run(base::MessagePump::Delegate* delegate) override {
     // The following was based on message_pump_glib.cc, except we're using a
@@ -89,6 +92,18 @@ class MessagePumpForUIStub : public base::MessagePumpForUI {
     RunState* previous_state = g_state;
     g_state = &state;
 
+    // When not nested we can use the real implementation, otherwise fall back
+    // to the stub implementation.
+    if (g_state->run_depth > 1) {
+      RunNested(delegate);
+    } else {
+      MessagePumpForUI::Run(delegate);
+    }
+
+    g_state = previous_state;
+  }
+
+  void RunNested(base::MessagePump::Delegate* delegate) {
     bool more_work_is_plausible = true;
 
     for (;;) {
@@ -117,29 +132,47 @@ class MessagePumpForUIStub : public base::MessagePumpForUI {
 
       more_work_is_plausible |= !delayed_work_time.is_null();
     }
-
-    g_state = previous_state;
   }
 
-  void Quit() override { Waitable::GetInstance()->Quit(); }
+  void Quit() override {
+    CHECK(g_state);
+    if (g_state->run_depth > 1) {
+      Waitable::GetInstance()->Quit();
+    } else {
+      MessagePumpForUI::Quit();
+    }
+  }
 
-  void ScheduleWork() override { Waitable::GetInstance()->Signal(); }
+  void ScheduleWork() override {
+    if (g_state && g_state->run_depth > 1) {
+      Waitable::GetInstance()->Signal();
+    } else {
+      MessagePumpForUI::ScheduleWork();
+    }
+  }
 
   void ScheduleDelayedWork(const base::TimeTicks& delayed_work_time) override {
-    Waitable::GetInstance()->Signal();
+    if (g_state && g_state->run_depth > 1) {
+      Waitable::GetInstance()->Signal();
+    } else {
+      MessagePumpForUI::ScheduleDelayedWork(delayed_work_time);
+    }
   }
 };
 
 std::unique_ptr<base::MessagePump> CreateMessagePumpForUIStub() {
   return std::unique_ptr<base::MessagePump>(new MessagePumpForUIStub());
-};
+}
 
 // Provides the test path for DIR_SOURCE_ROOT and DIR_ANDROID_APP_DATA.
 bool GetTestProviderPath(int key, base::FilePath* result) {
   switch (key) {
     // TODO(agrieve): Stop overriding DIR_ANDROID_APP_DATA.
     // https://crbug.com/617734
+    // Instead DIR_ASSETS should be used to discover assets file location in
+    // tests.
     case base::DIR_ANDROID_APP_DATA:
+    case base::DIR_ASSETS:
     case base::DIR_SOURCE_ROOT:
       CHECK(g_test_data_dir != nullptr);
       *result = *g_test_data_dir;
@@ -152,8 +185,10 @@ bool GetTestProviderPath(int key, base::FilePath* result) {
 void InitPathProvider(int key) {
   base::FilePath path;
   // If failed to override the key, that means the way has not been registered.
-  if (GetTestProviderPath(key, &path) && !PathService::Override(key, path))
-    PathService::RegisterProvider(&GetTestProviderPath, key, key + 1);
+  if (GetTestProviderPath(key, &path) &&
+      !base::PathService::Override(key, path)) {
+    base::PathService::RegisterProvider(&GetTestProviderPath, key, key + 1);
+  }
 }
 
 }  // namespace
@@ -179,6 +214,7 @@ void InitAndroidTestPaths(const FilePath& test_data_dir) {
   g_test_data_dir = new FilePath(test_data_dir);
   InitPathProvider(DIR_SOURCE_ROOT);
   InitPathProvider(DIR_ANDROID_APP_DATA);
+  InitPathProvider(DIR_ASSETS);
 }
 
 void InitAndroidTestMessageLoop() {
@@ -186,10 +222,4 @@ void InitAndroidTestMessageLoop() {
     LOG(INFO) << "MessagePumpForUIFactory already set, unable to override.";
 }
 
-void InitAndroidTest() {
-  if (!base::AndroidIsChildProcess()) {
-    InitAndroidTestLogging();
-  }
-  InitAndroidTestMessageLoop();
-}
 }  // namespace base

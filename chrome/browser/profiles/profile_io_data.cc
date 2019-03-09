@@ -15,15 +15,14 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/debug/alias.h"
+#include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/path_service.h"
+#include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -32,33 +31,23 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
-#include "chrome/browser/devtools/devtools_network_controller.h"
-#include "chrome/browser/devtools/devtools_network_transaction_factory.h"
-#include "chrome/browser/download/download_service.h"
-#include "chrome/browser/download/download_service_factory.h"
 #include "chrome/browser/io_thread.h"
-#include "chrome/browser/media/media_device_id_salt.h"
-#include "chrome/browser/net/chrome_http_user_agent_settings.h"
 #include "chrome/browser/net/chrome_network_delegate.h"
 #include "chrome/browser/net/chrome_url_request_context_getter.h"
-#include "chrome/browser/net/proxy_service_factory.h"
-#include "chrome/browser/net/resource_prefetch_predictor_observer.h"
+#include "chrome/browser/net/failing_url_request_interceptor.h"
+#include "chrome/browser/net/profile_network_context_service.h"
+#include "chrome/browser/net/profile_network_context_service_factory.h"
 #include "chrome/browser/policy/cloud/policy_header_service_factory.h"
-#include "chrome/browser/policy/policy_helpers.h"
-#include "chrome/browser/predictors/resource_prefetch_predictor.h"
-#include "chrome/browser/predictors/resource_prefetch_predictor_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ssl/chrome_expect_ct_reporter.h"
-#include "chrome/browser/ui/search/new_tab_page_interceptor_service.h"
-#include "chrome/browser/ui/search/new_tab_page_interceptor_service_factory.h"
-#include "chrome/common/chrome_paths.h"
+#include "chrome/browser/signin/account_consistency_mode_manager.h"
+#include "chrome/common/buildflags.h"
+#include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "components/about_handler/about_protocol_handler.h"
-#include "components/certificate_transparency/ct_policy_manager.h"
 #include "components/certificate_transparency/tree_state_tracker.h"
 #include "components/content_settings/core/browser/content_settings_provider.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
@@ -69,61 +58,64 @@
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_service.h"
 #include "components/net_log/chrome_net_log.h"
-#include "components/policy/core/browser/url_blacklist_manager.h"
-#include "components/policy/core/common/cloud/policy_header_io_helper.h"
 #include "components/policy/core/common/cloud/policy_header_service.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/common/signin_pref_names.h"
-#include "components/sync_driver/pref_names.h"
+#include "components/signin/core/browser/account_consistency_method.h"
+#include "components/signin/core/browser/signin_pref_names.h"
+#include "components/sync/base/pref_names.h"
 #include "components/url_formatter/url_fixer.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/host_zoom_map.h"
+#include "content/public/browser/devtools_network_transaction_factory.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/resource_context.h"
 #include "content/public/common/content_switches.h"
-#include "net/base/keygen_handler.h"
+#include "extensions/buildflags/buildflags.h"
+#include "net/base/layered_network_delegate.h"
+#include "net/cert/caching_cert_verifier.h"
 #include "net/cert/cert_verifier.h"
+#include "net/cert/cert_verify_proc.h"
 #include "net/cert/ct_log_verifier.h"
+#include "net/cert/ct_policy_enforcer.h"
 #include "net/cert/multi_log_ct_verifier.h"
+#include "net/cert/multi_threaded_cert_verifier.h"
 #include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_store.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_transaction_factory.h"
 #include "net/http/http_util.h"
 #include "net/http/transport_security_persister.h"
+#include "net/net_buildflags.h"
 #include "net/nqe/network_quality_estimator.h"
-#include "net/proxy/proxy_config_service_fixed.h"
-#include "net/proxy/proxy_script_fetcher_impl.h"
-#include "net/proxy/proxy_service.h"
 #include "net/ssl/channel_id_service.h"
 #include "net/ssl/client_cert_store.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/data_protocol_handler.h"
 #include "net/url_request/file_protocol_handler.h"
 #include "net/url_request/ftp_protocol_handler.h"
-#include "net/url_request/report_sender.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
+#include "net/url_request/url_request_context_storage.h"
 #include "net/url_request/url_request_file_job.h"
 #include "net/url_request/url_request_intercepting_job_factory.h"
 #include "net/url_request/url_request_interceptor.h"
 #include "net/url_request/url_request_job_factory_impl.h"
+#include "services/network/ignore_errors_cert_verifier.h"
+#include "services/network/network_service.h"
+#include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/proxy_config_mojom_traits.h"
+#include "services/network/url_request_context_builder_mojo.h"
+#include "third_party/blink/public/public_buildflags.h"
 
-#if defined(ENABLE_EXTENSIONS)
-#include "chrome/browser/extensions/extension_cookie_monster_delegate.h"
-#include "chrome/browser/extensions/extension_resource_protocols.h"
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "extensions/browser/extension_protocols.h"
 #include "extensions/browser/extension_system.h"
-#include "extensions/browser/extension_throttle_manager.h"
 #include "extensions/browser/info_map.h"
 #include "extensions/common/constants.h"
-#endif
-
-#if defined(ENABLE_SUPERVISED_USERS)
-#include "chrome/browser/supervised_user/supervised_user_service.h"
-#include "chrome/browser/supervised_user/supervised_user_service_factory.h"
-#include "chrome/browser/supervised_user/supervised_user_url_filter.h"
-#endif
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 #if defined(OS_ANDROID)
 #include "content/public/browser/android/content_protocol_handler.h"
@@ -135,15 +127,15 @@
 #include "chrome/browser/chromeos/certificate_provider/certificate_provider_service_factory.h"
 #include "chrome/browser/chromeos/fileapi/external_file_protocol_handler.h"
 #include "chrome/browser/chromeos/login/startup_utils.h"
-#include "chrome/browser/chromeos/net/cert_verify_proc_chromeos.h"
 #include "chrome/browser/chromeos/net/client_cert_filter_chromeos.h"
 #include "chrome/browser/chromeos/net/client_cert_store_chromeos.h"
 #include "chrome/browser/chromeos/policy/policy_cert_service.h"
 #include "chrome/browser/chromeos/policy/policy_cert_service_factory.h"
-#include "chrome/browser/chromeos/policy/policy_cert_verifier.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chrome/browser/net/nss_context.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "chromeos/dbus/cryptohome_client.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "chromeos/tpm/tpm_token_info_getter.h"
@@ -151,21 +143,26 @@
 #include "components/user_manager/user_manager.h"
 #include "crypto/nss_util.h"
 #include "crypto/nss_util_internal.h"
-#include "net/cert/caching_cert_verifier.h"
-#include "net/cert/multi_threaded_cert_verifier.h"
+#include "services/network/cert_verifier_with_trust_anchors.h"
+#include "services/network/cert_verify_proc_chromeos.h"
 #endif  // defined(OS_CHROMEOS)
 
 #if defined(USE_NSS_CERTS)
 #include "chrome/browser/ui/crypto_module_delegate_nss.h"
 #include "net/ssl/client_cert_store_nss.h"
-#endif
+#endif  // defined(USE_NSS_CERTS)
 
 #if defined(OS_WIN)
 #include "net/ssl/client_cert_store_win.h"
-#endif
+#endif  // defined(OS_WIN)
 
 #if defined(OS_MACOSX)
 #include "net/ssl/client_cert_store_mac.h"
+#endif  // defined(OS_MACOSX)
+
+#if BUILDFLAG(TRIAL_COMPARISON_CERT_VERIFIER_SUPPORTED)
+#include "net/cert/cert_verify_proc_builtin.h"
+#include "services/network/trial_comparison_cert_verifier_mojo.h"
 #endif
 
 using content::BrowserContext;
@@ -174,76 +171,34 @@ using content::ResourceContext;
 
 namespace {
 
-net::CertVerifier* g_cert_verifier_for_testing = nullptr;
+net::CertVerifier* g_cert_verifier_for_profile_io_data_testing = nullptr;
 
-#if defined(DEBUG_DEVTOOLS)
-bool IsSupportedDevToolsURL(const GURL& url, base::FilePath* path) {
-  std::string bundled_path_prefix(chrome::kChromeUIDevToolsBundledPath);
-  bundled_path_prefix = "/" + bundled_path_prefix + "/";
-
-  if (!url.SchemeIs(content::kChromeDevToolsScheme) ||
-      url.host_piece() != chrome::kChromeUIDevToolsHost ||
-      !base::StartsWith(url.path_piece(), bundled_path_prefix,
-                        base::CompareCase::INSENSITIVE_ASCII)) {
-    return false;
-  }
-
-  if (!url.is_valid()) {
-    NOTREACHED();
-    return false;
-  }
-
-  // Remove Query and Ref from URL.
-  GURL stripped_url;
-  GURL::Replacements replacements;
-  replacements.ClearQuery();
-  replacements.ClearRef();
-  stripped_url = url.ReplaceComponents(replacements);
-
-  std::string relative_path;
-  const std::string& spec = stripped_url.possibly_invalid_spec();
-  const url::Parsed& parsed = stripped_url.parsed_for_possibly_invalid_spec();
-  int offset = parsed.CountCharactersBefore(url::Parsed::PATH, false);
-  if (offset < static_cast<int>(spec.size()))
-    relative_path.assign(spec.substr(offset + bundled_path_prefix.length()));
-
-  // Check that |relative_path| is not an absolute path (otherwise
-  // AppendASCII() will DCHECK).  The awkward use of StringType is because on
-  // some systems FilePath expects a std::string, but on others a std::wstring.
-  base::FilePath p(
-      base::FilePath::StringType(relative_path.begin(), relative_path.end()));
-  if (p.IsAbsolute())
-    return false;
-
-  base::FilePath inspector_dir;
-  if (!PathService::Get(chrome::DIR_INSPECTOR, &inspector_dir))
-    return false;
-
-  if (inspector_dir.empty())
-    return false;
-
-  *path = inspector_dir.AppendASCII(relative_path);
-  return true;
-}
-
-class DebugDevToolsInterceptor : public net::URLRequestInterceptor {
+// A CertVerifier that forwards all requests to
+// |g_cert_verifier_for_profile_io_data_testing|. This is used to allow Profiles
+// to have their own std::unique_ptr<net::CertVerifier> while forwarding calls
+// to the shared verifier.
+class WrappedCertVerifierForProfileIODataTesting : public net::CertVerifier {
  public:
-  // net::URLRequestInterceptor implementation.
-  net::URLRequestJob* MaybeInterceptRequest(
-      net::URLRequest* request,
-      net::NetworkDelegate* network_delegate) const override {
-    base::FilePath path;
-    if (IsSupportedDevToolsURL(request->url(), &path))
-      return new net::URLRequestFileJob(
-          request, network_delegate, path,
-          content::BrowserThread::GetBlockingPool()->
-              GetTaskRunnerWithShutdownBehavior(
-                  base::SequencedWorkerPool::SKIP_ON_SHUTDOWN));
+  ~WrappedCertVerifierForProfileIODataTesting() override = default;
 
-    return NULL;
+  // CertVerifier implementation
+  int Verify(const RequestParams& params,
+             net::CertVerifyResult* verify_result,
+             net::CompletionOnceCallback callback,
+             std::unique_ptr<Request>* out_req,
+             const net::NetLogWithSource& net_log) override {
+    verify_result->Reset();
+    if (!g_cert_verifier_for_profile_io_data_testing)
+      return net::ERR_FAILED;
+    return g_cert_verifier_for_profile_io_data_testing->Verify(
+        params, verify_result, std::move(callback), out_req, net_log);
+  }
+  void SetConfig(const Config& config) override {
+    if (!g_cert_verifier_for_profile_io_data_testing)
+      return;
+    return g_cert_verifier_for_profile_io_data_testing->SetConfig(config);
   }
 };
-#endif  // defined(DEBUG_DEVTOOLS)
 
 #if defined(OS_CHROMEOS)
 // The following four functions are responsible for initializing NSS for each
@@ -285,16 +240,15 @@ class DebugDevToolsInterceptor : public net::URLRequestInterceptor {
 void DidGetTPMInfoForUserOnUIThread(
     std::unique_ptr<chromeos::TPMTokenInfoGetter> getter,
     const std::string& username_hash,
-    const chromeos::TPMTokenInfo& info) {
+    base::Optional<chromeos::CryptohomeClient::TpmTokenInfo> token_info) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (info.tpm_is_enabled && info.token_slot_id != -1) {
+  if (token_info.has_value() && token_info->slot != -1) {
     DVLOG(1) << "Got TPM slot for " << username_hash << ": "
-             << info.token_slot_id;
-    BrowserThread::PostTask(
-        BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(&crypto::InitializeTPMForChromeOSUser,
-                   username_hash, info.token_slot_id));
+             << token_info->slot;
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(&crypto::InitializeTPMForChromeOSUser, username_hash,
+                       token_info->slot));
   } else {
     NOTREACHED() << "TPMTokenInfoGetter reported invalid token.";
   }
@@ -316,19 +270,18 @@ void GetTPMInfoForUserOnUIThread(const AccountId& account_id,
   // before TPM token info is fetched.
   // TODO(tbarzic, pneubeck): Handle this in a nicer way when this logic is
   //     moved to a separate profile service.
-  token_info_getter->Start(
-      base::Bind(&DidGetTPMInfoForUserOnUIThread,
-                 base::Passed(&scoped_token_info_getter),
-                 username_hash));
+  token_info_getter->Start(base::BindOnce(&DidGetTPMInfoForUserOnUIThread,
+                                          std::move(scoped_token_info_getter),
+                                          username_hash));
 }
 
 void StartTPMSlotInitializationOnIOThread(const AccountId& account_id,
                                           const std::string& username_hash) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&GetTPMInfoForUserOnUIThread, account_id, username_hash));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&GetTPMInfoForUserOnUIThread, account_id, username_hash));
 }
 
 void StartNSSInitOnIOThread(const AccountId& account_id,
@@ -363,25 +316,22 @@ void StartNSSInitOnIOThread(const AccountId& account_id,
 }
 #endif  // defined(OS_CHROMEOS)
 
-#if defined(USE_NSS_CERTS)
-void InitializeAndPassKeygenHandler(
-    std::unique_ptr<net::KeygenHandler> keygen_handler,
-    const base::Callback<void(std::unique_ptr<net::KeygenHandler>)>& callback,
-    std::unique_ptr<ChromeNSSCryptoModuleDelegate> delegate) {
-  if (delegate)
-    keygen_handler->set_crypto_module_delegate(std::move(delegate));
-  callback.Run(std::move(keygen_handler));
-}
-#endif  // defined(USE_NSS_CERTS)
-
 // For safe shutdown, must be called before the ProfileIOData is destroyed.
 void NotifyContextGettersOfShutdownOnIO(
     std::unique_ptr<ProfileIOData::ChromeURLRequestContextGetterVector>
         getters) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  ProfileIOData::ChromeURLRequestContextGetterVector::iterator iter;
   for (auto& chrome_context_getter : *getters)
     chrome_context_getter->NotifyContextShuttingDown();
+}
+
+// Wraps |inner_job_factory| with |protocol_handler_interceptor|.
+std::unique_ptr<net::URLRequestJobFactory> CreateURLRequestJobFactory(
+    std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
+        protocol_handler_interceptor,
+    std::unique_ptr<net::URLRequestJobFactory> inner_job_factory) {
+  protocol_handler_interceptor->Chain(std::move(inner_job_factory));
+  return std::move(protocol_handler_interceptor);
 }
 
 }  // namespace
@@ -395,27 +345,31 @@ void ProfileIOData::InitializeOnUIThread(Profile* profile) {
 
   params->io_thread = g_browser_process->io_thread();
 
+  ProfileNetworkContextServiceFactory::GetForContext(profile)
+      ->SetUpProfileIODataNetworkContext(
+          profile->IsOffTheRecord() /* in_memory */,
+          base::FilePath() /* relative_partition_path */,
+          &params->main_network_context_request,
+          &params->main_network_context_params);
+
   params->cookie_settings = CookieSettingsFactory::GetForProfile(profile);
   params->host_content_settings_map =
       HostContentSettingsMapFactory::GetForProfile(profile);
-  params->ssl_config_service = profile->GetSSLConfigService();
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   params->extension_info_map =
       extensions::ExtensionSystem::Get(profile)->info_map();
-  params->cookie_monster_delegate = new ExtensionCookieMonsterDelegate(profile);
 #endif
 
-  if (predictors::ResourcePrefetchPredictor* predictor =
-          predictors::ResourcePrefetchPredictorFactory::GetForProfile(
-              profile)) {
-    resource_prefetch_predictor_observer_.reset(
-        new chrome_browser_net::ResourcePrefetchPredictorObserver(predictor));
-  }
+  params->account_consistency =
+      AccountConsistencyModeManager::GetMethodForProfile(profile);
 
   ProtocolHandlerRegistry* protocol_handler_registry =
       ProtocolHandlerRegistryFactory::GetForBrowserContext(profile);
   DCHECK(protocol_handler_registry);
+
+  protocol_handler_registry_io_thread_delegate_ =
+      protocol_handler_registry->io_thread_delegate();
 
   // The profile instance is only available here in the InitializeOnUIThread
   // method, so we create the url job factory here, then save it for
@@ -423,22 +377,19 @@ void ProfileIOData::InitializeOnUIThread(Profile* profile) {
   params->protocol_handler_interceptor =
       protocol_handler_registry->CreateJobInterceptorFactory();
 
-  NewTabPageInterceptorService* new_tab_interceptor_service =
-      NewTabPageInterceptorServiceFactory::GetForProfile(profile);
-  if (new_tab_interceptor_service) {
-    params->new_tab_page_interceptor =
-        new_tab_interceptor_service->CreateInterceptor();
+#if defined(OS_CHROMEOS)
+  // Enable client certificates for the Chrome OS sign-in frame, if this feature
+  // is not disabled by a flag.
+  // Note that while this applies to the whole sign-in profile, client
+  // certificates will only be selected for the StoragePartition currently used
+  // in the sign-in frame (see SigninPartitionManager).
+  if (chromeos::switches::IsSigninFrameClientCertsEnabled() &&
+      chromeos::ProfileHelper::IsSigninProfile(profile)) {
+    // We only need the system slot for client certificates, not in NSS context
+    // (the sign-in profile's NSS context is not initialized).
+    params->system_key_slot_use_type = SystemKeySlotUseType::kUseForClientAuth;
   }
 
-  params->proxy_config_service = ProxyServiceFactory::CreateProxyConfigService(
-      profile->GetProxyConfigTracker());
-#if defined(ENABLE_SUPERVISED_USERS)
-  SupervisedUserService* supervised_user_service =
-      SupervisedUserServiceFactory::GetForProfile(profile);
-  params->supervised_user_url_filter =
-      supervised_user_service->GetURLFilterForIOThread();
-#endif
-#if defined(OS_CHROMEOS)
   user_manager::UserManager* user_manager = user_manager::UserManager::Get();
   if (user_manager) {
     const user_manager::User* user =
@@ -450,14 +401,17 @@ void ProfileIOData::InitializeOnUIThread(Profile* profile) {
     if (user && !user->username_hash().empty()) {
       params->username_hash = user->username_hash();
       DCHECK(!params->username_hash.empty());
-      BrowserThread::PostTask(
-          BrowserThread::IO, FROM_HERE,
-          base::Bind(&StartNSSInitOnIOThread, user->GetAccountId(),
-                     user->username_hash(), profile->GetPath()));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::IO},
+          base::BindOnce(&StartNSSInitOnIOThread, user->GetAccountId(),
+                         user->username_hash(), profile->GetPath()));
 
       // Use the device-wide system key slot only if the user is affiliated on
       // the device.
-      params->use_system_key_slot = user->IsAffiliated();
+      if (user->IsAffiliated()) {
+        params->system_key_slot_use_type =
+            SystemKeySlotUseType::kUseForClientAuthAndCertManagement;
+      }
     }
   }
 
@@ -471,38 +425,39 @@ void ProfileIOData::InitializeOnUIThread(Profile* profile) {
 #endif
 
   params->profile = profile;
-  profile_params_.reset(params.release());
+  profile_params_ = std::move(params);
 
-  ChromeNetworkDelegate::InitializePrefsOnUIThread(
-      &enable_referrers_,
-      &enable_do_not_track_,
-      &force_google_safesearch_,
-      &force_youtube_safety_mode_,
-      &allowed_domains_for_apps_,
-      pref_service);
+  force_google_safesearch_.Init(prefs::kForceGoogleSafeSearch, pref_service);
+  force_google_safesearch_.MoveToThread(
+      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO}));
+  force_youtube_restrict_.Init(prefs::kForceYouTubeRestrict, pref_service);
+  force_youtube_restrict_.MoveToThread(
+      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO}));
+  allowed_domains_for_apps_.Init(prefs::kAllowedDomainsForApps, pref_service);
+  allowed_domains_for_apps_.MoveToThread(
+      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO}));
 
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner =
-      BrowserThread::GetMessageLoopProxyForThread(BrowserThread::IO);
-
-  chrome_http_user_agent_settings_.reset(
-      new ChromeHttpUserAgentSettings(pref_service));
+      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO});
 
   // These members are used only for sign in, which is not enabled
   // in incognito mode.  So no need to initialize them.
   if (!IsOffTheRecord()) {
-    google_services_user_account_id_.Init(
-        prefs::kGoogleServicesUserAccountId, pref_service);
+    google_services_user_account_id_.Init(prefs::kGoogleServicesUserAccountId,
+                                          pref_service);
     google_services_user_account_id_.MoveToThread(io_task_runner);
-
-    sync_disabled_.Init(sync_driver::prefs::kSyncManaged, pref_service);
-    sync_disabled_.MoveToThread(io_task_runner);
-
-    signin_allowed_.Init(prefs::kSigninAllowed, pref_service);
-    signin_allowed_.MoveToThread(io_task_runner);
+    sync_suppress_start_.Init(syncer::prefs::kSyncSuppressStart, pref_service);
+    sync_suppress_start_.MoveToThread(io_task_runner);
+    sync_first_setup_complete_.Init(syncer::prefs::kSyncFirstSetupComplete,
+                                    pref_service);
+    sync_first_setup_complete_.MoveToThread(io_task_runner);
   }
 
-  if (!IsOffTheRecord())
-    media_device_id_salt_ = new MediaDeviceIDSalt(pref_service);
+#if !defined(OS_CHROMEOS)
+  signin_scoped_device_id_.Init(prefs::kGoogleServicesSigninScopedDeviceId,
+                                pref_service);
+  signin_scoped_device_id_.MoveToThread(io_task_runner);
+#endif
 
   network_prediction_options_.Init(prefs::kNetworkPredictionOptions,
                                    pref_service);
@@ -510,52 +465,38 @@ void ProfileIOData::InitializeOnUIThread(Profile* profile) {
   network_prediction_options_.MoveToThread(io_task_runner);
 
 #if defined(OS_CHROMEOS)
-  std::unique_ptr<policy::PolicyCertVerifier> verifier =
-      policy::PolicyCertServiceFactory::CreateForProfile(profile);
-  policy_cert_verifier_ = verifier.get();
-  cert_verifier_ = std::move(verifier);
-#endif
-  // The URLBlacklistManager has to be created on the UI thread to register
-  // observers of |pref_service|, and it also has to clean up on
-  // ShutdownOnUIThread to release these observers on the right thread.
-  // Don't pass it in |profile_params_| to make sure it is correctly cleaned up,
-  // in particular when this ProfileIOData isn't |initialized_| during deletion.
-  policy::URLBlacklist::SegmentURLCallback callback =
-      static_cast<policy::URLBlacklist::SegmentURLCallback>(
-          url_formatter::SegmentURL);
-  base::SequencedWorkerPool* pool = BrowserThread::GetBlockingPool();
-  scoped_refptr<base::SequencedTaskRunner> background_task_runner =
-      pool->GetSequencedTaskRunner(pool->GetSequenceToken());
-  url_blacklist_manager_.reset(new policy::URLBlacklistManager(
-      pref_service, background_task_runner, io_task_runner, callback,
-      base::Bind(policy::OverrideBlacklistForURL)));
-
-  // The CTPolicyManager shares the same constraints of needing to be cleaned
-  // up on the UI thread.
-  ct_policy_manager_.reset(new certificate_transparency::CTPolicyManager(
-      pref_service, io_task_runner));
-
-  if (!IsOffTheRecord()) {
-    // Add policy headers for non-incognito requests.
-    policy::PolicyHeaderService* policy_header_service =
-        policy::PolicyHeaderServiceFactory::GetForBrowserContext(profile);
-    if (policy_header_service) {
-      policy_header_helper_ =
-          policy_header_service->CreatePolicyHeaderIOHelper(io_task_runner);
-    }
+  if (!g_cert_verifier_for_profile_io_data_testing &&
+      !base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    profile_params_->policy_cert_verifier =
+        policy::PolicyCertServiceFactory::CreateForProfile(profile);
   }
+#endif
 
-  incognito_availibility_pref_.Init(
-      prefs::kIncognitoModeAvailability, pref_service);
+  incognito_availibility_pref_.Init(prefs::kIncognitoModeAvailability,
+                                    pref_service);
   incognito_availibility_pref_.MoveToThread(io_task_runner);
+
+#if defined(OS_CHROMEOS)
+  account_consistency_mirror_required_pref_.Init(
+      prefs::kAccountConsistencyMirrorRequired, pref_service);
+  account_consistency_mirror_required_pref_.MoveToThread(io_task_runner);
+#endif
 
   // We need to make sure that content initializes its own data structures that
   // are associated with each ResourceContext because we might post this
   // object to the IO thread after this function.
   BrowserContext::EnsureResourceContextInitialized(profile);
+
+  if (base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(&ProfileIOData::Init, base::Unretained(this), nullptr,
+                       content::URLRequestInterceptorScopedVector()));
+  }
 }
 
-ProfileIOData::MediaRequestContext::MediaRequestContext() {
+ProfileIOData::MediaRequestContext::MediaRequestContext(const char* name) {
+  set_name(name);
 }
 
 void ProfileIOData::MediaRequestContext::SetHttpTransactionFactory(
@@ -569,6 +510,7 @@ ProfileIOData::MediaRequestContext::~MediaRequestContext() {
 }
 
 ProfileIOData::AppRequestContext::AppRequestContext() {
+  set_name("app_request");
 }
 
 void ProfileIOData::AppRequestContext::SetCookieStore(
@@ -604,29 +546,25 @@ ProfileIOData::AppRequestContext::~AppRequestContext() {
   AssertNoURLRequests();
 }
 
-ProfileIOData::ProfileParams::ProfileParams()
-    : io_thread(NULL),
-#if defined(OS_CHROMEOS)
-      use_system_key_slot(false),
-#endif
-      profile(NULL) {
-}
+ProfileIOData::ProfileParams::ProfileParams() = default;
 
-ProfileIOData::ProfileParams::~ProfileParams() {}
+ProfileIOData::ProfileParams::~ProfileParams() = default;
 
 ProfileIOData::ProfileIOData(Profile::ProfileType profile_type)
     : initialized_(false),
+      account_consistency_(signin::AccountConsistencyMethod::kDisabled),
 #if defined(OS_CHROMEOS)
-      policy_cert_verifier_(NULL),
-      use_system_key_slot_(false),
+      system_key_slot_use_type_(SystemKeySlotUseType::kNone),
 #endif
+      main_request_context_(nullptr),
       resource_context_(new ResourceContext(this)),
+      chrome_network_delegate_unowned_(nullptr),
       profile_type_(profile_type) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 }
 
 ProfileIOData::~ProfileIOData() {
-  if (BrowserThread::IsMessageLoopValid(BrowserThread::IO))
+  if (BrowserThread::IsThreadInitialized(BrowserThread::IO))
     DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   // Pull the contents of the request context maps onto the stack for sanity
@@ -653,7 +591,7 @@ ProfileIOData::~ProfileIOData() {
   for (URLRequestContextMap::const_iterator it =
            app_request_context_map_.begin();
        current_context < kMaxCachedContexts &&
-           it != app_request_context_map_.end();
+       it != app_request_context_map_.end();
        ++it, ++current_context) {
     app_context_cache[current_context] = it->second;
     memcpy(&app_context_vtable_cache[current_context],
@@ -664,49 +602,15 @@ ProfileIOData::~ProfileIOData() {
   for (URLRequestContextMap::const_iterator it =
            isolated_media_request_context_map_.begin();
        current_context < kMaxCachedContexts &&
-           it != isolated_media_request_context_map_.end();
+       it != isolated_media_request_context_map_.end();
        ++it, ++current_context) {
     media_context_cache[current_context] = it->second;
     memcpy(&media_context_vtable_cache[current_context],
            static_cast<void*>(it->second), sizeof(void*));
   }
 
-  // Destroy certificate_report_sender_ before main_request_context_,
-  // since the former has a reference to the latter.
-  if (transport_security_state_)
-    transport_security_state_->SetReportSender(nullptr);
-  certificate_report_sender_.reset();
-
-  if (transport_security_state_)
-    transport_security_state_->SetExpectCTReporter(nullptr);
-  expect_ct_reporter_.reset();
-
-  if (transport_security_state_)
-    transport_security_state_->SetRequireCTDelegate(nullptr);
-
-  // TODO(ajwong): These AssertNoURLRequests() calls are unnecessary since they
-  // are already done in the URLRequestContext destructor.
-  if (main_request_context_)
-    main_request_context_->AssertNoURLRequests();
-  if (extensions_request_context_)
-    extensions_request_context_->AssertNoURLRequests();
-
   current_context = 0;
-  for (URLRequestContextMap::iterator it = app_request_context_map_.begin();
-       it != app_request_context_map_.end(); ++it) {
-    if (current_context < kMaxCachedContexts) {
-      CHECK_EQ(app_context_cache[current_context], it->second);
-      memcpy(&tmp_vtable, static_cast<void*>(it->second), sizeof(void*));
-      CHECK_EQ(app_context_vtable_cache[current_context], tmp_vtable);
-    }
-    it->second->AssertNoURLRequests();
-    delete it->second;
-    current_context++;
-  }
-
-  current_context = 0;
-  for (URLRequestContextMap::iterator it =
-           isolated_media_request_context_map_.begin();
+  for (auto it = isolated_media_request_context_map_.begin();
        it != isolated_media_request_context_map_.end(); ++it) {
     if (current_context < kMaxCachedContexts) {
       CHECK_EQ(media_context_cache[current_context], it->second);
@@ -732,24 +636,26 @@ bool ProfileIOData::IsHandledProtocol(const std::string& scheme) {
     url::kFileScheme,
     content::kChromeDevToolsScheme,
     dom_distiller::kDomDistillerScheme,
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
     extensions::kExtensionScheme,
-    extensions::kExtensionResourceScheme,
 #endif
     content::kChromeUIScheme,
     url::kDataScheme,
 #if defined(OS_CHROMEOS)
     content::kExternalFileScheme,
 #endif  // defined(OS_CHROMEOS)
+#if defined(OS_ANDROID)
+    url::kContentScheme,
+#endif  // defined(OS_ANDROID)
     url::kAboutScheme,
-#if !defined(DISABLE_FTP_SUPPORT)
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
     url::kFtpScheme,
-#endif  // !defined(DISABLE_FTP_SUPPORT)
+#endif  // !BUILDFLAG(DISABLE_FTP_SUPPORT)
     url::kBlobScheme,
     url::kFileSystemScheme,
     chrome::kChromeSearchScheme,
   };
-  for (size_t i = 0; i < arraysize(kProtocolList); ++i) {
+  for (size_t i = 0; i < base::size(kProtocolList); ++i) {
     if (scheme == kProtocolList[i])
       return true;
   }
@@ -770,13 +676,22 @@ bool ProfileIOData::IsHandledURL(const GURL& url) {
 void ProfileIOData::InstallProtocolHandlers(
     net::URLRequestJobFactoryImpl* job_factory,
     content::ProtocolHandlerMap* protocol_handlers) {
-  for (content::ProtocolHandlerMap::iterator it =
-           protocol_handlers->begin();
-       it != protocol_handlers->end();
+  for (auto it = protocol_handlers->begin(); it != protocol_handlers->end();
        ++it) {
-    bool set_protocol = job_factory->SetProtocolHandler(
-        it->first, base::WrapUnique(it->second.release()));
+    bool set_protocol =
+        job_factory->SetProtocolHandler(it->first, std::move(it->second));
     DCHECK(set_protocol);
+  }
+  protocol_handlers->clear();
+}
+
+// static
+void ProfileIOData::AddProtocolHandlersToBuilder(
+    net::URLRequestContextBuilder* builder,
+    content::ProtocolHandlerMap* protocol_handlers) {
+  for (auto& protocol_handler : *protocol_handlers) {
+    builder->SetProtocolHandler(protocol_handler.first,
+                                std::move(protocol_handler.second));
   }
   protocol_handlers->clear();
 }
@@ -784,7 +699,7 @@ void ProfileIOData::InstallProtocolHandlers(
 // static
 void ProfileIOData::SetCertVerifierForTesting(
     net::CertVerifier* cert_verifier) {
-  g_cert_verifier_for_testing = cert_verifier;
+  g_cert_verifier_for_profile_io_data_testing = cert_verifier;
 }
 
 content::ResourceContext* ProfileIOData::GetResourceContext() const {
@@ -793,7 +708,7 @@ content::ResourceContext* ProfileIOData::GetResourceContext() const {
 
 net::URLRequestContext* ProfileIOData::GetMainRequestContext() const {
   DCHECK(initialized_);
-  return main_request_context_.get();
+  return main_request_context_;
 }
 
 net::URLRequestContext* ProfileIOData::GetMediaRequestContext() const {
@@ -803,30 +718,60 @@ net::URLRequestContext* ProfileIOData::GetMediaRequestContext() const {
   return context;
 }
 
-net::URLRequestContext* ProfileIOData::GetExtensionsRequestContext() const {
-  DCHECK(initialized_);
-  return extensions_request_context_.get();
-}
-
 net::URLRequestContext* ProfileIOData::GetIsolatedAppRequestContext(
-    net::URLRequestContext* main_context,
+    IOThread* io_thread,
     const StoragePartitionDescriptor& partition_descriptor,
     std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
         protocol_handler_interceptor,
     content::ProtocolHandlerMap* protocol_handlers,
-    content::URLRequestInterceptorScopedVector request_interceptors) const {
+    content::URLRequestInterceptorScopedVector request_interceptors,
+    network::mojom::NetworkContextRequest network_context_request,
+    network::mojom::NetworkContextParamsPtr network_context_params) const {
   DCHECK(initialized_);
-  net::URLRequestContext* context = NULL;
-  if (ContainsKey(app_request_context_map_, partition_descriptor)) {
-    context = app_request_context_map_[partition_descriptor];
-  } else {
-    context = AcquireIsolatedAppRequestContext(
-        main_context, partition_descriptor,
-        std::move(protocol_handler_interceptor), protocol_handlers,
-        std::move(request_interceptors));
-    app_request_context_map_[partition_descriptor] = context;
+  if (base::ContainsKey(app_request_context_map_, partition_descriptor))
+    return app_request_context_map_[partition_descriptor];
+
+  // If the network service is enabled, just re-use the same dummy
+  // URLRequestContext as for other requests.
+  if (base::FeatureList::IsEnabled(network::features::kNetworkService))
+    return main_request_context_;
+
+  std::unique_ptr<network::URLRequestContextBuilderMojo> builder =
+      std::make_unique<network::URLRequestContextBuilderMojo>();
+  io_thread->SetUpProxyService(builder.get());
+  builder->SetSharedCertVerifier(main_request_context_->cert_verifier());
+  if (data_reduction_proxy_io_data_.get()) {
+    builder->set_shared_proxy_delegate(
+        data_reduction_proxy_io_data_->proxy_delegate());
   }
-  DCHECK(context);
+
+  AddProtocolHandlersToBuilder(builder.get(), protocol_handlers);
+
+  if (!IsOffTheRecord()) {
+    // The data reduction proxy interceptor should be as close to the network
+    // as possible.
+    request_interceptors.insert(
+        request_interceptors.begin(),
+        data_reduction_proxy_io_data()->CreateInterceptor());
+  }
+
+  SetUpJobFactoryDefaultsForBuilder(builder.get(),
+                                    std::move(request_interceptors),
+                                    std::move(protocol_handler_interceptor));
+
+  builder->SetCreateHttpTransactionFactoryCallback(
+      base::BindOnce(&content::CreateDevToolsNetworkTransactionFactory));
+  builder->set_network_delegate(
+      net::LayeredNetworkDelegate::CreatePassThroughNetworkDelegate(
+          chrome_network_delegate_unowned_));
+
+  net::URLRequestContext* context;
+  app_network_contexts_.emplace_back(
+      content::GetNetworkServiceImpl()->CreateNetworkContextWithBuilder(
+          std::move(network_context_request), std::move(network_context_params),
+          std::move(builder), &context));
+
+  app_request_context_map_[partition_descriptor] = context;
   return context;
 }
 
@@ -835,11 +780,12 @@ net::URLRequestContext* ProfileIOData::GetIsolatedMediaRequestContext(
     const StoragePartitionDescriptor& partition_descriptor) const {
   DCHECK(initialized_);
   net::URLRequestContext* context = NULL;
-  if (ContainsKey(isolated_media_request_context_map_, partition_descriptor)) {
+  if (base::ContainsKey(isolated_media_request_context_map_,
+                        partition_descriptor)) {
     context = isolated_media_request_context_map_[partition_descriptor];
   } else {
-    context = AcquireIsolatedMediaRequestContext(app_context,
-                                                 partition_descriptor);
+    context =
+        AcquireIsolatedMediaRequestContext(app_context, partition_descriptor);
     isolated_media_request_context_map_[partition_descriptor] = context;
   }
   DCHECK(context);
@@ -848,18 +794,8 @@ net::URLRequestContext* ProfileIOData::GetIsolatedMediaRequestContext(
 
 extensions::InfoMap* ProfileIOData::GetExtensionInfoMap() const {
   DCHECK(initialized_) << "ExtensionSystem not initialized";
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   return extension_info_map_.get();
-#else
-  return nullptr;
-#endif
-}
-
-extensions::ExtensionThrottleManager*
-ProfileIOData::GetExtensionThrottleManager() const {
-  DCHECK(initialized_) << "ExtensionSystem not initialized";
-#if defined(ENABLE_EXTENSIONS)
-  return extension_throttle_manager_.get();
 #else
   return nullptr;
 #endif
@@ -876,44 +812,20 @@ HostContentSettingsMap* ProfileIOData::GetHostContentSettingsMap() const {
   return host_content_settings_map_.get();
 }
 
-std::string ProfileIOData::GetMediaDeviceIDSalt() const {
-  DCHECK(media_device_id_salt_);
-  return media_device_id_salt_->GetSalt();
+bool ProfileIOData::IsSyncEnabled() const {
+  return sync_first_setup_complete_.GetValue() &&
+         !sync_suppress_start_.GetValue();
 }
+
+#if !defined(OS_CHROMEOS)
+std::string ProfileIOData::GetSigninScopedDeviceId() const {
+  return signin_scoped_device_id_.GetValue();
+}
+#endif
 
 bool ProfileIOData::IsOffTheRecord() const {
-  return profile_type() == Profile::INCOGNITO_PROFILE
-      || profile_type() == Profile::GUEST_PROFILE;
-}
-
-void ProfileIOData::InitializeMetricsEnabledStateOnUIThread() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-#if BUILDFLAG(ANDROID_JAVA_UI)
-  // TODO(dwkang): rename or unify the pref for UMA once we have conclusion
-  // in crbugs.com/246495.
-  // Android has it's own preferences for metrics / crash uploading.
-  enable_metrics_.Init(prefs::kCrashReportingEnabled,
-                       g_browser_process->local_state());
-  enable_metrics_.MoveToThread(
-      BrowserThread::GetMessageLoopProxyForThread(BrowserThread::IO));
-#else
-  // Prep the PrefMember and send it to the IO thread, since this value will be
-  // read from there.
-  enable_metrics_.Init(metrics::prefs::kMetricsReportingEnabled,
-                       g_browser_process->local_state());
-  enable_metrics_.MoveToThread(
-      BrowserThread::GetMessageLoopProxyForThread(BrowserThread::IO));
-#endif  // BUILDFLAG(ANDROID_JAVA_UI)
-}
-
-bool ProfileIOData::GetMetricsEnabledStateOnIOThread() const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  return enable_metrics_.GetValue();
-}
-
-bool ProfileIOData::IsDataReductionProxyEnabled() const {
-  return data_reduction_proxy_io_data() &&
-      data_reduction_proxy_io_data()->IsEnabled();
+  return profile_type() == Profile::INCOGNITO_PROFILE ||
+         profile_type() == Profile::GUEST_PROFILE;
 }
 
 chrome_browser_net::Predictor* ProfileIOData::GetPredictor() {
@@ -924,17 +836,21 @@ std::unique_ptr<net::ClientCertStore> ProfileIOData::CreateClientCertStore() {
   if (!client_cert_store_factory_.is_null())
     return client_cert_store_factory_.Run();
 #if defined(OS_CHROMEOS)
+  bool use_system_key_slot =
+      system_key_slot_use_type_ == SystemKeySlotUseType::kUseForClientAuth ||
+      system_key_slot_use_type_ ==
+          SystemKeySlotUseType::kUseForClientAuthAndCertManagement;
   return std::unique_ptr<net::ClientCertStore>(
       new chromeos::ClientCertStoreChromeOS(
           certificate_provider_ ? certificate_provider_->Copy() : nullptr,
-          base::WrapUnique(new chromeos::ClientCertFilterChromeOS(
-              use_system_key_slot_, username_hash_)),
+          std::make_unique<chromeos::ClientCertFilterChromeOS>(
+              use_system_key_slot, username_hash_),
           base::Bind(&CreateCryptoModuleBlockingPasswordDelegate,
-                     chrome::kCryptoModulePasswordClientAuth)));
+                     kCryptoModulePasswordClientAuth)));
 #elif defined(USE_NSS_CERTS)
   return std::unique_ptr<net::ClientCertStore>(new net::ClientCertStoreNSS(
       base::Bind(&CreateCryptoModuleBlockingPasswordDelegate,
-                 chrome::kCryptoModulePasswordClientAuth)));
+                 kCryptoModulePasswordClientAuth)));
 #elif defined(OS_WIN)
   return std::unique_ptr<net::ClientCertStore>(new net::ClientCertStoreWin());
 #elif defined(OS_MACOSX)
@@ -955,68 +871,12 @@ void ProfileIOData::set_data_reduction_proxy_io_data(
   data_reduction_proxy_io_data_ = std::move(data_reduction_proxy_io_data);
 }
 
-net::HttpServerProperties* ProfileIOData::http_server_properties() const {
-  return http_server_properties_.get();
-}
-
-void ProfileIOData::set_http_server_properties(
-    std::unique_ptr<net::HttpServerProperties> http_server_properties) const {
-  http_server_properties_ = std::move(http_server_properties);
-}
-
 ProfileIOData::ResourceContext::ResourceContext(ProfileIOData* io_data)
-    : io_data_(io_data),
-      host_resolver_(NULL),
-      request_context_(NULL) {
+    : io_data_(io_data) {
   DCHECK(io_data);
 }
 
 ProfileIOData::ResourceContext::~ResourceContext() {}
-
-net::HostResolver* ProfileIOData::ResourceContext::GetHostResolver()  {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(io_data_->initialized_);
-  return host_resolver_;
-}
-
-net::URLRequestContext* ProfileIOData::ResourceContext::GetRequestContext()  {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(io_data_->initialized_);
-  return request_context_;
-}
-
-void ProfileIOData::ResourceContext::CreateKeygenHandler(
-    uint32_t key_size_in_bits,
-    const std::string& challenge_string,
-    const GURL& url,
-    const base::Callback<void(std::unique_ptr<net::KeygenHandler>)>& callback) {
-  DCHECK(!callback.is_null());
-#if defined(USE_NSS_CERTS)
-  std::unique_ptr<net::KeygenHandler> keygen_handler(
-      new net::KeygenHandler(key_size_in_bits, challenge_string, url));
-
-  base::Callback<void(std::unique_ptr<ChromeNSSCryptoModuleDelegate>)>
-      got_delegate_callback =
-          base::Bind(&InitializeAndPassKeygenHandler,
-                     base::Passed(&keygen_handler), callback);
-
-  ChromeNSSCryptoModuleDelegate::CreateForResourceContext(
-      chrome::kCryptoModulePasswordKeygen,
-      net::HostPortPair::FromURL(url),
-      this,
-      got_delegate_callback);
-#else
-  callback.Run(base::WrapUnique(
-      new net::KeygenHandler(key_size_in_bits, challenge_string, url)));
-#endif
-}
-
-std::string ProfileIOData::ResourceContext::GetMediaDeviceIDSalt() {
-  if (io_data_->HasMediaDeviceIDSalt())
-    return io_data_->GetMediaDeviceIDSalt();
-
-  return content::ResourceContext::GetMediaDeviceIDSalt();
-}
 
 void ProfileIOData::Init(
     content::ProtocolHandlerMap* protocol_handlers,
@@ -1028,166 +888,147 @@ void ProfileIOData::Init(
   DCHECK(!initialized_);
   DCHECK(profile_params_.get());
 
-  IOThread* const io_thread = profile_params_->io_thread;
-  IOThread::Globals* const io_thread_globals = io_thread->globals();
-  const base::CommandLine& command_line =
-      *base::CommandLine::ForCurrentProcess();
-
-  // Create the common request contexts.
-  main_request_context_.reset(new net::URLRequestContext());
-  extensions_request_context_.reset(new net::URLRequestContext());
-
-  main_request_context_->set_enable_brotli(io_thread_globals->enable_brotli);
-
-  // TODO(estark): Remove this once the Referrer-Policy header is no
-  // longer an experimental feature. https://crbug.com/619228
-  main_request_context_->set_enable_referrer_policy_header(
-      command_line.HasSwitch(switches::kEnableExperimentalWebPlatformFeatures));
-
-  std::unique_ptr<ChromeNetworkDelegate> network_delegate(
-      new ChromeNetworkDelegate(
-#if defined(ENABLE_EXTENSIONS)
-          io_thread_globals->extension_event_router_forwarder.get(),
-#else
-          NULL,
-#endif
-          &enable_referrers_, io_thread->GetMetricsDataUseForwarder()));
-#if defined(ENABLE_EXTENSIONS)
-  network_delegate->set_extension_info_map(
-      profile_params_->extension_info_map.get());
-  if (!command_line.HasSwitch(switches::kDisableExtensionsHttpThrottling)) {
-    extension_throttle_manager_.reset(
-        new extensions::ExtensionThrottleManager());
-  }
-#endif
-
-  network_delegate->set_url_blacklist_manager(url_blacklist_manager_.get());
-  network_delegate->set_profile(profile_params_->profile);
-  network_delegate->set_profile_path(profile_params_->path);
-  network_delegate->set_cookie_settings(profile_params_->cookie_settings.get());
-  network_delegate->set_enable_do_not_track(&enable_do_not_track_);
-  network_delegate->set_force_google_safe_search(&force_google_safesearch_);
-  network_delegate->set_force_youtube_safety_mode(&force_youtube_safety_mode_);
-  network_delegate->set_allowed_domains_for_apps(&allowed_domains_for_apps_);
-  network_delegate->set_data_use_aggregator(
-      io_thread_globals->data_use_aggregator.get(), IsOffTheRecord());
-
-  // NOTE: Proxy service uses the default io thread network delegate, not the
-  // delegate just created.
-  proxy_service_ = ProxyServiceFactory::CreateProxyService(
-      io_thread->net_log(),
-      io_thread_globals->proxy_script_fetcher_context.get(),
-      io_thread_globals->system_network_delegate.get(),
-      std::move(profile_params_->proxy_config_service), command_line,
-      io_thread->WpadQuickCheckEnabled(),
-      io_thread->PacHttpsUrlStrippingEnabled());
-  transport_security_state_.reset(new net::TransportSecurityState());
-  base::SequencedWorkerPool* pool = BrowserThread::GetBlockingPool();
-  transport_security_persister_.reset(
-      new net::TransportSecurityPersister(
-          transport_security_state_.get(),
-          profile_params_->path,
-          pool->GetSequencedTaskRunnerWithShutdownBehavior(
-              pool->GetSequenceToken(),
-              base::SequencedWorkerPool::BLOCK_SHUTDOWN),
-          IsOffTheRecord()));
-
-  certificate_report_sender_.reset(new net::ReportSender(
-      main_request_context_.get(), net::ReportSender::DO_NOT_SEND_COOKIES));
-  transport_security_state_->SetReportSender(certificate_report_sender_.get());
-
-  expect_ct_reporter_.reset(
-      new ChromeExpectCTReporter(main_request_context_.get()));
-  transport_security_state_->SetExpectCTReporter(expect_ct_reporter_.get());
-
-  transport_security_state_->SetRequireCTDelegate(
-      ct_policy_manager_->GetDelegate());
+  account_consistency_ = profile_params_->account_consistency;
 
   // Take ownership over these parameters.
   cookie_settings_ = profile_params_->cookie_settings;
   host_content_settings_map_ = profile_params_->host_content_settings_map;
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   extension_info_map_ = profile_params_->extension_info_map;
-#endif
-
-  resource_context_->host_resolver_ = io_thread_globals->host_resolver.get();
-  resource_context_->request_context_ = main_request_context_.get();
-
-  if (profile_params_->resource_prefetch_predictor_observer_) {
-    resource_prefetch_predictor_observer_.reset(
-        profile_params_->resource_prefetch_predictor_observer_.release());
-  }
-
-#if defined(ENABLE_SUPERVISED_USERS)
-  supervised_user_url_filter_ = profile_params_->supervised_user_url_filter;
 #endif
 
 #if defined(OS_CHROMEOS)
   username_hash_ = profile_params_->username_hash;
-  use_system_key_slot_ = profile_params_->use_system_key_slot;
-  if (use_system_key_slot_)
+  system_key_slot_use_type_ = profile_params_->system_key_slot_use_type;
+  // If we're using the system slot for certificate management, we also must
+  // have access to the user's slots.
+  DCHECK(!(username_hash_.empty() &&
+           system_key_slot_use_type_ ==
+               SystemKeySlotUseType::kUseForClientAuthAndCertManagement));
+  if (system_key_slot_use_type_ ==
+      SystemKeySlotUseType::kUseForClientAuthAndCertManagement) {
     EnableNSSSystemKeySlotForResourceContext(resource_context_.get());
+  }
 
   certificate_provider_ = std::move(profile_params_->certificate_provider);
 #endif
 
-  if (g_cert_verifier_for_testing) {
-    main_request_context_->set_cert_verifier(g_cert_verifier_for_testing);
+  if (base::FeatureList::IsEnabled(network::features::kNetworkService)) {
+    // Do nothing, |main_request_context_| should never be accessed.
   } else {
-#if defined(OS_CHROMEOS)
-    crypto::ScopedPK11Slot public_slot =
-        crypto::GetPublicSlotForChromeOSUser(username_hash_);
-    // The private slot won't be ready by this point. It shouldn't be necessary
-    // for cert trust purposes anyway.
-    scoped_refptr<net::CertVerifyProc> verify_proc(
-        new chromeos::CertVerifyProcChromeOS(std::move(public_slot)));
-    if (policy_cert_verifier_) {
-      DCHECK_EQ(policy_cert_verifier_, cert_verifier_.get());
-      policy_cert_verifier_->InitializeOnIOThread(verify_proc);
-    } else {
-      cert_verifier_ = base::MakeUnique<net::CachingCertVerifier>(
-          base::MakeUnique<net::MultiThreadedCertVerifier>(verify_proc.get()));
-    }
-    main_request_context_->set_cert_verifier(cert_verifier_.get());
-#else
-    main_request_context_->set_cert_verifier(
-        io_thread_globals->cert_verifier.get());
+    IOThread* const io_thread = profile_params_->io_thread;
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    IOThread::Globals* const io_thread_globals = io_thread->globals();
 #endif
+
+    // Create the main request context.
+    std::unique_ptr<network::URLRequestContextBuilderMojo> builder =
+        std::make_unique<network::URLRequestContextBuilderMojo>();
+
+    std::unique_ptr<ChromeNetworkDelegate> chrome_network_delegate(
+        new ChromeNetworkDelegate(
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+            io_thread_globals->extension_event_router_forwarder.get()));
+#else
+            nullptr));
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    chrome_network_delegate->set_extension_info_map(
+        profile_params_->extension_info_map.get());
+#endif
+
+    chrome_network_delegate->set_profile(profile_params_->profile);
+    chrome_network_delegate->set_profile_path(profile_params_->path);
+    chrome_network_delegate->set_cookie_settings(
+        profile_params_->cookie_settings.get());
+    chrome_network_delegate->set_force_google_safe_search(
+        &force_google_safesearch_);
+
+    chrome_network_delegate_unowned_ = chrome_network_delegate.get();
+
+    std::unique_ptr<net::NetworkDelegate> network_delegate =
+        ConfigureNetworkDelegate(profile_params_->io_thread,
+                                 std::move(chrome_network_delegate));
+
+    builder->set_network_delegate(std::move(network_delegate));
+
+    io_thread->SetUpProxyService(builder.get());
+
+    if (g_cert_verifier_for_profile_io_data_testing) {
+      builder->SetCertVerifier(
+          std::make_unique<WrappedCertVerifierForProfileIODataTesting>());
+    } else {
+      std::unique_ptr<net::CertVerifier> cert_verifier;
+#if defined(OS_CHROMEOS)
+      crypto::ScopedPK11Slot public_slot =
+          crypto::GetPublicSlotForChromeOSUser(username_hash_);
+      // The private slot won't be ready by this point. It shouldn't be
+      // necessary for cert trust purposes anyway.
+      scoped_refptr<net::CertVerifyProc> verify_proc(
+          new network::CertVerifyProcChromeOS(std::move(public_slot)));
+      if (profile_params_->policy_cert_verifier) {
+        profile_params_->policy_cert_verifier->InitializeOnIOThread(
+            verify_proc);
+        cert_verifier = std::move(profile_params_->policy_cert_verifier);
+      } else {
+        cert_verifier = std::make_unique<net::CachingCertVerifier>(
+            std::make_unique<net::MultiThreadedCertVerifier>(
+                verify_proc.get()));
+      }
+#elif BUILDFLAG(TRIAL_COMPARISON_CERT_VERIFIER_SUPPORTED)
+      auto& trial_params = profile_params_->main_network_context_params
+                               ->trial_comparison_cert_verifier_params;
+      if (trial_params) {
+        cert_verifier = std::make_unique<net::CachingCertVerifier>(
+            std::make_unique<network::TrialComparisonCertVerifierMojo>(
+                trial_params->initial_allowed,
+                std::move(trial_params->config_client_request),
+                std::move(trial_params->report_client),
+                net::CertVerifyProc::CreateDefault(),
+                net::CreateCertVerifyProcBuiltin()));
+      }
+#endif
+      if (!cert_verifier) {
+        cert_verifier = std::make_unique<net::CachingCertVerifier>(
+            std::make_unique<net::MultiThreadedCertVerifier>(
+                net::CertVerifyProc::CreateDefault()));
+      }
+      const base::CommandLine& command_line =
+          *base::CommandLine::ForCurrentProcess();
+      cert_verifier = network::IgnoreErrorsCertVerifier::MaybeWrapCertVerifier(
+          command_line, switches::kUserDataDir, std::move(cert_verifier));
+      builder->SetCertVerifier(std::move(cert_verifier));
+    }
+
+    // Install the New Tab Page Interceptor.
+    if (profile_params_->new_tab_page_interceptor.get()) {
+      request_interceptors.push_back(
+          std::move(profile_params_->new_tab_page_interceptor));
+    }
+
+    if (data_reduction_proxy_io_data_.get()) {
+      builder->set_shared_proxy_delegate(
+          data_reduction_proxy_io_data_->proxy_delegate());
+    }
+
+    InitializeInternal(builder.get(), profile_params_.get(), protocol_handlers,
+                       std::move(request_interceptors));
+
+    builder->SetCreateHttpTransactionFactoryCallback(
+        base::BindOnce(&content::CreateDevToolsNetworkTransactionFactory));
+
+    main_network_context_ =
+        content::GetNetworkServiceImpl()->CreateNetworkContextWithBuilder(
+            std::move(profile_params_->main_network_context_request),
+            std::move(profile_params_->main_network_context_params),
+            std::move(builder), &main_request_context_);
   }
 
-  // Install the New Tab Page Interceptor.
-  if (profile_params_->new_tab_page_interceptor.get()) {
-    request_interceptors.push_back(
-        profile_params_->new_tab_page_interceptor.release());
-  }
-
-  std::unique_ptr<net::MultiLogCTVerifier> ct_verifier(
-      new net::MultiLogCTVerifier());
-  ct_verifier->AddLogs(io_thread_globals->ct_logs);
-  main_request_context_->set_cert_transparency_verifier(ct_verifier.get());
-
-  ct_tree_tracker_.reset(new certificate_transparency::TreeStateTracker(
-      io_thread_globals->ct_logs));
-  ct_verifier->SetObserver(ct_tree_tracker_.get());
-
-  cert_transparency_verifier_ = std::move(ct_verifier);
-  io_thread->RegisterSTHObserver(ct_tree_tracker_.get());
-  ct_tree_tracker_unregistration_ =
-      base::Bind(&IOThread::UnregisterSTHObserver, base::Unretained(io_thread),
-                 ct_tree_tracker_.get());
-
-  InitializeInternal(std::move(network_delegate), profile_params_.get(),
-                     protocol_handlers, std::move(request_interceptors));
+  OnMainRequestContextCreated(profile_params_.get());
 
   profile_params_.reset();
   initialized_ = true;
-}
-
-void ProfileIOData::ApplyProfileParamsToContext(
-    net::URLRequestContext* context) const {
-  context->set_http_user_agent_settings(
-      chrome_http_user_agent_settings_.get());
-  context->set_ssl_config_service(profile_params_->ssl_config_service.get());
 }
 
 std::unique_ptr<net::URLRequestJobFactory>
@@ -1197,18 +1038,18 @@ ProfileIOData::SetUpJobFactoryDefaults(
     std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
         protocol_handler_interceptor,
     net::NetworkDelegate* network_delegate,
-    net::FtpTransactionFactory* ftp_transaction_factory) const {
+    net::HostResolver* host_resolver) const {
   // NOTE(willchan): Keep these protocol handlers in sync with
   // ProfileIOData::IsHandledProtocol().
   bool set_protocol = job_factory->SetProtocolHandler(
       url::kFileScheme,
-      base::WrapUnique(new net::FileProtocolHandler(
-          content::BrowserThread::GetBlockingPool()
-              ->GetTaskRunnerWithShutdownBehavior(
-                  base::SequencedWorkerPool::SKIP_ON_SHUTDOWN))));
+      std::make_unique<net::FileProtocolHandler>(
+          base::CreateTaskRunnerWithTraits(
+              {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+               base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})));
   DCHECK(set_protocol);
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   DCHECK(extension_info_map_.get());
   // Check only for incognito (and not Chrome OS guest mode GUEST_PROFILE).
   bool is_incognito = profile_type() == Profile::INCOGNITO_PROFILE;
@@ -1217,57 +1058,45 @@ ProfileIOData::SetUpJobFactoryDefaults(
       extensions::CreateExtensionProtocolHandler(is_incognito,
                                                  extension_info_map_.get()));
   DCHECK(set_protocol);
-  set_protocol = job_factory->SetProtocolHandler(
-      extensions::kExtensionResourceScheme,
-      CreateExtensionResourceProtocolHandler());
-  DCHECK(set_protocol);
 #endif
   set_protocol = job_factory->SetProtocolHandler(
-      url::kDataScheme, base::WrapUnique(new net::DataProtocolHandler()));
+      url::kDataScheme, std::make_unique<net::DataProtocolHandler>());
   DCHECK(set_protocol);
 #if defined(OS_CHROMEOS)
   if (profile_params_) {
     set_protocol = job_factory->SetProtocolHandler(
         content::kExternalFileScheme,
-        base::WrapUnique(new chromeos::ExternalFileProtocolHandler(
-            profile_params_->profile)));
+        std::make_unique<chromeos::ExternalFileProtocolHandler>(
+            profile_params_->profile));
     DCHECK(set_protocol);
   }
 #endif  // defined(OS_CHROMEOS)
 #if defined(OS_ANDROID)
   set_protocol = job_factory->SetProtocolHandler(
       url::kContentScheme,
-      content::ContentProtocolHandler::Create(
-          content::BrowserThread::GetBlockingPool()
-              ->GetTaskRunnerWithShutdownBehavior(
-                  base::SequencedWorkerPool::SKIP_ON_SHUTDOWN)));
+      content::ContentProtocolHandler::Create(base::CreateTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})));
 #endif
 
   job_factory->SetProtocolHandler(
       url::kAboutScheme,
-      base::WrapUnique(new about_handler::AboutProtocolHandler()));
-#if !defined(DISABLE_FTP_SUPPORT)
-  DCHECK(ftp_transaction_factory);
-  job_factory->SetProtocolHandler(
-      url::kFtpScheme,
-      base::WrapUnique(new net::FtpProtocolHandler(ftp_transaction_factory)));
-#endif  // !defined(DISABLE_FTP_SUPPORT)
+      std::make_unique<about_handler::AboutProtocolHandler>());
 
-#if defined(DEBUG_DEVTOOLS)
-  request_interceptors.push_back(new DebugDevToolsInterceptor);
-#endif
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
+  job_factory->SetProtocolHandler(
+      url::kFtpScheme, net::FtpProtocolHandler::Create(host_resolver));
+#endif  // !BUILDFLAG(DISABLE_FTP_SUPPORT)
 
   // Set up interceptors in the reverse order.
   std::unique_ptr<net::URLRequestJobFactory> top_job_factory =
       std::move(job_factory);
-  for (content::URLRequestInterceptorScopedVector::reverse_iterator i =
-           request_interceptors.rbegin();
-       i != request_interceptors.rend();
+  for (auto i = request_interceptors.rbegin(); i != request_interceptors.rend();
        ++i) {
     top_job_factory.reset(new net::URLRequestInterceptingJobFactory(
-        std::move(top_job_factory), base::WrapUnique(*i)));
+        std::move(top_job_factory), std::move(*i)));
   }
-  request_interceptors.weak_clear();
+  request_interceptors.clear();
 
   if (protocol_handler_interceptor) {
     protocol_handler_interceptor->Chain(std::move(top_job_factory));
@@ -1277,38 +1106,79 @@ ProfileIOData::SetUpJobFactoryDefaults(
   }
 }
 
+void ProfileIOData::SetUpJobFactoryDefaultsForBuilder(
+    net::URLRequestContextBuilder* builder,
+    content::URLRequestInterceptorScopedVector request_interceptors,
+    std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
+        protocol_handler_interceptor) const {
+// NOTE(willchan): Keep these protocol handlers in sync with
+// ProfileIOData::IsHandledProtocol().
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  DCHECK(extension_info_map_.get());
+  // Check only for incognito (and not Chrome OS guest mode GUEST_PROFILE).
+  bool is_incognito = profile_type() == Profile::INCOGNITO_PROFILE;
+  builder->SetProtocolHandler(extensions::kExtensionScheme,
+                              extensions::CreateExtensionProtocolHandler(
+                                  is_incognito, extension_info_map_.get()));
+#endif
+#if defined(OS_CHROMEOS)
+  if (profile_params_) {
+    builder->SetProtocolHandler(
+        content::kExternalFileScheme,
+        std::make_unique<chromeos::ExternalFileProtocolHandler>(
+            profile_params_->profile));
+  }
+#endif  // defined(OS_CHROMEOS)
+#if defined(OS_ANDROID)
+  builder->SetProtocolHandler(
+      url::kContentScheme,
+      content::ContentProtocolHandler::Create(base::CreateTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})));
+#endif
+
+  builder->SetProtocolHandler(
+      url::kAboutScheme,
+      std::make_unique<about_handler::AboutProtocolHandler>());
+
+  builder->SetInterceptors(std::move(request_interceptors));
+
+  if (protocol_handler_interceptor) {
+    builder->set_create_intercepting_job_factory(base::BindOnce(
+        &CreateURLRequestJobFactory, std::move(protocol_handler_interceptor)));
+  }
+}
+
 void ProfileIOData::ShutdownOnUIThread(
     std::unique_ptr<ChromeURLRequestContextGetterVector> context_getters) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   google_services_user_account_id_.Destroy();
-  enable_referrers_.Destroy();
-  enable_do_not_track_.Destroy();
+  sync_suppress_start_.Destroy();
+  sync_first_setup_complete_.Destroy();
+#if !defined(OS_CHROMEOS)
+  signin_scoped_device_id_.Destroy();
+#endif
   force_google_safesearch_.Destroy();
-  force_youtube_safety_mode_.Destroy();
+  force_youtube_restrict_.Destroy();
   allowed_domains_for_apps_.Destroy();
-  enable_metrics_.Destroy();
   safe_browsing_enabled_.Destroy();
-  sync_disabled_.Destroy();
-  signin_allowed_.Destroy();
+  safe_browsing_whitelist_domains_.Destroy();
   network_prediction_options_.Destroy();
-  if (media_device_id_salt_.get())
-    media_device_id_salt_->ShutdownOnUIThread();
-  session_startup_pref_.Destroy();
-  if (url_blacklist_manager_)
-    url_blacklist_manager_->ShutdownOnUIThread();
-  if (ct_policy_manager_)
-    ct_policy_manager_->Shutdown();
-  if (chrome_http_user_agent_settings_)
-    chrome_http_user_agent_settings_->CleanupOnUIThread();
   incognito_availibility_pref_.Destroy();
+#if BUILDFLAG(ENABLE_PLUGINS)
+  always_open_pdf_externally_.Destroy();
+#endif
+#if defined(OS_CHROMEOS)
+  account_consistency_mirror_required_pref_.Destroy();
+#endif
 
   if (!context_getters->empty()) {
-    if (BrowserThread::IsMessageLoopValid(BrowserThread::IO)) {
-      BrowserThread::PostTask(
-          BrowserThread::IO, FROM_HERE,
-          base::Bind(&NotifyContextGettersOfShutdownOnIO,
-              base::Passed(&context_getters)));
+    if (BrowserThread::IsThreadInitialized(BrowserThread::IO)) {
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::IO},
+          base::BindOnce(&NotifyContextGettersOfShutdownOnIO,
+                         std::move(context_getters)));
     }
   }
 
@@ -1317,68 +1187,22 @@ void ProfileIOData::ShutdownOnUIThread(
     delete this;
 }
 
-void ProfileIOData::set_channel_id_service(
-    net::ChannelIDService* channel_id_service) const {
-  channel_id_service_.reset(channel_id_service);
-}
-
 void ProfileIOData::DestroyResourceContext() {
   resource_context_.reset();
-  // Prevent the cert_transparency_observer_ from getting any more
-  // notifications by severing the link between it and the
-  // cert_transparency_verifier_ and unregistering it from new STH
-  // notifications.
-  cert_transparency_verifier_->SetObserver(nullptr);
-  ct_tree_tracker_unregistration_.Run();
-}
-
-std::unique_ptr<net::HttpNetworkSession>
-ProfileIOData::CreateHttpNetworkSession(
-    const ProfileParams& profile_params) const {
-  net::URLRequestContext* context = main_request_context();
-
-  IOThread* const io_thread = profile_params.io_thread;
-
-  net::HttpNetworkSession::Params params(io_thread->NetworkSessionParams());
-  net::URLRequestContextBuilder::SetHttpNetworkSessionComponents(context,
-                                                                 &params);
-  if (!IsOffTheRecord() && io_thread->globals()->network_quality_estimator) {
-    params.socket_performance_watcher_factory =
-        io_thread->globals()
-            ->network_quality_estimator->GetSocketPerformanceWatcherFactory();
-  }
-  if (data_reduction_proxy_io_data_.get())
-    params.proxy_delegate = data_reduction_proxy_io_data_->proxy_delegate();
-
-  return std::unique_ptr<net::HttpNetworkSession>(
-      new net::HttpNetworkSession(params));
-}
-
-std::unique_ptr<net::HttpCache> ProfileIOData::CreateMainHttpFactory(
-    net::HttpNetworkSession* session,
-    std::unique_ptr<net::HttpCache::BackendFactory> main_backend) const {
-  return base::WrapUnique(new net::HttpCache(
-      base::WrapUnique(new DevToolsNetworkTransactionFactory(
-          network_controller_handle_.GetController(), session)),
-      std::move(main_backend), true /* set_up_quic_server_info */));
 }
 
 std::unique_ptr<net::HttpCache> ProfileIOData::CreateHttpFactory(
-    net::HttpNetworkSession* shared_session,
+    net::HttpTransactionFactory* main_http_factory,
     std::unique_ptr<net::HttpCache::BackendFactory> backend) const {
-  return base::WrapUnique(new net::HttpCache(
-      base::WrapUnique(new DevToolsNetworkTransactionFactory(
-          network_controller_handle_.GetController(), shared_session)),
-      std::move(backend), true /* set_up_quic_server_info */));
+  DCHECK(main_http_factory);
+  net::HttpNetworkSession* shared_session = main_http_factory->GetSession();
+  return std::make_unique<net::HttpCache>(
+      content::CreateDevToolsNetworkTransactionFactory(shared_session),
+      std::move(backend), false /* is_main_cache */);
 }
 
-void ProfileIOData::SetCookieSettingsForTesting(
-    content_settings::CookieSettings* cookie_settings) {
-  DCHECK(!cookie_settings_.get());
-  cookie_settings_ = cookie_settings;
-}
-
-policy::URLBlacklist::URLBlacklistState ProfileIOData::GetURLBlacklistState(
-    const GURL& url) const {
-  return url_blacklist_manager_->GetURLBlacklistState(url);
+std::unique_ptr<net::NetworkDelegate> ProfileIOData::ConfigureNetworkDelegate(
+    IOThread* io_thread,
+    std::unique_ptr<ChromeNetworkDelegate> chrome_network_delegate) const {
+  return std::move(chrome_network_delegate);
 }

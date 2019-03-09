@@ -38,8 +38,7 @@ class SyncEngineContext {
       std::unique_ptr<drive::DriveUploaderInterface> drive_uploader,
       TaskLogger* task_logger,
       const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& worker_task_runner,
-      const scoped_refptr<base::SequencedWorkerPool>& worker_pool);
+      const scoped_refptr<base::SequencedTaskRunner>& worker_task_runner);
   ~SyncEngineContext();
 
   void SetMetadataDatabase(std::unique_ptr<MetadataDatabase> metadata_database);
@@ -53,7 +52,6 @@ class SyncEngineContext {
   RemoteChangeProcessor* GetRemoteChangeProcessor();
   base::SingleThreadTaskRunner* GetUITaskRunner();
   base::SequencedTaskRunner* GetWorkerTaskRunner();
-  base::SequencedWorkerPool* GetWorkerPool();
 
   std::unique_ptr<MetadataDatabase> PassMetadataDatabase();
 
@@ -70,7 +68,6 @@ class SyncEngineContext {
   std::unique_ptr<MetadataDatabase> metadata_database_;
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
   scoped_refptr<base::SequencedTaskRunner> worker_task_runner_;
-  scoped_refptr<base::SequencedWorkerPool> worker_pool_;
 
   base::SequenceChecker sequence_checker_;
 

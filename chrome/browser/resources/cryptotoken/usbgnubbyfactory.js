@@ -31,8 +31,8 @@ function UsbGnubbyFactory(gnubbies) {
  * @return {undefined} no open canceller needed for this type of gnubby
  * @override
  */
-UsbGnubbyFactory.prototype.openGnubby =
-    function(which, forEnroll, cb, opt_appIdHash, opt_logMsgUrl, opt_caller) {
+UsbGnubbyFactory.prototype.openGnubby = function(
+    which, forEnroll, cb, opt_appIdHash, opt_logMsgUrl, opt_caller) {
   var gnubby = new Gnubby();
   gnubby.open(which, GnubbyEnumerationTypes.ANY, function(rc) {
     if (rc) {
@@ -61,7 +61,19 @@ UsbGnubbyFactory.prototype.enumerate = function(cb) {
  * @param {FactoryOpenCallback} cb Called with the result of the prerequisite
  *     check. (A non-zero status indicates failure.)
  */
-UsbGnubbyFactory.prototype.notEnrolledPrerequisiteCheck =
-    function(gnubby, appIdHash, cb) {
+UsbGnubbyFactory.prototype.notEnrolledPrerequisiteCheck = function(
+    gnubby, appIdHash, cb) {
+  cb(DeviceStatusCodes.OK_STATUS, gnubby);
+};
+
+/**
+ * No-op post enroll action.
+ * @param {Gnubby} gnubby The just-enrolled gnubby.
+ * @param {string} appIdHash The base64-encoded hash of the app id for which
+ *     the gnubby was enrolled.
+ * @param {FactoryOpenCallback} cb Called with the result of the action.
+ *     (A non-zero status indicates failure.)
+ */
+UsbGnubbyFactory.prototype.postEnrollAction = function(gnubby, appIdHash, cb) {
   cb(DeviceStatusCodes.OK_STATUS, gnubby);
 };

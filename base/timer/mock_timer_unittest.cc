@@ -4,6 +4,8 @@
 
 #include "base/timer/mock_timer.h"
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/macros.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -15,7 +17,7 @@ void CallMeMaybe(int *number) {
 
 TEST(MockTimerTest, FiresOnce) {
   int calls = 0;
-  base::MockTimer timer(false, false);
+  base::MockOneShotTimer timer;
   base::TimeDelta delay = base::TimeDelta::FromSeconds(2);
   timer.Start(FROM_HERE, delay,
               base::Bind(&CallMeMaybe,
@@ -29,7 +31,7 @@ TEST(MockTimerTest, FiresOnce) {
 
 TEST(MockTimerTest, FiresRepeatedly) {
   int calls = 0;
-  base::MockTimer timer(true, true);
+  base::MockRepeatingTimer timer;
   base::TimeDelta delay = base::TimeDelta::FromSeconds(2);
   timer.Start(FROM_HERE, delay,
               base::Bind(&CallMeMaybe,
@@ -44,7 +46,7 @@ TEST(MockTimerTest, FiresRepeatedly) {
 
 TEST(MockTimerTest, Stops) {
   int calls = 0;
-  base::MockTimer timer(true, true);
+  base::MockRepeatingTimer timer;
   base::TimeDelta delay = base::TimeDelta::FromSeconds(2);
   timer.Start(FROM_HERE, delay,
               base::Bind(&CallMeMaybe,
@@ -56,24 +58,21 @@ TEST(MockTimerTest, Stops) {
 
 class HasWeakPtr : public base::SupportsWeakPtr<HasWeakPtr> {
  public:
-  HasWeakPtr() {}
-  virtual ~HasWeakPtr() {}
+  HasWeakPtr() = default;
+  virtual ~HasWeakPtr() = default;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(HasWeakPtr);
 };
 
-void DoNothingWithWeakPtr(HasWeakPtr* has_weak_ptr) {
-}
-
 TEST(MockTimerTest, DoesNotRetainClosure) {
   HasWeakPtr *has_weak_ptr = new HasWeakPtr();
   base::WeakPtr<HasWeakPtr> weak_ptr(has_weak_ptr->AsWeakPtr());
-  base::MockTimer timer(false, false);
+  base::MockOneShotTimer timer;
   base::TimeDelta delay = base::TimeDelta::FromSeconds(2);
   ASSERT_TRUE(weak_ptr.get());
   timer.Start(FROM_HERE, delay,
-              base::Bind(&DoNothingWithWeakPtr,
+              base::Bind(base::DoNothing::Repeatedly<HasWeakPtr*>(),
                          base::Owned(has_weak_ptr)));
   ASSERT_TRUE(weak_ptr.get());
   timer.Fire();

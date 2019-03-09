@@ -12,7 +12,6 @@
 #include <string>
 #include <vector>
 
-#include "base/gtest_prod_util.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/macros.h"
 #include "ui/gfx/gfx_export.h"
@@ -32,11 +31,14 @@ class GFX_EXPORT RenderTextMac : public RenderText {
 
   // RenderText:
   std::unique_ptr<RenderText> CreateInstanceOfSameType() const override;
+  void SetFontList(const FontList& font_list) override;
   bool MultilineSupported() const override;
   const base::string16& GetDisplayText() override;
   Size GetStringSize() override;
   SizeF GetStringSizeF() override;
-  SelectionModel FindCursorPosition(const Point& point) override;
+  SelectionModel FindCursorPosition(const Point& point,
+                                    const Point& drag_origin) override;
+  bool IsSelectionSupported() const override;
   std::vector<FontSpan> GetFontSpansForTesting() override;
 
  protected:
@@ -48,7 +50,7 @@ class GFX_EXPORT RenderTextMac : public RenderText {
   SelectionModel AdjacentWordSelectionModel(
       const SelectionModel& selection,
       VisualCursorDirection direction) override;
-  Range GetGlyphBounds(size_t index) override;
+  Range GetCursorSpan(const Range& text_range) override;
   std::vector<Rect> GetSubstringBounds(const Range& range) override;
   size_t TextIndexToDisplayIndex(size_t index) override;
   size_t DisplayIndexToTextIndex(size_t index) override;
@@ -60,7 +62,7 @@ class GFX_EXPORT RenderTextMac : public RenderText {
   void DrawVisualText(internal::SkiaTextRenderer* renderer) override;
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(RenderTextTest, Mac_ElidedText);
+  friend class RenderTextMacTest;
 
   struct TextRun {
     CTRunRef ct_run;
@@ -73,7 +75,6 @@ class GFX_EXPORT RenderTextMac : public RenderText {
     SkColor foreground;
     bool underline;
     bool strike;
-    bool diagonal_strike;
 
     TextRun();
     TextRun(const TextRun& other) = delete;
@@ -108,6 +109,10 @@ class GFX_EXPORT RenderTextMac : public RenderText {
 
   // Clears cached style. Doesn't update display text (e.g. eliding).
   void InvalidateStyle();
+
+  // RenderText:
+  bool GetDecoratedTextForRange(const Range& range,
+                                DecoratedText* decorated_text) override;
 
   // The Core Text line of text. Created by |EnsureLayout()|.
   base::ScopedCFTypeRef<CTLineRef> line_;

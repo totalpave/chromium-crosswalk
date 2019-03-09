@@ -4,71 +4,147 @@
 
 #import "ios/web/interstitials/web_interstitial_impl.h"
 
+#import <WebKit/WebKit.h>
+
 #include "base/logging.h"
-#include "ios/web/interstitials/web_interstitial_facade_delegate.h"
-#include "ios/web/navigation/crw_session_controller.h"
-#include "ios/web/navigation/navigation_manager_impl.h"
-#include "ios/web/public/interstitials/web_interstitial_delegate.h"
+#include "base/strings/sys_string_conversions.h"
+#import "ios/web/navigation/navigation_manager_impl.h"
+#import "ios/web/public/interstitials/web_interstitial_delegate.h"
 #import "ios/web/public/navigation_manager.h"
-#include "ios/web/web_state/web_state_impl.h"
+#include "ios/web/public/reload_type.h"
+#import "ios/web/public/web_state/ui/crw_web_view_content_view.h"
+#import "ios/web/public/web_view_creation_util.h"
+#import "ios/web/web_state/web_state_impl.h"
+#import "net/base/mac/url_conversions.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
+// The delegate of the web view that is used to display the HTML content.
+// It intercepts JavaScript-triggered commands and forwards them
+// to the interstitial.
+@interface CRWWebInterstitialImplWKWebViewDelegate
+    : NSObject<WKNavigationDelegate>
+// Initializes a CRWWebInterstitialImplWKWebViewDelegate which will
+// forward JavaScript commands from its WKWebView to |interstitial|.
+- (instancetype)initWithInterstitial:(web::WebInterstitialImpl*)interstitial;
+@end
+
+@implementation CRWWebInterstitialImplWKWebViewDelegate {
+  web::WebInterstitialImpl* _interstitial;
+}
+
+- (instancetype)initWithInterstitial:(web::WebInterstitialImpl*)interstitial {
+  self = [super init];
+  if (self)
+    _interstitial = interstitial;
+  return self;
+}
+
+- (BOOL)shouldStartLoadWithRequest:(NSURLRequest*)request {
+  NSString* requestString = request.URL.absoluteString;
+  // If the request is a JavaScript-triggered command, parse it and forward the
+  // command to |interstitial_|.
+  NSString* const kCommandPrefix = @"js-command:";
+  if ([requestString hasPrefix:kCommandPrefix]) {
+    DCHECK(_interstitial);
+    _interstitial->CommandReceivedFromWebView(
+        [requestString substringFromIndex:kCommandPrefix.length]);
+    return NO;
+  }
+  return YES;
+}
+
+#pragma mark -
+#pragma mark WKNavigationDelegate methods
+
+- (void)webView:(WKWebView*)webView
+    decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction
+                    decisionHandler:
+                        (void (^)(WKNavigationActionPolicy))decisionHandler {
+  decisionHandler([self shouldStartLoadWithRequest:navigationAction.request]
+                      ? WKNavigationActionPolicyAllow
+                      : WKNavigationActionPolicyCancel);
+}
+
+@end
 
 namespace web {
 
 // static
-WebInterstitial* WebInterstitial::GetWebInterstitial(web::WebState* web_state) {
-  return web_state->GetWebInterstitial();
+WebInterstitial* WebInterstitial::CreateInterstitial(
+    WebState* web_state,
+    bool new_navigation,
+    const GURL& url,
+    std::unique_ptr<WebInterstitialDelegate> delegate) {
+  WebStateImpl* web_state_impl = static_cast<WebStateImpl*>(web_state);
+  return new WebInterstitialImpl(web_state_impl, new_navigation, url,
+                                 std::move(delegate));
 }
 
-WebInterstitialImpl::WebInterstitialImpl(WebStateImpl* web_state,
-                                         bool new_navigation,
-                                         const GURL& url)
-    : WebStateObserver(web_state),
+WebInterstitialImpl::WebInterstitialImpl(
+    WebStateImpl* web_state,
+    bool new_navigation,
+    const GURL& url,
+    std::unique_ptr<WebInterstitialDelegate> delegate)
+    : web_state_(web_state),
       navigation_manager_(&web_state->GetNavigationManagerImpl()),
       url_(url),
-      facade_delegate_(nullptr),
       new_navigation_(new_navigation),
-      action_taken_(false) {
-  DCHECK(web_state);
+      action_taken_(false),
+      delegate_(std::move(delegate)) {
+  DCHECK(delegate_);
+  web_state_->AddObserver(this);
 }
 
 WebInterstitialImpl::~WebInterstitialImpl() {
   Hide();
-  if (facade_delegate_)
-    facade_delegate_->WebInterstitialDestroyed();
+  if (web_state_) {
+    web_state_->RemoveObserver(this);
+    web_state_ = nullptr;
+  }
+}
+
+CRWContentView* WebInterstitialImpl::GetContentView() const {
+  return content_view_;
 }
 
 const GURL& WebInterstitialImpl::GetUrl() const {
   return url_;
 }
 
-void WebInterstitialImpl::SetFacadeDelegate(
-    WebInterstitialFacadeDelegate* facade_delegate) {
-  facade_delegate_ = facade_delegate;
-}
-
-WebInterstitialFacadeDelegate* WebInterstitialImpl::GetFacadeDelegate() const {
-  return facade_delegate_;
-}
-
 void WebInterstitialImpl::Show() {
-  PrepareForDisplay();
-  GetWebStateImpl()->ShowWebInterstitial(this);
+  if (!content_view_) {
+    web_view_delegate_ = [[CRWWebInterstitialImplWKWebViewDelegate alloc]
+        initWithInterstitial:this];
+    web_view_ = web::BuildWKWebView(CGRectZero, web_state_->GetBrowserState());
+    [web_view_ setNavigationDelegate:web_view_delegate_];
+    [web_view_ setAutoresizingMask:(UIViewAutoresizingFlexibleWidth |
+                                    UIViewAutoresizingFlexibleHeight)];
+    NSString* html = base::SysUTF8ToNSString(delegate_->GetHtmlContents());
+    [web_view_ loadHTMLString:html baseURL:net::NSURLWithGURL(GetUrl())];
+    content_view_ =
+        [[CRWWebViewContentView alloc] initWithWebView:web_view_
+                                            scrollView:[web_view_ scrollView]];
+  }
+
+  web_state_->ShowWebInterstitial(this);
 
   if (new_navigation_) {
-    // TODO(stuartmorgan): Plumb transient entry handling through
-    // NavigationManager, and remove the NavigationManagerImpl and
-    // SessionController usage here.
-    CRWSessionController* sessionController =
-        navigation_manager_->GetSessionController();
-    [sessionController addTransientEntryWithURL:url_];
+    // TODO(crbug.com/706578): Plumb transient entry handling through
+    // NavigationManager, and remove the NavigationManagerImpl usage here.
+    navigation_manager_->AddTransientItem(url_);
 
     // Give delegates a chance to set some states on the navigation item.
-    GetDelegate()->OverrideItem(navigation_manager_->GetTransientItem());
+    delegate_->OverrideItem(navigation_manager_->GetTransientItem());
+
+    web_state_->DidChangeVisibleSecurityState();
   }
 }
 
 void WebInterstitialImpl::Hide() {
-  GetWebStateImpl()->ClearTransientContentView();
+  web_state_->ClearTransientContent();
 }
 
 void WebInterstitialImpl::DontProceed() {
@@ -79,11 +155,12 @@ void WebInterstitialImpl::DontProceed() {
 
   // Clear the pending entry, since that's the page that's not being
   // proceeded to.
-  GetWebStateImpl()->GetNavigationManager()->DiscardNonCommittedItems();
+  web_state_->GetNavigationManager()->DiscardNonCommittedItems();
 
   Hide();
 
-  GetDelegate()->OnDontProceed();
+  delegate_->OnDontProceed();
+
   delete this;
 }
 
@@ -93,16 +170,27 @@ void WebInterstitialImpl::Proceed() {
     return;
   action_taken_ = true;
   Hide();
-  GetDelegate()->OnProceed();
+  delegate_->OnProceed();
   delete this;
 }
 
-void WebInterstitialImpl::WebStateDestroyed() {
+void WebInterstitialImpl::WebStateDestroyed(WebState* web_state) {
+  DCHECK_EQ(web_state_, web_state);
+  // There is no need to remove the current instance from WebState's observer
+  // as DontProceed() delete "this" and the removal is done in the destructor.
+  // In addition since the current instance has been deleted, "this" should no
+  // longer be used after the method call.
   DontProceed();
 }
 
-WebStateImpl* WebInterstitialImpl::GetWebStateImpl() const {
-  return static_cast<web::WebStateImpl*>(web_state());
+void WebInterstitialImpl::CommandReceivedFromWebView(NSString* command) {
+  delegate_->CommandReceived(base::SysNSStringToUTF8(command));
+}
+
+void WebInterstitialImpl::ExecuteJavaScript(
+    NSString* script,
+    JavaScriptResultBlock completion_handler) {
+  web::ExecuteJavaScript(web_view_, script, completion_handler);
 }
 
 }  // namespace web

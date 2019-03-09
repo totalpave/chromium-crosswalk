@@ -9,10 +9,10 @@
 
 #include "base/macros.h"
 #include "content/common/content_export.h"
+#include "content/public/renderer/render_frame.h"
 
 namespace blink {
 class WebPlugin;
-struct WebPluginParams;
 }
 
 namespace gfx {
@@ -73,7 +73,8 @@ class CONTENT_EXPORT PluginInstanceThrottler {
     virtual void OnThrottlerDestroyed() {}
   };
 
-  static std::unique_ptr<PluginInstanceThrottler> Create();
+  static std::unique_ptr<PluginInstanceThrottler> Create(
+      RenderFrame::RecordPeripheralDecision record_decision);
 
   static void RecordUnthrottleMethodMetric(PowerSaverUnthrottleMethod method);
 
@@ -82,8 +83,8 @@ class CONTENT_EXPORT PluginInstanceThrottler {
   virtual void AddObserver(Observer* observer) = 0;
   virtual void RemoveObserver(Observer* observer) = 0;
 
-  virtual bool IsThrottled() const = 0;
-  virtual bool IsHiddenForPlaceholder() const = 0;
+  virtual bool IsThrottled() = 0;
+  virtual bool IsHiddenForPlaceholder() = 0;
 
   // Marks the plugin as essential. Unthrottles the plugin if already throttled.
   virtual void MarkPluginEssential(PowerSaverUnthrottleMethod method) = 0;
@@ -91,10 +92,10 @@ class CONTENT_EXPORT PluginInstanceThrottler {
   // Called by the placeholder when the plugin should temporarily be hidden.
   virtual void SetHiddenForPlaceholder(bool hidden) = 0;
 
-  virtual blink::WebPlugin* GetWebPlugin() const = 0;
+  virtual blink::WebPlugin* GetWebPlugin() = 0;
 
   // Gets the throttler's best estimate of the plugin's visible dimensions.
-  virtual const gfx::Size& GetSize() const = 0;
+  virtual const gfx::Size& GetSize() = 0;
 
   // Throttler needs to know when the plugin audio is throttled, as this may
   // prevent the plugin from generating new frames.

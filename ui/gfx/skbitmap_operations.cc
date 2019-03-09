@@ -24,8 +24,6 @@
 SkBitmap SkBitmapOperations::CreateInvertedBitmap(const SkBitmap& image) {
   DCHECK(image.colorType() == kN32_SkColorType);
 
-  SkAutoLockPixels lock_image(image);
-
   SkBitmap inverted;
   inverted.allocN32Pixels(image.width(), image.height());
 
@@ -60,9 +58,6 @@ SkBitmap SkBitmapOperations::CreateBlendedBitmap(const SkBitmap& first,
     return first;
   else if (alpha > alpha_max)
     return second;
-
-  SkAutoLockPixels lock_first(first);
-  SkAutoLockPixels lock_second(second);
 
   SkBitmap blended;
   blended.allocN32Pixels(first.width(), first.height());
@@ -106,18 +101,14 @@ SkBitmap SkBitmapOperations::CreateMaskedBitmap(const SkBitmap& rgb,
   SkBitmap masked;
   masked.allocN32Pixels(rgb.width(), rgb.height());
 
-  SkAutoLockPixels lock_rgb(rgb);
-  SkAutoLockPixels lock_alpha(alpha);
-  SkAutoLockPixels lock_masked(masked);
-
   for (int y = 0; y < masked.height(); ++y) {
     uint32_t* rgb_row = rgb.getAddr32(0, y);
     uint32_t* alpha_row = alpha.getAddr32(0, y);
     uint32_t* dst_row = masked.getAddr32(0, y);
 
     for (int x = 0; x < masked.width(); ++x) {
-      unsigned alpha = SkGetPackedA32(alpha_row[x]);
-      unsigned scale = SkAlpha255To256(alpha);
+      unsigned alpha32 = SkGetPackedA32(alpha_row[x]);
+      unsigned scale = SkAlpha255To256(alpha32);
       dst_row[x] = SkAlphaMulQ(rgb_row[x], scale);
     }
   }
@@ -129,6 +120,9 @@ SkBitmap SkBitmapOperations::CreateMaskedBitmap(const SkBitmap& rgb,
 SkBitmap SkBitmapOperations::CreateButtonBackground(SkColor color,
                                                     const SkBitmap& image,
                                                     const SkBitmap& mask) {
+  // Despite this assert, it seems like image is actually unpremultiplied.
+  // The math producing dst_row[x] below is a correct SrcOver when
+  // bg_* are premultiplied and img_* are unpremultiplied.
   DCHECK(image.colorType() == kN32_SkColorType);
   DCHECK(mask.colorType() == kN32_SkColorType);
 
@@ -136,13 +130,9 @@ SkBitmap SkBitmapOperations::CreateButtonBackground(SkColor color,
   background.allocN32Pixels(mask.width(), mask.height());
 
   double bg_a = SkColorGetA(color);
-  double bg_r = SkColorGetR(color);
-  double bg_g = SkColorGetG(color);
-  double bg_b = SkColorGetB(color);
-
-  SkAutoLockPixels lock_mask(mask);
-  SkAutoLockPixels lock_image(image);
-  SkAutoLockPixels lock_background(background);
+  double bg_r = SkColorGetR(color) * (bg_a / 255.0);
+  double bg_g = SkColorGetG(color) * (bg_a / 255.0);
+  double bg_b = SkColorGetB(color) * (bg_a / 255.0);
 
   for (int y = 0; y < mask.height(); ++y) {
     uint32_t* dst_row = background.getAddr32(0, y);
@@ -157,12 +147,13 @@ SkBitmap SkBitmapOperations::CreateButtonBackground(SkColor color,
       double img_g = SkColorGetG(image_pixel);
       double img_b = SkColorGetB(image_pixel);
 
-      double img_alpha = static_cast<double>(img_a) / 255.0;
+      double img_alpha = img_a / 255.0;
       double img_inv = 1 - img_alpha;
 
       double mask_a = static_cast<double>(SkColorGetA(mask_row[x])) / 255.0;
 
       dst_row[x] = SkColorSetARGB(
+          // This is pretty weird; why not the usual SrcOver alpha?
           static_cast<int>(std::min(255.0, bg_a + img_a) * mask_a),
           static_cast<int>(((bg_r * img_inv) + (img_r * img_alpha)) * mask_a),
           static_cast<int>(((bg_g * img_inv) + (img_g * img_alpha)) * mask_a),
@@ -514,9 +505,6 @@ SkBitmap SkBitmapOperations::CreateHSLShiftedBitmap(
   SkBitmap shifted;
   shifted.allocN32Pixels(bitmap.width(), bitmap.height());
 
-  SkAutoLockPixels lock_bitmap(bitmap);
-  SkAutoLockPixels lock_shifted(shifted);
-
   // Loop through the pixels of the original bitmap.
   for (int y = 0; y < bitmap.height(); ++y) {
     SkPMColor* pixels = bitmap.getAddr32(0, y);
@@ -536,9 +524,6 @@ SkBitmap SkBitmapOperations::CreateTiledBitmap(const SkBitmap& source,
 
   SkBitmap cropped;
   cropped.allocN32Pixels(dst_w, dst_h);
-
-  SkAutoLockPixels lock_source(source);
-  SkAutoLockPixels lock_cropped(cropped);
 
   // Loop through the pixels of the original bitmap.
   for (int y = 0; y < dst_h; ++y) {
@@ -584,8 +569,6 @@ SkBitmap SkBitmapOperations::DownsampleByTwo(const SkBitmap& bitmap) {
 
   SkBitmap result;
   result.allocN32Pixels((bitmap.width() + 1) / 2, (bitmap.height() + 1) / 2);
-
-  SkAutoLockPixels lock(bitmap);
 
   const int resultLastX = result.width() - 1;
   const int srcLastX = bitmap.width() - 1;
@@ -653,16 +636,12 @@ SkBitmap SkBitmapOperations::UnPreMultiply(const SkBitmap& bitmap) {
   SkBitmap opaque_bitmap;
   opaque_bitmap.allocPixels(opaque_info);
 
-  {
-    SkAutoLockPixels bitmap_lock(bitmap);
-    SkAutoLockPixels opaque_bitmap_lock(opaque_bitmap);
-    for (int y = 0; y < opaque_bitmap.height(); y++) {
-      for (int x = 0; x < opaque_bitmap.width(); x++) {
-        uint32_t src_pixel = *bitmap.getAddr32(x, y);
-        uint32_t* dst_pixel = opaque_bitmap.getAddr32(x, y);
-        SkColor unmultiplied = SkUnPreMultiply::PMColorToColor(src_pixel);
-        *dst_pixel = unmultiplied;
-      }
+  for (int y = 0; y < opaque_bitmap.height(); y++) {
+    for (int x = 0; x < opaque_bitmap.width(); x++) {
+      uint32_t src_pixel = *bitmap.getAddr32(x, y);
+      uint32_t* dst_pixel = opaque_bitmap.getAddr32(x, y);
+      SkColor unmultiplied = SkUnPreMultiply::PMColorToColor(src_pixel);
+      *dst_pixel = unmultiplied;
     }
   }
 
@@ -675,9 +654,6 @@ SkBitmap SkBitmapOperations::CreateTransposedBitmap(const SkBitmap& image) {
 
   SkBitmap transposed;
   transposed.allocN32Pixels(image.height(), image.width());
-
-  SkAutoLockPixels lock_image(image);
-  SkAutoLockPixels lock_transposed(transposed);
 
   for (int y = 0; y < image.height(); ++y) {
     uint32_t* image_row = image.getAddr32(0, y);
@@ -702,8 +678,7 @@ SkBitmap SkBitmapOperations::CreateColorMask(const SkBitmap& bitmap,
   SkCanvas canvas(color_mask);
 
   SkPaint paint;
-  paint.setColorFilter(
-      SkColorFilter::MakeModeFilter(c, SkXfermode::kSrcIn_Mode));
+  paint.setColorFilter(SkColorFilter::MakeModeFilter(c, SkBlendMode::kSrcIn));
   canvas.drawBitmap(bitmap, SkIntToScalar(0), SkIntToScalar(0), &paint);
   return color_mask;
 }

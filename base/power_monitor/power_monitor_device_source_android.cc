@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/power_monitor/power_monitor_device_source_android.h"
-
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_monitor_device_source.h"
 #include "base/power_monitor/power_monitor_source.h"
@@ -18,28 +16,22 @@ void ProcessPowerEventHelper(PowerMonitorSource::PowerEvent event) {
 
 namespace android {
 
-// Native implementation of PowerMonitor.java.
-void OnBatteryChargingChanged(JNIEnv* env, const JavaParamRef<jclass>& clazz) {
+// Native implementation of PowerMonitor.java. Note: This will be invoked by
+// PowerMonitor.java shortly after startup to set the correct initial value for
+// "is on battery power."
+void JNI_PowerMonitor_OnBatteryChargingChanged(JNIEnv* env) {
   ProcessPowerEventHelper(PowerMonitorSource::POWER_STATE_EVENT);
 }
 
-void OnMainActivityResumed(JNIEnv* env, const JavaParamRef<jclass>& clazz) {
-  ProcessPowerEventHelper(PowerMonitorSource::RESUME_EVENT);
-}
-
-void OnMainActivitySuspended(JNIEnv* env, const JavaParamRef<jclass>& clazz) {
-  ProcessPowerEventHelper(PowerMonitorSource::SUSPEND_EVENT);
-}
+// Note: Android does not have the concept of suspend / resume as it's known by
+// other platforms. Thus we do not send Suspend/Resume notifications. See
+// http://crbug.com/644515
 
 }  // namespace android
 
 bool PowerMonitorDeviceSource::IsOnBatteryPowerImpl() {
   JNIEnv* env = base::android::AttachCurrentThread();
   return base::android::Java_PowerMonitor_isBatteryPower(env);
-}
-
-bool RegisterPowerMonitor(JNIEnv* env) {
-  return base::android::RegisterNativesImpl(env);
 }
 
 }  // namespace base

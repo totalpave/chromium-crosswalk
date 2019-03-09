@@ -14,31 +14,15 @@
 #include "base/values.h"
 #include "net/cert/test_root_certs.h"
 #include "net/cert/x509_certificate.h"
+#include "net/test/cert_test_util.h"
 #include "net/test/python_utils.h"
 #include "net/test/spawned_test_server/base_test_server.h"
 #include "net/test/spawned_test_server/local_test_server.h"
+#include "net/test/test_data_directory.h"
 #include "url/third_party/mozilla/url_parse.h"
 #include "url/url_canon.h"
 
 namespace chromeos {
-
-namespace {
-
-// The root certificate used by net/tools/testserver/minica.py.
-const char kMinicaRootCert[] =
-    "-----BEGIN CERTIFICATE-----\n"
-    "MIIB0TCCATqgAwIBAgIBATANBgkqhkiG9w0BAQUFADAVMRMwEQYDVQQDEwpUZXN0aW5nIENBMB"
-    "4XDTEwMDEwMTA2MDAwMFoXDTMyMTIwMTA2MDAwMFowFTETMBEGA1UEAxMKVGVzdGluZyBDQTCB"
-    "nTANBgkqhkiG9w0BAQEFAAOBiwAwgYcCgYEApxmY8pML/nPQMah/Ez0vN47u7tUqd+RND8n/bw"
-    "f/Msvz2pmd5O1lgyr8sIB/mHh1BlOdJYoM48LHeWdlMJmpA0qbEVqHbDmoxOTtSs0MZAlZRvs5"
-    "7utHoHBNuwGKz0jDocS4lfxAn7SjQKmGsa/EVRmrnspHwwGFx3HGSqXs8H0CAQOjMzAxMBIGA1"
-    "UdEwEB/wQIMAYBAf8CAQAwGwYDVR0gAQEABBEwDzANBgsrBgEEAdZ5AgHODzANBgkqhkiG9w0B"
-    "AQUFAAOBgQA/STb40A6D+93jMfLGQzXc997IsaJZdoPt7tYa8PqGJBL62EiTj+erd/H5pDZx/2"
-    "/bcpOG4m9J56ygwOohbllw2TM+oeEd8syzV6X+1SIPnGI56JRrm3UXcHYx1Rq5loM9WKAiz/Wm"
-    "IWmskljsEQ7+542pq0pkHjs8nuXovSkUYA==\n"
-    "-----END CERTIFICATE-----";
-
-}  // namespace
 
 // A net::LocalTestServer that handles the actual forwarding to another server.
 // Requires that the root certificate used by minica.py be marked as trusted
@@ -66,8 +50,7 @@ ForwardingServer::ForwardingServer(const std::string& ssl_host,
                            SSLOptions(SSLOptions::CERT_AUTO),
                            base::FilePath()),
       ssl_host_(ssl_host),
-      forward_target_(forward_target) {
-}
+      forward_target_(forward_target) {}
 
 bool ForwardingServer::SetPythonPath() const {
   if (!net::LocalTestServer::SetPythonPath())
@@ -84,15 +67,15 @@ bool ForwardingServer::SetPythonPath() const {
 bool ForwardingServer::GetTestServerPath(
     base::FilePath* testserver_path) const {
   base::FilePath source_root_dir;
-  if (!PathService::Get(base::DIR_SOURCE_ROOT, &source_root_dir))
+  if (!base::PathService::Get(base::DIR_SOURCE_ROOT, &source_root_dir))
     return false;
 
   *testserver_path = source_root_dir.Append("chrome")
-                                    .Append("browser")
-                                    .Append("chromeos")
-                                    .Append("login")
-                                    .Append("test")
-                                    .Append("https_forwarder.py");
+                         .Append("browser")
+                         .Append("chromeos")
+                         .Append("login")
+                         .Append("test")
+                         .Append("https_forwarder.py");
   return true;
 }
 
@@ -100,7 +83,7 @@ bool ForwardingServer::GenerateAdditionalArguments(
     base::DictionaryValue* arguments) const {
   base::FilePath source_root_dir;
   if (!net::LocalTestServer::GenerateAdditionalArguments(arguments) ||
-      !PathService::Get(base::DIR_SOURCE_ROOT, &source_root_dir))
+      !base::PathService::Get(base::DIR_SOURCE_ROOT, &source_root_dir))
     return false;
 
   arguments->SetString("ssl-host", ssl_host_);
@@ -109,11 +92,9 @@ bool ForwardingServer::GenerateAdditionalArguments(
   return true;
 }
 
-HTTPSForwarder::HTTPSForwarder() {
-}
+HTTPSForwarder::HTTPSForwarder() {}
 
-HTTPSForwarder::~HTTPSForwarder() {
-}
+HTTPSForwarder::~HTTPSForwarder() {}
 
 GURL HTTPSForwarder::GetURLForSSLHost(const std::string& path) const {
   CHECK(forwarding_server_);
@@ -124,19 +105,15 @@ GURL HTTPSForwarder::GetURLForSSLHost(const std::string& path) const {
 
 bool HTTPSForwarder::Initialize(const std::string& ssl_host,
                                 const GURL& forward_target) {
-  // Mark the root certificate used by minica.py as trusted. This will be used
-  // by the Python part of the HTTPSForwarder to generate a certificate for
-  // |ssl_host_|.
-  net::TestRootCerts* root_certs = net::TestRootCerts::GetInstance();
-  if (!root_certs)
+  // Mark the root certificate used by minica.py as trusted. It will remain
+  // trusted for as long as the HTTPSForwarder object exists. This root cert
+  // will be used by the Python part of the HTTPSForwarder to generate a
+  // certificate for |ssl_host_|.
+  scoped_refptr<net::X509Certificate> root_cert = net::ImportCertFromFile(
+      net::GetTestCertsDirectory(), "ocsp-test-root.pem");
+  if (!root_cert)
     return false;
-  net::CertificateList certs =
-      net::X509Certificate::CreateCertificateListFromBytes(
-          kMinicaRootCert, strlen(kMinicaRootCert),
-          net::X509Certificate::FORMAT_AUTO);
-  if (certs.size() != 1)
-    return false;
-  root_certs->Add(certs.front().get());
+  test_root_.reset(new net::ScopedTestRoot(root_cert.get()));
 
   ssl_host_ = ssl_host;
   forwarding_server_.reset(new ForwardingServer(ssl_host, forward_target));

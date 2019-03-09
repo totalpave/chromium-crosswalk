@@ -5,7 +5,10 @@
 #include "chromeos/dbus/blocking_method_caller.h"
 
 #include <memory>
+#include <string>
+#include <utility>
 
+#include "base/callback.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/task_runner.h"
@@ -26,16 +29,16 @@ namespace {
 
 class FakeTaskRunner : public base::TaskRunner {
  public:
-  bool PostDelayedTask(const tracked_objects::Location& from_here,
-                       const base::Closure& task,
+  bool PostDelayedTask(const base::Location& from_here,
+                       base::OnceClosure task,
                        base::TimeDelta delay) override {
-    task.Run();
+    std::move(task).Run();
     return true;
   }
-  bool RunsTasksOnCurrentThread() const override { return true; }
+  bool RunsTasksInCurrentSequence() const override { return true; }
 
  protected:
-  ~FakeTaskRunner() override {}
+  ~FakeTaskRunner() override = default;
 };
 
 }  // namespace
@@ -59,9 +62,10 @@ class BlockingMethodCallerTest : public testing::Test {
 
     // Set an expectation so mock_proxy's CallMethodAndBlock() will use
     // CreateMockProxyResponse() to return responses.
-    EXPECT_CALL(*mock_proxy_.get(), MockCallMethodAndBlock(_, _))
+    EXPECT_CALL(*mock_proxy_.get(),
+                CallMethodAndBlockWithErrorDetails(_, _, _))
         .WillRepeatedly(
-             Invoke(this, &BlockingMethodCallerTest::CreateMockProxyResponse));
+            Invoke(this, &BlockingMethodCallerTest::CreateMockProxyResponse));
 
     // Set an expectation so mock_bus's GetObjectProxy() for the given
     // service name and the object path will return mock_proxy_.
@@ -89,8 +93,10 @@ class BlockingMethodCallerTest : public testing::Test {
  private:
   // Returns a response for the given method call. Used to implement
   // CallMethodAndBlock() for |mock_proxy_|.
-  dbus::Response* CreateMockProxyResponse(dbus::MethodCall* method_call,
-                                          int timeout_ms) {
+  std::unique_ptr<dbus::Response> CreateMockProxyResponse(
+      dbus::MethodCall* method_call,
+      int timeout_ms,
+      dbus::ScopedDBusError* error) {
     if (method_call->GetInterface() == "org.chromium.TestInterface" &&
         method_call->GetMember() == "Echo") {
       dbus::MessageReader reader(method_call);
@@ -100,12 +106,12 @@ class BlockingMethodCallerTest : public testing::Test {
             dbus::Response::CreateEmpty();
         dbus::MessageWriter writer(response.get());
         writer.AppendString(text_message);
-        return response.release();
+        return response;
       }
     }
 
     LOG(ERROR) << "Unexpected method call: " << method_call->ToString();
-    return NULL;
+    return nullptr;
   }
 };
 

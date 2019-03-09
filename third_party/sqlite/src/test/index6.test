@@ -65,12 +65,15 @@ do_test index6-1.5 {
   catchsql {
     CREATE INDEX bad1 ON t1(a,b) WHERE a!=random();
   }
-} {1 {functions prohibited in partial index WHERE clauses}}
+} {1 {non-deterministic functions prohibited in partial index WHERE clauses}}
 do_test index6-1.6 {
   catchsql {
     CREATE INDEX bad1 ON t1(a,b) WHERE a NOT LIKE 'abc%';
   }
-} {1 {functions prohibited in partial index WHERE clauses}}
+} {0 {}}
+do_execsql_test index6-1.7 {
+  DROP INDEX IF EXISTS bad1;
+}
 
 do_test index6-1.10 {
   execsql {
@@ -315,15 +318,16 @@ do_execsql_test index6-8.0 {
 do_eqp_test index6-8.1 {
   SELECT * FROM t8a LEFT JOIN t8b ON (x = 'value' AND y = a)
 } {
-  0 0 0 {SCAN TABLE t8a} 
-  0 1 1 {SEARCH TABLE t8b USING INDEX i8c (y=?)}
+  QUERY PLAN
+  |--SCAN TABLE t8a
+  `--SEARCH TABLE t8b USING INDEX i8c (y=?)
 }
 
 do_execsql_test index6-8.2 {
   SELECT * FROM t8a LEFT JOIN t8b ON (x = 'value' AND y = a)
 } {
-  1 one value 1 
-  2 two {} {} 
+  1 one value 1
+  2 two {} {}
   3 three value 3
 }
 
@@ -376,4 +380,34 @@ do_execsql_test index6-10.3eqp {
   SELECT e FROM t10 WHERE a=1 AND b=2 ORDER BY d DESC;
 } {~/USING INDEX t10x/}
 
+# A partial index will be used for a full table scan, where possible
+do_execsql_test index6-11.1 {
+  CREATE TABLE t11(a,b,c);
+  CREATE INDEX t11x ON t11(a) WHERE b<>99;
+  EXPLAIN QUERY PLAN SELECT a FROM t11 WHERE b<>99;
+} {/USING INDEX t11x/}
+do_execsql_test index6-11.2 {
+  EXPLAIN QUERY PLAN SELECT a FROM t11 WHERE b<>99 AND c<>98;
+} {/USING INDEX t11x/}
+
+# 2018-12-08
+# Ticket https://www.sqlite.org/src/info/1d958d90596593a7
+# NOT IN operator fails when using a partial index.
+#
+do_execsql_test index6-12.1 {
+  DROP TABLE IF EXISTS t1;
+  DROP TABLE IF EXISTS t2;
+  CREATE TABLE t1(a,b);
+  INSERT INTO t1 VALUES(1,1);
+  INSERT INTO t1 VALUES(2,2);
+  CREATE TABLE t2(x);
+  INSERT INTO t2 VALUES(1);
+  INSERT INTO t2 VALUES(2);
+  SELECT 'one', * FROM t2 WHERE x NOT IN (SELECT a FROM t1);
+  CREATE INDEX t1a ON t1(a) WHERE b=1;
+  SELECT 'two', * FROM t2 WHERE x NOT IN (SELECT a FROM t1);
+} {}
+do_execsql_test index6-12.2 {
+  SELECT x FROM t2 WHERE x IN (SELECT a FROM t1) ORDER BY +x;
+} {1 2}
 finish_test

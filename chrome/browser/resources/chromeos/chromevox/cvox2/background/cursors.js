@@ -12,8 +12,10 @@ goog.provide('cursors.Movement');
 goog.provide('cursors.Range');
 goog.provide('cursors.Unit');
 
+goog.require('AncestryRecoveryStrategy');
 goog.require('AutomationPredicate');
 goog.require('AutomationUtil');
+goog.require('RecoveryStrategy');
 goog.require('StringUtil');
 goog.require('constants');
 
@@ -34,13 +36,16 @@ cursors.Unit = {
   /** A range of characters (given by attributes on automation nodes). */
   WORD: 'word',
 
+  /** A text node. */
+  TEXT: 'text',
+
   /** A leaf node. */
   NODE: 'node',
 
-  /** A leaf DOM-node. */
-  DOM_NODE: 'dom_node',
-
-  /** Formed by a set of leaf nodes that are inline. */
+  /**
+   * A node or in line textbox that immediately precedes or follows a visual
+   *     line break.
+   */
   LINE: 'line'
 };
 
@@ -61,6 +66,7 @@ var AutomationNode = chrome.automation.AutomationNode;
 var Dir = constants.Dir;
 var Movement = cursors.Movement;
 var RoleType = chrome.automation.RoleType;
+var StateType = chrome.automation.StateType;
 var Unit = cursors.Unit;
 
 /**
@@ -72,17 +78,32 @@ var Unit = cursors.Unit;
  * is pointed to and covers the case where the accessible text is empty.
  */
 cursors.Cursor = function(node, index) {
+  // Compensate for specific issues in Blink.
+  // TODO(dtseng): Pass through affinity; if upstream, skip below.
+  if (node.role == RoleType.STATIC_TEXT && node.name.length == index) {
+    // Re-interpret this case as the beginning of the next node.
+    var nextNode = AutomationUtil.findNextNode(
+        node, Dir.FORWARD, AutomationPredicate.leafOrStaticText);
+
+    // The exception is when a user types at the end of a line. In that case,
+    // staying on the current node is appropriate.
+    if (node && node.nextOnLine && node.nextOnLine.role && nextNode) {
+      node = nextNode;
+      index = 0;
+    }
+  } else if (
+      node.role == RoleType.GENERIC_CONTAINER && node.state.richlyEditable &&
+      (node.firstChild &&
+       (node.firstChild.role == RoleType.LINE_BREAK ||
+        node.firstChild.role == RoleType.STATIC_TEXT))) {
+    // Re-interpret this case as pointing to the text under the div.
+    node = node.find({role: RoleType.INLINE_TEXT_BOX}) || node;
+  }
+
   /** @type {number} @private */
   this.index_ = index;
-  /** @type {Array<AutomationNode>} @private */
-  this.ancestry_ = [];
-  var nodeWalker = node;
-  while (nodeWalker) {
-    this.ancestry_.push(nodeWalker);
-    nodeWalker = nodeWalker.parent;
-    if (nodeWalker && AutomationPredicate.root(nodeWalker))
-      break;
-  }
+  /** @type {RecoveryStrategy} */
+  this.recovery_ = new TreePathRecoveryStrategy(node);
 };
 
 /**
@@ -97,12 +118,53 @@ cursors.Cursor.fromNode = function(node) {
 cursors.Cursor.prototype = {
   /**
    * Returns true if |rhs| is equal to this cursor.
+   * Use this for strict equality between cursors.
    * @param {!cursors.Cursor} rhs
    * @return {boolean}
    */
   equals: function(rhs) {
-    return this.node === rhs.node &&
-        this.index === rhs.index;
+    return this.node === rhs.node && this.index === rhs.index;
+  },
+
+  /**
+   * Returns true if |rhs| is equal to this cursor.
+   * Use this for loose equality between cursors where specific character-based
+   * indicies do not matter such as when processing node-targeted events.
+   * @param {!cursors.Cursor} rhs
+   * @return {boolean}
+   */
+  contentEquals: function(rhs) {
+    // First, normalize the two nodes so they both point to the first non-text
+    // node.
+    var lNode = this.node;
+    var rNode = rhs.node;
+    while (lNode &&
+           (lNode.role == RoleType.INLINE_TEXT_BOX ||
+            lNode.role == RoleType.STATIC_TEXT))
+      lNode = lNode.parent;
+    while (rNode &&
+           (rNode.role == RoleType.INLINE_TEXT_BOX ||
+            rNode.role == RoleType.STATIC_TEXT))
+      rNode = rNode.parent;
+
+    // Ignore indicies for now.
+
+    return lNode === rNode && lNode != undefined;
+  },
+
+  /**
+   * Compares this cursor with |rhs|.
+   * @param {cursors.Cursor} rhs
+   * @return Dir.BACKWARD if |rhs| comes before this cursor in
+   * document order. Forward otherwise.
+   */
+  compare: function(rhs) {
+    if (!this.node || !rhs.node)
+      return Dir.FORWARD;
+
+    if (rhs.node == this.node)
+      return rhs.index < this.index ? Dir.BACKWARD : Dir.FORWARD;
+    return AutomationUtil.getDirection(this.node, rhs.node);
   },
 
   /**
@@ -111,16 +173,11 @@ cursors.Cursor.prototype = {
    * @return {AutomationNode}
    */
   get node() {
-    for (var i = 0; i < this.ancestry_.length; i++) {
-      var firstValidNode = this.ancestry_[i];
-      if (firstValidNode != null && firstValidNode.role !== undefined &&
-          firstValidNode.root !== undefined) {
-        return firstValidNode;
-      }
-      // If we have to walk up to an ancestor, reset the index to NODE_INDEX.
+    if (this.recovery_.requiresRecovery()) {
+      // If we need to recover, the index is no longer valid.
       this.index_ = cursors.NODE_INDEX;
     }
-    return null;
+    return this.recovery_.node;
   },
 
   /**
@@ -130,40 +187,99 @@ cursors.Cursor.prototype = {
     return this.index_;
   },
 
+
   /**
-   * An index appropriate for making selections.
+   * A node appropriate for making selections.
+   * @return {AutomationNode}
+   * @private
+   */
+  get selectionNode_() {
+    var adjustedNode = this.node;
+    if (!adjustedNode)
+      return null;
+
+    // Make no adjustments if we're within non-rich editable content.
+    if (adjustedNode.state[StateType.EDITABLE] &&
+        !adjustedNode.state[StateType.RICHLY_EDITABLE])
+      return adjustedNode;
+
+    // Selections over line break nodes are broken.
+    var parent = adjustedNode.parent;
+    var grandparent = parent && parent.parent;
+    if (parent && parent.role == RoleType.LINE_BREAK) {
+      adjustedNode = grandparent;
+    } else if (grandparent && grandparent.role == RoleType.LINE_BREAK) {
+      adjustedNode = grandparent.parent;
+    } else if (
+        this.index_ == cursors.NODE_INDEX ||
+        adjustedNode.role == RoleType.INLINE_TEXT_BOX ||
+        adjustedNode.nameFrom != chrome.automation.NameFromType.CONTENTS) {
+      // A node offset or unselectable character offset.
+      adjustedNode = parent;
+    } else {
+      // A character offset into content.
+      adjustedNode =
+          adjustedNode.find({role: RoleType.STATIC_TEXT}) || adjustedNode;
+    }
+
+    return adjustedNode || null;
+  },
+
+  /**
+   * An index appropriate for making selections.  If this cursor has a
+   * cursors.NODE_INDEX index, the selection index is a node offset e.g. the
+   * index in parent. If not, the index is a character offset.
    * @return {number}
    * @private
    */
   get selectionIndex_() {
-    if (this.index_ == cursors.NODE_INDEX)
-      return 0;
-
     var adjustedIndex = this.index_;
 
-    if (this.node.role == RoleType.inlineTextBox) {
+    if (!this.node)
+      return -1;
+
+    if (this.node.state[StateType.EDITABLE]) {
+      if (!this.node.state[StateType.RICHLY_EDITABLE])
+        return this.index_;
+      return this.index_ == cursors.NODE_INDEX ?
+          (this.node.indexInParent || 0) :
+          this.index_;
+    } else if (
+        this.node.role == RoleType.INLINE_TEXT_BOX &&
+        // Selections under a line break are broken.
+        this.node.parent && this.node.parent.role != RoleType.LINE_BREAK) {
+      if (adjustedIndex == cursors.NODE_INDEX)
+        adjustedIndex = 0;
+
       var sibling = this.node.previousSibling;
       while (sibling) {
         adjustedIndex += sibling.name.length;
         sibling = sibling.previousSibling;
       }
+    } else if (
+        this.index_ == cursors.NODE_INDEX ||
+        this.node.nameFrom != chrome.automation.NameFromType.CONTENTS) {
+      // A node offset or unselectable character offset.
+
+      // The selected node could have been adjusted upwards in the tree.
+      var childOfSelection = this.node;
+      do {
+        adjustedIndex = childOfSelection.indexInParent || 0;
+        childOfSelection = childOfSelection.parent;
+      } while (childOfSelection && childOfSelection != this.selectionNode_);
     }
+    // A character offset into content is the remaining case. It requires no
+    // adjustment.
 
     return adjustedIndex;
   },
 
   /**
    * Gets the accessible text of the node associated with this cursor.
-   *
-   * @param {!AutomationNode=} opt_node Use this node rather than this cursor's
-   * node.
    * @return {string}
    */
-  getText: function(opt_node) {
-    var node = opt_node || this.node;
-    if (node.role === RoleType.textField)
-      return node.value;
-    return node.name || '';
+  getText: function() {
+    return AutomationUtil.getText(this.node);
   },
 
   /**
@@ -182,12 +298,10 @@ cursors.Cursor.prototype = {
     var newNode = originalNode;
     var newIndex = this.index_;
 
-    if ((unit != Unit.NODE || unit != Unit.DOM_NODE) &&
-        newIndex === cursors.NODE_INDEX)
-      newIndex = 0;
-
     switch (unit) {
       case Unit.CHARACTER:
+        if (newIndex === cursors.NODE_INDEX)
+          newIndex = 0;
         // BOUND and DIRECTIONAL are the same for characters.
         var text = this.getText();
         newIndex = dir == Dir.FORWARD ?
@@ -197,9 +311,9 @@ cursors.Cursor.prototype = {
           newNode = AutomationUtil.findNextNode(
               newNode, dir, AutomationPredicate.leafWithText);
           if (newNode) {
-            var newText = this.getText(newNode);
-            newIndex =
-                dir == Dir.FORWARD ? 0 :
+            var newText = AutomationUtil.getText(newNode);
+            newIndex = dir == Dir.FORWARD ?
+                0 :
                 StringUtil.previousCodePointOffset(newText, newText.length);
             newIndex = Math.max(newIndex, 0);
           } else {
@@ -208,15 +322,25 @@ cursors.Cursor.prototype = {
         }
         break;
       case Unit.WORD:
-        if (newNode.role != RoleType.inlineTextBox) {
-          newNode = AutomationUtil.findNextNode(newNode,
-              Dir.FORWARD,
-              AutomationPredicate.inlineTextBox,
-              {skipInitialSubtree: false}) || newNode;
+        // If we're not already on a node with word stops, find the next one.
+        if (!AutomationPredicate.leafWithWordStop(newNode)) {
+          newNode =
+              AutomationUtil.findNextNode(
+                  newNode, Dir.FORWARD, AutomationPredicate.leafWithWordStop,
+                  {skipInitialSubtree: false}) ||
+              newNode;
         }
+
+        // Ensure start position is on or after first word.
+        var firstWordStart = (newNode.wordStarts && newNode.wordStarts.length) ?
+            newNode.wordStarts[0] :
+            0;
+        if (newIndex < firstWordStart)  // Also catches cursors.NODE_INDEX case.
+          newIndex = firstWordStart;
+
         switch (movement) {
           case Movement.BOUND:
-            if (newNode.role == RoleType.inlineTextBox) {
+            if (newNode.role == RoleType.INLINE_TEXT_BOX) {
               var start, end;
               for (var i = 0; i < newNode.wordStarts.length; i++) {
                 if (newIndex >= newNode.wordStarts[i] &&
@@ -229,58 +353,61 @@ cursors.Cursor.prototype = {
               if (goog.isDef(start) && goog.isDef(end))
                 newIndex = dir == Dir.FORWARD ? end : start;
             } else {
-              // TODO(dtseng): Figure out what to do in this case.
+              newIndex = cursors.NODE_INDEX;
             }
             break;
           case Movement.DIRECTIONAL:
-            if (newNode.role == RoleType.inlineTextBox) {
-              var start, end;
+            var start;
+            if (newNode.role == RoleType.INLINE_TEXT_BOX) {
+              // Go to the next word stop in the same piece of text.
               for (var i = 0; i < newNode.wordStarts.length; i++) {
                 if (newIndex >= newNode.wordStarts[i] &&
                     newIndex <= newNode.wordEnds[i]) {
                   var nextIndex = dir == Dir.FORWARD ? i + 1 : i - 1;
                   start = newNode.wordStarts[nextIndex];
-                  end = newNode.wordEnds[nextIndex];
                   break;
                 }
               }
-              if (goog.isDef(start)) {
-                newIndex = start;
-              } else {
+            }
+            if (goog.isDef(start)) {
+              // Succesfully found the next word stop within the same text node.
+              newIndex = start;
+            } else {
+              // Use adjacent word in adjacent next node in direction |dir|.
+              if (dir == Dir.BACKWARD && newIndex > firstWordStart) {
                 // The backward case is special at the beginning of nodes.
-                if (dir == Dir.BACKWARD && newIndex != 0) {
-                  newIndex = 0;
-                } else {
-                  newNode = AutomationUtil.findNextNode(newNode, dir,
-                      AutomationPredicate.leaf);
-                  if (newNode) {
-                    newIndex = 0;
-                    if (dir == Dir.BACKWARD &&
-                        newNode.role == RoleType.inlineTextBox) {
-                      var starts = newNode.wordStarts;
-                      newIndex = starts[starts.length - 1] || 0;
-                    } else {
-                      // TODO(dtseng): Figure out what to do for general nodes.
+                newIndex = firstWordStart;
+              } else {
+                newNode = AutomationUtil.findNextNode(
+                    newNode, dir, AutomationPredicate.leafWithWordStop);
+                if (newNode) {
+                  if (newNode.role == RoleType.INLINE_TEXT_BOX) {
+                    var starts = newNode.wordStarts;
+                    if (starts.length) {
+                      newIndex = dir == Dir.BACKWARD ?
+                          starts[starts.length - 1] :
+                          starts[0];
                     }
+                  } else {
+                    // For non-text nodes, move by word = by object.
+                    newIndex = cursors.NODE_INDEX;
                   }
                 }
               }
-            } else {
-              // TODO(dtseng): Figure out what to do in this case.
             }
         }
         break;
+      case Unit.TEXT:
       case Unit.NODE:
-      case Unit.DOM_NODE:
         switch (movement) {
           case Movement.BOUND:
             newIndex = dir == Dir.FORWARD ? this.getText().length - 1 : 0;
             break;
           case Movement.DIRECTIONAL:
-            var pred = unit == Unit.NODE ?
-                AutomationPredicate.leaf : AutomationPredicate.object;
-            newNode = AutomationUtil.findNextNode(
-                newNode, dir, pred) || originalNode;
+            var pred = unit == Unit.TEXT ? AutomationPredicate.leaf :
+                                           AutomationPredicate.object;
+            newNode =
+                AutomationUtil.findNextNode(newNode, dir, pred) || originalNode;
             newIndex = cursors.NODE_INDEX;
             break;
         }
@@ -289,18 +416,18 @@ cursors.Cursor.prototype = {
         newIndex = 0;
         switch (movement) {
           case Movement.BOUND:
-            newNode = AutomationUtil.findNodeUntil(newNode, dir,
-                AutomationPredicate.linebreak, true);
+            newNode = AutomationUtil.findNodeUntil(
+                newNode, dir, AutomationPredicate.linebreak, true);
             newNode = newNode || originalNode;
             newIndex =
-                dir == Dir.FORWARD ? this.getText(newNode).length : 0;
+                dir == Dir.FORWARD ? AutomationUtil.getText(newNode).length : 0;
             break;
           case Movement.DIRECTIONAL:
             newNode = AutomationUtil.findNodeUntil(
                 newNode, dir, AutomationPredicate.linebreak);
             break;
-          }
-      break;
+        }
+        break;
       default:
         throw Error('Unrecognized unit: ' + unit);
     }
@@ -310,11 +437,100 @@ cursors.Cursor.prototype = {
   },
 
   /**
+   * Returns the deepest equivalent cursor.
+   * @return {cursors.Cursor}
+   */
+  get deepEquivalent() {
+    var newNode = this.node;
+    var newIndex = this.index_;
+    while (newNode.firstChild) {
+      if (newNode.role == RoleType.STATIC_TEXT) {
+        // Text offset.
+        // Re-interpret the index as an offset into an inlineTextBox.
+        var target = newNode.firstChild;
+        var length = 0;
+        while (target && length < newIndex) {
+          var newLength = length + target.name.length;
+
+          // Either |newIndex| falls between target's text or |newIndex| is the
+          // total length of all sibling text content.
+          if ((length <= newIndex && newIndex < newLength) ||
+              (newIndex == newLength && !target.nextSibling))
+            break;
+          length = newLength;
+          target = target.nextSibling;
+        }
+        if (target) {
+          newNode = target;
+          newIndex = newIndex - length;
+        }
+        break;
+      } else if (
+          newNode.role != RoleType.INLINE_TEXT_BOX &&
+          !newNode.state[StateType.EDITABLE] && newNode.children[newIndex]) {
+        // Valid node offset.
+        newNode = newNode.children[newIndex];
+        newIndex = 0;
+      } else {
+        // This offset is a text offset into the descendant visible
+        // text. Approximate this by indexing into the inline text boxes.
+        var lines = this.getAllLeaves_(newNode);
+        if (!lines.length)
+          break;
+
+        var targetLine, targetIndex = 0;
+        for (var i = 0, line, cur = 0; line = lines[i]; i++) {
+          var lineLength = line.name ? line.name.length : 1;
+          cur += lineLength;
+          if (cur > newIndex) {
+            targetLine = line;
+            if (!line.name)
+              targetIndex = cursors.NODE_INDEX;
+            else
+              targetIndex = newIndex - (cur - lineLength);
+            break;
+          }
+        }
+        if (!targetLine) {
+          // If we got here, that means the index is actually beyond the total
+          // length of text. Just get the last line.
+          targetLine = lines[lines.length - 1];
+          targetIndex =
+              targetLine ? targetLine.name.length : cursors.NODE_INDEX;
+        }
+        newNode = targetLine;
+        newIndex = targetIndex;
+        break;
+      }
+    }
+
+    return new cursors.Cursor(newNode, newIndex);
+  },
+
+  /**
    * Returns whether this cursor points to a valid position.
    * @return {boolean}
    */
   isValid: function() {
     return this.node != null;
+  },
+
+  /**
+   * @private
+   * @param {!AutomationNode} node
+   * @return {!Array<!AutomationNode>}
+   */
+  getAllLeaves_: function(node) {
+    var ret = [];
+    if (!node.firstChild) {
+      ret.push(node);
+      return ret;
+    }
+
+    for (var i = 0; i < node.children.length; i++)
+      ret = ret.concat(this.getAllLeaves_(node.children[i]));
+
+    return ret;
   }
 };
 
@@ -351,8 +567,13 @@ cursors.WrappingCursor.prototype = {
       return this;
 
     // Regular movement.
-    if (!AutomationPredicate.root(this.node) || dir == Dir.FORWARD)
+    if (!AutomationPredicate.root(this.node) || dir == Dir.FORWARD ||
+        movement == Movement.BOUND)
       result = cursors.Cursor.prototype.move.call(this, unit, movement, dir);
+
+    // Moving to the bounds of a unit never wraps.
+    if (movement == Movement.BOUND)
+      return new cursors.WrappingCursor(result.node, result.index);
 
     // There are two cases for wrapping:
     // 1. moving forwards from the last element.
@@ -362,15 +583,36 @@ cursors.WrappingCursor.prototype = {
     // For 2, place range on the root (if not already there). If at root,
     // try to descend to the first leaf-like object.
     if (movement == Movement.DIRECTIONAL && result.equals(this)) {
-      var pred = unit == Unit.DOM_NODE ?
-          AutomationPredicate.object : AutomationPredicate.leaf;
+      var pred = unit == Unit.NODE ? AutomationPredicate.object :
+                                     AutomationPredicate.leaf;
       var endpoint = this.node;
       if (!endpoint)
         return this;
 
+      // Finds any explicitly provided focus.
+      var getDirectedFocus = function(node) {
+        return dir == Dir.FORWARD ? node.nextFocus : node.previousFocus;
+      };
+
       // Case 1: forwards (find the root-like node).
-      while (!AutomationPredicate.root(endpoint) && endpoint.parent)
+      var directedFocus;
+      while (!AutomationPredicate.root(endpoint) && endpoint.parent) {
+        if (directedFocus = getDirectedFocus(endpoint)) {
+          window.last = directedFocus;
+          break;
+        }
         endpoint = endpoint.parent;
+      }
+
+      if (directedFocus) {
+        directedFocus =
+            (dir == Dir.FORWARD ?
+                 AutomationUtil.findNodePre(
+                     directedFocus, dir, AutomationPredicate.object) :
+                 AutomationUtil.findLastNode(directedFocus, pred)) ||
+            directedFocus;
+        return new cursors.WrappingCursor(directedFocus, cursors.NODE_INDEX);
+      }
 
       // Always play a wrap earcon when moving forward.
       var playEarcon = dir == Dir.FORWARD;
@@ -378,11 +620,7 @@ cursors.WrappingCursor.prototype = {
       // Case 2: backward (sync downwards to a leaf), if already on the root.
       if (dir == Dir.BACKWARD && endpoint == this.node) {
         playEarcon = true;
-        endpoint = AutomationUtil.findNodePre(endpoint,
-            dir,
-            function(n) {
-              return pred(n) && !AutomationPredicate.shouldIgnoreNode(n);
-            }) || endpoint;
+        endpoint = AutomationUtil.findLastNode(endpoint, pred) || endpoint;
       }
 
       if (playEarcon)
@@ -419,7 +657,7 @@ cursors.Range.fromNode = function(node) {
   return new cursors.Range(cursor, cursor);
 };
 
- /**
+/**
  * Given |rangeA| and |rangeB| in order, determine which |Dir|
  * relates them.
  * @param {!cursors.Range} rangeA
@@ -430,8 +668,8 @@ cursors.Range.getDirection = function(rangeA, rangeB) {
   if (!rangeA || !rangeB)
     return Dir.FORWARD;
 
-  if (!rangeA.start.node || !rangeA.end.node ||
-      !rangeB.start.node || !rangeB.end.node)
+  if (!rangeA.start.node || !rangeA.end.node || !rangeB.start.node ||
+      !rangeB.end.node)
     return Dir.FORWARD;
 
   // They are the same range.
@@ -440,11 +678,9 @@ cursors.Range.getDirection = function(rangeA, rangeB) {
     return Dir.FORWARD;
 
   var testDirA =
-      AutomationUtil.getDirection(
-          rangeA.start.node, rangeB.end.node);
+      AutomationUtil.getDirection(rangeA.start.node, rangeB.end.node);
   var testDirB =
-      AutomationUtil.getDirection(
-          rangeB.start.node, rangeA.end.node);
+      AutomationUtil.getDirection(rangeB.start.node, rangeA.end.node);
 
   // The two ranges are either partly overlapping or non overlapping.
   if (testDirA == Dir.FORWARD && testDirB == Dir.BACKWARD)
@@ -458,25 +694,32 @@ cursors.Range.getDirection = function(rangeA, rangeB) {
 cursors.Range.prototype = {
   /**
    * Returns true if |rhs| is equal to this range.
+   * Use this for strict equality between ranges.
    * @param {!cursors.Range} rhs
    * @return {boolean}
    */
   equals: function(rhs) {
-    return this.start_.equals(rhs.start) &&
-        this.end_.equals(rhs.end);
+    return this.start_.equals(rhs.start) && this.end_.equals(rhs.end);
   },
 
   /**
-   * Gets a cursor bounding this range.
+   * Returns true if |rhs| is equal to this range.
+   * Use this for loose equality between ranges.
+   * @param {!cursors.Range} rhs
+   * @return {boolean}
+   */
+  contentEquals: function(rhs) {
+    return this.start_.contentEquals(rhs.start) &&
+        this.end_.contentEquals(rhs.end);
+  },
+
+  /**
+   * Gets the directed end cursor of this range.
    * @param {Dir} dir Which endpoint cursor to return; Dir.FORWARD for end,
    * Dir.BACKWARD for start.
-   * @param {boolean=} opt_reverse Specify to have Dir.BACKWARD return end,
-   * Dir.FORWARD return start.
    * @return {!cursors.Cursor}
    */
-  getBound: function(dir, opt_reverse) {
-    if (opt_reverse)
-      return dir == Dir.BACKWARD ? this.end_ : this.start_;
+  getBound: function(dir) {
     return dir == Dir.FORWARD ? this.end_ : this.start_;
   },
 
@@ -499,9 +742,22 @@ cursors.Range.prototype = {
    * @return {boolean}
    */
   isSubNode: function() {
-    return this.start.node === this.end.node &&
-        this.start.index > -1 &&
-        this.end.index > -1;
+    var startIndex = this.start.index;
+    var endIndex = this.end.index;
+    return this.start.node === this.end.node && startIndex != -1 &&
+        endIndex != -1 && startIndex != endIndex &&
+        (startIndex != 0 || endIndex != this.start.getText().length);
+  },
+
+  /**
+   * Returns true if this range covers inline text (i.e. each end points to an
+   * inlineTextBox).
+   * @return {boolean?}
+   */
+  isInlineText: function() {
+    return this.start.node && this.end.node &&
+        this.start.node.role == this.end.node.role &&
+        this.start.node.role == RoleType.INLINE_TEXT_BOX;
   },
 
   /**
@@ -532,7 +788,6 @@ cursors.Range.prototype = {
         newEnd = newStart.move(unit, Movement.BOUND, Dir.FORWARD);
         break;
       case Unit.NODE:
-      case Unit.DOM_NODE:
         newStart = newStart.move(unit, Movement.DIRECTIONAL, dir);
         newEnd = newStart;
         break;
@@ -546,48 +801,51 @@ cursors.Range.prototype = {
    * Select the text contained within this range.
    */
   select: function() {
-    var start = this.start.node;
-    var end = this.end.node;
-
-    if (!start || !end)
-      return;
-
-    // Find the most common root.
-    var uniqueAncestors = AutomationUtil.getUniqueAncestors(start, end);
-    var mcr = start.root;
-    if (uniqueAncestors) {
-      var common = uniqueAncestors.pop().parent;
-      if (common)
-        mcr = common.root;
+    var start = this.start_, end = this.end_;
+    if (this.start.compare(this.end) == Dir.BACKWARD) {
+      start = this.end;
+      end = this.start;
     }
+    var startNode = start.selectionNode_;
+    var endNode = end.selectionNode_;
 
-    if (!mcr || mcr.role == RoleType.desktop)
+    if (!startNode || !endNode)
       return;
 
-    if (mcr === start.root && mcr === end.root) {
-      start = start.role == RoleType.inlineTextBox ? start.parent : start;
-      end = end.role == RoleType.inlineTextBox ? end.parent : end;
+    // Only allow selections within the same web tree.
+    if (startNode.root && startNode.root.role == RoleType.ROOT_WEB_AREA &&
+        startNode.root == endNode.root) {
+      // We want to adjust to select the entire node for node offsets;
+      // otherwise, use the plain character offset.
+      var startIndex = start.selectionIndex_;
+      var endIndex = end.index_ == cursors.NODE_INDEX ?
+          end.selectionIndex_ + 1 :
+          end.selectionIndex_;
 
-      if (!start || !end)
-        return;
+      // Richly editables should always set a caret, but not select. This makes
+      // it possible to navigate through content editables using ChromeVox keys
+      // and not hear selections as you go.
+      if (startNode.state[StateType.RICHLY_EDITABLE] ||
+          endNode.state[StateType.RICHLY_EDITABLE])
+        endIndex = startIndex;
 
-      chrome.automation.setDocumentSelection(
-          { anchorObject: start,
-            anchorOffset: this.start.selectionIndex_,
-            focusObject: end,
-            focusOffset: this.end.selectionIndex_ }
-      );
+      chrome.automation.setDocumentSelection({
+        anchorObject: startNode,
+        anchorOffset: startIndex,
+        focusObject: endNode,
+        focusOffset: endIndex
+      });
     }
   },
 
   /**
    * Returns true if this range has either cursor end on web content.
    * @return {boolean}
-  */
+   */
   isWebRange: function() {
     return this.isValid() &&
-        (this.start.node.root.role != RoleType.desktop ||
-        this.end.node.root.role != RoleType.desktop);
+        (this.start.node.root.role != RoleType.DESKTOP ||
+         this.end.node.root.role != RoleType.DESKTOP);
   },
 
   /**
@@ -596,6 +854,33 @@ cursors.Range.prototype = {
    */
   isValid: function() {
     return this.start.isValid() && this.end.isValid();
+  },
+
+  /**
+   * Compares this range with |rhs|.
+   * @param {cursors.Range} rhs
+   * @return {Dir|undefined} Dir.BACKWARD if |rhs| comes before this range in
+   * document order. Dir.FORWARD if |rhs| comes after this range. Undefined
+   * otherwise.
+   */
+  compare: function(rhs) {
+    var startDir = this.start.compare(rhs.start);
+    var endDir = this.end.compare(rhs.end);
+    if (startDir != endDir)
+      return undefined;
+
+    return startDir;
+  },
+
+  /**
+   * Returns an undirected version of this range.
+   * @return {!cursors.Range}
+   */
+  normalize: function() {
+    if (this.start.compare(this.end) == Dir.BACKWARD) {
+      return new cursors.Range(this.end, this.start);
+    }
+    return this;
   }
 };
 

@@ -13,14 +13,8 @@
 namespace content {
 namespace android {
 
-// Returns true if JNI registration succeeded.
-CONTENT_EXPORT bool OnJNIOnLoadRegisterJNI(
-    JavaVM* vm,
-    std::vector<base::android::RegisterCallback> callbacks);
-
 // Returns true if initialization succeeded.
-CONTENT_EXPORT bool OnJNIOnLoadInit(
-    std::vector<base::android::InitCallback> callbacks);
+CONTENT_EXPORT bool OnJNIOnLoadInit();
 
 }  // namespace android
 }  // namespace content

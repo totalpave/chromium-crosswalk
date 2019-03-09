@@ -16,13 +16,8 @@
 #include "ppapi/host/host_message_context.h"
 #include "ppapi/host/resource_host.h"
 #include "ppapi/proxy/resource_message_params.h"
-#include "third_party/WebKit/public/web/WebPepperSocket.h"
-#include "third_party/WebKit/public/web/WebPepperSocketClient.h"
-
-namespace ppapi {
-class StringVar;
-class Var;
-}  // namespace ppapi
+#include "third_party/blink/public/web/web_pepper_socket.h"
+#include "third_party/blink/public/web/web_pepper_socket_client.h"
 
 namespace content {
 
@@ -30,7 +25,7 @@ class RendererPpapiHost;
 
 class CONTENT_EXPORT PepperWebSocketHost
     : public ppapi::host::ResourceHost,
-      public NON_EXPORTED_BASE(::blink::WebPepperSocketClient) {
+      public ::blink::WebPepperSocketClient {
  public:
   explicit PepperWebSocketHost(RendererPpapiHost* host,
                                PP_Instance instance,
@@ -42,15 +37,15 @@ class CONTENT_EXPORT PepperWebSocketHost
       ppapi::host::HostMessageContext* context) override;
 
   // WebPepperSocketClient implementation.
-  void didConnect() override;
-  void didReceiveMessage(const blink::WebString& message) override;
-  void didReceiveArrayBuffer(const blink::WebArrayBuffer& binaryData) override;
-  void didReceiveMessageError() override;
-  void didUpdateBufferedAmount(unsigned long buffered_amount) override;
-  void didStartClosingHandshake() override;
-  void didClose(unsigned long unhandled_buffered_amount,
+  void DidConnect() override;
+  void DidReceiveMessage(const blink::WebString& message) override;
+  void DidReceiveArrayBuffer(const blink::WebArrayBuffer& binaryData) override;
+  void DidReceiveMessageError() override;
+  void DidUpdateBufferedAmount(unsigned long buffered_amount) override;
+  void DidStartClosingHandshake() override;
+  void DidClose(unsigned long unhandled_buffered_amount,
                 ClosingHandshakeCompletionStatus status,
-                unsigned short code,
+                uint16_t code,
                 const blink::WebString& reason) override;
 
  private:

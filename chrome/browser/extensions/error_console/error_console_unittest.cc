@@ -11,7 +11,7 @@
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/string_number_conversions.h"
-#include "chrome/common/extensions/features/feature_channel.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/crx_file/id_util.h"
@@ -24,6 +24,7 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/feature_switch.h"
+#include "extensions/common/features/feature_channel.h"
 #include "extensions/common/value_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -34,12 +35,11 @@ using error_test_util::CreateNewRuntimeError;
 
 class ErrorConsoleUnitTest : public testing::Test {
  public:
-  ErrorConsoleUnitTest() : error_console_(NULL) { }
+  ErrorConsoleUnitTest() : error_console_(nullptr) {}
   ~ErrorConsoleUnitTest() override {}
 
   void SetUp() override {
     testing::Test::SetUp();
-
     // Errors are only kept if we have the FeatureSwitch and have Developer Mode
     // enabled.
     FeatureSwitch::error_console()->SetOverrideValue(
@@ -57,15 +57,19 @@ class ErrorConsoleUnitTest : public testing::Test {
 
 // Test that the error console is enabled/disabled appropriately.
 TEST_F(ErrorConsoleUnitTest, EnableAndDisableErrorConsole) {
-  // Start in Dev Channel, without the feature switch.
-  std::unique_ptr<ScopedCurrentChannel> channel_override(
-      new ScopedCurrentChannel(version_info::Channel::DEV));
-  ASSERT_EQ(version_info::Channel::DEV, GetCurrentChannel());
-  FeatureSwitch::error_console()->SetOverrideValue(
-      FeatureSwitch::OVERRIDE_DISABLED);
+  profile_->GetPrefs()->SetBoolean(prefs::kExtensionsUIDeveloperMode, false);
 
-  // At the start, the error console should be enabled, and specifically
-  // enabled for the chrome:extensions page.
+  // At the start, the error console should be disabled because the user is not
+  // in developer mode.
+  EXPECT_FALSE(error_console_->enabled());
+  EXPECT_FALSE(error_console_->IsEnabledForChromeExtensionsPage());
+  EXPECT_FALSE(error_console_->IsEnabledForAppsDeveloperTools());
+
+  // Switch the error_console on.
+  profile_->GetPrefs()->SetBoolean(prefs::kExtensionsUIDeveloperMode, true);
+
+  // The error console should now be enabled, and specifically enabled for the
+  // chrome:extensions page.
   EXPECT_TRUE(error_console_->enabled());
   EXPECT_TRUE(error_console_->IsEnabledForChromeExtensionsPage());
   EXPECT_FALSE(error_console_->IsEnabledForAppsDeveloperTools());
@@ -76,43 +80,17 @@ TEST_F(ErrorConsoleUnitTest, EnableAndDisableErrorConsole) {
   EXPECT_FALSE(error_console_->IsEnabledForChromeExtensionsPage());
   EXPECT_FALSE(error_console_->IsEnabledForAppsDeveloperTools());
 
-  // Similarly, if we change the current to less fun than Dev, ErrorConsole
-  // should be disabled.
-  channel_override.reset();
-  channel_override.reset(
-      new ScopedCurrentChannel(version_info::Channel::BETA));
-  profile_->GetPrefs()->SetBoolean(prefs::kExtensionsUIDeveloperMode, true);
-  EXPECT_FALSE(error_console_->enabled());
-  EXPECT_FALSE(error_console_->IsEnabledForChromeExtensionsPage());
-  EXPECT_FALSE(error_console_->IsEnabledForAppsDeveloperTools());
-
-  // But if we add the feature switch, that should override the channel.
-  FeatureSwitch::error_console()->SetOverrideValue(
-      FeatureSwitch::OVERRIDE_ENABLED);
-  ASSERT_TRUE(FeatureSwitch::error_console()->IsEnabled());
-  // We use a pref mod to "poke" the ErrorConsole, because it needs an
-  // indication that something changed (FeatureSwitches don't change in a real
-  // environment, so ErrorConsole doesn't listen for them).
-  profile_->GetPrefs()->SetBoolean(prefs::kExtensionsUIDeveloperMode, false);
-  profile_->GetPrefs()->SetBoolean(prefs::kExtensionsUIDeveloperMode, true);
-  EXPECT_TRUE(error_console_->enabled());
-  EXPECT_TRUE(error_console_->IsEnabledForChromeExtensionsPage());
-  EXPECT_FALSE(error_console_->IsEnabledForAppsDeveloperTools());
-
-  // Next, remove the feature switch (turning error console off), and install
-  // the Apps Developer Tools. If we have Apps Developer Tools, Error Console
-  // should be enabled by default.
-  FeatureSwitch::error_console()->SetOverrideValue(
-      FeatureSwitch::OVERRIDE_DISABLED);
+  // Installing the Chrome Apps and Extensions Developer Tools should enable
+  // the ErrorConsole, same as if the profile were in developer mode.
   const char kAppsDeveloperToolsExtensionId[] =
       "ohmmkhmmmpcnpikjeljgnaoabkaalbgc";
-  scoped_refptr<Extension> adt =
+  scoped_refptr<const Extension> adt =
       ExtensionBuilder()
-          .SetManifest(
-              DictionaryBuilder().Set("name", "apps dev tools")
-                                 .Set("version", "0.2.0")
-                                 .Set("manifest_version", 2)
-                                 .Build())
+          .SetManifest(DictionaryBuilder()
+                           .Set("name", "apps dev tools")
+                           .Set("version", "0.2.0")
+                           .Set("manifest_version", 2)
+                           .Build())
           .SetID(kAppsDeveloperToolsExtensionId)
           .Build();
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile_.get());
@@ -124,10 +102,30 @@ TEST_F(ErrorConsoleUnitTest, EnableAndDisableErrorConsole) {
 
   // Unloading the Apps Developer Tools should disable error console.
   registry->RemoveEnabled(adt->id());
-  registry->TriggerOnUnloaded(adt.get(), UnloadedExtensionInfo::REASON_DISABLE);
+  registry->TriggerOnUnloaded(adt.get(), UnloadedExtensionReason::DISABLE);
   EXPECT_FALSE(error_console_->enabled());
   EXPECT_FALSE(error_console_->IsEnabledForChromeExtensionsPage());
   EXPECT_FALSE(error_console_->IsEnabledForAppsDeveloperTools());
+}
+
+// Test that the error console is enabled for all channels.
+TEST_F(ErrorConsoleUnitTest, EnabledForAllChannels) {
+  version_info::Channel channels[] = {
+      version_info::Channel::UNKNOWN, version_info::Channel::CANARY,
+      version_info::Channel::DEV, version_info::Channel::BETA,
+      version_info::Channel::STABLE};
+  for (const version_info::Channel channel : channels) {
+    ScopedCurrentChannel channel_override(channel);
+    ASSERT_EQ(channel, GetCurrentChannel());
+
+    profile_->GetPrefs()->SetBoolean(prefs::kExtensionsUIDeveloperMode, false);
+    EXPECT_FALSE(error_console_->enabled());
+    EXPECT_FALSE(error_console_->IsEnabledForChromeExtensionsPage());
+
+    profile_->GetPrefs()->SetBoolean(prefs::kExtensionsUIDeveloperMode, true);
+    EXPECT_TRUE(error_console_->enabled());
+    EXPECT_TRUE(error_console_->IsEnabledForChromeExtensionsPage());
+  }
 }
 
 // Test that errors are successfully reported. This is a simple test, since it
@@ -141,7 +139,7 @@ TEST_F(ErrorConsoleUnitTest, ReportErrors) {
 
   for (size_t i = 0; i < kNumTotalErrors; ++i) {
     error_console_->ReportError(
-        CreateNewManifestError(kId, base::SizeTToString(i)));
+        CreateNewManifestError(kId, base::NumberToString(i)));
   }
 
   ASSERT_EQ(kNumTotalErrors, error_console_->GetErrorsForExtension(kId).size());

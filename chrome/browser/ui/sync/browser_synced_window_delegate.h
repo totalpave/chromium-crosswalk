@@ -16,29 +16,30 @@ namespace browser_sync {
 class SyncedTabDelegate;
 }
 
-// A BrowserSyncedWindowDelegate is the Browser-based implementation of
-// SyncedWindowDelegate.
-class BrowserSyncedWindowDelegate : public browser_sync::SyncedWindowDelegate {
+// A BrowserSyncedWindowDelegate is the desktop implementation for
+// SyncedWindowDelegate, representing the window corresponding to |browser|,
+// and listing all its tabs.
+class BrowserSyncedWindowDelegate : public sync_sessions::SyncedWindowDelegate {
  public:
   explicit BrowserSyncedWindowDelegate(Browser* browser);
   ~BrowserSyncedWindowDelegate() override;
 
   // SyncedWindowDelegate:
   bool HasWindow() const override;
-  SessionID::id_type GetSessionId() const override;
+  SessionID GetSessionId() const override;
   int GetTabCount() const override;
   int GetActiveIndex() const override;
   bool IsApp() const override;
   bool IsTypeTabbed() const override;
   bool IsTypePopup() const override;
-  bool IsTabPinned(const browser_sync::SyncedTabDelegate* tab) const override;
-  browser_sync::SyncedTabDelegate* GetTabAt(int index) const override;
-  SessionID::id_type GetTabIdAt(int index) const override;
+  bool IsTabPinned(const sync_sessions::SyncedTabDelegate* tab) const override;
+  sync_sessions::SyncedTabDelegate* GetTabAt(int index) const override;
+  SessionID GetTabIdAt(int index) const override;
   bool IsSessionRestoreInProgress() const override;
   bool ShouldSync() const override;
 
  private:
-  Browser* browser_;
+  Browser* const browser_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserSyncedWindowDelegate);
 };

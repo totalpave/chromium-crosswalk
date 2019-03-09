@@ -42,12 +42,13 @@
 
 #include <stddef.h>
 
-#include <queue>
 #include <string>
 #include <vector>
 
 #include "base/base_export.h"
 #include "base/compiler_specific.h"
+#include "base/containers/queue.h"
+#include "base/macros.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/platform_thread.h"
@@ -58,25 +59,26 @@ namespace base {
 // virtual Run method, or you can use the DelegateSimpleThread interface.
 class BASE_EXPORT SimpleThread : public PlatformThread::Delegate {
  public:
-  class BASE_EXPORT Options {
+  struct BASE_EXPORT Options {
    public:
-    Options() : stack_size_(0), priority_(ThreadPriority::NORMAL) {}
-    explicit Options(ThreadPriority priority)
-        : stack_size_(0), priority_(priority) {}
-    ~Options() {}
+    Options() = default;
+    explicit Options(ThreadPriority priority_in) : priority(priority_in) {}
+    ~Options() = default;
 
-    // We use the standard compiler-supplied copy constructor.
+    // Allow copies.
+    Options(const Options& other) = default;
+    Options& operator=(const Options& other) = default;
 
     // A custom stack size, or 0 for the system default.
-    void set_stack_size(size_t size) { stack_size_ = size; }
-    size_t stack_size() const { return stack_size_; }
+    size_t stack_size = 0;
 
-    // A custom thread priority.
-    void set_priority(ThreadPriority priority) { priority_ = priority; }
-    ThreadPriority priority() const { return priority_; }
-   private:
-    size_t stack_size_;
-    ThreadPriority priority_;
+    ThreadPriority priority = ThreadPriority::NORMAL;
+
+    // If false, the underlying thread's PlatformThreadHandle will not be kept
+    // around and as such the SimpleThread instance will not be Join()able and
+    // must not be deleted before Run() is invoked. After that, it's up to
+    // the subclass to determine when it is safe to delete itself.
+    bool joinable = true;
   };
 
   // Create a SimpleThread.  |options| should be used to manage any specific
@@ -88,46 +90,79 @@ class BASE_EXPORT SimpleThread : public PlatformThread::Delegate {
 
   ~SimpleThread() override;
 
-  virtual void Start();
-  virtual void Join();
+  // Starts the thread and returns only after the thread has started and
+  // initialized (i.e. ThreadMain() has been called).
+  void Start();
+
+  // Joins the thread. If StartAsync() was used to start the thread, then this
+  // first waits for the thread to start cleanly, then it joins.
+  void Join();
+
+  // Starts the thread, but returns immediately, without waiting for the thread
+  // to have initialized first (i.e. this does not wait for ThreadMain() to have
+  // been run first).
+  void StartAsync();
 
   // Subclasses should override the Run method.
   virtual void Run() = 0;
 
-  // Return the thread name prefix, or "unnamed" if none was supplied.
-  std::string name_prefix() { return name_prefix_; }
+  // Returns the thread id, only valid after the thread has started. If the
+  // thread was started using Start(), then this will be valid after the call to
+  // Start(). If StartAsync() was used to start the thread, then this must not
+  // be called before HasBeenStarted() returns True.
+  PlatformThreadId tid();
 
-  // Return the completed name including TID, only valid after Start().
-  std::string name() { return name_; }
-
-  // Return the thread id, only valid after Start().
-  PlatformThreadId tid() { return tid_; }
-
-  // Return True if Start() has ever been called.
+  // Returns True if the thread has been started and initialized (i.e. if
+  // ThreadMain() has run). If the thread was started with StartAsync(), but it
+  // hasn't been initialized yet (i.e. ThreadMain() has not run), then this will
+  // return False.
   bool HasBeenStarted();
 
-  // Return True if Join() has evern been called.
-  bool HasBeenJoined() { return joined_; }
+  // Returns True if Join() has ever been called.
+  bool HasBeenJoined() const { return joined_; }
+
+  // Returns true if Start() or StartAsync() has been called.
+  bool HasStartBeenAttempted() { return start_called_; }
 
   // Overridden from PlatformThread::Delegate:
   void ThreadMain() override;
 
  private:
+  // This is called just before the thread is started. This is called regardless
+  // of whether Start() or StartAsync() is used to start the thread.
+  virtual void BeforeStart() {}
+
+  // This is called just after the thread has been initialized and just before
+  // Run() is called. This is called on the newly started thread.
+  virtual void BeforeRun() {}
+
+  // This is called just before the thread is joined. The thread is started and
+  // has been initialized before this is called.
+  virtual void BeforeJoin() {}
+
   const std::string name_prefix_;
   std::string name_;
   const Options options_;
-  PlatformThreadHandle thread_;  // PlatformThread handle, invalid after Join!
+  PlatformThreadHandle thread_;  // PlatformThread handle, reset after Join.
   WaitableEvent event_;          // Signaled if Start() was ever called.
-  PlatformThreadId tid_;         // The backing thread's id.
-  bool joined_;                  // True if Join has been called.
+  PlatformThreadId tid_ = kInvalidThreadId;  // The backing thread's id.
+  bool joined_ = false;                      // True if Join has been called.
+  // Set to true when the platform-thread creation has started.
+  bool start_called_ = false;
+
+  DISALLOW_COPY_AND_ASSIGN(SimpleThread);
 };
 
+// A SimpleThread which delegates Run() to its Delegate. Non-joinable
+// DelegateSimpleThread are safe to delete after Run() was invoked, their
+// Delegates are also safe to delete after that point from this class' point of
+// view (although implementations must of course make sure that Run() will not
+// use their Delegate's member state after its deletion).
 class BASE_EXPORT DelegateSimpleThread : public SimpleThread {
  public:
   class BASE_EXPORT Delegate {
    public:
-    Delegate() { }
-    virtual ~Delegate() { }
+    virtual ~Delegate() = default;
     virtual void Run() = 0;
   };
 
@@ -142,6 +177,8 @@ class BASE_EXPORT DelegateSimpleThread : public SimpleThread {
 
  private:
   Delegate* delegate_;
+
+  DISALLOW_COPY_AND_ASSIGN(DelegateSimpleThread);
 };
 
 // DelegateSimpleThreadPool allows you to start up a fixed number of threads,
@@ -183,9 +220,11 @@ class BASE_EXPORT DelegateSimpleThreadPool
   const std::string name_prefix_;
   int num_threads_;
   std::vector<DelegateSimpleThread*> threads_;
-  std::queue<Delegate*> delegates_;
+  base::queue<Delegate*> delegates_;
   base::Lock lock_;            // Locks delegates_
   WaitableEvent dry_;    // Not signaled when there is no work to do.
+
+  DISALLOW_COPY_AND_ASSIGN(DelegateSimpleThreadPool);
 };
 
 }  // namespace base

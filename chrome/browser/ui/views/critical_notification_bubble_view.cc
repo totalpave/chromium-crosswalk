@@ -4,18 +4,20 @@
 
 #include "chrome/browser/ui/views/critical_notification_bubble_view.h"
 
+#include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
-#include "chrome/browser/upgrade_detector.h"
+#include "chrome/browser/ui/browser_dialogs.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/locale_settings.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/browser/user_metrics.h"
-#include "grit/theme_resources.h"
-#include "ui/accessibility/ax_view_state.h"
+#include "components/strings/grit/components_strings.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -44,6 +46,7 @@ CriticalNotificationBubbleView::CriticalNotificationBubbleView(
     views::View* anchor_view)
     : BubbleDialogDelegateView(anchor_view, views::BubbleBorder::TOP_RIGHT) {
   set_close_on_deactivate(false);
+  chrome::RecordDialogCreation(chrome::DialogIdentifier::CRITICAL_NOTIFICATION);
 }
 
 CriticalNotificationBubbleView::~CriticalNotificationBubbleView() {
@@ -67,8 +70,7 @@ void CriticalNotificationBubbleView::OnCountdown() {
     // Time's up!
     upgrade_detector->acknowledge_critical_update();
 
-    content::RecordAction(
-        UserMetricsAction("CriticalNotification_AutoRestart"));
+    base::RecordAction(UserMetricsAction("CriticalNotification_AutoRestart"));
     refresh_timer_.Stop();
     chrome::AttemptRestart();
   }
@@ -83,18 +85,9 @@ void CriticalNotificationBubbleView::OnCountdown() {
 base::string16 CriticalNotificationBubbleView::GetWindowTitle() const {
   int seconds = GetRemainingTime();
   return seconds > 0 ? l10n_util::GetPluralStringFUTF16(
-                           IDS_CRITICAL_NOTIFICATION_HEADLINE, seconds)
+                           IDS_CRITICAL_NOTIFICATION_TITLE, seconds)
                      : l10n_util::GetStringUTF16(
-                           IDS_CRITICAL_NOTIFICATION_HEADLINE_ALTERNATE);
-}
-
-gfx::ImageSkia CriticalNotificationBubbleView::GetWindowIcon() {
-  return *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-      IDR_UPDATE_MENU_SEVERITY_HIGH);
-}
-
-bool CriticalNotificationBubbleView::ShouldShowWindowIcon() const {
-  return true;
+                           IDS_CRITICAL_NOTIFICATION_TITLE_ALTERNATE);
 }
 
 void CriticalNotificationBubbleView::WindowClosing() {
@@ -103,7 +96,7 @@ void CriticalNotificationBubbleView::WindowClosing() {
 
 bool CriticalNotificationBubbleView::Cancel() {
   UpgradeDetector::GetInstance()->acknowledge_critical_update();
-  content::RecordAction(UserMetricsAction("CriticalNotification_Ignore"));
+  base::RecordAction(UserMetricsAction("CriticalNotification_Ignore"));
   // If the counter reaches 0, we set a restart flag that must be cleared if
   // the user selects, for example, "Stay on this page" during an
   // onbeforeunload handler.
@@ -115,7 +108,7 @@ bool CriticalNotificationBubbleView::Cancel() {
 
 bool CriticalNotificationBubbleView::Accept() {
   UpgradeDetector::GetInstance()->acknowledge_critical_update();
-  content::RecordAction(UserMetricsAction("CriticalNotification_Restart"));
+  base::RecordAction(UserMetricsAction("CriticalNotification_Restart"));
   chrome::AttemptRestart();
   return true;
 }
@@ -123,37 +116,39 @@ bool CriticalNotificationBubbleView::Accept() {
 base::string16 CriticalNotificationBubbleView::GetDialogButtonLabel(
     ui::DialogButton button) const {
   return l10n_util::GetStringUTF16(button == ui::DIALOG_BUTTON_CANCEL
-                                       ? IDS_CRITICAL_NOTIFICATION_DISMISS
+                                       ? IDS_CANCEL
                                        : IDS_CRITICAL_NOTIFICATION_RESTART);
 }
 
 void CriticalNotificationBubbleView::Init() {
   bubble_created_ = base::TimeTicks::Now();
 
-  SetLayoutManager(new views::FillLayout());
+  SetLayoutManager(std::make_unique<views::FillLayout>());
 
   views::Label* message = new views::Label();
   message->SetMultiLine(true);
   message->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   message->SetText(l10n_util::GetStringUTF16(IDS_CRITICAL_NOTIFICATION_TEXT));
-  message->SizeToFit(views::Widget::GetLocalizedContentsWidth(
-      IDS_CRUCIAL_NOTIFICATION_BUBBLE_WIDTH_CHARS));
+  message->SizeToFit(
+      ChromeLayoutProvider::Get()->GetDistanceMetric(
+          ChromeDistanceMetric::DISTANCE_BUBBLE_PREFERRED_WIDTH) -
+      margins().width());
   AddChildView(message);
 
   refresh_timer_.Start(FROM_HERE,
       base::TimeDelta::FromMilliseconds(kRefreshBubbleEvery),
       this, &CriticalNotificationBubbleView::OnCountdown);
 
-  content::RecordAction(UserMetricsAction("CriticalNotificationShown"));
+  base::RecordAction(UserMetricsAction("CriticalNotificationShown"));
 }
 
-void CriticalNotificationBubbleView::GetAccessibleState(
-    ui::AXViewState* state) {
-  state->role = ui::AX_ROLE_ALERT;
+void CriticalNotificationBubbleView::GetAccessibleNodeData(
+    ui::AXNodeData* node_data) {
+  node_data->role = ax::mojom::Role::kAlert;
 }
 
 void CriticalNotificationBubbleView::ViewHierarchyChanged(
     const ViewHierarchyChangedDetails& details) {
   if (details.is_add && details.child == this)
-    NotifyAccessibilityEvent(ui::AX_EVENT_ALERT, true);
+    NotifyAccessibilityEvent(ax::mojom::Event::kAlert, true);
 }

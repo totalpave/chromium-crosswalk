@@ -22,8 +22,8 @@ class ViewsTestHelper;
 // by ViewsTestBase.
 class ScopedViewsTestHelper {
  public:
-  // Initialize with the default TestViewsDelegate, MessageLoopForUI::current()
-  // and the default test ContextFactory.
+  // Initialize with the default TestViewsDelegate,
+  // MessageLoopCurrentForUI::Get() and the default test ContextFactory.
   ScopedViewsTestHelper();
 
   // Initialize with the given TestViewsDelegate instance, after setting the
@@ -37,10 +37,16 @@ class ScopedViewsTestHelper {
   // the RootWindow. Everywhere else, null.
   gfx::NativeWindow GetContext();
 
-  TestViewsDelegate* views_delegate() { return views_delegate_.get(); };
+  TestViewsDelegate* test_views_delegate() {
+    return test_views_delegate_.get();
+  }
+
+  PlatformTestHelper* platform_test_helper() {
+    return platform_test_helper_.get();
+  }
 
  private:
-  std::unique_ptr<TestViewsDelegate> views_delegate_;
+  std::unique_ptr<TestViewsDelegate> test_views_delegate_;
   std::unique_ptr<ViewsTestHelper> test_helper_;
   std::unique_ptr<PlatformTestHelper> platform_test_helper_;
 

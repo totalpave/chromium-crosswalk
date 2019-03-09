@@ -8,6 +8,7 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "build/build_config.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/variations/variations_associated_data.h"
@@ -22,24 +23,10 @@ namespace {
 const int kDefaultUMAWeeklyQuotaBytes = 204800;
 const double kDefaultUMARatio = 0.05;
 
-// This function is for forwarding metrics usage pref changes to the appropriate
-// callback on the appropriate thread.
-// TODO(gayane): Reduce the frequency of posting tasks from IO to UI thread.
-void UpdateMetricsUsagePrefs(
-    const UpdateUsagePrefCallbackType& update_on_ui_callback,
-    scoped_refptr<base::SequencedTaskRunner> ui_task_runner,
-    const std::string& service_name,
-    int message_size,
-    bool is_cellular) {
-  ui_task_runner->PostTask(
-      FROM_HERE, base::Bind(update_on_ui_callback, service_name, message_size,
-                            is_cellular));
-}
-
 }  // namespace
 
 DataUseTracker::DataUseTracker(PrefService* local_state)
-    : local_state_(local_state), weak_ptr_factory_(this) {}
+    : local_state_(local_state) {}
 
 DataUseTracker::~DataUseTracker() {}
 
@@ -47,6 +34,8 @@ DataUseTracker::~DataUseTracker() {}
 std::unique_ptr<DataUseTracker> DataUseTracker::Create(
     PrefService* local_state) {
   std::unique_ptr<DataUseTracker> data_use_tracker;
+// Instantiate DataUseTracker only on Android. UpdateMetricsUsagePrefs() honors
+// this rule too.
 #if defined(OS_ANDROID)
   data_use_tracker.reset(new DataUseTracker(local_state));
 #endif
@@ -59,19 +48,36 @@ void DataUseTracker::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterDictionaryPref(metrics::prefs::kUmaCellDataUse);
 }
 
-UpdateUsagePrefCallbackType DataUseTracker::GetDataUseForwardingCallback(
-    scoped_refptr<base::SequencedTaskRunner> ui_task_runner) {
-  DCHECK(ui_task_runner->RunsTasksOnCurrentThread());
+// static
+void DataUseTracker::UpdateMetricsUsagePrefs(int message_size,
+                                             bool is_cellular,
+                                             bool is_metrics_service_usage,
+                                             PrefService* local_state) {
+// Instantiate DataUseTracker only on Android. Create() honors this rule too.
+#if defined(OS_ANDROID)
+  metrics::DataUseTracker tracker(local_state);
+  tracker.UpdateMetricsUsagePrefsInternal(message_size, is_cellular,
+                                          is_metrics_service_usage);
+#endif  // defined(OS_ANDROID)
+}
 
-  return base::Bind(
-      &UpdateMetricsUsagePrefs,
-      base::Bind(&DataUseTracker::UpdateMetricsUsagePrefsOnUIThread,
-                 weak_ptr_factory_.GetWeakPtr()),
-      ui_task_runner);
+void DataUseTracker::UpdateMetricsUsagePrefsInternal(
+    int message_size,
+    bool is_cellular,
+    bool is_metrics_service_usage) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!is_cellular)
+    return;
+
+  UpdateUsagePref(prefs::kUserCellDataUse, message_size);
+  // TODO(holte): Consider adding seperate tracking for UKM.
+  if (is_metrics_service_usage)
+    UpdateUsagePref(prefs::kUmaCellDataUse, message_size);
 }
 
 bool DataUseTracker::ShouldUploadLogOnCellular(int log_bytes) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   RemoveExpiredEntries();
 
@@ -98,23 +104,9 @@ bool DataUseTracker::ShouldUploadLogOnCellular(int log_bytes) {
          uma_ratio;
 }
 
-void DataUseTracker::UpdateMetricsUsagePrefsOnUIThread(
-    const std::string& service_name,
-    int message_size,
-    bool is_celllular) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-
-  if (!is_celllular)
-    return;
-
-  UpdateUsagePref(prefs::kUserCellDataUse, message_size);
-  if (service_name == "UMA")
-    UpdateUsagePref(prefs::kUmaCellDataUse, message_size);
-}
-
 void DataUseTracker::UpdateUsagePref(const std::string& pref_name,
                                      int message_size) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DictionaryPrefUpdate pref_updater(local_state_, pref_name);
   int todays_traffic = 0;
@@ -127,13 +119,13 @@ void DataUseTracker::UpdateUsagePref(const std::string& pref_name,
 }
 
 void DataUseTracker::RemoveExpiredEntries() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   RemoveExpiredEntriesForPref(prefs::kUmaCellDataUse);
   RemoveExpiredEntriesForPref(prefs::kUserCellDataUse);
 }
 
 void DataUseTracker::RemoveExpiredEntriesForPref(const std::string& pref_name) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   const base::DictionaryValue* user_pref_dict =
       local_state_->GetDictionary(pref_name);
@@ -144,8 +136,8 @@ void DataUseTracker::RemoveExpiredEntriesForPref(const std::string& pref_name) {
   for (base::DictionaryValue::Iterator it(*user_pref_dict); !it.IsAtEnd();
        it.Advance()) {
     base::Time key_date;
-    base::Time::FromUTCString(it.key().c_str(), &key_date);
-    if (key_date > week_ago)
+    if (base::Time::FromUTCString(it.key().c_str(), &key_date) &&
+        key_date > week_ago)
       user_pref_new_dict.Set(it.key(), it.value().CreateDeepCopy());
   }
   local_state_->Set(pref_name, user_pref_new_dict);
@@ -156,7 +148,7 @@ void DataUseTracker::RemoveExpiredEntriesForPref(const std::string& pref_name) {
 // than latest registered date in perf, we still count that in total use as user
 // actually used that data.
 int DataUseTracker::ComputeTotalDataUse(const std::string& pref_name) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   int total_data_use = 0;
   const base::DictionaryValue* pref_dict =
@@ -171,7 +163,7 @@ int DataUseTracker::ComputeTotalDataUse(const std::string& pref_name) {
 }
 
 bool DataUseTracker::GetUmaWeeklyQuota(int* uma_weekly_quota_bytes) const {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   std::string param_value_str = variations::GetVariationParamValue(
       "UMA_EnableCellularLogUpload", "Uma_Quota");
@@ -183,7 +175,7 @@ bool DataUseTracker::GetUmaWeeklyQuota(int* uma_weekly_quota_bytes) const {
 }
 
 bool DataUseTracker::GetUmaRatio(double* ratio) const {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   std::string param_value_str = variations::GetVariationParamValue(
       "UMA_EnableCellularLogUpload", "Uma_Ratio");
@@ -199,7 +191,7 @@ base::Time DataUseTracker::GetCurrentMeasurementDate() const {
 }
 
 std::string DataUseTracker::GetCurrentMeasurementDateAsString() const {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   base::Time::Exploded today_exploded;
   GetCurrentMeasurementDate().LocalExplode(&today_exploded);

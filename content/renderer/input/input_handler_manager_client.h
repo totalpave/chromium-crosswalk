@@ -8,51 +8,56 @@
 #include "base/callback.h"
 #include "base/callback_forward.h"
 #include "base/macros.h"
+#include "cc/input/touch_action.h"
 #include "content/common/content_export.h"
-#include "content/common/input/input_event_ack_state.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "content/public/common/input_event_ack_state.h"
+#include "third_party/blink/public/platform/web_input_event_result.h"
+#include "ui/events/blink/web_input_event_traits.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace ui {
 class LatencyInfo;
-}
-
-namespace cc {
-class InputHandler;
-}
-
-namespace ui {
 class SynchronousInputHandlerProxy;
+struct DidOverscrollParams;
 }
 
 namespace content {
-struct DidOverscrollParams;
+class InputHandlerManager;
+class MainThreadEventQueue;
 
 class CONTENT_EXPORT InputHandlerManagerClient {
  public:
   virtual ~InputHandlerManagerClient() {}
 
-  // The Manager will supply a |handler| when bound to the client. This is valid
-  // until the manager shuts down, at which point it supplies a null |handler|.
-  // The client should only makes calls to |handler| on the compositor thread.
-  typedef base::Callback<
-      InputEventAckState(int /*routing_id*/,
-                         const blink::WebInputEvent*,
-                         ui::LatencyInfo* latency_info)> Handler;
-
   // Called from the main thread.
-  virtual void SetBoundHandler(const Handler& handler) = 0;
+  virtual void SetInputHandlerManager(InputHandlerManager*) = 0;
 
   // Called from the compositor thread.
-  virtual void RegisterRoutingID(int routing_id) = 0;
+  virtual void RegisterRoutingID(
+      int routing_id,
+      const scoped_refptr<MainThreadEventQueue>& input_event_queue) = 0;
   virtual void UnregisterRoutingID(int routing_id) = 0;
+  virtual void RegisterAssociatedRenderFrameRoutingID(
+      int render_frame_routing_id,
+      int render_view_routing_id) = 0;
+  virtual void QueueClosureForMainThreadEventQueue(
+      int routing_id,
+      const base::Closure& closure) = 0;
+
+  // |HandleInputEvent| will respond to overscroll by calling the passed in
+  // callback.
+  // Otherwise |DidOverscroll| will be fired.
   virtual void DidOverscroll(int routing_id,
-                             const DidOverscrollParams& params) = 0;
-  virtual void DidStartFlinging(int routing_id) = 0;
-  virtual void DidStopFlinging(int routing_id) = 0;
-  virtual void NotifyInputEventHandled(int routing_id,
-                                       blink::WebInputEvent::Type type,
-                                       InputEventAckState ack_result) = 0;
+                             const ui::DidOverscrollParams& params) = 0;
+  virtual void DidStartScrollingViewport(int routing_id) = 0;
+  virtual void DispatchNonBlockingEventToMainThread(
+      int routing_id,
+      ui::WebScopedInputEvent event,
+      const ui::LatencyInfo& latency_info) = 0;
+  virtual void SetWhiteListedTouchAction(int routing_id,
+                                         cc::TouchAction touch_action,
+                                         uint32_t unique_touch_event_id,
+                                         InputEventAckState ack_state) = 0;
 
  protected:
   InputHandlerManagerClient() {}

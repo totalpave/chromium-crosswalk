@@ -8,19 +8,26 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "base/callback_forward.h"
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "build/build_config.h"
-#include "content/browser/accessibility/ax_tree_id_registry.h"
-#include "content/browser/accessibility/browser_accessibility_event.h"
+#include "content/browser/accessibility/accessibility_buildflags.h"
+#include "content/browser/accessibility/browser_accessibility_position.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/ax_event_notification_details.h"
-#include "third_party/WebKit/public/web/WebAXEnums.h"
+#include "third_party/blink/public/web/web_ax_enums.h"
+#include "ui/accessibility/ax_action_data.h"
+#include "ui/accessibility/ax_event_generator.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/accessibility/ax_range.h"
 #include "ui/accessibility/ax_serializable_tree.h"
+#include "ui/accessibility/ax_tree_id_registry.h"
+#include "ui/accessibility/ax_tree_manager.h"
+#include "ui/accessibility/ax_tree_observer.h"
 #include "ui/accessibility/ax_tree_update.h"
 #include "ui/gfx/native_widget_types.h"
 
@@ -33,13 +40,11 @@ class BrowserAccessibilityManager;
 class BrowserAccessibilityManagerAndroid;
 #elif defined(OS_WIN)
 class BrowserAccessibilityManagerWin;
-#elif defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(USE_X11)
+#elif BUILDFLAG(USE_ATK)
 class BrowserAccessibilityManagerAuraLinux;
 #elif defined(OS_MACOSX)
 class BrowserAccessibilityManagerMac;
 #endif
-
-class SiteInstance;
 
 // For testing.
 CONTENT_EXPORT ui::AXTreeUpdate MakeAXTreeUpdate(
@@ -66,34 +71,16 @@ CONTENT_EXPORT ui::AXTreeUpdate MakeAXTreeUpdate(
 class CONTENT_EXPORT BrowserAccessibilityDelegate {
  public:
   virtual ~BrowserAccessibilityDelegate() {}
-  virtual void AccessibilitySetFocus(int acc_obj_id) = 0;
-  virtual void AccessibilityDoDefaultAction(int acc_obj_id) = 0;
-  virtual void AccessibilityShowContextMenu(int acc_obj_id) = 0;
-  virtual void AccessibilityScrollToMakeVisible(
-      int acc_obj_id, const gfx::Rect& subfocus) = 0;
-  virtual void AccessibilityScrollToPoint(
-      int acc_obj_id, const gfx::Point& point) = 0;
-  virtual void AccessibilitySetScrollOffset(
-      int acc_obj_id, const gfx::Point& offset) = 0;
-  virtual void AccessibilitySetSelection(int anchor_obj_id,
-                                         int anchor_offset,
-                                         int focus_obj_id,
-                                         int focus_offset) = 0;
-  virtual void AccessibilitySetValue(
-      int acc_obj_id, const base::string16& value) = 0;
+
+  virtual void AccessibilityPerformAction(const ui::AXActionData& data) = 0;
   virtual bool AccessibilityViewHasFocus() const = 0;
   virtual gfx::Rect AccessibilityGetViewBounds() const = 0;
-  virtual gfx::Point AccessibilityOriginInScreen(
-      const gfx::Rect& bounds) const = 0;
-  virtual gfx::Rect AccessibilityTransformToRootCoordSpace(
-      const gfx::Rect& bounds) = 0;
-  virtual SiteInstance* AccessibilityGetSiteInstance() = 0;
-  virtual void AccessibilityHitTest(
-      const gfx::Point& point) = 0;
-  virtual void AccessibilitySetAccessibilityFocus(int acc_obj_id) = 0;
+  virtual float AccessibilityGetDeviceScaleFactor() const = 0;
   virtual void AccessibilityFatalError() = 0;
   virtual gfx::AcceleratedWidget AccessibilityGetAcceleratedWidget() = 0;
   virtual gfx::NativeViewAccessible AccessibilityGetNativeViewAccessible() = 0;
+  virtual gfx::NativeViewAccessible
+  AccessibilityGetNativeViewAccessibleForWindow() = 0;
 };
 
 class CONTENT_EXPORT BrowserAccessibilityFactory {
@@ -126,7 +113,14 @@ struct BrowserAccessibilityFindInPageInfo {
 };
 
 // Manages a tree of BrowserAccessibility objects.
-class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
+class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeObserver,
+                                                   public ui::AXTreeManager {
+ protected:
+  using BrowserAccessibilityPositionInstance =
+      BrowserAccessibilityPosition::AXPositionInstance;
+  using BrowserAccessibilityRange =
+      ui::AXRange<BrowserAccessibilityPositionInstance::element_type>;
+
  public:
   // Creates the platform-specific BrowserAccessibilityManager, but
   // with no parent window pointer. Only useful for unit tests.
@@ -135,8 +129,7 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
       BrowserAccessibilityDelegate* delegate,
       BrowserAccessibilityFactory* factory = new BrowserAccessibilityFactory());
 
-  static BrowserAccessibilityManager* FromID(
-      AXTreeIDRegistry::AXTreeID ax_tree_id);
+  static BrowserAccessibilityManager* FromID(ui::AXTreeID ax_tree_id);
 
   ~BrowserAccessibilityManager() override;
 
@@ -144,23 +137,20 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
 
   static ui::AXTreeUpdate GetEmptyDocument();
 
-  virtual void NotifyAccessibilityEvent(
-      BrowserAccessibilityEvent::Source source,
-      ui::AXEvent event_type,
-      BrowserAccessibility* node);
+  // Subclasses override these methods to send native event notifications.
+  virtual void FireFocusEvent(BrowserAccessibility* node);
+  virtual void FireBlinkEvent(ax::mojom::Event event_type,
+                              BrowserAccessibility* node) {}
+  virtual void FireGeneratedEvent(ui::AXEventGenerator::Event event_type,
+                                  BrowserAccessibility* node) {}
 
   // Checks whether focus has changed since the last time it was checked,
   // taking into account whether the window has focus and which frame within
   // the frame tree has focus. If focus has changed, calls FireFocusEvent.
-  void FireFocusEventsIfNeeded(BrowserAccessibilityEvent::Source source);
+  void FireFocusEventsIfNeeded();
 
   // Return whether or not we are currently able to fire events.
   virtual bool CanFireEvents();
-
-  // Fire a focus event. Virtual so that some platforms can customize it,
-  // like firing a focus event on the root first, on Windows.
-  virtual void FireFocusEvent(BrowserAccessibilityEvent::Source source,
-                              BrowserAccessibility* node);
 
   // Return a pointer to the root of the tree, does not make a new reference.
   BrowserAccessibility* GetRoot();
@@ -191,9 +181,16 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
   virtual void UserIsReloading();
   void NavigationSucceeded();
   void NavigationFailed();
+  void DidStopLoading();
 
-  // Send a message to the renderer to set focus to this node.
-  void SetFocus(const BrowserAccessibility& node);
+  // Keep track of if this page is hidden by an interstitial, in which case
+  // we need to suppress all events.
+  void set_hidden_by_interstitial_page(bool hidden) {
+    hidden_by_interstitial_page_ = hidden;
+  }
+  bool hidden_by_interstitial_page() const {
+    return hidden_by_interstitial_page_;
+  }
 
   // Pretend that the given node has focus, for testing only. Doesn't
   // communicate with the renderer and doesn't fire any events.
@@ -203,43 +200,46 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
   // in any BrowserAccessibilityManager.
   static void SetFocusChangeCallbackForTesting(const base::Closure& callback);
 
-  // Tell the renderer to do the default action for this node.
+  // Normally we avoid firing accessibility focus events when the containing
+  // native window isn't focused, and we also delay some other events like
+  // live region events to improve screen reader compatibility.
+  // However, this can lead to test flakiness, so for testing, simplify
+  // this behavior and just fire all events with no delay as if the window
+  // had focus.
+  static void NeverSuppressOrDelayEventsForTesting();
+
+  // Accessibility actions. All of these are implemented asynchronously
+  // by sending a message to the renderer to perform the respective action
+  // on the given node.  See the definition of |ui::AXActionData| for more
+  // information about each of these actions.
+  void ClearAccessibilityFocus(const BrowserAccessibility& node);
+  void Decrement(const BrowserAccessibility& node);
   void DoDefaultAction(const BrowserAccessibility& node);
-
-  // Tell the renderer to scroll to make |node| visible.
-  // In addition, if it's not possible to make the entire object visible,
-  // scroll so that the |subfocus| rect is visible at least. The subfocus
-  // rect is in local coordinates of the object itself.
-  void ScrollToMakeVisible(
-      const BrowserAccessibility& node, gfx::Rect subfocus);
-
-  // Tell the renderer to scroll such that |node| is at |point|,
-  // where |point| is in global coordinates of the WebContents.
-  void ScrollToPoint(
-      const BrowserAccessibility& node, gfx::Point point);
-
-  // If |node| is itself a scrollable container, set its scroll
-  // offset to |offset|.
+  void GetImageData(const BrowserAccessibility& node,
+                    const gfx::Size& max_size);
+  void HitTest(const gfx::Point& point);
+  void Increment(const BrowserAccessibility& node);
+  void LoadInlineTextBoxes(const BrowserAccessibility& node);
+  void ScrollToMakeVisible(const BrowserAccessibility& node,
+                           gfx::Rect subfocus);
+  void ScrollToPoint(const BrowserAccessibility& node, gfx::Point point);
+  void SetAccessibilityFocus(const BrowserAccessibility& node);
+  void SetFocus(const BrowserAccessibility& node);
   void SetScrollOffset(const BrowserAccessibility& node, gfx::Point offset);
-
-  // Tell the renderer to set the value of an editable text node.
-  void SetValue(
-      const BrowserAccessibility& node, const base::string16& value);
-
-  // Tell the renderer to set the text selection on a node.
-  void SetTextSelection(
-      const BrowserAccessibility& node, int start_offset, int end_offset);
+  void SetValue(const BrowserAccessibility& node, const std::string& value);
+  void SetSelection(const ui::AXActionData& action_data);
+  void SetSelection(const BrowserAccessibilityRange& range);
+  void ShowContextMenu(const BrowserAccessibility& node);
 
   // Retrieve the bounds of the parent View in screen coordinates.
-  gfx::Rect GetViewBounds();
+  virtual gfx::Rect GetViewBounds();
 
   // Fire an event telling native assistive technology to move focus to the
   // given find in page result.
   void ActivateFindInPageResult(int request_id, int match_index);
 
   // Called when the renderer process has notified us of about tree changes.
-  virtual void OnAccessibilityEvents(
-      const std::vector<AXEventNotificationDetails>& details);
+  virtual void OnAccessibilityEvents(const AXEventNotificationDetails& details);
 
   // Called when the renderer process updates the location of accessibility
   // objects. Calls SendLocationChangeEvents(), which can be overridden.
@@ -248,14 +248,12 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
 
   // Called when a new find in page result is received. We hold on to this
   // information and don't activate it until the user requests it.
-  void OnFindInPageResult(
-      int request_id, int match_index, int start_id, int start_offset,
-      int end_id, int end_offset);
-
-  // Called in response to a hit test, when the object hit has a child frame
-  // (like an iframe element or browser plugin), and we need to do another
-  // hit test recursively.
-  void OnChildFrameHitTestResult(const gfx::Point& point, int hit_obj_id);
+  void OnFindInPageResult(int request_id,
+                          int match_index,
+                          int start_id,
+                          int start_offset,
+                          int end_id,
+                          int end_offset);
 
   // This is called when the user has committed to a find in page query,
   // e.g. by pressing enter or tapping on the next / previous result buttons.
@@ -273,9 +271,9 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
   BrowserAccessibilityManagerAndroid* ToBrowserAccessibilityManagerAndroid();
 #endif
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(USE_X11)
+#if BUILDFLAG(USE_ATK)
   BrowserAccessibilityManagerAuraLinux*
-      ToBrowserAccessibilityManagerAuraLinux();
+  ToBrowserAccessibilityManagerAuraLinux();
 #endif
 
 #if defined(OS_MACOSX)
@@ -304,7 +302,8 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
   static BrowserAccessibility* NextInTreeOrder(
       const BrowserAccessibility* object);
   static BrowserAccessibility* PreviousInTreeOrder(
-      const BrowserAccessibility* object);
+      const BrowserAccessibility* object,
+      bool can_wrap_to_last_element);
   static BrowserAccessibility* NextTextOnlyObject(
       const BrowserAccessibility* object);
   static BrowserAccessibility* PreviousTextOnlyObject(
@@ -319,6 +318,12 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
                                         BrowserAccessibility** common_parent,
                                         int* child_index1,
                                         int* child_index2);
+
+  // Sets |out_is_before| to true if |object1| comes before |object2|
+  // in tree order (pre-order traversal), and false if the objects are the
+  // same or not in the same tree.
+  static ax::mojom::TreeOrder CompareNodes(const BrowserAccessibility& object1,
+                                           const BrowserAccessibility& object2);
 
   static std::vector<const BrowserAccessibility*> FindTextOnlyObjectsInRange(
       const BrowserAccessibility& start_object,
@@ -336,27 +341,32 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
       const BrowserAccessibility& end_object,
       int end_offset);
 
-  // Accessors.
-  AXTreeIDRegistry::AXTreeID ax_tree_id() const { return ax_tree_id_; }
+  static gfx::Rect GetPageBoundsForRange(
+      const BrowserAccessibility& start_object,
+      int start_offset,
+      const BrowserAccessibility& end_object,
+      int end_offset);
 
-  // AXTreeDelegate implementation.
-  void OnNodeDataWillChange(ui::AXTree* tree,
-                            const ui::AXNodeData& old_node_data,
-                            const ui::AXNodeData& new_node_data) override;
-  void OnTreeDataChanged(ui::AXTree* tree) override;
+  // Accessors.
+  ui::AXTreeID ax_tree_id() const { return ax_tree_id_; }
+  float device_scale_factor() const { return device_scale_factor_; }
+  ui::AXTree* ax_tree() const { return tree_.get(); }
+
+  // AXTreeObserver implementation.
   void OnNodeWillBeDeleted(ui::AXTree* tree, ui::AXNode* node) override;
   void OnSubtreeWillBeDeleted(ui::AXTree* tree, ui::AXNode* node) override;
   void OnNodeCreated(ui::AXTree* tree, ui::AXNode* node) override;
+  void OnNodeReparented(ui::AXTree* tree, ui::AXNode* node) override;
   void OnNodeChanged(ui::AXTree* tree, ui::AXNode* node) override;
   void OnAtomicUpdateFinished(
       ui::AXTree* tree,
       bool root_changed,
-      const std::vector<ui::AXTreeDelegate::Change>& changes) override;
+      const std::vector<ui::AXTreeObserver::Change>& changes) override;
+
+  // AXTreeManager implementation.
+  ui::AXNode* GetNodeFromTree(ui::AXTreeID tree_id, int32_t node_id) override;
 
   BrowserAccessibilityDelegate* delegate() const { return delegate_; }
-  void set_delegate(BrowserAccessibilityDelegate* delegate) {
-    delegate_ = delegate;
-  }
 
   // If this BrowserAccessibilityManager is a child frame or guest frame,
   // return the BrowserAccessibilityManager from the highest ancestor frame
@@ -372,44 +382,32 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
   // Get a snapshot of the current tree as an AXTreeUpdate.
   ui::AXTreeUpdate SnapshotAXTreeForTesting();
 
- protected:
-  BrowserAccessibilityManager(
-      BrowserAccessibilityDelegate* delegate,
-      BrowserAccessibilityFactory* factory);
+  // Use a custom device scale factor for testing.
+  void UseCustomDeviceScaleFactorForTesting(float device_scale_factor);
 
-  BrowserAccessibilityManager(
-      const ui::AXTreeUpdate& initial_tree,
-      BrowserAccessibilityDelegate* delegate,
-      BrowserAccessibilityFactory* factory);
+  // Given a point in screen coordinates, trigger an asynchronous hit test
+  // but return the best possible match instantly.
+  //
+  //
+  BrowserAccessibility* CachingAsyncHitTest(const gfx::Point& screen_point);
+
+  // Called in response to a hover event, caches the result for the next
+  // call to CachingAsyncHitTest().
+  void CacheHitTestResult(BrowserAccessibility* hit_test_result);
+
+ protected:
+  BrowserAccessibilityManager(BrowserAccessibilityDelegate* delegate,
+                              BrowserAccessibilityFactory* factory);
+
+  BrowserAccessibilityManager(const ui::AXTreeUpdate& initial_tree,
+                              BrowserAccessibilityDelegate* delegate,
+                              BrowserAccessibilityFactory* factory);
 
   // Send platform-specific notifications to each of these objects that
   // their location has changed. This is called by OnLocationChanges
   // after it's updated the internal data structure.
   virtual void SendLocationChangeEvents(
       const std::vector<AccessibilityHostMsg_LocationChangeParams>& params);
-
- private:
-  // The following states keep track of whether or not the
-  // on-screen keyboard is allowed to be shown.
-  enum OnScreenKeyboardState {
-    // Never show the on-screen keyboard because this tab is hidden.
-    OSK_DISALLOWED_BECAUSE_TAB_HIDDEN,
-
-    // This tab was just shown, so don't pop-up the on-screen keyboard if a
-    // text field gets focus that wasn't the result of an explicit touch.
-    OSK_DISALLOWED_BECAUSE_TAB_JUST_APPEARED,
-
-    // A touch event has occurred within the window, but focus has not
-    // explicitly changed. Allow the on-screen keyboard to be shown if the
-    // touch event was within the bounds of the currently focused object.
-    // Otherwise we'll just wait to see if focus changes.
-    OSK_ALLOWED_WITHIN_FOCUSED_OBJECT,
-
-    // Focus has changed within a tab that's already visible. Allow the
-    // on-screen keyboard to show anytime that a touch event leads to an
-    // editable text control getting focus.
-    OSK_ALLOWED
-  };
 
  protected:
   // The object that can perform actions on our behalf.
@@ -422,13 +420,14 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
   std::unique_ptr<ui::AXSerializableTree> tree_;
 
   // A mapping from a node id to its wrapper of type BrowserAccessibility.
-  base::hash_map<int32_t, BrowserAccessibility*> id_wrapper_map_;
+  std::unordered_map<int32_t, BrowserAccessibility*> id_wrapper_map_;
 
   // True if the user has initiated a navigation to another page.
   bool user_is_navigating_away_;
 
-  // The on-screen keyboard state.
-  OnScreenKeyboardState osk_state_;
+  // Interstitial page, like an SSL warning.
+  // If so we need to suppress any events.
+  bool hidden_by_interstitial_page_ = false;
 
   BrowserAccessibilityFindInPageInfo find_in_page_info_;
 
@@ -442,19 +441,37 @@ class CONTENT_EXPORT BrowserAccessibilityManager : public ui::AXTreeDelegate {
   BrowserAccessibility* last_focused_node_;
   BrowserAccessibilityManager* last_focused_manager_;
 
+  // These cache the AX tree ID, node ID, and global screen bounds of the
+  // last object found by an asynchronous hit test. Subsequent hit test
+  // requests that remain within this object's bounds will return the same
+  // object, but will also trigger a new asynchronous hit test request.
+  ui::AXTreeID last_hover_ax_tree_id_;
+  int last_hover_node_id_;
+  gfx::Rect last_hover_bounds_;
+
   // True if the root's parent is in another accessibility tree and that
   // parent's child is the root. Ensures that the parent node is notified
   // once when this subtree is first connected.
   bool connected_to_parent_tree_node_;
 
   // The global ID of this accessibility tree.
-  AXTreeIDRegistry::AXTreeID ax_tree_id_;
+  ui::AXTreeID ax_tree_id_;
 
-  // If this tree has a parent tree, this is the cached ID of the parent
-  // node within that parent tree. It's computed as needed and cached for
-  // speed so that it can be accessed quickly if it hasn't changed.
-  int parent_node_id_from_parent_tree_;
+  // The device scale factor for the view associated with this frame,
+  // cached each time there's any update to the accessibility tree.
+  float device_scale_factor_;
 
+  // For testing only: If true, the manually-set device scale factor will be
+  // used and it won't be updated from the delegate.
+  bool use_custom_device_scale_factor_for_testing_;
+
+  ui::AXEventGenerator event_generator_;
+
+  // Fire all events regardless of focus and with no delay, to avoid test
+  // flakiness. See NeverSuppressOrDelayEventsForTesting() for details.
+  static bool never_suppress_or_delay_events_for_testing_;
+
+ private:
   DISALLOW_COPY_AND_ASSIGN(BrowserAccessibilityManager);
 };
 

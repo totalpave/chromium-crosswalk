@@ -5,17 +5,21 @@
 #ifndef UI_WM_CORE_FOCUS_RULES_H_
 #define UI_WM_CORE_FOCUS_RULES_H_
 
-#include "ui/wm/wm_export.h"
+#include "ui/wm/core/wm_core_export.h"
 
 namespace aura {
 class Window;
+}
+
+namespace ui {
+class Event;
 }
 
 namespace wm {
 
 // Implemented by an object that establishes the rules about what can be
 // focused or activated.
-class WM_EXPORT FocusRules {
+class WM_CORE_EXPORT FocusRules {
  public:
   virtual ~FocusRules() {}
 
@@ -23,19 +27,23 @@ class WM_EXPORT FocusRules {
   // is considered toplevel is determined by a similar set of rules that
   // govern activation and focus. Not all toplevel windows are activatable,
   // call CanActivateWindow() to determine if a window can be activated.
-  virtual bool IsToplevelWindow(aura::Window* window) const = 0;
+  virtual bool IsToplevelWindow(const aura::Window* window) const = 0;
   // Returns true if |window| can be activated or focused.
-  virtual bool CanActivateWindow(aura::Window* window) const = 0;
-  // For CanFocusWindow(), NULL is supported, because NULL is a valid focusable
-  // window (in the case of clearing focus).
-  virtual bool CanFocusWindow(aura::Window* window) const = 0;
+  virtual bool CanActivateWindow(const aura::Window* window) const = 0;
+  // For CanFocusWindow(), NULL window is supported, because NULL is a valid
+  // focusable window (in the case of clearing focus).
+  // If |event| is non-null it is the event triggering the focus change.
+  virtual bool CanFocusWindow(const aura::Window* window,
+                              const ui::Event* event) const = 0;
 
   // Returns the toplevel window containing |window|. Not all toplevel windows
   // are activatable, call GetActivatableWindow() instead to return the
   // activatable window, which might be in a different hierarchy.
   // Will return NULL if |window| is not contained by a window considered to be
   // a toplevel window.
-  virtual aura::Window* GetToplevelWindow(aura::Window* window) const = 0;
+  virtual const aura::Window* GetToplevelWindow(
+      const aura::Window* window) const = 0;
+
   // Returns the activatable or focusable window given an attempt to activate or
   // focus |window|. Some possible scenarios (not intended to be exhaustive):
   // - |window| is a child of a non-focusable window and so focus must be set

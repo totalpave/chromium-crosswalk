@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/debug/leak_annotations.h"
 #include "base/i18n/rtl.h"
@@ -26,24 +27,36 @@
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/common/chrome_switches.h"
 #include "ui/base/hit_test.h"
+#include "ui/base/material_design/material_design_controller.h"
 #include "ui/events/event_handler.h"
 #include "ui/gfx/font_list.h"
+#include "ui/native_theme/native_theme_dark_aura.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/widget/native_widget.h"
 
 #if defined(OS_CHROMEOS)
-#include "ash/common/session/session_state_delegate.h"
-#include "ash/common/wm_shell.h"
-#include "ui/native_theme/native_theme_dark_aura.h"
+#include "components/user_manager/user_manager.h"
 #endif
 
 #if defined(OS_LINUX)
 #include "chrome/browser/ui/views/frame/browser_command_handler_linux.h"
 #endif
 
-#if defined(OS_WIN)
-#include "ui/native_theme/native_theme_dark_win.h"
+#if defined(USE_X11)
+#include "ui/views/widget/desktop_aura/x11_desktop_handler.h"
 #endif
+
+namespace {
+
+bool IsUsingGtkTheme(Profile* profile) {
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+  return ThemeServiceFactory::GetForProfile(profile)->UsingSystemTheme();
+#else
+  return false;
+#endif
+}
+
+}  // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // BrowserFrame, public:
@@ -57,22 +70,16 @@ BrowserFrame::BrowserFrame(BrowserView* browser_view)
   set_is_secondary_widget(false);
   // Don't focus anything on creation, selecting a tab will set the focus.
   set_focus_on_creation(false);
+  md_observer_.Add(ui::MaterialDesignController::GetInstance());
 }
 
-BrowserFrame::~BrowserFrame() {
-}
-
-// static
-const gfx::FontList& BrowserFrame::GetTitleFontList() {
-  static const gfx::FontList* title_font_list = new gfx::FontList();
-  ANNOTATE_LEAKING_OBJECT_PTR(title_font_list);
-  return *title_font_list;
-}
+BrowserFrame::~BrowserFrame() {}
 
 void BrowserFrame::InitBrowserFrame() {
   native_browser_frame_ =
       NativeBrowserFrameFactory::CreateNativeBrowserFrame(this, browser_view_);
   views::Widget::InitParams params = native_browser_frame_->GetWidgetParams();
+  params.name = "BrowserFrame";
   params.delegate = browser_view_;
   if (browser_view_->browser()->is_type_tabbed()) {
     // Typed panel/popup can only return a size once the widget has been
@@ -107,14 +114,15 @@ int BrowserFrame::GetMinimizeButtonOffset() const {
   return native_browser_frame_->GetMinimizeButtonOffset();
 }
 
-gfx::Rect BrowserFrame::GetBoundsForTabStrip(views::View* tabstrip) const {
+gfx::Rect BrowserFrame::GetBoundsForTabStrip(
+    const views::View* tabstrip) const {
   // This can be invoked before |browser_frame_view_| has been set.
   return browser_frame_view_ ?
       browser_frame_view_->GetBoundsForTabStrip(tabstrip) : gfx::Rect();
 }
 
-int BrowserFrame::GetTopInset(bool restored) const {
-  return browser_frame_view_->GetTopInset(restored);
+int BrowserFrame::GetTopInset() const {
+  return browser_frame_view_->GetTopInset(false);
 }
 
 int BrowserFrame::GetThemeBackgroundXInset() const {
@@ -123,14 +131,6 @@ int BrowserFrame::GetThemeBackgroundXInset() const {
 
 void BrowserFrame::UpdateThrobber(bool running) {
   browser_frame_view_->UpdateThrobber(running);
-}
-
-void BrowserFrame::UpdateToolbar() {
-  browser_frame_view_->UpdateToolbar();
-}
-
-views::View* BrowserFrame::GetLocationIconView() const {
-  return browser_frame_view_->GetLocationIconView();
 }
 
 BrowserNonClientFrameView* BrowserFrame::GetFrameView() const {
@@ -150,8 +150,32 @@ void BrowserFrame::GetWindowPlacement(gfx::Rect* bounds,
   return native_browser_frame_->GetWindowPlacement(bounds, show_state);
 }
 
+content::KeyboardEventProcessingResult BrowserFrame::PreHandleKeyboardEvent(
+    const content::NativeWebKeyboardEvent& event) {
+  return native_browser_frame_->PreHandleKeyboardEvent(event);
+}
+
+bool BrowserFrame::HandleKeyboardEvent(
+    const content::NativeWebKeyboardEvent& event) {
+  return native_browser_frame_->HandleKeyboardEvent(event);
+}
+
 void BrowserFrame::OnBrowserViewInitViewsComplete() {
   browser_frame_view_->OnBrowserViewInitViewsComplete();
+}
+
+bool BrowserFrame::ShouldUseTheme() const {
+  // Main browser windows are always themed.
+  if (browser_view_->IsBrowserTypeNormal())
+    return true;
+
+  // The system GTK theme should always be respected if the user has opted to
+  // use it.
+  if (IsUsingGtkTheme(browser_view_->browser()->profile()))
+    return true;
+
+  // Other window types (popups, hosted apps) on non-GTK use the default theme.
+  return false;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -174,54 +198,37 @@ bool BrowserFrame::GetAccelerator(int command_id,
 }
 
 const ui::ThemeProvider* BrowserFrame::GetThemeProvider() const {
-  return &ThemeService::GetThemeProviderForProfile(
-      browser_view_->browser()->profile());
+  Browser* browser = browser_view_->browser();
+  Profile* profile = browser->profile();
+  return ShouldUseTheme()
+             ? &ThemeService::GetThemeProviderForProfile(profile)
+             : &ThemeService::GetDefaultThemeProviderForProfile(profile);
 }
 
 const ui::NativeTheme* BrowserFrame::GetNativeTheme() const {
+#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_CHROMEOS)
   if (browser_view_->browser()->profile()->GetProfileType() ==
           Profile::INCOGNITO_PROFILE &&
       ThemeServiceFactory::GetForProfile(browser_view_->browser()->profile())
           ->UsingDefaultTheme()) {
-#if defined(OS_WIN)
-    return ui::NativeThemeDarkWin::instance();
-#elif defined(OS_CHROMEOS)
     return ui::NativeThemeDarkAura::instance();
+  }
 #endif
-  }
   return views::Widget::GetNativeTheme();
-}
-
-void BrowserFrame::SchedulePaintInRect(const gfx::Rect& rect) {
-  views::Widget::SchedulePaintInRect(rect);
-
-  // Paint the frame caption area and window controls during immersive reveal.
-  if (browser_view_ &&
-      browser_view_->immersive_mode_controller()->IsRevealed()) {
-    // This function should not be reentrant because the TopContainerView
-    // paints to a layer for the duration of the immersive reveal.
-    views::View* top_container = browser_view_->top_container();
-    CHECK(top_container->layer());
-    top_container->SchedulePaintInRect(rect);
-  }
-}
-
-void BrowserFrame::OnNativeWidgetActivationChanged(bool active) {
-  if (active) {
-    // When running under remote desktop, if the remote desktop client is not
-    // active on the users desktop, then none of the windows contained in the
-    // remote desktop will be activated.  However, NativeWidget::Activate() will
-    // still bring this browser window to the foreground.  We explicitly set
-    // ourselves as the last active browser window to ensure that we get treated
-    // as such by the rest of Chrome.
-    BrowserList::SetLastActive(browser_view_->browser());
-  }
-  Widget::OnNativeWidgetActivationChanged(active);
 }
 
 void BrowserFrame::OnNativeWidgetWorkspaceChanged() {
   chrome::SaveWindowWorkspace(browser_view_->browser(), GetWorkspace());
+#if defined(USE_X11)
+  BrowserList::MoveBrowsersInWorkspaceToFront(
+      views::X11DesktopHandler::get()->GetWorkspace());
+#endif
   Widget::OnNativeWidgetWorkspaceChanged();
+}
+
+void BrowserFrame::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
+  views::Widget::OnNativeThemeUpdated(observed_theme);
+  browser_view_->NativeThemeUpdated(observed_theme);
 }
 
 void BrowserFrame::ShowContextMenuForView(views::View* source,
@@ -240,25 +247,20 @@ void BrowserFrame::ShowContextMenuForView(views::View* source,
   if (hit_test == HTCAPTION || hit_test == HTNOWHERE) {
     menu_runner_.reset(new views::MenuRunner(
         GetSystemMenuModel(),
-        views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU));
-    if (menu_runner_->RunMenuAt(source->GetWidget(),
-                                nullptr,
-                                gfx::Rect(p, gfx::Size(0, 0)),
-                                views::MENU_ANCHOR_TOPLEFT,
-                                source_type) ==
-        views::MenuRunner::MENU_DELETED) {
-      return;
-    }
+        views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU,
+        base::Bind(&BrowserFrame::OnMenuClosed, base::Unretained(this))));
+    menu_runner_->RunMenuAt(source->GetWidget(), nullptr,
+                            gfx::Rect(p, gfx::Size(0, 0)),
+                            views::MENU_ANCHOR_TOPLEFT, source_type);
   }
 }
 
 ui::MenuModel* BrowserFrame::GetSystemMenuModel() {
 #if defined(OS_CHROMEOS)
-  ash::SessionStateDelegate* delegate =
-      ash::WmShell::Get()->GetSessionStateDelegate();
-  if (delegate && delegate->NumberOfLoggedInUsers() > 1) {
+  if (user_manager::UserManager::IsInitialized() &&
+      user_manager::UserManager::Get()->GetLoggedInUsers().size() > 1) {
     // In Multi user mode, the number of users as well as the order of users
-    // can change. Coming here we have more then one user and since the menu
+    // can change. Coming here we have more than one user and since the menu
     // model contains the user information, it must get updated to show any
     // changes happened since the last invocation.
     menu_model_builder_.reset();
@@ -272,6 +274,12 @@ ui::MenuModel* BrowserFrame::GetSystemMenuModel() {
   return menu_model_builder_->menu_model();
 }
 
-views::View* BrowserFrame::GetNewAvatarMenuButton() {
-  return browser_frame_view_->GetProfileSwitcherView();
+void BrowserFrame::OnMenuClosed() {
+  menu_runner_.reset();
+}
+
+void BrowserFrame::OnTouchUiChanged() {
+  client_view()->InvalidateLayout();
+  non_client_view()->InvalidateLayout();
+  GetRootView()->Layout();
 }

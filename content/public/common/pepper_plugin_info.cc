@@ -10,18 +10,14 @@
 namespace content {
 
 PepperPluginInfo::EntryPoints::EntryPoints()
-    : get_interface(NULL),
-      initialize_module(NULL),
-      shutdown_module(NULL) {
-}
+    : get_interface(nullptr),
+      initialize_module(nullptr),
+      shutdown_module(nullptr) {}
 
 PepperPluginInfo::PepperPluginInfo()
     : is_internal(false),
       is_out_of_process(false),
-      is_debug(false),
-      is_on_local_drive(true),
       is_external(false),
-      is_bundled(false),
       permissions(0) {
 }
 

@@ -10,53 +10,89 @@
 #include "base/bind.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
-#include "base/memory/ref_counted_delete_on_message_loop.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
+#include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/devtools/devtools_io_context.h"
+#include "content/browser/devtools/devtools_stream_blob.h"
+#include "content/browser/frame_host/render_frame_host_impl.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 
 namespace content {
-namespace devtools {
-namespace io {
-
-using Response = DevToolsProtocolClient::Response;
+namespace protocol {
 
 IOHandler::IOHandler(DevToolsIOContext* io_context)
-    : io_context_(io_context)
-    , weak_factory_(this) {}
+    : DevToolsDomainHandler(IO::Metainfo::domainName),
+      io_context_(io_context),
+      browser_context_(nullptr),
+      storage_partition_(nullptr),
+      weak_factory_(this) {}
 
 IOHandler::~IOHandler() {}
 
-void IOHandler::SetClient(std::unique_ptr<Client> client) {
-  client_.swap(client);
+void IOHandler::Wire(UberDispatcher* dispatcher) {
+  frontend_.reset(new IO::Frontend(dispatcher->channel()));
+  IO::Dispatcher::wire(dispatcher, this);
 }
 
-Response IOHandler::Read(DevToolsCommandId command_id,
-    const std::string& handle, const int* offset, const int* max_size) {
+void IOHandler::SetRenderer(int process_host_id,
+                            RenderFrameHostImpl* frame_host) {
+  RenderProcessHost* process_host = RenderProcessHost::FromID(process_host_id);
+  if (process_host) {
+    browser_context_ = process_host->GetBrowserContext();
+    storage_partition_ = process_host->GetStoragePartition();
+  } else {
+    browser_context_ = nullptr;
+    storage_partition_ = nullptr;
+  }
+}
+
+void IOHandler::Read(
+    const std::string& handle,
+    Maybe<int> offset,
+    Maybe<int> max_size,
+    std::unique_ptr<ReadCallback> callback) {
   static const size_t kDefaultChunkSize = 10 * 1024 * 1024;
+  static const char kBlobPrefix[] = "blob:";
 
   scoped_refptr<DevToolsIOContext::Stream> stream =
       io_context_->GetByHandle(handle);
-  if (!stream)
-    return Response::InvalidParams("Invalid stream handle");
-  stream->Read(offset ? *offset : -1,
-               max_size && *max_size ? *max_size : kDefaultChunkSize,
-               base::Bind(&IOHandler::ReadComplete,
-                          weak_factory_.GetWeakPtr(), command_id));
-  return Response::OK();
+  if (!stream && browser_context_ &&
+      StartsWith(handle, kBlobPrefix, base::CompareCase::SENSITIVE)) {
+    ChromeBlobStorageContext* blob_context =
+        ChromeBlobStorageContext::GetFor(browser_context_);
+    std::string uuid = handle.substr(strlen(kBlobPrefix));
+    stream = DevToolsStreamBlob::Create(io_context_, blob_context,
+                                        storage_partition_, handle, uuid);
+  }
+
+  if (!stream) {
+    callback->sendFailure(Response::InvalidParams("Invalid stream handle"));
+    return;
+  }
+  if (offset.isJust() && !stream->SupportsSeek()) {
+    callback->sendFailure(
+        Response::InvalidParams("Read offset is specificed for a stream that "
+                                "does not support random access"));
+    return;
+  }
+  stream->Read(offset.fromMaybe(-1), max_size.fromMaybe(kDefaultChunkSize),
+               base::BindOnce(&IOHandler::ReadComplete,
+                              weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
-void IOHandler::ReadComplete(DevToolsCommandId command_id,
-                             const scoped_refptr<base::RefCountedString>& data,
+void IOHandler::ReadComplete(std::unique_ptr<ReadCallback> callback,
+                             std::unique_ptr<std::string> data,
+                             bool base64_encoded,
                              int status) {
   if (status == DevToolsIOContext::Stream::StatusFailure) {
-    client_->SendError(command_id, Response::ServerError("Read failed"));
+    callback->sendFailure(Response::Error("Read failed"));
     return;
   }
   bool eof = status == DevToolsIOContext::Stream::StatusEOF;
-  client_->SendReadResponse(command_id,
-      ReadResponse::Create()->set_data(data->data())->set_eof(eof));
+  callback->sendSuccess(base64_encoded, std::move(*data), eof);
 }
 
 Response IOHandler::Close(const std::string& handle) {
@@ -64,6 +100,5 @@ Response IOHandler::Close(const std::string& handle) {
       : Response::InvalidParams("Invalid stream handle");
 }
 
-}  // namespace io
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content

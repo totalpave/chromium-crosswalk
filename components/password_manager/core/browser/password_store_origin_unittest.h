@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
@@ -23,7 +24,7 @@ using testing::_;
 using testing::ElementsAre;
 
 bool matchesOrigin(const url::Origin& origin, const GURL& url) {
-  return origin.IsSameOriginWith(url::Origin(url));
+  return origin.IsSameOriginWith(url::Origin::Create(url));
 }
 
 namespace password_manager {
@@ -39,7 +40,6 @@ PasswordFormData CreateTestPasswordFormDataByOrigin(const char* origin_url) {
                            L"username_value",
                            L"password_value",
                            true,
-                           false,
                            1};
   return data;
 }
@@ -59,20 +59,20 @@ class PasswordStoreOriginTest : public testing::Test {
   T delegate_;
 };
 
-TYPED_TEST_CASE_P(PasswordStoreOriginTest);
+TYPED_TEST_SUITE_P(PasswordStoreOriginTest);
 
 TYPED_TEST_P(PasswordStoreOriginTest,
              RemoveLoginsByURLAndTimeImpl_AllFittingOriginAndTime) {
   const char origin_url[] = "http://foo.example.com/";
-  std::unique_ptr<PasswordForm> form = CreatePasswordFormFromDataForTesting(
-      CreateTestPasswordFormDataByOrigin(origin_url));
+  std::unique_ptr<PasswordForm> form =
+      FillPasswordFormWithData(CreateTestPasswordFormDataByOrigin(origin_url));
   this->delegate_.store()->AddLogin(*form);
   this->delegate_.FinishAsyncProcessing();
 
   MockPasswordStoreObserver observer;
   this->delegate_.store()->AddObserver(&observer);
 
-  const url::Origin origin((GURL(origin_url)));
+  const url::Origin origin = url::Origin::Create((GURL(origin_url)));
   base::Callback<bool(const GURL&)> filter = base::Bind(&matchesOrigin, origin);
   base::RunLoop run_loop;
   EXPECT_CALL(observer, OnLoginsChanged(ElementsAre(PasswordStoreChange(
@@ -87,12 +87,12 @@ TYPED_TEST_P(PasswordStoreOriginTest,
 TYPED_TEST_P(PasswordStoreOriginTest,
              RemoveLoginsByURLAndTimeImpl_SomeFittingOriginAndTime) {
   const char fitting_url[] = "http://foo.example.com/";
-  std::unique_ptr<PasswordForm> form = CreatePasswordFormFromDataForTesting(
-      CreateTestPasswordFormDataByOrigin(fitting_url));
+  std::unique_ptr<PasswordForm> form =
+      FillPasswordFormWithData(CreateTestPasswordFormDataByOrigin(fitting_url));
   this->delegate_.store()->AddLogin(*form);
 
   const char nonfitting_url[] = "http://bar.example.com/";
-  this->delegate_.store()->AddLogin(*CreatePasswordFormFromDataForTesting(
+  this->delegate_.store()->AddLogin(*FillPasswordFormWithData(
       CreateTestPasswordFormDataByOrigin(nonfitting_url)));
 
   this->delegate_.FinishAsyncProcessing();
@@ -100,7 +100,7 @@ TYPED_TEST_P(PasswordStoreOriginTest,
   MockPasswordStoreObserver observer;
   this->delegate_.store()->AddObserver(&observer);
 
-  const url::Origin fitting_origin((GURL(fitting_url)));
+  const url::Origin fitting_origin = url::Origin::Create((GURL(fitting_url)));
   base::Callback<bool(const GURL&)> filter =
       base::Bind(&matchesOrigin, fitting_origin);
   base::RunLoop run_loop;
@@ -117,15 +117,15 @@ TYPED_TEST_P(PasswordStoreOriginTest,
              RemoveLoginsByURLAndTimeImpl_NonMatchingOrigin) {
   const char origin_url[] = "http://foo.example.com/";
   std::unique_ptr<autofill::PasswordForm> form =
-      CreatePasswordFormFromDataForTesting(
-          CreateTestPasswordFormDataByOrigin(origin_url));
+      FillPasswordFormWithData(CreateTestPasswordFormDataByOrigin(origin_url));
   this->delegate_.store()->AddLogin(*form);
   this->delegate_.FinishAsyncProcessing();
 
   MockPasswordStoreObserver observer;
   this->delegate_.store()->AddObserver(&observer);
 
-  const url::Origin other_origin(GURL("http://bar.example.com/"));
+  const url::Origin other_origin =
+      url::Origin::Create(GURL("http://bar.example.com/"));
   base::Callback<bool(const GURL&)> filter =
       base::Bind(&matchesOrigin, other_origin);
   base::RunLoop run_loop;
@@ -141,15 +141,14 @@ TYPED_TEST_P(PasswordStoreOriginTest,
              RemoveLoginsByURLAndTimeImpl_NotWithinTimeInterval) {
   const char origin_url[] = "http://foo.example.com/";
   std::unique_ptr<autofill::PasswordForm> form =
-      CreatePasswordFormFromDataForTesting(
-          CreateTestPasswordFormDataByOrigin(origin_url));
+      FillPasswordFormWithData(CreateTestPasswordFormDataByOrigin(origin_url));
   this->delegate_.store()->AddLogin(*form);
   this->delegate_.FinishAsyncProcessing();
 
   MockPasswordStoreObserver observer;
   this->delegate_.store()->AddObserver(&observer);
 
-  const url::Origin origin((GURL(origin_url)));
+  const url::Origin origin = url::Origin::Create((GURL(origin_url)));
   base::Callback<bool(const GURL&)> filter = base::Bind(&matchesOrigin, origin);
   base::Time time_after_creation_date =
       form->date_created + base::TimeDelta::FromDays(1);
@@ -163,7 +162,7 @@ TYPED_TEST_P(PasswordStoreOriginTest,
   this->delegate_.store()->RemoveObserver(&observer);
 }
 
-REGISTER_TYPED_TEST_CASE_P(
+REGISTER_TYPED_TEST_SUITE_P(
     PasswordStoreOriginTest,
     RemoveLoginsByURLAndTimeImpl_AllFittingOriginAndTime,
     RemoveLoginsByURLAndTimeImpl_SomeFittingOriginAndTime,

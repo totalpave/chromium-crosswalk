@@ -1,4 +1,8 @@
 include_rules = [
-  "+ipc",
+  "+components/crash/content/browser",
+  "+components/data_use_measurement/core",
+  "+components/previews/core",
   "+net",
+  "+services/network/public/cpp",
+  "+services/network/test",
 ]

@@ -9,14 +9,10 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/values.h"
 
 class PrefRegistrySimple;
 class PrefService;
-
-namespace base {
-class DictionaryValue;
-class ListValue;
-}
 
 namespace user_prefs {
 class PrefRegistrySyncable;
@@ -28,15 +24,6 @@ namespace ios {
 // or prefs.
 class NotificationPromo {
  public:
-  // TODO(crbug.com/608525): Remove when this code is refactored.
-  enum PromoType {
-    NO_PROMO,
-    NTP_NOTIFICATION_PROMO,
-    NTP_BUBBLE_PROMO,
-    MOBILE_NTP_SYNC_PROMO,
-    MOBILE_NTP_WHATS_NEW_PROMO,
-  };
-
   explicit NotificationPromo(PrefService* local_state);
   ~NotificationPromo();
 
@@ -44,8 +31,8 @@ class NotificationPromo {
   void InitFromVariations();
 
   // Initialize from json/prefs.
-  void InitFromJson(const base::DictionaryValue& json, PromoType promo_type);
-  void InitFromPrefs(PromoType promo_type);
+  void InitFromJson(base::Value json);
+  void InitFromPrefs();
 
   // Can this promo be shown?
   bool CanShow() const;
@@ -61,9 +48,9 @@ class NotificationPromo {
   void HandleViewed();
 
   const std::string& promo_text() const { return promo_text_; }
-  PromoType promo_type() const { return promo_type_; }
-  const base::DictionaryValue* promo_payload() const {
-    return promo_payload_.get();
+  const base::Value& promo_payload() const {
+    DCHECK(promo_payload_.is_dict());
+    return promo_payload_;
   }
 
   // Register preferences.
@@ -93,18 +80,11 @@ class NotificationPromo {
   // payload.
   bool IsPayloadParam(const std::string& param_name) const;
 
-  // Transition data saved in old prefs structure to new structure that supports
-  // storing multiple promos.
-  // TODO(crbug.com/623726) Remove this method when migration is no longer
-  // needed as most users have been upgraded to the new pref structure.
-  void MigrateOldPrefs();
-
   PrefService* local_state_;
 
-  PromoType promo_type_;
   std::string promo_text_;
 
-  std::unique_ptr<const base::DictionaryValue> promo_payload_;
+  base::Value promo_payload_;
 
   double start_;
   double end_;

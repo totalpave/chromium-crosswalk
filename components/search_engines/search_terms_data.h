@@ -49,16 +49,21 @@ class SearchTermsData {
   // This implementation returns the empty string.
   virtual std::string GetSuggestRequestIdentifier() const;
 
-  // Returns a string indicating whether InstantExtended is enabled.
-  virtual std::string InstantExtendedEnabledParam(bool for_search) const;
-
-  // Returns a string that will cause the search results page to update
-  // incrementally.
-  virtual std::string ForceInstantResultsParam(bool for_prerender) const;
-
   // Returns the value to use for replacements of type
   // GOOGLE_IMAGE_SEARCH_SOURCE.
   virtual std::string GoogleImageSearchSource() const;
+
+  // Returns the optional referral ID to be passed to Yandex when searching from
+  // the omnibox (returns the empty string if not supported/applicable).
+  virtual std::string GetYandexReferralID() const;
+
+  // Returns the optional referral ID to be passed to @MAIL.RU when searching
+  // from the omnibox (returns the empty string if not supported/applicable).
+  virtual std::string GetMailRUReferralID() const;
+
+  // Estimates dynamic memory usage.
+  // See base/trace_event/memory_usage_estimator.h for more info.
+  virtual size_t EstimateMemoryUsage() const;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(SearchTermsData);

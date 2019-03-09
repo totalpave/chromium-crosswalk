@@ -6,6 +6,7 @@
 
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/metrics/user_metrics.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
@@ -18,7 +19,7 @@
 #include "url/gurl.h"
 
 using base::ListValue;
-using base::FundamentalValue;
+using base::Value;
 
 namespace password_manager {
 
@@ -31,9 +32,19 @@ void LogUMAHistogramBoolean(const std::string& name, bool sample) {
   histogram->AddBoolean(sample);
 }
 
-void LogUIDismissalReason(UIDismissalReason reason) {
+void LogGeneralUIDismissalReason(UIDismissalReason reason) {
   UMA_HISTOGRAM_ENUMERATION("PasswordManager.UIDismissalReason",
                             reason,
+                            NUM_UI_RESPONSES);
+}
+
+void LogSaveUIDismissalReason(UIDismissalReason reason) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.SaveUIDismissalReason", reason,
+                            NUM_UI_RESPONSES);
+}
+
+void LogUpdateUIDismissalReason(UIDismissalReason reason) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.UpdateUIDismissalReason", reason,
                             NUM_UI_RESPONSES);
 }
 
@@ -70,19 +81,6 @@ void LogPasswordGenerationAvailableSubmissionEvent(
                             event, SUBMISSION_EVENT_ENUM_COUNT);
 }
 
-void LogUpdatePasswordSubmissionEvent(UpdatePasswordSubmissionEvent event) {
-  DCHECK_LT(event, UPDATE_PASSWORD_EVENT_COUNT);
-  UMA_HISTOGRAM_ENUMERATION("PasswordManager.UpdatePasswordSubmissionEvent",
-                            event, UPDATE_PASSWORD_EVENT_COUNT);
-}
-
-void LogMultiAccountUpdateBubbleUserAction(
-    MultiAccountUpdateBubbleUserAction action) {
-  UMA_HISTOGRAM_ENUMERATION("PasswordManager.MultiAccountPasswordUpdateAction",
-                            action,
-                            MULTI_ACCOUNT_UPDATE_BUBBLE_USER_ACTION_COUNT);
-}
-
 void LogAutoSigninPromoUserAction(AutoSigninPromoUserAction action) {
   UMA_HISTOGRAM_ENUMERATION("PasswordManager.AutoSigninFirstRunDialog", action,
                             AUTO_SIGNIN_PROMO_ACTION_COUNT);
@@ -91,29 +89,164 @@ void LogAutoSigninPromoUserAction(AutoSigninPromoUserAction action) {
 void LogAccountChooserUserActionOneAccount(AccountChooserUserAction action) {
   UMA_HISTOGRAM_ENUMERATION("PasswordManager.AccountChooserDialogOneAccount",
                             action, ACCOUNT_CHOOSER_ACTION_COUNT);
-  // TODO(vasilii): deprecate the histogram when the new ones hit the Stable.
-  UMA_HISTOGRAM_ENUMERATION("PasswordManager.AccountChooserDialog", action,
-                            ACCOUNT_CHOOSER_ACTION_COUNT);
 }
 
 void LogAccountChooserUserActionManyAccounts(AccountChooserUserAction action) {
   UMA_HISTOGRAM_ENUMERATION(
       "PasswordManager.AccountChooserDialogMultipleAccounts", action,
       ACCOUNT_CHOOSER_ACTION_COUNT);
-  // TODO(vasilii): deprecate the histogram when the new ones hit the Stable.
-  UMA_HISTOGRAM_ENUMERATION("PasswordManager.AccountChooserDialog", action,
-                            ACCOUNT_CHOOSER_ACTION_COUNT);
 }
 
-void LogAutoSigninPromoUserAction(SyncSignInUserAction action) {
+void LogSyncSigninPromoUserAction(SyncSignInUserAction action) {
   UMA_HISTOGRAM_ENUMERATION("PasswordManager.SignInPromo", action,
                             CHROME_SIGNIN_ACTION_COUNT);
 }
 
-void LogAccountChooserUsability(AccountChooserUsabilityMetric usability) {
+void LogShouldBlockPasswordForSameOriginButDifferentScheme(bool should_block) {
+  UMA_HISTOGRAM_BOOLEAN(
+      "PasswordManager.ShouldBlockPasswordForSameOriginButDifferentScheme",
+      should_block);
+}
+
+void LogCountHttpMigratedPasswords(int count) {
+  UMA_HISTOGRAM_COUNTS_100("PasswordManager.HttpPasswordMigrationCount", count);
+}
+
+void LogHttpPasswordMigrationMode(HttpPasswordMigrationMode mode) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.HttpPasswordMigrationMode", mode,
+                            HTTP_PASSWORD_MIGRATION_MODE_COUNT);
+}
+
+void LogAccountChooserUsability(AccountChooserUsabilityMetric usability,
+                                int count_empty_icons,
+                                int count_accounts) {
   UMA_HISTOGRAM_ENUMERATION("PasswordManager.AccountChooserDialogUsability",
                             usability, ACCOUNT_CHOOSER_USABILITY_COUNT);
+  UMA_HISTOGRAM_COUNTS_100("PasswordManager.AccountChooserDialogEmptyAvatars",
+                           count_empty_icons);
+  UMA_HISTOGRAM_COUNTS_100("PasswordManager.AccountChooserDialogAccounts",
+                           count_accounts);
 }
+
+void LogCredentialManagerGetResult(CredentialManagerGetResult result,
+                                   CredentialMediationRequirement mediation) {
+  switch (mediation) {
+    case CredentialMediationRequirement::kSilent:
+      UMA_HISTOGRAM_ENUMERATION("PasswordManager.MediationSilent", result,
+                                CREDENTIAL_MANAGER_GET_COUNT);
+      break;
+    case CredentialMediationRequirement::kOptional:
+      UMA_HISTOGRAM_ENUMERATION("PasswordManager.MediationOptional", result,
+                                CREDENTIAL_MANAGER_GET_COUNT);
+      break;
+    case CredentialMediationRequirement::kRequired:
+      UMA_HISTOGRAM_ENUMERATION("PasswordManager.MediationRequired", result,
+                                CREDENTIAL_MANAGER_GET_COUNT);
+      break;
+  }
+}
+
+void LogPasswordReuse(int password_length,
+                      int saved_passwords,
+                      int number_matches,
+                      bool password_field_detected,
+                      PasswordType reused_password_type) {
+  UMA_HISTOGRAM_COUNTS_100("PasswordManager.PasswordReuse.PasswordLength",
+                           password_length);
+  UMA_HISTOGRAM_COUNTS_1000("PasswordManager.PasswordReuse.TotalPasswords",
+                            saved_passwords);
+  UMA_HISTOGRAM_COUNTS_1000("PasswordManager.PasswordReuse.NumberOfMatches",
+                            number_matches);
+  UMA_HISTOGRAM_ENUMERATION(
+      "PasswordManager.PasswordReuse.PasswordFieldDetected",
+      password_field_detected ? HAS_PASSWORD_FIELD : NO_PASSWORD_FIELD,
+      PASSWORD_REUSE_PASSWORD_FIELD_DETECTED_COUNT);
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.ReusedPasswordType",
+                            reused_password_type,
+                            PasswordType::PASSWORD_TYPE_COUNT);
+}
+
+void LogContextOfShowAllSavedPasswordsShown(
+    ShowAllSavedPasswordsContext context) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.ShowAllSavedPasswordsShownContext",
+                            context, SHOW_ALL_SAVED_PASSWORDS_CONTEXT_COUNT);
+}
+
+void LogContextOfShowAllSavedPasswordsAccepted(
+    ShowAllSavedPasswordsContext context) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "PasswordManager.ShowAllSavedPasswordsAcceptedContext", context,
+      SHOW_ALL_SAVED_PASSWORDS_CONTEXT_COUNT);
+}
+
+void LogPasswordDropdownShown(PasswordDropdownState state) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.PasswordDropdownShown", state);
+}
+
+void LogPasswordDropdownItemSelected(PasswordDropdownSelectedOption type) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.PasswordDropdownItemSelected",
+                            type);
+}
+
+void LogPasswordSuccessfulSubmissionIndicatorEvent(
+    autofill::SubmissionIndicatorEvent event) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "PasswordManager.SuccessfulSubmissionIndicatorEvent", event,
+      autofill::SubmissionIndicatorEvent::SUBMISSION_INDICATOR_EVENT_COUNT);
+}
+
+void LogPasswordAcceptedSaveUpdateSubmissionIndicatorEvent(
+    autofill::SubmissionIndicatorEvent event) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "PasswordManager.AcceptedSaveUpdateSubmissionIndicatorEvent", event,
+      autofill::SubmissionIndicatorEvent::SUBMISSION_INDICATOR_EVENT_COUNT);
+}
+
+void LogSubmittedFormFrame(SubmittedFormFrame frame) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.SubmittedFormFrame", frame,
+                            SubmittedFormFrame::SUBMITTED_FORM_FRAME_COUNT);
+}
+
+void LogDeleteUndecryptableLoginsReturnValue(
+    DeleteCorruptedPasswordsResult result) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "PasswordManager.DeleteUndecryptableLoginsReturnValue", result);
+}
+
+void LogDeleteCorruptedPasswordsResult(DeleteCorruptedPasswordsResult result) {
+  UMA_HISTOGRAM_ENUMERATION("PasswordManager.DeleteCorruptedPasswordsResult",
+                            result);
+}
+
+#if defined(SYNC_PASSWORD_REUSE_DETECTION_ENABLED)
+void LogSyncPasswordHashChange(SyncPasswordHashChange event) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "PasswordManager.SyncPasswordHashChange", event,
+      SyncPasswordHashChange::SAVED_SYNC_PASSWORD_CHANGE_COUNT);
+}
+
+void LogIsSyncPasswordHashSaved(IsSyncPasswordHashSaved state,
+                                bool is_under_advanced_protection) {
+  UMA_HISTOGRAM_ENUMERATION(
+      "PasswordManager.IsSyncPasswordHashSaved", state,
+      IsSyncPasswordHashSaved::IS_SYNC_PASSWORD_HASH_SAVED_COUNT);
+  if (is_under_advanced_protection) {
+    UMA_HISTOGRAM_ENUMERATION(
+        "PasswordManager.IsSyncPasswordHashSavedForAdvancedProtectionUser",
+        state, IsSyncPasswordHashSaved::IS_SYNC_PASSWORD_HASH_SAVED_COUNT);
+  }
+}
+
+void LogProtectedPasswordHashCounts(size_t gaia_hash_count,
+                                    size_t enterprise_hash_count) {
+  UMA_HISTOGRAM_COUNTS_100("PasswordManager.SavedGaiaPasswordHashCount",
+                           static_cast<int>(gaia_hash_count));
+  UMA_HISTOGRAM_COUNTS_100("PasswordManager.SavedEnterprisePasswordHashCount",
+                           static_cast<int>(enterprise_hash_count));
+}
+
+void LogProtectedPasswordReuse(PasswordType reused_password_type) {}
+#endif
 
 }  // namespace metrics_util
 

@@ -20,20 +20,15 @@ bool ValidateStudyAndComputeTotalProbability(
     const Study& study,
     base::FieldTrial::Probability* total_probability,
     bool* all_assignments_to_one_group,
-    std::string* single_feature_name) {
-  // At the moment, a missing default_experiment_name makes the study invalid.
-  if (study.default_experiment_name().empty()) {
-    DVLOG(1) << study.name() << " has no default experiment defined.";
-    return false;
-  }
+    std::vector<std::string>* associated_features) {
   if (study.filter().has_min_version() &&
-      !Version::IsValidWildcardString(study.filter().min_version())) {
+      !base::Version::IsValidWildcardString(study.filter().min_version())) {
     DVLOG(1) << study.name() << " has invalid min version: "
              << study.filter().min_version();
     return false;
   }
   if (study.filter().has_max_version() &&
-      !Version::IsValidWildcardString(study.filter().max_version())) {
+      !base::Version::IsValidWildcardString(study.filter().max_version())) {
     DVLOG(1) << study.name() << " has invalid max version: "
              << study.filter().max_version();
     return false;
@@ -44,10 +39,10 @@ bool ValidateStudyAndComputeTotalProbability(
 
   bool multiple_assigned_groups = false;
   bool found_default_group = false;
-  std::string single_feature_name_seen;
-  bool has_multiple_features = false;
 
   std::set<std::string> experiment_names;
+  std::set<std::string> features_to_associate;
+
   for (int i = 0; i < study.experiment_size(); ++i) {
     const Study_Experiment& experiment = study.experiment(i);
     if (experiment.name().empty()) {
@@ -60,25 +55,17 @@ bool ValidateStudyAndComputeTotalProbability(
       return false;
     }
 
-    if (!has_multiple_features) {
+    // Note: This checks for ACTIVATE_ON_QUERY, since there is no reason to
+    // have this association with ACTIVATE_ON_STARTUP (where the trial starts
+    // active), as well as allowing flexibility to disable this behavior in the
+    // future from the server by introducing a new activation type.
+    if (study.activation_type() == Study_ActivationType_ACTIVATE_ON_QUERY) {
       const auto& features = experiment.feature_association();
       for (int i = 0; i < features.enable_feature_size(); ++i) {
-        const std::string& feature_name = features.enable_feature(i);
-        if (single_feature_name_seen.empty()) {
-          single_feature_name_seen = feature_name;
-        } else if (feature_name != single_feature_name_seen) {
-          has_multiple_features = true;
-          break;
-        }
+        features_to_associate.insert(features.enable_feature(i));
       }
       for (int i = 0; i < features.disable_feature_size(); ++i) {
-        const std::string& feature_name = features.disable_feature(i);
-        if (single_feature_name_seen.empty()) {
-          single_feature_name_seen = feature_name;
-        } else if (feature_name != single_feature_name_seen) {
-          has_multiple_features = true;
-          break;
-        }
+        features_to_associate.insert(features.disable_feature(i));
       }
     }
 
@@ -92,18 +79,24 @@ bool ValidateStudyAndComputeTotalProbability(
       found_default_group = true;
   }
 
-  if (!found_default_group) {
-    DVLOG(1) << study.name() << " is missing default experiment in its "
-             << "experiment list";
+  // Specifying a default experiment is optional, so finding it in the
+  // experiment list is only required when it is specified.
+  if (!study.default_experiment_name().empty() && !found_default_group) {
+    DVLOG(1) << study.name() << " is missing default experiment ("
+             << study.default_experiment_name() << ") in its experiment list";
     // The default group was not found in the list of groups. This study is not
     // valid.
     return false;
   }
 
-  if (!has_multiple_features && !single_feature_name_seen.empty())
-    single_feature_name->swap(single_feature_name_seen);
-  else
-    single_feature_name->clear();
+  // Ensure that groups that don't explicitly enable/disable any features get
+  // associated with all features in the study (i.e. so "Default" group gets
+  // reported).
+  if (!features_to_associate.empty()) {
+    associated_features->insert(associated_features->end(),
+                                features_to_associate.begin(),
+                                features_to_associate.end());
+  }
 
   *total_probability = divisor;
   *all_assignments_to_one_group = !multiple_assigned_groups;
@@ -113,12 +106,13 @@ bool ValidateStudyAndComputeTotalProbability(
 
 }  // namespace
 
-ProcessedStudy::ProcessedStudy()
-    : study_(NULL),
-      total_probability_(0),
-      all_assignments_to_one_group_(false),
-      is_expired_(false) {
-}
+// static
+const char ProcessedStudy::kGenericDefaultExperimentName[] =
+    "VariationsDefaultExperiment";
+
+ProcessedStudy::ProcessedStudy() {}
+
+ProcessedStudy::ProcessedStudy(const ProcessedStudy& other) = default;
 
 ProcessedStudy::~ProcessedStudy() {
 }
@@ -126,10 +120,10 @@ ProcessedStudy::~ProcessedStudy() {
 bool ProcessedStudy::Init(const Study* study, bool is_expired) {
   base::FieldTrial::Probability total_probability = 0;
   bool all_assignments_to_one_group = false;
-  std::string single_feature_name;
+  std::vector<std::string> associated_features;
   if (!ValidateStudyAndComputeTotalProbability(*study, &total_probability,
                                                &all_assignments_to_one_group,
-                                               &single_feature_name)) {
+                                               &associated_features)) {
     return false;
   }
 
@@ -137,7 +131,7 @@ bool ProcessedStudy::Init(const Study* study, bool is_expired) {
   is_expired_ = is_expired;
   total_probability_ = total_probability;
   all_assignments_to_one_group_ = all_assignments_to_one_group;
-  single_feature_name_.swap(single_feature_name);
+  associated_features_.swap(associated_features);
   return true;
 }
 
@@ -148,6 +142,13 @@ int ProcessedStudy::GetExperimentIndexByName(const std::string& name) const {
   }
 
   return -1;
+}
+
+const char* ProcessedStudy::GetDefaultExperimentName() const {
+  if (study_->default_experiment_name().empty())
+    return kGenericDefaultExperimentName;
+
+  return study_->default_experiment_name().c_str();
 }
 
 // static

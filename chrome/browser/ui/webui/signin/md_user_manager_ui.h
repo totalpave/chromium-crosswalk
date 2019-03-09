@@ -11,10 +11,6 @@
 class SigninCreateProfileHandler;
 class UserManagerScreenHandler;
 
-#if defined(ENABLE_SUPERVISED_USERS)
-class SigninSupervisedUserImportHandler;
-#endif
-
 namespace base {
 class DictionaryValue;
 }
@@ -33,12 +29,8 @@ class MDUserManagerUI : public content::WebUIController {
       const base::DictionaryValue& localized_strings);
   void GetLocalizedStrings(base::DictionaryValue* localized_strings);
 
-  SigninCreateProfileHandler* signin_create_profile_handler_;
-  UserManagerScreenHandler* user_manager_screen_handler_;
-
-#if defined(ENABLE_SUPERVISED_USERS)
-  SigninSupervisedUserImportHandler* signin_supervised_user_import_handler_;
-#endif
+  SigninCreateProfileHandler* signin_create_profile_handler_ = nullptr;
+  UserManagerScreenHandler* user_manager_screen_handler_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(MDUserManagerUI);
 };

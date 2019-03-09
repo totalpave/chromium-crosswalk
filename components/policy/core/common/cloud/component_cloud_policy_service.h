@@ -6,27 +6,25 @@
 #define COMPONENTS_POLICY_CORE_COMMON_CLOUD_COMPONENT_CLOUD_POLICY_SERVICE_H_
 
 #include <memory>
+#include <string>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "build/build_config.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/core/common/policy_bundle.h"
 #include "components/policy/core/common/policy_namespace.h"
+#include "components/policy/core/common/policy_types.h"
 #include "components/policy/core/common/schema_registry.h"
 #include "components/policy/policy_export.h"
 
 namespace base {
 class SequencedTaskRunner;
-}
-
-namespace net {
-class URLRequestContextGetter;
 }
 
 namespace policy {
@@ -35,16 +33,24 @@ class ExternalPolicyDataFetcherBackend;
 class ResourceCache;
 class SchemaMap;
 
-// Manages cloud policy for components.
+// Manages cloud policy for components (currently used for device local accounts
+// and policy for extensions --> go/cros-ent-p4ext-dd).
 //
 // This class takes care of fetching, validating, storing and updating policy
-// for components. The components to manage come from a SchemaRegistry.
+// for components.
+//
+// Note that the policies for all components, as returned by the server, are
+// downloaded and cached, regardless of the current state of the schema
+// registry. However, exposed are only the policies whose components are present
+// in the schema registry.
+//
+// The exposed policies are guaranteed to be conformant to the corresponding
+// schemas. Values that do not pass validation against the schema are dropped.
 class POLICY_EXPORT ComponentCloudPolicyService
     : public CloudPolicyClient::Observer,
       public CloudPolicyCore::Observer,
       public CloudPolicyStore::Observer,
-      public SchemaRegistry::Observer,
-      public base::NonThreadSafe {
+      public SchemaRegistry::Observer {
  public:
   class POLICY_EXPORT Delegate {
    public:
@@ -56,11 +62,21 @@ class POLICY_EXPORT ComponentCloudPolicyService
     virtual void OnComponentCloudPolicyUpdated() = 0;
   };
 
+  // |policy_type| specifies the policy type that should be fetched. The only
+  // allowed values are: |dm_protocol::kChromeExtensionPolicyType|,
+  // |dm_protocol::kChromeSigninExtensionPolicyType|.
+  //
+  // |policy_source| specifies where the policy originates from, and can be used
+  // to configure precedence when the same components are configured by policies
+  // from different sources. It only accepts POLICY_SOURCE_CLOUD and
+  // POLICY_SOURCE_PRIORITY_CLOUD now.
+  //
   // The |delegate| is notified of updates to the downloaded policies and must
   // outlive this object.
   //
-  // |schema_registry| is used to get the list of components to fetch cloud
-  // policy for. It must outlive this object.
+  // |schema_registry| is used to filter the fetched policies against the list
+  // of installed extensions and to validate the policies against corresponding
+  // schemas. It must outlive this object.
   //
   // |core| is used to obtain the CloudPolicyStore and CloudPolicyClient used
   // by this service. The store will be the source of the registration status
@@ -76,11 +92,10 @@ class POLICY_EXPORT ComponentCloudPolicyService
   // |cache| is used to load and store local copies of the downloaded policies.
   //
   // Download scheduling, validation and caching of policies are done via the
-  // |backend_task_runner|, which must support file I/O. Network I/O is done via
-  // the |io_task_runner|.
-  //
-  // |request_context| is used by the background URLFetchers.
+  // |backend_task_runner|, which must support file I/O.
   ComponentCloudPolicyService(
+      const std::string& policy_type,
+      PolicySource policy_source,
       Delegate* delegate,
       SchemaRegistry* schema_registry,
       CloudPolicyCore* core,
@@ -88,17 +103,15 @@ class POLICY_EXPORT ComponentCloudPolicyService
 #if !defined(OS_ANDROID) && !defined(OS_IOS)
       std::unique_ptr<ResourceCache> cache,
 #endif
-      scoped_refptr<net::URLRequestContextGetter> request_context,
-      scoped_refptr<base::SequencedTaskRunner> backend_task_runner,
-      scoped_refptr<base::SequencedTaskRunner> io_task_runner);
+      scoped_refptr<base::SequencedTaskRunner> backend_task_runner);
   ~ComponentCloudPolicyService() override;
 
   // Returns true if |domain| is supported by the service.
   static bool SupportsDomain(PolicyDomain domain);
 
-  // Returns true if the backend is initialized, and the initial policies and
-  // components are being served.
-  bool is_initialized() const { return loaded_initial_policy_; }
+  // Returns true if the backend is initialized, and the initial policies are
+  // being served.
+  bool is_initialized() const { return policy_installed_; }
 
   // Returns the current policies for components.
   const PolicyBundle& policy() const { return policy_; }
@@ -128,23 +141,22 @@ class POLICY_EXPORT ComponentCloudPolicyService
 #if !defined(OS_ANDROID) && !defined(OS_IOS)
   class Backend;
 
-  void InitializeIfReady();
-  void OnBackendInitialized(std::unique_ptr<PolicyBundle> initial_policy);
-  void ReloadSchema();
-  void OnPolicyUpdated(std::unique_ptr<PolicyBundle> policy);
+  void UpdateFromSuperiorStore();
+  void UpdateFromClient();
+  void UpdateFromSchemaRegistry();
+  void Disconnect();
+  void SetPolicy(std::unique_ptr<PolicyBundle> policy);
+  void FilterAndInstallPolicy();
 
+  std::string policy_type_;
   Delegate* delegate_;
   SchemaRegistry* schema_registry_;
   CloudPolicyCore* core_;
-  scoped_refptr<net::URLRequestContextGetter> request_context_;
   scoped_refptr<base::SequencedTaskRunner> backend_task_runner_;
-  scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
 
   // The |external_policy_data_fetcher_backend_| handles network I/O for the
-  // |backend_| because URLRequestContextGetter and URLFetchers cannot be
-  // referenced from background threads. It is instantiated on the thread |this|
-  // runs on but after that, must only be accessed and eventually destroyed via
-  // the |io_task_runner_|.
+  // |backend_| because the system SharedURLLoaderFactory cannot be referenced
+  // from background threads. It is owned by the thread |this| runs on.
   std::unique_ptr<ExternalPolicyDataFetcherBackend>
       external_policy_data_fetcher_backend_;
 
@@ -154,35 +166,25 @@ class POLICY_EXPORT ComponentCloudPolicyService
   // |backend_task_runner_|.
   std::unique_ptr<Backend> backend_;
 
-  // The currently registered components for each policy domain. Used to
-  // determine which components changed when a new SchemaMap becomes
-  // available.
+  // The currently registered components for each policy domain. Used for
+  // filtering and validation of the component policies.
   scoped_refptr<SchemaMap> current_schema_map_;
 #endif  // !defined(OS_ANDROID) && !defined(OS_IOS)
 
   // Contains all the policies loaded from the store, before having been
-  // filtered by the |current_schema_map_|.
+  // filtered and validated by the |current_schema_map_|.
   std::unique_ptr<PolicyBundle> unfiltered_policy_;
 
-  // Contains all the current policies for components, filtered by the
-  // |current_schema_map_|.
+  // Contains all the current policies for components, filtered and validated by
+  // the |current_schema_map_|.
   PolicyBundle policy_;
 
-  // Whether the backend has started initializing asynchronously. Used to
-  // prevent double initialization, since both OnSchemaRegistryUpdated() and
-  // OnStoreLoaded() can happen while the backend is initializing.
-  bool started_loading_initial_policy_;
+  // Whether policies are being served.
+  bool policy_installed_ = false;
 
-  // Whether the backend has been initialized with the initial credentials and
-  // schemas, and this provider is serving the initial policies loaded from the
-  // cache.
-  bool loaded_initial_policy_;
+  SEQUENCE_CHECKER(sequence_checker_);
 
-  // True if the backend currently has valid cloud policy credentials. This
-  // can go back to false if the user signs out, and back again to true if the
-  // user signs in again.
-  bool is_registered_for_cloud_policy_;
-
+  // Must be the last member.
   base::WeakPtrFactory<ComponentCloudPolicyService> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ComponentCloudPolicyService);

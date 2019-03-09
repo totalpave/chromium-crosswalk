@@ -11,7 +11,8 @@
 
 #include <stddef.h>
 
-#include "base/containers/hash_tables.h"
+#include <unordered_set>
+
 #include "net/cookies/canonical_cookie.h"
 
 namespace canonical_cookie {
@@ -34,10 +35,11 @@ struct CanonicalCookieComparer {
   }
 };
 
-typedef base::hash_set<net::CanonicalCookie,
-                       CanonicalCookieHasher,
-                       CanonicalCookieComparer> CookieHashSet;
+typedef std::unordered_set<net::CanonicalCookie,
+                           CanonicalCookieHasher,
+                           CanonicalCookieComparer>
+    CookieHashSet;
 
-};  // namespace canonical_cookie
+}  // namespace canonical_cookie
 
 #endif  // CHROME_BROWSER_BROWSING_DATA_CANONICAL_COOKIE_HASH_H_

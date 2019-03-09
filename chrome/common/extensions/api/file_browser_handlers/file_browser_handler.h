@@ -19,7 +19,7 @@ class URLPattern;
 // FileBrowserHandler encapsulates the state of a file browser action.
 class FileBrowserHandler {
  public:
-  typedef std::vector<linked_ptr<FileBrowserHandler> > List;
+  using List = std::vector<std::unique_ptr<FileBrowserHandler>>;
 
   FileBrowserHandler();
   ~FileBrowserHandler();
@@ -82,6 +82,8 @@ class FileBrowserHandler {
 
   // A list of file filters.
   extensions::URLPatternSet url_set_;
+
+  DISALLOW_COPY_AND_ASSIGN(FileBrowserHandler);
 };
 
 // Parses the "file_browser_handlers" extension manifest key.
@@ -93,7 +95,9 @@ class FileBrowserHandlerParser : public extensions::ManifestHandler {
   bool Parse(extensions::Extension* extension, base::string16* error) override;
 
  private:
-  const std::vector<std::string> Keys() const override;
+  base::span<const char* const> Keys() const override;
+
+  DISALLOW_COPY_AND_ASSIGN(FileBrowserHandlerParser);
 };
 
 #endif  // CHROME_COMMON_EXTENSIONS_API_FILE_BROWSER_HANDLERS_FILE_BROWSER_HANDLER_H_

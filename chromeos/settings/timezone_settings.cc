@@ -12,17 +12,18 @@
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/i18n/unicodestring.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/singleton.h"
 #include "base/observer_list.h"
 #include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
+#include "base/task/post_task.h"
 #include "base/task_runner.h"
-#include "base/threading/worker_pool.h"
 #include "chromeos/settings/timezone_settings_helper.h"
 
 namespace chromeos {
@@ -50,6 +51,7 @@ const char kFallbackTimeZoneId[] = "America/Los_Angeles";
 // identity is likely to cut down the number to < 100. Until we
 // come up with a better list, we hard-code the following list. It came from
 // from Android initially, but more entries have been added.
+// Note that the list is sorted in terms of timezone offset from UTC.
 static const char* kTimeZones[] = {
     "Pacific/Midway",
     "Pacific/Honolulu",
@@ -66,6 +68,7 @@ static const char* kTimeZones[] = {
     "America/Costa_Rica",
     "America/Chicago",
     "America/Mexico_City",
+    "America/Tegucigalpa",
     "America/Winnipeg",
     "Pacific/Easter",
     "America/Bogota",
@@ -81,8 +84,9 @@ static const char* kTimeZones[] = {
     "America/Araguaina",
     "America/Argentina/Buenos_Aires",
     "America/Argentina/San_Luis",
-    "America/Sao_Paulo",
     "America/Montevideo",
+    "America/Santiago",
+    "America/Sao_Paulo",
     "America/Godthab",
     "Atlantic/South_Georgia",
     "Atlantic/Cape_Verde",
@@ -223,7 +227,8 @@ std::string GetTimezoneIDAsString() {
 
   std::string timezone(buf, len);
   // Remove kTimezoneFilesDir from the beginning.
-  if (timezone.find(kTimezoneFilesDir) != 0) {
+  if (!base::StartsWith(timezone, kTimezoneFilesDir,
+                        base::CompareCase::SENSITIVE)) {
     LOG(ERROR) << "GetTimezoneID: Timezone symlink is wrong "
                << timezone;
     return std::string();
@@ -278,7 +283,8 @@ class TimezoneSettingsBaseImpl : public chromeos::system::TimezoneSettings {
   void SetTimezoneFromID(const base::string16& timezone_id) override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
-  const std::vector<icu::TimeZone*>& GetTimezoneList() const override;
+  const std::vector<std::unique_ptr<icu::TimeZone>>& GetTimezoneList()
+      const override;
 
  protected:
   TimezoneSettingsBaseImpl();
@@ -293,8 +299,8 @@ class TimezoneSettingsBaseImpl : public chromeos::system::TimezoneSettings {
   const icu::TimeZone* GetKnownTimezoneOrNull(
       const icu::TimeZone& timezone) const;
 
-  base::ObserverList<Observer> observers_;
-  std::vector<icu::TimeZone*> timezones_;
+  base::ObserverList<Observer>::Unchecked observers_;
+  std::vector<std::unique_ptr<icu::TimeZone>> timezones_;
   std::unique_ptr<icu::TimeZone> timezone_;
 
  private:
@@ -333,9 +339,7 @@ class TimezoneSettingsStubImpl : public TimezoneSettingsBaseImpl {
   DISALLOW_COPY_AND_ASSIGN(TimezoneSettingsStubImpl);
 };
 
-TimezoneSettingsBaseImpl::~TimezoneSettingsBaseImpl() {
-  STLDeleteElements(&timezones_);
-}
+TimezoneSettingsBaseImpl::~TimezoneSettingsBaseImpl() = default;
 
 const icu::TimeZone& TimezoneSettingsBaseImpl::GetTimezone() {
   return *timezone_.get();
@@ -360,15 +364,15 @@ void TimezoneSettingsBaseImpl::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-const std::vector<icu::TimeZone*>&
+const std::vector<std::unique_ptr<icu::TimeZone>>&
 TimezoneSettingsBaseImpl::GetTimezoneList() const {
   return timezones_;
 }
 
 TimezoneSettingsBaseImpl::TimezoneSettingsBaseImpl() {
-  for (size_t i = 0; i < arraysize(kTimeZones); ++i) {
-    timezones_.push_back(icu::TimeZone::createTimeZone(
-        icu::UnicodeString(kTimeZones[i], -1, US_INV)));
+  for (size_t i = 0; i < base::size(kTimeZones); ++i) {
+    timezones_.push_back(base::WrapUnique(icu::TimeZone::createTimeZone(
+        icu::UnicodeString(kTimeZones[i], -1, US_INV))));
   }
 }
 
@@ -389,10 +393,13 @@ void TimezoneSettingsImpl::SetTimezone(const icu::TimeZone& timezone) {
   VLOG(1) << "Setting timezone to " << id;
   // It's safe to change the timezone config files in the background as the
   // following operations don't depend on the completion of the config change.
-  base::WorkerPool::GetTaskRunner(true /* task is slow */)->
-      PostTask(FROM_HERE, base::Bind(&SetTimezoneIDFromString, id));
+  base::PostTaskWithTraits(FROM_HERE,
+                           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+                            base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+                           base::BindOnce(&SetTimezoneIDFromString, id));
   icu::TimeZone::setDefault(*known_timezone);
-  FOR_EACH_OBSERVER(Observer, observers_, TimezoneChanged(*known_timezone));
+  for (auto& observer : observers_)
+    observer.TimezoneChanged(*known_timezone);
 }
 
 // static
@@ -439,7 +446,8 @@ void TimezoneSettingsStubImpl::SetTimezone(const icu::TimeZone& timezone) {
   VLOG(1) << "Setting timezone to " << id;
   timezone_.reset(known_timezone->clone());
   icu::TimeZone::setDefault(*known_timezone);
-  FOR_EACH_OBSERVER(Observer, observers_, TimezoneChanged(*known_timezone));
+  for (auto& observer : observers_)
+    observer.TimezoneChanged(*known_timezone);
 }
 
 // static
@@ -461,7 +469,7 @@ TimezoneSettingsStubImpl::TimezoneSettingsStubImpl() {
 namespace chromeos {
 namespace system {
 
-TimezoneSettings::Observer::~Observer() {}
+TimezoneSettings::Observer::~Observer() = default;
 
 // static
 TimezoneSettings* TimezoneSettings::GetInstance() {
@@ -475,8 +483,7 @@ TimezoneSettings* TimezoneSettings::GetInstance() {
 // static
 base::string16 TimezoneSettings::GetTimezoneID(const icu::TimeZone& timezone) {
   icu::UnicodeString id;
-  timezone.getID(id);
-  return base::string16(id.getBuffer(), id.length());
+  return base::i18n::UnicodeStringToString16(timezone.getID(id));
 }
 
 }  // namespace system

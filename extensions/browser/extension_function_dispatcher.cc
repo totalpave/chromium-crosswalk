@@ -11,11 +11,11 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/metrics/sparse_histogram.h"
 #include "base/process/process.h"
-#include "base/profiler/scoped_profile.h"
 #include "base/scoped_observer.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -23,20 +23,22 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_observer.h"
-#include "content/public/browser/render_view_host.h"
-#include "content/public/browser/user_metrics.h"
+#include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/result_codes.h"
 #include "extensions/browser/api_activity_monitor.h"
+#include "extensions/browser/bad_message.h"
 #include "extensions/browser/extension_function_registry.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/io_thread_extension_message_filter.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/browser/quota_service.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_messages.h"
 #include "extensions/common/extension_set.h"
@@ -45,7 +47,6 @@
 #include "ipc/ipc_message_macros.h"
 
 using content::BrowserThread;
-using content::RenderViewHost;
 
 namespace extensions {
 namespace {
@@ -60,6 +61,12 @@ void NotifyApiFunctionCalled(const std::string& extension_id,
                                         args);
 }
 
+bool IsRequestFromServiceWorker(
+    const ExtensionHostMsg_Request_Params& request_params) {
+  return request_params.service_worker_version_id !=
+         blink::mojom::kInvalidServiceWorkerVersionId;
+}
+
 // Separate copy of ExtensionAPI used for IO thread extension functions. We need
 // this because ExtensionAPI has mutable data. It should be possible to remove
 // this once all the extension APIs are updated to the feature system.
@@ -67,54 +74,19 @@ struct Static {
   Static() : api(ExtensionAPI::CreateWithDefaultConfiguration()) {}
   std::unique_ptr<ExtensionAPI> api;
 };
-base::LazyInstance<Static> g_global_io_data = LAZY_INSTANCE_INITIALIZER;
-
-// Kills the specified process because it sends us a malformed message.
-// Track the specific function's |histogram_value|, as this may indicate a bug
-// in that API's implementation on the renderer.
-void KillBadMessageSender(const base::Process& process,
-                          functions::HistogramValue histogram_value) {
-  // The renderer has done validation before sending extension api requests.
-  // Therefore, we should never receive a request that is invalid in a way
-  // that JSON validation in the renderer should have caught. It could be an
-  // attacker trying to exploit the browser, so we crash the renderer instead.
-  LOG(ERROR) << "Terminating renderer because of malformed extension message.";
-  if (content::RenderProcessHost::run_renderer_in_process()) {
-    // In single process mode it is better if we don't suicide but just crash.
-    CHECK(false);
-    return;
-  }
-
-  NOTREACHED();
-  content::RecordAction(base::UserMetricsAction("BadMessageTerminate_EFD"));
-  UMA_HISTOGRAM_ENUMERATION("Extensions.BadMessageFunctionName",
-                            histogram_value, functions::ENUM_BOUNDARY);
-  if (process.IsValid())
-    process.Terminate(content::RESULT_CODE_KILLED_BAD_MESSAGE, false);
-}
-
-void KillBadMessageSenderRPH(content::RenderProcessHost* sender_process_host,
-                             functions::HistogramValue histogram_value) {
-  base::Process peer_process =
-      content::RenderProcessHost::run_renderer_in_process()
-          ? base::Process::Current()
-          : base::Process::DeprecatedGetProcessFromHandle(
-                sender_process_host->GetHandle());
-  KillBadMessageSender(peer_process, histogram_value);
-}
+base::LazyInstance<Static>::DestructorAtExit g_global_io_data =
+    LAZY_INSTANCE_INITIALIZER;
 
 void CommonResponseCallback(IPC::Sender* ipc_sender,
                             int routing_id,
-                            const base::Process& peer_process,
                             int request_id,
                             ExtensionFunction::ResponseType type,
                             const base::ListValue& results,
-                            const std::string& error,
-                            functions::HistogramValue histogram_value) {
+                            const std::string& error) {
   DCHECK(ipc_sender);
 
   if (type == ExtensionFunction::BAD_MESSAGE) {
-    KillBadMessageSender(peer_process, histogram_value);
+    // The renderer will be shut down from ExtensionFunction::SetBadMessage().
     return;
   }
 
@@ -134,10 +106,8 @@ void IOThreadResponseCallback(
   if (!ipc_sender.get())
     return;
 
-  base::Process peer_process =
-      base::Process::DeprecatedGetProcessFromHandle(ipc_sender->PeerHandle());
-  CommonResponseCallback(ipc_sender.get(), routing_id, peer_process, request_id,
-                         type, results, error, histogram_value);
+  CommonResponseCallback(ipc_sender.get(), routing_id, request_id, type,
+                         results, error);
 }
 
 }  // namespace
@@ -168,8 +138,6 @@ class ExtensionFunctionDispatcher::UIThreadResponseCallbackWrapper
       dispatcher_->ui_thread_response_callback_wrappers_
           .erase(render_frame_host);
     }
-
-    delete this;
   }
 
   ExtensionFunction::ResponseCallback CreateCallback(int request_id) {
@@ -185,15 +153,9 @@ class ExtensionFunctionDispatcher::UIThreadResponseCallbackWrapper
                                     const base::ListValue& results,
                                     const std::string& error,
                                     functions::HistogramValue histogram_value) {
-    base::Process process =
-        content::RenderProcessHost::run_renderer_in_process()
-            ? base::Process::Current()
-            : base::Process::DeprecatedGetProcessFromHandle(
-                  render_frame_host_->GetProcess()->GetHandle());
     CommonResponseCallback(render_frame_host_,
-                           render_frame_host_->GetRoutingID(),
-                           process, request_id, type, results, error,
-                           histogram_value);
+                           render_frame_host_->GetRoutingID(), request_id, type,
+                           results, error);
   }
 
   base::WeakPtr<ExtensionFunctionDispatcher> dispatcher_;
@@ -208,14 +170,15 @@ class ExtensionFunctionDispatcher::UIThreadWorkerResponseCallbackWrapper
  public:
   UIThreadWorkerResponseCallbackWrapper(
       const base::WeakPtr<ExtensionFunctionDispatcher>& dispatcher,
-      int render_process_id,
+      content::RenderProcessHost* render_process_host,
       int worker_thread_id)
       : dispatcher_(dispatcher),
         observer_(this),
-        render_process_id_(render_process_id),
+        render_process_host_(render_process_host),
         worker_thread_id_(worker_thread_id),
         weak_ptr_factory_(this) {
-    observer_.Add(content::RenderProcessHost::FromID(render_process_id_));
+    observer_.Add(render_process_host_);
+
     DCHECK(ExtensionsClient::Get()
                ->ExtensionAPIEnabledInExtensionServiceWorkers());
   }
@@ -223,9 +186,9 @@ class ExtensionFunctionDispatcher::UIThreadWorkerResponseCallbackWrapper
   ~UIThreadWorkerResponseCallbackWrapper() override {}
 
   // content::RenderProcessHostObserver override.
-  void RenderProcessExited(content::RenderProcessHost* rph,
-                           base::TerminationStatus status,
-                           int exit_code) override {
+  void RenderProcessExited(
+      content::RenderProcessHost* rph,
+      const content::ChildProcessTerminationInfo& info) override {
     CleanUp();
   }
 
@@ -243,8 +206,10 @@ class ExtensionFunctionDispatcher::UIThreadWorkerResponseCallbackWrapper
  private:
   void CleanUp() {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    if (dispatcher_)
-      dispatcher_->RemoveWorkerCallbacksForProcess(render_process_id_);
+    if (dispatcher_) {
+      dispatcher_->RemoveWorkerCallbacksForProcess(
+          render_process_host_->GetID());
+    }
     // Note: we are deleted here!
   }
 
@@ -253,14 +218,11 @@ class ExtensionFunctionDispatcher::UIThreadWorkerResponseCallbackWrapper
                                     const base::ListValue& results,
                                     const std::string& error,
                                     functions::HistogramValue histogram_value) {
-    content::RenderProcessHost* sender =
-        content::RenderProcessHost::FromID(render_process_id_);
     if (type == ExtensionFunction::BAD_MESSAGE) {
-      KillBadMessageSenderRPH(sender, histogram_value);
+      // The renderer will be shut down from ExtensionFunction::SetBadMessage().
       return;
     }
-    DCHECK(sender);
-    sender->Send(new ExtensionMsg_ResponseWorker(
+    render_process_host_->Send(new ExtensionMsg_ResponseWorker(
         worker_thread_id_, request_id, type == ExtensionFunction::SUCCEEDED,
         results, error));
   }
@@ -269,7 +231,7 @@ class ExtensionFunctionDispatcher::UIThreadWorkerResponseCallbackWrapper
   ScopedObserver<content::RenderProcessHost,
                  UIThreadWorkerResponseCallbackWrapper>
       observer_;
-  const int render_process_id_;
+  content::RenderProcessHost* const render_process_host_;
   const int worker_thread_id_;
   base::WeakPtrFactory<UIThreadWorkerResponseCallbackWrapper> weak_ptr_factory_;
 
@@ -277,17 +239,18 @@ class ExtensionFunctionDispatcher::UIThreadWorkerResponseCallbackWrapper
 };
 
 struct ExtensionFunctionDispatcher::WorkerResponseCallbackMapKey {
-  WorkerResponseCallbackMapKey(int render_process_id, int embedded_worker_id)
+  WorkerResponseCallbackMapKey(int render_process_id,
+                               int64_t service_worker_version_id)
       : render_process_id(render_process_id),
-        embedded_worker_id(embedded_worker_id) {}
+        service_worker_version_id(service_worker_version_id) {}
 
   bool operator<(const WorkerResponseCallbackMapKey& other) const {
-    return std::tie(render_process_id, embedded_worker_id) <
-           std::tie(other.render_process_id, other.embedded_worker_id);
+    return std::tie(render_process_id, service_worker_version_id) <
+           std::tie(other.render_process_id, other.service_worker_version_id);
   }
 
   int render_process_id;
-  int embedded_worker_id;
+  int64_t service_worker_version_id;
 };
 
 WindowController*
@@ -303,12 +266,6 @@ ExtensionFunctionDispatcher::Delegate::GetAssociatedWebContents() const {
 content::WebContents*
 ExtensionFunctionDispatcher::Delegate::GetVisibleWebContents() const {
   return GetAssociatedWebContents();
-}
-
-bool ExtensionFunctionDispatcher::OverrideFunction(
-    const std::string& name, ExtensionFunctionFactory factory) {
-  return ExtensionFunctionRegistry::GetInstance()->OverrideFunction(name,
-                                                                    factory);
 }
 
 // static
@@ -343,11 +300,11 @@ void ExtensionFunctionDispatcher::DispatchOnIOThread(
     NOTREACHED();
     return;
   }
-  function_io->set_ipc_sender(ipc_sender, routing_id);
+  function_io->set_ipc_sender(ipc_sender);
   function_io->set_extension_info_map(extension_info_map);
   if (extension) {
-    function->set_include_incognito(
-        extension_info_map->IsIncognitoEnabled(extension->id()));
+    function->set_include_incognito_information(
+        extension_info_map->CanCrossIncognito(extension));
   }
 
   if (!CheckPermissions(function.get(), params, callback))
@@ -368,11 +325,8 @@ void ExtensionFunctionDispatcher::DispatchOnIOThread(
   if (violation_error.empty()) {
     NotifyApiFunctionCalled(extension->id(), params.name, params.arguments,
                             static_cast<content::BrowserContext*>(profile_id));
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.FunctionCalls",
-                                function->histogram_value());
-    tracked_objects::ScopedProfile scoped_profile(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(function->name()),
-        tracked_objects::ScopedProfile::ENABLED);
+    base::UmaHistogramSparse("Extensions.FunctionCalls",
+                             function->histogram_value());
     base::ElapsedTimer timer;
     function->RunWithValidation()->Execute();
     // TODO(devlin): Once we have a baseline metric for how long functions take,
@@ -399,6 +353,16 @@ void ExtensionFunctionDispatcher::Dispatch(
     const ExtensionHostMsg_Request_Params& params,
     content::RenderFrameHost* render_frame_host,
     int render_process_id) {
+  // Kill the renderer if it's an invalid request.
+  const bool is_valid_request =
+      (!render_frame_host && IsRequestFromServiceWorker(params)) ||
+      (render_frame_host && !IsRequestFromServiceWorker(params));
+  if (!is_valid_request) {
+    bad_message::ReceivedBadMessage(render_process_id,
+                                    bad_message::EFD_BAD_MESSAGE);
+    return;
+  }
+
   if (render_frame_host) {
     // Extension API from a non Service Worker context, e.g. extension page,
     // background page, content script.
@@ -409,24 +373,29 @@ void ExtensionFunctionDispatcher::Dispatch(
       callback_wrapper =
           new UIThreadResponseCallbackWrapper(AsWeakPtr(), render_frame_host);
       ui_thread_response_callback_wrappers_[render_frame_host] =
-          callback_wrapper;
+          base::WrapUnique(callback_wrapper);
     } else {
-      callback_wrapper = iter->second;
+      callback_wrapper = iter->second.get();
     }
     DispatchWithCallbackInternal(
         params, render_frame_host, render_process_id,
         callback_wrapper->CreateCallback(params.request_id));
   } else {
-    // Extension API from Service Worker.
-    DCHECK_GE(params.embedded_worker_id, 0);
+    content::RenderProcessHost* rph =
+        content::RenderProcessHost::FromID(render_process_id);
+    // UIThreadWorkerResponseCallbackWrapper requires render process host to be
+    // around.
+    if (!rph)
+      return;
+
     WorkerResponseCallbackMapKey key(render_process_id,
-                                     params.embedded_worker_id);
+                                     params.service_worker_version_id);
     UIThreadWorkerResponseCallbackWrapperMap::const_iterator iter =
         ui_thread_response_callback_wrappers_for_worker_.find(key);
     UIThreadWorkerResponseCallbackWrapper* callback_wrapper = nullptr;
     if (iter == ui_thread_response_callback_wrappers_for_worker_.end()) {
       callback_wrapper = new UIThreadWorkerResponseCallbackWrapper(
-          AsWeakPtr(), render_process_id, params.worker_thread_id);
+          AsWeakPtr(), rph, params.worker_thread_id);
       ui_thread_response_callback_wrappers_for_worker_[key] =
           base::WrapUnique(callback_wrapper);
     } else {
@@ -472,8 +441,9 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
     NOTREACHED();
     return;
   }
-  if (params.embedded_worker_id != -1) {
-    function_ui->set_is_from_service_worker(true);
+  if (IsRequestFromServiceWorker(params)) {
+    function_ui->set_service_worker_version_id(
+        params.service_worker_version_id);
   } else {
     function_ui->SetRenderFrameHost(render_frame_host);
   }
@@ -482,7 +452,7 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
   if (extension &&
       ExtensionsBrowserClient::Get()->CanExtensionCrossIncognito(
           extension, browser_context_)) {
-    function->set_include_incognito(true);
+    function->set_include_incognito_information(true);
   }
 
   if (!CheckPermissions(function.get(), params, callback))
@@ -510,11 +480,8 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
     ExtensionsBrowserClient::Get()->PermitExternalProtocolHandler();
     NotifyApiFunctionCalled(extension->id(), params.name, params.arguments,
                             browser_context_);
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.FunctionCalls",
-                                function->histogram_value());
-    tracked_objects::ScopedProfile scoped_profile(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(function->name()),
-        tracked_objects::ScopedProfile::ENABLED);
+    base::UmaHistogramSparse("Extensions.FunctionCalls",
+                             function->histogram_value());
     base::ElapsedTimer timer;
     function->RunWithValidation()->Execute();
     // TODO(devlin): Once we have a baseline metric for how long functions take,
@@ -536,21 +503,24 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
   if (!registry->enabled_extensions().GetByID(params.extension_id))
     return;
 
-  // We only adjust the keepalive count for UIThreadExtensionFunction for
-  // now, largely for simplicity's sake. This is OK because currently, only
-  // the webRequest API uses IOThreadExtensionFunction, and that API is not
-  // compatible with lazy background pages.
-  // TODO(lazyboy): API functions from extension Service Worker will incorrectly
-  // change keepalive count below.
-  process_manager->IncrementLazyKeepaliveCount(extension);
+  if (!IsRequestFromServiceWorker(params)) {
+    // Increment ref count for non-service worker extension API. Ref count for
+    // service worker extension API is handled separately on IO thread via IPC.
+
+    // We only adjust the keepalive count for UIThreadExtensionFunction for
+    // now, largely for simplicity's sake. This is OK because currently, only
+    // the webRequest API uses IOThreadExtensionFunction, and that API is not
+    // compatible with lazy background pages.
+    process_manager->IncrementLazyKeepaliveCount(
+        function->extension(), Activity::API_FUNCTION, function->name());
+  }
 }
 
 void ExtensionFunctionDispatcher::RemoveWorkerCallbacksForProcess(
     int render_process_id) {
   UIThreadWorkerResponseCallbackWrapperMap& map =
       ui_thread_response_callback_wrappers_for_worker_;
-  for (UIThreadWorkerResponseCallbackWrapperMap::iterator it = map.begin();
-       it != map.end();) {
+  for (auto it = map.begin(); it != map.end();) {
     if (it->first.render_process_id == render_process_id) {
       it = map.erase(it);
       continue;
@@ -560,12 +530,15 @@ void ExtensionFunctionDispatcher::RemoveWorkerCallbacksForProcess(
 }
 
 void ExtensionFunctionDispatcher::OnExtensionFunctionCompleted(
-    const Extension* extension) {
-  // TODO(lazyboy): API functions from extension Service Worker will incorrectly
-  // change keepalive count below.
-  if (extension) {
+    const Extension* extension,
+    bool is_from_service_worker,
+    const char* name) {
+  if (extension && !is_from_service_worker) {
+    // Decrement ref count for non-service worker extension API. Service
+    // worker extension API ref counts are handled separately on IO thread
+    // directly via IPC.
     ProcessManager::Get(browser_context_)
-        ->DecrementLazyKeepaliveCount(extension);
+        ->DecrementLazyKeepaliveCount(extension, Activity::API_FUNCTION, name);
   }
 }
 
@@ -608,14 +581,14 @@ ExtensionFunction* ExtensionFunctionDispatcher::CreateExtensionFunction(
     void* profile_id,
     const ExtensionFunction::ResponseCallback& callback) {
   ExtensionFunction* function =
-      ExtensionFunctionRegistry::GetInstance()->NewFunction(params.name);
+      ExtensionFunctionRegistry::GetInstance().NewFunction(params.name);
   if (!function) {
     LOG(ERROR) << "Unknown Extension API - " << params.name;
     SendAccessDenied(callback, extensions::functions::UNKNOWN);
     return NULL;
   }
 
-  function->SetArgs(&params.arguments);
+  function->SetArgs(params.arguments.Clone());
   function->set_source_url(params.source_url);
   function->set_request_id(params.request_id);
   function->set_has_callback(params.has_callback);
@@ -623,7 +596,6 @@ ExtensionFunction* ExtensionFunctionDispatcher::CreateExtensionFunction(
   function->set_extension(extension);
   function->set_profile_id(profile_id);
   function->set_response_callback(callback);
-  function->set_source_tab_id(params.source_tab_id);
   function->set_source_context_type(
       process_map.GetMostLikelyContextType(extension, requesting_process_id));
   function->set_source_process_id(requesting_process_id);

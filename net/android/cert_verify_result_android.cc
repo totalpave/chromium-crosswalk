@@ -10,11 +10,13 @@
 
 using base::android::AttachCurrentThread;
 using base::android::JavaArrayOfByteArrayToStringVector;
+using base::android::JavaRef;
+using base::android::ScopedJavaLocalRef;
 
 namespace net {
 namespace android {
 
-void ExtractCertVerifyResult(jobject result,
+void ExtractCertVerifyResult(const JavaRef<jobject>& result,
                              CertVerifyStatusAndroid* status,
                              bool* is_issued_by_known_root,
                              std::vector<std::string>* verified_chain) {
@@ -28,12 +30,7 @@ void ExtractCertVerifyResult(jobject result,
 
   ScopedJavaLocalRef<jobjectArray> chain_byte_array =
       Java_AndroidCertVerifyResult_getCertificateChainEncoded(env, result);
-  JavaArrayOfByteArrayToStringVector(
-      env, chain_byte_array.obj(), verified_chain);
-}
-
-bool RegisterCertVerifyResult(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+  JavaArrayOfByteArrayToStringVector(env, chain_byte_array, verified_chain);
 }
 
 }  // namespace android

@@ -2,10 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <GLES2/gl2.h>
-
 #include "gpu/command_buffer/service/shader_translator.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_version_info.h"
 
 namespace gpu {
@@ -16,15 +15,15 @@ class ShaderTranslatorTest : public testing::Test {
   ShaderTranslatorTest() {
     shader_output_language_ =
         ShaderTranslator::GetShaderOutputLanguageForContext(
-            gl::GLVersionInfo("2.0", "", ""));
+            gl::GLVersionInfo("2.0", "", gfx::ExtensionSet()));
   }
 
-  ~ShaderTranslatorTest() override {}
+  ~ShaderTranslatorTest() override = default;
 
  protected:
   void SetUp() override {
     ShBuiltInResources resources;
-    ShInitBuiltInResources(&resources);
+    sh::InitBuiltInResources(&resources);
     resources.MaxExpressionComplexity = 32;
     resources.MaxCallStackDepth = 32;
 
@@ -33,7 +32,7 @@ class ShaderTranslatorTest : public testing::Test {
 
     ASSERT_TRUE(vertex_translator_->Init(GL_VERTEX_SHADER, SH_GLES2_SPEC,
                                          &resources, shader_output_language_,
-                                         SH_EMULATE_BUILT_IN_FUNCTIONS,
+                                         static_cast<ShCompileOptions>(0),
                                          false));
     ASSERT_TRUE(fragment_translator_->Init(GL_FRAGMENT_SHADER, SH_GLES2_SPEC,
                                            &resources, shader_output_language_,
@@ -41,8 +40,8 @@ class ShaderTranslatorTest : public testing::Test {
                                            false));
   }
   void TearDown() override {
-    vertex_translator_ = NULL;
-    fragment_translator_ = NULL;
+    vertex_translator_ = nullptr;
+    fragment_translator_ = nullptr;
   }
 
   scoped_refptr<ShaderTranslator> vertex_translator_;
@@ -55,15 +54,15 @@ class ES3ShaderTranslatorTest : public testing::Test {
   ES3ShaderTranslatorTest() {
     shader_output_language_ =
         ShaderTranslator::GetShaderOutputLanguageForContext(
-            gl::GLVersionInfo("3.0", "", ""));
+            gl::GLVersionInfo("3.0", "", gfx::ExtensionSet()));
   }
 
-  ~ES3ShaderTranslatorTest() override {}
+  ~ES3ShaderTranslatorTest() override = default;
 
  protected:
   void SetUp() override {
     ShBuiltInResources resources;
-    ShInitBuiltInResources(&resources);
+    sh::InitBuiltInResources(&resources);
     resources.MaxExpressionComplexity = 32;
     resources.MaxCallStackDepth = 32;
 
@@ -72,15 +71,16 @@ class ES3ShaderTranslatorTest : public testing::Test {
 
     ASSERT_TRUE(vertex_translator_->Init(GL_VERTEX_SHADER, SH_GLES3_SPEC,
                                          &resources, shader_output_language_,
-                                         SH_EMULATE_BUILT_IN_FUNCTIONS, false));
+                                         static_cast<ShCompileOptions>(0),
+                                         false));
     ASSERT_TRUE(fragment_translator_->Init(GL_FRAGMENT_SHADER, SH_GLES3_SPEC,
                                            &resources, shader_output_language_,
                                            static_cast<ShCompileOptions>(0),
                                            false));
   }
   void TearDown() override {
-    vertex_translator_ = NULL;
-    fragment_translator_ = NULL;
+    vertex_translator_ = nullptr;
+    fragment_translator_ = nullptr;
   }
 
   scoped_refptr<ShaderTranslator> vertex_translator_;
@@ -102,11 +102,9 @@ TEST_F(ShaderTranslatorTest, ValidVertexShader) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   EXPECT_TRUE(vertex_translator_->Translate(
       shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
 
   // Info log must be NULL.
   EXPECT_TRUE(info_log.empty());
@@ -119,8 +117,6 @@ TEST_F(ShaderTranslatorTest, ValidVertexShader) {
   EXPECT_TRUE(interface_block_map.empty());
   EXPECT_EQ(1u, varying_map.size());
   EXPECT_TRUE(output_variable_list.empty());
-  // There should be no name mapping.
-  EXPECT_TRUE(name_map.empty());
 }
 
 TEST_F(ShaderTranslatorTest, InvalidVertexShader) {
@@ -138,11 +134,9 @@ TEST_F(ShaderTranslatorTest, InvalidVertexShader) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   EXPECT_FALSE(vertex_translator_->Translate(
       bad_shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   // Info log must be valid and non-empty.
   ASSERT_FALSE(info_log.empty());
   // Translated shader must be NULL.
@@ -154,14 +148,12 @@ TEST_F(ShaderTranslatorTest, InvalidVertexShader) {
   EXPECT_TRUE(varying_map.empty());
   EXPECT_TRUE(interface_block_map.empty());
   EXPECT_TRUE(output_variable_list.empty());
-  EXPECT_TRUE(name_map.empty());
 
   // Try a good shader after bad.
   info_log.clear();
   EXPECT_TRUE(vertex_translator_->Translate(
       good_shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   EXPECT_TRUE(info_log.empty());
   EXPECT_FALSE(translated_source.empty());
   EXPECT_TRUE(interface_block_map.empty());
@@ -181,11 +173,9 @@ TEST_F(ShaderTranslatorTest, ValidFragmentShader) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   EXPECT_TRUE(fragment_translator_->Translate(
       shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   // Info log must be NULL.
   EXPECT_TRUE(info_log.empty());
   // Translated shader must be valid and non-empty.
@@ -196,7 +186,6 @@ TEST_F(ShaderTranslatorTest, ValidFragmentShader) {
   EXPECT_TRUE(uniform_map.empty());
   EXPECT_TRUE(varying_map.empty());
   EXPECT_TRUE(interface_block_map.empty());
-  EXPECT_TRUE(name_map.empty());
   // gl_FragColor.
   EXPECT_EQ(1u, output_variable_list.size());
 }
@@ -211,12 +200,10 @@ TEST_F(ShaderTranslatorTest, InvalidFragmentShader) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   // An invalid shader should fail.
   EXPECT_FALSE(fragment_translator_->Translate(
       shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   // Info log must be valid and non-empty.
   EXPECT_FALSE(info_log.empty());
   // Translated shader must be NULL.
@@ -227,7 +214,6 @@ TEST_F(ShaderTranslatorTest, InvalidFragmentShader) {
   EXPECT_TRUE(uniform_map.empty());
   EXPECT_TRUE(varying_map.empty());
   EXPECT_TRUE(output_variable_list.empty());
-  EXPECT_TRUE(name_map.empty());
 }
 
 TEST_F(ShaderTranslatorTest, GetAttributes) {
@@ -244,11 +230,9 @@ TEST_F(ShaderTranslatorTest, GetAttributes) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   EXPECT_TRUE(vertex_translator_->Translate(
       shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   // Info log must be NULL.
   EXPECT_TRUE(info_log.empty());
   // Translated shader must be valid and non-empty.
@@ -260,10 +244,11 @@ TEST_F(ShaderTranslatorTest, GetAttributes) {
   // There should be one attribute with following characteristics:
   // name:vPosition type:GL_FLOAT_VEC4 size:0.
   EXPECT_EQ(1u, attrib_map.size());
-  AttributeMap::const_iterator iter = attrib_map.find("vPosition");
+  // The shader translator adds a "_u" prefix to user-defined names.
+  AttributeMap::const_iterator iter = attrib_map.find("_uvPosition");
   EXPECT_TRUE(iter != attrib_map.end());
   EXPECT_EQ(static_cast<GLenum>(GL_FLOAT_VEC4), iter->second.type);
-  EXPECT_EQ(0u, iter->second.arraySize);
+  EXPECT_EQ(0u, iter->second.getOutermostArraySize());
   EXPECT_EQ("vPosition", iter->second.name);
 }
 
@@ -288,11 +273,9 @@ TEST_F(ShaderTranslatorTest, GetUniforms) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   EXPECT_TRUE(fragment_translator_->Translate(
       shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   // Info log must be NULL.
   EXPECT_TRUE(info_log.empty());
   // Translated shader must be valid and non-empty.
@@ -306,22 +289,23 @@ TEST_F(ShaderTranslatorTest, GetUniforms) {
   // 2. name:bar[1].foo.color[0] type:GL_FLOAT_VEC4 size:1
   // However, there will be only one entry "bar" in the map.
   EXPECT_EQ(1u, uniform_map.size());
-  UniformMap::const_iterator iter = uniform_map.find("bar");
+  // The shader translator adds a "_u" prefix to user-defined names.
+  UniformMap::const_iterator iter = uniform_map.find("_ubar");
   EXPECT_TRUE(iter != uniform_map.end());
   // First uniform.
   const sh::ShaderVariable* info;
   std::string original_name;
-  EXPECT_TRUE(iter->second.findInfoByMappedName(
-      "bar[0].foo.color[0]", &info, &original_name));
+  EXPECT_TRUE(iter->second.findInfoByMappedName("_ubar[0]._ufoo._ucolor[0]",
+                                                &info, &original_name));
   EXPECT_EQ(static_cast<GLenum>(GL_FLOAT_VEC4), info->type);
-  EXPECT_EQ(1u, info->arraySize);
+  EXPECT_EQ(1u, info->getOutermostArraySize());
   EXPECT_STREQ("color", info->name.c_str());
   EXPECT_STREQ("bar[0].foo.color[0]", original_name.c_str());
   // Second uniform.
-  EXPECT_TRUE(iter->second.findInfoByMappedName(
-      "bar[1].foo.color[0]", &info, &original_name));
+  EXPECT_TRUE(iter->second.findInfoByMappedName("_ubar[1]._ufoo._ucolor[0]",
+                                                &info, &original_name));
   EXPECT_EQ(static_cast<GLenum>(GL_FLOAT_VEC4), info->type);
-  EXPECT_EQ(1u, info->arraySize);
+  EXPECT_EQ(1u, info->getOutermostArraySize());
   EXPECT_STREQ("color", info->name.c_str());
   EXPECT_STREQ("bar[1].foo.color[0]", original_name.c_str());
   EXPECT_EQ(1u, output_variable_list.size());
@@ -356,11 +340,9 @@ TEST_F(ES3ShaderTranslatorTest, InvalidInterfaceBlocks) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   EXPECT_FALSE(fragment_translator_->Translate(
       shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   // Info log must be valid and non-empty.
   ASSERT_FALSE(info_log.empty());
   // Translated shader must be NULL.
@@ -371,7 +353,6 @@ TEST_F(ES3ShaderTranslatorTest, InvalidInterfaceBlocks) {
   EXPECT_TRUE(uniform_map.empty());
   EXPECT_TRUE(varying_map.empty());
   EXPECT_TRUE(interface_block_map.empty());
-  EXPECT_TRUE(name_map.empty());
 }
 
 TEST_F(ES3ShaderTranslatorTest, GetInterfaceBlocks) {
@@ -395,11 +376,9 @@ TEST_F(ES3ShaderTranslatorTest, GetInterfaceBlocks) {
   VaryingMap varying_map;
   InterfaceBlockMap interface_block_map;
   OutputVariableList output_variable_list;
-  NameMap name_map;
   EXPECT_TRUE(fragment_translator_->Translate(
       shader, &info_log, &translated_source, &shader_version, &attrib_map,
-      &uniform_map, &varying_map, &interface_block_map, &output_variable_list,
-      &name_map));
+      &uniform_map, &varying_map, &interface_block_map, &output_variable_list));
   // Info log must be NULL.
   EXPECT_TRUE(info_log.empty());
   // Translated shader must be valid and non-empty.
@@ -423,30 +402,30 @@ TEST_F(ShaderTranslatorTest, OptionsString) {
   scoped_refptr<ShaderTranslator> translator_3 = new ShaderTranslator();
 
   ShBuiltInResources resources;
-  ShInitBuiltInResources(&resources);
+  sh::InitBuiltInResources(&resources);
 
   ASSERT_TRUE(translator_1->Init(GL_VERTEX_SHADER, SH_GLES2_SPEC, &resources,
                                  SH_GLSL_150_CORE_OUTPUT,
-                                 SH_EMULATE_BUILT_IN_FUNCTIONS,
+                                 static_cast<ShCompileOptions>(0),
                                  false));
   ASSERT_TRUE(translator_2->Init(GL_FRAGMENT_SHADER, SH_GLES2_SPEC, &resources,
                                  SH_GLSL_150_CORE_OUTPUT,
-                                 static_cast<ShCompileOptions>(0),
+                                 SH_INIT_OUTPUT_VARIABLES,
                                  false));
   resources.EXT_draw_buffers = 1;
   ASSERT_TRUE(translator_3->Init(GL_VERTEX_SHADER, SH_GLES2_SPEC, &resources,
                                  SH_GLSL_150_CORE_OUTPUT,
-                                 SH_EMULATE_BUILT_IN_FUNCTIONS,
+                                 static_cast<ShCompileOptions>(0),
                                  false));
 
   std::string options_1(
-      translator_1->GetStringForOptionsThatWouldAffectCompilation());
+      translator_1->GetStringForOptionsThatWouldAffectCompilation()->data);
   std::string options_2(
-      translator_1->GetStringForOptionsThatWouldAffectCompilation());
+      translator_1->GetStringForOptionsThatWouldAffectCompilation()->data);
   std::string options_3(
-      translator_2->GetStringForOptionsThatWouldAffectCompilation());
+      translator_2->GetStringForOptionsThatWouldAffectCompilation()->data);
   std::string options_4(
-      translator_3->GetStringForOptionsThatWouldAffectCompilation());
+      translator_3->GetStringForOptionsThatWouldAffectCompilation()->data);
 
   EXPECT_EQ(options_1, options_2);
   EXPECT_NE(options_1, options_3);
@@ -463,7 +442,7 @@ class ShaderTranslatorOutputVersionTest
 // https://bugs.chromium.org/p/angleproject/issues/detail?id=1277
 TEST_F(ShaderTranslatorOutputVersionTest, DISABLED_CompatibilityOutput) {
   ShBuiltInResources resources;
-  ShInitBuiltInResources(&resources);
+  sh::InitBuiltInResources(&resources);
   ShCompileOptions compile_options = SH_OBJECT_CODE;
   ShShaderOutput shader_output_language = SH_GLSL_COMPATIBILITY_OUTPUT;
   scoped_refptr<ShaderTranslator> vertex_translator = new ShaderTranslator();
@@ -487,7 +466,7 @@ TEST_F(ShaderTranslatorOutputVersionTest, DISABLED_CompatibilityOutput) {
 
     EXPECT_TRUE(vertex_translator->Translate(
         kShader, nullptr, &translated_source, &shader_version, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr));
+        nullptr, nullptr, nullptr));
     EXPECT_TRUE(translated_source.find("#version") == std::string::npos);
     if (translated_source.find("gl_Position =") == std::string::npos) {
       ADD_FAILURE() << "Did not find gl_Position initialization.";
@@ -505,7 +484,7 @@ TEST_F(ShaderTranslatorOutputVersionTest, DISABLED_CompatibilityOutput) {
 
     EXPECT_TRUE(fragment_translator->Translate(
         kShader, nullptr, &translated_source, &shader_version, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr));
+        nullptr, nullptr, nullptr));
     EXPECT_TRUE(translated_source.find("#version 120") != std::string::npos);
     if (translated_source.find("#pragma STDGL invariant(all)") !=
         std::string::npos) {
@@ -527,11 +506,12 @@ TEST_P(ShaderTranslatorOutputVersionTest, HasCorrectOutputGLSLVersion) {
       "  gl_Position = vPosition;\n"
       "}";
 
-  gl::GLVersionInfo output_context_version(testing::get<0>(GetParam()), "", "");
+  gl::GLVersionInfo output_context_version(testing::get<0>(GetParam()), "",
+                                           gfx::ExtensionSet());
 
   scoped_refptr<ShaderTranslator> translator = new ShaderTranslator();
   ShBuiltInResources resources;
-  ShInitBuiltInResources(&resources);
+  sh::InitBuiltInResources(&resources);
   ShCompileOptions compile_options = SH_OBJECT_CODE;
   ShShaderOutput shader_output_language =
       ShaderTranslator::GetShaderOutputLanguageForContext(
@@ -543,7 +523,7 @@ TEST_P(ShaderTranslatorOutputVersionTest, HasCorrectOutputGLSLVersion) {
   int shader_version;
   EXPECT_TRUE(translator->Translate(kShader, nullptr, &translated_source,
                                     &shader_version, nullptr, nullptr, nullptr,
-                                    nullptr, nullptr, nullptr));
+                                    nullptr, nullptr));
 
   std::string expected_version_directive = testing::get<1>(GetParam());
   if (expected_version_directive.empty()) {
@@ -570,7 +550,7 @@ testing::tuple<const char*, const char*> make_gl_glsl_tuple(
 // certain version of GLSL to be guaranteed to be supported. Test
 // that ShaderTranslator produces a GLSL shader with the exact
 // specified GLSL version for each known OpenGL version.
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     KnownOpenGLContexts,
     ShaderTranslatorOutputVersionTest,
     testing::Values(make_gl_glsl_tuple("4.5", "#version 450\n"),
@@ -590,16 +570,16 @@ INSTANTIATE_TEST_CASE_P(
 // similar shader. We do not expect that future 3.3+ specs contain
 // the "all eariler GLSL versions" clause, since 3.3 did not contain
 // it either.
-INSTANTIATE_TEST_CASE_P(OldOrUnknownOpenGLContexts,
-                        ShaderTranslatorOutputVersionTest,
-                        testing::Values(make_gl_glsl_tuple("3.4", ""),
-                                        make_gl_glsl_tuple("2.0", "")));
+INSTANTIATE_TEST_SUITE_P(OldOrUnknownOpenGLContexts,
+                         ShaderTranslatorOutputVersionTest,
+                         testing::Values(make_gl_glsl_tuple("3.4", ""),
+                                         make_gl_glsl_tuple("2.0", "")));
 
 // Test data for the above test. Cases for the future OpenGL versions. The
 // code assumes that the future OpenGL specs specify the clause that all
 // earlier GLSL versions are supported. We select the highest GLSL
 // version known at the time of writing.
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     BackwardsCompatibleFutureOpenGLContexts,
     ShaderTranslatorOutputVersionTest,
     testing::Values(make_gl_glsl_tuple("5.0", "#version 450\n"),
@@ -609,14 +589,13 @@ INSTANTIATE_TEST_CASE_P(
 // contexts, the shader is such that GLSL 1.0 is used. The translator
 // selects GLSL 1.0 by not output any version at the moment, though we
 // do not know if that would be correct for the future OpenGL ES specs.
-INSTANTIATE_TEST_CASE_P(OpenGLESContexts,
-                        ShaderTranslatorOutputVersionTest,
-                        testing::Values(make_gl_glsl_tuple("opengl es 2.0", ""),
-                                        make_gl_glsl_tuple("opengl es 3.0", ""),
-                                        make_gl_glsl_tuple("opengl es 3.1", ""),
-                                        make_gl_glsl_tuple("opengl es 3.2",
-                                                           "")));
+INSTANTIATE_TEST_SUITE_P(
+    OpenGLESContexts,
+    ShaderTranslatorOutputVersionTest,
+    testing::Values(make_gl_glsl_tuple("opengl es 2.0", ""),
+                    make_gl_glsl_tuple("opengl es 3.0", ""),
+                    make_gl_glsl_tuple("opengl es 3.1", ""),
+                    make_gl_glsl_tuple("opengl es 3.2", "")));
 
 }  // namespace gles2
 }  // namespace gpu
-

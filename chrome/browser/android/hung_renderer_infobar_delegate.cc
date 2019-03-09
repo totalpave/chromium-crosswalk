@@ -5,7 +5,7 @@
 #include "chrome/browser/android/hung_renderer_infobar_delegate.h"
 
 #include "base/callback.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "chrome/browser/android/android_theme_resources.h"
 #include "chrome/browser/infobars/infobar_service.h"
 #include "chrome/grit/generated_resources.h"
@@ -40,7 +40,7 @@ HungRendererInfoBarDelegate::~HungRendererInfoBarDelegate() {
 
 infobars::InfoBarDelegate::InfoBarIdentifier
 HungRendererInfoBarDelegate::GetIdentifier() const {
-  return HUNG_RENDERER_INFOBAR_DELEGATE;
+  return HUNG_RENDERER_INFOBAR_DELEGATE_ANDROID;
 }
 
 void HungRendererInfoBarDelegate::InfoBarDismissed() {
@@ -69,7 +69,7 @@ base::string16 HungRendererInfoBarDelegate::GetButtonLabel(
 
 bool HungRendererInfoBarDelegate::Accept() {
   LogEvent(KILL_CLICKED);
-  render_process_host_->Shutdown(content::RESULT_CODE_HUNG, false);
+  render_process_host_->Shutdown(content::RESULT_CODE_HUNG);
   return true;
 }
 

@@ -2,8 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# GYP version: components/rappor.gypi:rappor
-source_set("rappor") {
+import("//build/config/jumbo.gni")
+import("//testing/test.gni")
+
+jumbo_static_library("rappor") {
   sources = [
     "bloom_filter.cc",
     "bloom_filter.h",
@@ -15,25 +17,23 @@ source_set("rappor") {
     "rappor_metric.cc",
     "rappor_metric.h",
     "rappor_parameters.cc",
-    "rappor_parameters.h",
     "rappor_pref_names.cc",
     "rappor_pref_names.h",
     "rappor_prefs.cc",
     "rappor_prefs.h",
-    "rappor_service.cc",
-    "rappor_service.h",
+    "rappor_service_impl.cc",
+    "rappor_service_impl.h",
     "rappor_utils.cc",
-    "rappor_utils.h",
     "reports.cc",
     "reports.h",
     "sample.cc",
-    "sample.h",
     "sampler.cc",
     "sampler.h",
   ]
 
   public_deps = [
     "//components/rappor/proto",
+    "//components/rappor/public",
   ]
 
   deps = [
@@ -44,12 +44,29 @@ source_set("rappor") {
     "//components/variations",
     "//crypto",
     "//net",
+    "//services/network/public/cpp:cpp",
     "//third_party/smhasher:cityhash",
   ]
 }
 
-# GYP version: components/rappor.gypi:rappor_test_support
-static_library("test_support") {
+jumbo_static_library("rappor_recorder") {
+  sources = [
+    "rappor_recorder_impl.cc",
+    "rappor_recorder_impl.h",
+  ]
+
+  public_deps = [
+    "//base",
+    "//components/rappor/public/interfaces",
+  ]
+
+  deps = [
+    ":rappor",
+    "//mojo/public/cpp/bindings",
+  ]
+}
+
+jumbo_static_library("test_support") {
   testonly = true
   sources = [
     "test_log_uploader.cc",
@@ -67,7 +84,7 @@ static_library("test_support") {
   ]
 }
 
-source_set("unit_tests") {
+jumbo_source_set("unit_tests") {
   testonly = true
   sources = [
     "bloom_filter_unittest.cc",
@@ -89,7 +106,20 @@ source_set("unit_tests") {
     "//components/metrics",
     "//components/prefs:test_support",
     "//net:test_support",
+    "//services/network:test_support",
+    "//services/network/public/cpp:cpp",
     "//testing/gtest",
     "//url",
+  ]
+}
+
+# Convenience testing target
+test("rappor_unittests") {
+  sources = [
+    "//components/test/run_all_unittests.cc",
+  ]
+  deps = [
+    ":unit_tests",
+    "//components/test:test_support",
   ]
 }

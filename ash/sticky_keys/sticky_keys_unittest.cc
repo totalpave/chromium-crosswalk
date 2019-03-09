@@ -13,43 +13,20 @@
 #include "ui/events/event_source.h"
 #include "ui/events/event_utils.h"
 
-#if defined(USE_X11)
-#include <X11/Xlib.h>
-#undef None
-#undef Bool
-#undef RootWindow
-#include "ui/events/test/events_test_utils_x11.h"
-#endif  // USE_X11
-
 namespace ash {
 
-namespace {
-
-#if defined(USE_X11)
-// The device id of the test touchpad device.
-const unsigned int kTouchPadDeviceId = 1;
-#endif
-
-}  // namespace
-
-class StickyKeysTest : public test::AshTestBase {
+class StickyKeysTest : public AshTestBase {
  protected:
   StickyKeysTest() : target_(NULL), root_window_(NULL) {}
 
   void SetUp() override {
-    test::AshTestBase::SetUp();
+    AshTestBase::SetUp();
 
     // |target_| owned by root window of shell. It is still safe to delete
     // it ourselves.
     target_ = CreateTestWindowInShellWithId(0);
     root_window_ = target_->GetRootWindow();
-
-#if defined(USE_X11)
-    ui::SetUpTouchPadForTest(kTouchPadDeviceId);
-#endif
   }
-
-  void TearDown() override { test::AshTestBase::TearDown(); }
 
   virtual void OnShortcutPressed() {
     if (target_) {
@@ -59,12 +36,7 @@ class StickyKeysTest : public test::AshTestBase {
   }
 
   ui::KeyEvent* GenerateKey(ui::EventType type, ui::KeyboardCode code) {
-#if defined(USE_X11)
-    scoped_xevent_.InitKeyEvent(type, code, 0);
-    return new ui::KeyEvent(scoped_xevent_);
-#else
     return GenerateSynthesizedKeyEvent(type, code);
-#endif
   }
 
   // Creates a mouse event backed by a native XInput2 generic button event.
@@ -77,41 +49,14 @@ class StickyKeysTest : public test::AshTestBase {
   // The |location| should be in physical pixels.
   ui::MouseEvent* GenerateMouseEventAt(ui::EventType type,
                                        const gfx::Point& location) {
-#if defined(USE_X11)
-    scoped_xevent_.InitGenericButtonEvent(kTouchPadDeviceId, type, location, 0);
-    return new ui::MouseEvent(scoped_xevent_);
-#else
     return GenerateSynthesizedMouseEventAt(type, location);
-#endif
   }
 
   ui::MouseWheelEvent* GenerateMouseWheelEvent(int wheel_delta) {
-#if defined(USE_X11)
-    EXPECT_NE(0, wheel_delta);
-    scoped_xevent_.InitGenericMouseWheelEvent(kTouchPadDeviceId, wheel_delta,
-                                              0);
-    ui::MouseWheelEvent* event = new ui::MouseWheelEvent(scoped_xevent_);
-    ui::Event::DispatcherApi dispatcher(event);
-    dispatcher.set_target(target_);
-    return event;
-#else
     return GenerateSynthesizedMouseWheelEvent(wheel_delta);
-#endif
   }
 
   ui::ScrollEvent* GenerateScrollEvent(int scroll_delta) {
-#if defined(USE_X11)
-    scoped_xevent_.InitScrollEvent(kTouchPadDeviceId,  // deviceid
-                                   0,                  // x_offset
-                                   scroll_delta,       // y_offset
-                                   0,                  // x_offset_ordinal
-                                   scroll_delta,       // y_offset_ordinal
-                                   2);                 // finger_count
-    ui::ScrollEvent* event = new ui::ScrollEvent(scoped_xevent_);
-    ui::Event::DispatcherApi dispatcher(event);
-    dispatcher.set_target(target_);
-    return event;
-#else
     ui::ScrollEvent* event = new ui::ScrollEvent(
         ui::ET_SCROLL, gfx::Point(0, 0), ui::EventTimeForNow(), ui::EF_NONE,
         0,             // x_offset
@@ -122,22 +67,9 @@ class StickyKeysTest : public test::AshTestBase {
     ui::Event::DispatcherApi dispatcher(event);
     dispatcher.set_target(target_);
     return event;
-#endif
   }
 
   ui::ScrollEvent* GenerateFlingScrollEvent(int fling_delta, bool is_cancel) {
-#if defined(USE_X11)
-    scoped_xevent_.InitFlingScrollEvent(kTouchPadDeviceId,  // deviceid
-                                        0,                  // x_velocity
-                                        fling_delta,        // y_velocity
-                                        0,            // x_velocity_ordinal
-                                        fling_delta,  // y_velocity_ordinal
-                                        is_cancel);   // is_cancel
-    ui::ScrollEvent* event = new ui::ScrollEvent(scoped_xevent_);
-    ui::Event::DispatcherApi dispatcher(event);
-    dispatcher.set_target(target_);
-    return event;
-#else
     ui::ScrollEvent* event = new ui::ScrollEvent(
         is_cancel ? ui::ET_SCROLL_FLING_CANCEL : ui::ET_SCROLL_FLING_START,
         gfx::Point(0, 0), ui::EventTimeForNow(), ui::EF_NONE,
@@ -149,7 +81,6 @@ class StickyKeysTest : public test::AshTestBase {
     ui::Event::DispatcherApi dispatcher(event);
     dispatcher.set_target(target_);
     return event;
-#endif
   }
 
   // Creates a synthesized KeyEvent that is not backed by a native event.
@@ -161,9 +92,16 @@ class StickyKeysTest : public test::AshTestBase {
   // Creates a synthesized MouseEvent that is not backed by a native event.
   ui::MouseEvent* GenerateSynthesizedMouseEventAt(ui::EventType event_type,
                                                   const gfx::Point& location) {
-    ui::MouseEvent* event = new ui::MouseEvent(
-        event_type, location, location, ui::EventTimeForNow(),
-        ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
+    ui::MouseEvent* event;
+    if (event_type == ui::ET_MOUSEWHEEL) {
+      event = new ui::MouseWheelEvent(
+          gfx::Vector2d(), location, location, ui::EventTimeForNow(),
+          ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
+    } else {
+      event = new ui::MouseEvent(
+          event_type, location, location, ui::EventTimeForNow(),
+          ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
+    }
     ui::Event::DispatcherApi dispatcher(event);
     dispatcher.set_target(target_);
     return event;
@@ -198,23 +136,23 @@ class StickyKeysTest : public test::AshTestBase {
     int down_flags = 0;
     std::unique_ptr<ui::KeyEvent> ev;
     ev.reset(GenerateKey(ui::ET_KEY_PRESSED, key_code));
-    handler->HandleKeyEvent(*ev.get(), key_code, &down_flags, &released);
+    handler->HandleKeyEvent(*ev.get(), &down_flags, &released);
     ev.reset(GenerateKey(ui::ET_KEY_RELEASED, key_code));
-    handler->HandleKeyEvent(*ev.get(), key_code, &down_flags, &released);
+    handler->HandleKeyEvent(*ev.get(), &down_flags, &released);
   }
 
   bool HandleKeyEvent(const ui::KeyEvent& key_event,
                       StickyKeysHandler* handler,
                       int* down,
                       bool* up) {
-    return handler->HandleKeyEvent(key_event, key_event.key_code(), down, up);
+    return handler->HandleKeyEvent(key_event, down, up);
   }
 
   int HandleKeyEventForDownFlags(const ui::KeyEvent& key_event,
                                  StickyKeysHandler* handler) {
     bool released = false;
     int down = 0;
-    handler->HandleKeyEvent(key_event, key_event.key_code(), &down, &released);
+    handler->HandleKeyEvent(key_event, &down, &released);
     return down;
   }
 
@@ -225,11 +163,6 @@ class StickyKeysTest : public test::AshTestBase {
   aura::Window* target_;
   // The root window of |target_|. Not owned.
   aura::Window* root_window_;
-
-#if defined(USE_X11)
-  // Used to construct the various X events.
-  ui::ScopedXI2Event scoped_xevent_;
-#endif
 
   DISALLOW_COPY_AND_ASSIGN(StickyKeysTest);
 };

@@ -11,27 +11,33 @@
 #include "base/macros.h"
 #include "chrome/browser/ui/ash/launcher/app_window_launcher_item_controller.h"
 
-class ChromeLauncherController;
+class ArcAppWindow;
 
+// Shelf item delegate for ARC app windows.
 class ArcAppWindowLauncherItemController
     : public AppWindowLauncherItemController {
  public:
-  ArcAppWindowLauncherItemController(const std::string& arc_app_id,
-                                     ChromeLauncherController* controller);
+  explicit ArcAppWindowLauncherItemController(const ash::ShelfID shelf_id);
 
   ~ArcAppWindowLauncherItemController() override;
 
-  // LauncherItemController overrides:
-  base::string16 GetTitle() override;
-  ash::ShelfItemDelegate::PerformedAction ItemSelected(
-      const ui::Event& event) override;
-  ash::ShelfMenuModel* CreateApplicationMenu(int event_flags) override;
-  ChromeLauncherAppMenuItems GetApplicationList(int event_flags) override;
+  // AppWindowLauncherItemController overrides:
+  void ItemSelected(std::unique_ptr<ui::Event> event,
+                    int64_t display_id,
+                    ash::ShelfLaunchSource source,
+                    ItemSelectedCallback callback) override;
+
+  void AddTaskId(int task_id);
+  void RemoveTaskId(int task_id);
+  bool HasAnyTasks() const;
 
   void AddTaskId(int task_id);
   void RemoveTaskId(int task_id);
 
  private:
+  // Update the shelf item's icon for the active window.
+  void UpdateIcon(ArcAppWindow* arc_app_window);
+
   std::unordered_set<int> task_ids_;
 
   DISALLOW_COPY_AND_ASSIGN(ArcAppWindowLauncherItemController);

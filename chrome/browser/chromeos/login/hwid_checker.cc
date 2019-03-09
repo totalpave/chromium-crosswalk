@@ -9,9 +9,9 @@
 #include "base/command_line.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "chrome/common/chrome_switches.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/system/statistics_provider.h"
 #include "content/public/common/content_switches.h"
 #include "third_party/re2/src/re2/re2.h"
@@ -20,18 +20,15 @@
 namespace {
 
 unsigned CalculateCRC32(const std::string& data) {
-  return static_cast<unsigned>(crc32(
-      0,
-      reinterpret_cast<const Bytef*>(data.c_str()),
-      data.length()));
+  return static_cast<unsigned>(
+      crc32(0, reinterpret_cast<const Bytef*>(data.c_str()), data.length()));
 }
 
 std::string CalculateHWIDv2Checksum(const std::string& data) {
   unsigned crc32 = CalculateCRC32(data);
   // We take four least significant decimal digits of CRC-32.
   char checksum[5];
-  int snprintf_result =
-      snprintf(checksum, 5, "%04u", crc32 % 10000);
+  int snprintf_result = snprintf(checksum, 5, "%04u", crc32 % 10000);
   LOG_ASSERT(snprintf_result == 4);
   return checksum;
 }
@@ -100,13 +97,13 @@ bool IsCorrectHWIDv3(const std::string& hwid) {
   return CalculateHWIDv3Checksum(not_checksum) == checksum;
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
 namespace chromeos {
 
 bool IsHWIDCorrect(const std::string& hwid) {
   return IsCorrectHWIDv2(hwid) || IsCorrectExceptionalHWID(hwid) ||
-      IsCorrectHWIDv3(hwid);
+         IsCorrectHWIDv3(hwid);
 }
 
 bool IsMachineHWIDCorrect() {
@@ -118,8 +115,11 @@ bool IsMachineHWIDCorrect() {
     return true;
   if (!base::SysInfo::IsRunningOnChromeOS())
     return true;
+
   chromeos::system::StatisticsProvider* stats =
       chromeos::system::StatisticsProvider::GetInstance();
+  if (stats->IsRunningOnVm())
+    return true;
 
   std::string hwid;
   if (!stats->GetMachineStatistic(chromeos::system::kHardwareClassKey, &hwid)) {
@@ -127,17 +127,10 @@ bool IsMachineHWIDCorrect() {
     return false;
   }
   if (!chromeos::IsHWIDCorrect(hwid)) {
-    // Log the system vendor info to see what the system vendor is on the GCE
-    // VMs. This info will be used to filter out error messages on VMs. See
-    // http://crbug.com/585514 and http://crbug.com/585515 for more info.
-    std::string system_vendor;
-    stats->GetMachineStatistic(chromeos::system::kSystemVendorKey,
-                               &system_vendor);
-    LOG(ERROR) << "Machine has malformed HWID '" << hwid << "'. "
-               << "The system vendor is '" << system_vendor << "'.";
+    LOG(ERROR) << "Machine has malformed HWID '" << hwid << "'. ";
     return false;
   }
   return true;
 }
 
-} // namespace chromeos
+}  // namespace chromeos

@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -86,8 +85,16 @@ _STRING_TEMPLATE = u'<string name="%s">"%s"</string>\n'
 # Some strings are output as a <plurals> element.
 _PLURALS_TEMPLATE = '<plurals name="%s">\n%s</plurals>\n'
 _PLURALS_ITEM_TEMPLATE = '  <item quantity="%s">%s</item>\n'
-_PLURALS_PATTERN = lazy_re.compile(r'\{[A-Z_]+,\s*plural,(?P<items>.*)\}$', flags=re.S)
-_PLURALS_ITEM_PATTERN = lazy_re.compile(r'(?P<quantity>\S+)\s*\{(?P<value>.*?)\}')
+
+# Matches e.g. "{HELLO, plural, HOW ARE YOU DOING}", while capturing
+# "HOW ARE YOU DOING" in <items>.
+_PLURALS_PATTERN = lazy_re.compile(r'\{[A-Z_]+,\s*plural,(?P<items>.*)\}$',
+                                   flags=re.S)
+
+# Repeatedly matched against the <items> capture in _PLURALS_PATTERN,
+# to match "<quantity>{<value>}".
+_PLURALS_ITEM_PATTERN = lazy_re.compile(r'(?P<quantity>\S+?)\s*'
+                                        '\{(?P<value>.*?)\}')
 _PLURALS_QUANTITY_MAP = {
   '=0': 'zero',
   'zero': 'zero',
@@ -166,13 +173,17 @@ def _FormatPluralMessage(message):
     return None
   body_in = plural_match.group('items').strip()
   lines = []
+  quantities_so_far = set()
   for item_match in _PLURALS_ITEM_PATTERN.finditer(body_in):
     quantity_in = item_match.group('quantity')
     quantity_out = _PLURALS_QUANTITY_MAP.get(quantity_in)
     value_in = item_match.group('value')
     value_out = '"' + value_in.replace('#', '%d') + '"'
     if quantity_out:
-      lines.append(_PLURALS_ITEM_TEMPLATE % (quantity_out, value_out))
+      # only one line per quantity out (https://crbug.com/787488)
+      if quantity_out not in quantities_so_far:
+        quantities_so_far.add(quantity_out)
+        lines.append(_PLURALS_ITEM_TEMPLATE % (quantity_out, value_out))
     else:
       raise Exception('Unsupported plural quantity for android '
                       'strings.xml: %s' % quantity_in)

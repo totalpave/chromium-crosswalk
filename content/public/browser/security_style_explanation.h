@@ -6,8 +6,11 @@
 #define CONTENT_PUBLIC_BROWSER_SECURITY_STYLE_EXPLANATION_H_
 
 #include <string>
+#include <vector>
 
 #include "content/common/content_export.h"
+#include "net/cert/x509_certificate.h"
+#include "third_party/blink/public/platform/web_mixed_content_context_type.h"
 
 namespace content {
 
@@ -16,20 +19,42 @@ namespace content {
 // resource. An example summary phrase would be "Expired Certificate",
 // with a description along the lines of "This site's certificate chain
 // contains errors (net::CERT_DATE_INVALID)".
-struct SecurityStyleExplanation {
-  CONTENT_EXPORT SecurityStyleExplanation(){};
-  CONTENT_EXPORT SecurityStyleExplanation(const std::string& summary,
-                                          const std::string& description)
-      : summary(summary), description(description), cert_id(0) {}
-  CONTENT_EXPORT SecurityStyleExplanation(const std::string& summary,
-                                          const std::string& description,
-                                          int cert_id)
-      : summary(summary), description(description), cert_id(cert_id) {}
-  CONTENT_EXPORT ~SecurityStyleExplanation() {}
+struct CONTENT_EXPORT SecurityStyleExplanation {
+  SecurityStyleExplanation();
+  SecurityStyleExplanation(std::string summary, std::string description);
+  SecurityStyleExplanation(std::string title,
+                           std::string summary,
+                           std::string description);
+  SecurityStyleExplanation(
+      std::string title,
+      std::string summary,
+      std::string description,
+      scoped_refptr<net::X509Certificate> certificate,
+      blink::WebMixedContentContextType mixed_content_type);
+  SecurityStyleExplanation(std::string title,
+                           std::string summary,
+                           std::string description,
+                           std::vector<std::string> recommendations);
+  SecurityStyleExplanation(const SecurityStyleExplanation& other);
+  SecurityStyleExplanation(SecurityStyleExplanation&& other);
+  SecurityStyleExplanation& operator=(const SecurityStyleExplanation& other);
+  SecurityStyleExplanation& operator=(SecurityStyleExplanation&& other);
+  ~SecurityStyleExplanation();
 
+  std::string title;
   std::string summary;
   std::string description;
-  int cert_id;
+  // |certificate| indicates that this explanation has an associated
+  // certificate.
+  scoped_refptr<net::X509Certificate> certificate;
+  // |mixed_content_type| indicates that the explanation describes a particular
+  // type of mixed content. A value of kNotMixedContent means that the
+  // explanation does not relate to mixed content. UI surfaces can use this to
+  // customize the display of mixed content explanations.
+  blink::WebMixedContentContextType mixed_content_type;
+  // |recommendations| contains a list of recommendations for the server to
+  // follow.
+  std::vector<std::string> recommendations;
 };
 
 }  // namespace content

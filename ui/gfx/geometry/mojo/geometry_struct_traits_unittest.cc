@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <utility>
+
 #include "base/message_loop/message_loop.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -19,54 +21,61 @@ class GeometryStructTraitsTest : public testing::Test,
 
  protected:
   mojom::GeometryTraitsTestServicePtr GetTraitsTestProxy() {
-    return traits_test_bindings_.CreateInterfacePtrAndBind(this);
+    mojom::GeometryTraitsTestServicePtr proxy;
+    traits_test_bindings_.AddBinding(this, mojo::MakeRequest(&proxy));
+    return proxy;
   }
 
  private:
   // GeometryTraitsTestService:
-  void EchoPoint(const Point& p, const EchoPointCallback& callback) override {
-    callback.Run(p);
+  void EchoPoint(const Point& p, EchoPointCallback callback) override {
+    std::move(callback).Run(p);
   }
 
-  void EchoPointF(const PointF& p,
-                  const EchoPointFCallback& callback) override {
-    callback.Run(p);
+  void EchoPointF(const PointF& p, EchoPointFCallback callback) override {
+    std::move(callback).Run(p);
   }
 
-  void EchoSize(const Size& s, const EchoSizeCallback& callback) override {
-    callback.Run(s);
+  void EchoPoint3F(const Point3F& p, EchoPoint3FCallback callback) override {
+    std::move(callback).Run(p);
   }
 
-  void EchoSizeF(const SizeF& s, const EchoSizeFCallback& callback) override {
-    callback.Run(s);
+  void EchoSize(const Size& s, EchoSizeCallback callback) override {
+    std::move(callback).Run(s);
   }
 
-  void EchoRect(const Rect& r, const EchoRectCallback& callback) override {
-    callback.Run(r);
+  void EchoSizeF(const SizeF& s, EchoSizeFCallback callback) override {
+    std::move(callback).Run(s);
   }
 
-  void EchoRectF(const RectF& r, const EchoRectFCallback& callback) override {
-    callback.Run(r);
+  void EchoRect(const Rect& r, EchoRectCallback callback) override {
+    std::move(callback).Run(r);
   }
 
-  void EchoInsets(const Insets& i,
-                  const EchoInsetsCallback& callback) override {
-    callback.Run(i);
+  void EchoRectF(const RectF& r, EchoRectFCallback callback) override {
+    std::move(callback).Run(r);
   }
 
-  void EchoInsetsF(const InsetsF& i,
-                   const EchoInsetsFCallback& callback) override {
-    callback.Run(i);
+  void EchoInsets(const Insets& i, EchoInsetsCallback callback) override {
+    std::move(callback).Run(i);
   }
 
-  void EchoVector2d(const Vector2d& v,
-                    const EchoVector2dCallback& callback) override {
-    callback.Run(v);
+  void EchoInsetsF(const InsetsF& i, EchoInsetsFCallback callback) override {
+    std::move(callback).Run(i);
+  }
+
+  void EchoVector2d(const Vector2d& v, EchoVector2dCallback callback) override {
+    std::move(callback).Run(v);
   }
 
   void EchoVector2dF(const Vector2dF& v,
-                     const EchoVector2dFCallback& callback) override {
-    callback.Run(v);
+                     EchoVector2dFCallback callback) override {
+    std::move(callback).Run(v);
+  }
+
+  void EchoVector3dF(const Vector3dF& v,
+                     EchoVector3dFCallback callback) override {
+    std::move(callback).Run(v);
   }
 
   base::MessageLoop loop_;
@@ -97,6 +106,19 @@ TEST_F(GeometryStructTraitsTest, PointF) {
   proxy->EchoPointF(input, &output);
   EXPECT_EQ(x, output.x());
   EXPECT_EQ(y, output.y());
+}
+
+TEST_F(GeometryStructTraitsTest, Point3F) {
+  const float x = 1234.5f;
+  const float y = 6789.6f;
+  const float z = 5432.1f;
+  gfx::Point3F input(x, y, z);
+  mojom::GeometryTraitsTestServicePtr proxy = GetTraitsTestProxy();
+  gfx::Point3F output;
+  proxy->EchoPoint3F(input, &output);
+  EXPECT_EQ(x, output.x());
+  EXPECT_EQ(y, output.y());
+  EXPECT_EQ(z, output.z());
 }
 
 TEST_F(GeometryStructTraitsTest, Size) {
@@ -201,6 +223,19 @@ TEST_F(GeometryStructTraitsTest, Vector2dF) {
   proxy->EchoVector2dF(input, &output);
   EXPECT_EQ(x, output.x());
   EXPECT_EQ(y, output.y());
+}
+
+TEST_F(GeometryStructTraitsTest, Vector3dF) {
+  const float x = 1234.5f;
+  const float y = 6789.6f;
+  const float z = 5432.1f;
+  gfx::Vector3dF input(x, y, z);
+  mojom::GeometryTraitsTestServicePtr proxy = GetTraitsTestProxy();
+  gfx::Vector3dF output;
+  proxy->EchoVector3dF(input, &output);
+  EXPECT_EQ(x, output.x());
+  EXPECT_EQ(y, output.y());
+  EXPECT_EQ(z, output.z());
 }
 
 }  // namespace gfx

@@ -2,19 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/android/animation_frame_time_histogram.h"
-
 #include "base/android/jni_string.h"
 #include "base/metrics/histogram_macros.h"
 #include "jni/AnimationFrameTimeHistogram_jni.h"
 
+using base::android::JavaParamRef;
+
 // static
-void SaveHistogram(JNIEnv* env,
-                   const JavaParamRef<jobject>& jcaller,
-                   const JavaParamRef<jstring>& j_histogram_name,
-                   const JavaParamRef<jlongArray>& j_frame_times_ms,
-                   jint j_count) {
-  jlong *frame_times_ms = env->GetLongArrayElements(j_frame_times_ms, NULL);
+void JNI_AnimationFrameTimeHistogram_SaveHistogram(
+    JNIEnv* env,
+    const JavaParamRef<jstring>& j_histogram_name,
+    const JavaParamRef<jlongArray>& j_frame_times_ms,
+    jint j_count) {
+  jlong* frame_times_ms =
+      env->GetLongArrayElements(j_frame_times_ms.obj(), nullptr);
   std::string histogram_name = base::android::ConvertJavaStringToUTF8(
       env, j_histogram_name);
 
@@ -22,15 +23,6 @@ void SaveHistogram(JNIEnv* env,
     UMA_HISTOGRAM_TIMES(histogram_name.c_str(),
                         base::TimeDelta::FromMilliseconds(frame_times_ms[i]));
   }
+  env->ReleaseLongArrayElements(j_frame_times_ms.obj(), frame_times_ms,
+                                JNI_ABORT);
 }
-
-namespace base {
-namespace android {
-
-// static
-bool RegisterAnimationFrameTimeHistogram(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
-}  // namespace android
-}  // namespace base

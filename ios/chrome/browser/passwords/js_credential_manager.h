@@ -1,50 +1,55 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef IOS_CHROME_BROWSER_PASSWORDS_JS_CREDENTIAL_MANAGER_H_
 #define IOS_CHROME_BROWSER_PASSWORDS_JS_CREDENTIAL_MANAGER_H_
 
-#include "ios/web/public/web_state/credential.h"
-#import "ios/web/public/web_state/js/crw_js_injection_manager.h"
+#include "base/optional.h"
+#include "components/password_manager/core/common/credential_manager_types.h"
 
-namespace base {
-class DictionaryValue;
-}  // namespace base
+namespace web {
+class WebState;
+}
 
-// Constants for rejecting requests.
-extern const char kCredentialsPendingRequestErrorType[];
-extern const char kCredentialsPendingRequestErrorMessage[];
-extern const char kCredentialsSecurityErrorType[];
-extern const char kCredentialsPasswordStoreUnavailableErrorType[];
-extern const char kCredentialsPasswordStoreUnavailableErrorMessage[];
-extern const char kCredentialsSecurityErrorMessageUntrustedOrigin[];
+// Resolves the Promise identified by |promise_id| with either Credential or
+// undefined. |promise_id| is unique number of a pending promise resolver stored
+// in |__gCrWeb.credentialManager|.
+void ResolveCredentialPromiseWithCredentialInfo(
+    web::WebState* web_state,
+    int promise_id,
+    const base::Optional<password_manager::CredentialInfo>& info);
 
-// Injects the JavaScript that implements the request credentials API and
-// provides an app-side interface for interacting with it.
-@interface JSCredentialManager : CRWJSInjectionManager
+// Resolves the Promise identified by |promise_id| with undefined. |promise_id|
+// is unique number of a pending promise resolver stored in
+// |__gCrWeb.credentialManager|.
+void ResolveCredentialPromiseWithUndefined(web::WebState* web_state,
+                                           int promise_id);
 
-// Resolves the JavaScript Promise associated with |requestID| with the
-// specified |credential|. |completionHandler| will be invoked after the
-// operation has completed with YES if successful.
-- (void)resolvePromiseWithRequestID:(NSInteger)requestID
-                         credential:(const web::Credential&)credential
-                  completionHandler:(void (^)(BOOL))completionHandler;
+// Rejects the Promise identified by |promise_id| with TypeError. This may be a
+// result of failed parsing of arguments passed to exposed API method.
+// |promise_id| is unique number of a pending promise rejecter stored in
+// |__gCrWeb.credentialManager|.
+void RejectCredentialPromiseWithTypeError(web::WebState* web_state,
+                                          int promise_id,
+                                          const base::StringPiece16& message);
 
-// Resolves the JavaScript Promise associated with |requestID|.
-// |completionHandler| will be invoked after the operation has completed with
-// YES if successful.
-- (void)resolvePromiseWithRequestID:(NSInteger)requestID
-                  completionHandler:(void (^)(BOOL))completionHandler;
+// Rejects the Promise identified by |promise_id| with InvalidStateError. This
+// should happen when credential manager is disabled or there is a pending 'get'
+// request. |promise_id| is unique number of a pending promise rejecter stored
+// in |__gCrWeb.credentialManager|.
+void RejectCredentialPromiseWithInvalidStateError(
+    web::WebState* web_state,
+    int promise_id,
+    const base::StringPiece16& message);
 
-// Rejects the JavaScript Promise associated with |requestID| with an Error of
-// the specified |errorType| and |message|. |completionHandler| will be invoked
-// after the operation has completed with YES if successful.
-- (void)rejectPromiseWithRequestID:(NSInteger)requestID
-                         errorType:(NSString*)errorType
-                           message:(NSString*)message
-                 completionHandler:(void (^)(BOOL))completionHandler;
-
-@end
+// Rejects the Promise identified by |promise_id| with NotSupportedError. This
+// should happen when password store is unavailable or an unknown error occurs.
+// |promise_id| is unique number of a pending promise rejecter stored in
+// |__gCrWeb.credentialManager|.
+void RejectCredentialPromiseWithNotSupportedError(
+    web::WebState* web_state,
+    int promise_id,
+    const base::StringPiece16& message);
 
 #endif  // IOS_CHROME_BROWSER_PASSWORDS_JS_CREDENTIAL_MANAGER_H_

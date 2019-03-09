@@ -11,10 +11,13 @@
 #include <vector>
 
 #include "base/time/time.h"
-#include "ui/base/ime/chromeos/input_method_descriptor.h"
 #include "ui/base/ime/composition_text.h"
 #include "ui/base/ime/ime_engine_handler_interface.h"
 #include "url/gurl.h"
+
+#if defined(OS_CHROMEOS)
+#include "ui/base/ime/chromeos/input_method_descriptor.h"
+#endif  // defined(OS_CHROMEOS)
 
 class Profile;
 
@@ -82,7 +85,7 @@ class InputMethodEngineBase : virtual public ui::IMEEngineHandlerInterface {
     virtual void OnKeyEvent(
         const std::string& engine_id,
         const InputMethodEngineBase::KeyboardEvent& event,
-        ui::IMEEngineHandlerInterface::KeyEventDoneCallback& key_data) = 0;
+        ui::IMEEngineHandlerInterface::KeyEventDoneCallback key_data) = 0;
 
     // Called when Chrome terminates on-going text input session.
     virtual void OnReset(const std::string& engine_id) = 0;
@@ -119,6 +122,8 @@ class InputMethodEngineBase : virtual public ui::IMEEngineHandlerInterface {
     // Called when a menu item for this IME is interacted with.
     virtual void OnMenuItemActivated(const std::string& component_id,
                                      const std::string& menu_id) = 0;
+
+    virtual void OnScreenProjectionChanged(bool is_projected) = 0;
 #endif  // defined(OS_CHROMEOS)
   };
 
@@ -138,23 +143,35 @@ class InputMethodEngineBase : virtual public ui::IMEEngineHandlerInterface {
   void Disable() override;
   void Reset() override;
   void ProcessKeyEvent(const ui::KeyEvent& key_event,
-                       KeyEventDoneCallback& callback) override;
+                       KeyEventDoneCallback callback) override;
   void SetSurroundingText(const std::string& text,
                           uint32_t cursor_pos,
                           uint32_t anchor_pos,
                           uint32_t offset_pos) override;
   void SetCompositionBounds(const std::vector<gfx::Rect>& bounds) override;
-  bool ClearComposition(int context_id, std::string* error) override;
-  bool CommitText(int context_id,
-                  const char* text,
-                  std::string* error) override;
-  const std::string& GetActiveComponentId() const override;
+  bool IsInterestedInKeyEvent() const override;
+
+  // Returns the current active input_component id.
+  const std::string& GetActiveComponentId() const;
+
+  // Clear the current composition.
+  bool ClearComposition(int context_id, std::string* error);
+
+  // Commit the specified text to the specified context.  Fails if the context
+  // is not focused.
+  bool CommitText(int context_id, const char* text, std::string* error);
+
+  // Deletes |number_of_chars| unicode characters as the basis of |offset| from
+  // the surrounding text. The |offset| is relative position based on current
+  // caret.
+  // NOTE: Currently we are falling back to backspace forwarding workaround,
+  // because delete_surrounding_text is not supported in Chrome. So this
+  // function is restricted for only preceding text.
+  // TODO(nona): Support full spec delete surrounding text.
   bool DeleteSurroundingText(int context_id,
                              int offset,
                              size_t number_of_chars,
-                             std::string* error) override;
-  int GetCotextIdForTesting() { return context_id_; }
-  bool IsInterestedInKeyEvent() const override;
+                             std::string* error);
 
   // Send the sequence of key events.
   bool SendKeyEvents(int context_id, const std::vector<KeyboardEvent>& events);
@@ -175,12 +192,19 @@ class InputMethodEngineBase : virtual public ui::IMEEngineHandlerInterface {
   // Adds unprocessed key event to |request_map_|.
   std::string AddRequest(
       const std::string& component_id,
-      ui::IMEEngineHandlerInterface::KeyEventDoneCallback& key_data);
+      ui::IMEEngineHandlerInterface::KeyEventDoneCallback key_data);
 
-  // Called when a key event is handled.
-  void KeyEventHandled();
+  int GetContextIdForTesting() const { return context_id_; }
+
+  // Get the composition bounds.
+  const std::vector<gfx::Rect>& composition_bounds() const {
+    return composition_bounds_;
+  }
 
  protected:
+  // Returns true if this IME is active, false if not.
+  virtual bool IsActive() const = 0;
+
   // Notifies InputContextHandler that the composition is changed.
   virtual void UpdateComposition(const ui::CompositionText& composition_text,
                                  uint32_t cursor_pos,
@@ -213,10 +237,6 @@ class InputMethodEngineBase : virtual public ui::IMEEngineHandlerInterface {
   std::unique_ptr<ui::CompositionText> composition_text_;
   int composition_cursor_;
 
-  // Used with SendKeyEvents and ProcessKeyEvent to check if the key event
-  // sent to ProcessKeyEvent is sent by SendKeyEvents.
-  const ui::KeyEvent* sent_key_event_;
-
   Profile* profile_;
 
   using RequestMap =
@@ -229,9 +249,15 @@ class InputMethodEngineBase : virtual public ui::IMEEngineHandlerInterface {
 
   // The composition text to be set from calling input.ime.setComposition API.
   ui::CompositionText composition_;
+  bool composition_changed_;
+
+  // The composition bounds returned by inputMethodPrivate.getCompositionBounds
+  // API.
+  std::vector<gfx::Rect> composition_bounds_;
 
   // The text to be committed from calling input.ime.commitText API.
   std::string text_;
+  bool commit_text_changed_;
 
   // Indicates whether the IME extension is currently handling a physical key
   // event. This is used in CommitText/UpdateCompositionText/etc.

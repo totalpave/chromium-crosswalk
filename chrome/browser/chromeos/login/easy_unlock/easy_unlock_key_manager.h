@@ -7,14 +7,14 @@
 
 #include <stddef.h>
 
-#include <deque>
 #include <map>
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/stl_util.h"
 #include "chrome/browser/chromeos/login/easy_unlock/easy_unlock_get_keys_operation.h"
 #include "chrome/browser/chromeos/login/easy_unlock/easy_unlock_refresh_keys_operation.h"
 #include "chrome/browser/chromeos/login/easy_unlock/easy_unlock_types.h"
@@ -24,7 +24,7 @@ class AccountId;
 namespace base {
 class DictionaryValue;
 class ListValue;
-}
+}  // namespace base
 
 namespace chromeos {
 
@@ -71,7 +71,7 @@ class EasyUnlockKeyManager {
       const AccountId& account_id,
       const EasyUnlockDeviceKeyDataList& data_list,
       base::ListValue* device_list);
-  static bool RemoteDeviceListToDeviceDataList(
+  static bool RemoteDeviceRefListToDeviceDataList(
       const base::ListValue& device_list,
       EasyUnlockDeviceKeyDataList* data_list);
 
@@ -90,9 +90,6 @@ class EasyUnlockKeyManager {
                                     base::ListValue* remote_devices,
                                     const RefreshKeysCallback& callback);
 
-  // Returns true if there are pending operations.
-  bool HasPendingOperations() const;
-
   // Callback invoked after refresh keys operation.
   void OnKeysRefreshed(const RefreshKeysCallback& callback,
                        bool create_success);
@@ -102,16 +99,10 @@ class EasyUnlockKeyManager {
                      bool fetch_success,
                      const EasyUnlockDeviceKeyDataList& fetched_data);
 
-  // Queued operations are stored as raw pointers, as scoped_ptrs may not behave
-  // nicely with std::deque.
-  using WriteOperationQueue = std::deque<EasyUnlockRefreshKeysOperation*>;
-  using ReadOperationQueue = std::deque<EasyUnlockGetKeysOperation*>;
-  WriteOperationQueue write_operation_queue_;
-  ReadOperationQueue read_operation_queue_;
-
-  // Scopes the raw operation pointers to the lifetime of this object.
-  STLElementDeleter<WriteOperationQueue> write_queue_deleter_;
-  STLElementDeleter<ReadOperationQueue> read_queue_deleter_;
+  base::circular_deque<std::unique_ptr<EasyUnlockRefreshKeysOperation>>
+      write_operation_queue_;
+  base::circular_deque<std::unique_ptr<EasyUnlockGetKeysOperation>>
+      read_operation_queue_;
 
   // Stores the current operation in progress. At most one of these variables
   // can be non-null at any time.

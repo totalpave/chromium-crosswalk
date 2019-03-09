@@ -7,7 +7,8 @@ package org.chromium.android_webview;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import org.chromium.content.browser.ContentViewStatics;
+import org.chromium.base.memory.MemoryPressureMonitor;
+import org.chromium.content_public.browser.ContentViewStatics;
 
 /**
  * Java side of the Browser Context: contains all the java side objects needed to host one
@@ -18,22 +19,34 @@ import org.chromium.content.browser.ContentViewStatics;
  * AwBrowserContext instance, so at this point the class mostly exists for conceptual clarity.
  */
 public class AwBrowserContext {
-    private static final String HTTP_AUTH_DATABASE_FILE = "http_auth.db";
-
+    private static final String TAG = "AwBrowserContext";
     private final SharedPreferences mSharedPreferences;
 
     private AwGeolocationPermissions mGeolocationPermissions;
     private AwFormDatabase mFormDatabase;
-    private HttpAuthDatabase mHttpAuthDatabase;
-    private AwMessagePortService mMessagePortService;
-    private AwMetricsServiceClient mMetricsServiceClient;
     private AwServiceWorkerController mServiceWorkerController;
+    private AwTracingController mTracingController;
     private Context mApplicationContext;
 
     public AwBrowserContext(SharedPreferences sharedPreferences, Context applicationContext) {
         mSharedPreferences = sharedPreferences;
-        mMetricsServiceClient = new AwMetricsServiceClient(applicationContext);
         mApplicationContext = applicationContext;
+
+        PlatformServiceBridge.getInstance().setSafeBrowsingHandler();
+
+        // Register MemoryPressureMonitor callbacks and make sure it polls only if there is at
+        // least one WebView around.
+        MemoryPressureMonitor.INSTANCE.registerComponentCallbacks();
+        AwContentsLifecycleNotifier.addObserver(new AwContentsLifecycleNotifier.Observer() {
+            @Override
+            public void onFirstWebViewCreated() {
+                MemoryPressureMonitor.INSTANCE.enablePolling();
+            }
+            @Override
+            public void onLastWebViewDestroyed() {
+                MemoryPressureMonitor.INSTANCE.disablePolling();
+            }
+        });
     }
 
     public AwGeolocationPermissions getGeolocationPermissions() {
@@ -50,29 +63,18 @@ public class AwBrowserContext {
         return mFormDatabase;
     }
 
-    public HttpAuthDatabase getHttpAuthDatabase(Context context) {
-        if (mHttpAuthDatabase == null) {
-            mHttpAuthDatabase = HttpAuthDatabase.newInstance(context, HTTP_AUTH_DATABASE_FILE);
-        }
-        return mHttpAuthDatabase;
-    }
-
-    public AwMessagePortService getMessagePortService() {
-        if (mMessagePortService == null) {
-            mMessagePortService = new AwMessagePortService();
-        }
-        return mMessagePortService;
-    }
-
-    public AwMetricsServiceClient getMetricsServiceClient() {
-        return mMetricsServiceClient;
-    }
-
     public AwServiceWorkerController getServiceWorkerController() {
         if (mServiceWorkerController == null) {
             mServiceWorkerController = new AwServiceWorkerController(mApplicationContext, this);
         }
         return mServiceWorkerController;
+    }
+
+    public AwTracingController getTracingController() {
+        if (mTracingController == null) {
+            mTracingController = new AwTracingController();
+        }
+        return mTracingController;
     }
 
     /**

@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_DOWNLOAD_DOWNLOAD_TARGET_DETERMINER_H_
 
 #include <memory>
+#include <string>
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
@@ -13,21 +14,17 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "build/build_config.h"
-#include "chrome/browser/download/download_path_reservation_tracker.h"
 #include "chrome/browser/download/download_target_determiner_delegate.h"
 #include "chrome/browser/download/download_target_info.h"
 #include "chrome/common/safe_browsing/download_file_types.pb.h"
-#include "content/public/browser/download_danger_type.h"
-#include "content/public/browser/download_item.h"
+#include "components/download/public/common/download_danger_type.h"
+#include "components/download/public/common/download_item.h"
+#include "components/download/public/common/download_path_reservation_tracker.h"
 #include "content/public/browser/download_manager_delegate.h"
+#include "ppapi/buildflags/buildflags.h"
 
-class ChromeDownloadManagerDelegate;
 class Profile;
 class DownloadPrefs;
-
-namespace content {
-enum DownloadDangerType;
-}
 
 // Determines the target of the download.
 //
@@ -52,11 +49,10 @@ enum DownloadDangerType;
 //
 // The only public entrypoint is the static Start() method which creates an
 // instance of DownloadTargetDeterminer.
-class DownloadTargetDeterminer
-    : public content::DownloadItem::Observer {
+class DownloadTargetDeterminer : public download::DownloadItem::Observer {
  public:
-  typedef base::Callback<void(std::unique_ptr<DownloadTargetInfo>)>
-      CompletionCallback;
+  using CompletionCallback =
+      base::Callback<void(std::unique_ptr<DownloadTargetInfo>)>;
 
   // Start the process of determing the target of |download|.
   //
@@ -74,11 +70,14 @@ class DownloadTargetDeterminer
   //   determination is complete or after |download| is destroyed.
   //
   // Start() should be called on the UI thread.
-  static void Start(content::DownloadItem* download,
-                    const base::FilePath& initial_virtual_path,
-                    DownloadPrefs* download_prefs,
-                    DownloadTargetDeterminerDelegate* delegate,
-                    const CompletionCallback& callback);
+  static void Start(
+      download::DownloadItem* download,
+      const base::FilePath& initial_virtual_path,
+      download::DownloadPathReservationTracker::FilenameConflictAction
+          conflict_action,
+      DownloadPrefs* download_prefs,
+      DownloadTargetDeterminerDelegate* delegate,
+      const CompletionCallback& callback);
 
   // Returns a .crdownload intermediate path for the |suggested_path|.
   static base::FilePath GetCrDownloadPath(const base::FilePath& suggested_path);
@@ -137,11 +136,14 @@ class DownloadTargetDeterminer
 
   // Construct a DownloadTargetDeterminer object. Constraints on the arguments
   // are as per Start() above.
-  DownloadTargetDeterminer(content::DownloadItem* download,
-                           const base::FilePath& initial_virtual_path,
-                           DownloadPrefs* download_prefs,
-                           DownloadTargetDeterminerDelegate* delegate,
-                           const CompletionCallback& callback);
+  DownloadTargetDeterminer(
+      download::DownloadItem* download,
+      const base::FilePath& initial_virtual_path,
+      download::DownloadPathReservationTracker::FilenameConflictAction
+          conflict_action,
+      DownloadPrefs* download_prefs,
+      DownloadTargetDeterminerDelegate* delegate,
+      const CompletionCallback& callback);
 
   ~DownloadTargetDeterminer() override;
 
@@ -170,7 +172,8 @@ class DownloadTargetDeterminer
   // |conflict_action_|.
   void NotifyExtensionsDone(
       const base::FilePath& new_path,
-      DownloadPathReservationTracker::FilenameConflictAction conflict_action);
+      download::DownloadPathReservationTracker::FilenameConflictAction
+          conflict_action);
 
   // Invokes ReserveVirtualPath() on the delegate to acquire a reservation for
   // the path. See DownloadPathReservationTracker.
@@ -179,16 +182,18 @@ class DownloadTargetDeterminer
   Result DoReserveVirtualPath();
 
   // Callback invoked after the delegate aquires a path reservation.
-  void ReserveVirtualPathDone(const base::FilePath& path, bool verified);
+  void ReserveVirtualPathDone(download::PathValidationResult result,
+                              const base::FilePath& path);
 
   // Presents a file picker to the user if necessary.
   // Next state:
   // - STATE_DETERMINE_LOCAL_PATH.
-  Result DoPromptUserForDownloadPath();
+  Result DoRequestConfirmation();
 
   // Callback invoked after the file picker completes. Cancels the download if
   // the user cancels the file picker.
-  void PromptUserForDownloadPathDone(const base::FilePath& virtual_path);
+  void RequestConfirmationDone(DownloadConfirmationResult result,
+                               const base::FilePath& virtual_path);
 
   // Up until this point, the path that was used is considered to be a virtual
   // path. This step determines the local file system path corresponding to this
@@ -220,7 +225,7 @@ class DownloadTargetDeterminer
   // - STATE_DETERMINE_IF_ADOBE_READER_UP_TO_DATE.
   Result DoDetermineIfHandledSafely();
 
-#if defined(ENABLE_PLUGINS)
+#if BUILDFLAG(ENABLE_PLUGINS)
   // Callback invoked when a decision is available about whether the file type
   // can be handled safely by the browser.
   void DetermineIfHandledSafelyDone(bool is_handled_safely);
@@ -246,7 +251,7 @@ class DownloadTargetDeterminer
 
   // Callback invoked after the delegate has checked the download URL. Sets the
   // danger type of the download to |danger_type|.
-  void CheckDownloadUrlDone(content::DownloadDangerType danger_type);
+  void CheckDownloadUrlDone(download::DownloadDangerType danger_type);
 
   // Checks if the user has visited the referrer URL of the download prior to
   // today. The actual check is only performed if it would be needed to
@@ -270,19 +275,22 @@ class DownloadTargetDeterminer
 
   // Utilities:
 
-  void ScheduleCallbackAndDeleteSelf();
-
-  void CancelOnFailureAndDeleteSelf();
+  // Schedules the completion callback to be run on the UI thread and deletes
+  // this object. The determined target info will be passed into the callback
+  // if |interrupt_reason| is NONE. Otherwise, only the interrupt reason will be
+  // passed on.
+  void ScheduleCallbackAndDeleteSelf(download::DownloadInterruptReason result);
 
   Profile* GetProfile() const;
 
-  // Determine whether to prompt the user for the download location. For regular
+  // Determine if the download requires confirmation from the user. For regular
   // downloads, this determination is based on the target disposition, auto-open
   // behavior, among other factors. For an interrupted download, this
   // determination will be based on the interrupt reason. It is assumed that
   // download interruptions always occur after the first round of download
   // target determination is complete.
-  bool ShouldPromptForDownload(const base::FilePath& filename) const;
+  DownloadConfirmationReason NeedsConfirmation(
+      const base::FilePath& filename) const;
 
   // Returns true if the user has been prompted for this download at least once
   // prior to this target determination operation. This method is only expected
@@ -302,24 +310,28 @@ class DownloadTargetDeterminer
   safe_browsing::DownloadFileType::DangerLevel GetDangerLevel(
       PriorVisitsToReferrer visits) const;
 
-  // content::DownloadItem::Observer
-  void OnDownloadDestroyed(content::DownloadItem* download) override;
+  // download::DownloadItem::Observer
+  void OnDownloadDestroyed(download::DownloadItem* download) override;
 
   // state
   State next_state_;
-  bool should_prompt_;
+  DownloadConfirmationReason confirmation_reason_;
   bool should_notify_extensions_;
   bool create_target_directory_;
-  DownloadPathReservationTracker::FilenameConflictAction conflict_action_;
-  content::DownloadDangerType danger_type_;
+  download::DownloadPathReservationTracker::FilenameConflictAction
+      conflict_action_;
+  download::DownloadDangerType danger_type_;
   safe_browsing::DownloadFileType::DangerLevel danger_level_;
   base::FilePath virtual_path_;
   base::FilePath local_path_;
   base::FilePath intermediate_path_;
   std::string mime_type_;
   bool is_filetype_handled_safely_;
+#if defined(OS_ANDROID)
+  bool is_checking_dialog_confirmed_path_;
+#endif
 
-  content::DownloadItem* download_;
+  download::DownloadItem* download_;
   const bool is_resumption_;
   DownloadPrefs* download_prefs_;
   DownloadTargetDeterminerDelegate* delegate_;

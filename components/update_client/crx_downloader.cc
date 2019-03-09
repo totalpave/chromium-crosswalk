@@ -7,24 +7,23 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #if defined(OS_WIN)
 #include "components/update_client/background_downloader_win.h"
 #endif
+#include "components/update_client/network.h"
+#include "components/update_client/task_traits.h"
+#include "components/update_client/update_client_errors.h"
 #include "components/update_client/url_fetcher_downloader.h"
 #include "components/update_client/utils.h"
 
 namespace update_client {
-
-CrxDownloader::Result::Result()
-    : error(0), downloaded_bytes(-1), total_bytes(-1) {
-}
 
 CrxDownloader::DownloadMetrics::DownloadMetrics()
     : downloader(kNone),
@@ -38,26 +37,22 @@ CrxDownloader::DownloadMetrics::DownloadMetrics()
 // which uses the BITS service.
 std::unique_ptr<CrxDownloader> CrxDownloader::Create(
     bool is_background_download,
-    net::URLRequestContextGetter* context_getter,
-    const scoped_refptr<base::SequencedTaskRunner>& task_runner) {
-  std::unique_ptr<CrxDownloader> url_fetcher_downloader(
-      std::unique_ptr<CrxDownloader>(new UrlFetcherDownloader(
-          std::unique_ptr<CrxDownloader>(), context_getter, task_runner)));
+    scoped_refptr<NetworkFetcherFactory> network_fetcher_factory) {
+  std::unique_ptr<CrxDownloader> url_fetcher_downloader =
+      std::make_unique<UrlFetcherDownloader>(nullptr, network_fetcher_factory);
+
 #if defined(OS_WIN)
   if (is_background_download) {
-    return std::unique_ptr<CrxDownloader>(new BackgroundDownloader(
-        std::move(url_fetcher_downloader), context_getter, task_runner));
+    return std::make_unique<BackgroundDownloader>(
+        std::move(url_fetcher_downloader));
   }
 #endif
 
   return url_fetcher_downloader;
 }
 
-CrxDownloader::CrxDownloader(
-    const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    std::unique_ptr<CrxDownloader> successor)
-    : task_runner_(task_runner),
-      main_task_runner_(base::ThreadTaskRunnerHandle::Get()),
+CrxDownloader::CrxDownloader(std::unique_ptr<CrxDownloader> successor)
+    : main_task_runner_(base::ThreadTaskRunnerHandle::Get()),
       successor_(std::move(successor)) {}
 
 CrxDownloader::~CrxDownloader() {}
@@ -82,39 +77,38 @@ CrxDownloader::download_metrics() const {
   return retval;
 }
 
-void CrxDownloader::StartDownloadFromUrl(
-    const GURL& url,
-    const std::string& expected_hash,
-    const DownloadCallback& download_callback) {
+void CrxDownloader::StartDownloadFromUrl(const GURL& url,
+                                         const std::string& expected_hash,
+                                         DownloadCallback download_callback) {
   std::vector<GURL> urls;
   urls.push_back(url);
-  StartDownload(urls, expected_hash, download_callback);
+  StartDownload(urls, expected_hash, std::move(download_callback));
 }
 
 void CrxDownloader::StartDownload(const std::vector<GURL>& urls,
                                   const std::string& expected_hash,
-                                  const DownloadCallback& download_callback) {
+                                  DownloadCallback download_callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  auto error = Error::SUCCESS;
+  auto error = CrxDownloaderError::NONE;
   if (urls.empty()) {
-    error = Error::NO_URL;
+    error = CrxDownloaderError::NO_URL;
   } else if (expected_hash.empty()) {
-    error = Error::NO_HASH;
+    error = CrxDownloaderError::NO_HASH;
   }
 
-  if (error != Error::SUCCESS) {
+  if (error != CrxDownloaderError::NONE) {
     Result result;
-    result.error = error;
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(download_callback, result));
+    result.error = static_cast<int>(error);
+    main_task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(download_callback), result));
     return;
   }
 
   urls_ = urls;
   expected_hash_ = expected_hash;
   current_url_ = urls_.begin();
-  download_callback_ = download_callback;
+  download_callback_ = std::move(download_callback);
 
   DoStartDownload(*current_url_);
 }
@@ -125,25 +119,25 @@ void CrxDownloader::OnDownloadComplete(
     const DownloadMetrics& download_metrics) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  if (result.error == Error::SUCCESS)
-    task_runner()->PostTask(
-        FROM_HERE,
-        base::Bind(&CrxDownloader::VerifyResponse, base::Unretained(this),
-                   is_handled, result, download_metrics));
+  if (!result.error)
+    base::PostTaskWithTraits(
+        FROM_HERE, kTaskTraits,
+        base::BindOnce(&CrxDownloader::VerifyResponse, base::Unretained(this),
+                       is_handled, result, download_metrics));
   else
     main_task_runner()->PostTask(
-        FROM_HERE,
-        base::Bind(&CrxDownloader::HandleDownloadError, base::Unretained(this),
-                   is_handled, result, download_metrics));
+        FROM_HERE, base::BindOnce(&CrxDownloader::HandleDownloadError,
+                                  base::Unretained(this), is_handled, result,
+                                  download_metrics));
 }
 
-void CrxDownloader::OnDownloadProgress(const Result& result) {
+void CrxDownloader::OnDownloadProgress() {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   if (progress_callback_.is_null())
     return;
 
-  progress_callback_.Run(result);
+  progress_callback_.Run();
 }
 
 // The function mutates the values of the parameters |result| and
@@ -151,30 +145,29 @@ void CrxDownloader::OnDownloadProgress(const Result& result) {
 void CrxDownloader::VerifyResponse(bool is_handled,
                                    Result result,
                                    DownloadMetrics download_metrics) {
-  DCHECK(task_runner()->RunsTasksOnCurrentThread());
-  DCHECK_EQ(Error::SUCCESS, result.error);
-  DCHECK_EQ(Error::SUCCESS, download_metrics.error);
+  DCHECK_EQ(0, result.error);
+  DCHECK_EQ(0, download_metrics.error);
   DCHECK(is_handled);
 
   if (VerifyFileHash256(result.response, expected_hash_)) {
     download_metrics_.push_back(download_metrics);
-    main_task_runner()->PostTask(FROM_HERE,
-                                 base::Bind(download_callback_, result));
+    main_task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(download_callback_), result));
     return;
   }
 
   // The download was successful but the response is not trusted. Clean up
   // the download, mutate the result, and try the remaining fallbacks when
   // handling the error.
-  result.error = Error::BAD_HASH;
+  result.error = static_cast<int>(CrxDownloaderError::BAD_HASH);
   download_metrics.error = result.error;
   DeleteFileAndEmptyParentDirectory(result.response);
   result.response.clear();
 
   main_task_runner()->PostTask(
-      FROM_HERE,
-      base::Bind(&CrxDownloader::HandleDownloadError, base::Unretained(this),
-                 is_handled, result, download_metrics));
+      FROM_HERE, base::BindOnce(&CrxDownloader::HandleDownloadError,
+                                base::Unretained(this), is_handled, result,
+                                download_metrics));
 }
 
 void CrxDownloader::HandleDownloadError(
@@ -182,8 +175,9 @@ void CrxDownloader::HandleDownloadError(
     const Result& result,
     const DownloadMetrics& download_metrics) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK_NE(Error::SUCCESS, result.error);
-  DCHECK_NE(Error::SUCCESS, download_metrics.error);
+  DCHECK_NE(0, result.error);
+  DCHECK(result.response.empty());
+  DCHECK_NE(0, download_metrics.error);
 
   download_metrics_.push_back(download_metrics);
 
@@ -206,14 +200,15 @@ void CrxDownloader::HandleDownloadError(
 
   // Try downloading using the next downloader.
   if (successor_ && !urls_.empty()) {
-    successor_->StartDownload(urls_, expected_hash_, download_callback_);
+    successor_->StartDownload(urls_, expected_hash_,
+                              std::move(download_callback_));
     return;
   }
 
   // The download ends here since there is no url nor downloader to handle this
   // download request further.
-  main_task_runner()->PostTask(FROM_HERE,
-                               base::Bind(download_callback_, result));
+  main_task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(download_callback_), result));
 }
 
 }  // namespace update_client

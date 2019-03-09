@@ -17,12 +17,13 @@ namespace chromeos {
 
 KioskInfoService::KioskInfoService() : weak_ptr_factory_(this) {}
 
-KioskInfoService::~KioskInfoService() {}
+KioskInfoService::~KioskInfoService() = default;
 
 void KioskInfoService::Start(
     scoped_refptr<dbus::ExportedObject> exported_object) {
   exported_object->ExportMethod(
-      kLibCrosServiceInterface, kGetKioskAppRequiredPlatforVersion,
+      kKioskAppServiceInterface,
+      kKioskAppServiceGetRequiredPlatformVersionMethod,
       base::Bind(&KioskInfoService::GetKioskAppRequiredPlatformVersion,
                  weak_ptr_factory_.GetWeakPtr()),
       base::Bind(&KioskInfoService::OnExported,

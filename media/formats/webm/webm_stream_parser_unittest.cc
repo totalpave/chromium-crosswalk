@@ -13,6 +13,7 @@
 #include "media/base/mock_media_log.h"
 #include "media/base/stream_parser.h"
 #include "media/base/test_data_util.h"
+#include "media/base/test_helpers.h"
 #include "media/base/text_track_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -23,8 +24,7 @@ namespace media {
 
 class WebMStreamParserTest : public testing::Test {
  public:
-  WebMStreamParserTest()
-      : media_log_(new testing::StrictMock<MockMediaLog>()) {}
+  WebMStreamParserTest() = default;
 
  protected:
   void ParseWebMFile(const std::string& filename,
@@ -38,21 +38,22 @@ class WebMStreamParserTest : public testing::Test {
     EXPECT_CALL(*this, InitCB(_));
     EXPECT_CALL(*this, NewMediaSegmentCB()).Times(testing::AnyNumber());
     EXPECT_CALL(*this, EndMediaSegmentCB()).Times(testing::AnyNumber());
-    EXPECT_CALL(*this, NewBuffersCB(_, _, _))
+    EXPECT_CALL(*this, NewBuffersCB(_))
         .Times(testing::AnyNumber())
         .WillRepeatedly(testing::Return(true));
-    parser_->Init(
-        base::Bind(&WebMStreamParserTest::InitF, base::Unretained(this),
-                   expected_params),
-        base::Bind(&WebMStreamParserTest::NewConfigCB, base::Unretained(this)),
-        base::Bind(&WebMStreamParserTest::NewBuffersCB, base::Unretained(this)),
-        false,  // don't ignore_text_track
-        encrypted_media_init_data_cb,
-        base::Bind(&WebMStreamParserTest::NewMediaSegmentCB,
-                   base::Unretained(this)),
-        base::Bind(&WebMStreamParserTest::EndMediaSegmentCB,
-                   base::Unretained(this)),
-        media_log_);
+    parser_->Init(base::BindOnce(&WebMStreamParserTest::InitF,
+                                 base::Unretained(this), expected_params),
+                  base::BindRepeating(&WebMStreamParserTest::NewConfigCB,
+                                      base::Unretained(this)),
+                  base::BindRepeating(&WebMStreamParserTest::NewBuffersCB,
+                                      base::Unretained(this)),
+                  false,  // don't ignore_text_track
+                  encrypted_media_init_data_cb,
+                  base::BindRepeating(&WebMStreamParserTest::NewMediaSegmentCB,
+                                      base::Unretained(this)),
+                  base::BindRepeating(&WebMStreamParserTest::EndMediaSegmentCB,
+                                      base::Unretained(this)),
+                  &media_log_);
     bool result = parser_->Parse(buffer->data(), buffer->data_size());
     EXPECT_TRUE(result);
   }
@@ -79,25 +80,22 @@ class WebMStreamParserTest : public testing::Test {
     return true;
   }
 
-  MOCK_METHOD3(NewBuffersCB,
-               bool(const StreamParser::BufferQueue&,
-                    const StreamParser::BufferQueue&,
-                    const StreamParser::TextBufferQueueMap&));
+  MOCK_METHOD1(NewBuffersCB, bool(const StreamParser::BufferQueueMap&));
   MOCK_METHOD2(OnEncryptedMediaInitData,
                void(EmeInitDataType init_data_type,
                     const std::vector<uint8_t>& init_data));
   MOCK_METHOD0(NewMediaSegmentCB, void());
   MOCK_METHOD0(EndMediaSegmentCB, void());
 
-  scoped_refptr<testing::StrictMock<MockMediaLog>> media_log_;
+  testing::StrictMock<MockMediaLog> media_log_;
   std::unique_ptr<WebMStreamParser> parser_;
   std::unique_ptr<MediaTracks> media_tracks_;
 };
 
 TEST_F(WebMStreamParserTest, VerifyMediaTrackMetadata) {
-  EXPECT_MEDIA_LOG(testing::HasSubstr("Estimating WebM block duration"))
+  EXPECT_MEDIA_LOG(WebMSimpleBlockDurationEstimatedAny())
       .Times(testing::AnyNumber());
-  StreamParser::InitParameters params(kInfiniteDuration());
+  StreamParser::InitParameters params(kInfiniteDuration);
   params.detected_audio_track_count = 1;
   params.detected_video_track_count = 1;
   params.detected_text_track_count = 0;
@@ -122,9 +120,9 @@ TEST_F(WebMStreamParserTest, VerifyMediaTrackMetadata) {
 }
 
 TEST_F(WebMStreamParserTest, VerifyDetectedTrack_AudioOnly) {
-  EXPECT_MEDIA_LOG(testing::HasSubstr("Estimating WebM block duration"))
+  EXPECT_MEDIA_LOG(WebMSimpleBlockDurationEstimatedAny())
       .Times(testing::AnyNumber());
-  StreamParser::InitParameters params(kInfiniteDuration());
+  StreamParser::InitParameters params(kInfiniteDuration);
   params.detected_audio_track_count = 1;
   params.detected_video_track_count = 0;
   params.detected_text_track_count = 0;
@@ -134,7 +132,7 @@ TEST_F(WebMStreamParserTest, VerifyDetectedTrack_AudioOnly) {
 }
 
 TEST_F(WebMStreamParserTest, VerifyDetectedTrack_VideoOnly) {
-  StreamParser::InitParameters params(kInfiniteDuration());
+  StreamParser::InitParameters params(kInfiniteDuration);
   params.detected_audio_track_count = 0;
   params.detected_video_track_count = 1;
   params.detected_text_track_count = 0;
@@ -144,9 +142,9 @@ TEST_F(WebMStreamParserTest, VerifyDetectedTrack_VideoOnly) {
 }
 
 TEST_F(WebMStreamParserTest, VerifyDetectedTracks_AVText) {
-  EXPECT_MEDIA_LOG(testing::HasSubstr("Estimating WebM block duration"))
+  EXPECT_MEDIA_LOG(WebMSimpleBlockDurationEstimatedAny())
       .Times(testing::AnyNumber());
-  StreamParser::InitParameters params(kInfiniteDuration());
+  StreamParser::InitParameters params(kInfiniteDuration);
   params.detected_audio_track_count = 1;
   params.detected_video_track_count = 1;
   params.detected_text_track_count = 1;
@@ -154,6 +152,69 @@ TEST_F(WebMStreamParserTest, VerifyDetectedTracks_AVText) {
   EXPECT_EQ(media_tracks_->tracks().size(), 2u);
   EXPECT_EQ(media_tracks_->tracks()[0]->type(), MediaTrack::Video);
   EXPECT_EQ(media_tracks_->tracks()[1]->type(), MediaTrack::Audio);
+}
+
+TEST_F(WebMStreamParserTest, ColourElement) {
+  EXPECT_MEDIA_LOG(WebMSimpleBlockDurationEstimatedAny())
+      .Times(testing::AnyNumber());
+  StreamParser::InitParameters params(kInfiniteDuration);
+  params.detected_audio_track_count = 0;
+  params.detected_video_track_count = 1;
+  params.detected_text_track_count = 0;
+  ParseWebMFile("colour.webm", params);
+  EXPECT_EQ(media_tracks_->tracks().size(), 1u);
+
+  const auto& video_track = media_tracks_->tracks()[0];
+  EXPECT_EQ(video_track->type(), MediaTrack::Video);
+
+  const VideoDecoderConfig& video_config =
+      media_tracks_->getVideoConfig(video_track->bytestream_track_id());
+
+  VideoColorSpace expected_color_space(VideoColorSpace::PrimaryID::SMPTEST428_1,
+                                       VideoColorSpace::TransferID::LOG,
+                                       VideoColorSpace::MatrixID::RGB,
+                                       gfx::ColorSpace::RangeID::FULL);
+  EXPECT_EQ(video_config.color_space_info(), expected_color_space);
+
+  base::Optional<HDRMetadata> hdr_metadata = video_config.hdr_metadata();
+  EXPECT_TRUE(hdr_metadata.has_value());
+  EXPECT_EQ(hdr_metadata->max_content_light_level, 11u);
+  EXPECT_EQ(hdr_metadata->max_frame_average_light_level, 12u);
+
+  const MasteringMetadata& mmdata = hdr_metadata->mastering_metadata;
+  EXPECT_FLOAT_EQ(mmdata.primary_r.x(), 0.1f);
+  EXPECT_FLOAT_EQ(mmdata.primary_r.y(), 0.2f);
+  EXPECT_FLOAT_EQ(mmdata.primary_g.x(), 0.1f);
+  EXPECT_FLOAT_EQ(mmdata.primary_g.y(), 0.2f);
+  EXPECT_FLOAT_EQ(mmdata.primary_b.x(), 0.1f);
+  EXPECT_FLOAT_EQ(mmdata.primary_b.y(), 0.2f);
+  EXPECT_FLOAT_EQ(mmdata.white_point.x(), 0.1f);
+  EXPECT_FLOAT_EQ(mmdata.white_point.y(), 0.2f);
+  EXPECT_EQ(mmdata.luminance_max, 40);
+  EXPECT_EQ(mmdata.luminance_min, 30);
+}
+
+TEST_F(WebMStreamParserTest, ColourElementWithUnspecifiedRange) {
+  EXPECT_MEDIA_LOG(WebMSimpleBlockDurationEstimatedAny())
+      .Times(testing::AnyNumber());
+  StreamParser::InitParameters params(kInfiniteDuration);
+  params.detected_audio_track_count = 0;
+  params.detected_video_track_count = 1;
+  params.detected_text_track_count = 0;
+  ParseWebMFile("colour_unspecified_range.webm", params);
+  EXPECT_EQ(media_tracks_->tracks().size(), 1u);
+
+  const auto& video_track = media_tracks_->tracks()[0];
+  EXPECT_EQ(video_track->type(), MediaTrack::Video);
+
+  const VideoDecoderConfig& video_config =
+      media_tracks_->getVideoConfig(video_track->bytestream_track_id());
+
+  VideoColorSpace expected_color_space(VideoColorSpace::PrimaryID::SMPTEST428_1,
+                                       VideoColorSpace::TransferID::LOG,
+                                       VideoColorSpace::MatrixID::RGB,
+                                       gfx::ColorSpace::RangeID::INVALID);
+  EXPECT_EQ(video_config.color_space_info(), expected_color_space);
 }
 
 }  // namespace media

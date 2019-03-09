@@ -3,12 +3,17 @@
 // found in the LICENSE file.
 
 #include <stddef.h>
-#include <Foundation/Foundation.h>
+#import <Foundation/Foundation.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
+#include "base/strings/sys_string_conversions.h"
 #import "ios/web/public/test/web_test_with_web_state.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "testing/gtest_mac.h"
+#import "testing/gtest_mac.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 
@@ -20,6 +25,12 @@ struct TextFieldTestElement {
   const int element_index;
   // True if this is expected to be a text field.
   const bool expected_is_text_field;
+};
+
+// Struct for stringify() test data.
+struct TestScriptAndExpectedValue {
+  NSString* test_script;
+  id expected_value;
 };
 
 }  // namespace
@@ -75,15 +86,110 @@ TEST_F(CommonJsTest, IsTestField) {
       {"state", 0, false},
       {"cars", 0, false},
       {"submit", 0, false}};
-  for (size_t i = 0; i < arraysize(testElements); ++i) {
+  for (size_t i = 0; i < base::size(testElements); ++i) {
     TextFieldTestElement element = testElements[i];
-    NSString* result = EvaluateJavaScriptAsString([NSString
+    id result = ExecuteJavaScript([NSString
         stringWithFormat:@"__gCrWeb.common.isTextField("
                           "window.document.getElementsByName('%s')[%d])",
                          element.element_name, element.element_index]);
-    EXPECT_NSEQ(element.expected_is_text_field ? @"true" : @"false", result)
+    EXPECT_NSEQ(element.expected_is_text_field ? @YES : @NO, result)
         << element.element_name << " with index " << element.element_index
         << " isTextField(): " << element.expected_is_text_field;
+  }
+}
+
+// Tests __gCrWeb.stringify JavaScript API.
+TEST_F(CommonJsTest, Stringify) {
+  TestScriptAndExpectedValue test_data[] = {
+      // Stringify a string that contains various characters that must
+      // be escaped.
+      {@"__gCrWeb.stringify('a\\u000a\\t\\b\\\\\\\"Z')",
+       @"\"a\\n\\t\\b\\\\\\\"Z\""},
+      // Stringify a number.
+      {@"__gCrWeb.stringify(77.7)", @"77.7"},
+      // Stringify an array.
+      {@"__gCrWeb.stringify(['a','b'])", @"[\"a\",\"b\"]"},
+      // Stringify an object.
+      {@"__gCrWeb.stringify({'a':'b','c':'d'})", @"{\"a\":\"b\",\"c\":\"d\"}"},
+      // Stringify a hierarchy of objects and arrays.
+      {@"__gCrWeb.stringify([{'a':['b','c'],'d':'e'},'f'])",
+       @"[{\"a\":[\"b\",\"c\"],\"d\":\"e\"},\"f\"]"},
+      // Stringify null.
+      {@"__gCrWeb.stringify(null)", @"null"},
+      // Stringify an object with a toJSON function.
+      {@"temp = [1,2];"
+        "temp.toJSON = function (key) {return undefined};"
+        "__gCrWeb.stringify(temp)",
+       @"[1,2]"},
+      // Stringify an object with a toJSON property that is not a function.
+      {@"temp = [1,2];"
+        "temp.toJSON = 42;"
+        "__gCrWeb.stringify(temp)",
+       @"[1,2]"},
+      // Stringify an undefined object.
+      {@"__gCrWeb.stringify(undefined)", @"undefined"},
+  };
+
+  for (size_t i = 0; i < base::size(test_data); i++) {
+    TestScriptAndExpectedValue& data = test_data[i];
+    // Load a sample HTML page. As a side-effect, loading HTML via
+    // |webController_| will also inject web_bundle.js.
+    LoadHtml(@"<p>");
+    id result = ExecuteJavaScript(data.test_script);
+    EXPECT_NSEQ(data.expected_value, result)
+        << " in test " << i << ": "
+        << base::SysNSStringToUTF8(data.test_script);
+  }
+}
+
+TEST_F(CommonJsTest, RemoveQueryAndReferenceFromURL) {
+  struct TestData {
+    NSString* input_url;
+    NSString* expected_output;
+  } test_data[] = {
+      {@"http://foo1.com/bar", @"http://foo1.com/bar"},
+      {@"http://foo2.com/bar#baz", @"http://foo2.com/bar"},
+      {@"http://foo3.com/bar?baz", @"http://foo3.com/bar"},
+      // Order of fragment and query string does not matter.
+      {@"http://foo4.com/bar#baz?blech", @"http://foo4.com/bar"},
+      {@"http://foo5.com/bar?baz#blech", @"http://foo5.com/bar"},
+      // Truncates on the first fragment mark.
+      {@"http://foo6.com/bar/#baz#blech", @"http://foo6.com/bar/"},
+      // Poorly formed URLs are normalized.
+      {@"http:///foo7.com//bar?baz", @"http://foo7.com//bar"},
+      // Non-http protocols.
+      {@"data:abc", @"data:abc"},
+      {@"javascript:login()", @"javascript:login()"},
+  };
+  for (size_t i = 0; i < base::size(test_data); i++) {
+    LoadHtml(@"<p>");
+    TestData& data = test_data[i];
+    id result = ExecuteJavaScript(
+        [NSString stringWithFormat:
+                      @"__gCrWeb.common.removeQueryAndReferenceFromURL('%@')",
+                      data.input_url]);
+    EXPECT_NSEQ(data.expected_output, result)
+        << " in test " << i << ": " << base::SysNSStringToUTF8(data.input_url);
+  }
+}
+
+TEST_F(CommonJsTest, IsSameOrigin) {
+  TestScriptAndExpectedValue test_data[] = {
+      {@"'http://abc.com', 'http://abc.com'", @YES},
+      {@"'http://abc.com',  'https://abc.com'", @NO},
+      {@"'http://abc.com', 'http://abc.com:123'", @NO},
+      {@"'http://abc.com', 'http://def.com'", @NO},
+      {@"'http://abc.com/def', 'http://abc.com/xyz'", @YES}};
+
+  for (size_t i = 0; i < base::size(test_data); i++) {
+    TestScriptAndExpectedValue& data = test_data[i];
+    LoadHtml(@"<p>");
+    id result = ExecuteJavaScript(
+        [NSString stringWithFormat:@"__gCrWeb.common.isSameOrigin(%@)",
+                                   data.test_script]);
+    EXPECT_NSEQ(data.expected_value, result)
+        << " in test " << i << ": "
+        << base::SysNSStringToUTF8(data.test_script);
   }
 }
 

@@ -10,10 +10,13 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
+#include "base/time/time.h"
+#include "components/account_id/account_id.h"
 #include "components/policy/core/common/cloud/resource_cache.h"
 #include "components/policy/core/common/policy_bundle.h"
 #include "components/policy/core/common/policy_namespace.h"
+#include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_export.h"
 
 namespace enterprise_management {
@@ -24,9 +27,16 @@ class PolicyFetchResponse;
 
 namespace policy {
 
+class ResourceCache;
+
 // Validates protobufs for external policy data, validates the data itself, and
 // caches both locally.
-class POLICY_EXPORT ComponentCloudPolicyStore : public base::NonThreadSafe {
+//
+// The policy data is validated using the credentials that have to be passed
+// beforehand using |SetCredentials|. The expectation is that these credentials
+// should be the same as used for validating the superior policy (e.g. the user
+// policy, the device-local account policy, etc.).
+class POLICY_EXPORT ComponentCloudPolicyStore {
  public:
   class POLICY_EXPORT Delegate {
    public:
@@ -37,19 +47,30 @@ class POLICY_EXPORT ComponentCloudPolicyStore : public base::NonThreadSafe {
     virtual void OnComponentCloudPolicyStoreUpdated() = 0;
   };
 
+  struct DomainConstants;
+
+  using PurgeFilter =
+      base::RepeatingCallback<bool(const PolicyDomain domain,
+                                   const std::string& component_id)>;
+
   // Both the |delegate| and the |cache| must outlive this object.
+  // |policy_type| only supports kChromeSigninExtensionPolicyType,
+  // kChromeExtensionPolicyType, kChromeMachineLevelExtensionCloudPolicyType.
+  // Please update component_cloud_policy_store.cc in case there is new policy
+  // type added.
+  // |policy_source| specifies where the policy originates from, and can be used
+  // to configure precedence when the same components are configured by policies
+  // from different sources. It only accepts POLICY_SOURCE_CLOUD and
+  // POLICY_SOURCE_PRIORITY_CLOUD now.
   ComponentCloudPolicyStore(Delegate* delegate,
-                            ResourceCache* cache);
+                            ResourceCache* cache,
+                            const std::string& policy_type,
+                            PolicySource policy_source);
   ~ComponentCloudPolicyStore();
 
   // Helper that returns true for PolicyDomains that can be managed by this
   // store.
   static bool SupportsDomain(PolicyDomain domain);
-
-  // Returns true if |domain| can be managed by this store; in that case, the
-  // dm_protocol policy type that corresponds to |domain| is stored in
-  // |policy_type|. Otherwise returns false.
-  static bool GetPolicyType(PolicyDomain domain, std::string* policy_type);
 
   // Returns true if |policy_type| corresponds to a policy domain that can be
   // managed by this store; in that case, the domain constants is assigned to
@@ -64,60 +85,57 @@ class POLICY_EXPORT ComponentCloudPolicyStore : public base::NonThreadSafe {
   // cached.
   const std::string& GetCachedHash(const PolicyNamespace& ns) const;
 
-  // |username| and |dm_token| are used to validate the cached data, and data
+  // The passed credentials are used to validate the cached data, and data
   // stored later.
   // All ValidatePolicy() requests without credentials fail.
-  void SetCredentials(const std::string& username,
-                      const std::string& dm_token);
+  void SetCredentials(const AccountId& account_id,
+                      const std::string& dm_token,
+                      const std::string& device_id,
+                      const std::string& public_key,
+                      int public_key_version);
 
-  // Loads and validates all the currently cached protobufs and policy data.
+  // Loads and validates the currently cached protobufs and policy data that are
+  // owned by this PolicyStore.
   // This is performed synchronously, and policy() will return the cached
   // policies after this call.
   void Load();
 
   // Stores the protobuf and |data| for namespace |ns|. The protobuf is passed
   // serialized in |serialized_policy_proto|, and must have been validated
-  // before.
+  // before. The protobuf |policy_data| contain the corresponding policy data.
   // The |data| is validated during this call, and its secure hash must match
   // |secure_hash|.
   // Returns false if |data| failed validation, otherwise returns true and the
   // data was stored in the cache.
   bool Store(const PolicyNamespace& ns,
              const std::string& serialized_policy_proto,
+             const enterprise_management::PolicyData* policy_data,
              const std::string& secure_hash,
              const std::string& data);
 
   // Deletes the storage of namespace |ns| and stops serving its policies.
   void Delete(const PolicyNamespace& ns);
 
-  // Deletes the storage of all components of |domain| that pass then given
+  // Deletes the storage of all components that pass for the given
   // |filter|, and stops serving their policies.
-  void Purge(PolicyDomain domain,
-             const ResourceCache::SubkeyFilter& filter);
+  void Purge(const PurgeFilter& filter);
 
-  // Deletes the storage of every component.
+  // Deletes the storage of every component that is owned by this PolicyStore.
   void Clear();
 
-  // Validates |proto| and returns the corresponding policy namespace in |ns|,
-  // and the parsed ExternalPolicyData in |payload|.
+  // Validates |proto| and returns the parsed PolicyData in |policy_data| and
+  // parsed ExternalPolicyData in |payload|. It is also validated that |proto|
+  // has the policy namespace equal to |ns|.
   // If |proto| validates successfully then its |payload| can be trusted, and
   // the data referenced there can be downloaded. A |proto| must be validated
   // before attempting to download the data, and before storing both.
   bool ValidatePolicy(
+      const PolicyNamespace& ns,
       std::unique_ptr<enterprise_management::PolicyFetchResponse> proto,
-      PolicyNamespace* ns,
+      enterprise_management::PolicyData* policy_data,
       enterprise_management::ExternalPolicyData* payload);
 
  private:
-  // Helper for ValidatePolicy(), that's also used to validate protobufs
-  // loaded from the disk cache.
-  bool ValidateProto(
-      std::unique_ptr<enterprise_management::PolicyFetchResponse> proto,
-      const std::string& policy_type,
-      const std::string& settings_entity_id,
-      enterprise_management::ExternalPolicyData* payload,
-      enterprise_management::PolicyData* policy_data);
-
   // Validates the JSON policy serialized in |data|, and verifies its hash
   // with |secure_hash|. Returns true on success, and in that case stores the
   // parsed policies in |policy|.
@@ -129,13 +147,30 @@ class POLICY_EXPORT ComponentCloudPolicyStore : public base::NonThreadSafe {
   // parse was successful.
   bool ParsePolicy(const std::string& data, PolicyMap* policy);
 
-  Delegate* delegate_;
-  ResourceCache* cache_;
-  std::string username_;
-  std::string dm_token_;
+  Delegate* const delegate_;
+  ResourceCache* const cache_;
 
+  // The following fields contain credentials used for validating the policy.
+  AccountId account_id_;
+  std::string dm_token_;
+  std::string device_id_;
+  std::string public_key_;
+  int public_key_version_ = -1;
+
+  // The current list of policies.
   PolicyBundle policy_bundle_;
+  // Mapping from policy namespace to data hashes for each currently exposed
+  // component.
   std::map<PolicyNamespace, std::string> cached_hashes_;
+  // Mapping from policy namespace to policy timestamp for each currently
+  // exposed component.
+  std::map<PolicyNamespace, base::Time> stored_policy_times_;
+
+  const DomainConstants* domain_constants_;
+
+  const PolicySource policy_source_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(ComponentCloudPolicyStore);
 };

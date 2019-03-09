@@ -11,19 +11,12 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate_evaluator.h"
 #include "components/url_matcher/url_matcher.h"
 #include "content/public/browser/web_contents_observer.h"
 
 namespace base {
 class Value;
-}
-
-namespace content {
-struct FrameNavigateParams;
-struct LoadCommittedDetails;
-class WebContents;
 }
 
 namespace extensions {
@@ -85,8 +78,7 @@ class DeclarativeContentPageUrlConditionTracker
   void TrackForWebContents(content::WebContents* contents) override;
   void OnWebContentsNavigation(
       content::WebContents* contents,
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
+      content::NavigationHandle* navigation_handle) override;
   bool EvaluatePredicate(const ContentPredicate* predicate,
                          content::WebContents* tab) const override;
 
@@ -143,8 +135,8 @@ class DeclarativeContentPageUrlConditionTracker
       tracked_predicates_;
 
   // Maps WebContents to the tracker for that WebContents state.
-  std::map<content::WebContents*,
-           linked_ptr<PerWebContentsTracker>> per_web_contents_tracker_;
+  std::map<content::WebContents*, std::unique_ptr<PerWebContentsTracker>>
+      per_web_contents_tracker_;
 
   DISALLOW_COPY_AND_ASSIGN(DeclarativeContentPageUrlConditionTracker);
 };

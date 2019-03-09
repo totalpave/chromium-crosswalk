@@ -5,19 +5,17 @@
 #include "remoting/host/chromoting_param_traits.h"
 
 #include <stdint.h>
+#include <sstream>
 
 #include "base/strings/stringprintf.h"
+#include "ipc/ipc_message_protobuf_utils.h"
 #include "ipc/ipc_message_utils.h"
+#include "remoting/protocol/file_transfer_helpers.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 
 namespace IPC {
 
-// static
-void ParamTraits<webrtc::DesktopVector>::GetSize(base::PickleSizer* s,
-                                                 const param_type& p) {
-  GetParamSize(s, p.x());
-  GetParamSize(s, p.y());
-}
+// webrtc::DesktopVector
 
 // static
 void ParamTraits<webrtc::DesktopVector>::Write(base::Pickle* m,
@@ -44,12 +42,7 @@ void ParamTraits<webrtc::DesktopVector>::Log(const webrtc::DesktopVector& p,
                                p.x(), p.y()));
 }
 
-// static
-void ParamTraits<webrtc::DesktopSize>::GetSize(base::PickleSizer* s,
-                                               const param_type& p) {
-  GetParamSize(s, p.width());
-  GetParamSize(s, p.height());
-}
+// webrtc::DesktopSize
 
 // static
 void ParamTraits<webrtc::DesktopSize>::Write(base::Pickle* m,
@@ -76,14 +69,7 @@ void ParamTraits<webrtc::DesktopSize>::Log(const webrtc::DesktopSize& p,
                                p.width(), p.height()));
 }
 
-// static
-void ParamTraits<webrtc::DesktopRect>::GetSize(base::PickleSizer* s,
-                                               const param_type& p) {
-  GetParamSize(s, p.left());
-  GetParamSize(s, p.top());
-  GetParamSize(s, p.right());
-  GetParamSize(s, p.bottom());
-}
+// webrtc::DesktopRect
 
 // static
 void ParamTraits<webrtc::DesktopRect>::Write(base::Pickle* m,
@@ -113,6 +99,8 @@ void ParamTraits<webrtc::DesktopRect>::Log(const webrtc::DesktopRect& p,
   l->append(base::StringPrintf("webrtc::DesktopRect(%d, %d, %d, %d)",
                                p.left(), p.top(), p.right(), p.bottom()));
 }
+
+// webrtc::MouseCursor
 
 // static
 void ParamTraits<webrtc::MouseCursor>::Write(base::Pickle* m,
@@ -175,6 +163,7 @@ void ParamTraits<webrtc::MouseCursor>::Log(
       p.hotspot().x(), p.hotspot().y()));
 }
 
+// remoting::ScreenResolution
 
 // static
 void ParamTraits<remoting::ScreenResolution>::Write(
@@ -212,68 +201,266 @@ void ParamTraits<remoting::ScreenResolution>::Log(
                                p.dpi().x(), p.dpi().y()));
 }
 
+// remoting::DesktopEnvironmentOptions
+
 // static
-void ParamTraits<net::IPAddress>::GetSize(base::PickleSizer* s,
-                                          const param_type& p) {
-  GetParamSize(s, p.bytes());
+void ParamTraits<remoting::DesktopEnvironmentOptions>::Write(
+    base::Pickle* m,
+    const remoting::DesktopEnvironmentOptions& p) {
+  m->WriteBool(p.enable_curtaining());
+  m->WriteBool(p.enable_user_interface());
+  m->WriteBool(p.desktop_capture_options()->use_update_notifications());
+  m->WriteBool(p.desktop_capture_options()->disable_effects());
+  m->WriteBool(p.desktop_capture_options()->detect_updated_region());
+#if defined(WEBRTC_WIN)
+  m->WriteBool(p.desktop_capture_options()->allow_use_magnification_api());
+  m->WriteBool(p.desktop_capture_options()->allow_directx_capturer());
+#endif  // defined(WEBRTC_WIN)
 }
 
 // static
-void ParamTraits<net::IPAddress>::Write(base::Pickle* m, const param_type& p) {
-  WriteParam(m, p.bytes());
-}
+bool ParamTraits<remoting::DesktopEnvironmentOptions>::Read(
+    const base::Pickle* m,
+    base::PickleIterator* iter,
+    remoting::DesktopEnvironmentOptions* r) {
+  *r = remoting::DesktopEnvironmentOptions::CreateDefault();
+  bool enable_curtaining;
+  bool enable_user_interface;
+  bool use_update_notifications;
+  bool disable_effects;
+  bool detect_updated_region;
 
-// static
-bool ParamTraits<net::IPAddress>::Read(const base::Pickle* m,
-                                       base::PickleIterator* iter,
-                                       param_type* p) {
-  std::vector<uint8_t> bytes;
-  if (!ReadParam(m, iter, &bytes))
+  if (!iter->ReadBool(&enable_curtaining) ||
+      !iter->ReadBool(&enable_user_interface) ||
+      !iter->ReadBool(&use_update_notifications) ||
+      !iter->ReadBool(&disable_effects) ||
+      !iter->ReadBool(&detect_updated_region)) {
     return false;
-
-  net::IPAddress address(bytes);
-  if (address.empty() || address.IsValid()) {
-    *p = address;
-    return true;
   }
-  return false;
-}
 
-// static
-void ParamTraits<net::IPAddress>::Log(const param_type& p, std::string* l) {
-  l->append("IPAddress:" + (p.empty() ? "(empty)" : p.ToString()));
-}
+  r->set_enable_curtaining(enable_curtaining);
+  r->set_enable_user_interface(enable_user_interface);
+  r->desktop_capture_options()->set_use_update_notifications(
+      use_update_notifications);
+  r->desktop_capture_options()->set_detect_updated_region(
+      detect_updated_region);
+  r->desktop_capture_options()->set_disable_effects(disable_effects);
 
-// static
-void ParamTraits<net::IPEndPoint>::GetSize(base::PickleSizer* s,
-                                           const param_type& p) {
-  GetParamSize(s, p.address());
-  GetParamSize(s, p.port());
-}
+#if defined(WEBRTC_WIN)
+  bool allow_use_magnification_api;
+  bool allow_directx_capturer;
 
-// static
-void ParamTraits<net::IPEndPoint>::Write(base::Pickle* m, const param_type& p) {
-  WriteParam(m, p.address());
-  WriteParam(m, p.port());
-}
-
-// static
-bool ParamTraits<net::IPEndPoint>::Read(const base::Pickle* m,
-                                        base::PickleIterator* iter,
-                                        param_type* p) {
-  net::IPAddress address;
-  uint16_t port;
-  if (!ReadParam(m, iter, &address) || !ReadParam(m, iter, &port))
+  if (!iter->ReadBool(&allow_use_magnification_api) ||
+      !iter->ReadBool(&allow_directx_capturer)) {
     return false;
+  }
 
-  *p = net::IPEndPoint(address, port);
+  r->desktop_capture_options()->set_allow_use_magnification_api(
+      allow_use_magnification_api);
+  r->desktop_capture_options()->set_allow_directx_capturer(
+      allow_directx_capturer);
+#endif  // defined(WEBRTC_WIN)
+
   return true;
 }
 
 // static
-void ParamTraits<net::IPEndPoint>::Log(const param_type& p, std::string* l) {
-  l->append("IPEndPoint: " + p.ToString());
+void ParamTraits<remoting::DesktopEnvironmentOptions>::Log(
+    const remoting::DesktopEnvironmentOptions& p,
+    std::string* l) {
+  l->append("DesktopEnvironmentOptions()");
+}
+
+// remoting::protocol::ProcessResourceUsage
+
+// static
+void ParamTraits<remoting::protocol::ProcessResourceUsage>::Write(
+    base::Pickle* m,
+    const param_type& p) {
+  m->WriteString(p.process_name());
+  m->WriteDouble(p.processor_usage());
+  m->WriteUInt64(p.working_set_size());
+  m->WriteUInt64(p.pagefile_size());
+}
+
+// static
+bool ParamTraits<remoting::protocol::ProcessResourceUsage>::Read(
+    const base::Pickle* m,
+    base::PickleIterator* iter,
+    param_type* p) {
+  std::string process_name;
+  double processor_usage;
+  uint64_t working_set_size;
+  uint64_t pagefile_size;
+  if (!iter->ReadString(&process_name) ||
+      !iter->ReadDouble(&processor_usage) ||
+      !iter->ReadUInt64(&working_set_size) ||
+      !iter->ReadUInt64(&pagefile_size)) {
+    return false;
+  }
+
+  p->set_process_name(process_name);
+  p->set_processor_usage(processor_usage);
+  p->set_working_set_size(working_set_size);
+  p->set_pagefile_size(pagefile_size);
+  return true;
+}
+
+// static
+void ParamTraits<remoting::protocol::ProcessResourceUsage>::Log(
+    const param_type& p,
+    std::string* l) {
+  l->append("ProcessResourceUsage(").append(p.process_name()).append(")");
+}
+
+// remoting::protocol::AggregatedProcessResourceUsage
+
+// static
+void ParamTraits<remoting::protocol::AggregatedProcessResourceUsage>::Write(
+    base::Pickle* m,
+    const param_type& p) {
+  WriteParam(m, p.usages());
+}
+
+// static
+bool ParamTraits<remoting::protocol::AggregatedProcessResourceUsage>::Read(
+    const base::Pickle* m,
+    base::PickleIterator* iter,
+    param_type* p) {
+  return ReadParam(m, iter, p->mutable_usages());
+}
+
+// static
+void ParamTraits<remoting::protocol::AggregatedProcessResourceUsage>::Log(
+    const param_type& p,
+    std::string* l) {
+  l->append("AggregatedProcessResourceUsage(");
+  LogParam(p.usages(), l);
+  l->append(")");
+}
+
+// remoting::protocol::ActionRequest
+
+// static
+void ParamTraits<remoting::protocol::ActionRequest>::Write(
+    base::Pickle* m,
+    const param_type& p) {
+  std::string serialized_action_request;
+  bool result = p.SerializeToString(&serialized_action_request);
+  DCHECK(result);
+  m->WriteString(serialized_action_request);
+}
+
+// static
+bool ParamTraits<remoting::protocol::ActionRequest>::Read(
+    const base::Pickle* m,
+    base::PickleIterator* iter,
+    param_type* p) {
+  std::string serialized_action_request;
+  if (!iter->ReadString(&serialized_action_request))
+    return false;
+
+  return p->ParseFromString(serialized_action_request);
+}
+
+// static
+void ParamTraits<remoting::protocol::ActionRequest>::Log(const param_type& p,
+                                                         std::string* l) {
+  l->append(base::StringPrintf("ActionRequest action: %d, id: %u", p.action(),
+                               p.request_id()));
+}
+
+// remoting::protocol::VideoLayout
+
+// static
+void ParamTraits<remoting::protocol::VideoLayout>::Write(
+    base::Pickle* m,
+    const remoting::protocol::VideoLayout& p) {
+  std::string serialized_video_layout;
+  bool result = p.SerializeToString(&serialized_video_layout);
+  DCHECK(result);
+  m->WriteString(serialized_video_layout);
+}
+
+// static
+bool ParamTraits<remoting::protocol::VideoLayout>::Read(
+    const base::Pickle* m,
+    base::PickleIterator* iter,
+    remoting::protocol::VideoLayout* p) {
+  std::string serialized_video_layout;
+  if (!iter->ReadString(&serialized_video_layout))
+    return false;
+
+  return p->ParseFromString(serialized_video_layout);
+}
+
+// static
+void ParamTraits<remoting::protocol::VideoLayout>::Log(
+    const remoting::protocol::VideoLayout& p,
+    std::string* l) {
+  l->append(base::StringPrintf("protocol::VideoLayout(["));
+  for (int i = 0; i < p.video_track_size(); i++) {
+    remoting::protocol::VideoTrackLayout track = p.video_track(i);
+    l->append("])");
+    if (i != 0)
+      l->append(",");
+    l->append(base::StringPrintf("{(%d,%d) %dx%d}", track.position_x(),
+                                 track.position_y(), track.width(),
+                                 track.height()));
+  }
+  l->append("])");
+}
+
+// remoting::protocol::FileTransfer_Error
+
+// static
+void IPC::ParamTraits<remoting::protocol::FileTransfer_Error>::Write(
+    base::Pickle* m,
+    const param_type& p) {
+  std::string serialized_file_transfer_error;
+  bool result = p.SerializeToString(&serialized_file_transfer_error);
+  DCHECK(result);
+  m->WriteString(serialized_file_transfer_error);
+}
+
+// static
+bool ParamTraits<remoting::protocol::FileTransfer_Error>::Read(
+    const base::Pickle* m,
+    base::PickleIterator* iter,
+    param_type* p) {
+  std::string serialized_file_transfer_error;
+  if (!iter->ReadString(&serialized_file_transfer_error))
+    return false;
+
+  return p->ParseFromString(serialized_file_transfer_error);
+}
+
+// static
+void ParamTraits<remoting::protocol::FileTransfer_Error>::Log(
+    const param_type& p,
+    std::string* l) {
+  std::ostringstream formatted;
+  formatted << p;
+  l->append(
+      base::StringPrintf("FileTransfer Error: %s", formatted.str().c_str()));
+}
+
+// remoting::Monostate
+
+// static
+void IPC::ParamTraits<remoting::Monostate>::Write(base::Pickle*,
+                                                  const param_type&) {}
+
+// static
+bool ParamTraits<remoting::Monostate>::Read(const base::Pickle*,
+                                            base::PickleIterator*,
+                                            param_type*) {
+  return true;
+}
+
+// static
+void ParamTraits<remoting::Monostate>::Log(const param_type&, std::string* l) {
+  l->append("()");
 }
 
 }  // namespace IPC
-

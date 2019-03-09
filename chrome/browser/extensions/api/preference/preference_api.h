@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_PREFERENCE_PREFERENCE_API_H__
 #define CHROME_BROWSER_EXTENSIONS_API_PREFERENCE_PREFERENCE_API_H__
 
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
@@ -13,6 +14,7 @@
 #include "chrome/browser/extensions/chrome_extension_function.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "content/public/browser/notification_observer.h"
+#include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_prefs_scope.h"
@@ -27,17 +29,25 @@ class Value;
 namespace extensions {
 class ExtensionPrefs;
 
-class PreferenceEventRouter {
+class PreferenceEventRouter : public content::NotificationObserver {
  public:
   explicit PreferenceEventRouter(Profile* profile);
-  virtual ~PreferenceEventRouter();
+  ~PreferenceEventRouter() override;
 
  private:
   void OnPrefChanged(PrefService* pref_service,
                      const std::string& pref_key);
 
+  // content::NotificationObserver:
+  void Observe(int type,
+               const content::NotificationSource& source,
+               const content::NotificationDetails& details) override;
+
+  void OnIncognitoProfileCreated(PrefService* prefs);
+
+  content::NotificationRegistrar notification_registrar_;
   PrefChangeRegistrar registrar_;
-  PrefChangeRegistrar incognito_registrar_;
+  std::unique_ptr<PrefChangeRegistrar> incognito_registrar_;
 
   // Weak, owns us (transitively via ExtensionService).
   Profile* profile_;
@@ -58,11 +68,10 @@ class PreferenceAPIBase {
   // but rather about something global the extension wants to override.
 
   // Set a new extension-controlled preference value.
-  // Takes ownership of |value|.
   void SetExtensionControlledPref(const std::string& extension_id,
                                   const std::string& pref_key,
                                   ExtensionPrefsScope scope,
-                                  base::Value* value);
+                                  base::Value value);
 
   // Remove an extension-controlled preference value.
   void RemoveExtensionControlledPref(const std::string& extension_id,
@@ -151,7 +160,7 @@ class PrefTransformerInterface {
   // |error| and returns NULL otherwise. |bad_message| is passed to simulate
   // the behavior of EXTENSION_FUNCTION_VALIDATE. It is never NULL.
   // The ownership of the returned value is passed to the caller.
-  virtual base::Value* ExtensionToBrowserPref(
+  virtual std::unique_ptr<base::Value> ExtensionToBrowserPref(
       const base::Value* extension_pref,
       std::string* error,
       bool* bad_message) = 0;
@@ -160,26 +169,17 @@ class PrefTransformerInterface {
   // into a representation that is used by the extension.
   // Returns the extension representation in case of success or NULL otherwise.
   // The ownership of the returned value is passed to the caller.
-  virtual base::Value* BrowserToExtensionPref(
+  virtual std::unique_ptr<base::Value> BrowserToExtensionPref(
       const base::Value* browser_pref) = 0;
 };
 
 // A base class to provide functionality common to the other *PreferenceFunction
 // classes.
-class PreferenceFunction : public ChromeSyncExtensionFunction {
+class PreferenceFunction : public UIThreadExtensionFunction {
  protected:
   enum PermissionType { PERMISSION_TYPE_READ, PERMISSION_TYPE_WRITE };
 
   ~PreferenceFunction() override;
-
-  // Given an |extension_pref_key|, provides its |browser_pref_key| from the
-  // static map in preference_api.cc. Returns true if the corresponding
-  // browser pref exists and the extension has the API permission needed to
-  // modify that pref. Sets |error_| if the extension doesn't have the needed
-  // permission.
-  bool ValidateBrowserPref(const std::string& extension_pref_key,
-                           PermissionType permission_type,
-                           std::string* browser_pref_key);
 };
 
 class GetPreferenceFunction : public PreferenceFunction {
@@ -190,7 +190,7 @@ class GetPreferenceFunction : public PreferenceFunction {
   ~GetPreferenceFunction() override;
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class SetPreferenceFunction : public PreferenceFunction {
@@ -201,7 +201,7 @@ class SetPreferenceFunction : public PreferenceFunction {
   ~SetPreferenceFunction() override;
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class ClearPreferenceFunction : public PreferenceFunction {
@@ -213,7 +213,7 @@ class ClearPreferenceFunction : public PreferenceFunction {
   ~ClearPreferenceFunction() override;
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 }  // namespace extensions

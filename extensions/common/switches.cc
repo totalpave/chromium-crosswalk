@@ -20,22 +20,17 @@ const char kAllowLegacyExtensionManifests[] =
 // a new tab.
 const char kEmbeddedExtensionOptions[] = "embedded-extension-options";
 
-// Show apps windows after the first paint. Windows will be shown significantly
-// later for heavy apps loading resources synchronously but it will be
-// insignificant for apps that load most of their resources asynchronously.
-const char kEnableAppsShowOnFirstPaint[] = "enable-apps-show-on-first-paint";
-
-// Enables the <window-controls> tag in platform apps.
-const char kEnableAppWindowControls[] = "enable-app-window-controls";
-
 // Enable BLE Advertisiing in apps.
 const char kEnableBLEAdvertising[] = "enable-ble-advertising-in-apps";
 
 const char kDisableDesktopCaptureAudio[] =
     "disable-audio-support-for-desktop-share";
 
-// Hack so that feature switch can work with about_flags. See
-// kEnableScriptsRequireAction.
+// FeatureSwitch and about_flags don't play nice. Feature switch expects either
+// --enable-<feature> or --<feature>=1, but about_flags expects the command
+// line argument to enable it (or a selection). Hack this in, so enabling it
+// in about_flags enables the feature. Appending this flag has the same effect
+// as --embedded-extension-options=1.
 const char kEnableEmbeddedExtensionOptions[] =
     "enable-embedded-extension-options";
 
@@ -43,31 +38,20 @@ const char kEnableEmbeddedExtensionOptions[] =
 const char kEnableExperimentalExtensionApis[] =
     "enable-experimental-extension-apis";
 
-// Hack so that feature switch can work with about_flags. See
-// kEnableScriptsRequireAction.
-const char kEnableExtensionActionRedesign[] =
-    "enable-extension-action-redesign";
-
-// Enables the mojo implementation of the serial API.
-const char kEnableMojoSerialService[] = "enable-mojo-serial-service";
-
 // Enables extensions to hide bookmarks UI elements.
 const char kEnableOverrideBookmarksUI[] = "enable-override-bookmarks-ui";
 
+// Disable the net::URLRequestThrottlerManager functionality for
+// requests originating from extensions.
+const char kDisableExtensionsHttpThrottling[] =
+    "disable-extensions-http-throttling";
+
 // Enables tab for desktop sharing.
 const char kDisableTabForDesktopShare[] = "disable-tab-for-desktop-share";
-const char kEnableTabForDesktopShare[] = "enable-tab-for-desktop-share";
-
-// Disable old UI for desktop capture picker window.
-const char kDisableDesktopCapturePickerOldUI[] =
-    "disable-desktop-capture-picker-old-ui";
 
 // Allows the ErrorConsole to collect runtime and manifest errors, and display
 // them in the chrome:extensions page.
 const char kErrorConsole[] = "error-console";
-
-// Whether to switch to extension action redesign mode (experimental).
-const char kExtensionActionRedesign[] = "extension-action-redesign";
 
 // Marks a renderer as extension process.
 const char kExtensionProcess[] = "extension-process";
@@ -80,29 +64,28 @@ const char kExtensionsOnChromeURLs[] = "extensions-on-chrome-urls";
 // Whether to force developer mode extensions highlighting.
 const char kForceDevModeHighlighting[] = "force-dev-mode-highlighting";
 
-// Enables site isolation for all chrome-extension:// urls.
-const char kIsolateExtensions[] = "isolate-extensions";
+// Whether |extensions_features::kBypassCorbAllowlistParamName| should always be
+// empty (i.e. ignoring hardcoded allowlist and the field trial param).  This
+// switch is useful for manually verifying if an extension would continue to
+// work fine after removing it from the allowlist.
+const char kForceEmptyCorbAllowlist[] = "force-empty-corb-allowlist";
 
-// Path to a comma-separated list of apps to load at startup.  The first app in
+// Comma-separated list of paths to apps to load at startup. The first app in
 // the list will be launched.
 const char kLoadApps[] = "load-apps";
 
-// Notify the user and require consent for extensions running scripts.
-// Appending --scripts-require-action=1 has the same effect as
-// --enable-scripts-require-action (see below).
-const char kScriptsRequireAction[] = "scripts-require-action";
-// FeatureSwitch and about_flags don't play nice. Feature switch expects either
-// --enable-<feature> or --<feature>=1, but about_flags expects the command
-// line argument to enable it (or a selection). Hack this in, so enabling it
-// in about_flags enables the feature. Appending this flag has the same effect
-// as --scripts-require-action=1.
-const char kEnableScriptsRequireAction[] = "enable-scripts-require-action";
+// Comma-separated list of paths to extensions to load at startup.
+const char kLoadExtension[] = "load-extension";
 
 #if defined(CHROMIUM_BUILD)
 // Should we prompt the user before allowing external extensions to install?
 // This flag is available on Chromium for testing purposes.
 const char kPromptForExternalExtensions[] = "prompt-for-external-extensions";
 #endif
+
+// Set the parameters for ExtensionURLLoaderThrottleBrowserTest.
+const char kSetExtensionThrottleTestParams[] =
+    "set-extension-throttle-test-params";
 
 // Makes component extensions appear in chrome://settings/extensions.
 const char kShowComponentExtensionOptions[] =

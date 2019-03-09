@@ -19,31 +19,20 @@ struct SyncToken;
 class GPU_EXPORT GpuMemoryBufferManager {
  public:
   GpuMemoryBufferManager();
+  virtual ~GpuMemoryBufferManager();
 
-  // Allocates a GpuMemoryBuffer that can be shared with another process.
-  virtual std::unique_ptr<gfx::GpuMemoryBuffer> AllocateGpuMemoryBuffer(
+  // Creates a GpuMemoryBuffer that can be shared with another process. It can
+  // be called on any thread.
+  virtual std::unique_ptr<gfx::GpuMemoryBuffer> CreateGpuMemoryBuffer(
       const gfx::Size& size,
       gfx::BufferFormat format,
       gfx::BufferUsage usage,
       gpu::SurfaceHandle surface_handle) = 0;
 
-  // Creates a GpuMemoryBuffer from existing handle.
-  virtual std::unique_ptr<gfx::GpuMemoryBuffer> CreateGpuMemoryBufferFromHandle(
-      const gfx::GpuMemoryBufferHandle& handle,
-      const gfx::Size& size,
-      gfx::BufferFormat format) = 0;
-
-  // Returns a GpuMemoryBuffer instance given a ClientBuffer. Returns NULL on
-  // failure.
-  virtual gfx::GpuMemoryBuffer* GpuMemoryBufferFromClientBuffer(
-      ClientBuffer buffer) = 0;
-
-  // Associates destruction sync point with |buffer|.
+  // Associates destruction sync point with |buffer|. It can be called on any
+  // thread.
   virtual void SetDestructionSyncToken(gfx::GpuMemoryBuffer* buffer,
                                        const gpu::SyncToken& sync_token) = 0;
-
- protected:
-  virtual ~GpuMemoryBufferManager();
 };
 
 }  // namespace gpu

@@ -11,20 +11,17 @@
 #include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_details.h"
+#include "content/public/common/previews_state.h"
 
 namespace content {
 
 struct LoadCommittedDetails;
-struct LoadNotificationDetails;
-struct NativeWebKeyboardEvent;
 class FrameTree;
 class InterstitialPage;
 class InterstitialPageImpl;
 class RenderFrameHost;
 class RenderViewHost;
-class SiteInstance;
 class WebContents;
-class WebContentsDelegate;
 
 // Interface for objects embedding a NavigationController to provide the
 // functionality NavigationController needs.
@@ -35,14 +32,12 @@ class NavigationControllerDelegate {
   virtual ~NavigationControllerDelegate() {}
 
   // Duplicates of WebContents methods.
-  virtual RenderViewHost* GetRenderViewHost() const = 0;
-  virtual InterstitialPage* GetInterstitialPage() const = 0;
-  virtual const std::string& GetContentsMimeType() const = 0;
+  virtual RenderViewHost* GetRenderViewHost() = 0;
+  virtual InterstitialPage* GetInterstitialPage() = 0;
+  virtual const std::string& GetContentsMimeType() = 0;
   virtual void NotifyNavigationStateChanged(InvalidateTypes changed_flags) = 0;
   virtual void Stop() = 0;
-  virtual int32_t GetMaxPageID() = 0;
-  virtual int32_t GetMaxPageIDForSiteInstance(SiteInstance* site_instance) = 0;
-  virtual bool IsBeingDestroyed() const = 0;
+  virtual bool IsBeingDestroyed() = 0;
   virtual bool CanOverscrollContent() const = 0;
 
   // Methods from WebContentsImpl that NavigationControllerImpl needs to
@@ -51,12 +46,13 @@ class NavigationControllerDelegate {
   virtual void NotifyBeforeFormRepostWarningShow() = 0;
   virtual void NotifyNavigationEntryCommitted(
       const LoadCommittedDetails& load_details) = 0;
+  virtual void NotifyNavigationEntryChanged(
+      const EntryChangedDetails& change_details) = 0;
+  virtual void NotifyNavigationListPruned(
+      const PrunedDetails& pruned_details) = 0;
+  virtual void NotifyNavigationEntriesDeleted() = 0;
   virtual void SetHistoryOffsetAndLength(int history_offset,
                                          int history_length) = 0;
-  virtual void CopyMaxPageIDsFrom(WebContents* web_contents) = 0;
-  virtual void UpdateMaxPageID(int32_t page_id) = 0;
-  virtual void UpdateMaxPageIDForSiteInstance(SiteInstance* site_instance,
-                                              int32_t page_id) = 0;
   virtual void ActivateAndShowRepostFormWarningDialog() = 0;
   virtual bool HasAccessedInitialDocument() = 0;
 
@@ -71,7 +67,7 @@ class NavigationControllerDelegate {
   virtual void AttachInterstitialPage(
       InterstitialPageImpl* interstitial_page) = 0;
   virtual void DidProceedOnInterstitial() = 0;
-  virtual void DetachInterstitialPage() = 0;
+  virtual void DetachInterstitialPage(bool has_focus) = 0;
 
   virtual void UpdateOverridingUserAgent() = 0;
 };

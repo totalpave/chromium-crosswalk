@@ -5,15 +5,6 @@
 #ifndef UI_EVENTS_DEVICES_X11_DEVICE_DATA_MANAGER_X11_H_
 #define UI_EVENTS_DEVICES_X11_DEVICE_DATA_MANAGER_X11_H_
 
-// Generically-named #defines from Xlib is conflicting with symbols in GTest.
-// So many tests .cc file #undef Bool before including device_data_manager.h,
-// which makes Bool unrecognized in XInput2.h.
-#ifndef Bool
-#define Bool int
-#endif
-
-#include <X11/extensions/XInput2.h>
-
 #include <bitset>
 #include <functional>
 #include <map>
@@ -21,16 +12,15 @@
 #include <set>
 #include <vector>
 
-#include "base/event_types.h"
 #include "base/macros.h"
 #include "ui/events/devices/device_data_manager.h"
 #include "ui/events/devices/x11/events_devices_x11_export.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/events/platform_event.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/x/x11_atom_cache.h"
-
-typedef union _XEvent XEvent;
+#include "ui/gfx/x/x11.h"
+#include "ui/gfx/x/x11_types.h"
 
 namespace ui {
 
@@ -108,6 +98,10 @@ class EVENTS_DEVICES_X11_EXPORT DeviceDataManagerX11
 
     DT_LAST_ENTRY  // This must come last.
   };
+
+  // A Device ID number that can be passed to InvalidateScrollClasses that
+  // invalidates all devices.
+  static const int kAllDevices = -1;
 
   // Data struct to store extracted data from an input event.
   typedef std::map<int, double> EventData;
@@ -200,8 +194,9 @@ class EVENTS_DEVICES_X11_EXPORT DeviceDataManagerX11
                              double* y_offset);
 
   // Invalidate stored scroll class counters, since they can change when
-  // pointing at other windows.
-  void InvalidateScrollClasses();
+  // pointing at other windows. If kAllDevices is specified, all devices are
+  // invalidated.
+  void InvalidateScrollClasses(int device_id);
 
   // Extract data from a fling event. User must first verify the event type
   // with IsFlingEvent. Pointers shouldn't be NULL.
@@ -297,6 +292,16 @@ class EVENTS_DEVICES_X11_EXPORT DeviceDataManagerX11
     AxisInfo vertical, horizontal;
   };
 
+  // Information from XIValuatorClassInfo.
+  struct ValuatorInfo {
+    // The valuator number.
+    int number = -1;
+    // The valuator min value.
+    double min = 0.0;
+    // The valuator max value.
+    double max = 0.0;
+  };
+
   DeviceDataManagerX11();
   ~DeviceDataManagerX11() override;
 
@@ -355,9 +360,12 @@ class EVENTS_DEVICES_X11_EXPORT DeviceDataManagerX11
   // Number of valuators on the specific device.
   int valuator_count_[kMaxDeviceNum];
 
-  // Index table to find the valuator for DataType on the specific device
-  // by valuator_lookup_[device_id][data_type].
-  std::vector<int> valuator_lookup_[kMaxDeviceNum];
+  // Index table to find valuator number, min and max for DataType on the
+  // specific device by valuator_lookup_[device_id][data_type].
+  std::vector<ValuatorInfo> valuator_lookup_[kMaxDeviceNum];
+
+  // Indicates if the user has disabled high precision scrolling support.
+  bool high_precision_scrolling_disabled_;
 
   // Index table to find the horizontal and vertical scroll valuator
   // numbers, scroll increments and scroll position.
@@ -366,11 +374,6 @@ class EVENTS_DEVICES_X11_EXPORT DeviceDataManagerX11
   // Index table to find the DataType for valuator on the specific device
   // by data_type_lookup_[device_id][valuator].
   std::vector<int> data_type_lookup_[kMaxDeviceNum];
-
-  // Index table to find the min & max value of the Valuator on a specific
-  // device.
-  std::vector<double> valuator_min_[kMaxDeviceNum];
-  std::vector<double> valuator_max_[kMaxDeviceNum];
 
   // Table to keep track of the last seen value for the specified valuator for
   // a specified slot of a device. Defaults to 0 if the valuator for that slot
@@ -384,9 +387,6 @@ class EVENTS_DEVICES_X11_EXPORT DeviceDataManagerX11
   // Map that stores meta-data for blocked keyboards. This is needed to restore
   // devices when they are re-enabled.
   std::map<int, ui::InputDevice> blocked_keyboard_devices_;
-
-  // X11 atoms cache.
-  X11AtomCache atom_cache_;
 
   unsigned char button_map_[256];
   int button_map_count_;

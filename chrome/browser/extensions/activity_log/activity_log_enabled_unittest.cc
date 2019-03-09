@@ -6,6 +6,7 @@
 #include "base/run_loop.h"
 #include "base/test/scoped_command_line.h"
 #include "chrome/browser/extensions/activity_log/activity_log.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/browser/extensions/api/activity_log_private/activity_log_private_api.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
@@ -17,12 +18,6 @@
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/common/extension_builder.h"
 
-#if defined OS_CHROMEOS
-#include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
-#endif
-
 namespace extensions {
 
 const char kExtensionID[] = "eplckmlabaanikjjcgnigddmagoglhmp";
@@ -31,23 +26,14 @@ class ActivityLogEnabledTest : public ChromeRenderViewHostTestHarness {
  protected:
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
-#if defined OS_CHROMEOS
-    test_user_manager_.reset(new chromeos::ScopedTestUserManager());
-#endif
+    SetActivityLogTaskRunnerForTesting(
+        base::ThreadTaskRunnerHandle::Get().get());
   }
 
   void TearDown() override {
-#if defined OS_CHROMEOS
-    test_user_manager_.reset();
-#endif
     ChromeRenderViewHostTestHarness::TearDown();
+    SetActivityLogTaskRunnerForTesting(nullptr);
   }
-
-#if defined OS_CHROMEOS
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
-  std::unique_ptr<chromeos::ScopedTestUserManager> test_user_manager_;
-#endif
 };
 
 TEST_F(ActivityLogEnabledTest, NoSwitch) {
@@ -116,9 +102,9 @@ TEST_F(ActivityLogEnabledTest, PrefSwitch) {
       profile2->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
   EXPECT_EQ(2,
       profile3->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
-  EXPECT_TRUE(activity_log1->IsWatchdogAppActive());
-  EXPECT_FALSE(activity_log2->IsWatchdogAppActive());
-  EXPECT_TRUE(activity_log3->IsWatchdogAppActive());
+  EXPECT_TRUE(activity_log1->is_active());
+  EXPECT_FALSE(activity_log2->is_active());
+  EXPECT_TRUE(activity_log3->is_active());
   EXPECT_TRUE(activity_log1->IsDatabaseEnabled());
   EXPECT_FALSE(activity_log2->IsDatabaseEnabled());
   EXPECT_TRUE(activity_log3->IsDatabaseEnabled());
@@ -149,7 +135,7 @@ TEST_F(ActivityLogEnabledTest, WatchdogSwitch) {
   EXPECT_EQ(0,
       profile2->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
 
-  scoped_refptr<Extension> extension =
+  scoped_refptr<const Extension> extension =
       ExtensionBuilder()
           .SetManifest(DictionaryBuilder()
                            .Set("name", "Watchdog Extension ")
@@ -170,7 +156,7 @@ TEST_F(ActivityLogEnabledTest, WatchdogSwitch) {
   EXPECT_FALSE(activity_log2->IsDatabaseEnabled());
 
   extension_service1->DisableExtension(kExtensionID,
-                                       Extension::DISABLE_USER_ACTION);
+                                       disable_reason::DISABLE_USER_ACTION);
 
   EXPECT_EQ(0,
       profile1->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
@@ -195,7 +181,6 @@ TEST_F(ActivityLogEnabledTest, WatchdogSwitch) {
   extension_service1->UninstallExtension(
       kExtensionID,
       extensions::UNINSTALL_REASON_FOR_TESTING,
-      base::Bind(&base::DoNothing),
       NULL);
 
   EXPECT_EQ(0,
@@ -207,7 +192,7 @@ TEST_F(ActivityLogEnabledTest, WatchdogSwitch) {
   EXPECT_FALSE(activity_log1->IsDatabaseEnabled());
   EXPECT_FALSE(activity_log2->IsDatabaseEnabled());
 
-  scoped_refptr<Extension> extension2 =
+  scoped_refptr<const Extension> extension2 =
       ExtensionBuilder()
           .SetManifest(DictionaryBuilder()
                            .Set("name", "Watchdog Extension ")
@@ -222,9 +207,9 @@ TEST_F(ActivityLogEnabledTest, WatchdogSwitch) {
       profile1->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
   EXPECT_TRUE(activity_log1->IsDatabaseEnabled());
   extension_service1->DisableExtension(kExtensionID,
-                                       Extension::DISABLE_USER_ACTION);
+                                       disable_reason::DISABLE_USER_ACTION);
   extension_service1->DisableExtension("fpofdchlamddhnajleknffcbmnjfahpg",
-                                       Extension::DISABLE_USER_ACTION);
+                                       disable_reason::DISABLE_USER_ACTION);
   EXPECT_EQ(0,
       profile1->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
   EXPECT_FALSE(activity_log1->IsDatabaseEnabled());
@@ -255,7 +240,7 @@ TEST_F(ActivityLogEnabledTest, AppAndCommandLine) {
   EXPECT_FALSE(activity_log->IsWatchdogAppActive());
 
   // Enable the extension.
-  scoped_refptr<Extension> extension =
+  scoped_refptr<const Extension> extension =
       ExtensionBuilder()
           .SetManifest(DictionaryBuilder()
                            .Set("name", "Watchdog Extension ")
@@ -274,13 +259,55 @@ TEST_F(ActivityLogEnabledTest, AppAndCommandLine) {
   extension_service->UninstallExtension(
       kExtensionID,
       extensions::UNINSTALL_REASON_FOR_TESTING,
-      base::Bind(&base::DoNothing),
       NULL);
 
   EXPECT_TRUE(activity_log->IsDatabaseEnabled());
   EXPECT_EQ(0,
       profile->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
   EXPECT_FALSE(activity_log->IsWatchdogAppActive());
+}
+
+// Tests that if the cached count in the profile preferences is incorrect, the
+// activity log will correct itself.
+TEST_F(ActivityLogEnabledTest, IncorrectPrefsRecovery) {
+  std::unique_ptr<TestingProfile> profile(
+      static_cast<TestingProfile*>(CreateBrowserContext()));
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+  ExtensionService* extension_service =
+    static_cast<TestExtensionSystem*>(
+        ExtensionSystem::Get(profile.get()))->CreateExtensionService(
+            &command_line, base::FilePath(), false);
+
+  // Set the preferences to indicate a cached count of 10.
+  profile->GetPrefs()->SetInteger(prefs::kWatchdogExtensionActive, 10);
+  ActivityLog* activity_log = ActivityLog::GetInstance(profile.get());
+
+  static_cast<TestExtensionSystem*>(
+      ExtensionSystem::Get(profile.get()))->SetReady();
+  base::RunLoop().RunUntilIdle();
+
+  // Even though the cached count was 10, the activity log should correctly
+  // realize that there were no real consumers, and should be inactive and
+  // correct the prefs.
+  EXPECT_FALSE(activity_log->is_active());
+  EXPECT_EQ(
+      0, profile->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
+
+  // Testing adding an extension maintains pref and active correctness.
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder()
+          .SetManifest(DictionaryBuilder()
+                           .Set("name", "Watchdog Extension ")
+                           .Set("version", "1.0.0")
+                           .Set("manifest_version", 2)
+                           .Build())
+          .SetID(kExtensionID)
+          .Build();
+  extension_service->AddExtension(extension.get());
+
+  EXPECT_EQ(
+      1, profile->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive));
+  EXPECT_TRUE(activity_log->is_active());
 }
 
 }  // namespace extensions

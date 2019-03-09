@@ -11,11 +11,8 @@
 
 namespace blacklist {
 
-// The registry path of the blacklist beacon.
-extern const wchar_t kRegistryBeaconPath[];
-
-// The registry path of the finch blacklist dlls.
-extern const wchar_t kRegistryFinchListPath[];
+// The name of the blacklist beacon registry key.
+extern const wchar_t kRegistryBeaconKeyName[];
 
 // The properties for the blacklist beacon.
 extern const wchar_t kBeaconVersion[];
@@ -40,5 +37,13 @@ enum BlacklistState {
 };
 
 }  // namespace blacklist
+
+namespace elf_sec {
+
+// The name of the registry key holding the finch "emergency-off"
+// switch for sandbox::MITIGATION_EXTENSION_POINT_DISABLE.
+extern const wchar_t kRegSecurityFinchKeyName[];
+
+}  // namespace elf_sec
 
 #endif  // CHROME_ELF_CHROME_ELF_CONSTANTS_H_

@@ -7,22 +7,29 @@
 
 #include <memory>
 
+#include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/supports_user_data.h"
 #include "base/time/time.h"
+#include "content/browser/loader/navigation_loader_interceptor.h"
 #include "content/common/content_export.h"
-#include "content/common/service_worker/service_worker_status_code.h"
 #include "content/common/service_worker/service_worker_types.h"
-#include "content/public/common/request_context_frame_type.h"
-#include "content/public/common/request_context_type.h"
 #include "content/public/common/resource_type.h"
 #include "net/url_request/url_request_job_factory.h"
+#include "services/network/public/mojom/fetch_api.mojom.h"
+#include "services/network/public/mojom/request_context_frame_type.mojom.h"
+#include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
 
 namespace net {
 class NetworkDelegate;
 class URLRequest;
 class URLRequestInterceptor;
+}
+
+namespace network {
+class ResourceRequestBody;
 }
 
 namespace storage {
@@ -32,17 +39,55 @@ class BlobStorageContext;
 namespace content {
 
 class ResourceContext;
-class ResourceMessageFilter;
-class ResourceRequestBodyImpl;
 class ServiceWorkerContextCore;
 class ServiceWorkerContextWrapper;
+class ServiceWorkerNavigationHandleCore;
 class ServiceWorkerProviderHost;
+class WebContents;
 
 // Abstract base class for routing network requests to ServiceWorkers.
 // Created one per URLRequest and attached to each request.
 class CONTENT_EXPORT ServiceWorkerRequestHandler
-    : public base::SupportsUserData::Data {
+    : public base::SupportsUserData::Data,
+      public NavigationLoaderInterceptor {
  public:
+  // PlzNavigate
+  // Attaches a newly created handler if the given |request| needs to be handled
+  // by ServiceWorker.
+  static void InitializeForNavigation(
+      net::URLRequest* request,
+      ServiceWorkerNavigationHandleCore* navigation_handle_core,
+      storage::BlobStorageContext* blob_storage_context,
+      bool skip_service_worker,
+      ResourceType resource_type,
+      blink::mojom::RequestContextType request_context_type,
+      network::mojom::RequestContextFrameType frame_type,
+      bool is_parent_frame_secure,
+      scoped_refptr<network::ResourceRequestBody> body,
+      base::RepeatingCallback<WebContents*()> web_contents_getter);
+
+  // S13nServiceWorker:
+  // Same as InitializeForNavigation() but instead of attaching to a URLRequest,
+  // just creates a NavigationLoaderInterceptor and returns it.
+  static std::unique_ptr<NavigationLoaderInterceptor>
+  InitializeForNavigationNetworkService(
+      const GURL& url,
+      ResourceContext* resource_context,
+      ServiceWorkerNavigationHandleCore* navigation_handle_core,
+      storage::BlobStorageContext* blob_storage_context,
+      bool skip_service_worker,
+      ResourceType resource_type,
+      blink::mojom::RequestContextType request_context_type,
+      network::mojom::RequestContextFrameType frame_type,
+      bool is_parent_frame_secure,
+      scoped_refptr<network::ResourceRequestBody> body,
+      base::RepeatingCallback<WebContents*()> web_contents_getter,
+      base::WeakPtr<ServiceWorkerProviderHost>* out_provider_host);
+
+  static std::unique_ptr<NavigationLoaderInterceptor> InitializeForWorker(
+      const network::ResourceRequest& resource_request,
+      base::WeakPtr<ServiceWorkerProviderHost> host);
+
   // Attaches a newly created handler if the given |request| needs to
   // be handled by ServiceWorker.
   // TODO(kinuko): While utilizing UserData to attach data to URLRequest
@@ -56,13 +101,15 @@ class CONTENT_EXPORT ServiceWorkerRequestHandler
       int process_id,
       int provider_id,
       bool skip_service_worker,
-      FetchRequestMode request_mode,
-      FetchCredentialsMode credentials_mode,
-      FetchRedirectMode redirect_mode,
+      network::mojom::FetchRequestMode request_mode,
+      network::mojom::FetchCredentialsMode credentials_mode,
+      network::mojom::FetchRedirectMode redirect_mode,
+      const std::string& integrity,
+      bool keepalive,
       ResourceType resource_type,
-      RequestContextType request_context_type,
-      RequestContextFrameType frame_type,
-      scoped_refptr<ResourceRequestBodyImpl> body);
+      blink::mojom::RequestContextType request_context_type,
+      network::mojom::RequestContextFrameType frame_type,
+      scoped_refptr<network::ResourceRequestBody> body);
 
   // Returns the handler attached to |request|. This may return NULL
   // if no handler is attached.
@@ -92,16 +139,11 @@ class CONTENT_EXPORT ServiceWorkerRequestHandler
       net::NetworkDelegate* network_delegate,
       ResourceContext* context) = 0;
 
-  // Methods to support cross site navigations.
-  void PrepareForCrossSiteTransfer(int old_process_id);
-  void CompleteCrossSiteTransfer(int new_process_id,
-                                 int new_provider_id);
-  void MaybeCompleteCrossSiteTransferInOldProcess(
-      int old_process_id);
-
-  // Useful for detecting storage partition mismatches in the context of cross
-  // site transfer navigations.
-  bool SanityCheckIsSameContext(ServiceWorkerContextWrapper* wrapper);
+  // NavigationLoaderInterceptor overrides.
+  void MaybeCreateLoader(const network::ResourceRequest& tentative_request,
+                         ResourceContext* resource_context,
+                         LoaderCallback callback,
+                         FallbackCallback fallback_callback) override;
 
  protected:
   ServiceWorkerRequestHandler(
@@ -116,9 +158,7 @@ class CONTENT_EXPORT ServiceWorkerRequestHandler
   ResourceType resource_type_;
 
  private:
-  std::unique_ptr<ServiceWorkerProviderHost> host_for_cross_site_transfer_;
-  int old_process_id_;
-  int old_provider_id_;
+  static int user_data_key_;  // Only address is used.
 
   DISALLOW_COPY_AND_ASSIGN(ServiceWorkerRequestHandler);
 };

@@ -32,19 +32,17 @@ bool LayerTreesMatch(LayerImpl* const layer_impl,
       EXPECT_EQ(layer_impl->test_properties()->children.size(),
                 layer->children().size()));
   RETURN_IF_EXPECTATION_FAILS(EXPECT_EQ(layer_impl->bounds(), layer->bounds()));
-  RETURN_IF_EXPECTATION_FAILS(
-      EXPECT_EQ(layer_impl->position(), layer->position()));
   RETURN_IF_EXPECTATION_FAILS(EXPECT_TRANSFORMATION_MATRIX_EQ(
-      layer_impl->transform(), layer->transform()));
+      layer_impl->test_properties()->transform, layer->transform()));
   RETURN_IF_EXPECTATION_FAILS(EXPECT_EQ(layer_impl->contents_opaque(),
                                         layer->contents_opaque()));
   RETURN_IF_EXPECTATION_FAILS(EXPECT_EQ(layer_impl->scrollable(),
                                         layer->scrollable()));
+
   RETURN_IF_EXPECTATION_FAILS(
       EXPECT_FLOAT_EQ(layer_impl->Opacity(), layer->opacity()));
-  RETURN_IF_EXPECTATION_FAILS(
-      EXPECT_EQ(layer_impl->touch_event_handler_region(),
-                layer->touch_event_handler_region()));
+  RETURN_IF_EXPECTATION_FAILS(EXPECT_EQ(layer_impl->touch_action_region(),
+                                        layer->touch_action_region()));
 
   for (size_t i = 0; i < layer_impl->test_properties()->children.size(); ++i) {
     RETURN_IF_EXPECTATION_FAILS(
@@ -63,10 +61,8 @@ class LayerTreeJsonParserSanityCheck : public testing::Test {
 
 TEST_F(LayerTreeJsonParserSanityCheck, Basic) {
   FakeImplTaskRunnerProvider task_runner_provider;
-  TestSharedBitmapManager shared_bitmap_manager;
   TestTaskGraphRunner task_graph_runner;
-  FakeLayerTreeHostImpl host_impl(&task_runner_provider, &shared_bitmap_manager,
-                                  &task_graph_runner);
+  FakeLayerTreeHostImpl host_impl(&task_runner_provider, &task_graph_runner);
   LayerTreeImpl* tree = host_impl.active_tree();
 
   std::unique_ptr<LayerImpl> root_impl(LayerImpl::Create(tree, 1));
@@ -79,16 +75,17 @@ TEST_F(LayerTreeJsonParserSanityCheck, Basic) {
 
   gfx::Transform translate;
   translate.Translate(10, 15);
-  child->SetTransform(translate);
+  child->test_properties()->transform = translate;
 
-  parent->SetPosition(gfx::PointF(25.f, 25.f));
+  parent->test_properties()->position = gfx::PointF(25.f, 25.f);
 
   parent->test_properties()->AddChild(std::move(child));
   root_impl->test_properties()->AddChild(std::move(parent));
   tree->SetRootLayerForTesting(std::move(root_impl));
+  tree->BuildPropertyTreesForTesting();
 
-  std::string json = host_impl.LayerTreeAsJson();
-  scoped_refptr<Layer> root = ParseTreeFromJson(json, NULL);
+  std::string json = tree->LayerTreeAsJson();
+  scoped_refptr<Layer> root = ParseTreeFromJson(json, nullptr);
   ASSERT_TRUE(root.get());
   EXPECT_TRUE(LayerTreesMatch(host_impl.active_tree()->root_layer_for_testing(),
                               root.get()));
@@ -96,10 +93,8 @@ TEST_F(LayerTreeJsonParserSanityCheck, Basic) {
 
 TEST_F(LayerTreeJsonParserSanityCheck, EventHandlerRegions) {
   FakeImplTaskRunnerProvider task_runner_provider;
-  TestSharedBitmapManager shared_bitmap_manager;
   TestTaskGraphRunner task_graph_runner;
-  FakeLayerTreeHostImpl host_impl(&task_runner_provider, &shared_bitmap_manager,
-                                  &task_graph_runner);
+  FakeLayerTreeHostImpl host_impl(&task_runner_provider, &task_graph_runner);
   LayerTreeImpl* tree = host_impl.active_tree();
 
   std::unique_ptr<LayerImpl> root_impl(LayerImpl::Create(tree, 1));
@@ -108,16 +103,17 @@ TEST_F(LayerTreeJsonParserSanityCheck, EventHandlerRegions) {
   root_impl->SetBounds(gfx::Size(100, 100));
   touch_layer->SetBounds(gfx::Size(50, 50));
 
-  Region touch_region;
-  touch_region.Union(gfx::Rect(10, 10, 20, 30));
-  touch_region.Union(gfx::Rect(40, 10, 20, 20));
-  touch_layer->SetTouchEventHandlerRegion(touch_region);
+  TouchActionRegion touch_action_region;
+  touch_action_region.Union(kTouchActionNone, gfx::Rect(10, 10, 20, 30));
+  touch_action_region.Union(kTouchActionNone, gfx::Rect(40, 10, 20, 20));
+  touch_layer->SetTouchActionRegion(std::move(touch_action_region));
 
   root_impl->test_properties()->AddChild(std::move(touch_layer));
   tree->SetRootLayerForTesting(std::move(root_impl));
+  tree->BuildPropertyTreesForTesting();
 
-  std::string json = host_impl.LayerTreeAsJson();
-  scoped_refptr<Layer> root = ParseTreeFromJson(json, NULL);
+  std::string json = tree->LayerTreeAsJson();
+  scoped_refptr<Layer> root = ParseTreeFromJson(json, nullptr);
   ASSERT_TRUE(root.get());
   EXPECT_TRUE(LayerTreesMatch(host_impl.active_tree()->root_layer_for_testing(),
                               root.get()));

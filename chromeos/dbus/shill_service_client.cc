@@ -4,14 +4,16 @@
 
 #include "chromeos/dbus/shill_service_client.h"
 
+#include <map>
+
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/message_loop/message_loop.h"
 #include "base/stl_util.h"
 #include "base/values.h"
 #include "chromeos/dbus/shill_property_changed_observer.h"
-#include "chromeos/network/network_event_log.h"
+#include "components/device_event_log/device_event_log.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
 #include "dbus/object_proxy.h"
@@ -54,10 +56,7 @@ void OnGetDictionaryError(
 // The ShillServiceClient implementation.
 class ShillServiceClientImpl : public ShillServiceClient {
  public:
-  explicit ShillServiceClientImpl()
-      : bus_(NULL),
-        weak_ptr_factory_(this) {
-  }
+  ShillServiceClientImpl() : bus_(NULL), weak_ptr_factory_(this) {}
 
   ~ShillServiceClientImpl() override {
     for (HelperMap::iterator iter = helpers_.begin();
@@ -65,7 +64,7 @@ class ShillServiceClientImpl : public ShillServiceClient {
       ShillClientHelper* helper = iter->second;
       bus_->RemoveObjectProxy(shill::kFlimflamServiceName,
                               helper->object_proxy()->object_path(),
-                              base::Bind(&base::DoNothing));
+                              base::DoNothing());
       delete helper;
     }
   }
@@ -231,7 +230,6 @@ class ShillServiceClientImpl : public ShillServiceClient {
       return it->second;
 
     // There is no helper for the profile, create it.
-    NET_LOG_DEBUG("AddShillClientHelper", service_path.value());
     dbus::ObjectProxy* object_proxy =
         bus_->GetObjectProxy(shill::kFlimflamServiceName, service_path);
     ShillClientHelper* helper = new ShillClientHelper(object_proxy);
@@ -254,13 +252,12 @@ class ShillServiceClientImpl : public ShillServiceClient {
     // Either way this would cause an invalid memory access in
     // ShillManagerClient, see crbug.com/324849.
     if (object_path == dbus::ObjectPath(shill::kFlimflamServicePath)) {
-      NET_LOG_ERROR("ShillServiceClient service has invalid path",
-                    shill::kFlimflamServicePath);
+      NET_LOG(ERROR) << "ShillServiceClient service has invalid path: "
+                     << shill::kFlimflamServicePath;
       return;
     }
-    NET_LOG_DEBUG("RemoveShillClientHelper", object_path.value());
-    bus_->RemoveObjectProxy(shill::kFlimflamServiceName,
-                            object_path, base::Bind(&base::DoNothing));
+    bus_->RemoveObjectProxy(shill::kFlimflamServiceName, object_path,
+                            base::DoNothing());
     helpers_.erase(object_path.value());
     delete helper;
   }
@@ -274,9 +271,9 @@ class ShillServiceClientImpl : public ShillServiceClient {
 
 }  // namespace
 
-ShillServiceClient::ShillServiceClient() {}
+ShillServiceClient::ShillServiceClient() = default;
 
-ShillServiceClient::~ShillServiceClient() {}
+ShillServiceClient::~ShillServiceClient() = default;
 
 // static
 ShillServiceClient* ShillServiceClient::Create() {

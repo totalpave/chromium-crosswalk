@@ -19,8 +19,9 @@ function assertUndefined(a) {
  */
 function assertNotNullNorUndefined(obj, opt_message) {
   if (obj === undefined || obj === null) {
-    throw new Error('Can\'t be null or undefined: ' + (opt_message || '') +
-        '\n' + 'Actual: ' + obj);
+    throw new Error(
+        'Can\'t be null or undefined: ' + (opt_message || '') + '\n' +
+        'Actual: ' + obj);
   }
 }
 
@@ -36,8 +37,8 @@ function assertException(msg, fn, error) {
     fn();
   } catch (e) {
     if (error && e.name != error) {
-      throw new Error('Expected to throw ' + error + ' but threw ' + e.name +
-          ' - ' + msg);
+      throw new Error(
+          'Expected to throw ' + error + ' but threw ' + e.name + ' - ' + msg);
     }
     return;
   }
@@ -61,8 +62,9 @@ function assertEqualStringArrays(array1, array2) {
     }
   }
   if (!same) {
-    throw new Error('Expected ' + JSON.stringify(array1) +
-                    ', got ' + JSON.stringify(array2));
+    throw new Error(
+        'Expected ' + JSON.stringify(array1) + ', got ' +
+        JSON.stringify(array2));
   }
 }
 
@@ -74,10 +76,55 @@ function assertEqualStringArrays(array1, array2) {
  */
 function assertEqualsJSON(expected, actual, opt_message) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error((opt_message ? opt_message + '\n' : '') +
-        'Expected ' + JSON.stringify(expected) + '\n' +
+    throw new Error(
+        (opt_message ? opt_message + '\n' : '') + 'Expected ' +
+        JSON.stringify(expected) + '\n' +
         'Got      ' + JSON.stringify(actual));
   }
+}
+
+/**
+ * Asserts that two ArrayBuffers have the same content.
+ * @param {ArrayBuffer} arrayBufA The expected ArrayBuffer.
+ * @param {ArrayBuffer} arrayBufB The test ArrayBuffer.
+ */
+function assertArrayBuffersEquals(arrayBufA, arrayBufB) {
+  var view1 = new Uint8Array(arrayBufA);
+  var view2 = new Uint8Array(arrayBufB);
+  assertEquals(JSON.stringify(view1), JSON.stringify(view2));
+}
+
+/**
+ * Asserts that two Arrays have the same content.
+ * @param {ArrayBuffer} arrayA The expected array.
+ * @param {ArrayBuffer} arrayB The test array.
+ */
+function assertArraysEquals(arrayA, arrayB) {
+  assertEquals(JSON.stringify(arrayA), JSON.stringify(arrayB));
+}
+
+/**
+ * Asserts and fails immediately once called.
+ */
+function assertNotReached() {
+  assertFalse(true);
+}
+
+/**
+ * Asserts an actual DOM equals an expected stringified DOM.
+ * @param {string} expected
+ * @param {Node} actual
+ */
+function assertEqualsDOM(expected, actual) {
+  expected = expected.replace(/>\s+</gm, '><').trim(/\s/gm);
+  var actualStr = actual.outerHTML;
+  actualStr = actualStr.replace(/>\s+</gm, '><').trim(/\s/gm);
+
+  for (var i = 0; i < expected.length; i++)
+    assertEquals(
+        expected[i], actualStr[i],
+        'Mismatch at index ' + i + ' in expected:\n' + expected +
+            '\nactual:\n' + actualStr + '\n');
 }
 
 assertSame = assertEquals;

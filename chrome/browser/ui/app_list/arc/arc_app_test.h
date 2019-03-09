@@ -15,16 +15,20 @@
 namespace arc {
 namespace mojom {
 class AppInfo;
-class ArcPackageInfo;
 }
-class ArcAuthService;
-class FakeArcBridgeService;
+class ArcPlayStoreEnabledPreferenceHandler;
+class ArcServiceManager;
+class ArcSessionManager;
 class FakeAppInstance;
 }
 
 namespace chromeos {
 class FakeChromeUserManager;
-class ScopedUserManagerEnabler;
+}
+
+namespace user_manager {
+class ScopedUserManager;
+class User;
 }
 
 class ArcAppListPrefs;
@@ -46,13 +50,20 @@ class ArcAppTest {
   static std::string GetAppId(const arc::mojom::AppInfo& app_info);
   static std::string GetAppId(const arc::mojom::ShortcutInfo& shortcut);
 
-  const std::vector<arc::mojom::ArcPackageInfo>& fake_packages() const {
+  // Helper that clones packages info array.
+  static std::vector<arc::mojom::ArcPackageInfoPtr> ClonePackages(
+      const std::vector<arc::mojom::ArcPackageInfoPtr>& packages);
+
+  const std::vector<arc::mojom::ArcPackageInfoPtr>& fake_packages() const {
     return fake_packages_;
   }
 
-  void AddPackage(const arc::mojom::ArcPackageInfo& package);
+  // Adds package info and takes ownership.
+  void AddPackage(arc::mojom::ArcPackageInfoPtr package);
 
-  void RemovePackage(const arc::mojom::ArcPackageInfo& package);
+  void RemovePackage(const std::string& package_name);
+
+  void WaitForDefaultApps();
 
   // The 0th item is sticky but not the followings.
   const std::vector<arc::mojom::AppInfo>& fake_apps() const {
@@ -69,30 +80,50 @@ class ArcAppTest {
 
   chromeos::FakeChromeUserManager* GetUserManager();
 
-  arc::FakeArcBridgeService* bridge_service() { return bridge_service_.get(); }
-
   arc::FakeAppInstance* app_instance() { return app_instance_.get(); }
 
   ArcAppListPrefs* arc_app_list_prefs() { return arc_app_list_pref_; }
 
-  arc::ArcAuthService* arc_auth_service() { return auth_service_.get(); }
+  arc::ArcSessionManager* arc_session_manager() {
+    return arc_session_manager_.get();
+  }
+  arc::ArcServiceManager* arc_service_manager() {
+    return arc_service_manager_.get();
+  }
+
+  void set_wait_default_apps(bool wait_default_apps) {
+    wait_default_apps_ = wait_default_apps;
+  }
+
+  void set_activate_arc_on_start(bool activate_arc_on_start) {
+    activate_arc_on_start_ = activate_arc_on_start;
+  }
 
  private:
-  void CreateUserAndLogin();
-  bool FindPackage(const arc::mojom::ArcPackageInfo& package);
+  const user_manager::User* CreateUserAndLogin();
+  bool FindPackage(const std::string& package_name);
+  void CreateFakeAppsAndPackages();
 
   // Unowned pointer.
   Profile* profile_ = nullptr;
 
   ArcAppListPrefs* arc_app_list_pref_ = nullptr;
 
-  std::unique_ptr<arc::FakeArcBridgeService> bridge_service_;
+  bool wait_default_apps_ = true;
+
+  // If set to true ARC would be automatically enabled on test start up.
+  bool activate_arc_on_start_ = true;
+
+  std::unique_ptr<arc::ArcServiceManager> arc_service_manager_;
+  std::unique_ptr<arc::ArcSessionManager> arc_session_manager_;
+  std::unique_ptr<arc::ArcPlayStoreEnabledPreferenceHandler>
+      arc_play_store_enabled_preference_handler_;
   std::unique_ptr<arc::FakeAppInstance> app_instance_;
-  std::unique_ptr<arc::ArcAuthService> auth_service_;
-  std::unique_ptr<chromeos::ScopedUserManagerEnabler> user_manager_enabler_;
+
+  std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
   std::vector<arc::mojom::AppInfo> fake_apps_;
   std::vector<arc::mojom::AppInfo> fake_default_apps_;
-  std::vector<arc::mojom::ArcPackageInfo> fake_packages_;
+  std::vector<arc::mojom::ArcPackageInfoPtr> fake_packages_;
   std::vector<arc::mojom::ShortcutInfo> fake_shortcuts_;
 
   bool dbus_thread_manager_initialized_ = false;

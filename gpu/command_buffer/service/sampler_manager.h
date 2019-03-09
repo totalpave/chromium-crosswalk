@@ -5,15 +5,15 @@
 #ifndef GPU_COMMAND_BUFFER_SERVICE_SAMPLER_MANAGER_H_
 #define GPU_COMMAND_BUFFER_SERVICE_SAMPLER_MANAGER_H_
 
+#include <unordered_map>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/command_buffer/service/gl_utils.h"
-#include "gpu/gpu_export.h"
+#include "gpu/gpu_gles2_export.h"
 
 namespace gpu {
 
@@ -35,11 +35,14 @@ struct SamplerState {
   GLfloat min_lod;
 };
 
-class GPU_EXPORT Sampler : public base::RefCounted<Sampler> {
+class GPU_GLES2_EXPORT Sampler : public base::RefCounted<Sampler> {
  public:
-  Sampler(SamplerManager* manager, GLuint service_id);
+  Sampler(SamplerManager* manager, GLuint client_id, GLuint service_id);
 
-  // The service side OpenGL id of the texture.
+  GLuint client_id() const {
+    return client_id_;
+  }
+
   GLuint service_id() const {
     return service_id_;
   }
@@ -114,7 +117,7 @@ class GPU_EXPORT Sampler : public base::RefCounted<Sampler> {
   // The manager that owns this Sampler.
   SamplerManager* manager_;
 
-    // The id of the texure
+  GLuint client_id_;
   GLuint service_id_;
 
   // Sampler parameters.
@@ -125,7 +128,7 @@ class GPU_EXPORT Sampler : public base::RefCounted<Sampler> {
 };
 
 // This class keeps track of the samplers and their state.
-class GPU_EXPORT SamplerManager {
+class GPU_GLES2_EXPORT SamplerManager {
  public:
   SamplerManager(FeatureInfo* feature_info);
   ~SamplerManager();
@@ -157,7 +160,7 @@ class GPU_EXPORT SamplerManager {
   scoped_refptr<FeatureInfo> feature_info_;
 
   // Info for each sampler in the system.
-  typedef base::hash_map<GLuint, scoped_refptr<Sampler> > SamplerMap;
+  typedef std::unordered_map<GLuint, scoped_refptr<Sampler>> SamplerMap;
   SamplerMap samplers_;
 
   bool have_context_;

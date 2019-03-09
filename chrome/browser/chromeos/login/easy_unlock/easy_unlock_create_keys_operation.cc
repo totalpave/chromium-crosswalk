@@ -16,12 +16,13 @@
 #include "base/strings/string_util.h"
 #include "chrome/browser/chromeos/login/easy_unlock/easy_unlock_key_manager.h"
 #include "chrome/browser/chromeos/login/easy_unlock/easy_unlock_types.h"
+#include "chromeos/components/multidevice/logging/logging.h"
+#include "chromeos/cryptohome/cryptohome_util.h"
 #include "chromeos/cryptohome/homedir_methods.h"
 #include "chromeos/cryptohome/system_salt_getter.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/easy_unlock_client.h"
 #include "chromeos/login/auth/key.h"
-#include "components/proximity_auth/logging/logging.h"
 #include "crypto/encryptor.h"
 #include "crypto/random.h"
 #include "crypto/symmetric_key.h"
@@ -46,7 +47,7 @@ const int kEasyUnlockKeyPrivileges =
 
 class EasyUnlockCreateKeysOperation::ChallengeCreator {
  public:
-  typedef base::Callback<void (bool success)> ChallengeCreatedCallback;
+  typedef base::Callback<void(bool success)> ChallengeCreatedCallback;
   ChallengeCreator(const std::string& user_key,
                    const std::string& session_key,
                    const std::string& tpm_pub_key,
@@ -82,7 +83,7 @@ class EasyUnlockCreateKeysOperation::ChallengeCreator {
   std::string esk_;
 
   // Owned by DBusThreadManager
-  chromeos::EasyUnlockClient* easy_unlock_client_;
+  EasyUnlockClient* easy_unlock_client_;
 
   base::WeakPtrFactory<ChallengeCreator> weak_ptr_factory_;
 
@@ -100,18 +101,14 @@ EasyUnlockCreateKeysOperation::ChallengeCreator::ChallengeCreator(
       tpm_pub_key_(tpm_pub_key),
       device_(device),
       callback_(callback),
-      easy_unlock_client_(
-          chromeos::DBusThreadManager::Get()->GetEasyUnlockClient()),
-      weak_ptr_factory_(this) {
-}
+      easy_unlock_client_(DBusThreadManager::Get()->GetEasyUnlockClient()),
+      weak_ptr_factory_(this) {}
 
-EasyUnlockCreateKeysOperation::ChallengeCreator::~ChallengeCreator() {
-}
+EasyUnlockCreateKeysOperation::ChallengeCreator::~ChallengeCreator() {}
 
 void EasyUnlockCreateKeysOperation::ChallengeCreator::Start() {
-  easy_unlock_client_->GenerateEcP256KeyPair(
-      base::Bind(&ChallengeCreator::OnEcKeyPairGenerated,
-                 weak_ptr_factory_.GetWeakPtr()));
+  easy_unlock_client_->GenerateEcP256KeyPair(base::Bind(
+      &ChallengeCreator::OnEcKeyPairGenerated, weak_ptr_factory_.GetWeakPtr()));
 }
 
 void EasyUnlockCreateKeysOperation::ChallengeCreator::OnEcKeyPairGenerated(
@@ -134,8 +131,7 @@ void EasyUnlockCreateKeysOperation::ChallengeCreator::OnEcKeyPairGenerated(
 
   ec_public_key_ = ec_public_key;
   easy_unlock_client_->PerformECDHKeyAgreement(
-      ec_private_key,
-      device_pub_key,
+      ec_private_key, device_pub_key,
       base::Bind(&ChallengeCreator::OnEskGenerated,
                  weak_ptr_factory_.GetWeakPtr()));
 }
@@ -154,8 +150,7 @@ void EasyUnlockCreateKeysOperation::ChallengeCreator::OnEskGenerated(
 
 void EasyUnlockCreateKeysOperation::ChallengeCreator::WrapTPMPublicKey() {
   easy_unlock_client_->WrapPublicKey(
-      easy_unlock::kKeyAlgorithmRSA,
-      tpm_pub_key_,
+      easy_unlock::kKeyAlgorithmRSA, tpm_pub_key_,
       base::Bind(&ChallengeCreator::OnTPMPublicKeyWrapped,
                  weak_ptr_factory_.GetWeakPtr()));
 }
@@ -180,14 +175,12 @@ void EasyUnlockCreateKeysOperation::ChallengeCreator::GeneratePayload() {
   options.signature_type = easy_unlock::kSignatureTypeHMACSHA256;
 
   easy_unlock_client_->CreateSecureMessage(
-      session_key_,
-      options,
+      session_key_, options,
       base::Bind(&ChallengeCreator::OnPayloadMessageGenerated,
                  weak_ptr_factory_.GetWeakPtr()));
 }
 
-void
-EasyUnlockCreateKeysOperation::ChallengeCreator::OnPayloadMessageGenerated(
+void EasyUnlockCreateKeysOperation::ChallengeCreator::OnPayloadMessageGenerated(
     const std::string& payload_message) {
   EasyUnlockClient::UnwrapSecureMessageOptions options;
   options.key = esk_;
@@ -195,8 +188,7 @@ EasyUnlockCreateKeysOperation::ChallengeCreator::OnPayloadMessageGenerated(
   options.signature_type = easy_unlock::kSignatureTypeHMACSHA256;
 
   easy_unlock_client_->UnwrapSecureMessage(
-      payload_message,
-      options,
+      payload_message, options,
       base::Bind(&ChallengeCreator::OnPayloadGenerated,
                  weak_ptr_factory_.GetWeakPtr()));
 }
@@ -216,8 +208,7 @@ void EasyUnlockCreateKeysOperation::ChallengeCreator::OnPayloadGenerated(
   options.signature_type = easy_unlock::kSignatureTypeHMACSHA256;
 
   easy_unlock_client_->CreateSecureMessage(
-      payload,
-      options,
+      payload, options,
       base::Bind(&ChallengeCreator::OnChallengeGenerated,
                  weak_ptr_factory_.GetWeakPtr()));
 }
@@ -253,8 +244,7 @@ EasyUnlockCreateKeysOperation::EasyUnlockCreateKeysOperation(
   DCHECK(!callback_.is_null());
 }
 
-EasyUnlockCreateKeysOperation::~EasyUnlockCreateKeysOperation() {
-}
+EasyUnlockCreateKeysOperation::~EasyUnlockCreateKeysOperation() {}
 
 void EasyUnlockCreateKeysOperation::Start() {
   key_creation_index_ = 0;
@@ -291,17 +281,10 @@ void EasyUnlockCreateKeysOperation::CreateKeyForDeviceAtIndex(size_t index) {
     return;
   }
 
-  std::string raw_session_key;
-  session_key->GetRawKey(&raw_session_key);
-
   challenge_creator_.reset(new ChallengeCreator(
-      user_key,
-      raw_session_key,
-      tpm_public_key_,
-      device,
+      user_key, session_key->key(), tpm_public_key_, device,
       base::Bind(&EasyUnlockCreateKeysOperation::OnChallengeCreated,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 index)));
+                 weak_ptr_factory_.GetWeakPtr(), index)));
   challenge_creator_->Start();
 }
 
@@ -317,8 +300,7 @@ void EasyUnlockCreateKeysOperation::OnChallengeCreated(size_t index,
 
   SystemSaltGetter::Get()->GetSystemSalt(
       base::Bind(&EasyUnlockCreateKeysOperation::OnGetSystemSalt,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 index));
+                 weak_ptr_factory_.GetWeakPtr(), index));
 }
 
 void EasyUnlockCreateKeysOperation::OnGetSystemSalt(
@@ -335,9 +317,8 @@ void EasyUnlockCreateKeysOperation::OnGetSystemSalt(
   user_key.Transform(Key::KEY_TYPE_SALTED_SHA256_TOP_HALF, system_salt);
 
   EasyUnlockDeviceKeyData* device = &devices_[index];
-  cryptohome::KeyDefinition key_def(
-      user_key.GetSecret(),
-      EasyUnlockKeyManager::GetKeyLabel(index),
+  auto key_def = cryptohome::KeyDefinition::CreateForPassword(
+      user_key.GetSecret(), EasyUnlockKeyManager::GetKeyLabel(index),
       kEasyUnlockKeyPrivileges);
   key_def.revision = kEasyUnlockKeyRevision;
   key_def.provider_data.push_back(cryptohome::KeyDefinition::ProviderData(
@@ -353,24 +334,30 @@ void EasyUnlockCreateKeysOperation::OnGetSystemSalt(
       kEasyUnlockKeyMetaNameChallenge, device->challenge));
   key_def.provider_data.push_back(cryptohome::KeyDefinition::ProviderData(
       kEasyUnlockKeyMetaNameWrappedSecret, device->wrapped_secret));
-
-  // Add cryptohome key.
-  const cryptohome::Identification id(user_context_.GetAccountId());
+  key_def.provider_data.push_back(cryptohome::KeyDefinition::ProviderData(
+      kEasyUnlockKeyMetaNameSerializedBeaconSeeds,
+      device->serialized_beacon_seeds));
+  // ProviderData only has std::string and int64_t fields for persistence -- use
+  // the int64_t field to store this boolean. The boolean is stored as either a
+  // 1 or 0 in as an int64_t.
+  key_def.provider_data.push_back(cryptohome::KeyDefinition::ProviderData(
+      kEasyUnlockKeyMetaNameUnlockKey,
+      static_cast<int64_t>(device->unlock_key)));
 
   std::unique_ptr<Key> auth_key(new Key(*user_context_.GetKey()));
   if (auth_key->GetKeyType() == Key::KEY_TYPE_PASSWORD_PLAIN)
     auth_key->Transform(Key::KEY_TYPE_SALTED_SHA256_TOP_HALF, system_salt);
 
-  cryptohome::Authorization auth(auth_key->GetSecret(), auth_key->GetLabel());
+  cryptohome::AddKeyRequest request;
+  cryptohome::KeyDefinitionToKey(key_def, request.mutable_key());
+  request.set_clobber_if_exists(true);
   cryptohome::HomedirMethods::GetInstance()->AddKeyEx(
-      id,
-      auth,
-      key_def,
-      true,  // clobber
+      cryptohome::Identification(user_context_.GetAccountId()),
+      cryptohome::CreateAuthorizationRequest(auth_key->GetLabel(),
+                                             auth_key->GetSecret()),
+      request,
       base::Bind(&EasyUnlockCreateKeysOperation::OnKeyCreated,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 index,
-                 user_key));
+                 weak_ptr_factory_.GetWeakPtr(), index, user_key));
 }
 
 void EasyUnlockCreateKeysOperation::OnKeyCreated(

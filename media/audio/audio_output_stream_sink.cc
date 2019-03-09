@@ -4,12 +4,15 @@
 
 #include "media/audio/audio_output_stream_sink.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/location.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "media/audio/audio_manager.h"
+#include "media/base/audio_timestamp_helper.h"
 
 namespace media {
 
@@ -21,8 +24,7 @@ AudioOutputStreamSink::AudioOutputStreamSink()
       audio_task_runner_(AudioManager::Get()->GetTaskRunner()),
       stream_(NULL) {}
 
-AudioOutputStreamSink::~AudioOutputStreamSink() {
-}
+AudioOutputStreamSink::~AudioOutputStreamSink() = default;
 
 void AudioOutputStreamSink::Initialize(const AudioParameters& params,
                                        RenderCallback* callback) {
@@ -42,20 +44,21 @@ void AudioOutputStreamSink::Start() {
   }
   started_ = true;
   audio_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&AudioOutputStreamSink::DoStart, this, params_));
+      FROM_HERE,
+      base::BindOnce(&AudioOutputStreamSink::DoStart, this, params_));
 }
 
 void AudioOutputStreamSink::Stop() {
   ClearCallback();
   started_ = false;
   audio_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&AudioOutputStreamSink::DoStop, this));
+      FROM_HERE, base::BindOnce(&AudioOutputStreamSink::DoStop, this));
 }
 
 void AudioOutputStreamSink::Pause() {
   ClearCallback();
   audio_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&AudioOutputStreamSink::DoPause, this));
+      FROM_HERE, base::BindOnce(&AudioOutputStreamSink::DoPause, this));
 }
 
 void AudioOutputStreamSink::Play() {
@@ -64,17 +67,28 @@ void AudioOutputStreamSink::Play() {
     active_render_callback_ = render_callback_;
   }
   audio_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&AudioOutputStreamSink::DoPlay, this));
+      FROM_HERE, base::BindOnce(&AudioOutputStreamSink::DoPlay, this));
 }
 
 bool AudioOutputStreamSink::SetVolume(double volume) {
   audio_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&AudioOutputStreamSink::DoSetVolume, this, volume));
+      FROM_HERE,
+      base::BindOnce(&AudioOutputStreamSink::DoSetVolume, this, volume));
   return true;
 }
 
 OutputDeviceInfo AudioOutputStreamSink::GetOutputDeviceInfo() {
-  return OutputDeviceInfo();
+  return OutputDeviceInfo(OUTPUT_DEVICE_STATUS_OK);
+}
+
+void AudioOutputStreamSink::GetOutputDeviceInfoAsync(
+    OutputDeviceInfoCB info_cb) {
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(info_cb), GetOutputDeviceInfo()));
+}
+
+bool AudioOutputStreamSink::IsOptimizedForHardwareParameters() {
+  return true;
 }
 
 bool AudioOutputStreamSink::CurrentThreadIsRenderingThread() {
@@ -82,21 +96,20 @@ bool AudioOutputStreamSink::CurrentThreadIsRenderingThread() {
   return false;
 }
 
-int AudioOutputStreamSink::OnMoreData(AudioBus* dest,
-                                      uint32_t total_bytes_delay,
-                                      uint32_t frames_skipped) {
+int AudioOutputStreamSink::OnMoreData(base::TimeDelta delay,
+                                      base::TimeTicks delay_timestamp,
+                                      int prior_frames_skipped,
+                                      AudioBus* dest) {
   // Note: Runs on the audio thread created by the OS.
   base::AutoLock al(callback_lock_);
   if (!active_render_callback_)
     return 0;
 
-  uint32_t frames_delayed = std::round(static_cast<double>(total_bytes_delay) /
-                                       active_params_.GetBytesPerFrame());
-
-  return active_render_callback_->Render(dest, frames_delayed, frames_skipped);
+  return active_render_callback_->Render(delay, delay_timestamp,
+                                         prior_frames_skipped, dest);
 }
 
-void AudioOutputStreamSink::OnError(AudioOutputStream* stream) {
+void AudioOutputStreamSink::OnError() {
   // Note: Runs on the audio thread created by the OS.
   base::AutoLock al(callback_lock_);
   if (active_render_callback_)
@@ -154,4 +167,4 @@ void AudioOutputStreamSink::ClearCallback() {
   active_render_callback_ = NULL;
 }
 
-}  // namepace media
+}  // namespace media

@@ -10,8 +10,10 @@
 #include "ui/aura/client/screen_position_client.h"
 #include "ui/aura/test/test_cursor_client.h"
 #include "ui/aura/window.h"
+#include "ui/aura/window_event_dispatcher.h"
+#include "ui/aura/window_tree_host.h"
+#include "ui/base/pointer/touch_editing_controller.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/touch/touch_editing_controller.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
@@ -19,10 +21,8 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/render_text.h"
-#include "ui/resources/grit/ui_resources.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_test_api.h"
-#include "ui/views/resources/grit/views_resources.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/touchui/touch_selection_controller_impl.h"
 #include "ui/views/views_touch_selection_controller_factory.h"
@@ -90,14 +90,15 @@ class TouchSelectionControllerImplTest : public ViewsTestBase {
   void CreateTextfield() {
     textfield_ = new Textfield();
     textfield_widget_ = new Widget;
-    Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_POPUP);
+    Widget::InitParams params =
+        CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
     params.bounds = gfx::Rect(0, 0, 200, 200);
     textfield_widget_->Init(params);
     View* container = new View();
     textfield_widget_->SetContentsView(container);
     container->AddChildView(textfield_);
 
-    textfield_->SetBoundsRect(gfx::Rect(0, 0, 200, 20));
+    textfield_->SetBoundsRect(gfx::Rect(0, 0, 200, 21));
     textfield_->set_id(1);
     textfield_widget_->Show();
 
@@ -126,8 +127,7 @@ class TouchSelectionControllerImplTest : public ViewsTestBase {
   }
 
   gfx::Point GetCursorPosition(const gfx::SelectionModel& sel) {
-    gfx::Rect cursor_bounds = GetCursorRect(sel);
-    return gfx::Point(cursor_bounds.x(), cursor_bounds.y());
+    return GetCursorRect(sel).origin();
   }
 
   TouchSelectionControllerImpl* GetSelectionController() {
@@ -234,7 +234,7 @@ class TouchSelectionControllerImplTest : public ViewsTestBase {
   // handle 1's position is matched against the start of selection or the end.
   void VerifyHandlePositions(bool cursor_at_selection_handle_1,
                              bool check_direction,
-                             const tracked_objects::Location& from_here) {
+                             const base::Location& from_here) {
     gfx::SelectionBound anchor, focus;
     textfield_->GetSelectionEndPoints(&anchor, &focus);
     std::string from_str = from_here.ToString();
@@ -687,11 +687,6 @@ class TestTouchEditable : public ui::TouchEditable {
     NOTREACHED();
     return false;
   }
-  bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override {
-    NOTREACHED();
-    return false;
-  }
   void ExecuteCommand(int command_id, int event_flags) override {
     NOTREACHED();
   }
@@ -759,8 +754,9 @@ TEST_F(TouchSelectionControllerImplTest,
 }
 
 TEST_F(TouchSelectionControllerImplTest, HandlesStackAboveParent) {
-  ui::EventTarget* root = GetContext();
-  ui::EventTargeter* targeter = root->GetEventTargeter();
+  aura::Window* root = GetContext();
+  ui::EventTargeter* targeter =
+      root->GetHost()->dispatcher()->GetDefaultEventTargeter();
 
   // Create the first window containing a Views::Textfield.
   CreateTextfield();
@@ -803,7 +799,7 @@ TEST_F(TouchSelectionControllerImplTest, MouseEventDeactivatesTouchSelection) {
   ui::test::EventGenerator generator(
       textfield_widget_->GetNativeView()->GetRootWindow());
 
-  generator.set_current_location(gfx::Point(5, 5));
+  generator.set_current_screen_location(gfx::Point(5, 5));
   RunPendingMessages();
 
   // Start touch editing; then move mouse over the textfield and ensure it

@@ -11,7 +11,7 @@ cr.define('cr.ui.pageManager', function() {
    * can call into PageManager to open a particular overlay or cancel an
    * existing overlay.
    */
-  var PageManager = {
+  const PageManager = {
     /**
      * True if page is served from a dialog.
      * @type {boolean}
@@ -21,7 +21,7 @@ cr.define('cr.ui.pageManager', function() {
     /**
      * Offset of page container in pixels. Uber pages that use the side menu
      * can override this with the setter.
-     * The default (23) comes from -webkit-margin-start in uber_shared.css.
+     * The default (23) comes from margin-inline-start in uber_shared.css.
      * @type {number}
      */
     horizontalOffset_: 23,
@@ -61,13 +61,13 @@ cr.define('cr.ui.pageManager', function() {
       this.handleScroll_();
 
       // Shake the dialog if the user clicks outside the dialog bounds.
-      var containers = /** @type {!NodeList<!HTMLElement>} */(
+      const containers = /** @type {!NodeList<!HTMLElement>} */ (
           document.querySelectorAll('body > .overlay'));
-      for (var i = 0; i < containers.length; i++) {
-        var overlay = containers[i];
+      for (let i = 0; i < containers.length; i++) {
+        const overlay = containers[i];
         cr.ui.overlay.setupOverlay(overlay);
-        overlay.addEventListener('cancelOverlay',
-                                 this.cancelOverlay.bind(this));
+        overlay.addEventListener(
+            'cancelOverlay', this.cancelOverlay.bind(this));
       }
 
       cr.ui.overlay.globalInitialization();
@@ -83,6 +83,14 @@ cr.define('cr.ui.pageManager', function() {
     },
 
     /**
+     * Unregisters an existing page.
+     * @param {!cr.ui.pageManager.Page} page Page to unregister.
+     */
+    unregister: function(page) {
+      delete this.registeredPages[page.name.toLowerCase()];
+    },
+
+    /**
      * Registers a new Overlay page.
      * @param {!cr.ui.pageManager.Page} overlay Overlay to register.
      * @param {cr.ui.pageManager.Page} parentPage Associated parent page for
@@ -90,9 +98,7 @@ cr.define('cr.ui.pageManager', function() {
      * @param {Array} associatedControls Array of control elements associated
      *     with this page.
      */
-    registerOverlay: function(overlay,
-                              parentPage,
-                              associatedControls) {
+    registerOverlay: function(overlay, parentPage, associatedControls) {
       this.registeredOverlayPages[overlay.name.toLowerCase()] = overlay;
       overlay.parentPage = parentPage;
       if (associatedControls) {
@@ -103,7 +109,7 @@ cr.define('cr.ui.pageManager', function() {
         }
 
         // Sanity check.
-        for (var i = 0; i < associatedControls.length; ++i) {
+        for (let i = 0; i < associatedControls.length; ++i) {
           assert(associatedControls[i], 'Invalid element passed.');
         }
       }
@@ -121,8 +127,9 @@ cr.define('cr.ui.pageManager', function() {
      *     showing the page (defaults to true).
      */
     showDefaultPage: function(opt_updateHistory) {
-      assert(this.defaultPage_ instanceof cr.ui.pageManager.Page,
-             'PageManager must be initialized with a default page.');
+      assert(
+          this.defaultPage_ instanceof cr.ui.pageManager.Page,
+          'PageManager must be initialized with a default page.');
       this.showPageByName(this.defaultPage_.name, opt_updateHistory);
     },
 
@@ -135,9 +142,7 @@ cr.define('cr.ui.pageManager', function() {
      *     replaceState (if history state should be replaced instead of pushed).
      *     hash (a hash state to attach to the page).
      */
-    showPageByName: function(pageName,
-                             opt_updateHistory,
-                             opt_propertyBag) {
+    showPageByName: function(pageName, opt_updateHistory, opt_propertyBag) {
       opt_updateHistory = opt_updateHistory !== false;
       opt_propertyBag = opt_propertyBag || {};
 
@@ -145,9 +150,9 @@ cr.define('cr.ui.pageManager', function() {
       this.hideBubble();
 
       // Find the currently visible root-level page.
-      var rootPage = null;
-      for (var name in this.registeredPages) {
-        var page = this.registeredPages[name];
+      let rootPage = null;
+      for (const name in this.registeredPages) {
+        const page = this.registeredPages[name];
         if (page.visible && !page.parentPage) {
           rootPage = page;
           break;
@@ -155,13 +160,14 @@ cr.define('cr.ui.pageManager', function() {
       }
 
       // Find the target page.
-      var targetPage = this.registeredPages[pageName.toLowerCase()];
+      let targetPage = this.registeredPages[pageName.toLowerCase()];
       if (!targetPage || !targetPage.canShowPage()) {
         // If it's not a page, try it as an overlay.
-        var hash = opt_propertyBag.hash || '';
+        const hash = opt_propertyBag.hash || '';
         if (!targetPage && this.showOverlay_(pageName, hash, rootPage)) {
-          if (opt_updateHistory)
+          if (opt_updateHistory) {
             this.updateHistoryState_(!!opt_propertyBag.replaceState);
+          }
           this.updateTitle_();
           return;
         }
@@ -169,18 +175,19 @@ cr.define('cr.ui.pageManager', function() {
       }
 
       pageName = targetPage.name.toLowerCase();
-      var targetPageWasVisible = targetPage.visible;
+      const targetPageWasVisible = targetPage.visible;
 
       // Determine if the root page is 'sticky', meaning that it
       // shouldn't change when showing an overlay. This can happen for special
       // pages like Search.
-      var isRootPageLocked =
+      const isRootPageLocked =
           rootPage && rootPage.sticky && targetPage.parentPage;
 
       // Notify pages if they will be hidden.
       this.forEachPage_(!isRootPageLocked, function(page) {
-        if (page.name != pageName && !this.isAncestorOfPage(page, targetPage))
+        if (page.name != pageName && !this.isAncestorOfPage(page, targetPage)) {
           page.willHidePage();
+        }
       });
 
       // Update the page's hash.
@@ -188,13 +195,14 @@ cr.define('cr.ui.pageManager', function() {
 
       // Update visibilities to show only the hierarchy of the target page.
       this.forEachPage_(!isRootPageLocked, function(page) {
-        page.visible = page.name == pageName ||
-                       this.isAncestorOfPage(page, targetPage);
+        page.visible =
+            page.name == pageName || this.isAncestorOfPage(page, targetPage);
       });
 
       // Update the history and current location.
-      if (opt_updateHistory)
+      if (opt_updateHistory) {
         this.updateHistoryState_(!!opt_propertyBag.replaceState);
+      }
 
       // Update focus if any other control was focused on the previous page,
       // or the previous page is not known.
@@ -214,8 +222,9 @@ cr.define('cr.ui.pageManager', function() {
 
       // If the target page was already visible, notify it that its hash
       // changed externally.
-      if (targetPageWasVisible)
+      if (targetPageWasVisible) {
         targetPage.didChangeHash();
+      }
 
       // Update the document title. Do this after didShowPage was called, in
       // case a page decides to change its title.
@@ -227,9 +236,10 @@ cr.define('cr.ui.pageManager', function() {
      * @return {string} Name of the page specified by the current path.
      */
     getPageNameFromPath: function() {
-      var path = location.pathname;
-      if (path.length <= 1)
+      const path = location.pathname;
+      if (path.length <= 1) {
         return this.defaultPage_.name;
+      }
 
       // Skip starting slash and remove trailing slash (if any).
       return path.slice(1).replace(/\/$/, '');
@@ -241,8 +251,8 @@ cr.define('cr.ui.pageManager', function() {
      * @return {number} How far down this page is from the root page.
      */
     getNestingLevel: function(page) {
-      var level = 0;
-      var parent = page.parentPage;
+      let level = 0;
+      let parent = page.parentPage;
       while (parent) {
         level++;
         parent = parent.parentPage;
@@ -259,10 +269,11 @@ cr.define('cr.ui.pageManager', function() {
      *     |potentialAncestor|.
      */
     isAncestorOfPage: function(potentialAncestor, potentialDescendent) {
-      var parent = potentialDescendent.parentPage;
+      let parent = potentialDescendent.parentPage;
       while (parent) {
-        if (parent == potentialAncestor)
+        if (parent == potentialAncestor) {
           return true;
+        }
         parent = parent.parentPage;
       }
       return false;
@@ -276,7 +287,7 @@ cr.define('cr.ui.pageManager', function() {
      */
     isTopLevelOverlay: function(page) {
       return page.isOverlay &&
-            (page.alwaysOnTop || this.getNestingLevel(page) == 1);
+          (page.alwaysOnTop || this.getNestingLevel(page) == 1);
     },
 
     /**
@@ -288,11 +299,13 @@ cr.define('cr.ui.pageManager', function() {
     onPageVisibilityChanged: function(page) {
       this.updateRootPageFreezeState();
 
-      for (var i = 0; i < this.observers_.length; ++i)
+      for (let i = 0; i < this.observers_.length; ++i) {
         this.observers_[i].onPageVisibilityChanged(page);
+      }
 
-      if (!page.visible && this.isTopLevelOverlay(page))
+      if (!page.visible && this.isTopLevelOverlay(page)) {
         this.updateScrollPosition_();
+      }
     },
 
     /**
@@ -301,8 +314,9 @@ cr.define('cr.ui.pageManager', function() {
      * @param {cr.ui.pageManager.Page} page The page whose hash has changed.
      */
     onPageHashChanged: function(page) {
-      if (page == this.getTopmostVisiblePage())
+      if (page == this.getTopmostVisiblePage()) {
         this.updateHistoryState_(false);
+      }
     },
 
     /**
@@ -320,9 +334,10 @@ cr.define('cr.ui.pageManager', function() {
      * overlay.
      */
     closeOverlay: function() {
-      var overlay = this.getVisibleOverlay_();
-      if (!overlay)
+      const overlay = this.getVisibleOverlay_();
+      if (!overlay) {
         return;
+      }
 
       overlay.visible = false;
       overlay.didClosePage();
@@ -348,9 +363,10 @@ cr.define('cr.ui.pageManager', function() {
     cancelOverlay: function() {
       // Blur the active element to ensure any changed pref value is saved.
       document.activeElement.blur();
-      var overlay = this.getVisibleOverlay_();
-      if (!overlay)
+      const overlay = this.getVisibleOverlay_();
+      if (!overlay) {
         return;
+      }
       // Let the overlay handle the <Esc> if it wants to.
       if (overlay.handleCancel) {
         overlay.handleCancel();
@@ -373,7 +389,7 @@ cr.define('cr.ui.pageManager', function() {
     showBubble: function(content, target, domSibling, location) {
       this.hideBubble();
 
-      var bubble = new cr.ui.AutoCloseBubble;
+      const bubble = new cr.ui.AutoCloseBubble;
       bubble.anchorNode = target;
       bubble.domSibling = domSibling;
       bubble.arrowLocation = location;
@@ -386,8 +402,9 @@ cr.define('cr.ui.pageManager', function() {
      * Hides the currently visible bubble, if any.
      */
     hideBubble: function() {
-      if (this.bubble_)
+      if (this.bubble_) {
         this.bubble_.hide();
+      }
     },
 
     /**
@@ -395,7 +412,7 @@ cr.define('cr.ui.pageManager', function() {
      * @return {cr.ui.AutoCloseBubble} The bubble currently being shown.
      */
     getVisibleBubble: function() {
-      var bubble = this.bubble_;
+      const bubble = this.bubble_;
       return bubble && !bubble.hidden ? bubble : null;
     },
 
@@ -406,11 +423,10 @@ cr.define('cr.ui.pageManager', function() {
      * @param {Object} data State data pushed into history.
      */
     setState: function(pageName, hash, data) {
-      var currentOverlay = this.getVisibleOverlay_();
-      var lowercaseName = pageName.toLowerCase();
-      var newPage = this.registeredPages[lowercaseName] ||
-                    this.registeredOverlayPages[lowercaseName] ||
-                    this.defaultPage_;
+      const currentOverlay = this.getVisibleOverlay_();
+      const lowercaseName = pageName.toLowerCase();
+      const newPage = this.registeredPages[lowercaseName] ||
+          this.registeredOverlayPages[lowercaseName] || this.defaultPage_;
       if (currentOverlay && !this.isAncestorOfPage(currentOverlay, newPage)) {
         currentOverlay.visible = false;
         currentOverlay.didClosePage();
@@ -432,9 +448,10 @@ cr.define('cr.ui.pageManager', function() {
      * will be closed.
      */
     willClose: function() {
-      var overlay = this.getVisibleOverlay_();
-      if (overlay)
+      const overlay = this.getVisibleOverlay_();
+      if (overlay) {
         overlay.didClosePage();
+      }
     },
 
     /**
@@ -442,9 +459,10 @@ cr.define('cr.ui.pageManager', function() {
      * current page stack.
      */
     updateRootPageFreezeState: function() {
-      var topPage = this.getTopmostVisiblePage();
-      if (topPage)
+      const topPage = this.getTopmostVisiblePage();
+      if (topPage) {
         this.setRootPageFrozen_(topPage.isOverlay);
+      }
     },
 
     /**
@@ -473,19 +491,21 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     showOverlay_: function(overlayName, hash, rootPage) {
-      var overlay = this.registeredOverlayPages[overlayName.toLowerCase()];
-      if (!overlay || !overlay.canShowPage())
+      const overlay = this.registeredOverlayPages[overlayName.toLowerCase()];
+      if (!overlay || !overlay.canShowPage()) {
         return false;
+      }
 
-      var focusOutlineManager = cr.ui.FocusOutlineManager.forDocument(document);
+      const focusOutlineManager =
+          cr.ui.FocusOutlineManager.forDocument(document);
 
       // Save the currently focused element in the page for restoration later.
-      var currentPage = this.getTopmostVisiblePage();
-      if (currentPage && focusOutlineManager.visible)
+      const currentPage = this.getTopmostVisiblePage();
+      if (currentPage && focusOutlineManager.visible) {
         currentPage.lastFocusedElement = document.activeElement;
+      }
 
-      if ((!rootPage || !rootPage.sticky) &&
-          overlay.parentPage &&
+      if ((!rootPage || !rootPage.sticky) && overlay.parentPage &&
           !overlay.parentPage.visible) {
         this.showPageByName(overlay.parentPage.name, false);
       }
@@ -498,16 +518,22 @@ cr.define('cr.ui.pageManager', function() {
         overlay.didChangeHash();
       }
 
-      if (focusOutlineManager.visible)
+      if (focusOutlineManager.visible) {
         overlay.focus();
+      }
 
-      if (!overlay.pageDiv.contains(document.activeElement))
+      if (!overlay.pageDiv.contains(document.activeElement)) {
         document.activeElement.blur();
+      }
 
       if ($('search-field') && $('search-field').value == '') {
-        var section = overlay.associatedSection;
-        if (section)
-          options.BrowserOptions.scrollToSection(section);
+        const section = overlay.associatedSection;
+        if (section) {
+          /** @suppress {checkTypes|checkVars} */
+          (function() {
+            options.BrowserOptions.scrollToSection(section);
+          })();
+        }
       }
 
       return true;
@@ -528,17 +554,19 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     getVisibleOverlay_: function() {
-      var topmostPage = null;
-      for (var name in this.registeredOverlayPages) {
-        var page = this.registeredOverlayPages[name];
-        if (!page.visible)
+      let topmostPage = null;
+      for (const name in this.registeredOverlayPages) {
+        const page = this.registeredOverlayPages[name];
+        if (!page.visible) {
           continue;
+        }
 
-        if (page.alwaysOnTop)
+        if (page.alwaysOnTop) {
           return page;
+        }
 
         if (!topmostPage ||
-             this.getNestingLevel(page) > this.getNestingLevel(topmostPage)) {
+            this.getNestingLevel(page) > this.getNestingLevel(topmostPage)) {
           topmostPage = page;
         }
       }
@@ -552,10 +580,11 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     getTopmostVisibleNonOverlayPage_: function() {
-      for (var name in this.registeredPages) {
-        var page = this.registeredPages[name];
-        if (page.visible)
+      for (const name in this.registeredPages) {
+        const page = this.registeredPages[name];
+        if (page.visible) {
           return page;
+        }
       }
 
       return null;
@@ -568,8 +597,8 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     updateScrollPosition_: function() {
-      var container = $('page-container');
-      var scrollTop = container.oldScrollTop || 0;
+      const container = $('page-container');
+      const scrollTop = container.oldScrollTop || 0;
       container.oldScrollTop = undefined;
       window.scroll(scrollLeftForDocument(document), scrollTop);
     },
@@ -580,10 +609,10 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     updateTitle_: function() {
-      var page = this.getTopmostVisiblePage();
+      let page = this.getTopmostVisiblePage();
       while (page) {
         if (page.title) {
-          for (var i = 0; i < this.observers_.length; ++i) {
+          for (let i = 0; i < this.observers_.length; ++i) {
             this.observers_[i].updateTitle(page.title);
           }
           return;
@@ -600,11 +629,12 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     updateHistoryState_: function(replace) {
-      if (this.isDialog)
+      if (this.isDialog) {
         return;
+      }
 
-      var page = this.getTopmostVisiblePage();
-      var path = window.location.pathname + window.location.hash;
+      const page = this.getTopmostVisiblePage();
+      let path = window.location.pathname + window.location.hash;
       if (path) {
         // Remove trailing slash.
         path = path.slice(1).replace(/\/(?:#|$)/, '');
@@ -612,11 +642,12 @@ cr.define('cr.ui.pageManager', function() {
 
       // If the page is already in history (the user may have clicked the same
       // link twice, or this is the initial load), do nothing.
-      var newPath = (page == this.defaultPage_ ? '' : page.name) + page.hash;
-      if (path == newPath)
+      const newPath = (page == this.defaultPage_ ? '' : page.name) + page.hash;
+      if (path == newPath) {
         return;
+      }
 
-      for (var i = 0; i < this.observers_.length; ++i) {
+      for (let i = 0; i < this.observers_.length; ++i) {
         this.observers_[i].updateHistory(newPath, replace);
       }
     },
@@ -626,13 +657,15 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     restoreLastFocusedElement_: function() {
-      var currentPage = this.getTopmostVisiblePage();
+      const currentPage = this.getTopmostVisiblePage();
 
-      if (!currentPage.lastFocusedElement)
+      if (!currentPage.lastFocusedElement) {
         return;
+      }
 
-      if (cr.ui.FocusOutlineManager.forDocument(document).visible)
+      if (cr.ui.FocusOutlineManager.forDocument(document).visible) {
         currentPage.lastFocusedElement.focus();
+      }
 
       currentPage.lastFocusedElement = null;
     },
@@ -645,8 +678,9 @@ cr.define('cr.ui.pageManager', function() {
      */
     findSectionForNode_: function(node) {
       while (node = node.parentNode) {
-        if (node.nodeName == 'SECTION')
+        if (node.nodeName == 'SECTION') {
           return node;
+        }
       }
       return null;
     },
@@ -657,16 +691,17 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     setRootPageFrozen_: function(freeze) {
-      var container = $('page-container');
-      if (container.classList.contains('frozen') == freeze)
+      const container = $('page-container');
+      if (container.classList.contains('frozen') == freeze) {
         return;
+      }
 
       if (freeze) {
         // Lock the width, since auto width computation may change.
         container.style.width = window.getComputedStyle(container).width;
         container.oldScrollTop = scrollTopForDocument(document);
         container.classList.add('frozen');
-        var verticalPosition =
+        const verticalPosition =
             container.getBoundingClientRect().top - container.oldScrollTop;
         container.style.top = verticalPosition + 'px';
         this.updateFrozenElementHorizontalPosition_(container);
@@ -693,9 +728,10 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     updateAllFrozenElementPositions_: function() {
-      var frozenElements = document.querySelectorAll('.frozen');
-      for (var i = 0; i < frozenElements.length; i++)
+      const frozenElements = document.querySelectorAll('.frozen');
+      for (let i = 0; i < frozenElements.length; i++) {
         this.updateFrozenElementHorizontalPosition_(frozenElements[i]);
+      }
     },
 
     /**
@@ -707,7 +743,7 @@ cr.define('cr.ui.pageManager', function() {
       if (isRTL()) {
         e.style.right = this.horizontalOffset + 'px';
       } else {
-        var scrollLeft = scrollLeftForDocument(document);
+        const scrollLeft = scrollLeftForDocument(document);
         e.style.left = this.horizontalOffset - scrollLeft + 'px';
       }
     },
@@ -720,22 +756,24 @@ cr.define('cr.ui.pageManager', function() {
      * @private
      */
     forEachPage_: function(includeRootPages, callback) {
-      var pageNames = Object.keys(this.registeredOverlayPages);
-      if (includeRootPages)
+      let pageNames = Object.keys(this.registeredOverlayPages);
+      if (includeRootPages) {
         pageNames = Object.keys(this.registeredPages).concat(pageNames);
+      }
 
       pageNames.forEach(function(name) {
-        callback.call(this, this.registeredOverlayPages[name] ||
-                            this.registeredPages[name]);
+        callback.call(
+            this,
+            this.registeredOverlayPages[name] || this.registeredPages[name]);
       }, this);
     },
   };
 
   /**
    * An observer of PageManager.
-   * @interface
+   * @constructor
    */
-  PageManager.Observer = function() {}
+  PageManager.Observer = function() {};
 
   PageManager.Observer.prototype = {
     /**
@@ -759,7 +797,5 @@ cr.define('cr.ui.pageManager', function() {
   };
 
   // Export
-  return {
-    PageManager: PageManager
-  };
+  return {PageManager: PageManager};
 });

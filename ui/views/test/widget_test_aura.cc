@@ -6,14 +6,19 @@
 
 #include "build/build_config.h"
 #include "ui/aura/client/focus_client.h"
+#include "ui/aura/mus/window_tree_client.h"
+#include "ui/aura/test/aura_test_helper.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_delegate.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/views/mus/mus_client.h"
 #include "ui/views/widget/widget.h"
+#include "ui/wm/core/shadow_controller.h"
 
 #if defined(USE_X11)
-#include <X11/Xutil.h>
+#include "ui/gfx/x/x11.h"        // nogncheck
 #include "ui/gfx/x/x11_types.h"  // nogncheck
+#include "ui/views/widget/desktop_aura/desktop_window_tree_host_x11.h"
 #endif
 
 namespace views {
@@ -48,12 +53,51 @@ bool FindLayersInOrder(const std::vector<ui::Layer*>& children,
   return false;
 }
 
-}  // namespace
+#if defined(OS_WIN)
 
-// static
-void WidgetTest::SimulateNativeDestroy(Widget* widget) {
-  delete widget->GetNativeView();
+struct FindAllWindowsData {
+  std::vector<aura::Window*>* windows;
+};
+
+BOOL CALLBACK FindAllWindowsCallback(HWND hwnd, LPARAM param) {
+  FindAllWindowsData* data = reinterpret_cast<FindAllWindowsData*>(param);
+  if (aura::WindowTreeHost* host =
+          aura::WindowTreeHost::GetForAcceleratedWidget(hwnd))
+    data->windows->push_back(host->window());
+  return TRUE;
 }
+
+#endif  // OS_WIN
+
+std::vector<aura::Window*> GetAllTopLevelWindows() {
+  std::vector<aura::Window*> roots;
+#if defined(USE_X11)
+  roots = DesktopWindowTreeHostX11::GetAllOpenWindows();
+#elif defined(OS_WIN)
+  {
+    FindAllWindowsData data = {&roots};
+    EnumThreadWindows(GetCurrentThreadId(), FindAllWindowsCallback,
+                      reinterpret_cast<LPARAM>(&data));
+  }
+#endif
+  if (MusClient::Get()) {
+    auto mus_roots = MusClient::Get()->window_tree_client()->GetRoots();
+    roots.insert(roots.end(), mus_roots.begin(), mus_roots.end());
+  } else {
+    aura::test::AuraTestHelper* aura_test_helper =
+        aura::test::AuraTestHelper::GetInstance();
+#if defined(OS_CHROMEOS)
+    // Chrome OS non-mash unit tests use AuraTestHelper to get the root window.
+    // Chrome OS non-mash browser tests must use ash::Shell::GetAllRootWindows.
+    DCHECK(aura_test_helper) << "Can't find all widgets without a test helper";
+#endif
+    if (aura_test_helper)
+      roots.push_back(aura_test_helper->root_window());
+  }
+  return roots;
+}
+
+}  // namespace
 
 // static
 void WidgetTest::SimulateNativeActivate(Widget* widget) {
@@ -80,9 +124,6 @@ bool WidgetTest::IsWindowStackedAbove(Widget* above, Widget* below) {
 }
 
 gfx::Size WidgetTest::GetNativeWidgetMinimumContentSize(Widget* widget) {
-  if (IsMus())
-    return widget->GetNativeWindow()->delegate()->GetMinimumSize();
-
   // On Windows, HWNDMessageHandler receives a WM_GETMINMAXINFO message whenever
   // the window manager is interested in knowing the size constraints. On
   // ChromeOS, it's handled internally. Elsewhere, the size constraints need to
@@ -104,8 +145,8 @@ gfx::Size WidgetTest::GetNativeWidgetMinimumContentSize(Widget* widget) {
 }
 
 // static
-ui::EventProcessor* WidgetTest::GetEventProcessor(Widget* widget) {
-  return widget->GetNativeWindow()->GetHost()->event_processor();
+ui::EventSink* WidgetTest::GetEventSink(Widget* widget) {
+  return widget->GetNativeWindow()->GetHost()->event_sink();
 }
 
 // static
@@ -117,6 +158,29 @@ ui::internal::InputMethodDelegate* WidgetTest::GetInputMethodDelegateForWidget(
 // static
 bool WidgetTest::IsNativeWindowTransparent(gfx::NativeWindow window) {
   return window->transparent();
+}
+
+// static
+bool WidgetTest::WidgetHasInProcessShadow(Widget* widget) {
+  aura::Window* window = widget->GetNativeWindow();
+  if (wm::ShadowController::GetShadowForWindow(window))
+    return true;
+
+  // If the Widget's native window is the content window for a
+  // DesktopWindowTreeHost, then giving the root window a shadow also has the
+  // effect of drawing a shadow around the window.
+  if (window->parent() == window->GetRootWindow())
+    return wm::ShadowController::GetShadowForWindow(window->GetRootWindow());
+
+  return false;
+}
+
+// static
+Widget::Widgets WidgetTest::GetAllWidgets() {
+  Widget::Widgets all_widgets;
+  for (aura::Window* window : GetAllTopLevelWindows())
+    Widget::GetAllChildWidgets(window->GetRootWindow(), &all_widgets);
+  return all_widgets;
 }
 
 }  // namespace test

@@ -1,6 +1,0 @@
-Dumping matched rules: 
-Dumping inherited rules: 
-*body* {    regular
-    color: blue;
-}
-

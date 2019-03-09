@@ -7,29 +7,33 @@
 #include <stddef.h>
 
 #include <map>
+#include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/task/post_task.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/component_extension_resource_manager.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/image_loader_factory.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/manifest_handlers/icons_handler.h"
 #include "skia/ext/image_operations.h"
+#include "ui/base/layout.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image_family.h"
 #include "ui/gfx/image/image_skia.h"
 
 using content::BrowserThread;
-using extensions::Extension;
-using extensions::ExtensionsBrowserClient;
-using extensions::ImageLoader;
-using extensions::Manifest;
+
+namespace extensions {
 
 namespace {
 
@@ -69,15 +73,13 @@ void LoadResourceOnUIThread(int resource_id, SkBitmap* bitmap) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   gfx::ImageSkia image(
-      *ResourceBundle::GetSharedInstance().GetImageSkiaNamed(resource_id));
+      *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(resource_id));
   image.MakeThreadSafe();
   *bitmap = *image.bitmap();
 }
 
-void LoadImageOnBlockingPool(const ImageLoader::ImageRepresentation& image_info,
-                             SkBitmap* bitmap) {
-  DCHECK(BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
-
+void LoadImageBlocking(const ImageLoader::ImageRepresentation& image_info,
+                       SkBitmap* bitmap) {
   // Read the file from disk.
   std::string file_contents;
   base::FilePath path = image_info.resource.GetFilePath();
@@ -105,21 +107,20 @@ std::vector<SkBitmap> LoadResourceBitmaps(
   bitmaps.resize(info_list.size());
 
   int i = 0;
-  for (std::vector<ImageLoader::ImageRepresentation>::const_iterator
-           it = info_list.begin();
-       it != info_list.end();
-       ++it, ++i) {
+  for (auto it = info_list.cbegin(); it != info_list.cend(); ++it, ++i) {
     DCHECK(it->resource.relative_path().empty() ||
            extension->path() == it->resource.extension_root());
 
-    int resource_id;
+    ComponentExtensionResourceInfo resource_info;
     if (extension->location() == Manifest::COMPONENT) {
       const extensions::ComponentExtensionResourceManager* manager =
           extensions::ExtensionsBrowserClient::Get()
               ->GetComponentExtensionResourceManager();
       if (manager && manager->IsComponentExtensionResource(
-              extension->path(), it->resource.relative_path(), &resource_id)) {
-        LoadResourceOnUIThread(resource_id, &bitmaps[i]);
+                         extension->path(), it->resource.relative_path(),
+                         &resource_info)) {
+        DCHECK(!resource_info.gzipped);
+        LoadResourceOnUIThread(resource_info.resource_id, &bitmaps[i]);
       }
     }
   }
@@ -128,8 +129,6 @@ std::vector<SkBitmap> LoadResourceBitmaps(
 
 }  // namespace
 
-namespace extensions {
-
 ////////////////////////////////////////////////////////////////////////////////
 // ImageLoader::ImageRepresentation
 
@@ -137,12 +136,11 @@ ImageLoader::ImageRepresentation::ImageRepresentation(
     const ExtensionResource& resource,
     ResizeCondition resize_condition,
     const gfx::Size& desired_size,
-    ui::ScaleFactor scale_factor)
+    float scale_factor)
     : resource(resource),
       resize_condition(resize_condition),
       desired_size(desired_size),
-      scale_factor(scale_factor) {
-}
+      scale_factor(scale_factor) {}
 
 ImageLoader::ImageRepresentation::~ImageRepresentation() {
 }
@@ -176,10 +174,9 @@ ImageLoader::LoadResult::~LoadResult() {
 namespace {
 
 // Need to be after ImageRepresentation and LoadResult are defined.
-std::vector<ImageLoader::LoadResult> LoadImagesOnBlockingPool(
+std::vector<ImageLoader::LoadResult> LoadImagesBlocking(
     const std::vector<ImageLoader::ImageRepresentation>& info_list,
     const std::vector<SkBitmap>& bitmaps) {
-  DCHECK(BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
   std::vector<ImageLoader::LoadResult> load_result;
 
   for (size_t i = 0; i < info_list.size(); ++i) {
@@ -191,7 +188,7 @@ std::vector<ImageLoader::LoadResult> LoadImagesOnBlockingPool(
 
     SkBitmap bitmap;
     if (bitmaps[i].isNull())
-      LoadImageOnBlockingPool(image, &bitmap);
+      LoadImageBlocking(image, &bitmap);
     else
       bitmap = bitmaps[i];
 
@@ -229,63 +226,78 @@ ImageLoader* ImageLoader::Get(content::BrowserContext* context) {
 void ImageLoader::LoadImageAsync(const Extension* extension,
                                  const ExtensionResource& resource,
                                  const gfx::Size& max_size,
-                                 const ImageLoaderImageCallback& callback) {
+                                 ImageLoaderImageCallback callback) {
   std::vector<ImageRepresentation> info_list;
   info_list.push_back(ImageRepresentation(
-      resource,
-      ImageRepresentation::RESIZE_WHEN_LARGER,
-      max_size,
-      ui::SCALE_FACTOR_100P));
-  LoadImagesAsync(extension, info_list, callback);
+      resource, ImageRepresentation::RESIZE_WHEN_LARGER, max_size, 1.f));
+  LoadImagesAsync(extension, info_list, std::move(callback));
+}
+
+void ImageLoader::LoadImageAtEveryScaleFactorAsync(
+    const Extension* extension,
+    const gfx::Size& dip_size,
+    ImageLoaderImageCallback callback) {
+  std::vector<ImageRepresentation> info_list;
+
+  std::set<float> scales;
+  for (auto scale : ui::GetSupportedScaleFactors())
+    scales.insert(ui::GetScaleForScaleFactor(scale));
+
+  // There may not be a screen in unit tests.
+  auto* screen = display::Screen::GetScreen();
+  if (screen) {
+    for (const auto& display : screen->GetAllDisplays())
+      scales.insert(display.device_scale_factor());
+  }
+
+  for (auto scale : scales) {
+    const gfx::Size px_size = gfx::ScaleToFlooredSize(dip_size, scale);
+    ExtensionResource image = IconsInfo::GetIconResource(
+        extension, px_size.width(), ExtensionIconSet::MATCH_BIGGER);
+    info_list.push_back(ImageRepresentation(
+        image, ImageRepresentation::ALWAYS_RESIZE, px_size, scale));
+  }
+  LoadImagesAsync(extension, info_list, std::move(callback));
 }
 
 void ImageLoader::LoadImagesAsync(
     const Extension* extension,
     const std::vector<ImageRepresentation>& info_list,
-    const ImageLoaderImageCallback& callback) {
+    ImageLoaderImageCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(!BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
-  base::PostTaskAndReplyWithResult(
-      BrowserThread::GetBlockingPool(),
-      FROM_HERE,
-      base::Bind(LoadImagesOnBlockingPool,
-                 info_list,
-                 LoadResourceBitmaps(extension, info_list)),
-      base::Bind(
-          &ImageLoader::ReplyBack, weak_ptr_factory_.GetWeakPtr(), callback));
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+      base::BindOnce(LoadImagesBlocking, info_list,
+                     LoadResourceBitmaps(extension, info_list)),
+      base::BindOnce(&ImageLoader::ReplyBack, weak_ptr_factory_.GetWeakPtr(),
+                     std::move(callback)));
 }
 
 void ImageLoader::LoadImageFamilyAsync(
-    const extensions::Extension* extension,
+    const Extension* extension,
     const std::vector<ImageRepresentation>& info_list,
-    const ImageLoaderImageFamilyCallback& callback) {
+    ImageLoaderImageFamilyCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(!BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
-  base::PostTaskAndReplyWithResult(
-      BrowserThread::GetBlockingPool(),
-      FROM_HERE,
-      base::Bind(LoadImagesOnBlockingPool,
-                 info_list,
-                 LoadResourceBitmaps(extension, info_list)),
-      base::Bind(&ImageLoader::ReplyBackWithImageFamily,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 callback));
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+      base::BindOnce(LoadImagesBlocking, info_list,
+                     LoadResourceBitmaps(extension, info_list)),
+      base::BindOnce(&ImageLoader::ReplyBackWithImageFamily,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
-void ImageLoader::ReplyBack(const ImageLoaderImageCallback& callback,
+void ImageLoader::ReplyBack(ImageLoaderImageCallback callback,
                             const std::vector<LoadResult>& load_result) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   gfx::ImageSkia image_skia;
 
-  for (std::vector<LoadResult>::const_iterator it = load_result.begin();
-       it != load_result.end(); ++it) {
+  for (auto it = load_result.cbegin(); it != load_result.cend(); ++it) {
     const SkBitmap& bitmap = it->bitmap;
     const ImageRepresentation& image_rep = it->image_representation;
 
-    image_skia.AddRepresentation(gfx::ImageSkiaRep(
-        bitmap,
-        ui::GetScaleForScaleFactor(image_rep.scale_factor)));
+    image_skia.AddRepresentation(
+        gfx::ImageSkiaRep(bitmap, image_rep.scale_factor));
   }
 
   gfx::Image image;
@@ -294,20 +306,18 @@ void ImageLoader::ReplyBack(const ImageLoaderImageCallback& callback,
     image = gfx::Image(image_skia);
   }
 
-  callback.Run(image);
+  std::move(callback).Run(image);
 }
 
 void ImageLoader::ReplyBackWithImageFamily(
-    const ImageLoaderImageFamilyCallback& callback,
+    ImageLoaderImageFamilyCallback callback,
     const std::vector<LoadResult>& load_result) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   std::map<std::pair<int, int>, gfx::ImageSkia> image_skia_map;
   gfx::ImageFamily image_family;
 
-  for (std::vector<LoadResult>::const_iterator it = load_result.begin();
-       it != load_result.end();
-       ++it) {
+  for (auto it = load_result.cbegin(); it != load_result.cend(); ++it) {
     const SkBitmap& bitmap = it->bitmap;
     const ImageRepresentation& image_rep = it->image_representation;
     const std::pair<int, int> key = std::make_pair(
@@ -315,19 +325,15 @@ void ImageLoader::ReplyBackWithImageFamily(
     // Create a new ImageSkia for this width/height, or add a representation to
     // an existing ImageSkia with the same width/height.
     image_skia_map[key].AddRepresentation(
-        gfx::ImageSkiaRep(bitmap,
-                          ui::GetScaleForScaleFactor(image_rep.scale_factor)));
+        gfx::ImageSkiaRep(bitmap, image_rep.scale_factor));
   }
 
-  for (std::map<std::pair<int, int>, gfx::ImageSkia>::iterator it =
-           image_skia_map.begin();
-       it != image_skia_map.end();
-       ++it) {
+  for (auto it = image_skia_map.begin(); it != image_skia_map.end(); ++it) {
     it->second.MakeThreadSafe();
     image_family.Add(it->second);
   }
 
-  callback.Run(image_family);
+  std::move(callback).Run(std::move(image_family));
 }
 
 }  // namespace extensions

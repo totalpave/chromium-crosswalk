@@ -8,12 +8,11 @@
 #include <stdint.h>
 
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/platform_thread.h"
 #include "base/trace_event/trace_buffer.h"
-#include "base/trace_event/trace_event_argument.h"
+#include "base/trace_event/traced_value.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -103,7 +102,7 @@ TEST_F(TraceEventAnalyzerTest, TraceEvent) {
   event.arg_numbers["int"] = static_cast<double>(int_num);
   event.arg_numbers["double"] = double_num;
   event.arg_strings["string"] = str;
-  event.arg_values["dict"] = WrapUnique(new base::DictionaryValue());
+  event.arg_values["dict"] = std::make_unique<base::DictionaryValue>();
 
   ASSERT_TRUE(event.HasNumberArg("false"));
   ASSERT_TRUE(event.HasNumberArg("true"));
@@ -123,7 +122,7 @@ TEST_F(TraceEventAnalyzerTest, TraceEvent) {
 
   std::unique_ptr<base::Value> arg;
   EXPECT_TRUE(event.GetArgAsValue("dict", &arg));
-  EXPECT_EQ(base::Value::TYPE_DICTIONARY, arg->GetType());
+  EXPECT_EQ(base::Value::Type::DICTIONARY, arg->type());
 }
 
 TEST_F(TraceEventAnalyzerTest, QueryEventMember) {
@@ -608,15 +607,21 @@ TEST_F(TraceEventAnalyzerTest, AsyncBeginEndAssocationsWithSteps) {
 
   EXPECT_STRCASEEQ("0xb", found[0]->id.c_str());
   EXPECT_EQ(TRACE_EVENT_PHASE_ASYNC_STEP_PAST, found[0]->other_event->phase);
+  EXPECT_EQ(found[0], found[0]->other_event->prev_event);
   EXPECT_TRUE(found[0]->other_event->other_event);
   EXPECT_EQ(TRACE_EVENT_PHASE_ASYNC_END,
             found[0]->other_event->other_event->phase);
+  EXPECT_EQ(found[0]->other_event,
+            found[0]->other_event->other_event->prev_event);
 
   EXPECT_STRCASEEQ("0xc", found[1]->id.c_str());
   EXPECT_EQ(TRACE_EVENT_PHASE_ASYNC_STEP_INTO, found[1]->other_event->phase);
+  EXPECT_EQ(found[1], found[1]->other_event->prev_event);
   EXPECT_TRUE(found[1]->other_event->other_event);
   EXPECT_EQ(TRACE_EVENT_PHASE_ASYNC_STEP_INTO,
             found[1]->other_event->other_event->phase);
+  EXPECT_EQ(found[1]->other_event,
+            found[1]->other_event->other_event->prev_event);
   double arg_actual = 0;
   EXPECT_TRUE(found[1]->other_event->other_event->GetArgAsNumber(
                   "a", &arg_actual));
@@ -740,7 +745,7 @@ TEST_F(TraceEventAnalyzerTest, RateStats) {
     event_ptrs.push_back(&events.back());
   }
 
-  ASSERT_TRUE(GetRateStats(event_ptrs, &stats, NULL));
+  ASSERT_TRUE(GetRateStats(event_ptrs, &stats, nullptr));
   EXPECT_EQ(little_delta, stats.mean_us);
   EXPECT_EQ(little_delta, stats.min_us);
   EXPECT_EQ(little_delta, stats.max_us);
@@ -755,7 +760,7 @@ TEST_F(TraceEventAnalyzerTest, RateStats) {
     event_ptrs.push_back(&events.back());
   }
 
-  ASSERT_TRUE(GetRateStats(event_ptrs, &stats, NULL));
+  ASSERT_TRUE(GetRateStats(event_ptrs, &stats, nullptr));
   EXPECT_LT(little_delta, stats.mean_us);
   EXPECT_EQ(little_delta, stats.min_us);
   EXPECT_EQ(big_delta, stats.max_us);
@@ -794,9 +799,9 @@ TEST_F(TraceEventAnalyzerTest, RateStats) {
     TraceEventVector few_event_ptrs;
     few_event_ptrs.push_back(&event);
     few_event_ptrs.push_back(&event);
-    ASSERT_FALSE(GetRateStats(few_event_ptrs, &stats, NULL));
+    ASSERT_FALSE(GetRateStats(few_event_ptrs, &stats, nullptr));
     few_event_ptrs.push_back(&event);
-    ASSERT_TRUE(GetRateStats(few_event_ptrs, &stats, NULL));
+    ASSERT_TRUE(GetRateStats(few_event_ptrs, &stats, nullptr));
 
     // Trim off more than allowed and verify failure.
     options.trim_min = 0;
@@ -817,8 +822,8 @@ TEST_F(TraceEventAnalyzerTest, FindOf) {
 
   std::vector<TraceEvent> events;
   events.resize(num_events);
-  for (size_t i = 0; i < events.size(); ++i)
-    event_ptrs.push_back(&events[i]);
+  for (auto& i : events)
+    event_ptrs.push_back(&i);
   size_t bam_index = num_events/2;
   events[bam_index].name = "bam";
   Query query_bam = Query::EventName() == Query::String(events[bam_index].name);
@@ -877,7 +882,7 @@ TEST_F(TraceEventAnalyzerTest, FindClosest) {
   // Only one event matches query_one, so two closest can't be found.
   EXPECT_FALSE(FindClosest(event_ptrs, query_one, 0, &index_1, &index_2));
 
-  EXPECT_TRUE(FindClosest(event_ptrs, query_one, 3, &index_1, NULL));
+  EXPECT_TRUE(FindClosest(event_ptrs, query_one, 3, &index_1, nullptr));
   EXPECT_EQ(0u, index_1);
 
   EXPECT_TRUE(FindClosest(event_ptrs, query_named, 1, &index_1, &index_2));
@@ -902,8 +907,8 @@ TEST_F(TraceEventAnalyzerTest, CountMatches) {
   size_t num_named = 3;
   std::vector<TraceEvent> events;
   events.resize(num_events);
-  for (size_t i = 0; i < events.size(); ++i)
-    event_ptrs.push_back(&events[i]);
+  for (auto& i : events)
+    event_ptrs.push_back(&i);
   events[0].name = "one";
   events[2].name = "two";
   events[4].name = "three";

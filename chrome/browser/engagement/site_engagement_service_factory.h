@@ -17,12 +17,12 @@ class SiteEngagementService;
 // the associated SiteEngagementService.
 //
 // The default factory behavior is suitable for this factory as:
-// * there should be no site engagement tracking in incognito
 // * the site engagement service should be created lazily
 // * the site engagement service is needed in tests.
 class SiteEngagementServiceFactory : public BrowserContextKeyedServiceFactory {
  public:
   static SiteEngagementService* GetForProfile(Profile* profile);
+  static SiteEngagementService* GetForProfileIfExists(Profile* profile);
 
   static SiteEngagementServiceFactory* GetInstance();
 
@@ -38,6 +38,8 @@ class SiteEngagementServiceFactory : public BrowserContextKeyedServiceFactory {
   // BrowserContextKeyedServiceFactory:
   KeyedService* BuildServiceInstanceFor(
       content::BrowserContext* profile) const override;
+  content::BrowserContext* GetBrowserContextToUse(
+      content::BrowserContext* context) const override;
 
   DISALLOW_COPY_AND_ASSIGN(SiteEngagementServiceFactory);
 };

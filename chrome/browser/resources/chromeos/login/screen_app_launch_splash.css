@@ -1,7 +1,6 @@
 /* Copyright 2013 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 #app-launch-splash {
   -webkit-box-align: center;
@@ -19,7 +18,6 @@
 }
 
 #splash-header {
-  -webkit-padding-start: 108px;
   background: left center no-repeat;
   background-size: 96px;
   color: #666;
@@ -27,6 +25,7 @@
   font-size: 48px;
   height: 96px;
   line-height: 96px;
+  padding-inline-start: 108px;
 }
 
 #splash-launch-text {
@@ -41,10 +40,10 @@
 }
 
 #splash-config-network-container {
-  -webkit-transition: 1s opacity;
   height : 30px;
   opacity: 1;
   padding-bottom: 20px;
+  transition: 1s opacity;
 }
 
 #splash-config-network-container.faded {

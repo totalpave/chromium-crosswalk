@@ -60,6 +60,8 @@ class ContentAction {
       const base::Value& json_action,
       std::string* error);
 
+  static void SetAllowInvisibleIconsForTest(bool value);
+
  protected:
   ContentAction();
 };
@@ -104,10 +106,7 @@ class RequestContentScript : public ContentAction {
                   const Extension* extension,
                   const ScriptData& script_data);
 
-  void AddScript() {
-    DCHECK(master_);
-    master_->AddScript(script_);
-  }
+  void AddScript();
 
   void InstructRenderProcessToInject(content::WebContents* contents,
                                      const Extension* extension) const;

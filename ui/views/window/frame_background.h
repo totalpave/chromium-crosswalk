@@ -29,9 +29,22 @@ class VIEWS_EXPORT FrameBackground {
   // Sets the color to draw under the frame images.
   void set_frame_color(SkColor color) { frame_color_ = color; }
 
+  void set_use_custom_frame(bool use_custom_frame) {
+    use_custom_frame_ = use_custom_frame;
+  }
+
+  // Sets whether the frame to be drawn should have focus.
+  void set_is_active(bool is_active) { is_active_ = is_active; }
+
+  // Sets whether the frame to be drawn is in incognito mode.
+  void set_incognito(bool incognito) { incognito_ = incognito; }
+
   // Sets the theme image for the top of the window.  May be null (empty).
   // Memory is owned by the caller.
   void set_theme_image(const gfx::ImageSkia& image) { theme_image_ = image; }
+
+  // Sets an inset into the theme image to begin painting at.
+  void set_theme_image_y_inset(int y_inset) { theme_image_y_inset_ = y_inset; }
 
   // Sets an image that overlays the top window image.  Usually used to add
   // edge highlighting to provide the illusion of depth.  May be null (empty).
@@ -71,11 +84,15 @@ class VIEWS_EXPORT FrameBackground {
   void PaintMaximized(gfx::Canvas* canvas, const View* view) const;
 
  private:
-  // Fills the frame area with the frame color.
-  void PaintFrameColor(gfx::Canvas* canvas, const View* view) const;
+  // Fills the frame side and bottom borders with the frame color.
+  void FillFrameBorders(gfx::Canvas* canvas, const View* view) const;
 
   SkColor frame_color_;
+  bool use_custom_frame_;
+  bool is_active_;
+  bool incognito_;
   gfx::ImageSkia theme_image_;
+  int theme_image_y_inset_;
   gfx::ImageSkia theme_overlay_image_;
   int top_area_height_;
 

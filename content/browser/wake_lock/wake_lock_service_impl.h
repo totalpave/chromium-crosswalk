@@ -1,38 +1,28 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2018 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef CONTENT_BROWSER_WAKE_LOCK_WAKE_LOCK_SERVICE_IMPL_H_
 #define CONTENT_BROWSER_WAKE_LOCK_WAKE_LOCK_SERVICE_IMPL_H_
 
-#include "base/macros.h"
-#include "base/memory/weak_ptr.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
-#include "third_party/WebKit/public/platform/modules/wake_lock/wake_lock_service.mojom.h"
+#include "content/public/browser/frame_service_base.h"
+#include "third_party/blink/public/mojom/wake_lock/wake_lock.mojom.h"
 
 namespace content {
 
-class WakeLockServiceContext;
-
-class WakeLockServiceImpl : public blink::mojom::WakeLockService {
+class WakeLockServiceImpl final
+    : public FrameServiceBase<blink::mojom::WakeLockService> {
  public:
-  WakeLockServiceImpl(
-      base::WeakPtr<WakeLockServiceContext> context,
-      int render_process_id,
-      int render_frame_id,
-      mojo::InterfaceRequest<blink::mojom::WakeLockService> request);
-  ~WakeLockServiceImpl() override;
+  static void Create(RenderFrameHost*, blink::mojom::WakeLockServiceRequest);
 
-  // WakeLockSevice implementation.
-  void RequestWakeLock() override;
-  void CancelWakeLock() override;
+  // WakeLockService implementation.
+  void GetWakeLock(device::mojom::WakeLockType,
+                   device::mojom::WakeLockReason,
+                   const std::string&,
+                   device::mojom::WakeLockRequest) final;
 
  private:
-  base::WeakPtr<WakeLockServiceContext> context_;
-  const int render_process_id_;
-  const int render_frame_id_;
-  mojo::StrongBinding<blink::mojom::WakeLockService> binding_;
+  WakeLockServiceImpl(RenderFrameHost*, blink::mojom::WakeLockServiceRequest);
 
   DISALLOW_COPY_AND_ASSIGN(WakeLockServiceImpl);
 };

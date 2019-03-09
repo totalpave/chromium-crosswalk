@@ -7,29 +7,38 @@
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/single_thread_task_runner.h"
+#include "base/memory/ptr_util.h"
+#include "base/memory/ref_counted.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ipc/ipc_channel.h"
 #include "ipc/ipc_sync_message.h"
+#include "mojo/public/cpp/bindings/sync_handle_registry.h"
 
 namespace IPC {
+
+namespace {
+
+// A generic callback used when watching handles synchronously. Sets |*signal|
+// to true.
+void OnEventReady(bool* signal) {
+  *signal = true;
+}
+
+}  // namespace
 
 bool SyncMessageFilter::Send(Message* message) {
   if (!message->is_sync()) {
     {
       base::AutoLock auto_lock(lock_);
-      if (sender_ && is_channel_send_thread_safe_) {
-        sender_->Send(message);
-        return true;
-      } else if (!io_task_runner_.get()) {
-        pending_messages_.push_back(message);
+      if (!io_task_runner_.get()) {
+        pending_messages_.emplace_back(base::WrapUnique(message));
         return true;
       }
     }
     io_task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(&SyncMessageFilter::SendOnIOThread, this, message));
+        base::BindOnce(&SyncMessageFilter::SendOnIOThread, this, message));
     return true;
   }
 
@@ -54,17 +63,30 @@ bool SyncMessageFilter::Send(Message* message) {
     if (io_task_runner_.get()) {
       io_task_runner_->PostTask(
           FROM_HERE,
-          base::Bind(&SyncMessageFilter::SendOnIOThread, this, message));
+          base::BindOnce(&SyncMessageFilter::SendOnIOThread, this, message));
     } else {
-      pending_messages_.push_back(message);
+      pending_messages_.emplace_back(base::WrapUnique(message));
     }
   }
 
-  base::WaitableEvent* events[2] = { shutdown_event_, &done_event };
-  if (base::WaitableEvent::WaitMany(events, 2) == 1) {
+  bool done = false;
+  bool shutdown = false;
+  scoped_refptr<mojo::SyncHandleRegistry> registry =
+      mojo::SyncHandleRegistry::current();
+  auto on_shutdown_callback = base::Bind(&OnEventReady, &shutdown);
+  auto on_done_callback = base::Bind(&OnEventReady, &done);
+  registry->RegisterEvent(shutdown_event_, on_shutdown_callback);
+  registry->RegisterEvent(&done_event, on_done_callback);
+
+  const bool* stop_flags[] = { &done, &shutdown };
+  registry->Wait(stop_flags, 2);
+  if (done) {
     TRACE_EVENT_FLOW_END0(TRACE_DISABLED_BY_DEFAULT("ipc.flow"),
                           "SyncMessageFilter::Send", &done_event);
   }
+
+  registry->UnregisterEvent(shutdown_event_, on_shutdown_callback);
+  registry->UnregisterEvent(&done_event, on_done_callback);
 
   {
     base::AutoLock auto_lock(lock_);
@@ -75,27 +97,28 @@ bool SyncMessageFilter::Send(Message* message) {
   return pending_message.send_result;
 }
 
-void SyncMessageFilter::OnFilterAdded(Sender* sender) {
-  std::vector<Message*> pending_messages;
+void SyncMessageFilter::OnFilterAdded(Channel* channel) {
+  std::vector<std::unique_ptr<Message>> pending_messages;
   {
     base::AutoLock auto_lock(lock_);
-    sender_ = sender;
+    channel_ = channel;
+
     io_task_runner_ = base::ThreadTaskRunnerHandle::Get();
-    pending_messages_.release(&pending_messages);
+    std::swap(pending_messages_, pending_messages);
   }
-  for (auto* msg : pending_messages)
-    SendOnIOThread(msg);
+  for (auto& msg : pending_messages)
+    SendOnIOThread(msg.release());
 }
 
 void SyncMessageFilter::OnChannelError() {
   base::AutoLock auto_lock(lock_);
-  sender_ = NULL;
+  channel_ = nullptr;
   SignalAllEvents();
 }
 
 void SyncMessageFilter::OnChannelClosing() {
   base::AutoLock auto_lock(lock_);
-  sender_ = NULL;
+  channel_ = nullptr;
   SignalAllEvents();
 }
 
@@ -119,20 +142,16 @@ bool SyncMessageFilter::OnMessageReceived(const Message& message) {
   return false;
 }
 
-SyncMessageFilter::SyncMessageFilter(base::WaitableEvent* shutdown_event,
-                                     bool is_channel_send_thread_safe)
-    : sender_(NULL),
-      is_channel_send_thread_safe_(is_channel_send_thread_safe),
+SyncMessageFilter::SyncMessageFilter(base::WaitableEvent* shutdown_event)
+    : channel_(nullptr),
       listener_task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      shutdown_event_(shutdown_event) {
-}
+      shutdown_event_(shutdown_event) {}
 
-SyncMessageFilter::~SyncMessageFilter() {
-}
+SyncMessageFilter::~SyncMessageFilter() = default;
 
 void SyncMessageFilter::SendOnIOThread(Message* message) {
-  if (sender_) {
-    sender_->Send(message);
+  if (channel_) {
+    channel_->Send(message);
     return;
   }
 
@@ -155,6 +174,25 @@ void SyncMessageFilter::SignalAllEvents() {
                             (*iter)->done_event);
     (*iter)->done_event->Signal();
   }
+}
+
+void SyncMessageFilter::GetGenericRemoteAssociatedInterface(
+    const std::string& interface_name,
+    mojo::ScopedInterfaceEndpointHandle handle) {
+  base::AutoLock auto_lock(lock_);
+  DCHECK(io_task_runner_ && io_task_runner_->BelongsToCurrentThread());
+  if (!channel_) {
+    // Attach the associated interface to a disconnected pipe, so that the
+    // associated interface pointer can be used to make calls (which are
+    // dropped).
+    mojo::AssociateWithDisconnectedPipe(std::move(handle));
+    return;
+  }
+
+  Channel::AssociatedInterfaceSupport* support =
+      channel_->GetAssociatedInterfaceSupport();
+  support->GetGenericRemoteAssociatedInterface(
+      interface_name, std::move(handle));
 }
 
 }  // namespace IPC

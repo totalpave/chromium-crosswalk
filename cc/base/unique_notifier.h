@@ -8,7 +8,7 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "cc/base/cc_export.h"
+#include "cc/base/base_export.h"
 
 namespace base {
 class SequencedTaskRunner;
@@ -16,11 +16,13 @@ class SequencedTaskRunner;
 
 namespace cc {
 
-class CC_EXPORT UniqueNotifier {
+// Callers must ensure that they only schedule the notifier on the same thread
+// that the provided |task_runner| runs on.
+class CC_BASE_EXPORT UniqueNotifier {
  public:
   // Configure this notifier to issue the |closure| notification when scheduled.
   UniqueNotifier(base::SequencedTaskRunner* task_runner,
-                 const base::Closure& closure);
+                 base::RepeatingClosure closure);
 
   // Destroying the notifier will ensure that no further notifications will
   // happen from this class.
@@ -37,8 +39,11 @@ class CC_EXPORT UniqueNotifier {
   void Notify();
 
   // TODO(dcheng): How come this doesn't need to hold a ref to the task runner?
-  base::SequencedTaskRunner* task_runner_;
-  base::Closure closure_;
+  base::SequencedTaskRunner* const task_runner_;
+  const base::RepeatingClosure closure_;
+
+  // Lock should be held before modifying |notification_pending_|.
+  base::Lock lock_;
   bool notification_pending_;
 
   base::WeakPtrFactory<UniqueNotifier> weak_ptr_factory_;

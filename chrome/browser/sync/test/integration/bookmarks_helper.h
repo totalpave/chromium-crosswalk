@@ -5,10 +5,19 @@
 #ifndef CHROME_BROWSER_SYNC_TEST_INTEGRATION_BOOKMARKS_HELPER_H_
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_BOOKMARKS_HELPER_H_
 
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "base/compiler_specific.h"
+#include "chrome/browser/sync/test/integration/await_match_status_change_checker.h"
+#include "chrome/browser/sync/test/integration/multi_client_status_change_checker.h"
+#include "chrome/browser/sync/test/integration/single_client_status_change_checker.h"
+#include "components/sync/base/cryptographer.h"
+#include "components/sync/engine_impl/loopback_server/loopback_server_entity.h"
+#include "components/sync/test/fake_server/fake_server.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "url/gurl.h"
 
 class GURL;
 
@@ -112,6 +121,14 @@ void ExpireFavicon(int profile, const bookmarks::BookmarkNode* node);
 // Checks whether the favicon at |icon_url| for |profile| is expired;
 void CheckFaviconExpired(int profile, const GURL& icon_url);
 
+// Deletes the favicon mappings for |node| in the bookmark model for |profile|.
+void DeleteFaviconMappings(int profile,
+                           const bookmarks::BookmarkNode* node,
+                           FaviconSource favicon_source);
+
+// Checks whether |page_url| for |profile| has no favicon mappings.
+void CheckHasNoFavicon(int profile, const GURL& page_url);
+
 // Changes the url of the node |node| in the bookmark model of profile
 // |profile| to |new_url|. Returns a pointer to the node with the changed url.
 const bookmarks::BookmarkNode* SetURL(int profile,
@@ -156,24 +173,6 @@ bool ModelsMatch(int profile_a, int profile_b) WARN_UNUSED_RESULT;
 // not compare them with the verifier bookmark model. Returns true if they
 // match.
 bool AllModelsMatch() WARN_UNUSED_RESULT;
-
-// Check if the bookmarks models of all sync profiles match each other, using
-// AllModelsMatch. Returns true if bookmark models match and don't timeout
-// while checking.
-bool AwaitAllModelsMatch() WARN_UNUSED_RESULT;
-
-// Blocks the caller until the given |profile| contains |expected_count|
-// bookmarks with |title| or until waiting times out.
-bool AwaitCountBookmarksWithTitlesMatching(int profile,
-                                           const std::string& title,
-                                           int expected_count)
-    WARN_UNUSED_RESULT;
-
-// Blocks the caller until the given |profile| contains |expected_count|
-// bookmarks with |url| or until waiting times out.
-bool AwaitCountBookmarksWithUrlsMatching(int profile,
-                                         const GURL& url,
-                                         int expected_count) WARN_UNUSED_RESULT;
 
 // Checks if the bookmark model of profile |profile| contains any instances of
 // two bookmarks with the same URL under the same parent folder. Returns true
@@ -230,6 +229,90 @@ std::string IndexedSubfolderName(int i);
 // Returns a subsubfolder name identifiable by |i|.
 std::string IndexedSubsubfolderName(int i);
 
+// Creates a server-side entity representing a bookmark with the given title and
+// URL.
+std::unique_ptr<syncer::LoopbackServerEntity> CreateBookmarkServerEntity(
+    const std::string& title,
+    const GURL& url);
+
 }  // namespace bookmarks_helper
+
+// Checker used to block until bookmarks match on all clients.
+class BookmarksMatchChecker : public MultiClientStatusChangeChecker {
+ public:
+  BookmarksMatchChecker();
+
+  // StatusChangeChecker implementation.
+  bool IsExitConditionSatisfied() override;
+  std::string GetDebugMessage() const override;
+};
+
+// Checker used to block until bookmarks match the verifier bookmark model.
+class BookmarksMatchVerifierChecker : public MultiClientStatusChangeChecker {
+ public:
+  BookmarksMatchVerifierChecker();
+
+  // StatusChangeChecker implementation.
+  bool IsExitConditionSatisfied() override;
+  std::string GetDebugMessage() const override;
+};
+
+// Checker used to block until the actual number of bookmarks with the given
+// title match the expected count.
+// TODO(pvalenzuela): Remove this class and instead use
+// AwaitMatchStatusChangeChecker.
+class BookmarksTitleChecker : public SingleClientStatusChangeChecker {
+ public:
+  BookmarksTitleChecker(int profile_index,
+                        const std::string& title,
+                        int expected_count);
+
+  // StatusChangeChecker implementation.
+  bool IsExitConditionSatisfied() override;
+  std::string GetDebugMessage() const override;
+
+ private:
+  const int profile_index_;
+  const std::string title_;
+  const int expected_count_;
+};
+
+// Checker used to block until the bookmarks on the server match a given set of
+// expected bookmarks.
+class ServerBookmarksEqualityChecker : public SingleClientStatusChangeChecker {
+ public:
+  struct ExpectedBookmark {
+    std::string title;
+    GURL url;
+  };
+
+  // If a |cryptographer| is provided (i.e. is not nullptr), it is assumed that
+  // the server-side data should be encrypted, and the provided cryptographer
+  // will be used to decrypt the data prior to checking for equality.
+  ServerBookmarksEqualityChecker(
+      browser_sync::ProfileSyncService* service,
+      fake_server::FakeServer* fake_server,
+      const std::vector<ExpectedBookmark>& expected_bookmarks,
+      syncer::Cryptographer* cryptographer);
+
+  bool IsExitConditionSatisfied() override;
+  std::string GetDebugMessage() const override;
+
+  ~ServerBookmarksEqualityChecker() override;
+
+ private:
+  fake_server::FakeServer* fake_server_;
+  syncer::Cryptographer* cryptographer_;
+  const std::vector<ExpectedBookmark> expected_bookmarks_;
+
+  DISALLOW_COPY_AND_ASSIGN(ServerBookmarksEqualityChecker);
+};
+
+// Checker used to block until the actual number of bookmarks with the given url
+// match the expected count.
+class BookmarksUrlChecker : public AwaitMatchStatusChangeChecker {
+ public:
+  BookmarksUrlChecker(int profile, const GURL& url, int expected_count);
+};
 
 #endif  // CHROME_BROWSER_SYNC_TEST_INTEGRATION_BOOKMARKS_HELPER_H_

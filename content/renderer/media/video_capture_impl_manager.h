@@ -5,8 +5,9 @@
 #ifndef CONTENT_RENDERER_MEDIA_VIDEO_CAPTURE_IMPL_MANAGER_H_
 #define CONTENT_RENDERER_MEDIA_VIDEO_CAPTURE_IMPL_MANAGER_H_
 
-#include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/callback.h"
 #include "base/macros.h"
@@ -16,14 +17,13 @@
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "content/common/content_export.h"
-#include "content/common/media/video_capture.h"
-#include "content/public/renderer/media_stream_video_sink.h"
-#include "media/base/video_capture_types.h"
+#include "media/capture/video_capture_types.h"
+#include "third_party/blink/public/common/media/video_capture.h"
+#include "third_party/blink/public/common/mediastream/media_stream_request.h"
 
 namespace content {
 
 class VideoCaptureImpl;
-class VideoCaptureMessageFilter;
 
 // TODO(hclam): This class should be renamed to VideoCaptureService.
 
@@ -70,57 +70,67 @@ class CONTENT_EXPORT VideoCaptureImplManager {
   base::Closure StartCapture(
       media::VideoCaptureSessionId id,
       const media::VideoCaptureParams& params,
-      const VideoCaptureStateUpdateCB& state_update_cb,
-      const VideoCaptureDeliverFrameCB& deliver_frame_cb);
+      const blink::VideoCaptureStateUpdateCB& state_update_cb,
+      const blink::VideoCaptureDeliverFrameCB& deliver_frame_cb);
 
   // Requests that the video capturer send a frame "soon" (e.g., to resolve
   // picture loss or quality issues).
   void RequestRefreshFrame(media::VideoCaptureSessionId id);
 
+  // Requests frame delivery be suspended/resumed for a given capture session.
+  void Suspend(media::VideoCaptureSessionId id);
+  void Resume(media::VideoCaptureSessionId id);
+
   // Get supported formats supported by the device for the given session
   // ID. |callback| will be called on the IO thread.
-  void GetDeviceSupportedFormats(media::VideoCaptureSessionId id,
-                                 const VideoCaptureDeviceFormatsCB& callback);
+  void GetDeviceSupportedFormats(
+      media::VideoCaptureSessionId id,
+      const blink::VideoCaptureDeviceFormatsCB& callback);
 
   // Get supported formats currently in use for the given session ID.
   // |callback| will be called on the IO thread.
-  void GetDeviceFormatsInUse(media::VideoCaptureSessionId id,
-                             const VideoCaptureDeviceFormatsCB& callback);
-
-  // Make all existing VideoCaptureImpl instances stop/resume delivering
-  // video frames to their clients, depends on flag |suspend|.
-  void SuspendDevices(bool suspend);
-
-  VideoCaptureMessageFilter* video_capture_message_filter() const {
-    return filter_.get();
-  }
-
- protected:
-  virtual VideoCaptureImpl* CreateVideoCaptureImplForTesting(
+  void GetDeviceFormatsInUse(
       media::VideoCaptureSessionId id,
-      VideoCaptureMessageFilter* filter) const;
+      const blink::VideoCaptureDeviceFormatsCB& callback);
+
+  // Make all VideoCaptureImpl instances in the input |video_devices|
+  // stop/resume delivering video frames to their clients, depends on flag
+  // |suspend|. This is called in response to a RenderView-wide
+  // PageHidden/Shown() event.
+  // To suspend/resume an individual session, please call Suspend(id) or
+  // Resume(id).
+  void SuspendDevices(const blink::MediaStreamDevices& video_devices,
+                      bool suspend);
+
+  void OnLog(media::VideoCaptureSessionId id, const std::string& message);
+  void OnFrameDropped(media::VideoCaptureSessionId id,
+                      media::VideoCaptureFrameDropReason reason);
+
+  virtual std::unique_ptr<VideoCaptureImpl> CreateVideoCaptureImplForTesting(
+      media::VideoCaptureSessionId session_id) const;
 
  private:
+  // Holds bookkeeping info for each VideoCaptureImpl shared by clients.
+  struct DeviceEntry;
+
   void StopCapture(int client_id, media::VideoCaptureSessionId id);
   void UnrefDevice(media::VideoCaptureSessionId id);
 
-  // The int is used to count clients of the corresponding VideoCaptureImpl.
-  // VideoCaptureImpl objects are owned by this object. But they are
-  // destroyed on the IO thread. These are raw pointers because we destroy
-  // them manually.
-  typedef std::map<media::VideoCaptureSessionId,
-                   std::pair<int, VideoCaptureImpl*>> VideoCaptureDeviceMap;
-  VideoCaptureDeviceMap devices_;
+  // Devices currently in use.
+  std::vector<DeviceEntry> devices_;
 
   // This is an internal ID for identifying clients of VideoCaptureImpl.
   // The ID is global for the render process.
   int next_client_id_;
 
-  const scoped_refptr<VideoCaptureMessageFilter> filter_;
-
   // Hold a pointer to the Render Main message loop to check we operate on the
   // right thread.
   const scoped_refptr<base::SingleThreadTaskRunner> render_main_task_runner_;
+
+  // Set to true if SuspendDevices(true) was called. This, along with
+  // DeviceEntry::is_individually_suspended, is used to determine whether to
+  // take action when suspending/resuming each device.
+  bool is_suspending_all_;
 
   // Bound to the render thread.
   // NOTE: Weak pointers must be invalidated before all other member variables.

@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "media/base/limits.h"
 #include "media/gpu/vp9_decoder.h"
@@ -16,20 +17,31 @@ VP9Decoder::VP9Accelerator::VP9Accelerator() {}
 
 VP9Decoder::VP9Accelerator::~VP9Accelerator() {}
 
-VP9Decoder::VP9Decoder(VP9Accelerator* accelerator)
-    : state_(kNeedStreamMetadata), accelerator_(accelerator) {
-  DCHECK(accelerator_);
+VP9Decoder::VP9Decoder(std::unique_ptr<VP9Accelerator> accelerator,
+                       const VideoColorSpace& container_color_space)
+    : state_(kNeedStreamMetadata),
+      container_color_space_(container_color_space),
+      accelerator_(std::move(accelerator)),
+      parser_(accelerator_->IsFrameContextRequired()) {
   ref_frames_.resize(kVp9NumRefFrames);
 }
 
-VP9Decoder::~VP9Decoder() {}
+VP9Decoder::~VP9Decoder() = default;
 
-void VP9Decoder::SetStream(const uint8_t* ptr, size_t size) {
+void VP9Decoder::SetStream(int32_t id,
+                           const uint8_t* ptr,
+                           size_t size,
+                           const DecryptConfig* decrypt_config) {
   DCHECK(ptr);
   DCHECK(size);
-
-  DVLOG(4) << "New input stream at: " << (void*)ptr << " size: " << size;
-  parser_.SetStream(ptr, size);
+  DVLOG(4) << "New input stream id: " << id << " at: " << (void*)ptr
+           << " size: " << size;
+  stream_id_ = id;
+  if (decrypt_config) {
+    parser_.SetStream(ptr, size, decrypt_config->Clone());
+  } else {
+    parser_.SetStream(ptr, size, nullptr);
+  }
 }
 
 bool VP9Decoder::Flush() {
@@ -52,12 +64,14 @@ void VP9Decoder::Reset() {
 VP9Decoder::DecodeResult VP9Decoder::Decode() {
   while (1) {
     // Read a new frame header if one is not awaiting decoding already.
+    std::unique_ptr<DecryptConfig> decrypt_config;
     if (!curr_frame_hdr_) {
       std::unique_ptr<Vp9FrameHeader> hdr(new Vp9FrameHeader());
-      Vp9Parser::Result res = parser_.ParseNextFrame(hdr.get());
+      Vp9Parser::Result res =
+          parser_.ParseNextFrame(hdr.get(), &decrypt_config);
       switch (res) {
         case Vp9Parser::kOk:
-          curr_frame_hdr_.reset(hdr.release());
+          curr_frame_hdr_ = std::move(hdr);
           break;
 
         case Vp9Parser::kEOStream:
@@ -67,6 +81,10 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
           DVLOG(1) << "Error parsing stream";
           SetError();
           return kDecodeError;
+
+        case Vp9Parser::kAwaitingRefresh:
+          DVLOG(4) << "Awaiting context update";
+          return kNeedContextUpdate;
       }
     }
 
@@ -74,7 +92,10 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
       // Not kDecoding, so we need a resume point (a keyframe), as we are after
       // reset or at the beginning of the stream. Drop anything that is not
       // a keyframe in such case, and continue looking for a keyframe.
-      if (curr_frame_hdr_->IsKeyframe()) {
+      // Only exception is when the stream/sequence starts with an Intra only
+      // frame.
+      if (curr_frame_hdr_->IsKeyframe() ||
+          (curr_frame_hdr_->IsIntra() && pic_size_.IsEmpty())) {
         state_ = kDecoding;
       } else {
         curr_frame_hdr_.reset();
@@ -86,14 +107,23 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
       // This frame header only instructs us to display one of the
       // previously-decoded frames, but has no frame data otherwise. Display
       // and continue decoding subsequent frames.
-      size_t frame_to_show = curr_frame_hdr_->frame_to_show;
+      size_t frame_to_show = curr_frame_hdr_->frame_to_show_map_idx;
       if (frame_to_show >= ref_frames_.size() || !ref_frames_[frame_to_show]) {
         DVLOG(1) << "Request to show an invalid frame";
         SetError();
         return kDecodeError;
       }
 
-      if (!accelerator_->OutputPicture(ref_frames_[frame_to_show])) {
+      // Duplicate the VP9Picture and set the current bitstream id to keep the
+      // correct timestamp.
+      scoped_refptr<VP9Picture> pic = ref_frames_[frame_to_show]->Duplicate();
+      if (pic == nullptr) {
+        DVLOG(1) << "Failed to duplicate the VP9Picture.";
+        SetError();
+        return kDecodeError;
+      }
+      pic->set_bitstream_id(stream_id_);
+      if (!accelerator_->OutputPicture(std::move(pic))) {
         SetError();
         return kDecodeError;
       }
@@ -102,18 +132,28 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
       continue;
     }
 
-    gfx::Size new_pic_size(curr_frame_hdr_->width, curr_frame_hdr_->height);
+    gfx::Size new_pic_size(curr_frame_hdr_->frame_width,
+                           curr_frame_hdr_->frame_height);
     DCHECK(!new_pic_size.IsEmpty());
 
     if (new_pic_size != pic_size_) {
       DVLOG(1) << "New resolution: " << new_pic_size.ToString();
 
-      if (!curr_frame_hdr_->IsKeyframe()) {
+      if (!curr_frame_hdr_->IsKeyframe() &&
+          (curr_frame_hdr_->IsIntra() && pic_size_.IsEmpty())) {
         // TODO(posciak): This is doable, but requires a few modifications to
         // VDA implementations to allow multiple picture buffer sets in flight.
-        DVLOG(1) << "Resolution change currently supported for keyframes only";
-        SetError();
-        return kDecodeError;
+        // http://crbug.com/832264
+        DVLOG(1) << "Resolution change currently supported for keyframes and "
+                    "sequence begins with Intra only when there is no prior "
+                    "frames in the context";
+        if (++size_change_failure_counter_ > kVPxMaxNumOfSizeChangeFailures) {
+          SetError();
+          return kDecodeError;
+        }
+
+        curr_frame_hdr_.reset();
+        return kRanOutOfStreamData;
       }
 
       // TODO(posciak): This requires us to be on a keyframe (see above) and is
@@ -124,6 +164,7 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
         ref_frame = nullptr;
 
       pic_size_ = new_pic_size;
+      size_change_failure_counter_ = 0;
       return kAllocateNewSurfaces;
     }
 
@@ -131,7 +172,29 @@ VP9Decoder::DecodeResult VP9Decoder::Decode() {
     if (!pic)
       return kRanOutOfSurfaces;
 
-    pic->frame_hdr.reset(curr_frame_hdr_.release());
+    gfx::Rect new_render_rect(curr_frame_hdr_->render_width,
+                              curr_frame_hdr_->render_height);
+    // For safety, check the validity of render size or leave it as (0, 0).
+    if (!gfx::Rect(pic_size_).Contains(new_render_rect)) {
+      DVLOG(1) << "Render size exceeds picture size. render size: "
+               << new_render_rect.ToString()
+               << ", picture size: " << pic_size_.ToString();
+      new_render_rect = gfx::Rect();
+    }
+    DVLOG(2) << "Render resolution: " << new_render_rect.ToString();
+
+    pic->set_visible_rect(new_render_rect);
+    pic->set_bitstream_id(stream_id_);
+
+    pic->set_decrypt_config(std::move(decrypt_config));
+
+    // For VP9, container color spaces override video stream color spaces.
+    if (container_color_space_.IsSpecified()) {
+      pic->set_colorspace(container_color_space_);
+    } else if (curr_frame_hdr_) {
+      pic->set_colorspace(curr_frame_hdr_->GetColorSpace());
+    }
+    pic->frame_hdr = std::move(curr_frame_hdr_);
 
     if (!DecodeAndOutputPicture(pic)) {
       SetError();
@@ -148,12 +211,35 @@ void VP9Decoder::RefreshReferenceFrames(const scoped_refptr<VP9Picture>& pic) {
   }
 }
 
+void VP9Decoder::UpdateFrameContext(
+    const scoped_refptr<VP9Picture>& pic,
+    const base::Callback<void(const Vp9FrameContext&)>& context_refresh_cb) {
+  DCHECK(context_refresh_cb);
+  Vp9FrameContext frame_ctx;
+  memset(&frame_ctx, 0, sizeof(frame_ctx));
+
+  if (!accelerator_->GetFrameContext(pic, &frame_ctx)) {
+    SetError();
+    return;
+  }
+
+  context_refresh_cb.Run(frame_ctx);
+}
+
 bool VP9Decoder::DecodeAndOutputPicture(scoped_refptr<VP9Picture> pic) {
   DCHECK(!pic_size_.IsEmpty());
   DCHECK(pic->frame_hdr);
 
-  if (!accelerator_->SubmitDecode(pic, parser_.GetSegmentation(),
-                                  parser_.GetLoopFilter(), ref_frames_))
+  base::Closure done_cb;
+  const auto& context_refresh_cb =
+      parser_.GetContextRefreshCb(pic->frame_hdr->frame_context_idx);
+  if (context_refresh_cb)
+    done_cb = base::Bind(&VP9Decoder::UpdateFrameContext,
+                         base::Unretained(this), pic, context_refresh_cb);
+
+  const Vp9Parser::Context& context = parser_.context();
+  if (!accelerator_->SubmitDecode(pic, context.segmentation(),
+                                  context.loop_filter(), ref_frames_, done_cb))
     return false;
 
   if (pic->frame_hdr->show_frame) {
@@ -175,9 +261,13 @@ gfx::Size VP9Decoder::GetPicSize() const {
 }
 
 size_t VP9Decoder::GetRequiredNumOfPictures() const {
-  // kMaxVideoFrames to keep higher level media pipeline populated, +2 for the
-  // pictures being parsed and decoded currently.
-  return limits::kMaxVideoFrames + kVp9NumRefFrames + 2;
+  constexpr size_t kPicsInPipeline = limits::kMaxVideoFrames + 1;
+  return kPicsInPipeline + GetNumReferenceFrames();
+}
+
+size_t VP9Decoder::GetNumReferenceFrames() const {
+  // Maximum number of reference frames
+  return kVp9NumRefFrames;
 }
 
 }  // namespace media

@@ -14,32 +14,33 @@ std::string NativeLibraryLoadError::ToString() const {
   return message;
 }
 
-// static
-NativeLibrary LoadNativeLibrary(const base::FilePath& library_path,
-                                NativeLibraryLoadError* error) {
+NativeLibrary LoadNativeLibraryWithOptions(const base::FilePath& library_path,
+                                           const NativeLibraryOptions& options,
+                                           NativeLibraryLoadError* error) {
   NOTIMPLEMENTED();
   if (error)
     error->message = "Not implemented.";
   return nullptr;
 }
 
-// static
 void UnloadNativeLibrary(NativeLibrary library) {
   NOTIMPLEMENTED();
   DCHECK(!library);
 }
 
-// static
 void* GetFunctionPointerFromNativeLibrary(NativeLibrary library,
                                           StringPiece name) {
   NOTIMPLEMENTED();
   return nullptr;
 }
 
-// static
 std::string GetNativeLibraryName(StringPiece name) {
   DCHECK(IsStringASCII(name));
   return name.as_string();
+}
+
+std::string GetLoadableModuleName(StringPiece name) {
+  return GetNativeLibraryName(name);
 }
 
 }  // namespace base

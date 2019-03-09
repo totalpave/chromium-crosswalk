@@ -8,12 +8,14 @@
 
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/metrics/user_metrics.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/chrome_signin_helper.h"
 #include "chrome/browser/ui/browser_finder.h"
@@ -21,7 +23,6 @@
 #include "chrome/installer/util/google_update_settings.h"
 #include "components/profile_metrics/counts.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/user_metrics.h"
 
 namespace {
 
@@ -164,6 +165,7 @@ bool ProfileMetrics::CountProfileInformation(ProfileManager* manager,
     if (!HasProfileBeenActiveSince(entry, oldest)) {
       counts->unused++;
     } else {
+      counts->active++;
       if (entry->IsSupervised())
         counts->supervised++;
       if (entry->IsAuthenticated()) {
@@ -235,7 +237,6 @@ void ProfileMetrics::LogProfileAddNewUser(ProfileAdd metric) {
 }
 
 void ProfileMetrics::LogProfileAvatarSelection(size_t icon_index) {
-  DCHECK(icon_index < NUM_PROFILE_AVATAR_METRICS);
   ProfileAvatar icon_name = AVATAR_UNKNOWN;
   switch (icon_index) {
     case 0:
@@ -319,11 +320,12 @@ void ProfileMetrics::LogProfileAvatarSelection(size_t icon_index) {
     case 26:
       icon_name = AVATAR_PLACEHOLDER;
       break;
-    case 28:
+    case SIZE_MAX:
       icon_name = AVATAR_GAIA;
       break;
-    default:  // We should never actually get here.
-      NOTREACHED();
+    default:
+      DCHECK(profiles::IsModernAvatarIconIndex(icon_index));
+      // TODO(crbug.com/937834): Log modern avatar selection.
       break;
   }
   UMA_HISTOGRAM_ENUMERATION("Profile.Avatar", icon_name,
@@ -335,7 +337,8 @@ void ProfileMetrics::LogProfileDeleteUser(ProfileDelete metric) {
   UMA_HISTOGRAM_ENUMERATION("Profile.DeleteProfileAction", metric,
                             NUM_DELETE_PROFILE_METRICS);
   if (metric != DELETE_PROFILE_USER_MANAGER_SHOW_WARNING &&
-      metric != DELETE_PROFILE_SETTINGS_SHOW_WARNING) {
+      metric != DELETE_PROFILE_SETTINGS_SHOW_WARNING &&
+      metric != DELETE_PROFILE_ABORTED) {
     // If a user was actually deleted, update the net user count.
     UMA_HISTOGRAM_ENUMERATION("Profile.NetUserCount", PROFILE_DELETED,
                               NUM_PROFILE_NET_METRICS);
@@ -389,7 +392,7 @@ void ProfileMetrics::LogProfileSwitch(
 
 void ProfileMetrics::LogProfileSwitchGaia(ProfileGaia metric) {
   if (metric == GAIA_OPT_IN)
-    LogProfileAvatarSelection(AVATAR_GAIA);
+    LogProfileAvatarSelection(SIZE_MAX);
   UMA_HISTOGRAM_ENUMERATION("Profile.SwitchGaiaPhotoSettings",
                             metric,
                             NUM_PROFILE_GAIA_METRICS);
@@ -446,27 +449,6 @@ void ProfileMetrics::LogProfileDesktopMenu(
 
 void ProfileMetrics::LogProfileDelete(bool profile_was_signed_in) {
   UMA_HISTOGRAM_BOOLEAN("Profile.Delete", profile_was_signed_in);
-}
-
-void ProfileMetrics::LogProfileNewAvatarMenuNotYou(
-    ProfileNewAvatarMenuNotYou metric) {
-  DCHECK_LT(metric, NUM_PROFILE_AVATAR_MENU_NOT_YOU_METRICS);
-  UMA_HISTOGRAM_ENUMERATION("Profile.NewAvatarMenu.NotYou", metric,
-                            NUM_PROFILE_AVATAR_MENU_NOT_YOU_METRICS);
-}
-
-void ProfileMetrics::LogProfileNewAvatarMenuSignin(
-    ProfileNewAvatarMenuSignin metric) {
-  DCHECK_LT(metric, NUM_PROFILE_AVATAR_MENU_SIGNIN_METRICS);
-  UMA_HISTOGRAM_ENUMERATION("Profile.NewAvatarMenu.Signin", metric,
-                            NUM_PROFILE_AVATAR_MENU_SIGNIN_METRICS);
-}
-
-void ProfileMetrics::LogProfileNewAvatarMenuUpgrade(
-    ProfileNewAvatarMenuUpgrade metric) {
-  DCHECK_LT(metric, NUM_PROFILE_AVATAR_MENU_UPGRADE_METRICS);
-  UMA_HISTOGRAM_ENUMERATION("Profile.NewAvatarMenu.Upgrade", metric,
-                            NUM_PROFILE_AVATAR_MENU_UPGRADE_METRICS);
 }
 
 void ProfileMetrics::LogTimeToOpenUserManager(
@@ -535,15 +517,9 @@ void ProfileMetrics::LogProfileLaunch(Profile* profile) {
                             NUM_PROFILE_TYPE_METRICS);
 
   if (profile->IsSupervised()) {
-    content::RecordAction(
+    base::RecordAction(
         base::UserMetricsAction("ManagedMode_NewManagedUserWindow"));
   }
-}
-
-void ProfileMetrics::LogProfileSyncSignIn(const base::FilePath& profile_path) {
-  UMA_HISTOGRAM_ENUMERATION("Profile.SyncSignIn",
-                            GetProfileType(profile_path),
-                            NUM_PROFILE_TYPE_METRICS);
 }
 
 void ProfileMetrics::LogProfileUpdate(const base::FilePath& profile_path) {

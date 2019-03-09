@@ -29,13 +29,13 @@ std::unique_ptr<base::Value> BackoffEntrySerializer::SerializeToValue(
 
   // Can't use entry.GetTimeUntilRelease as it doesn't allow negative deltas.
   base::TimeDelta backoff_duration =
-      entry.GetReleaseTime() - entry.tick_clock()->NowTicks();
+      entry.GetReleaseTime() - entry.GetTimeTicksNow();
   // Redundantly stores both the remaining time delta and the absolute time.
   // The delta is used to work around some cases where wall clock time changes.
   serialized->AppendDouble(backoff_duration.InSecondsF());
   base::Time absolute_release_time = backoff_duration + time_now;
   serialized->AppendString(
-      base::Int64ToString(absolute_release_time.ToInternalValue()));
+      base::NumberToString(absolute_release_time.ToInternalValue()));
 
   return std::move(serialized);
 }
@@ -43,7 +43,7 @@ std::unique_ptr<base::Value> BackoffEntrySerializer::SerializeToValue(
 std::unique_ptr<BackoffEntry> BackoffEntrySerializer::DeserializeFromValue(
     const base::Value& serialized,
     const BackoffEntry::Policy* policy,
-    base::TickClock* tick_clock,
+    const base::TickClock* tick_clock,
     base::Time time_now) {
   const base::ListValue* serialized_list = nullptr;
   if (!serialized.GetAsList(&serialized_list))

@@ -5,77 +5,80 @@
 // These have to be sync'd with file_manager_private_apitest.cc
 var expectedVolume1 = {
   volumeId: 'removable:mount_path1',
-  volumeLabel: 'mount_path1',
+  volumeLabel: 'device_label1',
   sourcePath: 'device_path1',
   volumeType: 'removable',
   deviceType: 'usb',
   devicePath: 'system_path_prefix1',
   isParentDevice: false,
   isReadOnly: false,
+  isReadOnlyRemovableDevice: false,
   hasMedia: false,
   configurable: false,
   watchable: true,
   source: 'device',
   profile: {profileId: '', displayName: '', isCurrentProfile: true},
+  diskFileSystemType: 'exfat',
+  iconSet: {},
+  driveLabel: 'drive_label1'
 };
 
 var expectedVolume2 = {
   volumeId: 'removable:mount_path2',
-  volumeLabel: 'mount_path2',
+  volumeLabel: 'device_label2',
   sourcePath: 'device_path2',
   volumeType: 'removable',
   deviceType: 'mobile',
   devicePath: 'system_path_prefix2',
   isParentDevice: true,
   isReadOnly: true,
+  isReadOnlyRemovableDevice: true,
   hasMedia: true,
   configurable: false,
   // This is not an MTP device, so it's watchable.
   // TODO(mtomasz): Add a test for a real MTP device.
   watchable: true,
   source: 'device',
-  profile: {profileId: '', displayName: '', isCurrentProfile: true}
+  profile: {profileId: '', displayName: '', isCurrentProfile: true},
+  diskFileSystemType: 'exfat',
+  iconSet: {},
+  driveLabel: 'drive_label2'
 };
 
 var expectedVolume3 = {
   volumeId: 'removable:mount_path3',
-  volumeLabel: 'mount_path3',
+  volumeLabel: 'device_label3',
   sourcePath: 'device_path3',
   volumeType: 'removable',
   deviceType: 'optical',
   devicePath: 'system_path_prefix3',
   isParentDevice: true,
-  isReadOnly: false,
+  isReadOnly: true,
+  isReadOnlyRemovableDevice: false,
   hasMedia: false,
   configurable: false,
   watchable: true,
   source: 'device',
-  profile: {profileId: '', displayName: '', isCurrentProfile: true}
+  profile: {profileId: '', displayName: '', isCurrentProfile: true},
+  diskFileSystemType: 'exfat',
+  iconSet: {},
+  driveLabel: 'drive_label3'
 };
 
 var expectedDownloadsVolume = {
-  volumeId: /^downloads:Downloads[^\/]*$/,
+  volumeId: /^downloads:[^\/]*$/,
   volumeLabel: '',
   volumeType: 'downloads',
   isReadOnly: false,
+  isReadOnlyRemovableDevice: false,
   hasMedia: false,
   configurable: false,
   watchable: true,
   source: 'system',
-  profile: {profileId: '', displayName: '', isCurrentProfile: true}
-};
-
-var expectedDriveVolume = {
-  volumeId: /^drive:drive[^\/]*$/,
-  volumeLabel: '',
-  sourcePath: /^\/special\/drive[^\/]*$/,
-  volumeType: 'drive',
-  isReadOnly: false,
-  hasMedia: false,
-  configurable: false,
-  watchable: true,
-  source: 'network',
-  profile: {profileId: '', displayName: '', isCurrentProfile: true}
+  profile: {profileId: '', displayName: '', isCurrentProfile: true},
+  diskFileSystemType: '',
+  iconSet: {},
+  driveLabel: ''
 };
 
 var expectedArchiveVolume = {
@@ -84,11 +87,15 @@ var expectedArchiveVolume = {
   sourcePath: /removable\/mount_path3\/archive.zip$/,
   volumeType: 'archive',
   isReadOnly: true,
+  isReadOnlyRemovableDevice: false,
   hasMedia: false,
   configurable: false,
   watchable: true,
   source: 'file',
-  profile: {profileId: '', displayName: '', isCurrentProfile: true}
+  profile: {profileId: '', displayName: '', isCurrentProfile: true},
+  diskFileSystemType: '',
+  iconSet: {},
+  driveLabel: ''
 };
 
 var expectedProvidedVolume = {
@@ -96,14 +103,21 @@ var expectedProvidedVolume = {
   volumeLabel: '',
   volumeType: 'provided',
   isReadOnly: true,
+  isReadOnlyRemovableDevice: false,
   hasMedia: false,
   configurable: true,
   watchable: false,
-  extensionId: 'testing-extension-id',
+  providerId: 'testing-provider-id',
   source: 'network',
   mountContext: 'auto',
   fileSystemId: '',
-  profile: {profileId: '', displayName: '', isCurrentProfile: true}
+  profile: {profileId: '', displayName: '', isCurrentProfile: true},
+  diskFileSystemType: '',
+  iconSet: {
+    icon16x16Url: 'chrome://resources/testing-provider-id-16.jpg',
+    icon32x32Url: 'chrome://resources/testing-provider-id-32.jpg'
+  },
+  driveLabel: ''
 };
 
 // List of expected mount points.
@@ -112,7 +126,6 @@ var expectedProvidedVolume = {
 var expectedVolumeList = [
   expectedArchiveVolume,
   expectedDownloadsVolume,
-  expectedDriveVolume,
   expectedProvidedVolume,
   expectedVolume1,
   expectedVolume2,
@@ -155,6 +168,14 @@ function validateObject(received, expected, name) {
 
 chrome.test.runTests([
   function removeMount() {
+    chrome.fileManagerPrivate.removeMount('removable:mount_path1');
+
+    // We actually check this one on C++ side. If MountLibrary.RemoveMount
+    // doesn't get called, test will fail.
+    chrome.test.succeed();
+  },
+
+  function removeMountArchive() {
     chrome.fileManagerPrivate.removeMount('archive:archive_mount_path');
 
     // We actually check this one on C++ side. If MountLibrary.RemoveMount

@@ -32,7 +32,7 @@ LabelManager::SimpleIndexAssigner::SimpleIndexAssigner(LabelVector* labels)
   VLOG(1) << used << " of " << labels_->size() << " labels pre-assigned.";
 }
 
-LabelManager::SimpleIndexAssigner::~SimpleIndexAssigner() {}
+LabelManager::SimpleIndexAssigner::~SimpleIndexAssigner() = default;
 
 void LabelManager::SimpleIndexAssigner::DoForwardFill() {
   size_t count = 0;
@@ -91,9 +91,9 @@ void LabelManager::SimpleIndexAssigner::DoInFill() {
   VLOG(1) << "  infill " << count;
 }
 
-LabelManager::LabelManager() {}
+LabelManager::LabelManager() = default;
 
-LabelManager::~LabelManager() {}
+LabelManager::~LabelManager() = default;
 
 // static
 int LabelManager::GetLabelIndexBound(const LabelVector& labels) {
@@ -177,8 +177,8 @@ void LabelManager::Read(RvaVisitor* rva_visitor) {
   labels_.reserve(num_distinct_rva);
   for (CRV it(rvas.begin(), rvas.end()); it.has_more(); it.advance()) {
     labels_.push_back(Label(*it.cur()));
-    base::CheckedNumeric<uint32_t> count = it.repeat();
-    labels_.back().count_ = count.ValueOrDie();
+    labels_.back().count_ =
+        base::checked_cast<decltype(labels_.back().count_)>(it.repeat());
   }
 }
 

@@ -4,27 +4,23 @@
 
 #include "components/password_manager/core/browser/mock_password_store.h"
 
-#include "base/memory/ptr_util.h"
+#include "base/sequenced_task_runner.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 
 namespace password_manager {
 
-MockPasswordStore::MockPasswordStore()
-    : PasswordStore(base::ThreadTaskRunnerHandle::Get(),
-                    base::ThreadTaskRunnerHandle::Get()) {
+MockPasswordStore::MockPasswordStore() = default;
+
+MockPasswordStore::~MockPasswordStore() = default;
+
+scoped_refptr<base::SequencedTaskRunner>
+MockPasswordStore::CreateBackgroundTaskRunner() const {
+  return base::SequencedTaskRunnerHandle::Get();
 }
 
-MockPasswordStore::~MockPasswordStore() {
-}
-
-std::vector<std::unique_ptr<InteractionsStats>>
-MockPasswordStore::GetSiteStatsImpl(const GURL& origin_domain) {
-  std::vector<InteractionsStats*> stats = GetSiteStatsMock(origin_domain);
-  std::vector<std::unique_ptr<InteractionsStats>> result;
-  result.reserve(stats.size());
-  for (auto* stat : stats) {
-    result.push_back(base::WrapUnique(stat));
-  }
-  return result;
+bool MockPasswordStore::InitOnBackgroundSequence(
+    const syncer::SyncableService::StartSyncFlare& flare) {
+  return true;
 }
 
 }  // namespace password_manager

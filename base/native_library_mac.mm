@@ -38,9 +38,9 @@ std::string NativeLibraryLoadError::ToString() const {
   return message;
 }
 
-// static
-NativeLibrary LoadNativeLibrary(const FilePath& library_path,
-                                NativeLibraryLoadError* error) {
+NativeLibrary LoadNativeLibraryWithOptions(const FilePath& library_path,
+                                           const NativeLibraryOptions& options,
+                                           NativeLibraryLoadError* error) {
   // dlopen() etc. open the file off disk.
   if (library_path.Extension() == "dylib" || !DirectoryExists(library_path)) {
     void* dylib = dlopen(library_path.value().c_str(), RTLD_LAZY);
@@ -74,7 +74,6 @@ NativeLibrary LoadNativeLibrary(const FilePath& library_path,
   return native_lib;
 }
 
-// static
 void UnloadNativeLibrary(NativeLibrary library) {
   if (library->objc_status == OBJC_NOT_PRESENT) {
     if (library->type == BUNDLE) {
@@ -94,7 +93,6 @@ void UnloadNativeLibrary(NativeLibrary library) {
   delete library;
 }
 
-// static
 void* GetFunctionPointerFromNativeLibrary(NativeLibrary library,
                                           StringPiece name) {
   void* function_pointer = nullptr;
@@ -117,10 +115,14 @@ void* GetFunctionPointerFromNativeLibrary(NativeLibrary library,
   return function_pointer;
 }
 
-// static
 std::string GetNativeLibraryName(StringPiece name) {
   DCHECK(IsStringASCII(name));
   return "lib" + name.as_string() + ".dylib";
+}
+
+std::string GetLoadableModuleName(StringPiece name) {
+  DCHECK(IsStringASCII(name));
+  return name.as_string() + ".so";
 }
 
 }  // namespace base

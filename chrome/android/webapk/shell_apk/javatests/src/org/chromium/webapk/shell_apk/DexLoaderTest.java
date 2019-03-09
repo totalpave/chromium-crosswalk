@@ -9,16 +9,26 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager.NameNotFoundException;
+import android.os.Build;
 import android.os.FileObserver;
 import android.os.IBinder;
 import android.os.RemoteException;
-import android.test.InstrumentationTestCase;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.MediumTest;
 
 import dalvik.system.DexFile;
 
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
 import org.chromium.base.FileUtils;
+import org.chromium.base.test.BaseJUnit4ClassRunner;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.content.browser.test.util.CallbackHelper;
+import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.webapk.shell_apk.test.dex_optimizer.IDexOptimizerService;
 
 import java.io.File;
@@ -28,7 +38,8 @@ import java.util.Arrays;
 /**
  * Tests for {@link DexLoader}.
  */
-public class DexLoaderTest extends InstrumentationTestCase {
+@RunWith(BaseJUnit4ClassRunner.class)
+public class DexLoaderTest {
     /**
      * Package of APK to load dex file from and package which provides DexOptimizerService.
      */
@@ -42,18 +53,22 @@ public class DexLoaderTest extends InstrumentationTestCase {
             "org.chromium.webapk.shell_apk.test.dex_optimizer.DexOptimizerServiceImpl";
 
     /**
-     * Name of the dex file in DexOptimizer.apk.
+     * Name of dex files in DexOptimizer.apk.
      */
     private static final String DEX_ASSET_NAME = "canary.dex";
+    private static final String DEX_ASSET_NAME2 = "canary2.dex";
 
     /**
-     * Class to load to check whether dex is valid.
+     * Classes to load to check whether dex is valid.
      */
     private static final String CANARY_CLASS_NAME =
             "org.chromium.webapk.shell_apk.test.canary.Canary";
+    private static final String CANARY_CLASS_NAME2 =
+            "org.chromium.webapk.shell_apk.test.canary.Canary2";
 
     private Context mContext;
     private Context mRemoteContext;
+    private DexLoader mDexLoader;
     private File mLocalDexDir;
     private IDexOptimizerService mDexOptimizerService;
     private ServiceConnection mServiceConnection;
@@ -87,16 +102,17 @@ public class DexLoaderTest extends InstrumentationTestCase {
         }
     }
 
-    @Override
-    protected void setUp() {
-        mContext = getInstrumentation().getTargetContext();
+    @Before
+    public void setUp() {
+        mContext = InstrumentationRegistry.getTargetContext();
         mRemoteContext = getRemoteContext(mContext);
+        mDexLoader = new DexLoader();
 
         mLocalDexDir = mContext.getDir("dex", Context.MODE_PRIVATE);
         if (mLocalDexDir.exists()) {
             FileUtils.recursivelyDeleteFile(mLocalDexDir);
             if (mLocalDexDir.exists()) {
-                fail("Could not delete local dex directory.");
+                Assert.fail("Could not delete local dex directory.");
             }
         }
 
@@ -104,26 +120,27 @@ public class DexLoaderTest extends InstrumentationTestCase {
 
         try {
             if (!mDexOptimizerService.deleteDexDirectory()) {
-                fail("Could not delete remote dex directory.");
+                Assert.fail("Could not delete remote dex directory.");
             }
         } catch (RemoteException e) {
             e.printStackTrace();
-            fail("Remote crashed during setup.");
+            Assert.fail("Remote crashed during setup.");
         }
     }
 
-    @Override
+    @After
     public void tearDown() throws Exception {
         mContext.unbindService(mServiceConnection);
-        super.tearDown();
     }
 
     /**
      * Test that {@DexLoader#load()} can create a ClassLoader from a dex and optimized dex in
      * another app's data directory.
      */
-    // @MediumTest  crbug.com/617935
-    @DisabledTest
+    @Test
+    @MediumTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.KITKAT)
+    @DisabledTest(message = "crbug.com/871920")
     public void testLoadFromRemoteDataDir() {
         // Extract the dex file into another app's data directory and optimize the dex.
         String remoteDexFilePath = null;
@@ -131,25 +148,25 @@ public class DexLoaderTest extends InstrumentationTestCase {
             remoteDexFilePath = mDexOptimizerService.extractAndOptimizeDex();
         } catch (RemoteException e) {
             e.printStackTrace();
-            fail("Remote crashed.");
+            Assert.fail("Remote crashed.");
         }
 
         if (remoteDexFilePath == null) {
-            fail("Could not extract and optimize dex.");
+            Assert.fail("Could not extract and optimize dex.");
         }
 
         // Check that the Android OS knows about the optimized dex file for
         // {@link remoteDexFilePath}.
         File remoteDexFile = new File(remoteDexFilePath);
-        assertFalse(isDexOptNeeded(remoteDexFile));
+        Assert.assertFalse(isDexOptNeeded(remoteDexFile));
 
-        ClassLoader loader = DexLoader.load(
+        ClassLoader loader = mDexLoader.load(
                 mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, remoteDexFile, mLocalDexDir);
-        assertNotNull(loader);
-        assertTrue(canLoadCanaryClass(loader));
+        Assert.assertNotNull(loader);
+        Assert.assertTrue(canLoadCanaryClass(loader));
 
         // Check that {@link DexLoader#load()} did not use the fallback path.
-        assertFalse(mLocalDexDir.exists());
+        Assert.assertFalse(mLocalDexDir.exists());
     }
 
     /**
@@ -157,111 +174,100 @@ public class DexLoaderTest extends InstrumentationTestCase {
      * local data directory and creating the ClassLoader from the extracted dex if creating the
      * ClassLoader from the cached data in the remote Context's data directory fails.
      */
-    // @MediumTest  crbug.com/617935
-    @DisabledTest
+    @Test
+    @MediumTest
     public void testLoadFromLocalDataDir() {
-        ClassLoader loader = DexLoader.load(
+        ClassLoader loader = mDexLoader.load(
                 mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, null, mLocalDexDir);
-        assertNotNull(loader);
-        assertTrue(canLoadCanaryClass(loader));
+        Assert.assertNotNull(loader);
+        Assert.assertTrue(canLoadCanaryClass(loader));
 
         // Check that the dex file was extracted to the local data directory and that a directory
         // was created for the optimized dex.
-        assertTrue(mLocalDexDir.exists());
+        Assert.assertTrue(mLocalDexDir.exists());
         File[] localDexDirFiles = mLocalDexDir.listFiles();
-        assertNotNull(localDexDirFiles);
+        Assert.assertNotNull(localDexDirFiles);
         Arrays.sort(localDexDirFiles);
-        assertEquals(2, localDexDirFiles.length);
-        assertEquals(DEX_ASSET_NAME, localDexDirFiles[0].getName());
-        assertFalse(localDexDirFiles[0].isDirectory());
-        assertEquals("optimized", localDexDirFiles[1].getName());
-        assertTrue(localDexDirFiles[1].isDirectory());
+        Assert.assertEquals(2, localDexDirFiles.length);
+        Assert.assertEquals(DEX_ASSET_NAME, localDexDirFiles[0].getName());
+        Assert.assertFalse(localDexDirFiles[0].isDirectory());
+        Assert.assertEquals("optimized", localDexDirFiles[1].getName());
+        Assert.assertTrue(localDexDirFiles[1].isDirectory());
     }
 
     /**
      * Test that {@link DexLoader#load()} does not extract the dex file from the APK if the dex file
      * was extracted in a previous call to {@link DexLoader#load()}
      */
-    // @MediumTest  crbug.com/617935
-    @DisabledTest
+    @Test
+    @MediumTest
     public void testPreviouslyLoadedFromLocalDataDir() {
-        assertTrue(mLocalDexDir.mkdir());
+        Assert.assertTrue(mLocalDexDir.mkdir());
+
+        // TODO(pkotwicz): fix on Android-Oreo.  See https://crbug.com/779218.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) return;
 
         {
             // Load dex the first time. This should extract the dex file from the APK's assets and
             // generate the optimized dex file.
             FileMonitor localDexDirMonitor = new FileMonitor(mLocalDexDir);
             localDexDirMonitor.startWatching();
-            ClassLoader loader = DexLoader.load(
+            ClassLoader loader = mDexLoader.load(
                     mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, null, mLocalDexDir);
             localDexDirMonitor.stopWatching();
 
-            assertNotNull(loader);
-            assertTrue(canLoadCanaryClass(loader));
+            Assert.assertNotNull(loader);
+            Assert.assertTrue(canLoadCanaryClass(loader));
 
-            assertTrue(localDexDirMonitor.mReadPaths.contains(DEX_ASSET_NAME));
-            assertTrue(localDexDirMonitor.mModifiedPaths.contains(DEX_ASSET_NAME));
+            Assert.assertTrue(localDexDirMonitor.mReadPaths.contains(DEX_ASSET_NAME));
+            Assert.assertTrue(localDexDirMonitor.mModifiedPaths.contains(DEX_ASSET_NAME));
         }
         {
             // Load dex a second time. We should use the already extracted dex file.
             FileMonitor localDexDirMonitor = new FileMonitor(mLocalDexDir);
             localDexDirMonitor.startWatching();
-            ClassLoader loader = DexLoader.load(
+            ClassLoader loader = mDexLoader.load(
                     mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, null, mLocalDexDir);
             localDexDirMonitor.stopWatching();
 
             // The returned ClassLoader should be valid.
-            assertNotNull(loader);
-            assertTrue(canLoadCanaryClass(loader));
+            Assert.assertNotNull(loader);
+            Assert.assertTrue(canLoadCanaryClass(loader));
 
             // We should not have modified any files.
-            assertTrue(localDexDirMonitor.mModifiedPaths.isEmpty());
+            Assert.assertTrue(localDexDirMonitor.mModifiedPaths.isEmpty());
         }
     }
 
     /**
-     * Test that {@link DexLoader#load()} re-extracts the dex file from the APK after a call to
-     * {@link DexLoader#deleteCachedDexes()}.
+     * Test loading a dex file from a directory which was previously used for loading a different
+     * dex file.
      */
-    // @MediumTest  crbug.com/617935
-    @DisabledTest
-    public void testLoadAfterDeleteCachedDexes() {
-        assertTrue(mLocalDexDir.mkdir());
+    @Test
+    @MediumTest
+    public void testLoadDifferentDexInLocalDataDir() {
+        Assert.assertTrue(mLocalDexDir.mkdir());
 
-        {
-            // Load dex the first time. This should extract the dex file from the APK's assets and
-            // generate the optimized dex file.
-            FileMonitor localDexDirMonitor = new FileMonitor(mLocalDexDir);
-            localDexDirMonitor.startWatching();
-            ClassLoader loader = DexLoader.load(
-                    mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, null, mLocalDexDir);
-            localDexDirMonitor.stopWatching();
+        // Load canary.dex
+        ClassLoader loader1 = mDexLoader.load(
+                mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, null, mLocalDexDir);
+        Assert.assertNotNull(loader1);
+        Assert.assertTrue(canLoadCanaryClass(loader1));
 
-            assertNotNull(loader);
-            assertTrue(canLoadCanaryClass(loader));
+        File canaryDexFile1 = new File(mLocalDexDir, DEX_ASSET_NAME);
+        Assert.assertTrue(canaryDexFile1.exists());
 
-            assertTrue(localDexDirMonitor.mReadPaths.contains(DEX_ASSET_NAME));
-            assertTrue(localDexDirMonitor.mModifiedPaths.contains(DEX_ASSET_NAME));
-        }
+        mDexLoader.deleteCachedDexes(mLocalDexDir);
 
-        DexLoader.deleteCachedDexes(mLocalDexDir);
+        ClassLoader loader2 = mDexLoader.load(
+                mRemoteContext, DEX_ASSET_NAME2, CANARY_CLASS_NAME2, null, mLocalDexDir);
+        Assert.assertNotNull(loader2);
+        Assert.assertTrue(canLoadClass(loader2, CANARY_CLASS_NAME2));
 
-        {
-            // Load dex a second time.
-            FileMonitor localDexDirMonitor = new FileMonitor(mLocalDexDir);
-            localDexDirMonitor.startWatching();
-            ClassLoader loader = DexLoader.load(
-                    mRemoteContext, DEX_ASSET_NAME, CANARY_CLASS_NAME, null, mLocalDexDir);
-            localDexDirMonitor.stopWatching();
-
-            // The returned ClassLoader should be valid.
-            assertNotNull(loader);
-            assertTrue(canLoadCanaryClass(loader));
-
-            // We should have re-extracted the dex from the APK's assets.
-            assertTrue(localDexDirMonitor.mReadPaths.contains(DEX_ASSET_NAME));
-            assertTrue(localDexDirMonitor.mModifiedPaths.contains(DEX_ASSET_NAME));
-        }
+        // canary2.dex should have been extracted and the previously extracted canary.dex file
+        // should have been deleted.
+        Assert.assertTrue(new File(mLocalDexDir, DEX_ASSET_NAME2).exists());
+        Assert.assertFalse(canaryDexFile1.exists());
     }
 
     /**
@@ -288,14 +294,14 @@ public class DexLoaderTest extends InstrumentationTestCase {
             mContext.bindService(intent, mServiceConnection, Context.BIND_AUTO_CREATE);
         } catch (SecurityException e) {
             e.printStackTrace();
-            fail();
+            Assert.fail();
         }
 
         try {
             connectedCallback.waitForCallback(0);
         } catch (Exception e) {
             e.printStackTrace();
-            fail("Could not connect to remote.");
+            Assert.fail("Could not connect to remote.");
         }
     }
 
@@ -311,7 +317,7 @@ public class DexLoaderTest extends InstrumentationTestCase {
                     Context.CONTEXT_IGNORE_SECURITY | Context.CONTEXT_INCLUDE_CODE);
         } catch (NameNotFoundException e) {
             e.printStackTrace();
-            fail("Could not get remote context");
+            Assert.fail("Could not get remote context");
             return null;
         }
     }
@@ -322,15 +328,20 @@ public class DexLoaderTest extends InstrumentationTestCase {
             return DexFile.isDexOptNeeded(dexFile.getPath());
         } catch (Exception e) {
             e.printStackTrace();
-            fail();
+            Assert.fail();
             return false;
         }
     }
 
     /** Returns whether the ClassLoader can load {@link CANARY_CLASS_NAME} */
     private boolean canLoadCanaryClass(ClassLoader loader) {
+        return canLoadClass(loader, CANARY_CLASS_NAME);
+    }
+
+    /** Returns whether the ClassLoader can load a class */
+    private boolean canLoadClass(ClassLoader loader, String className) {
         try {
-            loader.loadClass(CANARY_CLASS_NAME);
+            loader.loadClass(className);
             return true;
         } catch (Exception e) {
             return false;

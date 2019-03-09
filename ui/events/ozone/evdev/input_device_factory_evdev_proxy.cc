@@ -5,6 +5,7 @@
 #include "ui/events/ozone/evdev/input_device_factory_evdev_proxy.h"
 
 #include "base/bind.h"
+#include "base/callback.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ui/events/ozone/evdev/input_device_factory_evdev.h"
 
@@ -14,19 +15,19 @@ namespace {
 
 void ForwardGetTouchDeviceStatusReply(
     scoped_refptr<base::SingleThreadTaskRunner> reply_runner,
-    const GetTouchDeviceStatusReply& reply,
-    std::unique_ptr<std::string> status) {
+    InputController::GetTouchDeviceStatusReply reply,
+    const std::string& status) {
   // Thread hop back to UI for reply.
-  reply_runner->PostTask(FROM_HERE, base::Bind(reply, base::Passed(&status)));
+  reply_runner->PostTask(FROM_HERE, base::BindOnce(std::move(reply), status));
 }
 
 void ForwardGetTouchEventLogReply(
     scoped_refptr<base::SingleThreadTaskRunner> reply_runner,
-    const GetTouchEventLogReply& reply,
-    std::unique_ptr<std::vector<base::FilePath>> log_paths) {
+    InputController::GetTouchEventLogReply reply,
+    const std::vector<base::FilePath>& log_paths) {
   // Thread hop back to UI for reply.
   reply_runner->PostTask(FROM_HERE,
-                         base::Bind(reply, base::Passed(&log_paths)));
+                         base::BindOnce(std::move(reply), log_paths));
 }
 
 }  // namespace
@@ -42,56 +43,59 @@ InputDeviceFactoryEvdevProxy::~InputDeviceFactoryEvdevProxy() {
 
 void InputDeviceFactoryEvdevProxy::AddInputDevice(int id,
                                                   const base::FilePath& path) {
-  task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&InputDeviceFactoryEvdev::AddInputDevice,
-                                    input_device_factory_, id, path));
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&InputDeviceFactoryEvdev::AddInputDevice,
+                                input_device_factory_, id, path));
 }
 
 void InputDeviceFactoryEvdevProxy::RemoveInputDevice(
     const base::FilePath& path) {
-  task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&InputDeviceFactoryEvdev::RemoveInputDevice,
-                                    input_device_factory_, path));
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&InputDeviceFactoryEvdev::RemoveInputDevice,
+                                input_device_factory_, path));
 }
 
 void InputDeviceFactoryEvdevProxy::OnStartupScanComplete() {
   task_runner_->PostTask(
-      FROM_HERE, base::Bind(&InputDeviceFactoryEvdev::OnStartupScanComplete,
-                            input_device_factory_));
+      FROM_HERE, base::BindOnce(&InputDeviceFactoryEvdev::OnStartupScanComplete,
+                                input_device_factory_));
 }
 
 void InputDeviceFactoryEvdevProxy::SetCapsLockLed(bool enabled) {
-  task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&InputDeviceFactoryEvdev::SetCapsLockLed,
-                                    input_device_factory_, enabled));
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&InputDeviceFactoryEvdev::SetCapsLockLed,
+                                input_device_factory_, enabled));
 }
 
 void InputDeviceFactoryEvdevProxy::UpdateInputDeviceSettings(
     const InputDeviceSettingsEvdev& settings) {
   task_runner_->PostTask(
-      FROM_HERE, base::Bind(&InputDeviceFactoryEvdev::UpdateInputDeviceSettings,
-                            input_device_factory_, settings));
+      FROM_HERE,
+      base::BindOnce(&InputDeviceFactoryEvdev::UpdateInputDeviceSettings,
+                     input_device_factory_, settings));
 }
 
 void InputDeviceFactoryEvdevProxy::GetTouchDeviceStatus(
-    const GetTouchDeviceStatusReply& reply) {
+    InputController::GetTouchDeviceStatusReply reply) {
   task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&InputDeviceFactoryEvdev::GetTouchDeviceStatus,
-                 input_device_factory_,
-                 base::Bind(&ForwardGetTouchDeviceStatusReply,
-                            base::ThreadTaskRunnerHandle::Get(), reply)));
+      base::BindOnce(&InputDeviceFactoryEvdev::GetTouchDeviceStatus,
+                     input_device_factory_,
+                     base::BindOnce(&ForwardGetTouchDeviceStatusReply,
+                                    base::ThreadTaskRunnerHandle::Get(),
+                                    std::move(reply))));
 }
 
 void InputDeviceFactoryEvdevProxy::GetTouchEventLog(
     const base::FilePath& out_dir,
-    const GetTouchEventLogReply& reply) {
+    InputController::GetTouchEventLogReply reply) {
   task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&InputDeviceFactoryEvdev::GetTouchEventLog,
-                 input_device_factory_, out_dir,
-                 base::Bind(&ForwardGetTouchEventLogReply,
-                            base::ThreadTaskRunnerHandle::Get(), reply)));
+      base::BindOnce(&InputDeviceFactoryEvdev::GetTouchEventLog,
+                     input_device_factory_, out_dir,
+                     base::BindOnce(&ForwardGetTouchEventLogReply,
+                                    base::ThreadTaskRunnerHandle::Get(),
+                                    std::move(reply))));
 }
 
 }  // namespace ui

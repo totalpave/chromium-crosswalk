@@ -13,13 +13,12 @@ if __name__ == '__main__':
 
 import unittest
 
-from grit import exception
 from grit.format import data_pack
 
 
 class FormatDataPackUnittest(unittest.TestCase):
-  def testWriteDataPack(self):
-    expected = (
+  def testReadDataPackV4(self):
+    expected_data = (
         '\x04\x00\x00\x00'                  # header(version
         '\x04\x00\x00\x00'                  #        no. entries,
         '\x01'                              #        encoding)
@@ -29,42 +28,46 @@ class FormatDataPackUnittest(unittest.TestCase):
         '\x0a\x00\x3f\x00\x00\x00'          # index entry 10
         '\x00\x00\x3f\x00\x00\x00'          # extra entry for the size of last
         'this is id 4this is id 6')         # data
-    input = {1: '', 4: 'this is id 4', 6: 'this is id 6', 10: ''}
-    output = data_pack.WriteDataPackToString(input, data_pack.UTF8)
-    self.failUnless(output == expected)
+    expected_data_pack = data_pack.DataPackContents(
+        {
+            1: '',
+            4: 'this is id 4',
+            6: 'this is id 6',
+            10: '',
+        }, data_pack.UTF8, 4, {}, data_pack.DataPackSizes(9, 30, 0, 24))
+    loaded = data_pack.ReadDataPackFromString(expected_data)
+    self.assertDictEqual(expected_data_pack.__dict__, loaded.__dict__)
 
-  def testIncludeWithReservedHeader(self):
-    from grit import util
-    from grit.node import misc, include, empty
-    root = misc.GritNode()
-    root.StartParsing(u'grit', None)
-    root.HandleAttribute(u'latest_public_release', u'0')
-    root.HandleAttribute(u'current_release', u'1')
-    root.HandleAttribute(u'base_dir', ur'..\resource')
-    release = misc.ReleaseNode()
-    release.StartParsing(u'release', root)
-    release.HandleAttribute(u'seq', u'1')
-    root.AddChild(release)
-    includes = empty.IncludesNode()
-    includes.StartParsing(u'includes', release)
-    release.AddChild(includes)
-    include_node = include.IncludeNode()
-    include_node.StartParsing(u'include', includes)
-    include_node.HandleAttribute(u'name', u'test')
-    include_node.HandleAttribute(u'type', u'BINDATA')
-    include_node.HandleAttribute(u'file', u'doesntmatter')
-    includes.AddChild(include_node)
-    include_node.EndParsing()
-    root.EndParsing()
+  def testReadWriteDataPackV5(self):
+    expected_data = (
+        '\x05\x00\x00\x00'                  # version
+        '\x01\x00\x00\x00'                  # encoding & padding
+        '\x03\x00'                          # resource_count
+        '\x01\x00'                          # alias_count
+        '\x01\x00\x28\x00\x00\x00'          # index entry 1
+        '\x04\x00\x28\x00\x00\x00'          # index entry 4
+        '\x06\x00\x34\x00\x00\x00'          # index entry 6
+        '\x00\x00\x40\x00\x00\x00'          # extra entry for the size of last
+        '\x0a\x00\x01\x00'                  # alias table
+        'this is id 4this is id 6')         # data
+    input_resources = {
+        1: '',
+        4: 'this is id 4',
+        6: 'this is id 6',
+        10: 'this is id 4',
+    }
+    data = data_pack.WriteDataPackToString(input_resources, data_pack.UTF8)
+    self.assertEquals(data, expected_data)
 
-    ReadFile_copy = util.ReadFile
-    try:
-      util.ReadFile = lambda a, b: include.IncludeNode.RESERVED_HEADER
-      with self.assertRaises(exception.ReservedHeaderCollision):
-        data_pack.Format(root)
-
-    finally:
-      util.ReadFile = ReadFile_copy
+    expected_data_pack = data_pack.DataPackContents(
+        {
+            1: '',
+            4: input_resources[4],
+            6: input_resources[6],
+            10: input_resources[4],
+        }, data_pack.UTF8, 5, {10: 4}, data_pack.DataPackSizes(12, 24, 4, 24))
+    loaded = data_pack.ReadDataPackFromString(expected_data)
+    self.assertDictEqual(expected_data_pack.__dict__, loaded.__dict__)
 
   def testRePackUnittest(self):
     expected_with_whitelist = {
@@ -80,16 +83,17 @@ class FormatDataPackUnittest(unittest.TestCase):
               {40: 'Never', 50: 'gonna run around and', 60: 'desert you'},
               {65: 'Close', 70: 'Awww, snap!'}]
     whitelist = [1, 10, 20, 30, 40, 50, 60]
-    inputs = [data_pack.DataPackContents(input, data_pack.UTF8) for input
-              in inputs]
+    inputs = [(i, data_pack.UTF8) for i in inputs]
 
     # RePack using whitelist
-    output, _ = data_pack.RePackFromDataPackStrings(inputs, whitelist)
+    output, _ = data_pack.RePackFromDataPackStrings(
+        inputs, whitelist, suppress_removed_key_output=True)
     self.assertDictEqual(expected_with_whitelist, output,
                          'Incorrect resource output')
 
     # RePack a None whitelist
-    output, _ = data_pack.RePackFromDataPackStrings(inputs, None)
+    output, _ = data_pack.RePackFromDataPackStrings(
+        inputs, None, suppress_removed_key_output=True)
     self.assertDictEqual(expected_without_whitelist, output,
                          'Incorrect resource output')
 

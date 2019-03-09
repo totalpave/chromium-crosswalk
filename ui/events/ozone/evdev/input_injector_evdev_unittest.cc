@@ -7,6 +7,7 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/ozone/device/device_manager.h"
@@ -26,15 +27,15 @@ class EventObserver {
  public:
   void EventDispatchCallback(Event* event) {
     DispatchEventFromNativeUiEvent(
-        event, base::Bind(&EventObserver::OnEvent, base::Unretained(this)));
+        event, base::BindOnce(&EventObserver::OnEvent, base::Unretained(this)));
   }
 
   void OnEvent(Event* event) {
     if (event->IsMouseEvent()) {
       if (event->type() == ET_MOUSEWHEEL) {
-        OnMouseWheelEvent(static_cast<MouseWheelEvent*>(event));
+        OnMouseWheelEvent(event->AsMouseWheelEvent());
       } else {
-        OnMouseEvent(static_cast<MouseEvent*>(event));
+        OnMouseEvent(event->AsMouseEvent());
       }
     }
   }
@@ -77,7 +78,7 @@ class MockCursorEvdev : public CursorDelegateEvdev {
 MATCHER_P4(MatchesMouseEvent, type, button, x, y, "") {
   if (arg->type() != type) {
     *result_listener << "Expected type: " << type << " actual: " << arg->type()
-                     << " (" << arg->name() << ")";
+                     << " (" << arg->GetName() << ")";
     return false;
   }
   if (button == EF_LEFT_MOUSE_BUTTON && !arg->IsLeftMouseButton()) {
@@ -117,7 +118,7 @@ class InputInjectorEvdevTest : public testing::Test {
 
   InputInjectorEvdev injector_;
 
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   base::RunLoop run_loop_;
 
  private:
@@ -125,8 +126,9 @@ class InputInjectorEvdevTest : public testing::Test {
 };
 
 InputInjectorEvdevTest::InputInjectorEvdevTest()
-    : dispatch_callback_(base::Bind(&EventObserver::EventDispatchCallback,
-                                    base::Unretained(&event_observer_))),
+    : dispatch_callback_(
+          base::BindRepeating(&EventObserver::EventDispatchCallback,
+                              base::Unretained(&event_observer_))),
       device_manager_(CreateDeviceManagerForTest()),
       event_factory_(CreateEventFactoryEvdevForTest(
           &cursor_,
@@ -134,8 +136,7 @@ InputInjectorEvdevTest::InputInjectorEvdevTest()
           ui::KeyboardLayoutEngineManager::GetKeyboardLayoutEngine(),
           dispatch_callback_)),
       injector_(CreateDeviceEventDispatcherEvdevForTest(event_factory_.get()),
-                &cursor_) {
-}
+                &cursor_) {}
 
 void InputInjectorEvdevTest::SimulateMouseClick(int x,
                                                 int y,
@@ -170,6 +171,12 @@ TEST_F(InputInjectorEvdevTest, LeftClick) {
 TEST_F(InputInjectorEvdevTest, RightClick) {
   ExpectClick(12, 13, EF_RIGHT_MOUSE_BUTTON, 1);
   SimulateMouseClick(12, 13, EF_RIGHT_MOUSE_BUTTON, 1);
+  run_loop_.RunUntilIdle();
+}
+
+TEST_F(InputInjectorEvdevTest, MiddleClick) {
+  ExpectClick(12, 13, EF_MIDDLE_MOUSE_BUTTON, 1);
+  SimulateMouseClick(12, 13, EF_MIDDLE_MOUSE_BUTTON, 1);
   run_loop_.RunUntilIdle();
 }
 

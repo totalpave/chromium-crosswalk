@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef EXTENSIONS_BROWSER_API_APP_VIEW_APP_VIEW_GUEST_INTERNAL_API_H_
-#define EXTENSIONS_BROWSER_API_APP_VIEW_APP_VIEW_GUEST_INTERNAL_API_H_
+#ifndef EXTENSIONS_BROWSER_API_GUEST_VIEW_APP_VIEW_APP_VIEW_GUEST_INTERNAL_API_H_
+#define EXTENSIONS_BROWSER_API_GUEST_VIEW_APP_VIEW_APP_VIEW_GUEST_INTERNAL_API_H_
 
 #include "base/macros.h"
 #include "extensions/browser/extension_function.h"
@@ -14,7 +14,7 @@ class AppViewGuestInternalAttachFrameFunction
     : public UIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("appViewGuestInternal.attachFrame",
-                             APPVIEWINTERNAL_ATTACHFRAME);
+                             APPVIEWINTERNAL_ATTACHFRAME)
   AppViewGuestInternalAttachFrameFunction();
 
  protected:
@@ -29,7 +29,7 @@ class AppViewGuestInternalDenyRequestFunction
     : public UIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("appViewGuestInternal.denyRequest",
-                             APPVIEWINTERNAL_DENYREQUEST);
+                             APPVIEWINTERNAL_DENYREQUEST)
   AppViewGuestInternalDenyRequestFunction();
 
  protected:
@@ -42,4 +42,4 @@ class AppViewGuestInternalDenyRequestFunction
 
 }  // namespace extensions
 
-#endif  // EXTENSIONS_BROWSER_API_APP_VIEW_APP_VIEW_GUEST_INTERNAL_API_H_
+#endif  // EXTENSIONS_BROWSER_API_GUEST_VIEW_APP_VIEW_APP_VIEW_GUEST_INTERNAL_API_H_

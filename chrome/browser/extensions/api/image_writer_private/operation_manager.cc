@@ -20,10 +20,16 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/common/service_manager_connection.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/notification_types.h"
+#include "services/service_manager/public/cpp/connector.h"
+
+#if defined(OS_CHROMEOS)
+#include "chrome/browser/chromeos/file_manager/path_util.h"
+#endif
 
 namespace image_writer_api = extensions::api::image_writer_private;
 
@@ -53,13 +59,9 @@ OperationManager::~OperationManager() {
 }
 
 void OperationManager::Shutdown() {
-  for (OperationMap::iterator iter = operations_.begin();
-       iter != operations_.end();
-       iter++) {
-    BrowserThread::PostTask(BrowserThread::FILE,
-                            FROM_HERE,
-                            base::Bind(&Operation::Abort,
-                                       iter->second));
+  for (auto iter = operations_.begin(); iter != operations_.end(); iter++) {
+    scoped_refptr<Operation> operation = iter->second;
+    operation->PostTask(base::BindOnce(&Operation::Abort, operation));
   }
 }
 
@@ -68,91 +70,91 @@ void OperationManager::StartWriteFromUrl(
     GURL url,
     const std::string& hash,
     const std::string& device_path,
-    const Operation::StartWriteCallback& callback) {
+    Operation::StartWriteCallback callback) {
 #if defined(OS_CHROMEOS)
   // Chrome OS can only support a single operation at a time.
   if (operations_.size() > 0) {
 #else
-  OperationMap::iterator existing_operation = operations_.find(extension_id);
+  auto existing_operation = operations_.find(extension_id);
 
   if (existing_operation != operations_.end()) {
 #endif
-    return callback.Run(false, error::kOperationAlreadyInProgress);
+
+    std::move(callback).Run(false, error::kOperationAlreadyInProgress);
+    return;
   }
 
+  network::mojom::URLLoaderFactoryPtrInfo url_loader_factory_info;
+  content::BrowserContext::GetDefaultStoragePartition(browser_context_)
+      ->GetURLLoaderFactoryForBrowserProcess()
+      ->Clone(mojo::MakeRequest(&url_loader_factory_info));
+
   scoped_refptr<Operation> operation(new WriteFromUrlOperation(
-      weak_factory_.GetWeakPtr(),
-      extension_id,
-      content::BrowserContext::GetDefaultStoragePartition(browser_context_)->
-          GetURLRequestContext(),
-      url,
-      hash,
-      device_path));
+      weak_factory_.GetWeakPtr(), CreateConnector(), extension_id,
+      std::move(url_loader_factory_info), url, hash, device_path,
+      GetAssociatedDownloadFolder()));
   operations_[extension_id] = operation;
-  BrowserThread::PostTask(BrowserThread::FILE,
-                          FROM_HERE,
-                          base::Bind(&Operation::Start, operation));
-  callback.Run(true, "");
+  operation->PostTask(base::BindOnce(&Operation::Start, operation));
+
+  std::move(callback).Run(true, "");
 }
 
 void OperationManager::StartWriteFromFile(
     const ExtensionId& extension_id,
     const base::FilePath& path,
     const std::string& device_path,
-    const Operation::StartWriteCallback& callback) {
+    Operation::StartWriteCallback callback) {
 #if defined(OS_CHROMEOS)
   // Chrome OS can only support a single operation at a time.
   if (operations_.size() > 0) {
 #else
-  OperationMap::iterator existing_operation = operations_.find(extension_id);
+  auto existing_operation = operations_.find(extension_id);
 
   if (existing_operation != operations_.end()) {
 #endif
-    return callback.Run(false, error::kOperationAlreadyInProgress);
+    std::move(callback).Run(false, error::kOperationAlreadyInProgress);
+    return;
   }
 
   scoped_refptr<Operation> operation(new WriteFromFileOperation(
-      weak_factory_.GetWeakPtr(), extension_id, path, device_path));
+      weak_factory_.GetWeakPtr(), CreateConnector(), extension_id, path,
+      device_path, GetAssociatedDownloadFolder()));
   operations_[extension_id] = operation;
-  BrowserThread::PostTask(BrowserThread::FILE,
-                          FROM_HERE,
-                          base::Bind(&Operation::Start, operation));
-  callback.Run(true, "");
+  operation->PostTask(base::BindOnce(&Operation::Start, operation));
+  std::move(callback).Run(true, "");
 }
 
-void OperationManager::CancelWrite(
-    const ExtensionId& extension_id,
-    const Operation::CancelWriteCallback& callback) {
+void OperationManager::CancelWrite(const ExtensionId& extension_id,
+                                   Operation::CancelWriteCallback callback) {
   Operation* existing_operation = GetOperation(extension_id);
 
   if (existing_operation == NULL) {
-    callback.Run(false, error::kNoOperationInProgress);
+    std::move(callback).Run(false, error::kNoOperationInProgress);
   } else {
-    BrowserThread::PostTask(BrowserThread::FILE,
-                            FROM_HERE,
-                            base::Bind(&Operation::Cancel, existing_operation));
+    existing_operation->PostTask(
+        base::BindOnce(&Operation::Cancel, existing_operation));
     DeleteOperation(extension_id);
-    callback.Run(true, "");
+    std::move(callback).Run(true, "");
   }
 }
 
 void OperationManager::DestroyPartitions(
     const ExtensionId& extension_id,
     const std::string& device_path,
-    const Operation::StartWriteCallback& callback) {
-  OperationMap::iterator existing_operation = operations_.find(extension_id);
+    Operation::StartWriteCallback callback) {
+  auto existing_operation = operations_.find(extension_id);
 
   if (existing_operation != operations_.end()) {
-    return callback.Run(false, error::kOperationAlreadyInProgress);
+    std::move(callback).Run(false, error::kOperationAlreadyInProgress);
+    return;
   }
 
   scoped_refptr<Operation> operation(new DestroyPartitionsOperation(
-      weak_factory_.GetWeakPtr(), extension_id, device_path));
+      weak_factory_.GetWeakPtr(), CreateConnector(), extension_id, device_path,
+      GetAssociatedDownloadFolder()));
   operations_[extension_id] = operation;
-  BrowserThread::PostTask(BrowserThread::FILE,
-                          FROM_HERE,
-                          base::Bind(&Operation::Start, operation));
-  callback.Run(true, "");
+  operation->PostTask(base::BindOnce(&Operation::Start, operation));
+  std::move(callback).Run(true, "");
 }
 
 void OperationManager::OnProgress(const ExtensionId& extension_id,
@@ -213,8 +215,16 @@ void OperationManager::OnError(const ExtensionId& extension_id,
   DeleteOperation(extension_id);
 }
 
+base::FilePath OperationManager::GetAssociatedDownloadFolder() {
+#if defined(OS_CHROMEOS)
+  Profile* profile = Profile::FromBrowserContext(browser_context_);
+  return file_manager::util::GetDownloadsFolderForProfile(profile);
+#endif
+  return base::FilePath();
+}
+
 Operation* OperationManager::GetOperation(const ExtensionId& extension_id) {
-  OperationMap::iterator existing_operation = operations_.find(extension_id);
+  auto existing_operation = operations_.find(extension_id);
 
   if (existing_operation == operations_.end())
     return NULL;
@@ -222,7 +232,7 @@ Operation* OperationManager::GetOperation(const ExtensionId& extension_id) {
 }
 
 void OperationManager::DeleteOperation(const ExtensionId& extension_id) {
-  OperationMap::iterator existing_operation = operations_.find(extension_id);
+  auto existing_operation = operations_.find(extension_id);
   if (existing_operation != operations_.end()) {
     operations_.erase(existing_operation);
   }
@@ -231,8 +241,15 @@ void OperationManager::DeleteOperation(const ExtensionId& extension_id) {
 void OperationManager::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
-    UnloadedExtensionInfo::Reason reason) {
+    UnloadedExtensionReason reason) {
   DeleteOperation(extension->id());
+}
+
+std::unique_ptr<service_manager::Connector>
+OperationManager::CreateConnector() {
+  return content::ServiceManagerConnection::GetForProcess()
+      ->GetConnector()
+      ->Clone();
 }
 
 void OperationManager::Observe(int type,
@@ -262,12 +279,12 @@ OperationManager* OperationManager::Get(content::BrowserContext* context) {
   return BrowserContextKeyedAPIFactory<OperationManager>::Get(context);
 }
 
-static base::LazyInstance<BrowserContextKeyedAPIFactory<OperationManager> >
-    g_factory = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BrowserContextKeyedAPIFactory<OperationManager>>::
+    DestructorAtExit g_operation_manager_factory = LAZY_INSTANCE_INITIALIZER;
 
 BrowserContextKeyedAPIFactory<OperationManager>*
 OperationManager::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_operation_manager_factory.Pointer();
 }
 
 

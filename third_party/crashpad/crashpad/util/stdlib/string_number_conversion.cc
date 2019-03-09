@@ -16,25 +16,13 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <limits>
 
 #include "base/logging.h"
-#include "util/stdlib/cxx.h"
-
-// CONSTEXPR_STATIC_ASSERT will be a normal static_assert if the C++ library is
-// the C++11 library. If using an older C++ library, the
-// std::numeric_limits<>::min() and max() functions will not be marked as
-// constexpr, and thus won’t be usable with static_assert(). In that case, a
-// run-time CHECK() will have to do.
-#if CXX_LIBRARY_HAS_CONSTEXPR
-#define CONSTEXPR_STATIC_ASSERT(condition, message) \
-  static_assert(condition, message)
-#else
-#define CONSTEXPR_STATIC_ASSERT(condition, message) CHECK(condition) << message
-#endif
 
 namespace {
 
@@ -49,16 +37,16 @@ struct StringToIntegerTraits {
     static_assert(std::numeric_limits<TIntType>::is_signed ==
                       std::numeric_limits<TLongType>::is_signed,
                   "IntType and LongType signedness must agree");
-    CONSTEXPR_STATIC_ASSERT(std::numeric_limits<TIntType>::min() >=
-                                    std::numeric_limits<TLongType>::min() &&
-                                std::numeric_limits<TIntType>::min() <
-                                    std::numeric_limits<TLongType>::max(),
-                            "IntType min must be in LongType range");
-    CONSTEXPR_STATIC_ASSERT(std::numeric_limits<TIntType>::max() >
-                                    std::numeric_limits<TLongType>::min() &&
-                                std::numeric_limits<TIntType>::max() <=
-                                    std::numeric_limits<TLongType>::max(),
-                            "IntType max must be in LongType range");
+    static_assert(std::numeric_limits<TIntType>::min() >=
+                          std::numeric_limits<TLongType>::min() &&
+                      std::numeric_limits<TIntType>::min() <
+                          std::numeric_limits<TLongType>::max(),
+                  "IntType min must be in LongType range");
+    static_assert(std::numeric_limits<TIntType>::max() >
+                          std::numeric_limits<TLongType>::min() &&
+                      std::numeric_limits<TIntType>::max() <=
+                          std::numeric_limits<TLongType>::max(),
+                  "IntType max must be in LongType range");
   }
 };
 
@@ -102,14 +90,33 @@ struct StringToUnsignedIntTraits
     : public StringToUnsignedIntegerTraits<unsigned int, unsigned long> {
   static LongType Convert(const char* str, char** end, int base) {
     if (str[0] == '-') {
+      *end = const_cast<char*>(str);
       return 0;
     }
     return strtoul(str, end, base);
   }
 };
 
+struct StringToInt64Traits
+    : public StringToSignedIntegerTraits<int64_t, int64_t> {
+  static LongType Convert(const char* str, char** end, int base) {
+    return strtoll(str, end, base);
+  }
+};
+
+struct StringToUnsignedInt64Traits
+    : public StringToUnsignedIntegerTraits<uint64_t, uint64_t> {
+  static LongType Convert(const char* str, char** end, int base) {
+    if (str[0] == '-') {
+      *end = const_cast<char*>(str);
+      return 0;
+    }
+    return strtoull(str, end, base);
+  }
+};
+
 template <typename Traits>
-bool StringToIntegerInternal(const base::StringPiece& string,
+bool StringToIntegerInternal(const std::string& string,
                              typename Traits::IntType* number) {
   using IntType = typename Traits::IntType;
   using LongType = typename Traits::LongType;
@@ -118,14 +125,6 @@ bool StringToIntegerInternal(const base::StringPiece& string,
 
   if (string.empty() || isspace(string[0])) {
     return false;
-  }
-
-  if (string[string.length()] != '\0') {
-    // The implementations use the C standard library’s conversion routines,
-    // which rely on the strings having a trailing NUL character. std::string
-    // will NUL-terminate.
-    std::string terminated_string(string.data(), string.length());
-    return StringToIntegerInternal<Traits>(terminated_string, number);
   }
 
   errno = 0;
@@ -145,12 +144,20 @@ bool StringToIntegerInternal(const base::StringPiece& string,
 
 namespace crashpad {
 
-bool StringToNumber(const base::StringPiece& string, int* number) {
+bool StringToNumber(const std::string& string, int* number) {
   return StringToIntegerInternal<StringToIntTraits>(string, number);
 }
 
-bool StringToNumber(const base::StringPiece& string, unsigned int* number) {
+bool StringToNumber(const std::string& string, unsigned int* number) {
   return StringToIntegerInternal<StringToUnsignedIntTraits>(string, number);
+}
+
+bool StringToNumber(const std::string& string, int64_t* number) {
+  return StringToIntegerInternal<StringToInt64Traits>(string, number);
+}
+
+bool StringToNumber(const std::string& string, uint64_t* number) {
+  return StringToIntegerInternal<StringToUnsignedInt64Traits>(string, number);
 }
 
 }  // namespace crashpad

@@ -4,22 +4,28 @@
 
 #include "base/allocator/allocator_check.h"
 
+#include "base/allocator/buildflags.h"
 #include "build/build_config.h"
 
 #if defined(OS_WIN)
-#include "base/allocator/allocator_shim_win.h"
+#include "base/allocator/winheap_stubs_win.h"
 #endif
 
 #if defined(OS_LINUX)
 #include <malloc.h>
 #endif
 
+#if defined(OS_MACOSX)
+#include "base/allocator/allocator_interception_mac.h"
+#endif
+
 namespace base {
 namespace allocator {
 
 bool IsAllocatorInitialized() {
-#if defined(OS_WIN) && defined(ALLOCATOR_SHIM)
-  // Set by allocator_shim_win.cc when the shimmed _set_new_mode() is called.
+#if defined(OS_WIN) && BUILDFLAG(USE_ALLOCATOR_SHIM)
+  // Set by allocator_shim_override_ucrt_symbols_win.h when the
+  // shimmed _set_new_mode() is called.
   return g_is_win_shim_layer_initialized;
 #elif defined(OS_LINUX) && defined(USE_TCMALLOC) && \
     !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
@@ -28,6 +34,9 @@ bool IsAllocatorInitialized() {
 #define TC_MALLOPT_IS_OVERRIDDEN_BY_TCMALLOC 0xbeef42
   return (mallopt(TC_MALLOPT_IS_OVERRIDDEN_BY_TCMALLOC, 0) ==
           TC_MALLOPT_IS_OVERRIDDEN_BY_TCMALLOC);
+#elif defined(OS_MACOSX) && !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
+  // From allocator_interception_mac.mm.
+  return base::allocator::g_replaced_default_zone;
 #else
   return true;
 #endif

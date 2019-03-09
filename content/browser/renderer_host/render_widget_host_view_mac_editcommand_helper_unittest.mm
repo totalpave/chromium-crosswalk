@@ -9,14 +9,17 @@
 #include <stdint.h>
 
 #include "base/mac/scoped_nsautorelease_pool.h"
-#include "base/message_loop/message_loop.h"
-#include "content/browser/compositor/test/no_transport_image_transport_factory.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "content/browser/compositor/test/test_image_transport_factory.h"
 #include "content/browser/gpu/compositor_util.h"
 #include "content/browser/renderer_host/render_widget_host_delegate.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/common/input_messages.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/test/mock_widget_impl.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -33,15 +36,15 @@ using content::RenderWidgetHostViewMac;
 @end
 
 // Class that owns a RenderWidgetHostViewMac.
-@interface RenderWidgetHostViewMacOwner :
-    NSObject<RenderWidgetHostViewMacOwner> {
+@interface RenderWidgetHostNSViewClientOwner
+    : NSObject<RenderWidgetHostNSViewClientOwner> {
   RenderWidgetHostViewMac* rwhvm_;
 }
 
 - (id)initWithRenderWidgetHostViewMac:(RenderWidgetHostViewMac*)rwhvm;
 @end
 
-@implementation RenderWidgetHostViewMacOwner
+@implementation RenderWidgetHostNSViewClientOwner
 
 - (id)initWithRenderWidgetHostViewMac:(RenderWidgetHostViewMac*)rwhvm {
   if ((self = [super init])) {
@@ -50,7 +53,7 @@ using content::RenderWidgetHostViewMac;
   return self;
 }
 
-- (RenderWidgetHostViewMac*)renderWidgetHostViewMac {
+- (content::mojom::RenderWidgetHostNSViewClient*)renderWidgetHostNSViewClient {
   return rwhvm_;
 }
 
@@ -72,71 +75,82 @@ bool CheckObjectRespondsToEditCommands(NSArray* edit_commands, id test_obj) {
   return true;
 }
 
-class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
+class RenderWidgetHostDelegateEditCommandCounter
+    : public RenderWidgetHostDelegate {
  public:
-  MockRenderWidgetHostDelegate() {}
-  ~MockRenderWidgetHostDelegate() override {}
-
-  private:
-   void Cut() override {}
-   void Copy() override {}
-   void Paste() override {}
-   void SelectAll() override {}
-};
-
-// Create a RenderWidget for which we can filter messages.
-class RenderWidgetHostEditCommandCounter : public RenderWidgetHostImpl {
- public:
-  RenderWidgetHostEditCommandCounter(RenderWidgetHostDelegate* delegate,
-                                     RenderProcessHost* process,
-                                     int32_t routing_id)
-      : RenderWidgetHostImpl(delegate, process, routing_id, false),
-        edit_command_message_count_(0) {}
-
-  bool Send(IPC::Message* message) override {
-    if (message->type() == InputMsg_ExecuteEditCommand::ID)
-      edit_command_message_count_++;
-    return RenderWidgetHostImpl::Send(message);
-  }
-
+  RenderWidgetHostDelegateEditCommandCounter()
+      : edit_command_message_count_(0) {}
+  ~RenderWidgetHostDelegateEditCommandCounter() override {}
   unsigned int edit_command_message_count_;
+
+ private:
+  void ExecuteEditCommand(
+      const std::string& command,
+      const base::Optional<base::string16>& value) override {
+    edit_command_message_count_++;
+  }
+  void Cut() override {}
+  void Copy() override {}
+  void Paste() override {}
+  void SelectAll() override {}
 };
 
 class RenderWidgetHostViewMacEditCommandHelperTest : public PlatformTest {
  protected:
   void SetUp() override {
-    ImageTransportFactory::InitializeForUnitTests(
-        std::unique_ptr<ImageTransportFactory>(
-            new NoTransportImageTransportFactory));
+    ImageTransportFactory::SetFactory(
+        std::make_unique<TestImageTransportFactory>());
   }
   void TearDown() override { ImageTransportFactory::Terminate(); }
+
+ private:
+  base::test::ScopedTaskEnvironment task_environment_;
+};
+
+class RenderWidgetHostViewMacEditCommandHelperWithTaskEnvTest
+    : public PlatformTest {
+ protected:
+  void SetUp() override {
+    ImageTransportFactory::SetFactory(
+        std::make_unique<TestImageTransportFactory>());
+  }
+  void TearDown() override { ImageTransportFactory::Terminate(); }
+
+ private:
+  // This has a MessageLoop for ImageTransportFactory and enables
+  // BrowserThread::UI for RecyclableCompositorMac used by
+  // RenderWidgetHostViewMac.
+  content::TestBrowserThreadBundle thread_bundle_;
 };
 
 }  // namespace
 
 // Tests that editing commands make it through the pipeline all the way to
 // RenderWidgetHost.
-TEST_F(RenderWidgetHostViewMacEditCommandHelperTest,
+TEST_F(RenderWidgetHostViewMacEditCommandHelperWithTaskEnvTest,
        TestEditingCommandDelivery) {
-  MockRenderWidgetHostDelegate delegate;
+  RenderWidgetHostDelegateEditCommandCounter delegate;
   TestBrowserContext browser_context;
-  MockRenderProcessHost process_host(&browser_context);
+  MockRenderProcessHostFactory process_host_factory;
+  RenderProcessHost* process_host =
+      process_host_factory.CreateRenderProcessHost(&browser_context, nullptr);
 
   // Populates |g_supported_scale_factors|.
   std::vector<ui::ScaleFactor> supported_factors;
   supported_factors.push_back(ui::SCALE_FACTOR_100P);
   ui::test::ScopedSetSupportedScaleFactors scoped_supported(supported_factors);
 
-  int32_t routing_id = process_host.GetNextRoutingID();
-  RenderWidgetHostEditCommandCounter* render_widget =
-      new RenderWidgetHostEditCommandCounter(&delegate, &process_host,
-                                             routing_id);
-
   base::mac::ScopedNSAutoreleasePool pool;
 
-  base::MessageLoop message_loop;
-  ui::WindowResizeHelperMac::Get()->Init(
-    base::MessageLoop::current()->task_runner());
+  int32_t routing_id = process_host->GetNextRoutingID();
+  mojom::WidgetPtr widget;
+  std::unique_ptr<MockWidgetImpl> widget_impl =
+      std::make_unique<MockWidgetImpl>(mojo::MakeRequest(&widget));
+
+  RenderWidgetHostImpl* render_widget = new RenderWidgetHostImpl(
+      &delegate, process_host, routing_id, std::move(widget), false);
+
+  ui::WindowResizeHelperMac::Get()->Init(base::ThreadTaskRunnerHandle::Get());
 
   // Owned by its |cocoa_view()|, i.e. |rwhv_cocoa|.
   RenderWidgetHostViewMac* rwhv_mac = new RenderWidgetHostViewMac(
@@ -146,8 +160,8 @@ TEST_F(RenderWidgetHostViewMacEditCommandHelperTest,
 
   RenderWidgetHostViewMacEditCommandHelper helper;
   NSArray* edit_command_strings = helper.GetEditSelectorNames();
-  RenderWidgetHostViewMacOwner* rwhwvm_owner =
-      [[[RenderWidgetHostViewMacOwner alloc]
+  RenderWidgetHostNSViewClientOwner* rwhwvm_owner =
+      [[[RenderWidgetHostNSViewClientOwner alloc]
           initWithRenderWidgetHostViewMac:rwhv_mac] autorelease];
 
   helper.AddEditingSelectorsToClass([rwhwvm_owner class]);
@@ -158,7 +172,7 @@ TEST_F(RenderWidgetHostViewMacEditCommandHelperTest,
   }
 
   size_t num_edit_commands = [edit_command_strings count];
-  EXPECT_EQ(render_widget->edit_command_message_count_, num_edit_commands);
+  EXPECT_EQ(delegate.edit_command_message_count_, num_edit_commands);
   rwhv_cocoa.reset();
   pool.Recycle();
 
@@ -201,8 +215,8 @@ TEST_F(RenderWidgetHostViewMacEditCommandHelperTest,
 // Test RenderWidgetHostViewMacEditCommandHelper::IsMenuItemEnabled.
 TEST_F(RenderWidgetHostViewMacEditCommandHelperTest, TestMenuItemEnabling) {
   RenderWidgetHostViewMacEditCommandHelper helper;
-  RenderWidgetHostViewMacOwner* rwhvm_owner =
-      [[[RenderWidgetHostViewMacOwner alloc] init] autorelease];
+  RenderWidgetHostNSViewClientOwner* rwhvm_owner =
+      [[[RenderWidgetHostNSViewClientOwner alloc] init] autorelease];
 
   // The select all menu should always be enabled.
   SEL select_all = NSSelectorFromString(@"selectAll:");

@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_PRERENDER_EXTERNAL_PRERENDER_HANDLER_ANDROID_H_
 #define CHROME_BROWSER_PRERENDER_EXTERNAL_PRERENDER_HANDLER_ANDROID_H_
 
-#include <jni.h>
-
 #include <memory>
 
 #include "base/android/scoped_java_ref.h"
@@ -29,15 +27,18 @@ class ExternalPrerenderHandlerAndroid {
 
   // Add a prerender with the given url and referrer on the PrerenderManager of
   // the given profile. This is restricted to a single prerender at a time.
-  bool AddPrerender(JNIEnv* env,
-                    const base::android::JavaParamRef<jobject>& obj,
-                    const base::android::JavaParamRef<jobject>& profile,
-                    const base::android::JavaParamRef<jobject>& jweb_contents,
-                    const base::android::JavaParamRef<jstring>& url,
-                    const base::android::JavaParamRef<jstring>& referrer,
-                    jint width,
-                    jint height,
-                    jboolean prerender_on_cellular);
+  base::android::ScopedJavaLocalRef<jobject> AddPrerender(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& profile,
+      const base::android::JavaParamRef<jobject>& jweb_contents,
+      const base::android::JavaParamRef<jstring>& url,
+      const base::android::JavaParamRef<jstring>& referrer,
+      jint top,
+      jint left,
+      jint bottom,
+      jint right,
+      jboolean forced_prerender);
 
   // Cancel the prerender associated with the prerender_handle_
   void CancelCurrentPrerender(
@@ -50,14 +51,13 @@ class ExternalPrerenderHandlerAndroid {
                                 GURL url,
                                 content::WebContents* web_contents);
 
-  // Whether the PrerenderManager associated with the given profile has any
-  // prerenders for the url, and the prerender has finished loading.
-  static bool HasPrerenderedAndFinishedLoadingUrl(
-      Profile* profile,
-      GURL url,
-      content::WebContents* web_contents);
+  // Whether the PrerenderManager identified by |profile| has recently
+  // prefetched the |url|.
+  static bool HasRecentlyPrefetchedUrlForTesting(Profile* profile, GURL url);
 
-  static bool RegisterExternalPrerenderHandlerAndroid(JNIEnv* env);
+  // Clears the information about recent prefetches in the PrerenderManager
+  // identified by |profile|.
+  static bool ClearPrefetchInformationForTesting(Profile* profile);
 
  private:
   virtual ~ExternalPrerenderHandlerAndroid();

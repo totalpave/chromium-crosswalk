@@ -11,7 +11,9 @@
 #include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace remoting {
@@ -32,7 +34,7 @@ class CertificateWatcherTest : public testing::Test {
         base::Unretained(this)),
         task_runner_));
     watcher_->SetDelayForTests(base::TimeDelta::FromSeconds(0));
-    watcher_->SetWatchPathForTests(temp_dir_.path());
+    watcher_->SetWatchPathForTests(temp_dir_.GetPath());
   }
 
   ~CertificateWatcherTest() override {
@@ -64,34 +66,33 @@ class CertificateWatcherTest : public testing::Test {
 
   void Connect() {
     task_runner_->PostTask(
-        FROM_HERE,
-        base::Bind(&CertificateWatcher::OnClientConnected,
-                   base::Unretained(watcher_.get()), ""));
+        FROM_HERE, base::BindOnce(&CertificateWatcher::OnClientConnected,
+                                  base::Unretained(watcher_.get()), ""));
   }
 
   void Disconnect() {
     task_runner_->PostTask(
-        FROM_HERE,
-        base::Bind(&CertificateWatcher::OnClientDisconnected,
-                   base::Unretained(watcher_.get()), ""));
+        FROM_HERE, base::BindOnce(&CertificateWatcher::OnClientDisconnected,
+                                  base::Unretained(watcher_.get()), ""));
   }
 
   void TouchFile(const char* filename) {
-    task_runner_->PostTask(FROM_HERE,
-                           base::Bind(&CertificateWatcherTest::TouchFileTask,
-                                      base::Unretained(this), filename));
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&CertificateWatcherTest::TouchFileTask,
+                                  base::Unretained(this), filename));
   }
 
   void TouchFileTask(const char* filename) {
     std::string testWriteString = std::to_string(rand());
-    base::FilePath path = temp_dir_.path().AppendASCII(filename);
+    base::FilePath path = temp_dir_.GetPath().AppendASCII(filename);
 
     if (base::PathExists(path)) {
       EXPECT_TRUE(base::AppendToFile(path, testWriteString.c_str(),
                                      testWriteString.length()));
     } else {
-      EXPECT_TRUE(base::WriteFile(path, testWriteString.c_str(),
-                                  testWriteString.length()));
+      EXPECT_EQ(static_cast<int>(testWriteString.length()),
+                base::WriteFile(path, testWriteString.c_str(),
+                                testWriteString.length()));
     }
   }
 

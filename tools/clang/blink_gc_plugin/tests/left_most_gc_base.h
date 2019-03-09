@@ -20,10 +20,19 @@ class DerivedLeft : public Left, public Right { };
 
 class C : public GarbageCollected<C> {
 public:
-    virtual void trace(Visitor*);
+    virtual void Trace(Visitor*);
 };
 
 class IllFormed : public A, public C { }; // Error
+
+class LeftMixin : public GarbageCollectedMixin {
+public:
+    virtual void Trace(Visitor*);
+};
+
+class DerivedLeftMixin : public LeftMixin, public GarbageCollected<DerivedLeftMixin> {
+  USING_GARBAGE_COLLECTED_MIXIN(DerivedLeftMixin);
+};
 
 }
 

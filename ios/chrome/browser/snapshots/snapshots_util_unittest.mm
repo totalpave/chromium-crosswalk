@@ -7,11 +7,15 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-#include "base/ios/ios_util.h"
 #include "base/mac/foundation_util.h"
 #include "base/path_service.h"
 #include "base/strings/sys_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/platform_test.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 
@@ -35,16 +39,15 @@ bool RegexMatchesOneSnapshotPath(NSString* regexString) {
   return numberOfMatches == 1;
 }
 
-TEST(SnapshotsUtilTest, TestSnapshotList) {
+using SnapshotsUtilTest = PlatformTest;
+
+TEST_F(SnapshotsUtilTest, TestSnapshotList) {
   NSString* scaleModifier = @"";
   CGFloat scale = [UIScreen mainScreen].scale;
   if (scale > 1) {
     scaleModifier = [NSString stringWithFormat:@"@%.0fx", scale];
   }
-  NSString* path = @"Main";
-  if (base::ios::IsRunningOnIOS8OrLater()) {
-    path = base::SysUTF8ToNSString(base::mac::BaseBundleID());
-  }
+  NSString* path = base::SysUTF8ToNSString(base::mac::BaseBundleID());
   NSString* filename = @"UIApplicationAutomaticSnapshotDefault-LandscapeRight";
   NSString* regex = [NSString
       stringWithFormat:@".*/%@/%@%@.png$", path, filename, scaleModifier];

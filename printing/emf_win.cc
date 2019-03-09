@@ -6,141 +6,24 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <memory>
 
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/win/scoped_gdi_object.h"
-#include "base/win/scoped_hdc.h"
-#include "base/win/scoped_select_object.h"
+#include "base/numerics/safe_conversions.h"
 #include "skia/ext/skia_utils_win.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/codec/png_codec.h"
-#include "ui/gfx/gdi_util.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
-namespace {
-
-int CALLBACK IsAlphaBlendUsedEnumProc(HDC,
-                                      HANDLETABLE*,
-                                      const ENHMETARECORD *record,
-                                      int,
-                                      LPARAM data) {
-  bool* result = reinterpret_cast<bool*>(data);
-  if (!result)
-    return 0;
-  switch (record->iType) {
-    case EMR_ALPHABLEND: {
-      *result = true;
-      return 0;
-      break;
-    }
-  }
-  return 1;
-}
-
-int CALLBACK RasterizeAlphaBlendProc(HDC metafile_dc,
-                                     HANDLETABLE* handle_table,
-                                     const ENHMETARECORD *record,
-                                     int num_objects,
-                                     LPARAM data) {
-    HDC bitmap_dc = *reinterpret_cast<HDC*>(data);
-    // Play this command to the bitmap DC.
-    ::PlayEnhMetaFileRecord(bitmap_dc, handle_table, record, num_objects);
-    switch (record->iType) {
-    case EMR_ALPHABLEND: {
-      const EMRALPHABLEND* alpha_blend =
-          reinterpret_cast<const EMRALPHABLEND*>(record);
-      // Don't modify transformation here.
-      // Old implementation did reset transformations for DC to identity matrix.
-      // That was not correct and cause some bugs, like unexpected cropping.
-      // EMRALPHABLEND is rendered into bitmap and metafile contexts with
-      // current transformation. If we don't touch them here BitBlt will copy
-      // same areas.
-      ::BitBlt(metafile_dc,
-               alpha_blend->xDest,
-               alpha_blend->yDest,
-               alpha_blend->cxDest,
-               alpha_blend->cyDest,
-               bitmap_dc,
-               alpha_blend->xDest,
-               alpha_blend->yDest,
-               SRCCOPY);
-      break;
-    }
-    case EMR_CREATEBRUSHINDIRECT:
-    case EMR_CREATECOLORSPACE:
-    case EMR_CREATECOLORSPACEW:
-    case EMR_CREATEDIBPATTERNBRUSHPT:
-    case EMR_CREATEMONOBRUSH:
-    case EMR_CREATEPALETTE:
-    case EMR_CREATEPEN:
-    case EMR_DELETECOLORSPACE:
-    case EMR_DELETEOBJECT:
-    case EMR_EXTCREATEFONTINDIRECTW:
-      // Play object creation command only once.
-      break;
-
-    default:
-      // Play this command to the metafile DC.
-      ::PlayEnhMetaFileRecord(metafile_dc, handle_table, record, num_objects);
-      break;
-    }
-    return 1;  // Continue enumeration
-}
-
-// Bitmapt for rasterization.
-class RasterBitmap {
- public:
-  explicit RasterBitmap(const gfx::Size& raster_size)
-      : saved_object_(NULL) {
-    context_.Set(::CreateCompatibleDC(NULL));
-    if (!context_.IsValid()) {
-      NOTREACHED() << "Bitmap DC creation failed";
-      return;
-    }
-    ::SetGraphicsMode(context_.Get(), GM_ADVANCED);
-    void* bits = NULL;
-    gfx::Rect bitmap_rect(raster_size);
-    gfx::CreateBitmapHeader(raster_size.width(), raster_size.height(),
-                            &header_.bmiHeader);
-    bitmap_.reset(CreateDIBSection(context_.Get(), &header_, DIB_RGB_COLORS,
-                                   &bits, NULL, 0));
-    if (!bitmap_.is_valid())
-      NOTREACHED() << "Raster bitmap creation for printing failed";
-
-    saved_object_ = ::SelectObject(context_.Get(), bitmap_.get());
-    RECT rect = bitmap_rect.ToRECT();
-    ::FillRect(context_.Get(), &rect,
-               static_cast<HBRUSH>(::GetStockObject(WHITE_BRUSH)));
-  }
-
-  ~RasterBitmap() {
-    ::SelectObject(context_.Get(), saved_object_);
-  }
-
-  HDC context() const {
-    return context_.Get();
-  }
-
-  base::win::ScopedCreateDC context_;
-  BITMAPINFO header_;
-  base::win::ScopedBitmap bitmap_;
-  HGDIOBJ saved_object_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(RasterBitmap);
-};
-
-
-
-}  // namespace
-
 namespace printing {
+
+namespace {
 
 bool DIBFormatNativelySupported(HDC dc, uint32_t escape, const BYTE* bits,
                                 int size) {
@@ -153,8 +36,9 @@ bool DIBFormatNativelySupported(HDC dc, uint32_t escape, const BYTE* bits,
   return !!supported;
 }
 
-Emf::Emf() : emf_(NULL), hdc_(NULL) {
-}
+}  // namespace
+
+Emf::Emf() : emf_(nullptr), hdc_(nullptr) {}
 
 Emf::~Emf() {
   Close();
@@ -164,43 +48,47 @@ void Emf::Close() {
   DCHECK(!hdc_);
   if (emf_)
     DeleteEnhMetaFile(emf_);
-  emf_ = NULL;
+  emf_ = nullptr;
 }
 
 bool Emf::InitToFile(const base::FilePath& metafile_path) {
   DCHECK(!emf_ && !hdc_);
-  hdc_ = CreateEnhMetaFile(NULL, metafile_path.value().c_str(), NULL, NULL);
+  hdc_ = CreateEnhMetaFile(nullptr, metafile_path.value().c_str(), nullptr,
+                           nullptr);
   DCHECK(hdc_);
-  return hdc_ != NULL;
+  return !!hdc_;
 }
 
 bool Emf::InitFromFile(const base::FilePath& metafile_path) {
   DCHECK(!emf_ && !hdc_);
   emf_ = GetEnhMetaFile(metafile_path.value().c_str());
   DCHECK(emf_);
-  return emf_ != NULL;
+  return !!emf_;
 }
 
 bool Emf::Init() {
   DCHECK(!emf_ && !hdc_);
-  hdc_ = CreateEnhMetaFile(NULL, NULL, NULL, NULL);
+  hdc_ = CreateEnhMetaFile(nullptr, nullptr, nullptr, nullptr);
   DCHECK(hdc_);
-  return hdc_ != NULL;
+  return !!hdc_;
 }
 
-bool Emf::InitFromData(const void* src_buffer, uint32_t src_buffer_size) {
+bool Emf::InitFromData(const void* src_buffer, size_t src_buffer_size) {
   DCHECK(!emf_ && !hdc_);
-  emf_ = SetEnhMetaFileBits(src_buffer_size,
+  if (!base::IsValueInRangeForNumericType<UINT>(src_buffer_size))
+    return false;
+
+  emf_ = SetEnhMetaFileBits(static_cast<UINT>(src_buffer_size),
                             reinterpret_cast<const BYTE*>(src_buffer));
-  return emf_ != NULL;
+  return !!emf_;
 }
 
 bool Emf::FinishDocument() {
   DCHECK(!emf_ && hdc_);
   emf_ = CloseEnhMetaFile(hdc_);
   DCHECK(emf_);
-  hdc_ = NULL;
-  return emf_ != NULL;
+  hdc_ = nullptr;
+  return !!emf_;
 }
 
 bool Emf::Playback(HDC hdc, const RECT* rect) const {
@@ -259,7 +147,7 @@ HDC Emf::context() const {
 
 uint32_t Emf::GetDataSize() const {
   DCHECK(emf_ && !hdc_);
-  return GetEnhMetaFileBits(emf_, 0, NULL);
+  return GetEnhMetaFileBits(emf_, 0, nullptr);
 }
 
 bool Emf::GetData(void* buffer, uint32_t size) const {
@@ -351,12 +239,11 @@ bool Emf::Record::SafePlayback(Emf::EnumerationContext* context) const {
   const XFORM* base_matrix = context->base_matrix;
   switch (record()->iType) {
     case EMR_STRETCHDIBITS: {
-      const EMRSTRETCHDIBITS * sdib_record =
+      const EMRSTRETCHDIBITS* sdib_record =
           reinterpret_cast<const EMRSTRETCHDIBITS*>(record());
       const BYTE* record_start = reinterpret_cast<const BYTE *>(record());
-      const BITMAPINFOHEADER *bmih =
-          reinterpret_cast<const BITMAPINFOHEADER *>(record_start +
-                                                     sdib_record->offBmiSrc);
+      const BITMAPINFOHEADER* bmih = reinterpret_cast<const BITMAPINFOHEADER*>(
+          record_start + sdib_record->offBmiSrc);
       const BYTE* bits = record_start + sdib_record->offBitsSrc;
       bool play_normally = true;
       res = false;
@@ -372,23 +259,24 @@ bool Emf::Record::SafePlayback(Emf::EnumerationContext* context) const {
         if (!DIBFormatNativelySupported(hdc, CHECKPNGFORMAT, bits,
                                         bmih->biSizeImage)) {
           play_normally = false;
-          bitmap.reset(new SkBitmap());
+          bitmap = std::make_unique<SkBitmap>();
           gfx::PNGCodec::Decode(bits, bmih->biSizeImage, bitmap.get());
         }
       }
-      if (!play_normally) {
+      if (play_normally) {
+        res = Play(context);
+      } else {
         DCHECK(bitmap.get());
         if (bitmap.get()) {
-          SkAutoLockPixels lock(*bitmap.get());
           DCHECK_EQ(bitmap->colorType(), kN32_SkColorType);
           const uint32_t* pixels =
               static_cast<const uint32_t*>(bitmap->getPixels());
-          if (pixels == NULL) {
+          if (!pixels) {
             NOTREACHED();
             return false;
           }
           BITMAPINFOHEADER bmi = {0};
-          gfx::CreateBitmapHeader(bitmap->width(), bitmap->height(), &bmi);
+          skia::CreateBitmapHeader(bitmap->width(), bitmap->height(), &bmi);
           res = (0 != StretchDIBits(hdc, sdib_record->xDest, sdib_record->yDest,
                                     sdib_record->cxDest,
                                     sdib_record->cyDest, sdib_record->xSrc,
@@ -399,8 +287,6 @@ bool Emf::Record::SafePlayback(Emf::EnumerationContext* context) const {
                                     sdib_record->iUsageSrc,
                                     sdib_record->dwRop));
         }
-      } else {
-        res = Play(context);
       }
       break;
     }
@@ -513,97 +399,5 @@ int CALLBACK Emf::Enumerator::EnhMetaFileProc(HDC hdc,
   emf.items_.push_back(Record(record));
   return 1;
 }
-
-bool Emf::IsAlphaBlendUsed() const {
-  bool result = false;
-  ::EnumEnhMetaFile(NULL,
-                    emf(),
-                    &IsAlphaBlendUsedEnumProc,
-                    &result,
-                    NULL);
-  return result;
-}
-
-std::unique_ptr<Emf> Emf::RasterizeMetafile(int raster_area_in_pixels) const {
-  gfx::Rect page_bounds = GetPageBounds(1);
-  gfx::Size page_size(page_bounds.size());
-  if (page_size.GetArea() <= 0) {
-    NOTREACHED() << "Metafile is empty";
-    page_bounds = gfx::Rect(1, 1);
-  }
-
-  float scale = sqrt(
-      static_cast<float>(raster_area_in_pixels) / page_size.GetArea());
-  page_size.set_width(std::max<int>(1, page_size.width() * scale));
-  page_size.set_height(std::max<int>(1, page_size.height() * scale));
-
-
-  RasterBitmap bitmap(page_size);
-
-  gfx::Rect bitmap_rect(page_size);
-  RECT rect = bitmap_rect.ToRECT();
-  Playback(bitmap.context(), &rect);
-
-  std::unique_ptr<Emf> result(new Emf);
-  result->Init();
-  HDC hdc = result->context();
-  DCHECK(hdc);
-  skia::InitializeDC(hdc);
-
-  // Params are ignored.
-  result->StartPage(page_bounds.size(), page_bounds, 1);
-
-  ::ModifyWorldTransform(hdc, NULL, MWT_IDENTITY);
-  XFORM xform = {
-    static_cast<float>(page_bounds.width()) / bitmap_rect.width(),
-    0,
-    0,
-    static_cast<float>(page_bounds.height()) / bitmap_rect.height(),
-    static_cast<float>(page_bounds.x()),
-    static_cast<float>(page_bounds.y()),
-  };
-  ::SetWorldTransform(hdc, &xform);
-  ::BitBlt(hdc, 0, 0, bitmap_rect.width(), bitmap_rect.height(),
-           bitmap.context(), bitmap_rect.x(), bitmap_rect.y(), SRCCOPY);
-
-  result->FinishPage();
-  result->FinishDocument();
-
-  return result;
-}
-
-std::unique_ptr<Emf> Emf::RasterizeAlphaBlend() const {
-  gfx::Rect page_bounds = GetPageBounds(1);
-  if (page_bounds.size().GetArea() <= 0) {
-    NOTREACHED() << "Metafile is empty";
-    page_bounds = gfx::Rect(1, 1);
-  }
-
-  RasterBitmap bitmap(page_bounds.size());
-
-  // Map metafile page_bounds.x(), page_bounds.y() to bitmap 0, 0.
-  XFORM xform = {1,
-                 0,
-                 0,
-                 1,
-                 static_cast<float>(-page_bounds.x()),
-                 static_cast<float>(-page_bounds.y())};
-  ::SetWorldTransform(bitmap.context(), &xform);
-
-  std::unique_ptr<Emf> result(new Emf);
-  result->Init();
-  HDC hdc = result->context();
-  DCHECK(hdc);
-  skia::InitializeDC(hdc);
-
-  HDC bitmap_dc = bitmap.context();
-  RECT rect = page_bounds.ToRECT();
-  ::EnumEnhMetaFile(hdc, emf(), &RasterizeAlphaBlendProc, &bitmap_dc, &rect);
-
-  result->FinishDocument();
-
-  return result;
-}
-
 
 }  // namespace printing

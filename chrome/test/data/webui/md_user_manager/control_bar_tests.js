@@ -5,17 +5,17 @@
 cr.define('user_manager.control_bar_tests', function() {
   /** @return {!ControlBarElement} */
   function createElement() {
-    var controlBarElement = document.createElement('control-bar');
+    const controlBarElement = document.createElement('control-bar');
     document.body.appendChild(controlBarElement);
     return controlBarElement;
   }
 
   function registerTests() {
     /** @type {?TestProfileBrowserProxy} */
-    var browserProxy = null;
+    let browserProxy = null;
 
     /** @type {?ControlBarElement} */
-    var controlBarElement = null;
+    let controlBarElement = null;
 
     suite('ControlBarTests', function() {
       setup(function() {
@@ -47,9 +47,10 @@ cr.define('user_manager.control_bar_tests', function() {
       test('Can create profile', function() {
         return new Promise(function(resolve, reject) {
           // We expect to go to the 'create-profile' page.
-          controlBarElement.addEventListener('change-page', function(event) {
-            if (event.detail.page == 'create-user-page')
+          listenOnce(controlBarElement, 'change-page', function(event) {
+            if (event.detail.page == 'create-user-page') {
               resolve();
+            }
           });
 
           // Simulate clicking 'Create Profile'.
@@ -66,7 +67,7 @@ cr.define('user_manager.control_bar_tests', function() {
 
     suite('ControlBarTestsAllProfilesAreLocked', function() {
       /** @type {?ErrorDialogElement} */
-      var errorDialogElement = null;
+      let errorDialogElement = null;
 
       setup(function() {
         browserProxy = new TestProfileBrowserProxy();
@@ -82,6 +83,10 @@ cr.define('user_manager.control_bar_tests', function() {
 
       teardown(function(done) {
         controlBarElement.remove();
+        if (errorDialogElement.$.dialog.open) {
+          errorDialogElement.$.dialog.close();
+        }
+
         // Allow asynchronous tasks to finish.
         setTimeout(done);
       });
@@ -95,7 +100,7 @@ cr.define('user_manager.control_bar_tests', function() {
           Polymer.dom.flush();
 
           // The dialog is visible.
-          assertTrue(errorDialogElement.$.dialog.opened);
+          assertTrue(errorDialogElement.$.dialog.open);
         });
       });
 
@@ -108,9 +113,33 @@ cr.define('user_manager.control_bar_tests', function() {
           Polymer.dom.flush();
 
           // The error dialog is visible.
-          assertTrue(errorDialogElement.$.dialog.opened);
+          assertTrue(errorDialogElement.$.dialog.open);
         });
       });
+
+      test('Can create profile with force signin', function() {
+        controlBarElement.isForceSigninEnabled_ = true;
+        Polymer.dom.flush();
+        return new Promise(function(resolve, reject) {
+          // We expect to go to the 'create-profile' page.
+          listenOnce(controlBarElement, 'change-page', function(event) {
+            if (event.detail.page == 'create-user-page') {
+              resolve();
+            }
+          });
+
+          // Simulate clicking 'Create Profile'.
+          MockInteractions.tap(controlBarElement.$.addUser);
+        });
+      });
+
+      test('Can launch guest profile with force sign in', function() {
+        controlBarElement.isForceSigninEnabled_ = true;
+        Polymer.dom.flush();
+        MockInteractions.tap(controlBarElement.$.launchGuest);
+        return browserProxy.whenCalled('launchGuestUser');
+      });
+
     });
   }
 

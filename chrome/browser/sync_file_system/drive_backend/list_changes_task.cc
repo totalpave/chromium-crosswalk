@@ -11,6 +11,7 @@
 #include "base/bind.h"
 #include "base/format_macros.h"
 #include "base/location.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/sync_file_system/drive_backend/drive_backend_util.h"
 #include "chrome/browser/sync_file_system/drive_backend/metadata_database.h"
@@ -75,12 +76,21 @@ void ListChangesTask::DidListChanges(
     return;
   }
 
-  std::vector<google_apis::ChangeResource*> changes;
-  change_list->mutable_items()->release(&changes);
+  auto* mutable_items = change_list->mutable_items();
 
-  change_list_.reserve(change_list_.size() + changes.size());
-  for (size_t i = 0; i < changes.size(); ++i)
-    change_list_.push_back(changes[i]);
+  // google_apis::ChangeList can contain both FileResource and TeamDriveResource
+  // entries. We only care about FileResource entries, so filter out any entries
+  // that are TeamDriveReasource.
+  base::EraseIf(*mutable_items, [](const auto& change_resource) {
+    return change_resource->type() ==
+           google_apis::ChangeResource::ChangeType::TEAM_DRIVE;
+  });
+
+  change_list_.reserve(change_list_.size() + mutable_items->size());
+
+  std::move(mutable_items->begin(), mutable_items->end(),
+            std::back_inserter(change_list_));
+  change_list->mutable_items()->clear();
 
   if (!change_list->next_link().is_empty()) {
     drive_service()->GetRemainingChangeList(

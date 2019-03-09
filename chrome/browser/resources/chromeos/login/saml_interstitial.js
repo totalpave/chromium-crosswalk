@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// <include src="html-echo.js">
+
 Polymer({
   is: 'saml-interstitial',
 
@@ -10,15 +12,9 @@ Polymer({
       type: HTMLElement,
     },
 
-    domain: {
-      type: String,
-      observer: 'onDomainChanged_'
-    },
+    domain: {type: String, observer: 'onDomainChanged_'},
 
-    showDomainMessages_: {
-      type: Boolean,
-      value: false
-    }
+    showDomainMessages_: {type: Boolean, value: false}
   },
   ready: function() {
     this.changeAccountLink = this.$.changeAccountLink;
@@ -28,9 +24,9 @@ Polymer({
   },
   onDomainChanged_: function() {
     this.$.managedBy.textContent =
-      loadTimeData.getStringF('enterpriseInfoMessage', this.domain);
+        loadTimeData.getStringF('enterpriseInfoMessage', this.domain);
     this.$.message.content =
-      loadTimeData.getStringF('samlInterstitialMessage', this.domain);
+        loadTimeData.getStringF('samlInterstitialMessage', this.domain);
     this.showDomainMessages_ = !!this.domain.length;
   },
   onSamlPageNextClicked_: function() {

@@ -153,6 +153,23 @@ function testIdUsage() {
     .then(succeed);
 };
 
+function testIdLimit() {
+  var testName = "testIdLimit";
+  console.log("Starting " + testName);
+  var succeed = succeedTest(testName);
+  var fail = failTest(testName);
+
+  // Notification Ids are limited to 500 characters in length.
+  var id = 'a'.repeat(501);
+
+  create(id, {
+    type: 'basic',
+    iconUrl: red_dot,
+    title: 'My title',
+    message: 'My message'
+  }).then(fail, succeed);
+}
+
 function testBaseFormat() {
   var testName = "testBaseFormat";
   console.log("Starting " + testName);
@@ -169,7 +186,6 @@ function testBaseFormat() {
       priority: 1,
       eventTime: 123457896.12389,
       expandedMessage: "This is a longer expanded message.",
-      isClickable: true
     };
 
     for (var i = 0; i < toDelete.length; i++) {
@@ -233,7 +249,6 @@ function testListItem() {
     priority: 1,
     eventTime: 123457896.12389,
     items: [item, item, item, item, item],
-    isClickable: true
   };
   create("id", options).then(succeed, fail);
 };
@@ -351,6 +366,6 @@ function testOptionalParameters() {
 }
 
 chrome.test.runTests([
-    testIdUsage, testBaseFormat, testListItem, testGetAll, testProgress,
-    testLargeImage, testOptionalParameters
+    testIdUsage, testIdLimit, testBaseFormat, testListItem, testGetAll,
+    testProgress, testLargeImage, testOptionalParameters
 ]);

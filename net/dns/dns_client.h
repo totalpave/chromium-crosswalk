@@ -53,4 +53,3 @@ class NET_EXPORT DnsClient {
 }  // namespace net
 
 #endif  // NET_DNS_DNS_CLIENT_H_
-

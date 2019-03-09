@@ -13,11 +13,6 @@
 #include "chrome/common/extensions/api/autofill_private.h"
 #include "components/autofill/core/browser/personal_data_manager.h"
 
-namespace autofill {
-class AutofillProfile;
-class CreditCard;
-}
-
 namespace extensions {
 
 namespace autofill_util {
@@ -37,6 +32,16 @@ CountryEntryList GenerateCountryList(
 // Uses |personal_data| to generate a list of up-to-date CreditCardEntry
 // objects.
 CreditCardEntryList GenerateCreditCardList(
+    const autofill::PersonalDataManager& personal_data);
+
+// Uses |personal_data| to generate a list of up-to-date local CreditCardEntry
+// objects.
+CreditCardEntryList GenerateLocalCreditCardList(
+    const autofill::PersonalDataManager& personal_data);
+
+// Uses |personal_data| to generate a list of up-to-date server CreditCardEntry
+// objects.
+CreditCardEntryList GenerateServerCreditCardList(
     const autofill::PersonalDataManager& personal_data);
 
 }  // namespace autofill_util

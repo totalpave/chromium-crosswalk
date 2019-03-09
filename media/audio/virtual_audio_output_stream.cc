@@ -7,7 +7,9 @@
 #include <stdint.h>
 
 #include "base/logging.h"
+#include "base/time/time.h"
 #include "media/audio/virtual_audio_input_stream.h"
+#include "media/base/audio_timestamp_helper.h"
 
 namespace media {
 
@@ -56,7 +58,7 @@ void VirtualAudioOutputStream::Close() {
   // If a non-null AfterCloseCallback was provided to the constructor, invoke it
   // here.  The callback is moved to a stack-local first since |this| could be
   // destroyed during Run().
-  if (!after_close_cb_.is_null()) {
+  if (after_close_cb_) {
     const AfterCloseCallback cb = after_close_cb_;
     after_close_cb_.Reset();
     cb.Run(this);
@@ -79,10 +81,10 @@ double VirtualAudioOutputStream::ProvideInput(AudioBus* audio_bus,
   // platform.
   DCHECK(callback_);
 
-  const uint32_t upstream_delay_in_bytes =
-      params_.GetBytesPerFrame() * frames_delayed;
+  const base::TimeDelta delay =
+      AudioTimestampHelper::FramesToTime(frames_delayed, params_.sample_rate());
   const int frames =
-      callback_->OnMoreData(audio_bus, upstream_delay_in_bytes, 0);
+      callback_->OnMoreData(delay, base::TimeTicks::Now(), 0, audio_bus);
   if (frames < audio_bus->frames())
     audio_bus->ZeroFramesPartial(frames, audio_bus->frames() - frames);
 

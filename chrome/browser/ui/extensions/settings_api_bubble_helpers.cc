@@ -25,6 +25,14 @@ namespace extensions {
 
 namespace {
 
+// Whether the NTP bubble is enabled. By default, this is limited to Windows and
+// ChromeOS, but can be overridden for testing.
+#if defined(OS_WIN) || defined(OS_CHROMEOS)
+bool g_ntp_bubble_enabled = true;
+#else
+bool g_ntp_bubble_enabled = false;
+#endif
+
 void ShowSettingsApiBubble(SettingsApiOverrideType type,
                            Browser* browser) {
   ToolbarActionsModel* model = ToolbarActionsModel::Get(browser->profile());
@@ -47,6 +55,10 @@ void ShowSettingsApiBubble(SettingsApiOverrideType type,
 
 }  // namespace
 
+void SetNtpBubbleEnabledForTesting(bool enabled) {
+  g_ntp_bubble_enabled = enabled;
+}
+
 void MaybeShowExtensionControlledHomeNotification(Browser* browser) {
 #if !defined(OS_WIN) && !defined(OS_MACOSX)
   return;
@@ -56,7 +68,6 @@ void MaybeShowExtensionControlledHomeNotification(Browser* browser) {
 }
 
 void MaybeShowExtensionControlledSearchNotification(
-    Profile* profile,
     content::WebContents* web_contents,
     AutocompleteMatch::Type match_type) {
 #if !defined(OS_WIN) && !defined(OS_MACOSX)
@@ -66,18 +77,22 @@ void MaybeShowExtensionControlledSearchNotification(
   if (AutocompleteMatch::IsSearchType(match_type) &&
       match_type != AutocompleteMatchType::SEARCH_OTHER_ENGINE) {
     Browser* browser = chrome::FindBrowserWithWebContents(web_contents);
-    ShowSettingsApiBubble(BUBBLE_TYPE_SEARCH_ENGINE, browser);
+    if (browser)
+      ShowSettingsApiBubble(BUBBLE_TYPE_SEARCH_ENGINE, browser);
   }
 }
 
 void MaybeShowExtensionControlledNewTabPage(
     Browser* browser, content::WebContents* web_contents) {
-#if !defined(OS_WIN)
-  return;
-#endif
+  if (!g_ntp_bubble_enabled)
+    return;
+
+  // Acknowledge existing extensions if necessary.
+  NtpOverriddenBubbleDelegate::MaybeAcknowledgeExistingNtpExtensions(
+      browser->profile());
 
   content::NavigationEntry* entry =
-      web_contents->GetController().GetActiveEntry();
+      web_contents->GetController().GetVisibleEntry();
   if (!entry)
     return;
   GURL active_url = entry->GetURL();

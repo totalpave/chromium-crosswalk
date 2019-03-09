@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "content/renderer/dom_storage/local_storage_cached_area.h"
-#include "third_party/WebKit/public/platform/WebStorageArea.h"
+#include "third_party/blink/public/platform/web_storage_area.h"
 
 namespace content {
 
@@ -22,15 +22,15 @@ class LocalStorageArea : public blink::WebStorageArea {
 
   // blink::WebStorageArea:
   unsigned length() override;
-  blink::WebString key(unsigned index) override;
-  blink::WebString getItem(const blink::WebString& key) override;
-  void setItem(const blink::WebString& key,
+  blink::WebString Key(unsigned index, bool* did_decrease_iterator) override;
+  blink::WebString GetItem(const blink::WebString& key) override;
+  void SetItem(const blink::WebString& key,
                const blink::WebString& value,
                const blink::WebURL& page_url,
                WebStorageArea::Result& result) override;
-  void removeItem(const blink::WebString& key,
+  void RemoveItem(const blink::WebString& key,
                   const blink::WebURL& page_url) override;
-  void clear(const blink::WebURL& url) override;
+  void Clear(const blink::WebURL& url) override;
 
   const std::string& id() const { return id_; }
 

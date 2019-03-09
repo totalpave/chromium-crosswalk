@@ -9,7 +9,6 @@ import android.annotation.TargetApi;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.DialogInterface;
-import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
@@ -34,14 +33,14 @@ import org.chromium.chrome.browser.ChromeVersionInfo;
 import org.chromium.chrome.browser.init.BrowserParts;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.init.EmptyBrowserParts;
+import org.chromium.chrome.browser.notifications.channels.SiteChannelsManager;
 import org.chromium.chrome.browser.preferences.AboutChromePreferences;
-import org.chromium.chrome.browser.preferences.Preferences;
 import org.chromium.chrome.browser.preferences.PreferencesLauncher;
 import org.chromium.chrome.browser.preferences.website.Website.StoredDataClearedCallback;
+import org.chromium.chrome.browser.searchwidget.SearchWidgetProvider;
+import org.chromium.chrome.browser.util.ConversionUtils;
 
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.Collection;
 
 /**
  * This is the target activity for the "Manage Storage" button in the Android Settings UI. This is
@@ -74,7 +73,7 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
 
     private boolean mIsNativeInitialized;
 
-    @SuppressLint("CommitPrefEdits")
+    @SuppressLint({"ApplySharedPref", "CommitPrefEdits"})
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         ensureActivityNotExported();
@@ -121,8 +120,7 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
 
         // Allow reading/writing to disk to check whether the last attempt was successful before
         // kicking off the browser process initialization.
-        StrictMode.ThreadPolicy oldPolicy = StrictMode.allowThreadDiskReads();
-        StrictMode.allowThreadDiskWrites();
+        StrictMode.ThreadPolicy oldPolicy = StrictMode.allowThreadDiskWrites();
         try {
             String productVersion = AboutChromePreferences.getApplicationVersion(
                     this, ChromeVersionInfo.getProductVersion());
@@ -133,6 +131,10 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
                 return;
             }
 
+            // If the native library crashes and kills the browser process, there is no guarantee
+            // java-side the pref will be written before the process dies. We want to make sure we
+            // don't attempt to start the browser process and have it kill chrome. This activity is
+            // used to clear data for the chrome app, so it must be particularly error resistant.
             ContextUtils.getAppSharedPreferences().edit()
                     .putString(PREF_FAILED_BUILD_VERSION, productVersion)
                     .commit();
@@ -189,9 +191,10 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
 
     /** This refreshes the storage numbers by fetching all site permissions. */
     private void refreshStorageNumbers() {
-        WebsitePermissionsFetcher fetcher = new WebsitePermissionsFetcher(new SizeCalculator());
+        WebsitePermissionsFetcher fetcher = new WebsitePermissionsFetcher();
         fetcher.fetchPreferencesForCategory(
-                SiteSettingsCategory.fromString(SiteSettingsCategory.CATEGORY_USE_STORAGE));
+                SiteSettingsCategory.createFromType(SiteSettingsCategory.Type.USE_STORAGE),
+                new SizeCalculator());
     }
 
     /** Data will be cleared once we fetch all site size and important status info. */
@@ -231,17 +234,15 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
             }
             mUnimportantDialog.show();
         } else if (view == mManageSiteDataButton) {
-            Intent intent = PreferencesLauncher.createIntentForSettingsPage(
-                    this, SingleCategoryPreferences.class.getName());
             Bundle initialArguments = new Bundle();
             initialArguments.putString(SingleCategoryPreferences.EXTRA_CATEGORY,
-                    SiteSettingsCategory.CATEGORY_USE_STORAGE);
+                    SiteSettingsCategory.preferenceKey(SiteSettingsCategory.Type.USE_STORAGE));
             initialArguments.putString(SingleCategoryPreferences.EXTRA_TITLE,
                     getString(R.string.website_settings_storage));
-            intent.putExtra(Preferences.EXTRA_SHOW_FRAGMENT_ARGUMENTS, initialArguments);
             RecordHistogram.recordEnumeratedHistogram(
                     "Android.ManageSpace.ActionTaken", OPTION_MANAGE_STORAGE, OPTION_MAX);
-            startActivity(intent);
+            PreferencesLauncher.launchSettingsPage(
+                    this, SingleCategoryPreferences.class, initialArguments);
         } else if (view == mClearAllDataButton) {
             final ActivityManager activityManager =
                     (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
@@ -255,6 +256,11 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
                         RecordHistogram.recordEnumeratedHistogram("Android.ManageSpace.ActionTaken",
                                 OPTION_CLEAR_APP_DATA, OPTION_MAX);
                     }
+
+                    SearchWidgetProvider.reset();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        SiteChannelsManager.getInstance().deleteAllSiteChannels();
+                    }
                     activityManager.clearApplicationUserData();
                 }
             });
@@ -266,35 +272,17 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
     }
 
     private void onSiteStorageSizeCalculated(long totalSize, long unimportantSize) {
+        RecordHistogram.recordCountHistogram("Android.ManageSpace.TotalDiskUsageMB",
+                (int) ConversionUtils.bytesToMegabytes(totalSize));
+        RecordHistogram.recordCountHistogram("Android.ManageSpace.UnimportantDiskUsageMB",
+                (int) ConversionUtils.bytesToMegabytes(unimportantSize));
         mSiteDataSizeText.setText(Formatter.formatFileSize(this, totalSize));
         mUnimportantSiteDataSizeText.setText(Formatter.formatFileSize(this, unimportantSize));
     }
 
-    /** This function takes sites by origin and host and adds them all to one set. */
-    private static Set<Website> collapseAllSites(
-            Map<String, Set<Website>> sitesByOrigin, Map<String, Set<Website>> sitesByHost) {
-        Set<Website> sites = new HashSet<>();
-        // Add sites by origins.
-        for (Map.Entry<String, Set<Website>> element : sitesByOrigin.entrySet()) {
-            for (Website site : element.getValue()) {
-                sites.add(site);
-            }
-        }
-        // Add sites accessible by host name.
-        for (Map.Entry<String, Set<Website>> element : sitesByHost.entrySet()) {
-            for (Website site : element.getValue()) {
-                sites.add(site);
-            }
-        }
-        return sites;
-    }
-
     private class SizeCalculator implements WebsitePermissionsFetcher.WebsitePermissionsCallback {
         @Override
-        public void onWebsitePermissionsAvailable(
-                Map<String, Set<Website>> sitesByOrigin, Map<String, Set<Website>> sitesByHost) {
-            Set<Website> sites = collapseAllSites(sitesByOrigin, sitesByHost);
-
+        public void onWebsitePermissionsAvailable(Collection<Website> sites) {
             long siteStorageSize = 0;
             long importantSiteStorageTotal = 0;
             for (Website site : sites) {
@@ -321,9 +309,10 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
          * asynchronously, and at the end we update the UI with the new storage numbers.
          */
         public void clearData() {
-            WebsitePermissionsFetcher fetcher = new WebsitePermissionsFetcher(this);
+            WebsitePermissionsFetcher fetcher = new WebsitePermissionsFetcher(true);
             fetcher.fetchPreferencesForCategory(
-                    SiteSettingsCategory.fromString(SiteSettingsCategory.CATEGORY_USE_STORAGE));
+                    SiteSettingsCategory.createFromType(SiteSettingsCategory.Type.USE_STORAGE),
+                    this);
         }
 
         @Override
@@ -333,10 +322,7 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
         }
 
         @Override
-        public void onWebsitePermissionsAvailable(
-                Map<String, Set<Website>> sitesByOrigin, Map<String, Set<Website>> sitesByHost) {
-            Set<Website> sites = collapseAllSites(sitesByOrigin, sitesByHost);
-
+        public void onWebsitePermissionsAvailable(Collection<Website> sites) {
             long siteStorageLeft = 0;
             for (Website site : sites) {
                 if (site.getLocalStorageInfo() == null
@@ -347,7 +333,7 @@ public class ManageSpaceActivity extends AppCompatActivity implements View.OnCli
                     siteStorageLeft += site.getTotalUsage();
                 }
             }
-            if (sites.size() == 0) {
+            if (mNumSitesClearing == 0) {
                 onStoredDataCleared();
             }
             onSiteStorageSizeCalculated(siteStorageLeft, 0);

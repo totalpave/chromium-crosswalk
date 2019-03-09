@@ -21,48 +21,14 @@
 namespace IPC {
 namespace internal {
 
-namespace {
-
-// Used by Send() to capture a serialized Channel::Receive message.
-class MessageSerializer : public mojo::MessageReceiverWithResponder {
- public:
-  MessageSerializer() {}
-  ~MessageSerializer() override {}
-
-  mojo::Message* message() { return &message_; }
-
- private:
-  // mojo::MessageReceiverWithResponder
-  bool Accept(mojo::Message* message) override {
-    message->MoveTo(&message_);
-    return true;
-  }
-
-  bool AcceptWithResponder(mojo::Message* message,
-                           mojo::MessageReceiver* responder) override {
-    NOTREACHED();
-    return false;
-  }
-
-  mojo::Message message_;
-
-  DISALLOW_COPY_AND_ASSIGN(MessageSerializer);
-};
-
-}  // namespace
-
 MessagePipeReader::MessagePipeReader(
     mojo::MessagePipeHandle pipe,
     mojom::ChannelAssociatedPtr sender,
     mojo::AssociatedInterfaceRequest<mojom::Channel> receiver,
-    base::ProcessId peer_pid,
     MessagePipeReader::Delegate* delegate)
     : delegate_(delegate),
-      peer_pid_(peer_pid),
       sender_(std::move(sender)),
-      binding_(this, std::move(receiver)),
-      sender_interface_id_(sender_.interface_id()),
-      sender_pipe_(pipe) {
+      binding_(this, std::move(receiver)) {
   sender_.set_connection_error_handler(
       base::Bind(&MessagePipeReader::OnPipeError, base::Unretained(this),
                  MOJO_RESULT_FAILED_PRECONDITION));
@@ -84,48 +50,51 @@ void MessagePipeReader::Close() {
 }
 
 bool MessagePipeReader::Send(std::unique_ptr<Message> message) {
+  CHECK(message->IsValid());
   TRACE_EVENT_WITH_FLOW0(TRACE_DISABLED_BY_DEFAULT("ipc.flow"),
-                         "MessagePipeReader::Send",
-                         message->flags(),
+                         "MessagePipeReader::Send", message->flags(),
                          TRACE_EVENT_FLAG_FLOW_OUT);
-  mojo::Array<mojom::SerializedHandlePtr> handles(nullptr);
+  base::Optional<std::vector<mojo::native::SerializedHandlePtr>> handles;
   MojoResult result = MOJO_RESULT_OK;
   result = ChannelMojo::ReadFromMessageAttachmentSet(message.get(), &handles);
   if (result != MOJO_RESULT_OK)
     return false;
 
-  mojo::Array<uint8_t> data(message->size());
-  std::copy(reinterpret_cast<const uint8_t*>(message->data()),
-            reinterpret_cast<const uint8_t*>(message->data()) + message->size(),
-            &data[0]);
+  if (!sender_)
+    return false;
 
-  MessageSerializer serializer;
-  mojom::ChannelProxy proxy(&serializer);
-  proxy.Receive(std::move(data), std::move(handles));
-  mojo::Message* mojo_message = serializer.message();
-
-  size_t num_handles = mojo_message->handles()->size();
-  DCHECK_LE(num_handles, std::numeric_limits<uint32_t>::max());
-
-  mojo_message->set_interface_id(sender_interface_id_);
-  result = mojo::WriteMessageNew(sender_pipe_, mojo_message->TakeMojoMessage(),
-                                 MOJO_WRITE_MESSAGE_FLAG_NONE);
-
+  sender_->Receive(MessageView(*message, std::move(handles)));
   DVLOG(4) << "Send " << message->type() << ": " << message->size();
-  return result == MOJO_RESULT_OK;
+  return true;
 }
 
-void MessagePipeReader::Receive(
-    mojo::Array<uint8_t> data,
-    mojo::Array<mojom::SerializedHandlePtr> handles) {
-  Message message(
-      data.size() == 0 ? "" : reinterpret_cast<const char*>(&data[0]),
-      static_cast<uint32_t>(data.size()));
-  message.set_sender_pid(peer_pid_);
+void MessagePipeReader::GetRemoteInterface(
+    const std::string& name,
+    mojo::ScopedInterfaceEndpointHandle handle) {
+  if (!sender_.is_bound())
+    return;
+  sender_->GetAssociatedInterface(
+      name, mojom::GenericInterfaceAssociatedRequest(std::move(handle)));
+}
+
+void MessagePipeReader::SetPeerPid(int32_t peer_pid) {
+  delegate_->OnPeerPidReceived(peer_pid);
+}
+
+void MessagePipeReader::Receive(MessageView message_view) {
+  if (!message_view.size()) {
+    delegate_->OnBrokenDataReceived();
+    return;
+  }
+  Message message(message_view.data(), message_view.size());
+  if (!message.IsValid()) {
+    delegate_->OnBrokenDataReceived();
+    return;
+  }
 
   DVLOG(4) << "Receive " << message.type() << ": " << message.size();
-  MojoResult write_result =
-      ChannelMojo::WriteToMessageAttachmentSet(std::move(handles), &message);
+  MojoResult write_result = ChannelMojo::WriteToMessageAttachmentSet(
+      message_view.TakeHandles(), &message);
   if (write_result != MOJO_RESULT_OK) {
     OnPipeError(write_result);
     return;
@@ -138,18 +107,22 @@ void MessagePipeReader::Receive(
   delegate_->OnMessageReceived(message);
 }
 
-void MessagePipeReader::OnPipeError(MojoResult error) {
+void MessagePipeReader::GetAssociatedInterface(
+    const std::string& name,
+    mojom::GenericInterfaceAssociatedRequest request) {
   DCHECK(thread_checker_.CalledOnValidThread());
   if (delegate_)
-    delegate_->OnPipeError();
-  Close();
+    delegate_->OnAssociatedInterfaceRequest(name, request.PassHandle());
 }
 
-void MessagePipeReader::DelayedDeleter::operator()(
-    MessagePipeReader* ptr) const {
-  ptr->Close();
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                base::Bind(&DeleteNow, ptr));
+void MessagePipeReader::OnPipeError(MojoResult error) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+
+  Close();
+
+  // NOTE: The delegate call below may delete |this|.
+  if (delegate_)
+    delegate_->OnPipeError();
 }
 
 }  // namespace internal

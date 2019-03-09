@@ -86,7 +86,8 @@ bool IsBaselinePolicyWatched(int sysno) {
          SyscallSets::IsNuma(sysno) ||
          SyscallSets::IsPrctl(sysno) ||
          SyscallSets::IsProcessGroupOrSession(sysno) ||
-#if defined(__i386__) || defined(__mips__)
+#if defined(__i386__) || \
+    (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_32_BITS))
          SyscallSets::IsSocketCall(sysno) ||
 #endif
 #if defined(__arm__)
@@ -147,7 +148,8 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
   if (sysno == __NR_fcntl)
     return RestrictFcntlCommands();
 
-#if defined(__i386__) || defined(__arm__) || defined(__mips__)
+#if defined(__i386__) || defined(__arm__) || \
+    (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_32_BITS))
   if (sysno == __NR_fcntl64)
     return RestrictFcntlCommands();
 #endif
@@ -169,10 +171,22 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
   if (sysno == __NR_getpriority || sysno ==__NR_setpriority)
     return RestrictGetSetpriority(current_pid);
 
+  if (sysno == __NR_getrandom) {
+    return RestrictGetRandom();
+  }
+
   if (sysno == __NR_madvise) {
-    // Only allow MADV_DONTNEED (aka MADV_FREE).
+    // Only allow MADV_DONTNEED, MADV_RANDOM, MADV_NORMAL and MADV_FREE.
     const Arg<int> advice(2);
-    return If(advice == MADV_DONTNEED, Allow()).Else(Error(EPERM));
+    return If(AnyOf(advice == MADV_DONTNEED,
+                    advice == MADV_RANDOM,
+                    advice == MADV_NORMAL
+#if defined(MADV_FREE)
+                    // MADV_FREE was introduced in Linux 4.5 and started being
+                    // defined in glibc 2.24.
+                    , advice == MADV_FREE
+#endif
+                    ), Allow()).Else(Error(EPERM));
   }
 
 #if defined(__i386__) || defined(__x86_64__) || defined(__mips__) || \
@@ -181,7 +195,8 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
     return RestrictMmapFlags();
 #endif
 
-#if defined(__i386__) || defined(__arm__) || defined(__mips__)
+#if defined(__i386__) || defined(__arm__) || \
+    (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_32_BITS))
   if (sysno == __NR_mmap2)
     return RestrictMmapFlags();
 #endif
@@ -202,6 +217,12 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
     return If(domain == AF_UNIX, Allow()).Else(CrashSIGSYS());
   }
 #endif
+
+  // On Android, for https://crbug.com/701137.
+  // On Desktop, for https://crbug.com/741984.
+  if (sysno == __NR_mincore) {
+    return Allow();
+  }
 
   if (SyscallSets::IsKill(sysno)) {
     return RestrictKillTarget(current_pid, sysno);
@@ -226,7 +247,8 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
     return Error(EPERM);
   }
 
-#if defined(__i386__) || defined(__mips__)
+#if defined(__i386__) || \
+    (defined(ARCH_CPU_MIPS_FAMILY) && defined(ARCH_CPU_32_BITS))
   if (SyscallSets::IsSocketCall(sysno))
     return RestrictSocketcallCommand();
 #endif
@@ -253,9 +275,10 @@ ResultExpr EvaluateSyscallImpl(int fs_denied_errno,
 
 }  // namespace.
 
-// Unfortunately C++03 doesn't allow delegated constructors.
-// Call other constructor when C++11 lands.
-BaselinePolicy::BaselinePolicy() : BaselinePolicy(EPERM) {}
+BaselinePolicy::BaselinePolicy() : BaselinePolicy(EPERM) {
+  // Allocate crash keys set by Seccomp signal handlers.
+  AllocateCrashKeys();
+}
 
 BaselinePolicy::BaselinePolicy(int fs_denied_errno)
     : fs_denied_errno_(fs_denied_errno), policy_pid_(sys_getpid()) {

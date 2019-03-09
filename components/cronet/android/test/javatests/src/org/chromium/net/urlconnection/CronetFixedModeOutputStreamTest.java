@@ -4,19 +4,40 @@
 
 package org.chromium.net.urlconnection;
 
-import android.test.suitebuilder.annotation.SmallTest;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+import org.hamcrest.Description;
+import org.hamcrest.TypeSafeMatcher;
+
+import static org.chromium.net.CronetTestRule.getContext;
+
+import android.support.test.filters.SmallTest;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
-import org.chromium.net.CronetTestBase;
-import org.chromium.net.CronetTestFramework;
+import org.chromium.net.CronetEngine;
+import org.chromium.net.CronetTestRule;
+import org.chromium.net.CronetTestRule.CompareDefaultWithCronet;
+import org.chromium.net.CronetTestRule.OnlyRunCronetHttpURLConnection;
 import org.chromium.net.NativeTestServer;
-import org.chromium.net.UrlRequestException;
+import org.chromium.net.NetworkException;
+import org.chromium.net.impl.CallbackExceptionImpl;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpRetryException;
 import java.net.HttpURLConnection;
-import java.net.ProtocolException;
 import java.net.URL;
 
 /**
@@ -28,24 +49,26 @@ import java.net.URL;
  * {@code OnlyRunCronetHttpURLConnection} only run Cronet's implementation.
  * See {@link CronetTestBase#runTest()} for details.
  */
-public class CronetFixedModeOutputStreamTest extends CronetTestBase {
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        String[] commandLineArgs = {
-                CronetTestFramework.LIBRARY_INIT_KEY,
-                CronetTestFramework.LibraryInitType.HTTP_URL_CONNECTION,
-        };
-        startCronetTestFrameworkWithUrlAndCommandLineArgs(null, commandLineArgs);
+@RunWith(BaseJUnit4ClassRunner.class)
+public class CronetFixedModeOutputStreamTest {
+    @Rule
+    public final CronetTestRule mTestRule = new CronetTestRule();
+
+    @Rule
+    public ExpectedException thrown = ExpectedException.none();
+
+    @Before
+    public void setUp() throws Exception {
+        mTestRule.setStreamHandlerFactory(new CronetEngine.Builder(getContext()).build());
         assertTrue(NativeTestServer.startNativeTestServer(getContext()));
     }
 
-    @Override
-    protected void tearDown() throws Exception {
+    @After
+    public void tearDown() throws Exception {
         NativeTestServer.shutdownNativeTestServer();
-        super.tearDown();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -65,6 +88,25 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    @CompareDefaultWithCronet
+    // Regression test for crbug.com/687600.
+    public void testZeroLengthWriteWithNoResponseBody() throws Exception {
+        URL url = new URL(NativeTestServer.getEchoBodyURL());
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setDoOutput(true);
+        connection.setRequestMethod("POST");
+        connection.setFixedLengthStreamingMode(0);
+        OutputStream out = connection.getOutputStream();
+        out.write(new byte[] {});
+        assertEquals(200, connection.getResponseCode());
+        assertEquals("OK", connection.getResponseMessage());
+        connection.disconnect();
+    }
+
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -84,16 +126,18 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
             fail();
         } catch (IOException e) {
             // Expected.
-            if (!testingSystemHttpURLConnection()) {
-                UrlRequestException requestException = (UrlRequestException) e;
-                assertEquals(UrlRequestException.ERROR_CONNECTION_REFUSED,
-                        requestException.getErrorCode());
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                NetworkException requestException = (NetworkException) e;
+                assertEquals(
+                        NetworkException.ERROR_CONNECTION_REFUSED, requestException.getErrorCode());
             }
         }
+        connection.disconnect();
         // Restarting server to run the test for a second time.
         assertTrue(NativeTestServer.startNativeTestServer(getContext()));
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -109,12 +153,17 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         try {
             OutputStream out = connection.getOutputStream();
             out.write(1);
-            fail();
+            // Forces OutputStream implementation to flush. crbug.com/653072
+            out.flush();
+            // System's implementation is flaky see crbug.com/653072.
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                fail();
+            }
         } catch (IOException e) {
-            if (!testingSystemHttpURLConnection()) {
-                UrlRequestException requestException = (UrlRequestException) e;
-                assertEquals(UrlRequestException.ERROR_CONNECTION_REFUSED,
-                        requestException.getErrorCode());
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                NetworkException requestException = (NetworkException) e;
+                assertEquals(
+                        NetworkException.ERROR_CONNECTION_REFUSED, requestException.getErrorCode());
             }
         }
         // Make sure IOException is reported again when trying to read response
@@ -124,16 +173,17 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
             fail();
         } catch (IOException e) {
             // Expected.
-            if (!testingSystemHttpURLConnection()) {
-                UrlRequestException requestException = (UrlRequestException) e;
-                assertEquals(UrlRequestException.ERROR_CONNECTION_REFUSED,
-                        requestException.getErrorCode());
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                NetworkException requestException = (NetworkException) e;
+                assertEquals(
+                        NetworkException.ERROR_CONNECTION_REFUSED, requestException.getErrorCode());
             }
         }
         // Restarting server to run the test for a second time.
         assertTrue(NativeTestServer.startNativeTestServer(getContext()));
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -163,11 +213,11 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection2.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
-    public void testWriteLessThanContentLength()
-            throws Exception {
+    public void testWriteLessThanContentLength() throws Exception {
         URL url = new URL(NativeTestServer.getEchoBodyURL());
         HttpURLConnection connection =
                 (HttpURLConnection) url.openConnection();
@@ -180,17 +230,17 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         try {
             connection.getResponseCode();
             fail();
-        } catch (ProtocolException e) {
+        } catch (IOException e) {
             // Expected.
         }
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
-    public void testWriteMoreThanContentLength()
-            throws Exception {
+    public void testWriteMoreThanContentLength() throws Exception {
         URL url = new URL(NativeTestServer.getEchoBodyURL());
         HttpURLConnection connection =
                 (HttpURLConnection) url.openConnection();
@@ -204,7 +254,7 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
             // On Lollipop, default implementation only triggers the error when reading response.
             connection.getInputStream();
             fail();
-        } catch (ProtocolException e) {
+        } catch (IOException e) {
             // Expected.
             assertEquals("expected " + (TestUtil.UPLOAD_DATA.length - 1) + " bytes but received "
                             + TestUtil.UPLOAD_DATA.length,
@@ -213,11 +263,11 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
-    public void testWriteMoreThanContentLengthWriteOneByte()
-            throws Exception {
+    public void testWriteMoreThanContentLengthWriteOneByte() throws Exception {
         URL url = new URL(NativeTestServer.getEchoBodyURL());
         HttpURLConnection connection =
                 (HttpURLConnection) url.openConnection();
@@ -235,7 +285,7 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
             // On Lollipop, default implementation only triggers the error when reading response.
             connection.getInputStream();
             fail();
-        } catch (ProtocolException e) {
+        } catch (IOException e) {
             // Expected.
             String expectedVariant = "expected 0 bytes but received 1";
             String expectedVariantOnLollipop = "expected " + (TestUtil.UPLOAD_DATA.length - 1)
@@ -246,6 +296,7 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -264,11 +315,11 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
-    public void testFixedLengthStreamingModeWriteOneByte()
-            throws Exception {
+    public void testFixedLengthStreamingModeWriteOneByte() throws Exception {
         URL url = new URL(NativeTestServer.getEchoBodyURL());
         HttpURLConnection connection =
                 (HttpURLConnection) url.openConnection();
@@ -286,6 +337,7 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -319,11 +371,11 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
-    public void testFixedLengthStreamingModeLargeDataWriteOneByte()
-            throws Exception {
+    public void testFixedLengthStreamingModeLargeDataWriteOneByte() throws Exception {
         URL url = new URL(NativeTestServer.getEchoBodyURL());
         HttpURLConnection connection =
                 (HttpURLConnection) url.openConnection();
@@ -342,6 +394,7 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunCronetHttpURLConnection
@@ -363,6 +416,7 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         }
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -384,10 +438,37 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    private static class CauseMatcher extends TypeSafeMatcher<Throwable> {
+        private final Class<? extends Throwable> mType;
+        private final String mExpectedMessage;
+        private final Class<? extends Throwable> mInnerCauseType;
+        private final String mInnerCauseExpectedMessage;
+
+        public CauseMatcher(Class<? extends Throwable> type, String expectedMessage,
+                Class<? extends Throwable> innerCauseType, String innerCauseExpectedMessage) {
+            this.mType = type;
+            this.mExpectedMessage = expectedMessage;
+            this.mInnerCauseType = innerCauseType;
+            this.mInnerCauseExpectedMessage = innerCauseExpectedMessage;
+        }
+
+        @Override
+        protected boolean matchesSafely(Throwable item) {
+            return item.getClass().isAssignableFrom(mType)
+                    && item.getMessage().equals(mExpectedMessage)
+                    && item.getCause().getClass().isAssignableFrom(mInnerCauseType)
+                    && item.getCause().getMessage().equals(mInnerCauseExpectedMessage);
+        }
+        @Override
+        public void describeTo(Description description) {}
+    }
+
+    @Test
     @SmallTest
     @Feature({"Cronet"})
-    @CompareDefaultWithCronet
-    public void testRewind() throws Exception {
+    @OnlyRunCronetHttpURLConnection
+    public void testRewindWithCronet() throws Exception {
+        assertFalse(mTestRule.testingSystemHttpURLConnection());
         // Post preserving redirect should fail.
         URL url = new URL(NativeTestServer.getRedirectToEchoBody());
         HttpURLConnection connection =
@@ -395,12 +476,14 @@ public class CronetFixedModeOutputStreamTest extends CronetTestBase {
         connection.setDoOutput(true);
         connection.setRequestMethod("POST");
         connection.setFixedLengthStreamingMode(TestUtil.UPLOAD_DATA.length);
-        try {
-            OutputStream out = connection.getOutputStream();
-            out.write(TestUtil.UPLOAD_DATA);
-        } catch (HttpRetryException e) {
-            assertEquals("Cannot retry streamed Http body", e.getMessage());
-        }
+        thrown.expectMessage("Cronet Test failed.");
+        thrown.expectCause(instanceOf(CallbackExceptionImpl.class));
+        thrown.expectCause(new CauseMatcher(CallbackExceptionImpl.class,
+                "Exception received from UploadDataProvider", HttpRetryException.class,
+                "Cannot retry streamed Http body"));
+        OutputStream out = connection.getOutputStream();
+        out.write(TestUtil.UPLOAD_DATA);
+        connection.getResponseCode();
         connection.disconnect();
     }
 }

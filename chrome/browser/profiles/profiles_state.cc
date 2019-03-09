@@ -4,35 +4,39 @@
 
 #include "chrome/browser/profiles/profiles_state.h"
 
-#include <stddef.h>
-
 #include "base/files/file_path.h"
+#include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browsing_data/browsing_data_helper.h"
-#include "chrome/browser/browsing_data/browsing_data_remover.h"
-#include "chrome/browser/browsing_data/browsing_data_remover_factory.h"
-#include "chrome/browser/profiles/gaia_info_update_service.h"
-#include "chrome/browser/profiles/gaia_info_update_service_factory.h"
+#include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/signin/profile_oauth2_token_service_factory.h"
-#include "chrome/browser/signin/signin_error_controller_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/profile_oauth2_token_service.h"
-#include "components/signin/core/common/profile_management_switches.h"
-#include "components/signin/core/common/signin_pref_names.h"
+#include "components/signin/core/browser/account_info.h"
+#include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/resource_dispatcher_host.h"
+#include "services/identity/public/cpp/identity_manager.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/gfx/text_elider.h"
+
+#if defined(OS_CHROMEOS)
+#include "chromeos/login/login_state/login_state.h"
+#else
+#include <algorithm>
+#include "chrome/browser/profiles/gaia_info_update_service.h"
+#include "chrome/browser/profiles/gaia_info_update_service_factory.h"
+#include "chrome/browser/signin/signin_error_controller_factory.h"
+#include "components/signin/core/browser/signin_pref_names.h"
+#endif
 
 namespace profiles {
 
@@ -55,15 +59,26 @@ void RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterStringPref(prefs::kProfileLastUsed, std::string());
   registry->RegisterIntegerPref(prefs::kProfilesNumCreated, 1);
   registry->RegisterListPref(prefs::kProfilesLastActive);
+  registry->RegisterListPref(prefs::kProfilesDeleted);
 
   // Preferences about the user manager.
   registry->RegisterBooleanPref(prefs::kBrowserGuestModeEnabled, true);
   registry->RegisterBooleanPref(prefs::kBrowserAddPersonEnabled, true);
-
-  registry->RegisterBooleanPref(
-      prefs::kProfileAvatarRightClickTutorialDismissed, false);
+  registry->RegisterBooleanPref(prefs::kForceBrowserSignin, false);
 }
 
+void SetLastUsedProfile(const std::string& profile_dir) {
+  // We should never be saving the System Profile as the last one used since it
+  // shouldn't have a browser.
+  if (profile_dir == base::FilePath(chrome::kSystemProfileDir).AsUTF8Unsafe())
+    return;
+
+  PrefService* local_state = g_browser_process->local_state();
+  DCHECK(local_state);
+  local_state->SetString(prefs::kProfileLastUsed, profile_dir);
+}
+
+#if !defined(OS_ANDROID)
 base::string16 GetAvatarNameForProfile(const base::FilePath& profile_path) {
   base::string16 display_name;
 
@@ -96,19 +111,7 @@ base::string16 GetAvatarNameForProfile(const base::FilePath& profile_path) {
   return display_name;
 }
 
-base::string16 GetAvatarButtonTextForProfile(Profile* profile) {
-  const int kMaxCharactersToDisplay = 15;
-  base::string16 name = GetAvatarNameForProfile(profile->GetPath());
-  name = gfx::TruncateString(name,
-                             kMaxCharactersToDisplay,
-                             gfx::CHARACTER_BREAK);
-  if (profile->IsLegacySupervised()) {
-    name = l10n_util::GetStringFUTF16(
-        IDS_LEGACY_SUPERVISED_USER_NEW_AVATAR_LABEL, name);
-  }
-  return name;
-}
-
+#if !defined(OS_CHROMEOS)
 base::string16 GetProfileSwitcherTextForItem(const AvatarMenu::Item& item) {
   if (item.legacy_supervised) {
     return l10n_util::GetStringFUTF16(
@@ -141,21 +144,28 @@ void UpdateProfileName(Profile* profile,
                           base::UTF16ToUTF8(new_profile_name));
 }
 
-std::vector<std::string> GetSecondaryAccountsForProfile(
-    Profile* profile,
-    const std::string& primary_account) {
-  std::vector<std::string> accounts =
-      ProfileOAuth2TokenServiceFactory::GetForProfile(profile)->GetAccounts();
+std::vector<AccountInfo> GetSecondaryAccountsForSignedInProfile(
+    Profile* profile) {
+  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
+  std::vector<AccountInfo> accounts =
+      identity_manager->GetAccountsWithRefreshTokens();
 
-  // The vector returned by ProfileOAuth2TokenService::GetAccounts() contains
+  // The vector returned by GetAccountsWithRefreshTokens() contains
   // the primary account too, so we need to remove it from the list.
-  std::vector<std::string>::iterator primary_index =
-      std::find(accounts.begin(), accounts.end(), primary_account);
+  DCHECK(identity_manager->HasPrimaryAccount());
+  CoreAccountInfo primary_account = identity_manager->GetPrimaryAccountInfo();
+
+  auto primary_index = std::find_if(
+      accounts.begin(), accounts.end(),
+      [&primary_account](const AccountInfo& account_info) {
+        return account_info.account_id == primary_account.account_id;
+      });
   DCHECK(primary_index != accounts.end());
   accounts.erase(primary_index);
 
   return accounts;
 }
+#endif  // !defined(OS_CHROMEOS)
 
 bool IsRegularOrGuestSession(Browser* browser) {
   Profile* profile = browser->profile();
@@ -172,9 +182,8 @@ bool IsProfileLocked(const base::FilePath& profile_path) {
   return entry->IsSigninRequired();
 }
 
+#if !defined(OS_CHROMEOS)
 void UpdateIsProfileLockEnabledIfNeeded(Profile* profile) {
-  DCHECK(switches::IsNewProfileManagement());
-
   if (!profile->GetPrefs()->GetString(prefs::kGoogleServicesHostedDomain).
       empty())
     return;
@@ -183,12 +192,6 @@ void UpdateIsProfileLockEnabledIfNeeded(Profile* profile) {
 }
 
 void UpdateGaiaProfileInfoIfNeeded(Profile* profile) {
-  // If the --google-profile-info flag isn't used, then the
-  // GAIAInfoUpdateService isn't initialized, and we can't download the profile
-  // info.
-  if (!switches::IsGoogleProfileInfo())
-    return;
-
   DCHECK(profile);
 
   GAIAInfoUpdateService* service =
@@ -215,15 +218,16 @@ bool SetActiveProfileToGuestIfLocked() {
   bool has_entry =
       g_browser_process->profile_manager()->GetProfileAttributesStorage().
           GetProfileAttributesWithPath(active_profile_path, &entry);
-  DCHECK(has_entry);
 
-  if (!entry->IsSigninRequired())
+  // |has_entry| may be false if a profile is specified on the command line.
+  if (has_entry && !entry->IsSigninRequired())
     return false;
 
   SetLastUsedProfile(guest_path.BaseName().MaybeAsASCII());
 
   return true;
 }
+#endif  // !defined(OS_CHROMEOS)
 
 void RemoveBrowsingDataForProfile(const base::FilePath& profile_path) {
   // The BrowsingDataRemover relies on the ResourceDispatcherHost, which is
@@ -240,24 +244,15 @@ void RemoveBrowsingDataForProfile(const base::FilePath& profile_path) {
   if (profile->IsGuestSession())
     profile = profile->GetOffTheRecordProfile();
 
-  BrowsingDataRemoverFactory::GetForBrowserContext(profile)->Remove(
-      BrowsingDataRemover::Unbounded(),
-      BrowsingDataRemover::REMOVE_WIPE_PROFILE, BrowsingDataHelper::ALL);
+  content::BrowserContext::GetBrowsingDataRemover(profile)->Remove(
+      base::Time(), base::Time::Max(),
+      ChromeBrowsingDataRemoverDelegate::WIPE_PROFILE,
+      ChromeBrowsingDataRemoverDelegate::ALL_ORIGIN_TYPES);
 }
 
-void SetLastUsedProfile(const std::string& profile_dir) {
-  // We should never be saving the System Profile as the last one used since it
-  // shouldn't have a browser.
-  if (profile_dir == base::FilePath(chrome::kSystemProfileDir).AsUTF8Unsafe())
-    return;
-
-  PrefService* local_state = g_browser_process->local_state();
-  DCHECK(local_state);
-  local_state->SetString(prefs::kProfileLastUsed, profile_dir);
-}
-
-bool AreAllProfilesLocked() {
-  bool all_profiles_locked = true;
+#if !defined(OS_CHROMEOS)
+bool AreAllNonChildNonSupervisedProfilesLocked() {
+  bool at_least_one_regular_profile_present = false;
 
   std::vector<ProfileAttributesEntry*> entries =
       g_browser_process->profile_manager()->GetProfileAttributesStorage().
@@ -266,14 +261,35 @@ bool AreAllProfilesLocked() {
     if (entry->IsOmitted())
       continue;
 
-    // Supervised and Child profiles cannot be locked.
-    if (!entry->IsSigninRequired() &&
-        !entry->IsChild() &&
-        !entry->IsLegacySupervised()) {
-      return false;
+    // Only consider non-child and non-supervised profiles.
+    if (!entry->IsChild() && !entry->IsLegacySupervised()) {
+      at_least_one_regular_profile_present = true;
+
+      if (!entry->IsSigninRequired())
+        return false;
     }
   }
-  return all_profiles_locked;
+  return at_least_one_regular_profile_present;
 }
+#endif
+
+bool IsPublicSession() {
+#if defined(OS_CHROMEOS)
+  if (chromeos::LoginState::IsInitialized()) {
+    return chromeos::LoginState::Get()->IsPublicSessionUser();
+  }
+#endif
+  return false;
+}
+
+bool ArePublicSessionRestrictionsEnabled() {
+#if defined(OS_CHROMEOS)
+  if (chromeos::LoginState::IsInitialized()) {
+    return chromeos::LoginState::Get()->ArePublicSessionRestrictionsEnabled();
+  }
+#endif
+  return false;
+}
+#endif  // !defined(OS_ANDROID)
 
 }  // namespace profiles

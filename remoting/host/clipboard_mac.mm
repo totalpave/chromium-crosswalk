@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <utility>
 
 #include "base/logging.h"
 #include "base/macros.h"
@@ -53,7 +54,7 @@ ClipboardMac::~ClipboardMac() {}
 
 void ClipboardMac::Start(
     std::unique_ptr<protocol::ClipboardStub> client_clipboard) {
-  client_clipboard_.reset(client_clipboard.release());
+  client_clipboard_ = std::move(client_clipboard);
 
   // Synchronize local change-count with the pasteboard's. The change-count is
   // used to detect clipboard changes.
@@ -76,12 +77,11 @@ void ClipboardMac::InjectClipboardEvent(const protocol::ClipboardEvent& event) {
     return;
   }
 
-  // Write UTF-8 text to clipboard.
+  // Write text to clipboard.
   NSString* text = base::SysUTF8ToNSString(event.data());
   NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
-  [pasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType]
-                     owner:nil];
-  [pasteboard setString:text forType:NSStringPboardType];
+  [pasteboard clearContents];
+  [pasteboard writeObjects:@[ text ]];
 
   // Update local change-count to prevent this change from being picked up by
   // CheckClipboardForChanges.
@@ -96,14 +96,15 @@ void ClipboardMac::CheckClipboardForChanges() {
   }
   current_change_count_ = change_count;
 
-  NSString* data = [pasteboard stringForType:NSStringPboardType];
-  if (data == nil) {
+  NSArray* objects =
+      [pasteboard readObjectsForClasses:@[ [NSString class] ] options:0];
+  if (![objects count]) {
     return;
   }
 
   protocol::ClipboardEvent event;
   event.set_mime_type(kMimeTypeTextUtf8);
-  event.set_data(base::SysNSStringToUTF8(data));
+  event.set_data(base::SysNSStringToUTF8([objects lastObject]));
   client_clipboard_->InjectClipboardEvent(event);
 }
 

@@ -16,19 +16,21 @@
 #include "build/build_config.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_base.h"
 
-class ProfileOAuth2TokenService;
 class Profile;
 
-namespace net {
-class URLRequestContextGetter;
+namespace identity {
+class IdentityManager;
+}
+
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace policy {
 
 class CloudPolicyClientRegistrationHelper;
 
-// A specialization of the UserPolicySigninServiceBase for the mobile platforms
-// (currently Android and iOS).
+// A specialization of UserPolicySigninServiceBase for the Android.
 class UserPolicySigninService : public UserPolicySigninServiceBase {
  public:
   // Creates a UserPolicySigninService associated with the passed |profile|.
@@ -37,9 +39,8 @@ class UserPolicySigninService : public UserPolicySigninServiceBase {
       PrefService* local_state,
       DeviceManagementService* device_management_service,
       UserCloudPolicyManager* policy_manager,
-      SigninManager* signin_manager,
-      scoped_refptr<net::URLRequestContextGetter> system_request_context,
-      ProfileOAuth2TokenService* token_service);
+      identity::IdentityManager* identity_manager,
+      scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory);
   ~UserPolicySigninService() override;
 
   // Registers a CloudPolicyClient for fetching policy for |username|.
@@ -49,24 +50,10 @@ class UserPolicySigninService : public UserPolicySigninServiceBase {
   // token services.
   // |callback| is invoked once we have registered this device to fetch policy,
   // or once it is determined that |username| is not a managed account.
-  void RegisterForPolicy(const std::string& username,
-                         const std::string& account_id,
-                         const PolicyRegistrationCallback& callback);
-
-#if !defined(OS_ANDROID)
-  // Registers a CloudPolicyClient for fetching policy for |username|.
-  // This requires a valid OAuth access token for the scopes returned by the
-  // |GetScopes| static function. |callback| is invoked once we have
-  // registered this device to fetch policy, or once it is determined that
-  // |username| is not a managed account.
-  void RegisterForPolicyWithAccessToken(
+  void RegisterForPolicyWithAccountId(
       const std::string& username,
-      const std::string& access_token,
+      const std::string& account_id,
       const PolicyRegistrationCallback& callback);
-
-  // Returns the list of OAuth access scopes required for policy fetching.
-  static std::vector<std::string> GetScopes();
-#endif
 
   // Overridden from UserPolicySigninServiceBase to cancel the pending delayed
   // registration.
@@ -85,7 +72,7 @@ class UserPolicySigninService : public UserPolicySigninServiceBase {
   void Shutdown() override;
 
   // CloudPolicyService::Observer implementation:
-  void OnInitializationCompleted(CloudPolicyService* service) override;
+  void OnCloudPolicyServiceInitializationCompleted() override;
 
   // Registers for cloud policy for an already signed-in user.
   void RegisterCloudPolicyService();
@@ -96,10 +83,6 @@ class UserPolicySigninService : public UserPolicySigninServiceBase {
   void OnRegistrationDone();
 
   std::unique_ptr<CloudPolicyClientRegistrationHelper> registration_helper_;
-
-  // Weak pointer to the token service used to authenticate the
-  // CloudPolicyClient during registration.
-  ProfileOAuth2TokenService* oauth2_token_service_;
 
   // The PrefService associated with the profile.
   PrefService* profile_prefs_;

@@ -4,7 +4,6 @@
 
 #include <memory>
 
-#include "base/command_line.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gl/gl_glx_api_implementation.h"
 #include "ui/gl/gl_implementation.h"
@@ -31,13 +30,13 @@ class GLXApiTest : public testing::Test {
     fake_extension_string_ = "";
   }
 
-  void InitializeAPI(base::CommandLine* command_line) {
+  void InitializeAPI(const char* disabled_extensions) {
     api_.reset(new RealGLXApi());
     g_current_glx_context = api_.get();
-    if (command_line)
-      api_->InitializeWithCommandLine(&g_driver_glx, command_line);
-    else
-      api_->Initialize(&g_driver_glx);
+    api_->Initialize(&g_driver_glx);
+    if (disabled_extensions) {
+      SetDisabledExtensionsGLX(disabled_extensions);
+    }
     g_driver_glx.InitializeExtensionBindings();
   }
 
@@ -57,9 +56,11 @@ class GLXApiTest : public testing::Test {
     return static_cast<GLXContext>(nullptr);
   }
 
-  static void* GL_BINDING_CALL FakeGLGetProcAddress(const char *proc) {
+  static GLFunctionPointerType GL_BINDING_CALL
+  FakeGLGetProcAddress(const char* proc) {
     if (!strcmp("glXCreateContextAttribsARB", proc)) {
-      return reinterpret_cast<void *>(&FakeCreateContextAttribsARB);
+      return reinterpret_cast<GLFunctionPointerType>(
+          &FakeCreateContextAttribsARB);
     }
     return NULL;
   }
@@ -86,10 +87,7 @@ TEST_F(GLXApiTest, DisabledExtensionBitTest) {
 
   EXPECT_TRUE(g_driver_glx.ext.b_GLX_ARB_create_context);
 
-  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-  command_line.AppendSwitchASCII(switches::kDisableGLExtensions,
-                                 kFakeDisabledExtensions);
-  InitializeAPI(&command_line);
+  InitializeAPI(kFakeDisabledExtensions);
 
   EXPECT_FALSE(g_driver_glx.ext.b_GLX_ARB_create_context);
 }
@@ -106,10 +104,7 @@ TEST_F(GLXApiTest, DisabledExtensionStringTest) {
 
   EXPECT_STREQ(kFakeExtensions, GetExtensions());
 
-  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-  command_line.AppendSwitchASCII(switches::kDisableGLExtensions,
-                                 kFakeDisabledExtensions);
-  InitializeAPI(&command_line);
+  InitializeAPI(kFakeDisabledExtensions);
 
   EXPECT_STREQ(kFilteredExtensions, GetExtensions());
 }

@@ -41,10 +41,10 @@ cr.define('media_router_container_first_run_flow', function() {
       var fakeCastModeList = [];
 
       /**
-       * The list of CastModes to show with non-default modes only.
+       * The list of CastModes to show with non-PRESENTATION modes only.
        * @type {!Array<!media_router.CastMode>}
        */
-      var fakeCastModeListWithNonDefaultModesOnly = [];
+      var fakeCastModeListWithNonPresentationModesOnly = [];
 
       // Import media_router_container.html before running suite.
       suiteSetup(function() {
@@ -65,8 +65,8 @@ cr.define('media_router_container_first_run_flow', function() {
         checkElementsVisibleWithId = test_base.checkElementsVisibleWithId;
         checkElementVisibleWithId = test_base.checkElementVisibleWithId;
         fakeCastModeList = test_base.fakeCastModeList;
-        fakeCastModeListWithNonDefaultModesOnly =
-            test_base.fakeCastModeListWithNonDefaultModesOnly;
+        fakeCastModeListWithNonPresentationModesOnly =
+            test_base.fakeCastModeListWithNonPresentationModesOnly;
 
         container.castModeList = test_base.fakeCastModeList;
 
@@ -82,13 +82,13 @@ cr.define('media_router_container_first_run_flow', function() {
         container.showFirstRunFlow = true;
 
         setTimeout(function() {
-          container.addEventListener('acknowledge-first-run-flow',
-              function(data) {
-            assertEquals(undefined, data.detail.optedIntoCloudServices);
-            done();
-          });
-          MockInteractions.tap(container.shadowRoot.getElementById(
-              'first-run-button'));
+          container.addEventListener(
+              'acknowledge-first-run-flow', function(data) {
+                assertEquals(undefined, data.detail.optedIntoCloudServices);
+                done();
+              });
+          MockInteractions.tap(
+              container.shadowRoot.getElementById('first-run-button'));
         });
       });
 
@@ -100,34 +100,33 @@ cr.define('media_router_container_first_run_flow', function() {
         container.showFirstRunFlowCloudPref = true;
 
         setTimeout(function() {
-          container.addEventListener('acknowledge-first-run-flow',
-              function(data) {
-            assertTrue(data.detail.optedIntoCloudServices);
-            done();
-          });
-          MockInteractions.tap(container.shadowRoot.getElementById(
-              'first-run-button'));
+          container.addEventListener(
+              'acknowledge-first-run-flow', function(data) {
+                assertTrue(data.detail.optedIntoCloudServices);
+                done();
+              });
+          MockInteractions.tap(
+              container.shadowRoot.getElementById('first-run-button'));
         });
       });
 
       // Tests for 'acknowledge-first-run-flow' event firing when the
       // 'first-run-button' button is clicked after the cloud preference
       // checkbox is deselected.
-      test('first run button with cloud pref deselected click',
-          function(done) {
+      test('first run button with cloud pref deselected click', function(done) {
         container.showFirstRunFlow = true;
         container.showFirstRunFlowCloudPref = true;
 
         setTimeout(function() {
-          container.addEventListener('acknowledge-first-run-flow',
-              function(data) {
-            assertFalse(data.detail.optedIntoCloudServices);
-            done();
-          });
-          MockInteractions.tap(container.shadowRoot.getElementById(
-              'first-run-cloud-checkbox'));
-          MockInteractions.tap(container.shadowRoot.getElementById(
-              'first-run-button'));
+          container.addEventListener(
+              'acknowledge-first-run-flow', function(data) {
+                assertFalse(data.detail.optedIntoCloudServices);
+                done();
+              });
+          MockInteractions.tap(
+              container.shadowRoot.getElementById('first-run-cloud-checkbox'));
+          MockInteractions.tap(
+              container.shadowRoot.getElementById('first-run-button'));
         });
       });
 
@@ -138,8 +137,8 @@ cr.define('media_router_container_first_run_flow', function() {
 
         setTimeout(function() {
           checkElementVisibleWithId(true, 'first-run-flow');
-          MockInteractions.tap(container.shadowRoot.getElementById(
-              'first-run-button'));
+          MockInteractions.tap(
+              container.shadowRoot.getElementById('first-run-button'));
 
           setTimeout(function() {
             checkElementVisibleWithId(false, 'first-run-flow');
@@ -155,18 +154,16 @@ cr.define('media_router_container_first_run_flow', function() {
         container.showFirstRunFlowCloudPref = true;
 
         setTimeout(function() {
-          checkElementsVisibleWithId(['container-header',
-                                      'device-missing',
-                                      'first-run-flow',
-                                      'first-run-flow-cloud-pref',
-                                      'sink-list-view']);
-          MockInteractions.tap(container.shadowRoot.getElementById(
-              'first-run-button'));
+          checkElementsVisibleWithId([
+            'container-header', 'device-missing', 'first-run-flow',
+            'first-run-flow-cloud-pref', 'sink-list-view'
+          ]);
+          MockInteractions.tap(
+              container.shadowRoot.getElementById('first-run-button'));
 
           setTimeout(function() {
-            checkElementsVisibleWithId(['container-header',
-                                        'device-missing',
-                                        'sink-list-view']);
+            checkElementsVisibleWithId(
+                ['container-header', 'device-missing', 'sink-list-view']);
             done();
           });
         });

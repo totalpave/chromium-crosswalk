@@ -9,19 +9,15 @@
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "remoting/base/util.h"
 #include "remoting/proto/video.pb.h"
+#include "third_party/libvpx/source/libvpx/vpx/vp8cx.h"
+#include "third_party/libvpx/source/libvpx/vpx/vpx_encoder.h"
 #include "third_party/libyuv/include/libyuv/convert_from_argb.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_region.h"
-
-extern "C" {
-#define VPX_CODEC_DISABLE_COMPAT 1
-#include "third_party/libvpx/source/libvpx/vpx/vp8cx.h"
-#include "third_party/libvpx/source/libvpx/vpx/vpx_encoder.h"
-}
 
 namespace remoting {
 
@@ -241,9 +237,9 @@ std::unique_ptr<VideoEncoderVpx> VideoEncoderVpx::CreateForVP9() {
   return base::WrapUnique(new VideoEncoderVpx(true));
 }
 
-VideoEncoderVpx::~VideoEncoderVpx() {}
+VideoEncoderVpx::~VideoEncoderVpx() = default;
 
-void VideoEncoderVpx::SetTickClockForTests(base::TickClock* tick_clock) {
+void VideoEncoderVpx::SetTickClockForTests(const base::TickClock* tick_clock) {
   clock_ = tick_clock;
 }
 
@@ -269,8 +265,7 @@ void VideoEncoderVpx::SetLosslessColor(bool want_lossless) {
 }
 
 std::unique_ptr<VideoPacket> VideoEncoderVpx::Encode(
-    const webrtc::DesktopFrame& frame,
-    uint32_t flags) {
+    const webrtc::DesktopFrame& frame) {
   DCHECK_LE(32, frame.size().width());
   DCHECK_LE(32, frame.size().height());
 
@@ -300,9 +295,6 @@ std::unique_ptr<VideoPacket> VideoEncoderVpx::Encode(
   if (vpx_codec_control(codec_.get(), VP8E_SET_ACTIVEMAP, &act_map)) {
     LOG(ERROR) << "Unable to apply active map";
   }
-
-  if (flags & REQUEST_KEY_FRAME)
-    vpx_codec_control(codec_.get(), VP8E_SET_FRAME_FLAGS, VPX_EFLAG_FORCE_KF);
 
   // Do the actual encoding.
   int timestamp = (clock_->NowTicks() - timestamp_base_).InMilliseconds();
@@ -344,7 +336,6 @@ std::unique_ptr<VideoPacket> VideoEncoderVpx::Encode(
       case VPX_CODEC_CX_FRAME_PKT:
         got_data = true;
         packet->set_data(vpx_packet->data.frame.buf, vpx_packet->data.frame.sz);
-        packet->set_key_frame(vpx_packet->data.frame.flags & VPX_FRAME_IS_KEY);
         break;
       default:
         break;
@@ -357,7 +348,7 @@ std::unique_ptr<VideoPacket> VideoEncoderVpx::Encode(
 VideoEncoderVpx::VideoEncoderVpx(bool use_vp9)
     : use_vp9_(use_vp9),
       encode_unchanged_frame_(false),
-      clock_(&default_tick_clock_) {}
+      clock_(base::DefaultTickClock::GetInstance()) {}
 
 void VideoEncoderVpx::Configure(const webrtc::DesktopSize& size) {
   DCHECK(use_vp9_ || !lossless_color_);

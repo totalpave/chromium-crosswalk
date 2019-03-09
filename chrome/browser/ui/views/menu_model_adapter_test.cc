@@ -2,24 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/views/controls/menu/menu_model_adapter.h"
 #include "base/callback.h"
 #include "base/location.h"
 #include "base/macros.h"
+#include "base/message_loop/message_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "chrome/browser/ui/views/test/view_event_test_base.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "chrome/test/base/view_event_test_base.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/views/controls/button/menu_button.h"
 #include "ui/views/controls/button/menu_button_listener.h"
 #include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/controls/menu/menu_item_view.h"
-#include "ui/views/controls/menu/menu_model_adapter.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/submenu_view.h"
+#include "ui/views/test/menu_test_utils.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
 
@@ -64,20 +66,14 @@ class CommonMenuModel : public ui::MenuModel {
   bool GetIconAt(int index, gfx::Image* icon) override { return false; }
 
   ui::ButtonMenuItemModel* GetButtonMenuItemAt(int index) const override {
-    return NULL;
+    return nullptr;
   }
 
   bool IsEnabledAt(int index) const override { return true; }
 
-  ui::MenuModel* GetSubmenuModelAt(int index) const override { return NULL; }
-
-  void HighlightChangedTo(int index) override {}
+  ui::MenuModel* GetSubmenuModelAt(int index) const override { return nullptr; }
 
   void ActivatedAt(int index) override {}
-
-  void SetMenuModelDelegate(ui::MenuModelDelegate* delegate) override {}
-
-  ui::MenuModelDelegate* GetMenuModelDelegate() const override { return NULL; }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CommonMenuModel);
@@ -111,8 +107,8 @@ class SubMenuModel : public CommonMenuModel {
 
   void MenuWillShow() override { showing_ = true; }
 
-  // Called when the menu has been closed.
-  void MenuClosed() override { showing_ = false; }
+  // Called when the menu is about to close.
+  void MenuWillClose() override { showing_ = false; }
 
   bool showing_;
 
@@ -160,18 +156,17 @@ class MenuModelAdapterTest : public ViewEventTestBase,
  public:
   MenuModelAdapterTest()
       : ViewEventTestBase(),
-        button_(NULL),
+        button_(nullptr),
         menu_model_adapter_(&top_menu_model_),
-        menu_(NULL) {
-  }
+        menu_(nullptr) {}
 
   ~MenuModelAdapterTest() override {}
 
   // ViewEventTestBase implementation.
 
   void SetUp() override {
-    button_ = new views::MenuButton(base::ASCIIToUTF16("Menu Adapter Test"),
-                                    this, true);
+    button_ =
+        new views::MenuButton(base::ASCIIToUTF16("Menu Adapter Test"), this);
 
     menu_ = menu_model_adapter_.CreateMenu();
     menu_runner_.reset(
@@ -181,14 +176,14 @@ class MenuModelAdapterTest : public ViewEventTestBase,
   }
 
   void TearDown() override {
-    menu_runner_.reset(NULL);
-    menu_ = NULL;
+    menu_runner_ = nullptr;
+    menu_ = nullptr;
     ViewEventTestBase::TearDown();
   }
 
   views::View* CreateContentsView() override { return button_; }
 
-  gfx::Size GetPreferredSize() const override {
+  gfx::Size GetPreferredSizeForContents() const override {
     return button_->GetPreferredSize();
   }
 
@@ -199,11 +194,8 @@ class MenuModelAdapterTest : public ViewEventTestBase,
     gfx::Point screen_location;
     views::View::ConvertPointToScreen(source, &screen_location);
     gfx::Rect bounds(screen_location, source->size());
-    ignore_result(menu_runner_->RunMenuAt(source->GetWidget(),
-                                          button_,
-                                          bounds,
-                                          views::MENU_ANCHOR_TOPLEFT,
-                                          ui::MENU_SOURCE_NONE));
+    menu_runner_->RunMenuAt(source->GetWidget(), button_, bounds,
+                            views::MENU_ANCHOR_TOPLEFT, ui::MENU_SOURCE_NONE);
   }
 
   // ViewEventTestBase implementation
@@ -213,6 +205,7 @@ class MenuModelAdapterTest : public ViewEventTestBase,
 
   // Open the submenu.
   void Step1() {
+    views::test::DisableMenuClosureAnimations();
     views::SubmenuView* topmenu = menu_->GetSubmenu();
     ASSERT_TRUE(topmenu);
     ASSERT_TRUE(topmenu->IsShowing());
@@ -233,7 +226,8 @@ class MenuModelAdapterTest : public ViewEventTestBase,
 
     menu_model_adapter_.BuildMenu(menu_);
 
-    base::MessageLoopForUI::current()->task_runner()->PostTask(
+    ASSERT_TRUE(base::MessageLoopCurrentForUI::IsSet());
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE, CreateEventTask(this, &MenuModelAdapterTest::Step3));
   }
 
@@ -252,6 +246,7 @@ class MenuModelAdapterTest : public ViewEventTestBase,
   // All done.
   void Step4() {
     views::SubmenuView* topmenu = menu_->GetSubmenu();
+    views::test::WaitForMenuClosureAnimation();
     ASSERT_TRUE(topmenu);
     ASSERT_FALSE(topmenu->IsShowing());
     ASSERT_FALSE(top_menu_model_.IsSubmenuShowing());
@@ -261,12 +256,10 @@ class MenuModelAdapterTest : public ViewEventTestBase,
 
  private:
   // Generate a mouse click on the specified view and post a new task.
-  virtual void Click(views::View* view, const base::Closure& next) {
+  virtual void Click(views::View* view, base::OnceClosure next) {
     ui_test_utils::MoveMouseToCenterAndPress(
-        view,
-        ui_controls::LEFT,
-        ui_controls::DOWN | ui_controls::UP,
-        next);
+        view, ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP,
+        std::move(next));
   }
 
   views::MenuButton* button_;

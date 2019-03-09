@@ -11,25 +11,28 @@
 #include <set>
 #include <string>
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/optional.h"
+#include "base/sequence_checker.h"
 #include "base/timer/timer.h"
-#include "storage/browser/storage_browser_export.h"
-#include "storage/common/quota/quota_types.h"
-
-class GURL;
+#include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
 
 namespace content {
 class QuotaTemporaryStorageEvictorTest;
 }
 
+namespace url {
+class Origin;
+}
+
 namespace storage {
 
 class QuotaEvictionHandler;
-struct UsageAndQuota;
+struct QuotaSettings;
 
-class STORAGE_EXPORT QuotaTemporaryStorageEvictor : public base::NonThreadSafe {
+class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaTemporaryStorageEvictor {
  public:
   struct Statistics {
     Statistics()
@@ -61,7 +64,6 @@ class STORAGE_EXPORT QuotaTemporaryStorageEvictor : public base::NonThreadSafe {
     bool is_initialized;
 
     base::Time start_time;
-    int64_t usage_overage_at_round;
     int64_t diskspace_shortage_at_round;
 
     int64_t usage_on_beginning_of_round;
@@ -71,47 +73,29 @@ class STORAGE_EXPORT QuotaTemporaryStorageEvictor : public base::NonThreadSafe {
 
   QuotaTemporaryStorageEvictor(QuotaEvictionHandler* quota_eviction_handler,
                                int64_t interval_ms);
-  virtual ~QuotaTemporaryStorageEvictor();
+  ~QuotaTemporaryStorageEvictor();
 
   void GetStatistics(std::map<std::string, int64_t>* statistics);
   void ReportPerRoundHistogram();
   void ReportPerHourHistogram();
   void Start();
 
-  void reset_min_available_disk_space_to_start_eviction() {
-    min_available_to_start_eviction_ =
-        kMinAvailableToStartEvictionNotSpecified;
-  }
-  void set_min_available_disk_space_to_start_eviction(int64_t value) {
-    min_available_to_start_eviction_ = value;
-  }
-
  private:
   friend class content::QuotaTemporaryStorageEvictorTest;
 
   void StartEvictionTimerWithDelay(int delay_ms);
   void ConsiderEviction();
-  void OnGotVolumeInfo(bool success,
-                       uint64_t available_space,
-                       uint64_t total_size);
-  void OnGotUsageAndQuotaForEviction(
-      int64_t must_remain_available_space,
-      QuotaStatusCode status,
-      const UsageAndQuota& quota_and_usage);
-  void OnGotEvictionOrigin(const GURL& origin);
-  void OnEvictionComplete(QuotaStatusCode status);
+  void OnGotEvictionRoundInfo(blink::mojom::QuotaStatusCode status,
+                              const QuotaSettings& settings,
+                              int64_t available_space,
+                              int64_t total_space,
+                              int64_t current_usage,
+                              bool current_usage_is_complete);
+  void OnGotEvictionOrigin(const base::Optional<url::Origin>& origin);
+  void OnEvictionComplete(blink::mojom::QuotaStatusCode status);
 
   void OnEvictionRoundStarted();
   void OnEvictionRoundFinished();
-
-  // This is only used for tests.
-  void set_repeated_eviction(bool repeated_eviction) {
-    repeated_eviction_ = repeated_eviction;
-  }
-
-  static const int kMinAvailableToStartEvictionNotSpecified;
-
-  int64_t min_available_to_start_eviction_;
 
   // Not owned; quota_eviction_handler owns us.
   QuotaEvictionHandler* quota_eviction_handler_;
@@ -121,13 +105,16 @@ class STORAGE_EXPORT QuotaTemporaryStorageEvictor : public base::NonThreadSafe {
   EvictionRoundStatistics round_statistics_;
   base::Time time_of_end_of_last_nonskipped_round_;
   base::Time time_of_end_of_last_round_;
-  std::set<GURL> in_progress_eviction_origins_;
+  std::set<url::Origin> in_progress_eviction_origins_;
 
   int64_t interval_ms_;
-  bool repeated_eviction_;
+  bool timer_disabled_for_testing_;
 
   base::OneShotTimer eviction_timer_;
   base::RepeatingTimer histogram_timer_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
   base::WeakPtrFactory<QuotaTemporaryStorageEvictor> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(QuotaTemporaryStorageEvictor);

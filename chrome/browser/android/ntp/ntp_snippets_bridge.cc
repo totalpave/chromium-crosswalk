@@ -5,196 +5,403 @@
 #include "chrome/browser/android/ntp/ntp_snippets_bridge.h"
 
 #include <jni.h>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/bind.h"
 #include "base/callback.h"
+#include "base/feature_list.h"
+#include "base/time/time.h"
+#include "chrome/browser/android/chrome_feature_list.h"
+#include "chrome/browser/android/ntp/content_suggestions_notifier_service.h"
+#include "chrome/browser/android/ntp/get_remote_suggestions_scheduler.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/ntp_snippets/ntp_snippets_service_factory.h"
+#include "chrome/browser/ntp_snippets/content_suggestions_notifier_service_factory.h"
+#include "chrome/browser/ntp_snippets/content_suggestions_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_android.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/ntp_snippets/ntp_snippet.h"
-#include "components/ntp_snippets/ntp_snippets_service.h"
+#include "components/ntp_snippets/content_suggestion.h"
+#include "components/ntp_snippets/content_suggestions_metrics.h"
+#include "components/ntp_snippets/pref_names.h"
+#include "components/ntp_snippets/remote/remote_suggestions_provider.h"
+#include "components/ntp_snippets/remote/remote_suggestions_scheduler.h"
 #include "jni/SnippetsBridge_jni.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/image/image.h"
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF8;
+using base::android::ConvertUTF8ToJavaString;
+using base::android::ConvertUTF16ToJavaString;
+using base::android::JavaIntArrayToIntVector;
+using base::android::AppendJavaStringArrayToStringVector;
 using base::android::JavaParamRef;
-using base::android::ToJavaArrayOfStrings;
-using base::android::ToJavaLongArray;
-using base::android::ToJavaFloatArray;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
+using base::android::ToJavaIntArray;
+using ntp_snippets::Category;
+using ntp_snippets::CategoryInfo;
+using ntp_snippets::CategoryStatus;
+using ntp_snippets::KnownCategories;
+using ntp_snippets::ContentSuggestion;
 
 namespace {
 
-void SnippetVisitedHistoryRequestCallback(
-      base::android::ScopedJavaGlobalRef<jobject> callback,
-      bool success,
-      const history::URLRow& row,
-      const history::VisitVector& visitVector) {
-  bool visited = success && row.visit_count() != 0;
-  base::android::RunCallbackAndroid(callback, visited);
+// Converts a vector of ContentSuggestions to its Java equivalent.
+ScopedJavaLocalRef<jobject> JNI_SnippetsBridge_ToJavaSuggestionList(
+    JNIEnv* env,
+    const Category& category,
+    const std::vector<ContentSuggestion>& suggestions) {
+  ScopedJavaLocalRef<jobject> result =
+      Java_SnippetsBridge_createSuggestionList(env);
+  for (const ContentSuggestion& suggestion : suggestions) {
+    // image_dominant_color equal to 0 encodes absence of the value. 0 is not a
+    // valid color, because the passed color cannot be fully transparent.
+    ScopedJavaLocalRef<jobject> java_suggestion =
+        Java_SnippetsBridge_addSuggestion(
+            env, result, category.id(),
+            ConvertUTF8ToJavaString(env, suggestion.id().id_within_category()),
+            ConvertUTF16ToJavaString(env, suggestion.title()),
+            ConvertUTF16ToJavaString(env, suggestion.publisher_name()),
+            ConvertUTF8ToJavaString(env, suggestion.url().spec()),
+            suggestion.publish_date().ToJavaTime(), suggestion.score(),
+            suggestion.fetch_date().ToJavaTime(),
+            suggestion.is_video_suggestion(),
+            suggestion.optional_image_dominant_color().value_or(0));
+    if (suggestion.id().category().IsKnownCategory(
+            KnownCategories::DOWNLOADS) &&
+        suggestion.download_suggestion_extra() != nullptr) {
+      if (suggestion.download_suggestion_extra()->is_download_asset) {
+        Java_SnippetsBridge_setAssetDownloadDataForSuggestion(
+            env, java_suggestion,
+            ConvertUTF8ToJavaString(
+                env, suggestion.download_suggestion_extra()->download_guid),
+            ConvertUTF8ToJavaString(env, suggestion.download_suggestion_extra()
+                                             ->target_file_path.value()),
+            ConvertUTF8ToJavaString(
+                env, suggestion.download_suggestion_extra()->mime_type));
+      } else {
+        Java_SnippetsBridge_setOfflinePageDownloadDataForSuggestion(
+            env, java_suggestion,
+            suggestion.download_suggestion_extra()->offline_page_id);
+      }
+    }
+  }
+
+  return result;
 }
 
-} // namespace
+}  // namespace
 
-static jlong Init(JNIEnv* env,
-                  const JavaParamRef<jobject>& obj,
-                  const JavaParamRef<jobject>& j_profile) {
-  NTPSnippetsBridge* snippets_bridge = new NTPSnippetsBridge(env, j_profile);
+static jlong JNI_SnippetsBridge_Init(JNIEnv* env,
+                                     const JavaParamRef<jobject>& j_bridge,
+                                     const JavaParamRef<jobject>& j_profile) {
+  NTPSnippetsBridge* snippets_bridge =
+      new NTPSnippetsBridge(env, j_bridge, j_profile);
   return reinterpret_cast<intptr_t>(snippets_bridge);
 }
 
-static void FetchSnippets(JNIEnv* env,
-                          const JavaParamRef<jclass>& caller) {
-  Profile* profile = ProfileManager::GetLastUsedProfile();
-  NTPSnippetsServiceFactory::GetForProfile(profile)->FetchSnippets();
+static void
+JNI_SnippetsBridge_RemoteSuggestionsSchedulerOnPersistentSchedulerWakeUp(
+    JNIEnv* env) {
+  ntp_snippets::RemoteSuggestionsScheduler* scheduler =
+      GetRemoteSuggestionsScheduler();
+  if (!scheduler) {
+    return;
+  }
+
+  scheduler->OnPersistentSchedulerWakeUp();
 }
 
-// Reschedules the fetching of snippets. Used to support different fetching
-// intervals for different times of day.
-static void RescheduleFetching(JNIEnv* env,
-                               const JavaParamRef<jclass>& caller) {
-  Profile* profile = ProfileManager::GetLastUsedProfile();
-  NTPSnippetsServiceFactory::GetForProfile(profile)->RescheduleFetching();
+static void JNI_SnippetsBridge_RemoteSuggestionsSchedulerOnBrowserUpgraded(
+    JNIEnv* env) {
+  ntp_snippets::RemoteSuggestionsScheduler* scheduler =
+      GetRemoteSuggestionsScheduler();
+  // Can be null if the feature has been disabled but the scheduler has not been
+  // unregistered yet. The next start should unregister it.
+  if (!scheduler) {
+    return;
+  }
+
+  scheduler->OnBrowserUpgraded();
+}
+
+static void JNI_SnippetsBridge_SetContentSuggestionsNotificationsEnabled(
+    JNIEnv* env,
+    jboolean enabled) {
+  ContentSuggestionsNotifierService* notifier_service =
+      ContentSuggestionsNotifierServiceFactory::GetForProfile(
+          ProfileManager::GetLastUsedProfile());
+  if (!notifier_service)
+    return;
+
+  notifier_service->SetEnabled(enabled);
+}
+
+static jboolean JNI_SnippetsBridge_AreContentSuggestionsNotificationsEnabled(
+    JNIEnv* env) {
+  ContentSuggestionsNotifierService* notifier_service =
+      ContentSuggestionsNotifierServiceFactory::GetForProfile(
+          ProfileManager::GetLastUsedProfile());
+  if (!notifier_service)
+    return false;
+
+  return notifier_service->IsEnabled();
 }
 
 NTPSnippetsBridge::NTPSnippetsBridge(JNIEnv* env,
+                                     const JavaParamRef<jobject>& j_bridge,
                                      const JavaParamRef<jobject>& j_profile)
-    : snippet_service_observer_(this), weak_ptr_factory_(this) {
+    : content_suggestions_service_observer_(this),
+      bridge_(env, j_bridge),
+      weak_ptr_factory_(this) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
-  ntp_snippets_service_ = NTPSnippetsServiceFactory::GetForProfile(profile);
-  history_service_ =
-      HistoryServiceFactory::GetForProfile(profile,
-                                           ServiceAccessType::EXPLICIT_ACCESS);
-  snippet_service_observer_.Add(ntp_snippets_service_);
+  content_suggestions_service_ =
+      ContentSuggestionsServiceFactory::GetForProfile(profile);
+  history_service_ = HistoryServiceFactory::GetForProfile(
+      profile, ServiceAccessType::EXPLICIT_ACCESS);
+  content_suggestions_service_observer_.Add(content_suggestions_service_);
+
+  pref_change_registrar_.Init(profile->GetPrefs());
+  pref_change_registrar_.Add(
+      ntp_snippets::prefs::kArticlesListVisible,
+      base::BindRepeating(
+          &NTPSnippetsBridge::OnSuggestionsVisibilityChanged,
+          base::Unretained(this),
+          Category::FromKnownCategory(KnownCategories::ARTICLES)));
 }
 
 void NTPSnippetsBridge::Destroy(JNIEnv* env, const JavaParamRef<jobject>& obj) {
   delete this;
 }
 
-void NTPSnippetsBridge::SetObserver(JNIEnv* env,
-                                    const JavaParamRef<jobject>& obj,
-                                    const JavaParamRef<jobject>& j_observer) {
-  observer_.Reset(env, j_observer);
-  NTPSnippetsServiceLoaded();
+ScopedJavaLocalRef<jintArray> NTPSnippetsBridge::GetCategories(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj) {
+  std::vector<int> category_ids;
+  for (Category category : content_suggestions_service_->GetCategories()) {
+    category_ids.push_back(category.id());
+  }
+  return ToJavaIntArray(env, category_ids);
 }
 
-void NTPSnippetsBridge::FetchImage(JNIEnv* env,
-                                   const JavaParamRef<jobject>& obj,
-                                   const JavaParamRef<jstring>& snippet_id,
-                                   const JavaParamRef<jobject>& j_callback) {
-  base::android::ScopedJavaGlobalRef<jobject> callback(j_callback);
-  ntp_snippets_service_->FetchSnippetImage(
-      ConvertJavaStringToUTF8(env, snippet_id),
+int NTPSnippetsBridge::GetCategoryStatus(JNIEnv* env,
+                                         const JavaParamRef<jobject>& obj,
+                                         jint j_category_id) {
+  return static_cast<int>(content_suggestions_service_->GetCategoryStatus(
+      Category::FromIDValue(j_category_id)));
+}
+
+ScopedJavaLocalRef<jobject> NTPSnippetsBridge::GetCategoryInfo(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    jint j_category_id) {
+  base::Optional<CategoryInfo> info =
+      content_suggestions_service_->GetCategoryInfo(
+          Category::FromIDValue(j_category_id));
+  if (!info) {
+    return ScopedJavaLocalRef<jobject>(env, nullptr);
+  }
+  return Java_SnippetsBridge_createSuggestionsCategoryInfo(
+      env, j_category_id, ConvertUTF16ToJavaString(env, info->title()),
+      static_cast<int>(info->card_layout()),
+      static_cast<int>(info->additional_action()), info->show_if_empty(),
+      ConvertUTF16ToJavaString(env, info->no_suggestions_message()));
+}
+
+ScopedJavaLocalRef<jobject> NTPSnippetsBridge::GetSuggestionsForCategory(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    jint j_category_id) {
+  Category category = Category::FromIDValue(j_category_id);
+  return JNI_SnippetsBridge_ToJavaSuggestionList(
+      env, category,
+      content_suggestions_service_->GetSuggestionsForCategory(category));
+}
+
+jboolean NTPSnippetsBridge::AreRemoteSuggestionsEnabled(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj) {
+  return content_suggestions_service_->AreRemoteSuggestionsEnabled();
+}
+
+void NTPSnippetsBridge::FetchSuggestionImage(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    jint j_category_id,
+    const JavaParamRef<jstring>& id_within_category,
+    const JavaParamRef<jobject>& j_callback) {
+  ScopedJavaGlobalRef<jobject> callback(j_callback);
+  content_suggestions_service_->FetchSuggestionImage(
+      ContentSuggestion::ID(Category::FromIDValue(j_category_id),
+                            ConvertJavaStringToUTF8(env, id_within_category)),
       base::Bind(&NTPSnippetsBridge::OnImageFetched,
                  weak_ptr_factory_.GetWeakPtr(), callback));
 }
 
-void NTPSnippetsBridge::DiscardSnippet(JNIEnv* env,
-                                       const JavaParamRef<jobject>& obj,
-                                       const JavaParamRef<jstring>& id) {
-  ntp_snippets_service_->DiscardSnippet(ConvertJavaStringToUTF8(env, id));
+void NTPSnippetsBridge::FetchSuggestionFavicon(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    jint j_category_id,
+    const JavaParamRef<jstring>& id_within_category,
+    jint j_minimum_size_px,
+    jint j_desired_size_px,
+    const JavaParamRef<jobject>& j_callback) {
+  ScopedJavaGlobalRef<jobject> callback(j_callback);
+  content_suggestions_service_->FetchSuggestionFavicon(
+      ContentSuggestion::ID(Category::FromIDValue(j_category_id),
+                            ConvertJavaStringToUTF8(env, id_within_category)),
+      j_minimum_size_px, j_desired_size_px,
+      base::Bind(&NTPSnippetsBridge::OnImageFetched,
+                 weak_ptr_factory_.GetWeakPtr(), callback));
 }
 
-void NTPSnippetsBridge::SnippetVisited(JNIEnv* env,
-                                       const JavaParamRef<jobject>& obj,
-                                       const JavaParamRef<jobject>& jcallback,
-                                       const JavaParamRef<jstring>& jurl) {
-  base::android::ScopedJavaGlobalRef<jobject> callback(jcallback);
+void NTPSnippetsBridge::Fetch(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    jint j_category_id,
+    const JavaParamRef<jobjectArray>& j_displayed_suggestions,
+    const JavaParamRef<jobject>& j_success_callback,
+    const JavaParamRef<jobject>& j_failure_callback) {
+  ScopedJavaGlobalRef<jobject> success_callback(j_success_callback);
+  ScopedJavaGlobalRef<jobject> failure_callback(j_failure_callback);
+  std::vector<std::string> known_suggestion_ids;
+  AppendJavaStringArrayToStringVector(env, j_displayed_suggestions,
+                                      &known_suggestion_ids);
+
+  Category category = Category::FromIDValue(j_category_id);
+  content_suggestions_service_->Fetch(
+      category,
+      std::set<std::string>(known_suggestion_ids.begin(),
+                            known_suggestion_ids.end()),
+      base::Bind(&NTPSnippetsBridge::OnSuggestionsFetched,
+                 weak_ptr_factory_.GetWeakPtr(), success_callback,
+                 failure_callback, category));
+}
+
+void NTPSnippetsBridge::ReloadSuggestions(JNIEnv* env,
+                                          const JavaParamRef<jobject>& obj) {
+  content_suggestions_service_->ReloadSuggestions();
+}
+
+void NTPSnippetsBridge::DismissSuggestion(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    const JavaParamRef<jstring>& jurl,
+    jint global_position,
+    jint j_category_id,
+    jint position_in_category,
+    const JavaParamRef<jstring>& id_within_category) {
+  Category category = Category::FromIDValue(j_category_id);
+
+  content_suggestions_service_->DismissSuggestion(ContentSuggestion::ID(
+      category, ConvertJavaStringToUTF8(env, id_within_category)));
 
   history_service_->QueryURL(
-      GURL(ConvertJavaStringToUTF8(env, jurl)),
-      false,
-      base::Bind(&SnippetVisitedHistoryRequestCallback, callback),
+      GURL(ConvertJavaStringToUTF8(env, jurl)), /*want_visits=*/false,
+      base::Bind(
+          [](int global_position, Category category, int position_in_category,
+             bool success, const history::URLRow& row,
+             const history::VisitVector& visit_vector) {
+            bool visited = success && row.visit_count() != 0;
+            ntp_snippets::metrics::OnSuggestionDismissed(
+                global_position, category, position_in_category, visited);
+          },
+          global_position, category, position_in_category),
       &tracker_);
 }
 
-int NTPSnippetsBridge::GetDisabledReason(JNIEnv* env,
-                                         const JavaParamRef<jobject>& obj) {
-  return static_cast<int>(ntp_snippets_service_->disabled_reason());
+void NTPSnippetsBridge::DismissCategory(JNIEnv* env,
+                                        const JavaParamRef<jobject>& obj,
+                                        jint j_category_id) {
+  Category category = Category::FromIDValue(j_category_id);
+
+  content_suggestions_service_->DismissCategory(category);
+
+  ntp_snippets::metrics::OnCategoryDismissed(category);
+}
+
+void NTPSnippetsBridge::RestoreDismissedCategories(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj) {
+  content_suggestions_service_->RestoreDismissedCategories();
 }
 
 NTPSnippetsBridge::~NTPSnippetsBridge() {}
 
-void NTPSnippetsBridge::NTPSnippetsServiceLoaded() {
-  if (observer_.is_null())
-    return;
-
-  std::vector<std::string> ids;
-  std::vector<std::string> titles;
-  // URL for the article. This will also be used to find the favicon for the
-  // article.
-  std::vector<std::string> urls;
-  // URL for the AMP version of the article if it exists. This will be used as
-  // the URL to direct the user to on tap.
-  std::vector<std::string> amp_urls;
-  std::vector<std::string> thumbnail_urls;
-  std::vector<std::string> snippets;
-  std::vector<int64_t> timestamps;
-  std::vector<std::string> publishers;
-  std::vector<float> scores;
-  for (const std::unique_ptr<ntp_snippets::NTPSnippet>& snippet :
-       ntp_snippets_service_->snippets()) {
-    ids.push_back(snippet->id());
-    titles.push_back(snippet->title());
-    // The url from source_info is a url for a site that is one of the
-    // HOST_RESTRICT parameters, so this is preferred.
-    urls.push_back(snippet->best_source().url.spec());
-    amp_urls.push_back(snippet->best_source().amp_url.spec());
-    thumbnail_urls.push_back(snippet->salient_image_url().spec());
-    snippets.push_back(snippet->snippet());
-    timestamps.push_back(snippet->publish_date().ToJavaTime());
-    publishers.push_back(snippet->best_source().publisher_name);
-    scores.push_back(snippet->score());
-  }
-
-  JNIEnv* env = base::android::AttachCurrentThread();
-  Java_SnippetsBridge_onSnippetsAvailable(
-      env, observer_.obj(), ToJavaArrayOfStrings(env, ids).obj(),
-      ToJavaArrayOfStrings(env, titles).obj(),
-      ToJavaArrayOfStrings(env, urls).obj(),
-      ToJavaArrayOfStrings(env, amp_urls).obj(),
-      ToJavaArrayOfStrings(env, thumbnail_urls).obj(),
-      ToJavaArrayOfStrings(env, snippets).obj(),
-      ToJavaLongArray(env, timestamps).obj(),
-      ToJavaArrayOfStrings(env, publishers).obj(),
-      ToJavaFloatArray(env, scores).obj());
+void NTPSnippetsBridge::OnNewSuggestions(Category category) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_SnippetsBridge_onNewSuggestions(env, bridge_,
+                                       static_cast<int>(category.id()));
 }
 
-void NTPSnippetsBridge::NTPSnippetsServiceShutdown() {
-  observer_.Reset();
-  snippet_service_observer_.Remove(ntp_snippets_service_);
+void NTPSnippetsBridge::OnCategoryStatusChanged(Category category,
+                                                CategoryStatus new_status) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_SnippetsBridge_onCategoryStatusChanged(env, bridge_,
+                                              static_cast<int>(category.id()),
+                                              static_cast<int>(new_status));
 }
 
-void NTPSnippetsBridge::NTPSnippetsServiceDisabledReasonChanged(
-    ntp_snippets::DisabledReason disabled_reason) {
-  // The user signed out or disabled sync. Since snippets rely on those, we
-  // clear them to be consistent with the initially signed out state.
-  JNIEnv* env = base::android::AttachCurrentThread();
-  Java_SnippetsBridge_onDisabledReasonChanged(
-      env, observer_.obj(), static_cast<int>(disabled_reason));
+void NTPSnippetsBridge::OnSuggestionInvalidated(
+    const ContentSuggestion::ID& suggestion_id) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_SnippetsBridge_onSuggestionInvalidated(
+      env, bridge_, static_cast<int>(suggestion_id.category().id()),
+      ConvertUTF8ToJavaString(env, suggestion_id.id_within_category()));
+}
+
+void NTPSnippetsBridge::OnFullRefreshRequired() {
+  JNIEnv* env = AttachCurrentThread();
+  Java_SnippetsBridge_onFullRefreshRequired(env, bridge_);
+}
+
+void NTPSnippetsBridge::ContentSuggestionsServiceShutdown() {
+  bridge_.Reset();
+  content_suggestions_service_observer_.Remove(content_suggestions_service_);
 }
 
 void NTPSnippetsBridge::OnImageFetched(ScopedJavaGlobalRef<jobject> callback,
-                                       const std::string& snippet_id,
                                        const gfx::Image& image) {
   ScopedJavaLocalRef<jobject> j_bitmap;
-  if (!image.IsEmpty())
+  if (!image.IsEmpty()) {
     j_bitmap = gfx::ConvertToJavaBitmap(image.ToSkBitmap());
-
-  base::android::RunCallbackAndroid(callback, j_bitmap);
+  }
+  RunObjectCallbackAndroid(callback, j_bitmap);
 }
 
-// static
-bool NTPSnippetsBridge::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+void NTPSnippetsBridge::OnSuggestionsFetched(
+    const ScopedJavaGlobalRef<jobject>& success_callback,
+    const ScopedJavaGlobalRef<jobject>& failure_callback,
+    Category category,
+    ntp_snippets::Status status,
+    std::vector<ContentSuggestion> suggestions) {
+  // TODO(fhorschig, dgn): Allow refetch or show notification acc. to status.
+  JNIEnv* env = AttachCurrentThread();
+  if (status.IsSuccess()) {
+    RunObjectCallbackAndroid(
+        success_callback,
+        JNI_SnippetsBridge_ToJavaSuggestionList(env, category, suggestions));
+  } else {
+    // The second parameter here means nothing - it was more convenient to pass
+    // a Callback (which has 1 parameter) over to the native side than a
+    // Runnable (which has no parameters). We ignore the parameter Java-side.
+    RunIntCallbackAndroid(failure_callback, 0);
+  }
+}
+
+void NTPSnippetsBridge::OnSuggestionsVisibilityChanged(
+    const Category category) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_SnippetsBridge_onSuggestionsVisibilityChanged(
+      env, bridge_, static_cast<int>(category.id()));
 }

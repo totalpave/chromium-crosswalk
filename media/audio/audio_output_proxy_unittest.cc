@@ -6,7 +6,9 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
+#include "base/bind.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
@@ -19,6 +21,7 @@
 #include "media/audio/audio_output_resampler.h"
 #include "media/audio/fake_audio_log_factory.h"
 #include "media/audio/fake_audio_output_stream.h"
+#include "media/audio/test_audio_thread.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -39,6 +42,7 @@ using media::AudioOutputProxy;
 using media::AudioOutputStream;
 using media::AudioParameters;
 using media::FakeAudioOutputStream;
+using media::TestAudioThread;
 
 namespace {
 
@@ -49,6 +53,12 @@ static const int kOnMoreDataCallbackDelayMs = 10;
 
 // Let start run long enough for many OnMoreData callbacks to occur.
 static const int kStartRunTimeMs = kOnMoreDataCallbackDelayMs * 10;
+
+// Dummy function.
+std::unique_ptr<media::AudioDebugRecorder> RegisterDebugRecording(
+    const media::AudioParameters& params) {
+  return nullptr;
+}
 
 class MockAudioOutputStream : public AudioOutputStream {
  public:
@@ -61,17 +71,17 @@ class MockAudioOutputStream : public AudioOutputStream {
             FakeAudioOutputStream::MakeFakeStream(manager, params_)) {
   }
 
-  void Start(AudioSourceCallback* callback) {
+  void Start(AudioSourceCallback* callback) override {
     start_called_ = true;
     fake_output_stream_->Start(callback);
   }
 
-  void Stop() {
+  void Stop() override {
     stop_called_ = true;
     fake_output_stream_->Stop();
   }
 
-  ~MockAudioOutputStream() {}
+  ~MockAudioOutputStream() override = default;
 
   bool start_called() { return start_called_; }
   bool stop_called() { return stop_called_; }
@@ -91,14 +101,10 @@ class MockAudioOutputStream : public AudioOutputStream {
 class MockAudioManager : public AudioManagerBase {
  public:
   MockAudioManager()
-      : AudioManagerBase(base::ThreadTaskRunnerHandle::Get(),
-                         base::ThreadTaskRunnerHandle::Get(),
+      : AudioManagerBase(std::make_unique<TestAudioThread>(),
                          &fake_audio_log_factory_) {}
   ~MockAudioManager() override { Shutdown(); }
 
-  MOCK_METHOD0(HasAudioOutputDevices, bool());
-  MOCK_METHOD0(HasAudioInputDevices, bool());
-  MOCK_METHOD0(GetAudioInputDeviceModel, base::string16());
   MOCK_METHOD3(MakeAudioOutputStream,
                AudioOutputStream*(const AudioParameters& params,
                                   const std::string& device_id,
@@ -110,12 +116,10 @@ class MockAudioManager : public AudioManagerBase {
                AudioInputStream*(const AudioParameters& params,
                                  const std::string& device_id,
                                  const LogCallback& log_callback));
-  MOCK_METHOD0(ShowAudioInputSettings, void());
   MOCK_METHOD0(GetTaskRunner, scoped_refptr<base::SingleThreadTaskRunner>());
   MOCK_METHOD0(GetWorkerTaskRunner,
                scoped_refptr<base::SingleThreadTaskRunner>());
-  MOCK_METHOD1(GetAudioInputDeviceNames, void(
-      media::AudioDeviceNames* device_name));
+  MOCK_METHOD0(GetName, const char*());
 
   MOCK_METHOD2(MakeLinearOutputStream,
                AudioOutputStream*(const AudioParameters& params,
@@ -132,6 +136,12 @@ class MockAudioManager : public AudioManagerBase {
                AudioInputStream*(const AudioParameters& params,
                                  const std::string& device_id,
                                  const LogCallback& log_callback));
+
+ protected:
+  MOCK_METHOD0(HasAudioOutputDevices, bool());
+  MOCK_METHOD0(HasAudioInputDevices, bool());
+  MOCK_METHOD1(GetAudioInputDeviceNames,
+               void(media::AudioDeviceNames* device_name));
   MOCK_METHOD2(GetPreferredOutputStreamParameters, AudioParameters(
       const std::string& device_id, const AudioParameters& params));
 
@@ -141,13 +151,14 @@ class MockAudioManager : public AudioManagerBase {
 
 class MockAudioSourceCallback : public AudioOutputStream::AudioSourceCallback {
  public:
-  int OnMoreData(AudioBus* audio_bus,
-                 uint32_t total_bytes_delay,
-                 uint32_t frames_skipped) {
-    audio_bus->Zero();
-    return audio_bus->frames();
+  int OnMoreData(base::TimeDelta /* delay */,
+                 base::TimeTicks /* delay_timestamp */,
+                 int /* prior_frames_skipped */,
+                 AudioBus* dest) override {
+    dest->Zero();
+    return dest->frames();
   }
-  MOCK_METHOD1(OnError, void(AudioOutputStream* stream));
+  MOCK_METHOD0(OnError, void());
 };
 
 }  // namespace
@@ -161,7 +172,7 @@ class AudioOutputProxyTest : public testing::Test {
     // FakeAudioOutputStream will keep the message loop busy indefinitely; i.e.,
     // RunUntilIdle() will never terminate.
     params_ = AudioParameters(AudioParameters::AUDIO_PCM_LINEAR,
-                              CHANNEL_LAYOUT_STEREO, 8000, 16, 2048);
+                              CHANNEL_LAYOUT_STEREO, 8000, 2048);
     InitDispatcher(base::TimeDelta::FromMilliseconds(kTestCloseDelayMs));
   }
 
@@ -172,10 +183,8 @@ class AudioOutputProxyTest : public testing::Test {
   }
 
   virtual void InitDispatcher(base::TimeDelta close_delay) {
-    dispatcher_impl_ = new AudioOutputDispatcherImpl(&manager(),
-                                                     params_,
-                                                     std::string(),
-                                                     close_delay);
+    dispatcher_impl_ = std::make_unique<AudioOutputDispatcherImpl>(
+        &manager(), params_, std::string(), close_delay);
   }
 
   virtual void OnStart() {}
@@ -210,7 +219,7 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, Open())
         .WillOnce(Return(true));
 
-    AudioOutputProxy* proxy = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy->Open());
     CloseAndWaitForCloseTimer(proxy, &stream);
   }
@@ -226,7 +235,7 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, SetVolume(_))
         .Times(1);
 
-    AudioOutputProxy* proxy = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy->Open());
 
     proxy->Start(&callback_);
@@ -249,7 +258,7 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, SetVolume(_))
         .Times(1);
 
-    AudioOutputProxy* proxy = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy->Open());
 
     proxy->Start(&callback_);
@@ -272,8 +281,8 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, Open())
         .WillOnce(Return(true));
 
-    AudioOutputProxy* proxy1 = new AudioOutputProxy(dispatcher);
-    AudioOutputProxy* proxy2 = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy1 = dispatcher->CreateStreamProxy();
+    AudioOutputProxy* proxy2 = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy1->Open());
     EXPECT_TRUE(proxy2->Open());
     proxy1->Close();
@@ -293,7 +302,7 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, Close())
         .Times(1);
 
-    AudioOutputProxy* proxy = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
     EXPECT_FALSE(proxy->Open());
     proxy->Close();
     EXPECT_FALSE(stream.stop_called());
@@ -308,7 +317,7 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, Open())
         .WillOnce(Return(true));
 
-    AudioOutputProxy* proxy = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy->Open());
 
     WaitForCloseTimer(&stream);
@@ -328,7 +337,7 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, SetVolume(_))
         .Times(2);
 
-    AudioOutputProxy* proxy1 = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy1 = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy1->Open());
 
     proxy1->Start(&callback_);
@@ -336,7 +345,7 @@ class AudioOutputProxyTest : public testing::Test {
     proxy1->Stop();
 
     // The stream should now be idle and get reused by |proxy2|.
-    AudioOutputProxy* proxy2 = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy2 = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy2->Open());
     proxy2->Start(&callback_);
     OnStart();
@@ -366,8 +375,8 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream2, SetVolume(_))
         .Times(1);
 
-    AudioOutputProxy* proxy1 = new AudioOutputProxy(dispatcher);
-    AudioOutputProxy* proxy2 = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy1 = dispatcher->CreateStreamProxy();
+    AudioOutputProxy* proxy2 = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy1->Open());
     EXPECT_TRUE(proxy2->Open());
 
@@ -394,7 +403,7 @@ class AudioOutputProxyTest : public testing::Test {
     EXPECT_CALL(stream, Open())
         .WillOnce(Return(true));
 
-    AudioOutputProxy* proxy = new AudioOutputProxy(dispatcher);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
     EXPECT_TRUE(proxy->Open());
 
     WaitForCloseTimer(&stream);
@@ -404,8 +413,7 @@ class AudioOutputProxyTest : public testing::Test {
         .Times(2)
         .WillRepeatedly(Return(reinterpret_cast<AudioOutputStream*>(NULL)));
 
-    EXPECT_CALL(callback_, OnError(_))
-        .Times(2);
+    EXPECT_CALL(callback_, OnError()).Times(2);
 
     proxy->Start(&callback_);
 
@@ -419,26 +427,84 @@ class AudioOutputProxyTest : public testing::Test {
     proxy->Close();
   }
 
+  void DispatcherDestroyed_BeforeOpen(
+      std::unique_ptr<AudioOutputDispatcher> dispatcher) {
+    EXPECT_CALL(manager(), MakeAudioOutputStream(_, _, _)).Times(0);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
+    dispatcher.reset();
+    EXPECT_FALSE(proxy->Open());
+    proxy->Close();
+  }
+
+  void DispatcherDestroyed_BeforeStart(
+      std::unique_ptr<AudioOutputDispatcher> dispatcher) {
+    MockAudioOutputStream stream(&manager_, params_);
+    EXPECT_CALL(manager(), MakeAudioOutputStream(_, _, _))
+        .WillOnce(Return(&stream));
+    EXPECT_CALL(stream, Open()).WillOnce(Return(true));
+    EXPECT_CALL(stream, Close()).Times(1);
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
+    EXPECT_TRUE(proxy->Open());
+
+    EXPECT_CALL(callback_, OnError()).Times(1);
+    dispatcher.reset();
+    proxy->Start(&callback_);
+    proxy->Stop();
+    proxy->Close();
+  }
+
+  void DispatcherDestroyed_BeforeStop(
+      std::unique_ptr<AudioOutputDispatcher> dispatcher) {
+    MockAudioOutputStream stream(&manager_, params_);
+    EXPECT_CALL(manager(), MakeAudioOutputStream(_, _, _))
+        .WillOnce(Return(&stream));
+    EXPECT_CALL(stream, Open()).WillOnce(Return(true));
+    EXPECT_CALL(stream, Close()).Times(1);
+    EXPECT_CALL(stream, SetVolume(_)).Times(1);
+
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
+    EXPECT_TRUE(proxy->Open());
+    proxy->Start(&callback_);
+    dispatcher.reset();
+    proxy->Stop();
+    proxy->Close();
+  }
+
+  void DispatcherDestroyed_AfterStop(
+      std::unique_ptr<AudioOutputDispatcher> dispatcher) {
+    MockAudioOutputStream stream(&manager_, params_);
+    EXPECT_CALL(manager(), MakeAudioOutputStream(_, _, _))
+        .WillOnce(Return(&stream));
+    EXPECT_CALL(stream, Open()).WillOnce(Return(true));
+    EXPECT_CALL(stream, Close()).Times(1);
+    EXPECT_CALL(stream, SetVolume(_)).Times(1);
+
+    AudioOutputProxy* proxy = dispatcher->CreateStreamProxy();
+    EXPECT_TRUE(proxy->Open());
+    proxy->Start(&callback_);
+    proxy->Stop();
+    dispatcher.reset();
+    proxy->Close();
+  }
+
   base::MessageLoop message_loop_;
-  scoped_refptr<AudioOutputDispatcherImpl> dispatcher_impl_;
   MockAudioManager manager_;
+  std::unique_ptr<AudioOutputDispatcherImpl> dispatcher_impl_;
   MockAudioSourceCallback callback_;
   AudioParameters params_;
 };
 
 class AudioOutputResamplerTest : public AudioOutputProxyTest {
  public:
-  void TearDown() override { AudioOutputProxyTest::TearDown(); }
-
   void InitDispatcher(base::TimeDelta close_delay) override {
     // Use a low sample rate and large buffer size when testing otherwise the
     // FakeAudioOutputStream will keep the message loop busy indefinitely; i.e.,
     // RunUntilIdle() will never terminate.
-    resampler_params_ = AudioParameters(
-        AudioParameters::AUDIO_PCM_LOW_LATENCY, CHANNEL_LAYOUT_STEREO,
-        16000, 16, 1024);
-    resampler_ = new AudioOutputResampler(
-        &manager(), params_, resampler_params_, std::string(), close_delay);
+    resampler_params_ = AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
+                                        CHANNEL_LAYOUT_STEREO, 16000, 1024);
+    resampler_ = std::make_unique<AudioOutputResampler>(
+        &manager(), params_, resampler_params_, std::string(), close_delay,
+        base::BindRepeating(&RegisterDebugRecording));
   }
 
   void OnStart() override {
@@ -452,16 +518,16 @@ class AudioOutputResamplerTest : public AudioOutputProxyTest {
 
  protected:
   AudioParameters resampler_params_;
-  scoped_refptr<AudioOutputResampler> resampler_;
+  std::unique_ptr<AudioOutputResampler> resampler_;
 };
 
 TEST_F(AudioOutputProxyTest, CreateAndClose) {
-  AudioOutputProxy* proxy = new AudioOutputProxy(dispatcher_impl_.get());
+  AudioOutputProxy* proxy = dispatcher_impl_->CreateStreamProxy();
   proxy->Close();
 }
 
 TEST_F(AudioOutputResamplerTest, CreateAndClose) {
-  AudioOutputProxy* proxy = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy = resampler_->CreateStreamProxy();
   proxy->Close();
 }
 
@@ -541,6 +607,38 @@ TEST_F(AudioOutputResamplerTest, StartFailed) {
   StartFailed(resampler_.get());
 }
 
+TEST_F(AudioOutputProxyTest, DispatcherDestroyed_BeforeOpen) {
+  DispatcherDestroyed_BeforeOpen(std::move(dispatcher_impl_));
+}
+
+TEST_F(AudioOutputResamplerTest, DispatcherDestroyed_BeforeOpen) {
+  DispatcherDestroyed_BeforeOpen(std::move(resampler_));
+}
+
+TEST_F(AudioOutputProxyTest, DispatcherDestroyed_BeforeStart) {
+  DispatcherDestroyed_BeforeStart(std::move(dispatcher_impl_));
+}
+
+TEST_F(AudioOutputResamplerTest, DispatcherDestroyed_BeforeStart) {
+  DispatcherDestroyed_BeforeStart(std::move(resampler_));
+}
+
+TEST_F(AudioOutputProxyTest, DispatcherDestroyed_BeforeStop) {
+  DispatcherDestroyed_BeforeStop(std::move(dispatcher_impl_));
+}
+
+TEST_F(AudioOutputResamplerTest, DispatcherDestroyed_BeforeStop) {
+  DispatcherDestroyed_BeforeStop(std::move(resampler_));
+}
+
+TEST_F(AudioOutputProxyTest, DispatcherDestroyed_AfterStop) {
+  DispatcherDestroyed_AfterStop(std::move(dispatcher_impl_));
+}
+
+TEST_F(AudioOutputResamplerTest, DispatcherDestroyed_AfterStop) {
+  DispatcherDestroyed_AfterStop(std::move(resampler_));
+}
+
 // Simulate AudioOutputStream::Create() failure with a low latency stream and
 // ensure AudioOutputResampler falls back to the high latency path.
 TEST_F(AudioOutputResamplerTest, LowLatencyCreateFailedFallback) {
@@ -552,7 +650,7 @@ TEST_F(AudioOutputResamplerTest, LowLatencyCreateFailedFallback) {
   EXPECT_CALL(stream, Open())
       .WillOnce(Return(true));
 
-  AudioOutputProxy* proxy = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy = resampler_->CreateStreamProxy();
   EXPECT_TRUE(proxy->Open());
   CloseAndWaitForCloseTimer(proxy, &stream);
 }
@@ -573,7 +671,7 @@ TEST_F(AudioOutputResamplerTest, LowLatencyOpenFailedFallback) {
   EXPECT_CALL(okay_stream, Open())
       .WillOnce(Return(true));
 
-  AudioOutputProxy* proxy = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy = resampler_->CreateStreamProxy();
   EXPECT_TRUE(proxy->Open());
   CloseAndWaitForCloseTimer(proxy, &okay_stream);
 }
@@ -610,7 +708,7 @@ TEST_F(AudioOutputResamplerTest, HighLatencyFallbackFailed) {
   EXPECT_CALL(okay_stream, Open())
       .WillOnce(Return(true));
 
-  AudioOutputProxy* proxy = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy = resampler_->CreateStreamProxy();
   EXPECT_TRUE(proxy->Open());
   CloseAndWaitForCloseTimer(proxy, &okay_stream);
 }
@@ -630,7 +728,7 @@ TEST_F(AudioOutputResamplerTest, AllFallbackFailed) {
       .Times(kFallbackCount)
       .WillRepeatedly(Return(static_cast<AudioOutputStream*>(NULL)));
 
-  AudioOutputProxy* proxy = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy = resampler_->CreateStreamProxy();
   EXPECT_FALSE(proxy->Open());
   proxy->Close();
 }
@@ -660,19 +758,19 @@ TEST_F(AudioOutputResamplerTest, LowLatencyOpenEventuallyFails) {
       .Times(1);
 
   // Open and start the first proxy and stream.
-  AudioOutputProxy* proxy1 = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy1 = resampler_->CreateStreamProxy();
   EXPECT_TRUE(proxy1->Open());
   proxy1->Start(&callback_);
   OnStart();
 
   // Open and start the second proxy and stream.
-  AudioOutputProxy* proxy2 = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy2 = resampler_->CreateStreamProxy();
   EXPECT_TRUE(proxy2->Open());
   proxy2->Start(&callback_);
   OnStart();
 
   // Attempt to open the third stream which should fail.
-  AudioOutputProxy* proxy3 = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy3 = resampler_->CreateStreamProxy();
   EXPECT_FALSE(proxy3->Open());
   proxy3->Close();
 
@@ -718,7 +816,7 @@ TEST_F(AudioOutputResamplerTest, FallbackRecovery) {
                   _, _))
       .WillOnce(Return(&fake_stream));
   EXPECT_CALL(fake_stream, Open()).WillOnce(Return(true));
-  AudioOutputProxy* proxy = new AudioOutputProxy(resampler_.get());
+  AudioOutputProxy* proxy = resampler_->CreateStreamProxy();
   EXPECT_TRUE(proxy->Open());
   CloseAndWaitForCloseTimer(proxy, &fake_stream);
 
@@ -741,7 +839,7 @@ TEST_F(AudioOutputResamplerTest, FallbackRecovery) {
 
   // Stream1 should be able to successfully open and start.
   EXPECT_CALL(real_stream, Open()).WillOnce(Return(true));
-  proxy = new AudioOutputProxy(resampler_.get());
+  proxy = resampler_->CreateStreamProxy();
   EXPECT_TRUE(proxy->Open());
   CloseAndWaitForCloseTimer(proxy, &real_stream);
 }

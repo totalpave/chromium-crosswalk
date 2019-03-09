@@ -4,10 +4,13 @@
 
 #include "net/cert/internal/cert_issuer_source_aia.h"
 
-#include "base/bind.h"
+#include <memory>
+
 #include "net/cert/cert_net_fetcher.h"
+#include "net/cert/internal/cert_errors.h"
 #include "net/cert/internal/parsed_certificate.h"
 #include "net/cert/internal/test_helpers.h"
+#include "net/cert/x509_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -16,8 +19,11 @@ namespace net {
 
 namespace {
 
+using ::testing::ByMove;
 using ::testing::Mock;
+using ::testing::Return;
 using ::testing::StrictMock;
+using ::testing::_;
 
 ::testing::AssertionResult ReadTestPem(const std::string& file_name,
                                        const std::string& block_name,
@@ -38,9 +44,14 @@ using ::testing::StrictMock;
                   "CERTIFICATE", &der);
   if (!r)
     return r;
-  *result = ParsedCertificate::CreateFromCertificateCopy(der, {});
-  if (!*result)
-    return ::testing::AssertionFailure() << "CreateFromCertificateCopy failed";
+  CertErrors errors;
+  *result = ParsedCertificate::Create(x509_util::CreateCryptoBuffer(der), {},
+                                      &errors);
+  if (!*result) {
+    return ::testing::AssertionFailure()
+           << "ParsedCertificate::Create() failed:\n"
+           << errors.ToDebugString();
+  }
   return ::testing::AssertionSuccess();
 }
 
@@ -51,112 +62,59 @@ std::vector<uint8_t> CertDataVector(const ParsedCertificate* cert) {
   return data;
 }
 
-// Tracks a CertNetFetcher::Request that will be returned to the
-// CertIssuerSourceAia. Allows the tests to tell if the Request is still alive
-// or was deleted(cancelled) by the CertIssuerSourceAia. If the Request is still
-// alive, the test can get the FetchCallback to simulate the Request completing.
-class RequestManager {
+// MockCertNetFetcher is an implementation of CertNetFetcher for testing.
+class MockCertNetFetcher : public CertNetFetcher {
  public:
-  class Request : public CertNetFetcher::Request {
-   public:
-    Request(RequestManager* manager,
-            const CertNetFetcher::FetchCallback& callback)
-        : manager_(manager), callback_(callback) {}
-    ~Request() override { manager_->RequestWasDestroyed(); }
+  MockCertNetFetcher() = default;
+  MOCK_METHOD0(Shutdown, void());
+  MOCK_METHOD3(FetchCaIssuers,
+               std::unique_ptr<Request>(const GURL& url,
+                                        int timeout_milliseconds,
+                                        int max_response_bytes));
+  MOCK_METHOD3(FetchCrl,
+               std::unique_ptr<Request>(const GURL& url,
+                                        int timeout_milliseconds,
+                                        int max_response_bytes));
 
-    CertNetFetcher::FetchCallback get_callback() const { return callback_; }
+  MOCK_METHOD3(FetchOcsp,
+               std::unique_ptr<Request>(const GURL& url,
+                                        int timeout_milliseconds,
+                                        int max_response_bytes));
 
-   private:
-    RequestManager* manager_;
-    CertNetFetcher::FetchCallback callback_;
-  };
+ protected:
+  ~MockCertNetFetcher() override = default;
+};
 
-  ~RequestManager() { CHECK(!request_); }
+// MockCertNetFetcherRequest gives back the indicated error and bytes.
+class MockCertNetFetcherRequest : public CertNetFetcher::Request {
+ public:
+  MockCertNetFetcherRequest(Error error, std::vector<uint8_t> bytes)
+      : error_(error), bytes_(std::move(bytes)) {}
 
-  std::unique_ptr<Request> CreateRequest(
-      const CertNetFetcher::FetchCallback& callback) {
-    EXPECT_FALSE(request_);
-    std::unique_ptr<Request> request(new Request(this, callback));
-    request_ = request.get();
-    return request;
-  }
-
-  bool is_request_alive() const { return request_; }
-
-  CertNetFetcher::FetchCallback get_callback() const {
-    CHECK(is_request_alive());
-    return request_->get_callback();
+  void WaitForResult(Error* error, std::vector<uint8_t>* bytes) override {
+    DCHECK(!did_consume_result_);
+    *error = error_;
+    *bytes = std::move(bytes_);
+    did_consume_result_ = true;
   }
 
  private:
-  void RequestWasDestroyed() {
-    EXPECT_TRUE(request_);
-    request_ = nullptr;
-  }
-
-  Request* request_;
+  Error error_;
+  std::vector<uint8_t> bytes_;
+  bool did_consume_result_ = false;
 };
 
-// MockCertNetFetcherImpl is an implementation of CertNetFetcher for testing.
-class MockCertNetFetcherImpl : public CertNetFetcher {
- public:
-  MockCertNetFetcherImpl() = default;
-  ~MockCertNetFetcherImpl() override = default;
+// Creates a CertNetFetcher::Request that completes with an error.
+std::unique_ptr<CertNetFetcher::Request> CreateMockRequest(Error error) {
+  return std::make_unique<MockCertNetFetcherRequest>(error,
+                                                     std::vector<uint8_t>());
+}
 
-  RequestManager* GetRequestManagerForURL(const GURL& url) {
-    auto it = request_map_.find(url);
-    if (it == request_map_.end())
-      return nullptr;
-    return it->second.get();
-  }
-
-  WARN_UNUSED_RESULT std::unique_ptr<Request> FetchCaIssuers(
-      const GURL& url,
-      int timeout_milliseconds,
-      int max_response_bytes,
-      const FetchCallback& callback) override {
-    EXPECT_TRUE(request_map_.find(url) == request_map_.end());
-
-    std::unique_ptr<RequestManager> request_manager(new RequestManager());
-
-    std::unique_ptr<Request> request = request_manager->CreateRequest(callback);
-
-    request_map_[url] = std::move(request_manager);
-
-    return request;
-  }
-
-  WARN_UNUSED_RESULT std::unique_ptr<Request> FetchCrl(
-      const GURL& url,
-      int timeout_milliseconds,
-      int max_response_bytes,
-      const FetchCallback& callback) override {
-    NOTREACHED();
-    return nullptr;
-  }
-
-  WARN_UNUSED_RESULT std::unique_ptr<Request> FetchOcsp(
-      const GURL& url,
-      int timeout_milliseconds,
-      int max_response_bytes,
-      const FetchCallback& callback) override {
-    NOTREACHED();
-    return nullptr;
-  }
-
- private:
-  std::map<GURL, std::unique_ptr<RequestManager>> request_map_;
-
-  DISALLOW_COPY_AND_ASSIGN(MockCertNetFetcherImpl);
-};
-
-class MockIssuerCallback {
- public:
-  MOCK_METHOD1(Callback, void(CertIssuerSource::Request*));
-};
-
-void NotCalled(CertIssuerSource::Request* request) {
-  ADD_FAILURE() << "NotCalled was called";
+// Creates a CertNetFetcher::Request that completes with the specified error
+// code and bytes.
+std::unique_ptr<CertNetFetcher::Request> CreateMockRequest(
+    const std::vector<uint8_t>& bytes) {
+  return std::make_unique<MockCertNetFetcherRequest>(OK, bytes);
 }
 
 // CertIssuerSourceAia does not return results for SyncGetIssuersOf.
@@ -164,9 +122,10 @@ TEST(CertIssuerSourceAiaTest, NoSyncResults) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_two_aia.pem", &cert));
 
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
-  std::vector<scoped_refptr<ParsedCertificate>> issuers;
+  // No methods on |mock_fetcher| should be called.
+  auto mock_fetcher = base::MakeRefCounted<StrictMock<MockCertNetFetcher>>();
+  CertIssuerSourceAia aia_source(mock_fetcher);
+  ParsedCertificateList issuers;
   aia_source.SyncGetIssuersOf(cert.get(), &issuers);
   EXPECT_EQ(0U, issuers.size());
 }
@@ -177,10 +136,11 @@ TEST(CertIssuerSourceAiaTest, NoAia) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_no_aia.pem", &cert));
 
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  // No methods on |mock_fetcher| should be called.
+  auto mock_fetcher = base::MakeRefCounted<StrictMock<MockCertNetFetcher>>();
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> request;
-  aia_source.AsyncGetIssuersOf(cert.get(), base::Bind(&NotCalled), &request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &request);
   EXPECT_EQ(nullptr, request);
 }
 
@@ -193,32 +153,19 @@ TEST(CertIssuerSourceAiaTest, FileAia) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_file_aia.pem", &cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  auto mock_fetcher = base::MakeRefCounted<StrictMock<MockCertNetFetcher>>();
+  EXPECT_CALL(*mock_fetcher, FetchCaIssuers(GURL("file:///dev/null"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(ERR_DISALLOWED_URL_SCHEME))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("file:///dev/null"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  // CertNetFetcher rejects the URL scheme.
-  req_manager->get_callback().Run(ERR_DISALLOWED_URL_SCHEME,
-                                  std::vector<uint8_t>());
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
   // No results.
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  EXPECT_TRUE(result_certs.empty());
 }
 
 // If the AuthorityInfoAccess extension contains an invalid URL,
@@ -227,10 +174,10 @@ TEST(CertIssuerSourceAiaTest, OneInvalidURL) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_invalid_url_aia.pem", &cert));
 
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  auto mock_fetcher = base::MakeRefCounted<StrictMock<MockCertNetFetcher>>();
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> request;
-  aia_source.AsyncGetIssuersOf(cert.get(), base::Bind(&NotCalled), &request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &request);
   EXPECT_EQ(nullptr, request);
 }
 
@@ -241,38 +188,26 @@ TEST(CertIssuerSourceAiaTest, OneAia) {
   scoped_refptr<ParsedCertificate> intermediate_cert;
   ASSERT_TRUE(ReadTestCert("i.pem", &intermediate_cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  auto mock_fetcher = base::MakeRefCounted<StrictMock<MockCertNetFetcher>>();
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia/I.cer"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(CertDataVector(intermediate_cert.get())))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(1u, result_certs.size());
+  ASSERT_EQ(result_certs.front()->der_cert(), intermediate_cert->der_cert());
 
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
-
-  status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
-
-  EXPECT_TRUE(req_manager->is_request_alive());
-  cert_source_request.reset();
-  EXPECT_FALSE(req_manager->is_request_alive());
+  result_certs.clear();
+  cert_source_request->GetNext(&result_certs);
+  EXPECT_TRUE(result_certs.empty());
 }
 
 // AuthorityInfoAccess with two URIs, one a FILE, the other a HTTP.
@@ -285,50 +220,28 @@ TEST(CertIssuerSourceAiaTest, OneFileOneHttpAia) {
   scoped_refptr<ParsedCertificate> intermediate_cert;
   ASSERT_TRUE(ReadTestCert("i2.pem", &intermediate_cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  auto mock_fetcher = base::MakeRefCounted<StrictMock<MockCertNetFetcher>>();
+
+  EXPECT_CALL(*mock_fetcher, FetchCaIssuers(GURL("file:///dev/null"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(ERR_DISALLOWED_URL_SCHEME))));
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia2/I2.foo"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(CertDataVector(intermediate_cert.get())))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("file:///dev/null"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(1u, result_certs.size());
+  ASSERT_EQ(result_certs.front()->der_cert(), intermediate_cert->der_cert());
 
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
-
-  // Request for file URL completes with disallowed scheme failure. Callback is
-  // NOT called.
-  req_manager->get_callback().Run(ERR_DISALLOWED_URL_SCHEME,
-                                  std::vector<uint8_t>());
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Request for I2.foo completes. Callback should be called now.
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager2->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
-
-  status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
-
-  EXPECT_TRUE(req_manager2->is_request_alive());
-  cert_source_request.reset();
-  EXPECT_FALSE(req_manager2->is_request_alive());
+  cert_source_request->GetNext(&result_certs);
+  EXPECT_EQ(1u, result_certs.size());
 }
 
 // AuthorityInfoAccess with two URIs, one is invalid, the other HTTP.
@@ -338,38 +251,28 @@ TEST(CertIssuerSourceAiaTest, OneInvalidOneHttpAia) {
   scoped_refptr<ParsedCertificate> intermediate_cert;
   ASSERT_TRUE(ReadTestCert("i2.pem", &intermediate_cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  scoped_refptr<StrictMock<MockCertNetFetcher>> mock_fetcher(
+      new StrictMock<MockCertNetFetcher>());
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia2/I2.foo"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(CertDataVector(intermediate_cert.get())))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(1u, result_certs.size());
+  EXPECT_EQ(result_certs.front()->der_cert(), intermediate_cert->der_cert());
 
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
-
-  status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
-
-  EXPECT_TRUE(req_manager->is_request_alive());
-  cert_source_request.reset();
-  EXPECT_FALSE(req_manager->is_request_alive());
+  // No more results.
+  result_certs.clear();
+  cert_source_request->GetNext(&result_certs);
+  EXPECT_EQ(0u, result_certs.size());
 }
 
 // AuthorityInfoAccess with two HTTP urls, each pointing to a single DER cert.
@@ -383,490 +286,169 @@ TEST(CertIssuerSourceAiaTest, TwoAiaCompletedInSeries) {
   scoped_refptr<ParsedCertificate> intermediate_cert2;
   ASSERT_TRUE(ReadTestCert("i2.pem", &intermediate_cert2));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  scoped_refptr<StrictMock<MockCertNetFetcher>> mock_fetcher(
+      new StrictMock<MockCertNetFetcher>());
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia/I.cer"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(CertDataVector(intermediate_cert.get())))));
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia2/I2.foo"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(CertDataVector(intermediate_cert2.get())))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
+  // GetNext() should return intermediate_cert followed by intermediate_cert2.
+  // They are returned in two separate batches.
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(1u, result_certs.size());
+  EXPECT_EQ(result_certs.front()->der_cert(), intermediate_cert->der_cert());
 
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
-
-  // Request for I.cer completes first.
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Results are retrieved before the other request completes.
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
-
-  status = cert_source_request->GetNext(&result_cert);
-  // The other http request is still pending, status should be ASYNC to signify
-  // the need to wait for another callback.
-  ASSERT_EQ(CompletionStatus::ASYNC, status);
-  EXPECT_FALSE(result_cert.get());
-
-  // Request for I2.foo completes.
-  ASSERT_TRUE(req_manager2->is_request_alive());
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager2->get_callback().Run(OK,
-                                   CertDataVector(intermediate_cert2.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Results from the second http request are retrieved.
-  status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert2->der_cert());
+  result_certs.clear();
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(1u, result_certs.size());
+  EXPECT_EQ(result_certs.front()->der_cert(), intermediate_cert2->der_cert());
 
   // No more results.
-  status = cert_source_request->GetNext(&result_cert);
-  ASSERT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
-
-  EXPECT_TRUE(req_manager->is_request_alive());
-  EXPECT_TRUE(req_manager2->is_request_alive());
-  cert_source_request.reset();
-  EXPECT_FALSE(req_manager->is_request_alive());
-  EXPECT_FALSE(req_manager2->is_request_alive());
-}
-
-// AuthorityInfoAccess with two HTTP urls, each pointing to a single DER cert.
-// Both HTTP requests complete before the results are retrieved from the
-// CertIssuerSourceAia. There should only be a single callback since the 2nd
-// HTTP request completed before GetNext was called, so both requests can be
-// supplied to the caller in the same batch.
-TEST(CertIssuerSourceAiaTest, TwoAiaCompletedBeforeGetNext) {
-  scoped_refptr<ParsedCertificate> cert;
-  ASSERT_TRUE(ReadTestCert("target_two_aia.pem", &cert));
-  scoped_refptr<ParsedCertificate> intermediate_cert;
-  ASSERT_TRUE(ReadTestCert("i.pem", &intermediate_cert));
-  scoped_refptr<ParsedCertificate> intermediate_cert2;
-  ASSERT_TRUE(ReadTestCert("i2.pem", &intermediate_cert2));
-
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
-  std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
-  ASSERT_NE(nullptr, cert_source_request);
-
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
-
-  // First HTTP request completes. Callback is called as soon as the first
-  // request completes.
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Second HTTP request completes before any results were retrieved from the
-  // CertIssuerSourceAia. The callback should not be called again.
-  ASSERT_TRUE(req_manager2->is_request_alive());
-  req_manager2->get_callback().Run(OK,
-                                   CertDataVector(intermediate_cert2.get()));
-
-  // Caller retrieves results. Both certs should be supplied.
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
-
-  // 2nd cert is retrieved.
-  status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert2->der_cert());
-
-  // All results are done, SYNC signals completion.
-  status = cert_source_request->GetNext(&result_cert);
-  ASSERT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
-}
-
-// AuthorityInfoAccess with three HTTP urls, each pointing to a single DER cert.
-//
-// 1) Two HTTP requests complete before the results are retrieved from the
-// CertIssuerSourceAia.
-// 2) A single cert result is retrieved via GetNext.
-// 3) The third HTTP request completes.
-// 4) The remaining two certs are retrieved.
-//
-// Only one callback should occur (after the first HTTP request completed),
-// since the pending cert results weren't exhausted before the 3rd request
-// completed.
-TEST(CertIssuerSourceAiaTest, AiaRequestCompletesDuringGetNextSequence) {
-  scoped_refptr<ParsedCertificate> cert;
-  ASSERT_TRUE(ReadTestCert("target_three_aia.pem", &cert));
-  scoped_refptr<ParsedCertificate> intermediate_cert;
-  ASSERT_TRUE(ReadTestCert("i.pem", &intermediate_cert));
-  scoped_refptr<ParsedCertificate> intermediate_cert2;
-  ASSERT_TRUE(ReadTestCert("i2.pem", &intermediate_cert2));
-  scoped_refptr<ParsedCertificate> intermediate_cert3;
-  ASSERT_TRUE(ReadTestCert("i3.pem", &intermediate_cert3));
-
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
-  std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
-  ASSERT_NE(nullptr, cert_source_request);
-
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
-
-  RequestManager* req_manager3 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia3/I3.foo"));
-  ASSERT_TRUE(req_manager3);
-  ASSERT_TRUE(req_manager3->is_request_alive());
-
-  // First HTTP request completes. Callback is called as soon as the first
-  // request completes.
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Second HTTP request completes before any results were retrieved from the
-  // CertIssuerSourceAia. The callback should not be called again.
-  ASSERT_TRUE(req_manager2->is_request_alive());
-  req_manager2->get_callback().Run(OK,
-                                   CertDataVector(intermediate_cert2.get()));
-
-  // Caller retrieves a single result.
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
-
-  // Third HTTP request completes.
-  // The callback should not be called again, since the last GetNext call had
-  // indicated more results were pending still.
-  ASSERT_TRUE(req_manager3->is_request_alive());
-  req_manager3->get_callback().Run(OK,
-                                   CertDataVector(intermediate_cert3.get()));
-
-  // 2nd cert is retrieved.
-  status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert2->der_cert());
-
-  // 3rd cert is retrieved.
-  status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert3->der_cert());
-
-  // All results are done, SYNC signals completion.
-  status = cert_source_request->GetNext(&result_cert);
-  ASSERT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
+  result_certs.clear();
+  cert_source_request->GetNext(&result_certs);
+  EXPECT_EQ(0u, result_certs.size());
 }
 
 // AuthorityInfoAccess with a single HTTP url pointing to a single DER cert,
-// CertNetFetcher request fails.  The callback should be called to indicate the
-// request is complete, but no results should be provided.
+// CertNetFetcher request fails.
 TEST(CertIssuerSourceAiaTest, OneAiaHttpError) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_one_aia.pem", &cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  scoped_refptr<StrictMock<MockCertNetFetcher>> mock_fetcher(
+      new StrictMock<MockCertNetFetcher>());
+
+  // HTTP request returns with an error.
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia/I.cer"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(ERR_FAILED))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  // HTTP request returns with an error.
-  req_manager->get_callback().Run(ERR_FAILED, std::vector<uint8_t>());
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
+  // No results.
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(0u, result_certs.size());
 }
 
 // AuthorityInfoAccess with a single HTTP url pointing to a single DER cert,
-// CertNetFetcher request completes, but the DER cert fails to parse.  The
-// callback should be called to indicate the request is complete, but no results
-// should be provided.
+// CertNetFetcher request completes, but the DER cert fails to parse.
 TEST(CertIssuerSourceAiaTest, OneAiaParseError) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_one_aia.pem", &cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  scoped_refptr<StrictMock<MockCertNetFetcher>> mock_fetcher(
+      new StrictMock<MockCertNetFetcher>());
+
+  // HTTP request returns invalid certificate data.
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia/I.cer"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(std::vector<uint8_t>({1, 2, 3, 4, 5})))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  // HTTP request returns with an error.
-  req_manager->get_callback().Run(OK, std::vector<uint8_t>({1, 2, 3, 4, 5}));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
+  // No results.
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(0u, result_certs.size());
 }
 
 // AuthorityInfoAccess with two HTTP urls, each pointing to a single DER cert.
-// One request fails. No callback should be generated yet. Once the second
-// request completes, the callback should occur.
+// One request fails.
 TEST(CertIssuerSourceAiaTest, TwoAiaCompletedInSeriesFirstFails) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_two_aia.pem", &cert));
   scoped_refptr<ParsedCertificate> intermediate_cert2;
   ASSERT_TRUE(ReadTestCert("i2.pem", &intermediate_cert2));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  scoped_refptr<StrictMock<MockCertNetFetcher>> mock_fetcher(
+      new StrictMock<MockCertNetFetcher>());
+
+  // Request for I.cer completes first, but fails.
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia/I.cer"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(ERR_INVALID_RESPONSE))));
+
+  // Request for I2.foo succeeds.
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia2/I2.foo"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(CertDataVector(intermediate_cert2.get())))));
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
-
-  // Request for I.cer completes first, but fails. Callback is NOT called.
-  req_manager->get_callback().Run(ERR_INVALID_RESPONSE, std::vector<uint8_t>());
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Request for I2.foo completes. Callback should be called now.
-  ASSERT_TRUE(req_manager2->is_request_alive());
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager2->get_callback().Run(OK,
-                                   CertDataVector(intermediate_cert2.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Results from the second http request are retrieved.
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert2->der_cert());
+  // GetNext() should return intermediate_cert2.
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(1u, result_certs.size());
+  EXPECT_EQ(result_certs.front()->der_cert(), intermediate_cert2->der_cert());
 
   // No more results.
-  status = cert_source_request->GetNext(&result_cert);
-  ASSERT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
+  result_certs.clear();
+  cert_source_request->GetNext(&result_certs);
+  EXPECT_EQ(0u, result_certs.size());
 }
 
 // AuthorityInfoAccess with two HTTP urls, each pointing to a single DER cert.
 // First request completes, result is retrieved, then the second request fails.
-// The second callback should occur to indicate that the results are exhausted,
-// even though no more results are available.
 TEST(CertIssuerSourceAiaTest, TwoAiaCompletedInSeriesSecondFails) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_two_aia.pem", &cert));
   scoped_refptr<ParsedCertificate> intermediate_cert;
   ASSERT_TRUE(ReadTestCert("i.pem", &intermediate_cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
-  std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
-  ASSERT_NE(nullptr, cert_source_request);
-
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
+  scoped_refptr<StrictMock<MockCertNetFetcher>> mock_fetcher(
+      new StrictMock<MockCertNetFetcher>());
 
   // Request for I.cer completes first.
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia/I.cer"), _, _))
+      .WillOnce(Return(
+          ByMove(CreateMockRequest(CertDataVector(intermediate_cert.get())))));
 
-  // Results are retrieved before the other request completes.
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
+  // Request for I2.foo fails.
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia2/I2.foo"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(ERR_INVALID_RESPONSE))));
 
-  status = cert_source_request->GetNext(&result_cert);
-  // The other http request is still pending, status should be ASYNC to signify
-  // the need to wait for another callback.
-  ASSERT_EQ(CompletionStatus::ASYNC, status);
-  EXPECT_FALSE(result_cert.get());
-
-  // Request for I2.foo fails. Callback should be called to indicate that
-  // results are exhausted.
-  ASSERT_TRUE(req_manager2->is_request_alive());
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager2->get_callback().Run(ERR_INVALID_RESPONSE,
-                                   std::vector<uint8_t>());
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // GetNext has no more results.
-  status = cert_source_request->GetNext(&result_cert);
-  ASSERT_EQ(CompletionStatus::SYNC, status);
-  EXPECT_FALSE(result_cert.get());
-}
-
-// AuthorityInfoAccess with two HTTP urls. Request is cancelled before any HTTP
-// requests finish.
-TEST(CertIssuerSourceAiaTest, CertSourceRequestCancelled) {
-  scoped_refptr<ParsedCertificate> cert;
-  ASSERT_TRUE(ReadTestCert("target_two_aia.pem", &cert));
-
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
+  // GetNext() should return intermediate_cert.
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(1u, result_certs.size());
+  EXPECT_EQ(result_certs.front()->der_cert(), intermediate_cert->der_cert());
 
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
-
-  // Delete The CertIssuerSource::Request, cancelling it.
-  cert_source_request.reset();
-  // Both CertNetFetcher::Requests should be cancelled.
-  EXPECT_FALSE(req_manager->is_request_alive());
-  EXPECT_FALSE(req_manager2->is_request_alive());
-}
-
-// AuthorityInfoAccess with two HTTP urls, each pointing to a single DER cert.
-// One request completes, results are retrieved, then request is cancelled
-// before the second HTTP request completes.
-TEST(CertIssuerSourceAiaTest, TwoAiaOneCompletedThenRequestCancelled) {
-  scoped_refptr<ParsedCertificate> cert;
-  ASSERT_TRUE(ReadTestCert("target_two_aia.pem", &cert));
-  scoped_refptr<ParsedCertificate> intermediate_cert;
-  ASSERT_TRUE(ReadTestCert("i.pem", &intermediate_cert));
-
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
-  std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
-  ASSERT_NE(nullptr, cert_source_request);
-
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  ASSERT_TRUE(req_manager->is_request_alive());
-
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  ASSERT_TRUE(req_manager2->is_request_alive());
-
-  // Request for I.cer completes first.
-  EXPECT_CALL(mock_callback, Callback(cert_source_request.get()));
-  req_manager->get_callback().Run(OK, CertDataVector(intermediate_cert.get()));
-  Mock::VerifyAndClearExpectations(&mock_callback);
-
-  // Results are retrieved before the other request completes.
-  scoped_refptr<ParsedCertificate> result_cert;
-  CompletionStatus status = cert_source_request->GetNext(&result_cert);
-  EXPECT_EQ(CompletionStatus::SYNC, status);
-  ASSERT_TRUE(result_cert.get());
-  ASSERT_EQ(result_cert->der_cert(), intermediate_cert->der_cert());
-
-  status = cert_source_request->GetNext(&result_cert);
-  // The other http request is still pending, status should be ASYNC to signify
-  // the need to wait for another callback.
-  ASSERT_EQ(CompletionStatus::ASYNC, status);
-  EXPECT_FALSE(result_cert.get());
-
-  // Delete The CertIssuerSource::Request, cancelling it.
-  cert_source_request.reset();
-  // Both CertNetFetcher::Requests should be cancelled.
-  EXPECT_FALSE(req_manager->is_request_alive());
-  EXPECT_FALSE(req_manager2->is_request_alive());
+  // No more results.
+  result_certs.clear();
+  cert_source_request->GetNext(&result_certs);
+  EXPECT_EQ(0u, result_certs.size());
 }
 
 // AuthorityInfoAccess with six HTTP URLs.  kMaxFetchesPerCert is 5, so the
@@ -875,44 +457,43 @@ TEST(CertIssuerSourceAiaTest, MaxFetchesPerCert) {
   scoped_refptr<ParsedCertificate> cert;
   ASSERT_TRUE(ReadTestCert("target_six_aia.pem", &cert));
 
-  StrictMock<MockIssuerCallback> mock_callback;
-  StrictMock<MockCertNetFetcherImpl> mock_fetcher;
-  CertIssuerSourceAia aia_source(&mock_fetcher);
+  scoped_refptr<StrictMock<MockCertNetFetcher>> mock_fetcher(
+      new StrictMock<MockCertNetFetcher>());
+
+  std::vector<uint8_t> bad_der({1, 2, 3, 4, 5});
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia/I.cer"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(bad_der))));
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia2/I2.foo"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(bad_der))));
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia3/I3.foo"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(bad_der))));
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia4/I4.foo"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(bad_der))));
+
+  EXPECT_CALL(*mock_fetcher,
+              FetchCaIssuers(GURL("http://url-for-aia5/I5.foo"), _, _))
+      .WillOnce(Return(ByMove(CreateMockRequest(bad_der))));
+
+  // Note that the sixth URL (http://url-for-aia6/I6.foo) will not be requested.
+
+  CertIssuerSourceAia aia_source(mock_fetcher);
   std::unique_ptr<CertIssuerSource::Request> cert_source_request;
-  aia_source.AsyncGetIssuersOf(cert.get(),
-                               base::Bind(&MockIssuerCallback::Callback,
-                                          base::Unretained(&mock_callback)),
-                               &cert_source_request);
+  aia_source.AsyncGetIssuersOf(cert.get(), &cert_source_request);
   ASSERT_NE(nullptr, cert_source_request);
 
-  RequestManager* req_manager =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia/I.cer"));
-  ASSERT_TRUE(req_manager);
-  EXPECT_TRUE(req_manager->is_request_alive());
-
-  RequestManager* req_manager2 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia2/I2.foo"));
-  ASSERT_TRUE(req_manager2);
-  EXPECT_TRUE(req_manager2->is_request_alive());
-
-  RequestManager* req_manager3 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia3/I3.foo"));
-  ASSERT_TRUE(req_manager3);
-  EXPECT_TRUE(req_manager3->is_request_alive());
-
-  RequestManager* req_manager4 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia4/I4.foo"));
-  ASSERT_TRUE(req_manager4);
-  EXPECT_TRUE(req_manager4->is_request_alive());
-
-  RequestManager* req_manager5 =
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia5/I5.foo"));
-  ASSERT_TRUE(req_manager5);
-  EXPECT_TRUE(req_manager5->is_request_alive());
-
-  // Sixth URL should not have created a request.
-  EXPECT_FALSE(
-      mock_fetcher.GetRequestManagerForURL(GURL("http://url-for-aia6/I6.foo")));
+  // GetNext() will not get any certificates (since the first 5 fail to be
+  // parsed, and the sixth URL is not attempted).
+  ParsedCertificateList result_certs;
+  cert_source_request->GetNext(&result_certs);
+  ASSERT_EQ(0u, result_certs.size());
 }
 
 }  // namespace

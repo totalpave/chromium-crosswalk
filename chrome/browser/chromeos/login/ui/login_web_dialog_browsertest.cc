@@ -4,30 +4,43 @@
 
 #include "chrome/browser/chromeos/login/ui/login_web_dialog.h"
 
-#include "ash/shell.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
-#include "ui/wm/public/activation_client.h"
+#include "ui/events/test/event_generator.h"
+#include "ui/views/test/widget_test.h"
 
 namespace chromeos {
 
-typedef InProcessBrowserTest LoginWebDialogTest;
+using LoginWebDialogTest = InProcessBrowserTest;
 
-// Test that LoginWebDialog is not minimizable.
+// Tests that LoginWebDialog is not minimizable.
 IN_PROC_BROWSER_TEST_F(LoginWebDialogTest, CannotMinimize) {
   LoginWebDialog* dialog = new LoginWebDialog(
-      browser()->profile(), NULL, NULL, base::string16(), GURL());
+      browser()->profile(), nullptr, nullptr, base::string16(), GURL());
   dialog->Show();
+  aura::Window* window = dialog->get_dialog_window_for_test();
+  ASSERT_TRUE(window);
+  EXPECT_EQ(0, window->GetProperty(aura::client::kResizeBehaviorKey) &
+                   ws::mojom::kResizeBehaviorCanMinimize);
+}
 
-  aura::client::ActivationClient* activation_client =
-      aura::client::GetActivationClient(
-          ash::Shell::GetInstance()->GetPrimaryRootWindow());
-  aura::Window* active_window = activation_client->GetActiveWindow();
-  ASSERT_TRUE(active_window != NULL);
-  EXPECT_FALSE(active_window->GetProperty(aura::client::kCanMinimizeKey));
+// Tests that LoginWebDialog can be closed by 'Shift + BrowserBack' accelerator.
+IN_PROC_BROWSER_TEST_F(LoginWebDialogTest, CloseDialogByAccelerator) {
+  LoginWebDialog* dialog = new LoginWebDialog(
+      browser()->profile(), nullptr, nullptr, base::string16(), GURL());
+  dialog->Show();
+  gfx::NativeWindow window = dialog->get_dialog_window_for_test();
+  ASSERT_TRUE(window);
+  views::Widget* widget = views::Widget::GetWidgetForNativeWindow(window);
+  views::test::WidgetClosingObserver closing_observer(widget);
+  ui::test::EventGenerator generator(window->GetRootWindow());
+  generator.PressKey(ui::VKEY_BROWSER_BACK, ui::EF_SHIFT_DOWN);
+  closing_observer.Wait();
+  EXPECT_TRUE(closing_observer.widget_closed());
 }
 
 }  // namespace chromeos

@@ -8,21 +8,21 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "components/autofill/content/renderer/password_generation_agent.h"
-#include "ipc/ipc_message.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 
 namespace autofill {
 
 class TestPasswordGenerationAgent : public PasswordGenerationAgent {
  public:
   TestPasswordGenerationAgent(content::RenderFrame* render_frame,
-                              PasswordAutofillAgent* password_agent);
+                              PasswordAutofillAgent* password_agent,
+                              blink::AssociatedInterfaceRegistry* registry);
   ~TestPasswordGenerationAgent() override;
 
   // PasswordGenreationAgent implementation:
   // Always return true to allow loading of data URLs.
-  bool ShouldAnalyzeDocument() const override;
+  bool ShouldAnalyzeDocument() override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(TestPasswordGenerationAgent);

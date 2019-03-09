@@ -16,11 +16,15 @@
 #include "base/time/time.h"
 #include "google_apis/gcm/base/gcm_export.h"
 #include "net/base/backoff_entry.h"
-#include "net/url_request/url_fetcher_delegate.h"
 #include "url/gurl.h"
 
 namespace net {
-class URLRequestContextGetter;
+class HttpRequestHeaders;
+}
+
+namespace network {
+class SharedURLLoaderFactory;
+class SimpleURLLoader;
 }
 
 namespace gcm {
@@ -31,7 +35,7 @@ class GCMStatsRecorder;
 // and InstanceID delete-token requests. In case an attempt fails, it will retry
 // using the backoff policy.
 // TODO(fgorski): Consider sharing code with RegistrationRequest if possible.
-class GCM_EXPORT UnregistrationRequest : public net::URLFetcherDelegate {
+class GCM_EXPORT UnregistrationRequest {
  public:
   // Outcome of the response parsing. Note that these enums are consumed by a
   // histogram, so ordering should not be modified.
@@ -40,8 +44,7 @@ class GCM_EXPORT UnregistrationRequest : public net::URLFetcherDelegate {
     URL_FETCHING_FAILED,      // URL fetching failed.
     NO_RESPONSE_BODY,         // No response body.
     RESPONSE_PARSING_FAILED,  // Failed to parse a meaningful output from
-                              // response
-                              // body.
+                              // response body.
     INCORRECT_APP_ID,         // App ID returned by the fetcher does not match
                               // request.
     INVALID_PARAMETERS,       // Request parameters were invalid.
@@ -50,6 +53,7 @@ class GCM_EXPORT UnregistrationRequest : public net::URLFetcherDelegate {
     HTTP_NOT_OK,              // HTTP response code was not OK.
     UNKNOWN_ERROR,            // Unknown error.
     REACHED_MAX_RETRIES,      // Reached maximum number of retries.
+    DEVICE_REGISTRATION_ERROR,// Chrome is not properly registered.
     // NOTE: Always keep this entry at the end. Add new status types only
     // immediately above this line. Make sure to update the corresponding
     // histogram enum accordingly.
@@ -64,15 +68,22 @@ class GCM_EXPORT UnregistrationRequest : public net::URLFetcherDelegate {
   struct GCM_EXPORT RequestInfo {
     RequestInfo(uint64_t android_id,
                 uint64_t security_token,
-                const std::string& app_id);
+                const std::string& category,
+                const std::string& subtype);
     ~RequestInfo();
 
     // Android ID of the device.
     uint64_t android_id;
     // Security token of the device.
     uint64_t security_token;
-    // Application ID.
-    std::string app_id;
+
+    // Application ID used in Chrome to refer to registration/token's owner.
+    const std::string& app_id() { return subtype.empty() ? category : subtype; }
+
+    // GCM category field derived from the |app_id|.
+    std::string category;
+    // GCM subtype field derived from the |app_id|.
+    std::string subtype;
   };
 
   // Encapsulates the custom logic that is needed to build and process the
@@ -89,7 +100,7 @@ class GCM_EXPORT UnregistrationRequest : public net::URLFetcherDelegate {
 
     // Parses the HTTP response. It is called after
     // UnregistrationRequest::ParseResponse to proceed the parsing.
-    virtual Status ParseResponse(const net::URLFetcher* source) = 0;
+    virtual Status ParseResponse(const std::string& response) = 0;
 
     // Reports various UMAs, including status, retry count and completion time.
     virtual void ReportUMAs(Status status,
@@ -107,21 +118,23 @@ class GCM_EXPORT UnregistrationRequest : public net::URLFetcherDelegate {
       const net::BackoffEntry::Policy& backoff_policy,
       const UnregistrationCallback& callback,
       int max_retry_count,
-      scoped_refptr<net::URLRequestContextGetter> request_context_getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       GCMStatsRecorder* recorder,
       const std::string& source_to_record);
-  ~UnregistrationRequest() override;
+  ~UnregistrationRequest();
 
   // Starts an unregistration request.
   void Start();
 
  private:
-  // URLFetcherDelegate implementation.
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
+  // Invoked from SimpleURLLoader.
+  void OnURLLoadComplete(const network::SimpleURLLoader* source,
+                         std::unique_ptr<std::string> body);
 
-  void BuildRequestHeaders(std::string* extra_headers);
+  void BuildRequestHeaders(net::HttpRequestHeaders* headers);
   void BuildRequestBody(std::string* body);
-  Status ParseResponse(const net::URLFetcher* source);
+  Status ParseResponse(const network::SimpleURLLoader* source,
+                       std::unique_ptr<std::string> body);
 
   // Schedules a retry attempt with a backoff.
   void RetryWithBackoff();
@@ -132,8 +145,8 @@ class GCM_EXPORT UnregistrationRequest : public net::URLFetcherDelegate {
   GURL registration_url_;
 
   net::BackoffEntry backoff_entry_;
-  scoped_refptr<net::URLRequestContextGetter> request_context_getter_;
-  std::unique_ptr<net::URLFetcher> url_fetcher_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+  std::unique_ptr<network::SimpleURLLoader> url_loader_;
   base::TimeTicks request_start_time_;
   int retries_left_;
 

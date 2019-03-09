@@ -22,7 +22,7 @@ class DictionaryValue;
 class SequencedTaskRunner;
 }
 
-namespace syncable_prefs {
+namespace sync_preferences {
 class PrefServiceSyncable;
 }
 
@@ -44,11 +44,12 @@ class TestExtensionPrefs {
   virtual ~TestExtensionPrefs();
 
   ExtensionPrefs* prefs();
+  TestingProfile* profile();
 
   PrefService* pref_service();
   const scoped_refptr<user_prefs::PrefRegistrySyncable>& pref_registry();
   void ResetPrefRegistry();
-  const base::FilePath& temp_dir() const { return temp_dir_.path(); }
+  const base::FilePath& temp_dir() const { return temp_dir_.GetPath(); }
   const base::FilePath& extensions_dir() const { return extensions_dir_; }
   ExtensionPrefValueMap* extension_pref_value_map() {
     return extension_pref_value_map_.get();
@@ -83,9 +84,9 @@ class TestExtensionPrefs {
   std::string AddExtensionAndReturnId(const std::string& name);
 
   // This will add extension in our ExtensionPrefs.
-  void AddExtension(Extension* extension);
+  void AddExtension(const Extension* extension);
 
-  PrefService* CreateIncognitoPrefService() const;
+  std::unique_ptr<PrefService> CreateIncognitoPrefService() const;
 
   // Allows disabling the loading of preferences of extensions. Becomes
   // active after calling RecreateExtensionPrefs(). Defaults to false.
@@ -94,15 +95,20 @@ class TestExtensionPrefs {
   ChromeAppSorting* app_sorting();
 
  protected:
+  class IncrementalClock;
+
   base::ScopedTempDir temp_dir_;
   base::FilePath preferences_file_;
   base::FilePath extensions_dir_;
   scoped_refptr<user_prefs::PrefRegistrySyncable> pref_registry_;
-  std::unique_ptr<syncable_prefs::PrefServiceSyncable> pref_service_;
+  std::unique_ptr<sync_preferences::PrefServiceSyncable> pref_service_;
   std::unique_ptr<ExtensionPrefValueMap> extension_pref_value_map_;
   const scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
  private:
+  // |clock_| is injected to an ExtensionPrefs that associated to |profile_|.
+  // Put |clock_| above |profile_| to outlive it.
+  std::unique_ptr<IncrementalClock> clock_;
   TestingProfile profile_;
   bool extensions_disabled_;
   DISALLOW_COPY_AND_ASSIGN(TestExtensionPrefs);

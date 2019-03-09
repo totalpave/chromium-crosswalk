@@ -10,9 +10,11 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "net/base/escape.h"
 #include "net/base/net_errors.h"
 #include "storage/common/database/database_identifier.h"
@@ -38,7 +40,7 @@ base::FilePath VirtualPath::BaseName(const base::FilePath& virtual_path) {
 
   // Keep everything after the final separator, but if the pathname is only
   // one character and it's a separator, leave it alone.
-  while (path.size() > 1 && base::FilePath::IsSeparator(path[path.size() - 1]))
+  while (path.size() > 1 && base::FilePath::IsSeparator(path.back()))
     path.resize(path.size() - 1);
   base::FilePath::StringType::size_type last_separator =
       path.find_last_of(base::FilePath::kSeparators);
@@ -50,14 +52,14 @@ base::FilePath VirtualPath::BaseName(const base::FilePath& virtual_path) {
 }
 
 base::FilePath VirtualPath::DirName(const base::FilePath& virtual_path) {
-  typedef base::FilePath::StringType StringType;
+  using StringType = base::FilePath::StringType;
   StringType  path = virtual_path.value();
 
   // The logic below is taken from that of base::FilePath::DirName, except
   // that this version never cares about '//' or drive-letters even on win32.
 
   // Strip trailing separators.
-  while (path.size() > 1 && base::FilePath::IsSeparator(path[path.size() - 1]))
+  while (path.size() > 1 && base::FilePath::IsSeparator(path.back()))
     path.resize(path.size() - 1);
 
   StringType::size_type last_separator =
@@ -74,7 +76,7 @@ base::FilePath VirtualPath::DirName(const base::FilePath& virtual_path) {
   path.resize(last_separator);
 
   // Strip trailing separators.
-  while (path.size() > 1 && base::FilePath::IsSeparator(path[path.size() - 1]))
+  while (path.size() > 1 && base::FilePath::IsSeparator(path.back()))
     path.resize(path.size() - 1);
 
   if (path.empty())
@@ -83,17 +85,13 @@ base::FilePath VirtualPath::DirName(const base::FilePath& virtual_path) {
   return base::FilePath(path);
 }
 
-void VirtualPath::GetComponents(
-    const base::FilePath& path,
-    std::vector<base::FilePath::StringType>* components) {
-  typedef base::FilePath::StringType StringType;
+std::vector<base::FilePath::StringType> VirtualPath::GetComponents(
+    const base::FilePath& path) {
+  using StringType = base::FilePath::StringType;
 
-  DCHECK(components);
-  if (!components)
-    return;
-  components->clear();
+  std::vector<StringType> components;
   if (path.value().empty())
-    return;
+    return components;
 
   StringType::size_type begin = 0, end = 0;
   while (begin < path.value().length() && end != StringType::npos) {
@@ -101,26 +99,21 @@ void VirtualPath::GetComponents(
     StringType component = path.value().substr(
         begin, end == StringType::npos ? StringType::npos : end - begin);
     if (!component.empty() && component != base::FilePath::kCurrentDirectory)
-      components->push_back(component);
+      components.push_back(component);
     begin = end + 1;
   }
+  return components;
 }
 
-void VirtualPath::GetComponentsUTF8Unsafe(
-    const base::FilePath& path,
-    std::vector<std::string>* components) {
-  DCHECK(components);
-  if (!components)
-    return;
-  components->clear();
-
-  std::vector<base::FilePath::StringType> stringtype_components;
-  VirtualPath::GetComponents(path, &stringtype_components);
-  std::vector<base::FilePath::StringType>::const_iterator it;
-  for (it = stringtype_components.begin(); it != stringtype_components.end();
-       ++it) {
-    components->push_back(base::FilePath(*it).AsUTF8Unsafe());
-  }
+std::vector<std::string> VirtualPath::GetComponentsUTF8Unsafe(
+    const base::FilePath& path) {
+  std::vector<base::FilePath::StringType> stringtype_components =
+      VirtualPath::GetComponents(path);
+  std::vector<std::string> components;
+  components.reserve(stringtype_components.size());
+  for (const auto& component : stringtype_components)
+    components.push_back(base::FilePath(component).AsUTF8Unsafe());
+  return components;
 }
 
 base::FilePath::StringType VirtualPath::GetNormalizedFilePath(
@@ -138,12 +131,12 @@ base::FilePath::StringType VirtualPath::GetNormalizedFilePath(
 }
 
 bool VirtualPath::IsAbsolute(const base::FilePath::StringType& path) {
-  return path.find(kRoot) == 0;
+  return base::StartsWith(path, kRoot, base::CompareCase::SENSITIVE);
 }
 
 bool VirtualPath::IsRootPath(const base::FilePath& path) {
-  std::vector<base::FilePath::StringType> components;
-  VirtualPath::GetComponents(path, &components);
+  std::vector<base::FilePath::StringType> components =
+      VirtualPath::GetComponents(path);
   return (path.empty() || components.empty() ||
           (components.size() == 1 &&
            components[0] == VirtualPath::kRoot));
@@ -173,9 +166,9 @@ bool ParseFileSystemSchemeURL(const GURL& url,
   // A path of the inner_url contains only mount type part (e.g. "/temporary").
   DCHECK(url.inner_url());
   std::string inner_path = url.inner_url()->path();
-  for (size_t i = 0; i < arraysize(kValidTypes); ++i) {
-    if (inner_path == kValidTypes[i].dir) {
-      file_system_type = kValidTypes[i].type;
+  for (const auto& valid_type : kValidTypes) {
+    if (inner_path == valid_type.dir) {
+      file_system_type = valid_type.type;
       break;
     }
   }
@@ -183,10 +176,8 @@ bool ParseFileSystemSchemeURL(const GURL& url,
   if (file_system_type == kFileSystemTypeUnknown)
     return false;
 
-  std::string path = net::UnescapeURLComponent(url.path(),
-      net::UnescapeRule::SPACES | net::UnescapeRule::PATH_SEPARATORS |
-      net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-      net::UnescapeRule::SPOOFING_AND_CONTROL_CHARS);
+  std::string path;
+  net::UnescapeBinaryURLComponent(url.path(), &path);
 
   // Ensure the path is relative.
   while (!path.empty() && path[0] == '/')
@@ -247,34 +238,35 @@ std::string GetFileSystemName(const GURL& origin_url, FileSystemType type) {
 }
 
 FileSystemType QuotaStorageTypeToFileSystemType(
-    storage::StorageType storage_type) {
+    blink::mojom::StorageType storage_type) {
   switch (storage_type) {
-    case storage::kStorageTypeTemporary:
+    case blink::mojom::StorageType::kTemporary:
       return kFileSystemTypeTemporary;
-    case storage::kStorageTypePersistent:
+    case blink::mojom::StorageType::kPersistent:
       return kFileSystemTypePersistent;
-    case storage::kStorageTypeSyncable:
+    case blink::mojom::StorageType::kSyncable:
       return kFileSystemTypeSyncable;
-    case storage::kStorageTypeQuotaNotManaged:
-    case storage::kStorageTypeUnknown:
+    case blink::mojom::StorageType::kQuotaNotManaged:
+    case blink::mojom::StorageType::kUnknown:
       return kFileSystemTypeUnknown;
   }
   return kFileSystemTypeUnknown;
 }
 
-storage::StorageType FileSystemTypeToQuotaStorageType(FileSystemType type) {
+blink::mojom::StorageType FileSystemTypeToQuotaStorageType(
+    FileSystemType type) {
   switch (type) {
     case kFileSystemTypeTemporary:
-      return storage::kStorageTypeTemporary;
+      return blink::mojom::StorageType::kTemporary;
     case kFileSystemTypePersistent:
-      return storage::kStorageTypePersistent;
+      return blink::mojom::StorageType::kPersistent;
     case kFileSystemTypeSyncable:
     case kFileSystemTypeSyncableForInternalSync:
-      return storage::kStorageTypeSyncable;
+      return blink::mojom::StorageType::kSyncable;
     case kFileSystemTypePluginPrivate:
-      return storage::kStorageTypeQuotaNotManaged;
+      return blink::mojom::StorageType::kQuotaNotManaged;
     default:
-      return storage::kStorageTypeUnknown;
+      return blink::mojom::StorageType::kUnknown;
   }
 }
 
@@ -300,10 +292,6 @@ std::string GetFileSystemTypeString(FileSystemType type) {
       return "NativeMedia";
     case kFileSystemTypeDeviceMedia:
       return "DeviceMedia";
-    case kFileSystemTypePicasa:
-      return "Picasa";
-    case kFileSystemTypeItunes:
-      return "Itunes";
     case kFileSystemTypeDrive:
       return "Drive";
     case kFileSystemTypeSyncable:
@@ -321,10 +309,16 @@ std::string GetFileSystemTypeString(FileSystemType type) {
       return "Provided";
     case kFileSystemTypeDeviceMediaAsFileStorage:
       return "DeviceMediaStorage";
+    case kFileSystemTypeArcContent:
+      return "ArcContent";
+    case kFileSystemTypeArcDocumentsProvider:
+      return "ArcDocumentsProvider";
+    case kFileSystemTypeDriveFs:
+      return "DriveFs";
     case kFileSystemInternalTypeEnumStart:
     case kFileSystemInternalTypeEnumEnd:
       NOTREACHED();
-      // Fall through.
+      FALLTHROUGH;
     case kFileSystemTypeUnknown:
       return "Unknown";
   }
@@ -335,7 +329,7 @@ std::string GetFileSystemTypeString(FileSystemType type) {
 std::string FilePathToString(const base::FilePath& file_path) {
 #if defined(OS_WIN)
   return base::UTF16ToUTF8(file_path.value());
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   return file_path.value();
 #endif
 }
@@ -343,38 +337,9 @@ std::string FilePathToString(const base::FilePath& file_path) {
 base::FilePath StringToFilePath(const std::string& file_path_string) {
 #if defined(OS_WIN)
   return base::FilePath(base::UTF8ToUTF16(file_path_string));
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   return base::FilePath(file_path_string);
 #endif
-}
-
-blink::WebFileError FileErrorToWebFileError(
-    base::File::Error error_code) {
-  switch (error_code) {
-    case base::File::FILE_ERROR_NOT_FOUND:
-      return blink::WebFileErrorNotFound;
-    case base::File::FILE_ERROR_INVALID_OPERATION:
-    case base::File::FILE_ERROR_EXISTS:
-    case base::File::FILE_ERROR_NOT_EMPTY:
-      return blink::WebFileErrorInvalidModification;
-    case base::File::FILE_ERROR_NOT_A_DIRECTORY:
-    case base::File::FILE_ERROR_NOT_A_FILE:
-      return blink::WebFileErrorTypeMismatch;
-    case base::File::FILE_ERROR_ACCESS_DENIED:
-      return blink::WebFileErrorNoModificationAllowed;
-    case base::File::FILE_ERROR_FAILED:
-      return blink::WebFileErrorInvalidState;
-    case base::File::FILE_ERROR_ABORT:
-      return blink::WebFileErrorAbort;
-    case base::File::FILE_ERROR_SECURITY:
-      return blink::WebFileErrorSecurity;
-    case base::File::FILE_ERROR_NO_SPACE:
-      return blink::WebFileErrorQuotaExceeded;
-    case base::File::FILE_ERROR_INVALID_URL:
-      return blink::WebFileErrorEncoding;
-    default:
-      return blink::WebFileErrorInvalidModification;
-  }
 }
 
 bool GetFileSystemPublicType(
@@ -382,19 +347,19 @@ bool GetFileSystemPublicType(
     blink::WebFileSystemType* type) {
   DCHECK(type);
   if (type_string == "Temporary") {
-    *type = blink::WebFileSystemTypeTemporary;
+    *type = blink::kWebFileSystemTypeTemporary;
     return true;
   }
   if (type_string == "Persistent") {
-    *type = blink::WebFileSystemTypePersistent;
+    *type = blink::kWebFileSystemTypePersistent;
     return true;
   }
   if (type_string == "Isolated") {
-    *type = blink::WebFileSystemTypeIsolated;
+    *type = blink::kWebFileSystemTypeIsolated;
     return true;
   }
   if (type_string == "External") {
-    *type = blink::WebFileSystemTypeExternal;
+    *type = blink::kWebFileSystemTypeExternal;
     return true;
   }
   NOTREACHED();

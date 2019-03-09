@@ -25,9 +25,8 @@ void DummyCommand(
     const base::DictionaryValue& params,
     const std::string& session_id,
     const CommandCallback& callback) {
-  callback.Run(status,
-               std::unique_ptr<base::Value>(new base::FundamentalValue(1)),
-               "session_id");
+  callback.Run(status, std::unique_ptr<base::Value>(new base::Value(1)),
+               "session_id", false);
 }
 
 void OnResponse(net::HttpServerResponseInfo* response_to_set,
@@ -67,6 +66,7 @@ TEST(HttpHandlerTest, HandleNewSession) {
   net::HttpServerRequestInfo request;
   request.method = "post";
   request.path = "/base/session";
+  request.data = "{}";
   net::HttpServerResponseInfo response;
   handler.Handle(request, base::Bind(&OnResponse, &response));
   ASSERT_EQ(net::HTTP_OK, response.status_code());
@@ -100,6 +100,7 @@ TEST(HttpHandlerTest, HandleUnimplementedCommand) {
   net::HttpServerRequestInfo request;
   request.method = "post";
   request.path = "/path";
+  request.data = "{}";
   net::HttpServerResponseInfo response;
   handler.Handle(request, base::Bind(&OnResponse, &response));
   ASSERT_EQ(net::HTTP_NOT_IMPLEMENTED, response.status_code());
@@ -112,6 +113,7 @@ TEST(HttpHandlerTest, HandleCommand) {
   net::HttpServerRequestInfo request;
   request.method = "post";
   request.path = "/path";
+  request.data = "{}";
   net::HttpServerResponseInfo response;
   handler.Handle(request, base::Bind(&OnResponse, &response));
   ASSERT_EQ(net::HTTP_OK, response.status_code());

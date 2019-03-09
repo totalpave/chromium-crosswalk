@@ -9,12 +9,15 @@
 #include "android_webview/browser/aw_contents_io_thread_client.h"
 #include "base/logging.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/resource_request_info.h"
+#include "content/public/browser/websocket_handshake_request_info.h"
 #include "net/base/net_errors.h"
 
 using base::AutoLock;
 using content::BrowserThread;
 using content::ResourceRequestInfo;
+using content::WebSocketHandshakeRequestInfo;
 using net::StaticCookiePolicy;
 
 namespace android_webview {
@@ -46,9 +49,14 @@ void AwCookieAccessPolicy::SetShouldAcceptCookies(bool allow) {
 
 bool AwCookieAccessPolicy::GetShouldAcceptThirdPartyCookies(
     int render_process_id,
-    int render_frame_id) {
+    int render_frame_id,
+    int frame_tree_node_id) {
   std::unique_ptr<AwContentsIoThreadClient> io_thread_client =
-      AwContentsIoThreadClient::FromID(render_process_id, render_frame_id);
+      (frame_tree_node_id != content::RenderFrameHost::kNoFrameTreeNodeId)
+          ? AwContentsIoThreadClient::FromID(frame_tree_node_id)
+          : AwContentsIoThreadClient::FromID(render_process_id,
+                                             render_frame_id);
+
   if (!io_thread_client) {
     return false;
   }
@@ -57,12 +65,24 @@ bool AwCookieAccessPolicy::GetShouldAcceptThirdPartyCookies(
 
 bool AwCookieAccessPolicy::GetShouldAcceptThirdPartyCookies(
     const net::URLRequest& request) {
-  const ResourceRequestInfo* info = ResourceRequestInfo::ForRequest(&request);
-  if (!info) {
-    return false;
+  int child_id = 0;
+  int render_frame_id = 0;
+  int frame_tree_node_id = content::RenderFrameHost::kNoFrameTreeNodeId;
+  ResourceRequestInfo* info = ResourceRequestInfo::ForRequest(&request);
+  if (info) {
+    child_id = info->GetChildID();
+    render_frame_id = info->GetRenderFrameID();
+    frame_tree_node_id = info->GetFrameTreeNodeId();
+  } else {
+    const WebSocketHandshakeRequestInfo* websocket_info =
+        WebSocketHandshakeRequestInfo::ForRequest(&request);
+    if (!websocket_info)
+      return false;
+    child_id = websocket_info->GetChildId();
+    render_frame_id = websocket_info->GetRenderFrameId();
   }
-  return GetShouldAcceptThirdPartyCookies(info->GetChildID(),
-                                          info->GetRenderFrameID());
+  return GetShouldAcceptThirdPartyCookies(child_id, render_frame_id,
+                                          frame_tree_node_id);
 }
 
 bool AwCookieAccessPolicy::OnCanGetCookies(const net::URLRequest& request,
@@ -70,16 +90,16 @@ bool AwCookieAccessPolicy::OnCanGetCookies(const net::URLRequest& request,
   bool global = GetShouldAcceptCookies();
   bool thirdParty = GetShouldAcceptThirdPartyCookies(request);
   return AwStaticCookiePolicy(global, thirdParty)
-      .AllowGet(request.url(), request.first_party_for_cookies());
+      .AllowGet(request.url(), request.site_for_cookies());
 }
 
 bool AwCookieAccessPolicy::OnCanSetCookie(const net::URLRequest& request,
-                                          const std::string& cookie_line,
+                                          const net::CanonicalCookie& cookie,
                                           net::CookieOptions* options) {
   bool global = GetShouldAcceptCookies();
   bool thirdParty = GetShouldAcceptThirdPartyCookies(request);
   return AwStaticCookiePolicy(global, thirdParty)
-      .AllowSet(request.url(), request.first_party_for_cookies());
+      .AllowSet(request.url(), request.site_for_cookies());
 }
 
 bool AwCookieAccessPolicy::AllowGetCookie(const GURL& url,
@@ -89,21 +109,22 @@ bool AwCookieAccessPolicy::AllowGetCookie(const GURL& url,
                                           int render_process_id,
                                           int render_frame_id) {
   bool global = GetShouldAcceptCookies();
-  bool thirdParty =
-      GetShouldAcceptThirdPartyCookies(render_process_id, render_frame_id);
+  bool thirdParty = GetShouldAcceptThirdPartyCookies(
+      render_process_id, render_frame_id,
+      content::RenderFrameHost::kNoFrameTreeNodeId);
   return AwStaticCookiePolicy(global, thirdParty).AllowGet(url, first_party);
 }
 
 bool AwCookieAccessPolicy::AllowSetCookie(const GURL& url,
                                           const GURL& first_party,
-                                          const std::string& cookie_line,
+                                          const net::CanonicalCookie& cookie,
                                           content::ResourceContext* context,
                                           int render_process_id,
-                                          int render_frame_id,
-                                          const net::CookieOptions& options) {
+                                          int render_frame_id) {
   bool global = GetShouldAcceptCookies();
-  bool thirdParty =
-      GetShouldAcceptThirdPartyCookies(render_process_id, render_frame_id);
+  bool thirdParty = GetShouldAcceptThirdPartyCookies(
+      render_process_id, render_frame_id,
+      content::RenderFrameHost::kNoFrameTreeNodeId);
   return AwStaticCookiePolicy(global, thirdParty).AllowSet(url, first_party);
 }
 
@@ -131,15 +152,14 @@ StaticCookiePolicy::Type AwStaticCookiePolicy::GetPolicy(const GURL& url)
 
 bool AwStaticCookiePolicy::AllowSet(const GURL& url,
                                     const GURL& first_party) const {
-
-  return StaticCookiePolicy(GetPolicy(url)).CanSetCookie(url, first_party) ==
-         net::OK;
+  return StaticCookiePolicy(GetPolicy(url))
+             .CanAccessCookies(url, first_party) == net::OK;
 }
 
 bool AwStaticCookiePolicy::AllowGet(const GURL& url,
                                     const GURL& first_party) const {
-  return StaticCookiePolicy(GetPolicy(url)).CanGetCookies(url, first_party) ==
-         net::OK;
+  return StaticCookiePolicy(GetPolicy(url))
+             .CanAccessCookies(url, first_party) == net::OK;
 }
 
 }  // namespace android_webview

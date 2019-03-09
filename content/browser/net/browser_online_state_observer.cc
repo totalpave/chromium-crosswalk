@@ -26,8 +26,12 @@ void BrowserOnlineStateObserver::OnMaxBandwidthChanged(
     net::NetworkChangeNotifier::ConnectionType type) {
   for (RenderProcessHost::iterator it(RenderProcessHost::AllHostsIterator());
        !it.IsAtEnd(); it.Advance()) {
-    it.GetCurrentValue()->Send(
-        new ViewMsg_NetworkConnectionChanged(type, max_bandwidth_mbps));
+    // TODO(https://crbug.com/813045): Remove this check once we have a better
+    // way of iterating the hosts.
+    if (it.GetCurrentValue()->IsInitializedAndNotDead()) {
+      it.GetCurrentValue()->GetRendererInterface()->OnNetworkConnectionChanged(
+          type, max_bandwidth_mbps);
+    }
   }
 }
 
@@ -43,8 +47,8 @@ void BrowserOnlineStateObserver::Observe(
   net::NetworkChangeNotifier::ConnectionType connection_type;
   net::NetworkChangeNotifier::GetMaxBandwidthAndConnectionType(
       &max_bandwidth_mbps, &connection_type);
-  rph->Send(new ViewMsg_NetworkConnectionChanged(connection_type,
-                                                 max_bandwidth_mbps));
+  rph->GetRendererInterface()->OnNetworkConnectionChanged(
+      connection_type, max_bandwidth_mbps);
 }
 
 }  // namespace content

@@ -4,9 +4,6 @@
 
 #include "components/gcm_driver/crypto/p256_key_util.h"
 
-#include <openssl/ec.h>
-#include <openssl/ecdh.h>
-#include <openssl/evp.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,7 +13,9 @@
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "crypto/ec_private_key.h"
-#include "crypto/scoped_openssl_types.h"
+#include "third_party/boringssl/src/include/openssl/ec.h"
+#include "third_party/boringssl/src/include/openssl/ecdh.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
 
 namespace gcm {
 
@@ -34,108 +33,64 @@ const size_t kUncompressedPointBytes = 1 + 2 * kFieldBytes;
 
 }  // namespace
 
-bool CreateP256KeyPair(std::string* out_private_key,
-                       std::string* out_public_key_x509,
-                       std::string* out_public_key) {
-  DCHECK(out_private_key);
-  DCHECK(out_public_key);
-
-  std::unique_ptr<crypto::ECPrivateKey> key_pair(
-      crypto::ECPrivateKey::Create());
-  if (!key_pair.get()) {
-    DLOG(ERROR) << "Unable to generate a new P-256 key pair.";
-    return false;
-  }
-
-  std::vector<uint8_t> private_key;
-
-  // Export the encrypted private key with an empty password. This is not done
-  // to provide any security, but rather to achieve a consistent private key
-  // storage between the BoringSSL and NSS implementations.
-  if (!key_pair->ExportEncryptedPrivateKey(
-          "" /* password */, 1 /* iteration */, &private_key)) {
-    DLOG(ERROR) << "Unable to export the private key.";
-    return false;
-  }
-
+bool GetRawPublicKey(const crypto::ECPrivateKey& key, std::string* public_key) {
+  DCHECK(public_key);
   std::string candidate_public_key;
 
   // ECPrivateKey::ExportRawPublicKey() returns the EC point in the uncompressed
   // point format, but does not include the leading byte of value 0x04 that
   // indicates usage of uncompressed points, per SEC1 2.3.3.
-  if (!key_pair->ExportRawPublicKey(&candidate_public_key) ||
+  if (!key.ExportRawPublicKey(&candidate_public_key) ||
       candidate_public_key.size() != 2 * kFieldBytes) {
     DLOG(ERROR) << "Unable to export the public key.";
     return false;
   }
-
-  std::vector<uint8_t> public_key_x509;
-
-  // Export the public key to an X.509 SubjectPublicKeyInfo for enabling NSS to
-  // import the key material when computing a shared secret.
-  if (!key_pair->ExportPublicKey(&public_key_x509)) {
-    DLOG(ERROR) << "Unable to export the public key as an X.509 "
-                << "SubjectPublicKeyInfo block.";
-    return false;
-  }
-
-  out_private_key->assign(reinterpret_cast<const char*>(private_key.data()),
-                          private_key.size());
-  out_public_key_x509->assign(
-      reinterpret_cast<const char*>(public_key_x509.data()),
-      public_key_x509.size());
-
   // Concatenate the leading 0x04 byte and the two uncompressed points.
-  out_public_key->reserve(kUncompressedPointBytes);
-  out_public_key->push_back(kUncompressedPointForm);
-  out_public_key->append(candidate_public_key);
-
+  public_key->erase();
+  public_key->reserve(kUncompressedPointBytes);
+  public_key->push_back(kUncompressedPointForm);
+  public_key->append(candidate_public_key);
   return true;
 }
 
-bool ComputeSharedP256Secret(const base::StringPiece& private_key,
-                             const base::StringPiece& public_key_x509,
+// TODO(peter): Get rid of this once all key management code has been updated
+// to use ECPrivateKey instead of std::string.
+bool GetRawPrivateKey(const crypto::ECPrivateKey& key,
+                      std::string* private_key) {
+  DCHECK(private_key);
+  std::vector<uint8_t> private_key_vector;
+  if (!key.ExportPrivateKey(&private_key_vector))
+    return false;
+  private_key->assign(private_key_vector.begin(), private_key_vector.end());
+  return true;
+}
+
+bool ComputeSharedP256Secret(crypto::ECPrivateKey& key,
                              const base::StringPiece& peer_public_key,
                              std::string* out_shared_secret) {
   DCHECK(out_shared_secret);
 
-  std::unique_ptr<crypto::ECPrivateKey> local_key_pair(
-      crypto::ECPrivateKey::CreateFromEncryptedPrivateKeyInfo(
-          "" /* no password */,
-          std::vector<uint8_t>(private_key.data(),
-                               private_key.data() + private_key.size()),
-          std::vector<uint8_t>(
-              public_key_x509.data(),
-              public_key_x509.data() + public_key_x509.size())));
-
-  if (!local_key_pair) {
-    DLOG(ERROR) << "Unable to create the local key pair.";
-    return false;
-  }
-
-  crypto::ScopedEC_KEY ec_private_key(
-      EVP_PKEY_get1_EC_KEY(local_key_pair->key()));
-
-  if (!ec_private_key || !EC_KEY_check_key(ec_private_key.get())) {
+  EC_KEY* ec_private_key = EVP_PKEY_get0_EC_KEY(key.key());
+  if (!ec_private_key || !EC_KEY_check_key(ec_private_key)) {
     DLOG(ERROR) << "The private key is invalid.";
     return false;
   }
 
-  crypto::ScopedEC_POINT point(
-      EC_POINT_new(EC_KEY_get0_group(ec_private_key.get())));
+  bssl::UniquePtr<EC_POINT> point(
+      EC_POINT_new(EC_KEY_get0_group(ec_private_key)));
 
   if (!point ||
-      !EC_POINT_oct2point(EC_KEY_get0_group(ec_private_key.get()), point.get(),
-                                            reinterpret_cast<const uint8_t*>(
-                                                peer_public_key.data()),
-                                            peer_public_key.size(), nullptr)) {
+      !EC_POINT_oct2point(
+          EC_KEY_get0_group(ec_private_key), point.get(),
+          reinterpret_cast<const uint8_t*>(peer_public_key.data()),
+          peer_public_key.size(), nullptr)) {
     DLOG(ERROR) << "Can't convert peer public value to curve point.";
     return false;
   }
 
   uint8_t result[kFieldBytes];
-  if (ECDH_compute_key(result, sizeof(result), point.get(),
-                       ec_private_key.get(), nullptr) != sizeof(result)) {
+  if (ECDH_compute_key(result, sizeof(result), point.get(), ec_private_key,
+                       nullptr) != sizeof(result)) {
     DLOG(ERROR) << "Unable to compute the ECDH shared secret.";
     return false;
   }

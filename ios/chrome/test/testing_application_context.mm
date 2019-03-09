@@ -9,14 +9,25 @@
 #include "base/time/default_clock.h"
 #include "base/time/default_tick_clock.h"
 #include "components/network_time/network_time_tracker.h"
-#include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
+#import "ios/public/provider/chrome/browser/chrome_browser_provider.h"
 #include "net/url_request/url_request_context_getter.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_network_connection_tracker.h"
+#include "services/network/test/test_url_loader_factory.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 TestingApplicationContext::TestingApplicationContext()
     : application_locale_("en"),
       local_state_(nullptr),
       chrome_browser_state_manager_(nullptr),
-      was_last_shutdown_clean_(false) {
+      was_last_shutdown_clean_(false),
+      test_url_loader_factory_(
+          std::make_unique<network::TestURLLoaderFactory>()),
+      test_network_connection_tracker_(
+          network::TestNetworkConnectionTracker::CreateInstance()) {
   DCHECK(!GetApplicationContext());
   SetApplicationContext(this);
 }
@@ -82,6 +93,19 @@ TestingApplicationContext::GetSystemURLRequestContext() {
   return nullptr;
 }
 
+scoped_refptr<network::SharedURLLoaderFactory>
+TestingApplicationContext::GetSharedURLLoaderFactory() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  return test_url_loader_factory_->GetSafeWeakWrapper();
+}
+
+network::mojom::NetworkContext*
+TestingApplicationContext::GetSystemNetworkContext() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  NOTREACHED();
+  return nullptr;
+}
+
 const std::string& TestingApplicationContext::GetApplicationLocale() {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK(!application_locale_.empty());
@@ -105,18 +129,29 @@ metrics::MetricsService* TestingApplicationContext::GetMetricsService() {
   return nullptr;
 }
 
+ukm::UkmRecorder* TestingApplicationContext::GetUkmRecorder() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  return nullptr;
+}
+
 variations::VariationsService*
 TestingApplicationContext::GetVariationsService() {
   DCHECK(thread_checker_.CalledOnValidThread());
   return nullptr;
 }
 
-rappor::RapporService* TestingApplicationContext::GetRapporService() {
+rappor::RapporServiceImpl* TestingApplicationContext::GetRapporServiceImpl() {
   DCHECK(thread_checker_.CalledOnValidThread());
   return nullptr;
 }
 
-net_log::ChromeNetLog* TestingApplicationContext::GetNetLog() {
+net::NetLog* TestingApplicationContext::GetNetLog() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  return nullptr;
+}
+
+net_log::NetExportFileWriter*
+TestingApplicationContext::GetNetExportFileWriter() {
   DCHECK(thread_checker_.CalledOnValidThread());
   return nullptr;
 }
@@ -128,8 +163,7 @@ TestingApplicationContext::GetNetworkTimeTracker() {
     DCHECK(local_state_);
     network_time_tracker_.reset(new network_time::NetworkTimeTracker(
         base::WrapUnique(new base::DefaultClock),
-        base::WrapUnique(new base::DefaultTickClock), local_state_,
-        GetSystemURLRequestContext()));
+        base::WrapUnique(new base::DefaultTickClock), local_state_, nullptr));
   }
   return network_time_tracker_.get();
 }
@@ -150,7 +184,8 @@ TestingApplicationContext::GetComponentUpdateService() {
   return nullptr;
 }
 
-CRLSetFetcher* TestingApplicationContext::GetCRLSetFetcher() {
+network::NetworkConnectionTracker*
+TestingApplicationContext::GetNetworkConnectionTracker() {
   DCHECK(thread_checker_.CalledOnValidThread());
-  return nullptr;
+  return test_network_connection_tracker_.get();
 }

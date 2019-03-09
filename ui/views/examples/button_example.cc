@@ -6,10 +6,9 @@
 
 #include "base/strings/utf_string_conversions.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/image/image.h"
-#include "ui/resources/grit/ui_resources.h"
 #include "ui/views/background.h"
-#include "ui/views/controls/button/blue_button.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/md_text_button.h"
@@ -38,10 +37,11 @@ ButtonExample::~ButtonExample() {
 }
 
 void ButtonExample::CreateExampleView(View* container) {
-  container->set_background(Background::CreateSolidBackground(SK_ColorWHITE));
-  BoxLayout* layout = new BoxLayout(BoxLayout::kVertical, 10, 10, 10);
+  container->SetBackground(CreateSolidBackground(SK_ColorWHITE));
+  auto layout =
+      std::make_unique<BoxLayout>(BoxLayout::kVertical, gfx::Insets(10), 10);
   layout->set_cross_axis_alignment(BoxLayout::CROSS_AXIS_ALIGNMENT_CENTER);
-  container->SetLayoutManager(layout);
+  container->SetLayoutManager(std::move(layout));
 
   label_button_ = new LabelButton(this, ASCIIToUTF16(kLabelButton));
   label_button_->SetFocusForPlatform();
@@ -49,26 +49,22 @@ void ButtonExample::CreateExampleView(View* container) {
   container->AddChildView(label_button_);
 
   styled_button_ = new LabelButton(this, ASCIIToUTF16("Styled Button"));
-  styled_button_->SetStyle(Button::STYLE_BUTTON);
+  styled_button_->SetStyleDeprecated(Button::STYLE_BUTTON);
   container->AddChildView(styled_button_);
 
   disabled_button_ = new LabelButton(this, ASCIIToUTF16("Disabled Button"));
-  disabled_button_->SetStyle(Button::STYLE_BUTTON);
+  disabled_button_->SetStyleDeprecated(Button::STYLE_BUTTON);
   disabled_button_->SetState(Button::STATE_DISABLED);
   container->AddChildView(disabled_button_);
 
-  container->AddChildView(new BlueButton(this, ASCIIToUTF16("Blue Button")));
+  md_button_ =
+      MdTextButton::Create(this, base::ASCIIToUTF16("Material design"));
+  container->AddChildView(md_button_);
 
-  container->AddChildView(MdTextButton::CreateMdButton(
-      nullptr, base::ASCIIToUTF16("Material design")));
-  MdTextButton* md_button = MdTextButton::CreateMdButton(
-      nullptr, base::ASCIIToUTF16("Default"));
-  md_button->SetIsDefault(true);
-  container->AddChildView(md_button);
-  md_button = MdTextButton::CreateMdButton(
-      nullptr, base::ASCIIToUTF16("Call to action"));
-  md_button->SetCallToAction(true);
-  container->AddChildView(md_button);
+  md_default_button_ =
+      MdTextButton::Create(this, base::ASCIIToUTF16("Default"));
+  md_default_button_->SetIsDefault(true);
+  container->AddChildView(md_default_button_);
 
   ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
   image_button_ = new ImageButton(this);
@@ -110,13 +106,11 @@ void ButtonExample::LabelButtonPressed(LabelButton* label_button,
           ? label_button_->SetFocusBehavior(View::FocusBehavior::NEVER)
           : label_button_->SetFocusForPlatform();
     } else {
-      label_button->SetStyle(static_cast<Button::ButtonStyle>(
+      label_button->SetStyleDeprecated(static_cast<Button::ButtonStyle>(
           (label_button->style() + 1) % Button::STYLE_COUNT));
     }
   } else if (event.IsAltDown()) {
     label_button->SetIsDefault(!label_button->is_default());
-  } else {
-    label_button->SetMinSize(gfx::Size());
   }
   example_view()->GetLayoutManager()->Layout(example_view());
 }
@@ -128,6 +122,8 @@ void ButtonExample::ButtonPressed(Button* sender, const ui::Event& event) {
     LabelButtonPressed(styled_button_, event);
   else if (sender == disabled_button_)
     LabelButtonPressed(disabled_button_, event);
+  else if (sender == md_button_ || sender == md_default_button_)
+    static_cast<Button*>(sender)->StartThrobbing(5);
   else
     PrintStatus("Image Button Pressed! count: %d", ++count_);
 }

@@ -2,34 +2,19 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import os
+
 from core import perf_benchmark
 
-from measurements import tab_switching
-import page_sets
+from page_sets.system_health import multi_tab_stories
 from telemetry import benchmark
+from telemetry import story
+from telemetry.timeline import chrome_trace_category_filter
+from telemetry.web_perf import timeline_based_measurement
 
 
-@benchmark.Enabled('has tabs')
-@benchmark.Disabled('android')  # http://crbug.com/460084
-class TabSwitchingTop10(perf_benchmark.PerfBenchmark):
-  """This test records the MPArch.RWH_TabSwitchPaintDuration histogram.
-
-  The histogram is a measure of the time between when a tab was requested to be
-  shown, and when first paint occurred. The script opens 10 pages in different
-  tabs, waits for them to load, and then switches to each tab and records the
-  metric. The pages were chosen from Alexa top ranking sites.
-  """
-  test = tab_switching.TabSwitching
-  page_set = page_sets.Top10PageSet
-
-  @classmethod
-  def Name(cls):
-    return 'tab_switching.top_10'
-
-
-@benchmark.Enabled('has tabs')
-@benchmark.Disabled('mac-reference')  # http://crbug.com/612774
-@benchmark.Disabled('android')  # http://crbug.com/460084
+@benchmark.Info(emails=['vovoy@chromium.org'],
+                 component='OS>Performance')
 class TabSwitchingTypical25(perf_benchmark.PerfBenchmark):
   """This test records the MPArch.RWH_TabSwitchPaintDuration histogram.
 
@@ -38,68 +23,29 @@ class TabSwitchingTypical25(perf_benchmark.PerfBenchmark):
   tabs, waits for them to load, and then switches to each tab and records the
   metric. The pages were chosen from Alexa top ranking sites.
   """
-  test = tab_switching.TabSwitching
+  SUPPORTED_PLATFORMS = [story.expectations.ALL_DESKTOP]
+
+  @classmethod
+  def AddBenchmarkCommandLineArgs(cls, parser):
+    parser.add_option('--tabset-repeat', type='int', default=1,
+                      help='repeat tab page set')
 
   def CreateStorySet(self, options):
-    return page_sets.Typical25PageSet(run_no_page_interactions=True)
+    story_set = story.StorySet(
+        archive_data_file='../page_sets/data/system_health_desktop.json',
+        base_dir=os.path.dirname(os.path.abspath(__file__)),
+        cloud_storage_bucket=story.PARTNER_BUCKET)
+    story_set.AddStory(multi_tab_stories.MultiTabTypical24Story(
+        story_set, False, options.tabset_repeat))
+    return story_set
+
+  def CreateCoreTimelineBasedMeasurementOptions(self):
+    category_filter = chrome_trace_category_filter.ChromeTraceCategoryFilter()
+    category_filter.AddIncludedCategory('latency')
+    options = timeline_based_measurement.Options(category_filter)
+    options.SetTimelineBasedMetrics(['tabsMetric'])
+    return options
 
   @classmethod
   def Name(cls):
     return 'tab_switching.typical_25'
-
-
-@benchmark.Disabled('android')  # http://crbug.com/460084
-@benchmark.Enabled('has tabs')
-class TabSwitchingFiveBlankTabs(perf_benchmark.PerfBenchmark):
-  """This test records the MPArch.RWH_TabSwitchPaintDuration histogram.
-
-  The histogram is a measure of the time between when a tab was requested to be
-  shown, and when first paint occurred. The script opens 5 blank pages in
-  different tabs, waits for them to load, and then switches to each tab and
-  records the metric. Blank pages are use to detect unnecessary idle wakeups.
-  """
-  test = tab_switching.TabSwitching
-  page_set = page_sets.FiveBlankPagesPageSet
-  options = {'pageset_repeat': 10}
-
-  @classmethod
-  def Name(cls):
-    return 'tab_switching.five_blank_pages'
-
-
-@benchmark.Enabled('has tabs')
-# http://crbug.com/460084, http://crbug.com/488067
-@benchmark.Disabled('android', 'linux')
-class TabSwitchingToughEnergyCases(perf_benchmark.PerfBenchmark):
-  """This test records the MPArch.RWH_TabSwitchPaintDuration histogram.
-
-  The histogram is a measure of the time between when a tab was requested to be
-  shown, and when first paint occurred. The script opens each page in a
-  different tab, waits for them to load, and then switches to each tab and
-  records the metric. The pages were written by hand to stress energy usage.
-  """
-  test = tab_switching.TabSwitching
-  page_set = page_sets.ToughEnergyCasesPageSet
-  options = {'pageset_repeat': 10}
-
-  @classmethod
-  def Name(cls):
-    return 'tab_switching.tough_energy_cases'
-
-
-@benchmark.Enabled('has tabs')
-@benchmark.Disabled('android')  # http://crbug.com/460084
-class TabSwitchingToughImageCases(perf_benchmark.PerfBenchmark):
-  """This test records the MPArch.RWH_TabSwitchPaintDuration histogram.
-
-  The histogram is a measure of the time between when a tab was requested to be
-  shown, and when first paint occurred. The script opens each page in different
-  tabs, waits for them to load, and then switches to each tab and records the
-  metric. The pages were chosen by hand to stress the image decoding system.
-  """
-  test = tab_switching.TabSwitching
-  page_set = page_sets.ToughImageCasesPageSet
-
-  @classmethod
-  def Name(cls):
-    return 'tab_switching.tough_image_cases'

@@ -66,9 +66,9 @@ int DarwinMajorVersion() {
   // base::OperatingSystemVersionNumbers calls Gestalt(), which is a
   // higher-level function than is needed. It might perform unnecessary
   // operations. On 10.6, it was observed to be able to spawn threads (see
-  // http://crbug.com/53200). It might also read files or perform other blocking
-  // operations. Actually, nobody really knows for sure just what Gestalt()
-  // might do, or what it might be taught to do in the future.
+  // https://crbug.com/53200). It might also read files or perform other
+  // blocking operations. Actually, nobody really knows for sure just what
+  // Gestalt() might do, or what it might be taught to do in the future.
   //
   // uname(), on the other hand, is implemented as a simple series of sysctl()
   // system calls to obtain the relevant data from the kernel. The data is
@@ -181,9 +181,8 @@ std::string IORegistryEntryDataPropertyAsString(io_registry_entry_t entry,
 namespace crashpad {
 
 int MacOSXMinorVersion() {
-  // The Darwin major version is always 4 greater than the Mac OS X minor
-  // version for Darwin versions beginning with 6, corresponding to Mac OS X
-  // 10.2.
+  // The Darwin major version is always 4 greater than the macOS minor version
+  // for Darwin versions beginning with 6, corresponding to Mac OS X 10.2.
   static int mac_os_x_minor_version = DarwinMajorVersion() - 4;
   DCHECK(mac_os_x_minor_version >= 2);
   return mac_os_x_minor_version;

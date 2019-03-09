@@ -4,25 +4,30 @@
 
 package org.chromium.chrome.browser.identity;
 
-import android.test.InstrumentationTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.SmallTest;
 
-import junit.framework.Assert;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.AdvancedMockContext;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
-public class UuidBasedUniqueIdentificationGeneratorTest extends InstrumentationTestCase {
+@RunWith(ChromeJUnit4ClassRunner.class)
+public class UuidBasedUniqueIdentificationGeneratorTest {
     private static final String FLAG_UUID = "uuid";
 
     private AdvancedMockContext mContext;
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        mContext = new AdvancedMockContext(getInstrumentation().getTargetContext());
+    @Before
+    public void setUp() throws Exception {
+        mContext = new AdvancedMockContext(InstrumentationRegistry.getTargetContext());
     }
 
+    @Test
     @SmallTest
     @Feature({"Sync"})
     public void testGenerationAndRestorationOfUuid() {
@@ -36,16 +41,17 @@ public class UuidBasedUniqueIdentificationGeneratorTest extends InstrumentationT
         // Asking for a unique ID again, should not try to regenerate it.
         mContext.clearFlag(FLAG_UUID);
         Assert.assertEquals(expectedUniqueId, generator.getUniqueId(null));
-        assertFalse(mContext.isFlagSet(FLAG_UUID));
+        Assert.assertFalse(mContext.isFlagSet(FLAG_UUID));
 
         // After a restart, the TestGenerator should read the UUID from a preference, instead of
         // asking for it.
         mContext.clearFlag(FLAG_UUID);
         generator = new TestGenerator(mContext, preferenceKey, null);
         Assert.assertEquals(expectedUniqueId, generator.getUniqueId(null));
-        assertFalse(mContext.isFlagSet(FLAG_UUID));
+        Assert.assertFalse(mContext.isFlagSet(FLAG_UUID));
     }
 
+    @Test
     @SmallTest
     @Feature({"Sync"})
     public void testTwoDifferentGeneratorsShouldUseDifferentPreferences() {
@@ -63,10 +69,10 @@ public class UuidBasedUniqueIdentificationGeneratorTest extends InstrumentationT
         // Asking for a unique ID again, should not try to regenerate it.
         mContext.clearFlag(FLAG_UUID);
         Assert.assertEquals(expectedUniqueId1, generator1.getUniqueId(null));
-        assertFalse(mContext.isFlagSet(FLAG_UUID));
+        Assert.assertFalse(mContext.isFlagSet(FLAG_UUID));
         mContext.clearFlag(FLAG_UUID);
         Assert.assertEquals(expectedUniqueId2, generator2.getUniqueId(null));
-        assertFalse(mContext.isFlagSet(FLAG_UUID));
+        Assert.assertFalse(mContext.isFlagSet(FLAG_UUID));
     }
 
     private static class TestGenerator extends UuidBasedUniqueIdentificationGenerator {

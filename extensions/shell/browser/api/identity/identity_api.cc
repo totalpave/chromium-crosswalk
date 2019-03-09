@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/guid.h"
-#include "base/memory/ptr_util.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "extensions/common/manifest_handlers/oauth2_manifest_handler.h"
@@ -42,8 +41,9 @@ IdentityAPI* IdentityAPI::Get(content::BrowserContext* context) {
 
 // static
 BrowserContextKeyedAPIFactory<IdentityAPI>* IdentityAPI::GetFactoryInstance() {
-  static base::LazyInstance<BrowserContextKeyedAPIFactory<IdentityAPI>>
-      factory = LAZY_INSTANCE_INITIALIZER;
+  static base::LazyInstance<
+      BrowserContextKeyedAPIFactory<IdentityAPI>>::DestructorAtExit factory =
+      LAZY_INSTANCE_INITIALIZER;
   return factory.Pointer();
 }
 
@@ -93,8 +93,7 @@ ExtensionFunction::ResponseAction IdentityGetAuthTokenFunction::Run() {
 
 void IdentityGetAuthTokenFunction::OnGetTokenSuccess(
     const OAuth2TokenService::Request* request,
-    const std::string& access_token,
-    const base::Time& expiration_time) {
+    const OAuth2AccessTokenConsumer::TokenResponse& token_response) {
   // Tests may override the mint token flow.
   if (!mint_token_flow_) {
     const OAuth2Info& oauth2_info = OAuth2Info::GetOAuth2Info(extension());
@@ -112,9 +111,9 @@ void IdentityGetAuthTokenFunction::OnGetTokenSuccess(
 
   // Use the logging-in-user access token to mint an access token for this app.
   mint_token_flow_->Start(
-      content::BrowserContext::GetDefaultStoragePartition(browser_context())->
-          GetURLRequestContext(),
-      access_token);
+      content::BrowserContext::GetDefaultStoragePartition(browser_context())
+          ->GetURLLoaderFactoryForBrowserProcess(),
+      token_response.access_token);
 }
 
 void IdentityGetAuthTokenFunction::OnGetTokenFailure(
@@ -127,7 +126,7 @@ void IdentityGetAuthTokenFunction::OnGetTokenFailure(
 void IdentityGetAuthTokenFunction::OnMintTokenSuccess(
     const std::string& access_token,
     int time_to_live) {
-  Respond(OneArgument(base::MakeUnique<base::StringValue>(access_token)));
+  Respond(OneArgument(std::make_unique<base::Value>(access_token)));
   Release();  // Balanced in Run().
 }
 

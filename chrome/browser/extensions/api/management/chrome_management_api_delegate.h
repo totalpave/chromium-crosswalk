@@ -10,17 +10,13 @@
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "extensions/browser/api/management/management_api_delegate.h"
 
-namespace favicon_base {
-struct FaviconImageResult;
-}  // namespace favicon_base
-
 class ChromeManagementAPIDelegate : public extensions::ManagementAPIDelegate {
  public:
   ChromeManagementAPIDelegate();
   ~ChromeManagementAPIDelegate() override;
 
   // ManagementAPIDelegate.
-  bool LaunchAppFunctionDelegate(
+  void LaunchAppFunctionDelegate(
       const extensions::Extension* extension,
       content::BrowserContext* context) const override;
   GURL GetFullLaunchURL(const extensions::Extension* extension) const override;
@@ -35,8 +31,6 @@ class ChromeManagementAPIDelegate : public extensions::ManagementAPIDelegate {
       content::BrowserContext* browser_context,
       const extensions::Extension* extension,
       const base::Callback<void(bool)>& callback) const override;
-  std::unique_ptr<extensions::RequirementsChecker> CreateRequirementsChecker()
-      const override;
   std::unique_ptr<extensions::UninstallDialogDelegate>
   UninstallFunctionDelegate(
       extensions::ManagementUninstallFunctionBase* function,
@@ -44,7 +38,8 @@ class ChromeManagementAPIDelegate : public extensions::ManagementAPIDelegate {
       bool show_programmatic_uninstall_ui) const override;
   bool CreateAppShortcutFunctionDelegate(
       extensions::ManagementCreateAppShortcutFunction* function,
-      const extensions::Extension* extension) const override;
+      const extensions::Extension* extension,
+      std::string* error) const override;
   std::unique_ptr<extensions::AppForLinkDelegate>
   GenerateAppForLinkFunctionDelegate(
       extensions::ManagementGenerateAppForLinkFunction* function,
@@ -57,12 +52,12 @@ class ChromeManagementAPIDelegate : public extensions::ManagementAPIDelegate {
                        const std::string& extension_id) const override;
   void DisableExtension(
       content::BrowserContext* context,
+      const extensions::Extension* source_extension,
       const std::string& extension_id,
-      extensions::Extension::DisableReason disable_reason) const override;
+      extensions::disable_reason::DisableReason disable_reason) const override;
   bool UninstallExtension(content::BrowserContext* context,
                           const std::string& transient_extension_id,
                           extensions::UninstallReason reason,
-                          const base::Closure& deletion_done_callback,
                           base::string16* error) const override;
   void SetLaunchType(content::BrowserContext* context,
                      const std::string& extension_id,
@@ -70,8 +65,7 @@ class ChromeManagementAPIDelegate : public extensions::ManagementAPIDelegate {
   GURL GetIconURL(const extensions::Extension* extension,
                   int icon_size,
                   ExtensionIconSet::MatchType match,
-                  bool grayscale,
-                  bool* exists) const override;
+                  bool grayscale) const override;
 };
 
 #endif  // CHROME_BROWSER_EXTENSIONS_API_MANAGEMENT_CHROME_MANAGEMENT_API_DELEGATE_H_

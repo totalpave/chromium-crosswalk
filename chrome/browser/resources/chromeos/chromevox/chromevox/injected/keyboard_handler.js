@@ -25,7 +25,7 @@ cvox.ChromeVoxKbHandler.handlerKeyMap;
 /**
  * Handler for ChromeVox commands. Returns undefined if the command does not
  * exist. Otherwise, returns the result of executing the command.
- * @type {function(string): boolean|undefined}
+ * @type {function(string): (boolean|undefined)}
  */
 cvox.ChromeVoxKbHandler.commandHandler;
 
@@ -73,7 +73,7 @@ cvox.ChromeVoxKbHandler.sortKeyToFunctionsTable_ = function(
       // The keys are the same length. Sort lexicographically.
       return a[0].localeCompare(b[0]);
     }
-  };
+  }
 
   sortingArray.sort(compareKeyStr);
   return sortingArray;

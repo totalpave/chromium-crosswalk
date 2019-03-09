@@ -16,7 +16,8 @@ from xml.dom import minidom
 
 kTracingResourcePrefix = 'IDR_TRACING_'
 kGrdTemplate = '''<?xml version="1.0" encoding="UTF-8"?>
-<grit latest_public_release="0" current_release="1">
+<grit latest_public_release="0" current_release="1"
+      output_all_resource_defines="false">
   <outputs>
     <output filename="grit/tracing_resources.h" type="rc_header">
       <emit emit_type='prepend'></emit>
@@ -57,6 +58,7 @@ def add_file_to_grd(grd_doc, filename):
   new_include_node.setAttribute('name', make_name_from_filename(filename))
   new_include_node.setAttribute('file', filename)
   new_include_node.setAttribute('type', 'BINDATA')
+  new_include_node.setAttribute('compress', 'gzip')
   new_include_node.setAttribute('flattenhtml', 'true')
   if filename.endswith('.html'):
     new_include_node.setAttribute('allowexternalscript', 'true')

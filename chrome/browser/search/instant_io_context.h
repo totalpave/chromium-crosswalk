@@ -16,10 +16,6 @@ namespace content {
 class ResourceContext;
 }
 
-namespace net {
-class URLRequest;
-}
-
 // IO thread data held for Instant.  This reflects the data held in
 // InstantService for use on the IO thread.  Owned by ResourceContext
 // as user data.
@@ -50,7 +46,14 @@ class InstantIOContext : public base::RefCountedThreadSafe<InstantIOContext> {
 
   // Determine if this chrome-search: request is coming from an Instant render
   // process.
-  static bool ShouldServiceRequest(const net::URLRequest* request);
+  static bool ShouldServiceRequest(const GURL& url,
+                                   content::ResourceContext* resource_context,
+                                   int render_process_id);
+
+  // Returns true if the given |render_process_id| represents an Instant
+  // renderer.
+  static bool IsInstantProcess(content::ResourceContext* resource_context,
+                               int render_process_id);
 
  protected:
    virtual ~InstantIOContext();

@@ -17,12 +17,12 @@
 #include "base/json/json_writer.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
-#include "base/message_loop/message_loop.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -36,6 +36,7 @@
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/notification_service.h"
@@ -65,7 +66,15 @@ RenderWidgetHost* GetRenderWidgetHost(NavigationController* tab) {
 }
 
 const std::string GetTabUrl(RenderWidgetHost* rwh) {
+  // rwh is null during initialization and shut down.
+  if (!rwh)
+    return std::string();
+
   RenderWidgetHostView* rwhv = rwh->GetView();
+  // rwhv is null if renderer has crashed.
+  if (!rwhv)
+    return std::string();
+
   for (auto* browser : *BrowserList::GetInstance()) {
     for (int i = 0, tab_count = browser->tab_strip_model()->count();
          i < tab_count;
@@ -136,8 +145,8 @@ static const base::FilePath::CharType kLoginTimes[] = FPL("login-times");
 // Name of file collecting logout times.
 static const char kLogoutTimes[] = "logout-times";
 
-static base::LazyInstance<BootTimesRecorder> g_boot_times_recorder =
-    LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BootTimesRecorder>::DestructorAtExit
+    g_boot_times_recorder = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BootTimesRecorder::Stats BootTimesRecorder::Stats::GetCurrentStats() {
@@ -174,7 +183,7 @@ BootTimesRecorder::Stats BootTimesRecorder::Stats::DeserializeFromString(
   if (source.empty())
     return Stats();
 
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(source);
+  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(source);
   base::DictionaryValue* dictionary;
   if (!value || !value->GetAsDictionary(&dictionary)) {
     LOG(ERROR) << "BootTimesRecorder::Stats::DeserializeFromString(): not a "
@@ -209,28 +218,24 @@ bool BootTimesRecorder::Stats::UptimeDouble(double* result) const {
 }
 
 void BootTimesRecorder::Stats::RecordStats(const std::string& name) const {
-  BrowserThread::PostBlockingPoolTask(
-      FROM_HERE,
-      base::Bind(&BootTimesRecorder::Stats::RecordStatsImpl,
-                 base::Owned(new Stats(*this)),
-                 name));
+  base::PostTaskWithTraits(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&BootTimesRecorder::Stats::RecordStatsAsync,
+                     base::Owned(new Stats(*this)), name));
 }
 
 void BootTimesRecorder::Stats::RecordStatsWithCallback(
     const std::string& name,
     const base::Closure& callback) const {
-  BrowserThread::PostBlockingPoolTaskAndReply(
-      FROM_HERE,
-      base::Bind(&BootTimesRecorder::Stats::RecordStatsImpl,
-                 base::Owned(new Stats(*this)),
-                 name),
+  base::PostTaskWithTraitsAndReply(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::Bind(&BootTimesRecorder::Stats::RecordStatsAsync,
+                 base::Owned(new Stats(*this)), name),
       callback);
 }
 
-void BootTimesRecorder::Stats::RecordStatsImpl(
+void BootTimesRecorder::Stats::RecordStatsAsync(
     const base::FilePath::StringType& name) const {
-  DCHECK(content::BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
-
   const base::FilePath log_path(kLogPath);
   const base::FilePath uptime_output =
       log_path.Append(base::FilePath(kUptimePrefix + name));
@@ -337,18 +342,15 @@ void BootTimesRecorder::LoginDone(bool is_user_new) {
                       content::NotificationService::AllSources());
     registrar_.Remove(
         this,
-        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE,
+        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES,
         content::NotificationService::AllSources());
   }
-  // Don't swamp the FILE thread right away.
-  BrowserThread::PostDelayedTask(
-      BrowserThread::FILE,
-      FROM_HERE,
-      base::Bind(&WriteTimes,
-                 kLoginTimes,
-                 (is_user_new ? kUmaLoginNewUser : kUmaLogin),
-                 kUmaLoginPrefix,
-                 login_time_markers_),
+  // Don't swamp the background thread right away.
+  base::PostDelayedTaskWithTraits(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&WriteTimes, kLoginTimes,
+                     (is_user_new ? kUmaLoginNewUser : kUmaLogin),
+                     kUmaLoginPrefix, login_time_markers_),
       base::TimeDelta::FromMilliseconds(kLoginTimeWriteDelayMs));
 }
 
@@ -356,8 +358,8 @@ void BootTimesRecorder::WriteLogoutTimes() {
   // Either we're on the browser thread, or (more likely) Chrome is in the
   // process of shutting down and we're on the main thread but the message loop
   // has already been terminated.
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-         !BrowserThread::IsMessageLoopValid(BrowserThread::UI));
+  DCHECK(!BrowserThread::IsThreadInitialized(BrowserThread::UI) ||
+         BrowserThread::CurrentlyOn(BrowserThread::UI));
 
   WriteTimes(kLogoutTimes,
              (restart_requested_ ? kUmaRestart : kUmaLogout),
@@ -441,7 +443,7 @@ void BootTimesRecorder::RecordLoginAttempted() {
                    content::NotificationService::AllSources());
     registrar_.Add(
         this,
-        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE,
+        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES,
         content::NotificationService::AllSources());
   }
 }
@@ -462,18 +464,16 @@ void BootTimesRecorder::AddMarker(std::vector<TimeMarker>* vector,
   // The marker vectors can only be safely manipulated on the main thread.
   // If we're late in the process of shutting down (eg. as can be the case at
   // logout), then we have to assume we're on the main thread already.
-  if (BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-      !BrowserThread::IsMessageLoopValid(BrowserThread::UI)) {
+  if (!BrowserThread::IsThreadInitialized(BrowserThread::UI) ||
+      BrowserThread::CurrentlyOn(BrowserThread::UI)) {
     vector->push_back(marker);
   } else {
     // Add the marker on the UI thread.
     // Note that it's safe to use an unretained pointer to the vector because
     // BootTimesRecorder's lifetime exceeds that of the UI thread message loop.
-    BrowserThread::PostTask(
-        BrowserThread::UI, FROM_HERE,
-        base::Bind(&BootTimesRecorder::AddMarker,
-                   base::Unretained(vector),
-                   marker));
+    base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
+                             base::BindOnce(&BootTimesRecorder::AddMarker,
+                                            base::Unretained(vector), marker));
   }
 }
 
@@ -509,7 +509,8 @@ void BootTimesRecorder::Observe(int type,
       }
       break;
     }
-    case content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE: {
+    case content::
+        NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES: {
       RenderWidgetHost* rwh = content::Source<RenderWidgetHost>(source).ptr();
       if (render_widget_hosts_loading_.find(rwh) !=
           render_widget_hosts_loading_.end()) {

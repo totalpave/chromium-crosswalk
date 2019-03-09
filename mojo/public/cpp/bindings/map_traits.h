@@ -5,6 +5,8 @@
 #ifndef MOJO_PUBLIC_CPP_BINDINGS_MAP_TRAITS_H_
 #define MOJO_PUBLIC_CPP_BINDINGS_MAP_TRAITS_H_
 
+#include "mojo/public/cpp/bindings/lib/template_util.h"
+
 namespace mojo {
 
 // This must be specialized for any type |T| to be serialized/deserialized as
@@ -19,6 +21,8 @@ namespace mojo {
 //     using Value = V;
 //
 //     // These two methods are optional. Please see comments in struct_traits.h
+//     // Note that unlike with StructTraits, IsNull() is called *twice* during
+//     // serialization for MapTraits.
 //     static bool IsNull(const CustomMap<K, V>& input);
 //     static void SetToNull(CustomMap<K, V>* output);
 //
@@ -37,19 +41,23 @@ namespace mojo {
 //     static const V& GetValue(CustomConstIterator& iterator);
 //
 //     // Returning false results in deserialization failure and causes the
-//     // message pipe receiving it to be disconnected.
+//     // message pipe receiving it to be disconnected. |IK| and |IV| are
+//     // separate input key/value template parameters that allows for the
+//     // the key/value types to be forwarded.
+//     template <typename IK, typename IV>
 //     static bool Insert(CustomMap<K, V>& input,
-//                        const K& key,
-//                        V&& value);
-//     static bool Insert(CustomMap<K, V>& input,
-//                        const K& key,
-//                        const V& value);
+//                        IK&& key,
+//                        IV&& value);
 //
 //     static void SetToEmpty(CustomMap<K, V>* output);
 //   };
 //
 template <typename T>
-struct MapTraits;
+struct MapTraits {
+  static_assert(internal::AlwaysFalse<T>::value,
+                "Cannot find the mojo::MapTraits specialization. Did you "
+                "forget to include the corresponding header file?");
+};
 
 }  // namespace mojo
 

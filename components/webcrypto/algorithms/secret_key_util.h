@@ -10,8 +10,8 @@
 #include <string>
 #include <vector>
 
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithm.h"
-#include "third_party/WebKit/public/platform/WebCryptoKey.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm.h"
+#include "third_party/blink/public/platform/web_crypto_key.h"
 
 // This file contains functions shared by multiple symmetric key algorithms.
 
@@ -40,11 +40,6 @@ Status CreateWebCryptoSecretKey(const CryptoData& key_data,
                                 bool extractable,
                                 blink::WebCryptoKeyUsageMask usages,
                                 blink::WebCryptoKey* key);
-
-// Checks that |actual_usages| is a non-empty subset of |all_possible_usages|.
-Status CheckSecretKeyCreationUsages(
-    blink::WebCryptoKeyUsageMask all_possible_usages,
-    blink::WebCryptoKeyUsageMask actual_usages);
 
 // Writes a JWK-formatted symmetric key to |jwk_key_data|.
 //  * raw_key_data: The actual key data

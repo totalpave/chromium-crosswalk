@@ -5,12 +5,26 @@
 #ifndef CONTENT_PUBLIC_TEST_WEB_CONTENTS_TESTER_H_
 #define CONTENT_PUBLIC_TEST_WEB_CONTENTS_TESTER_H_
 
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "content/public/browser/site_instance.h"
+#include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/mojom/loader/pause_subresource_loading_handle.mojom.h"
+#include "third_party/blink/public/platform/web_input_event.h"
 #include "ui/base/page_transition_types.h"
 
 class GURL;
+class SkBitmap;
+
+namespace gfx {
+class Size;
+}
+
+namespace net {
+class HttpResponseHeaders;
+}
 
 namespace content {
 
@@ -18,9 +32,6 @@ class BrowserContext;
 class NavigationData;
 class NavigationHandle;
 class RenderFrameHost;
-class RenderViewHost;
-class WebContents;
-struct Referrer;
 
 // This interface allows embedders of content/ to write tests that depend on a
 // test version of WebContents.  This interface can be retrieved from any
@@ -55,46 +66,32 @@ class WebContentsTester {
   static WebContentsTester* For(WebContents* contents);
 
   // Creates a WebContents enabled for testing.
-  static WebContents* CreateTestWebContents(
+  static std::unique_ptr<WebContents> CreateTestWebContents(
       BrowserContext* browser_context,
       scoped_refptr<SiteInstance> instance);
+
+  // Creates a WebContents enabled for testing with the given params.
+  static WebContents* CreateTestWebContents(
+      const WebContents::CreateParams& params);
 
   // Simulates the appropriate RenderView (pending if any, current otherwise)
   // sending a navigate notification for the NavigationController pending entry.
   virtual void CommitPendingNavigation() = 0;
-
-  // Gets the pending RenderFrameHost, if any, for the main frame. For the
-  // current RenderFrameHost of the main frame, use WebContents::GetMainFrame().
-  // PlzNavigate: When browser side navigation is enabled it returns the
-  // speculative RenderFrameHost for the main frame if one exists.
-  virtual RenderFrameHost* GetPendingMainFrame() const = 0;
-
-  // Creates a pending navigation to |url|. Also simulates the
-  // DidStartProvisionalLoad received from the renderer.  To commit the
-  // navigation, callers should use
-  // RenderFrameHostTester::SimulateNavigationCommit. Callers can then use
-  // RenderFrameHostTester::SimulateNavigationStop to simulate the navigation
-  // stop.
-  // Note that this function is meant for callers that want to control the
-  // timing of navigation events precisely. Other callers should use
-  // NavigateAndCommit.
-  // PlzNavigate: this does not simulate the DidStartProvisionalLoad from the
-  // renderer, as it only should be received after the navigation is ready to
-  // commit.
-  virtual void StartNavigation(const GURL& url) = 0;
 
   // Creates a pending navigation to the given URL with the default parameters
   // and then commits the load with a page ID one larger than any seen. This
   // emulates what happens on a new navigation.
   virtual void NavigateAndCommit(const GURL& url) = 0;
 
+  // Creates a pending navigation to the given URL with the default parameters
+  // and then aborts it with the given |error_code| and |response_headers|.
+  virtual void NavigateAndFail(
+      const GURL& url,
+      int error_code,
+      scoped_refptr<net::HttpResponseHeaders> response_headers) = 0;
+
   // Sets the loading state to the given value.
   virtual void TestSetIsLoading(bool value) = 0;
-
-  // Simulates the current RVH notifying that it has unloaded so that the
-  // pending RVH navigation can proceed.
-  // Does nothing if no cross-navigation is pending.
-  virtual void ProceedWithCrossSiteNavigation() = 0;
 
   // Simulates a navigation with the given information.
   //
@@ -106,27 +103,81 @@ class WebContentsTester {
   //   created a new navigation entry; false for history navigations, reloads,
   //   and other navigations that don't affect the history list.
   virtual void TestDidNavigate(RenderFrameHost* render_frame_host,
-                               int page_id,
                                int nav_entry_id,
                                bool did_create_new_entry,
                                const GURL& url,
                                ui::PageTransition transition) = 0;
-  virtual void TestDidNavigateWithReferrer(RenderFrameHost* render_frame_host,
-                                           int page_id,
-                                           int nav_entry_id,
-                                           bool did_create_new_entry,
-                                           const GURL& url,
-                                           const Referrer& referrer,
-                                           ui::PageTransition transition) = 0;
 
   // Sets NavgationData on |navigation_handle|.
   virtual void SetNavigationData(
       NavigationHandle* navigation_handle,
       std::unique_ptr<NavigationData> navigation_data) = 0;
 
+  // Sets HttpResponseData on |navigation_handle|.
+  virtual void SetHttpResponseHeaders(
+      NavigationHandle* navigation_handle,
+      scoped_refptr<net::HttpResponseHeaders> response_headers) = 0;
+
+  // Simulate this WebContents' main frame having an opener that points to the
+  // main frame of |opener|.
+  virtual void SetOpener(WebContents* opener) = 0;
+
   // Returns headers that were passed in the previous SaveFrameWithHeaders(...)
   // call.
-  virtual const std::string& GetSaveFrameHeaders() = 0;
+  virtual const std::string& GetSaveFrameHeaders() const = 0;
+
+  // Returns the suggested file name passed in the SaveFrameWithHeaders call.
+  virtual const base::string16& GetSuggestedFileName() const = 0;
+
+  // Returns whether a download request triggered via DownloadImage() is in
+  // progress for |url|.
+  virtual bool HasPendingDownloadImage(const GURL& url) = 0;
+
+  // Simulates a request completion for DownloadImage(). For convenience, it
+  // returns whether an actual download associated to |url| was pending.
+  virtual bool TestDidDownloadImage(
+      const GURL& url,
+      int http_status_code,
+      const std::vector<SkBitmap>& bitmaps,
+      const std::vector<gfx::Size>& original_bitmap_sizes) = 0;
+
+  // Sets the return value of GetLastCommittedUrl() of TestWebContents.
+  virtual void SetLastCommittedURL(const GURL& url) = 0;
+
+  // Sets the return value of GetTitle() of TestWebContents. Once set, the real
+  // title will never be returned.
+  virtual void SetTitle(const base::string16& new_title) = 0;
+
+  // Sets the return value of GetContentsMimeType().
+  virtual void SetMainFrameMimeType(const std::string& mime_type) = 0;
+
+  // Change currently audible state for testing. This will cause all relevant
+  // notifications to fire as well.
+  virtual void SetIsCurrentlyAudible(bool audible) = 0;
+
+  // Simulates an input event from the user.
+  virtual void TestDidReceiveInputEvent(blink::WebInputEvent::Type type) = 0;
+
+  // Simulates successfully finishing a load.
+  virtual void TestDidFinishLoad(const GURL& url) = 0;
+
+  // Simulates terminating an load with a network error.
+  virtual void TestDidFailLoadWithError(
+      const GURL& url,
+      int error_code,
+      const base::string16& error_description) = 0;
+
+  // Returns whether PauseSubresourceLoading was called on this web contents.
+  virtual bool GetPauseSubresourceLoadingCalled() = 0;
+
+  // Resets the state around PauseSubresourceLoadingCalled.
+  virtual void ResetPauseSubresourceLoadingCalled() = 0;
+
+  // Sets the return value of GetPageImportanceSignals().
+  virtual void SetPageImportanceSignals(PageImportanceSignals signals) = 0;
+
+  // Sets the last active time.
+  virtual void SetLastActiveTime(base::TimeTicks last_active_time) = 0;
 };
 
 }  // namespace content

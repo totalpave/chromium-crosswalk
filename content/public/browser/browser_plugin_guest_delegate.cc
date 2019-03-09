@@ -6,10 +6,6 @@
 
 namespace content {
 
-bool BrowserPluginGuestDelegate::CanRunInDetachedState() const {
-  return false;
-}
-
 WebContents* BrowserPluginGuestDelegate::CreateNewGuestWindow(
     const WebContents::CreateParams& create_params) {
   NOTREACHED();
@@ -20,16 +16,20 @@ WebContents* BrowserPluginGuestDelegate::GetOwnerWebContents() const {
   return nullptr;
 }
 
-bool BrowserPluginGuestDelegate::HandleFindForEmbedder(
-    int request_id,
-    const base::string16& search_text,
-    const blink::WebFindOptions& options) {
+bool BrowserPluginGuestDelegate::CanUseCrossProcessFrames() {
+  return true;
+}
+
+bool BrowserPluginGuestDelegate::CanBeEmbeddedInsideCrossProcessFrames() {
   return false;
 }
 
-bool BrowserPluginGuestDelegate::HandleStopFindingForEmbedder(
-    StopFindAction action) {
-  return false;
+RenderWidgetHost* BrowserPluginGuestDelegate::GetOwnerRenderWidgetHost() {
+  return nullptr;
+}
+
+SiteInstance* BrowserPluginGuestDelegate::GetOwnerSiteInstance() {
+  return nullptr;
 }
 
 }  // namespace content

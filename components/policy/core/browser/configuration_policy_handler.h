@@ -12,7 +12,6 @@
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/values.h"
 #include "components/policy/core/common/schema.h"
 #include "components/policy/policy_export.h"
@@ -36,8 +35,6 @@ struct POLICY_EXPORT PolicyToPreferenceMapEntry {
 // their corresponding preferences, and to check whether the policies are valid.
 class POLICY_EXPORT ConfigurationPolicyHandler {
  public:
-  static std::string ValueTypeToString(base::Value::Type type);
-
   ConfigurationPolicyHandler();
   virtual ~ConfigurationPolicyHandler();
 
@@ -103,6 +100,50 @@ class POLICY_EXPORT TypeCheckingPolicyHandler
   base::Value::Type value_type_;
 
   DISALLOW_COPY_AND_ASSIGN(TypeCheckingPolicyHandler);
+};
+
+// Policy handler that makes sure the policy value is a list and filters out any
+// list entries that are not of type |list_entry_type|. Derived methods may
+// apply additional filters on list entries and transform the filtered list.
+class POLICY_EXPORT ListPolicyHandler : public TypeCheckingPolicyHandler {
+ public:
+  ListPolicyHandler(const char* policy_name, base::Value::Type list_entry_type);
+  ~ListPolicyHandler() override;
+
+  // TypeCheckingPolicyHandler methods:
+  // Marked as final since overriding them could bypass filtering. Override
+  // CheckListEntry() and ApplyList() instead.
+  bool CheckPolicySettings(const PolicyMap& policies,
+                           PolicyErrorMap* errors) final;
+
+  void ApplyPolicySettings(const PolicyMap& policies,
+                           PrefValueMap* prefs) final;
+
+ protected:
+  // Override this method to apply a filter for each |value| in the list.
+  // |value| is guaranteed to be of type |list_entry_type_| at this point.
+  // Returning false removes the value from |filtered_list| passed into
+  // ApplyList(). By default, any value of type |list_entry_type_| is accepted.
+  virtual bool CheckListEntry(const base::Value& value);
+
+  // Implement this method to apply the |filtered_list| of values of type
+  // |list_entry_type_| as returned from CheckAndGetList() to |prefs|.
+  virtual void ApplyList(std::unique_ptr<base::ListValue> filtered_list,
+                         PrefValueMap* prefs) = 0;
+
+ private:
+  // Checks whether the policy value is indeed a list, filters out all entries
+  // that are not of type |list_entry_type_| or where CheckListEntry() returns
+  // false, and returns the |filtered_list| if not nullptr. Sets errors for
+  // filtered list entries if |errors| is not nullptr.
+  bool CheckAndGetList(const policy::PolicyMap& policies,
+                       policy::PolicyErrorMap* errors,
+                       std::unique_ptr<base::ListValue>* filtered_list);
+
+  // Expected value type for list entries. All other types are filtered out.
+  base::Value::Type list_entry_type_;
+
+  DISALLOW_COPY_AND_ASSIGN(ListPolicyHandler);
 };
 
 // Abstract class derived from TypeCheckingPolicyHandler that ensures an int
@@ -180,7 +221,8 @@ class POLICY_EXPORT StringMappingListPolicyHandler
   };
 
   // Callback that generates the map for this instance.
-  typedef base::Callback<void(ScopedVector<MappingEntry>*)> GenerateMapCallback;
+  using GenerateMapCallback =
+      base::Callback<void(std::vector<std::unique_ptr<MappingEntry>>*)>;
 
   StringMappingListPolicyHandler(const char* policy_name,
                                  const char* pref_path,
@@ -212,7 +254,7 @@ class POLICY_EXPORT StringMappingListPolicyHandler
 
   // Map of string policy values to local pref values. This is generated lazily
   // so the generation does not have to happen if no policy is present.
-  ScopedVector<MappingEntry> map_;
+  std::vector<std::unique_ptr<MappingEntry>> map_;
 
   DISALLOW_COPY_AND_ASSIGN(StringMappingListPolicyHandler);
 };
@@ -287,18 +329,18 @@ class POLICY_EXPORT SchemaValidatingPolicyHandler
 
  private:
   const char* policy_name_;
-  Schema schema_;
-  SchemaOnErrorStrategy strategy_;
+  const Schema schema_;
+  const SchemaOnErrorStrategy strategy_;
 
   DISALLOW_COPY_AND_ASSIGN(SchemaValidatingPolicyHandler);
 };
 
 // Maps policy to pref like SimplePolicyHandler while ensuring that the value
 // set matches the schema. |schema| is the schema used for policies, and
-// |strategy| is the strategy used for schema validation errors. The
-// |recommended_permission| and |mandatory_permission| flags indicate the levels
-// at which the policy can be set. A value set at an unsupported level will be
-// ignored.
+// |strategy| is the strategy used for schema validation errors.
+// The |recommended_permission| and |mandatory_permission| flags indicate the
+// levels at which the policy can be set. A value set at an unsupported level
+// will be ignored.
 class POLICY_EXPORT SimpleSchemaValidatingPolicyHandler
     : public SchemaValidatingPolicyHandler {
  public:
@@ -328,6 +370,77 @@ class POLICY_EXPORT SimpleSchemaValidatingPolicyHandler
   DISALLOW_COPY_AND_ASSIGN(SimpleSchemaValidatingPolicyHandler);
 };
 
+// Maps policy to pref like SimplePolicyHandler. Ensures that the root value
+// of the policy is of the correct type (that is, a string, or a list, depending
+// on the policy). Apart from that, all policy values are accepted without
+// modification, but the |PolicyErrorMap| will be updated for every error
+// encountered - for instance, if the embedded JSON is unparsable or if it does
+// not match the validation schema.
+// NOTE: Do not store new policies using JSON strings! If your policy has a
+// complex schema, store it as a dict of that schema. This has some advantages:
+// - You don't have to parse JSON every time you read it from the pref store.
+// - Nested dicts are simple, but nested JSON strings are complicated.
+class POLICY_EXPORT SimpleJsonStringSchemaValidatingPolicyHandler
+    : public ConfigurationPolicyHandler {
+ public:
+  SimpleJsonStringSchemaValidatingPolicyHandler(
+      const char* policy_name,
+      const char* pref_path,
+      Schema schema,
+      SimpleSchemaValidatingPolicyHandler::RecommendedPermission
+          recommended_permission,
+      SimpleSchemaValidatingPolicyHandler::MandatoryPermission
+          mandatory_permission);
+
+  ~SimpleJsonStringSchemaValidatingPolicyHandler() override;
+
+  // ConfigurationPolicyHandler:
+  bool CheckPolicySettings(const PolicyMap& policies,
+                           PolicyErrorMap* errors) override;
+  void ApplyPolicySettings(const PolicyMap& policies,
+                           PrefValueMap* prefs) override;
+
+ private:
+  // Validates |root_value| as a string. Updates |errors| if it is not valid
+  // JSON or if it does not match the validation schema.
+  bool CheckSingleJsonString(const base::Value* root_value,
+                             PolicyErrorMap* errors);
+
+  // Validates |root_value| as a list. Updates |errors| for each item that is
+  // not a string, is not valid JSON, or doesn't match the validation schema.
+  bool CheckListOfJsonStrings(const base::Value* root_value,
+                              PolicyErrorMap* errors);
+
+  // Validates that the given JSON string matches the schema. |index| is used
+  // only in error messages, it is the index of the given string in the list
+  // if the root value is a list, and ignored otherwise. Adds any errors it
+  // finds to |errors|.
+  bool ValidateJsonString(const std::string& json_string,
+                          PolicyErrorMap* errors,
+                          int index);
+
+  // Returns a string describing where an error occurred - |index| is the index
+  // of the string where the error occurred if the root value is a list, and
+  // ignored otherwise. |json_error_path| describes where the error occurred
+  // inside a JSON string (this can be empty).
+  std::string ErrorPath(int index, std::string json_error_path);
+
+  // Record to UMA that this policy failed validation due to an error in one or
+  // more embedded JSON strings - either unparsable, or didn't match the schema.
+  void RecordJsonError();
+
+  // Returns true if the schema root is a list.
+  bool IsListSchema() const;
+
+  const char* policy_name_;
+  const Schema schema_;
+  const char* pref_path_;
+  const bool allow_recommended_;
+  const bool allow_mandatory_;
+
+  DISALLOW_COPY_AND_ASSIGN(SimpleJsonStringSchemaValidatingPolicyHandler);
+};
+
 // A policy handler to deprecate multiple legacy policies with a new one.
 // This handler will completely ignore any of legacy policy values if the new
 // one is set.
@@ -335,7 +448,8 @@ class POLICY_EXPORT LegacyPoliciesDeprecatingPolicyHandler
     : public ConfigurationPolicyHandler {
  public:
   LegacyPoliciesDeprecatingPolicyHandler(
-      ScopedVector<ConfigurationPolicyHandler> legacy_policy_handlers,
+      std::vector<std::unique_ptr<ConfigurationPolicyHandler>>
+          legacy_policy_handlers,
       std::unique_ptr<SchemaValidatingPolicyHandler> new_policy_handler);
   ~LegacyPoliciesDeprecatingPolicyHandler() override;
 
@@ -352,7 +466,8 @@ class POLICY_EXPORT LegacyPoliciesDeprecatingPolicyHandler
                            PrefValueMap* prefs) override;
 
  private:
-  ScopedVector<ConfigurationPolicyHandler> legacy_policy_handlers_;
+  std::vector<std::unique_ptr<ConfigurationPolicyHandler>>
+      legacy_policy_handlers_;
   std::unique_ptr<SchemaValidatingPolicyHandler> new_policy_handler_;
 
   DISALLOW_COPY_AND_ASSIGN(LegacyPoliciesDeprecatingPolicyHandler);

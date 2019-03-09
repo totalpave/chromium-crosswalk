@@ -5,9 +5,19 @@
 #ifndef ASH_WM_WORKSPACE_WORKSPACE_EVENT_HANDLER_H_
 #define ASH_WM_WORKSPACE_WORKSPACE_EVENT_HANDLER_H_
 
-#include "ash/common/wm/workspace/multi_window_resize_controller.h"
+#include "ash/ash_export.h"
+#include "ash/wm/workspace/multi_window_resize_controller.h"
 #include "base/macros.h"
 #include "ui/events/event_handler.h"
+
+namespace aura {
+class Window;
+}
+
+namespace ui {
+class GestureEvent;
+class MouseEvent;
+}
 
 namespace ash {
 class WorkspaceEventHandlerTestHelper;
@@ -16,9 +26,11 @@ namespace wm {
 class WindowState;
 }
 
-class WorkspaceEventHandler : public ui::EventHandler {
+// Handles events on workspace windows, such as double-click on the resize edge
+// to maximize in one dimension.
+class ASH_EXPORT WorkspaceEventHandler : public ui::EventHandler {
  public:
-  WorkspaceEventHandler();
+  explicit WorkspaceEventHandler(aura::Window* workspace_window);
   ~WorkspaceEventHandler() override;
 
   // ui::EventHandler:
@@ -34,6 +46,8 @@ class WorkspaceEventHandler : public ui::EventHandler {
   // workspace.
   void HandleVerticalResizeDoubleClick(wm::WindowState* window_state,
                                        ui::MouseEvent* event);
+
+  aura::Window* workspace_window_;
 
   MultiWindowResizeController multi_window_resize_controller_;
 

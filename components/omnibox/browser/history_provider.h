@@ -14,7 +14,6 @@
 #include "components/omnibox/browser/in_memory_url_index_types.h"
 
 class AutocompleteInput;
-class Profile;
 struct AutocompleteMatch;
 
 // This class is a base class for the history autocomplete providers and
@@ -28,6 +27,12 @@ class HistoryProvider : public AutocompleteProvider {
   // is true or the input text contains trailing whitespace.
   static bool PreventInlineAutocomplete(const AutocompleteInput& input);
 
+  // Fill and return an ACMatchClassifications structure given the |matches|
+  // to highlight.
+  static ACMatchClassifications SpansFromTermMatch(const TermMatches& matches,
+                                                   size_t text_length,
+                                                   bool is_url);
+
  protected:
   HistoryProvider(AutocompleteProvider::Type type,
                   AutocompleteProviderClient* client);
@@ -37,12 +42,6 @@ class HistoryProvider : public AutocompleteProvider {
   // Finds and removes the match from the current collection of matches and
   // backing data.
   void DeleteMatchFromMatches(const AutocompleteMatch& match);
-
-  // Fill and return an ACMatchClassifications structure given the |matches|
-  // to highlight.
-  static ACMatchClassifications SpansFromTermMatch(const TermMatches& matches,
-                                                   size_t text_length,
-                                                   bool is_url);
 
   AutocompleteProviderClient* client() { return client_; }
 

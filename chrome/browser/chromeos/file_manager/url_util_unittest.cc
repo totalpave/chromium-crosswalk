@@ -11,6 +11,8 @@
 #include "base/json/json_writer.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "chromeos/constants/chromeos_features.h"
+#include "extensions/common/constants.h"
 #include "net/base/escape.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -18,16 +20,33 @@ namespace file_manager {
 namespace util {
 namespace {
 
-// Pretty print the JSON escaped in the query string.
-std::string PrettyPrintEscapedJson(const std::string& query) {
+// Parse a JSON query string into a base::Value.
+base::Value ParseJsonQueryString(const std::string& query) {
   const std::string json = net::UnescapeURLComponent(
       query, net::UnescapeRule::SPACES | net::UnescapeRule::PATH_SEPARATORS |
                  net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS);
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(json);
+  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(json);
+  return value ? std::move(*value) : base::Value();
+}
+
+// Pretty print the JSON escaped in the query string.
+std::string PrettyPrintEscapedJson(const std::string& query) {
   std::string pretty_json;
-  base::JSONWriter::WriteWithOptions(
-      *value, base::JSONWriter::OPTIONS_PRETTY_PRINT, &pretty_json);
+  base::JSONWriter::WriteWithOptions(ParseJsonQueryString(query),
+                                     base::JSONWriter::OPTIONS_PRETTY_PRINT,
+                                     &pretty_json);
   return pretty_json;
+}
+
+base::Value MakeSimpleDictionary(
+    std::vector<std::pair<std::string, std::string>> entries) {
+  std::vector<std::pair<std::string, std::unique_ptr<base::Value>>> storage;
+  storage.reserve(entries.size());
+  for (auto& entry : entries) {
+    storage.emplace_back(std::move(entry.first), std::make_unique<base::Value>(
+                                                     std::move(entry.second)));
+  }
+  return base::Value(std::move(storage));
 }
 
 TEST(FileManagerUrlUtilTest, GetFileManagerMainPageUrl) {
@@ -37,34 +56,34 @@ TEST(FileManagerUrlUtilTest, GetFileManagerMainPageUrl) {
 
 TEST(FileManagerUrlUtilTest, GetFileManagerMainPageUrlWithParams_NoFileTypes) {
   const GURL url = GetFileManagerMainPageUrlWithParams(
-      ui::SelectFileDialog::SELECT_OPEN_FILE,
-      base::UTF8ToUTF16("some title"),
+      ui::SelectFileDialog::SELECT_OPEN_FILE, base::UTF8ToUTF16("some title"),
       GURL("filesystem:chrome-extension://abc/Downloads/"),
-      GURL("filesystem:chrome-extension://abc/Downloads/foo.txt"),
-      "foo.txt",
-      NULL,  // No file types
-      0,  // Hence no file type index.
+      GURL("filesystem:chrome-extension://abc/Downloads/foo.txt"), "foo.txt",
+      nullptr,  // No file types
+      0,        // Hence no file type index.
       FILE_PATH_LITERAL("txt"));
-  EXPECT_EQ("chrome-extension", url.scheme());
+  EXPECT_EQ(extensions::kExtensionScheme, url.scheme());
   EXPECT_EQ("hhaomjibdihmijegdhdafkllkbggdgoj", url.host());
   EXPECT_EQ("/main.html", url.path());
   // Confirm that "%20" is used instead of "+" in the query.
   EXPECT_TRUE(url.query().find("+") == std::string::npos);
   EXPECT_TRUE(url.query().find("%20") != std::string::npos);
-  // The escaped query is hard to read. Pretty print the escaped JSON.
-  EXPECT_EQ(
-      "{\n"
-      "   \"allowedPaths\": \"nativePath\",\n"
-      "   \"currentDirectoryURL\": "
-      "\"filesystem:chrome-extension://abc/Downloads/\",\n"
-      "   \"defaultExtension\": \"txt\",\n"
-      "   \"selectionURL\": "
-      "\"filesystem:chrome-extension://abc/Downloads/foo.txt\",\n"
-      "   \"targetName\": \"foo.txt\",\n"
-      "   \"title\": \"some title\",\n"
-      "   \"type\": \"open-file\"\n"
-      "}\n",
-      PrettyPrintEscapedJson(url.query()));
+  // With DriveFS, Drive is always allowed where native paths are.
+  EXPECT_EQ(MakeSimpleDictionary({
+                {"allowedPaths",
+                 base::FeatureList::IsEnabled(chromeos::features::kDriveFs)
+                     ? "nativeOrDrivePath"
+                     : "nativePath"},
+                {"currentDirectoryURL",
+                 "filesystem:chrome-extension://abc/Downloads/"},
+                {"defaultExtension", "txt"},
+                {"selectionURL",
+                 "filesystem:chrome-extension://abc/Downloads/foo.txt"},
+                {"targetName", "foo.txt"},
+                {"title", "some title"},
+                {"type", "open-file"},
+            }),
+            ParseJsonQueryString(url.query()));
 }
 
 TEST(FileManagerUrlUtilTest,
@@ -73,10 +92,10 @@ TEST(FileManagerUrlUtilTest,
   // extensions: [["htm", "html"], ["txt"]]
   // descriptions: ["HTML", "TEXT"]
   ui::SelectFileDialog::FileTypeInfo file_types;
-  file_types.extensions.push_back(std::vector<base::FilePath::StringType>());
+  file_types.extensions.emplace_back();
   file_types.extensions[0].push_back(FILE_PATH_LITERAL("htm"));
   file_types.extensions[0].push_back(FILE_PATH_LITERAL("html"));
-  file_types.extensions.push_back(std::vector<base::FilePath::StringType>());
+  file_types.extensions.emplace_back();
   file_types.extensions[1].push_back(FILE_PATH_LITERAL("txt"));
   file_types.extension_description_overrides.push_back(
       base::UTF8ToUTF16("HTML"));
@@ -94,7 +113,7 @@ TEST(FileManagerUrlUtilTest,
       &file_types,
       1,  // The file type index is 1-based.
       FILE_PATH_LITERAL("txt"));
-  EXPECT_EQ("chrome-extension", url.scheme());
+  EXPECT_EQ(extensions::kExtensionScheme, url.scheme());
   EXPECT_EQ("hhaomjibdihmijegdhdafkllkbggdgoj", url.host());
   EXPECT_EQ("/main.html", url.path());
   // Confirm that "%20" is used instead of "+" in the query.

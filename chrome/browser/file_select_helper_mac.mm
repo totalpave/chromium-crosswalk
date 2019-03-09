@@ -7,10 +7,13 @@
 #include <Cocoa/Cocoa.h>
 #include <sys/stat.h>
 
+#include "base/bind.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/mac/foundation_util.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "third_party/zlib/google/zip.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -20,18 +23,24 @@ namespace {
 // Given the |path| of a package, returns the destination that the package
 // should be zipped to. Returns an empty path on any errors.
 base::FilePath ZipDestination(const base::FilePath& path) {
-  NSMutableString* dest =
-      [NSMutableString stringWithString:NSTemporaryDirectory()];
+  base::FilePath dest;
 
-  // Couldn't get the temporary directory.
-  if (!dest)
+  if (!base::GetTempDir(&dest)) {
+    // Couldn't get the temporary directory.
     return base::FilePath();
+  }
 
-  [dest appendFormat:@"%@/zip_cache/%@",
-                     [[NSBundle mainBundle] bundleIdentifier],
-                     [[NSProcessInfo processInfo] globallyUniqueString]];
+  // TMPDIR/<bundleID>/zip_cache/<guid>
 
-  return base::mac::NSStringToFilePath(dest);
+  NSString* bundleID = [[NSBundle mainBundle] bundleIdentifier];
+  dest = dest.Append([bundleID fileSystemRepresentation]);
+
+  dest = dest.Append("zip_cache");
+
+  NSString* guid = [[NSProcessInfo processInfo] globallyUniqueString];
+  dest = dest.Append([guid fileSystemRepresentation]);
+
+  return dest;
 }
 
 // Returns the path of the package and its components relative to the package's
@@ -88,8 +97,6 @@ base::FilePath FileSelectHelper::ZipPackage(const base::FilePath& path) {
 
 void FileSelectHelper::ProcessSelectedFilesMac(
     const std::vector<ui::SelectedFileInfo>& files) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE_USER_BLOCKING);
-
   // Make a mutable copy of the input files.
   std::vector<ui::SelectedFileInfo> files_out(files);
   std::vector<base::FilePath> temporary_files;
@@ -110,13 +117,10 @@ void FileSelectHelper::ProcessSelectedFilesMac(
     }
   }
 
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&FileSelectHelper::ProcessSelectedFilesMacOnUIThread,
-                 base::Unretained(this),
-                 files_out,
-                 temporary_files));
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(&FileSelectHelper::ProcessSelectedFilesMacOnUIThread,
+                     base::Unretained(this), files_out, temporary_files));
 }
 
 void FileSelectHelper::ProcessSelectedFilesMacOnUIThread(

@@ -4,13 +4,10 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
-import android.support.v4.widget.DrawerLayout;
-
 import org.chromium.chrome.browser.favicon.LargeIconBridge;
-import org.chromium.chrome.browser.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.widget.selection.SelectableListLayout;
+import org.chromium.chrome.browser.widget.selection.SelectionDelegate;
 import org.chromium.components.bookmarks.BookmarkId;
-
-import java.util.List;
 
 /**
  * Interface used by UI components in the main bookmarks UI to broadcast UI change notifications
@@ -37,64 +34,26 @@ interface BookmarkDelegate {
     boolean isDialogUi();
 
     /**
-     * Corresponds to "All Items" list item in the side drawer. Shows all bookmarks.
-     */
-    void openAllBookmarks();
-
-    /**
-     * Corresponds to any folder named list item in the side drawer. Shows bookmarks under the
-     * folder.
+     * Shows bookmarks contained in the specified folder.
      * @param folder Parent folder that contains bookmarks to show as its children.
      */
     void openFolder(BookmarkId folder);
 
     /**
-     * Clear all selected items. After this call, {@link #isSelectionEnabled()} will return false.
+     * @return The {@link SelectionDelegate} responsible for tracking selected bookmarks.
      */
-    void clearSelection();
+    SelectionDelegate<BookmarkId> getSelectionDelegate();
 
     /**
-     * Toggle the selection state of a bookmark. If the given bookmark is not
-     * editable, it will take no effect.
-     * @return True if the bookmark is selected after toggling. False otherwise.
+     * @return The {@link SelectableListLayout} displaying the list of bookmarks.
      */
-    boolean toggleSelectionForBookmark(BookmarkId bookmark);
-
-    /**
-     * @return True if the bookmark is selected. False otherwise.
-     */
-    boolean isBookmarkSelected(BookmarkId bookmark);
-
-    /**
-     * @return Whether selection is happening.
-     */
-    boolean isSelectionEnabled();
-
-    /**
-     * @return The list of bookmarks that are currently selected by the user.
-     */
-    List<BookmarkId> getSelectedBookmarks();
+    SelectableListLayout<BookmarkId> getSelectableListLayout();
 
     /**
      * Notifies the current mode set event to the given observer. For example, if the current mode
      * is MODE_ALL_BOOKMARKS, it calls onAllBookmarksModeSet.
      */
     void notifyStateChange(BookmarkUIObserver observer);
-
-    /**
-     * @return Whether there is a drawer.
-     */
-    boolean doesDrawerExist();
-
-    /**
-     * Close drawer if it's visible.
-     */
-    void closeDrawer();
-
-    /**
-     * @return The current drawer layout instance, if it exists.
-     */
-    DrawerLayout getDrawerLayout();
 
     /**
      * Closes the Bookmark UI (if on phone) and opens the given bookmark.
@@ -139,9 +98,4 @@ interface BookmarkDelegate {
      * @return LargeIconBridge instance. By sharing the instance, we can also share the cache.
      */
     LargeIconBridge getLargeIconBridge();
-
-    /**
-     * @return SnackbarManager instance.
-     */
-    SnackbarManager getSnackbarManager();
 }

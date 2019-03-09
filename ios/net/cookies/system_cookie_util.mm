@@ -8,11 +8,15 @@
 #include <stddef.h>
 
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "net/cookies/cookie_constants.h"
 #include "url/gurl.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace net {
 
@@ -67,7 +71,7 @@ net::CanonicalCookie CanonicalCookieFromSystemCookie(
     NSHTTPCookie* cookie,
     const base::Time& ceation_time) {
   return net::CanonicalCookie(
-      GURL(), base::SysNSStringToUTF8([cookie name]),
+      base::SysNSStringToUTF8([cookie name]),
       base::SysNSStringToUTF8([cookie value]),
       base::SysNSStringToUTF8([cookie domain]),
       base::SysNSStringToUTF8([cookie path]), ceation_time,
@@ -76,6 +80,41 @@ net::CanonicalCookie CanonicalCookieFromSystemCookie(
       // TODO(mkwst): When iOS begins to support 'SameSite' and 'Priority'
       // attributes, pass them through here.
       net::CookieSameSite::DEFAULT_MODE, net::COOKIE_PRIORITY_DEFAULT);
+}
+
+void ReportGetCookiesForURLResult(SystemCookieStoreType store_type,
+                                  bool has_cookies) {
+  GetCookiesForURLCallResult call_result =
+      GetCookiesForURLCallResult::kCookiesFoundOnWKHTTPSystemCookieStore;
+  switch (store_type) {
+    case SystemCookieStoreType::kWKHTTPSystemCookieStore:
+      call_result =
+          has_cookies
+              ? GetCookiesForURLCallResult::
+                    kCookiesFoundOnWKHTTPSystemCookieStore
+              : GetCookiesForURLCallResult::kNoCookiesOnWKHTTPSystemCookieStore;
+      break;
+    case SystemCookieStoreType::kNSHTTPSystemCookieStore:
+      call_result =
+          has_cookies
+              ? GetCookiesForURLCallResult::
+                    kCookiesFoundOnNSHTTPSystemCookieStore
+              : GetCookiesForURLCallResult::kNoCookiesOnNSHTTPSystemCookieStore;
+
+      break;
+    case SystemCookieStoreType::kCookieMonster:
+      call_result =
+          has_cookies ? GetCookiesForURLCallResult::kCookiesFoundOnCookieMonster
+                      : GetCookiesForURLCallResult::kNoCookiesOnCookieMonster;
+      break;
+  }
+  UMA_HISTOGRAM_ENUMERATION("IOS.Cookies.GetCookiesForURLCallResult",
+                            call_result);
+}
+
+void ReportGetCookiesForURLCall(SystemCookieStoreType store_type) {
+  UMA_HISTOGRAM_ENUMERATION("IOS.Cookies.GetCookiesForURLCallStoreType",
+                            store_type);
 }
 
 // Converts net::CanonicalCookie to NSHTTPCookie.

@@ -12,7 +12,7 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
+#include "base/time/time.h"
 #include "components/content_settings/core/common/content_settings.h"
 
 class GURL;
@@ -44,7 +44,14 @@ class OriginIdentifierValueMap {
     bool operator<(const OriginIdentifierValueMap::PatternPair& other) const;
   };
 
-  typedef std::map<PatternPair, linked_ptr<base::Value> > Rules;
+  struct ValueEntry {
+    base::Time last_modified;
+    base::Value value;
+    ValueEntry();
+    ~ValueEntry();
+  };
+
+  typedef std::map<PatternPair, ValueEntry> Rules;
   typedef std::map<EntryMapKey, Rules> EntryMap;
 
   EntryMap::iterator begin() {
@@ -74,6 +81,7 @@ class OriginIdentifierValueMap {
   // |OriginIdentifierValueMap| (also |GetRuleIterator|) before the iterator
   // has been destroyed. If |lock| is non-NULL, the returned |RuleIterator|
   // locks it and releases it when it is destroyed.
+  // Returns nullptr to indicate the RuleIterator is empty.
   std::unique_ptr<RuleIterator> GetRuleIterator(
       ContentSettingsType content_type,
       const ResourceIdentifier& resource_identifier,
@@ -85,21 +93,27 @@ class OriginIdentifierValueMap {
   // Returns a weak pointer to the value for the given |primary_pattern|,
   // |secondary_pattern|, |content_type|, |resource_identifier| tuple. If
   // no value is stored for the passed parameter |NULL| is returned.
-  base::Value* GetValue(
+  const base::Value* GetValue(
       const GURL& primary_url,
       const GURL& secondary_url,
       ContentSettingsType content_type,
       const ResourceIdentifier& resource_identifier) const;
 
-  // Sets the |value| for the given |primary_pattern|, |secondary_pattern|,
-  // |content_type|, |resource_identifier| tuple. The method takes the ownership
-  // of the passed |value|.
-  void SetValue(
+  base::Time GetLastModified(
       const ContentSettingsPattern& primary_pattern,
       const ContentSettingsPattern& secondary_pattern,
       ContentSettingsType content_type,
-      const ResourceIdentifier& resource_identifier,
-      base::Value* value);
+      const ResourceIdentifier& resource_identifier) const;
+
+  // Sets the |value| for the given |primary_pattern|, |secondary_pattern|,
+  // |content_type|, |resource_identifier| tuple. The caller can also store a
+  // |last_modified| date for each value.
+  void SetValue(const ContentSettingsPattern& primary_pattern,
+                const ContentSettingsPattern& secondary_pattern,
+                ContentSettingsType content_type,
+                const ResourceIdentifier& resource_identifier,
+                base::Time last_modified,
+                base::Value value);
 
   // Deletes the map entry for the given |primary_pattern|,
   // |secondary_pattern|, |content_type|, |resource_identifier| tuple.

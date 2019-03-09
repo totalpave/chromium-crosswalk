@@ -11,6 +11,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "net/base/net_errors.h"
 #include "net/base/net_string_util.h"
+#include "net/dns/host_resolver.h"
 #include "net/http/http_auth.h"
 #include "net/http/http_auth_challenge_tokenizer.h"
 #include "net/http/http_auth_scheme.h"
@@ -89,8 +90,10 @@ HttpAuth::AuthorizationResult HttpAuthHandlerBasic::HandleAnotherChallenge(
 }
 
 int HttpAuthHandlerBasic::GenerateAuthTokenImpl(
-    const AuthCredentials* credentials, const HttpRequestInfo*,
-    const CompletionCallback&, std::string* auth_token) {
+    const AuthCredentials* credentials,
+    const HttpRequestInfo*,
+    CompletionOnceCallback callback,
+    std::string* auth_token) {
   DCHECK(credentials);
   // TODO(eroman): is this the right encoding of username/password?
   std::string base64_username_password;
@@ -101,11 +104,9 @@ int HttpAuthHandlerBasic::GenerateAuthTokenImpl(
   return OK;
 }
 
-HttpAuthHandlerBasic::Factory::Factory() {
-}
+HttpAuthHandlerBasic::Factory::Factory() = default;
 
-HttpAuthHandlerBasic::Factory::~Factory() {
-}
+HttpAuthHandlerBasic::Factory::~Factory() = default;
 
 int HttpAuthHandlerBasic::Factory::CreateAuthHandler(
     HttpAuthChallengeTokenizer* challenge,
@@ -114,7 +115,8 @@ int HttpAuthHandlerBasic::Factory::CreateAuthHandler(
     const GURL& origin,
     CreateReason reason,
     int digest_nonce_count,
-    const BoundNetLog& net_log,
+    const NetLogWithSource& net_log,
+    HostResolver* host_resolver,
     std::unique_ptr<HttpAuthHandler>* handler) {
   // TODO(cbentzel): Move towards model of parsing in the factory
   //                 method and only constructing when valid.

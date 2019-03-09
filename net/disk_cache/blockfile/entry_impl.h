@@ -8,13 +8,19 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
 
 #include "base/macros.h"
+#include "net/base/net_export.h"
 #include "net/disk_cache/blockfile/disk_format.h"
 #include "net/disk_cache/blockfile/storage_block-inl.h"
 #include "net/disk_cache/blockfile/storage_block.h"
 #include "net/disk_cache/disk_cache.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_with_source.h"
+
+namespace net {
+class NetLog;
+}
 
 namespace disk_cache {
 
@@ -46,21 +52,28 @@ class NET_EXPORT_PRIVATE EntryImpl
 
   // Background implementation of the Entry interface.
   void DoomImpl();
-  int ReadDataImpl(int index, int offset, IOBuffer* buf, int buf_len,
-                   const CompletionCallback& callback);
-  int WriteDataImpl(int index, int offset, IOBuffer* buf, int buf_len,
-                    const CompletionCallback& callback, bool truncate);
+  int ReadDataImpl(int index,
+                   int offset,
+                   IOBuffer* buf,
+                   int buf_len,
+                   CompletionOnceCallback callback);
+  int WriteDataImpl(int index,
+                    int offset,
+                    IOBuffer* buf,
+                    int buf_len,
+                    CompletionOnceCallback callback,
+                    bool truncate);
   int ReadSparseDataImpl(int64_t offset,
                          IOBuffer* buf,
                          int buf_len,
-                         const CompletionCallback& callback);
+                         CompletionOnceCallback callback);
   int WriteSparseDataImpl(int64_t offset,
                           IOBuffer* buf,
                           int buf_len,
-                          const CompletionCallback& callback);
+                          CompletionOnceCallback callback);
   int GetAvailableRangeImpl(int64_t offset, int len, int64_t* start);
   void CancelSparseIOImpl();
-  int ReadyForSparseIOImpl(const CompletionCallback& callback);
+  int ReadyForSparseIOImpl(CompletionOnceCallback callback);
 
   inline CacheEntryBlock* entry() {
     return &entry_;
@@ -149,7 +162,7 @@ class NET_EXPORT_PRIVATE EntryImpl
   // created rather than opened.
   void BeginLogging(net::NetLog* net_log, bool created);
 
-  const net::BoundNetLog& net_log() const;
+  const net::NetLogWithSource& net_log() const;
 
   // Returns the number of blocks needed to store an EntryStore.
   static int NumBlocksForEntry(int key_size);
@@ -165,28 +178,29 @@ class NET_EXPORT_PRIVATE EntryImpl
                int offset,
                IOBuffer* buf,
                int buf_len,
-               const CompletionCallback& callback) override;
+               CompletionOnceCallback callback) override;
   int WriteData(int index,
                 int offset,
                 IOBuffer* buf,
                 int buf_len,
-                const CompletionCallback& callback,
+                CompletionOnceCallback callback,
                 bool truncate) override;
   int ReadSparseData(int64_t offset,
                      IOBuffer* buf,
                      int buf_len,
-                     const CompletionCallback& callback) override;
+                     CompletionOnceCallback callback) override;
   int WriteSparseData(int64_t offset,
                       IOBuffer* buf,
                       int buf_len,
-                      const CompletionCallback& callback) override;
+                      CompletionOnceCallback callback) override;
   int GetAvailableRange(int64_t offset,
                         int len,
                         int64_t* start,
-                        const CompletionCallback& callback) override;
+                        CompletionOnceCallback callback) override;
   bool CouldBeSparse() const override;
   void CancelSparseIO() override;
-  int ReadyForSparseIO(const CompletionCallback& callback) override;
+  net::Error ReadyForSparseIO(CompletionOnceCallback callback) override;
+  void SetLastUsedTimeForTest(base::Time time) override;
 
  private:
   enum {
@@ -198,10 +212,17 @@ class NET_EXPORT_PRIVATE EntryImpl
 
   // Do all the work for ReadDataImpl and WriteDataImpl.  Implemented as
   // separate functions to make logging of results simpler.
-  int InternalReadData(int index, int offset, IOBuffer* buf,
-                       int buf_len, const CompletionCallback& callback);
-  int InternalWriteData(int index, int offset, IOBuffer* buf, int buf_len,
-                        const CompletionCallback& callback, bool truncate);
+  int InternalReadData(int index,
+                       int offset,
+                       IOBuffer* buf,
+                       int buf_len,
+                       CompletionOnceCallback callback);
+  int InternalWriteData(int index,
+                        int offset,
+                        IOBuffer* buf,
+                        int buf_len,
+                        CompletionOnceCallback callback,
+                        bool truncate);
 
   // Initializes the storage for an internal or external data block.
   bool CreateDataBlock(int index, int size);
@@ -288,7 +309,7 @@ class NET_EXPORT_PRIVATE EntryImpl
   bool dirty_;                // True if we detected that this is a dirty entry.
   std::unique_ptr<SparseControl> sparse_;  // Support for sparse entries.
 
-  net::BoundNetLog net_log_;
+  net::NetLogWithSource net_log_;
 
   DISALLOW_COPY_AND_ASSIGN(EntryImpl);
 };

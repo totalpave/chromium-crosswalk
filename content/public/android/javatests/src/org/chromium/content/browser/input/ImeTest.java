@@ -4,586 +4,805 @@
 
 package org.chromium.content.browser.input;
 
-import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
-import android.content.res.Configuration;
-import android.os.Handler;
-import android.os.Looper;
-import android.test.suitebuilder.annotation.MediumTest;
-import android.test.suitebuilder.annotation.SmallTest;
-import android.text.TextUtils;
-import android.util.Pair;
+import android.graphics.Color;
+import android.support.test.filters.MediumTest;
+import android.support.test.filters.SmallTest;
+import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.BackgroundColorSpan;
+import android.text.style.UnderlineSpan;
 import android.view.KeyEvent;
-import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
-import android.view.inputmethod.InputConnection;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.FlakyTest;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.DOMUtils;
-import org.chromium.content.browser.test.util.JavaScriptUtils;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer;
-import org.chromium.content.browser.test.util.TestInputMethodManagerWrapper;
+import org.chromium.base.test.util.UrlUtils;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.content_shell_apk.ContentShellTestBase;
+import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.ui.base.ime.TextInputType;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Integration tests for text input using cases based on fixed regressions.
+ * IME (input method editor) and text input tests.
  */
-public class ImeTest extends ContentShellTestBase {
-    protected ChromiumBaseInputConnection mConnection;
-    private TestInputConnectionFactory mConnectionFactory;
-    private ImeAdapter mImeAdapter;
+@RunWith(ContentJUnit4ClassRunner.class)
+@CommandLineFlags.Add({"expose-internals-for-testing"})
+public class ImeTest {
+    @Rule
+    public ImeActivityTestRule mRule = new ImeActivityTestRule();
+    @Rule
+    public ExpectedException thrown = ExpectedException.none();
 
-    private static final String INPUT_FORM_HTML =
-            "content/test/data/android/input/input_forms.html";
-
-    private ContentViewCore mContentViewCore;
-    private WebContents mWebContents;
-    private TestCallbackHelperContainer mCallbackContainer;
-    protected TestInputMethodManagerWrapper mInputMethodManagerWrapper;
-
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
-        startActivityWithTestUrl(INPUT_FORM_HTML);
-        mContentViewCore = getContentViewCore();
-        mWebContents = getWebContents();
-
-        mInputMethodManagerWrapper = new TestInputMethodManagerWrapper(mContentViewCore);
-        getImeAdapter().setInputMethodManagerWrapperForTest(mInputMethodManagerWrapper);
-        assertEquals(0, mInputMethodManagerWrapper.getShowSoftInputCounter());
-        mConnectionFactory =
-                new TestInputConnectionFactory(getImeAdapter().getInputConnectionFactoryForTest());
-        getImeAdapter().setInputConnectionFactory(mConnectionFactory);
-
-        mCallbackContainer = new TestCallbackHelperContainer(mContentViewCore);
-        DOMUtils.waitForNonZeroNodeBounds(mWebContents, "input_text");
-        DOMUtils.clickNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(true);
-
-        mConnection = getInputConnection();
-        mImeAdapter = getImeAdapter();
-
-        if (usingReplicaInputConnection()) {
-            // This is not needed if onCreateInputConnection() can return correct selection range.
-            waitAndVerifyUpdateSelection(0, 0, 0, -1, -1);
-        }
-        waitForKeyboardStates(1, 0, 1, new Integer[] {TextInputType.TEXT});
-        assertEquals(0, mConnectionFactory.getOutAttrs().initialSelStart);
-        assertEquals(0, mConnectionFactory.getOutAttrs().initialSelEnd);
-
-        waitForEventLogs("selectionchange");
-        clearEventLogs();
-
-        resetAllStates();
+        mRule.setUpForUrl(ImeActivityTestRule.INPUT_FORM_HTML);
     }
 
+    @Test
+    @MediumTest
+    @Feature({"TextInput", "Main"})
+    public void testKeyboardDismissedWhenNavigating() throws Throwable {
+        mRule.assertWaitForKeyboardStatus(true);
+
+        // Hide keyboard when loading a new Url.
+        mRule.fullyLoadUrl(UrlUtils.getIsolatedTestFileUrl(ImeActivityTestRule.INPUT_FORM_HTML));
+        mRule.assertWaitForKeyboardStatus(false);
+
+        DOMUtils.clickNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
+
+        // Hide keyboard when navigating.
+        final String code = "document.getElementById(\"link\").click()";
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(mRule.getWebContents(), code);
+        mRule.assertWaitForKeyboardStatus(false);
+    }
+
+    @Test
     @MediumTest
     @Feature({"TextInput", "Main"})
     public void testKeyboardDismissedAfterClickingGo() throws Throwable {
-        setComposingText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
+        mRule.setComposingText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
 
-        performGo(mCallbackContainer);
+        mRule.performGo(mRule.getTestCallBackHelperContainer());
 
-        assertWaitForKeyboardStatus(false);
+        mRule.assertWaitForKeyboardStatus(false);
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput", "Main"})
     public void testDoesNotHang_getTextAfterKeyboardHides() throws Throwable {
-        setComposingText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
+        mRule.setComposingText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
 
-        performGo(mCallbackContainer);
+        mRule.performGo(mRule.getTestCallBackHelperContainer());
 
         // This may time out if we do not get the information on time.
         // TODO(changwan): find a way to remove the loop.
         for (int i = 0; i < 100; ++i) {
-            getTextBeforeCursor(10, 0);
+            mRule.getTextBeforeCursor(10, 0);
         }
 
-        assertWaitForKeyboardStatus(false);
+        mRule.assertWaitForKeyboardStatus(false);
     }
 
+    // crbug.com/643519
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
-    public void testDeleteSurroundingTextWithZeroValue() throws Throwable {
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
-        deleteSurroundingText(0, 0);
+    public void testCompositionWithNullTextNotCrash() throws Throwable {
+        mRule.commitText(null, 1);
+        mRule.assertTextsAroundCursor("", null, "");
 
-        setSelection(0, 0);
-        waitAndVerifyUpdateSelection(1, 0, 0, -1, -1);
-        deleteSurroundingText(0, 0);
-
-        setSelection(2, 2);
-        waitAndVerifyUpdateSelection(2, 2, 2, -1, -1);
-        deleteSurroundingText(0, 0);
-        assertTextsAroundCursor("he", null, "llo");
+        mRule.setComposingText(null, 1);
+        mRule.assertTextsAroundCursor("", null, "");
     }
 
-    // When newCursorPosition != 1, setComposingText doesn't work for ReplicaInputConnection
-    // because there is a bug in BaseInputConnection.
-    @CommandLineFlags.Add("enable-features=ImeThread")
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
-    public void testSetComposingTextForDifferentnewCursorPositions() throws Throwable {
+    public void testDeleteSurroundingTextWithRangeSelection() throws Throwable {
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+
+        mRule.setSelection(1, 4);
+        mRule.waitAndVerifyUpdateSelection(1, 1, 4, -1, -1);
+
+        mRule.deleteSurroundingText(0, 0);
+        mRule.assertTextsAroundCursor("h", "ell", "o");
+
+        mRule.deleteSurroundingText(1, 1);
+        mRule.assertTextsAroundCursor("", "ell", "");
+
+        mRule.deleteSurroundingText(1, 0);
+        mRule.assertTextsAroundCursor("", "ell", "");
+
+        mRule.deleteSurroundingText(0, 1);
+        mRule.assertTextsAroundCursor("", "ell", "");
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testDeleteSurroundingTextWithCursorSelection() throws Throwable {
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+
+        mRule.setSelection(2, 2);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+
+        mRule.deleteSurroundingText(0, 0);
+        mRule.assertTextsAroundCursor("he", null, "llo");
+
+        mRule.deleteSurroundingText(1, 1);
+        mRule.assertTextsAroundCursor("h", null, "lo");
+
+        mRule.deleteSurroundingText(1, 0);
+        mRule.assertTextsAroundCursor("", null, "lo");
+
+        mRule.deleteSurroundingText(0, 10);
+        mRule.assertTextsAroundCursor("", null, "");
+
+        mRule.deleteSurroundingText(10, 10);
+        mRule.assertTextsAroundCursor("", null, "");
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testKeyboardAppFinishesCompositionOnUnexpectedSelectionChange() throws Throwable {
+        mRule.focusElementAndWaitForStateUpdate("textarea2");
+        mRule.commitText("12345", 1);
+        mRule.setSelection(3, 3);
+        mRule.setComposingRegion(2, 3);
+
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.waitAndVerifyUpdateSelection(1, 3, 3, -1, -1);
+        mRule.waitAndVerifyUpdateSelection(2, 3, 3, 2, 3);
+
+        // Unexpected selection change occurs, e.g., the user clicks on an area.
+        // There was already one click during test setup; we have to wait out the double-tap
+        // timeout or the test will be flaky.
+        Thread.sleep(ViewConfiguration.getDoubleTapTimeout());
+        DOMUtils.clickNode(mRule.getWebContents(), "textarea2");
+        mRule.waitAndVerifyUpdateSelection(3, 5, 5, 2, 3);
+        // Keyboard app finishes composition. We emulate this in TestInputMethodManagerWrapper.
+        mRule.waitAndVerifyUpdateSelection(4, 5, 5, -1, -1);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testDeleteSurroundingTextInCodePointsWithRangeSelection() throws Throwable {
+        final String trophy = "\uD83C\uDFC6";
+        mRule.commitText("ab" + trophy + "cdef" + trophy + "gh", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 12, 12, -1, -1);
+
+        mRule.setSelection(6, 8);
+        mRule.waitAndVerifyUpdateSelection(1, 6, 8, -1, -1);
+        mRule.assertTextsAroundCursor("ab" + trophy + "cd", "ef", trophy + "gh");
+
+        mRule.deleteSurroundingTextInCodePoints(2, 2);
+        mRule.waitAndVerifyUpdateSelection(2, 4, 6, -1, -1);
+        mRule.assertTextsAroundCursor("ab" + trophy, "ef", "h");
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testDeleteSurroundingTextInCodePointsWithCursorSelection() throws Throwable {
+        final String trophy = "\uD83C\uDFC6";
+        mRule.commitText("ab" + trophy + "cd" + trophy, 1);
+        mRule.waitAndVerifyUpdateSelection(0, 8, 8, -1, -1);
+
+        mRule.setSelection(4, 4);
+        mRule.waitAndVerifyUpdateSelection(1, 4, 4, -1, -1);
+        mRule.assertTextsAroundCursor("ab" + trophy, null, "cd" + trophy);
+
+        mRule.deleteSurroundingTextInCodePoints(2, 2);
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
+        mRule.assertTextsAroundCursor("a", null, trophy);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testSetComposingTextForNewCursorPositions() throws Throwable {
         // Cursor is on the right of composing text when newCursorPosition > 0.
-        setComposingText("ab", 1);
-        waitAndVerifyUpdateSelection(0, 2, 2, 0, 2);
+        mRule.setComposingText("ab", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 2, 2, 0, 2);
 
-        finishComposingText();
-        waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+        mRule.finishComposingText();
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
 
         // Cursor exceeds the left boundary.
-        setComposingText("cdef", -100);
-        waitAndVerifyUpdateSelection(2, 0, 0, 2, 6);
+        mRule.setComposingText("cdef", -100);
+        mRule.waitAndVerifyUpdateSelection(2, 0, 0, 2, 6);
 
         // Cursor is on the left boundary.
-        setComposingText("cd", -2);
-        waitAndVerifyUpdateSelection(3, 0, 0, 2, 4);
+        mRule.getInputMethodManagerWrapper().expectsSelectionOutsideComposition();
+        mRule.setComposingText("cd", -2);
+        mRule.waitAndVerifyUpdateSelection(3, 0, 0, 2, 4);
 
+        mRule.getInputMethodManagerWrapper().expectsSelectionOutsideComposition();
         // Cursor is between the left boundary and the composing text.
-        setComposingText("cd", -1);
-        waitAndVerifyUpdateSelection(4, 1, 1, 2, 4);
+        mRule.setComposingText("cd", -1);
+        mRule.waitAndVerifyUpdateSelection(4, 1, 1, 2, 4);
 
         // Cursor is on the left of composing text.
-        setComposingText("cd", 0);
-        waitAndVerifyUpdateSelection(5, 2, 2, 2, 4);
+        mRule.setComposingText("cd", 0);
+        mRule.waitAndVerifyUpdateSelection(5, 2, 2, 2, 4);
 
-        finishComposingText();
-        waitAndVerifyUpdateSelection(6, 2, 2, -1, -1);
+        mRule.finishComposingText();
+        mRule.waitAndVerifyUpdateSelection(6, 2, 2, -1, -1);
 
         // Cursor is on the right of composing text.
-        setComposingText("ef", 1);
-        waitAndVerifyUpdateSelection(7, 4, 4, 2, 4);
+        mRule.setComposingText("ef", 1);
+        mRule.waitAndVerifyUpdateSelection(7, 4, 4, 2, 4);
 
+        mRule.getInputMethodManagerWrapper().expectsSelectionOutsideComposition();
         // Cursor is between the composing text and the right boundary.
-        setComposingText("ef", 2);
-        waitAndVerifyUpdateSelection(8, 5, 5, 2, 4);
+        mRule.setComposingText("ef", 2);
+        mRule.waitAndVerifyUpdateSelection(8, 5, 5, 2, 4);
 
+        mRule.getInputMethodManagerWrapper().expectsSelectionOutsideComposition();
         // Cursor is on the right boundary.
-        setComposingText("ef", 3);
-        waitAndVerifyUpdateSelection(9, 6, 6, 2, 4);
+        mRule.setComposingText("ef", 3);
+        mRule.waitAndVerifyUpdateSelection(9, 6, 6, 2, 4);
 
+        mRule.getInputMethodManagerWrapper().expectsSelectionOutsideComposition();
         // Cursor exceeds the right boundary.
-        setComposingText("efgh", 100);
-        waitAndVerifyUpdateSelection(10, 8, 8, 2, 6);
+        mRule.setComposingText("efgh", 100);
+        mRule.waitAndVerifyUpdateSelection(10, 8, 8, 2, 6);
     }
 
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testCommitTextForNewCursorPositions() throws Throwable {
+        // Cursor is on the left of committing text.
+        mRule.commitText("ab", 0);
+        mRule.waitAndVerifyUpdateSelection(0, 0, 0, -1, -1);
+
+        // Cursor is on the right of committing text.
+        mRule.commitText("cd", 1);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+
+        // Cursor is between the committing text and the right boundary.
+        mRule.commitText("ef", 2);
+        mRule.waitAndVerifyUpdateSelection(2, 5, 5, -1, -1);
+
+        // Cursor is between the left boundary and the committing text.
+        mRule.commitText("gh", -3);
+        mRule.waitAndVerifyUpdateSelection(3, 2, 2, -1, -1);
+
+        // Cursor is on the right boundary.
+        mRule.commitText("ij", 7);
+        mRule.waitAndVerifyUpdateSelection(4, 10, 10, -1, -1);
+
+        // Cursor is on the left boundary.
+        mRule.commitText("kl", -10);
+        mRule.waitAndVerifyUpdateSelection(5, 0, 0, -1, -1);
+
+        // Cursor exceeds the right boundary.
+        mRule.commitText("mn", 100);
+        mRule.waitAndVerifyUpdateSelection(6, 14, 14, -1, -1);
+
+        // Cursor exceeds the left boundary.
+        mRule.commitText("op", -100);
+        mRule.waitAndVerifyUpdateSelection(7, 0, 0, -1, -1);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testSetComposingTextWithEmptyText() throws Throwable {
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+
+        mRule.setComposingText("AB", 1);
+        mRule.waitAndVerifyUpdateSelection(1, 7, 7, 5, 7);
+
+        // With previous composition.
+        mRule.setComposingText("", -3);
+        mRule.waitAndVerifyUpdateSelection(2, 2, 2, -1, -1);
+        mRule.assertTextsAroundCursor("he", null, "llo");
+
+        // Without previous composition.
+        mRule.setComposingText("", 3);
+        mRule.waitAndVerifyUpdateSelection(3, 4, 4, -1, -1);
+        mRule.assertTextsAroundCursor("hell", null, "o");
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testCommitTextWithEmptyText() throws Throwable {
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.setSelection(2, 2);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+
+        mRule.setComposingText("world", 1);
+        mRule.waitAndVerifyUpdateSelection(2, 7, 7, 2, 7);
+        // With previous composition.
+        mRule.commitText("", 2);
+        mRule.waitAndVerifyUpdateSelection(3, 3, 3, -1, -1);
+
+        // Without previous composition.
+        mRule.commitText("", -1);
+        mRule.waitAndVerifyUpdateSelection(4, 2, 2, -1, -1);
+
+        // Although it is not documented in the spec, commitText() also removes existing selection.
+        mRule.setSelection(2, 5);
+        mRule.commitText("", 1);
+        mRule.waitAndVerifyUpdateSelection(5, 2, 5, -1, -1);
+        mRule.waitAndVerifyUpdateSelection(6, 2, 2, -1, -1);
+    }
+
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testCommitWhileComposingText() throws Throwable {
-        setComposingText("h", 1);
-        waitAndVerifyUpdateSelection(0, 1, 1, 0, 1);
+        mRule.setComposingText("h", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 1, 1, 0, 1);
 
-        setComposingText("he", 1);
-        waitAndVerifyUpdateSelection(1, 2, 2, 0, 2);
+        mRule.setComposingText("he", 1);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, 0, 2);
 
-        setComposingText("hel", 1);
-        waitAndVerifyUpdateSelection(2, 3, 3, 0, 3);
+        mRule.setComposingText("hel", 1);
+        mRule.waitAndVerifyUpdateSelection(2, 3, 3, 0, 3);
 
-        commitText("hel", 1);
-        waitAndVerifyUpdateSelection(3, 3, 3, -1, -1);
+        mRule.commitText("hel", 1);
+        mRule.waitAndVerifyUpdateSelection(3, 3, 3, -1, -1);
 
-        setComposingText("lo", 1);
-        waitAndVerifyUpdateSelection(4, 5, 5, 3, 5);
+        mRule.setComposingText("lo", 1);
+        mRule.waitAndVerifyUpdateSelection(4, 5, 5, 3, 5);
 
-        commitText("", 1);
-        waitAndVerifyUpdateSelection(5, 3, 3, -1, -1);
+        mRule.commitText("", 1);
+        mRule.waitAndVerifyUpdateSelection(5, 3, 3, -1, -1);
 
-        assertTextsAroundCursor("hel", null, "");
+        mRule.assertTextsAroundCursor("hel", null, "");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testCommitEnterKeyWhileComposingText() throws Throwable {
-        focusElementAndWaitForStateUpdate("textarea");
+        mRule.focusElementAndWaitForStateUpdate("textarea");
 
-        setComposingText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
+        mRule.setComposingText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
 
         // Cancel the current composition and replace it with enter.
-        commitText("\n", 1);
-        waitAndVerifyUpdateSelection(1, 1, 1, -1, -1);
+        mRule.commitText("\n", 1);
+        mRule.waitAndVerifyUpdateSelection(1, 1, 1, -1, -1);
         // The second new line is not a user visible/editable one, it is a side-effect of Blink
         // using <br> internally. This only happens when \n is at the end.
-        assertTextsAroundCursor("\n", null, "\n");
+        mRule.assertTextsAroundCursor("\n", null, "\n");
 
-        commitText("world", 1);
-        waitAndVerifyUpdateSelection(2, 6, 6, -1, -1);
-        assertTextsAroundCursor("\nworld", null, "");
+        mRule.commitText("world", 1);
+        mRule.waitAndVerifyUpdateSelection(2, 6, 6, -1, -1);
+        mRule.assertTextsAroundCursor("\nworld", null, "");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImeCopy() throws Exception {
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
 
-        setSelection(2, 5);
-        waitAndVerifyUpdateSelection(1, 2, 5, -1, -1);
+        mRule.setSelection(2, 5);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 5, -1, -1);
 
-        copy();
-        assertClipboardContents(getActivity(), "llo");
+        mRule.copy();
+        mRule.assertClipboardContents(mRule.getActivity(), "llo");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testEnterTextAndRefocus() throws Exception {
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
-        restartInput();
-        DOMUtils.clickNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(true);
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.restartInput();
+        DOMUtils.clickNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
 
-        assertEquals(5, mConnectionFactory.getOutAttrs().initialSelStart);
-        assertEquals(5, mConnectionFactory.getOutAttrs().initialSelEnd);
+        Assert.assertEquals(5, mRule.getConnectionFactory().getOutAttrs().initialSelStart);
+        Assert.assertEquals(5, mRule.getConnectionFactory().getOutAttrs().initialSelEnd);
     }
 
+    private static int getImeAction(EditorInfo editorInfo) {
+        return editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testAdvanceFocusNextAndPrevious() throws Exception {
+        mRule.focusElement("textarea");
+        // Forward direction focus. Excessive focus advance should be ignored.
+        for (int i = 0; i < 10; ++i) {
+            // Forward direction focus.
+            mRule.performEditorAction(EditorInfo.IME_ACTION_NEXT);
+        }
+        mRule.waitForKeyboardStates(7, 0, 7,
+                new Integer[] {TextInputType.TEXT_AREA, TextInputType.TEXT_AREA,
+                        TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.CONTENT_EDITABLE,
+                        TextInputType.SEARCH, TextInputType.TEXT});
+        ArrayList<EditorInfo> editorInfoList =
+                mRule.getInputMethodManagerWrapper().getEditorInfoList();
+        Assert.assertEquals(7, editorInfoList.size());
+        // textarea.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NONE, getImeAction(editorInfoList.get(0)));
+        // textarea2.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NONE, getImeAction(editorInfoList.get(1)));
+        // input_number1.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NEXT, getImeAction(editorInfoList.get(2)));
+        // input_number2.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NEXT, getImeAction(editorInfoList.get(3)));
+        // content_editable1.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NONE, getImeAction(editorInfoList.get(4)));
+        // search1.
+        Assert.assertEquals(EditorInfo.IME_ACTION_SEARCH, getImeAction(editorInfoList.get(5)));
+        // input_text1.
+        Assert.assertEquals(EditorInfo.IME_ACTION_GO, getImeAction(editorInfoList.get(6)));
+
+        mRule.resetAllStates();
+
+        // Backward direction focus. Excessive focus advance should be ignored.
+        for (int i = 0; i < 10; ++i) {
+            // Backward direction focus.
+            mRule.performEditorAction(EditorInfo.IME_ACTION_PREVIOUS);
+        }
+        mRule.waitForKeyboardStates(6, 0, 6,
+                new Integer[] {TextInputType.SEARCH, TextInputType.CONTENT_EDITABLE,
+                        TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.TEXT_AREA,
+                        TextInputType.TEXT_AREA});
+        editorInfoList = mRule.getInputMethodManagerWrapper().getEditorInfoList();
+        Assert.assertEquals(6, editorInfoList.size());
+        // search1.
+        Assert.assertEquals(EditorInfo.IME_ACTION_SEARCH, getImeAction(editorInfoList.get(0)));
+        // content_editable1.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NONE, getImeAction(editorInfoList.get(1)));
+        // input_number2.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NEXT, getImeAction(editorInfoList.get(2)));
+        // input_number1.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NEXT, getImeAction(editorInfoList.get(3)));
+        // textarea2.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NONE, getImeAction(editorInfoList.get(4)));
+        // textarea.
+        Assert.assertEquals(EditorInfo.IME_ACTION_NONE, getImeAction(editorInfoList.get(5)));
+    }
+
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testShowAndHideSoftInput() throws Exception {
-        focusElement("input_radio", false);
+        mRule.focusElement("input_radio", false);
 
-        // hideSoftKeyboard(), restartInput()
-        waitForKeyboardStates(0, 1, 1, new Integer[] {});
+        // hideSoftKeyboard(), mRule.restartInput()
+        mRule.waitForKeyboardStates(0, 1, 1, new Integer[] {});
 
         // When input connection is null, we still need to set flags to prevent InputMethodService
         // from entering fullscreen mode and from opening custom UI.
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                return getInputConnection() == null;
+                return mRule.getInputConnection() == null;
             }
         });
-        assertTrue(
-                (mConnectionFactory.getOutAttrs().imeOptions
+        Assert.assertTrue(
+                (mRule.getConnectionFactory().getOutAttrs().imeOptions
                         & (EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI))
                 != 0);
 
-        // showSoftInput(), restartInput()
-        focusElement("input_number1");
-        waitForKeyboardStates(1, 1, 2, new Integer[] {TextInputType.NUMBER});
-        assertNotNull(mInputMethodManagerWrapper.getInputConnection());
+        // showSoftInput(), mRule.restartInput()
+        mRule.focusElement("input_number1");
+        mRule.waitForKeyboardStates(1, 1, 2, new Integer[] {TextInputType.NUMBER});
+        Assert.assertNotNull(mRule.getInputMethodManagerWrapper().getInputConnection());
 
-        focusElement("input_number2");
+        mRule.focusElement("input_number2");
         // Hide should never be called here. Otherwise we will see a flicker. Restarted to
         // reset internal states to handle the new input form.
-        waitForKeyboardStates(2, 1, 3, new Integer[] {TextInputType.NUMBER, TextInputType.NUMBER});
+        mRule.waitForKeyboardStates(
+                2, 1, 3, new Integer[] {TextInputType.NUMBER, TextInputType.NUMBER});
 
-        focusElement("input_text");
-        // showSoftInput() on input_text. restartInput() on input_number1 due to focus change,
-        // and restartInput() on input_text later.
-        // TODO(changwan): reduce unnecessary restart input.
-        waitForKeyboardStates(3, 1, 5, new Integer[] {
-                TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.NUMBER,
-                TextInputType.TEXT});
+        mRule.focusElement("input_text");
+        // showSoftInput() on input_text. mRule.restartInput() on input_number1 due to focus change,
+        // and mRule.restartInput() on input_text later.
+        mRule.waitForKeyboardStates(3, 1, 4,
+                new Integer[] {TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.TEXT});
 
-        focusElement("input_radio", false);
-        // hideSoftInput(), restartInput()
-        waitForKeyboardStates(3, 2, 6, new Integer[] {
-                TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.NUMBER,
-                TextInputType.TEXT});
+        mRule.setComposingText("a", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 0, 0, -1, -1);
+        mRule.waitAndVerifyUpdateSelection(1, 1, 1, 0, 1);
+        mRule.resetUpdateSelectionList();
+
+        // JavaScript changes focus.
+        String code = "(function() { "
+                + "var textarea = document.getElementById('textarea');"
+                + "textarea.focus();"
+                + "})();";
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(mRule.getWebContents(), code);
+        mRule.waitAndVerifyUpdateSelection(0, 0, 0, -1, -1);
+        mRule.resetUpdateSelectionList();
+
+        mRule.waitForKeyboardStates(4, 1, 5,
+                new Integer[] {TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.TEXT,
+                        TextInputType.TEXT_AREA});
+        Assert.assertEquals(0, mRule.getConnectionFactory().getOutAttrs().initialSelStart);
+        Assert.assertEquals(0, mRule.getConnectionFactory().getOutAttrs().initialSelEnd);
+
+        mRule.setComposingText("aa", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 2, 2, 0, 2);
+
+        mRule.focusElement("input_text");
+        mRule.waitForKeyboardStates(5, 1, 6,
+                new Integer[] {TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.TEXT,
+                        TextInputType.TEXT_AREA, TextInputType.TEXT});
+        Assert.assertEquals(1, mRule.getConnectionFactory().getOutAttrs().initialSelStart);
+        Assert.assertEquals(1, mRule.getConnectionFactory().getOutAttrs().initialSelEnd);
+
+        mRule.focusElement("input_radio", false);
+        // hideSoftInput(), mRule.restartInput()
+        mRule.waitForKeyboardStates(5, 2, 7,
+                new Integer[] {TextInputType.NUMBER, TextInputType.NUMBER, TextInputType.TEXT,
+                        TextInputType.TEXT_AREA, TextInputType.TEXT});
     }
-
-    private void assertTextsAroundCursor(
-            CharSequence before, CharSequence selected, CharSequence after) throws Exception {
-        assertEquals(before, getTextBeforeCursor(100, 0));
-
-        CharSequence actualSelected = getSelectedText(0);
-        assertEquals(selected, actualSelected);
-
-        if (usingReplicaInputConnection() && after.equals("\n")) {
-            // When the text ends with \n, we have a second new line that is not user
-            // visible/editable one, it is a side effect of using <br> internally.
-            // Replica model simply deviates from the blink editor in this case.
-            assertEquals("", getTextAfterCursor(100, 0));
-        } else {
-            assertEquals(after, getTextAfterCursor(100, 0));
-        }
-    }
-
-    private void waitForKeyboardStates(int show, int hide, int restart, Integer[] history)
-            throws InterruptedException {
-        final String expected = stringifyKeyboardStates(show, hide, restart, history);
-        CriteriaHelper.pollUiThread(Criteria.equals(expected, new Callable<String>() {
-            @Override
-            public String call() {
-                return getKeyboardStates();
-            }
-        }));
-    }
-
-    private void resetAllStates() {
-        mInputMethodManagerWrapper.reset();
-        mConnectionFactory.clearTextInputTypeHistory();
-    }
-
-    private String getKeyboardStates() {
-        int showCount = mInputMethodManagerWrapper.getShowSoftInputCounter();
-        int hideCount = mInputMethodManagerWrapper.getHideSoftInputCounter();
-        int restartCount = mInputMethodManagerWrapper.getRestartInputCounter();
-        Integer[] history = mConnectionFactory.getTextInputTypeHistory();
-        return stringifyKeyboardStates(showCount, hideCount, restartCount, history);
-    }
-
-    private String stringifyKeyboardStates(int show, int hide, int restart, Integer[] history) {
-        return "show count: " + show + ", hide count: " + hide + ", restart count: " + restart
-                + ", input type history: " + Arrays.deepToString(history);
-    }
-
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testKeyboardNotDismissedAfterCopySelection() throws Exception {
-        commitText("Sample Text", 1);
-        waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
+        mRule.commitText("Sample_Text", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
 
         // Select 'text' part.
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
 
-        assertWaitForSelectActionBarStatus(true);
+        mRule.assertWaitForSelectActionBarStatus(true);
 
-        selectAll();
-        copy();
-        assertClipboardContents(getActivity(), "Sample Text");
-        assertEquals(11, mInputMethodManagerWrapper.getSelection().end());
-        assertWaitForKeyboardStatus(true);
+        mRule.selectAll();
+        mRule.copy();
+        mRule.assertClipboardContents(mRule.getActivity(), "Sample_Text");
+        Assert.assertEquals(11, mRule.getInputMethodManagerWrapper().getSelection().end());
+        mRule.assertWaitForKeyboardStatus(true);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImeNotDismissedAfterCutSelection() throws Exception {
-        commitText("Sample Text", 1);
-        waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForSelectActionBarStatus(true);
-        assertWaitForKeyboardStatus(true);
-        cut();
-        assertWaitForKeyboardStatus(true);
-        assertWaitForSelectActionBarStatus(false);
+        mRule.commitText("Sample_Text", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForSelectActionBarStatus(true);
+        mRule.assertWaitForKeyboardStatus(true);
+        mRule.cut();
+        mRule.assertWaitForKeyboardStatus(true);
+        mRule.assertWaitForSelectActionBarStatus(false);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImeNotShownOnLongPressingEmptyInput() throws Exception {
-        DOMUtils.focusNode(mWebContents, "input_radio");
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(false);
-        commitText("Sample Text", 1);
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(true);
+        DOMUtils.focusNode(mRule.getWebContents(), "input_radio");
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(false);
+        mRule.commitText("Sample_Text", 1);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testSelectActionBarShownOnLongPressingInput() throws Exception {
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForSelectActionBarStatus(false);
-        commitText("Sample Text", 1);
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForSelectActionBarStatus(true);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForSelectActionBarStatus(false);
+        mRule.commitText("Sample_Text", 1);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForSelectActionBarStatus(true);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testLongPressInputWhileComposingText() throws Exception {
-        assertWaitForSelectActionBarStatus(false);
-        setComposingText("Sample Text", 1);
-        waitAndVerifyUpdateSelection(0, 11, 11, 0, 11);
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
+        mRule.assertWaitForSelectActionBarStatus(false);
+        mRule.setComposingText("SampleTextThatIsVeryLong Test", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 29, 29, 0, 29);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
 
-        assertWaitForSelectActionBarStatus(true);
+        mRule.assertWaitForSelectActionBarStatus(true);
 
         // Long press will first change selection region, and then trigger IME app to show up.
         // See RenderFrameImpl::didChangeSelection() and RenderWidget::didHandleGestureEvent().
-        waitAndVerifyUpdateSelection(1, 7, 11, 0, 11);
+        mRule.waitAndVerifyUpdateSelection(1, 0, 24, 0, 29);
 
         // Now IME app wants to finish composing text because an external selection
         // change has been detected. At least Google Latin IME and Samsung IME
         // behave this way.
-        finishComposingText();
-        waitAndVerifyUpdateSelection(2, 7, 11, -1, -1);
+        mRule.finishComposingText();
+        mRule.waitAndVerifyUpdateSelection(2, 0, 24, -1, -1);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImeShownWhenLongPressOnAlreadySelectedText() throws Exception {
-        assertWaitForSelectActionBarStatus(false);
-        commitText("Sample Text", 1);
+        mRule.assertWaitForSelectActionBarStatus(false);
+        mRule.commitText("Sample_Text", 1);
 
-        int showCount = mInputMethodManagerWrapper.getShowSoftInputCounter();
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForSelectActionBarStatus(true);
-        assertEquals(showCount + 1, mInputMethodManagerWrapper.getShowSoftInputCounter());
+        int showCount = mRule.getInputMethodManagerWrapper().getShowSoftInputCounter();
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForSelectActionBarStatus(true);
+        Assert.assertEquals(
+                showCount + 1, mRule.getInputMethodManagerWrapper().getShowSoftInputCounter());
 
         // Now long press again. Selection region remains the same, but the logic
         // should trigger IME to show up. Note that Android does not provide show /
         // hide status of IME, so we will just check whether showIme() has been triggered.
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
         final int newCount = showCount + 2;
         CriteriaHelper.pollUiThread(Criteria.equals(newCount, new Callable<Integer>() {
             @Override
             public Integer call() {
-                return mInputMethodManagerWrapper.getShowSoftInputCounter();
+                return mRule.getInputMethodManagerWrapper().getShowSoftInputCounter();
             }
         }));
     }
 
-    private void attachPhysicalKeyboard() {
-        Configuration hardKeyboardConfig =
-                new Configuration(mContentViewCore.getContext().getResources().getConfiguration());
-        hardKeyboardConfig.keyboard = Configuration.KEYBOARD_QWERTY;
-        hardKeyboardConfig.keyboardHidden = Configuration.KEYBOARDHIDDEN_YES;
-        hardKeyboardConfig.hardKeyboardHidden = Configuration.HARDKEYBOARDHIDDEN_NO;
-        onConfigurationChanged(hardKeyboardConfig);
-    }
-
-    private void detachPhysicalKeyboard() {
-        Configuration softKeyboardConfig =
-                new Configuration(mContentViewCore.getContext().getResources().getConfiguration());
-        softKeyboardConfig.keyboard = Configuration.KEYBOARD_NOKEYS;
-        softKeyboardConfig.keyboardHidden = Configuration.KEYBOARDHIDDEN_NO;
-        softKeyboardConfig.hardKeyboardHidden = Configuration.HARDKEYBOARDHIDDEN_YES;
-        onConfigurationChanged(softKeyboardConfig);
-    }
-
-    private void onConfigurationChanged(final Configuration config) {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                mContentViewCore.onConfigurationChanged(config);
-            }
-        });
-    }
-
-    private void reloadPage() {
+    private void reloadPage() throws Throwable {
         // Reload the page, then focus will be lost and keyboard should be hidden.
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                final String currentUrl = getContentViewCore().getWebContents().getUrl();
-                getActivity().getActiveShell().loadUrl(currentUrl);
-            }
-        });
+        mRule.fullyLoadUrl(mRule.getWebContents().getLastCommittedUrl());
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
-    public void testPhysicalKeyboard_AttachDetach() throws Exception {
-        attachPhysicalKeyboard();
+    @SuppressWarnings("TryFailThrowable") // TODO(tedchoc): Remove after fixing timeout.
+    public void testPhysicalKeyboard_AttachDetach() throws Throwable {
+        mRule.attachPhysicalKeyboard();
         // We still call showSoftKeyboard, which will be ignored by physical keyboard.
-        waitForKeyboardStates(1, 0, 1, new Integer[] {TextInputType.TEXT});
-        setComposingText("a", 1);
-        waitForKeyboardStates(1, 0, 1, new Integer[] {TextInputType.TEXT});
-        detachPhysicalKeyboard();
-        assertWaitForKeyboardStatus(true);
-        // Now we really show soft keyboard. We also call restartInput when configuration changes.
-        waitForKeyboardStates(2, 0, 2, new Integer[] {TextInputType.TEXT, TextInputType.TEXT});
+        mRule.waitForKeyboardStates(1, 0, 1, new Integer[] {TextInputType.TEXT});
+        mRule.setComposingText("a", 1);
+        mRule.waitForKeyboardStates(1, 0, 1, new Integer[] {TextInputType.TEXT});
+        mRule.detachPhysicalKeyboard();
+        mRule.assertWaitForKeyboardStatus(true);
+        // Now we really show soft keyboard. We also call mRule.restartInput when configuration
+        // changes.
+        mRule.waitForKeyboardStates(
+                2, 0, 2, new Integer[] {TextInputType.TEXT, TextInputType.TEXT});
 
         reloadPage();
 
-        // Depending on the timing, hideSoftInput and restartInput call counts may vary here
+        // Depending on the timing, hideSoftInput and mRule.restartInput call counts may vary here
         // because render widget gets restarted. But the end result should be the same.
-        assertWaitForKeyboardStatus(false);
+        mRule.assertWaitForKeyboardStatus(false);
 
-        detachPhysicalKeyboard();
+        mRule.detachPhysicalKeyboard();
 
-        try {
-            // We should not show soft keyboard here because focus has been lost.
-            CriteriaHelper.pollUiThread(new Criteria() {
-                @Override
-                public boolean isSatisfied() {
-                    return mInputMethodManagerWrapper.isShowWithoutHideOutstanding();
-                }
-            });
-            fail("Keyboard incorrectly showing");
-        } catch (AssertionError e) {
-            // TODO(tedchoc): This is horrible and should never timeout to determine success.
-        }
+        // We should not show soft keyboard here because focus has been lost.
+        thrown.expect(AssertionError.class);
+        CriteriaHelper.pollUiThread(new Criteria() {
+            @Override
+            public boolean isSatisfied() {
+                return mRule.getInputMethodManagerWrapper().isShowWithoutHideOutstanding();
+            }
+        });
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testSelectActionBarClearedOnTappingInput() throws Exception {
-        commitText("Sample Text", 1);
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(true);
-        assertWaitForSelectActionBarStatus(true);
-        DOMUtils.clickNode(this, mContentViewCore, "input_text");
-        assertWaitForSelectActionBarStatus(false);
+        mRule.commitText("Sample_Text", 1);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
+        mRule.assertWaitForSelectActionBarStatus(true);
+        DOMUtils.clickNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForSelectActionBarStatus(false);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testSelectActionBarClearedOnTappingOutsideInput() throws Exception {
-        commitText("Sample Text", 1);
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(true);
-        assertWaitForSelectActionBarStatus(true);
-        DOMUtils.clickNode(this, mContentViewCore, "input_radio");
-        assertWaitForKeyboardStatus(false);
-        assertWaitForSelectActionBarStatus(false);
+        mRule.commitText("Sample_Text", 1);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
+        mRule.assertWaitForSelectActionBarStatus(true);
+        DOMUtils.clickNode(mRule.getWebContents(), "plain_text");
+        mRule.assertWaitForKeyboardStatus(false);
+        mRule.assertWaitForSelectActionBarStatus(false);
+
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
+        mRule.assertWaitForSelectActionBarStatus(true);
+        DOMUtils.clickNode(mRule.getWebContents(), "input_radio");
+        mRule.assertWaitForKeyboardStatus(false);
+        mRule.assertWaitForSelectActionBarStatus(false);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImeNotShownOnLongPressingDifferentEmptyInputs() throws Exception {
-        DOMUtils.focusNode(mWebContents, "input_radio");
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(false);
-        DOMUtils.longPressNode(this, mContentViewCore, "textarea");
-        assertWaitForKeyboardStatus(false);
+        DOMUtils.focusNode(mRule.getWebContents(), "input_radio");
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(false);
+        DOMUtils.longPressNode(mRule.getWebContents(), "textarea");
+        mRule.assertWaitForKeyboardStatus(false);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImeStaysOnLongPressingDifferentNonEmptyInputs() throws Exception {
-        DOMUtils.focusNode(mWebContents, "input_text");
-        assertWaitForKeyboardStatus(true);
-        commitText("Sample Text", 1);
-        DOMUtils.focusNode(mWebContents, "textarea");
-        commitText("Sample Text", 1);
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForKeyboardStatus(true);
-        assertWaitForSelectActionBarStatus(true);
-        DOMUtils.longPressNode(this, mContentViewCore, "textarea");
-        assertWaitForKeyboardStatus(true);
+        DOMUtils.focusNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
+
+        mRule.commitText("Sample_Text", 1);
+        // We should wait to avoid race condition.
+        mRule.waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
+
+        DOMUtils.focusNode(mRule.getWebContents(), "textarea");
+        mRule.waitAndVerifyUpdateSelection(1, 0, 0, -1, -1);
+
+        mRule.commitText("Sample_Text", 1);
+        mRule.waitAndVerifyUpdateSelection(2, 11, 11, -1, -1);
+
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
+        mRule.assertWaitForSelectActionBarStatus(true);
+
+        DOMUtils.longPressNode(mRule.getWebContents(), "textarea");
+        mRule.assertWaitForKeyboardStatus(true);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImeCut() throws Exception {
-        commitText("snarful", 1);
-        waitAndVerifyUpdateSelection(0, 7, 7, -1, -1);
+        mRule.commitText("snarful", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 7, 7, -1, -1);
 
-        setSelection(1, 5);
-        waitAndVerifyUpdateSelection(1, 1, 5, -1, -1);
+        mRule.setSelection(1, 5);
+        mRule.waitAndVerifyUpdateSelection(1, 1, 5, -1, -1);
 
-        cut();
-        waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
-        assertTextsAroundCursor("s", null, "ul");
-        assertClipboardContents(getActivity(), "narf");
+        mRule.cut();
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
+        mRule.assertTextsAroundCursor("s", null, "ul");
+        mRule.assertClipboardContents(mRule.getActivity(), "narf");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testImePaste() throws Exception {
@@ -591,678 +810,738 @@ public class ImeTest extends ContentShellTestBase {
             @Override
             public void run() {
                 ClipboardManager clipboardManager =
-                        (ClipboardManager) getActivity().getSystemService(
+                        (ClipboardManager) mRule.getActivity().getSystemService(
                                 Context.CLIPBOARD_SERVICE);
                 clipboardManager.setPrimaryClip(ClipData.newPlainText("blarg", "blarg"));
             }
         });
 
-        paste();
+        mRule.paste();
         // Paste is a two step process when there is a non-zero selection.
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
-        assertTextsAroundCursor("blarg", null, "");
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.assertTextsAroundCursor("blarg", null, "");
 
-        setSelection(3, 5);
-        waitAndVerifyUpdateSelection(1, 3, 5, -1, -1);
-        assertTextsAroundCursor("bla", "rg", "");
+        mRule.setSelection(3, 5);
+        mRule.waitAndVerifyUpdateSelection(1, 3, 5, -1, -1);
+        mRule.assertTextsAroundCursor("bla", "rg", "");
 
-        paste();
+        mRule.paste();
         // Paste is a two step process when there is a non-zero selection.
-        waitAndVerifyUpdateSelection(2, 3, 3, -1, -1);
-        waitAndVerifyUpdateSelection(3, 8, 8, -1, -1);
-        assertTextsAroundCursor("blablarg", null, "");
+        mRule.waitAndVerifyUpdateSelection(2, 8, 8, -1, -1);
+        mRule.assertTextsAroundCursor("blablarg", null, "");
 
-        paste();
-        waitAndVerifyUpdateSelection(4, 13, 13, -1, -1);
-        assertTextsAroundCursor("blablargblarg", null, "");
+        mRule.paste();
+        mRule.waitAndVerifyUpdateSelection(3, 13, 13, -1, -1);
+        mRule.assertTextsAroundCursor("blablargblarg", null, "");
     }
 
-    // Chrome can crash after pasting long text into textarea, becasue there is an overflow bug in
-    // SpannableStringBuilder#replace(). This can be avoided by enabling ImeThread.
-    // crbug.com/606059
-    @CommandLineFlags.Add("enable-features=ImeThread")
-    @MediumTest
-    @Feature({"TextInput"})
-    @FlakyTest
-    public void testPasteLongText() throws Exception {
-        int textLength = 25000;
-        String text = new String(new char[textLength]).replace("\0", "a");
-
-        commitText(text, 1);
-        waitAndVerifyUpdateSelection(0, textLength, textLength, -1, -1);
-        selectAll();
-        waitAndVerifyUpdateSelection(1, 0, textLength, -1, -1);
-        copy();
-
-        focusElement("textarea");
-        waitAndVerifyUpdateSelection(2, 0, 0, -1, -1);
-
-        // In order to reproduce the bug, we need some text after the pasting text.
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(3, 5, 5, -1, -1);
-
-        setSelection(0, 0);
-        waitAndVerifyUpdateSelection(4, 0, 0, -1, -1);
-
-        // It will crash after the 3rd paste if ImeThread is not enabled.
-        for (int i = 0; i < 10; i++) {
-            paste();
-            waitAndVerifyUpdateSelection(5 + i, textLength * (i + 1), textLength * (i + 1), -1, -1);
-        }
-    }
-
+    @Test
     @SmallTest
     @Feature({"TextInput"})
-    public void testImeSelectAndUnSelectAll() throws Exception {
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+    public void testImeSelectAndCollapseSelection() throws Exception {
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
 
-        selectAll();
-        waitAndVerifyUpdateSelection(1, 0, 5, -1, -1);
+        mRule.selectAll();
+        mRule.waitAndVerifyUpdateSelection(1, 0, 5, -1, -1);
 
-        unselect();
-
-        assertWaitForKeyboardStatus(false);
+        mRule.collapseSelection();
+        mRule.waitAndVerifyUpdateSelection(2, 5, 5, -1, -1);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
-    public void testShowImeIfNeeded() throws Throwable {
-        // showImeIfNeeded() is now implicitly called by the updated focus
+    public void testShowVirtualKeyboardIfEnabled() throws Throwable {
+        // ShowVirtualKeyboardIfEnabled() is now implicitly called by the updated focus
         // heuristic so no need to call explicitly. http://crbug.com/371927
-        DOMUtils.focusNode(mWebContents, "input_radio");
-        assertWaitForKeyboardStatus(false);
+        DOMUtils.focusNode(mRule.getWebContents(), "input_radio");
+        mRule.assertWaitForKeyboardStatus(false);
 
-        DOMUtils.focusNode(mWebContents, "input_text");
-        assertWaitForKeyboardStatus(true);
+        DOMUtils.focusNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForKeyboardStatus(true);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testFinishComposingText() throws Throwable {
-        focusElementAndWaitForStateUpdate("textarea");
+        mRule.focusElementAndWaitForStateUpdate("textarea");
 
-        commitText("hllo", 1);
-        waitAndVerifyUpdateSelection(0, 4, 4, -1, -1);
+        mRule.commitText("hllo", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 4, 4, -1, -1);
 
-        commitText(" ", 1);
-        waitAndVerifyUpdateSelection(1, 5, 5, -1, -1);
+        mRule.commitText(" ", 1);
+        mRule.waitAndVerifyUpdateSelection(1, 5, 5, -1, -1);
 
-        setSelection(1, 1);
-        waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
-        assertTextsAroundCursor("h", null, "llo ");
+        mRule.setSelection(1, 1);
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
+        mRule.assertTextsAroundCursor("h", null, "llo ");
 
-        setComposingRegion(0, 4);
-        waitAndVerifyUpdateSelection(3, 1, 1, 0, 4);
+        mRule.setComposingRegion(0, 4);
+        mRule.waitAndVerifyUpdateSelection(3, 1, 1, 0, 4);
 
-        finishComposingText();
-        waitAndVerifyUpdateSelection(4, 1, 1, -1, -1);
+        mRule.finishComposingText();
+        mRule.waitAndVerifyUpdateSelection(4, 1, 1, -1, -1);
 
-        commitText("\n", 1);
-        waitAndVerifyUpdateSelection(5, 2, 2, -1, -1);
-        assertTextsAroundCursor("h\n", null, "llo ");
+        mRule.commitText("\n", 1);
+        mRule.waitAndVerifyUpdateSelection(5, 2, 2, -1, -1);
+        mRule.assertTextsAroundCursor("h\n", null, "llo ");
     }
 
     // http://crbug.com/445499
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testDeleteText() throws Throwable {
-        focusElement("textarea");
+        mRule.focusElement("textarea");
 
         // The calls below are a reflection of what the stock Google Keyboard (Andr
         // when the noted key is touched on screen.
         // H
-        setComposingText("h", 1);
-        assertEquals("h", getTextBeforeCursor(9, 0));
+        mRule.setComposingText("h", 1);
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
 
         // O
-        setComposingText("ho", 1);
-        assertEquals("ho", getTextBeforeCursor(9, 0));
+        mRule.setComposingText("ho", 1);
+        Assert.assertEquals("ho", mRule.getTextBeforeCursor(9, 0));
 
-        setComposingText("h", 1);
-        setComposingRegion(0, 1);
-        setComposingText("h", 1);
-        assertEquals("h", getTextBeforeCursor(9, 0));
+        mRule.setComposingText("h", 1);
+        mRule.setComposingRegion(0, 1);
+        mRule.setComposingText("h", 1);
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
 
         // I
-        setComposingText("hi", 1);
-        assertEquals("hi", getTextBeforeCursor(9, 0));
+        mRule.setComposingText("hi", 1);
+        Assert.assertEquals("hi", mRule.getTextBeforeCursor(9, 0));
 
         // SPACE
-        commitText("hi", 1);
-        commitText(" ", 1);
-        assertEquals("hi ", getTextBeforeCursor(9, 0));
+        mRule.commitText("hi", 1);
+        mRule.commitText(" ", 1);
+        Assert.assertEquals("hi ", mRule.getTextBeforeCursor(9, 0));
 
         // DEL
-        deleteSurroundingText(1, 0);
-        setComposingRegion(0, 2);
-        assertEquals("hi", getTextBeforeCursor(9, 0));
+        mRule.deleteSurroundingText(1, 0);
+        mRule.setComposingRegion(0, 2);
+        Assert.assertEquals("hi", mRule.getTextBeforeCursor(9, 0));
 
-        setComposingText("h", 1);
-        assertEquals("h", getTextBeforeCursor(9, 0));
+        mRule.setComposingText("h", 1);
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
 
-        commitText("", 1);
-        assertEquals("", getTextBeforeCursor(9, 0));
+        mRule.commitText("", 1);
+        Assert.assertEquals("", mRule.getTextBeforeCursor(9, 0));
 
         // DEL (on empty input)
-        deleteSurroundingText(1, 0); // DEL on empty still sends 1,0
-        assertEquals("", getTextBeforeCursor(9, 0));
+        mRule.deleteSurroundingText(1, 0); // DEL on empty still sends 1,0
+        Assert.assertEquals("", mRule.getTextBeforeCursor(9, 0));
     }
 
-
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testSwipingText() throws Throwable {
-        focusElement("textarea");
+        mRule.focusElement("textarea");
 
         // The calls below are a reflection of what the stock Google Keyboard (Android 4.4) sends
         // when the word is swiped on the soft keyboard.  Exercise care when altering to make sure
         // that the test reflects reality.  If this test breaks, it's possible that code has
         // changed and different calls need to be made instead.
         // "three"
-        setComposingText("three", 1);
-        assertEquals("three", getTextBeforeCursor(99, 0));
+        mRule.setComposingText("three", 1);
+        Assert.assertEquals("three", mRule.getTextBeforeCursor(99, 0));
 
         // "word"
-        commitText("three", 1);
-        commitText(" ", 1);
-        setComposingText("word", 1);
-        assertEquals("three word", getTextBeforeCursor(99, 0));
+        mRule.commitText("three", 1);
+        mRule.commitText(" ", 1);
+        mRule.setComposingText("word", 1);
+        Assert.assertEquals("three word", mRule.getTextBeforeCursor(99, 0));
 
         // "test"
-        commitText("word", 1);
-        commitText(" ", 1);
-        setComposingText("test", 1);
-        assertEquals("three word test", getTextBeforeCursor(99, 0));
+        mRule.commitText("word", 1);
+        mRule.commitText(" ", 1);
+        mRule.setComposingText("test", 1);
+        Assert.assertEquals("three word test", mRule.getTextBeforeCursor(99, 0));
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testDeleteMultiCharacterCodepoint() throws Throwable {
         // This smiley is a multi character codepoint.
         final String smiley = "\uD83D\uDE0A";
 
-        commitText(smiley, 1);
-        waitAndVerifyUpdateSelection(0, 2, 2, -1, -1);
-        assertTextsAroundCursor(smiley, null, "");
+        mRule.commitText(smiley, 1);
+        mRule.waitAndVerifyUpdateSelection(0, 2, 2, -1, -1);
+        mRule.assertTextsAroundCursor(smiley, null, "");
 
-        // DEL, sent via dispatchKeyEvent like it is in Android WebView or a physical keyboard.
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
+        // DEL, sent via mRule.dispatchKeyEvent like it is in Android WebView or a physical
+        // keyboard.
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
 
-        waitAndVerifyUpdateSelection(1, 0, 0, -1, -1);
+        mRule.waitAndVerifyUpdateSelection(1, 0, 0, -1, -1);
 
         // Make sure that we accept further typing after deleting the smiley.
-        setComposingText("s", 1);
-        setComposingText("sm", 1);
-        waitAndVerifyUpdateSelection(2, 1, 1, 0, 1);
-        waitAndVerifyUpdateSelection(3, 2, 2, 0, 2);
+        mRule.setComposingText("s", 1);
+        mRule.setComposingText("sm", 1);
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, 0, 1);
+        mRule.waitAndVerifyUpdateSelection(3, 2, 2, 0, 2);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testBackspaceKeycode() throws Throwable {
-        focusElement("textarea");
+        mRule.focusElement("textarea");
 
         // H
-        commitText("h", 1);
-        assertEquals("h", getTextBeforeCursor(9, 0));
+        mRule.commitText("h", 1);
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
 
         // O
-        commitText("o", 1);
-        assertEquals("ho", getTextBeforeCursor(9, 0));
+        mRule.commitText("o", 1);
+        Assert.assertEquals("ho", mRule.getTextBeforeCursor(9, 0));
 
-        // DEL, sent via dispatchKeyEvent like it is in Android WebView or a physical keyboard.
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
+        // DEL, sent via mRule.dispatchKeyEvent like it is in Android WebView or a physical
+        // keyboard.
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
 
         // DEL
-        assertEquals("h", getTextBeforeCursor(9, 0));
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testRepeatBackspaceKeycode() throws Throwable {
-        focusElement("textarea");
+        mRule.focusElement("textarea");
 
         // H
-        commitText("h", 1);
-        assertEquals("h", getTextBeforeCursor(9, 0));
+        mRule.commitText("h", 1);
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
 
         // O
-        commitText("o", 1);
-        assertEquals("ho", getTextBeforeCursor(9, 0));
+        mRule.commitText("o", 1);
+        Assert.assertEquals("ho", mRule.getTextBeforeCursor(9, 0));
 
         // Multiple keydowns should each delete one character (this is for physical keyboard
         // key-repeat).
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
 
         // DEL
-        assertEquals("", getTextBeforeCursor(9, 0));
+        Assert.assertEquals("", mRule.getTextBeforeCursor(9, 0));
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testPhysicalKeyboard() throws Throwable {
-        focusElementAndWaitForStateUpdate("textarea");
+        mRule.focusElementAndWaitForStateUpdate("textarea");
 
         // Type 'a' using a physical keyboard.
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_A));
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_A));
+        mRule.waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
 
         // Type 'enter' key.
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
-        waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
-        assertTextsAroundCursor("a\n", null, "\n");
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+        mRule.assertTextsAroundCursor("a\n", null, "\n");
 
         // Type 'b'.
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_B));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_B));
-        waitAndVerifyUpdateSelection(2, 3, 3, -1, -1);
-        assertTextsAroundCursor("a\nb", null, "");
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_B));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_B));
+        mRule.waitAndVerifyUpdateSelection(2, 3, 3, -1, -1);
+        mRule.assertTextsAroundCursor("a\nb", null, "");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testPhysicalKeyboard_AccentKeyCodes() throws Throwable {
-        focusElementAndWaitForStateUpdate("textarea");
+        mRule.focusElementAndWaitForStateUpdate("textarea");
+        int index = 0;
 
         // h
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_H));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_H));
-        assertEquals("h", getTextBeforeCursor(9, 0));
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_H));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_H));
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 1, 1, -1, -1);
 
-        // ALT-i  (circumflex accent key on virtual keyboard)
-        dispatchKeyEvent(new KeyEvent(
+        // ALT-i  (circumflex accent key on virtual keyboard). Accent should not appear until the
+        // next letter is entered.
+        mRule.dispatchKeyEvent(new KeyEvent(
                 0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        assertEquals("hˆ", getTextBeforeCursor(9, 0));
-        dispatchKeyEvent(new KeyEvent(
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
+        mRule.dispatchKeyEvent(new KeyEvent(
                 0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        assertEquals("hˆ", getTextBeforeCursor(9, 0));
-        waitAndVerifyUpdateSelection(1, 2, 2, 1, 2);
+        Assert.assertEquals("h", mRule.getTextBeforeCursor(9, 0));
+
+        // finishComposingText() should not prevent the accent from being joined.
+        mRule.finishComposingText();
 
         // o
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_O));
-        assertEquals("hô", getTextBeforeCursor(9, 0));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_O));
-        assertEquals("hô", getTextBeforeCursor(9, 0));
-        waitAndVerifyUpdateSelection(2, 2, 2, -1, -1);
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_O));
+        Assert.assertEquals("hô", mRule.getTextBeforeCursor(9, 0));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_O));
+        Assert.assertEquals("hô", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 2, 2, -1, -1);
 
-        // ALT-i
-        dispatchKeyEvent(new KeyEvent(
-                0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        dispatchKeyEvent(new KeyEvent(
-                0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        assertEquals("hôˆ", getTextBeforeCursor(9, 0));
-        waitAndVerifyUpdateSelection(3, 3, 3, 2, 3);
+        // o again. Should not have accent mark this time.
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_O));
+        Assert.assertEquals("hôo", mRule.getTextBeforeCursor(9, 0));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_O));
+        Assert.assertEquals("hôo", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 3, 3, -1, -1);
 
-        // ALT-i again should have no effect
-        dispatchKeyEvent(new KeyEvent(
+        // ALT-i. Should not display anything until the next key is pressed.
+        mRule.dispatchKeyEvent(new KeyEvent(
                 0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        dispatchKeyEvent(new KeyEvent(
+        mRule.dispatchKeyEvent(new KeyEvent(
                 0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        assertEquals("hôˆ", getTextBeforeCursor(9, 0));
+        Assert.assertEquals("hôo", mRule.getTextBeforeCursor(9, 0));
+
+        // ALT-i again should commit the caret this time.
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
+        Assert.assertEquals("hôoˆ", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 4, 4, -1, -1);
 
         // b (cannot be accented, should just appear after)
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_B));
-        assertEquals("hôˆb", getTextBeforeCursor(9, 0));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_B));
-        assertEquals("hôˆb", getTextBeforeCursor(9, 0));
-        int index = 4;
-        if (usingReplicaInputConnection()) {
-            // A transitional state due to finishComposingText.
-            waitAndVerifyUpdateSelection(index++, 3, 3, -1, -1);
-        }
-        waitAndVerifyUpdateSelection(index++, 4, 4, -1, -1);
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_B));
+        Assert.assertEquals("hôoˆb", mRule.getTextBeforeCursor(9, 0));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_B));
+        Assert.assertEquals("hôoˆb", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 5, 5, -1, -1);
 
-        // ALT-i
-        dispatchKeyEvent(new KeyEvent(
+        // ALT-i. Should not display anything.
+        mRule.dispatchKeyEvent(new KeyEvent(
                 0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        dispatchKeyEvent(new KeyEvent(
+        mRule.dispatchKeyEvent(new KeyEvent(
                 0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
-        assertEquals("hôˆbˆ", getTextBeforeCursor(9, 0));
-        waitAndVerifyUpdateSelection(index++, 5, 5, 4, 5);
+        Assert.assertEquals("hôoˆb", mRule.getTextBeforeCursor(9, 0));
 
-        // Backspace
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
-        assertEquals("hôˆb", getTextBeforeCursor(9, 0));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
-        assertEquals("hôˆb", getTextBeforeCursor(9, 0));
-        if (usingReplicaInputConnection()) {
-            // A transitional state due to finishComposingText in deleteSurroundingTextImpl.
-            waitAndVerifyUpdateSelection(index++, 5, 5, -1, -1);
-        }
-        waitAndVerifyUpdateSelection(index++, 4, 4, -1, -1);
+        // Backspace. Should delete the b even though we have a pending accent.
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL));
+        Assert.assertEquals("hôoˆ", mRule.getTextBeforeCursor(9, 0));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL));
+        Assert.assertEquals("hôoˆ", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 4, 4, -1, -1);
+
+        // Alt-i. Should not display anything (the pending accent should have been cleared by the
+        // backspace).
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
+        Assert.assertEquals("hôoˆ", mRule.getTextBeforeCursor(9, 0));
+
+        // Space. Should display the pending accent.
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SPACE));
+        Assert.assertEquals("hôoˆˆ", mRule.getTextBeforeCursor(9, 0));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SPACE));
+        Assert.assertEquals("hôoˆˆ", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 5, 5, -1, -1);
+
+        // Alt-i. Should not display anything but should set a circumflex as the pending accent.
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_I, 0, KeyEvent.META_ALT_ON));
+        Assert.assertEquals("hôoˆˆ", mRule.getTextBeforeCursor(9, 0));
+
+        // Alt-e. Should output the circumflex and set an acute accent as the pending accent.
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_E, 0, KeyEvent.META_ALT_ON));
+        mRule.dispatchKeyEvent(new KeyEvent(
+                0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_E, 0, KeyEvent.META_ALT_ON));
+        Assert.assertEquals("hôoˆˆˆ", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 6, 6, -1, -1);
+
+        // e. Should output an e with an acute accent.
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_E));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_E));
+        Assert.assertEquals("hôoˆˆˆé", mRule.getTextBeforeCursor(9, 0));
+        mRule.waitAndVerifyUpdateSelection(index++, 7, 7, -1, -1);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testSetComposingRegionOutOfBounds() throws Throwable {
-        focusElement("textarea");
-        setComposingText("hello", 1);
+        mRule.focusElementAndWaitForStateUpdate("textarea");
+        mRule.setComposingText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
 
-        setComposingRegion(0, 0);
-        setComposingRegion(0, 9);
-        setComposingRegion(9, 0);
+        mRule.setComposingRegion(0, 0);
+        mRule.waitAndVerifyUpdateSelection(1, 5, 5, -1, -1);
+        mRule.setComposingRegion(0, 9);
+        mRule.waitAndVerifyUpdateSelection(2, 5, 5, 0, 5);
+        mRule.setComposingRegion(9, 1);
+        mRule.waitAndVerifyUpdateSelection(3, 5, 5, 1, 5);
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testEnterKey_AfterCommitText() throws Throwable {
-        focusElementAndWaitForStateUpdate("textarea");
+        mRule.focusElementAndWaitForStateUpdate("textarea");
 
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
 
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
-        waitAndVerifyUpdateSelection(1, 6, 6, -1, -1);
-        assertTextsAroundCursor("hello\n", null, "\n");
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+        mRule.waitAndVerifyUpdateSelection(1, 6, 6, -1, -1);
+        mRule.assertTextsAroundCursor("hello\n", null, "\n");
 
-        commitText("world", 1);
-        waitAndVerifyUpdateSelection(2, 11, 11, -1, -1);
-        assertTextsAroundCursor("hello\nworld", null, "");
+        mRule.commitText("world", 1);
+        mRule.waitAndVerifyUpdateSelection(2, 11, 11, -1, -1);
+        mRule.assertTextsAroundCursor("hello\nworld", null, "");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testEnterKey_WhileComposingText() throws Throwable {
-        focusElementAndWaitForStateUpdate("textarea");
+        mRule.focusElementAndWaitForStateUpdate("textarea");
 
-        setComposingText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
+        mRule.setComposingText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, 0, 5);
 
         // IME app should call this, otherwise enter key should clear the current composition.
-        finishComposingText();
-        waitAndVerifyUpdateSelection(1, 5, 5, -1, -1);
+        mRule.finishComposingText();
+        mRule.waitAndVerifyUpdateSelection(1, 5, 5, -1, -1);
 
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
 
         // The second new line is not a user visible/editable one, it is a side-effect of Blink
         // using <br> internally. This only happens when \n is at the end.
-        waitAndVerifyUpdateSelection(2, 6, 6, -1, -1);
+        mRule.waitAndVerifyUpdateSelection(2, 6, 6, -1, -1);
 
-        commitText("world", 1);
-        waitAndVerifyUpdateSelection(3, 11, 11, -1, -1);
-        assertTextsAroundCursor("hello\nworld", null, "");
+        mRule.commitText("world", 1);
+        mRule.waitAndVerifyUpdateSelection(3, 11, 11, -1, -1);
+        mRule.assertTextsAroundCursor("hello\nworld", null, "");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
     public void testDpadKeyCodesWhileSwipingText() throws Throwable {
-        focusElement("textarea");
+        int showCount = mRule.getInputMethodManagerWrapper().getShowSoftInputCounter();
+        mRule.focusElement("textarea");
 
-        // DPAD_CENTER should cause keyboard to appear
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER));
-
-        // TODO(changwan): should really check this.
-    }
-
-    @SmallTest
-    @Feature({"TextInput", "Main"})
-    public void testNavigateTextWithDpadKeyCodes() throws Throwable {
-        focusElementAndWaitForStateUpdate("textarea");
-
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
-
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT));
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT));
-
-        if (usingReplicaInputConnection()) {
-            // Ideally getTextBeforeCursor immediately after dispatchKeyEvent should return a
-            // correct value, but we have a stop-gap solution in render_widget_input_handler and it
-            // make take some round trip time until we get the correct value.
-            waitUntilGetCharacterBeforeCursorBecomes("l");
-        } else {
-            assertTextsAroundCursor("hell", null, "o");
-        }
-    }
-
-    private void waitUntilGetCharacterBeforeCursorBecomes(final String expectedText)
-            throws InterruptedException {
-        pollForCriteriaOnThread(Criteria.equals(expectedText, new Callable<String>() {
+        // focusElement() calls showSoftInput().
+        CriteriaHelper.pollUiThread(Criteria.equals(showCount + 1, new Callable<Integer>() {
             @Override
-            public String call() {
-                return (String) mConnection.getTextBeforeCursor(1, 0);
+            public Integer call() {
+                return mRule.getInputMethodManagerWrapper().getShowSoftInputCounter();
+            }
+        }));
+
+        // DPAD_CENTER should cause keyboard to appear on keyup.
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_CENTER));
+
+        // Should not have called showSoftInput() on keydown.
+        CriteriaHelper.pollUiThread(Criteria.equals(showCount + 1, new Callable<Integer>() {
+            @Override
+            public Integer call() {
+                return mRule.getInputMethodManagerWrapper().getShowSoftInputCounter();
+            }
+        }));
+
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_CENTER));
+
+        // Should have called showSoftInput() on keyup.
+        CriteriaHelper.pollUiThread(Criteria.equals(showCount + 2, new Callable<Integer>() {
+            @Override
+            public Integer call() {
+                return mRule.getInputMethodManagerWrapper().getShowSoftInputCounter();
             }
         }));
     }
 
-    private void pollForCriteriaOnThread(final Criteria criteria) throws InterruptedException {
-        final Callable<Boolean> callable = new Callable<Boolean>() {
-            @Override
-            public Boolean call() throws Exception {
-                return criteria.isSatisfied();
-            }
-        };
-        CriteriaHelper.pollInstrumentationThread(new Criteria() {
-            @Override
-            public boolean isSatisfied() {
-                try {
-                    return runBlockingOnImeThread(callable);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    fail();
-                    return false;
-                }
-            }
+    @Test
+    @SmallTest
+    @Feature({"TextInput", "Main"})
+    public void testNavigateTextWithDpadKeyCodes() throws Throwable {
+        mRule.focusElementAndWaitForStateUpdate("textarea");
 
-            @Override
-            public String getFailureReason() {
-                return criteria.getFailureReason();
-            }
-        });
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT));
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT));
+
+        mRule.assertTextsAroundCursor("hell", null, "o");
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testPastePopupShowAndHide() throws Throwable {
-        commitText("hello", 1);
-        waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
 
-        selectAll();
-        waitAndVerifyUpdateSelection(1, 0, 5, -1, -1);
-        assertTextsAroundCursor("", "hello", "");
+        mRule.selectAll();
+        mRule.waitAndVerifyUpdateSelection(1, 0, 5, -1, -1);
+        mRule.assertTextsAroundCursor("", "hello", "");
 
-        cut();
-        waitAndVerifyUpdateSelection(2, 0, 0, -1, -1);
-        assertTextsAroundCursor("", null, "");
+        mRule.cut();
+        mRule.waitAndVerifyUpdateSelection(2, 0, 0, -1, -1);
+        mRule.assertTextsAroundCursor("", null, "");
 
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                return mContentViewCore.isPastePopupShowing();
+                return mRule.getSelectionPopupController().isPastePopupShowing()
+                        && mRule.getSelectionPopupController().isInsertionForTesting();
             }
         });
 
-        setComposingText("h", 1);
+        mRule.setComposingText("h", 1);
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                return !mContentViewCore.isPastePopupShowing();
+                return !mRule.getSelectionPopupController().isPastePopupShowing();
             }
         });
-        assertFalse(mContentViewCore.hasInsertion());
+        Assert.assertFalse(mRule.getSelectionPopupController().isInsertionForTesting());
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testSelectionClearedOnKeyEvent() throws Throwable {
-        commitText("Sample Text", 1);
-        waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
+        mRule.commitText("Sample_Text", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
 
-        DOMUtils.longPressNode(this, mContentViewCore, "input_text");
-        assertWaitForSelectActionBarStatus(true);
+        DOMUtils.longPressNode(mRule.getWebContents(), "input_text");
+        mRule.assertWaitForSelectActionBarStatus(true);
 
-        setComposingText("h", 1);
-        assertWaitForSelectActionBarStatus(false);
-        assertFalse(mContentViewCore.hasSelection());
+        mRule.setComposingText("h", 1);
+        mRule.assertWaitForSelectActionBarStatus(false);
+        Assert.assertFalse(mRule.getSelectionPopupController().hasSelection());
     }
 
+    @Test
     @SmallTest
     @Feature({"TextInput"})
     public void testTextHandlesPreservedWithDpadNavigation() throws Throwable {
-        DOMUtils.longPressNode(this, mContentViewCore, "plain_text");
-        assertWaitForSelectActionBarStatus(true);
-        assertTrue(mContentViewCore.hasSelection());
+        DOMUtils.longPressNode(mRule.getWebContents(), "plain_text");
+        mRule.assertWaitForSelectActionBarStatus(true);
+        Assert.assertTrue(mRule.getSelectionPopupController().hasSelection());
 
-        dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN));
-        assertWaitForSelectActionBarStatus(true);
-        assertTrue(mContentViewCore.hasSelection());
+        mRule.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN));
+        mRule.assertWaitForSelectActionBarStatus(true);
+        Assert.assertTrue(mRule.getSelectionPopupController().hasSelection());
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
     public void testRestartInputWhileComposingText() throws Throwable {
-        setComposingText("abc", 1);
-        waitAndVerifyUpdateSelection(0, 3, 3, 0, 3);
-        restartInput();
+        mRule.setComposingText("abc", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 3, 3, 0, 3);
+        mRule.restartInput();
         // We don't do anything when input gets restarted. But we depend on Android's
-        // InputMethodManager and/or input methods to call finishComposingText() in setting
+        // InputMethodManager and/or input methods to call mRule.finishComposingText() in setting
         // current input connection as active or finishing the current input connection.
         Thread.sleep(1000);
-        assertEquals(1, mInputMethodManagerWrapper.getUpdateSelectionList().size());
+        Assert.assertEquals(
+                1, mRule.getInputMethodManagerWrapper().getUpdateSelectionList().size());
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
     public void testRestartInputKeepsTextAndCursor() throws Exception {
-        commitText("ab", 2);
-        restartInput();
-        assertEquals("ab", getTextBeforeCursor(10, 0));
+        mRule.commitText("ab", 2);
+        mRule.restartInput();
+        Assert.assertEquals("ab", mRule.getTextBeforeCursor(10, 0));
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
-    public void testContentEditableEvents_SetComposingText() throws Throwable {
-        focusElementAndWaitForStateUpdate("contenteditable_event");
-        waitForEventLogs("selectionchange,selectionchange");
-        clearEventLogs();
+    public void testContentEditableEvents_ComposingText() throws Throwable {
+        mRule.focusElementAndWaitForStateUpdate("contenteditable_event");
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
 
-        beginBatchEdit();
-        setComposingText("a", 1);
-        finishComposingText();
-        endBatchEdit();
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
+        mRule.setComposingText("a", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 1, 1, 0, 1);
+        mRule.waitForEventLogs(
+                "keydown(229),compositionstart(),compositionupdate(a),input(a),keyup(229),"
+                + "selectionchange");
+        mRule.clearEventLogs();
 
-        // TODO(changwan): reduce the number of selection changes
-        waitForEventLogs("keydown(229),compositionstart(),compositionupdate(a),input,keyup(229),"
-                + "compositionupdate(a),input,compositionend(a),selectionchange,selectionchange,"
-                + "selectionchange,selectionchange,selectionchange");
+        mRule.finishComposingText();
+        mRule.waitAndVerifyUpdateSelection(1, 1, 1, -1, -1);
+        mRule.waitForEventLogs("compositionend(a)");
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
-    public void testInputTextEvents_SetComposingText() throws Throwable {
-        beginBatchEdit();
-        setComposingText("a", 1);
-        finishComposingText();
-        endBatchEdit();
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
+    public void testInputTextEvents_ComposingText() throws Throwable {
+        mRule.setComposingText("a", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 1, 1, 0, 1);
+        mRule.waitForEventLogs("keydown(229),compositionstart(),compositionupdate(a),"
+                + "input(a),keyup(229),selectionchange");
+        mRule.clearEventLogs();
 
-        // TODO(changwan): reduce the number of selection changes
-        waitForEventLogs("keydown(229),compositionstart(),compositionupdate(a),"
-                + "input,keyup(229),compositionupdate(a),input,compositionend(a),selectionchange,"
-                + "selectionchange,selectionchange,selectionchange,selectionchange");
+        mRule.finishComposingText();
+        mRule.waitAndVerifyUpdateSelection(1, 1, 1, -1, -1);
+        mRule.waitForEventLogs("compositionend(a)");
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
     public void testContentEditableEvents_CommitText() throws Throwable {
-        focusElementAndWaitForStateUpdate("contenteditable_event");
-        waitForEventLogs("selectionchange,selectionchange");
-        clearEventLogs();
+        mRule.focusElementAndWaitForStateUpdate("contenteditable_event");
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
 
-        commitText("a", 1);
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
+        mRule.commitText("a", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
 
-        waitForEventLogs("keydown(229),input,keyup(229),selectionchange");
+        mRule.waitForEventLogs("keydown(229),input(a),keyup(229),selectionchange");
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
     public void testInputTextEvents_CommitText() throws Throwable {
-        commitText("a", 1);
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
+        mRule.commitText("a", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
 
-        waitForEventLogs("keydown(229),input,keyup(229),selectionchange");
+        mRule.waitForEventLogs("keydown(229),input(a),keyup(229),selectionchange");
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
     public void testContentEditableEvents_DeleteSurroundingText() throws Throwable {
-        focusElementAndWaitForStateUpdate("contenteditable_event");
-        waitForEventLogs("selectionchange,selectionchange");
-        clearEventLogs();
+        mRule.focusElementAndWaitForStateUpdate("contenteditable_event");
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
 
-        commitText("a", 1);
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
-        waitForEventLogs("keydown(229),input,keyup(229),selectionchange");
-        clearEventLogs();
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.waitForEventLogs("keydown(229),input(hello),keyup(229),selectionchange");
+        mRule.clearEventLogs();
 
-        deleteSurroundingText(1, 0);
-        waitAndVerifyUpdateSelection(1, 0, 0, -1, -1);
+        mRule.setSelection(2, 2);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
 
-        waitForEventLogs("keydown(229),input,keyup(229),selectionchange,selectionchange");
+        mRule.deleteSurroundingText(1, 1);
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
+
+        // TODO(yabinh): It should only fire 1 input and 1 selectionchange events.
+        mRule.waitForEventLogs(
+                "keydown(229),input,input,keyup(229),selectionchange,selectionchange");
     }
 
+    @Test
     @MediumTest
     @Feature({"TextInput"})
     public void testInputTextEvents_DeleteSurroundingText() throws Throwable {
-        commitText("a", 1);
-        waitAndVerifyUpdateSelection(0, 1, 1, -1, -1);
-        waitForEventLogs("keydown(229),input,keyup(229),selectionchange");
-        clearEventLogs();
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.waitForEventLogs("keydown(229),input(hello),keyup(229),selectionchange");
+        mRule.clearEventLogs();
 
-        deleteSurroundingText(1, 0);
-        waitAndVerifyUpdateSelection(1, 0, 0, -1, -1);
+        mRule.setSelection(2, 2);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
 
-        waitForEventLogs("keydown(229),input,keyup(229),selectionchange,selectionchange");
+        mRule.deleteSurroundingText(1, 1);
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
+        // TODO(yabinh): It should only fire 1 input and 1 selectionchange events.
+        mRule.waitForEventLogs(
+                "keydown(229),input,input,keyup(229),selectionchange,selectionchange");
     }
 
-    private void clearEventLogs() throws Exception {
-        final String code = "clearEventLogs()";
-        JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                getContentViewCore().getWebContents(), code);
+    @Test
+    @MediumTest
+    @Feature({"TextInput"})
+    public void testContentEditableEvents_DeleteSurroundingTextInCodePoints() throws Throwable {
+        mRule.focusElementAndWaitForStateUpdate("contenteditable_event");
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
+
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.waitForEventLogs("keydown(229),input(hello),keyup(229),selectionchange");
+        mRule.clearEventLogs();
+
+        mRule.setSelection(2, 2);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
+
+        mRule.deleteSurroundingTextInCodePoints(1, 1);
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
+        // TODO(yabinh): It should only fire 1 input and 1 selectionchange events.
+        mRule.waitForEventLogs(
+                "keydown(229),input,input,keyup(229),selectionchange,selectionchange");
     }
 
-    private void waitForEventLogs(String expectedLogs) throws Exception {
-        final String code = "getEventLogs()";
-        final String sanitizedExpectedLogs = "\"" + expectedLogs + "\"";
-        if (usingReplicaInputConnection()) {
-            // When using replica input connection, JavaScript update will lands later.
-            CriteriaHelper.pollInstrumentationThread(new Criteria() {
-                @Override
-                public boolean isSatisfied() {
-                    try {
-                        String eventLogs = JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                                getContentViewCore().getWebContents(), code);
-                        updateFailureReason(eventLogs);
-                        return sanitizedExpectedLogs.equals(eventLogs);
-                    } catch (InterruptedException | TimeoutException e) {
-                        updateFailureReason(e.getMessage());
-                        return false;
-                    }
-                }
-            });
-        } else {
-            assertEquals(sanitizedExpectedLogs, JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                    getContentViewCore().getWebContents(), code));
-        }
+    @Test
+    @MediumTest
+    @Feature({"TextInput"})
+    public void testInputTextEvents_DeleteSurroundingTextInCodePoints() throws Throwable {
+        mRule.commitText("hello", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 5, 5, -1, -1);
+        mRule.waitForEventLogs("keydown(229),input(hello),keyup(229),selectionchange");
+        mRule.clearEventLogs();
+
+        mRule.setSelection(2, 2);
+        mRule.waitAndVerifyUpdateSelection(1, 2, 2, -1, -1);
+        mRule.waitForEventLogs("selectionchange");
+        mRule.clearEventLogs();
+
+        mRule.deleteSurroundingTextInCodePoints(1, 1);
+        mRule.waitAndVerifyUpdateSelection(2, 1, 1, -1, -1);
+        // TODO(yabinh): It should only fire 1 input and 1 selectionchange events.
+        mRule.waitForEventLogs(
+                "keydown(229),input,input,keyup(229),selectionchange,selectionchange");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"TextInput"})
+    public void testGetCursorCapsMode() throws Throwable {
+        mRule.focusElementAndWaitForStateUpdate("contenteditable_event");
+        mRule.commitText("Hello World", 1);
+        mRule.waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
+        Assert.assertEquals(0, mRule.getCursorCapsMode(InputType.TYPE_TEXT_FLAG_CAP_WORDS));
+        mRule.setSelection(6, 6);
+        mRule.waitAndVerifyUpdateSelection(1, 6, 6, -1, -1);
+        Assert.assertEquals(InputType.TYPE_TEXT_FLAG_CAP_WORDS,
+                mRule.getCursorCapsMode(InputType.TYPE_TEXT_FLAG_CAP_WORDS));
+        mRule.commitText("\n", 1);
+        Assert.assertEquals(InputType.TYPE_TEXT_FLAG_CAP_WORDS,
+                mRule.getCursorCapsMode(InputType.TYPE_TEXT_FLAG_CAP_WORDS));
     }
 
     // https://crbug.com/604675
+    @Test
     @MediumTest
     @Feature({"TextInput"})
-    @CommandLineFlags.Add("enable-features=ImeThread")
     public void testAlertInKeyUpListenerDoesNotCrash() throws Exception {
         // Call 'alert()' when 'keyup' event occurs. Since we are in contentshell,
         // this does not actually pops up the alert window.
@@ -1270,21 +1549,20 @@ public class ImeTest extends ContentShellTestBase {
                 + "var editor = document.getElementById('input_text');"
                 + "editor.addEventListener('keyup', function(e) { alert('keyup') });"
                 + "})();";
-        JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                getContentViewCore().getWebContents(), code);
-        setComposingText("ab", 1);
-        finishComposingText();
-        assertEquals("ab", getTextBeforeCursor(10, 0));
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(mRule.getWebContents(), code);
+        mRule.setComposingText("ab", 1);
+        mRule.finishComposingText();
+        Assert.assertEquals("ab", mRule.getTextBeforeCursor(10, 0));
     }
 
     // https://crbug.com/616334
+    @Test
     @SmallTest
     @Feature({"TextInput"})
-    @CommandLineFlags.Add("enable-features=ImeThread")
     public void testCastToBaseInputConnection() throws Exception {
-        commitText("a", 1);
-        final BaseInputConnection baseInputConnection = (BaseInputConnection) mConnection;
-        assertEquals("a", runBlockingOnImeThread(new Callable<CharSequence>() {
+        mRule.commitText("a", 1);
+        final BaseInputConnection baseInputConnection = (BaseInputConnection) mRule.getConnection();
+        Assert.assertEquals("a", mRule.runBlockingOnImeThread(new Callable<CharSequence>() {
             @Override
             public CharSequence call() {
                 return baseInputConnection.getTextBeforeCursor(10, 0);
@@ -1294,11 +1572,12 @@ public class ImeTest extends ContentShellTestBase {
 
     // Tests that the method call order is kept.
     // See crbug.com/601707 for details.
+    @Test
     @MediumTest
     @Feature({"TextInput"})
     public void testSetSelectionCommitTextOrder() throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        runBlockingOnImeThread(new Callable<Void>() {
+        final ChromiumBaseInputConnection connection = mRule.getConnection();
+        mRule.runBlockingOnImeThread(new Callable<Void>() {
             @Override
             public Void call() {
                 connection.beginBatchEdit();
@@ -1313,389 +1592,145 @@ public class ImeTest extends ContentShellTestBase {
                 return null;
             }
         });
-        waitAndVerifyUpdateSelection(0, 7, 7, -1, -1);
+        mRule.waitAndVerifyUpdateSelection(0, 7, 7, -1, -1);
     }
 
-    private void performGo(TestCallbackHelperContainer testCallbackHelperContainer)
-            throws Throwable {
-        final InputConnection inputConnection = mConnection;
-        final Callable<Void> callable = new Callable<Void>() {
+    // crbug.com/643477
+    @Test
+    @MediumTest
+    @Feature({"TextInput"})
+    public void testUiThreadAccess() throws Exception {
+        final ChromiumBaseInputConnection connection = mRule.getConnection();
+        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
-            public Void call() throws Exception {
-                inputConnection.performEditorAction(EditorInfo.IME_ACTION_GO);
-                return null;
+            public void run() {
+                // We allow UI thread access for most functions, except for
+                // beginBatchEdit(), endBatchEdit(), and get* methods().
+                Assert.assertTrue(connection.commitText("a", 1));
+                Assert.assertTrue(connection.setComposingText("b", 1));
+                Assert.assertTrue(connection.setComposingText("bc", 1));
+                Assert.assertTrue(connection.finishComposingText());
             }
-        };
-
-        handleBlockingCallbackAction(
-                testCallbackHelperContainer.getOnPageFinishedHelper(),
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            runBlockingOnImeThread(callable);
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                            fail();
-                        }
-                    }
-                });
+        });
+        Assert.assertEquals("abc", mRule.runBlockingOnImeThread(new Callable<CharSequence>() {
+            @Override
+            public CharSequence call() throws Exception {
+                return connection.getTextBeforeCursor(5, 0);
+            }
+        }));
     }
 
-    private void assertWaitForKeyboardStatus(final boolean show) throws InterruptedException {
-        CriteriaHelper.pollUiThread(new Criteria() {
+    @Test
+    @MediumTest
+    @Feature({"TextInput"})
+    public void testBackgroundAndUnderlineSpans() throws Throwable {
+        mRule.fullyLoadUrl("data:text/html, <div contenteditable id=\"div\" />");
+
+        WebContents webContents = mRule.getWebContents();
+        DOMUtils.focusNode(webContents, "div");
+
+        SpannableString textToCommit = new SpannableString("hello world");
+        BackgroundColorSpan backgroundColorSpan = new BackgroundColorSpan(Color.MAGENTA);
+        UnderlineSpan underlineSpan = new UnderlineSpan();
+        textToCommit.setSpan(backgroundColorSpan, 0, 5, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        textToCommit.setSpan(underlineSpan, 6, 11, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        mRule.commitText(textToCommit, 1);
+
+        // Wait for renderer to acknowledge commitText(). ImeActivityTestRule.commitText() blocks
+        // and waits for the IME thread to finish, but the communication between the IME thread and
+        // the renderer is asynchronous, so if we try to run JavaScript right away, the text won't
+        // necessarily have been committed yet.
+        CriteriaHelper.pollInstrumentationThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                // We do not check the other way around: in some cases we need to keep
-                // input connection even when the last known status is 'hidden'.
-                if (show && getInputConnection() == null) {
-                    updateFailureReason("input connection should not be null.");
+                try {
+                    return DOMUtils.getNodeContents(webContents, "div").equals("hello world");
+                } catch (InterruptedException | TimeoutException e) {
                     return false;
                 }
-                updateFailureReason("expected show: " + show);
-                return show == mInputMethodManagerWrapper.isShowWithoutHideOutstanding();
             }
         });
+
+        Assert.assertEquals("2",
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                        "internals.markerCountForNode("
+                                + "  document.getElementById('div').firstChild, "
+                                + "  'composition')"));
+
+        // Colors come back as ARGB.
+        Assert.assertEquals(0xFFFF00FFL,
+                (long) Double.parseDouble(
+                        JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                                "internals.markerBackgroundColorForNode("
+                                        + "  document.getElementById('div').firstChild, "
+                                        + "  'composition', 0)")));
+
+        Assert.assertEquals(0x0000000L,
+                (long) Double.parseDouble(
+                        JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                                "internals.markerBackgroundColorForNode("
+                                        + "  document.getElementById('div').firstChild, "
+                                        + "  'composition', 1)")));
+
+        Assert.assertEquals(0x00000000L,
+                (long) Double.parseDouble(
+                        JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                                "internals.markerUnderlineColorForNode("
+                                        + "  document.getElementById('div').firstChild, "
+                                        + "  'composition', 0)")));
+
+        Assert.assertEquals(0x00000000L,
+                (long) Double.parseDouble(
+                        JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                                "internals.markerUnderlineColorForNode("
+                                        + "  document.getElementById('div').firstChild, "
+                                        + "  'composition', 1)")));
+
+        Assert.assertEquals("0",
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                        "internals.markerRangeForNode("
+                                + "  document.getElementById('div').firstChild, "
+                                + "  'composition', 0).startOffset"));
+
+        Assert.assertEquals("5",
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                        "internals.markerRangeForNode("
+                                + "  document.getElementById('div').firstChild, "
+                                + "  'composition', 0).endOffset"));
+
+        Assert.assertEquals("6",
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                        "internals.markerRangeForNode("
+                                + "  document.getElementById('div').firstChild, "
+                                + "  'composition', 1).startOffset"));
+
+        Assert.assertEquals("11",
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(webContents,
+                        "internals.markerRangeForNode("
+                                + "  document.getElementById('div').firstChild, "
+                                + "  'composition', 1).endOffset"));
     }
 
-    private void assertWaitForSelectActionBarStatus(
-            final boolean show) throws InterruptedException {
-        CriteriaHelper.pollUiThread(Criteria.equals(show, new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return mContentViewCore.isSelectActionBarShowing();
-            }
-        }));
-    }
+    @Test
+    @SmallTest
+    @Feature({"TextInput"})
+    public void testAutocorrectAttribute() throws Exception {
+        // Autocorrect should be on for a text field that doesn't have an autocorrect attribute.
+        mRule.focusElement("input_text");
+        Assert.assertEquals(EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT,
+                mRule.getConnectionFactory().getOutAttrs().inputType
+                        & EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT);
 
-    private void waitAndVerifyUpdateSelection(final int index, final int selectionStart,
-            final int selectionEnd, final int compositionStart, final int compositionEnd)
-            throws InterruptedException {
-        final List<Pair<Range, Range>> states = mInputMethodManagerWrapper.getUpdateSelectionList();
-        CriteriaHelper.pollUiThread(new Criteria() {
-            @Override
-            public boolean isSatisfied() {
-                return states.size() > index;
-            }
-        });
-        Pair<Range, Range> selection = states.get(index);
-        assertEquals(selectionStart, selection.first.start());
-        assertEquals(selectionEnd, selection.first.end());
-        assertEquals(compositionStart, selection.second.start());
-        assertEquals(compositionEnd, selection.second.end());
-    }
+        // Autocorrect should be on for a text field that has autocorrect="on" set.
+        mRule.focusElement("autocorrect_on");
+        Assert.assertEquals(EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT,
+                mRule.getConnectionFactory().getOutAttrs().inputType
+                        & EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT);
 
-    private void resetUpdateSelectionList() {
-        mInputMethodManagerWrapper.getUpdateSelectionList().clear();
-    }
-
-    private void assertClipboardContents(final Activity activity, final String expectedContents)
-            throws InterruptedException {
-        CriteriaHelper.pollUiThread(new Criteria() {
-            @Override
-            public boolean isSatisfied() {
-                ClipboardManager clipboardManager =
-                        (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-                ClipData clip = clipboardManager.getPrimaryClip();
-                return clip != null && clip.getItemCount() == 1
-                        && TextUtils.equals(clip.getItemAt(0).getText(), expectedContents);
-            }
-        });
-    }
-
-    private ImeAdapter getImeAdapter() {
-        return mContentViewCore.getImeAdapterForTest();
-    }
-
-    private ChromiumBaseInputConnection getInputConnection() {
-        try {
-            return ThreadUtils.runOnUiThreadBlocking(new Callable<ChromiumBaseInputConnection>() {
-                @Override
-                public ChromiumBaseInputConnection call() {
-                    return mContentViewCore.getImeAdapterForTest().getInputConnectionForTest();
-                }
-            });
-        } catch (ExecutionException e) {
-            e.printStackTrace();
-            fail();
-            return null;
-        }
-    }
-
-    private void restartInput() {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                mImeAdapter.restartInput();
-            }
-        });
-    }
-
-    private void copy() {
-        final WebContents webContents = mWebContents;
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                webContents.copy();
-            }
-        });
-    }
-
-    private void cut() {
-        final WebContents webContents = mWebContents;
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                webContents.cut();
-            }
-        });
-    }
-
-    private void paste() {
-        final WebContents webContents = mWebContents;
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                webContents.paste();
-            }
-        });
-    }
-
-    private void selectAll() {
-        final WebContents webContents = mWebContents;
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                webContents.selectAll();
-            }
-        });
-    }
-
-    private void unselect() {
-        final WebContents webContents = mWebContents;
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                webContents.unselect();
-            }
-        });
-    }
-
-    private <T> T runBlockingOnImeThread(Callable<T> c) throws Exception {
-        return ImeTestUtils.runBlockingOnHandler(mConnectionFactory.getHandler(), c);
-    }
-
-    private boolean beginBatchEdit() throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.beginBatchEdit();
-            }
-        });
-    }
-
-    private boolean endBatchEdit() throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.endBatchEdit();
-            }
-        });
-    }
-
-    private boolean commitText(final CharSequence text, final int newCursorPosition)
-            throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.commitText(text, newCursorPosition);
-            }
-        });
-    }
-
-    private boolean setSelection(final int start, final int end) throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.setSelection(start, end);
-            }
-        });
-    }
-
-    private boolean setComposingRegion(final int start, final int end) throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.setComposingRegion(start, end);
-            }
-        });
-    }
-
-    protected boolean setComposingText(final CharSequence text, final int newCursorPosition)
-            throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.setComposingText(text, newCursorPosition);
-            }
-        });
-    }
-
-    private boolean finishComposingText() throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.finishComposingText();
-            }
-        });
-    }
-
-    private boolean deleteSurroundingText(final int before, final int after) throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() {
-                return connection.deleteSurroundingText(before, after);
-            }
-        });
-    }
-
-    private CharSequence getTextBeforeCursor(final int length, final int flags) throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<CharSequence>() {
-            @Override
-            public CharSequence call() {
-                return connection.getTextBeforeCursor(length, flags);
-            }
-        });
-    }
-
-    private CharSequence getSelectedText(final int flags) throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<CharSequence>() {
-            @Override
-            public CharSequence call() {
-                return connection.getSelectedText(flags);
-            }
-        });
-    }
-
-    private CharSequence getTextAfterCursor(final int length, final int flags) throws Exception {
-        final ChromiumBaseInputConnection connection = mConnection;
-        return runBlockingOnImeThread(new Callable<CharSequence>() {
-            @Override
-            public CharSequence call() {
-                return connection.getTextAfterCursor(length, flags);
-            }
-        });
-    }
-
-    private void dispatchKeyEvent(final KeyEvent event) {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                mImeAdapter.dispatchKeyEvent(event);
-            }
-        });
-    }
-
-    /**
-     * Focus element, wait for a single state update, reset state update list.
-     * @param id ID of the element to focus.
-     */
-    private void focusElementAndWaitForStateUpdate(String id)
-            throws InterruptedException, TimeoutException {
-        focusElement(id);
-        waitAndVerifyUpdateSelection(0, 0, 0, -1, -1);
-        resetUpdateSelectionList();
-    }
-
-    private void focusElement(final String id) throws InterruptedException, TimeoutException {
-        focusElement(id, true);
-    }
-
-    private void focusElement(final String id, boolean shouldShowKeyboard)
-            throws InterruptedException, TimeoutException {
-        DOMUtils.focusNode(mWebContents, id);
-        assertWaitForKeyboardStatus(shouldShowKeyboard);
-        CriteriaHelper.pollInstrumentationThread(Criteria.equals(id, new Callable<String>() {
-            @Override
-            public String call() throws Exception {
-                return DOMUtils.getFocusedNode(mWebContents);
-            }
-        }));
-        // When we focus another element, the connection may be recreated.
-        mConnection = getInputConnection();
-    }
-
-    private boolean usingReplicaInputConnection() {
-        return mConnectionFactory.getHandler().getLooper() == Looper.getMainLooper();
-    }
-
-    private static class TestInputConnectionFactory implements ChromiumBaseInputConnection.Factory {
-        private final ChromiumBaseInputConnection.Factory mFactory;
-
-        private final List<Integer> mTextInputTypeList = new ArrayList<>();
-        private EditorInfo mOutAttrs;
-
-        public TestInputConnectionFactory(ChromiumBaseInputConnection.Factory factory) {
-            mFactory = factory;
-        }
-
-        @Override
-        public ChromiumBaseInputConnection initializeAndGet(View view, ImeAdapter imeAdapter,
-                int inputType, int inputFlags, int selectionStart, int selectionEnd,
-                EditorInfo outAttrs) {
-            mTextInputTypeList.add(inputType);
-            mOutAttrs = outAttrs;
-            return mFactory.initializeAndGet(view, imeAdapter, inputType, inputFlags,
-                    selectionStart, selectionEnd, outAttrs);
-        }
-
-        @Override
-        public Handler getHandler() {
-            return mFactory.getHandler();
-        }
-
-        public Integer[] getTextInputTypeHistory() {
-            Integer[] result = new Integer[mTextInputTypeList.size()];
-            mTextInputTypeList.toArray(result);
-            return result;
-        }
-
-        public void clearTextInputTypeHistory() {
-            mTextInputTypeList.clear();
-        }
-
-        public EditorInfo getOutAttrs() {
-            return mOutAttrs;
-        }
-
-        @Override
-        public void onWindowFocusChanged(boolean gainFocus) {
-            mFactory.onWindowFocusChanged(gainFocus);
-        }
-
-        @Override
-        public void onViewFocusChanged(boolean gainFocus) {
-            mFactory.onViewFocusChanged(gainFocus);
-        }
-
-        @Override
-        public void onViewAttachedToWindow() {
-            mFactory.onViewAttachedToWindow();
-        }
-
-        @Override
-        public void onViewDetachedFromWindow() {
-            mFactory.onViewDetachedFromWindow();
-        }
+        // Autocorrect should be off for a text field that has autocorrect="off" set.
+        mRule.focusElement("autocorrect_off");
+        Assert.assertEquals(0,
+                mRule.getConnectionFactory().getOutAttrs().inputType
+                        & EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT);
     }
 }

@@ -5,24 +5,31 @@
 #ifndef CC_TREES_LAYER_TREE_HOST_SINGLE_THREAD_CLIENT_H_
 #define CC_TREES_LAYER_TREE_HOST_SINGLE_THREAD_CLIENT_H_
 
+#include "base/time/time.h"
+
 namespace cc {
 
 class LayerTreeHostSingleThreadClient {
  public:
-  // Request that the client schedule a composite.
+  // Request that the client schedule a composite. For tests using single thread
+  // without a scheduler.
   virtual void RequestScheduleComposite() {}
-  // Request that the client schedule a composite now, and calculate appropriate
-  // delay for potential future frame.
-  virtual void RequestScheduleAnimation() {}
 
-  // Called whenever the compositor posts a SwapBuffers (either full or
-  // partial). After DidPostSwapBuffers(), exactly one of
-  // DidCompleteSwapBuffers() or DidAbortSwapBuffers() will be called, thus
-  // these functions can be used to keep track of pending swap buffers calls for
-  // rate limiting.
-  virtual void DidPostSwapBuffers() = 0;
-  virtual void DidCompleteSwapBuffers() = 0;
-  virtual void DidAbortSwapBuffers() = 0;
+  // Called whenever the begin frame interval changes. This interval can be used
+  // for animations.
+  virtual void FrameIntervalUpdated(base::TimeDelta interval) {}
+
+  // Called whenever the compositor submits a CompositorFrame. Afterward,
+  // LayerTreeHostClient::DidReceiveCompositorFrameAck() will be called once the
+  // display compositor/ finishes processing the frame. So these functions can
+  // be used to keep track of pending submitted CompositorFrames for rate
+  // limiting.
+  virtual void DidSubmitCompositorFrame() = 0;
+
+  // Called when the active LayerTreeFrameSink is lost and needs to be
+  // replaced. This allows the embedder to schedule a composite which will
+  // run the machinery to acquire a new LayerTreeFrameSink.
+  virtual void DidLoseLayerTreeFrameSink() = 0;
 
  protected:
   virtual ~LayerTreeHostSingleThreadClient() {}

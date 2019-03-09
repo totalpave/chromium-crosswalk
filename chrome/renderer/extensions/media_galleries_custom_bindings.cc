@@ -6,23 +6,29 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "extensions/renderer/script_context.h"
 #include "storage/common/fileapi/file_system_util.h"
-#include "third_party/WebKit/public/platform/URLConversion.h"
-#include "third_party/WebKit/public/web/WebDOMFileSystem.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "third_party/blink/public/platform/url_conversion.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_dom_file_system.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 #include "v8/include/v8.h"
 
 namespace extensions {
 
 MediaGalleriesCustomBindings::MediaGalleriesCustomBindings(
     ScriptContext* context)
-    : ObjectBackedNativeHandler(context) {
-  RouteFunction(
+    : ObjectBackedNativeHandler(context) {}
+
+void MediaGalleriesCustomBindings::AddRoutes() {
+  RouteHandlerFunction(
       "GetMediaFileSystemObject", "mediaGalleries",
-      base::Bind(&MediaGalleriesCustomBindings::GetMediaFileSystemObject,
-                 base::Unretained(this)));
+      base::BindRepeating(
+          &MediaGalleriesCustomBindings::GetMediaFileSystemObject,
+          base::Unretained(this)));
 }
 
 // FileSystemObject GetMediaFileSystem(string file_system_url): construct
@@ -32,13 +38,13 @@ void MediaGalleriesCustomBindings::GetMediaFileSystemObject(
   CHECK_EQ(1, args.Length());
   CHECK(args[0]->IsString());
 
-  std::string fs_mount(*v8::String::Utf8Value(args[0]));
+  std::string fs_mount(*v8::String::Utf8Value(args.GetIsolate(), args[0]));
   CHECK(!fs_mount.empty());
 
   blink::WebLocalFrame* webframe =
-      blink::WebLocalFrame::frameForCurrentContext();
-  const GURL origin = blink::WebStringToGURL(
-      webframe->document().getSecurityOrigin().toString());
+      blink::WebLocalFrame::FrameForCurrentContext();
+  const GURL origin =
+      url::Origin(webframe->GetDocument().GetSecurityOrigin()).GetURL();
   std::string fs_name =
       storage::GetFileSystemName(origin, storage::kFileSystemTypeExternal);
   fs_name.append("_");
@@ -46,11 +52,10 @@ void MediaGalleriesCustomBindings::GetMediaFileSystemObject(
   const GURL root_url(
       storage::GetExternalFileSystemRootURIString(origin, fs_mount));
   args.GetReturnValue().Set(
-      blink::WebDOMFileSystem::create(webframe,
-                                      blink::WebFileSystemTypeExternal,
-                                      blink::WebString::fromUTF8(fs_name),
-                                      root_url)
-          .toV8Value(context()->v8_context()->Global(), args.GetIsolate()));
+      blink::WebDOMFileSystem::Create(
+          webframe, blink::kWebFileSystemTypeExternal,
+          blink::WebString::FromUTF8(fs_name), root_url)
+          .ToV8Value(context()->v8_context()->Global(), args.GetIsolate()));
 }
 
 }  // namespace extensions

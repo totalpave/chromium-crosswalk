@@ -3,8 +3,8 @@
 // found in the LICENSE file.
 
 #include "base/cpu.h"
+#include "base/stl_util.h"
 #include "build/build_config.h"
-
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if _MSC_VER >= 1700
@@ -57,6 +57,11 @@ TEST(CPU, RunExtendedInstructions) {
     __asm__ __volatile__("crc32 %%eax, %%eax\n" : : : "eax");
   }
 
+  if (cpu.has_popcnt()) {
+    // Execute a POPCNT instruction.
+    __asm__ __volatile__("popcnt %%eax, %%eax\n" : : : "eax");
+  }
+
   if (cpu.has_avx()) {
     // Execute an AVX instruction.
     __asm__ __volatile__("vzeroupper\n" : : : "xmm0");
@@ -100,6 +105,11 @@ TEST(CPU, RunExtendedInstructions) {
     __asm crc32 eax, eax;
   }
 
+  if (cpu.has_popcnt()) {
+    // Execute a POPCNT instruction.
+    __asm popcnt eax, eax;
+  }
+
 // Visual C 2012 required for AVX.
 #if _MSC_VER >= 1700
   if (cpu.has_avx()) {
@@ -114,4 +124,11 @@ TEST(CPU, RunExtendedInstructions) {
 #endif  // _MSC_VER >= 1700
 #endif  // defined(COMPILER_GCC)
 #endif  // defined(ARCH_CPU_X86_FAMILY)
+}
+
+// For https://crbug.com/249713
+TEST(CPU, BrandAndVendorContainsNoNUL) {
+  base::CPU cpu;
+  EXPECT_FALSE(base::ContainsValue(cpu.cpu_brand(), '\0'));
+  EXPECT_FALSE(base::ContainsValue(cpu.vendor_name(), '\0'));
 }

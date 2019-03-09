@@ -9,12 +9,11 @@
 
 #include <map>
 #include <memory>
-#include <queue>
 
+#include "base/containers/queue.h"
 #include "base/file_descriptor_posix.h"
 #include "base/files/scoped_file.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/display/types/native_display_delegate.h"
 #include "ui/events/ozone/device/device_event.h"
@@ -28,8 +27,8 @@ class DeviceManager;
 class DrmDeviceHandle;
 class DrmDisplayHost;
 class DrmDisplayHostManager;
-class DrmGpuPlatformSupportHost;
 class DrmNativeDisplayDelegate;
+class DrmOverlayManagerHost;
 class GpuThreadAdapter;
 
 struct DisplaySnapshot_Params;
@@ -41,6 +40,7 @@ class DrmDisplayHostManager : public DeviceEventObserver, GpuThreadObserver {
  public:
   DrmDisplayHostManager(GpuThreadAdapter* proxy,
                         DeviceManager* device_manager,
+                        DrmOverlayManagerHost* overlay_manager,
                         InputControllerEvdev* input_controller);
   ~DrmDisplayHostManager() override;
 
@@ -49,14 +49,15 @@ class DrmDisplayHostManager : public DeviceEventObserver, GpuThreadObserver {
   // External API.
   void AddDelegate(DrmNativeDisplayDelegate* delegate);
   void RemoveDelegate(DrmNativeDisplayDelegate* delegate);
-  void TakeDisplayControl(const DisplayControlCallback& callback);
-  void RelinquishDisplayControl(const DisplayControlCallback& callback);
-  void UpdateDisplays(const GetDisplaysCallback& callback);
+  void TakeDisplayControl(display::DisplayControlCallback callback);
+  void RelinquishDisplayControl(display::DisplayControlCallback callback);
+  void UpdateDisplays(display::GetDisplaysCallback callback);
 
   // DeviceEventObserver overrides:
   void OnDeviceEvent(const DeviceEvent& event) override;
 
   // GpuThreadObserver overrides:
+  void OnGpuProcessLaunched() override;
   void OnGpuThreadReady() override;
   void OnGpuThreadRetired() override;
 
@@ -65,7 +66,9 @@ class DrmDisplayHostManager : public DeviceEventObserver, GpuThreadObserver {
   void GpuHasUpdatedNativeDisplays(
       const std::vector<DisplaySnapshot_Params>& displays);
   void GpuConfiguredDisplay(int64_t display_id, bool status);
-  void GpuReceivedHDCPState(int64_t display_id, bool status, HDCPState state);
+  void GpuReceivedHDCPState(int64_t display_id,
+                            bool status,
+                            display::HDCPState state);
   void GpuUpdatedHDCPState(int64_t display_id, bool status);
   void GpuTookDisplayControl(bool status);
   void GpuRelinquishedDisplayControl(bool status);
@@ -91,20 +94,22 @@ class DrmDisplayHostManager : public DeviceEventObserver, GpuThreadObserver {
   void OnUpdateGraphicsDevice();
   void OnRemoveGraphicsDevice(const base::FilePath& path);
 
-  void RunUpdateDisplaysCallback(const GetDisplaysCallback& callback) const;
+  void RunUpdateDisplaysCallback(display::GetDisplaysCallback callback) const;
 
   void NotifyDisplayDelegate() const;
 
-  GpuThreadAdapter* proxy_;                 // Not owned.
-  DeviceManager* device_manager_;           // Not owned.
-  InputControllerEvdev* input_controller_;  // Not owned.
+  GpuThreadAdapter* const proxy_;                 // Not owned.
+  DeviceManager* const device_manager_;           // Not owned.
+  // TODO(crbug.com/936425): Remove after VizDisplayCompositor feature launches.
+  DrmOverlayManagerHost* const overlay_manager_;  // Not owned.
+  InputControllerEvdev* const input_controller_;  // Not owned.
 
   DrmNativeDisplayDelegate* delegate_ = nullptr;  // Not owned.
 
   // File path for the primary graphics card which is opened by default in the
   // GPU process. We'll avoid opening this in hotplug events since it will race
   // with the GPU process trying to open it and aquire DRM master.
-  base::FilePath primary_graphics_card_path_;
+  const base::FilePath primary_graphics_card_path_;
 
   // Keeps track if there is a dummy display. This happens on initialization
   // when there is no connection to the GPU to update the displays.
@@ -112,18 +117,18 @@ class DrmDisplayHostManager : public DeviceEventObserver, GpuThreadObserver {
 
   std::vector<std::unique_ptr<DrmDisplayHost>> displays_;
 
-  GetDisplaysCallback get_displays_callback_;
+  display::GetDisplaysCallback get_displays_callback_;
 
   bool display_externally_controlled_ = false;
   bool display_control_change_pending_ = false;
-  DisplayControlCallback take_display_control_callback_;
-  DisplayControlCallback relinquish_display_control_callback_;
+  display::DisplayControlCallback take_display_control_callback_;
+  display::DisplayControlCallback relinquish_display_control_callback_;
 
   // Used to serialize display event processing. This is done since
   // opening/closing DRM devices cannot be done on the UI thread and are handled
   // on a worker thread. Thus, we need to queue events in order to process them
   // in the correct order.
-  std::queue<DisplayEvent> event_queue_;
+  base::queue<DisplayEvent> event_queue_;
 
   // True if a display event is currently being processed on a worker thread.
   bool task_pending_ = false;

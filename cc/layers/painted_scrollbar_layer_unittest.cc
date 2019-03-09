@@ -4,6 +4,7 @@
 
 #include "cc/layers/painted_scrollbar_layer.h"
 
+#include "cc/animation/animation_host.h"
 #include "cc/test/fake_layer_tree_host.h"
 #include "cc/test/fake_layer_tree_host_client.h"
 #include "cc/test/fake_scrollbar.h"
@@ -21,32 +22,28 @@ class MockScrollbar : public FakeScrollbar {
  public:
   MockScrollbar() : FakeScrollbar(true, true, true) {}
   MOCK_METHOD3(PaintPart,
-               void(SkCanvas* canvas,
+               void(PaintCanvas* canvas,
                     ScrollbarPart part,
                     const gfx::Rect& content_rect));
 };
 
 TEST(PaintedScrollbarLayerTest, NeedsPaint) {
-  FakeLayerTreeHostClient fake_client_(FakeLayerTreeHostClient::DIRECT_3D);
+  FakeLayerTreeHostClient fake_client_;
   TestTaskGraphRunner task_graph_runner_;
-  std::unique_ptr<FakeLayerTreeHost> layer_tree_host_;
 
-  layer_tree_host_ =
-      FakeLayerTreeHost::Create(&fake_client_, &task_graph_runner_);
-  RendererCapabilities renderer_capabilities;
-  renderer_capabilities.max_texture_size = 2048;
-  layer_tree_host_->set_renderer_capabilities(renderer_capabilities);
+  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
+  auto layer_tree_host = FakeLayerTreeHost::Create(
+      &fake_client_, &task_graph_runner_, animation_host.get());
 
   MockScrollbar* scrollbar = new MockScrollbar();
   scoped_refptr<PaintedScrollbarLayer> scrollbar_layer =
-      PaintedScrollbarLayer::Create(std::unique_ptr<Scrollbar>(scrollbar), 1);
+      PaintedScrollbarLayer::Create(std::unique_ptr<Scrollbar>(scrollbar));
 
   scrollbar_layer->SetIsDrawable(true);
   scrollbar_layer->SetBounds(gfx::Size(100, 100));
 
-  layer_tree_host_->SetRootLayer(scrollbar_layer);
-  EXPECT_EQ(scrollbar_layer->layer_tree_host(), layer_tree_host_.get());
-  scrollbar_layer->SavePaintProperties();
+  layer_tree_host->SetRootLayer(scrollbar_layer);
+  EXPECT_EQ(scrollbar_layer->layer_tree_host(), layer_tree_host.get());
 
   // Request no paint, but expect them to be painted because they have not
   // yet been initialized.

@@ -7,7 +7,8 @@
 
 #include <string>
 
-#include "base/callback.h"
+#include "base/callback_forward.h"
+#include "base/values.h"
 
 class PrefRegistrySimple;
 
@@ -48,7 +49,7 @@ class StartupUtils {
   static bool IsDeviceRegistered();
 
   // Marks device registered. i.e. second part of OOBE is completed.
-  static void MarkDeviceRegistered(const base::Closure& done_callback);
+  static void MarkDeviceRegistered(base::OnceClosure done_callback);
 
   // Mark a device as requiring enrollment recovery.
   static void MarkEnrollmentRecoveryRequired();
@@ -58,9 +59,6 @@ class StartupUtils {
 
   // Sets initial locale in local settings.
   static void SetInitialLocale(const std::string& locale);
-
-  // Returns true if webview based signin flow has been activated.
-  static bool IsWebviewSigninEnabled();
 
   // Registers OOBE preferences.
   static void RegisterPrefs(PrefRegistrySimple* registry);

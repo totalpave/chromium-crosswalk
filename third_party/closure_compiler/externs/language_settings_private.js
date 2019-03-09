@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2018 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -17,16 +17,25 @@
 chrome.languageSettingsPrivate = {};
 
 /**
+ * @enum {string}
+ */
+chrome.languageSettingsPrivate.MoveType = {
+  TOP: 'TOP',
+  UP: 'UP',
+  DOWN: 'DOWN',
+  UNKNOWN: 'UNKNOWN',
+};
+
+/**
  * @typedef {{
  *   code: string,
  *   displayName: string,
  *   nativeDisplayName: string,
- *   displayNameRTL: (boolean|undefined),
  *   supportsUI: (boolean|undefined),
  *   supportsSpellcheck: (boolean|undefined),
- *   supportsTranslate: (boolean|undefined)
+ *   supportsTranslate: (boolean|undefined),
+ *   isProhibitedLanguage: (boolean|undefined)
  * }}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#type-Language
  */
 chrome.languageSettingsPrivate.Language;
 
@@ -37,7 +46,6 @@ chrome.languageSettingsPrivate.Language;
  *   isDownloading: (boolean|undefined),
  *   downloadFailed: (boolean|undefined)
  * }}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#type-SpellcheckDictionaryStatus
  */
 chrome.languageSettingsPrivate.SpellcheckDictionaryStatus;
 
@@ -47,9 +55,9 @@ chrome.languageSettingsPrivate.SpellcheckDictionaryStatus;
  *   displayName: string,
  *   languageCodes: !Array<string>,
  *   enabled: (boolean|undefined),
- *   hasOptionsPage: (boolean|undefined)
+ *   hasOptionsPage: (boolean|undefined),
+ *   isProhibitedByPolicy: (boolean|undefined)
  * }}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#type-InputMethod
  */
 chrome.languageSettingsPrivate.InputMethod;
 
@@ -58,64 +66,78 @@ chrome.languageSettingsPrivate.InputMethod;
  *   componentExtensionImes: !Array<!chrome.languageSettingsPrivate.InputMethod>,
  *   thirdPartyExtensionImes: !Array<!chrome.languageSettingsPrivate.InputMethod>
  * }}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#type-InputMethodLists
  */
 chrome.languageSettingsPrivate.InputMethodLists;
 
 /**
  * Gets languages available for translate, spell checking, input and locale.
- * @param {function(!Array<!chrome.languageSettingsPrivate.Language>):void} callback
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-getLanguageList
+ * @param {function(!Array<!chrome.languageSettingsPrivate.Language>):void}
+ *     callback
  */
 chrome.languageSettingsPrivate.getLanguageList = function(callback) {};
 
 /**
- * Sets the accepted languages, used to decide which languages to translate,
- * generate the Accept-Language header, etc.
- * @param {!Array<string>} languageCodes
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-setLanguageList
+ * Enables a language, adding it to the Accept-Language list (used to decide
+ * which languages to translate, generate the Accept-Language header, etc.).
+ * @param {string} languageCode
  */
-chrome.languageSettingsPrivate.setLanguageList = function(languageCodes) {};
+chrome.languageSettingsPrivate.enableLanguage = function(languageCode) {};
+
+/**
+ * Disables a language, removing it from the Accept-Language list.
+ * @param {string} languageCode
+ */
+chrome.languageSettingsPrivate.disableLanguage = function(languageCode) {};
+
+/**
+ * Enables or disables translation for a given language.
+ * @param {string} languageCode
+ * @param {boolean} enable
+ */
+chrome.languageSettingsPrivate.setEnableTranslationForLanguage = function(languageCode, enable) {};
+
+/**
+ * Moves a language inside the language list.
+ * @param {string} languageCode
+ * @param {!chrome.languageSettingsPrivate.MoveType} moveType
+ */
+chrome.languageSettingsPrivate.moveLanguage = function(languageCode, moveType) {};
 
 /**
  * Gets the current status of the chosen spell check dictionaries.
- * @param {function(!Array<!chrome.languageSettingsPrivate.SpellcheckDictionaryStatus>):void} callback
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-getSpellcheckDictionaryStatuses
+ * @param {function(!Array<!chrome.languageSettingsPrivate.SpellcheckDictionaryStatus>):void}
+ *     callback
  */
 chrome.languageSettingsPrivate.getSpellcheckDictionaryStatuses = function(callback) {};
 
 /**
  * Gets the custom spell check words, in sorted order.
  * @param {function(!Array<string>):void} callback
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-getSpellcheckWords
  */
 chrome.languageSettingsPrivate.getSpellcheckWords = function(callback) {};
 
 /**
  * Adds a word to the custom dictionary.
  * @param {string} word
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-addSpellcheckWord
  */
 chrome.languageSettingsPrivate.addSpellcheckWord = function(word) {};
 
 /**
  * Removes a word from the custom dictionary.
  * @param {string} word
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-removeSpellcheckWord
  */
 chrome.languageSettingsPrivate.removeSpellcheckWord = function(word) {};
 
 /**
  * Gets the translate target language (in most cases, the display locale).
  * @param {function(string):void} callback
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-getTranslateTargetLanguage
  */
 chrome.languageSettingsPrivate.getTranslateTargetLanguage = function(callback) {};
 
 /**
  * Gets all supported input methods, including third-party IMEs. Chrome OS only.
- * @param {function(!chrome.languageSettingsPrivate.InputMethodLists):void} callback
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-getInputMethodLists
+ * @param {function(!chrome.languageSettingsPrivate.InputMethodLists):void}
+ *     callback
  */
 chrome.languageSettingsPrivate.getInputMethodLists = function(callback) {};
 
@@ -123,7 +145,6 @@ chrome.languageSettingsPrivate.getInputMethodLists = function(callback) {};
  * Adds the input method to the current user's list of enabled input methods,
  * enabling the input method for the current user. Chrome OS only.
  * @param {string} inputMethodId
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-addInputMethod
  */
 chrome.languageSettingsPrivate.addInputMethod = function(inputMethodId) {};
 
@@ -131,15 +152,19 @@ chrome.languageSettingsPrivate.addInputMethod = function(inputMethodId) {};
  * Removes the input method from the current user's list of enabled input
  * methods, disabling the input method for the current user. Chrome OS only.
  * @param {string} inputMethodId
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#method-removeInputMethod
  */
 chrome.languageSettingsPrivate.removeInputMethod = function(inputMethodId) {};
+
+/**
+ * Tries to download the dictionary after a failed download.
+ * @param {string} languageCode
+ */
+chrome.languageSettingsPrivate.retryDownloadDictionary = function(languageCode) {};
 
 /**
  * Called when the pref for the dictionaries used for spell checking changes or
  * the status of one of the spell check dictionaries changes.
  * @type {!ChromeEvent}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#event-onSpellcheckDictionariesChanged
  */
 chrome.languageSettingsPrivate.onSpellcheckDictionariesChanged;
 
@@ -147,22 +172,17 @@ chrome.languageSettingsPrivate.onSpellcheckDictionariesChanged;
  * Called when words are added to and/or removed from the custom spell check
  * dictionary.
  * @type {!ChromeEvent}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#event-onCustomDictionaryChanged
  */
 chrome.languageSettingsPrivate.onCustomDictionaryChanged;
 
 /**
  * Called when an input method is added.
  * @type {!ChromeEvent}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#event-onInputMethodAdded
  */
 chrome.languageSettingsPrivate.onInputMethodAdded;
 
 /**
  * Called when an input method is removed.
  * @type {!ChromeEvent}
- * @see https://developer.chrome.com/extensions/languageSettingsPrivate#event-onInputMethodRemoved
  */
 chrome.languageSettingsPrivate.onInputMethodRemoved;
-
-

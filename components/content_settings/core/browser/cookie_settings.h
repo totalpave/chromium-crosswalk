@@ -14,59 +14,42 @@
 #include "base/threading/thread_checker.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/cookie_settings_base.h"
 #include "components/keyed_service/core/refcounted_keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
 
-class ContentSettingsPattern;
 class GURL;
 class PrefService;
 
 namespace content_settings {
 
+// Default value for |extension_scheme|.
+const char kDummyExtensionScheme[] = ":no-extension-scheme:";
+
 // A frontend to the cookie settings of |HostContentSettingsMap|. Handles
 // cookie-specific logic such as blocking third-party cookies. Written on the UI
 // thread and read on any thread.
-class CookieSettings : public RefcountedKeyedService {
+class CookieSettings : public CookieSettingsBase,
+                       public RefcountedKeyedService {
  public:
   // Creates a new CookieSettings instance.
   // The caller is responsible for ensuring that |extension_scheme| is valid for
   // the whole lifetime of this instance.
   CookieSettings(HostContentSettingsMap* host_content_settings_map,
                  PrefService* prefs,
-                 const char* extension_scheme);
+                 const char* extension_scheme = kDummyExtensionScheme);
 
   // Returns the default content setting (CONTENT_SETTING_ALLOW,
   // CONTENT_SETTING_BLOCK, or CONTENT_SETTING_SESSION_ONLY) for cookies. If
-  // |provider_id| is not NULL, the id of the provider which provided the
+  // |provider_id| is not nullptr, the id of the provider which provided the
   // default setting is assigned to it.
   //
   // This may be called on any thread.
   ContentSetting GetDefaultCookieSetting(std::string* provider_id) const;
 
-  // Returns true if the page identified by (|url|, |first_party_url|) is
-  // allowed to read cookies.
-  //
-  // This may be called on any thread.
-  bool IsReadingCookieAllowed(const GURL& url,
-                              const GURL& first_party_url) const;
-
-  // Returns true if the page identified by (|url|, |first_party_url|) is
-  // allowed to set cookies (permanent or session only).
-  //
-  // This may be called on any thread.
-  bool IsSettingCookieAllowed(const GURL& url,
-                              const GURL& first_party_url) const;
-
-  // Returns true if the cookie set by a page identified by |url| should be
-  // session only. Querying this only makes sense if |IsSettingCookieAllowed|
-  // has returned true.
-  //
-  // This may be called on any thread.
-  bool IsCookieSessionOnly(const GURL& url) const;
-
   // Returns all patterns with a non-default cookie setting, mapped to their
   // actual settings, in the precedence order of the setting rules. |settings|
-  // must be a non-NULL outparam.
+  // must be a non-nullptr outparam.
   //
   // This may be called on any thread.
   void GetCookieSettings(ContentSettingsForOneType* settings) const;
@@ -94,12 +77,11 @@ class CookieSettings : public RefcountedKeyedService {
   // called.
   void ShutdownOnUIThread() override;
 
-  // A helper for applying third party cookie blocking rules.
-  ContentSetting GetCookieSetting(
-      const GURL& url,
-      const GURL& first_party_url,
-      bool setting_cookie,
-      content_settings::SettingSource* source) const;
+  // content_settings::CookieSettingsBase:
+  void GetCookieSetting(const GURL& url,
+                        const GURL& first_party_url,
+                        content_settings::SettingSource* source,
+                        ContentSetting* cookie_setting) const override;
 
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 

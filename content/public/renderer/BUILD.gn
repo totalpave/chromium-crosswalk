@@ -3,7 +3,9 @@
 # found in the LICENSE file.
 
 import("//build/config/features.gni")
-import("//content/renderer/renderer.gni")
+import("//build/config/jumbo.gni")
+import("//media/media_options.gni")
+import("//ppapi/buildflags/buildflags.gni")
 
 # See //content/BUILD.gn for how this works.
 group("renderer") {
@@ -18,29 +20,85 @@ group("renderer") {
   }
 }
 
-source_set("renderer_sources") {
+if (is_component_build) {
+  link_target_type = "jumbo_source_set"
+} else {
+  link_target_type = "jumbo_static_library"
+}
+target(link_target_type, "renderer_sources") {
   # External code should depend on via ":renderer" above.
   visibility = [ "//content/*" ]
 
-  sources = rebase_path(content_renderer_gypi_values.public_renderer_sources,
-                        ".",
-                        "//content")
+  sources = [
+    "associated_resource_fetcher.h",
+    "browser_plugin_delegate.cc",
+    "browser_plugin_delegate.h",
+    "chrome_object_extensions_utils.cc",
+    "chrome_object_extensions_utils.h",
+    "content_renderer_client.cc",
+    "content_renderer_client.h",
+    "context_menu_client.h",
+    "document_state.cc",
+    "document_state.h",
+    "fixed_received_data.cc",
+    "fixed_received_data.h",
+    "media_stream_utils.h",
+    "pepper_plugin_instance.h",
+    "plugin_instance_throttler.h",
+    "render_accessibility.h",
+    "render_frame.h",
+    "render_frame_media_playback_options.h",
+    "render_frame_observer.cc",
+    "render_frame_observer.h",
+    "render_frame_observer_tracker.h",
+    "render_frame_visitor.h",
+    "render_thread.cc",
+    "render_thread.h",
+    "render_thread_observer.cc",
+    "render_thread_observer.h",
+    "render_view.h",
+    "render_view_observer.cc",
+    "render_view_observer.h",
+    "render_view_observer_tracker.h",
+    "render_view_visitor.h",
+    "renderer_ppapi_host.h",
+    "request_peer.h",
+    "resource_dispatcher_delegate.h",
+    "resource_fetcher.h",
+    "seccomp_sandbox_status_android.h",
+    "url_loader_throttle_provider.h",
+    "v8_value_converter.h",
+    "video_encode_accelerator.cc",
+    "video_encode_accelerator.h",
+    "webrtc_log_message_delegate.h",
+    "websocket_handshake_throttle_provider.h",
+    "window_features_converter.cc",
+    "window_features_converter.h",
+    "worker_thread.h",
+  ]
 
   configs += [ "//content:content_implementation" ]
 
+  public_deps = [
+    "//media",
+  ]
+
   deps = [
     "//content/public/child:child_sources",
+    "//content/public/common:buildflags",
     "//content/public/common:common_sources",
+    "//content/public/common:feature_h264_with_openh264_ffmpeg",
     "//content/renderer",
     "//gin",
-    "//media",
+    "//media/capture",
     "//media/gpu/ipc/client",
     "//net",
+    "//ppapi/buildflags",
     "//ppapi/c",
     "//skia",
-    "//third_party/WebKit/public:blink_headers",
-    "//third_party/libjingle",
-    "//third_party/widevine/cdm:version_h",
+    "//third_party/blink/public:blink_headers",
+    "//third_party/webrtc_overrides",
+    "//third_party/widevine/cdm:headers",
     "//ui/base",
     "//ui/base/ime",
     "//ui/gfx",
@@ -53,22 +111,15 @@ source_set("renderer_sources") {
     "//content/renderer",
   ]
 
-  if (enable_webrtc) {
-    sources +=
-        rebase_path(content_renderer_gypi_values.public_renderer_webrtc_sources,
-                    ".",
-                    "//content")
-    deps += [
-      "//content/public/common:feature_h264_with_openh264_ffmpeg",
-      "//content/public/common:features",
-      "//third_party/webrtc",
-    ]
+  if (is_android) {
+    # For seccomp_sandbox_status_android.h.
+    deps += [ "//sandbox" ]
   }
 
-  if (enable_plugins) {
-    sources +=
-        rebase_path(content_renderer_gypi_values.public_renderer_plugin_sources,
-                    ".",
-                    "//content")
+  if (enable_library_cdms) {
+    sources += [
+      "key_system_support.cc",
+      "key_system_support.h",
+    ]
   }
 }

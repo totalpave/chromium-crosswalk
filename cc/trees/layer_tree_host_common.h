@@ -13,10 +13,12 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "cc/base/cc_export.h"
+#include "cc/cc_export.h"
+#include "cc/input/browser_controls_state.h"
 #include "cc/layers/layer.h"
 #include "cc/layers/layer_collections.h"
 #include "cc/layers/layer_impl.h"
+#include "cc/layers/picture_layer.h"
 #include "cc/trees/layer_tree_host.h"
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/property_tree.h"
@@ -25,11 +27,6 @@
 #include "ui/gfx/transform.h"
 
 namespace cc {
-
-namespace proto {
-class ScrollUpdateInfo;
-class ScrollAndScaleSet;
-}
 
 class LayerImpl;
 class Layer;
@@ -47,7 +44,8 @@ class CC_EXPORT LayerTreeHostCommon {
                                       float page_scale_factor,
                                       const Layer* page_scale_layer,
                                       const Layer* inner_viewport_scroll_layer,
-                                      const Layer* outer_viewport_scroll_layer);
+                                      const Layer* outer_viewport_scroll_layer,
+                                      TransformNode* page_scale_transform_node);
     CalcDrawPropsMainInputsForTesting(Layer* root_layer,
                                       const gfx::Size& device_viewport_size,
                                       const gfx::Transform& device_transform);
@@ -61,27 +59,26 @@ class CC_EXPORT LayerTreeHostCommon {
     const Layer* page_scale_layer;
     const Layer* inner_viewport_scroll_layer;
     const Layer* outer_viewport_scroll_layer;
+    TransformNode* page_scale_transform_node;
   };
 
   struct CC_EXPORT CalcDrawPropsImplInputs {
    public:
-    CalcDrawPropsImplInputs(
-        LayerImpl* root_layer,
-        const gfx::Size& device_viewport_size,
-        const gfx::Transform& device_transform,
-        float device_scale_factor,
-        float page_scale_factor,
-        const LayerImpl* page_scale_layer,
-        const LayerImpl* inner_viewport_scroll_layer,
-        const LayerImpl* outer_viewport_scroll_layer,
-        const gfx::Vector2dF& elastic_overscroll,
-        const LayerImpl* elastic_overscroll_application_layer,
-        int max_texture_size,
-        bool can_render_to_separate_surface,
-        bool can_adjust_raster_scales,
-        bool verify_clip_tree_calculations,
-        LayerImplList* render_surface_layer_list,
-        PropertyTrees* property_trees);
+    CalcDrawPropsImplInputs(LayerImpl* root_layer,
+                            const gfx::Size& device_viewport_size,
+                            const gfx::Transform& device_transform,
+                            float device_scale_factor,
+                            float page_scale_factor,
+                            const LayerImpl* page_scale_layer,
+                            const LayerImpl* inner_viewport_scroll_layer,
+                            const LayerImpl* outer_viewport_scroll_layer,
+                            const gfx::Vector2dF& elastic_overscroll,
+                            const ElementId elastic_overscroll_element_id,
+                            int max_texture_size,
+                            bool can_adjust_raster_scales,
+                            RenderSurfaceList* render_surface_list,
+                            PropertyTrees* property_trees,
+                            TransformNode* page_scale_transform_node);
 
     LayerImpl* root_layer;
     gfx::Size device_viewport_size;
@@ -92,13 +89,12 @@ class CC_EXPORT LayerTreeHostCommon {
     const LayerImpl* inner_viewport_scroll_layer;
     const LayerImpl* outer_viewport_scroll_layer;
     gfx::Vector2dF elastic_overscroll;
-    const LayerImpl* elastic_overscroll_application_layer;
+    const ElementId elastic_overscroll_element_id;
     int max_texture_size;
-    bool can_render_to_separate_surface;
     bool can_adjust_raster_scales;
-    bool verify_clip_tree_calculations;
-    LayerImplList* render_surface_layer_list;
+    RenderSurfaceList* render_surface_list;
     PropertyTrees* property_trees;
+    TransformNode* page_scale_transform_node;
   };
 
   struct CC_EXPORT CalcDrawPropsImplInputsForTesting
@@ -106,10 +102,19 @@ class CC_EXPORT LayerTreeHostCommon {
     CalcDrawPropsImplInputsForTesting(LayerImpl* root_layer,
                                       const gfx::Size& device_viewport_size,
                                       const gfx::Transform& device_transform,
-                                      LayerImplList* render_surface_layer_list);
+                                      float device_scale_factor,
+                                      RenderSurfaceList* render_surface_list);
     CalcDrawPropsImplInputsForTesting(LayerImpl* root_layer,
                                       const gfx::Size& device_viewport_size,
-                                      LayerImplList* render_surface_layer_list);
+                                      const gfx::Transform& device_transform,
+                                      RenderSurfaceList* render_surface_list);
+    CalcDrawPropsImplInputsForTesting(LayerImpl* root_layer,
+                                      const gfx::Size& device_viewport_size,
+                                      RenderSurfaceList* render_surface_list);
+    CalcDrawPropsImplInputsForTesting(LayerImpl* root_layer,
+                                      const gfx::Size& device_viewport_size,
+                                      float device_scale_factor,
+                                      RenderSurfaceList* render_surface_list);
   };
 
   static int CalculateLayerJitter(LayerImpl* scrolling_layer);
@@ -121,7 +126,7 @@ class CC_EXPORT LayerTreeHostCommon {
       CalcDrawPropsImplInputsForTesting* inputs);
 
   template <typename Function>
-  static void CallFunctionForEveryLayer(LayerTreeHost* layer,
+  static void CallFunctionForEveryLayer(LayerTreeHost* host,
                                         const Function& function);
 
   template <typename Function>
@@ -129,15 +134,25 @@ class CC_EXPORT LayerTreeHostCommon {
                                         const Function& function);
 
   struct CC_EXPORT ScrollUpdateInfo {
-    int layer_id;
-    // TODO(miletus): Use ScrollOffset once LayerTreeHost/Blink fully supports
-    // franctional scroll offset.
-    gfx::Vector2d scroll_delta;
+    ElementId element_id;
+    gfx::ScrollOffset scroll_delta;
 
     bool operator==(const ScrollUpdateInfo& other) const;
+  };
 
-    void ToProtobuf(proto::ScrollUpdateInfo* proto) const;
-    void FromProtobuf(const proto::ScrollUpdateInfo& proto);
+  // Used to communicate scrollbar visibility from Impl thread to Blink.
+  // Scrollbar input is handled by Blink but the compositor thread animates
+  // opacity on scrollbars to fade them out when they're overlay. Blink needs
+  // to be told when they're faded out so it can stop handling input for
+  // invisible scrollbars.
+  struct CC_EXPORT ScrollbarsUpdateInfo {
+    ElementId element_id;
+    bool hidden;
+
+    ScrollbarsUpdateInfo();
+    ScrollbarsUpdateInfo(ElementId element_id, bool hidden);
+
+    bool operator==(const ScrollbarsUpdateInfo& other) const;
   };
 };
 
@@ -145,15 +160,38 @@ struct CC_EXPORT ScrollAndScaleSet {
   ScrollAndScaleSet();
   ~ScrollAndScaleSet();
 
+  // The inner viewport scroll delta is kept separate since it's special.
+  // Because the inner (visual) viewport's maximum offset depends on the
+  // current page scale, the two must be committed at the same time to prevent
+  // clamping.
+  LayerTreeHostCommon::ScrollUpdateInfo inner_viewport_scroll;
+
   std::vector<LayerTreeHostCommon::ScrollUpdateInfo> scrolls;
   float page_scale_delta;
-  gfx::Vector2dF elastic_overscroll_delta;
-  float top_controls_delta;
-  std::vector<std::unique_ptr<SwapPromise>> swap_promises;
 
-  bool EqualsForTesting(const ScrollAndScaleSet& other) const;
-  void ToProtobuf(proto::ScrollAndScaleSet* proto) const;
-  void FromProtobuf(const proto::ScrollAndScaleSet& proto);
+  // Elastic overscroll effect offset delta. This is used only on Mac and shows
+  // the pixels that the page is rubber-banned/stretched by.
+  gfx::Vector2dF elastic_overscroll_delta;
+
+  // Unconsumed scroll delta used to send overscroll events to the latched
+  // element on the main thread;
+  gfx::Vector2dF overscroll_delta;
+
+  // The element id of the node to which scrolling is latched. This is used to
+  // send overscroll/scrollend DOM events to proper targets whenever needed.
+  ElementId scroll_latched_element_id;
+
+  float top_controls_delta;
+  std::vector<LayerTreeHostCommon::ScrollbarsUpdateInfo> scrollbars;
+  std::vector<std::unique_ptr<SwapPromise>> swap_promises;
+  BrowserControlsState browser_controls_constraint;
+  bool browser_controls_constraint_changed;
+  bool has_scrolled_by_wheel;
+  bool has_scrolled_by_touch;
+
+  // Set to true when a scroll gesture being handled on the compositor has
+  // ended.
+  bool scroll_gesture_did_end;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ScrollAndScaleSet);
@@ -164,13 +202,8 @@ void LayerTreeHostCommon::CallFunctionForEveryLayer(LayerTreeHost* host,
                                                     const Function& function) {
   for (auto* layer : *host) {
     function(layer);
-    if (Layer* mask_layer = layer->mask_layer())
+    if (PictureLayer* mask_layer = layer->mask_layer())
       function(mask_layer);
-    if (Layer* replica_layer = layer->replica_layer()) {
-      function(replica_layer);
-      if (Layer* mask_layer = replica_layer->mask_layer())
-        function(mask_layer);
-    }
   }
 }
 
@@ -180,8 +213,7 @@ void LayerTreeHostCommon::CallFunctionForEveryLayer(LayerTreeImpl* tree_impl,
   for (auto* layer : *tree_impl)
     function(layer);
 
-  for (int id :
-       tree_impl->property_trees()->effect_tree.mask_replica_layer_ids()) {
+  for (int id : tree_impl->property_trees()->effect_tree.mask_layer_ids()) {
     function(tree_impl->LayerById(id));
   }
 }

@@ -2,18 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/message_loop/message_loop.h"
+#include "components/zoom/zoom_controller.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
 #include "components/zoom/test/zoom_test_utils.h"
-#include "components/zoom/zoom_controller.h"
 #include "components/zoom/zoom_observer.h"
 #include "content/public/browser/host_zoom_map.h"
-#include "content/public/browser/navigation_details.h"
-#include "content/public/common/frame_navigate_params.h"
+#include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "ipc/ipc_message.h"
@@ -32,7 +30,7 @@ class ZoomControllerTest : public ChromeRenderViewHostTestHarness {
     // This call is needed so that the RenderViewHost reports being alive. This
     // is only important for tests that call ZoomController::SetZoomLevel().
     content::RenderViewHostTester::For(rvh())->CreateTestRenderView(
-        base::string16(), MSG_ROUTING_NONE, MSG_ROUTING_NONE, -1, false);
+        base::string16(), MSG_ROUTING_NONE, MSG_ROUTING_NONE, false);
   }
 
   void TearDown() override {
@@ -54,8 +52,9 @@ TEST_F(ZoomControllerTest, DidNavigateMainFrame) {
       false);
   ZoomChangedWatcher zoom_change_watcher(zoom_controller_.get(),
                                          zoom_change_data);
-  zoom_controller_->DidNavigateMainFrame(content::LoadCommittedDetails(),
-                                         content::FrameNavigateParams());
+  content::MockNavigationHandle handle;
+  handle.set_has_committed(true);
+  zoom_controller_->DidFinishNavigation(&handle);
   zoom_change_watcher.Wait();
 }
 
@@ -65,12 +64,10 @@ TEST_F(ZoomControllerTest, Observe_ZoomController) {
 
   NavigateAndCommit(GURL("about:blank"));
 
+  // Changing from default to default so the bubble should not be shown.
   ZoomController::ZoomChangedEventData zoom_change_data1(
-      web_contents(),
-      old_zoom_level,
-      old_zoom_level,
-      ZoomController::ZOOM_MODE_ISOLATED,
-      true /* can_show_bubble */);
+      web_contents(), old_zoom_level, old_zoom_level,
+      ZoomController::ZOOM_MODE_ISOLATED, false /* can_show_bubble */);
 
   {
     ZoomChangedWatcher zoom_change_watcher1(zoom_controller_.get(),

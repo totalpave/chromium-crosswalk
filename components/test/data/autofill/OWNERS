@@ -1,5 +1,3 @@
-estade@chromium.org
-isherman@chromium.org
+file://components/autofill/OWNERS
 
-# Owner for password autofill/generation only.
-gcasto@chromium.org
+# COMPONENT: UI>Browser>Autofill

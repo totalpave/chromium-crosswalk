@@ -9,11 +9,15 @@
 
 #include "base/callback.h"
 #include "build/build_config.h"
+#include "content/common/buildflags.h"
 #include "content/common/content_export.h"
 #include "content/common/drag_event_source_info.h"
-#include "third_party/WebKit/public/platform/WebDragOperation.h"
+#include "content/public/common/input_event_ack_state.h"
+#include "third_party/blink/public/platform/web_drag_operation.h"
 
-class SkBitmap;
+namespace blink {
+class WebGestureEvent;
+}
 
 namespace gfx {
 class ImageSkia;
@@ -21,20 +25,21 @@ class Rect;
 class Vector2d;
 }
 
+#if defined(OS_ANDROID)
 namespace ui {
-class GestureEvent;
-class MouseEvent;
+class OverscrollRefreshHandler;
 }
+#endif
 
 namespace content {
 class RenderFrameHost;
+class RenderWidgetHostImpl;
 struct ContextMenuParams;
 struct DropData;
 struct MenuItem;
 
 // This class provides a way for the RenderViewHost to reach out to its
-// delegate's view. It only needs to be implemented by embedders if they don't
-// use the default WebContentsView implementations.
+// delegate's view.
 class CONTENT_EXPORT RenderViewHostDelegateView {
  public:
   // A context menu should be shown, to be built using the context information
@@ -51,21 +56,38 @@ class CONTENT_EXPORT RenderViewHostDelegateView {
                              blink::WebDragOperationsMask allowed_ops,
                              const gfx::ImageSkia& image,
                              const gfx::Vector2d& image_offset,
-                             const DragEventSourceInfo& event_info) {}
+                             const DragEventSourceInfo& event_info,
+                             RenderWidgetHostImpl* source_rwh) {}
 
   // The page wants to update the mouse cursor during a drag & drop operation.
   // |operation| describes the current operation (none, move, copy, link.)
   virtual void UpdateDragCursor(blink::WebDragOperation operation) {}
 
   // Notification that view for this delegate got the focus.
-  virtual void GotFocus() {}
+  virtual void GotFocus(RenderWidgetHostImpl* render_widget_host) {}
+
+  // Notification that view for this delegate lost the focus.
+  virtual void LostFocus(RenderWidgetHostImpl* render_widget_host) {}
 
   // Callback to inform the browser that the page is returning the focus to
   // the browser's chrome. If reverse is true, it means the focus was
   // retrieved by doing a Shift-Tab.
   virtual void TakeFocus(bool reverse) {}
 
-#if defined(USE_EXTERNAL_POPUP_MENU)
+  // Returns the height of the top controls in DIP.
+  virtual int GetTopControlsHeight() const;
+
+  // Returns the height of the bottom controls in DIP.
+  virtual int GetBottomControlsHeight() const;
+
+  // Returns true if the browser controls resize the renderer's view size.
+  virtual bool DoBrowserControlsShrinkRendererSize() const;
+
+  // Do post-event tasks for gesture events.
+  virtual void GestureEventAck(const blink::WebGestureEvent& event,
+                               InputEventAckState ack_result);
+
+#if BUILDFLAG(USE_EXTERNAL_POPUP_MENU)
   // Shows a popup menu with the specified items.
   // This method should call RenderFrameHost::DidSelectPopupMenuItem[s]() or
   // RenderFrameHost::DidCancelPopupMenu() based on the user action.
@@ -76,10 +98,14 @@ class CONTENT_EXPORT RenderViewHostDelegateView {
                              int selected_item,
                              const std::vector<MenuItem>& items,
                              bool right_aligned,
-                             bool allow_multiple_selection) {};
+                             bool allow_multiple_selection) {}
 
   // Hides a popup menu opened by ShowPopupMenu().
-  virtual void HidePopupMenu() {};
+  virtual void HidePopupMenu() {}
+#endif
+
+#if defined(OS_ANDROID)
+  virtual ui::OverscrollRefreshHandler* GetOverscrollRefreshHandler() const;
 #endif
 
  protected:

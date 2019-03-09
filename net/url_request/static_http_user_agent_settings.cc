@@ -13,8 +13,7 @@ StaticHttpUserAgentSettings::StaticHttpUserAgentSettings(
       user_agent_(user_agent) {
 }
 
-StaticHttpUserAgentSettings::~StaticHttpUserAgentSettings() {
-}
+StaticHttpUserAgentSettings::~StaticHttpUserAgentSettings() = default;
 
 std::string StaticHttpUserAgentSettings::GetAcceptLanguage() const {
   return accept_language_;
@@ -25,4 +24,3 @@ std::string StaticHttpUserAgentSettings::GetUserAgent() const {
 }
 
 }  // namespace net
-

@@ -2,16 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/net/file_downloader.h"
+
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/message_loop/message_loop.h"
-#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/browser/net/file_downloader.h"
-#include "content/public/browser/browser_thread.h"
-#include "net/url_request/test_url_fetcher_factory.h"
-#include "net/url_request/url_request_test_util.h"
+#include "content/public/test/test_utils.h"
+#include "net/http/http_status_code.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -24,13 +27,13 @@ const char kFileContents2[] = "different contents";
 class FileDownloaderTest : public testing::Test {
  public:
   FileDownloaderTest()
-      : request_context_(new net::TestURLRequestContextGetter(
-            base::ThreadTaskRunnerHandle::Get())),
-            url_fetcher_factory_(nullptr) {}
+      : test_shared_loader_factory_(
+            base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+                &test_url_loader_factory_)) {}
 
   void SetUp() override {
     ASSERT_TRUE(dir_.CreateUniqueTempDir());
-    path_ = dir_.path().AppendASCII(kFilename);
+    path_ = dir_.GetPath().AppendASCII(kFilename);
     ASSERT_FALSE(base::PathExists(path_));
   }
 
@@ -40,46 +43,37 @@ class FileDownloaderTest : public testing::Test {
   const base::FilePath& path() const { return path_; }
 
   void SetValidResponse() {
-    url_fetcher_factory_.SetFakeResponse(
-        GURL(kURL), kFileContents1, net::HTTP_OK,
-        net::URLRequestStatus::SUCCESS);
+    test_url_loader_factory_.AddResponse(kURL, kFileContents1);
   }
 
   void SetValidResponse2() {
-    url_fetcher_factory_.SetFakeResponse(
-        GURL(kURL), kFileContents2, net::HTTP_OK,
-        net::URLRequestStatus::SUCCESS);
+    test_url_loader_factory_.AddResponse(kURL, kFileContents2);
   }
 
   void SetFailedResponse() {
-    url_fetcher_factory_.SetFakeResponse(
-        GURL(kURL), std::string(), net::HTTP_NOT_FOUND,
-        net::URLRequestStatus::SUCCESS);
+    test_url_loader_factory_.AddResponse(
+        GURL(kURL), network::ResourceResponseHead(), std::string(),
+        network::URLLoaderCompletionStatus(net::HTTP_NOT_FOUND));
   }
 
   void Download(bool overwrite, FileDownloader::Result expected_result) {
     FileDownloader downloader(
-        GURL(kURL), path_, overwrite, request_context_.get(),
-        base::Bind(&FileDownloaderTest::OnDownloadFinished,
-                   base::Unretained(this)));
+        GURL(kURL), path_, overwrite, test_shared_loader_factory_,
+        base::BindOnce(&FileDownloaderTest::OnDownloadFinished,
+                       base::Unretained(this)),
+        TRAFFIC_ANNOTATION_FOR_TESTS);
     EXPECT_CALL(*this, OnDownloadFinished(expected_result));
     // Wait for the FileExists check to happen if necessary.
-    if (!overwrite)
-      content::BrowserThread::GetBlockingPool()->FlushForTesting();
-    // Wait for the actual download to happen.
-    base::RunLoop().RunUntilIdle();
-    // Wait for the FileMove to happen.
-    content::BrowserThread::GetBlockingPool()->FlushForTesting();
-    base::RunLoop().RunUntilIdle();
+    content::RunAllTasksUntilIdle();
   }
 
  private:
   base::ScopedTempDir dir_;
   base::FilePath path_;
 
-  base::MessageLoop message_loop_;
-  scoped_refptr<net::TestURLRequestContextGetter> request_context_;
-  net::FakeURLFetcherFactory url_fetcher_factory_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
+  scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
 };
 
 TEST_F(FileDownloaderTest, Success) {

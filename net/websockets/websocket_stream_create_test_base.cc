@@ -8,12 +8,13 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "net/base/ip_endpoint.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
+#include "net/log/net_log_with_source.h"
 #include "net/websockets/websocket_basic_handshake_stream.h"
 #include "net/websockets/websocket_handshake_request_info.h"
 #include "net/websockets/websocket_handshake_response_info.h"
-#include "net/websockets/websocket_handshake_stream_create_helper.h"
 #include "net/websockets/websocket_stream.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -22,32 +23,16 @@ namespace net {
 
 using HeaderKeyValuePair = WebSocketStreamCreateTestBase::HeaderKeyValuePair;
 
-// A sub-class of WebSocketHandshakeStreamCreateHelper which always sets a
-// deterministic key to use in the WebSocket handshake.
-class DeterministicKeyWebSocketHandshakeStreamCreateHelper
-    : public WebSocketHandshakeStreamCreateHelper {
- public:
-  DeterministicKeyWebSocketHandshakeStreamCreateHelper(
-      WebSocketStream::ConnectDelegate* connect_delegate,
-      const std::vector<std::string>& requested_subprotocols)
-      : WebSocketHandshakeStreamCreateHelper(connect_delegate,
-                                             requested_subprotocols) {}
-
-  void OnStreamCreated(WebSocketBasicHandshakeStream* stream) override {
-    stream->SetWebSocketKeyForTesting("dGhlIHNhbXBsZSBub25jZQ==");
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(
-      DeterministicKeyWebSocketHandshakeStreamCreateHelper);
-};
-
 class WebSocketStreamCreateTestBase::TestConnectDelegate
     : public WebSocketStream::ConnectDelegate {
  public:
   TestConnectDelegate(WebSocketStreamCreateTestBase* owner,
                       const base::Closure& done_callback)
       : owner_(owner), done_callback_(done_callback) {}
+
+  void OnCreateRequest(URLRequest* request) override {
+    owner_->url_request_ = request;
+  }
 
   void OnSuccess(std::unique_ptr<WebSocketStream> stream) override {
     stream.swap(owner_->stream_);
@@ -84,6 +69,18 @@ class WebSocketStreamCreateTestBase::TestConnectDelegate
     owner_->ssl_fatal_ = fatal;
   }
 
+  int OnAuthRequired(scoped_refptr<AuthChallengeInfo> auth_info,
+                     scoped_refptr<HttpResponseHeaders> response_headers,
+                     const IPEndPoint& remote_endpoint,
+                     base::OnceCallback<void(const AuthCredentials*)> callback,
+                     base::Optional<AuthCredentials>* credentials) override {
+    owner_->run_loop_waiting_for_on_auth_required_.Quit();
+    owner_->auth_challenge_info_ = std::move(auth_info);
+    *credentials = owner_->auth_credentials_;
+    owner_->on_auth_required_callback_ = std::move(callback);
+    return owner_->on_auth_required_rv_;
+  }
+
  private:
   WebSocketStreamCreateTestBase* owner_;
   base::Closure done_callback_;
@@ -91,35 +88,26 @@ class WebSocketStreamCreateTestBase::TestConnectDelegate
 };
 
 WebSocketStreamCreateTestBase::WebSocketStreamCreateTestBase()
-    : has_failed_(false), ssl_fatal_(false) {
-}
+    : has_failed_(false), ssl_fatal_(false), url_request_(nullptr) {}
 
-WebSocketStreamCreateTestBase::~WebSocketStreamCreateTestBase() {
-}
+WebSocketStreamCreateTestBase::~WebSocketStreamCreateTestBase() = default;
 
 void WebSocketStreamCreateTestBase::CreateAndConnectStream(
     const GURL& socket_url,
     const std::vector<std::string>& sub_protocols,
     const url::Origin& origin,
-    const GURL& first_party_for_cookies,
-    const std::string& additional_headers,
-    std::unique_ptr<base::Timer> timer) {
-  for (size_t i = 0; i < ssl_data_.size(); ++i) {
-    url_request_context_host_.AddSSLSocketDataProvider(std::move(ssl_data_[i]));
-  }
-  ssl_data_.clear();
-  std::unique_ptr<WebSocketStream::ConnectDelegate> connect_delegate(
-      new TestConnectDelegate(this, connect_run_loop_.QuitClosure()));
-  WebSocketStream::ConnectDelegate* delegate = connect_delegate.get();
-  std::unique_ptr<WebSocketHandshakeStreamCreateHelper> create_helper(
-      new DeterministicKeyWebSocketHandshakeStreamCreateHelper(delegate,
-                                                               sub_protocols));
-  stream_request_ = CreateAndConnectStreamForTesting(
-      socket_url, std::move(create_helper), origin, first_party_for_cookies,
-      additional_headers, url_request_context_host_.GetURLRequestContext(),
-      BoundNetLog(), std::move(connect_delegate),
-      timer ? std::move(timer)
-            : std::unique_ptr<base::Timer>(new base::Timer(false, false)));
+    const GURL& site_for_cookies,
+    const HttpRequestHeaders& additional_headers,
+    std::unique_ptr<base::OneShotTimer> timer) {
+  auto connect_delegate = std::make_unique<TestConnectDelegate>(
+      this, connect_run_loop_.QuitClosure());
+  auto api_delegate = std::make_unique<TestWebSocketStreamRequestAPI>();
+  stream_request_ = WebSocketStream::CreateAndConnectStreamForTesting(
+      socket_url, sub_protocols, origin, site_for_cookies, additional_headers,
+      url_request_context_host_.GetURLRequestContext(), NetLogWithSource(),
+      std::move(connect_delegate),
+      timer ? std::move(timer) : std::make_unique<base::OneShotTimer>(),
+      std::move(api_delegate));
 }
 
 std::vector<HeaderKeyValuePair>
@@ -145,6 +133,10 @@ WebSocketStreamCreateTestBase::ResponseHeadersToVector(
 
 void WebSocketStreamCreateTestBase::WaitUntilConnectDone() {
   connect_run_loop_.Run();
+}
+
+void WebSocketStreamCreateTestBase::WaitUntilOnAuthRequired() {
+  run_loop_waiting_for_on_auth_required_.Run();
 }
 
 std::vector<std::string> WebSocketStreamCreateTestBase::NoSubProtocols() {

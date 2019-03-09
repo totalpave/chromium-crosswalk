@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef IOS_WEB_PUBLIC_FAVICON_URL_
-#define IOS_WEB_PUBLIC_FAVICON_URL_
+#ifndef IOS_WEB_PUBLIC_FAVICON_URL_H_
+#define IOS_WEB_PUBLIC_FAVICON_URL_H_
 
 #include <vector>
 
@@ -16,11 +16,12 @@ namespace web {
 struct FaviconURL {
   // The icon type in a page. The definition must be same as
   // favicon_base::IconType.
-  enum IconType {
-    INVALID_ICON = 0x0,
-    FAVICON = 1 << 0,
-    TOUCH_ICON = 1 << 1,
-    TOUCH_PRECOMPOSED_ICON = 1 << 2
+  enum class IconType {
+    kInvalid = 0,
+    kFavicon,
+    kTouchIcon,
+    kTouchPrecomposedIcon,
+    kWebManifestIcon,
   };
 
   FaviconURL();
@@ -42,4 +43,4 @@ struct FaviconURL {
 
 } // namespace web
 
-#endif  // IOS_WEB_PUBLIC_FAVICON_URL_
+#endif  // IOS_WEB_PUBLIC_FAVICON_URL_H_

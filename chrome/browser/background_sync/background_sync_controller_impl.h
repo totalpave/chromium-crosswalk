@@ -18,7 +18,11 @@ struct BackgroundSyncParameters;
 }
 
 namespace rappor {
-class RapporService;
+class RapporServiceImpl;
+}
+
+namespace url {
+class Origin;
 }
 
 class Profile;
@@ -40,12 +44,12 @@ class BackgroundSyncControllerImpl : public content::BackgroundSyncController,
   // content::BackgroundSyncController overrides.
   void GetParameterOverrides(
       content::BackgroundSyncParameters* parameters) const override;
-  void NotifyBackgroundSyncRegistered(const GURL& origin) override;
+  void NotifyBackgroundSyncRegistered(const url::Origin& origin) override;
   void RunInBackground(bool enabled, int64_t min_ms) override;
 
  protected:
   // Virtual for testing.
-  virtual rappor::RapporService* GetRapporService();
+  virtual rappor::RapporServiceImpl* GetRapporServiceImpl();
 
  private:
   Profile* profile_;  // This object is owned by profile_.

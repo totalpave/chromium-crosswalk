@@ -4,11 +4,16 @@
 
 #include "chrome/browser/browser_process_platform_part_chromeos.h"
 
-#include "base/command_line.h"
+#include <utility>
+
+#include "ash/public/interfaces/constants.mojom.h"
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/tick_clock.h"
+#include "chrome/browser/ash_service_registry.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/chromeos/chrome_service_name.h"
 #include "chrome/browser/chromeos/login/session/chrome_session_manager.h"
 #include "chrome/browser/chromeos/login/users/chrome_user_manager_impl.h"
 #include "chrome/browser/chromeos/net/delay_network_call.h"
@@ -21,27 +26,42 @@
 #include "chrome/browser/chromeos/system/system_clock.h"
 #include "chrome/browser/chromeos/system/timezone_resolver_manager.h"
 #include "chrome/browser/chromeos/system/timezone_util.h"
-#include "chrome/browser/lifetime/keep_alive_types.h"
-#include "chrome/browser/lifetime/scoped_keep_alive.h"
-#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/component_updater/cros_component_installer_chromeos.h"
+#include "chrome/browser/component_updater/metadata_table_chromeos.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
+#include "chromeos/account_manager/account_manager_factory.h"
 #include "chromeos/geolocation/simple_geolocation_provider.h"
 #include "chromeos/timezone/timezone_resolver.h"
+#include "components/keep_alive_registry/keep_alive_types.h"
+#include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/common/service_manager_connection.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/preferences/public/mojom/preferences.mojom.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
+#include "services/service_manager/public/cpp/service.h"
+#include "services/ws/public/cpp/input_devices/input_device_controller.h"
+#include "services/ws/public/cpp/input_devices/input_device_controller_client.h"
+#include "services/ws/public/mojom/constants.mojom.h"
+#include "ui/base/ui_base_features.h"
 
 BrowserProcessPlatformPart::BrowserProcessPlatformPart()
-    : created_profile_helper_(false) {
-}
+    : created_profile_helper_(false),
+      account_manager_factory_(
+          std::make_unique<chromeos::AccountManagerFactory>()) {}
 
 BrowserProcessPlatformPart::~BrowserProcessPlatformPart() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 void BrowserProcessPlatformPart::InitializeAutomaticRebootManager() {
   DCHECK(!automatic_reboot_manager_);
 
   automatic_reboot_manager_.reset(new chromeos::system::AutomaticRebootManager(
-      std::unique_ptr<base::TickClock>(new base::DefaultTickClock)));
+      base::DefaultTickClock::GetInstance()));
 }
 
 void BrowserProcessPlatformPart::ShutdownAutomaticRebootManager() {
@@ -69,6 +89,7 @@ void BrowserProcessPlatformPart::InitializeDeviceDisablingManager() {
       device_disabling_manager_delegate_.get(),
       chromeos::CrosSettings::Get(),
       user_manager::UserManager::Get()));
+  device_disabling_manager_->Init();
 }
 
 void BrowserProcessPlatformPart::ShutdownDeviceDisablingManager() {
@@ -76,22 +97,35 @@ void BrowserProcessPlatformPart::ShutdownDeviceDisablingManager() {
   device_disabling_manager_delegate_.reset();
 }
 
-void BrowserProcessPlatformPart::InitializeSessionManager(
-    const base::CommandLine& parsed_command_line,
-    Profile* profile,
-    bool is_running_test) {
+void BrowserProcessPlatformPart::InitializeSessionManager() {
   DCHECK(!session_manager_);
-  session_manager_ = chromeos::ChromeSessionManager::CreateSessionManager(
-      parsed_command_line, profile, is_running_test);
+  session_manager_ = std::make_unique<chromeos::ChromeSessionManager>();
 }
 
 void BrowserProcessPlatformPart::ShutdownSessionManager() {
   session_manager_.reset();
 }
 
-session_manager::SessionManager* BrowserProcessPlatformPart::SessionManager() {
-  DCHECK(CalledOnValidThread());
-  return session_manager_.get();
+void BrowserProcessPlatformPart::InitializeCrosComponentManager() {
+  if (using_testing_cros_component_manager_)
+    return;
+
+  DCHECK(!cros_component_manager_);
+  cros_component_manager_ =
+      std::make_unique<component_updater::CrOSComponentInstaller>(
+          std::make_unique<component_updater::MetadataTable>(
+              g_browser_process->local_state()),
+          g_browser_process->component_updater());
+
+  // Register all installed components for regular update.
+  cros_component_manager_->RegisterInstalled();
+}
+
+void BrowserProcessPlatformPart::ShutdownCrosComponentManager() {
+  if (using_testing_cros_component_manager_)
+    return;
+
+  cros_component_manager_.reset();
 }
 
 void BrowserProcessPlatformPart::RegisterKeepAlive() {
@@ -106,7 +140,7 @@ void BrowserProcessPlatformPart::UnregisterKeepAlive() {
 }
 
 chromeos::ProfileHelper* BrowserProcessPlatformPart::profile_helper() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!created_profile_helper_)
     CreateProfileHelper();
   return profile_helper_.get();
@@ -131,7 +165,7 @@ chromeos::TimeZoneResolver* BrowserProcessPlatformPart::GetTimezoneResolver() {
   if (!timezone_resolver_.get()) {
     timezone_resolver_.reset(new chromeos::TimeZoneResolver(
         GetTimezoneResolverManager(),
-        g_browser_process->system_request_context(),
+        g_browser_process->shared_url_loader_factory(),
         chromeos::SimpleGeolocationProvider::DefaultGeolocationProviderURL(),
         base::Bind(&chromeos::system::ApplyTimeZone),
         base::Bind(&chromeos::DelayNetworkCall,
@@ -142,12 +176,6 @@ chromeos::TimeZoneResolver* BrowserProcessPlatformPart::GetTimezoneResolver() {
   return timezone_resolver_.get();
 }
 
-chromeos::system::SystemClock* BrowserProcessPlatformPart::GetSystemClock() {
-  if (!system_clock_.get())
-    system_clock_.reset(new chromeos::system::SystemClock());
-
-  return system_clock_.get();
-}
 void BrowserProcessPlatformPart::StartTearDown() {
   // interactive_ui_tests check for memory leaks before this object is
   // destroyed.  So we need to destroy |timezone_resolver_| here.
@@ -155,14 +183,43 @@ void BrowserProcessPlatformPart::StartTearDown() {
   profile_helper_.reset();
 }
 
-std::unique_ptr<policy::BrowserPolicyConnector>
+std::unique_ptr<policy::ChromeBrowserPolicyConnector>
 BrowserProcessPlatformPart::CreateBrowserPolicyConnector() {
-  return std::unique_ptr<policy::BrowserPolicyConnector>(
+  return std::unique_ptr<policy::ChromeBrowserPolicyConnector>(
       new policy::BrowserPolicyConnectorChromeOS());
+}
+
+chromeos::system::SystemClock* BrowserProcessPlatformPart::GetSystemClock() {
+  if (!system_clock_.get())
+    system_clock_.reset(new chromeos::system::SystemClock());
+  return system_clock_.get();
+}
+
+void BrowserProcessPlatformPart::DestroySystemClock() {
+  system_clock_.reset();
+}
+
+ws::InputDeviceControllerClient*
+BrowserProcessPlatformPart::GetInputDeviceControllerClient() {
+  if (!input_device_controller_client_) {
+    const std::string service_name = !features::IsMultiProcessMash()
+                                         ? chromeos::kChromeServiceName
+                                         : ws::mojom::kServiceName;
+    input_device_controller_client_ =
+        std::make_unique<ws::InputDeviceControllerClient>(
+            content::ServiceManagerConnection::GetForProcess()->GetConnector(),
+            service_name);
+  }
+  return input_device_controller_client_.get();
 }
 
 void BrowserProcessPlatformPart::CreateProfileHelper() {
   DCHECK(!created_profile_helper_ && !profile_helper_);
   created_profile_helper_ = true;
   profile_helper_.reset(new chromeos::ProfileHelper());
+}
+
+chromeos::AccountManagerFactory*
+BrowserProcessPlatformPart::GetAccountManagerFactory() {
+  return account_manager_factory_.get();
 }

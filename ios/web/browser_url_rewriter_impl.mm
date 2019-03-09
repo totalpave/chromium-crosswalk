@@ -7,8 +7,12 @@
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "ios/web/public/browser_state.h"
-#include "ios/web/public/web_client.h"
+#import "ios/web/public/web_client.h"
 #include "url/gurl.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace web {
 
@@ -52,7 +56,8 @@ bool BrowserURLRewriter::RewriteURLWithWriters(
 
 // static
 BrowserURLRewriterImpl* BrowserURLRewriterImpl::GetInstance() {
-  return base::Singleton<BrowserURLRewriterImpl>::get();
+  static base::NoDestructor<BrowserURLRewriterImpl> instance;
+  return instance.get();
 }
 
 BrowserURLRewriterImpl::BrowserURLRewriterImpl() {

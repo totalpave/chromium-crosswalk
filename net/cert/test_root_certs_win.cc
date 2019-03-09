@@ -8,8 +8,10 @@
 
 #include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/win/win_util.h"
 #include "net/cert/x509_certificate.h"
+#include "third_party/boringssl/src/include/openssl/pool.h"
 
 namespace net {
 
@@ -41,7 +43,7 @@ struct CryptoAPIInjector {
   HCRYPTOIDFUNCADDR original_handle;
 
  private:
-  friend struct base::DefaultLazyInstanceTraits<CryptoAPIInjector>;
+  friend struct base::LazyInstanceTraitsBase<CryptoAPIInjector>;
 
   CryptoAPIInjector()
       : original_function(NULL),
@@ -63,8 +65,9 @@ struct CryptoAPIInjector {
     // sz_CERT_STORE_PROV_SYSTEM_[A/W] and CERT_STORE_PROV_SYSTEM_A, based
     // on whether or not any third-party CryptoAPI modules have been
     // installed.
-    const CRYPT_OID_FUNC_ENTRY kFunctionToIntercept =
-        { CERT_STORE_PROV_SYSTEM_W, &InterceptedOpenStoreW };
+    const CRYPT_OID_FUNC_ENTRY kFunctionToIntercept = {
+        CERT_STORE_PROV_SYSTEM_W,
+        reinterpret_cast<void*>(&InterceptedOpenStoreW)};
 
     // Inject kFunctionToIntercept at the front of the linked list that
     // crypt32 uses when CertOpenStore is called, replacing the existing
@@ -142,8 +145,11 @@ bool TestRootCerts::Add(X509Certificate* certificate) {
   // happen.
   g_capi_injector.Get();
 
-  BOOL ok = CertAddCertificateContextToStore(
-      temporary_roots_, certificate->os_cert_handle(),
+  BOOL ok = CertAddEncodedCertificateToStore(
+      temporary_roots_, X509_ASN_ENCODING,
+      reinterpret_cast<const BYTE*>(
+          CRYPTO_BUFFER_data(certificate->cert_buffer())),
+      base::checked_cast<DWORD>(CRYPTO_BUFFER_len(certificate->cert_buffer())),
       CERT_STORE_ADD_NEW, NULL);
   if (!ok) {
     // If the certificate is already added, return successfully.

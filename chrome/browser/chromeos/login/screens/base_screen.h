@@ -9,6 +9,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "chrome/browser/chromeos/login/oobe_screen.h"
 #include "chrome/browser/chromeos/login/screens/base_screen_delegate.h"
 #include "components/login/base_screen_handler_utils.h"
 #include "components/login/screens/screen_context.h"
@@ -25,17 +26,14 @@ class ModelViewChannel;
 // Screens are identified by ID, screen and it's JS counterpart must have same
 // id.
 // Most of the screens will be re-created for each appearance with Initialize()
-// method called just once. However if initialization is too expensive, screen
-// can override result of IsPermanent() method, and do clean-up upon subsequent
-// Initialize() method calls.
+// method called just once.
 class BaseScreen {
  public:
-  explicit BaseScreen(BaseScreenDelegate* base_screen_delegate);
+  explicit BaseScreen(BaseScreenDelegate* base_screen_delegate,
+                      OobeScreen screen_id);
   virtual ~BaseScreen();
 
   // ---- Old implementation ----
-
-  virtual void PrepareToShow() = 0;
 
   // Makes wizard screen visible.
   virtual void Show() = 0;
@@ -43,16 +41,7 @@ class BaseScreen {
   // Makes wizard screen invisible.
   virtual void Hide() = 0;
 
-  // Returns the screen name.
-  virtual std::string GetName() const = 0;
-
   // ---- New Implementation ----
-
-  // Called to perform initialization of the screen. UI is guaranteed to exist
-  // at this point. Screen can alter context, resulting context will be passed
-  // to JS. This method will be called once per instance of the Screen object,
-  // unless |IsPermanent()| returns |true|.
-  virtual void Initialize(::login::ScreenContext* context);
 
   // Called when screen appears.
   virtual void OnShow();
@@ -69,12 +58,8 @@ class BaseScreen {
   // displayed.
   virtual bool IsStatusAreaDisplayed();
 
-  // If this method returns |true|, screen will not be deleted once we leave it.
-  // However, Initialize() might be called several times in this case.
-  virtual bool IsPermanent();
-
   // Returns the identifier of the screen.
-  virtual std::string GetID() const;
+  OobeScreen screen_id() const { return screen_id_; }
 
   // Called when user action event with |event_id|
   // happened. Notification about this event comes from the JS
@@ -82,6 +67,8 @@ class BaseScreen {
   virtual void OnUserAction(const std::string& action_id);
 
   void set_model_view_channel(ModelViewChannel* channel) { channel_ = channel; }
+
+  virtual void SetConfiguration(base::Value* configuration, bool notify);
 
  protected:
   // Scoped context editor, which automatically commits all pending
@@ -115,10 +102,6 @@ class BaseScreen {
   // Sends all pending context changes to the JS side.
   void CommitContextChanges();
 
-  // Screen can call this method to notify framework that it have finished
-  // it's work with |outcome|.
-  void Finish(BaseScreenDelegate::ExitCodes exit_code);
-
   // The method is called each time some key in screen context is
   // updated by JS side. Default implementation does nothing, so
   // subclasses should override it in order to observe updates in
@@ -129,6 +112,21 @@ class BaseScreen {
   // current BaseScreen instance.
   ContextEditor GetContextEditor();
 
+  // Global configuration for OOBE screens, that can be used to automate some
+  // screens.
+  // Screens can use values in Configuration to fill in UI values or
+  // automatically finish.
+  // Configuration is guaranteed to exist between pair of OnShow/OnHide calls,
+  // no external changes will be made to configuration during that time.
+  // Outside that time the configuration is set to nullptr to prevent any logic
+  // triggering while the screen is not displayed.
+  // Do not confuse it with Context, which is a way to communicate with
+  // JS-based UI part of the screen.
+  base::Value* GetConfiguration() { return configuration_; }
+
+  // This is called when configuration is changed while screen is displayed.
+  virtual void OnConfigurationChanged();
+
   BaseScreenDelegate* get_base_screen_delegate() const {
     return base_screen_delegate_;
   }
@@ -136,26 +134,28 @@ class BaseScreen {
   ::login::ScreenContext context_;
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(EnrollmentScreenTest, TestCancel);
-  FRIEND_TEST_ALL_PREFIXES(EnrollmentScreenTest, TestSuccess);
-  FRIEND_TEST_ALL_PREFIXES(ProvisionedEnrollmentScreenTest, TestBackButton);
-
-  friend class BaseScreenHandler;
+  friend class BaseWebUIHandler;
+  friend class EnrollmentScreenTest;
   friend class NetworkScreenTest;
   friend class ScreenEditor;
   friend class ScreenManager;
   friend class UpdateScreenTest;
-
-  void SetContext(::login::ScreenContext* context);
 
   // Called when context for the current screen was
   // changed. Notification about this event comes from the JS
   // counterpart.
   void OnContextChanged(const base::DictionaryValue& diff);
 
-  ModelViewChannel* channel_;
+  // Screen configuration, unowned.
+  // Configuration itself is owned by WizardController and is accessible
+  // to screen only between OnShow / OnHide calls.
+  base::Value* configuration_ = nullptr;
 
-  BaseScreenDelegate* base_screen_delegate_;
+  ModelViewChannel* channel_ = nullptr;
+
+  BaseScreenDelegate* base_screen_delegate_ = nullptr;
+
+  const OobeScreen screen_id_;
 
   DISALLOW_COPY_AND_ASSIGN(BaseScreen);
 };

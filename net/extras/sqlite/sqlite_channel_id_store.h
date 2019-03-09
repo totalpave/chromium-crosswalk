@@ -10,6 +10,7 @@
 
 #include "base/callback_forward.h"
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "net/ssl/default_channel_id_store.h"
@@ -19,15 +20,14 @@ class FilePath;
 class SequencedTaskRunner;
 }
 
-class GURL;
-
 namespace net {
 
 // Implements the DefaultChannelIDStore::PersistentStore interface
 // in terms of a SQLite database. For documentation about the actual member
 // functions consult the documentation of the parent class
 // DefaultChannelIDStore::PersistentCertStore.
-class SQLiteChannelIDStore : public DefaultChannelIDStore::PersistentStore {
+class COMPONENT_EXPORT(NET_EXTRAS) SQLiteChannelIDStore
+    : public DefaultChannelIDStore::PersistentStore {
  public:
   // Create or open persistent store in file |path|. All I/O tasks are performed
   // in background using |background_task_runner|.
@@ -42,6 +42,7 @@ class SQLiteChannelIDStore : public DefaultChannelIDStore::PersistentStore {
   void DeleteChannelID(
       const DefaultChannelIDStore::ChannelID& channel_id) override;
   void SetForceKeepSessionState() override;
+  void Flush() override;
 
   // Delete channel ids from servers in |server_identifiers|.
   void DeleteAllInList(const std::list<std::string>& server_identifiers);

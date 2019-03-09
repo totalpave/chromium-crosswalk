@@ -85,7 +85,8 @@ class ExitCodeWatcherTest : public testing::Test {
   void SetUp() override {
     Super::SetUp();
 
-    override_manager_.OverrideRegistry(HKEY_CURRENT_USER);
+    ASSERT_NO_FATAL_FAILURE(
+        override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
   }
 
   base::Process OpenSelfWithAccess(uint32_t access) {
@@ -117,16 +118,6 @@ class ExitCodeWatcherTest : public testing::Test {
 };
 
 }  // namespace
-
-TEST_F(ExitCodeWatcherTest, ExitCodeWatcherInvalidHandleFailsInit) {
-  ExitCodeWatcher watcher(kRegistryPath);
-
-  // A waitable event has a non process-handle.
-  base::Process event(::CreateEvent(NULL, false, false, NULL));
-
-  // A non-process handle should fail.
-  EXPECT_FALSE(watcher.Initialize(std::move(event)));
-}
 
 TEST_F(ExitCodeWatcherTest, ExitCodeWatcherNoAccessHandleFailsInit) {
   ExitCodeWatcher watcher(kRegistryPath);

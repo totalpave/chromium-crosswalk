@@ -20,7 +20,6 @@
 namespace remoting {
 
 class ClientContext;
-class XmppSignalStrategy;
 
 namespace protocol {
 class ClipboardStub;
@@ -49,7 +48,8 @@ class TestChromotingClient : public ClientUserInterface,
   ~TestChromotingClient() override;
 
   // Starts a Chromoting connection using the specified connection setup info.
-  void StartConnection(const ConnectionSetupInfo& connection_setup_info);
+  void StartConnection(bool use_test_api_values,
+                       const ConnectionSetupInfo& connection_setup_info);
 
   // Ends the current remote connection and updates the connection state.
   void EndConnection();
@@ -106,7 +106,8 @@ class TestChromotingClient : public ClientUserInterface,
   // List of observers which are notified when remote connection events occur.
   // We specify true below for the 'check_empty' flag so the list will check to
   // see if all observers have been unregistered when it is destroyed.
-  base::ObserverList<RemoteConnectionObserver, true> connection_observers_;
+  base::ObserverList<RemoteConnectionObserver, true>::Unchecked
+      connection_observers_;
 
   // ConnectionToHost used by TestChromotingClient tests.
   std::unique_ptr<protocol::ConnectionToHost> test_connection_to_host_;

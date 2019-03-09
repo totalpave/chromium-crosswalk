@@ -11,6 +11,9 @@
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -88,8 +91,9 @@ void DemuxerStreamAdapterTest::Start() {
   // exit of the unit test, the message loop is still running. Find a different
   // way to exit the unit test.
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&DemuxerStreamAdapterTest::OnTestTimeout,
-                            base::Unretained(this)),
+      FROM_HERE,
+      base::BindOnce(&DemuxerStreamAdapterTest::OnTestTimeout,
+                     base::Unretained(this)),
       base::TimeDelta::FromSeconds(5));
 
   coded_frame_provider_->Read(base::Bind(&DemuxerStreamAdapterTest::OnNewFrame,
@@ -98,8 +102,8 @@ void DemuxerStreamAdapterTest::Start() {
 
 void DemuxerStreamAdapterTest::OnTestTimeout() {
   ADD_FAILURE() << "Test timed out";
-  if (base::MessageLoop::current())
-    base::MessageLoop::current()->QuitWhenIdle();
+  if (base::MessageLoopCurrent::Get())
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 void DemuxerStreamAdapterTest::OnNewFrame(
@@ -133,8 +137,9 @@ void DemuxerStreamAdapterTest::OnNewFrame(
     if (use_post_task_for_flush_) {
       base::ThreadTaskRunnerHandle::Get()->PostTask(
           FROM_HERE,
-          base::Bind(&CodedFrameProvider::Flush,
-                     base::Unretained(coded_frame_provider_.get()), flush_cb));
+          base::BindOnce(&CodedFrameProvider::Flush,
+                         base::Unretained(coded_frame_provider_.get()),
+                         flush_cb));
     } else {
       coded_frame_provider_->Flush(flush_cb);
     }
@@ -145,7 +150,7 @@ void DemuxerStreamAdapterTest::OnNewFrame(
 void DemuxerStreamAdapterTest::OnFlushCompleted() {
   ASSERT_EQ(frame_received_count_, total_expected_frames_);
   ASSERT_FALSE(demuxer_stream_->has_pending_read());
-  base::MessageLoop::current()->QuitWhenIdle();
+  base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 TEST_F(DemuxerStreamAdapterTest, NoDelay) {
@@ -162,10 +167,10 @@ TEST_F(DemuxerStreamAdapterTest, NoDelay) {
 
   std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
   Initialize(demuxer_stream_.get());
-  message_loop->PostTask(
+  message_loop->task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&DemuxerStreamAdapterTest::Start, base::Unretained(this)));
-  message_loop->Run();
+      base::BindOnce(&DemuxerStreamAdapterTest::Start, base::Unretained(this)));
+  base::RunLoop().Run();
 }
 
 TEST_F(DemuxerStreamAdapterTest, AllDelayed) {
@@ -182,10 +187,10 @@ TEST_F(DemuxerStreamAdapterTest, AllDelayed) {
 
   std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
   Initialize(demuxer_stream_.get());
-  message_loop->PostTask(
+  message_loop->task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&DemuxerStreamAdapterTest::Start, base::Unretained(this)));
-  message_loop->Run();
+      base::BindOnce(&DemuxerStreamAdapterTest::Start, base::Unretained(this)));
+  base::RunLoop().Run();
 }
 
 TEST_F(DemuxerStreamAdapterTest, AllDelayedEarlyFlush) {
@@ -203,10 +208,10 @@ TEST_F(DemuxerStreamAdapterTest, AllDelayedEarlyFlush) {
 
   std::unique_ptr<base::MessageLoop> message_loop(new base::MessageLoop());
   Initialize(demuxer_stream_.get());
-  message_loop->PostTask(
+  message_loop->task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&DemuxerStreamAdapterTest::Start, base::Unretained(this)));
-  message_loop->Run();
+      base::BindOnce(&DemuxerStreamAdapterTest::Start, base::Unretained(this)));
+  base::RunLoop().Run();
 }
 
 }  // namespace media

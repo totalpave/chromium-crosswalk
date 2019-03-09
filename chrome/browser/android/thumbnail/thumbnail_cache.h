@@ -8,15 +8,17 @@
 #include <stddef.h>
 
 #include <list>
+#include <map>
 #include <set>
 #include <string>
 
 #include "base/bind.h"
-#include "base/containers/hash_tables.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
+#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
+#include "base/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "chrome/browser/android/thumbnail/scoped_ptr_expiring_cache.h"
 #include "chrome/browser/android/thumbnail/thumbnail.h"
@@ -29,12 +31,7 @@
 #include "url/gurl.h"
 
 namespace base {
-class File;
 class Time;
-}
-
-namespace content {
-class ContentViewCore;
 }
 
 typedef std::list<TabId> TabIdList;
@@ -66,7 +63,7 @@ class ThumbnailCache : ThumbnailDelegate {
 
   void InvalidateThumbnailIfChanged(TabId tab_id, const GURL& url);
   bool CheckAndUpdateThumbnailMetaData(TabId tab_id, const GURL& url);
-  void UpdateVisibleIds(const TabIdList& priority);
+  void UpdateVisibleIds(const TabIdList& priority, TabId primary_tab_id);
   void DecompressThumbnailFromFile(
       TabId tab_id,
       const base::Callback<void(bool, SkBitmap)>&
@@ -94,8 +91,8 @@ class ThumbnailCache : ThumbnailDelegate {
     GURL url_;
   };
 
-  typedef ScopedPtrExpiringCache<TabId, Thumbnail> ExpiringThumbnailCache;
-  typedef base::hash_map<TabId, ThumbnailMetaData> ThumbnailMetaDataMap;
+  using ExpiringThumbnailCache = ScopedPtrExpiringCache<TabId, Thumbnail>;
+  using ThumbnailMetaDataMap = std::map<TabId, ThumbnailMetaData>;
 
   void RemoveFromDisk(TabId tab_id);
   static void RemoveFromDiskTask(TabId tab_id);
@@ -147,6 +144,11 @@ class ThumbnailCache : ThumbnailDelegate {
   static std::pair<SkBitmap, float> CreateApproximation(const SkBitmap& bitmap,
                                                         float scale);
 
+  void OnMemoryPressure(
+      base::MemoryPressureListener::MemoryPressureLevel level);
+
+  const scoped_refptr<base::SequencedTaskRunner> file_sequenced_task_runner_;
+
   const size_t compression_queue_max_size_;
   const size_t write_queue_max_size_;
   const bool use_approximation_thumbnail_;
@@ -157,13 +159,15 @@ class ThumbnailCache : ThumbnailDelegate {
 
   ExpiringThumbnailCache cache_;
   ExpiringThumbnailCache approximation_cache_;
-  base::ObserverList<ThumbnailCacheObserver> observers_;
+  base::ObserverList<ThumbnailCacheObserver>::Unchecked observers_;
   ThumbnailMetaDataMap thumbnail_meta_data_;
   TabIdList read_queue_;
   TabIdList visible_ids_;
+  TabId primary_tab_id_ = -1;
 
   ui::UIResourceProvider* ui_resource_provider_;
 
+  std::unique_ptr<base::MemoryPressureListener> memory_pressure_;
   base::WeakPtrFactory<ThumbnailCache> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ThumbnailCache);

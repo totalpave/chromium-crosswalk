@@ -12,12 +12,15 @@
 
 #include "base/atomicops.h"
 #include "base/location.h"
-#include "base/macros.h"
-#include "base/memory/weak_ptr.h"
-#include "base/single_thread_task_runner.h"
+#include "base/memory/ref_counted.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/synchronization/lock.h"
+#include "base/synchronization/waitable_event.h"
+#include "base/task/post_task.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "rlz/lib/assert.h"
@@ -26,6 +29,8 @@
 #include "rlz/lib/rlz_lib.h"
 #include "rlz/lib/rlz_value_store.h"
 #include "rlz/lib/string_utils.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 
 #if !defined(OS_WIN)
 #include "base/time/time.h"
@@ -54,42 +59,13 @@ class InternetHandle {
 #else
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
 #include "net/base/load_flags.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_fetcher_delegate.h"
-#include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_context_getter.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "url/gurl.h"
 
 #endif
-
-namespace {
-
-// Returns the time relative to a fixed point in the past in multiples of
-// 100 ns stepts. The point in the past is arbitrary but can't change, as the
-// result of this value is stored on disk.
-int64_t GetSystemTimeAsInt64() {
-#if defined(OS_WIN)
-  FILETIME now_as_file_time;
-  // Relative to Jan 1, 1601 (UTC).
-  GetSystemTimeAsFileTime(&now_as_file_time);
-
-  LARGE_INTEGER integer;
-  integer.HighPart = now_as_file_time.dwHighDateTime;
-  integer.LowPart = now_as_file_time.dwLowDateTime;
-  return integer.QuadPart;
-#else
-  // Seconds since epoch (Jan 1, 1970).
-  double now_seconds = base::Time::Now().ToDoubleT();
-  return static_cast<int64_t>(now_seconds * 1000 * 1000 * 10);
-#endif
-}
-
-}  // namespace
-
 
 namespace rlz_lib {
 
@@ -148,7 +124,7 @@ bool FinancialPing::FormRequest(Product product,
   // Add the product events.
   char cgi[kMaxCgiLength + 1];
   cgi[0] = 0;
-  bool has_events = GetProductEventsAsCgi(product, cgi, arraysize(cgi));
+  bool has_events = GetProductEventsAsCgi(product, cgi, base::size(cgi));
   if (has_events)
     base::StringAppendF(request, "&%s", cgi);
 
@@ -162,8 +138,7 @@ bool FinancialPing::FormRequest(Product product,
     for (int ap = NO_ACCESS_POINT + 1; ap < LAST_ACCESS_POINT; ap++) {
       rlz[0] = 0;
       AccessPoint point = static_cast<AccessPoint>(ap);
-      if (GetAccessPointRlz(point, rlz, arraysize(rlz)) &&
-          rlz[0] != '\0')
+      if (GetAccessPointRlz(point, rlz, base::size(rlz)) && rlz[0] != '\0')
         all_points[idx++] = point;
     }
     all_points[idx] = NO_ACCESS_POINT;
@@ -172,8 +147,8 @@ bool FinancialPing::FormRequest(Product product,
   // Add the RLZ's and the DCC if needed. This is the same as get PingParams.
   // This will also include the RLZ Exchange Protocol CGI Argument.
   cgi[0] = 0;
-  if (GetPingParams(product, has_events ? access_points : all_points,
-                    cgi, arraysize(cgi)))
+  if (GetPingParams(product, has_events ? access_points : all_points, cgi,
+                    base::size(cgi)))
     base::StringAppendF(request, "&%s", cgi);
 
   if (has_events && !exclude_machine_id) {
@@ -191,56 +166,165 @@ bool FinancialPing::FormRequest(Product product,
 // The pointer to URLRequestContextGetter used by FinancialPing::PingServer().
 // It is atomic pointer because it can be accessed and modified by multiple
 // threads.
-AtomicWord g_context;
+AtomicWord g_URLLoaderFactory;
 
-bool FinancialPing::SetURLRequestContext(
-    net::URLRequestContextGetter* context) {
-  base::subtle::Release_Store(
-      &g_context, reinterpret_cast<AtomicWord>(context));
+bool FinancialPing::SetURLLoaderFactory(
+    network::mojom::URLLoaderFactory* factory) {
+  base::subtle::Release_Store(&g_URLLoaderFactory,
+                              reinterpret_cast<AtomicWord>(factory));
   return true;
 }
 
+// Signal to stop the ShutdownCheck() task.
+AtomicWord g_cancelShutdownCheck;
+
 namespace {
 
-class FinancialPingUrlFetcherDelegate : public net::URLFetcherDelegate {
+// A waitable event used to detect when either:
+//
+//   1/ the RLZ ping request completes
+//   2/ the RLZ ping request times out
+//   3/ browser shutdown begins
+class RefCountedWaitableEvent
+    : public base::RefCountedThreadSafe<RefCountedWaitableEvent> {
  public:
-  FinancialPingUrlFetcherDelegate(const base::Closure& callback)
-      : callback_(callback) {
+  RefCountedWaitableEvent()
+      : event_(base::WaitableEvent::ResetPolicy::MANUAL,
+               base::WaitableEvent::InitialState::NOT_SIGNALED) {}
+
+  void SignalShutdown() { event_.Signal(); }
+
+  void SignalFetchComplete(int response_code, std::string response) {
+    base::AutoLock autolock(lock_);
+    response_code_ = response_code;
+    response_ = std::move(response);
+    event_.Signal();
   }
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
+
+  bool TimedWait(base::TimeDelta timeout) { return event_.TimedWait(timeout); }
+
+  int GetResponseCode() {
+    base::AutoLock autolock(lock_);
+    return response_code_;
+  }
+
+  std::string TakeResponse() {
+    base::AutoLock autolock(lock_);
+    std::string temp = std::move(response_);
+    response_.clear();
+    return temp;
+  }
 
  private:
-  base::Closure callback_;
+  ~RefCountedWaitableEvent() = default;
+  friend class base::RefCountedThreadSafe<RefCountedWaitableEvent>;
+
+  base::WaitableEvent event_;
+  base::Lock lock_;
+  std::string response_;
+  int response_code_ = -1;
 };
 
-void FinancialPingUrlFetcherDelegate::OnURLFetchComplete(
-    const net::URLFetcher* source) {
-  callback_.Run();
+// The URL load complete callback signals an instance of
+// RefCountedWaitableEvent when the load completes.
+void OnURLLoadComplete(std::unique_ptr<network::SimpleURLLoader> url_loader,
+                       scoped_refptr<RefCountedWaitableEvent> event,
+                       std::unique_ptr<std::string> response_body) {
+  int response_code = -1;
+  if (url_loader->ResponseInfo() && url_loader->ResponseInfo()->headers) {
+    response_code = url_loader->ResponseInfo()->headers->response_code();
+  }
+
+  std::string response;
+  if (response_body) {
+    response = std::move(*response_body);
+  }
+
+  event->SignalFetchComplete(response_code, std::move(response));
 }
 
 bool send_financial_ping_interrupted_for_test = false;
 
 }  // namespace
 
-void ShutdownCheck(base::WeakPtr<base::RunLoop> weak) {
-  if (!weak.get())
+#if defined(RLZ_NETWORK_IMPLEMENTATION_CHROME_NET)
+void ShutdownCheck(scoped_refptr<RefCountedWaitableEvent> event) {
+  if (base::subtle::Acquire_Load(&g_cancelShutdownCheck))
     return;
-  if (!base::subtle::Acquire_Load(&g_context)) {
+
+  if (!base::subtle::Acquire_Load(&g_URLLoaderFactory)) {
     send_financial_ping_interrupted_for_test = true;
-    weak->QuitClosure().Run();
+    event->SignalShutdown();
     return;
   }
   // How frequently the financial ping thread should check
   // the shutdown condition?
   const base::TimeDelta kInterval = base::TimeDelta::FromMilliseconds(500);
-  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&ShutdownCheck, weak), kInterval);
+  base::PostDelayedTaskWithTraits(FROM_HERE, {base::TaskPriority::BEST_EFFORT},
+                                  base::BindOnce(&ShutdownCheck, event),
+                                  kInterval);
 }
 #endif
 
-bool FinancialPing::PingServer(const char* request, std::string* response) {
+void PingRlzServer(std::string url,
+                   scoped_refptr<RefCountedWaitableEvent> event) {
+  // Copy the pointer to stack because g_URLLoaderFactory may be set to NULL
+  // in different thread. The instance is guaranteed to exist while
+  // the method is running.
+  network::mojom::URLLoaderFactory* url_loader_factory =
+      reinterpret_cast<network::mojom::URLLoaderFactory*>(
+          base::subtle::Acquire_Load(&g_URLLoaderFactory));
+
+  // Browser shutdown will cause the factory to be reset to NULL.
+  // ShutdownCheck will catch this.
+  if (!url_loader_factory)
+    return;
+
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("rlz_ping", R"(
+        semantics {
+          sender: "RLZ Ping"
+          description:
+            "Used for measuring the effectiveness of a promotion. See the "
+            "Chrome Privacy Whitepaper for complete details."
+          trigger:
+            "1- At Chromium first run.\n"
+            "2- When Chromium is re-activated by a new promotion.\n"
+            "3- Once a week thereafter as long as Chromium is used.\n"
+          data:
+            "1- Non-unique cohort tag of when Chromium was installed.\n"
+            "2- Unique machine id on desktop platforms.\n"
+            "3- Whether Google is the default omnibox search.\n"
+            "4- Whether google.com is the default home page."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting: "This feature cannot be disabled in settings."
+          policy_exception_justification: "Not implemented."
+        })");
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = GURL(url);
+  resource_request->load_flags = net::LOAD_DISABLE_CACHE;
+  resource_request->allow_credentials = false;
+
+  auto url_loader = network::SimpleURLLoader::Create(
+      std::move(resource_request), traffic_annotation);
+
+  // Pass ownership of the loader to the bound function. Otherwise the load will
+  // be canceled when the SimpleURLLoader object is destroyed.
+  auto* url_loader_ptr = url_loader.get();
+  url_loader_ptr->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      url_loader_factory,
+      base::BindOnce(&OnURLLoadComplete, std::move(url_loader),
+                     std::move(event)));
+}
+#endif
+
+FinancialPing::PingResponse FinancialPing::PingServer(const char* request,
+                                                      std::string* response) {
   if (!response)
-    return false;
+    return PING_FAILURE;
 
   response->clear();
 
@@ -250,28 +334,30 @@ bool FinancialPing::PingServer(const char* request, std::string* response) {
                                              INTERNET_OPEN_TYPE_PRECONFIG,
                                              NULL, NULL, 0);
   if (!inet_handle)
-    return false;
+    return PING_FAILURE;
 
   // Open network connection.
   InternetHandle connection_handle = InternetConnectA(inet_handle,
       kFinancialServer, kFinancialPort, "", "", INTERNET_SERVICE_HTTP,
       INTERNET_FLAG_NO_CACHE_WRITE, 0);
   if (!connection_handle)
-    return false;
+    return PING_FAILURE;
 
   // Prepare the HTTP request.
-  InternetHandle http_handle = HttpOpenRequestA(connection_handle,
-      "GET", request, NULL, NULL, kFinancialPingResponseObjects,
-      INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_COOKIES, NULL);
+  const DWORD kFlags = INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_COOKIES |
+                       INTERNET_FLAG_SECURE;
+  InternetHandle http_handle =
+      HttpOpenRequestA(connection_handle, "GET", request, NULL, NULL,
+                       kFinancialPingResponseObjects, kFlags, NULL);
   if (!http_handle)
-    return false;
+    return PING_FAILURE;
 
   // Timeouts are probably:
   // INTERNET_OPTION_SEND_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT
 
   // Send the HTTP request. Note: Fails if user is working in off-line mode.
   if (!HttpSendRequest(http_handle, NULL, 0, NULL, 0))
-    return false;
+    return PING_FAILURE;
 
   // Check the response status.
   DWORD status;
@@ -279,12 +365,12 @@ bool FinancialPing::PingServer(const char* request, std::string* response) {
   if (!HttpQueryInfo(http_handle, HTTP_QUERY_STATUS_CODE |
                      HTTP_QUERY_FLAG_NUMBER, &status, &status_size, NULL) ||
       200 != status)
-    return false;
+    return PING_FAILURE;
 
   // Get the response text.
   std::unique_ptr<char[]> buffer(new char[kMaxPingResponseLength]);
   if (buffer.get() == NULL)
-    return false;
+    return PING_FAILURE;
 
   DWORD bytes_read = 0;
   while (InternetReadFile(http_handle, buffer.get(), kMaxPingResponseLength,
@@ -293,62 +379,49 @@ bool FinancialPing::PingServer(const char* request, std::string* response) {
     bytes_read = 0;
   };
 
-  return true;
+  return PING_SUCCESSFUL;
 #else
-  // Copy the pointer to stack because g_context may be set to NULL
-  // in different thread. The instance is guaranteed to exist while
-  // the method is running.
-  net::URLRequestContextGetter* context =
-      reinterpret_cast<net::URLRequestContextGetter*>(
-          base::subtle::Acquire_Load(&g_context));
+  std::string url =
+      base::StringPrintf("https://%s%s", kFinancialServer, request);
 
-  // Browser shutdown will cause the context to be reset to NULL.
-  if (!context)
-    return false;
+  // Use a waitable event to cause this function to block, to match the
+  // wininet implementation.
+  auto event = base::MakeRefCounted<RefCountedWaitableEvent>();
 
-  // Run a blocking event loop to match the win inet implementation.
-  std::unique_ptr<base::MessageLoop> message_loop;
-  // Ensure that we have a MessageLoop.
-  if (!base::MessageLoop::current())
-    message_loop.reset(new base::MessageLoop);
-  base::RunLoop loop;
-  FinancialPingUrlFetcherDelegate delegate(loop.QuitClosure());
+  base::subtle::Release_Store(&g_cancelShutdownCheck, 0);
 
-  std::string url = base::StringPrintf("http://%s:%d%s",
-                                       kFinancialServer, kFinancialPort,
-                                       request);
+  base::PostTaskWithTraits(FROM_HERE, {base::TaskPriority::BEST_EFFORT},
+                           base::BindOnce(&ShutdownCheck, event));
 
-  std::unique_ptr<net::URLFetcher> fetcher =
-      net::URLFetcher::Create(GURL(url), net::URLFetcher::GET, &delegate);
+  // PingRlzServer must be run in a separate sequence so that the TimedWait()
+  // call below does not block the URL fetch response from being handled by
+  // the URL delegate.
+  scoped_refptr<base::SequencedTaskRunner> background_runner(
+      base::CreateSequencedTaskRunnerWithTraits(
+          {base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN,
+           base::TaskPriority::BEST_EFFORT}));
+  background_runner->PostTask(FROM_HERE,
+                              base::BindOnce(&PingRlzServer, url, event));
 
-  fetcher->SetLoadFlags(net::LOAD_DISABLE_CACHE |
-                        net::LOAD_DO_NOT_SEND_AUTH_DATA |
-                        net::LOAD_DO_NOT_SEND_COOKIES |
-                        net::LOAD_DO_NOT_SAVE_COOKIES);
+  bool is_signaled;
+  {
+    base::ScopedAllowBaseSyncPrimitives allow_base_sync_primitives;
+    is_signaled = event->TimedWait(base::TimeDelta::FromMinutes(5));
+  }
 
-  // Ensure rlz_lib::SetURLRequestContext() has been called before sending
-  // pings.
-  fetcher->SetRequestContext(context);
+  base::subtle::Release_Store(&g_cancelShutdownCheck, 1);
 
-  base::WeakPtrFactory<base::RunLoop> weak(&loop);
+  if (!is_signaled)
+    return PING_FAILURE;
 
-  const base::TimeDelta kTimeout = base::TimeDelta::FromMinutes(5);
-  base::MessageLoop::ScopedNestableTaskAllower allow_nested(
-      base::MessageLoop::current());
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&ShutdownCheck, weak.GetWeakPtr()));
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&net::URLFetcher::Start, base::Unretained(fetcher.get())));
-  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, loop.QuitClosure(), kTimeout);
+  if (event->GetResponseCode() == -1) {
+    return PING_SHUTDOWN;
+  } else if (event->GetResponseCode() != 200) {
+    return PING_FAILURE;
+  }
 
-  loop.Run();
-
-  if (fetcher->GetResponseCode() != 200)
-    return false;
-
-  return fetcher->GetResponseAsString(response);
+  *response = event->TakeResponse();
+  return PING_SUCCESSFUL;
 #endif
 }
 
@@ -372,7 +445,7 @@ bool FinancialPing::IsPingTime(Product product, bool no_delay) {
   // Check if this product has any unreported events.
   char cgi[kMaxCgiLength + 1];
   cgi[0] = 0;
-  bool has_events = GetProductEventsAsCgi(product, cgi, arraysize(cgi));
+  bool has_events = GetProductEventsAsCgi(product, cgi, base::size(cgi));
   if (no_delay && has_events)
     return true;
 
@@ -397,6 +470,23 @@ bool FinancialPing::ClearLastPingTime(Product product) {
   if (!store || !store->HasAccess(RlzValueStore::kWriteAccess))
     return false;
   return store->ClearPingTime(product);
+}
+
+int64_t FinancialPing::GetSystemTimeAsInt64() {
+#if defined(OS_WIN)
+  FILETIME now_as_file_time;
+  // Relative to Jan 1, 1601 (UTC).
+  GetSystemTimeAsFileTime(&now_as_file_time);
+
+  LARGE_INTEGER integer;
+  integer.HighPart = now_as_file_time.dwHighDateTime;
+  integer.LowPart = now_as_file_time.dwLowDateTime;
+  return integer.QuadPart;
+#else
+  // Seconds since epoch (Jan 1, 1970).
+  double now_seconds = base::Time::Now().ToDoubleT();
+  return static_cast<int64_t>(now_seconds * 1000 * 1000 * 10);
+#endif
 }
 
 #if defined(RLZ_NETWORK_IMPLEMENTATION_CHROME_NET)

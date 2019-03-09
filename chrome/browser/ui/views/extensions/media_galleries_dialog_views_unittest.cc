@@ -10,6 +10,7 @@
 #include "chrome/browser/media_galleries/media_galleries_dialog_controller_mock.h"
 #include "chrome/browser/ui/views/extensions/media_galleries_dialog_views.h"
 #include "chrome/browser/ui/views/extensions/media_gallery_checkbox_view.h"
+#include "chrome/test/views/chrome_test_views_delegate.h"
 #include "components/storage_monitor/storage_info.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/controls/button/checkbox.h"
@@ -28,7 +29,7 @@ MediaGalleryPrefInfo MakePrefInfoForTesting(MediaGalleryPrefId id) {
   gallery.pref_id = id;
   gallery.device_id = storage_monitor::StorageInfo::MakeDeviceId(
       storage_monitor::StorageInfo::FIXED_MASS_STORAGE,
-      base::Uint64ToString(id));
+      base::NumberToString(id));
   gallery.display_name = base::ASCIIToUTF16("Display Name");
   return gallery;
 }
@@ -60,6 +61,7 @@ class MediaGalleriesDialogTest : public testing::Test {
  private:
   // TODO(gbillock): Get rid of this mock; make something specialized.
   NiceMock<MediaGalleriesDialogControllerMock> controller_;
+  ChromeTestViewsDelegate test_views_delegate_;
 
   DISALLOW_COPY_AND_ASSIGN(MediaGalleriesDialogTest);
 };

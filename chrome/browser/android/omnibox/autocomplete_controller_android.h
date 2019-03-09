@@ -13,18 +13,17 @@
 #include "base/memory/singleton.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/metrics/proto/omnibox_event.pb.h"
 #include "components/omnibox/browser/autocomplete_controller_delegate.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_service.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
 
 class AutocompleteController;
 struct AutocompleteMatch;
 class AutocompleteResult;
 class Profile;
-class Tab;
 
 // The native part of the Java AutocompleteController class.
 class AutocompleteControllerAndroid : public AutocompleteControllerDelegate,
@@ -42,16 +41,19 @@ class AutocompleteControllerAndroid : public AutocompleteControllerDelegate,
              bool prevent_inline_autocomplete,
              bool prefer_keyword,
              bool allow_exact_keyword_match,
-             bool best_match_only);
+             bool want_asynchronous_matches,
+             bool focused_from_fakebox);
   base::android::ScopedJavaLocalRef<jobject> Classify(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      const base::android::JavaParamRef<jstring>& j_text);
+      const base::android::JavaParamRef<jstring>& j_text,
+      bool focused_from_fakebox);
   void OnOmniboxFocused(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       const base::android::JavaParamRef<jstring>& j_omnibox_text,
       const base::android::JavaParamRef<jstring>& j_current_url,
+      const base::android::JavaParamRef<jstring>& j_current_title,
       jboolean focused_from_fakebox);
   void Stop(JNIEnv* env,
             const base::android::JavaParamRef<jobject>& obj,
@@ -62,6 +64,7 @@ class AutocompleteControllerAndroid : public AutocompleteControllerDelegate,
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       jint selected_index,
+      jint hash_code,
       const base::android::JavaParamRef<jstring>& j_current_url,
       jboolean focused_from_fakebox,
       jlong elapsed_time_since_first_modified,
@@ -69,12 +72,14 @@ class AutocompleteControllerAndroid : public AutocompleteControllerDelegate,
       const base::android::JavaParamRef<jobject>& j_web_contents);
   void DeleteSuggestion(JNIEnv* env,
                         const base::android::JavaParamRef<jobject>& obj,
-                        int selected_index);
+                        jint selected_index,
+                        jint hash_code);
   base::android::ScopedJavaLocalRef<jstring>
   UpdateMatchDestinationURLWithQueryFormulationTime(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       jint selected_index,
+      jint hash_code,
       jlong elapsed_time_since_input_change);
 
   // KeyedService:
@@ -130,7 +135,10 @@ class AutocompleteControllerAndroid : public AutocompleteControllerDelegate,
       JNIEnv* env,
       const base::android::JavaRef<jobject>& obj,
       const base::android::JavaRef<jstring>& j_text,
-      bool prevent_inline_autocomplete);
+      bool prevent_inline_autocomplete,
+      bool focused_from_fakebox);
+
+  bool IsValidMatch(JNIEnv* env, jint selected_index, jint hash_code);
 
   std::unique_ptr<AutocompleteController> autocomplete_controller_;
 
@@ -146,8 +154,5 @@ class AutocompleteControllerAndroid : public AutocompleteControllerDelegate,
 
   DISALLOW_COPY_AND_ASSIGN(AutocompleteControllerAndroid);
 };
-
-// Registers the LocationBar native method.
-bool RegisterAutocompleteControllerAndroid(JNIEnv* env);
 
 #endif  // CHROME_BROWSER_ANDROID_OMNIBOX_AUTOCOMPLETE_CONTROLLER_ANDROID_H_

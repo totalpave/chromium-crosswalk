@@ -70,8 +70,12 @@ class GIN_EXPORT WrappableBase {
   // Overrides of this method should be declared final and not overridden again.
   virtual ObjectTemplateBuilder GetObjectTemplateBuilder(v8::Isolate* isolate);
 
-  v8::Local<v8::Object> GetWrapperImpl(v8::Isolate* isolate,
-                                        WrapperInfo* wrapper_info);
+  // Returns a readable type name that will be used in surfacing errors. The
+  // default implementation returns nullptr, which results in a generic error.
+  virtual const char* GetTypeName();
+
+  v8::MaybeLocal<v8::Object> GetWrapperImpl(v8::Isolate* isolate,
+                                            WrapperInfo* wrapper_info);
 
  private:
   static void FirstWeakCallback(
@@ -79,6 +83,7 @@ class GIN_EXPORT WrappableBase {
   static void SecondWeakCallback(
       const v8::WeakCallbackInfo<WrappableBase>& data);
 
+  bool dead_ = false;
   v8::Global<v8::Object> wrapper_;  // Weak
 
   DISALLOW_COPY_AND_ASSIGN(WrappableBase);
@@ -89,26 +94,36 @@ template<typename T>
 class Wrappable : public WrappableBase {
  public:
   // Retrieve (or create) the v8 wrapper object cooresponding to this object.
-  v8::Local<v8::Object> GetWrapper(v8::Isolate* isolate) {
+  v8::MaybeLocal<v8::Object> GetWrapper(v8::Isolate* isolate) {
     return GetWrapperImpl(isolate, &T::kWrapperInfo);
   }
 
  protected:
   Wrappable() {}
-  virtual ~Wrappable() {}
+  ~Wrappable() override {}
 
  private:
   DISALLOW_COPY_AND_ASSIGN(Wrappable);
 };
 
+template <typename T>
+struct ToV8ReturnsMaybe<
+    T*,
+    typename std::enable_if<
+        std::is_convertible<T*, WrappableBase*>::value>::type> {
+  static const bool value = true;
+};
 
 // This converter handles any subclass of Wrappable.
 template <typename T>
 struct Converter<T*,
                  typename std::enable_if<
                      std::is_convertible<T*, WrappableBase*>::value>::type> {
-  static v8::Local<v8::Value> ToV8(v8::Isolate* isolate, T* val) {
-    return val->GetWrapper(isolate);
+  static v8::MaybeLocal<v8::Value> ToV8(v8::Isolate* isolate, T* val) {
+    v8::Local<v8::Object> wrapper;
+    if (!val->GetWrapper(isolate).ToLocal(&wrapper))
+      return v8::MaybeLocal<v8::Value>();
+    return v8::MaybeLocal<v8::Value>(wrapper);
   }
 
   static bool FromV8(v8::Isolate* isolate, v8::Local<v8::Value> val, T** out) {

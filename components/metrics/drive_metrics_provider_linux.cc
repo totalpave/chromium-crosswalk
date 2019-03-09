@@ -11,12 +11,9 @@
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
-
-#if defined(OS_CHROMEOS)
-#include "base/sys_info.h"
-#endif
 
 namespace metrics {
 
@@ -32,15 +29,6 @@ const char kRotationalFormat[] = "/sys/block/sd%c/queue/rotational";
 // static
 bool DriveMetricsProvider::HasSeekPenalty(const base::FilePath& path,
                                           bool* has_seek_penalty) {
-#if defined(OS_CHROMEOS)
-  std::string board = base::SysInfo::GetLsbReleaseBoard();
-  if (board != "unknown" && board != "parrot") {
-    // All ChromeOS devices have SSDs. Except some parrots.
-    *has_seek_penalty = false;
-    return true;
-  }
-#endif
-
   base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
   if (!file.IsValid())
     return false;

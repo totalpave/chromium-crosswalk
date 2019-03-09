@@ -2,36 +2,42 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "net/ssl/ssl_platform_key.h"
+#include "net/ssl/ssl_platform_key_mac.h"
 
+#include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecBase.h>
 #include <Security/SecCertificate.h>
 #include <Security/SecIdentity.h>
 #include <Security/SecKey.h>
 #include <Security/cssm.h>
-#include <openssl/ecdsa.h>
-#include <openssl/obj.h>
-#include <openssl/rsa.h>
 
 #include <memory>
 
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/mac/availability.h"
+#include "base/mac/foundation_util.h"
 #include "base/mac/mac_logging.h"
+#include "base/mac/mac_util.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/scoped_policy.h"
-#include "base/sequenced_task_runner.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/synchronization/lock.h"
 #include "crypto/mac_security_services_lock.h"
 #include "crypto/openssl_util.h"
-#include "crypto/scoped_openssl_types.h"
 #include "net/base/net_errors.h"
 #include "net/cert/x509_certificate.h"
-#include "net/ssl/ssl_platform_key_task_runner.h"
+#include "net/cert/x509_util_mac.h"
+#include "net/ssl/ssl_platform_key_util.h"
 #include "net/ssl/ssl_private_key.h"
 #include "net/ssl/threaded_ssl_private_key.h"
+#include "third_party/boringssl/src/include/openssl/ecdsa.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
+#include "third_party/boringssl/src/include/openssl/mem.h"
+#include "third_party/boringssl/src/include/openssl/nid.h"
+#include "third_party/boringssl/src/include/openssl/rsa.h"
+#include "third_party/boringssl/src/include/openssl/ssl.h"
 
 namespace net {
 
@@ -41,6 +47,21 @@ namespace net {
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 namespace {
+
+// TODO(davidben): Remove this when we switch to building to the 10.13
+// SDK. https://crbug.com/780980
+#if !defined(MAC_OS_X_VERSION_10_13) || \
+    MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_13
+API_AVAILABLE(macosx(10.13))
+const SecKeyAlgorithm kSecKeyAlgorithmRSASignatureDigestPSSSHA256 =
+    CFSTR("algid:sign:RSA:digest-PSS:SHA256:SHA256:32");
+API_AVAILABLE(macosx(10.13))
+const SecKeyAlgorithm kSecKeyAlgorithmRSASignatureDigestPSSSHA384 =
+    CFSTR("algid:sign:RSA:digest-PSS:SHA384:SHA384:48");
+API_AVAILABLE(macosx(10.13))
+const SecKeyAlgorithm kSecKeyAlgorithmRSASignatureDigestPSSSHA512 =
+    CFSTR("algid:sign:RSA:digest-PSS:SHA512:SHA512:64");
+#endif
 
 class ScopedCSSM_CC_HANDLE {
  public:
@@ -63,74 +84,33 @@ class ScopedCSSM_CC_HANDLE {
   DISALLOW_COPY_AND_ASSIGN(ScopedCSSM_CC_HANDLE);
 };
 
-// Looks up the private key for |certificate| in KeyChain and returns
-// a SecKeyRef or nullptr on failure. The caller takes ownership of the
-// result.
-SecKeyRef FetchSecKeyRefForCertificate(const X509Certificate* certificate) {
-  OSStatus status;
-  base::ScopedCFTypeRef<SecIdentityRef> identity;
-  {
-    base::AutoLock lock(crypto::GetMacSecurityServicesLock());
-    status = SecIdentityCreateWithCertificate(
-        nullptr, certificate->os_cert_handle(), identity.InitializeInto());
-  }
-  if (status != noErr) {
-    OSSTATUS_LOG(WARNING, status);
-    return nullptr;
-  }
-
-  base::ScopedCFTypeRef<SecKeyRef> private_key;
-  status = SecIdentityCopyPrivateKey(identity, private_key.InitializeInto());
-  if (status != noErr) {
-    OSSTATUS_LOG(WARNING, status);
-    return nullptr;
-  }
-
-  return private_key.release();
-}
-
-class SSLPlatformKeyMac : public ThreadedSSLPrivateKey::Delegate {
+class SSLPlatformKeyCSSM : public ThreadedSSLPrivateKey::Delegate {
  public:
-  SSLPlatformKeyMac(SecKeyRef key, const CSSM_KEY* cssm_key)
-      : key_(key, base::scoped_policy::RETAIN), cssm_key_(cssm_key) {
-    DCHECK(cssm_key_->KeyHeader.AlgorithmId == CSSM_ALGID_RSA ||
-           cssm_key_->KeyHeader.AlgorithmId == CSSM_ALGID_ECDSA);
+  SSLPlatformKeyCSSM(int type,
+                     size_t max_length,
+                     SecKeyRef key,
+                     const CSSM_KEY* cssm_key)
+      : type_(type),
+        max_length_(max_length),
+        key_(key, base::scoped_policy::RETAIN),
+        cssm_key_(cssm_key) {}
+
+  ~SSLPlatformKeyCSSM() override {}
+
+  std::string GetProviderName() override {
+    // TODO(https://crbug.com/900721): Is there a more descriptive name to
+    // return?
+    return "CSSM";
   }
 
-  ~SSLPlatformKeyMac() override {}
-
-  SSLPrivateKey::Type GetType() override {
-    if (cssm_key_->KeyHeader.AlgorithmId == CSSM_ALGID_RSA) {
-      return SSLPrivateKey::Type::RSA;
-    } else {
-      DCHECK_EQ(CSSM_ALGID_ECDSA, cssm_key_->KeyHeader.AlgorithmId);
-      return SSLPrivateKey::Type::ECDSA;
-    }
+  std::vector<uint16_t> GetAlgorithmPreferences() override {
+    return SSLPrivateKey::DefaultAlgorithmPreferences(type_,
+                                                      false /* no PSS */);
   }
 
-  std::vector<SSLPrivateKey::Hash> GetDigestPreferences() override {
-    static const SSLPrivateKey::Hash kHashes[] = {
-        SSLPrivateKey::Hash::SHA512, SSLPrivateKey::Hash::SHA384,
-        SSLPrivateKey::Hash::SHA256, SSLPrivateKey::Hash::SHA1};
-    return std::vector<SSLPrivateKey::Hash>(kHashes,
-                                            kHashes + arraysize(kHashes));
-  }
-
-  size_t GetMaxSignatureLengthInBytes() override {
-    if (cssm_key_->KeyHeader.AlgorithmId == CSSM_ALGID_RSA) {
-      return (cssm_key_->KeyHeader.LogicalKeySizeInBits + 7) / 8;
-    } else {
-      // LogicalKeySizeInBits is the size of an EC public key. But an
-      // ECDSA signature length depends on the size of the base point's
-      // order. For P-256, P-384, and P-521, these two sizes are the same.
-      return ECDSA_SIG_max_len((cssm_key_->KeyHeader.LogicalKeySizeInBits + 7) /
-                               8);
-    }
-  }
-
-  Error SignDigest(SSLPrivateKey::Hash hash,
-                   const base::StringPiece& input,
-                   std::vector<uint8_t>* signature) override {
+  Error Sign(uint16_t algorithm,
+             base::span<const uint8_t> input,
+             std::vector<uint8_t>* signature) override {
     crypto::OpenSSLErrStackTracer tracer(FROM_HERE);
 
     CSSM_CSP_HANDLE csp_handle;
@@ -156,33 +136,22 @@ class SSLPlatformKeyMac : public ThreadedSSLPrivateKey::Delegate {
     }
     ScopedCSSM_CC_HANDLE cssm_signature(cssm_signature_raw);
 
+    // Hash the input.
+    const EVP_MD* md = SSL_get_signature_algorithm_digest(algorithm);
+    uint8_t digest[EVP_MAX_MD_SIZE];
+    unsigned digest_len;
+    if (!md || !EVP_Digest(input.data(), input.size(), digest, &digest_len, md,
+                           nullptr)) {
+      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
+    }
     CSSM_DATA hash_data;
-    hash_data.Length = input.size();
-    hash_data.Data =
-        const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(input.data()));
+    hash_data.Length = digest_len;
+    hash_data.Data = digest;
 
-    crypto::ScopedOpenSSLBytes free_digest_info;
+    bssl::UniquePtr<uint8_t> free_digest_info;
     if (cssm_key_->KeyHeader.AlgorithmId == CSSM_ALGID_RSA) {
       // CSSM expects the caller to prepend the DigestInfo.
-      int hash_nid = NID_undef;
-      switch (hash) {
-        case SSLPrivateKey::Hash::MD5_SHA1:
-          hash_nid = NID_md5_sha1;
-          break;
-        case SSLPrivateKey::Hash::SHA1:
-          hash_nid = NID_sha1;
-          break;
-        case SSLPrivateKey::Hash::SHA256:
-          hash_nid = NID_sha256;
-          break;
-        case SSLPrivateKey::Hash::SHA384:
-          hash_nid = NID_sha384;
-          break;
-        case SSLPrivateKey::Hash::SHA512:
-          hash_nid = NID_sha512;
-          break;
-      }
-      DCHECK_NE(NID_undef, hash_nid);
+      int hash_nid = EVP_MD_type(md);
       int is_alloced;
       if (!RSA_add_pkcs1_prefix(&hash_data.Data, &hash_data.Length, &is_alloced,
                                 hash_nid, hash_data.Data, hash_data.Length)) {
@@ -202,7 +171,7 @@ class SSLPlatformKeyMac : public ThreadedSSLPrivateKey::Delegate {
       }
     }
 
-    signature->resize(GetMaxSignatureLengthInBytes());
+    signature->resize(max_length_);
     CSSM_DATA signature_data;
     signature_data.Length = signature->size();
     signature_data.Data = signature->data();
@@ -216,35 +185,165 @@ class SSLPlatformKeyMac : public ThreadedSSLPrivateKey::Delegate {
   }
 
  private:
+  int type_;
+  size_t max_length_;
   base::ScopedCFTypeRef<SecKeyRef> key_;
   const CSSM_KEY* cssm_key_;
 
-  DISALLOW_COPY_AND_ASSIGN(SSLPlatformKeyMac);
+  DISALLOW_COPY_AND_ASSIGN(SSLPlatformKeyCSSM);
 };
+
+// Returns the corresponding SecKeyAlgorithm or nullptr if unrecognized.
+API_AVAILABLE(macosx(10.12))
+SecKeyAlgorithm GetSecKeyAlgorithm(uint16_t algorithm) {
+  switch (algorithm) {
+    case SSL_SIGN_RSA_PKCS1_SHA512:
+      return kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA512;
+    case SSL_SIGN_RSA_PKCS1_SHA384:
+      return kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA384;
+    case SSL_SIGN_RSA_PKCS1_SHA256:
+      return kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA256;
+    case SSL_SIGN_RSA_PKCS1_SHA1:
+      return kSecKeyAlgorithmRSASignatureDigestPKCS1v15SHA1;
+    case SSL_SIGN_RSA_PKCS1_MD5_SHA1:
+      return kSecKeyAlgorithmRSASignatureDigestPKCS1v15Raw;
+    case SSL_SIGN_ECDSA_SECP521R1_SHA512:
+      return kSecKeyAlgorithmECDSASignatureDigestX962SHA512;
+    case SSL_SIGN_ECDSA_SECP384R1_SHA384:
+      return kSecKeyAlgorithmECDSASignatureDigestX962SHA384;
+    case SSL_SIGN_ECDSA_SECP256R1_SHA256:
+      return kSecKeyAlgorithmECDSASignatureDigestX962SHA256;
+    case SSL_SIGN_ECDSA_SHA1:
+      return kSecKeyAlgorithmECDSASignatureDigestX962SHA1;
+  }
+
+  if (__builtin_available(macOS 10.13, *)) {
+    switch (algorithm) {
+      case SSL_SIGN_RSA_PSS_SHA512:
+        return kSecKeyAlgorithmRSASignatureDigestPSSSHA512;
+      case SSL_SIGN_RSA_PSS_SHA384:
+        return kSecKeyAlgorithmRSASignatureDigestPSSSHA384;
+      case SSL_SIGN_RSA_PSS_SHA256:
+        return kSecKeyAlgorithmRSASignatureDigestPSSSHA256;
+    }
+  }
+
+  return nullptr;
+}
+
+class API_AVAILABLE(macosx(10.12)) SSLPlatformKeySecKey
+    : public ThreadedSSLPrivateKey::Delegate {
+ public:
+  SSLPlatformKeySecKey(int type, size_t max_length, SecKeyRef key)
+      : key_(key, base::scoped_policy::RETAIN) {
+    // Determine the algorithms supported by the key.
+    for (uint16_t algorithm : SSLPrivateKey::DefaultAlgorithmPreferences(
+             type, true /* include PSS */)) {
+      SecKeyAlgorithm sec_algorithm = GetSecKeyAlgorithm(algorithm);
+      if (sec_algorithm &&
+          SecKeyIsAlgorithmSupported(key_.get(), kSecKeyOperationTypeSign,
+                                     sec_algorithm)) {
+        preferences_.push_back(algorithm);
+      }
+    }
+  }
+
+  ~SSLPlatformKeySecKey() override {}
+
+  std::string GetProviderName() override {
+    // TODO(https://crbug.com/900721): Is there a more descriptive name to
+    // return?
+    return "SecKey";
+  }
+
+  std::vector<uint16_t> GetAlgorithmPreferences() override {
+    return preferences_;
+  }
+
+  Error Sign(uint16_t algorithm,
+             base::span<const uint8_t> input,
+             std::vector<uint8_t>* signature) override {
+    SecKeyAlgorithm sec_algorithm = GetSecKeyAlgorithm(algorithm);
+    if (!sec_algorithm) {
+      NOTREACHED();
+      return ERR_FAILED;
+    }
+
+    const EVP_MD* md = SSL_get_signature_algorithm_digest(algorithm);
+    uint8_t digest[EVP_MAX_MD_SIZE];
+    unsigned digest_len;
+    if (!md || !EVP_Digest(input.data(), input.size(), digest, &digest_len, md,
+                           nullptr)) {
+      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
+    }
+
+    base::ScopedCFTypeRef<CFDataRef> digest_ref(CFDataCreateWithBytesNoCopy(
+        kCFAllocatorDefault, digest, base::checked_cast<CFIndex>(digest_len),
+        kCFAllocatorNull));
+
+    base::ScopedCFTypeRef<CFErrorRef> error;
+    base::ScopedCFTypeRef<CFDataRef> signature_ref(SecKeyCreateSignature(
+        key_, sec_algorithm, digest_ref, error.InitializeInto()));
+    if (!signature_ref) {
+      LOG(ERROR) << error;
+      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
+    }
+
+    signature->assign(
+        CFDataGetBytePtr(signature_ref),
+        CFDataGetBytePtr(signature_ref) + CFDataGetLength(signature_ref));
+    return OK;
+  }
+
+ private:
+  std::vector<uint16_t> preferences_;
+  base::ScopedCFTypeRef<SecKeyRef> key_;
+
+  DISALLOW_COPY_AND_ASSIGN(SSLPlatformKeySecKey);
+};
+
+scoped_refptr<SSLPrivateKey> CreateSSLPrivateKeyForSecKey(
+    const X509Certificate* certificate,
+    SecKeyRef private_key) {
+  int key_type;
+  size_t max_length;
+  if (!GetClientCertInfo(certificate, &key_type, &max_length))
+    return nullptr;
+
+  if (__builtin_available(macOS 10.12, *)) {
+    return base::MakeRefCounted<ThreadedSSLPrivateKey>(
+        std::make_unique<SSLPlatformKeySecKey>(key_type, max_length,
+                                               private_key),
+        GetSSLPlatformKeyTaskRunner());
+  }
+
+  const CSSM_KEY* cssm_key;
+  OSStatus status = SecKeyGetCSSMKey(private_key, &cssm_key);
+  if (status != noErr) {
+    OSSTATUS_LOG(WARNING, status);
+    return nullptr;
+  }
+
+  return base::MakeRefCounted<ThreadedSSLPrivateKey>(
+      std::make_unique<SSLPlatformKeyCSSM>(key_type, max_length, private_key,
+                                           cssm_key),
+      GetSSLPlatformKeyTaskRunner());
+}
 
 }  // namespace
 
-scoped_refptr<SSLPrivateKey> FetchClientCertPrivateKey(
-    X509Certificate* certificate) {
-  // Look up the private key.
-  base::ScopedCFTypeRef<SecKeyRef> private_key(
-      FetchSecKeyRefForCertificate(certificate));
-  if (!private_key)
-    return nullptr;
-
-  const CSSM_KEY* cssm_key;
-  OSStatus status = SecKeyGetCSSMKey(private_key.get(), &cssm_key);
-  if (status != noErr)
-    return nullptr;
-
-  if (cssm_key->KeyHeader.AlgorithmId != CSSM_ALGID_RSA &&
-      cssm_key->KeyHeader.AlgorithmId != CSSM_ALGID_ECDSA) {
-    LOG(ERROR) << "Unknown key type: " << cssm_key->KeyHeader.AlgorithmId;
+scoped_refptr<SSLPrivateKey> CreateSSLPrivateKeyForSecIdentity(
+    const X509Certificate* certificate,
+    SecIdentityRef identity) {
+  base::ScopedCFTypeRef<SecKeyRef> private_key;
+  OSStatus status =
+      SecIdentityCopyPrivateKey(identity, private_key.InitializeInto());
+  if (status != noErr) {
+    OSSTATUS_LOG(WARNING, status);
     return nullptr;
   }
-  return make_scoped_refptr(new ThreadedSSLPrivateKey(
-      base::WrapUnique(new SSLPlatformKeyMac(private_key.get(), cssm_key)),
-      GetSSLPlatformKeyTaskRunner()));
+
+  return CreateSSLPrivateKeyForSecKey(certificate, private_key.get());
 }
 
 #pragma clang diagnostic pop  // "-Wdeprecated-declarations"

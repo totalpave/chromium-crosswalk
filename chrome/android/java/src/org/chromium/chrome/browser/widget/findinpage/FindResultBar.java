@@ -20,12 +20,11 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import org.chromium.base.ApiCompatibilityUtils;
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.findinpage.FindInPageBridge;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.util.MathUtils;
-import org.chromium.ui.UiUtils;
+import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.interpolators.BakedBezierInterpolator;
 
@@ -73,7 +72,7 @@ class FindResultBar extends View {
     private final Paint mFillPaint;
     private final Paint mStrokePaint;
 
-    boolean mWaitingForActivateAck = false;
+    boolean mWaitingForActivateAck;
 
     private static Comparator<RectF> sComparator = new Comparator<RectF>() {
         @Override
@@ -129,9 +128,9 @@ class FindResultBar extends View {
 
         mFindInPageBridge = findInPageBridge;
         mTab = tab;
-        mTab.getContentViewCore().getContainerView().addView(
-                this, new FrameLayout.LayoutParams(mBarTouchWidth,
-                ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+        mTab.getContentView().addView(this,
+                new FrameLayout.LayoutParams(
+                        mBarTouchWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
         setTranslationX(
                 MathUtils.flipSignIf(mBarTouchWidth, LocalizationUtils.isLayoutRtl()));
 
@@ -191,7 +190,7 @@ class FindResultBar extends View {
             // We decided it's more important to get the keyboard out of the
             // way asap; the user can compensate if their next MotionEvent
             // scrolls somewhere unintended.
-            UiUtils.hideKeyboard(this);
+            KeyboardVisibilityDelegate.getInstance().hideKeyboard(this);
 
             // Identify which drawn tickmark is closest to the user's finger.
             int closest = Collections.binarySearch(mTickmarks,
@@ -391,7 +390,6 @@ class FindResultBar extends View {
             rect.offset(LocalizationUtils.isLayoutRtl() ? -0.5f : 0.5f, 0);
             return rect;
         }
-        @SuppressFBWarnings("EQ_COMPARETO_USE_OBJECT_EQUAL")
         @Override
         public int compareTo(Tickmark other) {
             return Float.compare(centerY(), other.centerY());

@@ -10,7 +10,6 @@
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
-#include "base/debug/dump_without_crashing.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "content/child/child_process.h"
@@ -82,9 +81,9 @@ BrokerProcessDispatcher::BrokerProcessDispatcher(
     bool peer_is_browser)
     : ppapi::proxy::BrokerSideDispatcher(connect_instance),
       get_plugin_interface_(get_plugin_interface),
-      flash_browser_operations_1_3_(NULL),
-      flash_browser_operations_1_2_(NULL),
-      flash_browser_operations_1_0_(NULL),
+      flash_browser_operations_1_3_(nullptr),
+      flash_browser_operations_1_2_(nullptr),
+      flash_browser_operations_1_0_(nullptr),
       peer_is_browser_(peer_is_browser) {
   if (get_plugin_interface) {
     flash_browser_operations_1_0_ =
@@ -119,14 +118,6 @@ bool BrokerProcessDispatcher::OnMessageReceived(const IPC::Message& msg) {
   if (!peer_is_browser_) {
     // We might want to consider killing the peer instead is we see problems in
     // the future.
-    if (msg.type() == PpapiMsg_GetSitesWithData::ID ||
-        msg.type() == PpapiMsg_ClearSiteData::ID ||
-        msg.type() == PpapiMsg_DeauthorizeContentLicenses::ID ||
-        msg.type() == PpapiMsg_GetPermissionSettings::ID ||
-        msg.type() == PpapiMsg_SetDefaultPermission::ID ||
-        msg.type() == PpapiMsg_SetSitePermission::ID) {
-      base::debug::DumpWithoutCrashing();
-    }
     return false;
   }
 
@@ -235,7 +226,7 @@ void BrokerProcessDispatcher::GetSitesWithData(
     std::vector<std::string>* site_vector) {
   std::string data_str = ConvertPluginDataPath(plugin_data_path);
   if (flash_browser_operations_1_3_) {
-    char** sites = NULL;
+    char** sites = nullptr;
     flash_browser_operations_1_3_->GetSitesWithData(data_str.c_str(), &sites);
     if (!sites)
       return;
@@ -255,7 +246,8 @@ bool BrokerProcessDispatcher::ClearSiteData(
   std::string data_str = ConvertPluginDataPath(plugin_data_path);
   if (flash_browser_operations_1_3_) {
     flash_browser_operations_1_3_->ClearSiteData(
-        data_str.c_str(), site.empty() ? NULL : site.c_str(), flags, max_age);
+        data_str.c_str(), site.empty() ? nullptr : site.c_str(), flags,
+        max_age);
     return true;
   }
 
@@ -263,13 +255,15 @@ bool BrokerProcessDispatcher::ClearSiteData(
   // goes to Stable.
   if (flash_browser_operations_1_2_) {
     flash_browser_operations_1_2_->ClearSiteData(
-        data_str.c_str(), site.empty() ? NULL : site.c_str(), flags, max_age);
+        data_str.c_str(), site.empty() ? nullptr : site.c_str(), flags,
+        max_age);
     return true;
   }
 
   if (flash_browser_operations_1_0_) {
     flash_browser_operations_1_0_->ClearSiteData(
-        data_str.c_str(), site.empty() ? NULL : site.c_str(), flags, max_age);
+        data_str.c_str(), site.empty() ? nullptr : site.c_str(), flags,
+        max_age);
     return true;
   }
 

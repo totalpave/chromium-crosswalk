@@ -14,8 +14,10 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "ipc/ipc_channel_handle.h"
 #include "remoting/host/desktop_environment.h"
 #include "remoting/host/desktop_session_connector.h"
+#include "remoting/host/file_transfer/ipc_file_operations.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -44,17 +46,18 @@ class IpcDesktopEnvironment : public DesktopEnvironment {
       scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
       base::WeakPtr<ClientSessionControl> client_session_control,
       base::WeakPtr<DesktopSessionConnector> desktop_session_connector,
-      bool virtual_terminal,
-      bool supports_touch_events);
+      const DesktopEnvironmentOptions& options);
   ~IpcDesktopEnvironment() override;
 
   // DesktopEnvironment implementation.
+  std::unique_ptr<ActionExecutor> CreateActionExecutor() override;
   std::unique_ptr<AudioCapturer> CreateAudioCapturer() override;
   std::unique_ptr<InputInjector> CreateInputInjector() override;
   std::unique_ptr<ScreenControls> CreateScreenControls() override;
   std::unique_ptr<webrtc::DesktopCapturer> CreateVideoCapturer() override;
   std::unique_ptr<webrtc::MouseCursorMonitor> CreateMouseCursorMonitor()
       override;
+  std::unique_ptr<FileOperations> CreateFileOperations() override;
   std::string GetCapabilities() const override;
   void SetCapabilities(const std::string& capabilities) override;
   uint32_t GetDesktopSessionId() const override;
@@ -82,8 +85,8 @@ class IpcDesktopEnvironmentFactory
 
   // DesktopEnvironmentFactory implementation.
   std::unique_ptr<DesktopEnvironment> Create(
-      base::WeakPtr<ClientSessionControl> client_session_control) override;
-  void SetEnableCurtaining(bool enable) override;
+      base::WeakPtr<ClientSessionControl> client_session_control,
+      const DesktopEnvironmentOptions& options) override;
   bool SupportsAudioCapture() const override;
 
   // DesktopSessionConnector implementation.
@@ -95,14 +98,9 @@ class IpcDesktopEnvironmentFactory
                            const ScreenResolution& resolution) override;
   void OnDesktopSessionAgentAttached(
       int terminal_id,
-      base::ProcessHandle desktop_process_handle,
-      IPC::PlatformFileForTransit desktop_pipe) override;
+      int session_id,
+      const IPC::ChannelHandle& desktop_pipe) override;
   void OnTerminalDisconnected(int terminal_id) override;
-
-  // Enables or disables touch events capability.
-  void set_supports_touch_events(bool enable) {
-    supports_touch_events_ = enable;
-  }
 
  private:
   // Used to run the audio capturer.
@@ -115,9 +113,6 @@ class IpcDesktopEnvironmentFactory
   // Task runner used for running background I/O.
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
 
-  // True if curtain mode is enabled.
-  bool curtain_enabled_ = false;
-
   // IPC channel connected to the daemon process.
   IPC::Sender* daemon_channel_;
 
@@ -129,10 +124,6 @@ class IpcDesktopEnvironmentFactory
   // This gives us more than 67 years of unique IDs assuming a new ID is
   // allocated every second.
   int next_id_ = 0;
-
-  // Defines whether desktop environments created by this factory will support
-  // touch events by default.
-  bool supports_touch_events_ = false;
 
   // Factory for weak pointers to DesktopSessionConnector interface.
   base::WeakPtrFactory<DesktopSessionConnector> connector_factory_;

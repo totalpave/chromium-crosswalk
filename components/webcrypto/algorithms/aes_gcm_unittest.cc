@@ -5,15 +5,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/values.h"
 #include "components/webcrypto/algorithm_dispatch.h"
 #include "components/webcrypto/algorithms/test_helpers.h"
 #include "components/webcrypto/crypto_data.h"
 #include "components/webcrypto/status.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithmParams.h"
-#include "third_party/WebKit/public/platform/WebCryptoKeyAlgorithm.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
 
 namespace webcrypto {
 
@@ -24,18 +24,15 @@ blink::WebCryptoAlgorithm CreateAesGcmAlgorithm(
     const std::vector<uint8_t>& iv,
     const std::vector<uint8_t>& additional_data,
     unsigned int tag_length_bits) {
-  return blink::WebCryptoAlgorithm::adoptParamsAndCreate(
-      blink::WebCryptoAlgorithmIdAesGcm,
-      new blink::WebCryptoAesGcmParams(
-          iv.data(), static_cast<unsigned int>(iv.size()), true,
-          additional_data.data(),
-          static_cast<unsigned int>(additional_data.size()), true,
-          tag_length_bits));
+  return blink::WebCryptoAlgorithm::AdoptParamsAndCreate(
+      blink::kWebCryptoAlgorithmIdAesGcm,
+      new blink::WebCryptoAesGcmParams(iv, true, additional_data, true,
+                                       tag_length_bits));
 }
 
 blink::WebCryptoAlgorithm CreateAesGcmKeyGenAlgorithm(
-    unsigned short key_length_bits) {
-  return CreateAesKeyGenAlgorithm(blink::WebCryptoAlgorithmIdAesGcm,
+    uint16_t key_length_bits) {
+  return CreateAesKeyGenAlgorithm(blink::kWebCryptoAlgorithmIdAesGcm,
                                   key_length_bits);
 }
 
@@ -100,13 +97,13 @@ Status AesGcmDecrypt(const blink::WebCryptoKey& key,
 class WebCryptoAesGcmTest : public WebCryptoTestBase {};
 
 TEST_F(WebCryptoAesGcmTest, GenerateKeyBadLength) {
-  const unsigned short kKeyLen[] = {0, 127, 257};
+  const uint16_t kKeyLen[] = {0, 127, 257};
   blink::WebCryptoKey key;
-  for (size_t i = 0; i < arraysize(kKeyLen); ++i) {
+  for (size_t i = 0; i < base::size(kKeyLen); ++i) {
     SCOPED_TRACE(i);
     EXPECT_EQ(Status::ErrorGenerateAesKeyLength(),
               GenerateSecretKey(CreateAesGcmKeyGenAlgorithm(kKeyLen[i]), true,
-                                blink::WebCryptoKeyUsageDecrypt, &key));
+                                blink::kWebCryptoKeyUsageDecrypt, &key));
   }
 }
 
@@ -118,16 +115,16 @@ TEST_F(WebCryptoAesGcmTest, GenerateKeyEmptyUsage) {
 
 TEST_F(WebCryptoAesGcmTest, ImportExportJwk) {
   const blink::WebCryptoAlgorithm algorithm =
-      CreateAlgorithm(blink::WebCryptoAlgorithmIdAesGcm);
+      CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesGcm);
 
   // AES-GCM 128
   ImportExportJwkSymmetricKey(
       128, algorithm,
-      blink::WebCryptoKeyUsageEncrypt | blink::WebCryptoKeyUsageDecrypt,
+      blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt,
       "A128GCM");
 
   // AES-GCM 256
-  ImportExportJwkSymmetricKey(256, algorithm, blink::WebCryptoKeyUsageDecrypt,
+  ImportExportJwkSymmetricKey(256, algorithm, blink::kWebCryptoKeyUsageDecrypt,
                               "A256GCM");
 }
 
@@ -136,14 +133,14 @@ TEST_F(WebCryptoAesGcmTest, ImportExportJwk) {
 //   * Test decryption with empty input
 //   * Test decryption with tag length of 0.
 TEST_F(WebCryptoAesGcmTest, SampleSets) {
-  std::unique_ptr<base::ListValue> tests;
+  base::ListValue tests;
   ASSERT_TRUE(ReadJsonTestFileToList("aes_gcm.json", &tests));
 
   // Note that WebCrypto appends the authentication tag to the ciphertext.
-  for (size_t test_index = 0; test_index < tests->GetSize(); ++test_index) {
+  for (size_t test_index = 0; test_index < tests.GetSize(); ++test_index) {
     SCOPED_TRACE(test_index);
     base::DictionaryValue* test;
-    ASSERT_TRUE(tests->GetDictionary(test_index, &test));
+    ASSERT_TRUE(tests.GetDictionary(test_index, &test));
 
     const std::vector<uint8_t> test_key = GetBytesFromHexString(test, "key");
     const std::vector<uint8_t> test_iv = GetBytesFromHexString(test, "iv");
@@ -159,13 +156,13 @@ TEST_F(WebCryptoAesGcmTest, SampleSets) {
         GetBytesFromHexString(test, "cipher_text");
 
     blink::WebCryptoKey key = ImportSecretKeyFromRaw(
-        test_key, CreateAlgorithm(blink::WebCryptoAlgorithmIdAesGcm),
-        blink::WebCryptoKeyUsageEncrypt | blink::WebCryptoKeyUsageDecrypt);
+        test_key, CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesGcm),
+        blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt);
 
     // Verify exported raw key is identical to the imported data
     std::vector<uint8_t> raw_key;
     EXPECT_EQ(Status::Success(),
-              ExportKey(blink::WebCryptoKeyFormatRaw, key, &raw_key));
+              ExportKey(blink::kWebCryptoKeyFormatRaw, key, &raw_key));
 
     EXPECT_BYTES_EQ(test_key, raw_key);
 
@@ -208,7 +205,7 @@ TEST_F(WebCryptoAesGcmTest, SampleSets) {
 
     // Try different incorrect tag lengths
     uint8_t kAlternateTagLengths[] = {0, 8, 96, 120, 128, 160, 255};
-    for (size_t tag_i = 0; tag_i < arraysize(kAlternateTagLengths); ++tag_i) {
+    for (size_t tag_i = 0; tag_i < base::size(kAlternateTagLengths); ++tag_i) {
       unsigned int wrong_tag_size_bits = kAlternateTagLengths[tag_i];
       if (test_tag_size_bits == wrong_tag_size_bits)
         continue;

@@ -54,8 +54,7 @@ void InstallTracker::RemoveObserver(InstallObserver* observer) {
 
 const ActiveInstallData* InstallTracker::GetActiveInstall(
     const std::string& extension_id) const {
-  ActiveInstallsMap::const_iterator install_data =
-      active_installs_.find(extension_id);
+  auto install_data = active_installs_.find(extension_id);
   if (install_data == active_installs_.end())
     return NULL;
   else
@@ -76,56 +75,55 @@ void InstallTracker::RemoveActiveInstall(const std::string& extension_id) {
 
 void InstallTracker::OnBeginExtensionInstall(
     const InstallObserver::ExtensionInstallParams& params) {
-  ActiveInstallsMap::iterator install_data =
-      active_installs_.find(params.extension_id);
+  auto install_data = active_installs_.find(params.extension_id);
   if (install_data == active_installs_.end()) {
     ActiveInstallData install_data(params.extension_id);
     active_installs_.insert(std::make_pair(params.extension_id, install_data));
   }
 
-  FOR_EACH_OBSERVER(InstallObserver, observers_,
-                    OnBeginExtensionInstall(params));
+  for (auto& observer : observers_)
+    observer.OnBeginExtensionInstall(params);
 }
 
 void InstallTracker::OnBeginExtensionDownload(const std::string& extension_id) {
-  FOR_EACH_OBSERVER(
-      InstallObserver, observers_, OnBeginExtensionDownload(extension_id));
+  for (auto& observer : observers_)
+    observer.OnBeginExtensionDownload(extension_id);
 }
 
 void InstallTracker::OnDownloadProgress(const std::string& extension_id,
                                         int percent_downloaded) {
-  ActiveInstallsMap::iterator install_data =
-      active_installs_.find(extension_id);
+  auto install_data = active_installs_.find(extension_id);
   if (install_data != active_installs_.end()) {
     install_data->second.percent_downloaded = percent_downloaded;
   } else {
     NOTREACHED();
   }
 
-  FOR_EACH_OBSERVER(InstallObserver, observers_,
-                    OnDownloadProgress(extension_id, percent_downloaded));
+  for (auto& observer : observers_)
+    observer.OnDownloadProgress(extension_id, percent_downloaded);
 }
 
 void InstallTracker::OnBeginCrxInstall(const std::string& extension_id) {
-  FOR_EACH_OBSERVER(
-      InstallObserver, observers_, OnBeginCrxInstall(extension_id));
+  for (auto& observer : observers_)
+    observer.OnBeginCrxInstall(extension_id);
 }
 
 void InstallTracker::OnFinishCrxInstall(const std::string& extension_id,
                                         bool success) {
-  FOR_EACH_OBSERVER(
-      InstallObserver, observers_, OnFinishCrxInstall(extension_id, success));
+  for (auto& observer : observers_)
+    observer.OnFinishCrxInstall(extension_id, success);
 }
 
 void InstallTracker::OnInstallFailure(
     const std::string& extension_id) {
   RemoveActiveInstall(extension_id);
-  FOR_EACH_OBSERVER(InstallObserver, observers_,
-                    OnInstallFailure(extension_id));
+  for (auto& observer : observers_)
+    observer.OnInstallFailure(extension_id);
 }
 
 void InstallTracker::Shutdown() {
-  FOR_EACH_OBSERVER(InstallObserver, observers_, OnShutdown());
+  for (auto& observer : observers_)
+    observer.OnShutdown();
 }
 
 void InstallTracker::Observe(int type,
@@ -135,12 +133,13 @@ void InstallTracker::Observe(int type,
     case extensions::NOTIFICATION_EXTENSION_UPDATE_DISABLED: {
       const Extension* extension =
           content::Details<const Extension>(details).ptr();
-      FOR_EACH_OBSERVER(
-          InstallObserver, observers_, OnDisabledExtensionUpdated(extension));
+      for (auto& observer : observers_)
+        observer.OnDisabledExtensionUpdated(extension);
       break;
     }
     case chrome::NOTIFICATION_APP_LAUNCHER_REORDERED: {
-      FOR_EACH_OBSERVER(InstallObserver, observers_, OnAppsReordered());
+      for (auto& observer : observers_)
+        observer.OnAppsReordered();
       break;
     }
     default:
@@ -156,7 +155,8 @@ void InstallTracker::OnExtensionInstalled(
 }
 
 void InstallTracker::OnAppsReordered() {
-  FOR_EACH_OBSERVER(InstallObserver, observers_, OnAppsReordered());
+  for (auto& observer : observers_)
+    observer.OnAppsReordered();
 }
 
 }  // namespace extensions

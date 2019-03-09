@@ -4,10 +4,14 @@
 
 #include "chromecast/base/pref_names.h"
 
+namespace chromecast {
 namespace prefs {
 
-// Boolean which specifies if remote debugging is enabled
-const char kEnableRemoteDebugging[] = "enable_remote_debugging";
+// List of experiments enabled by DCS. For metrics purposes only.
+const char kActiveDCSExperiments[] = "experiments.ids";
+
+// Dictionary of remotely-enabled features from the latest DCS config fetch.
+const char kLatestDCSFeatures[] = "experiments.features";
 
 // Boolean that specifies whether or not the client_id has been regenerated
 // due to bug b/9487011.
@@ -48,3 +52,4 @@ const char kStabilitySystemUncleanShutdownCount[] =
     "user_experience_metrics.stability.system_unclean_shutdowns";
 
 }  // namespace prefs
+}  // namespace chromecast

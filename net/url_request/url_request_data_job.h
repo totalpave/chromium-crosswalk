@@ -8,6 +8,8 @@
 #include <string>
 
 #include "base/macros.h"
+#include "net/base/completion_once_callback.h"
+#include "net/base/net_export.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_simple_job.h"
 
@@ -34,7 +36,7 @@ class NET_EXPORT URLRequestDataJob : public URLRequestSimpleJob {
   int GetData(std::string* mime_type,
               std::string* charset,
               std::string* data,
-              const CompletionCallback& callback) const override;
+              CompletionOnceCallback callback) const override;
 
  private:
   ~URLRequestDataJob() override;

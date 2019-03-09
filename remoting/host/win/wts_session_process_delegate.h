@@ -12,7 +12,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "remoting/host/win/worker_process_launcher.h"
 
 namespace base {
@@ -28,16 +28,13 @@ namespace remoting {
 
 // Implements logic for launching and monitoring a worker process in a different
 // session.
-class WtsSessionProcessDelegate
-    : public base::NonThreadSafe,
-      public WorkerProcessLauncher::Delegate {
+class WtsSessionProcessDelegate : public WorkerProcessLauncher::Delegate {
  public:
   WtsSessionProcessDelegate(
       scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
       std::unique_ptr<base::CommandLine> target,
       bool launch_elevated,
-      const std::string& channel_security,
-      const std::string& new_process_security);
+      const std::string& channel_security);
   ~WtsSessionProcessDelegate() override;
 
   // Initializes the object returning true on success.
@@ -53,6 +50,8 @@ class WtsSessionProcessDelegate
   // The actual implementation resides in WtsSessionProcessDelegate::Core class.
   class Core;
   scoped_refptr<Core> core_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(WtsSessionProcessDelegate);
 };

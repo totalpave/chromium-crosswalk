@@ -13,10 +13,8 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
-#include "content/common/media/video_capture.h"
-#include "media/base/video_capture_types.h"
-
-class GURL;
+#include "media/capture/video_capture_types.h"
+#include "third_party/blink/public/common/media/video_capture.h"
 
 namespace content {
 class PepperMediaDeviceManager;
@@ -27,7 +25,6 @@ class PepperPlatformCameraDevice {
  public:
   PepperPlatformCameraDevice(int render_frame_id,
                              const std::string& device_id,
-                             const GURL& document_url,
                              PepperCameraDeviceHost* handler);
   ~PepperPlatformCameraDevice();
 

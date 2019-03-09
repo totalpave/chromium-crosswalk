@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include <string>
 
@@ -43,7 +44,7 @@ void* GetPermissionInfo(const FilePath& path, size_t* length) {
 
   struct stat stat_buf;
   if (stat(path.value().c_str(), &stat_buf) != 0)
-    return NULL;
+    return nullptr;
 
   *length = sizeof(mode_t);
   mode_t* mode = new mode_t;
@@ -79,7 +80,12 @@ bool DieFileDie(const FilePath& file, bool recurse) {
   return DeleteFile(file, recurse);
 }
 
-#if !defined(OS_LINUX) && !defined(OS_MACOSX)
+void SyncPageCacheToDisk() {
+  // On Linux (and Android) the sync(2) call waits for I/O completions.
+  sync();
+}
+
+#if !defined(OS_LINUX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
 bool EvictFileFromSystemCache(const FilePath& file) {
   // There doesn't seem to be a POSIX way to cool the disk cache.
   NOTIMPLEMENTED();
@@ -96,9 +102,9 @@ bool MakeFileUnwritable(const FilePath& path) {
 }
 
 FilePermissionRestorer::FilePermissionRestorer(const FilePath& path)
-    : path_(path), info_(NULL), length_(0) {
+    : path_(path), info_(nullptr), length_(0) {
   info_ = GetPermissionInfo(path_, &length_);
-  DCHECK(info_ != NULL);
+  DCHECK(info_ != nullptr);
   DCHECK_NE(0u, length_);
 }
 

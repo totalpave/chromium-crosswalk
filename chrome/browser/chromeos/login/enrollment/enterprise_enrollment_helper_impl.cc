@@ -4,7 +4,10 @@
 
 #include "chrome/browser/chromeos/login/enrollment/enterprise_enrollment_helper_impl.h"
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/command_line.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
@@ -19,11 +22,14 @@
 #include "chrome/browser/chromeos/policy/enrollment_status_chromeos.h"
 #include "chrome/browser/chromeos/policy/policy_oauth2_token_fetcher.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
+#include "chrome/browser/net/system_network_context_manager.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/policy/core/common/cloud/dm_auth.h"
 #include "google_apis/gaia/gaia_auth_consumer.h"
 #include "google_apis/gaia/gaia_auth_fetcher.h"
-#include "google_apis/gaia/gaia_constants.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace {
 
@@ -36,7 +42,8 @@ class TokenRevoker : public GaiaAuthConsumer {
   void Start(const std::string& token);
 
   // GaiaAuthConsumer:
-  void OnOAuth2RevokeTokenCompleted() override;
+  void OnOAuth2RevokeTokenCompleted(
+      GaiaAuthConsumer::TokenRevocationStatus status) override;
 
  private:
   GaiaAuthFetcher gaia_fetcher_;
@@ -46,18 +53,18 @@ class TokenRevoker : public GaiaAuthConsumer {
 
 TokenRevoker::TokenRevoker()
     : gaia_fetcher_(this,
-                    GaiaConstants::kChromeOSSource,
-                    g_browser_process->system_request_context()) {
-}
+                    gaia::GaiaSource::kChromeOS,
+                    g_browser_process->system_network_context_manager()
+                        ->GetSharedURLLoaderFactory()) {}
 
-TokenRevoker::~TokenRevoker() {
-}
+TokenRevoker::~TokenRevoker() {}
 
 void TokenRevoker::Start(const std::string& token) {
   gaia_fetcher_.StartRevokeOAuth2Token(token);
 }
 
-void TokenRevoker::OnOAuth2RevokeTokenCompleted() {
+void TokenRevoker::OnOAuth2RevokeTokenCompleted(
+    GaiaAuthConsumer::TokenRevocationStatus status) {
   base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, this);
 }
 
@@ -65,18 +72,7 @@ void TokenRevoker::OnOAuth2RevokeTokenCompleted() {
 
 namespace chromeos {
 
-EnterpriseEnrollmentHelperImpl::EnterpriseEnrollmentHelperImpl(
-    EnrollmentStatusConsumer* status_consumer,
-    const policy::EnrollmentConfig& enrollment_config,
-    const std::string& enrolling_user_domain)
-    : EnterpriseEnrollmentHelper(status_consumer),
-      enrollment_config_(enrollment_config),
-      enrolling_user_domain_(enrolling_user_domain),
-      started_(false),
-      finished_(false),
-      success_(false),
-      auth_data_cleared_(false),
-      weak_ptr_factory_(this) {
+EnterpriseEnrollmentHelperImpl::EnterpriseEnrollmentHelperImpl() {
   // Init the TPM if it has not been done until now (in debug build we might
   // have not done that yet).
   DBusThreadManager::Get()->GetCryptohomeClient()->TpmCanAttemptOwnership(
@@ -84,18 +80,31 @@ EnterpriseEnrollmentHelperImpl::EnterpriseEnrollmentHelperImpl(
 }
 
 EnterpriseEnrollmentHelperImpl::~EnterpriseEnrollmentHelperImpl() {
-  DCHECK(g_browser_process->IsShuttingDown() || !started_ ||
-         (finished_ && (success_ || auth_data_cleared_)));
+  DCHECK(
+      g_browser_process->IsShuttingDown() ||
+      oauth_status_ == OAUTH_NOT_STARTED ||
+      (oauth_status_ == OAUTH_FINISHED && (success_ || oauth_data_cleared_)));
+}
+
+void EnterpriseEnrollmentHelperImpl::Setup(
+    ActiveDirectoryJoinDelegate* ad_join_delegate,
+    const policy::EnrollmentConfig& enrollment_config,
+    const std::string& enrolling_user_domain) {
+  ad_join_delegate_ = ad_join_delegate;
+  enrollment_config_ = enrollment_config;
+  enrolling_user_domain_ = enrolling_user_domain;
 }
 
 void EnterpriseEnrollmentHelperImpl::EnrollUsingAuthCode(
     const std::string& auth_code,
     bool fetch_additional_token) {
-  DCHECK(!started_);
-  started_ = true;
-  oauth_fetcher_.reset(policy::PolicyOAuth2TokenFetcher::CreateInstance());
+  DCHECK(oauth_status_ == OAUTH_NOT_STARTED);
+  oauth_status_ = OAUTH_STARTED_WITH_AUTH_CODE;
+  oauth_fetcher_ = policy::PolicyOAuth2TokenFetcher::CreateInstance();
   oauth_fetcher_->StartWithAuthCode(
-      auth_code, g_browser_process->system_request_context(),
+      auth_code,
+      g_browser_process->system_network_context_manager()
+          ->GetSharedURLLoaderFactory(),
       base::Bind(&EnterpriseEnrollmentHelperImpl::OnTokenFetched,
                  weak_ptr_factory_.GetWeakPtr(),
                  fetch_additional_token /* is_additional_token */));
@@ -103,78 +112,207 @@ void EnterpriseEnrollmentHelperImpl::EnrollUsingAuthCode(
 
 void EnterpriseEnrollmentHelperImpl::EnrollUsingToken(
     const std::string& token) {
-  DCHECK(!started_);
-  started_ = true;
-  DoEnrollUsingToken(token);
+  DCHECK(oauth_status_ != OAUTH_STARTED_WITH_TOKEN);
+  if (oauth_status_ == OAUTH_NOT_STARTED)
+    oauth_status_ = OAUTH_STARTED_WITH_TOKEN;
+  DoEnroll(policy::DMAuth::FromOAuthToken(token));
 }
 
-void EnterpriseEnrollmentHelperImpl::ClearAuth(const base::Closure& callback) {
-  // Do not revoke the additional token if enrollment has finished
-  // successfully.
-  if (!success_ && additional_token_.length())
-    (new TokenRevoker())->Start(additional_token_);
-
-  if (oauth_fetcher_) {
-    if (!oauth_fetcher_->OAuth2AccessToken().empty())
-      (new TokenRevoker())->Start(oauth_fetcher_->OAuth2AccessToken());
-
-    if (!oauth_fetcher_->OAuth2RefreshToken().empty())
-      (new TokenRevoker())->Start(oauth_fetcher_->OAuth2RefreshToken());
-
-    oauth_fetcher_.reset();
-  } else if (oauth_token_.length()) {
-    // EnrollUsingToken was called.
-    (new TokenRevoker())->Start(oauth_token_);
-  }
-
-  chromeos::ProfileHelper::Get()->ClearSigninProfile(
-      base::Bind(&EnterpriseEnrollmentHelperImpl::OnSigninProfileCleared,
-                 weak_ptr_factory_.GetWeakPtr(), callback));
+void EnterpriseEnrollmentHelperImpl::EnrollUsingAttestation() {
+  CHECK(enrollment_config_.is_mode_attestation());
+  // The tokens are not used in attestation mode.
+  DoEnroll(policy::DMAuth::NoAuth());
 }
 
-void EnterpriseEnrollmentHelperImpl::DoEnrollUsingToken(
+void EnterpriseEnrollmentHelperImpl::EnrollUsingEnrollmentToken(
     const std::string& token) {
-  DCHECK(token == oauth_token_ || oauth_token_.empty());
-  oauth_token_ = token;
+  CHECK_EQ(enrollment_config_.mode,
+           policy::EnrollmentConfig::MODE_ATTESTATION_ENROLLMENT_TOKEN);
+  DoEnroll(policy::DMAuth::FromEnrollmentToken(token));
+}
+
+void EnterpriseEnrollmentHelperImpl::EnrollForOfflineDemo() {
+  CHECK_EQ(enrollment_config_.mode,
+           policy::EnrollmentConfig::MODE_OFFLINE_DEMO);
+  // The tokens are not used in offline demo mode.
+  DoEnroll(policy::DMAuth::NoAuth());
+}
+
+void EnterpriseEnrollmentHelperImpl::RestoreAfterRollback() {
+  CHECK_EQ(enrollment_config_.mode,
+           policy::EnrollmentConfig::MODE_ENROLLED_ROLLBACK);
   policy::BrowserPolicyConnectorChromeOS* connector =
       g_browser_process->platform_part()->browser_policy_connector_chromeos();
-  if (connector->IsEnterpriseManaged() &&
-      connector->GetEnterpriseDomain() != enrolling_user_domain_) {
+  DCHECK(connector->IsCloudManaged());
+
+  auto* manager = connector->GetDeviceCloudPolicyManager();
+
+  if (manager->core()->client()) {
+    RestoreAfterRollbackInitialized();
+  } else {
+    manager->AddDeviceCloudPolicyManagerObserver(this);
+  }
+}
+
+void EnterpriseEnrollmentHelperImpl::OnDeviceCloudPolicyManagerConnected() {
+  policy::BrowserPolicyConnectorChromeOS* connector =
+      g_browser_process->platform_part()->browser_policy_connector_chromeos();
+  connector->GetDeviceCloudPolicyManager()
+      ->RemoveDeviceCloudPolicyManagerObserver(this);
+  RestoreAfterRollbackInitialized();
+}
+
+void EnterpriseEnrollmentHelperImpl::OnDeviceCloudPolicyManagerDisconnected() {}
+
+void EnterpriseEnrollmentHelperImpl::RestoreAfterRollbackInitialized() {
+  policy::BrowserPolicyConnectorChromeOS* connector =
+      g_browser_process->platform_part()->browser_policy_connector_chromeos();
+  auto* manager = connector->GetDeviceCloudPolicyManager();
+  auto* client = manager->core()->client();
+  DCHECK(client);
+
+  device_account_initializer_ =
+      std::make_unique<policy::DeviceAccountInitializer>(client, this);
+  device_account_initializer_->FetchToken();
+}
+
+void EnterpriseEnrollmentHelperImpl::OnDeviceAccountTokenFetched(
+    bool empty_token) {
+  if (empty_token) {
+    status_consumer()->OnRestoreAfterRollbackCompleted();
+    return;
+  }
+  device_account_initializer_->StoreToken();
+}
+
+void EnterpriseEnrollmentHelperImpl::OnDeviceAccountTokenStored() {
+  status_consumer()->OnRestoreAfterRollbackCompleted();
+  base::ThreadTaskRunnerHandle::Get()->DeleteSoon(
+      FROM_HERE, device_account_initializer_.release());
+}
+
+void EnterpriseEnrollmentHelperImpl::OnDeviceAccountTokenError(
+    policy::EnrollmentStatus status) {
+  OnEnrollmentFinished(status);
+  base::ThreadTaskRunnerHandle::Get()->DeleteSoon(
+      FROM_HERE, device_account_initializer_.release());
+}
+
+void EnterpriseEnrollmentHelperImpl::OnDeviceAccountClientError(
+    policy::DeviceManagementStatus status) {
+  OnEnrollmentFinished(
+      policy::EnrollmentStatus::ForRobotAuthFetchError(status));
+  base::ThreadTaskRunnerHandle::Get()->DeleteSoon(
+      FROM_HERE, device_account_initializer_.release());
+}
+
+void EnterpriseEnrollmentHelperImpl::ClearAuth(base::OnceClosure callback) {
+  if (oauth_status_ != OAUTH_NOT_STARTED) {
+    // Do not revoke the additional token if enrollment has finished
+    // successfully.
+    if (!success_ && additional_token_.length())
+      (new TokenRevoker())->Start(additional_token_);
+
+    if (oauth_fetcher_) {
+      if (!oauth_fetcher_->OAuth2AccessToken().empty())
+        (new TokenRevoker())->Start(oauth_fetcher_->OAuth2AccessToken());
+
+      if (!oauth_fetcher_->OAuth2RefreshToken().empty())
+        (new TokenRevoker())->Start(oauth_fetcher_->OAuth2RefreshToken());
+
+      oauth_fetcher_.reset();
+    } else if (auth_data_ && auth_data_->has_oauth_token()) {
+      // EnrollUsingToken was called.
+      (new TokenRevoker())->Start(auth_data_->oauth_token());
+    }
+  }
+  auth_data_.reset();
+  chromeos::ProfileHelper::Get()->ClearSigninProfile(
+      base::AdaptCallbackForRepeating(base::BindOnce(
+          &EnterpriseEnrollmentHelperImpl::OnSigninProfileCleared,
+          weak_ptr_factory_.GetWeakPtr(), std::move(callback))));
+}
+
+bool EnterpriseEnrollmentHelperImpl::ShouldCheckLicenseType() const {
+  // The license selection dialog is not used when doing Zero Touch or setting
+  // up offline demo-mode, or when forced to enroll by server.
+  if (enrollment_config_.is_mode_attestation() ||
+      enrollment_config_.mode == policy::EnrollmentConfig::MODE_SERVER_FORCED ||
+      enrollment_config_.mode == policy::EnrollmentConfig::MODE_OFFLINE_DEMO) {
+    return false;
+  }
+  return !base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kEnterpriseDisableLicenseTypeSelection);
+}
+
+void EnterpriseEnrollmentHelperImpl::DoEnroll(
+    std::unique_ptr<policy::DMAuth> auth_data) {
+  CHECK(auth_data);
+  DCHECK(!auth_data_ || auth_data_->Equals(*auth_data));
+  DCHECK(enrollment_config_.is_mode_attestation() ||
+         enrollment_config_.mode ==
+             policy::EnrollmentConfig::MODE_OFFLINE_DEMO ||
+         oauth_status_ == OAUTH_STARTED_WITH_AUTH_CODE ||
+         oauth_status_ == OAUTH_STARTED_WITH_TOKEN);
+  auth_data_ = std::move(auth_data);
+  policy::BrowserPolicyConnectorChromeOS* connector =
+      g_browser_process->platform_part()->browser_policy_connector_chromeos();
+  // Re-enrollment is not implemented for Active Directory.
+  if (connector->IsCloudManaged() &&
+      connector->GetEnterpriseEnrollmentDomain() != enrolling_user_domain_) {
     LOG(ERROR) << "Trying to re-enroll to a different domain than "
-               << connector->GetEnterpriseDomain();
+               << connector->GetEnterpriseEnrollmentDomain();
     UMA(policy::kMetricEnrollmentPrecheckDomainMismatch);
-    finished_ = true;
+    if (oauth_status_ != OAUTH_NOT_STARTED)
+      oauth_status_ = OAUTH_FINISHED;
     status_consumer()->OnOtherError(OTHER_ERROR_DOMAIN_MISMATCH);
     return;
   }
 
-  policy::DeviceCloudPolicyInitializer::AllowedDeviceModes device_modes;
-  device_modes[policy::DEVICE_MODE_ENTERPRISE] = true;
   connector->ScheduleServiceInitialization(0);
-
   policy::DeviceCloudPolicyInitializer* dcp_initializer =
       connector->GetDeviceCloudPolicyInitializer();
   CHECK(dcp_initializer);
-  dcp_initializer->StartEnrollment(
-      policy::MANAGEMENT_MODE_ENTERPRISE_MANAGED,
-      connector->device_management_service(),
-      nullptr /* owner_settings_service */, enrollment_config_, token,
-      device_modes,
+  dcp_initializer->PrepareEnrollment(
+      connector->device_management_service(), ad_join_delegate_,
+      enrollment_config_, auth_data_->Clone(),
       base::Bind(&EnterpriseEnrollmentHelperImpl::OnEnrollmentFinished,
                  weak_ptr_factory_.GetWeakPtr()));
+  if (ShouldCheckLicenseType()) {
+    dcp_initializer->CheckAvailableLicenses(
+        base::Bind(&EnterpriseEnrollmentHelperImpl::OnLicenseMapObtained,
+                   weak_ptr_factory_.GetWeakPtr()));
+  } else {
+    dcp_initializer->StartEnrollment();
+  }
+}
+
+void EnterpriseEnrollmentHelperImpl::UseLicenseType(policy::LicenseType type) {
+  DCHECK(type != policy::LicenseType::UNKNOWN);
+  policy::DeviceCloudPolicyInitializer* dcp_initializer =
+      g_browser_process->platform_part()
+          ->browser_policy_connector_chromeos()
+          ->GetDeviceCloudPolicyInitializer();
+
+  CHECK(dcp_initializer);
+  dcp_initializer->StartEnrollmentWithLicense(type);
 }
 
 void EnterpriseEnrollmentHelperImpl::GetDeviceAttributeUpdatePermission() {
-  // TODO(pbond): remove this LOG once http://crbug.com/586961 is fixed.
-  LOG(WARNING) << "Get device attribute update permission";
+  DCHECK(auth_data_);
   policy::BrowserPolicyConnectorChromeOS* connector =
       g_browser_process->platform_part()->browser_policy_connector_chromeos();
+  // Don't update device attributes for Active Directory management.
+  if (connector->IsActiveDirectoryManaged()) {
+    OnDeviceAttributeUpdatePermission(false);
+    return;
+  }
   policy::DeviceCloudPolicyManagerChromeOS* policy_manager =
       connector->GetDeviceCloudPolicyManager();
   policy::CloudPolicyClient* client = policy_manager->core()->client();
 
   client->GetDeviceAttributeUpdatePermission(
-      oauth_token_,
+      auth_data_->Clone(),
       base::Bind(
           &EnterpriseEnrollmentHelperImpl::OnDeviceAttributeUpdatePermission,
           weak_ptr_factory_.GetWeakPtr()));
@@ -183,6 +321,7 @@ void EnterpriseEnrollmentHelperImpl::GetDeviceAttributeUpdatePermission() {
 void EnterpriseEnrollmentHelperImpl::UpdateDeviceAttributes(
     const std::string& asset_id,
     const std::string& location) {
+  DCHECK(auth_data_);
   policy::BrowserPolicyConnectorChromeOS* connector =
       g_browser_process->platform_part()->browser_policy_connector_chromeos();
   policy::DeviceCloudPolicyManagerChromeOS* policy_manager =
@@ -190,7 +329,7 @@ void EnterpriseEnrollmentHelperImpl::UpdateDeviceAttributes(
   policy::CloudPolicyClient* client = policy_manager->core()->client();
 
   client->UpdateDeviceAttributes(
-      oauth_token_, asset_id, location,
+      auth_data_->Clone(), asset_id, location,
       base::Bind(
           &EnterpriseEnrollmentHelperImpl::OnDeviceAttributeUploadCompleted,
           weak_ptr_factory_.GetWeakPtr()));
@@ -202,21 +341,23 @@ void EnterpriseEnrollmentHelperImpl::OnTokenFetched(
     const GoogleServiceAuthError& error) {
   if (error.state() != GoogleServiceAuthError::NONE) {
     ReportAuthStatus(error);
-    finished_ = true;
+    oauth_status_ = OAUTH_FINISHED;
     status_consumer()->OnAuthError(error);
     return;
   }
 
   if (!is_additional_token) {
-    DoEnrollUsingToken(token);
+    EnrollUsingToken(token);
     return;
   }
 
   additional_token_ = token;
   std::string refresh_token = oauth_fetcher_->OAuth2RefreshToken();
-  oauth_fetcher_.reset(policy::PolicyOAuth2TokenFetcher::CreateInstance());
+  oauth_fetcher_ = policy::PolicyOAuth2TokenFetcher::CreateInstance();
   oauth_fetcher_->StartWithRefreshToken(
-      refresh_token, g_browser_process->system_request_context(),
+      refresh_token,
+      g_browser_process->system_network_context_manager()
+          ->GetSharedURLLoaderFactory(),
       base::Bind(&EnterpriseEnrollmentHelperImpl::OnTokenFetched,
                  weak_ptr_factory_.GetWeakPtr(),
                  false /* is_additional_token */));
@@ -227,13 +368,39 @@ void EnterpriseEnrollmentHelperImpl::OnEnrollmentFinished(
   // TODO(pbond): remove this LOG once http://crbug.com/586961 is fixed.
   LOG(WARNING) << "Enrollment finished";
   ReportEnrollmentStatus(status);
-  finished_ = true;
-  if (status.status() == policy::EnrollmentStatus::STATUS_SUCCESS) {
+  if (oauth_status_ != OAUTH_NOT_STARTED)
+    oauth_status_ = OAUTH_FINISHED;
+  if (status.status() == policy::EnrollmentStatus::SUCCESS) {
     success_ = true;
     StartupUtils::MarkOobeCompleted();
-    status_consumer()->OnDeviceEnrolled(additional_token_);
+    status_consumer()->OnDeviceEnrolled();
   } else {
     status_consumer()->OnEnrollmentError(status);
+  }
+}
+
+void EnterpriseEnrollmentHelperImpl::OnLicenseMapObtained(
+    const EnrollmentLicenseMap& licenses) {
+  int count = 0;
+  policy::LicenseType license_type = policy::LicenseType::UNKNOWN;
+  for (const auto& it : licenses) {
+    if (it.second > 0) {
+      count++;
+      license_type = it.first;
+    }
+  }
+  if (count == 0) {
+    // No user license type selection allowed, start usual enrollment.
+    policy::BrowserPolicyConnectorChromeOS* connector =
+        g_browser_process->platform_part()->browser_policy_connector_chromeos();
+    policy::DeviceCloudPolicyInitializer* dcp_initializer =
+        connector->GetDeviceCloudPolicyInitializer();
+    CHECK(dcp_initializer);
+    dcp_initializer->StartEnrollment();
+  } else if (count == 1) {
+    UseLicenseType(license_type);
+  } else {
+    status_consumer()->OnMultipleLicensesAvailable(licenses);
   }
 }
 
@@ -255,7 +422,6 @@ void EnterpriseEnrollmentHelperImpl::ReportAuthStatus(
     case GoogleServiceAuthError::NONE:
     case GoogleServiceAuthError::CAPTCHA_REQUIRED:
     case GoogleServiceAuthError::TWO_FACTOR:
-    case GoogleServiceAuthError::HOSTED_NOT_ALLOWED:
     case GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS:
     case GoogleServiceAuthError::REQUEST_CANCELED:
     case GoogleServiceAuthError::UNEXPECTED_SERVICE_RESPONSE:
@@ -281,6 +447,7 @@ void EnterpriseEnrollmentHelperImpl::ReportAuthStatus(
       UMA(policy::kMetricEnrollmentNetworkFailed);
       LOG(WARNING) << "Network error " << error.state();
       break;
+    case GoogleServiceAuthError::HOSTED_NOT_ALLOWED_DEPRECATED:
     case GoogleServiceAuthError::NUM_STATES:
       NOTREACHED();
       break;
@@ -290,11 +457,11 @@ void EnterpriseEnrollmentHelperImpl::ReportAuthStatus(
 void EnterpriseEnrollmentHelperImpl::ReportEnrollmentStatus(
     policy::EnrollmentStatus status) {
   switch (status.status()) {
-    case policy::EnrollmentStatus::STATUS_SUCCESS:
+    case policy::EnrollmentStatus::SUCCESS:
       UMA(policy::kMetricEnrollmentOK);
       return;
-    case policy::EnrollmentStatus::STATUS_REGISTRATION_FAILED:
-    case policy::EnrollmentStatus::STATUS_POLICY_FETCH_FAILED:
+    case policy::EnrollmentStatus::REGISTRATION_FAILED:
+    case policy::EnrollmentStatus::POLICY_FETCH_FAILED:
       switch (status.client_status()) {
         case policy::DM_STATUS_SUCCESS:
           NOTREACHED();
@@ -344,69 +511,92 @@ void EnterpriseEnrollmentHelperImpl::ReportEnrollmentStatus(
         case policy::DM_STATUS_SERVICE_DOMAIN_MISMATCH:
           UMA(policy::kMetricEnrollmentRegisterPolicyDomainMismatch);
           break;
-      }
-      break;
-    case policy::EnrollmentStatus::STATUS_REGISTRATION_BAD_MODE:
-      UMA(policy::kMetricEnrollmentInvalidEnrollmentMode);
-      break;
-    case policy::EnrollmentStatus::STATUS_NO_STATE_KEYS:
-      UMA(policy::kMetricEnrollmentNoStateKeys);
-      break;
-    case policy::EnrollmentStatus::STATUS_VALIDATION_FAILED:
-      UMA(policy::kMetricEnrollmentPolicyValidationFailed);
-      break;
-    case policy::EnrollmentStatus::STATUS_STORE_ERROR:
-      UMA(policy::kMetricEnrollmentCloudPolicyStoreError);
-      break;
-    case policy::EnrollmentStatus::STATUS_LOCK_ERROR:
-      switch (status.lock_status()) {
-        case policy::EnterpriseInstallAttributes::LOCK_SUCCESS:
-        case policy::EnterpriseInstallAttributes::LOCK_NOT_READY:
+        case policy::DM_STATUS_CANNOT_SIGN_REQUEST:
+          UMA(policy::kMetricEnrollmentRegisterCannotSignRequest);
+          break;
+        case policy::DM_STATUS_SERVICE_ARC_DISABLED:
           NOTREACHED();
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_TIMEOUT:
+        case policy::DM_STATUS_SERVICE_CONSUMER_ACCOUNT_WITH_PACKAGED_LICENSE:
+          UMA(policy::
+                  kMetricEnrollmentRegisterConsumerAccountWithPackagedLicense);
+          break;
+      }
+      break;
+    case policy::EnrollmentStatus::REGISTRATION_BAD_MODE:
+      UMA(policy::kMetricEnrollmentInvalidEnrollmentMode);
+      break;
+    case policy::EnrollmentStatus::NO_STATE_KEYS:
+      UMA(policy::kMetricEnrollmentNoStateKeys);
+      break;
+    case policy::EnrollmentStatus::VALIDATION_FAILED:
+      UMA(policy::kMetricEnrollmentPolicyValidationFailed);
+      break;
+    case policy::EnrollmentStatus::STORE_ERROR:
+      UMA(policy::kMetricEnrollmentCloudPolicyStoreError);
+      break;
+    case policy::EnrollmentStatus::LOCK_ERROR:
+      switch (status.lock_status()) {
+        case InstallAttributes::LOCK_SUCCESS:
+        case InstallAttributes::LOCK_NOT_READY:
+          NOTREACHED();
+          break;
+        case InstallAttributes::LOCK_TIMEOUT:
           UMA(policy::kMetricEnrollmentLockboxTimeoutError);
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_BACKEND_INVALID:
+        case InstallAttributes::LOCK_BACKEND_INVALID:
           UMA(policy::kMetricEnrollmentLockBackendInvalid);
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_ALREADY_LOCKED:
+        case InstallAttributes::LOCK_ALREADY_LOCKED:
           UMA(policy::kMetricEnrollmentLockAlreadyLocked);
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_SET_ERROR:
+        case InstallAttributes::LOCK_SET_ERROR:
           UMA(policy::kMetricEnrollmentLockSetError);
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_FINALIZE_ERROR:
+        case InstallAttributes::LOCK_FINALIZE_ERROR:
           UMA(policy::kMetricEnrollmentLockFinalizeError);
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_READBACK_ERROR:
+        case InstallAttributes::LOCK_READBACK_ERROR:
           UMA(policy::kMetricEnrollmentLockReadbackError);
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_WRONG_DOMAIN:
+        case InstallAttributes::LOCK_WRONG_DOMAIN:
           UMA(policy::kMetricEnrollmentLockDomainMismatch);
           break;
-        case policy::EnterpriseInstallAttributes::LOCK_WRONG_MODE:
+        case InstallAttributes::LOCK_WRONG_MODE:
           UMA(policy::kMetricEnrollmentLockModeMismatch);
           break;
       }
       break;
-    case policy::EnrollmentStatus::STATUS_ROBOT_AUTH_FETCH_FAILED:
+    case policy::EnrollmentStatus::ROBOT_AUTH_FETCH_FAILED:
       UMA(policy::kMetricEnrollmentRobotAuthCodeFetchFailed);
       break;
-    case policy::EnrollmentStatus::STATUS_ROBOT_REFRESH_FETCH_FAILED:
+    case policy::EnrollmentStatus::ROBOT_REFRESH_FETCH_FAILED:
       UMA(policy::kMetricEnrollmentRobotRefreshTokenFetchFailed);
       break;
-    case policy::EnrollmentStatus::STATUS_ROBOT_REFRESH_STORE_FAILED:
+    case policy::EnrollmentStatus::ROBOT_REFRESH_STORE_FAILED:
       UMA(policy::kMetricEnrollmentRobotRefreshTokenStoreFailed);
       break;
-    case policy::EnrollmentStatus::STATUS_STORE_TOKEN_AND_ID_FAILED:
-      // This error should not happen for enterprise enrollment, it only affects
-      // consumer enrollment.
-      UMA(policy::kMetricEnrollmentStoreTokenAndIdFailed);
-      NOTREACHED();
-      break;
-    case policy::EnrollmentStatus::STATUS_ATTRIBUTE_UPDATE_FAILED:
+    case policy::EnrollmentStatus::ATTRIBUTE_UPDATE_FAILED:
       UMA(policy::kMetricEnrollmentAttributeUpdateFailed);
+      break;
+    case policy::EnrollmentStatus::REGISTRATION_CERT_FETCH_FAILED:
+      UMA(policy::kMetricEnrollmentRegistrationCertificateFetchFailed);
+      break;
+    case policy::EnrollmentStatus::NO_MACHINE_IDENTIFICATION:
+      UMA(policy::kMetricEnrollmentNoDeviceIdentification);
+      break;
+    case policy::EnrollmentStatus::ACTIVE_DIRECTORY_POLICY_FETCH_FAILED:
+      UMA(policy::kMetricEnrollmentActiveDirectoryPolicyFetchFailed);
+      break;
+    case policy::EnrollmentStatus::DM_TOKEN_STORE_FAILED:
+      UMA(policy::kMetricEnrollmentStoreDMTokenFailed);
+      break;
+    case policy::EnrollmentStatus::LICENSE_REQUEST_FAILED:
+      UMA(policy::kMetricEnrollmentLicenseRequestFailed);
+      break;
+    case policy::EnrollmentStatus::OFFLINE_POLICY_LOAD_FAILED:
+    case policy::EnrollmentStatus::OFFLINE_POLICY_DECODING_FAILED:
+      UMA(policy::kMetricEnrollmentRegisterPolicyResponseInvalid);
       break;
   }
 }
@@ -416,9 +606,9 @@ void EnterpriseEnrollmentHelperImpl::UMA(policy::MetricEnrollment sample) {
 }
 
 void EnterpriseEnrollmentHelperImpl::OnSigninProfileCleared(
-    const base::Closure& callback) {
-  auth_data_cleared_ = true;
-  callback.Run();
+    base::OnceClosure callback) {
+  oauth_data_cleared_ = true;
+  std::move(callback).Run();
 }
 
 }  // namespace chromeos

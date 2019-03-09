@@ -5,23 +5,30 @@
 #ifndef CC_TEST_FAKE_PICTURE_LAYER_TILING_CLIENT_H_
 #define CC_TEST_FAKE_PICTURE_LAYER_TILING_CLIENT_H_
 
-#include "cc/playback/raster_source.h"
+#include "cc/raster/raster_source.h"
 #include "cc/test/fake_tile_manager_client.h"
 #include "cc/tiles/picture_layer_tiling.h"
 #include "cc/tiles/tile.h"
 #include "cc/tiles/tile_manager.h"
 #include "ui/gfx/geometry/rect.h"
 
+namespace viz {
+class ClientResourceProvider;
+class ContextProvider;
+}
+
 namespace cc {
 
 class FakePictureLayerTilingClient : public PictureLayerTilingClient {
  public:
   FakePictureLayerTilingClient();
-  explicit FakePictureLayerTilingClient(ResourceProvider* resource_provider);
+  explicit FakePictureLayerTilingClient(
+      viz::ClientResourceProvider* resource_provider,
+      viz::ContextProvider* context_provider);
   ~FakePictureLayerTilingClient() override;
 
   // PictureLayerTilingClient implementation.
-  ScopedTilePtr CreateTile(const Tile::CreateInfo& info) override;
+  std::unique_ptr<Tile> CreateTile(const Tile::CreateInfo& info) override;
   gfx::Size CalculateTileSize(const gfx::Size& content_bounds) const override;
   bool HasValidTilePriorities() const override;
 

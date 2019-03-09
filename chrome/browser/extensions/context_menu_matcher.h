@@ -9,6 +9,7 @@
 
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/callback.h"
@@ -63,7 +64,12 @@ class ContextMenuMatcher {
       const MenuItem::ExtensionKey& extension_key,
       const base::string16& selection_text);
 
+  void set_smart_text_selection_enabled(bool enabled) {
+    is_smart_text_selection_enabled_ = enabled;
+  }
+
   bool IsCommandIdChecked(int command_id) const;
+  bool IsCommandIdVisible(int command_id) const;
   bool IsCommandIdEnabled(int command_id) const;
   void ExecuteCommand(int command_id,
                       content::WebContents* web_contents,
@@ -72,6 +78,7 @@ class ContextMenuMatcher {
 
  private:
   friend class ::ExtensionContextMenuBrowserTest;
+  friend class ExtensionContextMenuApiTest;
 
   bool GetRelevantExtensionTopLevelItems(
       const MenuItem::ExtensionKey& extension_key,
@@ -79,9 +86,8 @@ class ContextMenuMatcher {
       bool* can_cross_incognito,
       MenuItem::List* items);
 
-  MenuItem::List GetRelevantExtensionItems(
-      const MenuItem::List& items,
-      bool can_cross_incognito);
+  MenuItem::List GetRelevantExtensionItems(const MenuItem::OwnedList& items,
+                                           bool can_cross_incognito);
 
   // Used for recursively adding submenus of extension items.
   void RecursivelyAppendExtensionItems(const MenuItem::List& items,
@@ -102,6 +108,8 @@ class ContextMenuMatcher {
   ui::SimpleMenuModel::Delegate* delegate_;
 
   base::Callback<bool(const MenuItem*)> filter_;
+
+  bool is_smart_text_selection_enabled_;
 
   // Maps the id from a context menu item to the MenuItem's internal id.
   std::map<int, extensions::MenuItem::Id> extension_item_map_;

@@ -5,13 +5,12 @@
 #ifndef CHROME_BROWSER_ANDROID_TAB_WEB_CONTENTS_DELEGATE_ANDROID_H_
 #define CHROME_BROWSER_ANDROID_TAB_WEB_CONTENTS_DELEGATE_ANDROID_H_
 
-#include <jni.h>
-
 #include "base/files/file_path.h"
-#include "components/web_contents_delegate_android/web_contents_delegate_android.h"
+#include "components/embedder_support/android/delegate/web_contents_delegate_android.h"
 #include "content/public/browser/bluetooth_chooser.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "printing/buildflags/buildflags.h"
 
 class FindNotificationDetails;
 
@@ -25,7 +24,6 @@ class Rect;
 class RectF;
 }
 
-namespace chrome {
 namespace android {
 
 // Chromium Android specific WebContentsDelegate.
@@ -38,10 +36,9 @@ class TabWebContentsDelegateAndroid
   TabWebContentsDelegateAndroid(JNIEnv* env, jobject obj);
   ~TabWebContentsDelegateAndroid() override;
 
-  void LoadingStateChanged(content::WebContents* source,
-                           bool to_different_document) override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
-                      const content::FileChooserParams& params) override;
+                      std::unique_ptr<content::FileSelectListener> listener,
+                      const blink::mojom::FileChooserParams& params) override;
   std::unique_ptr<content::BluetoothChooser> RunBluetoothChooser(
       content::RenderFrameHost* frame,
       const content::BluetoothChooser::EventHandler& event_handler) override;
@@ -61,16 +58,17 @@ class TabWebContentsDelegateAndroid
                            const gfx::RectF& active_rect) override;
   content::JavaScriptDialogManager* GetJavaScriptDialogManager(
       content::WebContents* source) override;
+  void AdjustPreviewsStateForNavigation(
+      content::WebContents* web_contents,
+      content::PreviewsState* previews_state) override;
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
-      const content::MediaResponseCallback& callback) override;
-  bool CheckMediaAccessPermission(content::WebContents* web_contents,
+      content::MediaResponseCallback callback) override;
+  bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  content::MediaStreamType type) override;
-  void RequestMediaDecodePermission(
-      content::WebContents* web_contents,
-      const base::Callback<void(bool)>& callback) override;
+                                  blink::MediaStreamType type) override;
+  void SetOverlayMode(bool use_overlay_mode) override;
   bool RequestPpapiBrokerPermission(
       content::WebContents* web_contents,
       const GURL& url,
@@ -81,13 +79,31 @@ class TabWebContentsDelegateAndroid
       const content::OpenURLParams& params) override;
   bool ShouldResumeRequestsForCreatedWindow() override;
   void AddNewContents(content::WebContents* source,
-                      content::WebContents* new_contents,
+                      std::unique_ptr<content::WebContents> new_contents,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture,
                       bool* was_blocked) override;
-  void RequestAppBannerFromDevTools(
+  blink::WebSecurityStyle GetSecurityStyle(
+      content::WebContents* web_contents,
+      content::SecurityStyleExplanations* security_style_explanations) override;
+  void OnDidBlockFramebust(content::WebContents* web_contents,
+                           const GURL& url) override;
+  void UpdateUserGestureCarryoverInfo(
       content::WebContents* web_contents) override;
+  std::unique_ptr<content::WebContents> SwapWebContents(
+      content::WebContents* old_contents,
+      std::unique_ptr<content::WebContents> new_contents,
+      bool did_start_load,
+      bool did_finish_load) override;
+
+#if BUILDFLAG(ENABLE_PRINTING)
+  void PrintCrossProcessSubframe(
+      content::WebContents* web_contents,
+      const gfx::Rect& rect,
+      int document_cookie,
+      content::RenderFrameHost* subframe_host) const override;
+#endif
 
  private:
   // NotificationObserver implementation.
@@ -101,10 +117,6 @@ class TabWebContentsDelegateAndroid
   content::NotificationRegistrar notification_registrar_;
 };
 
-// Register the native methods through JNI.
-bool RegisterTabWebContentsDelegateAndroid(JNIEnv* env);
-
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_TAB_WEB_CONTENTS_DELEGATE_ANDROID_H_

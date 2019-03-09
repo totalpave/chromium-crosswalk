@@ -4,10 +4,13 @@
 
 #include "remoting/protocol/fake_session.h"
 
+#include "base/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "remoting/protocol/fake_authenticator.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "remoting/protocol/session_plugin.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting {
 namespace protocol {
@@ -17,7 +20,7 @@ const char kTestAuthKey[] = "test_auth_key";
 
 FakeSession::FakeSession()
     : config_(SessionConfig::ForTest()), jid_(kTestJid), weak_factory_(this) {}
-FakeSession::~FakeSession() {}
+FakeSession::~FakeSession() = default;
 
 void FakeSession::SimulateConnection(FakeSession* peer) {
   peer_ = peer->weak_factory_.GetWeakPtr();
@@ -31,16 +34,14 @@ void FakeSession::SimulateConnection(FakeSession* peer) {
   peer->event_handler_->OnSessionStateChange(AUTHENTICATING);
 
   // Initialize transport and authenticator on the client.
-  authenticator_.reset(new FakeAuthenticator(FakeAuthenticator::CLIENT, 0,
-                                             FakeAuthenticator::ACCEPT, false));
+  authenticator_.reset(new FakeAuthenticator(FakeAuthenticator::ACCEPT));
   authenticator_->set_auth_key(kTestAuthKey);
   transport_->Start(authenticator_.get(),
                     base::Bind(&FakeSession::SendTransportInfo,
                                weak_factory_.GetWeakPtr()));
 
   // Initialize transport and authenticator on the host.
-  peer->authenticator_.reset(new FakeAuthenticator(
-      FakeAuthenticator::HOST, 0, FakeAuthenticator::ACCEPT, false));
+  peer->authenticator_.reset(new FakeAuthenticator(FakeAuthenticator::ACCEPT));
   peer->authenticator_->set_auth_key(kTestAuthKey);
   peer->transport_->Start(peer->authenticator_.get(),
                           base::Bind(&FakeSession::SendTransportInfo, peer_));
@@ -74,16 +75,23 @@ void FakeSession::Close(ErrorCode error) {
   error_ = error;
   event_handler_->OnSessionStateChange(CLOSED);
 
-  FakeSession* peer = peer_.get();
+  base::WeakPtr<FakeSession> peer = peer_;
   if (peer) {
     peer->peer_.reset();
     peer_.reset();
-    peer->Close(error);
+
+    if (signaling_delay_.is_zero()) {
+      peer->Close(error);
+    } else {
+      base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+          FROM_HERE, base::BindOnce(&FakeSession::Close, peer, error),
+          signaling_delay_);
+    }
   }
 }
 
 void FakeSession::SendTransportInfo(
-    std::unique_ptr<buzz::XmlElement> transport_info) {
+    std::unique_ptr<jingle_xmpp::XmlElement> transport_info) {
   if (!peer_)
     return;
 
@@ -91,15 +99,36 @@ void FakeSession::SendTransportInfo(
     peer_->ProcessTransportInfo(std::move(transport_info));
   } else {
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&FakeSession::ProcessTransportInfo, peer_,
-                              base::Passed(&transport_info)),
+        FROM_HERE,
+        base::BindOnce(&FakeSession::ProcessTransportInfo, peer_,
+                       std::move(transport_info)),
         signaling_delay_);
   }
 }
 
 void FakeSession::ProcessTransportInfo(
-    std::unique_ptr<buzz::XmlElement> transport_info) {
+    std::unique_ptr<jingle_xmpp::XmlElement> transport_info) {
   transport_->ProcessTransportInfo(transport_info.get());
+}
+
+void FakeSession::AddPlugin(SessionPlugin* plugin) {
+  DCHECK(plugin);
+  for (const auto& message : attachments_) {
+    if (message) {
+      JingleMessage jingle_message;
+      jingle_message.AddAttachment(
+          std::make_unique<jingle_xmpp::XmlElement>(*message));
+      plugin->OnIncomingMessage(*(jingle_message.attachments));
+    }
+  }
+}
+
+void FakeSession::SetAttachment(size_t round,
+                                std::unique_ptr<jingle_xmpp::XmlElement> attachment) {
+  while (attachments_.size() <= round) {
+    attachments_.emplace_back();
+  }
+  attachments_[round] = std::move(attachment);
 }
 
 }  // namespace protocol

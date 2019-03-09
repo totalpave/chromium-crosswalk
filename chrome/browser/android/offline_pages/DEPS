@@ -1,4 +1,0 @@
-include_rules = [
-  "+components/offline_pages",
-  "+components/offline_pages/background",
-]

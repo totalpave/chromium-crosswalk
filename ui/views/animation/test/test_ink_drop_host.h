@@ -6,37 +6,59 @@
 #define UI_VIEWS_ANIMATION_TEST_TEST_INK_DROP_HOST_H_
 
 #include "base/macros.h"
-#include "ui/views/animation/ink_drop_host.h"
+#include "ui/views/animation/ink_drop_host_view.h"
 
 namespace views {
 
 // A non-functional implementation of an InkDropHost that can be used during
 // tests.  Tracks the number of hosted ink drop layers.
-class TestInkDropHost : public InkDropHost {
+//
+// Note that CreateInkDrop() is not supported.
+class TestInkDropHost : public InkDropHostView {
  public:
   TestInkDropHost();
   ~TestInkDropHost() override;
 
-  int num_ink_drop_layers() const { return num_ink_drop_layers_; }
+  int num_ink_drop_layers_added() const { return num_ink_drop_layers_added_; }
+  int num_ink_drop_layers() const {
+    return num_ink_drop_layers_added_ - num_ink_drop_layers_removed_;
+  }
 
-  void set_should_show_highlight(bool should_show_highlight) {
-    should_show_highlight_ = should_show_highlight;
+  int num_ink_drop_ripples_created() const {
+    return num_ink_drop_ripples_created_;
+  }
+  int num_ink_drop_highlights_created() const {
+    return num_ink_drop_highlights_created_;
+  }
+
+  const InkDropRipple* last_ink_drop_ripple() const {
+    return last_ink_drop_ripple_;
+  }
+  const InkDropHighlight* last_ink_drop_highlight() const {
+    return last_ink_drop_highlight_;
   }
 
   void set_disable_timers_for_test(bool disable_timers_for_test) {
     disable_timers_for_test_ = disable_timers_for_test;
   }
 
-  // TestInkDropHost:
+  // InkDropHostView:
   void AddInkDropLayer(ui::Layer* ink_drop_layer) override;
   void RemoveInkDropLayer(ui::Layer* ink_drop_layer) override;
   std::unique_ptr<InkDropRipple> CreateInkDropRipple() const override;
   std::unique_ptr<InkDropHighlight> CreateInkDropHighlight() const override;
 
  private:
-  int num_ink_drop_layers_;
+  int num_ink_drop_layers_added_;
+  int num_ink_drop_layers_removed_;
 
-  bool should_show_highlight_;
+  // CreateInkDrop{Ripple,Highlight} are const, so these members must be
+  // mutable.
+  mutable int num_ink_drop_ripples_created_;
+  mutable int num_ink_drop_highlights_created_;
+
+  mutable const InkDropRipple* last_ink_drop_ripple_;
+  mutable const InkDropHighlight* last_ink_drop_highlight_;
 
   // When true, the InkDropRipple/InkDropHighlight instances will have their
   // timers disabled after creation.

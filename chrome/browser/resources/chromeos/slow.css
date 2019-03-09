@@ -1,7 +1,6 @@
 /* Copyright 2013 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 body {
   background-color: #E6E6E6;
@@ -32,7 +31,6 @@ body {
 }
 
 button {
-  -webkit-user-select: none;
   background-image: -webkit-linear-gradient(#ededed, #ededed 38%, #dedede);
   border: 1px solid rgba(0, 0, 0, 0.25);
   border-radius: 2px;
@@ -43,5 +41,5 @@ button {
   min-width: 65px;
   padding: 8px 13px;
   text-shadow: 0 1px 0 rgb(240, 240, 240);
+  user-select: none;
 }
-

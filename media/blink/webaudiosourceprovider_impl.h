@@ -7,22 +7,25 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "media/base/audio_renderer_sink.h"
 #include "media/blink/media_blink_export.h"
-#include "third_party/WebKit/public/platform/WebAudioSourceProvider.h"
-#include "third_party/WebKit/public/platform/WebVector.h"
+#include "third_party/blink/public/platform/web_audio_source_provider.h"
+#include "third_party/blink/public/platform/web_vector.h"
 
 namespace blink {
 class WebAudioSourceProviderClient;
 }
 
 namespace media {
+class MediaLog;
 
 // WebAudioSourceProviderImpl is either one of two things (but not both):
 // - a connection between a RestartableAudioRendererSink (the |sink_|) passed in
@@ -40,19 +43,19 @@ namespace media {
 //
 // All calls are protected by a lock.
 class MEDIA_BLINK_EXPORT WebAudioSourceProviderImpl
-    : NON_EXPORTED_BASE(public blink::WebAudioSourceProvider),
-      NON_EXPORTED_BASE(public SwitchableAudioRendererSink) {
+    : public blink::WebAudioSourceProvider,
+      public SwitchableAudioRendererSink {
  public:
-  using CopyAudioCB = base::Callback<void(std::unique_ptr<AudioBus>,
-                                          uint32_t frames_delayed,
-                                          int sample_rate)>;
+  using CopyAudioCB = base::RepeatingCallback<void(std::unique_ptr<AudioBus>,
+                                                   uint32_t frames_delayed,
+                                                   int sample_rate)>;
 
-  explicit WebAudioSourceProviderImpl(
-      const scoped_refptr<SwitchableAudioRendererSink>& sink);
+  WebAudioSourceProviderImpl(scoped_refptr<SwitchableAudioRendererSink> sink,
+                             MediaLog* media_log);
 
   // blink::WebAudioSourceProvider implementation.
-  void setClient(blink::WebAudioSourceProviderClient* client) override;
-  void provideInput(const blink::WebVector<float*>& audio_data,
+  void SetClient(blink::WebAudioSourceProviderClient* client) override;
+  void ProvideInput(const blink::WebVector<float*>& audio_data,
                     size_t number_of_frames) override;
 
   // RestartableAudioRendererSink implementation.
@@ -64,20 +67,23 @@ class MEDIA_BLINK_EXPORT WebAudioSourceProviderImpl
   void Pause() override;
   bool SetVolume(double volume) override;
   OutputDeviceInfo GetOutputDeviceInfo() override;
+  void GetOutputDeviceInfoAsync(OutputDeviceInfoCB info_cb) override;
+  bool IsOptimizedForHardwareParameters() override;
   bool CurrentThreadIsRenderingThread() override;
   void SwitchOutputDevice(const std::string& device_id,
-                          const url::Origin& security_origin,
-                          const OutputDeviceStatusCB& callback) override;
+                          OutputDeviceStatusCB callback) override;
 
   // These methods allow a client to get a copy of the rendered audio.
-  void SetCopyAudioCallback(const CopyAudioCB& callback);
+  void SetCopyAudioCallback(CopyAudioCB callback);
   void ClearCopyAudioCallback();
 
   int RenderForTesting(AudioBus* audio_bus);
 
+ protected:
+  ~WebAudioSourceProviderImpl() override;
+
  private:
   friend class WebAudioSourceProviderImplTest;
-  ~WebAudioSourceProviderImpl() override;
 
   // Calls setFormat() on |client_| from the Blink renderer thread.
   void OnSetFormat();
@@ -96,12 +102,14 @@ class MEDIA_BLINK_EXPORT WebAudioSourceProviderImpl
 
   // Where audio ends up unless overridden by |client_|.
   base::Lock sink_lock_;
-  const scoped_refptr<SwitchableAudioRendererSink> sink_;
+  scoped_refptr<SwitchableAudioRendererSink> sink_ GUARDED_BY(sink_lock_);
   std::unique_ptr<AudioBus> bus_wrapper_;
 
   // An inner class acting as a T filter where actual data can be tapped.
   class TeeFilter;
   const std::unique_ptr<TeeFilter> tee_filter_;
+
+  MediaLog* const media_log_;
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
   base::WeakPtrFactory<WebAudioSourceProviderImpl> weak_factory_;

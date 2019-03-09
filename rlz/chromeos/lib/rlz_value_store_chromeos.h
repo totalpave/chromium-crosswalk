@@ -12,28 +12,25 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
-#include "base/values.h"
+#include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "rlz/lib/rlz_value_store.h"
 
 namespace base {
-class ListValue;
-class SequencedTaskRunner;
+class DictionaryValue;
 class Value;
 }
 
 namespace rlz_lib {
 
 // An implementation of RlzValueStore for ChromeOS.
-class RlzValueStoreChromeOS : public RlzValueStore,
-                              public base::NonThreadSafe {
+class RlzValueStoreChromeOS : public RlzValueStore {
  public:
-  // // Sets the task runner that will be used by ImportantFileWriter for write
-  // // operations.
-  // static void SetFileTaskRunner(base::SequencedTaskRunner* file_task_runner);
+  // The maximum retry times allowed for |SetRlzPingSent|.
+  static const int kMaxRetryCount;
 
   // Creates new instance and synchronously reads data from file.
-  RlzValueStoreChromeOS(const base::FilePath& store_path);
+  explicit RlzValueStoreChromeOS(const base::FilePath& store_path);
   ~RlzValueStoreChromeOS() override;
 
   // RlzValueStore overrides:
@@ -49,6 +46,7 @@ class RlzValueStoreChromeOS : public RlzValueStore,
                           char* rlz,
                           size_t rlz_size) override;
   bool ClearAccessPointRlz(AccessPoint access_point) override;
+  bool UpdateExistingAccessPointRlz(const std::string& brand) override;
 
   bool AddProductEvent(Product product, const char* event_rlz) override;
   bool ReadProductEvents(Product product,
@@ -63,6 +61,10 @@ class RlzValueStoreChromeOS : public RlzValueStore,
   void CollectGarbage() override;
 
  private:
+  // Returns true if the |rlz_embargo_end_date| present in VPD has passed
+  // compared to the current time.
+  static bool HasRlzEmbargoEndDatePassed();
+
   // Reads RLZ store from file.
   void ReadStore();
 
@@ -70,10 +72,18 @@ class RlzValueStoreChromeOS : public RlzValueStore,
   void WriteStore();
 
   // Adds |value| to list at |list_name| path in JSON store.
-  bool AddValueToList(const std::string& list_name, base::Value* value);
+  bool AddValueToList(const std::string& list_name,
+                      std::unique_ptr<base::Value> value);
   // Removes |value| from list at |list_name| path in JSON store.
   bool RemoveValueFromList(const std::string& list_name,
                            const base::Value& value);
+
+  // Set |should_send_rlz_ping| to 0 in RW_VPD. This is a wrapper of
+  // |DebugDaemonClient::SetRlzPingSent|.
+  void SetRlzPingSent();
+
+  // Callback of |SetRlzPingSent|.
+  void OnSetRlzPingSent(bool success);
 
   // In-memory store with RLZ data.
   std::unique_ptr<base::DictionaryValue> rlz_store_;
@@ -81,6 +91,13 @@ class RlzValueStoreChromeOS : public RlzValueStore,
   base::FilePath store_path_;
 
   bool read_only_;
+
+  // The number of attempts of |SetRlzPingSent| so far.
+  int set_rlz_ping_sent_attempts_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  base::WeakPtrFactory<RlzValueStoreChromeOS> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(RlzValueStoreChromeOS);
 };

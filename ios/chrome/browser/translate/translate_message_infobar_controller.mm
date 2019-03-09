@@ -4,45 +4,53 @@
 
 #include "ios/chrome/browser/translate/translate_message_infobar_controller.h"
 
+#include "base/mac/foundation_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "components/translate/core/browser/translate_infobar_delegate.h"
+#import "ios/chrome/browser/infobars/infobar_controller+protected.h"
+#include "ios/chrome/browser/infobars/infobar_controller_delegate.h"
 #include "ios/chrome/browser/translate/translate_infobar_tags.h"
-#include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
-#import "ios/public/provider/chrome/browser/ui/infobar_view_delegate.h"
-#import "ios/public/provider/chrome/browser/ui/infobar_view_protocol.h"
+#import "ios/chrome/browser/ui/infobars/confirm_infobar_view.h"
 #include "ui/gfx/image/image.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 @interface TranslateMessageInfoBarController ()
 
-// Action for any of the user defined buttons.
-- (void)infoBarButtonDidPress:(id)sender;
+// Overrides superclass property.
+@property(nonatomic, readonly)
+    translate::TranslateInfoBarDelegate* infoBarDelegate;
 
 @end
 
 @implementation TranslateMessageInfoBarController
 
-- (base::scoped_nsobject<UIView<InfoBarViewProtocol>>)
-    viewForDelegate:(infobars::InfoBarDelegate*)delegate
-              frame:(CGRect)frame {
-  base::scoped_nsobject<UIView<InfoBarViewProtocol>> infoBarView;
-  translate::TranslateInfoBarDelegate* translateInfoBarDelegate =
-      delegate->AsTranslateInfoBarDelegate();
-  infoBarView.reset(
-      ios::GetChromeBrowserProvider()->CreateInfoBarView(frame, self.delegate));
+@dynamic infoBarDelegate;
+
+- (instancetype)initWithInfoBarDelegate:
+    (translate::TranslateInfoBarDelegate*)infoBarDelegate {
+  return [super initWithInfoBarDelegate:infoBarDelegate];
+}
+
+- (UIView*)infobarView {
+  ConfirmInfoBarView* infoBarView =
+      [[ConfirmInfoBarView alloc] initWithFrame:CGRectZero];
   // Icon
-  gfx::Image icon = translateInfoBarDelegate->GetIcon();
+  gfx::Image icon = self.infoBarDelegate->GetIcon();
   if (!icon.IsEmpty())
     [infoBarView addLeftIcon:icon.ToUIImage()];
   // Text.
   [infoBarView addLabel:base::SysUTF16ToNSString(
-                            translateInfoBarDelegate->GetMessageInfoBarText())];
+                            self.infoBarDelegate->GetMessageInfoBarText())];
   // Close button.
   [infoBarView addCloseButtonWithTag:TranslateInfoBarIOSTag::CLOSE
                               target:self
                               action:@selector(infoBarButtonDidPress:)];
   // Other button.
   base::string16 buttonText(
-      translateInfoBarDelegate->GetMessageInfoBarButtonText());
+      self.infoBarDelegate->GetMessageInfoBarButtonText());
   if (!buttonText.empty()) {
     [infoBarView addButton:base::SysUTF16ToNSString(buttonText)
                        tag:TranslateInfoBarIOSTag::MESSAGE
@@ -55,20 +63,21 @@
 #pragma mark - Handling of User Events
 
 - (void)infoBarButtonDidPress:(id)sender {
-  // This press might have occurred after the user has already pressed a button,
-  // in which case the view has been detached from the delegate and this press
-  // should be ignored.
-  if (!self.delegate) {
+  if ([self shouldIgnoreUserInteraction])
     return;
-  }
-  if ([sender isKindOfClass:[UIButton class]]) {
-    NSUInteger buttonId = static_cast<UIButton*>(sender).tag;
-    if (buttonId == TranslateInfoBarIOSTag::CLOSE) {
-      self.delegate->InfoBarDidCancel();
-    } else {
-      DCHECK(buttonId == TranslateInfoBarIOSTag::MESSAGE);
-      self.delegate->InfoBarButtonDidPress(buttonId);
-    }
+
+  NSUInteger buttonId = base::mac::ObjCCastStrict<UIButton>(sender).tag;
+  switch (buttonId) {
+    case TranslateInfoBarIOSTag::CLOSE:
+      self.infoBarDelegate->InfoBarDismissed();
+      self.delegate->RemoveInfoBar();
+      break;
+    case TranslateInfoBarIOSTag::MESSAGE:
+      self.infoBarDelegate->MessageInfoBarButtonPressed();
+      break;
+    default:
+      NOTREACHED() << "Unexpected Translate button label";
+      break;
   }
 }
 

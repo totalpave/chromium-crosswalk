@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.test.util;
 
+import static org.chromium.base.test.util.ScalableTimeout.scaleTimeout;
+
 import android.app.Activity;
 import android.os.Build;
 import android.view.View;
@@ -12,8 +14,8 @@ import android.view.WindowManager;
 import org.chromium.base.ThreadUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabWebContentsDelegateAndroid;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 import java.util.concurrent.Callable;
 
@@ -29,10 +31,9 @@ public class FullscreenTestUtils {
      * @param tab The {@link Tab} to toggle fullscreen on.
      * @param state Whether the tab should be set to fullscreen.
      * @param activity The {@link Activity} owning the tab.
-     * @throws InterruptedException
      */
     public static void togglePersistentFullscreenAndAssert(final Tab tab, final boolean state,
-            Activity activity) throws InterruptedException {
+            Activity activity) {
         final TabWebContentsDelegateAndroid delegate = tab.getTabWebContentsDelegateAndroid();
         FullscreenTestUtils.togglePersistentFullscreen(delegate, state);
         FullscreenTestUtils.waitForFullscreenFlag(tab, state, activity);
@@ -50,7 +51,11 @@ public class FullscreenTestUtils {
         ThreadUtils.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                delegate.toggleFullscreenModeForTab(state);
+                if (state) {
+                    delegate.enterFullscreenModeForTab(false);
+                } else {
+                    delegate.exitFullscreenModeForTab();
+                }
             }
         });
     }
@@ -61,16 +66,15 @@ public class FullscreenTestUtils {
      * @param tab The {@link Tab} that is expected to have the flag set.
      * @param state Whether the tab should be to fullscreen.
      * @param activity The {@link Activity} owning the tab.
-     * @throws InterruptedException
      */
     public static void waitForFullscreenFlag(final Tab tab, final boolean state,
-            final Activity activity) throws InterruptedException {
+            final Activity activity) {
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
                 return isFullscreenFlagSet(tab, state, activity);
             }
-        });
+        }, scaleTimeout(6000), CriteriaHelper.DEFAULT_POLLING_INTERVAL);
     }
 
     /**
@@ -78,10 +82,9 @@ public class FullscreenTestUtils {
      *
      * @param delegate The {@link TabWebContentsDelegateAndroid} for the tab.
      * @param state Whether the tab should be set to fullscreen.
-     * @throws InterruptedException
      */
     public static void waitForPersistentFullscreen(final TabWebContentsDelegateAndroid delegate,
-            boolean state) throws InterruptedException {
+            boolean state) {
         CriteriaHelper.pollUiThread(Criteria.equals(state, new Callable<Boolean>() {
             @Override
             public Boolean call() {
@@ -97,7 +100,7 @@ public class FullscreenTestUtils {
     private static boolean isFullscreenFlagSet(final Tab tab, final boolean state,
             Activity activity) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
-            View view = tab.getContentViewCore().getContainerView();
+            View view = tab.getContentView();
             int visibility = view.getSystemUiVisibility();
             // SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN should only be used during the transition between
             // fullscreen states, so it should always be cleared when fullscreen transitions are

@@ -9,6 +9,7 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/optional.h"
 #include "base/time/time.h"
 #include "content/browser/loader/navigation_url_loader_delegate.h"
 #include "net/url_request/redirect_info.h"
@@ -17,10 +18,11 @@ namespace base {
 class RunLoop;
 }
 
-namespace content {
-
-class StreamHandle;
+namespace network {
 struct ResourceResponse;
+}
+
+namespace content {
 
 // PlzNavigate
 // Test implementation of NavigationURLLoaderDelegate to monitor navigation
@@ -31,13 +33,17 @@ class TestNavigationURLLoaderDelegate : public NavigationURLLoaderDelegate {
   ~TestNavigationURLLoaderDelegate() override;
 
   const net::RedirectInfo& redirect_info() const { return redirect_info_; }
-  ResourceResponse* redirect_response() const {
+  network::ResourceResponse* redirect_response() const {
     return redirect_response_.get();
   }
-  ResourceResponse* response() const { return response_.get(); }
-  StreamHandle* body() const { return body_.get(); }
+  network::ResourceResponse* response() const { return response_.get(); }
   int net_error() const { return net_error_; }
+  const net::SSLInfo& ssl_info() const { return ssl_info_; }
   int on_request_handled_counter() const { return on_request_handled_counter_; }
+  bool is_download() const { return is_download_; }
+  bool has_url_loader_client_endpoints() {
+    return !!url_loader_client_endpoints_;
+  }
 
   // Waits for various navigation events.
   // Note: if the event already happened, the functions will hang.
@@ -48,27 +54,35 @@ class TestNavigationURLLoaderDelegate : public NavigationURLLoaderDelegate {
   void WaitForRequestFailed();
   void WaitForRequestStarted();
 
-  void ReleaseBody();
+  void ReleaseURLLoaderClientEndpoints();
 
   // NavigationURLLoaderDelegate implementation.
   void OnRequestRedirected(
       const net::RedirectInfo& redirect_info,
-      const scoped_refptr<ResourceResponse>& response) override;
+      const scoped_refptr<network::ResourceResponse>& response) override;
   void OnResponseStarted(
-      const scoped_refptr<ResourceResponse>& response,
-      std::unique_ptr<StreamHandle> body,
-      std::unique_ptr<NavigationData> navigation_data) override;
-  void OnRequestFailed(bool in_cache, int net_error) override;
+      const scoped_refptr<network::ResourceResponse>& response,
+      network::mojom::URLLoaderClientEndpointsPtr url_loader_client_endpoints,
+      std::unique_ptr<NavigationData> navigation_data,
+      const GlobalRequestID& request_id,
+      bool is_download,
+      NavigationDownloadPolicy download_policy,
+      bool is_stream,
+      base::Optional<SubresourceLoaderParams> subresource_loader_params)
+      override;
+  void OnRequestFailed(
+      const network::URLLoaderCompletionStatus& status) override;
   void OnRequestStarted(base::TimeTicks timestamp) override;
-  void OnServiceWorkerEncountered() override;
 
  private:
   net::RedirectInfo redirect_info_;
-  scoped_refptr<ResourceResponse> redirect_response_;
-  scoped_refptr<ResourceResponse> response_;
-  std::unique_ptr<StreamHandle> body_;
+  scoped_refptr<network::ResourceResponse> redirect_response_;
+  network::mojom::URLLoaderClientEndpointsPtr url_loader_client_endpoints_;
+  scoped_refptr<network::ResourceResponse> response_;
   int net_error_;
+  net::SSLInfo ssl_info_;
   int on_request_handled_counter_;
+  bool is_download_;
 
   std::unique_ptr<base::RunLoop> request_redirected_;
   std::unique_ptr<base::RunLoop> response_started_;

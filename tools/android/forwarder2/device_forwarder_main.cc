@@ -13,6 +13,7 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/logging.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread.h"
@@ -72,10 +73,10 @@ class ServerDelegate : public Daemon::ServerDelegate {
       client_socket->WriteString("OK");
       return;
     }
-    controller_thread_->message_loop()->PostTask(
+    controller_thread_->task_runner()->PostTask(
         FROM_HERE,
-        base::Bind(&ServerDelegate::StartController, base::Unretained(this),
-                   GetExitNotifierFD(), base::Passed(&client_socket)));
+        base::BindOnce(&ServerDelegate::StartController, base::Unretained(this),
+                       GetExitNotifierFD(), std::move(client_socket)));
     initialized_ = true;
   }
 

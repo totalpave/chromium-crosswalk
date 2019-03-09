@@ -19,45 +19,33 @@
 #include "util/misc/uuid.h"
 
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
+#include <type_traits>
+
 #include "base/logging.h"
+#include "base/rand_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/sys_byteorder.h"
-#include "util/stdlib/cxx.h"
 
 #if defined(OS_MACOSX)
 #include <uuid/uuid.h>
 #endif  // OS_MACOSX
 
-#if CXX_LIBRARY_VERSION >= 2011
-#include <type_traits>
-#endif
-
 namespace crashpad {
 
 static_assert(sizeof(UUID) == 16, "UUID must be 16 bytes");
-
-#if CXX_LIBRARY_VERSION >= 2011
-static_assert(std::is_standard_layout<UUID>::value,
-              "UUID must be standard layout");
-#endif
-
-UUID::UUID() : data_1(0), data_2(0), data_3(0), data_4(), data_5() {
-}
-
-UUID::UUID(InitializeWithNewTag) {
-  CHECK(InitializeWithNew());
-}
-
-UUID::UUID(const uint8_t* bytes) {
-  InitializeFromBytes(bytes);
-}
+static_assert(std::is_pod<UUID>::value, "UUID must be POD");
 
 bool UUID::operator==(const UUID& that) const {
-  return memcmp(this, &that, sizeof(UUID)) == 0;
+  return memcmp(this, &that, sizeof(*this)) == 0;
+}
+
+void UUID::InitializeToZero() {
+  memset(this, 0, sizeof(*this));
 }
 
 void UUID::InitializeFromBytes(const uint8_t* bytes) {
@@ -72,7 +60,7 @@ bool UUID::InitializeFromString(const base::StringPiece& string) {
     return false;
 
   UUID temp;
-  const char kScanFormat[] =
+  static constexpr char kScanFormat[] =
       "%08" SCNx32 "-%04" SCNx16 "-%04" SCNx16
       "-%02" SCNx8 "%02" SCNx8
       "-%02" SCNx8 "%02" SCNx8 "%02" SCNx8 "%02" SCNx8 "%02" SCNx8 "%02" SCNx8;
@@ -96,19 +84,29 @@ bool UUID::InitializeFromString(const base::StringPiece& string) {
   return true;
 }
 
+bool UUID::InitializeFromString(const base::StringPiece16& string) {
+  return InitializeFromString(UTF16ToUTF8(string));
+}
+
 bool UUID::InitializeWithNew() {
 #if defined(OS_MACOSX)
   uuid_t uuid;
   uuid_generate(uuid);
   InitializeFromBytes(uuid);
   return true;
-#elif defined(OS_WIN)
-  ::UUID system_uuid;
-  if (UuidCreate(&system_uuid) != RPC_S_OK) {
-    LOG(ERROR) << "UuidCreate";
-    return false;
-  }
-  InitializeFromSystemUUID(&system_uuid);
+#elif defined(OS_WIN) || defined(OS_LINUX) || defined(OS_ANDROID) || \
+    defined(OS_FUCHSIA)
+  // Linux, Android, and Fuchsia do not provide a UUID generator in a
+  // widely-available system library. On Linux and Android, uuid_generate()
+  // from libuuid is not available everywhere.
+  // On Windows, do not use UuidCreate() to avoid a dependency on rpcrt4, so
+  // that this function is usable early in DllMain().
+  base::RandBytes(this, sizeof(*this));
+
+  // Set six bits per RFC 4122 §4.4 to identify this as a pseudo-random UUID.
+  data_3 = (4 << 12) | (data_3 & 0x0fff);  // §4.1.3
+  data_4[0] = 0x80 | (data_4[0] & 0x3f);  // §4.1.1
+
   return true;
 #else
 #error Port.
@@ -121,7 +119,7 @@ void UUID::InitializeFromSystemUUID(const ::UUID* system_uuid) {
                 "unexpected system uuid size");
   static_assert(offsetof(::UUID, Data1) == offsetof(UUID, data_1),
                 "unexpected system uuid layout");
-  memcpy(this, system_uuid, sizeof(::UUID));
+  memcpy(this, system_uuid, sizeof(*this));
 }
 #endif  // OS_WIN
 

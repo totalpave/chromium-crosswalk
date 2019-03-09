@@ -9,10 +9,10 @@
 #include <string>
 #include <vector>
 
-#include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "ui/events/ozone/evdev/touch_event_converter_evdev.h"
+#include "ui/ozone/public/input_controller.h"
 
 namespace ui {
 
@@ -26,20 +26,17 @@ const char kInputEventsLogFile[] =
 
 class GesturePropertyProvider;
 
-typedef base::Callback<void(std::unique_ptr<std::vector<base::FilePath>>)>
-    GetTouchEventLogReply;
-
 // Utility functions for generating gesture related logs. These logs will be
 // included in user feedback reports.
 void DumpTouchDeviceStatus(GesturePropertyProvider* provider,
                            std::string* status);
 
 void DumpTouchEventLog(
-    std::map<base::FilePath, EventConverterEvdev*>& converter,
+    const std::map<base::FilePath, std::unique_ptr<EventConverterEvdev>>&
+        converter,
     GesturePropertyProvider* provider,
     const base::FilePath& out_dir,
-    std::unique_ptr<std::vector<base::FilePath>> log_paths,
-    const GetTouchEventLogReply& reply);
+    InputController::GetTouchEventLogReply reply);
 
 }  // namespace ui
 

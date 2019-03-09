@@ -4,11 +4,10 @@
 
 #include "cc/test/fake_tile_task_manager.h"
 
-#include "base/memory/ptr_util.h"
 
 namespace cc {
 
-FakeTileTaskManagerImpl::FakeTileTaskManagerImpl() {}
+FakeTileTaskManagerImpl::FakeTileTaskManagerImpl() = default;
 
 FakeTileTaskManagerImpl::~FakeTileTaskManagerImpl() {
   DCHECK_EQ(0u, completed_tasks_.size());
@@ -16,10 +15,10 @@ FakeTileTaskManagerImpl::~FakeTileTaskManagerImpl() {
 
 void FakeTileTaskManagerImpl::ScheduleTasks(TaskGraph* graph) {
   for (const auto& node : graph->nodes) {
-    TileTask* task = static_cast<TileTask*>(node.task);
+    TileTask* task = static_cast<TileTask*>(node.task.get());
     // Cancel the task and append to |completed_tasks_|.
     task->state().DidCancel();
-    completed_tasks_.push_back(task);
+    completed_tasks_.push_back(node.task);
   }
 }
 

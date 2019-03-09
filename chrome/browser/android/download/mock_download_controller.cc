@@ -4,6 +4,8 @@
 
 #include "chrome/browser/android/download/mock_download_controller.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -17,14 +19,8 @@ MockDownloadController::MockDownloadController()
 
 MockDownloadController::~MockDownloadController() {}
 
-void MockDownloadController::CreateGETDownload(
-    int render_process_id, int render_view_id,
-    bool must_download, const DownloadInfo& info) {
-}
-
 void MockDownloadController::OnDownloadStarted(
-    content::DownloadItem* download_item) {
-}
+    download::DownloadItem* download_item) {}
 
 void MockDownloadController::StartContextMenuDownload(
     const content::ContextMenuParams& params,
@@ -32,22 +28,24 @@ void MockDownloadController::StartContextMenuDownload(
     bool is_link, const std::string& extra_headers) {
 }
 
-void MockDownloadController::DangerousDownloadValidated(
-    content::WebContents* web_contents,
-    const std::string& download_guid,
-    bool accept) {}
-
 void MockDownloadController::AcquireFileAccessPermission(
-    content::WebContents* web_contents,
-    const DownloadControllerBase::AcquireFileAccessPermissionCallback& cb) {
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
+    DownloadControllerBase::AcquireFileAccessPermissionCallback cb) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(cb, approve_file_access_request_));
+      FROM_HERE, base::BindOnce(std::move(cb), approve_file_access_request_));
 }
 
 void MockDownloadController::SetApproveFileAccessRequestForTesting(
     bool approve) {
   approve_file_access_request_ = approve;
 }
+
+void MockDownloadController::CreateAndroidDownload(
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
+    const DownloadInfo& info) {}
+
+void MockDownloadController::AboutToResumeDownload(
+    download::DownloadItem* download_item) {}
 
 }  // namespace android
 }  // namespace chrome

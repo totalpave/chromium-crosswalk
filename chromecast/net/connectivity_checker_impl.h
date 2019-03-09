@@ -21,6 +21,7 @@ namespace net {
 class SSLInfo;
 class URLRequest;
 class URLRequestContext;
+class URLRequestContextGetter;
 }
 
 namespace chromecast {
@@ -33,26 +34,29 @@ class ConnectivityCheckerImpl
       public net::NetworkChangeNotifier::NetworkChangeObserver {
  public:
   // Connectivity checking and initialization will run on task_runner.
-  explicit ConnectivityCheckerImpl(
-      const scoped_refptr<base::SingleThreadTaskRunner>& task_runner);
+  static scoped_refptr<ConnectivityCheckerImpl> Create(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+      net::URLRequestContextGetter* url_request_context_getter);
 
   // ConnectivityChecker implementation:
   bool Connected() const override;
   void Check() override;
 
  protected:
+  explicit ConnectivityCheckerImpl(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner);
   ~ConnectivityCheckerImpl() override;
 
  private:
   // UrlRequest::Delegate implementation:
-  void OnResponseStarted(net::URLRequest* request) override;
+  void OnResponseStarted(net::URLRequest* request, int net_error) override;
   void OnReadCompleted(net::URLRequest* request, int bytes_read) override;
   void OnSSLCertificateError(net::URLRequest* request,
                              const net::SSLInfo& ssl_info,
                              bool fatal) override;
 
   // Initializes ConnectivityChecker
-  void Initialize();
+  void Initialize(net::URLRequestContextGetter* url_request_context_getter);
 
   // net::NetworkChangeNotifier::NetworkChangeObserver implementation:
   void OnNetworkChanged(
@@ -81,7 +85,7 @@ class ConnectivityCheckerImpl
   void CheckInternal();
 
   std::unique_ptr<GURL> connectivity_check_url_;
-  std::unique_ptr<net::URLRequestContext> url_request_context_;
+  net::URLRequestContext* url_request_context_;
   std::unique_ptr<net::URLRequest> url_request_;
   const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
@@ -96,7 +100,7 @@ class ConnectivityCheckerImpl
   bool network_changed_pending_;
   // Timeout handler for connectivity checks.
   // Note: Cancelling this timeout can cause the destructor for this class to be
-  //       to be called.
+  // called.
   base::CancelableCallback<void()> timeout_;
 
   DISALLOW_COPY_AND_ASSIGN(ConnectivityCheckerImpl);

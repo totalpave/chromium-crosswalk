@@ -4,8 +4,8 @@
 
 #include "chrome/browser/ui/webui/media_router/media_router_resources_provider.h"
 
+#include "chrome/grit/browser_resources.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "grit/browser_resources.h"
 
 namespace {
 
@@ -64,9 +64,14 @@ void AddPolymerElements(content::WebUIDataSource* html_source) {
       "elements/media_router_search_highlighter/"
       "media_router_search_highlighter.js",
       IDR_MEDIA_ROUTER_SEARCH_HIGHLIGHTER_JS);
-  html_source->AddResourcePath(
-      "elements/route_details/route_details.css",
-      IDR_ROUTE_DETAILS_CSS);
+  html_source->AddResourcePath("elements/route_controls/route_controls.css",
+                               IDR_ROUTE_CONTROLS_CSS);
+  html_source->AddResourcePath("elements/route_controls/route_controls.html",
+                               IDR_ROUTE_CONTROLS_HTML);
+  html_source->AddResourcePath("elements/route_controls/route_controls.js",
+                               IDR_ROUTE_CONTROLS_JS);
+  html_source->AddResourcePath("elements/route_details/route_details.css",
+                               IDR_ROUTE_DETAILS_CSS);
   html_source->AddResourcePath(
       "elements/route_details/route_details.html",
       IDR_ROUTE_DETAILS_HTML);

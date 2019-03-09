@@ -14,9 +14,9 @@
 #include "base/path_service.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/extensions/manifest_handlers/content_scripts_handler.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/manifest_handlers/content_scripts_handler.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
@@ -38,14 +38,14 @@ TEST_F(ExtensionFromUserScript, Basic) {
   ASSERT_TRUE(extensions_dir.CreateUniqueTempDir());
 
   base::FilePath test_file;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_file));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_file));
   test_file = test_file.AppendASCII("extensions")
                        .AppendASCII("user_script_basic.user.js");
 
   base::string16 error;
-  scoped_refptr<Extension> extension(ConvertUserScriptToExtension(
-      test_file, GURL("http://www.google.com/foo"),
-      extensions_dir.path(), &error));
+  scoped_refptr<Extension> extension(
+      ConvertUserScriptToExtension(test_file, GURL("http://www.google.com/foo"),
+                                   extensions_dir.GetPath(), &error));
 
   ASSERT_TRUE(extension.get());
   EXPECT_EQ(base::string16(), error);
@@ -64,7 +64,7 @@ TEST_F(ExtensionFromUserScript, Basic) {
 
   ASSERT_EQ(1u, ContentScriptsInfo::GetContentScripts(extension.get()).size());
   const UserScript& script =
-      ContentScriptsInfo::GetContentScripts(extension.get())[0];
+      *ContentScriptsInfo::GetContentScripts(extension.get())[0];
   EXPECT_EQ(UserScript::DOCUMENT_IDLE, script.run_location());
   ASSERT_EQ(2u, script.globs().size());
   EXPECT_EQ("http://www.google.com/*", script.globs().at(0));
@@ -81,7 +81,7 @@ TEST_F(ExtensionFromUserScript, Basic) {
 
   // Make sure the files actually exist on disk.
   EXPECT_TRUE(base::PathExists(
-      extension->path().Append(script.js_scripts()[0].relative_path())));
+      extension->path().Append(script.js_scripts()[0]->relative_path())));
   EXPECT_TRUE(base::PathExists(
       extension->path().Append(kManifestFilename)));
 }
@@ -91,14 +91,14 @@ TEST_F(ExtensionFromUserScript, NoMetadata) {
   ASSERT_TRUE(extensions_dir.CreateUniqueTempDir());
 
   base::FilePath test_file;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_file));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_file));
   test_file = test_file.AppendASCII("extensions")
                        .AppendASCII("user_script_no_metadata.user.js");
 
   base::string16 error;
   scoped_refptr<Extension> extension(ConvertUserScriptToExtension(
       test_file, GURL("http://www.google.com/foo/bar.user.js?monkey"),
-      extensions_dir.path(), &error));
+      extensions_dir.GetPath(), &error));
 
   ASSERT_TRUE(extension.get());
   EXPECT_EQ(base::string16(), error);
@@ -117,7 +117,7 @@ TEST_F(ExtensionFromUserScript, NoMetadata) {
 
   ASSERT_EQ(1u, ContentScriptsInfo::GetContentScripts(extension.get()).size());
   const UserScript& script =
-      ContentScriptsInfo::GetContentScripts(extension.get())[0];
+      *ContentScriptsInfo::GetContentScripts(extension.get())[0];
   ASSERT_EQ(1u, script.globs().size());
   EXPECT_EQ("*", script.globs()[0]);
   EXPECT_EQ(0u, script.exclude_globs().size());
@@ -130,7 +130,7 @@ TEST_F(ExtensionFromUserScript, NoMetadata) {
 
   // Make sure the files actually exist on disk.
   EXPECT_TRUE(base::PathExists(
-      extension->path().Append(script.js_scripts()[0].relative_path())));
+      extension->path().Append(script.js_scripts()[0]->relative_path())));
   EXPECT_TRUE(base::PathExists(
       extension->path().Append(kManifestFilename)));
 }
@@ -140,14 +140,14 @@ TEST_F(ExtensionFromUserScript, NotUTF8) {
   ASSERT_TRUE(extensions_dir.CreateUniqueTempDir());
 
   base::FilePath test_file;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_file));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_file));
   test_file = test_file.AppendASCII("extensions")
                        .AppendASCII("user_script_not_utf8.user.js");
 
   base::string16 error;
   scoped_refptr<Extension> extension(ConvertUserScriptToExtension(
       test_file, GURL("http://www.google.com/foo/bar.user.js?monkey"),
-      extensions_dir.path(), &error));
+      extensions_dir.GetPath(), &error));
 
   ASSERT_FALSE(extension.get());
   EXPECT_EQ(base::ASCIIToUTF16("User script must be UTF8 encoded."), error);
@@ -158,14 +158,14 @@ TEST_F(ExtensionFromUserScript, RunAtDocumentStart) {
   ASSERT_TRUE(extensions_dir.CreateUniqueTempDir());
 
   base::FilePath test_file;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_file));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_file));
   test_file = test_file.AppendASCII("extensions")
                        .AppendASCII("user_script_run_at_start.user.js");
 
   base::string16 error;
-  scoped_refptr<Extension> extension(ConvertUserScriptToExtension(
-      test_file, GURL("http://www.google.com/foo"),
-      extensions_dir.path(), &error));
+  scoped_refptr<Extension> extension(
+      ConvertUserScriptToExtension(test_file, GURL("http://www.google.com/foo"),
+                                   extensions_dir.GetPath(), &error));
 
   ASSERT_TRUE(extension.get());
   EXPECT_EQ(base::string16(), error);
@@ -184,7 +184,7 @@ TEST_F(ExtensionFromUserScript, RunAtDocumentStart) {
   // Validate run location.
   ASSERT_EQ(1u, ContentScriptsInfo::GetContentScripts(extension.get()).size());
   const UserScript& script =
-      ContentScriptsInfo::GetContentScripts(extension.get())[0];
+      *ContentScriptsInfo::GetContentScripts(extension.get())[0];
   EXPECT_EQ(UserScript::DOCUMENT_START, script.run_location());
 }
 
@@ -193,14 +193,14 @@ TEST_F(ExtensionFromUserScript, RunAtDocumentEnd) {
   ASSERT_TRUE(extensions_dir.CreateUniqueTempDir());
 
   base::FilePath test_file;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_file));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_file));
   test_file = test_file.AppendASCII("extensions")
                        .AppendASCII("user_script_run_at_end.user.js");
 
   base::string16 error;
-  scoped_refptr<Extension> extension(ConvertUserScriptToExtension(
-      test_file, GURL("http://www.google.com/foo"),
-      extensions_dir.path(), &error));
+  scoped_refptr<Extension> extension(
+      ConvertUserScriptToExtension(test_file, GURL("http://www.google.com/foo"),
+                                   extensions_dir.GetPath(), &error));
 
   ASSERT_TRUE(extension.get());
   EXPECT_EQ(base::string16(), error);
@@ -219,7 +219,7 @@ TEST_F(ExtensionFromUserScript, RunAtDocumentEnd) {
   // Validate run location.
   ASSERT_EQ(1u, ContentScriptsInfo::GetContentScripts(extension.get()).size());
   const UserScript& script =
-      ContentScriptsInfo::GetContentScripts(extension.get())[0];
+      *ContentScriptsInfo::GetContentScripts(extension.get())[0];
   EXPECT_EQ(UserScript::DOCUMENT_END, script.run_location());
 }
 
@@ -228,15 +228,15 @@ TEST_F(ExtensionFromUserScript, RunAtDocumentIdle) {
   ASSERT_TRUE(extensions_dir.CreateUniqueTempDir());
 
   base::FilePath test_file;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_file));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_file));
   test_file = test_file.AppendASCII("extensions")
                        .AppendASCII("user_script_run_at_idle.user.js");
   ASSERT_TRUE(base::PathExists(test_file)) << test_file.value();
 
   base::string16 error;
-  scoped_refptr<Extension> extension(ConvertUserScriptToExtension(
-      test_file, GURL("http://www.google.com/foo"),
-      extensions_dir.path(), &error));
+  scoped_refptr<Extension> extension(
+      ConvertUserScriptToExtension(test_file, GURL("http://www.google.com/foo"),
+                                   extensions_dir.GetPath(), &error));
 
   ASSERT_TRUE(extension.get());
   EXPECT_EQ(base::string16(), error);
@@ -255,7 +255,7 @@ TEST_F(ExtensionFromUserScript, RunAtDocumentIdle) {
   // Validate run location.
   ASSERT_EQ(1u, ContentScriptsInfo::GetContentScripts(extension.get()).size());
   const UserScript& script =
-      ContentScriptsInfo::GetContentScripts(extension.get())[0];
+      *ContentScriptsInfo::GetContentScripts(extension.get())[0];
   EXPECT_EQ(UserScript::DOCUMENT_IDLE, script.run_location());
 }
 

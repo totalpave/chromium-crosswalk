@@ -8,20 +8,25 @@
  *     object and to facilitate mocking for tests.
  */
 
-goog.provide('ChromeVoxMode');
 goog.provide('ChromeVoxState');
+goog.provide('ChromeVoxStateObserver');
 
 goog.require('cursors.Cursor');
+goog.require('cursors.Range');
+goog.require('cvox.BrailleKeyEvent');
 
 /**
- * All possible modes ChromeVox can run.
- * @enum {string}
+ * An interface implemented by objects that want to observe ChromeVox state
+ * changes.
+ * @interface
  */
-ChromeVoxMode = {
-  CLASSIC: 'classic',
-  COMPAT: 'compat',
-  NEXT: 'next',
-  FORCE_NEXT: 'force_next'
+ChromeVoxStateObserver = function() {};
+
+ChromeVoxStateObserver.prototype = {
+  /**
+   * @param {cursors.Range} range The new range.
+   */
+  onCurrentRangeChanged: function(range) {}
 };
 
 /**
@@ -47,23 +52,10 @@ ChromeVoxState.backgroundTts;
 
 /**
  * @type {boolean}
-  */
-  ChromeVoxState.isReadingContinuously;
+ */
+ChromeVoxState.isReadingContinuously;
 
 ChromeVoxState.prototype = {
-  /** @type {ChromeVoxMode} */
-  get mode() {
-    return this.getMode();
-  },
-
-  /**
-   * @return {ChromeVoxMode} The current mode.
-   * @protected
-   */
-  getMode: function() {
-    return ChromeVoxMode.NEXT;
-  },
-
   /** @type {cursors.Range} */
   get currentRange() {
     return this.getCurrentRange();
@@ -81,4 +73,36 @@ ChromeVoxState.prototype = {
    * @param {cursors.Range} newRange The new range.
    */
   setCurrentRange: goog.abstractMethod,
+  /**
+   * Navigate to the given range - it both sets the range and outputs it.
+   * @param {!cursors.Range} range The new range.
+   * @param {boolean=} opt_focus Focus the range; defaults to true.
+   * @param {Object=} opt_speechProps Speech properties.
+   * @param {boolean=} opt_skipSettingSelection If true, does not set
+   *     the selection, otherwise it does by default.
+   */
+  navigateToRange: goog.abstractMethod,
+
+  /**
+   * Save the current ChromeVox range.
+   */
+  markCurrentRange: goog.abstractMethod,
+
+  /**
+   * Handles a braille command.
+   * @param {!cvox.BrailleKeyEvent} evt
+   * @param {!cvox.NavBraille} content
+   * @return {boolean} True if evt was processed.
+   */
+  onBrailleKeyEvent: goog.abstractMethod
+};
+
+/** @type {!Array<ChromeVoxStateObserver>} */
+ChromeVoxState.observers = [];
+
+/**
+ * @param {ChromeVoxStateObserver} observer
+ */
+ChromeVoxState.addObserver = function(observer) {
+  ChromeVoxState.observers.push(observer);
 };

@@ -9,6 +9,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "dbus/message.h"
 #include "dbus/mock_bus.h"
 #include "dbus/mock_exported_object.h"
@@ -27,8 +28,7 @@ namespace dbus {
 
 class MockTest : public testing::Test {
  public:
-  MockTest() {
-  }
+  MockTest() = default;
 
   void SetUp() override {
     // Create a mock bus.
@@ -44,17 +44,18 @@ class MockTest : public testing::Test {
 
     // Set an expectation so mock_proxy's CallMethodAndBlock() will use
     // CreateMockProxyResponse() to return responses.
-    EXPECT_CALL(*mock_proxy_.get(), MockCallMethodAndBlock(_, _))
+    EXPECT_CALL(*mock_proxy_.get(), CallMethodAndBlock(_, _))
         .WillRepeatedly(Invoke(this, &MockTest::CreateMockProxyResponse));
     EXPECT_CALL(*mock_proxy_.get(),
-                MockCallMethodAndBlockWithErrorDetails(_, _, _))
+                CallMethodAndBlockWithErrorDetails(_, _, _))
         .WillRepeatedly(
             Invoke(this, &MockTest::CreateMockProxyResponseWithErrorDetails));
 
     // Set an expectation so mock_proxy's CallMethod() will use
     // HandleMockProxyResponseWithMessageLoop() to return responses.
-    EXPECT_CALL(*mock_proxy_.get(), CallMethod(_, _, _)).WillRepeatedly(
-        Invoke(this, &MockTest::HandleMockProxyResponseWithMessageLoop));
+    EXPECT_CALL(*mock_proxy_.get(), DoCallMethod(_, _, _))
+        .WillRepeatedly(
+            Invoke(this, &MockTest::HandleMockProxyResponseWithMessageLoop));
 
     // Set an expectation so mock_bus's GetObjectProxy() for the given
     // service name and the object path will return mock_proxy_.
@@ -78,7 +79,7 @@ class MockTest : public testing::Test {
       ASSERT_TRUE(reader.PopString(&response_string_));
     }
     run_loop_->Quit();
-  };
+  }
 
  protected:
   std::string response_string_;
@@ -90,8 +91,8 @@ class MockTest : public testing::Test {
  private:
   // Returns a response for the given method call. Used to implement
   // CallMethodAndBlock() for |mock_proxy_|.
-  Response* CreateMockProxyResponse(MethodCall* method_call,
-                                    int timeout_ms) {
+  std::unique_ptr<Response> CreateMockProxyResponse(MethodCall* method_call,
+                                                    int timeout_ms) {
     if (method_call->GetInterface() == "org.chromium.TestInterface" &&
         method_call->GetMember() == "Echo") {
       MessageReader reader(method_call);
@@ -100,18 +101,18 @@ class MockTest : public testing::Test {
         std::unique_ptr<Response> response = Response::CreateEmpty();
         MessageWriter writer(response.get());
         writer.AppendString(text_message);
-        return response.release();
+        return response;
       }
     }
 
     LOG(ERROR) << "Unexpected method call: " << method_call->ToString();
-    return NULL;
+    return nullptr;
   }
 
-  Response* CreateMockProxyResponseWithErrorDetails(
+  std::unique_ptr<Response> CreateMockProxyResponseWithErrorDetails(
       MethodCall* method_call, int timeout_ms, ScopedDBusError* error) {
     dbus_set_error(error->get(), DBUS_ERROR_NOT_SUPPORTED, "Not implemented");
-    return NULL;
+    return nullptr;
   }
 
   // Creates a response and runs the given response callback in the
@@ -119,21 +120,20 @@ class MockTest : public testing::Test {
   void HandleMockProxyResponseWithMessageLoop(
       MethodCall* method_call,
       int timeout_ms,
-      ObjectProxy::ResponseCallback response_callback) {
-    Response* response = CreateMockProxyResponse(method_call, timeout_ms);
-    message_loop_.PostTask(FROM_HERE,
-                           base::Bind(&MockTest::RunResponseCallback,
-                                      base::Unretained(this),
-                                      response_callback,
-                                      response));
+      ObjectProxy::ResponseCallback* response_callback) {
+    std::unique_ptr<Response> response =
+        CreateMockProxyResponse(method_call, timeout_ms);
+    message_loop_.task_runner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&MockTest::RunResponseCallback, base::Unretained(this),
+                       std::move(*response_callback), std::move(response)));
   }
 
   // Runs the given response callback with the given response.
   void RunResponseCallback(
       ObjectProxy::ResponseCallback response_callback,
-      Response* response) {
-    response_callback.Run(response);
-    delete response;
+      std::unique_ptr<Response> response) {
+    std::move(response_callback).Run(response.get());
   }
 };
 

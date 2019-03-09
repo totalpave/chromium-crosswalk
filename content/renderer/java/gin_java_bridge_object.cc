@@ -4,24 +4,25 @@
 
 #include "content/renderer/java/gin_java_bridge_object.h"
 
+#include "base/bind.h"
 #include "content/common/gin_java_bridge_messages.h"
 #include "content/public/renderer/render_thread.h"
 #include "content/renderer/java/gin_java_function_invocation_helper.h"
 #include "gin/function_template.h"
-#include "third_party/WebKit/public/web/WebFrame.h"
-#include "third_party/WebKit/public/web/WebKit.h"
+#include "third_party/blink/public/web/blink.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 
 namespace content {
 
 // static
 GinJavaBridgeObject* GinJavaBridgeObject::InjectNamed(
-    blink::WebFrame* frame,
+    blink::WebLocalFrame* frame,
     const base::WeakPtr<GinJavaBridgeDispatcher>& dispatcher,
     const std::string& object_name,
     GinJavaBridgeDispatcher::ObjectID object_id) {
-  v8::Isolate* isolate = blink::mainThreadIsolate();
+  v8::Isolate* isolate = blink::MainThreadIsolate();
   v8::HandleScope handle_scope(isolate);
-  v8::Local<v8::Context> context = frame->mainWorldScriptContext();
+  v8::Local<v8::Context> context = frame->MainWorldScriptContext();
   if (context.IsEmpty())
     return NULL;
 
@@ -45,8 +46,8 @@ GinJavaBridgeObject* GinJavaBridgeObject::InjectNamed(
 GinJavaBridgeObject* GinJavaBridgeObject::InjectAnonymous(
     const base::WeakPtr<GinJavaBridgeDispatcher>& dispatcher,
     GinJavaBridgeDispatcher::ObjectID object_id) {
-  return new GinJavaBridgeObject(
-      blink::mainThreadIsolate(), dispatcher, object_id);
+  return new GinJavaBridgeObject(blink::MainThreadIsolate(), dispatcher,
+                                 object_id);
 }
 
 GinJavaBridgeObject::GinJavaBridgeObject(
@@ -89,10 +90,13 @@ v8::Local<v8::Value> GinJavaBridgeObject::GetNamedProperty(
     }
     known_methods_[property] = dispatcher_->HasJavaMethod(object_id_, property);
   }
-  if (known_methods_[property])
-    return GetFunctionTemplate(isolate, property)->GetFunction();
-  else
+  if (known_methods_[property]) {
+    return GetFunctionTemplate(isolate, property)
+        ->GetFunction(isolate->GetCurrentContext())
+        .FromMaybe(v8::Local<v8::Value>());
+  } else {
     return v8::Local<v8::Value>();
+  }
 }
 
 std::vector<std::string> GinJavaBridgeObject::EnumerateNamedProperties(

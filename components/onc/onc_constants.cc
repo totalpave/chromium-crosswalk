@@ -16,6 +16,8 @@ const char kAugmentationSharedSetting[] = "SharedSetting";
 const char kAugmentationUserEditable[] = "UserEditable";
 const char kAugmentationDeviceEditable[] = "DeviceEditable";
 
+const char kAugmentationActiveExtension[] = "ActiveExtension";
+
 // Common keys/values.
 const char kRecommended[] = "Recommended";
 const char kRemove[] = "Remove";
@@ -57,6 +59,7 @@ const char kSourceUser[] = "User";
 const char kSourceUserPolicy[] = "UserPolicy";
 const char kSource[] = "Source";
 const char kStaticIPConfig[] = "StaticIPConfig";
+const char kTether[] = "Tether";
 const char kType[] = "Type";
 const char kVPN[] = "VPN";
 const char kWiFi[] = "WiFi";
@@ -64,6 +67,10 @@ const char kWimax[] = "WiMAX";
 
 std::string CellularProperty(const std::string& property) {
   return std::string(kCellular) + "." + property;
+}
+
+std::string TetherProperty(const std::string& property) {
+  return std::string(kTether) + "." + property;
 }
 
 std::string VpnProperty(const std::string& property) {
@@ -80,6 +87,7 @@ namespace network_type {
 const char kAllTypes[] = "All";
 const char kCellular[] = "Cellular";
 const char kEthernet[] = "Ethernet";
+const char kTether[] = "Tether";
 const char kVPN[] = "VPN";
 const char kWiFi[] = "WiFi";
 const char kWimax[] = "WiMAX";
@@ -120,6 +128,7 @@ const char kRoamingHome[] = "Home";
 const char kRoamingRequired[] = "Required";
 const char kRoamingRoaming[] = "Roaming";
 const char kRoamingState[] = "RoamingState";
+const char kScanning[] = "Scanning";
 const char kServingOperator[] = "ServingOperator";
 const char kSignalStrength[] = "SignalStrength";
 const char kSIMLockStatus[] = "SIMLockStatus";
@@ -149,8 +158,9 @@ const char kAccessPointName[] = "AccessPointName";
 const char kName[] = "Name";
 const char kUsername[] = "Username";
 const char kPassword[] = "Password";
+const char kAuthentication[] = "Authentication";
 const char kLocalizedName[] = "LocalizedName";
-const char kLanguage[] = "LocalizedName";
+const char kLanguage[] = "Language";
 }  // namespace cellular_apn
 
 namespace cellular_found_network {
@@ -186,6 +196,13 @@ const char kEAP[] = "EAP";
 const char k8021X[] = "8021X";
 }  // namespace ethernet
 
+namespace tether {
+const char kBatteryPercentage[] = "BatteryPercentage";
+const char kCarrier[] = "Carrier";
+const char kHasConnectedToHost[] = "HasConnectedToHost";
+const char kSignalStrength[] = "SignalStrength";
+}  // namespace tether
+
 namespace ipconfig {
 const char kGateway[] = "Gateway";
 const char kIPAddress[] = "IPAddress";
@@ -194,6 +211,8 @@ const char kIPv6[] = "IPv6";
 const char kNameServers[] = "NameServers";
 const char kRoutingPrefix[] = "RoutingPrefix";
 const char kSearchDomains[] = "SearchDomains";
+const char kIncludedRoutes[] = "IncludedRoutes";
+const char kExcludedRoutes[] = "ExcludedRoutes";
 const char kType[] = "Type";
 const char kWebProxyAutoDiscoveryUrl[] = "WebProxyAutoDiscoveryUrl";
 }  // namespace ipconfig
@@ -205,6 +224,7 @@ const char kBSSID[] = "BSSID";
 const char kEAP[] = "EAP";
 const char kFrequency[] = "Frequency";
 const char kFrequencyList[] = "FrequencyList";
+const char kFTEnabled[] = "FTEnabled";
 const char kHexSSID[] = "HexSSID";
 const char kHiddenSSID[] = "HiddenSSID";
 const char kPassphrase[] = "Passphrase";
@@ -213,6 +233,7 @@ const char kSSID[] = "SSID";
 const char kSecurity[] = "Security";
 const char kSecurityNone[] = "None";
 const char kSignalStrength[] = "SignalStrength";
+const char kTetheringState[] = "TetheringState";
 const char kWEP_8021X[] = "WEP-8021X";
 const char kWEP_PSK[] = "WEP-PSK";
 const char kWPA_EAP[] = "WPA-EAP";
@@ -228,6 +249,7 @@ const char kSignalStrength[] = "SignalStrength";
 
 namespace client_cert {
 const char kClientCertPattern[] = "ClientCertPattern";
+const char kClientCertPKCS11Id[] = "ClientCertPKCS11Id";
 const char kClientCertRef[] = "ClientCertRef";
 const char kClientCertType[] = "ClientCertType";
 const char kClientCertTypeNone[] = "None";
@@ -241,6 +263,7 @@ const char kLocality[] = "Locality";
 const char kOrganization[] = "Organization";
 const char kOrganizationalUnit[] = "OrganizationalUnit";
 const char kPattern[] = "Pattern";
+const char kPKCS11Id[] = "PKCS11Id";
 const char kRef[] = "Ref";
 const char kSubject[] = "Subject";
 }  // namespace client_cert
@@ -284,6 +307,7 @@ const char kIdentity[] = "Identity";
 const char kInner[] = "Inner";
 const char kLEAP[] = "LEAP";
 const char kMD5[] = "MD5";
+const char kMSCHAP[] = "MSCHAP";
 const char kMSCHAPv2[] = "MSCHAPv2";
 const char kOuter[] = "Outer";
 const char kPAP[] = "PAP";
@@ -293,6 +317,8 @@ const char kSaveCredentials[] = "SaveCredentials";
 const char kServerCAPEMs[] = "ServerCAPEMs";
 const char kServerCARef[] = "ServerCARef";
 const char kServerCARefs[] = "ServerCARefs";
+const char kSubjectMatch[] = "SubjectMatch";
+const char kTLSVersionMax[] = "TLSVersionMax";
 const char kUseSystemCAs[] = "UseSystemCAs";
 const char kUseProactiveKeyCaching[] = "UseProactiveKeyCaching";
 }  // namespace eap
@@ -306,6 +332,7 @@ const char kOpenVPN[] = "OpenVPN";
 const char kPassword[] = "Password";
 const char kSaveCredentials[] = "SaveCredentials";
 const char kThirdPartyVpn[] = "ThirdPartyVPN";
+const char kArcVpn[] = "ARCVPN";
 const char kTypeL2TP_IPsec[] = "L2TP-IPsec";
 const char kType[] = "Type";
 const char kUsername[] = "Username";
@@ -338,6 +365,7 @@ const char kAuth[] = "Auth";
 const char kCipher[] = "Cipher";
 const char kCompLZO[] = "CompLZO";
 const char kCompNoAdapt[] = "CompNoAdapt";
+const char kExtraHosts[] = "ExtraHosts";
 const char kIgnoreDefaultRoute[] = "IgnoreDefaultRoute";
 const char kInteract[] = "interact";
 const char kKeyDirection[] = "KeyDirection";
@@ -364,6 +392,7 @@ const char kShaper[] = "Shaper";
 const char kStaticChallenge[] = "StaticChallenge";
 const char kTLSAuthContents[] = "TLSAuthContents";
 const char kTLSRemote[] = "TLSRemote";
+const char kTLSVersionMin[] = "TLSVersionMin";
 const char kUserAuthenticationType[] = "UserAuthenticationType";
 const char kVerb[] = "Verb";
 const char kVerifyHash[] = "VerifyHash";
@@ -381,6 +410,10 @@ namespace third_party_vpn {
 const char kExtensionID[] = "ExtensionID";
 const char kProviderName[] = "ProviderName";
 }  // third_party_vpn
+
+namespace arc_vpn {
+const char kTunnelChrome[] = "TunnelChrome";
+}  // namespace arc_vpn
 
 namespace verify_x509 {
 const char kName[] = "Name";
@@ -409,10 +442,20 @@ const char kWPAD[] = "WPAD";
 }  // namespace proxy
 
 namespace substitutes {
-const char kLoginIDField[] = "${LOGIN_ID}";
-const char kEmailField[] = "${LOGIN_EMAIL}";
-const char kCertSANEmail[] = "${CERT_SAN_EMAIL}";
-const char kCertSANUPN[] = "${CERT_SAN_UPN}";
+const char kLoginID[] = "LOGIN_ID";
+const char kLoginEmail[] = "LOGIN_EMAIL";
+const char kCertSANEmail[] = "CERT_SAN_EMAIL";
+const char kCertSANUPN[] = "CERT_SAN_UPN";
+const char kCertSubjectCommonName[] = "CERT_SUBJECT_COMMON_NAME";
+const char kDeviceSerialNumber[] = "DEVICE_SERIAL_NUMBER";
+const char kDeviceAssetId[] = "DEVICE_ASSET_ID";
+// The password placeholder is defined as ${PASSWORD} because it's compared
+// verbatim against the policy-specified password field, and if it matches,
+// another bool (|shill::kEapUseLoginPasswordProperty|) is set, which makes
+// shill replace the whole password field.
+// The other placeholders above on the other hand are replaced using
+// VariableExpander.
+const char kPasswordPlaceholderVerbatim[] = "${PASSWORD}";
 }  // namespace substitutes
 
 namespace global_network_config {
@@ -420,6 +463,9 @@ const char kAllowOnlyPolicyNetworksToAutoconnect[] =
     "AllowOnlyPolicyNetworksToAutoconnect";
 const char kAllowOnlyPolicyNetworksToConnect[] =
     "AllowOnlyPolicyNetworksToConnect";
+const char kAllowOnlyPolicyNetworksToConnectIfAvailable[] =
+    "AllowOnlyPolicyNetworksToConnectIfAvailable";
+const char kBlacklistedHexSSIDs[] = "BlacklistedHexSSIDs";
 const char kDisableNetworkTypes[] = "DisableNetworkTypes";
 }  // global_network_config
 
@@ -429,5 +475,11 @@ const char kDisabled[] = "Disabled";
 const char kEnabling[] = "Enabling";
 const char kEnabled[] = "Enabled";
 }  // device_state
+
+namespace tethering_state {
+const char kTetheringConfirmedState[] = "Confirmed";
+const char kTetheringNotDetectedState[] = "NotDetected";
+const char kTetheringSuspectedState[] = "Suspected";
+}  // namespace tethering_state
 
 }  // namespace onc

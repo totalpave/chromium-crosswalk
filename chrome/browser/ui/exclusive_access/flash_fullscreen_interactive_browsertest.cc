@@ -7,6 +7,7 @@
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -16,9 +17,11 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/ppapi/ppapi_test.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -42,7 +45,7 @@ bool RunLoopUntil(const base::Callback<bool()>& condition) {
     }
 
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::MessageLoop::QuitWhenIdleClosure(),
+        FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated(),
         base::TimeDelta::FromMilliseconds(20));
     content::RunMessageLoop();
   }
@@ -77,6 +80,38 @@ class FlashFullscreenInteractiveBrowserTest : public OutOfProcessPPAPITest {
     // plugin.  It will block until the plugin has completed an attempt to enter
     // Flash fullscreen mode.
     OutOfProcessPPAPITest::RunTest("FlashFullscreenForBrowserUI");
+
+    if (::testing::Test::HasFailure()) {
+      ADD_FAILURE() << ("Failed to launch simulated fullscreen Flash plugin.  "
+                        "Interactive UI testing cannot proceed.");
+      return false;
+    }
+
+    EXPECT_TRUE(ObserveTabIsInFullscreen(true));
+
+    return !::testing::Test::HasFailure();
+  }
+
+  bool LaunchFlashFullscreenInSubframe() {
+    // Start the embedded test server and set it up to serve PPAPI test case
+    // URLs.
+    base::FilePath document_root;
+    EXPECT_TRUE(ui_test_utils::GetRelativeBuildDirectory(&document_root));
+    embedded_test_server()->AddDefaultHandlers(document_root);
+    if (!embedded_test_server()->Start()) {
+      ADD_FAILURE() << "Failed to launch embedded test server.";
+      return false;
+    }
+
+    // Load a page with an <iframe> that points to the test case URL, which
+    // runs the simulated fullscreen Flash plugin.  In OOPIF modes, the frame
+    // will render in a separate process.  Block until the plugin has completed
+    // an attempt to enter Flash fullscreen mode.
+    GURL test_url = GetTestURL(*embedded_test_server(),
+                               "FlashFullscreenForBrowserUI", std::string());
+    GURL main_url("data:text/html,<iframe src='" + test_url.spec() +
+                  "'></iframe>");
+    OutOfProcessPPAPITest::RunTestURL(main_url);
 
     if (::testing::Test::HasFailure()) {
       ADD_FAILURE() << ("Failed to launch simulated fullscreen Flash plugin.  "
@@ -150,7 +185,7 @@ class FlashFullscreenInteractiveBrowserTest : public OutOfProcessPPAPITest {
             << "WebContents should have a fullscreen RenderWidgetHostView.";
         return false;
       }
-      EXPECT_EQ(GetActiveWebContents()->GetCapturerCount() > 0,
+      EXPECT_EQ(GetActiveWebContents()->IsBeingCaptured(),
                 !browser()
                      ->exclusive_access_manager()
                      ->fullscreen_controller()
@@ -216,30 +251,27 @@ class FlashFullscreenInteractiveBrowserTest : public OutOfProcessPPAPITest {
   bool IsObservingFlashFillColor(SkColor expected_color) const {
     content::RenderWidgetHostView* const flash_fs_view =
         GetActiveWebContents()->GetFullscreenRenderWidgetHostView();
-    content::RenderWidgetHost* const flash_fs_host =
-        flash_fs_view ? flash_fs_view->GetRenderWidgetHost() : nullptr;
-    if (!flash_fs_host) {
-      ADD_FAILURE() << "Flash fullscreen RenderWidgetHost is gone.";
+    if (!flash_fs_view) {
+      ADD_FAILURE() << "Flash fullscreen RenderWidgetHostView is gone.";
       return false;
     }
 
     // When a widget is first shown, it can take some time before it is ready
     // for copying from its backing store.  This is a transient condition, and
     // so it is not being treated as a test failure.
-    if (!flash_fs_host->CanCopyFromBackingStore())
+    if (!flash_fs_view->IsSurfaceAvailableForCopy())
       return false;
 
     // Copy and examine the upper-left pixel of the widget and compare it to the
     // |expected_color|.
     bool is_expected_color = false;
-    flash_fs_host->CopyFromBackingStore(
+    base::RunLoop run_loop;
+    flash_fs_view->CopyFromSurface(
         gfx::Rect(0, 0, 1, 1), gfx::Size(1, 1),
-        base::Bind(
+        base::BindOnce(
             &FlashFullscreenInteractiveBrowserTest::CheckBitmapForFillColor,
-            expected_color, &is_expected_color,
-            base::MessageLoop::QuitWhenIdleClosure()),
-        kN32_SkColorType);
-    content::RunMessageLoop();
+            expected_color, &is_expected_color, run_loop.QuitClosure()));
+    run_loop.Run();
 
     return is_expected_color;
   }
@@ -247,13 +279,9 @@ class FlashFullscreenInteractiveBrowserTest : public OutOfProcessPPAPITest {
   static void CheckBitmapForFillColor(SkColor expected_color,
                                       bool* is_expected_color,
                                       const base::Closure& done_cb,
-                                      const SkBitmap& bitmap,
-                                      content::ReadbackResponse response) {
-    if (response == content::READBACK_SUCCESS) {
-      SkAutoLockPixels lock_pixels(bitmap);
-      if (bitmap.width() > 0 && bitmap.height() > 0)
-        *is_expected_color = (bitmap.getColor(0, 0) == expected_color);
-    }
+                                      const SkBitmap& bitmap) {
+    if (!bitmap.drawsNothing())
+      *is_expected_color = (bitmap.getColor(0, 0) == expected_color);
     done_cb.Run();
   }
 
@@ -266,6 +294,23 @@ IN_PROC_BROWSER_TEST_F(FlashFullscreenInteractiveBrowserTest,
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   StartFakingTabCapture();
   ASSERT_TRUE(LaunchFlashFullscreen());
+  content::WebContents* const first_tab_contents = GetActiveWebContents();
+  EXPECT_TRUE(ObserveFlashHasFocus(first_tab_contents, true));
+  PressEscape();
+  EXPECT_TRUE(ObserveTabIsInFullscreen(false));
+}
+
+// Flaky on Linux, see https://crbug.com/648406.
+#if defined(OS_LINUX)
+#define MAYBE_FullscreenFromSubframe DISABLED_FullscreenFromSubframe
+#else
+#define MAYBE_FullscreenFromSubframe FullscreenFromSubframe
+#endif
+IN_PROC_BROWSER_TEST_F(FlashFullscreenInteractiveBrowserTest,
+                       MAYBE_FullscreenFromSubframe) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  StartFakingTabCapture();
+  ASSERT_TRUE(LaunchFlashFullscreenInSubframe());
   content::WebContents* const first_tab_contents = GetActiveWebContents();
   EXPECT_TRUE(ObserveFlashHasFocus(first_tab_contents, true));
   PressEscape();
@@ -354,4 +399,40 @@ IN_PROC_BROWSER_TEST_F(FlashFullscreenInteractiveBrowserTest,
   EXPECT_TRUE(ObserveFlashHasFocus(first_tab_contents, true));
   PressEscape();
   EXPECT_TRUE(ObserveTabIsInFullscreen(false));
+}
+
+// Tests that a fullscreen flash plugin can lock the mouse, and that it'll be
+// unlocked when the plugin exits fullscreen.
+// Flaky on Linux. See https://crbug.com/706148.
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+#define MAYBE_Fullscreen_LockMouse DISABLED_Fullscreen_LockMouse
+#else
+#define MAYBE_Fullscreen_LockMouse Fullscreen_LockMouse
+#endif
+IN_PROC_BROWSER_TEST_F(FlashFullscreenInteractiveBrowserTest,
+                       MAYBE_Fullscreen_LockMouse) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  StartFakingTabCapture();
+  ASSERT_TRUE(LaunchFlashFullscreen());
+  content::WebContents* web_contents = GetActiveWebContents();
+  EXPECT_TRUE(ObserveFlashHasFocus(web_contents, true));
+
+  // Try to lock the mouse.
+  content::RenderWidgetHostView* fullscreen_view =
+      web_contents->GetFullscreenRenderWidgetHostView();
+  content::RenderWidgetHost* fullscreen_widget =
+      fullscreen_view->GetRenderWidgetHost();
+  content::RenderProcessHost* process = fullscreen_widget->GetProcess();
+  content::PwnMessageHelper::LockMouse(
+      process, fullscreen_widget->GetRoutingID(), true, true);
+
+  // Make sure that the fullscreen widget got the mouse lock.
+  EXPECT_TRUE(fullscreen_view->IsMouseLocked());
+  EXPECT_EQ(fullscreen_widget, content::GetMouseLockWidget(web_contents));
+
+  PressEscape();
+  EXPECT_TRUE(ObserveTabIsInFullscreen(false));
+
+  // Mouse should be unlocked.
+  EXPECT_EQ(nullptr, content::GetMouseLockWidget(web_contents));
 }

@@ -5,13 +5,13 @@
 #ifndef CC_BASE_MATH_UTIL_H_
 #define CC_BASE_MATH_UTIL_H_
 
-#include <algorithm>
-#include <cmath>
+#include <limits>
 #include <memory>
 #include <vector>
 
 #include "base/logging.h"
-#include "cc/base/cc_export.h"
+#include "build/build_config.h"
+#include "cc/base/base_export.h"
 #include "ui/gfx/geometry/box_f.h"
 #include "ui/gfx/geometry/point3_f.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -30,12 +30,13 @@ namespace gfx {
 class QuadF;
 class Rect;
 class RectF;
+class RRectF;
 class SizeF;
 class Transform;
 class Vector2dF;
 class Vector2d;
 class Vector3dF;
-}
+}  // namespace gfx
 
 namespace cc {
 
@@ -79,24 +80,8 @@ struct HomogeneousCoordinate {
   SkMScalar vec[4];
 };
 
-class CC_EXPORT MathUtil {
+class CC_BASE_EXPORT MathUtil {
  public:
-  static const double kPiDouble;
-  static const float kPiFloat;
-
-  static double Deg2Rad(double deg) { return deg * kPiDouble / 180.0; }
-  static double Rad2Deg(double rad) { return rad * 180.0 / kPiDouble; }
-
-  static float Deg2Rad(float deg) { return deg * kPiFloat / 180.0f; }
-  static float Rad2Deg(float rad) { return rad * 180.0f / kPiFloat; }
-
-  static float Round(float f) {
-    return (f > 0.f) ? std::floor(f + 0.5f) : std::ceil(f - 0.5f);
-  }
-  static double Round(double d) {
-    return (d > 0.0) ? std::floor(d + 0.5) : std::ceil(d - 0.5);
-  }
-
   // Returns true if rounded up value does not overflow, false otherwise.
   template <typename T>
   static bool VerifyRoundup(T n, T mul) {
@@ -112,7 +97,6 @@ class CC_EXPORT MathUtil {
   static T UncheckedRoundUp(T n, T mul) {
     static_assert(std::numeric_limits<T>::is_integer,
                   "T must be an integer type");
-    DCHECK(VerifyRoundup(n, mul));
     return RoundUpInternal(n, mul);
   }
 
@@ -141,7 +125,6 @@ class CC_EXPORT MathUtil {
   static T UncheckedRoundDown(T n, T mul) {
     static_assert(std::numeric_limits<T>::is_integer,
                   "T must be an integer type");
-    DCHECK(VerifyRoundDown(n, mul));
     return RoundDownInternal(n, mul);
   }
 
@@ -155,8 +138,9 @@ class CC_EXPORT MathUtil {
     return RoundDownInternal(n, mul);
   }
 
-  template <typename T> static T ClampToRange(T value, T min, T max) {
-    return std::min(std::max(value, min), max);
+  template <typename T>
+  static bool IsWithinEpsilon(T a, T b) {
+    return std::abs(a - b) < std::numeric_limits<T>::epsilon();
   }
 
   // Background: Existing transform code does not do the right thing in
@@ -176,6 +160,13 @@ class CC_EXPORT MathUtil {
   static gfx::RectF ProjectClippedRect(const gfx::Transform& transform,
                                        const gfx::RectF& rect);
 
+  // Map device space quad to local space. Device_transform has no 3d
+  // component since it was flattened, so we don't need to project.  We should
+  // have already checked that the transform was invertible before this call.
+  static gfx::QuadF InverseMapQuadToLocalSpace(
+      const gfx::Transform& device_transform,
+      const gfx::QuadF& device_quad);
+
   // This function is only valid when the transform preserves 2d axis
   // alignment and the resulting rect will not be clipped.
   static gfx::Rect MapEnclosedRectWith2dAxisAlignedTransform(
@@ -187,13 +178,9 @@ class CC_EXPORT MathUtil {
   // clipped_quad array. Note that num_vertices_in_clipped_quad may be zero,
   // which means the entire quad was clipped, and none of the vertices in the
   // array are valid.
-  static void MapClippedQuad(const gfx::Transform& transform,
-                             const gfx::QuadF& src_quad,
-                             gfx::PointF clipped_quad[8],
-                             int* num_vertices_in_clipped_quad);
   static bool MapClippedQuad3d(const gfx::Transform& transform,
                                const gfx::QuadF& src_quad,
-                               gfx::Point3F clipped_quad[8],
+                               gfx::Point3F clipped_quad[6],
                                int* num_vertices_in_clipped_quad);
 
   static gfx::RectF ComputeEnclosingRectOfVertices(const gfx::PointF vertices[],
@@ -209,19 +196,9 @@ class CC_EXPORT MathUtil {
   static gfx::QuadF MapQuad(const gfx::Transform& transform,
                             const gfx::QuadF& quad,
                             bool* clipped);
-  static gfx::QuadF MapQuad3d(const gfx::Transform& transform,
-                              const gfx::QuadF& q,
-                              gfx::Point3F* p,
-                              bool* clipped);
   static gfx::PointF MapPoint(const gfx::Transform& transform,
                               const gfx::PointF& point,
                               bool* clipped);
-  static gfx::Point3F MapPoint(const gfx::Transform&,
-                               const gfx::Point3F&,
-                               bool* clipped);
-  static gfx::QuadF ProjectQuad(const gfx::Transform& transform,
-                                const gfx::QuadF& quad,
-                                bool* clipped);
   static gfx::PointF ProjectPoint(const gfx::Transform& transform,
                                   const gfx::PointF& point,
                                   bool* clipped);
@@ -233,6 +210,10 @@ class CC_EXPORT MathUtil {
 
   static gfx::Vector2dF ComputeTransform2dScaleComponents(const gfx::Transform&,
                                                           float fallbackValue);
+  // Returns an approximate max scale value of the transform even if it has
+  // perspective. Prefer to use ComputeTransform2dScaleComponents if there is no
+  // perspective, since it can produce more accurate results.
+  static float ComputeApproximateMaxScale(const gfx::Transform& transform);
 
   // Makes a rect that has the same relationship to input_outer_rect as
   // scale_inner_rect has to scale_outer_rect. scale_inner_rect should be
@@ -298,6 +279,9 @@ class CC_EXPORT MathUtil {
   static void AddToTracedValue(const char* name,
                                const gfx::BoxF& box,
                                base::trace_event::TracedValue* res);
+  static void AddToTracedValue(const char* name,
+                               const gfx::RRectF& rect,
+                               base::trace_event::TracedValue* res);
 
   // Returns a base::Value representation of the floating point value.
   // If the value is inf, returns max double/float representation.
@@ -310,6 +294,12 @@ class CC_EXPORT MathUtil {
   // Returns vector that y axis (0,1,0) transforms to under given transform.
   static gfx::Vector3dF GetYAxis(const gfx::Transform& transform);
 
+  static bool IsFloatNearlyTheSame(float left, float right);
+  static bool IsNearlyTheSameForTesting(const gfx::PointF& l,
+                                        const gfx::PointF& r);
+  static bool IsNearlyTheSameForTesting(const gfx::Point3F& l,
+                                        const gfx::Point3F& r);
+
  private:
   template <typename T>
   static T RoundUpInternal(T n, T mul) {
@@ -321,6 +311,18 @@ class CC_EXPORT MathUtil {
     return (n > 0) ? (n / mul) * mul : (n == 0) ? 0
                                                 : ((n - mul + 1) / mul) * mul;
   }
+};
+
+class CC_BASE_EXPORT ScopedSubnormalFloatDisabler {
+ public:
+  ScopedSubnormalFloatDisabler();
+  ~ScopedSubnormalFloatDisabler();
+
+ private:
+#if defined(ARCH_CPU_X86_FAMILY)
+  unsigned int orig_state_;
+#endif
+  DISALLOW_COPY_AND_ASSIGN(ScopedSubnormalFloatDisabler);
 };
 
 }  // namespace cc

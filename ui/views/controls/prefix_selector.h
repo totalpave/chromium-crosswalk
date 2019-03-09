@@ -8,25 +8,39 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(OS_WIN)
+#include <vector>
+#endif
+
 #include "base/macros.h"
 #include "base/strings/string16.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/views/views_export.h"
+
+namespace base {
+class TickClock;
+}
 
 namespace views {
 
 class PrefixDelegate;
+class View;
 
 // PrefixSelector is used to change the selection in a view as the user
 // types characters.
 class VIEWS_EXPORT PrefixSelector : public ui::TextInputClient {
  public:
-  explicit PrefixSelector(PrefixDelegate* delegate);
+  PrefixSelector(PrefixDelegate* delegate, View* host_view);
   ~PrefixSelector() override;
 
   // Invoked from the view when it loses focus.
   void OnViewBlur();
+
+  // Returns whether a key typed now would continue the existing search or start
+  // a new search.
+  bool ShouldContinueSelection() const;
 
   // ui::TextInputClient:
   void SetCompositionText(const ui::CompositionText& composition) override;
@@ -43,10 +57,11 @@ class VIEWS_EXPORT PrefixSelector : public ui::TextInputClient {
   bool GetCompositionCharacterBounds(uint32_t index,
                                      gfx::Rect* rect) const override;
   bool HasCompositionText() const override;
+  FocusReason GetFocusReason() const override;
   bool GetTextRange(gfx::Range* range) const override;
   bool GetCompositionTextRange(gfx::Range* range) const override;
-  bool GetSelectionRange(gfx::Range* range) const override;
-  bool SetSelectionRange(const gfx::Range& range) override;
+  bool GetEditableSelectionRange(gfx::Range* range) const override;
+  bool SetEditableSelectionRange(const gfx::Range& range) override;
   bool DeleteRange(const gfx::Range& range) override;
   bool GetTextFromRange(const gfx::Range& range,
                         base::string16* text) const override;
@@ -54,10 +69,23 @@ class VIEWS_EXPORT PrefixSelector : public ui::TextInputClient {
   bool ChangeTextDirectionAndLayoutAlignment(
       base::i18n::TextDirection direction) override;
   void ExtendSelectionAndDelete(size_t before, size_t after) override;
-  void EnsureCaretInRect(const gfx::Rect& rect) override;
+  void EnsureCaretNotInRect(const gfx::Rect& rect) override;
 
   bool IsTextEditCommandEnabled(ui::TextEditCommand command) const override;
   void SetTextEditCommandForNextKeyEvent(ui::TextEditCommand command) override;
+  ukm::SourceId GetClientSourceForMetrics() const override;
+  bool ShouldDoLearning() override;
+
+#if defined(OS_WIN)
+  // Overridden from ui::TextInputClient(Windows only):
+  void SetCompositionFromExistingText(
+      const gfx::Range& range,
+      const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) override;
+#endif
+
+  void set_tick_clock_for_testing(const base::TickClock* clock) {
+    tick_clock_ = clock;
+  }
 
  private:
   // Invoked when text is typed. Tries to change the selection appropriately.
@@ -71,10 +99,16 @@ class VIEWS_EXPORT PrefixSelector : public ui::TextInputClient {
 
   PrefixDelegate* prefix_delegate_;
 
+  View* host_view_;
+
   // Time OnTextInput() was last invoked.
   base::TimeTicks time_of_last_key_;
 
   base::string16 current_text_;
+
+  // TickClock used for getting the time of the current keystroke, used for
+  // continuing or restarting selections.
+  const base::TickClock* tick_clock_;
 
   DISALLOW_COPY_AND_ASSIGN(PrefixSelector);
 };

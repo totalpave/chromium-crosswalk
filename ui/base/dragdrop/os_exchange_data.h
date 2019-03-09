@@ -17,7 +17,6 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "ui/base/clipboard/clipboard.h"
 #include "ui/base/dragdrop/download_file_interface.h"
 #include "ui/base/ui_base_export.h"
 
@@ -34,6 +33,7 @@ class Vector2d;
 
 namespace ui {
 
+struct ClipboardFormatType;
 struct FileInfo;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -87,7 +87,7 @@ class UI_BASE_EXPORT OSExchangeData {
     Provider() {}
     virtual ~Provider() {}
 
-    virtual Provider* Clone() const = 0;
+    virtual std::unique_ptr<Provider> Clone() const = 0;
 
     virtual void MarkOriginatedFromRenderer() = 0;
     virtual bool DidOriginateFromRenderer() const = 0;
@@ -96,7 +96,7 @@ class UI_BASE_EXPORT OSExchangeData {
     virtual void SetURL(const GURL& url, const base::string16& title) = 0;
     virtual void SetFilename(const base::FilePath& path) = 0;
     virtual void SetFilenames(const std::vector<FileInfo>& file_names) = 0;
-    virtual void SetPickledData(const Clipboard::FormatType& format,
+    virtual void SetPickledData(const ClipboardFormatType& format,
                                 const base::Pickle& data) = 0;
 
     virtual bool GetString(base::string16* data) const = 0;
@@ -105,15 +105,15 @@ class UI_BASE_EXPORT OSExchangeData {
                                 base::string16* title) const = 0;
     virtual bool GetFilename(base::FilePath* path) const = 0;
     virtual bool GetFilenames(std::vector<FileInfo>* file_names) const = 0;
-    virtual bool GetPickledData(const Clipboard::FormatType& format,
+    virtual bool GetPickledData(const ClipboardFormatType& format,
                                 base::Pickle* data) const = 0;
 
     virtual bool HasString() const = 0;
     virtual bool HasURL(FilenameToURLPolicy policy) const = 0;
     virtual bool HasFile() const = 0;
-    virtual bool HasCustomFormat(const Clipboard::FormatType& format) const = 0;
+    virtual bool HasCustomFormat(const ClipboardFormatType& format) const = 0;
 
-#if (!defined(OS_CHROMEOS) && defined(USE_X11)) || defined(OS_WIN)
+#if defined(USE_X11) || defined(OS_WIN)
     virtual void SetFileContents(const base::FilePath& filename,
                                  const std::string& file_contents) = 0;
 #endif
@@ -133,18 +133,15 @@ class UI_BASE_EXPORT OSExchangeData {
 #if defined(USE_AURA) || defined(OS_MACOSX)
     virtual void SetDragImage(const gfx::ImageSkia& image,
                               const gfx::Vector2d& cursor_offset) = 0;
-    virtual const gfx::ImageSkia& GetDragImage() const = 0;
-    virtual const gfx::Vector2d& GetDragImageOffset() const = 0;
+    virtual gfx::ImageSkia GetDragImage() const = 0;
+    virtual gfx::Vector2d GetDragImageOffset() const = 0;
 #endif
   };
-
-  // Creates the platform specific Provider.
-  static Provider* CreateProvider();
 
   OSExchangeData();
   // Creates an OSExchangeData with the specified provider. OSExchangeData
   // takes ownership of the supplied provider.
-  explicit OSExchangeData(Provider* provider);
+  explicit OSExchangeData(std::unique_ptr<Provider> provider);
 
   ~OSExchangeData();
 
@@ -177,7 +174,7 @@ class UI_BASE_EXPORT OSExchangeData {
   void SetFilenames(
       const std::vector<FileInfo>& file_names);
   // Adds pickled data of the specified format.
-  void SetPickledData(const Clipboard::FormatType& format,
+  void SetPickledData(const ClipboardFormatType& format,
                       const base::Pickle& data);
 
   // These functions retrieve data of the specified type. If data exists, the
@@ -193,7 +190,7 @@ class UI_BASE_EXPORT OSExchangeData {
   // Return the path of a file, if available.
   bool GetFilename(base::FilePath* path) const;
   bool GetFilenames(std::vector<FileInfo>* file_names) const;
-  bool GetPickledData(const Clipboard::FormatType& format,
+  bool GetPickledData(const ClipboardFormatType& format,
                       base::Pickle* data) const;
 
   // Test whether or not data of certain types is present, without actually
@@ -201,12 +198,12 @@ class UI_BASE_EXPORT OSExchangeData {
   bool HasString() const;
   bool HasURL(FilenameToURLPolicy policy) const;
   bool HasFile() const;
-  bool HasCustomFormat(const Clipboard::FormatType& format) const;
+  bool HasCustomFormat(const ClipboardFormatType& format) const;
 
   // Returns true if this OSExchangeData has data in any of the formats in
   // |formats| or any custom format in |custom_formats|.
   bool HasAnyFormat(int formats,
-                    const std::set<Clipboard::FormatType>& types) const;
+                    const std::set<ClipboardFormatType>& types) const;
 
 #if defined(OS_WIN)
   // Adds the bytes of a file (CFSTR_FILECONTENTS and CFSTR_FILEDESCRIPTOR on

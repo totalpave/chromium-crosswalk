@@ -4,7 +4,9 @@
 
 #include "ui/views/widget/widget_delegate.h"
 
+#include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/view.h"
 #include "ui/views/views_delegate.h"
@@ -16,9 +18,22 @@ namespace views {
 ////////////////////////////////////////////////////////////////////////////////
 // WidgetDelegate:
 
-WidgetDelegate::WidgetDelegate()
-    : default_contents_view_(NULL),
-      can_activate_(true) {
+WidgetDelegate::WidgetDelegate() = default;
+WidgetDelegate::~WidgetDelegate() {
+  CHECK(can_delete_this_) << "A WidgetDelegate must outlive its Widget";
+}
+
+void WidgetDelegate::SetCanActivate(bool can_activate) {
+  if (can_activate == can_activate_)
+    return;
+
+  const bool previous_value = CanActivate();
+  can_activate_ = can_activate;
+  if (previous_value != CanActivate()) {
+    Widget* widget = GetWidget();
+    if (widget)
+      widget->OnCanActivateChanged();
+  }
 }
 
 void WidgetDelegate::OnWidgetMove() {
@@ -28,6 +43,10 @@ void WidgetDelegate::OnDisplayChanged() {
 }
 
 void WidgetDelegate::OnWorkAreaChanged() {
+}
+
+bool WidgetDelegate::OnCloseRequested(Widget::ClosedReason close_reason) {
+  return true;
 }
 
 View* WidgetDelegate::GetInitiallyFocusedView() {
@@ -54,6 +73,17 @@ bool WidgetDelegate::CanMinimize() const {
   return false;
 }
 
+int32_t WidgetDelegate::GetResizeBehavior() const {
+  int32_t behavior = ws::mojom::kResizeBehaviorNone;
+  if (CanResize())
+    behavior |= ws::mojom::kResizeBehaviorCanResize;
+  if (CanMaximize())
+    behavior |= ws::mojom::kResizeBehaviorCanMaximize;
+  if (CanMinimize())
+    behavior |= ws::mojom::kResizeBehaviorCanMinimize;
+  return behavior;
+}
+
 bool WidgetDelegate::CanActivate() const {
   return can_activate_;
 }
@@ -62,8 +92,8 @@ ui::ModalType WidgetDelegate::GetModalType() const {
   return ui::MODAL_TYPE_NONE;
 }
 
-ui::AXRole WidgetDelegate::GetAccessibleWindowRole() const {
-  return ui::AX_ROLE_WINDOW;
+ax::mojom::Role WidgetDelegate::GetAccessibleWindowRole() const {
+  return ax::mojom::Role::kWindow;
 }
 
 base::string16 WidgetDelegate::GetAccessibleWindowTitle() const {
@@ -79,19 +109,7 @@ bool WidgetDelegate::ShouldShowWindowTitle() const {
 }
 
 bool WidgetDelegate::ShouldShowCloseButton() const {
-#if defined(OS_MACOSX)
-  return false;
-#else
   return true;
-#endif
-}
-
-bool WidgetDelegate::ShouldHandleSystemCommands() const {
-  const Widget* widget = GetWidget();
-  if (!widget)
-    return false;
-
-  return widget->non_client_view() != NULL;
 }
 
 gfx::ImageSkia WidgetDelegate::GetWindowAppIcon() {
@@ -168,7 +186,7 @@ bool WidgetDelegate::WidgetHasHitTestMask() const {
   return false;
 }
 
-void WidgetDelegate::GetWidgetHitTestMask(gfx::Path* mask) const {
+void WidgetDelegate::GetWidgetHitTestMask(SkPath* mask) const {
   DCHECK(mask);
 }
 
@@ -206,6 +224,10 @@ Widget* WidgetDelegateView::GetWidget() {
 
 const Widget* WidgetDelegateView::GetWidget() const {
   return View::GetWidget();
+}
+
+views::View* WidgetDelegateView::GetContentsView() {
+  return this;
 }
 
 const char* WidgetDelegateView::GetClassName() const {

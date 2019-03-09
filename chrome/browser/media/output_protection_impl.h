@@ -5,32 +5,55 @@
 #ifndef CHROME_BROWSER_MEDIA_OUTPUT_PROTECTION_IMPL_H_
 #define CHROME_BROWSER_MEDIA_OUTPUT_PROTECTION_IMPL_H_
 
-#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/frame_service_base.h"
 #include "media/mojo/interfaces/output_protection.mojom.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+
+class OutputProtectionProxy;
+
+namespace content {
+class RenderFrameHost;
+}
 
 // Implements media::mojom::OutputProtection to check display links and
 // their statuses. On all platforms we'll check the network links. On ChromeOS
 // we'll also check the hardware links. Can only be used on the UI thread.
-class OutputProtectionImpl : public media::mojom::OutputProtection {
+class OutputProtectionImpl final
+    : public content::FrameServiceBase<media::mojom::OutputProtection> {
  public:
-  static void Create(
-      content::RenderFrameHost* render_frame_host,
-      mojo::InterfaceRequest<media::mojom::OutputProtection> request);
+  static void Create(content::RenderFrameHost* render_frame_host,
+                     media::mojom::OutputProtectionRequest request);
 
   OutputProtectionImpl(content::RenderFrameHost* render_frame_host,
-                       mojo::InterfaceRequest<OutputProtection> request);
-  ~OutputProtectionImpl() final;
+                       media::mojom::OutputProtectionRequest request);
 
   // media::mojom::OutputProtection implementation.
-  void QueryStatus(const QueryStatusCallback& callback) final;
+  void QueryStatus(QueryStatusCallback callback) final;
   void EnableProtection(uint32_t desired_protection_mask,
-                        const EnableProtectionCallback& callback) final;
+                        EnableProtectionCallback callback) final;
 
  private:
-  mojo::StrongBinding<media::mojom::OutputProtection> binding_;
+  // |this| can only be destructed as a FrameServiceBase.
+  ~OutputProtectionImpl() final;
 
-  content::RenderFrameHost* const render_frame_host_;
+  // Callbacks for QueryStatus and EnableProtection results.
+  // Note: These are bound using weak pointers so that we won't fire |callback|
+  // after the binding is destroyed.
+  void OnQueryStatusResult(QueryStatusCallback callback,
+                           bool success,
+                           uint32_t link_mask,
+                           uint32_t protection_mask);
+  void OnEnableProtectionResult(EnableProtectionCallback callback,
+                                bool success);
+
+  // Helper function to lazily create the |proxy_| and return it.
+  OutputProtectionProxy* GetProxy();
+
+  // TODO(crbug.com/770958): Remove these IDs after OutputProtection PPAPI is
+  // deprecated.
+  const int render_process_id_;
+  const int render_frame_id_;
+
+  std::unique_ptr<OutputProtectionProxy> proxy_;
 
   base::WeakPtrFactory<OutputProtectionImpl> weak_factory_;
 };

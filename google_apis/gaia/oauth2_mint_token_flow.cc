@@ -12,7 +12,6 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/json/json_reader.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -22,13 +21,8 @@
 #include "google_apis/gaia/gaia_urls.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/escape.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "net/url_request/url_request_status.h"
-
-using net::URLFetcher;
-using net::URLRequestContextGetter;
-using net::URLRequestStatus;
+#include "net/base/net_errors.h"
+#include "services/network/public/cpp/resource_response.h"
 
 namespace {
 
@@ -60,25 +54,34 @@ const char kDetailSeparators[] = "\n";
 const char kError[] = "error";
 const char kMessage[] = "message";
 
-static GoogleServiceAuthError CreateAuthError(const net::URLFetcher* source) {
-  URLRequestStatus status = source->GetStatus();
-  if (status.status() == URLRequestStatus::CANCELED) {
+static GoogleServiceAuthError CreateAuthError(
+    int net_error,
+    const network::ResourceResponseHead* head,
+    std::unique_ptr<std::string> body) {
+  if (net_error == net::ERR_ABORTED) {
     return GoogleServiceAuthError(GoogleServiceAuthError::REQUEST_CANCELED);
   }
-  if (status.status() == URLRequestStatus::FAILED) {
-    DLOG(WARNING) << "Server returned error: errno " << status.error();
-    return GoogleServiceAuthError::FromConnectionError(status.error());
+  if (net_error != net::OK) {
+    DLOG(WARNING) << "Server returned error: errno " << net_error;
+    return GoogleServiceAuthError::FromConnectionError(net_error);
   }
 
   std::string response_body;
-  source->GetResponseAsString(&response_body);
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(response_body);
+  if (body)
+    response_body = std::move(*body);
+
+  std::unique_ptr<base::Value> value =
+      base::JSONReader::ReadDeprecated(response_body);
   base::DictionaryValue* response;
   if (!value.get() || !value->GetAsDictionary(&response)) {
+    int http_response_code = -1;
+    if (head && head->headers)
+      http_response_code = head->headers->response_code();
     return GoogleServiceAuthError::FromUnexpectedServiceResponse(
-        base::StringPrintf(
-            "Not able to parse a JSON object from a service response. "
-            "HTTP Status of the response is: %d", source->GetResponseCode()));
+        base::StringPrintf("Not able to parse a JSON object from "
+                           "a service response. "
+                           "HTTP Status of the response is: %d",
+                           http_response_code));
   }
   base::DictionaryValue* error;
   if (!response->GetDictionary(kError, &error)) {
@@ -184,10 +187,13 @@ std::string OAuth2MintTokenFlow::CreateApiCallBody() {
 }
 
 void OAuth2MintTokenFlow::ProcessApiCallSuccess(
-    const net::URLFetcher* source) {
+    const network::ResourceResponseHead* head,
+    std::unique_ptr<std::string> body) {
   std::string response_body;
-  source->GetResponseAsString(&response_body);
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(response_body);
+  if (body)
+    response_body = std::move(*body);
+  std::unique_ptr<base::Value> value =
+      base::JSONReader::ReadDeprecated(response_body);
   base::DictionaryValue* dict = NULL;
   if (!value.get() || !value->GetAsDictionary(&dict)) {
     ReportFailure(GoogleServiceAuthError::FromUnexpectedServiceResponse(
@@ -224,8 +230,10 @@ void OAuth2MintTokenFlow::ProcessApiCallSuccess(
 }
 
 void OAuth2MintTokenFlow::ProcessApiCallFailure(
-    const net::URLFetcher* source) {
-  ReportFailure(CreateAuthError(source));
+    int net_error,
+    const network::ResourceResponseHead* head,
+    std::unique_ptr<std::string> body) {
+  ReportFailure(CreateAuthError(net_error, head, std::move(body)));
 }
 
 // static
@@ -278,4 +286,32 @@ bool OAuth2MintTokenFlow::ParseIssueAdviceResponse(
     issue_advice->clear();
 
   return success;
+}
+
+net::PartialNetworkTrafficAnnotationTag
+OAuth2MintTokenFlow::GetNetworkTrafficAnnotationTag() {
+  return net::DefinePartialNetworkTrafficAnnotation(
+      "oauth2_mint_token_flow", "oauth2_api_call_flow", R"(
+      semantics {
+        sender: "Chrome Identity API"
+        description:
+          "Requests a token from gaia allowing an app or extension to act as "
+          "the user when calling other google APIs."
+        trigger: "API call from the app/extension."
+        data:
+          "User's login token, the identity of a chrome app/extension, and a "
+          "list of oauth scopes requested by the app/extension."
+        destination: GOOGLE_OWNED_SERVICE
+      }
+      policy {
+        setting:
+          "This feature cannot be disabled by settings, however the request is "
+          "made only for signed-in users."
+        chrome_policy {
+          SigninAllowed {
+            policy_options {mode: MANDATORY}
+            SigninAllowed: false
+          }
+        }
+      })");
 }

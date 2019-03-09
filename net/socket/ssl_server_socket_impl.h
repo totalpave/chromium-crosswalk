@@ -10,28 +10,20 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "net/base/completion_callback.h"
 #include "net/base/io_buffer.h"
-#include "net/log/net_log.h"
 #include "net/socket/ssl_server_socket.h"
-#include "net/ssl/scoped_openssl_types.h"
 #include "net/ssl/ssl_server_config.h"
-
-// Avoid including misc OpenSSL headers, i.e.:
-// <openssl/bio.h>
-typedef struct bio_st BIO;
-// <openssl/ssl.h>
-typedef struct ssl_st SSL;
-typedef struct x509_store_ctx_st X509_STORE_CTX;
+#include "third_party/boringssl/src/include/openssl/base.h"
 
 namespace net {
-
-class SSLInfo;
 
 class SSLServerContextImpl : public SSLServerContext {
  public:
   SSLServerContextImpl(X509Certificate* certificate,
                        const crypto::RSAPrivateKey& key,
+                       const SSLServerConfig& ssl_server_config);
+  SSLServerContextImpl(X509Certificate* certificate,
+                       scoped_refptr<SSLPrivateKey> key,
                        const SSLServerConfig& ssl_server_config);
   ~SSLServerContextImpl() override;
 
@@ -39,7 +31,11 @@ class SSLServerContextImpl : public SSLServerContext {
       std::unique_ptr<StreamSocket> socket) override;
 
  private:
-  ScopedSSL_CTX ssl_ctx_;
+  class SocketImpl;
+
+  void Init();
+
+  bssl::UniquePtr<SSL_CTX> ssl_ctx_;
 
   // Options for the SSL socket.
   SSLServerConfig ssl_server_config_;
@@ -48,7 +44,9 @@ class SSLServerContextImpl : public SSLServerContext {
   scoped_refptr<X509Certificate> cert_;
 
   // Private key used by the server.
+  // Only one representation should be set at any time.
   std::unique_ptr<crypto::RSAPrivateKey> key_;
+  const scoped_refptr<SSLPrivateKey> private_key_;
 };
 
 }  // namespace net

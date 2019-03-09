@@ -18,7 +18,7 @@
 
 #include <memory>
 
-#include "net/base/completion_callback.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
 #include "net/socket/ssl_socket.h"
 #include "net/socket/stream_socket.h"
@@ -30,8 +30,10 @@ class RSAPrivateKey;
 namespace net {
 
 struct SSLServerConfig;
+class SSLPrivateKey;
 class X509Certificate;
 
+// A server socket that uses SSL as the transport layer.
 class SSLServerSocket : public SSLSocket {
  public:
   ~SSLServerSocket() override {}
@@ -40,12 +42,12 @@ class SSLServerSocket : public SSLSocket {
   // if the process completes asynchronously.  If Disconnect is called before
   // completion then the callback will be silently, as for other StreamSocket
   // calls.
-  virtual int Handshake(const CompletionCallback& callback) = 0;
+  virtual int Handshake(CompletionOnceCallback callback) = 0;
 };
 
 class SSLServerContext {
  public:
-  virtual ~SSLServerContext(){};
+  virtual ~SSLServerContext() {}
 
   // Creates an SSL server socket over an already-connected transport socket.
   // The caller must ensure the returned socket does not outlive the server
@@ -57,16 +59,6 @@ class SSLServerContext {
       std::unique_ptr<StreamSocket> socket) = 0;
 };
 
-// Configures the underlying SSL library for the use of SSL server sockets.
-//
-// Due to the requirements of the underlying libraries, this should be called
-// early in process initialization, before any SSL socket, client or server,
-// has been used.
-//
-// Note: If a process does not use SSL server sockets, this call may be
-// omitted.
-NET_EXPORT void EnableSSLServerSockets();
-
 // Creates an SSL server socket context where all sockets spawned using this
 // context will share the same session cache.
 //
@@ -77,6 +69,11 @@ NET_EXPORT void EnableSSLServerSockets();
 NET_EXPORT std::unique_ptr<SSLServerContext> CreateSSLServerContext(
     X509Certificate* certificate,
     const crypto::RSAPrivateKey& key,
+    const SSLServerConfig& ssl_config);
+
+NET_EXPORT std::unique_ptr<SSLServerContext> CreateSSLServerContext(
+    X509Certificate* certificate,
+    scoped_refptr<SSLPrivateKey> key,
     const SSLServerConfig& ssl_config);
 
 }  // namespace net

@@ -8,32 +8,29 @@
 #include "base/macros.h"
 #include "media/base/cdm_factory.h"
 
-namespace shell {
-namespace mojom {
-class InterfaceProvider;
-}
-}
-
 namespace media {
+
+namespace mojom {
+class InterfaceFactory;
+}
 
 class MojoCdmFactory : public CdmFactory {
  public:
-  explicit MojoCdmFactory(shell::mojom::InterfaceProvider* interface_provider);
+  explicit MojoCdmFactory(media::mojom::InterfaceFactory* interface_factory);
   ~MojoCdmFactory() final;
 
   // CdmFactory implementation.
   void Create(const std::string& key_system,
-              const GURL& security_origin,
+              const url::Origin& security_origin,
               const CdmConfig& cdm_config,
               const SessionMessageCB& session_message_cb,
               const SessionClosedCB& session_closed_cb,
-              const LegacySessionErrorCB& legacy_session_error_cb,
               const SessionKeysChangeCB& session_keys_change_cb,
               const SessionExpirationUpdateCB& session_expiration_update_cb,
               const CdmCreatedCB& cdm_created_cb) final;
 
  private:
-  shell::mojom::InterfaceProvider* interface_provider_;
+  media::mojom::InterfaceFactory* interface_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(MojoCdmFactory);
 };

@@ -10,16 +10,32 @@ InkDropStub::InkDropStub() {}
 
 InkDropStub::~InkDropStub() {}
 
+void InkDropStub::HostSizeChanged(const gfx::Size& new_size) {}
+
 InkDropState InkDropStub::GetTargetInkDropState() const {
   return InkDropState::HIDDEN;
 }
 
 void InkDropStub::AnimateToState(InkDropState state) {}
 
+void InkDropStub::SetHoverHighlightFadeDurationMs(int duration_ms) {}
+
+void InkDropStub::UseDefaultHoverHighlightFadeDuration() {}
+
 void InkDropStub::SnapToActivated() {}
+
+void InkDropStub::SnapToHidden() {}
 
 void InkDropStub::SetHovered(bool is_hovered) {}
 
 void InkDropStub::SetFocused(bool is_hovered) {}
+
+bool InkDropStub::IsHighlightFadingInOrVisible() const {
+  return false;
+}
+
+void InkDropStub::SetShowHighlightOnHover(bool show_highlight_on_hover) {}
+
+void InkDropStub::SetShowHighlightOnFocus(bool show_highlight_on_focus) {}
 
 }  // namespace views

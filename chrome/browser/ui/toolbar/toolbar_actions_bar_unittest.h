@@ -10,14 +10,14 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "chrome/browser/extensions/browser_action_test_util.h"
-#include "chrome/browser/extensions/extension_action_test_util.h"
+#include "chrome/browser/ui/extensions/browser_action_test_util.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
-#include "extensions/common/feature_switch.h"
-#include "ui/base/material_design/material_design_controller.h"
+#include "extensions/common/extension_builder.h"
 
 class ExtensionAction;
+class ScopedTestingLocalState;
 class ToolbarActionsBar;
+class ToolbarActionsModel;
 
 namespace content {
 class WebContents;
@@ -27,22 +27,24 @@ namespace extensions {
 class Extension;
 }
 
+namespace ui {
+namespace test {
+class MaterialDesignControllerTestAPI;
+}
+}  // namespace ui
+
 // A cross-platform unit test for the ToolbarActionsBar that uses the
 // TestToolbarActionsBarHelper to create the platform-specific containers.
 // TODO(devlin): Since this *does* use the real platform containers, in theory,
 // we can move all the BrowserActionsBarBrowserTests to be unittests. See about
 // doing this.
-class ToolbarActionsBarUnitTest :
-    public BrowserWithTestWindowTest,
-    public testing::WithParamInterface<ui::MaterialDesignController::Mode> {
+class ToolbarActionsBarUnitTest : public BrowserWithTestWindowTest,
+                                  public testing::WithParamInterface<bool> {
  public:
   ToolbarActionsBarUnitTest();
   ~ToolbarActionsBarUnitTest() override;
 
  protected:
-  // A constructor to allow subclasses to override the redesign value.
-  explicit ToolbarActionsBarUnitTest(bool use_redesign);
-
   void SetUp() override;
   void TearDown() override;
 
@@ -59,7 +61,7 @@ class ToolbarActionsBarUnitTest :
   // safe to ignore the returned value.)
   scoped_refptr<const extensions::Extension> CreateAndAddExtension(
       const std::string& name,
-      extensions::extension_action_test_util::ActionType action_type);
+      extensions::ExtensionBuilder::ActionType action_type);
 
   // Verifies that the toolbar is in order specified by |expected_names|, has
   // the total action count of |total_size|, and has the same |visible_count|.
@@ -97,28 +99,16 @@ class ToolbarActionsBarUnitTest :
   // ToolbarActionsBar.
   std::unique_ptr<BrowserActionTestUtil> browser_action_test_util_;
 
-  // The overflow container's BrowserActionTestUtil (only non-null if
-  // |use_redesign| is true).
+  // The overflow container's BrowserActionTestUtil.
   std::unique_ptr<BrowserActionTestUtil> overflow_browser_action_test_util_;
-
-  // True if the extension action redesign switch should be enabled.
-  bool use_redesign_;
-
-  std::unique_ptr<extensions::FeatureSwitch::ScopedOverride> redesign_switch_;
 
   std::unique_ptr<ui::test::MaterialDesignControllerTestAPI>
       material_design_state_;
 
+  // Local state for the browser process.
+  std::unique_ptr<ScopedTestingLocalState> local_state_;
+
   DISALLOW_COPY_AND_ASSIGN(ToolbarActionsBarUnitTest);
-};
-
-class ToolbarActionsBarRedesignUnitTest : public ToolbarActionsBarUnitTest {
- public:
-  ToolbarActionsBarRedesignUnitTest();
-  ~ToolbarActionsBarRedesignUnitTest() override;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ToolbarActionsBarRedesignUnitTest);
 };
 
 #endif  // CHROME_BROWSER_UI_TOOLBAR_TOOLBAR_ACTIONS_BAR_UNITTEST_H_

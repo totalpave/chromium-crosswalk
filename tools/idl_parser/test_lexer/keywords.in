@@ -12,7 +12,6 @@ DICTIONARY dictionary
 DOMSTRING DOMString
 DOUBLE double
 ENUM enum
-EXCEPTION exception
 FALSE false
 FLOAT float
 GETTER getter
@@ -22,9 +21,9 @@ INHERIT inherit
 INTERFACE interface
 ITERABLE iterable
 LEGACYCALLER legacycaller
-LEGACYITERABLE legacyiterable
 LONG long
 MAPLIKE maplike
+MIXIN mixin
 NAN Nan
 NULL null
 OBJECT object
@@ -34,10 +33,10 @@ OR or
 PARTIAL partial
 PROMISE Promise
 READONLY readonly
+RECORD record
 REGEXP RegExp
 REQUIRED required
 SEQUENCE sequence
-SERIALIZER serializer
 SETLIKE setlike
 SETTER setter
 SHORT short
@@ -47,4 +46,5 @@ TYPEDEF typedef
 TRUE true
 UNSIGNED unsigned
 UNRESTRICTED unrestricted
+USVSTRING USVString
 VOID void

@@ -4,17 +4,21 @@
 
 #include <stddef.h>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
+#include "base/containers/id_map.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/id_map.h"
 #include "base/location.h"
+#include "base/memory/ptr_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/dom_distiller/content/browser/distiller_javascript_utils.h"
 #include "components/dom_distiller/content/browser/distiller_page_web_contents.h"
@@ -26,11 +30,10 @@
 #include "components/dom_distiller/core/proto/distilled_article.pb.h"
 #include "components/dom_distiller/core/proto/distilled_page.pb.h"
 #include "components/dom_distiller/core/task_tracker.h"
-#include "components/leveldb_proto/proto_database.h"
-#include "components/leveldb_proto/proto_database_impl.h"
-#include "components/pref_registry/testing_pref_service_syncable.h"
+#include "components/leveldb_proto/public/proto_database.h"
+#include "components/leveldb_proto/public/proto_database_provider.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/test/content_browser_test.h"
@@ -47,8 +50,7 @@ namespace dom_distiller {
 
 namespace {
 
-typedef base::hash_map<std::string, std::string> FileToUrlMap;
-
+typedef std::unordered_map<std::string, std::string> FileToUrlMap;
 }
 
 // Factory for creating a Distiller that creates different DomDistillerOptions
@@ -126,14 +128,12 @@ std::unique_ptr<DomDistillerService> CreateDomDistillerService(
     const base::FilePath& db_path,
     const FileToUrlMap& file_to_url_map) {
   scoped_refptr<base::SequencedTaskRunner> background_task_runner =
-      content::BrowserThread::GetBlockingPool()->GetSequencedTaskRunner(
-          content::BrowserThread::GetBlockingPool()->GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()});
 
   // TODO(cjhopman): use an in-memory database instead of an on-disk one with
   // temporary directory.
-  std::unique_ptr<leveldb_proto::ProtoDatabaseImpl<ArticleEntry>> db(
-      new leveldb_proto::ProtoDatabaseImpl<ArticleEntry>(
-          background_task_runner));
+  auto db = leveldb_proto::ProtoDatabaseProvider::CreateUniqueDB<ArticleEntry>(
+      background_task_runner);
   std::unique_ptr<DomDistillerStore> dom_distiller_store(
       new DomDistillerStore(std::move(db), db_path));
 
@@ -142,7 +142,7 @@ std::unique_ptr<DomDistillerService> CreateDomDistillerService(
   std::unique_ptr<DistillerURLFetcherFactory> distiller_url_fetcher_factory(
       new DistillerURLFetcherFactory(
           content::BrowserContext::GetDefaultStoragePartition(context)
-              ->GetURLRequestContext()));
+              ->GetURLLoaderFactoryForBrowserProcess()));
 
   dom_distiller::proto::DomDistillerOptions options;
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(kExtractTextOnly)) {
@@ -171,8 +171,8 @@ std::unique_ptr<DomDistillerService> CreateDomDistillerService(
                                    options, file_to_url_map));
 
   // Setting up PrefService for DistilledPagePrefs.
-  user_prefs::TestingPrefServiceSyncable* pref_service =
-      new user_prefs::TestingPrefServiceSyncable();
+  sync_preferences::TestingPrefServiceSyncable* pref_service =
+      new sync_preferences::TestingPrefServiceSyncable();
   DistilledPagePrefs::RegisterProfilePrefs(pref_service->registry());
 
   return std::unique_ptr<DomDistillerService>(new DomDistillerService(
@@ -185,7 +185,7 @@ std::unique_ptr<DomDistillerService> CreateDomDistillerService(
 void AddComponentsTestResources() {
   base::FilePath pak_file;
   base::FilePath pak_dir;
-  PathService::Get(base::DIR_MODULE, &pak_dir);
+  base::PathService::Get(base::DIR_MODULE, &pak_dir);
   pak_file =
       pak_dir.Append(FILE_PATH_LITERAL("components_tests_resources.pak"));
   ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
@@ -248,16 +248,16 @@ class ContentExtractionRequest : public ViewRequestDelegate {
     return *article_proto_;
   }
 
-  static ScopedVector<ContentExtractionRequest> CreateForCommandLine(
-      const base::CommandLine& command_line,
-      FileToUrlMap* file_to_url_map) {
-    ScopedVector<ContentExtractionRequest> requests;
+  static std::vector<std::unique_ptr<ContentExtractionRequest>>
+  CreateForCommandLine(const base::CommandLine& command_line,
+                       FileToUrlMap* file_to_url_map) {
+    std::vector<std::unique_ptr<ContentExtractionRequest>> requests;
     if (command_line.HasSwitch(kUrlSwitch)) {
       GURL url;
       std::string url_string = command_line.GetSwitchValueASCII(kUrlSwitch);
       url = GURL(url_string);
       if (url.is_valid()) {
-        requests.push_back(new ContentExtractionRequest(url));
+        requests.push_back(base::WrapUnique(new ContentExtractionRequest(url)));
         if (command_line.HasSwitch(kOriginalUrl)) {
           (*file_to_url_map)[url.spec()] =
               command_line.GetSwitchValueASCII(kOriginalUrl);
@@ -283,7 +283,8 @@ class ContentExtractionRequest : public ViewRequestDelegate {
       for (size_t i = 0; i < urls.size(); ++i) {
         GURL url(urls[i]);
         if (url.is_valid()) {
-          requests.push_back(new ContentExtractionRequest(url));
+          requests.push_back(
+              base::WrapUnique(new ContentExtractionRequest(url)));
           // Only regard non-empty original urls.
           if (!original_urls.empty() && !original_urls[i].empty()) {
               (*file_to_url_map)[url.spec()] = original_urls[i];
@@ -351,9 +352,8 @@ class ContentExtractor : public ContentBrowserTest {
         command_line, &file_to_url_map);
     content::BrowserContext* context =
         shell()->web_contents()->GetBrowserContext();
-    service_ = CreateDomDistillerService(context,
-                                         db_dir_.path(),
-                                         file_to_url_map);
+    service_ =
+        CreateDomDistillerService(context, db_dir_.GetPath(), file_to_url_map);
     PumpQueue();
   }
 
@@ -421,7 +421,7 @@ class ContentExtractor : public ContentBrowserTest {
     requests_.clear();
     service_.reset();
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+        FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   }
 
   size_t pending_tasks_;
@@ -432,7 +432,7 @@ class ContentExtractor : public ContentBrowserTest {
   std::unique_ptr<net::ScopedDefaultHostResolverProc>
       mock_host_resolver_override_;
   std::unique_ptr<DomDistillerService> service_;
-  ScopedVector<ContentExtractionRequest> requests_;
+  std::vector<std::unique_ptr<ContentExtractionRequest>> requests_;
 
   std::string output_data_;
   std::unique_ptr<google::protobuf::io::StringOutputStream>

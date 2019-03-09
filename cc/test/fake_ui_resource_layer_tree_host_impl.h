@@ -16,7 +16,6 @@ class FakeUIResourceLayerTreeHostImpl : public FakeLayerTreeHostImpl {
  public:
   explicit FakeUIResourceLayerTreeHostImpl(
       TaskRunnerProvider* task_runner_provider,
-      SharedBitmapManager* manager,
       TaskGraphRunner* task_graph_runner);
   ~FakeUIResourceLayerTreeHostImpl() override;
 
@@ -25,14 +24,13 @@ class FakeUIResourceLayerTreeHostImpl : public FakeLayerTreeHostImpl {
 
   void DeleteUIResource(UIResourceId uid) override;
 
-  ResourceId ResourceIdForUIResource(UIResourceId uid) const override;
+  viz::ResourceId ResourceIdForUIResource(UIResourceId uid) const override;
 
   bool IsUIResourceOpaque(UIResourceId uid) const override;
 
  private:
-  using UIResourceMap =
-      std::unordered_map<UIResourceId, LayerTreeHostImpl::UIResourceData>;
-  UIResourceMap fake_ui_resource_map_;
+  std::unordered_map<UIResourceId, LayerTreeHostImpl::UIResourceData>
+      fake_ui_resource_map_;
 };
 
 }  // namespace cc

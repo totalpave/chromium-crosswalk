@@ -23,7 +23,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
-#include "third_party/webrtc/modules/desktop_capture/screen_capturer_mock_objects.h"
 
 using ::testing::_;
 using ::testing::AtLeast;
@@ -38,7 +37,7 @@ namespace protocol {
 namespace {
 
 ACTION(FinishSend) {
-  arg1.Run();
+  std::move(*arg1).Run();
 }
 
 std::unique_ptr<webrtc::DesktopFrame> CreateNullFrame(
@@ -50,20 +49,20 @@ std::unique_ptr<webrtc::DesktopFrame> CreateUnchangedFrame(
     webrtc::SharedMemoryFactory* shared_memory_factory) {
   const webrtc::DesktopSize kSize(800, 640);
   // updated_region() is already empty by default in new BasicDesktopFrames.
-  return base::WrapUnique(new webrtc::BasicDesktopFrame(kSize));
+  return std::make_unique<webrtc::BasicDesktopFrame>(kSize);
 }
 
 class MockVideoEncoder : public VideoEncoder {
  public:
-  MockVideoEncoder() {}
-  ~MockVideoEncoder() {}
+  MockVideoEncoder() = default;
+  ~MockVideoEncoder() override = default;
 
   MOCK_METHOD1(SetLosslessEncode, void(bool));
   MOCK_METHOD1(SetLosslessColor, void(bool));
   MOCK_METHOD1(EncodePtr, VideoPacket*(const webrtc::DesktopFrame&));
 
-  std::unique_ptr<VideoPacket> Encode(const webrtc::DesktopFrame& frame,
-                                      uint32_t flags) {
+  std::unique_ptr<VideoPacket> Encode(
+      const webrtc::DesktopFrame& frame) override {
     return base::WrapUnique(EncodePtr(frame));
   }
 };
@@ -83,9 +82,9 @@ class ThreadCheckVideoEncoder : public VideoEncoderVerbatim {
     EXPECT_TRUE(task_runner_->BelongsToCurrentThread());
   }
 
-  std::unique_ptr<VideoPacket> Encode(const webrtc::DesktopFrame& frame,
-                                      uint32_t flags) override {
-    return base::WrapUnique(new VideoPacket());
+  std::unique_ptr<VideoPacket> Encode(
+      const webrtc::DesktopFrame& frame) override {
+    return std::make_unique<VideoPacket>();
   }
 
  private:
@@ -111,7 +110,7 @@ class ThreadCheckDesktopCapturer : public webrtc::DesktopCapturer {
     callback_ = callback;
   }
 
-  void Capture(const webrtc::DesktopRegion& rect) override {
+  void CaptureFrame() override {
     EXPECT_TRUE(task_runner_->BelongsToCurrentThread());
 
     std::unique_ptr<webrtc::DesktopFrame> frame(
@@ -120,6 +119,16 @@ class ThreadCheckDesktopCapturer : public webrtc::DesktopCapturer {
         webrtc::DesktopRect::MakeXYWH(0, 0, 10, 10));
     callback_->OnCaptureResult(webrtc::DesktopCapturer::Result::SUCCESS,
                                std::move(frame));
+  }
+
+  bool GetSourceList(SourceList* sources) override {
+    EXPECT_TRUE(task_runner_->BelongsToCurrentThread());
+    return false;
+  }
+
+  bool SelectSource(SourceId id) override {
+    EXPECT_TRUE(task_runner_->BelongsToCurrentThread());
+    return true;
   }
 
  private:

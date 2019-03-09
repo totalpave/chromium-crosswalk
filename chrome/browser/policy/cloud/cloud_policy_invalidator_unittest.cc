@@ -12,7 +12,8 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/metrics/histogram.h"
+#include "base/message_loop/message_loop.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/metrics/sample_map.h"
 #include "base/metrics/statistics_recorder.h"
@@ -32,7 +33,8 @@
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_store.h"
 #include "components/policy/core/common/policy_types.h"
-#include "policy/policy_constants.h"
+#include "components/policy/policy_constants.h"
+#include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -192,7 +194,7 @@ class CloudPolicyInvalidatorTest : public testing::Test {
   CloudPolicyCore core_;
   MockCloudPolicyClient* client_;
   scoped_refptr<base::TestSimpleTaskRunner> task_runner_;
-  base::SimpleTestClock* clock_;
+  base::SimpleTestClock clock_;
 
   // The invalidator which will be tested.
   std::unique_ptr<CloudPolicyInvalidator> invalidator_;
@@ -214,17 +216,17 @@ CloudPolicyInvalidatorTest::CloudPolicyInvalidatorTest()
     : core_(dm_protocol::kChromeUserPolicyType,
             std::string(),
             &store_,
-            loop_.task_runner()),
+            loop_.task_runner(),
+            network::TestNetworkConnectionTracker::CreateGetter()),
       client_(nullptr),
       task_runner_(new base::TestSimpleTaskRunner()),
-      clock_(new base::SimpleTestClock()),
       object_id_a_(135, "asdf"),
       object_id_b_(246, "zxcv"),
       policy_value_a_("asdf"),
       policy_value_b_("zxcv"),
       policy_value_cur_(policy_value_a_) {
-  clock_->SetNow(
-      base::Time::UnixEpoch() + base::TimeDelta::FromSeconds(987654321));
+  clock_.SetNow(base::Time::UnixEpoch() +
+                base::TimeDelta::FromSeconds(987654321));
 }
 
 void CloudPolicyInvalidatorTest::TearDown() {
@@ -238,8 +240,7 @@ void CloudPolicyInvalidatorTest::StartInvalidator(
     bool start_refresh_scheduler,
     int64_t highest_handled_invalidation_version) {
   invalidator_.reset(
-      new CloudPolicyInvalidator(GetPolicyType(), &core_, task_runner_,
-                                 std::unique_ptr<base::Clock>(clock_),
+      new CloudPolicyInvalidator(GetPolicyType(), &core_, task_runner_, &clock_,
                                  highest_handled_invalidation_version));
   if (start_refresh_scheduler) {
     ConnectCore();
@@ -285,7 +286,7 @@ void CloudPolicyInvalidatorTest::StorePolicy(PolicyObject object,
     data->set_invalidation_source(GetPolicyObjectId(object).source());
     data->set_invalidation_name(GetPolicyObjectId(object).name());
   }
-  data->set_timestamp((time - base::Time::UnixEpoch()).InMilliseconds());
+  data->set_timestamp(time.ToJavaTime());
   // Swap the policy value if a policy change is desired.
   if (policy_changed)
     policy_value_cur_ = policy_value_cur_ == policy_value_a_ ?
@@ -387,11 +388,11 @@ int64_t CloudPolicyInvalidatorTest::GetHighestHandledInvalidationVersion()
 }
 
 void CloudPolicyInvalidatorTest::AdvanceClock(base::TimeDelta delta) {
-  clock_->Advance(delta);
+  clock_.Advance(delta);
 }
 
 base::Time CloudPolicyInvalidatorTest::Now() {
-  return clock_->Now();
+  return clock_.Now();
 }
 
 int64_t CloudPolicyInvalidatorTest::V(int version) {
@@ -411,9 +412,9 @@ bool CloudPolicyInvalidatorTest::CheckPolicyRefreshed(base::TimeDelta delay) {
   base::TimeDelta max_delay = delay + base::TimeDelta::FromMilliseconds(
       CloudPolicyInvalidator::kMaxFetchDelayMin);
 
-  if (task_runner_->GetPendingTasks().empty())
+  if (!task_runner_->HasPendingTask())
     return false;
-  base::TimeDelta actual_delay = task_runner_->GetPendingTasks().back().delay;
+  base::TimeDelta actual_delay = task_runner_->FinalPendingTaskDelay();
   EXPECT_GE(actual_delay, delay);
   EXPECT_LE(actual_delay, max_delay);
 
@@ -883,7 +884,6 @@ CloudPolicyInvalidatorUserTypedTest::~CloudPolicyInvalidatorUserTypedTest() {
 }
 
 void CloudPolicyInvalidatorUserTypedTest::SetUp() {
-  base::StatisticsRecorder::Initialize();
   refresh_samples_ = GetHistogramSamples(
       GetPolicyType() == em::DeviceRegisterRequest::DEVICE ?
           kMetricDevicePolicyRefresh : kMetricUserPolicyRefresh);
@@ -1084,21 +1084,19 @@ TEST_P(CloudPolicyInvalidatorUserTypedTest, ExpiredInvalidations) {
 }
 
 #if defined(OS_CHROMEOS)
-INSTANTIATE_TEST_CASE_P(
-    CloudPolicyInvalidatorUserTypedTestInstance,
-    CloudPolicyInvalidatorUserTypedTest,
-    testing::Values(em::DeviceRegisterRequest::USER,
-                    em::DeviceRegisterRequest::DEVICE));
+INSTANTIATE_TEST_SUITE_P(CloudPolicyInvalidatorUserTypedTestInstance,
+                         CloudPolicyInvalidatorUserTypedTest,
+                         testing::Values(em::DeviceRegisterRequest::USER,
+                                         em::DeviceRegisterRequest::DEVICE));
 #elif defined(OS_ANDROID)
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     CloudPolicyInvalidatorUserTypedTestInstance,
     CloudPolicyInvalidatorUserTypedTest,
     testing::Values(em::DeviceRegisterRequest::ANDROID_BROWSER));
 #else
-INSTANTIATE_TEST_CASE_P(
-    CloudPolicyInvalidatorUserTypedTestInstance,
-    CloudPolicyInvalidatorUserTypedTest,
-    testing::Values(em::DeviceRegisterRequest::BROWSER));
+INSTANTIATE_TEST_SUITE_P(CloudPolicyInvalidatorUserTypedTestInstance,
+                         CloudPolicyInvalidatorUserTypedTest,
+                         testing::Values(em::DeviceRegisterRequest::BROWSER));
 #endif
 
 }  // namespace policy

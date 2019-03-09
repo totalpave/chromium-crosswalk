@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/macros.h"
 #include "content/common/content_export.h"
 #include "content/public/common/resource_type.h"
@@ -19,9 +21,9 @@ class URLRequest;
 }
 
 namespace content {
+class AppCacheHost;
 class AppCacheRequestHandler;
 class AppCacheServiceImpl;
-class ResourceMessageFilter;
 
 // An interceptor to hijack requests and potentially service them out of
 // the appcache.
@@ -35,22 +37,18 @@ class CONTENT_EXPORT AppCacheInterceptor : public net::URLRequestInterceptor {
                                   ResourceType resource_type,
                                   bool should_reset_appcache);
 
+  // PlzNavigate
+  // Must be called to make a request eligible for retrieval from an appcache.
+  static void SetExtraRequestInfoForHost(net::URLRequest* request,
+                                         AppCacheHost* host,
+                                         ResourceType resource_type,
+                                         bool should_reset_appcache);
+
   // May be called after response headers are complete to retrieve extra
   // info about the response.
   static void GetExtraResponseInfo(net::URLRequest* request,
                                    int64_t* cache_id,
                                    GURL* manifest_url);
-
-  // Methods to support cross site navigations.
-  static void PrepareForCrossSiteTransfer(net::URLRequest* request,
-                                          int old_process_id);
-  static void CompleteCrossSiteTransfer(net::URLRequest* request,
-                                        int new_process_id,
-                                        int new_host_id,
-                                        ResourceMessageFilter* filter);
-  static void MaybeCompleteCrossSiteTransferInOldProcess(
-      net::URLRequest* request,
-      int old_process_id);
 
   AppCacheInterceptor();
   ~AppCacheInterceptor() override;
@@ -70,7 +68,7 @@ class CONTENT_EXPORT AppCacheInterceptor : public net::URLRequestInterceptor {
 
  private:
   static void SetHandler(net::URLRequest* request,
-                         AppCacheRequestHandler* handler);
+                         std::unique_ptr<AppCacheRequestHandler> handler);
   static AppCacheRequestHandler* GetHandler(net::URLRequest* request);
 
   DISALLOW_COPY_AND_ASSIGN(AppCacheInterceptor);

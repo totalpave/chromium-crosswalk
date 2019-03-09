@@ -4,11 +4,15 @@
 
 #include "chrome/browser/component_updater/component_updater_resource_throttle.h"
 
+#include <vector>
+
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
+#include "base/task/post_task.h"
 #include "components/component_updater/component_updater_service.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/resource_controller.h"
 #include "content/public/browser/resource_throttle.h"
 
 using content::BrowserThread;
@@ -76,14 +80,13 @@ const char* CUResourceThrottle::GetNameForLogging() const {
 void CUResourceThrottle::Unblock() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   if (state_ == BLOCKED)
-    controller()->Resume();
+    Resume();
   state_ = UNBLOCKED;
 }
 
 void UnblockThrottleOnUIThread(base::WeakPtr<CUResourceThrottle> rt) {
-  BrowserThread::PostTask(BrowserThread::IO,
-                          FROM_HERE,
-                          base::Bind(&CUResourceThrottle::Unblock, rt));
+  base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO})
+      ->PostTask(FROM_HERE, base::BindOnce(&CUResourceThrottle::Unblock, rt));
 }
 
 }  // namespace
@@ -97,13 +100,12 @@ content::ResourceThrottle* GetOnDemandResourceThrottle(
   // and we keep for ourselves a weak pointer to it so we can post tasks
   // from the UI thread without having to track lifetime directly.
   CUResourceThrottle* rt = new CUResourceThrottle;
-  BrowserThread::PostTask(
-      BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&ComponentUpdateService::MaybeThrottle,
-                 base::Unretained(cus),
-                 crx_id,
-                 base::Bind(&UnblockThrottleOnUIThread, rt->AsWeakPtr())));
+  base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI})
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&ComponentUpdateService::MaybeThrottle,
+                                base::Unretained(cus), crx_id,
+                                base::BindOnce(&UnblockThrottleOnUIThread,
+                                               rt->AsWeakPtr())));
   return rt;
 }
 

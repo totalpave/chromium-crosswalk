@@ -10,8 +10,8 @@ import contextlib
 import os
 import re
 import shutil
+import sys
 import tempfile
-import zipfile
 
 from jinja2 import contextfilter
 
@@ -19,6 +19,11 @@ import mojom.fileutil as fileutil
 import mojom.generate.generator as generator
 import mojom.generate.module as mojom
 from mojom.generate.template_expander import UseJinja
+
+sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir,
+                             os.pardir, os.pardir, os.pardir, os.pardir,
+                             'build', 'android', 'gyp'))
+from util import build_utils
 
 
 GENERATOR_PREFIX = 'java'
@@ -88,14 +93,22 @@ _java_primitive_to_boxed_type = {
   'short':   'Short',
 }
 
+_java_reserved_types = [
+  # These two may clash with commonly used classes on Android.
+  'Manifest',
+  'R'
+]
 
 def NameToComponent(name):
-  # insert '_' between anything and a Title name (e.g, HTTPEntry2FooBar ->
-  # HTTP_Entry2_FooBar)
-  name = re.sub('([^_])([A-Z][^A-Z_]+)', r'\1_\2', name)
-  # insert '_' between non upper and start of upper blocks (e.g.,
-  # HTTP_Entry2_FooBar -> HTTP_Entry2_Foo_Bar)
-  name = re.sub('([^A-Z_])([A-Z])', r'\1_\2', name)
+  """ Returns a list of lowercase words corresponding to a given name. """
+  # Add underscores after uppercase letters when appropriate. An uppercase
+  # letter is considered the end of a word if it is followed by an upper and a
+  # lower. E.g. URLLoaderFactory -> URL_LoaderFactory
+  name = re.sub('([A-Z][0-9]*)(?=[A-Z][0-9]*[a-z])', r'\1_', name)
+  # Add underscores after lowercase letters when appropriate. A lowercase letter
+  # is considered the end of a word if it is followed by an upper.
+  # E.g. URLLoaderFactory -> URLLoader_Factory
+  name = re.sub('([a-z][0-9]*)(?=[A-Z])', r'\1_', name)
   return [x.lower() for x in name.split('_')]
 
 def UpperCamelCase(name):
@@ -117,8 +130,13 @@ def ConstantStyle(name):
 def GetNameForElement(element):
   if (mojom.IsEnumKind(element) or mojom.IsInterfaceKind(element) or
       mojom.IsStructKind(element) or mojom.IsUnionKind(element)):
-    return UpperCamelCase(element.name)
-  if mojom.IsInterfaceRequestKind(element) or mojom.IsAssociatedKind(element):
+    name = UpperCamelCase(element.name)
+    if name in _java_reserved_types:
+      return name + '_'
+    return name
+  if (mojom.IsInterfaceRequestKind(element) or
+      mojom.IsAssociatedKind(element) or mojom.IsPendingRemoteKind(element) or
+      mojom.IsPendingReceiverKind(element)):
     return GetNameForElement(element.kind)
   if isinstance(element, (mojom.Method,
                           mojom.Parameter,
@@ -183,8 +201,12 @@ def AppendEncodeDecodeParams(initial_params, context, kind, bit):
     params.append(GetArrayExpectedLength(kind))
   if mojom.IsInterfaceKind(kind):
     params.append('%s.MANAGER' % GetJavaType(context, kind))
+  if mojom.IsPendingRemoteKind(kind):
+    params.append('%s.MANAGER' % GetJavaType(context, kind.kind))
   if mojom.IsArrayKind(kind) and mojom.IsInterfaceKind(kind.kind):
     params.append('%s.MANAGER' % GetJavaType(context, kind.kind))
+  if mojom.IsArrayKind(kind) and mojom.IsPendingRemoteKind(kind.kind):
+    params.append('%s.MANAGER' % GetJavaType(context, kind.kind.kind))
   return params
 
 
@@ -195,9 +217,9 @@ def DecodeMethod(context, kind, offset, bit):
       return _DecodeMethodName(kind.kind) + 's'
     if mojom.IsEnumKind(kind):
       return _DecodeMethodName(mojom.INT32)
-    if mojom.IsInterfaceRequestKind(kind):
+    if mojom.IsInterfaceRequestKind(kind) or mojom.IsPendingReceiverKind(kind):
       return 'readInterfaceRequest'
-    if mojom.IsInterfaceKind(kind):
+    if mojom.IsInterfaceKind(kind) or mojom.IsPendingRemoteKind(kind):
       return 'readServiceInterface'
     if mojom.IsAssociatedInterfaceRequestKind(kind):
       return 'readAssociatedInterfaceRequestNotSupported'
@@ -219,8 +241,8 @@ def GetPackage(module):
     return ParseStringAttribute(module.attributes['JavaPackage'])
   # Default package.
   if module.namespace:
-    return 'org.chromium.mojom.' + module.namespace
-  return 'org.chromium.mojom'
+    return 'org.chromium.' + module.namespace
+  return 'org.chromium'
 
 def GetNameForKind(context, kind):
   def _GetNameHierachy(kind):
@@ -255,7 +277,9 @@ def GetJavaType(context, kind, boxed=False, with_generics=True):
       mojom.IsInterfaceKind(kind) or
       mojom.IsUnionKind(kind)):
     return GetNameForKind(context, kind)
-  if mojom.IsInterfaceRequestKind(kind):
+  if mojom.IsPendingRemoteKind(kind):
+    return GetNameForKind(context, kind.kind)
+  if mojom.IsInterfaceRequestKind(kind) or mojom.IsPendingReceiverKind(kind):
     return ('org.chromium.mojo.bindings.InterfaceRequest<%s>' %
             GetNameForKind(context, kind.kind))
   if mojom.IsAssociatedInterfaceKind(kind):
@@ -397,48 +421,8 @@ def TempDir():
   finally:
     shutil.rmtree(dirname)
 
-def ZipContentInto(root, zip_filename):
-  with zipfile.ZipFile(zip_filename, 'w') as zip_file:
-    for dirname, _, files in os.walk(root):
-      for filename in files:
-        path = os.path.join(dirname, filename)
-        path_in_archive = os.path.relpath(path, root)
-        zip_file.write(path, path_in_archive)
-
 class Generator(generator.Generator):
-
-  java_filters = {
-    'array_expected_length': GetArrayExpectedLength,
-    'array': GetArrayKind,
-    'constant_value': ConstantValue,
-    'decode_method': DecodeMethod,
-    'default_value': DefaultValue,
-    'encode_method': EncodeMethod,
-    'expression_to_text': ExpressionToText,
-    'has_method_without_response': HasMethodWithoutResponse,
-    'has_method_with_response': HasMethodWithResponse,
-    'interface_response_name': GetInterfaceResponseName,
-    'is_array_kind': mojom.IsArrayKind,
-    'is_any_handle_kind': mojom.IsAnyHandleKind,
-    "is_enum_kind": mojom.IsEnumKind,
-    'is_interface_request_kind': mojom.IsInterfaceRequestKind,
-    'is_map_kind': mojom.IsMapKind,
-    'is_nullable_kind': mojom.IsNullableKind,
-    'is_pointer_array_kind': IsPointerArrayKind,
-    'is_reference_kind': mojom.IsReferenceKind,
-    'is_struct_kind': mojom.IsStructKind,
-    'is_union_array_kind': IsUnionArrayKind,
-    'is_union_kind': mojom.IsUnionKind,
-    'java_class_for_enum': GetJavaClassForEnum,
-    'java_true_false': GetJavaTrueFalse,
-    'java_type': GetJavaType,
-    'method_ordinal_name': GetMethodOrdinalName,
-    'name': GetNameForElement,
-    'new_array': NewArray,
-    'ucc': lambda x: UpperCamelCase(x.name),
-  }
-
-  def GetJinjaExports(self):
+  def _GetJinjaExports(self):
     return {
       'package': GetPackage(self.module),
     }
@@ -447,79 +431,108 @@ class Generator(generator.Generator):
   def GetTemplatePrefix():
     return "java_templates"
 
-  @classmethod
-  def GetFilters(cls):
-    return cls.java_filters
+  def GetFilters(self):
+    java_filters = {
+      'array_expected_length': GetArrayExpectedLength,
+      'array': GetArrayKind,
+      'constant_value': ConstantValue,
+      'decode_method': DecodeMethod,
+      'default_value': DefaultValue,
+      'encode_method': EncodeMethod,
+      'expression_to_text': ExpressionToText,
+      'has_method_without_response': HasMethodWithoutResponse,
+      'has_method_with_response': HasMethodWithResponse,
+      'interface_response_name': GetInterfaceResponseName,
+      'is_array_kind': mojom.IsArrayKind,
+      'is_any_handle_kind': mojom.IsAnyHandleKind,
+      "is_enum_kind": mojom.IsEnumKind,
+      'is_interface_request_kind': mojom.IsInterfaceRequestKind,
+      'is_map_kind': mojom.IsMapKind,
+      'is_nullable_kind': mojom.IsNullableKind,
+      'is_pointer_array_kind': IsPointerArrayKind,
+      'is_reference_kind': mojom.IsReferenceKind,
+      'is_struct_kind': mojom.IsStructKind,
+      'is_union_array_kind': IsUnionArrayKind,
+      'is_union_kind': mojom.IsUnionKind,
+      'java_class_for_enum': GetJavaClassForEnum,
+      'java_true_false': GetJavaTrueFalse,
+      'java_type': GetJavaType,
+      'method_ordinal_name': GetMethodOrdinalName,
+      'name': GetNameForElement,
+      'new_array': NewArray,
+      'ucc': lambda x: UpperCamelCase(x.name),
+    }
+    return java_filters
 
-  def GetJinjaExportsForInterface(self, interface):
-    exports = self.GetJinjaExports()
+  def _GetJinjaExportsForInterface(self, interface):
+    exports = self._GetJinjaExports()
     exports.update({'interface': interface})
     return exports
 
   @UseJinja('enum.java.tmpl')
-  def GenerateEnumSource(self, enum):
-    exports = self.GetJinjaExports()
+  def _GenerateEnumSource(self, enum):
+    exports = self._GetJinjaExports()
     exports.update({'enum': enum})
     return exports
 
   @UseJinja('struct.java.tmpl')
-  def GenerateStructSource(self, struct):
-    exports = self.GetJinjaExports()
+  def _GenerateStructSource(self, struct):
+    exports = self._GetJinjaExports()
     exports.update({'struct': struct})
     return exports
 
   @UseJinja('union.java.tmpl')
-  def GenerateUnionSource(self, union):
-    exports = self.GetJinjaExports()
+  def _GenerateUnionSource(self, union):
+    exports = self._GetJinjaExports()
     exports.update({'union': union})
     return exports
 
   @UseJinja('interface.java.tmpl')
-  def GenerateInterfaceSource(self, interface):
-    return self.GetJinjaExportsForInterface(interface)
+  def _GenerateInterfaceSource(self, interface):
+    return self._GetJinjaExportsForInterface(interface)
 
   @UseJinja('interface_internal.java.tmpl')
-  def GenerateInterfaceInternalSource(self, interface):
-    return self.GetJinjaExportsForInterface(interface)
+  def _GenerateInterfaceInternalSource(self, interface):
+    return self._GetJinjaExportsForInterface(interface)
 
   @UseJinja('constants.java.tmpl')
-  def GenerateConstantsSource(self, module):
-    exports = self.GetJinjaExports()
+  def _GenerateConstantsSource(self, module):
+    exports = self._GetJinjaExports()
     exports.update({'main_entity': GetConstantsMainEntityName(module),
                     'constants': module.constants})
     return exports
 
-  def DoGenerateFiles(self):
+  def _DoGenerateFiles(self):
     fileutil.EnsureDirectoryExists(self.output_dir)
 
-    # Keep this above the others as .GetStructs() changes the state of the
-    # module, annotating structs with required information.
-    for struct in self.GetStructs():
-      self.Write(self.GenerateStructSource(struct),
+    for struct in self.module.structs:
+      self.Write(self._GenerateStructSource(struct),
                  '%s.java' % GetNameForElement(struct))
 
     for union in self.module.unions:
-      self.Write(self.GenerateUnionSource(union),
+      self.Write(self._GenerateUnionSource(union),
                  '%s.java' % GetNameForElement(union))
 
     for enum in self.module.enums:
-      self.Write(self.GenerateEnumSource(enum),
+      self.Write(self._GenerateEnumSource(enum),
                  '%s.java' % GetNameForElement(enum))
 
-    for interface in self.GetInterfaces():
-      self.Write(self.GenerateInterfaceSource(interface),
+    for interface in self.module.interfaces:
+      self.Write(self._GenerateInterfaceSource(interface),
                  '%s.java' % GetNameForElement(interface))
-      self.Write(self.GenerateInterfaceInternalSource(interface),
+      self.Write(self._GenerateInterfaceInternalSource(interface),
                  '%s_Internal.java' % GetNameForElement(interface))
 
     if self.module.constants:
-      self.Write(self.GenerateConstantsSource(self.module),
+      self.Write(self._GenerateConstantsSource(self.module),
                  '%s.java' % GetConstantsMainEntityName(self.module))
 
   def GenerateFiles(self, unparsed_args):
     # TODO(rockot): Support variant output for Java.
     if self.variant:
       raise Exception("Variants not supported in Java bindings.")
+
+    self.module.Stylize(generator.Stylizer())
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--java_output_directory', dest='java_output_directory')
@@ -528,17 +541,17 @@ class Generator(generator.Generator):
 
     # Generate the java files in a temporary directory and place a single
     # srcjar in the output directory.
-    basename = self.MatchMojomFilePath("%s.srcjar" % self.module.name)
+    basename = "%s.srcjar" % self.module.path
     zip_filename = os.path.join(self.output_dir, basename)
     with TempDir() as temp_java_root:
       self.output_dir = os.path.join(temp_java_root, package_path)
-      self.DoGenerateFiles();
-      ZipContentInto(temp_java_root, zip_filename)
+      self._DoGenerateFiles();
+      build_utils.ZipDir(zip_filename, temp_java_root)
 
     if args.java_output_directory:
       # If requested, generate the java files directly into indicated directory.
       self.output_dir = os.path.join(args.java_output_directory, package_path)
-      self.DoGenerateFiles();
+      self._DoGenerateFiles();
 
   def GetJinjaParameters(self):
     return {

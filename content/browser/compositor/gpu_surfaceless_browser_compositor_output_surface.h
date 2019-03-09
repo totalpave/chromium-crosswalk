@@ -6,6 +6,7 @@
 #define CONTENT_BROWSER_COMPOSITOR_GPU_SURFACELESS_BROWSER_COMPOSITOR_OUTPUT_SURFACE_H_
 
 #include <memory>
+#include <vector>
 
 #include "content/browser/compositor/gpu_browser_compositor_output_surface.h"
 #include "gpu/ipc/common/surface_handle.h"
@@ -14,9 +15,8 @@ namespace gpu {
 class GpuMemoryBufferManager;
 }
 
-namespace display_compositor {
+namespace viz {
 class BufferQueue;
-class GLHelper;
 }
 
 namespace content {
@@ -25,39 +25,44 @@ class GpuSurfacelessBrowserCompositorOutputSurface
     : public GpuBrowserCompositorOutputSurface {
  public:
   GpuSurfacelessBrowserCompositorOutputSurface(
-      scoped_refptr<ContextProviderCommandBuffer> context,
+      scoped_refptr<ws::ContextProviderCommandBuffer> context,
       gpu::SurfaceHandle surface_handle,
-      scoped_refptr<ui::CompositorVSyncManager> vsync_manager,
-      cc::SyntheticBeginFrameSource* begin_frame_source,
-      std::unique_ptr<display_compositor::CompositorOverlayCandidateValidator>
+      const UpdateVSyncParametersCallback& update_vsync_parameters_callback,
+      std::unique_ptr<viz::CompositorOverlayCandidateValidator>
           overlay_candidate_validator,
       unsigned int target,
       unsigned int internalformat,
+      gfx::BufferFormat format,
       gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager);
   ~GpuSurfacelessBrowserCompositorOutputSurface() override;
 
-  // cc::OutputSurface implementation.
-  void SwapBuffers(cc::CompositorFrame frame) override;
-  void OnSwapBuffersComplete() override;
+  // viz::OutputSurface implementation.
+  void SwapBuffers(viz::OutputSurfaceFrame frame) override;
   void BindFramebuffer() override;
   uint32_t GetFramebufferCopyTextureFormat() override;
   void Reshape(const gfx::Size& size,
-               float scale_factor,
+               float device_scale_factor,
                const gfx::ColorSpace& color_space,
-               bool alpha) override;
+               bool has_alpha,
+               bool use_stencil) override;
   bool IsDisplayedAsOverlayPlane() const override;
   unsigned GetOverlayTextureId() const override;
+  gfx::BufferFormat GetOverlayBufferFormat() const override;
+  unsigned UpdateGpuFence() override;
+  void SetDrawRectangle(const gfx::Rect& damage) override;
 
   // BrowserCompositorOutputSurface implementation.
   void OnGpuSwapBuffersCompleted(
-      const std::vector<ui::LatencyInfo>& latency_info,
-      gfx::SwapResult result,
-      const gpu::GpuProcessHostedCALayerTreeParamsMac* params_mac) override;
+      std::vector<ui::LatencyInfo> latency_info,
+      const gpu::SwapBuffersCompleteParams& params) override;
 
  private:
-  const unsigned int internalformat_;
-  std::unique_ptr<display_compositor::GLHelper> gl_helper_;
-  std::unique_ptr<display_compositor::BufferQueue> buffer_queue_;
+  gfx::Size reshape_size_;
+  gfx::Size swap_size_;
+  bool use_gpu_fence_;
+  unsigned gpu_fence_id_;
+
+  std::unique_ptr<viz::BufferQueue> buffer_queue_;
   gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager_;
 };
 

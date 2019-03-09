@@ -4,8 +4,12 @@
 
 #include "extensions/browser/api/storage/settings_test_util.h"
 
+#include <utility>
+
+#include "base/bind.h"
 #include "base/files/file_path.h"
-#include "base/run_loop.h"
+#include "base/values.h"
+#include "content/public/test/test_utils.h"
 #include "extensions/browser/api/storage/storage_frontend.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system_provider.h"
@@ -23,7 +27,7 @@ std::unique_ptr<base::Value> CreateKilobyte() {
   for (int i = 0; i < 1024; ++i) {
     kilobyte_string += "a";
   }
-  return std::unique_ptr<base::Value>(new base::StringValue(kilobyte_string));
+  return std::unique_ptr<base::Value>(new base::Value(kilobyte_string));
 }
 
 // Creates a megabyte of data.
@@ -46,7 +50,7 @@ ValueStore* GetStorage(scoped_refptr<const Extension> extension,
   ValueStore* storage = NULL;
   frontend->RunWithStorage(
       extension, settings_namespace, base::Bind(&AssignStorage, &storage));
-  base::RunLoop().RunUntilIdle();
+  content::RunAllTasksUntilIdle();
   return storage;
 }
 
@@ -71,24 +75,24 @@ scoped_refptr<const Extension> AddExtensionWithIdAndPermissions(
   base::DictionaryValue manifest;
   manifest.SetString("name", std::string("Test extension ") + id);
   manifest.SetString("version", "1.0");
+  manifest.SetInteger("manifest_version", 2);
 
   std::unique_ptr<base::ListValue> permissions(new base::ListValue());
-  for (std::set<std::string>::const_iterator it = permissions_set.begin();
-      it != permissions_set.end(); ++it) {
+  for (auto it = permissions_set.cbegin(); it != permissions_set.cend(); ++it) {
     permissions->AppendString(*it);
   }
-  manifest.Set("permissions", permissions.release());
+  manifest.Set("permissions", std::move(permissions));
 
   switch (type) {
     case Manifest::TYPE_EXTENSION:
       break;
 
     case Manifest::TYPE_LEGACY_PACKAGED_APP: {
-      base::DictionaryValue* app = new base::DictionaryValue();
-      base::DictionaryValue* app_launch = new base::DictionaryValue();
+      auto app = std::make_unique<base::DictionaryValue>();
+      auto app_launch = std::make_unique<base::DictionaryValue>();
       app_launch->SetString("local_path", "fake.html");
-      app->Set("launch", app_launch);
-      manifest.Set("app", app);
+      app->Set("launch", std::move(app_launch));
+      manifest.Set("app", std::move(app));
       break;
     }
 
@@ -111,8 +115,7 @@ scoped_refptr<const Extension> AddExtensionWithIdAndPermissions(
   // the test discards the referenced to the returned extension.
   ExtensionRegistry::Get(context)->AddEnabled(extension);
 
-  for (std::set<std::string>::const_iterator it = permissions_set.begin();
-      it != permissions_set.end(); ++it) {
+  for (auto it = permissions_set.cbegin(); it != permissions_set.cend(); ++it) {
     DCHECK(extension->permissions_data()->HasAPIPermission(*it));
   }
 

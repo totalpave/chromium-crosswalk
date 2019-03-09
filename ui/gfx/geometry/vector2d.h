@@ -15,12 +15,12 @@
 #include <iosfwd>
 #include <string>
 
+#include "ui/gfx/geometry/geometry_export.h"
 #include "ui/gfx/geometry/vector2d_f.h"
-#include "ui/gfx/gfx_export.h"
 
 namespace gfx {
 
-class GFX_EXPORT Vector2d {
+class GEOMETRY_EXPORT Vector2d {
  public:
   constexpr Vector2d() : x_(0), y_(0) {}
   constexpr Vector2d(int x, int y) : x_(x), y_(y) {}
@@ -39,6 +39,9 @@ class GFX_EXPORT Vector2d {
   // Subtract the components of the |other| vector from the current vector.
   void Subtract(const Vector2d& other);
 
+  constexpr bool operator==(const Vector2d& other) const {
+    return x_ == other.x_ && y_ == other.y_;
+  }
   void operator+=(const Vector2d& other) { Add(other); }
   void operator-=(const Vector2d& other) { Subtract(other); }
 
@@ -70,11 +73,7 @@ class GFX_EXPORT Vector2d {
   int y_;
 };
 
-inline bool operator==(const Vector2d& lhs, const Vector2d& rhs) {
-  return lhs.x() == rhs.x() && lhs.y() == rhs.y();
-}
-
-inline Vector2d operator-(const Vector2d& v) {
+inline constexpr Vector2d operator-(const Vector2d& v) {
   return Vector2d(-v.x(), -v.y());
 }
 
@@ -91,8 +90,8 @@ inline Vector2d operator-(const Vector2d& lhs, const Vector2d& rhs) {
 }
 
 // This is declared here for use in gtest-based unit tests but is defined in
-// the gfx_test_support target. Depend on that to use this in your unit test.
-// This should not be used in production code - call ToString() instead.
+// the //ui/gfx:test_support target. Depend on that to use this in your unit
+// test. This should not be used in production code - call ToString() instead.
 void PrintTo(const Vector2d& vector, ::std::ostream* os);
 
 }  // namespace gfx

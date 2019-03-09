@@ -21,8 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <deque>
-
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "google/protobuf/io/zero_copy_stream.h"
@@ -44,14 +43,16 @@ class CompoundBuffer {
   // Adds new chunk to the buffer. |start| defines position of the chunk
   // within the |buffer|. |size| is the size of the chunk that is being
   // added, not size of the |buffer|.
-  void Append(net::IOBuffer* buffer, int size);
-  void Append(net::IOBuffer* buffer, const char* start, int size);
+  void Append(scoped_refptr<net::IOBuffer> buffer, int size);
+  void Append(scoped_refptr<net::IOBuffer> buffer, const char* start, int size);
   void Append(const CompoundBuffer& buffer);
-  void Prepend(net::IOBuffer* buffer, int size);
-  void Prepend(net::IOBuffer* buffer, const char* start, int size);
+  void Prepend(scoped_refptr<net::IOBuffer> buffer, int size);
+  void Prepend(scoped_refptr<net::IOBuffer> buffer,
+               const char* start,
+               int size);
   void Prepend(const CompoundBuffer& buffer);
 
-  // Same as above, but creates new IOBuffer and copies the data.
+  // Same as above, but creates an IOBuffer and copies the data.
   void AppendCopyOf(const char* data, int data_size);
   void PrependCopyOf(const char* data, int data_size);
 
@@ -70,9 +71,9 @@ class CompoundBuffer {
   // Returns true if content is locked.
   bool locked() const { return locked_; }
 
-  // Creates new IOBufferWithSize object and copies all data into it.
+  // Creates an IOBufferWithSize object and copies all data into it.
   // Ownership of the result is given to the caller.
-  net::IOBufferWithSize* ToIOBufferWithSize() const;
+  scoped_refptr<net::IOBufferWithSize> ToIOBufferWithSize() const;
 
   // Copies all data into given location.
   void CopyTo(char* data, int data_size) const;
@@ -85,7 +86,7 @@ class CompoundBuffer {
   friend class CompoundBufferInputStream;
 
   struct DataChunk {
-    DataChunk(net::IOBuffer* buffer, const char* start, int size);
+    DataChunk(scoped_refptr<net::IOBuffer> buffer, const char* start, int size);
     DataChunk(const DataChunk& other);
     ~DataChunk();
 
@@ -93,7 +94,7 @@ class CompoundBuffer {
     const char* start;
     int size;
   };
-  typedef std::deque<DataChunk> DataChunkList;
+  using DataChunkList = base::circular_deque<DataChunk>;
 
   DataChunkList chunks_;
   int total_bytes_;

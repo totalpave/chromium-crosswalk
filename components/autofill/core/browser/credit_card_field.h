@@ -20,6 +20,7 @@ class AutofillScanner;
 
 class CreditCardField : public FormField {
  public:
+  CreditCardField();
   ~CreditCardField() override;
   static std::unique_ptr<FormField> Parse(AutofillScanner* scanner);
 
@@ -27,7 +28,7 @@ class CreditCardField : public FormField {
   void AddClassifications(FieldCandidatesMap* field_candidates) const override;
 
  private:
-  friend class CreditCardFieldTest;
+  friend class CreditCardFieldTestBase;
 
   // Returns true if |scanner| points to a field that looks like a month
   // <select>.
@@ -47,8 +48,6 @@ class CreditCardField : public FormField {
   // Prepaid debit cards do not count as gift cards, since they can be used like
   // a credit card.
   static bool IsGiftCardField(AutofillScanner* scanner);
-
-  CreditCardField();
 
   // Parses the expiration month/year/date fields. Returns true if it finds
   // something new.

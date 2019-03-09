@@ -9,6 +9,8 @@ html {
 
 body {
   background-color: #fbfbfb;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   margin: 0;
   overflow: auto;
@@ -28,12 +30,12 @@ body {
   color: rgb(80, 80, 82);
   display: -webkit-flex;
   font-size: 15px;
-  height: 48px;
+  min-height: 48px;
 }
 
 .title-bar #page-title {
   -webkit-flex: 1 1 auto;
-  -webkit-margin-start: 20px;
+  margin-inline-start: 20px;
 }
 
 .title-bar .button-bar {
@@ -42,6 +44,7 @@ body {
 
 .content {
   color: #646464;
+  flex-grow: 1;
   font-size: 12px;
   margin: 20px;
 }
@@ -56,12 +59,16 @@ body {
   width: 100%;
 }
 
+.content #additional-info-label {
+  margin-inline-start: 10px;
+}
+
 .content .text-field-container {
   -webkit-align-items: center;
-  -webkit-padding-start: 10px;
   display: -webkit-flex;
   height: 29px;
   margin-top: 10px;
+  padding-inline-start: 10px;
 }
 
 .content .text-field-container > label {
@@ -69,17 +76,25 @@ body {
   width: 100px;
 }
 
+.content .text-field-container > select {
+  border: 1px solid #c8c8c8;
+  color: #585858;
+  flex: 1 1 auto;
+  height: 100%;
+  padding-inline-start: 5px;
+}
+
 .content .text-field-container > input[type=text] {
   -webkit-flex: 1 1 auto;
-  -webkit-padding-start: 5px;
   border: 1px solid;
   border-color: #c8c8c8;
   color: #585858;
   height: 100%;
+  padding-inline-start: 5px;
 }
 
 .content .text-field-container > input[type=checkbox] {
-  margin-right: 9px;
+  margin-inline-end: 9px;
 }
 
 .content .checkbox-field-container {
@@ -93,16 +108,16 @@ body {
 }
 
 .content #screenshot-image {
-  -webkit-margin-start: 150px;
   display: block;
   height: 60px;
+  margin-inline-end: 25px;
   margin-top: 40px;
   transition: all 250ms ease;
 }
 
 .content #screenshot-image:hover {
-  -webkit-margin-start: 80px;
   height: 125px;
+  margin-inline-end: 0;
   margin-top: 80px;
   z-index: 1;
 }
@@ -117,12 +132,18 @@ body {
   width: 200px;
 }
 
+.content #screenshot-label {
+  flex: auto;
+}
+
 .content #privacy-note {
   color: #969696;
-  font-size: 10px;
-  line-height: 15px;
-  margin-bottom: 20px;
+  font-size: 12px;
+  line-height: 20px;
+  margin-bottom: 0;
   margin-top: 20px;
+  text-align: justify;
+  text-justify: inter-word;
 }
 
 .content .buttons-pane {
@@ -134,8 +155,23 @@ body {
   right: 20px;
 }
 
+.content .top-buttons {
+  position: absolute;
+}
+
+#bottom-buttons-container {
+  margin: 0;
+}
+
+.content .bottom-buttons {
+  margin-bottom: 20px;
+  margin-inline-end: 20px;
+  margin-inline-start: 20px;
+  margin-top: 0;
+  position: static;
+}
+
 .content .remove-file-button {
-  -webkit-margin-start: 5px;
   background-color: transparent;
   background-image: -webkit-image-set(
       url(chrome://resources/images/apps/button_butter_bar_close.png) 1x,
@@ -144,6 +180,7 @@ body {
   background-repeat: no-repeat;
   border: none;
   height: 16px;
+  margin-inline-start: 5px;
   pointer-events: auto;
   width: 16px;
 }
@@ -161,8 +198,8 @@ body {
 }
 
 .content #attach-file-note {
-  -webkit-margin-start: 112px;
   margin-bottom: 10px;
+  margin-inline-start: 112px;
   margin-top: 10px;
 }
 
@@ -172,8 +209,8 @@ body {
 }
 
 button.white-button {
-  -webkit-margin-end: 10px;
   color: #000;
+  margin-inline-end: 10px;
 }
 
 button.blue-button {
@@ -182,11 +219,11 @@ button.blue-button {
 }
 
 .srt-image {
-  -webkit-margin-end: auto;
-  -webkit-margin-start: 40px;
   display: block;
   height: 50px;
   margin-bottom: 20px;
+  margin-inline-end: auto;
+  margin-inline-start: 40px;
   margin-top: 120px;
 }
 

@@ -6,17 +6,17 @@
 #define CC_ANIMATION_ANIMATION_ID_PROVIDER_H_
 
 #include "base/macros.h"
-#include "cc/base/cc_export.h"
+#include "cc/animation/animation_export.h"
 
 namespace cc {
 
-class CC_EXPORT AnimationIdProvider {
+class CC_ANIMATION_EXPORT AnimationIdProvider {
  public:
   // These functions each return monotonically increasing values.
-  static int NextAnimationId();
+  static int NextKeyframeModelId();
   static int NextGroupId();
   static int NextTimelineId();
-  static int NextPlayerId();
+  static int NextAnimationId();
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(AnimationIdProvider);

@@ -10,15 +10,16 @@
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace ui {
 
-base::LazyInstance<Clipboard::AllowedThreadsVector>
+base::LazyInstance<Clipboard::AllowedThreadsVector>::DestructorAtExit
     Clipboard::allowed_threads_ = LAZY_INSTANCE_INITIALIZER;
-base::LazyInstance<Clipboard::ClipboardMap> Clipboard::clipboard_map_ =
-    LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<Clipboard::ClipboardMap>::DestructorAtExit
+    Clipboard::clipboard_map_ = LAZY_INSTANCE_INITIALIZER;
 base::LazyInstance<base::Lock>::Leaky Clipboard::clipboard_map_lock_ =
     LAZY_INSTANCE_INITIALIZER;
 
@@ -62,15 +63,51 @@ Clipboard* Clipboard::GetForCurrentThread() {
   return clipboard;
 }
 
+// static
+std::unique_ptr<Clipboard> Clipboard::TakeForCurrentThread() {
+  base::AutoLock lock(clipboard_map_lock_.Get());
+
+  ClipboardMap* clipboard_map = clipboard_map_.Pointer();
+  base::PlatformThreadId id = base::PlatformThread::CurrentId();
+
+  Clipboard* clipboard = nullptr;
+
+  auto it = clipboard_map->find(id);
+  if (it != clipboard_map->end()) {
+    clipboard = it->second.release();
+    clipboard_map->erase(it);
+  }
+
+  return base::WrapUnique(clipboard);
+}
+
+// static
+void Clipboard::OnPreShutdownForCurrentThread() {
+  base::AutoLock lock(clipboard_map_lock_.Get());
+  base::PlatformThreadId id = GetAndValidateThreadID();
+
+  ClipboardMap* clipboard_map = clipboard_map_.Pointer();
+  ClipboardMap::const_iterator it = clipboard_map->find(id);
+  if (it != clipboard_map->end())
+    it->second->OnPreShutdown();
+}
+
+// static
 void Clipboard::DestroyClipboardForCurrentThread() {
   base::AutoLock lock(clipboard_map_lock_.Get());
 
   ClipboardMap* clipboard_map = clipboard_map_.Pointer();
   base::PlatformThreadId id = base::PlatformThread::CurrentId();
-  ClipboardMap::iterator it = clipboard_map->find(id);
+  auto it = clipboard_map->find(id);
   if (it != clipboard_map->end())
     clipboard_map->erase(it);
 }
+
+base::Time Clipboard::GetLastModifiedTime() const {
+  return base::Time();
+}
+
+void Clipboard::ClearLastModifiedTime() {}
 
 void Clipboard::DispatchObject(ObjectType type, const ObjectMapParams& params) {
   // Ignore writes with empty parameters.
@@ -119,11 +156,9 @@ void Clipboard::DispatchObject(ObjectType type, const ObjectMapParams& params) {
     }
 
     case CBF_DATA:
-      WriteData(
-          FormatType::Deserialize(
-              std::string(&(params[0].front()), params[0].size())),
-          &(params[1].front()),
-          params[1].size());
+      WriteData(ClipboardFormatType::Deserialize(
+                    std::string(&(params[0].front()), params[0].size())),
+                &(params[1].front()), params[1].size());
       break;
 
     default:
@@ -132,22 +167,16 @@ void Clipboard::DispatchObject(ObjectType type, const ObjectMapParams& params) {
 }
 
 base::PlatformThreadId Clipboard::GetAndValidateThreadID() {
-  base::PlatformThreadId id = base::PlatformThread::CurrentId();
-#ifndef NDEBUG
-  AllowedThreadsVector* allowed_threads = allowed_threads_.Pointer();
-  if (!allowed_threads->empty()) {
-    bool found = false;
-    for (AllowedThreadsVector::const_iterator it = allowed_threads->begin();
-         it != allowed_threads->end(); ++it) {
-      if (*it == id) {
-        found = true;
-        break;
-      }
-    }
+  clipboard_map_lock_.Get().AssertAcquired();
 
-    DCHECK(found);
-  }
-#endif
+  const base::PlatformThreadId id = base::PlatformThread::CurrentId();
+
+  // A Clipboard instance must be allocated for every thread that uses the
+  // clipboard. To prevented unbounded memory use, CHECK that the current thread
+  // was whitelisted to use the clipboard. This is a CHECK rather than a DCHECK
+  // to catch incorrect usage in production (e.g. https://crbug.com/872737).
+  AllowedThreadsVector* allowed_threads = allowed_threads_.Pointer();
+  CHECK(allowed_threads->empty() || base::ContainsValue(*allowed_threads, id));
 
   return id;
 }

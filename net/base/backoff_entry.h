@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "net/base/net_export.h"
 
@@ -23,7 +23,7 @@ namespace net {
 //
 // This utility class knows nothing about network specifics; it is
 // intended for reuse in various networking scenarios.
-class NET_EXPORT BackoffEntry : NON_EXPORTED_BASE(public base::NonThreadSafe) {
+class NET_EXPORT BackoffEntry {
  public:
   // The set of parameters that define a back-off policy. When modifying this,
   // increment SERIALIZATION_VERSION_NUMBER in backoff_entry_serializer.cc.
@@ -69,7 +69,7 @@ class NET_EXPORT BackoffEntry : NON_EXPORTED_BASE(public base::NonThreadSafe) {
   // Lifetime of policy and clock must enclose lifetime of BackoffEntry.
   // |policy| pointer must be valid but isn't dereferenced during construction.
   // |clock| pointer may be null.
-  BackoffEntry(const Policy* policy, base::TickClock* clock);
+  BackoffEntry(const Policy* policy, const base::TickClock* clock);
   virtual ~BackoffEntry();
 
   // Inform this item that a request for the network resource it is
@@ -108,15 +108,12 @@ class NET_EXPORT BackoffEntry : NON_EXPORTED_BASE(public base::NonThreadSafe) {
   // Returns the failure count for this entry.
   int failure_count() const { return failure_count_; }
 
-  // Returns the TickClock passed in to the constructor. May be NULL.
-  base::TickClock* tick_clock() const { return clock_; }
+  // Equivalent to TimeTicks::Now(), using clock_ if provided.
+  base::TimeTicks GetTimeTicksNow() const;
 
  private:
   // Calculates when requests should again be allowed through.
   base::TimeTicks CalculateReleaseTime() const;
-
-  // Equivalent to TimeTicks::Now(), using clock_ if provided.
-  base::TimeTicks GetTimeTicksNow() const;
 
   // Timestamp calculated by the exponential back-off algorithm at which we are
   // allowed to start sending requests again.
@@ -127,7 +124,9 @@ class NET_EXPORT BackoffEntry : NON_EXPORTED_BASE(public base::NonThreadSafe) {
 
   const Policy* const policy_;  // Not owned.
 
-  base::TickClock* const clock_;  // Not owned.
+  const base::TickClock* const clock_;  // Not owned.
+
+  THREAD_CHECKER(thread_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(BackoffEntry);
 };

@@ -17,6 +17,7 @@
 #include "media/base/media_log.h"
 #include "media/base/stream_parser_buffer.h"
 #include "media/formats/mp4/box_definitions.h"
+#include "media/media_buildflags.h"
 
 namespace media {
 
@@ -36,7 +37,7 @@ class MEDIA_EXPORT TrackRunIterator {
  public:
   // Create a new TrackRunIterator. A reference to |moov| will be retained for
   // the lifetime of this object.
-  TrackRunIterator(const Movie* moov, const scoped_refptr<MediaLog>& media_log);
+  TrackRunIterator(const Movie* moov, MediaLog* media_log);
   ~TrackRunIterator();
 
   // Sets up the iterator to handle all the runs from the current fragment.
@@ -46,10 +47,12 @@ class MEDIA_EXPORT TrackRunIterator {
   bool IsRunValid() const;
   bool IsSampleValid() const;
 
-  // Advance the properties to refer to the next run or sample. Requires that
-  // the current sample be valid.
-  void AdvanceRun();
-  void AdvanceSample();
+  // Advance the properties to refer to the next run or sample. These return
+  // |false| on failure, but note that advancing to the end (IsRunValid() or
+  // IsSampleValid() return false) is not a failure, and the properties are not
+  // guaranteed to be consistent in that case.
+  bool AdvanceRun();
+  bool AdvanceSample();
 
   // Returns true if this track run has auxiliary information and has not yet
   // been cached. Only valid if IsRunValid().
@@ -79,7 +82,7 @@ class MEDIA_EXPORT TrackRunIterator {
 
   // Properties of the current sample. Only valid if IsSampleValid().
   int64_t sample_offset() const;
-  int sample_size() const;
+  uint32_t sample_size() const;
   DecodeTimestamp dts() const;
   base::TimeDelta cts() const;
   base::TimeDelta duration() const;
@@ -90,7 +93,9 @@ class MEDIA_EXPORT TrackRunIterator {
   std::unique_ptr<DecryptConfig> GetDecryptConfig();
 
  private:
-  void ResetRun();
+  bool UpdateCts();
+  bool ResetRun();
+  const ProtectionSchemeInfo& protection_scheme_info() const;
   const TrackEncryption& track_encryption() const;
 
   uint32_t GetGroupDescriptionIndex(uint32_t sample_index) const;
@@ -99,15 +104,19 @@ class MEDIA_EXPORT TrackRunIterator {
   bool IsSampleEncrypted(size_t sample_index) const;
   uint8_t GetIvSize(size_t sample_index) const;
   const std::vector<uint8_t>& GetKeyId(size_t sample_index) const;
+#if BUILDFLAG(ENABLE_CBCS_ENCRYPTION_SCHEME)
+  bool ApplyConstantIv(size_t sample_index, SampleEncryptionEntry* entry) const;
+#endif
 
   const Movie* moov_;
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
 
   std::vector<TrackRunInfo> runs_;
   std::vector<TrackRunInfo>::const_iterator run_itr_;
   std::vector<SampleInfo>::const_iterator sample_itr_;
 
   int64_t sample_dts_;
+  int64_t sample_cts_;
   int64_t sample_offset_;
 
   DISALLOW_COPY_AND_ASSIGN(TrackRunIterator);

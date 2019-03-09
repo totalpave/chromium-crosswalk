@@ -16,10 +16,10 @@ import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.browser.document.DocumentUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabIdManager;
-import org.chromium.chrome.browser.tabmodel.OffTheRecordTabModel.OffTheRecordTabModelDelegate;
+import org.chromium.chrome.browser.tabmodel.IncognitoTabModel.IncognitoTabModelDelegate;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorBase;
 import org.chromium.content_public.browser.LoadUrlParams;
 
@@ -31,7 +31,8 @@ import org.chromium.content_public.browser.LoadUrlParams;
  * created by one Activity but need to be loaded in another Tab.
  */
 @TargetApi(Build.VERSION_CODES.LOLLIPOP)
-public class DocumentTabModelSelector extends TabModelSelectorBase implements TabCreatorManager {
+public class DocumentTabModelSelector extends TabModelSelectorBase
+        implements TabCreatorManager, DocumentTabModelImpl.TabModelDelegate {
     public static final String PREF_PACKAGE = "com.google.android.apps.chrome.document";
     public static final String PREF_IS_INCOGNITO_SELECTED = "is_incognito_selected";
 
@@ -70,7 +71,7 @@ public class DocumentTabModelSelector extends TabModelSelectorBase implements Ta
     /**
      * TabModel that keeps track of incognito tabs. This may be null if no incognito tabs exist.
      */
-    private final OffTheRecordDocumentTabModel mIncognitoTabModel;
+    private final IncognitoDocumentTabModel mIncognitoTabModel;
 
     /**
      * If the TabModels haven't been initialized yet, prioritize the correct one to load the Tab.
@@ -91,22 +92,29 @@ public class DocumentTabModelSelector extends TabModelSelectorBase implements Ta
 
         final Context context = ContextUtils.getApplicationContext();
         mRegularTabModel = new DocumentTabModelImpl(
-                mActivityDelegate, mStorageDelegate, this, false, sPrioritizedTabId, context);
-        mIncognitoTabModel = new OffTheRecordDocumentTabModel(new OffTheRecordTabModelDelegate() {
+                mActivityDelegate, mStorageDelegate, this, false, sPrioritizedTabId, context, this);
+        mIncognitoTabModel = new IncognitoDocumentTabModel(new IncognitoTabModelDelegate() {
             @Override
             public TabModel createTabModel() {
                 DocumentTabModel incognitoModel = new DocumentTabModelImpl(mActivityDelegate,
                         mStorageDelegate, DocumentTabModelSelector.this, true, sPrioritizedTabId,
-                        context);
+                        context, DocumentTabModelSelector.this);
                 return incognitoModel;
             }
 
             @Override
-            public boolean doOffTheRecordTabsExist() {
+            public boolean doIncognitoTabsExist() {
                 // TODO(dfalcantara): Devices in document mode do not trigger the TabWindowManager.
                 //                    Revisit this when we have a Samsung L multi-instance device.
                 return mIncognitoTabModel.getCount() > 0;
             }
+
+            @Override
+            public boolean isCurrentModel(TabModel model) {
+                return DocumentTabModelSelector.this.isCurrentModel(model);
+            }
+
+
         }, mActivityDelegate);
         initializeTabIdCounter();
 
@@ -151,8 +159,8 @@ public class DocumentTabModelSelector extends TabModelSelectorBase implements Ta
     }
 
     @Override
-    public Tab openNewTab(LoadUrlParams loadUrlParams, TabLaunchType type, Tab parent,
-            boolean incognito) {
+    public Tab openNewTab(
+            LoadUrlParams loadUrlParams, @TabLaunchType int type, Tab parent, boolean incognito) {
         TabDelegate delegate = getTabCreator(incognito);
         delegate.createNewTab(loadUrlParams, type, parent);
         return null;
@@ -177,6 +185,11 @@ public class DocumentTabModelSelector extends TabModelSelectorBase implements Ta
     @Override
     public DocumentTabModel getModelForTabId(int id) {
         return (DocumentTabModel) super.getModelForTabId(id);
+    }
+
+    @Override
+    public boolean isCurrentModel(TabModel model) {
+        return isIncognitoSelected() == model.isIncognito();
     }
 
     /**

@@ -8,9 +8,5 @@ void InstantServiceObserver::ThemeInfoChanged(const ThemeBackgroundInfo&) {
 }
 
 void InstantServiceObserver::MostVisitedItemsChanged(
-    const std::vector<InstantMostVisitedItem>&) {
-}
-
-void InstantServiceObserver::DefaultSearchProviderChanged(
-    bool google_base_url_domain_changed) {
-}
+    const std::vector<InstantMostVisitedItem>&,
+    bool is_custom_links) {}

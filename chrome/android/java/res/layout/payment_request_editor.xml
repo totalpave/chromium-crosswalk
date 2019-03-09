@@ -6,20 +6,21 @@
 <!-- PaymentRequestUI editor dialog. -->
 <RelativeLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:chrome="http://schemas.android.com/apk/res-auto" >
+    android:background="@color/modern_primary_color">
 
     <!-- Toolbar -->
-    <org.chromium.chrome.browser.payments.ui.EditorDialogToolbar
+    <org.chromium.chrome.browser.widget.prefeditor.EditorDialogToolbar
         android:id="@+id/action_bar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
         android:layout_alignParentTop="true"
         android:layout_alignParentStart="true"
-        android:layout_alignParentEnd="true"
-        android:background="@color/dark_action_bar_color" />
-    
+        android:layout_alignParentEnd="true" />
+
+    <include layout="@layout/preferences_action_bar_shadow" />
+
     <!-- All the page content in scrollable form. -->
-    <org.chromium.chrome.browser.payments.ui.FadingEdgeScrollView
+    <org.chromium.chrome.browser.widget.FadingEdgeScrollView
         android:id="@+id/scroll_view"
         android:layout_height="0dp"
         android:layout_width="match_parent"
@@ -32,20 +33,10 @@
             android:id="@+id/contents"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingTop="@dimen/payments_section_large_spacing"
             android:paddingStart="@dimen/pref_autofill_content_spacing"
             android:paddingEnd="@dimen/pref_autofill_content_spacing"
             android:orientation="vertical" />
 
-    </org.chromium.chrome.browser.payments.ui.FadingEdgeScrollView>
-
-    <!-- Shadow overlaps the FadingEdgeScrollView. -->
-    <org.chromium.chrome.browser.widget.FadingShadowView
-        android:id="@+id/shadow"
-        android:layout_width="match_parent"
-        android:layout_height="10dp"
-        android:layout_below="@id/action_bar"
-        android:layout_alignParentStart="true"
-        android:layout_alignParentEnd="true" />
+    </org.chromium.chrome.browser.widget.FadingEdgeScrollView>
 
 </RelativeLayout>

@@ -4,12 +4,15 @@
 
 #include "components/feedback/anonymizer_tool.h"
 
+#include <memory>
 #include <utility>
 
-#include "base/memory/ptr_util.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "content/public/browser/browser_thread.h"
+#include "net/base/ip_address.h"
 #include "third_party/re2/src/re2/re2.h"
 
 using re2::RE2;
@@ -37,16 +40,137 @@ namespace {
 //
 // +? is a non-greedy (lazy) +.
 // \b matches a word boundary.
-// (?i) turns on case insensitivy for the remainder of the regex.
+// (?i) turns on case insensitivity for the remainder of the regex.
 // (?-s) turns off "dot matches newline" for the remainder of the regex.
 // (?:regex) denotes non-capturing parentheses group.
-const char* kCustomPatternsWithContext[] = {
-    "(\\bCell ID: ')([0-9a-fA-F]+)(')",                  // ModemManager
-    "(\\bLocation area code: ')([0-9a-fA-F]+)(')",       // ModemManager
-    "(?i-s)(\\bssid[= ]')(.+)(')",                       // wpa_supplicant
-    "(?-s)(\\bSSID - hexdump\\(len=[0-9]+\\): )(.+)()",  // wpa_supplicant
-    "(?-s)(\\[SSID=)(.+?)(\\])",                         // shill
+constexpr const char* kCustomPatternsWithContext[] = {
+    // ModemManager
+    "(\\bCell ID: ')([0-9a-fA-F]+)(')",
+    "(\\bLocation area code: ')([0-9a-fA-F]+)(')",
+
+    // wpa_supplicant
+    "(?i-s)(\\bssid[= ]')(.+)(')",
+    "(?-s)(\\bSSID - hexdump\\(len=[0-9]+\\): )(.+)()",
+
+    // shill
+    "(?-s)(\\[SSID=)(.+?)(\\])",
+
+    // Serial numbers
+    "(?i-s)(serial\\s*(?:number)?\\s*[:=]\\s*)([0-9a-zA-Z\\-\"]+)()",
 };
+
+bool MaybeUnmapAddress(net::IPAddress* addr) {
+  if (!addr->IsIPv4MappedIPv6())
+    return false;
+
+  *addr = net::ConvertIPv4MappedIPv6ToIPv4(*addr);
+  return true;
+}
+
+bool MaybeUntranslateAddress(net::IPAddress* addr) {
+  if (!addr->IsIPv6())
+    return false;
+
+  static const net::IPAddress kTranslated6To4(0, 0x64, 0xff, 0x9b, 0, 0, 0, 0,
+                                              0, 0, 0, 0, 0, 0, 0, 0);
+  if (!IPAddressMatchesPrefix(*addr, kTranslated6To4, 96))
+    return false;
+
+  const auto bytes = addr->bytes();
+  *addr = net::IPAddress(bytes[12], bytes[13], bytes[14], bytes[15]);
+  return true;
+}
+
+// If |addr| points to a valid IPv6 address, this function truncates it at /32.
+bool MaybeTruncateIPv6(net::IPAddress* addr) {
+  if (!addr->IsIPv6())
+    return false;
+
+  const auto bytes = addr->bytes();
+  *addr = net::IPAddress(bytes[0], bytes[1], bytes[2], bytes[3], 0, 0, 0, 0, 0,
+                         0, 0, 0, 0, 0, 0, 0);
+  return true;
+}
+
+// Returns an appropriately scrubbed version of |addr| if applicable.
+std::string MaybeScrubIPAddress(const std::string& addr) {
+  struct {
+    net::IPAddress ip_addr;
+    int prefix_length;
+    bool scrub;
+  } static const kWhitelistedIPRanges[] = {
+      // Private.
+      {net::IPAddress(10, 0, 0, 0), 8, true},
+      {net::IPAddress(172, 16, 0, 0), 12, true},
+      {net::IPAddress(192, 168, 0, 0), 16, true},
+      // Chrome OS containers and VMs.
+      {net::IPAddress(100, 115, 92, 0), 24, false},
+      // Loopback.
+      {net::IPAddress(127, 0, 0, 0), 8, true},
+      // Any.
+      {net::IPAddress(0, 0, 0, 0), 8, true},
+      // DNS.
+      {net::IPAddress(8, 8, 8, 8), 32, false},
+      {net::IPAddress(8, 8, 4, 4), 32, false},
+      {net::IPAddress(1, 1, 1, 1), 32, false},
+      // Multicast.
+      {net::IPAddress(224, 0, 0, 0), 4, true},
+      // Link local.
+      {net::IPAddress(169, 254, 0, 0), 16, true},
+      {net::IPAddress(0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), 10,
+       true},
+      // Broadcast.
+      {net::IPAddress(255, 255, 255, 255), 32, false},
+      // IPv6 loopback, unspecified and non-address strings.
+      {net::IPAddress::IPv6AllZeros(), 112, false},
+      // IPv6 multicast all nodes and routers.
+      {net::IPAddress(0xff, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1),
+       128, false},
+      {net::IPAddress(0xff, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+       128, false},
+      {net::IPAddress(0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1),
+       128, false},
+      {net::IPAddress(0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+       128, false},
+      // IPv6 other multicast (link and interface local).
+      {net::IPAddress(0xff, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), 16,
+       true},
+      {net::IPAddress(0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), 16,
+       true},
+
+  };
+  net::IPAddress input_addr;
+  if (input_addr.AssignFromIPLiteral(addr) && input_addr.IsValid()) {
+    bool mapped = MaybeUnmapAddress(&input_addr);
+    bool translated = !mapped ? MaybeUntranslateAddress(&input_addr) : false;
+    for (const auto& range : kWhitelistedIPRanges) {
+      if (IPAddressMatchesPrefix(input_addr, range.ip_addr,
+                                 range.prefix_length)) {
+        std::string prefix;
+        std::string out_addr = addr;
+        if (mapped) {
+          prefix = "M ";
+          out_addr = input_addr.ToString();
+        } else if (translated) {
+          prefix = "T ";
+          out_addr = input_addr.ToString();
+        }
+        if (range.scrub) {
+          out_addr = base::StringPrintf(
+              "%s/%d", range.ip_addr.ToString().c_str(), range.prefix_length);
+        }
+        return base::StrCat({prefix, out_addr});
+      }
+    }
+    // |addr| may have been over-aggressively matched as an IPv6 address when
+    // it's really just an arbitrary part of a sentence. If the string is the
+    // same as the coarsely truncated address then keep it because even if
+    // it happens to be a real address, there is no loss of anonymity.
+    if (MaybeTruncateIPv6(&input_addr) && input_addr.ToString() == addr)
+      return addr;
+  }
+  return "";
+}
 
 // Helper macro: Non capturing group
 #define NCG(x) "(?:" x ")"
@@ -68,7 +192,7 @@ const char* kCustomPatternsWithContext[] = {
 
 #define PCT_ENCODED "%" HEXDIG HEXDIG
 
-#define DEC_OCTET NCG("[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-9]")
+#define DEC_OCTET NCG("1[0-9][0-9]|2[0-4][0-9]|25[0-5]|[1-9][0-9]|[0-9]")
 
 #define IPV4ADDRESS DEC_OCTET "\\." DEC_OCTET "\\." DEC_OCTET "\\." DEC_OCTET
 
@@ -164,14 +288,18 @@ const char* kCustomPatternsWithContext[] = {
 // The |kCustomPatternWithoutContext| array defines further patterns to match
 // and anonymize. Each pattern consists of a single capturing group.
 CustomPatternWithoutContext kCustomPatternsWithoutContext[] = {
-  {"URL", "(?i)(" IRI ")"},
-  // Email Addresses need to come after URLs because they can be part
-  // of a query parameter.
-  {"email", "(?i)([0-9a-z._%+-]+@[a-z0-9.-]+\\.[a-z]{2,6})"},
-  // IP filter rules need to come after URLs so that they don't disturb the
-  // URL pattern in case the IP address is part of a URL.
-  {"IPv4", "(?i)(" IPV4ADDRESS ")"},
-  {"IPv6", "(?i)(" IPV6ADDRESS ")"},
+    {"URL", "(?i)(" IRI ")"},
+    // Email Addresses need to come after URLs because they can be part
+    // of a query parameter.
+    {"email", "(?i)([0-9a-z._%+-]+@[a-z0-9.-]+\\.[a-z]{2,6})"},
+    // IP filter rules need to come after URLs so that they don't disturb the
+    // URL pattern in case the IP address is part of a URL.
+    {"IPv4", "(?i)(" IPV4ADDRESS ")"},
+    {"IPv6", "(?i)(" IPV6ADDRESS ")"},
+    // Universal Unique Identifiers (UUIDs).
+    {"UUID",
+     "(?i)([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-"
+     "[0-9a-zA-Z]{12})"},
 };
 
 // Like RE2's FindAndConsume, searches for the first occurrence of |pattern| in
@@ -216,19 +344,27 @@ bool FindAndConsumeAndGetSkipped(re2::StringPiece* input,
                                  Arg*... match_groups) {
   re2::StringPiece* args[] = {match_groups...};
   return FindAndConsumeAndGetSkippedN(input, pattern, skipped_input, args,
-                                      arraysize(args));
+                                      base::size(args));
 }
 
 }  // namespace
 
 AnonymizerTool::AnonymizerTool()
-    : custom_patterns_with_context_(arraysize(kCustomPatternsWithContext)),
+    : custom_patterns_with_context_(base::size(kCustomPatternsWithContext)),
       custom_patterns_without_context_(
-          arraysize(kCustomPatternsWithoutContext)) {}
+          base::size(kCustomPatternsWithoutContext)) {
+  DETACH_FROM_SEQUENCE(sequence_checker_);
+}
 
-AnonymizerTool::~AnonymizerTool() {}
+AnonymizerTool::~AnonymizerTool() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+}
 
 std::string AnonymizerTool::Anonymize(const std::string& input) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(!::content::BrowserThread::CurrentlyOn(::content::BrowserThread::UI))
+      << "This is an expensive operation. Do not execute this on the UI "
+         "thread.";
   std::string anonymized = AnonymizeMACAddresses(input);
   anonymized = AnonymizeCustomPatterns(std::move(anonymized));
   return anonymized;
@@ -239,7 +375,7 @@ RE2* AnonymizerTool::GetRegExp(const std::string& pattern) {
     RE2::Options options;
     // set_multiline of pcre is not supported by RE2, yet.
     options.set_dot_nl(true);  // Dot matches a new line.
-    std::unique_ptr<RE2> re = base::WrapUnique(new RE2(pattern, options));
+    std::unique_ptr<RE2> re = std::make_unique<RE2>(pattern, options);
     DCHECK_EQ(re2::RE2::NoError, re->error_code())
         << "Failed to parse:\n" << pattern << "\n" << re->error();
     regexp_cache_[pattern] = std::move(re);
@@ -292,12 +428,12 @@ std::string AnonymizerTool::AnonymizeMACAddresses(const std::string& input) {
 }
 
 std::string AnonymizerTool::AnonymizeCustomPatterns(std::string input) {
-  for (size_t i = 0; i < arraysize(kCustomPatternsWithContext); i++) {
+  for (size_t i = 0; i < base::size(kCustomPatternsWithContext); i++) {
     input =
         AnonymizeCustomPatternWithContext(input, kCustomPatternsWithContext[i],
                                           &custom_patterns_with_context_[i]);
   }
-  for (size_t i = 0; i < arraysize(kCustomPatternsWithoutContext); i++) {
+  for (size_t i = 0; i < base::size(kCustomPatternsWithoutContext); i++) {
     input = AnonymizeCustomPatternWithoutContext(
         input, kCustomPatternsWithoutContext[i],
         &custom_patterns_without_context_[i]);
@@ -324,7 +460,7 @@ std::string AnonymizerTool::AnonymizeCustomPatternWithContext(
     std::string matched_id_as_string = matched_id.as_string();
     std::string replacement_id = (*identifier_space)[matched_id_as_string];
     if (replacement_id.empty()) {
-      replacement_id = base::IntToString(identifier_space->size());
+      replacement_id = base::NumberToString(identifier_space->size());
       (*identifier_space)[matched_id_as_string] = replacement_id;
     }
 
@@ -335,6 +471,13 @@ std::string AnonymizerTool::AnonymizeCustomPatternWithContext(
   }
   text.AppendToString(&result);
   return result;
+}
+
+bool WhitelistMatchedId(re2::StringPiece matched_id) {
+  bool is_safe_chrome_resource =
+      matched_id.starts_with("chrome://resources/") &&
+      !matched_id.contains("?");
+  return is_safe_chrome_resource;
 }
 
 std::string AnonymizerTool::AnonymizeCustomPatternWithoutContext(
@@ -352,15 +495,24 @@ std::string AnonymizerTool::AnonymizeCustomPatternWithoutContext(
   re2::StringPiece skipped;
   re2::StringPiece matched_id;
   while (FindAndConsumeAndGetSkipped(&text, *re, &skipped, &matched_id)) {
+    if (WhitelistMatchedId(matched_id)) {
+      skipped.AppendToString(&result);
+      matched_id.AppendToString(&result);
+      continue;
+    }
     std::string matched_id_as_string = matched_id.as_string();
     std::string replacement_id = (*identifier_space)[matched_id_as_string];
     if (replacement_id.empty()) {
-      // The weird Uint64toString trick is because Windows does not like to deal
-      // with %zu and a size_t in printf, nor does it support %llu.
-      replacement_id = base::StringPrintf(
-          "<%s: %s>", pattern.alias,
-          base::Uint64ToString(identifier_space->size()).c_str());
-      (*identifier_space)[matched_id_as_string] = replacement_id;
+      replacement_id = MaybeScrubIPAddress(matched_id_as_string);
+      if (replacement_id != matched_id_as_string) {
+        // The weird Uint64toString trick is because Windows does not like
+        // to deal with %zu and a size_t in printf, nor does it support %llu.
+        replacement_id = base::StringPrintf(
+            "<%s: %s>",
+            replacement_id.empty() ? pattern.alias : replacement_id.c_str(),
+            base::NumberToString(identifier_space->size()).c_str());
+        (*identifier_space)[matched_id_as_string] = replacement_id;
+      }
     }
 
     skipped.AppendToString(&result);
@@ -368,6 +520,19 @@ std::string AnonymizerTool::AnonymizeCustomPatternWithoutContext(
   }
   text.AppendToString(&result);
   return result;
+}
+
+AnonymizerToolContainer::AnonymizerToolContainer(
+    scoped_refptr<base::SequencedTaskRunner> task_runner)
+    : anonymizer_(new AnonymizerTool), task_runner_(task_runner) {}
+
+AnonymizerToolContainer::~AnonymizerToolContainer() {
+  task_runner_->DeleteSoon(FROM_HERE, std::move(anonymizer_));
+}
+
+AnonymizerTool* AnonymizerToolContainer::Get() {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  return anonymizer_.get();
 }
 
 }  // namespace feedback

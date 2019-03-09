@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_CHANGE_H__
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_CHANGE_H__
 
+#include <ostream>
 #include <vector>
 
 #include "components/autofill/core/common/password_form.h"
@@ -19,12 +20,23 @@ class PasswordStoreChange {
     REMOVE,
   };
 
-  PasswordStoreChange(Type type, const autofill::PasswordForm& form)
-      : type_(type), form_(form) {}
+  // TODO(crbug.com/902349): The following constructor is important only in
+  // Linux backends production. It should be available only on Linux, and all
+  // test code should be updates to the other constructor that accepts a
+  // |primary_key|.
+  PasswordStoreChange(Type type, autofill::PasswordForm form)
+      : type_(type), form_(std::move(form)) {}
+  PasswordStoreChange(Type type, autofill::PasswordForm form, int primary_key)
+      : type_(type), form_(std::move(form)), primary_key_(primary_key) {}
+  PasswordStoreChange(const PasswordStoreChange& other) = default;
+  PasswordStoreChange(PasswordStoreChange&& other) = default;
+  PasswordStoreChange& operator=(const PasswordStoreChange& change) = default;
+  PasswordStoreChange& operator=(PasswordStoreChange&& change) = default;
   virtual ~PasswordStoreChange() {}
 
   Type type() const { return type_; }
   const autofill::PasswordForm& form() const { return form_; }
+  int primary_key() const { return primary_key_; }
 
   bool operator==(const PasswordStoreChange& other) const {
     return type() == other.type() &&
@@ -38,7 +50,6 @@ class PasswordStoreChange {
            form().password_value == other.form().password_value &&
            form().new_password_element == other.form().new_password_element &&
            form().new_password_value == other.form().new_password_value &&
-           form().ssl_valid == other.form().ssl_valid &&
            form().preferred == other.form().preferred &&
            form().date_created == other.form().date_created &&
            form().blacklisted_by_user == other.form().blacklisted_by_user;
@@ -47,6 +58,8 @@ class PasswordStoreChange {
  private:
   Type type_;
   autofill::PasswordForm form_;
+  // The corresponding primary key in the database for this password.
+  int primary_key_ = -1;
 };
 
 typedef std::vector<PasswordStoreChange> PasswordStoreChangeList;

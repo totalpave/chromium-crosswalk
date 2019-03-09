@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
@@ -18,7 +19,7 @@ class PrintPreviewDataStore;
 namespace base {
 template <typename T>
 struct DefaultSingletonTraits;
-class RefCountedBytes;
+class RefCountedMemory;
 }
 
 // PrintPreviewDataService manages data stores for chrome://print requests.
@@ -31,8 +32,9 @@ class PrintPreviewDataService {
   // |printing::COMPLETE_PREVIEW_DOCUMENT_INDEX| to represent complete preview
   // data. Use |index| to retrieve a specific preview page data. |data| is set
   // to NULL if the requested page is not yet available.
-  void GetDataEntry(int32_t preview_ui_id, int index,
-                    scoped_refptr<base::RefCountedBytes>* data);
+  void GetDataEntry(int32_t preview_ui_id,
+                    int index,
+                    scoped_refptr<base::RefCountedMemory>* data) const;
 
   // Set/Update the data entry in PrintPreviewDataStore. |index| is zero-based
   // or |printing::COMPLETE_PREVIEW_DOCUMENT_INDEX| to represent complete
@@ -41,13 +43,10 @@ class PrintPreviewDataService {
   // calling this function. It will be refcounted in PrintPreviewDataStore.
   void SetDataEntry(int32_t preview_ui_id,
                     int index,
-                    scoped_refptr<base::RefCountedBytes> data);
+                    scoped_refptr<base::RefCountedMemory> data);
 
   // Remove the corresponding PrintPreviewUI entry from the map.
   void RemoveEntry(int32_t preview_ui_id);
-
-  // Returns the available draft page count.
-  int GetAvailableDraftPageCount(int32_t preview_ui_id);
 
  private:
   friend struct base::DefaultSingletonTraits<PrintPreviewDataService>;
@@ -56,10 +55,10 @@ class PrintPreviewDataService {
   // Key: PrintPreviewUI ID.
   // Value: Print preview data store object.
   using PreviewDataStoreMap =
-      std::map<int32_t, scoped_refptr<PrintPreviewDataStore>>;
+      std::map<int32_t, std::unique_ptr<PrintPreviewDataStore>>;
 
   PrintPreviewDataService();
-  virtual ~PrintPreviewDataService();
+  ~PrintPreviewDataService();
 
   PreviewDataStoreMap data_store_map_;
 

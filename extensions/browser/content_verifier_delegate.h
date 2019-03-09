@@ -5,10 +5,9 @@
 #ifndef EXTENSIONS_BROWSER_CONTENT_VERIFIER_DELEGATE_H_
 #define EXTENSIONS_BROWSER_CONTENT_VERIFIER_DELEGATE_H_
 
-#include <stdint.h>
-
 #include <set>
 
+#include "extensions/browser/content_verifier/content_verifier_key.h"
 #include "extensions/browser/content_verify_job.h"
 #include "url/gurl.h"
 
@@ -20,19 +19,6 @@ class Version;
 namespace extensions {
 
 class Extension;
-
-// A pointer to the bytes of a public key, and the number of bytes.
-struct ContentVerifierKey {
-  const uint8_t* data;
-  int size;
-
-  ContentVerifierKey() : data(NULL), size(0) {}
-
-  ContentVerifierKey(const uint8_t* data, int size) {
-    this->data = data;
-    this->size = size;
-  }
-};
 
 // This is an interface for clients that want to use a ContentVerifier.
 class ContentVerifierDelegate {
@@ -81,6 +67,9 @@ class ContentVerifierDelegate {
   // an extension did not match its expected hash.
   virtual void VerifyFailed(const std::string& extension_id,
                             ContentVerifyJob::FailureReason reason) = 0;
+
+  // Called when ExtensionSystem is shutting down.
+  virtual void Shutdown() = 0;
 };
 
 }  // namespace extensions

@@ -10,12 +10,13 @@
 #include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/google_api_keys.h"
 #include "net/url_request/url_fetcher.h"
 #include "remoting/base/url_request_context_getter.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/transitional_url_loader_factory_owner.h"
 
 namespace {
 const int kMaxGetTokensRetries = 3;
@@ -34,8 +35,7 @@ AccessTokenFetcher::AccessTokenFetcher() {
       kOauthRedirectUrl};
 }
 
-AccessTokenFetcher::~AccessTokenFetcher() {
-}
+AccessTokenFetcher::~AccessTokenFetcher() = default;
 
 void AccessTokenFetcher::GetAccessTokenFromAuthCode(
     const std::string& auth_code,
@@ -52,9 +52,9 @@ void AccessTokenFetcher::GetAccessTokenFromAuthCode(
 
   // Create a new GaiaOAuthClient for each request to GAIA.
   CreateNewGaiaOAuthClientInstance();
-  auth_client_->GetTokensFromAuthCode(
-      oauth_client_info_, auth_code, kMaxGetTokensRetries,
-      this);  // GaiaOAuthClient::Delegate* delegate
+  auth_client_->GetTokensFromAuthCode(oauth_client_info_, auth_code,
+                                      kMaxGetTokensRetries,
+                                      /*delegate=*/this);
 }
 
 void AccessTokenFetcher::GetAccessTokenFromRefreshToken(
@@ -73,18 +73,32 @@ void AccessTokenFetcher::GetAccessTokenFromRefreshToken(
   // Create a new GaiaOAuthClient for each request to GAIA.
   CreateNewGaiaOAuthClientInstance();
   auth_client_->RefreshToken(oauth_client_info_, refresh_token_,
-                             std::vector<std::string>(),  // scopes
+                             /*scopes=*/std::vector<std::string>(),
                              kMaxGetTokensRetries,
-                             this);  // GaiaOAuthClient::Delegate* delegate
+                             /*delegate=*/this);
+}
+
+void AccessTokenFetcher::SetURLLoaderFactoryForTesting(
+    scoped_refptr<network::SharedURLLoaderFactory>
+        url_loader_factory_for_testing) {
+  url_loader_factory_for_testing_ = url_loader_factory_for_testing;
 }
 
 void AccessTokenFetcher::CreateNewGaiaOAuthClientInstance() {
-  scoped_refptr<remoting::URLRequestContextGetter> request_context_getter;
-  request_context_getter = new remoting::URLRequestContextGetter(
-      base::ThreadTaskRunnerHandle::Get(),   // network_runner
-      base::ThreadTaskRunnerHandle::Get());  // file_runner
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory;
+  if (url_loader_factory_for_testing_) {
+    url_loader_factory = url_loader_factory_for_testing_;
+  } else {
+    scoped_refptr<remoting::URLRequestContextGetter> request_context_getter;
+    request_context_getter = new remoting::URLRequestContextGetter(
+        base::ThreadTaskRunnerHandle::Get());
 
-  auth_client_.reset(new gaia::GaiaOAuthClient(request_context_getter.get()));
+    url_loader_factory_owner_.reset(
+        new network::TransitionalURLLoaderFactoryOwner(request_context_getter));
+    url_loader_factory = url_loader_factory_owner_->GetURLLoaderFactory();
+  }
+
+  auth_client_.reset(new gaia::GaiaOAuthClient(url_loader_factory));
 }
 
 void AccessTokenFetcher::OnGetTokensResponse(const std::string& refresh_token,
@@ -181,7 +195,7 @@ void AccessTokenFetcher::ValidateAccessToken() {
   // Create a new GaiaOAuthClient for each request to GAIA.
   CreateNewGaiaOAuthClientInstance();
   auth_client_->GetTokenInfo(access_token_, kMaxGetTokensRetries,
-                             this);  // GaiaOAuthClient::Delegate* delegate
+                             /*delegate=*/this);
 }
 
 }  // namespace test

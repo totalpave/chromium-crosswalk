@@ -28,7 +28,7 @@ class FloodFillInkDropRippleTestApi : public InkDropRippleTestApi {
 
   // Transforms |point| into the FloodFillInkDropRipples clip layer coordinate
   // space for the given radius.
-  void TransformPoint(float radius, gfx::Point* point);
+  void TransformPoint(float radius, gfx::Point3F* point);
 
   // Returns the center point that the ripple is drawn at in the original Canvas
   // coordinate space.
@@ -36,6 +36,9 @@ class FloodFillInkDropRippleTestApi : public InkDropRippleTestApi {
 
   // Wrapper for FloodFillInkDropRipple::MaxDistanceToCorners().
   float MaxDistanceToCorners(const gfx::Point& point) const;
+
+  // Gets the transform currently applied to the painted layer of the ripple.
+  gfx::Transform GetPaintedLayerTransform() const;
 
   // InkDropRippleTestApi:
   float GetCurrentOpacity() const override;

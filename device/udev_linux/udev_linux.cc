@@ -6,19 +6,23 @@
 
 #include <stddef.h>
 
-#include "base/message_loop/message_loop.h"
+#include "base/bind.h"
 
 namespace device {
 
 UdevLinux::UdevLinux(const std::vector<UdevMonitorFilter>& filters,
                      const UdevNotificationCallback& callback)
     : udev_(udev_new()),
-      monitor_(udev_monitor_new_from_netlink(udev_.get(), "udev")),
+      monitor_(udev_ ? udev_monitor_new_from_netlink(udev_.get(), "udev")
+                     : nullptr),
       monitor_fd_(-1),
       callback_(callback) {
-  CHECK(udev_);
-  CHECK(monitor_);
-  CHECK_EQ(base::MessageLoop::TYPE_IO, base::MessageLoop::current()->type());
+  if (!monitor_) {
+    LOG(ERROR) << "Failed to initialize udev, possibly due to an invalid "
+               << "system configuration. Various device-related browser "
+               << "features may be broken.";
+    return;
+  }
 
   for (const UdevMonitorFilter& filter : filters) {
     const int ret = udev_monitor_filter_add_match_subsystem_devtype(
@@ -31,32 +35,26 @@ UdevLinux::UdevLinux(const std::vector<UdevMonitorFilter>& filters,
   monitor_fd_ = udev_monitor_get_fd(monitor_.get());
   CHECK_GE(monitor_fd_, 0);
 
-  bool success = base::MessageLoopForIO::current()->WatchFileDescriptor(
-      monitor_fd_, true, base::MessageLoopForIO::WATCH_READ, &monitor_watcher_,
-      this);
-  CHECK(success);
+  monitor_watch_controller_ = base::FileDescriptorWatcher::WatchReadable(
+      monitor_fd_, base::Bind(&UdevLinux::OnMonitorCanReadWithoutBlocking,
+                              base::Unretained(this)));
 }
 
-UdevLinux::~UdevLinux() {
-  monitor_watcher_.StopWatchingFileDescriptor();
-}
+UdevLinux::~UdevLinux() = default;
 
 udev* UdevLinux::udev_handle() {
   return udev_.get();
 }
 
-void UdevLinux::OnFileCanReadWithoutBlocking(int fd) {
+void UdevLinux::OnMonitorCanReadWithoutBlocking() {
   // Events occur when devices attached to the system are added, removed, or
   // change state. udev_monitor_receive_device() will return a device object
   // representing the device which changed and what type of change occured.
-  DCHECK_EQ(monitor_fd_, fd);
   ScopedUdevDevicePtr dev(udev_monitor_receive_device(monitor_.get()));
   if (!dev)
     return;
 
   callback_.Run(dev.get());
 }
-
-void UdevLinux::OnFileCanWriteWithoutBlocking(int fd) {}
 
 }  // namespace device

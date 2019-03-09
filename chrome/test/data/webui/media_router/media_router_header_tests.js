@@ -32,7 +32,8 @@ cr.define('media_router_header', function() {
 
       // Checks whether the current icon matches the icon used for the view.
       var checkArrowDropIcon = function(view) {
-        assertEquals(header.computeArrowDropIcon_(view),
+        assertEquals(
+            header.computeArrowDropIcon_(view),
             header.$['arrow-drop-icon'].icon);
       };
 
@@ -40,22 +41,26 @@ cr.define('media_router_header', function() {
       // An element is considered hidden if it does not exist (e.g. unstamped)
       // or its |hidden| property is |false|.
       var checkElementHidden = function(hidden, elementId) {
-        var element = header.$[elementId] ||
-            header.shadowRoot.getElementById(elementId);
-        assertEquals(hidden, !element || element.hidden ||
-            window.getComputedStyle(element, null)
-                .getPropertyValue('display') == 'none');
+        var element =
+            header.$[elementId] || header.shadowRoot.getElementById(elementId);
+        assertEquals(
+            hidden,
+            !element || element.hidden ||
+                window.getComputedStyle(element, null)
+                        .getPropertyValue('display') == 'none');
       };
 
       // Checks whether the elements specified in |elementIdList| are visible.
       // Checks whether all other elements are hidden.
       var checkElementsVisibleWithId = function(elementIdList) {
-        for (var i = 0; i < elementIdList.length; i++)
+        for (var i = 0; i < elementIdList.length; i++) {
           checkElementHidden(false, elementIdList[i]);
+        }
 
         for (var j = 0; j < hiddenCheckElementIdList.length; j++) {
-          if (elementIdList.indexOf(hiddenCheckElementIdList[j]) == -1)
+          if (elementIdList.indexOf(hiddenCheckElementIdList[j]) == -1) {
             checkElementHidden(true, hiddenCheckElementIdList[j]);
+          }
         }
       };
 
@@ -101,8 +106,7 @@ cr.define('media_router_header', function() {
           header.addEventListener('back-click', function() {
             done();
           });
-          MockInteractions.tap(
-              header.shadowRoot.getElementById('back-button'));
+          MockInteractions.tap(header.shadowRoot.getElementById('back-button'));
         });
       });
 
@@ -189,51 +193,49 @@ cr.define('media_router_header', function() {
 
       // Tests the |computeArrowDropIcon_| function.
       test('compute arrow drop icon', function() {
-        assertEquals('media-router:arrow-drop-up',
+        assertEquals(
+            'cr:arrow-drop-up',
             header.computeArrowDropIcon_(
                 media_router.MediaRouterView.CAST_MODE_LIST));
-        assertEquals('media-router:arrow-drop-down',
-            header.computeArrowDropIcon_(
-                media_router.MediaRouterView.FILTER));
-        assertEquals('media-router:arrow-drop-down',
-            header.computeArrowDropIcon_(
-                media_router.MediaRouterView.ISSUE));
-        assertEquals('media-router:arrow-drop-down',
+        assertEquals(
+            'cr:arrow-drop-down',
+            header.computeArrowDropIcon_(media_router.MediaRouterView.FILTER));
+        assertEquals(
+            'cr:arrow-drop-down',
+            header.computeArrowDropIcon_(media_router.MediaRouterView.ISSUE));
+        assertEquals(
+            'cr:arrow-drop-down',
             header.computeArrowDropIcon_(
                 media_router.MediaRouterView.ROUTE_DETAILS));
-        assertEquals('media-router:arrow-drop-down',
+        assertEquals(
+            'cr:arrow-drop-down',
             header.computeArrowDropIcon_(
                 media_router.MediaRouterView.SINK_LIST));
       });
 
       test('visibility of UI depending on view', function(done) {
         header.view = media_router.MediaRouterView.CAST_MODE_LIST;
-        checkElementsVisibleWithId(['arrow-drop-icon',
-                                    'close-button',
-                                    'header-text']);
+        checkElementsVisibleWithId(
+            ['arrow-drop-icon', 'close-button', 'header-text']);
 
         header.view = media_router.MediaRouterView.FILTER;
         setTimeout(function() {
-          checkElementsVisibleWithId(['back-button-container',
-                                      'close-button',
-                                      'header-text']);
+          checkElementsVisibleWithId(
+              ['back-button-container', 'close-button', 'header-text']);
 
           header.view = media_router.MediaRouterView.ISSUE;
           setTimeout(function() {
-            checkElementsVisibleWithId(['close-button',
-                                        'header-text']);
+            checkElementsVisibleWithId(['close-button', 'header-text']);
 
             header.view = media_router.MediaRouterView.ROUTE_DETAILS;
             setTimeout(function() {
-              checkElementsVisibleWithId(['back-button-container',
-                                          'close-button',
-                                          'header-text']);
+              checkElementsVisibleWithId(
+                  ['back-button-container', 'close-button', 'header-text']);
 
               header.view = media_router.MediaRouterView.SINK_LIST;
               setTimeout(function() {
-                checkElementsVisibleWithId(['arrow-drop-icon',
-                                            'close-button',
-                                            'header-text']);
+                checkElementsVisibleWithId(
+                    ['arrow-drop-icon', 'close-button', 'header-text']);
                 done();
               });
             });
@@ -246,12 +248,11 @@ cr.define('media_router_header', function() {
         header.userEmail = 'user@example.com';
         header.showEmail = true;
         setTimeout(function() {
-          assertEquals(header.headerWithEmailHeight_, header.offsetHeight)
+          assertEquals(header.headerWithEmailHeight_, header.offsetHeight);
 
           assertFalse(header.$$('#user-email-container').hidden);
           checkElementText(
-              header.userEmail,
-              header.$$('#user-email-container'));
+              header.userEmail, header.$$('#user-email-container'));
           done();
         });
       });
@@ -261,10 +262,8 @@ cr.define('media_router_header', function() {
         header.userEmail = undefined;
         header.showEmail = true;
         setTimeout(function() {
-          assertNotEquals(header.headerWithEmailHeight_, header.offsetHeight)
-          checkElementText(
-              '',
-              header.$$('#user-email-container'));
+          assertNotEquals(header.headerWithEmailHeight_, header.offsetHeight);
+          checkElementText('', header.$$('#user-email-container'));
           done();
         });
       });

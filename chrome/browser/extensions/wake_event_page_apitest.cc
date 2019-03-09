@@ -11,15 +11,18 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
-#include "chrome/browser/extensions/test_extension_dir.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/browser/notification_service.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_utils.h"
+#include "extensions/browser/notification_types.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_manager_observer.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/background_page_watcher.h"
 #include "extensions/test/extension_test_message_listener.h"
+#include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 
@@ -63,6 +66,11 @@ class WakeEventPageTest : public ExtensionBrowserTest {
  public:
   WakeEventPageTest() {}
 
+  void SetUpOnMainThread() override {
+    ExtensionBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+  }
+
  protected:
   enum BackgroundPageConfiguration { EVENT, PERSISTENT, NONE };
 
@@ -73,7 +81,6 @@ class WakeEventPageTest : public ExtensionBrowserTest {
     ASSERT_TRUE(embedded_test_server()->Start());
 
     GURL web_url = embedded_test_server()->GetURL("example.com", "/empty.html");
-    host_resolver()->AddRule(web_url.host(), "127.0.0.1");
 
     TestExtensionDir extension_dir;
     {
@@ -107,8 +114,14 @@ class WakeEventPageTest : public ExtensionBrowserTest {
                               kContentScriptJs);
     }
 
-    // Install the extension, then close its background page if desired..
-    const Extension* extension = LoadExtension(extension_dir.unpacked_path());
+    // Install the extension, then close its background page if desired.
+    // TODO(https://crbug.com/898682): Waiting for content scripts to load
+    // should be done as part of the extension loading process.
+    content::WindowedNotificationObserver scripts_updated_observer(
+        extensions::NOTIFICATION_USER_SCRIPTS_UPDATED,
+        content::NotificationService::AllSources());
+    const Extension* extension = LoadExtension(extension_dir.UnpackedPath());
+    scripts_updated_observer.Wait();
     CHECK(extension);
 
     // Regardless of |will_be_open|, we haven't closed the background page yet,

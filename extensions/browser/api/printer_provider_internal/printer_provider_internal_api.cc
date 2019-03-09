@@ -35,8 +35,8 @@ namespace extensions {
 namespace {
 
 static base::LazyInstance<
-    BrowserContextKeyedAPIFactory<PrinterProviderInternalAPI>> g_api_factory =
-    LAZY_INSTANCE_INITIALIZER;
+    BrowserContextKeyedAPIFactory<PrinterProviderInternalAPI>>::DestructorAtExit
+    g_api_factory = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -67,33 +67,32 @@ void PrinterProviderInternalAPI::NotifyGetPrintersResult(
     const Extension* extension,
     int request_id,
     const PrinterProviderInternalAPIObserver::PrinterInfoVector& printers) {
-  FOR_EACH_OBSERVER(PrinterProviderInternalAPIObserver, observers_,
-                    OnGetPrintersResult(extension, request_id, printers));
+  for (auto& observer : observers_)
+    observer.OnGetPrintersResult(extension, request_id, printers);
 }
 
 void PrinterProviderInternalAPI::NotifyGetCapabilityResult(
     const Extension* extension,
     int request_id,
     const base::DictionaryValue& capability) {
-  FOR_EACH_OBSERVER(PrinterProviderInternalAPIObserver, observers_,
-                    OnGetCapabilityResult(extension, request_id, capability));
+  for (auto& observer : observers_)
+    observer.OnGetCapabilityResult(extension, request_id, capability);
 }
 
 void PrinterProviderInternalAPI::NotifyPrintResult(
     const Extension* extension,
     int request_id,
     api::printer_provider_internal::PrintError error) {
-  FOR_EACH_OBSERVER(PrinterProviderInternalAPIObserver, observers_,
-                    OnPrintResult(extension, request_id, error));
+  for (auto& observer : observers_)
+    observer.OnPrintResult(extension, request_id, error);
 }
 
 void PrinterProviderInternalAPI::NotifyGetUsbPrinterInfoResult(
     const Extension* extension,
     int request_id,
     const api::printer_provider::PrinterInfo* printer_info) {
-  FOR_EACH_OBSERVER(
-      PrinterProviderInternalAPIObserver, observers_,
-      OnGetUsbPrinterInfoResult(extension, request_id, printer_info));
+  for (auto& observer : observers_)
+    observer.OnGetUsbPrinterInfoResult(extension, request_id, printer_info);
 }
 
 PrinterProviderInternalReportPrintResultFunction::
@@ -195,25 +194,17 @@ PrinterProviderInternalGetPrintDataFunction::Run() {
   if (!job)
     return RespondNow(Error("Print request not found."));
 
-  if (job->document_bytes.get()) {
-    // |job->document_bytes| are passed to the callback to make sure the ref
-    // counted memory does not go away before the memory backed blob is created.
-    content::BrowserContext::CreateMemoryBackedBlob(
-        browser_context(), job->document_bytes->front_as<char>(),
-        job->document_bytes->size(),
-        base::Bind(&PrinterProviderInternalGetPrintDataFunction::OnBlob, this,
-                   job->content_type, job->document_bytes->size(),
-                   job->document_bytes));
-  } else if (!job->document_path.empty()) {
-    content::BrowserContext::CreateFileBackedBlob(
-        browser_context(), job->document_path, 0 /* offset */,
-        job->file_info.size, job->file_info.last_modified,
-        base::Bind(&PrinterProviderInternalGetPrintDataFunction::OnBlob, this,
-                   job->content_type, job->file_info.size,
-                   scoped_refptr<base::RefCountedMemory>()));
-  } else {
+  if (!job->document_bytes)
     return RespondNow(Error("Job data not set"));
-  }
+
+  // |job->document_bytes| are passed to the callback to make sure the ref
+  // counted memory does not go away before the memory backed blob is created.
+  content::BrowserContext::CreateMemoryBackedBlob(
+      browser_context(), job->document_bytes->front_as<char>(),
+      job->document_bytes->size(), "",
+      base::BindOnce(&PrinterProviderInternalGetPrintDataFunction::OnBlob, this,
+                     job->content_type, job->document_bytes->size(),
+                     job->document_bytes));
   return RespondLater();
 }
 
@@ -223,8 +214,7 @@ void PrinterProviderInternalGetPrintDataFunction::OnBlob(
     const scoped_refptr<base::RefCountedMemory>& data,
     std::unique_ptr<content::BlobHandle> blob) {
   if (!blob) {
-    SetError("Unable to create the blob.");
-    SendResponse(false);
+    Respond(Error("Unable to create the blob."));
     return;
   }
 
@@ -241,9 +231,8 @@ void PrinterProviderInternalGetPrintDataFunction::OnBlob(
           render_frame_host()->GetProcess());
   holder->HoldBlobReference(std::move(blob));
 
-  results_ = internal_api::GetPrintData::Results::Create(info);
   SetTransferredBlobUUIDs(uuids);
-  SendResponse(true);
+  Respond(ArgumentList(internal_api::GetPrintData::Results::Create(info)));
 }
 
 PrinterProviderInternalReportUsbPrinterInfoFunction::

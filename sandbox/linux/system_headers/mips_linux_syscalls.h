@@ -6,7 +6,7 @@
 #ifndef SANDBOX_LINUX_SYSTEM_HEADERS_MIPS_LINUX_SYSCALLS_H_
 #define SANDBOX_LINUX_SYSTEM_HEADERS_MIPS_LINUX_SYSCALLS_H_
 
-#if !defined(__mips__) || (_MIPS_SIM != _ABIO32)
+#if !defined(__mips__)
 #error "Including header on wrong architecture"
 #endif
 
@@ -1423,6 +1423,14 @@
 
 #if !defined(__NR_seccomp)
 #define __NR_seccomp (__NR_Linux + 352)
+#endif
+
+#if !defined(__NR_getrandom)
+#define __NR_getrandom (__NR_Linux + 353)
+#endif
+
+#if !defined(__NR_memfd_create)
+#define __NR_memfd_create (__NR_Linux + 354)
 #endif
 
 #endif  // SANDBOX_LINUX_SYSTEM_HEADERS_MIPS_LINUX_SYSCALLS_H_

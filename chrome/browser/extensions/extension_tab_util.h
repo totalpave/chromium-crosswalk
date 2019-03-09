@@ -14,11 +14,9 @@
 
 class Browser;
 class ChromeExtensionFunctionDetails;
-class ChromeUIThreadExtensionFunction;
-class ExtensionFunction;
 class GURL;
-class Profile;
 class TabStripModel;
+class UIThreadExtensionFunction;
 
 namespace base {
 class DictionaryValue;
@@ -35,13 +33,22 @@ class Rect;
 }
 
 namespace extensions {
-
 class Extension;
 class WindowController;
 
 // Provides various utility functions that help manipulate tabs.
 class ExtensionTabUtil {
  public:
+  enum PopulateTabBehavior {
+    kPopulateTabs,
+    kDontPopulateTabs,
+  };
+
+  enum ScrubTabBehavior {
+    kScrubTab,
+    kDontScrubTab,
+  };
+
   struct OpenTabParams {
     OpenTabParams();
     ~OpenTabParams();
@@ -55,13 +62,23 @@ class ExtensionTabUtil {
     std::unique_ptr<int> index;
   };
 
+  // Platform specific delegate.
+  class Delegate {
+   public:
+    virtual ~Delegate() {}
+    // Platform specific scrubbing of tab info for |extension|.
+    virtual void ScrubTabForExtension(const Extension* extension,
+                                      content::WebContents* contents,
+                                      api::tabs::Tab* tab) = 0;
+  };
+
   // Opens a new tab given an extension function |function| and creation
   // parameters |params|. Returns a Tab object if successful, or NULL and
   // optionally sets |error| if an error occurs.
-  static base::DictionaryValue* OpenTab(
-      ChromeUIThreadExtensionFunction* function,
-      const OpenTabParams& params,
-      std::string* error);
+  static base::DictionaryValue* OpenTab(UIThreadExtensionFunction* function,
+                                        const OpenTabParams& params,
+                                        bool user_gesture,
+                                        std::string* error);
 
   static int GetWindowId(const Browser* browser);
   static int GetWindowIdOfTabStripModel(const TabStripModel* tab_strip_model);
@@ -72,49 +89,53 @@ class ExtensionTabUtil {
       const Browser* browser,
       const Extension* extension);
 
-  // DEPRECATED: Please consider using ChromeExtensionFunctionDetails instead
-  // of the deprecated ChromeUIThreadExtensionFunction and use the overload
-  // below
-  static Browser* GetBrowserFromWindowID(
-      ChromeUIThreadExtensionFunction* function,
-      int window_id,
-      std::string* error_message);
-
   static Browser* GetBrowserFromWindowID(
       const ChromeExtensionFunctionDetails& details,
       int window_id,
       std::string* error_message);
 
-  // Creates a Tab object (see chrome/common/extensions/api/tabs.json) with
-  // information about the state of a browser tab.  Depending on the
-  // permissions of the extension, the object may or may not include sensitive
-  // data such as the tab's URL.
-  static std::unique_ptr<api::tabs::Tab> CreateTabObject(
-      content::WebContents* web_contents,
-      const Extension* extension) {
-    return CreateTabObject(web_contents, nullptr, -1, extension);
-  }
-  static std::unique_ptr<api::tabs::Tab> CreateTabObject(
-      content::WebContents* web_contents,
-      TabStripModel* tab_strip,
-      int tab_index,
-      const Extension* extension);
+  // Returns the tabs:: API constant for the window type of the |browser|.
+  static std::string GetBrowserWindowTypeText(const Browser& browser);
 
-  // Creates a Tab object but performs no extension permissions checks; the
-  // returned object will contain privacy-sensitive data.
+  // Creates a Tab object (see chrome/common/extensions/api/tabs.json) with
+  // information about the state of a browser tab for the given |web_contents|.
+  // This will scrub the tab of sensitive data (URL, favicon, title) according
+  // to |scrub_tab_behavior| and |extension|'s permissions. A null extension is
+  // treated as having no permissions.
+  // By default, tab information should always be scrubbed (kScrubTab) for any
+  // data passed to any extension.
   static std::unique_ptr<api::tabs::Tab> CreateTabObject(
-      content::WebContents* web_contents) {
-    return CreateTabObject(web_contents, nullptr, -1);
+      content::WebContents* web_contents,
+      ScrubTabBehavior scrub_tab_behavior,
+      const Extension* extension) {
+    return CreateTabObject(web_contents, scrub_tab_behavior, extension, nullptr,
+                           -1);
   }
   static std::unique_ptr<api::tabs::Tab> CreateTabObject(
       content::WebContents* web_contents,
+      ScrubTabBehavior scrub_tab_behavior,
+      const Extension* extension,
       TabStripModel* tab_strip,
       int tab_index);
+
+  // Creates a DictionaryValue representing the window for the given |browser|,
+  // and scrubs any privacy-sensitive data that |extension| does not have
+  // access to. |populate_tab_behavior| determines whether tabs will be
+  // populated in the result.
+  // TODO(devlin): Convert this to a api::Windows::Window object.
+  static std::unique_ptr<base::DictionaryValue> CreateWindowValueForExtension(
+      const Browser& browser,
+      const Extension* extension,
+      PopulateTabBehavior populate_tab_behavior);
 
   // Creates a tab MutedInfo object (see chrome/common/extensions/api/tabs.json)
   // with information about the mute state of a browser tab.
   static std::unique_ptr<api::tabs::MutedInfo> CreateMutedInfo(
       content::WebContents* contents);
+
+  // Platform specific logic moved to delegate. This should be set during
+  // startup.
+  static void SetPlatformDelegate(std::unique_ptr<Delegate> delegate);
 
   // Removes any privacy-sensitive fields from a Tab object if appropriate,
   // given the permissions of the extension and the tab in question.  The
@@ -157,7 +178,7 @@ class ExtensionTabUtil {
   static bool IsKillURL(const GURL& url);
 
   // Opens a tab for the specified |web_contents|.
-  static void CreateTab(content::WebContents* web_contents,
+  static void CreateTab(std::unique_ptr<content::WebContents> web_contents,
                         const std::string& extension_id,
                         WindowOpenDisposition disposition,
                         const gfx::Rect& initial_rect,
@@ -169,6 +190,13 @@ class ExtensionTabUtil {
 
   static WindowController* GetWindowControllerOfTab(
       const content::WebContents* web_contents);
+
+  // Open the extension's options page. Returns true if an options page was
+  // successfully opened (though it may not necessarily *load*, e.g. if the
+  // URL does not exist). This call to open the options page is iniatiated by
+  // the extension via chrome.runtime.openOptionsPage.
+  static bool OpenOptionsPageFromAPI(const Extension* extension,
+                                     content::BrowserContext* browser_context);
 
   // Open the extension's options page. Returns true if an options page was
   // successfully opened (though it may not necessarily *load*, e.g. if the

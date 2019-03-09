@@ -5,10 +5,13 @@
 #ifndef APPS_SAVED_FILES_SERVICE_FACTORY_H_
 #define APPS_SAVED_FILES_SERVICE_FACTORY_H_
 
+#include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 
-class Profile;
+namespace content {
+class BrowserContext;
+}
 
 namespace apps {
 
@@ -17,7 +20,11 @@ class SavedFilesService;
 // BrowserContextKeyedServiceFactory for SavedFilesService.
 class SavedFilesServiceFactory : public BrowserContextKeyedServiceFactory {
  public:
-  static SavedFilesService* GetForProfile(Profile* profile);
+  static SavedFilesService* GetForBrowserContext(
+      content::BrowserContext* context);
+
+  static SavedFilesService* GetForBrowserContextIfExists(
+      content::BrowserContext* context);
 
   static SavedFilesServiceFactory* GetInstance();
 
@@ -27,7 +34,11 @@ class SavedFilesServiceFactory : public BrowserContextKeyedServiceFactory {
   friend struct base::DefaultSingletonTraits<SavedFilesServiceFactory>;
 
   KeyedService* BuildServiceInstanceFor(
-      content::BrowserContext* profile) const override;
+      content::BrowserContext* context) const override;
+  content::BrowserContext* GetBrowserContextToUse(
+      content::BrowserContext* context) const override;
+
+  DISALLOW_COPY_AND_ASSIGN(SavedFilesServiceFactory);
 };
 
 }  // namespace apps

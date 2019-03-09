@@ -9,9 +9,11 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
+#include "base/json/json_reader.h"
 #include "base/logging.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
-#include "chromeos/chromeos_test_utils.h"
+#include "chromeos/test/chromeos_test_utils.h"
 
 namespace chromeos {
 namespace onc {
@@ -25,6 +27,7 @@ const char kNetworkComponentDirectory[] = "network";
 }  // namespace
 
 std::string ReadTestData(const std::string& filename) {
+  base::ScopedAllowBlockingForTesting allow_io;
   base::FilePath path;
   if (!chromeos::test_utils::GetTestDataPath(kNetworkComponentDirectory,
                                              filename,
@@ -50,8 +53,8 @@ std::unique_ptr<base::DictionaryValue> ReadTestDictionary(
     return dict;
   }
 
-  JSONFileValueDeserializer deserializer(path);
-  deserializer.set_allow_trailing_comma(true);
+  JSONFileValueDeserializer deserializer(path,
+                                         base::JSON_ALLOW_TRAILING_COMMAS);
 
   std::string error_message;
   std::unique_ptr<base::Value> content =
@@ -62,7 +65,7 @@ std::unique_ptr<base::DictionaryValue> ReadTestDictionary(
   dict = base::DictionaryValue::From(std::move(content));
   CHECK(dict) << "File '" << filename
               << "' does not contain a dictionary as expected, but type "
-              << content->GetType();
+              << content->type();
   return dict;
 }
 
@@ -72,7 +75,7 @@ std::unique_ptr<base::DictionaryValue> ReadTestDictionary(
   if (actual == NULL)
     return ::testing::AssertionFailure() << "Actual value pointer is NULL";
 
-  if (expected->Equals(actual))
+  if (*expected == *actual)
     return ::testing::AssertionSuccess() << "Values are equal";
 
   return ::testing::AssertionFailure() << "Values are unequal.\n"

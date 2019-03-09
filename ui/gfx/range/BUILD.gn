@@ -2,7 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-component("range") {
+import("//build/config/jumbo.gni")
+
+jumbo_component("range") {
   sources = [
     "gfx_range_export.h",
     "range.cc",
@@ -12,6 +14,12 @@ component("range") {
     "range_mac.mm",
     "range_win.cc",
   ]
+
+  if (is_ios) {
+    set_sources_assignment_filter([])
+    sources += [ "range_mac.mm" ]
+    set_sources_assignment_filter(sources_assignment_filter)
+  }
 
   configs += [
     # TODO(jschuh): crbug.com/167187 fix size_t to int truncations.

@@ -9,15 +9,15 @@
 
 #include <vector>
 
+#include "base/lazy_instance.h"
 #include "base/macros.h"
+#include "base/observer_list.h"
 #include "components/sessions/core/session_id.h"
 
-class Profile;
 class TabModel;
+class TabModelListObserver;
 
-namespace chrome {
 struct NavigateParams;
-}
 
 namespace content {
 class WebContents;
@@ -30,13 +30,16 @@ class TabModelList {
   typedef TabModelVector::iterator iterator;
   typedef TabModelVector::const_iterator const_iterator;
 
-  static void HandlePopupNavigation(chrome::NavigateParams* params);
+  static void HandlePopupNavigation(NavigateParams* params);
   static void AddTabModel(TabModel* tab_model);
   static void RemoveTabModel(TabModel* tab_model);
 
+  static void AddObserver(TabModelListObserver* observer);
+  static void RemoveObserver(TabModelListObserver* observer);
+
   static TabModel* GetTabModelForWebContents(
       content::WebContents* web_contents);
-  static TabModel* FindTabModelWithId(SessionID::id_type desired_id);
+  static TabModel* FindTabModelWithId(SessionID desired_id);
   static bool IsOffTheRecordSessionActive();
 
   static const_iterator begin();
@@ -45,6 +48,11 @@ class TabModelList {
   static size_t size();
 
   static TabModel* get(size_t index);
+
+  // A list of observers which will be notified of every TabModel addition and
+  // removal across all TabModelLists.
+  static base::LazyInstance<
+      base::ObserverList<TabModelListObserver>::Unchecked>::Leaky observers_;
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(TabModelList);

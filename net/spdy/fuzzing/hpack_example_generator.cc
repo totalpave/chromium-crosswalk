@@ -8,9 +8,10 @@
 #include "base/files/file_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "net/spdy/fuzzing/hpack_fuzz_util.h"
-#include "net/spdy/hpack/hpack_constants.h"
-#include "net/spdy/hpack/hpack_encoder.h"
-#include "net/spdy/spdy_protocol.h"
+#include "net/third_party/quiche/src/spdy/core/hpack/hpack_constants.h"
+#include "net/third_party/quiche/src/spdy/core/hpack/hpack_encoder.h"
+#include "net/third_party/quiche/src/spdy/core/spdy_protocol.h"
+#include "net/third_party/quiche/src/spdy/platform/api/spdy_string.h"
 
 namespace {
 
@@ -22,9 +23,9 @@ const char kExampleCount[] = "example-count";
 
 }  // namespace
 
-using net::HpackFuzzUtil;
+using spdy::HpackFuzzUtil;
+using spdy::SpdyString;
 using std::map;
-using std::string;
 
 // Generates a configurable number of header sets (using HpackFuzzUtil), and
 // sequentially encodes each header set with an HpackEncoder. Encoded header
@@ -38,12 +39,13 @@ int main(int argc, char** argv) {
 
   if (!command_line.HasSwitch(kFileToWrite) ||
       !command_line.HasSwitch(kExampleCount)) {
-    LOG(ERROR) << "Usage: " << argv[0]
-               << " --" << kFileToWrite << "=/path/to/file.out"
+    LOG(ERROR) << "Usage: " << argv[0] << " --" << kFileToWrite
+               << "=/path/to/file.out"
                << " --" << kExampleCount << "=1000";
     return -1;
   }
-  string file_to_write = command_line.GetSwitchValueASCII(kFileToWrite);
+  spdy::SpdyString file_to_write =
+      command_line.GetSwitchValueASCII(kFileToWrite);
 
   int example_count = 0;
   base::StringToInt(command_line.GetSwitchValueASCII(kExampleCount),
@@ -56,16 +58,16 @@ int main(int argc, char** argv) {
 
   HpackFuzzUtil::GeneratorContext context;
   HpackFuzzUtil::InitializeGeneratorContext(&context);
-  net::HpackEncoder encoder(net::ObtainHpackHuffmanTable());
+  spdy::HpackEncoder encoder(spdy::ObtainHpackHuffmanTable());
 
   for (int i = 0; i != example_count; ++i) {
-    net::SpdyHeaderBlock headers =
+    spdy::SpdyHeaderBlock headers =
         HpackFuzzUtil::NextGeneratedHeaderSet(&context);
 
-    string buffer;
+    spdy::SpdyString buffer;
     CHECK(encoder.EncodeHeaderSet(headers, &buffer));
 
-    string prefix = HpackFuzzUtil::HeaderBlockPrefix(buffer.size());
+    spdy::SpdyString prefix = HpackFuzzUtil::HeaderBlockPrefix(buffer.size());
 
     CHECK_LT(0, file_out.WriteAtCurrentPos(prefix.data(), prefix.size()));
     CHECK_LT(0, file_out.WriteAtCurrentPos(buffer.data(), buffer.size()));

@@ -13,17 +13,22 @@ static_library("webdata_services") {
   deps = [
     "//base",
     "//components/autofill/core/browser",
+    "//components/autofill/core/common",
     "//components/keyed_service/core",
     "//components/password_manager/core/browser",
     "//components/search_engines",
     "//components/signin/core/browser",
+    "//components/sync",
     "//components/webdata/common",
     "//sql",
-    "//sync",
   ]
+
+  if (!is_ios) {
+    deps += [ "//components/payments/content:utils" ]
+  }
 }
 
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "web_data_service_test_util.cc",

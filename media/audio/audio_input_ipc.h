@@ -7,19 +7,14 @@
 
 #include <stdint.h>
 
-#include "base/memory/shared_memory.h"
+#include "base/memory/read_only_shared_memory_region.h"
 #include "base/sync_socket.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/media_export.h"
 
 namespace media {
 
-enum AudioInputIPCDelegateState {
-  AUDIO_INPUT_IPC_DELEGATE_STATE_RECORDING,
-  AUDIO_INPUT_IPC_DELEGATE_STATE_STOPPED,
-  AUDIO_INPUT_IPC_DELEGATE_STATE_ERROR,
-  AUDIO_INPUT_IPC_DELEGATE_STATE_LAST = AUDIO_INPUT_IPC_DELEGATE_STATE_ERROR,
-};
+class AudioProcessorControls;
 
 // Contains IPC notifications for the state of the server side
 // (AudioInputController) audio state changes and when an AudioInputController
@@ -27,23 +22,18 @@ enum AudioInputIPCDelegateState {
 class MEDIA_EXPORT AudioInputIPCDelegate {
  public:
   // Called when an AudioInputController has been created.
-  // The shared memory |handle| points to a memory section that's used to
-  // transfer data between the AudioInputDevice and AudioInputController
-  // objects.  The implementation of OnStreamCreated takes ownership.
-  // The |socket_handle| is used by the AudioInputController to signal
-  // notifications that more data is available and can optionally provide
-  // parameter changes back.  The AudioInputDevice must read from this socket
-  // and process the shared memory whenever data is read from the socket.
-  virtual void OnStreamCreated(base::SharedMemoryHandle handle,
-                               base::SyncSocket::Handle socket_handle,
-                               int length,
-                               int total_segments) = 0;
+  // See media/mojo/interfaces/audio_data_pipe.mojom for documentation of
+  // |handle| and |socket_handle|.
+  virtual void OnStreamCreated(
+      base::ReadOnlySharedMemoryRegion shared_memory_region,
+      base::SyncSocket::Handle socket_handle,
+      bool initially_muted) = 0;
 
   // Called when state of an audio stream has changed.
-  virtual void OnStateChanged(AudioInputIPCDelegateState state) = 0;
+  virtual void OnError() = 0;
 
-  // Called when the input stream volume has changed.
-  virtual void OnVolume(double volume) = 0;
+  // Called when an audio stream is muted or unmuted.
+  virtual void OnMuted(bool is_muted) = 0;
 
   // Called when the AudioInputIPC object is going away and/or when the
   // IPC channel has been closed and no more IPC requests can be made.
@@ -69,7 +59,6 @@ class MEDIA_EXPORT AudioInputIPC {
   // memory buffer.  Once the stream has been created, the implementation will
   // notify |delegate| by calling OnStreamCreated().
   virtual void CreateStream(AudioInputIPCDelegate* delegate,
-                            int session_id,
                             const AudioParameters& params,
                             bool automatic_gain_control,
                             uint32_t total_segments) = 0;
@@ -79,6 +68,15 @@ class MEDIA_EXPORT AudioInputIPC {
 
   // Sets the volume of the audio stream.
   virtual void SetVolume(double volume) = 0;
+
+  // Sets the output device from which to cancel echo, if supported. The
+  // |output_device_id| can be gotten from a device enumeration. Must not be
+  // called before the stream has been successfully created.
+  virtual void SetOutputDeviceForAec(const std::string& output_device_id) = 0;
+
+  // If the input has built-in processing, returns a pointer to processing
+  // controls. Valid after the stream has been created.
+  virtual AudioProcessorControls* GetProcessorControls();
 
   // Closes the audio stream, which should shut down the corresponding
   // AudioInputController in the peer process.

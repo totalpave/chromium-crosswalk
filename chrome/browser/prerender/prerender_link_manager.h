@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <list>
+#include <memory>
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
@@ -149,10 +150,12 @@ class PrerenderLinkManager : public KeyedService,
   void OnPrerenderStopLoading(PrerenderHandle* prerender_handle) override;
   void OnPrerenderDomContentLoaded(PrerenderHandle* prerender_handle) override;
   void OnPrerenderStop(PrerenderHandle* prerender_handle) override;
+  void OnPrerenderNetworkBytesChanged(
+      PrerenderHandle* prerender_handle) override;
 
   bool has_shutdown_;
 
-  PrerenderManager* manager_;
+  PrerenderManager* const manager_;
 
   // All prerenders known to this PrerenderLinkManager. Insertions are always
   // made at the back, so the oldest prerender is at the front, and the youngest

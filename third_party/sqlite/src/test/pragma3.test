@@ -16,6 +16,11 @@
 set testdir [file dirname $argv0]
 source $testdir/tester.tcl
 
+if {[sqlite3 -has-codec]} {
+  finish_test
+  return
+}
+
 do_execsql_test pragma3-100 {
   PRAGMA data_version;
 } {1}
@@ -23,7 +28,7 @@ do_execsql_test pragma3-101 {
   PRAGMA temp.data_version;
 } {1}
 
-# Writing to the pragma is a no-op 
+# Writing to the pragma is a no-op
 do_execsql_test pragma3-102 {
   PRAGMA main.data_version=1234;
   PRAGMA main.data_version;
@@ -220,7 +225,7 @@ ifcapable shared_cache {
 # This will not work with the in-memory journal permutation, as opening
 # [db2] switches the journal mode back to "memory"
 #
-ifcapable wal {
+if {[wal_is_capable]} {
 if {[permutation]!="inmemory_journal"} {
 
   sqlite3 db test.db

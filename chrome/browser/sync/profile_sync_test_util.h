@@ -9,26 +9,20 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
-#include "components/browser_sync/browser/profile_sync_service_mock.h"
+#include "base/run_loop.h"
+#include "components/browser_sync/profile_sync_service_mock.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/notification_types.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
+class KeyedService;
+class Profile;
+
 namespace content {
 class BrowserContext;
 }
-
-namespace sync_driver {
-class SyncClient;
-}
-
-class KeyedService;
-class Profile;
-class ProfileSyncServiceMock;
-class TestingProfile;
 
 ACTION_P(Notify, type) {
   content::NotificationService::current()->Notify(
@@ -39,19 +33,12 @@ ACTION_P(Notify, type) {
 
 ACTION(QuitUIMessageLoop) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  base::MessageLoop::current()->QuitWhenIdle();
+  base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 // Helper methods for constructing ProfileSyncService mocks.
-ProfileSyncService::InitParams CreateProfileSyncServiceParamsForTest(
-    Profile* profile);
-ProfileSyncService::InitParams CreateProfileSyncServiceParamsForTest(
-    std::unique_ptr<sync_driver::SyncClient> sync_client,
-    Profile* profile);
-
-// A utility used by sync tests to create a TestingProfile with a Google
-// Services username stored in a (Testing)PrefService.
-std::unique_ptr<TestingProfile> MakeSignedInTestingProfile();
+browser_sync::ProfileSyncService::InitParams
+CreateProfileSyncServiceParamsForTest(Profile* profile);
 
 // Helper routine to be used in conjunction with
 // BrowserContextKeyedServiceFactory::SetTestingFactory().

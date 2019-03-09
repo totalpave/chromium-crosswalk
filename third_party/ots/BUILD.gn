@@ -8,7 +8,7 @@ config("ots_config") {
   include_dirs = [ "include" ]
 }
 
-source_set("ots") {
+static_library("ots") {
   sources = [
     "include/opentype-sanitiser.h",
     "include/ots-memory-stream.h",
@@ -77,17 +77,13 @@ source_set("ots") {
   public_configs = [ ":ots_config" ]
 
   deps = [
-    "//third_party/brotli",
+    "//third_party/brotli:dec",
     "//third_party/woff2:woff2_dec",
     "//third_party/zlib",
   ]
 
-  if (is_win) {
-    cflags = [
-      "/wd4267",  # Conversion from size_t to 'type'.
-      "/wd4334",  # 32-bit shift implicitly converted to 64-bits.
-    ]
-  }
+  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs += [ "//build/config/compiler:no_chromium_code" ]
 }
 
 fuzzer_test("ots_fuzzer") {

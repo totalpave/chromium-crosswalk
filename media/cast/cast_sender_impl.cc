@@ -8,7 +8,6 @@
 #include "base/callback.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "media/base/video_frame.h"
 #include "media/cast/sender/video_frame_factory.h"
 
@@ -49,7 +48,7 @@ class LocalVideoFrameInput : public VideoFrameInput {
   }
 
  protected:
-  ~LocalVideoFrameInput() final {}
+  ~LocalVideoFrameInput() final = default;
 
  private:
   friend class base::RefCountedThreadSafe<LocalVideoFrameInput>;
@@ -80,7 +79,7 @@ class LocalAudioFrameInput : public AudioFrameInput {
   }
 
  protected:
-  ~LocalAudioFrameInput() final {}
+  ~LocalAudioFrameInput() final = default;
 
  private:
   friend class base::RefCountedThreadSafe<LocalAudioFrameInput>;
@@ -108,7 +107,7 @@ CastSenderImpl::CastSenderImpl(scoped_refptr<CastEnvironment> cast_environment,
 }
 
 void CastSenderImpl::InitializeAudio(
-    const AudioSenderConfig& audio_config,
+    const FrameSenderConfig& audio_config,
     const StatusChangeCallback& status_change_cb) {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
   CHECK(audio_config.use_external_encoder ||
@@ -130,7 +129,7 @@ void CastSenderImpl::InitializeAudio(
 }
 
 void CastSenderImpl::InitializeVideo(
-    const VideoSenderConfig& video_config,
+    const FrameSenderConfig& video_config,
     const StatusChangeCallback& status_change_cb,
     const CreateVideoEncodeAcceleratorCallback& create_vea_cb,
     const CreateVideoEncodeMemoryCallback& create_video_encode_mem_cb) {

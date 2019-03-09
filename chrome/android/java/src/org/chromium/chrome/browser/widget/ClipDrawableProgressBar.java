@@ -5,16 +5,17 @@
 package org.chromium.chrome.browser.widget;
 
 import android.content.Context;
-import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.support.v4.view.ViewCompat;
-import android.util.AttributeSet;
 import android.view.Gravity;
+import android.view.ViewGroup.LayoutParams;
 import android.widget.ImageView;
 
+import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
 
 /**
@@ -32,6 +33,23 @@ public class ClipDrawableProgressBar extends ImageView {
         public int progressBarBackgroundColor;
     }
 
+    /**
+     * An observer for visible progress updates.
+     */
+    @VisibleForTesting
+    interface ProgressBarObserver {
+        /**
+         * A notification that the visible progress has been updated. This may not coincide with
+         * updates from the web page due to animations for the progress bar running.
+         */
+        void onVisibleProgressUpdated();
+
+        /**
+         * A notification that the visibility of the progress bar has changed.
+         */
+        void onVisibilityChanged();
+    }
+
     // ClipDrawable's max is a fixed constant 10000.
     // http://developer.android.com/reference/android/graphics/drawable/ClipDrawable.html
     private static final int CLIP_DRAWABLE_MAX = 10000;
@@ -39,45 +57,41 @@ public class ClipDrawableProgressBar extends ImageView {
     private final ColorDrawable mForegroundDrawable;
     private int mBackgroundColor = Color.TRANSPARENT;
     private float mProgress;
-    private int mProgressUpdateCount;
     private int mDesiredVisibility;
 
-    /**
-     * Interface for listening to drawing invalidation.
-     */
-    public interface InvalidationListener {
-        /**
-         * Called on drawing invalidation.
-         * @param dirtyRect Invalidated area.
-         */
-        void onInvalidation(Rect dirtyRect);
-    }
+    /** An observer of updates to the progress bar. */
+    private ProgressBarObserver mProgressBarObserver;
 
     /**
-     * Constructor for inflating from XML.
+     * Create the progress bar with a custom height.
+     * @param context An Android context.
+     * @param height The height in px of the progress bar.
      */
-    public ClipDrawableProgressBar(Context context, AttributeSet attrs) {
-        super(context, attrs);
+    public ClipDrawableProgressBar(Context context, int height) {
+        super(context);
+
         mDesiredVisibility = getVisibility();
 
-        assert attrs != null;
-        TypedArray a = context.obtainStyledAttributes(
-                attrs, R.styleable.ClipDrawableProgressBar, 0, 0);
-
-        int foregroundColor = a.getColor(
-                R.styleable.ClipDrawableProgressBar_progressBarColor, Color.TRANSPARENT);
-        mBackgroundColor = a.getColor(
-                R.styleable.ClipDrawableProgressBar_backgroundColor, Color.TRANSPARENT);
-        assert foregroundColor != Color.TRANSPARENT;
-        assert Color.alpha(foregroundColor) == 255
-                : "Currently ClipDrawableProgressBar only supports opaque progress bar color.";
-
-        a.recycle();
+        int foregroundColor =
+                ApiCompatibilityUtils.getColor(getResources(), R.color.progress_bar_foreground);
+        mBackgroundColor =
+                ApiCompatibilityUtils.getColor(getResources(), R.color.progress_bar_background);
 
         mForegroundDrawable = new ColorDrawable(foregroundColor);
         setImageDrawable(
                 new ClipDrawable(mForegroundDrawable, Gravity.START, ClipDrawable.HORIZONTAL));
         setBackgroundColor(mBackgroundColor);
+
+        setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, height));
+    }
+
+    /**
+     * @param observer An update observer for the progress bar.
+     */
+    @VisibleForTesting
+    void setProgressBarObserver(ProgressBarObserver observer) {
+        assert mProgressBarObserver == null;
+        mProgressBarObserver = observer;
     }
 
     /**
@@ -99,15 +113,8 @@ public class ClipDrawableProgressBar extends ImageView {
         if (mProgress == progress) return;
 
         mProgress = progress;
-        mProgressUpdateCount += 1;
         getDrawable().setLevel(Math.round(progress * CLIP_DRAWABLE_MAX));
-    }
-
-    /**
-     * @return Background color of this progress bar.
-     */
-    public int getProgressBarBackgroundColor() {
-        return mBackgroundColor;
+        if (mProgressBarObserver != null) mProgressBarObserver.onVisibleProgressUpdated();
     }
 
     /**
@@ -152,25 +159,14 @@ public class ClipDrawableProgressBar extends ImageView {
         }
     }
 
-    /**
-     * Resets progress update count to 0.
-     */
-    public void resetProgressUpdateCount() {
-        mProgressUpdateCount = 0;
-    }
-
-    /**
-     * @return Progress update count since reset.
-     */
-    public int getProgressUpdateCount() {
-        return mProgressUpdateCount;
-    }
-
     private void updateInternalVisibility() {
         int oldVisibility = getVisibility();
         int newVisibility = mDesiredVisibility;
         if (getAlpha() == 0 && mDesiredVisibility == VISIBLE) newVisibility = INVISIBLE;
-        if (oldVisibility != newVisibility) super.setVisibility(newVisibility);
+        if (oldVisibility != newVisibility) {
+            super.setVisibility(newVisibility);
+            if (mProgressBarObserver != null) mProgressBarObserver.onVisibilityChanged();
+        }
     }
 
     private int applyAlpha(int color, float alpha) {

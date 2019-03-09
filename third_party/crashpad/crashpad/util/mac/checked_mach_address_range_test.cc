@@ -19,7 +19,7 @@
 
 #include <limits>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "gtest/gtest.h"
@@ -43,7 +43,7 @@ bool ExpectationForValidity64(Validity validity) {
 }
 
 TEST(CheckedMachAddressRange, IsValid) {
-  const struct TestData {
+  static constexpr struct {
     mach_vm_address_t base;
     mach_vm_size_t size;
     Validity validity;
@@ -116,23 +116,23 @@ TEST(CheckedMachAddressRange, IsValid) {
       {0xffffffffffffffff, 1, kInvalid},
   };
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& testcase = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& testcase = kTestData[index];
     SCOPED_TRACE(base::StringPrintf("index %zu, base 0x%llx, size 0x%llx",
                                     index,
                                     testcase.base,
                                     testcase.size));
 
     CheckedMachAddressRange range_32(false, testcase.base, testcase.size);
-    EXPECT_EQ(ExpectationForValidity32(testcase.validity), range_32.IsValid());
+    EXPECT_EQ(range_32.IsValid(), ExpectationForValidity32(testcase.validity));
 
     CheckedMachAddressRange range_64(true, testcase.base, testcase.size);
-    EXPECT_EQ(ExpectationForValidity64(testcase.validity), range_64.IsValid());
+    EXPECT_EQ(range_64.IsValid(), ExpectationForValidity64(testcase.validity));
   }
 }
 
 TEST(CheckedMachAddressRange, ContainsValue) {
-  const struct TestData {
+  static constexpr struct {
     mach_vm_address_t value;
     bool expectation;
   } kTestData[] = {
@@ -166,13 +166,13 @@ TEST(CheckedMachAddressRange, ContainsValue) {
   CheckedMachAddressRange parent_range_32(false, 0x2000, 0x1000);
   ASSERT_TRUE(parent_range_32.IsValid());
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& testcase = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& testcase = kTestData[index];
     SCOPED_TRACE(
         base::StringPrintf("index %zu, value 0x%llx", index, testcase.value));
 
-    EXPECT_EQ(testcase.expectation,
-              parent_range_32.ContainsValue(testcase.value));
+    EXPECT_EQ(parent_range_32.ContainsValue(testcase.value),
+              testcase.expectation);
   }
 
   CheckedMachAddressRange parent_range_64(true, 0x100000000, 0x1000);
@@ -185,7 +185,7 @@ TEST(CheckedMachAddressRange, ContainsValue) {
 }
 
 TEST(CheckedMachAddressRange, ContainsRange) {
-  const struct TestData {
+  static constexpr struct {
     mach_vm_address_t base;
     mach_vm_size_t size;
     bool expectation;
@@ -223,8 +223,8 @@ TEST(CheckedMachAddressRange, ContainsRange) {
   CheckedMachAddressRange parent_range_32(false, 0x2000, 0x1000);
   ASSERT_TRUE(parent_range_32.IsValid());
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& testcase = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& testcase = kTestData[index];
     SCOPED_TRACE(base::StringPrintf("index %zu, base 0x%llx, size 0x%llx",
                                     index,
                                     testcase.base,
@@ -232,8 +232,8 @@ TEST(CheckedMachAddressRange, ContainsRange) {
 
     CheckedMachAddressRange child_range_32(false, testcase.base, testcase.size);
     ASSERT_TRUE(child_range_32.IsValid());
-    EXPECT_EQ(testcase.expectation,
-              parent_range_32.ContainsRange(child_range_32));
+    EXPECT_EQ(parent_range_32.ContainsRange(child_range_32),
+              testcase.expectation);
   }
 
   CheckedMachAddressRange parent_range_64(true, 0x100000000, 0x1000);

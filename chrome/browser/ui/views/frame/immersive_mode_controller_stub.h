@@ -21,7 +21,6 @@ class ImmersiveModeControllerStub : public ImmersiveModeController {
   void Init(BrowserView* browser_view) override;
   void SetEnabled(bool enabled) override;
   bool IsEnabled() const override;
-  bool ShouldHideTabIndicators() const override;
   bool ShouldHideTopViews() const override;
   bool IsRevealed() const override;
   int GetTopContainerVerticalOffset(
@@ -30,7 +29,8 @@ class ImmersiveModeControllerStub : public ImmersiveModeController {
       WARN_UNUSED_RESULT;
   void OnFindBarVisibleBoundsChanged(
       const gfx::Rect& new_visible_bounds_in_screen) override;
-  void SetupForTest() override;
+  bool ShouldStayImmersiveAfterExitingFullscreen() override;
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ImmersiveModeControllerStub);

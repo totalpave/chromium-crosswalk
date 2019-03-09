@@ -25,7 +25,7 @@ class Profile;
 
 namespace content {
 class SessionStorageNamespace;
-};
+}
 
 namespace extensions {
 class ExtensionHostDelegate;
@@ -45,11 +45,11 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
     // WebContents to a suitable container (e.g. browser) or to show it if it's
     // a popup window. If |was_blocked| is non-NULL, then |*was_blocked| will be
     // set to true if the popup gets blocked, and left unchanged otherwise.
-    virtual void AddWebContents(content::WebContents* new_contents,
-                                WindowOpenDisposition disposition,
-                                const gfx::Rect& initial_rect,
-                                bool user_gesture,
-                                bool* was_blocked) = 0;
+    virtual void AddWebContents(
+        std::unique_ptr<content::WebContents> new_contents,
+        WindowOpenDisposition disposition,
+        const gfx::Rect& initial_rect,
+        bool* was_blocked) = 0;
 
    protected:
     virtual ~Delegate() {}
@@ -57,6 +57,7 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
 
   BackgroundContents(
       scoped_refptr<content::SiteInstance> site_instance,
+      content::RenderFrameHost* opener,
       int32_t routing_id,
       int32_t main_frame_routing_id,
       int32_t main_frame_widget_routing_id,
@@ -76,7 +77,7 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
   bool ShouldSuppressDialogs(content::WebContents* source) override;
   void DidNavigateMainFramePostCommit(content::WebContents* tab) override;
   void AddNewContents(content::WebContents* source,
-                      content::WebContents* new_contents,
+                      std::unique_ptr<content::WebContents> new_contents,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture,
@@ -114,7 +115,7 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
   Profile* profile_;
   std::unique_ptr<content::WebContents> web_contents_;
   content::NotificationRegistrar registrar_;
-  base::ObserverList<extensions::DeferredStartRenderHostObserver>
+  base::ObserverList<extensions::DeferredStartRenderHostObserver>::Unchecked
       deferred_start_render_host_observer_list_;
 
   // The initial URL to load.
@@ -132,7 +133,7 @@ struct BackgroundContentsOpenedDetails {
   const std::string& frame_name;
 
   // The ID of the parent application (if any).
-  const base::string16& application_id;
+  const std::string& application_id;
 };
 
 #endif  // CHROME_BROWSER_BACKGROUND_BACKGROUND_CONTENTS_H_

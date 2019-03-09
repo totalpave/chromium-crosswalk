@@ -8,9 +8,6 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details about the presubmit API built into depot_tools.
 """
 
-import re
-
-
 ACTION_XML_PATH = '../../../tools/metrics/actions/actions.xml'
 
 
@@ -91,32 +88,53 @@ def IsBoolean(new_content_lines, metric_name, input_api):
       any(input_api.re.search(type_re, match.group(i)) for i in (1, 3)))
 
 
+def CheckHtml(input_api, output_api):
+  return input_api.canned_checks.CheckLongLines(
+      input_api, output_api, 80, lambda x: x.LocalPath().endswith('.html'))
+
+
+def RunOptimizeWebUiTests(input_api, output_api):
+  presubmit_path = input_api.PresubmitLocalPath()
+  sources = ['optimize_webui_test.py', 'unpack_pak_test.py']
+  tests = [input_api.os_path.join(presubmit_path, s) for s in sources]
+  return input_api.canned_checks.RunUnitTests(input_api, output_api, tests)
+
+
+def _CheckWebDevStyle(input_api, output_api):
+  results = []
+
+  try:
+    import sys
+    old_sys_path = sys.path[:]
+    cwd = input_api.PresubmitLocalPath()
+    sys.path += [input_api.os_path.join(cwd, '..', '..', '..', 'tools')]
+    import web_dev_style.presubmit_support
+    results += web_dev_style.presubmit_support.CheckStyle(input_api, output_api)
+  finally:
+    sys.path = old_sys_path
+
+  return results
+
+
+def _CheckChangeOnUploadOrCommit(input_api, output_api):
+  results = CheckUserActionUpdate(input_api, output_api, ACTION_XML_PATH)
+  affected = input_api.AffectedFiles()
+  if any(f for f in affected if f.LocalPath().endswith('.html')):
+    results += CheckHtml(input_api, output_api)
+
+  webui_sources = set(['optimize_webui.py', 'unpack_pak.py'])
+  affected_files = [input_api.os_path.basename(f.LocalPath()) for f in affected]
+  if webui_sources.intersection(set(affected_files)):
+    results += RunOptimizeWebUiTests(input_api, output_api)
+  results += _CheckWebDevStyle(input_api, output_api)
+  results += input_api.canned_checks.CheckPatchFormatted(input_api, output_api,
+                                                         check_js=True)
+  return results
+
+
 def CheckChangeOnUpload(input_api, output_api):
-  return CheckUserActionUpdate(input_api, output_api, ACTION_XML_PATH)
+  return _CheckChangeOnUploadOrCommit(input_api, output_api)
 
 
 def CheckChangeOnCommit(input_api, output_api):
-  return CheckUserActionUpdate(input_api, output_api, ACTION_XML_PATH)
-
-
-def PostUploadHook(cl, change, output_api):
-  rietveld_obj = cl.RpcServer()
-  description = rietveld_obj.get_description(cl.issue)
-
-  existing_bots = (change.CQ_INCLUDE_TRYBOTS or '').split(';')
-  clean_bots = set(filter(None, map(lambda s: s.strip(), existing_bots)))
-  new_bots = clean_bots | set(['tryserver.chromium.linux:closure_compilation'])
-  new_tag = 'CQ_INCLUDE_TRYBOTS=%s' % ';'.join(new_bots)
-
-  if clean_bots:
-    tag_reg = '^CQ_INCLUDE_TRYBOTS=.*$'
-    new_description = re.sub(tag_reg, new_tag, description, flags=re.M | re.I)
-  else:
-    new_description = description + '\n' + new_tag
-
-  if new_description == description:
-    return []
-
-  rietveld_obj.update_description(cl.issue, new_description)
-  return [output_api.PresubmitNotifyResult(
-      'Automatically added optional Closure bots to run on CQ.')]
+  return _CheckChangeOnUploadOrCommit(input_api, output_api)

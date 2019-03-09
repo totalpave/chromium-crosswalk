@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/macros.h"
+#include "chrome/browser/chromeos/login/test/fake_gaia_mixin.h"
 #include "chrome/browser/chromeos/login/test/oobe_base_test.h"
 
 namespace base {
@@ -33,16 +34,24 @@ class LoginPolicyTestBase : public chromeos::OobeBaseTest {
 
   virtual void GetMandatoryPoliciesValue(base::DictionaryValue* policy) const;
   virtual void GetRecommendedPoliciesValue(base::DictionaryValue* policy) const;
+  virtual std::string GetAccount() const;
+  virtual std::string GetIdToken() const;
 
   UserPolicyTestHelper* user_policy_helper() {
     return user_policy_helper_.get();
   }
 
   void SkipToLoginScreen();
-  void LogIn(const std::string& user_id, const std::string& password);
+  // Should match ShowSigninScreenForTest method in SigninScreenHandler.
+  void LogIn(const std::string& user_id,
+             const std::string& password,
+             const std::string& services);
 
   static const char kAccountPassword[];
   static const char kAccountId[];
+  static const char kEmptyServices[];
+
+  chromeos::FakeGaiaMixin fake_gaia_{&mixin_host_, embedded_test_server()};
 
  private:
   void SetUpGaiaServerWithAccessTokens();

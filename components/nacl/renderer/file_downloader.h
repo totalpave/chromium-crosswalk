@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef COMPONENTS_NACL_RENDERER_FILE_DOWNLOADER_H_
+#define COMPONENTS_NACL_RENDERER_FILE_DOWNLOADER_H_
+
 #include <stdint.h>
 
 #include <string>
@@ -9,11 +12,12 @@
 #include "base/callback.h"
 #include "base/files/file.h"
 #include "components/nacl/renderer/ppb_nacl_private.h"
-#include "third_party/WebKit/public/platform/WebURLLoaderClient.h"
+#include "third_party/blink/public/web/web_associated_url_loader_client.h"
 
 namespace blink {
+class WebAssociatedURLLoader;
 struct WebURLError;
-class WebURLLoader;
+class WebURLRequest;
 class WebURLResponse;
 }
 
@@ -21,7 +25,7 @@ namespace nacl {
 
 // Downloads a file and writes the contents to a specified file open for
 // writing.
-class FileDownloader : public blink::WebURLLoaderClient {
+class FileDownloader : public blink::WebAssociatedURLLoaderClient {
  public:
   enum Status {
     SUCCESS,
@@ -36,7 +40,7 @@ class FileDownloader : public blink::WebURLLoaderClient {
   // received.
   typedef base::Callback<void(int64_t, int64_t)> ProgressCallback;
 
-  FileDownloader(std::unique_ptr<blink::WebURLLoader> url_loader,
+  FileDownloader(std::unique_ptr<blink::WebAssociatedURLLoader> url_loader,
                  base::File file,
                  StatusCallback status_cb,
                  ProgressCallback progress_cb);
@@ -46,20 +50,13 @@ class FileDownloader : public blink::WebURLLoaderClient {
   void Load(const blink::WebURLRequest& request);
 
  private:
-  // WebURLLoaderClient implementation.
-  void didReceiveResponse(blink::WebURLLoader* loader,
-                          const blink::WebURLResponse& response) override;
-  void didReceiveData(blink::WebURLLoader* loader,
-                      const char* data,
-                      int data_length,
-                      int encoded_data_length) override;
-  void didFinishLoading(blink::WebURLLoader* loader,
-                        double finish_time,
-                        int64_t total_encoded_data_length) override;
-  void didFail(blink::WebURLLoader* loader,
-               const blink::WebURLError& error) override;
+  // WebAssociatedURLLoaderClient implementation.
+  void DidReceiveResponse(const blink::WebURLResponse& response) override;
+  void DidReceiveData(const char* data, int data_length) override;
+  void DidFinishLoading() override;
+  void DidFail(const blink::WebURLError& error) override;
 
-  std::unique_ptr<blink::WebURLLoader> url_loader_;
+  std::unique_ptr<blink::WebAssociatedURLLoader> url_loader_;
   base::File file_;
   StatusCallback status_cb_;
   ProgressCallback progress_cb_;
@@ -70,3 +67,5 @@ class FileDownloader : public blink::WebURLLoaderClient {
 };
 
 }  // namespace nacl
+
+#endif  // COMPONENTS_NACL_RENDERER_FILE_DOWNLOADER_H_

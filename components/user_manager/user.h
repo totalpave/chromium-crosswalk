@@ -9,10 +9,11 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/strings/string16.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "components/user_manager/user_image/user_image.h"
 #include "components/user_manager/user_info.h"
 #include "components/user_manager/user_manager_export.h"
@@ -30,17 +31,23 @@ class UserImageManagerImpl;
 class UserSessionManager;
 }
 
+namespace policy {
+class ProfilePolicyConnectorTest;
+}
+
 namespace user_manager {
 
 class UserManagerBase;
 class FakeUserManager;
 
 // A class representing information about a previously logged in user.
-// Each user has a canonical email (username), returned by |email()| and
-// may have a different displayed email (in the raw form as entered by user),
-// returned by |displayed_email()|.
-// Displayed emails are for use in UI only, anywhere else users must be referred
-// to by |email()|.
+//   Each user has an |AccountId| containing canonical email (username),
+// returned by |GetAccountId().GetUserEmail()| and may have a different
+// displayed email (in the raw form as entered by user), returned by
+// |displayed_email()|.
+//   Displayed emails are for use in UI only, anywhere else users must be
+// referred to by |GetAccountId()|. Internal details of AccountId should not
+// be relied on unless you have special knowledge of the account type.
 class USER_MANAGER_EXPORT User : public UserInfo {
  public:
   // User OAuth token status according to the last check.
@@ -64,21 +71,6 @@ class USER_MANAGER_EXPORT User : public UserInfo {
     USER_IMAGE_EXTERNAL = -1,
   } UserImageType;
 
-  // This enum is used to define the buckets for an enumerated UMA histogram.
-  // Hence,
-  //   (a) existing enumerated constants should never be deleted or reordered,
-  //   (b) new constants should only be appended at the end of the enumeration.
-  enum WallpaperType {
-    DAILY = 0,         // Surprise wallpaper. Changes once a day if enabled.
-    CUSTOMIZED = 1,    // Selected by user.
-    DEFAULT = 2,       // Default.
-    /* UNKNOWN = 3 */  // Removed.
-    ONLINE = 4,        // WallpaperInfo.location denotes an URL.
-    POLICY = 5,        // Controlled by policy, can't be changed by the user.
-    THIRDPARTY = 6,    // Current wallpaper is set by a third party app.
-    WALLPAPER_TYPE_COUNT = 7
-  };
-
   // Returns true if user type has gaia account.
   static bool TypeHasGaiaAccount(UserType user_type);
 
@@ -86,7 +78,7 @@ class USER_MANAGER_EXPORT User : public UserInfo {
   ~User() override;
 
   // UserInfo
-  std::string GetEmail() const override;
+  std::string GetDisplayEmail() const override;
   base::string16 GetDisplayName() const override;
   base::string16 GetGivenName() const override;
   const gfx::ImageSkia& GetImage() const override;
@@ -95,15 +87,21 @@ class USER_MANAGER_EXPORT User : public UserInfo {
   // Returns the user type.
   virtual UserType GetType() const = 0;
 
-  // Allows managing child status of the user. Used for RegularUser.
-  virtual void SetIsChild(bool is_child);
+  // Will LOG(FATAL) unless overridden.
+  virtual void UpdateType(UserType user_type);
 
   // Returns true if user has gaia account. True for users of types
   // USER_TYPE_REGULAR and USER_TYPE_CHILD.
   virtual bool HasGaiaAccount() const;
 
+  // Returns true if it's Active Directory user.
+  virtual bool IsActiveDirectoryUser() const;
+
   // Returns true if user is supervised.
   virtual bool IsSupervised() const;
+
+  // Returns true if user is child.
+  virtual bool IsChild() const;
 
   // True if user image can be synced.
   virtual bool CanSyncImage() const;
@@ -116,10 +114,6 @@ class USER_MANAGER_EXPORT User : public UserInfo {
 
   // True if the user is a device local account user.
   virtual bool IsDeviceLocalAccount() const;
-
-  // The email the user used to log in.
-  // TODO(alemate): rename this to GetUserEmail() (see crbug.com/548923)
-  const std::string& email() const;
 
   // The displayed user name.
   base::string16 display_name() const { return display_name_; }
@@ -137,8 +131,13 @@ class USER_MANAGER_EXPORT User : public UserInfo {
   int image_index() const { return image_index_; }
   bool has_image_bytes() const { return user_image_->has_image_bytes(); }
   // Returns bytes representation of static user image for WebUI.
-  const UserImage::Bytes& image_bytes() const {
+  scoped_refptr<base::RefCountedBytes> image_bytes() const {
     return user_image_->image_bytes();
+  }
+  // Returns image format of the bytes representation of static user image
+  // for WebUI.
+  UserImage::ImageFormat image_format() const {
+    return user_image_->image_format();
   }
 
   // Whether |user_image_| contains data in format that is considered safe to
@@ -178,6 +177,21 @@ class USER_MANAGER_EXPORT User : public UserInfo {
   // True if the user Profile is created.
   bool is_profile_created() const { return profile_is_created_; }
 
+  // True if user has google account (not a guest or managed user).
+  bool has_gaia_account() const;
+
+  static User* CreatePublicAccountUserForTesting(const AccountId& account_id) {
+    return CreatePublicAccountUser(account_id);
+  }
+
+  static User* CreateRegularUserForTesting(const AccountId& account_id) {
+    User* user = CreateRegularUser(account_id, USER_TYPE_REGULAR);
+    user->SetImage(std::unique_ptr<UserImage>(new UserImage), 0);
+    return user;
+  }
+
+  void AddProfileCreatedObserver(base::OnceClosure on_profile_created);
+
  protected:
   friend class UserManagerBase;
   friend class chromeos::ChromeUserManagerImpl;
@@ -190,12 +204,16 @@ class USER_MANAGER_EXPORT User : public UserInfo {
   friend class chromeos::FakeChromeUserManager;
   friend class chromeos::MockUserManager;
   friend class chromeos::UserAddingScreenTest;
+  friend class policy::ProfilePolicyConnectorTest;
   FRIEND_TEST_ALL_PREFIXES(UserTest, DeviceLocalAccountAffiliation);
+  FRIEND_TEST_ALL_PREFIXES(UserTest, UserSessionInitialized);
 
   // Do not allow anyone else to create new User instances.
-  static User* CreateRegularUser(const AccountId& account_id);
+  static User* CreateRegularUser(const AccountId& account_id,
+                                 const UserType user_type);
   static User* CreateGuestUser(const AccountId& guest_account_id);
   static User* CreateKioskAppUser(const AccountId& kiosk_app_account_id);
+  static User* CreateArcKioskAppUser(const AccountId& arc_kiosk_account_id);
   static User* CreateSupervisedUser(const AccountId& account_id);
   static User* CreatePublicAccountUser(const AccountId& account_id);
 
@@ -249,10 +267,7 @@ class USER_MANAGER_EXPORT User : public UserInfo {
 
   void set_is_active(bool is_active) { is_active_ = is_active; }
 
-  void set_profile_is_created() { profile_is_created_ = true; }
-
-  // True if user has google account (not a guest or managed user).
-  bool has_gaia_account() const;
+  void SetProfileIsCreated();
 
   virtual void SetAffiliation(bool is_affiliated);
 
@@ -300,6 +315,8 @@ class USER_MANAGER_EXPORT User : public UserInfo {
 
   // True if the user is affiliated to the device.
   bool is_affiliated_ = false;
+
+  std::vector<base::OnceClosure> on_profile_created_observers_;
 
   DISALLOW_COPY_AND_ASSIGN(User);
 };

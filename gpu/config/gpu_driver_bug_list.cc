@@ -5,6 +5,8 @@
 #include "gpu/config/gpu_driver_bug_list.h"
 
 #include "base/logging.h"
+#include "base/stl_util.h"
+#include "gpu/config/gpu_driver_bug_list_autogen.h"
 #include "gpu/config/gpu_driver_bug_workaround_type.h"
 #include "gpu/config/gpu_switches.h"
 #include "gpu/config/gpu_util.h"
@@ -26,18 +28,24 @@ const GpuDriverBugWorkaroundInfo kFeatureList[] = {
 
 }  // namespace anonymous
 
-GpuDriverBugList::GpuDriverBugList()
-    : GpuControlList() {
-}
+GpuDriverBugList::GpuDriverBugList(const GpuControlListData& data)
+    : GpuControlList(data) {}
 
-GpuDriverBugList::~GpuDriverBugList() {
+GpuDriverBugList::~GpuDriverBugList() = default;
+
+// static
+std::unique_ptr<GpuDriverBugList> GpuDriverBugList::Create() {
+  GpuControlListData data(kGpuDriverBugListEntryCount,
+                          kGpuDriverBugListEntries);
+  return Create(data);
 }
 
 // static
-GpuDriverBugList* GpuDriverBugList::Create() {
-  GpuDriverBugList* list = new GpuDriverBugList();
+std::unique_ptr<GpuDriverBugList> GpuDriverBugList::Create(
+    const GpuControlListData& data) {
+  std::unique_ptr<GpuDriverBugList> list(new GpuDriverBugList(data));
 
-  DCHECK_EQ(static_cast<int>(arraysize(kFeatureList)),
+  DCHECK_EQ(static_cast<int>(base::size(kFeatureList)),
             NUMBER_OF_GPU_DRIVER_BUG_WORKAROUND_TYPES);
   for (int i = 0; i < NUMBER_OF_GPU_DRIVER_BUG_WORKAROUND_TYPES; ++i) {
     list->AddSupportedFeature(kFeatureList[i].name,
@@ -59,15 +67,6 @@ void GpuDriverBugList::AppendWorkaroundsFromCommandLine(
     std::set<int>* workarounds,
     const base::CommandLine& command_line) {
   DCHECK(workarounds);
-
-  if (command_line.HasSwitch(switches::kGpuDriverBugWorkarounds)) {
-    std::string cmd_workarounds_str =
-        command_line.GetSwitchValueASCII(switches::kGpuDriverBugWorkarounds);
-    std::set<int> cmd_workarounds;
-    gpu::StringToFeatureSet(cmd_workarounds_str, &cmd_workarounds);
-    workarounds->insert(cmd_workarounds.begin(), cmd_workarounds.end());
-  }
-
   for (int i = 0; i < NUMBER_OF_GPU_DRIVER_BUG_WORKAROUND_TYPES; i++) {
     if (command_line.HasSwitch(kFeatureList[i].name)) {
       // Check for disabling workaround flag.
@@ -94,5 +93,25 @@ void GpuDriverBugList::AppendWorkaroundsFromCommandLine(
   }
 }
 
-}  // namespace gpu
+// static
+void GpuDriverBugList::AppendAllWorkarounds(
+    std::vector<const char*>* workarounds) {
+  static_assert(std::extent<decltype(kFeatureList)>::value ==
+                    NUMBER_OF_GPU_DRIVER_BUG_WORKAROUND_TYPES,
+                "Expected kFeatureList to include all gpu workarounds");
 
+  DCHECK(workarounds->empty());
+  workarounds->resize(NUMBER_OF_GPU_DRIVER_BUG_WORKAROUND_TYPES);
+  size_t i = 0;
+  for (const GpuDriverBugWorkaroundInfo& feature : kFeatureList)
+    (*workarounds)[i++] = feature.name;
+}
+
+// static
+bool GpuDriverBugList::AreEntryIndicesValid(
+    const std::vector<uint32_t>& entry_indices) {
+  return GpuControlList::AreEntryIndicesValid(entry_indices,
+                                              kGpuDriverBugListEntryCount);
+}
+
+}  // namespace gpu

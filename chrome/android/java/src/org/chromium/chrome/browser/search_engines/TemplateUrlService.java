@@ -4,11 +4,14 @@
 
 package org.chromium.chrome.browser.search_engines;
 
-import android.text.TextUtils;
+import android.support.annotation.Nullable;
 
 import org.chromium.base.ObserverList;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.task.PostTask;
+import org.chromium.content_public.browser.UiThreadTaskTraits;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,50 +42,6 @@ public class TemplateUrlService {
          * Notification that the template url model has changed in some way.
          */
         void onTemplateURLServiceChanged();
-    }
-
-    /**
-     * Represents search engine with its index.
-     */
-    public static class TemplateUrl {
-        private final int mIndex;
-        private final String mShortName;
-
-        @CalledByNative("TemplateUrl")
-        public static TemplateUrl create(
-                int id, String shortName) {
-            return new TemplateUrl(id, shortName);
-        }
-
-        public TemplateUrl(int index, String shortName) {
-            mIndex = index;
-            mShortName = shortName;
-        }
-
-        public int getIndex() {
-            return mIndex;
-        }
-
-        public String getShortName() {
-            return mShortName;
-        }
-
-        @Override
-        public int hashCode() {
-            final int prime = 31;
-            int result = 1;
-            result = prime * result + mIndex;
-            result = prime * result + ((mShortName == null) ? 0 : mShortName.hashCode());
-            return result;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (!(other instanceof TemplateUrl)) return false;
-            TemplateUrl otherTemplateUrl = (TemplateUrl) other;
-            return mIndex == otherTemplateUrl.mIndex
-                    && TextUtils.equals(mShortName, otherTemplateUrl.mShortName);
-        }
     }
 
     private static TemplateUrlService sService;
@@ -117,24 +76,49 @@ public class TemplateUrlService {
     }
 
     /**
-     * Returns a list of the prepopulated search engines.
+     * Ensure the TemplateUrlService is loaded before running the specified action.  If the service
+     * is already loaded, then run the action immediately.
+     * <p>
+     * Because this can introduce an arbitrary delay in the action being executed, ensure the state
+     * is still valid in the action before interacting with anything that might no longer be
+     * available (i.e. an Activity that has since been destroyed).
      *
-     * Warning: TemplateUrl.getIndex() is *not* an index into this list, since this list contains
-     * only prepopulated search engines. E.g. getLocalizedSearchEngines().get(0).getIndex() could
-     * return 3.
+     * @param action The action to be run.
      */
-    public List<TemplateUrl> getLocalizedSearchEngines() {
-        ThreadUtils.assertOnUiThread();
-        int templateUrlCount = nativeGetTemplateUrlCount(mNativeTemplateUrlServiceAndroid);
-        List<TemplateUrl> templateUrls = new ArrayList<TemplateUrl>(templateUrlCount);
-        for (int i = 0; i < templateUrlCount; i++) {
-            TemplateUrl templateUrl = nativeGetPrepopulatedTemplateUrlAt(
-                    mNativeTemplateUrlServiceAndroid, i);
-            if (templateUrl != null) {
-                templateUrls.add(templateUrl);
-            }
+    public void runWhenLoaded(final Runnable action) {
+        if (isLoaded()) {
+            action.run();
+        } else {
+            registerLoadListener(new LoadListener() {
+                @Override
+                public void onTemplateUrlServiceLoaded() {
+                    unregisterLoadListener(this);
+                    action.run();
+                }
+            });
+            load();
         }
+    }
+
+    /**
+     * Returns a list of the all available search engines.
+     */
+    public List<TemplateUrl> getTemplateUrls() {
+        ThreadUtils.assertOnUiThread();
+        List<TemplateUrl> templateUrls = new ArrayList<>();
+        nativeGetTemplateUrls(mNativeTemplateUrlServiceAndroid, templateUrls);
         return templateUrls;
+    }
+
+    /**
+     * Called from native to populate the list of all available search engines.
+     * @param templateUrls The list of {@link TemplateUrl} to be added.
+     * @param templateUrl The {@link TemplateUrl} would add to the list.
+     */
+    @CalledByNative
+    private static void addTemplateUrlToList(
+            List<TemplateUrl> templateUrls, TemplateUrl templateUrl) {
+        templateUrls.add(templateUrl);
     }
 
     /**
@@ -156,37 +140,26 @@ public class TemplateUrlService {
     }
 
     /**
-     * @return The default search engine index (e.g., 0, 1, 2,...).
+     * @return {@link TemplateUrl} for the default search engine.  This can
+     *         be null if DSEs are disabled entirely by administrators.
      */
-    public int getDefaultSearchEngineIndex() {
+    public @Nullable TemplateUrl getDefaultSearchEngineTemplateUrl() {
+        if (!isLoaded()) return null;
+        return nativeGetDefaultSearchEngine(mNativeTemplateUrlServiceAndroid);
+    }
+
+    public void setSearchEngine(String selectedKeyword) {
         ThreadUtils.assertOnUiThread();
-        return nativeGetDefaultSearchProvider(mNativeTemplateUrlServiceAndroid);
+        nativeSetUserSelectedDefaultSearchProvider(
+                mNativeTemplateUrlServiceAndroid, selectedKeyword);
     }
 
     /**
-     * @return {@link TemplateUrlService.TemplateUrl} for the default search engine.
+     * @return Whether the default search engine is managed and controlled by policy.  If true, the
+     *         DSE can not be modified by the user.
      */
-    public TemplateUrl getDefaultSearchEngineTemplateUrl() {
-        if (!isLoaded()) return null;
-
-        int defaultSearchEngineIndex = getDefaultSearchEngineIndex();
-        if (defaultSearchEngineIndex == -1) return null;
-
-        assert defaultSearchEngineIndex >= 0;
-        assert defaultSearchEngineIndex < nativeGetTemplateUrlCount(
-                mNativeTemplateUrlServiceAndroid);
-
-        return nativeGetPrepopulatedTemplateUrlAt(
-                mNativeTemplateUrlServiceAndroid, defaultSearchEngineIndex);
-    }
-
-    public void setSearchEngine(int selectedIndex) {
-        ThreadUtils.assertOnUiThread();
-        nativeSetUserSelectedDefaultSearchProvider(mNativeTemplateUrlServiceAndroid, selectedIndex);
-    }
-
-    public boolean isSearchProviderManaged() {
-        return nativeIsSearchProviderManaged(mNativeTemplateUrlServiceAndroid);
+    public boolean isDefaultSearchManaged() {
+        return nativeIsDefaultSearchManaged(mNativeTemplateUrlServiceAndroid);
     }
 
     /**
@@ -204,14 +177,42 @@ public class TemplateUrlService {
         return nativeIsDefaultSearchEngineGoogle(mNativeTemplateUrlServiceAndroid);
     }
 
+    public boolean doesDefaultSearchEngineHaveLogo() {
+        return nativeDoesDefaultSearchEngineHaveLogo(mNativeTemplateUrlServiceAndroid);
+    }
+
+    /**
+     * Checks whether a search result page is from a default search provider.
+     * @param url The url for the search result page.
+     * @return Whether the search result page with the given url from the default search provider.
+     */
+    public boolean isSearchResultsPageFromDefaultSearchProvider(String url) {
+        ThreadUtils.assertOnUiThread();
+        return nativeIsSearchResultsPageFromDefaultSearchProvider(
+                mNativeTemplateUrlServiceAndroid, url);
+    }
+
     /**
      * Registers a listener for the callback that indicates that the
      * TemplateURLService has loaded.
      */
-    public void registerLoadListener(LoadListener listener) {
+    public void registerLoadListener(final LoadListener listener) {
         ThreadUtils.assertOnUiThread();
         boolean added = mLoadListeners.addObserver(listener);
         assert added;
+
+        // If the load has already been completed, post a load complete to the observer.  Done
+        // as an asynchronous call to keep the client code predictable in the loaded/unloaded state.
+        if (isLoaded()) {
+            PostTask.postTask(UiThreadTaskTraits.DEFAULT, new Runnable() {
+                @Override
+                public void run() {
+                    if (!mLoadListeners.hasObserver(listener)) return;
+
+                    listener.onTemplateUrlServiceLoaded();
+                }
+            });
+        }
     }
 
     /**
@@ -294,26 +295,55 @@ public class TemplateUrlService {
     }
 
     /**
-     * Finds the URL for the search engine at the given index.
-     * @param index The templateUrl index to look up.
+     * Finds the URL for the search engine for the given keyword.
+     * @param keyword The templateUrl keyword to look up.
      * @return      A {@link String} that contains the url of the specified search engine.
      */
-    public String getSearchEngineUrlFromTemplateUrl(int index) {
-        return nativeGetSearchEngineUrlFromTemplateUrl(mNativeTemplateUrlServiceAndroid, index);
+    public String getSearchEngineUrlFromTemplateUrl(String keyword) {
+        return nativeGetSearchEngineUrlFromTemplateUrl(mNativeTemplateUrlServiceAndroid, keyword);
+    }
+
+    /**
+     * Finds the search engine type for the given keyword.
+     * @param keyword The templateUrl keyword to look up.
+     * @return      The search engine type of the specified search engine that contains the keyword.
+     */
+    public int getSearchEngineTypeFromTemplateUrl(String keyword) {
+        return nativeGetSearchEngineTypeFromTemplateUrl(mNativeTemplateUrlServiceAndroid, keyword);
+    }
+
+    /**
+     * Extracts the search query terms from a SRP URL.
+     * @param url The SRP URL.
+     * @return A string containing just the search terms stripped from the SRP URL.
+     */
+    public String extractSearchTermsFromUrl(String url) {
+        return nativeExtractSearchTermsFromUrl(mNativeTemplateUrlServiceAndroid, url);
+    }
+
+    @VisibleForTesting
+    public String addSearchEngineForTesting(String keyword, int ageInDays) {
+        return nativeAddSearchEngineForTesting(
+                mNativeTemplateUrlServiceAndroid, keyword, ageInDays);
+    }
+
+    @VisibleForTesting
+    public String updateLastVisitedForTesting(String keyword) {
+        return nativeUpdateLastVisitedForTesting(mNativeTemplateUrlServiceAndroid, keyword);
     }
 
     private native long nativeInit();
     private native void nativeLoad(long nativeTemplateUrlServiceAndroid);
     private native boolean nativeIsLoaded(long nativeTemplateUrlServiceAndroid);
-    private native int nativeGetTemplateUrlCount(long nativeTemplateUrlServiceAndroid);
-    private native TemplateUrl nativeGetPrepopulatedTemplateUrlAt(
-            long nativeTemplateUrlServiceAndroid, int i);
     private native void nativeSetUserSelectedDefaultSearchProvider(
-            long nativeTemplateUrlServiceAndroid, int selectedIndex);
-    private native int nativeGetDefaultSearchProvider(long nativeTemplateUrlServiceAndroid);
-    private native boolean nativeIsSearchProviderManaged(long nativeTemplateUrlServiceAndroid);
+            long nativeTemplateUrlServiceAndroid, String selectedKeyword);
+    private native boolean nativeIsDefaultSearchManaged(long nativeTemplateUrlServiceAndroid);
+    private native boolean nativeIsSearchResultsPageFromDefaultSearchProvider(
+            long nativeTemplateUrlServiceAndroid, String url);
     private native boolean nativeIsSearchByImageAvailable(long nativeTemplateUrlServiceAndroid);
     private native boolean nativeIsDefaultSearchEngineGoogle(long nativeTemplateUrlServiceAndroid);
+    private native boolean nativeDoesDefaultSearchEngineHaveLogo(
+            long nativeTemplateUrlServiceAndroid);
     private native String nativeGetUrlForSearchQuery(long nativeTemplateUrlServiceAndroid,
             String query);
     private native String nativeGetUrlForVoiceSearchQuery(long nativeTemplateUrlServiceAndroid,
@@ -323,5 +353,16 @@ public class TemplateUrlService {
     private native String nativeGetUrlForContextualSearchQuery(long nativeTemplateUrlServiceAndroid,
             String query, String alternateTerm, boolean shouldPrefetch, String protocolVersion);
     private native String nativeGetSearchEngineUrlFromTemplateUrl(
-            long nativeTemplateUrlServiceAndroid, int index);
+            long nativeTemplateUrlServiceAndroid, String keyword);
+    private native int nativeGetSearchEngineTypeFromTemplateUrl(
+            long nativeTemplateUrlServiceAndroid, String keyword);
+    private native String nativeAddSearchEngineForTesting(
+            long nativeTemplateUrlServiceAndroid, String keyword, int offset);
+    private native String nativeUpdateLastVisitedForTesting(
+            long nativeTemplateUrlServiceAndroid, String keyword);
+    private native String nativeExtractSearchTermsFromUrl(
+            long nativeTemplateUrlServiceAndroid, String url);
+    private native void nativeGetTemplateUrls(
+            long nativeTemplateUrlServiceAndroid, List<TemplateUrl> templateUrls);
+    private native TemplateUrl nativeGetDefaultSearchEngine(long nativeTemplateUrlServiceAndroid);
 }

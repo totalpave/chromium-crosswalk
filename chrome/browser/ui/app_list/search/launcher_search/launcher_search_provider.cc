@@ -6,8 +6,8 @@
 
 #include <utility>
 
-#include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
+#include "base/bind.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/chromeos/launcher_search_provider/launcher_search_provider_service.h"
 
@@ -17,8 +17,8 @@ namespace app_list {
 
 namespace {
 
-const int kLauncherSearchProviderQueryDelayInMs = 100;
-const int kLauncherSearchProviderMaxResults = 6;
+constexpr int kLauncherSearchProviderQueryDelayInMs = 100;
+constexpr int kLauncherSearchProviderMaxResults = 6;
 
 }  // namespace
 
@@ -29,18 +29,7 @@ LauncherSearchProvider::LauncherSearchProvider(Profile* profile)
 LauncherSearchProvider::~LauncherSearchProvider() {
 }
 
-void LauncherSearchProvider::Start(bool /*is_voice_query*/,
-                                   const base::string16& query) {
-  // Clear previously added search results.
-  ClearResults();
-
-  DelayQuery(base::Bind(&LauncherSearchProvider::StartInternal,
-                        weak_ptr_factory_.GetWeakPtr(), query));
-}
-
-void LauncherSearchProvider::Stop() {
-  // Since app_list code can call Stop() at any time, we stop timer here in
-  // order not to start query after Stop() is called.
+void LauncherSearchProvider::Start(const base::string16& query) {
   query_timer_.Stop();
 
   // Clear all search results of the previous query. Since results are
@@ -54,23 +43,33 @@ void LauncherSearchProvider::Stop() {
   // that no query is running at service side.
   if (service->IsQueryRunning())
     service->OnQueryEnded();
+
+  // Clear previously added search results.
+  ClearResults();
+
+  DelayQuery(base::Bind(&LauncherSearchProvider::StartInternal,
+                        weak_ptr_factory_.GetWeakPtr(), query));
 }
 
 void LauncherSearchProvider::SetSearchResults(
     const extensions::ExtensionId& extension_id,
-    ScopedVector<LauncherSearchResult> results) {
+    std::vector<std::unique_ptr<LauncherSearchResult>> results) {
   DCHECK(Service::Get(profile_)->IsQueryRunning());
 
+  // Record file search query latency metrics.
+  UMA_HISTOGRAM_TIMES("Apps.AppList.LauncherSearchProvider.QueryTime",
+                      base::TimeTicks::Now() - query_start_time_);
+
   // Add this extension's results (erasing any existing results).
-  extension_results_[extension_id] = base::WrapUnique(
-      new ScopedVector<LauncherSearchResult>(std::move(results)));
+  extension_results_[extension_id] = std::move(results);
 
   // Update results with other extension results.
-  ClearResults();
+  SearchProvider::Results new_results;
   for (const auto& item : extension_results_) {
-    for (const auto* result : *item.second)
-      Add(result->Duplicate());
+    for (const auto& result : item.second)
+      new_results.emplace_back(result->Duplicate());
   }
+  SwapResults(&new_results);
 }
 
 void LauncherSearchProvider::DelayQuery(const base::Closure& closure) {
@@ -87,6 +86,7 @@ void LauncherSearchProvider::DelayQuery(const base::Closure& closure) {
 
 void LauncherSearchProvider::StartInternal(const base::string16& query) {
   if (!query.empty()) {
+    query_start_time_ = base::TimeTicks::Now();
     Service::Get(profile_)->OnQueryStarted(this, base::UTF16ToUTF8(query),
                                            kLauncherSearchProviderMaxResults);
   }

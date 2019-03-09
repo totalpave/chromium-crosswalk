@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #include "media/base/video_frame.h"
-#include "third_party/webrtc/common_video/include/video_frame_buffer.h"
+#include "third_party/webrtc/api/video/video_frame_buffer.h"
 
 namespace content {
 // Thin adapter from media::VideoFrame to webrtc::VideoFrameBuffer. This
@@ -17,26 +17,16 @@ namespace content {
 // different threads, but that's safe since it's read-only.
 class WebRtcVideoFrameAdapter : public webrtc::VideoFrameBuffer {
  public:
-  explicit WebRtcVideoFrameAdapter(
-      const scoped_refptr<media::VideoFrame>& frame);
+  WebRtcVideoFrameAdapter(const scoped_refptr<media::VideoFrame>& frame);
+
+  scoped_refptr<media::VideoFrame> getMediaVideoFrame() const { return frame_; }
 
  private:
+  Type type() const override;
   int width() const override;
   int height() const override;
 
-  const uint8_t* DataY() const override;
-  const uint8_t* DataU() const override;
-  const uint8_t* DataV() const override;
-
-  int StrideY() const override;
-  int StrideU() const override;
-  int StrideV() const override;
-
-  void* native_handle() const override;
-
-  rtc::scoped_refptr<VideoFrameBuffer> NativeToI420Buffer() override;
-
-  friend class rtc::RefCountedObject<WebRtcVideoFrameAdapter>;
+  rtc::scoped_refptr<webrtc::I420BufferInterface> ToI420() override;
 
  protected:
   ~WebRtcVideoFrameAdapter() override;

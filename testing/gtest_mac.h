@@ -5,8 +5,8 @@
 #ifndef TESTING_GTEST_MAC_H_
 #define TESTING_GTEST_MAC_H_
 
-#include <gtest/internal/gtest-port.h>
-#include <gtest/gtest.h>
+#include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/googletest/src/googletest/include/gtest/internal/gtest-port.h"
 
 #ifdef GTEST_OS_MAC
 
@@ -58,6 +58,20 @@ GTEST_API_ AssertionResult CmpHelperNSNE(const char* expected_expression,
                                          const char* actual_expression,
                                          const NSPoint& expected,
                                          const NSPoint& actual);
+
+// This overloaded version allows comparison between NSRange objects using
+// NSEqualRanges. Used to implement {ASSERT|EXPECT}_NSEQ().
+GTEST_API_ AssertionResult CmpHelperNSEQ(const char* expected_expression,
+                                         const char* actual_expression,
+                                         const NSRange& expected,
+                                         const NSRange& actual);
+
+// This overloaded version allows comparison between NSRange objects using
+// NSEqualRanges. Used to implement {ASSERT|EXPECT}_NSNE().
+GTEST_API_ AssertionResult CmpHelperNSNE(const char* expected_expression,
+                                         const char* actual_expression,
+                                         const NSRange& expected,
+                                         const NSRange& actual);
 
 #endif  // !GTEST_OS_IOS
 

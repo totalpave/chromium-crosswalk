@@ -9,8 +9,9 @@
 #include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
+#include "base/task/post_task.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -49,7 +50,8 @@ void WriteSomethingAfterStartWatch(const base::FilePath& path,
   EXPECT_TRUE(watch_success) << path.value();
 
   const char kDummy[] = "hello";
-  ASSERT_TRUE(base::WriteFile(path, kDummy, arraysize(kDummy)));
+  ASSERT_EQ(static_cast<int>(base::size(kDummy)),
+            base::WriteFile(path, kDummy, base::size(kDummy)));
 }
 
 class FileWriteWatcherTest : public testing::Test {
@@ -68,7 +70,7 @@ class FileWriteWatcherTest : public testing::Test {
   void SetUp() override { ASSERT_TRUE(temp_dir_.CreateUniqueTempDir()); }
 
   base::FilePath GetTempPath(const std::string& name) {
-    return temp_dir_.path().Append(name);
+    return temp_dir_.GetPath().Append(name);
   }
 
  private:
@@ -88,10 +90,9 @@ TEST_F(FileWriteWatcherTest, WatchThreeFiles) {
   TestObserver observer(expected, loop.QuitClosure());
 
   // Set up the watcher.
-  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner =
-      content::BrowserThread::GetMessageLoopProxyForThread(
-          content::BrowserThread::FILE);
-  FileWriteWatcher watcher(file_task_runner.get());
+  scoped_refptr<base::SequencedTaskRunner> task_runner =
+      base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()});
+  FileWriteWatcher watcher(task_runner.get());
   watcher.DisableDelayForTesting();
 
   // Start watching and running.

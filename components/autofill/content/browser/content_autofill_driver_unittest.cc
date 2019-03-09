@@ -8,13 +8,13 @@
 
 #include <algorithm>
 #include <memory>
-#include <tuple>
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/command_line.h"
+#include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/autofill/content/common/autofill_messages.h"
 #include "components/autofill/core/browser/autofill_external_delegate.h"
 #include "components/autofill/core/browser/autofill_manager.h"
 #include "components/autofill/core/browser/autofill_test_utils.h"
@@ -22,15 +22,17 @@
 #include "components/autofill/core/common/autofill_switches.h"
 #include "components/autofill/core/common/form_data_predictions.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/navigation_details.h"
+#include "content/public/browser/ssl_status.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/frame_navigate_params.h"
-#include "content/public/test/mock_render_process_host.h"
+#include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/test_renderer_host.h"
-#include "ipc/ipc_test_sink.h"
+#include "mojo/public/cpp/bindings/associated_binding_set.h"
+#include "net/base/net_errors.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 
 namespace autofill {
 
@@ -40,22 +42,227 @@ const char kAppLocale[] = "en-US";
 const AutofillManager::AutofillDownloadManagerState kDownloadState =
     AutofillManager::DISABLE_AUTOFILL_DOWNLOAD_MANAGER;
 
+class FakeAutofillAgent : public mojom::AutofillAgent {
+ public:
+  FakeAutofillAgent()
+      : fill_form_id_(-1),
+        preview_form_id_(-1),
+        called_clear_section_(false),
+        called_clear_previewed_form_(false) {}
+
+  ~FakeAutofillAgent() override {}
+
+  void BindRequest(mojo::ScopedInterfaceEndpointHandle handle) {
+    bindings_.AddBinding(
+        this, mojom::AutofillAgentAssociatedRequest(std::move(handle)));
+  }
+
+  void SetQuitLoopClosure(base::Closure closure) { quit_closure_ = closure; }
+
+  // Returns the id and formdata received via
+  // mojo interface method mojom::AutofillAgent::FillForm().
+  bool GetAutofillFillFormMessage(int* page_id, FormData* results) {
+    if (fill_form_id_ == -1)
+      return false;
+    if (!fill_form_form_)
+      return false;
+
+    if (page_id)
+      *page_id = fill_form_id_;
+    if (results)
+      *results = *fill_form_form_;
+    return true;
+  }
+
+  // Returns the id and formdata received via
+  // mojo interface method mojom::AutofillAgent::PreviewForm().
+  bool GetAutofillPreviewFormMessage(int* page_id, FormData* results) {
+    if (preview_form_id_ == -1)
+      return false;
+    if (!preview_form_form_)
+      return false;
+
+    if (page_id)
+      *page_id = preview_form_id_;
+    if (results)
+      *results = *preview_form_form_;
+    return true;
+  }
+
+  // Returns data received via mojo interface method
+  // mojom::AutofillAent::FieldTypePredictionsAvailable().
+  bool GetFieldTypePredictionsAvailable(
+      std::vector<FormDataPredictions>* predictions) {
+    if (!predictions_)
+      return false;
+    if (predictions)
+      *predictions = *predictions_;
+    return true;
+  }
+
+  // Returns whether mojo interface method mojom::AutofillAgent::ClearForm() got
+  // called.
+  bool GetCalledClearSection() { return called_clear_section_; }
+
+  // Returns whether mojo interface method
+  // mojom::AutofillAgent::ClearPreviewedForm() got called.
+  bool GetCalledClearPreviewedForm() { return called_clear_previewed_form_; }
+
+  // Returns data received via mojo interface method
+  // mojom::AutofillAent::FillFieldWithValue().
+  bool GetString16FillFieldWithValue(base::string16* value) {
+    if (!value_fill_field_)
+      return false;
+    if (value)
+      *value = *value_fill_field_;
+    return true;
+  }
+
+  // Returns data received via mojo interface method
+  // mojom::AutofillAent::PreviewFieldWithValue().
+  bool GetString16PreviewFieldWithValue(base::string16* value) {
+    if (!value_preview_field_)
+      return false;
+    if (value)
+      *value = *value_preview_field_;
+    return true;
+  }
+
+  // Returns data received via mojo interface method
+  // mojom::AutofillAent::AcceptDataListSuggestion().
+  bool GetString16AcceptDataListSuggestion(base::string16* value) {
+    if (!value_accept_data_)
+      return false;
+    if (value)
+      *value = *value_accept_data_;
+    return true;
+  }
+
+  // Mocked mojom::AutofillAgent methods:
+  MOCK_METHOD0(FirstUserGestureObservedInTab, void());
+
+ private:
+  void CallDone() {
+    if (!quit_closure_.is_null()) {
+      quit_closure_.Run();
+      quit_closure_.Reset();
+    }
+  }
+
+  // mojom::AutofillAgent:
+  void FillForm(int32_t id, const FormData& form) override {
+    fill_form_id_ = id;
+    fill_form_form_ = form;
+    CallDone();
+  }
+
+  void PreviewForm(int32_t id, const FormData& form) override {
+    preview_form_id_ = id;
+    preview_form_form_ = form;
+    CallDone();
+  }
+
+  void FieldTypePredictionsAvailable(
+      const std::vector<FormDataPredictions>& forms) override {
+    predictions_ = forms;
+    CallDone();
+  }
+
+  void ClearSection() override {
+    called_clear_section_ = true;
+    CallDone();
+  }
+
+  void ClearPreviewedForm() override {
+    called_clear_previewed_form_ = true;
+    CallDone();
+  }
+
+  void FillFieldWithValue(const base::string16& value) override {
+    value_fill_field_ = value;
+    CallDone();
+  }
+
+  void PreviewFieldWithValue(const base::string16& value) override {
+    value_preview_field_ = value;
+    CallDone();
+  }
+
+  void AcceptDataListSuggestion(const base::string16& value) override {
+    value_accept_data_ = value;
+    CallDone();
+  }
+
+  void FillPasswordSuggestion(const base::string16& username,
+                              const base::string16& password) override {}
+
+  void PreviewPasswordSuggestion(const base::string16& username,
+                                 const base::string16& password) override {}
+
+  void ShowInitialPasswordAccountSuggestions(
+      const PasswordFormFillData& form_data) override {}
+
+  void SetUserGestureRequired(bool required) override {}
+
+  void SetSecureContextRequired(bool required) override {}
+
+  void SetFocusRequiresScroll(bool require) override {}
+
+  void SetQueryPasswordSuggestion(bool query) override {}
+
+  void GetElementFormAndFieldData(
+      const std::vector<std::string>& selectors,
+      GetElementFormAndFieldDataCallback callback) override {}
+
+  mojo::AssociatedBindingSet<mojom::AutofillAgent> bindings_;
+
+  base::Closure quit_closure_;
+
+  // Records data received from FillForm() call.
+  int32_t fill_form_id_;
+  base::Optional<FormData> fill_form_form_;
+  // Records data received from PreviewForm() call.
+  int32_t preview_form_id_;
+  base::Optional<FormData> preview_form_form_;
+  // Records data received from FieldTypePredictionsAvailable() call.
+  base::Optional<std::vector<FormDataPredictions>> predictions_;
+  // Records whether ClearSection() got called.
+  bool called_clear_section_;
+  // Records whether ClearPreviewedForm() got called.
+  bool called_clear_previewed_form_;
+  // Records string received from FillFieldWithValue() call.
+  base::Optional<base::string16> value_fill_field_;
+  // Records string received from PreviewFieldWithValue() call.
+  base::Optional<base::string16> value_preview_field_;
+  // Records string received from AcceptDataListSuggestion() call.
+  base::Optional<base::string16> value_accept_data_;
+};
+
 }  // namespace
 
 class MockAutofillManager : public AutofillManager {
  public:
   MockAutofillManager(AutofillDriver* driver, AutofillClient* client)
       : AutofillManager(driver, client, kAppLocale, kDownloadState) {}
-  virtual ~MockAutofillManager() {}
+  ~MockAutofillManager() override {}
 
   MOCK_METHOD0(Reset, void());
+};
+
+class MockAutofillClient : public TestAutofillClient {
+ public:
+  MOCK_METHOD0(OnFirstUserGestureObserved, void());
 };
 
 class TestContentAutofillDriver : public ContentAutofillDriver {
  public:
   TestContentAutofillDriver(content::RenderFrameHost* rfh,
                             AutofillClient* client)
-      : ContentAutofillDriver(rfh, client, kAppLocale, kDownloadState) {
+      : ContentAutofillDriver(rfh,
+                              client,
+                              kAppLocale,
+                              kDownloadState,
+                              nullptr) {
     std::unique_ptr<AutofillManager> autofill_manager(
         new MockAutofillManager(this, client));
     SetAutofillManager(std::move(autofill_manager));
@@ -66,17 +273,27 @@ class TestContentAutofillDriver : public ContentAutofillDriver {
     return static_cast<MockAutofillManager*>(autofill_manager());
   }
 
-  using ContentAutofillDriver::DidNavigateFrame;
+  using ContentAutofillDriver::DidNavigateMainFrame;
 };
 
 class ContentAutofillDriverTest : public content::RenderViewHostTestHarness {
  public:
   void SetUp() override {
     content::RenderViewHostTestHarness::SetUp();
+    // This needed to keep the WebContentsObserverSanityChecker checks happy for
+    // when AppendChild is called.
+    NavigateAndCommit(GURL("about:blank"));
 
-    test_autofill_client_.reset(new TestAutofillClient());
+    test_autofill_client_.reset(new MockAutofillClient());
     driver_.reset(new TestContentAutofillDriver(web_contents()->GetMainFrame(),
                                                 test_autofill_client_.get()));
+
+    blink::AssociatedInterfaceProvider* remote_interfaces =
+        web_contents()->GetMainFrame()->GetRemoteAssociatedInterfaces();
+    remote_interfaces->OverrideBinderForTesting(
+        mojom::AutofillAgent::Name_,
+        base::BindRepeating(&FakeAutofillAgent::BindRequest,
+                            base::Unretained(&fake_agent_)));
   }
 
   void TearDown() override {
@@ -86,119 +303,18 @@ class ContentAutofillDriverTest : public content::RenderViewHostTestHarness {
     content::RenderViewHostTestHarness::TearDown();
   }
 
+  void Navigate(bool same_document) {
+    content::MockNavigationHandle navigation_handle(GURL(), main_rfh());
+    navigation_handle.set_has_committed(true);
+    navigation_handle.set_is_same_document(same_document);
+    driver_->DidNavigateMainFrame(&navigation_handle);
+  }
+
  protected:
-  // Searches for an |AutofillMsg_FillForm| message in the queue of sent IPC
-  // messages. If none is present, returns false. Otherwise, extracts the first
-  // |AutofillMsg_FillForm| message, fills the output parameters with the values
-  // of the message's parameters, and clears the queue of sent messages.
-  bool GetAutofillFillFormMessage(int* page_id, FormData* results) {
-    const uint32_t kMsgID = AutofillMsg_FillForm::ID;
-    const IPC::Message* message =
-        process()->sink().GetFirstMessageMatching(kMsgID);
-    if (!message)
-      return false;
-    std::tuple<int, FormData> autofill_param;
-    if (!AutofillMsg_FillForm::Read(message, &autofill_param))
-      return false;
-    if (page_id)
-      *page_id = std::get<0>(autofill_param);
-    if (results)
-      *results = std::get<1>(autofill_param);
-    process()->sink().ClearMessages();
-    return true;
-  }
-
-  // Searches for an |AutofillMsg_PreviewForm| message in the queue of sent IPC
-  // messages. If none is present, returns false. Otherwise, extracts the first
-  // |AutofillMsg_PreviewForm| message, fills the output parameters with the
-  // values of the message's parameters, and clears the queue of sent messages.
-  bool GetAutofillPreviewFormMessage(int* page_id, FormData* results) {
-    const uint32_t kMsgID = AutofillMsg_PreviewForm::ID;
-    const IPC::Message* message =
-        process()->sink().GetFirstMessageMatching(kMsgID);
-    if (!message)
-      return false;
-    std::tuple<int, FormData> autofill_param;
-    if (!AutofillMsg_PreviewForm::Read(message, &autofill_param))
-      return false;
-    if (page_id)
-      *page_id = std::get<0>(autofill_param);
-    if (results)
-      *results = std::get<1>(autofill_param);
-    process()->sink().ClearMessages();
-    return true;
-  }
-
-  // Searches for an |AutofillMsg_FieldTypePredictionsAvailable| message in the
-  // queue of sent IPC messages. If none is present, returns false. Otherwise,
-  // extracts the first |AutofillMsg_FieldTypePredictionsAvailable| message,
-  // fills the output parameter with the values of the message's parameter, and
-  // clears the queue of sent messages.
-  bool GetFieldTypePredictionsAvailable(
-      std::vector<FormDataPredictions>* predictions) {
-    const uint32_t kMsgID = AutofillMsg_FieldTypePredictionsAvailable::ID;
-    const IPC::Message* message =
-        process()->sink().GetFirstMessageMatching(kMsgID);
-    if (!message)
-      return false;
-    std::tuple<std::vector<FormDataPredictions> > autofill_param;
-    if (!AutofillMsg_FieldTypePredictionsAvailable::Read(message,
-                                                         &autofill_param))
-      return false;
-    if (predictions)
-      *predictions = std::get<0>(autofill_param);
-
-    process()->sink().ClearMessages();
-    return true;
-  }
-
-  // Searches for a message matching |messageID| in the queue of sent IPC
-  // messages. If none is present, returns false. Otherwise, extracts the first
-  // matching message, fills the output parameter with the string16 from the
-  // message's parameter, and clears the queue of sent messages.
-  bool GetString16FromMessageWithID(uint32_t messageID, base::string16* value) {
-    const IPC::Message* message =
-        process()->sink().GetFirstMessageMatching(messageID);
-    if (!message)
-      return false;
-    std::tuple<base::string16> autofill_param;
-    switch (messageID) {
-      case AutofillMsg_FillFieldWithValue::ID:
-        if (!AutofillMsg_FillFieldWithValue::Read(message, &autofill_param))
-          return false;
-        break;
-      case AutofillMsg_PreviewFieldWithValue::ID:
-        if (!AutofillMsg_PreviewFieldWithValue::Read(message, &autofill_param))
-          return false;
-        break;
-      case AutofillMsg_AcceptDataListSuggestion::ID:
-        if (!AutofillMsg_AcceptDataListSuggestion::Read(message,
-                                                        &autofill_param))
-          return false;
-        break;
-      default:
-        NOTREACHED();
-    }
-    if (value)
-      *value = std::get<0>(autofill_param);
-    process()->sink().ClearMessages();
-    return true;
-  }
-
-  // Searches for a message matching |messageID| in the queue of sent IPC
-  // messages. If none is present, returns false. Otherwise, clears the queue
-  // of sent messages and returns true.
-  bool HasMessageMatchingID(uint32_t messageID) {
-    const IPC::Message* message =
-        process()->sink().GetFirstMessageMatching(messageID);
-    if (!message)
-      return false;
-    process()->sink().ClearMessages();
-    return true;
-  }
-
-  std::unique_ptr<TestAutofillClient> test_autofill_client_;
+  std::unique_ptr<MockAutofillClient> test_autofill_client_;
   std::unique_ptr<TestContentAutofillDriver> driver_;
+
+  FakeAutofillAgent fake_agent_;
 };
 
 TEST_F(ContentAutofillDriverTest, GetURLRequestContext) {
@@ -210,37 +326,33 @@ TEST_F(ContentAutofillDriverTest, GetURLRequestContext) {
   EXPECT_EQ(request_context, expected_request_context);
 }
 
-TEST_F(ContentAutofillDriverTest, NavigatedToDifferentPage) {
+TEST_F(ContentAutofillDriverTest, NavigatedMainFrameDifferentDocument) {
   EXPECT_CALL(*driver_->mock_autofill_manager(), Reset());
-  content::LoadCommittedDetails details = content::LoadCommittedDetails();
-  details.is_main_frame = true;
-  details.is_in_page = false;
-  ASSERT_TRUE(details.is_navigation_to_different_page());
-  content::FrameNavigateParams params = content::FrameNavigateParams();
-  driver_->DidNavigateFrame(details, params);
+  Navigate(/*same_document=*/false);
 }
 
-TEST_F(ContentAutofillDriverTest, NavigatedWithinSamePage) {
+TEST_F(ContentAutofillDriverTest, NavigatedMainFrameSameDocument) {
   EXPECT_CALL(*driver_->mock_autofill_manager(), Reset()).Times(0);
-  content::LoadCommittedDetails details = content::LoadCommittedDetails();
-  details.is_main_frame = false;
-  ASSERT_TRUE(!details.is_navigation_to_different_page());
-  content::FrameNavigateParams params = content::FrameNavigateParams();
-  driver_->DidNavigateFrame(details, params);
+  Navigate(/*same_document=*/true);
 }
 
 TEST_F(ContentAutofillDriverTest, FormDataSentToRenderer_FillForm) {
   int input_page_id = 42;
   FormData input_form_data;
   test::CreateTestAddressFormData(&input_form_data);
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
   driver_->SendFormDataToRenderer(
       input_page_id, AutofillDriver::FORM_DATA_ACTION_FILL, input_form_data);
 
+  run_loop.RunUntilIdle();
+
   int output_page_id = 0;
   FormData output_form_data;
-  EXPECT_FALSE(
-      GetAutofillPreviewFormMessage(&output_page_id, &output_form_data));
-  EXPECT_TRUE(GetAutofillFillFormMessage(&output_page_id, &output_form_data));
+  EXPECT_FALSE(fake_agent_.GetAutofillPreviewFormMessage(&output_page_id,
+                                                         &output_form_data));
+  EXPECT_TRUE(fake_agent_.GetAutofillFillFormMessage(&output_page_id,
+                                                     &output_form_data));
   EXPECT_EQ(input_page_id, output_page_id);
   EXPECT_TRUE(input_form_data.SameFormAs(output_form_data));
 }
@@ -249,26 +361,21 @@ TEST_F(ContentAutofillDriverTest, FormDataSentToRenderer_PreviewForm) {
   int input_page_id = 42;
   FormData input_form_data;
   test::CreateTestAddressFormData(&input_form_data);
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
   driver_->SendFormDataToRenderer(
       input_page_id, AutofillDriver::FORM_DATA_ACTION_PREVIEW, input_form_data);
 
+  run_loop.RunUntilIdle();
+
   int output_page_id = 0;
   FormData output_form_data;
-  EXPECT_FALSE(GetAutofillFillFormMessage(&output_page_id, &output_form_data));
-  EXPECT_TRUE(
-      GetAutofillPreviewFormMessage(&output_page_id, &output_form_data));
+  EXPECT_FALSE(fake_agent_.GetAutofillFillFormMessage(&output_page_id,
+                                                      &output_form_data));
+  EXPECT_TRUE(fake_agent_.GetAutofillPreviewFormMessage(&output_page_id,
+                                                        &output_form_data));
   EXPECT_EQ(input_page_id, output_page_id);
   EXPECT_TRUE(input_form_data.SameFormAs(output_form_data));
-}
-
-TEST_F(ContentAutofillDriverTest,
-       TypePredictionsNotSentToRendererWhenDisabled) {
-  FormData form;
-  test::CreateTestAddressFormData(&form);
-  FormStructure form_structure(form);
-  std::vector<FormStructure*> forms(1, &form_structure);
-  driver_->SendAutofillTypePredictionsToRenderer(forms);
-  EXPECT_FALSE(GetFieldTypePredictionsAvailable(NULL));
 }
 
 TEST_F(ContentAutofillDriverTest, TypePredictionsSentToRendererWhenEnabled) {
@@ -281,49 +388,72 @@ TEST_F(ContentAutofillDriverTest, TypePredictionsSentToRendererWhenEnabled) {
   std::vector<FormStructure*> forms(1, &form_structure);
   std::vector<FormDataPredictions> expected_type_predictions =
       FormStructure::GetFieldTypePredictions(forms);
+
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
   driver_->SendAutofillTypePredictionsToRenderer(forms);
+  run_loop.RunUntilIdle();
 
   std::vector<FormDataPredictions> output_type_predictions;
-  EXPECT_TRUE(GetFieldTypePredictionsAvailable(&output_type_predictions));
+  EXPECT_TRUE(
+      fake_agent_.GetFieldTypePredictionsAvailable(&output_type_predictions));
   EXPECT_EQ(expected_type_predictions, output_type_predictions);
 }
 
 TEST_F(ContentAutofillDriverTest, AcceptDataListSuggestion) {
   base::string16 input_value(base::ASCIIToUTF16("barfoo"));
   base::string16 output_value;
+
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
   driver_->RendererShouldAcceptDataListSuggestion(input_value);
-  EXPECT_TRUE(GetString16FromMessageWithID(
-      AutofillMsg_AcceptDataListSuggestion::ID, &output_value));
+  run_loop.RunUntilIdle();
+
+  EXPECT_TRUE(fake_agent_.GetString16AcceptDataListSuggestion(&output_value));
   EXPECT_EQ(input_value, output_value);
 }
 
-TEST_F(ContentAutofillDriverTest, ClearFilledFormSentToRenderer) {
-  driver_->RendererShouldClearFilledForm();
-  EXPECT_TRUE(HasMessageMatchingID(AutofillMsg_ClearForm::ID));
+TEST_F(ContentAutofillDriverTest, ClearFilledSectionSentToRenderer) {
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
+  driver_->RendererShouldClearFilledSection();
+  run_loop.RunUntilIdle();
+
+  EXPECT_TRUE(fake_agent_.GetCalledClearSection());
 }
 
 TEST_F(ContentAutofillDriverTest, ClearPreviewedFormSentToRenderer) {
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
   driver_->RendererShouldClearPreviewedForm();
-  EXPECT_TRUE(HasMessageMatchingID(AutofillMsg_ClearPreviewedForm::ID));
+  run_loop.RunUntilIdle();
+
+  EXPECT_TRUE(fake_agent_.GetCalledClearPreviewedForm());
 }
 
 TEST_F(ContentAutofillDriverTest, FillFieldWithValue) {
   base::string16 input_value(base::ASCIIToUTF16("barqux"));
   base::string16 output_value;
 
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
   driver_->RendererShouldFillFieldWithValue(input_value);
-  EXPECT_TRUE(GetString16FromMessageWithID(AutofillMsg_FillFieldWithValue::ID,
-                                           &output_value));
+  run_loop.RunUntilIdle();
+
+  EXPECT_TRUE(fake_agent_.GetString16FillFieldWithValue(&output_value));
   EXPECT_EQ(input_value, output_value);
 }
 
 TEST_F(ContentAutofillDriverTest, PreviewFieldWithValue) {
   base::string16 input_value(base::ASCIIToUTF16("barqux"));
   base::string16 output_value;
+
+  base::RunLoop run_loop;
+  fake_agent_.SetQuitLoopClosure(run_loop.QuitClosure());
   driver_->RendererShouldPreviewFieldWithValue(input_value);
-  EXPECT_TRUE(GetString16FromMessageWithID(
-      AutofillMsg_PreviewFieldWithValue::ID,
-      &output_value));
+  run_loop.RunUntilIdle();
+
+  EXPECT_TRUE(fake_agent_.GetString16PreviewFieldWithValue(&output_value));
   EXPECT_EQ(input_value, output_value);
 }
 

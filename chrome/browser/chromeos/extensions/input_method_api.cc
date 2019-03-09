@@ -5,41 +5,44 @@
 #include "chrome/browser/chromeos/extensions/input_method_api.h"
 
 #include <stddef.h>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
 
-#include "ash/shell.h"
+#include "base/bind.h"
+#include "base/callback.h"
 #include "base/command_line.h"
 #include "base/lazy_instance.h"
-#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/chromeos/extensions/dictionary_event_router.h"
 #include "chrome/browser/chromeos/extensions/ime_menu_event_router.h"
 #include "chrome/browser/chromeos/extensions/input_method_event_router.h"
-#include "chrome/browser/chromeos/input_method/input_method_util.h"
 #include "chrome/browser/extensions/api/input_ime/input_ime_api.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/spellchecker/spellcheck_factory.h"
 #include "chrome/browser/spellchecker/spellcheck_service.h"
 #include "chrome/browser/sync/profile_sync_service_factory.h"
+#include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/extensions/api/input_method_private.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/chromeos_switches.h"
-#include "components/browser_sync/browser/profile_sync_service.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "components/prefs/pref_service.h"
+#include "components/prefs/scoped_user_pref_update.h"
+#include "components/sync/driver/sync_service.h"
+#include "components/sync/driver/sync_user_settings.h"
 #include "extensions/browser/extension_function_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "ui/base/ime/chromeos/extension_ime_util.h"
 #include "ui/base/ime/chromeos/ime_keyboard.h"
 #include "ui/base/ime/chromeos/input_method_descriptor.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
-#include "ui/keyboard/keyboard_controller.h"
-#include "ui/keyboard/keyboard_util.h"
+#include "ui/base/ime/chromeos/input_method_util.h"
+#include "ui/base/ime/ime_bridge.h"
 
 namespace AddWordToDictionary =
     extensions::api::input_method_private::AddWordToDictionary;
@@ -59,6 +62,12 @@ namespace OnImeMenuListChanged =
     extensions::api::input_method_private::OnImeMenuListChanged;
 namespace OnImeMenuItemsChanged =
     extensions::api::input_method_private::OnImeMenuItemsChanged;
+namespace GetSurroundingText =
+    extensions::api::input_method_private::GetSurroundingText;
+namespace GetSetting = extensions::api::input_method_private::GetSetting;
+namespace SetSetting = extensions::api::input_method_private::SetSetting;
+namespace OnSettingsChanged =
+    extensions::api::input_method_private::OnSettingsChanged;
 
 namespace {
 
@@ -82,10 +91,9 @@ InputMethodPrivateGetInputMethodConfigFunction::Run() {
       !base::CommandLine::ForCurrentProcess()->HasSwitch(
           chromeos::switches::kDisablePhysicalKeyboardAutocorrect));
   output->SetBoolean("isImeMenuActivated",
-                     base::FeatureList::IsEnabled(features::kOptInImeMenu) &&
-                         Profile::FromBrowserContext(browser_context())
-                             ->GetPrefs()
-                             ->GetBoolean(prefs::kLanguageImeMenuActivated));
+                     Profile::FromBrowserContext(browser_context())
+                         ->GetPrefs()
+                         ->GetBoolean(prefs::kLanguageImeMenuActivated));
   return RespondNow(OneArgument(std::move(output)));
 #endif
 }
@@ -97,7 +105,7 @@ InputMethodPrivateGetCurrentInputMethodFunction::Run() {
 #else
   chromeos::input_method::InputMethodManager* manager =
       chromeos::input_method::InputMethodManager::Get();
-  return RespondNow(OneArgument(base::MakeUnique<base::StringValue>(
+  return RespondNow(OneArgument(std::make_unique<base::Value>(
       manager->GetActiveIMEState()->GetCurrentInputMethod().id())));
 #endif
 }
@@ -142,11 +150,11 @@ InputMethodPrivateGetInputMethodsFunction::Run() {
   for (size_t i = 0; i < input_methods->size(); ++i) {
     const chromeos::input_method::InputMethodDescriptor& input_method =
         (*input_methods)[i];
-    base::DictionaryValue* val = new base::DictionaryValue();
+    auto val = std::make_unique<base::DictionaryValue>();
     val->SetString("id", input_method.id());
     val->SetString("name", util->GetInputMethodLongName(input_method));
     val->SetString("indicator", util->GetInputMethodShortName(input_method));
-    output->Append(val);
+    output->Append(std::move(val));
   }
   return RespondNow(OneArgument(std::move(output)));
 #endif
@@ -199,7 +207,7 @@ InputMethodPrivateAddWordToDictionaryFunction::Run() {
   // Invalid words:
   // - Already in the dictionary.
   // - Not a UTF8 string.
-  // - Longer than 99 bytes (MAX_CUSTOM_DICTIONARY_WORD_BYTES).
+  // - Longer than 99 bytes (kMaxCustomDictionaryWordBytes).
   // - Leading/trailing whitespace.
   // - Empty.
   return RespondNow(Error("Unable to add invalid word to dictionary."));
@@ -211,13 +219,12 @@ InputMethodPrivateGetEncryptSyncEnabledFunction::Run() {
 #if !defined(OS_CHROMEOS)
   EXTENSION_FUNCTION_VALIDATE(false);
 #else
-  ProfileSyncService* profile_sync_service =
-      ProfileSyncServiceFactory::GetForProfile(
-          Profile::FromBrowserContext(browser_context()));
-  if (!profile_sync_service)
+  syncer::SyncService* sync_service = ProfileSyncServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context()));
+  if (!sync_service)
     return RespondNow(Error("Sync service is not ready for current profile."));
-  std::unique_ptr<base::Value> ret(new base::FundamentalValue(
-      profile_sync_service->IsEncryptEverythingEnabled()));
+  std::unique_ptr<base::Value> ret(new base::Value(
+      sync_service->GetUserSettings()->IsEncryptEverythingEnabled()));
   return RespondNow(OneArgument(std::move(ret)));
 #endif
 }
@@ -243,27 +250,12 @@ InputMethodPrivateShowInputViewFunction::Run() {
 #if !defined(OS_CHROMEOS)
   EXTENSION_FUNCTION_VALIDATE(false);
 #else
-  keyboard::KeyboardController* keyboard_controller =
-      keyboard::KeyboardController::GetInstance();
-  if (keyboard_controller) {
-    keyboard_controller->ShowKeyboard(false);
-    return RespondNow(NoArguments());
-  }
-
-  if (keyboard::IsKeyboardEnabled())
-    return RespondNow(Error(kErrorFailToShowInputView));
-
-  // Forcibly enables the a11y onscreen keyboard if there is on keyboard enabled
-  // for now. And re-disables it after showing once.
-  keyboard::SetAccessibilityKeyboardEnabled(true);
-  ash::Shell::GetInstance()->CreateKeyboard();
-  keyboard_controller = keyboard::KeyboardController::GetInstance();
-  if (!keyboard_controller) {
-    keyboard::SetAccessibilityKeyboardEnabled(false);
+  auto* keyboard_client = ChromeKeyboardControllerClient::Get();
+  if (!keyboard_client->is_keyboard_enabled()) {
     return RespondNow(Error(kErrorFailToShowInputView));
   }
-  keyboard_controller->ShowKeyboard(false);
-  keyboard::SetAccessibilityKeyboardEnabled(false);
+
+  keyboard_client->ShowKeyboard();
   return RespondNow(NoArguments());
 #endif
 }
@@ -289,11 +281,112 @@ InputMethodPrivateOpenOptionsPageFunction::Run() {
     if (!options_page_url.is_empty()) {
       Browser* browser = chrome::FindBrowserWithWebContents(web_contents);
       content::OpenURLParams url_params(options_page_url, content::Referrer(),
-                                        SINGLETON_TAB, ui::PAGE_TRANSITION_LINK,
-                                        false);
+                                        WindowOpenDisposition::SINGLETON_TAB,
+                                        ui::PAGE_TRANSITION_LINK, false);
       browser->OpenURL(url_params);
     }
   }
+  return RespondNow(NoArguments());
+#endif
+}
+
+ExtensionFunction::ResponseAction
+InputMethodPrivateGetSurroundingTextFunction::Run() {
+#if !defined(OS_CHROMEOS)
+  EXTENSION_FUNCTION_VALIDATE(false);
+#else
+  ui::IMEInputContextHandlerInterface* input_context =
+      ui::IMEBridge::Get()->GetInputContextHandler();
+  if (!input_context)
+    return RespondNow(Error("No input context handler."));
+
+  std::unique_ptr<GetSurroundingText::Params> params(
+      GetSurroundingText::Params::Create(*args_));
+  if (params->before_length < 0 || params->after_length < 0)
+    return RespondNow(Error("Invalid parameters."));
+
+  uint32_t param_before_length = (uint32_t)params->before_length;
+  uint32_t param_after_length = (uint32_t)params->after_length;
+
+  ui::SurroundingTextInfo info = input_context->GetSurroundingTextInfo();
+  if (!info.selection_range.IsValid())
+    return RespondNow(OneArgument(std::make_unique<base::Value>()));
+
+  auto ret = std::make_unique<base::DictionaryValue>();
+  uint32_t selection_start = info.selection_range.start();
+  uint32_t selection_end = info.selection_range.end();
+  // Makes sure |selection_start| is less or equals to |selection_end|.
+  if (selection_start > selection_end)
+    std::swap(selection_start, selection_end);
+
+  uint32_t text_before_end = selection_start;
+  uint32_t text_before_start = text_before_end > param_before_length
+                                   ? text_before_end - param_before_length
+                                   : 0;
+  uint32_t text_after_start = selection_end;
+  uint32_t text_after_end =
+      text_after_start + param_after_length < info.surrounding_text.length()
+          ? text_after_start + param_after_length
+          : info.surrounding_text.length();
+
+  ret->SetString("before",
+                 info.surrounding_text.substr(
+                     text_before_start, text_before_end - text_before_start));
+  ret->SetString("selected",
+                 info.surrounding_text.substr(
+                     text_before_end, text_after_start - text_before_end));
+  ret->SetString(
+      "after", info.surrounding_text.substr(text_after_start,
+                                            text_after_end - text_after_start));
+
+  return RespondNow(OneArgument(std::move(ret)));
+#endif
+}
+
+ExtensionFunction::ResponseAction InputMethodPrivateGetSettingFunction::Run() {
+#if !defined(OS_CHROMEOS)
+  EXTENSION_FUNCTION_VALIDATE(false);
+#else
+  const auto params = GetSetting::Params::Create(*args_);
+  EXTENSION_FUNCTION_VALIDATE(params.get());
+
+  const base::DictionaryValue* inputMethods =
+      Profile::FromBrowserContext(browser_context())
+          ->GetPrefs()
+          ->GetDictionary(prefs::kLanguageInputMethodSpecificSettings);
+  const base::Value* result =
+      inputMethods->FindPath({params->engine_id, params->key});
+  return RespondNow(
+      OneArgument(result ? std::make_unique<base::Value>(result->Clone())
+                         : std::make_unique<base::Value>()));
+#endif
+}
+
+ExtensionFunction::ResponseAction InputMethodPrivateSetSettingFunction::Run() {
+#if !defined(OS_CHROMEOS)
+  EXTENSION_FUNCTION_VALIDATE(false);
+#else
+  const auto params = SetSetting::Params::Create(*args_);
+  EXTENSION_FUNCTION_VALIDATE(params.get());
+
+  DictionaryPrefUpdate update(
+      Profile::FromBrowserContext(browser_context())->GetPrefs(),
+      prefs::kLanguageInputMethodSpecificSettings);
+  update->SetPath({params->engine_id, params->key}, params->value->Clone());
+
+  // The router will only send the event to extensions that are listening.
+  extensions::EventRouter* router =
+      extensions::EventRouter::Get(browser_context());
+  if (router->HasEventListener(OnSettingsChanged::kEventName)) {
+    auto event = std::make_unique<extensions::Event>(
+        extensions::events::INPUT_METHOD_PRIVATE_ON_SETTINGS_CHANGED,
+        OnSettingsChanged::kEventName,
+        OnSettingsChanged::Create(params->engine_id, params->key,
+                                  params->value->Clone()),
+        context_);
+    router->BroadcastEvent(std::move(event));
+  }
+
   return RespondNow(NoArguments());
 #endif
 }
@@ -311,19 +404,19 @@ InputMethodAPI::InputMethodAPI(content::BrowserContext* context)
       ->RegisterObserver(this, OnImeMenuListChanged::kEventName);
   EventRouter::Get(context_)
       ->RegisterObserver(this, OnImeMenuItemsChanged::kEventName);
-  ExtensionFunctionRegistry* registry =
+  ExtensionFunctionRegistry& registry =
       ExtensionFunctionRegistry::GetInstance();
-  registry->RegisterFunction<InputMethodPrivateGetInputMethodConfigFunction>();
-  registry->RegisterFunction<InputMethodPrivateGetCurrentInputMethodFunction>();
-  registry->RegisterFunction<InputMethodPrivateSetCurrentInputMethodFunction>();
-  registry->RegisterFunction<InputMethodPrivateGetInputMethodsFunction>();
+  registry.RegisterFunction<InputMethodPrivateGetInputMethodConfigFunction>();
+  registry.RegisterFunction<InputMethodPrivateGetCurrentInputMethodFunction>();
+  registry.RegisterFunction<InputMethodPrivateSetCurrentInputMethodFunction>();
+  registry.RegisterFunction<InputMethodPrivateGetInputMethodsFunction>();
   registry
-      ->RegisterFunction<InputMethodPrivateFetchAllDictionaryWordsFunction>();
-  registry->RegisterFunction<InputMethodPrivateAddWordToDictionaryFunction>();
-  registry->RegisterFunction<InputMethodPrivateGetEncryptSyncEnabledFunction>();
-  registry->RegisterFunction<
-      InputMethodPrivateNotifyImeMenuItemActivatedFunction>();
-  registry->RegisterFunction<InputMethodPrivateOpenOptionsPageFunction>();
+      .RegisterFunction<InputMethodPrivateFetchAllDictionaryWordsFunction>();
+  registry.RegisterFunction<InputMethodPrivateAddWordToDictionaryFunction>();
+  registry.RegisterFunction<InputMethodPrivateGetEncryptSyncEnabledFunction>();
+  registry
+      .RegisterFunction<InputMethodPrivateNotifyImeMenuItemActivatedFunction>();
+  registry.RegisterFunction<InputMethodPrivateOpenOptionsPageFunction>();
 }
 
 InputMethodAPI::~InputMethodAPI() {
@@ -366,8 +459,9 @@ void InputMethodAPI::OnListenerAdded(
   }
 }
 
-static base::LazyInstance<BrowserContextKeyedAPIFactory<InputMethodAPI> >
-    g_factory = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<
+    BrowserContextKeyedAPIFactory<InputMethodAPI>>::DestructorAtExit g_factory =
+    LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<InputMethodAPI>*

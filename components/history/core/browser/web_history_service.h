@@ -7,32 +7,39 @@
 
 #include <stddef.h>
 
-#include <set>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace base {
 class DictionaryValue;
 }
 
-namespace net {
-class URLRequestContextGetter;
+namespace identity {
+class IdentityManager;
+}
+
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace version_info {
 enum class Channel;
 }
 
-class OAuth2TokenService;
-class SigninManagerBase;
-
 namespace history {
+
+class WebHistoryServiceObserver;
 
 // Provides an API for querying Google servers for a signed-in user's
 // synced history visits. It is roughly analogous to HistoryService, and
@@ -90,10 +97,12 @@ class WebHistoryService : public KeyedService {
   typedef base::Callback<void(Request*, bool success)> CompletionCallback;
 
   WebHistoryService(
-      OAuth2TokenService* token_service,
-      SigninManagerBase* signin_manager,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context);
+      identity::IdentityManager* identity_manager,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   ~WebHistoryService() override;
+
+  void AddObserver(WebHistoryServiceObserver* observer);
+  void RemoveObserver(WebHistoryServiceObserver* observer);
 
   // Searches synced history for visits matching |text_query|. The timeframe to
   // search, along with other options, is specified in |options|. If
@@ -104,30 +113,44 @@ class WebHistoryService : public KeyedService {
   std::unique_ptr<Request> QueryHistory(
       const base::string16& text_query,
       const QueryOptions& options,
-      const QueryWebHistoryCallback& callback);
+      const QueryWebHistoryCallback& callback,
+      const net::PartialNetworkTrafficAnnotationTag&
+          partial_traffic_annotation);
 
   // Removes all visits to specified URLs in specific time ranges.
   // This is the of equivalent HistoryService::ExpireHistory().
   void ExpireHistory(const std::vector<ExpireHistoryArgs>& expire_list,
-                     const ExpireWebHistoryCallback& callback);
+                     const ExpireWebHistoryCallback& callback,
+                     const net::PartialNetworkTrafficAnnotationTag&
+                         partial_traffic_annotation);
 
   // Removes all visits to specified URLs in the given time range.
   // This is the of equivalent HistoryService::ExpireHistoryBetween().
   void ExpireHistoryBetween(const std::set<GURL>& restrict_urls,
                             base::Time begin_time,
                             base::Time end_time,
-                            const ExpireWebHistoryCallback& callback);
+                            const ExpireWebHistoryCallback& callback,
+                            const net::PartialNetworkTrafficAnnotationTag&
+                                partial_traffic_annotation);
 
   // Requests whether audio history recording is enabled.
-  virtual void GetAudioHistoryEnabled(const AudioWebHistoryCallback& callback);
+  virtual void GetAudioHistoryEnabled(
+      const AudioWebHistoryCallback& callback,
+      const net::PartialNetworkTrafficAnnotationTag&
+          partial_traffic_annotation);
 
   // Sets the state of audio history recording to |new_enabled_value|.
-  virtual void SetAudioHistoryEnabled(bool new_enabled_value,
-                                      const AudioWebHistoryCallback& callback);
+  virtual void SetAudioHistoryEnabled(
+      bool new_enabled_value,
+      const AudioWebHistoryCallback& callback,
+      const net::PartialNetworkTrafficAnnotationTag&
+          partial_traffic_annotation);
 
   // Queries whether web and app activity is enabled on the server.
   virtual void QueryWebAndAppActivity(
-      const QueryWebAndAppActivityCallback& callback);
+      const QueryWebAndAppActivityCallback& callback,
+      const net::PartialNetworkTrafficAnnotationTag&
+          partial_traffic_annotation);
 
   // Used for tests.
   size_t GetNumberOfPendingAudioHistoryRequests();
@@ -135,13 +158,17 @@ class WebHistoryService : public KeyedService {
   // Whether there are other forms of browsing history stored on the server.
   void QueryOtherFormsOfBrowsingHistory(
       version_info::Channel channel,
-      const QueryOtherFormsOfBrowsingHistoryCallback& callback);
+      const QueryOtherFormsOfBrowsingHistoryCallback& callback,
+      const net::PartialNetworkTrafficAnnotationTag&
+          partial_traffic_annotation);
 
  protected:
   // This function is pulled out for testing purposes. Caller takes ownership of
   // the new Request.
   virtual Request* CreateRequest(const GURL& url,
-                                 const CompletionCallback& callback);
+                                 const CompletionCallback& callback,
+                                 const net::PartialNetworkTrafficAnnotationTag&
+                                     partial_traffic_annotation);
 
   // Extracts a JSON-encoded HTTP response into a DictionaryValue.
   // If |request|'s HTTP response code indicates failure, or if the response
@@ -191,13 +218,12 @@ class WebHistoryService : public KeyedService {
  private:
   friend class WebHistoryServiceTest;
 
-  // Stores pointer to OAuth2TokenService and SigninManagerBase instance. They
-  // must outlive the WebHistoryService and can be null during tests.
-  OAuth2TokenService* token_service_;
-  SigninManagerBase* signin_manager_;
+  // Stores pointer to IdentityManager instance. It must outlive the
+  // WebHistoryService and can be null during tests.
+  identity::IdentityManager* identity_manager_;
 
   // Request context getter to use.
-  scoped_refptr<net::URLRequestContextGetter> request_context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   // Stores the version_info token received from the server in response to
   // a mutation operation (e.g., deleting history). This is used to ensure that
@@ -206,18 +232,23 @@ class WebHistoryService : public KeyedService {
 
   // Pending expiration requests to be canceled if not complete by profile
   // shutdown.
-  std::set<Request*> pending_expire_requests_;
+  std::map<Request*, std::unique_ptr<Request>> pending_expire_requests_;
 
   // Pending requests to be canceled if not complete by profile shutdown.
-  std::set<Request*> pending_audio_history_requests_;
+  std::map<Request*, std::unique_ptr<Request>> pending_audio_history_requests_;
 
   // Pending web and app activity queries to be canceled if not complete by
   // profile shutdown.
-  std::set<Request*> pending_web_and_app_activity_requests_;
+  std::map<Request*, std::unique_ptr<Request>>
+      pending_web_and_app_activity_requests_;
 
   // Pending queries for other forms of browsing history to be canceled if not
   // complete by profile shutdown.
-  std::set<Request*> pending_other_forms_of_browsing_history_requests_;
+  std::map<Request*, std::unique_ptr<Request>>
+      pending_other_forms_of_browsing_history_requests_;
+
+  // Observers.
+  base::ObserverList<WebHistoryServiceObserver, true>::Unchecked observer_list_;
 
   base::WeakPtrFactory<WebHistoryService> weak_ptr_factory_;
 

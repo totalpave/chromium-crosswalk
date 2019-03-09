@@ -4,7 +4,6 @@
 
 #include "ui/base/l10n/l10n_util_win.h"
 
-#include <windowsx.h>
 #include <algorithm>
 #include <iterator>
 
@@ -15,54 +14,12 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/i18n.h"
-#include "base/win/windows_version.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/display/display.h"
-#include "ui/display/win/dpi.h"
+#include "ui/display/win/screen_win.h"
 #include "ui/strings/grit/app_locale_settings.h"
 
 namespace {
-
-void AdjustLogFont(const base::string16& font_family,
-                   double font_size_scaler,
-                   double dpi_scale,
-                   LOGFONT* logfont) {
-  DCHECK(font_size_scaler > 0);
-  font_size_scaler = std::max(std::min(font_size_scaler, 2.0), 0.7);
-  // Font metrics are computed in pixels and scale in high-DPI mode.
-  // Normalized by the DPI scale factor in order to work in DIP with
-  // Views/Aura. Call with dpi_scale=1 to keep the size in pixels.
-  font_size_scaler /= dpi_scale;
-  logfont->lfHeight = static_cast<long>(font_size_scaler *
-      static_cast<double>(abs(logfont->lfHeight)) + 0.5) *
-      (logfont->lfHeight > 0 ? 1 : -1);
-
-  // TODO(jungshik): We may want to check the existence of the font.
-  // If it's not installed, we shouldn't adjust the font.
-  if (font_family != L"default") {
-    int name_len = std::min(static_cast<int>(font_family.size()),
-                            LF_FACESIZE -1);
-    memcpy(logfont->lfFaceName, font_family.data(), name_len * sizeof(WORD));
-    logfont->lfFaceName[name_len] = 0;
-  }
-}
-
-bool IsFontPresent(const wchar_t* font_name) {
-  HFONT hfont = CreateFont(12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                           font_name);
-  if (hfont == NULL)
-    return false;
-  HDC dc = GetDC(0);
-  HGDIOBJ oldFont = static_cast<HFONT>(SelectObject(dc, hfont));
-  WCHAR actual_font_name[LF_FACESIZE];
-  int size_ret = GetTextFace(dc, LF_FACESIZE, actual_font_name);
-  SelectObject(dc, oldFont);
-  DeleteObject(hfont);
-  ReleaseDC(0, dc);
-  // We don't have to worry about East Asian fonts with locale-dependent
-  // names here.
-  return (size_ret != 0) && wcscmp(font_name, actual_font_name) == 0;
-}
 
 class OverrideLocaleHolder {
  public:
@@ -76,8 +33,8 @@ class OverrideLocaleHolder {
   DISALLOW_COPY_AND_ASSIGN(OverrideLocaleHolder);
 };
 
-base::LazyInstance<OverrideLocaleHolder> override_locale_holder =
-    LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<OverrideLocaleHolder>::DestructorAtExit
+    override_locale_holder = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -107,13 +64,7 @@ void HWNDSetRTLLayout(HWND hwnd) {
 }
 
 bool IsLocaleSupportedByOS(const std::string& locale) {
-  // Block Amharic on Windows XP unless 'Abyssinica SIL' font is present.
-  // On Win XP, no Ethiopic/Amahric font is availabel out of box. We hard-coded
-  // 'Abyssinica SIL' in the resource bundle to use in the UI. Check
-  // for its presence to determine whether or not to support Amharic UI on XP.
-  return (base::win::GetVersion() >= base::win::VERSION_VISTA ||
-      !base::LowerCaseEqualsASCII(locale, "am") ||
-      IsFontPresent(L"Abyssinica SIL"));
+  return true;
 }
 
 bool NeedOverrideDefaultUIFont(base::string16* override_font_family,
@@ -123,19 +74,9 @@ bool NeedOverrideDefaultUIFont(base::string16* override_font_family,
   // the default Windows fonts are too small to be legible.  For those
   // locales, IDS_UI_FONT_FAMILY is set to an actual font family to
   // use while for other locales, it's set to 'default'.
-
-  // XP and Vista or later have different font size issues and
-  // we need separate ui font specifications.
-  int ui_font_family_id = IDS_UI_FONT_FAMILY;
-  int ui_font_size_scaler_id = IDS_UI_FONT_SIZE_SCALER;
-  if (base::win::GetVersion() < base::win::VERSION_VISTA) {
-    ui_font_family_id = IDS_UI_FONT_FAMILY_XP;
-    ui_font_size_scaler_id = IDS_UI_FONT_SIZE_SCALER_XP;
-  }
-
-  base::string16 ui_font_family = GetStringUTF16(ui_font_family_id);
+  base::string16 ui_font_family = GetStringUTF16(IDS_UI_FONT_FAMILY);
   int scaler100;
-  if (!base::StringToInt(l10n_util::GetStringUTF16(ui_font_size_scaler_id),
+  if (!base::StringToInt(l10n_util::GetStringUTF16(IDS_UI_FONT_SIZE_SCALER),
                          &scaler100))
     return false;
 
@@ -147,44 +88,12 @@ bool NeedOverrideDefaultUIFont(base::string16* override_font_family,
   if ((ui_font_family == L"default" && scaler100 == 100) ||
       ui_font_family.empty())
     return false;
-  if (override_font_family && font_size_scaler) {
+
+  if (override_font_family && ui_font_family != L"default")
     override_font_family->swap(ui_font_family);
+  if (font_size_scaler)
     *font_size_scaler = scaler100 / 100.0;
-  }
   return true;
-}
-
-void AdjustUIFont(LOGFONT* logfont) {
-  float dpi_scale = display::win::GetDPIScale();
-  if (display::Display::HasForceDeviceScaleFactor()) {
-    // If the scale is forced, we don't need to adjust it here.
-    dpi_scale = 1.0f;
-  }
-  AdjustUIFontForDIP(dpi_scale, logfont);
-}
-
-void AdjustUIFontForDIP(float dpi_scale, LOGFONT* logfont) {
-  base::string16 ui_font_family = L"default";
-  double ui_font_size_scaler = 1;
-  if (NeedOverrideDefaultUIFont(&ui_font_family, &ui_font_size_scaler) ||
-      dpi_scale != 1) {
-    AdjustLogFont(ui_font_family, ui_font_size_scaler, dpi_scale, logfont);
-  }
-}
-
-void AdjustUIFontForWindow(HWND hwnd) {
-  base::string16 ui_font_family;
-  double ui_font_size_scaler;
-  if (NeedOverrideDefaultUIFont(&ui_font_family, &ui_font_size_scaler)) {
-    LOGFONT logfont;
-    if (GetObject(GetWindowFont(hwnd), sizeof(logfont), &logfont)) {
-      double dpi_scale = 1;
-      AdjustLogFont(ui_font_family, ui_font_size_scaler, dpi_scale, &logfont);
-      HFONT hfont = CreateFontIndirect(&logfont);
-      if (hfont)
-        SetWindowFont(hwnd, hfont, FALSE);
-    }
-  }
 }
 
 void OverrideLocaleWithUILanguageList() {

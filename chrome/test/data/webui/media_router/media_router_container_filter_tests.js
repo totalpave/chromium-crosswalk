@@ -6,140 +6,153 @@
  * to the filter view.
  */
 cr.define('media_router_container_filter', function() {
-  function registerTests() {
-    suite('MediaRouterContainerFilter', function() {
-      /**
-       * Wrapper that lets a function |f| run after the container animation
-       * promise completes but also lets any UI logic run before setting up the
-       * call. This is important because |container.animationPromise_| may not
-       * exist until the UI logic runs or it may be updated to a new Promise.
-       * This wrapper also carries assertion errors (and any other exceptions)
-       * outside of the promise back into the test since throwing in a then() or
-       * catch() doesn't stop the test.
-       *
-       * @param {function()} f
-       */
-      var chainOnAnimationPromise = function(f) {
+  /**
+   * Wrapper that lets a function |f| run after the container animation promise
+   * completes but also lets any UI logic run before setting up the call. This
+   * is important because |container.animationPromise_| may not exist until the
+   * UI logic runs or it may be updated to a new Promise.  This wrapper also
+   * carries assertion errors (and any other exceptions) outside of the promise
+   * back into the test since throwing in a then() or catch() doesn't stop the
+   * test.
+   *
+   * @param {function()} f
+   */
+  var chainOnAnimationPromise = function(f) {
+    setTimeout(function() {
+      container.animationPromise_.then(f).catch(function(err) {
         setTimeout(function() {
-          container.animationPromise_.then(f).catch(function(err) {
-            setTimeout(function() { throw err; });
-          });
+          throw err;
         });
-      };
-
-      /**
-       * Checks whether |view| matches the current view of |container|.
-       *
-       * @param {!media_router.MediaRouterView} view Expected view type.
-       */
-      var checkCurrentView;
-
-      /**
-       * Checks whether the elements specified in |elementIdList| are visible.
-       * Checks whether all other elements are not visible. Throws an assertion
-       * error if this is not true.
-       *
-       * @param {!Array<!string>} elementIdList List of id's of elements that
-       *     should be visible.
-       */
-      var checkElementsVisibleWithId;
-
-      /**
-       * Checks whether |expected| and the text in the |element| are equal.
-       *
-       * @param {!string} expected Expected text.
-       * @param {!Element} element Element whose text will be checked.
-       */
-      var checkElementText;
-
-      /**
-       * Media Router Container created before each test.
-       * @type {?MediaRouterContainer}
-       */
-      var container;
-
-      /**
-       * The blocking issue to show.
-       * @type {?media_router.Issue}
-       */
-      var fakeNonBlockingIssue;
-
-      /**
-       * The list of current routes.
-       * @type {!Array<!media_router.Route>}
-       */
-      var fakeRouteList = [];
-
-      /**
-       * The list of available sinks.
-       * @type {!Array<!media_router.Sink>}
-       */
-      var fakeSinkList = [];
-
-      /**
-       * Simulates pressing the Escape key on |element|.
-       * @param {!HTMLElement} element
-       */
-      var pressEscapeOnElement = function(element) {
-        element.dispatchEvent(new KeyboardEvent('keydown', {
-          'key': 'Escape',
-          'code': 'Escape',
-          'bubbles': true,
-          'cancelable': true
-        }));
-      };
-
-      /**
-       * Search text that will match all sinks.
-       * @type {?string}
-       */
-      var searchTextAll;
-
-      /**
-       * Search text that won't match any sink in fakeSinkList.
-       * @type {?string}
-       */
-      var searchTextNone;
-
-      /**
-       * Search text that will match exactly one sink.
-       * @type {?string}
-       */
-      var searchTextOne;
-
-      // Import media_router_container.html before running suite.
-      suiteSetup(function() {
-        return PolymerTest.importHtml(
-            'chrome://media-router/elements/media_router_container/' +
-            'media_router_container.html');
       });
+    });
+  };
 
-      setup(function(done) {
-        PolymerTest.clearBody();
-        // Initialize a media-router-container before each test.
-        container = document.createElement('media-router-container');
-        document.body.appendChild(container);
+  /**
+   * Checks whether |view| matches the current view of |container|.
+   *
+   * @param {!media_router.MediaRouterView} view Expected view type.
+   */
+  var checkCurrentView;
 
-        // Get common functions and variables.
-        var test_base = media_router_container_test_base.init(container);
+  /**
+   * Checks whether the elements specified in |elementIdList| are visible.
+   * Checks whether all other elements are not visible. Throws an assertion
+   * error if this is not true.
+   *
+   * @param {!Array<!string>} elementIdList List of id's of elements that
+   *     should be visible.
+   */
+  var checkElementsVisibleWithId;
 
-        checkCurrentView = test_base.checkCurrentView;
-        checkElementsVisibleWithId = test_base.checkElementsVisibleWithId;
-        checkElementText = test_base.checkElementText;
-        fakeNonBlockingIssue = test_base.fakeNonBlockingIssue;
-        fakeRouteList = test_base.fakeRouteList;
-        fakeSinkList = test_base.fakeSinkList;
-        searchTextAll = test_base.searchTextAll;
-        searchTextNone = test_base.searchTextNone;
-        searchTextOne = test_base.searchTextOne;
+  /**
+   * Checks whether |expected| and the text in the |element| are equal.
+   *
+   * @param {!string} expected Expected text.
+   * @param {!Element} element Element whose text will be checked.
+   */
+  var checkElementText;
 
-        container.castModeList = test_base.fakeCastModeList;
-        container.searchEnabled_ = true;
+  /**
+   * Media Router Container created before each test.
+   * @type {?MediaRouterContainer}
+   */
+  var container;
 
-        // Allow for the media router container to be created, attached, and
-        // listeners registered in an afterNextRender() call.
-        Polymer.RenderStatus.afterNextRender(this, done);
-      });
+  /**
+   * The blocking issue to show.
+   * @type {?media_router.Issue}
+   */
+  var fakeNonBlockingIssue;
+
+  /**
+   * The list of current routes.
+   * @type {!Array<!media_router.Route>}
+   */
+  var fakeRouteList = [];
+
+  /**
+   * The list of available sinks.
+   * @type {!Array<!media_router.Sink>}
+   */
+  var fakeSinkList = [];
+
+  /**
+   * Simulates pressing the Escape key on |element|.
+   * @param {!HTMLElement} element
+   */
+  var pressEscapeOnElement = function(element) {
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      'key': 'Escape',
+      'code': 'Escape',
+      'bubbles': true,
+      'composed': true,
+      'cancelable': true
+    }));
+  };
+
+  /**
+   * Search text that will match all sinks.
+   * @type {?string}
+   */
+  var searchTextAll;
+
+  /**
+   * Search text that won't match any sink in fakeSinkList.
+   * @type {?string}
+   */
+  var searchTextNone;
+
+  /**
+   * Search text that will match exactly one sink.
+   * @type {?string}
+   */
+  var searchTextOne;
+
+  /**
+   * Import media_router_container.html before running suite.
+   */
+  var doSuiteSetup = function() {
+    return PolymerTest.importHtml(
+        'chrome://media-router/elements/media_router_container/' +
+        'media_router_container.html');
+  };
+
+  /**
+   * Performs test setup before each test.
+   *
+   * @param {function()} done Function for async test completion.
+   */
+  var doSetup = function(done) {
+    PolymerTest.clearBody();
+    // Initialize a media-router-container before each test.
+    container = document.createElement('media-router-container');
+    document.body.appendChild(container);
+
+    // Get common functions and variables.
+    var test_base = media_router_container_test_base.init(container);
+
+    checkCurrentView = test_base.checkCurrentView;
+    checkElementsVisibleWithId = test_base.checkElementsVisibleWithId;
+    checkElementText = test_base.checkElementText;
+    fakeNonBlockingIssue = test_base.fakeNonBlockingIssue;
+    fakeRouteList = test_base.fakeRouteList;
+    fakeSinkList = test_base.fakeSinkList;
+    searchTextAll = test_base.searchTextAll;
+    searchTextNone = test_base.searchTextNone;
+    searchTextOne = test_base.searchTextOne;
+
+    container.castModeList = test_base.fakeCastModeList;
+    container.searchEnabled_ = true;
+
+    // Allow for the media router container to be created, attached, and
+    // listeners registered in an afterNextRender() call.
+    Polymer.RenderStatus.afterNextRender(this, done);
+  };
+
+  function registerTestsPart1() {
+    suite('MediaRouterContainerFilterPart1', function() {
+      suiteSetup(doSuiteSetup);
+      setup(doSetup);
 
       // Tests that clicking the search icon will cause the container to enter
       // filter view.
@@ -147,8 +160,9 @@ cr.define('media_router_container_filter', function() {
         MockInteractions.tap(container.$$('#sink-search-icon'));
         setTimeout(function() {
           checkCurrentView(media_router.MediaRouterView.FILTER);
-          assertEquals(container.$$('#sink-search-input'),
-                       container.shadowRoot.activeElement);
+          assertEquals(
+              container.$$('#sink-search-input'),
+              container.shadowRoot.activeElement);
           done();
         });
       });
@@ -159,8 +173,9 @@ cr.define('media_router_container_filter', function() {
         MockInteractions.focus(container.$$('#sink-search-input'));
         setTimeout(function() {
           checkCurrentView(media_router.MediaRouterView.FILTER);
-          assertEquals(container.$$('#sink-search-input'),
-                       container.shadowRoot.activeElement);
+          assertEquals(
+              container.$$('#sink-search-input'),
+              container.shadowRoot.activeElement);
           done();
         });
       });
@@ -200,27 +215,29 @@ cr.define('media_router_container_filter', function() {
         container.allSinks = fakeSinkList;
         MockInteractions.tap(container.$$('#sink-search-icon'));
         setTimeout(function() {
-          var searchResults = container.$$('#search-results');
+          var searchResultsPaperMenu =
+              container.$$('#search-results-paper-menu');
           // Use the Polymer method for selecting (and focusing on) a sink
-          searchResults.selectIndex(focusIndex);
-          var itemInSearch =
-              searchResults.querySelectorAll('paper-item')[focusIndex];
+          searchResultsPaperMenu.selectIndex(focusIndex);
+          var itemInSearch = searchResultsPaperMenu.querySelectorAll(
+              'button.selectable-item')[focusIndex];
           // TODO(crbug.com/608551): This condition handles flakiness around
           // the search item getting focus earlier. If it doesn't get focus,
           // the logic that changes focus from a search item to a sink list
           // item obviously won't do anything.
           if (itemInSearch.focused) {
-            var selectedIndexInSearch = searchResults.selected;
+            var selectedIndexInSearch = searchResultsPaperMenu.selected;
             pressEscapeOnElement(itemInSearch);
             checkCurrentView(media_router.MediaRouterView.SINK_LIST);
             chainOnAnimationPromise(function() {
-              var sinkList = container.$$('#sink-list');
-              var item = sinkList.querySelectorAll('paper-item')[focusIndex];
+              var sinkListPaperMenu = container.$$('#sink-list-paper-menu');
+              var item = sinkListPaperMenu.querySelectorAll(
+                  'button.selectable-item')[focusIndex];
 
               // Check that the "focused" HTML attribute persists.
               assertTrue(item.focused);
               // Check that the "selected" Polymer attribute persists.
-              assertEquals(sinkList.selected, selectedIndexInSearch);
+              assertEquals(sinkListPaperMenu.selected, selectedIndexInSearch);
               done();
             });
           } else {
@@ -236,9 +253,8 @@ cr.define('media_router_container_filter', function() {
         container.allSinks = fakeSinkList;
         MockInteractions.tap(container.$$('#sink-search-icon'));
         setTimeout(function() {
-          var item =
-              container.$$('#search-results')
-                  .querySelectorAll('paper-item')[1];
+          var item = container.$$('#search-results')
+                         .querySelectorAll('button.selectable-item')[1];
           var closeButton = container.$['container-header'].$['close-button'];
           closeButton.focus();
           var focusedSuccess = closeButton.focused;
@@ -256,61 +272,61 @@ cr.define('media_router_container_filter', function() {
 
       // Tests that expected elements are visible when in filter view.
       test('filter view visibility', function(done) {
-        checkElementsVisibleWithId(['container-header',
-                                    'device-missing',
-                                    'sink-search',
-                                    'sink-list-view']);
+        checkElementsVisibleWithId([
+          'container-header', 'device-missing', 'sink-search', 'sink-list-view'
+        ]);
         // Clicking the search icon should transition |container| to FILTER
         // view.
         MockInteractions.tap(container.$$('#sink-search-icon'));
         chainOnAnimationPromise(function() {
-          checkElementsVisibleWithId(['container-header',
-                                      'device-missing',
-                                      'sink-search',
-                                      'sink-list-view']);
+          // The search results container is visible, since we are in filter
+          // view, but there are no results yet since there are no sinks.
+          checkElementsVisibleWithId([
+            'container-header', 'device-missing', 'sink-search',
+            'search-results-container', 'sink-list-view'
+          ]);
 
           // Adding sinks should populate the search list.
           container.allSinks = fakeSinkList;
           chainOnAnimationPromise(function() {
-            checkElementsVisibleWithId(['container-header',
-                                        'search-results',
-                                        'sink-search',
-                                        'sink-list-view']);
+            checkElementsVisibleWithId([
+              'container-header', 'search-results-container', 'search-results',
+              'sink-search', 'sink-list-view'
+            ]);
             // Typing text that doesn't match any sinks should display a 'no
             // matches' message.
             container.$$('#sink-search-input').value = searchTextNone;
-            checkElementsVisibleWithId(['container-header',
-                                        'no-search-matches',
-                                        'sink-search',
-                                        'sink-list-view']);
+            checkElementsVisibleWithId([
+              'container-header', 'search-results-container',
+              'no-search-matches', 'sink-search', 'sink-list-view'
+            ]);
             // Changing that text to something that matches at least one sink
             // should show the matching sinks again.
             container.$$('#sink-search-input').value = searchTextOne;
             // maybe inside setTimeout
-            checkElementsVisibleWithId(['container-header',
-                                        'search-results',
-                                        'sink-search',
-                                        'sink-list-view']);
+            checkElementsVisibleWithId([
+              'container-header', 'search-results-container', 'search-results',
+              'sink-search', 'sink-list-view'
+            ]);
             // Clicking the back button should leave |searchTextOne| in the
             // input but return to the SINK_LIST view.
             MockInteractions.tap(
                 container.shadowRoot.getElementById('container-header')
                     .shadowRoot.getElementById('back-button'));
             chainOnAnimationPromise(function() {
-              checkElementsVisibleWithId(['container-header',
-                                          'sink-search',
-                                          'sink-list',
-                                          'sink-list-view']);
+              checkElementsVisibleWithId([
+                'container-header', 'sink-search', 'sink-list', 'sink-list-view'
+              ]);
               // When the search button is clicked again, the matching sinks
               // should be shown again. This doesn't prove that the matching
               // worked when returning to the FILTER view though, just that it
               // at least shows some sort of sink list as search results.
               MockInteractions.tap(container.$$('#sink-search-icon'));
               chainOnAnimationPromise(function() {
-                checkElementsVisibleWithId(['container-header',
-                                            'search-results',
-                                            'sink-search',
-                                            'sink-list-view']);
+                checkElementsVisibleWithId([
+                  'container-header', 'search-results-container',
+                  'search-results', 'sink-search', 'sink-list-view'
+                ]);
 
                 container.$$('#sink-search-input').value = searchTextNone;
                 // Clicking the back button should leave |searchTextNone| in the
@@ -319,27 +335,27 @@ cr.define('media_router_container_filter', function() {
                     container.shadowRoot.getElementById('container-header')
                         .shadowRoot.getElementById('back-button'));
                 chainOnAnimationPromise(function() {
-                  checkElementsVisibleWithId(['container-header',
-                                              'sink-search',
-                                              'sink-list',
-                                              'sink-list-view']);
+                  checkElementsVisibleWithId([
+                    'container-header', 'sink-search', 'sink-list',
+                    'sink-list-view'
+                  ]);
                   // When the search button is clicked again, there should be no
                   // matches because |searchTextNone| should still be used to
                   // filter.
                   MockInteractions.tap(container.$$('#sink-search-icon'));
                   chainOnAnimationPromise(function() {
-                    checkElementsVisibleWithId(['container-header',
-                                                'no-search-matches',
-                                                'sink-search',
-                                                'sink-list-view']);
+                    checkElementsVisibleWithId([
+                      'container-header', 'search-results-container',
+                      'no-search-matches', 'sink-search', 'sink-list-view'
+                    ]);
                     // Pressing the Escape key in FILTER view should return
                     // |container| to SINK_LIST view and not exit the dialog.
                     pressEscapeOnElement(container);
                     chainOnAnimationPromise(function() {
-                      checkElementsVisibleWithId(['container-header',
-                                                  'sink-search',
-                                                  'sink-list',
-                                                  'sink-list-view']);
+                      checkElementsVisibleWithId([
+                        'container-header', 'sink-search', 'sink-list',
+                        'sink-list-view'
+                      ]);
                       done();
                     });
                   });
@@ -362,11 +378,10 @@ cr.define('media_router_container_filter', function() {
         container.issue = fakeNonBlockingIssue;
         MockInteractions.tap(container.$$('#sink-search-icon'));
         chainOnAnimationPromise(function() {
-          checkElementsVisibleWithId(['container-header',
-                                      'issue-banner',
-                                      'search-results',
-                                      'sink-search',
-                                      'sink-list-view']);
+          checkElementsVisibleWithId([
+            'container-header', 'issue-banner', 'search-results-container',
+            'search-results', 'sink-search', 'sink-list-view'
+          ]);
           done();
         });
       });
@@ -379,8 +394,8 @@ cr.define('media_router_container_filter', function() {
         container.$$('#sink-search-input').value = searchTextOne;
         MockInteractions.tap(container.$$('#sink-search-icon'));
         setTimeout(function() {
-          var searchResults =
-              container.$$('#search-results').querySelectorAll('paper-item');
+          var searchResults = container.$$('#search-results')
+                                  .querySelectorAll('button.selectable-item');
           assertEquals(1, searchResults.length);
           done();
         });
@@ -394,8 +409,8 @@ cr.define('media_router_container_filter', function() {
         container.$$('#sink-search-input').value = searchTextNone;
         MockInteractions.tap(container.$$('#sink-search-icon'));
         setTimeout(function() {
-          var searchResults =
-              container.$$('#search-results').querySelectorAll('paper-item');
+          var searchResults = container.$$('#search-results')
+                                  .querySelectorAll('button.selectable-item');
           assertEquals(0, searchResults.length);
           done();
         });
@@ -428,6 +443,13 @@ cr.define('media_router_container_filter', function() {
           done();
         });
       });
+    });
+  }
+
+  function registerTestsPart2() {
+    suite('MediaRouterContainerFilterPart2', function() {
+      suiteSetup(doSuiteSetup);
+      setup(doSetup);
 
       // Tests that the correct number of results are returned in the search
       // results.
@@ -437,21 +459,21 @@ cr.define('media_router_container_filter', function() {
         var searchInput = container.$$('#sink-search-input');
         setTimeout(function() {
           searchInput.value = searchTextAll;
-          var searchResults =
-              container.$$('#search-results').querySelectorAll('paper-item');
+          var searchResults = container.$$('#search-results')
+                                  .querySelectorAll('button.selectable-item');
           assertEquals(fakeSinkList.length, searchResults.length);
 
           searchInput.value = searchTextOne;
           setTimeout(function() {
-            var searchResults =
-                container.$$('#search-results').querySelectorAll('paper-item');
+            var searchResults = container.$$('#search-results')
+                                    .querySelectorAll('button.selectable-item');
             assertEquals(1, searchResults.length);
 
             searchInput.value = searchTextNone;
             setTimeout(function() {
               var searchResults =
                   container.$$('#search-results')
-                      .querySelectorAll('paper-item');
+                      .querySelectorAll('button.selectable-item');
               assertEquals(0, searchResults.length);
               done();
             });
@@ -467,8 +489,8 @@ cr.define('media_router_container_filter', function() {
         var testSinkName = fakeSinkList[0].name;
         container.$$('#sink-search-input').value = testSinkName;
         setTimeout(function() {
-          var searchResults =
-              container.$$('#search-results').querySelectorAll('paper-item');
+          var searchResults = container.$$('#search-results')
+                                  .querySelectorAll('button.selectable-item');
           assertEquals(1, searchResults.length);
           // This selector works only because there's only one result in the
           // list.
@@ -485,8 +507,8 @@ cr.define('media_router_container_filter', function() {
         container.allSinks = fakeSinkList;
         MockInteractions.tap(container.$$('#sink-search-icon'));
         setTimeout(function() {
-          var searchResults =
-              container.$$('#search-results').querySelectorAll('paper-item');
+          var searchResults = container.$$('#search-results')
+                                  .querySelectorAll('button.selectable-item');
           container.addEventListener('create-route', function(data) {
             assertEquals(fakeSinkList[1].id, data.detail.sinkId);
             done();
@@ -501,9 +523,9 @@ cr.define('media_router_container_filter', function() {
         container.allSinks = fakeSinkList;
         container.routeList = fakeRouteList;
         MockInteractions.tap(container.$$('#sink-search-icon'));
-        setTimeout(function() {
-          var searchResults =
-              container.$$('#search-results').querySelectorAll('paper-item');
+        chainOnAnimationPromise(function() {
+          var searchResults = container.$$('#search-results')
+                                  .querySelectorAll('button.selectable-item');
           MockInteractions.tap(searchResults[1]);
           checkCurrentView(media_router.MediaRouterView.ROUTE_DETAILS);
           done();
@@ -519,25 +541,25 @@ cr.define('media_router_container_filter', function() {
         // Sink 3 - no sink description, route -> subtext = route description
         // Sink 4 - sink description, route -> subtext = route description
         container.allSinks = [
-            new media_router.Sink('sink id 1', 'Sink 1', null, null,
-                media_router.SinkIconType.CAST,
-                media_router.SinkStatus.ACTIVE, [1, 2, 3]),
-            new media_router.Sink('sink id 2', 'Sink 2',
-                'Sink 2 description', null,
-                media_router.SinkIconType.CAST,
-                media_router.SinkStatus.ACTIVE, [1, 2, 3]),
-            new media_router.Sink('sink id 3', 'Sink 3', null, null,
-                media_router.SinkIconType.CAST,
-                media_router.SinkStatus.PENDING, [1, 2, 3]),
-            new media_router.Sink('sink id 4', 'Sink 4',
-                'Sink 4 description', null,
-                media_router.SinkIconType.CAST,
-                media_router.SinkStatus.PENDING, [1, 2, 3])
+          new media_router.Sink(
+              'sink id 1', 'Sink 1', null, null, media_router.SinkIconType.CAST,
+              media_router.SinkStatus.ACTIVE, [1, 2, 3]),
+          new media_router.Sink(
+              'sink id 2', 'Sink 2', 'Sink 2 description', null,
+              media_router.SinkIconType.CAST, media_router.SinkStatus.ACTIVE,
+              [1, 2, 3]),
+          new media_router.Sink(
+              'sink id 3', 'Sink 3', null, null, media_router.SinkIconType.CAST,
+              media_router.SinkStatus.PENDING, [1, 2, 3]),
+          new media_router.Sink(
+              'sink id 4', 'Sink 4', 'Sink 4 description', null,
+              media_router.SinkIconType.CAST, media_router.SinkStatus.PENDING,
+              [1, 2, 3])
         ];
 
         container.routeList = [
-            new media_router.Route('id 3', 'sink id 3', 'Title 3', 0, true),
-            new media_router.Route('id 4', 'sink id 4', 'Title 4', 1, false),
+          new media_router.Route('id 3', 'sink id 3', 'Title 3', 0, true),
+          new media_router.Route('id 4', 'sink id 4', 'Title 4', 1, false),
         ];
 
         MockInteractions.tap(container.$$('#sink-search-icon'));
@@ -549,15 +571,15 @@ cr.define('media_router_container_filter', function() {
           // have any subtext.
           assertEquals(3, sinkSubtextList.length);
 
-          checkElementText(container.allSinks[1].description,
-              sinkSubtextList[0]);
+          checkElementText(
+              container.allSinks[1].description, sinkSubtextList[0]);
 
           // Route description overrides sink description for subtext.
-          checkElementText(container.routeList[0].description,
-              sinkSubtextList[1]);
+          checkElementText(
+              container.routeList[0].description, sinkSubtextList[1]);
 
-          checkElementText(container.routeList[1].description,
-              sinkSubtextList[2]);
+          checkElementText(
+              container.routeList[1].description, sinkSubtextList[2]);
           done();
         });
       });
@@ -676,13 +698,17 @@ cr.define('media_router_container_filter', function() {
         checkEqual(oneMatchSectionSingleChar, oneMatchSectionSingleChar);
         checkLess(oneMatchSectionSingleChar, noMatches);
 
-        var oneMatchSectionBeginningLong = {sinkItem: null,
-                                            substrings: [[0, 2]]};
-        var oneMatchSectionBeginningShort = {sinkItem: null,
-                                             substrings: [[0, 1]]};
+        var oneMatchSectionBeginningLong = {
+          sinkItem: null,
+          substrings: [[0, 2]]
+        };
+        var oneMatchSectionBeginningShort = {
+          sinkItem: null,
+          substrings: [[0, 1]]
+        };
         checkEqual(oneMatchSectionBeginningLong, oneMatchSectionBeginningLong);
-        checkEqual(oneMatchSectionBeginningShort,
-            oneMatchSectionBeginningShort);
+        checkEqual(
+            oneMatchSectionBeginningShort, oneMatchSectionBeginningShort);
 
         checkLess(oneMatchSectionBeginningLong, oneMatchSectionBeginningShort);
 
@@ -720,7 +746,7 @@ cr.define('media_router_container_filter', function() {
 
         var oneMatchBeginningOverlap = {sinkItem: null, substrings: [[0, 2]]};
         var oneMatchMiddleOverlap = {sinkItem: null, substrings: [[1, 3]]};
-        var oneMatchEndOverlap = {sinkItem: null, substrings: [[2, 4]]}
+        var oneMatchEndOverlap = {sinkItem: null, substrings: [[2, 4]]};
 
         checkEqual(oneMatchBeginningOverlap, oneMatchBeginningOverlap);
         checkEqual(oneMatchMiddleOverlap, oneMatchMiddleOverlap);
@@ -812,14 +838,14 @@ cr.define('media_router_container_filter', function() {
           checkEqual(orderedMatches[i], orderedMatches[i]);
         }
         for (var i = 0; i < orderedMatches.length - 1; ++i) {
-          checkLess(orderedMatches[i], orderedMatches[i+1]);
+          checkLess(orderedMatches[i], orderedMatches[i + 1]);
         }
         // Check some transitivity.
         for (var i = 0; i < orderedMatches.length - 2; ++i) {
-          checkLess(orderedMatches[i], orderedMatches[i+2]);
+          checkLess(orderedMatches[i], orderedMatches[i + 2]);
         }
         for (var i = 0; i < orderedMatches.length - 3; ++i) {
-          checkLess(orderedMatches[i], orderedMatches[i+3]);
+          checkLess(orderedMatches[i], orderedMatches[i + 3]);
         }
 
         done();
@@ -871,9 +897,9 @@ cr.define('media_router_container_filter', function() {
       // of match indices.
       test('computeSinkMatchingText_ test', function(done) {
         var sinkName = '012345 789';
-        var sink = new media_router.Sink('id', sinkName, null, null,
-                                         media_router.SinkIconType.CAST,
-                                         media_router.SinkStatus.ACTIVE, 0);
+        var sink = new media_router.Sink(
+            'id', sinkName, null, null, media_router.SinkIconType.CAST,
+            media_router.SinkStatus.ACTIVE, 0);
         var checkMatches = function(matchesAndAnswers) {
           var matches = matchesAndAnswers.matches;
           var plainText = matchesAndAnswers.plainText;
@@ -975,6 +1001,7 @@ cr.define('media_router_container_filter', function() {
   }
 
   return {
-    registerTests: registerTests,
+    registerTestsPart1: registerTestsPart1,
+    registerTestsPart2: registerTestsPart2,
   };
 });

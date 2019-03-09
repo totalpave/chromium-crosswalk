@@ -4,29 +4,32 @@
 
 module IPC.mojom;
 
-struct SerializedHandle {
-  handle the_handle;
+import "mojo/public/mojom/base/big_buffer.mojom";
+import "mojo/public/interfaces/bindings/native_struct.mojom";
 
-  enum Type {
-    MOJO_HANDLE,
-    PLATFORM_FILE,
-    WIN_HANDLE,
-    MACH_PORT,
-  };
+// A placeholder interface type since we don't yet support generic associated
+// message pipe handles.
+interface GenericInterface {};
 
-  Type type;
+// Typemapped such that arbitrarily large IPC::Message objects can be sent and
+// received with minimal copying.
+struct Message {
+  mojo_base.mojom.BigBuffer buffer;
+  array<mojo.native.SerializedHandle>? handles;
 };
 
 interface Channel {
-  Receive(array<uint8> data, array<SerializedHandle>? handles);
+  // Informs the remote end of this client's PID. Must be called exactly once,
+  // before any calls to Receive() below.
+  SetPeerPid(int32 pid);
+
+  // Transmits a classical Chrome IPC message.
+  Receive(Message message);
+
+  // Requests a Channel-associated interface.
+  GetAssociatedInterface(string name, associated GenericInterface& request);
 };
 
-// An interface for connecting a pair of Channel interfaces representing a
-// bidirectional IPC channel.
-interface Bootstrap {
-  // Initializes a Chrome IPC channel over |to_client_channel| and
-  // |to_server_channel|. Each side also sends its PID to the other side.
-  Init(associated Channel& to_client_channel,
-       associated Channel to_server_channel,
-       int32 pid) => (int32 pid);
-};
+// A strictly nominal interface used to identify Channel bootstrap requests.
+interface ChannelBootstrap {};
+

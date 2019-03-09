@@ -8,14 +8,13 @@
 
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "remoting/base/url_request.h"
 #include "remoting/protocol/http_ice_config_request.h"
 #include "remoting/protocol/jingle_info_request.h"
 #include "remoting/protocol/port_allocator_factory.h"
-#include "third_party/webrtc/base/socketaddress.h"
+#include "third_party/webrtc/rtc_base/socket_address.h"
 
 #if !defined(OS_NACL)
 #include "jingle/glue/thread_wrapper.h"
@@ -26,14 +25,23 @@
 namespace remoting {
 namespace protocol {
 
+namespace {
+
+// Ensure ICE config is correct at least one hour after session starts.
+constexpr base::TimeDelta kMinimumIceConfigLifetime =
+    base::TimeDelta::FromHours(1);
+
+}  // namespace
+
 #if !defined(OS_NACL)
 // static
 scoped_refptr<TransportContext> TransportContext::ForTests(TransportRole role) {
   jingle_glue::JingleThreadWrapper::EnsureForCurrentMessageLoop();
   return new protocol::TransportContext(
-      nullptr, base::WrapUnique(new protocol::ChromiumPortAllocatorFactory()),
-      nullptr, protocol::NetworkSettings(
-                   protocol::NetworkSettings::NAT_TRAVERSAL_OUTGOING),
+      nullptr, std::make_unique<protocol::ChromiumPortAllocatorFactory>(),
+      nullptr,
+      protocol::NetworkSettings(
+          protocol::NetworkSettings::NAT_TRAVERSAL_OUTGOING),
       role);
 }
 #endif  // !defined(OS_NACL)
@@ -50,7 +58,7 @@ TransportContext::TransportContext(
       network_settings_(network_settings),
       role_(role) {}
 
-TransportContext::~TransportContext() {}
+TransportContext::~TransportContext() = default;
 
 void TransportContext::Prepare() {
   EnsureFreshIceConfig();
@@ -80,7 +88,8 @@ void TransportContext::EnsureFreshIceConfig() {
   }
 
   if (ice_config_[relay_mode_].is_null() ||
-      base::Time::Now() > ice_config_[relay_mode_].expiration_time) {
+      base::Time::Now() + kMinimumIceConfigLifetime >
+          ice_config_[relay_mode_].expiration_time) {
     std::unique_ptr<IceConfigRequest> request;
     switch (relay_mode_) {
       case RelayMode::TURN:
@@ -88,8 +97,8 @@ void TransportContext::EnsureFreshIceConfig() {
           LOG(WARNING) << "ice_config_url isn't set.";
           return;
         }
-        request.reset(new HttpIceConfigRequest(url_request_factory_.get(),
-                                               ice_config_url_));
+        request.reset(new HttpIceConfigRequest(
+            url_request_factory_.get(), ice_config_url_, oauth_token_getter_));
         break;
       case RelayMode::GTURN:
         request.reset(new JingleInfoRequest(signal_strategy_));
@@ -111,6 +120,11 @@ void TransportContext::OnIceConfig(RelayMode relay_mode,
     callback_list.begin()->Run(ice_config);
     callback_list.pop_front();
   }
+}
+
+int TransportContext::GetTurnMaxRateKbps() const {
+  DCHECK_EQ(relay_mode_, RelayMode::TURN);
+  return ice_config_[RelayMode::TURN].max_bitrate_kbps;
 }
 
 }  // namespace protocol

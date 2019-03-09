@@ -6,6 +6,7 @@
 #define COURGETTE_PROGRAM_DETECTOR_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <memory>
 
@@ -13,7 +14,12 @@
 
 namespace courgette {
 
-class AssemblyProgram;
+class Disassembler;
+
+// Returns a new instance of Disassembler inherited class if binary data given
+// in |buffer| and |length| match a known binary format, otherwise null.
+std::unique_ptr<Disassembler> DetectDisassembler(const uint8_t* buffer,
+                                                 size_t length);
 
 // Detects the type of an executable file, and it's length. The length may be
 // slightly smaller than some executables (like ELF), but will include all bytes
@@ -23,21 +29,10 @@ class AssemblyProgram;
 // On failure:
 //   Fills in |type| with UNKNOWN, |detected_length| with 0, and returns
 //   C_INPUT_NOT_RECOGNIZED.
-Status DetectExecutableType(const void* buffer,
+Status DetectExecutableType(const uint8_t* buffer,
                             size_t length,
                             ExecutableType* type,
                             size_t* detected_length);
-
-// Attempts to detect the type of executable, and parse it with the appropriate
-// tools.
-// On success:
-//   Parses the executable into a new AssemblyProgram in |*output|, and returns
-//   C_OK.
-// On failure:
-//   Returns an error status and assigns |*output| to null.
-Status ParseDetectedExecutable(const void* buffer,
-                               size_t length,
-                               std::unique_ptr<AssemblyProgram>* output);
 
 }  // namespace courgette
 

@@ -4,17 +4,18 @@
 
 #include "chrome/browser/ui/views/elevation_icon_setter.h"
 
+#include "base/bind.h"
 #include "base/callback.h"
-#include "base/task_runner_util.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
-#include "content/public/browser/browser_thread.h"
 #include "ui/views/controls/button/label_button.h"
 
 #if defined(OS_WIN)
 #include <windows.h>
 #include <shellapi.h>
+
+#include "base/task_runner_util.h"
 #include "base/win/win_util.h"
-#include "base/win/windows_version.h"
 #include "ui/display/win/dpi.h"
 #include "ui/gfx/icon_util.h"
 #endif
@@ -24,12 +25,10 @@
 
 namespace {
 
-std::unique_ptr<SkBitmap> GetElevationIcon() {
-  std::unique_ptr<SkBitmap> icon;
 #if defined(OS_WIN)
-  if ((base::win::GetVersion() < base::win::VERSION_VISTA) ||
-      !base::win::UserAccountControlIsEnabled())
-    return icon;
+SkBitmap GetElevationIcon() {
+  if (!base::win::UserAccountControlIsEnabled())
+    return SkBitmap();
 
   SHSTOCKICONINFO icon_info = { sizeof(SHSTOCKICONINFO) };
   typedef HRESULT (STDAPICALLTYPE *GetStockIconInfo)(SHSTOCKICONID,
@@ -43,15 +42,15 @@ std::unique_ptr<SkBitmap> GetElevationIcon() {
   // TODO(pkasting): Run on a background thread since this call spins a nested
   // message loop.
   if (FAILED((*func)(SIID_SHIELD, SHGSI_ICON | SHGSI_SMALLICON, &icon_info)))
-    return icon;
+    return SkBitmap();
 
-  icon.reset(IconUtil::CreateSkBitmapFromHICON(
+  SkBitmap icon = IconUtil::CreateSkBitmapFromHICON(
       icon_info.hIcon,
-      gfx::Size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON))));
+      gfx::Size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)));
   DestroyIcon(icon_info.hIcon);
-#endif
   return icon;
 }
+#endif
 
 }  // namespace
 
@@ -59,24 +58,25 @@ std::unique_ptr<SkBitmap> GetElevationIcon() {
 // ElevationIconSetter --------------------------------------------------------
 
 ElevationIconSetter::ElevationIconSetter(views::LabelButton* button,
-                                         const base::Closure& callback)
-    : button_(button),
-      weak_factory_(this) {
+                                         base::OnceClosure callback)
+    : button_(button), weak_factory_(this) {
+#if defined(OS_WIN)
   base::PostTaskAndReplyWithResult(
-      content::BrowserThread::GetBlockingPool(),
-      FROM_HERE,
-      base::Bind(&GetElevationIcon),
-      base::Bind(&ElevationIconSetter::SetButtonIcon,
-                 weak_factory_.GetWeakPtr(),
-                 callback));
+      base::CreateCOMSTATaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::USER_BLOCKING})
+          .get(),
+      FROM_HERE, base::BindOnce(&GetElevationIcon),
+      base::BindOnce(&ElevationIconSetter::SetButtonIcon,
+                     weak_factory_.GetWeakPtr(), std::move(callback)));
+#endif
 }
 
 ElevationIconSetter::~ElevationIconSetter() {
 }
 
-void ElevationIconSetter::SetButtonIcon(const base::Closure& callback,
-                                        std::unique_ptr<SkBitmap> icon) {
-  if (icon) {
+void ElevationIconSetter::SetButtonIcon(base::OnceClosure callback,
+                                        const SkBitmap& icon) {
+  if (!icon.isNull()) {
     float device_scale_factor = 1.0f;
 #if defined(OS_WIN)
     // Windows gives us back a correctly-scaled image for the current DPI, so
@@ -85,11 +85,11 @@ void ElevationIconSetter::SetButtonIcon(const base::Closure& callback,
 #endif
     button_->SetImage(
         views::Button::STATE_NORMAL,
-        gfx::ImageSkia(gfx::ImageSkiaRep(*icon, device_scale_factor)));
+        gfx::ImageSkia(gfx::ImageSkiaRep(icon, device_scale_factor)));
     button_->SizeToPreferredSize();
     if (button_->parent())
       button_->parent()->Layout();
     if (!callback.is_null())
-      callback.Run();
+      std::move(callback).Run();
   }
 }

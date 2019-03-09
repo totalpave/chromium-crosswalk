@@ -10,27 +10,19 @@
 namespace chrome {
 namespace android {
 
-enum RunningModeHistogram {
-  RUNNING_MODE_DOCUMENT_MODE,
-  RUNNING_MODE_TABBED_MODE,
-  RUNNING_MODE_MAX
-};
-
 enum CustomTabsVisibilityHistogram {
   VISIBLE_CUSTOM_TAB,
   VISIBLE_CHROME_TAB,
   CUSTOM_TABS_VISIBILITY_MAX
 };
 
-RunningModeHistogram GetDocumentModeValue();
-
 CustomTabsVisibilityHistogram GetCustomTabsVisibleValue();
 
 bool GetIsInMultiWindowModeValue();
 
+bool IsDownloadAutoResumptionEnabledInNative();
+
 } // namespace android
 } // namespace chrome
-
-bool RegisterFeatureUtilities(JNIEnv* env);
 
 #endif  // CHROME_BROWSER_ANDROID_FEATURE_UTILITIES_H_

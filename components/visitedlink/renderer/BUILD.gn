@@ -4,7 +4,7 @@
 
 assert(!is_ios)
 
-source_set("renderer") {
+static_library("renderer") {
   sources = [
     "visitedlink_slave.cc",
     "visitedlink_slave.h",
@@ -15,6 +15,6 @@ source_set("renderer") {
     "//components/visitedlink/common",
     "//content/public/common",
     "//content/public/renderer",
-    "//third_party/WebKit/public:blink",
+    "//third_party/blink/public:blink",
   ]
 }

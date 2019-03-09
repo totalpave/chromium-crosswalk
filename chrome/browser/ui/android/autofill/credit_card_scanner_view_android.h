@@ -24,9 +24,6 @@ class CreditCardScannerViewDelegate;
 // APIs through JNI service.
 class CreditCardScannerViewAndroid : public CreditCardScannerView {
  public:
-  // Registers with JNI services.
-  static bool Register(JNIEnv* env);
-
   CreditCardScannerViewAndroid(
       const base::WeakPtr<CreditCardScannerViewDelegate>& delegate,
       content::WebContents* web_contents);
@@ -37,11 +34,13 @@ class CreditCardScannerViewAndroid : public CreditCardScannerView {
                      const base::android::JavaParamRef<jobject>& object);
 
   // Called by JNI when credit card scan completed successfully.
-  void ScanCompleted(JNIEnv* env,
-                     const base::android::JavaParamRef<jobject>& object,
-                     const base::android::JavaParamRef<jstring>& card_number,
-                     jint expiration_month,
-                     jint expiration_year);
+  void ScanCompleted(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& object,
+      const base::android::JavaParamRef<jstring>& card_holder_name,
+      const base::android::JavaParamRef<jstring>& card_number,
+      jint expiration_month,
+      jint expiration_year);
 
  private:
   // CreditCardScannerView implementation.

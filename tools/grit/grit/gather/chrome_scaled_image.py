@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -40,7 +39,7 @@ _SPECIAL_CHUNKS = frozenset('csCl npTc'.split())
 
 '''Any ancillary chunk not in this list is deleted from the PNG.'''
 _ANCILLARY_CHUNKS_TO_LEAVE = frozenset(
-    'bKGD cHRM gAMA iCCP pHYs sBIT sRGB tRNS'.split())
+    'bKGD cHRM gAMA iCCP pHYs sBIT sRGB tRNS acTL fcTL fdAT'.split())
 
 
 def _MoveSpecialChunksToFront(data):

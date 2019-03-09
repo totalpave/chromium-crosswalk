@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,9 +23,6 @@
 
 namespace base {
 class TaskRunner;
-}
-namespace file_util {
-struct FileInfo;
 }
 
 namespace net {
@@ -43,17 +41,39 @@ class NET_EXPORT URLRequestFileJob : public URLRequestJob {
   void Start() override;
   void Kill() override;
   int ReadRawData(IOBuffer* buf, int buf_size) override;
-  bool IsRedirectResponse(GURL* location, int* http_status_code) override;
-  std::unique_ptr<Filter> SetupFilter() const override;
+  bool IsRedirectResponse(GURL* location,
+                          int* http_status_code,
+                          bool* insecure_scheme_was_upgraded) override;
   bool GetMimeType(std::string* mime_type) const override;
   void SetExtraRequestHeaders(const HttpRequestHeaders& headers) override;
+  void ShouldServeMimeTypeAsContentTypeHeader() {
+    serve_mime_type_as_content_type_ = true;
+  }
+  void GetResponseInfo(HttpResponseInfo* info) override;
+
+  // base::PowerObserver:
+  void OnSuspend() override;
 
   // An interface for subclasses who wish to monitor read operations.
+  //
+  // |result| is the net::Error code resulting from attempting to open the file.
+  // Called before OnSeekComplete, only called if the request advanced to the
+  // point the file was opened, without being canceled.
+  virtual void OnOpenComplete(int result);
+  // Called at most once.  On success, |result| is the non-negative offset into
+  // the file that the request will read from.  On seek failure, it's a negative
+  // net:Error code.
   virtual void OnSeekComplete(int64_t result);
+  // Called once per read attempt.  |buf| contains the read data, if any.
+  // |result| is the number of read bytes.  0 (net::OK) indicates EOF, negative
+  // numbers indicate it's a net::Error code.
   virtual void OnReadComplete(IOBuffer* buf, int result);
 
  protected:
   ~URLRequestFileJob() override;
+
+  // URLRequestJob implementation.
+  std::unique_ptr<SourceStream> SetUpSourceStream() override;
 
   int64_t remaining_bytes() const { return remaining_bytes_; }
 
@@ -61,6 +81,11 @@ class NET_EXPORT URLRequestFileJob : public URLRequestJob {
   base::FilePath file_path_;
 
  private:
+  // This class checks if a path is accessible via file: scheme, with
+  // NetworkDelegate. Subclasses can disable the check if needed.
+  virtual bool CanAccessFile(const base::FilePath& original_path,
+                             const base::FilePath& absolute_path);
+
   // Meta information about the file. It's used as a member in the
   // URLRequestFileJob and also passed between threads because disk access is
   // necessary to obtain it.
@@ -78,6 +103,8 @@ class NET_EXPORT URLRequestFileJob : public URLRequestJob {
     bool file_exists;
     // Flag showing whether the file name actually refers to a directory.
     bool is_directory;
+    // Absolute path of the file (i.e. symbolic link is resolved).
+    base::FilePath absolute_path;
   };
 
   // Fetches file info on a background thread.
@@ -104,6 +131,7 @@ class NET_EXPORT URLRequestFileJob : public URLRequestJob {
   std::vector<HttpByteRange> byte_ranges_;
   HttpByteRange byte_range_;
   int64_t remaining_bytes_;
+  bool serve_mime_type_as_content_type_ = false;
 
   Error range_parse_result_;
 

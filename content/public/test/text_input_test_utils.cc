@@ -6,19 +6,30 @@
 
 #include <unordered_set>
 
+#include "base/strings/utf_string_conversions.h"
+#include "content/browser/frame_host/frame_tree.h"
+#include "content/browser/frame_host/frame_tree_node.h"
+#include "content/browser/frame_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
-#include "content/browser/renderer_host/render_widget_host_view_aura.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/renderer_host/render_widget_host_view_base_observer.h"
 #include "content/browser/renderer_host/text_input_manager.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/common/input_messages.h"
 #include "content/common/text_input_state.h"
+#include "content/common/view_messages.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/test_utils.h"
+#include "third_party/blink/public/web/web_ime_text_span.h"
+#include "ui/base/ime/ime_text_span.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/input_method_observer.h"
+
+#if defined(USE_AURA)
+#include "content/browser/renderer_host/render_widget_host_view_aura.h"
+#endif
 
 namespace ui {
 class TextInputClient;
@@ -35,7 +46,6 @@ class TextInputManagerTester::InternalObserver
  public:
   InternalObserver(WebContents* web_contents, TextInputManagerTester* tester)
       : WebContentsObserver(web_contents),
-        tester_(tester),
         updated_view_(nullptr),
         text_input_state_changed_(false) {
     text_input_manager_ =
@@ -50,11 +60,28 @@ class TextInputManagerTester::InternalObserver
   }
 
   void set_update_text_input_state_called_callback(
-      const TextInputManagerTester::Callback& callback) {
+      const base::Closure& callback) {
     update_text_input_state_callback_ = callback;
   }
 
-  const RenderWidgetHostView* GetUpdatedView() const { return updated_view_; }
+  void set_on_selection_bounds_changed_callback(const base::Closure& callback) {
+    on_selection_bounds_changed_callback_ = callback;
+  }
+
+  void set_on_ime_composition_range_changed_callback(
+      const base::Closure& callback) {
+    on_ime_composition_range_changed_callback_ = callback;
+  }
+
+  void set_on_text_selection_changed_callback(const base::Closure& callback) {
+    on_text_selection_changed_callback_ = callback;
+  }
+
+  const gfx::Range* last_composition_range() const {
+    return last_composition_range_.get();
+  }
+
+  RenderWidgetHostView* GetUpdatedView() const { return updated_view_; }
 
   bool text_input_state_changed() const { return text_input_state_changed_; }
 
@@ -68,18 +95,53 @@ class TextInputManagerTester::InternalObserver
       return;
     text_input_state_changed_ = did_change_state;
     updated_view_ = updated_view;
-    update_text_input_state_callback_.Run(tester_);
+    if (!update_text_input_state_callback_.is_null())
+      update_text_input_state_callback_.Run();
+  }
+
+  void OnSelectionBoundsChanged(
+      TextInputManager* text_input_manager_,
+      RenderWidgetHostViewBase* updated_view) override {
+    updated_view_ = updated_view;
+    if (!on_selection_bounds_changed_callback_.is_null())
+      on_selection_bounds_changed_callback_.Run();
+  }
+
+  void OnImeCompositionRangeChanged(
+      TextInputManager* text_input_manager,
+      RenderWidgetHostViewBase* updated_view) override {
+    updated_view_ = updated_view;
+    const gfx::Range* range =
+        text_input_manager_->GetCompositionRangeForTesting();
+    DCHECK(range);
+    last_composition_range_.reset(new gfx::Range(range->start(), range->end()));
+    if (!on_ime_composition_range_changed_callback_.is_null())
+      on_ime_composition_range_changed_callback_.Run();
+  }
+
+  void OnTextSelectionChanged(TextInputManager* text_input_manager,
+                              RenderWidgetHostViewBase* updated_view) override {
+    updated_view_ = updated_view;
+    if (!on_text_selection_changed_callback_.is_null())
+      on_text_selection_changed_callback_.Run();
   }
 
   // WebContentsObserver implementation.
-  void WebContentsDestroyed() override { text_input_manager_ = nullptr; }
+  void WebContentsDestroyed() override {
+    DCHECK(text_input_manager_);
+    text_input_manager_->RemoveObserver(this);
+    text_input_manager_ = nullptr;
+  }
 
  private:
-  TextInputManagerTester* tester_;
   TextInputManager* text_input_manager_;
   RenderWidgetHostViewBase* updated_view_;
   bool text_input_state_changed_;
-  TextInputManagerTester::Callback update_text_input_state_callback_;
+  std::unique_ptr<gfx::Range> last_composition_range_;
+  base::Closure update_text_input_state_callback_;
+  base::Closure on_selection_bounds_changed_callback_;
+  base::Closure on_ime_composition_range_changed_callback_;
+  base::Closure on_text_selection_changed_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(InternalObserver);
 };
@@ -125,7 +187,7 @@ class TestRenderWidgetHostViewDestructionObserver::InternalObserver
   DISALLOW_COPY_AND_ASSIGN(InternalObserver);
 };
 
-#ifdef USE_AURA
+#if defined(USE_AURA)
 class InputMethodObserverAura : public TestInputMethodObserver,
                                 public ui::InputMethodObserver {
  public:
@@ -147,34 +209,25 @@ class InputMethodObserverAura : public TestInputMethodObserver,
     return ui::TEXT_INPUT_TYPE_NONE;
   }
 
-  void SetOnTextInputTypeChangedCallback(
-      const base::Closure& callback) override {
-    on_text_input_type_changed_callback_ = callback;
-  }
-
-  void SetOnShowImeIfNeededCallback(const base::Closure& callback) override {
+  void SetOnShowVirtualKeyboardIfEnabledCallback(
+      const base::RepeatingClosure& callback) override {
     on_show_ime_if_needed_callback_ = callback;
   }
 
  private:
-  // ui::InputMethodObserver implementations.
-  void OnTextInputTypeChanged(const ui::TextInputClient* client) override {
-    text_input_client_ = client;
-    on_text_input_type_changed_callback_.Run();
-  }
-
   void OnFocus() override {}
   void OnBlur() override {}
   void OnCaretBoundsChanged(const ui::TextInputClient* client) override {}
   void OnTextInputStateChanged(const ui::TextInputClient* client) override {}
   void OnInputMethodDestroyed(const ui::InputMethod* input_method) override {}
 
-  void OnShowImeIfNeeded() override { on_show_ime_if_needed_callback_.Run(); }
+  void OnShowVirtualKeyboardIfEnabled() override {
+    on_show_ime_if_needed_callback_.Run();
+  }
 
   ui::InputMethod* input_method_;
   const ui::TextInputClient* text_input_client_;
-  base::Closure on_text_input_type_changed_callback_;
-  base::Closure on_show_ime_if_needed_callback_;
+  base::RepeatingClosure on_show_ime_if_needed_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(InputMethodObserverAura);
 };
@@ -203,6 +256,62 @@ bool GetTextInputTypeForView(WebContents* web_contents,
   return true;
 }
 
+bool RequestCompositionInfoFromActiveWidget(WebContents* web_contents) {
+  TextInputManager* manager =
+      static_cast<WebContentsImpl*>(web_contents)->GetTextInputManager();
+  if (!manager || !manager->GetActiveWidget())
+    return false;
+
+  manager->GetActiveWidget()->RequestCompositionUpdates(
+      true /* immediate_request */, false /* monitor_updates */);
+  return true;
+}
+
+bool DoesFrameHaveFocusedEditableElement(RenderFrameHost* frame) {
+  return static_cast<RenderFrameHostImpl*>(frame)
+      ->has_focused_editable_element();
+}
+
+void SendImeCommitTextToWidget(
+    RenderWidgetHost* rwh,
+    const base::string16& text,
+    const std::vector<ui::ImeTextSpan>& ime_text_spans,
+    const gfx::Range& replacement_range,
+    int relative_cursor_pos) {
+  RenderWidgetHostImpl::From(rwh)->ImeCommitText(
+      text, ime_text_spans, replacement_range, relative_cursor_pos);
+}
+
+void SendImeSetCompositionTextToWidget(
+    RenderWidgetHost* rwh,
+    const base::string16& text,
+    const std::vector<ui::ImeTextSpan>& ime_text_spans,
+    const gfx::Range& replacement_range,
+    int selection_start,
+    int selection_end) {
+  RenderWidgetHostImpl::From(rwh)->ImeSetComposition(
+      text, ime_text_spans, replacement_range, selection_start, selection_end);
+}
+
+bool DestroyRenderWidgetHost(int32_t process_id,
+                             int32_t local_root_routing_id) {
+  RenderFrameHostImpl* rfh =
+      RenderFrameHostImpl::FromID(process_id, local_root_routing_id);
+  if (!rfh)
+    return false;
+
+  while (!rfh->is_local_root())
+    rfh = rfh->GetParent();
+
+  FrameTreeNode* ftn = rfh->frame_tree_node();
+  if (ftn->IsMainFrame()) {
+    WebContents::FromRenderFrameHost(rfh)->Close();
+  } else {
+    ftn->frame_tree()->RemoveFrame(ftn);
+  }
+  return true;
+}
+
 size_t GetRegisteredViewsCountFromTextInputManager(WebContents* web_contents) {
   std::unordered_set<RenderWidgetHostView*> views;
   TextInputManager* manager =
@@ -222,8 +331,23 @@ TextInputManagerTester::TextInputManagerTester(WebContents* web_contents)
 TextInputManagerTester::~TextInputManagerTester() {}
 
 void TextInputManagerTester::SetUpdateTextInputStateCalledCallback(
-    const Callback& callback) {
+    const base::Closure& callback) {
   observer_->set_update_text_input_state_called_callback(callback);
+}
+
+void TextInputManagerTester::SetOnSelectionBoundsChangedCallback(
+    const base::Closure& callback) {
+  observer_->set_on_selection_bounds_changed_callback(callback);
+}
+
+void TextInputManagerTester::SetOnImeCompositionRangeChangedCallback(
+    const base::Closure& callback) {
+  observer_->set_on_ime_composition_range_changed_callback(callback);
+}
+
+void TextInputManagerTester::SetOnTextSelectionChangedCallback(
+    const base::Closure& callback) {
+  observer_->set_on_text_selection_changed_callback(callback);
 }
 
 bool TextInputManagerTester::GetTextInputType(ui::TextInputType* type) {
@@ -242,7 +366,7 @@ bool TextInputManagerTester::GetTextInputValue(std::string* value) {
       observer_->text_input_manager()->GetTextInputState();
   if (!state)
     return false;
-  *value = state->value;
+  *value = base::UTF16ToUTF8(state->value);
   return true;
 }
 
@@ -251,8 +375,25 @@ const RenderWidgetHostView* TextInputManagerTester::GetActiveView() {
   return observer_->text_input_manager()->active_view_for_testing();
 }
 
-const RenderWidgetHostView* TextInputManagerTester::GetUpdatedView() {
+RenderWidgetHostView* TextInputManagerTester::GetUpdatedView() {
   return observer_->GetUpdatedView();
+}
+
+bool TextInputManagerTester::GetCurrentTextSelectionLength(size_t* length) {
+  DCHECK(observer_->text_input_manager());
+
+  if (!observer_->text_input_manager()->GetActiveWidget())
+    return false;
+
+  *length = observer_->text_input_manager()->GetTextSelection()->text().size();
+  return true;
+}
+
+bool TextInputManagerTester::GetLastCompositionRangeLength(uint32_t* length) {
+  if (!observer_->last_composition_range())
+    return false;
+  *length = observer_->last_composition_range()->length();
+  return true;
 }
 
 bool TextInputManagerTester::IsTextInputStateChanged() {
@@ -308,13 +449,19 @@ void TextInputStateSender::SetCanComposeInline(bool can_compose_inline) {
   text_input_state_->can_compose_inline = can_compose_inline;
 }
 
-void TextInputStateSender::SetShowImeIfNeeded(bool show_ime_if_needed) {
+void TextInputStateSender::SetShowVirtualKeyboardIfEnabled(
+    bool show_ime_if_needed) {
   text_input_state_->show_ime_if_needed = show_ime_if_needed;
 }
 
-void TextInputStateSender::SetIsNonImeChange(bool is_non_ime_change) {
-  text_input_state_->is_non_ime_change = is_non_ime_change;
+#if defined(USE_AURA)
+void TextInputStateSender::SetLastPointerType(
+    ui::EventPointerType last_pointer_type) {
+  RenderWidgetHostViewAura* rwhva =
+      static_cast<RenderWidgetHostViewAura*>(view_);
+  rwhva->SetLastPointerType(last_pointer_type);
 }
+#endif
 
 TestInputMethodObserver::TestInputMethodObserver() {}
 
@@ -325,7 +472,7 @@ std::unique_ptr<TestInputMethodObserver> TestInputMethodObserver::Create(
     WebContents* web_contents) {
   std::unique_ptr<TestInputMethodObserver> observer;
 
-#ifdef USE_AURA
+#if defined(USE_AURA)
   RenderWidgetHostViewAura* view = static_cast<RenderWidgetHostViewAura*>(
       web_contents->GetRenderWidgetHostView());
   observer.reset(new InputMethodObserverAura(view->GetInputMethod()));

@@ -15,10 +15,12 @@
 #include "test/scoped_temp_dir.h"
 
 #include <dirent.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "base/logging.h"
+#include "build/build_config.h"
 #include "gtest/gtest.h"
 #include "test/errors.h"
 
@@ -33,36 +35,25 @@ void ScopedTempDir::Rename() {
 
 // static
 base::FilePath ScopedTempDir::CreateTemporaryDirectory() {
-  char dir_template[] = "/tmp/org.chromium.crashpad.test.XXXXXX";
-  PCHECK(mkdtemp(dir_template)) << "mkdtemp " << dir_template;
-  return base::FilePath(dir_template);
-}
-
-// static
-void ScopedTempDir::RecursivelyDeleteTemporaryDirectory(
-    const base::FilePath& path) {
-  DIR* dir = opendir(path.value().c_str());
-  ASSERT_TRUE(dir) << ErrnoMessage("opendir") << " " << path.value();
-
-  dirent* entry;
-  while ((entry = readdir(dir))) {
-    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-      continue;
-    }
-
-    base::FilePath entry_path = path.Append(entry->d_name);
-    if (entry->d_type == DT_DIR) {
-      RecursivelyDeleteTemporaryDirectory(entry_path);
-    } else {
-      EXPECT_EQ(0, unlink(entry_path.value().c_str()))
-          << ErrnoMessage("unlink") << " " << entry_path.value();
-    }
+  char* tmpdir = getenv("TMPDIR");
+  std::string dir;
+  if (tmpdir && tmpdir[0] != '\0') {
+    dir.assign(tmpdir);
+  } else {
+#if defined(OS_ANDROID)
+    dir.assign("/data/local/tmp");
+#else
+    dir.assign("/tmp");
+#endif
   }
 
-  EXPECT_EQ(0, closedir(dir))
-      << ErrnoMessage("closedir") << " " << path.value();
-  EXPECT_EQ(0, rmdir(path.value().c_str()))
-      << ErrnoMessage("rmdir") << " " << path.value();
+  if (dir[dir.size() - 1] != '/') {
+    dir.append(1, '/');
+  }
+  dir.append("org.chromium.crashpad.test.XXXXXX");
+
+  PCHECK(mkdtemp(&dir[0])) << "mkdtemp " << dir;
+  return base::FilePath(dir);
 }
 
 }  // namespace test

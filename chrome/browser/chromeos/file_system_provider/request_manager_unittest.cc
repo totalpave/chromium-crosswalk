@@ -18,7 +18,6 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "chrome/browser/chromeos/file_system_provider/notification_manager_interface.h"
@@ -132,35 +131,41 @@ class EventLogger {
   virtual ~EventLogger() {}
 
   void OnExecute(int request_id) {
-    execute_events_.push_back(new ExecuteEvent(request_id));
+    execute_events_.push_back(std::make_unique<ExecuteEvent>(request_id));
   }
 
   void OnSuccess(int request_id,
                  std::unique_ptr<RequestValue> result,
                  bool has_more) {
-    success_events_.push_back(
-        new SuccessEvent(request_id, std::move(result), has_more));
+    success_events_.push_back(std::make_unique<SuccessEvent>(
+        request_id, std::move(result), has_more));
   }
 
   void OnError(int request_id,
                std::unique_ptr<RequestValue> result,
                base::File::Error error) {
     error_events_.push_back(
-        new ErrorEvent(request_id, std::move(result), error));
+        std::make_unique<ErrorEvent>(request_id, std::move(result), error));
   }
 
-  ScopedVector<ExecuteEvent>& execute_events() { return execute_events_; }
-  ScopedVector<SuccessEvent>& success_events() { return success_events_; }
-  ScopedVector<ErrorEvent>& error_events() { return error_events_; }
+  std::vector<std::unique_ptr<ExecuteEvent>>& execute_events() {
+    return execute_events_;
+  }
+  std::vector<std::unique_ptr<SuccessEvent>>& success_events() {
+    return success_events_;
+  }
+  std::vector<std::unique_ptr<ErrorEvent>>& error_events() {
+    return error_events_;
+  }
 
   base::WeakPtr<EventLogger> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
  private:
-  ScopedVector<ExecuteEvent> execute_events_;
-  ScopedVector<SuccessEvent> success_events_;
-  ScopedVector<ErrorEvent> error_events_;
+  std::vector<std::unique_ptr<ExecuteEvent>> execute_events_;
+  std::vector<std::unique_ptr<SuccessEvent>> success_events_;
+  std::vector<std::unique_ptr<ErrorEvent>> error_events_;
   base::WeakPtrFactory<EventLogger> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(EventLogger);
@@ -322,7 +327,7 @@ class FileSystemProviderRequestManagerTest : public testing::Test {
     profile_.reset(new TestingProfile);
     notification_manager_.reset(new FakeNotificationManager);
     request_manager_.reset(new RequestManager(profile_.get(),
-                                              std::string() /* extension_id */,
+                                              std::string() /* provider_id */,
                                               notification_manager_.get()));
   }
 
@@ -399,7 +404,7 @@ TEST_F(FileSystemProviderRequestManagerTest, CreateAndFulFill) {
   // Validate if the callback has correct arguments.
   ASSERT_EQ(1u, logger.success_events().size());
   EXPECT_EQ(0u, logger.error_events().size());
-  EventLogger::SuccessEvent* event = logger.success_events()[0];
+  EventLogger::SuccessEvent* event = logger.success_events()[0].get();
   ASSERT_TRUE(event->result());
   const std::string* response_test_string = event->result()->testing_params();
   ASSERT_TRUE(response_test_string);
@@ -465,7 +470,7 @@ TEST_F(FileSystemProviderRequestManagerTest, CreateAndFulFill_WithHasNext) {
   // Validate if the callback has correct arguments.
   ASSERT_EQ(1u, logger.success_events().size());
   EXPECT_EQ(0u, logger.error_events().size());
-  EventLogger::SuccessEvent* event = logger.success_events()[0];
+  EventLogger::SuccessEvent* event = logger.success_events()[0].get();
   EXPECT_TRUE(event->result());
   EXPECT_TRUE(event->has_more());
 
@@ -543,7 +548,7 @@ TEST_F(FileSystemProviderRequestManagerTest, CreateAndReject) {
   // Validate if the callback has correct arguments.
   ASSERT_EQ(1u, logger.error_events().size());
   EXPECT_EQ(0u, logger.success_events().size());
-  EventLogger::ErrorEvent* event = logger.error_events()[0];
+  EventLogger::ErrorEvent* event = logger.error_events()[0].get();
   EXPECT_EQ(error, event->error());
 
   ASSERT_EQ(1u, observer.rejected().size());
@@ -690,7 +695,7 @@ TEST_F(FileSystemProviderRequestManagerTest, AbortOnDestroy) {
 
   {
     RequestManager request_manager(profile_.get(),
-                                   std::string() /* extension_id */, nullptr);
+                                   std::string() /* provider_id */, nullptr);
     request_manager.AddObserver(&observer);
 
     request_id = request_manager.CreateRequest(
@@ -719,7 +724,7 @@ TEST_F(FileSystemProviderRequestManagerTest, AbortOnDestroy) {
 
   // All active requests should be aborted in the destructor of RequestManager.
   ASSERT_EQ(1u, logger.error_events().size());
-  EventLogger::ErrorEvent* event = logger.error_events()[0];
+  EventLogger::ErrorEvent* event = logger.error_events()[0].get();
   EXPECT_EQ(base::File::FILE_ERROR_ABORT, event->error());
 
   EXPECT_EQ(0u, logger.success_events().size());
@@ -763,7 +768,7 @@ TEST_F(FileSystemProviderRequestManagerTest, AbortOnTimeout) {
   EXPECT_EQ(0u, notification_manager_->size());
 
   ASSERT_EQ(1u, logger.error_events().size());
-  EventLogger::ErrorEvent* event = logger.error_events()[0];
+  EventLogger::ErrorEvent* event = logger.error_events()[0].get();
   EXPECT_EQ(base::File::FILE_ERROR_ABORT, event->error());
 
   ASSERT_EQ(1u, observer.rejected().size());
@@ -802,7 +807,7 @@ TEST_F(FileSystemProviderRequestManagerTest, ContinueOnTimeout) {
   // Wait until the request is timeouted.
   base::RunLoop().RunUntilIdle();
 
-  // Let the extension more time by closing the notification.
+  // Let the provider have more time by closing the notification.
   EXPECT_EQ(1u, notification_manager_->size());
   notification_manager_->Continue();
   EXPECT_EQ(0u, notification_manager_->size());

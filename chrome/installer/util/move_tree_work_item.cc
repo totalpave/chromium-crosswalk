@@ -4,10 +4,9 @@
 
 #include "chrome/installer/util/move_tree_work_item.h"
 
-#include <shlwapi.h>
-
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/win/shlwapi.h"
 #include "chrome/installer/util/duplicate_tree_detector.h"
 #include "chrome/installer/util/logging_installer.h"
 
@@ -48,7 +47,8 @@ bool MoveTreeWorkItem::DoImpl() {
                   << temp_dir_.value();
       return false;
     }
-    base::FilePath backup = backup_path_.path().Append(dest_path_.BaseName());
+    base::FilePath backup =
+        backup_path_.GetPath().Append(dest_path_.BaseName());
 
     if (duplicate_option_ == CHECK_DUPLICATES) {
       if (installer::IsIdenticalFileHierarchy(source_path_, dest_path_)) {
@@ -105,14 +105,18 @@ void MoveTreeWorkItem::RollbackImpl() {
                 << " to " << source_path_.value();
   }
 
-  base::FilePath backup = backup_path_.path().Append(dest_path_.BaseName());
-  if (moved_to_backup_ && !base::Move(backup, dest_path_)) {
-    PLOG(ERROR) << "failed move " << backup.value()
-                << " to " << dest_path_.value();
-  }
+  if (moved_to_backup_ || source_moved_to_backup_) {
+    base::FilePath backup =
+        backup_path_.GetPath().Append(dest_path_.BaseName());
 
-  if (source_moved_to_backup_ && !base::Move(backup, source_path_)) {
-    PLOG(ERROR) << "Can not restore " << backup.value()
-                << " to " << source_path_.value();
+    if (moved_to_backup_ && !base::Move(backup, dest_path_)) {
+      PLOG(ERROR) << "failed move " << backup.value() << " to "
+                  << dest_path_.value();
+    }
+
+    if (source_moved_to_backup_ && !base::Move(backup, source_path_)) {
+      PLOG(ERROR) << "Can not restore " << backup.value() << " to "
+                  << source_path_.value();
+    }
   }
 }

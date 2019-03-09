@@ -52,8 +52,9 @@ public final class NativeTestServer {
         return nativeGetFileURL(filePath);
     }
 
-    public static String getSdchURL() {
-        return nativeGetSdchURL();
+    // Returns a URL that the server will return an Exabyte of data
+    public static String getExabyteResponseURL() {
+        return nativeGetExabyteResponseURL();
     }
 
     // The following URLs will make NativeTestServer serve a response based on
@@ -75,12 +76,12 @@ public final class NativeTestServer {
         return nativeGetFileURL("/notfound.html");
     }
 
-    public static String getHostPort() {
-        return nativeGetHostPort();
+    public static int getPort() {
+        return nativeGetPort();
     }
 
-    public static boolean isDataReductionProxySupported() {
-        return nativeIsDataReductionProxySupported();
+    public static String getHostPort() {
+        return nativeGetHostPort();
     }
 
     private static native boolean nativeStartNativeTestServer(String filePath, String testDataDir);
@@ -91,7 +92,7 @@ public final class NativeTestServer {
     private static native String nativeGetEchoMethodURL();
     private static native String nativeGetRedirectToEchoBody();
     private static native String nativeGetFileURL(String filePath);
-    private static native String nativeGetSdchURL();
+    private static native String nativeGetExabyteResponseURL();
     private static native String nativeGetHostPort();
-    private static native boolean nativeIsDataReductionProxySupported();
+    private static native int nativeGetPort();
 }

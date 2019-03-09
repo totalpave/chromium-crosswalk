@@ -8,13 +8,43 @@
 #include "base/command_line.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/plugins/plugin_finder.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_json/safe_json_parser.h"
+#include "content/public/browser/network_service_instance.h"
+#include "content/public/common/service_manager_connection.h"
+#include "services/data_decoder/public/cpp/safe_json_parser.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
+
+namespace {
+constexpr net::NetworkTrafficAnnotationTag
+    kPluginResourceServiceTrafficAnnotation =
+        net::DefineNetworkTrafficAnnotation("plugins_resource_service", R"(
+        semantics {
+          sender: "Plugins Resource Service"
+          description:
+            "Fetches updates to the list of plugins known to Chromium. For a "
+            "given plugin, this list contains the minimum version not "
+            "containing known security vulnerabilities, and can be used to "
+            "inform the user that their plugins need to be updated."
+          trigger: "Triggered at regular intervals (once per day)."
+          data: "None"
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting: "This feature cannot be disabled in settings."
+          policy_exception_justification:
+            "Not implemented. AllowOutdatedPlugins policy silences local "
+            "warnings, but network request to update the list of plugins are "
+            "still sent."
+        })");
+
+}  // namespace
 
 namespace {
 
@@ -25,12 +55,14 @@ const int kStartResourceFetchDelayMs = 60 * 1000;
 const int kCacheUpdateDelayMs = 24 * 60 * 60 * 1000;
 
 const char kPluginsServerUrl[] =
-    "https://www.gstatic.com/chrome/config/plugins_2/";
+    "https://www.gstatic.com/chrome/config/plugins_3/";
 
 GURL GetPluginsServerURL() {
   std::string filename;
 #if defined(OS_WIN)
   filename = "plugins_win.json";
+#elif defined(OS_CHROMEOS)
+  filename = "plugins_chromeos.json";
 #elif defined(OS_LINUX)
   filename = "plugins_linux.json";
 #elif defined(OS_MACOSX)
@@ -52,9 +84,14 @@ PluginsResourceService::PluginsResourceService(PrefService* local_state)
           prefs::kPluginsResourceCacheUpdate,
           kStartResourceFetchDelayMs,
           kCacheUpdateDelayMs,
-          g_browser_process->system_request_context(),
+          g_browser_process->system_network_context_manager()
+              ->GetSharedURLLoaderFactory(),
           switches::kDisableBackgroundNetworking,
-          base::Bind(safe_json::SafeJsonParser::Parse)) {}
+          base::Bind(data_decoder::SafeJsonParser::Parse,
+                     content::ServiceManagerConnection::GetForProcess()
+                         ->GetConnector()),
+          kPluginResourceServiceTrafficAnnotation,
+          base::BindOnce(&content::GetNetworkConnectionTracker)) {}
 
 void PluginsResourceService::Init() {
   const base::DictionaryValue* metadata =
@@ -68,8 +105,7 @@ PluginsResourceService::~PluginsResourceService() {
 
 // static
 void PluginsResourceService::RegisterPrefs(PrefRegistrySimple* registry) {
-  registry->RegisterDictionaryPref(prefs::kPluginsMetadata,
-                                   new base::DictionaryValue());
+  registry->RegisterDictionaryPref(prefs::kPluginsMetadata);
   registry->RegisterStringPref(prefs::kPluginsResourceCacheUpdate, "0");
 }
 

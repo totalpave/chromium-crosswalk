@@ -8,10 +8,10 @@
 #include <map>
 
 #include "base/callback_forward.h"
+#include "base/component_export.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "storage/browser/storage_browser_export.h"
 
 namespace base {
 class TaskRunner;
@@ -21,18 +21,13 @@ namespace storage {
 
 // A scoped reference for a FilePath that can optionally schedule the file
 // to be deleted and/or to notify a consumer when it is going to be scoped out.
-// This class supports move semantics, i.e. consumers can call Pass() to
-// pass the ownership of ScopedFile.
+// Consumers can pass the ownership of a ScopedFile via std::move().
 //
 // TODO(kinuko): Probably this can be moved under base or somewhere more
 // common place.
-class STORAGE_EXPORT ScopedFile {
+class COMPONENT_EXPORT(STORAGE_BROWSER) ScopedFile {
  public:
-  typedef base::Callback<void(const base::FilePath&)> ScopeOutCallback;
-  typedef std::pair<ScopeOutCallback, scoped_refptr<base::TaskRunner> >
-      ScopeOutCallbackPair;
-  typedef std::vector<ScopeOutCallbackPair> ScopeOutCallbackList;
-
+  using ScopeOutCallback = base::OnceCallback<void(const base::FilePath&)>;
   enum ScopeOutPolicy {
     DELETE_ON_SCOPE_OUT,
     DONT_DELETE_ON_SCOPE_OUT,
@@ -44,7 +39,7 @@ class STORAGE_EXPORT ScopedFile {
   // is DELETE_ON_SCOPE_OUT.
   ScopedFile(const base::FilePath& path,
              ScopeOutPolicy policy,
-             const scoped_refptr<base::TaskRunner>& file_task_runner);
+             scoped_refptr<base::TaskRunner> file_task_runner);
 
   ScopedFile(ScopedFile&& other);
   ScopedFile& operator=(ScopedFile&& rhs) {
@@ -58,11 +53,15 @@ class STORAGE_EXPORT ScopedFile {
   // of this instance is released.
   // If release policy is DELETE_ON_SCOPE_OUT the
   // callback task(s) is/are posted before the deletion is scheduled.
-  void AddScopeOutCallback(const ScopeOutCallback& callback,
+  // The callbacks are posted in reverse of the order they were added, as LIFO
+  // generally makes most sense for cleanup work.
+  void AddScopeOutCallback(ScopeOutCallback callback,
                            base::TaskRunner* callback_runner);
 
   // The full file path.
   const base::FilePath& path() const { return path_; }
+
+  ScopeOutPolicy policy() const { return scope_out_policy_; }
 
   // Releases the file. After calling this, this instance will hold
   // an empty file path and scoping out won't make any file deletion
@@ -79,7 +78,8 @@ class STORAGE_EXPORT ScopedFile {
   base::FilePath path_;
   ScopeOutPolicy scope_out_policy_;
   scoped_refptr<base::TaskRunner> file_task_runner_;
-  ScopeOutCallbackList scope_out_callbacks_;
+  std::vector<std::pair<ScopeOutCallback, scoped_refptr<base::TaskRunner>>>
+      scope_out_callbacks_;
 
   DISALLOW_COPY_AND_ASSIGN(ScopedFile);
 };

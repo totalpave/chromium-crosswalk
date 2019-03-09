@@ -2,18 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ios/web/net/request_group_util.h"
+#import "ios/web/net/request_group_util.h"
 
-#include <Foundation/Foundation.h>
+#import <Foundation/Foundation.h>
 #include <stddef.h>
 
-#include "base/mac/scoped_nsobject.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/platform_test.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
+using RequestGroupUtilTest = PlatformTest;
 
 // Checks that all newly generated groupID are unique and that there are no
 // duplicates.
-TEST(RequestGroupUtilTest, RequestGroupID) {
-  base::scoped_nsobject<NSMutableSet> set([[NSMutableSet alloc] init]);
+TEST_F(RequestGroupUtilTest, RequestGroupID) {
+  NSMutableSet* set = [[NSMutableSet alloc] init];
   const size_t kGenerated = 2000;
   for (size_t i = 0; i < kGenerated; ++i)
     [set addObject:web::GenerateNewRequestGroupID()];
@@ -22,7 +28,7 @@ TEST(RequestGroupUtilTest, RequestGroupID) {
 
 // Tests that the ExtractRequestGroupIDFromUserAgent function behaves as
 // intended.
-TEST(RequestGroupUtilTest, ExtractRequestGroupIDFromUserAgent) {
+TEST_F(RequestGroupUtilTest, ExtractRequestGroupIDFromUserAgent) {
   EXPECT_FALSE(web::ExtractRequestGroupIDFromUserAgent(nil));
   EXPECT_FALSE(web::ExtractRequestGroupIDFromUserAgent(
       @"Lynx/2.8.1pre.9 libwww-FM/2.14"));

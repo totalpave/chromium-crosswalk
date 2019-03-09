@@ -6,26 +6,43 @@
 #define DEVICE_VR_TEST_FAKE_VR_DEVICE_H_
 
 #include "base/macros.h"
-#include "device/vr/vr_device.h"
+#include "base/memory/ref_counted.h"
+#include "device/vr/vr_device_base.h"
 #include "device/vr/vr_device_provider.h"
+#include "device/vr/vr_export.h"
 
 namespace device {
 
-class FakeVRDevice : public VRDevice {
+// TODO(mthiesse, crbug.com/769373): Remove DEVICE_VR_EXPORT.
+class DEVICE_VR_EXPORT FakeVRDevice : public VRDeviceBase,
+                                      public mojom::XRSessionController {
  public:
-  explicit FakeVRDevice(VRDeviceProvider* provider);
+  explicit FakeVRDevice(mojom::XRDeviceId id);
   ~FakeVRDevice() override;
 
-  void SetVRDevice(const VRDisplayPtr& device);
-  void SetPose(const VRPosePtr& state);
+  void RequestSession(
+      mojom::XRRuntimeSessionOptionsPtr options,
+      mojom::XRRuntime::RequestSessionCallback callback) override;
+  void SetPose(mojom::VRPosePtr pose) { pose_ = std::move(pose); }
 
-  VRDisplayPtr GetVRDevice() override;
-  VRPosePtr GetPose() override;
-  void ResetPose() override;
+  void SetFrameDataRestricted(bool restricted) override {}
+
+  using VRDeviceBase::IsPresenting;  // Make it public for tests.
+
+  void StopSession() { OnPresentingControllerMojoConnectionError(); }
 
  private:
-  VRDisplayPtr device_;
-  VRPosePtr pose_;
+  void OnPresentingControllerMojoConnectionError();
+
+  void OnGetInlineFrameData(
+      mojom::XRFrameDataProvider::GetFrameDataCallback callback) override;
+
+  mojom::VRDisplayInfoPtr InitBasicDevice();
+  mojom::VREyeParametersPtr InitEye(float fov, float offset, uint32_t size);
+
+  mojom::VRPosePtr pose_;
+
+  mojo::Binding<mojom::XRSessionController> controller_binding_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeVRDevice);
 };

@@ -5,27 +5,28 @@
 #ifndef MOJO_PUBLIC_CPP_BINDINGS_SYNC_HANDLE_WATCHER_H_
 #define MOJO_PUBLIC_CPP_BINDINGS_SYNC_HANDLE_WATCHER_H_
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/thread_checker.h"
+#include "base/sequence_checker.h"
 #include "mojo/public/cpp/bindings/sync_handle_registry.h"
 #include "mojo/public/cpp/system/core.h"
 
 namespace mojo {
 
 // SyncHandleWatcher supports watching a handle synchronously. It also supports
-// registering the handle with a thread-local storage (SyncHandleRegistry), so
-// that when other SyncHandleWatcher instances on the same thread perform sync
+// registering the handle with a sequence-local storage (SyncHandleRegistry), so
+// that when other SyncHandleWatcher instances on the same sequence perform sync
 // handle watching, this handle will be watched together.
 //
 // SyncHandleWatcher is used for sync methods. While a sync call is waiting for
-// response, we would like to block the thread. On the other hand, we need
-// incoming sync method requests on the same thread to be able to reenter. We
+// response, we would like to block the sequence. On the other hand, we need
+// incoming sync method requests on the same sequence to be able to reenter. We
 // also need master interface endpoints to continue dispatching messages for
-// associated endpoints on different threads.
+// associated endpoints on different sequence.
 //
 // This class is not thread safe.
-class SyncHandleWatcher {
+class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) SyncHandleWatcher {
  public:
   // Note: |handle| must outlive this object.
   SyncHandleWatcher(const Handle& handle,
@@ -35,7 +36,7 @@ class SyncHandleWatcher {
   ~SyncHandleWatcher();
 
   // Registers |handle_| with SyncHandleRegistry, so that when others perform
-  // sync handle watching on the same thread, |handle_| will be watched
+  // sync handle watching on the same sequence, |handle_| will be watched
   // together.
   void AllowWokenUpBySyncWatchOnSameThread();
 
@@ -64,7 +65,7 @@ class SyncHandleWatcher {
 
   scoped_refptr<base::RefCountedData<bool>> destroyed_;
 
-  base::ThreadChecker thread_checker_;
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(SyncHandleWatcher);
 };

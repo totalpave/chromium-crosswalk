@@ -6,67 +6,103 @@
 
 #import <WebKit/WebKit.h>
 
-#import "base/logging.h"
-#import "base/mac/scoped_nsobject.h"
+#include "base/logging.h"
+#include "base/mac/bundle_locations.h"
+#include "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
-#import "base/time/time.h"
 #import "ios/web/public/web_state/js/crw_js_injection_manager.h"
 #import "ios/web/public/web_state/js/crw_js_injection_receiver.h"
+#import "ios/web/web_state/js/page_script_util.h"
+#include "testing/gtest/include/gtest/gtest.h"
 
-using base::Time;
-using base::TimeDelta;
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
-namespace {
-// The amount of time (in secs) |evaluate:StringResultHandler:| is given time to
-// process until the test fails.
-const NSTimeInterval kTimeout = 5.0;
-}
+using base::test::ios::kWaitForJSCompletionTimeout;
+using base::test::ios::kWaitForPageLoadTimeout;
+using base::test::ios::WaitUntilConditionOrTimeout;
 
 namespace web {
+namespace test {
 
-NSString* EvaluateJavaScriptAsString(CRWJSInjectionManager* manager,
-                                     NSString* script) {
-  __block base::scoped_nsobject<NSString> evaluationResult;
-  [manager evaluate:script
-      stringResultHandler:^(NSString* result, NSError* error) {
-        DCHECK(result);
-        evaluationResult.reset([result copy]);
-      }];
-  // TODO(shreyasv): This is a temporary solution to have some duplicated code.
-  // The right way to implement this is to use |WaitUntilCondition|. Move to
-  // that when that function lives in ios/.
-  Time startTime = Time::Now();
-  while (!evaluationResult.get() &&
-         (Time::Now() - startTime < TimeDelta::FromSeconds(kTimeout))) {
-    NSDate* beforeDate = [NSDate dateWithTimeIntervalSinceNow:.01];
-    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                             beforeDate:beforeDate];
-  }
-  DCHECK(evaluationResult);
-  return [[evaluationResult retain] autorelease];
-}
-
-NSString* EvaluateJavaScriptAsString(CRWJSInjectionReceiver* receiver,
-                                     NSString* script) {
-  base::scoped_nsobject<CRWJSInjectionManager> manager(
-      [[CRWJSInjectionManager alloc] initWithReceiver:receiver]);
-  return EvaluateJavaScriptAsString(manager, script);
-}
-
-id EvaluateJavaScript(WKWebView* web_view, NSString* script) {
-  __block base::scoped_nsobject<id> result;
+id ExecuteJavaScript(CRWJSInjectionManager* manager, NSString* script) {
+  __block NSString* result = nil;
+  __block NSError* error = nil;
   __block bool completed = false;
-  [web_view evaluateJavaScript:script
-             completionHandler:^(id evaluationResult, NSError* error) {
-               DCHECK(!error);
-               completed = true;
-               result.reset([evaluationResult copy]);
-             }];
-  base::test::ios::WaitUntilCondition(^{
+  [manager executeJavaScript:script
+           completionHandler:^(id execution_result, NSError* execution_error) {
+             result = [execution_result copy];
+             error = [execution_error copy];
+             completed = true;
+           }];
+
+  BOOL success = WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
     return completed;
   });
-  return [[result retain] autorelease];
+  // Log stack trace to provide some context.
+  EXPECT_TRUE(success && !error)
+      << "CRWJSInjectionManager failed to complete javascript execution.\n"
+      << base::SysNSStringToUTF8(
+             [[NSThread callStackSymbols] componentsJoinedByString:@"\n"])
+      << "error: \n"
+      << base::SysNSStringToUTF8(error.description);
+  return result;
 }
 
+id ExecuteJavaScript(CRWJSInjectionReceiver* receiver, NSString* script) {
+  CRWJSInjectionManager* manager =
+      [[CRWJSInjectionManager alloc] initWithReceiver:receiver];
+  return ExecuteJavaScript(manager, script);
+}
+
+id ExecuteJavaScript(WKWebView* web_view, NSString* script) {
+  return ExecuteJavaScript(web_view, script, nil);
+}
+
+id ExecuteJavaScript(WKWebView* web_view,
+                     NSString* script,
+                     NSError* __autoreleasing* error) {
+  __block id result;
+  __block bool completed = false;
+  __block NSError* block_error = nil;
+  SCOPED_TRACE(base::SysNSStringToUTF8(script));
+  [web_view evaluateJavaScript:script
+             completionHandler:^(id script_result, NSError* script_error) {
+               result = [script_result copy];
+               block_error = [script_error copy];
+               completed = true;
+             }];
+  BOOL success = WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
+    return completed;
+  });
+  // Log stack trace to provide some context.
+  EXPECT_TRUE(success) << "WKWebView failed to complete javascript execution.\n"
+                       << base::SysNSStringToUTF8([[NSThread callStackSymbols]
+                              componentsJoinedByString:@"\n"]);
+  if (error) {
+    *error = block_error;
+  }
+  return result;
+}
+
+bool LoadHtml(WKWebView* web_view, NSString* html, NSURL* base_url) {
+  [web_view loadHTMLString:html baseURL:base_url];
+
+  return WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{
+    return !web_view.loading;
+  });
+}
+
+bool WaitForInjectedScripts(WKWebView* web_view) {
+  return WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
+    return !![ExecuteJavaScript(web_view, @"!!__gCrWeb") isEqual:@YES];
+  });
+}
+
+NSString* GetPageScript(NSString* script_file_name) {
+  return web::GetPageScript(script_file_name);
+}
+}  // namespace test
 }  // namespace web
 

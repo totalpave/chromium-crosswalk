@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -17,11 +18,12 @@
 #include "components/history/core/browser/download_types.h"
 
 namespace sql {
-class Connection;
+class Database;
 }
 
 namespace history {
 
+struct DownloadSliceInfo;
 struct DownloadRow;
 
 // Maintains a table of downloads.
@@ -47,13 +49,13 @@ class DownloadDatabase {
   bool CreateDownload(const DownloadRow& info);
 
   // Remove |id| from the database.
-  void RemoveDownload(uint32_t id);
+  void RemoveDownload(DownloadId id);
 
   size_t CountDownloads();
 
  protected:
   // Returns the database for the functions in this interface.
-  virtual sql::Connection& GetDB() = 0;
+  virtual sql::Database& GetDB() = 0;
 
   // Returns true if able to successfully add mime types to the downloads table.
   bool MigrateMimeType();
@@ -91,6 +93,15 @@ class DownloadDatabase {
   // table.
   bool MigrateDownloadSiteInstanceUrl();
 
+  // Returns true if able to add last_access_time column to the download table.
+  bool MigrateDownloadLastAccessTime();
+
+  // Returns true if able to add transient column to the download table.
+  bool MigrateDownloadTransient();
+
+  // Returns true if able to add the finished column to downloads slices table.
+  bool MigrateDownloadSliceFinished();
+
   // Creates the downloads table if needed.
   bool InitDownloadTable();
 
@@ -109,9 +120,27 @@ class DownloadDatabase {
   // fixes such entries.
   void EnsureInProgressEntriesCleanedUp();
 
+  // Ensures a column exists in downloads table.
   bool EnsureColumnExists(const std::string& name, const std::string& type);
 
-  void RemoveDownloadURLs(uint32_t id);
+  // Ensures a column exists in |table|.
+  bool EnsureColumnExistsInTable(const std::string& table,
+                                 const std::string& name,
+                                 const std::string& type);
+
+  void RemoveDownloadURLs(DownloadId id);
+
+  // Creates a new download slice if it doesn't exist, or updates an existing
+  // one. Returns true on success, or false otherwise.
+  bool CreateOrUpdateDownloadSlice(const DownloadSliceInfo& info);
+
+  // Delete all the download slices associated with one DownloadRow.
+  void RemoveDownloadSlices(DownloadId id);
+
+  // Helper method to query the download slices for all the records in
+  // |download_row_map|.
+  using DownloadRowMap = std::map<DownloadId, DownloadRow*>;
+  void QueryDownloadSlices(DownloadRowMap* download_row_map);
 
   bool owning_thread_set_;
   base::PlatformThreadId owning_thread_;

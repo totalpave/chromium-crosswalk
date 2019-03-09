@@ -9,9 +9,11 @@
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "net/base/load_flags.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "ui/gfx/image/image.h"
 
 namespace {
@@ -27,23 +29,48 @@ ProfileAvatarDownloader::ProfileAvatarDownloader(
   DCHECK(!callback_.is_null());
   GURL url(std::string(kHighResAvatarDownloadUrlPrefix) +
            profiles::GetDefaultAvatarIconFileNameAtIndex(icon_index));
-  fetcher_.reset(new chrome::BitmapFetcher(url, this));
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("profile_avatar", R"(
+        semantics {
+          sender: "Profile Avatar Downloader"
+          description:
+            "The Chromium binary comes with a bundle of low-resolution "
+            "versions of avatar images. When the user selects an avatar in "
+            "chrome://settings, Chromium will download a high-resolution "
+            "version from Google's static content servers for use in the "
+            "people manager UI."
+          trigger:
+            "User selects a new avatar in chrome://settings for their profile"
+          data: "None, only the filename of the png to download."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting: "This feature cannot be disabled in settings."
+          policy_exception_justification:
+            "No content is being uploaded or saved; this request merely "
+            "downloads a publicly available PNG file."
+        })");
+  fetcher_.reset(new BitmapFetcher(url, this, traffic_annotation));
 }
 
 ProfileAvatarDownloader::~ProfileAvatarDownloader() {
 }
 
 void ProfileAvatarDownloader::Start() {
-  // In unit tests, the browser process can return a NULL request context.
-  net::URLRequestContextGetter* request_context =
-      g_browser_process->system_request_context();
-  if (request_context) {
+  SystemNetworkContextManager* system_network_context_manager =
+      g_browser_process->system_network_context_manager();
+  // In unit tests, the browser process can return a NULL context manager
+  if (!system_network_context_manager)
+    return;
+  network::mojom::URLLoaderFactory* loader_factory =
+      system_network_context_manager->GetURLLoaderFactory();
+  if (loader_factory) {
     fetcher_->Init(
-        request_context,
         std::string(),
-        net::URLRequest::CLEAR_REFERRER_ON_TRANSITION_FROM_SECURE_TO_INSECURE,
+        net::URLRequest::REDUCE_REFERRER_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN,
         net::LOAD_NORMAL);
-    fetcher_->Start();
+    fetcher_->Start(loader_factory);
   }
 }
 

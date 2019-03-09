@@ -23,8 +23,6 @@
         'ppb_audio_config.h',
         'ppb_audio_encoder.h',
         'ppb_audio.h',
-        'ppb_compositor.h',
-        'ppb_compositor_layer.h',
         'ppb_console.h',
         'ppb_core.h',
         'ppb_file_io.h',
@@ -99,6 +97,7 @@
       'FILES': [
         'deprecated_bool.h',
         'ppb_cursor_control_dev.h',
+        'ppb_device_ref_dev.h',
         'ppb_file_chooser_dev.h',
         'ppb_memory_dev.h',
         'ppb_opengles2ext_dev.h',

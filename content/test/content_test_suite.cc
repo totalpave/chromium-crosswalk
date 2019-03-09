@@ -13,10 +13,10 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_paths.h"
 #include "content/public/test/test_content_client_initializer.h"
-#include "gpu/config/gpu_info_collector.h"
-#include "gpu/config/gpu_util.h"
+#include "gpu/ipc/test_gpu_thread_holder.h"
 #include "media/base/media.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gl/init/gl_factory.h"
 #include "ui/gl/test/gl_surface_test_support.h"
 
 #if defined(OS_WIN)
@@ -28,18 +28,12 @@
 #include "base/test/mock_chrome_application_mac.h"
 #endif
 
-#if defined(OS_ANDROID)
-#include "content/browser/media/android/browser_media_player_manager.h"
-#include "gpu/ipc/client/android/in_process_surface_texture_manager.h"
-#endif
-
 namespace content {
 namespace {
 
 class TestInitializationListener : public testing::EmptyTestEventListener {
  public:
-  TestInitializationListener() : test_content_client_initializer_(NULL) {
-  }
+  TestInitializationListener() : test_content_client_initializer_(nullptr) {}
 
   void OnTestStart(const testing::TestInfo& test_info) override {
     test_content_client_initializer_ =
@@ -62,8 +56,7 @@ ContentTestSuite::ContentTestSuite(int argc, char** argv)
     : ContentTestSuiteBase(argc, argv) {
 }
 
-ContentTestSuite::~ContentTestSuite() {
-}
+ContentTestSuite::~ContentTestSuite() = default;
 
 void ContentTestSuite::Initialize() {
 #if defined(OS_MACOSX)
@@ -80,27 +73,24 @@ void ContentTestSuite::Initialize() {
     ContentClient client;
     ContentTestSuiteBase::RegisterContentSchemes(&client);
   }
+  base::DiscardableMemoryAllocator::SetInstance(&discardable_memory_allocator_);
+
   RegisterPathProvider();
   media::InitializeMediaLibrary();
   // When running in a child process for Mac sandbox tests, the sandbox exists
   // to initialize GL, so don't do it here.
-  bool is_child_process = base::CommandLine::ForCurrentProcess()->HasSwitch(
-      switches::kTestChildProcess);
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  bool is_child_process = command_line->HasSwitch(switches::kTestChildProcess);
   if (!is_child_process) {
-    gpu::GPUInfo gpu_info;
-    gpu::CollectBasicGraphicsInfo(&gpu_info);
-    gpu::ApplyGpuDriverBugWorkarounds(gpu_info,
-                                      base::CommandLine::ForCurrentProcess());
-    gl::GLSurfaceTestSupport::InitializeOneOff();
+    gl::GLSurfaceTestSupport::InitializeNoExtensionsOneOff();
+    auto* gpu_feature_info = gpu::GetTestGpuThreadHolder()->GetGpuFeatureInfo();
+    gl::init::SetDisabledExtensionsPlatform(
+        gpu_feature_info->disabled_extensions);
+    gl::init::InitializeExtensionSettingsOneOffPlatform();
   }
   testing::TestEventListeners& listeners =
       testing::UnitTest::GetInstance()->listeners();
   listeners.Append(new TestInitializationListener);
-#if defined(OS_ANDROID)
-  gpu::SurfaceTextureManager::SetInstance(
-      gpu::InProcessSurfaceTextureManager::GetInstance());
-  content::BrowserMediaPlayerManager::InitSurfaceTexturePeer();
-#endif
 }
 
 }  // namespace content

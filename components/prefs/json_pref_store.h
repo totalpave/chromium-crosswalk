@@ -19,64 +19,62 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/threading/non_thread_safe.h"
-#include "components/prefs/base_prefs_export.h"
+#include "base/sequence_checker.h"
+#include "base/task/post_task.h"
 #include "components/prefs/persistent_pref_store.h"
+#include "components/prefs/pref_filter.h"
+#include "components/prefs/prefs_export.h"
 
 class PrefFilter;
 
 namespace base {
-class Clock;
 class DictionaryValue;
 class FilePath;
-class HistogramBase;
+class JsonPrefStoreCallbackTest;
 class JsonPrefStoreLossyWriteTest;
 class SequencedTaskRunner;
-class SequencedWorkerPool;
+class WriteCallbacksObserver;
 class Value;
-FORWARD_DECLARE_TEST(JsonPrefStoreTest, WriteCountHistogramTestBasic);
-FORWARD_DECLARE_TEST(JsonPrefStoreTest, WriteCountHistogramTestSinglePeriod);
-FORWARD_DECLARE_TEST(JsonPrefStoreTest, WriteCountHistogramTestMultiplePeriods);
-FORWARD_DECLARE_TEST(JsonPrefStoreTest, WriteCountHistogramTestPeriodWithGaps);
 }
 
 // A writable PrefStore implementation that is used for user preferences.
 class COMPONENTS_PREFS_EXPORT JsonPrefStore
     : public PersistentPrefStore,
       public base::ImportantFileWriter::DataSerializer,
-      public base::SupportsWeakPtr<JsonPrefStore>,
-      public base::NonThreadSafe {
+      public base::SupportsWeakPtr<JsonPrefStore> {
  public:
   struct ReadResult;
 
-  // Returns instance of SequencedTaskRunner which guarantees that file
-  // operations on the same file will be executed in sequenced order.
-  static scoped_refptr<base::SequencedTaskRunner> GetTaskRunnerForFile(
-      const base::FilePath& pref_filename,
-      base::SequencedWorkerPool* worker_pool);
+  // A pair of callbacks to call before and after the preference file is written
+  // to disk.
+  using OnWriteCallbackPair =
+      std::pair<base::Closure, base::Callback<void(bool success)>>;
 
-  // Same as the constructor below with no alternate filename.
-  JsonPrefStore(
-      const base::FilePath& pref_filename,
-      const scoped_refptr<base::SequencedTaskRunner>& sequenced_task_runner,
-      std::unique_ptr<PrefFilter> pref_filter);
-
-  // |sequenced_task_runner| must be a shutdown-blocking task runner, ideally
-  // created by the GetTaskRunnerForFile() method above.
-  // |pref_filename| is the path to the file to read prefs from.
-  // |pref_alternate_filename| is the path to an alternate file which the
-  // desired prefs may have previously been written to. If |pref_filename|
-  // doesn't exist and |pref_alternate_filename| does, |pref_alternate_filename|
-  // will be moved to |pref_filename| before the read occurs.
-  JsonPrefStore(
-      const base::FilePath& pref_filename,
-      const base::FilePath& pref_alternate_filename,
-      const scoped_refptr<base::SequencedTaskRunner>& sequenced_task_runner,
-      std::unique_ptr<PrefFilter> pref_filter);
+  // |pref_filename| is the path to the file to read prefs from. It is incorrect
+  // to create multiple JsonPrefStore with the same |pref_filename|.
+  // |file_task_runner| is used for asynchronous reads and writes. It must
+  // have the base::TaskShutdownBehavior::BLOCK_SHUTDOWN and base::MayBlock()
+  // traits. Unless external tasks need to run on the same sequence as
+  // JsonPrefStore tasks, keep the default value.
+  // The initial read is done synchronously, the TaskPriority is thus only used
+  // for flushes to disks and BACKGROUND is therefore appropriate. Priority of
+  // remaining BACKGROUND+BLOCK_SHUTDOWN tasks is bumped by the TaskScheduler on
+  // shutdown. However, some shutdown use cases happen without
+  // TaskScheduler::Shutdown() (e.g. ChromeRestartRequest::Start() and
+  // BrowserProcessImpl::EndSession()) and we must thus unfortunately make this
+  // USER_VISIBLE until we solve https://crbug.com/747495 to allow bumping
+  // priority of a sequence on demand.
+  JsonPrefStore(const base::FilePath& pref_filename,
+                std::unique_ptr<PrefFilter> pref_filter = nullptr,
+                scoped_refptr<base::SequencedTaskRunner> file_task_runner =
+                    base::CreateSequencedTaskRunnerWithTraits(
+                        {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+                         base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
 
   // PrefStore overrides:
   bool GetValue(const std::string& key,
                 const base::Value** result) const override;
+  std::unique_ptr<base::DictionaryValue> GetValues() const override;
   void AddObserver(PrefStore::Observer* observer) override;
   void RemoveObserver(PrefStore::Observer* observer) override;
   bool HasObservers() const override;
@@ -98,7 +96,10 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore
   // See details in pref_filter.h.
   PrefReadError ReadPrefs() override;
   void ReadPrefsAsync(ReadErrorDelegate* error_delegate) override;
-  void CommitPendingWrite() override;
+  void CommitPendingWrite(
+      base::OnceClosure reply_callback = base::OnceClosure(),
+      base::OnceClosure synchronous_done_callback =
+          base::OnceClosure()) override;
   void SchedulePendingLossyWrites() override;
   void ReportValueChanged(const std::string& key, uint32_t flags) override;
 
@@ -106,73 +107,41 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore
   // cleanup that shouldn't otherwise alert observers.
   void RemoveValueSilently(const std::string& key, uint32_t flags);
 
-  // Registers |on_next_successful_write| to be called once, on the next
+  // Registers |on_next_successful_write_reply| to be called once, on the next
   // successful write event of |writer_|.
-  void RegisterOnNextSuccessfulWriteCallback(
-      const base::Closure& on_next_successful_write);
+  // |on_next_successful_write_reply| will be called on the thread from which
+  // this method is called and does not need to be thread safe.
+  void RegisterOnNextSuccessfulWriteReply(
+      const base::Closure& on_next_successful_write_reply);
 
   void ClearMutableValues() override;
 
+  void OnStoreDeletionFromDisk() override;
+
  private:
-  // Represents a histogram for recording the number of writes to the pref file
-  // that occur every kHistogramWriteReportIntervalInMins minutes.
-  class COMPONENTS_PREFS_EXPORT WriteCountHistogram {
-   public:
-    static const int32_t kHistogramWriteReportIntervalMins;
-
-    WriteCountHistogram(const base::TimeDelta& commit_interval,
-                        const base::FilePath& path);
-    // Constructor for testing. |clock| is a test Clock that is used to retrieve
-    // the time.
-    WriteCountHistogram(const base::TimeDelta& commit_interval,
-                        const base::FilePath& path,
-                        std::unique_ptr<base::Clock> clock);
-    ~WriteCountHistogram();
-
-    // Record that a write has occured.
-    void RecordWriteOccured();
-
-    // Reports writes (that have not yet been reported) in all of the recorded
-    // intervals that have elapsed up until current time.
-    void ReportOutstandingWrites();
-
-    base::HistogramBase* GetHistogram();
-
-   private:
-    // The minimum interval at which writes can occur.
-    const base::TimeDelta commit_interval_;
-
-    // The path to the file.
-    const base::FilePath path_;
-
-    // Clock which is used to retrieve the current time.
-    std::unique_ptr<base::Clock> clock_;
-
-    // The interval at which to report write counts.
-    const base::TimeDelta report_interval_;
-
-    // The time at which the last histogram value was reported for the number
-    // of write counts.
-    base::Time last_report_time_;
-
-    // The number of writes that have occured since the last write count was
-    // reported.
-    uint32_t writes_since_last_report_;
-
-    DISALLOW_COPY_AND_ASSIGN(WriteCountHistogram);
-  };
-
-  FRIEND_TEST_ALL_PREFIXES(base::JsonPrefStoreTest,
-                           WriteCountHistogramTestBasic);
-  FRIEND_TEST_ALL_PREFIXES(base::JsonPrefStoreTest,
-                           WriteCountHistogramTestSinglePeriod);
-  FRIEND_TEST_ALL_PREFIXES(base::JsonPrefStoreTest,
-                           WriteCountHistogramTestMultiplePeriods);
-  FRIEND_TEST_ALL_PREFIXES(base::JsonPrefStoreTest,
-                           WriteCountHistogramTestPeriodWithGaps);
+  friend class base::JsonPrefStoreCallbackTest;
   friend class base::JsonPrefStoreLossyWriteTest;
+  friend class base::WriteCallbacksObserver;
 
   ~JsonPrefStore() override;
+
+  // If |write_success| is true, runs |on_next_successful_write_|.
+  // Otherwise, re-registers |on_next_successful_write_|.
+  void RunOrScheduleNextSuccessfulWriteCallback(bool write_success);
+
+  // Handles the result of a write with result |write_success|. Runs
+  // |on_next_write_callback| on the current thread and posts
+  // |on_next_write_reply| on |reply_task_runner|.
+  static void PostWriteCallback(
+      const base::Callback<void(bool success)>& on_next_write_callback,
+      const base::Callback<void(bool success)>& on_next_write_reply,
+      scoped_refptr<base::SequencedTaskRunner> reply_task_runner,
+      bool write_success);
+
+  // Registers the |callbacks| pair to be called once synchronously before and
+  // after, respectively, the next write event of |writer_|.
+  // Both callbacks must be thread-safe.
+  void RegisterOnNextWriteSynchronousCallbacks(OnWriteCallbackPair callbacks);
 
   // This method is called after the JSON file has been read.  It then hands
   // |value| (or an empty dictionary in some read error cases) to the
@@ -201,8 +170,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore
   void ScheduleWrite(uint32_t flags);
 
   const base::FilePath path_;
-  const base::FilePath alternate_path_;
-  const scoped_refptr<base::SequencedTaskRunner> sequenced_task_runner_;
+  const scoped_refptr<base::SequencedTaskRunner> file_task_runner_;
 
   std::unique_ptr<base::DictionaryValue> prefs_;
 
@@ -212,7 +180,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore
   base::ImportantFileWriter writer_;
 
   std::unique_ptr<PrefFilter> pref_filter_;
-  base::ObserverList<PrefStore::Observer, true> observers_;
+  base::ObserverList<PrefStore::Observer, true>::Unchecked observers_;
 
   std::unique_ptr<ReadErrorDelegate> error_delegate_;
 
@@ -223,7 +191,10 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore
 
   std::set<std::string> keys_need_empty_value_;
 
-  WriteCountHistogram write_count_histogram_;
+  bool has_pending_write_reply_ = true;
+  base::Closure on_next_successful_write_reply_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(JsonPrefStore);
 };

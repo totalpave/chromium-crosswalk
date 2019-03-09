@@ -4,36 +4,31 @@
 
 #include "ui/base/ime/input_method_mac.h"
 
+#import <Cocoa/Cocoa.h>
+
+#include "base/bind_helpers.h"
+
 namespace ui {
 
-InputMethodMac::InputMethodMac(internal::InputMethodDelegate* delegate) {
-  SetDelegate(delegate);
-}
+InputMethodMac::InputMethodMac(internal::InputMethodDelegate* delegate)
+    : InputMethodBase(delegate) {}
 
 InputMethodMac::~InputMethodMac() {
 }
 
-bool InputMethodMac::OnUntranslatedIMEMessage(const base::NativeEvent& event,
-                                              NativeEventResult* result) {
-  return false;
-}
-
-void InputMethodMac::DispatchKeyEvent(ui::KeyEvent* event) {
+ui::EventDispatchDetails InputMethodMac::DispatchKeyEvent(ui::KeyEvent* event) {
   // This is used on Mac only to dispatch events post-IME.
-  ignore_result(DispatchKeyEventPostIME(event));
+  return DispatchKeyEventPostIME(event, base::NullCallback());
 }
 
 void InputMethodMac::OnCaretBoundsChanged(const TextInputClient* client) {
 }
 
 void InputMethodMac::CancelComposition(const TextInputClient* client) {
-}
+  if (!IsTextInputClientFocused(client))
+    return;
 
-void InputMethodMac::OnInputLocaleChanged() {
-}
-
-std::string InputMethodMac::GetInputLocale() {
-  return "";
+  [[NSTextInputContext currentInputContext] discardMarkedText];
 }
 
 bool InputMethodMac::IsCandidatePopupOpen() const {

@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/command_line.h"
+#include "base/feature_list.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -20,7 +21,7 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/content_switches.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 
@@ -30,7 +31,7 @@ using ui::PAGE_TRANSITION_TYPED;
 
 namespace {
 
-const base::FilePath::CharType* kSimpleFile = FILE_PATH_LITERAL("/simple.html");
+const base::FilePath::CharType* kSimpleFile = FILE_PATH_LITERAL("simple.html");
 
 }  // namespace
 
@@ -66,42 +67,6 @@ class FullscreenControllerInteractiveTest
  private:
    void ToggleTabFullscreen_Internal(bool enter_fullscreen,
                                      bool retry_until_success);
-};
-
-// Allow the test harness to pick the non-simplified fullscreen UI, which
-// prompts with an interactive dialog rather than just notifying the user how to
-// exit fullscreen. TODO(tapted): Remove this when "simplified" is the only way.
-enum TestType {
-  TEST_TYPE_START,
-  PROMPTING = TEST_TYPE_START,
-  SIMPLIFIED,
-  TEST_TYPE_END,
-};
-
-class ParamaterizedFullscreenControllerInteractiveTest
-    : public FullscreenControllerInteractiveTest,
-      public ::testing::WithParamInterface<int> {
- public:
-  ParamaterizedFullscreenControllerInteractiveTest() {}
-
-  // content::BrowserTestBase:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    switch (GetParam()) {
-      case PROMPTING:
-        command_line->AppendSwitchASCII(switches::kDisableFeatures,
-                                        features::kSimplifiedFullscreenUI.name);
-        break;
-      case SIMPLIFIED:
-        command_line->AppendSwitchASCII(switches::kEnableFeatures,
-                                        features::kSimplifiedFullscreenUI.name);
-        break;
-      default:
-        NOTREACHED();
-    }
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ParamaterizedFullscreenControllerInteractiveTest);
 };
 
 void FullscreenControllerInteractiveTest::ToggleTabFullscreen(
@@ -140,7 +105,8 @@ void FullscreenControllerInteractiveTest::ToggleTabFullscreen_Internal(
   do {
     FullscreenNotificationObserver fullscreen_observer;
     if (enter_fullscreen)
-      browser()->EnterFullscreenModeForTab(tab, GURL());
+      browser()->EnterFullscreenModeForTab(tab, GURL(),
+                                           blink::WebFullscreenOptions());
     else
       browser()->ExitFullscreenModeForTab(tab);
     fullscreen_observer.Wait();
@@ -158,9 +124,8 @@ void FullscreenControllerInteractiveTest::ToggleTabFullscreen_Internal(
 // Tests ///////////////////////////////////////////////////////////////////////
 
 // Tests that while in fullscreen creating a new tab will exit fullscreen.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_TestNewTabExitsFullscreen) {
+                       TestNewTabExitsFullscreen) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   AddTabAtIndex(0, GURL(url::kAboutBlankURL), PAGE_TRANSITION_TYPED);
@@ -176,9 +141,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests a tab exiting fullscreen will bring the browser out of fullscreen.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_TestTabExitsItselfFromFullscreen) {
+                       TestTabExitsItselfFromFullscreen) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   AddTabAtIndex(0, GURL(url::kAboutBlankURL), PAGE_TRANSITION_TYPED);
@@ -188,9 +152,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests Fullscreen entered in Browser, then Tab mode, then exited via Browser.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_BrowserFullscreenExit) {
+                       BrowserFullscreenExit) {
   // Enter browser fullscreen.
   ASSERT_NO_FATAL_FAILURE(ToggleBrowserFullscreen(true));
 
@@ -204,9 +167,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests Browser Fullscreen remains active after Tab mode entered and exited.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_BrowserFullscreenAfterTabFSExit) {
+                       BrowserFullscreenAfterTabFSExit) {
   // Enter browser fullscreen.
   ASSERT_NO_FATAL_FAILURE(ToggleBrowserFullscreen(true));
 
@@ -220,9 +182,7 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests fullscreen entered without permision prompt for file:// urls.
-// Test is flaky: http://crbug.com/146006
-IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_FullscreenFileURL) {
+IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest, FullscreenFileURL) {
   ui_test_utils::NavigateToURL(
       browser(), ui_test_utils::GetTestUrl(
                      base::FilePath(base::FilePath::kCurrentDirectory),
@@ -234,9 +194,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests fullscreen is exited on page navigation.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_TestTabExitsFullscreenOnNavigation) {
+                       TestTabExitsFullscreenOnNavigation) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ui_test_utils::NavigateToURL(browser(), GURL("about:blank"));
@@ -247,9 +206,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests fullscreen is exited when navigating back.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_TestTabExitsFullscreenOnGoBack) {
+                       TestTabExitsFullscreenOnGoBack) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ui_test_utils::NavigateToURL(browser(), GURL("about:blank"));
@@ -263,10 +221,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests fullscreen is not exited on sub frame navigation.
-// Test is flaky: http://crbug.com/146006
-IN_PROC_BROWSER_TEST_F(
-    FullscreenControllerInteractiveTest,
-    DISABLED_TestTabDoesntExitFullscreenOnSubFrameNavigation) {
+IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
+                       TestTabDoesntExitFullscreenOnSubFrameNavigation) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   GURL url(ui_test_utils::GetTestUrl(base::FilePath(
@@ -280,10 +236,9 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 // Tests tab fullscreen exits, but browser fullscreen remains, on navigation.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(
     FullscreenControllerInteractiveTest,
-    DISABLED_TestFullscreenFromTabWhenAlreadyInBrowserFullscreenWorks) {
+    TestFullscreenFromTabWhenAlreadyInBrowserFullscreenWorks) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ui_test_utils::NavigateToURL(browser(), GURL("about:blank"));
@@ -311,7 +266,8 @@ IN_PROC_BROWSER_TEST_F(
   {
     FullscreenNotificationObserver fullscreen_observer;
     EXPECT_FALSE(browser()->window()->IsFullscreen());
-    browser()->EnterFullscreenModeForTab(tab, GURL());
+    browser()->EnterFullscreenModeForTab(tab, GURL(),
+                                         blink::WebFullscreenOptions());
     fullscreen_observer.Wait();
     EXPECT_TRUE(browser()->window()->IsFullscreen());
   }
@@ -360,9 +316,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest, EscapingMouseLock) {
 }
 
 // Tests mouse lock and fullscreen modes can be escaped with ESC key.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_EscapingMouseLockAndFullscreen) {
+                       EscapingMouseLockAndFullscreen) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kFullscreenMouseLockHTML));
@@ -390,9 +345,13 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests mouse lock then fullscreen.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_MouseLockThenFullscreen) {
+                       MouseLockThenFullscreen) {
+  if (base::FeatureList::IsEnabled(features::kUserActivationV2)) {
+    // TODO(mustaq): UAv2 seems to make this flaky (http://crbug.com/913409).
+    return;
+  }
+
   ASSERT_TRUE(embedded_test_server()->Start());
   ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kFullscreenMouseLockHTML));
@@ -425,8 +384,13 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 // Mac: http://crbug.com/103912
 // Windows: Failing flakily on try jobs also.
 // Tests mouse lock then fullscreen in same request.
+#if defined(OS_WIN)
+#define MAYBE_MouseLockAndFullscreen MouseLockAndFullscreen
+#else
+#define MAYBE_MouseLockAndFullscreen DISABLED_MouseLockAndFullscreen
+#endif
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_MouseLockAndFullscreen) {
+                       MAYBE_MouseLockAndFullscreen) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kFullscreenMouseLockHTML));
@@ -450,9 +414,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 // Tests mouse lock and fullscreen for the privileged fullscreen case (e.g.,
 // embedded flash fullscreen, since the Flash plugin handles user permissions
 // requests itself).
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_PrivilegedMouseLockAndFullscreen) {
+                       PrivilegedMouseLockAndFullscreen) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kFullscreenMouseLockHTML));
@@ -475,18 +438,15 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
   ASSERT_TRUE(IsWindowFullscreenForTabOrPending());
 }
 
-// Flaky on Windows, Linux, CrOS: http://crbug.com/159000
-#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_CHROMEOS)
-#define MAYBE_MouseLockSilentAfterTargetUnlock \
-  DISABLED_MouseLockSilentAfterTargetUnlock
-#else
-#define MAYBE_MouseLockSilentAfterTargetUnlock MouseLockSilentAfterTargetUnlock
-#endif
+// Flaky on Linux, CrOS: http://crbug.com/159000
+// Flaky on Windows; see https://crbug.com/791539.
+// Flaky on Mac: https://crbug.com/876617.
 
 // Tests mouse lock can be exited and re-entered by an application silently
 // with no UI distraction for users.
-IN_PROC_BROWSER_TEST_P(ParamaterizedFullscreenControllerInteractiveTest,
-                       MAYBE_MouseLockSilentAfterTargetUnlock) {
+IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
+                       DISABLED_MouseLockSilentAfterTargetUnlock) {
+  SetWebContentsGrantedSilentMouseLockPermission();
   ASSERT_TRUE(embedded_test_server()->Start());
   ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kFullscreenMouseLockHTML));
@@ -549,10 +509,7 @@ IN_PROC_BROWSER_TEST_P(ParamaterizedFullscreenControllerInteractiveTest,
   ASSERT_TRUE(IsMouseLocked());
 }
 
-#if defined(OS_WIN) || \
-  (defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(USE_AURA))
-// These tests are very flaky on Vista.
-// http://crbug.com/158762
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(USE_AURA)
 // These are flaky on linux_aura.
 // http://crbug.com/163931
 #define MAYBE_TestTabExitsMouseLockOnNavigation \
@@ -649,8 +606,15 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 // Tests Mouse Lock and Fullscreen are exited upon reload.
 // http://crbug.com/137486
 // mac: http://crbug.com/103912
+#if defined(OS_WIN)
+#define MAYBE_ReloadExitsMouseLockAndFullscreen \
+  ReloadExitsMouseLockAndFullscreen
+#else
+#define MAYBE_ReloadExitsMouseLockAndFullscreen \
+  DISABLED_ReloadExitsMouseLockAndFullscreen
+#endif
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_ReloadExitsMouseLockAndFullscreen) {
+                       MAYBE_ReloadExitsMouseLockAndFullscreen) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kFullscreenMouseLockHTML));
@@ -695,14 +659,14 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
 }
 
 // Tests ToggleFullscreenModeForTab always causes window to change.
-// Test is flaky: http://crbug.com/146006
 IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
-                       DISABLED_ToggleFullscreenModeForTab) {
+                       ToggleFullscreenModeForTab) {
   // Most fullscreen tests run sharded in fullscreen_controller_browsertest.cc
   // but flakiness required a while loop in
   // FullscreenControllerTest::ToggleTabFullscreen. This test verifies that
   // when running serially there is no flakiness.
 
+  EXPECT_TRUE(embedded_test_server()->Start());
   GURL url = embedded_test_server()->GetURL("/simple.html");
   AddTabAtIndex(0, url, PAGE_TRANSITION_TYPED);
 
@@ -712,8 +676,3 @@ IN_PROC_BROWSER_TEST_F(FullscreenControllerInteractiveTest,
   ASSERT_NO_FATAL_FAILURE(ToggleTabFullscreenNoRetries(false));
   ASSERT_FALSE(IsWindowFullscreenForTabOrPending());
 }
-
-INSTANTIATE_TEST_CASE_P(
-    ParamaterizedFullscreenControllerInteractiveTestInstance,
-    ParamaterizedFullscreenControllerInteractiveTest,
-    ::testing::Range<int>(TEST_TYPE_START, TEST_TYPE_END));

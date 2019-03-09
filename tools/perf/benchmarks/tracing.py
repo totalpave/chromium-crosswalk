@@ -12,29 +12,12 @@ from telemetry.web_perf import timeline_based_measurement
 import page_sets
 
 
-class TracingWithDebugOverhead(perf_benchmark.PerfBenchmark):
-
-  page_set = page_sets.Top10PageSet
-
-  def CreateTimelineBasedMeasurementOptions(self):
-    options = timeline_based_measurement.Options(
-        timeline_based_measurement.DEBUG_OVERHEAD_LEVEL)
-    options.SetTimelineBasedMetric('tracingMetric')
-    return options
-
-  @classmethod
-  def Name(cls):
-    return 'tracing.tracing_with_debug_overhead'
-
-
-# TODO(ssid): Enable on reference builds once stable browser starts supporting
-# background mode memory-infra. crbug.com/621195.
-@benchmark.Disabled('reference')
+@benchmark.Info(emails=['ssid@chromium.org'])
 class TracingWithBackgroundMemoryInfra(perf_benchmark.PerfBenchmark):
   """Measures the overhead of background memory-infra dumps"""
   page_set = page_sets.Top10PageSet
 
-  def CreateTimelineBasedMeasurementOptions(self):
+  def CreateCoreTimelineBasedMeasurementOptions(self):
     # Enable only memory-infra category with periodic background mode dumps
     # every 200 milliseconds.
     trace_memory = chrome_trace_category_filter.ChromeTraceCategoryFilter(
@@ -43,7 +26,7 @@ class TracingWithBackgroundMemoryInfra(perf_benchmark.PerfBenchmark):
     memory_dump_config = chrome_trace_config.MemoryDumpConfig()
     memory_dump_config.AddTrigger('background', 200)
     options.config.chrome_trace_config.SetMemoryDumpConfig(memory_dump_config)
-    options.SetTimelineBasedMetric('tracingMetric')
+    options.SetTimelineBasedMetrics(['tracingMetric'])
     return options
 
   @classmethod

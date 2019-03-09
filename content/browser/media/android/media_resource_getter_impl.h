@@ -22,10 +22,6 @@ namespace storage {
 class FileSystemContext;
 }
 
-namespace net {
-class URLRequestContextGetter;
-}
-
 namespace content {
 
 class BrowserContext;
@@ -47,36 +43,22 @@ class MediaResourceGetterImpl : public media::MediaResourceGetter {
   // media::MediaResourceGetter implementation.
   // Must be called on the UI thread.
   void GetAuthCredentials(const GURL& url,
-                          const GetAuthCredentialsCB& callback) override;
+                          GetAuthCredentialsCB callback) override;
   void GetCookies(const GURL& url,
-                  const GURL& first_party_for_cookies,
-                  const GetCookieCB& callback) override;
+                  const GURL& site_for_cookies,
+                  GetCookieCB callback) override;
   void GetPlatformPathFromURL(const GURL& url,
-                              const GetPlatformPathCB& callback) override;
-  void ExtractMediaMetadata(const std::string& url,
-                            const std::string& cookies,
-                            const std::string& user_agent,
-                            const ExtractMediaMetadataCB& callback) override;
-  void ExtractMediaMetadata(const int fd,
-                            const int64_t offset,
-                            const int64_t size,
-                            const ExtractMediaMetadataCB& callback) override;
-
-  static bool RegisterMediaResourceGetter(JNIEnv* env);
+                              GetPlatformPathCB callback) override;
 
  private:
   // Called when GetAuthCredentials() finishes.
   void GetAuthCredentialsCallback(
-      const GetAuthCredentialsCB& callback,
-      const net::AuthCredentials& credentials);
-
-  // Called when GetCookies() finishes.
-  void GetCookiesCallback(
-      const GetCookieCB& callback, const std::string& cookies);
+      GetAuthCredentialsCB callback,
+      const base::Optional<net::AuthCredentials>& credentials);
 
   // Called when GetPlatformPathFromFileSystemURL() finishes.
-  void GetPlatformPathCallback(
-      const GetPlatformPathCB& callback, const std::string& platform_path);
+  void GetPlatformPathCallback(GetPlatformPathCB callback,
+                               const std::string& platform_path);
 
   // BrowserContext to retrieve URLRequestContext and ResourceContext.
   BrowserContext* browser_context_;

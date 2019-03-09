@@ -33,21 +33,25 @@ Feature::Platform Feature::GetCurrentPlatform() {
 
 Feature::Availability Feature::IsAvailableToExtension(
     const Extension* extension) const {
-  return IsAvailableToManifest(extension->id(),
-                               extension->GetType(),
+  return IsAvailableToManifest(extension->hashed_id(), extension->GetType(),
                                extension->location(),
                                extension->manifest_version());
-}
-
-Feature::Availability Feature::IsAvailableToEnvironment() const {
-  return IsAvailableToManifest("",  // extension_id
-                               Manifest::TYPE_UNKNOWN,
-                               Manifest::INVALID_LOCATION,
-                               -1);  // manifest_version
 }
 
 Feature::Feature() : no_parent_(false) {}
 
 Feature::~Feature() {}
+
+void Feature::set_name(base::StringPiece name) {
+  name_ = name.as_string();
+}
+
+void Feature::set_alias(base::StringPiece alias) {
+  alias_ = alias.as_string();
+}
+
+void Feature::set_source(base::StringPiece source) {
+  source_ = source.as_string();
+}
 
 }  // namespace extensions

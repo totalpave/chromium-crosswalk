@@ -8,6 +8,8 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "content/public/browser/notification_service.h"
 #include "extensions/browser/image_loader.h"
 #include "extensions/browser/notification_types.h"
@@ -24,7 +26,7 @@
 // The ImageSkia provided by extensions::IconImage contains ImageSkiaReps that
 // are computed and updated using the following algorithm (if no default icon
 // was supplied, transparent icon is considered the default):
-// - |LoadImageForScaleFactors()| searches the extension for an icon of an
+// - |LoadImageForScale()| searches the extension for an icon of an
 //   appropriate size. If the extension doesn't have a icon resource needed for
 //   the image representation, the default icon's representation for the
 //   requested scale factor is returned by ImageSkiaSource.
@@ -99,8 +101,8 @@ class IconImage::Source : public gfx::ImageSkiaSource {
 
 IconImage::Source::Source(IconImage* host, const gfx::Size& size_in_dip)
     : host_(host),
-      blank_image_(new BlankImageSource(size_in_dip), size_in_dip) {
-}
+      blank_image_(std::make_unique<BlankImageSource>(size_in_dip),
+                   size_in_dip) {}
 
 IconImage::Source::~Source() {
 }
@@ -110,32 +112,26 @@ void IconImage::Source::ResetHost() {
 }
 
 gfx::ImageSkiaRep IconImage::Source::GetImageForScale(float scale) {
-  gfx::ImageSkiaRep representation;
-  if (host_) {
-    representation =
-        host_->LoadImageForScaleFactor(ui::GetSupportedScaleFactor(scale));
-  }
-
-  if (!representation.is_null())
-    return representation;
-
+  if (host_)
+    host_->LoadImageForScaleAsync(scale);
   return blank_image_.GetRepresentation(scale);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // IconImage
 
-IconImage::IconImage(
-    content::BrowserContext* context,
-    const Extension* extension,
-    const ExtensionIconSet& icon_set,
-    int resource_size_in_dip,
-    const gfx::ImageSkia& default_icon,
-    Observer* observer)
+IconImage::IconImage(content::BrowserContext* context,
+                     const Extension* extension,
+                     const ExtensionIconSet& icon_set,
+                     int resource_size_in_dip,
+                     bool keep_original_size,
+                     const gfx::ImageSkia& default_icon,
+                     Observer* observer)
     : browser_context_(context),
       extension_(extension),
       icon_set_(icon_set),
       resource_size_in_dip_(resource_size_in_dip),
+      keep_original_size_(keep_original_size),
       source_(NULL),
       default_icon_(gfx::ImageSkiaOperations::CreateResizedImage(
           default_icon,
@@ -146,13 +142,27 @@ IconImage::IconImage(
     AddObserver(observer);
   gfx::Size resource_size(resource_size_in_dip, resource_size_in_dip);
   source_ = new Source(this, resource_size);
-  image_skia_ = gfx::ImageSkia(source_, resource_size);
+  image_skia_ = gfx::ImageSkia(base::WrapUnique(source_), resource_size);
   image_ = gfx::Image(image_skia_);
 
   registrar_.Add(this,
                  extensions::NOTIFICATION_EXTENSION_REMOVED,
                  content::NotificationService::AllSources());
 }
+
+IconImage::IconImage(content::BrowserContext* context,
+                     const Extension* extension,
+                     const ExtensionIconSet& icon_set,
+                     int resource_size_in_dip,
+                     const gfx::ImageSkia& default_icon,
+                     Observer* observer)
+    : IconImage(context,
+                extension,
+                icon_set,
+                resource_size_in_dip,
+                /* keep_original_size */ false,
+                default_icon,
+                observer) {}
 
 void IconImage::AddObserver(Observer* observer) {
   observers_.AddObserver(observer);
@@ -163,17 +173,16 @@ void IconImage::RemoveObserver(Observer* observer) {
 }
 
 IconImage::~IconImage() {
-  FOR_EACH_OBSERVER(Observer, observers_, OnExtensionIconImageDestroyed(this));
+  for (auto& observer : observers_)
+    observer.OnExtensionIconImageDestroyed(this);
   source_->ResetHost();
 }
 
-gfx::ImageSkiaRep IconImage::LoadImageForScaleFactor(
-    ui::ScaleFactor scale_factor) {
+void IconImage::LoadImageForScaleAsync(float scale) {
   // Do nothing if extension is unloaded.
   if (!extension_)
-    return gfx::ImageSkiaRep();
+    return;
 
-  const float scale = ui::GetScaleForScaleFactor(scale_factor);
   const int resource_size_in_pixel =
       static_cast<int>(resource_size_in_dip_ * scale);
 
@@ -191,24 +200,30 @@ gfx::ImageSkiaRep IconImage::LoadImageForScaleFactor(
                                  ExtensionIconSet::MATCH_SMALLER);
   }
 
-  // If there is no resource found, return default icon.
-  if (resource.empty())
-    return default_icon_.GetRepresentation(scale);
+  if (!resource.empty()) {
+    std::vector<ImageLoader::ImageRepresentation> info_list;
+    const ImageLoader::ImageRepresentation::ResizeCondition resize_condition =
+        keep_original_size_ ? ImageLoader::ImageRepresentation::NEVER_RESIZE
+                            : ImageLoader::ImageRepresentation::ALWAYS_RESIZE;
+    info_list.push_back(ImageLoader::ImageRepresentation(
+        resource, resize_condition,
+        gfx::Size(resource_size_in_pixel, resource_size_in_pixel), scale));
 
-  std::vector<ImageLoader::ImageRepresentation> info_list;
-  info_list.push_back(ImageLoader::ImageRepresentation(
-      resource, ImageLoader::ImageRepresentation::ALWAYS_RESIZE,
-      gfx::ScaleToFlooredSize(
-          gfx::Size(resource_size_in_dip_, resource_size_in_dip_), scale),
-      scale_factor));
-
-  extensions::ImageLoader* loader =
-      extensions::ImageLoader::Get(browser_context_);
-  loader->LoadImagesAsync(extension_.get(), info_list,
-                          base::Bind(&IconImage::OnImageLoaded,
-                                     weak_ptr_factory_.GetWeakPtr(), scale));
-
-  return gfx::ImageSkiaRep();
+    extensions::ImageLoader* loader =
+        extensions::ImageLoader::Get(browser_context_);
+    loader->LoadImagesAsync(
+        extension_.get(), info_list,
+        base::BindOnce(&IconImage::OnImageLoaded,
+                       weak_ptr_factory_.GetWeakPtr(), scale));
+  } else {
+    // If there is no resource found, update from the default icon.
+    const gfx::ImageSkiaRep& rep = default_icon_.GetRepresentation(scale);
+    if (!rep.is_null()) {
+      base::ThreadTaskRunnerHandle::Get()->PostTask(
+          FROM_HERE, base::BindOnce(&IconImage::OnImageRepLoaded,
+                                    weak_ptr_factory_.GetWeakPtr(), rep));
+    }
+  }
 }
 
 void IconImage::OnImageLoaded(float scale, const gfx::Image& image_in) {
@@ -219,27 +234,15 @@ void IconImage::OnImageLoaded(float scale, const gfx::Image& image_in) {
   if (image->isNull())
     return;
 
-  gfx::ImageSkiaRep rep = image->GetRepresentation(scale);
+  OnImageRepLoaded(image->GetRepresentation(scale));
+}
+
+void IconImage::OnImageRepLoaded(const gfx::ImageSkiaRep& rep) {
   DCHECK(!rep.is_null());
-  DCHECK_EQ(scale, rep.scale());
 
-  // Remove fractional scale image representations as they may have become
-  // stale here. These images are generated by ImageSkia on request from
-  // supported scales like 1x, 2x, etc.
-  // TODO(oshima)
-  // A better approach might be to set the |image_| member using the ImageSkia
-  // copy from the image passed in and set the |image_skia_| member using
-  // image_.ToImageSkia(). However that does not work correctly as the
-  // ImageSkia from the image does not contain a source which breaks requests
-  // for scaled images.
-  std::vector<gfx::ImageSkiaRep> reps = image_skia_.image_reps();
-  for (const auto& image_rep : reps) {
-    if (!ui::IsSupportedScale(image_rep.scale()))
-      image_skia_.RemoveRepresentation(image_rep.scale());
-  }
-
-  image_skia_.RemoveRepresentation(scale);
+  image_skia_.RemoveRepresentation(rep.scale());
   image_skia_.AddRepresentation(rep);
+  image_skia_.RemoveUnsupportedRepresentationsForScale(rep.scale());
 
   // Update the image to use the updated image skia.
   // It's a shame we have to do this because it means that all the other
@@ -247,7 +250,8 @@ void IconImage::OnImageLoaded(float scale, const gfx::Image& image_in) {
   // there's no way to combine the storage of two images.
   image_ = gfx::Image(image_skia_);
 
-  FOR_EACH_OBSERVER(Observer, observers_, OnExtensionIconImageChanged(this));
+  for (auto& observer : observers_)
+    observer.OnExtensionIconImageChanged(this);
 }
 
 void IconImage::Observe(int type,

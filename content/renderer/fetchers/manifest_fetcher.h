@@ -11,17 +11,17 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "content/common/content_export.h"
-#include "third_party/WebKit/public/platform/WebURLResponse.h"
+#include "third_party/blink/public/platform/web_url_response.h"
 
 class GURL;
 
 namespace blink {
-class WebFrame;
+class WebLocalFrame;
 }
 
 namespace content {
 
-class ResourceFetcher;
+class AssociatedResourceFetcher;
 
 // Helper class to download a Web Manifest. When an instance is created, the
 // caller need to call Start() and wait for the passed callback to be executed.
@@ -38,7 +38,7 @@ class CONTENT_EXPORT ManifestFetcher {
   explicit ManifestFetcher(const GURL& url);
   virtual ~ManifestFetcher();
 
-  void Start(blink::WebFrame* frame,
+  void Start(blink::WebLocalFrame* frame,
              bool use_credentials,
              const Callback& callback);
   void Cancel();
@@ -49,11 +49,11 @@ class CONTENT_EXPORT ManifestFetcher {
 
   bool completed_;
   Callback callback_;
-  std::unique_ptr<ResourceFetcher> fetcher_;
+  std::unique_ptr<AssociatedResourceFetcher> fetcher_;
 
   DISALLOW_COPY_AND_ASSIGN(ManifestFetcher);
 };
 
-} // namespace content
+}  // namespace content
 
 #endif  // CONTENT_RENDERER_FETCHERS_MANIFEST_FETCHER_H_

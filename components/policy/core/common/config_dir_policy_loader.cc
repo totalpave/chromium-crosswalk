@@ -17,7 +17,6 @@
 #include "base/json/json_file_value_serializer.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/stl_util.h"
 #include "components/policy/core/common/policy_bundle.h"
 #include "components/policy/core/common/policy_load_status.h"
@@ -28,9 +27,9 @@ namespace policy {
 namespace {
 
 // Subdirectories that contain the mandatory and recommended policies.
-const base::FilePath::CharType kMandatoryConfigDir[] =
+constexpr base::FilePath::CharType kMandatoryConfigDir[] =
     FILE_PATH_LITERAL("managed");
-const base::FilePath::CharType kRecommendedConfigDir[] =
+constexpr base::FilePath::CharType kRecommendedConfigDir[] =
     FILE_PATH_LITERAL("recommended");
 
 PolicyLoadStatus JsonErrorToPolicyLoadStatus(int status) {
@@ -64,11 +63,15 @@ ConfigDirPolicyLoader::ConfigDirPolicyLoader(
     scoped_refptr<base::SequencedTaskRunner> task_runner,
     const base::FilePath& config_dir,
     PolicyScope scope)
-    : AsyncPolicyLoader(task_runner), config_dir_(config_dir), scope_(scope) {}
+    : AsyncPolicyLoader(task_runner),
+      task_runner_(task_runner),
+      config_dir_(config_dir),
+      scope_(scope) {}
 
 ConfigDirPolicyLoader::~ConfigDirPolicyLoader() {}
 
 void ConfigDirPolicyLoader::InitOnBackgroundThread() {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   base::FilePathWatcher::Callback callback =
       base::Bind(&ConfigDirPolicyLoader::OnFileUpdated, base::Unretained(this));
   mandatory_watcher_.Watch(config_dir_.Append(kMandatoryConfigDir), false,
@@ -89,15 +92,14 @@ std::unique_ptr<PolicyBundle> ConfigDirPolicyLoader::Load() {
 }
 
 base::Time ConfigDirPolicyLoader::LastModificationTime() {
-  static const base::FilePath::CharType* kConfigDirSuffixes[] = {
-    kMandatoryConfigDir,
-    kRecommendedConfigDir,
+  static constexpr const base::FilePath::CharType* kConfigDirSuffixes[] = {
+      kMandatoryConfigDir, kRecommendedConfigDir,
   };
 
   base::Time last_modification = base::Time();
   base::File::Info info;
 
-  for (size_t i = 0; i < arraysize(kConfigDirSuffixes); ++i) {
+  for (size_t i = 0; i < base::size(kConfigDirSuffixes); ++i) {
     base::FilePath path(config_dir_.Append(kConfigDirSuffixes[i]));
 
     // Skip if the file doesn't exist, or it isn't a directory.
@@ -129,7 +131,7 @@ void ConfigDirPolicyLoader::LoadFromPath(const base::FilePath& path,
        !config_file_path.empty(); config_file_path = file_enumerator.Next())
     files.insert(config_file_path);
 
-  PolicyLoadStatusSample status;
+  PolicyLoadStatusUmaReporter status;
   if (files.empty()) {
     status.Add(POLICY_LOAD_STATUS_NO_POLICY);
     return;
@@ -139,22 +141,21 @@ void ConfigDirPolicyLoader::LoadFromPath(const base::FilePath& path,
   // The files are processed in reverse order because |MergeFrom| gives priority
   // to existing keys, but the ConfigDirPolicyProvider gives priority to the
   // last file in lexicographic order.
-  for (std::set<base::FilePath>::reverse_iterator config_file_iter =
-           files.rbegin(); config_file_iter != files.rend();
+  for (auto config_file_iter = files.rbegin(); config_file_iter != files.rend();
        ++config_file_iter) {
-    JSONFileValueDeserializer deserializer(*config_file_iter);
-    deserializer.set_allow_trailing_comma(true);
+    JSONFileValueDeserializer deserializer(*config_file_iter,
+                                           base::JSON_ALLOW_TRAILING_COMMAS);
     int error_code = 0;
     std::string error_msg;
     std::unique_ptr<base::Value> value =
         deserializer.Deserialize(&error_code, &error_msg);
-    if (!value.get()) {
+    if (!value) {
       LOG(WARNING) << "Failed to read configuration file "
                    << config_file_iter->value() << ": " << error_msg;
       status.Add(JsonErrorToPolicyLoadStatus(error_code));
       continue;
     }
-    base::DictionaryValue* dictionary_value = NULL;
+    base::DictionaryValue* dictionary_value = nullptr;
     if (!value->GetAsDictionary(&dictionary_value)) {
       LOG(WARNING) << "Expected JSON dictionary in configuration file "
                    << config_file_iter->value();
@@ -196,7 +197,7 @@ void ConfigDirPolicyLoader::Merge3rdPartyPolicy(
 
   for (base::DictionaryValue::Iterator domains_it(*domains_dictionary);
        !domains_it.IsAtEnd(); domains_it.Advance()) {
-    if (!ContainsKey(supported_domains, domains_it.key())) {
+    if (!base::ContainsKey(supported_domains, domains_it.key())) {
       LOG(WARNING) << "Unsupported 3rd party policy domain: "
                    << domains_it.key();
       continue;
@@ -229,6 +230,7 @@ void ConfigDirPolicyLoader::Merge3rdPartyPolicy(
 
 void ConfigDirPolicyLoader::OnFileUpdated(const base::FilePath& path,
                                           bool error) {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   if (!error)
     Reload(false);
 }

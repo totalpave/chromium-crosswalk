@@ -5,21 +5,21 @@
 #ifndef ASH_SYSTEM_TOAST_TOAST_MANAGER_H_
 #define ASH_SYSTEM_TOAST_TOAST_MANAGER_H_
 
-#include <deque>
 #include <memory>
 #include <string>
 
 #include "ash/ash_export.h"
-#include "ash/common/shell_observer.h"
+#include "ash/session/session_observer.h"
 #include "ash/system/toast/toast_data.h"
 #include "ash/system/toast/toast_overlay.h"
+#include "base/containers/circular_deque.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/thread_checker.h"
 
 namespace ash {
 
 // Class managing toast requests.
-class ASH_EXPORT ToastManager : public ToastOverlay::Delegate {
+class ASH_EXPORT ToastManager : public ToastOverlay::Delegate,
+                                public SessionObserver {
  public:
   ToastManager();
   ~ToastManager() override;
@@ -33,6 +33,9 @@ class ASH_EXPORT ToastManager : public ToastOverlay::Delegate {
   // ToastOverlay::Delegate overrides:
   void OnClosed() override;
 
+  // SessionObserver:
+  void OnSessionStateChanged(session_manager::SessionState state) override;
+
  private:
   friend class ToastManagerTest;
 
@@ -43,13 +46,15 @@ class ASH_EXPORT ToastManager : public ToastOverlay::Delegate {
   int serial_for_testing() const { return serial_; }
   void ResetSerialForTesting() { serial_ = 0; }
 
-  // ID of the toast which is currently shown. Empty if no toast is visible.
-  std::string current_toast_id_;
+  // Data of the toast which is currently shown. Empty if no toast is visible.
+  base::Optional<ToastData> current_toast_data_;
 
   int serial_ = 0;
-  std::deque<ToastData> queue_;
+  bool locked_;
+  base::circular_deque<ToastData> queue_;
   std::unique_ptr<ToastOverlay> overlay_;
 
+  ScopedSessionObserver scoped_session_observer_{this};
   base::WeakPtrFactory<ToastManager> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ToastManager);

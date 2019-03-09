@@ -10,20 +10,11 @@
 #include "chrome/browser/ui/views/toolbar/toolbar_action_view_delegate_views.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/controls/button/menu_button.h"
+#include "ui/views/controls/button/menu_button_event_handler.h"
 #include "ui/views/controls/button/menu_button_listener.h"
 #include "ui/views/controls/menu/menu_model_adapter.h"
 #include "ui/views/drag_controller.h"
 #include "ui/views/view.h"
-
-class ExtensionAction;
-
-namespace extensions {
-class Extension;
-}
-
-namespace gfx {
-class Image;
-}
 
 namespace views {
 class MenuItemView;
@@ -57,6 +48,9 @@ class ToolbarActionView : public views::MenuButton,
     // reference point for a popup when this view isn't visible.
     virtual views::MenuButton* GetOverflowReferenceView() = 0;
 
+    // Returns the preferred size of the ToolbarActionView.
+    virtual gfx::Size GetToolbarActionSize() = 0;
+
    protected:
     ~Delegate() override {}
   };
@@ -69,12 +63,17 @@ class ToolbarActionView : public views::MenuButton,
   ~ToolbarActionView() override;
 
   // views::MenuButton:
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
+  gfx::Rect GetAnchorBoundsInScreen() const override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   std::unique_ptr<views::LabelButtonBorder> CreateDefaultBorder()
       const override;
   bool IsTriggerableEvent(const ui::Event& event) override;
   SkColor GetInkDropBaseColor() const override;
-  bool ShouldShowInkDropHighlight() const override;
+  std::unique_ptr<views::InkDrop> CreateInkDrop() override;
+  std::unique_ptr<views::InkDropHighlight> CreateInkDropHighlight()
+      const override;
+  bool OnKeyPressed(const ui::KeyEvent& event) override;
 
   // ToolbarActionViewDelegateViews:
   content::WebContents* GetCurrentWebContents() const override;
@@ -92,18 +91,15 @@ class ToolbarActionView : public views::MenuButton,
   // Returns button icon so it can be accessed during tests.
   gfx::ImageSkia GetIconForTest();
 
-  bool wants_to_run_for_testing() const { return wants_to_run_; }
+  bool IsMenuRunningForTesting() const;
 
-  // Set a callback to be called directly before the context menu is shown.
-  // The toolbar action opening the menu will be passed in.
-  static void set_context_menu_callback_for_testing(
-      ContextMenuCallback* callback);
+  bool wants_to_run_for_testing() const { return wants_to_run_; }
 
   views::MenuItemView* menu_for_testing() { return menu_; }
 
  private:
   // views::MenuButton:
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
   void OnDragDone() override;
@@ -136,7 +132,7 @@ class ToolbarActionView : public views::MenuButton,
   void OnMenuClosed();
 
   // A lock to keep the MenuButton pressed when a menu or popup is visible.
-  std::unique_ptr<views::MenuButton::PressedLock> pressed_lock_;
+  std::unique_ptr<views::MenuButtonEventHandler::PressedLock> pressed_lock_;
 
   // The controller for this toolbar action view.
   ToolbarActionViewController* view_controller_;
@@ -145,11 +141,11 @@ class ToolbarActionView : public views::MenuButton,
   Delegate* delegate_;
 
   // Used to make sure we only register the command once.
-  bool called_register_command_;
+  bool called_register_command_ = false;
 
   // The cached value of whether or not the action wants to run on the current
   // tab.
-  bool wants_to_run_;
+  bool wants_to_run_ = false;
 
   // Responsible for converting the context menu model into |menu_|.
   std::unique_ptr<views::MenuModelAdapter> menu_adapter_;
@@ -159,12 +155,12 @@ class ToolbarActionView : public views::MenuButton,
 
   // The root MenuItemView for the context menu, or null if no menu is being
   // shown.
-  views::MenuItemView* menu_;
+  views::MenuItemView* menu_ = nullptr;
 
   // The time the popup was last closed.
   base::TimeTicks popup_closed_time_;
 
-  base::WeakPtrFactory<ToolbarActionView> weak_factory_;
+  base::WeakPtrFactory<ToolbarActionView> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ToolbarActionView);
 };

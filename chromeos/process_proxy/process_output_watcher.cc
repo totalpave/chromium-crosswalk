@@ -15,6 +15,7 @@
 #include "base/logging.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/third_party/icu/icu_utf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
@@ -58,30 +59,25 @@ ProcessOutputWatcher::ProcessOutputWatcher(
       weak_factory_(this) {
   CHECK_GE(out_fd, 0);
   // We want to be sure we will be able to add 0 at the end of the input, so -1.
-  read_buffer_capacity_ = arraysize(read_buffer_) - 1;
+  read_buffer_capacity_ = base::size(read_buffer_) - 1;
 }
 
-ProcessOutputWatcher::~ProcessOutputWatcher() {}
+ProcessOutputWatcher::~ProcessOutputWatcher() = default;
 
 void ProcessOutputWatcher::Start() {
   WatchProcessOutput();
 }
 
-void ProcessOutputWatcher::OnFileCanReadWithoutBlocking(int fd) {
-  DCHECK_EQ(process_output_file_.GetPlatformFile(), fd);
-
-  output_file_watcher_.StopWatchingFileDescriptor();
-  ReadFromFd(fd);
-}
-
-void ProcessOutputWatcher::OnFileCanWriteWithoutBlocking(int fd) {
-  NOTREACHED();
+void ProcessOutputWatcher::OnProcessOutputCanReadWithoutBlocking() {
+  output_file_watcher_.reset();
+  ReadFromFd(process_output_file_.GetPlatformFile());
 }
 
 void ProcessOutputWatcher::WatchProcessOutput() {
-  base::MessageLoopForIO::current()->WatchFileDescriptor(
-      process_output_file_.GetPlatformFile(), false,
-      base::MessageLoopForIO::WATCH_READ, &output_file_watcher_, this);
+  output_file_watcher_ = base::FileDescriptorWatcher::WatchReadable(
+      process_output_file_.GetPlatformFile(),
+      base::Bind(&ProcessOutputWatcher::OnProcessOutputCanReadWithoutBlocking,
+                 base::Unretained(this)));
 }
 
 void ProcessOutputWatcher::ReadFromFd(int fd) {

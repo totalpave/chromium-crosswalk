@@ -31,6 +31,9 @@ class WebElement(object):
   def GetAttribute(self,name):
     return self._Execute(Command.GET_ELEMENT_ATTRIBUTE, {'name': name})
 
+  def GetProperty(self,name):
+    return self._Execute(Command.GET_ELEMENT_PROPERTY, {'name': name})
+
   def HoverOver(self):
     self._Execute(Command.HOVER_OVER_ELEMENT)
 
@@ -58,8 +61,17 @@ class WebElement(object):
         typing.append(value[i])
     self._Execute(Command.SEND_KEYS_TO_ELEMENT, {'value': typing})
 
+  def SendKeysW3c(self, text):
+    self._Execute(Command.SEND_KEYS_TO_ELEMENT, {'text': text})
+
   def GetLocation(self):
     return self._Execute(Command.GET_ELEMENT_LOCATION)
 
+  def GetRect(self):
+    return self._Execute(Command.GET_ELEMENT_RECT)
+
   def IsDisplayed(self):
     return self._Execute(Command.IS_ELEMENT_DISPLAYED)
+
+  def TakeElementScreenshot(self):
+    return self._Execute(Command.ELEMENT_SCREENSHOT)

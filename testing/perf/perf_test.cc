@@ -53,14 +53,8 @@ void PrintResult(const std::string& measurement,
                  size_t value,
                  const std::string& units,
                  bool important) {
-  PrintResultsImpl(measurement,
-                   modifier,
-                   trace,
-                   base::UintToString(static_cast<unsigned int>(value)),
-                   std::string(),
-                   std::string(),
-                   units,
-                   important);
+  PrintResultsImpl(measurement, modifier, trace, base::NumberToString(value),
+                   std::string(), std::string(), units, important);
 }
 
 void PrintResult(const std::string& measurement,
@@ -69,14 +63,8 @@ void PrintResult(const std::string& measurement,
                  double value,
                  const std::string& units,
                  bool important) {
-  PrintResultsImpl(measurement,
-                   modifier,
-                   trace,
-                   base::DoubleToString(value),
-                   std::string(),
-                   std::string(),
-                   units,
-                   important);
+  PrintResultsImpl(measurement, modifier, trace, base::NumberToString(value),
+                   std::string(), std::string(), units, important);
 }
 
 void AppendResult(std::string& output,
@@ -86,15 +74,9 @@ void AppendResult(std::string& output,
                   size_t value,
                   const std::string& units,
                   bool important) {
-  output += ResultsToString(
-      measurement,
-      modifier,
-      trace,
-      base::UintToString(static_cast<unsigned int>(value)),
-      std::string(),
-      std::string(),
-      units,
-      important);
+  output +=
+      ResultsToString(measurement, modifier, trace, base::NumberToString(value),
+                      std::string(), std::string(), units, important);
 }
 
 void PrintResult(const std::string& measurement,

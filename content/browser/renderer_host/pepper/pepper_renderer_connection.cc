@@ -9,8 +9,8 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/stl_util.h"
 #include "content/browser/browser_child_process_host_impl.h"
 #include "content/browser/ppapi_plugin_process_host.h"
 #include "content/browser/renderer_host/pepper/browser_ppapi_host_impl.h"
@@ -18,6 +18,7 @@
 #include "content/browser/renderer_host/pepper/pepper_file_system_browser_host.h"
 #include "content/common/frame_messages.h"
 #include "content/common/pepper_renderer_instance_data.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "ipc/ipc_message_macros.h"
@@ -30,7 +31,7 @@ namespace content {
 
 namespace {
 
-const uint32_t kFilteredMessageClasses[] = {
+const uint32_t kPepperFilteredMessageClasses[] = {
     PpapiMsgStart, FrameMsgStart,
 };
 
@@ -94,8 +95,8 @@ PendingHostCreator::~PendingHostCreator() {
 }  // namespace
 
 PepperRendererConnection::PepperRendererConnection(int render_process_id)
-    : BrowserMessageFilter(kFilteredMessageClasses,
-                           arraysize(kFilteredMessageClasses)),
+    : BrowserMessageFilter(kPepperFilteredMessageClasses,
+                           base::size(kPepperFilteredMessageClasses)),
       render_process_id_(render_process_id) {
   // Only give the renderer permission for stable APIs.
   in_process_host_.reset(new BrowserPpapiHostImpl(this,
@@ -232,12 +233,16 @@ void PepperRendererConnection::OnMsgDidCreateInProcessInstance(
     PP_Instance instance,
     const PepperRendererInstanceData& instance_data) {
   PepperRendererInstanceData data = instance_data;
+  // It's important that we supply the render process ID ourselves since the
+  // message may be coming from a compromised renderer.
   data.render_process_id = render_process_id_;
+  // 'instance' is possibly invalid. The host must be careful not to trust it.
   in_process_host_->AddInstance(instance, data);
 }
 
 void PepperRendererConnection::OnMsgDidDeleteInProcessInstance(
     PP_Instance instance) {
+  // 'instance' is possibly invalid. The host must be careful not to trust it.
   in_process_host_->DeleteInstance(instance);
 }
 

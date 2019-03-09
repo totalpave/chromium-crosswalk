@@ -9,7 +9,6 @@
 #include <CoreGraphics/CGGeometry.h>
 
 #include "base/ios/block_types.h"
-#import "base/mac/scoped_nsobject.h"
 #import "ios/web/public/web_state/js/crw_js_injection_manager.h"
 
 // Data from find in page.
@@ -25,14 +24,10 @@ extern FindInPageEntry FindInPageEntryZero;
 @class FindInPageModel;
 
 // Manager for the injection of the Find In Page JavaScript.
-@interface JsFindinpageManager : CRWJSInjectionManager {
- @private
-  // Model for find in page.
-  base::scoped_nsobject<FindInPageModel> findInPageModel_;
-}
+@interface JsFindinpageManager : CRWJSInjectionManager
 
-// Find In Page model. TODO(justincohen) consider using find_tab_helper.cc.
-@property(nonatomic, readonly) FindInPageModel* findInPageModel;
+// Find In Page model.
+@property(nonatomic, readwrite, strong) FindInPageModel* findInPageModel;
 
 // Sets the width and height of the window.
 - (void)setWidth:(CGFloat)width height:(CGFloat)height;
@@ -47,10 +42,8 @@ extern FindInPageEntry FindInPageEntryZero;
     completionHandler:(void (^)(BOOL, CGPoint))completionHandler;
 
 // Searches for more matches. Calls |completionHandler| with a success BOOL and
-// scroll position if pumping was successful. If the pumping was unsuccessfull
+// scroll position if pumping was successful. If the pumping was unsuccessful
 // another pumping call maybe required. |completionHandler| cannot be nil.
-// TODO(shreyasv): Consider folding the logic for re-pumping into this class
-// instead of having clients having to do it.
 - (void)pumpWithCompletionHandler:(void (^)(BOOL, CGPoint))completionHandler;
 
 // Moves to the next matched location and executes the completion handler with

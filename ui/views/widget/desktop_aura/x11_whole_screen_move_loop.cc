@@ -5,27 +5,30 @@
 #include "ui/views/widget/desktop_aura/x11_whole_screen_move_loop.h"
 
 #include <stddef.h>
-#include <X11/keysym.h>
-#include <X11/Xlib.h>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/macros.h"
+#include "base/logging.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "ui/aura/client/capture_client.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/base/x/x11_pointer_grab.h"
 #include "ui/base/x/x11_util.h"
+#include "ui/base/x/x11_window_event_manager.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
 #include "ui/events/platform/platform_event_source.h"
 #include "ui/events/platform/scoped_event_dispatcher.h"
 #include "ui/events/platform/x11/x11_event_source.h"
-#include "ui/views/widget/desktop_aura/x11_pointer_grab.h"
+#include "ui/gfx/x/x11.h"
 
 namespace views {
 
@@ -44,13 +47,12 @@ const unsigned int kModifiersMasks[] = {
 X11WholeScreenMoveLoop::X11WholeScreenMoveLoop(X11MoveLoopDelegate* delegate)
     : delegate_(delegate),
       in_move_loop_(false),
-      initial_cursor_(ui::kCursorNull),
+      initial_cursor_(ui::CursorType::kNull),
       should_reset_mouse_flags_(false),
-      grab_input_window_(None),
+      grab_input_window_(x11::None),
       grabbed_pointer_(false),
       canceled_(false),
-      weak_factory_(this) {
-}
+      weak_factory_(this) {}
 
 X11WholeScreenMoveLoop::~X11WholeScreenMoveLoop() {}
 
@@ -71,6 +73,8 @@ bool X11WholeScreenMoveLoop::CanDispatchEvent(const ui::PlatformEvent& event) {
 }
 
 uint32_t X11WholeScreenMoveLoop::DispatchEvent(const ui::PlatformEvent& event) {
+  DCHECK(base::MessageLoopCurrentForUI::IsSet());
+
   // This method processes all events while the move loop is active.
   if (!in_move_loop_)
     return ui::POST_DISPATCH_PERFORM_DEFAULT;
@@ -89,10 +93,10 @@ uint32_t X11WholeScreenMoveLoop::DispatchEvent(const ui::PlatformEvent& event) {
         // Post a task to dispatch mouse movement event when control returns to
         // the message loop. This allows smoother dragging since the events are
         // dispatched without waiting for the drag widget updates.
-        base::MessageLoopForUI::current()->PostTask(
+        base::ThreadTaskRunnerHandle::Get()->PostTask(
             FROM_HERE,
-            base::Bind(&X11WholeScreenMoveLoop::DispatchMouseMovement,
-                       weak_factory_.GetWeakPtr()));
+            base::BindOnce(&X11WholeScreenMoveLoop::DispatchMouseMovement,
+                           weak_factory_.GetWeakPtr()));
       }
       return ui::POST_DISPATCH_NONE;
     }
@@ -136,7 +140,7 @@ bool X11WholeScreenMoveLoop::RunMoveLoop(aura::Window* source,
   // restored when the move loop finishes.
   initial_cursor_ = source->GetHost()->last_cursor();
 
-  grab_input_window_ = CreateDragInputWindow(gfx::GetXDisplay());
+  CreateDragInputWindow(gfx::GetXDisplay());
 
   // Only grab mouse capture of |grab_input_window_| if |source| does not have
   // capture.
@@ -177,9 +181,7 @@ bool X11WholeScreenMoveLoop::RunMoveLoop(aura::Window* source,
 
   in_move_loop_ = true;
   canceled_ = false;
-  base::MessageLoopForUI* loop = base::MessageLoopForUI::current();
-  base::MessageLoop::ScopedNestableTaskAllower allow_nested(loop);
-  base::RunLoop run_loop;
+  base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
   quit_closure_ = run_loop.QuitClosure();
   run_loop.Run();
 
@@ -192,7 +194,7 @@ bool X11WholeScreenMoveLoop::RunMoveLoop(aura::Window* source,
 
 void X11WholeScreenMoveLoop::UpdateCursor(gfx::NativeCursor cursor) {
   if (in_move_loop_)
-    ChangeActivePointerGrabCursor(cursor.platform());
+    ui::ChangeActivePointerGrabCursor(cursor.platform());
 }
 
 void X11WholeScreenMoveLoop::EndMoveLoop() {
@@ -214,21 +216,22 @@ void X11WholeScreenMoveLoop::EndMoveLoop() {
 
   // Ungrab before we let go of the window.
   if (grabbed_pointer_)
-    UngrabPointer();
+    ui::UngrabPointer();
   else
     UpdateCursor(initial_cursor_);
 
   XDisplay* display = gfx::GetXDisplay();
   unsigned int esc_keycode = XKeysymToKeycode(display, XK_Escape);
-  for (size_t i = 0; i < arraysize(kModifiersMasks); ++i) {
+  for (size_t i = 0; i < base::size(kModifiersMasks); ++i) {
     XUngrabKey(display, esc_keycode, kModifiersMasks[i], grab_input_window_);
   }
 
   // Restore the previous dispatcher.
   nested_dispatcher_.reset();
   delegate_->OnMoveLoopEnded();
+  grab_input_window_events_.reset();
   XDestroyWindow(display, grab_input_window_);
-  grab_input_window_ = None;
+  grab_input_window_ = x11::None;
 
   in_move_loop_ = false;
   quit_closure_.Run();
@@ -236,16 +239,14 @@ void X11WholeScreenMoveLoop::EndMoveLoop() {
 
 bool X11WholeScreenMoveLoop::GrabPointer(gfx::NativeCursor cursor) {
   XDisplay* display = gfx::GetXDisplay();
-  XGrabServer(display);
 
   // Pass "owner_events" as false so that X sends all mouse events to
   // |grab_input_window_|.
-  int ret = ::views::GrabPointer(grab_input_window_, false, cursor.platform());
+  int ret = ui::GrabPointer(grab_input_window_, false, cursor.platform());
   if (ret != GrabSuccess) {
     DLOG(ERROR) << "Grabbing pointer for dragging failed: "
                 << ui::GetX11ErrorString(display, ret);
   }
-  XUngrabServer(display);
   XFlush(display);
   return ret == GrabSuccess;
 }
@@ -253,27 +254,27 @@ bool X11WholeScreenMoveLoop::GrabPointer(gfx::NativeCursor cursor) {
 void X11WholeScreenMoveLoop::GrabEscKey() {
   XDisplay* display = gfx::GetXDisplay();
   unsigned int esc_keycode = XKeysymToKeycode(display, XK_Escape);
-  for (size_t i = 0; i < arraysize(kModifiersMasks); ++i) {
+  for (size_t i = 0; i < base::size(kModifiersMasks); ++i) {
     XGrabKey(display, esc_keycode, kModifiersMasks[i], grab_input_window_,
-             False, GrabModeAsync, GrabModeAsync);
+             x11::False, GrabModeAsync, GrabModeAsync);
   }
 }
 
-Window X11WholeScreenMoveLoop::CreateDragInputWindow(XDisplay* display) {
+void X11WholeScreenMoveLoop::CreateDragInputWindow(XDisplay* display) {
   unsigned long attribute_mask = CWEventMask | CWOverrideRedirect;
   XSetWindowAttributes swa;
   memset(&swa, 0, sizeof(swa));
-  swa.event_mask = ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
-                   KeyPressMask | KeyReleaseMask | StructureNotifyMask;
-  swa.override_redirect = True;
-  Window window = XCreateWindow(display,
-                                DefaultRootWindow(display),
-                                -100, -100, 10, 10,
-                                0, CopyFromParent, InputOnly, CopyFromParent,
-                                attribute_mask, &swa);
-  XMapRaised(display, window);
-  ui::X11EventSource::GetInstance()->BlockUntilWindowMapped(window);
-  return window;
+  swa.override_redirect = x11::True;
+  grab_input_window_ = XCreateWindow(display, DefaultRootWindow(display), -100,
+                                     -100, 10, 10, 0, CopyFromParent, InputOnly,
+                                     CopyFromParent, attribute_mask, &swa);
+  uint32_t event_mask = ButtonPressMask | ButtonReleaseMask |
+                        PointerMotionMask | KeyPressMask | KeyReleaseMask |
+                        StructureNotifyMask;
+  grab_input_window_events_.reset(
+      new ui::XScopedEventSelector(grab_input_window_, event_mask));
+
+  XMapRaised(display, grab_input_window_);
 }
 
 }  // namespace views

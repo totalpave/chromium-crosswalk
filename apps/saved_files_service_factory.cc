@@ -5,15 +5,24 @@
 #include "apps/saved_files_service_factory.h"
 
 #include "apps/saved_files_service.h"
-#include "chrome/browser/profiles/profile.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "content/public/browser/browser_context.h"
+#include "extensions/browser/extensions_browser_client.h"
 
 namespace apps {
 
 // static
-SavedFilesService* SavedFilesServiceFactory::GetForProfile(Profile* profile) {
+SavedFilesService* SavedFilesServiceFactory::GetForBrowserContext(
+    content::BrowserContext* context) {
   return static_cast<SavedFilesService*>(
-      GetInstance()->GetServiceForBrowserContext(profile, true));
+      GetInstance()->GetServiceForBrowserContext(context, true));
+}
+
+// static
+SavedFilesService* SavedFilesServiceFactory::GetForBrowserContextIfExists(
+    content::BrowserContext* context) {
+  return static_cast<SavedFilesService*>(
+      GetInstance()->GetServiceForBrowserContext(context, false));
 }
 
 // static
@@ -26,11 +35,21 @@ SavedFilesServiceFactory::SavedFilesServiceFactory()
           "SavedFilesService",
           BrowserContextDependencyManager::GetInstance()) {}
 
-SavedFilesServiceFactory::~SavedFilesServiceFactory() {}
+SavedFilesServiceFactory::~SavedFilesServiceFactory() = default;
 
 KeyedService* SavedFilesServiceFactory::BuildServiceInstanceFor(
-    content::BrowserContext* profile) const {
-  return new SavedFilesService(static_cast<Profile*>(profile));
+    content::BrowserContext* context) const {
+  return new SavedFilesService(context);
+}
+
+content::BrowserContext* SavedFilesServiceFactory::GetBrowserContextToUse(
+    content::BrowserContext* context) const {
+  // Make sure that the service is created even for incognito profile. The goal
+  // is to make this service available in guest sessions, where it could be used
+  // when apps white-listed in guest sessions attempt to use chrome.fileSystem
+  // API.
+  return extensions::ExtensionsBrowserClient::Get()->GetOriginalContext(
+      context);
 }
 
 }  // namespace apps

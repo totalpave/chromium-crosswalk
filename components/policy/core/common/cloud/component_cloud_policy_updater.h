@@ -6,7 +6,6 @@
 #define COMPONENTS_POLICY_CORE_COMMON_CLOUD_COMPONENT_CLOUD_POLICY_UPDATER_H_
 
 #include <memory>
-#include <string>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -43,20 +42,20 @@ class POLICY_EXPORT ComponentCloudPolicyUpdater {
       ComponentCloudPolicyStore* store);
   ~ComponentCloudPolicyUpdater();
 
-  // |response| is the latest policy information fetched for some component.
+  // |response| is the latest policy information fetched for component
+  // represented by namespace |ns|.
   // This method schedules the download of the policy data, if |response| is
   // validated. If the downloaded data also passes validation then that data
   // will be passed to the |store_|.
   void UpdateExternalPolicy(
+      const PolicyNamespace& ns,
       std::unique_ptr<enterprise_management::PolicyFetchResponse> response);
 
   // Cancels any pending operations for the given namespace.
   void CancelUpdate(const PolicyNamespace& ns);
 
  private:
-  std::string NamespaceToKey(const PolicyNamespace& ns);
-
-  ComponentCloudPolicyStore* store_;
+  ComponentCloudPolicyStore* const store_;
   ExternalPolicyDataUpdater external_policy_data_updater_;
 
   DISALLOW_COPY_AND_ASSIGN(ComponentCloudPolicyUpdater);

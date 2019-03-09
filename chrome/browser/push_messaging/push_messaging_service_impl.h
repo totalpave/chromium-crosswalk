@@ -15,44 +15,47 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/background/background_trigger.h"
-#include "chrome/common/features.h"
+#include "base/optional.h"
+#include "chrome/browser/push_messaging/push_messaging_notification_manager.h"
+#include "chrome/common/buildflags.h"
 #include "components/content_settings/core/browser/content_settings_observer.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_types.h"
 #include "components/gcm_driver/common/gcm_messages.h"
+#include "components/gcm_driver/crypto/gcm_encryption_provider.h"
 #include "components/gcm_driver/gcm_app_handler.h"
 #include "components/gcm_driver/gcm_client.h"
+#include "components/gcm_driver/instance_id/instance_id.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "content/public/browser/notification_observer.h"
+#include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/push_messaging_service.h"
-#include "content/public/common/push_event_payload.h"
-#include "content/public/common/push_messaging_status.h"
-#include "third_party/WebKit/public/platform/modules/permissions/permission_status.mojom.h"
-#include "third_party/WebKit/public/platform/modules/push_messaging/WebPushPermissionStatus.h"
-
-#if defined(ENABLE_NOTIFICATIONS)
-#include "chrome/browser/push_messaging/push_messaging_notification_manager.h"
-#endif
 
 class Profile;
 class PushMessagingAppIdentifier;
-class PushMessagingServiceObserver;
+class PushMessagingServiceTest;
 class ScopedKeepAlive;
 struct PushSubscriptionOptions;
 
+namespace content {
+namespace mojom {
+enum class PushDeliveryStatus;
+enum class PushRegistrationStatus;
+}  // namespace mojom
+}  // namespace content
+
 namespace gcm {
 class GCMDriver;
-class GCMProfileService;
 }
-
-namespace user_prefs {
-class PrefRegistrySyncable;
+namespace instance_id {
+class InstanceIDDriver;
 }
 
 class PushMessagingServiceImpl : public content::PushMessagingService,
                                  public gcm::GCMAppHandler,
                                  public content_settings::Observer,
                                  public KeyedService,
-                                 public BackgroundTrigger {
+                                 public content::NotificationObserver {
  public:
   // If any Service Workers are using push, starts GCM and adds an app handler.
   static void InitializeForProfile(Profile* profile);
@@ -60,8 +63,13 @@ class PushMessagingServiceImpl : public content::PushMessagingService,
   explicit PushMessagingServiceImpl(Profile* profile);
   ~PushMessagingServiceImpl() override;
 
+  // Gets the permission status for the given |origin|.
+  blink::mojom::PermissionStatus GetPermissionStatus(const GURL& origin,
+                                                     bool user_visible);
+
   // gcm::GCMAppHandler implementation.
   void ShutdownHandler() override;
+  void OnStoreReset() override;
   void OnMessage(const std::string& app_id,
                  const gcm::IncomingMessage& message) override;
   void OnMessagesDeleted(const std::string& app_id) override;
@@ -74,52 +82,58 @@ class PushMessagingServiceImpl : public content::PushMessagingService,
 
   // content::PushMessagingService implementation:
   GURL GetEndpoint(bool standard_protocol) const override;
-  void SubscribeFromDocument(
-      const GURL& requesting_origin,
-      int64_t service_worker_registration_id,
-      int renderer_id,
-      int render_frame_id,
-      const content::PushSubscriptionOptions& options,
-      const content::PushMessagingService::RegisterCallback& callback) override;
-  void SubscribeFromWorker(
-      const GURL& requesting_origin,
-      int64_t service_worker_registration_id,
-      const content::PushSubscriptionOptions& options,
-      const content::PushMessagingService::RegisterCallback& callback) override;
-  void GetEncryptionInfo(
-      const GURL& origin,
-      int64_t service_worker_registration_id,
-      const content::PushMessagingService::EncryptionInfoCallback& callback)
-      override;
-  void Unsubscribe(
-      const GURL& requesting_origin,
-      int64_t service_worker_registration_id,
-      const std::string& sender_id,
-      const content::PushMessagingService::UnregisterCallback&) override;
-  blink::WebPushPermissionStatus GetPermissionStatus(
-      const GURL& origin,
-      bool user_visible) override;
+  void SubscribeFromDocument(const GURL& requesting_origin,
+                             int64_t service_worker_registration_id,
+                             int renderer_id,
+                             int render_frame_id,
+                             const content::PushSubscriptionOptions& options,
+                             bool user_gesture,
+                             const RegisterCallback& callback) override;
+  void SubscribeFromWorker(const GURL& requesting_origin,
+                           int64_t service_worker_registration_id,
+                           const content::PushSubscriptionOptions& options,
+                           const RegisterCallback& callback) override;
+  void GetSubscriptionInfo(const GURL& origin,
+                           int64_t service_worker_registration_id,
+                           const std::string& sender_id,
+                           const std::string& subscription_id,
+                           const SubscriptionInfoCallback& callback) override;
+  void Unsubscribe(content::mojom::PushUnregistrationReason reason,
+                   const GURL& requesting_origin,
+                   int64_t service_worker_registration_id,
+                   const std::string& sender_id,
+                   const UnregisterCallback&) override;
   bool SupportNonVisibleMessages() override;
+  void DidDeleteServiceWorkerRegistration(
+      const GURL& origin,
+      int64_t service_worker_registration_id) override;
+  void DidDeleteServiceWorkerDatabase() override;
 
   // content_settings::Observer implementation.
   void OnContentSettingChanged(const ContentSettingsPattern& primary_pattern,
                                const ContentSettingsPattern& secondary_pattern,
                                ContentSettingsType content_type,
-                               std::string resource_identifier) override;
+                               const std::string& resource_identifier) override;
 
   // KeyedService implementation.
   void Shutdown() override;
 
-  // BackgroundTrigger implementation.
-  base::string16 GetName() override;
-  gfx::ImageSkia* GetIcon() override;
-  void OnMenuClick() override;
+  // content::NotificationObserver:
+  void Observe(int type,
+               const content::NotificationSource& source,
+               const content::NotificationDetails& details) override;
 
   void SetMessageCallbackForTesting(const base::Closure& callback);
+  void SetUnsubscribeCallbackForTesting(const base::Closure& callback);
   void SetContentSettingChangedCallbackForTesting(
+      const base::Closure& callback);
+  void SetServiceWorkerUnregisteredCallbackForTesting(
+      const base::Closure& callback);
+  void SetServiceWorkerDatabaseWipedCallbackForTesting(
       const base::Closure& callback);
 
  private:
+  friend class PushMessagingBrowserTest;
   FRIEND_TEST_ALL_PREFIXES(PushMessagingServiceTest, NormalizeSenderInfo);
   FRIEND_TEST_ALL_PREFIXES(PushMessagingServiceTest, PayloadEncryptionTest);
 
@@ -134,65 +148,82 @@ class PushMessagingServiceImpl : public content::PushMessagingService,
                               int64_t service_worker_registration_id,
                               const gcm::IncomingMessage& message,
                               const base::Closure& message_handled_closure,
-                              content::PushDeliveryStatus status);
+                              content::mojom::PushDeliveryStatus status);
 
   void DidHandleMessage(const std::string& app_id,
                         const base::Closure& completion_closure);
 
   // Subscribe methods ---------------------------------------------------------
 
-  void SubscribeEnd(
-      const content::PushMessagingService::RegisterCallback& callback,
-      const std::string& subscription_id,
-      const std::vector<uint8_t>& p256dh,
-      const std::vector<uint8_t>& auth,
-      content::PushRegistrationStatus status);
+  void DoSubscribe(const PushMessagingAppIdentifier& app_identifier,
+                   const content::PushSubscriptionOptions& options,
+                   const RegisterCallback& callback,
+                   ContentSetting permission_status);
 
-  void SubscribeEndWithError(
-      const content::PushMessagingService::RegisterCallback& callback,
-      content::PushRegistrationStatus status);
+  void SubscribeEnd(const RegisterCallback& callback,
+                    const std::string& subscription_id,
+                    const std::vector<uint8_t>& p256dh,
+                    const std::vector<uint8_t>& auth,
+                    content::mojom::PushRegistrationStatus status);
 
-  void DidSubscribe(
-      const PushMessagingAppIdentifier& app_identifier,
-      const content::PushMessagingService::RegisterCallback& callback,
-      const std::string& subscription_id,
-      gcm::GCMClient::Result result);
+  void SubscribeEndWithError(const RegisterCallback& callback,
+                             content::mojom::PushRegistrationStatus status);
+
+  void DidSubscribe(const PushMessagingAppIdentifier& app_identifier,
+                    const std::string& sender_id,
+                    const RegisterCallback& callback,
+                    const std::string& subscription_id,
+                    instance_id::InstanceID::Result result);
 
   void DidSubscribeWithEncryptionInfo(
       const PushMessagingAppIdentifier& app_identifier,
-      const content::PushMessagingService::RegisterCallback& callback,
+      const RegisterCallback& callback,
       const std::string& subscription_id,
       const std::string& p256dh,
       const std::string& auth_secret);
 
-  void DidRequestPermission(
-      const PushMessagingAppIdentifier& app_identifier,
-      const content::PushSubscriptionOptions& options,
-      const content::PushMessagingService::RegisterCallback& callback,
-      blink::mojom::PermissionStatus permission_status);
+  // GetSubscriptionInfo methods -----------------------------------------------
 
-  // GetEncryptionInfo method --------------------------------------------------
+  void DidValidateSubscription(const std::string& app_id,
+                               const std::string& sender_id,
+                               const SubscriptionInfoCallback& callback,
+                               bool is_valid);
 
-  void DidGetEncryptionInfo(
-      const PushMessagingService::EncryptionInfoCallback& callback,
-      const std::string& p256dh,
-      const std::string& auth_secret) const;
+  void DidGetEncryptionInfo(const SubscriptionInfoCallback& callback,
+                            const std::string& p256dh,
+                            const std::string& auth_secret) const;
 
   // Unsubscribe methods -------------------------------------------------------
 
-  void Unsubscribe(const std::string& app_id,
-                   const std::string& sender_id,
-                   const content::PushMessagingService::UnregisterCallback&);
+  // |origin|, |service_worker_registration_id| and |app_id| should be provided
+  // whenever they can be obtained. It's valid for |origin| to be empty and
+  // |service_worker_registration_id| to be kInvalidServiceWorkerRegistrationId,
+  // or for app_id to be empty, but not both at once.
+  void UnsubscribeInternal(content::mojom::PushUnregistrationReason reason,
+                           const GURL& origin,
+                           int64_t service_worker_registration_id,
+                           const std::string& app_id,
+                           const std::string& sender_id,
+                           const UnregisterCallback& callback);
 
-  void DidUnsubscribe(bool was_subscribed,
-                      const content::PushMessagingService::UnregisterCallback&,
-                      gcm::GCMClient::Result result);
+  void DidClearPushSubscriptionId(
+      content::mojom::PushUnregistrationReason reason,
+      const std::string& app_id,
+      const std::string& sender_id,
+      const UnregisterCallback& callback);
+
+  void DidUnregister(bool was_subscribed, gcm::GCMClient::Result result);
+  void DidDeleteID(const std::string& app_id,
+                   bool was_subscribed,
+                   instance_id::InstanceID::Result result);
+  void DidUnsubscribe(const std::string& app_id_when_instance_id,
+                      bool was_subscribed);
 
   // OnContentSettingChanged methods -------------------------------------------
 
   void UnsubscribeBecausePermissionRevoked(
       const PushMessagingAppIdentifier& app_identifier,
-      const base::Closure& closure,
+      const UnregisterCallback& callback,
       const std::string& sender_id,
       bool success,
       bool not_found);
@@ -207,7 +238,15 @@ class PushMessagingServiceImpl : public content::PushMessagingService,
   // Checks if a given origin is allowed to use Push.
   bool IsPermissionSet(const GURL& origin);
 
+  // Wrapper around {GCMDriver, InstanceID}::GetEncryptionInfo.
+  void GetEncryptionInfoForAppId(
+      const std::string& app_id,
+      const std::string& sender_id,
+      gcm::GCMEncryptionProvider::EncryptionInfoCallback callback);
+
   gcm::GCMDriver* GetGCMDriver() const;
+
+  instance_id::InstanceIDDriver* GetInstanceIDDriver() const;
 
   // Testing methods -----------------------------------------------------------
 
@@ -217,7 +256,7 @@ class PushMessagingServiceImpl : public content::PushMessagingService,
       base::Callback<void(const std::string& app_id,
                           const GURL& origin,
                           int64_t service_worker_registration_id,
-                          const content::PushEventPayload& payload)>;
+                          base::Optional<std::string> payload)>;
 
   void SetMessageDispatchedCallbackForTesting(
       const MessageDispatchedCallback& callback) {
@@ -230,11 +269,12 @@ class PushMessagingServiceImpl : public content::PushMessagingService,
   int pending_push_subscription_count_;
 
   base::Closure message_callback_for_testing_;
+  base::Closure unsubscribe_callback_for_testing_;
   base::Closure content_setting_changed_callback_for_testing_;
+  base::Closure service_worker_unregistered_callback_for_testing_;
+  base::Closure service_worker_database_wiped_callback_for_testing_;
 
-#if defined(ENABLE_NOTIFICATIONS)
   PushMessagingNotificationManager notification_manager_;
-#endif
 
   // A multiset containing one entry for each in-flight push message delivery,
   // keyed by the receiver's app id.
@@ -242,14 +282,17 @@ class PushMessagingServiceImpl : public content::PushMessagingService,
 
   MessageDispatchedCallback message_dispatched_callback_for_testing_;
 
-  std::unique_ptr<PushMessagingServiceObserver>
-      push_messaging_service_observer_;
-
-#if BUILDFLAG(ENABLE_BACKGROUND)
+#if BUILDFLAG(ENABLE_BACKGROUND_MODE)
   // KeepAlive registered while we have in-flight push messages, to make sure
   // we can finish processing them without being interrupted.
   std::unique_ptr<ScopedKeepAlive> in_flight_keep_alive_;
 #endif
+
+  content::NotificationRegistrar registrar_;
+
+  // True when shutdown has started. Do not allow processing of incoming
+  // messages when this is true.
+  bool shutdown_started_ = false;
 
   base::WeakPtrFactory<PushMessagingServiceImpl> weak_factory_;
 

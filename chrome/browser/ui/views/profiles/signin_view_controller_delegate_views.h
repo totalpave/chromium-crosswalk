@@ -6,19 +6,15 @@
 #define CHROME_BROWSER_UI_VIEWS_PROFILES_SIGNIN_VIEW_CONTROLLER_DELEGATE_VIEWS_H_
 
 #include "base/macros.h"
+#include "chrome/browser/ui/chrome_web_modal_dialog_manager_delegate.h"
 #include "chrome/browser/ui/profile_chooser_constants.h"
 #include "chrome/browser/ui/signin_view_controller_delegate.h"
+#include "content/public/browser/web_contents_delegate.h"
+#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 #include "ui/views/window/dialog_delegate.h"
-
-class Browser;
-class Profile;
 
 namespace content {
 class WebContentsDelegate;
-}
-
-namespace signin_metrics {
-enum class AccessPoint;
 }
 
 namespace views {
@@ -29,28 +25,18 @@ class WebView;
 // managing the Signin and Sync Confirmation tab-modal dialogs.
 // Instances of this class delete themselves when the window they're managing
 // closes (in the DeleteDelegate callback).
-class SigninViewControllerDelegateViews : public views::DialogDelegateView,
-                                          public SigninViewControllerDelegate {
+class SigninViewControllerDelegateViews
+    : public views::DialogDelegateView,
+      public SigninViewControllerDelegate,
+      public content::WebContentsDelegate,
+      public ChromeWebModalDialogManagerDelegate {
  public:
-  // Creates and displays a constrained window containing |web_contents|. If
-  // |wait_for_size| is true, the delegate will wait for ResizeNativeView() to
-  // be called by the base class before displaying the constrained window.
-  SigninViewControllerDelegateViews(
-      SigninViewController* signin_view_controller,
-      views::WebView* content_view,
-      Browser* browser,
-      bool wait_for_size);
 
-  // Creates the web view that contains the signin flow in |mode| using
-  // |profile| as the web content's profile, then sets |delegate| as the created
-  // web content's delegate.
-  static views::WebView* CreateGaiaWebView(
-      content::WebContentsDelegate* delegate,
-      profiles::BubbleViewMode mode,
-      Browser* browser,
-      signin_metrics::AccessPoint access_point);
+  static std::unique_ptr<views::WebView> CreateSyncConfirmationWebView(
+      Browser* browser);
 
-  static views::WebView* CreateSyncConfirmationWebView(Browser* browser);
+  static std::unique_ptr<views::WebView> CreateSigninErrorWebView(
+      Browser* browser);
 
   // views::DialogDelegateView:
   views::View* GetContentsView() override;
@@ -61,22 +47,58 @@ class SigninViewControllerDelegateViews : public views::DialogDelegateView,
   bool ShouldShowCloseButton() const override;
   int GetDialogButtons() const override;
 
- private:
-  void PerformClose() override;
+  // SigninViewControllerDelegate:
+  void CloseModalSignin() override;
   void ResizeNativeView(int height) override;
+  content::WebContents* GetWebContents() override;
 
-  void DisplayModal();
+  // content::WebContentsDelegate:
+  bool HandleContextMenu(content::RenderFrameHost* render_frame_host,
+                         const content::ContextMenuParams& params) override;
+  bool HandleKeyboardEvent(
+      content::WebContents* source,
+      const content::NativeWebKeyboardEvent& event) override;
 
+  // ChromeWebModalDialogManagerDelegate:
+  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost()
+      override;
+
+ private:
+  friend SigninViewControllerDelegate;
+
+  // Creates and displays a constrained window containing |web_contents|. If
+  // |wait_for_size| is true, the delegate will wait for ResizeNativeView() to
+  // be called by the base class before displaying the constrained window.
+  SigninViewControllerDelegateViews(
+      SigninViewController* signin_view_controller,
+      std::unique_ptr<views::WebView> content_view,
+      Browser* browser,
+      ui::ModalType dialog_modal_type,
+      bool wait_for_size);
   ~SigninViewControllerDelegateViews() override;
 
+  // Creates a WebView for a dialog with the specified URL.
+  static std::unique_ptr<views::WebView> CreateDialogWebView(
+      Browser* browser,
+      const std::string& url,
+      int dialog_height,
+      base::Optional<int> dialog_width);
+
+  // Notifies the SigninViewController that this instance is being deleted.
+  void ResetSigninViewControllerDelegate();
+
+  // Displays the modal dialog.
+  void DisplayModal();
+
+  Browser* browser() { return browser_; }
+
+  SigninViewController* signin_view_controller_;  // Not owned.
+  content::WebContents* const web_contents_;      // Not owned.
+  Browser* const browser_;                        // Not owned.
   views::WebView* content_view_;
   views::Widget* modal_signin_widget_;  // Not owned.
-
-  // wait_for_size_ stores whether the dialog should only be shown after its
-  // content's size has been laid out and measured so that the constrained
-  // window is sized to the content.
-  bool wait_for_size_;
-  Browser* browser_;
+  ui::ModalType dialog_modal_type_;
+  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
 
   DISALLOW_COPY_AND_ASSIGN(SigninViewControllerDelegateViews);
 };

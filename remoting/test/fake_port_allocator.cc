@@ -5,12 +5,11 @@
 #include "remoting/test/fake_port_allocator.h"
 
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "remoting/protocol/transport_context.h"
 #include "remoting/test/fake_network_dispatcher.h"
 #include "remoting/test/fake_network_manager.h"
 #include "remoting/test/fake_socket_factory.h"
-#include "third_party/webrtc/p2p/client/basicportallocator.h"
+#include "third_party/webrtc/p2p/client/basic_port_allocator.h"
 
 namespace remoting {
 
@@ -41,7 +40,7 @@ FakePortAllocatorSession::FakePortAllocatorSession(
                                 ice_username_fragment,
                                 ice_password) {}
 
-FakePortAllocatorSession::~FakePortAllocatorSession() {}
+FakePortAllocatorSession::~FakePortAllocatorSession() = default;
 
 }  // namespace
 
@@ -52,13 +51,13 @@ FakePortAllocator::FakePortAllocator(
     : BasicPortAllocator(network_manager, socket_factory),
       transport_context_(transport_context) {
   set_flags(cricket::PORTALLOCATOR_DISABLE_TCP |
-            cricket::PORTALLOCATOR_ENABLE_SHARED_UFRAG |
             cricket::PORTALLOCATOR_ENABLE_IPV6 |
             cricket::PORTALLOCATOR_DISABLE_STUN |
             cricket::PORTALLOCATOR_DISABLE_RELAY);
+  Initialize();
 }
 
-FakePortAllocator::~FakePortAllocator() {}
+FakePortAllocator::~FakePortAllocator() = default;
 
 cricket::PortAllocatorSession* FakePortAllocator::CreateSessionInternal(
     const std::string& content_name,
@@ -76,13 +75,13 @@ FakePortAllocatorFactory::FakePortAllocatorFactory(
   network_manager_.reset(new FakeNetworkManager(socket_factory_->GetAddress()));
 }
 
-FakePortAllocatorFactory::~FakePortAllocatorFactory() {}
+FakePortAllocatorFactory::~FakePortAllocatorFactory() = default;
 
 std::unique_ptr<cricket::PortAllocator>
 FakePortAllocatorFactory::CreatePortAllocator(
     scoped_refptr<protocol::TransportContext> transport_context) {
-  return base::WrapUnique(new FakePortAllocator(
-      network_manager_.get(), socket_factory_.get(), transport_context));
+  return std::make_unique<FakePortAllocator>(
+      network_manager_.get(), socket_factory_.get(), transport_context);
 }
 
 }  // namespace remoting

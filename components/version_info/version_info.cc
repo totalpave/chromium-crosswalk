@@ -4,13 +4,12 @@
 
 #include "components/version_info/version_info.h"
 
+#include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/version.h"
 #include "build/build_config.h"
 #include "components/version_info/version_info_values.h"
-#include "grit/components_strings.h"
-
-#if defined(USE_UNOFFICIAL_VERSION_NUMBER)
-#include "ui/base/l10n/l10n_util.h"  // nogncheck
-#endif  // USE_UNOFFICIAL_VERSION_NUMBER
 
 namespace version_info {
 
@@ -24,6 +23,16 @@ std::string GetProductName() {
 
 std::string GetVersionNumber() {
   return PRODUCT_VERSION;
+}
+
+std::string GetMajorVersionNumber() {
+  DCHECK(version_info::GetVersion().IsValid());
+  return base::UintToString(version_info::GetVersion().components()[0]);
+}
+
+const base::Version& GetVersion() {
+  static const base::NoDestructor<base::Version> version(GetVersionNumber());
+  return *version;
 }
 
 std::string GetLastChange() {
@@ -66,38 +75,17 @@ std::string GetChannelString(Channel channel) {
   switch (channel) {
     case Channel::STABLE:
       return "stable";
-      break;
     case Channel::BETA:
       return "beta";
-      break;
     case Channel::DEV:
       return "dev";
-      break;
     case Channel::CANARY:
       return "canary";
-      break;
     case Channel::UNKNOWN:
       return "unknown";
-      break;
   }
+  NOTREACHED();
   return std::string();
-}
-
-std::string GetVersionStringWithModifier(const std::string& modifier) {
-  std::string current_version;
-  current_version += GetVersionNumber();
-#if defined(USE_UNOFFICIAL_VERSION_NUMBER)
-  current_version += " (";
-  current_version += l10n_util::GetStringUTF8(IDS_VERSION_UI_UNOFFICIAL);
-  current_version += " ";
-  current_version += GetLastChange();
-  current_version += " ";
-  current_version += GetOSType();
-  current_version += ")";
-#endif  // USE_UNOFFICIAL_VERSION_NUMBER
-  if (!modifier.empty())
-    current_version += " " + modifier;
-  return current_version;
 }
 
 }  // namespace version_info

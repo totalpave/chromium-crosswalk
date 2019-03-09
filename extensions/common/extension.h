@@ -11,18 +11,22 @@
 #include <string>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/thread_checker.h"
+#include "base/version.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension_id.h"
 #include "extensions/common/extension_resource.h"
+#include "extensions/common/hashed_extension_id.h"
 #include "extensions/common/install_warning.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/url_pattern_set.h"
 #include "url/gurl.h"
 
-#if !defined(ENABLE_EXTENSIONS)
+#if !BUILDFLAG(ENABLE_EXTENSIONS)
 #error "Extensions must be enabled"
 #endif
 
@@ -36,61 +40,28 @@ class PermissionSet;
 class PermissionsData;
 class PermissionsParser;
 
-// Uniquely identifies an Extension, using 32 characters from the alphabet
-// 'a'-'p'.  An empty string represents "no extension".
-//
-// Note: If this gets used heavily in files that don't otherwise need to include
-// extension.h, we should pull it into a dedicated header.
-typedef std::string ExtensionId;
-
 // Represents a Chrome extension.
 // Once created, an Extension object is immutable, with the exception of its
 // RuntimeData. This makes it safe to use on any thread, since access to the
 // RuntimeData is protected by a lock.
 class Extension : public base::RefCountedThreadSafe<Extension> {
  public:
+  // Do not renumber or reorder these values, as they are stored on-disk in the
+  // user's preferences.
   enum State {
     DISABLED = 0,
-    ENABLED,
+    ENABLED = 1,
+
     // An external extension that the user uninstalled. We should not reinstall
     // such extensions on startup.
-    EXTERNAL_EXTENSION_UNINSTALLED,
-    // DEPRECATED: Special state for component extensions.
-    // Maintained as a placeholder since states may be stored to disk.
-    ENABLED_COMPONENT_DEPRECATED,
-    // Add new states here as this enum is stored in prefs.
-    NUM_STATES
-  };
+    EXTERNAL_EXTENSION_UNINSTALLED = 2,
 
-  // Reasons an extension may be disabled. These are used in histograms, so do
-  // not remove/reorder entries - only add at the end just before
-  // DISABLE_REASON_LAST (and update the shift value for it). Also remember to
-  // update the enum listing in tools/metrics/histograms.xml.
-  // Also carefully consider if your reason should sync to other devices, and if
-  // so, add it to kKnownSyncableDisableReasons in extension_sync_service.cc.
-  enum DisableReason {
-    DISABLE_NONE = 0,
-    DISABLE_USER_ACTION = 1 << 0,
-    DISABLE_PERMISSIONS_INCREASE = 1 << 1,
-    DISABLE_RELOAD = 1 << 2,
-    DISABLE_UNSUPPORTED_REQUIREMENT = 1 << 3,
-    DISABLE_SIDELOAD_WIPEOUT = 1 << 4,
-    DEPRECATED_DISABLE_UNKNOWN_FROM_SYNC = 1 << 5,
-    // DISABLE_PERMISSIONS_CONSENT = 1 << 6,  // Deprecated.
-    // DISABLE_KNOWN_DISABLED = 1 << 7,  // Deprecated.
-    DISABLE_NOT_VERIFIED = 1 << 8,  // Disabled because we could not verify
-                                    // the install.
-    DISABLE_GREYLIST = 1 << 9,
-    DISABLE_CORRUPTED = 1 << 10,
-    DISABLE_REMOTE_INSTALL = 1 << 11,
-    // DISABLE_INACTIVE_EPHEMERAL_APP = 1 << 12,  // Deprecated.
-    DISABLE_EXTERNAL_EXTENSION = 1 << 13,  // External extensions might be
-                                           // disabled for user prompting.
-    DISABLE_UPDATE_REQUIRED_BY_POLICY = 1 << 14,  // Doesn't meet minimum
-                                                  // version requirement.
-    DISABLE_CUSTODIAN_APPROVAL_REQUIRED = 1 << 15,  // Supervised user needs
-                                                    // approval by custodian.
-    DISABLE_REASON_LAST = 1 << 16,  // This should always be the last value
+    // DEPRECATED: Special state for component extensions.
+    // ENABLED_COMPONENT_DEPRECATED = 3,
+
+    // Do not add more values. State is being removed.
+    // https://crbug.com/794205.
+    NUM_STATES = 4,
   };
 
   // A base class for parsed manifest data that APIs want to store on
@@ -187,7 +158,7 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
   // Valid schemes for web extent URLPatterns.
   static const int kValidWebExtentSchemes;
 
-  // Valid schemes for bookmark app installs.
+  // Valid schemes for bookmark app installs by the user.
   static const int kValidBookmarkAppSchemes;
 
   // Valid schemes for host permission URLPatterns.
@@ -239,9 +210,6 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
   // Returns the base extension url for a given |extension_id|.
   static GURL GetBaseURLFromExtensionId(const ExtensionId& extension_id);
 
-  // Whether context menu should be shown for page and browser actions.
-  bool ShowConfigureContextMenus() const;
-
   // Returns true if this extension or app includes areas within |origin|.
   bool OverlapsWithOrigin(const GURL& origin) const;
 
@@ -259,19 +227,19 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
   // settings page (i.e. chrome://extensions).
   bool ShouldDisplayInExtensionSettings() const;
 
-  // Returns true if the extension should not be shown anywhere. This is
-  // mostly the same as the extension being a component extension, but also
-  // includes non-component apps that are hidden from the app launcher and ntp.
-  bool ShouldNotBeVisible() const;
+  // Returns true if the extension should be exposed via the chrome.management
+  // API.
+  bool ShouldExposeViaManagementAPI() const;
 
   // Get the manifest data associated with the key, or NULL if there is none.
   // Can only be called after InitValue is finished.
   ManifestData* GetManifestData(const std::string& key) const;
 
-  // Sets |data| to be associated with the key. Takes ownership of |data|.
+  // Sets |data| to be associated with the key.
   // Can only be called before InitValue is finished. Not thread-safe;
   // all SetManifestData calls should be on only one thread.
-  void SetManifestData(const std::string& key, ManifestData* data);
+  void SetManifestData(const std::string& key,
+                       std::unique_ptr<ManifestData> data);
 
   // Accessors:
 
@@ -279,11 +247,12 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
   const GURL& url() const { return extension_url_; }
   Manifest::Location location() const;
   const ExtensionId& id() const;
-  const base::Version* version() const { return version_.get(); }
+  const HashedExtensionId& hashed_id() const;
+  const base::Version& version() const { return version_; }
   const std::string& version_name() const { return version_name_; }
   const std::string VersionString() const;
   const std::string GetVersionForDisplay() const;
-  const std::string& name() const { return name_; }
+  const std::string& name() const { return display_name_; }
   const std::string& short_name() const { return short_name_; }
   const std::string& non_localized_name() const { return non_localized_name_; }
   // Base64-encoded version of the key used to sign this extension.
@@ -305,8 +274,8 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
   }
 
   // Appends |new_warning[s]| to install_warnings_.
-  void AddInstallWarning(const InstallWarning& new_warning);
-  void AddInstallWarnings(const std::vector<InstallWarning>& new_warnings);
+  void AddInstallWarning(InstallWarning new_warning);
+  void AddInstallWarnings(std::vector<InstallWarning> new_warnings);
   const std::vector<InstallWarning>& install_warnings() const {
     return install_warnings_;
   }
@@ -333,14 +302,19 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
     return (creation_flags_ & WAS_INSTALLED_BY_OEM) != 0;
   }
 
-  // Type-related queries.
+  // Type-related queries. These are all mutually exclusive.
+  //
+  // The differences between the types of Extension are documented here:
+  // https://chromium.googlesource.com/chromium/src/+/HEAD/extensions/docs/extension_and_app_types.md
+  bool is_platform_app() const;         // aka "V2 app", "V2 packaged app"
+  bool is_hosted_app() const;           // Hosted app (or bookmark app)
+  bool is_legacy_packaged_app() const;  // aka "V1 packaged app"
+  bool is_extension() const;            // Regular browser extension, not an app
+  bool is_shared_module() const;        // Shared module
+  bool is_theme() const;                // Theme
+
+  // True if this is a platform app, hosted app, or legacy packaged app.
   bool is_app() const;
-  bool is_platform_app() const;
-  bool is_hosted_app() const;
-  bool is_legacy_packaged_app() const;
-  bool is_extension() const;
-  bool is_shared_module() const;
-  bool is_theme() const;
 
   void AddWebExtentPattern(const URLPattern& pattern);
   const URLPatternSet& web_extent() const { return extent_; }
@@ -393,7 +367,7 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
   // might be wrapped with unicode bidi control characters so that it is
   // displayed correctly in RTL context.
   // NOTE: Name is UTF-8 and may contain non-ascii characters.
-  std::string name_;
+  std::string display_name_;
 
   // A non-localized version of the extension's name. This is useful for
   // debug output.
@@ -434,7 +408,7 @@ class Extension : public base::RefCountedThreadSafe<Extension> {
   GURL extension_url_;
 
   // The extension's version.
-  std::unique_ptr<base::Version> version_;
+  base::Version version_;
 
   // The extension's user visible version name.
   std::string version_name_;
@@ -493,7 +467,10 @@ struct ExtensionInfo {
                 Manifest::Location location);
   ~ExtensionInfo();
 
+  // Note: This may be null (e.g. for unpacked extensions retrieved from the
+  // Preferences file).
   std::unique_ptr<base::DictionaryValue> extension_manifest;
+
   ExtensionId extension_id;
   base::FilePath extension_path;
   Manifest::Location extension_location;
@@ -502,48 +479,18 @@ struct ExtensionInfo {
   DISALLOW_COPY_AND_ASSIGN(ExtensionInfo);
 };
 
-struct InstalledExtensionInfo {
-  // The extension being installed - this should always be non-NULL.
-  const Extension* extension;
-
-  // True if the extension is being updated; false if it is being installed.
-  bool is_update;
-
-  // True if the extension was previously installed ephemerally and is now
-  // a regular installed extension.
-  bool from_ephemeral;
-
-  // The name of the extension prior to this update. Will be empty if
-  // |is_update| is false.
-  std::string old_name;
-
-  InstalledExtensionInfo(const Extension* extension,
-                         bool is_update,
-                         bool from_ephemeral,
-                         const std::string& old_name);
-};
-
-struct UnloadedExtensionInfo {
-  // TODO(DHNishi): Move this enum to ExtensionRegistryObserver.
-  enum Reason {
-    REASON_UNDEFINED,         // Undefined state used to initialize variables.
-    REASON_DISABLE,           // Extension is being disabled.
-    REASON_UPDATE,            // Extension is being updated to a newer version.
-    REASON_UNINSTALL,         // Extension is being uninstalled.
-    REASON_TERMINATE,         // Extension has terminated.
-    REASON_BLACKLIST,         // Extension has been blacklisted.
-    REASON_PROFILE_SHUTDOWN,  // Profile is being shut down.
-    REASON_LOCK_ALL,          // All extensions for the profile are blocked.
-    REASON_MIGRATED_TO_COMPONENT,  // Extension is being migrated to a component
-                                   // action.
-  };
-
-  Reason reason;
-
-  // The extension being unloaded - this should always be non-NULL.
-  const Extension* extension;
-
-  UnloadedExtensionInfo(const Extension* extension, Reason reason);
+// TODO(DHNishi): Move this enum to ExtensionRegistryObserver.
+enum class UnloadedExtensionReason {
+  UNDEFINED,              // Undefined state used to initialize variables.
+  DISABLE,                // Extension is being disabled.
+  UPDATE,                 // Extension is being updated to a newer version.
+  UNINSTALL,              // Extension is being uninstalled.
+  TERMINATE,              // Extension has terminated.
+  BLACKLIST,              // Extension has been blacklisted.
+  PROFILE_SHUTDOWN,       // Profile is being shut down.
+  LOCK_ALL,               // All extensions for the profile are blocked.
+  MIGRATED_TO_COMPONENT,  // Extension is being migrated to a component
+                          // action.
 };
 
 // The details sent for EXTENSION_PERMISSIONS_UPDATED notifications.
@@ -551,6 +498,7 @@ struct UpdatedExtensionPermissionsInfo {
   enum Reason {
     ADDED,    // The permissions were added to the extension.
     REMOVED,  // The permissions were removed from the extension.
+    POLICY,   // The policy that affects permissions was updated.
   };
 
   Reason reason;

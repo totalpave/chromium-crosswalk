@@ -4,6 +4,7 @@
 
 #include "ios/chrome/browser/ui/webui/gcm/gcm_internals_ui.h"
 
+#include <memory>
 #include <vector>
 
 #include "base/bind.h"
@@ -19,10 +20,10 @@
 #include "components/grit/components_resources.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
-#include "ios/chrome/browser/services/gcm/ios_chrome_gcm_profile_service_factory.h"
-#include "ios/public/provider/web/web_ui_ios.h"
-#include "ios/public/provider/web/web_ui_ios_message_handler.h"
+#include "ios/chrome/browser/gcm/ios_chrome_gcm_profile_service_factory.h"
 #include "ios/web/public/web_ui_ios_data_source.h"
+#include "ios/web/public/webui/web_ui_ios.h"
+#include "ios/web/public/webui/web_ui_ios_message_handler.h"
 
 namespace {
 
@@ -69,7 +70,9 @@ void GcmInternalsUIMessageHandler::ReturnResults(
     const gcm::GCMClient::GCMStatistics* stats) const {
   base::DictionaryValue results;
   gcm_driver::SetGCMInternalsInfo(stats, profile_service, prefs, &results);
-  web_ui()->CallJavascriptFunction(gcm_driver::kSetGcmInternalsInfo, results);
+
+  std::vector<const base::Value*> args{&results};
+  web_ui()->CallJavascriptFunction(gcm_driver::kSetGcmInternalsInfo, args);
 }
 
 void GcmInternalsUIMessageHandler::RequestAllInfo(const base::ListValue* args) {
@@ -143,12 +146,12 @@ void GcmInternalsUIMessageHandler::RequestGCMStatisticsFinished(
 void GcmInternalsUIMessageHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       gcm_driver::kGetGcmInternalsInfo,
-      base::Bind(&GcmInternalsUIMessageHandler::RequestAllInfo,
-                 weak_ptr_factory_.GetWeakPtr()));
+      base::BindRepeating(&GcmInternalsUIMessageHandler::RequestAllInfo,
+                          weak_ptr_factory_.GetWeakPtr()));
   web_ui()->RegisterMessageCallback(
       gcm_driver::kSetGcmInternalsRecording,
-      base::Bind(&GcmInternalsUIMessageHandler::SetRecording,
-                 weak_ptr_factory_.GetWeakPtr()));
+      base::BindRepeating(&GcmInternalsUIMessageHandler::SetRecording,
+                          weak_ptr_factory_.GetWeakPtr()));
 }
 
 }  // namespace
@@ -167,11 +170,12 @@ GCMInternalsUI::GCMInternalsUI(web::WebUIIOS* web_ui)
   html_source->AddResourcePath(gcm_driver::kGcmInternalsJS,
                                IDR_GCM_DRIVER_GCM_INTERNALS_JS);
   html_source->SetDefaultResource(IDR_GCM_DRIVER_GCM_INTERNALS_HTML);
+  html_source->UseGzip();
 
   web::WebUIIOSDataSource::Add(ios::ChromeBrowserState::FromWebUIIOS(web_ui),
                                html_source);
 
-  web_ui->AddMessageHandler(new GcmInternalsUIMessageHandler());
+  web_ui->AddMessageHandler(std::make_unique<GcmInternalsUIMessageHandler>());
 }
 
 GCMInternalsUI::~GCMInternalsUI() {}

@@ -6,72 +6,94 @@
 
 #include <shellapi.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <windows.h>
 
 #include <algorithm>
-#include <memory>
+#include <utility>
 
 #include "base/base_switches.h"
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/command_line.h"
+#include "base/enterprise_util.h"
 #include "base/environment.h"
-#include "base/files/file_enumerator.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/i18n/rtl.h"
 #include "base/location.h"
-#include "base/macros.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/scoped_native_library.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
+#include "base/threading/sequenced_task_runner_handle.h"
+#include "base/trace_event/trace_event.h"
+#include "base/version.h"
+#include "base/win/pe_image.h"
 #include "base/win/registry.h"
 #include "base/win/win_util.h"
-#include "base/win/windows_version.h"
 #include "base/win/wrapped_window_proc.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/conflicts/enumerate_input_method_editors_win.h"
+#include "chrome/browser/conflicts/enumerate_shell_extensions_win.h"
+#include "chrome/browser/conflicts/module_database_win.h"
+#include "chrome/browser/conflicts/module_event_sink_impl_win.h"
 #include "chrome/browser/first_run/first_run.h"
-#include "chrome/browser/install_verification/win/install_verification.h"
+#include "chrome/browser/memory/swap_thrashing_monitor.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_shortcut_manager.h"
-#include "chrome/browser/shell_integration.h"
+#include "chrome/browser/safe_browsing/chrome_cleaner/settings_resetter_win.h"
+#include "chrome/browser/safe_browsing/settings_reset_prompt/settings_reset_prompt_config.h"
+#include "chrome/browser/safe_browsing/settings_reset_prompt/settings_reset_prompt_util_win.h"
 #include "chrome/browser/ui/simple_message_box.h"
 #include "chrome/browser/ui/uninstall_browser_prompt.h"
 #include "chrome/browser/win/browser_util.h"
 #include "chrome/browser/win/chrome_elf_init.h"
 #include "chrome/chrome_watcher/chrome_watcher_main_api.h"
+#include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/chrome_utility_messages.h"
+#include "chrome/common/conflicts/module_watcher_win.h"
+#include "chrome/common/crash_keys.h"
 #include "chrome/common/env_vars.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/installer/util/browser_distribution.h"
+#include "chrome/install_static/install_details.h"
 #include "chrome/installer/util/helper.h"
 #include "chrome/installer/util/install_util.h"
 #include "chrome/installer/util/installer_util_strings.h"
 #include "chrome/installer/util/l10n_string_util.h"
 #include "chrome/installer/util/shell_util.h"
+#include "components/crash/content/app/crash_export_thunks.h"
+#include "components/crash/content/app/dump_hung_process_with_ptype.h"
+#include "components/crash/core/common/crash_key.h"
+#include "components/version_info/channel.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/utility_process_host.h"
-#include "content/public/browser/utility_process_host_client.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/main_function_params.h"
 #include "ui/base/cursor/cursor_loader_win.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/l10n/l10n_util_win.h"
 #include "ui/base/ui_base_switches.h"
+#include "ui/base/win/hidden_window.h"
 #include "ui/base/win/message_box_win.h"
+#include "ui/display/win/dpi.h"
 #include "ui/gfx/platform_font_win.h"
 #include "ui/gfx/switches.h"
 #include "ui/strings/grit/app_locale_settings.h"
 
 #if defined(GOOGLE_CHROME_BUILD)
-#include "chrome/browser/google/did_run_updater_win.h"
-#endif
-
-#if BUILDFLAG(ENABLE_KASKO)
-#include "syzygy/kasko/api/reporter.h"
+#include "chrome/browser/conflicts/third_party_conflicts_manager_win.h"
 #endif
 
 namespace {
@@ -81,19 +103,22 @@ typedef HRESULT (STDAPICALLTYPE* RegisterApplicationRestartProc)(
     DWORD flags);
 
 void InitializeWindowProcExceptions() {
-  // Get the breakpad pointer from chrome.exe
   base::win::WinProcExceptionFilter exception_filter =
-      reinterpret_cast<base::win::WinProcExceptionFilter>(
-          ::GetProcAddress(::GetModuleHandle(
-                               chrome::kBrowserProcessExecutableName),
-                           "CrashForException"));
-  exception_filter = base::win::SetWinProcExceptionFilter(exception_filter);
+      base::win::SetWinProcExceptionFilter(&CrashForException_ExportThunk);
   DCHECK(!exception_filter);
 }
 
+// TODO(siggi): Remove once https://crbug.com/806661 is resolved.
+void DumpHungRendererProcessImpl(const base::Process& renderer) {
+  // Use a distinguishing process type for these reports.
+  crash_reporter::DumpHungProcessWithPtype(renderer, "hung-renderer");
+}
+
 // gfx::Font callbacks
-void AdjustUIFont(LOGFONT* logfont) {
-  l10n_util::AdjustUIFont(logfont);
+void AdjustUIFont(gfx::PlatformFontWin::FontAdjustment* font_adjustment) {
+  l10n_util::NeedOverrideDefaultUIFont(&font_adjustment->font_family_override,
+                                       &font_adjustment->font_scale);
+  font_adjustment->font_scale *= display::win::GetAccessibilityFontScale();
 }
 
 int GetMinimumFontSize() {
@@ -107,41 +132,6 @@ class TranslationDelegate : public installer::TranslationDelegate {
  public:
   base::string16 GetLocalizedString(int installer_string_id) override;
 };
-
-#if BUILDFLAG(ENABLE_KASKO)
-void ObserveFailedCrashReportDirectory(const base::FilePath& path, bool error) {
-  DCHECK(!error);
-  if (error)
-    return;
-  base::FileEnumerator enumerator(path, true, base::FileEnumerator::FILES);
-  for (base::FilePath report_file = enumerator.Next(); !report_file.empty();
-       report_file = enumerator.Next()) {
-    if (report_file.Extension() ==
-        kasko::api::kPermanentFailureMinidumpExtension) {
-      UMA_HISTOGRAM_BOOLEAN("CrashReport.PermanentUploadFailure", true);
-    }
-    bool result = base::DeleteFile(report_file, false);
-    DCHECK(result);
-  }
-}
-
-void StartFailedKaskoCrashReportWatcher(base::FilePathWatcher* watcher) {
-  base::FilePath watcher_data_directory;
-  if (!PathService::Get(chrome::DIR_WATCHER_DATA, &watcher_data_directory)) {
-    NOTREACHED();
-  } else {
-    base::FilePath permanent_failure_directory =
-        watcher_data_directory.Append(kPermanentlyFailedReportsSubdir);
-    if (!watcher->Watch(permanent_failure_directory, true,
-                        base::Bind(&ObserveFailedCrashReportDirectory))) {
-      NOTREACHED();
-    }
-
-    // Call it once to observe any files present prior to the Watch() call.
-    ObserveFailedCrashReportDirectory(permanent_failure_directory, false);
-  }
-}
-#endif  // BUILDFLAG(ENABLE_KASKO)
 
 void DetectFaultTolerantHeap() {
   enum FTHFlags {
@@ -202,19 +192,236 @@ void DetectFaultTolerantHeap() {
   UMA_HISTOGRAM_ENUMERATION("FaultTolerantHeap", detected, FTH_FLAGS_COUNT);
 }
 
-}  // namespace
+// Notes on the OnModuleEvent() callback.
+//
+// The ModuleDatabase uses the TimeDateStamp value of the DLL to uniquely
+// identify modules as they are discovered. Unlike the SizeOfImage, this value
+// isn't provided via LdrDllNotification events or CreateToolhelp32Snapshot().
+//
+// The easiest way to obtain the TimeDateStamp is to read the mapped module in
+// memory. Unfortunately, this could cause an ACCESS_VIOLATION_EXCEPTION if the
+// module is unloaded before being accessed. This can occur when enumerating
+// already loaded modules with CreateToolhelp32Snapshot(). Note that this
+// problem doesn't affect LdrDllNotification events, where it is guaranteed that
+// the module stays in memory for the duration of the callback.
+//
+// To get around this, there are multiple solutions:
+// (1) Read the file on disk instead.
+//     Sidesteps the problem altogether. The drawback is that it must be done on
+//     a sequence that allow blocking IO, and it is way slower. We don't want to
+//     pay that price for each module in the process. This can fail if the file
+//     can not be found when attemping to read it.
+//
+// (2) Increase the reference count of the module.
+//     Calling ::LoadLibraryEx() or ::GetModuleHandleEx() lets us ensure that
+//     the module won't go away while we hold the extra handle. It's still
+//     possible that the module was unloaded before we have a chance to increase
+//     the reference count, which would mean either reloading the DLL, or
+//     failing to get a new handle.
+//
+//     This isn't ideal but the worst that can happen is that we hold the last
+//     reference to the module. The DLL would be unloaded on our thread when
+//     ::FreeLibrary() is called. This could go horribly wrong if the DLL's
+//     creator didn't consider this possibility.
+//
+// (3) Do it in a Structured Exception Handler (SEH)
+//     Make the read inside a __try/__except handler and handle the possible
+//     ACCESS_VIOLATION_EXCEPTION if it happens.
+//
+// The current solution is (3) with a fallback that uses (1). In the rare case
+// that both fail to get the TimeDateStamp, the module load event is dropped
+// altogether, as our best effort was unsuccessful.
+
+// Gets the TimeDateStamp from the file on disk and, if successful, sends the
+// load event to the ModuleDatabase.
+void HandleModuleLoadEventWithoutTimeDateStamp(
+    const base::FilePath& module_path,
+    size_t module_size) {
+  uint32_t size_of_image = 0;
+  uint32_t time_date_stamp = 0;
+  bool got_time_date_stamp = GetModuleImageSizeAndTimeDateStamp(
+      module_path, &size_of_image, &time_date_stamp);
+
+  // Simple sanity check.
+  got_time_date_stamp = got_time_date_stamp && size_of_image == module_size;
+  UMA_HISTOGRAM_BOOLEAN("ThirdPartyModules.TimeDateStampObtained",
+                        got_time_date_stamp);
+
+  // Drop the load event if it's not possible to get the time date stamp.
+  if (!got_time_date_stamp)
+    return;
+
+  ModuleDatabase::GetInstance()->OnModuleLoad(
+      content::PROCESS_TYPE_BROWSER, module_path, module_size, time_date_stamp);
+}
+
+// Helper function for getting the module size associated with a module in this
+// process based on its load address.
+uint32_t GetModuleSizeOfImage(const void* module_load_address) {
+  base::win::PEImage pe_image(module_load_address);
+  return pe_image.GetNTHeaders()->OptionalHeader.SizeOfImage;
+}
+
+// Helper function for getting the time date stamp associated with a module in
+// this process based on its load address.
+uint32_t GetModuleTimeDateStamp(const void* module_load_address) {
+  base::win::PEImage pe_image(module_load_address);
+  return pe_image.GetNTHeaders()->FileHeader.TimeDateStamp;
+}
+
+// An exception filter for handling Access Violation exceptions within the
+// memory range [module_load_address, module_load_address + size_of_image).
+DWORD FilterAccessViolation(DWORD exception_code,
+                            const EXCEPTION_POINTERS* exception_information,
+                            void* module_load_address,
+                            uint32_t size_of_image) {
+  if (exception_code != EXCEPTION_ACCESS_VIOLATION)
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  // To make sure an unrelated exception is not swallowed by the exception
+  // handler, the address where the exception happened is verified.
+  const EXCEPTION_RECORD* exception_record =
+      exception_information->ExceptionRecord;
+  const DWORD access_violation_address =
+      exception_record->ExceptionInformation[1];
+
+  uintptr_t range_start = reinterpret_cast<uintptr_t>(module_load_address);
+  uintptr_t range_end = range_start + size_of_image;
+  if (range_start > access_violation_address ||
+      range_end <= access_violation_address) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// Wrapper around GetModuleTimeDateStamp that handles a potential
+// EXCEPTION_ACCESS_VIOLATION that can happen if the |module_load_address| is
+// accessed after the module is unloaded. Also ensures that the expected module
+// is loaded at this address.
+bool TryGetModuleTimeDateStamp(void* module_load_address,
+                               const base::FilePath& module_path,
+                               uint32_t size_of_image,
+                               uint32_t* time_date_stamp) {
+  __try {
+    // Make sure it's the correct module, to protect against a potential race
+    // where a new module was loaded at the same address. This is safe because
+    // the only possibles races are either there was a module loaded at
+    // |module_load_address| and it was unloaded, or there was no module loaded
+    // at |module_load_address| and a new one took its place.
+    wchar_t module_file_name[MAX_PATH];
+    DWORD size =
+        ::GetModuleFileName(reinterpret_cast<HMODULE>(module_load_address),
+                            module_file_name, ARRAYSIZE(module_file_name));
+    if (!size || !base::FilePath::CompareEqualIgnoreCase(module_path.value(),
+                                                         module_file_name)) {
+      return false;
+    }
+    if (size_of_image != GetModuleSizeOfImage(module_load_address))
+      return false;
+
+    *time_date_stamp = GetModuleTimeDateStamp(module_load_address);
+  } __except(FilterAccessViolation(GetExceptionCode(),
+                                    GetExceptionInformation(),
+                                    module_load_address, size_of_image)) {
+    return false;
+  }
+  return true;
+}
+
+// Used as the callback for ModuleWatcher events in this process. Dispatches
+// them to the ModuleDatabase.
+void OnModuleEvent(const ModuleWatcher::ModuleEvent& event) {
+  TRACE_EVENT1("browser", "OnModuleEvent", "module_path",
+               event.module_path.BaseName().AsUTF8Unsafe());
+
+  auto* module_database = ModuleDatabase::GetInstance();
+
+  switch (event.event_type) {
+    case mojom::ModuleEventType::MODULE_ALREADY_LOADED: {
+      // MODULE_ALREADY_LOADED comes from the enumeration of loaded modules
+      // using CreateToolhelp32Snapshot().
+      uint32_t time_date_stamp = 0;
+      if (TryGetModuleTimeDateStamp(event.module_load_address,
+                                    event.module_path, event.module_size,
+                                    &time_date_stamp)) {
+        module_database->OnModuleLoad(content::PROCESS_TYPE_BROWSER,
+                                      event.module_path, event.module_size,
+                                      time_date_stamp);
+      } else {
+        // Failed to get the TimeDateStamp directly from memory. The next step
+        // to try is to read the file on disk. This must be done in a blocking
+        // task.
+        base::PostTaskWithTraits(
+            FROM_HERE,
+            {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+             base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+            base::BindOnce(&HandleModuleLoadEventWithoutTimeDateStamp,
+                           event.module_path, event.module_size));
+      }
+      return;
+    }
+    case mojom::ModuleEventType::MODULE_LOADED: {
+      module_database->OnModuleLoad(
+          content::PROCESS_TYPE_BROWSER, event.module_path, event.module_size,
+          GetModuleTimeDateStamp(event.module_load_address));
+      return;
+    }
+  }
+}
+
+// Helper function for initializing the module database subsystem. Populates
+// the provided |module_watcher|, and starts the enumeration of registered
+// modules in the Windows Registry.
+void SetupModuleDatabase(std::unique_ptr<ModuleWatcher>* module_watcher) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  ModuleDatabase::SetInstance(
+      std::make_unique<ModuleDatabase>(base::SequencedTaskRunnerHandle::Get()));
+  auto* module_database = ModuleDatabase::GetInstance();
+  module_database->StartDrainingModuleLoadAttemptsLog();
+
+  *module_watcher = ModuleWatcher::Create(base::BindRepeating(&OnModuleEvent));
+
+  // Enumerate shell extensions and input method editors. It is safe to use
+  // base::Unretained() here because the ModuleDatabase is never freed.
+  EnumerateShellExtensions(
+      base::BindRepeating(&ModuleDatabase::OnShellExtensionEnumerated,
+                          base::Unretained(module_database)),
+      base::BindOnce(&ModuleDatabase::OnShellExtensionEnumerationFinished,
+                     base::Unretained(module_database)));
+  EnumerateInputMethodEditors(
+      base::BindRepeating(&ModuleDatabase::OnImeEnumerated,
+                          base::Unretained(module_database)),
+      base::BindOnce(&ModuleDatabase::OnImeEnumerationFinished,
+                     base::Unretained(module_database)));
+}
 
 void ShowCloseBrowserFirstMessageBox() {
-  int message_id = IDS_UNINSTALL_CLOSE_APP;
-  if (base::win::GetVersion() >= base::win::VERSION_WIN8 &&
-      (shell_integration::GetDefaultBrowser() ==
-       shell_integration::IS_DEFAULT)) {
-    message_id = IDS_UNINSTALL_CLOSE_APP_IMMERSIVE;
-  }
-  chrome::ShowWarningMessageBox(NULL,
-                                l10n_util::GetStringUTF16(IDS_PRODUCT_NAME),
-                                l10n_util::GetStringUTF16(message_id));
+  chrome::ShowWarningMessageBox(
+      nullptr, l10n_util::GetStringUTF16(IDS_PRODUCT_NAME),
+      l10n_util::GetStringUTF16(IDS_UNINSTALL_CLOSE_APP));
 }
+
+void MaybePostSettingsResetPrompt() {
+  if (base::FeatureList::IsEnabled(safe_browsing::kSettingsResetPrompt)) {
+    content::BrowserThread::PostAfterStartupTask(
+        FROM_HERE,
+        base::CreateSingleThreadTaskRunnerWithTraits(
+            {content::BrowserThread::UI}),
+        base::Bind(safe_browsing::MaybeShowSettingsResetPromptWithDelay));
+  }
+}
+
+// This error message is not localized because we failed to load the
+// localization data files.
+const char kMissingLocaleDataTitle[] = "Missing File Error";
+
+// TODO(http://crbug.com/338969): This should be used on Linux Aura as well.
+const char kMissingLocaleDataMessage[] =
+    "Unable to find locale data files. Please reinstall.";
+
+}  // namespace
 
 int DoUninstallTasks(bool chrome_still_running) {
   // We want to show a warning to user (and exit) if Chrome is already running
@@ -237,7 +444,7 @@ int DoUninstallTasks(bool chrome_still_running) {
     // work done by setup.exe on uninstall.
     VLOG(1) << "Executing uninstall actions";
     base::FilePath chrome_exe;
-    if (PathService::Get(base::FILE_EXE, &chrome_exe)) {
+    if (base::PathService::Get(base::FILE_EXE, &chrome_exe)) {
       ShellUtil::ShortcutLocation user_shortcut_locations[] = {
           ShellUtil::SHORTCUT_LOCATION_DESKTOP,
           ShellUtil::SHORTCUT_LOCATION_QUICK_LAUNCH,
@@ -245,10 +452,9 @@ int DoUninstallTasks(bool chrome_still_running) {
           ShellUtil::SHORTCUT_LOCATION_START_MENU_CHROME_DIR_DEPRECATED,
           ShellUtil::SHORTCUT_LOCATION_START_MENU_CHROME_APPS_DIR,
       };
-      BrowserDistribution* dist = BrowserDistribution::GetDistribution();
-      for (size_t i = 0; i < arraysize(user_shortcut_locations); ++i) {
-        if (!ShellUtil::RemoveShortcuts(user_shortcut_locations[i], dist,
-                ShellUtil::CURRENT_USER, chrome_exe)) {
+      for (size_t i = 0; i < base::size(user_shortcut_locations); ++i) {
+        if (!ShellUtil::RemoveShortcuts(user_shortcut_locations[i],
+                                        ShellUtil::CURRENT_USER, chrome_exe)) {
           VLOG(1) << "Failed to delete shortcut at location "
                   << user_shortcut_locations[i];
         }
@@ -263,17 +469,18 @@ int DoUninstallTasks(bool chrome_still_running) {
 // ChromeBrowserMainPartsWin ---------------------------------------------------
 
 ChromeBrowserMainPartsWin::ChromeBrowserMainPartsWin(
-    const content::MainFunctionParams& parameters)
-    : ChromeBrowserMainParts(parameters) {
-}
+    const content::MainFunctionParams& parameters,
+    ChromeFeatureListCreator* chrome_feature_list_creator)
+    : ChromeBrowserMainParts(parameters,
+                             chrome_feature_list_creator) {}
 
 ChromeBrowserMainPartsWin::~ChromeBrowserMainPartsWin() {
 }
 
 void ChromeBrowserMainPartsWin::ToolkitInitialized() {
   ChromeBrowserMainParts::ToolkitInitialized();
-  gfx::PlatformFontWin::adjust_font_callback = &AdjustUIFont;
-  gfx::PlatformFontWin::get_minimum_font_size_callback = &GetMinimumFontSize;
+  gfx::PlatformFontWin::SetAdjustFontCallback(&AdjustUIFont);
+  gfx::PlatformFontWin::SetGetMinimumFontSizeCallback(&GetMinimumFontSize);
   ui::CursorLoaderWin::SetCursorResourceModule(chrome::kBrowserResourcesDll);
 }
 
@@ -290,70 +497,104 @@ void ChromeBrowserMainPartsWin::PreMainMessageLoopStart() {
 }
 
 int ChromeBrowserMainPartsWin::PreCreateThreads() {
-  int rv = ChromeBrowserMainParts::PreCreateThreads();
+  // Record whether the machine is enterprise managed in a crash key. This will
+  // be used to better identify whether crashes are from enterprise users.
+  static crash_reporter::CrashKeyString<4> is_enterprise_managed(
+      "is-enterprise-managed");
+  is_enterprise_managed.Set(base::IsMachineExternallyManaged() ? "yes" : "no");
 
-  // TODO(viettrungluu): why don't we run this earlier?
-  if (!parsed_command_line().HasSwitch(switches::kNoErrorDialogs) &&
-      base::win::GetVersion() < base::win::VERSION_XP) {
-    chrome::ShowWarningMessageBox(
-        NULL, l10n_util::GetStringUTF16(IDS_PRODUCT_NAME),
-        l10n_util::GetStringUTF16(IDS_UNSUPPORTED_OS_PRE_WIN_XP));
+  // Set crash keys containing the registry values used to determine Chrome's
+  // update channel at process startup; see https://crbug.com/579504.
+  const auto& details = install_static::InstallDetails::Get();
+
+  static crash_reporter::CrashKeyString<50> ap_value("ap");
+  ap_value.Set(base::UTF16ToUTF8(details.update_ap()));
+
+  static crash_reporter::CrashKeyString<32> update_cohort_name("cohort-name");
+  update_cohort_name.Set(base::UTF16ToUTF8(details.update_cohort_name()));
+
+  if (chrome::GetChannel() == version_info::Channel::CANARY) {
+    content::RenderProcessHost::SetHungRendererAnalysisFunction(
+        &DumpHungRendererProcessImpl);
   }
 
-  return rv;
+  return ChromeBrowserMainParts::PreCreateThreads();
 }
 
 void ChromeBrowserMainPartsWin::ShowMissingLocaleMessageBox() {
-  ui::MessageBox(NULL,
-                 base::ASCIIToUTF16(chrome_browser::kMissingLocaleDataMessage),
-                 base::ASCIIToUTF16(chrome_browser::kMissingLocaleDataTitle),
+  ui::MessageBox(NULL, base::ASCIIToUTF16(kMissingLocaleDataMessage),
+                 base::ASCIIToUTF16(kMissingLocaleDataTitle),
                  MB_OK | MB_ICONERROR | MB_TOPMOST);
 }
 
 void ChromeBrowserMainPartsWin::PostProfileInit() {
   ChromeBrowserMainParts::PostProfileInit();
 
-  // TODO(kulshin): remove this cleanup code in 2017. http://crbug.com/603718
-  // Attempt to delete the font cache and ignore any errors.
-  base::FilePath path(
-      profile()->GetPath().AppendASCII("ChromeDWriteFontCache"));
-  content::BrowserThread::PostAfterStartupTask(
-      FROM_HERE, content::BrowserThread::GetMessageLoopProxyForThread(
-                     content::BrowserThread::FILE),
-      base::Bind(base::IgnoreResult(&base::DeleteFile), path, false));
+#if defined(GOOGLE_CHROME_BUILD)
+  // Explicitly disable the third-party modules blocking.
+  //
+  // Because the blocking code lives in chrome_elf, it is not possible to check
+  // the feature (via the FeatureList API) or the policy to control whether it
+  // is enabled or not.
+  //
+  // What truly controls if the blocking is enabled is the presence of the
+  // module blacklist cache file. This means that to disable the feature, the
+  // cache must be deleted and the browser relaunched.
+  if (base::IsMachineExternallyManaged() ||
+      !ModuleDatabase::IsThirdPartyBlockingPolicyEnabled() ||
+      !base::FeatureList::IsEnabled(features::kThirdPartyModulesBlocking))
+    ThirdPartyConflictsManager::DisableThirdPartyModuleBlocking(
+        base::CreateTaskRunnerWithTraits(
+            {base::TaskPriority::BEST_EFFORT,
+             base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN,
+             base::MayBlock()})
+            .get());
+#endif
+
+  // Create the module database and hook up the in-process module watcher. This
+  // needs to be done before any child processes are initialized as the
+  // ModuleDatabase is an endpoint for IPC from child processes.
+  SetupModuleDatabase(&module_watcher_);
 }
 
 void ChromeBrowserMainPartsWin::PostBrowserStart() {
   ChromeBrowserMainParts::PostBrowserStart();
 
-  UMA_HISTOGRAM_BOOLEAN("Windows.Tablet", base::win::IsTabletDevice(nullptr));
-
-  // Set up a task to verify installed modules in the current process.
-  content::BrowserThread::PostAfterStartupTask(
-      FROM_HERE, content::BrowserThread::GetBlockingPool(),
-      base::Bind(&VerifyInstallation));
+  UMA_HISTOGRAM_BOOLEAN("Windows.Tablet",
+      base::win::IsTabletDevice(nullptr, ui::GetHiddenWindow()));
 
   InitializeChromeElf();
 
-#if BUILDFLAG(ENABLE_KASKO)
-  content::BrowserThread::PostDelayedTask(
-      content::BrowserThread::FILE, FROM_HERE,
-      base::Bind(&StartFailedKaskoCrashReportWatcher,
-                 base::Unretained(&failed_kasko_crash_report_watcher_)),
-      base::TimeDelta::FromMinutes(5));
-#endif  // BUILDFLAG(ENABLE_KASKO)
-
-#if defined(GOOGLE_CHROME_BUILD)
-  did_run_updater_.reset(new DidRunUpdater);
-#endif
+  // Reset settings for the current profile if it's tagged to be reset after a
+  // complete run of the Chrome Cleanup tool. If post-cleanup settings reset is
+  // enabled, we delay checks for settings reset prompt until the scheduled
+  // reset is finished.
+  if (safe_browsing::PostCleanupSettingsResetter::IsEnabled()) {
+    // Using last opened profiles, because we want to find reset the profile
+    // that was open in the last Chrome run, which may not be open yet in
+    // the current run.
+    safe_browsing::PostCleanupSettingsResetter().ResetTaggedProfiles(
+        g_browser_process->profile_manager()->GetLastOpenedProfiles(),
+        base::BindOnce(&MaybePostSettingsResetPrompt),
+        std::make_unique<
+            safe_browsing::PostCleanupSettingsResetter::Delegate>());
+  } else {
+    MaybePostSettingsResetPrompt();
+  }
 
   // Record UMA data about whether the fault-tolerant heap is enabled.
   // Use a delayed task to minimize the impact on startup time.
-  content::BrowserThread::PostDelayedTask(
-      content::BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&DetectFaultTolerantHeap),
-      base::TimeDelta::FromMinutes(1));
+  base::PostDelayedTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                                  base::BindOnce(&DetectFaultTolerantHeap),
+                                  base::TimeDelta::FromMinutes(1));
+
+  // Start the swap thrashing monitor if it's enabled.
+  //
+  // TODO(sebmarchand): Delay the initialization of this monitor once we start
+  // using this feature by default, this is currently enabled at startup to make
+  // it easier to experiment with this monitor.
+  if (base::FeatureList::IsEnabled(features::kSwapThrashingMonitor))
+    memory::SwapThrashingMonitor::Initialize();
 }
 
 // static
@@ -393,7 +634,6 @@ void ChromeBrowserMainPartsWin::PrepareRestartOnCrashEnviroment(
 // static
 void ChromeBrowserMainPartsWin::RegisterApplicationRestart(
     const base::CommandLine& parsed_command_line) {
-  DCHECK(base::win::GetVersion() >= base::win::VERSION_VISTA);
   base::ScopedNativeLibrary library(base::FilePath(L"kernel32.dll"));
   // Get the function pointer for RegisterApplicationRestart.
   RegisterApplicationRestartProc register_application_restart =
@@ -412,15 +652,17 @@ void ChromeBrowserMainPartsWin::RegisterApplicationRestart(
 
   // Restart Chrome if the computer is restarted as the result of an update.
   // This could be extended to handle crashes, hangs, and patches.
+  const auto& command_line_string = command_line.GetCommandLineString();
   HRESULT hr = register_application_restart(
-      command_line.GetCommandLineString().c_str(),
+      command_line_string.c_str(),
       RESTART_NO_CRASH | RESTART_NO_HANG | RESTART_NO_PATCH);
   if (FAILED(hr)) {
     if (hr == E_INVALIDARG) {
-      LOG(WARNING) << "Command line too long for RegisterApplicationRestart";
+      LOG(WARNING) << "Command line too long for RegisterApplicationRestart: "
+                   << command_line_string;
     } else {
-      NOTREACHED() << "RegisterApplicationRestart failed. hr: " << hr <<
-                      ", command_line: " << command_line.GetCommandLineString();
+      NOTREACHED() << "RegisterApplicationRestart failed. hr: " << hr
+                   << ", command_line: " << command_line_string;
     }
   }
 }
@@ -429,16 +671,9 @@ void ChromeBrowserMainPartsWin::RegisterApplicationRestart(
 int ChromeBrowserMainPartsWin::HandleIconsCommands(
     const base::CommandLine& parsed_command_line) {
   if (parsed_command_line.HasSwitch(switches::kHideIcons)) {
-    base::string16 cp_applet;
-    base::win::Version version = base::win::GetVersion();
-    if (version >= base::win::VERSION_VISTA) {
-      cp_applet.assign(L"Programs and Features");  // Windows Vista and later.
-    } else if (version >= base::win::VERSION_XP) {
-      cp_applet.assign(L"Add/Remove Programs");  // Windows XP.
-    } else {
-      return chrome::RESULT_CODE_UNSUPPORTED_PARAM;  // Not supported
-    }
-
+    // TODO(740976): This is not up-to-date and not localized. Figure out if
+    // the --hide-icons and --show-icons switches are still used.
+    base::string16 cp_applet(L"Programs and Features");
     const base::string16 msg =
         l10n_util::GetStringFUTF16(IDS_HIDE_ICONS_NOT_SUPPORTED, cp_applet);
     const base::string16 caption = l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
@@ -447,7 +682,7 @@ int ChromeBrowserMainPartsWin::HandleIconsCommands(
       ShellExecute(NULL, NULL, L"appwiz.cpl", NULL, NULL, SW_SHOWNORMAL);
 
     // Exit as we are not launching the browser.
-    return content::RESULT_CODE_NORMAL_EXIT;
+    return service_manager::RESULT_CODE_NORMAL_EXIT;
   }
   // We don't hide icons so we shouldn't do anything special to show them
   return chrome::RESULT_CODE_UNSUPPORTED_PARAM;
@@ -455,19 +690,16 @@ int ChromeBrowserMainPartsWin::HandleIconsCommands(
 
 // static
 bool ChromeBrowserMainPartsWin::CheckMachineLevelInstall() {
-  // TODO(tommi): Check if using the default distribution is always the right
-  // thing to do.
-  BrowserDistribution* dist = BrowserDistribution::GetDistribution();
-  Version version;
-  InstallUtil::GetChromeVersion(dist, true, &version);
+  base::Version version =
+      InstallUtil::GetChromeVersion(true /* system_install */);
   if (version.IsValid()) {
     base::FilePath exe_path;
-    PathService::Get(base::DIR_EXE, &exe_path);
+    base::PathService::Get(base::DIR_EXE, &exe_path);
     std::wstring exe = exe_path.value();
-    base::FilePath user_exe_path(installer::GetChromeInstallPath(false, dist));
+    base::FilePath user_exe_path(installer::GetChromeInstallPath(false));
     if (base::FilePath::CompareEqualIgnoreCase(exe, user_exe_path.value())) {
       base::CommandLine uninstall_cmd(
-          InstallUtil::GetChromeUninstallCmd(false, dist->GetType()));
+          InstallUtil::GetChromeUninstallCmd(false));
       if (!uninstall_cmd.GetProgram().empty()) {
         uninstall_cmd.AppendSwitch(installer::switches::kSelfDestruct);
         uninstall_cmd.AppendSwitch(installer::switches::kForceUninstall);
@@ -506,13 +738,13 @@ base::string16 TranslationDelegate::GetLocalizedString(
     int installer_string_id) {
   int resource_id = 0;
   switch (installer_string_id) {
-  // HANDLE_STRING is used by the DO_INSTALLER_STRING_MAPPING macro which is in
-  // the generated header installer_util_strings.h.
+    // HANDLE_STRING is used by the DO_STRING_MAPPING macro which is in the
+    // generated header installer_util_strings.h.
 #define HANDLE_STRING(base_id, chrome_id) \
   case base_id: \
     resource_id = chrome_id; \
     break;
-  DO_INSTALLER_STRING_MAPPING
+    DO_STRING_MAPPING
 #undef HANDLE_STRING
   default:
     NOTREACHED();
@@ -524,6 +756,6 @@ base::string16 TranslationDelegate::GetLocalizedString(
 
 // static
 void ChromeBrowserMainPartsWin::SetupInstallerUtilStrings() {
-  CR_DEFINE_STATIC_LOCAL(TranslationDelegate, delegate, ());
-  installer::SetTranslationDelegate(&delegate);
+  static base::NoDestructor<TranslationDelegate> delegate;
+  installer::SetTranslationDelegate(delegate.get());
 }

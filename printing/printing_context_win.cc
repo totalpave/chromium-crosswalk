@@ -5,14 +5,17 @@
 #include "printing/printing_context_win.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "base/bind.h"
 #include "base/memory/free_deleter.h"
 #include "base/memory/ptr_util.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "printing/backend/print_backend.h"
 #include "printing/backend/win_helper.h"
+#include "printing/buildflags/buildflags.h"
 #include "printing/print_settings_initializer_win.h"
 #include "printing/printed_document.h"
 #include "printing/printing_context_system_dialog_win.h"
@@ -26,7 +29,7 @@ namespace printing {
 
 namespace {
 
-void AssingResult(PrintingContext::Result* out, PrintingContext::Result in) {
+void AssignResult(PrintingContext::Result* out, PrintingContext::Result in) {
   *out = in;
 }
 
@@ -34,40 +37,41 @@ void AssingResult(PrintingContext::Result* out, PrintingContext::Result in) {
 
 // static
 std::unique_ptr<PrintingContext> PrintingContext::Create(Delegate* delegate) {
-#if defined(ENABLE_BASIC_PRINTING)
-  return base::WrapUnique(new PrintingContextSytemDialogWin(delegate));
-#else   // ENABLE_BASIC_PRINTING
+#if BUILDFLAG(ENABLE_PRINTING)
+  return base::WrapUnique(new PrintingContextSystemDialogWin(delegate));
+#else
+  // The code in printing/ is still built when the GN |enable_basic_printing|
+  // variable is set to false. Just return PrintingContextWin as a dummy
+  // context.
   return base::WrapUnique(new PrintingContextWin(delegate));
-#endif  // EENABLE_BASIC_PRINTING
+#endif
 }
 
 PrintingContextWin::PrintingContextWin(Delegate* delegate)
-    : PrintingContext(delegate), context_(NULL) {
-}
+    : PrintingContext(delegate), context_(nullptr) {}
 
 PrintingContextWin::~PrintingContextWin() {
   ReleaseContext();
 }
 
-void PrintingContextWin::AskUserForSettings(
-    int max_pages,
-    bool has_selection,
-    bool is_scripted,
-    const PrintSettingsCallback& callback) {
+void PrintingContextWin::AskUserForSettings(int max_pages,
+                                            bool has_selection,
+                                            bool is_scripted,
+                                            PrintSettingsCallback callback) {
   NOTIMPLEMENTED();
 }
 
 PrintingContext::Result PrintingContextWin::UseDefaultSettings() {
   DCHECK(!in_print_job_);
 
-  scoped_refptr<PrintBackend> backend = PrintBackend::CreateInstance(NULL);
+  scoped_refptr<PrintBackend> backend = PrintBackend::CreateInstance(nullptr);
   base::string16 default_printer =
       base::UTF8ToWide(backend->GetDefaultPrinterName());
   if (!default_printer.empty()) {
     ScopedPrinterHandle printer;
     if (printer.OpenPrinter(default_printer.c_str())) {
       std::unique_ptr<DEVMODE, base::FreeDeleter> dev_mode =
-          CreateDevMode(printer.Get(), NULL);
+          CreateDevMode(printer.Get(), nullptr);
       if (InitializeSettings(default_printer, dev_mode.get()) == OK)
         return OK;
     }
@@ -78,26 +82,25 @@ PrintingContext::Result PrintingContextWin::UseDefaultSettings() {
   // No default printer configured, do we have any printers at all?
   DWORD bytes_needed = 0;
   DWORD count_returned = 0;
-  (void)::EnumPrinters(PRINTER_ENUM_LOCAL|PRINTER_ENUM_CONNECTIONS,
-                       NULL, 2, NULL, 0, &bytes_needed, &count_returned);
+  (void)::EnumPrinters(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, nullptr,
+                       2, nullptr, 0, &bytes_needed, &count_returned);
   if (bytes_needed) {
     DCHECK_GE(bytes_needed, count_returned * sizeof(PRINTER_INFO_2));
-    std::unique_ptr<BYTE[]> printer_info_buffer(new BYTE[bytes_needed]);
-    BOOL ret = ::EnumPrinters(PRINTER_ENUM_LOCAL|PRINTER_ENUM_CONNECTIONS,
-                              NULL, 2, printer_info_buffer.get(),
-                              bytes_needed, &bytes_needed,
-                              &count_returned);
+    std::vector<BYTE> printer_info_buffer(bytes_needed);
+    BOOL ret = ::EnumPrinters(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
+                              nullptr, 2, printer_info_buffer.data(),
+                              bytes_needed, &bytes_needed, &count_returned);
     if (ret && count_returned) {  // have printers
       // Open the first successfully found printer.
       const PRINTER_INFO_2* info_2 =
-          reinterpret_cast<PRINTER_INFO_2*>(printer_info_buffer.get());
+          reinterpret_cast<PRINTER_INFO_2*>(printer_info_buffer.data());
       const PRINTER_INFO_2* info_2_end = info_2 + count_returned;
       for (; info_2 < info_2_end; ++info_2) {
         ScopedPrinterHandle printer;
         if (!printer.OpenPrinter(info_2->pPrinterName))
           continue;
         std::unique_ptr<DEVMODE, base::FreeDeleter> dev_mode =
-            CreateDevMode(printer.Get(), NULL);
+            CreateDevMode(printer.Get(), nullptr);
         if (InitializeSettings(info_2->pPrinterName, dev_mode.get()) == OK)
           return OK;
       }
@@ -188,20 +191,28 @@ PrintingContext::Result PrintingContextWin::UpdatePrinterSettings(
     dev_mode->dmOrientation = settings_.landscape() ? DMORIENT_LANDSCAPE :
                                                       DMORIENT_PORTRAIT;
 
+    if (settings_.dpi_horizontal() > 0) {
+      dev_mode->dmPrintQuality = settings_.dpi_horizontal();
+      dev_mode->dmFields |= DM_PRINTQUALITY;
+    }
+    if (settings_.dpi_vertical() > 0) {
+      dev_mode->dmYResolution = settings_.dpi_vertical();
+      dev_mode->dmFields |= DM_YRESOLUTION;
+    }
+
     const PrintSettings::RequestedMedia& requested_media =
         settings_.requested_media();
-    static const int kFromUm = 100;  // Windows uses 0.1mm.
-    int width = requested_media.size_microns.width() / kFromUm;
-    int height = requested_media.size_microns.height() / kFromUm;
     unsigned id = 0;
-    if (base::StringToUint(requested_media.vendor_id, &id) && id) {
+    // If the paper size is a custom user size, setting by ID may not work.
+    if (base::StringToUint(requested_media.vendor_id, &id) && id &&
+        id < DMPAPER_USER) {
       dev_mode->dmFields |= DM_PAPERSIZE;
       dev_mode->dmPaperSize = static_cast<short>(id);
-    } else if (width > 0 && height > 0) {
-      dev_mode->dmFields |= DM_PAPERWIDTH;
-      dev_mode->dmPaperWidth = width;
-      dev_mode->dmFields |= DM_PAPERLENGTH;
-      dev_mode->dmPaperLength = height;
+    } else if (!requested_media.size_microns.IsEmpty()) {
+      static constexpr int kFromUm = 100;  // Windows uses 0.1mm.
+      dev_mode->dmFields |= DM_PAPERWIDTH | DM_PAPERLENGTH;
+      dev_mode->dmPaperWidth = requested_media.size_microns.width() / kFromUm;
+      dev_mode->dmPaperLength = requested_media.size_microns.height() / kFromUm;
     }
   }
 
@@ -209,16 +220,15 @@ PrintingContext::Result PrintingContextWin::UpdatePrinterSettings(
   if (show_system_dialog) {
     PrintingContext::Result result = PrintingContext::FAILED;
     AskUserForSettings(page_count, false, false,
-                       base::Bind(&AssingResult, &result));
+                       base::BindOnce(&AssignResult, &result));
     return result;
-  } else {
-    scoped_dev_mode = CreateDevMode(printer.Get(), scoped_dev_mode.get());
   }
   // Set printer then refresh printer settings.
+  scoped_dev_mode = CreateDevMode(printer.Get(), scoped_dev_mode.get());
   return InitializeSettings(settings_.device_name(), scoped_dev_mode.get());
 }
 
-PrintingContext::Result PrintingContextWin::InitWithSettings(
+PrintingContext::Result PrintingContextWin::InitWithSettingsForTest(
     const PrintSettings& settings) {
   DCHECK(!in_print_job_);
 
@@ -230,7 +240,7 @@ PrintingContext::Result PrintingContextWin::InitWithSettings(
     return FAILED;
 
   std::unique_ptr<DEVMODE, base::FreeDeleter> dev_mode =
-      CreateDevMode(printer.Get(), NULL);
+      CreateDevMode(printer.Get(), nullptr);
 
   return InitializeSettings(settings_.device_name(), dev_mode.get());
 }
@@ -255,15 +265,16 @@ PrintingContext::Result PrintingContextWin::NewDocument(
   di.lpszDocName = document_name.c_str();
 
   // Is there a debug dump directory specified? If so, force to print to a file.
-  base::string16 debug_dump_path =
-      PrintedDocument::CreateDebugDumpPath(document_name,
-                                           FILE_PATH_LITERAL(".prn")).value();
-  if (!debug_dump_path.empty())
-    di.lpszOutput = debug_dump_path.c_str();
+  if (PrintedDocument::HasDebugDumpPath()) {
+    base::FilePath debug_dump_path = PrintedDocument::CreateDebugDumpPath(
+        document_name, FILE_PATH_LITERAL(".prn"));
+    if (!debug_dump_path.empty())
+      di.lpszOutput = debug_dump_path.value().c_str();
+  }
 
   // No message loop running in unit tests.
-  DCHECK(!base::MessageLoop::current() ||
-         !base::MessageLoop::current()->NestableTasksAllowed());
+  DCHECK(!base::MessageLoopCurrent::Get() ||
+         !base::MessageLoopCurrent::Get()->NestableTasksAllowed());
 
   // Begin a print job by calling the StartDoc function.
   // NOTE: StartDoc() starts a message loop. That causes a lot of problems with
@@ -280,7 +291,7 @@ PrintingContext::Result PrintingContextWin::NewPage() {
   DCHECK(context_);
   DCHECK(in_print_job_);
 
-  // Intentional No-op. PdfMetafileSkia::SafePlayback takes care of calling
+  // Intentional No-op. MetafileSkia::SafePlayback takes care of calling
   // ::StartPage().
 
   return OK;
@@ -291,7 +302,7 @@ PrintingContext::Result PrintingContextWin::PageDone() {
     return CANCEL;
   DCHECK(in_print_job_);
 
-  // Intentional No-op. PdfMetafileSkia::SafePlayback takes care of calling
+  // Intentional No-op. MetafileSkia::SafePlayback takes care of calling
   // ::EndPage().
 
   return OK;
@@ -321,11 +332,11 @@ void PrintingContextWin::Cancel() {
 void PrintingContextWin::ReleaseContext() {
   if (context_) {
     DeleteDC(context_);
-    context_ = NULL;
+    context_ = nullptr;
   }
 }
 
-gfx::NativeDrawingContext PrintingContextWin::context() const {
+printing::NativeDrawingContext PrintingContextWin::context() const {
   return context_;
 }
 
@@ -346,7 +357,7 @@ PrintingContext::Result PrintingContextWin::InitializeSettings(
     return OnError();
 
   ReleaseContext();
-  context_ = CreateDC(L"WINSPOOL", device_name.c_str(), NULL, dev_mode);
+  context_ = CreateDC(L"WINSPOOL", device_name.c_str(), nullptr, dev_mode);
   if (!context_)
     return OnError();
 
@@ -361,11 +372,11 @@ PrintingContext::Result PrintingContextWin::InitializeSettings(
 }
 
 HWND PrintingContextWin::GetRootWindow(gfx::NativeView view) {
-  HWND window = NULL;
+  HWND window = nullptr;
   if (view && view->GetHost())
     window = view->GetHost()->GetAcceleratedWidget();
   if (!window) {
-    // TODO(maruel):  crbug.com/1214347 Get the right browser window instead.
+    // TODO(maruel):  b/1214347 Get the right browser window instead.
     return GetDesktopWindow();
   }
   return window;

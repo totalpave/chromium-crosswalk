@@ -11,13 +11,13 @@
 #include <vector>
 
 #include "jingle/notifier/base/server_information.h"
-#include "webrtc/libjingle/xmpp/xmppclientsettings.h"
+#include "third_party/libjingle_xmpp/xmpp/xmppclientsettings.h"
 
 namespace notifier {
 
 struct NotifierOptions;
 
-buzz::XmppClientSettings MakeXmppClientSettings(
+jingle_xmpp::XmppClientSettings MakeXmppClientSettings(
     const NotifierOptions& notifier_options,
     const std::string& email, const std::string& token);
 

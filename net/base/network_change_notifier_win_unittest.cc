@@ -2,11 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "net/base/network_change_notifier_win.h"
+
+#include "base/bind.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_change_notifier_factory.h"
-#include "net/base/network_change_notifier_win.h"
+#include "net/test/test_with_scoped_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -38,6 +43,14 @@ class TestNetworkChangeNotifierWin : public NetworkChangeNotifierWin {
   }
 
   // From NetworkChangeNotifierWin.
+  void RecomputeCurrentConnectionTypeOnDnsThread(
+      base::Callback<void(ConnectionType)> reply_callback) const override {
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, base::BindOnce(reply_callback,
+                                  NetworkChangeNotifier::CONNECTION_UNKNOWN));
+  }
+
+  // From NetworkChangeNotifierWin.
   MOCK_METHOD0(WatchForAddressChangeInternal, bool());
 
  private:
@@ -61,13 +74,13 @@ class TestIPAddressObserver : public NetworkChangeNotifier::IPAddressObserver {
 };
 
 bool ExitMessageLoopAndReturnFalse() {
-  base::MessageLoop::current()->QuitWhenIdle();
+  base::RunLoop::QuitCurrentWhenIdleDeprecated();
   return false;
 }
 
 }  // namespace
 
-class NetworkChangeNotifierWinTest : public testing::Test {
+class NetworkChangeNotifierWinTest : public TestWithScopedTaskEnvironment {
  public:
   // Calls WatchForAddressChange, and simulates a WatchForAddressChangeInternal
   // success.  Expects that |network_change_notifier_| has just been created, so
@@ -89,7 +102,7 @@ class NetworkChangeNotifierWinTest : public testing::Test {
 
     // If a task to notify observers of the IP address change event was
     // incorrectly posted, make sure it gets run to trigger a failure.
-    base::MessageLoop::current()->RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
 
   // Calls WatchForAddressChange, and simulates a WatchForAddressChangeInternal
@@ -112,7 +125,7 @@ class NetworkChangeNotifierWinTest : public testing::Test {
 
     // If a task to notify observers of the IP address change event was
     // incorrectly posted, make sure it gets run.
-    base::MessageLoop::current()->RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
 
   // Simulates a network change event, resulting in a call to OnObjectSignaled.
@@ -132,7 +145,7 @@ class NetworkChangeNotifierWinTest : public testing::Test {
     EXPECT_EQ(0, network_change_notifier_.sequential_failures());
 
     // Run the task to notify observers of the IP address change event.
-    base::MessageLoop::current()->RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
 
   // Simulates a network change event, resulting in a call to OnObjectSignaled.
@@ -154,7 +167,7 @@ class NetworkChangeNotifierWinTest : public testing::Test {
     EXPECT_LT(0, network_change_notifier_.sequential_failures());
 
     // Run the task to notify observers of the IP address change event.
-    base::MessageLoop::current()->RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
 
   // Runs the message loop until WatchForAddressChange is called again, as a
@@ -165,14 +178,15 @@ class NetworkChangeNotifierWinTest : public testing::Test {
     EXPECT_FALSE(network_change_notifier_.is_watching());
     EXPECT_LT(0, network_change_notifier_.sequential_failures());
 
+    base::RunLoop run_loop;
+
     EXPECT_CALL(test_ip_address_observer_, OnIPAddressChanged())
         .Times(1)
-        .WillOnce(Invoke(base::MessageLoop::current(),
-                         &base::MessageLoop::QuitWhenIdle));
+        .WillOnce(Invoke(&run_loop, &base::RunLoop::QuitWhenIdle));
     EXPECT_CALL(network_change_notifier_, WatchForAddressChangeInternal())
         .Times(1).WillOnce(Return(true));
 
-    base::MessageLoop::current()->Run();
+    run_loop.Run();
 
     EXPECT_TRUE(network_change_notifier_.is_watching());
     EXPECT_EQ(0, network_change_notifier_.sequential_failures());
@@ -196,7 +210,7 @@ class NetworkChangeNotifierWinTest : public testing::Test {
         .Times(AtLeast(1))
         .WillRepeatedly(Invoke(ExitMessageLoopAndReturnFalse));
 
-    base::MessageLoop::current()->Run();
+    base::RunLoop().Run();
 
     EXPECT_FALSE(network_change_notifier_.is_watching());
     EXPECT_LT(initial_sequential_failures,
@@ -204,7 +218,7 @@ class NetworkChangeNotifierWinTest : public testing::Test {
 
     // If a task to notify observers of the IP address change event was
     // incorrectly posted, make sure it gets run.
-    base::MessageLoop::current()->RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
 
  private:

@@ -7,8 +7,9 @@
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/views/background.h"
-#include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view.h"
@@ -22,16 +23,16 @@ namespace examples {
 
 namespace {
 
-class DialogExample : public DialogDelegateView {
+class WidgetDialogExample : public DialogDelegateView {
  public:
-  DialogExample();
-  ~DialogExample() override;
+  WidgetDialogExample();
+  ~WidgetDialogExample() override;
   base::string16 GetWindowTitle() const override;
   View* CreateExtraView() override;
   View* CreateFootnoteView() override;
 };
 
-class ModalDialogExample : public DialogExample {
+class ModalDialogExample : public WidgetDialogExample {
  public:
   ModalDialogExample() {}
 
@@ -42,25 +43,25 @@ class ModalDialogExample : public DialogExample {
   DISALLOW_COPY_AND_ASSIGN(ModalDialogExample);
 };
 
-DialogExample::DialogExample() {
-  set_background(Background::CreateSolidBackground(SK_ColorGRAY));
-  SetLayoutManager(new BoxLayout(BoxLayout::kVertical, 10, 10, 10));
+WidgetDialogExample::WidgetDialogExample() {
+  SetBackground(CreateSolidBackground(SK_ColorGRAY));
+  SetLayoutManager(
+      std::make_unique<BoxLayout>(BoxLayout::kVertical, gfx::Insets(10), 10));
   AddChildView(new Label(ASCIIToUTF16("Dialog contents label!")));
 }
 
-DialogExample::~DialogExample() {}
+WidgetDialogExample::~WidgetDialogExample() {}
 
-base::string16 DialogExample::GetWindowTitle() const {
+base::string16 WidgetDialogExample::GetWindowTitle() const {
   return ASCIIToUTF16("Dialog Widget Example");
 }
 
-View* DialogExample::CreateExtraView() {
-  LabelButton* button = new LabelButton(NULL, ASCIIToUTF16("Extra button!"));
-  button->SetStyle(Button::STYLE_BUTTON);
-  return button;
+View* WidgetDialogExample::CreateExtraView() {
+  return MdTextButton::CreateSecondaryUiButton(nullptr,
+                                               ASCIIToUTF16("Extra button!"));
 }
 
-View* DialogExample::CreateFootnoteView() {
+View* WidgetDialogExample::CreateFootnoteView() {
   return new Label(ASCIIToUTF16("Footnote label!"));
 }
 
@@ -73,7 +74,8 @@ WidgetExample::~WidgetExample() {
 }
 
 void WidgetExample::CreateExampleView(View* container) {
-  container->SetLayoutManager(new BoxLayout(BoxLayout::kHorizontal, 0, 0, 10));
+  container->SetLayoutManager(
+      std::make_unique<BoxLayout>(BoxLayout::kHorizontal, gfx::Insets(), 10));
   BuildButton(container, "Popup widget", POPUP);
   BuildButton(container, "Dialog widget", DIALOG);
   BuildButton(container, "Modal Dialog", MODAL_DIALOG);
@@ -105,8 +107,9 @@ void WidgetExample::ShowWidget(View* sender, Widget::InitParams params) {
   // If the Widget has no contents by default, add a view with a 'Close' button.
   if (!widget->GetContentsView()) {
     View* contents = new View();
-    contents->SetLayoutManager(new BoxLayout(BoxLayout::kHorizontal, 0, 0, 0));
-    contents->set_background(Background::CreateSolidBackground(SK_ColorGRAY));
+    contents->SetLayoutManager(
+        std::make_unique<BoxLayout>(BoxLayout::kHorizontal));
+    contents->SetBackground(CreateSolidBackground(SK_ColorGRAY));
     BuildButton(contents, "Close", CLOSE_WIDGET);
     widget->SetContentsView(contents);
   }
@@ -120,8 +123,9 @@ void WidgetExample::ButtonPressed(Button* sender, const ui::Event& event) {
       ShowWidget(sender, Widget::InitParams(Widget::InitParams::TYPE_POPUP));
       break;
     case DIALOG: {
-      DialogDelegate::CreateDialogWidget(new DialogExample(), NULL,
-          sender->GetWidget()->GetNativeView())->Show();
+      DialogDelegate::CreateDialogWidget(new WidgetDialogExample(), NULL,
+                                         sender->GetWidget()->GetNativeView())
+          ->Show();
       break;
     }
     case MODAL_DIALOG: {

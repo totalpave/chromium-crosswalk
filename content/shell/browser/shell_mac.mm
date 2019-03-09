@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/logging.h"
+#import "base/mac/foundation_util.h"
 #import "base/mac/scoped_nsobject.h"
 #include "base/mac/sdk_forward_declarations.h"
 #include "base/strings/string_piece.h"
@@ -39,8 +40,12 @@
 // sequence by getting rid of the shell and removing it and the window from
 // the various global lists. By returning YES, we allow the window to be
 // removed from the screen.
-- (BOOL)windowShouldClose:(id)window {
+- (BOOL)windowShouldClose:(id)sender {
+  NSWindow* window = base::mac::ObjCCastStrict<NSWindow>(sender);
   [window autorelease];
+  // Don't leave a dangling pointer if the window lives beyond
+  // this method. See crbug.com/719830.
+  [window setDelegate:nil];
   delete shell_;
   [self release];
 
@@ -142,11 +147,12 @@ void Shell::PlatformEnableUIControl(UIControl control, bool is_enabled) {
       NOTREACHED() << "Unknown UI control";
       return;
   }
-  [[[window_ contentView] viewWithTag:id] setEnabled:is_enabled];
+  [[[window_.GetNativeNSWindow() contentView] viewWithTag:id]
+      setEnabled:is_enabled];
 }
 
 void Shell::PlatformSetAddressBarURL(const GURL& url) {
-  if (headless_)
+  if (headless_ || hide_toolbar_)
     return;
 
   NSString* url_string = base::SysUTF8ToNSString(url.spec());
@@ -162,8 +168,9 @@ void Shell::PlatformCreateWindow(int width, int height) {
     return;
   }
 
-  NSRect initial_window_bounds =
-      NSMakeRect(0, 0, width, height + kURLBarHeight);
+  if (!hide_toolbar_)
+    height += kURLBarHeight;
+  NSRect initial_window_bounds = NSMakeRect(0, 0, width, height);
   NSRect content_rect = initial_window_bounds;
   NSUInteger style_mask = NSTitledWindowMask |
                           NSClosableWindowMask |
@@ -176,64 +183,67 @@ void Shell::PlatformCreateWindow(int width, int height) {
                                            defer:NO];
   window_ = window;
   [window setShell:this];
-  [window_ setTitle:kWindowTitle];
-  NSView* content = [window_ contentView];
+  [window_.GetNativeNSWindow() setTitle:kWindowTitle];
+  NSView* content = [window_.GetNativeNSWindow() contentView];
 
   // If the window is allowed to get too small, it will wreck the view bindings.
   NSSize min_size = NSMakeSize(kMinimumWindowWidth, kMinimumWindowHeight);
   min_size = [content convertSize:min_size toView:nil];
   // Note that this takes window coordinates.
-  [window_ setContentMinSize:min_size];
+  [window_.GetNativeNSWindow() setContentMinSize:min_size];
 
   // Set the shell window to participate in Lion Fullscreen mode. Set
   // Setting this flag has no effect on Snow Leopard or earlier.
-  NSUInteger collectionBehavior = [window_ collectionBehavior];
+  NSUInteger collectionBehavior =
+      [window_.GetNativeNSWindow() collectionBehavior];
   collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
-  [window_ setCollectionBehavior:collectionBehavior];
+  [window_.GetNativeNSWindow() setCollectionBehavior:collectionBehavior];
 
   // Rely on the window delegate to clean us up rather than immediately
   // releasing when the window gets closed. We use the delegate to do
   // everything from the autorelease pool so the shell isn't on the stack
   // during cleanup (ie, a window close from javascript).
-  [window_ setReleasedWhenClosed:NO];
+  [window_.GetNativeNSWindow() setReleasedWhenClosed:NO];
 
   // Create a window delegate to watch for when it's asked to go away. It will
   // clean itself up so we don't need to hold a reference.
   ContentShellWindowDelegate* delegate =
       [[ContentShellWindowDelegate alloc] initWithShell:this];
-  [window_ setDelegate:delegate];
+  [window_.GetNativeNSWindow() setDelegate:delegate];
 
-  NSRect button_frame =
-      NSMakeRect(0, NSMaxY(initial_window_bounds) - kURLBarHeight,
-                 kButtonWidth, kURLBarHeight);
+  if (!hide_toolbar_) {
+    NSRect button_frame =
+        NSMakeRect(0, NSMaxY(initial_window_bounds) - kURLBarHeight,
+                   kButtonWidth, kURLBarHeight);
 
-  MakeShellButton(&button_frame, @"Back", content, IDC_NAV_BACK,
-                  (NSView*)delegate, @"[", NSCommandKeyMask);
-  MakeShellButton(&button_frame, @"Forward", content, IDC_NAV_FORWARD,
-                  (NSView*)delegate, @"]", NSCommandKeyMask);
-  MakeShellButton(&button_frame, @"Reload", content, IDC_NAV_RELOAD,
-                  (NSView*)delegate, @"r", NSCommandKeyMask);
-  MakeShellButton(&button_frame, @"Stop", content, IDC_NAV_STOP,
-                  (NSView*)delegate, @".", NSCommandKeyMask);
+    MakeShellButton(&button_frame, @"Back", content, IDC_NAV_BACK,
+                    (NSView*)delegate, @"[", NSCommandKeyMask);
+    MakeShellButton(&button_frame, @"Forward", content, IDC_NAV_FORWARD,
+                    (NSView*)delegate, @"]", NSCommandKeyMask);
+    MakeShellButton(&button_frame, @"Reload", content, IDC_NAV_RELOAD,
+                    (NSView*)delegate, @"r", NSCommandKeyMask);
+    MakeShellButton(&button_frame, @"Stop", content, IDC_NAV_STOP,
+                    (NSView*)delegate, @".", NSCommandKeyMask);
 
-  button_frame.size.width =
-      NSWidth(initial_window_bounds) - NSMinX(button_frame);
-  base::scoped_nsobject<NSTextField> url_edit_view(
-      [[NSTextField alloc] initWithFrame:button_frame]);
-  [content addSubview:url_edit_view];
-  [url_edit_view setAutoresizingMask:(NSViewWidthSizable | NSViewMinYMargin)];
-  [url_edit_view setTarget:delegate];
-  [url_edit_view setAction:@selector(takeURLStringValueFrom:)];
-  [[url_edit_view cell] setWraps:NO];
-  [[url_edit_view cell] setScrollable:YES];
-  url_edit_view_ = url_edit_view.get();
+    button_frame.size.width =
+        NSWidth(initial_window_bounds) - NSMinX(button_frame);
+    base::scoped_nsobject<NSTextField> url_edit_view(
+        [[NSTextField alloc] initWithFrame:button_frame]);
+    [content addSubview:url_edit_view];
+    [url_edit_view setAutoresizingMask:(NSViewWidthSizable | NSViewMinYMargin)];
+    [url_edit_view setTarget:delegate];
+    [url_edit_view setAction:@selector(takeURLStringValueFrom:)];
+    [[url_edit_view cell] setWraps:NO];
+    [[url_edit_view cell] setScrollable:YES];
+    url_edit_view_ = url_edit_view.get();
+  }
 
   // show the window
-  [window_ makeKeyAndOrderFront:nil];
+  [window_.GetNativeNSWindow() makeKeyAndOrderFront:nil];
 }
 
 void Shell::PlatformSetContents() {
-  NSView* web_view = web_contents_->GetNativeView();
+  NSView* web_view = web_contents_->GetNativeView().GetNativeNSView();
   [web_view setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 
   if (headless_) {
@@ -241,23 +251,25 @@ void Shell::PlatformSetContents() {
     return;
   }
 
-  NSView* content = [window_ contentView];
+  NSView* content = [window_.GetNativeNSWindow() contentView];
   [content addSubview:web_view];
 
   NSRect frame = [content bounds];
-  frame.size.height -= kURLBarHeight;
+  if (!hide_toolbar_)
+    frame.size.height -= kURLBarHeight;
   [web_view setFrame:frame];
   [web_view setNeedsDisplay:YES];
 }
 
 void Shell::SizeTo(const gfx::Size& content_size) {
   if (!headless_) {
-    NSRect frame = NSMakeRect(
-        0, 0, content_size.width(), content_size.height() + kURLBarHeight);
-    [window().contentView setFrame:frame];
+    int toolbar_height = hide_toolbar_ ? 0 : kURLBarHeight;
+    NSRect frame = NSMakeRect(0, 0, content_size.width(),
+                              content_size.height() + toolbar_height);
+    [window().GetNativeNSWindow().contentView setFrame:frame];
     return;
   }
-  NSView* web_view = web_contents_->GetNativeView();
+  NSView* web_view = web_contents_->GetNativeView().GetNativeNSView();
   NSRect frame = NSMakeRect(0, 0, content_size.width(), content_size.height());
   [web_view setFrame:frame];
 }
@@ -271,19 +283,14 @@ void Shell::PlatformSetTitle(const base::string16& title) {
     return;
 
   NSString* title_string = base::SysUTF16ToNSString(title);
-  [window_ setTitle:title_string];
-}
-
-bool Shell::PlatformHandleContextMenu(
-    const content::ContextMenuParams& params) {
-  return false;
+  [window_.GetNativeNSWindow() setTitle:title_string];
 }
 
 void Shell::Close() {
   if (headless_)
     delete this;
   else
-    [window_ performClose:nil];
+    [window_.GetNativeNSWindow() performClose:nil];
 }
 
 void Shell::ActionPerformed(int control) {
@@ -312,22 +319,24 @@ void Shell::URLEntered(const std::string& url_string) {
   }
 }
 
-void Shell::HandleKeyboardEvent(WebContents* source,
+bool Shell::HandleKeyboardEvent(WebContents* source,
                                 const NativeWebKeyboardEvent& event) {
-  if (event.skip_in_browser)
-    return;
+  if (event.skip_in_browser || headless_ || hide_toolbar_)
+    return false;
 
   // The event handling to get this strictly right is a tangle; cheat here a bit
   // by just letting the menus have a chance at it.
   if ([event.os_event type] == NSKeyDown) {
     if (([event.os_event modifierFlags] & NSCommandKeyMask) &&
         [[event.os_event characters] isEqual:@"l"]) {
-      [window_ makeFirstResponder:url_edit_view_];
-      return;
+      [window_.GetNativeNSWindow() makeFirstResponder:url_edit_view_];
+      return true;
     }
 
     [[NSApp mainMenu] performKeyEquivalent:event.os_event];
+    return true;
   }
+  return false;
 }
 
 }  // namespace content

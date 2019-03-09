@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 #include "content/browser/tracing/background_tracing_rule.h"
 
+#include <limits>
 #include <string>
 
 #include "base/bind.h"
@@ -10,10 +11,13 @@
 #include "base/metrics/statistics_recorder.h"
 #include "base/rand_util.h"
 #include "base/strings/safe_sprintf.h"
+#include "base/task/post_task.h"
+#include "base/timer/timer.h"
 #include "base/values.h"
 #include "components/tracing/common/tracing_messages.h"
 #include "content/browser/tracing/background_tracing_manager_impl.h"
 #include "content/browser/tracing/trace_message_filter.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
 namespace {
@@ -23,6 +27,9 @@ const char kConfigCategoryKey[] = "category";
 const char kConfigRuleTriggerNameKey[] = "trigger_name";
 const char kConfigRuleTriggerDelay[] = "trigger_delay";
 const char kConfigRuleTriggerChance[] = "trigger_chance";
+const char kConfigRuleStopTracingOnRepeatedReactive[] =
+    "stop_tracing_on_repeated_reactive";
+const char kConfigRuleArgsKey[] = "args";
 
 const char kConfigRuleHistogramNameKey[] = "histogram_name";
 const char kConfigRuleHistogramValueOldKey[] = "histogram_value";
@@ -59,11 +66,13 @@ namespace content {
 BackgroundTracingRule::BackgroundTracingRule()
     : trigger_chance_(1.0),
       trigger_delay_(-1),
+      stop_tracing_on_repeated_reactive_(false),
       category_preset_(BackgroundTracingConfigImpl::CATEGORY_PRESET_UNSET) {}
 
 BackgroundTracingRule::BackgroundTracingRule(int trigger_delay)
     : trigger_chance_(1.0),
       trigger_delay_(trigger_delay),
+      stop_tracing_on_repeated_reactive_(false),
       category_preset_(BackgroundTracingConfigImpl::CATEGORY_PRESET_UNSET) {}
 
 BackgroundTracingRule::~BackgroundTracingRule() {}
@@ -85,6 +94,11 @@ void BackgroundTracingRule::IntoDict(base::DictionaryValue* dict) const {
   if (trigger_delay_ != -1)
     dict->SetInteger(kConfigRuleTriggerDelay, trigger_delay_);
 
+  if (stop_tracing_on_repeated_reactive_) {
+    dict->SetBoolean(kConfigRuleStopTracingOnRepeatedReactive,
+                     stop_tracing_on_repeated_reactive_);
+  }
+
   if (category_preset_ != BackgroundTracingConfigImpl::CATEGORY_PRESET_UNSET) {
     dict->SetString(
         kConfigCategoryKey,
@@ -95,6 +109,8 @@ void BackgroundTracingRule::IntoDict(base::DictionaryValue* dict) const {
 void BackgroundTracingRule::Setup(const base::DictionaryValue* dict) {
   dict->GetDouble(kConfigRuleTriggerChance, &trigger_chance_);
   dict->GetInteger(kConfigRuleTriggerDelay, &trigger_delay_);
+  dict->GetBoolean(kConfigRuleStopTracingOnRepeatedReactive,
+                   &stop_tracing_on_repeated_reactive_);
 }
 
 namespace {
@@ -130,8 +146,9 @@ class NamedTriggerRule : public BackgroundTracingRule {
   std::string named_event_;
 };
 
-class HistogramRule : public BackgroundTracingRule,
-                      public TracingControllerImpl::TraceMessageFilterObserver {
+class HistogramRule
+    : public BackgroundTracingRule,
+      public BackgroundTracingManagerImpl::TraceMessageFilterObserver {
  private:
   HistogramRule(const std::string& histogram_name,
                 int histogram_lower_value,
@@ -140,7 +157,8 @@ class HistogramRule : public BackgroundTracingRule,
       : histogram_name_(histogram_name),
         histogram_lower_value_(histogram_lower_value),
         histogram_upper_value_(histogram_upper_value),
-        repeat_(repeat) {}
+        repeat_(repeat),
+        installed_(false) {}
 
  public:
   static std::unique_ptr<BackgroundTracingRule> Create(
@@ -169,14 +187,21 @@ class HistogramRule : public BackgroundTracingRule,
     if (histogram_lower_value >= histogram_upper_value)
       return nullptr;
 
-    return std::unique_ptr<BackgroundTracingRule>(new HistogramRule(
+    std::unique_ptr<BackgroundTracingRule> rule(new HistogramRule(
         histogram_name, histogram_lower_value, histogram_upper_value, repeat));
+
+    const base::DictionaryValue* args_dict = nullptr;
+    if (dict->GetDictionary(kConfigRuleArgsKey, &args_dict))
+      rule->SetArgs(*args_dict);
+    return rule;
   }
 
   ~HistogramRule() override {
     base::StatisticsRecorder::ClearCallback(histogram_name_);
-    TracingControllerImpl::GetInstance()->RemoveTraceMessageFilterObserver(
-        this);
+    if (installed_) {
+      BackgroundTracingManagerImpl::GetInstance()
+          ->RemoveTraceMessageFilterObserver(this);
+    }
   }
 
   // BackgroundTracingRule implementation
@@ -187,7 +212,9 @@ class HistogramRule : public BackgroundTracingRule,
                    base::Unretained(this), histogram_name_,
                    histogram_lower_value_, histogram_upper_value_, repeat_));
 
-    TracingControllerImpl::GetInstance()->AddTraceMessageFilterObserver(this);
+    BackgroundTracingManagerImpl::GetInstance()->AddTraceMessageFilterObserver(
+        this);
+    installed_ = true;
   }
 
   void IntoDict(base::DictionaryValue* dict) const override {
@@ -204,23 +231,23 @@ class HistogramRule : public BackgroundTracingRule,
     if (histogram_name != histogram_name_)
       return;
 
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI, FROM_HERE,
-        base::Bind(
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::UI},
+        base::BindOnce(
             &BackgroundTracingManagerImpl::OnRuleTriggered,
             base::Unretained(BackgroundTracingManagerImpl::GetInstance()), this,
             BackgroundTracingManager::StartedFinalizingCallback()));
   }
 
   void AbortTracing() {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI, FROM_HERE,
-        base::Bind(
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::UI},
+        base::BindOnce(
             &BackgroundTracingManagerImpl::AbortScenario,
             base::Unretained(BackgroundTracingManagerImpl::GetInstance())));
   }
 
-  // TracingControllerImpl::TraceMessageFilterObserver implementation
+  // BackgroundTracingManagerImpl::TraceMessageFilterObserver implementation
   void OnTraceMessageFilterAdded(TraceMessageFilter* filter) override {
     filter->Send(
         new TracingMsg_SetUMACallback(histogram_name_, histogram_lower_value_,
@@ -243,6 +270,12 @@ class HistogramRule : public BackgroundTracingRule,
       return;
     }
 
+    // Add the histogram name and its corresponding value to the trace.
+    TRACE_EVENT_INSTANT2("toplevel",
+                         "BackgroundTracingRule::OnHistogramTrigger",
+                         TRACE_EVENT_SCOPE_THREAD, "histogram_name",
+                         histogram_name, "value", actual_value);
+
     OnHistogramTrigger(histogram_name);
   }
 
@@ -255,6 +288,7 @@ class HistogramRule : public BackgroundTracingRule,
   int histogram_lower_value_;
   int histogram_upper_value_;
   bool repeat_;
+  bool installed_;
 };
 
 class TraceForNSOrTriggerOrFullRule : public BackgroundTracingRule {
@@ -348,9 +382,10 @@ class TraceAtRandomIntervalsRule : public BackgroundTracingRule {
   void StartTimer() {
     int time_to_wait = base::RandInt(kReactiveTraceRandomStartTimeMin,
                                      kReactiveTraceRandomStartTimeMax);
-    trigger_timer_.Start(FROM_HERE, base::TimeDelta::FromSeconds(time_to_wait),
-                         base::Bind(&TraceAtRandomIntervalsRule::OnTriggerTimer,
-                                    base::Unretained(this)));
+    trigger_timer_.Start(
+        FROM_HERE, base::TimeDelta::FromSeconds(time_to_wait),
+        base::BindOnce(&TraceAtRandomIntervalsRule::OnTriggerTimer,
+                       base::Unretained(this)));
   }
 
   int GetTraceDelay() const override {

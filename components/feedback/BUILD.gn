@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-source_set("feedback") {
+static_library("feedback") {
   sources = [
     "anonymizer_tool.cc",
     "anonymizer_tool.h",
@@ -16,20 +16,21 @@ source_set("feedback") {
     "feedback_switches.h",
     "feedback_uploader.cc",
     "feedback_uploader.h",
-    "feedback_uploader_chrome.cc",
-    "feedback_uploader_chrome.h",
-    "feedback_uploader_delegate.cc",
-    "feedback_uploader_delegate.h",
     "feedback_uploader_factory.cc",
     "feedback_uploader_factory.h",
     "feedback_util.cc",
     "feedback_util.h",
+    "system_logs/system_logs_fetcher.cc",
+    "system_logs/system_logs_fetcher.h",
+    "system_logs/system_logs_source.cc",
+    "system_logs/system_logs_source.h",
     "tracing_manager.cc",
     "tracing_manager.h",
   ]
 
   deps = [
     "//base",
+    "//components/data_use_measurement/core",
     "//components/feedback/proto",
     "//components/keyed_service/content",
     "//components/keyed_service/core",
@@ -37,8 +38,9 @@ source_set("feedback") {
     "//content/public/browser",
     "//content/public/common",
     "//net",
+    "//services/network/public/cpp",
     "//third_party/re2",
-    "//third_party/zlib:zip",
+    "//third_party/zlib/google:zip",
   ]
 }
 
@@ -48,7 +50,7 @@ source_set("unit_tests") {
     "anonymizer_tool_unittest.cc",
     "feedback_common_unittest.cc",
     "feedback_data_unittest.cc",
-    "feedback_uploader_chrome_unittest.cc",
+    "feedback_uploader_dispatch_unittest.cc",
     "feedback_uploader_unittest.cc",
   ]
   deps = [
@@ -56,12 +58,14 @@ source_set("unit_tests") {
     "//base",
     "//components/feedback/proto",
     "//components/keyed_service/core",
-    "//components/pref_registry:test_support",
     "//components/prefs:test_support",
+    "//components/sync_preferences:test_support",
     "//components/user_prefs",
     "//components/variations/net",
     "//content/test:test_support",
     "//net:test_support",
+    "//services/network:test_support",
+    "//services/network/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
   ]

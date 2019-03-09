@@ -2,42 +2,37 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/** @fileoverview Handles interprocess communcation for the system page. */
+/** @fileoverview Handles interprocess communication for the system page. */
 
 cr.define('settings', function() {
   /** @interface */
-  function SystemPageBrowserProxy() {}
-
-  SystemPageBrowserProxy.prototype = {
-    /** Allows the user to change native system proxy settings. */
-    changeProxySettings: function() {},
+  class SystemPageBrowserProxy {
+    /** Shows the native system proxy settings. */
+    showProxySettings() {}
 
     /**
      * @return {boolean} Whether hardware acceleration was enabled when the user
      *     started Chrome.
      */
-    wasHardwareAccelerationEnabledAtStartup: function() {},
-  };
+    wasHardwareAccelerationEnabledAtStartup() {}
+  }
 
   /**
-   * @constructor
    * @implements {settings.SystemPageBrowserProxy}
    */
-  function SystemPageBrowserProxyImpl() {}
+  class SystemPageBrowserProxyImpl {
+    /** @override */
+    showProxySettings() {
+      chrome.send('showProxySettings');
+    }
+
+    /** @override */
+    wasHardwareAccelerationEnabledAtStartup() {
+      return loadTimeData.getBoolean('hardwareAccelerationEnabledAtStartup');
+    }
+  }
 
   cr.addSingletonGetter(SystemPageBrowserProxyImpl);
-
-  SystemPageBrowserProxyImpl.prototype = {
-    /** @override */
-    changeProxySettings: function() {
-      chrome.send('changeProxySettings');
-    },
-
-    /** @override */
-    wasHardwareAccelerationEnabledAtStartup: function() {
-      return loadTimeData.getBoolean('hardwareAccelerationEnabledAtStartup');
-    },
-  };
 
   return {
     SystemPageBrowserProxy: SystemPageBrowserProxy,

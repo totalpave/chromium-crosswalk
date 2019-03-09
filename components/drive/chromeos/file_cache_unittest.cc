@@ -10,6 +10,7 @@
 #include <sys/ioctl.h>
 #include <sys/xattr.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/md5.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
@@ -63,6 +65,15 @@ bool HasRemovableFlag(const base::FilePath& file_path) {
   return (GetFileAttributes(file_path) & FS_NODUMP_FL) == FS_NODUMP_FL;
 }
 
+bool HasRemovableAttribute(const base::FilePath& file_path) {
+  return getxattr(file_path.value().c_str(),
+                  FileCache::kGCacheRemovableAttribute, nullptr, 0) >= 0;
+}
+
+bool IsMarkedAsRemovable(const base::FilePath& path) {
+  return HasRemovableFlag(path) && HasRemovableAttribute(path);
+}
+
 }  // namespace
 
 // Tests FileCache methods working with the blocking task runner.
@@ -70,13 +81,13 @@ class FileCacheTest : public testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    const base::FilePath metadata_dir = temp_dir_.path().AppendASCII("meta");
-    cache_files_dir_ = temp_dir_.path().Append(kCacheFileDirectory);
+    const base::FilePath metadata_dir = temp_dir_.GetPath().AppendASCII("meta");
+    cache_files_dir_ = temp_dir_.GetPath().Append(kCacheFileDirectory);
 
     ASSERT_TRUE(base::CreateDirectory(metadata_dir));
     ASSERT_TRUE(base::CreateDirectory(cache_files_dir_));
 
-    fake_free_disk_space_getter_.reset(new FakeFreeDiskSpaceGetter);
+    fake_free_disk_space_getter_ = std::make_unique<FakeFreeDiskSpaceGetter>();
 
     metadata_storage_.reset(new ResourceMetadataStorage(
         metadata_dir,
@@ -130,7 +141,7 @@ class FileCacheTest : public testing::Test {
 
 TEST_F(FileCacheTest, RecoverFilesFromCacheDirectory) {
   base::FilePath dir_source_root;
-  EXPECT_TRUE(PathService::Get(base::DIR_SOURCE_ROOT, &dir_source_root));
+  EXPECT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &dir_source_root));
   const base::FilePath src_path =
       dir_source_root.AppendASCII("chrome/test/data/chromeos/drive/image.png");
 
@@ -143,7 +154,7 @@ TEST_F(FileCacheTest, RecoverFilesFromCacheDirectory) {
 
   // Set up files in the cache directory. These files should be moved.
   const base::FilePath file_directory =
-      temp_dir_.path().Append(kCacheFileDirectory);
+      temp_dir_.GetPath().Append(kCacheFileDirectory);
   ASSERT_TRUE(base::CopyFile(src_path, file_directory.AppendASCII("id_bar")));
   ASSERT_TRUE(base::CopyFile(src_path, file_directory.AppendASCII("id_baz")));
 
@@ -154,7 +165,7 @@ TEST_F(FileCacheTest, RecoverFilesFromCacheDirectory) {
   recovered_cache_info["id_baz"].title = "baz.png";
 
   // Recover files.
-  const base::FilePath dest_directory = temp_dir_.path().AppendASCII("dest");
+  const base::FilePath dest_directory = temp_dir_.GetPath().AppendASCII("dest");
   EXPECT_TRUE(cache_->RecoverFilesFromCacheDirectory(dest_directory,
                                                      recovered_cache_info));
 
@@ -182,7 +193,7 @@ TEST_F(FileCacheTest, RecoverFilesFromCacheDirectory) {
 
 TEST_F(FileCacheTest, FreeDiskSpaceIfNeededFor) {
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
 
   // Store a file as a 'temporary' file and remember the path.
   const std::string id_tmp = "id_tmp", md5_tmp = "md5_tmp";
@@ -222,7 +233,7 @@ TEST_F(FileCacheTest, FreeDiskSpaceIfNeededFor) {
 TEST_F(FileCacheTest, EvictDriveCacheInLRU) {
   // Create temporary file.
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
   ASSERT_EQ(kTemporaryFileSizeInBytes,
             base::WriteFile(src_file, "abcdefghij", kTemporaryFileSizeInBytes));
 
@@ -281,7 +292,7 @@ TEST_F(FileCacheTest, EvictDriveCacheInLRU) {
 // metadata.
 TEST_F(FileCacheTest, EvictInvalidCacheFile) {
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
 
   // Add entries.
   const std::string id_a = "id_a", md5_a = "md5_a";
@@ -323,7 +334,7 @@ TEST_F(FileCacheTest, TooManyCacheFiles) {
 
   // Create temporary file.
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
   ASSERT_EQ(kTemporaryFileSizeInBytes,
             base::WriteFile(src_file, "abcdefghij", kTemporaryFileSizeInBytes));
 
@@ -361,7 +372,7 @@ TEST_F(FileCacheTest, TooManyCacheFiles) {
 }
 
 TEST_F(FileCacheTest, GetFile) {
-  const base::FilePath src_file_path = temp_dir_.path().Append("test.dat");
+  const base::FilePath src_file_path = temp_dir_.GetPath().Append("test.dat");
   const std::string src_contents = "test";
   EXPECT_TRUE(google_apis::test_util::WriteStringToFile(src_file_path,
                                                         src_contents));
@@ -369,7 +380,7 @@ TEST_F(FileCacheTest, GetFile) {
   std::string md5(base::MD5String(src_contents));
 
   const base::FilePath cache_file_directory =
-      temp_dir_.path().Append(kCacheFileDirectory);
+      temp_dir_.GetPath().Append(kCacheFileDirectory);
 
   // Try to get an existing file from cache.
   ResourceEntry entry;
@@ -415,7 +426,7 @@ TEST_F(FileCacheTest, GetFile) {
 }
 
 TEST_F(FileCacheTest, Store) {
-  const base::FilePath src_file_path = temp_dir_.path().Append("test.dat");
+  const base::FilePath src_file_path = temp_dir_.GetPath().Append("test.dat");
   const std::string src_contents = "test";
   EXPECT_TRUE(google_apis::test_util::WriteStringToFile(src_file_path,
                                                         src_contents));
@@ -438,7 +449,7 @@ TEST_F(FileCacheTest, Store) {
   EXPECT_TRUE(base::ContentsEqual(src_file_path, cache_file_path));
 
   base::FilePath dest_file_path = GetCacheFilePath(id);
-  EXPECT_TRUE(HasRemovableFlag((dest_file_path)));
+  EXPECT_TRUE(IsMarkedAsRemovable(dest_file_path));
 
   // Store a non-existent file.
   EXPECT_EQ(FILE_ERROR_FAILED, cache_->Store(
@@ -453,7 +464,7 @@ TEST_F(FileCacheTest, Store) {
   EXPECT_TRUE(entry.file_specific_info().cache_state().is_present());
   EXPECT_TRUE(entry.file_specific_info().cache_state().md5().empty());
   EXPECT_TRUE(entry.file_specific_info().cache_state().is_dirty());
-  EXPECT_FALSE(HasRemovableFlag((dest_file_path)));
+  EXPECT_FALSE(IsMarkedAsRemovable(dest_file_path));
 
   // No free space available.
   fake_free_disk_space_getter_->set_default_value(0);
@@ -463,7 +474,7 @@ TEST_F(FileCacheTest, Store) {
 }
 
 TEST_F(FileCacheTest, PinAndUnpin) {
-  const base::FilePath src_file_path = temp_dir_.path().Append("test.dat");
+  const base::FilePath src_file_path = temp_dir_.GetPath().Append("test.dat");
   const std::string src_contents = "test";
   EXPECT_TRUE(google_apis::test_util::WriteStringToFile(src_file_path,
                                                         src_contents));
@@ -480,21 +491,21 @@ TEST_F(FileCacheTest, PinAndUnpin) {
   const base::FilePath dest_file_path = GetCacheFilePath(id);
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id, &entry));
   EXPECT_FALSE(entry.file_specific_info().cache_state().is_pinned());
-  EXPECT_TRUE(HasRemovableFlag((dest_file_path)));
+  EXPECT_TRUE(IsMarkedAsRemovable(dest_file_path));
 
   // Pin the existing file.
   EXPECT_EQ(FILE_ERROR_OK, cache_->Pin(id));
 
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id, &entry));
   EXPECT_TRUE(entry.file_specific_info().cache_state().is_pinned());
-  EXPECT_FALSE(HasRemovableFlag((dest_file_path)));
+  EXPECT_FALSE(IsMarkedAsRemovable(dest_file_path));
 
   // Unpin the file.
   EXPECT_EQ(FILE_ERROR_OK, cache_->Unpin(id));
 
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id, &entry));
   EXPECT_FALSE(entry.file_specific_info().cache_state().is_pinned());
-  EXPECT_TRUE(HasRemovableFlag((dest_file_path)));
+  EXPECT_TRUE(IsMarkedAsRemovable(dest_file_path));
 
   // Pin a non-present file.
   std::string id_non_present = "id_non_present";
@@ -517,7 +528,7 @@ TEST_F(FileCacheTest, PinAndUnpin) {
 }
 
 TEST_F(FileCacheTest, MountUnmount) {
-  const base::FilePath src_file_path = temp_dir_.path().Append("test.dat");
+  const base::FilePath src_file_path = temp_dir_.GetPath().Append("test.dat");
   const std::string src_contents = "test";
   EXPECT_TRUE(google_apis::test_util::WriteStringToFile(src_file_path,
                                                         src_contents));
@@ -535,11 +546,15 @@ TEST_F(FileCacheTest, MountUnmount) {
   base::FilePath cache_file_path;
   EXPECT_EQ(FILE_ERROR_OK, cache_->MarkAsMounted(id, &cache_file_path));
 
+  EXPECT_TRUE(cache_->IsMarkedAsMounted(id));
+
   // Try to remove it.
   EXPECT_EQ(FILE_ERROR_IN_USE, cache_->Remove(id));
 
   // Clear mounted state of the file.
   EXPECT_EQ(FILE_ERROR_OK, cache_->MarkAsUnmounted(cache_file_path));
+
+  EXPECT_FALSE(cache_->IsMarkedAsMounted(id));
 
   // Try to remove again.
   EXPECT_EQ(FILE_ERROR_OK, cache_->Remove(id));
@@ -548,7 +563,7 @@ TEST_F(FileCacheTest, MountUnmount) {
 TEST_F(FileCacheTest, OpenForWrite) {
   // Prepare a file.
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
 
   const std::string id = "id";
   ResourceEntry entry;
@@ -557,6 +572,7 @@ TEST_F(FileCacheTest, OpenForWrite) {
   ASSERT_EQ(FILE_ERROR_OK, cache_->Store(id, "md5", src_file,
                                          FileCache::FILE_OPERATION_COPY));
   EXPECT_EQ(0, entry.file_info().last_modified());
+  EXPECT_EQ(0, entry.last_modified_by_me());
 
   // Entry is not dirty nor opened.
   EXPECT_FALSE(cache_->IsOpenedForWrite(id));
@@ -564,7 +580,7 @@ TEST_F(FileCacheTest, OpenForWrite) {
   EXPECT_FALSE(entry.file_specific_info().cache_state().is_dirty());
 
   const base::FilePath dest_file = GetCacheFilePath(id);
-  EXPECT_TRUE(HasRemovableFlag((dest_file)));
+  EXPECT_TRUE(IsMarkedAsRemovable(dest_file));
 
   // Open (1).
   std::unique_ptr<base::ScopedClosureRunner> file_closer1;
@@ -574,7 +590,7 @@ TEST_F(FileCacheTest, OpenForWrite) {
   // Entry is dirty.
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id, &entry));
   EXPECT_TRUE(entry.file_specific_info().cache_state().is_dirty());
-  EXPECT_FALSE(HasRemovableFlag((dest_file)));
+  EXPECT_FALSE(IsMarkedAsRemovable((dest_file)));
 
   // Open (2).
   std::unique_ptr<base::ScopedClosureRunner> file_closer2;
@@ -586,9 +602,11 @@ TEST_F(FileCacheTest, OpenForWrite) {
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(cache_->IsOpenedForWrite(id));
 
-  // last_modified is updated.
+  // last_modified and last_modified_by_me are updated.
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id, &entry));
   EXPECT_NE(0, entry.file_info().last_modified());
+  EXPECT_NE(0, entry.last_modified_by_me());
+  EXPECT_EQ(entry.file_info().last_modified(), entry.last_modified_by_me());
 
   // Close (2).
   file_closer2.reset();
@@ -602,7 +620,7 @@ TEST_F(FileCacheTest, OpenForWrite) {
 
 TEST_F(FileCacheTest, UpdateMd5) {
   // Store test data.
-  const base::FilePath src_file_path = temp_dir_.path().Append("test.dat");
+  const base::FilePath src_file_path = temp_dir_.GetPath().Append("test.dat");
   const std::string contents_before = "before";
   EXPECT_TRUE(google_apis::test_util::WriteStringToFile(src_file_path,
                                                         contents_before));
@@ -644,7 +662,7 @@ TEST_F(FileCacheTest, UpdateMd5) {
 TEST_F(FileCacheTest, ClearDirty) {
   // Prepare a file.
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
 
   const std::string id = "id";
   ResourceEntry entry;
@@ -654,7 +672,7 @@ TEST_F(FileCacheTest, ClearDirty) {
                                          FileCache::FILE_OPERATION_COPY));
 
   const base::FilePath dest_file = GetCacheFilePath(id);
-  EXPECT_TRUE(HasRemovableFlag((dest_file)));
+  EXPECT_TRUE(IsMarkedAsRemovable(dest_file));
 
   // Open the file.
   std::unique_ptr<base::ScopedClosureRunner> file_closer;
@@ -663,11 +681,11 @@ TEST_F(FileCacheTest, ClearDirty) {
   // Entry is dirty.
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id, &entry));
   EXPECT_TRUE(entry.file_specific_info().cache_state().is_dirty());
-  EXPECT_FALSE(HasRemovableFlag((dest_file)));
+  EXPECT_FALSE(IsMarkedAsRemovable(dest_file));
 
   // Cannot clear the dirty bit of an opened entry.
   EXPECT_EQ(FILE_ERROR_IN_USE, cache_->ClearDirty(id));
-  EXPECT_FALSE(HasRemovableFlag((dest_file)));
+  EXPECT_FALSE(IsMarkedAsRemovable(dest_file));
 
   // Close the file and clear the dirty bit.
   file_closer.reset();
@@ -677,11 +695,11 @@ TEST_F(FileCacheTest, ClearDirty) {
   // Entry is not dirty.
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id, &entry));
   EXPECT_FALSE(entry.file_specific_info().cache_state().is_dirty());
-  EXPECT_TRUE(HasRemovableFlag((dest_file)));
+  EXPECT_TRUE(IsMarkedAsRemovable(dest_file));
 }
 
 TEST_F(FileCacheTest, Remove) {
-  const base::FilePath src_file_path = temp_dir_.path().Append("test.dat");
+  const base::FilePath src_file_path = temp_dir_.GetPath().Append("test.dat");
   const std::string src_contents = "test";
   EXPECT_TRUE(google_apis::test_util::WriteStringToFile(src_file_path,
                                                         src_contents));
@@ -693,7 +711,7 @@ TEST_F(FileCacheTest, Remove) {
   entry.set_local_id(id);
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->PutEntry(entry));
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
   EXPECT_EQ(FILE_ERROR_OK, cache_->Store(
       id, md5, src_file_path, FileCache::FILE_OPERATION_COPY));
 
@@ -707,7 +725,7 @@ TEST_F(FileCacheTest, Remove) {
 
 TEST_F(FileCacheTest, RenameCacheFilesToNewFormat) {
   const base::FilePath file_directory =
-      temp_dir_.path().Append(kCacheFileDirectory);
+      temp_dir_.GetPath().Append(kCacheFileDirectory);
 
   // File with an old style "<prefix>:<ID>.<MD5>" name.
   ASSERT_TRUE(google_apis::test_util::WriteStringToFile(
@@ -747,7 +765,7 @@ TEST_F(FileCacheTest, RenameCacheFilesToNewFormat) {
 TEST_F(FileCacheTest, FixMetadataAndFileAttributes) {
   // Create test files and metadata.
   base::FilePath temp_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &temp_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &temp_file));
 
   // Entry A: pinned cache file.
   const std::string id_a = "id_a";
@@ -843,10 +861,10 @@ TEST_F(FileCacheTest, FixMetadataAndFileAttributes) {
   ASSERT_TRUE(cache_->Initialize());
 
   // Check result.
-  EXPECT_FALSE(HasRemovableFlag(file_path_a));
-  EXPECT_FALSE(HasRemovableFlag((file_path_b)));
-  EXPECT_TRUE(HasRemovableFlag((file_path_c)));
-  EXPECT_FALSE(HasRemovableFlag((file_path_d)));
+  EXPECT_FALSE(IsMarkedAsRemovable(file_path_a));
+  EXPECT_FALSE(IsMarkedAsRemovable(file_path_b));
+  EXPECT_TRUE(IsMarkedAsRemovable(file_path_c));
+  EXPECT_FALSE(IsMarkedAsRemovable(file_path_d));
   EXPECT_FALSE(base::PathExists(file_path_f));
 
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->GetEntry(id_e, &entry_e));
@@ -855,7 +873,7 @@ TEST_F(FileCacheTest, FixMetadataAndFileAttributes) {
   EXPECT_FALSE(entry_f.file_specific_info().cache_state().is_present());
 
   // Check the cache dir has appropriate attributes.
-  EXPECT_TRUE(HasRemovableFlag((cache_files_dir_)));
+  EXPECT_TRUE(HasRemovableFlag(cache_files_dir_));
   EXPECT_GE(getxattr(cache_files_dir_.value().c_str(),
       FileCache::kGCacheFilesAttribute, nullptr, 0), 0);
 }
@@ -869,7 +887,7 @@ TEST_F(FileCacheTest, ClearAll) {
   entry.set_local_id(id);
   EXPECT_EQ(FILE_ERROR_OK, metadata_storage_->PutEntry(entry));
   base::FilePath src_file;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &src_file));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &src_file));
   ASSERT_EQ(FILE_ERROR_OK,
             cache_->Store(id, md5, src_file, FileCache::FILE_OPERATION_COPY));
 

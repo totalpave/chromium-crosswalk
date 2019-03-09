@@ -8,6 +8,7 @@
 namespace user_manager {
 
 // The user type. Used in a histogram; do not modify existing types.
+// When adding a new one, also update histograms/enums.xml.
 typedef enum {
   // Regular user, has a user name and password.
   USER_TYPE_REGULAR = 0,
@@ -23,8 +24,12 @@ typedef enum {
   USER_TYPE_KIOSK_APP = 5,
   // Child user, with supervised options.
   USER_TYPE_CHILD = 6,
+  // Android app in kiosk mode, logs in without authentication.
+  USER_TYPE_ARC_KIOSK_APP = 7,
+  // Active Directory user. Authenticates against Active Directory server.
+  USER_TYPE_ACTIVE_DIRECTORY = 8,
   // Maximum histogram value.
-  NUM_USER_TYPES = 7
+  NUM_USER_TYPES = 9
 } UserType;
 
 }  // namespace user_manager

@@ -11,20 +11,21 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/metrics/field_trial.h"
-#include "chrome/common/variations/child_process_field_trial_syncer.h"
+#include "chrome/common/renderer_configuration.mojom.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "content/public/renderer/render_thread_observer.h"
+#include "mojo/public/cpp/bindings/associated_binding_set.h"
 
-class GURL;
-struct ContentSettings;
-
-namespace base {
-class CommandLine;
-}
+#if defined(OS_CHROMEOS)
+#include "chrome/renderer/chromeos_delayed_callback_group.h"
+#endif  // defined(OS_CHROMEOS)
 
 namespace content {
 class ResourceDispatcherDelegate;
+}
+
+namespace visitedlink {
+class VisitedLinkSlave;
 }
 
 // This class filters the incoming control messages (i.e. ones not destined for
@@ -32,41 +33,107 @@ class ResourceDispatcherDelegate;
 // happen.  If a few messages are related, they should probably have their own
 // observer.
 class ChromeRenderThreadObserver : public content::RenderThreadObserver,
-                                   public base::FieldTrialList::Observer {
+                                   public chrome::mojom::RendererConfiguration {
  public:
+#if defined(OS_CHROMEOS)
+  // A helper class to handle Mojo calls that need to be dispatched to the IO
+  // thread instead of the main thread as is the norm.
+  // This class is thread-safe.
+  class ChromeOSListener : public chrome::mojom::ChromeOSListener,
+                           public base::RefCountedThreadSafe<ChromeOSListener> {
+   public:
+    static scoped_refptr<ChromeOSListener> Create(
+        chrome::mojom::ChromeOSListenerRequest chromeos_listener_request);
+
+    // Is the merge session still running?
+    bool IsMergeSessionRunning() const;
+
+    // Run |callback| on the calling sequence when the merge session has
+    // finished (or timed out).
+    void RunWhenMergeSessionFinished(DelayedCallbackGroup::Callback callback);
+
+   protected:
+    // chrome::mojom::ChromeOSListener:
+    void MergeSessionComplete() override;
+
+   private:
+    friend class base::RefCountedThreadSafe<ChromeOSListener>;
+
+    ChromeOSListener();
+    ~ChromeOSListener() override;
+
+    void BindOnIOThread(
+        chrome::mojom::ChromeOSListenerRequest chromeos_listener_request);
+
+    scoped_refptr<DelayedCallbackGroup> session_merged_callbacks_;
+    bool merge_session_running_ GUARDED_BY(lock_);
+    mutable base::Lock lock_;
+    mojo::Binding<chrome::mojom::ChromeOSListener> binding_;
+
+    DISALLOW_COPY_AND_ASSIGN(ChromeOSListener);
+  };
+#endif  // defined(OS_CHROMEOS)
+
   ChromeRenderThreadObserver();
   ~ChromeRenderThreadObserver() override;
 
   static bool is_incognito_process() { return is_incognito_process_; }
 
+  // Return the dynamic parameters - those that may change while the
+  // render process is running.
+  static const chrome::mojom::DynamicParams& GetDynamicParams();
+
   // Returns a pointer to the content setting rules owned by
   // |ChromeRenderThreadObserver|.
   const RendererContentSettingRules* content_setting_rules() const;
 
+  visitedlink::VisitedLinkSlave* visited_link_slave() {
+    return visited_link_slave_.get();
+  }
+
+#if defined(OS_CHROMEOS)
+  scoped_refptr<ChromeOSListener> chromeos_listener() const {
+    return chromeos_listener_;
+  }
+#endif  // defined(OS_CHROMEOS)
+
+  // Return a weak pointer to |this|.
+  base::WeakPtr<ChromeRenderThreadObserver> GetWeakPtr();
+
  private:
-  // Initializes field trial state change observation and notifies the browser
-  // of any field trials that might have already been activated.
-  void InitFieldTrialObserving(const base::CommandLine& command_line);
-
   // content::RenderThreadObserver:
-  bool OnControlMessageReceived(const IPC::Message& message) override;
+  void RegisterMojoInterfaces(
+      blink::AssociatedInterfaceRegistry* associated_interfaces) override;
+  void UnregisterMojoInterfaces(
+      blink::AssociatedInterfaceRegistry* associated_interfaces) override;
 
-  // base::FieldTrialList::Observer:
-  void OnFieldTrialGroupFinalized(const std::string& trial_name,
-                                  const std::string& group_name) override;
+  // chrome::mojom::RendererConfiguration:
+  void SetInitialConfiguration(bool is_incognito_process,
+                               chrome::mojom::ChromeOSListenerRequest
+                                   chromeos_listener_request) override;
+  void SetConfiguration(chrome::mojom::DynamicParamsPtr params) override;
+  void SetContentSettingRules(
+      const RendererContentSettingRules& rules) override;
+  void SetFieldTrialGroup(const std::string& trial_name,
+                          const std::string& group_name) override;
 
-  void OnSetIsIncognitoProcess(bool is_incognito_process);
-  void OnSetContentSettingsForCurrentURL(
-      const GURL& url, const ContentSettings& content_settings);
-  void OnSetContentSettingRules(const RendererContentSettingRules& rules);
-  void OnGetCacheResourceStats();
-  void OnSetFieldTrialGroup(const std::string& trial_name,
-                            const std::string& group_name);
+  void OnRendererConfigurationAssociatedRequest(
+      chrome::mojom::RendererConfigurationAssociatedRequest request);
 
   static bool is_incognito_process_;
   std::unique_ptr<content::ResourceDispatcherDelegate> resource_delegate_;
   RendererContentSettingRules content_setting_rules_;
-  chrome_variations::ChildProcessFieldTrialSyncer field_trial_syncer_;
+
+  std::unique_ptr<visitedlink::VisitedLinkSlave> visited_link_slave_;
+
+  mojo::AssociatedBindingSet<chrome::mojom::RendererConfiguration>
+      renderer_configuration_bindings_;
+
+#if defined(OS_CHROMEOS)
+  // Only set if the Chrome OS merge session was running when the renderer
+  // was started.
+  scoped_refptr<ChromeOSListener> chromeos_listener_;
+#endif  // defined(OS_CHROMEOS)
 
   base::WeakPtrFactory<ChromeRenderThreadObserver> weak_factory_;
 

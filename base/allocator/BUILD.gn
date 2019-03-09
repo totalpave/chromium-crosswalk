@@ -11,10 +11,10 @@ declare_args() {
   # e.g. for profiling (it's more rare to profile Debug builds,
   # but people sometimes need to do that).
   enable_debugallocation = is_debug
-}
 
-# Allocator shim is only enabled for Release static builds.
-win_use_allocator_shim = is_win && !is_component_build && !is_debug
+  # Provide a way to build tcmalloc with a low memory footprint.
+  use_tcmalloc_small_but_slow = false
+}
 
 # This "allocator" meta-target will forward to the default allocator according
 # to the build settings.
@@ -25,26 +25,13 @@ group("allocator") {
   if (use_allocator == "tcmalloc") {
     deps += [ ":tcmalloc" ]
   }
-
-  if (win_use_allocator_shim) {
-    public_deps += [ ":allocator_shim" ]
-  }
-}
-
-# This config defines ALLOCATOR_SHIM in the same conditions that the allocator
-# shim will be used by the allocator target.
-#
-# TODO(brettw) this is only used in one place and is kind of mess, because it
-# assumes that the library using it will eventually be linked with
-# //base/allocator in the default way. Clean this up and delete this.
-config("allocator_shim_define") {
-  if (win_use_allocator_shim) {
-    defines = [ "ALLOCATOR_SHIM" ]
-  }
 }
 
 config("tcmalloc_flags") {
-  defines = []
+  defines = [
+    "TCMALLOC_USE_DOUBLYLINKED_FREELIST",
+    "TCMALLOC_DISABLE_HUGE_ALLOCATIONS",
+  ]
   if (enable_debugallocation) {
     defines += [
       # Use debugallocation for Debug builds to catch problems early
@@ -52,8 +39,11 @@ config("tcmalloc_flags") {
       "TCMALLOC_FOR_DEBUGALLOCATION",
     ]
   }
-  if (use_experimental_allocator_shim) {
+  if (use_allocator_shim) {
     defines += [ "TCMALLOC_DONT_REPLACE_SYSTEM_ALLOC" ]
+  }
+  if (use_tcmalloc_small_but_slow) {
+    defines += [ "TCMALLOC_SMALL_BUT_SLOW" ]
   }
   if (is_clang) {
     cflags = [
@@ -63,33 +53,35 @@ config("tcmalloc_flags") {
       # tcmalloc contains some unused local template specializations.
       "-Wno-unused-function",
 
-      # tcmalloc uses COMPILE_ASSERT without static_assert but with
-      # typedefs.
+      # tcmalloc uses COMPILE_ASSERT without static_assert but with typedefs.
       "-Wno-unused-local-typedefs",
 
-      # for magic2_ in debugallocation.cc (only built in Debug builds)
-      # typedefs.
+      # for magic2_ in debugallocation.cc (only built in Debug builds) typedefs.
       "-Wno-unused-private-field",
     ]
+  } else {
+    cflags = []
   }
-}
 
-# This config is only used on Windows static release builds for the
-# allocator shim.
-if (win_use_allocator_shim) {
-  source_set("allocator_shim") {
-    sources = [
-      "allocator_shim_win.cc",
-      "allocator_shim_win.h",
+  if (is_linux || is_android) {
+    # We enable all warnings by default, but upstream disables a few.
+    # Keep "-Wno-*" flags in sync with upstream by comparing against:
+    # http://code.google.com/p/google-perftools/source/browse/trunk/Makefile.am
+    cflags += [
+      "-Wno-sign-compare",
+      "-Wno-unused-result",
     ]
-    configs += [ ":allocator_shim_define" ]
   }
 }
 
 if (use_allocator == "tcmalloc") {
   # tcmalloc currently won't compile on Android.
   source_set("tcmalloc") {
-    tcmalloc_dir = "//third_party/tcmalloc/chromium"
+    if (use_new_tcmalloc) {
+      tcmalloc_dir = "//third_party/tcmalloc/chromium"
+    } else {
+      tcmalloc_dir = "//third_party/tcmalloc/gperftools-2.0/chromium"
+    }
 
     # Don't check tcmalloc's includes. These files include various files like
     # base/foo.h and they actually refer to tcmalloc's forked copy of base
@@ -147,9 +139,10 @@ if (use_allocator == "tcmalloc") {
       #"$tcmalloc_dir/src/debugallocation.cc",
       "$tcmalloc_dir/src/free_list.cc",
       "$tcmalloc_dir/src/free_list.h",
-      "$tcmalloc_dir/src/heap-profile-table.cc",
-      "$tcmalloc_dir/src/heap-profile-table.h",
-      "$tcmalloc_dir/src/heap-profiler.cc",
+      "$tcmalloc_dir/src/gperftools/heap-profiler.h",
+      "$tcmalloc_dir/src/gperftools/malloc_extension.h",
+      "$tcmalloc_dir/src/gperftools/malloc_hook.h",
+      "$tcmalloc_dir/src/gperftools/stacktrace.h",
       "$tcmalloc_dir/src/internal_logging.cc",
       "$tcmalloc_dir/src/internal_logging.h",
       "$tcmalloc_dir/src/linked_list.h",
@@ -158,8 +151,6 @@ if (use_allocator == "tcmalloc") {
       "$tcmalloc_dir/src/malloc_hook.cc",
       "$tcmalloc_dir/src/maybe_threads.cc",
       "$tcmalloc_dir/src/maybe_threads.h",
-      "$tcmalloc_dir/src/memory_region_map.cc",
-      "$tcmalloc_dir/src/memory_region_map.h",
       "$tcmalloc_dir/src/page_heap.cc",
       "$tcmalloc_dir/src/page_heap.h",
       "$tcmalloc_dir/src/raw_printer.cc",
@@ -180,6 +171,7 @@ if (use_allocator == "tcmalloc") {
 
       # #included by debugallocation_shim.cc
       #"$tcmalloc_dir/src/tcmalloc.cc",
+      #"$tcmalloc_dir/src/tcmalloc.h",
       "$tcmalloc_dir/src/thread_cache.cc",
       "$tcmalloc_dir/src/thread_cache.h",
       "$tcmalloc_dir/src/windows/port.cc",
@@ -190,6 +182,23 @@ if (use_allocator == "tcmalloc") {
       #"generic_allocators.cc",
       #"win_allocator.cc",
     ]
+
+    # Account for file changes in the new tcmalloc version.
+    if (use_new_tcmalloc) {
+      sources -= [ "$tcmalloc_dir/src/base/cycleclock.h" ]
+      sources += [
+        "$tcmalloc_dir/src/emergency_malloc_for_stacktrace.cc",
+        "$tcmalloc_dir/src/fake_stacktrace_scope.cc",
+      ]
+    }
+
+    # Not included on mips64el.
+    if (current_cpu == "mips64el") {
+      sources -= [
+        "$tcmalloc_dir/src/base/linuxthreads.cc",
+        "$tcmalloc_dir/src/base/linuxthreads.h",
+      ]
+    }
 
     # Disable the heap checker in tcmalloc.
     defines = [ "NO_HEAP_CHECK" ]
@@ -206,12 +215,29 @@ if (use_allocator == "tcmalloc") {
       ":tcmalloc_flags",
     ]
 
-    deps = []
+    # Thumb mode disabled due to bug in clang integrated assembler
+    # TODO(https://llvm.org/bugs/show_bug.cgi?id=31058)
+    configs -= [ "//build/config/compiler:compiler_arm_thumb" ]
+    configs += [ "//build/config/compiler:compiler_arm" ]
+
+    # TODO(crbug.com/633719) Make tcmalloc work with AFDO on GCC if possible.
+    if (!is_clang) {
+      configs -= [ "//build/config/compiler:afdo" ]
+    }
+
+    deps = [
+      ":buildflags",
+    ]
 
     if (enable_profiling) {
       sources += [
         "$tcmalloc_dir/src/base/thread_lister.c",
         "$tcmalloc_dir/src/base/thread_lister.h",
+        "$tcmalloc_dir/src/heap-profile-table.cc",
+        "$tcmalloc_dir/src/heap-profile-table.h",
+        "$tcmalloc_dir/src/heap-profiler.cc",
+        "$tcmalloc_dir/src/memory_region_map.cc",
+        "$tcmalloc_dir/src/memory_region_map.h",
         "$tcmalloc_dir/src/profile-handler.cc",
         "$tcmalloc_dir/src/profile-handler.h",
         "$tcmalloc_dir/src/profiledata.cc",
@@ -228,21 +254,13 @@ if (use_allocator == "tcmalloc") {
         "$tcmalloc_dir/src/windows/port.h",
       ]
 
-      # We enable all warnings by default, but upstream disables a few.
-      # Keep "-Wno-*" flags in sync with upstream by comparing against:
-      # http://code.google.com/p/google-perftools/source/browse/trunk/Makefile.am
-      cflags = [
-        "-Wno-sign-compare",
-        "-Wno-unused-result",
-      ]
-
       # Compiling tcmalloc with -fvisibility=default is only necessary when
       # not using the allocator shim, which provides the correct visibility
       # annotations for those symbols which need to be exported (see
       # //base/allocator/allocator_shim_override_glibc_weak_symbols.h and
       # //base/allocator/allocator_shim_internals.h for the definition of
       # SHIM_ALWAYS_EXPORT).
-      if (!use_experimental_allocator_shim) {
+      if (!use_allocator_shim) {
         configs -= [ "//build/config/gcc:symbol_visibility_hidden" ]
         configs += [ "//build/config/gcc:symbol_visibility_default" ]
       }
@@ -270,54 +288,24 @@ if (use_allocator == "tcmalloc") {
   }
 }  # use_allocator == "tcmalloc"
 
-buildflag_header("features") {
-  header = "features.h"
-  flags = [ "USE_EXPERIMENTAL_ALLOCATOR_SHIM=$use_experimental_allocator_shim" ]
+buildflag_header("buildflags") {
+  header = "buildflags.h"
+  flags = [
+    "USE_ALLOCATOR_SHIM=$use_allocator_shim",
+    "USE_NEW_TCMALLOC=$use_new_tcmalloc",
+  ]
 }
 
-if (use_experimental_allocator_shim) {
-  # Used to shim malloc symbols on Android. see //base/allocator/README.md.
-  config("wrap_malloc_symbols") {
-    ldflags = [
-      "-Wl,-wrap,calloc",
-      "-Wl,-wrap,free",
-      "-Wl,-wrap,malloc",
-      "-Wl,-wrap,memalign",
-      "-Wl,-wrap,posix_memalign",
-      "-Wl,-wrap,pvalloc",
-      "-Wl,-wrap,realloc",
-      "-Wl,-wrap,valloc",
-    ]
-  }
-
-  source_set("unified_allocator_shim") {
-    # TODO(primiano): support other platforms, currently this works only on
-    # Linux/CrOS/Android. http://crbug.com/550886 .
-    configs += [ "//base:base_implementation" ]  # for BASE_EXPORT
-    visibility = [ "//base:base" ]
-    sources = [
-      "allocator_shim.cc",
-      "allocator_shim.h",
-      "allocator_shim_internals.h",
-      "allocator_shim_override_cpp_symbols.h",
-      "allocator_shim_override_libc_symbols.h",
-    ]
-    if (is_linux && use_allocator == "tcmalloc") {
-      sources += [
-        "allocator_shim_default_dispatch_to_tcmalloc.cc",
-        "allocator_shim_override_glibc_weak_symbols.h",
-      ]
-      deps = [
-        ":tcmalloc",
-      ]
-    } else if (is_linux && use_allocator == "none") {
-      sources += [ "allocator_shim_default_dispatch_to_glibc.cc" ]
-    } else if (is_android && use_allocator == "none") {
-      sources += [
-        "allocator_shim_default_dispatch_to_linker_wrapped_symbols.cc",
-        "allocator_shim_override_linker_wrapped_symbols.h",
-      ]
-      all_dependent_configs = [ ":wrap_malloc_symbols" ]
-    }
-  }
+# Used to shim malloc symbols on Android. see //base/allocator/README.md.
+config("wrap_malloc_symbols") {
+  ldflags = [
+    "-Wl,-wrap,calloc",
+    "-Wl,-wrap,free",
+    "-Wl,-wrap,malloc",
+    "-Wl,-wrap,memalign",
+    "-Wl,-wrap,posix_memalign",
+    "-Wl,-wrap,pvalloc",
+    "-Wl,-wrap,realloc",
+    "-Wl,-wrap,valloc",
+  ]
 }

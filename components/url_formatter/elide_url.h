@@ -11,6 +11,7 @@
 
 #include "base/strings/string16.h"
 #include "build/build_config.h"
+#include "ui/gfx/text_constants.h"
 
 class GURL;
 
@@ -28,7 +29,7 @@ namespace url_formatter {
 // gfx::GetStringWidthF which is not implemented in Android
 #if !defined(OS_ANDROID)
 // This function takes a GURL object and elides it. It returns a string
-// which composed of parts from subdomain, domain, path, filename and query.
+// composed of parts from subdomain, domain, path, filename and query.
 // A "..." is added automatically at the end if the elided string is bigger
 // than the |available_pixel_width|. For |available_pixel_width| == 0, a
 // formatted, but un-elided, string is returned.
@@ -40,7 +41,8 @@ namespace url_formatter {
 // http://crbug.com/6487 for more information.
 base::string16 ElideUrl(const GURL& url,
                         const gfx::FontList& font_list,
-                        float available_pixel_width);
+                        float available_pixel_width,
+                        gfx::Typesetter typesetter = gfx::Typesetter::DEFAULT);
 
 // This function takes a GURL object and elides the host to fit within
 // the given width. The function will never elide past the TLD+1 point,
@@ -49,7 +51,8 @@ base::string16 ElideUrl(const GURL& url,
 // depending on the width.
 base::string16 ElideHost(const GURL& host_url,
                          const gfx::FontList& font_list,
-                         float available_pixel_width);
+                         float available_pixel_width,
+                         gfx::Typesetter typesetter = gfx::Typesetter::DEFAULT);
 #endif  // !defined(OS_ANDROID)
 
 enum class SchemeDisplay {
@@ -64,9 +67,11 @@ enum class SchemeDisplay {
 // other circumstances when people need to distinguish sites, origins, or
 // otherwise-simplified URLs from each other).
 //
-// Internationalized domain names (IDN) may be presented in Unicode if
-// they're regarded safe. See |url_formatter::FormatUrl| for more details on
-// the algorithm).
+// Internationalized domain names (IDN) will be presented in Unicode if
+// they're regarded safe except that domain names with RTL characters
+// will still be in ACE/punycode for now (http://crbug.com/650760).
+// See http://dev.chromium.org/developers/design-documents/idn-in-google-chrome
+// for details on the algorithm.
 //
 // - Omits the path for standard schemes, excepting file and filesystem.
 // - Omits the port if it is the default for the scheme.
@@ -75,7 +80,7 @@ enum class SchemeDisplay {
 //
 // Generally, prefer SchemeDisplay::SHOW to omitting the scheme unless there is
 // plenty of indication as to whether the origin is secure elsewhere in the UX.
-// For example, in Chrome's Origin Info Bubble, there are icons and strings
+// For example, in Chrome's Page Info Bubble, there are icons and strings
 // indicating origin (non-)security. But in the HTTP Basic Auth prompt (for
 // example), the scheme may be the only indicator.
 base::string16 FormatUrlForSecurityDisplay(

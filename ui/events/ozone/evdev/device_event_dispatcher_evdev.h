@@ -13,11 +13,14 @@
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/ozone/evdev/events_ozone_evdev_export.h"
+#include "ui/events/ozone/gamepad/gamepad_event.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace ui {
+
+enum class StylusState;
 
 struct EVENTS_OZONE_EVDEV_EXPORT KeyEventParams {
   KeyEventParams(int device_id,
@@ -26,6 +29,7 @@ struct EVENTS_OZONE_EVDEV_EXPORT KeyEventParams {
                  bool suppress_auto_repeat,
                  base::TimeTicks timestamp);
   KeyEventParams(const KeyEventParams& other);
+  KeyEventParams() {}
   ~KeyEventParams();
 
   int device_id;
@@ -37,13 +41,16 @@ struct EVENTS_OZONE_EVDEV_EXPORT KeyEventParams {
 
 struct EVENTS_OZONE_EVDEV_EXPORT MouseMoveEventParams {
   MouseMoveEventParams(int device_id,
+                       int flags,
                        const gfx::PointF& location,
                        const PointerDetails& details,
                        base::TimeTicks timestamp);
   MouseMoveEventParams(const MouseMoveEventParams& other);
+  MouseMoveEventParams() {}
   ~MouseMoveEventParams();
 
   int device_id;
+  int flags;
   gfx::PointF location;
   PointerDetails pointer_details;
   base::TimeTicks timestamp;
@@ -51,6 +58,7 @@ struct EVENTS_OZONE_EVDEV_EXPORT MouseMoveEventParams {
 
 struct EVENTS_OZONE_EVDEV_EXPORT MouseButtonEventParams {
   MouseButtonEventParams(int device_id,
+                         int flags,
                          const gfx::PointF& location,
                          unsigned int button,
                          bool down,
@@ -58,9 +66,11 @@ struct EVENTS_OZONE_EVDEV_EXPORT MouseButtonEventParams {
                          const PointerDetails& details,
                          base::TimeTicks timestamp);
   MouseButtonEventParams(const MouseButtonEventParams& other);
+  MouseButtonEventParams() {}
   ~MouseButtonEventParams();
 
   int device_id;
+  int flags;
   gfx::PointF location;
   unsigned int button;
   bool down;
@@ -75,6 +85,7 @@ struct EVENTS_OZONE_EVDEV_EXPORT MouseWheelEventParams {
                         const gfx::Vector2d& delta,
                         base::TimeTicks timestamp);
   MouseWheelEventParams(const MouseWheelEventParams& other);
+  MouseWheelEventParams() {}
   ~MouseWheelEventParams();
 
   int device_id;
@@ -90,6 +101,7 @@ struct EVENTS_OZONE_EVDEV_EXPORT PinchEventParams {
                    float scale,
                    const base::TimeTicks timestamp);
   PinchEventParams(const PinchEventParams& other);
+  PinchEventParams() {}
   ~PinchEventParams();
 
   int device_id;
@@ -108,6 +120,7 @@ struct EVENTS_OZONE_EVDEV_EXPORT ScrollEventParams {
                     int finger_count,
                     const base::TimeTicks timestamp);
   ScrollEventParams(const ScrollEventParams& other);
+  ScrollEventParams() {}
   ~ScrollEventParams();
 
   int device_id;
@@ -125,8 +138,10 @@ struct EVENTS_OZONE_EVDEV_EXPORT TouchEventParams {
                    EventType type,
                    const gfx::PointF& location,
                    const PointerDetails& pointer_details,
-                   const base::TimeTicks& timestamp);
+                   const base::TimeTicks& timestamp,
+                   int flags);
   TouchEventParams(const TouchEventParams& other);
+  TouchEventParams() {}
   ~TouchEventParams();
 
   int device_id;
@@ -135,6 +150,7 @@ struct EVENTS_OZONE_EVDEV_EXPORT TouchEventParams {
   gfx::PointF location;
   PointerDetails pointer_details;
   base::TimeTicks timestamp;
+  int flags;
 };
 
 // Interface used by device objects for event dispatch.
@@ -152,6 +168,7 @@ class EVENTS_OZONE_EVDEV_EXPORT DeviceEventDispatcherEvdev {
   virtual void DispatchPinchEvent(const PinchEventParams& params) = 0;
   virtual void DispatchScrollEvent(const ScrollEventParams& params) = 0;
   virtual void DispatchTouchEvent(const TouchEventParams& params) = 0;
+  virtual void DispatchGamepadEvent(const GamepadEvent& event) = 0;
 
   // Device lifecycle events.
   virtual void DispatchKeyboardDevicesUpdated(
@@ -163,6 +180,9 @@ class EVENTS_OZONE_EVDEV_EXPORT DeviceEventDispatcherEvdev {
   virtual void DispatchTouchpadDevicesUpdated(
       const std::vector<InputDevice>& devices) = 0;
   virtual void DispatchDeviceListsComplete() = 0;
+  virtual void DispatchStylusStateChanged(StylusState stylus_state) = 0;
+  virtual void DispatchGamepadDevicesUpdated(
+      const std::vector<InputDevice>& devices) = 0;
 };
 
 }  // namespace ui

@@ -5,37 +5,60 @@
 #ifndef UI_OZONE_PLATFORM_WAYLAND_WAYLAND_SURFACE_FACTORY_H_
 #define UI_OZONE_PLATFORM_WAYLAND_WAYLAND_SURFACE_FACTORY_H_
 
+#include "base/macros.h"
+#include "base/memory/ref_counted.h"
+#include "base/single_thread_task_runner.h"
+#include "base/threading/sequenced_task_runner_handle.h"
+#include "ui/gl/gl_surface.h"
+#include "ui/ozone/platform/wayland/wayland_util.h"
 #include "ui/ozone/public/surface_factory_ozone.h"
+
+namespace gfx {
+class Rect;
+}  // namespace gfx
 
 namespace ui {
 
-class WaylandDisplay;
+class GbmSurfacelessWayland;
+class WaylandConnectionProxy;
 
 class WaylandSurfaceFactory : public SurfaceFactoryOzone {
  public:
-  explicit WaylandSurfaceFactory(WaylandDisplay* display);
+  explicit WaylandSurfaceFactory(WaylandConnectionProxy* connection);
   ~WaylandSurfaceFactory() override;
 
-  intptr_t GetNativeDisplay() override;
-  bool LoadEGLGLES2Bindings(
-      AddGLLibraryCallback add_gl_library,
-      SetGLGetProcAddressProcCallback set_gl_get_proc_address) override;
+  // These methods are used, when a dmabuf based approach is used.
+  void ScheduleBufferSwap(gfx::AcceleratedWidget widget,
+                          uint32_t buffer_id,
+                          const gfx::Rect& damage_region_,
+                          wl::BufferSwapCallback callback);
+  void RegisterSurface(gfx::AcceleratedWidget widget,
+                       GbmSurfacelessWayland* surface);
+  void UnregisterSurface(gfx::AcceleratedWidget widget);
+  GbmSurfacelessWayland* GetSurface(gfx::AcceleratedWidget widget) const;
+
+  // SurfaceFactoryOzone overrides:
+  std::vector<gl::GLImplementation> GetAllowedGLImplementations() override;
+  GLOzone* GetGLOzone(gl::GLImplementation implementation) override;
   std::unique_ptr<SurfaceOzoneCanvas> CreateCanvasForWidget(
       gfx::AcceleratedWidget widget) override;
-  std::unique_ptr<SurfaceOzoneEGL> CreateEGLSurfaceForWidget(
-      gfx::AcceleratedWidget w) override;
-  scoped_refptr<NativePixmap> CreateNativePixmap(
+  scoped_refptr<gfx::NativePixmap> CreateNativePixmap(
       gfx::AcceleratedWidget widget,
       gfx::Size size,
       gfx::BufferFormat format,
       gfx::BufferUsage usage) override;
-  scoped_refptr<NativePixmap> CreateNativePixmapFromHandle(
+  scoped_refptr<gfx::NativePixmap> CreateNativePixmapFromHandle(
+      gfx::AcceleratedWidget widget,
       gfx::Size size,
       gfx::BufferFormat format,
       const gfx::NativePixmapHandle& handle) override;
 
  private:
-  WaylandDisplay* display_;
+  WaylandConnectionProxy* connection_ = nullptr;
+  std::unique_ptr<GLOzone> egl_implementation_;
+
+  std::map<gfx::AcceleratedWidget, GbmSurfacelessWayland*>
+      widget_to_surface_map_;
 
   DISALLOW_COPY_AND_ASSIGN(WaylandSurfaceFactory);
 };

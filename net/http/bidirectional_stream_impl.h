@@ -8,27 +8,34 @@
 #include <stdint.h>
 
 #include <memory>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "net/base/load_timing_info.h"
 #include "net/base/net_export.h"
 #include "net/socket/next_proto.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace base {
-class Timer;
+class OneShotTimer;
 }  // namespace base
+
+namespace spdy {
+class SpdyHeaderBlock;
+}  // namespace spdy
 
 namespace net {
 
-class BoundNetLog;
 class IOBuffer;
-class SpdyHeaderBlock;
+class NetLogWithSource;
 struct BidirectionalStreamRequestInfo;
+struct NetErrorDetails;
 
 // Exposes an interface to do HTTP/2 bidirectional streaming.
 // Note that only one ReadData or SendData should be in flight until the
 // operation completes synchronously or asynchronously.
-// BidirectionalStreamImpl once created by HttpStreamFactoryImpl should be owned
+// BidirectionalStreamImpl once created by HttpStreamFactory should be owned
 // by BidirectionalStream.
 class NET_EXPORT_PRIVATE BidirectionalStreamImpl {
  public:
@@ -52,7 +59,8 @@ class NET_EXPORT_PRIVATE BidirectionalStreamImpl {
     // The delegate may call BidirectionalStreamImpl::ReadData to start
     // reading, call BidirectionalStreamImpl::SendData to send data,
     // or call BidirectionalStreamImpl::Cancel to cancel the stream.
-    virtual void OnHeadersReceived(const SpdyHeaderBlock& response_headers) = 0;
+    virtual void OnHeadersReceived(
+        const spdy::SpdyHeaderBlock& response_headers) = 0;
 
     // Called when read is completed asynchronously. |bytes_read| specifies how
     // much data is available.
@@ -72,7 +80,7 @@ class NET_EXPORT_PRIVATE BidirectionalStreamImpl {
     // are received, which can happen before a read completes.
     // The delegate is able to continue reading if there is no pending read and
     // EOF has not been received, or to send data if there is no pending send.
-    virtual void OnTrailersReceived(const SpdyHeaderBlock& trailers) = 0;
+    virtual void OnTrailersReceived(const spdy::SpdyHeaderBlock& trailers) = 0;
 
     // Called when an error occurred. Do not call into the stream after this
     // point. No other delegate functions will be called after this.
@@ -97,10 +105,11 @@ class NET_EXPORT_PRIVATE BidirectionalStreamImpl {
   // sent only when SendRequestHeaders() is invoked or with next
   // SendData/SendvData.
   virtual void Start(const BidirectionalStreamRequestInfo* request_info,
-                     const BoundNetLog& net_log,
+                     const NetLogWithSource& net_log,
                      bool send_request_headers_automatically,
                      BidirectionalStreamImpl::Delegate* delegate,
-                     std::unique_ptr<base::Timer> timer) = 0;
+                     std::unique_ptr<base::OneShotTimer> timer,
+                     const NetworkTrafficAnnotationTag& traffic_annotation) = 0;
 
   // Sends request headers to server.
   // When |send_request_headers_automatically_| is
@@ -126,17 +135,9 @@ class NET_EXPORT_PRIVATE BidirectionalStreamImpl {
   // Delegate::OnHeadersSent is invoked, and should not be called again until
   // Delegate::OnDataSent is invoked. If |end_stream| is true, the DATA frame
   // will have an END_STREAM flag.
-  virtual void SendData(const scoped_refptr<IOBuffer>& data,
-                        int length,
-                        bool end_stream) = 0;
-
   virtual void SendvData(const std::vector<scoped_refptr<IOBuffer>>& buffers,
                          const std::vector<int>& lengths,
                          bool end_stream) = 0;
-
-  // Cancels the stream. No Delegate method will be called. Any pending
-  // operations may or may not succeed.
-  virtual void Cancel() = 0;
 
   // Returns the protocol used by this stream. If stream has not been
   // established, return kProtoUnknown.
@@ -152,6 +153,16 @@ class NET_EXPORT_PRIVATE BidirectionalStreamImpl {
   // not including proxy overhead. Note that some SPDY frames such as pings are
   // not associated with any stream, and are not included in this value.
   virtual int64_t GetTotalSentBytes() const = 0;
+
+  // Populates the connection establishment part of |load_timing_info|, and
+  // socket reuse info. Return true if LoadTimingInfo is obtained successfully
+  // and false otherwise.
+  virtual bool GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const = 0;
+
+  // Get the network error details this stream is encountering.
+  // Fills in |details| if it is available; leaves |details| unchanged if it
+  // is unavailable.
+  virtual void PopulateNetErrorDetails(NetErrorDetails* details) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(BidirectionalStreamImpl);

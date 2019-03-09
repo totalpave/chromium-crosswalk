@@ -4,13 +4,11 @@
 
 #include "components/dom_distiller/content/browser/web_contents_main_frame_observer.h"
 
-#include "content/public/browser/navigation_details.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
-
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(dom_distiller::WebContentsMainFrameObserver);
 
 namespace dom_distiller {
 
@@ -31,13 +29,16 @@ void WebContentsMainFrameObserver::DocumentLoadedInFrame(
   }
 }
 
-void WebContentsMainFrameObserver::DidNavigateMainFrame(
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
-  if (details.is_navigation_to_different_page()) {
-    is_document_loaded_in_main_frame_ = false;
-    is_initialized_ = true;
+void WebContentsMainFrameObserver::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!navigation_handle->IsInMainFrame() ||
+      !navigation_handle->HasCommitted() ||
+      navigation_handle->IsSameDocument()) {
+    return;
   }
+
+  is_document_loaded_in_main_frame_ = false;
+  is_initialized_ = true;
 }
 
 void WebContentsMainFrameObserver::RenderProcessGone(
@@ -46,7 +47,9 @@ void WebContentsMainFrameObserver::RenderProcessGone(
 }
 
 void WebContentsMainFrameObserver::CleanUp() {
-  content::WebContentsObserver::Observe(NULL);
+  content::WebContentsObserver::Observe(nullptr);
 }
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(WebContentsMainFrameObserver)
 
 }  // namespace dom_distiller

@@ -5,18 +5,20 @@
 #ifndef NET_URL_REQUEST_URL_REQUEST_FTP_JOB_H_
 #define NET_URL_REQUEST_URL_REQUEST_FTP_JOB_H_
 
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "net/base/auth.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
 #include "net/ftp/ftp_request_info.h"
 #include "net/ftp/ftp_transaction.h"
 #include "net/http/http_request_info.h"
 #include "net/http/http_transaction.h"
-#include "net/proxy/proxy_info.h"
-#include "net/proxy/proxy_service.h"
+#include "net/proxy_resolution/proxy_info.h"
+#include "net/proxy_resolution/proxy_resolution_service.h"
 #include "net/url_request/url_request_job.h"
 
 namespace net {
@@ -41,7 +43,7 @@ class NET_EXPORT_PRIVATE URLRequestFtpJob : public URLRequestJob {
   bool IsSafeRedirect(const GURL& location) override;
   bool GetMimeType(std::string* mime_type) const override;
   void GetResponseInfo(HttpResponseInfo* info) override;
-  HostPortPair GetSocketAddress() const override;
+  IPEndPoint GetResponseRemoteEndpoint() const override;
   void SetPriority(RequestPriority priority) override;
   void Start() override;
   void Kill() override;
@@ -49,6 +51,8 @@ class NET_EXPORT_PRIVATE URLRequestFtpJob : public URLRequestJob {
   RequestPriority priority() const { return priority_; }
 
  private:
+  class AuthData;
+
   void OnResolveProxyComplete(int result);
 
   void StartFtpTransaction();
@@ -70,17 +74,15 @@ class NET_EXPORT_PRIVATE URLRequestFtpJob : public URLRequestJob {
   void SetAuth(const AuthCredentials& credentials) override;
   void CancelAuth() override;
 
-  // TODO(ibrar):  Yet to give another look at this function.
-  UploadProgress GetUploadProgress() const override;
   int ReadRawData(IOBuffer* buf, int buf_size) override;
 
   void HandleAuthNeededResponse();
 
   RequestPriority priority_;
 
-  ProxyService* proxy_service_;
+  ProxyResolutionService* proxy_resolution_service_;
   ProxyInfo proxy_info_;
-  ProxyService::PacRequest* pac_request_;
+  std::unique_ptr<ProxyResolutionService::Request> proxy_resolve_request_;
 
   FtpRequestInfo ftp_request_info_;
   std::unique_ptr<FtpTransaction> ftp_transaction_;
@@ -91,7 +93,7 @@ class NET_EXPORT_PRIVATE URLRequestFtpJob : public URLRequestJob {
 
   bool read_in_progress_;
 
-  scoped_refptr<AuthData> auth_data_;
+  std::unique_ptr<AuthData> auth_data_;
 
   FtpTransactionFactory* ftp_transaction_factory_;
   FtpAuthCache* ftp_auth_cache_;

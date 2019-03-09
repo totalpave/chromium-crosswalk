@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
@@ -26,15 +27,21 @@
 
 InstantUnitTestBase::InstantUnitTestBase() {
   field_trial_list_.reset(new base::FieldTrialList(
-      new metrics::SHA1EntropyProvider("42")));
+      std::make_unique<variations::SHA1EntropyProvider>("42")));
 }
 
 InstantUnitTestBase::~InstantUnitTestBase() {
 }
 
 void InstantUnitTestBase::SetUp() {
-  search::EnableQueryExtractionForTesting();
-  SetUpHelper();
+  BrowserWithTestWindowTest::SetUp();
+
+  template_url_service_ = TemplateURLServiceFactory::GetForProfile(profile());
+  search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service_);
+
+  UIThreadSearchTermsData::SetGoogleBaseURL("https://www.google.com/");
+  SetUserSelectedDefaultSearchProvider("{google:baseURL}");
+  instant_service_ = InstantServiceFactory::GetForProfile(profile());
 }
 
 void InstantUnitTestBase::TearDown() {
@@ -42,27 +49,17 @@ void InstantUnitTestBase::TearDown() {
   BrowserWithTestWindowTest::TearDown();
 }
 
-#if !defined(OS_ANDROID)
-void InstantUnitTestBase::SetUpWithoutQueryExtraction() {
-  SetUpHelper();
-}
-#endif
-
 void InstantUnitTestBase::SetUserSelectedDefaultSearchProvider(
     const std::string& base_url) {
   TemplateURLData data;
   data.SetShortName(base::UTF8ToUTF16(base_url));
   data.SetKeyword(base::UTF8ToUTF16(base_url));
   data.SetURL(base_url + "url?bar={searchTerms}");
-  data.instant_url =
-      base_url + "instant?{google:forceInstantResults}foo=foo#foo=foo&strk";
   data.new_tab_url = base_url + "newtab";
   data.alternate_urls.push_back(base_url + "alt#quux={searchTerms}");
-  data.search_terms_replacement_key = "strk";
 
-  TemplateURL* template_url = new TemplateURL(data);
-  // Takes ownership of |template_url|.
-  template_url_service_->Add(template_url);
+  TemplateURL* template_url =
+      template_url_service_->Add(std::make_unique<TemplateURL>(data));
   template_url_service_->SetUserSelectedDefaultSearchProvider(template_url);
 }
 
@@ -77,25 +74,10 @@ void InstantUnitTestBase::NotifyGoogleBaseURLUpdate(
   TemplateURLServiceFactory::GetForProfile(profile())->GoogleBaseURLChanged();
 }
 
-bool InstantUnitTestBase::IsInstantServiceObserver(
-    const InstantServiceObserver* observer) const {
-  return instant_service_->observers_.HasObserver(observer);
-}
-
 TestingProfile* InstantUnitTestBase::CreateProfile() {
   TestingProfile* profile = BrowserWithTestWindowTest::CreateProfile();
   TemplateURLServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-      profile, &TemplateURLServiceFactory::BuildInstanceFor);
+      profile,
+      base::BindRepeating(&TemplateURLServiceFactory::BuildInstanceFor));
   return profile;
-}
-
-void InstantUnitTestBase::SetUpHelper() {
-  BrowserWithTestWindowTest::SetUp();
-
-  template_url_service_ = TemplateURLServiceFactory::GetForProfile(profile());
-  search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service_);
-
-  UIThreadSearchTermsData::SetGoogleBaseURL("https://www.google.com/");
-  SetUserSelectedDefaultSearchProvider("{google:baseURL}");
-  instant_service_ = InstantServiceFactory::GetForProfile(profile());
 }

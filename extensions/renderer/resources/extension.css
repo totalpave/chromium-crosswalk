@@ -181,12 +181,6 @@ input[type='search'] {
   min-width: 160px;
 }
 
-/* Remove when https://bugs.webkit.org/show_bug.cgi?id=51499 is fixed.
- * TODO(dbeam): are there more types that would benefit from this? */
-input[type='search']::-webkit-textfield-decoration-container {
-  direction: inherit;
-}
-
 /* Checked ********************************************************************/
 
 input[type='checkbox']:checked::before {
@@ -319,7 +313,7 @@ input:disabled:-webkit-any([type='password'],
  *
  *   <div class="checkbox">
  *     <label>
- *       <input type="checkbox"></input>
+ *       <input type="checkbox">
  *       <span>
  *     </label>
  *   </div>

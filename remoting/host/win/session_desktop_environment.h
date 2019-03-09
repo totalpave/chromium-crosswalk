@@ -9,6 +9,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/single_thread_task_runner.h"
 #include "remoting/host/me2me_desktop_environment.h"
 
 namespace remoting {
@@ -20,6 +21,7 @@ class SessionDesktopEnvironment : public Me2MeDesktopEnvironment {
   ~SessionDesktopEnvironment() override;
 
   // DesktopEnvironment implementation.
+  std::unique_ptr<ActionExecutor> CreateActionExecutor() override;
   std::unique_ptr<InputInjector> CreateInputInjector() override;
 
  private:
@@ -29,15 +31,17 @@ class SessionDesktopEnvironment : public Me2MeDesktopEnvironment {
       scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-      const base::Closure& inject_sas,
-      const base::Closure& lock_workstation,
-      bool supports_touch_events);
+      ui::SystemInputInjectorFactory* system_input_injector_factory,
+      base::WeakPtr<ClientSessionControl> client_session_control,
+      const base::RepeatingClosure& inject_sas,
+      const base::RepeatingClosure& lock_workstation,
+      const DesktopEnvironmentOptions& options);
 
   // Used to ask the daemon to inject Secure Attention Sequence.
-  base::Closure inject_sas_;
+  base::RepeatingClosure inject_sas_;
 
   // Used to lock the workstation for the current session.
-  base::Closure lock_workstation_;
+  base::RepeatingClosure lock_workstation_;
 
   DISALLOW_COPY_AND_ASSIGN(SessionDesktopEnvironment);
 };
@@ -50,20 +54,22 @@ class SessionDesktopEnvironmentFactory : public Me2MeDesktopEnvironmentFactory {
       scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-      const base::Closure& inject_sas,
-      const base::Closure& lock_workstation);
+      ui::SystemInputInjectorFactory* system_input_injector_factory,
+      const base::RepeatingClosure& inject_sas,
+      const base::RepeatingClosure& lock_workstation);
   ~SessionDesktopEnvironmentFactory() override;
 
   // DesktopEnvironmentFactory implementation.
   std::unique_ptr<DesktopEnvironment> Create(
-      base::WeakPtr<ClientSessionControl> client_session_control) override;
+      base::WeakPtr<ClientSessionControl> client_session_control,
+      const DesktopEnvironmentOptions& options) override;
 
  private:
   // Used to ask the daemon to inject Secure Attention Sequence.
-  base::Closure inject_sas_;
+  base::RepeatingClosure inject_sas_;
 
   // Used to lock the workstation for the current session.
-  base::Closure lock_workstation_;
+  base::RepeatingClosure lock_workstation_;
 
   DISALLOW_COPY_AND_ASSIGN(SessionDesktopEnvironmentFactory);
 };

@@ -19,7 +19,6 @@ class FrameTreeNode;
 class RenderFrameHostDelegate;
 class RenderFrameHostImpl;
 class RenderViewHostImpl;
-class RenderWidgetHostDelegate;
 class SiteInstance;
 
 // A factory for creating RenderFrameHosts. There is a global factory function
@@ -33,12 +32,12 @@ class CONTENT_EXPORT RenderFrameHostFactory {
       SiteInstance* site_instance,
       RenderViewHostImpl* render_view_host,
       RenderFrameHostDelegate* delegate,
-      RenderWidgetHostDelegate* rwh_delegate,
       FrameTree* frame_tree,
       FrameTreeNode* frame_tree_node,
       int32_t routing_id,
       int32_t widget_routing_id,
-      bool hidden);
+      bool hidden,
+      bool renderer_initiated_creation);
 
   // Returns true if there is currently a globally-registered factory.
   static bool has_factory() { return !!factory_; }
@@ -53,12 +52,12 @@ class CONTENT_EXPORT RenderFrameHostFactory {
       SiteInstance* site_instance,
       RenderViewHostImpl* render_view_host,
       RenderFrameHostDelegate* delegate,
-      RenderWidgetHostDelegate* rwh_delegate,
       FrameTree* frame_tree,
       FrameTreeNode* frame_tree_node,
       int32_t routing_id,
       int32_t widget_routing_id,
-      bool hidden) = 0;
+      bool hidden,
+      bool renderer_initiated_creation) = 0;
 
   // Registers a factory to be called when new RenderFrameHostImpls are created.
   // We have only one global factory, so there must be no factory registered

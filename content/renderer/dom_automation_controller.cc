@@ -6,14 +6,13 @@
 
 #include "base/json/json_string_value_serializer.h"
 #include "base/strings/string_util.h"
-#include "content/child/v8_value_converter_impl.h"
-#include "content/common/child_process_messages.h"
 #include "content/common/frame_messages.h"
 #include "content/renderer/render_view_impl.h"
+#include "content/renderer/v8_value_converter_impl.h"
 #include "gin/handle.h"
 #include "gin/object_template_builder.h"
-#include "third_party/WebKit/public/web/WebFrame.h"
-#include "third_party/WebKit/public/web/WebKit.h"
+#include "third_party/blink/public/web/blink.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 
 namespace content {
 
@@ -22,10 +21,10 @@ gin::WrapperInfo DomAutomationController::kWrapperInfo = {
 
 // static
 void DomAutomationController::Install(RenderFrame* render_frame,
-                                      blink::WebFrame* frame) {
-  v8::Isolate* isolate = blink::mainThreadIsolate();
+                                      blink::WebLocalFrame* frame) {
+  v8::Isolate* isolate = blink::MainThreadIsolate();
   v8::HandleScope handle_scope(isolate);
-  v8::Local<v8::Context> context = frame->mainWorldScriptContext();
+  v8::Local<v8::Context> context = frame->MainWorldScriptContext();
   if (context.IsEmpty())
     return;
 
@@ -42,7 +41,7 @@ void DomAutomationController::Install(RenderFrame* render_frame,
 }
 
 DomAutomationController::DomAutomationController(RenderFrame* render_frame)
-    : RenderFrameObserver(render_frame), automation_id_(MSG_ROUTING_NONE) {}
+    : RenderFrameObserver(render_frame) {}
 
 DomAutomationController::~DomAutomationController() {}
 
@@ -50,20 +49,16 @@ gin::ObjectTemplateBuilder DomAutomationController::GetObjectTemplateBuilder(
     v8::Isolate* isolate) {
   return gin::Wrappable<DomAutomationController>::GetObjectTemplateBuilder(
              isolate)
-      .SetMethod("send", &DomAutomationController::SendMsg)
-      .SetMethod("setAutomationId", &DomAutomationController::SetAutomationId)
-      .SetMethod("sendJSON", &DomAutomationController::SendJSON)
-      .SetMethod("sendWithId", &DomAutomationController::SendWithId);
+      .SetMethod("send", &DomAutomationController::SendMsg);
 }
 
 void DomAutomationController::OnDestruct() {}
 
 void DomAutomationController::DidCreateScriptContext(
     v8::Local<v8::Context> context,
-    int extension_group,
     int world_id) {
   // Add the domAutomationController to isolated worlds as well.
-  v8::Isolate* isolate = blink::mainThreadIsolate();
+  v8::Isolate* isolate = blink::MainThreadIsolate();
   v8::HandleScope handle_scope(isolate);
   if (context.IsEmpty())
     return;
@@ -85,9 +80,6 @@ bool DomAutomationController::SendMsg(const gin::Arguments& args) {
   if (!render_frame())
     return false;
 
-  if (automation_id_ == MSG_ROUTING_NONE)
-    return false;
-
   std::string json;
   JSONStringValueSerializer serializer(&json);
   std::unique_ptr<base::Value> value;
@@ -98,50 +90,19 @@ bool DomAutomationController::SendMsg(const gin::Arguments& args) {
   // writer is lenient, and (b) on the receiving side we wrap the JSON string
   // in square brackets, converting it to an array, then parsing it and
   // grabbing the 0th element to get the value out.
-  if (!args.PeekNext().IsEmpty() &&
-      (args.PeekNext()->IsString() || args.PeekNext()->IsBoolean() ||
-       args.PeekNext()->IsNumber())) {
+  if (!args.PeekNext().IsEmpty()) {
     V8ValueConverterImpl conv;
     value =
         conv.FromV8Value(args.PeekNext(), args.isolate()->GetCurrentContext());
   } else {
+    NOTREACHED() << "No arguments passed to domAutomationController.send";
     return false;
   }
 
-  if (!serializer.Serialize(*value))
+  if (!value || !serializer.Serialize(*value))
     return false;
 
-  bool succeeded = Send(new FrameHostMsg_DomOperationResponse(
-      routing_id(), json));
-
-  automation_id_ = MSG_ROUTING_NONE;
-  return succeeded;
-}
-
-bool DomAutomationController::SendJSON(const std::string& json) {
-  if (!render_frame())
-    return false;
-
-  if (automation_id_ == MSG_ROUTING_NONE)
-    return false;
-  bool result = Send(new FrameHostMsg_DomOperationResponse(
-      routing_id(), json));
-
-  automation_id_ = MSG_ROUTING_NONE;
-  return result;
-}
-
-bool DomAutomationController::SendWithId(int automation_id,
-                                         const std::string& str) {
-  if (!render_frame())
-    return false;
-  return Send(
-      new FrameHostMsg_DomOperationResponse(routing_id(), str));
-}
-
-bool DomAutomationController::SetAutomationId(int automation_id) {
-  automation_id_ = automation_id;
-  return true;
+  return Send(new FrameHostMsg_DomOperationResponse(routing_id(), json));
 }
 
 }  // namespace content

@@ -19,9 +19,11 @@ import("//v8/snapshot_toolchain.gni")
 #   deps
 #   visibility
 template("js2gtest") {
-  assert(defined(invoker.test_type) &&
-         (invoker.test_type == "webui" || invoker.test_type == "unit" ||
-          invoker.test_type == "extension"))
+  assert(
+      defined(invoker.test_type) &&
+      (invoker.test_type == "webui" || invoker.test_type == "unit" ||
+       invoker.test_type == "extension" || invoker.test_type == "mojo_webui" ||
+       invoker.test_type == "mojo_lite_webui"))
   action_name = target_name + "_action"
   source_set_name = target_name
 
@@ -37,9 +39,9 @@ template("js2gtest") {
 
     sources = invoker.sources
 
-    v8_shell_path = get_label_info("//v8:v8_shell($snapshot_toolchain)",
+    v8_shell_path = get_label_info("//v8:v8_shell($v8_snapshot_toolchain)",
                                    "root_out_dir") + "/v8_shell"
-    if (is_win) {
+    if (host_os == "win") {
       v8_shell_path += ".exe"
     }
 
@@ -90,7 +92,7 @@ template("js2gtest") {
     ]
 
     deps = [
-      "//v8:v8_shell($snapshot_toolchain)",
+      "//v8:v8_shell($v8_snapshot_toolchain)",
     ]
     if (defined(invoker.deps)) {
       deps += invoker.deps
@@ -116,6 +118,11 @@ template("js2gtest") {
                              "visibility",
                            ])
     sources = get_target_outputs(":$action_name")
+
+    # This empty public header is intentional to remove unnecessary build
+    # dependency.
+    public = []
+
     deps = [
       ":$action_name",
 

@@ -5,6 +5,7 @@
 #ifndef DEVICE_BLUETOOTH_DBUS_BLUETOOTH_LE_ADVERTISING_MANAGER_CLIENT_H_
 #define DEVICE_BLUETOOTH_DBUS_BLUETOOTH_LE_ADVERTISING_MANAGER_CLIENT_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -66,6 +67,19 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothLEAdvertisingManagerClient
       const dbus::ObjectPath& advertisement_object_path,
       const base::Closure& callback,
       const ErrorCallback& error_callback) = 0;
+
+  // Set's the advertising interval.
+  virtual void SetAdvertisingInterval(
+      const dbus::ObjectPath& manager_object_path,
+      uint16_t min_interval_ms,
+      uint16_t max_interval_ms,
+      const base::Closure& callback,
+      const ErrorCallback& error_callback) = 0;
+
+  // Resets advertising.
+  virtual void ResetAdvertising(const dbus::ObjectPath& manager_object_path,
+                                const base::Closure& callback,
+                                const ErrorCallback& error_callback) = 0;
 
   // Creates the instance.
   static BluetoothLEAdvertisingManagerClient* Create();

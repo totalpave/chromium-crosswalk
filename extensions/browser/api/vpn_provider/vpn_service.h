@@ -81,20 +81,8 @@ class VpnService : public KeyedService,
                          const std::string& error_message);
 
   // NetworkConfigurationObserver:
-  void OnConfigurationCreated(const std::string& service_path,
-                              const std::string& profile_path,
-                              const base::DictionaryValue& properties,
-                              Source source) override;
   void OnConfigurationRemoved(const std::string& service_path,
-                              const std::string& guid,
-                              Source source) override;
-  void OnPropertiesSet(const std::string& service_path,
-                       const std::string& guid,
-                       const base::DictionaryValue& set_properties,
-                       Source source) override;
-  void OnConfigurationProfileChanged(const std::string& service_path,
-                                     const std::string& profile_path,
-                                     Source source) override;
+                              const std::string& guid) override;
 
   // NetworkStateHandlerObserver:
   void NetworkListChanged() override;
@@ -103,10 +91,9 @@ class VpnService : public KeyedService,
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const extensions::Extension* extension,
                               extensions::UninstallReason reason) override;
-  void OnExtensionUnloaded(
-      content::BrowserContext* browser_context,
-      const extensions::Extension* extension,
-      extensions::UnloadedExtensionInfo::Reason reason) override;
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const extensions::Extension* extension,
+                           extensions::UnloadedExtensionReason reason) override;
 
   // Creates a new VPN configuration with |configuration_name| as the name and
   // attaches it to the extension with id |extension_id|.
@@ -168,11 +155,17 @@ class VpnService : public KeyedService,
   // valid to return nullptr.
   std::unique_ptr<content::VpnServiceProxy> GetVpnServiceProxy();
 
+  // Returns the single entry of |service_path_to_configuration_map_| for
+  // testing (see VpnProviderApiTest);
+  const std::string GetSingleServicepathForTesting();
+
  private:
   class VpnConfiguration;
   class VpnServiceProxyImpl;
 
   using StringToConfigurationMap = std::map<std::string, VpnConfiguration*>;
+  using StringToOwnedConfigurationMap =
+      std::map<std::string, std::unique_ptr<VpnConfiguration>>;
 
   // Callback used to indicate that configuration was successfully created.
   void OnCreateConfigurationSuccess(const SuccessCallback& callback,
@@ -253,8 +246,7 @@ class VpnService : public KeyedService,
 
   VpnConfiguration* active_configuration_;
 
-  // Key map owns the VpnConfigurations.
-  StringToConfigurationMap key_to_configuration_map_;
+  StringToOwnedConfigurationMap key_to_configuration_map_;
 
   // Service path does not own the VpnConfigurations.
   StringToConfigurationMap service_path_to_configuration_map_;

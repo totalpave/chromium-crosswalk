@@ -34,19 +34,18 @@ static base::TimeDelta PrecisionCappedDefaultDuration(
     const double timecode_scale_in_us,
     const int64_t duration_in_ns) {
   if (duration_in_ns <= 0)
-    return kNoTimestamp();
+    return kNoTimestamp;
 
   int64_t mult = duration_in_ns / 1000;
   mult /= timecode_scale_in_us;
   if (mult == 0)
-    return kNoTimestamp();
+    return kNoTimestamp;
 
   mult = static_cast<double>(mult) * timecode_scale_in_us;
   return base::TimeDelta::FromMicroseconds(mult);
 }
 
-WebMTracksParser::WebMTracksParser(const scoped_refptr<MediaLog>& media_log,
-                                   bool ignore_text_tracks)
+WebMTracksParser::WebMTracksParser(MediaLog* media_log, bool ignore_text_tracks)
     : ignore_text_tracks_(ignore_text_tracks),
       media_log_(media_log),
       audio_client_(media_log),
@@ -54,7 +53,7 @@ WebMTracksParser::WebMTracksParser(const scoped_refptr<MediaLog>& media_log,
   Reset();
 }
 
-WebMTracksParser::~WebMTracksParser() {}
+WebMTracksParser::~WebMTracksParser() = default;
 
 void WebMTracksParser::Reset() {
   ResetTrackEntry();
@@ -117,7 +116,11 @@ base::TimeDelta WebMTracksParser::GetVideoDefaultDuration(
 
 WebMParserClient* WebMTracksParser::OnListStart(int id) {
   if (id == kWebMIdContentEncodings) {
-    DCHECK(!track_content_encodings_client_.get());
+    if (track_content_encodings_client_) {
+      MEDIA_LOG(ERROR, media_log_) << "Multiple ContentEncodings lists";
+      return NULL;
+    }
+
     track_content_encodings_client_.reset(
         new WebMContentEncodingsClient(media_log_));
     return track_content_encodings_client_->OnListStart(id);
@@ -263,7 +266,7 @@ bool WebMTracksParser::OnListEnd(int id) {
         MEDIA_LOG(DEBUG, media_log_) << "Ignoring text track " << track_num_;
         ignored_tracks_.insert(track_num_);
       } else {
-        std::string track_num = base::Int64ToString(track_num_);
+        std::string track_num = base::NumberToString(track_num_);
         text_tracks_[track_num_] = TextTrackConfig(
             text_track_kind, track_name_, track_language_, track_num);
       }
@@ -346,11 +349,26 @@ bool WebMTracksParser::OnString(int id, const std::string& str) {
       return false;
     }
 
+    // This element is specified to be printable ASCII (0x20-0x7F). Here, we
+    // allow also 0x01-0x1F.
+    if (!base::IsStringASCII(str)) {
+      MEDIA_LOG(ERROR, media_log_)
+          << "Tracks CodecID element value must be an ASCII string";
+      return false;
+    }
+
     codec_id_ = str;
     return true;
   }
 
   if (id == kWebMIdName) {
+    // This element is specified to be printable ASCII (0x20-0x7F). Here, we
+    // allow also 0x01-0x1F.
+    if (!base::IsStringASCII(str)) {
+      MEDIA_LOG(ERROR, media_log_)
+          << "Tracks Name element value must be an ASCII string";
+      return false;
+    }
     track_name_ = str;
     return true;
   }

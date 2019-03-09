@@ -7,8 +7,7 @@
 
 #include <memory>
 #include <string>
-
-#include "base/memory/scoped_vector.h"
+#include <vector>
 
 namespace metrics {
 
@@ -24,8 +23,9 @@ namespace SerializationUtils {
 std::unique_ptr<MetricSample> ParseSample(const std::string& sample);
 
 // Reads all samples from a file and truncate the file when done.
-void ReadAndTruncateMetricsFromFile(const std::string& filename,
-                                    ScopedVector<MetricSample>* metrics);
+void ReadAndTruncateMetricsFromFile(
+    const std::string& filename,
+    std::vector<std::unique_ptr<MetricSample>>* metrics);
 
 // Serializes a sample and write it to filename.
 // The format for the message is:
@@ -40,7 +40,7 @@ void ReadAndTruncateMetricsFromFile(const std::string& filename,
 bool WriteMetricToFile(const MetricSample& sample, const std::string& filename);
 
 // Maximum length of a serialized message
-static const int kMessageMaxLength = 1024;
+static const size_t kMessageMaxLength = 1024;
 
 }  // namespace SerializationUtils
 }  // namespace metrics

@@ -4,73 +4,114 @@
 
 #include "gpu/ipc/service/pass_through_image_transport_surface.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/command_line.h"
 #include "build/build_config.h"
-#include "gpu/ipc/common/gpu_messages.h"
-#include "gpu/ipc/service/gpu_command_buffer_stub.h"
+#include "gpu/command_buffer/common/swap_buffers_complete_params.h"
 #include "ui/gfx/vsync_provider.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_switches.h"
 
 namespace gpu {
 
+namespace {
+// Number of swap generations before vsync is reenabled after we've stopped
+// doing multiple swaps per frame.
+const int kMultiWindowSwapEnableVSyncDelay = 60;
+
+int g_current_swap_generation_ = 0;
+int g_num_swaps_in_current_swap_generation_ = 0;
+int g_last_multi_window_swap_generation_ = 0;
+
+bool HasSwitch(const char switch_constant[]) {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(switch_constant);
+}
+
+}  // anonymous namespace
+
 PassThroughImageTransportSurface::PassThroughImageTransportSurface(
-    GpuChannelManager* /* manager */,
-    GpuCommandBufferStub* stub,
-    gl::GLSurface* surface)
+    base::WeakPtr<ImageTransportSurfaceDelegate> delegate,
+    gl::GLSurface* surface,
+    bool override_vsync_for_multi_window_swap)
     : GLSurfaceAdapter(surface),
-      stub_(stub->AsWeakPtr()),
-      did_set_swap_interval_(false),
+      is_gpu_vsync_disabled_(HasSwitch(switches::kDisableGpuVsync)),
+      is_multi_window_swap_vsync_override_enabled_(
+          override_vsync_for_multi_window_swap),
+      delegate_(delegate),
       weak_ptr_factory_(this) {}
 
-bool PassThroughImageTransportSurface::Initialize(
-    gl::GLSurface::Format format) {
+PassThroughImageTransportSurface::~PassThroughImageTransportSurface() {
+}
+
+bool PassThroughImageTransportSurface::Initialize(gl::GLSurfaceFormat format) {
+  DCHECK(gl::GLSurfaceAdapter::SupportsPresentationCallback());
   // The surface is assumed to have already been initialized.
-  if (!stub_.get() || !stub_->decoder())
-    return false;
-  stub_->SetLatencyInfoCallback(
-      base::Bind(&PassThroughImageTransportSurface::SetLatencyInfo,
-                 base::Unretained(this)));
   return true;
 }
 
-void PassThroughImageTransportSurface::Destroy() {
-  GLSurfaceAdapter::Destroy();
-}
-
-gfx::SwapResult PassThroughImageTransportSurface::SwapBuffers() {
-  std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info =
-      StartSwapBuffers();
-  gfx::SwapResult result = gl::GLSurfaceAdapter::SwapBuffers();
-  FinishSwapBuffers(std::move(latency_info), result);
+gfx::SwapResult PassThroughImageTransportSurface::SwapBuffers(
+    PresentationCallback callback) {
+  gfx::SwapResponse response;
+  StartSwapBuffers(&response);
+  gfx::SwapResult result = gl::GLSurfaceAdapter::SwapBuffers(
+      base::BindOnce(&PassThroughImageTransportSurface::BufferPresented,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  response.result = result;
+  FinishSwapBuffers(std::move(response));
   return result;
 }
 
 void PassThroughImageTransportSurface::SwapBuffersAsync(
-    const GLSurface::SwapCompletionCallback& callback) {
-  std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info =
-      StartSwapBuffers();
+    SwapCompletionCallback completion_callback,
+    PresentationCallback presentation_callback) {
+  gfx::SwapResponse response;
+  StartSwapBuffers(&response);
 
   // We use WeakPtr here to avoid manual management of life time of an instance
   // of this class. Callback will not be called once the instance of this class
   // is destroyed. However, this also means that the callback can be run on
   // the calling thread only.
-  gl::GLSurfaceAdapter::SwapBuffersAsync(base::Bind(
-      &PassThroughImageTransportSurface::FinishSwapBuffersAsync,
-      weak_ptr_factory_.GetWeakPtr(), base::Passed(&latency_info), callback));
+  gl::GLSurfaceAdapter::SwapBuffersAsync(
+      base::BindOnce(&PassThroughImageTransportSurface::FinishSwapBuffersAsync,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(completion_callback), std::move(response)),
+      base::BindOnce(&PassThroughImageTransportSurface::BufferPresented,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(presentation_callback)));
 }
 
-gfx::SwapResult PassThroughImageTransportSurface::PostSubBuffer(int x,
-                                                                int y,
-                                                                int width,
-                                                                int height) {
-  std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info =
-      StartSwapBuffers();
-  gfx::SwapResult result =
-      gl::GLSurfaceAdapter::PostSubBuffer(x, y, width, height);
-  FinishSwapBuffers(std::move(latency_info), result);
+gfx::SwapResult PassThroughImageTransportSurface::SwapBuffersWithBounds(
+    const std::vector<gfx::Rect>& rects,
+    PresentationCallback callback) {
+  gfx::SwapResponse response;
+  StartSwapBuffers(&response);
+  gfx::SwapResult result = gl::GLSurfaceAdapter::SwapBuffersWithBounds(
+      rects,
+      base::BindOnce(&PassThroughImageTransportSurface::BufferPresented,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  response.result = result;
+  FinishSwapBuffers(std::move(response));
+  return result;
+}
+
+gfx::SwapResult PassThroughImageTransportSurface::PostSubBuffer(
+    int x,
+    int y,
+    int width,
+    int height,
+    PresentationCallback callback) {
+  gfx::SwapResponse response;
+  StartSwapBuffers(&response);
+  gfx::SwapResult result = gl::GLSurfaceAdapter::PostSubBuffer(
+      x, y, width, height,
+      base::BindOnce(&PassThroughImageTransportSurface::BufferPresented,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  response.result = result;
+  FinishSwapBuffers(std::move(response));
+
   return result;
 }
 
@@ -79,107 +120,132 @@ void PassThroughImageTransportSurface::PostSubBufferAsync(
     int y,
     int width,
     int height,
-    const GLSurface::SwapCompletionCallback& callback) {
-  std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info =
-      StartSwapBuffers();
+    SwapCompletionCallback completion_callback,
+    PresentationCallback presentation_callback) {
+  gfx::SwapResponse response;
+  StartSwapBuffers(&response);
   gl::GLSurfaceAdapter::PostSubBufferAsync(
       x, y, width, height,
-      base::Bind(&PassThroughImageTransportSurface::FinishSwapBuffersAsync,
-                 weak_ptr_factory_.GetWeakPtr(), base::Passed(&latency_info),
-                 callback));
+      base::BindOnce(&PassThroughImageTransportSurface::FinishSwapBuffersAsync,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(completion_callback), std::move(response)),
+      base::BindOnce(&PassThroughImageTransportSurface::BufferPresented,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(presentation_callback)));
 }
 
-gfx::SwapResult PassThroughImageTransportSurface::CommitOverlayPlanes() {
-  std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info =
-      StartSwapBuffers();
-  gfx::SwapResult result = gl::GLSurfaceAdapter::CommitOverlayPlanes();
-  FinishSwapBuffers(std::move(latency_info), result);
+gfx::SwapResult PassThroughImageTransportSurface::CommitOverlayPlanes(
+    PresentationCallback callback) {
+  gfx::SwapResponse response;
+  StartSwapBuffers(&response);
+  gfx::SwapResult result = gl::GLSurfaceAdapter::CommitOverlayPlanes(
+      base::BindOnce(&PassThroughImageTransportSurface::BufferPresented,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  response.result = result;
+  FinishSwapBuffers(std::move(response));
   return result;
 }
 
 void PassThroughImageTransportSurface::CommitOverlayPlanesAsync(
-    const GLSurface::SwapCompletionCallback& callback) {
-  std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info =
-      StartSwapBuffers();
-  gl::GLSurfaceAdapter::CommitOverlayPlanesAsync(base::Bind(
-      &PassThroughImageTransportSurface::FinishSwapBuffersAsync,
-      weak_ptr_factory_.GetWeakPtr(), base::Passed(&latency_info), callback));
+    SwapCompletionCallback callback,
+    PresentationCallback presentation_callback) {
+  gfx::SwapResponse response;
+  StartSwapBuffers(&response);
+  gl::GLSurfaceAdapter::CommitOverlayPlanesAsync(
+      base::BindOnce(&PassThroughImageTransportSurface::FinishSwapBuffersAsync,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                     std::move(response)),
+      base::BindOnce(&PassThroughImageTransportSurface::BufferPresented,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(presentation_callback)));
 }
 
-bool PassThroughImageTransportSurface::OnMakeCurrent(gl::GLContext* context) {
-  if (!did_set_swap_interval_) {
-    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-            switches::kDisableGpuVsync))
-      context->ForceSwapIntervalZero(true);
-    else
-      context->SetSwapInterval(1);
-    did_set_swap_interval_ = true;
-  }
-  return true;
+void PassThroughImageTransportSurface::SetVSyncEnabled(bool enabled) {
+  if (vsync_enabled_ == enabled)
+    return;
+  vsync_enabled_ = enabled;
+  GLSurfaceAdapter::SetVSyncEnabled(enabled);
 }
 
-PassThroughImageTransportSurface::~PassThroughImageTransportSurface() {
-  if (stub_.get()) {
-    stub_->SetLatencyInfoCallback(
-        base::Callback<void(const std::vector<ui::LatencyInfo>&)>());
-  }
-}
-
-void PassThroughImageTransportSurface::SetLatencyInfo(
-    const std::vector<ui::LatencyInfo>& latency_info) {
-  latency_info_.insert(latency_info_.end(), latency_info.begin(),
-                       latency_info.end());
-}
-
-void PassThroughImageTransportSurface::SendVSyncUpdateIfAvailable() {
-  gfx::VSyncProvider* vsync_provider = GetVSyncProvider();
-  if (vsync_provider) {
-    vsync_provider->GetVSyncParameters(base::Bind(
-        &GpuCommandBufferStub::SendUpdateVSyncParameters, stub_->AsWeakPtr()));
-  }
-}
-
-std::unique_ptr<std::vector<ui::LatencyInfo>>
-PassThroughImageTransportSurface::StartSwapBuffers() {
-  // GetVsyncValues before SwapBuffers to work around Mali driver bug:
-  // crbug.com/223558.
-  SendVSyncUpdateIfAvailable();
-
-  base::TimeTicks swap_time = base::TimeTicks::Now();
-  for (auto& latency : latency_info_) {
-    latency.AddLatencyNumberWithTimestamp(
-        ui::INPUT_EVENT_GPU_SWAP_BUFFER_COMPONENT, 0, 0, swap_time, 1);
+void PassThroughImageTransportSurface::UpdateVSyncEnabled() {
+  if (is_gpu_vsync_disabled_) {
+    SetVSyncEnabled(false);
+    return;
   }
 
-  std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info(
-      new std::vector<ui::LatencyInfo>());
-  latency_info->swap(latency_info_);
+  bool should_override_vsync = false;
+  if (is_multi_window_swap_vsync_override_enabled_) {
+    // This code is a simple way of enforcing that we only vsync if one surface
+    // is swapping per frame. This provides single window cases a stable refresh
+    // while allowing multi-window cases to not slow down due to multiple syncs
+    // on a single thread. A better way to fix this problem would be to have
+    // each surface present on its own thread.
 
-  return latency_info;
+    if (g_current_swap_generation_ == swap_generation_) {
+      // No other surface has swapped since we swapped last time.
+      if (g_num_swaps_in_current_swap_generation_ > 1)
+        g_last_multi_window_swap_generation_ = g_current_swap_generation_;
+      g_num_swaps_in_current_swap_generation_ = 0;
+      g_current_swap_generation_++;
+    }
+
+    swap_generation_ = g_current_swap_generation_;
+    g_num_swaps_in_current_swap_generation_++;
+
+    should_override_vsync =
+        (g_num_swaps_in_current_swap_generation_ > 1) ||
+        (g_current_swap_generation_ - g_last_multi_window_swap_generation_ <
+         kMultiWindowSwapEnableVSyncDelay);
+  }
+  SetVSyncEnabled(!should_override_vsync);
+}
+
+void PassThroughImageTransportSurface::StartSwapBuffers(
+    gfx::SwapResponse* response) {
+  UpdateVSyncEnabled();
+  allow_running_presentation_callback_ = false;
+
+  // Populated later in the DecoderClient, before passing to client.
+  response->swap_id = 0;
+
+  response->swap_start = base::TimeTicks::Now();
 }
 
 void PassThroughImageTransportSurface::FinishSwapBuffers(
-    std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info,
-    gfx::SwapResult result) {
-  base::TimeTicks swap_ack_time = base::TimeTicks::Now();
-  for (auto& latency : *latency_info) {
-    latency.AddLatencyNumberWithTimestamp(
-        ui::INPUT_EVENT_LATENCY_TERMINATED_FRAME_SWAP_COMPONENT, 0, 0,
-        swap_ack_time, 1);
-  }
+    gfx::SwapResponse response) {
+  response.swap_end = base::TimeTicks::Now();
 
-  GpuCommandBufferMsg_SwapBuffersCompleted_Params params;
-  params.latency_info = *latency_info;
-  params.result = result;
-  stub_->SendSwapBuffersCompleted(params);
+  if (delegate_) {
+    SwapBuffersCompleteParams params;
+    params.swap_response = std::move(response);
+    delegate_->DidSwapBuffersComplete(std::move(params));
+  }
+  allow_running_presentation_callback_ = true;
 }
 
 void PassThroughImageTransportSurface::FinishSwapBuffersAsync(
-    std::unique_ptr<std::vector<ui::LatencyInfo>> latency_info,
-    GLSurface::SwapCompletionCallback callback,
-    gfx::SwapResult result) {
-  FinishSwapBuffers(std::move(latency_info), result);
-  callback.Run(result);
+    SwapCompletionCallback callback,
+    gfx::SwapResponse response,
+    gfx::SwapResult result,
+    std::unique_ptr<gfx::GpuFence> gpu_fence) {
+  // TODO(afrantzis): It's probably not ideal to introduce a wait here.
+  // However, since this is a temporary step to maintain existing behavior
+  // until we are ready to expose the gpu_fence further, and fences are only
+  // enabled with a flag, this should be fine for now.
+  if (gpu_fence)
+    gpu_fence->Wait();
+  response.result = result;
+  FinishSwapBuffers(std::move(response));
+  std::move(callback).Run(result, nullptr);
+}
+
+void PassThroughImageTransportSurface::BufferPresented(
+    GLSurface::PresentationCallback callback,
+    const gfx::PresentationFeedback& feedback) {
+  DCHECK(allow_running_presentation_callback_);
+  std::move(callback).Run(feedback);
+  if (delegate_)
+    delegate_->BufferPresented(feedback);
 }
 
 }  // namespace gpu

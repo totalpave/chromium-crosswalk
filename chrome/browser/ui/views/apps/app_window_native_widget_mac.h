@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROME_BROWSER_UI_VIEWS_APPS_APP_WINDOW_NATIVE_WIDGET_MAC_H
-#define CHROME_BROWSER_UI_VIEWS_APPS_APP_WINDOW_NATIVE_WIDGET_MAC_H
+#ifndef CHROME_BROWSER_UI_VIEWS_APPS_APP_WINDOW_NATIVE_WIDGET_MAC_H_
+#define CHROME_BROWSER_UI_VIEWS_APPS_APP_WINDOW_NATIVE_WIDGET_MAC_H_
 
 #include "base/macros.h"
 #include "ui/views/widget/native_widget_mac.h"
@@ -22,8 +22,11 @@ class AppWindowNativeWidgetMac : public views::NativeWidgetMac {
 
  protected:
   // NativeWidgetMac:
+  void PopulateCreateWindowParams(
+      const views::Widget::InitParams& widget_params,
+      views_bridge_mac::mojom::CreateWindowParams* params) override;
   NativeWidgetMacNSWindow* CreateNSWindow(
-      const views::Widget::InitParams& params) override;
+      const views_bridge_mac::mojom::CreateWindowParams* params) override;
 
  private:
   // Weak. Owned by extensions::AppWindow (which manages our Widget via its
@@ -33,4 +36,4 @@ class AppWindowNativeWidgetMac : public views::NativeWidgetMac {
   DISALLOW_COPY_AND_ASSIGN(AppWindowNativeWidgetMac);
 };
 
-#endif  // CHROME_BROWSER_UI_VIEWS_APPS_APP_WINDOW_NATIVE_WIDGET_MAC_H
+#endif  // CHROME_BROWSER_UI_VIEWS_APPS_APP_WINDOW_NATIVE_WIDGET_MAC_H_

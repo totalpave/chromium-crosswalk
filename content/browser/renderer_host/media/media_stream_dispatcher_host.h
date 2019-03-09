@@ -5,128 +5,96 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_MEDIA_MEDIA_STREAM_DISPATCHER_HOST_H_
 #define CONTENT_BROWSER_RENDERER_HOST_MEDIA_MEDIA_STREAM_DISPATCHER_HOST_H_
 
-#include <map>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "content/browser/renderer_host/media/media_stream_manager.h"
-#include "content/browser/renderer_host/media/media_stream_requester.h"
+#include "content/browser/media/media_devices_util.h"
 #include "content/common/content_export.h"
-#include "content/common/media/media_stream_options.h"
-#include "content/public/browser/browser_message_filter.h"
-#include "content/public/browser/resource_context.h"
-#include "url/origin.h"
+#include "mojo/public/cpp/bindings/binding_set.h"
+#include "third_party/blink/public/common/mediastream/media_stream_controls.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 
 namespace content {
 
 class MediaStreamManager;
-class MediaStreamUIProxy;
-class ResourceContext;
 
 // MediaStreamDispatcherHost is a delegate for Media Stream API messages used by
 // MediaStreamImpl.  There is one MediaStreamDispatcherHost per
 // RenderProcessHost, the former owned by the latter.
-class CONTENT_EXPORT MediaStreamDispatcherHost : public BrowserMessageFilter,
-                                                 public MediaStreamRequester {
+class CONTENT_EXPORT MediaStreamDispatcherHost
+    : public blink::mojom::MediaStreamDispatcherHost {
  public:
   MediaStreamDispatcherHost(int render_process_id,
-                            const std::string& salt,
-                            MediaStreamManager* media_stream_manager,
-                            bool use_fake_ui = false);
-
-  // MediaStreamRequester implementation.
-  void StreamGenerated(int render_frame_id,
-                       int page_request_id,
-                       const std::string& label,
-                       const StreamDeviceInfoArray& audio_devices,
-                       const StreamDeviceInfoArray& video_devices) override;
-  void StreamGenerationFailed(
-      int render_frame_id,
-      int page_request_id,
-      content::MediaStreamRequestResult result) override;
-  void DeviceStopped(int render_frame_id,
-                     const std::string& label,
-                     const StreamDeviceInfo& device) override;
-  void DevicesEnumerated(int render_frame_id,
-                         int page_request_id,
-                         const std::string& label,
-                         const StreamDeviceInfoArray& devices) override;
-  void DeviceOpened(int render_frame_id,
-                    int page_request_id,
-                    const std::string& label,
-                    const StreamDeviceInfo& video_device) override;
-  void DevicesChanged(MediaStreamType type) override;
-
-  // BrowserMessageFilter implementation.
-  bool OnMessageReceived(const IPC::Message& message) override;
-  void OnChannelClosing() override;
-
- protected:
+                            int render_frame_id,
+                            MediaStreamManager* media_stream_manager);
   ~MediaStreamDispatcherHost() override;
+  static void Create(int render_process_id,
+                     int render_frame_id,
+                     MediaStreamManager* media_stream_manager,
+                     blink::mojom::MediaStreamDispatcherHostRequest request);
+
+  void set_salt_and_origin_callback_for_testing(
+      MediaDeviceSaltAndOriginCallback callback) {
+    salt_and_origin_callback_ = std::move(callback);
+  }
+  void SetMediaStreamDeviceObserverForTesting(
+      blink::mojom::MediaStreamDeviceObserverPtr observer) {
+    media_stream_device_observer_ = std::move(observer);
+  }
 
  private:
   friend class MockMediaStreamDispatcherHost;
 
-  void OnGenerateStream(int render_frame_id,
-                        int page_request_id,
-                        const StreamControls& controls,
-                        const url::Origin& security_origin,
-                        bool user_gesture);
-  void OnCancelGenerateStream(int render_frame_id,
-                              int page_request_id);
-  void OnStopStreamDevice(int render_frame_id,
-                          const std::string& device_id);
+  const blink::mojom::MediaStreamDeviceObserverPtr&
+  GetMediaStreamDeviceObserver();
+  void OnMediaStreamDeviceObserverConnectionError();
+  void CancelAllRequests();
 
-  void OnEnumerateDevices(int render_frame_id,
-                          int page_request_id,
-                          MediaStreamType type,
-                          const url::Origin& security_origin);
+  // mojom::MediaStreamDispatcherHost implementation
+  void GenerateStream(int32_t request_id,
+                      const blink::StreamControls& controls,
+                      bool user_gesture,
+                      GenerateStreamCallback callback) override;
+  void CancelRequest(int32_t request_id) override;
+  void StopStreamDevice(const std::string& device_id,
+                        int32_t session_id) override;
+  void OpenDevice(int32_t request_id,
+                  const std::string& device_id,
+                  blink::MediaStreamType type,
+                  OpenDeviceCallback callback) override;
+  void CloseDevice(const std::string& label) override;
+  void SetCapturingLinkSecured(int32_t session_id,
+                               blink::MediaStreamType type,
+                               bool is_secure) override;
+  void OnStreamStarted(const std::string& label) override;
 
-  void OnCancelEnumerateDevices(int render_frame_id,
-                                int page_request_id);
-
-  void OnOpenDevice(int render_frame_id,
-                    int page_request_id,
+  void DoGenerateStream(int32_t request_id,
+                        const blink::StreamControls& controls,
+                        bool user_gesture,
+                        GenerateStreamCallback callback,
+                        MediaDeviceSaltAndOrigin salt_and_origin);
+  void DoOpenDevice(int32_t request_id,
                     const std::string& device_id,
-                    MediaStreamType type,
-                    const url::Origin& security_origin);
+                    blink::MediaStreamType type,
+                    OpenDeviceCallback callback,
+                    MediaDeviceSaltAndOrigin salt_and_origin);
 
-  void OnCloseDevice(int render_frame_id,
-                     const std::string& label);
+  void OnDeviceStopped(const std::string& label,
+                       const blink::MediaStreamDevice& device);
+  void OnDeviceChanged(const std::string& label,
+                       const blink::MediaStreamDevice& old_device,
+                       const blink::MediaStreamDevice& new_device);
 
-  void OnSubscribeToDeviceChangeNotifications(
-      int render_frame_id,
-      const url::Origin& security_origin);
+  static int next_requester_id_;
 
-  void OnCancelDeviceChangeNotifications(int render_frame_id);
-
-  void StoreRequest(int render_frame_id,
-                    int page_request_id,
-                    const std::string& label);
-
-  // IPC message handler: Set if the video capturing is secure.
-  void OnSetCapturingLinkSecured(int session_id,
-                                 content::MediaStreamType type,
-                                 bool is_secure);
-
-  std::unique_ptr<MediaStreamUIProxy> CreateMediaStreamUIProxy();
-  void HandleCheckAccessResponse(std::unique_ptr<MediaStreamUIProxy> ui_proxy,
-                                 int render_frame_id,
-                                 bool have_access);
-
-  int render_process_id_;
-  std::string salt_;
+  const int render_process_id_;
+  const int render_frame_id_;
+  const int requester_id_;
   MediaStreamManager* media_stream_manager_;
-
-  struct DeviceChangeSubscriberInfo {
-    int render_frame_id;
-    url::Origin security_origin;
-  };
-  std::vector<DeviceChangeSubscriberInfo> device_change_subscribers_;
-  bool use_fake_ui_;
+  blink::mojom::MediaStreamDeviceObserverPtr media_stream_device_observer_;
+  MediaDeviceSaltAndOriginCallback salt_and_origin_callback_;
 
   base::WeakPtrFactory<MediaStreamDispatcherHost> weak_factory_;
 

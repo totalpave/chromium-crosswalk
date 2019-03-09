@@ -12,10 +12,10 @@
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "breakpad/src/client/windows/crash_generation/client_info.h"
-#include "breakpad/src/client/windows/crash_generation/crash_generation_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/breakpad/breakpad/src/client/windows/crash_generation/client_info.h"
+#include "third_party/breakpad/breakpad/src/client/windows/crash_generation/crash_generation_server.h"
 
 namespace {
 
@@ -140,9 +140,13 @@ void BreakpadWinDeathTest::SetUp() {
 }
 
 TEST_F(BreakpadWinDeathTest, TestAccessViolation) {
+#if !defined(ADDRESS_SANITIZER)
+  // ASan overrides the user unhandled exception filter so we won't receive this
+  // callback.
   if (callbacks_.get()) {
     EXPECT_CALL(*callbacks_, OnClientDumpRequested());
   }
+#endif  // !defined(ADDRESS_SANITIZER)
 
   // Generate access violation exception.
   ASSERT_DEATH(*reinterpret_cast<volatile int*>(NULL) = 1, "");

@@ -4,25 +4,32 @@
 
 #include "ui/views/widget/native_widget_aura.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
-#include "third_party/skia/include/core/SkRegion.h"
+#include "services/ws/public/mojom/window_manager.mojom.h"
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/client/capture_client.h"
 #include "ui/aura/client/cursor_client.h"
+#include "ui/aura/client/drag_drop_client.h"
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/client/screen_position_client.h"
-#include "ui/aura/client/window_tree_client.h"
+#include "ui/aura/client/window_parenting_client.h"
+#include "ui/aura/client/window_types.h"
 #include "ui/aura/env.h"
+#include "ui/aura/mus/property_utils.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_observer.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/base/class_property.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/compositor/layer.h"
@@ -35,28 +42,30 @@
 #include "ui/views/drag_utils.h"
 #include "ui/views/views_delegate.h"
 #include "ui/views/widget/drop_helper.h"
+#include "ui/views/widget/focus_manager_event_handler.h"
 #include "ui/views/widget/native_widget_delegate.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/tooltip_manager_aura.h"
 #include "ui/views/widget/widget_aura_utils.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/window_reorderer.h"
+#include "ui/wm/core/coordinate_conversion.h"
 #include "ui/wm/core/shadow_types.h"
+#include "ui/wm/core/transient_window_manager.h"
 #include "ui/wm/core/window_animations.h"
+#include "ui/wm/core/window_properties.h"
 #include "ui/wm/core/window_util.h"
 #include "ui/wm/public/activation_client.h"
-#include "ui/wm/public/drag_drop_client.h"
 #include "ui/wm/public/window_move_client.h"
-#include "ui/wm/public/window_types.h"
 
 #if defined(OS_WIN)
 #include "base/win/scoped_gdi_object.h"
-#include "base/win/win_util.h"
-#include "ui/base/l10n/l10n_util_win.h"
+#include "ui/gfx/platform_font_win.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_win.h"
 #endif
 
-#if defined(USE_X11) && !defined(OS_CHROMEOS)
+#if defined(USE_X11)
+#include "ui/views/linux_ui/linux_ui.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_x11.h"
 #endif
 
@@ -65,12 +74,27 @@
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host.h"
 #endif
 
+DEFINE_UI_CLASS_PROPERTY_TYPE(views::internal::NativeWidgetPrivate*)
+
 namespace views {
 
 namespace {
 
+DEFINE_UI_CLASS_PROPERTY_KEY(internal::NativeWidgetPrivate*,
+                             kNativeWidgetPrivateKey,
+                             nullptr)
+
 void SetRestoreBounds(aura::Window* window, const gfx::Rect& bounds) {
   window->SetProperty(aura::client::kRestoreBoundsKey, new gfx::Rect(bounds));
+}
+
+void SetIcon(aura::Window* window,
+             const aura::WindowProperty<gfx::ImageSkia*>* key,
+             const gfx::ImageSkia& value) {
+  if (value.isNull())
+    window->ClearProperty(key);
+  else
+    window->SetProperty(key, new gfx::ImageSkia(value));
 }
 
 }  // namespace
@@ -78,53 +102,84 @@ void SetRestoreBounds(aura::Window* window, const gfx::Rect& bounds) {
 ////////////////////////////////////////////////////////////////////////////////
 // NativeWidgetAura, public:
 
-NativeWidgetAura::NativeWidgetAura(internal::NativeWidgetDelegate* delegate)
+NativeWidgetAura::NativeWidgetAura(internal::NativeWidgetDelegate* delegate,
+                                   bool is_parallel_widget_in_window_manager,
+                                   aura::Env* env)
     : delegate_(delegate),
-      window_(new aura::Window(this)),
+      is_parallel_widget_in_window_manager_(
+          is_parallel_widget_in_window_manager),
+      window_(new aura::Window(this, aura::client::WINDOW_TYPE_UNKNOWN, env)),
       ownership_(Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET),
       destroying_(false),
       cursor_(gfx::kNullCursor),
-      saved_window_state_(ui::SHOW_STATE_DEFAULT),
       close_widget_factory_(this) {
   aura::client::SetFocusChangeObserver(window_, this);
-  aura::client::SetActivationChangeObserver(window_, this);
+  wm::SetActivationChangeObserver(window_, this);
 }
 
 // static
 void NativeWidgetAura::RegisterNativeWidgetForWindow(
       internal::NativeWidgetPrivate* native_widget,
       aura::Window* window) {
-  window->set_user_data(native_widget);
+  window->SetProperty(kNativeWidgetPrivateKey, native_widget);
+}
+
+// static
+void NativeWidgetAura::AssignIconToAuraWindow(aura::Window* window,
+                                              const gfx::ImageSkia& window_icon,
+                                              const gfx::ImageSkia& app_icon) {
+  if (window) {
+    SetIcon(window, aura::client::kWindowIconKey, window_icon);
+    SetIcon(window, aura::client::kAppIconKey, app_icon);
+  }
+}
+
+// static
+void NativeWidgetAura::SetShadowElevationFromInitParams(
+    aura::Window* window,
+    const Widget::InitParams& params) {
+  if (params.shadow_type == Widget::InitParams::SHADOW_TYPE_NONE) {
+    wm::SetShadowElevation(window, wm::kShadowElevationNone);
+  } else if (params.shadow_type == Widget::InitParams::SHADOW_TYPE_DROP &&
+             params.shadow_elevation) {
+    wm::SetShadowElevation(window, *params.shadow_elevation);
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // NativeWidgetAura, internal::NativeWidgetPrivate implementation:
 
 void NativeWidgetAura::InitNativeWidget(const Widget::InitParams& params) {
-  // Aura needs to know which desktop (Ash or regular) will manage this widget.
   // See Widget::InitParams::context for details.
   DCHECK(params.parent || params.context);
 
   ownership_ = params.ownership;
 
   RegisterNativeWidgetForWindow(this, window_);
-  window_->SetType(GetAuraWindowTypeForWidgetType(params.type));
+  // MusClient has assertions that ws::mojom::WindowType matches
+  // views::Widget::InitParams::Type.
+  aura::SetWindowType(window_, static_cast<ws::mojom::WindowType>(params.type));
+  if (params.corner_radius) {
+    window_->SetProperty(aura::client::kWindowCornerRadiusKey,
+                         *params.corner_radius);
+  }
   window_->SetProperty(aura::client::kShowStateKey, params.show_state);
   if (params.type == Widget::InitParams::TYPE_BUBBLE)
-    aura::client::SetHideOnDeactivate(window_, true);
+    wm::SetHideOnDeactivate(window_, true);
   window_->SetTransparent(
       params.opacity == Widget::InitParams::TRANSLUCENT_WINDOW);
+
+  // Check for SHADOW_TYPE_NONE before aura::Window::Init() to ensure observers
+  // do not add useless shadow layers by deriving one from the window type.
+  SetShadowElevationFromInitParams(window_, params);
+
   window_->Init(params.layer_type);
   // Set name after layer init so it propagates to layer.
-  window_->SetName(params.name);
-  if (params.shadow_type == Widget::InitParams::SHADOW_TYPE_NONE)
-    SetShadowType(window_, wm::SHADOW_TYPE_NONE);
-  else if (params.shadow_type == Widget::InitParams::SHADOW_TYPE_DROP)
-    SetShadowType(window_, wm::SHADOW_TYPE_RECTANGULAR);
+  window_->SetName(params.name.empty() ? "NativeWidgetAura" : params.name);
   if (params.type == Widget::InitParams::TYPE_CONTROL)
     window_->Show();
 
-  delegate_->OnNativeWidgetCreated(false);
+  delegate_->OnNativeWidgetCreated();
 
   gfx::Rect window_bounds = params.bounds;
   gfx::NativeView parent = params.parent;
@@ -132,21 +187,31 @@ void NativeWidgetAura::InitNativeWidget(const Widget::InitParams& params) {
   if (!params.child) {
     // Set up the transient child before the window is added. This way the
     // LayoutManager knows the window has a transient parent.
-    if (parent && parent->type() != ui::wm::WINDOW_TYPE_UNKNOWN) {
+    if (parent && parent->type() != aura::client::WINDOW_TYPE_UNKNOWN) {
       wm::AddTransientChild(parent, window_);
       if (!context)
         context = parent;
-      parent = NULL;
+      parent = nullptr;
+
+      // Generally transient bubbles are showing state associated to the parent
+      // window. Make sure the transient bubble is only visible if the parent is
+      // visible, otherwise the bubble may not make sense by itself.
+      if (params.type == Widget::InitParams::TYPE_BUBBLE) {
+        wm::TransientWindowManager::GetOrCreate(window_)
+            ->set_parent_controls_visibility(true);
+      }
     }
     // SetAlwaysOnTop before SetParent so that always-on-top container is used.
     SetAlwaysOnTop(params.keep_on_top);
+
     // Make sure we have a real |window_bounds|.
-    if (parent && window_bounds == gfx::Rect()) {
-      // If a parent is specified but no bounds are given,
-      // use the origin of the parent's display so that the widget
-      // will be added to the same display as the parent.
+    aura::Window* parent_or_context = parent ? parent : context;
+    if (parent_or_context && window_bounds == gfx::Rect()) {
+      // If a parent or context is specified but no bounds are given, use the
+      // origin of the display so that the widget will be added to the same
+      // display as the parent or context.
       gfx::Rect bounds = display::Screen::GetScreen()
-                             ->GetDisplayNearestWindow(parent)
+                             ->GetDisplayNearestWindow(parent_or_context)
                              .bounds();
       window_bounds.set_origin(bounds.origin());
     }
@@ -163,7 +228,6 @@ void NativeWidgetAura::InitNativeWidget(const Widget::InitParams& params) {
         window_, context->GetRootWindow(), window_bounds);
   }
 
-  // Start observing property changes.
   window_->AddObserver(this);
 
   // Wait to set the bounds until we have a parent. That way we can know our
@@ -173,7 +237,10 @@ void NativeWidgetAura::InitNativeWidget(const Widget::InitParams& params) {
     SetRestoreBounds(window_, window_bounds);
   else
     SetBounds(window_bounds);
-  window_->set_ignore_events(!params.accept_events);
+  window_->SetEventTargetingPolicy(
+      params.accept_events
+          ? ws::mojom::EventTargetingPolicy::TARGET_AND_DESCENDANTS
+          : ws::mojom::EventTargetingPolicy::NONE);
   DCHECK(GetWidget()->GetRootView());
   if (params.type != Widget::InitParams::TYPE_TOOLTIP)
     tooltip_manager_.reset(new views::TooltipManagerAura(GetWidget()));
@@ -184,7 +251,12 @@ void NativeWidgetAura::InitNativeWidget(const Widget::InitParams& params) {
     aura::client::SetDragDropDelegate(window_, this);
   }
 
-  aura::client::SetActivationDelegate(window_, this);
+  if (params.type == Widget::InitParams::TYPE_WINDOW) {
+    focus_manager_event_handler_ =
+        std::make_unique<FocusManagerEventHandler>(GetWidget(), window_);
+  }
+
+  wm::SetActivationDelegate(window_, this);
 
   window_reorderer_.reset(new WindowReorderer(window_,
       GetWidget()->GetRootView()));
@@ -285,8 +357,10 @@ ui::InputMethod* NativeWidgetAura::GetInputMethod() {
 }
 
 void NativeWidgetAura::CenterWindow(const gfx::Size& size) {
-  if (!window_)
+  if (!window_ || is_parallel_widget_in_window_manager_)
     return;
+
+  window_->SetProperty(aura::client::kPreferredSize, new gfx::Size(size));
 
   gfx::Rect parent_bounds(window_->parent()->GetBoundsInRootWindow());
   // When centering window, we take the intersection of the host and
@@ -345,9 +419,9 @@ void NativeWidgetAura::GetWindowPlacement(
 }
 
 bool NativeWidgetAura::SetWindowTitle(const base::string16& title) {
-  if (!window_)
+  if (!window_ || is_parallel_widget_in_window_manager_)
     return false;
-  if (window_->title() == title)
+  if (window_->GetTitle() == title)
     return false;
   window_->SetTitle(title);
   return true;
@@ -355,7 +429,8 @@ bool NativeWidgetAura::SetWindowTitle(const base::string16& title) {
 
 void NativeWidgetAura::SetWindowIcons(const gfx::ImageSkia& window_icon,
                                       const gfx::ImageSkia& app_icon) {
-  // Aura doesn't have window icons.
+  if (!is_parallel_widget_in_window_manager_)
+    AssignIconToAuraWindow(window_, window_icon, app_icon);
 }
 
 void NativeWidgetAura::InitModalType(ui::ModalType modal_type) {
@@ -378,7 +453,7 @@ gfx::Rect NativeWidgetAura::GetRestoredBounds() const {
     return gfx::Rect();
 
   // Restored bounds should only be relevant if the window is minimized,
-  // maximized, fullscreen or docked. However, in some places the code expects
+  // maximized, or fullscreen. However, in some places the code expects
   // GetRestoredBounds() to return the current window bounds if the window is
   // not in either state.
   if (IsMinimized() || IsMaximized() || IsFullscreen()) {
@@ -388,20 +463,7 @@ gfx::Rect NativeWidgetAura::GetRestoredBounds() const {
     if (restore_bounds)
       return *restore_bounds;
   }
-  gfx::Rect bounds = window_->GetBoundsInScreen();
-  if (IsDocked()) {
-    // Restore bounds are in screen coordinates, no need to convert.
-    gfx::Rect* restore_bounds =
-        window_->GetProperty(aura::client::kRestoreBoundsKey);
-    // Use current window horizontal offset origin in order to preserve docked
-    // alignment but preserve restored size and vertical offset for the time
-    // when the |window_| gets undocked.
-    if (restore_bounds) {
-      bounds.set_size(restore_bounds->size());
-      bounds.set_y(restore_bounds->y());
-    }
-  }
-  return bounds;
+  return window_->GetBoundsInScreen();
 }
 
 std::string NativeWidgetAura::GetWorkspace() const {
@@ -426,6 +488,22 @@ void NativeWidgetAura::SetBounds(const gfx::Rect& bounds) {
   window_->SetBounds(bounds);
 }
 
+void NativeWidgetAura::SetBoundsConstrained(const gfx::Rect& bounds) {
+  if (!window_)
+    return;
+
+  gfx::Rect new_bounds(bounds);
+  if (window_->parent()) {
+    if (window_->parent()->GetProperty(wm::kUsesScreenCoordinatesKey)) {
+      new_bounds =
+          NativeWidgetPrivate::ConstrainBoundsToDisplayWorkArea(new_bounds);
+    } else {
+      new_bounds.AdjustToFit(gfx::Rect(window_->parent()->bounds().size()));
+    }
+  }
+  SetBounds(new_bounds);
+}
+
 void NativeWidgetAura::SetSize(const gfx::Size& size) {
   if (window_)
     window_->SetBounds(gfx::Rect(window_->bounds().origin(), size));
@@ -442,17 +520,9 @@ void NativeWidgetAura::StackAtTop() {
     window_->parent()->StackChildAtTop(window_);
 }
 
-void NativeWidgetAura::StackBelow(gfx::NativeView native_view) {
-  if (window_ && window_->parent() &&
-      window_->parent() == native_view->parent())
-    window_->parent()->StackChildBelow(window_, native_view);
-}
-
-void NativeWidgetAura::SetShape(SkRegion* region) {
+void NativeWidgetAura::SetShape(std::unique_ptr<Widget::ShapeRects> shape) {
   if (window_)
-    window_->layer()->SetAlphaShape(base::WrapUnique(region));
-  else
-    delete region;
+    window_->layer()->SetAlphaShape(std::move(shape));
 }
 
 void NativeWidgetAura::Close() {
@@ -469,8 +539,8 @@ void NativeWidgetAura::Close() {
 
   if (!close_widget_factory_.HasWeakPtrs()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&NativeWidgetAura::CloseNow,
-                              close_widget_factory_.GetWeakPtr()));
+        FROM_HERE, base::BindOnce(&NativeWidgetAura::CloseNow,
+                                  close_widget_factory_.GetWeakPtr()));
   }
 }
 
@@ -478,32 +548,20 @@ void NativeWidgetAura::CloseNow() {
   delete window_;
 }
 
-void NativeWidgetAura::Show() {
-  ShowWithWindowState(ui::SHOW_STATE_NORMAL);
-}
-
-void NativeWidgetAura::Hide() {
-  if (window_)
-    window_->Hide();
-}
-
-void NativeWidgetAura::ShowMaximizedWithBounds(
-    const gfx::Rect& restored_bounds) {
-  SetRestoreBounds(window_, restored_bounds);
-  ShowWithWindowState(ui::SHOW_STATE_MAXIMIZED);
-}
-
-void NativeWidgetAura::ShowWithWindowState(ui::WindowShowState state) {
+void NativeWidgetAura::Show(ui::WindowShowState show_state,
+                            const gfx::Rect& restore_bounds) {
   if (!window_)
     return;
 
-  if (state == ui::SHOW_STATE_MAXIMIZED || state == ui::SHOW_STATE_FULLSCREEN ||
-      state == ui::SHOW_STATE_DOCKED) {
-    window_->SetProperty(aura::client::kShowStateKey, state);
+  if (show_state == ui::SHOW_STATE_MAXIMIZED && !restore_bounds.IsEmpty())
+    SetRestoreBounds(window_, restore_bounds);
+  if (show_state == ui::SHOW_STATE_MAXIMIZED ||
+      show_state == ui::SHOW_STATE_FULLSCREEN) {
+    window_->SetProperty(aura::client::kShowStateKey, show_state);
   }
   window_->Show();
   if (delegate_->CanActivate()) {
-    if (state != ui::SHOW_STATE_INACTIVE)
+    if (show_state != ui::SHOW_STATE_INACTIVE)
       Activate();
     // SetInitialFocus() should be always be called, even for
     // SHOW_STATE_INACTIVE. If the window has to stay inactive, the method will
@@ -511,13 +569,18 @@ void NativeWidgetAura::ShowWithWindowState(ui::WindowShowState state) {
     // Activate() might fail if the window is non-activatable. In this case, we
     // should pass SHOW_STATE_INACTIVE to SetInitialFocus() to stop the initial
     // focused view from getting focused. See crbug.com/515594 for example.
-    SetInitialFocus(IsActive() ? state : ui::SHOW_STATE_INACTIVE);
+    SetInitialFocus(IsActive() ? show_state : ui::SHOW_STATE_INACTIVE);
   }
 
   // On desktop aura, a window is activated first even when it is shown as
   // minimized. Do the same for consistency.
-  if (state == ui::SHOW_STATE_MINIMIZED)
+  if (show_state == ui::SHOW_STATE_MINIMIZED)
     Minimize();
+}
+
+void NativeWidgetAura::Hide() {
+  if (window_)
+    window_->Hide();
 }
 
 bool NativeWidgetAura::IsVisible() const {
@@ -530,10 +593,8 @@ void NativeWidgetAura::Activate() {
 
   // We don't necessarily have a root window yet. This can happen with
   // constrained windows.
-  if (window_->GetRootWindow()) {
-    aura::client::GetActivationClient(window_->GetRootWindow())->ActivateWindow(
-        window_);
-  }
+  if (window_->GetRootWindow())
+    wm::GetActivationClient(window_->GetRootWindow())->ActivateWindow(window_);
   if (window_->GetProperty(aura::client::kDrawAttentionKey))
     window_->SetProperty(aura::client::kDrawAttentionKey, false);
 }
@@ -541,8 +602,7 @@ void NativeWidgetAura::Activate() {
 void NativeWidgetAura::Deactivate() {
   if (!window_)
     return;
-  aura::client::GetActivationClient(window_->GetRootWindow())->DeactivateWindow(
-      window_);
+  wm::GetActivationClient(window_->GetRootWindow())->DeactivateWindow(window_);
 }
 
 bool NativeWidgetAura::IsActive() const {
@@ -550,7 +610,7 @@ bool NativeWidgetAura::IsActive() const {
 }
 
 void NativeWidgetAura::SetAlwaysOnTop(bool on_top) {
-  if (window_)
+  if (window_ && !is_parallel_widget_in_window_manager_)
     window_->SetProperty(aura::client::kAlwaysOnTopKey, on_top);
 }
 
@@ -560,6 +620,10 @@ bool NativeWidgetAura::IsAlwaysOnTop() const {
 
 void NativeWidgetAura::SetVisibleOnAllWorkspaces(bool always_visible) {
   // Not implemented on chromeos or for child widgets.
+}
+
+bool NativeWidgetAura::IsVisibleOnAllWorkspaces() const {
+  return false;
 }
 
 void NativeWidgetAura::Maximize() {
@@ -591,14 +655,7 @@ void NativeWidgetAura::SetFullscreen(bool fullscreen) {
   if (!window_ || IsFullscreen() == fullscreen)
     return;  // Nothing to do.
 
-  // Save window state before entering full screen so that it could restored
-  // when exiting full screen.
-  if (fullscreen)
-    saved_window_state_ = window_->GetProperty(aura::client::kShowStateKey);
-
-  window_->SetProperty(
-      aura::client::kShowStateKey,
-      fullscreen ? ui::SHOW_STATE_FULLSCREEN : saved_window_state_);
+  wm::SetWindowFullscreen(window_, fullscreen);
 }
 
 bool NativeWidgetAura::IsFullscreen() const {
@@ -606,9 +663,22 @@ bool NativeWidgetAura::IsFullscreen() const {
       ui::SHOW_STATE_FULLSCREEN;
 }
 
+void NativeWidgetAura::SetCanAppearInExistingFullscreenSpaces(
+    bool can_appear_in_existing_fullscreen_spaces) {}
+
 void NativeWidgetAura::SetOpacity(float opacity) {
   if (window_)
     window_->layer()->SetOpacity(opacity);
+}
+
+void NativeWidgetAura::SetAspectRatio(const gfx::SizeF& aspect_ratio) {
+  DCHECK(!aspect_ratio.IsEmpty());
+  if (window_) {
+    // aura::client::kAspectRatio is owned, which allows for passing in this
+    // raw pointer.
+    window_->SetProperty(aura::client::kAspectRatio,
+                         new gfx::SizeF(aspect_ratio));
+  }
 }
 
 void NativeWidgetAura::FlashFrame(bool flash) {
@@ -646,6 +716,11 @@ bool NativeWidgetAura::IsMouseEventsEnabled() const {
   return cursor_client ? cursor_client->IsMouseEventsEnabled() : true;
 }
 
+bool NativeWidgetAura::IsMouseButtonDown() const {
+  return window_ ? window_->env()->IsMouseButtonDown()
+                 : aura::Env::GetInstance()->IsMouseButtonDown();
+}
+
 void NativeWidgetAura::ClearNativeFocus() {
   aura::client::FocusClient* client = aura::client::GetFocusClient(window_);
   if (window_ && client && window_->Contains(client->GetFocusedWindow()))
@@ -668,18 +743,17 @@ Widget::MoveLoopResult NativeWidgetAura::RunMoveLoop(
   // loop.
   if (!window_ || !window_->GetRootWindow())
     return Widget::MOVE_LOOP_CANCELED;
-  aura::client::WindowMoveClient* move_client =
-      aura::client::GetWindowMoveClient(window_->GetRootWindow());
+  wm::WindowMoveClient* move_client =
+      wm::GetWindowMoveClient(window_->GetRootWindow());
   if (!move_client)
     return Widget::MOVE_LOOP_CANCELED;
 
   SetCapture();
-  aura::client::WindowMoveSource window_move_source =
-      source == Widget::MOVE_LOOP_SOURCE_MOUSE ?
-      aura::client::WINDOW_MOVE_SOURCE_MOUSE :
-      aura::client::WINDOW_MOVE_SOURCE_TOUCH;
+  wm::WindowMoveSource window_move_source =
+      source == Widget::MOVE_LOOP_SOURCE_MOUSE ? wm::WINDOW_MOVE_SOURCE_MOUSE
+                                               : wm::WINDOW_MOVE_SOURCE_TOUCH;
   if (move_client->RunMoveLoop(window_, drag_offset, window_move_source) ==
-          aura::client::MOVE_SUCCESSFUL) {
+      wm::MOVE_SUCCESSFUL) {
     return Widget::MOVE_LOOP_SUCCESSFUL;
   }
   return Widget::MOVE_LOOP_CANCELED;
@@ -688,8 +762,8 @@ Widget::MoveLoopResult NativeWidgetAura::RunMoveLoop(
 void NativeWidgetAura::EndMoveLoop() {
   if (!window_ || !window_->GetRootWindow())
     return;
-  aura::client::WindowMoveClient* move_client =
-      aura::client::GetWindowMoveClient(window_->GetRootWindow());
+  wm::WindowMoveClient* move_client =
+      wm::GetWindowMoveClient(window_->GetRootWindow());
   if (move_client)
     move_client->EndMoveLoop();
 }
@@ -724,36 +798,26 @@ void NativeWidgetAura::SetVisibilityAnimationTransition(
   wm::SetWindowVisibilityAnimationTransition(window_, wm_transition);
 }
 
-ui::NativeTheme* NativeWidgetAura::GetNativeTheme() const {
-#if !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
-  return DesktopWindowTreeHost::GetNativeTheme(window_);
-#else
-  return ui::NativeThemeAura::instance();
-#endif
-}
-
-void NativeWidgetAura::OnRootViewLayout() {
-}
-
 bool NativeWidgetAura::IsTranslucentWindowOpacitySupported() const {
   return true;
 }
 
-void NativeWidgetAura::OnSizeConstraintsChanged() {
-  window_->SetProperty(aura::client::kCanMaximizeKey,
-                       GetWidget()->widget_delegate()->CanMaximize());
-  window_->SetProperty(aura::client::kCanMinimizeKey,
-                       GetWidget()->widget_delegate()->CanMinimize());
-  window_->SetProperty(aura::client::kCanResizeKey,
-                       GetWidget()->widget_delegate()->CanResize());
+ui::GestureRecognizer* NativeWidgetAura::GetGestureRecognizer() {
+  return window_->env()->gesture_recognizer();
 }
 
-void NativeWidgetAura::RepostNativeEvent(gfx::NativeEvent native_event) {
-  OnEvent(native_event);
+void NativeWidgetAura::OnSizeConstraintsChanged() {
+  if (is_parallel_widget_in_window_manager_)
+    return;
+
+  int32_t behavior = ws::mojom::kResizeBehaviorNone;
+  if (GetWidget()->widget_delegate())
+    behavior = GetWidget()->widget_delegate()->GetResizeBehavior();
+  window_->SetProperty(aura::client::kResizeBehaviorKey, behavior);
 }
 
 std::string NativeWidgetAura::GetName() const {
-  return window_ ? window_->name() : std::string();
+  return window_ ? window_->GetName() : std::string();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -764,10 +828,10 @@ gfx::Size NativeWidgetAura::GetMinimumSize() const {
 }
 
 gfx::Size NativeWidgetAura::GetMaximumSize() const {
-  // If a window have a maximum size, the window should not be
-  // maximizable.
+  // A window should not have a maximum size and also be maximizable.
   DCHECK(delegate_->GetMaximumSize().IsEmpty() ||
-         !window_->GetProperty(aura::client::kCanMaximizeKey));
+         !(window_->GetProperty(aura::client::kResizeBehaviorKey) &
+           ws::mojom::kResizeBehaviorCanMaximize));
   return delegate_->GetMaximumSize();
 }
 
@@ -795,36 +859,8 @@ int NativeWidgetAura::GetNonClientComponent(const gfx::Point& point) const {
 bool NativeWidgetAura::ShouldDescendIntoChildForEventHandling(
       aura::Window* child,
       const gfx::Point& location) {
-  views::WidgetDelegate* widget_delegate = GetWidget()->widget_delegate();
-  if (widget_delegate &&
-      !widget_delegate->ShouldDescendIntoChildForEventHandling(child, location))
-    return false;
-
-  // Don't descend into |child| if there is a view with a Layer that contains
-  // the point and is stacked above |child|s layer.
-  typedef std::vector<ui::Layer*> Layers;
-  const Layers& root_layers(delegate_->GetRootLayers());
-  if (root_layers.empty())
-    return true;
-
-  Layers::const_iterator child_layer_iter(
-      std::find(window_->layer()->children().begin(),
-                window_->layer()->children().end(), child->layer()));
-  if (child_layer_iter == window_->layer()->children().end())
-    return true;
-
-  for (std::vector<ui::Layer*>::const_reverse_iterator i = root_layers.rbegin();
-       i != root_layers.rend(); ++i) {
-    ui::Layer* layer = *i;
-    if (layer->visible() && layer->bounds().Contains(location)) {
-      Layers::const_iterator root_layer_iter(
-          std::find(window_->layer()->children().begin(),
-                    window_->layer()->children().end(), layer));
-      if (root_layer_iter > child_layer_iter)
-        return false;
-    }
-  }
-  return true;
+  return delegate_->ShouldDescendIntoChildForEventHandling(
+      window_->layer(), child, child->layer(), location);
 }
 
 bool NativeWidgetAura::CanFocus() {
@@ -839,8 +875,11 @@ void NativeWidgetAura::OnPaint(const ui::PaintContext& context) {
   delegate_->OnNativeWidgetPaint(context);
 }
 
-void NativeWidgetAura::OnDeviceScaleFactorChanged(float device_scale_factor) {
-  GetWidget()->DeviceScaleFactorChanged(device_scale_factor);
+void NativeWidgetAura::OnDeviceScaleFactorChanged(
+    float old_device_scale_factor,
+    float new_device_scale_factor) {
+  GetWidget()->DeviceScaleFactorChanged(old_device_scale_factor,
+                                        new_device_scale_factor);
 }
 
 void NativeWidgetAura::OnWindowDestroying(aura::Window* window) {
@@ -849,12 +888,18 @@ void NativeWidgetAura::OnWindowDestroying(aura::Window* window) {
 
   // If the aura::Window is destroyed, we can no longer show tooltips.
   tooltip_manager_.reset();
+
+  focus_manager_event_handler_.reset();
 }
 
 void NativeWidgetAura::OnWindowDestroyed(aura::Window* window) {
   window_ = NULL;
+  // |OnNativeWidgetDestroyed| may delete |this| if the object does not own
+  // itself.
+  bool should_delete_this =
+      (ownership_ == Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
   delegate_->OnNativeWidgetDestroyed();
-  if (ownership_ == Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET)
+  if (should_delete_this)
     delete this;
 }
 
@@ -866,7 +911,7 @@ bool NativeWidgetAura::HasHitTestMask() const {
   return delegate_->HasHitTestMask();
 }
 
-void NativeWidgetAura::GetHitTestMask(gfx::Path* mask) const {
+void NativeWidgetAura::GetHitTestMask(SkPath* mask) const {
   DCHECK(mask);
   delegate_->GetHitTestMask(mask);
 }
@@ -879,6 +924,14 @@ void NativeWidgetAura::OnWindowPropertyChanged(aura::Window* window,
                                                intptr_t old) {
   if (key == aura::client::kShowStateKey)
     delegate_->OnNativeWidgetWindowShowStateChanged();
+}
+
+void NativeWidgetAura::OnResizeLoopStarted(aura::Window* window) {
+  delegate_->OnNativeWidgetBeginUserBoundsChange();
+}
+
+void NativeWidgetAura::OnResizeLoopEnded(aura::Window* window) {
+  delegate_->OnNativeWidgetEndUserBoundsChange();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -899,8 +952,7 @@ void NativeWidgetAura::OnMouseEvent(ui::MouseEvent* event) {
   DCHECK(window_->IsVisible());
   if (event->type() == ui::ET_MOUSEWHEEL) {
     delegate_->OnMouseEvent(event);
-    if (event->handled())
-      return;
+    return;
   }
 
   if (tooltip_manager_.get())
@@ -920,17 +972,17 @@ void NativeWidgetAura::OnGestureEvent(ui::GestureEvent* event) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// NativeWidgetAura, aura::client::ActivationDelegate implementation:
+// NativeWidgetAura, wm::ActivationDelegate implementation:
 
 bool NativeWidgetAura::ShouldActivate() const {
   return delegate_->CanActivate();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// NativeWidgetAura, aura::client::ActivationChangeObserver implementation:
+// NativeWidgetAura, wm::ActivationChangeObserver implementation:
 
 void NativeWidgetAura::OnWindowActivated(
-    aura::client::ActivationChangeObserver::ActivationReason,
+    wm::ActivationChangeObserver::ActivationReason,
     aura::Window* gained_active,
     aura::Window* lost_active) {
   DCHECK(window_ == gained_active || window_ == lost_active);
@@ -995,12 +1047,6 @@ NativeWidgetAura::~NativeWidgetAura() {
 ////////////////////////////////////////////////////////////////////////////////
 // NativeWidgetAura, private:
 
-bool NativeWidgetAura::IsDocked() const {
-  return window_ &&
-         window_->GetProperty(aura::client::kShowStateKey) ==
-             ui::SHOW_STATE_DOCKED;
-}
-
 void NativeWidgetAura::SetInitialFocus(ui::WindowShowState show_state) {
   // The window does not get keyboard messages unless we focus it.
   if (!GetWidget()->SetInitialFocus(show_state))
@@ -1011,7 +1057,7 @@ void NativeWidgetAura::SetInitialFocus(ui::WindowShowState show_state) {
 // Widget, public:
 
 namespace {
-#if defined(OS_WIN) || (defined(USE_X11) && !defined(OS_CHROMEOS))
+#if defined(OS_WIN) || defined(USE_X11)
 void CloseWindow(aura::Window* window) {
   if (window) {
     Widget* widget = Widget::GetWidgetForNativeView(window);
@@ -1041,15 +1087,23 @@ void Widget::CloseAllSecondaryWidgets() {
   EnumThreadWindows(GetCurrentThreadId(), WindowCallbackProc, 0);
 #endif
 
-#if defined(USE_X11) && !defined(OS_CHROMEOS)
+#if defined(USE_X11)
   DesktopWindowTreeHostX11::CleanUpWindowList(CloseWindow);
 #endif
 }
 
-bool Widget::ConvertRect(const Widget* source,
-                         const Widget* target,
-                         gfx::Rect* rect) {
-  return false;
+const ui::NativeTheme* Widget::GetNativeTheme() const {
+#if defined(USE_X11)
+  const LinuxUI* linux_ui = LinuxUI::instance();
+  if (linux_ui) {
+    ui::NativeTheme* native_theme =
+        linux_ui->GetNativeTheme(native_widget_->GetNativeWindow());
+    if (native_theme)
+      return native_theme;
+  }
+#endif
+
+  return ui::NativeTheme::GetInstanceForNativeUi();
 }
 
 namespace internal {
@@ -1059,22 +1113,27 @@ namespace internal {
 
 // static
 NativeWidgetPrivate* NativeWidgetPrivate::CreateNativeWidget(
+    const Widget::InitParams& init_params,
     internal::NativeWidgetDelegate* delegate) {
-  return new NativeWidgetAura(delegate);
+  aura::Env* env = nullptr;
+  if (init_params.parent)
+    env = init_params.parent->env();
+  else if (init_params.context)
+    env = init_params.context->env();
+  return new NativeWidgetAura(
+      delegate, /*is_parallel_widget_in_window_manager*/ false, env);
 }
 
 // static
 NativeWidgetPrivate* NativeWidgetPrivate::GetNativeWidgetForNativeView(
     gfx::NativeView native_view) {
-  // Cast must match type supplied to RegisterNativeWidgetForWindow().
-  return reinterpret_cast<NativeWidgetPrivate*>(native_view->user_data());
+  return native_view->GetProperty(kNativeWidgetPrivateKey);
 }
 
 // static
 NativeWidgetPrivate* NativeWidgetPrivate::GetNativeWidgetForNativeWindow(
     gfx::NativeWindow native_window) {
-  // Cast must match type supplied to RegisterNativeWidgetForWindow().
-  return reinterpret_cast<NativeWidgetPrivate*>(native_window->user_data());
+  return native_window->GetProperty(kNativeWidgetPrivateKey);
 }
 
 // static
@@ -1103,8 +1162,7 @@ void NativeWidgetPrivate::GetAllChildWidgets(gfx::NativeView native_view,
   }
 
   const aura::Window::Windows& child_windows = native_view->children();
-  for (aura::Window::Windows::const_iterator i = child_windows.begin();
-       i != child_windows.end(); ++i) {
+  for (auto i = child_windows.begin(); i != child_windows.end(); ++i) {
     GetAllChildWidgets((*i), children);
   }
 }
@@ -1140,8 +1198,7 @@ void NativeWidgetPrivate::ReparentNativeView(gfx::NativeView native_view,
 
   // First notify all the widgets that they are being disassociated
   // from their previous parent.
-  for (Widget::Widgets::iterator it = widgets.begin();
-      it != widgets.end(); ++it) {
+  for (auto it = widgets.begin(); it != widgets.end(); ++it) {
     (*it)->NotifyNativeViewHierarchyWillChange();
   }
 
@@ -1150,8 +1207,8 @@ void NativeWidgetPrivate::ReparentNativeView(gfx::NativeView native_view,
   } else {
     // The following looks weird, but it's the equivalent of what aura has
     // always done. (The previous behaviour of aura::Window::SetParent() used
-    // NULL as a special value that meant ask the WindowTreeClient where things
-    // should go.)
+    // NULL as a special value that meant ask the WindowParentingClient where
+    // things should go.)
     //
     // This probably isn't strictly correct, but its an invariant that a Window
     // in use will be attached to a RootWindow, so we can't just call
@@ -1165,25 +1222,16 @@ void NativeWidgetPrivate::ReparentNativeView(gfx::NativeView native_view,
   }
 
   // And now, notify them that they have a brand new parent.
-  for (Widget::Widgets::iterator it = widgets.begin();
-      it != widgets.end(); ++it) {
+  for (auto it = widgets.begin(); it != widgets.end(); ++it) {
     (*it)->NotifyNativeViewHierarchyChanged();
   }
 }
 
 // static
-bool NativeWidgetPrivate::IsMouseButtonDown() {
-  return aura::Env::GetInstance()->IsMouseButtonDown();
-}
-
-// static
 gfx::FontList NativeWidgetPrivate::GetWindowTitleFontList() {
 #if defined(OS_WIN)
-  NONCLIENTMETRICS_XP ncm;
-  base::win::GetNonClientMetrics(&ncm);
-  l10n_util::AdjustUIFont(&(ncm.lfCaptionFont));
-  base::win::ScopedHFONT caption_font(CreateFontIndirect(&(ncm.lfCaptionFont)));
-  return gfx::FontList(gfx::Font(caption_font.get()));
+  return gfx::FontList(gfx::PlatformFontWin::GetSystemFont(
+      gfx::PlatformFontWin::SystemFont::kCaption));
 #else
   return gfx::FontList();
 #endif

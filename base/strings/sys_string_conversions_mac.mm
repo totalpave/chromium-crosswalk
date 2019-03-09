@@ -131,7 +131,7 @@ std::string SysWideToUTF8(const std::wstring& wide) {
 }
 
 // Do not assert in this function since it is used by the asssertion code!
-std::wstring SysUTF8ToWide(const StringPiece& utf8) {
+std::wstring SysUTF8ToWide(StringPiece utf8) {
   return STLStringToSTLStringWithEncodingsT<StringPiece, std::wstring>(
       utf8, kNarrowStringEncoding, kWideStringEncoding);
 }
@@ -140,7 +140,7 @@ std::string SysWideToNativeMB(const std::wstring& wide) {
   return SysWideToUTF8(wide);
 }
 
-std::wstring SysNativeMBToWide(const StringPiece& native_mb) {
+std::wstring SysNativeMBToWide(StringPiece native_mb) {
   return SysUTF8ToWide(native_mb);
 }
 
@@ -153,13 +153,11 @@ CFStringRef SysUTF16ToCFStringRef(const string16& utf16) {
 }
 
 NSString* SysUTF8ToNSString(const std::string& utf8) {
-  return (NSString*)base::mac::CFTypeRefToNSObjectAutorelease(
-      SysUTF8ToCFStringRef(utf8));
+  return [mac::CFToNSCast(SysUTF8ToCFStringRef(utf8)) autorelease];
 }
 
 NSString* SysUTF16ToNSString(const string16& utf16) {
-  return (NSString*)base::mac::CFTypeRefToNSObjectAutorelease(
-      SysUTF16ToCFStringRef(utf16));
+  return [mac::CFToNSCast(SysUTF16ToCFStringRef(utf16)) autorelease];
 }
 
 std::string SysCFStringRefToUTF8(CFStringRef ref) {

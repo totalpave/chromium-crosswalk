@@ -7,27 +7,33 @@ package org.chromium.android_webview.test;
 import android.graphics.Bitmap;
 import android.graphics.Picture;
 import android.net.http.SslError;
-import android.webkit.ConsoleMessage;
-import android.webkit.ValueCallback;
 
+import org.chromium.android_webview.AwConsoleMessage;
 import org.chromium.android_webview.AwContentsClient.AwWebResourceRequest;
 import org.chromium.android_webview.AwWebResourceResponse;
+import org.chromium.base.Callback;
+import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
-import org.chromium.content.browser.test.util.CallbackHelper;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnEvaluateJavaScriptResultHelper;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnPageCommitVisibleHelper;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnPageStartedHelper;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnReceivedErrorHelper;
+import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnEvaluateJavaScriptResultHelper;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageCommitVisibleHelper;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageStartedHelper;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnReceivedErrorHelper;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * AwContentsClient subclass used for testing.
  */
 public class TestAwContentsClient extends NullContentsClient {
+    private static final boolean TRACE = false;
+    private static final String TAG = "TestAwContentsClient";
+
     private boolean mAllowSslError;
     private final OnPageStartedHelper mOnPageStartedHelper;
     private final OnPageFinishedHelper mOnPageFinishedHelper;
@@ -35,7 +41,7 @@ public class TestAwContentsClient extends NullContentsClient {
     private final OnReceivedErrorHelper mOnReceivedErrorHelper;
     private final OnReceivedError2Helper mOnReceivedError2Helper;
     private final OnReceivedHttpErrorHelper mOnReceivedHttpErrorHelper;
-    private final CallbackHelper mOnReceivedSslErrorHelper;
+    private final OnReceivedSslErrorHelper mOnReceivedSslErrorHelper;
     private final OnDownloadStartHelper mOnDownloadStartHelper;
     private final OnReceivedLoginRequestHelper mOnReceivedLoginRequestHelper;
     private final OnEvaluateJavaScriptResultHelper mOnEvaluateJavaScriptResultHelper;
@@ -44,6 +50,8 @@ public class TestAwContentsClient extends NullContentsClient {
     private final OnReceivedTitleHelper mOnReceivedTitleHelper;
     private final PictureListenerHelper mPictureListenerHelper;
     private final ShouldOverrideUrlLoadingHelper mShouldOverrideUrlLoadingHelper;
+    private final ShouldInterceptRequestHelper mShouldInterceptRequestHelper;
+    private final OnLoadResourceHelper mOnLoadResourceHelper;
     private final DoUpdateVisitedHistoryHelper mDoUpdateVisitedHistoryHelper;
     private final OnCreateWindowHelper mOnCreateWindowHelper;
     private final FaviconHelper mFaviconHelper;
@@ -57,7 +65,7 @@ public class TestAwContentsClient extends NullContentsClient {
         mOnReceivedErrorHelper = new OnReceivedErrorHelper();
         mOnReceivedError2Helper = new OnReceivedError2Helper();
         mOnReceivedHttpErrorHelper = new OnReceivedHttpErrorHelper();
-        mOnReceivedSslErrorHelper = new CallbackHelper();
+        mOnReceivedSslErrorHelper = new OnReceivedSslErrorHelper();
         mOnDownloadStartHelper = new OnDownloadStartHelper();
         mOnReceivedLoginRequestHelper = new OnReceivedLoginRequestHelper();
         mOnEvaluateJavaScriptResultHelper = new OnEvaluateJavaScriptResultHelper();
@@ -66,6 +74,8 @@ public class TestAwContentsClient extends NullContentsClient {
         mOnReceivedTitleHelper = new OnReceivedTitleHelper();
         mPictureListenerHelper = new PictureListenerHelper();
         mShouldOverrideUrlLoadingHelper = new ShouldOverrideUrlLoadingHelper();
+        mShouldInterceptRequestHelper = new ShouldInterceptRequestHelper();
+        mOnLoadResourceHelper = new OnLoadResourceHelper();
         mDoUpdateVisitedHistoryHelper = new DoUpdateVisitedHistoryHelper();
         mOnCreateWindowHelper = new OnCreateWindowHelper();
         mFaviconHelper = new FaviconHelper();
@@ -97,7 +107,7 @@ public class TestAwContentsClient extends NullContentsClient {
         return mOnReceivedHttpErrorHelper;
     }
 
-    public CallbackHelper getOnReceivedSslErrorHelper() {
+    public OnReceivedSslErrorHelper getOnReceivedSslErrorHelper() {
         return mOnReceivedSslErrorHelper;
     }
 
@@ -115,6 +125,14 @@ public class TestAwContentsClient extends NullContentsClient {
 
     public ShouldOverrideUrlLoadingHelper getShouldOverrideUrlLoadingHelper() {
         return mShouldOverrideUrlLoadingHelper;
+    }
+
+    public ShouldInterceptRequestHelper getShouldInterceptRequestHelper() {
+        return mShouldInterceptRequestHelper;
+    }
+
+    public OnLoadResourceHelper getOnLoadResourceHelper() {
+        return mOnLoadResourceHelper;
     }
 
     public AddMessageToConsoleHelper getAddMessageToConsoleHelper() {
@@ -192,6 +210,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onReceivedTitle(String title) {
+        if (TRACE) Log.i(TAG, "onReceivedTitle " + title);
         mOnReceivedTitleHelper.notifyCalled(title);
     }
 
@@ -201,33 +220,39 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onPageStarted(String url) {
+        if (TRACE) Log.i(TAG, "onPageStarted " + url);
         mOnPageStartedHelper.notifyCalled(url);
     }
 
     @Override
     public void onPageCommitVisible(String url) {
+        if (TRACE) Log.i(TAG, "onPageCommitVisible " + url);
         mOnPageCommitVisibleHelper.notifyCalled(url);
     }
 
     @Override
     public void onPageFinished(String url) {
+        if (TRACE) Log.i(TAG, "onPageFinished " + url);
         mOnPageFinishedHelper.notifyCalled(url);
     }
 
     @Override
     public void onReceivedError(int errorCode, String description, String failingUrl) {
+        if (TRACE) Log.i(TAG, "onReceivedError " + failingUrl);
         mOnReceivedErrorHelper.notifyCalled(errorCode, description, failingUrl);
     }
 
     @Override
     public void onReceivedError2(AwWebResourceRequest request, AwWebResourceError error) {
+        if (TRACE) Log.i(TAG, "onReceivedError2 " + request.url);
         mOnReceivedError2Helper.notifyCalled(request, error);
     }
 
     @Override
-    public void onReceivedSslError(ValueCallback<Boolean> callback, SslError error) {
-        callback.onReceiveValue(mAllowSslError);
-        mOnReceivedSslErrorHelper.notifyCalled();
+    public void onReceivedSslError(Callback<Boolean> callback, SslError error) {
+        if (TRACE) Log.i(TAG, "onReceivedSslError");
+        callback.onResult(mAllowSslError);
+        mOnReceivedSslErrorHelper.notifyCalled(error);
     }
 
     public void setAllowSslError(boolean allow) {
@@ -286,6 +311,7 @@ public class TestAwContentsClient extends NullContentsClient {
             String contentDisposition,
             String mimeType,
             long contentLength) {
+        if (TRACE) Log.i(TAG, "onDownloadStart " + url);
         getOnDownloadStartHelper().notifyCalled(url, userAgent, contentDisposition, mimeType,
                 contentLength);
     }
@@ -303,7 +329,7 @@ public class TestAwContentsClient extends NullContentsClient {
             return mIsDialog;
         }
 
-        public boolean getUserAgent() {
+        public boolean getIsUserGesture() {
             assert getCallCount() > 0;
             return mIsUserGesture;
         }
@@ -323,6 +349,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public boolean onCreateWindow(boolean isDialog, boolean isUserGesture) {
+        if (TRACE) Log.i(TAG, "onCreateWindow");
         return mOnCreateWindowHelper.notifyCalled(isDialog, isUserGesture);
     }
 
@@ -359,11 +386,13 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onReceivedLoginRequest(String realm, String account, String args) {
+        if (TRACE) Log.i(TAG, "onReceivedLoginRequest " + realm);
         getOnReceivedLoginRequestHelper().notifyCalled(realm, account, args);
     }
 
     @Override
-    public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+    public boolean onConsoleMessage(AwConsoleMessage consoleMessage) {
+        if (TRACE) Log.i(TAG, "onConsoleMessage " + consoleMessage);
         mAddMessageToConsoleHelper.notifyCalled(consoleMessage);
         return false;
     }
@@ -372,19 +401,19 @@ public class TestAwContentsClient extends NullContentsClient {
      * Callback helper for AddMessageToConsole.
      */
     public static class AddMessageToConsoleHelper extends CallbackHelper {
-        private List<ConsoleMessage> mMessages = new ArrayList<ConsoleMessage>();
+        private List<AwConsoleMessage> mMessages = new ArrayList<AwConsoleMessage>();
 
         public void clearMessages() {
             mMessages.clear();
         }
 
-        public List<ConsoleMessage> getMessages() {
+        public List<AwConsoleMessage> getMessages() {
             return mMessages;
         }
 
         public int getLevel() {
             assert getCallCount() > 0;
-            return getLastMessage().messageLevel().ordinal();
+            return getLastMessage().messageLevel();
         }
 
         public String getMessage() {
@@ -402,11 +431,11 @@ public class TestAwContentsClient extends NullContentsClient {
             return getLastMessage().sourceId();
         }
 
-        private ConsoleMessage getLastMessage() {
+        private AwConsoleMessage getLastMessage() {
             return mMessages.get(mMessages.size() - 1);
         }
 
-        void notifyCalled(ConsoleMessage message) {
+        void notifyCalled(AwConsoleMessage message) {
             mMessages.add(message);
             notifyCalled();
         }
@@ -414,6 +443,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onScaleChangedScaled(float oldScale, float newScale) {
+        if (TRACE) Log.i(TAG, "onScaleChangedScaled " + oldScale + " -> " + newScale);
         mOnScaleChangedHelper.notifyCalled(oldScale, newScale);
     }
 
@@ -437,6 +467,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onNewPicture(Picture picture) {
+        if (TRACE) Log.i(TAG, "onNewPicture");
         mPictureListenerHelper.notifyCalled(picture);
     }
 
@@ -445,7 +476,7 @@ public class TestAwContentsClient extends NullContentsClient {
      */
     public static class ShouldOverrideUrlLoadingHelper extends CallbackHelper {
         private String mShouldOverrideUrlLoadingUrl;
-        private boolean mShouldOverrideUrlLoadingReturnValue = false;
+        private boolean mShouldOverrideUrlLoadingReturnValue;
         private boolean mIsRedirect;
         private boolean mHasUserGesture;
         private boolean mIsMainFrame;
@@ -483,6 +514,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public boolean shouldOverrideUrlLoading(AwWebResourceRequest request) {
+        if (TRACE) Log.i(TAG, "shouldOverrideUrlLoading " + request.url);
         super.shouldOverrideUrlLoading(request);
         boolean returnValue =
                 mShouldOverrideUrlLoadingHelper.getShouldOverrideUrlLoadingReturnValue();
@@ -491,6 +523,77 @@ public class TestAwContentsClient extends NullContentsClient {
         return returnValue;
     }
 
+    /**
+     * Callback helper for shouldInterceptRequest.
+     */
+    public static class ShouldInterceptRequestHelper extends CallbackHelper {
+        private List<String> mShouldInterceptRequestUrls = new ArrayList<String>();
+        private Map<String, AwWebResourceResponse> mReturnValuesByUrls =
+                Collections.synchronizedMap(new HashMap<String, AwWebResourceResponse>());
+        private Map<String, AwWebResourceRequest> mRequestsByUrls =
+                Collections.synchronizedMap(new HashMap<String, AwWebResourceRequest>());
+        // This is read on another thread, so needs to be marked volatile.
+        private volatile AwWebResourceResponse mShouldInterceptRequestReturnValue;
+        void setReturnValue(AwWebResourceResponse value) {
+            mShouldInterceptRequestReturnValue = value;
+        }
+        void setReturnValueForUrl(String url, AwWebResourceResponse value) {
+            mReturnValuesByUrls.put(url, value);
+        }
+        public List<String> getUrls() {
+            assert getCallCount() > 0;
+            return mShouldInterceptRequestUrls;
+        }
+        public AwWebResourceResponse getReturnValue(String url) {
+            AwWebResourceResponse value = mReturnValuesByUrls.get(url);
+            if (value != null) return value;
+            return mShouldInterceptRequestReturnValue;
+        }
+        public AwWebResourceRequest getRequestsForUrl(String url) {
+            assert getCallCount() > 0;
+            assert mRequestsByUrls.containsKey(url);
+            return mRequestsByUrls.get(url);
+        }
+        public void notifyCalled(AwWebResourceRequest request) {
+            mShouldInterceptRequestUrls.add(request.url);
+            mRequestsByUrls.put(request.url, request);
+            notifyCalled();
+        }
+    }
+
+    @Override
+    public AwWebResourceResponse shouldInterceptRequest(AwWebResourceRequest request) {
+        super.shouldInterceptRequest(request);
+        if (TRACE) Log.i(TAG, "shouldInterceptRequest " + request.url);
+        AwWebResourceResponse returnValue =
+                mShouldInterceptRequestHelper.getReturnValue(request.url);
+        mShouldInterceptRequestHelper.notifyCalled(request);
+        return returnValue;
+    }
+
+    /**
+     * Callback helper for OnLoadedResource.
+     */
+    public static class OnLoadResourceHelper extends CallbackHelper {
+        private String mLastLoadedResource;
+
+        public String getLastLoadedResource() {
+            assert getCallCount() > 0;
+            return mLastLoadedResource;
+        }
+
+        public void notifyCalled(String url) {
+            mLastLoadedResource = url;
+            notifyCalled();
+        }
+    }
+
+    @Override
+    public void onLoadResource(String url) {
+        if (TRACE) Log.i(TAG, "onLoadResource " + url);
+        super.onLoadResource(url);
+        mOnLoadResourceHelper.notifyCalled(url);
+    }
 
     /**
      * Callback helper for doUpdateVisitedHistory.
@@ -518,7 +621,25 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void doUpdateVisitedHistory(String url, boolean isReload) {
+        if (TRACE) Log.i(TAG, "doUpdateVisitedHistory " + url);
         getDoUpdateVisitedHistoryHelper().notifyCalled(url, isReload);
+    }
+
+    /**
+     * CallbackHelper for onReceivedSslError.
+     */
+    public static class OnReceivedSslErrorHelper extends CallbackHelper {
+        private SslError mSslError;
+
+        public void notifyCalled(SslError error) {
+            mSslError = error;
+            notifyCalled();
+        }
+
+        public SslError getError() {
+            assert getCallCount() > 0;
+            return mSslError;
+        }
     }
 
     /**
@@ -566,6 +687,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onReceivedHttpError(AwWebResourceRequest request, AwWebResourceResponse response) {
+        if (TRACE) Log.i(TAG, "onReceivedHttpError " + request.url);
         super.onReceivedHttpError(request, response);
         mOnReceivedHttpErrorHelper.notifyCalled(request, response);
     }
@@ -589,6 +711,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onReceivedIcon(Bitmap bitmap) {
+        if (TRACE) Log.i(TAG, "onReceivedIcon");
         // We don't inform the API client about the URL of the icon.
         mFaviconHelper.notifyFavicon(bitmap);
     }
@@ -616,6 +739,7 @@ public class TestAwContentsClient extends NullContentsClient {
 
     @Override
     public void onReceivedTouchIconUrl(String url, boolean precomposed) {
+        if (TRACE) Log.i(TAG, "onReceivedTouchIconUrl " + url);
         mTouchIconHelper.notifyTouchIcon(url, precomposed);
     }
 }

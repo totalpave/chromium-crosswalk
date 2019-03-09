@@ -10,7 +10,6 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/scoped_observer.h"
 #include "base/threading/thread_checker.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
@@ -22,9 +21,9 @@ class ExtensionAction;
 class Profile;
 class StatusTray;
 
+namespace extensions {
 FORWARD_DECLARE_TEST(SystemIndicatorApiTest, SystemIndicator);
 
-namespace extensions {
 class ExtensionIndicatorIcon;
 class ExtensionRegistry;
 
@@ -42,12 +41,12 @@ class SystemIndicatorManager : public ExtensionRegistryObserver,
   void Shutdown() override;
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(::SystemIndicatorApiTest, SystemIndicator);
+  FRIEND_TEST_ALL_PREFIXES(SystemIndicatorApiTest, SystemIndicator);
 
   // ExtensionRegistryObserver implementation.
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   // ExtensionActionAPI::Observer implementation.
   void OnExtensionActionUpdated(
@@ -68,8 +67,8 @@ class SystemIndicatorManager : public ExtensionRegistryObserver,
   // Causes the indicator for the given extension to be hidden.
   void RemoveIndicator(const std::string& extension_id);
 
-  typedef std::map<const std::string, linked_ptr<ExtensionIndicatorIcon> >
-      SystemIndicatorMap;
+  using SystemIndicatorMap =
+      std::map<const std::string, std::unique_ptr<ExtensionIndicatorIcon>>;
 
   Profile* profile_;
   StatusTray* status_tray_;

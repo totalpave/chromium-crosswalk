@@ -4,28 +4,22 @@
 
 package org.chromium.chrome.browser.firstrun;
 
-import android.app.Fragment;
+import android.os.Bundle;
 
 /**
  * Defines the host interface for First Run Experience pages.
  */
 public interface FirstRunPageDelegate {
     /**
-     * @return A {@link ProfileDataCache} for Android user accounts.
+     * Returns FRE properties bundle.
      */
-    ProfileDataCache getProfileDataCache();
+    Bundle getProperties();
 
     /**
      * Advances the First Run Experience to the next page.
      * Successfully finishes FRE if the current page is the last page.
      */
     void advanceToNextPage();
-
-    /**
-     * Asks to re-instantiate the current page.
-     * Useful to restore the "clean" state of the UI elements.
-     */
-    void recreateCurrentPage();
 
     /**
      * Unsuccessfully aborts the First Run Experience.
@@ -47,14 +41,10 @@ public interface FirstRunPageDelegate {
     /**
      * Notifies that the user accepted to be signed in.
      * @param accountName An account to be signed in to.
+     * @param isDefaultAccount Whether this account is the default choice for the user.
+     * @param openSettings Whether the settings page should be opened after signing in.
      */
-    void acceptSignIn(String accountName);
-
-    /**
-     * Notifies that the user asked to show sign in Settings once the sign in
-     * process is complete.
-     */
-    void askToOpenSignInSettings();
+    void acceptSignIn(String accountName, boolean isDefaultAccount, boolean openSettings);
 
     /**
      * @return Whether the user has accepted Chrome Terms of Service.
@@ -62,26 +52,15 @@ public interface FirstRunPageDelegate {
     boolean didAcceptTermsOfService();
 
     /**
-     * @return Whether the "upload crash dump" setting is set to "NEVER".
-     */
-    boolean isNeverUploadCrashDump();
-
-    /**
      * Notifies all interested parties that the user has accepted Chrome Terms of Service.
+     * Must be called only after native has been initialized.
      * @param allowCrashUpload True if the user allows to upload crash dumps and collect stats.
      */
     void acceptTermsOfService(boolean allowCrashUpload);
 
     /**
-     * Opens the Android account adder UI.
-     * @param fragment A fragment that needs the account adder UI.
+     * Show an informational web page. The page doesn't show navigation control.
+     * @param url Resource id for the URL of the web page.
      */
-    void openAccountAdder(Fragment fragment);
-
-    /**
-     * Show an EmbedContentViewActivity with a given title and a URL.
-     * @param title Resource id for the title of the EmbedContentViewActivity.
-     * @param url Resource id for the URL of the EmbedContentViewActivity.
-     */
-    void showEmbedContentViewActivity(int title, int url);
+    void showInfoPage(int url);
 }

@@ -42,11 +42,22 @@ class PageCaptureSaveAsMHTMLFunction : public ChromeAsyncExtensionFunction {
   bool RunAsync() override;
   bool OnMessageReceived(const IPC::Message& message) override;
 
+#if defined(OS_CHROMEOS)
+  // Resolves the API permission request in Public Sessions.
+  void ResolvePermissionRequest(const PermissionIDSet& allowed_permissions);
+#endif
+
+  // Returns whether or not the extension has permission to capture the current
+  // page.
+  bool CanCaptureCurrentPage();
+
   // Called on the file thread.
   void CreateTemporaryFile();
 
+  void TemporaryFileCreatedOnIO(bool success);
+  void TemporaryFileCreatedOnUI(bool success);
+
   // Called on the UI thread.
-  void TemporaryFileCreated(bool success);
   void ReturnFailure(const std::string& error);
   void ReturnSuccess(int64_t file_size);
 

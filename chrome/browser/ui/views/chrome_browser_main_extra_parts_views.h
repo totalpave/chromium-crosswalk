@@ -9,21 +9,22 @@
 
 #include "base/macros.h"
 #include "chrome/browser/chrome_browser_main_extra_parts.h"
-
-namespace mus {
-class InputDeviceClient;
-}
+#include "ui/views/layout/layout_provider.h"
 
 namespace views {
 class ViewsDelegate;
-class WindowManagerConnection;
 }
 
 #if defined(USE_AURA)
+namespace ui_devtools {
+class UiDevToolsServer;
+}
 namespace wm {
 class WMState;
 }
 #endif
+
+class RelaunchNotificationController;
 
 class ChromeBrowserMainExtraPartsViews : public ChromeBrowserMainExtraParts {
  public:
@@ -34,19 +35,23 @@ class ChromeBrowserMainExtraPartsViews : public ChromeBrowserMainExtraParts {
   void ToolkitInitialized() override;
   void PreCreateThreads() override;
   void PreProfileInit() override;
+  void PostBrowserStart() override;
+  void PostMainMessageLoopRun() override;
 
  private:
   std::unique_ptr<views::ViewsDelegate> views_delegate_;
+  std::unique_ptr<views::LayoutProvider> layout_provider_;
 
 #if defined(USE_AURA)
+  // Only used when running in --enable-ui-devtools.
+  std::unique_ptr<ui_devtools::UiDevToolsServer> devtools_server_;
+
   std::unique_ptr<wm::WMState> wm_state_;
 #endif
-#if defined(USE_AURA) && defined(MOJO_SHELL_CLIENT)
-  std::unique_ptr<views::WindowManagerConnection> window_manager_connection_;
 
-  // Subscribes to updates about input-devices.
-  std::unique_ptr<mus::InputDeviceClient> input_device_client_;
-#endif
+  // Manages the relaunch notification prompts.
+  std::unique_ptr<RelaunchNotificationController>
+      relaunch_notification_controller_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeBrowserMainExtraPartsViews);
 };

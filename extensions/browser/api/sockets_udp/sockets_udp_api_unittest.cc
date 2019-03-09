@@ -6,7 +6,7 @@
 
 #include <memory>
 
-#include "base/memory/ptr_util.h"
+#include "base/bind.h"
 #include "base/values.h"
 #include "extensions/browser/api/api_resource_manager.h"
 #include "extensions/browser/api/socket/socket.h"
@@ -20,7 +20,7 @@ namespace api {
 
 static std::unique_ptr<KeyedService> ApiResourceManagerTestFactory(
     content::BrowserContext* context) {
-  return base::WrapUnique(new ApiResourceManager<ResumableUDPSocket>(context));
+  return std::make_unique<ApiResourceManager<ResumableUDPSocket>>(context);
 }
 
 class SocketsUdpUnitTest : public ApiUnitTest {
@@ -29,19 +29,16 @@ class SocketsUdpUnitTest : public ApiUnitTest {
     ApiUnitTest::SetUp();
 
     ApiResourceManager<ResumableUDPSocket>::GetFactoryInstance()
-        ->SetTestingFactoryAndUse(browser_context(),
-                                  ApiResourceManagerTestFactory);
+        ->SetTestingFactoryAndUse(
+            browser_context(),
+            base::BindRepeating(&ApiResourceManagerTestFactory));
   }
 };
 
 TEST_F(SocketsUdpUnitTest, Create) {
-  // Get BrowserThread
-  content::BrowserThread::ID id;
-  CHECK(content::BrowserThread::GetCurrentThreadIdentifier(&id));
-
   // Create SocketCreateFunction and put it on BrowserThread
   SocketsUdpCreateFunction* function = new SocketsUdpCreateFunction();
-  function->set_work_thread_id(id);
+  function->set_work_task_runner(base::SequencedTaskRunnerHandle::Get());
 
   // Run tests
   std::unique_ptr<base::DictionaryValue> result(RunFunctionAndReturnDictionary(

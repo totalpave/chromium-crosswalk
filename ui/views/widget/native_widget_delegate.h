@@ -5,14 +5,13 @@
 #ifndef UI_VIEWS_WIDGET_NATIVE_WIDGET_DELEGATE_H_
 #define UI_VIEWS_WIDGET_NATIVE_WIDGET_DELEGATE_H_
 
-#include <vector>
-
 #include "ui/events/event_constants.h"
+#include "ui/gfx/native_widget_types.h"
 #include "ui/views/views_export.h"
 
+class SkPath;
+
 namespace gfx {
-class Canvas;
-class Path;
 class Point;
 class Size;
 }
@@ -24,7 +23,6 @@ class Layer;
 class MouseEvent;
 class PaintContext;
 class ScrollEvent;
-class TouchEvent;
 }
 
 namespace views {
@@ -51,6 +49,9 @@ class VIEWS_EXPORT NativeWidgetDelegate {
   // Returns true if the window can be activated.
   virtual bool CanActivate() const = 0;
 
+  // Returns true if the native widget has been initialized.
+  virtual bool IsNativeWidgetInitialized() const = 0;
+
   // Prevents the window from being rendered as deactivated. This state is
   // reset automatically as soon as the window becomes activated again. There is
   // no ability to control the state through this API as this leads to sync
@@ -59,7 +60,8 @@ class VIEWS_EXPORT NativeWidgetDelegate {
   virtual bool IsAlwaysRenderAsActive() const = 0;
 
   // Called when the activation state of a window has changed.
-  virtual void OnNativeWidgetActivationChanged(bool active) = 0;
+  // Returns true if this event should be handled.
+  virtual bool OnNativeWidgetActivationChanged(bool active) = 0;
 
   // Called when native focus moves from one native view to another.
   virtual void OnNativeFocus() = 0;
@@ -80,9 +82,7 @@ class VIEWS_EXPORT NativeWidgetDelegate {
   virtual void OnSoftVisibilityChanged(bool visible) = 0;
 
   // Called when the native widget is created.
-  // The |desktop_widget| bool is true for widgets created in the desktop and
-  // false for widgets created in the shell.
-  virtual void OnNativeWidgetCreated(bool desktop_widget) = 0;
+  virtual void OnNativeWidgetCreated() = 0;
 
   // Called just before the native widget is destroyed. This is the delegate's
   // last chance to do anything with the native widget handle.
@@ -138,14 +138,11 @@ class VIEWS_EXPORT NativeWidgetDelegate {
   // Runs the specified native command. Returns true if the command is handled.
   virtual bool ExecuteCommand(int command_id) = 0;
 
-  // Returns the child Layers of the Widgets layer that were created by Views.
-  virtual const std::vector<ui::Layer*>& GetRootLayers() = 0;
-
   // Returns true if window has a hit-test mask.
   virtual bool HasHitTestMask() const = 0;
 
   // Provides the hit-test mask if HasHitTestMask above returns true.
-  virtual void GetHitTestMask(gfx::Path* mask) const = 0;
+  virtual void GetHitTestMask(SkPath* mask) const = 0;
 
   virtual Widget* AsWidget() = 0;
   virtual const Widget* AsWidget() const = 0;
@@ -157,6 +154,15 @@ class VIEWS_EXPORT NativeWidgetDelegate {
   // not set the initial focus, or false if the caller should set the initial
   // focus (if any).
   virtual bool SetInitialFocus(ui::WindowShowState show_state) = 0;
+
+  // Returns true if event handling should descend into |child|. |root_layer| is
+  // the layer associated with the root Window and |child_layer| the layer
+  // associated with |child|. |location| is in terms of the Window.
+  virtual bool ShouldDescendIntoChildForEventHandling(
+      ui::Layer* root_layer,
+      gfx::NativeView child,
+      ui::Layer* child_layer,
+      const gfx::Point& location) = 0;
 };
 
 }  // namespace internal

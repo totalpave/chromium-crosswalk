@@ -2,48 +2,132 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <tuple>
+#include "content/renderer/accessibility/render_accessibility_impl.h"
 
+#include <memory>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+#include "base/bind.h"
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "content/common/accessibility_messages.h"
 #include "content/common/frame_messages.h"
-#include "content/common/site_isolation_policy.h"
-#include "content/common/view_message_enums.h"
-#include "content/public/common/content_switches.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/render_view_test.h"
-#include "content/renderer/accessibility/render_accessibility_impl.h"
+#include "content/renderer/accessibility/ax_image_annotator.h"
 #include "content/renderer/render_frame_impl.h"
 #include "content/renderer/render_view_impl.h"
+#include "services/image_annotation/public/cpp/image_processor.h"
+#include "services/image_annotation/public/mojom/image_annotation.mojom.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/WebKit/public/platform/WebSize.h"
-#include "third_party/WebKit/public/web/WebAXObject.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/platform/web_size.h"
+#include "third_party/blink/public/web/web_ax_object.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_element.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_node.h"
+#include "third_party/blink/public/web/web_view.h"
+#include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_node_data.h"
+
+namespace content {
 
 using blink::WebAXObject;
 using blink::WebDocument;
-
-namespace content {
+using testing::ElementsAre;
 
 class TestRenderAccessibilityImpl : public RenderAccessibilityImpl {
  public:
   explicit TestRenderAccessibilityImpl(RenderFrameImpl* render_frame)
-    : RenderAccessibilityImpl(render_frame) {
-  }
+      : RenderAccessibilityImpl(render_frame, ui::kAXModeComplete) {}
+  ~TestRenderAccessibilityImpl() override = default;
 
+  // Change method's visibility from protected to public so that it can be
+  // accessed by tests.
   void SendPendingAccessibilityEvents() {
     RenderAccessibilityImpl::SendPendingAccessibilityEvents();
   }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(TestRenderAccessibilityImpl);
+};
+
+class TestAXImageAnnotator : public AXImageAnnotator {
+ public:
+  TestAXImageAnnotator(TestRenderAccessibilityImpl* const render_accessibility,
+                       image_annotation::mojom::AnnotatorPtr annotator_ptr)
+      : AXImageAnnotator(render_accessibility, std::move(annotator_ptr)) {}
+  ~TestAXImageAnnotator() override = default;
+
+ private:
+  std::string GenerateImageSourceId(
+      const blink::WebAXObject& image) const override {
+    std::string image_id;
+    if (image.IsDetached() || image.IsNull() || image.GetNode().IsNull() ||
+        image.GetNode().To<blink::WebElement>().IsNull()) {
+      ADD_FAILURE() << "Unable to retrieve the image src.";
+      return image_id;
+    }
+
+    image_id =
+        image.GetNode().To<blink::WebElement>().GetAttribute("SRC").Utf8();
+    return image_id;
+  }
+
+  DISALLOW_COPY_AND_ASSIGN(TestAXImageAnnotator);
+};
+
+class MockAnnotationService : public image_annotation::mojom::Annotator {
+ public:
+  MockAnnotationService() = default;
+  ~MockAnnotationService() override = default;
+
+  image_annotation::mojom::AnnotatorPtr GetPtr() {
+    image_annotation::mojom::AnnotatorPtr ptr;
+    bindings_.AddBinding(this, mojo::MakeRequest(&ptr));
+    return ptr;
+  }
+
+  void AnnotateImage(const std::string& image_id,
+                     image_annotation::mojom::ImageProcessorPtr image_processor,
+                     AnnotateImageCallback callback) override {
+    image_ids_.push_back(image_id);
+    image_processors_.push_back(std::move(image_processor));
+    image_processors_.back().set_connection_error_handler(
+        base::BindOnce(&MockAnnotationService::ResetImageProcessor,
+                       base::Unretained(this), image_processors_.size() - 1));
+    callbacks_.push_back(std::move(callback));
+  }
+
+  // Tests should not delete entries in these lists.
+  std::vector<std::string> image_ids_;
+  std::vector<image_annotation::mojom::ImageProcessorPtr> image_processors_;
+  std::vector<AnnotateImageCallback> callbacks_;
+
+ private:
+  void ResetImageProcessor(const size_t index) {
+    image_processors_[index].reset();
+  }
+
+  mojo::BindingSet<image_annotation::mojom::Annotator> bindings_;
+
+  DISALLOW_COPY_AND_ASSIGN(MockAnnotationService);
 };
 
 class RenderAccessibilityImplTest : public RenderViewTest {
  public:
-  RenderAccessibilityImplTest() {}
+  RenderAccessibilityImplTest() = default;
+  ~RenderAccessibilityImplTest() override = default;
 
+ protected:
   RenderViewImpl* view() {
     return static_cast<RenderViewImpl*>(view_);
   }
@@ -52,12 +136,31 @@ class RenderAccessibilityImplTest : public RenderViewTest {
     return static_cast<RenderFrameImpl*>(view()->GetMainRenderFrame());
   }
 
+  // Loads a page given an HTML snippet and initializes its accessibility tree.
+  //
+  // Consolidates the initialization code required by all tests into a single
+  // method.
+  void LoadHTMLAndRefreshAccessibilityTree(const char* html) {
+    LoadHTML(html);
+    sink_->ClearMessages();
+    WebDocument document = GetMainFrame()->GetDocument();
+    EXPECT_FALSE(document.IsNull());
+    WebAXObject root_obj = WebAXObject::FromWebDocument(document);
+    EXPECT_FALSE(root_obj.IsNull());
+    render_accessibility().HandleAXEvent(root_obj,
+                                         ax::mojom::Event::kLayoutComplete);
+    render_accessibility().SendPendingAccessibilityEvents();
+  }
+
   void SetUp() override {
     RenderViewTest::SetUp();
     sink_ = &render_thread_->sink();
+    render_accessibility_ =
+        std::make_unique<TestRenderAccessibilityImpl>(frame());
   }
 
   void TearDown() override {
+    render_accessibility_.release();
 #if defined(LEAK_SANITIZER)
      // Do this before shutting down V8 in RenderViewTest::TearDown().
      // http://crbug.com/328552
@@ -66,39 +169,40 @@ class RenderAccessibilityImplTest : public RenderViewTest {
      RenderViewTest::TearDown();
   }
 
-  void SetMode(AccessibilityMode mode) {
-    frame()->OnSetAccessibilityMode(mode);
-  }
+  void SetMode(ui::AXMode mode) { frame()->OnSetAccessibilityMode(mode); }
 
-  void GetAllAccEvents(
-      std::vector<AccessibilityHostMsg_EventParams>* param_list) {
+  void GetLastAccessibilityEventBundle(
+      AccessibilityHostMsg_EventBundleParams* event_bundle) {
     const IPC::Message* message =
-        sink_->GetUniqueMessageMatching(AccessibilityHostMsg_Events::ID);
+        sink_->GetUniqueMessageMatching(AccessibilityHostMsg_EventBundle::ID);
     ASSERT_TRUE(message);
-    std::tuple<std::vector<AccessibilityHostMsg_EventParams>, int> param;
-    AccessibilityHostMsg_Events::Read(message, &param);
-    *param_list = std::get<0>(param);
+    std::tuple<AccessibilityHostMsg_EventBundleParams, int, int> param;
+    AccessibilityHostMsg_EventBundle::Read(message, &param);
+    *event_bundle = std::get<0>(param);
   }
 
-  void GetLastAccEvent(
-      AccessibilityHostMsg_EventParams* params) {
-    std::vector<AccessibilityHostMsg_EventParams> param_list;
-    GetAllAccEvents(&param_list);
-    ASSERT_GE(param_list.size(), 1U);
-    *params = param_list[0];
+  AXContentTreeUpdate GetLastAccUpdate() {
+    AccessibilityHostMsg_EventBundleParams event_bundle;
+    GetLastAccessibilityEventBundle(&event_bundle);
+    CHECK_GE(event_bundle.updates.size(), 1U);
+    return event_bundle.updates[event_bundle.updates.size() - 1];
   }
 
   int CountAccessibilityNodesSentToBrowser() {
-    AccessibilityHostMsg_EventParams event;
-    GetLastAccEvent(&event);
-    return event.update.nodes.size();
+    AXContentTreeUpdate update = GetLastAccUpdate();
+    return update.nodes.size();
   }
 
- protected:
+  TestRenderAccessibilityImpl& render_accessibility() {
+    return *render_accessibility_;
+  }
+
   IPC::TestSink* sink_;
 
-  DISALLOW_COPY_AND_ASSIGN(RenderAccessibilityImplTest);
+ private:
+  std::unique_ptr<TestRenderAccessibilityImpl> render_accessibility_;
 
+  DISALLOW_COPY_AND_ASSIGN(RenderAccessibilityImplTest);
 };
 
 TEST_F(RenderAccessibilityImplTest, SendFullAccessibilityTreeOnReload) {
@@ -108,63 +212,56 @@ TEST_F(RenderAccessibilityImplTest, SendFullAccessibilityTreeOnReload) {
   // the nodes that actually changed or were reparented. This test
   // ensures that the messages sent are correct in cases when a page
   // reloads, and that internal state is properly garbage-collected.
-  std::string html =
-      "<body>"
-      "  <div role='group' id='A'>"
-      "    <div role='group' id='A1'></div>"
-      "    <div role='group' id='A2'></div>"
-      "  </div>"
-      "</body>";
-  LoadHTML(html.c_str());
+  constexpr char html[] = R"HTML(
+      <body>
+        <div role="group" id="A">
+          <div role="group" id="A1"></div>
+          <div role="group" id="A2"></div>
+        </div>
+      </body>
+      )HTML";
+  LoadHTMLAndRefreshAccessibilityTree(html);
 
-  // Creating a RenderAccessibilityImpl should sent the tree to the browser.
-  std::unique_ptr<TestRenderAccessibilityImpl> accessibility(
-      new TestRenderAccessibilityImpl(frame()));
-  accessibility->SendPendingAccessibilityEvents();
   EXPECT_EQ(4, CountAccessibilityNodesSentToBrowser());
 
   // If we post another event but the tree doesn't change,
   // we should only send 1 node to the browser.
   sink_->ClearMessages();
-  WebDocument document = view()->GetWebView()->mainFrame()->document();
-  WebAXObject root_obj = document.accessibilityObject();
-  accessibility->HandleAXEvent(
-      root_obj,
-      ui::AX_EVENT_LAYOUT_COMPLETE);
-  accessibility->SendPendingAccessibilityEvents();
+  WebDocument document = GetMainFrame()->GetDocument();
+  WebAXObject root_obj = WebAXObject::FromWebDocument(document);
+  render_accessibility().HandleAXEvent(root_obj,
+                                       ax::mojom::Event::kLayoutComplete);
+  render_accessibility().SendPendingAccessibilityEvents();
   EXPECT_EQ(1, CountAccessibilityNodesSentToBrowser());
   {
     // Make sure it's the root object that was updated.
-    AccessibilityHostMsg_EventParams event;
-    GetLastAccEvent(&event);
-    EXPECT_EQ(root_obj.axID(), event.update.nodes[0].id);
+    AXContentTreeUpdate update = GetLastAccUpdate();
+    EXPECT_EQ(root_obj.AxID(), update.nodes[0].id);
   }
 
   // If we reload the page and send a event, we should send
   // all 4 nodes to the browser. Also double-check that we didn't
   // leak any of the old BrowserTreeNodes.
-  LoadHTML(html.c_str());
-  document = view()->GetWebView()->mainFrame()->document();
-  root_obj = document.accessibilityObject();
+  LoadHTML(html);
+  document = GetMainFrame()->GetDocument();
+  root_obj = WebAXObject::FromWebDocument(document);
   sink_->ClearMessages();
-  accessibility->HandleAXEvent(
-      root_obj,
-      ui::AX_EVENT_LAYOUT_COMPLETE);
-  accessibility->SendPendingAccessibilityEvents();
+  render_accessibility().HandleAXEvent(root_obj,
+                                       ax::mojom::Event::kLayoutComplete);
+  render_accessibility().SendPendingAccessibilityEvents();
   EXPECT_EQ(4, CountAccessibilityNodesSentToBrowser());
 
   // Even if the first event is sent on an element other than
   // the root, the whole tree should be updated because we know
   // the browser doesn't have the root element.
-  LoadHTML(html.c_str());
-  document = view()->GetWebView()->mainFrame()->document();
-  root_obj = document.accessibilityObject();
+  LoadHTML(html);
+  document = GetMainFrame()->GetDocument();
+  root_obj = WebAXObject::FromWebDocument(document);
   sink_->ClearMessages();
-  const WebAXObject& first_child = root_obj.childAt(0);
-  accessibility->HandleAXEvent(
-      first_child,
-      ui::AX_EVENT_LIVE_REGION_CHANGED);
-  accessibility->SendPendingAccessibilityEvents();
+  const WebAXObject& first_child = root_obj.ChildAt(0);
+  render_accessibility().HandleAXEvent(first_child,
+                                       ax::mojom::Event::kLiveRegionChanged);
+  render_accessibility().SendPendingAccessibilityEvents();
   EXPECT_EQ(4, CountAccessibilityNodesSentToBrowser());
 }
 
@@ -172,50 +269,44 @@ TEST_F(RenderAccessibilityImplTest, HideAccessibilityObject) {
   // Test RenderAccessibilityImpl and make sure it sends the
   // proper event to the browser when an object in the tree
   // is hidden, but its children are not.
-  std::string html =
-      "<body>"
-      "  <div role='group' id='A'>"
-      "    <div role='group' id='B'>"
-      "      <div role='group' id='C' style='visibility:visible'>"
-      "      </div>"
-      "    </div>"
-      "  </div>"
-      "</body>";
-  LoadHTML(html.c_str());
+  LoadHTMLAndRefreshAccessibilityTree(R"HTML(
+      <body>
+        <div role="group" id="A">
+          <div role="group" id="B">
+            <div role="group" id="C" style="visibility: visible">
+            </div>
+          </div>
+        </div>
+      </body>
+      )HTML");
 
-  std::unique_ptr<TestRenderAccessibilityImpl> accessibility(
-      new TestRenderAccessibilityImpl(frame()));
-  accessibility->SendPendingAccessibilityEvents();
   EXPECT_EQ(4, CountAccessibilityNodesSentToBrowser());
 
-  WebDocument document = view()->GetWebView()->mainFrame()->document();
-  WebAXObject root_obj = document.accessibilityObject();
-  WebAXObject node_a = root_obj.childAt(0);
-  WebAXObject node_b = node_a.childAt(0);
-  WebAXObject node_c = node_b.childAt(0);
+  WebDocument document = GetMainFrame()->GetDocument();
+  WebAXObject root_obj = WebAXObject::FromWebDocument(document);
+  WebAXObject node_a = root_obj.ChildAt(0);
+  WebAXObject node_b = node_a.ChildAt(0);
+  WebAXObject node_c = node_b.ChildAt(0);
 
-  // Hide node 'B' ('C' stays visible).
+  // Hide node "B" ("C" stays visible).
   ExecuteJavaScriptForTests(
       "document.getElementById('B').style.visibility = 'hidden';");
   // Force layout now.
   ExecuteJavaScriptForTests("document.getElementById('B').offsetLeft;");
 
-  // Send a childrenChanged on 'A'.
+  // Send a childrenChanged on "A".
   sink_->ClearMessages();
-  accessibility->HandleAXEvent(
-      node_a,
-      ui::AX_EVENT_CHILDREN_CHANGED);
+  render_accessibility().HandleAXEvent(node_a,
+                                       ax::mojom::Event::kChildrenChanged);
+  render_accessibility().SendPendingAccessibilityEvents();
+  AXContentTreeUpdate update = GetLastAccUpdate();
+  ASSERT_EQ(2U, update.nodes.size());
 
-  accessibility->SendPendingAccessibilityEvents();
-  AccessibilityHostMsg_EventParams event;
-  GetLastAccEvent(&event);
-  ASSERT_EQ(2U, event.update.nodes.size());
-
-  // RenderAccessibilityImpl notices that 'C' is being reparented,
-  // so it clears the subtree rooted at 'A', then updates 'A' and then 'C'.
-  EXPECT_EQ(node_a.axID(), event.update.node_id_to_clear);
-  EXPECT_EQ(node_a.axID(), event.update.nodes[0].id);
-  EXPECT_EQ(node_c.axID(), event.update.nodes[1].id);
+  // RenderAccessibilityImpl notices that "C" is being reparented,
+  // so it clears the subtree rooted at "A", then updates "A" and then "C".
+  EXPECT_EQ(node_a.AxID(), update.node_id_to_clear);
+  EXPECT_EQ(node_a.AxID(), update.nodes[0].id);
+  EXPECT_EQ(node_c.AxID(), update.nodes[1].id);
   EXPECT_EQ(2, CountAccessibilityNodesSentToBrowser());
 }
 
@@ -224,119 +315,181 @@ TEST_F(RenderAccessibilityImplTest, ShowAccessibilityObject) {
   // proper event to the browser when an object in the tree
   // is shown, causing its own already-visible children to be
   // reparented to it.
-  std::string html =
-      "<body>"
-      "  <div role='group' id='A'>"
-      "    <div role='group' id='B' style='visibility:hidden'>"
-      "      <div role='group' id='C' style='visibility:visible'>"
-      "      </div>"
-      "    </div>"
-      "  </div>"
-      "</body>";
-  LoadHTML(html.c_str());
+  LoadHTMLAndRefreshAccessibilityTree(R"HTML(
+      <body>
+        <div role="group" id="A">
+          <div role="group" id="B" style="visibility: hidden">
+            <div role="group" id="C" style="visibility: visible">
+            </div>
+          </div>
+        </div>
+      </body>
+      )HTML");
 
-  std::unique_ptr<TestRenderAccessibilityImpl> accessibility(
-      new TestRenderAccessibilityImpl(frame()));
-  accessibility->SendPendingAccessibilityEvents();
   EXPECT_EQ(3, CountAccessibilityNodesSentToBrowser());
 
-  // Show node 'B', then send a childrenChanged on 'A'.
+  // Show node "B", then send a childrenChanged on "A".
   ExecuteJavaScriptForTests(
       "document.getElementById('B').style.visibility = 'visible';");
   ExecuteJavaScriptForTests("document.getElementById('B').offsetLeft;");
 
   sink_->ClearMessages();
-  WebDocument document = view()->GetWebView()->mainFrame()->document();
-  WebAXObject root_obj = document.accessibilityObject();
-  WebAXObject node_a = root_obj.childAt(0);
-  WebAXObject node_b = node_a.childAt(0);
-  WebAXObject node_c = node_b.childAt(0);
+  WebDocument document = GetMainFrame()->GetDocument();
+  WebAXObject root_obj = WebAXObject::FromWebDocument(document);
+  WebAXObject node_a = root_obj.ChildAt(0);
+  WebAXObject node_b = node_a.ChildAt(0);
+  WebAXObject node_c = node_b.ChildAt(0);
 
-  accessibility->HandleAXEvent(
-      node_a,
-      ui::AX_EVENT_CHILDREN_CHANGED);
+  render_accessibility().HandleAXEvent(node_a,
+                                       ax::mojom::Event::kChildrenChanged);
+  render_accessibility().SendPendingAccessibilityEvents();
+  AXContentTreeUpdate update = GetLastAccUpdate();
 
-  accessibility->SendPendingAccessibilityEvents();
-  AccessibilityHostMsg_EventParams event;
-  GetLastAccEvent(&event);
-
-  ASSERT_EQ(3U, event.update.nodes.size());
-  EXPECT_EQ(node_a.axID(), event.update.node_id_to_clear);
-  EXPECT_EQ(node_a.axID(), event.update.nodes[0].id);
-  EXPECT_EQ(node_b.axID(), event.update.nodes[1].id);
-  EXPECT_EQ(node_c.axID(), event.update.nodes[2].id);
+  ASSERT_EQ(3U, update.nodes.size());
+  EXPECT_EQ(node_a.AxID(), update.node_id_to_clear);
+  EXPECT_EQ(node_a.AxID(), update.nodes[0].id);
+  EXPECT_EQ(node_b.AxID(), update.nodes[1].id);
+  EXPECT_EQ(node_c.AxID(), update.nodes[2].id);
   EXPECT_EQ(3, CountAccessibilityNodesSentToBrowser());
 }
 
-TEST_F(RenderAccessibilityImplTest, DetachAccessibilityObject) {
-  // Test RenderAccessibilityImpl and make sure it sends the
-  // proper event to the browser when an object in the tree
-  // is detached, but its children are not. This can happen when
-  // a layout occurs and an anonymous render block is no longer needed.
-  std::string html =
-      "<body aria-label='Body'>"
-      "<span>1</span><span style='display:block'>2</span>"
-      "</body>";
-  LoadHTML(html.c_str());
+//
+// AXImageAnnotatorTest
+//
 
-  std::unique_ptr<TestRenderAccessibilityImpl> accessibility(
-      new TestRenderAccessibilityImpl(frame()));
-  accessibility->SendPendingAccessibilityEvents();
-  EXPECT_EQ(7, CountAccessibilityNodesSentToBrowser());
+class AXImageAnnotatorTest : public RenderAccessibilityImplTest {
+ public:
+  AXImageAnnotatorTest() = default;
+  ~AXImageAnnotatorTest() override = default;
 
-  // Initially, the accessibility tree looks like this:
-  //
-  //   Document
-  //   +--Body
-  //      +--Anonymous Block
-  //         +--Static Text "1"
-  //            +--Inline Text Box "1"
-  //      +--Static Text "2"
-  //         +--Inline Text Box "2"
-  WebDocument document = view()->GetWebView()->mainFrame()->document();
-  WebAXObject root_obj = document.accessibilityObject();
-  WebAXObject body = root_obj.childAt(0);
-  WebAXObject anonymous_block = body.childAt(0);
-  WebAXObject text_1 = anonymous_block.childAt(0);
-  WebAXObject text_2 = body.childAt(1);
+ protected:
+  void SetUp() override {
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kExperimentalAccessibilityLabels);
+    RenderAccessibilityImplTest::SetUp();
+    // TODO(nektar): Add the ability to test the AX action that labels images
+    // only once.
+    ui::AXMode mode = ui::kAXModeComplete;
+    mode.set_mode(ui::AXMode::kLabelImages, true);
+    SetMode(mode);
+    render_accessibility().ax_image_annotator_ =
+        std::make_unique<TestAXImageAnnotator>(&render_accessibility(),
+                                               mock_annotator().GetPtr());
+    render_accessibility().tree_source_.RemoveImageAnnotator();
+    render_accessibility().tree_source_.AddImageAnnotator(
+        render_accessibility().ax_image_annotator_.get());
+  }
 
-  // Change the display of the second 'span' back to inline, which causes the
-  // anonymous block to be destroyed.
+  void TearDown() override {
+    render_accessibility().ax_image_annotator_.release();
+    RenderAccessibilityImplTest::TearDown();
+  }
+
+  MockAnnotationService& mock_annotator() { return mock_annotator_; }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  MockAnnotationService mock_annotator_;
+
+  DISALLOW_COPY_AND_ASSIGN(AXImageAnnotatorTest);
+};
+
+TEST_F(AXImageAnnotatorTest, OnImageAdded) {
+  LoadHTMLAndRefreshAccessibilityTree(R"HTML(
+      <body>
+        <img id="A" src="test1.jpg"
+            style="width: 200px; height: 150px;">
+        <img id="B" src="test2.jpg"
+            style="visibility: hidden; width: 200px; height: 150px;">
+      </body>
+      )HTML");
+
+  // Every time we call a method on a Mojo interface, a message is posted to the
+  // current task queue. We need to ask the queue to drain itself before we
+  // check test expectations.
+  scoped_task_environment_.RunUntilIdle();
+
+  ASSERT_EQ(4, CountAccessibilityNodesSentToBrowser());
+  EXPECT_THAT(mock_annotator().image_ids_, ElementsAre("test1.jpg"));
+  ASSERT_EQ(1u, mock_annotator().image_processors_.size());
+  EXPECT_TRUE(mock_annotator().image_processors_[0].is_bound());
+  EXPECT_EQ(1u, mock_annotator().callbacks_.size());
+
+  // Show node "B".
   ExecuteJavaScriptForTests(
-      "document.querySelectorAll('span')[1].style.display = 'inline';");
-  // Force layout now.
-  ExecuteJavaScriptForTests("document.body.offsetLeft;");
+      "document.getElementById('B').style.visibility = 'visible';");
 
-  // Send a childrenChanged on the body.
   sink_->ClearMessages();
-  accessibility->HandleAXEvent(
-      body,
-      ui::AX_EVENT_CHILDREN_CHANGED);
+  WebDocument document = GetMainFrame()->GetDocument();
+  WebAXObject root_obj = WebAXObject::FromWebDocument(document);
+  ASSERT_FALSE(root_obj.IsNull());
+  // This should update the annotations of all images on the page, including the
+  // already visible one.
+  render_accessibility().MarkWebAXObjectDirty(root_obj, true /* subtree */);
+  render_accessibility().SendPendingAccessibilityEvents();
+  scoped_task_environment_.RunUntilIdle();
 
-  accessibility->SendPendingAccessibilityEvents();
+  EXPECT_THAT(mock_annotator().image_ids_,
+              ElementsAre("test1.jpg", "test1.jpg", "test2.jpg"));
+  ASSERT_EQ(3u, mock_annotator().image_processors_.size());
+  EXPECT_TRUE(mock_annotator().image_processors_[0].is_bound());
+  EXPECT_TRUE(mock_annotator().image_processors_[1].is_bound());
+  EXPECT_TRUE(mock_annotator().image_processors_[2].is_bound());
+  EXPECT_EQ(3u, mock_annotator().callbacks_.size());
+}
 
-  // Afterwards, the accessibility tree looks like this:
-  //
-  //   Document
-  //   +--Body
-  //      +--Static Text "1"
-  //         +--Inline Text Box "1"
-  //      +--Static Text "2"
-  //         +--Inline Text Box "2"
-  //
-  // We just assert that there are now four nodes in the
-  // accessibility tree and that only three nodes needed
-  // to be updated (the body, the static text 1, and
-  // the static text 2).
+TEST_F(AXImageAnnotatorTest, OnImageUpdated) {
+  LoadHTMLAndRefreshAccessibilityTree(R"HTML(
+      <body>
+        <img id="A" src="test1.jpg"
+            style="width: 200px; height: 150px;">
+      </body>
+      )HTML");
 
-  AccessibilityHostMsg_EventParams event;
-  GetLastAccEvent(&event);
-  ASSERT_EQ(5U, event.update.nodes.size());
+  // Every time we call a method on a Mojo interface, a message is posted to the
+  // current task queue. We need to ask the queue to drain itself before we
+  // check test expectations.
+  scoped_task_environment_.RunUntilIdle();
 
-  EXPECT_EQ(body.axID(), event.update.nodes[0].id);
-  EXPECT_EQ(text_1.axID(), event.update.nodes[1].id);
-  // The third event is to update text_2, but its id changes
-  // so we don't have a test expectation for it.
+  ASSERT_EQ(3, CountAccessibilityNodesSentToBrowser());
+  EXPECT_THAT(mock_annotator().image_ids_, ElementsAre("test1.jpg"));
+  ASSERT_EQ(1u, mock_annotator().image_processors_.size());
+  EXPECT_TRUE(mock_annotator().image_processors_[0].is_bound());
+  EXPECT_EQ(1u, mock_annotator().callbacks_.size());
+
+  sink_->ClearMessages();
+  WebDocument document = GetMainFrame()->GetDocument();
+  WebAXObject root_obj = WebAXObject::FromWebDocument(document);
+  ASSERT_FALSE(root_obj.IsNull());
+  // This should update the annotations of all images on the page.
+  render_accessibility().MarkWebAXObjectDirty(root_obj, true /* subtree */);
+  render_accessibility().SendPendingAccessibilityEvents();
+  scoped_task_environment_.RunUntilIdle();
+
+  EXPECT_THAT(mock_annotator().image_ids_,
+              ElementsAre("test1.jpg", "test1.jpg"));
+  ASSERT_EQ(2u, mock_annotator().image_processors_.size());
+  EXPECT_TRUE(mock_annotator().image_processors_[0].is_bound());
+  EXPECT_TRUE(mock_annotator().image_processors_[1].is_bound());
+  EXPECT_EQ(2u, mock_annotator().callbacks_.size());
+
+  // Update node "A".
+  ExecuteJavaScriptForTests("document.querySelector('img').src = 'test2.jpg';");
+
+  sink_->ClearMessages();
+  // This should update the annotations of all images on the page, including the
+  // now updated image src.
+  render_accessibility().MarkWebAXObjectDirty(root_obj, true /* subtree */);
+  render_accessibility().SendPendingAccessibilityEvents();
+  scoped_task_environment_.RunUntilIdle();
+
+  EXPECT_THAT(mock_annotator().image_ids_,
+              ElementsAre("test1.jpg", "test1.jpg", "test2.jpg"));
+  ASSERT_EQ(3u, mock_annotator().image_processors_.size());
+  EXPECT_TRUE(mock_annotator().image_processors_[0].is_bound());
+  EXPECT_TRUE(mock_annotator().image_processors_[1].is_bound());
+  EXPECT_TRUE(mock_annotator().image_processors_[2].is_bound());
+  EXPECT_EQ(3u, mock_annotator().callbacks_.size());
 }
 
 }  // namespace content

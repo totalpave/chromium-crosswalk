@@ -10,7 +10,7 @@
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "jingle/glue/utils.h"
-#include "third_party/webrtc/base/socketaddress.h"
+#include "third_party/webrtc/rtc_base/socket_address.h"
 
 namespace remoting {
 
@@ -21,14 +21,13 @@ FakeNetworkManager::FakeNetworkManager(const rtc::IPAddress& address)
   network_->AddIP(address);
 }
 
-FakeNetworkManager::~FakeNetworkManager() {
-}
+FakeNetworkManager::~FakeNetworkManager() = default;
 
 void FakeNetworkManager::StartUpdating() {
   started_ = true;
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&FakeNetworkManager::SendNetworksChangedSignal,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&FakeNetworkManager::SendNetworksChangedSignal,
+                                weak_factory_.GetWeakPtr()));
 }
 
 void FakeNetworkManager::StopUpdating() {

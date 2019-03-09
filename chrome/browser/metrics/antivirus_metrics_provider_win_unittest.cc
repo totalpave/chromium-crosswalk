@@ -7,51 +7,44 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/feature_list.h"
-#include "base/memory/ref_counted.h"
-#include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/sys_string_conversions.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_checker.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/version.h"
 #include "base/win/windows_version.h"
-#include "components/variations/metrics_util.h"
-#include "content/public/browser/browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_utils.h"
+#include "chrome/services/util_win/public/mojom/constants.mojom.h"
+#include "chrome/services/util_win/util_win_service.h"
+#include "components/variations/hashing.h"
+#include "services/service_manager/public/cpp/test/test_connector_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
 
-// Helper function to toggle whether the ReportFullAVProductDetails feature is
-// enabled or not.
-void SetFullNamesFeatureEnabled(bool enabled) {
-  base::FeatureList::ClearInstanceForTesting();
-  std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
-  if (enabled) {
-    feature_list->InitializeFromCommandLine(
-        AntiVirusMetricsProvider::kReportNamesFeature.name, std::string());
-  } else {
-    feature_list->InitializeFromCommandLine(
-        std::string(), AntiVirusMetricsProvider::kReportNamesFeature.name);
-  }
-  base::FeatureList::SetInstance(std::move(feature_list));
-}
-
 void VerifySystemProfileData(const metrics::SystemProfileProto& system_profile,
                              bool expect_unhashed_value) {
-  const char kWindowsDefender[] = "Windows Defender";
+  if (base::win::GetVersion() < base::win::VERSION_WIN8)
+    return;
+
+  // The name of Windows Defender changed sometime in Windows 10, so any of the
+  // following is possible.
+  constexpr char kWindowsDefender[] = "Windows Defender";
+  constexpr char kWindowsDefenderAntivirus[] = "Windows Defender Antivirus";
 
   if (base::win::GetVersion() >= base::win::VERSION_WIN8) {
     bool defender_found = false;
     for (const auto& av : system_profile.antivirus_product()) {
-      if (av.product_name_hash() == metrics::HashName(kWindowsDefender)) {
+      if (av.product_name_hash() ==
+          variations::HashName(kWindowsDefender) ||
+          av.product_name_hash() ==
+          variations::HashName(kWindowsDefenderAntivirus)) {
         defender_found = true;
         if (expect_unhashed_value) {
           EXPECT_TRUE(av.has_product_name());
-          EXPECT_EQ(kWindowsDefender, av.product_name());
+          EXPECT_TRUE(av.product_name() == kWindowsDefender ||
+                      av.product_name() == kWindowsDefenderAntivirus);
         } else {
           EXPECT_FALSE(av.has_product_name());
         }
@@ -69,66 +62,65 @@ class AntiVirusMetricsProviderTest : public ::testing::TestWithParam<bool> {
   AntiVirusMetricsProviderTest()
       : got_results_(false),
         expect_unhashed_value_(GetParam()),
-        provider_(new AntiVirusMetricsProvider(
-            content::BrowserThread::GetMessageLoopProxyForThread(
-                content::BrowserThread::FILE))),
-        thread_bundle_(content::TestBrowserThreadBundle::REAL_FILE_THREAD),
-        weak_ptr_factory_(this) {}
+        util_win_service_(connector_factory_.RegisterInstance(
+            chrome::mojom::kUtilWinServiceName)),
+        provider_(connector_factory_.GetDefaultConnector()) {}
 
   void GetMetricsCallback() {
     // Check that the callback runs on the main loop.
     ASSERT_TRUE(thread_checker_.CalledOnValidThread());
-    ASSERT_TRUE(run_loop_.running());
-
-    run_loop_.QuitWhenIdle();
 
     got_results_ = true;
 
     metrics::SystemProfileProto system_profile;
-    provider_->ProvideSystemProfileMetrics(&system_profile);
+    provider_.ProvideSystemProfileMetrics(&system_profile);
 
     VerifySystemProfileData(system_profile, expect_unhashed_value_);
     // This looks weird, but it's to make sure that reading the data out of the
     // AntiVirusMetricsProvider does not invalidate it, as the class should be
     // resilient to this.
     system_profile.Clear();
-    provider_->ProvideSystemProfileMetrics(&system_profile);
+    provider_.ProvideSystemProfileMetrics(&system_profile);
     VerifySystemProfileData(system_profile, expect_unhashed_value_);
+  }
+
+  // Helper function to toggle whether the ReportFullAVProductDetails feature is
+  // enabled or not.
+  void SetFullNamesFeatureEnabled(bool enabled) {
+    if (enabled) {
+      scoped_feature_list_.InitAndEnableFeature(
+          AntiVirusMetricsProvider::kReportNamesFeature);
+    } else {
+      scoped_feature_list_.InitAndDisableFeature(
+          AntiVirusMetricsProvider::kReportNamesFeature);
+    }
   }
 
   bool got_results_;
   bool expect_unhashed_value_;
-  std::unique_ptr<AntiVirusMetricsProvider> provider_;
-  content::TestBrowserThreadBundle thread_bundle_;
-  base::RunLoop run_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  service_manager::TestConnectorFactory connector_factory_;
+  UtilWinService util_win_service_;
+  AntiVirusMetricsProvider provider_;
+  base::test::ScopedFeatureList scoped_feature_list_;
   base::ThreadChecker thread_checker_;
-  base::WeakPtrFactory<AntiVirusMetricsProviderTest> weak_ptr_factory_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(AntiVirusMetricsProviderTest);
 };
 
 TEST_P(AntiVirusMetricsProviderTest, GetMetricsFullName) {
+  base::ScopedAllowBlockingForTesting scoped_allow_blocking_;
+
   ASSERT_TRUE(thread_checker_.CalledOnValidThread());
   base::HistogramTester histograms;
   SetFullNamesFeatureEnabled(expect_unhashed_value_);
-  // Make sure the I/O is happening on the FILE thread by disallowing it on
-  // the main thread.
-  bool previous_value = base::ThreadRestrictions::SetIOAllowed(false);
-  provider_->GetAntiVirusMetrics(
+
+  // The usage of base::Unretained(this) is safe here because |provider_|, who
+  // owns the callback, will go away before |this|.
+  provider_.AsyncInit(
       base::Bind(&AntiVirusMetricsProviderTest::GetMetricsCallback,
-                 weak_ptr_factory_.GetWeakPtr()));
-  content::RunThisRunLoop(&run_loop_);
+                 base::Unretained(this)));
+  scoped_task_environment_.RunUntilIdle();
   EXPECT_TRUE(got_results_);
-  base::ThreadRestrictions::SetIOAllowed(previous_value);
-
-  AntiVirusMetricsProvider::ResultCode expected_result =
-      AntiVirusMetricsProvider::RESULT_SUCCESS;
-  if (base::win::OSInfo::GetInstance()->version_type() ==
-      base::win::SUITE_SERVER)
-    expected_result = AntiVirusMetricsProvider::RESULT_WSC_NOT_AVAILABLE;
-  histograms.ExpectUniqueSample("UMA.AntiVirusMetricsProvider.Result",
-                                expected_result, 1);
 }
-
-INSTANTIATE_TEST_CASE_P(, AntiVirusMetricsProviderTest, ::testing::Bool());

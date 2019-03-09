@@ -9,16 +9,13 @@ GEN_INCLUDE(['../testing/chromevox_unittest_base.js']);
  * @constructor
  * @extends {ChromeVoxUnitTestBase}
  */
-function CvoxWalkerUnitTestBase() {}
+function ChromeVoxWalkerUnitTestBase() {}
 
-CvoxWalkerUnitTestBase.prototype = {
+ChromeVoxWalkerUnitTestBase.prototype = {
   __proto__: ChromeVoxUnitTestBase.prototype,
 
   /** @override */
-  closureModuleDeps: [
-    'TestMsgs',
-    'cvox.CursorSelection'
-  ],
+  closureModuleDeps: ['TestMsgs', 'cvox.CursorSelection'],
 
   /**
    * Common set up for all walker test cases.
@@ -82,7 +79,8 @@ CvoxWalkerUnitTestBase.prototype = {
     if (opt_cmdOrDest instanceof cvox.CursorSelection) {
       var ret = opt_cmdOrDest;
     } else {
-      if (CvoxWalkerUnitTestBase.CMD_WHITELIST.indexOf(opt_cmdOrDest) == -1) {
+      if (ChromeVoxWalkerUnitTestBase.CMD_WHITELIST.indexOf(opt_cmdOrDest) ==
+          -1) {
         // Intentionally fail the test if there's a typo.
         throw 'Got an invalid command: "' + opt_cmdOrDest + '".';
       }
@@ -100,7 +98,7 @@ CvoxWalkerUnitTestBase.prototype = {
     }
 
     for (var key in desc) {
-      if (CvoxWalkerUnitTestBase.DESC_WHITELIST.indexOf(key) == -1) {
+      if (ChromeVoxWalkerUnitTestBase.DESC_WHITELIST.indexOf(key) == -1) {
         throw 'Invalid key in desc parameter: "' + key + '".';
       }
     }
@@ -155,30 +153,33 @@ CvoxWalkerUnitTestBase.prototype = {
  * @type {Array.string}
  * @const
  */
-CvoxWalkerUnitTestBase.CMD_WHITELIST = ['next', 'sync', 'nextRow', 'nextCol'];
+ChromeVoxWalkerUnitTestBase.CMD_WHITELIST =
+    ['next', 'sync', 'nextRow', 'nextCol'];
 
 /**
  * Whitelist for the properties that can be asserted with go().
  * @type {Array.string}
  * @const
  */
-CvoxWalkerUnitTestBase.DESC_WHITELIST = ['selText', 'selNodeId',
-'selParentNodeId', 'selStartIndex', 'selEndIndex', 'selReversed', 'descText',
-'descContext', 'descAnnotation', 'descUserValue', 'descPersonality'];
+ChromeVoxWalkerUnitTestBase.DESC_WHITELIST = [
+  'selText', 'selNodeId', 'selParentNodeId', 'selStartIndex', 'selEndIndex',
+  'selReversed', 'descText', 'descContext', 'descAnnotation', 'descUserValue',
+  'descPersonality'
+];
 
 /**
  * Adds common walker tests
  * @param {string} testFixture Name of the test fixture class.
  */
-CvoxWalkerUnitTestBase.addCommonTests = function(testFixture) {
+ChromeVoxWalkerUnitTestBase.addCommonTests = function(testFixture) {
   /**
    * Ensures that syncing to the beginning and ends of the page return
    * not null.
    */
   TEST_F(testFixture, 'testSyncToPage', function() {
-    this.loadDoc(function() {/*!
+    this.loadDoc(function() { /*!
       <div><p id="a">a</p></div>
-    */});
+    */ });
     var ret = this.walker.begin();
     assertNotEquals(null, ret);
     ret = this.walker.begin({reversed: true});
@@ -191,7 +192,7 @@ CvoxWalkerUnitTestBase.addCommonTests = function(testFixture) {
    * for TableWalker, sync can return null. Override if it doesn't work yet.
    */
   TEST_F(testFixture, 'testSyncInvariant', function() {
-    this.loadDoc(function() {/*!
+    this.loadDoc(function() { /*!
       <div id="outer">
         <p id="a">a</p>
         <p id="b">b</p>
@@ -201,9 +202,8 @@ CvoxWalkerUnitTestBase.addCommonTests = function(testFixture) {
         <p id="e">e</p>
         <h1 id="B">h1</h1>
       </div>
-    */});
-    var sel = cvox.CursorSelection.fromNode(
-        $('outer').firstChild);
+    */ });
+    var sel = cvox.CursorSelection.fromNode($('outer').firstChild);
     var sync = this.walker.sync(sel);
     var syncsync = this.walker.sync(sync);
     assertEquals(true, sync.equals(syncsync));

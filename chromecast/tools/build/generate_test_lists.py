@@ -2,13 +2,50 @@
 # Copyright 2014 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-
 """Helper script to generate unit test lists for the Chromecast build scripts.
 """
 
 import glob
+import json
 import optparse
+import os
 import sys
+
+
+def GetTestNames(test_files_dir):
+  """Returns test names specified in the *.tests files in |test_files_dir|."""
+  test_files = sorted(glob.glob(test_files_dir + "/*.tests"))
+  test_names = set()
+  for test_filename in test_files:
+    with open(test_filename, "r") as test_file:
+      for test_file_line in test_file:
+        # Binary name may be a simple test target (cast_net_unittests) or be a
+        # qualified gyp path (../base.gyp:base_unittests).
+        test_name = test_file_line.split(":")[-1].strip()
+        test_names.add(test_name)
+  return test_names
+
+
+def GetTestFilters(test_files_dir, test_names, include_filters):
+  """Returns filters specified in the *.filters files in |test_files_dir|."""
+  # GYP targets may provide a numbered priority for the filename. Sort to
+  # use that priority.
+  filter_files = sorted(glob.glob(test_files_dir + "/*.filters"))
+  test_filters = {}
+  if include_filters:
+    for filter_filename in filter_files:
+      with open(filter_filename, "r") as filter_file:
+        for filter_line in filter_file:
+          (test_name, test_filter) = filter_line.strip().split(" ", 1)
+
+          if test_name not in test_names:
+            raise Exception("Filter found for unknown target: " + test_name)
+
+          # Note: This may overwrite a previous rule. This is okay, since higher
+          # priority files are evaluated after lower priority files.
+          test_filters[test_name] = test_filter
+
+  return test_filters
 
 
 def CombineList(test_files_dir, list_output_file, include_filters,
@@ -26,45 +63,60 @@ def CombineList(test_files_dir, list_output_file, include_filters,
         the test list.
     additional_runtime_options: Arguments to be applied to all tests.  These are
         applied before filters (so test-specific filters take precedence).
+
+  Raises:
+    Exception: if filter is found for an unknown target.
   """
-
-  # GYP targets may provide a numbered priority for the filename. Sort to
-  # use that priority.
-  test_files = sorted(glob.glob(test_files_dir + "/*.tests"))
-  filter_files = sorted(glob.glob(test_files_dir + "/*.filters"))
-
-  test_bin_set = set()
-  for test_filename in test_files:
-    with open(test_filename, "r") as test_file:
-      for test_file_line in test_file:
-        # Binary name may be a simple test target (cast_net_unittests) or be a
-        # qualified gyp path (../base.gyp:base_unittests).
-        test_binary_name = test_file_line.split(":")[-1].strip()
-        test_bin_set.add(test_binary_name)
-
-  test_filters = {}
-  if include_filters:
-    for filter_filename in filter_files:
-      with open(filter_filename, "r") as filter_file:
-        for filter_line in filter_file:
-          (test_binary_name, filter) = filter_line.strip().split(" ", 1)
-
-          if test_binary_name not in test_bin_set:
-            raise Exception("Filter found for unknown target: " +
-                test_binary_name)
-
-          if test_binary_name in test_filters:
-            test_filters[test_binary_name] += " " + filter
-          else:
-            test_filters[test_binary_name] = filter
-
-  test_binaries = [
-      binary + " " + (additional_runtime_options or "")
-             + (" " + test_filters[binary] if binary in test_filters else "")
-      for binary in test_bin_set]
+  test_names = GetTestNames(test_files_dir)
+  test_filters = GetTestFilters(test_files_dir, test_names, include_filters)
+  test_commands = [
+      "{} {} {}".format(test_name,
+                        additional_runtime_options or "",
+                        test_filters.get(test_name, ""))
+      for test_name in test_names
+  ]
 
   with open(list_output_file, "w") as f:
-    f.write("\n".join(sorted(test_binaries)))
+    f.write("\n".join(sorted(test_commands)))
+
+
+def CombineRuntimeDeps(test_files_dir, deps_output_file):
+  """Writes a JSON file that lists the runtime dependecies for each test.
+
+  The output will consist of a JSON dictionary where the keys are names of the
+  unittests and the values are arrays of files and directories needed at runtime
+  by the unittest. Of note, the unittest itself is always listed as a runtime
+  dependency of itself.
+
+  The paths are all relative to the root output directory (where the unittest
+  binaries live).
+
+  {
+    "base_unittests": ["./base_unittests", "../../base/test/data/"],
+    "cast_media_unittests": [...],
+    ...
+  }
+
+  Args:
+    test_files_dir: path to the intermediate directory containing the invidual
+        runtime deps files.
+    deps_output_file: Path to write the JSON file out to.
+  """
+  test_names = GetTestNames(test_files_dir)
+  runtime_deps = {}
+  runtime_deps_dir = os.path.join(test_files_dir, "runtime_deps")
+  for runtime_deps_file in glob.glob(runtime_deps_dir + "/*_runtime_deps.txt"):
+    test_name = os.path.basename(runtime_deps_file).replace(
+        "_runtime_deps.txt", "")
+    if test_name not in test_names:
+      continue
+
+    with open(runtime_deps_file, "r") as f:
+      runtime_deps[test_name] = [dep.strip() for dep in f]
+
+  with open(deps_output_file, "w") as outfile:
+    json.dump(
+        runtime_deps, outfile, sort_keys=True, indent=2, separators=(",", ": "))
 
 
 def CreateList(inputs, list_output_file):
@@ -85,15 +137,30 @@ def DoMain(argv):
           pack_run          packs all test and filter files from the given
                             output directory into a single test list file
       """)
-  parser.add_option("-o", action="store", dest="list_output_file",
-                    help="Output path in which to write the test list.")
-  parser.add_option("-t", action="store", dest="test_files_dir",
-                    help="Intermediate test list directory.")
-  parser.add_option("-a", action="store", dest="additional_runtime_options",
-                    help="Additional options applied to all tests.")
+  parser.add_option(
+      "-o",
+      action="store",
+      dest="list_output_file",
+      help="Output path in which to write the test list.")
+  parser.add_option(
+      "-d",
+      action="store",
+      dest="deps_output_file",
+      help="Output path in which to write the runtime deps.")
+  parser.add_option(
+      "-t",
+      action="store",
+      dest="test_files_dir",
+      help="Intermediate test list directory.")
+  parser.add_option(
+      "-a",
+      action="store",
+      dest="additional_runtime_options",
+      help="Additional options applied to all tests.")
   options, inputs = parser.parse_args(argv)
 
   list_output_file = options.list_output_file
+  deps_output_file = options.deps_output_file
   test_files_dir = options.test_files_dir
   additional_runtime_options = options.additional_runtime_options
 
@@ -116,6 +183,8 @@ def DoMain(argv):
   if command == "pack_run":
     if not test_files_dir:
       parser.error("pack_run require a test files directory (-t).\n")
+    if deps_output_file:
+      CombineRuntimeDeps(test_files_dir, deps_output_file)
     return CombineList(test_files_dir, list_output_file, True,
                        additional_runtime_options)
 

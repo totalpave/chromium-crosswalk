@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/device_log_ui.h"
 
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
@@ -11,14 +12,13 @@
 #include "base/macros.h"
 #include "base/values.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/grit/chromium_strings.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/device_event_log/device_event_log.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/web_ui_message_handler.h"
-#include "grit/browser_resources.h"
 
 namespace chromeos {
 
@@ -33,12 +33,13 @@ class DeviceLogMessageHandler : public content::WebUIMessageHandler {
   void RegisterMessages() override {
     web_ui()->RegisterMessageCallback(
         "DeviceLog.getLog",
-        base::Bind(&DeviceLogMessageHandler::GetLog, base::Unretained(this)));
+        base::BindRepeating(&DeviceLogMessageHandler::GetLog,
+                            base::Unretained(this)));
   }
 
  private:
   void GetLog(const base::ListValue* value) const {
-    base::StringValue data(device_event_log::GetAsString(
+    base::Value data(device_event_log::GetAsString(
         device_event_log::NEWEST_FIRST, "json", "",
         device_event_log::LOG_LEVEL_DEBUG, 0));
     web_ui()->CallJavascriptFunctionUnsafe("DeviceLogUI.getLogCallback", data);
@@ -51,7 +52,7 @@ class DeviceLogMessageHandler : public content::WebUIMessageHandler {
 
 DeviceLogUI::DeviceLogUI(content::WebUI* web_ui)
     : content::WebUIController(web_ui) {
-  web_ui->AddMessageHandler(new DeviceLogMessageHandler());
+  web_ui->AddMessageHandler(std::make_unique<DeviceLogMessageHandler>());
 
   content::WebUIDataSource* html =
       content::WebUIDataSource::Create(chrome::kChromeUIDeviceLogHost);
@@ -76,12 +77,14 @@ DeviceLogUI::DeviceLogUI(content::WebUI* web_ui)
                            IDS_DEVICE_LOG_TYPE_BLUETOOTH);
   html->AddLocalizedString("logTypeUsbText", IDS_DEVICE_LOG_TYPE_USB);
   html->AddLocalizedString("logTypeHidText", IDS_DEVICE_LOG_TYPE_HID);
+  html->AddLocalizedString("logTypePrinterText", IDS_DEVICE_LOG_TYPE_PRINTER);
 
   html->AddLocalizedString("logEntryFormat", IDS_DEVICE_LOG_ENTRY);
   html->SetJsonPath("strings.js");
   html->AddResourcePath("device_log_ui.css", IDR_DEVICE_LOG_UI_CSS);
   html->AddResourcePath("device_log_ui.js", IDR_DEVICE_LOG_UI_JS);
   html->SetDefaultResource(IDR_DEVICE_LOG_UI_HTML);
+  html->UseGzip();
 
   content::WebUIDataSource::Add(web_ui->GetWebContents()->GetBrowserContext(),
                                 html);

@@ -5,9 +5,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
+#include "base/run_loop.h"
 #include "chromeos/dbus/shill_client_unittest_base.h"
 #include "chromeos/dbus/shill_third_party_vpn_driver_client.h"
 #include "chromeos/dbus/shill_third_party_vpn_observer.h"
@@ -23,8 +25,8 @@ const char kExampleIPConfigPath[] = "/foo/bar";
 
 class MockShillThirdPartyVpnObserver : public ShillThirdPartyVpnObserver {
  public:
-  MockShillThirdPartyVpnObserver() {}
-  ~MockShillThirdPartyVpnObserver() override {}
+  MockShillThirdPartyVpnObserver() = default;
+  ~MockShillThirdPartyVpnObserver() override = default;
   MOCK_METHOD1(OnPacketReceived, void(const std::vector<char>& data));
   MOCK_METHOD1(OnPlatformMessage, void(uint32_t message));
 };
@@ -44,10 +46,8 @@ class ShillThirdPartyVpnDriverClientTest : public ShillClientUnittestBase {
     client_.reset(ShillThirdPartyVpnDriverClient::Create());
     client_->Init(mock_bus_.get());
     // Run the message loop to run the signal connection result callback.
-    message_loop_.RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
-
-  void TearDown() override { ShillClientUnittestBase::TearDown(); }
 
   MOCK_METHOD0(MockSuccess, void());
   MOCK_METHOD1(MockSuccessWithWarning, void(const std::string& warning));
@@ -122,7 +122,7 @@ TEST_F(ShillThirdPartyVpnDriverClientTest, PlatformSignal) {
 
   testing::Mock::VerifyAndClearExpectations(&observer);
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(ShillThirdPartyVpnDriverClientTest, SetParameters) {
@@ -132,8 +132,8 @@ TEST_F(ShillThirdPartyVpnDriverClientTest, SetParameters) {
 
   base::DictionaryValue parameters;
   const std::string kAddress("1.1.1.1");
-  parameters.SetStringWithoutPathExpansion(
-      shill::kAddressParameterThirdPartyVpn, kAddress);
+  parameters.SetKey(shill::kAddressParameterThirdPartyVpn,
+                    base::Value(kAddress));
 
   EXPECT_CALL(*this, MockSuccessWithWarning(std::string("deadbeef"))).Times(1);
 
@@ -148,7 +148,7 @@ TEST_F(ShillThirdPartyVpnDriverClientTest, SetParameters) {
                  base::Unretained(this)),
       base::Bind(&Failure));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(ShillThirdPartyVpnDriverClientTest, UpdateConnectionState) {
@@ -167,7 +167,7 @@ TEST_F(ShillThirdPartyVpnDriverClientTest, UpdateConnectionState) {
                  base::Unretained(this)),
       base::Bind(&Failure));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(ShillThirdPartyVpnDriverClientTest, SendPacket) {
@@ -189,7 +189,7 @@ TEST_F(ShillThirdPartyVpnDriverClientTest, SendPacket) {
                  base::Unretained(this)),
       base::Bind(&Failure));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 }  // namespace chromeos

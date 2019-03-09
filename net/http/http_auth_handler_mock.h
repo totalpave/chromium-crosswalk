@@ -6,27 +6,27 @@
 #define NET_HTTP_HTTP_AUTH_HANDLER_MOCK_H_
 
 #include <memory>
+#include <ostream>
 #include <string>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
+#include "net/base/completion_once_callback.h"
 #include "net/http/http_auth_handler.h"
 #include "net/http/http_auth_handler_factory.h"
 #include "url/gurl.h"
 
 namespace net {
 
-class HostResolver;
-
 // MockAuthHandler is used in tests to reliably trigger edge cases.
 class HttpAuthHandlerMock : public HttpAuthHandler {
  public:
-  enum Resolve {
-    RESOLVE_INIT,
-    RESOLVE_SKIP,
-    RESOLVE_SYNC,
-    RESOLVE_ASYNC,
-    RESOLVE_TESTED,
+  enum class State {
+    WAIT_FOR_INIT,
+    WAIT_FOR_CHALLENGE,
+    WAIT_FOR_GENERATE_AUTH_TOKEN,
+    TOKEN_PENDING,
+    DONE
   };
 
   // The Factory class returns handlers in the order they were added via
@@ -49,7 +49,8 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
                           const GURL& origin,
                           CreateReason reason,
                           int nonce_count,
-                          const BoundNetLog& net_log,
+                          const NetLogWithSource& net_log,
+                          HostResolver* host_resolver,
                           std::unique_ptr<HttpAuthHandler>* handler) override;
 
    private:
@@ -61,13 +62,6 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
   HttpAuthHandlerMock();
 
   ~HttpAuthHandlerMock() override;
-
-  void SetResolveExpectation(Resolve resolve);
-
-  virtual bool NeedsCanonicalName();
-
-  virtual int ResolveCanonicalName(HostResolver* host_resolver,
-                                   const CompletionCallback& callback);
 
 
   void SetGenerateExpectation(bool async, int rv);
@@ -88,6 +82,8 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
     return request_url_;
   }
 
+  State state() const { return state_; }
+
   // HttpAuthHandler:
   HttpAuth::AuthorizationResult HandleAnotherChallenge(
       HttpAuthChallengeTokenizer* challenge) override;
@@ -101,16 +97,14 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
 
   int GenerateAuthTokenImpl(const AuthCredentials* credentials,
                             const HttpRequestInfo* request,
-                            const CompletionCallback& callback,
+                            CompletionOnceCallback callback,
                             std::string* auth_token) override;
 
  private:
-  void OnResolveCanonicalName();
-
   void OnGenerateAuthToken();
 
-  Resolve resolve_;
-  CompletionCallback callback_;
+  State state_;
+  CompletionOnceCallback callback_;
   bool generate_async_;
   int generate_rv_;
   std::string* auth_token_;
@@ -121,6 +115,8 @@ class HttpAuthHandlerMock : public HttpAuthHandler {
   GURL request_url_;
   base::WeakPtrFactory<HttpAuthHandlerMock> weak_factory_;
 };
+
+void PrintTo(const HttpAuthHandlerMock::State& state, ::std::ostream* os);
 
 }  // namespace net
 

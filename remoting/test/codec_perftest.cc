@@ -46,18 +46,18 @@ class CodecPerfTest : public testing::Test,
   std::unique_ptr<VideoEncoderVpx> encoder_;
 };
 
-INSTANTIATE_TEST_CASE_P(VP8,
-                        CodecPerfTest,
-                        ::testing::Values(CodecParams(false, false, false)));
-INSTANTIATE_TEST_CASE_P(VP9,
-                        CodecPerfTest,
-                        ::testing::Values(CodecParams(true, false, false)));
-INSTANTIATE_TEST_CASE_P(VP9Lossless,
-                        CodecPerfTest,
-                        ::testing::Values(CodecParams(true, true, false)));
-INSTANTIATE_TEST_CASE_P(VP9LosslessColor,
-                        CodecPerfTest,
-                        ::testing::Values(CodecParams(true, false, true)));
+INSTANTIATE_TEST_SUITE_P(VP8,
+                         CodecPerfTest,
+                         ::testing::Values(CodecParams(false, false, false)));
+INSTANTIATE_TEST_SUITE_P(VP9,
+                         CodecPerfTest,
+                         ::testing::Values(CodecParams(true, false, false)));
+INSTANTIATE_TEST_SUITE_P(VP9Lossless,
+                         CodecPerfTest,
+                         ::testing::Values(CodecParams(true, true, false)));
+INSTANTIATE_TEST_SUITE_P(VP9LosslessColor,
+                         CodecPerfTest,
+                         ::testing::Values(CodecParams(true, false, true)));
 
 TEST_P(CodecPerfTest, EncodeLatency) {
   const int kTotalFrames = 300;
@@ -77,7 +77,7 @@ TEST_P(CodecPerfTest, EncodeLatency) {
         frame_generator_->GenerateFrame(nullptr);
     base::TimeTicks started = base::TimeTicks::Now();
 
-    std::unique_ptr<VideoPacket> packet = encoder_->Encode(*frame, 0);
+    std::unique_ptr<VideoPacket> packet = encoder_->Encode(*frame);
 
     base::TimeTicks ended = base::TimeTicks::Now();
     base::TimeDelta latency = ended - started;
@@ -140,7 +140,7 @@ TEST_P(CodecPerfTest, MaxFramerate) {
         frame_generator_->GenerateFrame(nullptr);
     base::TimeTicks started = base::TimeTicks::Now();
 
-    std::unique_ptr<VideoPacket> packet = encoder_->Encode(*frame, 0);
+    std::unique_ptr<VideoPacket> packet = encoder_->Encode(*frame);
 
     base::TimeTicks ended = base::TimeTicks::Now();
     base::TimeDelta latency = ended - started;

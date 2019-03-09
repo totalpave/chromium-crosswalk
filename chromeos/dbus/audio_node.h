@@ -10,27 +10,31 @@
 #include <string>
 #include <vector>
 
-#include "chromeos/chromeos_export.h"
+#include "base/component_export.h"
 
 namespace chromeos {
 
 // Structure to hold AudioNode data received from cras.
-struct CHROMEOS_EXPORT AudioNode {
-  bool is_input;
-  uint64_t id;
-  uint64_t stable_device_id;
+struct COMPONENT_EXPORT(CHROMEOS_DBUS) AudioNode {
+  bool is_input = false;
+  uint64_t id = 0;
+  bool has_v2_stable_device_id = false;
+  uint64_t stable_device_id_v1 = 0;
+  uint64_t stable_device_id_v2 = 0;
   std::string device_name;
   std::string type;
   std::string name;
   std::string mic_positions;
-  bool active;
+  bool active = false;
   // Time that the node was plugged in.
-  uint64_t plugged_time;
+  uint64_t plugged_time = 0;
 
   AudioNode();
   AudioNode(bool is_input,
             uint64_t id,
-            uint64_t stable_device_id,
+            bool has_v2_stable_device_id,
+            uint64_t stable_device_id_v1,
+            uint64_t stable_device_id_v2,
             std::string device_name,
             std::string type,
             std::string name,
@@ -38,7 +42,10 @@ struct CHROMEOS_EXPORT AudioNode {
             uint64_t plugged_time);
   AudioNode(const AudioNode& other);
   ~AudioNode();
+
   std::string ToString() const;
+  int StableDeviceIdVersion() const;
+  uint64_t StableDeviceId() const;
 };
 
 typedef std::vector<AudioNode> AudioNodeList;

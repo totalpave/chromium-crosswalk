@@ -4,8 +4,10 @@
 
 #include "net/http/http_response_body_drainer.h"
 
+#include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_network_session.h"
@@ -13,16 +15,19 @@
 
 namespace net {
 
+const int HttpResponseBodyDrainer::kDrainBodyBufferSize;
+const int HttpResponseBodyDrainer::kTimeoutInSeconds;
+
 HttpResponseBodyDrainer::HttpResponseBodyDrainer(HttpStream* stream)
     : stream_(stream),
       next_state_(STATE_NONE),
       total_read_(0),
       session_(NULL) {}
 
-HttpResponseBodyDrainer::~HttpResponseBodyDrainer() {}
+HttpResponseBodyDrainer::~HttpResponseBodyDrainer() = default;
 
 void HttpResponseBodyDrainer::Start(HttpNetworkSession* session) {
-  read_buf_ = new IOBuffer(kDrainBodyBufferSize);
+  read_buf_ = base::MakeRefCounted<IOBuffer>(kDrainBodyBufferSize);
   next_state_ = STATE_DRAIN_RESPONSE_BODY;
   int rv = DoLoop(OK);
 
@@ -32,7 +37,7 @@ void HttpResponseBodyDrainer::Start(HttpNetworkSession* session) {
                  this,
                  &HttpResponseBodyDrainer::OnTimerFired);
     session_ = session;
-    session->AddResponseDrainer(this);
+    session->AddResponseDrainer(base::WrapUnique(this));
     return;
   }
 

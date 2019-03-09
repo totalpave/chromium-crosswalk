@@ -12,27 +12,27 @@
 namespace content {
 
 // static
-RenderFrameHostFactory* RenderFrameHostFactory::factory_ = NULL;
+RenderFrameHostFactory* RenderFrameHostFactory::factory_ = nullptr;
 
 // static
 std::unique_ptr<RenderFrameHostImpl> RenderFrameHostFactory::Create(
     SiteInstance* site_instance,
     RenderViewHostImpl* render_view_host,
     RenderFrameHostDelegate* delegate,
-    RenderWidgetHostDelegate* rwh_delegate,
     FrameTree* frame_tree,
     FrameTreeNode* frame_tree_node,
     int32_t routing_id,
     int32_t widget_routing_id,
-    bool hidden) {
+    bool hidden,
+    bool renderer_initiated_creation) {
   if (factory_) {
     return factory_->CreateRenderFrameHost(
-        site_instance, render_view_host, delegate, rwh_delegate, frame_tree,
-        frame_tree_node, routing_id, widget_routing_id, hidden);
+        site_instance, render_view_host, delegate, frame_tree, frame_tree_node,
+        routing_id, widget_routing_id, hidden, renderer_initiated_creation);
   }
   return base::WrapUnique(new RenderFrameHostImpl(
-      site_instance, render_view_host, delegate, rwh_delegate, frame_tree,
-      frame_tree_node, routing_id, widget_routing_id, hidden));
+      site_instance, render_view_host, delegate, frame_tree, frame_tree_node,
+      routing_id, widget_routing_id, hidden, renderer_initiated_creation));
 }
 
 // static
@@ -44,7 +44,7 @@ void RenderFrameHostFactory::RegisterFactory(RenderFrameHostFactory* factory) {
 // static
 void RenderFrameHostFactory::UnregisterFactory() {
   DCHECK(factory_) << "No factory to unregister.";
-  factory_ = NULL;
+  factory_ = nullptr;
 }
 
 }  // namespace content

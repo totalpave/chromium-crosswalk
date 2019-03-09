@@ -17,7 +17,8 @@ import android.util.Pair;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.base.annotations.SuppressFBWarnings;
+import org.chromium.base.annotations.MainDex;
+import org.chromium.base.metrics.RecordHistogram;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -33,6 +34,7 @@ import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.CertificateNotYetValidException;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -48,13 +50,37 @@ import javax.security.auth.x500.X500Principal;
  * Utility functions for verifying X.509 certificates.
  */
 @JNINamespace("net")
+@MainDex
 public class X509Util {
-
     private static final String TAG = "X509Util";
 
     private static final class TrustStorageListener extends BroadcastReceiver {
-        @Override public void onReceive(Context context, Intent intent) {
-            if (intent.getAction().equals(KeyChain.ACTION_STORAGE_CHANGED)) {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            boolean shouldReloadTrustManager = false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (KeyChain.ACTION_KEYCHAIN_CHANGED.equals(intent.getAction())
+                        || KeyChain.ACTION_TRUST_STORE_CHANGED.equals(intent.getAction())) {
+                    // TODO(davidben): ACTION_KEYCHAIN_CHANGED indicates client certificates
+                    // changed, not the trust store. The two signals within CertDatabase are
+                    // identical, so we are reloading more than needed. But note b/36492171.
+                    shouldReloadTrustManager = true;
+                } else if (KeyChain.ACTION_KEY_ACCESS_CHANGED.equals(intent.getAction())
+                        && !intent.getBooleanExtra(KeyChain.EXTRA_KEY_ACCESSIBLE, false)) {
+                    // We lost access to a client certificate key. Reload all client certificate
+                    // state as we are not currently able to forget an individual identity.
+                    shouldReloadTrustManager = true;
+                }
+            } else {
+                @SuppressWarnings("deprecation")
+                String action = KeyChain.ACTION_STORAGE_CHANGED;
+                // Before Android O, KeyChain only emitted a coarse-grained intent. This fires much
+                // more often than it should (https://crbug.com/381912), but there are no APIs to
+                // distinguish the various cases.
+                shouldReloadTrustManager = action.equals(intent.getAction());
+            }
+
+            if (shouldReloadTrustManager) {
                 try {
                     reloadDefaultTrustManager();
                 } catch (CertificateException e) {
@@ -105,9 +131,10 @@ public class X509Util {
         }
 
         @Override
-        public List<X509Certificate> checkServerTrusted(X509Certificate[] chain,
-                                                        String authType,
-                                                        String host) throws CertificateException {
+        @SuppressLint("NewApi")
+        public List<X509Certificate> checkServerTrusted(
+                X509Certificate[] chain, String authType, String host) throws CertificateException {
+            // API Level 17: android.net.http.X509TrustManagerExtensions#checkServerTrusted
             return mTrustManagerExtensions.checkServerTrusted(chain, authType, host);
         }
     }
@@ -173,11 +200,10 @@ public class X509Util {
     private static final Object sLock = new Object();
 
     /**
-     * Allow disabling registering the observer and recording histograms for the certificate
-     * changes. Net unit tests do not load native libraries which prevent this to succeed. Moreover,
-     * the system does not allow to interact with the certificate store without user interaction.
+     * Allow disabling recording histograms for the certificate changes. Java unit tests do not load
+     * native libraries which prevent this from succeeding.
      */
-    private static boolean sDisableNativeCodeForTest = false;
+    private static boolean sDisableNativeCodeForTest;
 
     /**
      * Ensures that the trust managers and certificate factory are initialized.
@@ -195,7 +221,6 @@ public class X509Util {
      */
     // FindBugs' static field initialization warnings do not handle methods that are expected to be
     // called locked.
-    @SuppressFBWarnings({"LI_LAZY_INIT_STATIC", "LI_LAZY_INIT_UPDATE_STATIC"})
     private static void ensureInitializedLocked()
             throws CertificateException, KeyStoreException, NoSuchAlgorithmException {
         assert Thread.holdsLock(sLock);
@@ -220,8 +245,12 @@ public class X509Util {
                 // Could not load AndroidCAStore. Continue anyway; isKnownRoot will always
                 // return false.
             }
-            if (!sDisableNativeCodeForTest) {
-                nativeRecordCertVerifyCapabilitiesHistogram(sSystemKeyStore != null);
+            if (!sDisableNativeCodeForTest
+                    && Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+                // Only record the histogram for 4.2 and up. Before 4.2, the platform doesn't
+                // return the certificate chain anyway.
+                RecordHistogram.recordBooleanHistogram(
+                        "Net.FoundSystemTrustRootsAndroid", sSystemKeyStore != null);
             }
             sLoadedSystemKeyStore = true;
         }
@@ -239,10 +268,19 @@ public class X509Util {
         if (sTestTrustManager == null) {
             sTestTrustManager = X509Util.createTrustManager(sTestKeyStore);
         }
-        if (!sDisableNativeCodeForTest && sTrustStorageListener == null) {
+        if (sTrustStorageListener == null) {
             sTrustStorageListener = new TrustStorageListener();
-            ContextUtils.getApplicationContext().registerReceiver(
-                    sTrustStorageListener, new IntentFilter(KeyChain.ACTION_STORAGE_CHANGED));
+            IntentFilter filter = new IntentFilter();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                filter.addAction(KeyChain.ACTION_KEYCHAIN_CHANGED);
+                filter.addAction(KeyChain.ACTION_KEY_ACCESS_CHANGED);
+                filter.addAction(KeyChain.ACTION_TRUST_STORE_CHANGED);
+            } else {
+                @SuppressWarnings("deprecation")
+                String action = KeyChain.ACTION_STORAGE_CHANGED;
+                filter.addAction(action);
+            }
+            ContextUtils.getApplicationContext().registerReceiver(sTrustStorageListener, filter);
         }
     }
 
@@ -455,14 +493,21 @@ public class X509Util {
             return new AndroidCertVerifyResult(CertVerifyStatusAndroid.FAILED);
         }
 
-        X509Certificate[] serverCertificates = new X509Certificate[certChain.length];
+        List<X509Certificate> serverCertificatesList = new ArrayList<X509Certificate>();
         try {
-            for (int i = 0; i < certChain.length; ++i) {
-                serverCertificates[i] = createCertificateFromBytes(certChain[i]);
-            }
+            serverCertificatesList.add(createCertificateFromBytes(certChain[0]));
         } catch (CertificateException e) {
             return new AndroidCertVerifyResult(CertVerifyStatusAndroid.UNABLE_TO_PARSE);
         }
+        for (int i = 1; i < certChain.length; ++i) {
+            try {
+                serverCertificatesList.add(createCertificateFromBytes(certChain[i]));
+            } catch (CertificateException e) {
+                Log.w(TAG, "intermediate " + i + " failed parsing");
+            }
+        }
+        X509Certificate[] serverCertificates =
+                serverCertificatesList.toArray(new X509Certificate[serverCertificatesList.size()]);
 
         // Expired and not yet valid certificates would be rejected by the trust managers, but the
         // trust managers report all certificate errors using the general CertificateException. In
@@ -524,11 +569,4 @@ public class X509Util {
      * Notify the native net::CertDatabase instance that the system database has been updated.
      */
     private static native void nativeNotifyKeyChainChanged();
-
-    /**
-     * Record histograms on the platform's certificate verification capabilities.
-     */
-    private static native void nativeRecordCertVerifyCapabilitiesHistogram(
-            boolean foundSystemTrustRoots);
-
 }

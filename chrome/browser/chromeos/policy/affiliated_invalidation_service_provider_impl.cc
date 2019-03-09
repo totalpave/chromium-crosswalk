@@ -6,35 +6,70 @@
 
 #include <vector>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part_chromeos.h"
+#include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
 #include "chrome/browser/chromeos/policy/ticl_device_settings_provider.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/chromeos/settings/device_identity_provider.h"
 #include "chrome/browser/chromeos/settings/device_oauth2_token_service_factory.h"
-#include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
+#include "chrome/browser/invalidation/deprecated_profile_invalidation_provider_factory.h"
+#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/chrome_content_client.h"
 #include "components/invalidation/impl/invalidation_state_tracker.h"
 #include "components/invalidation/impl/invalidator_storage.h"
 #include "components/invalidation/impl/profile_invalidation_provider.h"
 #include "components/invalidation/impl/ticl_invalidation_service.h"
 #include "components/invalidation/impl/ticl_settings_provider.h"
+#include "components/invalidation/public/identity_provider.h"
 #include "components/invalidation/public/invalidation_handler.h"
 #include "components/invalidation/public/invalidation_service.h"
 #include "components/invalidation/public/invalidator_state.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/user_manager/user.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
-#include "google_apis/gaia/identity_provider.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/mojom/network_context.mojom.h"
 
 namespace policy {
+
+namespace {
+
+// Runs on UI thread.
+void RequestProxyResolvingSocketFactoryOnUIThread(
+    base::WeakPtr<invalidation::TiclInvalidationService> owner,
+    network::mojom::ProxyResolvingSocketFactoryRequest request) {
+  if (!owner)
+    return;
+  if (g_browser_process->system_network_context_manager()) {
+    g_browser_process->system_network_context_manager()
+        ->GetContext()
+        ->CreateProxyResolvingSocketFactory(std::move(request));
+  }
+}
+
+// Runs on IO thread.
+void RequestProxyResolvingSocketFactory(
+    base::WeakPtr<invalidation::TiclInvalidationService> owner,
+    network::mojom::ProxyResolvingSocketFactoryRequest request) {
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(&RequestProxyResolvingSocketFactoryOnUIThread, owner,
+                     std::move(request)));
+}
+
+}  // namespace
 
 class AffiliatedInvalidationServiceProviderImpl::InvalidationServiceObserver
     : public syncer::InvalidationHandler {
@@ -149,7 +184,8 @@ void AffiliatedInvalidationServiceProviderImpl::Observe(
   DCHECK(!is_shut_down_);
   Profile* profile = content::Details<Profile>(details).ptr();
   invalidation::ProfileInvalidationProvider* invalidation_provider =
-      invalidation::ProfileInvalidationProviderFactory::GetForProfile(profile);
+      invalidation::DeprecatedProfileInvalidationProviderFactory::GetForProfile(
+          profile);
   if (!invalidation_provider) {
     // If the Profile does not support invalidation (e.g. guest, incognito),
     // ignore it.
@@ -167,7 +203,8 @@ void AffiliatedInvalidationServiceProviderImpl::Observe(
   invalidation::InvalidationService* invalidation_service =
       invalidation_provider->GetInvalidationService();
   profile_invalidation_service_observers_.push_back(
-      new InvalidationServiceObserver(this, invalidation_service));
+      std::make_unique<InvalidationServiceObserver>(this,
+                                                    invalidation_service));
 
   if (profile_invalidation_service_observers_.back()->IsServiceConnected()) {
     // If the invalidation service is connected, check whether to switch to it.
@@ -254,7 +291,6 @@ void AffiliatedInvalidationServiceProviderImpl::OnInvalidationServiceConnected(
     // now, destroy the device-global one.
     DestroyDeviceInvalidationService();
   }
-
 }
 
 void
@@ -289,31 +325,41 @@ AffiliatedInvalidationServiceProviderImpl::FindConnectedInvalidationService() {
   DCHECK(consumer_count_);
   DCHECK(!is_shut_down_);
 
-  for (ScopedVector<InvalidationServiceObserver>::const_iterator it =
-           profile_invalidation_service_observers_.begin();
-           it != profile_invalidation_service_observers_.end(); ++it) {
-    if ((*it)->IsServiceConnected()) {
+  for (const auto& observer : profile_invalidation_service_observers_) {
+    if (observer->IsServiceConnected()) {
       // If a connected invalidation service belonging to an affiliated
       // logged-in user is found, make it available to consumers.
       DestroyDeviceInvalidationService();
-      SetInvalidationService((*it)->GetInvalidationService());
+      SetInvalidationService(observer->GetInvalidationService());
       return;
     }
   }
 
   if (!device_invalidation_service_) {
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory;
+    if (g_browser_process->system_network_context_manager()) {
+      // system_network_context_manager() can be null during unit tests.
+      url_loader_factory = g_browser_process->system_network_context_manager()
+                               ->GetSharedURLLoaderFactory();
+    }
+
+    identity_provider_ = std::make_unique<chromeos::DeviceIdentityProvider>(
+        chromeos::DeviceOAuth2TokenServiceFactory::Get());
+
+    DCHECK(identity_provider_);
     // If no other connected invalidation service was found and no device-global
     // invalidation service exists, create one.
-    device_invalidation_service_.reset(
-        new invalidation::TiclInvalidationService(
-            GetUserAgent(),
-            std::unique_ptr<IdentityProvider>(
-                new chromeos::DeviceIdentityProvider(
-                    chromeos::DeviceOAuth2TokenServiceFactory::Get())),
+    device_invalidation_service_ =
+        std::make_unique<invalidation::TiclInvalidationService>(
+            GetUserAgent(), identity_provider_.get(),
             std::unique_ptr<invalidation::TiclSettingsProvider>(
                 new TiclDeviceSettingsProvider),
             g_browser_process->gcm_driver(),
-            g_browser_process->system_request_context()));
+            base::BindRepeating(&RequestProxyResolvingSocketFactory),
+            base::CreateSingleThreadTaskRunnerWithTraits(
+                {content::BrowserThread::IO}),
+            std::move(url_loader_factory),
+            content::GetNetworkConnectionTracker());
     device_invalidation_service_->Init(
         std::unique_ptr<syncer::InvalidationStateTracker>(
             new invalidation::InvalidatorStorage(
@@ -336,15 +382,15 @@ void AffiliatedInvalidationServiceProviderImpl::SetInvalidationService(
     invalidation::InvalidationService* invalidation_service) {
   DCHECK(!invalidation_service_);
   invalidation_service_ = invalidation_service;
-  FOR_EACH_OBSERVER(Consumer,
-                    consumers_,
-                    OnInvalidationServiceSet(invalidation_service_));
+  for (auto& observer : consumers_)
+    observer.OnInvalidationServiceSet(invalidation_service_);
 }
 
 void
 AffiliatedInvalidationServiceProviderImpl::DestroyDeviceInvalidationService() {
   device_invalidation_service_observer_.reset();
   device_invalidation_service_.reset();
+  identity_provider_.reset();
 }
 
 }  // namespace policy

@@ -38,7 +38,7 @@ bool SslNetErrorMayImplyCaptivePortal(int error) {
   if (error == net::ERR_SSL_PROTOCOL_ERROR)
     return true;
 
-  return false;
+  return net::IsCertificateError(error);
 }
 
 }  // namespace
@@ -103,8 +103,8 @@ void CaptivePortalTabReloader::OnLoadCommitted(int net_error) {
   // issues.
   if (state_ == STATE_NEEDS_RELOAD) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&CaptivePortalTabReloader::ReloadTabIfNeeded,
-                              weak_factory_.GetWeakPtr()));
+        FROM_HERE, base::BindOnce(&CaptivePortalTabReloader::ReloadTabIfNeeded,
+                                  weak_factory_.GetWeakPtr()));
   }
 }
 
@@ -220,7 +220,7 @@ void CaptivePortalTabReloader::SetState(State new_state) {
     default:
       NOTREACHED();
       break;
-  };
+  }
 
   state_ = new_state;
 
@@ -266,8 +266,10 @@ void CaptivePortalTabReloader::ReloadTabIfNeeded() {
 
 void CaptivePortalTabReloader::ReloadTab() {
   content::NavigationController* controller = &web_contents_->GetController();
-  if (!controller->GetActiveEntry()->GetHasPostData())
-    controller->Reload(true);
+  if (controller->GetLastCommittedEntry() &&
+      !controller->GetLastCommittedEntry()->GetHasPostData()) {
+    controller->Reload(content::ReloadType::NORMAL, true);
+  }
 }
 
 void CaptivePortalTabReloader::MaybeOpenCaptivePortalLoginTab() {

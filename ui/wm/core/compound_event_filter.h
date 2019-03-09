@@ -8,20 +8,15 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "ui/aura/window_tracker.h"
 #include "ui/events/event.h"
 #include "ui/events/event_handler.h"
 #include "ui/gfx/native_widget_types.h"
-#include "ui/wm/wm_export.h"
-
-namespace aura {
-class CursorManager;
-class RootWindow;
-}
+#include "ui/wm/core/wm_core_export.h"
 
 namespace ui {
 class GestureEvent;
 class KeyEvent;
-class LocatedEvent;
 class MouseEvent;
 class TouchEvent;
 }
@@ -38,7 +33,7 @@ namespace wm {
 // consumed by any of those filters. If an event is consumed by a filter, the
 // rest of the filter(s) and CompoundEventFilter will not see the consumed
 // event.
-class WM_EXPORT CompoundEventFilter : public ui::EventHandler {
+class WM_CORE_EXPORT CompoundEventFilter : public ui::EventHandler {
  public:
   CompoundEventFilter();
   ~CompoundEventFilter() override;
@@ -52,6 +47,13 @@ class WM_EXPORT CompoundEventFilter : public ui::EventHandler {
   // instead.
   void AddHandler(ui::EventHandler* filter);
   void RemoveHandler(ui::EventHandler* filter);
+
+  // If |window| is part of the same window hierarchy as the last window to have
+  // provided the cursor (i.e. for which UpdateCursor was called), updates the
+  // cursor manager with |cursor|. Otherwise, this call does nothing. This means
+  // calling SetCursorForWindow on an arbitrary window that the pointer is not
+  // over will do nothing.
+  void SetCursorForWindow(aura::Window* window, const ui::Cursor& cursor);
 
  private:
   // Updates the cursor if the target provides a custom one, and provides
@@ -81,7 +83,10 @@ class WM_EXPORT CompoundEventFilter : public ui::EventHandler {
   void OnGestureEvent(ui::GestureEvent* event) override;
 
   // Additional pre-target event handlers.
-  base::ObserverList<ui::EventHandler, true> handlers_;
+  base::ObserverList<ui::EventHandler, true>::Unchecked handlers_;
+
+  // Holds the last window that was used to update CursorClient in UpdateCursor.
+  aura::WindowTracker last_window_that_provided_cursor_;
 
   DISALLOW_COPY_AND_ASSIGN(CompoundEventFilter);
 };

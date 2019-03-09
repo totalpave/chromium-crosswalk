@@ -6,26 +6,27 @@
 
 #include <stdint.h>
 
+#include "base/bind.h"
 #include "base/json/json_reader.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/timer/elapsed_timer.h"
-#include "content/public/child/v8_value_converter.h"
+#include "content/public/renderer/v8_value_converter.h"
 #include "extensions/renderer/request_sender.h"
 #include "extensions/renderer/script_context.h"
-
-using content::V8ValueConverter;
 
 namespace extensions {
 
 SendRequestNatives::SendRequestNatives(RequestSender* request_sender,
                                        ScriptContext* context)
-    : ObjectBackedNativeHandler(context), request_sender_(request_sender) {
-  RouteFunction(
-      "StartRequest",
-      base::Bind(&SendRequestNatives::StartRequest, base::Unretained(this)));
-  RouteFunction(
-      "GetGlobal",
-      base::Bind(&SendRequestNatives::GetGlobal, base::Unretained(this)));
+    : ObjectBackedNativeHandler(context), request_sender_(request_sender) {}
+
+void SendRequestNatives::AddRoutes() {
+  RouteHandlerFunction("StartRequest",
+                       base::BindRepeating(&SendRequestNatives::StartRequest,
+                                           base::Unretained(this)));
+  RouteHandlerFunction("GetGlobal",
+                       base::BindRepeating(&SendRequestNatives::GetGlobal,
+                                           base::Unretained(this)));
 }
 
 // Starts an API request to the browser, with an optional callback.  The
@@ -34,26 +35,30 @@ void SendRequestNatives::StartRequest(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   base::ElapsedTimer timer;
   CHECK_EQ(5, args.Length());
-  std::string name = *v8::String::Utf8Value(args[0]);
-  bool has_callback = args[2]->BooleanValue();
-  bool for_io_thread = args[3]->BooleanValue();
-  bool preserve_null_in_objects = args[4]->BooleanValue();
+  std::string name = *v8::String::Utf8Value(args.GetIsolate(), args[0]);
+  bool has_callback = args[2]->BooleanValue(context()->isolate());
+  bool for_io_thread = args[3]->BooleanValue(context()->isolate());
+  bool preserve_null_in_objects = args[4]->BooleanValue(context()->isolate());
 
   int request_id = request_sender_->GetNextRequestId();
   args.GetReturnValue().Set(static_cast<int32_t>(request_id));
 
-  std::unique_ptr<V8ValueConverter> converter(V8ValueConverter::create());
+  std::unique_ptr<content::V8ValueConverter> converter =
+      content::V8ValueConverter::Create();
 
   // See http://crbug.com/149880. The context menus APIs relies on this, but
   // we shouldn't really be doing it (e.g. for the sake of the storage API).
   converter->SetFunctionAllowed(true);
+
+  // See http://crbug.com/694248.
+  converter->SetConvertNegativeZeroToInt(true);
 
   if (!preserve_null_in_objects)
     converter->SetStripNullFromObjects(true);
 
   std::unique_ptr<base::Value> value_args(
       converter->FromV8Value(args[1], context()->v8_context()));
-  if (!value_args.get() || !value_args->IsType(base::Value::TYPE_LIST)) {
+  if (!value_args.get() || !value_args->is_list()) {
     NOTREACHED() << "Unable to convert args passed to StartRequest";
     return;
   }

@@ -4,24 +4,25 @@
 
 #include "chrome/browser/chromeos/login/startup_utils.h"
 
+#include <utility>
+
 #include "base/bind.h"
+#include "base/callback.h"
 #include "base/command_line.h"
-#include "base/files/file_util.h"
 #include "base/path_service.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/web_resource/web_resource_pref_names.h"
-#include "content/public/browser/browser_thread.h"
 #include "ui/base/l10n/l10n_util.h"
-
-using content::BrowserThread;
 
 namespace {
 
@@ -59,7 +60,7 @@ base::FilePath GetOobeCompleteFlagPath() {
     return base::FilePath(kOobeCompleteFlagFilePath);
   } else {
     base::FilePath user_data_dir;
-    PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
+    base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
     return user_data_dir.AppendASCII(".oobe_completed");
   }
 }
@@ -87,7 +88,6 @@ void StartupUtils::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(prefs::kDeviceRegistered, -1);
   registry->RegisterBooleanPref(prefs::kEnrollmentRecoveryRequired, false);
   registry->RegisterStringPref(prefs::kInitialLocale, "en-US");
-  registry->RegisterBooleanPref(prefs::kOobeControllerDetected, false);
 }
 
 // static
@@ -137,10 +137,9 @@ bool StartupUtils::IsDeviceRegistered() {
       g_browser_process->local_state()->GetInteger(prefs::kDeviceRegistered);
   if (value > 0) {
     // Recreate flag file in case it was lost.
-    BrowserThread::PostTask(
-        BrowserThread::FILE,
-        FROM_HERE,
-        base::Bind(&CreateOobeCompleteFlagFile));
+    base::PostTaskWithTraits(
+        FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
+        base::BindOnce(&CreateOobeCompleteFlagFile));
     return true;
   } else if (value == 0) {
     return false;
@@ -156,19 +155,16 @@ bool StartupUtils::IsDeviceRegistered() {
 }
 
 // static
-void StartupUtils::MarkDeviceRegistered(const base::Closure& done_callback) {
+void StartupUtils::MarkDeviceRegistered(base::OnceClosure done_callback) {
   SaveIntegerPreferenceForced(prefs::kDeviceRegistered, 1);
   if (done_callback.is_null()) {
-    BrowserThread::PostTask(
-        BrowserThread::FILE,
-        FROM_HERE,
-        base::Bind(&CreateOobeCompleteFlagFile));
+    base::PostTaskWithTraits(
+        FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
+        base::BindOnce(&CreateOobeCompleteFlagFile));
   } else {
-    BrowserThread::PostTaskAndReply(
-        BrowserThread::FILE,
-        FROM_HERE,
-        base::Bind(&CreateOobeCompleteFlagFile),
-        done_callback);
+    base::PostTaskWithTraitsAndReply(
+        FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
+        base::BindOnce(&CreateOobeCompleteFlagFile), std::move(done_callback));
   }
 }
 
@@ -184,11 +180,6 @@ std::string StartupUtils::GetInitialLocale() {
   if (!l10n_util::IsValidLocaleSyntax(locale))
     locale = "en-US";
   return locale;
-}
-
-// static
-bool StartupUtils::IsWebviewSigninEnabled() {
-  return true;
 }
 
 // static

@@ -14,6 +14,7 @@
 
 #include "handler/mac/crash_report_exception_handler.h"
 
+#include <utility>
 #include <vector>
 
 #include "base/logging.h"
@@ -21,7 +22,9 @@
 #include "base/mac/scoped_mach_port.h"
 #include "base/strings/stringprintf.h"
 #include "client/settings.h"
+#include "handler/mac/file_limit_annotation.h"
 #include "minidump/minidump_file_writer.h"
+#include "minidump/minidump_user_extension_stream_data_source.h"
 #include "snapshot/crashpad_info_client_options.h"
 #include "snapshot/mac/process_snapshot_mac.h"
 #include "util/file/file_writer.h"
@@ -32,6 +35,7 @@
 #include "util/mach/mach_message.h"
 #include "util/mach/scoped_task_suspend.h"
 #include "util/mach/symbolic_constants_mach.h"
+#include "util/misc/metrics.h"
 #include "util/misc/tri_state.h"
 #include "util/misc/uuid.h"
 
@@ -40,11 +44,12 @@ namespace crashpad {
 CrashReportExceptionHandler::CrashReportExceptionHandler(
     CrashReportDatabase* database,
     CrashReportUploadThread* upload_thread,
-    const std::map<std::string, std::string>* process_annotations)
+    const std::map<std::string, std::string>* process_annotations,
+    const UserStreamDataSources* user_stream_data_sources)
     : database_(database),
       upload_thread_(upload_thread),
-      process_annotations_(process_annotations) {
-}
+      process_annotations_(process_annotations),
+      user_stream_data_sources_(user_stream_data_sources) {}
 
 CrashReportExceptionHandler::~CrashReportExceptionHandler() {
 }
@@ -64,6 +69,9 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
     mach_msg_type_number_t* new_state_count,
     const mach_msg_trailer_t* trailer,
     bool* destroy_complex_request) {
+  RecordFileLimitAnnotation();
+  Metrics::ExceptionEncountered();
+  Metrics::ExceptionCode(ExceptionCodeForMetrics(exception, code[0]));
   *destroy_complex_request = true;
 
   // The expected behavior is EXCEPTION_STATE_IDENTITY | MACH_EXCEPTION_CODES,
@@ -74,6 +82,8 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
         "unexpected exception behavior %s, rejecting",
         ExceptionBehaviorToString(
             behavior, kUseFullName | kUnknownIsNumeric | kUseOr).c_str());
+    Metrics::ExceptionCaptureResult(
+        Metrics::CaptureResult::kUnexpectedExceptionBehavior);
     return KERN_FAILURE;
   } else if (behavior != (EXCEPTION_STATE_IDENTITY | kMachExceptionCodes)) {
     LOG(WARNING) << base::StringPrintf(
@@ -84,6 +94,8 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
 
   if (task == mach_task_self()) {
     LOG(ERROR) << "cannot suspend myself";
+    Metrics::ExceptionCaptureResult(
+        Metrics::CaptureResult::kFailedDueToSuspendSelf);
     return KERN_FAILURE;
   }
 
@@ -91,6 +103,7 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
 
   ProcessSnapshotMac process_snapshot;
   if (!process_snapshot.Initialize(task)) {
+    Metrics::ExceptionCaptureResult(Metrics::CaptureResult::kSnapshotFailed);
     return KERN_FAILURE;
   }
 
@@ -126,6 +139,8 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
                                               *flavor,
                                               old_state,
                                               old_state_count)) {
+      Metrics::ExceptionCaptureResult(
+          Metrics::CaptureResult::kExceptionInitializationFailed);
       return KERN_FAILURE;
     }
 
@@ -141,35 +156,40 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
     process_snapshot.SetClientID(client_id);
     process_snapshot.SetAnnotationsSimpleMap(*process_annotations_);
 
-    CrashReportDatabase::NewReport* new_report;
+    std::unique_ptr<CrashReportDatabase::NewReport> new_report;
     CrashReportDatabase::OperationStatus database_status =
         database_->PrepareNewCrashReport(&new_report);
     if (database_status != CrashReportDatabase::kNoError) {
+      Metrics::ExceptionCaptureResult(
+          Metrics::CaptureResult::kPrepareNewCrashReportFailed);
       return KERN_FAILURE;
     }
 
-    process_snapshot.SetReportID(new_report->uuid);
-
-    CrashReportDatabase::CallErrorWritingCrashReport
-        call_error_writing_crash_report(database_, new_report);
-
-    WeakFileHandleFileWriter file_writer(new_report->handle);
+    process_snapshot.SetReportID(new_report->ReportID());
 
     MinidumpFileWriter minidump;
     minidump.InitializeFromSnapshot(&process_snapshot);
-    if (!minidump.WriteEverything(&file_writer)) {
+    AddUserExtensionStreams(
+        user_stream_data_sources_, &process_snapshot, &minidump);
+
+    if (!minidump.WriteEverything(new_report->Writer())) {
+      Metrics::ExceptionCaptureResult(
+          Metrics::CaptureResult::kMinidumpWriteFailed);
       return KERN_FAILURE;
     }
-
-    call_error_writing_crash_report.Disarm();
 
     UUID uuid;
-    database_status = database_->FinishedWritingCrashReport(new_report, &uuid);
+    database_status =
+        database_->FinishedWritingCrashReport(std::move(new_report), &uuid);
     if (database_status != CrashReportDatabase::kNoError) {
+      Metrics::ExceptionCaptureResult(
+          Metrics::CaptureResult::kFinishedWritingCrashReportFailed);
       return KERN_FAILURE;
     }
 
-    upload_thread_->ReportPending();
+    if (upload_thread_) {
+      upload_thread_->ReportPending(uuid);
+    }
   }
 
   if (client_options.system_crash_reporter_forwarding != TriState::kDisabled &&
@@ -223,6 +243,7 @@ kern_return_t CrashReportExceptionHandler::CatchMachException(
   ExcServerCopyState(
       behavior, old_state, old_state_count, new_state, new_state_count);
 
+  Metrics::ExceptionCaptureResult(Metrics::CaptureResult::kSuccess);
   return ExcServerSuccessfulReturnValue(exception, behavior, false);
 }
 

@@ -10,7 +10,7 @@
 #include "build/build_config.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/api/commands/commands_handler.h"
-#include "chrome/common/extensions/features/feature_channel.h"
+#include "extensions/common/features/feature_channel.h"
 #include "extensions/common/manifest_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -41,7 +41,7 @@ TEST_F(CommandsManifestTest, CommandManifestSimple) {
   const CommandMap* commands = CommandsInfo::GetNamedCommands(extension.get());
   ASSERT_TRUE(commands);
   ASSERT_EQ(1u, commands->size());
-  CommandMap::const_iterator iter = commands->begin();
+  auto iter = commands->begin();
   ASSERT_TRUE(commands->end() != iter);
   const Command* named_command = &(*iter).second;
   ASSERT_STREQ("feature1", named_command->command_name().c_str());

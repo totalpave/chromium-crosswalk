@@ -10,12 +10,14 @@ using ::testing::AtLeast;
 using ::testing::_;
 
 MockEulaScreen::MockEulaScreen(BaseScreenDelegate* base_screen_delegate,
-                               Delegate* delegate,
-                               EulaView* view)
-    : EulaScreen(base_screen_delegate, delegate, view) {
-}
+                               EulaView* view,
+                               const ScreenExitCallback& exit_callback)
+    : EulaScreen(base_screen_delegate, view, exit_callback) {}
 
-MockEulaScreen::~MockEulaScreen() {
+MockEulaScreen::~MockEulaScreen() {}
+
+void MockEulaScreen::ExitScreen(Result result) {
+  exit_callback()->Run(result);
 }
 
 MockEulaView::MockEulaView() {
@@ -23,17 +25,17 @@ MockEulaView::MockEulaView() {
 }
 
 MockEulaView::~MockEulaView() {
-  if (model_)
-    model_->OnViewDestroyed(this);
+  if (screen_)
+    screen_->OnViewDestroyed(this);
 }
 
-void MockEulaView::Bind(EulaModel& model) {
-  model_ = &model;
-  MockBind(model);
+void MockEulaView::Bind(EulaScreen* screen) {
+  screen_ = screen;
+  MockBind(screen);
 }
 
 void MockEulaView::Unbind() {
-  model_ = nullptr;
+  screen_ = nullptr;
   MockUnbind();
 }
 

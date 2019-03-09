@@ -4,12 +4,14 @@
 
 #include "ui/views/controls/focusable_border.h"
 
-#include "third_party/skia/include/core/SkPaint.h"
+#include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkPath.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
+#include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/safe_integer_conversions.h"
+#include "ui/gfx/scoped_canvas.h"
 #include "ui/gfx/skia_util.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/controls/textfield/textfield.h"
@@ -22,41 +24,38 @@ const int kInsetSize = 1;
 
 namespace views {
 
-FocusableBorder::FocusableBorder()
-    : insets_(kInsetSize, kInsetSize, kInsetSize, kInsetSize),
-      override_color_(gfx::kPlaceholderColor),
-      use_default_color_(true) {
-}
+FocusableBorder::FocusableBorder() : insets_(kInsetSize) {}
 
 FocusableBorder::~FocusableBorder() {
 }
 
-void FocusableBorder::SetColor(SkColor color) {
-  override_color_ = color;
-  use_default_color_ = false;
-}
-
-void FocusableBorder::UseDefaultColor() {
-  use_default_color_ = true;
+void FocusableBorder::SetColorId(
+    const base::Optional<ui::NativeTheme::ColorId>& color_id) {
+  override_color_id_ = color_id;
 }
 
 void FocusableBorder::Paint(const View& view, gfx::Canvas* canvas) {
-  SkPaint paint;
-  paint.setStyle(SkPaint::kStroke_Style);
-  paint.setColor(GetCurrentColor(view));
+  cc::PaintFlags flags;
+  flags.setStyle(cc::PaintFlags::kStroke_Style);
+  flags.setColor(GetCurrentColor(view));
+
+  gfx::ScopedCanvas scoped(canvas);
+  float dsf = canvas->UndoDeviceScaleFactor();
+
+  const int stroke_width_px = 1;
+  flags.setStrokeWidth(SkIntToScalar(stroke_width_px));
+
+  // Scale the rect and snap to pixel boundaries.
+  gfx::RectF rect(gfx::ScaleToEnclosedRect(view.GetLocalBounds(), dsf));
+  rect.Inset(gfx::InsetsF(stroke_width_px / 2.0f));
 
   SkPath path;
-  if (ui::MaterialDesignController::IsSecondaryUiMaterial()) {
-    path.moveTo(Textfield::kTextPadding, view.height() - 1);
-    path.rLineTo(view.width() - Textfield::kTextPadding * 2, 0);
-    path.offset(0.5f, 0.5f);
-    paint.setStrokeWidth(SkIntToScalar(1));
-  } else {
-    path.addRect(gfx::RectToSkRect(view.GetLocalBounds()),
-                 SkPath::kCW_Direction);
-    paint.setStrokeWidth(SkIntToScalar(2));
-  }
-  canvas->DrawPath(path, paint);
+    flags.setAntiAlias(true);
+    float corner_radius_px = kCornerRadiusDp * dsf;
+    path.addRoundRect(gfx::RectFToSkRect(rect), corner_radius_px,
+                      corner_radius_px);
+
+  canvas->DrawPath(path, flags);
 }
 
 gfx::Insets FocusableBorder::GetInsets() const {
@@ -71,12 +70,20 @@ void FocusableBorder::SetInsets(int top, int left, int bottom, int right) {
   insets_.Set(top, left, bottom, right);
 }
 
+void FocusableBorder::SetInsets(int vertical, int horizontal) {
+  SetInsets(vertical, horizontal, vertical, horizontal);
+}
+
 SkColor FocusableBorder::GetCurrentColor(const View& view) const {
-  if (!use_default_color_)
-    return override_color_;
-  return view.GetNativeTheme()->GetSystemColor(
-      view.HasFocus() ? ui::NativeTheme::kColorId_FocusedBorderColor :
-                        ui::NativeTheme::kColorId_UnfocusedBorderColor);
+  ui::NativeTheme::ColorId color_id =
+      ui::NativeTheme::kColorId_UnfocusedBorderColor;
+  if (override_color_id_)
+    color_id = *override_color_id_;
+
+  SkColor color = view.GetNativeTheme()->GetSystemColor(color_id);
+  return view.enabled() ? color
+                        : color_utils::BlendTowardMaxContrast(
+                              color, gfx::kDisabledControlAlpha);
 }
 
 }  // namespace views

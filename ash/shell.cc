@@ -5,110 +5,213 @@
 #include "ash/shell.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <utility>
 
 #include "ash/accelerators/accelerator_controller.h"
-#include "ash/accelerators/accelerator_delegate.h"
-#include "ash/accelerators/focus_manager_factory.h"
-#include "ash/aura/wm_shell_aura.h"
-#include "ash/aura/wm_window_aura.h"
+#include "ash/accelerators/ash_focus_manager_factory.h"
+#include "ash/accelerators/magnifier_key_scroller.h"
+#include "ash/accelerators/pre_target_accelerator_handler.h"
+#include "ash/accelerators/spoken_feedback_toggler.h"
+#include "ash/accelerometer/accelerometer_reader.h"
+#include "ash/accessibility/accessibility_controller.h"
+#include "ash/accessibility/accessibility_delegate.h"
+#include "ash/accessibility/accessibility_focus_ring_controller.h"
+#include "ash/accessibility/key_accessibility_enabler.h"
+#include "ash/app_list/app_list_controller_impl.h"
+#include "ash/assistant/assistant_controller.h"
 #include "ash/autoclick/autoclick_controller.h"
-#include "ash/common/accessibility_delegate.h"
-#include "ash/common/ash_switches.h"
-#include "ash/common/keyboard/keyboard_ui.h"
-#include "ash/common/login_status.h"
-#include "ash/common/session/session_state_delegate.h"
-#include "ash/common/shelf/shelf_item_delegate.h"
-#include "ash/common/shelf/shelf_item_delegate_manager.h"
-#include "ash/common/shelf/shelf_model.h"
-#include "ash/common/shell_window_ids.h"
-#include "ash/common/system/locale/locale_notification_controller.h"
-#include "ash/common/system/tray/system_tray_delegate.h"
-#include "ash/common/wm/maximize_mode/maximize_mode_window_manager.h"
-#include "ash/common/wm/mru_window_tracker.h"
-#include "ash/common/wm/root_window_finder.h"
-#include "ash/common/wm/window_positioner.h"
-#include "ash/common/wm_shell.h"
-#include "ash/desktop_background/desktop_background_controller.h"
-#include "ash/desktop_background/desktop_background_view.h"
-#include "ash/desktop_background/user_wallpaper_delegate.h"
+#include "ash/cast_config_controller.h"
+#include "ash/components/tap_visualizer/public/mojom/tap_visualizer.mojom.h"
+#include "ash/custom_tab/arc_custom_tab_controller.h"
+#include "ash/dbus/ash_dbus_services.h"
+#include "ash/detachable_base/detachable_base_handler.h"
+#include "ash/detachable_base/detachable_base_notification_controller.h"
+#include "ash/display/ash_display_controller.h"
+#include "ash/display/cros_display_config.h"
 #include "ash/display/cursor_window_controller.h"
+#include "ash/display/display_color_manager.h"
 #include "ash/display/display_configuration_controller.h"
-#include "ash/display/display_manager.h"
+#include "ash/display/display_configuration_observer.h"
+#include "ash/display/display_error_observer.h"
+#include "ash/display/display_output_protection.h"
+#include "ash/display/display_prefs.h"
+#include "ash/display/display_shutdown_observer.h"
 #include "ash/display/event_transformation_handler.h"
 #include "ash/display/mouse_cursor_event_filter.h"
+#include "ash/display/persistent_window_controller.h"
+#include "ash/display/projecting_observer.h"
+#include "ash/display/resolution_notification_controller.h"
+#include "ash/display/screen_ash.h"
+#include "ash/display/screen_orientation_controller.h"
 #include "ash/display/screen_position_controller.h"
 #include "ash/display/window_tree_host_manager.h"
 #include "ash/drag_drop/drag_drop_controller.h"
-#include "ash/first_run/first_run_helper_impl.h"
-#include "ash/frame/custom_frame_view_ash.h"
-#include "ash/gpu_support.h"
+#include "ash/events/event_rewriter_controller.h"
+#include "ash/first_run/first_run_helper.h"
+#include "ash/focus_cycler.h"
+#include "ash/frame/non_client_frame_view_ash.h"
 #include "ash/high_contrast/high_contrast_controller.h"
+#include "ash/highlighter/highlighter_controller.h"
+#include "ash/home_screen/home_screen_controller.h"
 #include "ash/host/ash_window_tree_host_init_params.h"
-#include "ash/ime/input_method_event_handler.h"
-#include "ash/keyboard_uma_event_filter.h"
+#include "ash/ime/ime_controller.h"
+#include "ash/ime/ime_focus_handler.h"
+#include "ash/keyboard/ash_keyboard_controller.h"
+#include "ash/kiosk_next/kiosk_next_shell_controller.h"
+#include "ash/laser/laser_pointer_controller.h"
+#include "ash/login/login_screen_controller.h"
+#include "ash/login_status.h"
+#include "ash/magnifier/docked_magnifier_controller.h"
 #include "ash/magnifier/magnification_controller.h"
 #include "ash/magnifier/partial_magnification_controller.h"
-#include "ash/new_window_delegate.h"
-#include "ash/pointer_watcher_delegate.h"
+#include "ash/media/media_controller.h"
+#include "ash/media/media_notification_controller.h"
+#include "ash/metrics/time_to_first_present_recorder.h"
+#include "ash/multi_device_setup/multi_device_notification_presenter.h"
+#include "ash/new_window_controller.h"
+#include "ash/note_taking_controller.h"
+#include "ash/policy/policy_recommendation_restorer.h"
+#include "ash/public/cpp/ash_constants.h"
+#include "ash/public/cpp/ash_features.h"
+#include "ash/public/cpp/ash_switches.h"
+#include "ash/public/cpp/shelf_model.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/root_window_controller.h"
-#include "ash/shelf/app_list_shelf_item_delegate.h"
+#include "ash/screenshot_delegate.h"
+#include "ash/session/session_controller.h"
 #include "ash/shelf/shelf.h"
-#include "ash/shelf/shelf_delegate.h"
-#include "ash/shelf/shelf_widget.h"
+#include "ash/shelf/shelf_controller.h"
 #include "ash/shelf/shelf_window_watcher.h"
 #include "ash/shell_delegate.h"
-#include "ash/shell_factory.h"
 #include "ash/shell_init_params.h"
+#include "ash/shell_observer.h"
+#include "ash/shell_state.h"
+#include "ash/shutdown_controller.h"
+#include "ash/sticky_keys/sticky_keys_controller.h"
+#include "ash/system/audio/display_speaker_controller.h"
+#include "ash/system/bluetooth/bluetooth_notification_controller.h"
+#include "ash/system/bluetooth/bluetooth_power_controller.h"
+#include "ash/system/bluetooth/tray_bluetooth_helper_experimental.h"
+#include "ash/system/bluetooth/tray_bluetooth_helper_legacy.h"
+#include "ash/system/brightness/brightness_controller_chromeos.h"
+#include "ash/system/brightness_control_delegate.h"
+#include "ash/system/caps_lock_notification_controller.h"
+#include "ash/system/keyboard_brightness/keyboard_brightness_controller.h"
+#include "ash/system/keyboard_brightness_control_delegate.h"
+#include "ash/system/locale/locale_update_controller.h"
+#include "ash/system/message_center/message_center_controller.h"
+#include "ash/system/model/system_tray_model.h"
+#include "ash/system/network/sms_observer.h"
+#include "ash/system/network/vpn_list.h"
+#include "ash/system/network/vpn_list_view.h"
+#include "ash/system/night_light/night_light_controller.h"
+#include "ash/system/palette/palette_tray.h"
+#include "ash/system/palette/palette_welcome_bubble.h"
+#include "ash/system/power/backlights_forced_off_setter.h"
+#include "ash/system/power/notification_reporter.h"
+#include "ash/system/power/peripheral_battery_notifier.h"
+#include "ash/system/power/power_button_controller.h"
+#include "ash/system/power/power_event_observer.h"
+#include "ash/system/power/power_prefs.h"
+#include "ash/system/power/power_status.h"
+#include "ash/system/power/video_activity_notifier.h"
+#include "ash/system/screen_layout_observer.h"
+#include "ash/system/screen_security/screen_switch_check_controller.h"
+#include "ash/system/session/logout_button_tray.h"
+#include "ash/system/session/logout_confirmation_controller.h"
 #include "ash/system/status_area_widget.h"
+#include "ash/system/system_notification_controller.h"
 #include "ash/system/toast/toast_manager.h"
+#include "ash/system/tray/system_tray_notifier.h"
+#include "ash/touch/ash_touch_transform_controller.h"
+#include "ash/touch/touch_devices_controller.h"
+#include "ash/tray_action/tray_action.h"
 #include "ash/utility/screenshot_controller.h"
+#include "ash/voice_interaction/voice_interaction_controller.h"
+#include "ash/wallpaper/wallpaper_controller.h"
+#include "ash/wayland/wayland_server_controller.h"
 #include "ash/wm/ash_focus_rules.h"
-#include "ash/wm/ash_native_cursor_manager.h"
+#include "ash/wm/container_finder.h"
+#include "ash/wm/cursor_manager_chromeos.h"
+#include "ash/wm/desks/desks_controller.h"
 #include "ash/wm/event_client_impl.h"
+#include "ash/wm/immersive_context_ash.h"
 #include "ash/wm/lock_state_controller.h"
-#include "ash/wm/maximize_mode/maximize_mode_controller.h"
+#include "ash/wm/mru_window_tracker.h"
+#include "ash/wm/native_cursor_manager_ash.h"
+#include "ash/wm/non_client_frame_controller.h"
 #include "ash/wm/overlay_event_filter.h"
-#include "ash/wm/overview/scoped_overview_animation_settings_factory_aura.h"
-#include "ash/wm/power_button_controller.h"
+#include "ash/wm/overview/overview_controller.h"
 #include "ash/wm/resize_shadow_controller.h"
+#include "ash/wm/root_window_finder.h"
 #include "ash/wm/screen_pinning_controller.h"
+#include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/system_gesture_event_filter.h"
 #include "ash/wm/system_modal_container_event_filter.h"
 #include "ash/wm/system_modal_container_layout_manager.h"
+#include "ash/wm/tablet_mode/tablet_mode_controller.h"
+#include "ash/wm/tablet_mode/tablet_mode_window_manager.h"
 #include "ash/wm/toplevel_window_event_handler.h"
 #include "ash/wm/video_detector.h"
 #include "ash/wm/window_animations.h"
 #include "ash/wm/window_cycle_controller.h"
+#include "ash/wm/window_positioner.h"
 #include "ash/wm/window_properties.h"
 #include "ash/wm/window_util.h"
+#include "ash/wm/wm_shadow_controller_delegate.h"
 #include "ash/wm/workspace_controller.h"
+#include "ash/ws/ax_ash_window_utils.h"
+#include "ash/ws/window_service_owner.h"
 #include "base/bind.h"
+#include "base/bind_helpers.h"
+#include "base/command_line.h"
 #include "base/memory/ptr_util.h"
+#include "base/system/sys_info.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
 #include "base/trace_event/trace_event.h"
-#include "ui/app_list/presenter/app_list_presenter.h"
+#include "chromeos/dbus/dbus_thread_manager.h"
+#include "chromeos/dbus/power_policy_controller.h"
+#include "chromeos/system/devicemode.h"
+#include "components/exo/file_helper.h"
+#include "components/prefs/pref_registry_simple.h"
+#include "components/prefs/pref_service.h"
+#include "components/viz/host/host_frame_sink_manager.h"
+#include "services/preferences/public/cpp/pref_service_factory.h"
+#include "services/preferences/public/mojom/preferences.mojom.h"
+#include "services/service_manager/public/cpp/connector.h"
+#include "services/ws/public/cpp/host/gpu_interface_provider.h"
+#include "services/ws/window_service.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
 #include "ui/aura/layout_manager.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/base/user_activity/user_activity_detector.h"
+#include "ui/chromeos/user_activity_power_manager_notifier.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/display/display.h"
+#include "ui/display/manager/default_touch_transform_setter.h"
+#include "ui/display/manager/display_change_observer.h"
+#include "ui/display/manager/display_configurator.h"
+#include "ui/display/manager/display_manager.h"
+#include "ui/display/manager/touch_transform_setter.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/native_display_delegate.h"
 #include "ui/events/event_target_iterator.h"
-#include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/keyboard/keyboard_controller.h"
-#include "ui/keyboard/keyboard_switches.h"
-#include "ui/keyboard/keyboard_util.h"
-#include "ui/message_center/message_center.h"
+#include "ui/keyboard/keyboard_ui_factory.h"
+#include "ui/ozone/public/ozone_platform.h"
 #include "ui/views/corewm/tooltip_aura.h"
 #include "ui/views/corewm/tooltip_controller.h"
 #include "ui/views/focus/focus_manager_factory.h"
+#include "ui/views/mus/window_manager_frame_values.h"
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/accelerator_filter.h"
@@ -118,44 +221,6 @@
 #include "ui/wm/core/visibility_controller.h"
 #include "ui/wm/core/window_modality_controller.h"
 
-#if defined(OS_CHROMEOS)
-#if defined(USE_X11)
-#include "ui/gfx/x/x11_types.h"  // nogncheck
-#endif                           // defined(USE_X11)
-#include "ash/accelerators/magnifier_key_scroller.h"
-#include "ash/accelerators/spoken_feedback_toggler.h"
-#include "ash/common/ash_constants.h"
-#include "ash/common/system/chromeos/power/power_status.h"
-#include "ash/display/display_change_observer_chromeos.h"
-#include "ash/display/display_color_manager_chromeos.h"
-#include "ash/display/display_error_observer_chromeos.h"
-#include "ash/display/projecting_observer_chromeos.h"
-#include "ash/display/resolution_notification_controller.h"
-#include "ash/display/screen_orientation_controller_chromeos.h"
-#include "ash/sticky_keys/sticky_keys_controller.h"
-#include "ash/system/chromeos/bluetooth/bluetooth_notification_controller.h"
-#include "ash/system/chromeos/brightness/brightness_controller_chromeos.h"
-#include "ash/system/chromeos/power/power_event_observer.h"
-#include "ash/system/chromeos/power/video_activity_notifier.h"
-#include "ash/touch/touch_transformer_controller.h"
-#include "ash/virtual_keyboard_controller.h"
-#include "base/bind_helpers.h"
-#include "base/sys_info.h"
-#include "chromeos/audio/audio_a11y_controller.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
-#include "ui/chromeos/user_activity_power_manager_notifier.h"
-#include "ui/display/chromeos/display_configurator.h"
-
-#if defined(USE_X11)
-#include "ui/display/chromeos/x11/native_display_delegate_x11.h"
-#endif
-
-#if defined(USE_OZONE)
-#include "ui/display/types/native_display_delegate.h"
-#include "ui/ozone/public/ozone_platform.h"
-#endif
-#endif  // defined(OS_CHROMEOS)
-
 namespace ash {
 
 namespace {
@@ -163,20 +228,14 @@ namespace {
 using aura::Window;
 using views::Widget;
 
-// Returns the display id corresponding to window, or |GetTargetDisplayId()|
-// if |window| is null.
-int64_t GetDisplayIdForWindow(aura::Window* window) {
-  if (!window)
-    return Shell::GetTargetDisplayId();
-  return display::Screen::GetScreen()->GetDisplayNearestWindow(window).id();
-}
+bool g_is_browser_process_with_mash = false;
 
 // A Corewm VisibilityController subclass that calls the Ash animation routine
 // so we can pick up our extended animations. See ash/wm/window_animations.h.
 class AshVisibilityController : public ::wm::VisibilityController {
  public:
-  AshVisibilityController() {}
-  ~AshVisibilityController() override {}
+  AshVisibilityController() = default;
+  ~AshVisibilityController() override = default;
 
  private:
   // Overridden from ::wm::VisibilityController:
@@ -188,35 +247,51 @@ class AshVisibilityController : public ::wm::VisibilityController {
   DISALLOW_COPY_AND_ASSIGN(AshVisibilityController);
 };
 
-AshWindowTreeHostInitParams ShellInitParamsToAshWindowTreeHostInitParams(
-    const ShellInitParams& shell_init_params) {
-  AshWindowTreeHostInitParams ash_init_params;
-#if defined(OS_WIN)
-  ash_init_params.remote_hwnd = shell_init_params.remote_hwnd;
-#endif
-  return ash_init_params;
+// Registers prefs whose default values are same in user and signin prefs.
+void RegisterProfilePrefs(PrefRegistrySimple* registry, bool for_test) {
+  AccessibilityController::RegisterProfilePrefs(registry, for_test);
+  AssistantController::RegisterProfilePrefs(registry);
+  BluetoothPowerController::RegisterProfilePrefs(registry);
+  CapsLockNotificationController::RegisterProfilePrefs(registry, for_test);
+  DockedMagnifierController::RegisterProfilePrefs(registry, for_test);
+  KioskNextShellController::RegisterProfilePrefs(registry);
+  LoginScreenController::RegisterProfilePrefs(registry, for_test);
+  LogoutButtonTray::RegisterProfilePrefs(registry);
+  MessageCenterController::RegisterProfilePrefs(registry);
+  NightLightController::RegisterProfilePrefs(registry);
+  PaletteTray::RegisterProfilePrefs(registry);
+  PaletteWelcomeBubble::RegisterProfilePrefs(registry);
+  ShelfController::RegisterProfilePrefs(registry);
+  TouchDevicesController::RegisterProfilePrefs(registry);
+  tray::VPNListView::RegisterProfilePrefs(registry);
 }
 
 }  // namespace
 
 // static
 Shell* Shell::instance_ = nullptr;
-// static
-bool Shell::initially_hide_cursor_ = false;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Shell, public:
 
 // static
-Shell* Shell::CreateInstance(const ShellInitParams& init_params) {
+Shell* Shell::CreateInstance(ShellInitParams init_params) {
   CHECK(!instance_);
-  instance_ = new Shell(init_params.delegate, init_params.blocking_pool);
-  instance_->Init(init_params);
+  instance_ = new Shell(std::move(init_params.delegate), init_params.connector);
+  instance_->Init(init_params.context_factory,
+                  init_params.context_factory_private,
+                  std::move(init_params.initial_display_prefs),
+                  std::move(init_params.gpu_interface_provider),
+                  std::move(init_params.keyboard_ui_factory));
   return instance_;
 }
 
 // static
-Shell* Shell::GetInstance() {
+Shell* Shell::Get() {
+  CHECK(!g_is_browser_process_with_mash)  // Implies null |instance_|.
+      << "Ash is running in its own process so Shell::Get() will return null. "
+         "The browser process must use the mojo interfaces in //ash/public to "
+         "access ash. See ash/README.md for details.";
   CHECK(instance_);
   return instance_;
 }
@@ -234,43 +309,48 @@ void Shell::DeleteInstance() {
 // static
 RootWindowController* Shell::GetPrimaryRootWindowController() {
   CHECK(HasInstance());
-  return GetRootWindowController(GetPrimaryRootWindow());
+  return RootWindowController::ForWindow(GetPrimaryRootWindow());
 }
 
 // static
 Shell::RootWindowControllerList Shell::GetAllRootWindowControllers() {
   CHECK(HasInstance());
-  return Shell::GetInstance()
-      ->window_tree_host_manager()
-      ->GetAllRootWindowControllers();
+  RootWindowControllerList root_window_controllers;
+  for (aura::Window* root : GetAllRootWindows())
+    root_window_controllers.push_back(RootWindowController::ForWindow(root));
+  return root_window_controllers;
+}
+
+// static
+RootWindowController* Shell::GetRootWindowControllerWithDisplayId(
+    int64_t display_id) {
+  CHECK(HasInstance());
+  aura::Window* root = GetRootWindowForDisplayId(display_id);
+  return root ? RootWindowController::ForWindow(root) : nullptr;
+}
+
+// static
+aura::Window* Shell::GetRootWindowForDisplayId(int64_t display_id) {
+  CHECK(HasInstance());
+  return instance_->window_tree_host_manager_->GetRootWindowForDisplayId(
+      display_id);
 }
 
 // static
 aura::Window* Shell::GetPrimaryRootWindow() {
   CHECK(HasInstance());
-  return GetInstance()->window_tree_host_manager()->GetPrimaryRootWindow();
+  return instance_->window_tree_host_manager_->GetPrimaryRootWindow();
 }
 
 // static
-aura::Window* Shell::GetTargetRootWindow() {
-  CHECK(HasInstance());
-  Shell* shell = GetInstance();
-  if (shell->scoped_target_root_window_)
-    return shell->scoped_target_root_window_;
-  return shell->target_root_window_;
-}
-
-// static
-int64_t Shell::GetTargetDisplayId() {
-  return display::Screen::GetScreen()
-      ->GetDisplayNearestWindow(GetTargetRootWindow())
-      .id();
+aura::Window* Shell::GetRootWindowForNewWindows() {
+  return Shell::Get()->shell_state_->GetRootWindowForNewWindows();
 }
 
 // static
 aura::Window::Windows Shell::GetAllRootWindows() {
   CHECK(HasInstance());
-  return Shell::GetInstance()->window_tree_host_manager()->GetAllRootWindows();
+  return instance_->window_tree_host_manager_->GetAllRootWindows();
 }
 
 // static
@@ -285,313 +365,188 @@ const aura::Window* Shell::GetContainer(const aura::Window* root_window,
 }
 
 // static
-std::vector<aura::Window*> Shell::GetContainersFromAllRootWindows(
-    int container_id,
-    aura::Window* priority_root) {
-  std::vector<aura::Window*> containers;
-  aura::Window::Windows root_windows = GetAllRootWindows();
-  for (aura::Window::Windows::const_iterator it = root_windows.begin();
-       it != root_windows.end(); ++it) {
-    aura::Window* container = (*it)->GetChildById(container_id);
-    if (container) {
-      if (priority_root && priority_root->Contains(container))
-        containers.insert(containers.begin(), container);
-      else
-        containers.push_back(container);
+int Shell::GetOpenSystemModalWindowContainerId() {
+  // The test boolean is not static to avoid leaking state between tests.
+  if (Get()->simulate_modal_window_open_for_test_)
+    return kShellWindowId_SystemModalContainer;
+
+  // Traverse all system modal containers, and find its direct child window
+  // with "SystemModal" setting, and visible.
+  for (aura::Window* root : Shell::GetAllRootWindows()) {
+    for (int modal_window_id : kSystemModalContainerIds) {
+      aura::Window* system_modal = root->GetChildById(modal_window_id);
+      if (!system_modal)
+        continue;
+      for (const aura::Window* child : system_modal->children()) {
+        if (child->GetProperty(aura::client::kModalKey) ==
+                ui::MODAL_TYPE_SYSTEM &&
+            child->layer()->GetTargetVisibility()) {
+          return modal_window_id;
+        }
+      }
     }
   }
-  return containers;
+  return -1;
 }
 
-void Shell::ShowContextMenu(const gfx::Point& location_in_screen,
-                            ui::MenuSourceType source_type) {
-  // No context menus if there is no session with an active user.
-  if (!session_state_delegate_->NumberOfLoggedInUsers())
-    return;
-  // No context menus when screen is locked.
-  if (session_state_delegate_->IsScreenLocked())
-    return;
-
-  aura::Window* root = WmWindowAura::GetAuraWindow(
-      wm::GetRootWindowMatching(gfx::Rect(location_in_screen, gfx::Size())));
-  GetRootWindowController(root)->ShowContextMenu(location_in_screen,
-                                                 source_type);
+// static
+bool Shell::IsSystemModalWindowOpen() {
+  return GetOpenSystemModalWindowContainerId() >= 0;
 }
 
-void Shell::ShowAppList(aura::Window* window) {
-  // If the context window is not given, show it on the target root window.
-  delegate_->GetAppListPresenter()->Show(GetDisplayIdForWindow(window));
+// static
+bool Shell::IsProxyWindow(aura::Window* window) {
+  return ws::WindowService::IsProxyWindow(window);
 }
 
-void Shell::DismissAppList() {
-  delegate_->GetAppListPresenter()->Dismiss();
+// static
+void Shell::RegisterLocalStatePrefs(PrefRegistrySimple* registry,
+                                    bool for_test) {
+  PaletteTray::RegisterLocalStatePrefs(registry);
+  WallpaperController::RegisterLocalStatePrefs(registry);
+  BluetoothPowerController::RegisterLocalStatePrefs(registry);
+  DetachableBaseHandler::RegisterPrefs(registry);
+  // Note: DisplayPrefs are registered in chrome in AshShellInit::RegisterPrefs
+  // (see comment there for details).
+  if (for_test)
+    DisplayPrefs::RegisterLocalStatePrefs(registry);
+  else
+    DisplayPrefs::RegisterForeignPrefs(registry);
 }
 
-void Shell::ToggleAppList(aura::Window* window) {
-  // If the context window is not given, show it on the target root window.
-  delegate_->GetAppListPresenter()->ToggleAppList(
-      GetDisplayIdForWindow(window));
+// static
+void Shell::RegisterSigninProfilePrefs(PrefRegistrySimple* registry,
+                                       bool for_test) {
+  RegisterProfilePrefs(registry, for_test);
+  PowerPrefs::RegisterSigninProfilePrefs(registry, for_test);
 }
 
-bool Shell::GetAppListTargetVisibility() const {
-  return delegate_->GetAppListPresenter()->GetTargetVisibility();
+// static
+void Shell::RegisterUserProfilePrefs(PrefRegistrySimple* registry,
+                                     bool for_test) {
+  RegisterProfilePrefs(registry, for_test);
+  PowerPrefs::RegisterUserProfilePrefs(registry, for_test);
+}
+
+display::DisplayConfigurator* Shell::display_configurator() {
+  return display_manager_->configurator();
+}
+
+void Shell::InitWaylandServer(std::unique_ptr<exo::FileHelper> file_helper) {
+  wayland_server_controller_ = WaylandServerController::CreateIfNecessary(
+      std::move(file_helper), aura_env_);
+  if (wayland_server_controller_) {
+    system_tray_model()
+        ->virtual_keyboard()
+        ->SetInputMethodSurfaceManagerObserver(
+            wayland_server_controller_->arc_input_method_surface_manager());
+  }
+}
+
+void Shell::DestroyWaylandServer() {
+  if (wayland_server_controller_) {
+    system_tray_model()
+        ->virtual_keyboard()
+        ->RemoveInputMethodSurfaceManagerObserver(
+            wayland_server_controller_->arc_input_method_surface_manager());
+  }
+  wayland_server_controller_.reset();
 }
 
 views::NonClientFrameView* Shell::CreateDefaultNonClientFrameView(
     views::Widget* widget) {
   // Use translucent-style window frames for dialogs.
-  return new CustomFrameViewAsh(widget);
+  return new NonClientFrameViewAsh(widget);
 }
 
 void Shell::SetDisplayWorkAreaInsets(Window* contains,
                                      const gfx::Insets& insets) {
-  if (!window_tree_host_manager_->UpdateWorkAreaOfDisplayNearestWindow(
-          contains, insets)) {
-    return;
-  }
-}
-
-void Shell::OnLoginStateChanged(LoginStatus status) {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnLoginStateChanged(status));
-}
-
-void Shell::OnLoginUserProfilePrepared() {
-  CreateShelf();
-  CreateKeyboard();
-}
-
-void Shell::UpdateAfterLoginStatusChange(LoginStatus status) {
-  RootWindowControllerList controllers = GetAllRootWindowControllers();
-  for (RootWindowControllerList::iterator iter = controllers.begin();
-       iter != controllers.end(); ++iter)
-    (*iter)->UpdateAfterLoginStatusChange(status);
-}
-
-void Shell::OnAppTerminating() {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnAppTerminating());
-}
-
-void Shell::OnLockStateChanged(bool locked) {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnLockStateChanged(locked));
-#ifndef NDEBUG
-  // Make sure that there is no system modal in Lock layer when unlocked.
-  if (!locked) {
-    std::vector<aura::Window*> containers = GetContainersFromAllRootWindows(
-        kShellWindowId_LockSystemModalContainer, GetPrimaryRootWindow());
-    for (std::vector<aura::Window*>::const_iterator iter = containers.begin();
-         iter != containers.end(); ++iter) {
-      DCHECK_EQ(0u, (*iter)->children().size());
-    }
-  }
-#endif
+  window_tree_host_manager_->UpdateWorkAreaOfDisplayNearestWindow(contains,
+                                                                  insets);
 }
 
 void Shell::OnCastingSessionStartedOrStopped(bool started) {
-#if defined(OS_CHROMEOS)
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnCastingSessionStartedOrStopped(started));
-#endif
+  for (auto& observer : shell_observers_)
+    observer.OnCastingSessionStartedOrStopped(started);
 }
 
-void Shell::OnMaximizeModeStarted() {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnMaximizeModeStarted());
+void Shell::OnRootWindowAdded(aura::Window* root_window) {
+  for (auto& observer : shell_observers_)
+    observer.OnRootWindowAdded(root_window);
 }
 
-void Shell::OnMaximizeModeEnded() {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnMaximizeModeEnded());
+void Shell::OnDictationStarted() {
+  for (auto& observer : shell_observers_)
+    observer.OnDictationStarted();
 }
 
-void Shell::OnRootWindowAdded(WmWindow* root_window) {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnRootWindowAdded(root_window));
+void Shell::OnDictationEnded() {
+  for (auto& observer : shell_observers_)
+    observer.OnDictationEnded();
 }
 
-void Shell::CreateShelf() {
-  RootWindowControllerList controllers = GetAllRootWindowControllers();
-  for (RootWindowControllerList::iterator iter = controllers.begin();
-       iter != controllers.end(); ++iter)
-    (*iter)->CreateShelf();
+void Shell::EnableKeyboard() {
+  // The keyboard controller is persistent; this will create or recreate the
+  // keyboard window as necessary.
+  ash_keyboard_controller_->EnableKeyboard();
 }
 
-void Shell::OnShelfCreatedForRootWindow(WmWindow* root_window) {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnShelfCreatedForRootWindow(root_window));
+void Shell::DisableKeyboard() {
+  ash_keyboard_controller_->DisableKeyboard();
 }
 
-void Shell::CreateKeyboard() {
-  if (in_mus_)
-    return;
-  // TODO(bshe): Primary root window controller may not be the controller to
-  // attach virtual keyboard. See http://crbug.com/303429
-  InitKeyboard();
-  GetPrimaryRootWindowController()->ActivateKeyboard(
-      keyboard::KeyboardController::GetInstance());
-}
-
-void Shell::DeactivateKeyboard() {
-  // TODO(jamescook): Move keyboard create and hide into WmShell.
-  wm_shell_->keyboard_ui()->Hide();
-  if (in_mus_)
-    return;
-  if (keyboard::KeyboardController::GetInstance()) {
-    RootWindowControllerList controllers = GetAllRootWindowControllers();
-    for (RootWindowControllerList::iterator iter = controllers.begin();
-         iter != controllers.end(); ++iter) {
-      (*iter)->DeactivateKeyboard(keyboard::KeyboardController::GetInstance());
-    }
-  }
-  keyboard::KeyboardController::ResetInstance(nullptr);
-}
-
-void Shell::ShowShelf() {
-  RootWindowControllerList controllers = GetAllRootWindowControllers();
-  for (RootWindowControllerList::iterator iter = controllers.begin();
-       iter != controllers.end(); ++iter)
-    (*iter)->ShowShelf();
-}
-
-void Shell::ShutdownShelf() {
-  RootWindowControllerList controllers = GetAllRootWindowControllers();
-  for (RootWindowControllerList::iterator iter = controllers.begin();
-       iter != controllers.end(); ++iter) {
-    if ((*iter)->shelf_widget())
-      (*iter)->shelf_widget()->Shutdown();
-  }
-}
-
-void Shell::AddPointerWatcher(views::PointerWatcher* watcher) {
-  pointer_watcher_delegate_->AddPointerWatcher(watcher);
-}
-
-void Shell::RemovePointerWatcher(views::PointerWatcher* watcher) {
-  pointer_watcher_delegate_->RemovePointerWatcher(watcher);
-}
-
-#if defined(OS_CHROMEOS)
 bool Shell::ShouldSaveDisplaySettings() {
   return !(
       screen_orientation_controller_->ignore_display_configuration_updates() ||
-      resolution_notification_controller_->DoesNotificationTimeout());
+      resolution_notification_controller_->DoesNotificationTimeout() ||
+      !display_configuration_observer_->save_preference());
 }
-#endif
+
+DockedMagnifierController* Shell::docked_magnifier_controller() {
+  return docked_magnifier_controller_.get();
+}
+
+NightLightController* Shell::night_light_controller() {
+  return night_light_controller_.get();
+}
+
+ShelfModel* Shell::shelf_model() {
+  return shelf_controller_->model();
+}
+
+::wm::ActivationClient* Shell::activation_client() {
+  return focus_controller_.get();
+}
 
 void Shell::UpdateShelfVisibility() {
-  RootWindowControllerList controllers = GetAllRootWindowControllers();
-  for (RootWindowControllerList::iterator iter = controllers.begin();
-       iter != controllers.end(); ++iter)
-    if ((*iter)->shelf_widget())
-      (*iter)->UpdateShelfVisibility();
-}
-
-void Shell::OnShelfAlignmentChanged(WmWindow* root_window) {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnShelfAlignmentChanged(root_window));
-}
-
-void Shell::OnShelfAutoHideBehaviorChanged(WmWindow* root_window) {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnShelfAutoHideBehaviorChanged(root_window));
-}
-
-void Shell::NotifyFullscreenStateChange(bool is_fullscreen,
-                                        WmWindow* root_window) {
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnFullscreenStateChanged(is_fullscreen, root_window));
-}
-
-void Shell::CreateModalBackground(aura::Window* window) {
-  if (!modality_filter_) {
-    modality_filter_.reset(new SystemModalContainerEventFilter(this));
-    AddPreTargetHandler(modality_filter_.get());
-  }
-  RootWindowControllerList controllers = GetAllRootWindowControllers();
-  for (RootWindowControllerList::iterator iter = controllers.begin();
-       iter != controllers.end(); ++iter)
-    (*iter)->GetSystemModalLayoutManager(window)->CreateModalBackground();
-}
-
-void Shell::OnModalWindowRemoved(aura::Window* removed) {
-  RootWindowControllerList controllers = GetAllRootWindowControllers();
-  bool activated = false;
-  for (RootWindowControllerList::iterator iter = controllers.begin();
-       iter != controllers.end() && !activated; ++iter) {
-    activated = (*iter)
-                    ->GetSystemModalLayoutManager(removed)
-                    ->ActivateNextModalWindow();
-  }
-  if (!activated) {
-    RemovePreTargetHandler(modality_filter_.get());
-    modality_filter_.reset();
-    for (RootWindowControllerList::iterator iter = controllers.begin();
-         iter != controllers.end(); ++iter)
-      (*iter)->GetSystemModalLayoutManager(removed)->DestroyModalBackground();
-  }
-}
-
-WebNotificationTray* Shell::GetWebNotificationTray() {
-  return GetPrimaryRootWindowController()
-      ->shelf_widget()
-      ->status_area_widget()
-      ->web_notification_tray();
+  for (aura::Window* root : GetAllRootWindows())
+    Shelf::ForWindow(root)->UpdateVisibilityState();
 }
 
 bool Shell::HasPrimaryStatusArea() {
-  ShelfWidget* shelf = GetPrimaryRootWindowController()->shelf_widget();
-  return shelf && shelf->status_area_widget();
+  return !!GetPrimaryRootWindowController()->GetStatusAreaWidget();
 }
 
-SystemTray* Shell::GetPrimarySystemTray() {
-  return GetPrimaryRootWindowController()->GetSystemTray();
+void Shell::SetLargeCursorSizeInDip(int large_cursor_size_in_dip) {
+  window_tree_host_manager_->cursor_window_controller()
+      ->SetLargeCursorSizeInDip(large_cursor_size_in_dip);
 }
 
-ShelfDelegate* Shell::GetShelfDelegate() {
-  if (!shelf_delegate_) {
-    // Creates ShelfItemDelegateManager before ShelfDelegate.
-    shelf_item_delegate_manager_.reset(
-        new ShelfItemDelegateManager(shelf_model_.get()));
-
-    shelf_delegate_.reset(delegate_->CreateShelfDelegate(shelf_model_.get()));
-    std::unique_ptr<ShelfItemDelegate> controller(new AppListShelfItemDelegate);
-
-    // Finding the shelf model's location of the app list and setting its
-    // ShelfItemDelegate.
-    int app_list_index = shelf_model_->GetItemIndexForType(TYPE_APP_LIST);
-    DCHECK_GE(app_list_index, 0);
-    ShelfID app_list_id = shelf_model_->items()[app_list_index].id;
-    DCHECK(app_list_id);
-    shelf_item_delegate_manager_->SetShelfItemDelegate(app_list_id,
-                                                       std::move(controller));
-    shelf_window_watcher_.reset(new ShelfWindowWatcher(
-        shelf_model_.get(), shelf_item_delegate_manager_.get()));
-  }
-  return shelf_delegate_.get();
-}
-
-void Shell::SetTouchHudProjectionEnabled(bool enabled) {
-  if (is_touch_hud_projection_enabled_ == enabled)
-    return;
-
-  is_touch_hud_projection_enabled_ = enabled;
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnTouchHudProjectionToggled(enabled));
-}
-
-#if defined(OS_CHROMEOS)
-FirstRunHelper* Shell::CreateFirstRunHelper() {
-  return new FirstRunHelperImpl;
+void Shell::UpdateCursorCompositingEnabled() {
+  SetCursorCompositingEnabled(
+      window_tree_host_manager_->cursor_window_controller()
+          ->ShouldEnableCursorCompositing());
 }
 
 void Shell::SetCursorCompositingEnabled(bool enabled) {
-  window_tree_host_manager_->cursor_window_controller()
-      ->SetCursorCompositingEnabled(enabled);
+  CursorWindowController* cursor_window_controller =
+      window_tree_host_manager_->cursor_window_controller();
+
+  if (cursor_window_controller->is_cursor_compositing_enabled() == enabled)
+    return;
+  cursor_window_controller->SetCursorCompositingEnabled(enabled);
   native_cursor_manager_->SetNativeCursorEnabled(!enabled);
 }
-#endif  // defined(OS_CHROMEOS)
 
 void Shell::DoInitialWorkspaceAnimation() {
   return GetPrimaryRootWindowController()
@@ -599,343 +554,555 @@ void Shell::DoInitialWorkspaceAnimation() {
       ->DoInitialAnimation();
 }
 
+bool Shell::IsSplitViewModeActive() const {
+  return split_view_controller_.get() &&
+         split_view_controller_->IsSplitViewModeActive();
+}
+
+void Shell::ShowContextMenu(const gfx::Point& location_in_screen,
+                            ui::MenuSourceType source_type) {
+  // Bail with no active user session, in the lock screen, or in app/kiosk mode.
+  if (session_controller_->NumberOfLoggedInUsers() < 1 ||
+      session_controller_->IsScreenLocked() ||
+      session_controller_->IsRunningInAppMode()) {
+    return;
+  }
+
+  aura::Window* root = wm::GetRootWindowAt(location_in_screen);
+  RootWindowController::ForWindow(root)->ShowContextMenu(location_in_screen,
+                                                         source_type);
+}
+
+void Shell::AddShellObserver(ShellObserver* observer) {
+  shell_observers_.AddObserver(observer);
+}
+
+void Shell::RemoveShellObserver(ShellObserver* observer) {
+  shell_observers_.RemoveObserver(observer);
+}
+
+void Shell::UpdateAfterLoginStatusChange(LoginStatus status) {
+  for (auto* root_window_controller : GetAllRootWindowControllers())
+    root_window_controller->UpdateAfterLoginStatusChange(status);
+}
+
+void Shell::NotifySplitViewModeStarting() {
+  for (auto& observer : shell_observers_)
+    observer.OnSplitViewModeStarting();
+}
+
+void Shell::NotifySplitViewModeStarted() {
+  for (auto& observer : shell_observers_)
+    observer.OnSplitViewModeStarted();
+}
+
+void Shell::NotifySplitViewModeEnded() {
+  for (auto& observer : shell_observers_)
+    observer.OnSplitViewModeEnded();
+}
+
+void Shell::NotifyFullscreenStateChanged(bool is_fullscreen,
+                                         aura::Window* root_window) {
+  for (auto& observer : shell_observers_)
+    observer.OnFullscreenStateChanged(is_fullscreen, root_window);
+}
+
+void Shell::NotifyPinnedStateChanged(aura::Window* pinned_window) {
+  for (auto& observer : shell_observers_)
+    observer.OnPinnedStateChanged(pinned_window);
+}
+
+void Shell::NotifyShelfAlignmentChanged(aura::Window* root_window) {
+  for (auto& observer : shell_observers_)
+    observer.OnShelfAlignmentChanged(root_window);
+}
+
+void Shell::NotifyShelfAutoHideBehaviorChanged(aura::Window* root_window) {
+  for (auto& observer : shell_observers_)
+    observer.OnShelfAutoHideBehaviorChanged(root_window);
+}
+
+// static
+void Shell::SetIsBrowserProcessWithMash() {
+  g_is_browser_process_with_mash = true;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Shell, private:
 
-Shell::Shell(ShellDelegate* delegate, base::SequencedWorkerPool* blocking_pool)
-    : target_root_window_(nullptr),
-      scoped_target_root_window_(nullptr),
-      delegate_(delegate),
-      shelf_model_(new ShelfModel),
-      link_handler_model_factory_(nullptr),
-      activation_client_(nullptr),
-#if defined(OS_CHROMEOS)
-      display_configurator_(new ui::DisplayConfigurator()),
-#endif  // defined(OS_CHROMEOS)
+Shell::Shell(std::unique_ptr<ShellDelegate> shell_delegate,
+             service_manager::Connector* connector)
+    : owned_aura_env_(::features::IsSingleProcessMash()
+                          ? aura::Env::CreateLocalInstanceForInProcess()
+                          : nullptr),
+      aura_env_(owned_aura_env_.get() ? owned_aura_env_.get()
+                                      : aura::Env::GetInstance()),
+      arc_custom_tab_controller_(std::make_unique<ArcCustomTabController>()),
+      ash_display_controller_(std::make_unique<AshDisplayController>()),
+      brightness_control_delegate_(
+          std::make_unique<system::BrightnessControllerChromeos>()),
+      cast_config_(std::make_unique<CastConfigController>()),
+      connector_(connector),
+      first_run_helper_(std::make_unique<FirstRunHelper>()),
+      focus_cycler_(std::make_unique<FocusCycler>()),
+      ime_controller_(std::make_unique<ImeController>()),
+      immersive_context_(std::make_unique<ImmersiveContextAsh>()),
+      keyboard_brightness_control_delegate_(
+          std::make_unique<KeyboardBrightnessController>()),
+      kiosk_next_shell_controller_(
+          std::make_unique<KioskNextShellController>()),
+      locale_update_controller_(std::make_unique<LocaleUpdateController>()),
+      media_controller_(std::make_unique<MediaController>(connector)),
+      new_window_controller_(std::make_unique<NewWindowController>()),
+      session_controller_(std::make_unique<SessionController>(connector)),
+      note_taking_controller_(std::make_unique<NoteTakingController>()),
+      shell_delegate_(std::move(shell_delegate)),
+      shell_state_(std::make_unique<ShellState>()),
+      shutdown_controller_(std::make_unique<ShutdownController>()),
+      system_tray_notifier_(std::make_unique<SystemTrayNotifier>()),
+      vpn_list_(std::make_unique<VpnList>()),
+      window_cycle_controller_(std::make_unique<WindowCycleController>()),
       native_cursor_manager_(nullptr),
-      simulate_modal_window_open_for_testing_(false),
-      is_touch_hud_projection_enabled_(false),
-      blocking_pool_(blocking_pool) {
-  DCHECK(delegate_.get());
-  DCHECK(aura::Env::GetInstanceDontCreate());
-  gpu_support_.reset(delegate_->CreateGPUSupport());
-  display_manager_.reset(new DisplayManager);
-  window_tree_host_manager_.reset(new WindowTreeHostManager);
-  user_metrics_recorder_.reset(new UserMetricsRecorder);
+      weak_factory_(this) {
+  // Ash doesn't properly remove pre-target-handlers.
+  ui::EventHandler::DisableCheckTargets();
 
-#if defined(OS_CHROMEOS)
+  AccelerometerReader::GetInstance()->Initialize(
+      base::CreateSequencedTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
+
+  login_screen_controller_ =
+      std::make_unique<LoginScreenController>(system_tray_notifier_.get());
+  display_manager_.reset(ScreenAsh::CreateDisplayManager());
+  display_output_protection_ = std::make_unique<DisplayOutputProtection>(
+      display_manager_->configurator());
+  window_tree_host_manager_ = std::make_unique<WindowTreeHostManager>();
+  user_metrics_recorder_ = std::make_unique<UserMetricsRecorder>();
+  ash_keyboard_controller_ =
+      std::make_unique<AshKeyboardController>(session_controller_.get());
+
+  if (base::FeatureList::IsEnabled(features::kUseBluetoothSystemInAsh)) {
+    tray_bluetooth_helper_ =
+        std::make_unique<TrayBluetoothHelperExperimental>(connector_);
+  } else {
+    tray_bluetooth_helper_ = std::make_unique<TrayBluetoothHelperLegacy>();
+  }
+
   PowerStatus::Initialize();
-#endif
+
+  session_controller_->AddObserver(this);
 }
 
 Shell::~Shell() {
   TRACE_EVENT0("shutdown", "ash::Shell::Destructor");
 
+  for (auto& observer : shell_observers_)
+    observer.OnShellDestroying();
+
+  // Wayland depends upon some ash specific objects. Destroy it early on.
+  wayland_server_controller_.reset();
+
   user_metrics_recorder_->OnShellShuttingDown();
 
-  delegate_->PreShutdown();
-
-  views::FocusManagerFactory::Install(nullptr);
+  cros_display_config_.reset();
+  display_configuration_observer_.reset();
+  display_prefs_.reset();
 
   // Remove the focus from any window. This will prevent overhead and side
   // effects (e.g. crashes) from changing focus during shutdown.
   // See bug crbug.com/134502.
   aura::client::GetFocusClient(GetPrimaryRootWindow())->FocusWindow(nullptr);
 
-  // Please keep in same order as in Init() because it's easy to miss one.
+  // Please keep in reverse order as in Init() because it's easy to miss one.
   if (window_modality_controller_)
     window_modality_controller_.reset();
-  RemovePreTargetHandler(
-      window_tree_host_manager_->input_method_event_handler());
-#if defined(OS_CHROMEOS)
+
   RemovePreTargetHandler(magnifier_key_scroll_handler_.get());
   magnifier_key_scroll_handler_.reset();
 
   RemovePreTargetHandler(speech_feedback_handler_.get());
   speech_feedback_handler_.reset();
-#endif
+
   RemovePreTargetHandler(overlay_filter_.get());
+  overlay_filter_.reset();
+
   RemovePreTargetHandler(accelerator_filter_.get());
   RemovePreTargetHandler(event_transformation_handler_.get());
   RemovePreTargetHandler(toplevel_window_event_handler_.get());
   RemovePostTargetHandler(toplevel_window_event_handler_.get());
   RemovePreTargetHandler(system_gesture_filter_.get());
-  RemovePreTargetHandler(keyboard_metrics_filter_.get());
   RemovePreTargetHandler(mouse_cursor_filter_.get());
-
-  // TooltipController is deleted with the Shell so removing its references.
+  RemovePreTargetHandler(modality_filter_.get());
   RemovePreTargetHandler(tooltip_controller_.get());
 
-#if defined(OS_CHROMEOS)
+  event_rewriter_controller_.reset();
+
   screen_orientation_controller_.reset();
-#endif
+  screen_layout_observer_.reset();
 
-// Destroy the virtual keyboard controller before the maximize mode controller
-// since the latters destructor triggers events that the former is listening
-// to but no longer cares about.
-#if defined(OS_CHROMEOS)
-  virtual_keyboard_controller_.reset();
-#endif
+  // Destroy the virtual keyboard controller before the tablet mode controller
+  // since the latters destructor triggers events that the former is listening
+  // to but no longer cares about.
+  ash_keyboard_controller_->DestroyVirtualKeyboard();
 
-  // Destroy maximize mode controller early on since it has some observers which
+  // Depends on |tablet_mode_controller_|.
+  shelf_controller_->Shutdown();
+
+  // Destroy |home_screen_controller_| before |app_list_controller_| since
+  // the former delegates to the latter.
+  home_screen_controller_.reset();
+
+  // Destroy |app_list_controller_| earlier than |tablet_mode_controller_| since
+  // the former may use the latter before destruction.
+  app_list_controller_.reset();
+
+  // Destroy |assistant_controller_| earlier than |tablet_mode_controller_| so
+  // that the former will destroy the Assistant view hierarchy which has a
+  // dependency on the latter.
+  if (chromeos::switches::IsAssistantEnabled())
+    assistant_controller_.reset();
+
+  // Destroy tablet mode controller early on since it has some observers which
   // need to be removed.
-  maximize_mode_controller_.reset();
+  tablet_mode_controller_.reset();
 
   // Destroy the keyboard before closing the shelf, since it will invoke a shelf
   // layout.
-  DeactivateKeyboard();
+  DisableKeyboard();
 
-  // Destroy toasts
   toast_manager_.reset();
 
-  // Destroy SystemTrayDelegate before destroying the status area(s). Make sure
-  // to deinitialize the shelf first, as it is initialized after the delegate.
-  ShutdownShelf();
-  wm_shell_->DeleteSystemTrayDelegate();
+  tray_bluetooth_helper_.reset();
 
-  locale_notification_controller_.reset();
+  // Accesses root window containers.
+  logout_confirmation_controller_.reset();
 
   // Drag-and-drop must be canceled prior to close all windows.
+  for (aura::Window* root : GetAllRootWindows())
+    aura::client::SetDragDropClient(root, nullptr);
   drag_drop_controller_.reset();
 
-// Controllers who have WindowObserver added must be deleted
-// before |window_tree_host_manager_| is deleted.
+  // Controllers who have WindowObserver added must be deleted
+  // before |window_tree_host_manager_| is deleted.
 
-#if defined(OS_CHROMEOS)
+  persistent_window_controller_.reset();
+
   // VideoActivityNotifier must be deleted before |video_detector_| is
   // deleted because it's observing video activity through
-  // VideoDetectorObserver interface.
+  // VideoDetector::Observer interface.
   video_activity_notifier_.reset();
-#endif  // defined(OS_CHROMEOS)
   video_detector_.reset();
   high_contrast_controller_.reset();
 
   shadow_controller_.reset();
   resize_shadow_controller_.reset();
 
+  // Has to happen before ~MruWindowTracker.
   window_cycle_controller_.reset();
-  wm_shell_->DeleteWindowSelectorController();
+  overview_controller_.reset();
 
-  // |shelf_window_watcher_| has a weak pointer to |shelf_Model_|
-  // and has window observers.
-  shelf_window_watcher_.reset();
+  // |split_view_controller_| needs to be deleted after
+  // |overview_controller_|.
+  split_view_controller_.reset();
 
-  // Destroy all child windows including widgets.
-  window_tree_host_manager_->CloseChildWindows();
+  desks_controller_.reset();
+
+  // Stop dispatching events (e.g. synthesized mouse exits from window close).
+  // https://crbug.com/874156
+  for (RootWindowController* rwc : GetAllRootWindowControllers())
+    rwc->GetHost()->dispatcher()->Shutdown();
+
+  // Close all widgets (including the shelf) and destroy all window containers.
+  CloseAllRootWindowChildWindows();
+
+  login_screen_controller_.reset();
+  system_notification_controller_.reset();
+  // Should be destroyed after Shelf and |system_notification_controller_|.
+  system_tray_model_.reset();
+
   // MruWindowTracker must be destroyed after all windows have been deleted to
   // avoid a possible crash when Shell is destroyed from a non-normal shutdown
   // path. (crbug.com/485438).
-  wm_shell_->DeleteMruWindowTracker();
-
-  // Chrome implementation of shelf delegate depends on FocusClient,
-  // so must be deleted before |focus_client_| (below).
-  shelf_delegate_.reset();
+  mru_window_tracker_.reset();
 
   // These need a valid Shell instance to clean up properly, so explicitly
   // delete them before invalidating the instance.
   // Alphabetical. TODO(oshima): sort.
+  autoclick_controller_.reset();
   magnification_controller_.reset();
-  partial_magnification_controller_.reset();
   tooltip_controller_.reset();
   event_client_.reset();
   toplevel_window_event_handler_.reset();
   visibility_controller_.reset();
-  // |shelf_item_delegate_manager_| observes |shelf_model_|. It must be
-  // destroyed before |shelf_model_| is destroyed.
-  shelf_item_delegate_manager_.reset();
-  shelf_model_.reset();
+  power_prefs_.reset();
+
+  tray_action_.reset();
 
   power_button_controller_.reset();
   lock_state_controller_.reset();
+  backlights_forced_off_setter_.reset();
 
   screen_pinning_controller_.reset();
 
-#if defined(OS_CHROMEOS)
+  multidevice_notification_presenter_.reset();
   resolution_notification_controller_.reset();
-#endif
-  desktop_background_controller_.reset();
   screenshot_controller_.reset();
   mouse_cursor_filter_.reset();
+  modality_filter_.reset();
 
-#if defined(OS_CHROMEOS)
   touch_transformer_controller_.reset();
-#endif  // defined(OS_CHROMEOS)
+  laser_pointer_controller_.reset();
+  partial_magnification_controller_.reset();
+  highlighter_controller_.reset();
+  voice_interaction_controller_.reset();
+  key_accessibility_enabler_.reset();
 
-#if defined(OS_CHROMEOS)
-  audio_a11y_controller_.reset();
-#endif  // defined(OS_CHROMEOS)
+  display_speaker_controller_.reset();
+  screen_switch_check_controller_.reset();
+
+  ScreenAsh::CreateScreenForShutdown();
+  display_configuration_controller_.reset();
+
+  // These members access Shell in their destructors.
+  wallpaper_controller_.reset();
+  accessibility_controller_.reset();
+  accessibility_delegate_.reset();
+  accessibility_focus_ring_controller_.reset();
+  policy_recommendation_restorer_.reset();
+  ime_controller_.reset();
+
+  // Balances the Install() in Initialize().
+  views::FocusManagerFactory::Install(nullptr);
+
+  // ShelfWindowWatcher has window observers and a pointer to the shelf model.
+  shelf_window_watcher_.reset();
+
+  // Removes itself as an observer of |pref_service_|.
+  shelf_controller_.reset();
+
+  // NightLightController depends on the PrefService as well as the window tree
+  // host manager, and must be destructed before them. crbug.com/724231.
+  night_light_controller_ = nullptr;
+  // Similarly for DockedMagnifierController.
+  docked_magnifier_controller_ = nullptr;
+
+  // May own windows and other objects that have indirect hooks into
+  // WindowTreeHostManager.
+  window_service_owner_.reset();
+
+  // Must be released before |focus_controller_|.
+  ime_focus_handler_.reset();
+
+  // Stop observing window activation changes before closing all windows.
+  focus_controller_->RemoveObserver(this);
 
   // This also deletes all RootWindows. Note that we invoke Shutdown() on
   // WindowTreeHostManager before resetting |window_tree_host_manager_|, since
-  // destruction
-  // of its owned RootWindowControllers relies on the value.
-  display_manager_->CreateScreenForShutdown();
-  display_configuration_controller_.reset();
-
-  wm_shell_->PrepareForShutdown();
-  // Depends on |focus_client_|, so must be destroyed before.
+  // destruction of its owned RootWindowControllers relies on the value.
   window_tree_host_manager_->Shutdown();
+
+  // Depends on |focus_controller_|, so must be destroyed before.
   window_tree_host_manager_.reset();
-  focus_client_.reset();
+  focus_rules_ = nullptr;
+  focus_controller_.reset();
   screen_position_controller_.reset();
-  accessibility_delegate_.reset();
-  new_window_delegate_.reset();
-  pointer_watcher_delegate_.reset();
 
-  keyboard::KeyboardController::ResetInstance(nullptr);
-
-#if defined(OS_CHROMEOS)
   display_color_manager_.reset();
+  projecting_observer_.reset();
+
   if (display_change_observer_)
-    display_configurator_->RemoveObserver(display_change_observer_.get());
+    display_manager_->configurator()->RemoveObserver(
+        display_change_observer_.get());
   if (display_error_observer_)
-    display_configurator_->RemoveObserver(display_error_observer_.get());
-  if (projecting_observer_) {
-    display_configurator_->RemoveObserver(projecting_observer_.get());
-    wm_shell_->RemoveShellObserver(projecting_observer_.get());
-  }
+    display_manager_->configurator()->RemoveObserver(
+        display_error_observer_.get());
   display_change_observer_.reset();
+  display_shutdown_observer_.reset();
+
+  ash_keyboard_controller_.reset();
 
   PowerStatus::Shutdown();
+  // Depends on SessionController.
+  power_event_observer_.reset();
+  notification_reporter_.reset();
 
-  // Ensure that DBusThreadManager outlives this Shell.
-  DCHECK(chromeos::DBusThreadManager::IsInitialized());
-#endif
+  session_controller_->RemoveObserver(this);
+  // BluetoothPowerController depends on the PrefService and must be destructed
+  // before it.
+  bluetooth_power_controller_ = nullptr;
+  // TouchDevicesController depends on the PrefService and must be destructed
+  // before it.
+  touch_devices_controller_ = nullptr;
+  // DetachableBaseNotificationController depends on DetachableBaseHandler, and
+  // has to be destructed before it.
+  detachable_base_notification_controller_.reset();
+  // DetachableBaseHandler depends on the PrefService and must be destructed
+  // before it.
+  detachable_base_handler_.reset();
 
-  // Needs to happen right before |instance_| is reset.
-  wm_shell_.reset();
+  // MediaNotificationController depends on MessageCenter and must be destructed
+  // before it.
+  media_notification_controller_.reset();
+
+  // Destroys the MessageCenter singleton, so must happen late.
+  message_center_controller_.reset();
+
+  local_state_.reset();
+  shell_delegate_.reset();
+
+  for (auto& observer : shell_observers_)
+    observer.OnShellDestroyed();
 
   DCHECK(instance_ == this);
   instance_ = nullptr;
 }
 
-void Shell::Init(const ShellInitParams& init_params) {
-  in_mus_ = init_params.in_mus;
+void Shell::Init(
+    ui::ContextFactory* context_factory,
+    ui::ContextFactoryPrivate* context_factory_private,
+    std::unique_ptr<base::Value> initial_display_prefs,
+    std::unique_ptr<ws::GpuInterfaceProvider> gpu_interface_provider,
+    std::unique_ptr<keyboard::KeyboardUIFactory> keyboard_ui_factory) {
+  if (::features::IsSingleProcessMash()) {
+    // In SingleProcessMash mode ScreenMus is not created, which means Ash needs
+    // to set the WindowManagerFrameValues.
+    views::WindowManagerFrameValues frame_values;
+    frame_values.normal_insets = frame_values.maximized_insets =
+        NonClientFrameController::GetPreferredClientAreaInsets();
+    frame_values.max_title_bar_button_width =
+        NonClientFrameController::GetMaxTitleBarButtonWidth();
+    views::WindowManagerFrameValues::SetInstance(frame_values);
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-  DCHECK(in_mus_) << "linux desktop does not support ash.";
-#endif
-
-  wm_shell_.reset(new WmShellAura);
-  scoped_overview_animation_settings_factory_.reset(
-      new ScopedOverviewAnimationSettingsFactoryAura);
-  window_positioner_.reset(new WindowPositioner(wm_shell_.get()));
-
-  if (!in_mus_) {
-    native_cursor_manager_ = new AshNativeCursorManager;
-#if defined(OS_CHROMEOS)
-    cursor_manager_.reset(
-        new CursorManager(base::WrapUnique(native_cursor_manager_)));
-#else
-    cursor_manager_.reset(
-        new ::wm::CursorManager(base::WrapUnique(native_cursor_manager_)));
-#endif
+    // Accessibility node tree serialization needs to "jump the fence" and
+    // convert between ash proxy and mus client windows.
+    views::AXAuraWindowUtils::Set(std::make_unique<AXAshWindowUtils>());
   }
 
-  delegate_->PreInit();
-  bool display_initialized = display_manager_->InitFromCommandLine();
+  // This creates the MessageCenter object which is used by some other objects
+  // initialized here, so it needs to come early.
+  message_center_controller_ = std::make_unique<MessageCenterController>();
 
-  display_configuration_controller_.reset(new DisplayConfigurationController(
-      display_manager_.get(), window_tree_host_manager_.get()));
+  // These controllers call Shell::Get() in their constructors, so they cannot
+  // be in the member initialization list.
+  touch_devices_controller_ = std::make_unique<TouchDevicesController>();
+  bluetooth_power_controller_ = std::make_unique<BluetoothPowerController>();
+  detachable_base_handler_ = std::make_unique<DetachableBaseHandler>(this);
+  detachable_base_notification_controller_ =
+      std::make_unique<DetachableBaseNotificationController>(
+          detachable_base_handler_.get());
+  display_speaker_controller_ = std::make_unique<DisplaySpeakerController>();
+  policy_recommendation_restorer_ =
+      std::make_unique<PolicyRecommendationRestorer>();
+  screen_switch_check_controller_ =
+      std::make_unique<ScreenSwitchCheckController>();
+  // Connector can be null in tests.
+  if (connector_) {
+    multidevice_notification_presenter_ =
+        std::make_unique<MultiDeviceNotificationPresenter>(
+            message_center::MessageCenter::Get(), connector_);
 
-#if defined(OS_CHROMEOS)
-  // When running as part of mash display configuration is handled by the mus
-  // process, so we won't try to configure displays here.
-  if (in_mus_) {
-    display_configurator_->set_configure_display(false);
-  } else {
-#if defined(USE_OZONE)
-    display_configurator_->Init(
-        ui::OzonePlatform::GetInstance()->CreateNativeDisplayDelegate(),
-        !gpu_support_->IsPanelFittingDisabled());
-#elif defined(USE_X11)
-    display_configurator_->Init(
-        base::WrapUnique(new ui::NativeDisplayDelegateX11()),
-        !gpu_support_->IsPanelFittingDisabled());
-#endif
+    // Connect to local state prefs now, but wait for an active user before
+    // connecting to the profile pref service. The login screen has a temporary
+    // user profile that is not associated with a real user.
+    auto pref_registry = base::MakeRefCounted<PrefRegistrySimple>();
+    RegisterLocalStatePrefs(pref_registry.get(), false);
+    prefs::ConnectToPrefService(
+        connector_, std::move(pref_registry),
+        base::Bind(&Shell::OnLocalStatePrefServiceInitialized,
+                   weak_factory_.GetWeakPtr()),
+        prefs::mojom::kLocalStateServiceName);
   }
 
-  // The DBusThreadManager must outlive this Shell. See the DCHECK in ~Shell.
-  chromeos::DBusThreadManager* dbus_thread_manager =
-      chromeos::DBusThreadManager::Get();
-  projecting_observer_.reset(
-      new ProjectingObserver(dbus_thread_manager->GetPowerManagerClient()));
-  display_configurator_->AddObserver(projecting_observer_.get());
-  wm_shell_->AddShellObserver(projecting_observer_.get());
+  tablet_mode_controller_ = std::make_unique<TabletModeController>();
 
-  if (!in_mus_ && !display_initialized &&
-      base::SysInfo::IsRunningOnChromeOS()) {
-    display_change_observer_.reset(new DisplayChangeObserver);
-    // Register |display_change_observer_| first so that the rest of
-    // observer gets invoked after the root windows are configured.
-    display_configurator_->AddObserver(display_change_observer_.get());
-    display_error_observer_.reset(new DisplayErrorObserver());
-    display_configurator_->AddObserver(display_error_observer_.get());
-    display_configurator_->set_state_controller(display_change_observer_.get());
-    display_configurator_->set_mirroring_controller(display_manager_.get());
-    display_configurator_->ForceInitialConfigure(
-        delegate_->IsFirstRunAfterBoot() ? kChromeOsBootColor : 0);
-    display_initialized = true;
-  }
-  display_color_manager_.reset(
-      new DisplayColorManager(display_configurator_.get(), blocking_pool_));
-#endif  // defined(OS_CHROMEOS)
+  accessibility_focus_ring_controller_ =
+      std::make_unique<AccessibilityFocusRingController>();
+  accessibility_delegate_.reset(shell_delegate_->CreateAccessibilityDelegate());
+  accessibility_controller_ = std::make_unique<AccessibilityController>();
+  toast_manager_ = std::make_unique<ToastManager>();
 
-  if (!display_initialized)
-    display_manager_->InitDefaultDisplay();
-
-  display_manager_->RefreshFontParams();
-
-  // Install the custom factory first so that views::FocusManagers for Tray,
+  // Install the custom factory early on so that views::FocusManagers for Tray,
   // Shelf, and WallPaper could be created by the factory.
   views::FocusManagerFactory::Install(new AshFocusManagerFactory);
 
-  aura::Env::GetInstance()->set_context_factory(init_params.context_factory);
+  wallpaper_controller_ = std::make_unique<WallpaperController>();
+
+  window_positioner_ = std::make_unique<WindowPositioner>();
+
+  native_cursor_manager_ = new NativeCursorManagerAsh;
+  cursor_manager_ =
+      std::make_unique<CursorManager>(base::WrapUnique(native_cursor_manager_));
+
+  InitializeDisplayManager();
+
+  // In CLASSIC mode, |initial_display_prefs| contains the synchronously
+  // loaded display pref values. Otherwise |initial_display_prefs| is null and
+  // the pref values will be loaded once |local_state_| is available. (Any store
+  // requests in the meanwhile will be queued).
+  display_prefs_ =
+      std::make_unique<DisplayPrefs>(std::move(initial_display_prefs));
+
+  // This will initialize aura::Env which requires |display_manager_| to
+  // be initialized first.
+  if (context_factory)
+    aura_env_->set_context_factory(context_factory);
+  if (context_factory_private)
+    aura_env_->set_context_factory_private(context_factory_private);
+
+  // Night Light depends on the display manager, the display color manager, and
+  // aura::Env, so initialize it after all have been initialized.
+  night_light_controller_ = std::make_unique<NightLightController>();
 
   // The WindowModalityController needs to be at the front of the input event
   // pretarget handler list to ensure that it processes input events when modal
   // windows are active.
-  window_modality_controller_.reset(new ::wm::WindowModalityController(this));
+  window_modality_controller_ =
+      std::make_unique<::wm::WindowModalityController>(this, aura_env_);
 
-  env_filter_.reset(new ::wm::CompoundEventFilter);
+  event_rewriter_controller_ = std::make_unique<EventRewriterController>();
+
+  env_filter_ = std::make_unique<::wm::CompoundEventFilter>();
   AddPreTargetHandler(env_filter_.get());
 
-  wm::AshFocusRules* focus_rules = new wm::AshFocusRules();
+  // FocusController takes ownership of AshFocusRules.
+  focus_rules_ = new wm::AshFocusRules();
+  focus_controller_ = std::make_unique<::wm::FocusController>(focus_rules_);
+  focus_controller_->AddObserver(this);
 
-  ::wm::FocusController* focus_controller =
-      new ::wm::FocusController(focus_rules);
-  focus_client_.reset(focus_controller);
-  activation_client_ = focus_controller;
-  activation_client_->AddObserver(this);
+  overview_controller_ = std::make_unique<OverviewController>();
 
-  screen_position_controller_.reset(new ScreenPositionController);
+  screen_position_controller_ = std::make_unique<ScreenPositionController>();
+
+  // Must be before CreatePrimaryHost().
+  window_service_owner_ =
+      std::make_unique<WindowServiceOwner>(std::move(gpu_interface_provider));
 
   window_tree_host_manager_->Start();
-  window_tree_host_manager_->CreatePrimaryHost(
-      ShellInitParamsToAshWindowTreeHostInitParams(init_params));
-  aura::Window* root_window = window_tree_host_manager_->GetPrimaryRootWindow();
-  target_root_window_ = root_window;
+  AshWindowTreeHostInitParams ash_init_params;
+  window_tree_host_manager_->CreatePrimaryHost(ash_init_params);
 
-#if defined(OS_CHROMEOS)
-  resolution_notification_controller_.reset(
-      new ResolutionNotificationController);
-#endif
+  time_to_first_present_recorder_ =
+      std::make_unique<TimeToFirstPresentRecorder>(GetPrimaryRootWindow());
 
-  if (cursor_manager_)
-    cursor_manager_->SetDisplay(
-        display::Screen::GetScreen()->GetPrimaryDisplay());
+  shell_state_->SetRootWindowForNewWindows(GetPrimaryRootWindow());
 
-  accelerator_controller_.reset(new AcceleratorController);
-  maximize_mode_controller_.reset(new MaximizeModeController());
+  resolution_notification_controller_ =
+      std::make_unique<ResolutionNotificationController>();
 
-  AddPreTargetHandler(window_tree_host_manager_->input_method_event_handler());
+  cursor_manager_->SetDisplay(
+      display::Screen::GetScreen()->GetPrimaryDisplay());
 
-#if defined(OS_CHROMEOS)
+  accelerator_controller_ = std::make_unique<AcceleratorController>();
+  voice_interaction_controller_ =
+      std::make_unique<VoiceInteractionController>();
+
+  shelf_controller_ = std::make_unique<ShelfController>();
+
   magnifier_key_scroll_handler_ = MagnifierKeyScroller::CreateHandler();
   AddPreTargetHandler(magnifier_key_scroll_handler_.get());
   speech_feedback_handler_ = SpokenFeedbackToggler::CreateHandler();
   AddPreTargetHandler(speech_feedback_handler_.get());
-#endif
 
   // The order in which event filters are added is significant.
 
@@ -945,198 +1112,269 @@ void Shell::Init(const ShellInitParams& init_params) {
 
   overlay_filter_.reset(new OverlayEventFilter);
   AddPreTargetHandler(overlay_filter_.get());
-  wm_shell_->AddShellObserver(overlay_filter_.get());
 
   accelerator_filter_.reset(new ::wm::AcceleratorFilter(
-      std::unique_ptr<::wm::AcceleratorDelegate>(new AcceleratorDelegate),
+      std::make_unique<PreTargetAcceleratorHandler>(),
       accelerator_controller_->accelerator_history()));
   AddPreTargetHandler(accelerator_filter_.get());
 
   event_transformation_handler_.reset(new EventTransformationHandler);
   AddPreTargetHandler(event_transformation_handler_.get());
 
-  toplevel_window_event_handler_.reset(
-      new ToplevelWindowEventHandler(wm_shell_.get()));
+  toplevel_window_event_handler_ =
+      std::make_unique<ToplevelWindowEventHandler>();
 
-  system_gesture_filter_.reset(new SystemGestureEventFilter);
+  system_gesture_filter_ = std::make_unique<SystemGestureEventFilter>();
   AddPreTargetHandler(system_gesture_filter_.get());
 
-  keyboard_metrics_filter_.reset(new KeyboardUMAEventFilter);
-  AddPreTargetHandler(keyboard_metrics_filter_.get());
-
-#if defined(OS_CHROMEOS)
   sticky_keys_controller_.reset(new StickyKeysController);
-#endif
-  screen_pinning_controller_.reset(
-      new ScreenPinningController(window_tree_host_manager_.get()));
+  screen_pinning_controller_ = std::make_unique<ScreenPinningController>();
 
-  lock_state_controller_.reset(new LockStateController);
-  power_button_controller_.reset(
-      new PowerButtonController(lock_state_controller_.get()));
-#if defined(OS_CHROMEOS)
+  power_prefs_ =
+      std::make_unique<PowerPrefs>(chromeos::PowerPolicyController::Get(),
+                                   chromeos::PowerManagerClient::Get());
+
+  backlights_forced_off_setter_ = std::make_unique<BacklightsForcedOffSetter>();
+
+  tray_action_ =
+      std::make_unique<TrayAction>(backlights_forced_off_setter_.get());
+
+  lock_state_controller_ =
+      std::make_unique<LockStateController>(shutdown_controller_.get());
+  power_button_controller_ = std::make_unique<PowerButtonController>(
+      backlights_forced_off_setter_.get());
   // Pass the initial display state to PowerButtonController.
   power_button_controller_->OnDisplayModeChanged(
-      display_configurator_->cached_displays());
-#endif
-  wm_shell_->AddShellObserver(lock_state_controller_.get());
+      display_configurator()->cached_displays());
 
-  drag_drop_controller_.reset(new DragDropController);
+  drag_drop_controller_ = std::make_unique<DragDropController>();
+
   // |screenshot_controller_| needs to be created (and prepended as a
   // pre-target handler) at this point, because |mouse_cursor_filter_| needs to
   // process mouse events prior to screenshot session.
   // See http://crbug.com/459214
-  screenshot_controller_.reset(new ScreenshotController());
-  mouse_cursor_filter_.reset(new MouseCursorEventFilter());
-  PrependPreTargetHandler(mouse_cursor_filter_.get());
+  screenshot_controller_ = std::make_unique<ScreenshotController>(
+      shell_delegate_->CreateScreenshotDelegate());
+  mouse_cursor_filter_ = std::make_unique<MouseCursorEventFilter>();
+  AddPreTargetHandler(mouse_cursor_filter_.get(),
+                      ui::EventTarget::Priority::kAccessibility);
 
   // Create Controllers that may need root window.
   // TODO(oshima): Move as many controllers before creating
   // RootWindowController as possible.
   visibility_controller_.reset(new AshVisibilityController);
 
-  magnification_controller_.reset(MagnificationController::CreateInstance());
-  wm_shell_->CreateMruWindowTracker();
-
+  laser_pointer_controller_.reset(new LaserPointerController());
   partial_magnification_controller_.reset(new PartialMagnificationController());
+  highlighter_controller_.reset(new HighlighterController());
 
-  autoclick_controller_.reset(AutoclickController::CreateInstance());
+  magnification_controller_ = std::make_unique<MagnificationController>();
+  mru_window_tracker_ = std::make_unique<MruWindowTracker>();
+  assistant_controller_ = chromeos::switches::IsAssistantEnabled()
+                              ? std::make_unique<AssistantController>()
+                              : nullptr;
+  home_screen_controller_ = std::make_unique<HomeScreenController>();
+
+  // |tablet_mode_controller_| |mru_window_tracker_|,
+  // |assistant_controller_| and |home_screen_controller_| are put before
+  // |app_list_controller_| as they are used in its constructor.
+  app_list_controller_ = std::make_unique<AppListControllerImpl>();
+  home_screen_controller_->SetDelegate(app_list_controller_.get());
+
+  autoclick_controller_ = std::make_unique<AutoclickController>();
 
   high_contrast_controller_.reset(new HighContrastController);
-  video_detector_.reset(new VideoDetector);
-  window_cycle_controller_.reset(new WindowCycleController());
+
+  docked_magnifier_controller_ = std::make_unique<DockedMagnifierController>();
+
+  video_detector_ = std::make_unique<VideoDetector>();
 
   tooltip_controller_.reset(new views::corewm::TooltipController(
       std::unique_ptr<views::corewm::Tooltip>(new views::corewm::TooltipAura)));
   AddPreTargetHandler(tooltip_controller_.get());
 
+  modality_filter_.reset(new SystemModalContainerEventFilter(this));
+  AddPreTargetHandler(modality_filter_.get());
+
   event_client_.reset(new EventClientImpl);
 
-  // This controller needs to be set before SetupManagedWindowMode.
-  desktop_background_controller_.reset(
-      new DesktopBackgroundController(blocking_pool_));
-  user_wallpaper_delegate_.reset(delegate_->CreateUserWallpaperDelegate());
-
-  session_state_delegate_.reset(delegate_->CreateSessionStateDelegate());
-  accessibility_delegate_.reset(delegate_->CreateAccessibilityDelegate());
-  new_window_delegate_.reset(delegate_->CreateNewWindowDelegate());
-  wm_shell_->SetMediaDelegate(
-      base::WrapUnique(delegate_->CreateMediaDelegate()));
-  pointer_watcher_delegate_ = delegate_->CreatePointerWatcherDelegate();
-
   resize_shadow_controller_.reset(new ResizeShadowController());
-  shadow_controller_.reset(new ::wm::ShadowController(activation_client_));
+  shadow_controller_ = std::make_unique<::wm::ShadowController>(
+      focus_controller_.get(), std::make_unique<WmShadowControllerDelegate>(),
+      aura_env_);
 
-  wm_shell_->SetSystemTrayDelegate(
-      base::WrapUnique(delegate()->CreateSystemTrayDelegate()));
+  logout_confirmation_controller_ =
+      std::make_unique<LogoutConfirmationController>();
 
-  locale_notification_controller_.reset(new LocaleNotificationController);
+  // May trigger initialization of the Bluetooth adapter.
+  tray_bluetooth_helper_->Initialize();
 
-  // Initialize toast manager
-  toast_manager_.reset(new ToastManager);
-
-#if defined(OS_CHROMEOS)
-  // Create TouchTransformerController before
+  // Create AshTouchTransformController before
   // WindowTreeHostManager::InitDisplays()
-  // since TouchTransformerController listens on
+  // since AshTouchTransformController listens on
   // WindowTreeHostManager::Observer::OnDisplaysInitialized().
-  if (!in_mus_)
-    touch_transformer_controller_.reset(new TouchTransformerController());
-#endif  // defined(OS_CHROMEOS)
+  touch_transformer_controller_ = std::make_unique<AshTouchTransformController>(
+      display_manager_.get(),
+      std::make_unique<display::DefaultTouchTransformSetter>());
 
-  wm_shell_->SetKeyboardUI(init_params.keyboard_factory.is_null()
-                               ? KeyboardUI::Create()
-                               : init_params.keyboard_factory.Run());
+  // |system_tray_model_| should be available before
+  // |system_notification_controller_| is initialized and Shelf is created by
+  // WindowTreeHostManager::InitHosts.
+  system_tray_model_ = std::make_unique<SystemTrayModel>();
+  system_notification_controller_ =
+      std::make_unique<SystemNotificationController>();
+
+  ash_keyboard_controller_->CreateVirtualKeyboard(
+      std::move(keyboard_ui_factory));
 
   window_tree_host_manager_->InitHosts();
 
-#if defined(OS_CHROMEOS)
-  // Needs to be created after InitDisplays() since it may cause the virtual
-  // keyboard to be deployed.
-  virtual_keyboard_controller_.reset(new VirtualKeyboardController);
-#endif  // defined(OS_CHROMEOS)
+  cursor_manager_->HideCursor();  // Hide the mouse cursor on startup.
+  cursor_manager_->SetCursor(ui::CursorType::kPointer);
 
-#if defined(OS_CHROMEOS)
-  audio_a11y_controller_.reset(new chromeos::AudioA11yController);
-#endif  // defined(OS_CHROMEOS)
-
-  // It needs to be created after RootWindowController has been created
-  // (which calls OnWindowResized has been called, otherwise the
-  // widget will not paint when restoring after a browser crash.  Also it needs
-  // to be created after InitSecondaryDisplays() to initialize the wallpapers in
-  // the correct size.
-  user_wallpaper_delegate_->InitializeWallpaper();
-
-  if (cursor_manager_) {
-    if (initially_hide_cursor_)
-      cursor_manager_->HideCursor();
-    cursor_manager_->SetCursor(ui::kCursorPointer);
-  }
-
-#if defined(OS_CHROMEOS)
-  // Set accelerator controller delegates.
-  accelerator_controller_->SetBrightnessControlDelegate(
-      std::unique_ptr<BrightnessControlDelegate>(
-          new system::BrightnessControllerChromeos));
-
+  peripheral_battery_notifier_ = std::make_unique<PeripheralBatteryNotifier>();
   power_event_observer_.reset(new PowerEventObserver());
-  user_activity_notifier_.reset(
-      new ui::UserActivityPowerManagerNotifier(user_activity_detector_.get()));
+  user_activity_notifier_ =
+      std::make_unique<ui::UserActivityPowerManagerNotifier>(
+          user_activity_detector_.get(), connector_);
   video_activity_notifier_.reset(
       new VideoActivityNotifier(video_detector_.get()));
   bluetooth_notification_controller_.reset(new BluetoothNotificationController);
-  screen_orientation_controller_.reset(new ScreenOrientationController());
-#endif
+  screen_orientation_controller_ =
+      std::make_unique<ScreenOrientationController>();
+  screen_layout_observer_.reset(new ScreenLayoutObserver());
+  sms_observer_.reset(new SmsObserver());
+
+  split_view_controller_.reset(new SplitViewController());
+
+  if (features::IsVirtualDesksEnabled())
+    desks_controller_ = std::make_unique<DesksController>();
+
+  key_accessibility_enabler_ = std::make_unique<KeyAccessibilityEnabler>();
+
   // The compositor thread and main message loop have to be running in
   // order to create mirror window. Run it after the main message loop
   // is started.
   display_manager_->CreateMirrorWindowAsyncIfAny();
 
-  FOR_EACH_OBSERVER(ShellObserver, *wm_shell_->shell_observers(),
-                    OnShellInitialized());
+  // |connector_| is null in unit tests.
+  if (connector_ &&
+      base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kShowTaps)) {
+    // The show taps feature is a separate service.
+    // TODO(jamescook): Make this work in ash_shell_with_content.
+    tap_visualizer::mojom::TapVisualizerPtr tap_visualizer_ptr;
+    connector_->BindInterface(service_manager::ServiceFilter::ByName(
+                                  tap_visualizer::mojom::kServiceName),
+                              mojo::MakeRequest(&tap_visualizer_ptr));
+    tap_visualizer_ptr->Show();
+  }
+
+  if (!::features::IsMultiProcessMash()) {
+    ime_focus_handler_ = std::make_unique<ImeFocusHandler>(
+        focus_controller(), window_tree_host_manager_->input_method());
+  }
+
+  if (base::FeatureList::IsEnabled(features::kMediaSessionNotification)) {
+    media_notification_controller_ =
+        std::make_unique<MediaNotificationController>(connector_);
+  }
+
+  for (auto& observer : shell_observers_)
+    observer.OnShellInitialized();
 
   user_metrics_recorder_->OnShellInitialized();
+
+  notification_reporter_ = std::make_unique<NotificationReporter>();
+
+  // Initialize the D-Bus thread and services for ash.
+  ash_dbus_services_ = std::make_unique<AshDBusServices>();
+  // By this point ash shell should have initialized its D-Bus signal
+  // listeners, so emit ash-initialized upstart signal to start Chrome OS tasks
+  // that expect that ash is listening to D-Bus signals they emit. For example,
+  // hammerd, which handles detachable base state, communicates the base state
+  // purely by emitting D-Bus signals, and thus has to be run whenever ash is
+  // started so ash (DetachableBaseHandler in particular) gets the proper view
+  // of the current detachable base state.
+  // TODO(stevenjb): Move this and other D-Bus dependencies to AshDBusServices.
+  ash_dbus_services_->EmitAshInitialized();
 }
 
-void Shell::InitKeyboard() {
-  if (in_mus_)
-    return;
+void Shell::InitializeDisplayManager() {
+  bool display_initialized = display_manager_->InitFromCommandLine();
 
-  if (keyboard::IsKeyboardEnabled()) {
-    if (keyboard::KeyboardController::GetInstance()) {
-      RootWindowControllerList controllers = GetAllRootWindowControllers();
-      for (RootWindowControllerList::iterator iter = controllers.begin();
-           iter != controllers.end(); ++iter) {
-        (*iter)->DeactivateKeyboard(
-            keyboard::KeyboardController::GetInstance());
-      }
+  display_manager_->InitConfigurator(
+      ui::OzonePlatform::GetInstance()->CreateNativeDisplayDelegate());
+  display_configuration_controller_ =
+      std::make_unique<DisplayConfigurationController>(
+          display_manager_.get(), window_tree_host_manager_.get());
+  display_configuration_observer_ =
+      std::make_unique<DisplayConfigurationObserver>();
+
+  cros_display_config_ = std::make_unique<CrosDisplayConfig>();
+
+  persistent_window_controller_ =
+      std::make_unique<PersistentWindowController>();
+
+  projecting_observer_ =
+      std::make_unique<ProjectingObserver>(display_manager_->configurator());
+
+  if (!display_initialized) {
+    if (chromeos::IsRunningAsSystemCompositor()) {
+      display_change_observer_ =
+          std::make_unique<display::DisplayChangeObserver>(
+              display_manager_.get());
+
+      display_error_observer_ = std::make_unique<DisplayErrorObserver>();
+      display_shutdown_observer_ = std::make_unique<DisplayShutdownObserver>(
+          display_manager_->configurator());
+
+      display_manager_->ForceInitialConfigureWithObservers(
+          display_change_observer_.get(), display_error_observer_.get());
+      display_initialized = true;
     }
-    keyboard::KeyboardController::ResetInstance(
-        new keyboard::KeyboardController(delegate_->CreateKeyboardUI()));
   }
+
+  display_color_manager_ = std::make_unique<DisplayColorManager>(
+      display_manager_->configurator(), display::Screen::GetScreen());
+
+  if (!display_initialized)
+    display_manager_->InitDefaultDisplay();
+
+  display_manager_->RefreshFontParams();
 }
 
 void Shell::InitRootWindow(aura::Window* root_window) {
-  DCHECK(activation_client_);
+  DCHECK(focus_controller_);
   DCHECK(visibility_controller_.get());
-  DCHECK(drag_drop_controller_.get());
 
-  aura::client::SetFocusClient(root_window, focus_client_.get());
-  aura::client::SetActivationClient(root_window, activation_client_);
-  ::wm::FocusController* focus_controller =
-      static_cast<::wm::FocusController*>(activation_client_);
-  root_window->AddPreTargetHandler(focus_controller);
+  aura::client::SetFocusClient(root_window, focus_controller_.get());
+  ::wm::SetActivationClient(root_window, focus_controller_.get());
+  root_window->AddPreTargetHandler(focus_controller_.get());
   aura::client::SetVisibilityClient(root_window, visibility_controller_.get());
   aura::client::SetDragDropClient(root_window, drag_drop_controller_.get());
   aura::client::SetScreenPositionClient(root_window,
                                         screen_position_controller_.get());
   aura::client::SetCursorClient(root_window, cursor_manager_.get());
-  aura::client::SetTooltipClient(root_window, tooltip_controller_.get());
+  ::wm::SetTooltipClient(root_window, tooltip_controller_.get());
   aura::client::SetEventClient(root_window, event_client_.get());
 
-  aura::client::SetWindowMoveClient(root_window,
-                                    toplevel_window_event_handler_.get());
+  ::wm::SetWindowMoveClient(root_window, toplevel_window_event_handler_.get());
   root_window->AddPreTargetHandler(toplevel_window_event_handler_.get());
   root_window->AddPostTargetHandler(toplevel_window_event_handler_.get());
+}
+
+void Shell::CloseAllRootWindowChildWindows() {
+  for (aura::Window* root : GetAllRootWindows()) {
+    RootWindowController* controller = RootWindowController::ForWindow(root);
+    if (controller) {
+      controller->CloseChildWindows();
+    } else {
+      while (!root->children().empty()) {
+        aura::Window* child = root->children()[0];
+        delete child;
+      }
+    }
+  }
 }
 
 bool Shell::CanWindowReceiveEvents(aura::Window* window) {
@@ -1156,7 +1394,7 @@ bool Shell::CanAcceptEvent(const ui::Event& event) {
 }
 
 ui::EventTarget* Shell::GetParentTarget() {
-  return aura::Env::GetInstance();
+  return aura_env_;
 }
 
 std::unique_ptr<ui::EventTargetIterator> Shell::GetChildIterator() const {
@@ -1168,15 +1406,69 @@ ui::EventTargeter* Shell::GetEventTargeter() {
   return nullptr;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Shell, aura::client::ActivationChangeObserver implementation:
-
 void Shell::OnWindowActivated(
-    aura::client::ActivationChangeObserver::ActivationReason reason,
+    ::wm::ActivationChangeObserver::ActivationReason reason,
     aura::Window* gained_active,
     aura::Window* lost_active) {
-  if (gained_active)
-    target_root_window_ = gained_active->GetRootWindow();
+  if (!gained_active)
+    return;
+
+  shell_state_->SetRootWindowForNewWindows(gained_active->GetRootWindow());
+}
+
+void Shell::OnFirstSessionStarted() {
+  // Enable magnifier scroll keys as there may be no mouse cursor in kiosk mode.
+  MagnifierKeyScroller::SetEnabled(session_controller_->IsRunningInAppMode());
+
+  // Enable long press action to toggle spoken feedback with hotrod remote
+  // which can't handle shortcuts.
+  SpokenFeedbackToggler::SetEnabled(session_controller_->IsRunningInAppMode());
+}
+
+void Shell::OnSessionStateChanged(session_manager::SessionState state) {
+  const bool is_session_active = state == session_manager::SessionState::ACTIVE;
+  // Initialize the |shelf_window_watcher_| when a session becomes active.
+  // Shelf itself is initialized in RootWindowController.
+  if (is_session_active && !shelf_window_watcher_)
+    shelf_window_watcher_ = std::make_unique<ShelfWindowWatcher>(shelf_model());
+
+  // Disable drag-and-drop during OOBE and GAIA login screens by only enabling
+  // the controller when the session is active. https://crbug.com/464118
+  drag_drop_controller_->set_enabled(is_session_active);
+
+  if (is_session_active)
+    kiosk_next_shell_controller_->LaunchKioskNextShellIfEnabled();
+}
+
+void Shell::OnLoginStatusChanged(LoginStatus login_status) {
+  UpdateAfterLoginStatusChange(login_status);
+}
+
+void Shell::OnLockStateChanged(bool locked) {
+#ifndef NDEBUG
+  // Make sure that there is no system modal in Lock layer when unlocked.
+  if (!locked) {
+    aura::Window::Windows containers = wm::GetContainersFromAllRootWindows(
+        kShellWindowId_LockSystemModalContainer, GetPrimaryRootWindow());
+    for (aura::Window* container : containers)
+      DCHECK(container->children().empty());
+  }
+#endif
+}
+
+void Shell::OnLocalStatePrefServiceInitialized(
+    std::unique_ptr<::PrefService> pref_service) {
+  DCHECK(!local_state_);
+  // |pref_service| is null if can't connect to Chrome (as happens when
+  // running mash outside of chrome --enable-features=Mash and chrome isn't
+  // built).
+  if (!pref_service)
+    return;
+
+  local_state_ = std::move(pref_service);
+
+  for (auto& observer : shell_observers_)
+    observer.OnLocalStatePrefServiceInitialized(local_state_.get());
 }
 
 }  // namespace ash

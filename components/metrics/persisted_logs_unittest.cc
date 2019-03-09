@@ -11,6 +11,7 @@
 #include "base/rand_util.h"
 #include "base/sha1.h"
 #include "base/values.h"
+#include "components/metrics/persisted_logs_metrics_impl.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
@@ -63,13 +64,29 @@ class PersistedLogsTest : public testing::Test {
 class TestPersistedLogs : public PersistedLogs {
  public:
   TestPersistedLogs(PrefService* service, size_t min_log_bytes)
-      : PersistedLogs(service, kTestPrefName, kLogCountLimit, min_log_bytes,
-                      0) {
-  }
+      : PersistedLogs(std::unique_ptr<PersistedLogsMetricsImpl>(
+                          new PersistedLogsMetricsImpl()),
+                      service,
+                      kTestPrefName,
+                      kLogCountLimit,
+                      min_log_bytes,
+                      0,
+                      std::string()) {}
+  TestPersistedLogs(PrefService* service,
+                    size_t min_log_bytes,
+                    const std::string& signing_key)
+      : PersistedLogs(std::unique_ptr<PersistedLogsMetricsImpl>(
+                          new PersistedLogsMetricsImpl()),
+                      service,
+                      kTestPrefName,
+                      kLogCountLimit,
+                      min_log_bytes,
+                      0,
+                      signing_key) {}
 
   // Stages and removes the next log, while testing it's value.
   void ExpectNextLog(const std::string& expected_log) {
-    StageLog();
+    StageNextLog();
     EXPECT_EQ(staged_log(), Compress(expected_log));
     DiscardStagedLog();
   }
@@ -84,12 +101,12 @@ class TestPersistedLogs : public PersistedLogs {
 TEST_F(PersistedLogsTest, EmptyLogList) {
   TestPersistedLogs persisted_logs(&prefs_, kLogByteLimit);
 
-  persisted_logs.SerializeLogs();
+  persisted_logs.PersistUnsentLogs();
   const base::ListValue* list_value = prefs_.GetList(kTestPrefName);
   EXPECT_EQ(0U, list_value->GetSize());
 
   TestPersistedLogs result_persisted_logs(&prefs_, kLogByteLimit);
-  EXPECT_EQ(PersistedLogs::LIST_EMPTY, result_persisted_logs.DeserializeLogs());
+  result_persisted_logs.LoadPersistedUnsentLogs();
   EXPECT_EQ(0U, result_persisted_logs.size());
 }
 
@@ -98,19 +115,22 @@ TEST_F(PersistedLogsTest, SingleElementLogList) {
   TestPersistedLogs persisted_logs(&prefs_, kLogByteLimit);
 
   persisted_logs.StoreLog("Hello world!");
-  persisted_logs.SerializeLogs();
+  persisted_logs.PersistUnsentLogs();
 
   TestPersistedLogs result_persisted_logs(&prefs_, kLogByteLimit);
-  EXPECT_EQ(PersistedLogs::RECALL_SUCCESS,
-            result_persisted_logs.DeserializeLogs());
+  result_persisted_logs.LoadPersistedUnsentLogs();
   EXPECT_EQ(1U, result_persisted_logs.size());
 
   // Verify that the result log matches the initial log.
-  persisted_logs.StageLog();
-  result_persisted_logs.StageLog();
+  persisted_logs.StageNextLog();
+  result_persisted_logs.StageNextLog();
   EXPECT_EQ(persisted_logs.staged_log(), result_persisted_logs.staged_log());
   EXPECT_EQ(persisted_logs.staged_log_hash(),
             result_persisted_logs.staged_log_hash());
+  EXPECT_EQ(persisted_logs.staged_log_signature(),
+            result_persisted_logs.staged_log_signature());
+  EXPECT_EQ(persisted_logs.staged_log_timestamp(),
+            result_persisted_logs.staged_log_timestamp());
 }
 
 // Store a set of logs over the length limit, but smaller than the min number of
@@ -122,11 +142,10 @@ TEST_F(PersistedLogsTest, LongButTinyLogList) {
   for (size_t i = 0; i < log_count; ++i)
     persisted_logs.StoreLog("x");
 
-  persisted_logs.SerializeLogs();
+  persisted_logs.PersistUnsentLogs();
 
   TestPersistedLogs result_persisted_logs(&prefs_, kLogByteLimit);
-  EXPECT_EQ(PersistedLogs::RECALL_SUCCESS,
-            result_persisted_logs.DeserializeLogs());
+  result_persisted_logs.LoadPersistedUnsentLogs();
   EXPECT_EQ(persisted_logs.size(), result_persisted_logs.size());
 
   result_persisted_logs.ExpectNextLog("x");
@@ -159,11 +178,10 @@ TEST_F(PersistedLogsTest, LongButSmallLogList) {
     persisted_logs.StoreLog(blank_log);
   }
   persisted_logs.StoreLog(last_kept);
-  persisted_logs.SerializeLogs();
+  persisted_logs.PersistUnsentLogs();
 
   TestPersistedLogs result_persisted_logs(&prefs_, kLogByteLimit);
-  EXPECT_EQ(PersistedLogs::RECALL_SUCCESS,
-            result_persisted_logs.DeserializeLogs());
+  result_persisted_logs.LoadPersistedUnsentLogs();
   EXPECT_EQ(persisted_logs.size() - 2, result_persisted_logs.size());
 
   result_persisted_logs.ExpectNextLog(last_kept);
@@ -185,11 +203,10 @@ TEST_F(PersistedLogsTest, ShortButLargeLogList) {
   for (size_t i = 0; i < log_count; ++i) {
     persisted_logs.StoreLog(log_data);
   }
-  persisted_logs.SerializeLogs();
+  persisted_logs.PersistUnsentLogs();
 
   TestPersistedLogs result_persisted_logs(&prefs_, kLogByteLimit);
-  EXPECT_EQ(PersistedLogs::RECALL_SUCCESS,
-            result_persisted_logs.DeserializeLogs());
+  result_persisted_logs.LoadPersistedUnsentLogs();
   EXPECT_EQ(persisted_logs.size(), result_persisted_logs.size());
 }
 
@@ -214,11 +231,10 @@ TEST_F(PersistedLogsTest, LongAndLargeLogList) {
       persisted_logs.StoreLog(log_data);
   }
 
-  persisted_logs.SerializeLogs();
+  persisted_logs.PersistUnsentLogs();
 
   TestPersistedLogs result_persisted_logs(&prefs_, kLogByteLimit);
-  EXPECT_EQ(PersistedLogs::RECALL_SUCCESS,
-            result_persisted_logs.DeserializeLogs());
+  result_persisted_logs.LoadPersistedUnsentLogs();
   EXPECT_EQ(kLogCountLimit, result_persisted_logs.size());
 
   while (result_persisted_logs.size() > 1) {
@@ -236,7 +252,7 @@ TEST_F(PersistedLogsTest, Staging) {
   persisted_logs.StoreLog("one");
   EXPECT_FALSE(persisted_logs.has_staged_log());
   persisted_logs.StoreLog("two");
-  persisted_logs.StageLog();
+  persisted_logs.StageNextLog();
   EXPECT_TRUE(persisted_logs.has_staged_log());
   EXPECT_EQ(persisted_logs.staged_log(), Compress("two"));
   persisted_logs.StoreLog("three");
@@ -245,10 +261,10 @@ TEST_F(PersistedLogsTest, Staging) {
   persisted_logs.DiscardStagedLog();
   EXPECT_FALSE(persisted_logs.has_staged_log());
   EXPECT_EQ(persisted_logs.size(), 2U);
-  persisted_logs.StageLog();
+  persisted_logs.StageNextLog();
   EXPECT_EQ(persisted_logs.staged_log(), Compress("three"));
   persisted_logs.DiscardStagedLog();
-  persisted_logs.StageLog();
+  persisted_logs.StageNextLog();
   EXPECT_EQ(persisted_logs.staged_log(), Compress("one"));
   persisted_logs.DiscardStagedLog();
   EXPECT_FALSE(persisted_logs.has_staged_log());
@@ -261,14 +277,13 @@ TEST_F(PersistedLogsTest, DiscardOrder) {
   TestPersistedLogs persisted_logs(&prefs_, kLogByteLimit);
 
   persisted_logs.StoreLog("one");
-  persisted_logs.StageLog();
+  persisted_logs.StageNextLog();
   persisted_logs.StoreLog("two");
   persisted_logs.DiscardStagedLog();
-  persisted_logs.SerializeLogs();
+  persisted_logs.PersistUnsentLogs();
 
   TestPersistedLogs result_persisted_logs(&prefs_, kLogByteLimit);
-  EXPECT_EQ(PersistedLogs::RECALL_SUCCESS,
-            result_persisted_logs.DeserializeLogs());
+  result_persisted_logs.LoadPersistedUnsentLogs();
   EXPECT_EQ(1U, result_persisted_logs.size());
   result_persisted_logs.ExpectNextLog("two");
 }
@@ -280,10 +295,54 @@ TEST_F(PersistedLogsTest, Hashes) {
 
   TestPersistedLogs persisted_logs(&prefs_, kLogByteLimit);
   persisted_logs.StoreLog(kFooText);
-  persisted_logs.StageLog();
+  persisted_logs.StageNextLog();
 
   EXPECT_EQ(Compress(kFooText), persisted_logs.staged_log());
   EXPECT_EQ(foo_hash, persisted_logs.staged_log_hash());
+}
+
+TEST_F(PersistedLogsTest, Signatures) {
+  const char kFooText[] = "foo";
+
+  TestPersistedLogs persisted_logs(&prefs_, kLogByteLimit);
+  persisted_logs.StoreLog(kFooText);
+  persisted_logs.StageNextLog();
+
+  EXPECT_EQ(Compress(kFooText), persisted_logs.staged_log());
+
+  // The expected signature as a base 64 encoded string. The value was obtained
+  // by running the test with an empty expected_signature_base64 and taking the
+  // actual value from the test failure message. Can be verifying by the
+  // following python code:
+  // import hmac, hashlib, base64
+  // key = ''
+  // print(base64.b64encode(
+  //   hmac.new(key, msg='foo', digestmod=hashlib.sha256).digest()).decode())
+  std::string expected_signature_base64 =
+      "DA2Y9+PZ1F5y6Id7wbEEMn77nAexjy/+ztdtgTB/H/8=";
+
+  std::string actual_signature_base64;
+  base::Base64Encode(persisted_logs.staged_log_signature(),
+                     &actual_signature_base64);
+  EXPECT_EQ(expected_signature_base64, actual_signature_base64);
+
+  // Test a different key results in a different signature.
+  std::string key = "secret key, don't tell anyone";
+  TestPersistedLogs persisted_logs_different_key(&prefs_, kLogByteLimit, key);
+
+  persisted_logs_different_key.StoreLog(kFooText);
+  persisted_logs_different_key.StageNextLog();
+
+  EXPECT_EQ(Compress(kFooText), persisted_logs_different_key.staged_log());
+
+  // Base 64 encoded signature obtained in similar fashion to previous
+  // signature. To use previous python code change:
+  // key = "secret key, don't tell anyone"
+  expected_signature_base64 = "DV7z8wdDrjLkQrCzrXR3UjWsR3/YVM97tIhMnhUvfXM=";
+  base::Base64Encode(persisted_logs_different_key.staged_log_signature(),
+                     &actual_signature_base64);
+
+  EXPECT_EQ(expected_signature_base64, actual_signature_base64);
 }
 
 }  // namespace metrics

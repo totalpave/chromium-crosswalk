@@ -13,7 +13,13 @@
 #include "base/command_line.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/task/task_scheduler/task_scheduler.h"
 #include "build/build_config.h"
+#include "mojo/core/embedder/scoped_ipc_support.h"
+#include "mojo/public/cpp/platform/named_platform_channel.h"
+#include "mojo/public/cpp/platform/platform_channel.h"
+#include "mojo/public/cpp/platform/platform_channel_endpoint.h"
+#include "mojo/public/cpp/system/invitation.h"
 #include "remoting/base/auto_thread.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/host/desktop_process.h"
@@ -28,11 +34,8 @@ namespace remoting {
 int DesktopProcessMain() {
   const base::CommandLine* command_line =
       base::CommandLine::ForCurrentProcess();
-  std::string channel_name =
-      command_line->GetSwitchValueASCII(kDaemonPipeSwitchName);
 
-  if (channel_name.empty())
-    return kInvalidCommandLineExitCode;
+  base::TaskScheduler::CreateAndStartWithDefaultParams("Me2Me");
 
   base::MessageLoopForUI message_loop;
   base::RunLoop run_loop;
@@ -49,23 +52,44 @@ int DesktopProcessMain() {
       AutoThread::CreateWithType(
           "Input thread", ui_task_runner, base::MessageLoop::TYPE_IO);
 
-  DesktopProcess desktop_process(ui_task_runner,
-                                 input_task_runner,
-                                 channel_name);
+  // Launch the I/O thread.
+  scoped_refptr<AutoThreadTaskRunner> io_task_runner =
+      AutoThread::CreateWithType("I/O thread", ui_task_runner,
+                                 base::MessageLoop::TYPE_IO);
+
+  mojo::core::ScopedIPCSupport ipc_support(
+      io_task_runner->task_runner(),
+      mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST);
+  mojo::PlatformChannelEndpoint endpoint =
+      mojo::PlatformChannel::RecoverPassedEndpointFromCommandLine(
+          *command_line);
+  if (!endpoint.is_valid())
+    endpoint = mojo::NamedPlatformChannel::ConnectToServer(*command_line);
+  if (!endpoint.is_valid())
+    return kInvalidCommandLineExitCode;
+
+  auto invitation = mojo::IncomingInvitation::Accept(std::move(endpoint));
+  mojo::ScopedMessagePipeHandle message_pipe = invitation.ExtractMessagePipe(
+      command_line->GetSwitchValueASCII(kMojoPipeToken));
+  DesktopProcess desktop_process(ui_task_runner, input_task_runner,
+                                 io_task_runner, std::move(message_pipe));
 
   // Create a platform-dependent environment factory.
   std::unique_ptr<DesktopEnvironmentFactory> desktop_environment_factory;
 #if defined(OS_WIN)
+  // base::Unretained() is safe here: |desktop_process| outlives run_loop.Run().
+  auto inject_sas_closure = base::Bind(&DesktopProcess::InjectSas,
+                                       base::Unretained(&desktop_process));
+  auto lock_workstation_closure = base::Bind(
+      &DesktopProcess::LockWorkstation, base::Unretained(&desktop_process));
+
   desktop_environment_factory.reset(new SessionDesktopEnvironmentFactory(
       ui_task_runner, video_capture_task_runner, input_task_runner,
-      ui_task_runner,
-      base::Bind(&DesktopProcess::InjectSas, desktop_process.AsWeakPtr()),
-      base::Bind(&DesktopProcess::LockWorkStation,
-                 desktop_process.AsWeakPtr())));
+      ui_task_runner, nullptr, inject_sas_closure, lock_workstation_closure));
 #else  // !defined(OS_WIN)
   desktop_environment_factory.reset(new Me2MeDesktopEnvironmentFactory(
       ui_task_runner, video_capture_task_runner, input_task_runner,
-      ui_task_runner));
+      ui_task_runner, nullptr));
 #endif  // !defined(OS_WIN)
 
   if (!desktop_process.Start(std::move(desktop_environment_factory)))

@@ -21,6 +21,10 @@ class MenuHost;
 class MenuItemView;
 class MenuScrollViewContainer;
 
+namespace test {
+class MenuControllerTest;
+}  // test
+
 // SubmenuView is the parent of all menu items.
 //
 // SubmenuView has the following responsibilities:
@@ -36,7 +40,8 @@ class MenuScrollViewContainer;
 // MenuScrollViewContainer handles showing as much of the SubmenuView as the
 // screen allows. If the SubmenuView is taller than the screen, scroll buttons
 // are provided that allow the user to see all the menu items.
-class VIEWS_EXPORT SubmenuView : public PrefixDelegate,
+class VIEWS_EXPORT SubmenuView : public View,
+                                 public PrefixDelegate,
                                  public ScrollDelegate {
  public:
   // The submenu's class name.
@@ -46,9 +51,15 @@ class VIEWS_EXPORT SubmenuView : public PrefixDelegate,
   explicit SubmenuView(MenuItemView* parent);
   ~SubmenuView() override;
 
+  // Returns true if the submenu has at least one empty menu item.
+  bool HasEmptyMenuItemView();
+
+  // Returns true if the submenu has at least one visible child item.
+  bool HasVisibleChildren();
+
   // Returns the number of child views that are MenuItemViews.
   // MenuItemViews are identified by ID.
-  int GetMenuItemCount();
+  int GetMenuItemCount() const;
 
   // Returns the MenuItemView at the specified index.
   MenuItemView* GetMenuItemAt(int index);
@@ -58,18 +69,17 @@ class VIEWS_EXPORT SubmenuView : public PrefixDelegate,
   // Positions and sizes the child views. This tiles the views vertically,
   // giving each child the available width.
   void Layout() override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
 
   // Override from View.
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
 
   // Painting.
-  void PaintChildren(const ui::PaintContext& context) override;
+  void PaintChildren(const PaintInfo& paint_info) override;
 
   // Drag and drop methods. These are forwarded to the MenuController.
-  bool GetDropFormats(
-      int* formats,
-      std::set<ui::Clipboard::FormatType>* format_types) override;
+  bool GetDropFormats(int* formats,
+                      std::set<ui::ClipboardFormatType>* format_types) override;
   bool AreDropTypesRequired() override;
   bool CanDrop(const OSExchangeData& data) override;
   void OnDragEntered(const ui::DropTargetEvent& event) override;
@@ -136,6 +146,9 @@ class VIEWS_EXPORT SubmenuView : public PrefixDelegate,
   // Returns the container for the SubmenuView.
   MenuScrollViewContainer* GetScrollViewContainer();
 
+  // Returns the last MenuItemView in this submenu.
+  MenuItemView* GetLastItem();
+
   // Invoked if the menu is prematurely destroyed. This can happen if the window
   // closes while the menu is shown. If invoked the SubmenuView must drop all
   // references to the MenuHost as the MenuHost is about to be deleted.
@@ -168,6 +181,8 @@ class VIEWS_EXPORT SubmenuView : public PrefixDelegate,
   void ChildPreferredSizeChanged(View* child) override;
 
  private:
+  friend class test::MenuControllerTest;
+
   void SchedulePaintForDropIndicator(MenuItemView* item,
                                      MenuDelegate::DropPosition position);
 

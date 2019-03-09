@@ -5,14 +5,12 @@
 #include "remoting/protocol/clipboard_thread_proxy.h"
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "remoting/proto/event.pb.h"
 
 namespace remoting {
 namespace protocol {
 
-ClipboardThreadProxy::~ClipboardThreadProxy() {
-}
+ClipboardThreadProxy::~ClipboardThreadProxy() = default;
 
 ClipboardThreadProxy::ClipboardThreadProxy(
     const base::WeakPtr<ClipboardStub>& clipboard_stub,
@@ -22,10 +20,10 @@ ClipboardThreadProxy::ClipboardThreadProxy(
 }
 
 void ClipboardThreadProxy::InjectClipboardEvent(const ClipboardEvent& event) {
-  clipboard_stub_task_runner_->PostTask(FROM_HERE, base::Bind(
-      &ClipboardThreadProxy::InjectClipboardEventStatic,
-      clipboard_stub_,
-      event));
+  clipboard_stub_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ClipboardThreadProxy::InjectClipboardEventStatic,
+                     clipboard_stub_, event));
 }
 
 void ClipboardThreadProxy::InjectClipboardEventStatic(

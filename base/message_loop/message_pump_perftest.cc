@@ -6,9 +6,10 @@
 #include <stdint.h>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/format_macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/memory/scoped_vector.h"
+#include "base/message_loop/message_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/condition_variable.h"
@@ -48,7 +49,7 @@ class ScheduleWorkTest : public testing::Test {
     uint64_t schedule_calls = 0u;
     do {
       for (size_t i = 0; i < kBatchSize; ++i) {
-        target_message_loop()->ScheduleWork();
+        target_message_loop_base()->GetMessagePump()->ScheduleWork();
         schedule_calls++;
       }
       now = base::TimeTicks::Now();
@@ -64,9 +65,9 @@ class ScheduleWorkTest : public testing::Test {
           base::ThreadTicks::Now() - thread_start;
     min_batch_times_[index] = minimum;
     max_batch_times_[index] = maximum;
-    target_message_loop()->task_runner()->PostTask(
-        FROM_HERE, base::Bind(&ScheduleWorkTest::Increment,
-                              base::Unretained(this), schedule_calls));
+    target_message_loop_base()->GetTaskRunner()->PostTask(
+        FROM_HERE, base::BindOnce(&ScheduleWorkTest::Increment,
+                                  base::Unretained(this), schedule_calls));
   }
 
   void ScheduleWork(MessageLoop::Type target_type, int num_scheduling_threads) {
@@ -77,8 +78,16 @@ class ScheduleWorkTest : public testing::Test {
     } else
 #endif
     {
-      target_.reset(new Thread("target"));
-      target_->StartWithOptions(Thread::Options(target_type, 0u));
+      target_.reset(new Thread("test"));
+
+      Thread::Options options(target_type, 0u);
+
+      std::unique_ptr<MessageLoop> message_loop =
+          MessageLoop::CreateUnbound(target_type);
+      message_loop_ = message_loop.get();
+      options.task_environment =
+          new internal::MessageLoopTaskEnvironment(std::move(message_loop));
+      target_->StartWithOptions(options);
 
       // Without this, it's possible for the scheduling threads to start and run
       // before the target thread. In this case, the scheduling threads will
@@ -95,15 +104,14 @@ class ScheduleWorkTest : public testing::Test {
     max_batch_times_.reset(new base::TimeDelta[num_scheduling_threads]);
 
     for (int i = 0; i < num_scheduling_threads; ++i) {
-      scheduling_threads.push_back(
-          WrapUnique(new Thread("posting thread")));
+      scheduling_threads.push_back(std::make_unique<Thread>("posting thread"));
       scheduling_threads[i]->Start();
     }
 
     for (int i = 0; i < num_scheduling_threads; ++i) {
-      scheduling_threads[i]->message_loop()->task_runner()->PostTask(
-          FROM_HERE,
-          base::Bind(&ScheduleWorkTest::Schedule, base::Unretained(this), i));
+      scheduling_threads[i]->task_runner()->PostTask(
+          FROM_HERE, base::BindOnce(&ScheduleWorkTest::Schedule,
+                                    base::Unretained(this), i));
     }
 
     for (int i = 0; i < num_scheduling_threads; ++i) {
@@ -167,16 +175,17 @@ class ScheduleWorkTest : public testing::Test {
     }
   }
 
-  MessageLoop* target_message_loop() {
+  MessageLoopBase* target_message_loop_base() {
 #if defined(OS_ANDROID)
     if (java_thread_)
-      return java_thread_->message_loop();
+      return java_thread_->message_loop()->GetMessageLoopBase();
 #endif
-    return target_->message_loop();
+    return message_loop_->GetMessageLoopBase();
   }
 
  private:
   std::unique_ptr<Thread> target_;
+  MessageLoop* message_loop_;
 #if defined(OS_ANDROID)
   std::unique_ptr<android::JavaHandlerThread> java_thread_;
 #endif
@@ -239,67 +248,5 @@ TEST_F(ScheduleWorkTest, ThreadTimeToJavaFromFourThreads) {
   ScheduleWork(MessageLoop::TYPE_JAVA, 4);
 }
 #endif
-
-class FakeMessagePump : public MessagePump {
- public:
-  FakeMessagePump() {}
-  ~FakeMessagePump() override {}
-
-  void Run(Delegate* delegate) override {}
-
-  void Quit() override {}
-  void ScheduleWork() override {}
-  void ScheduleDelayedWork(const TimeTicks& delayed_work_time) override {}
-};
-
-class PostTaskTest : public testing::Test {
- public:
-  void Run(int batch_size, int tasks_per_reload) {
-    base::TimeTicks start = base::TimeTicks::Now();
-    base::TimeTicks now;
-    MessageLoop loop(std::unique_ptr<MessagePump>(new FakeMessagePump));
-    scoped_refptr<internal::IncomingTaskQueue> queue(
-        new internal::IncomingTaskQueue(&loop));
-    uint32_t num_posted = 0;
-    do {
-      for (int i = 0; i < batch_size; ++i) {
-        for (int j = 0; j < tasks_per_reload; ++j) {
-          queue->AddToIncomingQueue(
-              FROM_HERE, base::Bind(&DoNothing), base::TimeDelta(), false);
-          num_posted++;
-        }
-        TaskQueue loop_local_queue;
-        queue->ReloadWorkQueue(&loop_local_queue);
-        while (!loop_local_queue.empty()) {
-          PendingTask t = loop_local_queue.front();
-          loop_local_queue.pop();
-          loop.RunTask(t);
-        }
-      }
-
-      now = base::TimeTicks::Now();
-    } while (now - start < base::TimeDelta::FromSeconds(5));
-    std::string trace = StringPrintf("%d_tasks_per_reload", tasks_per_reload);
-    perf_test::PrintResult(
-        "task",
-        "",
-        trace,
-        (now - start).InMicroseconds() / static_cast<double>(num_posted),
-        "us/task",
-        true);
-  }
-};
-
-TEST_F(PostTaskTest, OneTaskPerReload) {
-  Run(10000, 1);
-}
-
-TEST_F(PostTaskTest, TenTasksPerReload) {
-  Run(10000, 10);
-}
-
-TEST_F(PostTaskTest, OneHundredTasksPerReload) {
-  Run(1000, 100);
-}
 
 }  // namespace base

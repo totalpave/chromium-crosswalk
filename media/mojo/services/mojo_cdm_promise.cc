@@ -10,31 +10,31 @@
 
 #include "base/bind.h"
 #include "base/logging.h"
+#include "media/base/content_decryption_module.h"
 #include "media/base/decryptor.h"
-#include "media/base/media_keys.h"
 
 namespace media {
 
 static mojom::CdmPromiseResultPtr GetRejectResult(
-    MediaKeys::Exception exception,
+    CdmPromise::Exception exception,
     uint32_t system_code,
     const std::string& error_message) {
   mojom::CdmPromiseResultPtr cdm_promise_result(mojom::CdmPromiseResult::New());
   cdm_promise_result->success = false;
-  cdm_promise_result->exception = static_cast<mojom::CdmException>(exception);
+  cdm_promise_result->exception = exception;
   cdm_promise_result->system_code = system_code;
   cdm_promise_result->error_message = error_message;
   return cdm_promise_result;
 }
 
-template <typename... T>
-MojoCdmPromise<T...>::MojoCdmPromise(const CallbackType& callback)
-    : callback_(callback) {
+template <typename F, typename... T>
+MojoCdmPromise<F, T...>::MojoCdmPromise(CallbackType callback)
+    : callback_(std::move(callback)) {
   DCHECK(!callback_.is_null());
 }
 
-template <typename... T>
-MojoCdmPromise<T...>::~MojoCdmPromise() {
+template <typename F, typename... T>
+MojoCdmPromise<F, T...>::~MojoCdmPromise() {
   if (IsPromiseSettled())
     return;
 
@@ -42,29 +42,29 @@ MojoCdmPromise<T...>::~MojoCdmPromise() {
   RejectPromiseOnDestruction();
 }
 
-template <typename... T>
-void MojoCdmPromise<T...>::resolve(const T&... result) {
+template <typename F, typename... T>
+void MojoCdmPromise<F, T...>::resolve(const T&... result) {
   MarkPromiseSettled();
   mojom::CdmPromiseResultPtr cdm_promise_result(mojom::CdmPromiseResult::New());
   cdm_promise_result->success = true;
-  callback_.Run(
-      std::move(cdm_promise_result),
-      mojo::TypeConverter<typename MojoTypeTrait<T>::MojoType, T>::Convert(
-          result)...);
-  callback_.Reset();
+  std::move(callback_).Run(std::move(cdm_promise_result), result...);
 }
 
-template <typename... T>
-void MojoCdmPromise<T...>::reject(MediaKeys::Exception exception,
-                                  uint32_t system_code,
-                                  const std::string& error_message) {
+template <typename F, typename... T>
+void MojoCdmPromise<F, T...>::reject(CdmPromise::Exception exception,
+                                     uint32_t system_code,
+                                     const std::string& error_message) {
   MarkPromiseSettled();
-  callback_.Run(GetRejectResult(exception, system_code, error_message),
-                MojoTypeTrait<T>::DefaultValue()...);
-  callback_.Reset();
+  std::move(callback_).Run(
+      GetRejectResult(exception, system_code, error_message), T()...);
 }
 
-template class MojoCdmPromise<>;
-template class MojoCdmPromise<std::string>;
+template class MojoCdmPromise<void(mojom::CdmPromiseResultPtr)>;
+template class MojoCdmPromise<void(mojom::CdmPromiseResultPtr,
+                                   CdmKeyInformation::KeyStatus),
+                              CdmKeyInformation::KeyStatus>;
+template class MojoCdmPromise<void(mojom::CdmPromiseResultPtr,
+                                   const std::string&),
+                              std::string>;
 
 }  // namespace media

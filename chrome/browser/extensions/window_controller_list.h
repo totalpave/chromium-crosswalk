@@ -13,7 +13,6 @@
 #include "base/observer_list.h"
 #include "chrome/browser/extensions/window_controller.h"
 
-class Profile;
 class UIThreadExtensionFunction;
 
 namespace extensions {
@@ -33,14 +32,6 @@ class WindowControllerList {
 
   void AddObserver(WindowControllerListObserver* observer);
   void RemoveObserver(WindowControllerListObserver* observer);
-
-  // Returns a window matching |id|.
-  WindowController* FindWindowById(int id) const;
-
-  // Returns a window matching |id| using |filter|.
-  WindowController* FindWindowByIdWithFilter(
-      int id,
-      WindowController::TypeFilter filter) const;
 
   // Returns a window matching the context the function was invoked in
   // using |filter|.
@@ -70,7 +61,7 @@ class WindowControllerList {
   // Entries are not owned by this class and must be removed when destroyed.
   ControllerList windows_;
 
-  base::ObserverList<WindowControllerListObserver> observers_;
+  base::ObserverList<WindowControllerListObserver>::Unchecked observers_;
 
   DISALLOW_COPY_AND_ASSIGN(WindowControllerList);
 };

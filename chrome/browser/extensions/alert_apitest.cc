@@ -4,13 +4,13 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/app_modal/app_modal_dialog.h"
 #include "components/app_modal/app_modal_dialog_queue.h"
 #include "components/app_modal/javascript_app_modal_dialog.h"
 #include "components/app_modal/native_app_modal_dialog.h"
@@ -20,16 +20,16 @@
 #include "extensions/browser/process_manager.h"
 #include "extensions/common/extension.h"
 
+namespace extensions {
+
 namespace {
 
 void GetNextDialog(app_modal::NativeAppModalDialog** native_dialog) {
   DCHECK(native_dialog);
   *native_dialog = nullptr;
-  app_modal::AppModalDialog* dialog = ui_test_utils::WaitForAppModalDialog();
-  ASSERT_TRUE(dialog->IsJavaScriptModalDialog());
-  app_modal::JavaScriptAppModalDialog* js_dialog =
-      static_cast<app_modal::JavaScriptAppModalDialog*>(dialog);
-  *native_dialog = js_dialog->native_dialog();
+  app_modal::JavaScriptAppModalDialog* dialog =
+      ui_test_utils::WaitForAppModalDialog();
+  *native_dialog = dialog->native_dialog();
   ASSERT_TRUE(*native_dialog);
 }
 
@@ -55,7 +55,7 @@ void CheckAlertResult(const std::string& dialog_name,
                       size_t* call_count,
                       const base::Value* value) {
   ASSERT_TRUE(value) << dialog_name;
-  ASSERT_TRUE(value->IsType(base::Value::TYPE_NULL));
+  ASSERT_TRUE(value->is_none());
   ++*call_count;
 }
 
@@ -75,10 +75,9 @@ void CheckConfirmResult(const std::string& dialog_name,
 IN_PROC_BROWSER_TEST_F(ExtensionApiTest, AlertBasic) {
   ASSERT_TRUE(RunExtensionTest("alert")) << message_;
 
-  const extensions::Extension* extension = GetSingleLoadedExtension();
-  extensions::ExtensionHost* host =
-      extensions::ProcessManager::Get(browser()->profile())
-          ->GetBackgroundHostForExtension(extension->id());
+  const Extension* extension = GetSingleLoadedExtension();
+  ExtensionHost* host = ProcessManager::Get(browser()->profile())
+                            ->GetBackgroundHostForExtension(extension->id());
   ASSERT_TRUE(host);
   host->host_contents()->GetMainFrame()->ExecuteJavaScriptForTests(
       base::ASCIIToUTF16("alert('This should not crash.');"));
@@ -89,17 +88,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, AlertBasic) {
 IN_PROC_BROWSER_TEST_F(ExtensionApiTest, AlertQueue) {
   ASSERT_TRUE(RunExtensionTest("alert")) << message_;
 
-  const extensions::Extension* extension = GetSingleLoadedExtension();
-  extensions::ExtensionHost* host =
-      extensions::ProcessManager::Get(browser()->profile())
-          ->GetBackgroundHostForExtension(extension->id());
+  const Extension* extension = GetSingleLoadedExtension();
+  ExtensionHost* host = ProcessManager::Get(browser()->profile())
+                            ->GetBackgroundHostForExtension(extension->id());
   ASSERT_TRUE(host);
 
   // Creates several dialogs at the same time.
   const size_t num_dialogs = 3;
   size_t call_count = 0;
   for (size_t i = 0; i != num_dialogs; ++i) {
-    const std::string dialog_name = "Dialog #" + base::SizeTToString(i) + ".";
+    const std::string dialog_name = "Dialog #" + base::NumberToString(i) + ".";
     host->host_contents()->GetMainFrame()->ExecuteJavaScriptForTests(
         base::ASCIIToUTF16("alert('" + dialog_name + "');"),
         base::Bind(&CheckAlertResult, dialog_name,
@@ -124,10 +122,9 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, AlertQueue) {
 IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ConfirmQueue) {
   ASSERT_TRUE(RunExtensionTest("alert")) << message_;
 
-  const extensions::Extension* extension = GetSingleLoadedExtension();
-  extensions::ExtensionHost* host =
-      extensions::ProcessManager::Get(browser()->profile())
-          ->GetBackgroundHostForExtension(extension->id());
+  const Extension* extension = GetSingleLoadedExtension();
+  ExtensionHost* host = ProcessManager::Get(browser()->profile())
+                            ->GetBackgroundHostForExtension(extension->id());
   ASSERT_TRUE(host);
 
   // Creates several dialogs at the same time.
@@ -136,7 +133,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ConfirmQueue) {
   size_t call_count = 0;
   for (size_t i = 0; i != num_accepted_dialogs; ++i) {
     const std::string dialog_name =
-        "Accepted dialog #" + base::SizeTToString(i) + ".";
+        "Accepted dialog #" + base::NumberToString(i) + ".";
     host->host_contents()->GetMainFrame()->ExecuteJavaScriptForTests(
         base::ASCIIToUTF16("confirm('" + dialog_name + "');"),
         base::Bind(&CheckConfirmResult, dialog_name, true,
@@ -144,7 +141,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ConfirmQueue) {
   }
   for (size_t i = 0; i != num_cancelled_dialogs; ++i) {
     const std::string dialog_name =
-        "Cancelled dialog #" + base::SizeTToString(i) + ".";
+        "Cancelled dialog #" + base::NumberToString(i) + ".";
     host->host_contents()->GetMainFrame()->ExecuteJavaScriptForTests(
         base::ASCIIToUTF16("confirm('" + dialog_name + "');"),
         base::Bind(&CheckConfirmResult, dialog_name, false,
@@ -166,3 +163,5 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ConfirmQueue) {
   while (call_count < num_accepted_dialogs + num_cancelled_dialogs)
     ASSERT_NO_FATAL_FAILURE(content::RunAllPendingInMessageLoop());
 }
+
+}  // namespace extensions

@@ -20,9 +20,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'common'))
 from diff_util import PromptUserToAcceptDiff
 import path_util
 
-import print_style
+import histogram_paths
+import histograms_print_style
 
-HISTOGRAMS_PATH = path_util.GetHistogramsFile()
+ENUMS_PATH = histogram_paths.ENUMS_XML
 POLICY_TEMPLATES_PATH = 'components/policy/resources/policy_templates.json'
 ENUM_NAME = 'EnterprisePolicies'
 
@@ -33,40 +34,6 @@ class UserError(Exception):
   @property
   def message(self):
     return self.args[0]
-
-
-def FlattenPolicies(policy_definitions, policy_list):
-  """Appends a list of policies defined in |policy_definitions| to
-  |policy_list|, flattening subgroups.
-
-  Args:
-    policy_definitions: A list of policy definitions and groups, as in
-                        policy_templates.json file.
-    policy_list: A list that has policy definitions appended to it.
-  """
-  for policy in policy_definitions:
-    if policy['type'] == 'group':
-      FlattenPolicies(policy['policies'], policy_list)
-    else:
-      policy_list.append(policy)
-
-
-def ParsePlaceholders(text):
-  """Parse placeholders in |text|, making it more human-readable. The format of
-  |text| is exactly the same as in captions in policy_templates.json: it can
-  contain XML tags (ph, ex) and $1-like substitutions. Note that this function
-  does only a very simple parsing that is not fully correct, but should be
-  enough for all practical situations.
-
-  Args:
-    text: A string containing placeholders.
-
-  Returns:
-    |text| with placeholders removed or replaced by readable text.
-  """
-  text = re.sub(r'\$\d+', '', text)    # Remove $1-like substitutions.
-  text = re.sub(r'<[^>]+>', '', text)  # Remove XML tags.
-  return text
 
 
 def UpdateHistogramDefinitions(policy_templates, doc):
@@ -97,13 +64,13 @@ def UpdateHistogramDefinitions(policy_templates, doc):
   policy_enum_node.appendChild(doc.createComment(comment))
 
   # Add values generated from policy templates.
-  ordered_policies = []
-  FlattenPolicies(policy_templates['policy_definitions'], ordered_policies)
+  ordered_policies = [x for x in policy_templates['policy_definitions']
+                      if x['type'] != 'group']
   ordered_policies.sort(key=lambda policy: policy['id'])
   for policy in ordered_policies:
     node = doc.createElement('int')
     node.attributes['value'] = str(policy['id'])
-    node.attributes['label'] = ParsePlaceholders(policy['caption'])
+    node.attributes['label'] = policy['name']
     policy_enum_node.appendChild(node)
 
 
@@ -115,15 +82,16 @@ def main():
 
   with open(path_util.GetInputFile(POLICY_TEMPLATES_PATH), 'rb') as f:
     policy_templates = literal_eval(f.read())
-  with open(HISTOGRAMS_PATH, 'rb') as f:
+  with open(ENUMS_PATH, 'rb') as f:
     histograms_doc = minidom.parse(f)
     f.seek(0)
     xml = f.read()
 
   UpdateHistogramDefinitions(policy_templates, histograms_doc)
-  new_xml = print_style.GetPrintStyle().PrettyPrintNode(histograms_doc)
+  new_xml = histograms_print_style.GetPrintStyle().PrettyPrintNode(
+      histograms_doc)
   if PromptUserToAcceptDiff(xml, new_xml, 'Is the updated version acceptable?'):
-    with open(HISTOGRAMS_PATH, 'wb') as f:
+    with open(ENUMS_PATH, 'wb') as f:
       f.write(new_xml)
 
 

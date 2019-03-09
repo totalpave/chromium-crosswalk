@@ -4,6 +4,8 @@
 
 #include "ui/views/views_delegate.h"
 
+#include <utility>
+
 #include "base/command_line.h"
 #include "build/build_config.h"
 #include "ui/views/views_touch_selection_controller_factory.h"
@@ -14,10 +16,25 @@
 #endif
 
 namespace views {
+
 namespace {
 
 ViewsDelegate* views_delegate = nullptr;
 
+}  // namespace
+
+ViewsDelegate::ViewsDelegate()
+    : editing_controller_factory_(new ViewsTouchEditingControllerFactory) {
+  DCHECK(!views_delegate);
+  views_delegate = this;
+
+  ui::TouchEditingControllerFactory::SetInstance(
+      editing_controller_factory_.get());
+
+#if defined(USE_AURA)
+  touch_selection_menu_runner_ =
+      std::make_unique<TouchSelectionMenuRunnerViews>();
+#endif
 }
 
 ViewsDelegate::~ViewsDelegate() {
@@ -34,8 +51,7 @@ ViewsDelegate* ViewsDelegate::GetInstance() {
 void ViewsDelegate::SaveWindowPlacement(const Widget* widget,
                                         const std::string& window_name,
                                         const gfx::Rect& bounds,
-                                        ui::WindowShowState show_state) {
-}
+                                        ui::WindowShowState show_state) {}
 
 bool ViewsDelegate::GetSavedWindowPlacement(
     const Widget* widget,
@@ -45,16 +61,11 @@ bool ViewsDelegate::GetSavedWindowPlacement(
   return false;
 }
 
-void ViewsDelegate::NotifyAccessibilityEvent(View* view,
-                                             ui::AXEvent event_type) {
-}
-
 void ViewsDelegate::NotifyMenuItemFocused(const base::string16& menu_name,
                                           const base::string16& menu_item_name,
                                           int item_index,
                                           int item_count,
-                                          bool has_submenu) {
-}
+                                          bool has_submenu) {}
 
 ViewsDelegate::ProcessMenuAcceleratorResult
 ViewsDelegate::ProcessAcceleratorWhileMenuShowing(
@@ -64,6 +75,10 @@ ViewsDelegate::ProcessAcceleratorWhileMenuShowing(
 
 #if defined(OS_WIN)
 HICON ViewsDelegate::GetDefaultWindowIcon() const {
+  return nullptr;
+}
+
+HICON ViewsDelegate::GetSmallWindowIcon() const {
   return nullptr;
 }
 
@@ -81,27 +96,23 @@ NonClientFrameView* ViewsDelegate::CreateDefaultNonClientFrameView(
   return nullptr;
 }
 
-void ViewsDelegate::AddRef() {
-}
+void ViewsDelegate::AddRef() {}
 
-void ViewsDelegate::ReleaseRef() {
-}
+void ViewsDelegate::ReleaseRef() {}
 
-content::WebContents* ViewsDelegate::CreateWebContents(
-    content::BrowserContext* browser_context,
-    content::SiteInstance* site_instance) {
-  return nullptr;
-}
-
-base::TimeDelta ViewsDelegate::GetDefaultTextfieldObscuredRevealDuration() {
-  return base::TimeDelta();
-}
+void ViewsDelegate::OnBeforeWidgetInit(
+    Widget::InitParams* params,
+    internal::NativeWidgetDelegate* delegate) {}
 
 bool ViewsDelegate::WindowManagerProvidesTitleBar(bool maximized) {
   return false;
 }
 
 ui::ContextFactory* ViewsDelegate::GetContextFactory() {
+  return nullptr;
+}
+
+ui::ContextFactoryPrivate* ViewsDelegate::GetContextFactoryPrivate() {
   return nullptr;
 }
 
@@ -117,20 +128,11 @@ int ViewsDelegate::GetAppbarAutohideEdges(HMONITOR monitor,
 }
 #endif
 
-scoped_refptr<base::TaskRunner> ViewsDelegate::GetBlockingPoolTaskRunner() {
-  return nullptr;
-}
-
-ViewsDelegate::ViewsDelegate()
-    : views_tsc_factory_(new ViewsTouchEditingControllerFactory) {
-  DCHECK(!views_delegate);
-  views_delegate = this;
-
-  ui::TouchEditingControllerFactory::SetInstance(views_tsc_factory_.get());
-
 #if defined(USE_AURA)
-  touch_selection_menu_runner_.reset(new TouchSelectionMenuRunnerViews());
-#endif
+void ViewsDelegate::SetTouchSelectionMenuRunner(
+    std::unique_ptr<TouchSelectionMenuRunnerViews> menu_runner) {
+  touch_selection_menu_runner_ = std::move(menu_runner);
 }
+#endif
 
 }  // namespace views

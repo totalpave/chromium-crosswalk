@@ -9,17 +9,19 @@
 #include "base/callback_helpers.h"
 #include "chrome/browser/extensions/api/input_ime/input_ime_api_nonchromeos.h"
 #include "chrome/browser/platform_util.h"
+#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/chrome_typography.h"
+#include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/toolbar/app_menu_button.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/toolbar/browser_actions_container.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "extensions/common/feature_switch.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/views/controls/button/checkbox.h"
-#include "ui/views/layout/layout_constants.h"
 
 using extensions::Extension;
 
@@ -28,9 +30,8 @@ namespace {
 // The column width of the warning bubble.
 const int kColumnWidth = 285;
 
-views::Label* CreateLabel(const base::string16& text,
-                          const gfx::FontList& font) {
-  views::Label* label = new views::Label(text, font);
+views::Label* CreateExtensionNameLabel(const base::string16& text) {
+  views::Label* label = new views::Label(text, CONTEXT_BODY_TEXT_SMALL);
   label->SetMultiLine(true);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   return label;
@@ -67,10 +68,6 @@ bool ImeWarningBubbleView::Cancel() {
   return true;
 }
 
-bool ImeWarningBubbleView::ShouldDefaultButtonBeBlue() const {
-  return true;
-}
-
 void ImeWarningBubbleView::OnToolbarActionsBarAnimationEnded() {
   if (!bubble_has_shown_) {
     views::BubbleDialogDelegateView::CreateBubble(this)->Show();
@@ -95,13 +92,13 @@ ImeWarningBubbleView::ImeWarningBubbleView(
     : extension_(extension),
       browser_view_(browser_view),
       browser_(browser_view->browser()),
-      anchor_to_browser_action_(false),
+      anchor_to_action_(false),
       never_show_checkbox_(nullptr),
       response_callback_(callback),
       bubble_has_shown_(false),
       toolbar_actions_bar_observer_(this),
       weak_ptr_factory_(this) {
-  container_ = browser_view_->GetToolbarView()->browser_actions();
+  container_ = browser_view_->toolbar()->browser_actions();
   toolbar_actions_bar_ = container_->toolbar_actions_bar();
   BrowserList::AddObserver(this);
 
@@ -119,6 +116,7 @@ ImeWarningBubbleView::ImeWarningBubbleView(
   }
   views::BubbleDialogDelegateView::CreateBubble(this)->Show();
   bubble_has_shown_ = true;
+  chrome::RecordDialogCreation(chrome::DialogIdentifier::IME_WARNING);
 }
 
 ImeWarningBubbleView::~ImeWarningBubbleView() {
@@ -133,19 +131,20 @@ ImeWarningBubbleView::~ImeWarningBubbleView() {
 void ImeWarningBubbleView::InitAnchorView() {
   views::View* reference_view = nullptr;
 
-  anchor_to_browser_action_ =
+  anchor_to_action_ =
       extensions::ActionInfo::GetBrowserActionInfo(extension_) ||
-      extensions::FeatureSwitch::extension_action_redesign()->IsEnabled();
-  if (anchor_to_browser_action_) {
+      extensions::ActionInfo::GetPageActionInfo(extension_);
+  if (anchor_to_action_) {
     // Anchors the bubble to the browser action of the extension.
     reference_view = container_->GetViewForId(extension_->id());
   }
   if (!reference_view || !reference_view->visible()) {
     // Anchors the bubble to the app menu.
-    reference_view = browser_view_->GetToolbarView()->app_menu_button();
+    reference_view =
+        browser_view_->toolbar_button_provider()->GetAppMenuButton();
   }
   SetAnchorView(reference_view);
-  set_arrow(views::BubbleBorder::TOP_RIGHT);
+  SetArrow(views::BubbleBorder::TOP_RIGHT);
 }
 
 void ImeWarningBubbleView::InitLayout() {
@@ -162,34 +161,35 @@ void ImeWarningBubbleView::InitLayout() {
   // -----------------------------------------
   //
 
-  views::GridLayout* layout = new views::GridLayout(this);
-  SetLayoutManager(layout);
+  views::GridLayout* layout =
+      SetLayoutManager(std::make_unique<views::GridLayout>(this));
 
   int cs_id = 0;
 
   views::ColumnSet* main_cs = layout->AddColumnSet(cs_id);
   // The first row which shows the warning info.
-  main_cs->AddColumn(views::GridLayout::LEADING, views::GridLayout::LEADING, 0,
-                     views::GridLayout::FIXED, kColumnWidth, 0);
+  main_cs->AddColumn(views::GridLayout::LEADING, views::GridLayout::LEADING,
+                     views::GridLayout::kFixedSize, views::GridLayout::FIXED,
+                     kColumnWidth, 0);
 
-  ResourceBundle& rb = ResourceBundle::GetSharedInstance();
-  layout->StartRow(0, cs_id);
+  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
+  const int vertical_spacing =
+      provider->GetDistanceMetric(views::DISTANCE_RELATED_CONTROL_VERTICAL);
+  layout->StartRow(views::GridLayout::kFixedSize, cs_id);
   base::string16 extension_name = base::UTF8ToUTF16(extension_->name());
   base::i18n::AdjustStringForLocaleDirection(&extension_name);
-  views::Label* warning = CreateLabel(
-      l10n_util::GetStringFUTF16(IDS_IME_API_ACTIVATED_WARNING, extension_name),
-      rb.GetFontList(ResourceBundle::BaseFont));
+  views::Label* warning = CreateExtensionNameLabel(l10n_util::GetStringFUTF16(
+      IDS_IME_API_ACTIVATED_WARNING, extension_name));
   layout->AddView(warning);
-  layout->AddPaddingRow(0, views::kRelatedControlVerticalSpacing);
+  layout->AddPaddingRow(views::GridLayout::kFixedSize, vertical_spacing);
 
   // The seconde row which shows the check box.
-  layout->StartRow(0, cs_id);
+  layout->StartRow(views::GridLayout::kFixedSize, cs_id);
   never_show_checkbox_ =
       new views::Checkbox(l10n_util::GetStringUTF16(IDS_IME_API_NEVER_SHOW));
   layout->AddView(never_show_checkbox_);
-  layout->AddPaddingRow(0, views::kRelatedControlVerticalSpacing);
 }
 
 bool ImeWarningBubbleView::IsToolbarAnimating() {
-  return anchor_to_browser_action_ && container_->animating();
+  return anchor_to_action_ && container_->animating();
 }

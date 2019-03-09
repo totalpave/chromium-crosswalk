@@ -31,12 +31,12 @@ function DimmableUIController(container) {
   this.isCursorInTools_ = false;
 
   /**
-   * @private {Gallery.Mode|undefined}
+   * @private {GalleryMode|undefined}
    */
   this.mode_ = undefined;
 
   /**
-   * @private {Gallery.SubMode|undefined}
+   * @private {GallerySubMode|undefined}
    */
   this.subMode_ = undefined;
 
@@ -98,8 +98,8 @@ DimmableUIController.MIN_OPERATION_INTERVAL = 500; // ms
 
 /**
  * Returns true if this controller should be disabled.
- * @param {Gallery.Mode|undefined} mode
- * @param {Gallery.SubMode|undefined} subMode
+ * @param {GalleryMode|undefined} mode
+ * @param {GallerySubMode|undefined} subMode
  * @param {boolean} loading
  * @param {boolean} spokenFeedbackEnabled
  * @param {boolean} renaming
@@ -107,23 +107,22 @@ DimmableUIController.MIN_OPERATION_INTERVAL = 500; // ms
  */
 DimmableUIController.shouldBeDisabled = function(
     mode, subMode, loading, spokenFeedbackEnabled, renaming) {
-  return spokenFeedbackEnabled ||
-      mode === undefined ||
-      subMode === undefined ||
-      mode === Gallery.Mode.THUMBNAIL ||
-      (mode === Gallery.Mode.SLIDE && subMode === Gallery.SubMode.EDIT) ||
-      (mode === Gallery.Mode.SLIDE && subMode === Gallery.SubMode.BROWSE &&
+  return spokenFeedbackEnabled || mode === undefined || subMode === undefined ||
+      mode === GalleryMode.THUMBNAIL ||
+      (mode === GalleryMode.SLIDE && subMode === GallerySubMode.EDIT) ||
+      (mode === GalleryMode.SLIDE && subMode === GallerySubMode.BROWSE &&
        (loading || renaming));
 };
 
 /**
  * Sets current mode of Gallery.
- * @param {Gallery.Mode} mode
- * @param {Gallery.SubMode} subMode
+ * @param {GalleryMode} mode
+ * @param {GallerySubMode} subMode
  */
 DimmableUIController.prototype.setCurrentMode = function(mode, subMode) {
-  if (this.mode_ === mode && this.subMode_ === subMode)
+  if (this.mode_ === mode && this.subMode_ === subMode) {
     return;
+  }
 
   this.mode_ = mode;
   this.subMode_ = subMode;
@@ -135,8 +134,9 @@ DimmableUIController.prototype.setCurrentMode = function(mode, subMode) {
  * @param {boolean} renaming
  */
 DimmableUIController.prototype.setRenaming = function(renaming) {
-  if (this.renaming_ === renaming)
+  if (this.renaming_ === renaming) {
     return;
+  }
 
   this.renaming_ = renaming;
   this.updateAvailability_();
@@ -147,8 +147,9 @@ DimmableUIController.prototype.setRenaming = function(renaming) {
  * @param {boolean} loading
  */
 DimmableUIController.prototype.setLoading = function(loading) {
-  if (this.loading_ === loading)
+  if (this.loading_ === loading) {
     return;
+  }
 
   this.loading_ = loading;
   this.updateAvailability_();
@@ -174,8 +175,9 @@ DimmableUIController.prototype.onClick_ = function(event) {
  * @private
  */
 DimmableUIController.prototype.onMousemove_ = function() {
-  if (this.disabled_)
+  if (this.disabled_) {
     return;
+  }
 
   this.kick();
 };
@@ -185,8 +187,9 @@ DimmableUIController.prototype.onMousemove_ = function() {
  * @private
  */
 DimmableUIController.prototype.onTouchOperation_ = function() {
-  if (this.disabled_)
+  if (this.disabled_) {
     return;
+  }
 
   this.kick();
 };
@@ -196,8 +199,9 @@ DimmableUIController.prototype.onTouchOperation_ = function() {
  * @private
  */
 DimmableUIController.prototype.onMouseover_ = function() {
-  if (this.disabled_)
+  if (this.disabled_) {
     return;
+  }
 
   this.isCursorInTools_ = true;
 };
@@ -207,8 +211,9 @@ DimmableUIController.prototype.onMouseover_ = function() {
  * @private
  */
 DimmableUIController.prototype.onMouseout_ = function() {
-  if (this.disabled_)
+  if (this.disabled_) {
     return;
+  }
 
   this.isCursorInTools_ = false;
 };
@@ -221,8 +226,9 @@ DimmableUIController.prototype.onMouseout_ = function() {
  */
 DimmableUIController.prototype.isPartOfTools_ = function(element) {
   for (var i = 0; i < this.tools_.length; i++) {
-    if (this.tools_[i].contains(element))
+    if (this.tools_[i].contains(element)) {
       return true;
+    }
   }
   return false;
 };
@@ -232,10 +238,11 @@ DimmableUIController.prototype.isPartOfTools_ = function(element) {
  * @private
  */
 DimmableUIController.prototype.toggle_ = function() {
-  if (this.isToolsVisible_())
+  if (this.isToolsVisible_()) {
     this.show_(false);
-  else
+  } else {
     this.kick();
+  }
 };
 
 /**
@@ -253,8 +260,9 @@ DimmableUIController.prototype.isToolsVisible_ = function() {
  * @private
  */
 DimmableUIController.prototype.show_ = function(show) {
-  if (this.isToolsVisible_() === show)
+  if (this.isToolsVisible_() === show) {
     return;
+  }
 
   if (show) {
     this.madeVisibleAt_ = Date.now();
@@ -275,8 +283,9 @@ DimmableUIController.prototype.show_ = function(show) {
  * @private
  */
 DimmableUIController.prototype.clearTimeout_ = function() {
-  if (!this.timeoutId_)
+  if (!this.timeoutId_) {
     return;
+  }
 
   clearTimeout(this.timeoutId_);
   this.timeoutId_ = 0;
@@ -340,8 +349,9 @@ DimmableUIController.prototype.setTools = function(tools) {
  * @param {number=} opt_timeout Timeout.
  */
 DimmableUIController.prototype.kick = function(opt_timeout) {
-  if (this.disabled_)
+  if (this.disabled_) {
     return;
+  }
 
   this.show_(true);
   this.extendTimeout_(opt_timeout);
@@ -356,8 +366,9 @@ DimmableUIController.prototype.updateAvailability_ = function() {
       this.mode_, this.subMode_, this.loading_, this.spokenFeedbackEnabled_,
       this.renaming_);
 
-  if (this.disabled_ === disabled)
+  if (this.disabled_ === disabled) {
     return;
+  }
 
   this.disabled_ = disabled;
 

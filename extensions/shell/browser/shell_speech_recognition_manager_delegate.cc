@@ -5,8 +5,10 @@
 #include "extensions/shell/browser/shell_speech_recognition_manager_delegate.h"
 
 #include "base/bind.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/render_view_host.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/speech_recognition_manager.h"
 #include "content/public/browser/speech_recognition_session_context.h"
 #include "content/public/browser/web_contents.h"
@@ -50,13 +52,11 @@ void ShellSpeechRecognitionManagerDelegate::OnRecognitionEnd(int session_id) {
 
 void ShellSpeechRecognitionManagerDelegate::OnRecognitionResults(
     int session_id,
-    const content::SpeechRecognitionResults& result) {
-}
+    const std::vector<blink::mojom::SpeechRecognitionResultPtr>& result) {}
 
 void ShellSpeechRecognitionManagerDelegate::OnRecognitionError(
     int session_id,
-    const content::SpeechRecognitionError& error) {
-}
+    const blink::mojom::SpeechRecognitionError& error) {}
 
 void ShellSpeechRecognitionManagerDelegate::OnAudioLevelsChange(
     int session_id,
@@ -66,7 +66,7 @@ void ShellSpeechRecognitionManagerDelegate::OnAudioLevelsChange(
 
 void ShellSpeechRecognitionManagerDelegate::CheckRecognitionIsAllowed(
     int session_id,
-    base::Callback<void(bool ask_user, bool is_allowed)> callback) {
+    base::OnceCallback<void(bool ask_user, bool is_allowed)> callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   const content::SpeechRecognitionSessionContext& context =
@@ -76,11 +76,10 @@ void ShellSpeechRecognitionManagerDelegate::CheckRecognitionIsAllowed(
   // |render_process_id| field, which is needed later to retrieve the profile.
   DCHECK_NE(context.render_process_id, 0);
 
-  BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                          base::Bind(&CheckRenderViewType,
-                                     callback,
-                                     context.render_process_id,
-                                     context.render_view_id));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&CheckRenderFrameType, std::move(callback),
+                     context.render_process_id, context.render_frame_id));
 }
 
 content::SpeechRecognitionEventListener*
@@ -95,19 +94,20 @@ bool ShellSpeechRecognitionManagerDelegate::FilterProfanities(
 }
 
 // static
-void ShellSpeechRecognitionManagerDelegate::CheckRenderViewType(
-    base::Callback<void(bool ask_user, bool is_allowed)> callback,
+void ShellSpeechRecognitionManagerDelegate::CheckRenderFrameType(
+    base::OnceCallback<void(bool ask_user, bool is_allowed)> callback,
     int render_process_id,
-    int render_view_id) {
+    int render_frame_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  content::RenderViewHost* render_view_host =
-      content::RenderViewHost::FromID(render_process_id, render_view_id);
+
+  content::RenderFrameHost* render_frame_host =
+      content::RenderFrameHost::FromID(render_process_id, render_frame_id);
   bool allowed = false;
   bool check_permission = false;
 
-  if (render_view_host) {
+  if (render_frame_host) {
     WebContents* web_contents =
-        WebContents::FromRenderViewHost(render_view_host);
+        WebContents::FromRenderFrameHost(render_frame_host);
     extensions::ViewType view_type = extensions::GetViewType(web_contents);
 
     if (view_type == extensions::VIEW_TYPE_APP_WINDOW ||
@@ -119,8 +119,9 @@ void ShellSpeechRecognitionManagerDelegate::CheckRenderViewType(
     }
   }
 
-  BrowserThread::PostTask(BrowserThread::IO, FROM_HERE,
-                          base::Bind(callback, check_permission, allowed));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::IO},
+      base::BindOnce(std::move(callback), check_permission, allowed));
 }
 
 }  // namespace speech

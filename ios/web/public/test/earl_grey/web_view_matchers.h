@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <string>
+#ifndef IOS_WEB_PUBLIC_TEST_EARL_GREY_WEB_VIEW_MATCHERS_H_
+#define IOS_WEB_PUBLIC_TEST_EARL_GREY_WEB_VIEW_MATCHERS_H_
+
+#include <string>
 
 #import <EarlGrey/EarlGrey.h>
 
@@ -10,16 +13,15 @@
 
 namespace web {
 
-// Shorthand for GREYMatchers::matcherForWebViewContainingText:inWebState.
-id<GREYMatcher> webViewContainingText(const std::string& text,
-                                      web::WebState* webState);
+// Matcher for WKWebView which belogs to the given |webState|.
+id<GREYMatcher> WebViewInWebState(WebState* web_state);
+
+// Matcher for WKWebView's scroll view.
+id<GREYMatcher> WebViewScrollView(WebState* web_state);
+
+// Matcher for an interstitial page. Does not wait if the page is not displayed.
+id<GREYMatcher> Interstitial(WebState* web_state);
 
 }  // namespace web
 
-@interface GREYMatchers (WebViewAdditions)
-
-// Matcher for WKWebView containing |text|.
-+ (id<GREYMatcher>)matcherForWebViewContainingText:(const std::string&)text
-                                        inWebState:(web::WebState*)webState;
-
-@end
+#endif  // IOS_WEB_PUBLIC_TEST_EARL_GREY_WEB_VIEW_MATCHERS_H_

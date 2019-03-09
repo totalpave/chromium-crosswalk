@@ -5,9 +5,14 @@
 #ifndef IOS_CHROME_BROWSER_INFOBARS_CONFIRM_INFOBAR_CONTROLLER_H_
 #define IOS_CHROME_BROWSER_INFOBARS_CONFIRM_INFOBAR_CONTROLLER_H_
 
-#include "ios/chrome/browser/infobars/infobar_controller.h"
+#import "ios/chrome/browser/infobars/infobar_controller.h"
+
+class ConfirmInfoBarDelegate;
 
 @interface ConfirmInfoBarController : InfoBarController
+
+- (instancetype)initWithInfoBarDelegate:(ConfirmInfoBarDelegate*)infoBarDelegate
+    NS_DESIGNATED_INITIALIZER;
 
 @end
 

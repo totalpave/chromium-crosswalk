@@ -18,13 +18,8 @@ FakePictureLayerImpl::FakePictureLayerImpl(
     LayerTreeImpl* tree_impl,
     int id,
     scoped_refptr<RasterSource> raster_source,
-    bool is_mask)
-    : PictureLayerImpl(tree_impl, id, is_mask),
-      append_quads_count_(0),
-      did_become_active_call_count_(0),
-      has_valid_tile_priorities_(false),
-      use_set_valid_tile_priorities_flag_(false),
-      release_resources_count_(0) {
+    Layer::LayerMaskType mask_type)
+    : PictureLayerImpl(tree_impl, id, mask_type) {
   SetBounds(raster_source->GetSize());
   SetRasterSourceOnPending(raster_source, Region());
 }
@@ -33,31 +28,22 @@ FakePictureLayerImpl::FakePictureLayerImpl(
     LayerTreeImpl* tree_impl,
     int id,
     scoped_refptr<RasterSource> raster_source,
-    bool is_mask,
+    Layer::LayerMaskType mask_type,
     const gfx::Size& layer_bounds)
-    : PictureLayerImpl(tree_impl, id, is_mask),
-      append_quads_count_(0),
-      did_become_active_call_count_(0),
-      has_valid_tile_priorities_(false),
-      use_set_valid_tile_priorities_flag_(false),
-      release_resources_count_(0) {
+    : PictureLayerImpl(tree_impl, id, mask_type) {
   SetBounds(layer_bounds);
   SetRasterSourceOnPending(raster_source, Region());
 }
 
 FakePictureLayerImpl::FakePictureLayerImpl(LayerTreeImpl* tree_impl,
                                            int id,
-                                           bool is_mask)
-    : PictureLayerImpl(tree_impl, id, is_mask),
-      append_quads_count_(0),
-      did_become_active_call_count_(0),
-      has_valid_tile_priorities_(false),
-      use_set_valid_tile_priorities_flag_(false),
-      release_resources_count_(0) {}
+                                           Layer::LayerMaskType mask_type)
+    : PictureLayerImpl(tree_impl, id, mask_type) {}
 
 std::unique_ptr<LayerImpl> FakePictureLayerImpl::CreateLayerImpl(
     LayerTreeImpl* tree_impl) {
-  return base::WrapUnique(new FakePictureLayerImpl(tree_impl, id(), is_mask_));
+  return base::WrapUnique(
+      new FakePictureLayerImpl(tree_impl, id(), mask_type_));
 }
 
 void FakePictureLayerImpl::PushPropertiesTo(LayerImpl* layer_impl) {
@@ -67,9 +53,8 @@ void FakePictureLayerImpl::PushPropertiesTo(LayerImpl* layer_impl) {
   PictureLayerImpl::PushPropertiesTo(layer_impl);
 }
 
-void FakePictureLayerImpl::AppendQuads(
-    RenderPass* render_pass,
-    AppendQuadsData* append_quads_data) {
+void FakePictureLayerImpl::AppendQuads(viz::RenderPass* render_pass,
+                                       AppendQuadsData* append_quads_data) {
   PictureLayerImpl::AppendQuads(render_pass, append_quads_data);
   ++append_quads_count_;
 }
@@ -84,7 +69,7 @@ gfx::Size FakePictureLayerImpl::CalculateTileSize(
 }
 
 PictureLayerTiling* FakePictureLayerImpl::HighResTiling() const {
-  PictureLayerTiling* result = NULL;
+  PictureLayerTiling* result = nullptr;
   for (size_t i = 0; i < tilings_->num_tilings(); ++i) {
     PictureLayerTiling* tiling = tilings_->tiling_at(i);
     if (tiling->resolution() == HIGH_RESOLUTION) {
@@ -97,7 +82,7 @@ PictureLayerTiling* FakePictureLayerImpl::HighResTiling() const {
 }
 
 PictureLayerTiling* FakePictureLayerImpl::LowResTiling() const {
-  PictureLayerTiling* result = NULL;
+  PictureLayerTiling* result = nullptr;
   for (size_t i = 0; i < tilings_->num_tilings(); ++i) {
     PictureLayerTiling* tiling = tilings_->tiling_at(i);
     if (tiling->resolution() == LOW_RESOLUTION) {
@@ -115,7 +100,8 @@ void FakePictureLayerImpl::SetRasterSourceOnPending(
   DCHECK(layer_tree_impl()->IsPendingTree());
   Region invalidation_temp = invalidation;
   const PictureLayerTilingSet* pending_set = nullptr;
-  set_gpu_raster_max_texture_size(layer_tree_impl()->device_viewport_size());
+  set_gpu_raster_max_texture_size(
+      layer_tree_impl()->GetDeviceViewport().size());
   UpdateRasterSource(raster_source, &invalidation_temp, pending_set);
 }
 
@@ -218,6 +204,11 @@ size_t FakePictureLayerImpl::CountTilesRequiredForDraw() const {
 void FakePictureLayerImpl::ReleaseResources() {
   PictureLayerImpl::ReleaseResources();
   ++release_resources_count_;
+}
+
+void FakePictureLayerImpl::ReleaseTileResources() {
+  PictureLayerImpl::ReleaseTileResources();
+  ++release_tile_resources_count_;
 }
 
 }  // namespace cc

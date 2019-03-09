@@ -10,7 +10,6 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/task_runner.h"
 #include "chrome/browser/chromeos/policy/remote_commands/device_command_screenshot_job.h"
 #include "chrome/browser/chromeos/policy/upload_job.h"
 #include "ui/gfx/geometry/rect.h"
@@ -21,11 +20,10 @@
 namespace policy {
 
 // An implementation of the |DeviceCommandScreenshotJob::Delegate| that uses
-// aura's GrabWindowSnapshotAsync() to acquire the window snapshot.
+// aura's GrabWindowSnapshotAsyncPNG() to acquire the window snapshot.
 class ScreenshotDelegate : public DeviceCommandScreenshotJob::Delegate {
  public:
-  explicit ScreenshotDelegate(
-      scoped_refptr<base::TaskRunner> blocking_task_runner);
+  ScreenshotDelegate();
   ~ScreenshotDelegate() override;
 
   // DeviceCommandScreenshotJob::Delegate:
@@ -40,9 +38,7 @@ class ScreenshotDelegate : public DeviceCommandScreenshotJob::Delegate {
 
  private:
   void StoreScreenshot(const ui::GrabWindowSnapshotAsyncPNGCallback& callback,
-                       scoped_refptr<base::RefCountedBytes> png_data);
-
-  scoped_refptr<base::TaskRunner> blocking_task_runner_;
+                       scoped_refptr<base::RefCountedMemory> png_data);
 
   base::WeakPtrFactory<ScreenshotDelegate> weak_ptr_factory_;
 

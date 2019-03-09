@@ -22,18 +22,17 @@
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/codec/png_codec.h"
 
-using base::android::ScopedJavaGlobalRef;
-using base::android::ScopedJavaLocalRef;
 using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF16;
+using base::android::JavaParamRef;
+using base::android::JavaRef;
+using base::android::ScopedJavaGlobalRef;
+using base::android::ScopedJavaLocalRef;
 
 namespace {
 
-const SkColor kDefaultBackgroundColor = SkColorSetRGB(0x78, 0x78, 0x78);
-
-void OnLargeIconAvailable(
-    ScopedJavaGlobalRef<jobject>* j_callback,
-    const favicon_base::LargeIconResult& result) {
+void OnLargeIconAvailable(const JavaRef<jobject>& j_callback,
+                          const favicon_base::LargeIconResult& result) {
   JNIEnv* env = AttachCurrentThread();
 
   // Convert the result to a Java Bitmap.
@@ -41,33 +40,30 @@ void OnLargeIconAvailable(
   ScopedJavaLocalRef<jobject> j_bitmap;
   if (result.bitmap.is_valid()) {
     gfx::PNGCodec::Decode(result.bitmap.bitmap_data->front(),
-                          result.bitmap.bitmap_data->size(),
-                          &bitmap);
+                          result.bitmap.bitmap_data->size(), &bitmap);
     if (!bitmap.isNull())
       j_bitmap = gfx::ConvertToJavaBitmap(&bitmap);
   }
 
-  jint background_color = kDefaultBackgroundColor;
+  favicon_base::FallbackIconStyle fallback;
   if (result.fallback_icon_style)
-    background_color = result.fallback_icon_style->background_color;
+    fallback = *result.fallback_icon_style;
 
-  Java_LargeIconCallback_onLargeIconAvailable(env,
-                                              j_callback->obj(),
-                                              j_bitmap.obj(),
-                                              background_color);
+  Java_LargeIconCallback_onLargeIconAvailable(
+      env, j_callback, j_bitmap, fallback.background_color,
+      fallback.is_default_background_color,
+      static_cast<int>(result.bitmap.icon_type));
 }
 
 }  // namespace
 
-static jlong Init(JNIEnv* env, const JavaParamRef<jclass>& clazz) {
+static jlong JNI_LargeIconBridge_Init(JNIEnv* env) {
   return reinterpret_cast<intptr_t>(new LargeIconBridge());
 }
 
-LargeIconBridge::LargeIconBridge() {
-}
+LargeIconBridge::LargeIconBridge() {}
 
-LargeIconBridge::~LargeIconBridge() {
-}
+LargeIconBridge::~LargeIconBridge() {}
 
 void LargeIconBridge::Destroy(JNIEnv* env, const JavaParamRef<jobject>& obj) {
   delete this;
@@ -89,24 +85,14 @@ jboolean LargeIconBridge::GetLargeIconForURL(
   if (!large_icon_service)
     return false;
 
-  ScopedJavaGlobalRef<jobject>* j_global_callback =
-      new ScopedJavaGlobalRef<jobject>();
-  j_global_callback->Reset(env, j_callback);
+  favicon_base::LargeIconCallback callback_runner = base::Bind(
+      &OnLargeIconAvailable, ScopedJavaGlobalRef<jobject>(env, j_callback));
 
-  favicon_base::LargeIconCallback callback_runner =
-      base::Bind(&OnLargeIconAvailable, base::Owned(j_global_callback));
-
-  large_icon_service->GetLargeIconOrFallbackStyle(
-      GURL(ConvertJavaStringToUTF16(env, j_page_url)),
-      min_source_size_px,
-      0,  // Do not resize.
-      callback_runner,
-      &cancelable_task_tracker_);
+  // Use desired_size = 0 for getting the icon from the cache (so that
+  // the icon is not poorly rescaled by LargeIconService).
+  large_icon_service->GetLargeIconRawBitmapOrFallbackStyleForPageUrl(
+      GURL(ConvertJavaStringToUTF16(env, j_page_url)), min_source_size_px,
+      /*desired_size_in_pixel=*/0, callback_runner, &cancelable_task_tracker_);
 
   return true;
-}
-
-// static
-bool LargeIconBridge::RegisterLargeIconBridge(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }

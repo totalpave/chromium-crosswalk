@@ -10,11 +10,11 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_data.h"
-#include "sync/api/sync_error.h"
-#include "sync/api/sync_error_factory.h"
-#include "sync/api/syncable_service.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_data.h"
+#include "components/sync/model/sync_error.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "components/sync/model/syncable_service.h"
 
 class Profile;
 class ThemeService;
@@ -44,7 +44,7 @@ class ThemeSyncableService : public syncer::SyncableService {
   void StopSyncing(syncer::ModelType type) override;
   syncer::SyncDataList GetAllSyncData(syncer::ModelType type) const override;
   syncer::SyncError ProcessSyncChanges(
-      const tracked_objects::Location& from_here,
+      const base::Location& from_here,
       const syncer::SyncChangeList& change_list) override;
 
   // Client tag and tile of theme node in sync.

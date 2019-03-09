@@ -4,6 +4,7 @@
 
 #include "chrome/browser/chromeos/extensions/echo_private_api.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -12,11 +13,13 @@
 #include "base/location.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chrome/browser/chromeos/ui/echo_dialog_view.h"
+#include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/common/extensions/api/echo_private.h"
@@ -25,13 +28,12 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/extension_file_task_runner.h"
+#include "extensions/browser/view_type_utils.h"
 #include "extensions/common/extension.h"
 
 namespace echo_api = extensions::api::echo_private;
-
-using content::BrowserThread;
 
 namespace {
 
@@ -60,7 +62,8 @@ EchoPrivateGetRegistrationCodeFunction::
 EchoPrivateGetRegistrationCodeFunction::
     ~EchoPrivateGetRegistrationCodeFunction() {}
 
-void EchoPrivateGetRegistrationCodeFunction::GetRegistrationCode(
+ExtensionFunction::ResponseValue
+EchoPrivateGetRegistrationCodeFunction::GetRegistrationCode(
     const std::string& type) {
   // Possible ECHO code type and corresponding key name in StatisticsProvider.
   const std::string kCouponType = "COUPON_CODE";
@@ -77,22 +80,22 @@ void EchoPrivateGetRegistrationCodeFunction::GetRegistrationCode(
                                   &result);
   }
 
-  results_ = echo_api::GetRegistrationCode::Results::Create(result);
+  return ArgumentList(echo_api::GetRegistrationCode::Results::Create(result));
 }
 
-bool EchoPrivateGetRegistrationCodeFunction::RunSync() {
+ExtensionFunction::ResponseAction
+EchoPrivateGetRegistrationCodeFunction::Run() {
   std::unique_ptr<echo_api::GetRegistrationCode::Params> params =
       echo_api::GetRegistrationCode::Params::Create(*args_);
   EXTENSION_FUNCTION_VALIDATE(params);
-  GetRegistrationCode(params->type);
-  return true;
+  return RespondNow(GetRegistrationCode(params->type));
 }
 
 EchoPrivateSetOfferInfoFunction::EchoPrivateSetOfferInfoFunction() {}
 
 EchoPrivateSetOfferInfoFunction::~EchoPrivateSetOfferInfoFunction() {}
 
-bool EchoPrivateSetOfferInfoFunction::RunSync() {
+ExtensionFunction::ResponseAction EchoPrivateSetOfferInfoFunction::Run() {
   std::unique_ptr<echo_api::SetOfferInfo::Params> params =
       echo_api::SetOfferInfo::Params::Create(*args_);
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -104,14 +107,14 @@ bool EchoPrivateSetOfferInfoFunction::RunSync() {
   PrefService* local_state = g_browser_process->local_state();
   DictionaryPrefUpdate offer_update(local_state, prefs::kEchoCheckedOffers);
   offer_update->SetWithoutPathExpansion("echo." + service_id, std::move(dict));
-  return true;
+  return RespondNow(NoArguments());
 }
 
 EchoPrivateGetOfferInfoFunction::EchoPrivateGetOfferInfoFunction() {}
 
 EchoPrivateGetOfferInfoFunction::~EchoPrivateGetOfferInfoFunction() {}
 
-bool EchoPrivateGetOfferInfoFunction::RunSync() {
+ExtensionFunction::ResponseAction EchoPrivateGetOfferInfoFunction::Run() {
   std::unique_ptr<echo_api::GetOfferInfo::Params> params =
       echo_api::GetOfferInfo::Params::Create(*args_);
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -124,14 +127,13 @@ bool EchoPrivateGetOfferInfoFunction::RunSync() {
   const base::DictionaryValue* offer_info = NULL;
   if (!offer_infos->GetDictionaryWithoutPathExpansion(
          "echo." + service_id, &offer_info)) {
-    error_ = "Not found";
-    return false;
+    return RespondNow(Error("Not found"));
   }
 
   echo_api::GetOfferInfo::Results::Result result;
   result.additional_properties.MergeDictionary(offer_info);
-  results_ = echo_api::GetOfferInfo::Results::Create(result);
-  return true;
+  return RespondNow(
+      ArgumentList(echo_api::GetOfferInfo::Results::Create(result)));
 }
 
 EchoPrivateGetOobeTimestampFunction::EchoPrivateGetOobeTimestampFunction() {
@@ -141,13 +143,12 @@ EchoPrivateGetOobeTimestampFunction::~EchoPrivateGetOobeTimestampFunction() {
 }
 
 bool EchoPrivateGetOobeTimestampFunction::RunAsync() {
-  BrowserThread::PostTaskAndReplyWithResult(
-      BrowserThread::FILE, FROM_HERE,
+  base::PostTaskAndReplyWithResult(
+      extensions::GetExtensionFileTaskRunner().get(), FROM_HERE,
       base::Bind(
-          &EchoPrivateGetOobeTimestampFunction::GetOobeTimestampOnFileThread,
+          &EchoPrivateGetOobeTimestampFunction::GetOobeTimestampOnFileSequence,
           this),
-      base::Bind(
-          &EchoPrivateGetOobeTimestampFunction::SendResponse, this));
+      base::Bind(&EchoPrivateGetOobeTimestampFunction::SendResponse, this));
   return true;
 }
 
@@ -155,8 +156,9 @@ bool EchoPrivateGetOobeTimestampFunction::RunAsync() {
 // The timestamp is used to determine when the user first activates the device.
 // If we can get the timestamp info, return it as yyyy-mm-dd, otherwise, return
 // an empty string.
-bool EchoPrivateGetOobeTimestampFunction::GetOobeTimestampOnFileThread() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+bool EchoPrivateGetOobeTimestampFunction::GetOobeTimestampOnFileSequence() {
+  DCHECK(
+      extensions::GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
 
   const char kOobeTimestampFile[] = "/home/chronos/.oobe_completed";
   std::string timestamp = "";
@@ -203,12 +205,12 @@ void EchoPrivateGetUserConsentFunction::OnCancel() {
 }
 
 void EchoPrivateGetUserConsentFunction::OnMoreInfoLinkClicked() {
-  chrome::NavigateParams params(
-      GetProfile(), GURL(kMoreInfoLink), ui::PAGE_TRANSITION_LINK);
+  NavigateParams params(GetProfile(), GURL(kMoreInfoLink),
+                        ui::PAGE_TRANSITION_LINK);
   // Open the link in a new window. The echo dialog is modal, so the current
   // window is useless until the dialog is closed.
-  params.disposition = NEW_WINDOW;
-  chrome::Navigate(&params);
+  params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  Navigate(&params);
 }
 
 void EchoPrivateGetUserConsentFunction::CheckRedeemOffersAllowed() {
@@ -241,12 +243,39 @@ void EchoPrivateGetUserConsentFunction::OnRedeemOffersAllowedChecked(
     return;
   }
 
-  content::WebContents* web_contents = GetAssociatedWebContents();
-  if (!web_contents) {
-    error_ = "No web contents.";
-    SendResponse(false);
-    return;
+  content::WebContents* web_contents = nullptr;
+  if (!params->consent_requester.tab_id) {
+    web_contents = GetSenderWebContents();
+
+    if (!web_contents || extensions::GetViewType(web_contents) !=
+                             extensions::VIEW_TYPE_APP_WINDOW) {
+      error_ = "Not called from an app window - the tabId is required.";
+      SendResponse(false);
+      return;
+    }
+  } else {
+    TabStripModel* tab_strip = nullptr;
+    int tab_index = -1;
+    if (!extensions::ExtensionTabUtil::GetTabById(
+            *params->consent_requester.tab_id, browser_context(),
+            false /*incognito_enabled*/, nullptr /*browser*/, &tab_strip,
+            &web_contents, &tab_index)) {
+      error_ = "Tab not found.";
+      SendResponse(false);
+      return;
+    }
+
+    // Bail out if the requested tab is not active - the dialog is modal to the
+    // window, so showing it for a request from an inactive tab could be
+    // misleading/confusing to the user.
+    if (tab_index != tab_strip->active_index()) {
+      error_ = "Consent requested from an inactive tab.";
+      SendResponse(false);
+      return;
+    }
   }
+
+  DCHECK(web_contents);
 
   // Add ref to ensure the function stays around until the dialog listener is
   // called. The reference is release in |Finalize|.

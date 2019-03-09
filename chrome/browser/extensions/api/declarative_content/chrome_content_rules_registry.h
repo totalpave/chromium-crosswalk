@@ -16,20 +16,17 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "chrome/browser/extensions/api/declarative_content/content_action.h"
 #include "chrome/browser/extensions/api/declarative_content/content_condition.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate_evaluator.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/api/declarative_content/content_rules_registry.h"
-#include "extensions/common/extension.h"
+#include "extensions/common/extension_id.h"
 
 namespace content {
 class BrowserContext;
 class WebContents;
-struct FrameNavigateParams;
-struct LoadCommittedDetails;
 }
 
 namespace extensions {
@@ -69,15 +66,14 @@ class ChromeContentRulesRegistry
   // ContentRulesRegistry:
   void MonitorWebContentsForRuleEvaluation(
       content::WebContents* contents) override;
-  void DidNavigateMainFrame(
+  void DidFinishNavigation(
       content::WebContents* tab,
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
+      content::NavigationHandle* navigation_handle) override;
 
   // RulesRegistry:
   std::string AddRulesImpl(
       const std::string& extension_id,
-      const std::vector<linked_ptr<api::events::Rule>>& rules) override;
+      const std::vector<const api::events::Rule*>& rules) override;
   std::string RemoveRulesImpl(
       const std::string& extension_id,
       const std::vector<std::string>& rule_identifiers) override;
@@ -162,8 +158,8 @@ class ChromeContentRulesRegistry
       const Extension* extension) const;
 
   using ExtensionIdRuleIdPair = std::pair<extensions::ExtensionId, std::string>;
-  using RulesMap = std::map<ExtensionIdRuleIdPair,
-                            linked_ptr<const ContentRule>>;
+  using RulesMap =
+      std::map<ExtensionIdRuleIdPair, std::unique_ptr<const ContentRule>>;
 
   RulesMap content_rules_;
 

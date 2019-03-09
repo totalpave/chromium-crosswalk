@@ -39,17 +39,22 @@ class FakeAudioRendererSink : public AudioRendererSink {
   void Play() override;
   bool SetVolume(double volume) override;
   OutputDeviceInfo GetOutputDeviceInfo() override;
+  void GetOutputDeviceInfoAsync(OutputDeviceInfoCB info_cb) override;
+  bool IsOptimizedForHardwareParameters() override;
   bool CurrentThreadIsRenderingThread() override;
 
   // Attempts to call Render() on the callback provided to
-  // Initialize() with |dest| and |frames_delayed|.
+  // Initialize() with |dest| and |delay|.
   // Returns true and sets |frames_written| to the return value of the
   // Render() call.
   // Returns false if this object is in a state where calling Render()
   // should not occur. (i.e., in the kPaused or kStopped state.) The
   // value of |frames_written| is undefined if false is returned.
-  bool Render(AudioBus* dest, uint32_t frames_delayed, int* frames_written);
+  bool Render(AudioBus* dest, base::TimeDelta delay, int* frames_written);
   void OnRenderError();
+
+  // Enables different tests to have different settings.
+  void SetIsOptimizedForHardwareParameters(bool value);
 
   State state() const { return state_; }
 
@@ -62,6 +67,7 @@ class FakeAudioRendererSink : public AudioRendererSink {
   State state_;
   RenderCallback* callback_;
   OutputDeviceInfo output_device_info_;
+  bool is_optimized_for_hw_params_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeAudioRendererSink);
 };

@@ -8,9 +8,10 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/memory/ptr_util.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/shill_profile_client.h"
 #include "chromeos/network/network_type_pattern.h"
@@ -27,7 +28,7 @@ namespace chromeos {
 
 namespace {
 
-void LogErrorMessage(const tracked_objects::Location& from_where,
+void LogErrorMessage(const base::Location& from_where,
                      const std::string& error_name,
                      const std::string& error_message) {
   LOG(ERROR) << from_where.ToString() << ": " << error_message;
@@ -36,11 +37,15 @@ void LogErrorMessage(const tracked_objects::Location& from_where,
 const base::DictionaryValue* GetByGUID(
     const PolicyApplicator::GuidToPolicyMap& policies,
     const std::string& guid) {
-  PolicyApplicator::GuidToPolicyMap::const_iterator it = policies.find(guid);
+  auto it = policies.find(guid);
   if (it == policies.end())
     return NULL;
-  return it->second;
+  return it->second.get();
 }
+
+// Special service name in shill remembering settings across ethernet services.
+// Chrome should not attempt to configure / delete this.
+const char kEthernetAnyService[] = "ethernet_any";
 
 }  // namespace
 
@@ -53,14 +58,13 @@ PolicyApplicator::PolicyApplicator(
     : handler_(handler), profile_(profile), weak_ptr_factory_(this) {
   global_network_config_.MergeDictionary(&global_network_config);
   remaining_policies_.swap(*modified_policies);
-  for (GuidToPolicyMap::const_iterator it = all_policies.begin();
-       it != all_policies.end(); ++it) {
-    all_policies_.insert(std::make_pair(it->first, it->second->DeepCopy()));
+  for (const auto& policy_pair : all_policies) {
+    all_policies_.insert(std::make_pair(policy_pair.first,
+                                        policy_pair.second->CreateDeepCopy()));
   }
 }
 
 PolicyApplicator::~PolicyApplicator() {
-  STLDeleteValues(&all_policies_);
   VLOG(1) << "Destroying PolicyApplicator for " << profile_.userhash;
 }
 
@@ -97,7 +101,13 @@ void PolicyApplicator::GetProfilePropertiesCallback(
   for (base::ListValue::const_iterator it = entries->begin();
        it != entries->end(); ++it) {
     std::string entry;
-    (*it)->GetAsString(&entry);
+    it->GetAsString(&entry);
+
+    // Skip "ethernet_any", as this is used by shill internally to persist
+    // ethernet settings and the policy application logic should not mess with
+    // it.
+    if (entry == kEthernetAnyService)
+      continue;
 
     pending_get_entry_calls_.insert(entry);
     DBusThreadManager::Get()->GetShillProfileClient()->GetEntry(
@@ -191,7 +201,7 @@ void PolicyApplicator::GetEntryCallback(
               << new_guid << " because the policy didn't change.";
     } else {
       const base::DictionaryValue* user_settings =
-          ui_data ? ui_data->user_settings() : NULL;
+          ui_data ? ui_data->GetUserSettingsDictionary() : nullptr;
       std::unique_ptr<base::DictionaryValue> new_shill_properties =
           policy_util::CreateShillConfiguration(profile_, new_guid,
                                                 &global_network_config_,
@@ -267,9 +277,7 @@ void PolicyApplicator::GetEntryError(const std::string& entry,
 
 void PolicyApplicator::DeleteEntry(const std::string& entry) {
   DBusThreadManager::Get()->GetShillProfileClient()->DeleteEntry(
-      dbus::ObjectPath(profile_.path),
-      entry,
-      base::Bind(&base::DoNothing),
+      dbus::ObjectPath(profile_.path), entry, base::DoNothing(),
       base::Bind(&LogErrorMessage, FROM_HERE));
 }
 
@@ -294,7 +302,7 @@ void PolicyApplicator::WriteNewShillConfiguration(
   }
 
   if (write_later)
-    new_shill_configurations_.push_back(shill_dictionary.DeepCopy());
+    new_shill_configurations_.push_back(shill_dictionary.CreateDeepCopy());
   else
     handler_->CreateConfigurationFromPolicy(shill_dictionary);
 }
@@ -303,11 +311,8 @@ void PolicyApplicator::ApplyRemainingPolicies() {
   DCHECK(pending_get_entry_calls_.empty());
 
   // Write all queued configurations now.
-  for (ScopedVector<base::DictionaryValue>::const_iterator it =
-           new_shill_configurations_.begin();
-       it != new_shill_configurations_.end();
-       ++it) {
-    handler_->CreateConfigurationFromPolicy(**it);
+  for (const auto& configuration : new_shill_configurations_) {
+    handler_->CreateConfigurationFromPolicy(*configuration);
   }
   new_shill_configurations_.clear();
 

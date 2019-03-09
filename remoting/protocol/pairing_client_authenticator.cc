@@ -9,7 +9,7 @@
 #include "remoting/base/constants.h"
 #include "remoting/protocol/auth_util.h"
 #include "remoting/protocol/channel_authenticator.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting {
 namespace protocol {
@@ -21,7 +21,7 @@ PairingClientAuthenticator::PairingClientAuthenticator(
       create_base_authenticator_callback_(create_base_authenticator_callback),
       weak_factory_(this) {}
 
-PairingClientAuthenticator::~PairingClientAuthenticator() {}
+PairingClientAuthenticator::~PairingClientAuthenticator() = default;
 
 void PairingClientAuthenticator::Start(State initial_state,
                                        const base::Closure& resume_callback) {

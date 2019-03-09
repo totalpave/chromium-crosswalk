@@ -17,7 +17,8 @@ std::unique_ptr<DomainReliabilityConfig> MakeBaseConfig() {
   DomainReliabilityConfig* config = new DomainReliabilityConfig();
   config->origin = GURL("https://example/");
   config->include_subdomains = false;
-  config->collectors.push_back(new GURL("https://example/upload"));
+  config->collectors.push_back(
+      std::make_unique<GURL>("https://example/upload"));
   config->failure_sample_rate = 1.0;
   config->success_sample_rate = 0.0;
   EXPECT_TRUE(config->IsValid());
@@ -26,8 +27,8 @@ std::unique_ptr<DomainReliabilityConfig> MakeBaseConfig() {
 
 std::unique_ptr<DomainReliabilityConfig> MakeSampleConfig() {
   std::unique_ptr<DomainReliabilityConfig> config(MakeBaseConfig());
-  config->path_prefixes.push_back(new std::string("/css/"));
-  config->path_prefixes.push_back(new std::string("/js/"));
+  config->path_prefixes.push_back(std::make_unique<std::string>("/css/"));
+  config->path_prefixes.push_back(std::make_unique<std::string>("/js/"));
   EXPECT_TRUE(config->IsValid());
   return config;
 }
@@ -49,8 +50,7 @@ TEST_F(DomainReliabilityConfigTest, IsValid) {
   EXPECT_FALSE(config->IsValid());
 
   config = MakeSampleConfig();
-  delete config->collectors[0];
-  config->collectors[0] = new GURL();
+  config->collectors[0] = std::make_unique<GURL>();
   EXPECT_FALSE(config->IsValid());
 
   config = MakeSampleConfig();

@@ -20,7 +20,7 @@ developing Chromium. It's unpolished, but here's what works:
 
 ### Get & Configure Eclipse
 
-Eclipse 4.3 (Kepler) is known to work with Chromium for Linux.
+Eclipse 4.6.1 (Neon) is known to work with Chromium for Linux.
 
 *   [Download](http://www.eclipse.org/downloads/) the distribution appropriate
     for your OS. For example, for Linux 64-bit/Java 64-bit, use the Linux 64 bit
@@ -65,20 +65,6 @@ Before you start setting up your work space - here are a few hints:
     (Note: This means that the source will possibly not reside in your user
     directory since it would require a link from filer to your local
     repository.)
-*   You may want to start Eclipse from the source root. To do this you can add
-    an icon to your task bar as launcher. It should point to a shell script
-    which will set the current path to your source base, and then start Eclipse.
-    The result would probably look like this:
-
-    ```shell
-    ~/.bashrc
-    cd /usr/local/google/chromium/src
-    export PATH=/home/skuhne/depot_tools:/usr/local/google/goma/goma:/opt/eclipse:/usr/local/symlinks:/usr/local/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    /opt/eclipse/eclipse -vm /usr/bin/java
-    ```
-
-(Note: Things work fine for me without launching Eclipse from a special
-directory. jamescook@chromium.org 2012-06-1)
 
 ### Run Eclipse & Set your workspace
 
@@ -93,7 +79,7 @@ same directory as your checkout.
 ### Install the C Development Tools ("CDT")
 
 1.  From the Help menu, select Install New Software...
-    1.  Select the 'Workd with' URL for the CDT
+    1.  Select the 'Work with' URL for the CDT
         If it's not there you can click Add... and add it.
         See https://eclipse.org/cdt/downloads.php for up to date versions,
         e.g. with CDT 8.7.0 for Eclipse Mars, use
@@ -118,21 +104,26 @@ tries to do these too often and gets confused:
 1.  Turn off "Refresh using native hooks or polling"
 1.  Click "Apply"
 
-Chromium uses C++11, so tell the indexer about it. Otherwise it will get
-confused about things like std::unique_ptr.
-
-1.  Open Window > Preferences > C/C++ > Build > Settings > Discovery >
-    CDT GCC Build-in Compiler Settings
-1.  In the text box entitled Command to get compiler specs append "-std=c++11"
-
 Create a single Eclipse project for everything:
 
 1.  From the File menu, select New > Project...
 1.  Select C/C++ Project > Makefile Project with Existing Code
-1.  Name the project the exact name of the directory: "src"
-1.  Provide a path to the code, like /work/chromium/src
+1.  Name the project the exact name of the directory: "src" (or "WebKit" if you
+    mainly work in Blink and want a faster experience)
+1.  Provide a path to the code, like /work/chromium/src (or
+    /work/chromium/src/third_party/WebKit)
 1.  Select toolchain: Linux GCC
 1.  Click Finish.
+
+Chromium uses C++11, so tell the indexer about it. Otherwise it will get
+confused about things like std::unique_ptr.
+
+1.  Right-click on "src" and select "Properties..."
+1.  Navigate to C/C++ General > Preprocess Include Paths, Macros etc. >
+    Providers
+1.  Select CDT GCC Built-in Compiler Settings
+1.  In the text box entitled Command to get compiler specs append "-std=c++11"
+    (leaving out the quotes)
 
 Chromium has a huge amount of code, enough that Eclipse can take a very long
 time to perform operations like "go to definition" and "open resource". You need
@@ -142,7 +133,7 @@ In the Project Explorer on the left side:
 
 1.  Right-click on "src" and select "Properties..."
 1.  Open Resource > Resource Filters
-1.  Click "Add..."
+1.  Click "Add Filter..."
 1.  Add the following filter:
     *   Include only
     *   Files, all children (recursive)
@@ -152,10 +143,10 @@ In the Project Explorer on the left side:
 1.  Add another filter:
     *   Exclude all
     *   Folders
-    *   Name matches `out_.*|\.git|\.svn|LayoutTests` regular expression
-        *   If you aren't working on WebKit, adding `|WebKit` will remove more
+    *   Name matches `out_.*|\.git|web_tests` regular expression
+        *   If you aren't working on WebKit, adding `|blink` will remove more
             files
-1.  Click "OK"
+1.  Click "Apply and Close"
 
 Don't exclude the primary "out" directory, as it contains generated header files
 for things like string resources and Eclipse will miss a lot of symbols if you
@@ -170,10 +161,19 @@ most header files, however. Give it more help finding them:
 1.  Select "Use active build configuration"
 1.  Set Cache limits > Index database > Limit relative... to 20%
 1.  Set Cache limits > Index database > Absolute limit to 256 MB
-1.  Click "OK"
+1.  Click "Apply and Close"
 
 Now the indexer will find many more include files, regardless of which approach
 you take below.
+
+Eclipse will still complain about unresolved includes or invalid declarations
+(semantic errors or code analysis errors in the ```Problems``` tab),
+which you can set eclipse to ignore:
+
+1.  Right-click on "src" and select "Properties..."
+    * Open C++ General > Code Analysis
+    * Change the severity from ```Error``` to ```Warning``` for each of the
+    settings that you want eclipse to ignore.
 
 #### Optional: Manual header paths and symbols
 
@@ -264,6 +264,18 @@ If you want to build multiple different targets in Eclipse (`chrome`,
 You can also drag the toolbar to the bottom of your window to save vertical
 space.
 
+### Optional: Running inside eclipse
+
+Running inside eclipse is fairly straightforward:
+
+1. Create a ```C/C++ Application```:
+     1. ```Run``` > ```Run configurations```
+     2. Double click on ```C/C++ Application```
+     3. Pick a  name (e.g. ```shell```)
+     4. Point to ```C/C++ Application```
+        (e.g. ```src/out/Default/content_shell```)
+     6. Click ```Debug``` to run the program.
+
 ### Optional: Debugging
 
 1.  From the toolbar at the top, click the arrow next to the debug icon and
@@ -278,6 +290,46 @@ space.
 1.  Set a breakpoint somewhere in your code and click the debug icon to start
     debugging.
 
+#### Multi-process debugging
+
+If you set breakpoints and your debugger session doesn't stop it is because
+both ```chrome``` and ```content_shell ``` spawn sub-processes.
+To debug, you need to attach a debugger to one of those sub-processes.
+
+Eclipse can attach automatically to forked processes
+(Run -> Debug configurations -> Debugger tab), but that doesn't seem to
+work well.
+
+The overall idea is described [here](https://www.chromium.org/blink/getting-started-with-blink-debugging)
+, but one way to accomplish this in eclipse is to run two ```Debug configurations```:
+
+1. Create a ```C/C++ Application```:
+     1. ```Run``` > ```Debug configurations```
+     2. Double click on ```C/C++ Application```
+     3. Pick a  name (e.g. ```shell```)
+     4. Point to ```C/C++ Application```
+        (e.g. ```src/out/Default/content_shell```)
+     5. In the arguments tab, add the following the to program arguments:
+        ```--no-sandbox --renderer-startup-dialog test.html```
+     6. Click ```Debug``` to run the program.
+     7. That will run the application and it will stop with a message like the
+         following:
+       ```Renderer (239930) paused waiting for debugger to attach. Send SIGUSR1 to unpause.```
+     9. ```239930``` is the number of the process running waiting for the ```signal```.
+2. Create a ```C/C++ Attach to Application```:
+    1. ```Run``` > ```Debug configurations```
+    2. Double click on ```C/C++ Attach to Application```
+    3. Pick  a name (e.g. ```shell proc```)
+    4. Click ```Debug``` to run the configuration.
+    5. In the ```Select Processes``` dialog, pick the process that was
+        spawned above (if you type ```content_shell``` it will filter by
+        name)
+    6. Click on ```Debugger console``` to access the ```gdb``` console.
+    7. Send the original process a signal
+        ```signal SIGUSR1```
+    8. That should unblock the original process and you should now be able to
+        set breakpoints.
+
 ### Optional: Accurate symbol information
 
 If setup properly, Eclipse can do a great job of semantic navigation of C++ code
@@ -287,21 +339,14 @@ requires the Eclipse knows correct include paths and pre-processor definitions.
 After fighting with with a number of approaches, I've found the below to work
 best for me.
 
-*The instrcutions below are out-of-date since it references GYP. Please see
-`gn help gen` for how to generate an Eclipse CDT file in GN. If you use
-Eclipse and make it work, please update this documentation.*
-
 1.  From a shell in your src directory, run
-    `GYP_GENERATORS=ninja,eclipse build/gyp_chromium`
+    `gn gen --ide=eclipse out/Debug/` (replacing Debug with the output directory you normally use when building).
     1.  This generates <project root>/out/Debug/eclipse-cdt-settings.xml which
         is used below.
     1.  This creates a single list of include directories and preprocessor
         definitions to be used for all source files, and so is a little
         inaccurate. Here are some tips for compensating for the limitations:
-        1.  Use `-R <target>` to restrict the output to considering only certain
-            targets (avoiding unnecessary includes that are likely to cause
-            trouble). Eg. for a blink project, use `-R blink`.
-        1.  If you care about blink, move 'third\_party/Webkit/Source' to the
+        1.  If you care about blink, move 'third\_party/WebKit/Source' to the
             top of the list to better resolve ambiguous include paths (eg.
             `config.h`).
 1.  Import paths and symbols
@@ -407,6 +452,5 @@ in practice than the simpler (and less bug-prone) approach above.
     is helpful:
 1.  For improved performance, I use medium-granularity projects (eg. one for
     WebKit/Source) instead of putting all of 'src/' in one project.
-1.  For working in Blink (which uses WebKit code style), feel free to use
-    [this](https://drive.google.com/file/d/0B2LVVIKSxUVYM3R6U0tUa1dmY0U/view?usp=sharing)
-    code-style formatter XML profile
+1. Running [```content_shell```](https://www.chromium.org/developers/content-module)
+   as opposed to all of ```chrome```  is a lot faster/smaller.

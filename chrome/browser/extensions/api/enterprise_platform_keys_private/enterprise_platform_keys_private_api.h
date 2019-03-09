@@ -13,28 +13,25 @@
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
+#include "base/optional.h"
 #include "chrome/common/extensions/api/enterprise_platform_keys_private.h"
-#include "chromeos/attestation/attestation_constants.h"
 #include "chromeos/attestation/attestation_flow.h"
+#include "chromeos/dbus/attestation_constants.h"
 #include "chromeos/dbus/cryptohome_client.h"
-#include "chromeos/dbus/dbus_method_call_status.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "extensions/browser/extension_function.h"
+#include "extensions/common/extension.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
-class PrefService;
 class Profile;
 
 namespace chromeos {
 class CryptohomeClient;
+class InstallAttributes;
 }
 
 namespace cryptohome {
 class AsyncMethodCaller;
-}
-
-namespace policy {
-class EnterpriseInstallAttributes;
 }
 
 namespace user_prefs {
@@ -72,7 +69,7 @@ class EPKPChallengeKeyBase {
       chromeos::CryptohomeClient* cryptohome_client,
       cryptohome::AsyncMethodCaller* async_caller,
       chromeos::attestation::AttestationFlow* attestation_flow,
-      policy::EnterpriseInstallAttributes* install_attributes);
+      chromeos::InstallAttributes* install_attributes);
   virtual ~EPKPChallengeKeyBase();
 
   // Returns a trusted value from CroSettings indicating if the device
@@ -86,8 +83,9 @@ class EPKPChallengeKeyBase {
   // Returns true if the extension is white-listed in the user policy.
   bool IsExtensionWhitelisted() const;
 
-  // Returns true if the user is enterprise managed.
-  bool IsUserManaged() const;
+  // Returns true if the user is managed and is affiliated with the domain the
+  // device is enrolled to.
+  bool IsUserAffiliated() const;
 
   // Returns the enterprise domain the device is enrolled to.
   std::string GetEnterpriseDomain() const;
@@ -120,7 +118,7 @@ class EPKPChallengeKeyBase {
       default_attestation_flow_;
   ChallengeKeyCallback callback_;
   Profile* profile_;
-  std::string extension_id_;
+  scoped_refptr<const Extension> extension_;
 
  private:
   // Holds the context of a PrepareKey() operation.
@@ -143,29 +141,26 @@ class EPKPChallengeKeyBase {
     const base::Callback<void(PrepareKeyResult)> callback;
   };
 
-  void IsAttestationPreparedCallback(
-      const PrepareKeyContext& context,
-      chromeos::DBusMethodCallStatus status,
-      bool result);
-  void DoesKeyExistCallback(
-      const PrepareKeyContext& context,
-      chromeos::DBusMethodCallStatus status,
-      bool result);
+  void IsAttestationPreparedCallback(const PrepareKeyContext& context,
+                                     base::Optional<bool> result);
+  void DoesKeyExistCallback(const PrepareKeyContext& context,
+                            base::Optional<bool> result);
   void AskForUserConsent(const base::Callback<void(bool)>& callback) const;
   void AskForUserConsentCallback(
       const PrepareKeyContext& context,
       bool result);
   void GetCertificateCallback(
       const base::Callback<void(PrepareKeyResult)>& callback,
-      bool success,
+      chromeos::attestation::AttestationStatus status,
       const std::string& pem_certificate_chain);
 
-  policy::EnterpriseInstallAttributes* install_attributes_;
+  chromeos::InstallAttributes* install_attributes_;
 };
 
 class EPKPChallengeMachineKey : public EPKPChallengeKeyBase {
  public:
   static const char kGetCertificateFailedError[];
+  static const char kKeyRegistrationFailedError[];
   static const char kNonEnterpriseDeviceError[];
 
   EPKPChallengeMachineKey();
@@ -173,34 +168,44 @@ class EPKPChallengeMachineKey : public EPKPChallengeKeyBase {
       chromeos::CryptohomeClient* cryptohome_client,
       cryptohome::AsyncMethodCaller* async_caller,
       chromeos::attestation::AttestationFlow* attestation_flow,
-      policy::EnterpriseInstallAttributes* install_attributes);
+      chromeos::InstallAttributes* install_attributes);
   ~EPKPChallengeMachineKey() override;
 
   // Asynchronously run the flow to challenge a machine key in the |caller|
   // context.
   void Run(scoped_refptr<UIThreadExtensionFunction> caller,
            const ChallengeKeyCallback& callback,
-           const std::string& encoded_challenge);
+           const std::string& encoded_challenge,
+           bool register_key);
 
   // Like |Run| but expects a Base64 |encoded_challenge|.
   void DecodeAndRun(scoped_refptr<UIThreadExtensionFunction> caller,
                     const ChallengeKeyCallback& callback,
-                    const std::string& encoded_challenge);
+                    const std::string& encoded_challenge,
+                    bool register_key);
 
  private:
   static const char kKeyName[];
 
   void GetDeviceAttestationEnabledCallback(const std::string& challenge,
+                                           bool register_key,
                                            bool enabled);
   void PrepareKeyCallback(const std::string& challenge,
+                          bool register_key,
                           PrepareKeyResult result);
-  void SignChallengeCallback(bool success, const std::string& response);
+  void SignChallengeCallback(bool register_key,
+                             bool success,
+                             const std::string& response);
+  void RegisterKeyCallback(const std::string& response,
+                           bool success,
+                           cryptohome::MountError return_code);
 };
 
 class EPKPChallengeUserKey : public EPKPChallengeKeyBase {
  public:
   static const char kGetCertificateFailedError[];
   static const char kKeyRegistrationFailedError[];
+  static const char kUserKeyNotAvailable[];
   static const char kUserPolicyDisabledError[];
 
   EPKPChallengeUserKey();
@@ -208,7 +213,7 @@ class EPKPChallengeUserKey : public EPKPChallengeKeyBase {
       chromeos::CryptohomeClient* cryptohome_client,
       cryptohome::AsyncMethodCaller* async_caller,
       chromeos::attestation::AttestationFlow* attestation_flow,
-      policy::EnterpriseInstallAttributes* install_attributes);
+      chromeos::InstallAttributes* install_attributes);
   ~EPKPChallengeUserKey() override;
 
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
@@ -267,7 +272,7 @@ class EnterprisePlatformKeysPrivateChallengeMachineKeyFunction
 
   DECLARE_EXTENSION_FUNCTION(
       "enterprise.platformKeysPrivate.challengeMachineKey",
-      ENTERPRISE_PLATFORMKEYSPRIVATE_CHALLENGEMACHINEKEY);
+      ENTERPRISE_PLATFORMKEYSPRIVATE_CHALLENGEMACHINEKEY)
 };
 
 class EnterprisePlatformKeysPrivateChallengeUserKeyFunction
@@ -289,9 +294,8 @@ class EnterprisePlatformKeysPrivateChallengeUserKeyFunction
   std::unique_ptr<EPKPChallengeUserKey> default_impl_;
   EPKPChallengeUserKey* impl_;
 
-  DECLARE_EXTENSION_FUNCTION(
-      "enterprise.platformKeysPrivate.challengeUserKey",
-      ENTERPRISE_PLATFORMKEYSPRIVATE_CHALLENGEUSERKEY);
+  DECLARE_EXTENSION_FUNCTION("enterprise.platformKeysPrivate.challengeUserKey",
+                             ENTERPRISE_PLATFORMKEYSPRIVATE_CHALLENGEUSERKEY)
 };
 
 }  // namespace extensions

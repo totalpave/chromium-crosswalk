@@ -14,7 +14,7 @@
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/policy_export.h"
-#include "net/base/network_change_notifier.h"
+#include "services/network/public/cpp/network_connection_tracker.h"
 
 namespace base {
 class SequencedTaskRunner;
@@ -22,12 +22,14 @@ class SequencedTaskRunner;
 
 namespace policy {
 
+class CloudPolicyService;
+
 // Observes CloudPolicyClient and CloudPolicyStore to trigger periodic policy
 // fetches and issue retries on error conditions.
 class POLICY_EXPORT CloudPolicyRefreshScheduler
     : public CloudPolicyClient::Observer,
       public CloudPolicyStore::Observer,
-      public net::NetworkChangeNotifier::IPAddressObserver {
+      public network::NetworkConnectionTracker::NetworkConnectionObserver {
  public:
   // Refresh constants.
   static const int64_t kDefaultRefreshDelayMs;
@@ -39,21 +41,28 @@ class POLICY_EXPORT CloudPolicyRefreshScheduler
   static const int64_t kRefreshDelayMinMs;
   static const int64_t kRefreshDelayMaxMs;
 
-  // |client| and |store| pointers must stay valid throughout the
+  // |client|, |store| and |service| pointers must stay valid throughout the
   // lifetime of CloudPolicyRefreshScheduler.
   CloudPolicyRefreshScheduler(
       CloudPolicyClient* client,
       CloudPolicyStore* store,
-      const scoped_refptr<base::SequencedTaskRunner>& task_runner);
+      CloudPolicyService* service,
+      const scoped_refptr<base::SequencedTaskRunner>& task_runner,
+      network::NetworkConnectionTrackerGetter
+          network_connection_tracker_getter);
   ~CloudPolicyRefreshScheduler() override;
 
   base::Time last_refresh() const { return last_refresh_; }
-  int64_t refresh_delay() const { return refresh_delay_ms_; }
 
-  // Sets the refresh delay to |refresh_delay| (subject to min/max clamping).
-  void SetRefreshDelay(int64_t refresh_delay);
+  // Sets the refresh delay to |refresh_delay| (actual refresh delay may vary
+  // due to min/max clamping, changes to delay due to invalidations, etc).
+  void SetDesiredRefreshDelay(int64_t refresh_delay);
 
-  // Requests a policy refresh to be performed soon.
+  // Returns the current fixed refresh delay (can vary depending on whether
+  // invalidations are available or not).
+  int64_t GetActualRefreshDelay() const;
+
+  // Schedules a refresh to be performed immediately.
   void RefreshSoon();
 
   // The refresh scheduler starts by assuming that invalidations are not
@@ -65,9 +74,7 @@ class POLICY_EXPORT CloudPolicyRefreshScheduler
 
   // Whether the invalidations service is available and receiving notifications
   // of policy updates.
-  bool invalidations_available() {
-    return invalidations_available_;
-  }
+  bool invalidations_available() const { return invalidations_available_; }
 
   // CloudPolicyClient::Observer:
   void OnPolicyFetched(CloudPolicyClient* client) override;
@@ -78,8 +85,11 @@ class POLICY_EXPORT CloudPolicyRefreshScheduler
   void OnStoreLoaded(CloudPolicyStore* store) override;
   void OnStoreError(CloudPolicyStore* store) override;
 
-  // net::NetworkChangeNotifier::IPAddressObserver:
-  void OnIPAddressChanged() override;
+  // network::NetworkConnectionTracker::NetworkConnectionObserver:
+  // Triggered also when the device wakes up.
+  void OnConnectionChanged(network::mojom::ConnectionType type) override;
+
+  void set_last_refresh_for_testing(base::Time last_refresh);
 
  private:
   // Initializes |last_refresh_| to the policy timestamp from |store_| in case
@@ -89,9 +99,6 @@ class POLICY_EXPORT CloudPolicyRefreshScheduler
   // a refresh on every restart.
   void UpdateLastRefreshFromPolicy();
 
-  // Schedules a refresh to be performed immediately.
-  void RefreshNow();
-
   // Evaluates when the next refresh is pending and updates the callback to
   // execute that refresh at the appropriate time.
   void ScheduleRefresh();
@@ -99,21 +106,46 @@ class POLICY_EXPORT CloudPolicyRefreshScheduler
   // Triggers a policy refresh.
   void PerformRefresh();
 
-  // Schedules a policy refresh to happen after |delta_ms| milliseconds,
-  // relative to |last_refresh_|.
+  // Schedules a policy refresh to happen no later than |delta_ms| msecs after
+  // |last_refresh_| or |last_refresh_ticks_| whichever is sooner.
   void RefreshAfter(int delta_ms);
+
+  // Cancels the scheduled policy refresh.
+  void CancelRefresh();
+
+  // Sets the |last_refresh_| and |last_refresh_ticks_| to current time.
+  void UpdateLastRefresh();
+
+  // Called when policy was refreshed after refresh request.
+  // It is different than OnPolicyFetched(), which will be called every time
+  // policy was fetched by the |client_|, does not matter where it was
+  // requested.
+  void OnPolicyRefreshed(bool success);
 
   CloudPolicyClient* client_;
   CloudPolicyStore* store_;
+  CloudPolicyService* service_;
 
   // For scheduling delayed tasks.
   const scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
+  // For listening for network connection changes.
+  network::NetworkConnectionTracker* network_connection_tracker_;
+
   // The delayed refresh callback.
   base::CancelableClosure refresh_callback_;
 
-  // The last time a refresh callback completed.
+  // Whether the refresh is scheduled for soon (using |RefreshSoon| or
+  // |RefreshNow|).
+  bool is_scheduled_for_soon_ = false;
+
+  // The last time a policy fetch was attempted or completed.
   base::Time last_refresh_;
+
+  // The same |last_refresh_|, but based on TimeTicks. This allows to schedule
+  // the refresh times based on both, system time and TimeTicks, providing a
+  // protection against changes in system time.
+  base::TimeTicks last_refresh_ticks_;
 
   // Error retry delay in milliseconds.
   int64_t error_retry_delay_ms_;
@@ -128,6 +160,8 @@ class POLICY_EXPORT CloudPolicyRefreshScheduler
   // Used to measure how long it took for the invalidations service to report
   // its initial status.
   base::Time creation_time_;
+
+  base::WeakPtrFactory<CloudPolicyRefreshScheduler> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(CloudPolicyRefreshScheduler);
 };

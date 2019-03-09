@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include <algorithm>
+#include <limits>
 
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "net/http/http_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -46,7 +48,7 @@ TEST(HttpUtilTest, IsSafeHeader) {
     "user-agent",
     "via",
   };
-  for (size_t i = 0; i < arraysize(unsafe_headers); ++i) {
+  for (size_t i = 0; i < base::size(unsafe_headers); ++i) {
     EXPECT_FALSE(HttpUtil::IsSafeHeader(unsafe_headers[i]))
       << unsafe_headers[i];
     EXPECT_FALSE(HttpUtil::IsSafeHeader(base::ToUpperASCII(unsafe_headers[i])))
@@ -92,54 +94,11 @@ TEST(HttpUtilTest, IsSafeHeader) {
     "user_agent",
     "viaa",
   };
-  for (size_t i = 0; i < arraysize(safe_headers); ++i) {
+  for (size_t i = 0; i < base::size(safe_headers); ++i) {
     EXPECT_TRUE(HttpUtil::IsSafeHeader(safe_headers[i])) << safe_headers[i];
     EXPECT_TRUE(HttpUtil::IsSafeHeader(base::ToUpperASCII(safe_headers[i])))
         << safe_headers[i];
   }
-}
-
-TEST(HttpUtilTest, HasHeader) {
-  static const struct {
-    const char* const headers;
-    const char* const name;
-    bool expected_result;
-  } tests[] = {
-    { "", "foo", false },
-    { "foo\r\nbar", "foo", false },
-    { "ffoo: 1", "foo", false },
-    { "foo: 1", "foo", true },
-    { "foo: 1\r\nbar: 2", "foo", true },
-    { "fOO: 1\r\nbar: 2", "foo", true },
-    { "g: 0\r\nfoo: 1\r\nbar: 2", "foo", true },
-  };
-  for (size_t i = 0; i < arraysize(tests); ++i) {
-    bool result = HttpUtil::HasHeader(tests[i].headers, tests[i].name);
-    EXPECT_EQ(tests[i].expected_result, result);
-  }
-}
-
-TEST(HttpUtilTest, StripHeaders) {
-  static const char* const headers =
-      "Origin: origin\r\n"
-      "Content-Type: text/plain\r\n"
-      "Cookies: foo1\r\n"
-      "Custom: baz\r\n"
-      "COOKIES: foo2\r\n"
-      "Server: Apache\r\n"
-      "OrIGin: origin2\r\n";
-
-  static const char* const header_names[] = {
-    "origin", "content-type", "cookies"
-  };
-
-  static const char* const expected_stripped_headers =
-      "Custom: baz\r\n"
-      "Server: Apache\r\n";
-
-  EXPECT_EQ(expected_stripped_headers,
-            HttpUtil::StripHeaders(headers, header_names,
-                                   arraysize(header_names)));
 }
 
 TEST(HttpUtilTest, HeadersIterator) {
@@ -226,7 +185,8 @@ TEST(HttpUtilTest, HeadersIterator_Reset) {
 TEST(HttpUtilTest, ValuesIterator) {
   std::string values = " must-revalidate,   no-cache=\"foo, bar\"\t, private ";
 
-  HttpUtil::ValuesIterator it(values.begin(), values.end(), ',');
+  HttpUtil::ValuesIterator it(values.begin(), values.end(), ',',
+                              true /* ignore_empty_values */);
 
   ASSERT_TRUE(it.GetNext());
   EXPECT_EQ(std::string("must-revalidate"), it.value());
@@ -240,12 +200,50 @@ TEST(HttpUtilTest, ValuesIterator) {
   EXPECT_FALSE(it.GetNext());
 }
 
+TEST(HttpUtilTest, ValuesIterator_EmptyValues) {
+  std::string values = ", foopy , \t ,,,";
+
+  HttpUtil::ValuesIterator it(values.begin(), values.end(), ',',
+                              true /* ignore_empty_values */);
+  ASSERT_TRUE(it.GetNext());
+  EXPECT_EQ(std::string("foopy"), it.value());
+  EXPECT_FALSE(it.GetNext());
+
+  HttpUtil::ValuesIterator it_with_empty_values(
+      values.begin(), values.end(), ',', false /* ignore_empty_values */);
+  ASSERT_TRUE(it_with_empty_values.GetNext());
+  EXPECT_EQ(std::string(""), it_with_empty_values.value());
+
+  ASSERT_TRUE(it_with_empty_values.GetNext());
+  EXPECT_EQ(std::string("foopy"), it_with_empty_values.value());
+
+  ASSERT_TRUE(it_with_empty_values.GetNext());
+  EXPECT_EQ(std::string(""), it_with_empty_values.value());
+
+  ASSERT_TRUE(it_with_empty_values.GetNext());
+  EXPECT_EQ(std::string(""), it_with_empty_values.value());
+
+  ASSERT_TRUE(it_with_empty_values.GetNext());
+  EXPECT_EQ(std::string(""), it_with_empty_values.value());
+
+  ASSERT_TRUE(it_with_empty_values.GetNext());
+  EXPECT_EQ(std::string(""), it_with_empty_values.value());
+
+  EXPECT_FALSE(it_with_empty_values.GetNext());
+}
+
 TEST(HttpUtilTest, ValuesIterator_Blanks) {
   std::string values = " \t ";
 
-  HttpUtil::ValuesIterator it(values.begin(), values.end(), ',');
-
+  HttpUtil::ValuesIterator it(values.begin(), values.end(), ',',
+                              true /* ignore_empty_values */);
   EXPECT_FALSE(it.GetNext());
+
+  HttpUtil::ValuesIterator it_with_empty_values(
+      values.begin(), values.end(), ',', false /* ignore_empty_values */);
+  ASSERT_TRUE(it_with_empty_values.GetNext());
+  EXPECT_EQ(std::string(""), it_with_empty_values.value());
+  EXPECT_FALSE(it_with_empty_values.GetNext());
 }
 
 TEST(HttpUtilTest, Unquote) {
@@ -263,10 +261,6 @@ TEST(HttpUtilTest, Unquote) {
   // Act as identity function on unquoted inputs.
   EXPECT_STREQ("X", HttpUtil::Unquote("X").c_str());
   EXPECT_STREQ("\"", HttpUtil::Unquote("\"").c_str());
-
-  // Allow single quotes to act as quote marks.
-  // Not part of RFC 2616.
-  EXPECT_STREQ("x\"", HttpUtil::Unquote("'x\"'").c_str());
 
   // Allow quotes in the middle of the input.
   EXPECT_STREQ("foo\"bar", HttpUtil::Unquote("\"foo\"bar\"").c_str());
@@ -333,12 +327,12 @@ TEST(HttpUtilTest, Quote) {
 TEST(HttpUtilTest, LocateEndOfHeaders) {
   struct {
     const char* const input;
-    int expected_result;
+    size_t expected_result;
   } tests[] = {
-      {"\r\n", -1},
-      {"\n", -1},
-      {"\r", -1},
-      {"foo", -1},
+      {"\r\n", std::string::npos},
+      {"\n", std::string::npos},
+      {"\r", std::string::npos},
+      {"foo", std::string::npos},
       {"\r\n\r\n", 4},
       {"foo\r\nbar\r\n\r\n", 12},
       {"foo\nbar\n\n", 9},
@@ -347,9 +341,9 @@ TEST(HttpUtilTest, LocateEndOfHeaders) {
       {"foo\nbar\n\r\njunk", 10},
       {"foo\nbar\r\n\njunk", 10},
   };
-  for (size_t i = 0; i < arraysize(tests); ++i) {
-    int input_len = static_cast<int>(strlen(tests[i].input));
-    int eoh = HttpUtil::LocateEndOfHeaders(tests[i].input, input_len);
+  for (size_t i = 0; i < base::size(tests); ++i) {
+    size_t input_len = strlen(tests[i].input);
+    size_t eoh = HttpUtil::LocateEndOfHeaders(tests[i].input, input_len);
     EXPECT_EQ(tests[i].expected_result, eoh);
   }
 }
@@ -357,12 +351,12 @@ TEST(HttpUtilTest, LocateEndOfHeaders) {
 TEST(HttpUtilTest, LocateEndOfAdditionalHeaders) {
   struct {
     const char* const input;
-    int expected_result;
+    size_t expected_result;
   } tests[] = {
       {"\r\n", 2},
       {"\n", 1},
-      {"\r", -1},
-      {"foo", -1},
+      {"\r", std::string::npos},
+      {"foo", std::string::npos},
       {"\r\n\r\n", 2},
       {"foo\r\nbar\r\n\r\n", 12},
       {"foo\nbar\n\n", 9},
@@ -371,13 +365,15 @@ TEST(HttpUtilTest, LocateEndOfAdditionalHeaders) {
       {"foo\nbar\n\r\njunk", 10},
       {"foo\nbar\r\n\njunk", 10},
   };
-  for (size_t i = 0; i < arraysize(tests); ++i) {
-    int input_len = static_cast<int>(strlen(tests[i].input));
-    int eoh = HttpUtil::LocateEndOfAdditionalHeaders(tests[i].input, input_len);
+  for (size_t i = 0; i < base::size(tests); ++i) {
+    size_t input_len = strlen(tests[i].input);
+    size_t eoh =
+        HttpUtil::LocateEndOfAdditionalHeaders(tests[i].input, input_len);
     EXPECT_EQ(tests[i].expected_result, eoh);
   }
 }
 TEST(HttpUtilTest, AssembleRawHeaders) {
+  // clang-format off
   struct {
     const char* const input;  // with '|' representing '\0'
     const char* const expected_result;  // with '\0' changed to '|'
@@ -679,8 +675,20 @@ TEST(HttpUtilTest, AssembleRawHeaders) {
       "HTTP/1.0 200 OK\nFoo: 1|Foo2: 3\nBar: 2\n\n",
       "HTTP/1.0 200 OK|Foo: 1Foo2: 3|Bar: 2||"
     },
+
+    // The embedded NUL at the start of the line (before "Blah:") should not be
+    // interpreted as LWS (as that would mistake it for a header line
+    // continuation).
+    {
+      "HTTP/1.0 200 OK\n"
+      "Foo: 1\n"
+      "|Blah: 3\n"
+      "Bar: 2\n\n",
+      "HTTP/1.0 200 OK|Foo: 1|Blah: 3|Bar: 2||"
+    },
   };
-  for (size_t i = 0; i < arraysize(tests); ++i) {
+  // clang-format on
+  for (size_t i = 0; i < base::size(tests); ++i) {
     std::string input = tests[i].input;
     std::replace(input.begin(), input.end(), '|', '\0');
     std::string raw = HttpUtil::AssembleRawHeaders(input.data(), input.size());
@@ -720,7 +728,7 @@ TEST(HttpUtilTest, RequestUrlSanitize) {
       "wss://www.google.com:78/foobar?query=1",
     }
   };
-  for (size_t i = 0; i < arraysize(tests); ++i) {
+  for (size_t i = 0; i < base::size(tests); ++i) {
     SCOPED_TRACE(i);
 
     GURL url(GURL(tests[i].url));
@@ -738,15 +746,24 @@ TEST(HttpUtilTest, SpecForRequestForUrlWithFtpScheme) {
 }
 
 TEST(HttpUtilTest, GenerateAcceptLanguageHeader) {
-  EXPECT_EQ(std::string("en-US,fr;q=0.8,de;q=0.6"),
-            HttpUtil::GenerateAcceptLanguageHeader("en-US,fr,de"));
-  EXPECT_EQ(std::string("en-US,fr;q=0.8,de;q=0.6,ko;q=0.4,zh-CN;q=0.2,"
-                        "ja;q=0.2"),
-            HttpUtil::GenerateAcceptLanguageHeader("en-US,fr,de,ko,zh-CN,ja"));
+  std::string header = HttpUtil::GenerateAcceptLanguageHeader("");
+  EXPECT_TRUE(header.empty());
+
+  header = HttpUtil::GenerateAcceptLanguageHeader("es");
+  EXPECT_EQ(std::string("es"), header);
+
+  header = HttpUtil::GenerateAcceptLanguageHeader("en-US,fr,de");
+  EXPECT_EQ(std::string("en-US,fr;q=0.9,de;q=0.8"), header);
+
+  header = HttpUtil::GenerateAcceptLanguageHeader("en-US,fr,de,ko,zh-CN,ja");
+  EXPECT_EQ(
+      std::string("en-US,fr;q=0.9,de;q=0.8,ko;q=0.7,zh-CN;q=0.6,ja;q=0.5"),
+      header);
 }
 
 // HttpResponseHeadersTest.GetMimeType also tests ParseContentType.
 TEST(HttpUtilTest, ParseContentType) {
+  // clang-format off
   const struct {
     const char* const content_type;
     const char* const expected_mime_type;
@@ -754,16 +771,29 @@ TEST(HttpUtilTest, ParseContentType) {
     const bool expected_had_charset;
     const char* const expected_boundary;
   } tests[] = {
+    { "text/html",
+      "text/html",
+      "",
+      false,
+      ""
+    },
+    { "text/html;",
+      "text/html",
+      "",
+      false,
+      ""
+    },
     { "text/html; charset=utf-8",
       "text/html",
       "utf-8",
       true,
       ""
     },
+    // Parameter name is "charset ", not "charset".  See https://crbug.com/772834.
     { "text/html; charset =utf-8",
       "text/html",
-      "utf-8",
-      true,
+      "",
+      false,
       ""
     },
     { "text/html; charset= utf-8",
@@ -778,35 +808,40 @@ TEST(HttpUtilTest, ParseContentType) {
       true,
       ""
     },
+
     { "text/html; boundary=\"WebKit-ada-df-dsf-adsfadsfs\"",
       "text/html",
       "",
       false,
-      "\"WebKit-ada-df-dsf-adsfadsfs\""
+      "WebKit-ada-df-dsf-adsfadsfs"
     },
+    // Parameter name is "boundary ", not "boundary".
+    // See https://crbug.com/772834.
     { "text/html; boundary =\"WebKit-ada-df-dsf-adsfadsfs\"",
       "text/html",
       "",
       false,
-      "\"WebKit-ada-df-dsf-adsfadsfs\""
+      ""
     },
+    // Parameter value includes leading space.  See https://crbug.com/772834.
     { "text/html; boundary= \"WebKit-ada-df-dsf-adsfadsfs\"",
       "text/html",
       "",
       false,
-      "\"WebKit-ada-df-dsf-adsfadsfs\""
+      "WebKit-ada-df-dsf-adsfadsfs"
     },
+    // Parameter value includes leading space.  See https://crbug.com/772834.
     { "text/html; boundary= \"WebKit-ada-df-dsf-adsfadsfs\"   ",
       "text/html",
       "",
       false,
-      "\"WebKit-ada-df-dsf-adsfadsfs\""
+      "WebKit-ada-df-dsf-adsfadsfs"
     },
     { "text/html; boundary=\"WebKit-ada-df-dsf-adsfadsfs  \"",
       "text/html",
       "",
       false,
-      "\"WebKit-ada-df-dsf-adsfadsfs  \""
+      "WebKit-ada-df-dsf-adsfadsfs"
     },
     { "text/html; boundary=WebKit-ada-df-dsf-adsfadsfs",
       "text/html",
@@ -814,161 +849,232 @@ TEST(HttpUtilTest, ParseContentType) {
       false,
       "WebKit-ada-df-dsf-adsfadsfs"
     },
+    { "text/html; charset",
+      "text/html",
+      "",
+      false,
+      ""
+    },
+    { "text/html; charset=",
+      "text/html",
+      "",
+      false,
+      ""
+    },
+    { "text/html; charset= ",
+      "text/html",
+      "",
+      false,
+      ""
+    },
+    { "text/html; charset= ;",
+      "text/html",
+      "",
+      false,
+      ""
+    },
+    // Empty quoted strings are allowed.
+    { "text/html; charset=\"\"",
+      "text/html",
+      "",
+      true,
+      ""
+    },
+
+    // Leading and trailing whitespace in quotes is trimmed.
+    { "text/html; charset=\" \"",
+      "text/html",
+      "",
+      true,
+      ""
+    },
+    { "text/html; charset=\" foo \"",
+      "text/html",
+      "foo",
+      true,
+      ""
+    },
+
+    // With multiple values, should use the first one.
+    { "text/html; charset=foo; charset=utf-8",
+      "text/html",
+      "foo",
+      true,
+      ""
+    },
+    { "text/html; charset; charset=; charset=utf-8",
+      "text/html",
+      "utf-8",
+      true,
+      ""
+    },
+    { "text/html; charset=utf-8; charset=; charset",
+      "text/html",
+      "utf-8",
+      true,
+      ""
+    },
+    { "text/html; boundary=foo; boundary=bar",
+      "text/html",
+      "",
+      false,
+      "foo"
+    },
+
+    // Stray quotes ignored.
+    { "text/html; \"; \"\"; charset=utf-8",
+      "text/html",
+      "utf-8",
+      true,
+      ""
+    },
+    // Non-leading quotes kept as-is.
+    { "text/html; charset=u\"tf-8\"",
+      "text/html",
+      "u\"tf-8\"",
+      true,
+      ""
+    },
+    { "text/html; charset=\"utf-8\"",
+      "text/html",
+      "utf-8",
+      true,
+      ""
+    },
+    // No closing quote.
+    { "text/html; charset=\"utf-8",
+      "text/html",
+      "utf-8",
+      true,
+      ""
+    },
+    // Check that \ is treated as an escape character.
+    { "text/html; charset=\"\\utf\\-\\8\"",
+      "text/html",
+      "utf-8",
+      true,
+      ""
+    },
+    // More interseting escape character test - test escaped backslash, escaped
+    // quote, and backslash at end of input in unterminated quoted string.
+    { "text/html; charset=\"\\\\\\\"\\",
+      "text/html",
+      "\\\"\\",
+      true,
+      ""
+    },
+    // Check quoted semicolon.
+    { "text/html; charset=\";charset=utf-8;\"",
+      "text/html",
+      ";charset=utf-8;",
+      true,
+      ""
+    },
+    // Unclear if this one should just return utf-8 or not.
+    { "text/html; charset= \"utf-8\"",
+      "text/html",
+      "utf-8",
+      true,
+      ""
+    },
+    // Regression test for https://crbug.com/772350:
+    // Single quotes are not delimiters but must be treated as part of charset.
+    { "text/html; charset='utf-8'",
+      "text/html",
+      "'utf-8'",
+      true,
+      ""
+    },
     // TODO(abarth): Add more interesting test cases.
   };
-  for (size_t i = 0; i < arraysize(tests); ++i) {
+  // clang-format on
+  for (size_t i = 0; i < base::size(tests); ++i) {
     std::string mime_type;
     std::string charset;
     bool had_charset = false;
     std::string boundary;
     HttpUtil::ParseContentType(tests[i].content_type, &mime_type, &charset,
                                &had_charset, &boundary);
-    EXPECT_EQ(tests[i].expected_mime_type, mime_type) << "i=" << i;
-    EXPECT_EQ(tests[i].expected_charset, charset) << "i=" << i;
-    EXPECT_EQ(tests[i].expected_had_charset, had_charset) << "i=" << i;
-    EXPECT_EQ(tests[i].expected_boundary, boundary) << "i=" << i;
+    EXPECT_EQ(tests[i].expected_mime_type, mime_type)
+        << "content_type=" << tests[i].content_type;
+    EXPECT_EQ(tests[i].expected_charset, charset)
+        << "content_type=" << tests[i].content_type;
+    EXPECT_EQ(tests[i].expected_had_charset, had_charset)
+        << "content_type=" << tests[i].content_type;
+    EXPECT_EQ(tests[i].expected_boundary, boundary)
+        << "content_type=" << tests[i].content_type;
   }
 }
 
-TEST(HttpUtilTest, ParseRanges) {
+TEST(HttpUtilTest, ParseContentRangeHeader) {
   const struct {
-    const char* const headers;
+    const char* const content_range_header_spec;
     bool expected_return_value;
-    size_t expected_ranges_size;
-    const struct {
-      int64_t expected_first_byte_position;
-      int64_t expected_last_byte_position;
-      int64_t expected_suffix_length;
-    } expected_ranges[10];
+    int64_t expected_first_byte_position;
+    int64_t expected_last_byte_position;
+    int64_t expected_instance_length;
   } tests[] = {
-    { "Range: bytes=0-10",
-      true,
-      1,
-      { {0, 10, -1}, }
-    },
-    { "Range: bytes=10-0",
-      false,
-      0,
-      {}
-    },
-    { "Range: BytES=0-10",
-      true,
-      1,
-      { {0, 10, -1}, }
-    },
-    { "Range: megabytes=0-10",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes0-10",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes=0-0,0-10,10-20,100-200,100-,-200",
-      true,
-      6,
-      { {0, 0, -1},
-        {0, 10, -1},
-        {10, 20, -1},
-        {100, 200, -1},
-        {100, -1, -1},
-        {-1, -1, 200},
-      }
-    },
-    { "Range: bytes=0-10\r\n"
-      "Range: bytes=0-10,10-20,100-200,100-,-200",
-      true,
-      1,
-      { {0, 10, -1}
-      }
-    },
-    { "Range: bytes=",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes=-",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes=0-10-",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes=-0-10",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes =0-10\r\n",
-      true,
-      1,
-      { {0, 10, -1}
-      }
-    },
-    { "Range: bytes=  0-10      \r\n",
-      true,
-      1,
-      { {0, 10, -1}
-      }
-    },
-    { "Range: bytes  =   0  -   10      \r\n",
-      true,
-      1,
-      { {0, 10, -1}
-      }
-    },
-    { "Range: bytes=   0-1   0\r\n",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes=   0-     -10\r\n",
-      false,
-      0,
-      {}
-    },
-    { "Range: bytes=   0  -  1   ,   10 -20,   100- 200 ,  100-,  -200 \r\n",
-      true,
-      5,
-      { {0, 1, -1},
-        {10, 20, -1},
-        {100, 200, -1},
-        {100, -1, -1},
-        {-1, -1, 200},
-      }
-    },
+      {"", false, -1, -1, -1},
+      {"megabytes 0-10/50", false, -1, -1, -1},
+      {"0-10/50", false, -1, -1, -1},
+      {"Bytes 0-50/51", true, 0, 50, 51},
+      {"bytes 0-50/51", true, 0, 50, 51},
+      {"bytes\t0-50/51", false, -1, -1, -1},
+      {"    bytes 0-50/51", true, 0, 50, 51},
+      {"    bytes    0    -   50  \t / \t51", true, 0, 50, 51},
+      {"bytes 0\t-\t50\t/\t51\t", true, 0, 50, 51},
+      {"  \tbytes\t\t\t 0\t-\t50\t/\t51\t", true, 0, 50, 51},
+      {"\t   bytes \t  0    -   50   /   5   1", false, -1, -1, -1},
+      {"\t   bytes \t  0    -   5 0   /   51", false, -1, -1, -1},
+      {"bytes 50-0/51", false, -1, -1, -1},
+      {"bytes * /*", false, -1, -1, -1},
+      {"bytes *   /    *   ", false, -1, -1, -1},
+      {"bytes 0-50/*", false, -1, -1, -1},
+      {"bytes 0-50  /    * ", false, -1, -1, -1},
+      {"bytes 0-10000000000/10000000001", true, 0, 10000000000ll,
+       10000000001ll},
+      {"bytes 0-10000000000/10000000000", false, -1, -1, -1},
+      // 64 bit wraparound.
+      {"bytes 0 - 9223372036854775807 / 100", false, -1, -1, -1},
+      // 64 bit wraparound.
+      {"bytes 0 - 100 / -9223372036854775808", false, -1, -1, -1},
+      {"bytes */50", false, -1, -1, -1},
+      {"bytes 0-50/10", false, -1, -1, -1},
+      {"bytes 40-50/45", false, -1, -1, -1},
+      {"bytes 0-50/-10", false, -1, -1, -1},
+      {"bytes 0-0/1", true, 0, 0, 1},
+      {"bytes 0-40000000000000000000/40000000000000000001", false, -1, -1, -1},
+      {"bytes 1-/100", false, -1, -1, -1},
+      {"bytes -/100", false, -1, -1, -1},
+      {"bytes -1/100", false, -1, -1, -1},
+      {"bytes 0-1233/*", false, -1, -1, -1},
+      {"bytes -123 - -1/100", false, -1, -1, -1},
   };
 
-  for (size_t i = 0; i < arraysize(tests); ++i) {
-    std::vector<HttpByteRange> ranges;
-    bool return_value = HttpUtil::ParseRanges(std::string(tests[i].headers),
-                                              &ranges);
-    EXPECT_EQ(tests[i].expected_return_value, return_value);
-    if (return_value) {
-      EXPECT_EQ(tests[i].expected_ranges_size, ranges.size());
-      for (size_t j = 0; j < ranges.size(); ++j) {
-        EXPECT_EQ(tests[i].expected_ranges[j].expected_first_byte_position,
-                  ranges[j].first_byte_position());
-        EXPECT_EQ(tests[i].expected_ranges[j].expected_last_byte_position,
-                  ranges[j].last_byte_position());
-        EXPECT_EQ(tests[i].expected_ranges[j].expected_suffix_length,
-                  ranges[j].suffix_length());
-      }
-    }
+  for (const auto& test : tests) {
+    int64_t first_byte_position, last_byte_position, instance_length;
+    EXPECT_EQ(test.expected_return_value,
+              HttpUtil::ParseContentRangeHeaderFor206(
+                  test.content_range_header_spec, &first_byte_position,
+                  &last_byte_position, &instance_length))
+        << test.content_range_header_spec;
+    EXPECT_EQ(test.expected_first_byte_position, first_byte_position)
+        << test.content_range_header_spec;
+    EXPECT_EQ(test.expected_last_byte_position, last_byte_position)
+        << test.content_range_header_spec;
+    EXPECT_EQ(test.expected_instance_length, instance_length)
+        << test.content_range_header_spec;
   }
 }
 
 TEST(HttpUtilTest, ParseRetryAfterHeader) {
-  base::Time::Exploded now_exploded = { 2014, 11, -1, 5, 22, 39, 30, 0 };
-  base::Time now = base::Time::FromUTCExploded(now_exploded);
+  base::Time::Exploded now_exploded = {2014, 11, 4, 5, 22, 39, 30, 0};
+  base::Time now;
+  EXPECT_TRUE(base::Time::FromUTCExploded(now_exploded, &now));
 
-  base::Time::Exploded later_exploded = { 2015, 1, -1, 1, 12, 34, 56, 0 };
-  base::Time later = base::Time::FromUTCExploded(later_exploded);
+  base::Time::Exploded later_exploded = {2015, 1, 5, 1, 12, 34, 56, 0};
+  base::Time later;
+  EXPECT_TRUE(base::Time::FromUTCExploded(later_exploded, &later));
 
   const struct {
     const char* retry_after_string;
@@ -990,7 +1096,7 @@ TEST(HttpUtilTest, ParseRetryAfterHeader) {
     { "Mon, 1 Jan 1900 12:34:56 GMT", false, base::TimeDelta() }
   };
 
-  for (size_t i = 0; i < arraysize(tests); ++i) {
+  for (size_t i = 0; i < base::size(tests); ++i) {
     base::TimeDelta retry_after;
     bool return_value = HttpUtil::ParseRetryAfterHeader(
         tests[i].retry_after_string, now, &retry_after);
@@ -1087,25 +1193,26 @@ void CheckInvalidNameValuePair(std::string valid_part,
 }  // namespace
 
 TEST(HttpUtilTest, NameValuePairsIteratorCopyAndAssign) {
-  std::string data = "alpha='\\'a\\''; beta=\" b \"; cappa='c;'; delta=\"d\"";
+  std::string data =
+      "alpha=\"\\\"a\\\"\"; beta=\" b \"; cappa=\"c;\"; delta=\"d\"";
   HttpUtil::NameValuePairsIterator parser_a(data.begin(), data.end(), ';');
 
   EXPECT_TRUE(parser_a.valid());
   ASSERT_NO_FATAL_FAILURE(
-      CheckNextNameValuePair(&parser_a, true, true, "alpha", "'a'"));
+      CheckNextNameValuePair(&parser_a, true, true, "alpha", "\"a\""));
 
   HttpUtil::NameValuePairsIterator parser_b(parser_a);
   // a and b now point to same location
   ASSERT_NO_FATAL_FAILURE(
-      CheckCurrentNameValuePair(&parser_b, true, "alpha", "'a'"));
+      CheckCurrentNameValuePair(&parser_b, true, "alpha", "\"a\""));
   ASSERT_NO_FATAL_FAILURE(
-      CheckCurrentNameValuePair(&parser_a, true, "alpha", "'a'"));
+      CheckCurrentNameValuePair(&parser_a, true, "alpha", "\"a\""));
 
   // advance a, no effect on b
   ASSERT_NO_FATAL_FAILURE(
       CheckNextNameValuePair(&parser_a, true, true, "beta", " b "));
   ASSERT_NO_FATAL_FAILURE(
-      CheckCurrentNameValuePair(&parser_b, true, "alpha", "'a'"));
+      CheckCurrentNameValuePair(&parser_b, true, "alpha", "\"a\""));
 
   // assign b the current state of a, no effect on a
   parser_b = parser_a;
@@ -1131,10 +1238,13 @@ TEST(HttpUtilTest, NameValuePairsIteratorEmptyInput) {
 }
 
 TEST(HttpUtilTest, NameValuePairsIterator) {
-  std::string data = "alpha=1; beta= 2 ;cappa =' 3; ';"
-                     "delta= \" \\\"4\\\" \"; e= \" '5'\"; e=6;"
-                     "f='\\'\\h\\e\\l\\l\\o\\ \\w\\o\\r\\l\\d\\'';"
-                     "g=''; h='hello'";
+  std::string data =
+      "alpha=1; beta= 2 ;"
+      "cappa =' 3; foo=';"
+      "cappa =\" 3; foo=\";"
+      "delta= \" \\\"4\\\" \"; e= \" '5'\"; e=6;"
+      "f=\"\\\"\\h\\e\\l\\l\\o\\ \\w\\o\\r\\l\\d\\\"\";"
+      "g=\"\"; h=\"hello\"";
   HttpUtil::NameValuePairsIterator parser(data.begin(), data.end(), ';');
   EXPECT_TRUE(parser.valid());
 
@@ -1142,8 +1252,17 @@ TEST(HttpUtilTest, NameValuePairsIterator) {
       CheckNextNameValuePair(&parser, true, true, "alpha", "1"));
   ASSERT_NO_FATAL_FAILURE(
       CheckNextNameValuePair(&parser, true, true, "beta", "2"));
+
+  // Single quotes shouldn't be treated as quotes.
   ASSERT_NO_FATAL_FAILURE(
-      CheckNextNameValuePair(&parser, true, true, "cappa", " 3; "));
+      CheckNextNameValuePair(&parser, true, true, "cappa", "' 3"));
+  ASSERT_NO_FATAL_FAILURE(
+      CheckNextNameValuePair(&parser, true, true, "foo", "'"));
+
+  // But double quotes should be, and can contain semi-colons and equal signs.
+  ASSERT_NO_FATAL_FAILURE(
+      CheckNextNameValuePair(&parser, true, true, "cappa", " 3; foo="));
+
   ASSERT_NO_FATAL_FAILURE(
       CheckNextNameValuePair(&parser, true, true, "delta", " \"4\" "));
   ASSERT_NO_FATAL_FAILURE(
@@ -1151,7 +1270,7 @@ TEST(HttpUtilTest, NameValuePairsIterator) {
   ASSERT_NO_FATAL_FAILURE(
       CheckNextNameValuePair(&parser, true, true, "e", "6"));
   ASSERT_NO_FATAL_FAILURE(
-      CheckNextNameValuePair(&parser, true, true, "f", "'hello world'"));
+      CheckNextNameValuePair(&parser, true, true, "f", "\"hello world\""));
   ASSERT_NO_FATAL_FAILURE(
       CheckNextNameValuePair(&parser, true, true, "g", std::string()));
   ASSERT_NO_FATAL_FAILURE(
@@ -1208,8 +1327,9 @@ TEST(HttpUtilTest, NameValuePairsIteratorIllegalInputs) {
   ASSERT_NO_FATAL_FAILURE(CheckInvalidNameValuePair("alpha=1", "; beta"));
   ASSERT_NO_FATAL_FAILURE(CheckInvalidNameValuePair(std::string(), "beta"));
 
-  ASSERT_NO_FATAL_FAILURE(CheckInvalidNameValuePair("alpha=1", "; 'beta'=2"));
-  ASSERT_NO_FATAL_FAILURE(CheckInvalidNameValuePair(std::string(), "'beta'=2"));
+  ASSERT_NO_FATAL_FAILURE(CheckInvalidNameValuePair("alpha=1", "; \"beta\"=2"));
+  ASSERT_NO_FATAL_FAILURE(
+      CheckInvalidNameValuePair(std::string(), "\"beta\"=2"));
   ASSERT_NO_FATAL_FAILURE(CheckInvalidNameValuePair("alpha=1", ";beta="));
   ASSERT_NO_FATAL_FAILURE(CheckInvalidNameValuePair("alpha=1",
                                                     ";beta=;cappa=2"));
@@ -1240,7 +1360,7 @@ TEST(HttpUtilTest, NameValuePairsIteratorExtraSeparators) {
 // See comments on the implementation of NameValuePairsIterator::GetNext
 // regarding this derogation from the spec.
 TEST(HttpUtilTest, NameValuePairsIteratorMissingEndQuote) {
-  std::string data = "name='value";
+  std::string data = "name=\"value";
   HttpUtil::NameValuePairsIterator parser(data.begin(), data.end(), ';');
   EXPECT_TRUE(parser.valid());
 
@@ -1365,6 +1485,164 @@ TEST(HttpUtilTest, HasValidators) {
   EXPECT_TRUE(HttpUtil::HasValidators(v1_1, kEtagStrong, kLastModifiedInvalid));
   EXPECT_TRUE(HttpUtil::HasValidators(v1_1, kEtagWeak, kLastModifiedInvalid));
   EXPECT_TRUE(HttpUtil::HasValidators(v1_1, kEtagEmpty, kLastModifiedInvalid));
+}
+
+TEST(HttpUtilTest, IsValidHeaderValue) {
+  const char* const invalid_values[] = {
+      "X-Requested-With: chrome${NUL}Sec-Unsafe: injected",
+      "X-Requested-With: chrome\r\nSec-Unsafe: injected",
+      "X-Requested-With: chrome\nSec-Unsafe: injected",
+      "X-Requested-With: chrome\rSec-Unsafe: injected",
+  };
+  for (const std::string& value : invalid_values) {
+    std::string replaced = value;
+    base::ReplaceSubstringsAfterOffset(&replaced, 0, "${NUL}",
+                                       std::string(1, '\0'));
+    EXPECT_FALSE(HttpUtil::IsValidHeaderValue(replaced)) << replaced;
+  }
+
+  // Check that all characters permitted by RFC7230 3.2.6 are allowed.
+  std::string allowed = "\t";
+  for (char c = '\x20'; c < '\x7F'; ++c) {
+    allowed.append(1, c);
+  }
+  for (int c = 0x80; c <= 0xFF; ++c) {
+    allowed.append(1, static_cast<char>(c));
+  }
+  EXPECT_TRUE(HttpUtil::IsValidHeaderValue(allowed));
+}
+
+TEST(HttpUtilTest, IsToken) {
+  EXPECT_TRUE(HttpUtil::IsToken("valid"));
+  EXPECT_TRUE(HttpUtil::IsToken("!"));
+  EXPECT_TRUE(HttpUtil::IsToken("~"));
+
+  EXPECT_FALSE(HttpUtil::IsToken(""));
+  EXPECT_FALSE(HttpUtil::IsToken(base::StringPiece()));
+  EXPECT_FALSE(HttpUtil::IsToken("hello, world"));
+  EXPECT_FALSE(HttpUtil::IsToken(" "));
+  EXPECT_FALSE(HttpUtil::IsToken(base::StringPiece("\0", 1)));
+  EXPECT_FALSE(HttpUtil::IsToken("\x01"));
+  EXPECT_FALSE(HttpUtil::IsToken("\x7F"));
+  EXPECT_FALSE(HttpUtil::IsToken("\x80"));
+  EXPECT_FALSE(HttpUtil::IsToken("\xff"));
+}
+
+TEST(HttpUtilTest, IsLWS) {
+  EXPECT_FALSE(HttpUtil::IsLWS('\v'));
+  EXPECT_FALSE(HttpUtil::IsLWS('\0'));
+  EXPECT_FALSE(HttpUtil::IsLWS('1'));
+  EXPECT_FALSE(HttpUtil::IsLWS('a'));
+  EXPECT_FALSE(HttpUtil::IsLWS('.'));
+  EXPECT_FALSE(HttpUtil::IsLWS('\n'));
+  EXPECT_FALSE(HttpUtil::IsLWS('\r'));
+
+  EXPECT_TRUE(HttpUtil::IsLWS('\t'));
+  EXPECT_TRUE(HttpUtil::IsLWS(' '));
+}
+
+TEST(HttpUtilTest, ParseAcceptEncoding) {
+  const struct {
+    const char* const value;
+    const char* const expected;
+  } tests[] = {
+      {"", "*"},
+      {"identity;q=1, *;q=0", "identity"},
+      {"identity", "identity"},
+      {"FOO, Bar", "bar|foo|identity"},
+      {"foo; q=1", "foo|identity"},
+      {"abc, foo; Q=1.0", "abc|foo|identity"},
+      {"abc, foo;q= 1.00 , bar", "abc|bar|foo|identity"},
+      {"abc, foo; q=1.000, bar", "abc|bar|foo|identity"},
+      {"abc, foo ; q = 0 , bar", "abc|bar|identity"},
+      {"abc, foo; q=0.0, bar", "abc|bar|identity"},
+      {"abc, foo; q=0.00, bar", "abc|bar|identity"},
+      {"abc, foo; q=0.000, bar", "abc|bar|identity"},
+      {"abc, foo; q=0.001, bar", "abc|bar|foo|identity"},
+      {"gzip", "gzip|identity|x-gzip"},
+      {"x-gzip", "gzip|identity|x-gzip"},
+      {"compress", "compress|identity|x-compress"},
+      {"x-compress", "compress|identity|x-compress"},
+      {"x-compress", "compress|identity|x-compress"},
+      {"foo bar", "INVALID"},
+      {"foo;", "INVALID"},
+      {"foo;w=1", "INVALID"},
+      {"foo;q+1", "INVALID"},
+      {"foo;q=2", "INVALID"},
+      {"foo;q=1.001", "INVALID"},
+      {"foo;q=0.", "INVALID"},
+      {"foo,\"bar\"", "INVALID"},
+  };
+
+  for (size_t i = 0; i < base::size(tests); ++i) {
+    std::string value(tests[i].value);
+    std::string reformatted;
+    std::set<std::string> allowed_encodings;
+    if (!HttpUtil::ParseAcceptEncoding(value, &allowed_encodings)) {
+      reformatted = "INVALID";
+    } else {
+      std::vector<std::string> encodings_list;
+      for (auto const& encoding : allowed_encodings)
+        encodings_list.push_back(encoding);
+      reformatted = base::JoinString(encodings_list, "|");
+    }
+    EXPECT_STREQ(tests[i].expected, reformatted.c_str())
+        << "value=\"" << value << "\"";
+  }
+}
+
+TEST(HttpUtilTest, ParseContentEncoding) {
+  const struct {
+    const char* const value;
+    const char* const expected;
+  } tests[] = {
+      {"", ""},
+      {"identity;q=1, *;q=0", "INVALID"},
+      {"identity", "identity"},
+      {"FOO, zergli , Bar", "bar|foo|zergli"},
+      {"foo, *", "INVALID"},
+      {"foo,\"bar\"", "INVALID"},
+  };
+
+  for (size_t i = 0; i < base::size(tests); ++i) {
+    std::string value(tests[i].value);
+    std::string reformatted;
+    std::set<std::string> used_encodings;
+    if (!HttpUtil::ParseContentEncoding(value, &used_encodings)) {
+      reformatted = "INVALID";
+    } else {
+      std::vector<std::string> encodings_list;
+      for (auto const& encoding : used_encodings)
+        encodings_list.push_back(encoding);
+      reformatted = base::JoinString(encodings_list, "|");
+    }
+    EXPECT_STREQ(tests[i].expected, reformatted.c_str())
+        << "value=\"" << value << "\"";
+  }
+}
+
+// Test the expansion of the Language List.
+TEST(HttpUtilTest, ExpandLanguageList) {
+  EXPECT_EQ("", HttpUtil::ExpandLanguageList(""));
+  EXPECT_EQ("en-US,en", HttpUtil::ExpandLanguageList("en-US"));
+  EXPECT_EQ("fr", HttpUtil::ExpandLanguageList("fr"));
+
+  // The base language is added after all regional codes...
+  EXPECT_EQ("en-US,en-CA,en", HttpUtil::ExpandLanguageList("en-US,en-CA"));
+
+  // ... but before other language families.
+  EXPECT_EQ("en-US,en-CA,en,fr",
+            HttpUtil::ExpandLanguageList("en-US,en-CA,fr"));
+  EXPECT_EQ("en-US,en-CA,en,fr,en-AU",
+            HttpUtil::ExpandLanguageList("en-US,en-CA,fr,en-AU"));
+  EXPECT_EQ("en-US,en-CA,en,fr-CA,fr",
+            HttpUtil::ExpandLanguageList("en-US,en-CA,fr-CA"));
+
+  // Add a base language even if it's already in the list.
+  EXPECT_EQ("en-US,en,fr-CA,fr,it,es-AR,es,it-IT",
+            HttpUtil::ExpandLanguageList("en-US,fr-CA,it,fr,es-AR,it-IT"));
+  // Trims a whitespace.
+  EXPECT_EQ("en-US,en,fr", HttpUtil::ExpandLanguageList("en-US, fr"));
 }
 
 }  // namespace net

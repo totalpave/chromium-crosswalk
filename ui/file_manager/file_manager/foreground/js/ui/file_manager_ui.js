@@ -3,25 +3,22 @@
 // found in the LICENSE file.
 
 /**
- * The root of the file manager's view managing the DOM of Files.app.
+ * The root of the file manager's view managing the DOM of the Files app.
  *
  * @param {!ProvidersModel} providersModel Model for providers.
- * @param {!HTMLElement} element Top level element of Files.app.
+ * @param {!HTMLElement} element Top level element of the Files app.
  * @param {!LaunchParam} launchParam Launch param.
  * @constructor
  * @struct
  */
 function FileManagerUI(providersModel, element, launchParam) {
-  // Pre-populate the static localized strings.
-  i18nTemplate.process(element.ownerDocument, loadTimeData);
-
   // Initialize the dialog label. This should be done before constructing dialog
   // instances.
   cr.ui.dialogs.BaseDialog.OK_LABEL = str('OK_LABEL');
   cr.ui.dialogs.BaseDialog.CANCEL_LABEL = str('CANCEL_LABEL');
 
   /**
-   * Top level element of Files.app.
+   * Top level element of the Files app.
    * @type {!HTMLElement}
    */
   this.element = element;
@@ -32,6 +29,16 @@ function FileManagerUI(providersModel, element, launchParam) {
    * @private
    */
   this.dialogType_ = launchParam.type;
+
+  /**
+   * <hr> elements in cr.ui.Menu.
+   * This is a workaround for crbug.com/689255. This member variable is just for
+   * keeping explicit reference to decorated <hr>s to prevent GC from collecting
+   * <hr> wrappers, and not used anywhere.
+   * TODO(fukino): Remove this member variable once the root cause is fixed.
+   * @private {!Array<!Element>}
+   */
+  this.separators_ = [].slice.call(document.querySelectorAll('cr-menu > hr'));
 
   /**
    * Error dialog.
@@ -63,11 +70,20 @@ function FileManagerUI(providersModel, element, launchParam) {
   this.deleteConfirmDialog.setOkLabel(str('DELETE_BUTTON_LABEL'));
 
   /**
-   * Share dialog.
-   * @type {!ShareDialog}
+   * Confirm dialog for file move operation.
+   * @type {!FilesConfirmDialog}
    * @const
    */
-  this.shareDialog = new ShareDialog(this.element);
+  this.moveConfirmDialog = new FilesConfirmDialog(this.element);
+  this.moveConfirmDialog.setOkLabel(str('CONFIRM_MOVE_BUTTON_LABEL'));
+
+  /**
+   * Confirm dialog for file copy operation.
+   * @type {!FilesConfirmDialog}
+   * @const
+   */
+  this.copyConfirmDialog = new FilesConfirmDialog(this.element);
+  this.copyConfirmDialog.setOkLabel(str('CONFIRM_COPY_BUTTON_LABEL'));
 
   /**
    * Multi-profile share dialog.
@@ -93,9 +109,16 @@ function FileManagerUI(providersModel, element, launchParam) {
       providersModel, this.element, launchParam.suggestAppsDialogState);
 
   /**
+   * Dialog for installing .deb files
+   * @type {!cr.filebrowser.InstallLinuxPackageDialog}
+   * @const
+   */
+  this.installLinuxPackageDialog =
+      new cr.filebrowser.InstallLinuxPackageDialog(this.element);
+
+  /**
    * The container element of the dialog.
    * @type {!HTMLElement}
-   * @private
    */
   this.dialogContainer =
       queryRequiredElement('.dialog-container', this.element);
@@ -120,6 +143,14 @@ function FileManagerUI(providersModel, element, launchParam) {
    * @const
    */
   this.toolbar = queryRequiredElement('.dialog-header', this.element);
+
+  /**
+   * The actionbar which contains buttons to perform actions on selected
+   * file(s).
+   * @type {!HTMLElement}
+   * @const
+   */
+  this.actionbar = queryRequiredElement('#action-bar', this.toolbar);
 
   /**
    * The navigation list.
@@ -162,25 +193,8 @@ function FileManagerUI(providersModel, element, launchParam) {
       '#sort-button', cr.ui.MenuButton);
 
   /**
-   * The button to open the details panel.
-   * @type {!Element}
-   * @const
-   */
-  this.detailsButton = queryRequiredElement(
-      '#details-button', this.element);
-
-  /**
-   * Ripple effect of details button.
-   * @private {!FilesToggleRipple}
-   * @const
-   */
-  this.detailsButtonToggleRipple_ =
-      /** @type {!FilesToggleRipple} */ (queryRequiredElement(
-          'files-toggle-ripple', this.detailsButton));
-
-  /**
    * Ripple effect of sort button.
-   * @private {!FilesToggleRipple}
+   * @type {!FilesToggleRipple}
    * @const
    */
   this.sortButtonToggleRipple =
@@ -189,11 +203,11 @@ function FileManagerUI(providersModel, element, launchParam) {
 
   /**
    * The button to open gear menu.
-   * @type {!cr.ui.MenuButton}
+   * @type {!cr.ui.MultiMenuButton}
    * @const
    */
-  this.gearButton = util.queryDecoratedElement(
-      '#gear-button', cr.ui.MenuButton);
+  this.gearButton =
+      util.queryDecoratedElement('#gear-button', cr.ui.MultiMenuButton);
 
   /**
    * Ripple effect of gear button.
@@ -209,6 +223,14 @@ function FileManagerUI(providersModel, element, launchParam) {
    * @const
    */
   this.gearMenu = new GearMenu(this.gearButton.menu);
+
+  /**
+   * The button to open context menu in the check-select mode.
+   * @type {!cr.ui.MenuButton}
+   * @const
+   */
+  this.selectionMenuButton =
+      util.queryDecoratedElement('#selection-menu-button', cr.ui.MenuButton);
 
   /**
    * Directory tree.
@@ -229,12 +251,6 @@ function FileManagerUI(providersModel, element, launchParam) {
    * @type {ListContainer}
    */
   this.listContainer = null;
-
-  /**
-   * Details container.
-   * @type {DetailsContainer}
-   */
-  this.detailsContainer = null;
 
   /**
    * @type {!HTMLElement}
@@ -272,10 +288,35 @@ function FileManagerUI(providersModel, element, launchParam) {
       '#tasks', cr.ui.ComboButton);
   this.taskMenuButton.showMenu = function(shouldSetFocus) {
     // Prevent the empty menu from opening.
-    if (!this.menu.length)
+    if (!this.menu.length) {
       return;
+    }
     cr.ui.ComboButton.prototype.showMenu.call(this, shouldSetFocus);
   };
+
+  /**
+   * The menu button for share options
+   * @type {!cr.ui.MultiMenuButton}
+   * @const
+   */
+  this.shareMenuButton =
+      util.queryDecoratedElement('#share-menu-button', cr.ui.MultiMenuButton);
+  const shareMenuButtonToggleRipple =
+      /** @type {!FilesToggleRipple} */ (
+          queryRequiredElement('files-toggle-ripple', this.shareMenuButton));
+  this.shareMenuButton.addEventListener('menushow', () => {
+    shareMenuButtonToggleRipple.activated = true;
+  });
+  this.shareMenuButton.addEventListener('menuhide', () => {
+    shareMenuButtonToggleRipple.activated = false;
+  });
+
+  /**
+   * @type {!cr.ui.Menu}
+   * @const
+   */
+  this.shareSubMenu = util.queryDecoratedElement('#share-sub-menu', cr.ui.Menu);
+  this.shareMenuButton.overflow = this.shareSubMenu;
 
   /**
    * Banners in the file list.
@@ -303,29 +344,55 @@ function FileManagerUI(providersModel, element, launchParam) {
    */
   this.actionsSubmenu = new ActionsSubmenu(this.fileContextMenu);
 
+  /**
+   * @type {!FilesToast}
+   * @const
+   */
+  this.toast =
+      /** @type {!FilesToast} */ (document.querySelector('files-toast'));
+
+  /**
+   * A hidden div that can be used to announce text to screen reader/ChromeVox.
+   * @private {!HTMLElement}
+   */
+  this.a11yMessage_ = queryRequiredElement('#a11y-msg', this.element);
+
+
+  if (window.IN_TEST) {
+    /**
+     * Stores all a11y announces to be checked in tests.
+     * @public {Array<string>}
+     */
+    this.a11yAnnounces = [];
+  }
+
   // Initialize attributes.
   this.element.setAttribute('type', this.dialogType_);
+  if (launchParam.allowedPaths !== AllowedPaths.ANY_PATH_OR_URL) {
+    this.element.setAttribute('block-hosted-docs', '');
+  }
 
-  // Hack: make menuitems focusable. Since the menuitems in Files.app is not
+  // Hack: make menuitems focusable. Since the menuitems in the Files app is not
   // button so it doesn't have a tabfocus in nature. It prevents Chromevox from
   // speeaching because the opened menu is closed when the non-focusable object
   // tries to get the focus.
-  var menuitems = document.querySelectorAll('cr-menu.chrome-menu > :not(hr)');
-  for (var i = 0; i < menuitems.length; i++) {
+  const menuitems = document.querySelectorAll('cr-menu.chrome-menu > :not(hr)');
+  for (let i = 0; i < menuitems.length; i++) {
     // Make menuitems focusable. The value can be any non-negative value,
     // because pressing 'Tab' key on menu is handled and we don't need to mind
     // the taborder and the destination of tabfocus.
-    if (!menuitems[i].hasAttribute('tabindex'))
+    if (!menuitems[i].hasAttribute('tabindex')) {
       menuitems[i].setAttribute('tabindex', '0');
+    }
   }
 
   // Modify UI default behavior.
   this.element.addEventListener('click', this.onExternalLinkClick_.bind(this));
-  this.element.addEventListener('drop', function(e) {
+  this.element.addEventListener('drop', e => {
     e.preventDefault();
   });
   if (util.runningInBrowser()) {
-    this.element.addEventListener('contextmenu', function(e) {
+    this.element.addEventListener('contextmenu', e => {
       e.preventDefault();
       e.stopPropagation();
     });
@@ -337,12 +404,9 @@ function FileManagerUI(providersModel, element, launchParam) {
  *
  * @param {!FileTable} table
  * @param {!FileGrid} grid
- * @param {!SingleFileDetailsPanel} singlePanel
- * @param {!MultiFileDetailsPanel} multiPanel
  * @param {!LocationLine} locationLine
  */
-FileManagerUI.prototype.initAdditionalUI = function(
-    table, grid, singlePanel, multiPanel, locationLine) {
+FileManagerUI.prototype.initAdditionalUI = function(table, grid, locationLine) {
   // List container.
   this.listContainer = new ListContainer(
       queryRequiredElement('#list-container', this.element), table, grid);
@@ -350,25 +414,6 @@ FileManagerUI.prototype.initAdditionalUI = function(
   // Splitter.
   this.decorateSplitter_(
       queryRequiredElement('#navigation-list-splitter', this.element));
-
-  // Details container.
-  var listDetailsSplitter =
-      queryRequiredElement('#list-details-splitter', this.element);
-  this.decorateSplitter_(listDetailsSplitter, true);
-  this.detailsContainer = new DetailsContainer(
-      queryRequiredElement('#details-container', this.element),
-      singlePanel,
-      multiPanel,
-      listDetailsSplitter,
-      this.detailsButton,
-      this.detailsButtonToggleRipple_);
-
-  chrome.commandLinePrivate.hasSwitch('enable-files-details-panel',
-      function(enabled) {
-    if (enabled) {
-      this.detailsButton.style.display = 'block';
-    }
-  }.bind(this));
 
   // Location line.
   this.locationLine = locationLine;
@@ -390,7 +435,7 @@ FileManagerUI.prototype.initAdditionalUI = function(
 FileManagerUI.prototype.initUIFocus = function() {
   // Set the initial focus. When there is no focus, the active element is the
   // <body>.
-  var targetElement = null;
+  let targetElement = null;
   if (this.dialogType_ == DialogType.SELECT_SAVEAS_FILE) {
     targetElement = this.dialogFooter.filenameInput;
   } else if (this.listContainer.currentListType !=
@@ -398,8 +443,9 @@ FileManagerUI.prototype.initUIFocus = function() {
     targetElement = this.listContainer.currentList;
   }
 
-  if (targetElement)
+  if (targetElement) {
     targetElement.focus();
+  }
 };
 
 /**
@@ -418,9 +464,9 @@ FileManagerUI.prototype.initDirectoryTree = function(directoryTree) {
   // Visible height of the directory tree depends on the size of progress
   // center panel. When the size of progress center panel changes, directory
   // tree has to be notified to adjust its components (e.g. progress bar).
-  var relayoutLimiter = new AsyncUtil.RateLimiter(
+  const relayoutLimiter = new AsyncUtil.RateLimiter(
       directoryTree.relayout.bind(directoryTree), 200);
-  var observer = new MutationObserver(
+  const observer = new MutationObserver(
       relayoutLimiter.run.bind(relayoutLimiter));
   observer.observe(this.progressCenterPanel.element,
                    /** @type {MutationObserverInit} */
@@ -439,7 +485,7 @@ FileManagerUI.prototype.initBanners = function(banners) {
 /**
  * Attaches files tooltip.
  */
-FileManagerUI.prototype.attachFilesTooltip = function() {
+FileManagerUI.prototype.attachFilesTooltip = () => {
   assertInstanceof(document.querySelector('files-tooltip'), FilesTooltip)
       .addTargets(document.querySelectorAll('[has-tooltip]'));
 };
@@ -448,12 +494,12 @@ FileManagerUI.prototype.attachFilesTooltip = function() {
  * Initialize files menu items. This method must be called after all files menu
  * items are decorated as cr.ui.MenuItem.
  */
-FileManagerUI.prototype.decorateFilesMenuItems = function() {
-  var filesMenuItems = document.querySelectorAll(
+FileManagerUI.prototype.decorateFilesMenuItems = () => {
+  const filesMenuItems = document.querySelectorAll(
       'cr-menu.files-menu > cr-menu-item');
 
-  for (var i = 0; i < filesMenuItems.length; i++) {
-    var filesMenuItem = filesMenuItems[i];
+  for (let i = 0; i < filesMenuItems.length; i++) {
+    const filesMenuItem = filesMenuItems[i];
     assertInstanceof(filesMenuItem, cr.ui.MenuItem);
     cr.ui.decorate(filesMenuItem, cr.ui.FilesMenuItem);
   }
@@ -469,8 +515,9 @@ FileManagerUI.prototype.relayout = function() {
       ListContainer.ListType.UNINITIALIZED) {
     this.listContainer.currentView.relayout();
   }
-  if (this.directoryTree)
+  if (this.directoryTree) {
     this.directoryTree.relayout();
+  }
 };
 
 /**
@@ -480,24 +527,13 @@ FileManagerUI.prototype.relayout = function() {
 FileManagerUI.prototype.setCurrentListType = function(listType) {
   this.listContainer.setCurrentListType(listType);
 
-  var isListView = (listType === ListContainer.ListType.DETAIL);
+  const isListView = (listType === ListContainer.ListType.DETAIL);
   this.toggleViewButton.classList.toggle('thumbnail', isListView);
 
-  var label = isListView ? str('CHANGE_TO_THUMBNAILVIEW_BUTTON_LABEL') :
+  const label = isListView ? str('CHANGE_TO_THUMBNAILVIEW_BUTTON_LABEL') :
                            str('CHANGE_TO_LISTVIEW_BUTTON_LABEL');
   this.toggleViewButton.setAttribute('aria-label', label);
   this.relayout();
-};
-
-/**
- * Sets the details panel visibility
- * @param {boolean} visibility True if the details panel is visible.
- */
-FileManagerUI.prototype.setDetailsVisibility = function(visibility) {
-  if (this.detailsContainer) {
-    this.detailsContainer.setVisibility(visibility);
-    this.relayout();
-  }
 };
 
 /**
@@ -509,11 +545,13 @@ FileManagerUI.prototype.setDetailsVisibility = function(visibility) {
  * @private
  */
 FileManagerUI.prototype.onExternalLinkClick_ = function(event) {
-  if (event.target.tagName != 'A' || !event.target.href)
+  if (event.target.tagName != 'A' || !event.target.href) {
     return;
+  }
 
-  if (this.dialogType_ != DialogType.FULL_PAGE)
+  if (this.dialogType_ != DialogType.FULL_PAGE) {
     this.dialogFooter.cancelButton.click();
+  }
 };
 
 /**
@@ -524,9 +562,9 @@ FileManagerUI.prototype.onExternalLinkClick_ = function(event) {
  */
 FileManagerUI.prototype.decorateSplitter_ = function(splitterElement,
     opt_resizeNextElement) {
-  var self = this;
-  var Splitter = cr.ui.Splitter;
-  var customSplitter = cr.ui.define('div');
+  const self = this;
+  const Splitter = cr.ui.Splitter;
+  const customSplitter = cr.ui.define('div');
 
   customSplitter.prototype = {
     __proto__: Splitter.prototype,
@@ -547,6 +585,93 @@ FileManagerUI.prototype.decorateSplitter_ = function(splitterElement,
     }
   };
 
-  customSplitter.decorate(splitterElement);
+  /** @type Object */ (customSplitter).decorate(splitterElement);
   splitterElement.resizeNextElement = !!opt_resizeNextElement;
+};
+
+/**
+ * Mark |element| with "loaded" attribute to indicate that File Manager has
+ * finished loading.
+ */
+FileManagerUI.prototype.addLoadedAttribute = function() {
+  this.element.setAttribute('loaded', '');
+};
+
+/**
+ * Sets up and shows the alert to inform a user the task is opened in the
+ * desktop of the running profile.
+ *
+ * @param {Array<Entry>} entries List of opened entries.
+ */
+FileManagerUI.prototype.showOpenInOtherDesktopAlert = function(entries) {
+  if (!entries.length) {
+    return;
+  }
+  chrome.fileManagerPrivate.getProfiles(
+    (profiles, currentId, displayedId) => {
+      // Find strings.
+      let displayName;
+      for (let i = 0; i < profiles.length; i++) {
+        if (profiles[i].profileId === currentId) {
+          displayName = profiles[i].displayName;
+          break;
+        }
+      }
+      if (!displayName) {
+        console.warn('Display name is not found.');
+        return;
+      }
+
+      const title = entries.length > 1 ?
+          entries[0].name + '\u2026' /* ellipsis */ : entries[0].name;
+      const message = strf(entries.length > 1 ?
+                         'OPEN_IN_OTHER_DESKTOP_MESSAGE_PLURAL' :
+                         'OPEN_IN_OTHER_DESKTOP_MESSAGE',
+                         displayName,
+                         currentId);
+
+      // Show the dialog.
+      this.alertDialog.showWithTitle(title, message, null, null, null);
+    });
+};
+
+/**
+ * Shows confirmation dialog and handles user interaction.
+ * @param {boolean} isMove true if the operation is move. false if copy.
+ * @param {!Array<string>} messages The messages to show in the dialog.
+ *     box.
+ * @return {!Promise<boolean>}
+ */
+FileManagerUI.prototype.showConfirmationDialog = function(isMove, messages) {
+  let dialog = null;
+  if (isMove) {
+    dialog = this.moveConfirmDialog;
+  } else {
+    dialog = this.copyConfirmDialog;
+  }
+  return new Promise((resolve, reject) => {
+    dialog.show(
+        messages.join(' '),
+        () => {
+          resolve(true);
+        },
+        () => {
+          resolve(false);
+        });
+  });
+};
+
+/**
+ * Send a text to screen reader/Chromevox without displaying the text in the UI.
+ * @param {string} text Text to be announced by screen reader, which should be
+ * already translated.
+ */
+FileManagerUI.prototype.speakA11yMessage = function(text) {
+  // Screen reader only reads if the content changes, so clear the content
+  // first.
+  this.a11yMessage_.textContent = '';
+  this.a11yMessage_.textContent = text;
+  if (window.IN_TEST) {
+    this.a11yAnnounces.push(text);
+  }
 };

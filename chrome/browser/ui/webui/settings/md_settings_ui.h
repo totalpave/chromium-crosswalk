@@ -12,34 +12,35 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui_controller.h"
 
-class GURL;
+namespace content {
+class WebUIMessageHandler;
+}
+
+namespace user_prefs {
+class PrefRegistrySyncable;
+}
 
 namespace settings {
 
-class SettingsPageUIHandler;
-
-// The WebUI handler for chrome://md-settings.
+// The WebUI handler for chrome://settings.
 class MdSettingsUI : public content::WebUIController,
                      public content::WebContentsObserver {
  public:
-  MdSettingsUI(content::WebUI* web_ui, const GURL& url);
+  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+
+  explicit MdSettingsUI(content::WebUI* web_ui);
   ~MdSettingsUI() override;
 
   // content::WebContentsObserver:
-  void DidStartProvisionalLoadForFrame(
-      content::RenderFrameHost* render_frame_host,
-      const GURL& validated_url,
-      bool is_error_page,
-      bool is_iframe_srcdoc) override;
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void DocumentLoadedInFrame(
       content::RenderFrameHost *render_frame_host) override;
   void DocumentOnLoadCompletedInMainFrame() override;
 
  private:
-  void AddSettingsPageUIHandler(SettingsPageUIHandler* handler);
-
-  // Weak references; all |handlers_| are owned by |web_ui()|.
-  std::unordered_set<SettingsPageUIHandler*> handlers_;
+  void AddSettingsPageUIHandler(
+      std::unique_ptr<content::WebUIMessageHandler> handler);
 
   base::Time load_start_time_;
 

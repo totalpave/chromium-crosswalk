@@ -10,18 +10,13 @@ Polymer({
   is: 'settings-people-page',
 
   behaviors: [
-    WebUIListenerBehavior,
+    settings.RouteObserverBehavior, I18nBehavior, WebUIListenerBehavior,
+    // <if expr="chromeos">
+    CrPngBehavior, LockStateBehavior,
+    // </if>
   ],
 
   properties: {
-    /**
-     * The current active route.
-     */
-    currentRoute: {
-      type: Object,
-      notify: true,
-    },
-
     /**
      * Preferences state.
      */
@@ -30,6 +25,44 @@ Polymer({
       notify: true,
     },
 
+    // <if expr="not chromeos">
+    /**
+     * This flag is used to conditionally show a set of new sign-in UIs to the
+     * profiles that have been migrated to be consistent with the web sign-ins.
+     * TODO(scottchen): In the future when all profiles are completely migrated,
+     * this should be removed, and UIs hidden behind it should become default.
+     * @private
+     */
+    diceEnabled_: {
+      type: Boolean,
+      value: function() {
+        return loadTimeData.getBoolean('diceEnabled');
+      },
+    },
+    // </if>
+
+    /**
+     * This flag is used to conditionally show a set of sync UIs to the
+     * profiles that have been migrated to have a unified consent flow.
+     * TODO(scottchen): In the future when all profiles are completely migrated,
+     * this should be removed, and UIs hidden behind it should become default.
+     * @private
+     */
+    unifiedConsentEnabled_: {
+      type: Boolean,
+      value: function() {
+        return loadTimeData.getBoolean('unifiedConsentEnabled');
+      },
+    },
+
+    // <if expr="not chromeos">
+    /**
+     * Stored accounts to the system, supplied by SyncBrowserProxy.
+     * @type {?Array<!settings.StoredAccount>}
+     */
+    storedAccounts: Object,
+    // </if>
+
     /**
      * The current sync status, supplied by SyncBrowserProxy.
      * @type {?settings.SyncStatus}
@@ -37,110 +70,197 @@ Polymer({
     syncStatus: Object,
 
     /**
+     * Dictionary defining page visibility.
+     * @type {!GuestModePageVisibility}
+     */
+    pageVisibility: Object,
+
+    /**
      * The currently selected profile icon URL. May be a data URL.
+     * @private
      */
     profileIconUrl_: String,
 
     /**
      * The current profile name.
+     * @private
      */
     profileName_: String,
 
-    /**
-     * True if the current profile manages supervised users.
-     */
-    profileManagesSupervisedUsers_: Boolean,
-
-    /** @private {!settings.SyncBrowserProxy} */
-    syncBrowserProxy_: {
-      type: Object,
-      value: function() {
-        return settings.SyncBrowserProxyImpl.getInstance();
-      },
+    // <if expr="not chromeos">
+    /** @private {boolean} */
+    shouldShowGoogleAccount_: {
+      type: Boolean,
+      value: false,
+      computed: 'computeShouldShowGoogleAccount_(storedAccounts, syncStatus,' +
+          'storedAccounts.length, syncStatus.signedIn, syncStatus.hasError)',
     },
 
-<if expr="chromeos">
+    /** @private */
+    showImportDataDialog_: {
+      type: Boolean,
+      value: false,
+    },
+    // </if>
+
+    /** @private */
+    showSignoutDialog_: Boolean,
+
+    // <if expr="chromeos">
     /**
-     * True if quick unlock settings should be displayed on this machine.
+     * True if fingerprint settings should be displayed on this machine.
      * @private
      */
-    quickUnlockAllowed_: {
+    fingerprintUnlockEnabled_: {
       type: Boolean,
-      // TODO(jdufault): Get a real value via quickUnlockPrivate API.
-      value: false,
+      value: function() {
+        return loadTimeData.getBoolean('fingerprintUnlockEnabled');
+      },
       readOnly: true,
     },
 
-    /** @private {!settings.EasyUnlockBrowserProxy} */
-    easyUnlockBrowserProxy_: {
+    /**
+     * True if Chrome OS Account Manager is enabled.
+     * @private
+     */
+    isAccountManagerEnabled_: {
+      type: Boolean,
+      value: function() {
+        return loadTimeData.getBoolean('isAccountManagerEnabled');
+      },
+      readOnly: true,
+    },
+    // </if>
+
+    /** @private {!Map<string, string>} */
+    focusConfig_: {
       type: Object,
       value: function() {
-        return settings.EasyUnlockBrowserProxyImpl.getInstance();
+        const map = new Map();
+        if (settings.routes.SYNC) {
+          map.set(
+              settings.routes.SYNC.path,
+              loadTimeData.getBoolean('unifiedConsentEnabled') ?
+                  '#sync-setup' :
+                  '#sync-status .subpage-arrow button');
+        }
+        // <if expr="not chromeos">
+        if (settings.routes.MANAGE_PROFILE) {
+          map.set(
+              settings.routes.MANAGE_PROFILE.path,
+              loadTimeData.getBoolean('diceEnabled') ?
+                  '#edit-profile .subpage-arrow button' :
+                  '#picture-subpage-trigger .subpage-arrow button');
+        }
+        // </if>
+        // <if expr="chromeos">
+        if (settings.routes.CHANGE_PICTURE) {
+          map.set(
+              settings.routes.CHANGE_PICTURE.path,
+              '#picture-subpage-trigger .subpage-arrow button');
+        }
+        if (settings.routes.LOCK_SCREEN) {
+          map.set(
+              settings.routes.LOCK_SCREEN.path,
+              '#lock-screen-subpage-trigger .subpage-arrow button');
+        }
+        if (settings.routes.ACCOUNTS) {
+          map.set(
+              settings.routes.ACCOUNTS.path,
+              '#manage-other-people-subpage-trigger');
+        }
+        if (settings.routes.ACCOUNT_MANAGER) {
+          map.set(
+              settings.routes.ACCOUNT_MANAGER.path,
+              '#account-manager-subpage-trigger .subpage-arrow button');
+        }
+        // </if>
+        return map;
       },
     },
 
     /**
-     * True if Easy Unlock is allowed on this machine.
+     * True if current user is child user.
      */
-    easyUnlockAllowed_: {
-      type: Boolean,
-      value: function() {
-        return loadTimeData.getBoolean('easyUnlockAllowed');
-      },
-      readOnly: true,
-    },
+    isChild_: Boolean,
+  },
 
-    /**
-     * True if Easy Unlock is enabled.
-     */
-    easyUnlockEnabled_: {
-      type: Boolean,
-      value: function() {
-        return loadTimeData.getBoolean('easyUnlockEnabled');
-      },
-    },
+  /** @private {?settings.SyncBrowserProxy} */
+  syncBrowserProxy_: null,
 
-    /**
-     * True if Easy Unlock's proximity detection feature is allowed.
-     */
-    easyUnlockProximityDetectionAllowed_: {
-      type: Boolean,
-      value: function() {
-        return loadTimeData.getBoolean('easyUnlockAllowed') &&
-            loadTimeData.getBoolean('easyUnlockProximityDetectionAllowed');
-      },
-      readOnly: true,
-    },
-</if>
+  /** @override */
+  created: function() {
+    // <if expr="chromeos">
+    chrome.usersPrivate.getCurrentUser(user => {
+      this.isChild_ = user.isChild;
+    });
+    // </if>
   },
 
   /** @override */
   attached: function() {
-    var profileInfoProxy = settings.ProfileInfoBrowserProxyImpl.getInstance();
+    const profileInfoProxy = settings.ProfileInfoBrowserProxyImpl.getInstance();
     profileInfoProxy.getProfileInfo().then(this.handleProfileInfo_.bind(this));
-    this.addWebUIListener('profile-info-changed',
-                          this.handleProfileInfo_.bind(this));
+    this.addWebUIListener(
+        'profile-info-changed', this.handleProfileInfo_.bind(this));
 
-    profileInfoProxy.getProfileManagesSupervisedUsers().then(
-        this.handleProfileManagesSupervisedUsers_.bind(this));
-    this.addWebUIListener('profile-manages-supervised-users-changed',
-                          this.handleProfileManagesSupervisedUsers_.bind(this));
-
+    this.syncBrowserProxy_ = settings.SyncBrowserProxyImpl.getInstance();
     this.syncBrowserProxy_.getSyncStatus().then(
         this.handleSyncStatus_.bind(this));
-    this.addWebUIListener('sync-status-changed',
-                          this.handleSyncStatus_.bind(this));
+    this.addWebUIListener(
+        'sync-status-changed', this.handleSyncStatus_.bind(this));
 
-<if expr="chromeos">
-    if (this.easyUnlockAllowed_) {
-      this.addWebUIListener(
-          'easy-unlock-enabled-status',
-          this.handleEasyUnlockEnabledStatusChanged_.bind(this));
-      this.easyUnlockBrowserProxy_.getEnabledStatus().then(
-          this.handleEasyUnlockEnabledStatusChanged_.bind(this));
-    }
-</if>
+    // <if expr="not chromeos">
+    const handleStoredAccounts = accounts => {
+      this.storedAccounts = accounts;
+    };
+    this.syncBrowserProxy_.getStoredAccounts().then(handleStoredAccounts);
+    this.addWebUIListener('stored-accounts-updated', handleStoredAccounts);
+
+    this.addWebUIListener('sync-settings-saved', () => {
+      /** @type {!CrToastElement} */ (this.$.toast).show();
+    });
+    // </if>
   },
+
+  /** @protected */
+  currentRouteChanged: function() {
+    this.showImportDataDialog_ =
+        settings.getCurrentRoute() == settings.routes.IMPORT_DATA;
+
+    if (settings.getCurrentRoute() == settings.routes.SIGN_OUT) {
+      // If the sync status has not been fetched yet, optimistically display
+      // the sign-out dialog. There is another check when the sync status is
+      // fetched. The dialog will be closed when the user is not signed in.
+      if (this.syncStatus && !this.syncStatus.signedIn) {
+        settings.navigateToPreviousRoute();
+      } else {
+        this.showSignoutDialog_ = true;
+      }
+    }
+  },
+
+  /**
+   * @return {!Element}
+   * @private
+   */
+  getEditPersonAssocControl_: function() {
+    return this.diceEnabled_ ? assert(this.$$('#edit-profile')) :
+                               assert(this.$$('#picture-subpage-trigger'));
+  },
+
+  // <if expr="chromeos">
+  /** @private */
+  getPasswordState_: function(hasPin, enableScreenLock) {
+    if (!enableScreenLock) {
+      return this.i18n('lockScreenNone');
+    }
+    if (hasPin) {
+      return this.i18n('lockScreenPinOrPassword');
+    }
+    return this.i18n('lockScreenPasswordOnly');
+  },
+  // </if>
 
   /**
    * Handler for when the profile's icon and name is updated.
@@ -149,16 +269,19 @@ Polymer({
    */
   handleProfileInfo_: function(info) {
     this.profileName_ = info.name;
-    this.profileIconUrl_ = info.iconUrl;
-  },
+    /**
+     * Extract first frame from image by creating a single frame PNG using
+     * url as input if base64 encoded and potentially animated.
+     */
+    // <if expr="chromeos">
+    if (info.iconUrl.startsWith('data:image/png;base64')) {
+      this.profileIconUrl_ =
+          CrPngBehavior.convertImageSequenceToPng([info.iconUrl]);
+      return;
+    }
+    // </if>
 
-  /**
-   * Handler for when the profile starts or stops managing supervised users.
-   * @private
-   * @param {boolean} managesSupervisedUsers
-   */
-  handleProfileManagesSupervisedUsers_: function(managesSupervisedUsers) {
-    this.profileManagesSupervisedUsers_ = managesSupervisedUsers;
+    this.profileIconUrl_ = info.iconUrl;
   },
 
   /**
@@ -167,39 +290,43 @@ Polymer({
    * @private
    */
   handleSyncStatus_: function(syncStatus) {
+    // Sign-in impressions should be recorded only if the sign-in promo is
+    // shown. They should be recorder only once, the first time
+    // |this.syncStatus| is set.
+    const shouldRecordSigninImpression =
+        !this.syncStatus && syncStatus && this.showSignin_(syncStatus);
+
     this.syncStatus = syncStatus;
+
+    if (shouldRecordSigninImpression && !this.shouldShowSyncAccountControl_()) {
+      // SyncAccountControl records the impressions user actions.
+      chrome.metricsPrivate.recordUserAction('Signin_Impression_FromSettings');
+    }
   },
 
-<if expr="chromeos">
+  // <if expr="not chromeos">
   /**
-   * Handler for when the Easy Unlock enabled status has changed.
+   * @return {boolean}
    * @private
    */
-  handleEasyUnlockEnabledStatusChanged_: function(easyUnlockEnabled) {
-    this.easyUnlockEnabled_ = easyUnlockEnabled;
+  computeShouldShowGoogleAccount_: function() {
+    if (this.storedAccounts === undefined || this.syncStatus === undefined) {
+      return false;
+    }
+
+    return (this.storedAccounts.length > 0 || !!this.syncStatus.signedIn) &&
+        !this.syncStatus.hasError;
   },
-</if>
+  // </if>
 
   /** @private */
-  onPictureTap_: function() {
-<if expr="chromeos">
-    this.$.pages.setSubpageChain(['changePicture']);
-</if>
-<if expr="not chromeos">
-    this.$.pages.setSubpageChain(['manageProfile']);
-</if>
-  },
-
-<if expr="not chromeos">
-  /** @private */
-  onProfileNameTap_: function() {
-    this.$.pages.setSubpageChain(['manageProfile']);
-  },
-</if>
-
-  /** @private */
-  onActivityControlsTap_: function() {
-    this.syncBrowserProxy_.openActivityControlsUrl();
+  onProfileTap_: function() {
+    // <if expr="chromeos">
+    settings.navigateTo(settings.routes.CHANGE_PICTURE);
+    // </if>
+    // <if expr="not chromeos">
+    settings.navigateTo(settings.routes.MANAGE_PROFILE);
+    // </if>
   },
 
   /** @private */
@@ -208,94 +335,148 @@ Polymer({
   },
 
   /** @private */
+  onDisconnectDialogClosed_: function(e) {
+    this.showSignoutDialog_ = false;
+    // <if expr="not chromeos">
+    if (!this.diceEnabled_) {
+      // If DICE-enabled, this button won't exist here.
+      cr.ui.focusWithoutInk(assert(this.$$('#disconnectButton')));
+    }
+    // </if>
+
+    // <if expr="chromeos">
+    cr.ui.focusWithoutInk(assert(this.$$('#disconnectButton')));
+    // </if>
+
+    if (settings.getCurrentRoute() == settings.routes.SIGN_OUT) {
+      settings.navigateToPreviousRoute();
+    }
+  },
+
+  /** @private */
   onDisconnectTap_: function() {
-    this.$.disconnectDialog.open();
-  },
-
-  /** @private */
-  onDisconnectCancel_: function() {
-    this.$.disconnectDialog.close();
-  },
-
-  /** @private */
-  onDisconnectConfirm_: function() {
-    var deleteProfile = !!this.syncStatus.domain ||
-        (this.$.deleteProfile && this.$.deleteProfile.checked);
-    this.syncBrowserProxy_.signOut(deleteProfile);
-
-    this.$.disconnectDialog.close();
+    settings.navigateTo(settings.routes.SIGN_OUT);
   },
 
   /** @private */
   onSyncTap_: function() {
+    // When unified-consent is enabled, users can go to sync subpage regardless
+    // of sync status.
+    if (this.unifiedConsentEnabled_) {
+      settings.navigateTo(settings.routes.SYNC);
+      return;
+    }
+
+    // TODO(crbug.com/862983): Remove this code once UnifiedConsent is rolled
+    // out to 100%.
     assert(this.syncStatus.signedIn);
     assert(this.syncStatus.syncSystemEnabled);
 
-    if (this.syncStatus.managed)
+    if (!this.isSyncStatusActionable_(this.syncStatus)) {
       return;
+    }
 
-    this.$.pages.setSubpageChain(['sync']);
+    switch (this.syncStatus.statusAction) {
+      case settings.StatusAction.REAUTHENTICATE:
+        this.syncBrowserProxy_.startSignIn();
+        break;
+      case settings.StatusAction.SIGNOUT_AND_SIGNIN:
+        // <if expr="chromeos">
+        this.syncBrowserProxy_.attemptUserExit();
+        // </if>
+        // <if expr="not chromeos">
+        if (this.syncStatus.domain) {
+          settings.navigateTo(settings.routes.SIGN_OUT);
+        } else {
+          // Silently sign the user out without deleting their profile and
+          // prompt them to sign back in.
+          this.syncBrowserProxy_.signOut(false);
+          this.syncBrowserProxy_.startSignIn();
+        }
+        // </if>
+        break;
+      case settings.StatusAction.UPGRADE_CLIENT:
+        settings.navigateTo(settings.routes.ABOUT);
+        break;
+      case settings.StatusAction.ENTER_PASSPHRASE:
+      case settings.StatusAction.CONFIRM_SYNC_SETTINGS:
+      case settings.StatusAction.NO_ACTION:
+      default:
+        settings.navigateTo(settings.routes.SYNC);
+    }
   },
 
-<if expr="chromeos">
-  /** @private */
-  onQuickUnlockTap_: function() {
-    this.$.pages.setSubpageChain(['quick-unlock-authenticate']);
+  // <if expr="chromeos">
+  /**
+   * @param {!Event} e
+   * @private
+   */
+  onConfigureLockTap_: function(e) {
+    // Navigating to the lock screen will always open the password prompt
+    // dialog, so prevent the end of the tap event to focus what is underneath
+    // it, which takes focus from the dialog.
+    e.preventDefault();
+    settings.navigateTo(settings.routes.LOCK_SCREEN);
   },
 
-  /** @private */
-  onEasyUnlockSetupTap_: function() {
-    this.easyUnlockBrowserProxy_.startTurnOnFlow();
+  /**
+   * @param {!Event} e
+   * @private
+   */
+  onAccountManagerTap_: function(e) {
+    settings.navigateTo(settings.routes.ACCOUNT_MANAGER);
   },
-
-  /** @private */
-  onEasyUnlockTurnOffTap_: function() {
-    this.$$('#easyUnlockTurnOffDialog').open();
-  },
-</if>
 
   /** @private */
   onManageOtherPeople_: function() {
-<if expr="not chromeos">
-    this.syncBrowserProxy_.manageOtherPeople();
-</if>
-<if expr="chromeos">
-    this.$.pages.setSubpageChain(['users']);
-</if>
+    settings.navigateTo(settings.routes.ACCOUNTS);
+  },
+  // </if>
+
+  // <if expr="not chromeos">
+  /** @private */
+  onImportDataTap_: function() {
+    settings.navigateTo(settings.routes.IMPORT_DATA);
   },
 
   /** @private */
-  onManageSupervisedUsers_: function() {
-    window.open(loadTimeData.getString('supervisedUsersUrl'));
+  onImportDataDialogClosed_: function() {
+    settings.navigateToPreviousRoute();
+    cr.ui.focusWithoutInk(assert(this.$.importDataDialogTrigger));
   },
 
-<if expr="not chromeos">
   /**
+   * Open URL for managing your Google Account.
    * @private
-   * @param {string} domain
-   * @return {string}
    */
-  getDomainHtml_: function(domain) {
-    var innerSpan =
-        '<span id="managed-by-domain-name">' + domain + '</span>';
-    return loadTimeData.getStringF('domainManagedProfile', innerSpan);
+  openGoogleAccount_: function() {
+    settings.OpenWindowProxyImpl.getInstance().openURL(
+        loadTimeData.getString('googleAccountUrl'));
+    chrome.metricsPrivate.recordUserAction('ManageGoogleAccount_Clicked');
   },
-</if>
 
   /**
+   * @return {boolean}
    * @private
-   * @param {string} domain
-   * @return {string}
    */
-  getDisconnectExplanationHtml_: function(domain) {
-<if expr="not chromeos">
-    if (domain) {
-      return loadTimeData.getStringF(
-          'syncDisconnectManagedProfileExplanation',
-          '<span id="managed-by-domain-name">' + domain + '</span>');
+  shouldShowSyncAccountControl_: function() {
+    if (this.syncStatus == undefined) {
+      return false;
     }
-</if>
-    return loadTimeData.getString('syncDisconnectExplanation');
+
+    return this.diceEnabled_ && !!this.syncStatus.syncSystemEnabled &&
+        !!this.syncStatus.signinAllowed;
+  },
+  // </if>
+
+  /**
+   * @private
+   * @param {?settings.SyncStatus} syncStatus
+   * @return {boolean}
+   */
+  isPreUnifiedConsentAdvancedSyncSettingsVisible_: function(syncStatus) {
+    return !!syncStatus && !!syncStatus.signedIn &&
+        !!syncStatus.syncSystemEnabled && !this.unifiedConsentEnabled_;
   },
 
   /**
@@ -303,9 +484,31 @@ Polymer({
    * @param {?settings.SyncStatus} syncStatus
    * @return {boolean}
    */
-  isAdvancedSyncSettingsVisible_: function(syncStatus) {
-    return !!syncStatus && !!syncStatus.signedIn &&
-        !!syncStatus.syncSystemEnabled;
+  isAdvancedSyncSettingsSearchable_: function(syncStatus) {
+    return this.isPreUnifiedConsentAdvancedSyncSettingsVisible_(syncStatus) ||
+        !!this.unifiedConsentEnabled_;
+  },
+
+  /**
+   * @private
+   * @return {Element|null}
+   */
+  getAdvancedSyncSettingsAssociatedControl_: function() {
+    return this.unifiedConsentEnabled_ ? this.$$('#sync-setup') :
+                                         this.$$('#sync-status');
+  },
+
+  /**
+   * @private
+   * @param {?settings.SyncStatus} syncStatus
+   * @return {boolean} Whether an action can be taken with the sync status. sync
+   *     status is actionable if sync is not managed and if there is a sync
+   *     error, there is an action associated with it.
+   */
+  isSyncStatusActionable_: function(syncStatus) {
+    return !!syncStatus && !syncStatus.managed &&
+        (!syncStatus.hasError ||
+         syncStatus.statusAction != settings.StatusAction.NO_ACTION);
   },
 
   /**
@@ -314,13 +517,69 @@ Polymer({
    * @return {string}
    */
   getSyncIcon_: function(syncStatus) {
-    if (!syncStatus)
+    if (!syncStatus) {
       return '';
-    if (syncStatus.hasError)
-      return 'settings:sync-problem';
-    if (syncStatus.managed)
-      return 'settings:sync-disabled';
+    }
 
-    return 'settings:done';
+    let syncIcon = 'cr:sync';
+
+    if (syncStatus.hasError) {
+      syncIcon = 'settings:sync-problem';
+    }
+
+    // Override the icon to the disabled icon if sync is managed.
+    if (syncStatus.managed ||
+        syncStatus.statusAction == settings.StatusAction.REAUTHENTICATE) {
+      syncIcon = 'settings:sync-disabled';
+    }
+
+    return syncIcon;
+  },
+
+  /**
+   * @private
+   * @param {?settings.SyncStatus} syncStatus
+   * @return {string} The class name for the sync status row.
+   */
+  getSyncStatusClass_: function(syncStatus) {
+    if (syncStatus && syncStatus.hasError) {
+      // Most of the time re-authenticate states are caused by intentional user
+      // action, so they will be displayed differently as other errors.
+      return syncStatus.statusAction == settings.StatusAction.REAUTHENTICATE ?
+          'auth-error' :
+          'sync-error';
+    }
+
+    return '';
+  },
+
+  /**
+   * @param {string} iconUrl
+   * @return {string} A CSS image-set for multiple scale factors.
+   * @private
+   */
+  getIconImageSet_: function(iconUrl) {
+    return cr.icon.getImage(iconUrl);
+  },
+
+  /**
+   * @param {!settings.SyncStatus} syncStatus
+   * @return {boolean} Whether to show the "Sign in to Chrome" button.
+   * @private
+   */
+  showSignin_: function(syncStatus) {
+    return !!syncStatus.signinAllowed && !syncStatus.signedIn;
+  },
+
+  /**
+   * Looks up the translation id, which depends on PIN login support.
+   * @param {boolean} hasPinLogin
+   * @private
+   */
+  selectLockScreenTitleString(hasPinLogin) {
+    if (hasPinLogin) {
+      return this.i18n('lockScreenTitleLoginLock');
+    }
+    return this.i18n('lockScreenTitleLock');
   },
 });

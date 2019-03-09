@@ -17,7 +17,7 @@ ByteQueue::ByteQueue()
       offset_(0),
       used_(0) {}
 
-ByteQueue::~ByteQueue() {}
+ByteQueue::~ByteQueue() = default;
 
 void ByteQueue::Reset() {
   offset_ = 0;
@@ -45,7 +45,7 @@ void ByteQueue::Push(const uint8_t* data, int size) {
     if (used_ > 0)
       memcpy(new_buffer.get(), front(), used_);
 
-    buffer_.reset(new_buffer.release());
+    buffer_ = std::move(new_buffer);
     size_ = new_size;
     offset_ = 0;
   } else if ((offset_ + used_ + size) > size_) {

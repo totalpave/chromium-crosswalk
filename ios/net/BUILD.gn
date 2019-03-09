@@ -2,25 +2,38 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/buildflag_header.gni")
 import("//ios/build/config.gni")
+import("//ios/features.gni")
 import("//testing/test.gni")
+import("//url/features.gni")
+
+buildflag_header("ios_net_buildflags") {
+  header = "ios_net_buildflags.h"
+  flags = [ "CRONET_BUILD=$is_cronet_build" ]
+}
+
+group("all_tests") {
+  testonly = true
+  deps = [
+    ":ios_net_unittests",
+  ]
+}
 
 source_set("net") {
   deps = [
+    ":ios_net_buildflags",
     "//base",
-    "//base:i18n",
     "//net",
-    "//url:url_features",
+    "//url:buildflags",
   ]
 
+  configs += [ "//build/config/compiler:enable_arc" ]
+
   sources = [
-    "clients/crn_forwarding_network_client.h",
-    "clients/crn_forwarding_network_client.mm",
-    "clients/crn_forwarding_network_client_factory.h",
-    "clients/crn_forwarding_network_client_factory.mm",
+    "chunked_data_stream_uploader.cc",
+    "chunked_data_stream_uploader.h",
     "clients/crn_network_client_protocol.h",
-    "clients/crn_simple_network_client_factory.h",
-    "clients/crn_simple_network_client_factory.mm",
     "cookies/cookie_cache.cc",
     "cookies/cookie_cache.h",
     "cookies/cookie_creation_time_manager.h",
@@ -29,6 +42,12 @@ source_set("net") {
     "cookies/cookie_store_ios.mm",
     "cookies/cookie_store_ios_client.h",
     "cookies/cookie_store_ios_client.mm",
+    "cookies/cookie_store_ios_persistent.h",
+    "cookies/cookie_store_ios_persistent.mm",
+    "cookies/ns_http_system_cookie_store.h",
+    "cookies/ns_http_system_cookie_store.mm",
+    "cookies/system_cookie_store.h",
+    "cookies/system_cookie_store.mm",
     "cookies/system_cookie_util.h",
     "cookies/system_cookie_util.mm",
     "crn_http_protocol_handler.h",
@@ -55,23 +74,51 @@ source_set("net") {
     "url_scheme_util.h",
     "url_scheme_util.mm",
   ]
+
+  if (!use_platform_icu_alternatives) {
+    deps += [ "//base:i18n" ]
+  }
 }
 
-test("ios_net_unittests") {
+source_set("test_support") {
+  testonly = true
+  configs += [ "//build/config/compiler:enable_arc" ]
+
   deps = [
     ":net",
     "//base",
+    "//base/test:test_support",
+    "//net:test_support",
+  ]
+  sources = [
+    "cookies/cookie_store_ios_test_util.h",
+    "cookies/cookie_store_ios_test_util.mm",
+    "cookies/system_cookie_store_unittest_template.h",
+    "url_test_util.cc",
+    "url_test_util.h",
+  ]
+}
+
+test("ios_net_unittests") {
+  configs += [ "//build/config/compiler:enable_arc" ]
+  deps = [
+    ":net",
+    ":test_support",
+    "//base",
     "//base/test:run_all_unittests",
+    "//base/test:test_support",
     "//net:test_support",
     "//testing/gtest",
     "//url",
   ]
 
   sources = [
-    "clients/crn_forwarding_network_client_factory_unittest.mm",
+    "chunked_data_stream_uploader_unittest.cc",
     "cookies/cookie_cache_unittest.cc",
     "cookies/cookie_creation_time_manager_unittest.mm",
+    "cookies/cookie_store_ios_persistent_unittest.mm",
     "cookies/cookie_store_ios_unittest.mm",
+    "cookies/ns_http_system_cookie_store_unittest.mm",
     "cookies/system_cookie_util_unittest.mm",
     "http_response_headers_util_unittest.mm",
     "nsurlrequest_util_unittest.mm",

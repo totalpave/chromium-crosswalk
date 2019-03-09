@@ -10,16 +10,16 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
-#include "base/containers/hash_tables.h"
 #include "base/files/file_path.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
+#include "base/sequence_checker.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_piece.h"
-#include "build/build_config.h"
 #include "ui/base/layout.h"
 #include "ui/base/ui_base_export.h"
 #include "ui/gfx/font_list.h"
@@ -50,19 +50,15 @@ class UI_BASE_EXPORT ResourceBundle {
   static const int kMediumFontDelta = 3;
   static const int kLargeFontDelta = 8;
 
-  static constexpr const char* CUSTOM_GZIP_HEADER = "\xff\x1f\x8b";
-
   // Legacy font style mappings. TODO(tapted): Phase these out in favour of
   // client code providing their own constant with the desired font size delta.
   enum FontStyle {
     SmallFont,
-    SmallBoldFont,
     BaseFont,
     BoldFont,
     MediumFont,
     MediumBoldFont,
     LargeFont,
-    LargeBoldFont,
   };
 
   enum LoadResources {
@@ -150,11 +146,17 @@ class UI_BASE_EXPORT ResourceBundle {
   // Returns true after the global resource loader instance has been created.
   static bool HasSharedInstance();
 
+  // Initialize the ResourceBundle using data pack from given buffer.
   // Return the global resource loader instance.
   static ResourceBundle& GetSharedInstance();
 
+  // Loads a secondary locale data pack using the given file region.
+  void LoadSecondaryLocaleDataWithPakFileRegion(
+      base::File pak_file,
+      const base::MemoryMappedFile::Region& region);
+
   // Check if the .pak for the given locale exists.
-  bool LocaleDataPakExists(const std::string& locale);
+  static bool LocaleDataPakExists(const std::string& locale);
 
   // Registers additional data pack files with this ResourceBundle.  When
   // looking for a DataResource, we will search these files after searching the
@@ -174,19 +176,14 @@ class UI_BASE_EXPORT ResourceBundle {
                                  const base::MemoryMappedFile::Region& region,
                                  ScaleFactor scale_factor);
 
+  // Same as above but using contents of the given buffer.
+  void AddDataPackFromBuffer(base::StringPiece buffer,
+                             ScaleFactor scale_factor);
+
   // Same as AddDataPackFromPath but does not log an error if the pack fails to
   // load.
   void AddOptionalDataPackFromPath(const base::FilePath& path,
                                    ScaleFactor scale_factor);
-
-  // The same as AddDataPackFromPath() and AddOptionalDataPackFromPath(),
-  // except the data pack is flagged as containing only material design assets.
-  // TODO(tdanderson): These methods are temporary and should be removed after
-  //                   the transition to material design in the browser UI.
-  void AddMaterialDesignDataPackFromPath(const base::FilePath& path,
-                                         ScaleFactor scale_factor);
-  void AddOptionalMaterialDesignDataPackFromPath(const base::FilePath& path,
-                                                 ScaleFactor scale_factor);
 
   // Changes the locale for an already-initialized ResourceBundle, returning the
   // name of the newly-loaded locale.  Future calls to get strings will return
@@ -240,13 +237,27 @@ class UI_BASE_EXPORT ResourceBundle {
   base::StringPiece GetRawDataResourceForScale(int resource_id,
                                                ScaleFactor scale_factor) const;
 
-  // Get a localized string given a message id.  Returns an empty
-  // string if the message_id is not found.
-  base::string16 GetLocalizedString(int message_id);
+  // Get a localized string given a message id.  Returns an empty string if the
+  // resource_id is not found.
+  base::string16 GetLocalizedString(int resource_id);
+
+  // Get a localized resource (for example, localized image logo) given a
+  // resource id.
+  base::RefCountedMemory* LoadLocalizedResourceBytes(int resource_id);
 
   // Returns a font list derived from the platform-specific "Base" font list.
   // The result is always cached and exists for the lifetime of the process.
   const gfx::FontList& GetFontListWithDelta(
+      int size_delta,
+      gfx::Font::FontStyle style = gfx::Font::NORMAL,
+      gfx::Font::Weight weight = gfx::Font::Weight::NORMAL);
+
+  // Returns a font list derived from the user-specified typeface. The
+  // result is always cached and exists for the lifetime of the process.
+  // If typeface is empty, we default to the platform-specific "Base" font
+  // list.
+  const gfx::FontList& GetFontListWithTypefaceAndDelta(
+      const std::string& typeface,
       int size_delta,
       gfx::Font::FontStyle style = gfx::Font::NORMAL,
       gfx::Font::Weight weight = gfx::Font::Weight::NORMAL);
@@ -271,44 +282,47 @@ class UI_BASE_EXPORT ResourceBundle {
 
   // Overrides a localized string resource with the given string. If no delegate
   // is present, the |string| will be returned when getting the localized string
-  // |message_id|. If |ReloadLocaleResources| is called, all overrides are
+  // |resource_id|. If |ReloadLocaleResources| is called, all overrides are
   // cleared. This is intended to be used in conjunction with field trials and
   // the variations service to experiment with different UI strings. This method
   // is not thread safe!
-  void OverrideLocaleStringResource(int message_id,
+  void OverrideLocaleStringResource(int resource_id,
                                     const base::string16& string);
 
   // Returns the full pathname of the locale file to load.  May return an empty
   // string if no locale data files are found and |test_file_exists| is true.
   // Used on Android to load the local file in the browser process and pass it
   // to the sandboxed renderer process.
-  base::FilePath GetLocaleFilePath(const std::string& app_locale,
-                                   bool test_file_exists);
+  static base::FilePath GetLocaleFilePath(const std::string& app_locale,
+                                          bool test_file_exists);
 
   // Returns the maximum scale factor currently loaded.
   // Returns SCALE_FACTOR_100P if no resource is loaded.
   ScaleFactor GetMaxScaleFactor() const;
 
-#if defined(OS_MACOSX)
-  // Loads Material Design data packs and makes them the first items in
-  // |data_packs_|.
-  void LoadMaterialDesignResources();
-#endif
-
- protected:
   // Returns true if |scale_factor| is supported by this platform.
   static bool IsScaleFactorSupported(ScaleFactor scale_factor);
+
+  // Checks whether overriding locale strings is supported. This will fail with
+  // a DCHECK if the first string resource has already been queried.
+  void CheckCanOverrideStringResources();
+
+  // Sets whether this ResourceBundle should mangle localized strings or not.
+  void set_mangle_localized_strings_for_test(bool mangle) {
+    mangle_localized_strings_ = mangle;
+  }
+
+#if DCHECK_IS_ON()
+  // Gets whether overriding locale strings is supported.
+  bool get_can_override_locale_string_resources_for_test() {
+    return can_override_locale_string_resources_;
+  }
+#endif
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ResourceBundleTest, DelegateGetPathForLocalePack);
   FRIEND_TEST_ALL_PREFIXES(ResourceBundleTest, DelegateGetImageNamed);
   FRIEND_TEST_ALL_PREFIXES(ResourceBundleTest, DelegateGetNativeImageNamed);
-  FRIEND_TEST_ALL_PREFIXES(ResourceBundleImageTest,
-                           CountMaterialDesignDataPacksInResourceBundle);
-  FRIEND_TEST_ALL_PREFIXES(ResourceBundleMacImageTest,
-                           CheckImageFromMaterialDesign);
-  FRIEND_TEST_ALL_PREFIXES(ChromeBrowserMainMacBrowserTest,
-                           MDResourceAccess);
 
   friend class ResourceBundleMacImageTest;
   friend class ResourceBundleImageTest;
@@ -320,7 +334,7 @@ class UI_BASE_EXPORT ResourceBundle {
 
   struct FontKey;
 
-  typedef base::hash_map<int, base::string16> IdToStringMap;
+  using IdToStringMap = std::unordered_map<int, base::string16>;
 
   // Ctor/dtor are private, since we're a singleton.
   explicit ResourceBundle(Delegate* delegate);
@@ -335,23 +349,18 @@ class UI_BASE_EXPORT ResourceBundle {
   // Load the main resources.
   void LoadCommonResources();
 
-  // Loads the resource paks chrome_{100,200}_percent.pak. Also loads the
-  // resource paks chrome_material_{100,200}_percent.pak contaning top
-  // chrome material design assets if the runtime flag is enabled.
+  // Loads the resource paks chrome_{100,200}_percent.pak.
   void LoadChromeResources();
 
   // Implementation for the public methods which add a DataPack from a path. If
-  // |optional| is false, an error is logged on failure to load. Sets the
-  // member |has_only_material_design_assets_| on the created DataPack to the
-  // value of |has_only_material_assets|.
+  // |optional| is false, an error is logged on failure to load.
   void AddDataPackFromPathInternal(const base::FilePath& path,
                                    ScaleFactor scale_factor,
-                                   bool optional,
-                                   bool has_only_material_assets);
+                                   bool optional);
 
   // Inserts |data_pack| to |data_pack_| and updates |max_scale_factor_|
   // accordingly.
-  void AddDataPack(DataPack* data_pack);
+  void AddDataPack(std::unique_ptr<DataPack> data_pack);
 
   // Try to load the locale specific strings from an external data module.
   // Returns the locale that is loaded.
@@ -382,20 +391,11 @@ class UI_BASE_EXPORT ResourceBundle {
   // Fills the |bitmap| given the |resource_id| and |scale_factor|.
   // Returns false if the resource does not exist. This may fall back to
   // the data pack with SCALE_FACTOR_NONE, and when this happens,
-  // |scale_factor| will be set to SCALE_FACTOR_100P.
+  // |scale_factor| will be set to SCALE_FACTOR_NONE.
   bool LoadBitmap(int resource_id,
                   ScaleFactor* scale_factor,
                   SkBitmap* bitmap,
                   bool* fell_back_to_1x) const;
-
-  // Loads the raw bytes of a data resource nearest the scale factor
-  // |scale_factor| into |bytes|, without doing any processing or
-  // interpretation of the resource. Use ResourceHandle::SCALE_FACTOR_NONE
-  // for scale independent image resources (such as wallpaper).
-  // Returns NULL if we fail to read the resource.
-  base::StringPiece GetRawDataResourceForScaleImpl(
-      int resource_id,
-      ScaleFactor scale_factor) const;
 
   // Returns true if missing scaled resources should be visually indicated when
   // drawing the fallback (e.g., by tinting the image).
@@ -420,26 +420,36 @@ class UI_BASE_EXPORT ResourceBundle {
 
   const base::FilePath& GetOverriddenPakPath();
 
+  // If mangling of localized strings is enabled, mangles |str| to make it
+  // longer and to add begin and end markers so that any truncation of it is
+  // visible and returns the mangled string. If not, returns |str|.
+  base::string16 MaybeMangleLocalizedString(const base::string16& str);
+
+  // An internal implementation of |GetLocalizedString()| without setting the
+  // flag of whether overriding locale strings is supported to false. We don't
+  // update this flag only in |InitDefaultFontList()| which is called earlier
+  // than the overriding. This is okay, because the font list doesn't need to be
+  // overridden by variations.
+  base::string16 GetLocalizedStringImpl(int resource_id);
+
   // This pointer is guaranteed to outlive the ResourceBundle instance and may
   // be NULL.
   Delegate* delegate_;
-
-  // Protects |images_| and font-related members.
-  std::unique_ptr<base::Lock> images_and_fonts_lock_;
 
   // Protects |locale_resources_data_|.
   std::unique_ptr<base::Lock> locale_resources_data_lock_;
 
   // Handles for data sources.
   std::unique_ptr<ResourceHandle> locale_resources_data_;
-  ScopedVector<ResourceHandle> data_packs_;
+  std::unique_ptr<ResourceHandle> secondary_locale_resources_data_;
+  std::vector<std::unique_ptr<ResourceHandle>> data_packs_;
 
   // The maximum scale factor currently loaded.
   ScaleFactor max_scale_factor_;
 
   // Cached images. The ResourceBundle caches all retrieved images and keeps
   // ownership of the pointers.
-  typedef std::map<int, gfx::Image> ImageMap;
+  using ImageMap = std::map<int, gfx::Image>;
   ImageMap images_;
 
   gfx::Image empty_image_;
@@ -447,21 +457,25 @@ class UI_BASE_EXPORT ResourceBundle {
   // The various font lists used, as a map from a signed size delta from the
   // platform base font size, plus style, to the FontList. Cached to avoid
   // repeated GDI creation/destruction and font derivation.
-  // Must be accessed only while holding |images_and_fonts_lock_|.
+  // Must be accessed only from UI thread.
   std::map<FontKey, gfx::FontList> font_cache_;
 
   base::FilePath overridden_pak_path_;
 
   IdToStringMap overridden_locale_strings_;
 
+#if DCHECK_IS_ON()
+  bool can_override_locale_string_resources_ = true;
+#endif
+
   bool is_test_resources_ = false;
+  bool mangle_localized_strings_ = false;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(ResourceBundle);
 };
 
 }  // namespace ui
-
-// TODO(beng): Someday, maybe, get rid of this.
-using ui::ResourceBundle;
 
 #endif  // UI_BASE_RESOURCE_RESOURCE_BUNDLE_H_

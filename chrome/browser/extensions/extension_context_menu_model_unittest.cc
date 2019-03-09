@@ -6,17 +6,25 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
+#include "chrome/browser/extensions/chrome_extension_browser_constants.h"
+#include "chrome/browser/extensions/context_menu_matcher.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_action_test_util.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/menu_manager.h"
 #include "chrome/browser/extensions/menu_manager_factory.h"
+#include "chrome/browser/extensions/permissions_test_util.h"
+#include "chrome/browser/extensions/permissions_updater.h"
 #include "chrome/browser/extensions/scripting_permissions_modifier.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -26,6 +34,9 @@
 #include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/crx_file/id_util.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/test/browser_side_navigation_test_utils.h"
+#include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "extensions/browser/extension_dialog_auto_confirm.h"
 #include "extensions/browser/extension_registry.h"
@@ -33,7 +44,8 @@
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/browser/test_management_policy.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/feature_switch.h"
+#include "extensions/common/extension_features.h"
+#include "extensions/common/extensions_client.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/options_page_info.h"
@@ -41,9 +53,17 @@
 #include "extensions/common/value_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/display/test/scoped_screen_override.h"
+#include "ui/display/test/test_screen.h"
 #include "ui/gfx/image/image.h"
 
+#if defined(OS_CHROMEOS)
+#include "chrome/browser/chromeos/app_mode/kiosk_app_manager.h"
+#endif
+
 namespace extensions {
+
+using display::test::ScopedScreenOverride;
 
 namespace {
 
@@ -54,6 +74,10 @@ void Increment(int* i) {
 
 // Label for test extension menu item.
 const char* kTestExtensionItemLabel = "test-ext-item";
+
+std::string item_label() {
+  return kTestExtensionItemLabel;
+}
 
 class MenuBuilder {
  public:
@@ -67,9 +91,9 @@ class MenuBuilder {
   ~MenuBuilder() {}
 
   std::unique_ptr<ExtensionContextMenuModel> BuildMenu() {
-    return base::WrapUnique(new ExtensionContextMenuModel(
+    return std::make_unique<ExtensionContextMenuModel>(
         extension_.get(), browser_, ExtensionContextMenuModel::VISIBLE,
-        nullptr));
+        nullptr);
   }
 
   void AddContextItem(MenuItem::Context context) {
@@ -78,10 +102,28 @@ class MenuBuilder {
     id.uid = ++cur_id_;
     menu_manager_->AddContextItem(
         extension_.get(),
-        new MenuItem(id, kTestExtensionItemLabel,
-                     false,  // check`ed
-                     true,   // enabled
-                     MenuItem::NORMAL, MenuItem::ContextList(context)));
+        std::make_unique<MenuItem>(id, kTestExtensionItemLabel,
+                                   false,  // check`ed
+                                   true,   // visible
+                                   true,   // enabled
+                                   MenuItem::NORMAL,
+                                   MenuItem::ContextList(context)));
+  }
+
+  void SetItemVisibility(int item_id, bool visible) {
+    MenuItem::Id id(false /* not incognito */,
+                    MenuItem::ExtensionKey(extension_->id()));
+    id.uid = item_id;
+
+    menu_manager_->GetItemById(id)->set_visible(visible);
+  }
+
+  void SetItemTitle(int item_id, const std::string& title) {
+    MenuItem::Id id(false /* not incognito */,
+                    MenuItem::ExtensionKey(extension_->id()));
+    id.uid = item_id;
+
+    menu_manager_->GetItemById(id)->set_title(title);
   }
 
  private:
@@ -101,12 +143,20 @@ int CountExtensionItems(const ExtensionContextMenuModel& model) {
   int num_items_found = 0;
   int num_custom_found = 0;
   for (int i = 0; i < model.GetItemCount(); ++i) {
-    if (expected_label == model.GetLabelAt(i))
-      ++num_items_found;
+    base::string16 actual_label = model.GetLabelAt(i);
     int command_id = model.GetCommandIdAt(i);
-    if (command_id >= IDC_EXTENSIONS_CONTEXT_CUSTOM_FIRST &&
-        command_id <= IDC_EXTENSIONS_CONTEXT_CUSTOM_LAST)
-      ++num_custom_found;
+    // If the command id is not visible, it should not be counted.
+    if (model.IsCommandIdVisible(command_id)) {
+      // The last character of |expected_label| can be the item number (e.g
+      // "test-ext-item" -> "test-ext-item1"). In checking that extensions items
+      // have the same label |kTestExtensionItemLabel|, the specific item number
+      // is ignored, [0, expected_label.size).
+      if (base::StartsWith(actual_label, expected_label,
+                           base::CompareCase::SENSITIVE))
+        ++num_items_found;
+      if (ContextMenuMatcher::IsExtensionsCustomCommandId(command_id))
+        ++num_custom_found;
+    }
   }
   // The only custom extension items present on the menu should be those we
   // added in the test.
@@ -114,10 +164,34 @@ int CountExtensionItems(const ExtensionContextMenuModel& model) {
   return num_items_found;
 }
 
+// Checks that the model has the extension items in the exact order specified by
+// |item_number|.
+void VerifyItems(const ExtensionContextMenuModel& model,
+                 std::vector<std::string> item_number) {
+  size_t j = 0;
+  for (int i = 0; i < model.GetItemCount(); i++) {
+    int command_id = model.GetCommandIdAt(i);
+    if (ContextMenuMatcher::IsExtensionsCustomCommandId(command_id) &&
+        model.IsCommandIdVisible(command_id)) {
+      ASSERT_LT(j, item_number.size());
+      EXPECT_EQ(base::ASCIIToUTF16(item_label() + item_number[j]),
+                model.GetLabelAt(i));
+      j++;
+    }
+  }
+  EXPECT_EQ(item_number.size(), j);
+}
+
 }  // namespace
 
 class ExtensionContextMenuModelTest : public ExtensionServiceTestBase {
  public:
+  enum class CommandState {
+    kAbsent,    // The command is not present in the menu.
+    kEnabled,   // The command is present, and enabled.
+    kDisabled,  // The command is present, and disabled.
+  };
+
   ExtensionContextMenuModelTest();
 
   // Build an extension to pass to the menu constructor, with the action
@@ -130,12 +204,34 @@ class ExtensionContextMenuModelTest : public ExtensionServiceTestBase {
       const char* action_key,
       Manifest::Location location,
       const std::string& host_permission);
+  // TODO(devlin): Consolidate this with the methods above.
+  void InitializeAndAddExtension(const Extension& extension);
 
   Browser* GetBrowser();
+
+  // Adds a new tab with |url| to the tab strip, and returns the WebContents
+  // associated with it.
+  content::WebContents* AddTab(const GURL& url);
+
+  // Returns the current state for the specified page access |command|.
+  CommandState GetPageAccessCommandState(const ExtensionContextMenuModel& menu,
+                                         int command) const;
+
+  // Returns true if the |menu| has the page access submenu at all.
+  bool HasPageAccessSubmenu(const ExtensionContextMenuModel& menu) const;
+
+  // Returns true if the |menu| has a valid entry for the "can't access page"
+  // item.
+  bool HasCantAccessPageEntry(const ExtensionContextMenuModel& menu) const;
+
+  void SetUp() override;
+  void TearDown() override;
 
  private:
   std::unique_ptr<TestBrowserWindow> test_window_;
   std::unique_ptr<Browser> browser_;
+  display::test::TestScreen test_screen_;
+  std::unique_ptr<ScopedScreenOverride> scoped_screen_override_;
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionContextMenuModelTest);
 };
@@ -171,18 +267,108 @@ const Extension* ExtensionContextMenuModelTest::AddExtensionWithHostPermission(
           .Build();
   if (!extension.get())
     ADD_FAILURE();
+  service()->GrantPermissions(extension.get());
   service()->AddExtension(extension.get());
   return extension.get();
 }
 
+void ExtensionContextMenuModelTest::InitializeAndAddExtension(
+    const Extension& extension) {
+  PermissionsUpdater updater(profile());
+  updater.InitializePermissions(&extension);
+  updater.GrantActivePermissions(&extension);
+  service()->AddExtension(&extension);
+}
+
 Browser* ExtensionContextMenuModelTest::GetBrowser() {
   if (!browser_) {
-    Browser::CreateParams params(profile());
+    Browser::CreateParams params(profile(), true);
     test_window_.reset(new TestBrowserWindow());
     params.window = test_window_.get();
     browser_.reset(new Browser(params));
   }
   return browser_.get();
+}
+
+content::WebContents* ExtensionContextMenuModelTest::AddTab(const GURL& url) {
+  std::unique_ptr<content::WebContents> contents(
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+  content::WebContents* raw_contents = contents.get();
+  Browser* browser = GetBrowser();
+  browser->tab_strip_model()->AppendWebContents(std::move(contents), true);
+  EXPECT_EQ(browser->tab_strip_model()->GetActiveWebContents(), raw_contents);
+  content::WebContentsTester* web_contents_tester =
+      content::WebContentsTester::For(raw_contents);
+  web_contents_tester->NavigateAndCommit(url);
+  return raw_contents;
+}
+
+ExtensionContextMenuModelTest::CommandState
+ExtensionContextMenuModelTest::GetPageAccessCommandState(
+    const ExtensionContextMenuModel& menu,
+    int command) const {
+  int submenu_index =
+      menu.GetIndexOfCommandId(ExtensionContextMenuModel::PAGE_ACCESS_SUBMENU);
+  if (submenu_index == -1)
+    return CommandState::kAbsent;
+
+  ui::MenuModel* submenu = menu.GetSubmenuModelAt(submenu_index);
+  DCHECK(submenu);
+
+  ui::MenuModel** menu_to_search = &submenu;
+  int index_unused = 0;
+  if (!ui::MenuModel::GetModelAndIndexForCommandId(command, menu_to_search,
+                                                   &index_unused)) {
+    return CommandState::kAbsent;
+  }
+
+  // The command is present; determine if it's enabled.
+  return menu.IsCommandIdEnabled(command) ? CommandState::kEnabled
+                                          : CommandState::kDisabled;
+}
+
+bool ExtensionContextMenuModelTest::HasPageAccessSubmenu(
+    const ExtensionContextMenuModel& menu) const {
+  return menu.GetIndexOfCommandId(
+             ExtensionContextMenuModel::PAGE_ACCESS_SUBMENU) != -1;
+}
+
+bool ExtensionContextMenuModelTest::HasCantAccessPageEntry(
+    const ExtensionContextMenuModel& menu) const {
+  if (menu.GetIndexOfCommandId(
+          ExtensionContextMenuModel::PAGE_ACCESS_CANT_ACCESS) == -1) {
+    return false;
+  }
+
+  // The "Can't access this page" entry, if present, should always be disabled.
+  EXPECT_FALSE(menu.IsCommandIdEnabled(
+      ExtensionContextMenuModel::PAGE_ACCESS_CANT_ACCESS));
+  return true;
+}
+
+void ExtensionContextMenuModelTest::SetUp() {
+  ExtensionServiceTestBase::SetUp();
+  content::BrowserSideNavigationSetUp();
+  scoped_screen_override_ =
+      std::make_unique<ScopedScreenOverride>(&test_screen_);
+}
+
+void ExtensionContextMenuModelTest::TearDown() {
+  // Remove any tabs in the tab strip; else the test crashes.
+  if (browser_) {
+    while (!browser_->tab_strip_model()->empty())
+      browser_->tab_strip_model()->DetachWebContentsAt(0);
+  }
+
+#if defined(OS_CHROMEOS)
+  // The KioskAppManager, if initialized, needs to be cleaned up.
+  // TODO(devlin): This should probably go somewhere more central, like
+  // chromeos::ScopedCrosSettingsTestHelper.
+  chromeos::KioskAppManager::Shutdown();
+#endif
+
+  content::BrowserSideNavigationTearDown();
+  ExtensionServiceTestBase::TearDown();
 }
 
 // Tests that applicable menu items are disabled when a ManagementPolicy
@@ -203,6 +389,8 @@ TEST_F(ExtensionContextMenuModelTest, RequiredInstallationsDisablesItems) {
 
   // Uninstallation should be, by default, enabled.
   EXPECT_TRUE(menu.IsCommandIdEnabled(ExtensionContextMenuModel::UNINSTALL));
+  // Uninstallation should always be visible.
+  EXPECT_TRUE(menu.IsCommandIdVisible(ExtensionContextMenuModel::UNINSTALL));
 
   TestManagementPolicyProvider policy_provider(
       TestManagementPolicyProvider::PROHIBIT_MODIFY_STATUS);
@@ -251,15 +439,16 @@ TEST_F(ExtensionContextMenuModelTest, ComponentExtensionContextMenu) {
     // A component extension's context menu should not include options for
     // managing extensions or removing it, and should only include an option for
     // the options page if the extension has one (which this one doesn't).
-    EXPECT_EQ(-1,
-              menu.GetIndexOfCommandId(ExtensionContextMenuModel::CONFIGURE));
+    EXPECT_EQ(-1, menu.GetIndexOfCommandId(ExtensionContextMenuModel::OPTIONS));
     EXPECT_EQ(-1,
               menu.GetIndexOfCommandId(ExtensionContextMenuModel::UNINSTALL));
-    EXPECT_EQ(-1, menu.GetIndexOfCommandId(ExtensionContextMenuModel::MANAGE));
+    EXPECT_EQ(-1, menu.GetIndexOfCommandId(
+                      ExtensionContextMenuModel::MANAGE_EXTENSIONS));
     // The "name" option should be present, but not enabled for component
     // extensions.
-    EXPECT_NE(-1, menu.GetIndexOfCommandId(ExtensionContextMenuModel::NAME));
-    EXPECT_FALSE(menu.IsCommandIdEnabled(ExtensionContextMenuModel::NAME));
+    EXPECT_NE(-1,
+              menu.GetIndexOfCommandId(ExtensionContextMenuModel::HOME_PAGE));
+    EXPECT_FALSE(menu.IsCommandIdEnabled(ExtensionContextMenuModel::HOME_PAGE));
   }
 
   {
@@ -277,9 +466,8 @@ TEST_F(ExtensionContextMenuModelTest, ComponentExtensionContextMenu) {
                                    ExtensionContextMenuModel::VISIBLE, nullptr);
     service()->AddExtension(extension.get());
     EXPECT_TRUE(extensions::OptionsPageInfo::HasOptionsPage(extension.get()));
-    EXPECT_NE(-1,
-              menu.GetIndexOfCommandId(ExtensionContextMenuModel::CONFIGURE));
-    EXPECT_TRUE(menu.IsCommandIdEnabled(ExtensionContextMenuModel::CONFIGURE));
+    EXPECT_NE(-1, menu.GetIndexOfCommandId(ExtensionContextMenuModel::OPTIONS));
+    EXPECT_TRUE(menu.IsCommandIdEnabled(ExtensionContextMenuModel::OPTIONS));
   }
 }
 
@@ -292,7 +480,8 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionItemTest) {
   MenuManager* manager = static_cast<MenuManager*>(
       (MenuManagerFactory::GetInstance()->SetTestingFactoryAndUse(
           profile(),
-          &MenuManagerFactory::BuildServiceInstanceForTesting)));
+          base::BindRepeating(
+              &MenuManagerFactory::BuildServiceInstanceForTesting))));
   ASSERT_TRUE(manager);
 
   MenuBuilder builder(extension, GetBrowser(), manager);
@@ -311,7 +500,7 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionItemTest) {
   builder.AddContextItem(MenuItem::PAGE_ACTION);
   EXPECT_EQ(1, CountExtensionItems(*builder.BuildMenu()));
 
-  // Create more page action items to test top level menu item limitations.
+  // Create more page action items to test top-level menu item limitations.
   // We start at 1, so this should try to add the limit + 1.
   for (int i = 0; i < api::context_menus::ACTION_MENU_TOP_LEVEL_LIMIT; ++i)
     builder.AddContextItem(MenuItem::PAGE_ACTION);
@@ -321,81 +510,132 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionItemTest) {
             CountExtensionItems(*builder.BuildMenu()));
 }
 
-// Test that the "show" and "hide" menu items appear correctly in the extension
-// context menu without the toolbar redesign.
-TEST_F(ExtensionContextMenuModelTest, ExtensionContextMenuShowAndHideLegacy) {
-  // Start with the toolbar redesign disabled.
-  std::unique_ptr<FeatureSwitch::ScopedOverride> toolbar_redesign_override(
-      new FeatureSwitch::ScopedOverride(
-          FeatureSwitch::extension_action_redesign(), false));
-
+// Top-level extension actions, like 'browser_action' or 'page_action',
+// are subject to an item limit chrome.contextMenus.ACTION_MENU_TOP_LEVEL_LIMIT.
+// The test below ensures that:
+//
+// 1. The limit is respected for top-level items. In this case, we test
+//    MenuItem::PAGE_ACTION.
+// 2. Adding more items than the limit are ignored; only items within the limit
+//    are visible.
+// 3. Hiding items within the limit makes "extra" ones visible.
+// 4. Unhiding an item within the limit hides a visible "extra" one.
+TEST_F(ExtensionContextMenuModelTest,
+       TestItemVisibilityAgainstItemLimitForTopLevelItems) {
   InitializeEmptyExtensionService();
-  Browser* browser = GetBrowser();
-  extension_action_test_util::CreateToolbarModelForProfile(profile());
+  const Extension* extension =
+      AddExtension("extension", manifest_keys::kPageAction, Manifest::INTERNAL);
 
-  const Extension* page_action = AddExtension(
-      "page_action_extension", manifest_keys::kPageAction, Manifest::INTERNAL);
-  const Extension* browser_action =
-      AddExtension("browser_action_extension", manifest_keys::kBrowserAction,
-                   Manifest::INTERNAL);
+  // Create a MenuManager for adding context items.
+  MenuManager* manager = static_cast<MenuManager*>(
+      MenuManagerFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(
+                         &MenuManagerFactory::BuildServiceInstanceForTesting)));
+  ASSERT_TRUE(manager);
 
-  // For laziness.
-  const ExtensionContextMenuModel::MenuEntries visibility_command =
-      ExtensionContextMenuModel::TOGGLE_VISIBILITY;
-  base::string16 hide_string =
-      l10n_util::GetStringUTF16(IDS_EXTENSIONS_HIDE_BUTTON);
+  MenuBuilder builder(extension, GetBrowser(), manager);
 
-  {
-    ExtensionContextMenuModel menu(page_action, browser,
-                                   ExtensionContextMenuModel::VISIBLE, nullptr);
+  // There should be no extension items yet.
+  EXPECT_EQ(0, CountExtensionItems(*builder.BuildMenu()));
 
-    // Without the toolbar redesign switch, page action menus shouldn't have a
-    // visibility option.
-    EXPECT_EQ(-1, menu.GetIndexOfCommandId(visibility_command));
+  // Create more page action items to test top-level menu item limitations.
+  for (int i = 1; i <= api::context_menus::ACTION_MENU_TOP_LEVEL_LIMIT; ++i) {
+    builder.AddContextItem(MenuItem::PAGE_ACTION);
+    builder.SetItemTitle(i, item_label().append(base::StringPrintf("%d", i)));
   }
 
-  {
-    ExtensionContextMenuModel menu(browser_action, browser,
-                                   ExtensionContextMenuModel::VISIBLE, nullptr);
-    int index = menu.GetIndexOfCommandId(visibility_command);
-    // Browser actions should have the visibility option.
-    EXPECT_NE(-1, index);
-    // Since the action is currently visible, it should have the option to hide
-    // it.
-    EXPECT_EQ(hide_string, menu.GetLabelAt(index));
-  }
+  // We shouldn't go above the limit of top-level items.
+  EXPECT_EQ(api::context_menus::ACTION_MENU_TOP_LEVEL_LIMIT,
+            CountExtensionItems(*builder.BuildMenu()));
 
-  {
-    ExtensionContextMenuModel menu(browser_action, browser,
-                                   ExtensionContextMenuModel::OVERFLOWED,
-                                   nullptr);
-    int index = menu.GetIndexOfCommandId(visibility_command);
-    EXPECT_NE(-1, index);
-    // Without the redesign, 'hiding' refers to removing the action from the
-    // toolbar entirely, so even with the action overflowed, the string should
-    // be 'Hide action'.
-    EXPECT_EQ(hide_string, menu.GetLabelAt(index));
+  // Add three more page actions items. This exceeds the top-level menu item
+  // limit, so the three added should not be visible in the menu.
+  builder.AddContextItem(MenuItem::PAGE_ACTION);
+  builder.SetItemTitle(7, item_label() + "7");
 
-    ExtensionActionAPI* action_api = ExtensionActionAPI::Get(profile());
-    // At the start, the action should be visible.
-    EXPECT_TRUE(action_api->GetBrowserActionVisibility(browser_action->id()));
-    menu.ExecuteCommand(visibility_command, 0);
-    // After execution, it should be hidden.
-    EXPECT_FALSE(action_api->GetBrowserActionVisibility(browser_action->id()));
+  // By default, the additional page action items have their visibility set to
+  // true. Test creating the eigth item such that it is hidden.
+  builder.AddContextItem(MenuItem::PAGE_ACTION);
+  builder.SetItemTitle(8, item_label() + "8");
+  builder.SetItemVisibility(8, false);
 
-    // Cleanup - make the action visible again.
-    action_api->SetBrowserActionVisibility(browser_action->id(), true);
-  }
+  builder.AddContextItem(MenuItem::PAGE_ACTION);
+  builder.SetItemTitle(9, item_label() + "9");
+
+  std::unique_ptr<ExtensionContextMenuModel> model = builder.BuildMenu();
+
+  // Ensure that the menu item limit is obeyed, meaning that the three
+  // additional items are not visible in the menu.
+  EXPECT_EQ(api::context_menus::ACTION_MENU_TOP_LEVEL_LIMIT,
+            CountExtensionItems(*model));
+  // Items 7 to 9 should not be visible in the model.
+  VerifyItems(*model, {"1", "2", "3", "4", "5", "6"});
+
+  // Hide the first two items.
+  builder.SetItemVisibility(1, false);
+  builder.SetItemVisibility(2, false);
+  model = builder.BuildMenu();
+
+  // Ensure that the menu item limit is obeyed.
+  EXPECT_EQ(api::context_menus::ACTION_MENU_TOP_LEVEL_LIMIT,
+            CountExtensionItems(*model));
+  // Hiding the first two items in the model should make visible the "extra"
+  // items -- items 7 and 9. Note, item 8 was set to hidden, so it should not
+  // show in the model.
+  VerifyItems(*model, {"3", "4", "5", "6", "7", "9"});
+
+  // Unhide the eigth item.
+  builder.SetItemVisibility(8, true);
+  model = builder.BuildMenu();
+
+  // Ensure that the menu item limit is obeyed.
+  EXPECT_EQ(api::context_menus::ACTION_MENU_TOP_LEVEL_LIMIT,
+            CountExtensionItems(*model));
+  // The ninth item should be replaced with the eigth.
+  VerifyItems(*model, {"3", "4", "5", "6", "7", "8"});
+
+  // Unhide the first two items.
+  builder.SetItemVisibility(1, true);
+  builder.SetItemVisibility(2, true);
+  model = builder.BuildMenu();
+
+  EXPECT_EQ(api::context_menus::ACTION_MENU_TOP_LEVEL_LIMIT,
+            CountExtensionItems(*model));
+  // Unhiding the first two items should respect the menu item limit and
+  // exclude the "extra" items -- items 7, 8, and 9 -- from the model.
+  VerifyItems(*model, {"1", "2", "3", "4", "5", "6"});
+}
+
+// Tests that the standard menu items (e.g. uninstall, manage) are always
+// visible.
+TEST_F(ExtensionContextMenuModelTest,
+       ExtensionContextMenuStandardItemsAlwaysVisible) {
+  InitializeEmptyExtensionService();
+  const Extension* extension =
+      AddExtension("extension", manifest_keys::kPageAction, Manifest::INTERNAL);
+
+  ExtensionContextMenuModel menu(extension, GetBrowser(),
+                                 ExtensionContextMenuModel::VISIBLE, nullptr);
+  EXPECT_TRUE(menu.IsCommandIdVisible(ExtensionContextMenuModel::HOME_PAGE));
+  EXPECT_TRUE(menu.IsCommandIdVisible(ExtensionContextMenuModel::OPTIONS));
+  EXPECT_TRUE(
+      menu.IsCommandIdVisible(ExtensionContextMenuModel::TOGGLE_VISIBILITY));
+  EXPECT_TRUE(menu.IsCommandIdVisible(ExtensionContextMenuModel::UNINSTALL));
+  EXPECT_TRUE(
+      menu.IsCommandIdVisible(ExtensionContextMenuModel::MANAGE_EXTENSIONS));
+  EXPECT_TRUE(
+      menu.IsCommandIdVisible(ExtensionContextMenuModel::INSPECT_POPUP));
+  EXPECT_TRUE(menu.IsCommandIdVisible(
+      ExtensionContextMenuModel::PAGE_ACCESS_RUN_ON_CLICK));
+  EXPECT_TRUE(menu.IsCommandIdVisible(
+      ExtensionContextMenuModel::PAGE_ACCESS_RUN_ON_SITE));
+  EXPECT_TRUE(menu.IsCommandIdVisible(
+      ExtensionContextMenuModel::PAGE_ACCESS_RUN_ON_ALL_SITES));
 }
 
 // Test that the "show" and "hide" menu items appear correctly in the extension
-// context menu with the toolbar redesign.
-TEST_F(ExtensionContextMenuModelTest, ExtensionContextMenuShowAndHideRedesign) {
-  // Start with the toolbar redesign disabled.
-  std::unique_ptr<FeatureSwitch::ScopedOverride> toolbar_redesign_override(
-      new FeatureSwitch::ScopedOverride(
-          FeatureSwitch::extension_action_redesign(), true));
-
+// context menu.
+TEST_F(ExtensionContextMenuModelTest, ExtensionContextMenuShowAndHide) {
   InitializeEmptyExtensionService();
   Browser* browser = GetBrowser();
   extension_action_test_util::CreateToolbarModelForProfile(profile());
@@ -411,20 +651,20 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionContextMenuShowAndHideRedesign) {
   // For laziness.
   const ExtensionContextMenuModel::MenuEntries visibility_command =
       ExtensionContextMenuModel::TOGGLE_VISIBILITY;
-  base::string16 redesign_hide_string =
+  base::string16 hide_string =
       l10n_util::GetStringUTF16(IDS_EXTENSIONS_HIDE_BUTTON_IN_MENU);
-  base::string16 redesign_show_string =
+  base::string16 show_string =
       l10n_util::GetStringUTF16(IDS_EXTENSIONS_SHOW_BUTTON_IN_TOOLBAR);
-  base::string16 redesign_keep_string =
+  base::string16 keep_string =
       l10n_util::GetStringUTF16(IDS_EXTENSIONS_KEEP_BUTTON_IN_TOOLBAR);
 
   {
-    // Even page actions should have a visibility option with the redesign on.
+    // Even page actions should have a visibility option.
     ExtensionContextMenuModel menu(page_action, browser,
                                    ExtensionContextMenuModel::VISIBLE, nullptr);
     int index = menu.GetIndexOfCommandId(visibility_command);
     EXPECT_NE(-1, index);
-    EXPECT_EQ(redesign_hide_string, menu.GetLabelAt(index));
+    EXPECT_EQ(hide_string, menu.GetLabelAt(index));
   }
 
   {
@@ -432,12 +672,13 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionContextMenuShowAndHideRedesign) {
                                    ExtensionContextMenuModel::VISIBLE, nullptr);
     int index = menu.GetIndexOfCommandId(visibility_command);
     EXPECT_NE(-1, index);
-    EXPECT_EQ(redesign_hide_string, menu.GetLabelAt(index));
+    EXPECT_EQ(hide_string, menu.GetLabelAt(index));
 
     ExtensionActionAPI* action_api = ExtensionActionAPI::Get(profile());
     EXPECT_TRUE(action_api->GetBrowserActionVisibility(browser_action->id()));
-    // Executing the 'hide' command shouldn't modify the prefs with the redesign
-    // turned on (the ordering behavior is tested in ToolbarActionsModel tests).
+    // Executing the 'hide' command shouldn't modify the prefs (the ordering
+    // behavior is tested in ToolbarActionsModel tests).
+    // TODO(devlin): We should be able to get rid of the pref.
     menu.ExecuteCommand(visibility_command, 0);
     EXPECT_TRUE(action_api->GetBrowserActionVisibility(browser_action->id()));
   }
@@ -450,7 +691,7 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionContextMenuShowAndHideRedesign) {
                                    nullptr);
     int index = menu.GetIndexOfCommandId(visibility_command);
     EXPECT_NE(-1, index);
-    EXPECT_EQ(redesign_show_string, menu.GetLabelAt(index));
+    EXPECT_EQ(show_string, menu.GetLabelAt(index));
   }
 
   {
@@ -461,7 +702,7 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionContextMenuShowAndHideRedesign) {
         ExtensionContextMenuModel::TRANSITIVELY_VISIBLE, nullptr);
     int index = menu.GetIndexOfCommandId(visibility_command);
     EXPECT_NE(-1, index);
-    EXPECT_EQ(redesign_keep_string, menu.GetLabelAt(index));
+    EXPECT_EQ(keep_string, menu.GetLabelAt(index));
   }
 }
 
@@ -490,31 +731,27 @@ TEST_F(ExtensionContextMenuModelTest, ExtensionContextUninstall) {
 
 TEST_F(ExtensionContextMenuModelTest, TestPageAccessSubmenu) {
   // This test relies on the click-to-script feature.
-  std::unique_ptr<FeatureSwitch::ScopedOverride> enable_scripts_require_action(
-      new FeatureSwitch::ScopedOverride(FeatureSwitch::scripts_require_action(),
-                                        true));
+  auto scoped_feature_list = std::make_unique<base::test::ScopedFeatureList>();
+  scoped_feature_list->InitAndEnableFeature(
+      extensions_features::kRuntimeHostPermissions);
   InitializeEmptyExtensionService();
 
-  // Add an extension with all urls.
+  // Add an extension with all urls, and withhold permission.
   const Extension* extension =
       AddExtensionWithHostPermission("extension", manifest_keys::kBrowserAction,
                                      Manifest::INTERNAL, "*://*/*");
+  ScriptingPermissionsModifier(profile(), extension)
+      .SetWithholdHostPermissions(true);
+  EXPECT_TRUE(registry()->enabled_extensions().Contains(extension->id()));
 
   const GURL kActiveUrl("http://www.example.com/");
   const GURL kOtherUrl("http://www.google.com/");
 
-  // Add a web contents to the browser.
-  std::unique_ptr<content::WebContents> contents(
-      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
-  Browser* browser = GetBrowser();
-  browser->tab_strip_model()->AppendWebContents(contents.get(), true);
-  EXPECT_EQ(browser->tab_strip_model()->GetActiveWebContents(), contents.get());
-  content::WebContentsTester* web_contents_tester =
-      content::WebContentsTester::For(contents.get());
-  web_contents_tester->NavigateAndCommit(kActiveUrl);
+  // Add a tab to the browser.
+  content::WebContents* web_contents = AddTab(kActiveUrl);
 
   ExtensionActionRunner* action_runner =
-      ExtensionActionRunner::GetForWebContents(contents.get());
+      ExtensionActionRunner::GetForWebContents(web_contents);
   ASSERT_TRUE(action_runner);
 
   // Pretend the extension wants to run.
@@ -568,6 +805,8 @@ TEST_F(ExtensionContextMenuModelTest, TestPageAccessSubmenu) {
   EXPECT_FALSE(action_runner->WantsToRun(extension));
 
   // On another url, the mode should still be run on click.
+  content::WebContentsTester* web_contents_tester =
+      content::WebContentsTester::For(web_contents);
   web_contents_tester->NavigateAndCommit(kOtherUrl);
   EXPECT_TRUE(menu.IsCommandIdChecked(kRunOnClick));
   EXPECT_FALSE(menu.IsCommandIdChecked(kRunOnSite));
@@ -628,25 +867,24 @@ TEST_F(ExtensionContextMenuModelTest, TestPageAccessSubmenu) {
   EXPECT_EQ(2, run_count);
   EXPECT_TRUE(action_runner->WantsToRun(extension));
 
-  // Install an extension requesting only a single host. Since the extension
-  // doesn't request all hosts, it shouldn't have withheld permissions, and
-  // thus shouldn't have the page access submenu.
+  // Install an extension requesting a single host. The page access submenu
+  // should still be present.
   const Extension* single_host_extension = AddExtensionWithHostPermission(
       "single_host_extension", manifest_keys::kBrowserAction,
-      Manifest::INTERNAL, "http://www.google.com/*");
+      Manifest::INTERNAL, "http://www.example.com/*");
   ExtensionContextMenuModel single_host_menu(
       single_host_extension, GetBrowser(), ExtensionContextMenuModel::VISIBLE,
       nullptr);
-  EXPECT_EQ(-1, single_host_menu.GetIndexOfCommandId(
+  EXPECT_NE(-1, single_host_menu.GetIndexOfCommandId(
                     ExtensionContextMenuModel::PAGE_ACCESS_SUBMENU));
 
   // Disable the click-to-script feature, and install a new extension requiring
   // all hosts. Since the feature isn't on, it shouldn't have the page access
   // submenu either.
-  enable_scripts_require_action.reset();
-  enable_scripts_require_action.reset(
-      new FeatureSwitch::ScopedOverride(FeatureSwitch::scripts_require_action(),
-                                        false));
+  scoped_feature_list.reset();  // Need to delete the old list first.
+  scoped_feature_list = std::make_unique<base::test::ScopedFeatureList>();
+  scoped_feature_list->InitAndDisableFeature(
+      extensions_features::kRuntimeHostPermissions);
   const Extension* feature_disabled_extension = AddExtensionWithHostPermission(
       "feature_disabled_extension", manifest_keys::kBrowserAction,
       Manifest::INTERNAL, "http://www.google.com/*");
@@ -658,10 +896,6 @@ TEST_F(ExtensionContextMenuModelTest, TestPageAccessSubmenu) {
 }
 
 TEST_F(ExtensionContextMenuModelTest, TestInspectPopupPresence) {
-  std::unique_ptr<FeatureSwitch::ScopedOverride> toolbar_redesign_override(
-      new FeatureSwitch::ScopedOverride(
-          FeatureSwitch::extension_action_redesign(), true));
-
   InitializeEmptyExtensionService();
   {
     const Extension* page_action = AddExtension(
@@ -683,9 +917,8 @@ TEST_F(ExtensionContextMenuModelTest, TestInspectPopupPresence) {
     EXPECT_GE(0, inspect_popup_index);
   }
   {
-    // With the extension toolbar redesign, an extension with no specified
-    // action has one synthesized. However, there will never be a popup to
-    // inspect, so we shouldn't add a menu item.
+    // An extension with no specified action has one synthesized. However,
+    // there will never be a popup to inspect, so we shouldn't add a menu item.
     const Extension* no_action = AddExtension(
         "no_action", nullptr, Manifest::INTERNAL);
     ExtensionContextMenuModel menu(no_action, GetBrowser(),
@@ -694,6 +927,592 @@ TEST_F(ExtensionContextMenuModelTest, TestInspectPopupPresence) {
         menu.GetIndexOfCommandId(ExtensionContextMenuModel::INSPECT_POPUP);
     EXPECT_EQ(-1, inspect_popup_index);
   }
+}
+
+TEST_F(ExtensionContextMenuModelTest, PageAccessMenuOptions) {
+  // This test relies on the click-to-script feature.
+  auto scoped_feature_list = std::make_unique<base::test::ScopedFeatureList>();
+  scoped_feature_list->InitAndEnableFeature(
+      extensions_features::kRuntimeHostPermissions);
+  InitializeEmptyExtensionService();
+
+  // For laziness.
+  // TODO(devlin): Hoist these up to ExtensionContextMenuModelTest; enough
+  // tests use them.
+  using Entries = ExtensionContextMenuModel::MenuEntries;
+  const Entries kOnClick = Entries::PAGE_ACCESS_RUN_ON_CLICK;
+  const Entries kOnSite = Entries::PAGE_ACCESS_RUN_ON_SITE;
+  const Entries kOnAllSites = Entries::PAGE_ACCESS_RUN_ON_ALL_SITES;
+  const Entries kLearnMore = Entries::PAGE_ACCESS_LEARN_MORE;
+
+  struct {
+    // The pattern requested by the extension.
+    std::string requested_pattern;
+    // The pattern that's granted to the extension, if any. This may be
+    // significantly different than the requested pattern.
+    base::Optional<std::string> granted_pattern;
+    // The current URL the context menu will be used on.
+    GURL current_url;
+    // The set of page access menu entries that should be present.
+    std::set<Entries> expected_entries;
+    // The set of page access menu entries that should be enabled.
+    std::set<Entries> enabled_entries;
+    // The selected page access menu entry.
+    base::Optional<Entries> selected_entry;
+  } test_cases[] = {
+      // Easy cases: site the extension wants to run on, with or without
+      // permission granted.
+      {"https://google.com/maps",
+       "https://google.com/maps",
+       GURL("https://google.com/maps"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnSite},
+      {"https://google.com/maps",
+       base::nullopt,
+       GURL("https://google.com/maps"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnClick},
+      // We should display the page access controls if the extension wants to
+      // run on the specified origin, even if not on the exact site itself.
+      {"https://google.com/maps",
+       "https://google.com/maps",
+       GURL("https://google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnSite},
+      // The menu should be hidden if the extension cannot run on the origin.
+      {"https://google.com/maps",
+       "https://google.com/maps",
+       GURL("https://mail.google.com"),
+       {},
+       {}},
+      // An extension with all hosts granted should display the all sites
+      // controls, even if it didn't request all sites.
+      {"https://google.com/maps",
+       "*://*/*",
+       GURL("https://mail.google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite, kOnAllSites},
+       kOnAllSites},
+      // Subdomain pattern tests.
+      {"https://*.google.com/*",
+       "https://*.google.com/*",
+       GURL("https://google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnSite},
+      {"https://*.google.com/*",
+       base::nullopt,
+       GURL("https://google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnClick},
+      {"https://*.google.com/*",
+       "https://*.google.com/*",
+       GURL("https://mail.google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnSite},
+      {"https://*.google.com/*",
+       "https://google.com/*",
+       GURL("https://mail.google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnClick},
+      // On sites the extension doesn't want to run on, no controls should be
+      // shown...
+      {"https://*.google.com/*",
+       base::nullopt,
+       GURL("https://example.com"),
+       {}},
+      // ...unless the extension has access to the page, in which case we should
+      // display the controls.
+      {"https://*.google.com/*",
+       "https://*.example.com/*",
+       GURL("https://example.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite},
+       kOnSite},
+      // All-hosts like permissions should be treated as if the extension
+      // requested access to all urls.
+      {"https://*/maps",
+       "https://*/maps",
+       GURL("https://google.com/maps"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite, kOnAllSites},
+       kOnAllSites},
+      {"https://*/maps",
+       "https://google.com/*",
+       GURL("https://google.com/maps"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite, kOnAllSites},
+       kOnSite},
+      {"https://*/maps",
+       "https://*/maps",
+       GURL("https://google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite, kOnAllSites},
+       kOnAllSites},
+      {"https://*/maps",
+       "https://*/maps",
+       GURL("https://chromium.org"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite, kOnAllSites},
+       kOnAllSites},
+      {"https://*.com/*",
+       "https://*.com/*",
+       GURL("https://google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite, kOnAllSites},
+       kOnAllSites},
+      {"https://*.com/*",
+       "https://*.com/*",
+       GURL("https://maps.google.com"),
+       {kOnClick, kOnSite, kOnAllSites},
+       {kOnClick, kOnSite, kOnAllSites},
+       kOnAllSites},
+      // Even with an all-hosts like pattern, we shouldn't show access controls
+      // if the extension can't run on the origin (though we show the learn more
+      // option).
+      {"https://*.com/*",
+       "https://*.com/*",
+       GURL("https://chromium.org"),
+       {},
+       {}},
+      // No access controls should ever show for restricted pages, like
+      // chrome:-scheme pages or the webstore.
+      {"<all_urls>", "<all_urls>", GURL("chrome://extensions"), {}, {}},
+      {"<all_urls>",
+       "<all_urls>",
+       ExtensionsClient::Get()->GetWebstoreBaseURL(),
+       {},
+       {}},
+  };
+
+  // Add a web contents to the browser.
+  content::WebContents* web_contents = AddTab(GURL("about:blank"));
+  content::WebContentsTester* web_contents_tester =
+      content::WebContentsTester::For(web_contents);
+
+  for (const auto& test_case : test_cases) {
+    SCOPED_TRACE(base::StringPrintf(
+        "Request: '%s'; Granted: %s; URL: %s",
+        test_case.requested_pattern.c_str(),
+        test_case.granted_pattern.value_or(std::string()).c_str(),
+        test_case.current_url.spec().c_str()));
+
+    // Install an extension with the specified permission.
+    scoped_refptr<const Extension> extension =
+        ExtensionBuilder("test")
+            .AddContentScript("script.js", {test_case.requested_pattern})
+            .Build();
+    InitializeAndAddExtension(*extension);
+
+    ScriptingPermissionsModifier(profile(), extension)
+        .SetWithholdHostPermissions(true);
+    if (test_case.granted_pattern) {
+      URLPattern pattern(UserScript::ValidUserScriptSchemes(false),
+                         *test_case.granted_pattern);
+      permissions_test_util::GrantRuntimePermissionsAndWaitForCompletion(
+          profile(), *extension,
+          PermissionSet(APIPermissionSet(), ManifestPermissionSet(),
+                        URLPatternSet(), URLPatternSet({pattern})));
+    }
+
+    web_contents_tester->NavigateAndCommit(test_case.current_url);
+
+    ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                   ExtensionContextMenuModel::VISIBLE, nullptr);
+
+    EXPECT_EQ(test_case.selected_entry.has_value(),
+              !test_case.expected_entries.empty())
+        << "If any entries are available, one should be selected.";
+
+    if (test_case.expected_entries.empty()) {
+      // If there are no expected entries (i.e., the extension can't run on the
+      // page), there should be no submenu and instead there should be a
+      // disabled label.
+      int label_index = menu.GetIndexOfCommandId(
+          ExtensionContextMenuModel::PAGE_ACCESS_CANT_ACCESS);
+      EXPECT_NE(-1, label_index);
+      EXPECT_FALSE(menu.IsCommandIdEnabled(
+          ExtensionContextMenuModel::PAGE_ACCESS_CANT_ACCESS));
+      EXPECT_FALSE(HasPageAccessSubmenu(menu));
+      continue;
+    }
+
+    // The learn more option should be visible whenever the menu is.
+    EXPECT_EQ(CommandState::kEnabled,
+              GetPageAccessCommandState(menu, kLearnMore));
+
+    auto get_expected_state = [test_case](Entries command) {
+      if (!test_case.expected_entries.count(command))
+        return CommandState::kAbsent;
+      return test_case.enabled_entries.count(command) ? CommandState::kEnabled
+                                                      : CommandState::kDisabled;
+    };
+
+    // Verify the menu options are what we expect.
+    EXPECT_EQ(get_expected_state(kOnClick),
+              GetPageAccessCommandState(menu, kOnClick));
+    EXPECT_EQ(get_expected_state(kOnSite),
+              GetPageAccessCommandState(menu, kOnSite));
+    EXPECT_EQ(get_expected_state(kOnAllSites),
+              GetPageAccessCommandState(menu, kOnAllSites));
+
+    auto should_command_be_checked = [test_case](int command) {
+      return test_case.selected_entry && *test_case.selected_entry == command;
+    };
+
+    if (test_case.expected_entries.count(kOnClick)) {
+      EXPECT_EQ(should_command_be_checked(kOnClick),
+                menu.IsCommandIdChecked(kOnClick));
+    }
+    if (test_case.expected_entries.count(kOnSite)) {
+      EXPECT_EQ(should_command_be_checked(kOnSite),
+                menu.IsCommandIdChecked(kOnSite));
+    }
+    if (test_case.expected_entries.count(kOnAllSites)) {
+      EXPECT_EQ(should_command_be_checked(kOnAllSites),
+                menu.IsCommandIdChecked(kOnAllSites));
+    }
+
+    // Uninstall the extension so as not to conflict with more additions.
+    base::string16 error;
+    EXPECT_TRUE(service()->UninstallExtension(
+        extension->id(), UNINSTALL_REASON_FOR_TESTING, &error));
+    EXPECT_TRUE(error.empty()) << error;
+    EXPECT_EQ(nullptr, registry()->GetInstalledExtension(extension->id()));
+  }
+}
+
+TEST_F(ExtensionContextMenuModelTest, PageAccessWithActiveTab) {
+  // This test relies on the click-to-script feature.
+  auto scoped_feature_list = std::make_unique<base::test::ScopedFeatureList>();
+  scoped_feature_list->InitAndEnableFeature(
+      extensions_features::kRuntimeHostPermissions);
+  InitializeEmptyExtensionService();
+
+  // For laziness.
+  using Entries = ExtensionContextMenuModel::MenuEntries;
+  const Entries kOnClick = Entries::PAGE_ACCESS_RUN_ON_CLICK;
+  const Entries kOnSite = Entries::PAGE_ACCESS_RUN_ON_SITE;
+  const Entries kOnAllSites = Entries::PAGE_ACCESS_RUN_ON_ALL_SITES;
+  const Entries kLearnMore = Entries::PAGE_ACCESS_LEARN_MORE;
+
+  // Add an extension that has activeTab. Note: we add permission for b.com so
+  // that the extension is seen as affectable by the runtime host permissions
+  // feature; otherwise the page access menu entry is omitted entirely.
+  // TODO(devlin): Should we change that?
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("extension")
+          .AddPermissions({"activeTab", "http://b.com/*"})
+          .Build();
+  InitializeAndAddExtension(*extension);
+
+  AddTab(GURL("https://a.com"));
+
+  ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                 ExtensionContextMenuModel::VISIBLE, nullptr);
+  EXPECT_EQ(CommandState::kEnabled, GetPageAccessCommandState(menu, kOnClick));
+  EXPECT_EQ(CommandState::kDisabled, GetPageAccessCommandState(menu, kOnSite));
+  EXPECT_EQ(CommandState::kDisabled,
+            GetPageAccessCommandState(menu, kOnAllSites));
+  EXPECT_EQ(CommandState::kEnabled,
+            GetPageAccessCommandState(menu, kLearnMore));
+}
+
+TEST_F(ExtensionContextMenuModelTest,
+       TestTogglingAccessWithSpecificSitesWithUnrequestedUrl) {
+  // This test relies on the click-to-script feature.
+  auto scoped_feature_list = std::make_unique<base::test::ScopedFeatureList>();
+  scoped_feature_list->InitAndEnableFeature(
+      extensions_features::kRuntimeHostPermissions);
+  InitializeEmptyExtensionService();
+
+  // For laziness.
+  using Entries = ExtensionContextMenuModel::MenuEntries;
+  const Entries kOnClick = Entries::PAGE_ACCESS_RUN_ON_CLICK;
+  const Entries kOnSite = Entries::PAGE_ACCESS_RUN_ON_SITE;
+  const Entries kOnAllSites = Entries::PAGE_ACCESS_RUN_ON_ALL_SITES;
+  const Entries kLearnMore = Entries::PAGE_ACCESS_LEARN_MORE;
+
+  // Add an extension that wants access to a.com.
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("extension").AddPermission("*://a.com/*").Build();
+  InitializeAndAddExtension(*extension);
+
+  // Additionally, grant it the (unrequested) access to b.com.
+  ExtensionPrefs* prefs = ExtensionPrefs::Get(profile());
+  URLPattern b_com_pattern(Extension::kValidHostPermissionSchemes,
+                           "*://b.com/*");
+  PermissionSet b_com_permissions(APIPermissionSet(), ManifestPermissionSet(),
+                                  URLPatternSet({b_com_pattern}),
+                                  URLPatternSet());
+  prefs->AddGrantedPermissions(extension->id(), b_com_permissions);
+
+  ScriptingPermissionsModifier modifier(profile(), extension);
+  EXPECT_FALSE(modifier.HasWithheldHostPermissions());
+
+  const GURL a_com("https://a.com");
+  content::WebContents* web_contents = AddTab(a_com);
+
+  {
+    ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                   ExtensionContextMenuModel::VISIBLE, nullptr);
+
+    // Without withholding host permissions, the menu should be visible on
+    // a.com...
+    EXPECT_TRUE(HasPageAccessSubmenu(menu));
+    EXPECT_FALSE(HasCantAccessPageEntry(menu));
+
+    EXPECT_EQ(CommandState::kEnabled,
+              GetPageAccessCommandState(menu, kOnClick));
+    EXPECT_EQ(CommandState::kEnabled, GetPageAccessCommandState(menu, kOnSite));
+    EXPECT_EQ(CommandState::kDisabled,
+              GetPageAccessCommandState(menu, kOnAllSites));
+    EXPECT_EQ(CommandState::kEnabled,
+              GetPageAccessCommandState(menu, kLearnMore));
+
+    EXPECT_TRUE(menu.IsCommandIdChecked(kOnSite));
+    EXPECT_FALSE(menu.IsCommandIdChecked(kOnClick));
+    EXPECT_FALSE(menu.IsCommandIdChecked(kOnAllSites));
+  }
+
+  const GURL b_com("https://b.com");
+  content::WebContentsTester* web_contents_tester =
+      content::WebContentsTester::For(web_contents);
+  web_contents_tester->NavigateAndCommit(b_com);
+
+  {
+    // ... but not on b.com, where it doesn't want to run.
+    ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                   ExtensionContextMenuModel::VISIBLE, nullptr);
+    EXPECT_FALSE(HasPageAccessSubmenu(menu));
+    EXPECT_TRUE(HasCantAccessPageEntry(menu));
+  }
+
+  modifier.SetWithholdHostPermissions(true);
+
+  // However, if the extension has runtime-granted permissions to b.com, we
+  // *should* display them in the menu.
+  permissions_test_util::GrantRuntimePermissionsAndWaitForCompletion(
+      profile(), *extension, b_com_permissions);
+
+  {
+    ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                   ExtensionContextMenuModel::VISIBLE, nullptr);
+    EXPECT_TRUE(HasPageAccessSubmenu(menu));
+    EXPECT_FALSE(HasCantAccessPageEntry(menu));
+    EXPECT_EQ(CommandState::kEnabled,
+              GetPageAccessCommandState(menu, kOnClick));
+    EXPECT_EQ(CommandState::kEnabled, GetPageAccessCommandState(menu, kOnSite));
+    EXPECT_EQ(CommandState::kDisabled,
+              GetPageAccessCommandState(menu, kOnAllSites));
+    EXPECT_EQ(CommandState::kEnabled,
+              GetPageAccessCommandState(menu, kLearnMore));
+
+    EXPECT_TRUE(menu.IsCommandIdChecked(kOnSite));
+    EXPECT_FALSE(menu.IsCommandIdChecked(kOnClick));
+
+    // Set the extension to run on click. This revokes b.com permissions.
+    menu.ExecuteCommand(kOnClick, 0);
+  }
+
+  {
+    ScriptingPermissionsModifier::SiteAccess site_access =
+        modifier.GetSiteAccess(b_com);
+    EXPECT_FALSE(site_access.has_site_access);
+    EXPECT_FALSE(site_access.withheld_site_access);
+  }
+
+  ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                 ExtensionContextMenuModel::VISIBLE, nullptr);
+  // Somewhat strangely, this also removes the access controls, because we don't
+  // show it for sites the extension doesn't want to run on.
+  EXPECT_FALSE(HasPageAccessSubmenu(menu));
+  EXPECT_TRUE(HasCantAccessPageEntry(menu));
+}
+
+TEST_F(ExtensionContextMenuModelTest,
+       TestTogglingAccessWithSpecificSitesWithRequestedSites) {
+  // This test relies on the click-to-script feature.
+  auto scoped_feature_list = std::make_unique<base::test::ScopedFeatureList>();
+  scoped_feature_list->InitAndEnableFeature(
+      extensions_features::kRuntimeHostPermissions);
+  InitializeEmptyExtensionService();
+
+  // For laziness.
+  using Entries = ExtensionContextMenuModel::MenuEntries;
+  const Entries kOnClick = Entries::PAGE_ACCESS_RUN_ON_CLICK;
+  const Entries kOnSite = Entries::PAGE_ACCESS_RUN_ON_SITE;
+  const Entries kOnAllSites = Entries::PAGE_ACCESS_RUN_ON_ALL_SITES;
+
+  // Add an extension that wants access to a.com and b.com.
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("extension")
+          .AddPermissions({"*://a.com/*", "*://b.com/*"})
+          .Build();
+  InitializeAndAddExtension(*extension);
+
+  ScriptingPermissionsModifier modifier(profile(), extension);
+  EXPECT_FALSE(modifier.HasWithheldHostPermissions());
+
+  const GURL a_com("https://a.com");
+  AddTab(a_com);
+
+  ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                 ExtensionContextMenuModel::VISIBLE, nullptr);
+
+  EXPECT_EQ(CommandState::kEnabled, GetPageAccessCommandState(menu, kOnClick));
+  EXPECT_EQ(CommandState::kEnabled, GetPageAccessCommandState(menu, kOnSite));
+  EXPECT_EQ(CommandState::kDisabled,
+            GetPageAccessCommandState(menu, kOnAllSites));
+
+  EXPECT_TRUE(menu.IsCommandIdChecked(kOnSite));
+  EXPECT_FALSE(menu.IsCommandIdChecked(kOnClick));
+
+  // Withhold access on a.com by setting the extension to on-click.
+  menu.ExecuteCommand(kOnClick, 0);
+
+  // This, sadly, removes access for the extension on b.com as well. :( This
+  // is because we revoke all host permissions when transitioning from "don't
+  // withhold" to "do withhold".
+  // TODO(devlin): We should fix that, so that toggling access on a.com doesn't
+  // revoke access on b.com.
+  const GURL b_com("https://b.com");
+  ScriptingPermissionsModifier::SiteAccess site_access =
+      modifier.GetSiteAccess(b_com);
+  EXPECT_FALSE(site_access.has_site_access);
+  EXPECT_TRUE(site_access.withheld_site_access);
+}
+
+TEST_F(ExtensionContextMenuModelTest, TestClickingPageAccessLearnMore) {
+  // This test relies on the click-to-script feature.
+  auto scoped_feature_list = std::make_unique<base::test::ScopedFeatureList>();
+  scoped_feature_list->InitAndEnableFeature(
+      extensions_features::kRuntimeHostPermissions);
+  InitializeEmptyExtensionService();
+
+  // Add an extension that wants access to a.com.
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("extension").AddPermission("*://a.com/*").Build();
+  InitializeAndAddExtension(*extension);
+
+  ScriptingPermissionsModifier modifier(profile(), extension);
+  EXPECT_FALSE(modifier.HasWithheldHostPermissions());
+
+  const GURL a_com("https://a.com");
+  AddTab(a_com);
+
+  Browser* browser = GetBrowser();
+  ExtensionContextMenuModel menu(extension.get(), browser,
+                                 ExtensionContextMenuModel::VISIBLE, nullptr);
+
+  const ExtensionContextMenuModel::MenuEntries kLearnMore =
+      ExtensionContextMenuModel::PAGE_ACCESS_LEARN_MORE;
+  EXPECT_EQ(CommandState::kEnabled,
+            GetPageAccessCommandState(menu, kLearnMore));
+  menu.ExecuteCommand(kLearnMore, 0);
+
+  EXPECT_EQ(2, browser->tab_strip_model()->count());
+  content::WebContents* web_contents =
+      browser->tab_strip_model()->GetActiveWebContents();
+
+  // Test web contents need a poke to commit.
+  content::NavigationController& controller = web_contents->GetController();
+  content::RenderFrameHostTester::CommitPendingLoad(&controller);
+
+  EXPECT_EQ(GURL(chrome_extension_constants::kRuntimeHostPermissionsHelpURL),
+            web_contents->GetLastCommittedURL());
+}
+
+TEST_F(ExtensionContextMenuModelTest, HistogramTest_Basic) {
+  InitializeEmptyExtensionService();
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("extension").Build();
+  InitializeAndAddExtension(*extension);
+  constexpr char kHistogramName[] = "Extensions.ContextMenuAction";
+  {
+    base::HistogramTester tester;
+    {
+      // The menu is constructed, but never shown.
+      ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                     ExtensionContextMenuModel::VISIBLE,
+                                     nullptr);
+    }
+    tester.ExpectTotalCount(kHistogramName, 0);
+  }
+
+  {
+    base::HistogramTester tester;
+    {
+      // The menu is constructed and shown, but no action is taken.
+      ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                     ExtensionContextMenuModel::VISIBLE,
+                                     nullptr);
+      menu.OnMenuWillShow(&menu);
+      menu.MenuClosed(&menu);
+    }
+    tester.ExpectUniqueSample(
+        kHistogramName, ExtensionContextMenuModel::ContextMenuAction::kNoAction,
+        1 /* expected_count */);
+  }
+
+  {
+    base::HistogramTester tester;
+    {
+      // The menu is constructed, shown, and an action taken.
+      ExtensionContextMenuModel menu(extension.get(), GetBrowser(),
+                                     ExtensionContextMenuModel::VISIBLE,
+                                     nullptr);
+      menu.OnMenuWillShow(&menu);
+      menu.ExecuteCommand(ExtensionContextMenuModel::MANAGE_EXTENSIONS, 0);
+      menu.MenuClosed(&menu);
+    }
+
+    tester.ExpectUniqueSample(
+        kHistogramName,
+        ExtensionContextMenuModel::ContextMenuAction::kManageExtensions,
+        1 /* expected_count */);
+  }
+}
+
+TEST_F(ExtensionContextMenuModelTest, HistogramTest_CustomCommand) {
+  constexpr char kHistogramName[] = "Extensions.ContextMenuAction";
+
+  InitializeEmptyExtensionService();
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("extension")
+          .SetAction(ExtensionBuilder::ActionType::BROWSER_ACTION)
+          .Build();
+  InitializeAndAddExtension(*extension);
+
+  // Create a MenuManager for adding context items.
+  MenuManager* manager = static_cast<MenuManager*>(
+      (MenuManagerFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(),
+          base::BindRepeating(
+              &MenuManagerFactory::BuildServiceInstanceForTesting))));
+  ASSERT_TRUE(manager);
+
+  MenuBuilder builder(extension, GetBrowser(), manager);
+  builder.AddContextItem(MenuItem::BROWSER_ACTION);
+  std::unique_ptr<ExtensionContextMenuModel> menu = builder.BuildMenu();
+  EXPECT_EQ(1, CountExtensionItems(*menu));
+
+  base::HistogramTester tester;
+  menu->OnMenuWillShow(menu.get());
+  menu->ExecuteCommand(
+      ContextMenuMatcher::ConvertToExtensionsCustomCommandId(0), 0);
+  menu->MenuClosed(menu.get());
+
+  tester.ExpectUniqueSample(
+      kHistogramName,
+      ExtensionContextMenuModel::ContextMenuAction::kCustomCommand,
+      1 /* expected_count */);
 }
 
 }  // namespace extensions

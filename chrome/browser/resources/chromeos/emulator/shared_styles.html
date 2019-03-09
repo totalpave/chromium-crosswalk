@@ -3,28 +3,18 @@
 <dom-module id="device-emulator-shared-styles">
   <template>
     <style>
-      paper-input {
+      cr-input {
         display: inline-block;
         margin: 0 15px;
+        vertical-align: top;
         width: 200px;
       }
 
-      #editModal paper-checkbox {
-        -webkit-margin-start: 15px;
-      }
-
-      paper-dialog {
-        height: 90%;
-        overflow-y: scroll;
-        width: 40%;
-      }
-
-      paper-radio-button {
-        display: inline-block;
+      cr-radio-button {
+        display: inline-flex;
       }
 
       .element-label {
-        -webkit-padding-start: 0;
         color: rgb(82, 101, 162);
         display: block;
         font-size: 24px;
@@ -32,6 +22,7 @@
         height: 80px;
         letter-spacing: 0.05em;
         line-height: 80px;
+        padding-inline-start: 0;
       }
 
       .form-label {
@@ -121,7 +112,6 @@
 
       .add-device-container paper-button {
         color: rgb(82, 101, 162);
-        width: 200px;
       }
     </style>
   </template>

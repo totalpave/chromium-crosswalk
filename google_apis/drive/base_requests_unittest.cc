@@ -12,6 +12,7 @@
 #include "base/bind.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/values.h"
 #include "google_apis/drive/drive_api_parser.h"
 #include "google_apis/drive/drive_api_requests.h"
@@ -19,9 +20,11 @@
 #include "google_apis/drive/request_sender.h"
 #include "google_apis/drive/test_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-#include "net/url_request/url_request_test_util.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "services/network/network_service.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_network_service_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace google_apis {
@@ -36,16 +39,18 @@ class FakeUrlFetchRequest : public UrlFetchRequestBase {
   FakeUrlFetchRequest(RequestSender* sender,
                       const EntryActionCallback& callback,
                       const GURL& url)
-      : UrlFetchRequestBase(sender),
+      : UrlFetchRequestBase(sender, ProgressCallback(), ProgressCallback()),
         callback_(callback),
-        url_(url) {
-  }
+        url_(url) {}
 
   ~FakeUrlFetchRequest() override {}
 
  protected:
   GURL GetURL() const override { return url_; }
-  void ProcessURLFetchResults(const net::URLFetcher* source) override {
+  void ProcessURLFetchResults(
+      const network::ResourceResponseHead* response_head,
+      base::FilePath response_file,
+      std::string response_body) override {
     callback_.Run(GetErrorCode());
   }
   void RunCallbackOnPrematureFailure(DriveApiErrorCode code) override {
@@ -82,9 +87,7 @@ class FakeMultipartUploadRequest : public MultipartUploadRequestBase {
 
   ~FakeMultipartUploadRequest() override {}
 
-  net::URLFetcher::RequestType GetRequestType() const override {
-    return net::URLFetcher::POST;
-  }
+  std::string GetRequestType() const override { return "POST"; }
 
   bool GetContentData(std::string* content_type,
                       std::string* content_data) override {
@@ -108,20 +111,54 @@ class FakeMultipartUploadRequest : public MultipartUploadRequestBase {
 
 class BaseRequestsTest : public testing::Test {
  public:
-  BaseRequestsTest() : response_code_(net::HTTP_OK) {}
+  BaseRequestsTest() : response_code_(net::HTTP_OK) {
+    network::mojom::NetworkServicePtr network_service_ptr;
+    network::mojom::NetworkServiceRequest network_service_request =
+        mojo::MakeRequest(&network_service_ptr);
+    network_service_ =
+        network::NetworkService::Create(std::move(network_service_request),
+                                        /*netlog=*/nullptr);
+    network::mojom::NetworkContextParamsPtr context_params =
+        network::mojom::NetworkContextParams::New();
+    context_params->enable_data_url_support = true;
+    network_service_ptr->CreateNetworkContext(
+        mojo::MakeRequest(&network_context_), std::move(context_params));
+
+    network::mojom::NetworkServiceClientPtr network_service_client_ptr;
+    network_service_client_ =
+        std::make_unique<network::TestNetworkServiceClient>(
+            mojo::MakeRequest(&network_service_client_ptr));
+    network_service_ptr->SetClient(std::move(network_service_client_ptr),
+                                   network::mojom::NetworkServiceParams::New());
+
+    network::mojom::URLLoaderFactoryParamsPtr params =
+        network::mojom::URLLoaderFactoryParams::New();
+    params->process_id = network::mojom::kBrowserProcessId;
+    params->is_corb_enabled = false;
+    network_context_->CreateURLLoaderFactory(
+        mojo::MakeRequest(&url_loader_factory_), std::move(params));
+    test_shared_loader_factory_ =
+        base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+            url_loader_factory_.get());
+  }
 
   void SetUp() override {
-    request_context_getter_ = new net::TestURLRequestContextGetter(
-        message_loop_.task_runner());
+    sender_.reset(new RequestSender(
+        std::make_unique<DummyAuthService>(), test_shared_loader_factory_,
+        scoped_task_environment_.GetMainThreadTaskRunner(),
+        std::string(), /* custom user agent */
+        TRAFFIC_ANNOTATION_FOR_TESTS));
 
-    sender_.reset(new RequestSender(new DummyAuthService,
-                                    request_context_getter_.get(),
-                                    message_loop_.task_runner(),
-                                    std::string() /* custom user agent */));
-
-    ASSERT_TRUE(test_server_.Start());
     test_server_.RegisterRequestHandler(
         base::Bind(&BaseRequestsTest::HandleRequest, base::Unretained(this)));
+    ASSERT_TRUE(test_server_.Start());
+  }
+
+  void TearDown() override {
+    // Deleting the sender here will delete all request objects.
+    sender_.reset();
+    // Wait for any DeleteSoon tasks to run.
+    scoped_task_environment_.RunUntilIdle();
   }
 
   std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
@@ -134,8 +171,14 @@ class BaseRequestsTest : public testing::Test {
     return std::move(response);
   }
 
-  base::MessageLoopForIO message_loop_;
-  scoped_refptr<net::TestURLRequestContextGetter> request_context_getter_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_{
+      base::test::ScopedTaskEnvironment::MainThreadType::IO};
+  std::unique_ptr<network::mojom::NetworkService> network_service_;
+  std::unique_ptr<network::mojom::NetworkServiceClient> network_service_client_;
+  network::mojom::NetworkContextPtr network_context_;
+  network::mojom::URLLoaderFactoryPtr url_loader_factory_;
+  scoped_refptr<network::WeakWrapperSharedURLLoaderFactory>
+      test_shared_loader_factory_;
   std::unique_ptr<RequestSender> sender_;
   net::EmbeddedTestServer test_server_;
 
@@ -179,7 +222,7 @@ TEST_F(BaseRequestsTest, UrlFetchRequestBaseResponseCodeOverride) {
 
   DriveApiErrorCode error = DRIVE_OTHER_ERROR;
   base::RunLoop run_loop;
-  sender_->StartRequestWithAuthRetry(new FakeUrlFetchRequest(
+  sender_->StartRequestWithAuthRetry(std::make_unique<FakeUrlFetchRequest>(
       sender_.get(),
       test_util::CreateQuitCallback(
           &run_loop, test_util::CreateCopyResultCallback(&error)),
@@ -200,8 +243,8 @@ TEST_F(MultipartUploadRequestBaseTest, Basic) {
       google_apis::test_util::GetTestFilePath("drive/text.txt");
   std::string upload_content_type;
   std::string upload_content_data;
-  FakeMultipartUploadRequest* const multipart_request =
-      new FakeMultipartUploadRequest(
+  std::unique_ptr<FakeMultipartUploadRequest> multipart_request =
+      std::make_unique<FakeMultipartUploadRequest>(
           sender_->blocking_task_runner(), "{json:\"test\"}", "text/plain", 10,
           source_path,
           test_util::CreateQuitCallback(
@@ -209,10 +252,9 @@ TEST_F(MultipartUploadRequestBaseTest, Basic) {
           ProgressCallback(), test_server_.base_url(), &upload_content_type,
           &upload_content_data);
   multipart_request->SetBoundaryForTesting("TESTBOUNDARY");
-  std::unique_ptr<drive::SingleBatchableDelegateRequest> request(
-      new drive::SingleBatchableDelegateRequest(sender_.get(),
-                                                multipart_request));
-  sender_->StartRequestWithAuthRetry(request.release());
+  sender_->StartRequestWithAuthRetry(
+      std::make_unique<drive::SingleBatchableDelegateRequest>(
+          sender_.get(), std::move(multipart_request)));
   run_loop.Run();
   EXPECT_EQ("multipart/related; boundary=TESTBOUNDARY", upload_content_type);
   EXPECT_EQ(
@@ -231,4 +273,4 @@ TEST_F(MultipartUploadRequestBaseTest, Basic) {
   EXPECT_EQ("file_id", file->file_id());
 }
 
-}  // Namespace google_apis
+}  // namespace google_apis

@@ -4,11 +4,9 @@
 
 package org.chromium.media;
 
-import android.content.Context;
+import android.annotation.SuppressLint;
 import android.media.MediaPlayer;
-import android.media.MediaPlayer.TrackInfo;
 import android.net.Uri;
-import android.os.AsyncTask;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.text.TextUtils;
@@ -16,9 +14,13 @@ import android.util.Base64;
 import android.util.Base64InputStream;
 import android.view.Surface;
 
+import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.StreamUtil;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.task.AsyncTask;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -71,10 +73,7 @@ public class MediaPlayerBridge {
 
     @CalledByNative
     protected void destroy() {
-        if (mLoadDataUriTask != null) {
-            mLoadDataUriTask.cancel(true);
-            mLoadDataUriTask = null;
-        }
+        cancelLoadDataUriTask();
         mNativeMediaPlayerBridge = 0;
     }
 
@@ -111,48 +110,6 @@ public class MediaPlayerBridge {
     }
 
     @CalledByNative
-    protected boolean hasVideo() {
-        return hasTrack(TrackInfo.MEDIA_TRACK_TYPE_VIDEO);
-    }
-
-    @CalledByNative
-    protected boolean hasAudio() {
-        return hasTrack(TrackInfo.MEDIA_TRACK_TYPE_AUDIO);
-    }
-
-    private boolean hasTrack(int trackType) {
-        try {
-            TrackInfo trackInfo[] = getLocalPlayer().getTrackInfo();
-
-            // HLS media does not have the track info, so we treat them conservatively.
-            if (trackInfo.length == 0) return true;
-
-            for (TrackInfo info : trackInfo) {
-                // TODO(zqzhang): may be we can have a histogram recording
-                // media track types in the future.
-                // See http://crbug.com/571411
-                if (trackType == info.getTrackType()) return true;
-                if (TrackInfo.MEDIA_TRACK_TYPE_UNKNOWN == info.getTrackType()) return true;
-            }
-        } catch (RuntimeException e) {
-            // Exceptions may come from getTrackInfo (IllegalStateException/RuntimeException), or
-            // from some customized OS returning null TrackInfos (NullPointerException).
-            return true;
-        }
-        return false;
-    }
-
-    @CalledByNative
-    protected int getVideoWidth() {
-        return getLocalPlayer().getVideoWidth();
-    }
-
-    @CalledByNative
-    protected int getVideoHeight() {
-        return getLocalPlayer().getVideoHeight();
-    }
-
-    @CalledByNative
     protected int getCurrentPosition() {
         return getLocalPlayer().getCurrentPosition();
     }
@@ -164,6 +121,7 @@ public class MediaPlayerBridge {
 
     @CalledByNative
     protected void release() {
+        cancelLoadDataUriTask();
         getLocalPlayer().release();
     }
 
@@ -189,7 +147,7 @@ public class MediaPlayerBridge {
 
     @CalledByNative
     protected boolean setDataSource(
-            Context context, String url, String cookies, String userAgent, boolean hideUrlLog) {
+            String url, String cookies, String userAgent, boolean hideUrlLog) {
         Uri uri = Uri.parse(url);
         HashMap<String, String> headersMap = new HashMap<String, String>();
         if (hideUrlLog) headersMap.put("x-hide-urls-from-log", "true");
@@ -202,12 +160,7 @@ public class MediaPlayerBridge {
             headersMap.put("allow-cross-domain-redirect", "false");
         }
         try {
-            if (sResourceLoadFilter != null &&
-                    sResourceLoadFilter.shouldOverrideResourceLoading(
-                            getLocalPlayer(), context, uri)) {
-                return true;
-            }
-            getLocalPlayer().setDataSource(context, uri, headersMap);
+            getLocalPlayer().setDataSource(ContextUtils.getApplicationContext(), uri, headersMap);
             return true;
         } catch (Exception e) {
             return false;
@@ -228,11 +181,8 @@ public class MediaPlayerBridge {
     }
 
     @CalledByNative
-    protected boolean setDataUriDataSource(final Context context, final String url) {
-        if (mLoadDataUriTask != null) {
-            mLoadDataUriTask.cancel(true);
-            mLoadDataUriTask = null;
-        }
+    protected boolean setDataUriDataSource(final String url) {
+        cancelLoadDataUriTask();
 
         if (!url.startsWith("data:")) return false;
         int headerStop = url.indexOf(',');
@@ -245,28 +195,27 @@ public class MediaPlayerBridge {
         if (headerInfo.length != 2) return false;
         if (!"base64".equals(headerInfo[1])) return false;
 
-        mLoadDataUriTask = new LoadDataUriTask(context, data);
+        mLoadDataUriTask = new LoadDataUriTask(data);
         mLoadDataUriTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
         return true;
     }
 
-    private class LoadDataUriTask extends AsyncTask<Void, Void, Boolean> {
+    private class LoadDataUriTask extends AsyncTask<Boolean> {
         private final String mData;
-        private final Context mContext;
         private File mTempFile;
 
-        public LoadDataUriTask(Context context, String data) {
+        public LoadDataUriTask(String data) {
             mData = data;
-            mContext = context;
         }
 
         @Override
-        protected Boolean doInBackground(Void... params) {
+        protected Boolean doInBackground() {
             FileOutputStream fos = null;
             try {
                 mTempFile = File.createTempFile("decoded", "mediadata");
                 fos = new FileOutputStream(mTempFile);
-                InputStream stream = new ByteArrayInputStream(mData.getBytes());
+                InputStream stream =
+                        new ByteArrayInputStream(ApiCompatibilityUtils.getBytesUtf8(mData));
                 Base64InputStream decoder = new Base64InputStream(stream, Base64.DEFAULT);
                 byte[] buffer = new byte[1024];
                 int len;
@@ -278,11 +227,7 @@ public class MediaPlayerBridge {
             } catch (IOException e) {
                 return false;
             } finally {
-                try {
-                    if (fos != null) fos.close();
-                } catch (IOException e) {
-                    // Can't do anything.
-                }
+                StreamUtil.closeQuietly(fos);
             }
         }
 
@@ -293,10 +238,13 @@ public class MediaPlayerBridge {
                 return;
             }
 
-            try {
-                getLocalPlayer().setDataSource(mContext, Uri.fromFile(mTempFile));
-            } catch (IOException e) {
-                result = false;
+            if (result) {
+                try {
+                    getLocalPlayer().setDataSource(
+                            ContextUtils.getApplicationContext(), Uri.fromFile(mTempFile));
+                } catch (IOException e) {
+                    result = false;
+                }
             }
 
             deleteFile();
@@ -314,10 +262,6 @@ public class MediaPlayerBridge {
         }
     }
 
-    protected void setOnBufferingUpdateListener(MediaPlayer.OnBufferingUpdateListener listener) {
-        getLocalPlayer().setOnBufferingUpdateListener(listener);
-    }
-
     protected void setOnCompletionListener(MediaPlayer.OnCompletionListener listener) {
         getLocalPlayer().setOnCompletionListener(listener);
     }
@@ -330,29 +274,17 @@ public class MediaPlayerBridge {
         getLocalPlayer().setOnPreparedListener(listener);
     }
 
-    protected void setOnSeekCompleteListener(MediaPlayer.OnSeekCompleteListener listener) {
-        getLocalPlayer().setOnSeekCompleteListener(listener);
-    }
-
     protected void setOnVideoSizeChangedListener(MediaPlayer.OnVideoSizeChangedListener listener) {
         getLocalPlayer().setOnVideoSizeChangedListener(listener);
     }
 
     protected static class AllowedOperations {
-        private final boolean mCanPause;
         private final boolean mCanSeekForward;
         private final boolean mCanSeekBackward;
 
-        public AllowedOperations(boolean canPause, boolean canSeekForward,
-                boolean canSeekBackward) {
-            mCanPause = canPause;
+        public AllowedOperations(boolean canSeekForward, boolean canSeekBackward) {
             mCanSeekForward = canSeekForward;
             mCanSeekBackward = canSeekBackward;
-        }
-
-        @CalledByNative("AllowedOperations")
-        private boolean canPause() {
-            return mCanPause;
         }
 
         @CalledByNative("AllowedOperations")
@@ -373,10 +305,10 @@ public class MediaPlayerBridge {
     @CalledByNative
     protected AllowedOperations getAllowedOperations() {
         MediaPlayer player = getLocalPlayer();
-        boolean canPause = true;
         boolean canSeekForward = true;
         boolean canSeekBackward = true;
         try {
+            @SuppressLint("PrivateApi")
             Method getMetadata = player.getClass().getDeclaredMethod(
                     "getMetadata", boolean.class, boolean.class);
             getMetadata.setAccessible(true);
@@ -386,15 +318,12 @@ public class MediaPlayerBridge {
                 Method hasMethod = metadataClass.getDeclaredMethod("has", int.class);
                 Method getBooleanMethod = metadataClass.getDeclaredMethod("getBoolean", int.class);
 
-                int pause = (Integer) metadataClass.getField("PAUSE_AVAILABLE").get(null);
                 int seekForward =
                         (Integer) metadataClass.getField("SEEK_FORWARD_AVAILABLE").get(null);
                 int seekBackward =
                         (Integer) metadataClass.getField("SEEK_BACKWARD_AVAILABLE").get(null);
                 hasMethod.setAccessible(true);
                 getBooleanMethod.setAccessible(true);
-                canPause = !((Boolean) hasMethod.invoke(data, pause))
-                        || ((Boolean) getBooleanMethod.invoke(data, pause));
                 canSeekForward = !((Boolean) hasMethod.invoke(data, seekForward))
                         || ((Boolean) getBooleanMethod.invoke(data, seekForward));
                 canSeekBackward = !((Boolean) hasMethod.invoke(data, seekBackward))
@@ -409,9 +338,16 @@ public class MediaPlayerBridge {
         } catch (NoSuchFieldException e) {
             Log.e(TAG, "Cannot find matching fields in Metadata class: " + e);
         }
-        return new AllowedOperations(canPause, canSeekForward, canSeekBackward);
+        return new AllowedOperations(canSeekForward, canSeekBackward);
     }
 
     private native void nativeOnDidSetDataUriDataSource(long nativeMediaPlayerBridge,
                                                         boolean success);
+
+    private void cancelLoadDataUriTask() {
+        if (mLoadDataUriTask != null) {
+            mLoadDataUriTask.cancel(true);
+            mLoadDataUriTask = null;
+        }
+    }
 }

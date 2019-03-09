@@ -5,13 +5,16 @@
 #include "chrome/browser/extensions/event_router_forwarder.h"
 
 #include <stddef.h>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/task/post_task.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/event_router.h"
 #include "url/gurl.h"
@@ -48,30 +51,6 @@ void EventRouterForwarder::DispatchEventToRenderers(
               profile, use_profile_to_restrict_events, event_url);
 }
 
-void EventRouterForwarder::BroadcastEventToExtension(
-    const std::string& extension_id,
-    events::HistogramValue histogram_value,
-    const std::string& event_name,
-    std::unique_ptr<base::ListValue> event_args,
-    const GURL& event_url) {
-  HandleEvent(extension_id, histogram_value, event_name, std::move(event_args),
-              0, true, event_url);
-}
-
-void EventRouterForwarder::DispatchEventToExtension(
-    const std::string& extension_id,
-    events::HistogramValue histogram_value,
-    const std::string& event_name,
-    std::unique_ptr<base::ListValue> event_args,
-    void* profile,
-    bool use_profile_to_restrict_events,
-    const GURL& event_url) {
-  if (!profile)
-    return;
-  HandleEvent(extension_id, histogram_value, event_name, std::move(event_args),
-              profile, use_profile_to_restrict_events, event_url);
-}
-
 void EventRouterForwarder::HandleEvent(
     const std::string& extension_id,
     events::HistogramValue histogram_value,
@@ -81,11 +60,11 @@ void EventRouterForwarder::HandleEvent(
     bool use_profile_to_restrict_events,
     const GURL& event_url) {
   if (!BrowserThread::CurrentlyOn(BrowserThread::UI)) {
-    BrowserThread::PostTask(
-        BrowserThread::UI, FROM_HERE,
-        base::Bind(&EventRouterForwarder::HandleEvent, this, extension_id,
-                   histogram_value, event_name, base::Passed(&event_args),
-                   profile_ptr, use_profile_to_restrict_events, event_url));
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::UI},
+        base::BindOnce(&EventRouterForwarder::HandleEvent, this, extension_id,
+                       histogram_value, event_name, std::move(event_args),
+                       profile_ptr, use_profile_to_restrict_events, event_url));
     return;
   }
 
@@ -132,9 +111,8 @@ void EventRouterForwarder::CallEventRouter(
     return;
 #endif
 
-  std::unique_ptr<Event> event(
-      new Event(histogram_value, event_name, std::move(event_args)));
-  event->restrict_to_browser_context = restrict_to_profile;
+  auto event = std::make_unique<Event>(
+      histogram_value, event_name, std::move(event_args), restrict_to_profile);
   event->event_url = event_url;
   if (extension_id.empty()) {
     extensions::EventRouter::Get(profile)->BroadcastEvent(std::move(event));

@@ -6,15 +6,20 @@
 #define ASH_WM_VIDEO_DETECTOR_H_
 
 #include <map>
+#include <memory>
+#include <set>
 
 #include "ash/ash_export.h"
-#include "ash/common/shell_observer.h"
+#include "ash/session/session_observer.h"
+#include "ash/shell_observer.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observer.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "mojo/public/cpp/bindings/binding.h"
+#include "services/viz/public/interfaces/compositing/video_detector_observer.mojom.h"
 #include "ui/aura/env_observer.h"
 #include "ui/aura/window_observer.h"
 
@@ -22,84 +27,94 @@ namespace aura {
 class Window;
 }
 
-namespace gfx {
-class Rect;
-}
-
 namespace ash {
 
-class ASH_EXPORT VideoDetectorObserver {
- public:
-  // Invoked periodically while a video is being played onscreen.
-  virtual void OnVideoDetected(bool is_fullscreen) = 0;
-
- protected:
-  virtual ~VideoDetectorObserver() {}
-};
-
-// Watches for updates to windows and tries to detect when a video is playing.
-// We err on the side of false positives and can be fooled by things like
-// continuous scrolling of a page.
+// Receives notifications from viz::VideoDetector about whether it is likely
+// that a video is being played on screen. If video activity is detected, this
+// class will classify it as full screen or windowed.
 class ASH_EXPORT VideoDetector : public aura::EnvObserver,
                                  public aura::WindowObserver,
-                                 public ShellObserver {
+                                 public SessionObserver,
+                                 public ShellObserver,
+                                 public viz::mojom::VideoDetectorObserver {
  public:
-  // Minimum dimensions in pixels that a window update must have to be
-  // considered a potential video frame.
-  static const int kMinUpdateWidth;
-  static const int kMinUpdateHeight;
+  // State of detected video activity.
+  enum class State {
+    // Video activity has been detected recently and there are no fullscreen
+    // windows.
+    PLAYING_WINDOWED,
+    // Video activity has been detected recently and there is at least one
+    // fullscreen window.
+    PLAYING_FULLSCREEN,
+    // Video activity has not been detected recently.
+    NOT_PLAYING,
+  };
 
-  // Number of video-sized updates that we must see within a second in a window
-  // before we assume that a video is playing.
-  static const int kMinFramesPerSecond;
+  class Observer {
+   public:
+    // Invoked when the video playback state has changed.
+    virtual void OnVideoStateChanged(VideoDetector::State state) = 0;
 
-  // Minimum amount of time between notifications to observers that a video is
-  // playing.
-  static const double kNotifyIntervalSec;
+   protected:
+    virtual ~Observer() {}
+  };
 
   VideoDetector();
   ~VideoDetector() override;
 
-  void set_now_for_test(base::TimeTicks now) { now_for_test_ = now; }
+  State state() const { return state_; }
 
-  void AddObserver(VideoDetectorObserver* observer);
-  void RemoveObserver(VideoDetectorObserver* observer);
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
 
   // EnvObserver overrides.
   void OnWindowInitialized(aura::Window* window) override;
 
-  // WindowObserver overrides.
-  void OnDelegatedFrameDamage(aura::Window* window,
-                              const gfx::Rect& region) override;
+  // aura::WindowObserver overrides.
   void OnWindowDestroyed(aura::Window* window) override;
+  void OnWindowDestroying(aura::Window* window) override;
+
+  // SessionStateController overrides.
+  void OnChromeTerminating() override;
 
   // ShellObserver overrides.
-  void OnAppTerminating() override;
+  void OnFullscreenStateChanged(bool is_fullscreen,
+                                aura::Window* root_window) override;
+
+  // viz::mojom::VideoDetectorObserver implementation.
+  void OnVideoActivityStarted() override;
+  void OnVideoActivityEnded() override;
 
  private:
-  class WindowInfo;
-  typedef std::map<aura::Window*, linked_ptr<WindowInfo>> WindowInfoMap;
+  // Updates |state_| and notifies |observers_| if it changed.
+  void UpdateState();
 
-  // Possibly notifies observers in response to detection of a video in
-  // |window|.  Notifications are rate-limited and don't get sent if the window
-  // is invisible or offscreen.
-  void MaybeNotifyObservers(aura::Window* window, base::TimeTicks now);
+  // Connects to Viz and starts observing video activities.
+  void EstablishConnectionToViz();
 
-  // Maps from a window that we're tracking to information about it.
-  WindowInfoMap window_infos_;
+  // Called when connection to Viz is lost. The connection will be
+  // re-established after a short delay.
+  void OnConnectionError();
 
-  base::ObserverList<VideoDetectorObserver> observers_;
+  // Current playback state.
+  State state_;
 
-  // Last time at which we notified observers that a video was playing.
-  base::TimeTicks last_observer_notification_time_;
+  // True if video has been observed in the last |kVideoTimeoutMs|.
+  bool video_is_playing_;
 
-  // If set, used when the current time is needed.  This can be set by tests to
-  // simulate the passage of time.
-  base::TimeTicks now_for_test_;
+  // Currently-fullscreen root windows.
+  std::set<aura::Window*> fullscreen_root_windows_;
 
-  ScopedObserver<aura::Window, aura::WindowObserver> observer_manager_;
+  base::ObserverList<Observer>::Unchecked observers_;
+
+  ScopedObserver<aura::Window, aura::WindowObserver> window_observer_manager_;
+  ScopedSessionObserver scoped_session_observer_;
 
   bool is_shutting_down_;
+
+  mojo::Binding<viz::mojom::VideoDetectorObserver> binding_;
+
+  base::WeakPtrFactory<VideoDetector> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(VideoDetector);
 };

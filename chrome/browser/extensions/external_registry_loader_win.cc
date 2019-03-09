@@ -4,20 +4,26 @@
 
 #include "chrome/browser/extensions/external_registry_loader_win.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/sequenced_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "base/version.h"
 #include "base/win/registry.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
 #include "components/crx_file/id_util.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
 using content::BrowserThread;
@@ -41,6 +47,11 @@ const base::char16 kRegistryExtensionVersion[] = L"version";
 const base::char16 kRegistryExtensionUpdateUrl[] = L"update_url";
 
 bool CanOpenFileForReading(const base::FilePath& path) {
+  // Note: Because this ScopedFILE is used on the stack and not passed around
+  // threads/sequences, this method doesn't require callers to run on tasks with
+  // BLOCK_SHUTDOWN. SKIP_ON_SHUTDOWN is enough and safe because it guarantees
+  // that if a task starts, it will always finish, and will block shutdown at
+  // that point.
   base::ScopedFILE file_handle(base::OpenFile(path, "rb"));
   return file_handle.get() != NULL;
 }
@@ -54,17 +65,21 @@ std::string MakePrefName(const std::string& extension_id,
 
 namespace extensions {
 
+ExternalRegistryLoader::ExternalRegistryLoader()
+    : attempted_watching_registry_(false) {}
+
+ExternalRegistryLoader::~ExternalRegistryLoader() {}
+
 void ExternalRegistryLoader::StartLoading() {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));
-  BrowserThread::PostTask(
-      BrowserThread::FILE, FROM_HERE,
-      base::Bind(&ExternalRegistryLoader::LoadOnFileThread, this));
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  GetOrCreateTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ExternalRegistryLoader::LoadOnBlockingThread, this));
 }
 
 std::unique_ptr<base::DictionaryValue>
-ExternalRegistryLoader::LoadPrefsOnFileThread() {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::FILE));
-  std::unique_ptr<base::DictionaryValue> prefs(new base::DictionaryValue);
+ExternalRegistryLoader::LoadPrefsOnBlockingThread() {
+  auto prefs = std::make_unique<base::DictionaryValue>();
 
   // A map of IDs, to weed out duplicates between HKCU and HKLM.
   std::set<base::string16> keys;
@@ -164,7 +179,7 @@ ExternalRegistryLoader::LoadPrefsOnFileThread() {
       continue;
     }
 
-    Version version(base::UTF16ToASCII(extension_version));
+    base::Version version(base::UTF16ToASCII(extension_version));
     if (!version.IsValid()) {
       LOG(ERROR) << "Invalid version value " << extension_version
                  << " for key " << key_path << ".";
@@ -185,43 +200,53 @@ ExternalRegistryLoader::LoadPrefsOnFileThread() {
   return prefs;
 }
 
-void ExternalRegistryLoader::LoadOnFileThread() {
+void ExternalRegistryLoader::LoadOnBlockingThread() {
+  DCHECK(task_runner_);
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   base::TimeTicks start_time = base::TimeTicks::Now();
-  std::unique_ptr<base::DictionaryValue> initial_prefs =
-      LoadPrefsOnFileThread();
-  prefs_.reset(initial_prefs.release());
+  std::unique_ptr<base::DictionaryValue> prefs = LoadPrefsOnBlockingThread();
   LOCAL_HISTOGRAM_TIMES("Extensions.ExternalRegistryLoaderWin",
                         base::TimeTicks::Now() - start_time);
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&ExternalRegistryLoader::CompleteLoadAndStartWatchingRegistry,
-                 this));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(
+          &ExternalRegistryLoader::CompleteLoadAndStartWatchingRegistry, this,
+          std::move(prefs)));
 }
 
-void ExternalRegistryLoader::CompleteLoadAndStartWatchingRegistry() {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));
-  LoadFinished();
+void ExternalRegistryLoader::CompleteLoadAndStartWatchingRegistry(
+    std::unique_ptr<base::DictionaryValue> prefs) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  DCHECK(prefs);
+  LoadFinished(std::move(prefs));
 
-  // Start watching registry.
-  if (hklm_key_.Create(HKEY_LOCAL_MACHINE, kRegistryExtensions,
-                       KEY_NOTIFY | KEY_WOW64_32KEY) == ERROR_SUCCESS) {
-    base::win::RegKey::ChangeCallback callback =
-        base::Bind(&ExternalRegistryLoader::OnRegistryKeyChanged,
-                   base::Unretained(this), base::Unretained(&hklm_key_));
-    hklm_key_.StartWatching(callback);
-  } else {
-    LOG(WARNING) << "Error observing HKLM.";
-  }
+  // Attempt to watch registry if we haven't already.
+  if (attempted_watching_registry_)
+    return;
 
-  if (hkcu_key_.Create(HKEY_CURRENT_USER, kRegistryExtensions, KEY_NOTIFY) ==
+  LONG result = ERROR_SUCCESS;
+  if ((result = hklm_key_.Create(HKEY_LOCAL_MACHINE, kRegistryExtensions,
+                                 KEY_NOTIFY | KEY_WOW64_32KEY)) ==
       ERROR_SUCCESS) {
     base::win::RegKey::ChangeCallback callback =
-        base::Bind(&ExternalRegistryLoader::OnRegistryKeyChanged,
-                   base::Unretained(this), base::Unretained(&hkcu_key_));
-    hkcu_key_.StartWatching(callback);
+        base::BindOnce(&ExternalRegistryLoader::OnRegistryKeyChanged,
+                       base::Unretained(this), base::Unretained(&hklm_key_));
+    hklm_key_.StartWatching(std::move(callback));
   } else {
-    LOG(WARNING) << "Error observing HKCU.";
+    LOG(WARNING) << "Error observing HKLM: " << result;
   }
+
+  if ((result = hkcu_key_.Create(HKEY_CURRENT_USER, kRegistryExtensions,
+                                 KEY_NOTIFY)) == ERROR_SUCCESS) {
+    base::win::RegKey::ChangeCallback callback =
+        base::BindOnce(&ExternalRegistryLoader::OnRegistryKeyChanged,
+                       base::Unretained(this), base::Unretained(&hkcu_key_));
+    hkcu_key_.StartWatching(std::move(callback));
+  } else {
+    LOG(WARNING) << "Error observing HKCU: " << result;
+  }
+
+  attempted_watching_registry_ = true;
 }
 
 void ExternalRegistryLoader::OnRegistryKeyChanged(base::win::RegKey* key) {
@@ -230,20 +255,36 @@ void ExternalRegistryLoader::OnRegistryKeyChanged(base::win::RegKey* key) {
   key->StartWatching(base::Bind(&ExternalRegistryLoader::OnRegistryKeyChanged,
                                 base::Unretained(this), base::Unretained(key)));
 
-  BrowserThread::PostTask(
-      BrowserThread::FILE, FROM_HERE,
-      base::Bind(&ExternalRegistryLoader::UpdatePrefsOnFileThread, this));
+  GetOrCreateTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ExternalRegistryLoader::UpatePrefsOnBlockingThread,
+                     this));
 }
 
-void ExternalRegistryLoader::UpdatePrefsOnFileThread() {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::FILE));
+scoped_refptr<base::SequencedTaskRunner>
+ExternalRegistryLoader::GetOrCreateTaskRunner() {
+  if (!task_runner_.get()) {
+    task_runner_ = base::CreateSequencedTaskRunnerWithTraits(
+        {// Requires I/O for registry.
+         base::MayBlock(),
+
+         // Inherit priority.
+
+         base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
+  }
+  return task_runner_;
+}
+
+void ExternalRegistryLoader::UpatePrefsOnBlockingThread() {
+  DCHECK(task_runner_);
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   base::TimeTicks start_time = base::TimeTicks::Now();
-  std::unique_ptr<base::DictionaryValue> prefs = LoadPrefsOnFileThread();
+  std::unique_ptr<base::DictionaryValue> prefs = LoadPrefsOnBlockingThread();
   LOCAL_HISTOGRAM_TIMES("Extensions.ExternalRegistryLoaderWinUpdate",
                         base::TimeTicks::Now() - start_time);
-  BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                          base::Bind(&ExternalRegistryLoader::OnUpdated, this,
-                                     base::Passed(&prefs)));
+  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
+                           base::BindOnce(&ExternalRegistryLoader::OnUpdated,
+                                          this, base::Passed(&prefs)));
 }
 
 }  // namespace extensions

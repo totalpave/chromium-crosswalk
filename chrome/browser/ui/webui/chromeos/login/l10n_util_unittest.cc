@@ -6,13 +6,12 @@
 
 #include <stddef.h>
 
-#include "base/at_exit.h"
+#include <utility>
+
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/memory/singleton.h"
-#include "base/message_loop/message_loop.h"
-#include "base/single_thread_task_runner.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/values.h"
 #include "chrome/browser/chromeos/customization/customization_document.h"
 #include "chrome/browser/chromeos/input_method/input_method_configuration.h"
@@ -24,28 +23,6 @@
 namespace chromeos {
 
 namespace {
-
-class MachineStatisticsInitializer {
- public:
-  MachineStatisticsInitializer();
-
-  static MachineStatisticsInitializer* GetInstance();
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(MachineStatisticsInitializer);
-};
-
-MachineStatisticsInitializer::MachineStatisticsInitializer() {
-  base::MessageLoop loop;
-  chromeos::system::StatisticsProvider::GetInstance()
-      ->StartLoadingMachineStatistics(loop.task_runner(), false);
-  loop.RunUntilIdle();
-}
-
-// static
-MachineStatisticsInitializer* MachineStatisticsInitializer::GetInstance() {
-  return base::Singleton<MachineStatisticsInitializer>::get();
-}
 
 void VerifyOnlyUILanguages(const base::ListValue& list) {
   for (size_t i = 0; i < list.GetSize(); ++i) {
@@ -77,34 +54,28 @@ class L10nUtilTest : public testing::Test {
   L10nUtilTest();
   ~L10nUtilTest() override;
 
-  // testing::Test:
-  void SetUp() override;
-  void TearDown() override;
-
   void SetInputMethods1();
   void SetInputMethods2();
 
  private:
-  base::ShadowingAtExitManager at_exit_manager_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 
   MockInputMethodManagerWithInputMethods* input_manager_;
 };
 
 L10nUtilTest::L10nUtilTest()
     : input_manager_(new MockInputMethodManagerWithInputMethods) {
+  chromeos::input_method::InitializeForTesting(input_manager_);
+  input_manager_->SetComponentExtensionIMEManager(
+      std::make_unique<ComponentExtensionIMEManager>());
+
+  chromeos::system::StatisticsProvider::GetInstance()
+      ->StartLoadingMachineStatistics(false);
+  base::RunLoop().RunUntilIdle();
 }
 
 L10nUtilTest::~L10nUtilTest() {
-}
-
-void L10nUtilTest::SetUp() {
-  chromeos::input_method::InitializeForTesting(input_manager_);
-  input_manager_->SetComponentExtensionIMEManager(
-      base::WrapUnique(new ComponentExtensionIMEManager));
-  MachineStatisticsInitializer::GetInstance();  // Ignore result.
-}
-
-void L10nUtilTest::TearDown() {
+  chromeos::system::StatisticsProvider::GetInstance()->Shutdown();
   chromeos::input_method::Shutdown();
 }
 
@@ -136,13 +107,13 @@ TEST_F(L10nUtilTest, FindMostRelevantLocale) {
   base::ListValue available_locales;
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue);
   dict->SetString("value", "de");
-  available_locales.Append(dict.release());
+  available_locales.Append(std::move(dict));
   dict.reset(new base::DictionaryValue);
   dict->SetString("value", "fr");
-  available_locales.Append(dict.release());
+  available_locales.Append(std::move(dict));
   dict.reset(new base::DictionaryValue);
   dict->SetString("value", "en-GB");
-  available_locales.Append(dict.release());
+  available_locales.Append(std::move(dict));
 
   std::vector<std::string> most_relevant_language_codes;
   EXPECT_EQ("en-US", FindMostRelevantLocale(most_relevant_language_codes,

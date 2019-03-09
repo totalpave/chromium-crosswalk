@@ -10,9 +10,11 @@
 #include <cmath>
 #include <set>
 
+#include "base/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "base/macros.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -27,9 +29,12 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_menu_delegate.h"
-#include "chrome/browser/ui/views/toolbar/app_menu_observer.h"
+#include "chrome/browser/ui/views/frame/app_menu_button.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/toolbar/extension_toolbar_menu_view.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/grit/theme_resources.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/zoom/page_zoom.h"
 #include "components/zoom/zoom_controller.h"
@@ -39,23 +44,22 @@
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/notification_types.h"
-#include "content/public/browser/user_metrics.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/common/feature_switch.h"
-#include "grit/theme_resources.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkPaint.h"
-#include "ui/accessibility/ax_view_state.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/layout.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia_source.h"
+#include "ui/gfx/scoped_canvas.h"
 #include "ui/gfx/skia_util.h"
 #include "ui/gfx/text_utils.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/label_button.h"
@@ -74,7 +78,7 @@ using bookmarks::BookmarkModel;
 using content::WebContents;
 using ui::ButtonMenuItemModel;
 using ui::MenuModel;
-using views::CustomButton;
+using views::Button;
 using views::ImageButton;
 using views::Label;
 using views::LabelButton;
@@ -115,8 +119,8 @@ class FullscreenButton : public ImageButton {
       : ImageButton(listener) { }
 
   // Overridden from ImageButton.
-  gfx::Size GetPreferredSize() const override {
-    gfx::Size pref = ImageButton::GetPreferredSize();
+  gfx::Size CalculatePreferredSize() const override {
+    gfx::Size pref = ImageButton::CalculatePreferredSize();
     if (border()) {
       gfx::Insets insets = border()->GetInsets();
       pref.Enlarge(insets.width(), insets.height());
@@ -124,9 +128,9 @@ class FullscreenButton : public ImageButton {
     return pref;
   }
 
-  void GetAccessibleState(ui::AXViewState* state) override {
-    ImageButton::GetAccessibleState(state);
-    state->role = ui::AX_ROLE_MENU_ITEM;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override {
+    ImageButton::GetAccessibleNodeData(node_data);
+    node_data->role = ax::mojom::Role::kMenuItem;
   }
 
  private:
@@ -153,55 +157,46 @@ class InMenuButtonBackground : public views::Background {
 
   // Overridden from views::Background.
   void Paint(gfx::Canvas* canvas, View* view) const override {
-    CustomButton* button = CustomButton::AsCustomButton(view);
-    views::Button::ButtonState state =
-        button ? button->state() : views::Button::STATE_NORMAL;
+    Button* button = Button::AsButton(view);
     int h = view->height();
 
-    // Draw leading border where needed. This is along the left edge unless the
-    // layout is RTL and the button isn't mirroring itself.
+    // Draw leading border if desired.
     gfx::Rect bounds(view->GetLocalBounds());
     if (type_ == LEADING_BORDER) {
-      gfx::Rect rect = view->FlipCanvasOnPaintForRTLUI()
-          ? gfx::Rect(0, 0, 1, h)
-          : gfx::Rect(view->GetMirroredXWithWidthInView(0, 1), 0, 1, h);
-      canvas->FillRect(rect, BorderColor(view, views::Button::STATE_NORMAL));
-      bounds.Inset(gfx::Insets(0, 1, 0, 0));
+      // We need to flip the canvas for RTL iff the button is not auto-flipping
+      // already, so we end up flipping exactly once.
+      gfx::ScopedRTLFlipCanvas scoped_canvas(
+          canvas, view->width(), !view->flip_canvas_on_paint_for_rtl_ui());
+      ui::NativeTheme::ExtraParams params;
+      gfx::Rect separator_bounds =
+          gfx::Rect(0, 0, MenuConfig::instance().separator_thickness, h);
+      params.menu_separator.paint_rect = &separator_bounds;
+      params.menu_separator.type = ui::VERTICAL_SEPARATOR;
+      view->GetNativeTheme()->Paint(
+          canvas->sk_canvas(), ui::NativeTheme::kMenuPopupSeparator,
+          ui::NativeTheme::kNormal, separator_bounds, params);
+      bounds.Inset(
+          gfx::Insets(0, MenuConfig::instance().separator_thickness, 0, 0));
     }
 
     // Fill in background for state.
-    bounds.set_x(view->GetMirroredXForRect(bounds));
-    DrawBackground(canvas, view, bounds, state);
+    views::Button::ButtonState state =
+        button ? button->state() : views::Button::STATE_NORMAL;
+    DrawBackground(canvas, view, view->GetMirroredRect(bounds), state);
   }
 
  private:
-  static SkColor BorderColor(View* view, views::Button::ButtonState state) {
-    ui::NativeTheme* theme = view->GetNativeTheme();
-    switch (state) {
-      case views::Button::STATE_HOVERED:
-        return theme->GetSystemColor(
-            ui::NativeTheme::kColorId_HoverMenuButtonBorderColor);
-      case views::Button::STATE_PRESSED:
-        return theme->GetSystemColor(
-            ui::NativeTheme::kColorId_FocusedMenuButtonBorderColor);
-      default:
-        return theme->GetSystemColor(
-            ui::NativeTheme::kColorId_EnabledMenuButtonBorderColor);
-    }
-  }
-
   static SkColor BackgroundColor(const View* view,
                                  views::Button::ButtonState state) {
     const ui::NativeTheme* theme = view->GetNativeTheme();
     switch (state) {
-      case views::Button::STATE_HOVERED:
-        // Hovered should be handled in DrawBackground.
-        NOTREACHED();
-        return theme->GetSystemColor(
-            ui::NativeTheme::kColorId_HoverMenuItemBackgroundColor);
       case views::Button::STATE_PRESSED:
         return theme->GetSystemColor(
             ui::NativeTheme::kColorId_FocusedMenuItemBackgroundColor);
+      case views::Button::STATE_HOVERED:
+        // Hovered should be handled in DrawBackground.
+        NOTREACHED();
+        FALLTHROUGH;
       default:
         return theme->GetSystemColor(
             ui::NativeTheme::kColorId_MenuBackgroundColor);
@@ -233,13 +228,15 @@ class InMenuButtonBackground : public views::Background {
 
 base::string16 GetAccessibleNameForAppMenuItem(ButtonMenuItemModel* model,
                                                int item_index,
-                                               int accessible_string_id) {
+                                               int accessible_string_id,
+                                               bool add_accelerator_text) {
   base::string16 accessible_name =
       l10n_util::GetStringUTF16(accessible_string_id);
   base::string16 accelerator_text;
 
   ui::Accelerator menu_accelerator;
-  if (model->GetAcceleratorAt(item_index, &menu_accelerator)) {
+  if (add_accelerator_text &&
+      model->GetAcceleratorAt(item_index, &menu_accelerator)) {
     accelerator_text =
         ui::Accelerator(menu_accelerator.key_code(),
                         menu_accelerator.modifiers()).GetShortcutText();
@@ -253,7 +250,7 @@ base::string16 GetAccessibleNameForAppMenuItem(ButtonMenuItemModel* model,
 class InMenuButton : public LabelButton {
  public:
   InMenuButton(views::ButtonListener* listener, const base::string16& text)
-      : LabelButton(listener, text), in_menu_background_(NULL) {}
+      : LabelButton(listener, text) {}
   ~InMenuButton() override {}
 
   void Init(InMenuButtonBackground::ButtonType type) {
@@ -262,16 +259,15 @@ class InMenuButton : public LabelButton {
     SetFocusBehavior(FocusBehavior::ALWAYS);
     SetHorizontalAlignment(gfx::ALIGN_CENTER);
 
-    in_menu_background_ = new InMenuButtonBackground(type);
-    set_background(in_menu_background_);
-    SetBorder(views::Border::CreateEmptyBorder(0, kHorizontalPadding, 0,
-                                               kHorizontalPadding));
-    SetFontList(MenuConfig::instance().font_list);
+    SetBackground(std::make_unique<InMenuButtonBackground>(type));
+    SetBorder(
+        views::CreateEmptyBorder(0, kHorizontalPadding, 0, kHorizontalPadding));
+    label()->SetFontList(MenuConfig::instance().font_list);
   }
 
-  void GetAccessibleState(ui::AXViewState* state) override {
-    LabelButton::GetAccessibleState(state);
-    state->role = ui::AX_ROLE_MENU_ITEM;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override {
+    LabelButton::GetAccessibleNodeData(node_data);
+    node_data->role = ax::mojom::Role::kMenuItem;
   }
 
   // views::LabelButton
@@ -297,25 +293,21 @@ class InMenuButton : public LabelButton {
   }
 
  private:
-  InMenuButtonBackground* in_menu_background_;
-
   DISALLOW_COPY_AND_ASSIGN(InMenuButton);
 };
 
 // AppMenuView is a view that can contain label buttons.
-class AppMenuView : public views::View,
-                    public views::ButtonListener,
-                    public AppMenuObserver {
+class AppMenuView : public views::View, public views::ButtonListener {
  public:
   AppMenuView(AppMenu* menu, ButtonMenuItemModel* menu_model)
-      : menu_(menu),
-        menu_model_(menu_model) {
-    menu_->AddObserver(this);
-  }
+      : menu_(menu->AsWeakPtr()), menu_model_(menu_model) {}
 
-  ~AppMenuView() override {
-    if (menu_)
-      menu_->RemoveObserver(this);
+  ~AppMenuView() override = default;
+
+  // Overridden from views::View.
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override {
+    views::View::GetAccessibleNodeData(node_data);
+    node_data->role = ax::mojom::Role::kMenu;
   }
 
   // Overridden from views::View.
@@ -331,51 +323,48 @@ class AppMenuView : public views::View,
       int string_id,
       InMenuButtonBackground::ButtonType type,
       int index) {
-    return CreateButtonWithAccName(string_id, type, index, string_id);
+    return CreateButtonWithAccName(string_id, type, index, string_id,
+                                   /*add_accelerator_text*/ true);
   }
 
   InMenuButton* CreateButtonWithAccName(int string_id,
                                         InMenuButtonBackground::ButtonType type,
                                         int index,
-                                        int acc_string_id) {
+                                        int acc_string_id,
+                                        bool add_accelerator_text) {
     // Should only be invoked during construction when |menu_| is valid.
     DCHECK(menu_);
     InMenuButton* button = new InMenuButton(
-        this,
-        gfx::RemoveAcceleratorChar(
-            l10n_util::GetStringUTF16(string_id), '&', NULL, NULL));
+        this, gfx::RemoveAcceleratorChar(l10n_util::GetStringUTF16(string_id),
+                                         '&', nullptr, nullptr));
     button->Init(type);
-    button->SetAccessibleName(
-        GetAccessibleNameForAppMenuItem(menu_model_, index, acc_string_id));
+    button->SetAccessibleName(GetAccessibleNameForAppMenuItem(
+        menu_model_, index, acc_string_id, add_accelerator_text));
     button->set_tag(index);
     button->SetEnabled(menu_model_->IsEnabledAt(index));
 
     AddChildView(button);
     // all buttons on menu should must be a custom button in order for
     // the keyboard nativigation work.
-    DCHECK(CustomButton::AsCustomButton(button));
+    DCHECK(Button::AsButton(button));
     return button;
   }
 
-  // Overridden from AppMenuObserver:
-  void AppMenuDestroyed() override {
-    menu_->RemoveObserver(this);
-    menu_ = NULL;
-    menu_model_ = NULL;
-  }
-
  protected:
-  AppMenu* menu() { return menu_; }
-  const AppMenu* menu() const { return menu_; }
-  ButtonMenuItemModel* menu_model() { return menu_model_; }
+  base::WeakPtr<AppMenu> menu() { return menu_; }
+  base::WeakPtr<const AppMenu> menu() const { return menu_; }
+  ButtonMenuItemModel* menu_model() {
+    // The menu and the items in the menu model have similar lifetimes; it's
+    // only safe to access model items if the menu is still alive.
+    DCHECK(menu_);
+    return menu_model_;
+  }
 
  private:
   // Hosting AppMenu.
-  // WARNING: this may be NULL during shutdown.
-  AppMenu* menu_;
+  base::WeakPtr<AppMenu> menu_;
 
   // The menu model containing the increment/decrement/reset items.
-  // WARNING: this may be NULL during shutdown.
   ButtonMenuItemModel* menu_model_;
 
   DISALLOW_COPY_AND_ASSIGN(AppMenuView);
@@ -392,11 +381,10 @@ class HoveredImageSource : public gfx::ImageSkiaSource {
 
   gfx::ImageSkiaRep GetImageForScale(float scale) override {
     const gfx::ImageSkiaRep& rep = image_.GetRepresentation(scale);
-    SkBitmap bitmap = rep.sk_bitmap();
+    SkBitmap bitmap = rep.GetBitmap();
     SkBitmap white;
     white.allocN32Pixels(bitmap.width(), bitmap.height());
     white.eraseARGB(0, 0, 0, 0);
-    bitmap.lockPixels();
     for (int y = 0; y < bitmap.height(); ++y) {
       uint32_t* image_row = bitmap.getAddr32(0, y);
       uint32_t* dst_row = white.getAddr32(0, y);
@@ -406,7 +394,6 @@ class HoveredImageSource : public gfx::ImageSkiaSource {
         dst_row[x] = (image_pixel & 0xFF000000) == 0x0 ? 0x0 : color_;
       }
     }
-    bitmap.unlockPixels();
     return gfx::ImageSkiaRep(white, scale);
   }
 
@@ -438,7 +425,7 @@ class AppMenu::CutCopyPasteView : public AppMenuView {
   }
 
   // Overridden from View.
-  gfx::Size GetPreferredSize() const override {
+  gfx::Size CalculatePreferredSize() const override {
     // Returned height doesn't matter as MenuItemView forces everything to the
     // height of the menuitemview.
     return gfx::Size(GetMaxChildViewPreferredWidth() * child_count(), 0);
@@ -483,10 +470,10 @@ class AppMenu::ZoomView : public AppMenuView {
            int fullscreen_index)
       : AppMenuView(menu, menu_model),
         fullscreen_index_(fullscreen_index),
-        increment_button_(NULL),
-        zoom_label_(NULL),
-        decrement_button_(NULL),
-        fullscreen_button_(NULL),
+        increment_button_(nullptr),
+        zoom_label_(nullptr),
+        decrement_button_(nullptr),
+        fullscreen_button_(nullptr),
         zoom_label_max_width_(0),
         zoom_label_max_width_valid_(false) {
     browser_zoom_subscription_ =
@@ -497,27 +484,31 @@ class AppMenu::ZoomView : public AppMenuView {
 
     decrement_button_ = CreateButtonWithAccName(
         IDS_ZOOM_MINUS2, InMenuButtonBackground::LEADING_BORDER,
-        decrement_index, IDS_ACCNAME_ZOOM_MINUS2);
+        decrement_index, IDS_ACCNAME_ZOOM_MINUS2,
+        /*add_accelerator_text*/ false);
 
     zoom_label_ = new Label(base::FormatPercent(100));
     zoom_label_->SetAutoColorReadabilityEnabled(false);
     zoom_label_->SetHorizontalAlignment(gfx::ALIGN_RIGHT);
 
-    InMenuButtonBackground* center_bg =
-        new InMenuButtonBackground(InMenuButtonBackground::NO_BORDER);
-    zoom_label_->set_background(center_bg);
+    zoom_label_->SetBackground(std::make_unique<InMenuButtonBackground>(
+        InMenuButtonBackground::NO_BORDER));
+
+    // An accessibility role of kAlert will ensure that any updates to the zoom
+    // level can be picked up by screen readers.
+    zoom_label_->GetViewAccessibility().OverrideRole(ax::mojom::Role::kAlert);
 
     AddChildView(zoom_label_);
     zoom_label_max_width_valid_ = false;
 
     increment_button_ = CreateButtonWithAccName(
         IDS_ZOOM_PLUS2, InMenuButtonBackground::NO_BORDER, increment_index,
-        IDS_ACCNAME_ZOOM_PLUS2);
+        IDS_ACCNAME_ZOOM_PLUS2, /*add_accelerator_text*/ false);
 
     fullscreen_button_ = new FullscreenButton(this);
     // all buttons on menu should must be a custom button in order for
-    // the keyboard navigation work.
-    DCHECK(CustomButton::AsCustomButton(fullscreen_button_));
+    // the keyboard navigation to work.
+    DCHECK(Button::AsButton(fullscreen_button_));
     gfx::ImageSkia* full_screen_image =
         ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
             IDR_FULLSCREEN_MENU_BUTTON);
@@ -529,21 +520,22 @@ class AppMenu::ZoomView : public AppMenuView {
     fullscreen_button_->set_tag(fullscreen_index);
     fullscreen_button_->SetImageAlignment(
         ImageButton::ALIGN_CENTER, ImageButton::ALIGN_MIDDLE);
-    fullscreen_button_->set_background(
-        new InMenuButtonBackground(InMenuButtonBackground::LEADING_BORDER));
+    fullscreen_button_->SetBackground(std::make_unique<InMenuButtonBackground>(
+        InMenuButtonBackground::LEADING_BORDER));
     fullscreen_button_->SetAccessibleName(GetAccessibleNameForAppMenuItem(
-        menu_model, fullscreen_index, IDS_ACCNAME_FULLSCREEN));
+        menu_model, fullscreen_index, IDS_ACCNAME_FULLSCREEN,
+        /*add_accelerator_text*/ true));
     AddChildView(fullscreen_button_);
 
     // Need to set a font list for the zoom label width calculations.
-    OnNativeThemeChanged(NULL);
+    OnNativeThemeChanged(nullptr);
     UpdateZoomControls();
   }
 
   ~ZoomView() override {}
 
   // Overridden from View.
-  gfx::Size GetPreferredSize() const override {
+  gfx::Size CalculatePreferredSize() const override {
     // The increment/decrement button are forced to the same width.
     int button_width = std::max(increment_button_->GetPreferredSize().width(),
                                 decrement_button_->GetPreferredSize().width());
@@ -585,7 +577,7 @@ class AppMenu::ZoomView : public AppMenuView {
   void OnNativeThemeChanged(const ui::NativeTheme* theme) override {
     AppMenuView::OnNativeThemeChanged(theme);
 
-    zoom_label_->SetBorder(views::Border::CreateEmptyBorder(
+    zoom_label_->SetBorder(views::CreateEmptyBorder(
         0, kZoomLabelHorizontalPadding, 0, kZoomLabelHorizontalPadding));
     zoom_label_->SetFontList(MenuConfig::instance().font_list);
     zoom_label_max_width_valid_ = false;
@@ -599,8 +591,8 @@ class AppMenu::ZoomView : public AppMenuView {
       SkColor fg_color = theme->GetSystemColor(
           ui::NativeTheme::kColorId_SelectedMenuItemForegroundColor);
       gfx::ImageSkia hovered_fullscreen_image(
-          new HoveredImageSource(*full_screen_image, fg_color),
-      full_screen_image->size());
+          std::make_unique<HoveredImageSource>(*full_screen_image, fg_color),
+          full_screen_image->size());
       fullscreen_button_->SetImage(
           ImageButton::STATE_HOVERED, &hovered_fullscreen_image);
       fullscreen_button_->SetImage(
@@ -633,7 +625,7 @@ class AppMenu::ZoomView : public AppMenuView {
     WebContents* contents = GetActiveWebContents();
     int zoom = 100;
     if (contents) {
-      auto zoom_controller = zoom::ZoomController::FromWebContents(contents);
+      auto* zoom_controller = zoom::ZoomController::FromWebContents(contents);
       if (zoom_controller)
         zoom = zoom_controller->GetZoomPercent();
       increment_button_->SetEnabled(zoom <
@@ -642,6 +634,9 @@ class AppMenu::ZoomView : public AppMenuView {
                                     contents->GetMinimumZoomPercent());
     }
     zoom_label_->SetText(base::FormatPercent(zoom));
+    // An alert notification will ensure that the zoom label is always announced
+    // even if is not focusable.
+    zoom_label_->NotifyAccessibilityEvent(ax::mojom::Event::kAlert, true);
     zoom_label_max_width_valid_ = false;
   }
 
@@ -657,7 +652,7 @@ class AppMenu::ZoomView : public AppMenuView {
 
       WebContents* selected_tab = GetActiveWebContents();
       if (selected_tab) {
-        auto zoom_controller =
+        auto* zoom_controller =
             zoom::ZoomController::FromWebContents(selected_tab);
         DCHECK(zoom_controller);
         // Enumerate all zoom factors that can be used in PageZoom::Zoom.
@@ -724,17 +719,11 @@ class AppMenu::RecentTabsMenuModelDelegate : public ui::MenuModelDelegate {
   }
 
   ~RecentTabsMenuModelDelegate() override {
-    model_->SetMenuModelDelegate(NULL);
+    model_->SetMenuModelDelegate(nullptr);
   }
 
   const gfx::FontList* GetLabelFontListAt(int index) const {
     return model_->GetLabelFontListAt(index);
-  }
-
-  bool GetShouldUseDisabledEmphasizedForegroundColor(int index) const {
-    // The items for which we get a font list, should be shown in the bolded
-    // color.
-    return GetLabelFontListAt(index) ? true : false;
   }
 
   // ui::MenuModelDelegate implementation:
@@ -757,8 +746,7 @@ class AppMenu::RecentTabsMenuModelDelegate : public ui::MenuModelDelegate {
 
       // Remove all elements in |AppMenu::command_id_to_entry_| that map to
       // |model_|.
-      AppMenu::CommandIDToEntry::iterator iter =
-          app_menu_->command_id_to_entry_.begin();
+      auto iter = app_menu_->command_id_to_entry_.begin();
       while (iter != app_menu_->command_id_to_entry_.end()) {
         if (iter->second.first == model_)
           app_menu_->command_id_to_entry_.erase(iter++);
@@ -787,28 +775,21 @@ class AppMenu::RecentTabsMenuModelDelegate : public ui::MenuModelDelegate {
 
 // AppMenu ------------------------------------------------------------------
 
-AppMenu::AppMenu(Browser* browser, int run_flags)
-    : root_(nullptr),
-      browser_(browser),
-      selected_menu_model_(nullptr),
-      selected_index_(0),
-      bookmark_menu_(nullptr),
-      feedback_menu_item_(nullptr),
-      screenshot_menu_item_(nullptr),
-      extension_toolbar_(nullptr),
-      run_flags_(run_flags) {
+AppMenu::AppMenu(Browser* browser, int run_flags, bool alert_reopen_tab_items)
+    : browser_(browser),
+      run_flags_(run_flags),
+      alert_reopen_tab_items_(alert_reopen_tab_items) {
   registrar_.Add(this, chrome::NOTIFICATION_GLOBAL_ERRORS_CHANGED,
                  content::Source<Profile>(browser_->profile()));
 }
 
 AppMenu::~AppMenu() {
   if (bookmark_menu_delegate_.get()) {
-    BookmarkModel* model = BookmarkModelFactory::GetForProfile(
-        browser_->profile());
+    BookmarkModel* model =
+        BookmarkModelFactory::GetForBrowserContext(browser_->profile());
     if (model)
       model->RemoveObserver(this);
   }
-  FOR_EACH_OBSERVER(AppMenuObserver, observer_list_, AppMenuDestroyed());
 }
 
 void AppMenu::Init(ui::MenuModel* model) {
@@ -829,26 +810,11 @@ void AppMenu::Init(ui::MenuModel* model) {
 }
 
 void AppMenu::RunMenu(views::MenuButton* host) {
-  gfx::Point screen_loc;
-  views::View::ConvertPointToScreen(host, &screen_loc);
-  gfx::Rect bounds(screen_loc, host->size());
-  content::RecordAction(UserMetricsAction("ShowAppMenu"));
-  if (menu_runner_->RunMenuAt(host->GetWidget(),
-                              host,
-                              bounds,
-                              views::MENU_ANCHOR_TOPRIGHT,
-                              ui::MENU_SOURCE_NONE) ==
-      views::MenuRunner::MENU_DELETED)
-    return;
-  if (bookmark_menu_delegate_.get()) {
-    BookmarkModel* model = BookmarkModelFactory::GetForProfile(
-        browser_->profile());
-    if (model)
-      model->RemoveObserver(this);
-  }
-  if (selected_menu_model_) {
-    selected_menu_model_->ActivatedAt(selected_index_);
-  }
+  base::RecordAction(UserMetricsAction("ShowAppMenu"));
+
+  menu_runner_->RunMenuAt(host->GetWidget(), host,
+                          host->GetAnchorBoundsInScreen(),
+                          views::MENU_ANCHOR_TOPRIGHT, ui::MENU_SOURCE_NONE);
 }
 
 void AppMenu::CloseMenu() {
@@ -856,34 +822,24 @@ void AppMenu::CloseMenu() {
     menu_runner_->Cancel();
 }
 
-bool AppMenu::IsShowing() {
+bool AppMenu::IsShowing() const {
   return menu_runner_.get() && menu_runner_->IsRunning();
 }
 
-void AppMenu::AddObserver(AppMenuObserver* observer) {
-  observer_list_.AddObserver(observer);
-}
-
-void AppMenu::RemoveObserver(AppMenuObserver* observer) {
-  observer_list_.RemoveObserver(observer);
-}
-
-const gfx::FontList* AppMenu::GetLabelFontList(int command_id) const {
+void AppMenu::GetLabelStyle(int command_id, LabelStyle* style) const {
   if (IsRecentTabsCommand(command_id)) {
-    return recent_tabs_menu_model_delegate_->GetLabelFontListAt(
-        ModelIndexFromCommandId(command_id));
-  }
-  return NULL;
-}
-
-bool AppMenu::GetShouldUseDisabledEmphasizedForegroundColor(
-    int command_id) const {
-  if (IsRecentTabsCommand(command_id)) {
-    return recent_tabs_menu_model_delegate_->
-        GetShouldUseDisabledEmphasizedForegroundColor(
+    const gfx::FontList* font_list =
+        recent_tabs_menu_model_delegate_->GetLabelFontListAt(
             ModelIndexFromCommandId(command_id));
+    // Only fill in |*color| if there's a font list - otherwise this method will
+    // override the color for every recent tab item, not just the header.
+    if (font_list) {
+      // TODO(ellyjones): Use CONTEXT_MENU instead of CONTEXT_LABEL.
+      style->foreground = views::style::GetColor(
+          *root_, views::style::CONTEXT_LABEL, views::style::STYLE_PRIMARY);
+      style->font_list = *font_list;
+    }
   }
-  return false;
 }
 
 base::string16 AppMenu::GetTooltipText(int command_id,
@@ -899,10 +855,9 @@ bool AppMenu::IsTriggerableEvent(views::MenuItemView* menu,
       MenuDelegate::IsTriggerableEvent(menu, e);
 }
 
-bool AppMenu::GetDropFormats(
-    MenuItemView* menu,
-    int* formats,
-    std::set<ui::Clipboard::FormatType>* format_types) {
+bool AppMenu::GetDropFormats(MenuItemView* menu,
+                             int* formats,
+                             std::set<ui::ClipboardFormatType>* format_types) {
   CreateBookmarkMenu();
   return bookmark_menu_delegate_.get() &&
       bookmark_menu_delegate_->GetDropFormats(menu, formats, format_types);
@@ -965,8 +920,10 @@ int AppMenu::GetDragOperations(MenuItemView* sender) {
 }
 
 int AppMenu::GetMaxWidthForMenu(MenuItemView* menu) {
-  if (IsBookmarkCommand(menu->GetCommand()))
+  if (menu->GetCommand() == IDC_BOOKMARKS_MENU ||
+      IsBookmarkCommand(menu->GetCommand())) {
     return bookmark_menu_delegate_->GetMaxWidthForMenu(menu);
+  }
   return MenuDelegate::GetMaxWidthForMenu(menu);
 }
 
@@ -1032,7 +989,7 @@ bool AppMenu::GetAccelerator(int command_id,
     return false;
   }
 
-  CommandIDToEntry::const_iterator ix = command_id_to_entry_.find(command_id);
+  auto ix = command_id_to_entry_.find(command_id);
   const Entry& entry = ix->second;
   ui::Accelerator menu_accelerator;
   if (!entry.first->GetAcceleratorAt(entry.second, &menu_accelerator))
@@ -1066,6 +1023,31 @@ void AppMenu::WillHideMenu(MenuItemView* menu) {
 }
 
 bool AppMenu::ShouldCloseOnDragComplete() {
+  return false;
+}
+
+void AppMenu::OnMenuClosed(views::MenuItemView* menu) {
+  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
+  browser_view->toolbar_button_provider()->GetAppMenuButton()->OnMenuClosed();
+
+  if (bookmark_menu_delegate_.get()) {
+    BookmarkModel* model =
+        BookmarkModelFactory::GetForBrowserContext(browser_->profile());
+    if (model)
+      model->RemoveObserver(this);
+  }
+
+  if (selected_menu_model_)
+    selected_menu_model_->ActivatedAt(selected_index_);
+}
+
+bool AppMenu::ShouldExecuteCommandWithoutClosingMenu(int command_id,
+                                                     const ui::Event& event) {
+  if (IsRecentTabsCommand(command_id) && event.IsMouseEvent()) {
+    const auto disposition = ui::DispositionFromEventFlags(event.flags());
+    if (disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB)
+      return true;
+  }
   return false;
 }
 
@@ -1115,15 +1097,12 @@ void AppMenu::PopulateMenu(MenuItemView* parent, MenuModel* model) {
 
     switch (model->GetCommandIdAt(i)) {
       case IDC_EXTENSIONS_OVERFLOW_MENU: {
-        std::unique_ptr<ExtensionToolbarMenuView> extension_toolbar(
-            new ExtensionToolbarMenuView(browser_, this, item));
-        if (ui::MaterialDesignController::IsModeMaterial()) {
-          for (int i = 0; i < extension_toolbar->contents()->child_count();
-               ++i) {
-            View* action_view = extension_toolbar->contents()->child_at(i);
-            action_view->set_background(new InMenuButtonBackground(
-                InMenuButtonBackground::ROUNDED_BUTTON));
-          }
+        auto extension_toolbar =
+            std::make_unique<ExtensionToolbarMenuView>(browser_, item);
+        for (int i = 0; i < extension_toolbar->contents()->child_count(); ++i) {
+          View* action_view = extension_toolbar->contents()->child_at(i);
+          action_view->SetBackground(std::make_unique<InMenuButtonBackground>(
+              InMenuButtonBackground::ROUNDED_BUTTON));
         }
         extension_toolbar_ = extension_toolbar.get();
         item->AddChildView(extension_toolbar.release());
@@ -1218,6 +1197,14 @@ MenuItemView* AppMenu::AddMenuItem(MenuItemView* parent,
       if (model->GetIconAt(model_index, &icon))
         menu_item->SetIcon(*icon.ToImageSkia());
     }
+
+    // If we want to show items relating to reopening the last-closed tab as
+    // alerted, we specifically need to show alerts on the recent tabs submenu
+    // and the last closed tab menu item.
+    if (alert_reopen_tab_items_ &&
+        ((command_id == IDC_RECENT_TABS_MENU) ||
+         (command_id == AppMenuModel::kMinRecentTabsCommandId)))
+      menu_item->SetAlerted();
   }
 
   return menu_item;
@@ -1234,7 +1221,7 @@ void AppMenu::CreateBookmarkMenu() {
     return;  // Already created the menu.
 
   BookmarkModel* model =
-      BookmarkModelFactory::GetForProfile(browser_->profile());
+      BookmarkModelFactory::GetForBrowserContext(browser_->profile());
   if (!model->loaded())
     return;
 
@@ -1254,7 +1241,7 @@ void AppMenu::CreateBookmarkMenu() {
 }
 
 int AppMenu::ModelIndexFromCommandId(int command_id) const {
-  CommandIDToEntry::const_iterator ix = command_id_to_entry_.find(command_id);
+  auto ix = command_id_to_entry_.find(command_id);
   DCHECK(ix != command_id_to_entry_.end());
   return ix->second.second;
 }

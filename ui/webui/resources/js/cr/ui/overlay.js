@@ -13,7 +13,7 @@ cr.define('cr.ui.overlay', function() {
    * @return {HTMLElement} The overlay.
    */
   function getTopOverlay() {
-    var overlays = /** @type !NodeList<!HTMLElement> */(
+    const overlays = /** @type !NodeList<!HTMLElement> */ (
         document.querySelectorAll('.overlay:not([hidden])'));
     return overlays[overlays.length - 1];
   }
@@ -26,18 +26,21 @@ cr.define('cr.ui.overlay', function() {
    * @return {HTMLElement} The default button.
    */
   function getDefaultButton(overlay) {
-    function isHidden(node) { return node.hidden; }
-    var defaultButtons = /** @type !NodeList<!HTMLElement> */(
+    function isHidden(node) {
+      return node.hidden;
+    }
+    const defaultButtons = /** @type !NodeList<!HTMLElement> */ (
         overlay.querySelectorAll('.page .button-strip > .default-button'));
-    for (var i = 0; i < defaultButtons.length; i++) {
-      if (!findAncestor(defaultButtons[i], isHidden))
+    for (let i = 0; i < defaultButtons.length; i++) {
+      if (!findAncestor(defaultButtons[i], isHidden)) {
         return defaultButtons[i];
+      }
     }
     return null;
   }
 
   /** @type {boolean} */
-  var globallyInitialized = false;
+  let globallyInitialized = false;
 
   /**
    * Makes initializations which must hook at the document level.
@@ -45,20 +48,22 @@ cr.define('cr.ui.overlay', function() {
   function globalInitialization() {
     if (!globallyInitialized) {
       document.addEventListener('keydown', function(e) {
-        var overlay = getTopOverlay();
-        if (!overlay)
+        const overlay = getTopOverlay();
+        if (!overlay) {
           return;
+        }
 
         // Close the overlay on escape.
-        if (e.keyIdentifier == 'U+001B')
+        if (e.key == 'Escape') {
           cr.dispatchSimpleEvent(overlay, 'cancelOverlay');
+        }
 
         // Execute the overlay's default button on enter, unless focus is on an
         // element that has standard behavior for the enter key.
-        var forbiddenTagNames = /^(A|BUTTON|SELECT|TEXTAREA)$/;
-        if (e.keyIdentifier == 'Enter' &&
+        const forbiddenTagNames = /^(A|BUTTON|SELECT|TEXTAREA)$/;
+        if (e.key == 'Enter' &&
             !forbiddenTagNames.test(document.activeElement.tagName)) {
-          var button = getDefaultButton(overlay);
+          const button = getDefaultButton(overlay);
           if (button) {
             button.click();
             // Executing the default button may result in focus moving to a
@@ -81,12 +86,13 @@ cr.define('cr.ui.overlay', function() {
    * height.
    */
   function setMaxHeightAllPages() {
-    var pages = document.querySelectorAll(
-        '.overlay .page:not(.not-resizable)');
+    const pages =
+        document.querySelectorAll('.overlay .page:not(.not-resizable)');
 
-    var maxHeight = Math.min(0.9 * window.innerHeight, 640) + 'px';
-    for (var i = 0; i < pages.length; i++)
+    const maxHeight = Math.min(0.9 * window.innerHeight, 640) + 'px';
+    for (let i = 0; i < pages.length; i++) {
       pages[i].style.maxHeight = maxHeight;
+    }
   }
 
   /**
@@ -95,11 +101,12 @@ cr.define('cr.ui.overlay', function() {
    */
   function setupOverlay(overlay) {
     // Close the overlay on clicking any of the pages' close buttons.
-    var closeButtons = overlay.querySelectorAll('.page > .close-button');
-    for (var i = 0; i < closeButtons.length; i++) {
+    const closeButtons = overlay.querySelectorAll('.page > .close-button');
+    for (let i = 0; i < closeButtons.length; i++) {
       closeButtons[i].addEventListener('click', function(e) {
-        if (cr.ui.FocusOutlineManager)
+        if (cr.ui.FocusOutlineManager) {
           cr.ui.FocusOutlineManager.forDocument(document).updateVisibility();
+        }
         cr.dispatchSimpleEvent(overlay, 'cancelOverlay');
       });
     }
@@ -107,10 +114,11 @@ cr.define('cr.ui.overlay', function() {
     // Remove the 'pulse' animation any time the overlay is hidden or shown.
     overlay.__defineSetter__('hidden', function(value) {
       this.classList.remove('pulse');
-      if (value)
+      if (value) {
         this.setAttribute('hidden', true);
-      else
+      } else {
         this.removeAttribute('hidden');
+      }
     });
     overlay.__defineGetter__('hidden', function() {
       return this.hasAttribute('hidden');
@@ -119,15 +127,17 @@ cr.define('cr.ui.overlay', function() {
     // Shake when the user clicks away.
     overlay.addEventListener('click', function(e) {
       // Only pulse if the overlay was the target of the click.
-      if (this != e.target)
+      if (this != e.target) {
         return;
+      }
 
       // This may be null while the overlay is closing.
-      var overlayPage = this.querySelector('.page:not([hidden])');
-      if (overlayPage)
+      const overlayPage = this.querySelector('.page:not([hidden])');
+      if (overlayPage) {
         overlayPage.classList.add('pulse');
+      }
     });
-    overlay.addEventListener('webkitAnimationEnd', function(e) {
+    overlay.addEventListener('animationend', function(e) {
       e.target.classList.remove('pulse');
     });
   }

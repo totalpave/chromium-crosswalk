@@ -7,17 +7,23 @@ package org.chromium.android_webview;
 import android.content.Context;
 import android.net.http.SslCertificate;
 import android.net.http.SslError;
+import android.os.Handler;
 import android.util.Log;
-import android.webkit.ValueCallback;
 
-import org.chromium.base.ThreadUtils;
+import org.chromium.base.Callback;
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.annotations.CalledByNativeUnchecked;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.task.PostTask;
+import org.chromium.content_public.browser.UiThreadTaskTraits;
+import org.chromium.net.NetError;
 
 import java.security.Principal;
 import java.security.PrivateKey;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.security.auth.x500.X500Principal;
 
@@ -72,31 +78,16 @@ public class AwContentsClientBridge {
         }
 
         public void proceed(final PrivateKey privateKey, final X509Certificate[] chain) {
-            ThreadUtils.runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    proceedOnUiThread(privateKey, chain);
-                }
-            });
+            PostTask.runOrPostTask(
+                    UiThreadTaskTraits.DEFAULT, () -> proceedOnUiThread(privateKey, chain));
         }
 
         public void ignore() {
-            ThreadUtils.runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    ignoreOnUiThread();
-                }
-            });
+            PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT, () -> ignoreOnUiThread());
         }
 
         public void cancel() {
-            ThreadUtils.runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    cancelOnUiThread();
-                }
-
-            });
+            PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT, () -> cancelOnUiThread());
         }
 
         private void proceedOnUiThread(PrivateKey privateKey, X509Certificate[] chain) {
@@ -168,18 +159,14 @@ public class AwContentsClientBridge {
             return false;
         }
         final SslError sslError = SslUtil.sslErrorFromNetErrorCode(certError, cert, url);
-        ValueCallback<Boolean> callback = new ValueCallback<Boolean>() {
-            @Override
-            public void onReceiveValue(final Boolean value) {
-                ThreadUtils.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        proceedSslError(value.booleanValue(), id);
-                    }
-                });
-            }
-        };
-        mClient.onReceivedSslError(callback, sslError);
+        final Callback<Boolean> callback = value
+                -> PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT,
+                        () -> proceedSslError(value.booleanValue(), id));
+        // Post the application callback back to the current thread to ensure the application
+        // callback is executed without any native code on the stack. This so that any exception
+        // thrown by the application callback won't have to be propagated through a native call
+        // stack.
+        new Handler().post(() -> mClient.onReceivedSslError(callback, sslError));
         return true;
     }
 
@@ -227,30 +214,162 @@ public class AwContentsClientBridge {
     }
 
     @CalledByNative
-    private void handleJsAlert(String url, String message, int id) {
-        JsResultHandler handler = new JsResultHandler(this, id);
-        mClient.handleJsAlert(url, message, handler);
+    private void handleJsAlert(final String url, final String message, final int id) {
+        // Post the application callback back to the current thread to ensure the application
+        // callback is executed without any native code on the stack. This so that any exception
+        // thrown by the application callback won't have to be propagated through a native call
+        // stack.
+        new Handler().post(() -> {
+            JsResultHandler handler = new JsResultHandler(AwContentsClientBridge.this, id);
+            mClient.handleJsAlert(url, message, handler);
+        });
     }
 
     @CalledByNative
-    private void handleJsConfirm(String url, String message, int id) {
-        JsResultHandler handler = new JsResultHandler(this, id);
-        mClient.handleJsConfirm(url, message, handler);
+    private void handleJsConfirm(final String url, final String message, final int id) {
+        // Post the application callback back to the current thread to ensure the application
+        // callback is executed without any native code on the stack. This so that any exception
+        // thrown by the application callback won't have to be propagated through a native call
+        // stack.
+        new Handler().post(() -> {
+            JsResultHandler handler = new JsResultHandler(AwContentsClientBridge.this, id);
+            mClient.handleJsConfirm(url, message, handler);
+        });
     }
 
     @CalledByNative
-    private void handleJsPrompt(String url, String message, String defaultValue, int id) {
-        JsResultHandler handler = new JsResultHandler(this, id);
-        mClient.handleJsPrompt(url, message, defaultValue, handler);
+    private void handleJsPrompt(
+            final String url, final String message, final String defaultValue, final int id) {
+        // Post the application callback back to the current thread to ensure the application
+        // callback is executed without any native code on the stack. This so that any exception
+        // thrown by the application callback won't have to be propagated through a native call
+        // stack.
+        new Handler().post(() -> {
+            JsResultHandler handler = new JsResultHandler(AwContentsClientBridge.this, id);
+            mClient.handleJsPrompt(url, message, defaultValue, handler);
+        });
     }
 
     @CalledByNative
-    private void handleJsBeforeUnload(String url, String message, int id) {
-        JsResultHandler handler = new JsResultHandler(this, id);
-        mClient.handleJsBeforeUnload(url, message, handler);
+    private void handleJsBeforeUnload(final String url, final String message, final int id) {
+        // Post the application callback back to the current thread to ensure the application
+        // callback is executed without any native code on the stack. This so that any exception
+        // thrown by the application callback won't have to be propagated through a native call
+        // stack.
+        new Handler().post(() -> {
+            JsResultHandler handler = new JsResultHandler(AwContentsClientBridge.this, id);
+            mClient.handleJsBeforeUnload(url, message, handler);
+        });
     }
 
     @CalledByNative
+    private void newDownload(String url, String userAgent, String contentDisposition,
+            String mimeType, long contentLength) {
+        mClient.getCallbackHelper().postOnDownloadStart(
+                url, userAgent, contentDisposition, mimeType, contentLength);
+    }
+
+    @CalledByNative
+    private void newLoginRequest(String realm, String account, String args) {
+        mClient.getCallbackHelper().postOnReceivedLoginRequest(realm, account, args);
+    }
+
+    @CalledByNative
+    private void onReceivedError(
+            // WebResourceRequest
+            String url, boolean isMainFrame, boolean hasUserGesture, boolean isRendererInitiated,
+            String method, String[] requestHeaderNames, String[] requestHeaderValues,
+            // WebResourceError
+            int errorCode, String description, boolean safebrowsingHit) {
+        AwContentsClient.AwWebResourceRequest request = new AwContentsClient.AwWebResourceRequest(
+                url, isMainFrame, hasUserGesture, method, requestHeaderNames, requestHeaderValues);
+        AwContentsClient.AwWebResourceError error = new AwContentsClient.AwWebResourceError();
+        error.errorCode = errorCode;
+        error.description = description;
+
+        String unreachableWebDataUrl = AwContentsStatics.getUnreachableWebDataUrl();
+        boolean isErrorUrl =
+                unreachableWebDataUrl != null && unreachableWebDataUrl.equals(request.url);
+
+        if ((!isErrorUrl && error.errorCode != NetError.ERR_ABORTED) || safebrowsingHit) {
+            // NetError.ERR_ABORTED error code is generated for the following reasons:
+            // - WebView.stopLoading is called;
+            // - the navigation is intercepted by the embedder via shouldOverrideUrlLoading;
+            // - server returned 204 status (no content).
+            //
+            // Android WebView does not notify the embedder of these situations using
+            // this error code with the WebViewClient.onReceivedError callback.
+            if (safebrowsingHit) {
+                error.errorCode = ErrorCodeConversionHelper.ERROR_UNSAFE_RESOURCE;
+            } else {
+                error.errorCode = ErrorCodeConversionHelper.convertErrorCode(error.errorCode);
+            }
+            if (request.isMainFrame
+                    && AwFeatureList.pageStartedOnCommitEnabled(isRendererInitiated)) {
+                mClient.getCallbackHelper().postOnPageStarted(request.url);
+            }
+            mClient.getCallbackHelper().postOnReceivedError(request, error);
+            if (request.isMainFrame) {
+                // Need to call onPageFinished after onReceivedError for backwards compatibility
+                // with the classic webview. See also AwWebContentsObserver.didFailLoad which is
+                // used when we want to send onPageFinished alone.
+                mClient.getCallbackHelper().postOnPageFinished(request.url);
+            }
+        }
+    }
+
+    @CalledByNative
+    public void onSafeBrowsingHit(
+            // WebResourceRequest
+            String url, boolean isMainFrame, boolean hasUserGesture, String method,
+            String[] requestHeaderNames, String[] requestHeaderValues, int threatType,
+            final int requestId) {
+        AwContentsClient.AwWebResourceRequest request = new AwContentsClient.AwWebResourceRequest(
+                url, isMainFrame, hasUserGesture, method, requestHeaderNames, requestHeaderValues);
+
+        // TODO(ntfschr): remove clang-format directives once crbug/764582 is resolved
+        // clang-format off
+        Callback<AwSafeBrowsingResponse> callback =
+                response -> PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT,
+                        () -> nativeTakeSafeBrowsingAction(mNativeContentsClientBridge,
+                                response.action(), response.reporting(), requestId));
+        // clang-format on
+
+        mClient.getCallbackHelper().postOnSafeBrowsingHit(
+                request, AwSafeBrowsingConversionHelper.convertThreatType(threatType), callback);
+    }
+
+    @CalledByNative
+    private void onReceivedHttpError(
+            // WebResourceRequest
+            String url, boolean isMainFrame, boolean hasUserGesture, String method,
+            String[] requestHeaderNames, String[] requestHeaderValues,
+            // WebResourceResponse
+            String mimeType, String encoding, int statusCode, String reasonPhrase,
+            String[] responseHeaderNames, String[] responseHeaderValues) {
+        AwContentsClient.AwWebResourceRequest request = new AwContentsClient.AwWebResourceRequest(
+                url, isMainFrame, hasUserGesture, method, requestHeaderNames, requestHeaderValues);
+        Map<String, String> responseHeaders =
+                new HashMap<String, String>(responseHeaderNames.length);
+        // Note that we receive un-coalesced response header lines, thus we need to combine
+        // values for the same header.
+        for (int i = 0; i < responseHeaderNames.length; ++i) {
+            if (!responseHeaders.containsKey(responseHeaderNames[i])) {
+                responseHeaders.put(responseHeaderNames[i], responseHeaderValues[i]);
+            } else if (!responseHeaderValues[i].isEmpty()) {
+                String currentValue = responseHeaders.get(responseHeaderNames[i]);
+                if (!currentValue.isEmpty()) {
+                    currentValue += ", ";
+                }
+                responseHeaders.put(responseHeaderNames[i], currentValue + responseHeaderValues[i]);
+            }
+        }
+        AwWebResourceResponse response = new AwWebResourceResponse(
+                mimeType, encoding, null, statusCode, reasonPhrase, responseHeaders);
+        mClient.getCallbackHelper().postOnReceivedHttpError(request, response);
+    }
+
+    @CalledByNativeUnchecked
     private boolean shouldOverrideUrlLoading(
             String url, boolean hasUserGesture, boolean isRedirect, boolean isMainFrame) {
         return mClient.shouldIgnoreNavigation(
@@ -270,6 +389,8 @@ public class AwContentsClientBridge {
     //--------------------------------------------------------------------------------------------
     //  Native methods
     //--------------------------------------------------------------------------------------------
+    private native void nativeTakeSafeBrowsingAction(
+            long nativeAwContentsClientBridge, int action, boolean reporting, int requestId);
     private native void nativeProceedSslError(long nativeAwContentsClientBridge, boolean proceed,
             int id);
     private native void nativeProvideClientCertificateResponse(long nativeAwContentsClientBridge,

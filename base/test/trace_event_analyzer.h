@@ -71,7 +71,21 @@
 //     EXPECT_TRUE(events[i].GetAbsTimeToOtherEvent(&duration));
 //     EXPECT_LT(duration, 1000000.0/60.0); // expect less than 1/60 second.
 //   }
-
+//
+// There are two helper functions, Start(category_filter_string) and Stop(), for
+// facilitating the collection of process-local traces and building a
+// TraceAnalyzer from them. A typical test, that uses the helper functions,
+// looks like the following:
+//
+// TEST_F(...) {
+//   Start("*");
+//   [Invoke the functions you want to test their traces]
+//   auto analyzer = Stop();
+//
+//   [Use the analyzer to verify produced traces, as explained above]
+// }
+//
+// Note: The Stop() function needs a SingleThreadTaskRunner.
 
 #ifndef BASE_TEST_TRACE_EVENT_ANALYZER_H_
 #define BASE_TEST_TRACE_EVENT_ANALYZER_H_
@@ -80,6 +94,9 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -165,6 +182,14 @@ struct TraceEvent {
   std::string category;
   std::string name;
   std::string id;
+  double thread_duration = 0.0;
+  double thread_timestamp = 0.0;
+  std::string scope;
+  std::string bind_id;
+  bool flow_out = false;
+  bool flow_in = false;
+  std::string global_id2;
+  std::string local_id2;
 
   // All numbers and bool values from TraceEvent args are cast to double.
   // bool becomes 1.0 (true) or 0.0 (false).
@@ -174,6 +199,10 @@ struct TraceEvent {
 
   // The other event associated with this event (or NULL).
   const TraceEvent* other_event;
+
+  // A back-link for |other_event|. That is, if other_event is not null, then
+  // |event->other_event->prev_event == event| is always true.
+  const TraceEvent* prev_event;
 };
 
 typedef std::vector<const TraceEvent*> TraceEventVector;
@@ -351,6 +380,70 @@ class Query {
     return Query(OTHER_ARG, arg_name);
   }
 
+  // Access the associated prev_event's members:
+
+  static Query PrevPid() { return Query(PREV_PID); }
+
+  static Query PrevTid() { return Query(PREV_TID); }
+
+  static Query PrevTime() { return Query(PREV_TIME); }
+
+  static Query PrevPhase() { return Query(PREV_PHASE); }
+
+  static Query PrevCategory() { return Query(PREV_CATEGORY); }
+
+  static Query PrevName() { return Query(PREV_NAME); }
+
+  static Query PrevId() { return Query(PREV_ID); }
+
+  static Query PrevPidIs(int process_id) {
+    return Query(PREV_PID) == Query::Int(process_id);
+  }
+
+  static Query PrevTidIs(int thread_id) {
+    return Query(PREV_TID) == Query::Int(thread_id);
+  }
+
+  static Query PrevThreadIs(const TraceEvent::ProcessThreadID& thread) {
+    return PrevPidIs(thread.process_id) && PrevTidIs(thread.thread_id);
+  }
+
+  static Query PrevTimeIs(double timestamp) {
+    return Query(PREV_TIME) == Query::Double(timestamp);
+  }
+
+  static Query PrevPhaseIs(char phase) {
+    return Query(PREV_PHASE) == Query::Phase(phase);
+  }
+
+  static Query PrevCategoryIs(const std::string& category) {
+    return Query(PREV_CATEGORY) == Query::String(category);
+  }
+
+  static Query PrevNameIs(const std::string& name) {
+    return Query(PREV_NAME) == Query::String(name);
+  }
+
+  static Query PrevIdIs(const std::string& id) {
+    return Query(PREV_ID) == Query::String(id);
+  }
+
+  // Evaluates to true if arg exists and is a string.
+  static Query PrevHasStringArg(const std::string& arg_name) {
+    return Query(PREV_HAS_STRING_ARG, arg_name);
+  }
+
+  // Evaluates to true if arg exists and is a number.
+  // Number arguments include types double, int and bool.
+  static Query PrevHasNumberArg(const std::string& arg_name) {
+    return Query(PREV_HAS_NUMBER_ARG, arg_name);
+  }
+
+  // Evaluates to arg value (string or number).
+  static Query PrevArg(const std::string& arg_name) {
+    return Query(PREV_ARG, arg_name);
+  }
+
   ////////////////////////////////////////////////////////////////
   // Common queries:
 
@@ -422,7 +515,6 @@ class Query {
   // This is a recursive method that walks the query tree.
   bool Evaluate(const TraceEvent& event) const;
 
- private:
   enum TraceEventMember {
     EVENT_INVALID,
     EVENT_PID,
@@ -438,6 +530,8 @@ class Query {
     EVENT_HAS_NUMBER_ARG,
     EVENT_ARG,
     EVENT_HAS_OTHER,
+    EVENT_HAS_PREV,
+
     OTHER_PID,
     OTHER_TID,
     OTHER_TIME,
@@ -448,6 +542,23 @@ class Query {
     OTHER_HAS_STRING_ARG,
     OTHER_HAS_NUMBER_ARG,
     OTHER_ARG,
+
+    PREV_PID,
+    PREV_TID,
+    PREV_TIME,
+    PREV_PHASE,
+    PREV_CATEGORY,
+    PREV_NAME,
+    PREV_ID,
+    PREV_HAS_STRING_ARG,
+    PREV_HAS_NUMBER_ARG,
+    PREV_ARG,
+
+    OTHER_FIRST_MEMBER = OTHER_PID,
+    OTHER_LAST_MEMBER = OTHER_ARG,
+
+    PREV_FIRST_MEMBER = PREV_PID,
+    PREV_LAST_MEMBER = PREV_ARG,
   };
 
   enum Operator {
@@ -536,9 +647,13 @@ class Query {
     return operator_ != OP_INVALID && operator_ < OP_AND;
   }
 
+  static const TraceEvent* SelectTargetEvent(const TraceEvent* ev,
+                                             TraceEventMember member);
+
   const Query& left() const;
   const Query& right() const;
 
+ private:
   QueryType type_;
   Operator operator_;
   scoped_refptr<QueryNode> left_;
@@ -573,7 +688,9 @@ class TraceAnalyzer {
   static TraceAnalyzer* Create(const std::string& json_events)
                                WARN_UNUSED_RESULT;
 
-  void SetIgnoreMetadataEvents(bool ignore) { ignore_metadata_events_ = true; }
+  void SetIgnoreMetadataEvents(bool ignore) {
+    ignore_metadata_events_ = ignore;
+  }
 
   // Associate BEGIN and END events with each other. This allows Query(OTHER_*)
   // to access the associated event and enables Query(EVENT_DURATION).
@@ -587,7 +704,10 @@ class TraceAnalyzer {
   // An ASYNC_END event will match the most recent ASYNC_BEGIN or ASYNC_STEP
   // event with the same name, category, and ID. This creates a singly linked
   // list of ASYNC_BEGIN->ASYNC_STEP...->ASYNC_END.
-  void AssociateAsyncBeginEndEvents();
+  // |match_pid| - If true, will only match async events which are running
+  //               under the same process ID, otherwise will allow linking
+  //               async events from different processes.
+  void AssociateAsyncBeginEndEvents(bool match_pid = true);
 
   // AssociateEvents can be used to customize event associations by setting the
   // other_event member of TraceEvent. This should be used to associate two
@@ -643,10 +763,17 @@ class TraceAnalyzer {
   std::map<TraceEvent::ProcessThreadID, std::string> thread_names_;
   std::vector<TraceEvent> raw_events_;
   bool ignore_metadata_events_;
-  bool allow_assocation_changes_;
+  bool allow_association_changes_;
 
   DISALLOW_COPY_AND_ASSIGN(TraceAnalyzer);
 };
+
+// Utility functions for collecting process-local traces and creating a
+// |TraceAnalyzer| from the result. Please see comments in trace_config.h to
+// understand how the |category_filter_string| works. Use "*" to enable all
+// default categories.
+void Start(const std::string& category_filter_string);
+std::unique_ptr<TraceAnalyzer> Stop();
 
 // Utility functions for TraceEventVector.
 

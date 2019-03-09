@@ -6,29 +6,28 @@
 
 #include "base/bind.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/grit/theme_resources.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/test/test_browser_thread.h"
-#include "grit/theme_resources.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-using content::BrowserThread;
 
 class WebUISourcesTest : public testing::Test {
  public:
-  WebUISourcesTest()
-      : result_data_size_(0),
-        ui_thread_(BrowserThread::UI, base::MessageLoop::current()) {}
+  WebUISourcesTest() : result_data_size_(0) {}
 
   TestingProfile* profile() const { return profile_.get(); }
   ThemeSource* theme_source() const { return theme_source_.get(); }
   size_t result_data_size() const { return result_data_size_; }
 
   void StartDataRequest(const std::string& source) {
-    theme_source()->StartDataRequest(source, -1, -1, callback_);
+    theme_source()->StartDataRequest(
+        source,
+        content::ResourceRequestInfo::WebContentsGetter(),
+        callback_);
   }
 
   size_t result_data_size_;
@@ -52,8 +51,7 @@ class WebUISourcesTest : public testing::Test {
 
   content::URLDataSource::GotDataCallback callback_;
 
-  base::MessageLoop loop_;
-  content::TestBrowserThread ui_thread_;
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
 
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<ThemeSource> theme_source_;
@@ -78,8 +76,6 @@ TEST_F(WebUISourcesTest, ThemeSourceImages) {
 }
 
 TEST_F(WebUISourcesTest, ThemeSourceCSS) {
-  content::TestBrowserThread io_thread(BrowserThread::IO,
-                                       base::MessageLoop::current());
   // Generating the test data for the NTP CSS would just involve copying the
   // method, or being super brittle and hard-coding the result (requiring
   // an update to the unittest every time the CSS template changes), so we
@@ -87,9 +83,11 @@ TEST_F(WebUISourcesTest, ThemeSourceCSS) {
   size_t empty_size = 0;
 
   StartDataRequest("css/new_tab_theme.css");
+  base::RunLoop().RunUntilIdle();
   EXPECT_NE(result_data_size_, empty_size);
 
   StartDataRequest("css/new_tab_theme.css?pie");
+  base::RunLoop().RunUntilIdle();
   EXPECT_NE(result_data_size_, empty_size);
 
 #if !DCHECK_IS_ON()

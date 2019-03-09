@@ -14,6 +14,14 @@
 #include "base/memory/ref_counted.h"
 #include "remoting/host/desktop_environment.h"
 
+namespace base {
+class SingleThreadTaskRunner;
+}
+
+namespace ui {
+class SystemInputInjectorFactory;
+}
+
 namespace webrtc {
 
 class DesktopCaptureOptions;
@@ -29,12 +37,14 @@ class BasicDesktopEnvironment : public DesktopEnvironment {
   ~BasicDesktopEnvironment() override;
 
   // DesktopEnvironment implementation.
+  std::unique_ptr<ActionExecutor> CreateActionExecutor() override;
   std::unique_ptr<AudioCapturer> CreateAudioCapturer() override;
   std::unique_ptr<InputInjector> CreateInputInjector() override;
   std::unique_ptr<ScreenControls> CreateScreenControls() override;
   std::unique_ptr<webrtc::DesktopCapturer> CreateVideoCapturer() override;
   std::unique_ptr<webrtc::MouseCursorMonitor> CreateMouseCursorMonitor()
       override;
+  std::unique_ptr<FileOperations> CreateFileOperations() override;
   std::string GetCapabilities() const override;
   void SetCapabilities(const std::string& capabilities) override;
   uint32_t GetDesktopSessionId() const override;
@@ -47,7 +57,9 @@ class BasicDesktopEnvironment : public DesktopEnvironment {
       scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-      bool supports_touch_events);
+      ui::SystemInputInjectorFactory* system_input_injector_factory,
+      base::WeakPtr<ClientSessionControl> client_session_control,
+      const DesktopEnvironmentOptions& options);
 
   scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner() const {
     return caller_task_runner_;
@@ -66,8 +78,20 @@ class BasicDesktopEnvironment : public DesktopEnvironment {
     return ui_task_runner_;
   }
 
-  webrtc::DesktopCaptureOptions* desktop_capture_options() {
-    return desktop_capture_options_.get();
+  webrtc::DesktopCaptureOptions* mutable_desktop_capture_options() {
+    return options_.desktop_capture_options();
+  }
+
+  const webrtc::DesktopCaptureOptions& desktop_capture_options() const {
+    return *options_.desktop_capture_options();
+  }
+
+  ui::SystemInputInjectorFactory* system_input_injector_factory() const {
+    return system_input_injector_factory_;
+  }
+
+  const DesktopEnvironmentOptions& desktop_environment_options() const {
+    return options_;
   }
 
  private:
@@ -84,15 +108,13 @@ class BasicDesktopEnvironment : public DesktopEnvironment {
   // Used to run UI code.
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
 
-  // Options shared between |DesktopCapturer| and |MouseCursorMonitor|. It
-  // might contain expensive resources, thus justifying the sharing.
-  // Also: it's dynamically allocated to avoid having to bring in
-  // desktop_capture_options.h which brings in X11 headers which causes hard to
-  // find build errors.
-  std::unique_ptr<webrtc::DesktopCaptureOptions> desktop_capture_options_;
+  // Passed to InputInjector.
+  ui::SystemInputInjectorFactory* system_input_injector_factory_;
 
-  // True if the touch events capability should be offered.
-  const bool supports_touch_events_;
+  // Used to send messages directly to the client session.
+  base::WeakPtr<ClientSessionControl> client_session_control_;
+
+  DesktopEnvironmentOptions options_;
 
   DISALLOW_COPY_AND_ASSIGN(BasicDesktopEnvironment);
 };
@@ -104,15 +126,12 @@ class BasicDesktopEnvironmentFactory : public DesktopEnvironmentFactory {
       scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner);
+      scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+      ui::SystemInputInjectorFactory* system_input_injector_factory);
   ~BasicDesktopEnvironmentFactory() override;
 
   // DesktopEnvironmentFactory implementation.
   bool SupportsAudioCapture() const override;
-
-  void set_supports_touch_events(bool enable) {
-    supports_touch_events_ = enable;
-  }
 
  protected:
   scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner() const {
@@ -132,7 +151,9 @@ class BasicDesktopEnvironmentFactory : public DesktopEnvironmentFactory {
     return ui_task_runner_;
   }
 
-  bool supports_touch_events() const { return supports_touch_events_; }
+  ui::SystemInputInjectorFactory* system_input_injector_factory() const {
+    return system_input_injector_factory_;
+  }
 
  private:
   // Task runner on which methods of DesktopEnvironmentFactory interface should
@@ -148,9 +169,8 @@ class BasicDesktopEnvironmentFactory : public DesktopEnvironmentFactory {
   // Used to run UI code.
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
 
-  // True if the touch events capability should be offered by the
-  // DesktopEnvironment instances.
-  bool supports_touch_events_;
+  // Passed to the environments built.
+  ui::SystemInputInjectorFactory* system_input_injector_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(BasicDesktopEnvironmentFactory);
 };

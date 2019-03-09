@@ -13,19 +13,22 @@
 
 #include "base/callback_forward.h"
 #include "base/files/file_path.h"
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "chrome/common/buildflags.h"
 
-class ExtensionServiceInterface;
 class PrefService;
 class Profile;
 
 namespace extensions {
 
 class Extension;
+class ExtensionServiceInterface;
 
 // For registering, loading, and unloading component extensions.
 class ComponentLoader {
@@ -54,7 +57,7 @@ class ComponentLoader {
   //
   //   ssh-keygen -t rsa -b 1024 -N '' -f /tmp/key.pem
   //   openssl rsa -pubout -outform DER < /tmp/key.pem 2>/dev/null | base64 -w 0
-  std::string Add(const std::string& manifest_contents,
+  std::string Add(const base::StringPiece& manifest_contents,
                   const base::FilePath& root_directory);
 
   // Convenience method for registering a component extension by resource id.
@@ -64,11 +67,6 @@ class ComponentLoader {
   // Loads a component extension from file system. Replaces previously added
   // extension with the same ID.
   std::string AddOrReplace(const base::FilePath& path);
-
-  // Returns the extension ID of a component extension specified by resource
-  // id of its manifest file.
-  std::string GetExtensionID(int manifest_resource_id,
-                             const base::FilePath& root_directory);
 
   // Returns true if an extension with the specified id has been added.
   bool Exists(const std::string& id) const;
@@ -91,23 +89,29 @@ class ComponentLoader {
   // Similar to above but adds the default component extensions for kiosk mode.
   void AddDefaultComponentExtensionsForKioskMode(bool skip_session_components);
 
-  // Parse the given JSON manifest. Returns NULL if it cannot be parsed, or if
-  // if the result is not a DictionaryValue.
-  base::DictionaryValue* ParseManifest(
-      const std::string& manifest_contents) const;
-
-  // Clear the list of registered extensions.
-  void ClearAllRegistered();
-
   // Reloads a registered component extension.
   void Reload(const std::string& extension_id);
 
 #if defined(OS_CHROMEOS)
-  // Calls |done_cb|, if not a null callback, on success.
-  // NOTE: |done_cb| is not called if the component loader is shut down
-  // during loading.
-  void AddChromeVoxExtension(const base::Closure& done_cb);
-  void AddChromeOsSpeechSynthesisExtension();
+  // Add a component extension from a specific directory. Assumes that the
+  // extension uses a different manifest file when this is a guest session
+  // and that the manifest file lives in |root_directory|. Calls |done_cb|
+  // on success, unless the component loader is shut down during loading.
+  void AddComponentFromDir(
+      const base::FilePath& root_directory,
+      const char* extension_id,
+      const base::Closure& done_cb);
+
+  // Add a component extension from a specific directory. Assumes that the
+  // extension's manifest file lives in |root_directory| and its name is
+  // 'manifest.json'. |name_string| and |description_string| are used to
+  // localize component extension's name and description text exclusively.
+  void AddWithNameAndDescriptionFromDir(const base::FilePath& root_directory,
+                                        const char* extension_id,
+                                        const std::string& name_string,
+                                        const std::string& description_string);
+
+  void AddChromeOsSpeechSynthesisExtensions();
 #endif
 
   void set_ignore_whitelist_for_testing(bool value) {
@@ -115,25 +119,40 @@ class ComponentLoader {
   }
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(ComponentLoaderTest, ParseManifest);
+
   // Information about a registered component extension.
   struct ComponentExtensionInfo {
-    ComponentExtensionInfo(const base::DictionaryValue* manifest,
-                           const base::FilePath& root_directory);
+    ComponentExtensionInfo(
+        std::unique_ptr<base::DictionaryValue> manifest_param,
+        const base::FilePath& root_directory);
+    ~ComponentExtensionInfo();
+
+    ComponentExtensionInfo(ComponentExtensionInfo&& other);
+    ComponentExtensionInfo& operator=(ComponentExtensionInfo&& other);
 
     // The parsed contents of the extensions's manifest file.
-    const base::DictionaryValue* manifest;
+    std::unique_ptr<base::DictionaryValue> manifest;
 
     // Directory where the extension is stored.
     base::FilePath root_directory;
 
     // The component extension's ID.
     std::string extension_id;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(ComponentExtensionInfo);
   };
 
-  std::string Add(const std::string& manifest_contents,
+  // Parses the given JSON manifest. Returns nullptr if it cannot be parsed or
+  // if the result is not a DictionaryValue.
+  std::unique_ptr<base::DictionaryValue> ParseManifest(
+      base::StringPiece manifest_contents) const;
+
+  std::string Add(const base::StringPiece& manifest_contents,
                   const base::FilePath& root_directory,
                   bool skip_whitelist);
-  std::string Add(const base::DictionaryValue* parsed_manifest,
+  std::string Add(std::unique_ptr<base::DictionaryValue> parsed_manifest,
                   const base::FilePath& root_directory,
                   bool skip_whitelist);
 
@@ -143,24 +162,33 @@ class ComponentLoader {
   void AddDefaultComponentExtensionsWithBackgroundPages(
       bool skip_session_components);
   void AddDefaultComponentExtensionsWithBackgroundPagesForKioskMode();
-  void AddFileManagerExtension();
-  void AddVideoPlayerExtension();
-  void AddAudioPlayerExtension();
-  void AddGalleryExtension();
-  void AddWebstoreWidgetExtension();
+
+#if BUILDFLAG(ENABLE_HANGOUT_SERVICES_EXTENSION)
   void AddHangoutServicesExtension();
-  void AddHotwordHelperExtension();
-  void AddImageLoaderExtension();
+#endif  // BUILDFLAG(ENABLE_HANGOUT_SERVICES_EXTENSION)
+
   void AddNetworkSpeechSynthesisExtension();
 
   void AddWithNameAndDescription(int manifest_resource_id,
                                  const base::FilePath& root_directory,
                                  const std::string& name_string,
                                  const std::string& description_string);
+#if BUILDFLAG(ENABLE_APP_LIST)
   void AddChromeApp();
-  void AddHotwordAudioVerificationApp();
-  void AddKeyboardApp();
+#endif  // BUILDFLAG(ENABLE_APP_LIST)
+
   void AddWebStoreApp();
+
+#if defined(OS_CHROMEOS)
+  void AddFileManagerExtension();
+  void AddVideoPlayerExtension();
+  void AddAudioPlayerExtension();
+  void AddGalleryExtension();
+  void AddImageLoaderExtension();
+  void AddKeyboardApp();
+  void AddChromeCameraApp();
+  void AddZipArchiverExtension();
+#endif  // defined(OS_CHROMEOS)
 
   scoped_refptr<const Extension> CreateExtension(
       const ComponentExtensionInfo& info, std::string* utf8_error);
@@ -168,27 +196,21 @@ class ComponentLoader {
   // Unloads |component| from the memory.
   void UnloadComponent(ComponentExtensionInfo* component);
 
+#if defined(OS_CHROMEOS)
   // Enable HTML5 FileSystem for given component extension in Guest mode.
   void EnableFileSystemInGuestMode(const std::string& id);
 
-#if defined(OS_CHROMEOS)
-  // Adds an extension where the manifest file is stored on the file system.
-  // |manifest_filename| can be relative to the |root_directory|.
-  void AddWithManifestFile(
-      const base::FilePath::CharType* manifest_filename,
-      const base::FilePath& root_directory,
-      const char* extension_id,
-      const base::Closure& done_cb);
-
-  // Used as a reply callback by |AddWithManifestFile|.
+  // Used as a reply callback by |AddComponentFromDir|.
   // Called with a |root_directory| and parsed |manifest| and invokes
   // |done_cb| after adding the extension.
-  void FinishAddWithManifestFile(
+  void FinishAddComponentFromDir(
       const base::FilePath& root_directory,
       const char* extension_id,
+      const base::Optional<std::string>& name_string,
+      const base::Optional<std::string>& description_string,
       const base::Closure& done_cb,
       std::unique_ptr<base::DictionaryValue> manifest);
-#endif
+#endif  // defined(OS_CHROMEOS)
 
   PrefService* profile_prefs_;
   PrefService* local_state_;

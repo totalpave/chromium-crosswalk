@@ -4,131 +4,100 @@
 
 #include "ui/ozone/platform/x11/x11_surface_factory.h"
 
-#include <X11/Xlib.h>
-
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "third_party/khronos/EGL/egl.h"
-#include "ui/gfx/vsync_provider.h"
+#include "gpu/vulkan/buildflags.h"
+#include "ui/gfx/x/x11.h"
 #include "ui/gfx/x/x11_types.h"
+#include "ui/gl/gl_surface_egl.h"
 #include "ui/ozone/common/egl_util.h"
-#include "ui/ozone/public/surface_ozone_egl.h"
+#include "ui/ozone/common/gl_ozone_egl.h"
+#include "ui/ozone/platform/x11/gl_ozone_glx.h"
+#include "ui/ozone/platform/x11/gl_surface_egl_ozone_x11.h"
+#include "ui/ozone/platform/x11/gl_surface_egl_readback_x11.h"
+
+#if BUILDFLAG(ENABLE_VULKAN)
+#include "gpu/vulkan/x/vulkan_implementation_x11.h"
+#endif
 
 namespace ui {
-
 namespace {
 
-class X11SurfaceEGL : public SurfaceOzoneEGL {
+class GLOzoneEGLX11 : public GLOzoneEGL {
  public:
-  explicit X11SurfaceEGL(gfx::AcceleratedWidget widget) : widget_(widget) {}
-  ~X11SurfaceEGL() override {}
+  GLOzoneEGLX11() = default;
+  ~GLOzoneEGLX11() override = default;
 
-  intptr_t GetNativeWindow() override { return widget_; }
-
-  bool OnSwapBuffers() override { return true; }
-
-  void OnSwapBuffersAsync(const SwapCompletionCallback& callback) override {
-    NOTREACHED();
+  // GLOzone:
+  bool InitializeStaticGLBindings(
+      gl::GLImplementation implementation) override {
+    is_swiftshader_ = (implementation == gl::kGLImplementationSwiftShaderGL);
+    return GLOzoneEGL::InitializeStaticGLBindings(implementation);
   }
 
-  bool ResizeNativeWindow(const gfx::Size& viewport_size) override {
-    return true;
+  scoped_refptr<gl::GLSurface> CreateViewGLSurface(
+      gfx::AcceleratedWidget window) override {
+    if (is_swiftshader_) {
+      return gl::InitializeGLSurface(
+          base::MakeRefCounted<GLSurfaceEglReadbackX11>(window));
+    } else {
+      return gl::InitializeGLSurface(
+          base::MakeRefCounted<GLSurfaceEGLOzoneX11>(window));
+    }
   }
 
-  std::unique_ptr<gfx::VSyncProvider> CreateVSyncProvider() override {
-    return nullptr;
+  scoped_refptr<gl::GLSurface> CreateOffscreenGLSurface(
+      const gfx::Size& size) override {
+    return gl::InitializeGLSurface(
+        base::MakeRefCounted<gl::PbufferGLSurfaceEGL>(size));
   }
 
-  void* /* EGLConfig */ GetEGLSurfaceConfig(
-      const EglConfigCallbacks& egl) override;
+ protected:
+  // GLOzoneEGL:
+  intptr_t GetNativeDisplay() override {
+    return reinterpret_cast<intptr_t>(gfx::GetXDisplay());
+  }
+
+  bool LoadGLES2Bindings(gl::GLImplementation implementation) override {
+    return LoadDefaultEGLGLES2Bindings(implementation);
+  }
 
  private:
-  gfx::AcceleratedWidget widget_;
+  bool is_swiftshader_ = false;
 
-  DISALLOW_COPY_AND_ASSIGN(X11SurfaceEGL);
+  DISALLOW_COPY_AND_ASSIGN(GLOzoneEGLX11);
 };
-
-void* /* EGLConfig */ X11SurfaceEGL::GetEGLSurfaceConfig(
-    const EglConfigCallbacks& egl) {
-  // Try matching the window depth with an alpha channel,
-  // because we're worried the destination alpha width could
-  // constrain blending precision.
-  EGLConfig config;
-  const int kBufferSizeOffset = 1;
-  const int kAlphaSizeOffset = 3;
-  EGLint config_attribs[] = {EGL_BUFFER_SIZE,
-                             ~0,  // To be replaced.
-                             EGL_ALPHA_SIZE,
-                             8,
-                             EGL_BLUE_SIZE,
-                             8,
-                             EGL_GREEN_SIZE,
-                             8,
-                             EGL_RED_SIZE,
-                             8,
-                             EGL_RENDERABLE_TYPE,
-                             EGL_OPENGL_ES2_BIT,
-                             EGL_SURFACE_TYPE,
-                             EGL_WINDOW_BIT,
-                             EGL_NONE};
-
-  // Get the depth of XWindow for surface
-  XWindowAttributes win_attribs;
-  if (XGetWindowAttributes(gfx::GetXDisplay(), widget_, &win_attribs)) {
-    config_attribs[kBufferSizeOffset] = win_attribs.depth;
-  }
-
-  EGLint num_configs;
-  if (!egl.choose_config.Run(config_attribs, &config, 1, &num_configs)) {
-    LOG(ERROR) << "eglChooseConfig failed with error "
-               << egl.get_last_error_string.Run();
-    return nullptr;
-  }
-  if (num_configs > 0) {
-    EGLint config_depth;
-    if (!egl.get_config_attribute.Run(config, EGL_BUFFER_SIZE, &config_depth)) {
-      LOG(ERROR) << "eglGetConfigAttrib failed with error "
-                 << egl.get_last_error_string.Run();
-      return nullptr;
-    }
-    if (config_depth == config_attribs[kBufferSizeOffset]) {
-      return config;
-    }
-  }
-
-  // Try without an alpha channel.
-  config_attribs[kAlphaSizeOffset] = 0;
-  if (!egl.choose_config.Run(config_attribs, &config, 1, &num_configs)) {
-    LOG(ERROR) << "eglChooseConfig failed with error "
-               << egl.get_last_error_string.Run();
-    return nullptr;
-  }
-  if (num_configs == 0) {
-    LOG(ERROR) << "No suitable EGL configs found.";
-    return nullptr;
-  }
-  return config;
-}
 
 }  // namespace
 
-X11SurfaceFactory::X11SurfaceFactory() {}
+X11SurfaceFactory::X11SurfaceFactory()
+    : glx_implementation_(std::make_unique<GLOzoneGLX>()),
+      egl_implementation_(std::make_unique<GLOzoneEGLX11>()) {}
 
 X11SurfaceFactory::~X11SurfaceFactory() {}
 
-std::unique_ptr<SurfaceOzoneEGL> X11SurfaceFactory::CreateEGLSurfaceForWidget(
-    gfx::AcceleratedWidget widget) {
-  return base::WrapUnique(new X11SurfaceEGL(widget));
+std::vector<gl::GLImplementation>
+X11SurfaceFactory::GetAllowedGLImplementations() {
+  return std::vector<gl::GLImplementation>{gl::kGLImplementationDesktopGL,
+                                           gl::kGLImplementationEGLGLES2,
+                                           gl::kGLImplementationSwiftShaderGL};
 }
 
-bool X11SurfaceFactory::LoadEGLGLES2Bindings(
-    AddGLLibraryCallback add_gl_library,
-    SetGLGetProcAddressProcCallback set_gl_get_proc_address) {
-  return LoadDefaultEGLGLES2Bindings(add_gl_library, set_gl_get_proc_address);
+GLOzone* X11SurfaceFactory::GetGLOzone(gl::GLImplementation implementation) {
+  switch (implementation) {
+    case gl::kGLImplementationDesktopGL:
+      return glx_implementation_.get();
+    case gl::kGLImplementationEGLGLES2:
+    case gl::kGLImplementationSwiftShaderGL:
+      return egl_implementation_.get();
+    default:
+      return nullptr;
+  }
 }
 
-intptr_t X11SurfaceFactory::GetNativeDisplay() {
-  return reinterpret_cast<intptr_t>(gfx::GetXDisplay());
+#if BUILDFLAG(ENABLE_VULKAN)
+std::unique_ptr<gpu::VulkanImplementation>
+X11SurfaceFactory::CreateVulkanImplementation() {
+  return std::make_unique<gpu::VulkanImplementationX11>();
 }
+#endif
 
 }  // namespace ui

@@ -12,6 +12,7 @@
 #include "base/files/memory_mapped_file.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
 #include "base/numerics/safe_conversions.h"
 
 namespace subresource_filter {
@@ -19,15 +20,21 @@ namespace subresource_filter {
 // A reference-counted wrapper around base::MemoryMappedFile. The |ruleset_file|
 // supplied in the constructor is kept memory-mapped and is safe to access until
 // the last reference to this instance is dropped.
-class MemoryMappedRuleset : public base::RefCounted<MemoryMappedRuleset> {
+class MemoryMappedRuleset : public base::RefCounted<MemoryMappedRuleset>,
+                            public base::SupportsWeakPtr<MemoryMappedRuleset> {
  public:
-  explicit MemoryMappedRuleset(base::File ruleset_file);
+  REQUIRE_ADOPTION_FOR_REFCOUNTED_TYPE();
+  static scoped_refptr<MemoryMappedRuleset> CreateAndInitialize(
+      base::File ruleset_file);
+
+  static void SetMemoryMapFailuresForTesting(bool fail);
 
   const uint8_t* data() const { return ruleset_.data(); }
   size_t length() const { return base::strict_cast<size_t>(ruleset_.length()); }
 
  private:
   friend class base::RefCounted<MemoryMappedRuleset>;
+  MemoryMappedRuleset();
   ~MemoryMappedRuleset();
 
   base::MemoryMappedFile ruleset_;

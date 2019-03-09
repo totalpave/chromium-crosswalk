@@ -2,16 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/download/download_resource_throttle.h"
 #include "base/bind.h"
 #include "base/run_loop.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/download/download_request_limiter.h"
-#include "chrome/browser/download/download_resource_throttle.h"
 #include "chrome/browser/tab_contents/tab_util.h"
-#include "chrome/common/features.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/browser/resource_controller.h"
 #include "content/public/browser/resource_throttle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
@@ -19,7 +19,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
 #include "chrome/browser/android/download/mock_download_controller.h"
 #endif
 
@@ -35,7 +35,8 @@ class MockWebContentsDelegate : public content::WebContentsDelegate {
   ~MockWebContentsDelegate() override {}
 };
 
-class MockResourceController : public content::ResourceController {
+class MockResourceThrottleDelegate
+    : public content::ResourceThrottle::Delegate {
  public:
   MOCK_METHOD0(Cancel, void());
   MOCK_METHOD0(CancelAndIgnore, void());
@@ -45,17 +46,17 @@ class MockResourceController : public content::ResourceController {
 
 // Posts |quit_closure| to UI thread.
 ACTION_P(QuitLoop, quit_closure) {
-  content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-                                   quit_closure);
+  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                           quit_closure);
 }
 
 class DownloadResourceThrottleTest : public ChromeRenderViewHostTestHarness {
  public:
   DownloadResourceThrottleTest()
-      : throttle_(nullptr), limiter_(new DownloadRequestLimiter()) {
-    // Cannot use IO_MAIN_LOOP with RenderViewHostTestHarness.
-    SetThreadBundleOptions(content::TestBrowserThreadBundle::REAL_IO_THREAD);
-  }
+      : ChromeRenderViewHostTestHarness(
+            content::TestBrowserThreadBundle::REAL_IO_THREAD),
+        throttle_(nullptr),
+        limiter_(new DownloadRequestLimiter()) {}
 
   ~DownloadResourceThrottleTest() override {}
 
@@ -63,7 +64,7 @@ class DownloadResourceThrottleTest : public ChromeRenderViewHostTestHarness {
     ChromeRenderViewHostTestHarness::SetUp();
     web_contents()->SetDelegate(&delegate_);
     run_loop_.reset(new base::RunLoop());
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
     DownloadControllerBase::SetDownloadControllerBase(&download_controller_);
 #endif
   }
@@ -71,7 +72,7 @@ class DownloadResourceThrottleTest : public ChromeRenderViewHostTestHarness {
   void TearDown() override {
     content::BrowserThread::DeleteSoon(content::BrowserThread::IO, FROM_HERE,
                                        throttle_);
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
     DownloadControllerBase::SetDownloadControllerBase(nullptr);
 #endif
     ChromeRenderViewHostTestHarness::TearDown();
@@ -82,19 +83,20 @@ class DownloadResourceThrottleTest : public ChromeRenderViewHostTestHarness {
         limiter_,
         base::Bind(&tab_util::GetWebContentsByID, process_id, render_view_id),
         GURL(kTestUrl), "GET");
-    throttle_->set_controller_for_testing(&resource_controller_);
+    throttle_->set_delegate_for_testing(&resource_throttle_delegate_);
     bool defer;
     throttle_->WillStartRequest(&defer);
     EXPECT_EQ(true, defer);
   }
 
   void StartThrottle() {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO, FROM_HERE,
-        base::Bind(&DownloadResourceThrottleTest::StartThrottleOnIOThread,
-                   base::Unretained(this),
-                   web_contents()->GetRenderViewHost()->GetProcess()->GetID(),
-                   web_contents()->GetRoutingID()));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::IO},
+        base::BindOnce(
+            &DownloadResourceThrottleTest::StartThrottleOnIOThread,
+            base::Unretained(this),
+            web_contents()->GetRenderViewHost()->GetProcess()->GetID(),
+            web_contents()->GetRenderViewHost()->GetRoutingID()));
     run_loop_->Run();
   }
 
@@ -102,24 +104,24 @@ class DownloadResourceThrottleTest : public ChromeRenderViewHostTestHarness {
   content::ResourceThrottle* throttle_;
   MockWebContentsDelegate delegate_;
   scoped_refptr<DownloadRequestLimiter> limiter_;
-  ::testing::NiceMock<MockResourceController> resource_controller_;
+  ::testing::NiceMock<MockResourceThrottleDelegate> resource_throttle_delegate_;
   std::unique_ptr<base::RunLoop> run_loop_;
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
   chrome::android::MockDownloadController download_controller_;
 #endif
 };
 
 TEST_F(DownloadResourceThrottleTest, StartDownloadThrottle_Basic) {
-  EXPECT_CALL(resource_controller_, Resume())
+  EXPECT_CALL(resource_throttle_delegate_, Resume())
       .WillOnce(QuitLoop(run_loop_->QuitClosure()));
   StartThrottle();
 }
 
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
 TEST_F(DownloadResourceThrottleTest, DownloadWithFailedFileAcecssRequest) {
   DownloadControllerBase::Get()
       ->SetApproveFileAccessRequestForTesting(false);
-  EXPECT_CALL(resource_controller_, Cancel())
+  EXPECT_CALL(resource_throttle_delegate_, Cancel())
       .WillOnce(QuitLoop(run_loop_->QuitClosure()));
   StartThrottle();
 }

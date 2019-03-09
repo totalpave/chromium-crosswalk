@@ -7,7 +7,6 @@
 #include "base/path_service.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/grit/options_test_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/data/grit/webui_test_resources.h"
@@ -22,9 +21,9 @@ class WebUIResourceBrowserTest : public InProcessBrowserTest {
   void SetUpOnMainThread() override {
     // Load resources that are only used by browser_tests.
     base::FilePath pak_path;
-    ASSERT_TRUE(PathService::Get(base::DIR_MODULE, &pak_path));
+    ASSERT_TRUE(base::PathService::Get(base::DIR_MODULE, &pak_path));
     pak_path = pak_path.AppendASCII("browser_tests.pak");
-    ResourceBundle::GetSharedInstance().AddDataPackFromPath(
+    ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
         pak_path, ui::SCALE_FACTOR_NONE);
   }
 
@@ -35,7 +34,7 @@ class WebUIResourceBrowserTest : public InProcessBrowserTest {
   }
 
   void LoadResource(int idr) {
-    ResourceBundle& bundle = ResourceBundle::GetSharedInstance();
+    ui::ResourceBundle& bundle = ui::ResourceBundle::GetSharedInstance();
     scoped_refptr<base::RefCountedMemory> resource =
         bundle.LoadDataResourceBytes(idr);
     RunTest(GURL(std::string("data:text/html,") +
@@ -95,7 +94,19 @@ IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, I18nProcessCssTest) {
   LoadResource(IDR_WEBUI_TEST_I18N_PROCESS_CSS_TEST);
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, I18nProcessTest) {
+class WebUIResourceBrowserTestV0 : public WebUIResourceBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    // TODO(yoichio): This is temporary switch to support chrome internal
+    // components migration from the old web APIs.
+    // After completion of the migration, we should remove this.
+    // See crbug.com/911943 for detail.
+    command_line->AppendSwitchASCII("enable-blink-features", "HTMLImports");
+    command_line->AppendSwitchASCII("enable-blink-features", "ShadowDOMV0");
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTestV0, I18nProcessTest) {
   AddLibrary(IDR_WEBUI_JS_LOAD_TIME_DATA);
   AddLibrary(IDR_WEBUI_JS_I18N_TEMPLATE_NO_PROCESS);
   AddLibrary(IDR_WEBUI_JS_UTIL);
@@ -128,12 +139,6 @@ IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, GridTest) {
   LoadFile(base::FilePath(FILE_PATH_LITERAL("grid_test.html")));
 }
 
-IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, LinkControllerTest) {
-  AddLibrary(IDR_WEBUI_JS_CR);
-  AddLibrary(IDR_WEBUI_JS_CR_LINK_CONTROLLER);
-  LoadFile(base::FilePath(FILE_PATH_LITERAL("link_controller_test.html")));
-}
-
 IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, ListSelectionModelTest) {
   AddLibrary(IDR_WEBUI_JS_CR);
   AddLibrary(IDR_WEBUI_JS_CR_EVENT_TARGET);
@@ -147,22 +152,6 @@ IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, ListSingleSelectionModelTest) {
   AddLibrary(IDR_WEBUI_JS_CR_UI_LIST_SINGLE_SELECTION_MODEL);
   LoadFile(base::FilePath(FILE_PATH_LITERAL(
       "list_single_selection_model_test.html")));
-}
-
-IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, InlineEditableListTest) {
-  AddLibrary(IDR_WEBUI_JS_CR);
-  AddLibrary(IDR_WEBUI_JS_CR_EVENT_TARGET);
-  AddLibrary(IDR_WEBUI_JS_CR_UI);
-  AddLibrary(IDR_WEBUI_JS_CR_UI_ARRAY_DATA_MODEL);
-  AddLibrary(IDR_WEBUI_JS_CR_UI_LIST_ITEM);
-  AddLibrary(IDR_WEBUI_JS_CR_UI_LIST_SELECTION_CONTROLLER);
-  AddLibrary(IDR_WEBUI_JS_CR_UI_LIST_SELECTION_MODEL);
-  AddLibrary(IDR_WEBUI_JS_CR_UI_LIST);
-  AddLibrary(IDR_WEBUI_JS_LOAD_TIME_DATA);
-  AddLibrary(IDR_OPTIONS_DELETABLE_ITEM_LIST);
-  AddLibrary(IDR_OPTIONS_INLINE_EDITABLE_LIST);
-  LoadFile(base::FilePath(FILE_PATH_LITERAL(
-      "inline_editable_list_test.html")));
 }
 
 IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, MenuTest) {
@@ -226,6 +215,7 @@ IN_PROC_BROWSER_TEST_F(WebUIResourceBrowserTest, MenuButtonTest) {
   AddLibrary(IDR_WEBUI_JS_CR_UI);
   AddLibrary(IDR_WEBUI_JS_CR_UI_POSITION_UTIL);
   AddLibrary(IDR_WEBUI_JS_CR_UI_MENU_BUTTON);
+  AddLibrary(IDR_WEBUI_JS_CR_UI_MENU_ITEM);
   AddLibrary(IDR_WEBUI_JS_CR_UI_MENU);
   LoadFile(base::FilePath(FILE_PATH_LITERAL("menu_button_test.html")));
 }

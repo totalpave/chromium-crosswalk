@@ -4,115 +4,50 @@
 
 #include "chrome/browser/signin/signin_error_notifier_ash.h"
 
-#include "ash/common/system/system_notifier.h"
-#include "ash/shell.h"
-#include "ash/shell_delegate.h"
+#include <memory>
+
+#include "ash/public/cpp/notification_utils.h"
+#include "ash/public/cpp/vector_icons/vector_icons.h"
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
-#include "chrome/browser/browser_process.h"
+#include "chrome/browser/chromeos/account_manager/account_manager_util.h"
+#include "chrome/browser/chromeos/login/user_flow.h"
+#include "chrome/browser/chromeos/login/users/chrome_user_manager.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
-#include "chrome/browser/notifications/notification.h"
-#include "chrome/browser/notifications/notification_delegate.h"
-#include "chrome/browser/notifications/notification_ui_manager.h"
+#include "chrome/browser/notifications/notification_common.h"
+#include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
+#include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chrome/browser/ui/webui/chromeos/account_manager_welcome_dialog.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/signin/core/account_id/account_id.h"
-#include "grit/theme_resources.h"
+#include "chrome/grit/theme_resources.h"
+#include "components/account_id/account_id.h"
+#include "components/user_manager/user_manager.h"
+#include "services/identity/public/cpp/identity_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/message_center/notification.h"
-#include "ui/message_center/notification_delegate.h"
-
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/user_flow.h"
-#include "chrome/browser/chromeos/login/users/chrome_user_manager.h"
-#include "components/user_manager/user_manager.h"
-#endif
+#include "ui/message_center/public/cpp/notification.h"
+#include "ui/message_center/public/cpp/notification_delegate.h"
 
 namespace {
 
-const char kProfileSigninNotificationId[] = "chrome://settings/signin/";
+constexpr char kProfileSigninNotificationId[] = "chrome://settings/signin/";
+constexpr char kSecondaryAccountNotificationIdSuffix[] = "secondary-account";
 
-// A notification delegate for the sign-out button.
-class SigninNotificationDelegate : public NotificationDelegate {
- public:
-  SigninNotificationDelegate(const std::string& id,
-                             Profile* profile);
-
-  // NotificationDelegate:
-  void Click() override;
-  void ButtonClick(int button_index) override;
-  std::string id() const override;
-
- protected:
-  ~SigninNotificationDelegate() override;
-
- private:
-  void FixSignIn();
-
-  // Unique id of the notification.
-  const std::string id_;
-
-#if !defined(OS_CHROMEOS)
-  Profile* profile_;
-#endif
-
-  DISALLOW_COPY_AND_ASSIGN(SigninNotificationDelegate);
-};
-
-SigninNotificationDelegate::SigninNotificationDelegate(const std::string& id,
-                                                       Profile* profile)
-#if defined(OS_CHROMEOS)
-    : id_(id) {
-#else
-    : id_(id), profile_(profile) {
-#endif
-}
-
-SigninNotificationDelegate::~SigninNotificationDelegate() {
-}
-
-void SigninNotificationDelegate::Click() {
-  FixSignIn();
-}
-
-void SigninNotificationDelegate::ButtonClick(int button_index) {
-  FixSignIn();
-}
-
-std::string SigninNotificationDelegate::id() const {
-  return id_;
-}
-
-void SigninNotificationDelegate::FixSignIn() {
-#if defined(OS_CHROMEOS)
+void HandleDeviceAccountReauthNotificationClick(
+    base::Optional<int> button_index) {
   chrome::AttemptUserExit();
-#else
-  LoginUIService* login_ui = LoginUIServiceFactory::GetForProfile(profile_);
-  if (login_ui->current_login_ui()) {
-    login_ui->current_login_ui()->FocusUI();
-    return;
-  }
-
-  // Find a browser instance or create one.
-  chrome::ScopedTabbedBrowserDisplayer browser_displayer(profile_);
-
-  // Navigate to the sync setup subpage, which will launch a login page.
-  chrome::ShowSettingsSubPage(browser_displayer.browser(),
-                              chrome::kSyncSetupSubPage);
-#endif
 }
 
 }  // namespace
@@ -120,10 +55,15 @@ void SigninNotificationDelegate::FixSignIn() {
 SigninErrorNotifier::SigninErrorNotifier(SigninErrorController* controller,
                                          Profile* profile)
     : error_controller_(controller),
-      profile_(profile) {
+      profile_(profile),
+      identity_manager_(IdentityManagerFactory::GetForProfile(profile_)),
+      weak_factory_(this) {
   // Create a unique notification ID for this profile.
-  notification_id_ =
+  device_account_notification_id_ =
       kProfileSigninNotificationId + profile->GetProfileUserName();
+  secondary_account_notification_id_ =
+      std::string(kProfileSigninNotificationId) +
+      kSecondaryAccountNotificationIdSuffix;
 
   error_controller_->AddObserver(this);
   OnErrorChanged();
@@ -140,20 +80,15 @@ void SigninErrorNotifier::Shutdown() {
 }
 
 void SigninErrorNotifier::OnErrorChanged() {
-  NotificationUIManager* notification_ui_manager =
-      g_browser_process->notification_ui_manager();
-
-  // notification_ui_manager() may return NULL when shutting down.
-  if (!notification_ui_manager)
-    return;
-
   if (!error_controller_->HasError()) {
-    g_browser_process->notification_ui_manager()->CancelById(
-        notification_id_, NotificationUIManager::GetProfileID(profile_));
+    NotificationDisplayService::GetForProfile(profile_)->Close(
+        NotificationHandler::Type::TRANSIENT, device_account_notification_id_);
+    NotificationDisplayService::GetForProfile(profile_)->Close(
+        NotificationHandler::Type::TRANSIENT,
+        secondary_account_notification_id_);
     return;
   }
 
-#if defined(OS_CHROMEOS)
   if (user_manager::UserManager::IsInitialized()) {
     chromeos::UserFlow* user_flow =
         chromeos::ChromeUserManager::Get()->GetCurrentUserFlow();
@@ -164,44 +99,111 @@ void SigninErrorNotifier::OnErrorChanged() {
     if (!user_flow->ShouldLaunchBrowser())
       return;
   }
-#endif
 
+  if (!chromeos::IsAccountManagerAvailable(profile_)) {
+    // If this flag is disabled, Chrome OS does not have a concept of Secondary
+    // Accounts. Preserve existing behavior.
+    HandleDeviceAccountError();
+    return;
+  }
+
+  const std::string error_account_id = error_controller_->error_account_id();
+  if (error_account_id ==
+      identity_manager_->GetPrimaryAccountInfo().account_id) {
+    HandleDeviceAccountError();
+  } else {
+    HandleSecondaryAccountError(error_account_id);
+  }
+}
+
+void SigninErrorNotifier::HandleDeviceAccountError() {
   // Add an accept button to sign the user out.
   message_center::RichNotificationData data;
   data.buttons.push_back(message_center::ButtonInfo(
       l10n_util::GetStringUTF16(IDS_SYNC_RELOGIN_LINK_LABEL)));
 
-  // Set the delegate for the notification's sign-out button.
-  SigninNotificationDelegate* delegate =
-      new SigninNotificationDelegate(notification_id_, profile_);
-
   message_center::NotifierId notifier_id(
-      message_center::NotifierId::SYSTEM_COMPONENT,
+      message_center::NotifierType::SYSTEM_COMPONENT,
       kProfileSigninNotificationId);
 
   // Set |profile_id| for multi-user notification blocker.
   notifier_id.profile_id =
       multi_user_util::GetAccountIdFromProfile(profile_).GetUserEmail();
 
-  Notification notification(
-      message_center::NOTIFICATION_TYPE_SIMPLE,
-      l10n_util::GetStringUTF16(IDS_SIGNIN_ERROR_BUBBLE_VIEW_TITLE),
-      GetMessageBody(), ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-                            IDR_NOTIFICATION_ALERT),
-      notifier_id,
-      base::string16(),  // display_source
-      GURL(notification_id_), notification_id_, data, delegate);
-  notification.SetSystemPriority();
+  std::unique_ptr<message_center::Notification> notification =
+      ash::CreateSystemNotification(
+          message_center::NOTIFICATION_TYPE_SIMPLE,
+          device_account_notification_id_,
+          l10n_util::GetStringUTF16(IDS_SIGNIN_ERROR_BUBBLE_VIEW_TITLE),
+          GetMessageBody(false /* is_secondary_account_error */),
+          l10n_util::GetStringUTF16(IDS_SIGNIN_ERROR_DISPLAY_SOURCE),
+          GURL(device_account_notification_id_), notifier_id, data,
+          new message_center::HandleNotificationClickDelegate(
+              base::BindRepeating(&HandleDeviceAccountReauthNotificationClick)),
+          ash::kNotificationWarningIcon,
+          message_center::SystemNotificationWarningLevel::WARNING);
+  notification->SetSystemPriority();
 
   // Update or add the notification.
-  if (notification_ui_manager->FindById(
-          notification_id_, NotificationUIManager::GetProfileID(profile_)))
-    notification_ui_manager->Update(notification, profile_);
-  else
-    notification_ui_manager->Add(notification, profile_);
+  NotificationDisplayService::GetForProfile(profile_)->Display(
+      NotificationHandler::Type::TRANSIENT, *notification);
 }
 
-base::string16 SigninErrorNotifier::GetMessageBody() const {
+void SigninErrorNotifier::HandleSecondaryAccountError(
+    const std::string& account_id) {
+  message_center::NotifierId notifier_id(
+      message_center::NotifierType::SYSTEM_COMPONENT,
+      kProfileSigninNotificationId);
+  // Set |profile_id| for multi-user notification blocker. Note the primary user
+  // account id is used to identify the profile for the blocker so it is used
+  // instead of the secondary user account id.
+  notifier_id.profile_id =
+      multi_user_util::GetAccountIdFromProfile(profile_).GetUserEmail();
+
+  std::unique_ptr<message_center::Notification> notification =
+      ash::CreateSystemNotification(
+          message_center::NOTIFICATION_TYPE_SIMPLE,
+          secondary_account_notification_id_,
+          l10n_util::GetStringUTF16(
+              IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_BUBBLE_VIEW_TITLE),
+          GetMessageBody(true /* is_secondary_account_error */),
+          l10n_util::GetStringUTF16(
+              IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_DISPLAY_SOURCE),
+          GURL(secondary_account_notification_id_), notifier_id,
+          message_center::RichNotificationData(),
+          new message_center::HandleNotificationClickDelegate(
+              base::BindRepeating(
+                  &SigninErrorNotifier::
+                      HandleSecondaryAccountReauthNotificationClick,
+                  weak_factory_.GetWeakPtr())),
+          ash::kNotificationSettingsIcon,
+          message_center::SystemNotificationWarningLevel::NORMAL);
+  notification->SetSystemPriority();
+
+  // Update or add the notification.
+  NotificationDisplayService::GetForProfile(profile_)->Display(
+      NotificationHandler::Type::TRANSIENT, *notification);
+}
+
+void SigninErrorNotifier::HandleSecondaryAccountReauthNotificationClick(
+    base::Optional<int> button_index) {
+  if (!chromeos::AccountManagerWelcomeDialog::ShowIfRequired()) {
+    // The welcome dialog was not shown (because it has been shown too many
+    // times already). Take users to Account Manager UI directly.
+    // Note: If the welcome dialog was shown, we don't need to do anything.
+    // Closing that dialog takes users to Account Manager UI.
+    chrome::SettingsWindowManager::GetInstance()->ShowChromePageForProfile(
+        profile_, GURL("chrome://settings/accountManager"));
+  }
+}
+
+base::string16 SigninErrorNotifier::GetMessageBody(
+    bool is_secondary_account_error) const {
+  if (is_secondary_account_error) {
+    return l10n_util::GetStringUTF16(
+        IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_BUBBLE_VIEW_MESSAGE);
+  }
+
   switch (error_controller_->auth_error().state()) {
     // TODO(rogerta): use account id in error messages.
 

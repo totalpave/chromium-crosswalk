@@ -42,8 +42,7 @@ bool ValueToUnackedInvalidationStorageMap(
 std::unique_ptr<base::ListValue> UnackedInvalidationStorageMapToValue(
     const syncer::UnackedInvalidationsMap& map) {
   std::unique_ptr<base::ListValue> value(new base::ListValue);
-  for (syncer::UnackedInvalidationsMap::const_iterator it = map.begin();
-       it != map.end(); ++it) {
+  for (auto it = map.begin(); it != map.end(); ++it) {
     value->Append(it->second.ToValue());
   }
   return value;
@@ -114,7 +113,7 @@ void InvalidatorStorage::SetSavedInvalidations(
       const syncer::UnackedInvalidationsMap& map) {
   std::unique_ptr<base::ListValue> value(
       UnackedInvalidationStorageMapToValue(map));
-  pref_service_->Set(prefs::kInvalidatorSavedInvalidations, *value.get());
+  pref_service_->Set(prefs::kInvalidatorSavedInvalidations, *value);
 }
 
 syncer::UnackedInvalidationsMap
@@ -122,11 +121,9 @@ InvalidatorStorage::GetSavedInvalidations() const {
   syncer::UnackedInvalidationsMap map;
   const base::ListValue* value =
       pref_service_->GetList(prefs::kInvalidatorSavedInvalidations);
-  if (!ValueToUnackedInvalidationStorageMap(*value, &map)) {
+  if (!ValueToUnackedInvalidationStorageMap(*value, &map))
     return syncer::UnackedInvalidationsMap();
-  } else {
-    return map;
-  }
+  return map;
 }
 
 void InvalidatorStorage::Clear() {

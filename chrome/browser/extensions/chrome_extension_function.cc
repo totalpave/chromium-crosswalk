@@ -14,113 +14,59 @@
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/browser/render_view_host.h"
 #include "extensions/browser/extension_function_dispatcher.h"
 
-using content::RenderViewHost;
-using content::WebContents;
-
-ChromeUIThreadExtensionFunction::ChromeUIThreadExtensionFunction() {
-}
-
-Profile* ChromeUIThreadExtensionFunction::GetProfile() const {
-  return Profile::FromBrowserContext(context_);
-}
-
-// TODO(stevenjb): Replace this with GetExtensionWindowController().
-Browser* ChromeUIThreadExtensionFunction::GetCurrentBrowser() {
-  // If the delegate has an associated browser, return it.
-  if (dispatcher()) {
-    extensions::WindowController* window_controller =
-        dispatcher()->GetExtensionWindowController();
-    if (window_controller) {
-      Browser* browser = window_controller->GetBrowser();
-      if (browser)
-        return browser;
-    }
-  }
-
-  // Otherwise, try to default to a reasonable browser. If |include_incognito_|
-  // is true, we will also search browsers in the incognito version of this
-  // profile. Note that the profile may already be incognito, in which case
-  // we will search the incognito version only, regardless of the value of
-  // |include_incognito|. Look only for browsers on the active desktop as it is
-  // preferable to pretend no browser is open then to return a browser on
-  // another desktop.
-  content::WebContents* web_contents = GetSenderWebContents();
-  Profile* profile = Profile::FromBrowserContext(
-      web_contents ? web_contents->GetBrowserContext() : browser_context());
-  Browser* browser = chrome::FindAnyBrowser(profile, include_incognito_);
-  if (browser)
-    return browser;
-
-  // NOTE(rafaelw): This can return NULL in some circumstances. In particular,
-  // a background_page onload chrome.tabs api call can make it into here
-  // before the browser is sufficiently initialized to return here, or
-  // all of this profile's browser windows may have been closed.
-  // A similar situation may arise during shutdown.
-  // TODO(rafaelw): Delay creation of background_page until the browser
-  // is available. http://code.google.com/p/chromium/issues/detail?id=13284
-  return NULL;
-}
-
-extensions::WindowController*
-ChromeUIThreadExtensionFunction::GetExtensionWindowController() {
-  // If the delegate has an associated window controller, return it.
-  if (dispatcher()) {
-    extensions::WindowController* window_controller =
-        dispatcher()->GetExtensionWindowController();
-    if (window_controller)
-      return window_controller;
-  }
-
-  return extensions::WindowControllerList::GetInstance()
-      ->CurrentWindowForFunction(this);
-}
-
-content::WebContents*
-ChromeUIThreadExtensionFunction::GetAssociatedWebContents() {
-  content::WebContents* web_contents =
-      UIThreadExtensionFunction::GetAssociatedWebContents();
-  if (web_contents)
-    return web_contents;
-
-  Browser* browser = GetCurrentBrowser();
-  if (!browser)
-    return NULL;
-  return browser->tab_strip_model()->GetActiveWebContents();
-}
-
-ChromeUIThreadExtensionFunction::~ChromeUIThreadExtensionFunction() {
-}
-
-ChromeAsyncExtensionFunction::ChromeAsyncExtensionFunction() {
-}
+ChromeAsyncExtensionFunction::ChromeAsyncExtensionFunction()
+    : chrome_details_(this) {}
 
 ChromeAsyncExtensionFunction::~ChromeAsyncExtensionFunction() {}
 
+Profile* ChromeAsyncExtensionFunction::GetProfile() const {
+  return Profile::FromBrowserContext(context_);
+}
+
+void ChromeAsyncExtensionFunction::SetError(const std::string& error) {
+  error_ = error;
+}
+
+const std::string& ChromeAsyncExtensionFunction::GetError() const {
+  return error_.empty() ? UIThreadExtensionFunction::GetError() : error_;
+}
+
+void ChromeAsyncExtensionFunction::SendResponse(bool success) {
+  ResponseValue response;
+  if (success) {
+    response = ArgumentList(std::move(results_));
+  } else {
+    response = results_ ? ErrorWithArguments(std::move(results_), error_)
+                        : Error(error_);
+  }
+  Respond(std::move(response));
+}
+
+void ChromeAsyncExtensionFunction::SetResult(
+    std::unique_ptr<base::Value> result) {
+  results_.reset(new base::ListValue());
+  results_->Append(std::move(result));
+}
+
+void ChromeAsyncExtensionFunction::SetResultList(
+    std::unique_ptr<base::ListValue> results) {
+  results_ = std::move(results);
+}
+
 ExtensionFunction::ResponseAction ChromeAsyncExtensionFunction::Run() {
-  return RunAsync() ? RespondLater() : RespondNow(Error(error_));
+  if (RunAsync())
+    return RespondLater();
+  // TODO(devlin): Track these down and eliminate them if possible. We
+  // shouldn't return results and an error.
+  if (results_)
+    return RespondNow(ErrorWithArguments(std::move(results_), error_));
+  return RespondNow(Error(error_));
 }
 
 // static
 bool ChromeAsyncExtensionFunction::ValidationFailure(
     ChromeAsyncExtensionFunction* function) {
-  return false;
-}
-
-ChromeSyncExtensionFunction::ChromeSyncExtensionFunction() {
-}
-
-ChromeSyncExtensionFunction::~ChromeSyncExtensionFunction() {}
-
-ExtensionFunction::ResponseAction ChromeSyncExtensionFunction::Run() {
-  return RespondNow(RunSync() ? ArgumentList(std::move(results_))
-                              : Error(error_));
-}
-
-// static
-bool ChromeSyncExtensionFunction::ValidationFailure(
-    ChromeSyncExtensionFunction* function) {
   return false;
 }

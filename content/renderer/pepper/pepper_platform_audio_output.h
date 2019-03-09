@@ -6,6 +6,7 @@
 #define CONTENT_RENDERER_PEPPER_PEPPER_PLATFORM_AUDIO_OUTPUT_H_
 
 #include <memory>
+#include <string>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -52,13 +53,13 @@ class PepperPlatformAudioOutput
   void ShutDown();
 
   // media::AudioOutputIPCDelegate implementation.
-  void OnStateChanged(media::AudioOutputIPCDelegateState state) override;
+  void OnError() override;
   void OnDeviceAuthorized(media::OutputDeviceStatus device_status,
                           const media::AudioParameters& output_params,
                           const std::string& matched_device_id) override;
-  void OnStreamCreated(base::SharedMemoryHandle handle,
+  void OnStreamCreated(base::UnsafeSharedMemoryRegion shared_memory_region,
                        base::SyncSocket::Handle socket_handle,
-                       int length) override;
+                       bool playing_automatically) override;
   void OnIPCClosed() override;
 
  protected:

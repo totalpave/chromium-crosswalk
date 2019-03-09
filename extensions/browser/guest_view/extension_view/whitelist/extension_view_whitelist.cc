@@ -7,7 +7,7 @@
 #include <stddef.h>
 
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 
 namespace extensions {
 
@@ -22,18 +22,15 @@ namespace {
 const char* const kWhitelist[] = {
     "pemeknaakobkocgmimdeamlcklioagkh",  // Used in browser tests
     "dppcjffonoklmpdmljnpdojmoaefcabf",  // Used in browser tests
-    "pkedcjkdefgpdelpbcmbmeomcjbeemfm",  // http://crbug.com/574889
-    "ekpaaapppgpmolpcldedioblbkmijaca",  // http://crbug.com/552208
-    "lhkfccafpkdlaodkicmokbmfapjadkij",  // http://crbug.com/552208
-    "ibiljbkambkbohapfhoonkcpcikdglop",  // http://crbug.com/552208
-    "enhhojjnijigcajfphajepfemndkmdlo",  // http://crbug.com/552208
+    "enhhojjnijigcajfphajepfemndkmdlo",  // Media Router Dev
+    "pkedcjkdefgpdelpbcmbmeomcjbeemfm",  // Media Router Stable
 };
 
 }  // namespace
 
 // static
 bool IsExtensionIdWhitelisted(const std::string& extension_id) {
-  for (size_t i = 0; i < arraysize(kWhitelist); ++i) {
+  for (size_t i = 0; i < base::size(kWhitelist); ++i) {
     if (extension_id == kWhitelist[i])
       return true;
   }

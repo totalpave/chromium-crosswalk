@@ -2,46 +2,47 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/jumbo.gni")
 import("//third_party/protobuf/proto_library.gni")
 
-# GYP version: components/autofill.gypi:autofill_content_browser
-static_library("browser") {
+jumbo_static_library("browser") {
   sources = [
     "content_autofill_driver.cc",
     "content_autofill_driver.h",
     "content_autofill_driver_factory.cc",
     "content_autofill_driver_factory.h",
+    "key_press_handler_manager.cc",
+    "key_press_handler_manager.h",
     "risk/fingerprint.cc",
     "risk/fingerprint.h",
   ]
 
   public_deps = [
     ":risk_proto",
+    "//components/autofill/content/common:mojo_interfaces",
+    "//components/autofill/core/browser",
+    "//components/autofill/core/common",
     "//skia",
   ]
   deps = [
     "//base",
     "//base:i18n",
-    "//components/autofill/content/common",
-    "//components/autofill/content/public/interfaces",
-    "//components/autofill/core/browser",
-    "//components/autofill/core/common",
     "//components/os_crypt",
     "//components/prefs",
     "//components/resources",
     "//components/strings",
     "//components/user_prefs",
-    "//components/webdata/common",
     "//content/public/browser",
     "//content/public/common",
-    "//google_apis",
     "//gpu/config",
-    "//ipc",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
     "//net",
-    "//services/shell/public/cpp",
+    "//ppapi/buildflags",
+    "//services/device/public/cpp/geolocation",
+    "//services/device/public/mojom",
+    "//services/service_manager/public/cpp",
     "//sql",
-    "//third_party/icu",
-    "//third_party/libphonenumber",
     "//ui/base",
     "//ui/display",
     "//ui/gfx",
@@ -61,24 +62,22 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "content_autofill_driver_unittest.cc",
-    "payments/payments_client_unittest.cc",
+    "key_press_handler_manager_unittest.cc",
   ]
 
   deps = [
     ":browser",
     "//base",
-    "//components/autofill/content/common",
+    "//components/autofill/content/common:mojo_interfaces",
     "//components/autofill/core/browser",
     "//components/autofill/core/browser:test_support",
     "//components/autofill/core/common",
     "//content/public/browser",
     "//content/public/common",
     "//content/test:test_support",
-    "//google_apis",
-    "//google_apis:test_support",
-    "//ipc:test_support",
-    "//net",
+    "//mojo/public/cpp/system",
     "//net:test_support",
+    "//services/service_manager/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
   ]

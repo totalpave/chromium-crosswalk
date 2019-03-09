@@ -6,18 +6,19 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/browser/chrome_notification_types.h"
-#include "chrome/browser/extensions/api/declarative_content/content_constants.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate_evaluator.h"
 #include "chrome/browser/profiles/profile.h"
-#include "content/public/browser/navigation_details.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/render_process_host.h"
+#include "extensions/common/api/declarative/declarative_constants.h"
 #include "extensions/common/extension_messages.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_macros.h"
@@ -26,7 +27,7 @@ namespace extensions {
 
 namespace {
 
-const char kInvalidTypeOfParameter[] = "Attribute '%s' has an invalid type";
+const char kCssInvalidTypeOfParameter[] = "Attribute '%s' has an invalid type";
 
 }  // namespace
 
@@ -48,14 +49,14 @@ DeclarativeContentCssPredicate::Create(ContentPredicateEvaluator* evaluator,
     for (size_t i = 0; i < css_rules_value->GetSize(); ++i) {
       std::string css_rule;
       if (!css_rules_value->GetString(i, &css_rule)) {
-        *error = base::StringPrintf(kInvalidTypeOfParameter,
+        *error = base::StringPrintf(kCssInvalidTypeOfParameter,
                                     declarative_content_constants::kCss);
         return std::unique_ptr<DeclarativeContentCssPredicate>();
       }
       css_rules.push_back(css_rule);
     }
   } else {
-    *error = base::StringPrintf(kInvalidTypeOfParameter,
+    *error = base::StringPrintf(kCssInvalidTypeOfParameter,
                                 declarative_content_constants::kCss);
     return std::unique_ptr<DeclarativeContentCssPredicate>();
   }
@@ -98,9 +99,8 @@ DeclarativeContentCssConditionTracker::PerWebContentsTracker::
 }
 
 void DeclarativeContentCssConditionTracker::PerWebContentsTracker::
-OnWebContentsNavigation(const content::LoadCommittedDetails& details,
-                        const content::FrameNavigateParams& params) {
-  if (details.is_in_page) {
+OnWebContentsNavigation(content::NavigationHandle* navigation_handle) {
+  if (navigation_handle->IsSameDocument()) {
     // Within-page navigations don't change the set of elements that
     // exist, and we only support filtering on the top-level URL, so
     // this can't change which rules match.
@@ -201,8 +201,7 @@ void DeclarativeContentCssConditionTracker::StopTrackingPredicates(
       continue;
     for (const DeclarativeContentCssPredicate* predicate : loc->second) {
       for (const std::string& selector : predicate->css_selectors()) {
-        std::map<std::string, int>::iterator loc =
-            watched_css_selector_predicate_count_.find(selector);
+        auto loc = watched_css_selector_predicate_count_.find(selector);
         DCHECK(loc != watched_css_selector_predicate_count_.end());
         if (--loc->second == 0) {
           watched_css_selector_predicate_count_.erase(loc);
@@ -219,23 +218,22 @@ void DeclarativeContentCssConditionTracker::StopTrackingPredicates(
 
 void DeclarativeContentCssConditionTracker::TrackForWebContents(
     content::WebContents* contents) {
-  per_web_contents_tracker_[contents] =
-      make_linked_ptr(new PerWebContentsTracker(
-          contents,
-          base::Bind(&Delegate::RequestEvaluation, base::Unretained(delegate_)),
-          base::Bind(&DeclarativeContentCssConditionTracker::
-                     DeletePerWebContentsTracker,
-                     base::Unretained(this))));
+  per_web_contents_tracker_[contents] = std::make_unique<PerWebContentsTracker>(
+      contents,
+      base::Bind(&Delegate::RequestEvaluation, base::Unretained(delegate_)),
+      base::Bind(
+          &DeclarativeContentCssConditionTracker::DeletePerWebContentsTracker,
+          base::Unretained(this)));
   // Note: the condition is always false until we receive OnWatchedPageChange,
   // so there's no need to evaluate it here.
 }
 
 void DeclarativeContentCssConditionTracker::OnWebContentsNavigation(
     content::WebContents* contents,
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
-  DCHECK(ContainsKey(per_web_contents_tracker_, contents));
-  per_web_contents_tracker_[contents]->OnWebContentsNavigation(details, params);
+    content::NavigationHandle* navigation_handle) {
+  DCHECK(base::ContainsKey(per_web_contents_tracker_, contents));
+  per_web_contents_tracker_[contents]->OnWebContentsNavigation(
+      navigation_handle);
 }
 
 bool DeclarativeContentCssConditionTracker::EvaluatePredicate(
@@ -246,11 +244,11 @@ bool DeclarativeContentCssConditionTracker::EvaluatePredicate(
       static_cast<const DeclarativeContentCssPredicate*>(predicate);
   auto loc = per_web_contents_tracker_.find(tab);
   DCHECK(loc != per_web_contents_tracker_.end());
-  const base::hash_set<std::string>& matching_css_selectors =
+  const std::unordered_set<std::string>& matching_css_selectors =
       loc->second->matching_css_selectors();
   for (const std::string& predicate_css_selector :
            typed_predicate->css_selectors()) {
-    if (!ContainsKey(matching_css_selectors, predicate_css_selector))
+    if (!base::ContainsKey(matching_css_selectors, predicate_css_selector))
       return false;
   }
 
@@ -304,7 +302,7 @@ InstructRenderProcessIfManagingBrowserContext(
 
 void DeclarativeContentCssConditionTracker::DeletePerWebContentsTracker(
     content::WebContents* contents) {
-  DCHECK(ContainsKey(per_web_contents_tracker_, contents));
+  DCHECK(base::ContainsKey(per_web_contents_tracker_, contents));
   per_web_contents_tracker_.erase(contents);
 }
 

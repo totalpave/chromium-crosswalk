@@ -10,7 +10,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/permissions_parser.h"
 #include "extensions/common/permissions/permission_set.h"
-#include "grit/extensions_strings.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace extensions {
@@ -44,10 +44,11 @@ bool PermissionsBasedManagementPolicyProvider::UserMayLoad(
   if (!settings_->IsPermissionSetAllowed(
           extension, PermissionsParser::GetRequiredPermissions(extension))) {
     if (error) {
-      *error =
-          l10n_util::GetStringFUTF16(IDS_EXTENSION_CANT_INSTALL_POLICY_BLOCKED,
-                                     base::UTF8ToUTF16(extension->name()),
-                                     base::UTF8ToUTF16(extension->id()));
+      *error = l10n_util::GetStringFUTF16(
+          IDS_EXTENSION_CANT_INSTALL_POLICY_BLOCKED,
+          base::UTF8ToUTF16(extension->name()),
+          base::UTF8ToUTF16(extension->id()),
+          base::UTF8ToUTF16(settings_->BlockedInstallMessage(extension->id())));
     }
     return false;
   }

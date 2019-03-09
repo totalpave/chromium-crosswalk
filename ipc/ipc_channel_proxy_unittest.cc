@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <memory>
 
+#include "base/message_loop/message_loop.h"
 #include "base/pickle.h"
 #include "base/run_loop.h"
 #include "base/threading/thread.h"
@@ -21,10 +22,6 @@
 
 // Generate constructors.
 #include "ipc/struct_constructor_macros.h"
-#include "ipc/ipc_channel_proxy_unittest_messages.h"
-
-// Generate destructors.
-#include "ipc/struct_destructor_macros.h"
 #include "ipc/ipc_channel_proxy_unittest_messages.h"
 
 // Generate param traits write methods.
@@ -48,9 +45,16 @@ namespace IPC {
 
 namespace {
 
+void CreateRunLoopAndRun(base::RunLoop** run_loop_ptr) {
+  base::RunLoop run_loop;
+  *run_loop_ptr = &run_loop;
+  run_loop.Run();
+  *run_loop_ptr = nullptr;
+}
+
 class QuitListener : public IPC::Listener {
  public:
-  QuitListener() : bad_message_received_(false) {}
+  QuitListener() = default;
 
   bool OnMessageReceived(const IPC::Message& message) override {
     IPC_BEGIN_MESSAGE_MAP(QuitListener, message)
@@ -64,8 +68,11 @@ class QuitListener : public IPC::Listener {
     bad_message_received_ = true;
   }
 
+  void OnChannelError() override { CHECK(quit_message_received_); }
+
   void OnQuit() {
-    base::MessageLoop::current()->QuitWhenIdle();
+    quit_message_received_ = true;
+    run_loop_->QuitWhenIdle();
   }
 
   void OnBadMessage(const BadType& bad_type) {
@@ -73,12 +80,14 @@ class QuitListener : public IPC::Listener {
     CHECK(false);
   }
 
-  bool bad_message_received_;
+  bool bad_message_received_ = false;
+  bool quit_message_received_ = false;
+  base::RunLoop* run_loop_ = nullptr;
 };
 
 class ChannelReflectorListener : public IPC::Listener {
  public:
-  ChannelReflectorListener() : channel_(NULL) {}
+  ChannelReflectorListener() = default;
 
   void Init(IPC::Channel* channel) {
     DCHECK(!channel_);
@@ -89,7 +98,7 @@ class ChannelReflectorListener : public IPC::Listener {
     IPC_BEGIN_MESSAGE_MAP(ChannelReflectorListener, message)
       IPC_MESSAGE_HANDLER(TestMsg_Bounce, OnTestBounce)
       IPC_MESSAGE_HANDLER(TestMsg_SendBadMessage, OnSendBadMessage)
-      IPC_MESSAGE_HANDLER(UtilityMsg_Bounce, OnUtilityBounce)
+      IPC_MESSAGE_HANDLER(AutomationMsg_Bounce, OnAutomationBounce)
       IPC_MESSAGE_HANDLER(WorkerMsg_Bounce, OnBounce)
       IPC_MESSAGE_HANDLER(WorkerMsg_Quit, OnQuit)
     IPC_END_MESSAGE_MAP()
@@ -104,9 +113,7 @@ class ChannelReflectorListener : public IPC::Listener {
     channel_->Send(new TestMsg_BadMessage(BadType()));
   }
 
-  void OnUtilityBounce() {
-    channel_->Send(new UtilityMsg_Bounce());
-  }
+  void OnAutomationBounce() { channel_->Send(new AutomationMsg_Bounce()); }
 
   void OnBounce() {
     channel_->Send(new WorkerMsg_Bounce());
@@ -114,11 +121,13 @@ class ChannelReflectorListener : public IPC::Listener {
 
   void OnQuit() {
     channel_->Send(new WorkerMsg_Quit());
-    base::MessageLoop::current()->QuitWhenIdle();
+    run_loop_->QuitWhenIdle();
   }
 
+  base::RunLoop* run_loop_ = nullptr;
+
  private:
-  IPC::Channel* channel_;
+  IPC::Channel* channel_ = nullptr;
 };
 
 class MessageCountFilter : public IPC::MessageFilter {
@@ -131,22 +140,14 @@ class MessageCountFilter : public IPC::MessageFilter {
     CHANNEL_CLOSING,
     FILTER_REMOVED
   };
-  MessageCountFilter()
-      : messages_received_(0),
-        supported_message_class_(0),
-        is_global_filter_(true),
-        last_filter_event_(NONE),
-        message_filtering_enabled_(false) {}
 
+  MessageCountFilter() = default;
   MessageCountFilter(uint32_t supported_message_class)
-      : messages_received_(0),
-        supported_message_class_(supported_message_class),
-        is_global_filter_(false),
-        last_filter_event_(NONE),
-        message_filtering_enabled_(false) {}
+      : supported_message_class_(supported_message_class),
+        is_global_filter_(false) {}
 
-  void OnFilterAdded(IPC::Sender* sender) override {
-    EXPECT_TRUE(sender);
+  void OnFilterAdded(IPC::Channel* channel) override {
+    EXPECT_TRUE(channel);
     EXPECT_EQ(NONE, last_filter_event_);
     last_filter_event_ = FILTER_ADDED;
   }
@@ -165,17 +166,18 @@ class MessageCountFilter : public IPC::MessageFilter {
   void OnChannelClosing() override {
     // We may or may not have gotten OnChannelError; if not, the last event has
     // to be OnChannelConnected.
+    EXPECT_NE(FILTER_REMOVED, last_filter_event_);
     if (last_filter_event_ != CHANNEL_ERROR)
       EXPECT_EQ(CHANNEL_CONNECTED, last_filter_event_);
     last_filter_event_ = CHANNEL_CLOSING;
   }
 
   void OnFilterRemoved() override {
-    // If the channel didn't get a chance to connect, we might see the
-    // OnFilterRemoved event with no other events preceding it. We still want
-    // OnFilterRemoved to be called to allow for deleting the Filter.
-    if (last_filter_event_ != NONE)
-      EXPECT_EQ(CHANNEL_CLOSING, last_filter_event_);
+    // A filter may be removed at any time, even before the channel is connected
+    // (and thus before OnFilterAdded is ever able to dispatch.) The only time
+    // we won't see OnFilterRemoved is immediately after OnFilterAdded, because
+    // OnChannelConnected is always the next event to fire after that.
+    EXPECT_NE(FILTER_ADDED, last_filter_event_);
     last_filter_event_ = FILTER_REMOVED;
   }
 
@@ -221,23 +223,23 @@ class MessageCountFilter : public IPC::MessageFilter {
   FilterEvent last_filter_event() const { return last_filter_event_; }
 
  private:
-  ~MessageCountFilter() override {}
+  ~MessageCountFilter() override = default;
 
-  size_t messages_received_;
-  uint32_t supported_message_class_;
-  bool is_global_filter_;
+  size_t messages_received_ = 0;
+  uint32_t supported_message_class_ = 0;
+  bool is_global_filter_ = true;
 
-  FilterEvent last_filter_event_;
-  bool message_filtering_enabled_;
+  FilterEvent last_filter_event_ = NONE;
+  bool message_filtering_enabled_ = false;
 };
 
-class IPCChannelProxyTest : public IPCTestBase {
+class IPCChannelProxyTest : public IPCChannelMojoTestBase {
  public:
-  IPCChannelProxyTest() {}
-  ~IPCChannelProxyTest() override {}
+  IPCChannelProxyTest() = default;
+  ~IPCChannelProxyTest() override = default;
 
   void SetUp() override {
-    IPCTestBase::SetUp();
+    IPCChannelMojoTestBase::SetUp();
 
     Init("ChannelProxyClient");
 
@@ -247,21 +249,21 @@ class IPCChannelProxyTest : public IPCTestBase {
     thread_->StartWithOptions(options);
 
     listener_.reset(new QuitListener());
-    CreateChannelProxy(listener_.get(), thread_->task_runner().get());
-
-    ASSERT_TRUE(StartClient());
+    channel_proxy_ = IPC::ChannelProxy::Create(
+        TakeHandle().release(), IPC::Channel::MODE_SERVER, listener_.get(),
+        thread_->task_runner(), base::ThreadTaskRunnerHandle::Get());
   }
 
   void TearDown() override {
-    DestroyChannelProxy();
+    channel_proxy_.reset();
     thread_.reset();
     listener_.reset();
-    IPCTestBase::TearDown();
+    IPCChannelMojoTestBase::TearDown();
   }
 
   void SendQuitMessageAndWaitForIdle() {
     sender()->Send(new WorkerMsg_Quit);
-    base::RunLoop().Run();
+    CreateRunLoopAndRun(&listener_->run_loop_);
     EXPECT_TRUE(WaitForClientShutdown());
   }
 
@@ -269,24 +271,28 @@ class IPCChannelProxyTest : public IPCTestBase {
     return listener_->bad_message_received_;
   }
 
+  IPC::ChannelProxy* channel_proxy() { return channel_proxy_.get(); }
+  IPC::Sender* sender() { return channel_proxy_.get(); }
+
  private:
   std::unique_ptr<base::Thread> thread_;
   std::unique_ptr<QuitListener> listener_;
+  std::unique_ptr<IPC::ChannelProxy> channel_proxy_;
 };
 
 TEST_F(IPCChannelProxyTest, MessageClassFilters) {
   // Construct a filter per message class.
-  std::vector<scoped_refptr<MessageCountFilter> > class_filters;
-  class_filters.push_back(make_scoped_refptr(
-      new MessageCountFilter(TestMsgStart)));
-  class_filters.push_back(make_scoped_refptr(
-      new MessageCountFilter(UtilityMsgStart)));
+  std::vector<scoped_refptr<MessageCountFilter>> class_filters;
+  class_filters.push_back(
+      base::MakeRefCounted<MessageCountFilter>(TestMsgStart));
+  class_filters.push_back(
+      base::MakeRefCounted<MessageCountFilter>(AutomationMsgStart));
   for (size_t i = 0; i < class_filters.size(); ++i)
     channel_proxy()->AddFilter(class_filters[i].get());
 
   // Send a message for each class; each filter should receive just one message.
-  sender()->Send(new TestMsg_Bounce());
-  sender()->Send(new UtilityMsg_Bounce());
+  sender()->Send(new TestMsg_Bounce);
+  sender()->Send(new AutomationMsg_Bounce);
 
   // Send some messages not assigned to a specific or valid message class.
   sender()->Send(new WorkerMsg_Bounce);
@@ -314,7 +320,7 @@ TEST_F(IPCChannelProxyTest, GlobalAndMessageClassFilters) {
   sender()->Send(new TestMsg_Bounce);
 
   // A message of a different class should be seen only by the global filter.
-  sender()->Send(new UtilityMsg_Bounce);
+  sender()->Send(new AutomationMsg_Bounce);
 
   // Flush all messages.
   SendQuitMessageAndWaitForIdle();
@@ -341,7 +347,7 @@ TEST_F(IPCChannelProxyTest, FilterRemoval) {
 
   // Send some messages; they should not be seen by either filter.
   sender()->Send(new TestMsg_Bounce);
-  sender()->Send(new UtilityMsg_Bounce);
+  sender()->Send(new AutomationMsg_Bounce);
 
   // Ensure that the filters were removed and did not receive any messages.
   SendQuitMessageAndWaitForIdle();
@@ -352,9 +358,6 @@ TEST_F(IPCChannelProxyTest, FilterRemoval) {
   EXPECT_EQ(0U, class_filter->messages_received());
   EXPECT_EQ(0U, global_filter->messages_received());
 }
-
-// The test that follow trigger DCHECKS in debug build.
-#if defined(NDEBUG) && !defined(DCHECK_ALWAYS_ON)
 
 TEST_F(IPCChannelProxyTest, BadMessageOnListenerThread) {
   scoped_refptr<MessageCountFilter> class_filter(
@@ -380,28 +383,26 @@ TEST_F(IPCChannelProxyTest, BadMessageOnIPCThread) {
   EXPECT_TRUE(DidListenerGetBadMessage());
 }
 
-class IPCChannelBadMessageTest : public IPCTestBase {
+class IPCChannelBadMessageTest : public IPCChannelMojoTestBase {
  public:
   void SetUp() override {
-    IPCTestBase::SetUp();
+    IPCChannelMojoTestBase::SetUp();
 
     Init("ChannelProxyClient");
 
     listener_.reset(new QuitListener());
     CreateChannel(listener_.get());
     ASSERT_TRUE(ConnectChannel());
-
-    ASSERT_TRUE(StartClient());
   }
 
   void TearDown() override {
+    IPCChannelMojoTestBase::TearDown();
     listener_.reset();
-    IPCTestBase::TearDown();
   }
 
   void SendQuitMessageAndWaitForIdle() {
     sender()->Send(new WorkerMsg_Quit);
-    base::RunLoop().Run();
+    CreateRunLoopAndRun(&listener_->run_loop_);
     EXPECT_TRUE(WaitForClientShutdown());
   }
 
@@ -413,27 +414,20 @@ class IPCChannelBadMessageTest : public IPCTestBase {
   std::unique_ptr<QuitListener> listener_;
 };
 
-#if !defined(OS_WIN)
-  // TODO(jam): for some reason this is flaky on win buildbots.
 TEST_F(IPCChannelBadMessageTest, BadMessage) {
   sender()->Send(new TestMsg_SendBadMessage());
   SendQuitMessageAndWaitForIdle();
   EXPECT_TRUE(DidListenerGetBadMessage());
 }
-#endif
 
-#endif
-
-MULTIPROCESS_IPC_TEST_CLIENT_MAIN(ChannelProxyClient) {
-  base::MessageLoopForIO main_message_loop;
+DEFINE_IPC_CHANNEL_MOJO_TEST_CLIENT(ChannelProxyClient) {
   ChannelReflectorListener listener;
-  std::unique_ptr<IPC::Channel> channel(IPC::Channel::CreateClient(
-      IPCTestBase::GetChannelName("ChannelProxyClient"), &listener));
-  CHECK(channel->Connect());
-  listener.Init(channel.get());
+  Connect(&listener);
+  listener.Init(channel());
 
-  base::RunLoop().Run();
-  return 0;
+  CreateRunLoopAndRun(&listener.run_loop_);
+
+  Close();
 }
 
 }  // namespace

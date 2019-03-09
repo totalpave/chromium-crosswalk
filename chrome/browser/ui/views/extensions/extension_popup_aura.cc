@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/extensions/extension_popup_aura.h"
 
+#include "chrome/browser/extensions/extension_view_host.h"
+#include "chrome/browser/ui/browser_dialogs.h"
 #include "ui/aura/window.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/window_animations.h"
@@ -11,11 +13,13 @@
 #include "ui/wm/public/activation_client.h"
 
 // static
-ExtensionPopup* ExtensionPopup::Create(extensions::ExtensionViewHost* host,
-                                       views::View* anchor_view,
-                                       views::BubbleBorder::Arrow arrow,
-                                       ShowAction show_action) {
-  auto popup = new ExtensionPopupAura(host, anchor_view, arrow, show_action);
+void ExtensionPopup::ShowPopup(
+    std::unique_ptr<extensions::ExtensionViewHost> host,
+    views::View* anchor_view,
+    views::BubbleBorder::Arrow arrow,
+    ShowAction show_action) {
+  auto* popup =
+      new ExtensionPopupAura(host.release(), anchor_view, arrow, show_action);
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(popup);
   gfx::NativeView native_view = widget->GetNativeView();
 
@@ -23,10 +27,7 @@ ExtensionPopup* ExtensionPopup::Create(extensions::ExtensionViewHost* host,
       native_view, wm::WINDOW_VISIBILITY_ANIMATION_TYPE_VERTICAL);
   wm::SetWindowVisibilityAnimationVerticalPosition(native_view, -3.0f);
 
-  aura::client::GetActivationClient(native_view->GetRootWindow())
-      ->AddObserver(popup);
-
-  return popup;
+  wm::GetActivationClient(native_view->GetRootWindow())->AddObserver(popup);
 }
 
 ExtensionPopupAura::ExtensionPopupAura(extensions::ExtensionViewHost* host,
@@ -34,6 +35,7 @@ ExtensionPopupAura::ExtensionPopupAura(extensions::ExtensionViewHost* host,
                                        views::BubbleBorder::Arrow arrow,
                                        ShowAction show_action)
     : ExtensionPopup(host, anchor_view, arrow, show_action) {
+  chrome::RecordDialogCreation(chrome::DialogIdentifier::EXTENSION_POPUP_AURA);
 }
 
 ExtensionPopupAura::~ExtensionPopupAura() {
@@ -43,8 +45,8 @@ void ExtensionPopupAura::OnWidgetDestroying(views::Widget* widget) {
   ExtensionPopup::OnWidgetDestroying(widget);
 
   if (widget == GetWidget()) {
-    auto activation_client = aura::client::GetActivationClient(
-        widget->GetNativeWindow()->GetRootWindow());
+    auto* activation_client =
+        wm::GetActivationClient(widget->GetNativeWindow()->GetRootWindow());
     // If the popup was being inspected with devtools and the browser window
     // was closed, then the root window and activation client are already
     // destroyed.
@@ -54,7 +56,7 @@ void ExtensionPopupAura::OnWidgetDestroying(views::Widget* widget) {
 }
 
 void ExtensionPopupAura::OnWindowActivated(
-    aura::client::ActivationChangeObserver::ActivationReason reason,
+    wm::ActivationChangeObserver::ActivationReason reason,
     aura::Window* gained_active,
     aura::Window* lost_active) {
   // Close on anchor window activation (ie. user clicked the browser window).
@@ -62,5 +64,5 @@ void ExtensionPopupAura::OnWindowActivated(
   // [de]activation events when activating widgets in its own root window.
   // This additional check handles those cases. See: http://crbug.com/320889
   if (gained_active == anchor_widget()->GetNativeWindow())
-    OnAnchorWindowActivation();
+    CloseUnlessUnderInspection();
 }

@@ -33,6 +33,14 @@ window.runCommand = function(command, opt_step) {
       break;
     case 'testFocusRestoredRunNextStep':
       testFocusRestoredRunNextStep(opt_step);
+      break;
+    case 'testKeyboardFocusRunNextStep':
+      testKeyboardFocusRunNextStep(opt_step);
+      break;
+    case 'monitorGuestEvent':
+      monitorGuestEvent(opt_step);
+    case 'waitGuestEvent':
+      waitGuestEvent(opt_step);
     default:
       embedder.test.fail();
   }
@@ -389,6 +397,61 @@ function testBlurEvent() {
   });
 }
 
+// This test verifies that keyboard input is correctly routed into the guest.
+//
+// 1) Load the guest and attach an <input> to the guest dom. Count the number of
+// input events sent to that element.
+// 2) C++ simulates a mouse over and click of the <input> element and waits for
+// the browser to see the guest main frame as focused.
+// 3) Injects the key sequence: a, Shift+b, c.
+// 4) In the second step, the test waits for the input events to be processed
+// and then expects the vaue of the <input> to be what the test sent, notably:
+// aBc.
+function testKeyboardFocusImpl(input_length) {
+  embedder.testFocus_(function(webview) {
+    var created = function(e) {
+      var data = JSON.parse(e.data);
+      if (data[0] === 'response-createdInput') {
+        chrome.test.sendMessage('TEST_PASSED');
+        window.removeEventListener('message', created);
+      }
+    };
+    window.addEventListener('message', created);
+
+    g_webview = webview;
+    var msg = ['request-createInput', input_length];
+    webview.contentWindow.postMessage(JSON.stringify(msg), '*');
+  }, 'response-elementClicked', function() {
+        chrome.test.sendMessage('TEST_STEP_PASSED');
+  });
+
+}
+
+function testKeyboardFocusRunNextStep(expected) {
+  window.addEventListener('message', function(e) {
+    var data = JSON.parse(e.data);
+    LOG('send window.message, data: ' + data);
+    if (data[0] == 'response-inputValue') {
+      if (data[1] == expected) {
+        chrome.test.sendMessage('TEST_STEP_PASSED');
+      } else {
+        chrome.test.sendMessage('TEST_STEP_FAILED');
+      }
+    }
+  });
+
+  g_webview.contentWindow.postMessage(
+      JSON.stringify(['request-getInputValue']), '*');
+}
+
+function testKeyboardFocusSimple() {
+  testKeyboardFocusImpl(3);
+}
+
+function testKeyboardFocusWindowFocusCycle() {
+  testKeyboardFocusImpl(6);
+}
+
 // This test verifies IME related stuff for guest.
 //
 // Briefly:
@@ -487,6 +550,55 @@ function testFocusRestoredRunNextStep(step) {
   });
 }
 
+// Ensures that the tab key can be used to navigate out of the webview. There is
+// a corner case where focus can be trapped in the webview if the next focusable
+// element in the embedder is focused when trying to tab or the previous element
+// when using shift-tab.
+//
+// Briefly:
+// 1) Start with the embedder input focused
+// 2) Click the guest input and wait for it to be focused
+// 3) Send a tab key event
+// 4) Wait for the embedder input to receive another input event.
+function testFocusTakeFocus() {
+  var input = document.createElement('input');
+  var webview = embedder.setUpGuest_();
+  g_webview = webview;
+  document.body.appendChild(input);
+
+  var onChannelEstablished = function(webview) {
+    input.focus();
+
+    var msg = ['request-coords'];
+    webview.contentWindow.postMessage(JSON.stringify(msg), '*');
+  };
+
+  var inputFocusedHandler = function(e) {
+      chrome.test.sendMessage('TEST_STEP_PASSED');
+  }
+
+  var guestFocusedHandler = function(e) {
+      console.log('input focused in guest');
+      window.removeEventListener('message', guestFocusedHandler);
+      input.addEventListener('focus', inputFocusedHandler);
+      chrome.test.sendMessage('TEST_STEP_PASSED');
+  };
+
+  var coordHandler = function(response) {
+    var rect = g_webview.getBoundingClientRect();
+    window.clickX = rect.left + response[1];
+    window.clickY = rect.top + response[2];
+    window.addEventListener('message', guestFocusedHandler);
+    chrome.test.sendMessage('TEST_PASSED');
+  };
+
+  embedder.waitForResponseFromGuest_(webview,
+      'inject_focus_take_focus.js',
+      onChannelEstablished,
+      'response-coords',
+      coordHandler);
+}
+
 // Tests that if we focus/blur the embedder, it also gets reflected in the
 // guest.
 //
@@ -528,11 +640,8 @@ function testFocusTracksEmbedderRunNextStep() {
   window.addEventListener('message', function(e) {
     var data = JSON.parse(e.data);
     LOG('send window.message, data: ' + data);
-    if (data[0] == 'response-seenBlurAfterFocus') {
+    if (data[0] == 'response-seenBlurAfterFocus')
       chrome.test.sendMessage('TEST_STEP_PASSED');
-    } else {
-      chrome.test.sendMessage('TEST_STEP_FAILED');
-    }
   });
 }
 
@@ -591,6 +700,29 @@ function testAdvanceFocus() {
   webview.src = embedder.guestURL;
 }
 
+function monitorGuestEvent(type) {
+  g_webview.contentWindow.postMessage(
+      JSON.stringify(['request-monitorEvent', type]), '*');
+}
+
+function waitGuestEvent(type) {
+  var listener = function(e) {
+    var data = JSON.parse(e.data);
+    if (data[0] == 'response-waitEvent') {
+      window.removeEventListener('message', listener);
+      if (data[1] == type) {
+        chrome.test.sendMessage('TEST_STEP_PASSED');
+      } else {
+        chrome.test.sendMessage('TEST_STEP_FAILED');
+      }
+    }
+  }
+  window.addEventListener('message', listener);
+
+  g_webview.contentWindow.postMessage(
+      JSON.stringify(['request-waitEvent', type]), '*');
+}
+
 embedder.test.testList = {
   'testAdvanceFocus': testAdvanceFocus,
   'testBlurEvent': testBlurEvent,
@@ -598,7 +730,10 @@ embedder.test.testList = {
   'testFocusEvent': testFocusEvent,
   'testFocusTracksEmbedder': testFocusTracksEmbedder,
   'testInputMethod': testInputMethod,
-  'testFocusRestored': testFocusRestored
+  'testKeyboardFocusSimple': testKeyboardFocusSimple,
+  'testKeyboardFocusWindowFocusCycle': testKeyboardFocusWindowFocusCycle,
+  'testFocusRestored': testFocusRestored,
+  'testFocusTakeFocus': testFocusTakeFocus
 };
 
 onload = function() {

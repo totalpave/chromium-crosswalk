@@ -4,27 +4,24 @@
 
 package org.chromium.chrome.browser.gsa;
 
+import android.support.annotation.Nullable;
 import android.text.TextUtils;
 
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.chrome.browser.ChromeActivity;
 import org.chromium.chrome.browser.UrlConstants;
-import org.chromium.chrome.browser.contextualsearch.ContextualSearchObserver;
+import org.chromium.chrome.browser.contextualsearch.ContextualSearchManager;
 import org.chromium.chrome.browser.sync.ProfileSyncService;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.EmptyTabModelObserver;
-import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabSelectionType;
-import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
-import org.chromium.sync.ModelType;
-import org.chromium.sync.PassphraseType;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
+import org.chromium.components.sync.ModelType;
+import org.chromium.components.sync.Passphrase;
 
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import javax.annotation.Nullable;
 
 /**
  * Reports context to GSA for search quality.
@@ -53,15 +50,17 @@ public class ContextReporter {
     public static final int STATUS_RESULT_IS_NULL = 17;
     public static final int STATUS_RESULT_FAILED = 18;
     public static final int STATUS_SUCCESS_WITH_SELECTION = 19;
+    public static final int STATUS_DUP_ENTRY = 20;
     // This should always stay last and have the highest number.
-    private static final int STATUS_BOUNDARY = 20;
+    private static final int STATUS_BOUNDARY = 21;
 
     private final ChromeActivity mActivity;
     private final GSAContextReportDelegate mDelegate;
     private TabModelSelectorTabObserver mSelectorTabObserver;
-    private TabModelObserver mModelObserver;
-    private ContextualSearchObserver mContextualSearchObserver;
+    private TabModelSelectorTabModelObserver mModelObserver;
     private boolean mLastContextWasTitleChange;
+    private String mLastUrl;
+    private String mLastTitle;
     private final AtomicBoolean mContextInUse;
 
     /**
@@ -102,29 +101,17 @@ public class ContextReporter {
         }
         if (mModelObserver == null) {
             assert !selector.getModels().isEmpty();
-            mModelObserver = new EmptyTabModelObserver() {
+            mModelObserver = new TabModelSelectorTabModelObserver(selector) {
                 @Override
-                public void didSelectTab(Tab tab, TabSelectionType type, int lastId) {
+                public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
                     reportUsageOfCurrentContextIfPossible(tab, false, null);
                 }
             };
-            for (TabModel model : selector.getModels()) {
-                model.addObserver(mModelObserver);
-            }
         }
-        if (mContextualSearchObserver == null && mActivity.getContextualSearchManager() != null) {
-            mContextualSearchObserver = new ContextualSearchObserver() {
-                @Override
-                public void onShowContextualSearch(GSAContextDisplaySelection contextSelection) {
-                    if (contextSelection != null) reportDisplaySelection(contextSelection);
-                }
-
-                @Override
-                public void onHideContextualSearch() {
-                    reportDisplaySelection(null);
-                }
-            };
-            mActivity.getContextualSearchManager().addObserver(mContextualSearchObserver);
+        ContextualSearchManager manager = mActivity.getContextualSearchManager();
+        if (manager != null) {
+            manager.enableContextReporting(
+                    (selection) -> ContextReporter.this.reportDisplaySelection(selection));
         }
     }
 
@@ -139,14 +126,11 @@ public class ContextReporter {
             mSelectorTabObserver = null;
         }
         if (mModelObserver != null) {
-            for (TabModel model : mActivity.getTabModelSelector().getModels()) {
-                model.removeObserver(mModelObserver);
-            }
+            mModelObserver.destroy();
             mModelObserver = null;
         }
-        if (mContextualSearchObserver != null && mActivity.getContextualSearchManager() != null) {
-            mActivity.getContextualSearchManager().removeObserver(mContextualSearchObserver);
-            mContextualSearchObserver = null;
+        if (mActivity.getContextualSearchManager() != null) {
+            mActivity.getContextualSearchManager().disableContextReporting();
         }
     }
 
@@ -179,8 +163,8 @@ public class ContextReporter {
         }
 
         String currentUrl = currentTab.getUrl();
-        if (TextUtils.isEmpty(currentUrl) || !(currentUrl.startsWith(UrlConstants.HTTP_SCHEME)
-                || currentUrl.startsWith(UrlConstants.HTTPS_SCHEME))) {
+        if (TextUtils.isEmpty(currentUrl) || !(currentUrl.startsWith(UrlConstants.HTTP_URL_PREFIX)
+                || currentUrl.startsWith(UrlConstants.HTTPS_URL_PREFIX))) {
             reportStatus(STATUS_INVALID_SCHEME);
             Log.d(TAG, "Not reporting, URL scheme is invalid");
             reportUsageEndedIfNecessary();
@@ -198,11 +182,20 @@ public class ContextReporter {
             Log.d(TAG, "Not reporting, repeated title update");
             return;
         }
+        if (TextUtils.equals(currentTab.getUrl(), mLastUrl)
+                && TextUtils.equals(currentTab.getTitle(), mLastTitle)
+                && displaySelection == null) {
+            reportStatus(STATUS_DUP_ENTRY);
+            Log.d(TAG, "Not reporting, repeated url and title");
+            return;
+        }
 
         reportUsageEndedIfNecessary();
 
         mDelegate.reportContext(currentTab.getUrl(), currentTab.getTitle(), displaySelection);
         mLastContextWasTitleChange = isTitleChange;
+        mLastUrl = currentTab.getUrl();
+        mLastTitle = currentTab.getTitle();
         mContextInUse.set(true);
     }
 
@@ -219,11 +212,11 @@ public class ContextReporter {
      * Records an appropriate status via UMA given the current sync status.
      */
     public static void reportSyncStatus(@Nullable ProfileSyncService syncService) {
-        if (syncService == null || !syncService.isBackendInitialized()) {
+        if (syncService == null || !syncService.isEngineInitialized()) {
             reportStatus(STATUS_SYNC_NOT_INITIALIZED);
         } else if (!syncService.getActiveDataTypes().contains(ModelType.TYPED_URLS)) {
             reportStatus(STATUS_SYNC_NOT_SYNCING_URLS);
-        } else if (!syncService.getPassphraseType().equals(PassphraseType.KEYSTORE_PASSPHRASE)) {
+        } else if (syncService.getPassphraseType() != Passphrase.Type.KEYSTORE) {
             reportStatus(STATUS_SYNC_NOT_KEYSTORE_PASSPHRASE);
         } else {
             reportStatus(STATUS_SYNC_OTHER);

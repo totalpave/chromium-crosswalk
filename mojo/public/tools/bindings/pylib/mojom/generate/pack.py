@@ -44,11 +44,12 @@ class PackedField(object):
   @classmethod
   def GetSizeForKind(cls, kind):
     if isinstance(kind, (mojom.Array, mojom.Map, mojom.Struct,
-                         mojom.Interface, mojom.AssociatedInterface)):
+                         mojom.Interface, mojom.AssociatedInterface,
+                         mojom.PendingRemote)):
       return 8
     if isinstance(kind, mojom.Union):
       return 16
-    if isinstance(kind, mojom.InterfaceRequest):
+    if isinstance(kind, (mojom.InterfaceRequest, mojom.PendingReceiver)):
       kind = mojom.MSGPIPE
     if isinstance(kind, mojom.AssociatedInterfaceRequest):
       return 4
@@ -56,7 +57,8 @@ class PackedField(object):
       # TODO(mpcomplete): what about big enums?
       return cls.kind_to_size[mojom.INT32]
     if not kind in cls.kind_to_size:
-      raise Exception("Invalid kind: %s" % kind.spec)
+      raise Exception("Undefined type: %s. Did you forget to import the file "
+                      "containing the definition?" % kind.spec)
     return cls.kind_to_size[kind]
 
   @classmethod

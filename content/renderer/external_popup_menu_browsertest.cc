@@ -11,8 +11,9 @@
 #include "content/renderer/render_frame_impl.h"
 #include "content/renderer/render_view_impl.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/WebKit/public/platform/WebSize.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/platform/web_size.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_view.h"
 
 // Tests for the external select popup menu (Mac specific).
 
@@ -39,7 +40,7 @@ class ExternalPopupMenuTest : public RenderViewTest {
   void SetUp() override {
     RenderViewTest::SetUp();
     // We need to set this explictly as RenderMain is not run.
-    blink::WebView::setUseExternalPopupMenus(true);
+    blink::WebView::SetUseExternalPopupMenus(true);
 
     std::string html = "<select id='mySelect' onchange='selectChanged(this)'>"
                        "  <option>zero</option>"
@@ -60,8 +61,8 @@ class ExternalPopupMenuTest : public RenderViewTest {
     LoadHTML(html.c_str());
 
     // Set a minimum size and give focus so simulated events work.
-    view()->GetWidget()->webwidget()->resize(blink::WebSize(500, 500));
-    view()->GetWidget()->webwidget()->setFocus(true);
+    view()->GetWidget()->GetWebWidget()->Resize(blink::WebSize(500, 500));
+    view()->GetWidget()->GetWebWidget()->SetFocus(true);
   }
 
   int GetSelectedIndex() {
@@ -153,6 +154,31 @@ TEST_F(ExternalPopupMenuRemoveTest, RemoveOnChange) {
   EXPECT_FALSE(SimulateElementClick(kSelectID));
 }
 
+// crbug.com/912211
+TEST_F(ExternalPopupMenuRemoveTest, RemoveFrameOnChange) {
+  LoadHTML(
+      "<style>* { margin: 0; } iframe { border: 0; }</style>"
+      "<body><iframe srcdoc=\""
+      "<style>* { margin: 0; }</style><select><option>opt1<option>opt2"
+      "\"></iframe>"
+      "<script>"
+      "onload = function() {"
+      "  const frame = document.querySelector('iframe');"
+      "  frame.contentDocument.querySelector('select').onchange = "
+      "      () => { frame.remove(); };"
+      "};"
+      "</script>");
+  // Open a popup.
+  SimulatePointClick(gfx::Point(8, 8));
+  // Select something on the sub-frame, it causes the frame to be removed from
+  // the page.
+  auto* child_web_frame =
+      static_cast<blink::WebLocalFrame*>(frame()->GetWebFrame()->FirstChild());
+  static_cast<RenderFrameImpl*>(RenderFrame::FromWebFrame(child_web_frame))
+      ->OnSelectPopupMenuItem(1);
+  // The test passes if the test didn't crash and ASAN didn't complain.
+}
+
 class ExternalPopupMenuDisplayNoneTest : public ExternalPopupMenuTest {
   public:
   ExternalPopupMenuDisplayNoneTest() {}
@@ -160,7 +186,7 @@ class ExternalPopupMenuDisplayNoneTest : public ExternalPopupMenuTest {
   void SetUp() override {
     RenderViewTest::SetUp();
     // We need to set this explictly as RenderMain is not run.
-    blink::WebView::setUseExternalPopupMenus(true);
+    blink::WebView::SetUseExternalPopupMenus(true);
 
     std::string html = "<select id='mySelect'>"
                        "  <option value='zero'>zero</option>"
@@ -176,8 +202,8 @@ class ExternalPopupMenuDisplayNoneTest : public ExternalPopupMenuTest {
     LoadHTML(html.c_str());
 
     // Set a minimum size and give focus so simulated events work.
-    view()->GetWidget()->webwidget()->resize(blink::WebSize(500, 500));
-    view()->GetWidget()->webwidget()->setFocus(true);
+    view()->GetWidget()->GetWebWidget()->Resize(blink::WebSize(500, 500));
+    view()->GetWidget()->GetWebWidget()->SetFocus(true);
   }
 
 };

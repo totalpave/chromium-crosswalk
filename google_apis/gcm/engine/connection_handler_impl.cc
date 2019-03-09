@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "google/protobuf/io/coded_stream.h"
@@ -50,7 +51,6 @@ ConnectionHandlerImpl::ConnectionHandlerImpl(
     const ProtoSentCallback& write_callback,
     const ConnectionChangedCallback& connection_callback)
     : read_timeout_(read_timeout),
-      socket_(NULL),
       handshake_complete_(false),
       message_tag_(0),
       message_size_(0),
@@ -66,7 +66,8 @@ ConnectionHandlerImpl::~ConnectionHandlerImpl() {
 
 void ConnectionHandlerImpl::Init(
     const mcs_proto::LoginRequest& login_request,
-    net::StreamSocket* socket) {
+    mojo::ScopedDataPipeConsumerHandle receive_stream,
+    mojo::ScopedDataPipeProducerHandle send_stream) {
   DCHECK(!read_callback_.is_null());
   DCHECK(!write_callback_.is_null());
   DCHECK(!connection_callback_.is_null());
@@ -77,9 +78,8 @@ void ConnectionHandlerImpl::Init(
   handshake_complete_ = false;
   message_tag_ = 0;
   message_size_ = 0;
-  socket_ = socket;
-  input_stream_.reset(new SocketInputStream(socket_));
-  output_stream_.reset(new SocketOutputStream(socket_));
+  input_stream_.reset(new SocketInputStream(std::move(receive_stream)));
+  output_stream_.reset(new SocketOutputStream(std::move(send_stream)));
 
   Login(login_request);
 }
@@ -133,9 +133,8 @@ void ConnectionHandlerImpl::Login(
           base::Bind(&ConnectionHandlerImpl::OnMessageSent,
                      weak_ptr_factory_.GetWeakPtr())) != net::ERR_IO_PENDING) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(&ConnectionHandlerImpl::OnMessageSent,
-                   weak_ptr_factory_.GetWeakPtr()));
+        FROM_HERE, base::BindOnce(&ConnectionHandlerImpl::OnMessageSent,
+                                  weak_ptr_factory_.GetWeakPtr()));
   }
 
   read_timeout_timer_.Start(FROM_HERE,
@@ -229,8 +228,6 @@ void ConnectionHandlerImpl::WaitForData(ProcessingState state) {
         max_bytes_needed = bytes_left;
       }
       break;
-    default:
-      NOTREACHED();
   }
   DCHECK_GE(max_bytes_needed, min_bytes_needed);
 
@@ -264,9 +261,8 @@ void ConnectionHandlerImpl::WaitForData(ProcessingState state) {
              << " more bytes.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&ConnectionHandlerImpl::WaitForData,
-                   weak_ptr_factory_.GetWeakPtr(),
-                   MCS_PROTO_BYTES));
+        base::BindOnce(&ConnectionHandlerImpl::WaitForData,
+                       weak_ptr_factory_.GetWeakPtr(), MCS_PROTO_BYTES));
     return;
   }
 
@@ -285,8 +281,6 @@ void ConnectionHandlerImpl::WaitForData(ProcessingState state) {
     case MCS_PROTO_BYTES:
       OnGotMessageBytes();
       break;
-    default:
-      NOTREACHED();
   }
 }
 
@@ -387,9 +381,8 @@ void ConnectionHandlerImpl::OnGotMessageBytes() {
   // that tag.
   if (protobuf.get() && message_size_ == 0) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(&ConnectionHandlerImpl::GetNextMessage,
-                   weak_ptr_factory_.GetWeakPtr()));
+        FROM_HERE, base::BindOnce(&ConnectionHandlerImpl::GetNextMessage,
+                                  weak_ptr_factory_.GetWeakPtr()));
     read_callback_.Run(std::move(protobuf));
     return;
   }
@@ -460,9 +453,8 @@ void ConnectionHandlerImpl::OnGotMessageBytes() {
 
   input_stream_->RebuildBuffer();
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&ConnectionHandlerImpl::GetNextMessage,
-                 weak_ptr_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&ConnectionHandlerImpl::GetNextMessage,
+                                weak_ptr_factory_.GetWeakPtr()));
   if (message_tag_ == kLoginResponseTag) {
     if (handshake_complete_) {
       LOG(ERROR) << "Unexpected login response.";
@@ -484,9 +476,6 @@ void ConnectionHandlerImpl::OnTimeout() {
 void ConnectionHandlerImpl::CloseConnection() {
   DVLOG(1) << "Closing connection.";
   read_timeout_timer_.Stop();
-  if (socket_)
-    socket_->Disconnect();
-  socket_ = NULL;
   handshake_complete_ = false;
   message_tag_ = 0;
   message_size_ = 0;

@@ -8,14 +8,12 @@
 
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/dropdown_bar_host_delegate.h"
-#include "chrome/browser/ui/views/dropdown_bar_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/gfx/scrollbar_size.h"
 #include "ui/views/focus/external_focus_tracker.h"
-#include "ui/views/focus/view_storage.h"
 #include "ui/views/widget/widget.h"
 
 // static
@@ -44,7 +42,7 @@ void DropdownBarHost::Init(views::View* host_view,
   // The |clip_view| exists to paint to a layer so that it can clip descendent
   // Views which also paint to a Layer. See http://crbug.com/589497
   std::unique_ptr<views::View> clip_view(new views::View());
-  clip_view->SetPaintToLayer(true);
+  clip_view->SetPaintToLayer();
   clip_view->layer()->SetFillsBoundsOpaquely(false);
   clip_view->layer()->SetMasksToBounds(true);
   clip_view->AddChildView(view_);
@@ -52,6 +50,8 @@ void DropdownBarHost::Init(views::View* host_view,
   // Initialize the host.
   host_.reset(new ThemeCopyingWidget(browser_view_->GetWidget()));
   views::Widget::InitParams params(views::Widget::InitParams::TYPE_CONTROL);
+  params.delegate = this;
+  params.name = "DropdownBarHost";
   params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.parent = browser_view_->GetWidget()->GetNativeView();
   params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
@@ -72,6 +72,9 @@ void DropdownBarHost::Init(views::View* host_view,
   }
 
   animation_.reset(new gfx::SlideAnimation(this));
+  if (!gfx::Animation::ShouldRenderRichAnimation())
+    animation_->SetSlideDuration(0);
+
   // Update the widget and |view_| bounds to the hidden state.
   AnimationProgressed(animation_.get());
 }
@@ -87,6 +90,12 @@ void DropdownBarHost::Show(bool animate) {
   focus_tracker_.reset(new views::ExternalFocusTracker(view_, focus_manager_));
 
   SetDialogPosition(GetDialogPosition(gfx::Rect()));
+
+  // If we're in the middle of a close animation, stop it and skip to the end.
+  // This ensures that the state is consistent and prepared to show the drop-
+  // down bar.
+  if (animation_->IsClosing())
+    StopAnimation();
 
   host_->Show();
 
@@ -106,7 +115,7 @@ void DropdownBarHost::Show(bool animate) {
 }
 
 void DropdownBarHost::SetFocusAndSelection() {
-  delegate_->SetFocusAndSelection(true);
+  delegate_->FocusAndSelectAll();
 }
 
 bool DropdownBarHost::IsAnimating() const {
@@ -220,6 +229,14 @@ void DropdownBarHost::OnVisibilityChanged() {
 void DropdownBarHost::GetWidgetBounds(gfx::Rect* bounds) {
   DCHECK(bounds);
   *bounds = browser_view_->bounds();
+}
+
+views::Widget* DropdownBarHost::GetWidget() {
+  return host_.get();
+}
+
+const views::Widget* DropdownBarHost::GetWidget() const {
+  return host_.get();
 }
 
 void DropdownBarHost::RegisterAccelerators() {

@@ -10,10 +10,14 @@
 #include <vector>
 
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/memory/ref_counted.h"
+#include "net/cert/pem_tokenizer.h"
+#include "net/cert/x509_util.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/test_data_directory.h"
+#include "net/test/test_with_scoped_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -22,14 +26,21 @@ namespace {
 
 // "CN=B CA" - DER encoded DN of the issuer of client_1.pem
 const unsigned char kAuthority1DN[] = {
-  0x30, 0x0f, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c,
-  0x04, 0x42, 0x20, 0x43, 0x41
+    0x30, 0x0f, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55,
+    0x04, 0x03, 0x0c, 0x04, 0x42, 0x20, 0x43, 0x41,
 };
 
 // "CN=E CA" - DER encoded DN of the issuer of client_2.pem
-unsigned char kAuthority2DN[] = {
-  0x30, 0x0f, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c,
-  0x04, 0x45, 0x20, 0x43, 0x41
+const unsigned char kAuthority2DN[] = {
+    0x30, 0x0f, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55,
+    0x04, 0x03, 0x0c, 0x04, 0x45, 0x20, 0x43, 0x41,
+};
+
+// "CN=C Root CA" - DER encoded DN of the issuer of client_1_ca.pem,
+// client_2_ca.pem, and client_3_ca.pem.
+const unsigned char kAuthorityRootDN[] = {
+    0x30, 0x14, 0x31, 0x12, 0x30, 0x10, 0x06, 0x03, 0x55, 0x04, 0x03,
+    0x0c, 0x09, 0x43, 0x20, 0x52, 0x6f, 0x6f, 0x74, 0x20, 0x43, 0x41,
 };
 
 }  // namespace
@@ -39,30 +50,30 @@ unsigned char kAuthority2DN[] = {
 // filtering behavior.
 //
 // NOTE: If any test cases are added, removed, or renamed, the
-// REGISTER_TYPED_TEST_CASE_P macro at the bottom of this file must be updated.
+// REGISTER_TYPED_TEST_SUITE_P macro at the bottom of this file must be updated.
 //
-// The type T provided as the third argument to INSTANTIATE_TYPED_TEST_CASE_P by
-// the platform implementation should implement this method:
-// bool SelectClientCerts(const CertificateList& input_certs,
+// The type T provided as the third argument to INSTANTIATE_TYPED_TEST_SUITE_P
+// by the platform implementation should implement this method: bool
+// SelectClientCerts(const CertificateList& input_certs,
 //                        const SSLCertRequestInfo& cert_request_info,
-//                        CertificateList* selected_certs);
+//                        ClientCertIdentityList* selected_identities);
 template <typename T>
-class ClientCertStoreTest : public ::testing::Test {
+class ClientCertStoreTest : public TestWithScopedTaskEnvironment {
  public:
   T delegate_;
 };
 
-TYPED_TEST_CASE_P(ClientCertStoreTest);
+TYPED_TEST_SUITE_P(ClientCertStoreTest);
 
 TYPED_TEST_P(ClientCertStoreTest, EmptyQuery) {
-  std::vector<scoped_refptr<X509Certificate> > certs;
+  CertificateList certs;
   scoped_refptr<SSLCertRequestInfo> request(new SSLCertRequestInfo());
 
-  std::vector<scoped_refptr<X509Certificate> > selected_certs;
-  bool rv = this->delegate_.SelectClientCerts(
-      certs, *request.get(), &selected_certs);
+  ClientCertIdentityList selected_identities;
+  bool rv = this->delegate_.SelectClientCerts(certs, *request.get(),
+                                              &selected_identities);
   EXPECT_TRUE(rv);
-  EXPECT_EQ(0u, selected_certs.size());
+  EXPECT_EQ(0u, selected_identities.size());
 }
 
 // Verify that CertRequestInfo with empty |cert_authorities| matches all
@@ -76,12 +87,13 @@ TYPED_TEST_P(ClientCertStoreTest, AllIssuersAllowed) {
   certs.push_back(cert);
   scoped_refptr<SSLCertRequestInfo> request(new SSLCertRequestInfo());
 
-  std::vector<scoped_refptr<X509Certificate> > selected_certs;
-  bool rv = this->delegate_.SelectClientCerts(
-      certs, *request.get(), &selected_certs);
+  ClientCertIdentityList selected_identities;
+  bool rv = this->delegate_.SelectClientCerts(certs, *request.get(),
+                                              &selected_identities);
   EXPECT_TRUE(rv);
-  ASSERT_EQ(1u, selected_certs.size());
-  EXPECT_TRUE(selected_certs[0]->Equals(cert.get()));
+  ASSERT_EQ(1u, selected_identities.size());
+  EXPECT_TRUE(
+      selected_identities[0]->certificate()->EqualsExcludingChain(cert.get()));
 }
 
 // Verify that certificates are correctly filtered against CertRequestInfo with
@@ -111,18 +123,57 @@ TYPED_TEST_P(ClientCertStoreTest, CertAuthorityFiltering) {
   scoped_refptr<SSLCertRequestInfo> request(new SSLCertRequestInfo());
   request->cert_authorities = authority_1;
 
-  std::vector<scoped_refptr<X509Certificate> > selected_certs;
-  bool rv = this->delegate_.SelectClientCerts(
-      certs, *request.get(), &selected_certs);
+  ClientCertIdentityList selected_identities;
+  bool rv = this->delegate_.SelectClientCerts(certs, *request.get(),
+                                              &selected_identities);
   EXPECT_TRUE(rv);
-  ASSERT_EQ(1u, selected_certs.size());
-  EXPECT_TRUE(selected_certs[0]->Equals(cert_1.get()));
+  ASSERT_EQ(1u, selected_identities.size());
+  EXPECT_TRUE(selected_identities[0]->certificate()->EqualsExcludingChain(
+      cert_1.get()));
 }
 
-REGISTER_TYPED_TEST_CASE_P(ClientCertStoreTest,
-                           EmptyQuery,
-                           AllIssuersAllowed,
-                           CertAuthorityFiltering);
+TYPED_TEST_P(ClientCertStoreTest, PrintableStringContainingUTF8) {
+  base::FilePath certs_dir =
+      GetTestNetDataDirectory().AppendASCII("parse_certificate_unittest");
+
+  std::string file_data;
+  ASSERT_TRUE(base::ReadFileToString(
+      certs_dir.AppendASCII(
+          "subject_printable_string_containing_utf8_client_cert.pem"),
+      &file_data));
+
+  net::PEMTokenizer pem_tokenizer(file_data, {"CERTIFICATE"});
+  ASSERT_TRUE(pem_tokenizer.GetNext());
+  std::string cert_der(pem_tokenizer.data());
+  ASSERT_FALSE(pem_tokenizer.GetNext());
+
+  bssl::UniquePtr<CRYPTO_BUFFER> cert_handle =
+      x509_util::CreateCryptoBuffer(cert_der);
+  ASSERT_TRUE(cert_handle);
+
+  X509Certificate::UnsafeCreateOptions options;
+  options.printable_string_is_utf8 = true;
+  scoped_refptr<X509Certificate> cert =
+      X509Certificate::CreateFromBufferUnsafeOptions(std::move(cert_handle), {},
+                                                     options);
+  ASSERT_TRUE(cert);
+
+  scoped_refptr<SSLCertRequestInfo> request(new SSLCertRequestInfo());
+
+  ClientCertIdentityList selected_identities;
+  bool rv = this->delegate_.SelectClientCerts({cert}, *request.get(),
+                                              &selected_identities);
+  EXPECT_TRUE(rv);
+  ASSERT_EQ(1u, selected_identities.size());
+  EXPECT_TRUE(
+      selected_identities[0]->certificate()->EqualsExcludingChain(cert.get()));
+}
+
+REGISTER_TYPED_TEST_SUITE_P(ClientCertStoreTest,
+                            EmptyQuery,
+                            AllIssuersAllowed,
+                            CertAuthorityFiltering,
+                            PrintableStringContainingUTF8);
 
 }  // namespace net
 

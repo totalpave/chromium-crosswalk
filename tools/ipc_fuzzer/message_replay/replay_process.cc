@@ -5,48 +5,82 @@
 #include "tools/ipc_fuzzer/message_replay/replay_process.h"
 
 #include <limits.h>
+
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/posix/global_descriptors.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_switches.h"
+#include "content/public/common/connection_filter.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/common/mojo_channel_switches.h"
+#include "content/public/common/service_manager_connection.h"
+#include "ipc/ipc.mojom.h"
 #include "ipc/ipc_channel_mojo.h"
-#include "ipc/ipc_descriptors.h"
-#include "ipc/ipc_switches.h"
-#include "mojo/edk/embedder/embedder.h"
-#include "mojo/edk/embedder/platform_channel_pair.h"
-#include "mojo/edk/embedder/scoped_ipc_support.h"
+#include "mojo/core/embedder/configuration.h"
+#include "mojo/core/embedder/embedder.h"
+#include "mojo/core/embedder/scoped_ipc_support.h"
+#include "mojo/public/cpp/platform/platform_channel.h"
+#include "mojo/public/cpp/platform/platform_channel_endpoint.h"
+#include "mojo/public/cpp/system/invitation.h"
+#include "services/service_manager/embedder/switches.h"
 
 #if defined(OS_POSIX)
-#include "content/public/common/content_descriptors.h"
+#include "base/posix/global_descriptors.h"
+#include "services/service_manager/embedder/descriptors.h"
 #endif
 
 namespace ipc_fuzzer {
+namespace {
+
+class IPCChannelBootstrapper : public content::ConnectionFilter {
+ public:
+  explicit IPCChannelBootstrapper(
+      mojo::ScopedMessagePipeHandle bootstrap_handle)
+      : bootstrap_handle_(std::move(bootstrap_handle)) {}
+
+ private:
+  void OnBindInterface(const service_manager::BindSourceInfo& source_info,
+                       const std::string& interface_name,
+                       mojo::ScopedMessagePipeHandle* interface_pipe,
+                       service_manager::Connector* connector) override {
+    if (interface_name != IPC::mojom::ChannelBootstrap::Name_)
+      return;
+
+    DCHECK(bootstrap_handle_.is_valid());
+    mojo::FuseMessagePipes(std::move(*interface_pipe),
+                           std::move(bootstrap_handle_));
+  }
+
+  mojo::ScopedMessagePipeHandle bootstrap_handle_;
+
+  DISALLOW_COPY_AND_ASSIGN(IPCChannelBootstrapper);
+};
+
+}  // namespace
 
 void InitializeMojo() {
-  mojo::edk::SetMaxMessageSize(64 * 1024 * 1024);
-  mojo::edk::Init();
+  mojo::core::Configuration config;
+  config.max_message_num_bytes = 64 * 1024 * 1024;
+  mojo::core::Init(config);
 }
 
-void InitializeMojoIPCChannel() {
-  mojo::edk::ScopedPlatformHandle platform_channel;
+mojo::IncomingInvitation InitializeMojoIPCChannel() {
+  mojo::PlatformChannelEndpoint endpoint;
 #if defined(OS_WIN)
-  platform_channel =
-      mojo::edk::PlatformChannelPair::PassClientHandleFromParentProcess(
-          *base::CommandLine::ForCurrentProcess());
+  endpoint = mojo::PlatformChannel::RecoverPassedEndpointFromCommandLine(
+      *base::CommandLine::ForCurrentProcess());
 #elif defined(OS_POSIX)
-  platform_channel.reset(mojo::edk::PlatformHandle(
-      base::GlobalDescriptors::GetInstance()->Get(kMojoIPCChannel)));
+  endpoint = mojo::PlatformChannelEndpoint(mojo::PlatformHandle(
+      base::ScopedFD(base::GlobalDescriptors::GetInstance()->Get(
+          service_manager::kMojoIPCChannel))));
 #endif
-  CHECK(platform_channel.is_valid());
-  mojo::edk::SetParentPipeHandle(std::move(platform_channel));
+  CHECK(endpoint.is_valid());
+  return mojo::IncomingInvitation::Accept(std::move(endpoint));
 }
 
 ReplayProcess::ReplayProcess()
@@ -89,43 +123,37 @@ bool ReplayProcess::Initialize(int argc, const char** argv) {
 
 #if defined(OS_POSIX)
   base::GlobalDescriptors* g_fds = base::GlobalDescriptors::GetInstance();
-  g_fds->Set(kPrimaryIPCChannel,
-             kPrimaryIPCChannel + base::GlobalDescriptors::kBaseDescriptor);
-  g_fds->Set(kMojoIPCChannel,
-             kMojoIPCChannel + base::GlobalDescriptors::kBaseDescriptor);
+  g_fds->Set(service_manager::kMojoIPCChannel,
+             service_manager::kMojoIPCChannel +
+                 base::GlobalDescriptors::kBaseDescriptor);
 #endif
 
-  mojo_ipc_support_.reset(
-      new mojo::edk::ScopedIPCSupport(io_thread_.task_runner()));
-  InitializeMojoIPCChannel();
+  mojo_ipc_support_.reset(new mojo::core::ScopedIPCSupport(
+      io_thread_.task_runner(),
+      mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST));
+  mojo_invitation_ =
+      std::make_unique<mojo::IncomingInvitation>(InitializeMojoIPCChannel());
 
   return true;
 }
 
 void ReplayProcess::OpenChannel() {
-  // TODO(morrita): As the adoption of ChannelMojo spreads, this
-  // criteria has to be updated.
-  std::string process_type =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          switches::kProcessType);
-  bool should_use_mojo = process_type == switches::kRendererProcess;
-  if (should_use_mojo) {
-    std::string token =
-        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-            switches::kMojoChannelToken);
-    channel_ = IPC::ChannelProxy::Create(
-        IPC::ChannelMojo::CreateClientFactory(mojo::edk::CreateChildMessagePipe(
-            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-                switches::kMojoChannelToken))),
-        this, io_thread_.task_runner());
-  } else {
-    std::string channel_name =
-        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-            switches::kProcessChannelID);
-    channel_ =
-        IPC::ChannelProxy::Create(channel_name, IPC::Channel::MODE_CLIENT, this,
-                                  io_thread_.task_runner());
-  }
+  DCHECK(mojo_invitation_);
+  service_manager_connection_ = content::ServiceManagerConnection::Create(
+      service_manager::mojom::ServiceRequest(
+          mojo_invitation_->ExtractMessagePipe(
+              base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+                  service_manager::switches::kServiceRequestChannelToken))),
+      io_thread_.task_runner());
+  mojo::MessagePipe ipc_pipe;
+  service_manager_connection_->AddConnectionFilter(
+      std::make_unique<IPCChannelBootstrapper>(std::move(ipc_pipe.handle0)));
+  service_manager_connection_->Start();
+  channel_ = IPC::ChannelProxy::Create(
+      IPC::ChannelMojo::CreateClientFactory(
+          std::move(ipc_pipe.handle1), io_thread_.task_runner(),
+          base::ThreadTaskRunnerHandle::Get()),
+      this, io_thread_.task_runner(), base::ThreadTaskRunnerHandle::Get());
 }
 
 bool ReplayProcess::OpenTestcase() {
@@ -137,27 +165,25 @@ bool ReplayProcess::OpenTestcase() {
 
 void ReplayProcess::SendNextMessage() {
   if (message_index_ >= messages_.size()) {
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
     return;
   }
 
-  // Take next message and release it from vector.
-  IPC::Message* message = messages_[message_index_];
-  messages_[message_index_++] = NULL;
+  std::unique_ptr<IPC::Message> message =
+      std::move(messages_[message_index_++]);
 
-  if (!channel_->Send(message)) {
+  if (!channel_->Send(message.release())) {
     LOG(ERROR) << "ChannelProxy::Send() failed after "
                << message_index_ << " messages";
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 }
 
 void ReplayProcess::Run() {
-  timer_.reset(new base::Timer(false, true));
-  timer_->Start(FROM_HERE,
-                base::TimeDelta::FromMilliseconds(1),
-                base::Bind(&ReplayProcess::SendNextMessage,
-                           base::Unretained(this)));
+  base::RepeatingTimer timer;
+  timer.Start(FROM_HERE, base::TimeDelta::FromMilliseconds(1),
+              base::BindRepeating(&ReplayProcess::SendNextMessage,
+                                  base::Unretained(this)));
   base::RunLoop().Run();
 }
 
@@ -168,7 +194,7 @@ bool ReplayProcess::OnMessageReceived(const IPC::Message& msg) {
 void ReplayProcess::OnChannelError() {
   LOG(ERROR) << "Channel error, quitting after "
              << message_index_ << " messages";
-  base::MessageLoop::current()->QuitWhenIdle();
+  base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 }  // namespace ipc_fuzzer

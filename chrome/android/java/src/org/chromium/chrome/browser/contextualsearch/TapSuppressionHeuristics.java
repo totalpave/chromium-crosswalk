@@ -4,45 +4,64 @@
 
 package org.chromium.chrome.browser.contextualsearch;
 
+import android.support.annotation.Nullable;
+
 /**
  * A set of {@link ContextualSearchHeuristic}s that support experimentation and logging.
  */
 public class TapSuppressionHeuristics extends ContextualSearchHeuristics {
+    private CtrSuppression mCtrSuppression;
+
     /**
      * Gets all the heuristics needed for Tap suppression.
      * @param selectionController The {@link ContextualSearchSelectionController}.
      * @param previousTapState The state of the previous tap, or {@code null}.
      * @param x The x position of the Tap.
      * @param y The y position of the Tap.
-     * @param tapsSinceOpen the number of Tap gestures since the last open of the panel.
+     * @param contextualSearchContext The {@link ContextualSearchContext} of this tap.
+     * @param tapDurationMs The duration of this tap in milliseconds.
+     * @param wasSelectionEmptyBeforeTap Whether the selection was empty before this tap.
+     * @param fontSizeDips The font size from Blink in dips.
+     * @param elementRunLength The length of the text in the element tapped, in characters.
      */
     TapSuppressionHeuristics(ContextualSearchSelectionController selectionController,
-            ContextualSearchTapState previousTapState, int x, int y, int tapsSinceOpen) {
+            @Nullable ContextualSearchTapState previousTapState, int x, int y,
+            ContextualSearchContext contextualSearchContext, int tapDurationMs,
+            boolean wasSelectionEmptyBeforeTap, int fontSizeDips, int elementRunLength) {
         super();
-        RecentScrollTapSuppression scrollTapExperiment =
-                new RecentScrollTapSuppression(selectionController);
-        mHeuristics.add(scrollTapExperiment);
-        TapFarFromPreviousSuppression farFromPreviousHeuristic =
-                new TapFarFromPreviousSuppression(selectionController, previousTapState, x, y);
-        mHeuristics.add(farFromPreviousHeuristic);
-        NearTopTapSuppression tapNearTopSuppression =
-                new NearTopTapSuppression(selectionController, y);
-        mHeuristics.add(tapNearTopSuppression);
-        BarOverlapTapSuppression barOverlapTapSuppression =
-                new BarOverlapTapSuppression(selectionController, x, y);
-        mHeuristics.add(barOverlapTapSuppression);
-        // General Tap Suppression and Tap Twice.
-        TapSuppression tapSuppression =
-                new TapSuppression(selectionController, previousTapState, x, y, tapsSinceOpen);
-        mHeuristics.add(tapSuppression);
+        mCtrSuppression = new CtrSuppression();
+        mHeuristics.add(mCtrSuppression);
+        mHeuristics.add(new EngagementSuppression());
+        mHeuristics.add(new RecentScrollTapSuppression(selectionController));
+        mHeuristics.add(new TapFarFromPreviousSuppression(
+                selectionController, previousTapState, x, y, wasSelectionEmptyBeforeTap));
+        mHeuristics.add(new TapDurationSuppression(tapDurationMs));
+        mHeuristics.add(new TapWordLengthSuppression(contextualSearchContext));
+        mHeuristics.add(new TapWordEdgeSuppression(contextualSearchContext));
+        mHeuristics.add(new ContextualSearchEntityHeuristic(contextualSearchContext));
+        mHeuristics.add(new NearTopTapSuppression(selectionController, y));
+        mHeuristics.add(new BarOverlapTapSuppression(selectionController, y));
+        mHeuristics.add(new ShortTextRunSuppression(contextualSearchContext, elementRunLength));
+        mHeuristics.add(new SmallTextSuppression(fontSizeDips));
+        // Second Tap ML Override.
+        mHeuristics.add(new SecondTapMlOverride(selectionController, previousTapState, x, y));
+        // Quick Answer that appears in the Caption via the JS API.
+        QuickAnswersHeuristic quickAnswersHeuristic = new QuickAnswersHeuristic();
+        setQuickAnswersHeuristic(quickAnswersHeuristic);
+        mHeuristics.add(quickAnswersHeuristic);
     }
 
     /**
-     * Logs the results seen for the heuristics and whether they would have had their condition
-     * satisfied if enabled.
-     * @param wasSearchContentViewSeen Whether the panel contents were seen.
-     * @param wasActivatedByTap Whether the panel was activated by a Tap or not.
+     * This method should be called to clean up storage when an instance of this class is
+     * no longer in use.
      */
+    public void destroy() {
+        if (mCtrSuppression != null) {
+            mCtrSuppression.destroy();
+            mCtrSuppression = null;
+        }
+    }
+
     @Override
     public void logResultsSeen(boolean wasSearchContentViewSeen, boolean wasActivatedByTap) {
         for (ContextualSearchHeuristic heuristic : mHeuristics) {
@@ -66,7 +85,17 @@ public class TapSuppressionHeuristics extends ContextualSearchHeuristics {
      */
     boolean shouldSuppressTap() {
         for (ContextualSearchHeuristic heuristic : mHeuristics) {
-            if (heuristic.isConditionSatisfied()) return true;
+            if (heuristic.isConditionSatisfiedAndEnabled()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * @return Whether the Tap should override an ML suppression.
+     */
+    boolean shouldOverrideMlTapSuppression() {
+        for (ContextualSearchHeuristic heuristic : mHeuristics) {
+            if (heuristic.shouldOverrideMlTapSuppression()) return true;
         }
         return false;
     }

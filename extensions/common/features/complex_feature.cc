@@ -6,9 +6,11 @@
 
 namespace extensions {
 
-ComplexFeature::ComplexFeature(std::unique_ptr<FeatureList> features) {
-  DCHECK_GT(features->size(), 0UL);
-  features_.swap(*features);
+ComplexFeature::ComplexFeature(std::vector<Feature*>* features) {
+  DCHECK_GT(features->size(), 1UL);
+  for (Feature* f : *features)
+    features_.push_back(std::unique_ptr<Feature>(f));
+  features->clear();
   no_parent_ = features_[0]->no_parent();
 
 #if !defined(NDEBUG) || defined(DCHECK_ALWAYS_ON)
@@ -31,21 +33,20 @@ ComplexFeature::~ComplexFeature() {
 }
 
 Feature::Availability ComplexFeature::IsAvailableToManifest(
-    const std::string& extension_id,
+    const HashedExtensionId& hashed_id,
     Manifest::Type type,
     Manifest::Location location,
     int manifest_version,
     Platform platform) const {
   Feature::Availability first_availability =
-      features_[0]->IsAvailableToManifest(
-          extension_id, type, location, manifest_version, platform);
+      features_[0]->IsAvailableToManifest(hashed_id, type, location,
+                                          manifest_version, platform);
   if (first_availability.is_available())
     return first_availability;
 
-  for (FeatureList::const_iterator it = features_.begin() + 1;
-       it != features_.end(); ++it) {
+  for (auto it = features_.cbegin() + 1; it != features_.cend(); ++it) {
     Availability availability = (*it)->IsAvailableToManifest(
-        extension_id, type, location, manifest_version, platform);
+        hashed_id, type, location, manifest_version, platform);
     if (availability.is_available())
       return availability;
   }
@@ -64,8 +65,7 @@ Feature::Availability ComplexFeature::IsAvailableToContext(
   if (first_availability.is_available())
     return first_availability;
 
-  for (FeatureList::const_iterator it = features_.begin() + 1;
-       it != features_.end(); ++it) {
+  for (auto it = features_.cbegin() + 1; it != features_.cend(); ++it) {
     Availability availability =
         (*it)->IsAvailableToContext(extension, context, url, platform);
     if (availability.is_available())
@@ -76,21 +76,33 @@ Feature::Availability ComplexFeature::IsAvailableToContext(
   return first_availability;
 }
 
-bool ComplexFeature::IsIdInBlacklist(const std::string& extension_id) const {
-  for (FeatureList::const_iterator it = features_.begin();
-       it != features_.end();
-       ++it) {
-    if ((*it)->IsIdInBlacklist(extension_id))
+Feature::Availability ComplexFeature::IsAvailableToEnvironment() const {
+  Feature::Availability first_availability =
+      features_[0]->IsAvailableToEnvironment();
+  if (first_availability.is_available())
+    return first_availability;
+
+  for (auto iter = features_.cbegin() + 1; iter != features_.cend(); ++iter) {
+    Availability availability = (*iter)->IsAvailableToEnvironment();
+    if (availability.is_available())
+      return availability;
+  }
+  // If none of the SimpleFeatures are available, we return the availability
+  // info of the first SimpleFeature that was not available.
+  return first_availability;
+}
+
+bool ComplexFeature::IsIdInBlocklist(const HashedExtensionId& hashed_id) const {
+  for (auto it = features_.cbegin(); it != features_.cend(); ++it) {
+    if ((*it)->IsIdInBlocklist(hashed_id))
       return true;
   }
   return false;
 }
 
-bool ComplexFeature::IsIdInWhitelist(const std::string& extension_id) const {
-  for (FeatureList::const_iterator it = features_.begin();
-       it != features_.end();
-       ++it) {
-    if ((*it)->IsIdInWhitelist(extension_id))
+bool ComplexFeature::IsIdInAllowlist(const HashedExtensionId& hashed_id) const {
+  for (auto it = features_.cbegin(); it != features_.cend(); ++it) {
+    if ((*it)->IsIdInAllowlist(hashed_id))
       return true;
   }
   return false;
@@ -100,18 +112,6 @@ bool ComplexFeature::IsInternal() const {
   // Constructor verifies that composed features are consistent, thus we can
   // return just the first feature's value.
   return features_[0]->IsInternal();
-}
-
-std::string ComplexFeature::GetAvailabilityMessage(AvailabilityResult result,
-                                                   Manifest::Type type,
-                                                   const GURL& url,
-                                                   Context context) const {
-  if (result == IS_AVAILABLE)
-    return std::string();
-
-  // TODO(justinlin): Form some kind of combined availabilities/messages from
-  // SimpleFeatures.
-  return features_[0]->GetAvailabilityMessage(result, type, url, context);
 }
 
 }  // namespace extensions

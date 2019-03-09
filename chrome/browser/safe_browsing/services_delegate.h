@@ -6,9 +6,10 @@
 #define CHROME_BROWSER_SAFE_BROWSING_SERVICES_DELEGATE_H_
 
 #include <memory>
+#include <string>
 
+#include "base/memory/ref_counted.h"
 #include "chrome/browser/safe_browsing/incident_reporting/delayed_analysis_callback.h"
-#include "components/user_prefs/tracked/tracked_preference_validation_delegate.h"
 
 class Profile;
 
@@ -16,8 +17,14 @@ namespace content {
 class DownloadManager;
 }
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
+}
+
+namespace prefs {
+namespace mojom {
+class TrackedPreferenceValidationDelegate;
+}
 }
 
 namespace safe_browsing {
@@ -25,9 +32,12 @@ namespace safe_browsing {
 class ClientSideDetectionService;
 class DownloadProtectionService;
 class IncidentReportingService;
+class PasswordProtectionService;
 class ResourceRequestDetector;
 struct ResourceRequestInfo;
 class SafeBrowsingService;
+class SafeBrowsingDatabaseManager;
+class TelemetryService;
 struct V4ProtocolConfig;
 
 // Abstraction to help organize code for mobile vs full safe browsing modes.
@@ -43,12 +53,14 @@ class ServicesDelegate {
   // ServicesDelegate will use its built-in service creation code.
   class ServicesCreator {
    public:
+    virtual bool CanCreateDatabaseManager() = 0;
     virtual bool CanCreateDownloadProtectionService() = 0;
     virtual bool CanCreateIncidentReportingService() = 0;
     virtual bool CanCreateResourceRequestDetector() = 0;
 
     // Caller takes ownership of the returned object. Cannot use std::unique_ptr
     // because services may not be implemented for some build configs.
+    virtual SafeBrowsingDatabaseManager* CreateDatabaseManager() = 0;
     virtual DownloadProtectionService* CreateDownloadProtectionService() = 0;
     virtual IncidentReportingService* CreateIncidentReportingService() = 0;
     virtual ResourceRequestDetector* CreateResourceRequestDetector() = 0;
@@ -66,12 +78,18 @@ class ServicesDelegate {
 
   virtual ~ServicesDelegate() {}
 
+  virtual const scoped_refptr<SafeBrowsingDatabaseManager>& database_manager()
+      const = 0;
+
   // Initializes internal state using the ServicesCreator.
   virtual void Initialize() = 0;
 
-  // Creates the CSD service for the given |context_getter|.
+  // Creates the CSD service for the given |url_loader_factory|.
   virtual void InitializeCsdService(
-      net::URLRequestContextGetter* context_getter) = 0;
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) = 0;
+
+  virtual void SetDatabaseManagerForTest(
+      SafeBrowsingDatabaseManager* database_manager) = 0;
 
   // Shuts down the download service.
   virtual void ShutdownServices() = 0;
@@ -81,11 +99,9 @@ class ServicesDelegate {
 
   // See the SafeBrowsingService methods of the same name.
   virtual void ProcessResourceRequest(const ResourceRequestInfo* request) = 0;
-  virtual std::unique_ptr<TrackedPreferenceValidationDelegate>
-      CreatePreferenceValidationDelegate(Profile* profile) = 0;
+  virtual std::unique_ptr<prefs::mojom::TrackedPreferenceValidationDelegate>
+  CreatePreferenceValidationDelegate(Profile* profile) = 0;
   virtual void RegisterDelayedAnalysisCallback(
-      const DelayedAnalysisCallback& callback) = 0;
-  virtual void RegisterExtendedReportingOnlyDelayedAnalysisCallback(
       const DelayedAnalysisCallback& callback) = 0;
   virtual void AddDownloadManager(
       content::DownloadManager* download_manager) = 0;
@@ -95,9 +111,20 @@ class ServicesDelegate {
   virtual DownloadProtectionService* GetDownloadService() = 0;
 
   virtual void StartOnIOThread(
-    net::URLRequestContextGetter* url_request_context_getter,
-    const V4ProtocolConfig& v4_config) = 0;
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const V4ProtocolConfig& v4_config) = 0;
   virtual void StopOnIOThread(bool shutdown) = 0;
+
+  virtual void CreatePasswordProtectionService(Profile* profile) = 0;
+  virtual void RemovePasswordProtectionService(Profile* profile) = 0;
+  virtual PasswordProtectionService* GetPasswordProtectionService(
+      Profile* profile) const = 0;
+
+  virtual void CreateTelemetryService(Profile* profile) = 0;
+  virtual void RemoveTelemetryService() = 0;
+  virtual TelemetryService* GetTelemetryService() const = 0;
+
+  virtual std::string GetSafetyNetId() const = 0;
 };
 
 }  // namespace safe_browsing

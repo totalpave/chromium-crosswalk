@@ -9,15 +9,13 @@
 #include <limits>
 #include <set>
 
+#include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "cc/base/math_util.h"
-#include "cc/test/fake_output_surface.h"
 #include "cc/test/fake_output_surface_client.h"
 #include "cc/test/fake_picture_layer_tiling_client.h"
 #include "cc/test/fake_raster_source.h"
-#include "cc/test/test_context_provider.h"
-#include "cc/test/test_shared_bitmap_manager.h"
 #include "cc/tiles/picture_layer_tiling_set.h"
 #include "cc/trees/layer_tree_settings.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -47,37 +45,52 @@ class TestablePictureLayerTiling : public PictureLayerTiling {
 
   static std::unique_ptr<TestablePictureLayerTiling> Create(
       WhichTree tree,
-      float contents_scale,
+      const gfx::AxisTransform2d& raster_transform,
       scoped_refptr<RasterSource> raster_source,
       PictureLayerTilingClient* client,
       const LayerTreeSettings& settings) {
     return base::WrapUnique(new TestablePictureLayerTiling(
-        tree, contents_scale, raster_source, client,
+        tree, raster_transform, raster_source, client,
         settings.tiling_interest_area_padding,
         settings.skewport_target_time_in_seconds,
-        settings.skewport_extrapolation_limit_in_screen_pixels));
+        settings.skewport_extrapolation_limit_in_screen_pixels,
+        312.f, /* min_preraster_distance */
+        settings.max_preraster_distance_in_screen_pixels));
   }
 
   gfx::Rect live_tiles_rect() const { return live_tiles_rect_; }
+  PriorityRectType visible_rect_type() const {
+    return PriorityRectType::VISIBLE_RECT;
+  }
 
-  using PictureLayerTiling::RemoveTileAt;
   using PictureLayerTiling::RemoveTilesInRegion;
+  using PictureLayerTiling::ComputePriorityRectTypeForTile;
 
  protected:
   TestablePictureLayerTiling(WhichTree tree,
-                             float contents_scale,
+                             const gfx::AxisTransform2d& raster_transform,
                              scoped_refptr<RasterSource> raster_source,
                              PictureLayerTilingClient* client,
                              size_t tiling_interest_area_padding,
                              float skewport_target_time,
-                             int skewport_extrapolation_limit)
-      : PictureLayerTiling(tree, contents_scale, raster_source, client) {}
+                             int skewport_extrapolation_limit,
+                             float min_preraster_distance,
+                             float max_preraster_distance)
+      : PictureLayerTiling(tree,
+                           raster_transform,
+                           raster_source,
+                           client,
+                           min_preraster_distance,
+                           max_preraster_distance) {}
 };
 
 class PictureLayerTilingIteratorTest : public testing::Test {
  public:
-  PictureLayerTilingIteratorTest() {}
-  ~PictureLayerTilingIteratorTest() override {}
+  using VerifyTilesCallback =
+      base::RepeatingCallback<void(Tile* tile, const gfx::Rect& geometry_rect)>;
+
+  PictureLayerTilingIteratorTest() = default;
+  ~PictureLayerTilingIteratorTest() override = default;
 
   void Initialize(const gfx::Size& tile_size,
                   float contents_scale,
@@ -85,7 +98,19 @@ class PictureLayerTilingIteratorTest : public testing::Test {
     client_.SetTileSize(tile_size);
     scoped_refptr<FakeRasterSource> raster_source =
         FakeRasterSource::CreateFilled(layer_bounds);
-    tiling_ = TestablePictureLayerTiling::Create(PENDING_TREE, contents_scale,
+    tiling_ = TestablePictureLayerTiling::Create(
+        PENDING_TREE, gfx::AxisTransform2d(contents_scale, gfx::Vector2dF()),
+        raster_source, &client_, LayerTreeSettings());
+    tiling_->set_resolution(HIGH_RESOLUTION);
+  }
+
+  void InitializeWithTranslation(const gfx::Size& tile_size,
+                                 const gfx::AxisTransform2d& raster_transform,
+                                 const gfx::Size& layer_bounds) {
+    client_.SetTileSize(tile_size);
+    scoped_refptr<FakeRasterSource> raster_source =
+        FakeRasterSource::CreateFilled(layer_bounds);
+    tiling_ = TestablePictureLayerTiling::Create(PENDING_TREE, raster_transform,
                                                  raster_source, &client_,
                                                  LayerTreeSettings());
     tiling_->set_resolution(HIGH_RESOLUTION);
@@ -97,9 +122,9 @@ class PictureLayerTilingIteratorTest : public testing::Test {
     client_.SetTileSize(tile_size);
     scoped_refptr<FakeRasterSource> raster_source =
         FakeRasterSource::CreateFilled(layer_bounds);
-    tiling_ = TestablePictureLayerTiling::Create(ACTIVE_TREE, contents_scale,
-                                                 raster_source, &client_,
-                                                 LayerTreeSettings());
+    tiling_ = TestablePictureLayerTiling::Create(
+        ACTIVE_TREE, gfx::AxisTransform2d(contents_scale, gfx::Vector2dF()),
+        raster_source, &client_, LayerTreeSettings());
     tiling_->set_resolution(HIGH_RESOLUTION);
   }
 
@@ -107,9 +132,7 @@ class PictureLayerTilingIteratorTest : public testing::Test {
     tiling_->SetLiveTilesRect(live_tiles_rect);
 
     std::vector<Tile*> tiles = tiling_->AllTilesForTesting();
-    for (std::vector<Tile*>::iterator iter = tiles.begin();
-         iter != tiles.end();
-         ++iter) {
+    for (auto iter = tiles.begin(); iter != tiles.end(); ++iter) {
       EXPECT_TRUE(live_tiles_rect.Intersects((*iter)->content_rect()));
     }
   }
@@ -120,12 +143,11 @@ class PictureLayerTilingIteratorTest : public testing::Test {
       const gfx::Rect& expect_rect) {
     EXPECT_TRUE(request_rect.Contains(expect_rect));
 
-    // Iterators are not valid if this ratio is too large (i.e. the
-    // tiling is too high-res for a low-res destination rect.)  This is an
-    // artifact of snapping geometry to integer coordinates and then mapping
-    // back to floating point texture coordinates.
-    float dest_to_contents_scale = tiling_->contents_scale() / rect_scale;
-    ASSERT_LE(dest_to_contents_scale, 2.0);
+    // Iterators are not valid if the destination scale is smaller than the
+    // tiling scale. This is because coverage computation is done in integer
+    // grids in the dest space, and the overlap between tiles may not guarantee
+    // to enclose an integer grid line to round to if scaled down.
+    ASSERT_GE(rect_scale, tiling_->contents_scale_key());
 
     Region remaining = expect_rect;
     for (PictureLayerTiling::CoverageIterator
@@ -139,11 +161,21 @@ class PictureLayerTilingIteratorTest : public testing::Test {
       remaining.Subtract(geometry);
 
       // Sanity check that texture coords are within the texture rect.
+      // Skip check for external edges because they do overhang.
+      // For internal edges there is an inset of 0.5 texels because the sample
+      // points are at the center of the texels. An extra 1/1024 tolerance
+      // is allowed for numerical errors.
+      // Refer to picture_layer_tiling.cc for detailed analysis.
+      const float inset = loose_texel_extent_check_ ? 0 : (0.5f - 1.f / 1024.f);
       gfx::RectF texture_rect = iter.texture_rect();
-      EXPECT_GE(texture_rect.x(), 0);
-      EXPECT_GE(texture_rect.y(), 0);
-      EXPECT_LE(texture_rect.right(), client_.TileSize().width());
-      EXPECT_LE(texture_rect.bottom(), client_.TileSize().height());
+      if (iter.i())
+        EXPECT_GE(texture_rect.x(), inset);
+      if (iter.j())
+        EXPECT_GE(texture_rect.y(), inset);
+      if (iter.i() != tiling_->tiling_data()->num_tiles_x() - 1)
+        EXPECT_LE(texture_rect.right(), client_.TileSize().width() - inset);
+      if (iter.j() != tiling_->tiling_data()->num_tiles_y() - 1)
+        EXPECT_LE(texture_rect.bottom(), client_.TileSize().height() - inset);
     }
 
     // The entire rect must be filled by geometry from the tiling.
@@ -154,27 +186,19 @@ class PictureLayerTilingIteratorTest : public testing::Test {
     VerifyTilesExactlyCoverRect(rect_scale, rect, rect);
   }
 
-  void VerifyTiles(
-      float rect_scale,
-      const gfx::Rect& rect,
-      base::Callback<void(Tile* tile,
-                          const gfx::Rect& geometry_rect)> callback) {
-    VerifyTiles(tiling_.get(),
-                rect_scale,
-                rect,
-                callback);
+  void VerifyTiles(float rect_scale,
+                   const gfx::Rect& rect,
+                   VerifyTilesCallback callback) {
+    VerifyTiles(tiling_.get(), rect_scale, rect, callback);
   }
 
-  void VerifyTiles(
-      PictureLayerTiling* tiling,
-      float rect_scale,
-      const gfx::Rect& rect,
-      base::Callback<void(Tile* tile,
-                          const gfx::Rect& geometry_rect)> callback) {
+  void VerifyTiles(PictureLayerTiling* tiling,
+                   float rect_scale,
+                   const gfx::Rect& rect,
+                   VerifyTilesCallback callback) {
     Region remaining = rect;
     for (PictureLayerTiling::CoverageIterator iter(tiling, rect_scale, rect);
-         iter;
-         ++iter) {
+         iter; ++iter) {
       remaining.Subtract(iter.geometry_rect());
       callback.Run(*iter, iter.geometry_rect());
     }
@@ -183,7 +207,7 @@ class PictureLayerTilingIteratorTest : public testing::Test {
 
   void VerifyTilesCoverNonContainedRect(float rect_scale,
                                         const gfx::Rect& dest_rect) {
-    float dest_to_contents_scale = tiling_->contents_scale() / rect_scale;
+    float dest_to_contents_scale = tiling_->contents_scale_key() / rect_scale;
     gfx::Rect clamped_rect = gfx::ScaleToEnclosingRect(
         gfx::Rect(tiling_->tiling_size()), 1.f / dest_to_contents_scale);
     clamped_rect.Intersect(dest_rect);
@@ -193,6 +217,7 @@ class PictureLayerTilingIteratorTest : public testing::Test {
  protected:
   FakePictureLayerTilingClient client_;
   std::unique_ptr<TestablePictureLayerTiling> tiling_;
+  bool loose_texel_extent_check_ = false;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PictureLayerTilingIteratorTest);
@@ -379,6 +404,40 @@ TEST_F(PictureLayerTilingIteratorTest, ResizeLiveTileRectOverTileBorders) {
   EXPECT_TRUE(tiling_->TileAt(2, 0));
 }
 
+TEST_F(PictureLayerTilingIteratorTest, ShrinkWidthExpandHeightTilingRect) {
+  Initialize(gfx::Size(100, 100), 1.f, gfx::Size(450, 296));
+  EXPECT_EQ(5, tiling_->TilingDataForTesting().num_tiles_x());
+  EXPECT_EQ(3, tiling_->TilingDataForTesting().num_tiles_y());
+
+  SetLiveRectAndVerifyTiles(gfx::Rect(450, 296));
+
+  // Tiles in the rightmost column exist and tiles in the third row does
+  // not exist yet.
+  EXPECT_TRUE(tiling_->TileAt(4, 0));
+  EXPECT_TRUE(tiling_->TileAt(4, 1));
+  EXPECT_TRUE(tiling_->TileAt(4, 2));
+  EXPECT_FALSE(tiling_->TileAt(0, 3));
+  EXPECT_FALSE(tiling_->TileAt(1, 3));
+  EXPECT_FALSE(tiling_->TileAt(2, 3));
+  EXPECT_FALSE(tiling_->TileAt(3, 3));
+
+  scoped_refptr<FakeRasterSource> raster_source =
+      FakeRasterSource::CreateFilled(gfx::Size(310, 310));
+  tiling_->SetRasterSourceAndResize(raster_source);
+  EXPECT_EQ(4, tiling_->TilingDataForTesting().num_tiles_x());
+  EXPECT_EQ(4, tiling_->TilingDataForTesting().num_tiles_y());
+
+  // Tiles in the rightmost column for the original size was removed and
+  // tiles in the bottom row was created.
+  EXPECT_FALSE(tiling_->TileAt(4, 0));
+  EXPECT_FALSE(tiling_->TileAt(4, 1));
+  EXPECT_FALSE(tiling_->TileAt(4, 2));
+  EXPECT_TRUE(tiling_->TileAt(0, 3));
+  EXPECT_TRUE(tiling_->TileAt(1, 3));
+  EXPECT_TRUE(tiling_->TileAt(2, 3));
+  EXPECT_TRUE(tiling_->TileAt(3, 3));
+}
+
 TEST_F(PictureLayerTilingIteratorTest, ResizeLiveTileRectOverSameTiles) {
   // The tiling has four rows and three columns.
   Initialize(gfx::Size(100, 100), 1.f, gfx::Size(250, 350));
@@ -475,9 +534,9 @@ TEST_F(PictureLayerTilingIteratorTest, CreateTileJustCoverBorderUp) {
   scoped_refptr<FakeRasterSource> raster_source =
       FakeRasterSource::CreateFilled(layer_size);
   std::unique_ptr<TestablePictureLayerTiling> active_tiling =
-      TestablePictureLayerTiling::Create(ACTIVE_TREE, content_scale,
-                                         raster_source, &active_client,
-                                         LayerTreeSettings());
+      TestablePictureLayerTiling::Create(
+          ACTIVE_TREE, gfx::AxisTransform2d(content_scale, gfx::Vector2dF()),
+          raster_source, &active_client, LayerTreeSettings());
   active_tiling->set_resolution(HIGH_RESOLUTION);
 
   gfx::Rect invalid_rect(0, 750, 220, 100);
@@ -531,16 +590,16 @@ TEST_F(PictureLayerTilingIteratorTest, IteratorCoversLayerBoundsNoScale) {
 
 TEST_F(PictureLayerTilingIteratorTest, IteratorCoversLayerBoundsTilingScale) {
   Initialize(gfx::Size(200, 100), 2.0f, gfx::Size(1005, 2010));
-  VerifyTilesExactlyCoverRect(1, gfx::Rect());
-  VerifyTilesExactlyCoverRect(1, gfx::Rect(0, 0, 1005, 2010));
-  VerifyTilesExactlyCoverRect(1, gfx::Rect(50, 112, 512, 381));
+  VerifyTilesExactlyCoverRect(2, gfx::Rect());
+  VerifyTilesExactlyCoverRect(2, gfx::Rect(0, 0, 2010, 4020));
+  VerifyTilesExactlyCoverRect(2, gfx::Rect(100, 224, 1024, 762));
 
   Initialize(gfx::Size(3, 3), 2.0f, gfx::Size(10, 10));
-  VerifyTilesExactlyCoverRect(1, gfx::Rect());
-  VerifyTilesExactlyCoverRect(1, gfx::Rect(0, 0, 1, 1));
-  VerifyTilesExactlyCoverRect(1, gfx::Rect(0, 0, 2, 2));
-  VerifyTilesExactlyCoverRect(1, gfx::Rect(1, 1, 2, 2));
-  VerifyTilesExactlyCoverRect(1, gfx::Rect(3, 2, 5, 2));
+  VerifyTilesExactlyCoverRect(2, gfx::Rect());
+  VerifyTilesExactlyCoverRect(2, gfx::Rect(0, 0, 1, 1));
+  VerifyTilesExactlyCoverRect(2, gfx::Rect(0, 0, 2, 2));
+  VerifyTilesExactlyCoverRect(2, gfx::Rect(1, 1, 2, 2));
+  VerifyTilesExactlyCoverRect(2, gfx::Rect(3, 2, 5, 2));
 
   Initialize(gfx::Size(100, 200), 0.5f, gfx::Size(1005, 2010));
   VerifyTilesExactlyCoverRect(1, gfx::Rect(0, 0, 1005, 2010));
@@ -557,9 +616,9 @@ TEST_F(PictureLayerTilingIteratorTest, IteratorCoversLayerBoundsTilingScale) {
 
 TEST_F(PictureLayerTilingIteratorTest, IteratorCoversLayerBoundsBothScale) {
   Initialize(gfx::Size(50, 50), 4.0f, gfx::Size(800, 600));
-  VerifyTilesExactlyCoverRect(2.0f, gfx::Rect());
-  VerifyTilesExactlyCoverRect(2.0f, gfx::Rect(0, 0, 1600, 1200));
-  VerifyTilesExactlyCoverRect(2.0f, gfx::Rect(512, 365, 253, 182));
+  VerifyTilesExactlyCoverRect(4.0f, gfx::Rect());
+  VerifyTilesExactlyCoverRect(4.0f, gfx::Rect(0, 0, 3200, 2400));
+  VerifyTilesExactlyCoverRect(4.0f, gfx::Rect(1024, 730, 506, 364));
 
   float scale = 6.7f;
   gfx::Size bounds(800, 600);
@@ -588,7 +647,6 @@ TEST_F(PictureLayerTilingIteratorTest, LayerEdgeTextureCoordinates) {
   Initialize(gfx::Size(300, 300), 1.0f, gfx::Size(256, 256));
   // All of these sizes are 256x256, scaled and ceiled.
   VerifyTilesExactlyCoverRect(1.0f, gfx::Rect(0, 0, 256, 256));
-  VerifyTilesExactlyCoverRect(0.8f, gfx::Rect(0, 0, 205, 205));
   VerifyTilesExactlyCoverRect(1.2f, gfx::Rect(0, 0, 308, 308));
 }
 
@@ -598,24 +656,23 @@ TEST_F(PictureLayerTilingIteratorTest, NonContainedDestRect) {
   // Too large in all dimensions
   VerifyTilesCoverNonContainedRect(1.0f, gfx::Rect(-1000, -1000, 2000, 2000));
   VerifyTilesCoverNonContainedRect(1.5f, gfx::Rect(-1000, -1000, 2000, 2000));
-  VerifyTilesCoverNonContainedRect(0.5f, gfx::Rect(-1000, -1000, 2000, 2000));
 
   // Partially covering content, but too large
   VerifyTilesCoverNonContainedRect(1.0f, gfx::Rect(-1000, 100, 2000, 100));
   VerifyTilesCoverNonContainedRect(1.5f, gfx::Rect(-1000, 100, 2000, 100));
-  VerifyTilesCoverNonContainedRect(0.5f, gfx::Rect(-1000, 100, 2000, 100));
 }
 
 static void TileExists(bool exists, Tile* tile,
                        const gfx::Rect& geometry_rect) {
-  EXPECT_EQ(exists, tile != NULL) << geometry_rect.ToString();
+  EXPECT_EQ(exists, tile != nullptr) << geometry_rect.ToString();
 }
 
 TEST_F(PictureLayerTilingIteratorTest, TilesExist) {
   gfx::Size layer_bounds(1099, 801);
   Initialize(gfx::Size(100, 100), 1.f, layer_bounds);
   VerifyTilesExactlyCoverRect(1.f, gfx::Rect(layer_bounds));
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, false));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, false));
 
   tiling_->ComputeTilePriorityRects(
       gfx::Rect(layer_bounds),  // visible rect
@@ -624,19 +681,22 @@ TEST_F(PictureLayerTilingIteratorTest, TilesExist) {
       gfx::Rect(layer_bounds),  // eventually rect
       1.f,                      // current contents scale
       Occlusion());
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, true));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, true));
 
   // Make the viewport rect empty. All tiles are killed and become zombies.
   tiling_->ComputeTilePriorityRects(gfx::Rect(), gfx::Rect(), gfx::Rect(),
                                     gfx::Rect(), 1.f, Occlusion());
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, false));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, false));
 }
 
 TEST_F(PictureLayerTilingIteratorTest, TilesExistGiantViewport) {
   gfx::Size layer_bounds(1099, 801);
   Initialize(gfx::Size(100, 100), 1.f, layer_bounds);
   VerifyTilesExactlyCoverRect(1.f, gfx::Rect(layer_bounds));
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, false));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, false));
 
   gfx::Rect giant_rect(-10000000, -10000000, 1000000000, 1000000000);
 
@@ -647,19 +707,22 @@ TEST_F(PictureLayerTilingIteratorTest, TilesExistGiantViewport) {
       gfx::Rect(layer_bounds),  // eventually rect
       1.f,                      // current contents scale
       Occlusion());
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, true));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, true));
 
   // If the visible content rect is huge, we should still have live tiles.
   tiling_->ComputeTilePriorityRects(giant_rect, giant_rect, giant_rect,
                                     giant_rect, 1.f, Occlusion());
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, true));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, true));
 }
 
 TEST_F(PictureLayerTilingIteratorTest, TilesExistOutsideViewport) {
   gfx::Size layer_bounds(1099, 801);
   Initialize(gfx::Size(100, 100), 1.f, layer_bounds);
   VerifyTilesExactlyCoverRect(1.f, gfx::Rect(layer_bounds));
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, false));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, false));
 
   // This rect does not intersect with the layer, as the layer is outside the
   // viewport.
@@ -672,7 +735,8 @@ TEST_F(PictureLayerTilingIteratorTest, TilesExistOutsideViewport) {
                         -settings.tiling_interest_area_padding);
   tiling_->ComputeTilePriorityRects(viewport_rect, viewport_rect, viewport_rect,
                                     eventually_rect, 1.f, Occlusion());
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, true));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, true));
 }
 
 static void TilesIntersectingRectExist(const gfx::Rect& rect,
@@ -681,7 +745,7 @@ static void TilesIntersectingRectExist(const gfx::Rect& rect,
                                        const gfx::Rect& geometry_rect) {
   bool intersects = rect.Intersects(geometry_rect);
   bool expected_exists = intersect_exists ? intersects : !intersects;
-  EXPECT_EQ(expected_exists, tile != NULL)
+  EXPECT_EQ(expected_exists, tile != nullptr)
       << "Rects intersecting " << rect.ToString() << " should exist. "
       << "Current tile rect is " << geometry_rect.ToString();
 }
@@ -695,11 +759,12 @@ TEST_F(PictureLayerTilingIteratorTest,
 
   scoped_refptr<FakeRasterSource> raster_source =
       FakeRasterSource::CreateFilled(layer_bounds);
-  tiling_ = TestablePictureLayerTiling::Create(PENDING_TREE, 1.f, raster_source,
-                                               &client_, settings);
+  tiling_ = TestablePictureLayerTiling::Create(
+      PENDING_TREE, gfx::AxisTransform2d(), raster_source, &client_, settings);
   tiling_->set_resolution(HIGH_RESOLUTION);
   VerifyTilesExactlyCoverRect(1.f, gfx::Rect(layer_bounds));
-  VerifyTiles(1.f, gfx::Rect(layer_bounds), base::Bind(&TileExists, false));
+  VerifyTiles(1.f, gfx::Rect(layer_bounds),
+              base::BindRepeating(&TileExists, false));
 
   gfx::Rect visible_rect(8000, 8000, 50, 50);
 
@@ -709,9 +774,9 @@ TEST_F(PictureLayerTilingIteratorTest,
                                     visible_rect,  // eventually rect
                                     1.f,           // current contents scale
                                     Occlusion());
-  VerifyTiles(1.f,
-              gfx::Rect(layer_bounds),
-              base::Bind(&TilesIntersectingRectExist, visible_rect, true));
+  VerifyTiles(
+      1.f, gfx::Rect(layer_bounds),
+      base::BindRepeating(&TilesIntersectingRectExist, visible_rect, true));
 }
 
 TEST(ComputeTilePriorityRectsTest, VisibleTiles) {
@@ -720,7 +785,6 @@ TEST(ComputeTilePriorityRectsTest, VisibleTiles) {
   FakePictureLayerTilingClient client;
 
   gfx::Size device_viewport(800, 600);
-  gfx::Size last_layer_bounds(200, 200);
   gfx::Size current_layer_bounds(200, 200);
   float current_layer_contents_scale = 1.f;
   gfx::Transform current_screen_transform;
@@ -733,8 +797,9 @@ TEST(ComputeTilePriorityRectsTest, VisibleTiles) {
   scoped_refptr<FakeRasterSource> raster_source =
       FakeRasterSource::CreateFilled(current_layer_bounds);
   std::unique_ptr<TestablePictureLayerTiling> tiling =
-      TestablePictureLayerTiling::Create(ACTIVE_TREE, 1.0f, raster_source,
-                                         &client, LayerTreeSettings());
+      TestablePictureLayerTiling::Create(ACTIVE_TREE, gfx::AxisTransform2d(),
+                                         raster_source, &client,
+                                         LayerTreeSettings());
   tiling->set_resolution(HIGH_RESOLUTION);
 
   LayerTreeSettings settings;
@@ -774,7 +839,6 @@ TEST(ComputeTilePriorityRectsTest, OffscreenTiles) {
   FakePictureLayerTilingClient client;
 
   gfx::Size device_viewport(800, 600);
-  gfx::Size last_layer_bounds(200, 200);
   gfx::Size current_layer_bounds(200, 200);
   float current_layer_contents_scale = 1.f;
   gfx::Transform last_screen_transform;
@@ -791,8 +855,9 @@ TEST(ComputeTilePriorityRectsTest, OffscreenTiles) {
   scoped_refptr<FakeRasterSource> raster_source =
       FakeRasterSource::CreateFilled(current_layer_bounds);
   std::unique_ptr<TestablePictureLayerTiling> tiling =
-      TestablePictureLayerTiling::Create(ACTIVE_TREE, 1.0f, raster_source,
-                                         &client, LayerTreeSettings());
+      TestablePictureLayerTiling::Create(ACTIVE_TREE, gfx::AxisTransform2d(),
+                                         raster_source, &client,
+                                         LayerTreeSettings());
   tiling->set_resolution(HIGH_RESOLUTION);
 
   LayerTreeSettings settings;
@@ -842,7 +907,6 @@ TEST(ComputeTilePriorityRectsTest, PartiallyOffscreenLayer) {
   FakePictureLayerTilingClient client;
 
   gfx::Size device_viewport(800, 600);
-  gfx::Size last_layer_bounds(200, 200);
   gfx::Size current_layer_bounds(200, 200);
   float current_layer_contents_scale = 1.f;
   gfx::Transform last_screen_transform;
@@ -859,8 +923,9 @@ TEST(ComputeTilePriorityRectsTest, PartiallyOffscreenLayer) {
   scoped_refptr<FakeRasterSource> raster_source =
       FakeRasterSource::CreateFilled(current_layer_bounds);
   std::unique_ptr<TestablePictureLayerTiling> tiling =
-      TestablePictureLayerTiling::Create(ACTIVE_TREE, 1.0f, raster_source,
-                                         &client, LayerTreeSettings());
+      TestablePictureLayerTiling::Create(ACTIVE_TREE, gfx::AxisTransform2d(),
+                                         raster_source, &client,
+                                         LayerTreeSettings());
   tiling->set_resolution(HIGH_RESOLUTION);
 
   LayerTreeSettings settings;
@@ -901,8 +966,9 @@ TEST(PictureLayerTilingTest, RecycledTilesClearedOnReset) {
   scoped_refptr<FakeRasterSource> raster_source =
       FakeRasterSource::CreateFilled(gfx::Size(100, 100));
   std::unique_ptr<TestablePictureLayerTiling> active_tiling =
-      TestablePictureLayerTiling::Create(ACTIVE_TREE, 1.0f, raster_source,
-                                         &active_client, LayerTreeSettings());
+      TestablePictureLayerTiling::Create(ACTIVE_TREE, gfx::AxisTransform2d(),
+                                         raster_source, &active_client,
+                                         LayerTreeSettings());
   active_tiling->set_resolution(HIGH_RESOLUTION);
   // Create all tiles on this tiling.
   gfx::Rect visible_rect = gfx::Rect(0, 0, 100, 100);
@@ -917,8 +983,9 @@ TEST(PictureLayerTilingTest, RecycledTilesClearedOnReset) {
 
   raster_source = FakeRasterSource::CreateFilled(gfx::Size(100, 100));
   std::unique_ptr<TestablePictureLayerTiling> recycle_tiling =
-      TestablePictureLayerTiling::Create(PENDING_TREE, 1.0f, raster_source,
-                                         &recycle_client, settings);
+      TestablePictureLayerTiling::Create(PENDING_TREE, gfx::AxisTransform2d(),
+                                         raster_source, &recycle_client,
+                                         settings);
   recycle_tiling->set_resolution(HIGH_RESOLUTION);
 
   // Create all tiles on the recycle tiling.
@@ -927,8 +994,8 @@ TEST(PictureLayerTilingTest, RecycledTilesClearedOnReset) {
                                            Occlusion());
 
   // Set the second tiling as recycled.
-  active_client.set_twin_tiling(NULL);
-  recycle_client.set_twin_tiling(NULL);
+  active_client.set_twin_tiling(nullptr);
+  recycle_client.set_twin_tiling(nullptr);
 
   EXPECT_TRUE(active_tiling->TileAt(0, 0));
   EXPECT_FALSE(recycle_tiling->TileAt(0, 0));
@@ -937,6 +1004,50 @@ TEST(PictureLayerTilingTest, RecycledTilesClearedOnReset) {
   active_tiling->Reset();
   EXPECT_FALSE(active_tiling->TileAt(0, 0));
   EXPECT_FALSE(recycle_tiling->TileAt(0, 0));
+}
+
+TEST(PictureLayerTilingTest, EdgeCaseTileNowAndRequired) {
+  FakePictureLayerTilingClient pending_client;
+  pending_client.SetTileSize(gfx::Size(100, 100));
+
+  scoped_refptr<FakeRasterSource> raster_source =
+      FakeRasterSource::CreateFilled(gfx::Size(500, 500));
+  std::unique_ptr<TestablePictureLayerTiling> pending_tiling =
+      TestablePictureLayerTiling::Create(PENDING_TREE, gfx::AxisTransform2d(),
+                                         raster_source, &pending_client,
+                                         LayerTreeSettings());
+  pending_tiling->set_resolution(HIGH_RESOLUTION);
+  pending_tiling->set_can_require_tiles_for_activation(true);
+
+  // The tile at (1, 0) should be touching the visible rect, but not
+  // intersecting it.
+  gfx::Rect visible_rect = gfx::Rect(0, 0, 99, 99);
+  gfx::Rect eventually_rect = gfx::Rect(0, 0, 500, 500);
+  pending_tiling->ComputeTilePriorityRects(visible_rect, visible_rect,
+                                           visible_rect, eventually_rect, 1.f,
+                                           Occlusion());
+
+  Tile* tile = pending_tiling->TileAt(1, 0);
+  EXPECT_NE(pending_tiling->visible_rect_type(),
+            pending_tiling->ComputePriorityRectTypeForTile(tile));
+  EXPECT_FALSE(pending_tiling->IsTileRequiredForActivation(tile));
+  EXPECT_TRUE(tile->content_rect().Intersects(visible_rect));
+  EXPECT_FALSE(pending_tiling->tiling_data()
+                   ->TileBounds(tile->tiling_i_index(), tile->tiling_j_index())
+                   .Intersects(visible_rect));
+
+  // Now the tile at (1, 0) should be intersecting the visible rect.
+  visible_rect = gfx::Rect(0, 0, 100, 100);
+  pending_tiling->ComputeTilePriorityRects(visible_rect, visible_rect,
+                                           visible_rect, eventually_rect, 1.f,
+                                           Occlusion());
+  EXPECT_EQ(pending_tiling->visible_rect_type(),
+            pending_tiling->ComputePriorityRectTypeForTile(tile));
+  EXPECT_TRUE(pending_tiling->IsTileRequiredForActivation(tile));
+  EXPECT_TRUE(tile->content_rect().Intersects(visible_rect));
+  EXPECT_TRUE(pending_tiling->tiling_data()
+                  ->TileBounds(tile->tiling_i_index(), tile->tiling_j_index())
+                  .Intersects(visible_rect));
 }
 
 TEST_F(PictureLayerTilingIteratorTest, ResizeTilesAndUpdateToCurrent) {
@@ -966,6 +1077,8 @@ TEST_F(PictureLayerTilingIteratorTest, ResizeTilesAndUpdateToCurrent) {
 
 // This test runs into floating point issues because of big numbers.
 TEST_F(PictureLayerTilingIteratorTest, GiantRect) {
+  loose_texel_extent_check_ = true;
+
   gfx::Size tile_size(256, 256);
   gfx::Size layer_size(33554432, 33554432);
   float contents_scale = 1.f;
@@ -973,12 +1086,232 @@ TEST_F(PictureLayerTilingIteratorTest, GiantRect) {
   client_.SetTileSize(tile_size);
   scoped_refptr<FakeRasterSource> raster_source =
       FakeRasterSource::CreateEmpty(layer_size);
-  tiling_ = TestablePictureLayerTiling::Create(PENDING_TREE, contents_scale,
-                                               raster_source, &client_,
-                                               LayerTreeSettings());
+  tiling_ = TestablePictureLayerTiling::Create(
+      PENDING_TREE, gfx::AxisTransform2d(contents_scale, gfx::Vector2dF()),
+      raster_source, &client_, LayerTreeSettings());
 
   gfx::Rect content_rect(25554432, 25554432, 950, 860);
   VerifyTilesExactlyCoverRect(contents_scale, content_rect);
+}
+
+TEST_F(PictureLayerTilingIteratorTest, QuadShouldNotUseLastHalfTexel) {
+  Initialize(gfx::Size(100, 100), 1.f, gfx::Size(198, 198));
+  // Creates a situation that tile bounds get rounded up by almost 1px in the
+  // dest space. This test verifies that even in such situation the coverage
+  // iterator won't generate a texture rect that can potentially get clamped.
+  VerifyTilesExactlyCoverRect(1.000005f, gfx::Rect(199, 199));
+}
+
+static void TileHasGeometryRect(const gfx::Rect& expected_rect,
+                                Tile* tile,
+                                const gfx::Rect& geometry_rect) {
+  EXPECT_EQ(expected_rect, geometry_rect);
+}
+
+TEST_F(PictureLayerTilingIteratorTest, UseLeastTilesToCover) {
+  // This test verifies that when a dest pixel can be covered by more than
+  // one tiles, least number of tiles gets emitted.
+  Initialize(gfx::Size(100, 100), 1.f, gfx::Size(1000, 1000));
+  gfx::RectF overlaped =
+      gfx::ScaleRect(gfx::RectF(198.f, 198.f, 1.f, 1.f), 1.f / 2.f);
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(0, 0).Contains(overlaped));
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(1, 0).Contains(overlaped));
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(0, 1).Contains(overlaped));
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(1, 1).Contains(overlaped));
+  VerifyTilesExactlyCoverRect(2.f, gfx::Rect(199, 199));
+  VerifyTiles(2.f, gfx::Rect(199, 199),
+              base::BindRepeating(&TileHasGeometryRect, gfx::Rect(199, 199)));
+}
+
+TEST_F(PictureLayerTilingIteratorTest, UseLeastTilesToCover2) {
+  // Similar to above test, but with an internal tile.
+  Initialize(gfx::Size(100, 100), 1.f, gfx::Size(1000, 1000));
+  gfx::RectF overlaped =
+      gfx::ScaleRect(gfx::RectF(197.f, 393.f, 1.f, 1.f), 1.f / 2.f);
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(0, 1).Contains(overlaped));
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(1, 1).Contains(overlaped));
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(0, 2).Contains(overlaped));
+  ASSERT_TRUE(tiling_->tiling_data()->TexelExtent(1, 2).Contains(overlaped));
+  gfx::Rect dest_rect(197, 393, 198, 198);
+  VerifyTilesExactlyCoverRect(2.f, dest_rect);
+  VerifyTiles(2.f, dest_rect,
+              base::BindRepeating(&TileHasGeometryRect, dest_rect));
+}
+
+TEST_F(PictureLayerTilingIteratorTest, TightCover) {
+  // This test verifies that the whole dest rect is still fully covered when
+  // numerical condition is tight.
+  // In this test, the right edge of tile #37 almost (but failed to) covered
+  // grid line x = 9654. Tile #38 needs to reach hard to x = 9653 to make up
+  // for this.
+  Initialize(gfx::Size(256, 256), 1.f, gfx::Size(10000, 1));
+  float dest_scale = 16778082.f / 16777216.f;  // 0b1.00000000 00000011 01100010
+  VerifyTilesExactlyCoverRect(dest_scale, gfx::Rect(10001, 2));
+}
+
+TEST_F(PictureLayerTilingIteratorTest, TightCover2) {
+  // In this test, the left edge of tile #38 almost (but failed to) covered
+  // grid line x = 9653. Tile #37 needs to reach hard to x = 9654 to make up
+  // for this.
+  Initialize(gfx::Size(256, 256), 1.f, gfx::Size(10000, 1));
+  float dest_scale = 16778088.f / 16777216.f;  // 0b1.00000000 00000011 01101000
+  VerifyTilesExactlyCoverRect(dest_scale, gfx::Rect(10001, 2));
+}
+
+TEST_F(PictureLayerTilingIteratorTest, TilesStoreTilings) {
+  gfx::Size bounds(200, 200);
+  Initialize(gfx::Size(100, 100), 1.f, bounds);
+  SetLiveRectAndVerifyTiles(gfx::Rect(bounds));
+
+  // Get all tiles and ensure they are associated with |tiling_|.
+  std::vector<Tile*> tiles = tiling_->AllTilesForTesting();
+  EXPECT_TRUE(tiles.size());
+  for (const auto* tile : tiles) {
+    EXPECT_EQ(tile->tiling(), tiling_.get());
+  }
+
+  // Create an active tiling, transfer tiles to that tiling, and ensure that
+  // the tiles have their tiling updated.
+  scoped_refptr<FakeRasterSource> raster_source =
+      FakeRasterSource::CreateFilled(bounds);
+  auto active_tiling = TestablePictureLayerTiling::Create(
+      ACTIVE_TREE, gfx::AxisTransform2d(), raster_source, &client_,
+      LayerTreeSettings());
+  active_tiling->set_resolution(HIGH_RESOLUTION);
+
+  active_tiling->TakeTilesAndPropertiesFrom(tiling_.get(),
+                                            Region(gfx::Rect(bounds)));
+  for (const auto* tile : tiles) {
+    EXPECT_EQ(tile->tiling(), active_tiling.get());
+  }
+}
+
+TEST_F(PictureLayerTilingIteratorTest, FractionalTranslatedTiling) {
+  InitializeWithTranslation(
+      gfx::Size(256, 256),
+      gfx::AxisTransform2d(1.f, gfx::Vector2dF(0.125f, 0.125f)),
+      gfx::Size(1000, 1));
+  EXPECT_EQ(tiling_->tiling_size(), gfx::Size(1001, 2));
+  SetLiveRectAndVerifyTiles(gfx::Rect(1000, 1));
+
+  // Verifies the texture coordinate is correctly translated.
+  for (PictureLayerTiling::CoverageIterator iter(tiling_.get(), 1.f,
+                                                 gfx::Rect(1000, 1));
+       iter; ++iter) {
+    gfx::Rect geometry_rect = iter.geometry_rect();
+    gfx::RectF texture_rect = iter.texture_rect();
+    if (geometry_rect == gfx::Rect(0, 0, 255, 1)) {
+      EXPECT_EQ(gfx::RectF(0.125f, 0.125f, 255.f, 1.f), texture_rect);
+    } else if (geometry_rect == gfx::Rect(255, 0, 254, 1)) {
+      EXPECT_EQ(gfx::RectF(1.125f, 0.125f, 254.f, 1.f), texture_rect);
+    } else if (geometry_rect == gfx::Rect(509, 0, 254, 1)) {
+      EXPECT_EQ(gfx::RectF(1.125f, 0.125f, 254.f, 1.f), texture_rect);
+    } else {
+      EXPECT_EQ(gfx::Rect(763, 0, 237, 1), geometry_rect);
+      EXPECT_EQ(gfx::RectF(1.125f, 0.125f, 237.f, 1.f), texture_rect);
+    }
+  }
+
+  // Similar to above, with a different coverage scale.
+  for (PictureLayerTiling::CoverageIterator iter(tiling_.get(), 1.375f,
+                                                 gfx::Rect(1375, 2));
+       iter; ++iter) {
+    gfx::Rect geometry_rect = iter.geometry_rect();
+    gfx::RectF texture_rect = iter.texture_rect();
+    if (geometry_rect == gfx::Rect(0, 0, 351, 2)) {
+      gfx::RectF expectation(geometry_rect);
+      expectation.Scale(1.f / 1.375f);
+      expectation.Offset(0.125f, 0.125f);
+      EXPECT_FLOAT_EQ(expectation.x(), texture_rect.x());
+      EXPECT_FLOAT_EQ(expectation.y(), texture_rect.y());
+      EXPECT_FLOAT_EQ(expectation.width(), texture_rect.width());
+      EXPECT_FLOAT_EQ(expectation.height(), texture_rect.height());
+    } else if (geometry_rect == gfx::Rect(351, 0, 349, 2)) {
+      gfx::RectF expectation(geometry_rect);
+      expectation.Scale(1.f / 1.375f);
+      expectation.Offset(0.125f - 254.f, 0.125f);
+      EXPECT_FLOAT_EQ(expectation.x(), texture_rect.x());
+      EXPECT_FLOAT_EQ(expectation.y(), texture_rect.y());
+      EXPECT_FLOAT_EQ(expectation.width(), texture_rect.width());
+      EXPECT_FLOAT_EQ(expectation.height(), texture_rect.height());
+    } else if (geometry_rect == gfx::Rect(700, 0, 349, 2)) {
+      gfx::RectF expectation(geometry_rect);
+      expectation.Scale(1.f / 1.375f);
+      expectation.Offset(0.125f - 254.f * 2.f, 0.125f);
+      EXPECT_FLOAT_EQ(expectation.x(), texture_rect.x());
+      EXPECT_FLOAT_EQ(expectation.y(), texture_rect.y());
+      EXPECT_FLOAT_EQ(expectation.width(), texture_rect.width());
+      EXPECT_FLOAT_EQ(expectation.height(), texture_rect.height());
+    } else {
+      EXPECT_EQ(gfx::Rect(1049, 0, 326, 2), geometry_rect);
+      gfx::RectF expectation(geometry_rect);
+      expectation.Scale(1.f / 1.375f);
+      expectation.Offset(0.125f - 254.f * 3.f, 0.125f);
+      EXPECT_FLOAT_EQ(expectation.x(), texture_rect.x());
+      EXPECT_FLOAT_EQ(expectation.y(), texture_rect.y());
+      EXPECT_FLOAT_EQ(expectation.width(), texture_rect.width());
+      EXPECT_FLOAT_EQ(expectation.height(), texture_rect.height());
+    }
+  }
+}
+
+TEST_F(PictureLayerTilingIteratorTest, FractionalTranslatedTilingOverflow) {
+  // This tests a corner case where the coverage rect is slightly greater
+  // than the layer rect due to rounding up, and the bottom right edge of
+  // the tiling coincide with actual layer bound. That is, the requested
+  // coverage rect slightly exceed the valid extent, but we still return
+  // full coverage as a special case for external edges.
+
+  // The layer bounds is (9, 9), which after scale and translation
+  // becomes (l=0.5, t=0.5, r=14, b=14) in the contents space.
+  InitializeWithTranslation(
+      gfx::Size(256, 256),
+      gfx::AxisTransform2d(1.5f, gfx::Vector2dF(0.5f, 0.5f)), gfx::Size(9, 9));
+  EXPECT_EQ(tiling_->tiling_size(), gfx::Size(14, 14));
+  SetLiveRectAndVerifyTiles(gfx::Rect(9, 9));
+
+  PictureLayerTiling::CoverageIterator iter(tiling_.get(), 1.56f,
+                                            gfx::Rect(15, 15));
+  ASSERT_TRUE(iter);
+  gfx::Rect geometry_rect = iter.geometry_rect();
+  gfx::RectF texture_rect = iter.texture_rect();
+  EXPECT_EQ(gfx::Rect(0, 0, 15, 15), geometry_rect);
+  gfx::RectF expectation(geometry_rect);
+  expectation.Scale(1.5f / 1.56f);
+  expectation.Offset(0.5f, 0.5f);
+  EXPECT_FLOAT_EQ(expectation.x(), texture_rect.x());
+  EXPECT_FLOAT_EQ(expectation.y(), texture_rect.y());
+  EXPECT_FLOAT_EQ(expectation.width(), texture_rect.width());
+  EXPECT_FLOAT_EQ(expectation.height(), texture_rect.height());
+
+  EXPECT_FALSE(++iter);
+}
+
+TEST_F(PictureLayerTilingIteratorTest, EdgeCaseLargeIntBounds) {
+  gfx::Size tile_size(256, 256);
+  float scale = 7352.331055f;
+  gfx::Size layer_bounds(292082, 26910);
+  gfx::Rect coverage_rect(2104641536, 522015, 29440, 66172);
+  Initialize(tile_size, scale, layer_bounds);
+  int count = 0;
+  for (PictureLayerTiling::CoverageIterator
+           iter(tiling_.get(), scale, coverage_rect);
+       iter && count < 200; ++count, ++iter) {
+    EXPECT_FALSE(iter.geometry_rect().IsEmpty());
+  }
+}
+
+TEST_F(PictureLayerTilingIteratorTest, EdgeCaseLargeIntBounds2) {
+  gfx::Size tile_size(256, 256);
+  float scale = 7352.331055f;
+  gfx::Size layer_bounds(292082, 26910);
+  gfx::Rect coverage_rect(2104670720, 522015, 192, 1);
+  Initialize(tile_size, scale, layer_bounds);
+  for (PictureLayerTiling::CoverageIterator iter(tiling_.get(), scale,
+                                                 coverage_rect);
+       iter; ++iter) {
+    EXPECT_FALSE(iter.geometry_rect().IsEmpty());
+  }
 }
 
 }  // namespace

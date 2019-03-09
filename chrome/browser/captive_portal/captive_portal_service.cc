@@ -7,8 +7,7 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/time/tick_clock.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
@@ -16,7 +15,10 @@
 #include "chrome/common/pref_names.h"
 #include "components/captive_portal/captive_portal_types.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
+#include "content/public/browser/storage_partition.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 #if defined(OS_WIN)
 #include "base/win/windows_version.h"
@@ -90,7 +92,7 @@ void RecordRepeatHistograms(CaptivePortalResult result,
   result_duration_histogram->AddTime(result_duration);
 }
 
-int GetHistogramEntryForDetectionResult(
+CaptivePortalDetectionResult GetHistogramEntryForDetectionResult(
     const captive_portal::CaptivePortalDetector::Results& results) {
   bool is_https = results.landing_url.SchemeIs("https");
   bool is_ip = results.landing_url.HostIsIPAddress();
@@ -117,7 +119,7 @@ int GetHistogramEntryForDetectionResult(
           DETECTION_RESULT_BEHIND_CAPTIVE_PORTAL;
     default:
       NOTREACHED();
-      return -1;
+      return DETECTION_RESULT_COUNT;
   }
 }
 
@@ -167,20 +169,30 @@ CaptivePortalService::RecheckPolicy::RecheckPolicy()
   backoff_policy.always_use_initial_delay = true;
 }
 
-CaptivePortalService::CaptivePortalService(Profile* profile)
-    : CaptivePortalService(profile, nullptr) {
-}
-
-CaptivePortalService::CaptivePortalService(Profile* profile,
-                                           base::TickClock* clock_for_testing)
+CaptivePortalService::CaptivePortalService(
+    Profile* profile,
+    const base::TickClock* clock_for_testing,
+    network::mojom::URLLoaderFactory* loader_factory_for_testing)
     : profile_(profile),
       state_(STATE_IDLE),
-      captive_portal_detector_(profile->GetRequestContext()),
       enabled_(false),
       last_detection_result_(captive_portal::RESULT_INTERNET_CONNECTED),
       num_checks_with_same_result_(0),
       test_url_(captive_portal::CaptivePortalDetector::kDefaultURL),
       tick_clock_for_testing_(clock_for_testing) {
+  network::mojom::URLLoaderFactory* loader_factory;
+  if (loader_factory_for_testing) {
+    loader_factory = loader_factory_for_testing;
+  } else {
+    shared_url_loader_factory_ =
+        content::BrowserContext::GetDefaultStoragePartition(profile)
+            ->GetURLLoaderFactoryForBrowserProcess();
+    loader_factory = shared_url_loader_factory_.get();
+  }
+  captive_portal_detector_ =
+      std::make_unique<captive_portal::CaptivePortalDetector>(loader_factory);
+
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   // The order matters here:
   // |resolve_errors_with_web_service_| must be initialized and |backoff_entry_|
   // created before the call to UpdateEnabledState.
@@ -195,10 +207,11 @@ CaptivePortalService::CaptivePortalService(Profile* profile,
 }
 
 CaptivePortalService::~CaptivePortalService() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 }
 
 void CaptivePortalService::DetectCaptivePortal() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   // Detection should be disabled only in tests.
   if (testing_state_ == IGNORE_REQUESTS_FOR_TESTING)
@@ -220,7 +233,7 @@ void CaptivePortalService::DetectCaptivePortal() {
 }
 
 void CaptivePortalService::DetectCaptivePortalInternal() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(state_ == STATE_TIMER_RUNNING || state_ == STATE_IDLE);
   DCHECK(!TimerRunning());
 
@@ -235,15 +248,44 @@ void CaptivePortalService::DetectCaptivePortalInternal() {
     return;
   }
 
-  captive_portal_detector_.DetectCaptivePortal(
-      test_url_, base::Bind(
-          &CaptivePortalService::OnPortalDetectionCompleted,
-          base::Unretained(this)));
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("captive_portal_service", R"(
+        semantics {
+          sender: "Captive Portal Service"
+          description:
+            "Checks if the system is behind a captive portal. To do so, makes"
+            "an unlogged, dataless connection to a Google server and checks"
+            "the response."
+          trigger:
+            "It is triggered on multiple cases: It is run on certain SSL "
+            "errors (ERR_CONNECTION_TIMED_OUT, ERR_SSL_PROTOCOL_ERROR, and all "
+            "SSL interstitials)."
+          data: "None."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "Users can enable/disable this feature by toggling 'Use a web "
+            "service to resolve network errors' in Chromium settings under "
+            "Privacy. This feature is enabled by default."
+          chrome_policy {
+            AlternateErrorPagesEnabled {
+              policy_options {mode: MANDATORY}
+              AlternateErrorPagesEnabled: false
+            }
+          }
+        })");
+  captive_portal_detector_->DetectCaptivePortal(
+      test_url_,
+      base::BindOnce(&CaptivePortalService::OnPortalDetectionCompleted,
+                     base::Unretained(this)),
+      traffic_annotation);
 }
 
 void CaptivePortalService::OnPortalDetectionCompleted(
     const captive_portal::CaptivePortalDetector::Results& results) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK_EQ(STATE_CHECKING_FOR_PORTAL, state_);
   DCHECK(!TimerRunning());
   DCHECK(enabled_);
@@ -301,7 +343,7 @@ void CaptivePortalService::OnPortalDetectionCompleted(
 }
 
 void CaptivePortalService::Shutdown() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (enabled_) {
     RecordRepeatHistograms(
         last_detection_result_,
@@ -343,7 +385,7 @@ void CaptivePortalService::ResetBackoffEntry(CaptivePortalResult result) {
 }
 
 void CaptivePortalService::UpdateEnabledState() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   bool enabled_before = enabled_;
   enabled_ = testing_state_ != DISABLED_FOR_TESTING &&
              resolve_errors_with_web_service_.GetValue();
@@ -368,7 +410,7 @@ void CaptivePortalService::UpdateEnabledState() {
     // If a captive portal check was running or pending, cancel check
     // and the timer.
     check_captive_portal_timer_.Stop();
-    captive_portal_detector_.Cancel();
+    captive_portal_detector_->Cancel();
     state_ = STATE_IDLE;
 
     // Since a captive portal request was queued or running, something may be
@@ -380,8 +422,7 @@ void CaptivePortalService::UpdateEnabledState() {
 base::TimeTicks CaptivePortalService::GetCurrentTimeTicks() const {
   if (tick_clock_for_testing_)
     return tick_clock_for_testing_->NowTicks();
-  else
-    return base::TimeTicks::Now();
+  return base::TimeTicks::Now();
 }
 
 bool CaptivePortalService::DetectionInProgress() const {

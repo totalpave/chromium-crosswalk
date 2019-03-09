@@ -2,17 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <stdint.h>
+
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/test/test_mock_time_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "cc/output/begin_frame_args.h"
-#include "cc/test/begin_frame_args_test.h"
+#include "base/time/time.h"
+#include "components/viz/common/frame_sinks/begin_frame_args.h"
+#include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
+#include "components/viz/service/surfaces/surface_manager.h"
+#include "components/viz/test/begin_frame_args_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/test/context_factories_for_test.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
+#include "ui/compositor/test/in_process_context_factory.h"
 
 using testing::Mock;
 using testing::_;
@@ -20,73 +29,121 @@ using testing::_;
 namespace ui {
 namespace {
 
-ACTION_P2(RemoveObserver, compositor, observer) {
-  compositor->RemoveBeginFrameObserver(observer);
-}
-
-// Test fixture for tests that require a ui::Compositor with a real task
-// runner.
 class CompositorTest : public testing::Test {
  public:
   CompositorTest() {}
   ~CompositorTest() override {}
 
   void SetUp() override {
-    task_runner_ = base::ThreadTaskRunnerHandle::Get();
+    ui::ContextFactory* context_factory = nullptr;
+    ui::ContextFactoryPrivate* context_factory_private = nullptr;
+    ui::InitializeContextFactoryForTests(false, &context_factory,
+                                         &context_factory_private);
 
-    ui::ContextFactory* context_factory =
-        ui::InitializeContextFactoryForTests(false);
-
-    compositor_.reset(new ui::Compositor(context_factory, task_runner_));
+    compositor_.reset(new ui::Compositor(
+        context_factory_private->AllocateFrameSinkId(), context_factory,
+        context_factory_private, CreateTaskRunner(),
+        false /* enable_pixel_canvas */));
     compositor_->SetAcceleratedWidget(gfx::kNullAcceleratedWidget);
   }
+
   void TearDown() override {
     compositor_.reset();
     ui::TerminateContextFactoryForTests();
   }
 
+  void DestroyCompositor() { compositor_.reset(); }
+
  protected:
-  base::SingleThreadTaskRunner* task_runner() { return task_runner_.get(); }
+  virtual scoped_refptr<base::SingleThreadTaskRunner> CreateTaskRunner() = 0;
+
   ui::Compositor* compositor() { return compositor_.get(); }
 
  private:
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   std::unique_ptr<ui::Compositor> compositor_;
 
   DISALLOW_COPY_AND_ASSIGN(CompositorTest);
 };
 
+// For tests that control time.
+class CompositorTestWithMockedTime : public CompositorTest {
+ protected:
+  scoped_refptr<base::SingleThreadTaskRunner> CreateTaskRunner() override {
+    task_runner_ = new base::TestMockTimeTaskRunner;
+    return task_runner_;
+  }
+
+  base::TestMockTimeTaskRunner* task_runner() { return task_runner_.get(); }
+
+ protected:
+  scoped_refptr<base::TestMockTimeTaskRunner> task_runner_;
+};
+
+// For tests that run on a real MessageLoop with real time.
+class CompositorTestWithMessageLoop : public CompositorTest {
+ public:
+  CompositorTestWithMessageLoop()
+      : scoped_task_environment_(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI) {}
+  ~CompositorTestWithMessageLoop() override = default;
+
+ protected:
+  scoped_refptr<base::SingleThreadTaskRunner> CreateTaskRunner() override {
+    task_runner_ = base::ThreadTaskRunnerHandle::Get();
+    return task_runner_;
+  }
+
+  base::SequencedTaskRunner* task_runner() { return task_runner_.get(); }
+
+ private:
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+};
+
 }  // namespace
 
-TEST_F(CompositorTest, LocksTimeOut) {
-  scoped_refptr<ui::CompositorLock> lock;
-  {
-    base::RunLoop run_loop;
-    // Ensure that the lock times out by default.
-    lock = compositor()->GetCompositorLock();
-    EXPECT_TRUE(compositor()->IsLocked());
-    task_runner()->PostDelayedTask(
-        FROM_HERE, run_loop.QuitClosure(),
-        base::TimeDelta::FromMilliseconds(kCompositorLockTimeoutMs));
-    run_loop.Run();
-    EXPECT_FALSE(compositor()->IsLocked());
-  }
+TEST_F(CompositorTestWithMessageLoop, OutputColorMatrix) {
+  auto root_layer = std::make_unique<Layer>(ui::LAYER_SOLID_COLOR);
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  root_layer->SetBounds(gfx::Rect(10, 10));
+  compositor()->SetRootLayer(root_layer.get());
+  compositor()->SetScaleAndSize(1.0f, gfx::Size(10, 10),
+                                allocator.GetCurrentLocalSurfaceIdAllocation());
+  DCHECK(compositor()->IsVisible());
 
-  {
-    base::RunLoop run_loop;
-    // Ensure that the lock does not time out when set.
-    compositor()->SetLocksWillTimeOut(false);
-    lock = compositor()->GetCompositorLock();
-    EXPECT_TRUE(compositor()->IsLocked());
-    task_runner()->PostDelayedTask(
-        FROM_HERE, run_loop.QuitClosure(),
-        base::TimeDelta::FromMilliseconds(kCompositorLockTimeoutMs));
-    run_loop.Run();
-    EXPECT_TRUE(compositor()->IsLocked());
-  }
+  // Set a non-identity color matrix on the compistor display, and expect it to
+  // be set on the context factory.
+  SkMatrix44 color_matrix(SkMatrix44::kIdentity_Constructor);
+  color_matrix.set(1, 1, 0.7f);
+  color_matrix.set(2, 2, 0.4f);
+  compositor()->SetDisplayColorMatrix(color_matrix);
+  InProcessContextFactory* context_factory_private =
+      static_cast<InProcessContextFactory*>(
+          compositor()->context_factory_private());
+  compositor()->ScheduleDraw();
+  DrawWaiterForTest::WaitForCompositingEnded(compositor());
+  EXPECT_EQ(color_matrix,
+            context_factory_private->GetOutputColorMatrix(compositor()));
+
+  // Simulate a lost context by releasing the output surface and setting it on
+  // the compositor again. Expect that the same color matrix will be set again
+  // on the context factory.
+  context_factory_private->ResetOutputColorMatrixToIdentity(compositor());
+  compositor()->SetVisible(false);
+  EXPECT_EQ(gfx::kNullAcceleratedWidget,
+            compositor()->ReleaseAcceleratedWidget());
+  compositor()->SetAcceleratedWidget(gfx::kNullAcceleratedWidget);
+  compositor()->SetVisible(true);
+  compositor()->ScheduleDraw();
+  DrawWaiterForTest::WaitForCompositingEnded(compositor());
+  EXPECT_EQ(color_matrix,
+            context_factory_private->GetOutputColorMatrix(compositor()));
+  compositor()->SetRootLayer(nullptr);
 }
 
-TEST_F(CompositorTest, ReleaseWidgetWithOutputSurfaceNeverCreated) {
+TEST_F(CompositorTestWithMockedTime,
+       ReleaseWidgetWithOutputSurfaceNeverCreated) {
   compositor()->SetVisible(false);
   EXPECT_EQ(gfx::kNullAcceleratedWidget,
             compositor()->ReleaseAcceleratedWidget());
@@ -101,11 +158,14 @@ TEST_F(CompositorTest, ReleaseWidgetWithOutputSurfaceNeverCreated) {
 #else
 #define MAYBE_CreateAndReleaseOutputSurface CreateAndReleaseOutputSurface
 #endif
-TEST_F(CompositorTest, MAYBE_CreateAndReleaseOutputSurface) {
+TEST_F(CompositorTestWithMessageLoop, MAYBE_CreateAndReleaseOutputSurface) {
   std::unique_ptr<Layer> root_layer(new Layer(ui::LAYER_SOLID_COLOR));
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
   root_layer->SetBounds(gfx::Rect(10, 10));
   compositor()->SetRootLayer(root_layer.get());
-  compositor()->SetScaleAndSize(1.0f, gfx::Size(10, 10));
+  compositor()->SetScaleAndSize(1.0f, gfx::Size(10, 10),
+                                allocator.GetCurrentLocalSurfaceIdAllocation());
   DCHECK(compositor()->IsVisible());
   compositor()->ScheduleDraw();
   DrawWaiterForTest::WaitForCompositingEnded(compositor());

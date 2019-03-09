@@ -11,10 +11,8 @@
 #include "base/atomic_sequence_num.h"
 #include "base/logging.h"
 #include "build/build_config.h"
-#include "ipc/attachment_broker.h"
 #include "ipc/ipc_message_attachment.h"
 #include "ipc/ipc_message_attachment_set.h"
-#include "ipc/placeholder_brokerable_attachment.h"
 
 #if defined(OS_POSIX)
 #include "base/file_descriptor_posix.h"
@@ -23,7 +21,7 @@
 
 namespace {
 
-base::StaticAtomicSequenceNumber g_ref_num;
+base::AtomicSequenceNumber g_ref_num;
 
 // Create a reference number for identifying IPC messages in traces. The return
 // values has the reference number stored in the upper 24 bits, leaving the low
@@ -46,16 +44,12 @@ namespace IPC {
 
 //------------------------------------------------------------------------------
 
-Message::~Message() {
-}
+Message::~Message() = default;
 
 Message::Message() : base::Pickle(sizeof(Header)) {
   header()->routing = header()->type = 0;
   header()->flags = GetRefNumUpper24();
-#if USE_ATTACHMENT_BROKER
-  header()->num_brokered_attachments = 0;
-#endif
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
   header()->num_fds = 0;
   header()->pad = 0;
 #endif
@@ -68,10 +62,7 @@ Message::Message(int32_t routing_id, uint32_t type, PriorityValue priority)
   header()->type = type;
   DCHECK((priority & 0xffffff00) == 0);
   header()->flags = priority | GetRefNumUpper24();
-#if USE_ATTACHMENT_BROKER
-  header()->num_brokered_attachments = 0;
-#endif
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
   header()->num_fds = 0;
   header()->pad = 0;
 #endif
@@ -86,13 +77,11 @@ Message::Message(const char* data, int data_len)
 Message::Message(const Message& other) : base::Pickle(other) {
   Init();
   attachment_set_ = other.attachment_set_;
-  sender_pid_ = other.sender_pid_;
 }
 
 void Message::Init() {
   dispatch_error_ = false;
-  sender_pid_ = base::kNullProcessId;
-#ifdef IPC_MESSAGE_LOG_ENABLED
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
   received_time_ = 0;
   dont_log_ = false;
   log_data_ = NULL;
@@ -102,7 +91,6 @@ void Message::Init() {
 Message& Message::operator=(const Message& other) {
   *static_cast<base::Pickle*>(this) = other;
   attachment_set_ = other.attachment_set_;
-  sender_pid_ = other.sender_pid_;
   return *this;
 }
 
@@ -120,7 +108,7 @@ void Message::EnsureMessageAttachmentSet() {
     attachment_set_ = new MessageAttachmentSet;
 }
 
-#ifdef IPC_MESSAGE_LOG_ENABLED
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
 void Message::set_sent_time(int64_t time) {
   DCHECK((header()->flags & HAS_SENT_TIME_BIT) == 0);
   header()->flags |= HAS_SENT_TIME_BIT;
@@ -139,32 +127,12 @@ int64_t Message::sent_time() const {
 void Message::set_received_time(int64_t time) const {
   received_time_ = time;
 }
-#endif
+#endif  // BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
 
 Message::NextMessageInfo::NextMessageInfo()
     : message_size(0), message_found(false), pickle_end(nullptr),
       message_end(nullptr) {}
-Message::NextMessageInfo::~NextMessageInfo() {}
-
-Message::SerializedAttachmentIds
-Message::SerializedIdsOfBrokerableAttachments() {
-  DCHECK(HasBrokerableAttachments());
-  std::vector<scoped_refptr<IPC::BrokerableAttachment>> attachments(
-      attachment_set_->GetBrokerableAttachments());
-  CHECK_LE(attachments.size(), std::numeric_limits<size_t>::max() /
-                                   BrokerableAttachment::kNonceSize);
-  size_t size = attachments.size() * BrokerableAttachment::kNonceSize;
-  char* buffer = static_cast<char*>(malloc(size));
-  for (size_t i = 0; i < attachments.size(); ++i) {
-    char* start_range = buffer + i * BrokerableAttachment::kNonceSize;
-    BrokerableAttachment::AttachmentId id = attachments[i]->GetIdentifier();
-    id.SerializeToBuffer(start_range, BrokerableAttachment::kNonceSize);
-  }
-  SerializedAttachmentIds ids;
-  ids.buffer = buffer;
-  ids.size = size;
-  return ids;
-}
+Message::NextMessageInfo::~NextMessageInfo() = default;
 
 // static
 void Message::FindNext(const char* range_start,
@@ -182,43 +150,6 @@ void Message::FindNext(const char* range_start,
   bool have_entire_pickle =
       static_cast<size_t>(range_end - range_start) >= pickle_size;
 
-#if USE_ATTACHMENT_BROKER
-  // TODO(dskiba): determine message_size when entire pickle is not available
-
-  if (!have_entire_pickle)
-    return;
-
-  const char* pickle_end = range_start + pickle_size;
-
-  // The data is not copied.
-  Message message(range_start, static_cast<int>(pickle_size));
-  size_t num_attachments = message.header()->num_brokered_attachments;
-
-  // Check for possible overflows.
-  size_t max_size_t = std::numeric_limits<size_t>::max();
-  if (num_attachments >= max_size_t / BrokerableAttachment::kNonceSize)
-    return;
-
-  size_t attachment_length = num_attachments * BrokerableAttachment::kNonceSize;
-  if (pickle_size > max_size_t - attachment_length)
-    return;
-
-  // Check whether the range includes the attachments.
-  size_t buffer_length = static_cast<size_t>(range_end - range_start);
-  if (buffer_length < attachment_length + pickle_size)
-    return;
-
-  for (size_t i = 0; i < num_attachments; ++i) {
-    const char* attachment_start =
-        pickle_end + i * BrokerableAttachment::kNonceSize;
-    BrokerableAttachment::AttachmentId id(attachment_start,
-                                          BrokerableAttachment::kNonceSize);
-    info->attachment_ids.push_back(id);
-  }
-  info->message_end =
-      pickle_end + num_attachments * BrokerableAttachment::kNonceSize;
-  info->message_size = info->message_end - range_start;
-#else
   info->message_size = pickle_size;
 
   if (!have_entire_pickle)
@@ -227,42 +158,22 @@ void Message::FindNext(const char* range_start,
   const char* pickle_end = range_start + pickle_size;
 
   info->message_end = pickle_end;
-#endif  // USE_ATTACHMENT_BROKER
 
   info->pickle_end = pickle_end;
   info->message_found = true;
 }
 
-bool Message::AddPlaceholderBrokerableAttachmentWithId(
-    BrokerableAttachment::AttachmentId id) {
-  scoped_refptr<PlaceholderBrokerableAttachment> attachment(
-      new PlaceholderBrokerableAttachment(id));
-  return attachment_set()->AddAttachment(attachment);
-}
-
 bool Message::WriteAttachment(
     scoped_refptr<base::Pickle::Attachment> attachment) {
-  bool brokerable;
   size_t index;
   bool success = attachment_set()->AddAttachment(
-      make_scoped_refptr(static_cast<MessageAttachment*>(attachment.get())),
-      &index, &brokerable);
+      base::WrapRefCounted(static_cast<MessageAttachment*>(attachment.get())),
+      &index);
   DCHECK(success);
-
-  // NOTE: If you add more data to the pickle, make sure to update
-  // PickleSizer::AddAttachment.
-
-  // Write the type of descriptor.
-  WriteBool(brokerable);
 
   // Write the index of the descriptor so that we don't have to
   // keep the current descriptor as extra decoding state when deserialising.
   WriteInt(static_cast<int>(index));
-
-#if USE_ATTACHMENT_BROKER
-  if (brokerable)
-    header()->num_brokered_attachments++;
-#endif
 
   return success;
 }
@@ -270,10 +181,6 @@ bool Message::WriteAttachment(
 bool Message::ReadAttachment(
     base::PickleIterator* iter,
     scoped_refptr<base::Pickle::Attachment>* attachment) const {
-  bool brokerable;
-  if (!iter->ReadBool(&brokerable))
-    return false;
-
   int index;
   if (!iter->ReadInt(&index))
     return false;
@@ -282,24 +189,13 @@ bool Message::ReadAttachment(
   if (!attachment_set)
     return false;
 
-  *attachment = brokerable
-                    ? attachment_set->GetBrokerableAttachmentAt(index)
-                    : attachment_set->GetNonBrokerableAttachmentAt(index);
+  *attachment = attachment_set->GetAttachmentAt(index);
 
   return nullptr != attachment->get();
 }
 
 bool Message::HasAttachments() const {
   return attachment_set_.get() && !attachment_set_->empty();
-}
-
-bool Message::HasMojoHandles() const {
-  return attachment_set_.get() && attachment_set_->num_mojo_handles() > 0;
-}
-
-bool Message::HasBrokerableAttachments() const {
-  return attachment_set_.get() &&
-         attachment_set_->num_brokerable_attachments() > 0;
 }
 
 }  // namespace IPC

@@ -20,10 +20,9 @@ FixedPatternStringSearchIgnoringCaseAndAccents(const string16& find_this)
   const string16& dummy = find_this_;
 
   UErrorCode status = U_ZERO_ERROR;
-  search_ = usearch_open(find_this_.data(), find_this_.size(),
-                         dummy.data(), dummy.size(),
-                         uloc_getDefault(),
-                         NULL,  // breakiter
+  search_ = usearch_open(find_this_.data(), find_this_.size(), dummy.data(),
+                         dummy.size(), uloc_getDefault(),
+                         nullptr,  // breakiter
                          &status);
   if (U_SUCCESS(status)) {
     UCollator* collator = usearch_getCollator(search_);
@@ -49,15 +48,13 @@ bool FixedPatternStringSearchIgnoringCaseAndAccents::Search(
   // substring search will give the correct return value.
   if (!U_SUCCESS(status)) {
     size_t index = in_this.find(find_this_);
-    if (index == string16::npos) {
+    if (index == string16::npos)
       return false;
-    } else {
-      if (match_index)
-        *match_index = index;
-      if (match_length)
-        *match_length = find_this_.size();
-      return true;
-    }
+    if (match_index)
+      *match_index = index;
+    if (match_length)
+      *match_length = find_this_.size();
+    return true;
   }
 
   int32_t index = usearch_first(search_, &status);

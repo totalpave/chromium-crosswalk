@@ -1,4 +1,3 @@
-
 // Copyright 2014 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -26,6 +25,11 @@ namespace ui {
 // while all *output* coordinates are in DIPs (as with WebTouchEvent).
 class EVENTS_EXPORT MotionEventAndroid : public MotionEvent {
  public:
+  // Returns the motion event action defined in Java layer for a given
+  // MotionEvent::Action.
+  static int GetAndroidAction(Action action);
+  static int GetAndroidToolType(ToolType tool_type);
+
   struct Pointer {
     Pointer(jint id,
             jfloat pos_x_pixels,
@@ -41,27 +45,44 @@ class EVENTS_EXPORT MotionEventAndroid : public MotionEvent {
     jfloat touch_major_pixels;
     jfloat touch_minor_pixels;
     jfloat orientation_rad;
+    // Unlike the tilt angles in motion_event.h, this field matches the
+    // MotionEvent spec because we get this values from Java.
     jfloat tilt_rad;
     jint tool_type;
   };
 
   // Forcing the caller to provide all cached values upon construction
   // eliminates the need to perform a JNI call to retrieve values individually.
-  MotionEventAndroid(float pix_to_dip,
-                     JNIEnv* env,
+  MotionEventAndroid(JNIEnv* env,
                      jobject event,
+                     jfloat pix_to_dip,
+                     jfloat ticks_x,
+                     jfloat ticks_y,
+                     jfloat tick_multiplier,
                      jlong time_ms,
                      jint android_action,
                      jint pointer_count,
                      jint history_size,
                      jint action_index,
+                     jint android_action_button,
                      jint android_button_state,
                      jint meta_state,
                      jfloat raw_offset_x_pixels,
                      jfloat raw_offset_y_pixels,
-                     const Pointer& pointer0,
-                     const Pointer& pointer1);
+                     jboolean for_touch_handle,
+                     const Pointer* const pointer0,
+                     const Pointer* const pointer1);
   ~MotionEventAndroid() override;
+
+  // Create a new instance from |this| with its cached pointers set
+  // to a given point.
+  std::unique_ptr<MotionEventAndroid> CreateFor(const gfx::PointF& point) const;
+
+  // Convenience method returning the pointer at index 0.
+  gfx::PointF GetPoint() const { return gfx::PointF(GetX(0), GetY(0)); }
+  gfx::PointF GetPointPix() const {
+    return gfx::PointF(GetXPix(0), GetYPix(0));
+  }
 
   // ui::MotionEvent methods.
   uint32_t GetUniqueEventId() const override;
@@ -77,7 +98,10 @@ class EVENTS_EXPORT MotionEventAndroid : public MotionEvent {
   float GetTouchMinor(size_t pointer_index) const override;
   float GetOrientation(size_t pointer_index) const override;
   float GetPressure(size_t pointer_index) const override;
-  float GetTilt(size_t pointer_index) const override;
+  float GetTiltX(size_t pointer_index) const override;
+  float GetTiltY(size_t pointer_index) const override;
+  float GetTwist(size_t pointer_index) const override;
+  float GetTangentialPressure(size_t pointer_index) const override;
   base::TimeTicks GetEventTime() const override;
   size_t GetHistorySize() const override;
   base::TimeTicks GetHistoricalEventTime(
@@ -92,13 +116,25 @@ class EVENTS_EXPORT MotionEventAndroid : public MotionEvent {
   int GetButtonState() const override;
   int GetFlags() const override;
 
-  static bool RegisterMotionEventAndroid(JNIEnv* env);
+  int GetActionButton() const;
+  float ticks_x() const { return ticks_x_; }
+  float ticks_y() const { return ticks_y_; }
+  float time_sec() const { return time_sec_; }
+  float GetTickMultiplier() const;
+  bool for_touch_handle() const { return for_touch_handle_; }
+
+  base::android::ScopedJavaLocalRef<jobject> GetJavaObject() const;
+
+  float GetXPix(size_t pointer_index) const;
+  float GetYPix(size_t pointer_index) const;
 
  private:
   struct CachedPointer;
 
   float ToDips(float pixels) const;
   CachedPointer FromAndroidPointer(const Pointer& pointer) const;
+  CachedPointer CreateCachedPointer(const CachedPointer& pointer,
+                                    const gfx::PointF& point) const;
 
   // Cache pointer coords, id's and major lengths for the most common
   // touch-related scenarios, i.e., scrolling and pinching.  This prevents
@@ -112,11 +148,20 @@ class EVENTS_EXPORT MotionEventAndroid : public MotionEvent {
   // DIP coordinates cached/returned by the MotionEventAndroid.
   const float pix_to_dip_;
 
+  // Variables for mouse wheel event.
+  const float ticks_x_;
+  const float ticks_y_;
+  const float tick_multiplier_;
+  const uint64_t time_sec_;
+
+  const bool for_touch_handle_;
+
   const base::TimeTicks cached_time_;
   const Action cached_action_;
   const size_t cached_pointer_count_;
   const size_t cached_history_size_;
   const int cached_action_index_;
+  const int cached_action_button_;
   const int cached_button_state_;
   const int cached_flags_;
   const gfx::Vector2dF cached_raw_position_offset_;
@@ -127,14 +172,17 @@ class EVENTS_EXPORT MotionEventAndroid : public MotionEvent {
     float touch_major;
     float touch_minor;
     float orientation;
-    float tilt;
+    float tilt_x;
+    float tilt_y;
     ToolType tool_type;
   } cached_pointers_[MAX_POINTERS_TO_CACHE];
 
   // A unique identifier for the Android motion event.
   const uint32_t unique_event_id_;
 
-  DISALLOW_COPY_AND_ASSIGN(MotionEventAndroid);
+  // Disallow copy/assign.
+  MotionEventAndroid(const MotionEventAndroid& e);  // private ctor
+  void operator=(const MotionEventAndroid&) = delete;
 };
 
 }  // namespace content

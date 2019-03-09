@@ -32,7 +32,7 @@ function SuggestAppsDialog(providersModel, parentNode, state) {
    * The root element for the Chrome Web Store widget container.
    * @const {!HTMLElement}
    */
-  var widgetRoot = this.document_.createElement('div');
+  const widgetRoot = this.document_.createElement('div');
   this.frame_.insertBefore(widgetRoot, this.text_.nextSibling);
 
   /**
@@ -80,7 +80,7 @@ Object.freeze(SuggestAppsDialog.Result);
 /**
  * Dummy function for SuggestAppsDialog.show() not to be called unintentionally.
  */
-SuggestAppsDialog.prototype.show = function() {
+SuggestAppsDialog.prototype.show = () => {
   console.error('SuggestAppsDialog.show() shouldn\'t be called directly.');
 };
 
@@ -88,7 +88,7 @@ SuggestAppsDialog.prototype.show = function() {
  * Shows suggest-apps dialog by file extension and mime.
  *
  * @param {string} extension Extension of the file with a trailing dot.
- * @param {string} mime Mime of the file.
+ * @param {?string} mime Mime of the file.
  * @param {function(SuggestAppsDialog.Result, ?string)} onDialogClosed Called
  *     when the dialog is closed, with a result code and an optionally an
  *     extension id, if an extension was installed.
@@ -96,14 +96,13 @@ SuggestAppsDialog.prototype.show = function() {
 SuggestAppsDialog.prototype.showByExtensionAndMime =
     function(extension, mime, onDialogClosed) {
   assert(extension && extension[0] === '.');
+  const options = {file_extension: extension.substr(1)};
+  if (mime) {
+    options.mime_type = mime;
+  }
   this.showInternal_(
-      {
-        file_extension: extension.substr(1),
-        mime_type: mime
-      },
-      str('SUGGEST_DIALOG_TITLE'),
-      FileTasks.createWebStoreLink(extension, mime),
-      onDialogClosed);
+      options, str('SUGGEST_DIALOG_TITLE'),
+      webStoreUtils.createWebStoreLink(extension, mime), onDialogClosed);
 };
 
 /**
@@ -124,7 +123,7 @@ SuggestAppsDialog.prototype.showProviders = function(onDialogClosed) {
 
 /**
  * Creates platform delegate for CWSWidgetContainer.
- * @return {!CWSWidgetContainer.PlatformDelegate}
+ * @return {!CWSWidgetContainerPlatformDelegate}
  * @private
  */
 SuggestAppsDialog.prototype.createWidgetPlatformDelegate_ = function() {
@@ -172,7 +171,7 @@ SuggestAppsDialog.prototype.createWidgetPlatformDelegate_ = function() {
       chrome.webstoreWidgetPrivate.installWebstoreItem(
           itemId,
           false /* show installation prompt */,
-          function() {
+          () => {
             callback(chrome.runtime.lastError ?
                 chrome.runtime.lastError.message || 'UNKNOWN ERROR' : null);
           });
@@ -182,27 +181,31 @@ SuggestAppsDialog.prototype.createWidgetPlatformDelegate_ = function() {
      * @param {function(?Array<!string>)} callback Callback
      *     argument is a list of installed item ids (null on error).
      */
-    getInstalledItems: function(callback) {
-      // Return only installed providers. Returning other extensions/apps is
-      // redundant, as the suggest app for non-providers is executed only when
-      // there is no extension/app matching a file task. Hence, none of the
-      // suggested extensions/apps can be already installed.
-      this.providersModel_.getInstalledProviders().then(function(extensions) {
-        callback(extensions.map(function(extension) {
-          return extension.extensionId;
-        }));
-      }).catch(function(error) {
-        console.error(error.stack || error);
-        callback(null);
-      });
-    }.bind(this),
+    getInstalledItems: callback => {
+      // Return only installed provided extensions. Returning other
+      // extensions/apps is redundant, as the suggest app for non-providers is
+      // executed only when there is no extension/app matching a file task.
+      // Hence, none of the suggested extensions/apps can be already installed.
+      this.providersModel_.getInstalledProviders()
+          .then(providers => {
+            callback(providers.map(provider => {
+              // Assume that the provider is an extension backed provider. In
+              // such case the providerId is the same as extensionId.
+              return provider.providerId;
+            }));
+          })
+          .catch(error => {
+            console.error(error.stack || error);
+            callback(null);
+          });
+    },
 
     /**
      * @param {function(?string)} callback Callback argument is the requested
      *     token (null on error).
      */
     requestWebstoreAccessToken: function(callback) {
-      chrome.fileManagerPrivate.requestWebStoreAccessToken(function(token) {
+      chrome.fileManagerPrivate.requestWebStoreAccessToken(token => {
         if (chrome.runtime.lastError) {
           console.error(chrome.runtime.lastError.message);
           callback(null);
@@ -236,58 +239,65 @@ SuggestAppsDialog.prototype.showInternal_ =
     return;
   }
 
-  var dialogShown = false;
+  let dialogShown = false;
+  let tokenObtained = false;
 
   this.widget_.ready()
-      .then(
-          /** @return {!Promise} */
-          function() {
-            return this.showDialog_(title);
-          }.bind(this))
-      .then(
-          /** @return {!Promise.<CWSWidgetContainer.ResolveReason>} */
-          function() {
-            dialogShown = true;
-            // This is not set before so it doesn't polute state if the previous
-            // dialog hasn't finished hiding.
-            this.onDialogClosed_ = onDialogClosed;
-            return this.widget_.start(options, webStoreUrl);
-          }.bind(this))
-      .then(
-          /** @param {CWSWidgetContainer.ResolveReason} reason */
-          function(reason) {
-            if (reason !== CWSWidgetContainer.ResolveReason.RESET)
-              this.hide();
-          }.bind(this))
+      .then(/** @return {!Promise} */
+  () => {
+    tokenObtained = true;
+    return this.showDialog_(title);
+  })
+      .then(/** @return {!Promise<CWSWidgetContainer.ResolveReason>} */
+  () => {
+    dialogShown = true;
+    // This is not set before so it doesn't pollute state if the
+    // previous dialog hasn't finished hiding.
+    this.onDialogClosed_ = onDialogClosed;
+    return this.widget_.start(options, webStoreUrl);
+  })
+      .then(/** @param {CWSWidgetContainer.ResolveReason} reason */
+  reason => {
+    if (reason !== CWSWidgetContainer.ResolveReason.RESET) {
+      this.hide();
+    }
+  })
       .catch(
-          /** @param {string} error */
-          function(error) {
+          error => {
             console.error('Failed to start CWS widget: ' + error);
 
-            // If the widget dialog was not shown, consider the widget
-            // canceled.
             if (!dialogShown) {
               // Reset any widget state set in |this.widget_.ready()|. The
               // returned value is ignored because it doesn't influence the
               // value reported by dialog.
               this.widget_.finalizeAndGetResult();
-              onDialogClosed(SuggestAppsDialog.Result.CANCELLED, null);
+
+              const result = tokenObtained ?
+                  // Got access token but the widget dialog was not shown.
+                  // Consider the widget was cancelled.
+                  SuggestAppsDialog.Result.CANCELLED :
+                  // Access token was unavailable.
+                  // This can happen in the Guest mode. crbug.com/694419
+                  // Callback shows an alert notifying the file was not opened
+                  // because of the unsupported type.
+                  SuggestAppsDialog.Result.FAILED;
+              onDialogClosed(result, null);
               return;
             }
 
             this.result_ = SuggestAppsDialog.Result.FAILED;
             this.hide();
-          }.bind(this));
+          });
 };
 
 /**
  * Internal method for showing the dialog in the file manager window.
  * @param {string} title The dialog title.
- * @return {Promise}
+ * @return {!Promise}
  */
 SuggestAppsDialog.prototype.showDialog_ = function(title) {
-  return new Promise(function(resolve, reject) {
-     var success = this.dialogText_ ?
+  return new Promise((resolve, reject) => {
+     const success = this.dialogText_ ?
          FileManagerDialogBase.prototype.showTitleAndTextDialog.call(
              this, title, this.dialogText_) :
          FileManagerDialogBase.prototype.showTitleOnlyDialog.call(
@@ -297,7 +307,7 @@ SuggestAppsDialog.prototype.showDialog_ = function(title) {
        return;
      }
      resolve();
-  }.bind(this));
+  });
 };
 
 /**
@@ -305,10 +315,11 @@ SuggestAppsDialog.prototype.showDialog_ = function(title) {
  * @param {VolumeManagerCommon.DriveConnectionType} connectionType Current
  *     connection type.
  */
-SuggestAppsDialog.prototype.onDriveConnectionChanged =
-    function(connectionType) {
-  if (connectionType === VolumeManagerCommon.DriveConnectionType.OFFLINE)
+SuggestAppsDialog.prototype.onDriveConnectionChanged = function(
+    connectionType) {
+  if (connectionType === VolumeManagerCommon.DriveConnectionType.OFFLINE) {
     this.widget_.onConnectionLost();
+  }
 };
 
 /**
@@ -317,7 +328,7 @@ SuggestAppsDialog.prototype.onDriveConnectionChanged =
  * @override
  */
 SuggestAppsDialog.prototype.hide = function(opt_originalOnHide) {
-  var widgetResult = this.widget_.finalizeAndGetResult();
+  const widgetResult = this.widget_.finalizeAndGetResult();
 
   switch (widgetResult.result) {
     case CWSWidgetContainer.Result.INSTALL_SUCCESSFUL:
@@ -345,8 +356,9 @@ SuggestAppsDialog.prototype.hide = function(opt_originalOnHide) {
  */
 SuggestAppsDialog.prototype.onHide_ = function(opt_originalOnHide) {
   // Calls the callback after the dialog hides.
-  if (opt_originalOnHide)
+  if (opt_originalOnHide) {
     opt_originalOnHide();
+  }
 
   this.onDialogClosed_(this.result_, this.installedItemId_);
 };

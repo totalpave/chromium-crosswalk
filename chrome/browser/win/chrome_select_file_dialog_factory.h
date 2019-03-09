@@ -5,33 +5,25 @@
 #ifndef CHROME_BROWSER_WIN_CHROME_SELECT_FILE_DIALOG_FACTORY_H_
 #define CHROME_BROWSER_WIN_CHROME_SELECT_FILE_DIALOG_FACTORY_H_
 
-#include "base/compiler_specific.h"
+#include <memory>
+
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
 #include "ui/shell_dialogs/select_file_dialog_factory.h"
 
-namespace base {
-class SequencedTaskRunner;
-}  // namespace base
-
-// Implements a Select File dialog that delegates to a Metro file picker on
-// Metro and to a utility process otherwise. The utility process is used in
-// order to isolate the Chrome browser process from potential instability
-// caused by Shell extension modules loaded by GetOpenFileName.
+// Implements a file Open / Save dialog in a utility process. The utility
+// process is used to isolate the Chrome browser process from potential
+// instability caused by Shell extension modules loaded by the file dialogs.
 class ChromeSelectFileDialogFactory : public ui::SelectFileDialogFactory {
  public:
-  // Uses |blocking_task_runner| to perform IPC with the utility process.
-  explicit ChromeSelectFileDialogFactory(
-      const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner);
+  ChromeSelectFileDialogFactory();
   ~ChromeSelectFileDialogFactory() override;
 
-  // ui::SelectFileDialogFactory implementation
-  ui::SelectFileDialog* Create(ui::SelectFileDialog::Listener* listener,
-                               ui::SelectFilePolicy* policy) override;
+  // ui::SelectFileDialogFactory:
+  ui::SelectFileDialog* Create(
+      ui::SelectFileDialog::Listener* listener,
+      std::unique_ptr<ui::SelectFilePolicy> policy) override;
 
  private:
-  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
-
   DISALLOW_COPY_AND_ASSIGN(ChromeSelectFileDialogFactory);
 };
 

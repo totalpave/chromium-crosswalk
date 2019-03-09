@@ -10,10 +10,10 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 
 #include "base/callback.h"
 #include "base/cancelable_callback.h"
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -95,7 +95,7 @@ class ExtensionEventObserver : public content::NotificationObserver,
                             uint64_t request_id) override;
 
   // PowerManagerClient::Observer overrides.
-  void SuspendImminent() override;
+  void SuspendImminent(power_manager::SuspendImminent::Reason reason) override;
   void DarkSuspendImminent() override;
   void SuspendDone(const base::TimeDelta& duration) override;
 
@@ -115,8 +115,8 @@ class ExtensionEventObserver : public content::NotificationObserver,
   void MaybeReportSuspendReadiness();
 
   struct KeepaliveSources;
-  base::ScopedPtrHashMap<const extensions::ExtensionHost*,
-                         std::unique_ptr<KeepaliveSources>>
+  std::unordered_map<const extensions::ExtensionHost*,
+                     std::unique_ptr<KeepaliveSources>>
       keepalive_sources_;
 
   std::set<Profile*> active_profiles_;

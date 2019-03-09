@@ -17,7 +17,7 @@ template("compress_file_brotli") {
                              "deps",
                              "testonly",
                            ])
-    tool = "//third_party/brotli:bro"
+    tool = "//third_party/brotli:brotli"
     inputs = [
       invoker.input_file,
     ]
@@ -26,9 +26,9 @@ template("compress_file_brotli") {
     ]
     args = [
       "--force",
-      "--input",
+      "--no-copy-stat",
       rebase_path(invoker.input_file, root_build_dir),
-      "--output",
+      "-o",
       rebase_path(invoker.output_file, root_build_dir),
     ]
   }

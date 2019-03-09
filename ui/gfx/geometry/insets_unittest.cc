@@ -6,6 +6,8 @@
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/insets_f.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/vector2d.h"
 
 TEST(InsetsTest, InsetsDefault) {
   gfx::Insets insets;
@@ -27,6 +29,30 @@ TEST(InsetsTest, Insets) {
   EXPECT_EQ(6, insets.width());  // Left + right.
   EXPECT_EQ(4, insets.height());  // Top + bottom.
   EXPECT_FALSE(insets.IsEmpty());
+}
+
+TEST(InsetsTest, SetTop) {
+  gfx::Insets insets(1);
+  insets.set_top(2);
+  EXPECT_EQ(gfx::Insets(2, 1, 1, 1), insets);
+}
+
+TEST(InsetsTest, SetBottom) {
+  gfx::Insets insets(1);
+  insets.set_bottom(2);
+  EXPECT_EQ(gfx::Insets(1, 1, 2, 1), insets);
+}
+
+TEST(InsetsTest, SetLeft) {
+  gfx::Insets insets(1);
+  insets.set_left(2);
+  EXPECT_EQ(gfx::Insets(1, 2, 1, 1), insets);
+}
+
+TEST(InsetsTest, SetRight) {
+  gfx::Insets insets(1);
+  insets.set_right(2);
+  EXPECT_EQ(gfx::Insets(1, 1, 1, 2), insets);
 }
 
 TEST(InsetsTest, Set) {
@@ -112,4 +138,26 @@ TEST(InsetsTest, Equality) {
 TEST(InsetsTest, ToString) {
   gfx::Insets insets(1, 2, 3, 4);
   EXPECT_EQ("1,2,3,4", insets.ToString());
+}
+
+TEST(InsetsTest, Offset) {
+  const gfx::Insets insets(1, 2, 3, 4);
+  const gfx::Rect rect(5, 6, 7, 8);
+  const gfx::Vector2d vector(9, 10);
+
+  // Whether you inset then offset the rect, offset then inset the rect, or
+  // offset the insets then apply to the rect, the outcome should be the same.
+  gfx::Rect inset_first = rect;
+  inset_first.Inset(insets);
+  inset_first.Offset(vector);
+
+  gfx::Rect offset_first = rect;
+  offset_first.Offset(vector);
+  offset_first.Inset(insets);
+
+  gfx::Rect inset_by_offset = rect;
+  inset_by_offset.Inset(insets.Offset(vector));
+
+  EXPECT_EQ(inset_first, offset_first);
+  EXPECT_EQ(inset_by_offset, inset_first);
 }

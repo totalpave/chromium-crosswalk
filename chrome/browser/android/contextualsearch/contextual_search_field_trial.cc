@@ -5,7 +5,9 @@
 #include "chrome/browser/android/contextualsearch/contextual_search_field_trial.h"
 
 #include "base/command_line.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/strings/string_number_conversions.h"
+#include "chrome/browser/android/chrome_feature_list.h"
 #include "components/variations/variations_associated_data.h"
 
 namespace {
@@ -15,11 +17,13 @@ const char kFalseValue[] = "false";
 const char kAnyNonEmptyValue[] = "1";
 const char kContextualSearchResolverUrl[] = "contextual-search-resolver-url";
 const char kContextualSearchSurroundingSizeParamName[] = "surrounding_size";
-const char kContextualSearchIcingSurroundingSizeParamName[] =
-    "icing_surrounding_size";
+const char kContextualSearchSampleSurroundingSizeParamName[] =
+    "sample_surrounding_size";
 const char kContextualSearchSendURLDisabledParamName[] = "disable_send_url";
 const char kContextualSearchDecodeMentionsDisabledParamName[] =
     "disable_decode_mentions";
+const char kContextualCardsVersionParamName[] = "contextual_cards_version";
+
 // The default size of the content surrounding the selection to gather, allowing
 // room for other parameters.
 const int kContextualSearchDefaultContentSize = 1536;
@@ -28,19 +32,21 @@ const int kContextualSearchDefaultContentSize = 1536;
 
 // static
 const int
-    ContextualSearchFieldTrial::kContextualSearchDefaultIcingSurroundingSize =
+    ContextualSearchFieldTrial::kContextualSearchDefaultSampleSurroundingSize =
         400;
 
 ContextualSearchFieldTrial::ContextualSearchFieldTrial()
     : is_resolver_url_prefix_cached_(false),
       is_surrounding_size_cached_(false),
       surrounding_size_(0),
-      is_icing_surrounding_size_cached_(false),
-      icing_surrounding_size_(0),
+      is_sample_surrounding_size_cached_(false),
+      sample_surrounding_size_(0),
       is_send_base_page_url_disabled_cached_(false),
       is_send_base_page_url_disabled_(false),
       is_decode_mentions_disabled_cached_(false),
-      is_decode_mentions_disabled_(false) {}
+      is_decode_mentions_disabled_(false),
+      is_contextual_cards_version_cached_(false),
+      contextual_cards_version_(0) {}
 
 ContextualSearchFieldTrial::~ContextualSearchFieldTrial() {}
 
@@ -54,18 +60,18 @@ std::string ContextualSearchFieldTrial::GetResolverURLPrefix() {
   return resolver_url_prefix_;
 }
 
-int ContextualSearchFieldTrial::GetSurroundingSize() {
+int ContextualSearchFieldTrial::GetResolveSurroundingSize() {
   return GetIntParamValueOrDefault(kContextualSearchSurroundingSizeParamName,
                                    kContextualSearchDefaultContentSize,
                                    &is_surrounding_size_cached_,
                                    &surrounding_size_);
 }
 
-int ContextualSearchFieldTrial::GetIcingSurroundingSize() {
+int ContextualSearchFieldTrial::GetSampleSurroundingSize() {
   return GetIntParamValueOrDefault(
-      kContextualSearchIcingSurroundingSizeParamName,
-      kContextualSearchDefaultIcingSurroundingSize,
-      &is_icing_surrounding_size_cached_, &icing_surrounding_size_);
+      kContextualSearchSampleSurroundingSizeParamName,
+      kContextualSearchDefaultSampleSurroundingSize,
+      &is_sample_surrounding_size_cached_, &sample_surrounding_size_);
 }
 
 bool ContextualSearchFieldTrial::IsSendBasePageURLDisabled() {
@@ -78,6 +84,12 @@ bool ContextualSearchFieldTrial::IsDecodeMentionsDisabled() {
   return GetBooleanParam(kContextualSearchDecodeMentionsDisabledParamName,
                          &is_decode_mentions_disabled_cached_,
                          &is_decode_mentions_disabled_);
+}
+
+int ContextualSearchFieldTrial::GetContextualCardsVersion() {
+  return GetIntParamValueOrDefault(kContextualCardsVersionParamName, 0,
+                                   &is_contextual_cards_version_cached_,
+                                   &contextual_cards_version_);
 }
 
 bool ContextualSearchFieldTrial::GetBooleanParam(const std::string& name,
@@ -107,6 +119,12 @@ int ContextualSearchFieldTrial::GetIntParamValueOrDefault(
     std::string param_string = GetSwitch(name);
     if (param_string.empty())
       param_string = GetParam(name);
+    // If we still didn't get a param, try getting a Feature param.
+    if (param_string.empty()) {
+      // For now, we just support the Contextual Search Definitions feature.
+      param_string = base::GetFieldTrialParamValueByFeature(
+          chrome::android::kContextualSearchDefinitions, name);
+    }
 
     int param_int;
     if (!param_string.empty() && base::StringToInt(param_string, &param_int))

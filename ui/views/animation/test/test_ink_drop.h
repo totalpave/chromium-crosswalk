@@ -21,11 +21,18 @@ class TestInkDrop : public InkDrop {
 
   bool is_hovered() const { return is_hovered_; }
 
+  void HostSizeChanged(const gfx::Size& new_size) override;
   InkDropState GetTargetInkDropState() const override;
   void AnimateToState(InkDropState ink_drop_state) override;
+  void SetHoverHighlightFadeDurationMs(int duration_ms) override;
+  void UseDefaultHoverHighlightFadeDuration() override;
   void SnapToActivated() override;
+  void SnapToHidden() override;
   void SetHovered(bool is_hovered) override;
   void SetFocused(bool is_focused) override;
+  bool IsHighlightFadingInOrVisible() const override;
+  void SetShowHighlightOnHover(bool show_highlight_on_hover) override;
+  void SetShowHighlightOnFocus(bool show_highlight_on_focus) override;
 
  private:
   InkDropState state_;

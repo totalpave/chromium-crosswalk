@@ -13,7 +13,6 @@
 #include "net/cert/signed_certificate_timestamp.h"
 #include "net/cert/signed_tree_head.h"
 #include "net/cert/x509_certificate.h"
-#include "net/log/net_log.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/ct_test_util.h"
 #include "net/test/test_data_directory.h"
@@ -80,13 +79,12 @@ TEST_F(CtSerializationTest, EncodesDigitallySigned) {
   EXPECT_EQ(test_digitally_signed_, encoded);
 }
 
-
-TEST_F(CtSerializationTest, EncodesLogEntryForX509Cert) {
-  ct::LogEntry entry;
-  ct::GetX509CertLogEntry(&entry);
+TEST_F(CtSerializationTest, EncodesSignedEntryForX509Cert) {
+  ct::SignedEntryData entry;
+  ct::GetX509CertSignedEntry(&entry);
 
   std::string encoded;
-  ASSERT_TRUE(ct::EncodeLogEntry(entry, &encoded));
+  ASSERT_TRUE(ct::EncodeSignedEntry(entry, &encoded));
   EXPECT_EQ((718U + 5U), encoded.size());
   // First two bytes are log entry type. Next, length:
   // Length is 718 which is 512 + 206, which is 0x2ce
@@ -96,12 +94,12 @@ TEST_F(CtSerializationTest, EncodesLogEntryForX509Cert) {
   EXPECT_EQ(expected_prefix, encoded.substr(0, 5));
 }
 
-TEST_F(CtSerializationTest, EncodesLogEntryForPrecert) {
-  ct::LogEntry entry;
-  ct::GetPrecertLogEntry(&entry);
+TEST_F(CtSerializationTest, EncodesSignedEntryForPrecert) {
+  ct::SignedEntryData entry;
+  ct::GetPrecertSignedEntry(&entry);
 
   std::string encoded;
-  ASSERT_TRUE(ct::EncodeLogEntry(entry, &encoded));
+  ASSERT_TRUE(ct::EncodeSignedEntry(entry, &encoded));
   EXPECT_EQ(604u, encoded.size());
   // First two bytes are the log entry type.
   EXPECT_EQ(std::string("\x00\x01", 2), encoded.substr(0, 2));
@@ -142,7 +140,7 @@ TEST_F(CtSerializationTest, DecodesSCTList) {
   base::StringPiece encoded("\x0\xa\x0\x3\x61\x62\x63\x0\x3\x64\x65\x66", 12);
   std::vector<base::StringPiece> decoded;
 
-  ASSERT_TRUE(ct::DecodeSCTList(&encoded, &decoded));
+  ASSERT_TRUE(ct::DecodeSCTList(encoded, &decoded));
   ASSERT_STREQ("abc", decoded[0].data());
   ASSERT_STREQ("def", decoded[1].data());
 }
@@ -152,7 +150,19 @@ TEST_F(CtSerializationTest, FailsDecodingInvalidSCTList) {
   base::StringPiece encoded("\x0\xa\x0\x3\x61\x62\x63\x0\x5\x64\x65\x66", 12);
   std::vector<base::StringPiece> decoded;
 
-  ASSERT_FALSE(ct::DecodeSCTList(&encoded, &decoded));
+  ASSERT_FALSE(ct::DecodeSCTList(encoded, &decoded));
+}
+
+TEST_F(CtSerializationTest, EncodeSignedCertificateTimestamp) {
+  std::string encoded_test_sct(ct::GetTestSignedCertificateTimestamp());
+  base::StringPiece encoded_sct(encoded_test_sct);
+
+  scoped_refptr<ct::SignedCertificateTimestamp> sct;
+  ASSERT_TRUE(ct::DecodeSignedCertificateTimestamp(&encoded_sct, &sct));
+
+  std::string serialized;
+  ASSERT_TRUE(ct::EncodeSignedCertificateTimestamp(sct, &serialized));
+  EXPECT_EQ(serialized, encoded_test_sct);
 }
 
 TEST_F(CtSerializationTest, DecodesSignedCertificateTimestamp) {
@@ -204,8 +214,8 @@ TEST_F(CtSerializationTest, EncodesMerkleTreeLeafForX509Cert) {
       "Log entry type encoded incorrectly";
   EXPECT_EQ(std::string("\x00\x02\xce", 3), encoded.substr(12, 3)) <<
       "Certificate length encoded incorrectly";
-  EXPECT_EQ(tree_leaf.log_entry.leaf_certificate, encoded.substr(15, 718)) <<
-      "Certificate encoded incorrectly";
+  EXPECT_EQ(tree_leaf.signed_entry.leaf_certificate, encoded.substr(15, 718))
+      << "Certificate encoded incorrectly";
   EXPECT_EQ(std::string("\x00\x06", 2), encoded.substr(733, 2)) <<
       "CT extensions length encoded incorrectly";
   EXPECT_EQ(tree_leaf.extensions, encoded.substr(735, 6)) <<
@@ -229,12 +239,12 @@ TEST_F(CtSerializationTest, EncodesMerkleTreeLeafForPrecert) {
   EXPECT_EQ(std::string("\x00\x01", 2), encoded.substr(10, 2)) <<
       "Log entry type encoded incorrectly";
   EXPECT_THAT(encoded.substr(12, 32),
-              ElementsAreArray(tree_leaf.log_entry.issuer_key_hash.data)) <<
-      "Issuer key hash encoded incorrectly";
+              ElementsAreArray(tree_leaf.signed_entry.issuer_key_hash.data))
+      << "Issuer key hash encoded incorrectly";
   EXPECT_EQ(std::string("\x00\x02\x37", 3), encoded.substr(44, 3)) <<
       "TBS certificate length encoded incorrectly";
-  EXPECT_EQ(tree_leaf.log_entry.tbs_certificate, encoded.substr(47, 567)) <<
-      "TBS certificate encoded incorrectly";
+  EXPECT_EQ(tree_leaf.signed_entry.tbs_certificate, encoded.substr(47, 567))
+      << "TBS certificate encoded incorrectly";
   EXPECT_EQ(std::string("\x00\x06", 2), encoded.substr(614, 2)) <<
       "CT extensions length encoded incorrectly";
   EXPECT_EQ(tree_leaf.extensions, encoded.substr(616, 6)) <<
@@ -246,7 +256,7 @@ TEST_F(CtSerializationTest, EncodesValidSignedTreeHead) {
   ASSERT_TRUE(GetSampleSignedTreeHead(&signed_tree_head));
 
   std::string encoded;
-  ct::EncodeTreeHeadSignature(signed_tree_head, &encoded);
+  ASSERT_TRUE(ct::EncodeTreeHeadSignature(signed_tree_head, &encoded));
   // Expected size is 50 bytes:
   // Byte 0 is version, byte 1 is signature type
   // Bytes 2-9 are timestamp
@@ -260,4 +270,3 @@ TEST_F(CtSerializationTest, EncodesValidSignedTreeHead) {
 }
 
 }  // namespace net
-

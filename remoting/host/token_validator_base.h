@@ -10,6 +10,7 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "net/ssl/client_cert_identity.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context_getter.h"
 #include "remoting/host/third_party_auth_config.h"
@@ -18,7 +19,6 @@
 
 namespace net {
 class ClientCertStore;
-typedef std::vector<scoped_refptr<X509Certificate> > CertificateList;
 }
 
 namespace remoting {
@@ -43,8 +43,8 @@ class TokenValidatorBase
   const std::string& token_scope() const override;
 
   // URLRequest::Delegate interface.
-  void OnResponseStarted(net::URLRequest* source) override;
-  void OnReadCompleted(net::URLRequest* source, int bytes_read) override;
+  void OnResponseStarted(net::URLRequest* source, int net_result) override;
+  void OnReadCompleted(net::URLRequest* source, int net_result) override;
   void OnReceivedRedirect(net::URLRequest* request,
                           const net::RedirectInfo& redirect_info,
                           bool* defer_redirect) override;
@@ -53,12 +53,15 @@ class TokenValidatorBase
       net::SSLCertRequestInfo* cert_request_info) override;
 
  protected:
-  void OnCertificatesSelected(net::CertificateList* selected_certs,
-                              net::ClientCertStore* unused);
+  void OnCertificatesSelected(net::ClientCertStore* unused,
+                              net::ClientCertIdentityList selected_certs);
 
   virtual void StartValidateRequest(const std::string& token) = 0;
+  virtual void ContinueWithCertificate(
+      scoped_refptr<net::X509Certificate> client_cert,
+      scoped_refptr<net::SSLPrivateKey> client_private_key);
   virtual bool IsValidScope(const std::string& token_scope);
-  std::string ProcessResponse();
+  std::string ProcessResponse(int net_result);
 
   // Constructor parameters.
   ThirdPartyAuthConfig third_party_auth_config_;

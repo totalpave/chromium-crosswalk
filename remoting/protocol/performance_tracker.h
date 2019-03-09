@@ -12,15 +12,14 @@
 #include "base/timer/timer.h"
 #include "remoting/base/rate_counter.h"
 #include "remoting/base/running_samples.h"
+#include "remoting/protocol/frame_stats.h"
 
 namespace remoting {
 namespace protocol {
 
-struct FrameStats;
-
 // PerformanceTracker defines a bundle of performance counters and statistics
 // for chromoting.
-class PerformanceTracker {
+class PerformanceTracker : public FrameStatsConsumer {
  public:
   // Callback that updates UMA custom counts or custom times histograms.
   typedef base::Callback<void(const std::string& histogram_name,
@@ -36,24 +35,24 @@ class PerformanceTracker {
       UpdateUmaEnumHistogramCallback;
 
   PerformanceTracker();
-  virtual ~PerformanceTracker();
+  ~PerformanceTracker() override;
 
   // Constant used to calculate the average for rate metrics and used by the
   // plugin for the frequency at which stats should be updated.
   static const int kStatsUpdatePeriodSeconds = 1;
 
   // Return rates and running-averages for different metrics.
-  double video_bandwidth() { return video_bandwidth_.Rate(); }
-  double video_frame_rate() { return video_frame_rate_.Rate(); }
-  double video_packet_rate() { return video_packet_rate_.Rate(); }
-  const RunningSamples& video_capture_ms() { return video_capture_ms_; }
-  const RunningSamples& video_encode_ms() { return video_encode_ms_; }
-  const RunningSamples& video_decode_ms() { return video_decode_ms_; }
-  const RunningSamples& video_paint_ms() { return video_paint_ms_; }
-  const RunningSamples& round_trip_ms() { return round_trip_ms_; }
+  double video_bandwidth() const { return video_bandwidth_.Rate(); }
+  double video_frame_rate() const { return video_frame_rate_.Rate(); }
+  double video_packet_rate() const { return video_packet_rate_.Rate(); }
+  const RunningSamples& video_capture_ms() const { return video_capture_ms_; }
+  const RunningSamples& video_encode_ms() const { return video_encode_ms_; }
+  const RunningSamples& video_decode_ms() const { return video_decode_ms_; }
+  const RunningSamples& video_paint_ms() const { return video_paint_ms_; }
+  const RunningSamples& round_trip_ms() const { return round_trip_ms_; }
 
-  // Record stats for a video-packet.
-  void RecordVideoFrameStats(const FrameStats& stats);
+  // FrameStatsConsumer interface.
+  void OnVideoFrameStats(const FrameStats& stats) override;
 
   // Sets callbacks in ChromotingInstance to update a UMA custom counts, custom
   // times or enum histogram.

@@ -96,11 +96,18 @@ LSSharedFileListItemRef GetLoginItemForApp() {
   NSURL* url = [NSURL fileURLWithPath:[base::mac::MainBundle() bundlePath]];
 
   for(NSUInteger i = 0; i < [login_items_array count]; ++i) {
-    LSSharedFileListItemRef item = reinterpret_cast<LSSharedFileListItemRef>(
-        [login_items_array objectAtIndex:i]);
-    CFURLRef item_url_ref = NULL;
+    LSSharedFileListItemRef item =
+        reinterpret_cast<LSSharedFileListItemRef>(login_items_array[i]);
+    base::ScopedCFTypeRef<CFErrorRef> error;
+    CFURLRef item_url_ref =
+        LSSharedFileListItemCopyResolvedURL(item, 0, error.InitializeInto());
 
-    if (LSSharedFileListItemResolve(item, 0, &item_url_ref, NULL) == noErr) {
+    // This function previously used LSSharedFileListItemResolve(), which could
+    // return a NULL URL even when returning no error. This caused
+    // <https://crbug.com/760989>. It's not clear one way or the other whether
+    // LSSharedFileListItemCopyResolvedURL() shares this behavior, so this check
+    // remains in place.
+    if (!error && item_url_ref) {
       ScopedCFTypeRef<CFURLRef> item_url(item_url_ref);
       if (CFEqual(item_url, url)) {
         CFRetain(item);
@@ -121,19 +128,6 @@ bool IsHiddenLoginItem(LSSharedFileListItemRef item) {
 }
 
 }  // namespace
-
-std::string PathFromFSRef(const FSRef& ref) {
-  ScopedCFTypeRef<CFURLRef> url(
-      CFURLCreateFromFSRef(kCFAllocatorDefault, &ref));
-  NSString *path_string = [(NSURL *)url.get() path];
-  return [path_string fileSystemRepresentation];
-}
-
-bool FSRefFromPath(const std::string& path, FSRef* ref) {
-  OSStatus status = FSPathMakeRef((const UInt8*)path.c_str(),
-                                  ref, nil);
-  return status == noErr;
-}
 
 CGColorSpaceRef GetGenericRGBColorSpace() {
   // Leaked. That's OK, it's scoped to the lifetime of the application.
@@ -218,39 +212,20 @@ void SwitchFullScreenModes(FullScreenMode from_mode, FullScreenMode to_mode) {
   SetUIMode();
 }
 
-bool AmIForeground() {
-  ProcessSerialNumber foreground_psn = { 0 };
-  OSErr err = GetFrontProcess(&foreground_psn);
-  if (err != noErr) {
-    OSSTATUS_DLOG(WARNING, err) << "GetFrontProcess";
-    return false;
-  }
-
-  ProcessSerialNumber my_psn = { 0, kCurrentProcess };
-
-  Boolean result = FALSE;
-  err = SameProcess(&foreground_psn, &my_psn, &result);
-  if (err != noErr) {
-    OSSTATUS_DLOG(WARNING, err) << "SameProcess";
-    return false;
-  }
-
-  return result;
+bool GetFileBackupExclusion(const FilePath& file_path) {
+  return CSBackupIsItemExcluded(FilePathToCFURL(file_path), nullptr);
 }
 
 bool SetFileBackupExclusion(const FilePath& file_path) {
-  NSString* file_path_ns =
-      [NSString stringWithUTF8String:file_path.value().c_str()];
-  NSURL* file_url = [NSURL fileURLWithPath:file_path_ns];
-
   // When excludeByPath is true the application must be running with root
   // privileges (admin for 10.6 and earlier) but the URL does not have to
   // already exist. When excludeByPath is false the URL must already exist but
   // can be used in non-root (or admin as above) mode. We use false so that
   // non-root (or admin) users don't get their TimeMachine drive filled up with
   // unnecessary backups.
-  OSStatus os_err =
-      CSBackupSetItemExcluded(base::mac::NSToCFCast(file_url), TRUE, FALSE);
+  OSStatus os_err = CSBackupSetItemExcluded(FilePathToCFURL(file_path),
+                                            /*exclude=*/TRUE,
+                                            /*excludeByPath=*/FALSE);
   if (os_err != noErr) {
     OSSTATUS_DLOG(WARNING, os_err)
         << "Failed to set backup exclusion for file '"
@@ -293,9 +268,7 @@ void AddToLoginItems(bool hide_on_startup) {
 
   BOOL hide = hide_on_startup ? YES : NO;
   NSDictionary* properties =
-      [NSDictionary
-        dictionaryWithObject:[NSNumber numberWithBool:hide]
-                      forKey:(NSString*)kLSSharedFileListLoginItemHidden];
+      @{(NSString*)kLSSharedFileListLoginItemHidden : @(hide) };
 
   ScopedCFTypeRef<LSSharedFileListItemRef> new_item;
   new_item.reset(LSSharedFileListInsertItemURL(
@@ -329,11 +302,21 @@ bool WasLaunchedAsLoginOrResumeItem() {
   ProcessInfoRec info = {};
   info.processInfoLength = sizeof(info);
 
+// GetProcessInformation has been deprecated since macOS 10.9, but there is no
+// replacement that provides the information we need. See
+// https://crbug.com/650854.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   if (GetProcessInformation(&psn, &info) == noErr) {
+#pragma clang diagnostic pop
     ProcessInfoRec parent_info = {};
     parent_info.processInfoLength = sizeof(parent_info);
-    if (GetProcessInformation(&info.processLauncher, &parent_info) == noErr)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if (GetProcessInformation(&info.processLauncher, &parent_info) == noErr) {
+#pragma clang diagnostic pop
       return parent_info.processSignature == 'lgnw';
+    }
   }
   return false;
 }
@@ -441,82 +424,21 @@ int MacOSXMinorVersionInternal() {
   // immediate death.
   CHECK(darwin_major_version >= 6);
   int mac_os_x_minor_version = darwin_major_version - 4;
-  DLOG_IF(WARNING, darwin_major_version > 15) << "Assuming Darwin "
-      << base::IntToString(darwin_major_version) << " is Mac OS X 10."
-      << base::IntToString(mac_os_x_minor_version);
+  DLOG_IF(WARNING, darwin_major_version > 18)
+      << "Assuming Darwin " << base::IntToString(darwin_major_version)
+      << " is macOS 10." << base::IntToString(mac_os_x_minor_version);
 
   return mac_os_x_minor_version;
 }
 
-// Returns the running system's Mac OS X minor version. This is the |y| value
-// in 10.y or 10.y.z.
+}  // namespace
+
+namespace internal {
 int MacOSXMinorVersion() {
   static int mac_os_x_minor_version = MacOSXMinorVersionInternal();
   return mac_os_x_minor_version;
 }
-
-enum {
-  MAVERICKS_MINOR_VERSION = 9,
-  YOSEMITE_MINOR_VERSION = 10,
-  EL_CAPITAN_MINOR_VERSION = 11,
-  SIERRA_MINOR_VERSION = 12,
-};
-
-}  // namespace
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GT_10_9)
-bool IsOSMavericks() {
-  return MacOSXMinorVersion() == MAVERICKS_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GE_10_9)
-bool IsOSMavericksOrLater() {
-  return MacOSXMinorVersion() >= MAVERICKS_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GT_10_10)
-bool IsOSYosemite() {
-  return MacOSXMinorVersion() == YOSEMITE_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GE_10_10)
-bool IsOSYosemiteOrLater() {
-  return MacOSXMinorVersion() >= YOSEMITE_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GT_10_11)
-bool IsOSElCapitan() {
-  return MacOSXMinorVersion() == EL_CAPITAN_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GE_10_11)
-bool IsOSElCapitanOrLater() {
-  return MacOSXMinorVersion() >= EL_CAPITAN_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GT_10_12)
-bool IsOSSierra() {
-  return MacOSXMinorVersion() == SIERRA_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GE_10_12)
-bool IsOSSierraOrLater() {
-  return MacOSXMinorVersion() >= SIERRA_MINOR_VERSION;
-}
-#endif
-
-#if !defined(BASE_MAC_MAC_UTIL_H_INLINED_GT_10_12)
-bool IsOSLaterThanSierra_DontCallThis() {
-  return MacOSXMinorVersion() > SIERRA_MINOR_VERSION;
-}
-#endif
+}  // namespace internal
 
 std::string GetModelIdentifier() {
   std::string return_string;

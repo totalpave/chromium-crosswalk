@@ -17,9 +17,11 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/common/profile_management_switches.h"
+#include "components/signin/core/browser/account_consistency_method.h"
+#include "components/zoom/test/zoom_test_utils.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
@@ -27,43 +29,9 @@
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
+using zoom::ZoomChangedWatcher;
 using zoom::ZoomController;
 using zoom::ZoomObserver;
-
-bool operator==(const ZoomController::ZoomChangedEventData& lhs,
-                const ZoomController::ZoomChangedEventData& rhs) {
-  return lhs.web_contents == rhs.web_contents &&
-         lhs.old_zoom_level == rhs.old_zoom_level &&
-         lhs.new_zoom_level == rhs.new_zoom_level &&
-         lhs.zoom_mode == rhs.zoom_mode &&
-         lhs.can_show_bubble == rhs.can_show_bubble;
-}
-
-class ZoomChangedWatcher : public ZoomObserver {
- public:
-  ZoomChangedWatcher(
-      content::WebContents* web_contents,
-      const ZoomController::ZoomChangedEventData& expected_event_data)
-      : expected_event_data_(expected_event_data),
-        message_loop_runner_(new content::MessageLoopRunner) {
-    ZoomController::FromWebContents(web_contents)->AddObserver(this);
-  }
-  ~ZoomChangedWatcher() override {}
-
-  void Wait() { message_loop_runner_->Run(); }
-
-  void OnZoomChanged(
-      const ZoomController::ZoomChangedEventData& event_data) override {
-    if (event_data == expected_event_data_)
-      message_loop_runner_->Quit();
-  }
-
- private:
-  ZoomController::ZoomChangedEventData expected_event_data_;
-  scoped_refptr<content::MessageLoopRunner> message_loop_runner_;
-
-  DISALLOW_COPY_AND_ASSIGN(ZoomChangedWatcher);
-};
 
 class ZoomControllerBrowserTest : public InProcessBrowserTest {
  public:
@@ -112,11 +80,11 @@ IN_PROC_BROWSER_TEST_F(ZoomControllerBrowserTest,
   double old_zoom_level = zoom_controller->GetZoomLevel();
   double new_zoom_level = old_zoom_level + 0.5;
 
-  content::RenderProcessHost* host = web_contents->GetRenderProcessHost();
+  content::RenderProcessHost* host = web_contents->GetMainFrame()->GetProcess();
   {
     content::RenderProcessHostWatcher crash_observer(
         host, content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
-    host->Shutdown(0, false);
+    host->Shutdown(0);
     crash_observer.Wait();
   }
   EXPECT_FALSE(web_contents->GetRenderViewHost()->IsRenderViewLive());
@@ -180,7 +148,7 @@ IN_PROC_BROWSER_TEST_F(ZoomControllerBrowserTest,
   ASSERT_TRUE(tab_strip);
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, NEW_FOREGROUND_TAB,
+      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   {
     content::WebContents* web_contents = tab_strip->GetActiveWebContents();
@@ -279,14 +247,14 @@ IN_PROC_BROWSER_TEST_F(ZoomControllerBrowserTest, NavigationResetsManualMode) {
 IN_PROC_BROWSER_TEST_F(ZoomControllerBrowserTest,
                        SettingsZoomAfterSigninWorks) {
   GURL signin_url(std::string(chrome::kChromeUIChromeSigninURL)
-                      .append("?access_point=0&reason=0"));
+                      .append("?access_point=0&reason=5"));
   // We open the signin page in a new tab so that the ZoomController is
   // created against the HostZoomMap of the special StoragePartition that
   // backs the signin page. When we subsequently navigate away from the
   // signin page, the HostZoomMap changes, and we need to test that the
   // ZoomController correctly detects this.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), signin_url, NEW_FOREGROUND_TAB,
+      browser(), signin_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   login_ui_test_utils::WaitUntilUIReady(browser());
   content::WebContents* web_contents =

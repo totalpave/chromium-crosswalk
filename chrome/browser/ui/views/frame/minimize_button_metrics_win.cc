@@ -4,12 +4,11 @@
 
 #include "chrome/browser/ui/views/frame/minimize_button_metrics_win.h"
 
-#include "base/logging.h"
 #include "base/i18n/rtl.h"
+#include "base/logging.h"
 #include "base/win/windows_version.h"
 #include "dwmapi.h"
 #include "ui/base/win/shell.h"
-#include "ui/display/win/dpi.h"
 #include "ui/display/win/screen_win.h"
 #include "ui/gfx/geometry/point.h"
 
@@ -61,6 +60,12 @@ void MinimizeButtonMetrics::OnHWNDActivated() {
   was_activated_ = true;
   // NOTE: we don't cache here as it seems only after the activate is the value
   // correct.
+}
+
+void MinimizeButtonMetrics::OnDpiChanged() {
+  // This ensures that the next time GetMinimizeButtonOffsetX() is called, it
+  // will be recalculated, given the new scale factor.
+  cached_minimize_button_x_delta_ = 0;
 }
 
 // This function attempts to calculate the odd and varying difference
@@ -123,7 +128,7 @@ int MinimizeButtonMetrics::GetMinimizeButtonOffsetForWindow() const {
     TITLEBARINFOEX titlebar_info = {0};
     titlebar_info.cbSize = sizeof(TITLEBARINFOEX);
     SendMessage(hwnd_, WM_GETTITLEBARINFOEX, 0,
-                reinterpret_cast<WPARAM>(&titlebar_info));
+                reinterpret_cast<LPARAM>(&titlebar_info));
 
     // Under DWM WM_GETTITLEBARINFOEX won't return the right thing until after
     // WM_NCACTIVATE (maybe it returns classic values?). In an attempt to

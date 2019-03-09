@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+#include <utility>
+
+#include "base/threading/thread_restrictions.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/api/commands/command_service.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -41,22 +46,23 @@ namespace extensions {
 typedef ExtensionApiTest CommandServiceTest;
 
 IN_PROC_BROWSER_TEST_F(CommandServiceTest, RemoveShortcutSurvivesUpdate) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
   base::ScopedTempDir scoped_temp_dir;
   EXPECT_TRUE(scoped_temp_dir.CreateUniqueTempDir());
   base::FilePath pem_path = test_data_dir_.
       AppendASCII("keybinding").AppendASCII("keybinding.pem");
-  base::FilePath path_v1 = PackExtensionWithOptions(
-      test_data_dir_.AppendASCII("keybinding").AppendASCII("update")
-                    .AppendASCII("v1"),
-      scoped_temp_dir.path().AppendASCII("v1.crx"),
-      pem_path,
-      base::FilePath());
-  base::FilePath path_v2 = PackExtensionWithOptions(
-      test_data_dir_.AppendASCII("keybinding").AppendASCII("update")
-                    .AppendASCII("v2"),
-      scoped_temp_dir.path().AppendASCII("v2.crx"),
-      pem_path,
-      base::FilePath());
+  base::FilePath path_v1 =
+      PackExtensionWithOptions(test_data_dir_.AppendASCII("keybinding")
+                                   .AppendASCII("update")
+                                   .AppendASCII("v1"),
+                               scoped_temp_dir.GetPath().AppendASCII("v1.crx"),
+                               pem_path, base::FilePath());
+  base::FilePath path_v2 =
+      PackExtensionWithOptions(test_data_dir_.AppendASCII("keybinding")
+                                   .AppendASCII("update")
+                                   .AppendASCII("v2"),
+                               scoped_temp_dir.GetPath().AppendASCII("v2.crx"),
+                               pem_path, base::FilePath());
 
   ExtensionService* service = ExtensionSystem::Get(browser()->profile())->
       extension_service();
@@ -110,11 +116,11 @@ IN_PROC_BROWSER_TEST_F(CommandServiceTest,
   // another platform.
   std::string anotherPlatformKey = GetAnotherCommandPlatform() + ":Alt+G";
   const char kNamedCommandName[] = "toggle-feature";
-  base::DictionaryValue* keybinding = new base::DictionaryValue();
+  auto keybinding = std::make_unique<base::DictionaryValue>();
   keybinding->SetString("extension", extension->id());
   keybinding->SetString("command_name", kNamedCommandName);
   keybinding->SetBoolean("global", false);
-  bindings->Set(anotherPlatformKey, keybinding);
+  bindings->Set(anotherPlatformKey, std::move(keybinding));
 
   CommandService* command_service = CommandService::Get(browser()->profile());
   command_service->RemoveKeybindingPrefs(extension->id(), kNamedCommandName);

@@ -9,6 +9,7 @@
 
 #include "remoting/base/breakpad.h"
 
+#include <crtdbg.h>
 #include <windows.h>
 
 #include <memory>
@@ -18,11 +19,11 @@
 #include "base/file_version_info.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/current_module.h"
 #include "base/win/wrapped_window_proc.h"
-#include "breakpad/src/client/windows/handler/exception_handler.h"
+#include "third_party/breakpad/breakpad/src/client/windows/handler/exception_handler.h"
 
 namespace remoting {
 void InitializeCrashReportingForTest(const wchar_t* pipe_name);
@@ -133,7 +134,7 @@ BreakpadWin::BreakpadWin() : handling_exception_(0) {
 }
 
 BreakpadWin::~BreakpadWin() {
-  // This object should be leaked so that crashes occurred during the process
+  // This object should be leaked so that crashes which occur during process
   // shutdown will be caught.
   NOTREACHED();
 }
@@ -163,8 +164,8 @@ google_breakpad::CustomClientInfo* BreakpadWin::GetCustomInfo() {
       kBreakpadPlatformEntry, kBreakpadPlatformWin32);
   static google_breakpad::CustomInfoEntry entries[] = {
       ver_entry, prod_entry, plat_entry  };
-  static google_breakpad::CustomClientInfo custom_info = {
-      entries, arraysize(entries) };
+  static google_breakpad::CustomClientInfo custom_info = {entries,
+                                                          base::size(entries)};
   return &custom_info;
 }
 

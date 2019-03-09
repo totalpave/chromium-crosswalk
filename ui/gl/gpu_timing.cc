@@ -4,6 +4,9 @@
 
 #include "ui/gl/gpu_timing.h"
 
+#include <utility>
+
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/time/time.h"
@@ -22,14 +25,14 @@ int64_t NanoToMicro(uint64_t nano_seconds) {
 }
 
 int32_t QueryTimestampBits() {
-  GLint timestamp_bits;
+  GLint timestamp_bits = 0;
   glGetQueryiv(GL_TIMESTAMP, GL_QUERY_COUNTER_BITS, &timestamp_bits);
   return static_cast<int32_t>(timestamp_bits);
 }
 
 class GPUTimingImpl : public GPUTiming {
  public:
-   GPUTimingImpl(GLContextReal* context);
+  explicit GPUTimingImpl(GLContextReal* context);
   ~GPUTimingImpl() override;
 
   void ForceTimeElapsedQuery() { force_time_elapsed_query_ = true; }
@@ -50,8 +53,8 @@ class GPUTimingImpl : public GPUTiming {
            ? (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds()
            : cpu_time_for_testing_.Run();
   }
-  void SetCpuTimeForTesting(const base::Callback<int64_t(void)>& cpu_time) {
-    cpu_time_for_testing_ = cpu_time;
+  void SetCpuTimeForTesting(base::RepeatingCallback<int64_t(void)> cpu_time) {
+    cpu_time_for_testing_ = std::move(cpu_time);
   }
 
   void UpdateQueryResults();
@@ -74,7 +77,7 @@ class GPUTimingImpl : public GPUTiming {
  private:
   scoped_refptr<GPUTimingClient> CreateGPUTimingClient() override;
 
-  base::Callback<int64_t(void)> cpu_time_for_testing_;
+  base::RepeatingCallback<int64_t(void)> cpu_time_for_testing_;
   GPUTiming::TimerType timer_type_ = GPUTiming::kTimerTypeInvalid;
   uint32_t disjoint_counter_ = 0;
   int64_t offset_ = 0;  // offset cache when timer_type_ == kTimerTypeARB
@@ -83,7 +86,7 @@ class GPUTimingImpl : public GPUTiming {
   int32_t timestamp_bit_count_gl_ = -1;  // gl implementation timestamp bits
 
   uint32_t next_timer_query_id_ = 0;
-  uint32_t next_good_timer_query_id_ = 0; // identify bad ids for disjoints.
+  uint32_t next_good_timer_query_id_ = 0;  // identify bad ids for disjoints.
   uint32_t query_disjoint_count_ = 0;
 
   // Extra state tracking data for elapsed timer queries.
@@ -91,7 +94,7 @@ class GPUTimingImpl : public GPUTiming {
   uint32_t elapsed_query_count_ = 0;
   scoped_refptr<TimeElapsedTimerQuery> last_elapsed_query_;
 
-  std::deque<scoped_refptr<TimerQuery> > queries_;
+  base::circular_deque<scoped_refptr<TimerQuery>> queries_;
 
   DISALLOW_COPY_AND_ASSIGN(GPUTimingImpl);
 };
@@ -121,7 +124,7 @@ class QueryResult : public base::RefCounted<QueryResult> {
 
 class TimerQuery : public base::RefCounted<TimerQuery> {
  public:
-  TimerQuery(uint32_t next_id);
+  explicit TimerQuery(uint32_t next_id);
   virtual void Destroy() = 0;
 
   // Returns true when UpdateQueryResults() is ready to be called.
@@ -134,7 +137,7 @@ class TimerQuery : public base::RefCounted<TimerQuery> {
   virtual void PrepareNextUpdate(scoped_refptr<TimerQuery> prev) {}
 
   uint32_t timer_query_id_ = 0;
-  int64_t time_stamp_ = 0; // Timestamp of the query, could be estimated.
+  int64_t time_stamp_ = 0;  // Timestamp of the query, could be estimated.
 
  protected:
   friend class base::RefCounted<TimerQuery>;
@@ -270,8 +273,7 @@ class TimeElapsedTimerQuery : public TimerQuery {
 
 class TimeStampTimerQuery : public TimerQuery {
  public:
-  TimeStampTimerQuery(uint32_t next_id)
-      : TimerQuery(next_id) {
+  explicit TimeStampTimerQuery(uint32_t next_id) : TimerQuery(next_id) {
     glGenQueries(1, &gl_query_id_);
   }
 
@@ -413,7 +415,7 @@ scoped_refptr<QueryResult> GPUTimingImpl::DoTimeStampQuery() {
   if (timestamp_bit_count_gl_ == -1) {
     DCHECK(timer_type_ != GPUTiming::kTimerTypeEXT);
     timestamp_bit_count_gl_ = QueryTimestampBits();
-    force_time_elapsed_query_ = (timestamp_bit_count_gl_ == 0);
+    force_time_elapsed_query_ |= (timestamp_bit_count_gl_ == 0);
   }
 
   if (force_time_elapsed_query_) {
@@ -648,9 +650,9 @@ int64_t GPUTimingClient::GetCurrentCPUTime() {
 }
 
 void GPUTimingClient::SetCpuTimeForTesting(
-    const base::Callback<int64_t(void)>& cpu_time) {
+    base::RepeatingCallback<int64_t(void)> cpu_time) {
   DCHECK(gpu_timing_);
-  gpu_timing_->SetCpuTimeForTesting(cpu_time);
+  gpu_timing_->SetCpuTimeForTesting(std::move(cpu_time));
 }
 
 bool GPUTimingClient::IsForceTimeElapsedQuery() {

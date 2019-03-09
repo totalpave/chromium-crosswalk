@@ -7,8 +7,7 @@
 
 #include <stdint.h>
 
-#include <queue>
-
+#include "base/containers/queue.h"
 #include "base/macros.h"
 #include "ui/gfx/vsync_provider.h"
 
@@ -21,7 +20,18 @@ class SyncControlVSyncProvider : public gfx::VSyncProvider {
   SyncControlVSyncProvider();
   ~SyncControlVSyncProvider() override;
 
-  void GetVSyncParameters(const UpdateVSyncCallback& callback) override;
+  void GetVSyncParameters(UpdateVSyncCallback callback) override;
+  bool GetVSyncParametersIfAvailable(base::TimeTicks* timebase,
+                                     base::TimeDelta* interval) override;
+  bool SupportGetVSyncParametersIfAvailable() const override;
+
+  static constexpr bool IsSupported() {
+#if defined(OS_LINUX)
+    return true;
+#else
+    return false;
+#endif  // defined(OS_LINUX)
+  }
 
  protected:
   virtual bool GetSyncValues(int64_t* system_time,
@@ -41,8 +51,8 @@ class SyncControlVSyncProvider : public gfx::VSyncProvider {
   // We use this to filter out the noise in the computation resulting
   // from configuration change (monitor reconfiguration, moving windows
   // between monitors, suspend and resume, etc.).
-  std::queue<base::TimeDelta> last_computed_intervals_;
-#endif
+  base::queue<base::TimeDelta> last_computed_intervals_;
+#endif  // defined(OS_LINUX)
 
   DISALLOW_COPY_AND_ASSIGN(SyncControlVSyncProvider);
 };

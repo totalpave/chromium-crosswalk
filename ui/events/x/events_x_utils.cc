@@ -6,11 +6,6 @@
 
 #include <stddef.h>
 #include <string.h>
-#include <X11/extensions/XInput.h>
-#include <X11/extensions/XInput2.h>
-#include <X11/XKBlib.h>
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
 #include <cmath>
 
 #include "base/logging.h"
@@ -27,8 +22,8 @@
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/x/x11.h"
 #include "ui/gfx/x/x11_atom_cache.h"
-#include "ui/gfx/x/x11_types.h"
 
 namespace {
 
@@ -271,6 +266,12 @@ ui::EventType GetTouchEventType(const XEvent& xev) {
     case XI_DeviceChanged:
       // This can happen when --touch-devices flag is used.
       return ui::ET_UNKNOWN;
+    case XI_Leave:
+    case XI_Enter:
+    case XI_FocusIn:
+    case XI_FocusOut:
+      // These may be handled by the PlatformEventDispatcher directly.
+      return ui::ET_UNKNOWN;
     default:
       NOTREACHED();
   }
@@ -425,8 +426,11 @@ EventType EventTypeFromXEvent(const XEvent& xev) {
             return devices->IsTouchpadXInputEvent(xev) ? ET_SCROLL
                                                        : ET_MOUSEWHEEL;
           }
-          if (devices->GetScrollClassEventDetail(xev) != SCROLL_TYPE_NO_SCROLL)
-            return ET_MOUSEWHEEL;
+          if (devices->GetScrollClassEventDetail(xev) !=
+              SCROLL_TYPE_NO_SCROLL) {
+            return devices->IsTouchpadXInputEvent(xev) ? ET_SCROLL
+                                                       : ET_MOUSEWHEEL;
+          }
           if (devices->IsCMTMetricsEvent(xev))
             return ET_UMA_DATA;
           if (GetButtonMaskForX2Event(xievent))
@@ -469,6 +473,9 @@ int EventFlagsFromXEvent(const XEvent& xev) {
       return flags;
     }
     case EnterNotify:
+      // EnterNotify creates ET_MOUSE_MOVED. Mark as synthesized as this is not
+      // a real mouse move event.
+      return GetEventFlagsFromXState(xev.xcrossing.state) | EF_IS_SYNTHESIZED;
     case LeaveNotify:
       return GetEventFlagsFromXState(xev.xcrossing.state);
     case MotionNotify:
@@ -631,6 +638,7 @@ int GetChangedMouseButtonFlagsFromXEvent(const XEvent& xev) {
         default:
           break;
       }
+      break;
     }
     default:
       break;
@@ -720,6 +728,9 @@ float GetTouchAngleFromXEvent(const XEvent& xev) {
 }
 
 float GetTouchForceFromXEvent(const XEvent& xev) {
+  XIDeviceEvent* event = static_cast<XIDeviceEvent*>(xev.xcookie.data);
+  if (event->evtype == XI_TouchEnd)
+    return 0.0;
   double force = 0.0;
   force = GetTouchParamFromXEvent(
       xev, ui::DeviceDataManagerX11::DT_TOUCH_PRESSURE, 0.0);
@@ -732,28 +743,35 @@ float GetTouchForceFromXEvent(const XEvent& xev) {
   return force;
 }
 
+EventPointerType GetTouchPointerTypeFromXEvent(const XEvent& xev) {
+  XIDeviceEvent* event = static_cast<XIDeviceEvent*>(xev.xcookie.data);
+  DCHECK(ui::TouchFactory::GetInstance()->IsTouchDevice(event->sourceid));
+  return ui::TouchFactory::GetInstance()->GetTouchDevicePointerType(
+      event->sourceid);
+}
+
 bool GetScrollOffsetsFromXEvent(const XEvent& xev,
                                 float* x_offset,
                                 float* y_offset,
                                 float* x_offset_ordinal,
                                 float* y_offset_ordinal,
                                 int* finger_count) {
-  if (DeviceDataManagerX11::GetInstance()->IsScrollEvent(xev)) {
-    // Temp values to prevent passing NULLs to DeviceDataManager.
-    float x_offset_, y_offset_;
-    float x_offset_ordinal_, y_offset_ordinal_;
-    int finger_count_;
-    if (!x_offset)
-      x_offset = &x_offset_;
-    if (!y_offset)
-      y_offset = &y_offset_;
-    if (!x_offset_ordinal)
-      x_offset_ordinal = &x_offset_ordinal_;
-    if (!y_offset_ordinal)
-      y_offset_ordinal = &y_offset_ordinal_;
-    if (!finger_count)
-      finger_count = &finger_count_;
+  // Temp values to prevent passing NULLs to DeviceDataManager.
+  float x_scroll_offset, y_scroll_offset;
+  float x_scroll_offset_ordinal, y_scroll_offset_ordinal;
+  int finger;
+  if (!x_offset)
+    x_offset = &x_scroll_offset;
+  if (!y_offset)
+    y_offset = &y_scroll_offset;
+  if (!x_offset_ordinal)
+    x_offset_ordinal = &x_scroll_offset_ordinal;
+  if (!y_offset_ordinal)
+    y_offset_ordinal = &y_scroll_offset_ordinal;
+  if (!finger_count)
+    finger_count = &finger;
 
+  if (DeviceDataManagerX11::GetInstance()->IsScrollEvent(xev)) {
     DeviceDataManagerX11::GetInstance()->GetScrollOffsets(
         xev, x_offset, y_offset, x_offset_ordinal, y_offset_ordinal,
         finger_count);
@@ -767,6 +785,15 @@ bool GetScrollOffsetsFromXEvent(const XEvent& xev,
         xev, &x_scroll_offset, &y_scroll_offset);
     *x_offset = x_scroll_offset * kWheelScrollAmount;
     *y_offset = y_scroll_offset * kWheelScrollAmount;
+
+    if (DeviceDataManagerX11::GetInstance()->IsTouchpadXInputEvent(xev)) {
+      *x_offset_ordinal = *x_offset;
+      *y_offset_ordinal = *y_offset;
+      // In libinput, we can check to validate whether the device supports
+      // 'two_finger', 'edge' scrolling or not. See
+      // https://www.mankier.com/4/libinput.
+      *finger_count = 2;
+    }
     return true;
   }
   return false;
@@ -800,11 +827,13 @@ bool GetFlingDataFromXEvent(const XEvent& xev,
   return true;
 }
 
-void ResetTimestampRolloverCountersForTesting(
-    std::unique_ptr<base::TickClock> tick_clock) {
+bool IsAltPressed() {
+  return XModifierStateWatcher::GetInstance()->state() & Mod1Mask;
+}
+
+void ResetTimestampRolloverCountersForTesting() {
   g_last_seen_timestamp_ms = 0;
   g_rollover_ms = 0;
-  SetEventTickClockForTesting(std::move(tick_clock));
 }
 
 }  // namespace ui

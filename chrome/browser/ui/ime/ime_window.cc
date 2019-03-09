@@ -18,6 +18,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "ui/display/display.h"
+#include "ui/display/display_finder.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/image/image.h"
 
@@ -69,9 +70,10 @@ ImeWindow::ImeWindow(Profile* profile,
     create_params.opener_render_frame_id =
         opener_render_frame_host->GetRoutingID();
   }
-  web_contents_.reset(content::WebContents::Create(create_params));
+  web_contents_ = content::WebContents::Create(create_params);
   web_contents_->SetDelegate(this);
-  content::OpenURLParams params(gurl, content::Referrer(), SINGLETON_TAB,
+  content::OpenURLParams params(gurl, content::Referrer(),
+                                WindowOpenDisposition::SINGLETON_TAB,
                                 ui::PAGE_TRANSITION_LINK, false);
   web_contents_->OpenURL(params);
 
@@ -100,10 +102,12 @@ void ImeWindow::FollowCursor(const gfx::Rect& cursor_bounds) {
     return;
 
   gfx::Rect screen_bounds =
-      display::Screen::GetScreen()->GetPrimaryDisplay().bounds();
+      display::FindDisplayNearestPoint(
+          display::Screen::GetScreen()->GetAllDisplays(),
+          gfx::Point(cursor_bounds.x(), cursor_bounds.y()))->bounds();
   gfx::Rect window_bounds = native_window_->GetBounds();
-  int screen_width = screen_bounds.width();
-  int screen_height = screen_bounds.height();
+  int screen_width = screen_bounds.x() + screen_bounds.width();
+  int screen_height = screen_bounds.y() + screen_bounds.height();
   int width = window_bounds.width();
   int height = window_bounds.height();
   // By default, aligns the left of the window client area to the left of the
@@ -128,7 +132,8 @@ int ImeWindow::GetFrameId() const {
 }
 
 void ImeWindow::OnWindowDestroyed() {
-  FOR_EACH_OBSERVER(ImeWindowObserver, observers_, OnWindowDestroyed(this));
+  for (ImeWindowObserver& observer : observers_)
+    observer.OnWindowDestroyed(this);
   native_window_ = nullptr;
   delete this;
 }
@@ -174,26 +179,22 @@ void ImeWindow::CloseContents(content::WebContents* source) {
   Close();
 }
 
-void ImeWindow::MoveContents(content::WebContents* source,
-                                 const gfx::Rect& pos) {
+void ImeWindow::SetContentsBounds(content::WebContents* source,
+                                  const gfx::Rect& bounds) {
   if (!native_window_)
     return;
 
   if (mode_ == NORMAL) {
-    native_window_->SetBounds(pos);
+    native_window_->SetBounds(bounds);
     return;
   }
 
   // Follow-cursor window needs to remain the x/y and only allow JS to
   // change the size.
-  gfx::Rect bounds = native_window_->GetBounds();
-  bounds.set_width(pos.width());
-  bounds.set_height(pos.height());
-  native_window_->SetBounds(bounds);
-}
-
-bool ImeWindow::IsPopupOrPanel(const content::WebContents* source) const {
-  return true;
+  gfx::Rect native_bounds = native_window_->GetBounds();
+  native_bounds.set_width(bounds.width());
+  native_bounds.set_height(bounds.height());
+  native_window_->SetBounds(native_bounds);
 }
 
 }  // namespace ui

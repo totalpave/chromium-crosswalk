@@ -14,14 +14,25 @@
 
 namespace google_apis {
 
+// This enum class is used to express a corpora parameter configuration for
+// Files:list.
+enum class FilesListCorpora {
+  // 'default': The user's subscribed items.
+  DEFAULT,
+  // 'teamDrives': A Team Drive.
+  TEAM_DRIVE,
+  // 'default,allTeamDrives': All Team Drives and the user's subscribed items.
+  ALL_TEAM_DRIVES
+};
+
 // This class is used to generate URLs for communicating with drive api
 // servers for production, and a local server for testing.
 class DriveApiUrlGenerator {
  public:
   // |base_url| is the path to the target drive api server.
   // Note that this is an injecting point for a testing server.
-  DriveApiUrlGenerator(const GURL& base_url,
-                       const GURL& base_thumbnail_url);
+  DriveApiUrlGenerator(const GURL& base_url, const GURL& base_thumbnail_url);
+  DriveApiUrlGenerator(const DriveApiUrlGenerator& src);
   ~DriveApiUrlGenerator();
 
   // The base URL for communicating with the production drive api server.
@@ -33,22 +44,9 @@ class DriveApiUrlGenerator {
   // Returns a URL to invoke "About: get" method.
   GURL GetAboutGetUrl() const;
 
-  // Returns a URL to invoke "Apps: list" method.
-  // Set |use_internal_endpoint| to true if official Chrome's API key is used
-  // and retrieving more information (related to App uninstall) is necessary.
-  GURL GetAppsListUrl(bool use_internal_endpoint) const;
-
-  // Returns a URL to uninstall an app with the give |app_id|.
-  GURL GetAppsDeleteUrl(const std::string& app_id) const;
-
   // Returns a URL to fetch a file metadata.
   GURL GetFilesGetUrl(const std::string& file_id,
-                      bool use_internal_endpoint,
                       const GURL& embed_origin) const;
-
-  // Returns a URL to authorize an app to access a file.
-  GURL GetFilesAuthorizeUrl(const std::string& file_id,
-                            const std::string& app_id) const;
 
   // Returns a URL to create a resource.
   GURL GetFilesInsertUrl(const std::string& visibility) const;
@@ -65,6 +63,8 @@ class DriveApiUrlGenerator {
   // Returns a URL to fetch file list.
   GURL GetFilesListUrl(int max_results,
                        const std::string& page_token,
+                       FilesListCorpora corpora,
+                       const std::string& team_drive_id,
                        const std::string& q) const;
 
   // Returns a URL to delete a resource with the given |file_id|.
@@ -73,11 +73,16 @@ class DriveApiUrlGenerator {
   // Returns a URL to trash a resource with the given |file_id|.
   GURL GetFilesTrashUrl(const std::string& file_id) const;
 
+  // Returns a URL to invoke "TeamDrives: list" method.
+  GURL GetTeamDriveListUrl(int max_results,
+                           const std::string& page_token) const;
+
   // Returns a URL to fetch a list of changes.
   GURL GetChangesListUrl(bool include_deleted,
                          int max_results,
                          const std::string& page_token,
-                         int64_t start_change_id) const;
+                         int64_t start_change_id,
+                         const std::string& team_dirve_id) const;
 
   // Returns a URL to add a resource to a directory with |folder_id|.
   GURL GetChildrenInsertUrl(const std::string& folder_id) const;
@@ -121,6 +126,11 @@ class DriveApiUrlGenerator {
 
   // Generates a URL for batch upload.
   GURL GetBatchUploadUrl() const;
+
+  // Returns a URL for the start page token for a |team_drive|. |team_drive|
+  // may be empty, in which case the start page token will be returned for
+  // the users changes.
+  GURL GetStartPageTokenUrl(const std::string& team_drive) const;
 
  private:
   const GURL base_url_;

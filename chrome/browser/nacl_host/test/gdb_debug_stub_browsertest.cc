@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/environment.h"
 #include "base/path_service.h"
@@ -41,10 +42,10 @@ void NaClGdbDebugStubTest::StartTestScript(base::Process* test_process,
   // We call python script to reuse GDB RSP protocol implementation.
   base::CommandLine cmd(base::FilePath(FILE_PATH_LITERAL("python")));
   base::FilePath script;
-  PathService::Get(chrome::DIR_TEST_DATA, &script);
+  base::PathService::Get(chrome::DIR_TEST_DATA, &script);
   script = script.AppendASCII("nacl/debug_stub_browser_tests.py");
   cmd.AppendArgPath(script);
-  cmd.AppendArg(base::IntToString(debug_stub_port));
+  cmd.AppendArg(base::NumberToString(debug_stub_port));
   cmd.AppendArg(test_name);
   LOG(INFO) << cmd.GetCommandLineString();
   *test_process = base::LaunchProcess(cmd, base::LaunchOptions());
@@ -54,14 +55,14 @@ void NaClGdbDebugStubTest::RunDebugStubTest(const std::string& nacl_module,
                                             const std::string& test_name) {
   base::Process test_script;
   std::unique_ptr<base::Environment> env(base::Environment::Create());
-  nacl::NaClBrowser::GetInstance()->SetGdbDebugStubPortListener(
-      base::Bind(&NaClGdbDebugStubTest::StartTestScript,
-                 base::Unretained(this), &test_script, test_name));
+  nacl::NaClBrowser::SetGdbDebugStubPortListenerForTest(
+      base::Bind(&NaClGdbDebugStubTest::StartTestScript, base::Unretained(this),
+                 &test_script, test_name));
   // Turn on debug stub logging.
   env->SetVar("NACLVERBOSITY", "1");
   RunTestViaHTTP(nacl_module);
   env->UnSetVar("NACLVERBOSITY");
-  nacl::NaClBrowser::GetInstance()->ClearGdbDebugStubPortListener();
+  nacl::NaClBrowser::ClearGdbDebugStubPortListenerForTest();
   int exit_code;
   test_script.WaitForExit(&exit_code);
   EXPECT_EQ(0, exit_code);

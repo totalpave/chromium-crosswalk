@@ -2,9 +2,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+if (is_android) {
+  import("//build/config/android/rules.gni")
+}
+
 browser_sources = [
-  "data_reduction_proxy_bypass_protocol.cc",
-  "data_reduction_proxy_bypass_protocol.h",
   "data_reduction_proxy_bypass_stats.cc",
   "data_reduction_proxy_bypass_stats.h",
   "data_reduction_proxy_compression_stats.cc",
@@ -17,6 +19,8 @@ browser_sources = [
   "data_reduction_proxy_configurator.h",
   "data_reduction_proxy_data.cc",
   "data_reduction_proxy_data.h",
+  "data_reduction_proxy_data_use_observer.cc",
+  "data_reduction_proxy_data_use_observer.h",
   "data_reduction_proxy_delegate.cc",
   "data_reduction_proxy_delegate.h",
   "data_reduction_proxy_interceptor.cc",
@@ -29,7 +33,6 @@ browser_sources = [
   "data_reduction_proxy_mutable_config_values.h",
   "data_reduction_proxy_network_delegate.cc",
   "data_reduction_proxy_network_delegate.h",
-  "data_reduction_proxy_pingback_client.cc",
   "data_reduction_proxy_pingback_client.h",
   "data_reduction_proxy_prefs.cc",
   "data_reduction_proxy_prefs.h",
@@ -40,52 +43,77 @@ browser_sources = [
   "data_reduction_proxy_service_observer.h",
   "data_reduction_proxy_settings.cc",
   "data_reduction_proxy_settings.h",
-  "data_reduction_proxy_tamper_detection.cc",
-  "data_reduction_proxy_tamper_detection.h",
+  "data_reduction_proxy_util.cc",
+  "data_reduction_proxy_util.h",
   "data_store.cc",
   "data_store.h",
   "data_usage_store.cc",
   "data_usage_store.h",
   "db_data_owner.cc",
   "db_data_owner.h",
+  "network_properties_manager.cc",
+  "network_properties_manager.h",
+  "secure_proxy_checker.cc",
+  "secure_proxy_checker.h",
+  "warmup_url_fetcher.cc",
+  "warmup_url_fetcher.h",
 ]
 
 if (is_android) {
-  source_set("browser_small") {
+  static_library("browser_small") {
     sources = browser_sources
 
     deps = [
       "//base",
       "//components/data_reduction_proxy/core/common",
       "//components/data_reduction_proxy/proto:data_reduction_proxy_proto",
+      "//components/data_use_measurement/core",
+      "//components/data_use_measurement/core:ascriber",
       "//components/pref_registry",
       "//components/prefs",
       "//components/variations",
+      "//components/variations/net",
+      "//content/public/browser",
       "//crypto",
       "//google_apis",
       "//net:net",
+      "//services/network/public/cpp",
       "//url:url",
+    ]
+  }
+
+  java_cpp_enum("data_reduction_proxy_savings_cleared_enum_java") {
+    sources = [
+      "data_reduction_proxy_compression_stats.h",
     ]
   }
 }
 
-source_set("browser") {
+static_library("browser") {
   sources = browser_sources
   sources += [
     "data_store_impl.cc",
     "data_store_impl.h",
   ]
 
-  deps = [
-    "//base",
+  public_deps = [
     "//components/data_reduction_proxy/core/common",
     "//components/data_reduction_proxy/proto:data_reduction_proxy_proto",
+  ]
+  deps = [
+    "//base",
+    "//components/data_use_measurement/core",
+    "//components/data_use_measurement/core:ascriber",
     "//components/pref_registry",
     "//components/prefs",
     "//components/variations",
+    "//components/variations/net",
+    "//content/public/browser",
     "//crypto",
     "//google_apis",
     "//net",
+    "//services/network:network_service",
+    "//services/network/public/cpp",
     "//third_party/leveldatabase",
     "//url",
   ]
@@ -96,9 +124,11 @@ source_set("browser") {
   }
 }
 
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
+    "data_reduction_proxy_config_service_client_test_utils.cc",
+    "data_reduction_proxy_config_service_client_test_utils.h",
     "data_reduction_proxy_config_test_utils.cc",
     "data_reduction_proxy_config_test_utils.h",
     "data_reduction_proxy_settings_test_utils.cc",
@@ -117,8 +147,11 @@ source_set("test_support") {
     "//components/data_reduction_proxy/core/common",
     "//components/data_reduction_proxy/core/common:test_support",
     "//components/prefs:test_support",
+    "//components/previews/core:core",
+    "//components/previews/core:test_support",
     "//net",
     "//net:test_support",
+    "//services/network:test_support",
     "//testing/gmock",
     "//testing/gtest",
   ]
@@ -159,12 +192,13 @@ source_set("unit_tests") {
     "data_reduction_proxy_metrics_unittest.cc",
     "data_reduction_proxy_mutable_config_values_unittest.cc",
     "data_reduction_proxy_network_delegate_unittest.cc",
-    "data_reduction_proxy_pingback_client_unittest.cc",
     "data_reduction_proxy_prefs_unittest.cc",
     "data_reduction_proxy_request_options_unittest.cc",
     "data_reduction_proxy_settings_unittest.cc",
-    "data_reduction_proxy_tamper_detection_unittest.cc",
+    "data_reduction_proxy_util_unittest.cc",
     "data_usage_store_unittest.cc",
+    "network_properties_manager_unittest.cc",
+    "warmup_url_fetcher_unittest.cc",
   ]
 
   configs += [ "//build/config/compiler:no_size_t_to_int_warning" ]
@@ -177,9 +211,15 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//components/data_reduction_proxy/core/common:test_support",
     "//components/data_reduction_proxy/proto:data_reduction_proxy_proto",
+    "//components/data_use_measurement/core:ascriber",
     "//components/prefs:test_support",
+    "//components/previews/core",
+    "//components/previews/core:test_support",
     "//components/variations",
+    "//content/public/browser",
     "//net:test_support",
+    "//services/network:network_service",
+    "//services/network:test_support",
     "//testing/gmock",
     "//testing/gtest",
   ]

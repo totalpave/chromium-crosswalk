@@ -7,43 +7,62 @@
 
 #include <stdint.h>
 
+#include <memory>
+
+#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
-#include "ui/display/chromeos/display_configurator.h"
+#include "ui/display/display_observer.h"
 
 namespace chromeos {
 
 // A class to query output protection status and/or enable output protection.
 // All methods except constructor should be invoked in UI thread.
-class OutputProtectionDelegate : public aura::WindowObserver {
+class OutputProtectionDelegate : public aura::WindowObserver,
+                                 public display::DisplayObserver {
  public:
   typedef base::Callback<void(bool /* success */,
                               uint32_t /* link_mask */,
                               uint32_t /* protection_mask*/)>
       QueryStatusCallback;
-  typedef base::Callback<void(bool /* success */)> EnableProtectionCallback;
+  typedef base::Callback<void(bool /* success */)> SetProtectionCallback;
 
   OutputProtectionDelegate(int render_process_id, int render_frame_id);
   ~OutputProtectionDelegate() override;
 
-  // aura::WindowObserver overrides.
+  // display::DisplayObserver:
+  void OnDisplayMetricsChanged(const display::Display& display,
+                               uint32_t changed_metrics) override;
+
+  // aura::WindowObserver:
   void OnWindowHierarchyChanged(
       const aura::WindowObserver::HierarchyChangeParams& params) override;
   void OnWindowDestroying(aura::Window* window) override;
 
   void QueryStatus(const QueryStatusCallback& callback);
-  void EnableProtection(uint32_t desired_method_mask,
-                        const EnableProtectionCallback& callback);
+  void SetProtection(uint32_t desired_method_mask,
+                     const SetProtectionCallback& callback);
+
+  // Display content protection controller interface.
+  class Controller {
+   public:
+    Controller();
+    virtual ~Controller();
+    virtual void QueryStatus(int64_t display_id,
+                             const QueryStatusCallback& callback) = 0;
+    virtual void SetProtection(int64_t display_id,
+                               uint32_t desired_method_mask,
+                               const SetProtectionCallback& callback) = 0;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(Controller);
+  };
 
  private:
-  ui::DisplayConfigurator::ContentProtectionClientId GetClientId();
+  void OnWindowMayHaveMovedToAnotherDisplay();
 
-  void QueryStatusComplete(
-      const QueryStatusCallback& callback,
-      const ui::DisplayConfigurator::QueryProtectionResponse& response);
-  void EnableProtectionComplete(const EnableProtectionCallback& callback,
-                                bool success);
+  bool InitializeControllerIfNecessary();
 
   // Used to lookup the WebContents associated with the render frame.
   int render_process_id_;
@@ -52,8 +71,6 @@ class OutputProtectionDelegate : public aura::WindowObserver {
   // Native window being observed.
   aura::Window* window_;
 
-  ui::DisplayConfigurator::ContentProtectionClientId client_id_;
-
   // The display id which the renderer currently uses.
   int64_t display_id_;
 
@@ -61,7 +78,12 @@ class OutputProtectionDelegate : public aura::WindowObserver {
   // renderer changes display.
   uint32_t desired_method_mask_;
 
+  // The display content protection controller.
+  std::unique_ptr<Controller> controller_;
+
   base::WeakPtrFactory<OutputProtectionDelegate> weak_ptr_factory_;
+
+  DISALLOW_COPY_AND_ASSIGN(OutputProtectionDelegate);
 };
 
 }  // namespace chromeos

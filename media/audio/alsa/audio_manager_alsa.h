@@ -20,21 +20,18 @@ class AlsaWrapper;
 
 class MEDIA_EXPORT AudioManagerAlsa : public AudioManagerBase {
  public:
-  AudioManagerAlsa(
-      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> worker_task_runner,
-      AudioLogFactory* audio_log_factory);
-
-  static void ShowLinuxAudioInputSettings();
+  AudioManagerAlsa(std::unique_ptr<AudioThread> audio_thread,
+                   AudioLogFactory* audio_log_factory);
+  ~AudioManagerAlsa() override;
 
   // Implementation of AudioManager.
   bool HasAudioOutputDevices() override;
   bool HasAudioInputDevices() override;
-  void ShowAudioInputSettings() override;
   void GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
   void GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
   AudioParameters GetInputStreamParameters(
       const std::string& device_id) override;
+  const char* GetName() override;
 
   // Implementation of AudioManagerBase.
   AudioOutputStream* MakeLinearOutputStream(
@@ -54,8 +51,6 @@ class MEDIA_EXPORT AudioManagerAlsa : public AudioManagerBase {
       const LogCallback& log_callback) override;
 
  protected:
-  ~AudioManagerAlsa() override;
-
   AudioParameters GetPreferredOutputStreamParameters(
       const std::string& output_device_id,
       const AudioParameters& input_params) override;
@@ -67,14 +62,13 @@ class MEDIA_EXPORT AudioManagerAlsa : public AudioManagerBase {
   };
 
   // Gets a list of available ALSA devices.
-  void GetAlsaAudioDevices(StreamType type,
-                           media::AudioDeviceNames* device_names);
+  void GetAlsaAudioDevices(StreamType type, AudioDeviceNames* device_names);
 
   // Gets the ALSA devices' names and ids that support streams of the
   // given type.
   void GetAlsaDevicesInfo(StreamType type,
                           void** hint,
-                          media::AudioDeviceNames* device_names);
+                          AudioDeviceNames* device_names);
 
   // Checks if the specific ALSA device is available.
   static bool IsAlsaDeviceAvailable(StreamType type,

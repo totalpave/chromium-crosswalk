@@ -8,6 +8,9 @@
 #include <memory>
 
 #include "base/memory/ref_counted.h"
+#include "components/prefs/persistent_pref_store.h"
+#include "components/prefs/pref_value_store.h"
+#include "services/preferences/public/mojom/tracked_preference_validation_delegate.mojom-forward.h"
 
 namespace base {
 class DictionaryValue;
@@ -18,9 +21,10 @@ class Time;
 
 namespace policy {
 class PolicyService;
+class BrowserPolicyConnector;
 }
 
-namespace syncable_prefs {
+namespace sync_preferences {
 class PrefServiceSyncable;
 }
 
@@ -28,15 +32,12 @@ namespace user_prefs {
 class PrefRegistrySyncable;
 }
 
-class PrefHashStore;
 class PrefRegistry;
-class PrefRegistrySimple;
 class PrefService;
 
 class PrefStore;
 class Profile;
 class SupervisedUserSettingsService;
-class TrackedPreferenceValidationDelegate;
 
 namespace chrome_prefs {
 
@@ -64,23 +65,36 @@ extern const char kSettingsEnforcementGroupEnforceAlwaysWithExtensionsAndDSE[];
 // the created PrefService or NULL if creation has failed. Note, it is
 // guaranteed that in asynchronous version initialization happens after this
 // function returned.
-
 std::unique_ptr<PrefService> CreateLocalState(
     const base::FilePath& pref_filename,
-    base::SequencedTaskRunner* pref_io_task_runner,
     policy::PolicyService* policy_service,
-    const scoped_refptr<PrefRegistry>& pref_registry,
-    bool async);
+    scoped_refptr<PrefRegistry> pref_registry,
+    bool async,
+    std::unique_ptr<PrefValueStore::Delegate> delegate,
+    policy::BrowserPolicyConnector* policy_connector);
 
-std::unique_ptr<syncable_prefs::PrefServiceSyncable> CreateProfilePrefs(
+std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
     const base::FilePath& pref_filename,
-    base::SequencedTaskRunner* pref_io_task_runner,
-    TrackedPreferenceValidationDelegate* validation_delegate,
+    prefs::mojom::TrackedPreferenceValidationDelegatePtr validation_delegate,
     policy::PolicyService* policy_service,
     SupervisedUserSettingsService* supervised_user_settings,
-    const scoped_refptr<PrefStore>& extension_prefs,
-    const scoped_refptr<user_prefs::PrefRegistrySyncable>& pref_registry,
-    bool async);
+    scoped_refptr<PrefStore> extension_prefs,
+    scoped_refptr<user_prefs::PrefRegistrySyncable> pref_registry,
+    bool async,
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
+    std::unique_ptr<PrefValueStore::Delegate> delegate);
+
+// Installs policy related PrefStores on |preexisting_local_state|.
+// |preexisting_local_state| instance is a local state that has user PrefStore
+// and commandline PrefStore initialized. It is missing the mandatory and
+// recommended PrefStores and this method will add them to it.
+// |policy_service| is used as the source for mandatory or recommended
+// policies.
+// |delegate| is passed to listen to PrefStore initialization events.
+void InstallPoliciesOnLocalState(
+    PrefService* preexisting_local_state,
+    policy::PolicyService* policy_service,
+    std::unique_ptr<PrefValueStore::Delegate> delegate);
 
 // Call before startup tasks kick in to ignore the presence of a domain when
 // determining the active SettingsEnforcement group. For testing only.
@@ -90,7 +104,7 @@ void DisableDomainCheckForTesting();
 // preference values in |master_prefs|. Returns true on success.
 bool InitializePrefsFromMasterPrefs(
     const base::FilePath& profile_path,
-    const base::DictionaryValue& master_prefs);
+    std::unique_ptr<base::DictionaryValue> master_prefs);
 
 // Retrieves the time of the last preference reset event, if any, for the
 // provided profile. If no reset has occurred, returns a null |Time|.
@@ -100,11 +114,13 @@ base::Time GetResetTime(Profile* profile);
 // profile.
 void ClearResetTime(Profile* profile);
 
-// Register local state prefs used by chrome preference system.
-void RegisterPrefs(PrefRegistrySimple* registry);
-
 // Register user prefs used by chrome preference system.
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+
+// Shows notifications which correspond to PersistentPrefStore's reading errors.
+void HandlePersistentPrefStoreReadError(
+    const base::FilePath& pref_filename,
+    PersistentPrefStore::PrefReadError error);
 
 }  // namespace chrome_prefs
 

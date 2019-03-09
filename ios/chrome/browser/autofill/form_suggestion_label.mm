@@ -12,13 +12,23 @@
 #include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
+#include "components/autofill/core/browser/autofill_data_util.h"
 #include "components/autofill/core/browser/credit_card.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
-#import "ios/chrome/browser/autofill/form_suggestion_view_client.h"
-#include "ios/chrome/browser/ui/ui_util.h"
-#import "ios/chrome/browser/ui/uikit_ui_util.h"
+#import "ios/chrome/browser/autofill/form_suggestion_client.h"
+#include "ios/chrome/browser/ui/util/ui_util.h"
+#import "ios/chrome/browser/ui/util/uikit_ui_util.h"
+#include "ios/chrome/common/ui_util/constraints_ui_util.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
+// a11y identifier used to locate the autofill suggestion in automation
+NSString* const kFormSuggestionLabelAccessibilityIdentifier =
+    @"formSuggestionLabelAXID";
 
 namespace {
 
@@ -49,21 +59,10 @@ struct IconImageMap {
   NSString* image_name;
 };
 
-const IconImageMap kCreditCardIconImageMap[] = {
-    {autofill::kAmericanExpressCard, @"autofill_card_american_express"},
-    {autofill::kDiscoverCard, @"autofill_card_discover"},
-    {autofill::kMasterCard, @"autofill_card_mastercard"},
-    {autofill::kVisaCard, @"autofill_card_visa"},
-    {autofill::kDinersCard, @"autofill_card_diners"},
-    {autofill::kGenericCard, @"autofill_card_generic"},
-    {autofill::kJCBCard, @"autofill_card_jcb"},
-    {autofill::kUnionPay, @"autofill_card_unionpay"},
-};
-
 // Creates a label with the given |text| and |alpha| suitable for use in a
 // suggestion button in the keyboard accessory view.
 UILabel* TextLabel(NSString* text, CGFloat alpha, BOOL bold) {
-  base::scoped_nsobject<UILabel> label([[UILabel alloc] init]);
+  UILabel* label = [[UILabel alloc] init];
   [label setText:text];
   CGFloat fontSize = IsIPadIdiom() ? kIpadFontSize : kIphoneFontSize;
   UIFont* font = bold ? [UIFont boldSystemFontOfSize:fontSize]
@@ -71,83 +70,61 @@ UILabel* TextLabel(NSString* text, CGFloat alpha, BOOL bold) {
   [label setFont:font];
   [label setTextColor:[UIColor colorWithWhite:0.0f alpha:alpha]];
   [label setBackgroundColor:[UIColor clearColor]];
-  [label sizeToFit];
-  return label.autorelease();
+  return label;
 }
 
 }  // namespace
 
-@interface FormSuggestionLabel ()
-
-// Returns the name of the image for credit card icon.
-+ (NSString*)imageNameForCreditCardIcon:(NSString*)icon;
-@end
-
 @implementation FormSuggestionLabel {
   // Client of this view.
-  base::WeakNSProtocol<id<FormSuggestionViewClient>> client_;
-  base::scoped_nsobject<FormSuggestion> suggestion_;
+  __weak id<FormSuggestionClient> client_;
+  FormSuggestion* suggestion_;
+  BOOL userInteractionEnabled_;
 }
 
 - (id)initWithSuggestion:(FormSuggestion*)suggestion
-           proposedFrame:(CGRect)proposedFrame
-                   index:(NSUInteger)index
-          numSuggestions:(NSUInteger)numSuggestions
-                  client:(id<FormSuggestionViewClient>)client {
-  // TODO(jimblackler): implement sizeThatFits: and layoutSubviews, and perform
-  // layout in those methods instead of in the designated initializer.
+                     index:(NSUInteger)index
+    userInteractionEnabled:(BOOL)userInteractionEnabled
+            numSuggestions:(NSUInteger)numSuggestions
+                    client:(id<FormSuggestionClient>)client {
   self = [super initWithFrame:CGRectZero];
   if (self) {
-    suggestion_.reset([suggestion retain]);
-    client_.reset(client);
+    suggestion_ = suggestion;
+    client_ = client;
+    userInteractionEnabled_ = userInteractionEnabled;
 
-    const CGFloat frameHeight = CGRectGetHeight(proposedFrame);
-    CGFloat currentX = kBorderWidth;
+    UIStackView* stackView = [[UIStackView alloc] initWithArrangedSubviews:@[]];
+    stackView.axis = UILayoutConstraintAxisHorizontal;
+    stackView.alignment = UIStackViewAlignmentCenter;
+    stackView.layoutMarginsRelativeArrangement = YES;
+    stackView.layoutMargins =
+        UIEdgeInsetsMake(0, kBorderWidth, 0, kBorderWidth);
+    stackView.spacing = kSpacing;
+    stackView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:stackView];
+    AddSameConstraints(stackView, self);
 
-    // [UIImage imageNamed:] writes error message if nil is passed. Prevent
-    // console spam by checking the name first.
-    NSString* iconImageName =
-        [FormSuggestionLabel imageNameForCreditCardIcon:suggestion.icon];
-    UIImage* iconImage = nil;
-    if (iconImageName)
-      iconImage = [UIImage imageNamed:iconImageName];
-    if (iconImage) {
-      UIImageView* iconView =
-          [[[UIImageView alloc] initWithImage:iconImage] autorelease];
-      const CGFloat iconY =
-          std::floor((frameHeight - iconImage.size.height) / 2.0f);
-      iconView.frame = CGRectMake(currentX, iconY, iconImage.size.width,
-                                  iconImage.size.height);
-      [self addSubview:iconView];
-      currentX += CGRectGetWidth(iconView.frame) + kSpacing;
+    if (suggestion.icon.length > 0) {
+      const int iconImageID = autofill::data_util::GetPaymentRequestData(
+                                  base::SysNSStringToUTF8(suggestion.icon))
+                                  .icon_resource_id;
+      UIImage* iconImage = NativeImage(iconImageID);
+      UIImageView* iconView = [[UIImageView alloc] initWithImage:iconImage];
+      [stackView addArrangedSubview:iconView];
     }
 
     UILabel* label = TextLabel(suggestion.value, kMainLabelAlpha, YES);
-    const CGFloat labelY =
-        std::floor(frameHeight / 2.0f - CGRectGetMidY(label.frame));
-    label.frame = CGRectMake(currentX, labelY, CGRectGetWidth(label.frame),
-                             CGRectGetHeight(label.frame));
-    [self addSubview:label];
-    currentX += CGRectGetWidth(label.frame);
+    [stackView addArrangedSubview:label];
 
     if ([suggestion.displayDescription length] > 0) {
-      currentX += kSpacing;
       UILabel* description =
           TextLabel(suggestion.displayDescription, kDescriptionLabelAlpha, NO);
-      const CGFloat descriptionY =
-          std::floor(frameHeight / 2.0f - CGRectGetMidY(description.frame));
-      description.frame =
-          CGRectMake(currentX, descriptionY, CGRectGetWidth(description.frame),
-                     CGRectGetHeight(description.frame));
-      [self addSubview:description];
-      currentX += CGRectGetWidth(description.frame);
+      [stackView addArrangedSubview:description];
     }
 
-    currentX += kBorderWidth;
-
-    self.frame = CGRectMake(proposedFrame.origin.x, proposedFrame.origin.y,
-                            currentX, proposedFrame.size.height);
-    [self setBackgroundColor:UIColorFromRGB(kBackgroundNormalColor)];
+    if (userInteractionEnabled_) {
+      [self setBackgroundColor:UIColorFromRGB(kBackgroundNormalColor)];
+    }
     [[self layer] setCornerRadius:kCornerRadius];
 
     [self setClipsToBounds:YES];
@@ -158,48 +135,35 @@ UILabel* TextLabel(NSString* text, CGFloat alpha, BOOL bold) {
                                     base::SysNSStringToUTF16(suggestion.value),
                                     base::SysNSStringToUTF16(
                                         suggestion.displayDescription),
-                                    base::IntToString16(index + 1),
-                                    base::IntToString16(numSuggestions))];
+                                    base::NumberToString16(index + 1),
+                                    base::NumberToString16(numSuggestions))];
+    [self
+        setAccessibilityIdentifier:kFormSuggestionLabelAccessibilityIdentifier];
   }
 
   return self;
-}
-
-- (id)initWithFrame:(CGRect)frame {
-  NOTREACHED();
-  return nil;
 }
 
 #pragma mark -
 #pragma mark UIResponder
 
 - (void)touchesBegan:(NSSet*)touches withEvent:(UIEvent*)event {
-  [self setBackgroundColor:UIColorFromRGB(kBackgroundPressedColor)];
+  if (userInteractionEnabled_) {
+    [self setBackgroundColor:UIColorFromRGB(kBackgroundPressedColor)];
+  }
 }
 
 - (void)touchesCancelled:(NSSet*)touches withEvent:(UIEvent*)event {
-  [self setBackgroundColor:UIColorFromRGB(kBackgroundNormalColor)];
+  if (userInteractionEnabled_) {
+    [self setBackgroundColor:UIColorFromRGB(kBackgroundNormalColor)];
+  }
 }
 
 - (void)touchesEnded:(NSSet*)touches withEvent:(UIEvent*)event {
-  [self setBackgroundColor:UIColorFromRGB(kBackgroundNormalColor)];
-  [client_ didSelectSuggestion:suggestion_];
-}
-
-#pragma mark -
-#pragma mark Private
-
-+ (NSString*)imageNameForCreditCardIcon:(NSString*)icon {
-  if (!icon || [icon length] == 0) {
-    return nil;
+  if (userInteractionEnabled_) {
+    [self setBackgroundColor:UIColorFromRGB(kBackgroundNormalColor)];
+    [client_ didSelectSuggestion:suggestion_];
   }
-  std::string iconName(base::SysNSStringToUTF8(icon));
-  for (size_t i = 0; i < arraysize(kCreditCardIconImageMap); ++i) {
-    if (iconName.compare(kCreditCardIconImageMap[i].icon_name) == 0) {
-      return kCreditCardIconImageMap[i].image_name;
-    }
-  }
-  return nil;
 }
 
 @end

@@ -4,15 +4,19 @@
 
 #include "content/common/input/input_event.h"
 
-#include "content/common/input/web_input_event_traits.h"
+#include "ui/events/blink/web_input_event_traits.h"
 
 namespace content {
 
 InputEvent::InputEvent() {}
 
+InputEvent::InputEvent(ui::WebScopedInputEvent event,
+                       const ui::LatencyInfo& info)
+    : web_event(std::move(event)), latency_info(info) {}
+
 InputEvent::InputEvent(const blink::WebInputEvent& web_event,
                        const ui::LatencyInfo& latency_info)
-    : web_event(WebInputEventTraits::Clone(web_event)),
+    : web_event(ui::WebInputEventTraits::Clone(web_event)),
       latency_info(latency_info) {}
 
 InputEvent::~InputEvent() {}

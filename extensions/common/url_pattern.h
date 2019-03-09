@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+#include "base/strings/string_piece.h"
+#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+
 class GURL;
 
 // A pattern that can be used to match URLs. A URLPattern is a very restricted
@@ -17,7 +20,8 @@ class GURL;
 // <url-pattern> := <scheme>://<host><port><path> | '<all_urls>'
 // <scheme> := '*' | 'http' | 'https' | 'file' | 'ftp' | 'chrome' |
 //             'chrome-extension' | 'filesystem'
-// <host> := '*' | '*.' <anychar except '/' and '*'>+
+// <host> := '*' | <IPv4 address> | [<IPv6 address>] |
+//           '*.' <anychar except '/' and '*'>+
 // <port> := [':' ('*' | <port number between 0 and 65535>)]
 // <path> := '/' <any chars>
 //
@@ -33,6 +37,7 @@ class GURL;
 // - https://*.google.com/foo*bar
 // - file://monkey*
 // - http://127.0.0.1/*
+// - http://[2607:f8b0:4005:805::200e]/*
 //
 // Examples of invalid patterns:
 // - http://* -- path not specified
@@ -45,14 +50,17 @@ class URLPattern {
  public:
   // A collection of scheme bitmasks for use with valid_schemes.
   enum SchemeMasks {
-    SCHEME_NONE       = 0,
-    SCHEME_HTTP       = 1 << 0,
-    SCHEME_HTTPS      = 1 << 1,
-    SCHEME_FILE       = 1 << 2,
-    SCHEME_FTP        = 1 << 3,
-    SCHEME_CHROMEUI   = 1 << 4,
-    SCHEME_EXTENSION  = 1 << 5,
+    SCHEME_NONE = 0,
+    SCHEME_HTTP = 1 << 0,
+    SCHEME_HTTPS = 1 << 1,
+    SCHEME_FILE = 1 << 2,
+    SCHEME_FTP = 1 << 3,
+    SCHEME_CHROMEUI = 1 << 4,
+    SCHEME_EXTENSION = 1 << 5,
     SCHEME_FILESYSTEM = 1 << 6,
+    SCHEME_WS = 1 << 7,
+    SCHEME_WSS = 1 << 8,
+    SCHEME_DATA = 1 << 9,
 
     // IMPORTANT!
     // SCHEME_ALL will match every scheme, including chrome://, chrome-
@@ -60,48 +68,63 @@ class URLPattern {
     // implications, third-party extensions should usually not be able to get
     // access to URL patterns initialized this way. If there is a reason
     // for violating this general rule, document why this it safe.
-    SCHEME_ALL      = -1,
+    SCHEME_ALL = -1,
   };
 
   // Error codes returned from Parse().
-  enum ParseResult {
-    PARSE_SUCCESS = 0,
-    PARSE_ERROR_MISSING_SCHEME_SEPARATOR,
-    PARSE_ERROR_INVALID_SCHEME,
-    PARSE_ERROR_WRONG_SCHEME_SEPARATOR,
-    PARSE_ERROR_EMPTY_HOST,
-    PARSE_ERROR_INVALID_HOST_WILDCARD,
-    PARSE_ERROR_EMPTY_PATH,
-    PARSE_ERROR_INVALID_PORT,
-    PARSE_ERROR_INVALID_HOST,
-    NUM_PARSE_RESULTS
+  enum class ParseResult {
+    kSuccess = 0,
+    kMissingSchemeSeparator,
+    kInvalidScheme,
+    kWrongSchemeSeparator,
+    kEmptyHost,
+    kInvalidHostWildcard,
+    kEmptyPath,
+    kInvalidPort,
+    kInvalidHost,
+    kNumParseResults,
+  };
+
+  // Types of URLPattern that Parse() considers valid.
+  enum ParseOptions {
+    DENY_WILDCARD_FOR_EFFECTIVE_TLD,
+    ALLOW_WILDCARD_FOR_EFFECTIVE_TLD,
   };
 
   // The <all_urls> string pattern.
   static const char kAllUrlsPattern[];
 
   // Returns true if the given |scheme| is considered valid for extensions.
-  static bool IsValidSchemeForExtensions(const std::string& scheme);
+  static bool IsValidSchemeForExtensions(base::StringPiece scheme);
+
+  // Returns the mask for all schemes considered valid for extensions.
+  static int GetValidSchemeMaskForExtensions();
 
   explicit URLPattern(int valid_schemes);
 
   // Convenience to construct a URLPattern from a string. If the string is not
   // known ahead of time, use Parse() instead, which returns success or failure.
-  URLPattern(int valid_schemes, const std::string& pattern);
+  URLPattern(int valid_schemes, base::StringPiece pattern);
 
   URLPattern();
   URLPattern(const URLPattern& other);
+  URLPattern(URLPattern&& other);
   ~URLPattern();
+
+  URLPattern& operator=(const URLPattern& other);
+  URLPattern& operator=(URLPattern&& other);
 
   bool operator<(const URLPattern& other) const;
   bool operator>(const URLPattern& other) const;
   bool operator==(const URLPattern& other) const;
 
   // Initializes this instance by parsing the provided string. Returns
-  // URLPattern::PARSE_SUCCESS on success, or an error code otherwise. On
-  // failure, this instance will have some intermediate values and is in an
-  // invalid state.
-  ParseResult Parse(const std::string& pattern_str);
+  // URLPattern::ParseResult::kSuccess on success, or an error code otherwise.
+  // On failure, this instance will have some intermediate values and is in an
+  // invalid state. If you want to allow the match pattern to specify a wildcard
+  // for the effective TLD, specify in |parse_options|.
+  ParseResult Parse(base::StringPiece pattern_str);
+  ParseResult Parse(base::StringPiece pattern_str, ParseOptions parse_options);
 
   // Gets the bitmask of valid schemes.
   int valid_schemes() const { return valid_schemes_; }
@@ -110,16 +133,25 @@ class URLPattern {
   // Gets the host the pattern matches. This can be an empty string if the
   // pattern matches all hosts (the input was <scheme>://*/<whatever>).
   const std::string& host() const { return host_; }
-  void SetHost(const std::string& host);
+  void SetHost(base::StringPiece host);
 
   // Gets whether to match subdomains of host().
   bool match_subdomains() const { return match_subdomains_; }
   void SetMatchSubdomains(bool val);
 
+  // Gets whether host() contains an effective TLD. If false, during
+  // a match, the URL you're comparing must have its TLD removed
+  // prior to comparison.
+  // e.g. For the match pattern https://google.com/*
+  //      If this is true: host() would be google.com
+  //      If this is false: host() would be google
+  bool match_effective_tld() const { return match_effective_tld_; }
+  void SetMatchEffectiveTld(bool val);
+
   // Gets the path the pattern matches with the leading slash. This can have
   // embedded asterisks which are interpreted using glob rules.
   const std::string& path() const { return path_; }
-  void SetPath(const std::string& path);
+  void SetPath(base::StringPiece path);
 
   // Returns true if this pattern matches all urls.
   bool match_all_urls() const { return match_all_urls_; }
@@ -128,14 +160,14 @@ class URLPattern {
   // Sets the scheme for pattern matches. This can be a single '*' if the
   // pattern matches all valid schemes (as defined by the valid_schemes_
   // property). Returns false on failure (if the scheme is not valid).
-  bool SetScheme(const std::string& scheme);
+  bool SetScheme(base::StringPiece scheme);
   // Note: You should use MatchesScheme() instead of this getter unless you
   // absolutely need the exact scheme. This is exposed for testing.
   const std::string& scheme() const { return scheme_; }
 
   // Returns true if the specified scheme can be used in this URL pattern, and
   // false otherwise. Uses valid_schemes_ to determine validity.
-  bool IsValidScheme(const std::string& scheme) const;
+  bool IsValidScheme(base::StringPiece scheme) const;
 
   // Returns true if this instance matches the specified URL.
   bool MatchesURL(const GURL& test) const;
@@ -147,28 +179,37 @@ class URLPattern {
   // Note that if test is "filesystem", this may fail whereas MatchesURL
   // may succeed.  MatchesURL is smart enough to look at the inner_url instead
   // of the outer "filesystem:" part.
-  bool MatchesScheme(const std::string& test) const;
+  bool MatchesScheme(base::StringPiece test) const;
 
   // Returns true if |test| matches our host.
-  bool MatchesHost(const std::string& test) const;
+  bool MatchesHost(base::StringPiece test) const;
   bool MatchesHost(const GURL& test) const;
 
   // Returns true if |test| matches our path.
-  bool MatchesPath(const std::string& test) const;
+  bool MatchesPath(base::StringPiece test) const;
 
-  // Returns true if the pattern is vague enough that it implies all hosts,
-  // such as *://*/*.
-  // This is an expensive method, and should be used sparingly!
+  // Returns true if the pattern matches all patterns in an (e)TLD. This
+  // includes patterns like *://*.com/*, *://*.co.uk/*, etc. A pattern that
+  // matches all domains (e.g., *://*/*) will return true.
+  // |private_filter| specifies whether private registries (like appspot.com)
+  // should be considered; if included, patterns like *://*.appspot.com/* will
+  // return true. By default, we exclude private registries (so *.appspot.com
+  // returns false).
+  // Note: This is an expensive method, and should be used sparingly!
   // You should probably use URLPatternSet::ShouldWarnAllHosts(), which is
   // cached.
-  bool ImpliesAllHosts() const;
+  bool MatchesEffectiveTld(
+      net::registry_controlled_domains::PrivateRegistryFilter private_filter =
+          net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES,
+      net::registry_controlled_domains::UnknownRegistryFilter unknown_filter =
+          net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES) const;
 
   // Returns true if the pattern only matches a single origin. The pattern may
   // include a path.
   bool MatchesSingleOrigin() const;
 
   // Sets the port. Returns false if the port is invalid.
-  bool SetPort(const std::string& port);
+  bool SetPort(base::StringPiece port);
   const std::string& port() const { return port_; }
 
   // Returns a string representing this instance.
@@ -182,6 +223,21 @@ class URLPattern {
   // Returns true if this pattern matches all possible URLs that |other| can
   // match. For example, http://*.google.com encompasses http://www.google.com.
   bool Contains(const URLPattern& other) const;
+
+  // Creates a new URLPattern that represents the intersection of this
+  // URLPattern with the |other|, or base::nullopt if no intersection exists.
+  // For instance, given the patterns http://*.google.com/* and
+  // *://maps.google.com/*, the intersection is http://maps.google.com/*.
+  // NOTES:
+  // - This will DCHECK if either pattern has match_effective_tld_ set to false.
+  // - Though scheme intersections are supported, the serialization of
+  //   URLPatternSet does not record them. Be sure that this is safe for your
+  //   use cases.
+  // - Path intersection is done on a best-effort basis. If one path clearly
+  //   contains another, it will be handled correctly, but this method does not
+  //   deal with cases like /*a* and /*b* (where technically the intersection
+  //   is /*a*b*|/*b*a*); the intersection returned for that case will be empty.
+  base::Optional<URLPattern> CreateIntersection(const URLPattern& other) const;
 
   // Converts this URLPattern into an equivalent set of URLPatterns that don't
   // use a wildcard in the scheme component. If this URLPattern doesn't use a
@@ -216,7 +272,7 @@ class URLPattern {
   bool MatchesSecurityOriginHelper(const GURL& test) const;
 
   // Returns true if our port matches the |port| pattern (it may be "*").
-  bool MatchesPortPattern(const std::string& port) const;
+  bool MatchesPortPattern(base::StringPiece port) const;
 
   // If the URLPattern contains a wildcard scheme, returns a list of
   // equivalent literal schemes, otherwise returns the current scheme.
@@ -239,6 +295,12 @@ class URLPattern {
   // Whether we should match subdomains of the host. This is true if the first
   // component of the pattern's host was "*".
   bool match_subdomains_;
+
+  // Whether we should match the effective TLD of the host. This is true by
+  // default and only false if ParseOptions is ALLOW_WILDCARD_FOR_EFFECTIVE_TLD
+  // and is only applicable when the the pattern's host ends with ".*"
+  // (e.g. https://example.*/*).
+  bool match_effective_tld_;
 
   // The port.
   std::string port_;

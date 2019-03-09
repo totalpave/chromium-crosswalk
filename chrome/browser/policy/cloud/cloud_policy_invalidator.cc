@@ -9,18 +9,19 @@
 #include "base/bind.h"
 #include "base/hash.h"
 #include "base/location.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
 #include "base/sequenced_task_runner.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/invalidation/public/invalidation_service.h"
+#include "components/invalidation/public/invalidation_util.h"
 #include "components/invalidation/public/object_id_invalidation_map.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_refresh_scheduler.h"
 #include "components/policy/core/common/cloud/enterprise_metrics.h"
-#include "policy/policy_constants.h"
+#include "components/policy/policy_constants.h"
 
 namespace policy {
 
@@ -36,13 +37,13 @@ CloudPolicyInvalidator::CloudPolicyInvalidator(
     enterprise_management::DeviceRegisterRequest::Type type,
     CloudPolicyCore* core,
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    std::unique_ptr<base::Clock> clock,
+    base::Clock* clock,
     int64_t highest_handled_invalidation_version)
     : state_(UNINITIALIZED),
       type_(type),
       core_(core),
       task_runner_(task_runner),
-      clock_(std::move(clock)),
+      clock_(clock),
       invalidation_service_(NULL),
       invalidations_enabled_(false),
       invalidation_service_enabled_(false),
@@ -119,8 +120,7 @@ void CloudPolicyInvalidator::OnIncomingInvalidation(
   }
 
   // Acknowledge all except the invalidation with the highest version.
-  syncer::SingleObjectInvalidationSet::const_reverse_iterator it =
-      list.rbegin();
+  auto it = list.rbegin();
   ++it;
   for ( ; it != list.rend(); ++it) {
     it->Acknowledge();
@@ -266,10 +266,9 @@ void CloudPolicyInvalidator::HandleInvalidation(
   // Schedule the policy to be refreshed.
   task_runner_->PostDelayedTask(
       FROM_HERE,
-      base::Bind(
-          &CloudPolicyInvalidator::RefreshPolicy,
-          weak_factory_.GetWeakPtr(),
-          payload.empty() /* is_missing_payload */),
+      base::BindOnce(&CloudPolicyInvalidator::RefreshPolicy,
+                     weak_factory_.GetWeakPtr(),
+                     payload.empty() /* is_missing_payload */),
       delay);
 }
 
@@ -310,7 +309,16 @@ void CloudPolicyInvalidator::Register(const invalidation::ObjectId& object_id) {
   // Update registration with the invalidation service.
   syncer::ObjectIdSet ids;
   ids.insert(object_id);
-  CHECK(invalidation_service_->UpdateRegisteredInvalidationIds(this, ids));
+  bool success =
+      invalidation_service_->UpdateRegisteredInvalidationIds(this, ids);
+  // Do not crash as server might send duplicate invalidation IDs due to
+  // http://b/119860379.
+  if (!success) {
+    LOG(ERROR) << "Failed to register " << syncer::ObjectIdToString(object_id)
+               << " for policy invalidations";
+  }
+  UMA_HISTOGRAM_BOOLEAN("Enterprise.PolicyInvalidationsRegistrationResult",
+                        success);
 }
 
 void CloudPolicyInvalidator::Unregister() {
@@ -391,8 +399,8 @@ bool CloudPolicyInvalidator::IsPolicyChanged(
 }
 
 bool CloudPolicyInvalidator::IsInvalidationExpired(int64_t version) {
-  base::Time last_fetch_time = base::Time::UnixEpoch() +
-      base::TimeDelta::FromMilliseconds(core_->store()->policy()->timestamp());
+  base::Time last_fetch_time =
+      base::Time::FromJavaTime(core_->store()->policy()->timestamp());
 
   // If the version is unknown, consider the invalidation invalid if the
   // policy was fetched very recently.
@@ -411,7 +419,8 @@ bool CloudPolicyInvalidator::IsInvalidationExpired(int64_t version) {
   return invalidation_time < last_fetch_time;
 }
 
-int CloudPolicyInvalidator::GetPolicyRefreshMetric(bool policy_changed) {
+MetricPolicyRefresh CloudPolicyInvalidator::GetPolicyRefreshMetric(
+    bool policy_changed) {
   if (policy_changed) {
     if (invalid_)
       return METRIC_POLICY_REFRESH_INVALIDATED_CHANGED;
@@ -424,8 +433,9 @@ int CloudPolicyInvalidator::GetPolicyRefreshMetric(bool policy_changed) {
   return METRIC_POLICY_REFRESH_UNCHANGED;
 }
 
-int CloudPolicyInvalidator::GetInvalidationMetric(bool is_missing_payload,
-                                                  bool is_expired) {
+PolicyInvalidationType CloudPolicyInvalidator::GetInvalidationMetric(
+    bool is_missing_payload,
+    bool is_expired) {
   if (is_expired) {
     if (is_missing_payload)
       return POLICY_INVALIDATION_TYPE_NO_PAYLOAD_EXPIRED;

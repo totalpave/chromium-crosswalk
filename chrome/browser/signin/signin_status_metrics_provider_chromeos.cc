@@ -6,7 +6,7 @@
 
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chromeos/login/login_state.h"
+#include "chromeos/login/login_state/login_state.h"
 
 namespace {
 
@@ -31,7 +31,7 @@ SigninStatusMetricsProviderChromeOS::SigninStatusMetricsProviderChromeOS() {
 SigninStatusMetricsProviderChromeOS::~SigninStatusMetricsProviderChromeOS() {
 }
 
-void SigninStatusMetricsProviderChromeOS::ProvideGeneralMetrics(
+void SigninStatusMetricsProviderChromeOS::ProvideCurrentSessionData(
     metrics::ChromeUserMetricsExtension* uma_proto) {
   // Compare the current logged-in status with the recorded one and compute
   // sign-in status that should be reported.

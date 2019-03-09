@@ -9,29 +9,37 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/format_macros.h"
-#include "base/ios/ios_util.h"
 #include "base/location.h"
-#include "base/mac/bind_objc_block.h"
-#include "base/mac/scoped_nsautorelease_pool.h"
+#include "base/mac/scoped_cftyperef.h"
 #include "base/run_loop.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/task/task_scheduler/task_scheduler.h"
 #include "base/time/time.h"
-#include "ios/chrome/browser/experimental_flags.h"
-#include "ios/chrome/browser/ui/ui_util.h"
+#import "ios/chrome/browser/snapshots/snapshot_cache_internal.h"
+#import "ios/chrome/browser/snapshots/snapshot_cache_observer.h"
 #include "ios/web/public/test/test_web_thread_bundle.h"
 #include "ios/web/public/web_thread.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/gtest_mac.h"
 #include "testing/platform_test.h"
 
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
 static const NSUInteger kSessionCount = 10;
 static const NSUInteger kSnapshotPixelSize = 8;
 
-// Promote some implementation methods to public.
-@interface SnapshotCache (Testing)
-+ (base::FilePath)imagePathForSessionID:(NSString*)sessionID;
-+ (base::FilePath)greyImagePathForSessionID:(NSString*)sessionID;
-- (void)handleLowMemory;
+@interface FakeSnapshotCacheObserver : NSObject<SnapshotCacheObserver>
+@property(nonatomic, copy) NSString* lastUpdatedIdentifier;
+@end
+
+@implementation FakeSnapshotCacheObserver
+@synthesize lastUpdatedIdentifier = _lastUpdatedIdentifier;
+- (void)snapshotCache:(SnapshotCache*)snapshotCache
+    didUpdateSnapshotForIdentifier:(NSString*)identifier {
+  self.lastUpdatedIdentifier = identifier;
+}
 @end
 
 namespace {
@@ -42,12 +50,11 @@ class SnapshotCacheTest : public PlatformTest {
   // random colors.
   void SetUp() override {
     PlatformTest::SetUp();
-    snapshotCache_.reset([[SnapshotCache alloc] init]);
-    testImages_.reset([[NSMutableArray alloc] initWithCapacity:kSessionCount]);
-    testSessions_.reset(
-        [[NSMutableArray alloc] initWithCapacity:kSessionCount]);
+    snapshotCache_ = [[SnapshotCache alloc] init];
+    testImages_ = [[NSMutableArray alloc] initWithCapacity:kSessionCount];
+    testSessions_ = [[NSMutableArray alloc] initWithCapacity:kSessionCount];
 
-    CGFloat scale = [SnapshotCache snapshotScaleForDevice];
+    CGFloat scale = [snapshotCache_ snapshotScaleForDevice];
     UIGraphicsBeginImageContextWithOptions(
         CGSizeMake(kSnapshotPixelSize, kSnapshotPixelSize), NO, scale);
     CGContextRef context = UIGraphicsGetCurrentContext();
@@ -67,13 +74,12 @@ class SnapshotCacheTest : public PlatformTest {
 
   void TearDown() override {
     ClearDumpedImages();
-    snapshotCache_.reset();
+    [snapshotCache_ shutdown];
+    snapshotCache_ = nil;
     PlatformTest::TearDown();
   }
 
-  SnapshotCache* GetSnapshotCache() {
-    return snapshotCache_.get();
-  }
+  SnapshotCache* GetSnapshotCache() { return snapshotCache_; }
 
   // Generates an image filled with a random color.
   UIImage* GenerateRandomImage(CGContextRef context) {
@@ -87,10 +93,19 @@ class SnapshotCacheTest : public PlatformTest {
     return UIGraphicsGetImageFromCurrentImageContext();
   }
 
+  // Generates an image of |size|, filled with a random color.
+  UIImage* GenerateRandomImage(CGSize size) {
+    UIGraphicsBeginImageContextWithOptions(size, /*opaque=*/NO,
+                                           UIScreen.mainScreen.scale);
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    UIImage* image = GenerateRandomImage(context);
+    UIGraphicsEndImageContext();
+    return image;
+  }
+
   // Flushes all the runloops internally used by the snapshot cache.
   void FlushRunLoops() {
-    base::RunLoop().RunUntilIdle();
-    web::WebThread::GetBlockingPool()->FlushForTesting();
+    base::TaskScheduler::GetInstance()->FlushForTesting();
     base::RunLoop().RunUntilIdle();
   }
 
@@ -99,7 +114,7 @@ class SnapshotCacheTest : public PlatformTest {
     SnapshotCache* cache = GetSnapshotCache();
 
     NSString* sessionID;
-    for (sessionID in testSessions_.get())
+    for (sessionID in testSessions_)
       [cache removeImageWithSessionID:sessionID];
 
     FlushRunLoops();
@@ -110,8 +125,8 @@ class SnapshotCacheTest : public PlatformTest {
 
     __block BOOL foundImage = NO;
     __block NSUInteger numCallbacks = 0;
-    for (sessionID in testSessions_.get()) {
-      base::FilePath path([SnapshotCache imagePathForSessionID:sessionID]);
+    for (sessionID in testSessions_) {
+      base::FilePath path([cache imagePathForSessionID:sessionID]);
 
       // Checks that the snapshot is not on disk.
       EXPECT_FALSE(base::PathExists(path));
@@ -143,17 +158,18 @@ class SnapshotCacheTest : public PlatformTest {
     SnapshotCache* cache = GetSnapshotCache();
     // Put color images in the cache.
     for (NSUInteger i = 0; i < count; ++i) {
-      base::mac::ScopedNSAutoreleasePool pool;
-      UIImage* image = [testImages_ objectAtIndex:i];
-      NSString* sessionID = [testSessions_ objectAtIndex:i];
-      [cache setImage:image withSessionID:sessionID];
+      @autoreleasepool {
+        UIImage* image = [testImages_ objectAtIndex:i];
+        NSString* sessionID = [testSessions_ objectAtIndex:i];
+        [cache setImage:image withSessionID:sessionID];
+      }
     }
     if (waitForFilesOnDisk) {
       FlushRunLoops();
       for (NSUInteger i = 0; i < count; ++i) {
         // Check that images are on the disk.
         NSString* sessionID = [testSessions_ objectAtIndex:i];
-        base::FilePath path([SnapshotCache imagePathForSessionID:sessionID]);
+        base::FilePath path([cache imagePathForSessionID:sessionID]);
         EXPECT_TRUE(base::PathExists(path));
       }
     }
@@ -199,32 +215,29 @@ class SnapshotCacheTest : public PlatformTest {
     }
   }
 
-  const char* GetPixelData(CGImageRef cgImage) {
-    CFDataRef data = CGDataProviderCopyData(CGImageGetDataProvider(cgImage));
-    return reinterpret_cast<const char*>(CFDataGetBytePtr(data));
+  void TriggerMemoryWarning() {
+    // _performMemoryWarning is a private API and must not be compiled into
+    // official builds.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundeclared-selector"
+    [[UIApplication sharedApplication]
+        performSelector:@selector(_performMemoryWarning)];
+#pragma clang diagnostic pop
   }
 
   web::TestWebThreadBundle thread_bundle_;
-  base::scoped_nsobject<SnapshotCache> snapshotCache_;
-  base::scoped_nsobject<NSMutableArray> testSessions_;
-  base::scoped_nsobject<NSMutableArray> testImages_;
+  SnapshotCache* snapshotCache_;
+  NSMutableArray* testSessions_;
+  NSMutableArray* testImages_;
 };
 
 // This test simply put all the snapshots in the cache and then gets them back
 // As the snapshots are kept in memory, the same pointer can be retrieved.
 // This test also checks that images are correctly removed from the disk.
 TEST_F(SnapshotCacheTest, Cache) {
-  // Don't run on tablets because color snapshots are not cached so this test
-  // can't compare the UIImage pointers directly.
-  if (IsIPadIdiom() && !experimental_flags::IsTabSwitcherEnabled()) {
-    return;
-  }
-
   SnapshotCache* cache = GetSnapshotCache();
 
-  NSUInteger expectedCacheSize = kSessionCount;
-  if (experimental_flags::IsLRUSnapshotCacheEnabled())
-    expectedCacheSize = MIN(kSessionCount, [cache lruCacheMaxSize]);
+  NSUInteger expectedCacheSize = MIN(kSessionCount, [cache lruCacheMaxSize]);
 
   // Put all images in the cache.
   for (NSUInteger i = 0; i < expectedCacheSize; ++i) {
@@ -267,7 +280,7 @@ TEST_F(SnapshotCacheTest, SaveToDisk) {
     // Check that images are on the disk.
     NSString* sessionID = [testSessions_ objectAtIndex:i];
 
-    base::FilePath path([SnapshotCache imagePathForSessionID:sessionID]);
+    base::FilePath path([cache imagePathForSessionID:sessionID]);
     EXPECT_TRUE(base::PathExists(path));
 
     // Check image colors by comparing the first pixel against the reference
@@ -275,12 +288,20 @@ TEST_F(SnapshotCacheTest, SaveToDisk) {
     UIImage* image =
         [UIImage imageWithContentsOfFile:base::SysUTF8ToNSString(path.value())];
     CGImageRef cgImage = [image CGImage];
-    const char* pixels = GetPixelData(cgImage);
+    ASSERT_TRUE(cgImage != nullptr);
+
+    base::ScopedCFTypeRef<CFDataRef> pixelData(
+        CGDataProviderCopyData(CGImageGetDataProvider(cgImage)));
+    const char* pixels =
+        reinterpret_cast<const char*>(CFDataGetBytePtr(pixelData));
     EXPECT_TRUE(pixels);
 
     UIImage* referenceImage = [testImages_ objectAtIndex:i];
     CGImageRef referenceCgImage = [referenceImage CGImage];
-    const char* referencePixels = GetPixelData(referenceCgImage);
+    base::ScopedCFTypeRef<CFDataRef> referenceData(
+        CGDataProviderCopyData(CGImageGetDataProvider(referenceCgImage)));
+    const char* referencePixels =
+        reinterpret_cast<const char*>(CFDataGetBytePtr(referenceData));
     EXPECT_TRUE(referencePixels);
 
     if (pixels != nil && referencePixels != nil) {
@@ -325,7 +346,7 @@ TEST_F(SnapshotCacheTest, Purge) {
     // Check that images are on the disk.
     NSString* sessionID = [testSessions_ objectAtIndex:i];
 
-    base::FilePath path([SnapshotCache imagePathForSessionID:sessionID]);
+    base::FilePath path([cache imagePathForSessionID:sessionID]);
     EXPECT_TRUE(base::PathExists(path));
   }
 
@@ -338,7 +359,7 @@ TEST_F(SnapshotCacheTest, Purge) {
     // Check that images are on the disk.
     NSString* sessionID = [testSessions_ objectAtIndex:i];
 
-    base::FilePath path([SnapshotCache imagePathForSessionID:sessionID]);
+    base::FilePath path([cache imagePathForSessionID:sessionID]);
     if (i == 0)
       EXPECT_TRUE(base::PathExists(path));
     else
@@ -347,16 +368,8 @@ TEST_F(SnapshotCacheTest, Purge) {
 }
 
 // Loads the color images into the cache, and pins two of them.  Ensures that
-// only the two pinned IDs remain in memory after a call to -handleLowMemory.
-TEST_F(SnapshotCacheTest, HandleLowMemory) {
-// TODO(droger): This test fails on iPad iOS8 device: http://crbug.com/455209
-#if !TARGET_IPHONE_SIMULATOR
-  if (IsIPadIdiom() && base::ios::IsRunningOnIOS8OrLater()) {
-    LOG(WARNING) << "Test disabled on iPad iOS8 device.";
-    return;
-  }
-#endif
-
+// only the two pinned IDs remain in memory after a memory warning.
+TEST_F(SnapshotCacheTest, HandleMemoryWarning) {
   LoadAllColorImagesIntoCache(true);
 
   SnapshotCache* cache = GetSnapshotCache();
@@ -368,15 +381,10 @@ TEST_F(SnapshotCacheTest, HandleLowMemory) {
   [set addObject:secondPinnedID];
   cache.pinnedIDs = set;
 
-  if (!IsIPadIdiom() || experimental_flags::IsTabSwitcherEnabled())
-    [cache handleLowMemory];
+  TriggerMemoryWarning();
 
-  BOOL expectedValue = YES;
-  if (IsIPadIdiom() && !experimental_flags::IsTabSwitcherEnabled())
-    expectedValue = NO;
-
-  EXPECT_EQ(expectedValue, [cache hasImageInMemory:firstPinnedID]);
-  EXPECT_EQ(expectedValue, [cache hasImageInMemory:secondPinnedID]);
+  EXPECT_EQ(YES, [cache hasImageInMemory:firstPinnedID]);
+  EXPECT_EQ(YES, [cache hasImageInMemory:secondPinnedID]);
 
   NSString* notPinnedID = [testSessions_ objectAtIndex:2];
   EXPECT_FALSE([cache hasImageInMemory:notPinnedID]);
@@ -423,8 +431,7 @@ TEST_F(SnapshotCacheTest, CreateGreyCacheFromDisk) {
   // Remove color images from in-memory cache.
   SnapshotCache* cache = GetSnapshotCache();
 
-  if (!IsIPadIdiom() || experimental_flags::IsTabSwitcherEnabled())
-    [cache handleLowMemory];
+  TriggerMemoryWarning();
 
   // Request the creation of a grey image cache for all images.
   [cache createGreyCache:testSessions_];
@@ -453,8 +460,8 @@ TEST_F(SnapshotCacheTest, CreateGreyCacheFromDisk) {
 // Disabled due to the greyImage crash.  b/8048597
 TEST_F(SnapshotCacheTest, MostRecentGreyBlock) {
   const NSUInteger kNumImages = 3;
-  base::scoped_nsobject<NSMutableArray> sessionIDs(
-      [[NSMutableArray alloc] initWithCapacity:kNumImages]);
+  NSMutableArray* sessionIDs =
+      [[NSMutableArray alloc] initWithCapacity:kNumImages];
   [sessionIDs addObject:[testSessions_ objectAtIndex:0]];
   [sessionIDs addObject:[testSessions_ objectAtIndex:1]];
   [sessionIDs addObject:[testSessions_ objectAtIndex:2]];
@@ -465,8 +472,7 @@ TEST_F(SnapshotCacheTest, MostRecentGreyBlock) {
   LoadColorImagesIntoCache(kNumImages, true);
   // Make sure the color images are only on disk, to ensure the background
   // thread is slow enough to queue up the requests.
-  if (!IsIPadIdiom() || experimental_flags::IsTabSwitcherEnabled())
-    [cache handleLowMemory];
+  TriggerMemoryWarning();
 
   // Enable the grey image cache.
   [cache createGreyCache:sessionIDs];
@@ -498,7 +504,6 @@ TEST_F(SnapshotCacheTest, MostRecentGreyBlock) {
 
 // Test the function used to save a grey copy of a color snapshot fully on a
 // background thread when the application is backgrounded.
-// Disabled due to the greyImage crash.  b/8048597
 TEST_F(SnapshotCacheTest, GreyImageAllInBackground) {
   LoadAllColorImagesIntoCache(true);
 
@@ -513,8 +518,8 @@ TEST_F(SnapshotCacheTest, GreyImageAllInBackground) {
   // to disk, which happens in a background thread.
   FlushRunLoops();
 
-  for (NSString* sessionID in testSessions_.get()) {
-    base::FilePath path([SnapshotCache greyImagePathForSessionID:sessionID]);
+  for (NSString* sessionID in testSessions_) {
+    base::FilePath path([cache greyImagePathForSessionID:sessionID]);
     EXPECT_TRUE(base::PathExists(path));
     base::DeleteFile(path, false);
   }
@@ -523,8 +528,10 @@ TEST_F(SnapshotCacheTest, GreyImageAllInBackground) {
 // Verifies that image size and scale are preserved when writing and reading
 // from disk.
 TEST_F(SnapshotCacheTest, SizeAndScalePreservation) {
+  SnapshotCache* cache = GetSnapshotCache();
+
   // Create an image with the expected snapshot scale.
-  CGFloat scale = [SnapshotCache snapshotScaleForDevice];
+  CGFloat scale = [cache snapshotScaleForDevice];
   UIGraphicsBeginImageContextWithOptions(
       CGSizeMake(kSnapshotPixelSize, kSnapshotPixelSize), NO, scale);
   CGContextRef context = UIGraphicsGetCurrentContext();
@@ -533,12 +540,10 @@ TEST_F(SnapshotCacheTest, SizeAndScalePreservation) {
 
   // Add the image to the cache then call handle low memory to ensure the image
   // is read from disk instead of the in-memory cache.
-  SnapshotCache* cache = GetSnapshotCache();
   NSString* const kSession = @"foo";
   [cache setImage:image withSessionID:kSession];
   FlushRunLoops();  // ensure the file is written to disk.
-  if (!IsIPadIdiom() || experimental_flags::IsTabSwitcherEnabled())
-    [cache handleLowMemory];
+  TriggerMemoryWarning();
 
   // Retrive the image and have the callback verify the size and scale.
   __block BOOL callbackComplete = NO;
@@ -557,7 +562,8 @@ TEST_F(SnapshotCacheTest, SizeAndScalePreservation) {
 
 // Verifies that retina-scale images are deleted properly.
 TEST_F(SnapshotCacheTest, DeleteRetinaImages) {
-  if ([SnapshotCache snapshotScaleForDevice] != 2.0) {
+  SnapshotCache* cache = GetSnapshotCache();
+  if ([cache snapshotScaleForDevice] != 2.0) {
     return;
   }
 
@@ -570,15 +576,13 @@ TEST_F(SnapshotCacheTest, DeleteRetinaImages) {
 
   // Add the image to the cache then call handle low memory to ensure the image
   // is read from disk instead of the in-memory cache.
-  SnapshotCache* cache = GetSnapshotCache();
   NSString* const kSession = @"foo";
   [cache setImage:image withSessionID:kSession];
   FlushRunLoops();  // ensure the file is written to disk.
-  if (!IsIPadIdiom() || experimental_flags::IsTabSwitcherEnabled())
-    [cache handleLowMemory];
+  TriggerMemoryWarning();
 
   // Verify the file was writted with @2x in the file name.
-  base::FilePath retinaFile = [SnapshotCache imagePathForSessionID:kSession];
+  base::FilePath retinaFile = [cache imagePathForSessionID:kSession];
   EXPECT_TRUE(base::PathExists(retinaFile));
 
   // Delete the image.
@@ -588,4 +592,55 @@ TEST_F(SnapshotCacheTest, DeleteRetinaImages) {
   EXPECT_FALSE(base::PathExists(retinaFile));
 }
 
+// Tests that a marked image does not immediately delete when calling
+// |-removeImageWithSessionID:|. Calling |-removeMarkedImages| immediately
+// deletes the marked image.
+TEST_F(SnapshotCacheTest, MarkedImageNotImmediatelyDeleted) {
+  SnapshotCache* cache = GetSnapshotCache();
+  UIImage* image =
+      GenerateRandomImage(CGSizeMake(kSnapshotPixelSize, kSnapshotPixelSize));
+  [cache setImage:image withSessionID:@"sessionID"];
+  base::FilePath image_path = [cache imagePathForSessionID:@"sessionID"];
+  [cache markImageWithSessionID:@"sessionID"];
+  [cache removeImageWithSessionID:@"sessionID"];
+  // Give enough time for deletion.
+  FlushRunLoops();
+  EXPECT_TRUE(base::PathExists(image_path));
+  [cache removeMarkedImages];
+  FlushRunLoops();
+  EXPECT_FALSE(base::PathExists(image_path));
+}
+
+// Tests that unmarked images are not deleted when calling
+// |-removeMarkedImages|.
+TEST_F(SnapshotCacheTest, UnmarkedImageNotDeleted) {
+  SnapshotCache* cache = GetSnapshotCache();
+  UIImage* image =
+      GenerateRandomImage(CGSizeMake(kSnapshotPixelSize, kSnapshotPixelSize));
+  [cache setImage:image withSessionID:@"sessionID"];
+  base::FilePath image_path = [cache imagePathForSessionID:@"sessionID"];
+  [cache markImageWithSessionID:@"sessionID"];
+  [cache unmarkAllImages];
+  [cache removeMarkedImages];
+  // Give enough time for deletion.
+  FlushRunLoops();
+  EXPECT_TRUE(base::PathExists(image_path));
+}
+
+// Tests that observers are notified when a snapshot is cached and removed.
+TEST_F(SnapshotCacheTest, ObserversNotifiedOnSetAndRemoveImage) {
+  SnapshotCache* cache = GetSnapshotCache();
+  FakeSnapshotCacheObserver* observer =
+      [[FakeSnapshotCacheObserver alloc] init];
+  [cache addObserver:observer];
+  EXPECT_NSEQ(nil, observer.lastUpdatedIdentifier);
+  UIImage* image = [testImages_ objectAtIndex:0];
+  NSString* sessionID = [testSessions_ objectAtIndex:0];
+  [cache setImage:image withSessionID:sessionID];
+  EXPECT_NSEQ(sessionID, observer.lastUpdatedIdentifier);
+  observer.lastUpdatedIdentifier = nil;
+  [cache removeImageWithSessionID:sessionID];
+  EXPECT_NSEQ(sessionID, observer.lastUpdatedIdentifier);
+  [cache removeObserver:observer];
+}
 }  // namespace

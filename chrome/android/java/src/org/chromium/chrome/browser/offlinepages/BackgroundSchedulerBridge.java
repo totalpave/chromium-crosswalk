@@ -4,10 +4,13 @@
 
 package org.chromium.chrome.browser.offlinepages;
 
+import android.text.format.DateUtils;
+
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.chrome.browser.DeviceConditions;
 
 /**
  * Provides Java scheduling support from native offlining code as
@@ -24,21 +27,51 @@ public class BackgroundSchedulerBridge {
     // not receive a callback.
     // TODO(dougarnett): consider adding policy check api to let caller
     //     separately determine if not allowed by policy.
-    public static boolean startProcessing(
+    public static boolean startScheduledProcessing(
             DeviceConditions deviceConditions, Callback<Boolean> callback) {
-        return nativeStartProcessing(deviceConditions.isPowerConnected(),
+        return nativeStartScheduledProcessing(deviceConditions.isPowerConnected(),
                 deviceConditions.getBatteryPercentage(), deviceConditions.getNetConnectionType(),
                 callback);
     }
 
+    /**
+     * Stops scheduled processing.
+     * @return true, as it always expects to be rescheduled.
+     */
+    public static boolean stopScheduledProcessing() {
+        nativeStopScheduledProcessing();
+        return true;
+    }
+
     @CalledByNative
     private static void schedule(TriggerConditions triggerConditions) {
-        BackgroundScheduler.schedule(ContextUtils.getApplicationContext(), triggerConditions);
+        BackgroundScheduler.getInstance().schedule(triggerConditions);
+    }
+
+    @CalledByNative
+    private static void backupSchedule(TriggerConditions triggerConditions, long delayInSeconds) {
+        BackgroundScheduler.getInstance().scheduleBackup(
+                triggerConditions, DateUtils.SECOND_IN_MILLIS * delayInSeconds);
     }
 
     @CalledByNative
     private static void unschedule() {
-        BackgroundScheduler.unschedule(ContextUtils.getApplicationContext());
+        BackgroundScheduler.getInstance().cancel();
+    }
+
+    @CalledByNative
+    private static boolean getPowerConditions() {
+        return DeviceConditions.isCurrentlyPowerConnected(ContextUtils.getApplicationContext());
+    }
+
+    @CalledByNative
+    private static int getBatteryConditions() {
+        return DeviceConditions.getCurrentBatteryPercentage(ContextUtils.getApplicationContext());
+    }
+
+    @CalledByNative
+    private static int getNetworkConditions() {
+        return DeviceConditions.getCurrentNetConnectionType(ContextUtils.getApplicationContext());
     }
 
     /**
@@ -53,6 +86,8 @@ public class BackgroundSchedulerBridge {
     }
 
     /** Instructs the native RequestCoordinator to start processing. */
-    private static native boolean nativeStartProcessing(boolean powerConnected,
+    private static native boolean nativeStartScheduledProcessing(boolean powerConnected,
             int batteryPercentage, int netConnectionType, Callback<Boolean> callback);
+    /** Instructs the native RequestCoordinator to stop processing. */
+    private static native void nativeStopScheduledProcessing();
 }

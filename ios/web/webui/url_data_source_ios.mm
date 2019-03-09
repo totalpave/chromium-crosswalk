@@ -4,9 +4,13 @@
 
 #include "ios/web/public/url_data_source_ios.h"
 
-#include "ios/web/public/web_client.h"
+#import "ios/web/public/web_client.h"
 #include "ios/web/webui/url_data_manager_ios.h"
 #include "net/url_request/url_request.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace web {
 
@@ -31,11 +35,12 @@ bool URLDataSourceIOS::ShouldDenyXFrameOptions() const {
   return true;
 }
 
-bool URLDataSourceIOS::ShouldServiceRequest(
-    const net::URLRequest* request) const {
-  if (GetWebClient()->IsAppSpecificURL(request->url()))
-    return true;
+bool URLDataSourceIOS::IsGzipped(const std::string& path) const {
   return false;
+}
+
+bool URLDataSourceIOS::ShouldServiceRequest(const GURL& url) const {
+  return GetWebClient()->IsAppSpecificURL(url);
 }
 
 }  // namespace web

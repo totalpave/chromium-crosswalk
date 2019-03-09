@@ -7,13 +7,15 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "base/bind.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/values.h"
+#include "chrome/browser/chromeos/file_system_provider/icon_set.h"
 #include "chrome/browser/chromeos/file_system_provider/operations/test_util.h"
 #include "chrome/common/extensions/api/file_system_provider.h"
 #include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
@@ -45,8 +47,9 @@ void CreateRequestValueFromJSON(const std::string& json,
 
   int json_error_code;
   std::string json_error_msg;
-  std::unique_ptr<base::Value> value = base::JSONReader::ReadAndReturnError(
-      json, base::JSON_PARSE_RFC, &json_error_code, &json_error_msg);
+  std::unique_ptr<base::Value> value =
+      base::JSONReader::ReadAndReturnErrorDeprecated(
+          json, base::JSON_PARSE_RFC, &json_error_code, &json_error_msg);
   ASSERT_TRUE(value.get()) << json_error_msg;
 
   base::ListValue* value_as_list;
@@ -81,13 +84,13 @@ class CallbackLogger {
 
   void OnGetMetadata(std::unique_ptr<EntryMetadata> metadata,
                      base::File::Error result) {
-    events_.push_back(new Event(std::move(metadata), result));
+    events_.push_back(std::make_unique<Event>(std::move(metadata), result));
   }
 
-  const ScopedVector<Event>& events() const { return events_; }
+  const std::vector<std::unique_ptr<Event>>& events() const { return events_; }
 
  private:
-  ScopedVector<Event> events_;
+  std::vector<std::unique_ptr<Event>> events_;
 
   DISALLOW_COPY_AND_ASSIGN(CallbackLogger);
 };
@@ -106,7 +109,7 @@ class FileSystemProviderOperationsGetMetadataTest : public testing::Test {
     file_system_info_ = ProvidedFileSystemInfo(
         kExtensionId, MountOptions(kFileSystemId, "" /* display_name */),
         base::FilePath(), false /* configurable */, true /* watchable */,
-        extensions::SOURCE_FILE);
+        extensions::SOURCE_FILE, IconSet());
   }
 
   ProvidedFileSystemInfo file_system_info_;
@@ -237,7 +240,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, Execute) {
   EXPECT_TRUE(get_metadata.Execute(kRequestId));
 
   ASSERT_EQ(1u, dispatcher.events().size());
-  extensions::Event* event = dispatcher.events()[0];
+  extensions::Event* event = dispatcher.events()[0].get();
   EXPECT_EQ(
       extensions::api::file_system_provider::OnGetMetadataRequested::kEventName,
       event->event_name);
@@ -318,7 +321,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
   get_metadata.OnSuccess(kRequestId, std::move(request_value), has_more);
 
   ASSERT_EQ(1u, callback_logger.events().size());
-  CallbackLogger::Event* event = callback_logger.events()[0];
+  CallbackLogger::Event* event = callback_logger.events()[0].get();
   EXPECT_EQ(base::File::FILE_OK, event->result());
 
   const EntryMetadata* metadata = event->metadata();
@@ -379,7 +382,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
   get_metadata.OnSuccess(kRequestId, std::move(request_value), has_more);
 
   ASSERT_EQ(1u, callback_logger.events().size());
-  CallbackLogger::Event* event = callback_logger.events()[0];
+  CallbackLogger::Event* event = callback_logger.events()[0].get();
   EXPECT_EQ(base::File::FILE_ERROR_IO, event->result());
 
   const EntryMetadata* metadata = event->metadata();
@@ -406,7 +409,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnError) {
                        base::File::FILE_ERROR_TOO_MANY_OPENED);
 
   ASSERT_EQ(1u, callback_logger.events().size());
-  CallbackLogger::Event* event = callback_logger.events()[0];
+  CallbackLogger::Event* event = callback_logger.events()[0].get();
   EXPECT_EQ(base::File::FILE_ERROR_TOO_MANY_OPENED, event->result());
 }
 

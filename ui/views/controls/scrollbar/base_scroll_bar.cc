@@ -8,7 +8,6 @@
 #include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -24,29 +23,31 @@
 #include "ui/views/controls/scrollbar/base_scroll_bar_thumb.h"
 #include "ui/views/widget/widget.h"
 
-#undef min
-#undef max
-
 namespace views {
 
 ///////////////////////////////////////////////////////////////////////////////
 // BaseScrollBar, public:
 
-BaseScrollBar::BaseScrollBar(bool horizontal, BaseScrollBarThumb* thumb)
+BaseScrollBar::BaseScrollBar(bool horizontal)
     : ScrollBar(horizontal),
-      thumb_(thumb),
+      thumb_(nullptr),
       contents_size_(0),
       contents_scroll_offset_(0),
       viewport_size_(0),
-      thumb_track_state_(CustomButton::STATE_NORMAL),
       last_scroll_amount_(SCROLL_NONE),
       repeater_(base::Bind(&BaseScrollBar::TrackClicked,
                            base::Unretained(this))),
       context_menu_mouse_position_(0) {
-  AddChildView(thumb_);
-
   set_context_menu_controller(this);
-  thumb_->set_context_menu_controller(this);
+}
+
+BaseScrollBar::~BaseScrollBar() {}
+
+void BaseScrollBar::SetThumb(BaseScrollBarThumb* thumb) {
+  DCHECK(!thumb_);
+  thumb_ = thumb;
+  AddChildView(thumb);
+  thumb->set_context_menu_controller(this);
 }
 
 void BaseScrollBar::ScrollByAmount(ScrollAmount amount) {
@@ -81,13 +82,10 @@ void BaseScrollBar::ScrollByAmount(ScrollAmount amount) {
   ScrollContentsToOffset();
 }
 
-BaseScrollBar::~BaseScrollBar() {
-}
-
 void BaseScrollBar::ScrollToThumbPosition(int thumb_position,
                                           bool scroll_to_middle) {
-  contents_scroll_offset_ =
-      CalculateContentsOffset(thumb_position, scroll_to_middle);
+  contents_scroll_offset_ = CalculateContentsOffset(
+      static_cast<float>(thumb_position), scroll_to_middle);
   if (contents_scroll_offset_ < GetMinPosition()) {
     contents_scroll_offset_ = GetMinPosition();
   } else if (contents_scroll_offset_ > GetMaxPosition()) {
@@ -112,15 +110,6 @@ bool BaseScrollBar::ScrollByContentsOffset(int contents_offset) {
   return true;
 }
 
-void BaseScrollBar::OnThumbStateChanged(CustomButton::ButtonState old_state,
-                                        CustomButton::ButtonState new_state) {
-  if (old_state == CustomButton::STATE_PRESSED &&
-      new_state == CustomButton::STATE_NORMAL &&
-      GetThumbTrackState() == CustomButton::STATE_HOVERED) {
-    SetThumbTrackState(CustomButton::STATE_NORMAL);
-  }
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // BaseScrollBar, View implementation:
 
@@ -131,21 +120,11 @@ bool BaseScrollBar::OnMousePressed(const ui::MouseEvent& event) {
 }
 
 void BaseScrollBar::OnMouseReleased(const ui::MouseEvent& event) {
-  SetState(HitTestPoint(event.location()) ?
-           CustomButton::STATE_HOVERED : CustomButton::STATE_NORMAL);
+  repeater_.Stop();
 }
 
 void BaseScrollBar::OnMouseCaptureLost() {
-  SetState(CustomButton::STATE_NORMAL);
-}
-
-void BaseScrollBar::OnMouseEntered(const ui::MouseEvent& event) {
-  SetThumbTrackState(CustomButton::STATE_HOVERED);
-}
-
-void BaseScrollBar::OnMouseExited(const ui::MouseEvent& event) {
-  if (GetThumbTrackState() == CustomButton::STATE_HOVERED)
-    SetState(CustomButton::STATE_NORMAL);
+  repeater_.Stop();
 }
 
 bool BaseScrollBar::OnKeyPressed(const ui::KeyEvent& event) {
@@ -216,7 +195,7 @@ void BaseScrollBar::OnGestureEvent(ui::GestureEvent* event) {
     return;
   }
 
-  SetState(CustomButton::STATE_NORMAL);
+  repeater_.Stop();
 
   if (event->type() == ui::ET_GESTURE_TAP) {
     // TAP_DOWN would have already scrolled some amount. So scrolling again on
@@ -288,68 +267,45 @@ void BaseScrollBar::ShowContextMenuForView(View* source,
   View::ConvertPointFromWidget(this, &temp_pt);
   context_menu_mouse_position_ = IsHorizontal() ? temp_pt.x() : temp_pt.y();
 
-  views::MenuItemView* menu = new views::MenuItemView(this);
-  // MenuRunner takes ownership of |menu|.
-  menu_runner_.reset(new MenuRunner(
-      menu, MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU));
-  menu->AppendDelegateMenuItem(ScrollBarContextMenuCommand_ScrollHere);
-  menu->AppendSeparator();
-  menu->AppendDelegateMenuItem(ScrollBarContextMenuCommand_ScrollStart);
-  menu->AppendDelegateMenuItem(ScrollBarContextMenuCommand_ScrollEnd);
-  menu->AppendSeparator();
-  menu->AppendDelegateMenuItem(ScrollBarContextMenuCommand_ScrollPageUp);
-  menu->AppendDelegateMenuItem(ScrollBarContextMenuCommand_ScrollPageDown);
-  menu->AppendSeparator();
-  menu->AppendDelegateMenuItem(ScrollBarContextMenuCommand_ScrollPrev);
-  menu->AppendDelegateMenuItem(ScrollBarContextMenuCommand_ScrollNext);
-  if (menu_runner_->RunMenuAt(GetWidget(),
-                              NULL,
-                              gfx::Rect(p, gfx::Size()),
-                              MENU_ANCHOR_TOPLEFT,
-                              source_type) == MenuRunner::MENU_DELETED) {
-    return;
+  if (!menu_model_) {
+    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+    menu_model_->AddItemWithStringId(ScrollBarContextMenuCommand_ScrollHere,
+                                     IDS_APP_SCROLLBAR_CXMENU_SCROLLHERE);
+    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+    menu_model_->AddItemWithStringId(
+        ScrollBarContextMenuCommand_ScrollStart,
+        IsHorizontal() ? IDS_APP_SCROLLBAR_CXMENU_SCROLLLEFTEDGE
+                       : IDS_APP_SCROLLBAR_CXMENU_SCROLLHOME);
+    menu_model_->AddItemWithStringId(
+        ScrollBarContextMenuCommand_ScrollEnd,
+        IsHorizontal() ? IDS_APP_SCROLLBAR_CXMENU_SCROLLRIGHTEDGE
+                       : IDS_APP_SCROLLBAR_CXMENU_SCROLLEND);
+    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+    menu_model_->AddItemWithStringId(ScrollBarContextMenuCommand_ScrollPageUp,
+                                     IDS_APP_SCROLLBAR_CXMENU_SCROLLPAGEUP);
+    menu_model_->AddItemWithStringId(ScrollBarContextMenuCommand_ScrollPageDown,
+                                     IDS_APP_SCROLLBAR_CXMENU_SCROLLPAGEDOWN);
+    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+    menu_model_->AddItemWithStringId(ScrollBarContextMenuCommand_ScrollPrev,
+                                     IsHorizontal()
+                                         ? IDS_APP_SCROLLBAR_CXMENU_SCROLLLEFT
+                                         : IDS_APP_SCROLLBAR_CXMENU_SCROLLUP);
+    menu_model_->AddItemWithStringId(ScrollBarContextMenuCommand_ScrollNext,
+                                     IsHorizontal()
+                                         ? IDS_APP_SCROLLBAR_CXMENU_SCROLLRIGHT
+                                         : IDS_APP_SCROLLBAR_CXMENU_SCROLLDOWN);
   }
+  menu_runner_ = std::make_unique<MenuRunner>(
+      menu_model_.get(),
+      MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU);
+  menu_runner_->RunMenuAt(GetWidget(), nullptr, gfx::Rect(p, gfx::Size()),
+                          MENU_ANCHOR_TOPLEFT, source_type);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // BaseScrollBar, Menu::Delegate implementation:
 
-base::string16 BaseScrollBar::GetLabel(int id) const {
-  int ids_value = 0;
-  switch (id) {
-    case ScrollBarContextMenuCommand_ScrollHere:
-      ids_value = IDS_APP_SCROLLBAR_CXMENU_SCROLLHERE;
-      break;
-    case ScrollBarContextMenuCommand_ScrollStart:
-      ids_value = IsHorizontal() ? IDS_APP_SCROLLBAR_CXMENU_SCROLLLEFTEDGE
-                                 : IDS_APP_SCROLLBAR_CXMENU_SCROLLHOME;
-      break;
-    case ScrollBarContextMenuCommand_ScrollEnd:
-      ids_value = IsHorizontal() ? IDS_APP_SCROLLBAR_CXMENU_SCROLLRIGHTEDGE
-                                 : IDS_APP_SCROLLBAR_CXMENU_SCROLLEND;
-      break;
-    case ScrollBarContextMenuCommand_ScrollPageUp:
-      ids_value = IDS_APP_SCROLLBAR_CXMENU_SCROLLPAGEUP;
-      break;
-    case ScrollBarContextMenuCommand_ScrollPageDown:
-      ids_value = IDS_APP_SCROLLBAR_CXMENU_SCROLLPAGEDOWN;
-      break;
-    case ScrollBarContextMenuCommand_ScrollPrev:
-      ids_value = IsHorizontal() ? IDS_APP_SCROLLBAR_CXMENU_SCROLLLEFT
-                                 : IDS_APP_SCROLLBAR_CXMENU_SCROLLUP;
-      break;
-    case ScrollBarContextMenuCommand_ScrollNext:
-      ids_value = IsHorizontal() ? IDS_APP_SCROLLBAR_CXMENU_SCROLLRIGHT
-                                 : IDS_APP_SCROLLBAR_CXMENU_SCROLLDOWN;
-      break;
-    default:
-      NOTREACHED() << "Invalid BaseScrollBar Context Menu command!";
-  }
-
-  return ids_value ? l10n_util::GetStringUTF16(ids_value) : base::string16();
-}
-
-bool BaseScrollBar::IsCommandEnabled(int id) const {
+bool BaseScrollBar::IsCommandIdEnabled(int id) const {
   switch (id) {
     case ScrollBarContextMenuCommand_ScrollPageUp:
     case ScrollBarContextMenuCommand_ScrollPageDown:
@@ -358,7 +314,11 @@ bool BaseScrollBar::IsCommandEnabled(int id) const {
   return true;
 }
 
-void BaseScrollBar::ExecuteCommand(int id) {
+bool BaseScrollBar::IsCommandIdChecked(int id) const {
+  return false;
+}
+
+void BaseScrollBar::ExecuteCommand(int id, int event_flags) {
   switch (id) {
     case ScrollBarContextMenuCommand_ScrollHere:
       ScrollToThumbPosition(context_menu_mouse_position_, true);
@@ -411,8 +371,7 @@ void BaseScrollBar::Update(int viewport_size,
   // content size multiplied by the height of the thumb track.
   double ratio =
       std::min(1.0, static_cast<double>(viewport_size) / contents_size_);
-  int thumb_size = static_cast<int>(ratio * GetTrackSize());
-  thumb_->SetSize(thumb_size);
+  thumb_->SetLength(static_cast<int>(ratio * GetTrackSize()));
 
   int thumb_position = CalculateThumbPosition(contents_scroll_offset);
   thumb_->SetPosition(thumb_position);
@@ -422,15 +381,15 @@ int BaseScrollBar::GetPosition() const {
   return thumb_->GetPosition();
 }
 
+bool BaseScrollBar::OverlapsContent() const {
+  return false;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // BaseScrollBar, protected:
 
 BaseScrollBarThumb* BaseScrollBar::GetThumb() const {
   return thumb_;
-}
-
-CustomButton::ButtonState BaseScrollBar::GetThumbTrackState() const {
-  return thumb_track_state_;
 }
 
 void BaseScrollBar::ScrollToPosition(int position) {
@@ -444,12 +403,19 @@ int BaseScrollBar::GetScrollIncrement(bool is_page, bool is_positive) {
 ///////////////////////////////////////////////////////////////////////////////
 // BaseScrollBar, private:
 
+#if !defined(OS_MACOSX)
+// static
+base::RetainingOneShotTimer* BaseScrollBar::GetHideTimerForTest(
+    BaseScrollBar* scroll_bar) {
+  return nullptr;
+}
+#endif
+
 int BaseScrollBar::GetThumbSizeForTest() {
   return thumb_->GetSize();
 }
 
 void BaseScrollBar::ProcessPressEvent(const ui::LocatedEvent& event) {
-  SetThumbTrackState(CustomButton::STATE_PRESSED);
   gfx::Rect thumb_bounds = thumb_->bounds();
   if (IsHorizontal()) {
     if (GetMirroredXInView(event.x()) < thumb_bounds.x()) {
@@ -466,11 +432,6 @@ void BaseScrollBar::ProcessPressEvent(const ui::LocatedEvent& event) {
   }
   TrackClicked();
   repeater_.Start();
-}
-
-void BaseScrollBar::SetState(CustomButton::ButtonState state) {
-  SetThumbTrackState(state);
-  repeater_.Stop();
 }
 
 void BaseScrollBar::TrackClicked() {
@@ -499,21 +460,17 @@ int BaseScrollBar::CalculateThumbPosition(int contents_scroll_offset) const {
          (contents_size_ - viewport_size_);
 }
 
-int BaseScrollBar::CalculateContentsOffset(int thumb_position,
+int BaseScrollBar::CalculateContentsOffset(float thumb_position,
                                            bool scroll_to_middle) const {
-  int thumb_size = thumb_->GetSize();
+  float thumb_size = static_cast<float>(thumb_->GetSize());
   int track_size = GetTrackSize();
   if (track_size == thumb_size)
     return 0;
   if (scroll_to_middle)
     thumb_position = thumb_position - (thumb_size / 2);
-  return (thumb_position * (contents_size_ - viewport_size_)) /
-         (track_size - thumb_size);
-}
-
-void BaseScrollBar::SetThumbTrackState(CustomButton::ButtonState state) {
-  thumb_track_state_ = state;
-  SchedulePaint();
+  float result = (thumb_position * (contents_size_ - viewport_size_)) /
+                 (track_size - thumb_size);
+  return static_cast<int>(result);
 }
 
 }  // namespace views

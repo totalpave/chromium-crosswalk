@@ -7,8 +7,9 @@
   };
 
   function getUserMediaAndReturnVideoDimensions(constraints) {
-    navigator.webkitGetUserMedia(
-        constraints, gotStreamCallback, failedCallback);
+    navigator.mediaDevices.getUserMedia(constraints)
+        .then(gotStreamCallback)
+        .catch(failedCallback);
   }
 
   function failedCallback(error) {
@@ -17,8 +18,8 @@
 
   function gotStreamCallback(stream) {
     var localView = $('local-view');
-    localView.src = URL.createObjectURL(stream);
-    detectVideoPlaying('local-view', function() {
+    localView.srcObject = stream;
+    detectVideoPlaying('local-view').then(() => {
       sendValueToTest(localView.videoWidth + 'x' + localView.videoHeight);
     });
   }

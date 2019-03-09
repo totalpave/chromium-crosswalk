@@ -173,31 +173,29 @@ size_t kSampleSTHTreeSize = 21u;
 
 }  // namespace
 
-void GetX509CertLogEntry(LogEntry* entry) {
-  entry->type = ct::LogEntry::LOG_ENTRY_TYPE_X509;
+void GetX509CertSignedEntry(SignedEntryData* entry) {
+  entry->type = ct::SignedEntryData::LOG_ENTRY_TYPE_X509;
   entry->leaf_certificate = HexToBytes(kDefaultDerCert);
 }
 
 void GetX509CertTreeLeaf(MerkleTreeLeaf* tree_leaf) {
-  tree_leaf->log_id = HexToBytes(kTestKeyId);
   tree_leaf->timestamp = base::Time::FromJsTime(kTestTimestamp);
-  GetX509CertLogEntry(&tree_leaf->log_entry);
+  GetX509CertSignedEntry(&tree_leaf->signed_entry);
   tree_leaf->extensions = HexToBytes(kDefaultExtensions);
 }
 
 std::string GetDerEncodedX509Cert() { return HexToBytes(kDefaultDerCert); }
 
-void GetPrecertLogEntry(LogEntry* entry) {
-  entry->type = ct::LogEntry::LOG_ENTRY_TYPE_PRECERT;
+void GetPrecertSignedEntry(SignedEntryData* entry) {
+  entry->type = ct::SignedEntryData::LOG_ENTRY_TYPE_PRECERT;
   std::string issuer_hash(HexToBytes(kDefaultIssuerKeyHash));
   memcpy(entry->issuer_key_hash.data, issuer_hash.data(), issuer_hash.size());
   entry->tbs_certificate = HexToBytes(kDefaultDerTbsCert);
 }
 
 void GetPrecertTreeLeaf(MerkleTreeLeaf* tree_leaf) {
-  tree_leaf->log_id = HexToBytes(kTestKeyId);
   tree_leaf->timestamp = base::Time::FromJsTime(kTestTimestamp);
-  GetPrecertLogEntry(&tree_leaf->log_entry);
+  GetPrecertSignedEntry(&tree_leaf->signed_entry);
   tree_leaf->extensions = HexToBytes(kDefaultExtensions);
 }
 
@@ -343,8 +341,8 @@ std::string CreateSignedTreeHeadJsonString(size_t tree_size,
                                            std::string sha256_root_hash,
                                            std::string tree_head_signature) {
   std::string sth_json =
-      std::string("{\"tree_size\":") + base::SizeTToString(tree_size) +
-      std::string(",\"timestamp\":") + base::Int64ToString(timestamp);
+      std::string("{\"tree_size\":") + base::NumberToString(tree_size) +
+      std::string(",\"timestamp\":") + base::NumberToString(timestamp);
 
   if (!sha256_root_hash.empty()) {
     std::string root_hash_b64;
@@ -399,17 +397,21 @@ std::string GetSCTListWithInvalidSCT() {
   return sct_list;
 }
 
-bool CheckForSingleVerifiedSCTInResult(const ct::CTVerifyResult& result,
-                                       const std::string& log_description) {
-  return (result.verified_scts.size() == 1U) && result.invalid_scts.empty() &&
-         result.unknown_logs_scts.empty() &&
-         result.verified_scts[0]->log_description == log_description;
+bool CheckForSingleVerifiedSCTInResult(
+    const SignedCertificateTimestampAndStatusList& scts,
+    const std::string& log_description) {
+  return (scts.size() == 1 && scts[0].status == ct::SCT_STATUS_OK &&
+          scts[0].sct->log_description == log_description);
 }
 
-bool CheckForSCTOrigin(const ct::CTVerifyResult& result,
+bool CheckForSCTOrigin(const SignedCertificateTimestampAndStatusList& scts,
                        ct::SignedCertificateTimestamp::Origin origin) {
-  return (result.verified_scts.size() > 0) &&
-         (result.verified_scts[0]->origin == origin);
+  for (const auto& sct_and_status : scts)
+    if (sct_and_status.status == SCT_STATUS_OK &&
+        sct_and_status.sct->origin == origin)
+      return true;
+
+  return false;
 }
 
 }  // namespace ct

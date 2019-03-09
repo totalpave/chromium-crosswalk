@@ -7,24 +7,22 @@
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/memory/singleton.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/sql_init_error_message_ids.h"
 #include "chrome/browser/sync/glue/sync_start_util.h"
 #include "chrome/browser/ui/profile_error_dialog.h"
-#include "chrome/grit/chromium_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/payments/content/payment_manifest_web_data_service.h"
 #include "components/search_engines/keyword_web_data_service.h"
 #include "components/signin/core/browser/webdata/token_web_data.h"
 #include "components/webdata_services/web_data_service_wrapper.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-
-#if defined(OS_WIN)
-#include "components/password_manager/core/browser/webdata/password_web_data_service_win.h"
-#endif
 
 using content::BrowserThread;
 
@@ -35,31 +33,36 @@ ProfileErrorType ProfileErrorFromWebDataServiceWrapperError(
     WebDataServiceWrapper::ErrorType error_type) {
   switch (error_type) {
     case WebDataServiceWrapper::ERROR_LOADING_AUTOFILL:
-      return PROFILE_ERROR_DB_AUTOFILL_WEB_DATA;
+      return ProfileErrorType::DB_AUTOFILL_WEB_DATA;
+
+    case WebDataServiceWrapper::ERROR_LOADING_ACCOUNT_AUTOFILL:
+      return ProfileErrorType::DB_ACCOUNT_AUTOFILL_WEB_DATA;
 
     case WebDataServiceWrapper::ERROR_LOADING_KEYWORD:
-      return PROFILE_ERROR_DB_KEYWORD_WEB_DATA;
+      return ProfileErrorType::DB_KEYWORD_WEB_DATA;
 
     case WebDataServiceWrapper::ERROR_LOADING_TOKEN:
-      return PROFILE_ERROR_DB_TOKEN_WEB_DATA;
+      return ProfileErrorType::DB_TOKEN_WEB_DATA;
 
     case WebDataServiceWrapper::ERROR_LOADING_PASSWORD:
-      return PROFILE_ERROR_DB_WEB_DATA;
+      return ProfileErrorType::DB_WEB_DATA;
+
+    case WebDataServiceWrapper::ERROR_LOADING_PAYMENT_MANIFEST:
+      return ProfileErrorType::DB_PAYMENT_MANIFEST_WEB_DATA;
 
     default:
-      NOTREACHED()
-          << "Unknown WebDataServiceWrapper::ErrorType: " << error_type;
-      return PROFILE_ERROR_DB_WEB_DATA;
+      NOTREACHED() << "Unknown WebDataServiceWrapper::ErrorType: "
+                   << error_type;
+      return ProfileErrorType::DB_WEB_DATA;
   }
 }
 
 // Callback to show error dialog on profile load error.
 void ProfileErrorCallback(WebDataServiceWrapper::ErrorType error_type,
-                          sql::InitStatus status) {
-  ShowProfileErrorDialog(
-      ProfileErrorFromWebDataServiceWrapperError(error_type),
-      (status == sql::INIT_FAILURE) ?
-          IDS_COULDNT_OPEN_PROFILE_ERROR : IDS_PROFILE_TOO_NEW_ERROR);
+                          sql::InitStatus status,
+                          const std::string& diagnostics) {
+  ShowProfileErrorDialog(ProfileErrorFromWebDataServiceWrapperError(error_type),
+                         SqlInitStatusToMessageId(status), diagnostics);
 }
 
 }  // namespace
@@ -71,8 +74,7 @@ WebDataServiceFactory::WebDataServiceFactory()
   // WebDataServiceFactory has no dependecies.
 }
 
-WebDataServiceFactory::~WebDataServiceFactory() {
-}
+WebDataServiceFactory::~WebDataServiceFactory() {}
 
 // static
 WebDataServiceWrapper* WebDataServiceFactory::GetForProfile(
@@ -108,9 +110,20 @@ WebDataServiceFactory::GetAutofillWebDataForProfile(
   WebDataServiceWrapper* wrapper =
       WebDataServiceFactory::GetForProfile(profile, access_type);
   // |wrapper| can be null in Incognito mode.
-  return wrapper ?
-      wrapper->GetAutofillWebData() :
-      scoped_refptr<autofill::AutofillWebDataService>(nullptr);
+  return wrapper ? wrapper->GetProfileAutofillWebData()
+                 : scoped_refptr<autofill::AutofillWebDataService>(nullptr);
+}
+
+// static
+scoped_refptr<autofill::AutofillWebDataService>
+WebDataServiceFactory::GetAutofillWebDataForAccount(
+    Profile* profile,
+    ServiceAccessType access_type) {
+  WebDataServiceWrapper* wrapper =
+      WebDataServiceFactory::GetForProfile(profile, access_type);
+  // |wrapper| can be null in Incognito mode.
+  return wrapper ? wrapper->GetAccountAutofillWebData()
+                 : scoped_refptr<autofill::AutofillWebDataService>(nullptr);
 }
 
 // static
@@ -121,9 +134,8 @@ WebDataServiceFactory::GetKeywordWebDataForProfile(
   WebDataServiceWrapper* wrapper =
       WebDataServiceFactory::GetForProfile(profile, access_type);
   // |wrapper| can be null in Incognito mode.
-  return wrapper ?
-      wrapper->GetKeywordWebData() :
-      scoped_refptr<KeywordWebDataService>(nullptr);
+  return wrapper ? wrapper->GetKeywordWebData()
+                 : scoped_refptr<KeywordWebDataService>(nullptr);
 }
 
 // static
@@ -133,24 +145,22 @@ scoped_refptr<TokenWebData> WebDataServiceFactory::GetTokenWebDataForProfile(
   WebDataServiceWrapper* wrapper =
       WebDataServiceFactory::GetForProfile(profile, access_type);
   // |wrapper| can be null in Incognito mode.
-  return wrapper ?
-      wrapper->GetTokenWebData() : scoped_refptr<TokenWebData>(nullptr);
+  return wrapper ? wrapper->GetTokenWebData()
+                 : scoped_refptr<TokenWebData>(nullptr);
 }
 
-#if defined(OS_WIN)
 // static
-scoped_refptr<PasswordWebDataService>
-WebDataServiceFactory::GetPasswordWebDataForProfile(
+scoped_refptr<payments::PaymentManifestWebDataService>
+WebDataServiceFactory::GetPaymentManifestWebDataForProfile(
     Profile* profile,
     ServiceAccessType access_type) {
   WebDataServiceWrapper* wrapper =
       WebDataServiceFactory::GetForProfile(profile, access_type);
   // |wrapper| can be null in Incognito mode.
-  return wrapper ?
-      wrapper->GetPasswordWebData() :
-      scoped_refptr<PasswordWebDataService>(nullptr);
+  return wrapper
+             ? wrapper->GetPaymentManifestWebData()
+             : scoped_refptr<payments::PaymentManifestWebDataService>(nullptr);
 }
-#endif
 
 // static
 WebDataServiceFactory* WebDataServiceFactory::GetInstance() {
@@ -167,10 +177,9 @@ KeyedService* WebDataServiceFactory::BuildServiceInstanceFor(
   const base::FilePath& profile_path = context->GetPath();
   return new WebDataServiceWrapper(
       profile_path, g_browser_process->GetApplicationLocale(),
-      BrowserThread::GetMessageLoopProxyForThread(BrowserThread::UI),
-      BrowserThread::GetMessageLoopProxyForThread(BrowserThread::DB),
+      base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::UI}),
       sync_start_util::GetFlareForSyncableService(profile_path),
-      &ProfileErrorCallback);
+      base::BindRepeating(&ProfileErrorCallback));
 }
 
 bool WebDataServiceFactory::ServiceIsNULLWhileTesting() const {

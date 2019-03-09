@@ -4,27 +4,45 @@
 
 package org.chromium.chrome.browser.input;
 
-import android.test.suitebuilder.annotation.LargeTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.LargeTest;
+
+import org.junit.Assert;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.WebContentsFactory;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
-import org.chromium.content.browser.ContentView;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.DOMUtils;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.WebContentsUtils;
 import org.chromium.ui.base.ActivityWindowAndroid;
-import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.base.ViewAndroidDelegate;
+
+import java.util.concurrent.ExecutionException;
 
 /**
- * Test the select popup and how it interacts with another ContentViewCore.
+ * Test the select popup and how it interacts with another WebContents.
  */
-public class SelectPopupOtherContentViewTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class SelectPopupOtherContentViewTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
+
     private static final String SELECT_URL = UrlUtils.encodeHtmlDataUri(
             "<html><body>"
             + "Which animal is the strongest:<br/>"
@@ -46,18 +64,19 @@ public class SelectPopupOtherContentViewTest extends ChromeActivityTestCaseBase<
 
         @Override
         public boolean isSatisfied() {
-            ContentViewCore contentViewCore = getActivity().getCurrentContentViewCore();
-            return contentViewCore.getSelectPopupForTest() != null;
+            return isSelectPopupVisibleOnUiThread();
         }
     }
 
-    public SelectPopupOtherContentViewTest() {
-        super(ChromeActivity.class);
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        // Don't launch activity automatically.
+    private boolean isSelectPopupVisibleOnUiThread() {
+        try {
+            // clang-format off
+            return ThreadUtils.runOnUiThreadBlocking(() ->
+                    WebContentsUtils.isSelectPopupVisible(mActivityTestRule.getWebContents()));
+            // clang-format on
+        } catch (ExecutionException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**
@@ -65,38 +84,39 @@ public class SelectPopupOtherContentViewTest extends ChromeActivityTestCaseBase<
      * gets destroyed.
      *
      */
+    @Test
     @LargeTest
     @Feature({"Browser"})
+    @RetryOnFailure
     public void testPopupNotClosedByOtherContentView()
             throws InterruptedException, Exception, Throwable {
         // Load the test page.
-        startMainActivityWithURL(SELECT_URL);
-
-        final ContentViewCore viewCore = getActivity().getCurrentContentViewCore();
+        mActivityTestRule.startMainActivityWithURL(SELECT_URL);
 
         // Once clicked, the popup should show up.
-        DOMUtils.clickNode(this, viewCore, "select");
+        DOMUtils.clickNode(mActivityTestRule.getWebContents(), "select");
         CriteriaHelper.pollInstrumentationThread(new PopupShowingCriteria());
 
-        // Now create and destroy a different ContentView.
+        // Now create and destroy a different WebContents.
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
                 WebContents webContents = WebContentsFactory.createWebContents(false, false);
-                WindowAndroid windowAndroid = new ActivityWindowAndroid(getActivity());
+                ChromeActivity activity = mActivityTestRule.getActivity();
 
-                ContentViewCore contentViewCore = new ContentViewCore(getActivity());
-                ContentView cv = ContentView.createContentView(getActivity(), contentViewCore);
-                contentViewCore.initialize(cv, cv, webContents, windowAndroid);
-                contentViewCore.destroy();
+                ContentView cv = ContentView.createContentView(activity, webContents);
+                webContents.initialize("", ViewAndroidDelegate.createBasicDelegate(cv), cv,
+                        new ActivityWindowAndroid(activity),
+                        WebContents.createDefaultInternalsHolder());
+                webContents.destroy();
             }
         });
 
         // Process some more events to give a chance to the dialog to hide if it were to.
-        getInstrumentation().waitForIdleSync();
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
         // The popup should still be shown.
-        assertNotNull("The select popup got hidden by destroying of unrelated ContentViewCore.",
-                viewCore.getSelectPopupForTest());
+        Assert.assertTrue("The select popup got hidden by destroying of unrelated ContentViewCore.",
+                isSelectPopupVisibleOnUiThread());
     }
 }

@@ -7,7 +7,6 @@
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -29,7 +28,7 @@ class KeywordTableTest : public testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    file_ = temp_dir_.path().AppendASCII("TestWebDatabase");
+    file_ = temp_dir_.GetPath().AppendASCII("TestWebDatabase");
 
     table_.reset(new KeywordTable);
     db_.reset(new WebDatabase);
@@ -47,27 +46,25 @@ class KeywordTableTest : public testing::Test {
     keyword.SetKeyword(ASCIIToUTF16("keyword"));
     keyword.SetURL("http://url/");
     keyword.suggestions_url = "url2";
-    keyword.instant_url = "http://instant/";
     keyword.image_url = "http://image-search-url/";
     keyword.new_tab_url = "http://new-tab-url/";
     keyword.search_url_post_params = "ie=utf-8,oe=utf-8";
     keyword.image_url_post_params = "name=1,value=2";
     keyword.favicon_url = GURL("http://favicon.url/");
     keyword.originating_url = GURL("http://google.com/");
-    keyword.show_in_default_list = true;
     keyword.safe_for_autoreplace = true;
     keyword.input_encodings.push_back("UTF-8");
     keyword.input_encodings.push_back("UTF-16");
     keyword.id = 1;
     keyword.date_created = base::Time::UnixEpoch();
     keyword.last_modified = base::Time::UnixEpoch();
+    keyword.last_visited = base::Time::UnixEpoch();
     keyword.created_by_policy = true;
     keyword.usage_count = 32;
     keyword.prepopulate_id = 10;
     keyword.sync_guid = "1234-5678-90AB-CDEF";
     keyword.alternate_urls.push_back("a_url1");
     keyword.alternate_urls.push_back("a_url2");
-    keyword.search_terms_replacement_key = "espv";
     AddKeyword(keyword);
     return keyword;
   }
@@ -122,11 +119,8 @@ TEST_F(KeywordTableTest, Keywords) {
   EXPECT_EQ(keyword.keyword(), restored_keyword.keyword());
   EXPECT_EQ(keyword.url(), restored_keyword.url());
   EXPECT_EQ(keyword.suggestions_url, restored_keyword.suggestions_url);
-  EXPECT_EQ(keyword.instant_url, restored_keyword.instant_url);
   EXPECT_EQ(keyword.favicon_url, restored_keyword.favicon_url);
   EXPECT_EQ(keyword.originating_url, restored_keyword.originating_url);
-  EXPECT_EQ(keyword.show_in_default_list,
-            restored_keyword.show_in_default_list);
   EXPECT_EQ(keyword.safe_for_autoreplace,
             restored_keyword.safe_for_autoreplace);
   EXPECT_EQ(keyword.input_encodings, restored_keyword.input_encodings);
@@ -136,6 +130,8 @@ TEST_F(KeywordTableTest, Keywords) {
             restored_keyword.date_created.ToTimeT());
   EXPECT_EQ(keyword.last_modified.ToTimeT(),
             restored_keyword.last_modified.ToTimeT());
+  EXPECT_EQ(keyword.last_visited.ToTimeT(),
+            restored_keyword.last_visited.ToTimeT());
   EXPECT_EQ(keyword.created_by_policy, restored_keyword.created_by_policy);
   EXPECT_EQ(keyword.usage_count, restored_keyword.usage_count);
   EXPECT_EQ(keyword.prepopulate_id, restored_keyword.prepopulate_id);
@@ -153,7 +149,6 @@ TEST_F(KeywordTableTest, UpdateKeyword) {
   TemplateURLData keyword(CreateAndAddKeyword());
 
   keyword.SetKeyword(ASCIIToUTF16("url"));
-  keyword.instant_url = "http://instant2/";
   keyword.originating_url = GURL("http://originating.url/");
   keyword.input_encodings.push_back("Shift_JIS");
   keyword.prepopulate_id = 5;
@@ -166,11 +161,8 @@ TEST_F(KeywordTableTest, UpdateKeyword) {
   EXPECT_EQ(keyword.short_name(), restored_keyword.short_name());
   EXPECT_EQ(keyword.keyword(), restored_keyword.keyword());
   EXPECT_EQ(keyword.suggestions_url, restored_keyword.suggestions_url);
-  EXPECT_EQ(keyword.instant_url, restored_keyword.instant_url);
   EXPECT_EQ(keyword.favicon_url, restored_keyword.favicon_url);
   EXPECT_EQ(keyword.originating_url, restored_keyword.originating_url);
-  EXPECT_EQ(keyword.show_in_default_list,
-            restored_keyword.show_in_default_list);
   EXPECT_EQ(keyword.safe_for_autoreplace,
             restored_keyword.safe_for_autoreplace);
   EXPECT_EQ(keyword.input_encodings, restored_keyword.input_encodings);

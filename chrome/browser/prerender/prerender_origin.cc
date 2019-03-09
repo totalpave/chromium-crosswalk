@@ -4,8 +4,8 @@
 
 #include "chrome/browser/prerender/prerender_origin.h"
 
-#include "base/macros.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/stl_util.h"
 #include "chrome/browser/prerender/prerender_manager.h"
 
 namespace prerender {
@@ -13,24 +13,24 @@ namespace prerender {
 namespace {
 
 const char* kOriginNames[] = {
-  "[Deprecated] Link Rel Prerender (original)",
-  "[Deprecated] Omnibox (original)",
-  "GWS Prerender",
-  "[Deprecated] Omnibox (conservative)",
-  "[Deprecated] Omnibox (exact)",
-  "Omnibox",
-  "None",
-  "Link Rel Prerender (same domain)",
-  "Link Rel Prerender (cross domain)",
-  "Local Predictor",
-  "External Request",
-  "Instant",
-  "Link Rel Next",
-  "External Request Forced Cellular",
-  "Offline",
-  "Max",
+    "[Deprecated] Link Rel Prerender (original)",
+    "[Deprecated] Omnibox (original)",
+    "GWS Prerender",
+    "[Deprecated] Omnibox (conservative)",
+    "[Deprecated] Omnibox (exact)",
+    "Omnibox",
+    "None",
+    "Link Rel Prerender (same domain)",
+    "Link Rel Prerender (cross domain)",
+    "[Deprecated] Local Predictor",
+    "External Request",
+    "[Deprecated] Instant",
+    "[Deprecated] Link Rel Next",
+    "External Request Forced Cellular",
+    "[Deprecated] Offline",
+    "Max",
 };
-static_assert(arraysize(kOriginNames) == ORIGIN_MAX + 1,
+static_assert(base::size(kOriginNames) == ORIGIN_MAX + 1,
               "prerender origin name count mismatch");
 
 }  // namespace

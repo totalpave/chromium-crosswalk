@@ -15,11 +15,11 @@
 #include "chrome/browser/sync/glue/sync_start_util.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_change_processor.h"
-#include "sync/api/sync_error_factory.h"
-#include "sync/api/syncable_service.h"
-#include "sync/protocol/arc_package_specifics.pb.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_change_processor.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "components/sync/model/syncable_service.h"
+#include "components/sync/protocol/arc_package_specifics.pb.h"
 
 class Profile;
 
@@ -55,6 +55,7 @@ class ArcPackageSyncableService : public syncer::SyncableService,
   bool IsPackageSyncing(const std::string& package_name) const;
 
   // syncer::SyncableService:
+  void WaitUntilReadyToSync(base::OnceClosure done) override;
   syncer::SyncMergeResult MergeDataAndStartSyncing(
       syncer::ModelType type,
       const syncer::SyncDataList& initial_sync_data,
@@ -63,7 +64,7 @@ class ArcPackageSyncableService : public syncer::SyncableService,
   void StopSyncing(syncer::ModelType type) override;
   syncer::SyncDataList GetAllSyncData(syncer::ModelType type) const override;
   syncer::SyncError ProcessSyncChanges(
-      const tracked_objects::Location& from_here,
+      const base::Location& from_here,
       const syncer::SyncChangeList& change_list) override;
 
   bool SyncStarted();
@@ -77,7 +78,9 @@ class ArcPackageSyncableService : public syncer::SyncableService,
   // ArcAppListPrefs::Observer:
   void OnPackageInstalled(const mojom::ArcPackageInfo& package_info) override;
   void OnPackageModified(const mojom::ArcPackageInfo& package_info) override;
-  void OnPackageRemoved(const std::string& package_name) override;
+  void OnPackageRemoved(const std::string& package_name,
+                        bool uninstalled) override;
+  void OnPackageListInitialRefreshed() override;
 
   // Sends adds/updates sync change to sync server.
   void SendSyncChange(
@@ -104,6 +107,7 @@ class ArcPackageSyncableService : public syncer::SyncableService,
   bool ShouldSyncPackage(const std::string& package_name) const;
 
   Profile* const profile_;
+  base::OnceClosure wait_until_ready_to_sync_cb_;
   std::unique_ptr<syncer::SyncChangeProcessor> sync_processor_;
   std::unique_ptr<syncer::SyncErrorFactory> sync_error_handler_;
 

@@ -4,41 +4,79 @@
 
 #include "net/cert/internal/trust_store.h"
 
-#include "net/cert/internal/parsed_certificate.h"
-
 namespace net {
 
-TrustStore::TrustStore() {}
-TrustStore::~TrustStore() {}
-
-void TrustStore::Clear() {
-  anchors_.clear();
+CertificateTrust CertificateTrust::ForTrustAnchor() {
+  CertificateTrust result;
+  result.type = CertificateTrustType::TRUSTED_ANCHOR;
+  return result;
 }
 
-void TrustStore::AddTrustedCertificate(
-    scoped_refptr<ParsedCertificate> anchor) {
-  // TODO(mattm): should this check for duplicate certs?
-  anchors_.insert(std::make_pair(anchor->normalized_subject().AsStringPiece(),
-                                 std::move(anchor)));
+CertificateTrust CertificateTrust::ForTrustAnchorEnforcingConstraints() {
+  CertificateTrust result;
+  result.type = CertificateTrustType::TRUSTED_ANCHOR_WITH_CONSTRAINTS;
+  return result;
 }
 
-void TrustStore::FindTrustAnchorsByNormalizedName(
-    const der::Input& normalized_name,
-    std::vector<scoped_refptr<ParsedCertificate>>* matches) const {
-  auto range = anchors_.equal_range(normalized_name.AsStringPiece());
-  for (auto it = range.first; it != range.second; ++it)
-    matches->push_back(it->second);
+CertificateTrust CertificateTrust::ForUnspecified() {
+  CertificateTrust result;
+  result.type = CertificateTrustType::UNSPECIFIED;
+  return result;
 }
 
-bool TrustStore::IsTrustedCertificate(const ParsedCertificate* cert) const {
-  auto range = anchors_.equal_range(cert->normalized_subject().AsStringPiece());
-  for (auto it = range.first; it != range.second; ++it) {
-    // First compare the ParsedCertificate pointers as an optimization, fall
-    // back to comparing full DER encoding.
-    if (it->second == cert || it->second->der_cert() == cert->der_cert())
+CertificateTrust CertificateTrust::ForDistrusted() {
+  CertificateTrust result;
+  result.type = CertificateTrustType::DISTRUSTED;
+  return result;
+}
+
+bool CertificateTrust::IsTrustAnchor() const {
+  switch (type) {
+    case CertificateTrustType::DISTRUSTED:
+    case CertificateTrustType::UNSPECIFIED:
+      return false;
+    case CertificateTrustType::TRUSTED_ANCHOR:
+    case CertificateTrustType::TRUSTED_ANCHOR_WITH_CONSTRAINTS:
       return true;
   }
+
+  NOTREACHED();
   return false;
+}
+
+bool CertificateTrust::IsDistrusted() const {
+  switch (type) {
+    case CertificateTrustType::DISTRUSTED:
+      return true;
+    case CertificateTrustType::UNSPECIFIED:
+    case CertificateTrustType::TRUSTED_ANCHOR:
+    case CertificateTrustType::TRUSTED_ANCHOR_WITH_CONSTRAINTS:
+      return false;
+  }
+
+  NOTREACHED();
+  return false;
+}
+
+bool CertificateTrust::HasUnspecifiedTrust() const {
+  switch (type) {
+    case CertificateTrustType::UNSPECIFIED:
+      return true;
+    case CertificateTrustType::DISTRUSTED:
+    case CertificateTrustType::TRUSTED_ANCHOR:
+    case CertificateTrustType::TRUSTED_ANCHOR_WITH_CONSTRAINTS:
+      return false;
+  }
+
+  NOTREACHED();
+  return true;
+}
+
+TrustStore::TrustStore() = default;
+
+void TrustStore::AsyncGetIssuersOf(const ParsedCertificate* cert,
+                                   std::unique_ptr<Request>* out_req) {
+  out_req->reset();
 }
 
 }  // namespace net

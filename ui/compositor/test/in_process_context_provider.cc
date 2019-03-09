@@ -9,12 +9,15 @@
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
-#include "cc/output/managed_memory_policy.h"
-#include "gpu/command_buffer/client/gl_in_process_context.h"
+#include "components/viz/common/gpu/context_cache_controller.h"
 #include "gpu/command_buffer/client/gles2_implementation.h"
-#include "gpu/command_buffer/client/gles2_lib.h"
+#include "gpu/command_buffer/client/raster_implementation_gles.h"
 #include "gpu/command_buffer/client/shared_memory_limits.h"
+#include "gpu/command_buffer/common/skia_utils.h"
+#include "gpu/ipc/gl_in_process_context.h"
+#include "gpu/ipc/test_gpu_thread_holder.h"
 #include "gpu/skia_bindings/grcontext_for_gles2_interface.h"
 #include "third_party/skia/include/gpu/GrContext.h"
 #include "third_party/skia/include/gpu/gl/GrGLInterface.h"
@@ -23,15 +26,15 @@ namespace ui {
 
 // static
 scoped_refptr<InProcessContextProvider> InProcessContextProvider::Create(
-    const gpu::gles2::ContextCreationAttribHelper& attribs,
-    InProcessContextProvider* shared_context,
+    const gpu::ContextCreationAttribs& attribs,
     gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager,
     gpu::ImageFactory* image_factory,
-    gfx::AcceleratedWidget window,
-    const std::string& debug_name) {
-  return new InProcessContextProvider(attribs, shared_context,
-                                      gpu_memory_buffer_manager, image_factory,
-                                      window, debug_name);
+    gpu::SurfaceHandle window,
+    const std::string& debug_name,
+    bool support_locking) {
+  return new InProcessContextProvider(attribs, gpu_memory_buffer_manager,
+                                      image_factory, window, debug_name,
+                                      support_locking);
 }
 
 // static
@@ -39,8 +42,8 @@ scoped_refptr<InProcessContextProvider>
 InProcessContextProvider::CreateOffscreen(
     gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager,
     gpu::ImageFactory* image_factory,
-    InProcessContextProvider* shared_context) {
-  gpu::gles2::ContextCreationAttribHelper attribs;
+    bool support_locking) {
+  gpu::ContextCreationAttribs attribs;
   attribs.alpha_size = 8;
   attribs.blue_size = 8;
   attribs.green_size = 8;
@@ -51,20 +54,20 @@ InProcessContextProvider::CreateOffscreen(
   attribs.sample_buffers = 0;
   attribs.fail_if_major_perf_caveat = false;
   attribs.bind_generates_resource = false;
-  return new InProcessContextProvider(attribs, shared_context,
-                                      gpu_memory_buffer_manager, image_factory,
-                                      gfx::kNullAcceleratedWidget, "Offscreen");
+  return new InProcessContextProvider(attribs, gpu_memory_buffer_manager,
+                                      image_factory, gpu::kNullSurfaceHandle,
+                                      "Offscreen", support_locking);
 }
 
 InProcessContextProvider::InProcessContextProvider(
-    const gpu::gles2::ContextCreationAttribHelper& attribs,
-    InProcessContextProvider* shared_context,
+    const gpu::ContextCreationAttribs& attribs,
     gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager,
     gpu::ImageFactory* image_factory,
-    gfx::AcceleratedWidget window,
-    const std::string& debug_name)
-    : attribs_(attribs),
-      shared_context_(shared_context),
+    gpu::SurfaceHandle window,
+    const std::string& debug_name,
+    bool support_locking)
+    : support_locking_(support_locking),
+      attribs_(attribs),
       gpu_memory_buffer_manager_(gpu_memory_buffer_manager),
       image_factory_(image_factory),
       window_(window),
@@ -78,83 +81,111 @@ InProcessContextProvider::~InProcessContextProvider() {
          context_thread_checker_.CalledOnValidThread());
 }
 
-bool InProcessContextProvider::BindToCurrentThread() {
+void InProcessContextProvider::AddRef() const {
+  base::RefCountedThreadSafe<InProcessContextProvider>::AddRef();
+}
+
+void InProcessContextProvider::Release() const {
+  base::RefCountedThreadSafe<InProcessContextProvider>::Release();
+}
+
+gpu::ContextResult InProcessContextProvider::BindToCurrentThread() {
   // This is called on the thread the context will be used.
   DCHECK(context_thread_checker_.CalledOnValidThread());
 
-  if (!context_) {
-    context_.reset(gpu::GLInProcessContext::Create(
-        nullptr,  /* service */
-        nullptr,  /* surface */
-        !window_, /* is_offscreen */
-        window_, (shared_context_ ? shared_context_->context_.get() : nullptr),
-        attribs_, gpu::SharedMemoryLimits(), gpu_memory_buffer_manager_,
-        image_factory_));
+  if (bind_tried_)
+    return bind_result_;
+  bind_tried_ = true;
 
-    if (!context_)
-      return false;
-  }
+  context_ = std::make_unique<gpu::GLInProcessContext>();
+  bind_result_ = context_->Initialize(
+      gpu::GetTestGpuThreadHolder()->GetTaskExecutor(), nullptr, /* surface */
+      !window_, /* is_offscreen */
+      window_, attribs_, gpu::SharedMemoryLimits(), gpu_memory_buffer_manager_,
+      image_factory_, base::ThreadTaskRunnerHandle::Get());
+
+  if (bind_result_ != gpu::ContextResult::kSuccess)
+    return bind_result_;
+
+  cache_controller_ = std::make_unique<viz::ContextCacheController>(
+      context_->GetImplementation(), base::ThreadTaskRunnerHandle::Get());
+  if (support_locking_)
+    cache_controller_->SetLock(GetLock());
 
   std::string unique_context_name =
       base::StringPrintf("%s-%p", debug_name_.c_str(), context_.get());
   context_->GetImplementation()->TraceBeginCHROMIUM(
       "gpu_toplevel", unique_context_name.c_str());
 
-  return true;
+  raster_context_ = std::make_unique<gpu::raster::RasterImplementationGLES>(
+      context_->GetImplementation());
+
+  return bind_result_;
 }
 
-void InProcessContextProvider::DetachFromThread() {
-  context_thread_checker_.DetachFromThread();
-}
-
-gpu::Capabilities InProcessContextProvider::ContextCapabilities() {
-  DCHECK(context_thread_checker_.CalledOnValidThread());
+const gpu::Capabilities& InProcessContextProvider::ContextCapabilities() const {
+  CheckValidThreadOrLockAcquired();
   return context_->GetImplementation()->capabilities();
 }
 
-gpu::gles2::GLES2Interface* InProcessContextProvider::ContextGL() {
-  DCHECK(context_thread_checker_.CalledOnValidThread());
+const gpu::GpuFeatureInfo& InProcessContextProvider::GetGpuFeatureInfo() const {
+  CheckValidThreadOrLockAcquired();
+  return context_->GetGpuFeatureInfo();
+}
 
+gpu::gles2::GLES2Interface* InProcessContextProvider::ContextGL() {
+  CheckValidThreadOrLockAcquired();
   return context_->GetImplementation();
 }
 
-gpu::ContextSupport* InProcessContextProvider::ContextSupport() {
-  DCHECK(context_thread_checker_.CalledOnValidThread());
+gpu::raster::RasterInterface* InProcessContextProvider::RasterInterface() {
+  CheckValidThreadOrLockAcquired();
 
+  return raster_context_.get();
+}
+
+gpu::ContextSupport* InProcessContextProvider::ContextSupport() {
   return context_->GetImplementation();
 }
 
 class GrContext* InProcessContextProvider::GrContext() {
-  DCHECK(context_thread_checker_.CalledOnValidThread());
+  CheckValidThreadOrLockAcquired();
 
   if (gr_context_)
     return gr_context_->get();
 
-  gr_context_.reset(new skia_bindings::GrContextForGLES2Interface(ContextGL()));
+  size_t max_resource_cache_bytes;
+  size_t max_glyph_cache_texture_bytes;
+  gpu::raster::DefaultGrCacheLimitsForTests(&max_resource_cache_bytes,
+                                            &max_glyph_cache_texture_bytes);
+  gr_context_.reset(new skia_bindings::GrContextForGLES2Interface(
+      ContextGL(), ContextSupport(), ContextCapabilities(),
+      max_resource_cache_bytes, max_glyph_cache_texture_bytes));
+  cache_controller_->SetGrContext(gr_context_->get());
 
   return gr_context_->get();
 }
 
-void InProcessContextProvider::InvalidateGrContext(uint32_t state) {
-  DCHECK(context_thread_checker_.CalledOnValidThread());
+gpu::SharedImageInterface* InProcessContextProvider::SharedImageInterface() {
+  return context_->GetSharedImageInterface();
+}
 
-  if (gr_context_)
-    gr_context_->ResetContext(state);
+viz::ContextCacheController* InProcessContextProvider::CacheController() {
+  CheckValidThreadOrLockAcquired();
+  return cache_controller_.get();
 }
 
 base::Lock* InProcessContextProvider::GetLock() {
+  if (!support_locking_)
+    return nullptr;
   return &context_lock_;
 }
 
-void InProcessContextProvider::DeleteCachedResources() {
-  DCHECK(context_thread_checker_.CalledOnValidThread());
-
-  if (gr_context_)
-    gr_context_->FreeGpuResources();
+void InProcessContextProvider::AddObserver(viz::ContextLostObserver* obs) {
+  // Pixel tests do not test lost context.
 }
 
-void InProcessContextProvider::SetLostContextCallback(
-    const LostContextCallback& lost_context_callback) {
+void InProcessContextProvider::RemoveObserver(viz::ContextLostObserver* obs) {
   // Pixel tests do not test lost context.
 }
 

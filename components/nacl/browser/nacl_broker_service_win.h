@@ -12,7 +12,9 @@
 #include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "base/memory/weak_ptr.h"
+#include "base/process/process.h"
 #include "components/nacl/browser/nacl_broker_host_win.h"
+#include "services/service_manager/public/mojom/service.mojom.h"
 
 namespace nacl {
 
@@ -29,11 +31,10 @@ class NaClBrokerService {
   // Send a message to the broker process, causing it to launch
   // a Native Client loader process.
   bool LaunchLoader(base::WeakPtr<NaClProcessHost> client,
-                    const std::string& loader_channel_id);
+                    service_manager::mojom::ServiceRequest service_request);
 
   // Called by NaClBrokerHost to notify the service that a loader was launched.
-  void OnLoaderLaunched(const std::string& channel_id,
-                        base::ProcessHandle handle);
+  void OnLoaderLaunched(int launch_id, base::Process process);
 
   // Called by NaClProcessHost when a loader process is terminated
   void OnLoaderDied();
@@ -48,9 +49,8 @@ class NaClBrokerService {
   void OnDebugExceptionHandlerLaunched(int32_t pid, bool success);
 
  private:
-  typedef std::map<std::string, base::WeakPtr<NaClProcessHost> >
-      PendingLaunchesMap;
-  typedef std::map<int, base::WeakPtr<NaClProcessHost> >
+  typedef std::map<int, base::WeakPtr<NaClProcessHost>> PendingLaunchesMap;
+  typedef std::map<int, base::WeakPtr<NaClProcessHost>>
       PendingDebugExceptionHandlersMap;
 
   friend struct base::DefaultSingletonTraits<NaClBrokerService>;
@@ -61,6 +61,7 @@ class NaClBrokerService {
   NaClBrokerHost* GetBrokerHost();
 
   int loaders_running_;
+  int next_launch_id_ = 0;
   PendingLaunchesMap pending_launches_;
   PendingDebugExceptionHandlersMap pending_debuggers_;
 

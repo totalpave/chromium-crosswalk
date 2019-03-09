@@ -9,6 +9,7 @@
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
+#include "net/dns/dns_util.h"
 
 using base::StringPiece;
 
@@ -58,6 +59,7 @@ class HostsParser {
           }
 
           // If comma_mode_ is COMMA_IS_TOKEN, fall through:
+          FALLTHROUGH;
 
         default: {
           size_t token_start = pos_;
@@ -155,6 +157,8 @@ void ParseHostsWithCommaMode(const std::string& contents,
       }
     } else {
       DnsHostsKey key(parser.token().as_string(), family);
+      if (!IsValidDNSDomain(key.first))
+        continue;
       key.first = base::ToLowerASCII(key.first);
       IPAddress* mapped_ip = &(*dns_hosts)[key];
       if (mapped_ip->empty())
@@ -195,8 +199,8 @@ bool ParseHostsFile(const base::FilePath& path, DnsHosts* dns_hosts) {
   if (!base::GetFileSize(path, &size))
     return false;
 
-  UMA_HISTOGRAM_COUNTS("AsyncDNS.HostsSize",
-                       static_cast<base::HistogramBase::Sample>(size));
+  UMA_HISTOGRAM_COUNTS_1M("AsyncDNS.HostsSize",
+                          static_cast<base::HistogramBase::Sample>(size));
 
   // Reject HOSTS files larger than |kMaxHostsSize| bytes.
   const int64_t kMaxHostsSize = 1 << 25;  // 32MB
@@ -212,4 +216,3 @@ bool ParseHostsFile(const base::FilePath& path, DnsHosts* dns_hosts) {
 }
 
 }  // namespace net
-

@@ -7,12 +7,10 @@
 #include "build/build_config.h"
 #include "cc/layers/picture_layer.h"
 #include "cc/layers/solid_color_layer.h"
+#include "cc/test/fake_content_layer_client.h"
 #include "cc/test/layer_tree_pixel_test.h"
 #include "cc/test/pixel_comparator.h"
 #include "cc/test/solid_color_content_layer_client.h"
-#include "third_party/skia/include/effects/SkColorFilterImageFilter.h"
-#include "third_party/skia/include/effects/SkColorMatrixFilter.h"
-#include "third_party/skia/include/effects/SkOffsetImageFilter.h"
 
 #if !defined(OS_ANDROID)
 
@@ -21,11 +19,11 @@ namespace {
 
 class LayerTreeHostFiltersPixelTest : public LayerTreePixelTest {};
 
-TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlur) {
+TEST_F(LayerTreeHostFiltersPixelTest, BackdropFilterBlurRect) {
   scoped_refptr<SolidColorLayer> background = CreateSolidColorLayer(
       gfx::Rect(200, 200), SK_ColorWHITE);
 
-  // The green box is entirely behind a layer with background blur, so it
+  // The green box is entirely behind a layer with backdrop blur, so it
   // should appear blurred on its edges.
   scoped_refptr<SolidColorLayer> green = CreateSolidColorLayer(
       gfx::Rect(50, 50, 100, 100), kCSSGreen);
@@ -35,11 +33,14 @@ TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlur) {
   background->AddChild(blur);
 
   FilterOperations filters;
-  filters.Append(FilterOperation::CreateBlurFilter(2.f));
-  blur->SetBackgroundFilters(filters);
+  filters.Append(FilterOperation::CreateBlurFilter(
+      2.f, SkBlurImageFilter::kClamp_TileMode));
+  blur->SetBackdropFilters(filters);
+  gfx::RRectF backdrop_filter_bounds(gfx::RectF(gfx::SizeF(blur->bounds())), 0);
+  blur->SetBackdropFilterBounds(backdrop_filter_bounds);
 
-#if defined(OS_WIN)
-  // Windows has 436 pixels off by 1: crbug.com/259915
+#if defined(OS_WIN) || defined(ARCH_CPU_ARM64)
+  // Windows and ARM64 have 436 pixels off by 1: crbug.com/259915
   float percentage_pixels_large_error = 1.09f;  // 436px / (200*200)
   float percentage_pixels_small_error = 0.0f;
   float average_error_allowed_in_bad_pixels = 1.f;
@@ -54,17 +55,56 @@ TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlur) {
       small_error_allowed));
 #endif
 
-  RunPixelTest(PIXEL_TEST_GL,
-               background,
-               base::FilePath(FILE_PATH_LITERAL("background_filter_blur.png")));
+  RunPixelTest(PIXEL_TEST_GL, background,
+               base::FilePath(FILE_PATH_LITERAL("backdrop_filter_blur.png")));
 }
 
-TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlurOutsets) {
+TEST_F(LayerTreeHostFiltersPixelTest, BackdropFilterBlurRounded) {
+  scoped_refptr<SolidColorLayer> background =
+      CreateSolidColorLayer(gfx::Rect(200, 200), SK_ColorWHITE);
+
+  // The green box is entirely behind a layer with backdrop blur, so it
+  // should appear blurred on its edges.
+  scoped_refptr<SolidColorLayer> green =
+      CreateSolidColorLayer(gfx::Rect(50, 50, 100, 100), kCSSGreen);
+  scoped_refptr<SolidColorLayer> blur =
+      CreateSolidColorLayer(gfx::Rect(46, 46, 108, 108), SK_ColorTRANSPARENT);
+  background->AddChild(green);
+  background->AddChild(blur);
+
+  FilterOperations filters;
+  filters.Append(FilterOperation::CreateBlurFilter(
+      2.f, SkBlurImageFilter::kClamp_TileMode));
+  blur->SetBackdropFilters(filters);
+  gfx::RRectF backdrop_filter_bounds(gfx::RectF(gfx::SizeF(blur->bounds())), 14,
+                                     16, 18, 20, 22, 30, 40, 50);
+  blur->SetBackdropFilterBounds(backdrop_filter_bounds);
+
+#if defined(OS_WIN) || defined(ARCH_CPU_ARM64)
+  // Windows and ARM64 have 436 pixels off by 1: crbug.com/259915
+  float percentage_pixels_large_error = 1.09f;  // 436px / (200*200)
+  float percentage_pixels_small_error = 0.0f;
+  float average_error_allowed_in_bad_pixels = 1.f;
+  int large_error_allowed = 1;
+  int small_error_allowed = 0;
+  pixel_comparator_.reset(new FuzzyPixelComparator(
+      true,  // discard_alpha
+      percentage_pixels_large_error, percentage_pixels_small_error,
+      average_error_allowed_in_bad_pixels, large_error_allowed,
+      small_error_allowed));
+#endif
+
+  RunPixelTest(
+      PIXEL_TEST_GL, background,
+      base::FilePath(FILE_PATH_LITERAL("backdrop_filter_blur_rounded.png")));
+}
+
+TEST_F(LayerTreeHostFiltersPixelTest, BackdropFilterBlurOutsets) {
   scoped_refptr<SolidColorLayer> background = CreateSolidColorLayer(
       gfx::Rect(200, 200), SK_ColorWHITE);
 
-  // The green border is outside the layer with background blur, but the
-  // background blur should use pixels from outside its layer borders, up to the
+  // The green border is outside the layer with backdrop blur, but the
+  // backdrop blur should use pixels from outside its layer borders, up to the
   // radius of the blur effect. So the border should be blurred underneath the
   // top layer causing the green to bleed under the transparent layer, but not
   // in the 1px region between the transparent layer and the green border.
@@ -76,12 +116,20 @@ TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlurOutsets) {
   background->AddChild(blur);
 
   FilterOperations filters;
-  filters.Append(FilterOperation::CreateBlurFilter(5.f));
-  blur->SetBackgroundFilters(filters);
+  filters.Append(FilterOperation::CreateBlurFilter(
+      5.f, SkBlurImageFilter::kClamp_TileMode));
+  blur->SetBackdropFilters(filters);
+  gfx::RRectF backdrop_filter_bounds(gfx::RectF(gfx::SizeF(blur->bounds())), 0);
+  blur->SetBackdropFilterBounds(backdrop_filter_bounds);
 
-#if defined(OS_WIN)
-  // Windows has 5.6075% pixels by at most 2: crbug.com/259922
-  float percentage_pixels_large_error = 5.7f;
+#if defined(OS_WIN) || defined(_MIPS_ARCH_LOONGSON) || defined(ARCH_CPU_ARM64)
+#if defined(OS_WIN) || defined(ARCH_CPU_ARM64)
+  // Windows has 5.9325% pixels by at most 2: crbug.com/259922
+  float percentage_pixels_large_error = 6.0f;
+#else
+  // Loongson has 8.685% pixels by at most 2: crbug.com/819110
+  float percentage_pixels_large_error = 8.7f;
+#endif
   float percentage_pixels_small_error = 0.0f;
   float average_error_allowed_in_bad_pixels = 2.f;
   int large_error_allowed = 2;
@@ -96,12 +144,11 @@ TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlurOutsets) {
 #endif
 
   RunPixelTest(
-      PIXEL_TEST_GL,
-      background,
-      base::FilePath(FILE_PATH_LITERAL("background_filter_blur_outsets.png")));
+      PIXEL_TEST_GL, background,
+      base::FilePath(FILE_PATH_LITERAL("backdrop_filter_blur_outsets.png")));
 }
 
-TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlurOffAxis) {
+TEST_F(LayerTreeHostFiltersPixelTest, BackdropFilterBlurOffAxis) {
   scoped_refptr<SolidColorLayer> background =
       CreateSolidColorLayer(gfx::Rect(200, 200), SK_ColorTRANSPARENT);
 
@@ -137,15 +184,23 @@ TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlurOffAxis) {
   blur->SetTransform(blur_transform);
 
   FilterOperations filters;
-  filters.Append(FilterOperation::CreateBlurFilter(2.f));
-  blur->SetBackgroundFilters(filters);
+  filters.Append(FilterOperation::CreateBlurFilter(
+      2.f, SkBlurImageFilter::kClamp_TileMode));
+  blur->SetBackdropFilters(filters);
+  // TODO(916311): Fix clipping for 3D transformed elements.
+  blur->SetBackdropFilterBounds(gfx::RRectF());
 
+#if defined(OS_WIN) || defined(ARCH_CPU_ARM64)
 #if defined(OS_WIN)
   // Windows has 116 pixels off by at most 2: crbug.com/225027
   float percentage_pixels_large_error = 0.3f;  // 116px / (200*200), rounded up
+  int large_error_allowed = 2;
+#else
+  float percentage_pixels_large_error = 0.25f;  // 96px / (200*200), rounded up
+  int large_error_allowed = 1;
+#endif
   float percentage_pixels_small_error = 0.0f;
   float average_error_allowed_in_bad_pixels = 1.f;
-  int large_error_allowed = 2;
   int small_error_allowed = 0;
   pixel_comparator_.reset(new FuzzyPixelComparator(
       true,  // discard_alpha
@@ -157,9 +212,8 @@ TEST_F(LayerTreeHostFiltersPixelTest, BackgroundFilterBlurOffAxis) {
 #endif
 
   RunPixelTest(
-      PIXEL_TEST_GL,
-      background,
-      base::FilePath(FILE_PATH_LITERAL("background_filter_blur_off_axis.png")));
+      PIXEL_TEST_GL, background,
+      base::FilePath(FILE_PATH_LITERAL("backdrop_filter_blur_off_axis.png")));
 }
 
 class LayerTreeHostFiltersScaledPixelTest
@@ -170,7 +224,7 @@ class LayerTreeHostFiltersScaledPixelTest
   }
 
   void SetupTree() override {
-    layer_tree_host()->SetDeviceScaleFactor(device_scale_factor_);
+    SetInitialDeviceScaleFactor(device_scale_factor_);
     LayerTreePixelTest::SetupTree();
   }
 
@@ -191,11 +245,11 @@ class LayerTreeHostFiltersScaledPixelTest
     // Add an alpha threshold filter to the blue layer which will filter out
     // everything except the lower right corner.
     FilterOperations filters;
-    SkRegion alpha_region;
-    alpha_region.setRect(
-        half_content, half_content, content_size, content_size);
+    FilterOperation::ShapeRects alpha_shape;
+    alpha_shape.emplace_back(half_content, half_content, content_size,
+                             content_size);
     filters.Append(
-        FilterOperation::CreateAlphaThresholdFilter(alpha_region, 1.f, 0.f));
+        FilterOperation::CreateAlphaThresholdFilter(alpha_shape, 1.f, 0.f));
     foreground->SetFilters(filters);
 
     device_scale_factor_ = device_scale_factor;
@@ -262,8 +316,8 @@ class LayerTreeHostCroppedFilterPixelTest
     // result completely.
     FilterOperations filters;
     SkImageFilter::CropRect cropRect(SkRect::MakeXYWH(0, 0, 100, 0));
-    sk_sp<SkImageFilter> offset(
-        SkOffsetImageFilter::Make(0, 0, nullptr, &cropRect));
+    sk_sp<PaintFilter> offset(
+        sk_make_sp<OffsetPaintFilter>(0, 0, nullptr, &cropRect));
     filters.Append(FilterOperation::CreateReferenceFilter(offset));
     foreground->SetFilters(filters);
 
@@ -297,8 +351,8 @@ class ImageFilterClippedPixelTest : public LayerTreeHostFiltersPixelTest {
     // We filter only the bottom 200x100 pixels of the foreground.
     SkImageFilter::CropRect crop_rect(SkRect::MakeXYWH(0, 100, 200, 100));
     FilterOperations filters;
-    filters.Append(
-        FilterOperation::CreateReferenceFilter(SkColorFilterImageFilter::Make(
+    filters.Append(FilterOperation::CreateReferenceFilter(
+        sk_make_sp<ColorFilterPaintFilter>(
             SkColorFilter::MakeMatrixFilterRowMajor255(matrix), nullptr,
             &crop_rect)));
 
@@ -329,7 +383,51 @@ TEST_F(ImageFilterClippedPixelTest, ImageFilterClipped_Software) {
   RunPixelTestType(PIXEL_TEST_SOFTWARE);
 }
 
-class ImageScaledBackgroundFilter : public LayerTreeHostFiltersPixelTest {
+class ImageFilterNonZeroOriginPixelTest : public LayerTreeHostFiltersPixelTest {
+ protected:
+  void RunPixelTestType(PixelTestType test_type) {
+    scoped_refptr<SolidColorLayer> background =
+        CreateSolidColorLayer(gfx::Rect(200, 200), SK_ColorYELLOW);
+
+    scoped_refptr<SolidColorLayer> foreground =
+        CreateSolidColorLayer(gfx::Rect(200, 200), SK_ColorRED);
+    background->AddChild(foreground);
+
+    SkScalar matrix[20];
+    memset(matrix, 0, 20 * sizeof(matrix[0]));
+    // This filter does a red-blue swap, so the foreground becomes blue.
+    matrix[2] = matrix[6] = matrix[10] = matrix[18] = SK_Scalar1;
+    // Set up a crop rec to filter the bottom 200x100 pixels of the foreground.
+    SkImageFilter::CropRect crop_rect(SkRect::MakeXYWH(0, 100, 200, 100));
+    FilterOperations filters;
+    filters.Append(FilterOperation::CreateReferenceFilter(
+        sk_make_sp<ColorFilterPaintFilter>(
+            SkColorFilter::MakeMatrixFilterRowMajor255(matrix), nullptr,
+            &crop_rect)));
+
+    // Make the foreground layer's render surface be clipped by the background
+    // layer.
+    background->SetMasksToBounds(true);
+    foreground->SetFilters(filters);
+
+    // Now move the filters origin up by 100 pixels, so the crop rect is
+    // applied only to the top 100 pixels, not the bottom.
+    foreground->SetFiltersOrigin(gfx::PointF(0.0f, -100.0f));
+
+    RunPixelTest(test_type, background,
+                 base::FilePath(FILE_PATH_LITERAL("blue_yellow.png")));
+  }
+};
+
+TEST_F(ImageFilterNonZeroOriginPixelTest, ImageFilterNonZeroOrigin_GL) {
+  RunPixelTestType(PIXEL_TEST_GL);
+}
+
+TEST_F(ImageFilterNonZeroOriginPixelTest, ImageFilterNonZeroOrigin_Software) {
+  RunPixelTestType(PIXEL_TEST_SOFTWARE);
+}
+
+class ImageScaledBackdropFilter : public LayerTreeHostFiltersPixelTest {
  protected:
   void RunPixelTestType(PixelTestType test_type, base::FilePath image_name) {
     scoped_refptr<SolidColorLayer> background =
@@ -367,14 +465,24 @@ class ImageScaledBackgroundFilter : public LayerTreeHostFiltersPixelTest {
 
     FilterOperations filters;
     filters.Append(FilterOperation::CreateGrayscaleFilter(1.0f));
-    filter->SetBackgroundFilters(filters);
+    filter->SetBackdropFilters(filters);
+    filter->SetBackdropFilterBounds(gfx::RRectF());
 
+#if defined(OS_WIN) || defined(_MIPS_ARCH_LOONGSON) || defined(ARCH_CPU_ARM64)
 #if defined(OS_WIN)
     // Windows has 153 pixels off by at most 2: crbug.com/225027
     float percentage_pixels_large_error = 0.3825f;  // 153px / (200*200)
+    int large_error_allowed = 2;
+#elif defined(_MIPS_ARCH_LOONGSON)
+    // Loongson has 2 pixels off by at most 2: crbug.com/819075
+    float percentage_pixels_large_error = 0.005f;  // 2px / (200*200)
+    int large_error_allowed = 2;
+#else
+    float percentage_pixels_large_error = 0.0325f;  // 13px / (200*200)
+    int large_error_allowed = 1;
+#endif
     float percentage_pixels_small_error = 0.0f;
     float average_error_allowed_in_bad_pixels = 1.f;
-    int large_error_allowed = 2;
     int small_error_allowed = 0;
     pixel_comparator_.reset(new FuzzyPixelComparator(
         true,  // discard_alpha
@@ -387,19 +495,19 @@ class ImageScaledBackgroundFilter : public LayerTreeHostFiltersPixelTest {
   }
 };
 
-TEST_F(ImageScaledBackgroundFilter, ImageFilterScaled_GL) {
+TEST_F(ImageScaledBackdropFilter, ImageFilterScaled_GL) {
   RunPixelTestType(PIXEL_TEST_GL,
                    base::FilePath(FILE_PATH_LITERAL(
-                       "background_filter_on_scaled_layer_gl.png")));
+                       "backdrop_filter_on_scaled_layer_gl.png")));
 }
 
-TEST_F(ImageScaledBackgroundFilter, ImageFilterScaled_Software) {
+TEST_F(ImageScaledBackdropFilter, ImageFilterScaled_Software) {
   RunPixelTestType(PIXEL_TEST_SOFTWARE,
                    base::FilePath(FILE_PATH_LITERAL(
-                       "background_filter_on_scaled_layer_sw.png")));
+                       "backdrop_filter_on_scaled_layer_sw.png")));
 }
 
-class ImageBackgroundFilter : public LayerTreeHostFiltersPixelTest {
+class ImageBackdropFilter : public LayerTreeHostFiltersPixelTest {
  protected:
   void RunPixelTestType(PixelTestType test_type, base::FilePath image_name) {
     // Add a white background with a rotated red rect in the center.
@@ -420,25 +528,31 @@ class ImageBackgroundFilter : public LayerTreeHostFiltersPixelTest {
     background->AddChild(layer);
 
     // Add a slightly transparent blue layer.
-    scoped_refptr<SolidColorLayer> filter =
-        CreateSolidColorLayer(gfx::Rect(100, 0, 100, 200), SK_ColorBLUE);
-    filter->SetOpacity(0.137f);
+    SkColor transparent_blue = SkColorSetARGB(0x23, 0x00, 0x00, 0xFF);
+    scoped_refptr<SolidColorLayer> filter_layer =
+        CreateSolidColorLayer(gfx::Rect(100, 0, 100, 200), transparent_blue);
 
     // Add some rotation so that we can see that it blurs only under the layer.
     gfx::Transform transform_filter;
     transform_filter.RotateAboutZAxis(10.0);
-    filter->SetTransform(transform_filter);
-
-    background->AddChild(filter);
+    filter_layer->SetTransform(transform_filter);
 
     // Add a blur filter to the blue layer.
     FilterOperations filters;
-    filters.Append(FilterOperation::CreateBlurFilter(5.0f));
-    filter->SetBackgroundFilters(filters);
+    filters.Append(FilterOperation::CreateBlurFilter(
+        5.0f, SkBlurImageFilter::kClamp_TileMode));
+    filter_layer->SetBackdropFilters(filters);
+    // TODO(916311): Adding filter bounds here should work, but it clips
+    // the corner of the red box.
+    // gfx::RectF backdrop_filter_bounds(gfx::SizeF(filter_layer->bounds()));
+    gfx::RRectF backdrop_filter_bounds;
+    filter_layer->SetBackdropFilterBounds(backdrop_filter_bounds);
 
-#if defined(OS_WIN)
-    // Windows has 3.065% pixels off by at most 2: crbug.com/225027
-    float percentage_pixels_large_error = 3.1f;
+    background->AddChild(filter_layer);
+
+    // Allow some fuzziness so that this doesn't fail when Skia makes minor
+    // changes to blur or rectangle rendering.
+    float percentage_pixels_large_error = 4.f;
     float percentage_pixels_small_error = 0.0f;
     float average_error_allowed_in_bad_pixels = 2.f;
     int large_error_allowed = 2;
@@ -448,22 +562,21 @@ class ImageBackgroundFilter : public LayerTreeHostFiltersPixelTest {
         percentage_pixels_large_error, percentage_pixels_small_error,
         average_error_allowed_in_bad_pixels, large_error_allowed,
         small_error_allowed));
-#endif
 
     RunPixelTest(test_type, background, image_name);
   }
 };
 
-TEST_F(ImageBackgroundFilter, BackgroundFilterRotated_GL) {
+TEST_F(ImageBackdropFilter, BackdropFilterRotated_GL) {
   RunPixelTestType(
       PIXEL_TEST_GL,
-      base::FilePath(FILE_PATH_LITERAL("background_filter_rotated_gl.png")));
+      base::FilePath(FILE_PATH_LITERAL("backdrop_filter_rotated_gl.png")));
 }
 
-TEST_F(ImageBackgroundFilter, BackgroundFilterRotated_Software) {
+TEST_F(ImageBackdropFilter, BackdropFilterRotated_Software) {
   RunPixelTestType(
       PIXEL_TEST_SOFTWARE,
-      base::FilePath(FILE_PATH_LITERAL("background_filter_rotated_sw.png")));
+      base::FilePath(FILE_PATH_LITERAL("backdrop_filter_rotated_sw.png")));
 }
 
 class ImageScaledRenderSurface : public LayerTreeHostFiltersPixelTest {
@@ -525,6 +638,86 @@ TEST_F(ImageScaledRenderSurface, ImageRenderSurfaceScaled_Software) {
   RunPixelTestType(
       PIXEL_TEST_SOFTWARE,
       base::FilePath(FILE_PATH_LITERAL("scaled_render_surface_layer_sw.png")));
+}
+
+class ZoomFilterTest : public LayerTreeHostFiltersPixelTest {
+ protected:
+  void RunPixelTestType(PixelTestType test_type, base::FilePath image_name) {
+    scoped_refptr<SolidColorLayer> root =
+        CreateSolidColorLayer(gfx::Rect(300, 300), SK_ColorWHITE);
+
+    // Create the pattern. Two blue/yellow side by side blocks with a horizontal
+    // green strip.
+    scoped_refptr<SolidColorLayer> left =
+        CreateSolidColorLayer(gfx::Rect(0, 0, 100, 150), SK_ColorBLUE);
+    root->AddChild(left);
+    scoped_refptr<SolidColorLayer> right =
+        CreateSolidColorLayer(gfx::Rect(100, 0, 200, 150), SK_ColorYELLOW);
+    root->AddChild(right);
+    scoped_refptr<SolidColorLayer> horizontal_strip =
+        CreateSolidColorLayer(gfx::Rect(0, 10, 300, 10), SK_ColorGREEN);
+    root->AddChild(horizontal_strip);
+
+    // Test a zoom that extends past the edge of the screen.
+    scoped_refptr<SolidColorLayer> border_edge_zoom =
+        CreateSolidColorLayer(gfx::Rect(-10, -10, 50, 50), SK_ColorTRANSPARENT);
+    FilterOperations border_filters;
+    border_filters.Append(
+        FilterOperation::CreateZoomFilter(2.f /* zoom */, 0 /* inset */));
+    border_edge_zoom->SetBackdropFilters(border_filters);
+    gfx::RectF border_filter_bounds(gfx::SizeF(border_edge_zoom->bounds()));
+    border_edge_zoom->SetBackdropFilterBounds(
+        gfx::RRectF(border_filter_bounds, 0));
+    root->AddChild(border_edge_zoom);
+
+    // Test a zoom that extends past the edge of the screen.
+    scoped_refptr<SolidColorLayer> top_edge_zoom =
+        CreateSolidColorLayer(gfx::Rect(70, -10, 50, 50), SK_ColorTRANSPARENT);
+    FilterOperations top_filters;
+    top_filters.Append(
+        FilterOperation::CreateZoomFilter(2.f /* zoom */, 0 /* inset */));
+    top_edge_zoom->SetBackdropFilters(top_filters);
+    gfx::RectF top_filter_bounds(gfx::SizeF(top_edge_zoom->bounds()));
+    top_edge_zoom->SetBackdropFilterBounds(gfx::RRectF(top_filter_bounds, 0));
+    root->AddChild(top_edge_zoom);
+
+    // Test a zoom that is fully within the screen.
+    scoped_refptr<SolidColorLayer> contained_zoom =
+        CreateSolidColorLayer(gfx::Rect(150, 5, 50, 50), SK_ColorTRANSPARENT);
+    FilterOperations mid_filters;
+    mid_filters.Append(
+        FilterOperation::CreateZoomFilter(2.f /* zoom */, 0 /* inset */));
+    contained_zoom->SetBackdropFilters(mid_filters);
+    gfx::RectF mid_filter_bounds(gfx::SizeF(contained_zoom->bounds()));
+    contained_zoom->SetBackdropFilterBounds(gfx::RRectF(mid_filter_bounds, 0));
+    root->AddChild(contained_zoom);
+
+#if defined(OS_WIN)
+    // Windows has 1 pixel off by 1: crbug.com/259915
+    float percentage_pixels_large_error = 0.00111112f;  // 1px / (300*300)
+    float percentage_pixels_small_error = 0.0f;
+    float average_error_allowed_in_bad_pixels = 1.f;
+    int large_error_allowed = 1;
+    int small_error_allowed = 0;
+    pixel_comparator_.reset(new FuzzyPixelComparator(
+        true,  // discard_alpha
+        percentage_pixels_large_error, percentage_pixels_small_error,
+        average_error_allowed_in_bad_pixels, large_error_allowed,
+        small_error_allowed));
+#endif
+
+    RunPixelTest(test_type, std::move(root), image_name);
+  }
+};
+
+TEST_F(ZoomFilterTest, ZoomFilterTest_GL) {
+  RunPixelTestType(PIXEL_TEST_GL,
+                   base::FilePath(FILE_PATH_LITERAL("zoom_filter_gl.png")));
+}
+
+TEST_F(ZoomFilterTest, ZoomFilterTest_Software) {
+  RunPixelTestType(PIXEL_TEST_SOFTWARE,
+                   base::FilePath(FILE_PATH_LITERAL("zoom_filter_sw.png")));
 }
 
 class RotatedFilterTest : public LayerTreeHostFiltersPixelTest {
@@ -608,8 +801,8 @@ class RotatedDropShadowFilterTest : public LayerTreeHostFiltersPixelTest {
 
     background->AddChild(child);
 
-#if defined(OS_WIN)
-    // Windows has 3 pixels off by 1: crbug.com/259915
+#if defined(OS_WIN) || defined(ARCH_CPU_ARM64)
+    // Windows and ARM64 have 3 pixels off by 1: crbug.com/259915
     float percentage_pixels_large_error = 0.00333334f;  // 3px / (300*300)
     float percentage_pixels_small_error = 0.0f;
     float average_error_allowed_in_bad_pixels = 1.f;
@@ -636,6 +829,58 @@ TEST_F(RotatedDropShadowFilterTest, RotatedDropShadowFilterTest_Software) {
   RunPixelTestType(
       PIXEL_TEST_SOFTWARE,
       base::FilePath(FILE_PATH_LITERAL("rotated_drop_shadow_filter_sw.png")));
+}
+
+class TranslatedFilterTest : public LayerTreeHostFiltersPixelTest {
+ protected:
+  void RunPixelTestType(PixelTestType test_type, base::FilePath image_name) {
+    scoped_refptr<Layer> clip = Layer::Create();
+    clip->SetBounds(gfx::Size(300, 300));
+    clip->SetMasksToBounds(true);
+
+    scoped_refptr<Layer> parent = Layer::Create();
+    parent->SetPosition(gfx::PointF(30.f, 30.f));
+
+    gfx::Rect child_rect(100, 100);
+    // Use two colors to bypass solid color detection, so we get a tile quad.
+    // This is intended to test render pass removal optimizations.
+    FakeContentLayerClient client;
+    client.set_bounds(child_rect.size());
+    PaintFlags flags;
+    flags.setColor(SK_ColorGREEN);
+    client.add_draw_rect(child_rect, flags);
+    flags.setColor(SK_ColorBLUE);
+    client.add_draw_rect(gfx::Rect(100, 50), flags);
+    scoped_refptr<PictureLayer> child = PictureLayer::Create(&client);
+    child->SetBounds(child_rect.size());
+    child->SetIsDrawable(true);
+    FilterOperations filters;
+    filters.Append(FilterOperation::CreateOpacityFilter(0.5f));
+    child->SetFilters(filters);
+
+    // This layer will be clipped by |clip|, so the RenderPass created for
+    // |child| will only have one visible quad.
+    scoped_refptr<SolidColorLayer> grand_child =
+        CreateSolidColorLayer(gfx::Rect(-300, -300, 100, 100), SK_ColorRED);
+
+    child->AddChild(grand_child);
+    parent->AddChild(child);
+    clip->AddChild(parent);
+
+    RunPixelTest(test_type, clip, image_name);
+  }
+};
+
+TEST_F(TranslatedFilterTest, GL) {
+  RunPixelTestType(
+      PIXEL_TEST_GL,
+      base::FilePath(FILE_PATH_LITERAL("translated_blue_green_alpha_gl.png")));
+}
+
+TEST_F(TranslatedFilterTest, Software) {
+  RunPixelTestType(
+      PIXEL_TEST_SOFTWARE,
+      base::FilePath(FILE_PATH_LITERAL("translated_blue_green_alpha_sw.png")));
 }
 
 class EnlargedTextureWithAlphaThresholdFilter
@@ -665,12 +910,10 @@ class EnlargedTextureWithAlphaThresholdFilter
 
     rect1.Inset(-5, -5);
     rect2.Inset(-5, -5);
-    SkRegion alpha_region;
-    SkIRect rects[2] = {gfx::RectToSkIRect(rect1), gfx::RectToSkIRect(rect2)};
-    alpha_region.setRects(rects, 2);
+    FilterOperation::ShapeRects alpha_shape = {rect1, rect2};
     FilterOperations filters;
     filters.Append(
-        FilterOperation::CreateAlphaThresholdFilter(alpha_region, 0.f, 0.f));
+        FilterOperation::CreateAlphaThresholdFilter(alpha_shape, 0.f, 0.f));
     filter_layer->SetFilters(filters);
 
     background->AddChild(filter_layer);
@@ -722,7 +965,7 @@ class EnlargedTextureWithCropOffsetFilter
     FilterOperations filters;
     SkImageFilter::CropRect cropRect(SkRect::MakeXYWH(10, 10, 80, 80));
     filters.Append(FilterOperation::CreateReferenceFilter(
-        SkOffsetImageFilter::Make(0, 0, nullptr, &cropRect)));
+        sk_make_sp<OffsetPaintFilter>(0, 0, nullptr, &cropRect)));
     filter_layer->SetFilters(filters);
 
     background->AddChild(filter_layer);
@@ -766,15 +1009,22 @@ class BlurFilterWithClip : public LayerTreeHostFiltersPixelTest {
     filter_layer->AddChild(child4);
 
     FilterOperations filters;
-    filters.Append(FilterOperation::CreateBlurFilter(2.f));
+    filters.Append(FilterOperation::CreateBlurFilter(
+        2.f, SkBlurImageFilter::kClamp_TileMode));
     filter_layer->SetFilters(filters);
 
     // Force the allocation a larger textures.
     set_enlarge_texture_amount(gfx::Size(50, 50));
 
+#if defined(OS_WIN) || defined(ARCH_CPU_ARM64)
 #if defined(OS_WIN)
     // Windows has 1880 pixels off by 1: crbug.com/259915
     float percentage_pixels_large_error = 4.7f;  // 1880px / (200*200)
+#else
+    // Differences in floating point calculation on ARM means a small percentage
+    // of pixels will have small differences.
+    float percentage_pixels_large_error = 2.76f;  // 1104px / (200*200)
+#endif
     float percentage_pixels_small_error = 0.0f;
     float average_error_allowed_in_bad_pixels = 1.f;
     int large_error_allowed = 2;
@@ -822,10 +1072,10 @@ class FilterWithGiantCropRectPixelTest : public LayerTreeHostFiltersPixelTest {
     FilterOperations filters;
     SkImageFilter::CropRect cropRect(
         SkRect::MakeXYWH(-40000, -40000, 80000, 80000));
-    filters.Append(
-        FilterOperation::CreateReferenceFilter((SkColorFilterImageFilter::Make(
+    filters.Append(FilterOperation::CreateReferenceFilter(
+        sk_make_sp<ColorFilterPaintFilter>(
             SkColorFilter::MakeMatrixFilterRowMajor255(matrix), nullptr,
-            &cropRect))));
+            &cropRect)));
     filter_layer->SetFilters(filters);
     background->SetMasksToBounds(masks_to_bounds);
     background->AddChild(filter_layer);
@@ -862,7 +1112,7 @@ TEST_F(FilterWithGiantCropRectNoClip, GL) {
       base::FilePath(FILE_PATH_LITERAL("filter_with_giant_crop_rect.png")));
 }
 
-class BackgroundFilterWithDeviceScaleFactorTest
+class BackdropFilterWithDeviceScaleFactorTest
     : public LayerTreeHostFiltersPixelTest {
  protected:
   void RunPixelTestType(float device_scale_factor,
@@ -881,8 +1131,9 @@ class BackgroundFilterWithDeviceScaleFactorTest
         gfx::Rect(0, 100, 200, 100), SkColorSetA(SK_ColorGREEN, 127));
     FilterOperations filters;
     filters.Append(FilterOperation::CreateReferenceFilter(
-        SkOffsetImageFilter::Make(0, 80, nullptr)));
-    filtered->SetBackgroundFilters(filters);
+        sk_make_sp<OffsetPaintFilter>(0, 80, nullptr)));
+    filtered->SetBackdropFilters(filters);
+    filtered->SetBackdropFilterBounds(gfx::RRectF());
     root->AddChild(filtered);
 
     // This should appear as a grid of 4 100x100 squares which are:
@@ -901,35 +1152,35 @@ class BackgroundFilterWithDeviceScaleFactorTest
   }
 
   void SetupTree() override {
-    layer_tree_host()->SetDeviceScaleFactor(device_scale_factor_);
+    SetInitialDeviceScaleFactor(device_scale_factor_);
     LayerTreeHostFiltersPixelTest::SetupTree();
   }
 
   float device_scale_factor_ = 1;
 };
 
-TEST_F(BackgroundFilterWithDeviceScaleFactorTest, StandardDpi_GL) {
+TEST_F(BackdropFilterWithDeviceScaleFactorTest, StandardDpi_GL) {
   RunPixelTestType(
       1.f, PIXEL_TEST_GL,
-      base::FilePath(FILE_PATH_LITERAL("offset_background_filter_1x.png")));
+      base::FilePath(FILE_PATH_LITERAL("offset_backdrop_filter_1x.png")));
 }
 
-TEST_F(BackgroundFilterWithDeviceScaleFactorTest, StandardDpi_Software) {
+TEST_F(BackdropFilterWithDeviceScaleFactorTest, StandardDpi_Software) {
   RunPixelTestType(
       1.f, PIXEL_TEST_SOFTWARE,
-      base::FilePath(FILE_PATH_LITERAL("offset_background_filter_1x.png")));
+      base::FilePath(FILE_PATH_LITERAL("offset_backdrop_filter_1x.png")));
 }
 
-TEST_F(BackgroundFilterWithDeviceScaleFactorTest, HiDpi_GL) {
+TEST_F(BackdropFilterWithDeviceScaleFactorTest, HiDpi_GL) {
   RunPixelTestType(
       2.f, PIXEL_TEST_GL,
-      base::FilePath(FILE_PATH_LITERAL("offset_background_filter_2x.png")));
+      base::FilePath(FILE_PATH_LITERAL("offset_backdrop_filter_2x.png")));
 }
 
-TEST_F(BackgroundFilterWithDeviceScaleFactorTest, HiDpi_Software) {
+TEST_F(BackdropFilterWithDeviceScaleFactorTest, HiDpi_Software) {
   RunPixelTestType(
       2.f, PIXEL_TEST_SOFTWARE,
-      base::FilePath(FILE_PATH_LITERAL("offset_background_filter_2x.png")));
+      base::FilePath(FILE_PATH_LITERAL("offset_backdrop_filter_2x.png")));
 }
 
 }  // namespace

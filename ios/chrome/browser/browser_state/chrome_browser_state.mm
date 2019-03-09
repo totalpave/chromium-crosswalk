@@ -4,32 +4,53 @@
 
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/sequenced_task_runner.h"
-#include "components/prefs/json_pref_store.h"
-#include "components/syncable_prefs/pref_service_syncable.h"
+#include "components/sync_preferences/pref_service_syncable.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
-#include "ios/chrome/browser/net/ios_chrome_url_request_context_getter.h"
-#include "ios/chrome/browser/net/net_types.h"
-#include "ios/public/provider/web/web_ui_ios.h"
-#include "ios/web/public/web_state/web_state.h"
+#import "ios/web/public/web_state/web_state.h"
 #include "ios/web/public/web_thread.h"
+#include "ios/web/public/webui/web_ui_ios.h"
 #include "ios/web/webui/url_data_manager_ios_backend.h"
+#include "net/url_request/url_request_context_getter.h"
 #include "net/url_request/url_request_interceptor.h"
 
-namespace ios {
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
-ChromeBrowserState::ChromeBrowserState() {}
+namespace ios {
+namespace {
+// All ChromeBrowserState will store a dummy base::SupportsUserData::Data
+// object with this key. It can be used to check that a web::BrowserState
+// is effectively a ChromeBrowserState when converting.
+const char kBrowserStateIsChromeBrowserState[] = "IsChromeBrowserState";
+}
+
+ChromeBrowserState::ChromeBrowserState(
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner)
+    : io_task_runner_(std::move(io_task_runner)) {
+  DCHECK(io_task_runner_);
+  SetUserData(kBrowserStateIsChromeBrowserState,
+              std::make_unique<base::SupportsUserData::Data>());
+}
 
 ChromeBrowserState::~ChromeBrowserState() {}
 
 // static
 ChromeBrowserState* ChromeBrowserState::FromBrowserState(
     web::BrowserState* browser_state) {
-  // This is safe; this is the only implementation of BrowserState.
+  if (!browser_state)
+    return nullptr;
+
+  // Check that the BrowserState is a ChromeBrowserState. It should always
+  // be true in production and during tests as the only BrowserState that
+  // should be used in ios/chrome inherits from ChromeBrowserState.
+  DCHECK(browser_state->GetUserData(kBrowserStateIsChromeBrowserState));
   return static_cast<ChromeBrowserState*>(browser_state);
 }
 
@@ -50,18 +71,11 @@ std::string ChromeBrowserState::GetDebugName() {
 }
 
 scoped_refptr<base::SequencedTaskRunner> ChromeBrowserState::GetIOTaskRunner() {
-  base::FilePath browser_state_path =
-      GetOriginalChromeBrowserState()->GetStatePath();
-  return JsonPrefStore::GetTaskRunnerForFile(browser_state_path,
-                                             web::WebThread::GetBlockingPool());
+  return io_task_runner_;
 }
 
-syncable_prefs::PrefServiceSyncable* ChromeBrowserState::GetSyncablePrefs() {
-  return static_cast<syncable_prefs::PrefServiceSyncable*>(GetPrefs());
-}
-
-TestChromeBrowserState* ChromeBrowserState::AsTestChromeBrowserState() {
-  return nullptr;
+sync_preferences::PrefServiceSyncable* ChromeBrowserState::GetSyncablePrefs() {
+  return static_cast<sync_preferences::PrefServiceSyncable*>(GetPrefs());
 }
 
 net::URLRequestContextGetter* ChromeBrowserState::GetRequestContext() {
@@ -69,12 +83,9 @@ net::URLRequestContextGetter* ChromeBrowserState::GetRequestContext() {
   if (!request_context_getter_) {
     ProtocolHandlerMap protocol_handlers;
     protocol_handlers[kChromeUIScheme] =
-        linked_ptr<net::URLRequestJobFactory::ProtocolHandler>(
-            web::URLDataManagerIOSBackend::CreateProtocolHandler(this)
-                .release());
-    URLRequestInterceptorScopedVector request_interceptors;
-    request_context_getter_ = make_scoped_refptr(CreateRequestContext(
-        &protocol_handlers, std::move(request_interceptors)));
+        web::URLDataManagerIOSBackend::CreateProtocolHandler(this);
+    request_context_getter_ =
+        base::WrapRefCounted(CreateRequestContext(&protocol_handlers));
   }
   return request_context_getter_.get();
 }

@@ -4,11 +4,17 @@
 
 #include "ios/chrome/browser/net/ios_chrome_http_user_agent_settings.h"
 
+#include "base/task/post_task.h"
 #include "components/prefs/pref_service.h"
 #include "ios/chrome/browser/pref_names.h"
 #include "ios/web/public/web_client.h"
+#include "ios/web/public/web_task_traits.h"
 #include "ios/web/public/web_thread.h"
 #include "net/http/http_util.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 IOSChromeHttpUserAgentSettings::IOSChromeHttpUserAgentSettings(
     PrefService* prefs) {
@@ -18,7 +24,7 @@ IOSChromeHttpUserAgentSettings::IOSChromeHttpUserAgentSettings(
   last_http_accept_language_ =
       net::HttpUtil::GenerateAcceptLanguageHeader(last_pref_accept_language_);
   pref_accept_language_.MoveToThread(
-      web::WebThread::GetTaskRunnerForThread(web::WebThread::IO));
+      base::CreateSingleThreadTaskRunnerWithTraits({web::WebThread::IO}));
 }
 
 IOSChromeHttpUserAgentSettings::~IOSChromeHttpUserAgentSettings() {
@@ -43,5 +49,5 @@ std::string IOSChromeHttpUserAgentSettings::GetAcceptLanguage() const {
 
 std::string IOSChromeHttpUserAgentSettings::GetUserAgent() const {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  return web::GetWebClient()->GetUserAgent(false);
+  return web::GetWebClient()->GetUserAgent(web::UserAgentType::MOBILE);
 }

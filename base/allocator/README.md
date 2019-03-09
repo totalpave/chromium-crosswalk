@@ -15,34 +15,34 @@ Background
 ----------
 The `allocator` target defines at compile-time the platform-specific choice of
 the allocator and extra-hooks which services calls to malloc/new. The relevant
-build-time flags involved are `use_allocator` and `win_use_allocator_shim`.
+build-time flags involved are `use_allocator` and `use_allocator_shim`.
 
 The default choices are as follows:
 
-**Windows**  
+**Windows**
 `use_allocator: winheap`, the default Windows heap.
 Additionally, `static_library` (i.e. non-component) builds have a shim
-layer wrapping malloc/new, which is controlled by `win_use_allocator_shim`.  
+layer wrapping malloc/new, which is controlled by `use_allocator_shim`.
 The shim layer provides extra security features, such as preventing large
 allocations that can hit signed vs. unsigned bugs in third_party code.
 
-**Linux Desktop / CrOS**  
+**Linux Desktop / CrOS**
 `use_allocator: tcmalloc`, a forked copy of tcmalloc which resides in
 `third_party/tcmalloc/chromium`. Setting `use_allocator: none` causes the build
 to fall back to the system (Glibc) symbols.
 
-**Android**  
+**Android**
 `use_allocator: none`, always use the allocator symbols coming from Android's
 libc (Bionic). As it is developed as part of the OS, it is considered to be
-optimized for small devices and more memory-efficient than other choices.  
+optimized for small devices and more memory-efficient than other choices.
 The actual implementation backing malloc symbols in Bionic is up to the board
 config and can vary (typically *dlmalloc* or *jemalloc* on most Nexus devices).
 
-**Mac/iOS**  
+**Mac/iOS**
 `use_allocator: none`, we always use the system's allocator implementation.
 
-In addition, when building for `asan` / `msan` / `syzyasan` `valgrind`, the
-both the allocator and the shim layer are disabled.
+In addition, when building for `asan` / `msan` both the allocator and the shim
+layer are disabled.
 
 Layering and build deps
 -----------------------
@@ -59,7 +59,7 @@ If such a functional dependency is required that should be achieved using
 abstractions in `base` (see `/base/allocator/allocator_extension.h` and
 `/base/memory/`)
 
-**Why `base` depends on `allocator`?**  
+**Why `base` depends on `allocator`?**
 Because it needs to provide services that depend on the actual allocator
 implementation. In the past `base` used to pretend to be allocator-agnostic
 and get the dependencies injected by other layers. This ended up being an
@@ -87,21 +87,22 @@ time we no longer need any forked files.
 
 Unified allocator shim
 ----------------------
-On most platform, Chrome overrides the malloc / operator new symbols (and
+On most platforms, Chrome overrides the malloc / operator new symbols (and
 corresponding free / delete and other variants). This is to enforce security
 checks and lately to enable the
-[memory-infra heap profiler][url-memory-infra-heap-profiler].  
+[memory-infra heap profiler][url-memory-infra-heap-profiler].
 Historically each platform had its special logic for defining the allocator
 symbols in different places of the codebase. The unified allocator shim is
 a project aimed to unify the symbol definition and allocator routing logic in
 a central place.
 
  - Full documentation: [Allocator shim design doc][url-allocator-shim].
- - Current state: Available and enabled by default on Linux, CrOS and Android.
+ - Current state: Available and enabled by default on Android, CrOS, Linux,
+   Mac OS and Windows.
  - Tracking bug: [https://crbug.com/550886][crbug.com/550886].
- - Build-time flag: `use_experimental_allocator_shim`.
+ - Build-time flag: `use_allocator_shim`.
 
-**Overview of the unified allocator shim**  
+**Overview of the unified allocator shim**
 The allocator shim consists of three stages:
 ```
 +-------------------------+    +-----------------------+    +----------------+
@@ -117,7 +118,7 @@ The allocator shim consists of three stages:
 +-------------------------+
 ```
 
-**1. malloc symbols definition**  
+**1. malloc symbols definition**
 This stage takes care of overriding the symbols `malloc`, `free`,
 `operator new`, `operator delete` and friends and routing those calls inside the
 allocator shim (next point).
@@ -157,7 +158,7 @@ undefined symbol references to malloc symbols.
 These symbols will be resolved against libc.so as usual.
 More details in [crrev.com/1719433002](https://crrev.com/1719433002).
 
-**2. Shim layer implementation**  
+**2. Shim layer implementation**
 This stage contains the actual shim implementation. This consists of:
 - A singly linked list of dispatchers (structs with function pointers to `malloc`-like functions). Dispatchers can be dynamically inserted at runtime
 (using the `InsertAllocatorDispatch` API). They can intercept and override
@@ -165,7 +166,7 @@ allocator calls.
 - The security checks (suicide on malloc-failure via `std::new_handler`, etc).
 This happens inside `allocator_shim.cc`
 
-**3. Final allocator routing**  
+**3. Final allocator routing**
 The final element of the aforementioned dispatcher chain is statically defined
 at build time and ultimately routes the allocator calls to the actual allocator
 (as described in the *Background* section above). This is taken care of by the
@@ -174,7 +175,7 @@ headers in `allocator_shim_default_dispatch_to_*` files.
 
 Appendixes
 ----------
-**How does the Windows shim layer replace the malloc symbols?**  
+**How does the Windows shim layer replace the malloc symbols?**
 The mechanism for hooking LIBCMT in Windows is rather tricky.  The core
 problem is that by default, the Windows library does not declare malloc and
 free as weak symbols.  Because of this, they cannot be overridden.  To work
@@ -189,8 +190,8 @@ Related links
 - [Unified allocator shim doc - Feb 2016][url-allocator-shim]
 - [Allocator cleanup doc - Jan 2016][url-allocator-cleanup]
 - [Proposal to use PartitionAlloc as default allocator](https://crbug.com/339604)
-- [Memory-Infra: Tools to profile memory usage in Chrome](components/tracing/docs/memory_infra.md)
+- [Memory-Infra: Tools to profile memory usage in Chrome](/docs/memory-infra/README.md)
 
 [url-allocator-cleanup]: https://docs.google.com/document/d/1V77Kgp_4tfaaWPEZVxNevoD02wXiatnAv7Ssgr0hmjg/edit?usp=sharing
-[url-memory-infra-heap-profiler]: components/tracing/docs/heap_profiler.md
+[url-memory-infra-heap-profiler]: /docs/memory-infra/heap_profiler.md
 [url-allocator-shim]: https://docs.google.com/document/d/1yKlO1AO4XjpDad9rjcBOI15EKdAGsuGO_IeZy0g0kxo/edit?usp=sharing

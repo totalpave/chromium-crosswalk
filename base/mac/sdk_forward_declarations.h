@@ -14,11 +14,13 @@
 #import <AppKit/AppKit.h>
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <CoreWLAN/CoreWLAN.h>
-#import <ImageCaptureCore/ImageCaptureCore.h>
 #import <IOBluetooth/IOBluetooth.h>
+#import <ImageCaptureCore/ImageCaptureCore.h>
+#import <QuartzCore/QuartzCore.h>
 #include <stdint.h>
 
 #include "base/base_export.h"
+#include "base/mac/availability.h"
 
 // ----------------------------------------------------------------------------
 // Define typedefs, enums, and protocols not available in the version of the
@@ -50,7 +52,22 @@ enum {
 };
 typedef NSUInteger NSSpringLoadingHighlight;
 
-#endif // MAC_OS_X_VERSION_10_11
+#endif  // MAC_OS_X_VERSION_10_11
+
+#if !defined(MAC_OS_X_VERSION_10_12) || \
+    MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_12
+
+// The protocol was formalized by the 10.12 SDK, but it was informally used
+// before.
+@protocol CAAnimationDelegate
+- (void)animationDidStart:(CAAnimation*)animation;
+- (void)animationDidStop:(CAAnimation*)animation finished:(BOOL)finished;
+@end
+
+@protocol CALayerDelegate
+@end
+
+#endif  // MAC_OS_X_VERSION_10_12
 
 // ----------------------------------------------------------------------------
 // Define NSStrings only available in newer versions of the OSX SDK to force
@@ -58,15 +75,9 @@ typedef NSUInteger NSSpringLoadingHighlight;
 // ----------------------------------------------------------------------------
 
 extern "C" {
-#if !defined(MAC_OS_X_VERSION_10_9) || \
-    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_9
-BASE_EXPORT extern NSString* const NSWindowDidChangeOcclusionStateNotification;
-BASE_EXPORT extern NSString* const CBAdvertisementDataOverflowServiceUUIDsKey;
-BASE_EXPORT extern NSString* const CBAdvertisementDataIsConnectable;
-#endif  // MAC_OS_X_VERSION_10_9
-
 #if !defined(MAC_OS_X_VERSION_10_10) || \
     MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_10
+BASE_EXPORT extern NSString* const CIDetectorTypeQRCode;
 BASE_EXPORT extern NSString* const NSUserActivityTypeBrowsingWeb;
 BASE_EXPORT extern NSString* const NSAppearanceNameVibrantDark;
 BASE_EXPORT extern NSString* const NSAppearanceNameVibrantLight;
@@ -80,111 +91,19 @@ BASE_EXPORT extern NSString* const NSAppearanceNameVibrantLight;
 // functions to suppress -Wpartial-availability warnings.
 // ----------------------------------------------------------------------------
 
-// Once Chrome no longer supports OSX 10.7, everything within this preprocessor
-// block can be removed.
-#if !defined(MAC_OS_X_VERSION_10_8) || \
-    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_8
-
-@interface NSColor (MountainLionSDK)
-- (CGColorRef)CGColor;
-@end
-
-@interface NSUUID (MountainLionSDK)
-- (NSString*)UUIDString;
-@end
-
-@interface NSControl (MountainLionSDK)
-@property BOOL allowsExpansionToolTips;
-@end
-
-#endif  // MAC_OS_X_VERSION_10_8
-
-// Once Chrome no longer supports OSX 10.8, everything within this preprocessor
-// block can be removed.
-#if !defined(MAC_OS_X_VERSION_10_9) || \
-    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_9
-
-// NSProgress is public API in 10.9, but a version of it exists and is usable
-// in 10.8.
-@class NSProgress;
-@class NSAppearance;
-
-@interface NSProgress (MavericksSDK)
-
-- (instancetype)initWithParent:(NSProgress*)parentProgressOrNil
-                      userInfo:(NSDictionary*)userInfoOrNil;
-@property(copy) NSString* kind;
-
-@property int64_t totalUnitCount;
-@property int64_t completedUnitCount;
-
-@property(getter=isCancellable) BOOL cancellable;
-@property(getter=isPausable) BOOL pausable;
-@property(readonly, getter=isCancelled) BOOL cancelled;
-@property(readonly, getter=isPaused) BOOL paused;
-@property(copy) void (^cancellationHandler)(void);
-@property(copy) void (^pausingHandler)(void);
-- (void)cancel;
-- (void)pause;
-
-- (void)setUserInfoObject:(id)objectOrNil forKey:(NSString*)key;
-- (NSDictionary*)userInfo;
-
-@property(readonly, getter=isIndeterminate) BOOL indeterminate;
-@property(readonly) double fractionCompleted;
-
-- (void)publish;
-- (void)unpublish;
-
-@end
-
-@interface NSScreen (MavericksSDK)
-+ (BOOL)screensHaveSeparateSpaces;
-@end
-
-@interface NSView (MavericksSDK)
-- (void)setCanDrawSubviewsIntoLayer:(BOOL)flag;
-- (void)setAppearance:(NSAppearance*)appearance;
-- (NSAppearance*)effectiveAppearance;
-@end
-
-@interface NSWindow (MavericksSDK)
-- (NSWindowOcclusionState)occlusionState;
-@end
-
-@interface NSAppearance (MavericksSDK)
-+ (id<NSObject>)appearanceNamed:(NSString*)name;
-@end
-
-@interface CBPeripheral (MavericksSDK)
-@property(readonly, nonatomic) NSUUID* identifier;
-@end
-
-@interface NSVisualEffectView (MavericksSDK)
-- (void)setState:(NSVisualEffectState)state;
-@end
-
-@class NSVisualEffectView;
-
-@class NSUserActivity;
-
-#endif  // MAC_OS_X_VERSION_10_9
-
 // Once Chrome no longer supports OSX 10.9, everything within this preprocessor
 // block can be removed.
 #if !defined(MAC_OS_X_VERSION_10_10) || \
     MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_10
 
 @interface NSUserActivity (YosemiteSDK)
-
 @property(readonly, copy) NSString* activityType;
 @property(copy) NSDictionary* userInfo;
 @property(copy) NSURL* webpageURL;
-
+@property(copy) NSString* title;
 - (instancetype)initWithActivityType:(NSString*)activityType;
 - (void)becomeCurrent;
 - (void)invalidate;
-
 @end
 
 @interface CBUUID (YosemiteSDK)
@@ -203,6 +122,33 @@ BASE_EXPORT extern NSString* const NSAppearanceNameVibrantLight;
 @property(readonly) NSOperatingSystemVersion operatingSystemVersion;
 @end
 
+@interface NSLayoutConstraint (YosemiteSDK)
+@property(getter=isActive) BOOL active;
++ (void)activateConstraints:(NSArray*)constraints;
+@end
+
+@interface NSVisualEffectView (YosemiteSDK)
+- (void)setState:(NSVisualEffectState)state;
+@end
+
+@class NSVisualEffectView;
+
+@interface CIQRCodeFeature (YosemiteSDK)
+@property(readonly) CGRect bounds;
+@property(readonly) CGPoint topLeft;
+@property(readonly) CGPoint topRight;
+@property(readonly) CGPoint bottomLeft;
+@property(readonly) CGPoint bottomRight;
+@property(readonly, copy) NSString* messageString;
+@end
+
+@class CIQRCodeFeature;
+
+@interface NSView (YosemiteSDK)
+- (BOOL)isAccessibilitySelectorAllowed:(SEL)selector;
+@property(copy) NSString* accessibilityLabel;
+@end
+
 #endif  // MAC_OS_X_VERSION_10_10
 
 // Once Chrome no longer supports OSX 10.10.2, everything within this
@@ -210,15 +156,213 @@ BASE_EXPORT extern NSString* const NSAppearanceNameVibrantLight;
 #if !defined(MAC_OS_X_VERSION_10_10_3) || \
     MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_10_3
 
-@interface NSEvent (YosemiteSDK)
+@interface NSEvent (Yosemite_3_SDK)
 @property(readonly) NSInteger stage;
 @end
 
-@interface NSView (YosemiteSDK)
-- (void)setPressureConfiguration:(NSPressureConfiguration*)aConfiguration;
+#endif  // MAC_OS_X_VERSION_10_10
+
+// ----------------------------------------------------------------------------
+// Define NSStrings only available in newer versions of the OSX SDK to force
+// them to be statically linked.
+// ----------------------------------------------------------------------------
+
+extern "C" {
+#if !defined(MAC_OS_X_VERSION_10_11) || \
+    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_11
+BASE_EXPORT extern NSString* const CIDetectorTypeText;
+#endif  // MAC_OS_X_VERSION_10_11
+}  // extern "C"
+
+// Once Chrome no longer supports OSX 10.10, everything within this
+// preprocessor block can be removed.
+#if !defined(MAC_OS_X_VERSION_10_11) || \
+    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_11
+
+@class NSLayoutDimension;
+@class NSLayoutXAxisAnchor;
+@class NSLayoutYAxisAnchor;
+
+@interface NSObject (ElCapitanSDK)
+- (NSLayoutConstraint*)constraintEqualToConstant:(CGFloat)c;
+- (NSLayoutConstraint*)constraintGreaterThanOrEqualToConstant:(CGFloat)c;
 @end
 
-#endif  // MAC_OS_X_VERSION_10_10
+@interface NSView (ElCapitanSDK)
+- (void)setPressureConfiguration:(NSPressureConfiguration*)aConfiguration
+    API_AVAILABLE(macos(10.11));
+@property(readonly, strong)
+    NSLayoutXAxisAnchor* leftAnchor API_AVAILABLE(macos(10.11));
+@property(readonly, strong)
+    NSLayoutXAxisAnchor* rightAnchor API_AVAILABLE(macos(10.11));
+@property(readonly, strong)
+    NSLayoutYAxisAnchor* bottomAnchor API_AVAILABLE(macos(10.11));
+@property(readonly, strong)
+    NSLayoutDimension* widthAnchor API_AVAILABLE(macos(10.11));
+@end
+
+@interface NSWindow (ElCapitanSDK)
+- (void)performWindowDragWithEvent:(NSEvent*)event;
+@end
+
+@interface CIRectangleFeature (ElCapitanSDK)
+@property(readonly) CGRect bounds;
+@end
+
+@class CIRectangleFeature;
+
+#endif  // MAC_OS_X_VERSION_10_11
+
+// Once Chrome no longer supports OSX 10.11, everything within this
+// preprocessor block can be removed.
+#if !defined(MAC_OS_X_VERSION_10_12) || \
+    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_12
+
+@interface NSWindow (SierraSDK)
+@property(class) BOOL allowsAutomaticWindowTabbing;
+@end
+
+#endif  // MAC_OS_X_VERSION_10_12
+
+// Once Chrome no longer supports OSX 10.12.0, everything within this
+// preprocessor block can be removed.
+#if !defined(MAC_OS_X_VERSION_10_12_1) || \
+    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_12_1
+
+@interface NSButton (SierraPointOneSDK)
+@property(copy) NSColor* bezelColor;
+@property BOOL imageHugsTitle;
++ (instancetype)buttonWithTitle:(NSString*)title
+                         target:(id)target
+                         action:(SEL)action;
++ (instancetype)buttonWithImage:(NSImage*)image
+                         target:(id)target
+                         action:(SEL)action;
++ (instancetype)buttonWithTitle:(NSString*)title
+                          image:(NSImage*)image
+                         target:(id)target
+                         action:(SEL)action;
+@end
+
+@interface NSSegmentedControl (SierraPointOneSDK)
++ (instancetype)segmentedControlWithImages:(NSArray*)images
+                              trackingMode:(NSSegmentSwitchTracking)trackingMode
+                                    target:(id)target
+                                    action:(SEL)action;
+@end
+
+@interface NSTextField (SierraPointOneSDK)
++ (instancetype)labelWithAttributedString:
+    (NSAttributedString*)attributedStringValue;
+@end
+
+#endif  // MAC_OS_X_VERSION_10_12_1
+
+// Once Chrome no longer supports OSX 10.12, everything within this
+// preprocessor block can be removed.
+#if !defined(MAC_OS_X_VERSION_10_13) || \
+    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_13
+
+// VNRequest forward declarations.
+@class VNRequest;
+typedef void (^VNRequestCompletionHandler)(VNRequest* request, NSError* error);
+
+@interface VNRequest : NSObject<NSCopying>
+- (instancetype)initWithCompletionHandler:
+    (VNRequestCompletionHandler)completionHandler NS_DESIGNATED_INITIALIZER;
+@property(readonly, nonatomic, copy) NSArray* results;
+@end
+
+// VNDetectFaceLandmarksRequest forward declarations.
+@interface VNImageBasedRequest : VNRequest
+@end
+
+@protocol VNFaceObservationAccepting<NSObject>
+@end
+
+@interface VNDetectFaceLandmarksRequest
+    : VNImageBasedRequest<VNFaceObservationAccepting>
+@end
+
+// VNImageRequestHandler forward declarations.
+typedef NSString* VNImageOption NS_STRING_ENUM;
+
+@interface VNImageRequestHandler : NSObject
+- (instancetype)initWithCIImage:(CIImage*)image
+                        options:(NSDictionary<VNImageOption, id>*)options;
+- (BOOL)performRequests:(NSArray<VNRequest*>*)requests error:(NSError**)error;
+@end
+
+// VNFaceLandmarks2D forward declarations.
+@interface VNFaceLandmarkRegion : NSObject
+@property(readonly) NSUInteger pointCount;
+@end
+
+@interface VNFaceLandmarkRegion2D : VNFaceLandmarkRegion
+@property(readonly, assign)
+    const CGPoint* normalizedPoints NS_RETURNS_INNER_POINTER;
+@end
+
+@interface VNFaceLandmarks2D : NSObject
+@property(readonly) VNFaceLandmarkRegion2D* leftEye;
+@property(readonly) VNFaceLandmarkRegion2D* rightEye;
+@property(readonly) VNFaceLandmarkRegion2D* outerLips;
+@property(readonly) VNFaceLandmarkRegion2D* nose;
+@end
+
+// VNFaceObservation forward declarations.
+@interface VNObservation : NSObject<NSCopying, NSSecureCoding>
+@end
+
+@interface VNDetectedObjectObservation : VNObservation
+@property(readonly, nonatomic, assign) CGRect boundingBox;
+@end
+
+@interface VNFaceObservation : VNDetectedObjectObservation
+@property(readonly, nonatomic, strong) VNFaceLandmarks2D* landmarks;
+@end
+
+// VNDetectBarcodesRequest forward declarations.
+typedef NSString* VNBarcodeSymbology NS_STRING_ENUM;
+
+@interface VNDetectBarcodesRequest : VNImageBasedRequest
+@property(readwrite, nonatomic, copy) NSArray<VNBarcodeSymbology>* symbologies;
+@end
+
+// VNBarcodeObservation forward declarations.
+@interface VNRectangleObservation : VNDetectedObjectObservation
+@property(readonly, nonatomic, assign) CGPoint topLeft;
+@property(readonly, nonatomic, assign) CGPoint topRight;
+@property(readonly, nonatomic, assign) CGPoint bottomLeft;
+@property(readonly, nonatomic, assign) CGPoint bottomRight;
+@end
+
+@interface VNBarcodeObservation : VNRectangleObservation
+@property(readonly, nonatomic, copy) NSString* payloadStringValue;
+@end
+
+#endif  // MAC_OS_X_VERSION_10_13
+
+// Once Chrome no longer supports macOS 10.13, everything within this
+// preprocessor block can be removed.
+#if !defined(MAC_OS_X_VERSION_10_14) || \
+    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_14
+
+typedef NSString* NSAppearanceName;
+
+@interface NSApplication (ForwardDeclare)
+@property(strong) NSAppearance* appearance;
+@property(readonly, strong) NSAppearance* effectiveAppearance;
+@end
+
+@interface NSAppearance (ForwardDeclare)
+- (NSAppearanceName)bestMatchFromAppearancesWithNames:
+    (NSArray<NSAppearanceName>*)appearances;
+@end
+
+BASE_EXPORT extern NSAppearanceName const NSAppearanceNameDarkAqua;
+
+#endif
 
 // ----------------------------------------------------------------------------
 // The symbol for kCWSSIDDidChangeNotification is available in the
@@ -227,5 +371,11 @@ BASE_EXPORT extern NSString* const NSAppearanceNameVibrantLight;
 // declare the symbol.
 // ----------------------------------------------------------------------------
 BASE_EXPORT extern "C" NSString* const kCWSSIDDidChangeNotification;
+
+// Once Chrome is built with at least the macOS 10.13 SDK, everything within
+// this preprocessor block can be removed.
+#if !defined(MAC_OS_X_VERSION_10_13)
+typedef NSString* NSTextCheckingOptionKey;
+#endif
 
 #endif  // BASE_MAC_SDK_FORWARD_DECLARATIONS_H_

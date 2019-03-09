@@ -9,7 +9,7 @@
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/browser_state/off_the_record_chrome_browser_state_io_data.h"
 
-namespace syncable_prefs {
+namespace sync_preferences {
 class PrefServiceSyncable;
 }
 
@@ -26,15 +26,13 @@ class OffTheRecordChromeBrowserStateImpl : public ios::ChromeBrowserState {
   ios::ChromeBrowserState* GetOffTheRecordChromeBrowserState() override;
   void DestroyOffTheRecordChromeBrowserState() override;
   PrefProxyConfigTracker* GetProxyConfigTracker() override;
-  net::SSLConfigService* GetSSLConfigService() override;
   PrefService* GetPrefs() override;
   PrefService* GetOffTheRecordPrefs() override;
   ChromeBrowserStateIOData* GetIOData() override;
   void ClearNetworkingHistorySince(base::Time time,
                                    const base::Closure& completion) override;
   net::URLRequestContextGetter* CreateRequestContext(
-      ProtocolHandlerMap* protocol_handlers,
-      URLRequestInterceptorScopedVector request_interceptors) override;
+      ProtocolHandlerMap* protocol_handlers) override;
   net::URLRequestContextGetter* CreateIsolatedRequestContext(
       const base::FilePath& partition_path) override;
 
@@ -48,6 +46,7 @@ class OffTheRecordChromeBrowserStateImpl : public ios::ChromeBrowserState {
   // |original_chrome_browser_state_| is the non-incognito
   // ChromeBrowserState instance that owns this instance.
   OffTheRecordChromeBrowserStateImpl(
+      scoped_refptr<base::SequencedTaskRunner> io_task_runner,
       ios::ChromeBrowserState* original_chrome_browser_state,
       const base::FilePath& otr_path);
 
@@ -55,7 +54,7 @@ class OffTheRecordChromeBrowserStateImpl : public ios::ChromeBrowserState {
   ios::ChromeBrowserState* original_chrome_browser_state_;  // weak
 
   // Weak pointer owned by |original_chrome_browser_state_|.
-  syncable_prefs::PrefServiceSyncable* prefs_;
+  sync_preferences::PrefServiceSyncable* prefs_;
 
   std::unique_ptr<OffTheRecordChromeBrowserStateIOData::Handle> io_data_;
   std::unique_ptr<PrefProxyConfigTracker> pref_proxy_config_tracker_;

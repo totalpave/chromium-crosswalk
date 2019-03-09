@@ -12,22 +12,12 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "media/base/video_frame.h"
+#include "media/base/video_frame_layout.h"
 #include "mojo/public/cpp/system/buffer.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
-namespace mojo {
-template <typename T, typename U>
-struct TypeConverter;
-template <typename T>
-class StructPtr;
-};
-
 namespace media {
-
-namespace mojom {
-class VideoFrame;
-}
 
 // A derived class of media::VideoFrame holding a mojo::SharedBufferHandle
 // which is mapped on constructor and remains so for the lifetime of the
@@ -45,9 +35,15 @@ class MojoSharedBufferVideoFrame : public VideoFrame {
   // Buffers for the frame are allocated but not initialized. The caller must
   // not make assumptions about the actual underlying sizes, but check the
   // returned VideoFrame instead.
-  static scoped_refptr<MojoSharedBufferVideoFrame> CreateDefaultI420(
+  static scoped_refptr<MojoSharedBufferVideoFrame> CreateDefaultI420ForTesting(
       const gfx::Size& dimensions,
       base::TimeDelta timestamp);
+
+  // Creates a YUV frame backed by shared memory from in-memory YUV frame.
+  // Internally the data from in-memory YUV frame will be copied to a
+  // consecutive block in shared memory. Will return null on failure.
+  static scoped_refptr<MojoSharedBufferVideoFrame> CreateFromYUVFrame(
+      const VideoFrame& frame);
 
   // Creates a MojoSharedBufferVideoFrame that uses the memory in |handle|.
   // This will take ownership of |handle|, so the caller can no longer use it.
@@ -72,20 +68,22 @@ class MojoSharedBufferVideoFrame : public VideoFrame {
   // |plane| specified.
   size_t PlaneOffset(size_t plane) const;
 
+  // Returns a reference to the mojo shared memory handle. Caller should
+  // duplicate the handle if they want to extend the lifetime of the buffer.
+  const mojo::SharedBufferHandle& Handle() const;
+
+  // Returns the size of the shared memory.
+  size_t MappedSize() const;
+
   // Sets the callback to be called to free the shared buffer. If not null,
   // it is called on destruction, and is passed ownership of |handle|.
   void SetMojoSharedBufferDoneCB(
       const MojoSharedBufferDoneCB& mojo_shared_buffer_done_cb);
 
  private:
-  // mojo::TypeConverter added as a friend so that MojoSharedBufferVideoFrame
-  // can be transferred across a mojo connection.
-  friend struct mojo::TypeConverter<mojo::StructPtr<mojom::VideoFrame>,
-                                    scoped_refptr<VideoFrame>>;
   friend class MojoDecryptorService;
 
-  MojoSharedBufferVideoFrame(VideoPixelFormat format,
-                             const gfx::Size& coded_size,
+  MojoSharedBufferVideoFrame(const VideoFrameLayout& layout,
                              const gfx::Rect& visible_rect,
                              const gfx::Size& natural_size,
                              mojo::ScopedSharedBufferHandle handle,
@@ -94,25 +92,12 @@ class MojoSharedBufferVideoFrame : public VideoFrame {
   ~MojoSharedBufferVideoFrame() override;
 
   // Initializes the MojoSharedBufferVideoFrame by creating a mapping onto
-  // the shared memory, and then setting the strides and offsets as specified.
-  bool Init(int32_t y_stride,
-            int32_t u_stride,
-            int32_t v_stride,
-            size_t y_offset,
-            size_t u_offset,
-            size_t v_offset);
-
-  // Returns the mojo shared memory handle. This object continues to own the
-  // handle. Caller should call duplicate the handle if they want to keep a
-  // copy of the shared memory.
-  const mojo::SharedBufferHandle& Handle() const;
-
-  // Returns the size of the shared memory.
-  size_t MappedSize() const;
+  // the shared memory, and then setting offsets as specified.
+  bool Init(size_t y_offset, size_t u_offset, size_t v_offset);
 
   uint8_t* shared_buffer_data() {
     return reinterpret_cast<uint8_t*>(shared_buffer_mapping_.get());
-  };
+  }
 
   mojo::ScopedSharedBufferHandle shared_buffer_handle_;
   mojo::ScopedSharedBufferMapping shared_buffer_mapping_;

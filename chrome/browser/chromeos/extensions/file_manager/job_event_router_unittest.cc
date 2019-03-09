@@ -7,7 +7,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -20,7 +23,7 @@ class JobEventRouterImpl : public JobEventRouter {
   JobEventRouterImpl() : JobEventRouter(base::TimeDelta::FromMilliseconds(0)) {
     listener_extension_ids_.insert("extension_a");
   }
-  std::vector<linked_ptr<base::DictionaryValue>> events;
+  std::vector<std::unique_ptr<base::DictionaryValue>> events;
 
   void SetListenerExtensionIds(std::set<std::string> extension_ids) {
     listener_extension_ids_ = extension_ids;
@@ -49,7 +52,7 @@ class JobEventRouterImpl : public JobEventRouter {
       std::unique_ptr<base::ListValue> event_args) override {
     const base::DictionaryValue* event;
     event_args->GetDictionary(0, &event);
-    events.push_back(make_linked_ptr(event->DeepCopy()));
+    events.push_back(base::WrapUnique(event->DeepCopy()));
   }
 
  private:
@@ -60,7 +63,9 @@ class JobEventRouterImpl : public JobEventRouter {
 
 class JobEventRouterTest : public testing::Test {
  protected:
-  void SetUp() override { job_event_router.reset(new JobEventRouterImpl()); }
+  void SetUp() override {
+    job_event_router = std::make_unique<JobEventRouterImpl>();
+  }
 
   drive::JobInfo CreateJobInfo(drive::JobID id,
                                int64_t num_completed_bytes,

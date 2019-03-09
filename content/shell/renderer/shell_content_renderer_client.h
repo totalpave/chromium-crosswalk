@@ -6,9 +6,12 @@
 #define CONTENT_SHELL_RENDERER_SHELL_CONTENT_RENDERER_CLIENT_H_
 
 #include <memory>
+#include <string>
 
 #include "base/compiler_specific.h"
+#include "build/build_config.h"
 #include "content/public/renderer/content_renderer_client.h"
+#include "media/mojo/buildflags.h"
 
 namespace web_cache {
 class WebCacheImpl;
@@ -24,17 +27,31 @@ class ShellContentRendererClient : public ContentRendererClient {
   // ContentRendererClient implementation.
   void RenderThreadStarted() override;
   void RenderViewCreated(RenderView* render_view) override;
+  bool HasErrorPage(int http_status_code) override;
+  void PrepareErrorPage(RenderFrame* render_frame,
+                        const blink::WebURLError& error,
+                        const std::string& http_method,
+                        bool ignoring_cache,
+                        std::string* error_html) override;
+  void PrepareErrorPageForHttpStatusError(content::RenderFrame* render_frame,
+                                          const GURL& unreachable_url,
+                                          const std::string& http_method,
+                                          bool ignoring_cache,
+                                          int http_status,
+                                          std::string* error_html) override;
 
   // TODO(mkwst): These toggle based on the kEnablePepperTesting flag. Do we
-  // need that outside of layout tests?
-  bool IsPluginAllowedToUseCompositorAPI(const GURL& url) override;
+  // need that outside of web tests?
   bool IsPluginAllowedToUseDevChannelAPIs() override;
 
   void DidInitializeWorkerContextOnWorkerThread(
       v8::Local<v8::Context> context) override;
 
-  void ExposeInterfacesToBrowser(
-      shell::InterfaceRegistry* interface_registry) override;
+#if BUILDFLAG(ENABLE_MOJO_CDM)
+  void AddSupportedKeySystems(
+      std::vector<std::unique_ptr<media::KeySystemProperties>>* key_systems)
+      override;
+#endif
 
  private:
   std::unique_ptr<web_cache::WebCacheImpl> web_cache_impl_;

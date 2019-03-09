@@ -4,69 +4,67 @@
 
 #include "chromeos/dbus/arc_obb_mounter_client.h"
 
+#include <utility>
+
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
 #include "dbus/object_proxy.h"
+#include "third_party/cros_system_api/dbus/service_constants.h"
 
 namespace chromeos {
 
 namespace {
 
-// TODO(hashimoto): Share these constants with the service.
-// D-Bus service constants.
-const char kArcObbMounterInterface[] = "org.chromium.ArcObbMounterInterface";
-const char kArcObbMounterServicePath[] = "/org/chromium/ArcObbMounter";
-const char kArcObbMounterServiceName[] = "org.chromium.ArcObbMounter";
-
-// Method names.
-const char kMountObbMethod[] = "MountObb";
-const char kUnmountObbMethod[] = "UnmountObb";
-
 class ArcObbMounterClientImpl : public ArcObbMounterClient {
  public:
   ArcObbMounterClientImpl() : weak_ptr_factory_(this) {}
-  ~ArcObbMounterClientImpl() override {}
+  ~ArcObbMounterClientImpl() override = default;
 
   // ArcObbMounterClient override:
   void MountObb(const std::string& obb_file,
                 const std::string& mount_path,
                 int32_t owner_gid,
-                const VoidDBusMethodCallback& callback) override {
-    dbus::MethodCall method_call(kArcObbMounterInterface, kMountObbMethod);
+                VoidDBusMethodCallback callback) override {
+    dbus::MethodCall method_call(arc::obb_mounter::kArcObbMounterInterface,
+                                 arc::obb_mounter::kMountObbMethod);
     dbus::MessageWriter writer(&method_call);
     writer.AppendString(obb_file);
     writer.AppendString(mount_path);
     writer.AppendInt32(owner_gid);
-    proxy_->CallMethod(&method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-                       base::Bind(&ArcObbMounterClientImpl::OnVoidDBusMethod,
-                                  weak_ptr_factory_.GetWeakPtr(), callback));
+    proxy_->CallMethod(
+        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
+        base::BindOnce(&ArcObbMounterClientImpl::OnVoidDBusMethod,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
   }
 
   void UnmountObb(const std::string& mount_path,
-                  const VoidDBusMethodCallback& callback) override {
-    dbus::MethodCall method_call(kArcObbMounterInterface, kUnmountObbMethod);
+                  VoidDBusMethodCallback callback) override {
+    dbus::MethodCall method_call(arc::obb_mounter::kArcObbMounterInterface,
+                                 arc::obb_mounter::kUnmountObbMethod);
     dbus::MessageWriter writer(&method_call);
     writer.AppendString(mount_path);
-    proxy_->CallMethod(&method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-                       base::Bind(&ArcObbMounterClientImpl::OnVoidDBusMethod,
-                                  weak_ptr_factory_.GetWeakPtr(), callback));
+    proxy_->CallMethod(
+        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
+        base::BindOnce(&ArcObbMounterClientImpl::OnVoidDBusMethod,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
   }
 
  protected:
   // DBusClient override.
   void Init(dbus::Bus* bus) override {
-    proxy_ = bus->GetObjectProxy(kArcObbMounterServiceName,
-                                 dbus::ObjectPath(kArcObbMounterServicePath));
+    proxy_ = bus->GetObjectProxy(
+        arc::obb_mounter::kArcObbMounterServiceName,
+        dbus::ObjectPath(arc::obb_mounter::kArcObbMounterServicePath));
   }
 
  private:
   // Runs the callback with the method call result.
-  void OnVoidDBusMethod(const VoidDBusMethodCallback& callback,
+  void OnVoidDBusMethod(VoidDBusMethodCallback callback,
                         dbus::Response* response) {
-    callback.Run(response ? DBUS_METHOD_CALL_SUCCESS
-                          : DBUS_METHOD_CALL_FAILURE);
+    std::move(callback).Run(response != nullptr);
   }
 
   dbus::ObjectProxy* proxy_ = nullptr;
@@ -78,9 +76,9 @@ class ArcObbMounterClientImpl : public ArcObbMounterClient {
 
 }  // namespace
 
-ArcObbMounterClient::ArcObbMounterClient() {}
+ArcObbMounterClient::ArcObbMounterClient() = default;
 
-ArcObbMounterClient::~ArcObbMounterClient() {}
+ArcObbMounterClient::~ArcObbMounterClient() = default;
 
 // static
 ArcObbMounterClient* ArcObbMounterClient::Create() {

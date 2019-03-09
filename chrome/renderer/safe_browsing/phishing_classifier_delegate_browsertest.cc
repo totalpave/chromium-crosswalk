@@ -6,19 +6,21 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
-#include "chrome/common/safe_browsing/safebrowsing_messages.h"
 #include "chrome/renderer/safe_browsing/features.h"
 #include "chrome/renderer/safe_browsing/phishing_classifier.h"
 #include "chrome/renderer/safe_browsing/scorer.h"
 #include "chrome/test/base/chrome_render_view_test.h"
 #include "chrome/test/base/chrome_unit_test_suite.h"
+#include "components/safe_browsing/proto/csd.pb.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_view.h"
+#include "mojo/public/cpp/bindings/binding_set.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/WebKit/public/platform/WebURL.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
+#include "third_party/blink/public/platform/web_url.h"
+#include "third_party/blink/public/platform/web_url_request.h"
 #include "url/gurl.h"
 
 using base::ASCIIToUTF16;
@@ -37,10 +39,9 @@ class MockPhishingClassifier : public PhishingClassifier {
   explicit MockPhishingClassifier(content::RenderFrame* render_frame)
       : PhishingClassifier(render_frame, NULL /* clock */) {}
 
-  virtual ~MockPhishingClassifier() {}
+  ~MockPhishingClassifier() override {}
 
-  MOCK_METHOD2(BeginClassification,
-               void(const base::string16*, const DoneCallback&));
+  MOCK_METHOD2(BeginClassification, void(const base::string16*, DoneCallback));
   MOCK_METHOD0(CancelPendingClassification, void());
 
  private:
@@ -50,7 +51,7 @@ class MockPhishingClassifier : public PhishingClassifier {
 class MockScorer : public Scorer {
  public:
   MockScorer() : Scorer() {}
-  virtual ~MockScorer() {}
+  ~MockScorer() override {}
 
   MOCK_CONST_METHOD1(ComputeScore, double(const FeatureMap&));
 
@@ -59,50 +60,54 @@ class MockScorer : public Scorer {
 };
 }  // namespace
 
-class FakeRenderThread : public ChromeMockRenderThread {
+class FakePhishingDetectorClient : public mojom::PhishingDetectorClient {
  public:
-  // Instead of sending this message, we verify its content here.
-  bool Send(IPC::Message* msg) override {
-    // handle and verify message here.
-    IPC_BEGIN_MESSAGE_MAP(FakeRenderThread, *msg)
-      IPC_MESSAGE_HANDLER(SafeBrowsingHostMsg_PhishingDetectionDone,
-                          VerifyMessageContent)
-    IPC_END_MESSAGE_MAP()
-    if (msg) {  // Prevent memory leak.
-      delete msg;
-      msg = nullptr;
-    }
-    // Return true anyway, since we don't want to block other IPC.
-    return true;
+  FakePhishingDetectorClient() = default;
+
+  ~FakePhishingDetectorClient() override = default;
+
+  void BindRequest(mojom::PhishingDetectorClientRequest request) {
+    bindings_.AddBinding(this, std::move(request));
   }
 
-  void VerifyMessageContent(const std::string& verdict_str) {
+  // mojom::PhishingDetectorClient
+  void PhishingDetectionDone(const std::string& request_proto) override {
     ClientPhishingRequest verdict;
-    if (verdict.ParseFromString(verdict_str)) {
-      EXPECT_EQ("http://host.com/", verdict.url());
-      EXPECT_EQ(0.8f, verdict.client_score());
-      EXPECT_FALSE(verdict.is_phishing());
-    } else {
-      NOTREACHED() << "Cannot parse IPC content. Test failed.";
-    }
+    ASSERT_TRUE(verdict.ParseFromString(request_proto));
+    EXPECT_EQ("http://host.com/", verdict.url());
+    EXPECT_EQ(0.8f, verdict.client_score());
+    EXPECT_FALSE(verdict.is_phishing());
   }
+
+ private:
+  mojo::BindingSet<mojom::PhishingDetectorClient> bindings_;
+  DISALLOW_COPY_AND_ASSIGN(FakePhishingDetectorClient);
 };
 
 class PhishingClassifierDelegateTest : public ChromeRenderViewTest {
  protected:
   void SetUp() override {
-    ChromeUnitTestSuite::InitializeProviders();
-    ChromeUnitTestSuite::InitializeResourceBundle();
-
-    // Plug-in FakeRenderThread.
-    chrome_render_thread_ = new FakeRenderThread();
-    render_thread_.reset(chrome_render_thread_);
-
-    content::RenderViewTest::SetUp();
+    ChromeRenderViewTest::SetUp();
 
     content::RenderFrame* render_frame = view_->GetMainRenderFrame();
     classifier_ = new StrictMock<MockPhishingClassifier>(render_frame);
     delegate_ = PhishingClassifierDelegate::Create(render_frame, classifier_);
+  }
+
+  void RegisterMainFrameRemoteInterfaces() override {
+    service_manager::InterfaceProvider* remote_interfaces =
+        view_->GetMainRenderFrame()->GetRemoteInterfaces();
+    service_manager::InterfaceProvider::TestApi test_api(remote_interfaces);
+    test_api.SetBinderForName(
+        mojom::PhishingDetectorClient::Name_,
+        base::BindRepeating(
+            &PhishingClassifierDelegateTest::BindPhishingDetectorClient,
+            base::Unretained(this)));
+  }
+
+  void BindPhishingDetectorClient(mojo::ScopedMessagePipeHandle handle) {
+    fake_phishing_client_.BindRequest(
+        mojom::PhishingDetectorClientRequest(std::move(handle)));
   }
 
   // Runs the ClassificationDone callback, then verify if message sent
@@ -112,7 +117,7 @@ class PhishingClassifierDelegateTest : public ChromeRenderViewTest {
   }
 
   void OnStartPhishingDetection(const GURL& url) {
-    delegate_->OnStartPhishingDetection(url);
+    delegate_->StartPhishingDetection(url);
   }
 
   void PageCaptured(base::string16* page_text,
@@ -140,6 +145,7 @@ class PhishingClassifierDelegateTest : public ChromeRenderViewTest {
 
   StrictMock<MockPhishingClassifier>* classifier_;  // Owned by |delegate_|.
   PhishingClassifierDelegate* delegate_;            // Owned by the RenderFrame.
+  FakePhishingDetectorClient fake_phishing_client_;
 };
 
 TEST_F(PhishingClassifierDelegateTest, Navigation) {
@@ -183,10 +189,10 @@ TEST_F(PhishingClassifierDelegateTest, Navigation) {
   PageCaptured(&page_text, false, url);
   Mock::VerifyAndClearExpectations(classifier_);
 
-  // Navigating within page works similarly to a subframe navigation, but
-  // see the TODO in PhishingClassifierDelegate::DidCommitProvisionalLoad.
+  // Same document navigation works similarly to a subframe navigation, but see
+  // the TODO in PhishingClassifierDelegate::DidCommitProvisionalLoad.
   EXPECT_CALL(*classifier_, CancelPendingClassification());
-  DidNavigateWithinPage(GetMainFrame(), true, true);
+  OnSameDocumentNavigation(GetMainFrame(), true);
   Mock::VerifyAndClearExpectations(classifier_);
 
   OnStartPhishingDetection(url);
@@ -250,8 +256,8 @@ TEST_F(PhishingClassifierDelegateTest, Navigation) {
   Mock::VerifyAndClearExpectations(classifier_);
 
   EXPECT_CALL(*classifier_, CancelPendingClassification());
-  // In-page navigation.
-  DidNavigateWithinPage(GetMainFrame(), true, true);
+  // Same document navigation.
+  OnSameDocumentNavigation(GetMainFrame(), true);
   Mock::VerifyAndClearExpectations(classifier_);
 
   OnStartPhishingDetection(url);

@@ -9,75 +9,92 @@
 namespace base {
 namespace internal {
 
-void BindStateBase::AddRef() {
-  AtomicRefCountInc(&ref_count_);
+namespace {
+
+bool QueryCancellationTraitsForNonCancellables(
+    const BindStateBase*,
+    BindStateBase::CancellationQueryMode mode) {
+  switch (mode) {
+    case BindStateBase::IS_CANCELLED:
+      return false;
+    case BindStateBase::MAYBE_VALID:
+      return true;
+  }
+  NOTREACHED();
 }
 
-void BindStateBase::Release() {
-  if (!AtomicRefCountDec(&ref_count_))
-    destructor_(this);
+}  // namespace
+
+void BindStateBaseRefCountTraits::Destruct(const BindStateBase* bind_state) {
+  bind_state->destructor_(bind_state);
 }
 
-CallbackBase<CopyMode::MoveOnly>::CallbackBase(CallbackBase&& c)
-    : bind_state_(std::move(c.bind_state_)),
-      polymorphic_invoke_(c.polymorphic_invoke_) {
-  c.polymorphic_invoke_ = nullptr;
-}
+BindStateBase::BindStateBase(InvokeFuncStorage polymorphic_invoke,
+                             void (*destructor)(const BindStateBase*))
+    : BindStateBase(polymorphic_invoke,
+                    destructor,
+                    &QueryCancellationTraitsForNonCancellables) {}
 
-CallbackBase<CopyMode::MoveOnly>&
-CallbackBase<CopyMode::MoveOnly>::operator=(CallbackBase&& c) {
-  bind_state_ = std::move(c.bind_state_);
-  polymorphic_invoke_ = c.polymorphic_invoke_;
-  c.polymorphic_invoke_ = nullptr;
+BindStateBase::BindStateBase(
+    InvokeFuncStorage polymorphic_invoke,
+    void (*destructor)(const BindStateBase*),
+    bool (*query_cancellation_traits)(const BindStateBase*,
+                                      CancellationQueryMode))
+    : polymorphic_invoke_(polymorphic_invoke),
+      destructor_(destructor),
+      query_cancellation_traits_(query_cancellation_traits) {}
+
+CallbackBase& CallbackBase::operator=(CallbackBase&& c) noexcept = default;
+CallbackBase::CallbackBase(const CallbackBaseCopyable& c)
+    : bind_state_(c.bind_state_) {}
+
+CallbackBase& CallbackBase::operator=(const CallbackBaseCopyable& c) {
+  bind_state_ = c.bind_state_;
   return *this;
 }
 
-void CallbackBase<CopyMode::MoveOnly>::Reset() {
-  polymorphic_invoke_ = nullptr;
+CallbackBase::CallbackBase(CallbackBaseCopyable&& c) noexcept
+    : bind_state_(std::move(c.bind_state_)) {}
+
+CallbackBase& CallbackBase::operator=(CallbackBaseCopyable&& c) noexcept {
+  bind_state_ = std::move(c.bind_state_);
+  return *this;
+}
+
+void CallbackBase::Reset() {
   // NULL the bind_state_ last, since it may be holding the last ref to whatever
   // object owns us, and we may be deleted after that.
   bind_state_ = nullptr;
 }
 
-bool CallbackBase<CopyMode::MoveOnly>::EqualsInternal(
-    const CallbackBase& other) const {
-  return bind_state_.get() == other.bind_state_.get() &&
-         polymorphic_invoke_ == other.polymorphic_invoke_;
+bool CallbackBase::IsCancelled() const {
+  DCHECK(bind_state_);
+  return bind_state_->IsCancelled();
 }
 
-CallbackBase<CopyMode::MoveOnly>::CallbackBase(
-    BindStateBase* bind_state)
-    : bind_state_(bind_state) {
-  DCHECK(!bind_state_.get() || bind_state_->ref_count_ == 1);
+bool CallbackBase::MaybeValid() const {
+  DCHECK(bind_state_);
+  return bind_state_->MaybeValid();
 }
 
-CallbackBase<CopyMode::MoveOnly>::~CallbackBase() {}
+bool CallbackBase::EqualsInternal(const CallbackBase& other) const {
+  return bind_state_ == other.bind_state_;
+}
 
-CallbackBase<CopyMode::Copyable>::CallbackBase(
-    const CallbackBase& c)
-    : CallbackBase<CopyMode::MoveOnly>(nullptr) {
+CallbackBase::~CallbackBase() = default;
+
+CallbackBaseCopyable::CallbackBaseCopyable(const CallbackBaseCopyable& c) {
   bind_state_ = c.bind_state_;
-  polymorphic_invoke_ = c.polymorphic_invoke_;
 }
 
-CallbackBase<CopyMode::Copyable>::CallbackBase(CallbackBase&& c)
-    : CallbackBase<CopyMode::MoveOnly>(std::move(c)) {}
-
-CallbackBase<CopyMode::Copyable>&
-CallbackBase<CopyMode::Copyable>::operator=(const CallbackBase& c) {
+CallbackBaseCopyable& CallbackBaseCopyable::operator=(
+    const CallbackBaseCopyable& c) {
   bind_state_ = c.bind_state_;
-  polymorphic_invoke_ = c.polymorphic_invoke_;
   return *this;
 }
 
-CallbackBase<CopyMode::Copyable>&
-CallbackBase<CopyMode::Copyable>::operator=(CallbackBase&& c) {
-  *static_cast<CallbackBase<CopyMode::MoveOnly>*>(this) = std::move(c);
-  return *this;
-}
-
-template class CallbackBase<CopyMode::MoveOnly>;
-template class CallbackBase<CopyMode::Copyable>;
+CallbackBaseCopyable& CallbackBaseCopyable::operator=(
+    CallbackBaseCopyable&& c) noexcept = default;
 
 }  // namespace internal
 }  // namespace base

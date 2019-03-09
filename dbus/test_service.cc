@@ -10,7 +10,11 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/guid.h"
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
 #include "dbus/bus.h"
@@ -19,13 +23,6 @@
 #include "dbus/object_manager.h"
 #include "dbus/object_path.h"
 #include "dbus/property.h"
-
-namespace {
-
-void EmptyCallback(bool /* success */) {
-}
-
-}  // namespace
 
 namespace dbus {
 
@@ -37,8 +34,7 @@ TestService::Options::Options()
     : request_ownership_options(Bus::REQUIRE_PRIMARY) {
 }
 
-TestService::Options::~Options() {
-}
+TestService::Options::~Options() = default;
 
 TestService::TestService(const Options& options)
     : base::Thread("TestService"),
@@ -50,8 +46,8 @@ TestService::TestService(const Options& options)
       num_exported_methods_(0),
       send_immediate_properties_changed_(false),
       has_ownership_(false),
-      exported_object_(NULL),
-      exported_object_manager_(NULL) {
+      exported_object_(nullptr),
+      exported_object_manager_(nullptr) {
   if (service_name_.empty()) {
     service_name_ = "org.chromium.TestService-" + base::GenerateGUID();
   }
@@ -67,17 +63,15 @@ bool TestService::StartService() {
   return StartWithOptions(thread_options);
 }
 
-bool TestService::WaitUntilServiceIsStarted() {
-  const base::TimeDelta timeout(TestTimeouts::action_max_timeout());
+void TestService::WaitUntilServiceIsStarted() {
   // Wait until the ownership of the service name is obtained.
-  return on_name_obtained_.TimedWait(timeout);
+  on_name_obtained_.Wait();
 }
 
 void TestService::ShutdownAndBlock() {
-  message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&TestService::ShutdownAndBlockInternal,
-                 base::Unretained(this)));
+  task_runner()->PostTask(FROM_HERE,
+                          base::BindOnce(&TestService::ShutdownAndBlockInternal,
+                                         base::Unretained(this)));
 }
 
 bool TestService::HasDBusThread() {
@@ -92,19 +86,15 @@ void TestService::ShutdownAndBlockInternal() {
 }
 
 void TestService::SendTestSignal(const std::string& message) {
-  message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&TestService::SendTestSignalInternal,
-                 base::Unretained(this),
-                 message));
+  task_runner()->PostTask(FROM_HERE,
+                          base::BindOnce(&TestService::SendTestSignalInternal,
+                                         base::Unretained(this), message));
 }
 
 void TestService::SendTestSignalFromRoot(const std::string& message) {
-  message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&TestService::SendTestSignalFromRootInternal,
-                 base::Unretained(this),
-                 message));
+  task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&TestService::SendTestSignalFromRootInternal,
+                                base::Unretained(this), message));
 }
 
 void TestService::SendTestSignalInternal(const std::string& message) {
@@ -119,11 +109,9 @@ void TestService::SendTestSignalFromRootInternal(const std::string& message) {
   MessageWriter writer(&signal);
   writer.AppendString(message);
 
-  bus_->RequestOwnership(service_name_,
-                         request_ownership_options_,
+  bus_->RequestOwnership(service_name_, request_ownership_options_,
                          base::Bind(&TestService::OnOwnership,
-                                    base::Unretained(this),
-                                    base::Bind(&EmptyCallback)));
+                                    base::Unretained(this), base::DoNothing()));
 
   // Use "/" just like dbus-send does.
   ExportedObject* root_object = bus_->GetExportedObject(ObjectPath("/"));
@@ -131,11 +119,9 @@ void TestService::SendTestSignalFromRootInternal(const std::string& message) {
 }
 
 void TestService::RequestOwnership(base::Callback<void(bool)> callback) {
-  message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&TestService::RequestOwnershipInternal,
-                 base::Unretained(this),
-                 callback));
+  task_runner()->PostTask(FROM_HERE,
+                          base::BindOnce(&TestService::RequestOwnershipInternal,
+                                         base::Unretained(this), callback));
 }
 
 void TestService::RequestOwnershipInternal(
@@ -159,10 +145,8 @@ void TestService::OnOwnership(base::Callback<void(bool)> callback,
 
 void TestService::ReleaseOwnership(base::Closure callback) {
   bus_->GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&TestService::ReleaseOwnershipInternal,
-                 base::Unretained(this),
-                 callback));
+      FROM_HERE, base::BindOnce(&TestService::ReleaseOwnershipInternal,
+                                base::Unretained(this), callback));
 }
 
 void TestService::ReleaseOwnershipInternal(
@@ -194,15 +178,14 @@ void TestService::OnExported(const std::string& interface_name,
   if (num_exported_methods_ == kNumMethodsToExport) {
     // As documented in exported_object.h, the service name should be
     // requested after all methods are exposed.
-    bus_->RequestOwnership(service_name_,
-                           request_ownership_options_,
-                           base::Bind(&TestService::OnOwnership,
-                                      base::Unretained(this),
-                                      base::Bind(&EmptyCallback)));
+    bus_->RequestOwnership(
+        service_name_, request_ownership_options_,
+        base::Bind(&TestService::OnOwnership, base::Unretained(this),
+                   base::DoNothing()));
   }
 }
 
-void TestService::Run(base::MessageLoop* message_loop) {
+void TestService::Run(base::RunLoop* run_loop) {
   Bus::Options bus_options;
   bus_options.bus_type = Bus::SESSION;
   bus_options.connection_type = Bus::PRIVATE;
@@ -302,7 +285,7 @@ void TestService::Run(base::MessageLoop* message_loop) {
   if (num_methods != kNumMethodsToExport) {
     LOG(ERROR) << "The number of methods does not match";
   }
-  message_loop->Run();
+  run_loop->Run();
 }
 
 void TestService::Echo(MethodCall* method_call,
@@ -329,12 +312,11 @@ void TestService::SlowEcho(MethodCall* method_call,
 void TestService::AsyncEcho(MethodCall* method_call,
                             ExportedObject::ResponseSender response_sender) {
   // Schedule a call to Echo() to send an asynchronous response after we return.
-  message_loop()->PostDelayedTask(FROM_HERE,
-                                  base::Bind(&TestService::Echo,
-                                             base::Unretained(this),
-                                             method_call,
-                                             response_sender),
-                                  TestTimeouts::tiny_timeout());
+  task_runner()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&TestService::Echo, base::Unretained(this), method_call,
+                     response_sender),
+      TestTimeouts::tiny_timeout());
 }
 
 void TestService::BrokenMethod(MethodCall* method_call,
@@ -399,8 +381,8 @@ void TestService::GetProperty(MethodCall* method_call,
     // Variant<["Echo", "SlowEcho", "AsyncEcho", "BrokenMethod"]>
     std::unique_ptr<Response> response = Response::FromMethodCall(method_call);
     MessageWriter writer(response.get());
-    MessageWriter variant_writer(NULL);
-    MessageWriter variant_array_writer(NULL);
+    MessageWriter variant_writer(nullptr);
+    MessageWriter variant_array_writer(nullptr);
 
     writer.OpenVariant("as", &variant_writer);
     variant_writer.OpenArray("s", &variant_array_writer);
@@ -417,8 +399,8 @@ void TestService::GetProperty(MethodCall* method_call,
     // Variant<[objectpath:"/TestObjectPath"]>
     std::unique_ptr<Response> response = Response::FromMethodCall(method_call);
     MessageWriter writer(response.get());
-    MessageWriter variant_writer(NULL);
-    MessageWriter variant_array_writer(NULL);
+    MessageWriter variant_writer(nullptr);
+    MessageWriter variant_array_writer(nullptr);
 
     writer.OpenVariant("ao", &variant_writer);
     variant_writer.OpenArray("o", &variant_array_writer);
@@ -432,8 +414,8 @@ void TestService::GetProperty(MethodCall* method_call,
     // Variant<[0x54, 0x65, 0x73, 0x74]>
     std::unique_ptr<Response> response = Response::FromMethodCall(method_call);
     MessageWriter writer(response.get());
-    MessageWriter variant_writer(NULL);
-    MessageWriter variant_array_writer(NULL);
+    MessageWriter variant_writer(nullptr);
+    MessageWriter variant_array_writer(nullptr);
 
     writer.OpenVariant("ay", &variant_writer);
     const uint8_t bytes[] = {0x54, 0x65, 0x73, 0x74};
@@ -557,10 +539,10 @@ void TestService::GetManagedObjects(
   // }
 
 
-  MessageWriter array_writer(NULL);
-  MessageWriter dict_entry_writer(NULL);
-  MessageWriter object_array_writer(NULL);
-  MessageWriter object_dict_entry_writer(NULL);
+  MessageWriter array_writer(nullptr);
+  MessageWriter dict_entry_writer(nullptr);
+  MessageWriter object_array_writer(nullptr);
+  MessageWriter object_dict_entry_writer(nullptr);
 
   writer.OpenArray("{oa{sa{sv}}}", &array_writer);
 
@@ -597,10 +579,10 @@ void TestService::AddPropertiesToWriter(MessageWriter* writer) {
   //   "Bytes": Variant<[0x54, 0x65, 0x73, 0x74]>
   // }
 
-  MessageWriter array_writer(NULL);
-  MessageWriter dict_entry_writer(NULL);
-  MessageWriter variant_writer(NULL);
-  MessageWriter variant_array_writer(NULL);
+  MessageWriter array_writer(nullptr);
+  MessageWriter dict_entry_writer(nullptr);
+  MessageWriter variant_writer(nullptr);
+  MessageWriter variant_array_writer(nullptr);
 
   writer->OpenArray("{sv}", &array_writer);
 
@@ -647,11 +629,9 @@ void TestService::AddPropertiesToWriter(MessageWriter* writer) {
 }
 
 void TestService::AddObject(const ObjectPath& object_path) {
-  message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&TestService::AddObjectInternal,
-                 base::Unretained(this),
-                 object_path));
+  task_runner()->PostTask(FROM_HERE,
+                          base::BindOnce(&TestService::AddObjectInternal,
+                                         base::Unretained(this), object_path));
 }
 
 void TestService::AddObjectInternal(const ObjectPath& object_path) {
@@ -659,8 +639,8 @@ void TestService::AddObjectInternal(const ObjectPath& object_path) {
   MessageWriter writer(&signal);
   writer.AppendObjectPath(object_path);
 
-  MessageWriter array_writer(NULL);
-  MessageWriter dict_entry_writer(NULL);
+  MessageWriter array_writer(nullptr);
+  MessageWriter dict_entry_writer(nullptr);
 
   writer.OpenArray("{sa{sv}}", &array_writer);
   array_writer.OpenDictEntry(&dict_entry_writer);
@@ -673,10 +653,9 @@ void TestService::AddObjectInternal(const ObjectPath& object_path) {
 }
 
 void TestService::RemoveObject(const ObjectPath& object_path) {
-  message_loop()->PostTask(FROM_HERE,
-                           base::Bind(&TestService::RemoveObjectInternal,
-                                      base::Unretained(this),
-                                      object_path));
+  task_runner()->PostTask(FROM_HERE,
+                          base::BindOnce(&TestService::RemoveObjectInternal,
+                                         base::Unretained(this), object_path));
 }
 
 void TestService::RemoveObjectInternal(const ObjectPath& object_path) {
@@ -693,11 +672,9 @@ void TestService::RemoveObjectInternal(const ObjectPath& object_path) {
 }
 
 void TestService::SendPropertyChangedSignal(const std::string& name) {
-  message_loop()->PostTask(
-      FROM_HERE,
-      base::Bind(&TestService::SendPropertyChangedSignalInternal,
-                 base::Unretained(this),
-                 name));
+  task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&TestService::SendPropertyChangedSignalInternal,
+                                base::Unretained(this), name));
 }
 
 void TestService::SendPropertyChangedSignalInternal(const std::string& name) {
@@ -705,8 +682,8 @@ void TestService::SendPropertyChangedSignalInternal(const std::string& name) {
   MessageWriter writer(&signal);
   writer.AppendString("org.chromium.TestInterface");
 
-  MessageWriter array_writer(NULL);
-  MessageWriter dict_entry_writer(NULL);
+  MessageWriter array_writer(nullptr);
+  MessageWriter dict_entry_writer(nullptr);
 
   writer.OpenArray("{sv}", &array_writer);
   array_writer.OpenDictEntry(&dict_entry_writer);
@@ -715,7 +692,7 @@ void TestService::SendPropertyChangedSignalInternal(const std::string& name) {
   array_writer.CloseContainer(&dict_entry_writer);
   writer.CloseContainer(&array_writer);
 
-  MessageWriter invalidated_array_writer(NULL);
+  MessageWriter invalidated_array_writer(nullptr);
 
   writer.OpenArray("s", &invalidated_array_writer);
   writer.CloseContainer(&invalidated_array_writer);
@@ -724,9 +701,10 @@ void TestService::SendPropertyChangedSignalInternal(const std::string& name) {
 }
 
 void TestService::SendPropertyInvalidatedSignal() {
-  message_loop()->PostTask(
-      FROM_HERE, base::Bind(&TestService::SendPropertyInvalidatedSignalInternal,
-                            base::Unretained(this)));
+  task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&TestService::SendPropertyInvalidatedSignalInternal,
+                     base::Unretained(this)));
 }
 
 void TestService::SendPropertyInvalidatedSignalInternal() {
@@ -734,13 +712,13 @@ void TestService::SendPropertyInvalidatedSignalInternal() {
   MessageWriter writer(&signal);
   writer.AppendString("org.chromium.TestInterface");
 
-  MessageWriter array_writer(NULL);
-  MessageWriter dict_entry_writer(NULL);
+  MessageWriter array_writer(nullptr);
+  MessageWriter dict_entry_writer(nullptr);
 
   writer.OpenArray("{sv}", &array_writer);
   writer.CloseContainer(&array_writer);
 
-  MessageWriter invalidated_array_writer(NULL);
+  MessageWriter invalidated_array_writer(nullptr);
 
   writer.OpenArray("s", &invalidated_array_writer);
   invalidated_array_writer.AppendString("Name");

@@ -17,8 +17,6 @@ component("dbus") {
     "dbus_statistics.h",
     "exported_object.cc",
     "exported_object.h",
-    "file_descriptor.cc",
-    "file_descriptor.h",
     "message.cc",
     "message.h",
     "object_manager.cc",
@@ -59,15 +57,13 @@ proto_library("test_proto") {
 
 # This target contains mocks that can be used to write unit tests without
 # issuing actual D-Bus calls.
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "mock_bus.cc",
     "mock_bus.h",
     "mock_exported_object.cc",
     "mock_exported_object.h",
-    "mock_object_manager.cc",
-    "mock_object_manager.h",
     "mock_object_proxy.cc",
     "mock_object_proxy.h",
   ]
@@ -127,7 +123,6 @@ executable("dbus_test_server") {
     ":dbus",
     "//base",
     "//base/test:test_support",
-    "//build/config/sanitizers:deps",
   ]
 
   configs += [ "//build/config/linux/dbus" ]

@@ -2,11 +2,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
+import("//components/nacl/features.gni")
 
 assert(enable_nacl)
 
-source_set("browser") {
+static_library("browser") {
   sources = [
     "bad_message.cc",
     "bad_message.h",
@@ -34,16 +34,22 @@ source_set("browser") {
     "//base",
     "//base/third_party/dynamic_annotations",
     "//components/nacl/common",
+    "//components/nacl/common:buildflags",
     "//components/nacl/common:debug_exception_handler",
     "//components/url_formatter",
     "//content/public/browser",
     "//content/public/common",
-    "//ipc",
     "//native_client/src/trusted/service_runtime:sel_main_chrome",
     "//net",
     "//ppapi/host",
     "//ppapi/proxy:ipc",
     "//ppapi/shared_impl",
+    "//services/service_manager/zygote:zygote_buildflags",
+  ]
+
+  public_deps = [
+    "//ipc",
+    "//services/service_manager/public/mojom",
   ]
 
   data_deps = []
@@ -58,9 +64,12 @@ source_set("browser") {
       "//components/nacl/loader:nacl_helper_integration",
       "//sandbox/linux:sandbox_services",
       "//sandbox/linux:suid_sandbox_client",
+      "//services/service_manager/zygote",
     ]
 
-    data_deps += [ "//components/nacl/loader:helper_nonsfi" ]
+    if (enable_nacl_nonsfi) {
+      data_deps += [ "//components/nacl/loader:helper_nonsfi" ]
+    }
   }
 
   if (is_win && current_cpu == "x86") {
@@ -77,6 +86,7 @@ source_set("unit_tests") {
     "pnacl_host_unittest.cc",
     "pnacl_translation_cache_unittest.cc",
     "test_nacl_browser_delegate.cc",
+    "test_nacl_browser_delegate.h",
   ]
 
   deps = [

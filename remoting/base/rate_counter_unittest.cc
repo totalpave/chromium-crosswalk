@@ -5,7 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
+#include "base/test/simple_test_tick_clock.h"
 #include "remoting/base/rate_counter.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -18,10 +19,11 @@ TEST(RateCounterTest, OneSecondWindow) {
   RateCounter rate_counter(base::TimeDelta::FromSeconds(1));
   EXPECT_EQ(0, rate_counter.Rate());
 
-  base::Time now = base::Time::Now();
-  for (size_t i = 0; i < arraysize(kTestValues); ++i) {
-    now += base::TimeDelta::FromSeconds(1);
-    rate_counter.SetCurrentTimeForTest(now);
+  base::SimpleTestTickClock tick_clock;
+  rate_counter.set_tick_clock_for_tests(&tick_clock);
+
+  for (size_t i = 0; i < base::size(kTestValues); ++i) {
+    tick_clock.Advance(base::TimeDelta::FromSeconds(1));
     rate_counter.Record(kTestValues[i]);
     EXPECT_EQ(static_cast<double>(kTestValues[i]), rate_counter.Rate());
   }
@@ -32,10 +34,11 @@ TEST(RateCounterTest, OneSecondWindowAllSamples) {
   RateCounter rate_counter(base::TimeDelta::FromSeconds(1));
   EXPECT_EQ(0, rate_counter.Rate());
 
-  rate_counter.SetCurrentTimeForTest(base::Time::Now());
+  base::SimpleTestTickClock tick_clock;
+  rate_counter.set_tick_clock_for_tests(&tick_clock);
 
   double expected = 0.0;
-  for (size_t i = 0; i < arraysize(kTestValues); ++i) {
+  for (size_t i = 0; i < base::size(kTestValues); ++i) {
     rate_counter.Record(kTestValues[i]);
     expected += kTestValues[i];
   }
@@ -50,10 +53,11 @@ TEST(RateCounterTest, TwoSecondWindow) {
   RateCounter rate_counter(base::TimeDelta::FromSeconds(2));
   EXPECT_EQ(0, rate_counter.Rate());
 
-  base::Time now = base::Time::Now();
-  for (size_t i = 0; i < arraysize(kTestValues); ++i) {
-    now += base::TimeDelta::FromSeconds(1);
-    rate_counter.SetCurrentTimeForTest(now);
+  base::SimpleTestTickClock tick_clock;
+  rate_counter.set_tick_clock_for_tests(&tick_clock);
+
+  for (size_t i = 0; i < base::size(kTestValues); ++i) {
+    tick_clock.Advance(base::TimeDelta::FromSeconds(1));
     rate_counter.Record(kTestValues[i]);
     double expected = kTestValues[i];
     if (i > 0)
@@ -66,16 +70,17 @@ TEST(RateCounterTest, TwoSecondWindow) {
 // Sample over a window one second shorter than the number of samples.
 // Rate should be the average of all but the first sample.
 TEST(RateCounterTest, LongWindow) {
-  const size_t kWindowSeconds = arraysize(kTestValues) - 1;
+  const size_t kWindowSeconds = base::size(kTestValues) - 1;
 
   RateCounter rate_counter(base::TimeDelta::FromSeconds(kWindowSeconds));
   EXPECT_EQ(0, rate_counter.Rate());
 
+  base::SimpleTestTickClock tick_clock;
+  rate_counter.set_tick_clock_for_tests(&tick_clock);
+
   double expected = 0.0;
-  base::Time now = base::Time::Now();
-  for (size_t i = 0; i < arraysize(kTestValues); ++i) {
-    now += base::TimeDelta::FromSeconds(1);
-    rate_counter.SetCurrentTimeForTest(now);
+  for (size_t i = 0; i < base::size(kTestValues); ++i) {
+    tick_clock.Advance(base::TimeDelta::FromSeconds(1));
     rate_counter.Record(kTestValues[i]);
     if (i != 0)
       expected += kTestValues[i];

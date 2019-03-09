@@ -5,32 +5,43 @@
 #include "ash/test/ash_test_views_delegate.h"
 
 #include "ash/shell.h"
-#include "content/public/test/web_contents_tester.h"
+#include "ui/base/ui_base_features.h"
 
 namespace ash {
-namespace test {
 
-AshTestViewsDelegate::AshTestViewsDelegate() {}
+AshTestViewsDelegate::AshTestViewsDelegate() = default;
 
-AshTestViewsDelegate::~AshTestViewsDelegate() {}
-
-content::WebContents* AshTestViewsDelegate::CreateWebContents(
-    content::BrowserContext* browser_context,
-    content::SiteInstance* site_instance) {
-  return content::WebContentsTester::CreateTestWebContents(browser_context,
-                                                           site_instance);
-}
+AshTestViewsDelegate::~AshTestViewsDelegate() = default;
 
 void AshTestViewsDelegate::OnBeforeWidgetInit(
     views::Widget::InitParams* params,
     views::internal::NativeWidgetDelegate* delegate) {
-  TestViewsDelegate::OnBeforeWidgetInit(params, delegate);
-
-  if (!params->parent && !params->context && ash::Shell::HasInstance()) {
-    // If the window has neither a parent nor a context add to the root.
-    params->parent = ash::Shell::GetInstance()->GetPrimaryRootWindow();
+  if (running_outside_ash_) {
+    // With Mash, MusClient::CreateNativeWidget uses a DesktopNativeWidgetAura,
+    // which doesn't need a context.
+    if (!features::IsUsingWindowService()) {
+      DCHECK(ash::Shell::HasInstance());
+      if (!params->parent && !params->context)
+        params->context = Shell::GetRootWindowForNewWindows();
+    }
+  } else {
+    CHECK(params->native_widget || params->context || params->parent)
+        << "Widgets must be created with a context or parent. In tests use "
+        << "CurrentContext(). In non-test code you likely want to use the "
+        << "parent the Widget will be added to, or possibly "
+        << "Shell::GetRootWindowForNewWindows().";
   }
+
+  TestViewsDelegate::OnBeforeWidgetInit(params, delegate);
 }
 
-}  // namespace test
+views::TestViewsDelegate::ProcessMenuAcceleratorResult
+AshTestViewsDelegate::ProcessAcceleratorWhileMenuShowing(
+    const ui::Accelerator& accelerator) {
+  if (accelerator == close_menu_accelerator_)
+    return ProcessMenuAcceleratorResult::CLOSE_MENU;
+
+  return ProcessMenuAcceleratorResult::LEAVE_MENU_OPEN;
+}
+
 }  // namespace ash

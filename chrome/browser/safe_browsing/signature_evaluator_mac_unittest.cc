@@ -22,7 +22,7 @@
 #include "chrome/browser/safe_browsing/incident_reporting/incident.h"
 #include "chrome/browser/safe_browsing/incident_reporting/mock_incident_receiver.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
+#include "components/safe_browsing/proto/csd.pb.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -49,21 +49,21 @@ class MacSignatureEvaluatorTest : public testing::Test {
  protected:
   void SetUp() override {
     base::FilePath source_path;
-    ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &source_path));
+    ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &source_path));
     testdata_path_ =
         source_path.AppendASCII("safe_browsing").AppendASCII("mach_o");
 
     base::FilePath dir_exe;
-    ASSERT_TRUE(PathService::Get(base::DIR_EXE, &dir_exe));
+    ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &dir_exe));
     base::FilePath file_exe;
-    ASSERT_TRUE(PathService::Get(base::FILE_EXE, &file_exe));
+    ASSERT_TRUE(base::PathService::Get(base::FILE_EXE, &file_exe));
 
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
   }
 
   bool SetupXattrs(const base::FilePath& path) {
     char sentinel = 'A';
-    for (const auto& xattr : xattrs) {
+    for (auto* xattr : xattrs) {
       std::vector<uint8_t> buf(10);
       memset(&buf[0], sentinel++, buf.size());
       if (setxattr(path.value().c_str(), xattr, &buf[0], buf.size(), 0, 0) != 0)
@@ -247,7 +247,7 @@ TEST_F(MacSignatureEvaluatorTest, ModifiedBundleTest) {
 
   base::FilePath orig_path = testdata_path_.AppendASCII("modified-bundle.app");
   base::FilePath copied_path =
-      temp_dir_.path().AppendASCII("modified-bundle.app");
+      temp_dir_.GetPath().AppendASCII("modified-bundle.app");
   CHECK(base::CopyDirectory(orig_path, copied_path, true));
 
   // Setup the extended attributes, which don't persist in the git repo.
@@ -322,7 +322,7 @@ TEST_F(MacSignatureEvaluatorTest, ModifiedBundleTest) {
   EXPECT_EQ(6, mainmenunib->signature().xattr_size());
   // Manually convert the global xattrs array to a vector
   std::vector<std::string> xattrs_known;
-  for (const auto& xattr : xattrs)
+  for (auto* xattr : xattrs)
     xattrs_known.push_back(xattr);
 
   std::vector<std::string> xattrs_seen;

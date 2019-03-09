@@ -4,48 +4,62 @@
 
 #include "chromecast/renderer/cast_content_renderer_client.h"
 
-#include <stdint.h>
+#include <utility>
 
 #include "base/command_line.h"
-#include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
-#include "build/build_config.h"
+#include "chromecast/base/bitstream_audio_codecs.h"
 #include "chromecast/base/chromecast_switches.h"
-#include "chromecast/crash/cast_crash_keys.h"
-#include "chromecast/media/base/media_caps.h"
-#include "chromecast/renderer/cast_media_load_deferrer.h"
-#include "chromecast/renderer/cast_render_thread_observer.h"
-#include "chromecast/renderer/key_systems_cast.h"
-#include "chromecast/renderer/media/chromecast_media_renderer_factory.h"
+#include "chromecast/media/base/media_codec_support.h"
+#include "chromecast/media/base/supported_codec_profile_levels_memo.h"
+#include "chromecast/public/media/media_capabilities_shlib.h"
+#include "chromecast/renderer/cast_media_playback_options.h"
+#include "chromecast/renderer/media/key_systems_cast.h"
+#include "chromecast/renderer/media/media_caps_observer_impl.h"
 #include "components/network_hints/renderer/prescient_networking_dispatcher.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/service_names.mojom.h"
 #include "content/public/renderer/render_frame.h"
+#include "content/public/renderer/render_thread.h"
 #include "content/public/renderer/render_view.h"
 #include "media/base/media.h"
-#include "third_party/WebKit/public/platform/WebColor.h"
-#include "third_party/WebKit/public/web/WebFrameWidget.h"
-#include "third_party/WebKit/public/web/WebSettings.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "mojo/public/cpp/bindings/interface_request.h"
+#include "services/service_manager/public/cpp/connector.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/blink/public/platform/web_runtime_features.h"
+#include "third_party/blink/public/web/web_frame_widget.h"
+#include "third_party/blink/public/web/web_settings.h"
+#include "third_party/blink/public/web/web_view.h"
 
 #if defined(OS_ANDROID)
 #include "media/base/android/media_codec_util.h"
+#else
+#include "chromecast/renderer/memory_pressure_observer_impl.h"
 #endif  // OS_ANDROID
+
+#if !defined(OS_FUCHSIA)
+#include "chromecast/crash/cast_crash_keys.h"
+#endif  // !defined(OS_FUCHSIA)
+
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+#include "chromecast/common/cast_extensions_client.h"
+#include "chromecast/renderer/cast_extensions_renderer_client.h"
+#include "content/public/common/content_constants.h"
+#include "extensions/common/common_manifest_handlers.h"  // nogncheck
+#include "extensions/common/extension_urls.h"            // nogncheck
+#include "extensions/renderer/dispatcher.h"              // nogncheck
+#include "extensions/renderer/extension_frame_helper.h"  // nogncheck
+#include "extensions/renderer/guest_view/extensions_guest_view_container.h"  // nogncheck
+#include "extensions/renderer/guest_view/extensions_guest_view_container_dispatcher.h"  // nogncheck
+#endif
 
 namespace chromecast {
 namespace shell {
 
-namespace {
-
-// Default background color to set for WebViews. WebColor is in ARGB format
-// though the comment of WebColor says it is in RGBA.
-const blink::WebColor kColorBlack = 0xFF000000;
-
-}  // namespace
-
 CastContentRendererClient::CastContentRendererClient()
-    : allow_hidden_media_playback_(
-          base::CommandLine::ForCurrentProcess()->HasSwitch(
-              switches::kAllowHiddenMediaPlayback)) {
+    : supported_profiles_(new media::SupportedCodecProfileLevelsMemo()),
+      app_media_capabilities_observer_binding_(this),
+      supported_bitstream_audio_codecs_(kBitstreamAudioCodecNone) {
 #if defined(OS_ANDROID)
   DCHECK(::media::MediaCodecUtil::IsMediaCodecAvailable())
       << "MediaCodec is not available!";
@@ -57,101 +71,230 @@ CastContentRendererClient::CastContentRendererClient()
 #endif  // OS_ANDROID
 }
 
-CastContentRendererClient::~CastContentRendererClient() {
-}
+CastContentRendererClient::~CastContentRendererClient() = default;
 
 void CastContentRendererClient::RenderThreadStarted() {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  // Register as observer for media capabilities
+  content::RenderThread* thread = content::RenderThread::Get();
+  media::mojom::MediaCapsPtr media_caps;
+  thread->GetConnector()->BindInterface(content::mojom::kBrowserServiceName,
+                                        &media_caps);
+  media::mojom::MediaCapsObserverPtr proxy;
+  media_caps_observer_.reset(
+      new media::MediaCapsObserverImpl(&proxy, supported_profiles_.get()));
+  media_caps->AddObserver(std::move(proxy));
 
-  // Set the initial known codecs mask.
-  if (command_line->HasSwitch(switches::kHdmiSinkSupportedCodecs)) {
-    int hdmi_codecs_mask;
-    if (base::StringToInt(command_line->GetSwitchValueASCII(
-                              switches::kHdmiSinkSupportedCodecs),
-                          &hdmi_codecs_mask)) {
-      ::media::SetHdmiSinkCodecs(hdmi_codecs_mask);
-    }
-  }
-
-  cast_observer_.reset(new CastRenderThreadObserver());
+#if !defined(OS_ANDROID)
+  // Register to observe memory pressure changes
+  chromecast::mojom::MemoryPressureControllerPtr memory_pressure_controller;
+  thread->GetConnector()->BindInterface(content::mojom::kBrowserServiceName,
+                                        &memory_pressure_controller);
+  chromecast::mojom::MemoryPressureObserverPtr memory_pressure_proxy;
+  memory_pressure_observer_.reset(
+      new MemoryPressureObserverImpl(&memory_pressure_proxy));
+  memory_pressure_controller->AddObserver(std::move(memory_pressure_proxy));
+#endif
 
   prescient_networking_dispatcher_.reset(
       new network_hints::PrescientNetworkingDispatcher());
 
+#if !defined(OS_FUCHSIA)
+  // TODO(crbug.com/753619): Enable crash reporting on Fuchsia.
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+
   std::string last_launched_app =
       command_line->GetSwitchValueNative(switches::kLastLaunchedApp);
   if (!last_launched_app.empty())
-    base::debug::SetCrashKeyValue(crash_keys::kLastApp, last_launched_app);
+    crash_keys::last_app.Set(last_launched_app);
 
   std::string previous_app =
       command_line->GetSwitchValueNative(switches::kPreviousApp);
   if (!previous_app.empty())
-    base::debug::SetCrashKeyValue(crash_keys::kPreviousApp, previous_app);
+    crash_keys::previous_app.Set(previous_app);
+#endif  // !defined(OS_FUCHSIA)
+
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+  extensions_client_ = std::make_unique<extensions::CastExtensionsClient>();
+  extensions::ExtensionsClient::Set(extensions_client_.get());
+
+  extensions_renderer_client_ =
+      std::make_unique<extensions::CastExtensionsRendererClient>();
+  extensions::ExtensionsRendererClient::Set(extensions_renderer_client_.get());
+
+  thread->AddObserver(extensions_renderer_client_->GetDispatcher());
+
+  guest_view_container_dispatcher_ =
+      std::make_unique<extensions::ExtensionsGuestViewContainerDispatcher>();
+  thread->AddObserver(guest_view_container_dispatcher_.get());
+#endif
 }
 
 void CastContentRendererClient::RenderViewCreated(
     content::RenderView* render_view) {
   blink::WebView* webview = render_view->GetWebView();
   if (webview) {
-    blink::WebFrameWidget* web_frame_widget = render_view->GetWebFrameWidget();
-    web_frame_widget->setBaseBackgroundColor(kColorBlack);
-
-    // The following settings express consistent behaviors across Cast
-    // embedders, though Android has enabled by default for mobile browsers.
-    webview->settings()->setShrinksViewportContentToFit(false);
-    webview->settings()->setMediaControlsOverlayPlayButtonEnabled(false);
-
-    // Scale 1 ensures window.innerHeight/Width match application resolution.
-    // PageScaleOverride is the 'user agent' value which overrides page
-    // settings (from meta viewport tag) - thus preventing inconsistency
-    // between Android and non-Android cast_shell.
-    webview->setDefaultPageScaleLimits(1.f, 1.f);
-    webview->setInitialPageScaleOverride(1.f);
-
+    webview->SetBaseBackgroundColor(chromecast::GetSwitchValueColor(
+        switches::kCastAppBackgroundColor, SK_ColorBLACK));
     // Disable application cache as Chromecast doesn't support off-line
     // application running.
-    webview->settings()->setOfflineWebApplicationCacheEnabled(false);
+    webview->GetSettings()->SetOfflineWebApplicationCacheEnabled(false);
   }
+}
+
+void CastContentRendererClient::RenderFrameCreated(
+    content::RenderFrame* render_frame) {
+  DCHECK(render_frame);
+  // Lifetime is tied to |render_frame| via content::RenderFrameObserver.
+  new CastMediaPlaybackOptions(render_frame);
+
+  if (!app_media_capabilities_observer_binding_.is_bound()) {
+    mojom::ApplicationMediaCapabilitiesObserverPtr observer;
+    app_media_capabilities_observer_binding_.Bind(mojo::MakeRequest(&observer));
+    mojom::ApplicationMediaCapabilitiesPtr app_media_capabilities;
+    render_frame->GetRemoteInterfaces()->GetInterface(
+        mojo::MakeRequest(&app_media_capabilities));
+    app_media_capabilities->AddObserver(std::move(observer));
+  }
+
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+  extensions::Dispatcher* dispatcher =
+      extensions_renderer_client_->GetDispatcher();
+  // ExtensionFrameHelper destroys itself when the RenderFrame is destroyed.
+  new extensions::ExtensionFrameHelper(render_frame, dispatcher);
+
+  dispatcher->OnRenderFrameCreated(render_frame);
+#endif
+}
+
+content::BrowserPluginDelegate*
+CastContentRendererClient::CreateBrowserPluginDelegate(
+    content::RenderFrame* render_frame,
+    const content::WebPluginInfo& info,
+    const std::string& mime_type,
+    const GURL& original_url) {
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+  if (mime_type == content::kBrowserPluginMimeType) {
+    return new extensions::ExtensionsGuestViewContainer(render_frame);
+  }
+#endif
+  return nullptr;
+}
+
+void CastContentRendererClient::RunScriptsAtDocumentStart(
+    content::RenderFrame* render_frame) {
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+  extensions_renderer_client_->GetDispatcher()->RunScriptsAtDocumentStart(
+      render_frame);
+#endif
+}
+
+void CastContentRendererClient::RunScriptsAtDocumentEnd(
+    content::RenderFrame* render_frame) {
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+  extensions_renderer_client_->GetDispatcher()->RunScriptsAtDocumentEnd(
+      render_frame);
+#endif
 }
 
 void CastContentRendererClient::AddSupportedKeySystems(
     std::vector<std::unique_ptr<::media::KeySystemProperties>>*
         key_systems_properties) {
-  AddChromecastKeySystems(key_systems_properties, false);
+  media::AddChromecastKeySystems(key_systems_properties,
+                                 false /* enable_persistent_license_support */,
+                                 false /* force_software_crypto */);
 }
 
-#if !defined(OS_ANDROID)
-std::unique_ptr<::media::RendererFactory>
-CastContentRendererClient::CreateMediaRendererFactory(
-    ::content::RenderFrame* render_frame,
-    ::media::GpuVideoAcceleratorFactories* gpu_factories,
-    const scoped_refptr<::media::MediaLog>& media_log) {
-  const base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
-  if (!cmd_line->HasSwitch(switches::kEnableCmaMediaPipeline))
-    return nullptr;
+bool CastContentRendererClient::IsSupportedAudioType(
+    const ::media::AudioType& type) {
+#if defined(OS_ANDROID)
+  // No ATV device we know of has (E)AC3 decoder, so it relies on the audio sink
+  // device.
+  if (type.codec == ::media::kCodecEAC3)
+    return kBitstreamAudioCodecEac3 & supported_bitstream_audio_codecs_;
+  if (type.codec == ::media::kCodecAC3)
+    return kBitstreamAudioCodecAc3 & supported_bitstream_audio_codecs_;
+  if (type.codec == ::media::kCodecMpegHAudio)
+    return kBitstreamAudioCodecMpegHAudio & supported_bitstream_audio_codecs_;
 
-  return std::unique_ptr<::media::RendererFactory>(
-      new chromecast::media::ChromecastMediaRendererFactory(
-          gpu_factories, render_frame->GetRoutingID()));
-}
+  // TODO(sanfin): Implement this for Android.
+  return true;
+#else
+  // If the HDMI sink supports bitstreaming the codec, then the vendor backend
+  // does not need to support it.
+  if (IsSupportedBitstreamAudioCodec(type.codec)) {
+    return true;
+  }
+
+  media::AudioCodec codec = media::ToCastAudioCodec(type.codec);
+  // Cast platform implements software decoding of Opus and FLAC, so only PCM
+  // support is necessary in order to support Opus and FLAC.
+  if (codec == media::kCodecOpus || codec == media::kCodecFLAC)
+    codec = media::kCodecPCM;
+
+  media::AudioConfig cast_audio_config;
+  cast_audio_config.codec = codec;
+  return media::MediaCapabilitiesShlib::IsSupportedAudioConfig(
+      cast_audio_config);
 #endif
+}
+
+bool CastContentRendererClient::IsSupportedVideoType(
+    const ::media::VideoType& type) {
+// TODO(servolk): make use of eotf.
+#if defined(OS_ANDROID)
+  return supported_profiles_->IsSupportedVideoConfig(
+      media::ToCastVideoCodec(type.codec, type.profile),
+      media::ToCastVideoProfile(type.profile), type.level);
+#else
+  return media::MediaCapabilitiesShlib::IsSupportedVideoConfig(
+      media::ToCastVideoCodec(type.codec, type.profile),
+      media::ToCastVideoProfile(type.profile), type.level);
+#endif
+}
+
+bool CastContentRendererClient::IsSupportedBitstreamAudioCodec(
+    ::media::AudioCodec codec) {
+  return (codec == ::media::kCodecAC3 &&
+          (kBitstreamAudioCodecAc3 & supported_bitstream_audio_codecs_)) ||
+         (codec == ::media::kCodecEAC3 &&
+          (kBitstreamAudioCodecEac3 & supported_bitstream_audio_codecs_)) ||
+         (codec == ::media::kCodecMpegHAudio &&
+          (kBitstreamAudioCodecMpegHAudio & supported_bitstream_audio_codecs_));
+}
 
 blink::WebPrescientNetworking*
 CastContentRendererClient::GetPrescientNetworking() {
   return prescient_networking_dispatcher_.get();
 }
 
-void CastContentRendererClient::DeferMediaLoad(
+bool CastContentRendererClient::DeferMediaLoad(
     content::RenderFrame* render_frame,
     bool render_frame_has_played_media_before,
-    const base::Closure& closure) {
-  if (!render_frame->IsHidden() || allow_hidden_media_playback_) {
-    closure.Run();
-    return;
-  }
+    base::OnceClosure closure) {
+  return RunWhenInForeground(render_frame, std::move(closure));
+}
 
-  // Lifetime is tied to |render_frame| via content::RenderFrameObserver.
-  new CastMediaLoadDeferrer(render_frame, closure);
+bool CastContentRendererClient::RunWhenInForeground(
+    content::RenderFrame* render_frame,
+    base::OnceClosure closure) {
+  auto* playback_options = CastMediaPlaybackOptions::Get(render_frame);
+  DCHECK(playback_options);
+  return playback_options->RunWhenInForeground(std::move(closure));
+}
+
+bool CastContentRendererClient::IsIdleMediaSuspendEnabled() {
+  return false;
+}
+
+void CastContentRendererClient::
+    SetRuntimeFeaturesDefaultsBeforeBlinkInitialization() {
+  // Settings for ATV (Android defaults are not what we want).
+  blink::WebRuntimeFeatures::EnableMediaControlsOverlayPlayButton(false);
+}
+
+void CastContentRendererClient::OnSupportedBitstreamAudioCodecsChanged(
+    int codecs) {
+  supported_bitstream_audio_codecs_ = codecs;
 }
 
 }  // namespace shell

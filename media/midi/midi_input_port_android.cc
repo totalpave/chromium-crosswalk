@@ -8,7 +8,8 @@
 #include "base/time/time.h"
 #include "jni/MidiInputPortAndroid_jni.h"
 
-namespace media {
+using base::android::JavaParamRef;
+
 namespace midi {
 
 MidiInputPortAndroid::MidiInputPortAndroid(JNIEnv* env,
@@ -22,13 +23,13 @@ MidiInputPortAndroid::~MidiInputPortAndroid() {
 
 bool MidiInputPortAndroid::Open() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  return Java_MidiInputPortAndroid_open(env, raw_port_.obj(),
+  return Java_MidiInputPortAndroid_open(env, raw_port_,
                                         reinterpret_cast<jlong>(this));
 }
 
 void MidiInputPortAndroid::Close() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_MidiInputPortAndroid_close(env, raw_port_.obj());
+  Java_MidiInputPortAndroid_close(env, raw_port_);
 }
 
 void MidiInputPortAndroid::OnData(JNIEnv* env,
@@ -51,9 +52,4 @@ void MidiInputPortAndroid::OnData(JNIEnv* env,
   delegate_->OnReceivedData(this, &bytes[offset], size, timestamp_to_pass);
 }
 
-bool MidiInputPortAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
 }  // namespace midi
-}  // namespace media

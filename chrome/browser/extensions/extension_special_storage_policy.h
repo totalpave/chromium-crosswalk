@@ -6,10 +6,12 @@
 #define CHROME_BROWSER_EXTENSIONS_EXTENSION_SPECIAL_STORAGE_POLICY_H_
 
 #include <map>
+#include <memory>
 #include <string>
 
 #include "base/synchronization/lock.h"
 #include "extensions/common/extension_set.h"
+#include "services/network/session_cleanup_cookie_store.h"
 #include "storage/browser/quota/special_storage_policy.h"
 #include "url/gurl.h"
 
@@ -38,10 +40,11 @@ class ExtensionSpecialStoragePolicy : public storage::SpecialStoragePolicy {
   bool IsStorageProtected(const GURL& origin) override;
   bool IsStorageUnlimited(const GURL& origin) override;
   bool IsStorageSessionOnly(const GURL& origin) override;
-  bool CanQueryDiskSize(const GURL& origin) override;
   bool HasIsolatedStorage(const GURL& origin) override;
   bool HasSessionOnlyOrigins() override;
   bool IsStorageDurable(const GURL& origin) override;
+  network::SessionCleanupCookieStore::DeleteCookiePredicate
+  CreateDeleteCookieOnExitPredicate() override;
 
   // Methods used by the ExtensionService to populate this class.
   void GrantRightsForExtension(const extensions::Extension* extension,
@@ -75,12 +78,10 @@ class ExtensionSpecialStoragePolicy : public storage::SpecialStoragePolicy {
     void Clear();
 
    private:
-    typedef std::map<GURL, extensions::ExtensionSet*> CachedResults;
-
     void ClearCache();
 
     extensions::ExtensionSet extensions_;
-    CachedResults cached_results_;
+    std::map<GURL, std::unique_ptr<extensions::ExtensionSet>> cached_results_;
   };
 
   void NotifyGranted(const GURL& origin, int change_flags);
@@ -89,7 +90,6 @@ class ExtensionSpecialStoragePolicy : public storage::SpecialStoragePolicy {
 
   base::Lock lock_;  // Synchronize all access to the collections.
   SpecialCollection protected_apps_;
-  SpecialCollection installed_apps_;
   SpecialCollection unlimited_extensions_;
   SpecialCollection file_handler_extensions_;
   SpecialCollection isolated_extensions_;

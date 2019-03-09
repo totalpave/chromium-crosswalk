@@ -21,9 +21,9 @@ class TokenServiceTableTest : public testing::Test {
 
  protected:
   void SetUp() override {
-    OSCryptMocker::SetUpWithSingleton();
+    OSCryptMocker::SetUp();
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    file_ = temp_dir_.path().AppendASCII("TestWebDatabase");
+    file_ = temp_dir_.GetPath().AppendASCII("TestWebDatabase");
 
     table_.reset(new TokenServiceTable);
     db_.reset(new WebDatabase);

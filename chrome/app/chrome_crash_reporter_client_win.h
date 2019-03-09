@@ -15,7 +15,7 @@ class ChromeCrashReporterClient : public crash_reporter::CrashReporterClient {
   // class and initializes crash reporting for the process. The instance is
   // leaked.
   static void InitializeCrashReportingForProcess();
-#endif
+#endif  // !defined(NACL_WIN64)
 
   ChromeCrashReporterClient();
   ~ChromeCrashReporterClient() override;
@@ -32,19 +32,22 @@ class ChromeCrashReporterClient : public crash_reporter::CrashReporterClient {
                                bool* is_rtl_locale) override;
   bool AboutToRestart() override;
   bool GetDeferredUploadsSupported(bool is_per_user_install) override;
-  bool GetIsPerUserInstall(const base::string16& exe_path) override;
-  bool GetShouldDumpLargerDumps(bool is_per_user_install) override;
+  bool GetIsPerUserInstall() override;
+  bool GetShouldDumpLargerDumps() override;
   int GetResultCodeRespawnFailed() override;
 
   bool GetCrashDumpLocation(base::string16* crash_dir) override;
-
-  size_t RegisterCrashKeys() override;
+  bool GetCrashMetricsLocation(base::string16* metrics_dir) override;
 
   bool IsRunningUnattended() override;
 
   bool GetCollectStatsConsent() override;
 
+  bool GetCollectStatsInSample() override;
+
   bool ReportingIsEnforcedByPolicy(bool* breakpad_enabled) override;
+
+  bool ShouldMonitorCrashHandlerExpensively() override;
 
   bool EnableBreakpadForProcess(const std::string& process_type) override;
 

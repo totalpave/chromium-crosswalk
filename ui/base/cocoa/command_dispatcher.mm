@@ -4,8 +4,22 @@
 
 #import "ui/base/cocoa/command_dispatcher.h"
 
+#include "base/auto_reset.h"
 #include "base/logging.h"
 #include "ui/base/cocoa/cocoa_base_utils.h"
+#import "ui/base/cocoa/user_interface_item_command_handler.h"
+
+// Expose -[NSWindow hasKeyAppearance], which determines whether the traffic
+// lights on the window are "lit". CommandDispatcher uses this property on a
+// parent window to decide whether keys and commands should bubble up.
+@interface NSWindow (PrivateAPI)
+- (BOOL)hasKeyAppearance;
+@end
+
+@interface CommandDispatcher ()
+// The parent to bubble events to, or nil.
+- (NSWindow<CommandDispatchingWindow>*)bubbleParent;
+@end
 
 namespace {
 
@@ -48,8 +62,9 @@ NSEvent* KeyEventForWindow(NSWindow* window, NSEvent* event) {
 
 @implementation CommandDispatcher {
  @private
-  BOOL redispatchingEvent_;
   BOOL eventHandled_;
+  BOOL isRedispatchingKeyEvent_;
+
   NSWindow<CommandDispatchingWindow>* owner_;  // Weak, owns us.
 }
 
@@ -62,32 +77,115 @@ NSEvent* KeyEventForWindow(NSWindow* window, NSEvent* event) {
   return self;
 }
 
+// When an event is being redispatched, its window is rewritten to be the owner_
+// of the CommandDispatcher. However, AppKit may still choose to send the event
+// to the key window. To check of an event is being redispatched, we check the
+// event's window.
+- (BOOL)isEventBeingRedispatched:(NSEvent*)event {
+  if ([event.window conformsToProtocol:@protocol(CommandDispatchingWindow)]) {
+    NSObject<CommandDispatchingWindow>* window =
+        static_cast<NSObject<CommandDispatchingWindow>*>(event.window);
+    return [window commandDispatcher]->isRedispatchingKeyEvent_;
+  }
+  return NO;
+}
+
+// |delegate_| may be nil in this method. Rather than adding nil checks to every
+// call, we rely on the fact that method calls to nil return nil, and that nil
+// == ui::PerformKeyEquivalentResult::kUnhandled;
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
-  if ([delegate_ eventHandledByExtensionCommand:event
-                                   isRedispatch:redispatchingEvent_]) {
-    return YES;
+  DCHECK_EQ(NSKeyDown, [event type]);
+
+  // If the event is being redispatched, then this is the second time
+  // performKeyEquivalent: is being called on the event. The first time, a
+  // WebContents was firstResponder and claimed to have handled the event [but
+  // instead sent the event asynchronously to the renderer process]. The
+  // renderer process chose not to handle the event, and the consumer
+  // redispatched the event by calling -[CommandDispatchingWindow
+  // redispatchKeyEvent:].
+  //
+  // We skip all steps before postPerformKeyEquivalent, since those were already
+  // triggered on the first pass of the event.
+  if ([self isEventBeingRedispatched:event]) {
+    ui::PerformKeyEquivalentResult result =
+        [delegate_ postPerformKeyEquivalent:event
+                                     window:owner_
+                               isRedispatch:YES];
+    if (result == ui::PerformKeyEquivalentResult::kHandled)
+      return YES;
+    if (result == ui::PerformKeyEquivalentResult::kPassToMainMenu)
+      return NO;
+    return [[self bubbleParent] performKeyEquivalent:event];
   }
 
-  if (redispatchingEvent_)
+  // First, give the delegate an opportunity to consume this event.
+  ui::PerformKeyEquivalentResult result =
+      [delegate_ prePerformKeyEquivalent:event window:owner_];
+  if (result == ui::PerformKeyEquivalentResult::kHandled)
+    return YES;
+  if (result == ui::PerformKeyEquivalentResult::kPassToMainMenu)
     return NO;
 
-  // Give a CommandDispatcherTarget (e.g. a web site) a chance to handle the
-  // event. If it doesn't want to handle it, it will call us back with
-  // -redispatchKeyEvent:.
-  NSResponder* r = [owner_ firstResponder];
-  if ([r conformsToProtocol:@protocol(CommandDispatcherTarget)])
-    return [r performKeyEquivalent:event];
-
-  if ([delegate_ prePerformKeyEquivalent:event window:owner_])
-    return YES;
-
+  // Next, pass the event down the NSView hierarchy. Surprisingly, this doesn't
+  // use the responder chain. See implementation of -[NSWindow
+  // performKeyEquivalent:]. If the view hierarchy contains a
+  // RenderWidgetHostViewCocoa, it may choose to return true, and to
+  // asynchronously pass the event to the renderer. See
+  // -[RenderWidgetHostViewCocoa performKeyEquivalent:].
   if ([owner_ defaultPerformKeyEquivalent:event])
     return YES;
 
-  return [delegate_ postPerformKeyEquivalent:event window:owner_];
+  // If the firstResponder [e.g. omnibox] chose not to handle the keyEquivalent,
+  // then give the delegate another chance to consume it.
+  result =
+      [delegate_ postPerformKeyEquivalent:event window:owner_ isRedispatch:NO];
+  if (result == ui::PerformKeyEquivalentResult::kHandled)
+    return YES;
+  if (result == ui::PerformKeyEquivalentResult::kPassToMainMenu)
+    return NO;
+
+  // Allow commands to "bubble up" to CommandDispatchers in parent windows, if
+  // they were not handled here.
+  return [[self bubbleParent] performKeyEquivalent:event];
+}
+
+- (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
+                       forHandler:(id<UserInterfaceItemCommandHandler>)handler {
+  // Since this class implements these selectors, |super| will always say they
+  // are enabled. Only use [super] to validate other selectors. If there is no
+  // command handler, defer to AppController.
+  if ([item action] == @selector(commandDispatch:) ||
+      [item action] == @selector(commandDispatchUsingKeyModifiers:)) {
+    if (handler) {
+      // -dispatch:.. can't later decide to bubble events because
+      // -commandDispatch:.. is assumed to always succeed. So, if there is a
+      // |handler|, only validate against that for -commandDispatch:.
+      return [handler validateUserInterfaceItem:item window:owner_];
+    }
+
+    id appController = [NSApp delegate];
+    DCHECK([appController
+        conformsToProtocol:@protocol(NSUserInterfaceValidations)]);
+    if ([appController validateUserInterfaceItem:item])
+      return YES;
+  }
+
+  // Note this may validate an action bubbled up from a child window. However,
+  // if the child window also -respondsToSelector: (but validated it `NO`), the
+  // action will be dispatched to the child only, which may NSBeep().
+  // TODO(tapted): Fix this. E.g. bubble up validation via the bubbleParent's
+  // CommandDispatcher rather than the NSUserInterfaceValidations protocol, so
+  // that this step can be skipped.
+  if ([owner_ defaultValidateUserInterfaceItem:item])
+    return YES;
+
+  return [[self bubbleParent] validateUserInterfaceItem:item];
 }
 
 - (BOOL)redispatchKeyEvent:(NSEvent*)event {
+  DCHECK(!isRedispatchingKeyEvent_);
+  base::AutoReset<BOOL> resetter(&isRedispatchingKeyEvent_, YES);
+
   DCHECK(event);
   NSEventType eventType = [event type];
   if (eventType != NSKeyDown && eventType != NSKeyUp &&
@@ -107,18 +205,26 @@ NSEvent* KeyEventForWindow(NSWindow* window, NSEvent* event) {
 
   // Redispatch the event.
   eventHandled_ = YES;
-  redispatchingEvent_ = YES;
   [NSApp sendEvent:event];
-  redispatchingEvent_ = NO;
 
-  // If the event was not handled by [NSApp sendEvent:], the sendEvent:
-  // method below will be called, and because |redispatchingEvent_| is YES,
+  // If the event was not handled by [NSApp sendEvent:], the preSendEvent:
+  // method below will be called, and because the event is being redispatched,
   // |eventHandled_| will be set to NO.
   return eventHandled_;
 }
 
 - (BOOL)preSendEvent:(NSEvent*)event {
-  if (redispatchingEvent_) {
+  // AppKit does not call performKeyEquivalent: if the event only has the
+  // NSEventModifierFlagOption modifier. However, Chrome wants to treat these
+  // events just like keyEquivalents, since they can be consumed by extensions.
+  if ([event type] == NSKeyDown &&
+      ([event modifierFlags] & NSEventModifierFlagOption)) {
+    BOOL handled = [self performKeyEquivalent:event];
+    if (handled)
+      return YES;
+  }
+
+  if ([self isEventBeingRedispatched:event]) {
     // If we get here, then the event was not handled by NSApplication.
     eventHandled_ = NO;
     // Return YES to stop native -sendEvent handling.
@@ -126,6 +232,30 @@ NSEvent* KeyEventForWindow(NSWindow* window, NSEvent* event) {
   }
 
   return NO;
+}
+
+- (void)dispatch:(id)sender
+      forHandler:(id<UserInterfaceItemCommandHandler>)handler {
+  if (handler)
+    [handler commandDispatch:sender window:owner_];
+  else
+    [[self bubbleParent] commandDispatch:sender];
+}
+
+- (void)dispatchUsingKeyModifiers:(id)sender
+                       forHandler:(id<UserInterfaceItemCommandHandler>)handler {
+  if (handler)
+    [handler commandDispatchUsingKeyModifiers:sender window:owner_];
+  else
+    [[self bubbleParent] commandDispatchUsingKeyModifiers:sender];
+}
+
+- (NSWindow<CommandDispatchingWindow>*)bubbleParent {
+  NSWindow* parent = [owner_ parentWindow];
+  if (parent && [parent hasKeyAppearance] &&
+      [parent conformsToProtocol:@protocol(CommandDispatchingWindow)])
+    return static_cast<NSWindow<CommandDispatchingWindow>*>(parent);
+  return nil;
 }
 
 @end

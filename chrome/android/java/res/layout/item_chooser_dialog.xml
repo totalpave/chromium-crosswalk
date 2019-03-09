@@ -5,11 +5,10 @@
  -->
 
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:chrome="http://schemas.android.com/apk/res-auto"
     android:layout_width="fill_parent"
     android:layout_height="fill_parent"
     android:orientation="vertical"
-    android:paddingBottom="8dp"
+    android:paddingBottom="12dp"
     android:paddingTop="20dp" >
 
     <!-- The title at the top. -->
@@ -20,7 +19,7 @@
         android:paddingBottom="8dp"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
-        android:textSize="16sp" />
+        android:textAppearance="@style/TextAppearance.BlackHint1" />
 
     <!-- The "no item found" message. -->
     <org.chromium.ui.widget.TextViewWithClickableSpans
@@ -30,7 +29,7 @@
         android:layout_marginTop="8dp"
         android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
-        android:textSize="16sp"
+        android:textAppearance="@style/TextAppearance.BlackHint1"
         android:visibility="gone" />
 
     <!-- A layout containing a spinning progress bar that gets replaced with a
@@ -39,6 +38,7 @@
         android:id="@+id/container"
         android:layout_width="fill_parent"
         android:layout_height="100dp" >
+
         <ProgressBar
             android:id="@+id/progress"
             android:layout_width="24dp"
@@ -65,7 +65,7 @@
         android:layout_marginTop="12dp"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
-        android:textSize="14sp" />
+        android:textAppearance="@style/TextAppearance.BlackBody" />
 
     <!-- Button row. -->
     <org.chromium.ui.widget.ButtonCompat
@@ -77,7 +77,5 @@
         android:layout_marginEnd="12dp"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
-        android:textAllCaps="true"
-        android:textColor="#fff"
-        chrome:buttonColor="@color/pref_accent_color" />
+        style="@style/FilledButton" />
 </LinearLayout>

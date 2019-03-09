@@ -13,11 +13,13 @@
 #include "base/memory/weak_ptr.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/resource_request_info.h"
+#include "net/ssl/client_cert_identity.h"
 #include "net/ssl/ssl_cert_request_info.h"
 
 namespace net {
 class ClientCertStore;
-class URLRequest;
+class SSLPrivateKey;
 class X509Certificate;
 }  // namespace net
 
@@ -36,7 +38,9 @@ class SSLClientAuthHandler {
     Delegate() {}
 
     // Called to continue the request with |cert|. |cert| may be nullptr.
-    virtual void ContinueWithCertificate(net::X509Certificate* cert) = 0;
+    virtual void ContinueWithCertificate(
+        scoped_refptr<net::X509Certificate> cert,
+        scoped_refptr<net::SSLPrivateKey> private_key) = 0;
 
     // Called to cancel the certificate selection and abort the request.
     virtual void CancelCertificateSelection() = 0;
@@ -49,11 +53,12 @@ class SSLClientAuthHandler {
   };
 
   // Creates a new SSLClientAuthHandler. The caller ensures that the handler
-  // does not outlive |request| or |delegate|.
-  SSLClientAuthHandler(std::unique_ptr<net::ClientCertStore> client_cert_store,
-                       net::URLRequest* request,
-                       net::SSLCertRequestInfo* cert_request_info,
-                       Delegate* delegate);
+  // does not outlive |delegate|.
+  SSLClientAuthHandler(
+      std::unique_ptr<net::ClientCertStore> client_cert_store,
+      ResourceRequestInfo::WebContentsGetter web_contents_getter,
+      net::SSLCertRequestInfo* cert_request_info,
+      Delegate* delegate);
   ~SSLClientAuthHandler();
 
   // Selects a certificate and resumes the URL request with that certificate.
@@ -63,7 +68,8 @@ class SSLClientAuthHandler {
   // is static to avoid deleting |handler| while it is on the stack.
   static void ContinueWithCertificate(
       const base::WeakPtr<SSLClientAuthHandler>& handler,
-      net::X509Certificate* cert);
+      scoped_refptr<net::X509Certificate> cert,
+      scoped_refptr<net::SSLPrivateKey> key);
 
   // Called to abort the request associated with |handler|. This is static to
   // avoid deleting |handler| while it is on the stack.
@@ -74,15 +80,14 @@ class SSLClientAuthHandler {
   class Core;
 
   // Called when |core_| is done retrieving the cert list.
-  void DidGetClientCerts();
+  void DidGetClientCerts(net::ClientCertIdentityList client_certs);
 
   // A reference-counted core so the ClientCertStore may outlive
   // SSLClientAuthHandler if the handler is destroyed while an operation on the
   // ClientCertStore is in progress.
   scoped_refptr<Core> core_;
 
-  // The net::URLRequest that triggered this client auth.
-  net::URLRequest* request_;
+  ResourceRequestInfo::WebContentsGetter web_contents_getter_;
 
   // The certs to choose from.
   scoped_refptr<net::SSLCertRequestInfo> cert_request_info_;

@@ -2,61 +2,93 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/speech/tts_chromeos.h"
+
 #include "base/macros.h"
-#include "chrome/browser/speech/tts_platform.h"
+#include "components/arc/arc_bridge_service.h"
+#include "components/arc/arc_service_manager.h"
+#include "components/arc/common/tts.mojom.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/browser/tts_platform.h"
 
-// Chrome OS doesn't have native TTS, instead it includes a built-in
-// component extension that provides speech synthesis. This class includes
-// an implementation of LoadBuiltInTtsExtension and dummy implementations of
-// everything else.
+bool TtsPlatformImplChromeOs::PlatformImplAvailable() {
+  return arc::ArcServiceManager::Get() && arc::ArcServiceManager::Get()
+                                              ->arc_bridge_service()
+                                              ->tts()
+                                              ->IsConnected();
+}
 
-class TtsPlatformImplChromeOs : public TtsPlatformImpl {
- public:
-  // TtsPlatformImpl overrides:
-  bool PlatformImplAvailable() override { return false; }
+bool TtsPlatformImplChromeOs::LoadBuiltInTtsEngine(
+    content::BrowserContext* browser_context) {
+  content::TtsEngineDelegate* tts_engine_delegate =
+      content::TtsController::GetInstance()->GetTtsEngineDelegate();
+  if (tts_engine_delegate)
+    return tts_engine_delegate->LoadBuiltInTtsEngine(browser_context);
+  return false;
+}
 
-  bool LoadBuiltInTtsExtension(
-      content::BrowserContext* browser_context) override {
-    TtsEngineDelegate* tts_engine_delegate =
-        TtsController::GetInstance()->GetTtsEngineDelegate();
-    if (tts_engine_delegate)
-      return tts_engine_delegate->LoadBuiltInTtsExtension(browser_context);
+bool TtsPlatformImplChromeOs::Speak(
+    int utterance_id,
+    const std::string& utterance,
+    const std::string& lang,
+    const content::VoiceData& voice,
+    const content::UtteranceContinuousParameters& params) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto* const arc_service_manager = arc::ArcServiceManager::Get();
+  if (!arc_service_manager)
     return false;
-  }
-
-  bool Speak(int utterance_id,
-             const std::string& utterance,
-             const std::string& lang,
-             const VoiceData& voice,
-             const UtteranceContinuousParameters& params) override {
+  arc::mojom::TtsInstance* tts = ARC_GET_INSTANCE_FOR_METHOD(
+      arc_service_manager->arc_bridge_service()->tts(), Speak);
+  if (!tts)
     return false;
-  }
 
-  bool StopSpeaking() override { return false; }
+  arc::mojom::TtsUtterancePtr arc_utterance = arc::mojom::TtsUtterance::New();
+  arc_utterance->utteranceId = utterance_id;
+  arc_utterance->text = utterance;
+  arc_utterance->rate = params.rate;
+  arc_utterance->pitch = params.pitch;
+  tts->Speak(std::move(arc_utterance));
+  return true;
+}
 
-  void Pause() override {}
+bool TtsPlatformImplChromeOs::StopSpeaking() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto* const arc_service_manager = arc::ArcServiceManager::Get();
+  if (!arc_service_manager)
+    return false;
+  arc::mojom::TtsInstance* tts = ARC_GET_INSTANCE_FOR_METHOD(
+      arc_service_manager->arc_bridge_service()->tts(), Stop);
+  if (!tts)
+    return false;
 
-  void Resume() override {}
+  tts->Stop();
+  return true;
+}
 
-  bool IsSpeaking() override { return false; }
+void TtsPlatformImplChromeOs::GetVoices(
+    std::vector<content::VoiceData>* out_voices) {
+  out_voices->push_back(content::VoiceData());
+  content::VoiceData& voice = out_voices->back();
+  voice.native = true;
+  voice.name = "Android";
+  voice.events.insert(content::TTS_EVENT_START);
+  voice.events.insert(content::TTS_EVENT_END);
+}
 
-  void GetVoices(std::vector<VoiceData>* out_voices) override {}
+std::string TtsPlatformImplChromeOs::GetError() {
+  return error_;
+}
 
-  // Get the single instance of this class.
-  static TtsPlatformImplChromeOs* GetInstance();
+void TtsPlatformImplChromeOs::ClearError() {
+  error_ = std::string();
+}
 
- private:
-  TtsPlatformImplChromeOs() {}
-  ~TtsPlatformImplChromeOs() override {}
+void TtsPlatformImplChromeOs::SetError(const std::string& error) {
+  error_ = error;
+}
 
-  friend struct base::DefaultSingletonTraits<TtsPlatformImplChromeOs>;
-
-  DISALLOW_COPY_AND_ASSIGN(TtsPlatformImplChromeOs);
-};
-
-// static
-TtsPlatformImpl* TtsPlatformImpl::GetInstance() {
-  return TtsPlatformImplChromeOs::GetInstance();
+bool TtsPlatformImplChromeOs::IsSpeaking() {
+  return false;
 }
 
 // static

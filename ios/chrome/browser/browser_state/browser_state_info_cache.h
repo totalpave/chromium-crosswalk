@@ -17,6 +17,7 @@
 
 namespace base {
 class DictionaryValue;
+class Value;
 }
 
 class BrowserStateInfoCacheObserver;
@@ -64,8 +65,8 @@ class BrowserStateInfoCache {
  private:
   const base::DictionaryValue* GetInfoForBrowserStateAtIndex(
       size_t index) const;
-  // Saves the browser state info to a cache and takes ownership of |info|.
-  void SetInfoForBrowserStateAtIndex(size_t index, base::DictionaryValue* info);
+  // Saves the browser state info to a cache.
+  void SetInfoForBrowserStateAtIndex(size_t index, base::Value info);
 
   std::string CacheKeyFromBrowserStatePath(
       const base::FilePath& browser_state_path) const;
@@ -74,7 +75,8 @@ class BrowserStateInfoCache {
   PrefService* prefs_;
   std::vector<std::string> sorted_keys_;
   base::FilePath user_data_dir_;
-  base::ObserverList<BrowserStateInfoCacheObserver, true> observer_list_;
+  base::ObserverList<BrowserStateInfoCacheObserver, true>::Unchecked
+      observer_list_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserStateInfoCache);
 };

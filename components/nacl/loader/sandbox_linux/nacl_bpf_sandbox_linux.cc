@@ -9,8 +9,9 @@
 
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "sandbox/sandbox_buildflags.h"
 
-#if defined(USE_SECCOMP_BPF)
+#if BUILDFLAG(USE_SECCOMP_BPF)
 
 #include <errno.h>
 #include <signal.h>
@@ -30,11 +31,11 @@
 #include "sandbox/linux/seccomp-bpf-helpers/syscall_parameters_restrictions.h"
 #include "sandbox/linux/system_headers/linux_syscalls.h"
 
-#endif  // defined(USE_SECCOMP_BPF)
+#endif  // BUILDFLAG(USE_SECCOMP_BPF)
 
 namespace nacl {
 
-#if defined(USE_SECCOMP_BPF)
+#if BUILDFLAG(USE_SECCOMP_BPF)
 
 namespace {
 
@@ -115,7 +116,6 @@ ResultExpr NaClBPFSandboxPolicy::EvaluateSyscall(int sysno) const {
 #endif
     // NaCl runtime uses flock to simulate POSIX behavior for pwrite.
     case __NR_flock:
-    case __NR_pread64:
     case __NR_pwrite64:
     case __NR_sched_get_priority_max:
     case __NR_sched_get_priority_min:
@@ -163,10 +163,10 @@ void RunSandboxSanityChecks() {
 
 #error "Seccomp-bpf disabled on supported architecture!"
 
-#endif  // defined(USE_SECCOMP_BPF)
+#endif  // BUILDFLAG(USE_SECCOMP_BPF)
 
 bool InitializeBPFSandbox(base::ScopedFD proc_fd) {
-#if defined(USE_SECCOMP_BPF)
+#if BUILDFLAG(USE_SECCOMP_BPF)
   bool sandbox_is_initialized = content::InitializeSandbox(
       std::unique_ptr<sandbox::bpf_dsl::Policy>(new NaClBPFSandboxPolicy),
       std::move(proc_fd));
@@ -174,7 +174,7 @@ bool InitializeBPFSandbox(base::ScopedFD proc_fd) {
     RunSandboxSanityChecks();
     return true;
   }
-#endif  // defined(USE_SECCOMP_BPF)
+#endif  // BUILDFLAG(USE_SECCOMP_BPF)
   return false;
 }
 

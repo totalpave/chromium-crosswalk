@@ -4,43 +4,33 @@
 
 #include "net/test/net_test_suite.h"
 
-#include "base/message_loop/message_loop.h"
+#include "base/logging.h"
 #include "net/base/network_change_notifier.h"
 #include "net/http/http_stream_factory.h"
 #include "net/spdy/spdy_session.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(USE_NSS_CERTS)
-#include "net/cert_net/nss_ocsp.h"
-#endif
-
-class StaticReset : public ::testing::EmptyTestEventListener {
-  void OnTestStart(const ::testing::TestInfo& test_info) override {
-    net::HttpStreamFactory::ResetStaticSettingsToInit();
-  }
-};
+namespace {
+NetTestSuite* g_current_net_test_suite = nullptr;
+}  // namespace
 
 NetTestSuite::NetTestSuite(int argc, char** argv)
     : TestSuite(argc, argv) {
+  DCHECK(!g_current_net_test_suite);
+  g_current_net_test_suite = this;
 }
 
-NetTestSuite::~NetTestSuite() {}
+NetTestSuite::~NetTestSuite() {
+  DCHECK_EQ(g_current_net_test_suite, this);
+  g_current_net_test_suite = nullptr;
+}
 
 void NetTestSuite::Initialize() {
   TestSuite::Initialize();
-  ::testing::UnitTest::GetInstance()->listeners().Append(new StaticReset());
   InitializeTestThread();
 }
 
 void NetTestSuite::Shutdown() {
-#if defined(USE_NSS_CERTS)
-  net::ShutdownNSSHttpIO();
-#endif
-
-  // We want to destroy this here before the TestSuite continues to tear down
-  // the environment.
-  message_loop_.reset();
-
   TestSuite::Shutdown();
 }
 
@@ -57,6 +47,4 @@ void NetTestSuite::InitializeTestThreadNoNetworkChangeNotifier() {
   // be mapped to localhost.  This prevents DNS queries from being sent in
   // the process of running these unit tests.
   host_resolver_proc_->AddRule("*", "127.0.0.1");
-
-  message_loop_.reset(new base::MessageLoopForIO());
 }

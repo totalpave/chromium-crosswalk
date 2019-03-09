@@ -6,44 +6,48 @@
 #define CHROME_BROWSER_UI_WEBUI_SETTINGS_PEOPLE_HANDLER_H_
 
 #include <memory>
+#include <string>
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observer.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
 #include "chrome/browser/sync/sync_startup_tracker.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "components/signin/core/browser/signin_manager_base.h"
-#include "components/sync_driver/sync_service_observer.h"
+#include "components/signin/core/browser/signin_buildflags.h"
+#include "components/sync/driver/sync_service_observer.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "services/identity/public/cpp/identity_manager.h"
 
 class LoginUIService;
-class ProfileSyncService;
-class SigninManagerBase;
 
 namespace content {
-class WebContents;
 class WebUI;
-}
+}  // namespace content
 
 namespace signin_metrics {
 enum class AccessPoint;
-}
+}  // namespace signin_metrics
 
-namespace sync_driver {
+namespace syncer {
+class SyncService;
 class SyncSetupInProgressHandle;
-}
+}  // namespace syncer
 
 namespace settings {
 
 class PeopleHandler : public SettingsPageUIHandler,
-                      public SigninManagerBase::Observer,
+                      public identity::IdentityManager::Observer,
                       public SyncStartupTracker::Observer,
                       public LoginUIService::LoginUI,
-                      public sync_driver::SyncServiceObserver {
+                      public syncer::SyncServiceObserver,
+                      public content::WebContentsObserver {
  public:
   // TODO(tommycli): Remove these strings and instead use WebUIListener events.
   // These string constants are used from JavaScript (sync_browser_proxy.js).
@@ -56,9 +60,6 @@ class PeopleHandler : public SettingsPageUIHandler,
   explicit PeopleHandler(Profile* profile);
   ~PeopleHandler() override;
 
-  // Initializes the sync setup flow and shows the setup UI.
-  void OpenSyncSetup(bool creating_supervised_user);
-
   // Terminates the sync setup flow.
   void CloseSyncSetup();
 
@@ -68,16 +69,30 @@ class PeopleHandler : public SettingsPageUIHandler,
  private:
   friend class PeopleHandlerTest;
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest,
-                           DisplayConfigureWithBackendDisabledAndCancel);
+                           DisplayConfigureWithEngineDisabledAndCancel);
   FRIEND_TEST_ALL_PREFIXES(
       PeopleHandlerTest,
-      DisplayConfigureWithBackendDisabledAndSyncStartupCompleted);
+      DisplayConfigureWithEngineDisabledAndCancelAfterSigninSuccess);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest,
+                           DisplayConfigureWithEngineDisabledAndSigninFailed);
+  FRIEND_TEST_ALL_PREFIXES(
+      PeopleHandlerTest,
+      DisplayConfigureWithEngineDisabledAndSyncStartupCompleted);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, HandleSetupUIWhenSyncDisabled);
-  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, SelectCustomEncryption);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest,
+                           ShowSetupCustomPassphraseRequired);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, ShowSetupEncryptAll);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, ShowSetupEncryptAllDisallowed);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, ShowSetupManuallySyncAll);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest,
+                           ShowSetupOldGaiaPassphraseRequired);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, ShowSetupSyncEverything);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest,
+                           ShowSetupSyncForAllTypesIndividually);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, ShowSigninOnAuthError);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, ShowSyncSetup);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, ShowSyncSetupWhenNotSignedIn);
-  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, SuccessfullySetPassphrase);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, TestSyncEverything);
-  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, TestSyncNothing);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, TestSyncAllManually);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, TestPassphraseStillRequired);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, TestSyncIndividualTypes);
@@ -90,11 +105,15 @@ class PeopleHandler : public SettingsPageUIHandler,
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerNonCrosTest,
                            UnrecoverableErrorInitializingSync);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerNonCrosTest, GaiaErrorInitializingSync);
-  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerNonCrosTest, HandleCaptcha);
-  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerNonCrosTest, HandleGaiaAuthFailure);
-  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerNonCrosTest,
-                           SubmitAuthWithInvalidUsername);
   FRIEND_TEST_ALL_PREFIXES(PeopleHandlerFirstSigninTest, DisplayBasicLogin);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest,
+                           AcquireSyncBlockerWhenLoadingSyncSettingsSubpage);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerTest, RestartSyncAfterDashboardClear);
+  FRIEND_TEST_ALL_PREFIXES(
+      PeopleHandlerTest,
+      RestartSyncAfterDashboardClearWithStandaloneTransport);
+  FRIEND_TEST_ALL_PREFIXES(PeopleHandlerDiceUnifiedConsentTest,
+                           StoredAccountsList);
 
   // SettingsPageUIHandler implementation.
   void RegisterMessages() override;
@@ -108,23 +127,29 @@ class PeopleHandler : public SettingsPageUIHandler,
   // LoginUIService::LoginUI implementation.
   void FocusUI() override;
 
-  // SigninManagerBase::Observer implementation.
-  void GoogleSigninSucceeded(const std::string& account_id,
-                             const std::string& username,
-                             const std::string& password) override;
-  void GoogleSignedOut(const std::string& account_id,
-                       const std::string& username) override;
+  // IdentityManager::Observer implementation.
+  void OnPrimaryAccountSet(
+      const CoreAccountInfo& primary_account_info) override;
+  void OnPrimaryAccountCleared(
+      const CoreAccountInfo& previous_primary_account_info) override;
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;
+  void OnExtendedAccountInfoRemoved(const AccountInfo& info) override;
+#endif
 
-  // sync_driver::SyncServiceObserver implementation.
-  void OnStateChanged() override;
+  // syncer::SyncServiceObserver implementation.
+  void OnStateChanged(syncer::SyncService* sync) override;
+
+  // content::WebContentsObserver implementation
+  void BeforeUnloadDialogCancelled() override;
 
   // Returns a newly created dictionary with a number of properties that
   // correspond to the status of sync.
   std::unique_ptr<base::DictionaryValue> GetSyncStatusDictionary();
 
-  // Helper routine that gets the ProfileSyncService associated with the parent
+  // Helper routine that gets the SyncService associated with the parent
   // profile.
-  ProfileSyncService* GetSyncService() const;
+  syncer::SyncService* GetSyncService() const;
 
   // Returns the LoginUIService for the parent profile.
   LoginUIService* GetLoginUIService() const;
@@ -135,11 +160,16 @@ class PeopleHandler : public SettingsPageUIHandler,
   void HandleSetDatatypes(const base::ListValue* args);
   void HandleSetEncryption(const base::ListValue* args);
   void HandleShowSetupUI(const base::ListValue* args);
-  void HandleDoSignOutOnAuthError(const base::ListValue* args);
+  void HandleAttemptUserExit(const base::ListValue* args);
+#if defined(OS_CHROMEOS)
+  void HandleRequestPinLoginState(const base::ListValue* args);
+#endif
+#if !defined(OS_CHROMEOS)
   void HandleStartSignin(const base::ListValue* args);
-  void HandleStopSyncing(const base::ListValue* args);
+  void HandleSignout(const base::ListValue* args);
+  void HandlePauseSync(const base::ListValue* args);
+#endif
   void HandleGetSyncStatus(const base::ListValue* args);
-  void HandleManageOtherPeople(const base::ListValue* args);
 
 #if !defined(OS_CHROMEOS)
   // Displays the GAIA login form.
@@ -151,13 +181,23 @@ class PeopleHandler : public SettingsPageUIHandler,
       signin_metrics::AccessPoint access_point);
 #endif
 
+#if defined(OS_CHROMEOS)
+  void OnPinLoginAvailable(bool is_available);
+#endif
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  void HandleGetStoredAccounts(const base::ListValue* args);
+  void HandleStartSyncingWithEmail(const base::ListValue* args);
+  base::Value GetStoredAccountsList();
+#endif
+
   // Displays spinner-only UI indicating that something is going on in the
   // background.
   // TODO(kochi): better to show some message that the user can understand what
   // is running in the background.
   void DisplaySpinner();
 
-  // Displays an error dialog which shows timeout of starting the sync backend.
+  // Displays an error dialog which shows timeout of starting the sync engine.
   void DisplayTimeout();
 
   // Closes the associated sync settings page.
@@ -172,30 +212,47 @@ class PeopleHandler : public SettingsPageUIHandler,
   // Suppresses any further signin promos, since the user has signed in once.
   void MarkFirstSetupComplete();
 
+  // True if profile needs authentication before sync can run.
+  bool IsProfileAuthNeededOrHasErrors();
+
+  // If we're directly loading the sync setup page, we acquire a
+  // SetupInProgressHandle early in order to prevent a lapse in SyncService's
+  // "SetupInProgress" status. This lapse previously occurred between when the
+  // sync confirmation dialog was closed and when the sync setup page hadn't yet
+  // fired the SyncSetupShowSetupUI event. InitializeSyncBlocker is responsible
+  // for checking if we're navigating to the setup page and acquiring the
+  // |sync_blocker_|.
+  void InitializeSyncBlocker();
+
   // Weak pointer.
   Profile* profile_;
 
-  // Helper object used to wait for the sync backend to startup.
+  // Helper object used to wait for the sync engine to startup.
   std::unique_ptr<SyncStartupTracker> sync_startup_tracker_;
 
   // Prevents Sync from running until configuration is complete.
-  std::unique_ptr<sync_driver::SyncSetupInProgressHandle> sync_blocker_;
+  std::unique_ptr<syncer::SyncSetupInProgressHandle> sync_blocker_;
 
   // Set to true whenever the sync configure UI is visible. This is used to tell
   // what stage of the setup wizard the user was in and to update the UMA
   // histograms in the case that the user cancels out.
   bool configuring_sync_;
 
-  // The OneShotTimer object used to timeout of starting the sync backend
+  // The OneShotTimer object used to timeout of starting the sync engine
   // service.
-  std::unique_ptr<base::OneShotTimer> backend_start_timer_;
+  std::unique_ptr<base::OneShotTimer> engine_start_timer_;
 
   // Used to listen for pref changes to allow or disallow signin.
   PrefChangeRegistrar profile_pref_registrar_;
 
   // Manages observer lifetimes.
-  ScopedObserver<SigninManagerBase, PeopleHandler> signin_observer_;
-  ScopedObserver<ProfileSyncService, PeopleHandler> sync_service_observer_;
+  ScopedObserver<identity::IdentityManager, PeopleHandler>
+      identity_manager_observer_;
+  ScopedObserver<syncer::SyncService, PeopleHandler> sync_service_observer_;
+
+#if defined(OS_CHROMEOS)
+  base::WeakPtrFactory<PeopleHandler> weak_factory_{this};
+#endif
 
   DISALLOW_COPY_AND_ASSIGN(PeopleHandler);
 };

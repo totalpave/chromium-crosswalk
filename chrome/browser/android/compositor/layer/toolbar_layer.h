@@ -19,7 +19,6 @@ class SolidColorLayer;
 class UIResourceLayer;
 }
 
-namespace chrome {
 namespace android {
 
 class ToolbarLayer : public Layer {
@@ -33,9 +32,11 @@ class ToolbarLayer : public Layer {
   void PushResource(int toolbar_resource_id,
                     int toolbar_background_color,
                     bool anonymize,
-                    int  toolbar_textbox_background_color,
+                    int toolbar_textbox_background_color,
                     int url_bar_background_resource_id,
                     float url_bar_alpha,
+                    float window_height,
+                    float y_offset,
                     bool show_debug,
                     bool clip_shadow);
 
@@ -50,11 +51,15 @@ class ToolbarLayer : public Layer {
                          int progress_bar_background_height,
                          int progress_bar_background_color);
 
+  void SetOpacity(float opacity);
+
  protected:
   explicit ToolbarLayer(ui::ResourceManager* resource_manager);
   ~ToolbarLayer() override;
 
  private:
+  int GetIndexOfLayer(scoped_refptr<cc::Layer> layer);
+
   ui::ResourceManager* resource_manager_;
 
   scoped_refptr<cc::Layer> layer_;
@@ -63,13 +68,11 @@ class ToolbarLayer : public Layer {
   scoped_refptr<cc::UIResourceLayer> bitmap_layer_;
   scoped_refptr<cc::SolidColorLayer> progress_bar_layer_;
   scoped_refptr<cc::SolidColorLayer> progress_bar_background_layer_;
-  scoped_refptr<cc::SolidColorLayer> anonymize_layer_;
   scoped_refptr<cc::SolidColorLayer> debug_layer_;
 
   DISALLOW_COPY_AND_ASSIGN(ToolbarLayer);
 };
 
 }  //  namespace android
-}  //  namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_LAYER_TOOLBAR_LAYER_H_

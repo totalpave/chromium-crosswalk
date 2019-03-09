@@ -8,20 +8,19 @@
 #include <utility>
 #include <vector>
 
-#include "ash/test/ash_test_base.h"
+#include "base/bind.h"
 #include "base/json/json_writer.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/test/test_mock_time_task_runner.h"
-#include "base/threading/sequenced_worker_pool.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "chrome/test/base/chrome_ash_test_base.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "policy/proto/device_management_backend.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/codec/png_codec.h"
@@ -49,7 +48,7 @@ em::RemoteCommand GenerateScreenshotCommandProto(
   em::RemoteCommand command_proto;
   command_proto.set_type(
       enterprise_management::RemoteCommand_Type_DEVICE_SCREENSHOT);
-  command_proto.set_unique_id(unique_id);
+  command_proto.set_command_id(unique_id);
   command_proto.set_age_of_command(age_of_command.InMilliseconds());
   std::string payload;
   base::DictionaryValue root_dict;
@@ -106,13 +105,13 @@ void MockUploadJob::Start() {
   EXPECT_EQ(kMockUploadUrl, upload_url_.spec());
   if (error_code_) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&UploadJob::Delegate::OnFailure,
-                              base::Unretained(delegate_), *error_code_));
+        FROM_HERE, base::BindOnce(&UploadJob::Delegate::OnFailure,
+                                  base::Unretained(delegate_), *error_code_));
     return;
   }
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&UploadJob::Delegate::OnSuccess, base::Unretained(delegate_)));
+      FROM_HERE, base::BindOnce(&UploadJob::Delegate::OnSuccess,
+                                base::Unretained(delegate_)));
 }
 
 scoped_refptr<base::RefCountedBytes> GenerateTestPNG(const int& width,
@@ -124,7 +123,6 @@ scoped_refptr<base::RefCountedBytes> GenerateTestPNG(const int& width,
     for (int x = 0; x < width; ++x)
       *bmp.getAddr32(x, y) = background_color;
   }
-  SkAutoLockPixels lock(bmp);
   scoped_refptr<base::RefCountedBytes> png_bytes(new base::RefCountedBytes());
   gfx::PNGCodec::ColorFormat color_format = gfx::PNGCodec::FORMAT_RGBA;
   if (!gfx::PNGCodec::Encode(
@@ -178,20 +176,20 @@ void MockScreenshotDelegate::TakeSnapshot(
   const int height = source_rect.height();
   scoped_refptr<base::RefCountedBytes> test_png =
       GenerateTestPNG(width, height);
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                base::Bind(callback, test_png));
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(callback, test_png));
 }
 
 std::unique_ptr<UploadJob> MockScreenshotDelegate::CreateUploadJob(
     const GURL& upload_url,
     UploadJob::Delegate* delegate) {
-  return base::WrapUnique(new MockUploadJob(upload_url, delegate,
-                                            std::move(upload_job_error_code_)));
+  return std::make_unique<MockUploadJob>(upload_url, delegate,
+                                         std::move(upload_job_error_code_));
 }
 
 }  // namespace
 
-class DeviceCommandScreenshotTest : public ash::test::AshTestBase {
+class DeviceCommandScreenshotTest : public ChromeAshTestBase {
  public:
   void VerifyResults(RemoteCommandJob* job,
                      RemoteCommandJob::Status expected_status,
@@ -200,7 +198,7 @@ class DeviceCommandScreenshotTest : public ash::test::AshTestBase {
  protected:
   DeviceCommandScreenshotTest();
 
-  // ash::test::AshTestBase:
+  // ChromeAshTestBase:
   void SetUp() override;
 
   void InitializeScreenshotJob(RemoteCommandJob* job,
@@ -225,7 +223,7 @@ DeviceCommandScreenshotTest::DeviceCommandScreenshotTest()
 }
 
 void DeviceCommandScreenshotTest::SetUp() {
-  ash::test::AshTestBase::SetUp();
+  ChromeAshTestBase::SetUp();
   test_start_time_ = base::TimeTicks::Now();
 }
 
@@ -247,7 +245,7 @@ std::string DeviceCommandScreenshotTest::CreatePayloadFromResultCode(
   std::string payload;
   base::DictionaryValue root_dict;
   if (result_code != DeviceCommandScreenshotJob::SUCCESS)
-    root_dict.Set(kResultFieldName, new base::FundamentalValue(result_code));
+    root_dict.Set(kResultFieldName, std::make_unique<base::Value>(result_code));
   base::JSONWriter::Write(root_dict, &payload);
   return payload;
 }
@@ -267,7 +265,7 @@ void DeviceCommandScreenshotTest::VerifyResults(
 
 TEST_F(DeviceCommandScreenshotTest, Success) {
   std::unique_ptr<RemoteCommandJob> job(new DeviceCommandScreenshotJob(
-      base::WrapUnique(new MockScreenshotDelegate(nullptr, true))));
+      std::make_unique<MockScreenshotDelegate>(nullptr, true)));
   InitializeScreenshotJob(job.get(), kUniqueID, test_start_time_,
                           kMockUploadUrl);
   bool success = job->Run(
@@ -282,7 +280,7 @@ TEST_F(DeviceCommandScreenshotTest, Success) {
 
 TEST_F(DeviceCommandScreenshotTest, FailureUserInput) {
   std::unique_ptr<RemoteCommandJob> job(new DeviceCommandScreenshotJob(
-      base::WrapUnique(new MockScreenshotDelegate(nullptr, false))));
+      std::make_unique<MockScreenshotDelegate>(nullptr, false)));
   InitializeScreenshotJob(job.get(), kUniqueID, test_start_time_,
                           kMockUploadUrl);
   bool success =
@@ -300,9 +298,8 @@ TEST_F(DeviceCommandScreenshotTest, Failure) {
   using ErrorCode = UploadJob::ErrorCode;
   std::unique_ptr<ErrorCode> error_code(
       new ErrorCode(UploadJob::AUTHENTICATION_ERROR));
-  std::unique_ptr<RemoteCommandJob> job(
-      new DeviceCommandScreenshotJob(base::WrapUnique(
-          new MockScreenshotDelegate(std::move(error_code), true))));
+  std::unique_ptr<RemoteCommandJob> job(new DeviceCommandScreenshotJob(
+      std::make_unique<MockScreenshotDelegate>(std::move(error_code), true)));
   InitializeScreenshotJob(job.get(), kUniqueID, test_start_time_,
                           kMockUploadUrl);
   bool success = job->Run(

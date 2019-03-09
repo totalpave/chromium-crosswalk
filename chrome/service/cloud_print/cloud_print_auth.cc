@@ -4,9 +4,11 @@
 
 #include "chrome/service/cloud_print/cloud_print_auth.h"
 
+#include <vector>
+
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -14,8 +16,8 @@
 #include "chrome/common/cloud_print/cloud_print_helpers.h"
 #include "chrome/service/cloud_print/cloud_print_token_store.h"
 #include "chrome/service/net/service_url_request_context_getter.h"
-#include "chrome/service/service_process.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace cloud_print {
 
@@ -43,11 +45,13 @@ CloudPrintAuth::CloudPrintAuth(
     Client* client,
     const GURL& cloud_print_server_url,
     const gaia::OAuthClientInfo& oauth_client_info,
-    const std::string& proxy_id)
-      : client_(client),
-        oauth_client_info_(oauth_client_info),
-        cloud_print_server_url_(cloud_print_server_url),
-        proxy_id_(proxy_id) {
+    const std::string& proxy_id,
+    const net::PartialNetworkTrafficAnnotationTag& partial_traffic_annotation)
+    : client_(client),
+      oauth_client_info_(oauth_client_info),
+      cloud_print_server_url_(cloud_print_server_url),
+      proxy_id_(proxy_id),
+      partial_traffic_annotation_(partial_traffic_annotation) {
   DCHECK(client);
 }
 
@@ -64,7 +68,7 @@ void CloudPrintAuth::AuthenticateWithToken(
   GURL get_authcode_url = GetUrlForGetAuthCode(cloud_print_server_url_,
                                                oauth_client_info_.client_id,
                                                proxy_id_);
-  request_ = CloudPrintURLFetcher::Create();
+  request_ = CloudPrintURLFetcher::Create(partial_traffic_annotation_);
   request_->StartGetRequest(CloudPrintURLFetcher::REQUEST_AUTH_CODE,
                             get_authcode_url, this,
                             kCloudPrintAuthMaxRetryCount, std::string());
@@ -93,8 +97,8 @@ void CloudPrintAuth::AuthenticateWithRobotAuthCode(
 
   robot_email_ = robot_email;
   // Now that we have an auth code we need to get the refresh and access tokens.
-  oauth_client_.reset(new gaia::GaiaOAuthClient(
-      g_service_process->GetServiceURLRequestContextGetter()));
+  oauth_client_.reset(
+      new gaia::GaiaOAuthClient(client_->GetURLLoaderFactory()));
   oauth_client_->GetTokensFromAuthCode(oauth_client_info_,
                                        robot_oauth_auth_code,
                                        kCloudPrintAuthMaxRetryCount,
@@ -104,8 +108,8 @@ void CloudPrintAuth::AuthenticateWithRobotAuthCode(
 void CloudPrintAuth::RefreshAccessToken() {
   UMA_HISTOGRAM_ENUMERATION("CloudPrint.AuthEvent", AUTH_EVENT_REFRESH_REQUEST,
                             AUTH_EVENT_MAX);
-  oauth_client_.reset(new gaia::GaiaOAuthClient(
-      g_service_process->GetServiceURLRequestContextGetter()));
+  oauth_client_.reset(
+      new gaia::GaiaOAuthClient(client_->GetURLLoaderFactory()));
   std::vector<std::string> empty_scope_list;  // (Use scope from refresh token.)
   oauth_client_->RefreshToken(oauth_client_info_,
                               refresh_token_,
@@ -138,7 +142,7 @@ void CloudPrintAuth::OnRefreshTokenResponse(const std::string& access_token,
   base::TimeDelta refresh_delay = base::TimeDelta::FromSeconds(
       expires_in_seconds - kTokenRefreshGracePeriodSecs);
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&CloudPrintAuth::RefreshAccessToken, this),
+      FROM_HERE, base::BindOnce(&CloudPrintAuth::RefreshAccessToken, this),
       refresh_delay);
 }
 
@@ -162,8 +166,10 @@ void CloudPrintAuth::OnNetworkError(int response_code) {
 CloudPrintURLFetcher::ResponseAction CloudPrintAuth::HandleJSONData(
     const net::URLFetcher* source,
     const GURL& url,
-    const base::DictionaryValue* json_data,
+    const base::Value& json_data,
     bool succeeded) {
+  DCHECK(json_data.is_dict());
+
   if (!succeeded) {
     VLOG(1) << "CP_AUTH: Creating robot account failed";
     UMA_HISTOGRAM_ENUMERATION("CloudPrint.AuthEvent",
@@ -173,8 +179,8 @@ CloudPrintURLFetcher::ResponseAction CloudPrintAuth::HandleJSONData(
     return CloudPrintURLFetcher::STOP_PROCESSING;
   }
 
-  std::string auth_code;
-  if (!json_data->GetString(kOAuthCodeValue, &auth_code)) {
+  const std::string* auth_code = json_data.FindStringKey(kOAuthCodeValue);
+  if (!auth_code) {
     VLOG(1) << "CP_AUTH: Creating robot account returned invalid json response";
     UMA_HISTOGRAM_ENUMERATION("CloudPrint.AuthEvent",
                               AUTH_EVENT_ROBO_JSON_ERROR,
@@ -187,14 +193,14 @@ CloudPrintURLFetcher::ResponseAction CloudPrintAuth::HandleJSONData(
                               AUTH_EVENT_ROBO_SUCCEEDED,
                               AUTH_EVENT_MAX);
 
-  json_data->GetString(kXMPPJidValue, &robot_email_);
+  const std::string* robot_email = json_data.FindStringKey(kXMPPJidValue);
+  if (robot_email)
+    robot_email_ = *robot_email;
   // Now that we have an auth code we need to get the refresh and access tokens.
-  oauth_client_.reset(new gaia::GaiaOAuthClient(
-      g_service_process->GetServiceURLRequestContextGetter()));
-  oauth_client_->GetTokensFromAuthCode(oauth_client_info_,
-                                       auth_code,
-                                       kCloudPrintAPIMaxRetryCount,
-                                       this);
+  oauth_client_ =
+      std::make_unique<gaia::GaiaOAuthClient>(client_->GetURLLoaderFactory());
+  oauth_client_->GetTokensFromAuthCode(oauth_client_info_, *auth_code,
+                                       kCloudPrintAPIMaxRetryCount, this);
 
   return CloudPrintURLFetcher::STOP_PROCESSING;
 }

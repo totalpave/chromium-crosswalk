@@ -4,101 +4,147 @@
 
 #include "headless/lib/browser/headless_devtools.h"
 
+#include <string>
+#include <utility>
+
 #include "base/files/file_path.h"
 #include "base/memory/ptr_util.h"
-#include "components/devtools_http_handler/devtools_http_handler.h"
-#include "components/devtools_http_handler/devtools_http_handler_delegate.h"
-#include "content/public/browser/devtools_frontend_host.h"
+#include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/devtools_socket_factory.h"
 #include "content/public/browser/navigation_entry.h"
 #include "headless/grit/headless_lib_resources.h"
-#include "headless/lib/browser/headless_browser_context_impl.h"
+#include "headless/public/headless_browser.h"
+#include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
+#include "net/log/net_log_source.h"
 #include "net/socket/tcp_server_socket.h"
 #include "ui/base/resource/resource_bundle.h"
-
-using devtools_http_handler::DevToolsHttpHandler;
 
 namespace headless {
 
 namespace {
 
+const char kUseLocalHostForDevToolsHttpServer[] = "localhost";
 const int kBackLog = 10;
 
-class TCPServerSocketFactory : public DevToolsHttpHandler::ServerSocketFactory {
+class TCPEndpointServerSocketFactory : public content::DevToolsSocketFactory {
  public:
-  TCPServerSocketFactory(const net::IPEndPoint& endpoint)
+  explicit TCPEndpointServerSocketFactory(const net::HostPortPair& endpoint)
       : endpoint_(endpoint) {
-    DCHECK(endpoint_.address().IsValid());
+    DCHECK(!endpoint_.IsEmpty());
+    if (!endpoint.host().empty() &&
+        endpoint.host() != kUseLocalHostForDevToolsHttpServer) {
+      net::IPAddress ip;
+      DCHECK(ip.AssignFromIPLiteral(endpoint.host()));
+    }
   }
 
  private:
-  // DevToolsHttpHandler::ServerSocketFactory implementation:
+  // This function, and the logic below that uses it, is copied from
+  // chrome/browser/devtools/remote_debugging_server.cc
+  std::unique_ptr<net::ServerSocket> CreateLocalHostServerSocket(int port) {
+    std::unique_ptr<net::ServerSocket> socket(
+        new net::TCPServerSocket(nullptr, net::NetLogSource()));
+    if (socket->ListenWithAddressAndPort("127.0.0.1", port, kBackLog) ==
+        net::OK)
+      return socket;
+    if (socket->ListenWithAddressAndPort("::1", port, kBackLog) == net::OK)
+      return socket;
+    return std::unique_ptr<net::ServerSocket>();
+  }
+
+  // content::DevToolsSocketFactory.
   std::unique_ptr<net::ServerSocket> CreateForHttpServer() override {
     std::unique_ptr<net::ServerSocket> socket(
-        new net::TCPServerSocket(nullptr, net::NetLog::Source()));
-    if (socket->Listen(endpoint_, kBackLog) != net::OK)
-      return std::unique_ptr<net::ServerSocket>();
-
-    return socket;
+        new net::TCPServerSocket(nullptr, net::NetLogSource()));
+    if (endpoint_.host() == kUseLocalHostForDevToolsHttpServer)
+      return CreateLocalHostServerSocket(endpoint_.port());
+    if (socket->ListenWithAddressAndPort(endpoint_.host(), endpoint_.port(),
+                                         kBackLog) == net::OK)
+      return socket;
+    return std::unique_ptr<net::ServerSocket>();
   }
 
-  net::IPEndPoint endpoint_;
+  std::unique_ptr<net::ServerSocket> CreateForTethering(
+      std::string* out_name) override {
+    return nullptr;
+  }
 
-  DISALLOW_COPY_AND_ASSIGN(TCPServerSocketFactory);
+  net::HostPortPair endpoint_;
+
+  DISALLOW_COPY_AND_ASSIGN(TCPEndpointServerSocketFactory);
 };
 
-class HeadlessDevToolsDelegate
-    : public devtools_http_handler::DevToolsHttpHandlerDelegate {
+#if defined(OS_POSIX)
+class TCPAdoptServerSocketFactory : public content::DevToolsSocketFactory {
  public:
-  HeadlessDevToolsDelegate();
-  ~HeadlessDevToolsDelegate() override;
-
-  // devtools_http_handler::DevToolsHttpHandlerDelegate implementation:
-  std::string GetDiscoveryPageHTML() override;
-  std::string GetFrontendResource(const std::string& path) override;
-  std::string GetPageThumbnailData(const GURL& url) override;
-  content::DevToolsExternalAgentProxyDelegate* HandleWebSocketConnection(
-      const std::string& path) override;
+  // Construct a factory to use an already-open, already-listening socket.
+  explicit TCPAdoptServerSocketFactory(const size_t socket_fd)
+      : socket_fd_(socket_fd) {}
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(HeadlessDevToolsDelegate);
+  std::unique_ptr<net::ServerSocket> CreateForHttpServer() override {
+    std::unique_ptr<net::TCPServerSocket> tsock(
+        new net::TCPServerSocket(nullptr, net::NetLogSource()));
+    if (tsock->AdoptSocket(socket_fd_) != net::OK) {
+      LOG(ERROR) << "Failed to adopt open socket";
+      return std::unique_ptr<net::ServerSocket>();
+    }
+    // Note that we assume that the socket is already listening, so unlike
+    // TCPEndpointServerSocketFactory, we don't call Listen.
+    return std::unique_ptr<net::ServerSocket>(std::move(tsock));
+  }
+
+  std::unique_ptr<net::ServerSocket> CreateForTethering(
+      std::string* out_name) override {
+    return nullptr;
+  }
+
+  size_t socket_fd_;
+
+  DISALLOW_COPY_AND_ASSIGN(TCPAdoptServerSocketFactory);
 };
+#else   // defined(OS_POSIX)
 
-HeadlessDevToolsDelegate::HeadlessDevToolsDelegate() {}
+// Placeholder class to use when a socket_fd is passed in on non-Posix.
+class DummyTCPServerSocketFactory : public content::DevToolsSocketFactory {
+ public:
+  explicit DummyTCPServerSocketFactory() {}
 
-HeadlessDevToolsDelegate::~HeadlessDevToolsDelegate() {}
+ private:
+  std::unique_ptr<net::ServerSocket> CreateForHttpServer() override {
+    return nullptr;
+  }
 
-std::string HeadlessDevToolsDelegate::GetDiscoveryPageHTML() {
-  return ResourceBundle::GetSharedInstance().GetRawDataResource(
-      IDR_HEADLESS_LIB_DEVTOOLS_DISCOVERY_PAGE).as_string();
-}
+  std::unique_ptr<net::ServerSocket> CreateForTethering(
+      std::string* out_name) override {
+    return nullptr;
+  }
 
-std::string HeadlessDevToolsDelegate::GetFrontendResource(
-    const std::string& path) {
-  return content::DevToolsFrontendHost::GetFrontendResource(path).as_string();
-}
-
-std::string HeadlessDevToolsDelegate::GetPageThumbnailData(const GURL& url) {
-  return std::string();
-}
-
-content::DevToolsExternalAgentProxyDelegate*
-HeadlessDevToolsDelegate::HandleWebSocketConnection(const std::string& path) {
-  return nullptr;
-}
-
+  DISALLOW_COPY_AND_ASSIGN(DummyTCPServerSocketFactory);
+};
+#endif  // defined(OS_POSIX)
 }  // namespace
 
-std::unique_ptr<DevToolsHttpHandler> CreateLocalDevToolsHttpHandler(
-    HeadlessBrowserContextImpl* browser_context) {
-  const net::IPEndPoint& endpoint =
-      browser_context->options()->devtools_endpoint;
-  std::unique_ptr<DevToolsHttpHandler::ServerSocketFactory> socket_factory(
-      new TCPServerSocketFactory(endpoint));
-  return base::WrapUnique(new DevToolsHttpHandler(
-      std::move(socket_factory), std::string(), new HeadlessDevToolsDelegate(),
-      browser_context->GetPath(), base::FilePath(), std::string(),
-      browser_context->options()->user_agent));
+void StartLocalDevToolsHttpHandler(HeadlessBrowser::Options* options) {
+  if (options->devtools_pipe_enabled)
+    content::DevToolsAgentHost::StartRemoteDebuggingPipeHandler();
+  if (options->devtools_endpoint.IsEmpty())
+    return;
+
+  std::unique_ptr<content::DevToolsSocketFactory> socket_factory;
+  const net::HostPortPair& endpoint = options->devtools_endpoint;
+  socket_factory.reset(new TCPEndpointServerSocketFactory(endpoint));
+
+  content::DevToolsAgentHost::StartRemoteDebuggingServer(
+      std::move(socket_factory),
+      options->user_data_dir,  // TODO(altimin): Figure a proper value for this.
+      base::FilePath());
+}
+
+void StopLocalDevToolsHttpHandler() {
+  content::DevToolsAgentHost::StopRemoteDebuggingServer();
+  content::DevToolsAgentHost::StopRemoteDebuggingPipeHandler();
 }
 
 }  // namespace headless

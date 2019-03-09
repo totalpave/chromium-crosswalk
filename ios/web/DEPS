@@ -1,15 +1,23 @@
 include_rules = [
   "+components/url_formatter",
   "+crypto",
-  "+ios/public/provider/web",
   "+ios/net",
   "+ios/web",
+  "+mojo/public",
   "+net",
-  "+services/shell/public",
+  "+services/metrics/public/cpp",
+  "+services/network/network_context.h",
+  "+services/network/public/cpp",
+  "+services/network/public/mojom",
   "+ui",
+
+  # Needed to embed the ServiceManager in //ios/web.
+  "+services/service_manager",
 
   # For tests.
   "+ios/testing",
   "+ios/third_party/earl_grey/src",
-  "+mojo/edk/embedder/embedder.h",
+  "+ios/third_party/earl_grey2/src/CommonLib",
+  "+ios/third_party/earl_grey2/src/TestLib",
+  "+mojo/core/embedder/embedder.h",
 ]

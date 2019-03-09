@@ -4,11 +4,11 @@
 
 #include "content/renderer/frame_blame_context.h"
 
-#include "base/trace_event/trace_event_argument.h"
+#include "base/trace_event/traced_value.h"
 #include "content/renderer/render_frame_impl.h"
 #include "content/renderer/top_level_blame_context.h"
-#include "third_party/WebKit/public/platform/Platform.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 
 namespace content {
 namespace {
@@ -16,8 +16,8 @@ namespace {
 base::trace_event::BlameContext* GetParentBlameContext(
     RenderFrameImpl* parent_frame) {
   if (parent_frame)
-    return parent_frame->frameBlameContext();
-  return blink::Platform::current()->topLevelBlameContext();
+    return parent_frame->GetFrameBlameContext();
+  return blink::Platform::Current()->GetTopLevelBlameContext();
 }
 
 }  // namespace

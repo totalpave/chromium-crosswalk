@@ -20,18 +20,18 @@
 #include "chrome/browser/media_galleries/media_galleries_preferences.h"
 #include "chrome/browser/media_galleries/media_galleries_preferences_factory.h"
 #include "chrome/browser/media_galleries/media_galleries_test_util.h"
+#include "chrome/common/apps/platform_apps/media_galleries_permission.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/storage_monitor/test_storage_monitor.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/extension.h"
-#include "extensions/common/permissions/media_galleries_permission.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
+#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
 #endif
 
 namespace component_updater {
@@ -57,11 +57,15 @@ class GalleryWatchManagerTest : public GalleryWatchManagerObserver,
  public:
   GalleryWatchManagerTest()
       : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP),
+#if defined(OS_CHROMEOS)
+        test_user_manager_(std::make_unique<chromeos::ScopedTestUserManager>()),
+#endif
         profile_(new TestingProfile()),
         gallery_prefs_(NULL),
         expect_gallery_changed_(false),
         expect_gallery_watch_dropped_(false),
-        pending_loop_(NULL) {}
+        pending_loop_(NULL) {
+  }
 
   ~GalleryWatchManagerTest() override {}
 
@@ -83,7 +87,7 @@ class GalleryWatchManagerTest : public GalleryWatchManagerObserver,
 
     std::vector<std::string> read_permissions;
     read_permissions.push_back(
-        extensions::MediaGalleriesPermission::kReadPermission);
+        chrome_apps::MediaGalleriesPermission::kReadPermission);
     extension_ = AddMediaGalleriesApp("read", read_permissions, profile_.get());
 
     manager_.reset(new GalleryWatchManager);
@@ -95,6 +99,22 @@ class GalleryWatchManagerTest : public GalleryWatchManagerObserver,
       manager_->RemoveObserver(profile_.get());
     }
     manager_.reset();
+
+    // The TestingProfile must be destroyed before the TestingBrowserProcess
+    // because TestingProfile uses TestingBrowserProcess in its destructor.
+    ShutdownProfile();
+
+#if defined(OS_CHROMEOS)
+    // The TestUserManager must be destroyed before the TestingBrowserProcess
+    // because TestUserManager uses TestingBrowserProcess in its destructor.
+    test_user_manager_.reset();
+#endif
+
+    // The MediaFileSystemRegistry owned by the TestingBrowserProcess must be
+    // destroyed before the StorageMonitor because it calls
+    // StorageMonitor::RemoveObserver() in its destructor.
+    TestingBrowserProcess::DeleteInstance();
+
     storage_monitor::TestStorageMonitor::Destroy();
   }
 
@@ -181,9 +201,8 @@ class GalleryWatchManagerTest : public GalleryWatchManagerObserver,
   EnsureMediaDirectoriesExists mock_gallery_locations_;
 
 #if defined(OS_CHROMEOS)
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
-  chromeos::ScopedTestUserManager test_user_manager_;
+  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
+  std::unique_ptr<chromeos::ScopedTestUserManager> test_user_manager_;
 #endif
 
   storage_monitor::TestStorageMonitor* monitor_;
@@ -197,10 +216,16 @@ class GalleryWatchManagerTest : public GalleryWatchManagerObserver,
   DISALLOW_COPY_AND_ASSIGN(GalleryWatchManagerTest);
 };
 
-TEST_F(GalleryWatchManagerTest, Basic) {
+// TODO(crbug.com/936065): Flaky on ChromeOS.
+#if defined(OS_CHROMEOS)
+#define MAYBE_Basic DISABLED_Basic
+#else
+#define MAYBE_Basic Basic
+#endif
+TEST_F(GalleryWatchManagerTest, MAYBE_Basic) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  MediaGalleryPrefId id = AddGallery(temp_dir.path());
+  MediaGalleryPrefId id = AddGallery(temp_dir.GetPath());
 
   base::RunLoop loop;
   if (GalleryWatchesSupported()) {
@@ -228,33 +253,33 @@ TEST_F(GalleryWatchManagerTest, AddAndRemoveTwoWatches) {
 
   base::ScopedTempDir temp1;
   ASSERT_TRUE(temp1.CreateUniqueTempDir());
-  MediaGalleryPrefId id1 = AddGallery(temp1.path());
+  MediaGalleryPrefId id1 = AddGallery(temp1.GetPath());
 
   base::ScopedTempDir temp2;
   ASSERT_TRUE(temp2.CreateUniqueTempDir());
-  MediaGalleryPrefId id2 = AddGallery(temp2.path());
+  MediaGalleryPrefId id2 = AddGallery(temp2.GetPath());
 
   // Add first watch and test it was added correctly.
   AddAndConfirmWatch(id1);
   MediaGalleryPrefIdSet set1 =
       manager()->GetWatchSet(profile(), extension()->id());
   EXPECT_EQ(1u, set1.size());
-  EXPECT_TRUE(ContainsKey(set1, id1));
+  EXPECT_TRUE(base::ContainsKey(set1, id1));
 
   // Test that the second watch was added correctly too.
   AddAndConfirmWatch(id2);
   MediaGalleryPrefIdSet set2 =
       manager()->GetWatchSet(profile(), extension()->id());
   EXPECT_EQ(2u, set2.size());
-  EXPECT_TRUE(ContainsKey(set2, id1));
-  EXPECT_TRUE(ContainsKey(set2, id2));
+  EXPECT_TRUE(base::ContainsKey(set2, id1));
+  EXPECT_TRUE(base::ContainsKey(set2, id2));
 
   // Remove first watch and test that the second is still in there.
   manager()->RemoveWatch(profile(), extension()->id(), id1);
   MediaGalleryPrefIdSet set3 =
       manager()->GetWatchSet(profile(), extension()->id());
   EXPECT_EQ(1u, set3.size());
-  EXPECT_TRUE(ContainsKey(set3, id2));
+  EXPECT_TRUE(base::ContainsKey(set3, id2));
 
   // Try removing the first watch again and test that it has no effect.
   manager()->RemoveWatch(profile(), extension()->id(), id1);
@@ -271,11 +296,11 @@ TEST_F(GalleryWatchManagerTest, RemoveAllWatches) {
 
   base::ScopedTempDir temp1;
   ASSERT_TRUE(temp1.CreateUniqueTempDir());
-  MediaGalleryPrefId id1 = AddGallery(temp1.path());
+  MediaGalleryPrefId id1 = AddGallery(temp1.GetPath());
 
   base::ScopedTempDir temp2;
   ASSERT_TRUE(temp2.CreateUniqueTempDir());
-  MediaGalleryPrefId id2 = AddGallery(temp2.path());
+  MediaGalleryPrefId id2 = AddGallery(temp2.GetPath());
 
   // Add watches.
   AddAndConfirmWatch(id1);
@@ -299,7 +324,7 @@ TEST_F(GalleryWatchManagerTest, DropWatchOnGalleryRemoved) {
 
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  MediaGalleryPrefId id = AddGallery(temp_dir.path());
+  MediaGalleryPrefId id = AddGallery(temp_dir.GetPath());
   AddAndConfirmWatch(id);
 
   base::RunLoop success_loop;
@@ -314,7 +339,7 @@ TEST_F(GalleryWatchManagerTest, DropWatchOnGalleryPermissionRevoked) {
 
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  MediaGalleryPrefId id = AddGallery(temp_dir.path());
+  MediaGalleryPrefId id = AddGallery(temp_dir.GetPath());
   AddAndConfirmWatch(id);
 
   base::RunLoop success_loop;
@@ -330,13 +355,13 @@ TEST_F(GalleryWatchManagerTest, DropWatchOnStorageRemoved) {
   // Create a temporary directory and treat is as a removable storage device.
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  storage_monitor()->AddRemovablePath(temp_dir.path());
+  storage_monitor()->AddRemovablePath(temp_dir.GetPath());
   storage_monitor::StorageInfo storage_info;
-  ASSERT_TRUE(
-      storage_monitor()->GetStorageInfoForPath(temp_dir.path(), &storage_info));
+  ASSERT_TRUE(storage_monitor()->GetStorageInfoForPath(temp_dir.GetPath(),
+                                                       &storage_info));
   storage_monitor()->receiver()->ProcessAttach(storage_info);
 
-  MediaGalleryPrefId id = AddGallery(temp_dir.path());
+  MediaGalleryPrefId id = AddGallery(temp_dir.GetPath());
   AddAndConfirmWatch(id);
 
   base::RunLoop success_loop;
@@ -351,13 +376,13 @@ TEST_F(GalleryWatchManagerTest, TestWatchOperation) {
 
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  MediaGalleryPrefId id = AddGallery(temp_dir.path());
+  MediaGalleryPrefId id = AddGallery(temp_dir.GetPath());
   AddAndConfirmWatch(id);
 
   base::RunLoop success_loop;
   ExpectGalleryChanged(&success_loop);
-  ASSERT_EQ(
-      4, base::WriteFile(temp_dir.path().AppendASCII("fake file"), "blah", 4));
+  ASSERT_EQ(4, base::WriteFile(temp_dir.GetPath().AppendASCII("fake file"),
+                               "blah", 4));
   success_loop.Run();
 }
 
@@ -367,7 +392,7 @@ TEST_F(GalleryWatchManagerTest, TestWatchOperationAfterProfileShutdown) {
 
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  MediaGalleryPrefId id = AddGallery(temp_dir.path());
+  MediaGalleryPrefId id = AddGallery(temp_dir.GetPath());
   AddAndConfirmWatch(id);
 
   ShutdownProfile();
@@ -375,8 +400,8 @@ TEST_F(GalleryWatchManagerTest, TestWatchOperationAfterProfileShutdown) {
   // Trigger a watch that should have been removed when the profile was
   // destroyed to catch regressions. crbug.com/467627
   base::RunLoop run_loop;
-  ASSERT_EQ(
-      4, base::WriteFile(temp_dir.path().AppendASCII("fake file"), "blah", 4));
+  ASSERT_EQ(4, base::WriteFile(temp_dir.GetPath().AppendASCII("fake file"),
+                               "blah", 4));
   run_loop.RunUntilIdle();
 }
 
@@ -387,13 +412,13 @@ TEST_F(GalleryWatchManagerTest, TestStorageRemovedAfterProfileShutdown) {
   // Create a temporary directory and treat is as a removable storage device.
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  storage_monitor()->AddRemovablePath(temp_dir.path());
+  storage_monitor()->AddRemovablePath(temp_dir.GetPath());
   storage_monitor::StorageInfo storage_info;
-  ASSERT_TRUE(
-      storage_monitor()->GetStorageInfoForPath(temp_dir.path(), &storage_info));
+  ASSERT_TRUE(storage_monitor()->GetStorageInfoForPath(temp_dir.GetPath(),
+                                                       &storage_info));
   storage_monitor()->receiver()->ProcessAttach(storage_info);
 
-  MediaGalleryPrefId id = AddGallery(temp_dir.path());
+  MediaGalleryPrefId id = AddGallery(temp_dir.GetPath());
   AddAndConfirmWatch(id);
 
   ShutdownProfile();

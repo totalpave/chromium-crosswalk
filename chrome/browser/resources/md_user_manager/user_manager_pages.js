@@ -12,45 +12,62 @@ Polymer({
   properties: {
     /**
      * ID of the currently selected page.
-     * @private {string}
+     * @private
      */
-    selectedPage_: {
-      type: String,
-      value: 'user-pods-page'
-    },
+    selectedPage_: String,
 
     /**
      * Data passed to the currently selected page.
      * @private {?Object}
      */
-    pageData_: {
-      type: Object,
-      value: null
-    }
+    pageData_: {type: Object, value: null}
   },
 
-  listeners: {
-    'change-page': 'changePage_'
+  listeners: {'change-page': 'onChangePage_'},
+
+  /** @override */
+  attached: function() {
+    this.setSelectedPage('user-pods-page');
   },
 
   /**
-   * Changes the currently selected page.
-   * @param {Event} e The event containing ID of the selected page.
+   * Handler for the change-page event.
+   * @param {Event} e The event containing ID of the page that is to be selected
+   *     and the optional data to be passed to the page.
    * @private
    */
-  changePage_: function(e) {
-    this.pageData_ = e.detail.data || null;
-    this.selectedPage_ = e.detail.page;
+  onChangePage_: function(e) {
+    this.setSelectedPage(e.detail.page, e.detail.data);
   },
 
   /**
-   * Returns True if the first argument is present in the given set of values.
-   * @param {string} selectedPage ID of the currently selected page.
-   * @param {...string} var_args Pages IDs to check the first argument against.
-   * @return {boolean}
+   * Sets the selected page.
+   * @param {string} pageId ID of the page that is to be selected.
+   * @param {Object=} opt_pageData Optional data to be passed to the page.
    */
-  isPresentIn_: function(selectedPage, var_args) {
-    var pages = Array.prototype.slice.call(arguments, 1);
-    return pages.indexOf(selectedPage) !== -1;
+  setSelectedPage: function(pageId, opt_pageData) {
+    this.pageData_ = opt_pageData || null;
+    this.selectedPage_ = pageId;
+    /** @type {CrViewManagerElement} */ (this.$.animatedPages)
+        .switchView(this.selectedPage_);
+  },
+
+  /**
+   * This is to prevent events from propagating to the document element, which
+   * erroneously triggers user-pod selections.
+   *
+   * TODO(scottchen): re-examine if its necessary for user_pod_row.js to bind
+   * listeners on the entire document element.
+   *
+   * @param {!Event} e
+   * @private
+   */
+  stopPropagation_: function(e) {
+    e.stopPropagation();
+  },
+
+  /** @return {boolean} */
+  shouldShowCreateProfile_: function() {
+    return this.selectedPage_ == 'create-user-page';
   }
 });

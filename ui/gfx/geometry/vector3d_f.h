@@ -13,12 +13,12 @@
 #include <iosfwd>
 #include <string>
 
+#include "ui/gfx/geometry/geometry_export.h"
 #include "ui/gfx/geometry/vector2d_f.h"
-#include "ui/gfx/gfx_export.h"
 
 namespace gfx {
 
-class GFX_EXPORT Vector3dF {
+class GEOMETRY_EXPORT Vector3dF {
  public:
   constexpr Vector3dF() : x_(0), y_(0), z_(0) {}
   constexpr Vector3dF(float x, float y, float z) : x_(x), y_(y), z_(z) {}
@@ -71,6 +71,10 @@ class GFX_EXPORT Vector3dF {
   // Take the cross product of this vector with |other| and become the result.
   void Cross(const Vector3dF& other);
 
+  // |out| is assigned a unit-length vector in the direction of |this| iff
+  // this function returns true. It can return false if |this| is too short.
+  bool GetNormalized(Vector3dF* out) const;
+
   std::string ToString() const;
 
  private:
@@ -107,14 +111,19 @@ inline Vector3dF CrossProduct(const Vector3dF& lhs, const Vector3dF& rhs) {
 }
 
 // Return the dot product of two vectors.
-GFX_EXPORT float DotProduct(const Vector3dF& lhs, const Vector3dF& rhs);
+GEOMETRY_EXPORT float DotProduct(const Vector3dF& lhs, const Vector3dF& rhs);
 
 // Return a vector that is |v| scaled by the given scale factors along each
 // axis.
-GFX_EXPORT Vector3dF ScaleVector3d(const Vector3dF& v,
-                                   float x_scale,
-                                   float y_scale,
-                                   float z_scale);
+GEOMETRY_EXPORT Vector3dF ScaleVector3d(const Vector3dF& v,
+                                        float x_scale,
+                                        float y_scale,
+                                        float z_scale);
+
+// Return a vector that is |v| scaled by the components of |s|
+inline Vector3dF ScaleVector3d(const Vector3dF& v, const Vector3dF& s) {
+  return ScaleVector3d(v, s.x(), s.y(), s.z());
+}
 
 // Return a vector that is |v| scaled by the given scale factor.
 inline Vector3dF ScaleVector3d(const Vector3dF& v, float scale) {
@@ -122,19 +131,19 @@ inline Vector3dF ScaleVector3d(const Vector3dF& v, float scale) {
 }
 
 // Returns the angle between |base| and |other| in degrees.
-GFX_EXPORT float AngleBetweenVectorsInDegrees(const gfx::Vector3dF& base,
-                                              const gfx::Vector3dF& other);
+GEOMETRY_EXPORT float AngleBetweenVectorsInDegrees(const gfx::Vector3dF& base,
+                                                   const gfx::Vector3dF& other);
 
 // Returns the clockwise angle between |base| and |other| where |normal| is the
 // normal of the virtual surface to measure clockwise according to.
-GFX_EXPORT float ClockwiseAngleBetweenVectorsInDegrees(
+GEOMETRY_EXPORT float ClockwiseAngleBetweenVectorsInDegrees(
     const gfx::Vector3dF& base,
     const gfx::Vector3dF& other,
     const gfx::Vector3dF& normal);
 
 // This is declared here for use in gtest-based unit tests but is defined in
-// the gfx_test_support target. Depend on that to use this in your unit test.
-// This should not be used in production code - call ToString() instead.
+// the //ui/gfx:test_support target. Depend on that to use this in your unit
+// test. This should not be used in production code - call ToString() instead.
 void PrintTo(const Vector3dF& vector, ::std::ostream* os);
 
 }  // namespace gfx

@@ -15,9 +15,9 @@
 #include "content/public/browser/background_tracing_config.h"
 #include "content/public/browser/background_tracing_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
-
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(tracing::NavigationTracingObserver);
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 using content::RenderFrameHost;
 
@@ -27,24 +27,27 @@ namespace {
 
 const char kNavigationTracingConfig[] = "navigation-config";
 
-void OnUploadComplete(TraceCrashServiceUploader* uploader,
-                      const base::Closure& done_callback,
-                      bool success,
-                      const std::string& feedback) {
+void OnNavigationTracingUploadComplete(
+    TraceCrashServiceUploader* uploader,
+    content::BackgroundTracingManager::FinishedProcessingCallback done_callback,
+    bool success,
+    const std::string& feedback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  done_callback.Run();
+  std::move(done_callback).Run(success);
 }
 
-void UploadCallback(const scoped_refptr<base::RefCountedString>& file_contents,
-                    std::unique_ptr<const base::DictionaryValue> metadata,
-                    base::Closure callback) {
+void NavigationUploadCallback(
+    const scoped_refptr<base::RefCountedString>& file_contents,
+    std::unique_ptr<const base::DictionaryValue> metadata,
+    content::BackgroundTracingManager::FinishedProcessingCallback callback) {
   TraceCrashServiceUploader* uploader = new TraceCrashServiceUploader(
-      g_browser_process->system_request_context());
+      g_browser_process->shared_url_loader_factory());
 
   uploader->DoUpload(
       file_contents->data(), content::TraceUploader::UNCOMPRESSED_UPLOAD,
       std::move(metadata), content::TraceUploader::UploadProgressCallback(),
-      base::Bind(&OnUploadComplete, base::Owned(uploader), callback));
+      base::BindOnce(&OnNavigationTracingUploadComplete, base::Owned(uploader),
+                     std::move(callback)));
 }
 
 }  // namespace
@@ -67,6 +70,7 @@ void SetupNavigationTracing() {
         new base::DictionaryValue());
     rules_dict->SetString("rule", "TRACE_ON_NAVIGATION_UNTIL_TRIGGER_OR_FULL");
     rules_dict->SetString("trigger_name", kNavigationTracingConfig);
+    rules_dict->SetBoolean("stop_tracing_on_repeated_reactive", true);
     rules_dict->SetString("category", "BENCHMARK_DEEP");
     rules_list->Append(std::move(rules_dict));
   }
@@ -89,7 +93,7 @@ void SetupNavigationTracing() {
   DCHECK(config);
 
   content::BackgroundTracingManager::GetInstance()->SetActiveScenario(
-      std::move(config), base::Bind(&UploadCallback),
+      std::move(config), base::Bind(&NavigationUploadCallback),
       content::BackgroundTracingManager::NO_DATA_FILTERING);
 }
 
@@ -100,8 +104,8 @@ bool NavigationTracingObserver::IsEnabled() {
 NavigationTracingObserver::NavigationTracingObserver(
     content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents) {
-  if (navigation_handle == -1) {
-    navigation_handle =
+  if (navigation_trigger_handle_ == -1) {
+    navigation_trigger_handle_ =
         content::BackgroundTracingManager::GetInstance()->RegisterTriggerType(
             kNavigationTracingConfig);
   }
@@ -110,19 +114,18 @@ NavigationTracingObserver::NavigationTracingObserver(
 NavigationTracingObserver::~NavigationTracingObserver() {
 }
 
-void NavigationTracingObserver::DidStartProvisionalLoadForFrame(
-    content::RenderFrameHost* render_frame_host,
-    const GURL& validated_url,
-    bool is_error_page,
-    bool is_iframe_srcdoc) {
-  if (!render_frame_host->GetParent() && !is_error_page) {
+void NavigationTracingObserver::DidStartNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (navigation_handle->IsInMainFrame()) {
     content::BackgroundTracingManager::GetInstance()->TriggerNamedEvent(
-        navigation_handle,
+        navigation_trigger_handle_,
         content::BackgroundTracingManager::StartedFinalizingCallback());
   }
 }
 
 content::BackgroundTracingManager::TriggerHandle
-    NavigationTracingObserver::navigation_handle = -1;
+    NavigationTracingObserver::navigation_trigger_handle_ = -1;
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(NavigationTracingObserver)
 
 }  // namespace tracing

@@ -12,27 +12,52 @@
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/test_extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
+#include "chrome/browser/signin/account_consistency_mode_manager.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/sync/bubble_sync_promo_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/profiles/profile_chooser_view.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/signin/core/common/profile_management_switches.h"
+#include "components/signin/core/browser/account_consistency_method.h"
+#include "components/signin/core/browser/account_info.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/test_utils.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/range/range.h"
 
-#if defined(OS_CHROMEOS)
-const bool kHasProfileChooser = false;
-#else
-const bool kHasProfileChooser = true;
+#if !defined(OS_CHROMEOS)
+#include "chrome/browser/ui/views/profiles/profile_chooser_view.h"
 #endif
+
+namespace {
+
+// Returns true if signin happens in a modal dialog and false if it happens in a
+// regular tab.
+bool IsSigninModal(Profile* profile) {
+#if defined(OS_CHROMEOS)
+  return false;
+#else
+  return AccountConsistencyModeManager::GetMethodForProfile(profile) ==
+         signin::AccountConsistencyMethod::kDisabled;
+#endif
+}
+
+// Returns whether the signin modal dialog is displayed.
+bool ShowsModalDialog(Browser* browser) {
+#if defined(OS_CHROMEOS)
+  NOTREACHED();
+  return false;
+#else
+  return browser->signin_view_controller()->ShowsModalDialog();
+#endif
+}
+
+}  // namespace
 
 class BookmarkBubbleSignInDelegateTest : public InProcessBrowserTest {
  public:
@@ -41,6 +66,8 @@ class BookmarkBubbleSignInDelegateTest : public InProcessBrowserTest {
   Profile* profile() { return browser()->profile(); }
 
   void ReplaceBlank(Browser* browser);
+
+  void SignInBrowser(Browser* browser);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(BookmarkBubbleSignInDelegateTest);
@@ -51,28 +78,25 @@ class BookmarkBubbleSignInDelegateTest : public InProcessBrowserTest {
 // replace this tab.  This function replaces about:blank with another URL
 // so that the sign in page goes into a new tab.
 void BookmarkBubbleSignInDelegateTest::ReplaceBlank(Browser* browser) {
-  chrome::NavigateParams params(
-      chrome::GetSingletonTabNavigateParams(browser, GURL("chrome:version")));
-  params.path_behavior = chrome::NavigateParams::IGNORE_AND_NAVIGATE;
-  chrome::ShowSingletonTabOverwritingNTP(browser, params);
+  NavigateParams params(
+      GetSingletonTabNavigateParams(browser, GURL("chrome:version")));
+  params.path_behavior = NavigateParams::IGNORE_AND_NAVIGATE;
+  ShowSingletonTabOverwritingNTP(browser, std::move(params));
+}
+
+void BookmarkBubbleSignInDelegateTest::SignInBrowser(Browser* browser) {
+  std::unique_ptr<BubbleSyncPromoDelegate> delegate;
+  delegate.reset(new BookmarkBubbleSignInDelegate(browser));
+  delegate->OnEnableSync(AccountInfo(), false /* is_default_promo_account */);
 }
 
 IN_PROC_BROWSER_TEST_F(BookmarkBubbleSignInDelegateTest, OnSignInLinkClicked) {
   ReplaceBlank(browser());
   int starting_tab_count = browser()->tab_strip_model()->count();
+  SignInBrowser(browser());
 
-  std::unique_ptr<BubbleSyncPromoDelegate> delegate;
-  delegate.reset(new BookmarkBubbleSignInDelegate(browser()));
-
-  delegate->OnSignInLinkClicked();
-
-  if (kHasProfileChooser) {
-    if (switches::UsePasswordSeparatedSigninFlow()) {
-      EXPECT_TRUE(browser()->signin_view_controller()->delegate());
-    } else {
-      EXPECT_TRUE(ProfileChooserView::IsShowing());
-    }
-
+  if (IsSigninModal(profile())) {
+    EXPECT_TRUE(ShowsModalDialog(browser()));
     EXPECT_EQ(starting_tab_count, browser()->tab_strip_model()->count());
   } else {
     EXPECT_EQ(starting_tab_count + 1, browser()->tab_strip_model()->count());
@@ -82,48 +106,66 @@ IN_PROC_BROWSER_TEST_F(BookmarkBubbleSignInDelegateTest, OnSignInLinkClicked) {
 IN_PROC_BROWSER_TEST_F(BookmarkBubbleSignInDelegateTest,
                        OnSignInLinkClickedReusesBlank) {
   int starting_tab_count = browser()->tab_strip_model()->count();
+  SignInBrowser(browser());
 
-  std::unique_ptr<BubbleSyncPromoDelegate> delegate;
-  delegate.reset(new BookmarkBubbleSignInDelegate(browser()));
-
-  delegate->OnSignInLinkClicked();
-
-  if (kHasProfileChooser) {
-    if (switches::UsePasswordSeparatedSigninFlow()) {
-      EXPECT_TRUE(browser()->signin_view_controller()->delegate());
-    } else {
-      EXPECT_TRUE(ProfileChooserView::IsShowing());
-    }
-
-    EXPECT_EQ(starting_tab_count, browser()->tab_strip_model()->count());
-  } else {
-    EXPECT_EQ(starting_tab_count, browser()->tab_strip_model()->count());
+  if (IsSigninModal(profile())) {
+    EXPECT_TRUE(ShowsModalDialog(browser()));
   }
+  EXPECT_EQ(starting_tab_count, browser()->tab_strip_model()->count());
 }
 
 IN_PROC_BROWSER_TEST_F(BookmarkBubbleSignInDelegateTest,
-                       OnSignInLinkClickedIncognito) {
+                       OnSignInLinkClickedIncognito_RegularBrowserWithTabs) {
   ReplaceBlank(browser());
+  int starting_tab_count = browser()->tab_strip_model()->count();
+  EXPECT_GT(starting_tab_count, 0);
   Browser* incognito_browser = CreateIncognitoBrowser();
-
-  int starting_tab_count_normal = browser()->tab_strip_model()->count();
   int starting_tab_count_incognito =
       incognito_browser->tab_strip_model()->count();
 
-  std::unique_ptr<BubbleSyncPromoDelegate> delegate;
-  delegate.reset(new BookmarkBubbleSignInDelegate(incognito_browser));
+  SignInBrowser(incognito_browser);
 
-  delegate->OnSignInLinkClicked();
-
-  if (kHasProfileChooser) {
+  int tab_count = browser()->tab_strip_model()->count();
+  if (IsSigninModal(profile())) {
+#if !defined(OS_CHROMEOS)
     // ProfileChooser doesn't show in an incognito window.
     EXPECT_FALSE(ProfileChooserView::IsShowing());
+#endif
+
+    // Sign-in dialog is shown when there is at least one tab in the
+    // non-incognito browser.
+    EXPECT_EQ(starting_tab_count, tab_count);
+    EXPECT_TRUE(ShowsModalDialog(browser()));
   } else {
-    // A new tab should have been opened in the normal browser, which should be
-    // visible.
-    int tab_count_normal = browser()->tab_strip_model()->count();
-    EXPECT_EQ(starting_tab_count_normal + 1, tab_count_normal);
+    // On ChromeOS, the full-tab signin page is used.
+    EXPECT_EQ(starting_tab_count + 1, tab_count);
   }
+
+  // No effect is expected on the incognito browser.
+  int tab_count_incognito = incognito_browser->tab_strip_model()->count();
+  EXPECT_EQ(starting_tab_count_incognito, tab_count_incognito);
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBubbleSignInDelegateTest,
+                       OnSignInLinkClickedIncognito_RegularBrowserClosed) {
+  Browser* incognito_browser = CreateIncognitoBrowser();
+  int starting_tab_count_incognito =
+      incognito_browser->tab_strip_model()->count();
+  // Close the main browser.
+  CloseBrowserSynchronously(browser());
+
+  SignInBrowser(incognito_browser);
+
+  // Signing in fom incognito should create a new non-incognito browser.
+  Browser* new_regular_browser = chrome::FindTabbedBrowser(
+      incognito_browser->profile()->GetOriginalProfile(), false);
+  if (IsSigninModal(new_regular_browser->profile())) {
+    EXPECT_FALSE(ShowsModalDialog(new_regular_browser));
+  }
+
+  // The full-tab sign-in page should be shown in the newly created browser.
+  EXPECT_EQ(1, new_regular_browser->tab_strip_model()->count());
+
   // No effect is expected on the incognito browser.
   int tab_count_incognito = incognito_browser->tab_strip_model()->count();
   EXPECT_EQ(starting_tab_count_incognito, tab_count_incognito);
@@ -148,18 +190,15 @@ IN_PROC_BROWSER_TEST_F(BookmarkBubbleSignInDelegateTest, BrowserRemoved) {
   browser()->tab_strip_model()->CloseAllTabs();
   content::RunAllPendingInMessageLoop();
 
-  delegate->OnSignInLinkClicked();
+  delegate->OnEnableSync(AccountInfo(), false /* is_default_promo_account */);
 
-  if (kHasProfileChooser) {
-    if (switches::UsePasswordSeparatedSigninFlow()) {
-      EXPECT_TRUE(extra_browser->signin_view_controller()->delegate());
-    } else {
-      EXPECT_TRUE(ProfileChooserView::IsShowing());
-    }
+  int tab_count = extra_browser->tab_strip_model()->count();
+  if (IsSigninModal(extra_browser->profile())) {
+    EXPECT_TRUE(ShowsModalDialog(extra_browser));
+    EXPECT_EQ(starting_tab_count, tab_count);
   } else {
     // A new tab should have been opened in the extra browser, which should be
     // visible.
-    int tab_count = extra_browser->tab_strip_model()->count();
     EXPECT_EQ(starting_tab_count + 1, tab_count);
   }
 }

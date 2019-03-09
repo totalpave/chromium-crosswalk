@@ -11,10 +11,6 @@
 #include "base/memory/ref_counted.h"
 #include "net/cookies/canonical_cookie.h"
 
-namespace base {
-class SequencedTaskRunner;
-}
-
 namespace ios {
 class ChromeBrowserState;
 }
@@ -22,6 +18,8 @@ class ChromeBrowserState;
 namespace net {
 class CookieCryptoDelegate;
 class CookieStore;
+class SystemCookieStore;
+class NetLog;
 }
 
 namespace cookie_util {
@@ -74,10 +72,12 @@ struct CookieStoreConfig {
   net::CookieCryptoDelegate* crypto_delegate;
 };
 
-// Creates a cookie store wich is internally either a CookieMonster or a
+// Creates a cookie store which is internally either a CookieMonster or a
 // CookieStoreIOS.
 std::unique_ptr<net::CookieStore> CreateCookieStore(
-    const CookieStoreConfig& config);
+    const CookieStoreConfig& config,
+    std::unique_ptr<net::SystemCookieStore> system_cookie_store,
+    net::NetLog* net_log);
 
 // Returns true if the cookies should be cleared.
 // Current implementation returns true if the device has rebooted since the

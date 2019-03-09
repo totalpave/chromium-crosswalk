@@ -15,11 +15,10 @@
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "ui/events/events_export.h"
-#include "ui/events/platform/platform_event_types.h"
+#include "ui/events/platform_event.h"
 
 namespace ui {
 
-class Event;
 class PlatformEventDispatcher;
 class PlatformEventObserver;
 class ScopedEventDispatcher;
@@ -34,7 +33,18 @@ class EVENTS_EXPORT PlatformEventSource {
  public:
   virtual ~PlatformEventSource();
 
+  // Returns the thread-local singleton.
   static PlatformEventSource* GetInstance();
+
+  // Returns true when platform events should not be sent to the rest of the
+  // pipeline. Mainly when Chrome is run in a test environment and it doesn't
+  // expect any events from the platform and all events are synthesized by the
+  // test environment.
+  static bool ShouldIgnoreNativePlatformEvents();
+
+  // Sets whether to ignore platform events and drop them or to forward them to
+  // the rest of the input pipeline.
+  static void SetIgnoreNativePlatformEvents(bool ignore_events);
 
   // Adds a dispatcher to the dispatcher list. If a dispatcher is added during
   // dispatching an event, then the newly added dispatcher also receives that
@@ -65,9 +75,13 @@ class EVENTS_EXPORT PlatformEventSource {
   void AddPlatformEventObserver(PlatformEventObserver* observer);
   void RemovePlatformEventObserver(PlatformEventObserver* observer);
 
+  // Creates PlatformEventSource and sets it as a thread-local singleton.
   static std::unique_ptr<PlatformEventSource> CreateDefault();
 
  protected:
+  typedef base::ObserverList<PlatformEventObserver>::Unchecked
+      PlatformEventObserverList;
+
   PlatformEventSource();
 
   // Dispatches |platform_event| to the dispatchers. If there is an override
@@ -77,11 +91,11 @@ class EVENTS_EXPORT PlatformEventSource {
   // current message-loop iteration.
   virtual uint32_t DispatchEvent(PlatformEvent platform_event);
 
+  PlatformEventObserverList& observers() { return observers_; }
+
  private:
   friend class ScopedEventDispatcher;
   friend class test::PlatformEventSourceTestAPI;
-
-  static PlatformEventSource* instance_;
 
   // This is invoked when the list of dispatchers changes (i.e. a new dispatcher
   // is added, or a dispatcher is removed).
@@ -93,7 +107,7 @@ class EVENTS_EXPORT PlatformEventSource {
   // of
   // dispatchers, so that adding/removing dispatchers during an event dispatch
   // is well-defined.
-  typedef base::ObserverList<PlatformEventDispatcher>
+  typedef base::ObserverList<PlatformEventDispatcher>::Unchecked
       PlatformEventDispatcherList;
   PlatformEventDispatcherList dispatchers_;
   PlatformEventDispatcher* overridden_dispatcher_;
@@ -102,7 +116,9 @@ class EVENTS_EXPORT PlatformEventSource {
   // reset and a previous override-dispatcher has been restored.
   bool overridden_dispatcher_restored_;
 
-  base::ObserverList<PlatformEventObserver> observers_;
+  static bool ignore_native_platform_events_;
+
+  PlatformEventObserverList observers_;
 
   DISALLOW_COPY_AND_ASSIGN(PlatformEventSource);
 };

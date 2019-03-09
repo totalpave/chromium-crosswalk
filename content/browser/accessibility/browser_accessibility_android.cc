@@ -5,6 +5,7 @@
 #include "content/browser/accessibility/browser_accessibility_android.h"
 
 #include "base/i18n/break_iterator.h"
+#include "base/lazy_instance.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -14,10 +15,12 @@
 #include "content/common/accessibility_messages.h"
 #include "content/public/common/content_client.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/accessibility/ax_assistant_structure.h"
+#include "ui/accessibility/ax_role_properties.h"
+#include "ui/accessibility/platform/ax_android_constants.h"
+#include "ui/accessibility/platform/ax_unique_id.h"
 
 namespace {
-
-const base::char16 kSecurePasswordBullet = 0x2022;
 
 // These are enums from android.text.InputType in Java:
 enum {
@@ -43,21 +46,89 @@ enum {
 
 // These are enums from
 // android.view.accessibility.AccessibilityNodeInfo.RangeInfo in Java:
-enum {
-  ANDROID_VIEW_ACCESSIBILITY_RANGE_TYPE_FLOAT = 1
-};
+enum { ANDROID_VIEW_ACCESSIBILITY_RANGE_TYPE_FLOAT = 1 };
+
+static bool HasListAncestor(const content::BrowserAccessibility* node) {
+  if (node == nullptr)
+    return false;  // Base case
+
+  if (ui::IsStaticList(node->GetRole()))
+    return true;
+
+  return HasListAncestor(node->InternalGetParent());
+}
+
+static bool HasListDescendant(const content::BrowserAccessibility* current,
+                              const content::BrowserAccessibility* root) {
+  // Only check role of descendants
+  if (current != root) {
+    if (ui::IsStaticList(current->GetRole()))
+      return true;
+  }
+
+  int num_children = current->InternalChildCount();
+
+  for (int i = 0; i < num_children; ++i) {
+    if (HasListDescendant(current->InternalGetChild(i), root))
+      return true;
+  }
+  return false;
+}
+
+/*
+Determines:
+1. If this is an ancestor of any lists
+2. If this list is a descendant of any lists
+Talkback uses this information to report if the list has levels, and if so,
+which level is currently selected
+*/
+static bool IsHierarchicalList(const content::BrowserAccessibility* node) {
+  // Only makes sense to run if |node| is already a list
+  DCHECK(ui::IsStaticList(node->GetRole()));
+
+  if (node == nullptr)
+    return false;
+
+  bool found_list_in_descendants = HasListDescendant(node, node);
+  bool found_list_in_ancestors = HasListAncestor(node->InternalGetParent());
+
+  return (found_list_in_descendants || found_list_in_ancestors);
+}
 
 }  // namespace
 
 namespace content {
+
+const float kContentInvalidTimeoutMillisecs = 6000.0;
 
 // static
 BrowserAccessibility* BrowserAccessibility::Create() {
   return new BrowserAccessibilityAndroid();
 }
 
+using UniqueIdMap = std::unordered_map<int32_t, BrowserAccessibilityAndroid*>;
+// Map from each AXPlatformNode's unique id to its instance.
+base::LazyInstance<UniqueIdMap>::Leaky g_unique_id_map =
+    LAZY_INSTANCE_INITIALIZER;
+
+// static
+BrowserAccessibilityAndroid* BrowserAccessibilityAndroid::GetFromUniqueId(
+    int32_t unique_id) {
+  UniqueIdMap* unique_ids = g_unique_id_map.Pointer();
+  auto iter = unique_ids->find(unique_id);
+  if (iter != unique_ids->end())
+    return iter->second;
+
+  return nullptr;
+}
+
 BrowserAccessibilityAndroid::BrowserAccessibilityAndroid() {
-  first_time_ = true;
+  g_unique_id_map.Get()[unique_id()] = this;
+}
+
+BrowserAccessibilityAndroid::~BrowserAccessibilityAndroid() {
+  if (unique_id())
+    g_unique_id_map.Get().erase(unique_id());
 }
 
 bool BrowserAccessibilityAndroid::IsNative() const {
@@ -65,10 +136,9 @@ bool BrowserAccessibilityAndroid::IsNative() const {
 }
 
 void BrowserAccessibilityAndroid::OnLocationChanged() {
-  manager()->NotifyAccessibilityEvent(
-      BrowserAccessibilityEvent::FromTreeChange,
-      ui::AX_EVENT_LOCATION_CHANGED,
-      this);
+  auto* manager =
+      static_cast<BrowserAccessibilityManagerAndroid*>(this->manager());
+  manager->FireLocationChanged(this);
 }
 
 base::string16 BrowserAccessibilityAndroid::GetValue() const {
@@ -77,10 +147,17 @@ base::string16 BrowserAccessibilityAndroid::GetValue() const {
   // Optionally replace entered password text with bullet characters
   // based on a user preference.
   if (IsPassword()) {
-    bool should_expose = static_cast<BrowserAccessibilityManagerAndroid*>(
-        manager())->ShouldExposePasswordText();
-    if (!should_expose) {
-      value = base::string16(value.size(), kSecurePasswordBullet);
+    auto* manager =
+        static_cast<BrowserAccessibilityManagerAndroid*>(this->manager());
+    if (manager->ShouldRespectDisplayedPasswordText()) {
+      // In the Chrome accessibility tree, the value of a password node is
+      // unobscured. However, if ShouldRespectDisplayedPasswordText() returns
+      // true we should try to expose whatever's actually visually displayed,
+      // whether that's the actual password or dots or whatever. To do this
+      // we rely on the password field's shadow dom.
+      value = base::UTF8ToUTF16(ComputeAccessibleNameFromDescendants());
+    } else if (!manager->ShouldExposePasswordText()) {
+      value = base::string16(value.size(), ui::kSecurePasswordBullet);
     }
   }
 
@@ -92,98 +169,117 @@ bool BrowserAccessibilityAndroid::PlatformIsLeaf() const {
     return true;
 
   // Iframes are always allowed to contain children.
-  if (IsIframe() ||
-      GetRole() == ui::AX_ROLE_ROOT_WEB_AREA ||
-      GetRole() == ui::AX_ROLE_WEB_AREA) {
+  if (IsIframe() || GetRole() == ax::mojom::Role::kRootWebArea ||
+      GetRole() == ax::mojom::Role::kWebArea) {
     return false;
   }
 
-  // If it has a focusable child, we definitely can't leave out children.
-  if (HasFocusableChild())
-    return false;
-
   // Date and time controls should drop their children.
   switch (GetRole()) {
-    case ui::AX_ROLE_DATE:
-    case ui::AX_ROLE_DATE_TIME:
-    case ui::AX_ROLE_INPUT_TIME:
+    case ax::mojom::Role::kDate:
+    case ax::mojom::Role::kDateTime:
+    case ax::mojom::Role::kInputTime:
       return true;
     default:
       break;
   }
+
+  // If it has a focusable child, we definitely can't leave out children.
+  if (HasFocusableNonOptionChild())
+    return false;
 
   BrowserAccessibilityManagerAndroid* manager_android =
       static_cast<BrowserAccessibilityManagerAndroid*>(manager());
   if (manager_android->prune_tree_for_screen_reader()) {
     // Headings with text can drop their children.
     base::string16 name = GetText();
-    if (GetRole() == ui::AX_ROLE_HEADING && !name.empty())
+    if (GetRole() == ax::mojom::Role::kHeading && !name.empty())
       return true;
 
     // Focusable nodes with text can drop their children.
-    if (HasState(ui::AX_STATE_FOCUSABLE) && !name.empty())
+    if (HasState(ax::mojom::State::kFocusable) && !name.empty())
       return true;
 
     // Nodes with only static text as children can drop their children.
-    if (HasOnlyStaticTextChildren())
+    if (HasOnlyTextChildren())
       return true;
   }
 
   return false;
 }
 
+bool BrowserAccessibilityAndroid::CanFireEvents() const {
+  return true;
+}
+
 bool BrowserAccessibilityAndroid::IsCheckable() const {
-  bool checkable = false;
-  bool is_aria_pressed_defined;
-  bool is_mixed;
-  GetAriaTristate("aria-pressed", &is_aria_pressed_defined, &is_mixed);
-  if (GetRole() == ui::AX_ROLE_CHECK_BOX ||
-      GetRole() == ui::AX_ROLE_RADIO_BUTTON ||
-      GetRole() == ui::AX_ROLE_MENU_ITEM_CHECK_BOX ||
-      GetRole() == ui::AX_ROLE_MENU_ITEM_RADIO ||
-      is_aria_pressed_defined) {
-    checkable = true;
-  }
-  if (HasState(ui::AX_STATE_CHECKED))
-    checkable = true;
-  return checkable;
+  return HasIntAttribute(ax::mojom::IntAttribute::kCheckedState);
 }
 
 bool BrowserAccessibilityAndroid::IsChecked() const {
-  return (HasState(ui::AX_STATE_CHECKED) || HasState(ui::AX_STATE_PRESSED));
+  return GetData().GetCheckedState() == ax::mojom::CheckedState::kTrue;
 }
 
 bool BrowserAccessibilityAndroid::IsClickable() const {
-  if (!PlatformIsLeaf())
+  // Explicitly disabled form controls shouldn't be clickable.
+  if (!IsEnabled())
     return false;
 
-  // We are very aggressive about returning true with IsClickable on Android
-  // because there is no way to know for sure what might have a click handler.
-  return IsFocusable() || !GetText().empty();
+  // If it has a custom default action verb except for
+  // ax::mojom::DefaultActionVerb::kClickAncestor, it's definitely clickable.
+  // ax::mojom::DefaultActionVerb::kClickAncestor is used when an element with a
+  // click listener is present in its ancestry chain.
+  if (HasIntAttribute(ax::mojom::IntAttribute::kDefaultActionVerb) &&
+      (GetData().GetDefaultActionVerb() !=
+       ax::mojom::DefaultActionVerb::kClickAncestor)) {
+    return true;
+  }
+
+  // Otherwise return true if it's focusable, but skip web areas and iframes.
+  if (IsIframe() || (GetRole() == ax::mojom::Role::kRootWebArea))
+    return false;
+  return IsFocusable();
 }
 
+bool BrowserAccessibilityAndroid::IsCollapsed() const {
+  return HasState(ax::mojom::State::kCollapsed);
+}
+
+// TODO(dougt) Move to ax_role_properties?
 bool BrowserAccessibilityAndroid::IsCollection() const {
-  return (GetRole() == ui::AX_ROLE_GRID ||
-          GetRole() == ui::AX_ROLE_LIST ||
-          GetRole() == ui::AX_ROLE_LIST_BOX ||
-          GetRole() == ui::AX_ROLE_DESCRIPTION_LIST ||
-          GetRole() == ui::AX_ROLE_TABLE ||
-          GetRole() == ui::AX_ROLE_TREE);
+  return (ui::IsTableLike(GetRole()) || GetRole() == ax::mojom::Role::kList ||
+          GetRole() == ax::mojom::Role::kListBox ||
+          GetRole() == ax::mojom::Role::kDescriptionList ||
+          GetRole() == ax::mojom::Role::kTree);
 }
 
 bool BrowserAccessibilityAndroid::IsCollectionItem() const {
-  return (GetRole() == ui::AX_ROLE_CELL ||
-          GetRole() == ui::AX_ROLE_COLUMN_HEADER ||
-          GetRole() == ui::AX_ROLE_DESCRIPTION_LIST_TERM ||
-          GetRole() == ui::AX_ROLE_LIST_BOX_OPTION ||
-          GetRole() == ui::AX_ROLE_LIST_ITEM ||
-          GetRole() == ui::AX_ROLE_ROW_HEADER ||
-          GetRole() == ui::AX_ROLE_TREE_ITEM);
+  return (GetRole() == ax::mojom::Role::kCell ||
+          GetRole() == ax::mojom::Role::kColumnHeader ||
+          GetRole() == ax::mojom::Role::kDescriptionListTerm ||
+          GetRole() == ax::mojom::Role::kListBoxOption ||
+          GetRole() == ax::mojom::Role::kListItem ||
+          GetRole() == ax::mojom::Role::kRowHeader ||
+          GetRole() == ax::mojom::Role::kTreeItem);
 }
 
 bool BrowserAccessibilityAndroid::IsContentInvalid() const {
-  std::string invalid;
-  return GetHtmlAttribute("aria-invalid", &invalid);
+  if (IsFocused()) {
+    // When a node has focus, only report that it's invalid for a short period
+    // of time. Otherwise it's annoying to hear the invalid message every time
+    // a character is entered.
+    if (content_invalid_timer_.Elapsed().InMillisecondsF() <
+        kContentInvalidTimeoutMillisecs) {
+      bool invalid_state =
+          HasIntAttribute(ax::mojom::IntAttribute::kInvalidState) &&
+          GetData().GetInvalidState() != ax::mojom::InvalidState::kFalse;
+      if (invalid_state)
+        return true;
+    }
+    return false;
+  }
+  return HasIntAttribute(ax::mojom::IntAttribute::kInvalidState) &&
+         GetData().GetInvalidState() != ax::mojom::InvalidState::kFalse;
 }
 
 bool BrowserAccessibilityAndroid::IsDismissable() const {
@@ -191,20 +287,27 @@ bool BrowserAccessibilityAndroid::IsDismissable() const {
 }
 
 bool BrowserAccessibilityAndroid::IsEditableText() const {
-  return GetRole() == ui::AX_ROLE_TEXT_FIELD;
+  return IsPlainTextField() || IsRichTextField();
 }
 
 bool BrowserAccessibilityAndroid::IsEnabled() const {
-  return HasState(ui::AX_STATE_ENABLED);
+  return GetData().GetRestriction() != ax::mojom::Restriction::kDisabled;
+}
+
+bool BrowserAccessibilityAndroid::IsExpanded() const {
+  return HasState(ax::mojom::State::kExpanded);
 }
 
 bool BrowserAccessibilityAndroid::IsFocusable() const {
-  bool focusable = HasState(ui::AX_STATE_FOCUSABLE);
+  // If it's an iframe element, or the root element of a child frame,
+  // only mark it as focusable if the element has an explicit name.
+  // Otherwise mark it as not focusable to avoid the user landing on
+  // empty container elements in the tree.
   if (IsIframe() ||
-      GetRole() == ui::AX_ROLE_WEB_AREA) {
-    focusable = false;
-  }
-  return focusable;
+      (GetRole() == ax::mojom::Role::kRootWebArea && PlatformGetParent()))
+    return HasStringAttribute(ax::mojom::StringAttribute::kName);
+
+  return HasState(ax::mojom::State::kFocusable);
 }
 
 bool BrowserAccessibilityAndroid::IsFocused() const {
@@ -213,179 +316,156 @@ bool BrowserAccessibilityAndroid::IsFocused() const {
 
 bool BrowserAccessibilityAndroid::IsHeading() const {
   BrowserAccessibilityAndroid* parent =
-      static_cast<BrowserAccessibilityAndroid*>(GetParent());
+      static_cast<BrowserAccessibilityAndroid*>(PlatformGetParent());
   if (parent && parent->IsHeading())
     return true;
 
-  return (GetRole() == ui::AX_ROLE_COLUMN_HEADER ||
-          GetRole() == ui::AX_ROLE_HEADING ||
-          GetRole() == ui::AX_ROLE_ROW_HEADER);
+  return ui::IsHeadingOrTableHeader(GetRole());
 }
 
 bool BrowserAccessibilityAndroid::IsHierarchical() const {
-  return (GetRole() == ui::AX_ROLE_LIST ||
-          GetRole() == ui::AX_ROLE_DESCRIPTION_LIST ||
-          GetRole() == ui::AX_ROLE_TREE);
+  return (GetRole() == ax::mojom::Role::kTree ||
+          (ui::IsStaticList(GetRole()) && IsHierarchicalList(this)));
 }
 
 bool BrowserAccessibilityAndroid::IsLink() const {
-  return (GetRole() == ui::AX_ROLE_LINK ||
-         GetRole() == ui::AX_ROLE_IMAGE_MAP_LINK);
+  return ui::IsLink(GetRole());
 }
 
 bool BrowserAccessibilityAndroid::IsMultiLine() const {
-  return HasState(ui::AX_STATE_MULTILINE);
+  return HasState(ax::mojom::State::kMultiline);
 }
 
 bool BrowserAccessibilityAndroid::IsPassword() const {
-  return HasState(ui::AX_STATE_PROTECTED);
+  return HasState(ax::mojom::State::kProtected);
 }
 
 bool BrowserAccessibilityAndroid::IsRangeType() const {
-  return (GetRole() == ui::AX_ROLE_PROGRESS_INDICATOR ||
-          GetRole() == ui::AX_ROLE_METER ||
-          GetRole() == ui::AX_ROLE_SCROLL_BAR ||
-          GetRole() == ui::AX_ROLE_SLIDER);
+  return (GetRole() == ax::mojom::Role::kProgressIndicator ||
+          GetRole() == ax::mojom::Role::kMeter ||
+          GetRole() == ax::mojom::Role::kScrollBar ||
+          GetRole() == ax::mojom::Role::kSlider ||
+          (GetRole() == ax::mojom::Role::kSplitter && IsFocusable()));
 }
 
 bool BrowserAccessibilityAndroid::IsScrollable() const {
-  return (HasIntAttribute(ui::AX_ATTR_SCROLL_X_MAX) &&
-          GetRole() != ui::AX_ROLE_SCROLL_AREA);
+  return HasIntAttribute(ax::mojom::IntAttribute::kScrollXMax);
 }
 
 bool BrowserAccessibilityAndroid::IsSelected() const {
-  return HasState(ui::AX_STATE_SELECTED);
+  return GetBoolAttribute(ax::mojom::BoolAttribute::kSelected);
 }
 
 bool BrowserAccessibilityAndroid::IsSlider() const {
-  return GetRole() == ui::AX_ROLE_SLIDER;
+  return GetRole() == ax::mojom::Role::kSlider;
 }
 
 bool BrowserAccessibilityAndroid::IsVisibleToUser() const {
-  return !HasState(ui::AX_STATE_INVISIBLE);
+  return !HasState(ax::mojom::State::kInvisible);
+}
+
+bool BrowserAccessibilityAndroid::IsInterestingOnAndroid() const {
+  // The root is not interesting if it doesn't have a title, even
+  // though it's focusable.
+  if (GetRole() == ax::mojom::Role::kRootWebArea && GetText().empty())
+    return false;
+
+  // Mark as uninteresting if it's hidden, even if it is focusable.
+  if (HasState(ax::mojom::State::kInvisible))
+    return false;
+
+  // Focusable nodes are always interesting. Note that IsFocusable()
+  // already skips over things like iframes and child frames that are
+  // technically focusable but shouldn't be exposed as focusable on Android.
+  if (IsFocusable())
+    return true;
+
+  // If it's not focusable but has a control role, then it's interesting.
+  if (ui::IsControl(GetRole()))
+    return true;
+
+  // A non focusable child of a control is not interesting
+  const BrowserAccessibility* parent = PlatformGetParent();
+  while (parent != nullptr) {
+    if (ui::IsControl(parent->GetRole()))
+      return false;
+    parent = parent->PlatformGetParent();
+  }
+
+  // Otherwise, the interesting nodes are leaf nodes with non-whitespace text.
+  return PlatformIsLeaf() &&
+         !base::ContainsOnlyChars(GetText(), base::kWhitespaceUTF16);
+}
+
+const BrowserAccessibilityAndroid*
+BrowserAccessibilityAndroid::GetSoleInterestingNodeFromSubtree() const {
+  if (IsInterestingOnAndroid())
+    return this;
+
+  const BrowserAccessibilityAndroid* sole_interesting_node = nullptr;
+  for (uint32_t i = 0; i < PlatformChildCount(); ++i) {
+    const BrowserAccessibilityAndroid* interesting_node =
+        static_cast<const BrowserAccessibilityAndroid*>(PlatformGetChild(i))
+            ->GetSoleInterestingNodeFromSubtree();
+    if (interesting_node && sole_interesting_node) {
+      // If there are two interesting nodes, return nullptr.
+      return nullptr;
+    } else if (interesting_node) {
+      sole_interesting_node = interesting_node;
+    }
+  }
+
+  return sole_interesting_node;
+}
+
+bool BrowserAccessibilityAndroid::AreInlineTextBoxesLoaded() const {
+  if (GetRole() == ax::mojom::Role::kStaticText)
+    return InternalChildCount() > 0;
+
+  // Return false if any descendant needs to load inline text boxes.
+  for (uint32_t i = 0; i < InternalChildCount(); ++i) {
+    BrowserAccessibilityAndroid* child =
+        static_cast<BrowserAccessibilityAndroid*>(InternalGetChild(i));
+    if (!child->AreInlineTextBoxesLoaded())
+      return false;
+  }
+
+  // Otherwise return true - either they're all loaded, or there aren't
+  // any descendants that need to load inline text boxes.
+  return true;
 }
 
 bool BrowserAccessibilityAndroid::CanOpenPopup() const {
-  return HasState(ui::AX_STATE_HASPOPUP);
+  return HasIntAttribute(ax::mojom::IntAttribute::kHasPopup);
 }
 
 const char* BrowserAccessibilityAndroid::GetClassName() const {
-  const char* class_name = NULL;
+  ax::mojom::Role role = GetRole();
 
-  switch (GetRole()) {
-    case ui::AX_ROLE_SEARCH_BOX:
-    case ui::AX_ROLE_SPIN_BUTTON:
-    case ui::AX_ROLE_TEXT_FIELD:
-      class_name = "android.widget.EditText";
-      break;
-    case ui::AX_ROLE_SLIDER:
-      class_name = "android.widget.SeekBar";
-      break;
-    case ui::AX_ROLE_COLOR_WELL:
-    case ui::AX_ROLE_COMBO_BOX:
-    case ui::AX_ROLE_DATE:
-    case ui::AX_ROLE_POP_UP_BUTTON:
-    case ui::AX_ROLE_INPUT_TIME:
-      class_name = "android.widget.Spinner";
-      break;
-    case ui::AX_ROLE_BUTTON:
-    case ui::AX_ROLE_MENU_BUTTON:
-      class_name = "android.widget.Button";
-      break;
-    case ui::AX_ROLE_CHECK_BOX:
-    case ui::AX_ROLE_SWITCH:
-      class_name = "android.widget.CheckBox";
-      break;
-    case ui::AX_ROLE_RADIO_BUTTON:
-      class_name = "android.widget.RadioButton";
-      break;
-    case ui::AX_ROLE_TOGGLE_BUTTON:
-      class_name = "android.widget.ToggleButton";
-      break;
-    case ui::AX_ROLE_CANVAS:
-    case ui::AX_ROLE_IMAGE:
-    case ui::AX_ROLE_SVG_ROOT:
-      class_name = "android.widget.Image";
-      break;
-    case ui::AX_ROLE_METER:
-    case ui::AX_ROLE_PROGRESS_INDICATOR:
-      class_name = "android.widget.ProgressBar";
-      break;
-    case ui::AX_ROLE_TAB_LIST:
-      class_name = "android.widget.TabWidget";
-      break;
-    case ui::AX_ROLE_GRID:
-    case ui::AX_ROLE_TABLE:
-      class_name = "android.widget.GridView";
-      break;
-    case ui::AX_ROLE_LIST:
-    case ui::AX_ROLE_LIST_BOX:
-    case ui::AX_ROLE_DESCRIPTION_LIST:
-      class_name = "android.widget.ListView";
-      break;
-    case ui::AX_ROLE_DIALOG:
-      class_name = "android.app.Dialog";
-      break;
-    case ui::AX_ROLE_ROOT_WEB_AREA:
-      if (GetParent() == nullptr)
-        class_name = "android.webkit.WebView";
-      else
-        class_name = "android.view.View";
-      break;
-    case ui::AX_ROLE_MENU_ITEM:
-    case ui::AX_ROLE_MENU_ITEM_CHECK_BOX:
-    case ui::AX_ROLE_MENU_ITEM_RADIO:
-      class_name = "android.view.MenuItem";
-      break;
-    default:
-      class_name = "android.view.View";
-      break;
-  }
+  // On Android, contenteditable needs to be handled the same as any
+  // other text field.
+  if (IsPlainTextField() || IsRichTextField())
+    role = ax::mojom::Role::kTextField;
 
-  return class_name;
+  return ui::AXRoleToAndroidClassName(role, PlatformGetParent() != nullptr);
 }
 
 base::string16 BrowserAccessibilityAndroid::GetText() const {
-  if (IsIframe() ||
-      GetRole() == ui::AX_ROLE_WEB_AREA) {
+  if (IsIframe() || GetRole() == ax::mojom::Role::kWebArea) {
     return base::string16();
   }
-
-  // In accordance with ARIA, some elements use their contents as an
-  // accessibility name, so some elements will have the same name as their
-  // child. While most platforms expect this, it causes Android to speak the
-  // name twice. So in this case we should remove the name from the parent.
-  if (GetRole() == ui::AX_ROLE_LIST_ITEM &&
-      GetIntAttribute(ui::AX_ATTR_NAME_FROM) == ui::AX_NAME_FROM_CONTENTS) {
-    // This is an approximation of "PlatformChildCount() > 0" because we can't
-    // call PlatformChildCount from here.
-    if (InternalChildCount() > 0 && !HasOnlyStaticTextChildren())
-      return base::string16();
-  }
-
-  // We can only expose one accessible name on Android,
-  // not 2 or 3 like on Windows or Mac.
 
   // First, always return the |value| attribute if this is an
   // input field.
   base::string16 value = GetValue();
-  if (!value.empty()) {
-    if (HasState(ui::AX_STATE_EDITABLE))
-      return value;
-
-    switch (GetRole()) {
-      case ui::AX_ROLE_COMBO_BOX:
-      case ui::AX_ROLE_POP_UP_BUTTON:
-      case ui::AX_ROLE_TEXT_FIELD:
-        return value;
-    }
-  }
+  if (ShouldExposeValueAsName())
+    return value;
 
   // For color wells, the color is stored in separate attributes.
   // Perhaps we could return color names in the future?
-  if (GetRole() == ui::AX_ROLE_COLOR_WELL) {
-    unsigned int color =
-        static_cast<unsigned int>(GetIntAttribute(ui::AX_ATTR_COLOR_VALUE));
+  if (GetRole() == ax::mojom::Role::kColorWell) {
+    unsigned int color = static_cast<unsigned int>(
+        GetIntAttribute(ax::mojom::IntAttribute::kColorValue));
     unsigned int red = SkColorGetR(color);
     unsigned int green = SkColorGetG(color);
     unsigned int blue = SkColorGetB(color);
@@ -393,49 +473,67 @@ base::string16 BrowserAccessibilityAndroid::GetText() const {
         base::StringPrintf("#%02X%02X%02X", red, green, blue));
   }
 
-  base::string16 text = GetString16Attribute(ui::AX_ATTR_NAME);
-  base::string16 description = GetString16Attribute(ui::AX_ATTR_DESCRIPTION);
-  if (!description.empty()) {
-    if (!text.empty())
-      text += base::ASCIIToUTF16(" ");
-    text += description;
-  }
-
+  base::string16 text = GetString16Attribute(ax::mojom::StringAttribute::kName);
   if (text.empty())
     text = value;
 
+  // If this is the root element, give up now, allow it to have no
+  // accessible text. For almost all other focusable nodes we try to
+  // get text from contents, but for the root element that's redundant
+  // and often way too verbose.
+  if (GetRole() == ax::mojom::Role::kRootWebArea)
+    return text;
+
   // This is called from PlatformIsLeaf, so don't call PlatformChildCount
   // from within this!
-  if (text.empty() &&
-      (HasOnlyStaticTextChildren() ||
-       (IsFocusable() && HasOnlyTextAndImageChildren()))) {
+  if (text.empty() && (HasOnlyTextChildren() ||
+                       (IsFocusable() && HasOnlyTextAndImageChildren()))) {
     for (uint32_t i = 0; i < InternalChildCount(); i++) {
       BrowserAccessibility* child = InternalGetChild(i);
       text += static_cast<BrowserAccessibilityAndroid*>(child)->GetText();
     }
   }
 
-  if (text.empty() && (IsLink() || GetRole() == ui::AX_ROLE_IMAGE)) {
-    base::string16 url = GetString16Attribute(ui::AX_ATTR_URL);
-    // Given a url like http://foo.com/bar/baz.png, just return the
-    // base text, e.g., "baz".
-    int trailing_slashes = 0;
-    while (url.size() - trailing_slashes > 0 &&
-           url[url.size() - trailing_slashes - 1] == '/') {
-      trailing_slashes++;
-    }
-    if (trailing_slashes)
-      url = url.substr(0, url.size() - trailing_slashes);
-    size_t slash_index = url.rfind('/');
-    if (slash_index != std::string::npos)
-      url = url.substr(slash_index + 1);
-    size_t dot_index = url.rfind('.');
-    if (dot_index != std::string::npos)
-      url = url.substr(0, dot_index);
-    text = url;
+  if (text.empty() && (ui::IsLink(GetRole()) || ui::IsImage(GetRole())) &&
+      !HasExplicitlyEmptyName()) {
+    base::string16 url = GetString16Attribute(ax::mojom::StringAttribute::kUrl);
+    text = ui::AXUrlBaseText(url);
   }
 
   return text;
+}
+
+base::string16 BrowserAccessibilityAndroid::GetHint() const {
+  std::vector<base::string16> strings;
+
+  // If we're returning the value as the main text, the name needs to be
+  // part of the hint.
+  if (ShouldExposeValueAsName()) {
+    base::string16 name =
+        GetString16Attribute(ax::mojom::StringAttribute::kName);
+    if (!name.empty())
+      strings.push_back(name);
+  }
+
+  if (GetData().GetNameFrom() != ax::mojom::NameFrom::kPlaceholder &&
+      GetData().GetIntAttribute(ax::mojom::IntAttribute::kDescriptionFrom) !=
+          static_cast<int32_t>(ax::mojom::DescriptionFrom::kPlaceholder)) {
+    base::string16 placeholder =
+        GetString16Attribute(ax::mojom::StringAttribute::kPlaceholder);
+    if (!placeholder.empty())
+      strings.push_back(placeholder);
+  }
+
+  base::string16 description =
+      GetString16Attribute(ax::mojom::StringAttribute::kDescription);
+  if (!description.empty())
+    strings.push_back(description);
+
+  return base::JoinString(strings, base::ASCIIToUTF16(" "));
+}
+
+std::string BrowserAccessibilityAndroid::GetRoleString() const {
+  return ui::ToString(GetRole());
 }
 
 base::string16 BrowserAccessibilityAndroid::GetRoleDescription() const {
@@ -443,11 +541,11 @@ base::string16 BrowserAccessibilityAndroid::GetRoleDescription() const {
 
   // As a special case, if we have a heading level return a string like
   // "heading level 1", etc.
-  if (GetRole() == ui::AX_ROLE_HEADING) {
-    int level = GetIntAttribute(ui::AX_ATTR_HIERARCHICAL_LEVEL);
+  if (GetRole() == ax::mojom::Role::kHeading) {
+    int level = GetIntAttribute(ax::mojom::IntAttribute::kHierarchicalLevel);
     if (level >= 1 && level <= 6) {
       std::vector<base::string16> values;
-      values.push_back(base::IntToString16(level));
+      values.push_back(base::NumberToString16(level));
       return base::ReplaceStringPlaceholders(
           content_client->GetLocalizedString(IDS_AX_ROLE_HEADING_WITH_LEVEL),
           values, nullptr);
@@ -456,384 +554,528 @@ base::string16 BrowserAccessibilityAndroid::GetRoleDescription() const {
 
   int message_id = -1;
   switch (GetRole()) {
-    case ui::AX_ROLE_ABBR:
+    case ax::mojom::Role::kAbbr:
       // No role description.
       break;
-    case ui::AX_ROLE_ALERT_DIALOG:
+    case ax::mojom::Role::kAlertDialog:
       message_id = IDS_AX_ROLE_ALERT_DIALOG;
       break;
-    case ui::AX_ROLE_ALERT:
+    case ax::mojom::Role::kAlert:
       message_id = IDS_AX_ROLE_ALERT;
       break;
-    case ui::AX_ROLE_ANNOTATION:
+    case ax::mojom::Role::kAnchor:
       // No role description.
       break;
-    case ui::AX_ROLE_APPLICATION:
+    case ax::mojom::Role::kAnnotation:
+      // No role description.
+      break;
+    case ax::mojom::Role::kApplication:
       message_id = IDS_AX_ROLE_APPLICATION;
       break;
-    case ui::AX_ROLE_ARTICLE:
+    case ax::mojom::Role::kArticle:
       message_id = IDS_AX_ROLE_ARTICLE;
       break;
-    case ui::AX_ROLE_BANNER:
+    case ax::mojom::Role::kAudio:
+      message_id = IDS_AX_MEDIA_AUDIO_ELEMENT;
+      break;
+    case ax::mojom::Role::kBanner:
       message_id = IDS_AX_ROLE_BANNER;
       break;
-    case ui::AX_ROLE_BLOCKQUOTE:
+    case ax::mojom::Role::kBlockquote:
       message_id = IDS_AX_ROLE_BLOCKQUOTE;
       break;
-    case ui::AX_ROLE_BUSY_INDICATOR:
-      message_id = IDS_AX_ROLE_BUSY_INDICATOR;
-      break;
-    case ui::AX_ROLE_BUTTON:
+    case ax::mojom::Role::kButton:
       message_id = IDS_AX_ROLE_BUTTON;
       break;
-    case ui::AX_ROLE_BUTTON_DROP_DOWN:
-      message_id = IDS_AX_ROLE_BUTTON_DROP_DOWN;
-      break;
-    case ui::AX_ROLE_CANVAS:
+    case ax::mojom::Role::kCanvas:
       // No role description.
       break;
-    case ui::AX_ROLE_CAPTION:
+    case ax::mojom::Role::kCaption:
       // No role description.
-       break;
-    case ui::AX_ROLE_CELL:
-      message_id = IDS_AX_ROLE_CELL;
       break;
-    case ui::AX_ROLE_CHECK_BOX:
+    case ax::mojom::Role::kCaret:
+      // No role description.
+      break;
+    case ax::mojom::Role::kCell:
+      // No role description.
+      break;
+    case ax::mojom::Role::kCheckBox:
       message_id = IDS_AX_ROLE_CHECK_BOX;
       break;
-    case ui::AX_ROLE_CLIENT:
+    case ax::mojom::Role::kClient:
       // No role description.
       break;
-    case ui::AX_ROLE_COLOR_WELL:
+    case ax::mojom::Role::kColorWell:
       message_id = IDS_AX_ROLE_COLOR_WELL;
       break;
-    case ui::AX_ROLE_COLUMN_HEADER:
+    case ax::mojom::Role::kColumnHeader:
       message_id = IDS_AX_ROLE_COLUMN_HEADER;
       break;
-    case ui::AX_ROLE_COLUMN:
+    case ax::mojom::Role::kColumn:
       // No role description.
       break;
-    case ui::AX_ROLE_COMBO_BOX:
-      message_id = IDS_AX_ROLE_COMBO_BOX;
+    case ax::mojom::Role::kComboBoxGrouping:
+      // No role descripotion.
       break;
-    case ui::AX_ROLE_COMPLEMENTARY:
+    case ax::mojom::Role::kComboBoxMenuButton:
+      // No role descripotion.
+      break;
+    case ax::mojom::Role::kComplementary:
       message_id = IDS_AX_ROLE_COMPLEMENTARY;
       break;
-    case ui::AX_ROLE_CONTENT_INFO:
+    case ax::mojom::Role::kContentDeletion:
+      message_id = IDS_AX_ROLE_CONTENT_DELETION;
+      break;
+    case ax::mojom::Role::kContentInsertion:
+      message_id = IDS_AX_ROLE_CONTENT_INSERTION;
+      break;
+    case ax::mojom::Role::kContentInfo:
       message_id = IDS_AX_ROLE_CONTENT_INFO;
       break;
-    case ui::AX_ROLE_DATE:
+    case ax::mojom::Role::kDate:
       message_id = IDS_AX_ROLE_DATE;
       break;
-    case ui::AX_ROLE_DATE_TIME:
+    case ax::mojom::Role::kDateTime:
       message_id = IDS_AX_ROLE_DATE_TIME;
       break;
-    case ui::AX_ROLE_DEFINITION:
+    case ax::mojom::Role::kDefinition:
       message_id = IDS_AX_ROLE_DEFINITION;
       break;
-    case ui::AX_ROLE_DESCRIPTION_LIST_DETAIL:
+    case ax::mojom::Role::kDescriptionListDetail:
       message_id = IDS_AX_ROLE_DEFINITION;
       break;
-    case ui::AX_ROLE_DESCRIPTION_LIST:
+    case ax::mojom::Role::kDescriptionList:
       // No role description.
       break;
-    case ui::AX_ROLE_DESCRIPTION_LIST_TERM:
+    case ax::mojom::Role::kDescriptionListTerm:
       // No role description.
       break;
-    case ui::AX_ROLE_DESKTOP:
+    case ax::mojom::Role::kDesktop:
       // No role description.
       break;
-    case ui::AX_ROLE_DETAILS:
+    case ax::mojom::Role::kDetails:
       // No role description.
       break;
-    case ui::AX_ROLE_DIALOG:
+    case ax::mojom::Role::kDialog:
       message_id = IDS_AX_ROLE_DIALOG;
       break;
-    case ui::AX_ROLE_DIRECTORY:
+    case ax::mojom::Role::kDirectory:
       message_id = IDS_AX_ROLE_DIRECTORY;
       break;
-    case ui::AX_ROLE_DISCLOSURE_TRIANGLE:
+    case ax::mojom::Role::kDisclosureTriangle:
       message_id = IDS_AX_ROLE_DISCLOSURE_TRIANGLE;
       break;
-    case ui::AX_ROLE_DIV:
-      // No role description.
+    case ax::mojom::Role::kDocAbstract:
+      message_id = IDS_AX_ROLE_DOC_ABSTRACT;
       break;
-    case ui::AX_ROLE_DOCUMENT:
+    case ax::mojom::Role::kDocAcknowledgments:
+      message_id = IDS_AX_ROLE_DOC_ACKNOWLEDGMENTS;
+      break;
+    case ax::mojom::Role::kDocAfterword:
+      message_id = IDS_AX_ROLE_DOC_AFTERWORD;
+      break;
+    case ax::mojom::Role::kDocAppendix:
+      message_id = IDS_AX_ROLE_DOC_APPENDIX;
+      break;
+    case ax::mojom::Role::kDocBackLink:
+      message_id = IDS_AX_ROLE_DOC_BACKLINK;
+      break;
+    case ax::mojom::Role::kDocBiblioEntry:
+      message_id = IDS_AX_ROLE_DOC_BIBLIO_ENTRY;
+      break;
+    case ax::mojom::Role::kDocBibliography:
+      message_id = IDS_AX_ROLE_DOC_BIBLIOGRAPHY;
+      break;
+    case ax::mojom::Role::kDocBiblioRef:
+      message_id = IDS_AX_ROLE_DOC_BIBLIO_REF;
+      break;
+    case ax::mojom::Role::kDocChapter:
+      message_id = IDS_AX_ROLE_DOC_CHAPTER;
+      break;
+    case ax::mojom::Role::kDocColophon:
+      message_id = IDS_AX_ROLE_DOC_COLOPHON;
+      break;
+    case ax::mojom::Role::kDocConclusion:
+      message_id = IDS_AX_ROLE_DOC_CONCLUSION;
+      break;
+    case ax::mojom::Role::kDocCover:
+      message_id = IDS_AX_ROLE_DOC_COVER;
+      break;
+    case ax::mojom::Role::kDocCredit:
+      message_id = IDS_AX_ROLE_DOC_CREDIT;
+      break;
+    case ax::mojom::Role::kDocCredits:
+      message_id = IDS_AX_ROLE_DOC_CREDITS;
+      break;
+    case ax::mojom::Role::kDocDedication:
+      message_id = IDS_AX_ROLE_DOC_DEDICATION;
+      break;
+    case ax::mojom::Role::kDocEndnote:
+      message_id = IDS_AX_ROLE_DOC_ENDNOTE;
+      break;
+    case ax::mojom::Role::kDocEndnotes:
+      message_id = IDS_AX_ROLE_DOC_ENDNOTES;
+      break;
+    case ax::mojom::Role::kDocEpigraph:
+      message_id = IDS_AX_ROLE_DOC_EPIGRAPH;
+      break;
+    case ax::mojom::Role::kDocEpilogue:
+      message_id = IDS_AX_ROLE_DOC_EPILOGUE;
+      break;
+    case ax::mojom::Role::kDocErrata:
+      message_id = IDS_AX_ROLE_DOC_ERRATA;
+      break;
+    case ax::mojom::Role::kDocExample:
+      message_id = IDS_AX_ROLE_DOC_EXAMPLE;
+      break;
+    case ax::mojom::Role::kDocFootnote:
+      message_id = IDS_AX_ROLE_DOC_FOOTNOTE;
+      break;
+    case ax::mojom::Role::kDocForeword:
+      message_id = IDS_AX_ROLE_DOC_FOREWORD;
+      break;
+    case ax::mojom::Role::kDocGlossary:
+      message_id = IDS_AX_ROLE_DOC_GLOSSARY;
+      break;
+    case ax::mojom::Role::kDocGlossRef:
+      message_id = IDS_AX_ROLE_DOC_GLOSS_REF;
+      break;
+    case ax::mojom::Role::kDocIndex:
+      message_id = IDS_AX_ROLE_DOC_INDEX;
+      break;
+    case ax::mojom::Role::kDocIntroduction:
+      message_id = IDS_AX_ROLE_DOC_INTRODUCTION;
+      break;
+    case ax::mojom::Role::kDocNoteRef:
+      message_id = IDS_AX_ROLE_DOC_NOTE_REF;
+      break;
+    case ax::mojom::Role::kDocNotice:
+      message_id = IDS_AX_ROLE_DOC_NOTICE;
+      break;
+    case ax::mojom::Role::kDocPageBreak:
+      message_id = IDS_AX_ROLE_DOC_PAGE_BREAK;
+      break;
+    case ax::mojom::Role::kDocPageList:
+      message_id = IDS_AX_ROLE_DOC_PAGE_LIST;
+      break;
+    case ax::mojom::Role::kDocPart:
+      message_id = IDS_AX_ROLE_DOC_PART;
+      break;
+    case ax::mojom::Role::kDocPreface:
+      message_id = IDS_AX_ROLE_DOC_PREFACE;
+      break;
+    case ax::mojom::Role::kDocPrologue:
+      message_id = IDS_AX_ROLE_DOC_PROLOGUE;
+      break;
+    case ax::mojom::Role::kDocPullquote:
+      message_id = IDS_AX_ROLE_DOC_PULLQUOTE;
+      break;
+    case ax::mojom::Role::kDocQna:
+      message_id = IDS_AX_ROLE_DOC_QNA;
+      break;
+    case ax::mojom::Role::kDocSubtitle:
+      message_id = IDS_AX_ROLE_DOC_SUBTITLE;
+      break;
+    case ax::mojom::Role::kDocTip:
+      message_id = IDS_AX_ROLE_DOC_TIP;
+      break;
+    case ax::mojom::Role::kDocToc:
+      message_id = IDS_AX_ROLE_DOC_TOC;
+      break;
+    case ax::mojom::Role::kDocument:
       message_id = IDS_AX_ROLE_DOCUMENT;
       break;
-    case ui::AX_ROLE_EMBEDDED_OBJECT:
+    case ax::mojom::Role::kEmbeddedObject:
       message_id = IDS_AX_ROLE_EMBEDDED_OBJECT;
       break;
-    case ui::AX_ROLE_FIGCAPTION:
+    case ax::mojom::Role::kFeed:
+      message_id = IDS_AX_ROLE_FEED;
+      break;
+    case ax::mojom::Role::kFigcaption:
       // No role description.
       break;
-    case ui::AX_ROLE_FIGURE:
+    case ax::mojom::Role::kFigure:
       message_id = IDS_AX_ROLE_GRAPHIC;
       break;
-    case ui::AX_ROLE_FOOTER:
+    case ax::mojom::Role::kFooter:
       message_id = IDS_AX_ROLE_FOOTER;
       break;
-    case ui::AX_ROLE_FORM:
+    case ax::mojom::Role::kForm:
       // No role description.
       break;
-    case ui::AX_ROLE_GRID:
+    case ax::mojom::Role::kGenericContainer:
+      // No role description.
+      break;
+    case ax::mojom::Role::kGraphicsDocument:
+      message_id = IDS_AX_ROLE_GRAPHICS_DOCUMENT;
+      break;
+    case ax::mojom::Role::kGraphicsObject:
+      message_id = IDS_AX_ROLE_GRAPHICS_OBJECT;
+      break;
+    case ax::mojom::Role::kGraphicsSymbol:
+      message_id = IDS_AX_ROLE_GRAPHICS_SYMBOL;
+      break;
+    case ax::mojom::Role::kGrid:
       message_id = IDS_AX_ROLE_TABLE;
       break;
-    case ui::AX_ROLE_GROUP:
+    case ax::mojom::Role::kGroup:
       // No role description.
       break;
-    case ui::AX_ROLE_HEADING:
+    case ax::mojom::Role::kHeading:
       // Note that code above this switch statement handles headings with
       // a level, returning a string like "heading level 1", etc.
       message_id = IDS_AX_ROLE_HEADING;
       break;
-    case ui::AX_ROLE_IFRAME:
+    case ax::mojom::Role::kIframe:
       // No role description.
       break;
-    case ui::AX_ROLE_IFRAME_PRESENTATIONAL:
+    case ax::mojom::Role::kIframePresentational:
       // No role description.
       break;
-    case ui::AX_ROLE_IGNORED:
+    case ax::mojom::Role::kIgnored:
       // No role description.
       break;
-    case ui::AX_ROLE_IMAGE_MAP_LINK:
-      message_id = IDS_AX_ROLE_LINK;
-      break;
-    case ui::AX_ROLE_IMAGE_MAP:
+    case ax::mojom::Role::kImageMap:
       message_id = IDS_AX_ROLE_GRAPHIC;
       break;
-    case ui::AX_ROLE_IMAGE:
+    case ax::mojom::Role::kImage:
       message_id = IDS_AX_ROLE_GRAPHIC;
       break;
-    case ui::AX_ROLE_INLINE_TEXT_BOX:
+    case ax::mojom::Role::kInlineTextBox:
       // No role description.
       break;
-    case ui::AX_ROLE_INPUT_TIME:
+    case ax::mojom::Role::kInputTime:
       message_id = IDS_AX_ROLE_INPUT_TIME;
       break;
-    case ui::AX_ROLE_LABEL_TEXT:
+    case ax::mojom::Role::kKeyboard:
       // No role description.
       break;
-    case ui::AX_ROLE_LEGEND:
+    case ax::mojom::Role::kLabelText:
       // No role description.
       break;
-    case ui::AX_ROLE_LINE_BREAK:
+    case ax::mojom::Role::kLayoutTable:
+    case ax::mojom::Role::kLayoutTableCell:
+    case ax::mojom::Role::kLayoutTableColumn:
+    case ax::mojom::Role::kLayoutTableRow:
       // No role description.
       break;
-    case ui::AX_ROLE_LINK:
+    case ax::mojom::Role::kLegend:
+      // No role description.
+      break;
+    case ax::mojom::Role::kLineBreak:
+      // No role description.
+      break;
+    case ax::mojom::Role::kLink:
       message_id = IDS_AX_ROLE_LINK;
       break;
-    case ui::AX_ROLE_LIST_BOX_OPTION:
+    case ax::mojom::Role::kList:
       // No role description.
       break;
-    case ui::AX_ROLE_LIST_BOX:
+    case ax::mojom::Role::kListBox:
       message_id = IDS_AX_ROLE_LIST_BOX;
       break;
-    case ui::AX_ROLE_LIST_ITEM:
+    case ax::mojom::Role::kListBoxOption:
       // No role description.
       break;
-    case ui::AX_ROLE_LIST_MARKER:
-      // No role description.
-      break;
-    case ui::AX_ROLE_LIST:
-      // No role description.
-      break;
-    case ui::AX_ROLE_LOCATION_BAR:
-      // No role description.
-      break;
-    case ui::AX_ROLE_LOG:
-      message_id = IDS_AX_ROLE_LOG;
-      break;
-    case ui::AX_ROLE_MAIN:
-      message_id = IDS_AX_ROLE_MAIN_CONTENT;
-      break;
-    case ui::AX_ROLE_MARK:
-      message_id = IDS_AX_ROLE_MARK;
-      break;
-    case ui::AX_ROLE_MARQUEE:
-      message_id = IDS_AX_ROLE_MARQUEE;
-      break;
-    case ui::AX_ROLE_MATH:
-      message_id = IDS_AX_ROLE_MATH;
-      break;
-    case ui::AX_ROLE_MENU_BAR:
-      message_id = IDS_AX_ROLE_MENU_BAR;
-      break;
-    case ui::AX_ROLE_MENU_BUTTON:
-      message_id = IDS_AX_ROLE_MENU_BUTTON;
-      break;
-    case ui::AX_ROLE_MENU_ITEM:
-      message_id = IDS_AX_ROLE_MENU_ITEM;
-      break;
-    case ui::AX_ROLE_MENU_ITEM_CHECK_BOX:
-      message_id = IDS_AX_ROLE_CHECK_BOX;
-      break;
-    case ui::AX_ROLE_MENU_ITEM_RADIO:
-      message_id = IDS_AX_ROLE_RADIO;
-      break;
-    case ui::AX_ROLE_MENU_LIST_OPTION:
-      // No role description.
-      break;
-    case ui::AX_ROLE_MENU_LIST_POPUP:
-      // No role description.
-      break;
-    case ui::AX_ROLE_MENU:
-      message_id = IDS_AX_ROLE_MENU;
-      break;
-    case ui::AX_ROLE_METER:
-      message_id = IDS_AX_ROLE_METER;
-      break;
-    case ui::AX_ROLE_NAVIGATION:
-      message_id = IDS_AX_ROLE_NAVIGATIONAL_LINK;
-      break;
-    case ui::AX_ROLE_NOTE:
-      message_id = IDS_AX_ROLE_NOTE;
-      break;
-    case ui::AX_ROLE_OUTLINE:
-      message_id = IDS_AX_ROLE_OUTLINE;
-      break;
-    case ui::AX_ROLE_PANE:
-      // No role description.
-      break;
-    case ui::AX_ROLE_PARAGRAPH:
-      // No role description.
-      break;
-    case ui::AX_ROLE_POP_UP_BUTTON:
-      message_id = IDS_AX_ROLE_POP_UP_BUTTON;
-      break;
-    case ui::AX_ROLE_PRE:
-      // No role description.
-      break;
-    case ui::AX_ROLE_PRESENTATIONAL:
-      // No role description.
-      break;
-    case ui::AX_ROLE_PROGRESS_INDICATOR:
-      message_id = IDS_AX_ROLE_PROGRESS_INDICATOR;
-      break;
-    case ui::AX_ROLE_RADIO_BUTTON:
-      message_id = IDS_AX_ROLE_RADIO;
-      break;
-    case ui::AX_ROLE_RADIO_GROUP:
-      message_id = IDS_AX_ROLE_RADIO_GROUP;
-      break;
-    case ui::AX_ROLE_REGION:
-      message_id = IDS_AX_ROLE_REGION;
-      break;
-    case ui::AX_ROLE_ROOT_WEB_AREA:
-      // No role description.
-      break;
-    case ui::AX_ROLE_ROW_HEADER:
-      message_id = IDS_AX_ROLE_ROW_HEADER;
-      break;
-    case ui::AX_ROLE_ROW:
-      // No role description.
-      break;
-    case ui::AX_ROLE_RUBY:
-      // No role description.
-      break;
-    case ui::AX_ROLE_RULER:
-      message_id = IDS_AX_ROLE_RULER;
-      break;
-    case ui::AX_ROLE_SVG_ROOT:
-      message_id = IDS_AX_ROLE_GRAPHIC;
-      break;
-    case ui::AX_ROLE_SCROLL_AREA:
-      // No role description.
-      break;
-    case ui::AX_ROLE_SCROLL_BAR:
-      message_id = IDS_AX_ROLE_SCROLL_BAR;
-      break;
-    case ui::AX_ROLE_SEAMLESS_WEB_AREA:
-      // No role description.
-      break;
-    case ui::AX_ROLE_SEARCH:
-      message_id = IDS_AX_ROLE_SEARCH;
-      break;
-    case ui::AX_ROLE_SEARCH_BOX:
-      message_id = IDS_AX_ROLE_SEARCH_BOX;
-      break;
-    case ui::AX_ROLE_SLIDER:
-      message_id = IDS_AX_ROLE_SLIDER;
-      break;
-    case ui::AX_ROLE_SLIDER_THUMB:
-      // No role description.
-      break;
-    case ui::AX_ROLE_SPIN_BUTTON_PART:
-      // No role description.
-      break;
-    case ui::AX_ROLE_SPIN_BUTTON:
-      message_id = IDS_AX_ROLE_SPIN_BUTTON;
-      break;
-    case ui::AX_ROLE_SPLITTER:
-      message_id = IDS_AX_ROLE_SPLITTER;
-      break;
-    case ui::AX_ROLE_STATIC_TEXT:
-      // No role description.
-      break;
-    case ui::AX_ROLE_STATUS:
-      message_id = IDS_AX_ROLE_STATUS;
-      break;
-    case ui::AX_ROLE_SWITCH:
-      message_id = IDS_AX_ROLE_SWITCH;
-      break;
-    case ui::AX_ROLE_TAB_GROUP:
-      // No role description.
-      break;
-    case ui::AX_ROLE_TAB_LIST:
-      message_id = IDS_AX_ROLE_TAB_LIST;
-      break;
-    case ui::AX_ROLE_TAB_PANEL:
-      message_id = IDS_AX_ROLE_TAB_PANEL;
-      break;
-    case ui::AX_ROLE_TAB:
-      message_id = IDS_AX_ROLE_TAB;
-      break;
-    case ui::AX_ROLE_TABLE_HEADER_CONTAINER:
-      // No role description.
-      break;
-    case ui::AX_ROLE_TABLE:
+    case ax::mojom::Role::kListGrid:
       message_id = IDS_AX_ROLE_TABLE;
       break;
-    case ui::AX_ROLE_TEXT_FIELD:
+    case ax::mojom::Role::kListItem:
       // No role description.
       break;
-    case ui::AX_ROLE_TIME:
+    case ax::mojom::Role::kListMarker:
+      // No role description.
+      break;
+    case ax::mojom::Role::kLog:
+      message_id = IDS_AX_ROLE_LOG;
+      break;
+    case ax::mojom::Role::kMain:
+      message_id = IDS_AX_ROLE_MAIN_CONTENT;
+      break;
+    case ax::mojom::Role::kMark:
+      message_id = IDS_AX_ROLE_MARK;
+      break;
+    case ax::mojom::Role::kMarquee:
+      message_id = IDS_AX_ROLE_MARQUEE;
+      break;
+    case ax::mojom::Role::kMath:
+      message_id = IDS_AX_ROLE_MATH;
+      break;
+    case ax::mojom::Role::kMenu:
+      message_id = IDS_AX_ROLE_MENU;
+      break;
+    case ax::mojom::Role::kMenuBar:
+      message_id = IDS_AX_ROLE_MENU_BAR;
+      break;
+    case ax::mojom::Role::kMenuButton:
+      message_id = IDS_AX_ROLE_MENU_BUTTON;
+      break;
+    case ax::mojom::Role::kMenuItem:
+      message_id = IDS_AX_ROLE_MENU_ITEM;
+      break;
+    case ax::mojom::Role::kMenuItemCheckBox:
+      message_id = IDS_AX_ROLE_CHECK_BOX;
+      break;
+    case ax::mojom::Role::kMenuItemRadio:
+      message_id = IDS_AX_ROLE_RADIO;
+      break;
+    case ax::mojom::Role::kMenuListOption:
+      // No role description.
+      break;
+    case ax::mojom::Role::kMenuListPopup:
+      // No role description.
+      break;
+    case ax::mojom::Role::kMeter:
+      message_id = IDS_AX_ROLE_METER;
+      break;
+    case ax::mojom::Role::kNavigation:
+      message_id = IDS_AX_ROLE_NAVIGATIONAL_LINK;
+      break;
+    case ax::mojom::Role::kNote:
+      message_id = IDS_AX_ROLE_NOTE;
+      break;
+    case ax::mojom::Role::kPane:
+      // No role description.
+      break;
+    case ax::mojom::Role::kParagraph:
+      // No role description.
+      break;
+    case ax::mojom::Role::kPopUpButton:
+      message_id = IDS_AX_ROLE_POP_UP_BUTTON;
+      break;
+    case ax::mojom::Role::kPre:
+      // No role description.
+      break;
+    case ax::mojom::Role::kPresentational:
+      // No role description.
+      break;
+    case ax::mojom::Role::kProgressIndicator:
+      message_id = IDS_AX_ROLE_PROGRESS_INDICATOR;
+      break;
+    case ax::mojom::Role::kRadioButton:
+      message_id = IDS_AX_ROLE_RADIO;
+      break;
+    case ax::mojom::Role::kRadioGroup:
+      message_id = IDS_AX_ROLE_RADIO_GROUP;
+      break;
+    case ax::mojom::Role::kRegion:
+      message_id = IDS_AX_ROLE_REGION;
+      break;
+    case ax::mojom::Role::kRootWebArea:
+      // No role description.
+      break;
+    case ax::mojom::Role::kRowHeader:
+      message_id = IDS_AX_ROLE_ROW_HEADER;
+      break;
+    case ax::mojom::Role::kRow:
+      // No role description.
+      break;
+    case ax::mojom::Role::kRuby:
+      // No role description.
+      break;
+    case ax::mojom::Role::kSvgRoot:
+      message_id = IDS_AX_ROLE_GRAPHIC;
+      break;
+    case ax::mojom::Role::kScrollBar:
+      message_id = IDS_AX_ROLE_SCROLL_BAR;
+      break;
+    case ax::mojom::Role::kScrollView:
+      // No role description.
+      break;
+    case ax::mojom::Role::kSearch:
+      message_id = IDS_AX_ROLE_SEARCH;
+      break;
+    case ax::mojom::Role::kSearchBox:
+      message_id = IDS_AX_ROLE_SEARCH_BOX;
+      break;
+    case ax::mojom::Role::kSlider:
+      message_id = IDS_AX_ROLE_SLIDER;
+      break;
+    case ax::mojom::Role::kSliderThumb:
+      // No role description.
+      break;
+    case ax::mojom::Role::kSpinButton:
+      message_id = IDS_AX_ROLE_SPIN_BUTTON;
+      break;
+    case ax::mojom::Role::kSplitter:
+      message_id = IDS_AX_ROLE_SPLITTER;
+      break;
+    case ax::mojom::Role::kStaticText:
+      // No role description.
+      break;
+    case ax::mojom::Role::kStatus:
+      message_id = IDS_AX_ROLE_STATUS;
+      break;
+    case ax::mojom::Role::kSwitch:
+      message_id = IDS_AX_ROLE_SWITCH;
+      break;
+    case ax::mojom::Role::kTabList:
+      message_id = IDS_AX_ROLE_TAB_LIST;
+      break;
+    case ax::mojom::Role::kTabPanel:
+      message_id = IDS_AX_ROLE_TAB_PANEL;
+      break;
+    case ax::mojom::Role::kTab:
+      message_id = IDS_AX_ROLE_TAB;
+      break;
+    case ax::mojom::Role::kTableHeaderContainer:
+      // No role description.
+      break;
+    case ax::mojom::Role::kTable:
+      message_id = IDS_AX_ROLE_TABLE;
+      break;
+    case ax::mojom::Role::kTerm:
+      message_id = IDS_AX_ROLE_DESCRIPTION_TERM;
+      break;
+    case ax::mojom::Role::kTextField:
+      // No role description.
+      break;
+    case ax::mojom::Role::kTextFieldWithComboBox:
+      // No role description.
+      break;
+    case ax::mojom::Role::kTime:
       message_id = IDS_AX_ROLE_TIME;
       break;
-    case ui::AX_ROLE_TIMER:
+    case ax::mojom::Role::kTimer:
       message_id = IDS_AX_ROLE_TIMER;
       break;
-    case ui::AX_ROLE_TITLE_BAR:
+    case ax::mojom::Role::kTitleBar:
       // No role description.
       break;
-    case ui::AX_ROLE_TOGGLE_BUTTON:
+    case ax::mojom::Role::kToggleButton:
       message_id = IDS_AX_ROLE_TOGGLE_BUTTON;
       break;
-    case ui::AX_ROLE_TOOLBAR:
+    case ax::mojom::Role::kToolbar:
       message_id = IDS_AX_ROLE_TOOLBAR;
       break;
-    case ui::AX_ROLE_TREE_GRID:
+    case ax::mojom::Role::kTreeGrid:
       message_id = IDS_AX_ROLE_TREE_GRID;
       break;
-    case ui::AX_ROLE_TREE_ITEM:
+    case ax::mojom::Role::kTreeItem:
       message_id = IDS_AX_ROLE_TREE_ITEM;
       break;
-    case ui::AX_ROLE_TREE:
+    case ax::mojom::Role::kTree:
       message_id = IDS_AX_ROLE_TREE;
       break;
-    case ui::AX_ROLE_UNKNOWN:
+    case ax::mojom::Role::kUnknown:
       // No role description.
       break;
-    case ui::AX_ROLE_TOOLTIP:
+    case ax::mojom::Role::kTooltip:
       message_id = IDS_AX_ROLE_TOOLTIP;
       break;
-    case ui::AX_ROLE_WEB_AREA:
+    case ax::mojom::Role::kVideo:
+      message_id = IDS_AX_MEDIA_VIDEO_ELEMENT;
+      break;
+    case ax::mojom::Role::kWebArea:
       // No role description.
       break;
-    case ui::AX_ROLE_WEB_VIEW:
+    case ax::mojom::Role::kWebView:
       // No role description.
       break;
-    case ui::AX_ROLE_WINDOW:
+    case ax::mojom::Role::kWindow:
+      // No role description.
+      break;
+    case ax::mojom::Role::kNone:
       // No role description.
       break;
   }
@@ -846,22 +1088,23 @@ base::string16 BrowserAccessibilityAndroid::GetRoleDescription() const {
 
 int BrowserAccessibilityAndroid::GetItemIndex() const {
   int index = 0;
-  switch (GetRole()) {
-    case ui::AX_ROLE_LIST_ITEM:
-    case ui::AX_ROLE_LIST_BOX_OPTION:
-    case ui::AX_ROLE_TREE_ITEM:
-      index = GetIntAttribute(ui::AX_ATTR_POS_IN_SET) - 1;
-      break;
-    case ui::AX_ROLE_SLIDER:
-    case ui::AX_ROLE_PROGRESS_INDICATOR: {
-      // Return a percentage here for live feedback in an AccessibilityEvent.
-      // The exact value is returned in RangeCurrentValue.
-      float min = GetFloatAttribute(ui::AX_ATTR_MIN_VALUE_FOR_RANGE);
-      float max = GetFloatAttribute(ui::AX_ATTR_MAX_VALUE_FOR_RANGE);
-      float value = GetFloatAttribute(ui::AX_ATTR_VALUE_FOR_RANGE);
-      if (max > min && value >= min && value <= max)
-        index = static_cast<int>(((value - min)) * 100 / (max - min));
-      break;
+  if (IsRangeType()) {
+    // Return a percentage here for live feedback in an AccessibilityEvent.
+    // The exact value is returned in RangeCurrentValue.
+    float min = GetFloatAttribute(ax::mojom::FloatAttribute::kMinValueForRange);
+    float max = GetFloatAttribute(ax::mojom::FloatAttribute::kMaxValueForRange);
+    float value = GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange);
+    if (max > min && value >= min && value <= max)
+      index = static_cast<int>(((value - min)) * 100 / (max - min));
+  } else {
+    switch (GetRole()) {
+      case ax::mojom::Role::kListItem:
+      case ax::mojom::Role::kListBoxOption:
+      case ax::mojom::Role::kTreeItem:
+        index = node()->GetPosInSet() - 1;
+        break;
+      default:
+        break;
     }
   }
   return index;
@@ -869,42 +1112,42 @@ int BrowserAccessibilityAndroid::GetItemIndex() const {
 
 int BrowserAccessibilityAndroid::GetItemCount() const {
   int count = 0;
-  switch (GetRole()) {
-    case ui::AX_ROLE_LIST:
-    case ui::AX_ROLE_LIST_BOX:
-    case ui::AX_ROLE_DESCRIPTION_LIST:
-      count = PlatformChildCount();
-      break;
-    case ui::AX_ROLE_SLIDER:
-    case ui::AX_ROLE_PROGRESS_INDICATOR:
-      // An AccessibilityEvent can only return integer information about a
-      // seek control, so we return a percentage. The real range is returned
-      // in RangeMin and RangeMax.
-      count = 100;
-      break;
+  if (IsRangeType()) {
+    // An AccessibilityEvent can only return integer information about a
+    // seek control, so we return a percentage. The real range is returned
+    // in RangeMin and RangeMax.
+    count = 100;
+  } else {
+    switch (GetRole()) {
+      case ax::mojom::Role::kList:
+      case ax::mojom::Role::kListBox:
+      case ax::mojom::Role::kDescriptionList:
+        count = node()->GetSetSize();
+        break;
+      default:
+        break;
+    }
   }
   return count;
 }
 
 bool BrowserAccessibilityAndroid::CanScrollForward() const {
   if (IsSlider()) {
-    float value = GetFloatAttribute(ui::AX_ATTR_VALUE_FOR_RANGE);
-    float max = GetFloatAttribute(ui::AX_ATTR_MAX_VALUE_FOR_RANGE);
+    float value = GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange);
+    float max = GetFloatAttribute(ax::mojom::FloatAttribute::kMaxValueForRange);
     return value < max;
   } else {
-    return GetScrollX() < GetMaxScrollX() ||
-           GetScrollY() < GetMaxScrollY();
+    return GetScrollX() < GetMaxScrollX() || GetScrollY() < GetMaxScrollY();
   }
 }
 
 bool BrowserAccessibilityAndroid::CanScrollBackward() const {
   if (IsSlider()) {
-    float value = GetFloatAttribute(ui::AX_ATTR_VALUE_FOR_RANGE);
-    float min = GetFloatAttribute(ui::AX_ATTR_MIN_VALUE_FOR_RANGE);
+    float value = GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange);
+    float min = GetFloatAttribute(ax::mojom::FloatAttribute::kMinValueForRange);
     return value > min;
   } else {
-    return GetScrollX() > GetMinScrollX() ||
-           GetScrollY() > GetMinScrollY();
+    return GetScrollX() > GetMinScrollX() || GetScrollY() > GetMinScrollY();
   }
 }
 
@@ -926,65 +1169,66 @@ bool BrowserAccessibilityAndroid::CanScrollRight() const {
 
 int BrowserAccessibilityAndroid::GetScrollX() const {
   int value = 0;
-  GetIntAttribute(ui::AX_ATTR_SCROLL_X, &value);
+  GetIntAttribute(ax::mojom::IntAttribute::kScrollX, &value);
   return value;
 }
 
 int BrowserAccessibilityAndroid::GetScrollY() const {
   int value = 0;
-  GetIntAttribute(ui::AX_ATTR_SCROLL_Y, &value);
+  GetIntAttribute(ax::mojom::IntAttribute::kScrollY, &value);
   return value;
 }
 
 int BrowserAccessibilityAndroid::GetMinScrollX() const {
-  return GetIntAttribute(ui::AX_ATTR_SCROLL_X_MIN);
+  return GetIntAttribute(ax::mojom::IntAttribute::kScrollXMin);
 }
 
 int BrowserAccessibilityAndroid::GetMinScrollY() const {
-  return GetIntAttribute(ui::AX_ATTR_SCROLL_Y_MIN);
+  return GetIntAttribute(ax::mojom::IntAttribute::kScrollYMin);
 }
 
 int BrowserAccessibilityAndroid::GetMaxScrollX() const {
-  return GetIntAttribute(ui::AX_ATTR_SCROLL_X_MAX);
+  return GetIntAttribute(ax::mojom::IntAttribute::kScrollXMax);
 }
 
 int BrowserAccessibilityAndroid::GetMaxScrollY() const {
-  return GetIntAttribute(ui::AX_ATTR_SCROLL_Y_MAX);
+  return GetIntAttribute(ax::mojom::IntAttribute::kScrollYMax);
 }
 
 bool BrowserAccessibilityAndroid::Scroll(int direction) const {
-  int x = GetIntAttribute(ui::AX_ATTR_SCROLL_X);
-  int x_min = GetIntAttribute(ui::AX_ATTR_SCROLL_X_MIN);
-  int x_max = GetIntAttribute(ui::AX_ATTR_SCROLL_X_MAX);
-  int y = GetIntAttribute(ui::AX_ATTR_SCROLL_Y);
-  int y_min = GetIntAttribute(ui::AX_ATTR_SCROLL_Y_MIN);
-  int y_max = GetIntAttribute(ui::AX_ATTR_SCROLL_Y_MAX);
+  int x_initial = GetIntAttribute(ax::mojom::IntAttribute::kScrollX);
+  int x_min = GetIntAttribute(ax::mojom::IntAttribute::kScrollXMin);
+  int x_max = GetIntAttribute(ax::mojom::IntAttribute::kScrollXMax);
+  int y_initial = GetIntAttribute(ax::mojom::IntAttribute::kScrollY);
+  int y_min = GetIntAttribute(ax::mojom::IntAttribute::kScrollYMin);
+  int y_max = GetIntAttribute(ax::mojom::IntAttribute::kScrollYMax);
 
   // Figure out the bounding box of the visible portion of this scrollable
   // view so we know how much to scroll by.
   gfx::Rect bounds;
-  if (GetRole() == ui::AX_ROLE_ROOT_WEB_AREA && !GetParent()) {
+  if (GetRole() == ax::mojom::Role::kRootWebArea && !PlatformGetParent()) {
     // If this is the root web area, use the bounds of the view to determine
     // how big one page is.
     if (!manager()->delegate())
       return false;
     bounds = manager()->delegate()->AccessibilityGetViewBounds();
-  } else if (GetRole() == ui::AX_ROLE_ROOT_WEB_AREA && GetParent()) {
+  } else if (GetRole() == ax::mojom::Role::kRootWebArea &&
+             PlatformGetParent()) {
     // If this is a web area inside of an iframe, try to use the bounds of
     // the containing element.
-    BrowserAccessibility* parent = GetParent();
-    while (parent && (parent->GetLocation().width() == 0 ||
-                      parent->GetLocation().height() == 0)) {
-      parent = parent->GetParent();
+    BrowserAccessibility* parent = PlatformGetParent();
+    while (parent && (parent->GetPageBoundsRect().width() == 0 ||
+                      parent->GetPageBoundsRect().height() == 0)) {
+      parent = parent->PlatformGetParent();
     }
     if (parent)
-      bounds = parent->GetLocation();
+      bounds = parent->GetPageBoundsRect();
     else
-      bounds = GetLocation();
+      bounds = GetPageBoundsRect();
   } else {
     // Otherwise this is something like a scrollable div, just use the
     // bounds of this object itself.
-    bounds = GetLocation();
+    bounds = GetPageBoundsRect();
   }
 
   // Scroll by 80% of one page.
@@ -996,18 +1240,28 @@ bool BrowserAccessibilityAndroid::Scroll(int direction) const {
   if (direction == BACKWARD)
     direction = y_max > y_min ? UP : LEFT;
 
+  int x = x_initial;
+  int y = y_initial;
   switch (direction) {
     case UP:
-      y = std::min(std::max(y - page_y, y_min), y_max);
+      if (y_initial == y_min)
+        return false;
+      y = std::min(std::max(y_initial - page_y, y_min), y_max);
       break;
     case DOWN:
-      y = std::min(std::max(y + page_y, y_min), y_max);
+      if (y_initial == y_max)
+        return false;
+      y = std::min(std::max(y_initial + page_y, y_min), y_max);
       break;
     case LEFT:
-      x = std::min(std::max(x - page_x, x_min), x_max);
+      if (x_initial == x_min)
+        return false;
+      x = std::min(std::max(x_initial - page_x, x_min), x_max);
       break;
     case RIGHT:
-      x = std::min(std::max(x + page_x, x_min), x_max);
+      if (x_initial == x_max)
+        return false;
+      x = std::min(std::max(x_initial + page_x, x_min), x_max);
       break;
     default:
       NOTREACHED();
@@ -1041,39 +1295,35 @@ int BrowserAccessibilityAndroid::GetTextChangeRemovedCount() const {
 }
 
 // static
-size_t BrowserAccessibilityAndroid::CommonPrefixLength(
-    const base::string16 a,
-    const base::string16 b) {
+size_t BrowserAccessibilityAndroid::CommonPrefixLength(const base::string16 a,
+                                                       const base::string16 b) {
   size_t a_len = a.length();
   size_t b_len = b.length();
   size_t i = 0;
-  while (i < a_len &&
-         i < b_len &&
-         a[i] == b[i]) {
+  while (i < a_len && i < b_len && a[i] == b[i]) {
     i++;
   }
   return i;
 }
 
 // static
-size_t BrowserAccessibilityAndroid::CommonSuffixLength(
-    const base::string16 a,
-    const base::string16 b) {
+size_t BrowserAccessibilityAndroid::CommonSuffixLength(const base::string16 a,
+                                                       const base::string16 b) {
   size_t a_len = a.length();
   size_t b_len = b.length();
   size_t i = 0;
-  while (i < a_len &&
-         i < b_len &&
-         a[a_len - i - 1] == b[b_len - i - 1]) {
+  while (i < a_len && i < b_len && a[a_len - i - 1] == b[b_len - i - 1]) {
     i++;
   }
   return i;
 }
 
+// TODO(nektar): Merge this function with
+// |BrowserAccessibilityCocoa::computeTextEdit|.
+//
 // static
-size_t BrowserAccessibilityAndroid::CommonEndLengths(
-    const base::string16 a,
-    const base::string16 b) {
+size_t BrowserAccessibilityAndroid::CommonEndLengths(const base::string16 a,
+                                                     const base::string16 b) {
   size_t prefix_len = CommonPrefixLength(a, b);
   // Remove the matching prefix before finding the suffix. Otherwise, if
   // old_value_ is "a" and new_value_ is "aa", "a" will be double-counted as
@@ -1090,14 +1340,45 @@ base::string16 BrowserAccessibilityAndroid::GetTextChangeBeforeText() const {
 
 int BrowserAccessibilityAndroid::GetSelectionStart() const {
   int sel_start = 0;
-  GetIntAttribute(ui::AX_ATTR_TEXT_SEL_START, &sel_start);
-  return sel_start;
+  if (IsPlainTextField() &&
+      GetIntAttribute(ax::mojom::IntAttribute::kTextSelStart, &sel_start)) {
+    return sel_start;
+  }
+
+  int32_t anchor_id = manager()->GetTreeData().sel_anchor_object_id;
+  BrowserAccessibility* anchor_object = manager()->GetFromID(anchor_id);
+  if (!anchor_object) {
+    return 0;
+  }
+
+  auto position = anchor_object->CreatePositionAt(
+      manager()->GetTreeData().sel_anchor_offset,
+      manager()->GetTreeData().sel_anchor_affinity);
+  while (position->GetAnchor() && position->GetAnchor() != this)
+    position = position->CreateParentPosition();
+
+  return !position->IsNullPosition() ? position->text_offset() : 0;
 }
 
 int BrowserAccessibilityAndroid::GetSelectionEnd() const {
   int sel_end = 0;
-  GetIntAttribute(ui::AX_ATTR_TEXT_SEL_END, &sel_end);
-  return sel_end;
+  if (IsPlainTextField() &&
+      GetIntAttribute(ax::mojom::IntAttribute::kTextSelEnd, &sel_end)) {
+    return sel_end;
+  }
+
+  int32_t focus_id = manager()->GetTreeData().sel_focus_object_id;
+  BrowserAccessibility* focus_object = manager()->GetFromID(focus_id);
+  if (!focus_object)
+    return 0;
+
+  auto position = focus_object->CreatePositionAt(
+      manager()->GetTreeData().sel_focus_offset,
+      manager()->GetTreeData().sel_focus_affinity);
+  while (position->GetAnchor() && position->GetAnchor() != this)
+    position = position->CreateParentPosition();
+
+  return !position->IsNullPosition() ? position->text_offset() : 0;
 }
 
 int BrowserAccessibilityAndroid::GetEditableTextLength() const {
@@ -1106,8 +1387,8 @@ int BrowserAccessibilityAndroid::GetEditableTextLength() const {
 }
 
 int BrowserAccessibilityAndroid::AndroidInputType() const {
-  std::string html_tag = GetStringAttribute(
-      ui::AX_ATTR_HTML_TAG);
+  std::string html_tag =
+      GetStringAttribute(ax::mojom::StringAttribute::kHtmlTag);
   if (html_tag != "input")
     return ANDROID_TEXT_INPUTTYPE_TYPE_NULL;
 
@@ -1142,8 +1423,8 @@ int BrowserAccessibilityAndroid::AndroidInputType() const {
 }
 
 int BrowserAccessibilityAndroid::AndroidLiveRegionType() const {
-  std::string live = GetStringAttribute(
-      ui::AX_ATTR_LIVE_STATUS);
+  std::string live =
+      GetStringAttribute(ax::mojom::StringAttribute::kLiveStatus);
   if (live == "polite")
     return ANDROID_VIEW_VIEW_ACCESSIBILITY_LIVE_REGION_POLITE;
   else if (live == "assertive")
@@ -1156,61 +1437,58 @@ int BrowserAccessibilityAndroid::AndroidRangeType() const {
 }
 
 int BrowserAccessibilityAndroid::RowCount() const {
-  if (GetRole() == ui::AX_ROLE_GRID ||
-      GetRole() == ui::AX_ROLE_TABLE) {
-    return CountChildrenWithRole(ui::AX_ROLE_ROW);
-  }
+  if (ui::IsTableLike(GetRole()))
+    return node()->GetTableRowCount();
 
-  if (GetRole() == ui::AX_ROLE_LIST ||
-      GetRole() == ui::AX_ROLE_LIST_BOX ||
-      GetRole() == ui::AX_ROLE_DESCRIPTION_LIST ||
-      GetRole() == ui::AX_ROLE_TREE) {
-    return PlatformChildCount();
+  if (GetRole() == ax::mojom::Role::kList ||
+      GetRole() == ax::mojom::Role::kListBox ||
+      GetRole() == ax::mojom::Role::kDescriptionList ||
+      GetRole() == ax::mojom::Role::kTree) {
+    return node()->GetSetSize();
   }
 
   return 0;
 }
 
 int BrowserAccessibilityAndroid::ColumnCount() const {
-  if (GetRole() == ui::AX_ROLE_GRID ||
-      GetRole() == ui::AX_ROLE_TABLE) {
-    return CountChildrenWithRole(ui::AX_ROLE_COLUMN);
-  }
+  if (ui::IsTableLike(GetRole()))
+    return node()->GetTableColCount();
+
   return 0;
 }
 
 int BrowserAccessibilityAndroid::RowIndex() const {
-  if (GetRole() == ui::AX_ROLE_LIST_ITEM ||
-      GetRole() == ui::AX_ROLE_LIST_BOX_OPTION ||
-      GetRole() == ui::AX_ROLE_TREE_ITEM) {
-    return GetIndexInParent();
+  if (GetRole() == ax::mojom::Role::kListItem ||
+      GetRole() == ax::mojom::Role::kListBoxOption ||
+      GetRole() == ax::mojom::Role::kTreeItem) {
+    return node()->GetPosInSet() - 1;
   }
 
-  return GetIntAttribute(ui::AX_ATTR_TABLE_CELL_ROW_INDEX);
+  return node()->GetTableCellRowIndex();
 }
 
 int BrowserAccessibilityAndroid::RowSpan() const {
-  return GetIntAttribute(ui::AX_ATTR_TABLE_CELL_ROW_SPAN);
+  return node()->GetTableCellRowSpan();
 }
 
 int BrowserAccessibilityAndroid::ColumnIndex() const {
-  return GetIntAttribute(ui::AX_ATTR_TABLE_CELL_COLUMN_INDEX);
+  return node()->GetTableCellColIndex();
 }
 
 int BrowserAccessibilityAndroid::ColumnSpan() const {
-  return GetIntAttribute(ui::AX_ATTR_TABLE_CELL_COLUMN_SPAN);
+  return node()->GetTableCellColSpan();
 }
 
 float BrowserAccessibilityAndroid::RangeMin() const {
-  return GetFloatAttribute(ui::AX_ATTR_MIN_VALUE_FOR_RANGE);
+  return GetFloatAttribute(ax::mojom::FloatAttribute::kMinValueForRange);
 }
 
 float BrowserAccessibilityAndroid::RangeMax() const {
-  return GetFloatAttribute(ui::AX_ATTR_MAX_VALUE_FOR_RANGE);
+  return GetFloatAttribute(ax::mojom::FloatAttribute::kMaxValueForRange);
 }
 
 float BrowserAccessibilityAndroid::RangeCurrentValue() const {
-  return GetFloatAttribute(ui::AX_ATTR_VALUE_FOR_RANGE);
+  return GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange);
 }
 
 void BrowserAccessibilityAndroid::GetGranularityBoundaries(
@@ -1242,15 +1520,15 @@ void BrowserAccessibilityAndroid::GetLineBoundaries(
 
   // If this is a static text node, get the line boundaries from the
   // inline text boxes if possible.
-  if (GetRole() == ui::AX_ROLE_STATIC_TEXT) {
+  if (GetRole() == ax::mojom::Role::kStaticText) {
     int last_y = 0;
     for (uint32_t i = 0; i < InternalChildCount(); i++) {
       BrowserAccessibilityAndroid* child =
           static_cast<BrowserAccessibilityAndroid*>(InternalGetChild(i));
-      CHECK_EQ(ui::AX_ROLE_INLINE_TEXT_BOX, child->GetRole());
+      CHECK_EQ(ax::mojom::Role::kInlineTextBox, child->GetRole());
       // TODO(dmazzoni): replace this with a proper API to determine
       // if two inline text boxes are on the same line. http://crbug.com/421771
-      int y = child->GetLocation().y();
+      int y = child->GetPageBoundsRect().y();
       if (i == 0) {
         line_starts->push_back(offset);
       } else if (y != last_y) {
@@ -1277,11 +1555,11 @@ void BrowserAccessibilityAndroid::GetWordBoundaries(
     std::vector<int32_t>* word_starts,
     std::vector<int32_t>* word_ends,
     int offset) {
-  if (GetRole() == ui::AX_ROLE_INLINE_TEXT_BOX) {
+  if (GetRole() == ax::mojom::Role::kInlineTextBox) {
     const std::vector<int32_t>& starts =
-        GetIntListAttribute(ui::AX_ATTR_WORD_STARTS);
+        GetIntListAttribute(ax::mojom::IntListAttribute::kWordStarts);
     const std::vector<int32_t>& ends =
-        GetIntListAttribute(ui::AX_ATTR_WORD_ENDS);
+        GetIntListAttribute(ax::mojom::IntListAttribute::kWordEnds);
     for (size_t i = 0; i < starts.size(); ++i) {
       word_starts->push_back(offset + starts[i]);
       word_ends->push_back(offset + ends[i]);
@@ -1323,25 +1601,56 @@ void BrowserAccessibilityAndroid::GetWordBoundaries(
   }
 }
 
-bool BrowserAccessibilityAndroid::HasFocusableChild() const {
+bool BrowserAccessibilityAndroid::HasFocusableNonOptionChild() const {
   // This is called from PlatformIsLeaf, so don't call PlatformChildCount
   // from within this!
   for (uint32_t i = 0; i < InternalChildCount(); i++) {
     BrowserAccessibility* child = InternalGetChild(i);
-    if (child->HasState(ui::AX_STATE_FOCUSABLE))
+    if (child->HasState(ax::mojom::State::kFocusable) &&
+        child->GetRole() != ax::mojom::Role::kMenuListOption)
       return true;
-    if (static_cast<BrowserAccessibilityAndroid*>(child)->HasFocusableChild())
+    if (static_cast<BrowserAccessibilityAndroid*>(child)
+            ->HasFocusableNonOptionChild())
       return true;
   }
   return false;
 }
 
-bool BrowserAccessibilityAndroid::HasOnlyStaticTextChildren() const {
+bool BrowserAccessibilityAndroid::HasNonEmptyValue() const {
+  return IsEditableText() && !GetValue().empty();
+}
+
+bool BrowserAccessibilityAndroid::HasCharacterLocations() const {
+  if (GetRole() == ax::mojom::Role::kStaticText)
+    return true;
+
+  for (uint32_t i = 0; i < InternalChildCount(); i++) {
+    BrowserAccessibility* child = InternalGetChild(i);
+    if (static_cast<BrowserAccessibilityAndroid*>(child)
+            ->HasCharacterLocations())
+      return true;
+  }
+  return false;
+}
+
+bool BrowserAccessibilityAndroid::HasImage() const {
+  if (ui::IsImage(GetRole()))
+    return true;
+
+  for (uint32_t i = 0; i < InternalChildCount(); i++) {
+    BrowserAccessibility* child = InternalGetChild(i);
+    if (static_cast<BrowserAccessibilityAndroid*>(child)->HasImage())
+      return true;
+  }
+  return false;
+}
+
+bool BrowserAccessibilityAndroid::HasOnlyTextChildren() const {
   // This is called from PlatformIsLeaf, so don't call PlatformChildCount
   // from within this!
   for (uint32_t i = 0; i < InternalChildCount(); i++) {
     BrowserAccessibility* child = InternalGetChild(i);
-    if (child->GetRole() != ui::AX_ROLE_STATIC_TEXT)
+    if (!child->IsTextOnlyObject())
       return false;
   }
   return true;
@@ -1352,8 +1661,8 @@ bool BrowserAccessibilityAndroid::HasOnlyTextAndImageChildren() const {
   // from within this!
   for (uint32_t i = 0; i < InternalChildCount(); i++) {
     BrowserAccessibility* child = InternalGetChild(i);
-    if (child->GetRole() != ui::AX_ROLE_STATIC_TEXT &&
-        child->GetRole() != ui::AX_ROLE_IMAGE) {
+    if (child->GetRole() != ax::mojom::Role::kStaticText &&
+        !ui::IsImage(child->GetRole())) {
       return false;
     }
   }
@@ -1361,8 +1670,30 @@ bool BrowserAccessibilityAndroid::HasOnlyTextAndImageChildren() const {
 }
 
 bool BrowserAccessibilityAndroid::IsIframe() const {
-  return (GetRole() == ui::AX_ROLE_IFRAME ||
-          GetRole() == ui::AX_ROLE_IFRAME_PRESENTATIONAL);
+  return (GetRole() == ax::mojom::Role::kIframe ||
+          GetRole() == ax::mojom::Role::kIframePresentational);
+}
+
+bool BrowserAccessibilityAndroid::ShouldExposeValueAsName() const {
+  switch (GetRole()) {
+    case ax::mojom::Role::kTextField:
+    case ax::mojom::Role::kTextFieldWithComboBox:
+      return true;
+    default:
+      break;
+  }
+
+  if (IsPlainTextField() || IsRichTextField())
+    return true;
+
+  base::string16 value = GetValue();
+  if (value.empty())
+    return false;
+
+  if (GetRole() == ax::mojom::Role::kPopUpButton)
+    return true;
+
+  return false;
 }
 
 void BrowserAccessibilityAndroid::OnDataChanged() {
@@ -1375,48 +1706,54 @@ void BrowserAccessibilityAndroid::OnDataChanged() {
       new_value_ = value;
     }
   }
-
-  if (GetRole() == ui::AX_ROLE_ALERT && first_time_) {
-    manager()->NotifyAccessibilityEvent(
-        BrowserAccessibilityEvent::FromTreeChange,
-        ui::AX_EVENT_ALERT,
-        this);
-  }
-
-  base::string16 live;
-  if (GetString16Attribute(
-      ui::AX_ATTR_CONTAINER_LIVE_STATUS, &live)) {
-    NotifyLiveRegionUpdate(live);
-  }
-
-  first_time_ = false;
 }
 
-void BrowserAccessibilityAndroid::NotifyLiveRegionUpdate(
-    base::string16& aria_live) {
-  if (!base::EqualsASCII(aria_live, aria_strings::kAriaLivePolite) &&
-      !base::EqualsASCII(aria_live, aria_strings::kAriaLiveAssertive))
-    return;
-
-  base::string16 text = GetText();
-  if (cached_text_ != text) {
-    if (!text.empty()) {
-      manager()->NotifyAccessibilityEvent(
-          BrowserAccessibilityEvent::FromTreeChange,
-          ui::AX_EVENT_SHOW,
-          this);
-    }
-    cached_text_ = text;
-  }
-}
-
-int BrowserAccessibilityAndroid::CountChildrenWithRole(ui::AXRole role) const {
+int BrowserAccessibilityAndroid::CountChildrenWithRole(
+    ax::mojom::Role role) const {
   int count = 0;
   for (uint32_t i = 0; i < PlatformChildCount(); i++) {
     if (PlatformGetChild(i)->GetRole() == role)
       count++;
   }
   return count;
+}
+
+base::string16 BrowserAccessibilityAndroid::GetContentInvalidErrorMessage()
+    const {
+  content::ContentClient* content_client = content::GetContentClient();
+  int message_id = -1;
+
+  if (!IsContentInvalid())
+    return base::string16();
+
+  switch (GetData().GetInvalidState()) {
+    case ax::mojom::InvalidState::kNone:
+    case ax::mojom::InvalidState::kFalse:
+      // No error message necessary
+      break;
+
+    case ax::mojom::InvalidState::kTrue:
+    case ax::mojom::InvalidState::kOther:
+      message_id = CONTENT_INVALID_TRUE;
+      break;
+
+    case ax::mojom::InvalidState::kSpelling:
+      message_id = CONTENT_INVALID_SPELLING;
+      break;
+
+    case ax::mojom::InvalidState::kGrammar:
+      message_id = CONTENT_INVALID_GRAMMAR;
+      break;
+  }
+
+  if (message_id != -1)
+    return content_client->GetLocalizedString(message_id);
+
+  return base::string16();
+}
+
+void BrowserAccessibilityAndroid::ResetContentInvalidTimer() {
+  content_invalid_timer_ = base::ElapsedTimer();
 }
 
 }  // namespace content

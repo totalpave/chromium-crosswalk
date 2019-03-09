@@ -105,6 +105,13 @@ function ListContainer(element, table, grid) {
    */
   this.textSearchState = new TextSearchState();
 
+  /**
+   * Whtehter to allow or cancel a context menu event.
+   * @type {boolean}
+   * @private
+   */
+  this.allowContextMenuByTouch_ = false;
+
   // Overriding the default role 'list' to 'listbox' for better accessibility
   // on ChromeOS.
   this.table.list.setAttribute('role', 'listbox');
@@ -114,6 +121,30 @@ function ListContainer(element, table, grid) {
   this.element.addEventListener('keydown', this.onKeyDown_.bind(this));
   this.element.addEventListener('keypress', this.onKeyPress_.bind(this));
   this.element.addEventListener('mousemove', this.onMouseMove_.bind(this));
+  this.element.addEventListener(
+      'contextmenu', this.onContextMenu_.bind(this), /* useCapture */ true);
+
+  this.element.addEventListener('touchstart', function(e) {
+    if (e.touches.length > 1) {
+      this.allowContextMenuByTouch_ = true;
+    }
+  }.bind(this), {passive: true});
+  this.element.addEventListener('touchend', function(e) {
+    if (e.touches.length == 0) {
+      // contextmenu event will be sent right after touchend.
+      setTimeout(function() {
+        this.allowContextMenuByTouch_ = false;
+      }.bind(this));
+    }
+  }.bind(this));
+  this.element.addEventListener('contextmenu', function(e) {
+    // Block context menu triggered by touch event unless it is right after
+    // multi-touch, or we are currently selecting a file.
+    if (this.currentList.selectedItem && !this.allowContextMenuByTouch_ &&
+        e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents) {
+      e.stopPropagation();
+    }
+  }.bind(this), true);
 }
 
 /**
@@ -135,19 +166,23 @@ ListContainer.ListType = {
 };
 
 /**
- * Metadata property names used by FileTable and FileGrid.
- * These metadata is expected to be cached.
- * @const {!Array<string>}
+ * Keep the order of this in sync with FileManagerListType in
+ * tools/metrics/histograms/enums.xml.
+ * The array indices will be recorded in UMA as enum values. The index for each
+ * root type should never be renumbered nor reused in this array.
+ *
+ * @type {Array<ListContainer.ListType>}
+ * @const
  */
-ListContainer.METADATA_PREFETCH_PROPERTY_NAMES = [
-  'availableOffline',
-  'contentMimeType',
-  'customIconUrl',
-  'hosted',
-  'modificationTime',
-  'shared',
-  'size',
-];
+ListContainer.ListTypesForUMA = Object.freeze([
+  ListContainer.ListType.UNINITIALIZED,
+  ListContainer.ListType.DETAIL,
+  ListContainer.ListType.THUMBNAIL,
+]);
+console.assert(
+    Object.keys(ListContainer.ListType).length ===
+        ListContainer.ListTypesForUMA.length,
+    'Members in ListTypesForUMA do not match those in ListType.');
 
 ListContainer.prototype = /** @struct */ {
   /**
@@ -258,7 +293,7 @@ ListContainer.prototype.clearHover = function() {
  * @return {cr.ui.ListItem}
  */
 ListContainer.prototype.findListItemForNode = function(node) {
-  var item = this.currentList.getListItemAncestor(node);
+  const item = this.currentList.getListItemAncestor(node);
   // TODO(serya): list should check that.
   return item && this.currentList.isItem(item) ?
       assertInstanceof(item, cr.ui.ListItem) : null;
@@ -278,6 +313,43 @@ ListContainer.prototype.focus = function() {
     default:
       assertNotReached();
       break;
+  }
+};
+
+/**
+ * Check if our context menu has any items that can be activated
+ * @return {boolean} True if the menu has action item. Otherwise, false.
+ * @private
+ */
+ListContainer.prototype.contextMenuHasActions_ = () => {
+  const menu = document.querySelector('#file-context-menu');
+  const menuItems = menu.querySelectorAll('cr-menu-item, hr');
+  for (const item of menuItems) {
+    if (!item.hasAttribute('hidden') && !item.hasAttribute('disabled') &&
+        (window.getComputedStyle(item).display != 'none')) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Contextmenu event handler to prevent change of focus on long-tapping the
+ * header of the file list.
+ * @param {!Event} e Menu event.
+ * @private
+ */
+ListContainer.prototype.onContextMenu_ = function(e) {
+  // Inhibit the context menu being shown if it only hosts
+  // disabled items https://crbug.com/917975
+  if (this.contextMenuHasActions_() === false) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  if (!this.allowContextMenuByTouch_ && e.sourceCapabilities &&
+      e.sourceCapabilities.firesTouchEvents) {
+    this.focus();
   }
 };
 
@@ -322,15 +394,16 @@ ListContainer.prototype.onKeyPress_ = function(event) {
     return;
   }
 
-  var now = new Date();
-  var character = String.fromCharCode(event.charCode).toLowerCase();
-  var text = now - this.textSearchState.date > 1000 ? '' :
+  const now = new Date();
+  const character = String.fromCharCode(event.charCode).toLowerCase();
+  const text = now - this.textSearchState.date > 1000 ? '' :
       this.textSearchState.text;
   this.textSearchState.text = text + character;
   this.textSearchState.date = now;
 
-  if (this.textSearchState.text)
+  if (this.textSearchState.text) {
     cr.dispatchSimpleEvent(this.element, ListContainer.EventType.TEXT_SEARCH);
+  }
 };
 
 /**

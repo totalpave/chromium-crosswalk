@@ -5,8 +5,11 @@
 #import "ios/chrome/browser/ui/commands/reading_list_add_command.h"
 
 #include "base/logging.h"
-#include "ios/chrome/browser/ui/commands/ios_command_ids.h"
 #include "url/gurl.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 @implementation ReadingListAddCommand {
   GURL _URL;
@@ -16,16 +19,11 @@
 @synthesize URL = _URL;
 
 - (instancetype)initWithURL:(const GURL&)URL title:(NSString*)title {
-  if (self = [super initWithTag:IDC_ADD_READING_LIST]) {
+  if (self = [super init]) {
     _URL = URL;
     _title = title;
   }
   return self;
-}
-
-- (instancetype)initWithTag:(NSInteger)tag {
-  NOTREACHED();
-  return nil;
 }
 
 @end

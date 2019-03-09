@@ -11,15 +11,16 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/observer_list.h"
 #include "base/strings/string16.h"
 #include "components/renderer_context_menu/context_menu_content_type.h"
 #include "components/renderer_context_menu/render_view_context_menu_observer.h"
 #include "components/renderer_context_menu/render_view_context_menu_proxy.h"
 #include "content/public/common/context_menu_params.h"
+#include "ppapi/buildflags/buildflags.h"
 #include "ui/base/models/simple_menu_model.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
@@ -27,15 +28,6 @@
 namespace content {
 class RenderFrameHost;
 class WebContents;
-}
-
-namespace gfx {
-class Point;
-}
-
-namespace blink {
-struct WebMediaPlayerAction;
-struct WebPluginAction;
 }
 
 class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
@@ -55,10 +47,10 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
     virtual void UpdateMenuItem(int command_id,
                                 bool enabled,
                                 bool hidden,
-                                const base::string16& title) = 0;
-#if defined(OS_CHROMEOS)
-    virtual void UpdateMenuIcon(int command_id, const gfx::Image& image) = 0;
-#endif
+                                const base::string16& title) {}
+
+    // Recreates the menu using the |menu_model_|.
+    virtual void RebuildMenu(){}
   };
 
   static const size_t kMaxSelectionTextLength;
@@ -98,7 +90,7 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
   // SimpleMenuModel::Delegate implementation.
   bool IsCommandIdChecked(int command_id) const override;
   void ExecuteCommand(int command_id, int event_flags) override;
-  void MenuWillShow(ui::SimpleMenuModel* source) override;
+  void OnMenuWillShow(ui::SimpleMenuModel* source) override;
   void MenuClosed(ui::SimpleMenuModel* source) override;
 
   // RenderViewContextMenuProxy implementation.
@@ -113,6 +105,8 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
                       bool hidden,
                       const base::string16& title) override;
   void UpdateMenuIcon(int command_id, const gfx::Image& image) override;
+  void RemoveMenuItem(int command_id) override;
+  void RemoveAdjacentSeparators() override;
   content::RenderViewHost* GetRenderViewHost() const override;
   content::WebContents* GetWebContents() const override;
   content::BrowserContext* GetBrowserContext() const override;
@@ -121,8 +115,8 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
   friend class RenderViewContextMenuTest;
   friend class RenderViewContextMenuPrefsTest;
 
-  void set_content_type(ContextMenuContentType* content_type) {
-    content_type_.reset(content_type);
+  void set_content_type(std::unique_ptr<ContextMenuContentType> content_type) {
+    content_type_ = std::move(content_type);
   }
 
   void set_toolkit_delegate(std::unique_ptr<ToolkitDelegate> delegate) {
@@ -144,18 +138,12 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
   // Increments histogram value for visible context menu item specified by |id|.
   virtual void RecordShownItem(int id) = 0;
 
-#if defined(ENABLE_PLUGINS)
+#if BUILDFLAG(ENABLE_PLUGINS)
   virtual void HandleAuthorizeAllPlugins() = 0;
 #endif
 
-  // Returns the accelerator for given |command_id|.
-  bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override = 0;
-
   // Subclasses should send notification.
   virtual void NotifyMenuShown() = 0;
-  virtual void NotifyURLOpened(const GURL& url,
-                               content::WebContents* new_contents) = 0;
 
   // TODO(oshima): Remove this.
   virtual void AppendPlatformEditableItems() {}
@@ -167,7 +155,8 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
   bool IsCustomItemEnabled(int id) const;
 
   // Opens the specified URL string in a new tab.
-  void OpenURL(const GURL& url, const GURL& referrer,
+  void OpenURL(const GURL& url,
+               const GURL& referrer,
                WindowOpenDisposition disposition,
                ui::PageTransition transition);
 
@@ -176,7 +165,8 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
                                const GURL& referrer,
                                WindowOpenDisposition disposition,
                                ui::PageTransition transition,
-                               const std::string& extra_headers);
+                               const std::string& extra_headers,
+                               bool started_from_context_menu);
 
   content::ContextMenuParams params_;
   content::WebContents* const source_web_contents_;
@@ -187,8 +177,12 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
   // Renderer's frame id.
   const int render_frame_id_;
 
+  // The RenderFrameHost's IDs.
+  const int render_process_id_;
+
   // Our observers.
-  mutable base::ObserverList<RenderViewContextMenuObserver> observers_;
+  mutable base::ObserverList<RenderViewContextMenuObserver>::Unchecked
+      observers_;
 
   // Whether a command has been executed. Used to track whether menu observers
   // should be notified of menu closing without execution.
@@ -199,12 +193,9 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
  private:
   bool AppendCustomItems();
 
-  // The RenderFrameHost's IDs.
-  const int render_process_id_;
-
   std::unique_ptr<ToolkitDelegate> toolkit_delegate_;
 
-  ScopedVector<ui::SimpleMenuModel> custom_submenus_;
+  std::vector<std::unique_ptr<ui::SimpleMenuModel>> custom_submenus_;
 
   DISALLOW_COPY_AND_ASSIGN(RenderViewContextMenuBase);
 };

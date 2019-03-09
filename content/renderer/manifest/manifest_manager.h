@@ -5,14 +5,17 @@
 #ifndef CONTENT_RENDERER_MANIFEST_MANIFEST_MANAGER_H_
 #define CONTENT_RENDERER_MANIFEST_MANIFEST_MANAGER_H_
 
-#include <list>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "content/public/common/manifest.h"
+#include "base/memory/weak_ptr.h"
 #include "content/public/renderer/render_frame_observer.h"
-#include "content/renderer/manifest/manifest_debug_info.h"
+#include "mojo/public/cpp/bindings/binding_set.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
+#include "third_party/blink/public/mojom/manifest/manifest_manager.mojom.h"
 
 class GURL;
 
@@ -27,26 +30,22 @@ class ManifestFetcher;
 // The ManifestManager is a helper class that takes care of fetching and parsing
 // the Manifest of the associated RenderFrame. It uses the ManifestFetcher and
 // the ManifestParser in order to do so.
-// There are two expected consumers of this helper: ManifestManagerHost, via IPC
-// messages and callers inside the renderer process. The latter should use
-// GetManifest().
-class ManifestManager : public RenderFrameObserver {
+//
+// Consumers should use the mojo ManifestManager interface to use this class.
+class ManifestManager : public RenderFrameObserver,
+                        public blink::mojom::ManifestManager {
  public:
-  typedef base::Callback<void(const Manifest&,
-                              const ManifestDebugInfo&)> GetManifestCallback;
+  static bool CanFetchManifest(RenderFrame* render_frame);
 
   explicit ManifestManager(RenderFrame* render_frame);
   ~ManifestManager() override;
 
-  // Will call the given |callback| with the Manifest associated with the
-  // RenderFrame if any. Will pass an empty Manifest in case of error.
-  void GetManifest(const GetManifestCallback& callback);
-
   // RenderFrameObserver implementation.
-  bool OnMessageReceived(const IPC::Message& message) override;
   void DidChangeManifest() override;
-  void DidCommitProvisionalLoad(bool is_new_navigation,
-                                bool is_same_page_navigation) override;
+  void DidCommitProvisionalLoad(bool is_same_document_navigation,
+                                ui::PageTransition transition) override;
+
+  void BindToRequest(blink::mojom::ManifestManagerRequest request);
 
  private:
   enum ResolveState {
@@ -54,16 +53,20 @@ class ManifestManager : public RenderFrameObserver {
     ResolveStateFailure
   };
 
+  using InternalRequestManifestCallback =
+      base::OnceCallback<void(const GURL&,
+                              const blink::Manifest&,
+                              const blink::mojom::ManifestDebugInfo*)>;
+
   // RenderFrameObserver implementation.
   void OnDestruct() override;
 
-  // Called when receiving a ManifestManagerMsg_RequestManifest from the browser
-  // process.
-  void OnHasManifest(int request_id);
-  void OnRequestManifest(int request_id);
-  void OnRequestManifestComplete(int request_id,
-                                 const Manifest&,
-                                 const ManifestDebugInfo&);
+  // blink::mojom::ManifestManager implementation.
+  void RequestManifest(RequestManifestCallback callback) override;
+  void RequestManifestDebugInfo(
+      RequestManifestDebugInfoCallback callback) override;
+
+  void RequestManifestImpl(InternalRequestManifestCallback callback);
 
   void FetchManifest();
   void OnManifestFetchComplete(const GURL& document_url,
@@ -83,16 +86,21 @@ class ManifestManager : public RenderFrameObserver {
   bool manifest_dirty_;
 
   // Current Manifest. Might be outdated if manifest_dirty_ is true.
-  Manifest manifest_;
+  blink::Manifest manifest_;
+
+  // The URL of the current manifest.
+  GURL manifest_url_;
 
   // Current Manifest debug information.
-  ManifestDebugInfo manifest_debug_info_;
+  blink::mojom::ManifestDebugInfoPtr manifest_debug_info_;
 
-  std::list<GetManifestCallback> pending_callbacks_;
+  std::vector<InternalRequestManifestCallback> pending_callbacks_;
+
+  mojo::BindingSet<blink::mojom::ManifestManager> bindings_;
 
   DISALLOW_COPY_AND_ASSIGN(ManifestManager);
 };
 
-} // namespace content
+}  // namespace content
 
 #endif  // CONTENT_RENDERER_MANIFEST_MANIFEST_MANAGER_H_

@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "gmock/gmock.h"
@@ -43,28 +44,28 @@ using testing::Return;
 // Fake Mach ports. These aren’t used as ports in these tests, they’re just used
 // as cookies to make sure that the correct values get passed to the correct
 // places.
-const mach_port_t kClientRemotePort = 0x01010101;
-const mach_port_t kServerLocalPort = 0x02020202;
-const thread_t kExceptionThreadPort = 0x03030303;
-const task_t kExceptionTaskPort = 0x04040404;
+constexpr mach_port_t kClientRemotePort = 0x01010101;
+constexpr mach_port_t kServerLocalPort = 0x02020202;
+constexpr thread_t kExceptionThreadPort = 0x03030303;
+constexpr task_t kExceptionTaskPort = 0x04040404;
 
 // Other fake exception values.
-const exception_type_t kExceptionType = EXC_BAD_ACCESS;
+constexpr exception_type_t kExceptionType = EXC_BAD_ACCESS;
 
 // Test using an exception code with the high bit set to ensure that it gets
 // promoted to the wider mach_exception_data_type_t type as a signed quantity.
-const exception_data_type_t kTestExceptonCodes[] = {
+constexpr exception_data_type_t kTestExceptonCodes[] = {
     KERN_PROTECTION_FAILURE,
     implicit_cast<exception_data_type_t>(0xfedcba98),
 };
 
-const mach_exception_data_type_t kTestMachExceptionCodes[] = {
+constexpr mach_exception_data_type_t kTestMachExceptionCodes[] = {
     KERN_PROTECTION_FAILURE,
     implicit_cast<mach_exception_data_type_t>(0xfedcba9876543210),
 };
 
-const thread_state_flavor_t kThreadStateFlavor = MACHINE_THREAD_STATE;
-const mach_msg_type_number_t kThreadStateFlavorCount =
+constexpr thread_state_flavor_t kThreadStateFlavor = MACHINE_THREAD_STATE;
+constexpr mach_msg_type_number_t kThreadStateFlavorCount =
     MACHINE_THREAD_STATE_COUNT;
 
 void InitializeMachMsgPortDescriptor(mach_msg_port_descriptor_t* descriptor,
@@ -123,26 +124,26 @@ struct __attribute__((packed, aligned(4))) ExceptionRaiseReply {
   // MachExceptionRaiseReply. Knowing which behavior is expected allows the
   // message ID to be checked.
   void Verify(exception_behavior_t behavior) {
-    EXPECT_EQ(implicit_cast<mach_msg_bits_t>(
-                  MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0)),
-              Head.msgh_bits);
-    EXPECT_EQ(sizeof(*this), Head.msgh_size);
-    EXPECT_EQ(kClientRemotePort, Head.msgh_remote_port);
-    EXPECT_EQ(kMachPortNull, Head.msgh_local_port);
+    EXPECT_EQ(Head.msgh_bits,
+              implicit_cast<mach_msg_bits_t>(
+                  MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0)));
+    EXPECT_EQ(Head.msgh_size, sizeof(*this));
+    EXPECT_EQ(Head.msgh_remote_port, kClientRemotePort);
+    EXPECT_EQ(Head.msgh_local_port, kMachPortNull);
     switch (behavior) {
       case EXCEPTION_DEFAULT:
-        EXPECT_EQ(2501, Head.msgh_id);
+        EXPECT_EQ(Head.msgh_id, 2501);
         break;
       case EXCEPTION_DEFAULT | kMachExceptionCodes:
-        EXPECT_EQ(2505, Head.msgh_id);
+        EXPECT_EQ(Head.msgh_id, 2505);
         break;
       default:
         ADD_FAILURE() << "behavior " << behavior << ", Head.msgh_id "
                       << Head.msgh_id;
         break;
     }
-    EXPECT_EQ(0, memcmp(&NDR, &NDR_record, sizeof(NDR)));
-    EXPECT_EQ(KERN_SUCCESS, RetCode);
+    EXPECT_EQ(memcmp(&NDR, &NDR_record, sizeof(NDR)), 0);
+    EXPECT_EQ(RetCode, KERN_SUCCESS);
   }
 
   mach_msg_header_t Head;
@@ -201,34 +202,34 @@ struct __attribute__((packed, aligned(4))) ExceptionRaiseStateReply {
   // MachExceptionRaiseStateIdentityReply. Knowing which behavior is expected
   // allows the message ID to be checked.
   void Verify(exception_behavior_t behavior) {
-    EXPECT_EQ(implicit_cast<mach_msg_bits_t>(
-                  MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0)),
-              Head.msgh_bits);
-    EXPECT_EQ(sizeof(*this), Head.msgh_size);
-    EXPECT_EQ(kClientRemotePort, Head.msgh_remote_port);
-    EXPECT_EQ(kMachPortNull, Head.msgh_local_port);
+    EXPECT_EQ(Head.msgh_bits,
+              implicit_cast<mach_msg_bits_t>(
+                  MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0)));
+    EXPECT_EQ(Head.msgh_size, sizeof(*this));
+    EXPECT_EQ(Head.msgh_remote_port, kClientRemotePort);
+    EXPECT_EQ(Head.msgh_local_port, kMachPortNull);
     switch (behavior) {
       case EXCEPTION_STATE:
-        EXPECT_EQ(2502, Head.msgh_id);
+        EXPECT_EQ(Head.msgh_id, 2502);
         break;
       case EXCEPTION_STATE_IDENTITY:
-        EXPECT_EQ(2503, Head.msgh_id);
+        EXPECT_EQ(Head.msgh_id, 2503);
         break;
       case EXCEPTION_STATE | kMachExceptionCodes:
-        EXPECT_EQ(2506, Head.msgh_id);
+        EXPECT_EQ(Head.msgh_id, 2506);
         break;
       case EXCEPTION_STATE_IDENTITY | kMachExceptionCodes:
-        EXPECT_EQ(2507, Head.msgh_id);
+        EXPECT_EQ(Head.msgh_id, 2507);
         break;
       default:
         ADD_FAILURE() << "behavior " << behavior << ", Head.msgh_id "
                       << Head.msgh_id;
         break;
     }
-    EXPECT_EQ(0, memcmp(&NDR, &NDR_record, sizeof(NDR)));
-    EXPECT_EQ(KERN_SUCCESS, RetCode);
-    EXPECT_EQ(kThreadStateFlavor, flavor);
-    EXPECT_EQ(arraysize(new_state), new_stateCnt);
+    EXPECT_EQ(memcmp(&NDR, &NDR_record, sizeof(NDR)), 0);
+    EXPECT_EQ(RetCode, KERN_SUCCESS);
+    EXPECT_EQ(flavor, kThreadStateFlavor);
+    EXPECT_EQ(new_stateCnt, base::size(new_state));
   }
 
   mach_msg_header_t Head;
@@ -441,15 +442,15 @@ struct BadIDErrorReply : public mig_reply_error_t {
   }
 
   void Verify(mach_msg_id_t id) {
-    EXPECT_EQ(implicit_cast<mach_msg_bits_t>(
-                  MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0)),
-              Head.msgh_bits);
-    EXPECT_EQ(sizeof(*this), Head.msgh_size);
-    EXPECT_EQ(kClientRemotePort, Head.msgh_remote_port);
-    EXPECT_EQ(kMachPortNull, Head.msgh_local_port);
-    EXPECT_EQ(id + 100, Head.msgh_id);
-    EXPECT_EQ(0, memcmp(&NDR, &NDR_record, sizeof(NDR)));
-    EXPECT_EQ(MIG_BAD_ID, RetCode);
+    EXPECT_EQ(Head.msgh_bits,
+              implicit_cast<mach_msg_bits_t>(
+                  MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0)));
+    EXPECT_EQ(Head.msgh_size, sizeof(*this));
+    EXPECT_EQ(Head.msgh_remote_port, kClientRemotePort);
+    EXPECT_EQ(Head.msgh_local_port, kMachPortNull);
+    EXPECT_EQ(Head.msgh_id, id + 100);
+    EXPECT_EQ(memcmp(&NDR, &NDR_record, sizeof(NDR)), 0);
+    EXPECT_EQ(RetCode, MIG_BAD_ID);
   }
 };
 
@@ -591,7 +592,7 @@ TEST(ExcServerVariants, MockExceptionRaise) {
 
   std::set<mach_msg_id_t> ids =
       universal_mach_exc_server.MachMessageServerRequestIDs();
-  EXPECT_NE(ids.end(), ids.find(2401));  // There is no constant for this.
+  EXPECT_NE(ids.find(2401), ids.end());  // There is no constant for this.
 
   ExceptionRaiseRequest request;
   EXPECT_LE(request.Head.msgh_size,
@@ -601,7 +602,7 @@ TEST(ExcServerVariants, MockExceptionRaise) {
   EXPECT_LE(sizeof(reply),
             universal_mach_exc_server.MachMessageServerReplySize());
 
-  const exception_behavior_t kExceptionBehavior = EXCEPTION_DEFAULT;
+  constexpr exception_behavior_t kExceptionBehavior = EXCEPTION_DEFAULT;
 
   EXPECT_CALL(server,
               MockCatchMachException(kExceptionBehavior,
@@ -636,7 +637,7 @@ TEST(ExcServerVariants, MockExceptionRaiseState) {
 
   std::set<mach_msg_id_t> ids =
       universal_mach_exc_server.MachMessageServerRequestIDs();
-  EXPECT_NE(ids.end(), ids.find(2402));  // There is no constant for this.
+  EXPECT_NE(ids.find(2402), ids.end());  // There is no constant for this.
 
   ExceptionRaiseStateRequest request;
   EXPECT_LE(request.Head.msgh_size,
@@ -646,7 +647,7 @@ TEST(ExcServerVariants, MockExceptionRaiseState) {
   EXPECT_LE(sizeof(reply),
             universal_mach_exc_server.MachMessageServerReplySize());
 
-  const exception_behavior_t kExceptionBehavior = EXCEPTION_STATE;
+  constexpr exception_behavior_t kExceptionBehavior = EXCEPTION_STATE;
 
   EXPECT_CALL(
       server,
@@ -659,7 +660,7 @@ TEST(ExcServerVariants, MockExceptionRaiseState) {
           AreExceptionCodes(kTestExceptonCodes[0], kTestExceptonCodes[1]),
           Pointee(Eq(kThreadStateFlavor)),
           IsThreadStateAndCount(kThreadStateFlavorCount),
-          IsThreadStateAndCount(arraysize(reply.new_state)),
+          IsThreadStateAndCount(base::size(reply.new_state)),
           Eq(request.Trailer())))
       .WillOnce(Return(KERN_SUCCESS))
       .RetiresOnSaturation();
@@ -685,7 +686,7 @@ TEST(ExcServerVariants, MockExceptionRaiseStateIdentity) {
 
   std::set<mach_msg_id_t> ids =
       universal_mach_exc_server.MachMessageServerRequestIDs();
-  EXPECT_NE(ids.end(), ids.find(2403));  // There is no constant for this.
+  EXPECT_NE(ids.find(2403), ids.end());  // There is no constant for this.
 
   ExceptionRaiseStateIdentityRequest request;
   EXPECT_LE(request.Head.msgh_size,
@@ -695,7 +696,7 @@ TEST(ExcServerVariants, MockExceptionRaiseStateIdentity) {
   EXPECT_LE(sizeof(reply),
             universal_mach_exc_server.MachMessageServerReplySize());
 
-  const exception_behavior_t kExceptionBehavior = EXCEPTION_STATE_IDENTITY;
+  constexpr exception_behavior_t kExceptionBehavior = EXCEPTION_STATE_IDENTITY;
 
   EXPECT_CALL(
       server,
@@ -708,7 +709,7 @@ TEST(ExcServerVariants, MockExceptionRaiseStateIdentity) {
           AreExceptionCodes(kTestExceptonCodes[0], kTestExceptonCodes[1]),
           Pointee(Eq(kThreadStateFlavor)),
           IsThreadStateAndCount(kThreadStateFlavorCount),
-          IsThreadStateAndCount(arraysize(reply.new_state)),
+          IsThreadStateAndCount(base::size(reply.new_state)),
           Eq(request.Trailer())))
       .WillOnce(Return(KERN_SUCCESS))
       .RetiresOnSaturation();
@@ -731,7 +732,7 @@ TEST(ExcServerVariants, MockMachExceptionRaise) {
 
   std::set<mach_msg_id_t> ids =
       universal_mach_exc_server.MachMessageServerRequestIDs();
-  EXPECT_NE(ids.end(), ids.find(2405));  // There is no constant for this.
+  EXPECT_NE(ids.find(2405), ids.end());  // There is no constant for this.
 
   MachExceptionRaiseRequest request;
   EXPECT_LE(request.Head.msgh_size,
@@ -741,7 +742,7 @@ TEST(ExcServerVariants, MockMachExceptionRaise) {
   EXPECT_LE(sizeof(reply),
             universal_mach_exc_server.MachMessageServerReplySize());
 
-  const exception_behavior_t kExceptionBehavior =
+  constexpr exception_behavior_t kExceptionBehavior =
       EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES;
 
   EXPECT_CALL(
@@ -778,7 +779,7 @@ TEST(ExcServerVariants, MockMachExceptionRaiseState) {
 
   std::set<mach_msg_id_t> ids =
       universal_mach_exc_server.MachMessageServerRequestIDs();
-  EXPECT_NE(ids.end(), ids.find(2406));  // There is no constant for this.
+  EXPECT_NE(ids.find(2406), ids.end());  // There is no constant for this.
 
   MachExceptionRaiseStateRequest request;
   EXPECT_LE(request.Head.msgh_size,
@@ -788,7 +789,7 @@ TEST(ExcServerVariants, MockMachExceptionRaiseState) {
   EXPECT_LE(sizeof(reply),
             universal_mach_exc_server.MachMessageServerReplySize());
 
-  const exception_behavior_t kExceptionBehavior =
+  constexpr exception_behavior_t kExceptionBehavior =
       EXCEPTION_STATE | MACH_EXCEPTION_CODES;
 
   EXPECT_CALL(
@@ -802,7 +803,7 @@ TEST(ExcServerVariants, MockMachExceptionRaiseState) {
                                                kTestMachExceptionCodes[1]),
                              Pointee(Eq(kThreadStateFlavor)),
                              IsThreadStateAndCount(kThreadStateFlavorCount),
-                             IsThreadStateAndCount(arraysize(reply.new_state)),
+                             IsThreadStateAndCount(base::size(reply.new_state)),
                              Eq(request.Trailer())))
       .WillOnce(Return(KERN_SUCCESS))
       .RetiresOnSaturation();
@@ -828,7 +829,7 @@ TEST(ExcServerVariants, MockMachExceptionRaiseStateIdentity) {
 
   std::set<mach_msg_id_t> ids =
       universal_mach_exc_server.MachMessageServerRequestIDs();
-  EXPECT_NE(ids.end(), ids.find(2407));  // There is no constant for this.
+  EXPECT_NE(ids.find(2407), ids.end());  // There is no constant for this.
 
   MachExceptionRaiseStateIdentityRequest request;
   EXPECT_LE(request.Head.msgh_size,
@@ -838,7 +839,7 @@ TEST(ExcServerVariants, MockMachExceptionRaiseStateIdentity) {
   EXPECT_LE(sizeof(reply),
             universal_mach_exc_server.MachMessageServerReplySize());
 
-  const exception_behavior_t kExceptionBehavior =
+  constexpr exception_behavior_t kExceptionBehavior =
       EXCEPTION_STATE_IDENTITY | MACH_EXCEPTION_CODES;
 
   EXPECT_CALL(
@@ -852,7 +853,7 @@ TEST(ExcServerVariants, MockMachExceptionRaiseStateIdentity) {
                                                kTestMachExceptionCodes[1]),
                              Pointee(Eq(kThreadStateFlavor)),
                              IsThreadStateAndCount(kThreadStateFlavorCount),
-                             IsThreadStateAndCount(arraysize(reply.new_state)),
+                             IsThreadStateAndCount(base::size(reply.new_state)),
                              Eq(request.Trailer())))
       .WillOnce(Return(KERN_SUCCESS))
       .RetiresOnSaturation();
@@ -877,7 +878,7 @@ TEST(ExcServerVariants, MockUnknownID) {
   // UniversalMachExcServer should not dispatch the message to
   // MachMessageServerFunction, but should generate a MIG_BAD_ID error reply.
 
-  const mach_msg_id_t unknown_ids[] = {
+  static constexpr mach_msg_id_t unknown_ids[] = {
       // Reasonable things to check.
       -101,
       -100,
@@ -906,14 +907,14 @@ TEST(ExcServerVariants, MockUnknownID) {
       2508,
   };
 
-  for (size_t index = 0; index < arraysize(unknown_ids); ++index) {
+  for (size_t index = 0; index < base::size(unknown_ids); ++index) {
     mach_msg_id_t id = unknown_ids[index];
 
     SCOPED_TRACE(base::StringPrintf("unknown id %d", id));
 
     std::set<mach_msg_id_t> ids =
         universal_mach_exc_server.MachMessageServerRequestIDs();
-    EXPECT_EQ(ids.end(), ids.find(id));
+    EXPECT_EQ(ids.find(id), ids.end());
 
     InvalidRequest request(id);
     EXPECT_LE(sizeof(request),
@@ -953,8 +954,8 @@ TEST(ExcServerVariants, MachMessageServerRequestIDs) {
   MockUniversalMachExcServer server;
   UniversalMachExcServer universal_mach_exc_server(&server);
 
-  EXPECT_EQ(expect_request_ids,
-            universal_mach_exc_server.MachMessageServerRequestIDs());
+  EXPECT_EQ(universal_mach_exc_server.MachMessageServerRequestIDs(),
+            expect_request_ids);
 }
 
 class TestExcServerVariants : public MachMultiprocess,
@@ -968,7 +969,10 @@ class TestExcServerVariants : public MachMultiprocess,
         behavior_(behavior),
         flavor_(flavor),
         state_count_(state_count),
-        handled_(false) {}
+        handled_(false) {
+    // This is how the __builtin_trap() in MachMultiprocessChild() appears.
+    SetExpectedChildTermination(kTerminationSignal, SIGILL);
+  }
 
   // UniversalMachExcServer::Interface:
 
@@ -992,20 +996,20 @@ class TestExcServerVariants : public MachMultiprocess,
     EXPECT_FALSE(handled_);
     handled_ = true;
 
-    EXPECT_EQ(behavior_, behavior);
+    EXPECT_EQ(behavior, behavior_);
 
-    EXPECT_EQ(LocalPort(), exception_port);
+    EXPECT_EQ(exception_port, LocalPort());
 
     if (ExceptionBehaviorHasIdentity(behavior)) {
-      EXPECT_NE(THREAD_NULL, thread);
-      EXPECT_EQ(ChildTask(), task);
+      EXPECT_NE(thread, THREAD_NULL);
+      EXPECT_EQ(task, ChildTask());
     } else {
-      EXPECT_EQ(THREAD_NULL, thread);
-      EXPECT_EQ(TASK_NULL, task);
+      EXPECT_EQ(thread, THREAD_NULL);
+      EXPECT_EQ(task, TASK_NULL);
     }
 
-    EXPECT_EQ(EXC_CRASH, exception);
-    EXPECT_EQ(2u, code_count);
+    EXPECT_EQ(exception, EXC_CRASH);
+    EXPECT_EQ(code_count, 2u);
 
     // The exception and code_count checks above would ideally use ASSERT_EQ so
     // that the next conditional would not be necessary, but ASSERT_* requires a
@@ -1013,29 +1017,29 @@ class TestExcServerVariants : public MachMultiprocess,
     if (exception == EXC_CRASH && code_count >= 1) {
       int signal;
       ExcCrashRecoverOriginalException(code[0], nullptr, &signal);
-      SetExpectedChildTermination(kTerminationSignal, signal);
     }
 
     const bool has_state = ExceptionBehaviorHasState(behavior);
     if (has_state) {
-      EXPECT_EQ(flavor_, *flavor);
-      EXPECT_EQ(state_count_, old_state_count);
-      EXPECT_NE(nullptr, old_state);
-      EXPECT_EQ(implicit_cast<mach_msg_type_number_t>(THREAD_STATE_MAX),
-                *new_state_count);
-      EXPECT_NE(nullptr, new_state);
+      EXPECT_EQ(*flavor, flavor_);
+      EXPECT_EQ(old_state_count, state_count_);
+      EXPECT_NE(old_state, nullptr);
+      EXPECT_EQ(*new_state_count,
+                implicit_cast<mach_msg_type_number_t>(THREAD_STATE_MAX));
+      EXPECT_NE(new_state, nullptr);
     } else {
-      EXPECT_EQ(THREAD_STATE_NONE, *flavor);
-      EXPECT_EQ(0u, old_state_count);
-      EXPECT_EQ(nullptr, old_state);
-      EXPECT_EQ(0u, *new_state_count);
-      EXPECT_EQ(nullptr, new_state);
+      EXPECT_EQ(*flavor, THREAD_STATE_NONE);
+      EXPECT_EQ(old_state_count, 0u);
+      EXPECT_EQ(old_state, nullptr);
+      EXPECT_EQ(*new_state_count, 0u);
+      EXPECT_EQ(new_state, nullptr);
     }
 
-    EXPECT_EQ(implicit_cast<mach_msg_trailer_type_t>(MACH_MSG_TRAILER_FORMAT_0),
-              trailer->msgh_trailer_type);
-    EXPECT_EQ(REQUESTED_TRAILER_SIZE(kMachMessageOptions),
-              trailer->msgh_trailer_size);
+    EXPECT_EQ(
+        trailer->msgh_trailer_type,
+        implicit_cast<mach_msg_trailer_type_t>(MACH_MSG_TRAILER_FORMAT_0));
+    EXPECT_EQ(trailer->msgh_trailer_size,
+              REQUESTED_TRAILER_SIZE(kMachMessageOptions));
 
     ExcServerCopyState(
         behavior, old_state, old_state_count, new_state, new_state_count);
@@ -1056,7 +1060,7 @@ class TestExcServerVariants : public MachMultiprocess,
                                MachMessageServer::kOneShot,
                                MachMessageServer::kReceiveLargeError,
                                kMachMessageTimeoutWaitIndefinitely);
-    EXPECT_EQ(KERN_SUCCESS, kr)
+    EXPECT_EQ(kr, KERN_SUCCESS)
         << MachErrorMessage(kr, "MachMessageServer::Run");
 
     EXPECT_TRUE(handled_);
@@ -1066,7 +1070,7 @@ class TestExcServerVariants : public MachMultiprocess,
     // Set the parent as the exception handler for EXC_CRASH.
     kern_return_t kr = task_set_exception_ports(
         mach_task_self(), EXC_MASK_CRASH, RemotePort(), behavior_, flavor_);
-    ASSERT_EQ(KERN_SUCCESS, kr)
+    ASSERT_EQ(kr, KERN_SUCCESS)
         << MachErrorMessage(kr, "task_set_exception_ports");
 
     // Now crash.
@@ -1129,11 +1133,10 @@ TEST(ExcServerVariants, ThreadStates) {
   // So far, all of the tests worked with MACHINE_THREAD_STATE. Now try all of
   // the other thread state flavors that are expected to work.
 
-  struct TestData {
+  static constexpr struct {
     thread_state_flavor_t flavor;
     mach_msg_type_number_t count;
-  };
-  const TestData test_data[] = {
+  } test_data[] = {
 #if defined(ARCH_CPU_X86_FAMILY)
       // For the x86 family, exception handlers can only properly receive the
       // thread, float, and exception state flavors. There’s a bug in the kernel
@@ -1177,8 +1180,8 @@ TEST(ExcServerVariants, ThreadStates) {
 #endif
   };
 
-  for (size_t index = 0; index < arraysize(test_data); ++index) {
-    const TestData& test = test_data[index];
+  for (size_t index = 0; index < base::size(test_data); ++index) {
+    const auto& test = test_data[index];
     SCOPED_TRACE(
         base::StringPrintf("index %zu, flavor %d", index, test.flavor));
 
@@ -1194,13 +1197,12 @@ TEST(ExcServerVariants, ExcServerSuccessfulReturnValue) {
   const kern_return_t prefer_not_set_thread_state =
       MacOSXMinorVersion() < 11 ? MACH_RCV_PORT_DIED : KERN_SUCCESS;
 
-  struct TestData {
+  const struct {
     exception_type_t exception;
     exception_behavior_t behavior;
     bool set_thread_state;
     kern_return_t kr;
-  };
-  const TestData kTestData[] = {
+  } kTestData[] = {
       {EXC_CRASH, EXCEPTION_DEFAULT, false, KERN_SUCCESS},
       {EXC_CRASH, EXCEPTION_STATE, false, prefer_not_set_thread_state},
       {EXC_CRASH, EXCEPTION_STATE_IDENTITY, false, prefer_not_set_thread_state},
@@ -1251,27 +1253,27 @@ TEST(ExcServerVariants, ExcServerSuccessfulReturnValue) {
        KERN_SUCCESS},
   };
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& test_data = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& test_data = kTestData[index];
     SCOPED_TRACE(
         base::StringPrintf("index %zu, behavior %d, set_thread_state %s",
                            index,
                            test_data.behavior,
                            test_data.set_thread_state ? "true" : "false"));
 
-    EXPECT_EQ(test_data.kr,
-              ExcServerSuccessfulReturnValue(test_data.exception,
+    EXPECT_EQ(ExcServerSuccessfulReturnValue(test_data.exception,
                                              test_data.behavior,
-                                             test_data.set_thread_state));
+                                             test_data.set_thread_state),
+              test_data.kr);
   }
 }
 
 TEST(ExcServerVariants, ExcServerCopyState) {
-  const natural_t old_state[] = {1, 2, 3, 4, 5};
+  static constexpr natural_t old_state[] = {1, 2, 3, 4, 5};
   natural_t new_state[10] = {};
 
-  const mach_msg_type_number_t old_state_count = arraysize(old_state);
-  mach_msg_type_number_t new_state_count = arraysize(new_state);
+  constexpr mach_msg_type_number_t old_state_count = base::size(old_state);
+  mach_msg_type_number_t new_state_count = base::size(new_state);
 
   // EXCEPTION_DEFAULT (with or without MACH_EXCEPTION_CODES) is not
   // state-carrying. new_state and new_state_count should be untouched.
@@ -1280,9 +1282,9 @@ TEST(ExcServerVariants, ExcServerCopyState) {
                      old_state_count,
                      new_state,
                      &new_state_count);
-  EXPECT_EQ(arraysize(new_state), new_state_count);
-  for (size_t i = 0; i < arraysize(new_state); ++i) {
-    EXPECT_EQ(0u, new_state[i]) << "i " << i;
+  EXPECT_EQ(new_state_count, base::size(new_state));
+  for (size_t i = 0; i < base::size(new_state); ++i) {
+    EXPECT_EQ(new_state[i], 0u) << "i " << i;
   }
 
   ExcServerCopyState(MACH_EXCEPTION_CODES | EXCEPTION_DEFAULT,
@@ -1290,21 +1292,21 @@ TEST(ExcServerVariants, ExcServerCopyState) {
                      old_state_count,
                      new_state,
                      &new_state_count);
-  EXPECT_EQ(arraysize(new_state), new_state_count);
-  for (size_t i = 0; i < arraysize(new_state); ++i) {
-    EXPECT_EQ(0u, new_state[i]) << "i " << i;
+  EXPECT_EQ(new_state_count, base::size(new_state));
+  for (size_t i = 0; i < base::size(new_state); ++i) {
+    EXPECT_EQ(new_state[i], 0u) << "i " << i;
   }
 
   // This is a state-carrying exception where old_state_count is small.
   mach_msg_type_number_t copy_limit = 2;
   ExcServerCopyState(
       EXCEPTION_STATE, old_state, copy_limit, new_state, &new_state_count);
-  EXPECT_EQ(copy_limit, new_state_count);
+  EXPECT_EQ(new_state_count, copy_limit);
   for (size_t i = 0; i < copy_limit; ++i) {
-    EXPECT_EQ(old_state[i], new_state[i]) << "i " << i;
+    EXPECT_EQ(new_state[i], old_state[i]) << "i " << i;
   }
-  for (size_t i = copy_limit; i < arraysize(new_state); ++i) {
-    EXPECT_EQ(0u, new_state[i]) << "i " << i;
+  for (size_t i = copy_limit; i < base::size(new_state); ++i) {
+    EXPECT_EQ(new_state[i], 0u) << "i " << i;
   }
 
   // This is a state-carrying exception where new_state_count is small.
@@ -1315,28 +1317,28 @@ TEST(ExcServerVariants, ExcServerCopyState) {
                      old_state_count,
                      new_state,
                      &new_state_count);
-  EXPECT_EQ(copy_limit, new_state_count);
+  EXPECT_EQ(new_state_count, copy_limit);
   for (size_t i = 0; i < copy_limit; ++i) {
-    EXPECT_EQ(old_state[i], new_state[i]) << "i " << i;
+    EXPECT_EQ(new_state[i], old_state[i]) << "i " << i;
   }
-  for (size_t i = copy_limit; i < arraysize(new_state); ++i) {
-    EXPECT_EQ(0u, new_state[i]) << "i " << i;
+  for (size_t i = copy_limit; i < base::size(new_state); ++i) {
+    EXPECT_EQ(new_state[i], 0u) << "i " << i;
   }
 
   // This is a state-carrying exception where all of old_state is copied to
   // new_state, which is large enough to receive it and then some.
-  new_state_count = arraysize(new_state);
+  new_state_count = base::size(new_state);
   ExcServerCopyState(MACH_EXCEPTION_CODES | EXCEPTION_STATE_IDENTITY,
                      old_state,
                      old_state_count,
                      new_state,
                      &new_state_count);
-  EXPECT_EQ(old_state_count, new_state_count);
-  for (size_t i = 0; i < arraysize(old_state); ++i) {
-    EXPECT_EQ(old_state[i], new_state[i]) << "i " << i;
+  EXPECT_EQ(new_state_count, old_state_count);
+  for (size_t i = 0; i < base::size(old_state); ++i) {
+    EXPECT_EQ(new_state[i], old_state[i]) << "i " << i;
   }
-  for (size_t i = arraysize(old_state); i < arraysize(new_state); ++i) {
-    EXPECT_EQ(0u, new_state[i]) << "i " << i;
+  for (size_t i = base::size(old_state); i < base::size(new_state); ++i) {
+    EXPECT_EQ(new_state[i], 0u) << "i " << i;
   }
 }
 

@@ -46,7 +46,7 @@ class DefaultFrameGenerator
 
  private:
   friend class base::RefCountedThreadSafe<DefaultFrameGenerator>;
-  ~DefaultFrameGenerator() {}
+  ~DefaultFrameGenerator() = default;
 
   webrtc::DesktopSize size_;
   int box_pos_x_;
@@ -123,10 +123,10 @@ std::unique_ptr<webrtc::DesktopFrame> DefaultFrameGenerator::GenerateFrame(
 FakeDesktopCapturer::FakeDesktopCapturer()
     : callback_(nullptr) {
   frame_generator_ = base::Bind(&DefaultFrameGenerator::GenerateFrame,
-                                new DefaultFrameGenerator());
+                                base::MakeRefCounted<DefaultFrameGenerator>());
 }
 
-FakeDesktopCapturer::~FakeDesktopCapturer() {}
+FakeDesktopCapturer::~FakeDesktopCapturer() = default;
 
 void FakeDesktopCapturer::set_frame_generator(
     const FrameGenerator& frame_generator) {
@@ -145,7 +145,7 @@ void FakeDesktopCapturer::SetSharedMemoryFactory(
   shared_memory_factory_ = std::move(shared_memory_factory);
 }
 
-void FakeDesktopCapturer::Capture(const webrtc::DesktopRegion& region) {
+void FakeDesktopCapturer::CaptureFrame() {
   base::Time capture_start_time = base::Time::Now();
   std::unique_ptr<webrtc::DesktopFrame> frame =
       frame_generator_.Run(shared_memory_factory_.get());
@@ -157,6 +157,16 @@ void FakeDesktopCapturer::Capture(const webrtc::DesktopRegion& region) {
       frame ? webrtc::DesktopCapturer::Result::SUCCESS
             : webrtc::DesktopCapturer::Result::ERROR_TEMPORARY,
       std::move(frame));
+}
+
+bool FakeDesktopCapturer::GetSourceList(SourceList* sources) {
+  NOTIMPLEMENTED();
+  return false;
+}
+
+bool FakeDesktopCapturer::SelectSource(SourceId id) {
+  NOTIMPLEMENTED();
+  return false;
 }
 
 }  // namespace protocol

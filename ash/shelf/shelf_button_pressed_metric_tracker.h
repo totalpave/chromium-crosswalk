@@ -8,7 +8,7 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/common/shelf/shelf_item_delegate.h"
+#include "ash/public/interfaces/shelf.mojom.h"
 #include "base/macros.h"
 #include "base/time/tick_clock.h"
 #include "base/time/time.h"
@@ -19,10 +19,6 @@ class Button;
 }  // namespace views
 
 namespace ash {
-
-namespace test {
-class ShelfButtonPressedMetricTrackerTestAPI;
-}  // namespace test
 
 // Tracks UMA metrics based on shelf button press actions. More specifically
 // data is added to the following user actions and histograms:
@@ -47,17 +43,16 @@ class ASH_EXPORT ShelfButtonPressedMetricTracker {
   // Records metrics based on the |event|, |sender|, and |performed_action|.
   void ButtonPressed(const ui::Event& event,
                      const views::Button* sender,
-                     ShelfItemDelegate::PerformedAction performed_action);
+                     ShelfAction performed_action);
 
  private:
-  friend class test::ShelfButtonPressedMetricTrackerTestAPI;
+  friend class ShelfButtonPressedMetricTrackerTestAPI;
 
   // Records UMA metrics for the input source when a button is pressed.
   void RecordButtonPressedSource(const ui::Event& event);
 
   // Records UMA metrics for the action performed when a button is pressed.
-  void RecordButtonPressedAction(
-      ShelfItemDelegate::PerformedAction performed_action);
+  void RecordButtonPressedAction(ShelfAction performed_action);
 
   // Records UMA metrics for the elapsed time since the last window minimize
   // action.
@@ -75,7 +70,7 @@ class ASH_EXPORT ShelfButtonPressedMetricTracker {
   void ResetMinimizedData();
 
   // Time source for performed action times.
-  std::unique_ptr<base::TickClock> tick_clock_;
+  const base::TickClock* tick_clock_;
 
   // Stores the time of the last window minimize action.
   base::TimeTicks time_of_last_minimize_;

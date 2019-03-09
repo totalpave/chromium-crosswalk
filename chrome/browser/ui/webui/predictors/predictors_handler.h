@@ -16,7 +16,7 @@ class ListValue;
 
 namespace predictors {
 class AutocompleteActionPredictor;
-class ResourcePrefetchPredictor;
+class LoadingPredictor;
 }
 
 class Profile;
@@ -39,13 +39,13 @@ class PredictorsHandler : public content::WebUIMessageHandler {
   // DictionaryValue to the JS.
   void RequestResourcePrefetchPredictorDb(const base::ListValue* args);
 
-  // Helper for RequestResourcePrefetchPredictorDb.
-  void AddPrefetchDataMapToListValue(
-      const predictors::ResourcePrefetchPredictor::PrefetchDataMap& data_map,
+  // Helpers for RequestResourcePrefetchPredictorDb.
+  void AddOriginDataMapToListValue(
+      const std::map<std::string, predictors::OriginData>& data_map,
       base::ListValue* db) const;
 
   predictors::AutocompleteActionPredictor* autocomplete_action_predictor_;
-  predictors::ResourcePrefetchPredictor* resource_prefetch_predictor_;
+  predictors::LoadingPredictor* loading_predictor_;
 
   DISALLOW_COPY_AND_ASSIGN(PredictorsHandler);
 };

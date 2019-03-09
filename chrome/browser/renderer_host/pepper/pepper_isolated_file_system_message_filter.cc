@@ -6,22 +6,19 @@
 
 #include <stddef.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pepper_permission_util.h"
 #include "content/public/browser/browser_ppapi_host.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/render_view_host.h"
-#if defined(ENABLE_EXTENSIONS)
-#include "extensions/browser/extension_registry.h"
-#include "extensions/common/constants.h"
-#include "extensions/common/extension.h"
-#include "extensions/common/extension_set.h"
-#endif
+#include "extensions/buildflags/buildflags.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/host/dispatch_host_message.h"
 #include "ppapi/host/host_message_context.h"
@@ -30,7 +27,12 @@
 #include "ppapi/shared_impl/file_system_util.h"
 #include "storage/browser/fileapi/isolated_context.h"
 
-namespace chrome {
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "extensions/browser/extension_registry.h"
+#include "extensions/common/constants.h"
+#include "extensions/common/extension.h"
+#include "extensions/common/extension_set.h"
+#endif
 
 namespace {
 
@@ -67,7 +69,7 @@ PepperIsolatedFileSystemMessageFilter::PepperIsolatedFileSystemMessageFilter(
       profile_directory_(profile_directory),
       document_url_(document_url),
       ppapi_host_(ppapi_host) {
-  for (size_t i = 0; i < arraysize(kPredefinedAllowedCrxFsOrigins); ++i)
+  for (size_t i = 0; i < base::size(kPredefinedAllowedCrxFsOrigins); ++i)
     allowed_crxfs_origins_.insert(kPredefinedAllowedCrxFsOrigins[i]);
 }
 
@@ -79,8 +81,8 @@ PepperIsolatedFileSystemMessageFilter::OverrideTaskRunnerForMessage(
     const IPC::Message& msg) {
   // In order to reach ExtensionSystem, we need to get ProfileManager first.
   // ProfileManager lives in UI thread, so we need to do this in UI thread.
-  return content::BrowserThread::GetMessageLoopProxyForThread(
-      content::BrowserThread::UI);
+  return base::CreateSingleThreadTaskRunnerWithTraits(
+      {content::BrowserThread::UI});
 }
 
 int32_t PepperIsolatedFileSystemMessageFilter::OnResourceMessageReceived(
@@ -102,7 +104,7 @@ Profile* PepperIsolatedFileSystemMessageFilter::GetProfile() {
 
 std::string PepperIsolatedFileSystemMessageFilter::CreateCrxFileSystem(
     Profile* profile) {
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   const extensions::Extension* extension =
       extensions::ExtensionRegistry::Get(profile)->enabled_extensions().GetByID(
           document_url_.host());
@@ -140,7 +142,7 @@ int32_t PepperIsolatedFileSystemMessageFilter::OnOpenFileSystem(
 
 int32_t PepperIsolatedFileSystemMessageFilter::OpenCrxFileSystem(
     ppapi::host::HostMessageContext* context) {
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   Profile* profile = GetProfile();
   const extensions::ExtensionSet* extension_set = NULL;
   if (profile) {
@@ -198,5 +200,3 @@ int32_t PepperIsolatedFileSystemMessageFilter::OpenPluginPrivateFileSystem(
   context->reply_msg = PpapiPluginMsg_IsolatedFileSystem_BrowserOpenReply(fsid);
   return PP_OK;
 }
-
-}  // namespace chrome

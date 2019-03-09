@@ -26,16 +26,12 @@
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
 
-// Times out on win syzyasan, http://crbug.com/166026
-#if defined(SYZYASAN)
-#define MAYBE_BookmarkManager DISABLED_BookmarkManager
-#else
-#define MAYBE_BookmarkManager BookmarkManager
-#endif
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, MAYBE_BookmarkManager) {
+namespace extensions {
+
+IN_PROC_BROWSER_TEST_F(ExtensionApiTest, BookmarkManager) {
   // Add managed bookmarks.
   Profile* profile = browser()->profile();
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(profile);
+  BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile);
   bookmarks::ManagedBookmarkService* managed =
       ManagedBookmarkServiceFactory::GetForProfile(profile);
   bookmarks::test::WaitForBookmarkModelToLoad(model);
@@ -47,7 +43,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, MAYBE_BookmarkManager) {
   list.Append(std::move(node));
   node.reset(new base::DictionaryValue());
   node->SetString("name", "Managed Folder");
-  node->Set("children", new base::ListValue());
+  node->Set("children", std::make_unique<base::ListValue>());
   list.Append(std::move(node));
   profile->GetPrefs()->Set(bookmarks::prefs::kManagedBookmarks, list);
   ASSERT_EQ(2, managed->managed_node()->child_count());
@@ -61,7 +57,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, BookmarkManagerEditDisabled) {
 
   // Provide some testing data here, since bookmark editing will be disabled
   // within the extension.
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(profile);
+  BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile);
   bookmarks::test::WaitForBookmarkModelToLoad(model);
   const BookmarkNode* bar = model->bookmark_bar_node();
   const BookmarkNode* folder =
@@ -77,3 +73,5 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, BookmarkManagerEditDisabled) {
   ASSERT_TRUE(RunComponentExtensionTest("bookmark_manager/edit_disabled"))
       << message_;
 }
+
+}  // namespace extensions

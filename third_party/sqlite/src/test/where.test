@@ -220,7 +220,7 @@ do_test where-1.25 {
   count {SELECT w FROM t1 WHERE x=3 AND 121<=y AND 196>=y}
 } {10 11 12 13 9}
 
-# Need to work on optimizing the BETWEEN operator.  
+# Need to work on optimizing the BETWEEN operator.
 #
 # do_test where-1.26 {
 #   count {SELECT w FROM t1 WHERE x=3 AND y BETWEEN 121 AND 196}
@@ -435,28 +435,28 @@ ifcapable subquery {
   } {1 0 4 2 1 9 3 1 16 102}
   do_test where-5.5 {
     count {
-      SELECT * FROM t1 WHERE rowid IN 
+      SELECT * FROM t1 WHERE rowid IN
          (select rowid from t1 where rowid IN (-1,2,4))
       ORDER BY 1;
     }
   } {2 1 9 4 2 25 3}
   do_test where-5.6 {
     count {
-      SELECT * FROM t1 WHERE rowid+0 IN 
+      SELECT * FROM t1 WHERE rowid+0 IN
          (select rowid from t1 where rowid IN (-1,2,4))
       ORDER BY 1;
     }
   } {2 1 9 4 2 25 103}
   do_test where-5.7 {
     count {
-      SELECT * FROM t1 WHERE w IN 
+      SELECT * FROM t1 WHERE w IN
          (select rowid from t1 where rowid IN (-1,2,4))
       ORDER BY 1;
     }
   } {2 1 9 4 2 25 9}
   do_test where-5.8 {
     count {
-      SELECT * FROM t1 WHERE w+0 IN 
+      SELECT * FROM t1 WHERE w+0 IN
          (select rowid from t1 where rowid IN (-1,2,4))
       ORDER BY 1;
     }
@@ -490,12 +490,12 @@ ifcapable subquery {
     count {
       SELECT * FROM t1 WHERE x IN (1,7) AND y IN (9,10) ORDER BY 1;
     }
-  } {2 1 9 5}
+  } {2 1 9 4}
   do_test where-5.15 {
     count {
       SELECT * FROM t1 WHERE x IN (1,7) AND y IN (9,16) ORDER BY 1;
     }
-  } {2 1 9 3 1 16 9}
+  } {2 1 9 3 1 16 8}
   do_test where-5.100 {
     db eval {
       SELECT w, x, y FROM t1 WHERE x IN (1,5) AND y IN (9,8,3025,1000,3969)
@@ -573,11 +573,16 @@ do_test where-6.6 {
     SELECT * FROM t3 WHERE a>0 ORDER BY a LIMIT 3
   }
 } {1 100 4 2 99 9 3 98 16 nosort}
-do_test where-6.7 {
+do_test where-6.7.1 {
   cksort {
-    SELECT * FROM t3 WHERE b>0 ORDER BY a LIMIT 3
+    SELECT * FROM t3 WHERE b>0 ORDER BY a LIMIT 10
   }
-} {1 100 4 2 99 9 3 98 16 nosort}
+} {/1 100 4 2 99 9 3 98 16 .* nosort/}
+do_test where-6.7.2 {
+  cksort {
+    SELECT * FROM t3 WHERE b>0 ORDER BY a LIMIT 1
+  }
+} {1 100 4 nosort}
 ifcapable subquery {
   do_test where-6.8a {
     cksort {
@@ -987,13 +992,13 @@ do_test where-11.1 {
   execsql {
    CREATE TABLE t99(Dte INT, X INT);
    DELETE FROM t99 WHERE (Dte = 2451337) OR (Dte = 2451339) OR
-     (Dte BETWEEN 2451345 AND 2451347) OR (Dte = 2451351) OR 
+     (Dte BETWEEN 2451345 AND 2451347) OR (Dte = 2451351) OR
      (Dte BETWEEN 2451355 AND 2451356) OR (Dte = 2451358) OR
      (Dte = 2451362) OR (Dte = 2451365) OR (Dte = 2451367) OR
      (Dte BETWEEN 2451372 AND 2451376) OR (Dte BETWEEN 2451382 AND 2451384) OR
-     (Dte = 2451387) OR (Dte BETWEEN 2451389 AND 2451391) OR 
-     (Dte BETWEEN 2451393 AND 2451395) OR (Dte = 2451400) OR 
-     (Dte = 2451402) OR (Dte = 2451404) OR (Dte BETWEEN 2451416 AND 2451418) OR 
+     (Dte = 2451387) OR (Dte BETWEEN 2451389 AND 2451391) OR
+     (Dte BETWEEN 2451393 AND 2451395) OR (Dte = 2451400) OR
+     (Dte = 2451402) OR (Dte = 2451404) OR (Dte BETWEEN 2451416 AND 2451418) OR
      (Dte = 2451422) OR (Dte = 2451426) OR (Dte BETWEEN 2451445 AND 2451446) OR
      (Dte = 2451456) OR (Dte = 2451458) OR (Dte BETWEEN 2451465 AND 2451467) OR
      (Dte BETWEEN 2451469 AND 2451471) OR (Dte = 2451474) OR
@@ -1003,9 +1008,9 @@ do_test where-11.1 {
      (Dte BETWEEN 2451539 AND 2451544) OR (Dte BETWEEN 2451546 AND 2451551) OR
      (Dte BETWEEN 2451553 AND 2451555) OR (Dte = 2451557) OR
      (Dte BETWEEN 2451559 AND 2451561) OR (Dte = 2451563) OR
-     (Dte BETWEEN 2451565 AND 2451566) OR (Dte BETWEEN 2451569 AND 2451571) OR 
+     (Dte BETWEEN 2451565 AND 2451566) OR (Dte BETWEEN 2451569 AND 2451571) OR
      (Dte = 2451573) OR (Dte = 2451575) OR (Dte = 2451577) OR (Dte = 2451581) OR
-     (Dte BETWEEN 2451583 AND 2451586) OR (Dte BETWEEN 2451588 AND 2451592) OR 
+     (Dte BETWEEN 2451583 AND 2451586) OR (Dte BETWEEN 2451588 AND 2451592) OR
      (Dte BETWEEN 2451596 AND 2451598) OR (Dte = 2451600) OR
      (Dte BETWEEN 2451602 AND 2451603) OR (Dte = 2451606) OR (Dte = 2451611);
   }
@@ -1161,74 +1166,74 @@ do_test where-14.1 {
   }
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.a, y.b
-  } 
+  }
 } {1/4 1/1 4/4 4/1 nosort}
 do_test where-14.2 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.a, y.b DESC
-  } 
+  }
 } {1/1 1/4 4/1 4/4 nosort}
 do_test where-14.3 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.a, x.b
-  } 
+  }
 } {1/4 1/1 4/4 4/1 nosort}
 do_test where-14.4 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.a, x.b DESC
-  } 
+  }
 } {1/4 1/1 4/4 4/1 nosort}
 do_test where-14.5 {
   # This test case changed from "nosort" to "sort". See ticket 2a5629202f.
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, x.a||x.b
-  } 
+  }
 } {/4/[14] 4/[14] 1/[14] 1/[14] sort/}
 do_test where-14.6 {
   # This test case changed from "nosort" to "sort". See ticket 2a5629202f.
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, x.a||x.b DESC
-  } 
+  }
 } {/4/[14] 4/[14] 1/[14] 1/[14] sort/}
 do_test where-14.7 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, y.a||y.b
-  } 
+  }
 } {4/1 4/4 1/1 1/4 sort}
 do_test where-14.7.1 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, x.a, y.a||y.b
-  } 
+  }
 } {4/1 4/4 1/1 1/4 sort}
 do_test where-14.7.2 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, x.a, x.a||x.b
-  } 
+  }
 } {4/4 4/1 1/4 1/1 nosort}
 do_test where-14.8 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, y.a||y.b DESC
-  } 
+  }
 } {4/4 4/1 1/4 1/1 sort}
 do_test where-14.9 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, x.a||y.b
-  } 
+  }
 } {4/4 4/1 1/4 1/1 sort}
 do_test where-14.10 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, x.a||y.b DESC
-  } 
+  }
 } {4/1 4/4 1/1 1/4 sort}
 do_test where-14.11 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, y.a||x.b
-  } 
+  }
 } {4/1 4/4 1/1 1/4 sort}
 do_test where-14.12 {
   cksort {
     SELECT x.a || '/' || y.a FROM t8 x, t8 y ORDER BY x.b, y.a||x.b DESC
-  } 
+  }
 } {4/4 4/1 1/4 1/1 sort}
 } ;# {permutation != "no_optimization"}
 
@@ -1247,12 +1252,12 @@ do_test where-15.1 {
 } {}
 
 # Ticket #3408.
-# 
+#
 # The branch of code in where.c that generated rowid lookups was
-# incorrectly deallocating a constant register, meaning that if the 
+# incorrectly deallocating a constant register, meaning that if the
 # vdbe code ran more than once, the second time around the constant
 # value may have been clobbered by some other value.
-# 
+#
 do_test where-16.1 {
   execsql {
     CREATE TABLE a1(id INTEGER PRIMARY KEY, v);
@@ -1362,5 +1367,75 @@ do_execsql_test where-18.6 {
   SELECT DISTINCT a FROM t181 LEFT JOIN t182 ON a=b ORDER BY +a, +c IS NULL;
 } {1 2}
 
+# Make sure the OR optimization works on a JOIN
+#
+do_execsql_test where-19.0 {
+  CREATE TABLE t191(a INT UNIQUE NOT NULL, b INT UNIQUE NOT NULL,c,d);
+  CREATE INDEX t191a ON t1(a);
+  CREATE INDEX t191b ON t1(b);
+  CREATE TABLE t192(x INTEGER PRIMARY KEY,y INT, z INT);
+
+  EXPLAIN QUERY PLAN
+  SELECT t191.rowid FROM t192, t191 WHERE (a=y OR b=y) AND x=?1;
+} {/.* sqlite_autoindex_t191_1 .* sqlite_autoindex_t191_2 .*/}
+
+# 2018-04-24 ticket [https://www.sqlite.org/src/info/4ba5abf65c5b0f9a]
+# Index on expressions leads to an incorrect answer for a LEFT JOIN
+#
+do_execsql_test where-20.0 {
+  CREATE TABLE t201(x);
+  CREATE TABLE t202(y, z);
+  INSERT INTO t201 VALUES('key');
+  INSERT INTO t202 VALUES('key', -1);
+  CREATE INDEX t202i ON t202(y, ifnull(z, 0));
+  SELECT count(*) FROM t201 LEFT JOIN t202 ON (x=y) WHERE ifnull(z, 0) >=0;
+} {0}
+
+do_execsql_test where-21.0 {
+  CREATE TABLE t12(a, b, c);
+  CREATE TABLE t13(x);
+  CREATE INDEX t12ab ON t12(b, a);
+  CREATE INDEX t12ac ON t12(c, a);
+
+  INSERT INTO t12 VALUES(4, 0, 1);
+  INSERT INTO t12 VALUES(4, 1, 0);
+  INSERT INTO t12 VALUES(5, 0, 1);
+  INSERT INTO t12 VALUES(5, 1, 0);
+
+  INSERT INTO t13 VALUES(1), (2), (3), (4);
+}
+do_execsql_test where-21.1 {
+  SELECT * FROM t12 WHERE
+  a = (SELECT * FROM (SELECT count(*) FROM t13 LIMIT 5) ORDER BY 1 LIMIT 10)
+  AND (b=1 OR c=1);
+} {
+  4 1 0
+  4 0 1
+}
+
+# 2018-11-05: ticket [https://www.sqlite.org/src/tktview/65eb38f6e46de8c75e188a]
+# Incorrect result in LEFT JOIN when STAT4 is enabled.
+#
+sqlite3 db :memory:
+do_execsql_test where-22.1 {
+  CREATE TABLE t1(a INT);
+  CREATE INDEX t1a ON t1(a);
+  INSERT INTO t1(a) VALUES(NULL),(NULL),(42),(NULL),(NULL);
+  CREATE TABLE t2(dummy INT);
+  SELECT count(*) FROM t1 LEFT JOIN t2 ON a IS NOT NULL;
+} {5}
+
+# 20190-02-22:  A bug introduced by checkin
+# https://www.sqlite.org/src/info/fa792714ae62fa98.
+#
+do_execsql_test where-23.0 {
+  DROP TABLE IF EXISTS t1;
+  DROP TABLE IF EXISTS t2;
+  CREATE TABLE t1(a INTEGER PRIMARY KEY);
+  INSERT INTO t1(a) VALUES(1),(2),(3);
+  CREATE TABLE t2(x INTEGER PRIMARY KEY, y INT);
+  INSERT INTO t2(y) VALUES(2),(3);
+  SELECT * FROM t1, t2 WHERE a=y AND y=3;
+} {3 2 3}
 
 finish_test

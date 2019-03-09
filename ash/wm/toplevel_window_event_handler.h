@@ -6,8 +6,7 @@
 #define ASH_WM_TOPLEVEL_WINDOW_EVENT_HANDLER_H_
 
 #include "ash/ash_export.h"
-#include "ash/common/wm/wm_toplevel_window_event_handler.h"
-#include "ash/common/wm/wm_types.h"
+#include "ash/wm/wm_toplevel_window_event_handler.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/events/event_handler.h"
@@ -22,28 +21,46 @@ class RunLoop;
 }
 
 namespace ash {
-namespace wm {
-class WmGloblals;
-}
 
-class ASH_EXPORT ToplevelWindowEventHandler
-    : public ui::EventHandler,
-      public aura::client::WindowMoveClient {
+class ASH_EXPORT ToplevelWindowEventHandler : public ui::EventHandler,
+                                              public ::wm::WindowMoveClient {
  public:
-  explicit ToplevelWindowEventHandler(WmShell* shell);
+  ToplevelWindowEventHandler();
   ~ToplevelWindowEventHandler() override;
+
+  wm::WmToplevelWindowEventHandler* wm_toplevel_window_event_handler() {
+    return &wm_toplevel_window_event_handler_;
+  }
 
   // Overridden from ui::EventHandler:
   void OnKeyEvent(ui::KeyEvent* event) override;
   void OnMouseEvent(ui::MouseEvent* event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
 
-  // Overridden form aura::client::WindowMoveClient:
-  aura::client::WindowMoveResult RunMoveLoop(
+  // Attempts to start a drag if one is not already in progress. Returns true if
+  // successful. |end_closure| is run when the drag completes.
+  // If the event handler is handing the gesture stream, it will use the touch
+  // movement.
+  bool AttemptToStartDrag(
+      aura::Window* window,
+      const gfx::Point& point_in_parent,
+      int window_component,
+      wm::WmToplevelWindowEventHandler::EndClosure end_closure);
+
+  // Overridden form wm::WindowMoveClient:
+  ::wm::WindowMoveResult RunMoveLoop(
       aura::Window* source,
       const gfx::Vector2d& drag_offset,
-      aura::client::WindowMoveSource move_source) override;
+      ::wm::WindowMoveSource move_source) override;
   void EndMoveLoop() override;
+
+  aura::Window* gesture_target() {
+    return wm_toplevel_window_event_handler_.gesture_target();
+  }
+
+  const gfx::Point& event_location_in_gesture_target() {
+    return wm_toplevel_window_event_handler_.event_location_in_gesture_target();
+  }
 
  private:
   // Callback from WmToplevelWindowEventHandler once the drag completes.
@@ -54,7 +71,7 @@ class ASH_EXPORT ToplevelWindowEventHandler
 
   wm::WmToplevelWindowEventHandler wm_toplevel_window_event_handler_;
 
-  // Are we running a nested message loop from RunMoveLoop().
+  // Are we running a nested run loop from RunMoveLoop().
   bool in_move_loop_ = false;
 
   base::WeakPtrFactory<ToplevelWindowEventHandler> weak_factory_;

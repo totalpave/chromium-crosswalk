@@ -9,8 +9,7 @@
 #include <vector>
 
 #include "base/i18n/case_conversion.h"
-#include "base/macros.h"
-#include "base/memory/scoped_vector.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/history/core/browser/keyword_search_term.h"
 #include "components/url_formatter/url_formatter.h"
@@ -61,15 +60,15 @@ std::string URLDatabase::GURLToDatabaseURL(const GURL& gurl) {
 
 // Convenience to fill a URLRow. Must be in sync with the fields in
 // kURLRowFields.
-void URLDatabase::FillURLRow(sql::Statement& s, URLRow* i) {
+void URLDatabase::FillURLRow(const sql::Statement& s, URLRow* i) {
   DCHECK(i);
-  i->id_ = s.ColumnInt64(0);
-  i->url_ = GURL(s.ColumnString(1));
-  i->title_ = s.ColumnString16(2);
-  i->visit_count_ = s.ColumnInt(3);
-  i->typed_count_ = s.ColumnInt(4);
-  i->last_visit_ = base::Time::FromInternalValue(s.ColumnInt64(5));
-  i->hidden_ = s.ColumnInt(6) != 0;
+  i->set_id(s.ColumnInt64(0));
+  i->set_url(GURL(s.ColumnString(1)));
+  i->set_title(s.ColumnString16(2));
+  i->set_visit_count(s.ColumnInt(3));
+  i->set_typed_count(s.ColumnInt(4));
+  i->set_last_visit(base::Time::FromInternalValue(s.ColumnInt64(5)));
+  i->set_hidden(s.ColumnInt(6) != 0);
 }
 
 bool URLDatabase::GetURLRow(URLID url_id, URLRow* info) {
@@ -86,18 +85,6 @@ bool URLDatabase::GetURLRow(URLID url_id, URLRow* info) {
     return true;
   }
   return false;
-}
-
-bool URLDatabase::GetAllTypedUrls(URLRows* urls) {
-  sql::Statement statement(GetDB().GetCachedStatement(SQL_FROM_HERE,
-      "SELECT" HISTORY_URL_ROW_FIELDS "FROM urls WHERE typed_count > 0"));
-
-  while (statement.Step()) {
-    URLRow info;
-    FillURLRow(statement, &info);
-    urls->push_back(info);
-  }
-  return true;
 }
 
 URLID URLDatabase::GetRowForURL(const GURL& url, URLRow* info) {
@@ -138,19 +125,19 @@ URLID URLDatabase::AddURLInternal(const URLRow& info, bool is_temporary) {
       " (url, title, visit_count, typed_count, "\
       "last_visit_time, hidden) "\
       "VALUES (?,?,?,?,?,?)"
-  const char* statement_name;
+  size_t statement_line;
   const char* statement_sql;
   if (is_temporary) {
-    statement_name = "AddURLTemporary";
+    statement_line = __LINE__;
     statement_sql = "INSERT INTO temp_urls" ADDURL_COMMON_SUFFIX;
   } else {
-    statement_name = "AddURL";
+    statement_line = __LINE__;
     statement_sql = "INSERT INTO urls" ADDURL_COMMON_SUFFIX;
   }
   #undef ADDURL_COMMON_SUFFIX
 
   sql::Statement statement(GetDB().GetCachedStatement(
-      sql::StatementID(statement_name), statement_sql));
+      sql::StatementID(__FILE__, statement_line), statement_sql));
   statement.BindString(0, GURLToDatabaseURL(info.url()));
   statement.BindString16(1, info.title());
   statement.BindInt(2, info.visit_count());
@@ -164,6 +151,27 @@ URLID URLDatabase::AddURLInternal(const URLRow& info, bool is_temporary) {
     return 0;
   }
   return GetDB().GetLastInsertRowId();
+}
+
+bool URLDatabase::URLTableContainsAutoincrement() {
+  // sqlite_master has columns:
+  //   type - "index" or "table".
+  //   name - name of created element.
+  //   tbl_name - name of element, or target table in case of index.
+  //   rootpage - root page of the element in database file.
+  //   sql - SQL to create the element.
+  sql::Statement statement(GetDB().GetUniqueStatement(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'urls'"));
+
+  // urls table does not exist.
+  if (!statement.Step())
+    return false;
+
+  std::string urls_schema = statement.ColumnString(0);
+  // We check if the whole schema contains "AUTOINCREMENT", since
+  // "AUTOINCREMENT" only can be used for "INTEGER PRIMARY KEY", so we assume no
+  // other columns could cantain "AUTOINCREMENT".
+  return urls_schema.find("AUTOINCREMENT") != std::string::npos;
 }
 
 bool URLDatabase::InsertOrUpdateURLRowByID(const URLRow& info) {
@@ -228,9 +236,7 @@ bool URLDatabase::CommitTemporaryURLTable() {
 
   // Re-create the index over the now permanent URLs table -- this was not there
   // for the temporary table.
-  CreateMainURLIndex();
-
-  return true;
+  return CreateMainURLIndex();
 }
 
 bool URLDatabase::InitURLEnumeratorForEverything(URLEnumerator* enumerator) {
@@ -247,8 +253,12 @@ bool URLDatabase::InitURLEnumeratorForSignificant(URLEnumerator* enumerator) {
   DCHECK(!enumerator->initialized_);
   std::string sql("SELECT ");
   sql.append(kURLRowFields);
-  sql.append(" FROM urls WHERE last_visit_time >= ? OR visit_count >= ? OR "
-             "typed_count >= ?");
+  sql.append(
+      " FROM urls WHERE hidden = 0 AND "
+      "(last_visit_time >= ? OR visit_count >= ? OR typed_count >= ?)");
+  sql.append(
+      " ORDER BY typed_count DESC, last_visit_time DESC, visit_count "
+      "DESC");
   enumerator->statement_.Assign(GetDB().GetUniqueStatement(sql.c_str()));
   enumerator->statement_.BindInt64(
       0, AutocompleteAgeThreshold().ToInternalValue());
@@ -266,8 +276,9 @@ bool URLDatabase::AutocompleteForPrefix(const std::string& prefix,
   // as bookmarks is no longer part of the db we no longer include the order
   // by clause.
   results->clear();
+
   const char* sql;
-  int line;
+  size_t line;
   if (typed_only) {
     sql = "SELECT" HISTORY_URL_ROW_FIELDS "FROM urls "
         "WHERE url >= ? AND url < ? AND hidden = 0 AND typed_count > 0 "
@@ -304,19 +315,22 @@ bool URLDatabase::AutocompleteForPrefix(const std::string& prefix,
   return !results->empty();
 }
 
-bool URLDatabase::IsTypedHost(const std::string& host) {
+bool URLDatabase::IsTypedHost(const std::string& host, std::string* scheme) {
   const char* schemes[] = {
     url::kHttpScheme,
     url::kHttpsScheme,
     url::kFtpScheme
   };
   URLRows dummy;
-  for (size_t i = 0; i < arraysize(schemes); ++i) {
+  for (size_t i = 0; i < base::size(schemes); ++i) {
     std::string scheme_and_host(schemes[i]);
     scheme_and_host += url::kStandardSchemeSeparator + host;
     if (AutocompleteForPrefix(scheme_and_host + '/', 1, true, &dummy) ||
-        AutocompleteForPrefix(scheme_and_host + ':', 1, true, &dummy))
+        AutocompleteForPrefix(scheme_and_host + ':', 1, true, &dummy)) {
+      if (scheme != nullptr)
+        *scheme = schemes[i];
       return true;
+    }
   }
   return false;
 }
@@ -363,8 +377,8 @@ bool URLDatabase::GetTextMatchesWithAlgorithm(
     const base::string16& query,
     query_parser::MatchingAlgorithm algorithm,
     URLRows* results) {
-  ScopedVector<query_parser::QueryNode> query_nodes;
-  query_parser_.ParseQueryNodes(query, algorithm, &query_nodes.get());
+  query_parser::QueryNodeVector query_nodes;
+  query_parser_.ParseQueryNodes(query, algorithm, &query_nodes);
 
   results->clear();
   sql::Statement statement(GetDB().GetCachedStatement(SQL_FROM_HERE,
@@ -385,7 +399,7 @@ bool URLDatabase::GetTextMatchesWithAlgorithm(
     base::string16 title = base::i18n::ToLower(statement.ColumnString16(2));
     query_parser_.ExtractQueryWords(title, &query_words);
 
-    if (query_parser_.DoesQueryMatch(query_words, query_nodes.get())) {
+    if (query_parser_.DoesQueryMatch(query_words, query_nodes)) {
       URLResult info;
       FillURLRow(statement, &info);
       if (info.url().is_valid())
@@ -535,8 +549,7 @@ void URLDatabase::GetMostRecentKeywordSearchTerms(
   base::string16 lower_prefix = base::i18n::ToLower(prefix);
   // This magic gives us a prefix search.
   base::string16 next_prefix = lower_prefix;
-  next_prefix[next_prefix.size() - 1] =
-      next_prefix[next_prefix.size() - 1] + 1;
+  next_prefix.back() = next_prefix.back() + 1;
   statement.BindInt64(0, keyword_id);
   statement.BindString16(1, lower_prefix);
   statement.BindString16(2, next_prefix);
@@ -570,26 +583,7 @@ bool URLDatabase::DropStarredIDFromURLs() {
   if (!GetDB().DoesColumnExist("urls", "starred_id"))
     return true;  // urls is already updated, no need to continue.
 
-  // Create a temporary table to contain the new URLs table.
-  if (!CreateTemporaryURLTable()) {
-    NOTREACHED();
-    return false;
-  }
-
-  // Copy the contents.
-  if (!GetDB().Execute(
-      "INSERT INTO temp_urls (id, url, title, visit_count, typed_count, "
-      "last_visit_time, hidden, favicon_id) "
-      "SELECT id, url, title, visit_count, typed_count, last_visit_time, "
-      "hidden, favicon_id FROM urls")) {
-    NOTREACHED() << GetDB().GetErrorMessage();
-    return false;
-  }
-
-  // Rename/commit the tmp table.
-  CommitTemporaryURLTable();
-
-  return true;
+  return RecreateURLTableWithAllContents();
 }
 
 bool URLDatabase::CreateURLTable(bool is_temporary) {
@@ -602,15 +596,34 @@ bool URLDatabase::CreateURLTable(bool is_temporary) {
   std::string sql;
   sql.append("CREATE TABLE ");
   sql.append(name);
-  sql.append("("
-      "id INTEGER PRIMARY KEY,"
+  sql.append(
+      "("
+      // The id uses AUTOINCREMENT is for sync propose. Sync uses this |id| as
+      // an unique key to identify the URLs. If here did not use AUTOINCREMENT,
+      // and Sync was not working somehow, a ROWID could be deleted and re-used
+      // during this period. Once Sync come back, Sync would use ROWIDs and
+      // timestamps to see if there are any updates need to be synced. And sync
+      // will only see the new URL, but missed the deleted URL.
+      //
+      // IMPORTANT NOTE: Currently new tables are created with AUTOINCREMENT
+      // but the migration code is disabled. This means that you will not
+      // be able to count on AUTOINCREMENT behavior without adding
+      // additional migration steps.
+      //
+      // Along with this, an unused favicon_id column will exist for tables
+      // without AUTOINCREMENT. This should be removed everywhere.
+      //
+      // TODO(https://crbug.com/736136) figure out how to update users to use
+      // AUTOINCREMENT and remove the favicon_id column consistently.
+      "id INTEGER PRIMARY KEY AUTOINCREMENT,"
       "url LONGVARCHAR,"
       "title LONGVARCHAR,"
       "visit_count INTEGER DEFAULT 0 NOT NULL,"
       "typed_count INTEGER DEFAULT 0 NOT NULL,"
       "last_visit_time INTEGER NOT NULL,"
-      "hidden INTEGER DEFAULT 0 NOT NULL,"
-      "favicon_id INTEGER DEFAULT 0 NOT NULL)"); // favicon_id is not used now.
+      "hidden INTEGER DEFAULT 0 NOT NULL)");
+  // IMPORTANT: If you change the colums, also update in_memory_database.cc
+  // where the values are copied (InitFromDisk).
 
   return GetDB().Execute(sql.c_str());
 }
@@ -618,6 +631,27 @@ bool URLDatabase::CreateURLTable(bool is_temporary) {
 bool URLDatabase::CreateMainURLIndex() {
   return GetDB().Execute(
       "CREATE INDEX IF NOT EXISTS urls_url_index ON urls (url)");
+}
+
+bool URLDatabase::RecreateURLTableWithAllContents() {
+  // Create a temporary table to contain the new URLs table.
+  if (!CreateTemporaryURLTable()) {
+    NOTREACHED();
+    return false;
+  }
+
+  // Copy the contents.
+  if (!GetDB().Execute(
+          "INSERT INTO temp_urls (id, url, title, visit_count, typed_count, "
+          "last_visit_time, hidden) "
+          "SELECT id, url, title, visit_count, typed_count, last_visit_time, "
+          "hidden FROM urls")) {
+    NOTREACHED() << GetDB().GetErrorMessage();
+    return false;
+  }
+
+  // Rename/commit the tmp table.
+  return CommitTemporaryURLTable();
 }
 
 const int kLowQualityMatchTypedLimit = 1;
@@ -631,6 +665,9 @@ base::Time AutocompleteAgeThreshold() {
 
 bool RowQualifiesAsSignificant(const URLRow& row,
                                const base::Time& threshold) {
+  if (row.hidden())
+    return false;
+
   const base::Time& real_threshold =
       threshold.is_null() ? AutocompleteAgeThreshold() : threshold;
   return (row.typed_count() >= kLowQualityMatchTypedLimit) ||

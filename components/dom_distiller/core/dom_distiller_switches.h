@@ -5,16 +5,15 @@
 #ifndef COMPONENTS_DOM_DISTILLER_CORE_DOM_DISTILLER_SWITCHES_H_
 #define COMPONENTS_DOM_DISTILLER_CORE_DOM_DISTILLER_SWITCHES_H_
 
-#include "base/base_switches.h"
 #include "base/command_line.h"
 
 namespace switches {
 
+// Switch to enable the distillability service on the renderer.
+extern const char kEnableDistillabilityService[];
+
 // Switch to enable the DOM distiller.
 extern const char kEnableDomDistiller[];
-
-// Switch to enable synced articles.
-extern const char kEnableSyncArticles[];
 
 // Switch to enable specific heuristics for detecting if a page is distillable
 // or not.
@@ -25,15 +24,16 @@ extern const char kReaderModeFeedback[];
 
 namespace reader_mode_heuristics {
 extern const char kAdaBoost[];
+extern const char kAllArticles[];
 extern const char kOGArticle[];
 extern const char kAlwaysTrue[];
 extern const char kNone[];
-};
+}  // namespace reader_mode_heuristics
 
 namespace reader_mode_feedback {
 extern const char kOn[];
 extern const char kOff[];
-};
+}  // namespace reader_mode_feedback
 
 }  // namespace switches
 

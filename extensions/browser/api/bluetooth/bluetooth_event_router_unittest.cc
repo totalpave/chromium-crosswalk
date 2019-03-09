@@ -8,15 +8,14 @@
 #include <string>
 #include <utility>
 
+#include "base/bind_helpers.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/test/test_browser_context.h"
-#include "content/public/test/test_browser_thread.h"
 #include "device/bluetooth/bluetooth_common.h"
 #include "device/bluetooth/bluetooth_uuid.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
+#include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/common/api/bluetooth.h"
@@ -42,10 +41,12 @@ namespace bluetooth = api::bluetooth;
 class BluetoothEventRouterTest : public ExtensionsTest {
  public:
   BluetoothEventRouterTest()
-      : ui_thread_(content::BrowserThread::UI, &message_loop_),
-        mock_adapter_(new testing::StrictMock<device::MockBluetoothAdapter>()),
-        notification_service_(content::NotificationService::Create()),
-        router_(new BluetoothEventRouter(browser_context())) {
+      : mock_adapter_(new testing::StrictMock<device::MockBluetoothAdapter>()) {
+  }
+
+  void SetUp() override {
+    ExtensionsTest::SetUp();
+    router_ = std::make_unique<BluetoothEventRouter>(browser_context());
     router_->SetAdapterForTest(mock_adapter_);
   }
 
@@ -57,28 +58,27 @@ class BluetoothEventRouterTest : public ExtensionsTest {
   }
 
  protected:
-  base::MessageLoopForUI message_loop_;
-  // Note: |ui_thread_| must be declared before |router_|.
-  content::TestBrowserThread ui_thread_;
   testing::StrictMock<device::MockBluetoothAdapter>* mock_adapter_;
-  std::unique_ptr<content::NotificationService> notification_service_;
   std::unique_ptr<BluetoothEventRouter> router_;
 };
 
 TEST_F(BluetoothEventRouterTest, BluetoothEventListener) {
-  router_->OnListenerAdded();
+  EventListenerInfo info("", "", GURL(), nullptr);
+  router_->OnListenerAdded(info);
   EXPECT_CALL(*mock_adapter_, RemoveObserver(testing::_)).Times(1);
-  router_->OnListenerRemoved();
+  router_->OnListenerRemoved(info);
 }
 
 TEST_F(BluetoothEventRouterTest, MultipleBluetoothEventListeners) {
-  router_->OnListenerAdded();
-  router_->OnListenerAdded();
-  router_->OnListenerAdded();
-  router_->OnListenerRemoved();
-  router_->OnListenerRemoved();
+  // TODO(rkc/stevenjb): Test multiple extensions and WebUI.
+  EventListenerInfo info("", "", GURL(), nullptr);
+  router_->OnListenerAdded(info);
+  router_->OnListenerAdded(info);
+  router_->OnListenerAdded(info);
+  router_->OnListenerRemoved(info);
+  router_->OnListenerRemoved(info);
   EXPECT_CALL(*mock_adapter_, RemoveObserver(testing::_)).Times(1);
-  router_->OnListenerRemoved();
+  router_->OnListenerRemoved(info);
 }
 
 TEST_F(BluetoothEventRouterTest, UnloadExtension) {
@@ -92,8 +92,8 @@ TEST_F(BluetoothEventRouterTest, UnloadExtension) {
           .SetID(kTestExtensionId)
           .Build();
 
-  ExtensionRegistry::Get(browser_context())->TriggerOnUnloaded(
-      extension.get(), UnloadedExtensionInfo::REASON_DISABLE);
+  ExtensionRegistry::Get(browser_context())
+      ->TriggerOnUnloaded(extension.get(), UnloadedExtensionReason::DISABLE);
 
   EXPECT_CALL(*mock_adapter_, RemoveObserver(testing::_)).Times(1);
 }
@@ -111,16 +111,15 @@ TEST_F(BluetoothEventRouterTest, SetDiscoveryFilter) {
   df.CopyFrom(*discovery_filter);
 
   router_->SetDiscoveryFilter(std::move(discovery_filter), mock_adapter_,
-                              kTestExtensionId, base::Bind(&base::DoNothing),
-                              base::Bind(&base::DoNothing));
+                              kTestExtensionId, base::DoNothing(),
+                              base::DoNothing());
 
   EXPECT_CALL(*mock_adapter_, StartDiscoverySessionWithFilterRaw(
                                   testing::Pointee(IsFilterEqual(&df)),
                                   testing::_, testing::_)).Times(1);
 
   router_->StartDiscoverySession(mock_adapter_, kTestExtensionId,
-                                 base::Bind(&base::DoNothing),
-                                 base::Bind(&base::DoNothing));
+                                 base::DoNothing(), base::DoNothing());
 
   EXPECT_CALL(*mock_adapter_, RemoveObserver(testing::_)).Times(1);
 }

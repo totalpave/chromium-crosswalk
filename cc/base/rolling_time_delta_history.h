@@ -7,24 +7,26 @@
 
 #include <stddef.h>
 
-#include <deque>
 #include <set>
 
+#include "base/containers/circular_deque.h"
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/time/time.h"
-#include "cc/base/cc_export.h"
+#include "cc/base/base_export.h"
 
 namespace cc {
 
 // Stores a limited number of samples. When the maximum size is reached, each
 // insertion results in the deletion of the oldest remaining sample.
-class CC_EXPORT RollingTimeDeltaHistory {
+class CC_BASE_EXPORT RollingTimeDeltaHistory {
  public:
   explicit RollingTimeDeltaHistory(size_t max_size);
 
   ~RollingTimeDeltaHistory();
 
   void InsertSample(base::TimeDelta time);
+  size_t sample_count() const { return sample_set_.size(); }
 
   void Clear();
 
@@ -35,9 +37,13 @@ class CC_EXPORT RollingTimeDeltaHistory {
  private:
   typedef std::multiset<base::TimeDelta> TimeDeltaMultiset;
 
+  base::TimeDelta ComputePercentile(double percent) const;
+
   TimeDeltaMultiset sample_set_;
-  std::deque<TimeDeltaMultiset::iterator> chronological_sample_deque_;
+  base::circular_deque<TimeDeltaMultiset::iterator> chronological_sample_deque_;
   size_t max_size_;
+
+  mutable base::flat_map<double, base::TimeDelta> percentile_cache_;
 
   DISALLOW_COPY_AND_ASSIGN(RollingTimeDeltaHistory);
 };

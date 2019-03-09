@@ -7,17 +7,16 @@
 
 #include <stdint.h>
 
-#include <openssl/ssl.h>
-
+#include "net/base/net_export.h"
 #include "net/cert/x509_certificate.h"
-#include "net/log/net_log.h"
-#include "net/ssl/scoped_openssl_types.h"
+#include "net/log/net_log_parameters_callback.h"
+#include "third_party/boringssl/src/include/openssl/base.h"
 
 namespace crypto {
 class OpenSSLErrStackTracer;
 }
 
-namespace tracked_objects {
+namespace base {
 class Location;
 }
 
@@ -25,7 +24,7 @@ namespace net {
 
 // Puts a net error, |err|, on the error stack in OpenSSL. The file and line are
 // extracted from |posted_from|. The function code of the error is left as 0.
-void OpenSSLPutNetError(const tracked_objects::Location& posted_from, int err);
+void OpenSSLPutNetError(const base::Location& posted_from, int err);
 
 // Utility to construct the appropriate set & clear masks for use the OpenSSL
 // options and mode configuration functions. (SSL_set_options etc)
@@ -43,7 +42,9 @@ struct SslSetClearMask {
 // Note that |tracer| is not currently used in the implementation, but is passed
 // in anyway as this ensures the caller will clear any residual codes left on
 // the error stack.
-int MapOpenSSLError(int err, const crypto::OpenSSLErrStackTracer& tracer);
+NET_EXPORT_PRIVATE int MapOpenSSLError(
+    int err,
+    const crypto::OpenSSLErrStackTracer& tracer);
 
 // Helper struct to store information about an OpenSSL error stack entry.
 struct OpenSSLErrorInfo {
@@ -68,7 +69,7 @@ int MapOpenSSLErrorWithDetails(int err,
                                OpenSSLErrorInfo* out_error_info);
 
 // Creates NetLog callback for an OpenSSL error.
-NetLog::ParametersCallback CreateNetLogOpenSSLErrorCallback(
+NetLogParametersCallback CreateNetLogOpenSSLErrorCallback(
     int net_error,
     int ssl_error,
     const OpenSSLErrorInfo& error_info);
@@ -77,10 +78,12 @@ NetLog::ParametersCallback CreateNetLogOpenSSLErrorCallback(
 // this SSL connection.
 int GetNetSSLVersion(SSL* ssl);
 
-ScopedX509 OSCertHandleToOpenSSL(X509Certificate::OSCertHandle os_handle);
-
-ScopedX509Stack OSCertHandlesToOpenSSL(
-    const X509Certificate::OSCertHandles& os_handles);
+// Configures |ssl| to send the specified certificate and either |pkey| or
+// |custom_key|. This is a wrapper over |SSL_set_chain_and_key|.
+bool SetSSLChainAndKey(SSL* ssl,
+                       X509Certificate* cert,
+                       EVP_PKEY* pkey,
+                       const SSL_PRIVATE_KEY_METHOD* custom_key);
 
 }  // namespace net
 

@@ -6,30 +6,18 @@ package org.chromium.chrome.browser.compositor.layouts;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Rect;
-import android.graphics.RectF;
-import android.view.MotionEvent;
 import android.view.ViewGroup;
 
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.compositor.LayerTitleCache;
 import org.chromium.chrome.browser.compositor.layouts.content.TabContentManager;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.AreaGestureEventFilter;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EdgeSwipeEventFilter.ScrollDirection;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EventFilterHost;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.GestureHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
-import org.chromium.chrome.browser.compositor.scene_layer.SceneLayer;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManagementDelegate;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManagerDelegate;
-import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
-import org.chromium.ui.resources.ResourceManager;
 import org.chromium.ui.resources.dynamics.DynamicResourceLoader;
 
 import java.util.List;
@@ -39,9 +27,6 @@ import java.util.List;
  * the tablet.
  */
 public class LayoutManagerChromeTablet extends LayoutManagerChrome {
-    // Event Filters
-    private final TabStripEventFilter mTabStripFilter;
-
     // Internal State
     private final String mDefaultTitle;
 
@@ -51,19 +36,13 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
     /**
      * Creates an instance of a {@link LayoutManagerChromePhone}.
      * @param host                     A {@link LayoutManagerHost} instance.
-     * @param overviewLayoutFactoryDelegate A {@link OverviewLayoutFactoryDelegate} instance.
      */
-    public LayoutManagerChromeTablet(
-            LayoutManagerHost host, OverviewLayoutFactoryDelegate overviewLayoutFactoryDelegate) {
-        super(host, overviewLayoutFactoryDelegate);
+    public LayoutManagerChromeTablet(LayoutManagerHost host) {
+        super(host, false);
         Context context = host.getContext();
 
-        // Build Event Filters
-        mTabStripFilter = new TabStripEventFilter(
-                context, this, new TabStripEventHandler(), null, false, false);
-
-        mTabStripLayoutHelperManager = new StripLayoutHelperManager(
-                context, this, mHost.getLayoutRenderHost(), mTabStripFilter);
+        mTabStripLayoutHelperManager =
+                new StripLayoutHelperManager(context, this, mHost.getLayoutRenderHost());
 
         // Set up state
         mDefaultTitle = context.getString(R.string.tab_loading_default_title);
@@ -95,11 +74,6 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
     }
 
     @Override
-    protected ToolbarSwipeHandler createToolbarSwipeHandler(LayoutProvider provider) {
-        return new TabletToolbarSwipeHandler(provider);
-    }
-
-    @Override
     public void tabSelected(int tabId, int prevId, boolean incognito) {
         if (getActiveLayout() == mStaticLayout || getActiveLayout() == mOverviewListLayout) {
             super.tabSelected(tabId, prevId, incognito);
@@ -109,17 +83,17 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
             // internal tab to show and not start hiding until we're done calling finalizeShowing().
             // This prevents a flicker because we properly build and set the internal
             // {@link LayoutTab} before actually showing the {@link TabView}.
-            if (getActiveLayout() != null) {
-                getActiveLayout().onTabSelected(time(), tabId, prevId, incognito);
-            }
+            super.tabSelected(tabId, prevId, incognito);
             if (getActiveLayout() != null) getActiveLayout().onTabSelecting(time(), tabId);
         }
     }
 
     @Override
-    protected void tabCreated(int id, int sourceId, TabLaunchType launchType, boolean incognito,
-            boolean willBeSelected, float originX, float originY) {
-        if (getFullscreenManager() != null) getFullscreenManager().showControlsTransient();
+    protected void tabCreated(int id, int sourceId, @TabLaunchType int launchType,
+            boolean incognito, boolean willBeSelected, float originX, float originY) {
+        if (getFullscreenManager() != null) {
+            getFullscreenManager().getBrowserVisibilityDelegate().showControlsTransient();
+        }
         super.tabCreated(id, sourceId, launchType, incognito, willBeSelected, originX, originY);
     }
 
@@ -139,14 +113,13 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
     public void init(TabModelSelector selector, TabCreatorManager creator,
             TabContentManager content, ViewGroup androidContentContainer,
             ContextualSearchManagementDelegate contextualSearchDelegate,
-            ReaderModeManagerDelegate readerModeDelegate,
             DynamicResourceLoader dynamicResourceLoader) {
         if (mTabStripLayoutHelperManager != null) {
             mTabStripLayoutHelperManager.setTabModelSelector(selector, creator);
         }
 
         super.init(selector, creator, content, androidContentContainer, contextualSearchDelegate,
-                readerModeDelegate, dynamicResourceLoader);
+                dynamicResourceLoader);
 
         mTabObserver = new TabModelSelectorTabObserver(selector) {
             @Override
@@ -177,7 +150,7 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
     protected LayoutManagerTabModelObserver createTabModelObserver() {
         return new LayoutManagerTabModelObserver() {
             @Override
-            public void didAddTab(Tab tab, TabLaunchType launchType) {
+            public void didAddTab(Tab tab, @TabLaunchType int launchType) {
                 super.didAddTab(tab, launchType);
                 updateTitle(getTabById(tab.getId()));
             }
@@ -189,89 +162,11 @@ public class LayoutManagerChromeTablet extends LayoutManagerChrome {
         return mTabStripLayoutHelperManager;
     }
 
-    @Override
-    public SceneLayer getUpdatedActiveSceneLayer(Rect viewport, Rect contentViewport,
-            LayerTitleCache layerTitleCache, TabContentManager tabContentManager,
-            ResourceManager resourceManager, ChromeFullscreenManager fullscreenManager) {
-        return super.getUpdatedActiveSceneLayer(viewport, contentViewport, layerTitleCache,
-                tabContentManager, resourceManager, fullscreenManager);
-    }
-
     private void updateTitle(Tab tab) {
         if (tab != null && mTitleCache != null) {
             String title = mTitleCache.getUpdatedTitle(tab, mDefaultTitle);
             getActiveLayout().tabTitleChanged(tab.getId(), title);
         }
         requestUpdate();
-    }
-
-    private class TabletToolbarSwipeHandler extends ToolbarSwipeHandler {
-        public TabletToolbarSwipeHandler(LayoutProvider provider) {
-            super(provider);
-        }
-
-        @Override
-        public boolean isSwipeEnabled(ScrollDirection direction) {
-            if ((direction == ScrollDirection.LEFT || direction == ScrollDirection.RIGHT)
-                    && (getTabModelSelector() == null
-                               || getTabModelSelector().getCurrentModel().getCount() <= 1)) {
-                return false;
-            }
-
-            return super.isSwipeEnabled(direction);
-        }
-    }
-
-    private class TabStripEventHandler implements GestureHandler {
-        @Override
-        public void onDown(float x, float y, boolean fromMouse, int buttons) {
-            mTabStripLayoutHelperManager.onDown(time(), x, y, fromMouse, buttons);
-        }
-
-        @Override
-        public void onUpOrCancel() {
-            mTabStripLayoutHelperManager.onUpOrCancel(time());
-        }
-
-        @Override
-        public void drag(float x, float y, float dx, float dy, float tx, float ty) {
-            mTabStripLayoutHelperManager.drag(time(), x, y, dx, dy, tx, ty);
-        }
-
-        @Override
-        public void click(float x, float y, boolean fromMouse, int buttons) {
-            mTabStripLayoutHelperManager.click(time(), x, y, fromMouse, buttons);
-        }
-
-        @Override
-        public void fling(float x, float y, float velocityX, float velocityY) {
-            mTabStripLayoutHelperManager.fling(time(), x, y, velocityX, velocityY);
-        }
-
-        @Override
-        public void onLongPress(float x, float y) {
-            mTabStripLayoutHelperManager.onLongPress(time(), x, y);
-        }
-
-        @Override
-        public void onPinch(float x0, float y0, float x1, float y1, boolean firstEvent) {
-            // Not implemented.
-        }
-    }
-
-    private class TabStripEventFilter extends AreaGestureEventFilter {
-        public TabStripEventFilter(Context context, EventFilterHost host, GestureHandler handler,
-                RectF triggerRect, boolean autoOffset, boolean useDefaultLongPress) {
-            super(context, host, handler, triggerRect, autoOffset, useDefaultLongPress);
-        }
-
-        @Override
-        public boolean onInterceptTouchEventInternal(MotionEvent e, boolean isKeyboardShowing) {
-            if (getActiveLayout().isTabStripEventFilterEnabled()) {
-                return super.onInterceptTouchEventInternal(e, isKeyboardShowing);
-            }
-
-            return false;
-        }
     }
 }

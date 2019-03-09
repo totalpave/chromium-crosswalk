@@ -14,12 +14,16 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "google_apis/gcm/engine/connection_handler.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace mcs_proto {
 class LoginRequest;
 }  // namespace mcs_proto
 
 namespace gcm {
+
+class SocketInputStream;
+class SocketOutputStream;
 
 class GCM_EXPORT ConnectionHandlerImpl : public ConnectionHandler {
  public:
@@ -39,7 +43,8 @@ class GCM_EXPORT ConnectionHandlerImpl : public ConnectionHandler {
 
   // ConnectionHandler implementation.
   void Init(const mcs_proto::LoginRequest& login_request,
-            net::StreamSocket* socket) override;
+            mojo::ScopedDataPipeConsumerHandle receive_stream,
+            mojo::ScopedDataPipeProducerHandle send_stream) override;
   void Reset() override;
   bool CanSendMessage() const override;
   void SendMessage(const google::protobuf::MessageLite& message) override;
@@ -98,8 +103,7 @@ class GCM_EXPORT ConnectionHandlerImpl : public ConnectionHandler {
   const base::TimeDelta read_timeout_;
   base::OneShotTimer read_timeout_timer_;
 
-  // This connection's socket and the input/output streams attached to it.
-  net::StreamSocket* socket_;
+  // This connection's input/output streams.
   std::unique_ptr<SocketInputStream> input_stream_;
   std::unique_ptr<SocketOutputStream> output_stream_;
 

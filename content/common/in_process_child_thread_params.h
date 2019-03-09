@@ -8,8 +8,9 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
-#include "base/sequenced_task_runner.h"
+#include "base/single_thread_task_runner.h"
 #include "content/common/content_export.h"
+#include "mojo/public/cpp/system/invitation.h"
 
 namespace content {
 
@@ -19,27 +20,26 @@ namespace content {
 class CONTENT_EXPORT InProcessChildThreadParams {
  public:
   InProcessChildThreadParams(
-      const std::string& channel_name,
-      scoped_refptr<base::SequencedTaskRunner> io_runner,
-      const std::string& ipc_token = std::string(),
-      const std::string& application_token = std::string());
+      scoped_refptr<base::SingleThreadTaskRunner> io_runner,
+      mojo::OutgoingInvitation* mojo_invitation,
+      const std::string& service_request_token);
   InProcessChildThreadParams(const InProcessChildThreadParams& other);
   ~InProcessChildThreadParams();
 
-  const std::string& channel_name() const { return channel_name_; }
-  scoped_refptr<base::SequencedTaskRunner> io_runner() const {
+  scoped_refptr<base::SingleThreadTaskRunner> io_runner() const {
     return io_runner_;
   }
-  const std::string& ipc_token() const { return ipc_token_; }
-  const std::string& application_token() const {
-    return application_token_;
+
+  mojo::OutgoingInvitation* mojo_invitation() const { return mojo_invitation_; }
+
+  const std::string& service_request_token() const {
+    return service_request_token_;
   }
 
  private:
-  std::string channel_name_;
-  scoped_refptr<base::SequencedTaskRunner> io_runner_;
-  std::string ipc_token_;
-  std::string application_token_;
+  scoped_refptr<base::SingleThreadTaskRunner> io_runner_;
+  mojo::OutgoingInvitation* const mojo_invitation_;
+  std::string service_request_token_;
 };
 
 }  // namespace content

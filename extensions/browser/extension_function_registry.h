@@ -7,14 +7,14 @@
 
 #include <map>
 #include <string>
-#include <vector>
 
+#include "base/macros.h"
 #include "extensions/browser/extension_function_histogram_value.h"
 
 class ExtensionFunction;
 
 // A factory function for creating new ExtensionFunction instances.
-typedef ExtensionFunction* (*ExtensionFunctionFactory)();
+using ExtensionFunctionFactory = ExtensionFunction* (*)();
 
 // Template for defining ExtensionFunctionFactory.
 template <class T>
@@ -26,40 +26,50 @@ ExtensionFunction* NewExtensionFunction() {
 // create instances of them.
 class ExtensionFunctionRegistry {
  public:
-  static ExtensionFunctionRegistry* GetInstance();
-  explicit ExtensionFunctionRegistry();
-  virtual ~ExtensionFunctionRegistry();
+  struct FactoryEntry {
+   public:
+    FactoryEntry();
+    constexpr FactoryEntry(
+        ExtensionFunctionFactory factory,
+        const char* function_name,
+        extensions::functions::HistogramValue histogram_value)
+        : factory_(factory),
+          function_name_(function_name),
+          histogram_value_(histogram_value) {}
 
-  // Allows overriding of specific functions (e.g. for testing).  Functions
-  // must be previously registered.  Returns true if successful.
-  bool OverrideFunction(const std::string& name,
-                        ExtensionFunctionFactory factory);
+    ExtensionFunctionFactory factory_ = nullptr;
+    const char* function_name_ = nullptr;
+    extensions::functions::HistogramValue histogram_value_ =
+        extensions::functions::UNKNOWN;
+  };
+  using FactoryMap = std::map<std::string, FactoryEntry>;
+
+  static ExtensionFunctionRegistry& GetInstance();
+  ExtensionFunctionRegistry();
+  ~ExtensionFunctionRegistry();
+
+  // Allows overriding of specific functions for testing.  Functions must be
+  // previously registered.  Returns true if successful.
+  bool OverrideFunctionForTesting(const std::string& name,
+                                  ExtensionFunctionFactory factory);
 
   // Factory method for the ExtensionFunction registered as 'name'.
   ExtensionFunction* NewFunction(const std::string& name);
 
+  // Registers a new extension function. This will override any existing entry.
+  void Register(const FactoryEntry& entry);
   template <class T>
   void RegisterFunction() {
-    ExtensionFunctionFactory factory = &NewExtensionFunction<T>;
-    factories_[T::function_name()] =
-        FactoryEntry(factory, T::function_name(), T::histogram_value());
+    Register(FactoryEntry(&NewExtensionFunction<T>, T::function_name(),
+                          T::histogram_value()));
   }
 
-  struct FactoryEntry {
-   public:
-    explicit FactoryEntry();
-    explicit FactoryEntry(
-        ExtensionFunctionFactory factory,
-        const char* function_name,
-        extensions::functions::HistogramValue histogram_value);
+  const FactoryMap& GetFactoriesForTesting() const { return factories_; }
 
-    ExtensionFunctionFactory factory_;
-    const char* function_name_;
-    extensions::functions::HistogramValue histogram_value_;
-  };
-
-  typedef std::map<std::string, FactoryEntry> FactoryMap;
+ private:
   FactoryMap factories_;
+
+  DISALLOW_COPY_AND_ASSIGN(ExtensionFunctionRegistry);
 };
 
 #endif  // EXTENSIONS_BROWSER_EXTENSION_FUNCTION_REGISTRY_H_

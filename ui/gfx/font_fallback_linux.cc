@@ -19,9 +19,24 @@ namespace gfx {
 
 namespace {
 
+const char kFontFormatTrueType[] = "TrueType";
+const char kFontFormatCFF[] = "CFF";
+
 typedef std::map<std::string, std::vector<Font> > FallbackCache;
 base::LazyInstance<FallbackCache>::Leaky g_fallback_cache =
     LAZY_INSTANCE_INITIALIZER;
+
+std::string GetFilenameFromFcPattern(FcPattern* pattern) {
+  const char* c_filename = nullptr;
+  if (FcPatternGetString(pattern, FC_FILE, 0,
+                         reinterpret_cast<FcChar8**>(const_cast<char**>(
+                             &c_filename))) != FcResultMatch) {
+    return std::string();
+  }
+  const char* sysroot =
+      reinterpret_cast<const char*>(FcConfigGetSysRoot(nullptr));
+  return std::string(sysroot ? sysroot : "") + c_filename;
+}
 
 }  // namespace
 
@@ -76,7 +91,7 @@ class CachedFont {
     DCHECK(pattern);
     DCHECK(char_set);
     fallback_font_.name = GetFontName(pattern);
-    fallback_font_.filename = GetFontFilename(pattern);
+    fallback_font_.filename = GetFilenameFromFcPattern(pattern);
     fallback_font_.ttc_index = GetFontTtcIndex(pattern);
     fallback_font_.is_bold = IsFontBold(pattern);
     fallback_font_.is_italic = IsFontItalic(pattern);
@@ -94,13 +109,6 @@ class CachedFont {
     if (FcPatternGetString(pattern, FC_FAMILY, 0, &familyName) != FcResultMatch)
       return std::string();
     return std::string(reinterpret_cast<const char*>(familyName));
-  }
-
-  static std::string GetFontFilename(FcPattern* pattern) {
-    FcChar8* c_filename = nullptr;
-    if (FcPatternGetString(pattern, FC_FILE, 0, &c_filename) != FcResultMatch)
-      return std::string();
-    return std::string(reinterpret_cast<const char*>(c_filename));
   }
 
   static int GetFontTtcIndex(FcPattern* pattern) {
@@ -206,11 +214,21 @@ class CachedFontSet {
 
       // Ignore any fonts FontConfig knows about, but that we don't have
       // permission to read.
-      FcChar8* c_filename;
-      if (FcPatternGetString(pattern, FC_FILE, 0, &c_filename) != FcResultMatch)
+      std::string filename = GetFilenameFromFcPattern(pattern);
+      if (access(filename.c_str(), R_OK))
         continue;
-      if (access(reinterpret_cast<char*>(c_filename), R_OK))
+
+      // Take only supported font formats on board.
+      FcChar8* font_format;
+      if (FcPatternGetString(pattern, FC_FONTFORMAT, 0, &font_format) !=
+          FcResultMatch) {
         continue;
+      }
+      if (font_format &&
+          strcmp(reinterpret_cast<char*>(font_format), kFontFormatTrueType) &&
+          strcmp(reinterpret_cast<char*>(font_format), kFontFormatCFF)) {
+        continue;
+      }
 
       // Make sure this font can tell us what characters it has glyphs for.
       FcCharSet* char_set;

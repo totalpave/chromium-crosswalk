@@ -7,44 +7,60 @@ package org.chromium.chrome.browser.compositor.layouts;
 import static org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.AnimatableAnimation.createAnimation;
 
 import android.os.SystemClock;
-import android.test.InstrumentationTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.annotation.IntDef;
+import android.support.test.filters.SmallTest;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.compositor.animation.CompositorAnimator;
 import org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.Animatable;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
  * Unit tests for {@link org.chromium.chrome.browser.compositor.layouts.ChromeAnimation}.
  */
-public class ChromeAnimationTest extends InstrumentationTestCase
-        implements Animatable<ChromeAnimationTest.Property> {
-
-    protected enum Property {
-        FAST_ANIMATION,
-        SLOW_ANIMATION
+@RunWith(ChromeJUnit4ClassRunner.class)
+public class ChromeAnimationTest implements Animatable {
+    @IntDef({Property.FAST_ANIMATION, Property.SLOW_ANIMATION})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Property {
+        int FAST_ANIMATION = 0;
+        int SLOW_ANIMATION = 1;
     }
 
     private static final long FAST_DURATION = 100;
     private static final long SLOW_DURATION = 1000;
 
-    private ChromeAnimation<Animatable<?>> mAnimations;
+    private ChromeAnimation<Animatable> mAnimations;
 
     private boolean mHasFinishedFastAnimation;
     private boolean mHasFinishedSlowAnimation;
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-
+    @Before
+    public void setUp() throws Exception {
         mHasFinishedFastAnimation = false;
         mHasFinishedSlowAnimation = false;
+        ChromeAnimation.Animation.setAnimationMultiplierForTesting(1f);
+    }
+
+    @After
+    public void tearDown() {
+        ChromeAnimation.Animation.unsetAnimationMultiplierForTesting();
     }
 
     @Override
-    public void setProperty(Property prop, float val) {}
+    public void setProperty(@Property int prop, float val) {}
 
     @Override
-    public void onPropertyAnimationFinished(Property prop) {
+    public void onPropertyAnimationFinished(@Property int prop) {
         if (prop == Property.FAST_ANIMATION) {
             mHasFinishedFastAnimation = true;
         } else if (prop == Property.SLOW_ANIMATION) {
@@ -65,11 +81,10 @@ public class ChromeAnimationTest extends InstrumentationTestCase
      * @param duration                The duration of the animation in ms
      * @param startTime               The start time in ms
      */
-    private <T extends Enum<?>> void addToAnimation(Animatable<T> object, T prop,
-            float start, float end, long duration, long startTime) {
-        ChromeAnimation.Animation<Animatable<?>> component = createAnimation(
-                object, prop, start, end, duration, startTime, false,
-                ChromeAnimation.getDecelerateInterpolator());
+    private void addToAnimation(
+            Animatable object, int prop, float start, float end, long duration, long startTime) {
+        ChromeAnimation.Animation<Animatable> component = createAnimation(object, prop, start, end,
+                duration, startTime, false, CompositorAnimator.DECELERATE_INTERPOLATOR);
         addToAnimation(component);
     }
 
@@ -77,7 +92,7 @@ public class ChromeAnimationTest extends InstrumentationTestCase
      * Appends an Animation to the current animation set and starts it immediately.  If the set is
      * already finished or doesn't exist, the animation set is also started.
      */
-    private void addToAnimation(ChromeAnimation.Animation<Animatable<?>> component) {
+    private void addToAnimation(ChromeAnimation.Animation<Animatable> component) {
         if (mAnimations == null || mAnimations.finished()) {
             mAnimations = new ChromeAnimation<>();
             mAnimations.start();
@@ -86,6 +101,7 @@ public class ChromeAnimationTest extends InstrumentationTestCase
         mAnimations.add(component);
     }
 
+    @Test
     @SmallTest
     @Feature({"ContextualSearch"})
     public void testConcurrentAnimationsFinishSeparately() {
@@ -99,12 +115,12 @@ public class ChromeAnimationTest extends InstrumentationTestCase
 
         // Advances time to check that the fast animation will finish first.
         mAnimations.update(now + FAST_DURATION);
-        assertTrue(mHasFinishedFastAnimation);
-        assertFalse(mHasFinishedSlowAnimation);
+        Assert.assertTrue(mHasFinishedFastAnimation);
+        Assert.assertFalse(mHasFinishedSlowAnimation);
 
         // Advances time to check that all animations are finished.
         mAnimations.update(now + SLOW_DURATION);
-        assertTrue(mHasFinishedFastAnimation);
-        assertTrue(mHasFinishedSlowAnimation);
+        Assert.assertTrue(mHasFinishedFastAnimation);
+        Assert.assertTrue(mHasFinishedSlowAnimation);
     }
 }

@@ -13,9 +13,10 @@
 #include "base/macros.h"
 #include "net/base/completion_callback.h"
 #include "net/base/net_export.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_with_source.h"
 #include "net/socket/socket_descriptor.h"
 #include "net/socket/stream_socket.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace net {
 
@@ -42,31 +43,31 @@ class NET_EXPORT UnixDomainClientSocket : public StreamSocket {
                           SockaddrStorage* address);
 
   // StreamSocket implementation.
-  int Connect(const CompletionCallback& callback) override;
+  int Connect(CompletionOnceCallback callback) override;
   void Disconnect() override;
   bool IsConnected() const override;
   bool IsConnectedAndIdle() const override;
   int GetPeerAddress(IPEndPoint* address) const override;
   int GetLocalAddress(IPEndPoint* address) const override;
-  const BoundNetLog& NetLog() const override;
-  void SetSubresourceSpeculation() override;
-  void SetOmniboxSpeculation() override;
+  const NetLogWithSource& NetLog() const override;
   bool WasEverUsed() const override;
-  bool WasNpnNegotiated() const override;
+  bool WasAlpnNegotiated() const override;
   NextProto GetNegotiatedProtocol() const override;
   bool GetSSLInfo(SSLInfo* ssl_info) override;
   void GetConnectionAttempts(ConnectionAttempts* out) const override;
   void ClearConnectionAttempts() override {}
   void AddConnectionAttempts(const ConnectionAttempts& attempts) override {}
   int64_t GetTotalReceivedBytes() const override;
+  void ApplySocketTag(const SocketTag& tag) override;
 
   // Socket implementation.
   int Read(IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) override;
+           CompletionOnceCallback callback) override;
   int Write(IOBuffer* buf,
             int buf_len,
-            const CompletionCallback& callback) override;
+            CompletionOnceCallback callback,
+            const NetworkTrafficAnnotationTag& traffic_annotation) override;
   int SetReceiveBufferSize(int32_t size) override;
   int SetSendBufferSize(int32_t size) override;
 
@@ -81,7 +82,7 @@ class NET_EXPORT UnixDomainClientSocket : public StreamSocket {
   std::unique_ptr<SocketPosix> socket_;
   // This net log is just to comply StreamSocket::NetLog(). It throws away
   // everything.
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
 
   DISALLOW_COPY_AND_ASSIGN(UnixDomainClientSocket);
 };

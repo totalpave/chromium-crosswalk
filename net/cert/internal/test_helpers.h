@@ -11,6 +11,9 @@
 #include <string>
 #include <vector>
 
+#include "net/cert/internal/parsed_certificate.h"
+#include "net/cert/internal/trust_store.h"
+#include "net/cert/internal/verify_certificate_chain.h"
 #include "net/der/input.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -73,6 +76,73 @@ template <size_t N>
     const PemBlockMapping(&mappings)[N]) {
   return ReadTestDataFromPemFile(file_path_ascii, mappings, N);
 }
+
+// Test cases are comprised of all the parameters to certificate
+// verification, as well as the expected outputs.
+struct VerifyCertChainTest {
+  VerifyCertChainTest();
+  ~VerifyCertChainTest();
+
+  // The chain of certificates (with the zero-th being the target).
+  ParsedCertificateList chain;
+
+  // Details on the trustedness of the last certificate.
+  CertificateTrust last_cert_trust;
+
+  // The time to use when verifying the chain.
+  der::GeneralizedTime time;
+
+  // The Key Purpose to use when verifying the chain.
+  KeyPurpose key_purpose = KeyPurpose::ANY_EKU;
+
+  InitialExplicitPolicy initial_explicit_policy = InitialExplicitPolicy::kFalse;
+
+  std::set<der::Input> user_initial_policy_set;
+
+  InitialPolicyMappingInhibit initial_policy_mapping_inhibit =
+      InitialPolicyMappingInhibit::kFalse;
+
+  InitialAnyPolicyInhibit initial_any_policy_inhibit =
+      InitialAnyPolicyInhibit::kFalse;
+
+  // The expected errors/warnings from verification (as a string).
+  std::string expected_errors;
+
+  // Returns true if |expected_errors| contains any high severity errors (a
+  // non-empty expected_errors doesn't necessarily mean verification is
+  // expected to fail, as it may have contained warnings).
+  bool HasHighSeverityErrors() const;
+};
+
+// Reads a test case from |file_path_ascii| (which is relative to //src).
+// Generally |file_path_ascii| will start with:
+//   net/data/verify_certificate_chain_unittest/
+bool ReadVerifyCertChainTestFromFile(const std::string& file_path_ascii,
+                                     VerifyCertChainTest* test);
+
+// Reads a certificate chain from |file_path_ascii|
+bool ReadCertChainFromFile(const std::string& file_path_ascii,
+                           ParsedCertificateList* chain);
+
+// Reads a data file relative to the src root directory.
+std::string ReadTestFileToString(const std::string& file_path_ascii);
+
+// Asserts that |actual_errors| matches |expected_errors_str|.
+//
+// This is a helper function to simplify rebasing the error expectations when
+// they originate from a test file.
+void VerifyCertPathErrors(const std::string& expected_errors_str,
+                          const CertPathErrors& actual_errors,
+                          const ParsedCertificateList& chain,
+                          const std::string& errors_file_path);
+
+// Asserts that |actual_errors| matches |expected_errors_str|.
+//
+// This is a helper function to simplify rebasing the error expectations when
+// they originate from a test file.
+void VerifyCertErrors(const std::string& expected_errors_str,
+                      const CertErrors& actual_errors,
+                      const std::string& errors_file_path);
 
 }  // namespace net
 

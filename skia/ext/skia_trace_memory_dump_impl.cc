@@ -31,13 +31,13 @@ SkiaTraceMemoryDumpImpl::SkiaTraceMemoryDumpImpl(
               ? SkTraceMemoryDump::kLight_LevelOfDetail
               : SkTraceMemoryDump::kObjectsBreakdowns_LevelOfDetail) {}
 
-SkiaTraceMemoryDumpImpl::~SkiaTraceMemoryDumpImpl() {}
+SkiaTraceMemoryDumpImpl::~SkiaTraceMemoryDumpImpl() = default;
 
 void SkiaTraceMemoryDumpImpl::dumpNumericValue(const char* dumpName,
                                                const char* valueName,
                                                const char* units,
                                                uint64_t value) {
-  auto dump = process_memory_dump_->GetOrCreateAllocatorDump(dumpName);
+  auto* dump = process_memory_dump_->GetOrCreateAllocatorDump(dumpName);
   dump->AddScalar(valueName, units, value);
 }
 
@@ -45,7 +45,7 @@ void SkiaTraceMemoryDumpImpl::setMemoryBacking(const char* dumpName,
                                                const char* backingType,
                                                const char* backingObjectId) {
   if (strcmp(backingType, kMallocBackingType) == 0) {
-    auto dump = process_memory_dump_->GetOrCreateAllocatorDump(dumpName);
+    auto* dump = process_memory_dump_->GetOrCreateAllocatorDump(dumpName);
     const char* system_allocator_name =
         base::trace_event::MemoryDumpManager::GetInstance()
             ->system_allocator_pool_name();
@@ -65,7 +65,7 @@ void SkiaTraceMemoryDumpImpl::setDiscardableMemoryBacking(
   DCHECK(!process_memory_dump_->GetAllocatorDump(name));
   const SkDiscardableMemoryChrome& discardable_memory_obj =
       static_cast<const SkDiscardableMemoryChrome&>(discardableMemoryObject);
-  auto dump = discardable_memory_obj.CreateMemoryAllocatorDump(
+  auto* dump = discardable_memory_obj.CreateMemoryAllocatorDump(
       name.c_str(), process_memory_dump_);
   DCHECK(dump);
 }
@@ -73,6 +73,12 @@ void SkiaTraceMemoryDumpImpl::setDiscardableMemoryBacking(
 SkTraceMemoryDump::LevelOfDetail SkiaTraceMemoryDumpImpl::getRequestedDetails()
     const {
   return request_level_;
+}
+
+bool SkiaTraceMemoryDumpImpl::shouldDumpWrappedObjects() const {
+  // Chrome already dumps objects it imports into Skia. Avoid duplicate dumps
+  // by asking Skia not to dump them.
+  return false;
 }
 
 }  // namespace skia

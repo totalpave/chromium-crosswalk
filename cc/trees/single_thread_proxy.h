@@ -10,106 +10,138 @@
 #include "base/cancelable_callback.h"
 #include "base/macros.h"
 #include "base/time/time.h"
-#include "cc/output/begin_frame_args.h"
 #include "cc/scheduler/scheduler.h"
-#include "cc/trees/blocking_task_runner.h"
 #include "cc/trees/layer_tree_host_impl.h"
 #include "cc/trees/proxy.h"
 #include "cc/trees/task_runner_provider.h"
+#include "components/viz/common/frame_sinks/begin_frame_args.h"
+
+namespace viz {
+class BeginFrameSource;
+}
 
 namespace cc {
 
-class AnimationEvents;
-class BeginFrameSource;
-class ContextProvider;
+class MutatorEvents;
 class LayerTreeHost;
 class LayerTreeHostSingleThreadClient;
+class RenderFrameMetadataObserver;
 
 class CC_EXPORT SingleThreadProxy : public Proxy,
-                                    NON_EXPORTED_BASE(LayerTreeHostImplClient),
-                                    SchedulerClient {
+                                    LayerTreeHostImplClient,
+                                    public SchedulerClient {
  public:
   static std::unique_ptr<Proxy> Create(
       LayerTreeHost* layer_tree_host,
       LayerTreeHostSingleThreadClient* client,
-      TaskRunnerProvider* task_runner_provider_);
+      TaskRunnerProvider* task_runner_provider);
   ~SingleThreadProxy() override;
 
   // Proxy implementation
-  void FinishAllRendering() override;
   bool IsStarted() const override;
   bool CommitToActiveTree() const override;
-  void SetOutputSurface(OutputSurface* output_surface) override;
-  void ReleaseOutputSurface() override;
+  void SetLayerTreeFrameSink(
+      LayerTreeFrameSink* layer_tree_frame_sink) override;
+  void ReleaseLayerTreeFrameSink() override;
   void SetVisible(bool visible) override;
-  const RendererCapabilities& GetRendererCapabilities() const override;
   void SetNeedsAnimate() override;
   void SetNeedsUpdateLayers() override;
   void SetNeedsCommit() override;
   void SetNeedsRedraw(const gfx::Rect& damage_rect) override;
   void SetNextCommitWaitsForActivation() override;
+  bool RequestedAnimatePending() override;
   void NotifyInputThrottledUntilCommit() override {}
-  void SetDeferCommits(bool defer_commits) override;
+  void SetDeferMainFrameUpdate(bool defer_main_frame_update) override;
+  void StartDeferringCommits(base::TimeDelta timeout) override;
+  void StopDeferringCommits() override;
   bool CommitRequested() const override;
-  bool BeginMainFrameRequested() const override;
-  void MainThreadHasStoppedFlinging() override {}
-  void Start(
-      std::unique_ptr<BeginFrameSource> external_begin_frame_source) override;
+  void Start() override;
   void Stop() override;
   void SetMutator(std::unique_ptr<LayerTreeMutator> mutator) override;
+  void SetPaintWorkletLayerPainter(
+      std::unique_ptr<PaintWorkletLayerPainter> painter) override;
   bool SupportsImplScrolling() const override;
   bool MainFrameWillHappenForTesting() override;
-  void UpdateTopControlsState(TopControlsState constraints,
-                              TopControlsState current,
-                              bool animate) override;
+  void SetURLForUkm(const GURL& url) override {
+    // Single-threaded mode is only for browser compositing and for renderers in
+    // layout tests. This will still get called in the latter case, but we don't
+    // need to record UKM in that case.
+  }
+  void ClearHistory() override;
+  void SetRenderFrameObserver(
+      std::unique_ptr<RenderFrameMetadataObserver> observer) override;
+
+  void UpdateBrowserControlsState(BrowserControlsState constraints,
+                                  BrowserControlsState current,
+                                  bool animate) override;
 
   // SchedulerClient implementation
-  void WillBeginImplFrame(const BeginFrameArgs& args) override;
+  bool WillBeginImplFrame(const viz::BeginFrameArgs& args) override;
   void DidFinishImplFrame() override;
-  void ScheduledActionSendBeginMainFrame(const BeginFrameArgs& args) override;
-  DrawResult ScheduledActionDrawAndSwapIfPossible() override;
-  DrawResult ScheduledActionDrawAndSwapForced() override;
+  void DidNotProduceFrame(const viz::BeginFrameAck& ack) override;
+  void WillNotReceiveBeginFrame() override;
+  void ScheduledActionSendBeginMainFrame(
+      const viz::BeginFrameArgs& args) override;
+  DrawResult ScheduledActionDrawIfPossible() override;
+  DrawResult ScheduledActionDrawForced() override;
   void ScheduledActionCommit() override;
   void ScheduledActionActivateSyncTree() override;
-  void ScheduledActionBeginOutputSurfaceCreation() override;
+  void ScheduledActionBeginLayerTreeFrameSinkCreation() override;
   void ScheduledActionPrepareTiles() override;
-  void ScheduledActionInvalidateOutputSurface() override;
+  void ScheduledActionInvalidateLayerTreeFrameSink(bool needs_redraw) override;
+  void ScheduledActionPerformImplSideInvalidation() override;
   void SendBeginMainFrameNotExpectedSoon() override;
+  void ScheduledActionBeginMainFrameNotExpectedUntil(
+      base::TimeTicks time) override;
+  void FrameIntervalUpdated(base::TimeDelta interval) override;
+  size_t CompositedAnimationsCount() const override;
+  size_t MainThreadAnimationsCount() const override;
+  bool CurrentFrameHadRAF() const override;
+  bool NextFrameHasPendingRAF() const override;
 
   // LayerTreeHostImplClient implementation
-  void UpdateRendererCapabilitiesOnImplThread() override;
-  void DidLoseOutputSurfaceOnImplThread() override;
-  void CommitVSyncParameters(base::TimeTicks timebase,
-                             base::TimeDelta interval) override;
-  void SetBeginFrameSource(BeginFrameSource* source) override;
-  void SetEstimatedParentDrawTime(base::TimeDelta draw_time) override;
-  void DidSwapBuffersOnImplThread() override;
-  void DidSwapBuffersCompleteOnImplThread() override;
+  void DidLoseLayerTreeFrameSinkOnImplThread() override;
+  void SetBeginFrameSource(viz::BeginFrameSource* source) override;
+  void DidReceiveCompositorFrameAckOnImplThread() override;
   void OnCanDrawStateChanged(bool can_draw) override;
   void NotifyReadyToActivate() override;
   void NotifyReadyToDraw() override;
   void SetNeedsRedrawOnImplThread() override;
-  void SetNeedsRedrawRectOnImplThread(const gfx::Rect& dirty_rect) override;
   void SetNeedsOneBeginImplFrameOnImplThread() override;
   void SetNeedsPrepareTilesOnImplThread() override;
   void SetNeedsCommitOnImplThread() override;
   void SetVideoNeedsBeginFrames(bool needs_begin_frames) override;
   void PostAnimationEventsToMainThreadOnImplThread(
-      std::unique_ptr<AnimationEvents> events) override;
+      std::unique_ptr<MutatorEvents> events) override;
   bool IsInsideDraw() override;
   void RenewTreePriority() override {}
-  void PostDelayedAnimationTaskOnImplThread(const base::Closure& task,
+  void PostDelayedAnimationTaskOnImplThread(base::OnceClosure task,
                                             base::TimeDelta delay) override {}
   void DidActivateSyncTree() override;
   void WillPrepareTiles() override;
   void DidPrepareTiles() override;
   void DidCompletePageScaleAnimationOnImplThread() override;
-  void OnDrawForOutputSurface(bool resourceless_software_draw) override;
+  void OnDrawForLayerTreeFrameSink(bool resourceless_software_draw,
+                                   bool skip_draw) override;
+  void NeedsImplSideInvalidation(bool needs_first_draw_on_activation) override;
+  void RequestBeginMainFrameNotExpected(bool new_state) override;
+  uint32_t GenerateChildSurfaceSequenceNumberSync() override;
+  void NotifyImageDecodeRequestFinished() override;
+  void DidPresentCompositorFrameOnImplThread(
+      uint32_t frame_token,
+      std::vector<LayerTreeHost::PresentationTimeCallback> callbacks,
+      const gfx::PresentationFeedback& feedback) override;
+  void DidGenerateLocalSurfaceIdAllocationOnImplThread(
+      const viz::LocalSurfaceIdAllocation& allocation) override;
+  void NotifyAnimationWorkletStateChange(
+      AnimationWorkletMutationState state,
+      ElementListType element_list_type) override;
 
-  void RequestNewOutputSurface();
+  void RequestNewLayerTreeFrameSink();
 
   // Called by the legacy path where RenderWidget does the scheduling.
-  void CompositeImmediately(base::TimeTicks frame_begin_time);
+  // Rasterization of tiles is only performed when |raster| is true.
+  void CompositeImmediately(base::TimeTicks frame_begin_time, bool raster);
 
  protected:
   SingleThreadProxy(LayerTreeHost* layer_tree_host,
@@ -117,9 +149,10 @@ class CC_EXPORT SingleThreadProxy : public Proxy,
                     TaskRunnerProvider* task_runner_provider);
 
  private:
-  void BeginMainFrame(const BeginFrameArgs& begin_frame_args);
+  void BeginMainFrame(const viz::BeginFrameArgs& begin_frame_args);
   void BeginMainFrameAbortedOnImplThread(CommitEarlyOutReason reason);
-  void DoBeginMainFrame(const BeginFrameArgs& begin_frame_args);
+  void DoBeginMainFrame(const viz::BeginFrameArgs& begin_frame_args);
+  void DoPainting();
   void DoCommit();
   DrawResult DoComposite(LayerTreeHostImpl::FrameData* frame);
   void DoSwap();
@@ -127,44 +160,55 @@ class CC_EXPORT SingleThreadProxy : public Proxy,
   void CommitComplete();
 
   bool ShouldComposite() const;
-  void ScheduleRequestNewOutputSurface();
+  void ScheduleRequestNewLayerTreeFrameSink();
+  void IssueImageDecodeFinishedCallbacks();
+
+  void DidReceiveCompositorFrameAck();
 
   // Accessed on main thread only.
   LayerTreeHost* layer_tree_host_;
-  LayerTreeHostSingleThreadClient* client_;
+  LayerTreeHostSingleThreadClient* single_thread_client_;
 
   TaskRunnerProvider* task_runner_provider_;
 
   // Used on the Thread, but checked on main thread during
   // initialization/shutdown.
-  std::unique_ptr<LayerTreeHostImpl> layer_tree_host_impl_;
-  RendererCapabilities renderer_capabilities_for_main_thread_;
+  std::unique_ptr<LayerTreeHostImpl> host_impl_;
 
   // Accessed from both threads.
-  std::unique_ptr<BeginFrameSource> external_begin_frame_source_;
-  std::unique_ptr<BeginFrameSource> unthrottled_begin_frame_source_;
-  std::unique_ptr<SyntheticBeginFrameSource> synthetic_begin_frame_source_;
   std::unique_ptr<Scheduler> scheduler_on_impl_thread_;
 
-  std::unique_ptr<BlockingTaskRunner::CapturePostTasks>
-      commit_blocking_task_runner_;
+  // Only used when defer_commits_ is active and must be set in such cases.
+  base::TimeTicks commits_restart_time_;
+
   bool next_frame_is_newly_committed_frame_;
 
 #if DCHECK_IS_ON()
   bool inside_impl_frame_;
 #endif
   bool inside_draw_;
+  bool defer_main_frame_update_;
   bool defer_commits_;
   bool animate_requested_;
   bool commit_requested_;
   bool inside_synchronous_composite_;
+  bool needs_impl_frame_;
 
   // True if a request to the LayerTreeHostClient to create an output surface
   // is still outstanding.
-  bool output_surface_creation_requested_;
+  bool layer_tree_frame_sink_creation_requested_;
+  // When output surface is lost, is set to true until a new output surface is
+  // initialized.
+  bool layer_tree_frame_sink_lost_;
 
-  // This is the callback for the scheduled RequestNewOutputSurface.
-  base::CancelableClosure output_surface_creation_callback_;
+  // This is the callback for the scheduled RequestNewLayerTreeFrameSink.
+  base::CancelableOnceClosure layer_tree_frame_sink_creation_callback_;
+
+  base::WeakPtr<SingleThreadProxy> frame_sink_bound_weak_ptr_;
+
+  // WeakPtrs generated by this factory will be invalidated when
+  // LayerTreeFrameSink is released.
+  base::WeakPtrFactory<SingleThreadProxy> frame_sink_bound_weak_factory_;
 
   base::WeakPtrFactory<SingleThreadProxy> weak_factory_;
 

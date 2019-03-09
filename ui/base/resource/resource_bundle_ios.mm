@@ -59,6 +59,7 @@ void ResourceBundle::LoadCommonResources() {
   }
 }
 
+// static
 base::FilePath ResourceBundle::GetLocaleFilePath(const std::string& app_locale,
                                                  bool test_file_exists) {
   NSString* mac_locale = base::SysUTF8ToNSString(app_locale);
@@ -74,9 +75,9 @@ base::FilePath ResourceBundle::GetLocaleFilePath(const std::string& app_locale,
   base::FilePath locale_file_path =
       GetResourcesPakFilePath(@"locale", mac_locale);
 
-  if (delegate_) {
-    locale_file_path =
-        delegate_->GetPathForLocalePack(locale_file_path, app_locale);
+  if (HasSharedInstance() && GetSharedInstance().delegate_) {
+    locale_file_path = GetSharedInstance().delegate_->GetPathForLocalePack(
+        locale_file_path, app_locale);
   }
 
   // Don't try to load empty values or values that are not absolute paths.
@@ -90,13 +91,12 @@ base::FilePath ResourceBundle::GetLocaleFilePath(const std::string& app_locale,
 }
 
 gfx::Image& ResourceBundle::GetNativeImageNamed(int resource_id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
   // Check to see if the image is already in the cache.
-  {
-    base::AutoLock lock(*images_and_fonts_lock_);
-    ImageMap::iterator found = images_.find(resource_id);
-    if (found != images_.end()) {
-      return found->second;
-    }
+  ImageMap::iterator found = images_.find(resource_id);
+  if (found != images_.end()) {
+    return found->second;
   }
 
   gfx::Image image;
@@ -162,18 +162,14 @@ gfx::Image& ResourceBundle::GetNativeImageNamed(int resource_id) {
       return GetEmptyImage();
     }
 
-    // The gfx::Image takes ownership.
-    image = gfx::Image(ui_image.release());
+    image = gfx::Image(ui_image);
   }
 
-  base::AutoLock lock(*images_and_fonts_lock_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // Another thread raced the load and has already cached the image.
-  if (images_.count(resource_id))
-    return images_[resource_id];
-
-  images_[resource_id] = image;
-  return images_[resource_id];
+  auto inserted = images_.insert(std::make_pair(resource_id, image));
+  DCHECK(inserted.second);
+  return inserted.first->second;
 }
 
 }  // namespace ui

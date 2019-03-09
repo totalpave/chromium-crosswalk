@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -22,7 +23,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task_runner_util.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/time/default_clock.h"
 #include "base/values.h"
 #include "components/prefs/pref_filter.h"
@@ -88,7 +89,7 @@ PersistentPrefStore::PrefReadError HandleReadErrors(
                            : PersistentPrefStore::PREF_READ_ERROR_JSON_PARSE;
     }
   }
-  if (!value->IsType(base::Value::TYPE_DICTIONARY))
+  if (!value->is_dict())
     return PersistentPrefStore::PREF_READ_ERROR_JSON_TYPE;
   return PersistentPrefStore::PREF_READ_ERROR_NONE;
 }
@@ -103,6 +104,8 @@ void RecordJsonDataSizeHistogram(const base::FilePath& path, size_t size) {
   // The histogram below is an expansion of the UMA_HISTOGRAM_CUSTOM_COUNTS
   // macro adapted to allow for a dynamically suffixed histogram name.
   // Note: The factory creates and owns the histogram.
+  // This histogram is expired but the code was intentionally left behind so
+  // it can be re-enabled on Stable in a single config tweak if needed.
   base::HistogramBase* histogram = base::Histogram::FactoryGet(
       "Settings.JsonDataReadSizeKilobytes." + spaceless_basename, 1, 10000, 50,
       base::HistogramBase::kUmaTargetedHistogramFlag);
@@ -110,13 +113,7 @@ void RecordJsonDataSizeHistogram(const base::FilePath& path, size_t size) {
 }
 
 std::unique_ptr<JsonPrefStore::ReadResult> ReadPrefsFromDisk(
-    const base::FilePath& path,
-    const base::FilePath& alternate_path) {
-  if (!base::PathExists(path) && !alternate_path.empty() &&
-      base::PathExists(alternate_path)) {
-    base::Move(alternate_path, path);
-  }
-
+    const base::FilePath& path) {
   int error_code;
   std::string error_msg;
   std::unique_ptr<JsonPrefStore::ReadResult> read_result(
@@ -135,49 +132,27 @@ std::unique_ptr<JsonPrefStore::ReadResult> ReadPrefsFromDisk(
 
 }  // namespace
 
-// static
-scoped_refptr<base::SequencedTaskRunner> JsonPrefStore::GetTaskRunnerForFile(
-    const base::FilePath& filename,
-    base::SequencedWorkerPool* worker_pool) {
-  std::string token("json_pref_store-");
-  token.append(filename.AsUTF8Unsafe());
-  return worker_pool->GetSequencedTaskRunnerWithShutdownBehavior(
-      worker_pool->GetNamedSequenceToken(token),
-      base::SequencedWorkerPool::BLOCK_SHUTDOWN);
-}
-
 JsonPrefStore::JsonPrefStore(
     const base::FilePath& pref_filename,
-    const scoped_refptr<base::SequencedTaskRunner>& sequenced_task_runner,
-    std::unique_ptr<PrefFilter> pref_filter)
-    : JsonPrefStore(pref_filename,
-                    base::FilePath(),
-                    sequenced_task_runner,
-                    std::move(pref_filter)) {}
-
-JsonPrefStore::JsonPrefStore(
-    const base::FilePath& pref_filename,
-    const base::FilePath& pref_alternate_filename,
-    const scoped_refptr<base::SequencedTaskRunner>& sequenced_task_runner,
-    std::unique_ptr<PrefFilter> pref_filter)
+    std::unique_ptr<PrefFilter> pref_filter,
+    scoped_refptr<base::SequencedTaskRunner> file_task_runner)
     : path_(pref_filename),
-      alternate_path_(pref_alternate_filename),
-      sequenced_task_runner_(sequenced_task_runner),
+      file_task_runner_(std::move(file_task_runner)),
       prefs_(new base::DictionaryValue()),
       read_only_(false),
-      writer_(pref_filename, sequenced_task_runner),
+      writer_(pref_filename, file_task_runner_),
       pref_filter_(std::move(pref_filter)),
       initialized_(false),
       filtering_in_progress_(false),
       pending_lossy_write_(false),
       read_error_(PREF_READ_ERROR_NONE),
-      write_count_histogram_(writer_.commit_interval(), path_) {
+      has_pending_write_reply_(false) {
   DCHECK(!path_.empty());
 }
 
 bool JsonPrefStore::GetValue(const std::string& key,
                              const base::Value** result) const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   base::Value* tmp = nullptr;
   if (!prefs_->Get(key, &tmp))
@@ -188,33 +163,37 @@ bool JsonPrefStore::GetValue(const std::string& key,
   return true;
 }
 
+std::unique_ptr<base::DictionaryValue> JsonPrefStore::GetValues() const {
+  return prefs_->CreateDeepCopy();
+}
+
 void JsonPrefStore::AddObserver(PrefStore::Observer* observer) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   observers_.AddObserver(observer);
 }
 
 void JsonPrefStore::RemoveObserver(PrefStore::Observer* observer) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   observers_.RemoveObserver(observer);
 }
 
 bool JsonPrefStore::HasObservers() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   return observers_.might_have_observers();
 }
 
 bool JsonPrefStore::IsInitializationComplete() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   return initialized_;
 }
 
 bool JsonPrefStore::GetMutableValue(const std::string& key,
                                     base::Value** result) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   return prefs_->Get(key, result);
 }
@@ -222,7 +201,7 @@ bool JsonPrefStore::GetMutableValue(const std::string& key,
 void JsonPrefStore::SetValue(const std::string& key,
                              std::unique_ptr<base::Value> value,
                              uint32_t flags) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(value);
   base::Value* old_value = nullptr;
@@ -236,7 +215,7 @@ void JsonPrefStore::SetValue(const std::string& key,
 void JsonPrefStore::SetValueSilently(const std::string& key,
                                      std::unique_ptr<base::Value> value,
                                      uint32_t flags) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(value);
   base::Value* old_value = nullptr;
@@ -248,7 +227,7 @@ void JsonPrefStore::SetValueSilently(const std::string& key,
 }
 
 void JsonPrefStore::RemoveValue(const std::string& key, uint32_t flags) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (prefs_->RemovePath(key, nullptr))
     ReportValueChanged(key, flags);
@@ -256,48 +235,48 @@ void JsonPrefStore::RemoveValue(const std::string& key, uint32_t flags) {
 
 void JsonPrefStore::RemoveValueSilently(const std::string& key,
                                         uint32_t flags) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   prefs_->RemovePath(key, nullptr);
   ScheduleWrite(flags);
 }
 
 bool JsonPrefStore::ReadOnly() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   return read_only_;
 }
 
 PersistentPrefStore::PrefReadError JsonPrefStore::GetReadError() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   return read_error_;
 }
 
 PersistentPrefStore::PrefReadError JsonPrefStore::ReadPrefs() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  OnFileRead(ReadPrefsFromDisk(path_, alternate_path_));
+  OnFileRead(ReadPrefsFromDisk(path_));
   return filtering_in_progress_ ? PREF_READ_ERROR_ASYNCHRONOUS_TASK_INCOMPLETE
                                 : read_error_;
 }
 
 void JsonPrefStore::ReadPrefsAsync(ReadErrorDelegate* error_delegate) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   initialized_ = false;
   error_delegate_.reset(error_delegate);
 
   // Weakly binds the read task so that it doesn't kick in during shutdown.
   base::PostTaskAndReplyWithResult(
-      sequenced_task_runner_.get(),
-      FROM_HERE,
-      base::Bind(&ReadPrefsFromDisk, path_, alternate_path_),
+      file_task_runner_.get(), FROM_HERE, base::Bind(&ReadPrefsFromDisk, path_),
       base::Bind(&JsonPrefStore::OnFileRead, AsWeakPtr()));
 }
 
-void JsonPrefStore::CommitPendingWrite() {
-  DCHECK(CalledOnValidThread());
+void JsonPrefStore::CommitPendingWrite(
+    base::OnceClosure reply_callback,
+    base::OnceClosure synchronous_done_callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Schedule a write for any lossy writes that are outstanding to ensure that
   // they get flushed when this function is called.
@@ -305,6 +284,21 @@ void JsonPrefStore::CommitPendingWrite() {
 
   if (writer_.HasPendingWrite() && !read_only_)
     writer_.DoScheduledWrite();
+
+  // Since disk operations occur on |file_task_runner_|, the reply of a task
+  // posted to |file_task_runner_| will run after currently pending disk
+  // operations. Also, by definition of PostTaskAndReply(), the reply (in the
+  // |reply_callback| case will run on the current sequence.
+
+  if (synchronous_done_callback) {
+    file_task_runner_->PostTask(FROM_HERE,
+                                std::move(synchronous_done_callback));
+  }
+
+  if (reply_callback) {
+    file_task_runner_->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                                        std::move(reply_callback));
+  }
 }
 
 void JsonPrefStore::SchedulePendingLossyWrites() {
@@ -313,29 +307,96 @@ void JsonPrefStore::SchedulePendingLossyWrites() {
 }
 
 void JsonPrefStore::ReportValueChanged(const std::string& key, uint32_t flags) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (pref_filter_)
     pref_filter_->FilterUpdate(key);
 
-  FOR_EACH_OBSERVER(PrefStore::Observer, observers_, OnPrefValueChanged(key));
+  for (PrefStore::Observer& observer : observers_)
+    observer.OnPrefValueChanged(key);
 
   ScheduleWrite(flags);
 }
 
-void JsonPrefStore::RegisterOnNextSuccessfulWriteCallback(
-    const base::Closure& on_next_successful_write) {
-  DCHECK(CalledOnValidThread());
+void JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback(
+    bool write_success) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  writer_.RegisterOnNextSuccessfulWriteCallback(on_next_successful_write);
+  has_pending_write_reply_ = false;
+  if (!on_next_successful_write_reply_.is_null()) {
+    base::Closure on_successful_write =
+        std::move(on_next_successful_write_reply_);
+    if (write_success) {
+      on_successful_write.Run();
+    } else {
+      RegisterOnNextSuccessfulWriteReply(on_successful_write);
+    }
+  }
+}
+
+// static
+void JsonPrefStore::PostWriteCallback(
+    const base::Callback<void(bool success)>& on_next_write_callback,
+    const base::Callback<void(bool success)>& on_next_write_reply,
+    scoped_refptr<base::SequencedTaskRunner> reply_task_runner,
+    bool write_success) {
+  if (!on_next_write_callback.is_null())
+    on_next_write_callback.Run(write_success);
+
+  // We can't run |on_next_write_reply| on the current thread. Bounce back to
+  // the |reply_task_runner| which is the correct sequenced thread.
+  reply_task_runner->PostTask(
+      FROM_HERE, base::BindOnce(on_next_write_reply, write_success));
+}
+
+void JsonPrefStore::RegisterOnNextSuccessfulWriteReply(
+    const base::Closure& on_next_successful_write_reply) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(on_next_successful_write_reply_.is_null());
+
+  on_next_successful_write_reply_ = on_next_successful_write_reply;
+
+  // If there are pending callbacks, avoid erasing them; the reply will be used
+  // as we set |on_next_successful_write_reply_|. Otherwise, setup a reply with
+  // an empty callback.
+  if (!has_pending_write_reply_) {
+    has_pending_write_reply_ = true;
+    writer_.RegisterOnNextWriteCallbacks(
+        base::Closure(),
+        base::Bind(
+            &PostWriteCallback, base::Callback<void(bool success)>(),
+            base::Bind(&JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
+                       AsWeakPtr()),
+            base::SequencedTaskRunnerHandle::Get()));
+  }
+}
+
+void JsonPrefStore::RegisterOnNextWriteSynchronousCallbacks(
+    OnWriteCallbackPair callbacks) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  has_pending_write_reply_ = true;
+
+  writer_.RegisterOnNextWriteCallbacks(
+      callbacks.first,
+      base::Bind(
+          &PostWriteCallback, callbacks.second,
+          base::Bind(&JsonPrefStore::RunOrScheduleNextSuccessfulWriteCallback,
+                     AsWeakPtr()),
+          base::SequencedTaskRunnerHandle::Get()));
 }
 
 void JsonPrefStore::ClearMutableValues() {
   NOTIMPLEMENTED();
 }
 
+void JsonPrefStore::OnStoreDeletionFromDisk() {
+  if (pref_filter_)
+    pref_filter_->OnStoreDeletionFromDisk();
+}
+
 void JsonPrefStore::OnFileRead(std::unique_ptr<ReadResult> read_result) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(read_result);
 
@@ -356,7 +417,7 @@ void JsonPrefStore::OnFileRead(std::unique_ptr<ReadResult> read_result) {
         read_only_ = true;
         break;
       case PREF_READ_ERROR_NONE:
-        DCHECK(read_result->value.get());
+        DCHECK(read_result->value);
         unfiltered_prefs.reset(
             static_cast<base::DictionaryValue*>(read_result->value.release()));
         break;
@@ -391,39 +452,43 @@ void JsonPrefStore::OnFileRead(std::unique_ptr<ReadResult> read_result) {
 }
 
 JsonPrefStore::~JsonPrefStore() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CommitPendingWrite();
 }
 
 bool JsonPrefStore::SerializeData(std::string* output) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   pending_lossy_write_ = false;
 
-  write_count_histogram_.RecordWriteOccured();
-
-  if (pref_filter_)
-    pref_filter_->FilterSerializeData(prefs_.get());
+  if (pref_filter_) {
+    OnWriteCallbackPair callbacks =
+        pref_filter_->FilterSerializeData(prefs_.get());
+    if (!callbacks.first.is_null() || !callbacks.second.is_null())
+      RegisterOnNextWriteSynchronousCallbacks(callbacks);
+  }
 
   JSONStringValueSerializer serializer(output);
   // Not pretty-printing prefs shrinks pref file size by ~30%. To obtain
   // readable prefs for debugging purposes, you can dump your prefs into any
   // command-line or online JSON pretty printing tool.
   serializer.set_pretty_print(false);
-  return serializer.Serialize(*prefs_);
+  bool success = serializer.Serialize(*prefs_);
+  DCHECK(success);
+  return success;
 }
 
 void JsonPrefStore::FinalizeFileRead(
     bool initialization_successful,
     std::unique_ptr<base::DictionaryValue> prefs,
     bool schedule_write) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   filtering_in_progress_ = false;
 
   if (!initialization_successful) {
-    FOR_EACH_OBSERVER(PrefStore::Observer,
-                      observers_,
-                      OnInitializationCompleted(false));
+    for (PrefStore::Observer& observer : observers_)
+      observer.OnInitializationCompleted(false);
     return;
   }
 
@@ -437,9 +502,8 @@ void JsonPrefStore::FinalizeFileRead(
   if (error_delegate_ && read_error_ != PREF_READ_ERROR_NONE)
     error_delegate_->OnError(read_error_);
 
-  FOR_EACH_OBSERVER(PrefStore::Observer,
-                    observers_,
-                    OnInitializationCompleted(true));
+  for (PrefStore::Observer& observer : observers_)
+    observer.OnInitializationCompleted(true);
 
   return;
 }
@@ -452,91 +516,4 @@ void JsonPrefStore::ScheduleWrite(uint32_t flags) {
     pending_lossy_write_ = true;
   else
     writer_.ScheduleWrite(this);
-}
-
-// NOTE: This value should NOT be changed without renaming the histogram
-// otherwise it will create incompatible buckets.
-const int32_t
-    JsonPrefStore::WriteCountHistogram::kHistogramWriteReportIntervalMins = 5;
-
-JsonPrefStore::WriteCountHistogram::WriteCountHistogram(
-    const base::TimeDelta& commit_interval,
-    const base::FilePath& path)
-    : WriteCountHistogram(
-          commit_interval,
-          path,
-          std::unique_ptr<base::Clock>(new base::DefaultClock)) {}
-
-JsonPrefStore::WriteCountHistogram::WriteCountHistogram(
-    const base::TimeDelta& commit_interval,
-    const base::FilePath& path,
-    std::unique_ptr<base::Clock> clock)
-    : commit_interval_(commit_interval),
-      path_(path),
-      clock_(clock.release()),
-      report_interval_(
-          base::TimeDelta::FromMinutes(kHistogramWriteReportIntervalMins)),
-      last_report_time_(clock_->Now()),
-      writes_since_last_report_(0) {}
-
-JsonPrefStore::WriteCountHistogram::~WriteCountHistogram() {
-  ReportOutstandingWrites();
-}
-
-void JsonPrefStore::WriteCountHistogram::RecordWriteOccured() {
-  ReportOutstandingWrites();
-
-  ++writes_since_last_report_;
-}
-
-void JsonPrefStore::WriteCountHistogram::ReportOutstandingWrites() {
-  base::Time current_time = clock_->Now();
-  base::TimeDelta time_since_last_report = current_time - last_report_time_;
-
-  if (time_since_last_report <= report_interval_)
-    return;
-
-  // If the time since the last report exceeds the report interval, report all
-  // the writes since the last report. They must have all occurred in the same
-  // report interval.
-  base::HistogramBase* histogram = GetHistogram();
-  histogram->Add(writes_since_last_report_);
-
-  // There may be several report intervals that elapsed that don't have any
-  // writes in them. Report these too.
-  int64_t total_num_intervals_elapsed =
-      (time_since_last_report / report_interval_);
-  for (int64_t i = 0; i < total_num_intervals_elapsed - 1; ++i)
-    histogram->Add(0);
-
-  writes_since_last_report_ = 0;
-  last_report_time_ += total_num_intervals_elapsed * report_interval_;
-}
-
-base::HistogramBase* JsonPrefStore::WriteCountHistogram::GetHistogram() {
-  std::string spaceless_basename;
-  base::ReplaceChars(path_.BaseName().MaybeAsASCII(), " ", "_",
-                     &spaceless_basename);
-  std::string histogram_name =
-      "Settings.JsonDataWriteCount." + spaceless_basename;
-
-  // The min value for a histogram is 1. The max value is the maximum number of
-  // writes that can occur in the window being recorded. The number of buckets
-  // used is the max value (plus the underflow/overflow buckets).
-  int32_t min_value = 1;
-  int32_t max_value = report_interval_ / commit_interval_;
-  int32_t num_buckets = max_value + 1;
-
-  // NOTE: These values should NOT be changed without renaming the histogram
-  // otherwise it will create incompatible buckets.
-  DCHECK_EQ(30, max_value);
-  DCHECK_EQ(31, num_buckets);
-
-  // The histogram below is an expansion of the UMA_HISTOGRAM_CUSTOM_COUNTS
-  // macro adapted to allow for a dynamically suffixed histogram name.
-  // Note: The factory creates and owns the histogram.
-  base::HistogramBase* histogram = base::Histogram::FactoryGet(
-      histogram_name, min_value, max_value, num_buckets,
-      base::HistogramBase::kUmaTargetedHistogramFlag);
-  return histogram;
 }

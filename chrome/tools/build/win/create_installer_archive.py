@@ -13,6 +13,7 @@
 """
 
 import ConfigParser
+import fnmatch
 import glob
 import optparse
 import os
@@ -103,8 +104,11 @@ def CopyAllFilesToStagingDir(config, distribution, staging_dir, build_dir,
   if distribution:
     if len(distribution) > 1 and distribution[0] == '_':
       distribution = distribution[1:]
-    CopySectionFilesToStagingDir(config, distribution.upper(),
-                                 staging_dir, build_dir)
+
+    distribution = distribution.upper()
+    if config.has_section(distribution):
+      CopySectionFilesToStagingDir(config, distribution,
+                                   staging_dir, build_dir)
   if enable_hidpi == '1':
     CopySectionFilesToStagingDir(config, 'HIDPI', staging_dir, build_dir)
 
@@ -118,8 +122,10 @@ def CopySectionFilesToStagingDir(config, section, staging_dir, src_dir):
     if option.endswith('dir'):
       continue
 
+    src_subdir = option.replace('\\', os.sep)
     dst_dir = os.path.join(staging_dir, config.get(section, option))
-    src_paths = glob.glob(os.path.join(src_dir, option))
+    dst_dir = dst_dir.replace('\\', os.sep)
+    src_paths = glob.glob(os.path.join(src_dir, src_subdir))
     if src_paths and not os.path.exists(dst_dir):
       os.makedirs(dst_dir)
     for src_path in src_paths:
@@ -138,8 +144,11 @@ def GenerateDiffPatch(options, orig_file, new_file, patch_file):
   RunSystemCommand(cmd, options.verbose)
 
 def GetLZMAExec(build_dir):
-  lzma_exec = os.path.join(build_dir, "..", "..", "third_party",
-                           "lzma_sdk", "Executable", "7za.exe")
+  if sys.platform == 'win32':
+    lzma_exec = os.path.join(build_dir, "..", "..", "third_party",
+                             "lzma_sdk", "Executable", "7za.exe")
+  else:
+    lzma_exec = '7zr'  # Use system 7zr.
   return lzma_exec
 
 def GetPrevVersion(build_dir, temp_dir, last_chrome_installer, output_name):
@@ -158,7 +167,7 @@ def GetPrevVersion(build_dir, temp_dir, last_chrome_installer, output_name):
   dll_path = glob.glob(os.path.join(temp_dir, 'Chrome-bin', '*', 'chrome.dll'))
   return os.path.split(os.path.split(dll_path[0])[0])[1]
 
-def MakeStagingDirectories(staging_dir):
+def MakeStagingDirectory(staging_dir):
   """Creates a staging path for installer archive. If directory exists already,
   deletes the existing directory.
   """
@@ -166,12 +175,7 @@ def MakeStagingDirectories(staging_dir):
   if os.path.exists(file_path):
     shutil.rmtree(file_path)
   os.makedirs(file_path)
-
-  temp_file_path = os.path.join(staging_dir, TEMP_ARCHIVE_DIR)
-  if os.path.exists(temp_file_path):
-    shutil.rmtree(temp_file_path)
-  os.makedirs(temp_file_path)
-  return (file_path, temp_file_path)
+  return file_path
 
 def Readconfig(input_file, current_version):
   """Reads config information from input file after setting default value of
@@ -268,8 +272,8 @@ def CreateArchiveFile(options, staging_dir, current_version, prev_version):
     os.remove(archive_file)
     RunSystemCommand(cmd, options.verbose)
 
-  # Do not compress the archive in developer (component) builds.
-  if options.component_build == '1':
+  # Do not compress the archive when skip_archive_compression is specified.
+  if options.skip_archive_compression:
     compressed_file = os.path.join(
         options.output_dir, options.output_name + COMPRESSED_ARCHIVE_SUFFIX)
     if os.path.exists(compressed_file):
@@ -321,7 +325,10 @@ def PrepareSetupExec(options, current_version, prev_version):
     CompressUsingLZMA(options.build_dir, setup_file_path, patch_file,
                       options.verbose)
   else:
-    cmd = ['makecab.exe',
+    # Use makecab.py instead of makecab.exe so that this works when building
+    # on non-Windows hosts too.
+    makecab_py = os.path.join(os.path.dirname(__file__), 'makecab.py')
+    cmd = [sys.executable, makecab_py,
            '/D', 'CompressionType=LZX',
            '/V1',
            '/L', options.output_dir,
@@ -428,36 +435,6 @@ def CopyIfChanged(src, target_dir):
     shutil.copyfile(src, dest)
 
 
-# Taken and modified from:
-# third_party\WebKit\Tools\Scripts\webkitpy\layout_tests\port\factory.py
-def _read_configuration_from_gn(build_dir):
-  """Return the configuration to used based on args.gn, if possible."""
-  path = os.path.join(build_dir, 'args.gn')
-  if not os.path.exists(path):
-    path = os.path.join(build_dir, 'toolchain.ninja')
-    if not os.path.exists(path):
-      # This does not appear to be a GN-based build directory, so we don't
-      # know how to interpret it.
-      return None
-
-    # toolchain.ninja exists, but args.gn does not; this can happen when
-    # `gn gen` is run with no --args.
-    return 'Debug'
-
-  args = open(path).read()
-  for l in args.splitlines():
-    # See the original of this function and then gn documentation for why this
-    # regular expression is correct:
-    # https://chromium.googlesource.com/chromium/src/+/master/tools/gn/docs/reference.md#GN-build-language-grammar
-    m = re.match('^\s*is_debug\s*=\s*false(\s*$|\s*#.*$)', l)
-    if m:
-      return 'Release'
-
-  # if is_debug is set to anything other than false, or if it
-  # does not exist at all, we should use the default value (True).
-  return 'Debug'
-
-
 def ParseDLLsFromDeps(build_dir, runtime_deps_file):
   """Parses the runtime_deps file and returns the set of DLLs in it, relative
   to build_dir."""
@@ -485,30 +462,8 @@ def DoComponentBuildTasks(staging_dir, build_dir, target_arch,
   if not os.path.exists(installer_dir):
     os.mkdir(installer_dir)
 
-  if setup_runtime_deps:
-    setup_component_dlls = ParseDLLsFromDeps(build_dir, setup_runtime_deps)
-  else:
-    # Explicitly list the component DLLs setup.exe depends on (this list may
-    # contain wildcards). These will be copied to |installer_dir| in the
-    # archive.
-    # TODO(jbauman): Remove when GYP is deprecated on Windows.
-    setup_component_dll_globs = [ 'api-ms-win-*.dll',
-                                  'base.dll',
-                                  'boringssl.dll',
-                                  'crcrypto.dll',
-                                  'icui18n.dll',
-                                  'icuuc.dll',
-                                  'msvc*.dll',
-                                  'ucrtbase*.dll',
-                                  'vcruntime*.dll', ]
-    setup_component_dlls = set()
-    for setup_component_dll_glob in setup_component_dll_globs:
-      setup_component_partial_dlls = glob.glob(
-          os.path.join(build_dir, setup_component_dll_glob))
-      if len(setup_component_partial_dlls) == 0:
-        raise Exception('Error: missing expected DLL for component build '
-                        'mini_installer: "%s"' % setup_component_dll_glob)
-      setup_component_dlls.update(setup_component_partial_dlls)
+  setup_component_dlls = ParseDLLsFromDeps(build_dir, setup_runtime_deps)
+
   for setup_component_dll in setup_component_dlls:
     g_archive_inputs.append(setup_component_dll)
     shutil.copy(setup_component_dll, installer_dir)
@@ -517,27 +472,18 @@ def DoComponentBuildTasks(staging_dir, build_dir, target_arch,
   # the version assembly to be able to refer to them below and make sure
   # chrome.exe can find them at runtime), except the ones that are already
   # staged (i.e. non-component DLLs).
-  if chrome_runtime_deps:
-    build_dlls = ParseDLLsFromDeps(build_dir, chrome_runtime_deps)
-  else:
-    # If no chrome_runtime_deps was specified, every DLL in build_dir is
-    # considered to be a component DLL.
-    # TODO(jbauman): Remove when GYP is deprecated on Windows.
-    build_dlls = glob.glob(os.path.join(build_dir, '*.dll'))
-  staged_dll_basenames = [os.path.basename(staged_dll) for staged_dll in \
-                          glob.glob(os.path.join(version_dir, '*.dll'))]
+  build_dlls = ParseDLLsFromDeps(build_dir, chrome_runtime_deps)
+  # Generate a list of relative dll paths that have already been staged into the
+  # version directory (i.e., non-component DLLs).
+  staged_dlls = [os.path.normcase(os.path.relpath(os.path.join(dir, file),
+                                                  version_dir)) \
+                 for dir, _, files in os.walk(version_dir) \
+                 for file in files if fnmatch.fnmatch(file, '*.dll')]
   component_dll_filenames = []
   for component_dll in [dll for dll in build_dlls if \
-                        os.path.basename(dll) not in staged_dll_basenames]:
+                        os.path.normcase(os.path.relpath(dll, build_dir)) \
+                        not in staged_dlls]:
     component_dll_name = os.path.basename(component_dll)
-    # ash*.dll remoting_*.dll's don't belong in the archive (it doesn't depend
-    # on them in gyp). Trying to copy them causes a build race when creating the
-    # installer archive in component mode. See: crbug.com/180996 and
-    # crbug.com/586967
-    if (component_dll_name.startswith('remoting_') or
-        component_dll_name.startswith('ash')):
-      continue
-
     component_dll_filenames.append(component_dll_name)
     g_archive_inputs.append(component_dll)
     shutil.copy(component_dll, version_dir)
@@ -562,21 +508,13 @@ def main(options):
 
   config = Readconfig(options.input_file, current_version)
 
-  (staging_dir, temp_dir) = MakeStagingDirectories(options.staging_dir)
+  staging_dir = MakeStagingDirectory(options.staging_dir)
 
-  prev_version = GetPrevVersion(options.build_dir, temp_dir,
+  prev_version = GetPrevVersion(options.build_dir, staging_dir,
                                 options.last_chrome_installer,
                                 options.output_name)
 
-  # Preferentially copy the files we can find from the output_dir, as
-  # this is where we'll find the Syzygy-optimized executables when
-  # building the optimized mini_installer.
-  if options.build_dir != options.output_dir:
-    CopyAllFilesToStagingDir(config, options.distribution,
-                             staging_dir, options.output_dir,
-                             options.enable_hidpi)
-
-  # Now copy the remainder of the files from the build dir.
+  # Copy the files from the build dir.
   CopyAllFilesToStagingDir(config, options.distribution,
                            staging_dir, options.build_dir,
                            options.enable_hidpi)
@@ -641,15 +579,14 @@ def _ParseOptions():
   parser.add_option('--enable_hidpi', default='0',
       help='Whether to include HiDPI resource files.')
   parser.add_option('--component_build', default='0',
-      help='Whether this archive is packaging a component build. This will '
-           'also turn off compression of chrome.7z into chrome.packed.7z and '
-           'helpfully delete any old chrome.packed.7z in |output_dir|.')
+      help='Whether this archive is packaging a component build.')
+  parser.add_option('--skip_archive_compression',
+      action='store_true', default=False,
+      help='This will turn off compression of chrome.7z into chrome.packed.7z '
+           'and helpfully delete any old chrome.packed.7z in |output_dir|.')
   parser.add_option('--depfile',
       help='Generate a depfile with the given name listing the implicit inputs '
            'to the archive process that can be used with a build system.')
-
-  # TODO(jbauman): Make --chrome_runtime_deps and --setup_runtime_deps
-  # mandatory when GYP is deprecated on Windows.
   parser.add_option('--chrome_runtime_deps',
       help='A file listing runtime dependencies. This will be used to get a '
            'list of DLLs to archive in a component build.')
@@ -674,6 +611,12 @@ def _ParseOptions():
 
   if not options.input_file:
     parser.error('You must provide an input file')
+
+  is_component_build = options.component_build == '1'
+  if is_component_build and not options.chrome_runtime_deps:
+    parser.error("chrome_runtime_deps must be specified for a component build")
+  if is_component_build and not options.setup_runtime_deps:
+    parser.error("setup_runtime_deps must be specified for a component build")
 
   if not options.output_dir:
     options.output_dir = options.build_dir

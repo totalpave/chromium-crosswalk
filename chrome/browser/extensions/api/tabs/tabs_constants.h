@@ -36,6 +36,8 @@ extern const char kOldWindowIdKey[];
 extern const char kOpenerTabIdKey[];
 extern const char kPinnedKey[];
 extern const char kAudibleKey[];
+extern const char kDiscardedKey[];
+extern const char kAutoDiscardableKey[];
 extern const char kMutedKey[];
 extern const char kMutedInfoKey[];
 extern const char kQualityKey[];
@@ -66,12 +68,11 @@ extern const char kShowStateValueNormal[];
 extern const char kShowStateValueMinimized[];
 extern const char kShowStateValueMaximized[];
 extern const char kShowStateValueFullscreen[];
+extern const char kShowStateValueLockedFullscreen[];
 extern const char kStatusValueComplete[];
 extern const char kStatusValueLoading[];
 extern const char kWindowTypeValueNormal[];
 extern const char kWindowTypeValuePopup[];
-extern const char kWindowTypeValuePanel[];
-extern const char kWindowTypeValueDetachedPanel[];
 extern const char kWindowTypeValueApp[];
 extern const char kWindowTypeValueDevTools[];
 
@@ -81,10 +82,14 @@ extern const char kFrameNotFoundError[];
 extern const char kNoCrashBrowserError[];
 extern const char kNoCurrentWindowError[];
 extern const char kNoLastFocusedWindowError[];
+extern const char kNoTabInBrowserWindowError[];
 extern const char kPerOriginOnlyInAutomaticError[];
 extern const char kWindowNotFoundError[];
 extern const char kTabIndexNotFoundError[];
+extern const char kNotFoundNextPageError[];
 extern const char kTabNotFoundError[];
+extern const char kCannotDiscardTab[];
+extern const char kCannotFindTabToDiscard[];
 extern const char kTabStripNotEditableError[];
 extern const char kNoHighlightedTabError[];
 extern const char kNoSelectedTabError[];
@@ -97,12 +102,13 @@ extern const char kSupportedInWindowsOnlyError[];
 extern const char kInvalidWindowTypeError[];
 extern const char kInvalidWindowStateError[];
 extern const char kScreenshotsDisabled[];
-extern const char kCannotUpdateMuteDisabled[];
 extern const char kCannotUpdateMuteCaptured[];
-
 extern const char kCannotDetermineLanguageOfUnloadedTab[];
+extern const char kMissingLockWindowFullscreenPrivatePermission[];
+extern const char kJavaScriptUrlsNotAllowedInTabsUpdate[];
+extern const char kBrowserWindowNotAllowed[];
 
-};  // namespace tabs_constants
-};  // namespace extensions
+}  // namespace tabs_constants
+}  // namespace extensions
 
 #endif  // CHROME_BROWSER_EXTENSIONS_API_TABS_TABS_CONSTANTS_H_

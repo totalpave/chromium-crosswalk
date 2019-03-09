@@ -7,10 +7,10 @@
 
 #include "base/callback_forward.h"
 #include "base/time/time.h"
+#include "media/base/feedback_signal_accumulator.h"
 #include "media/capture/capture_export.h"
 #include "media/capture/content/animated_content_sampler.h"
 #include "media/capture/content/capture_resolution_chooser.h"
-#include "media/capture/content/feedback_signal_accumulator.h"
 #include "media/capture/content/smooth_event_sampler.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -24,22 +24,41 @@ class CAPTURE_EXPORT VideoCaptureOracle {
  public:
   enum Event {
     kCompositorUpdate,
-    kActiveRefreshRequest,
-    kPassiveRefreshRequest,
-    kMouseCursorUpdate,
+    kRefreshRequest,
     kNumEvents,
   };
 
-  VideoCaptureOracle(base::TimeDelta min_capture_period,
-                     const gfx::Size& max_frame_size,
-                     media::ResolutionChangePolicy resolution_change_policy,
-                     bool enable_auto_throttling);
+  // Constructs a VideoCaptureOracle with a default min capture period and
+  // capture size constraints. Clients should call SetMinCapturePeriod() and
+  // SetCaptureSizeConstraints() to provide more-accurate hard limits. If
+  // |enable_auto_throttling| is true, enable realtime analysis of system
+  // performance and auto-adjust the capture resolution and sampling decisions
+  // to provide the best user experience.
+  explicit VideoCaptureOracle(bool enable_auto_throttling);
 
   virtual ~VideoCaptureOracle();
 
-  // Sets the source content size.  This may not have an immediate effect on the
-  // proposed capture size, as the oracle will prevent too-frequent changes from
-  // occurring.
+  // Get/Update the minimum capture period.
+  base::TimeDelta min_capture_period() const {
+    return smoothing_sampler_.min_capture_period();
+  }
+  void SetMinCapturePeriod(base::TimeDelta period);
+
+  // Sets the range of acceptable capture sizes and whether a fixed aspect ratio
+  // is required. If a fixed aspect ratio is required, the aspect ratio of
+  // |max_size| is used.
+  void SetCaptureSizeConstraints(const gfx::Size& min_size,
+                                 const gfx::Size& max_size,
+                                 bool use_fixed_aspect_ratio);
+
+  // Specifies whether the oracle should automatically adjust the capture size
+  // in response to end-to-end utilization.
+  void SetAutoThrottlingEnabled(bool enabled);
+
+  // Get/Update the source content size.  Changes may not have an immediate
+  // effect on the proposed capture size, as the oracle will prevent too-
+  // frequent changes from occurring.
+  gfx::Size source_size() const { return resolution_chooser_.source_size(); }
   void SetSourceSize(const gfx::Size& source_size);
 
   // Record a event of type |event|, and decide whether the caller should do a
@@ -50,22 +69,29 @@ class CAPTURE_EXPORT VideoCaptureOracle {
                                     const gfx::Rect& damage_rect,
                                     base::TimeTicks event_time);
 
+  // Returns the |frame_number| to be used with CompleteCapture().
+  int next_frame_number() const { return next_frame_number_; }
+
   // Record and update internal state based on whether the frame capture will be
   // started.  |pool_utilization| is a value in the range 0.0 to 1.0 to indicate
   // the current buffer pool utilization relative to a sustainable maximum (not
   // the absolute maximum).  This method should only be called if the last call
-  // to ObserveEventAndDecideCapture() returned true.  The first method returns
-  // the |frame_number| to be used with CompleteCapture().
-  int RecordCapture(double pool_utilization);
+  // to ObserveEventAndDecideCapture() returned true.
+  void RecordCapture(double pool_utilization);
   void RecordWillNotCapture(double pool_utilization);
 
   // Notify of the completion of a capture, and whether it was successful.
   // Returns true iff the captured frame should be delivered.  |frame_timestamp|
   // is set to the timestamp that should be provided to the consumer of the
   // frame.
-  bool CompleteCapture(int frame_number,
-                       bool capture_was_successful,
-                       base::TimeTicks* frame_timestamp);
+  virtual bool CompleteCapture(int frame_number,
+                               bool capture_was_successful,
+                               base::TimeTicks* frame_timestamp);
+
+  // Notify that all in-flight captures have been canceled.  This has the same
+  // effect as calling CompleteCapture() with a non-success status for all
+  // outstanding frames.
+  void CancelAllCaptures();
 
   // Record the resource utilization feedback for a frame that was processed by
   // the consumer.  This allows the oracle to reduce/increase future data volume
@@ -76,9 +102,11 @@ class CAPTURE_EXPORT VideoCaptureOracle {
   // returned true.
   void RecordConsumerFeedback(int frame_number, double resource_utilization);
 
-  base::TimeDelta min_capture_period() const {
-    return smoothing_sampler_.min_capture_period();
-  }
+  // Sets the minimum amount of time that must pass between changes to the
+  // capture size. This throttles the rate of size changes, to avoid stressing
+  // consumers and to allow the end-to-end system sufficient time to stabilize
+  // before re-evaluating the capture size.
+  void SetMinSizeChangePeriod(base::TimeDelta period);
 
   // Returns the oracle's estimate of the duration of the next frame.  This
   // should be called just after ObserveEventAndDecideCapture(), and will only
@@ -90,7 +118,7 @@ class CAPTURE_EXPORT VideoCaptureOracle {
   // Returns the capture frame size the client should use.  This is updated by
   // calls to ObserveEventAndDecideCapture().  The oracle prevents too-frequent
   // changes to the capture size, to avoid stressing the end-to-end pipeline.
-  gfx::Size capture_size() const { return capture_size_; }
+  virtual gfx::Size capture_size() const;
 
   // Returns the oracle's estimate of the last time animation was detected.
   base::TimeTicks last_time_animation_was_detected() const {
@@ -100,6 +128,16 @@ class CAPTURE_EXPORT VideoCaptureOracle {
   // Returns a NUL-terminated string containing a short, human-readable form of
   // |event|.
   static const char* EventAsString(Event event);
+
+  // Default minimum capture period. This is a rather low framerate for safety.
+  // Clients are expected to set a better minimum capture period after
+  // VideoCaptureOracle is constructed.
+  static constexpr base::TimeDelta kDefaultMinCapturePeriod =
+      base::TimeDelta::FromMicroseconds(1000000 / 5);  // 5 FPS
+
+  // Default minimum size change period if SetMinSizeChangePeriod is not called.
+  static constexpr base::TimeDelta kDefaultMinSizeChangePeriod =
+      base::TimeDelta::FromSeconds(3);
 
  private:
   // Retrieve/Assign a frame timestamp by capture |frame_number|.  Only valid
@@ -132,11 +170,28 @@ class CAPTURE_EXPORT VideoCaptureOracle {
   // or -1 if no increase should be made.
   int AnalyzeForIncreasedArea(base::TimeTicks analyze_time);
 
+  // Returns the amount of time, since the source size last changed, to allow
+  // frequent increases in capture area.  This allows the system a period of
+  // time to quickly explore up and down to find an ideal point before being
+  // more careful about capture size increases.
+  base::TimeDelta GetExplorationPeriodAfterSourceSizeChange();
+
+  // Returns true if updates have been accumulated by |accumulator| for a
+  // sufficient amount of time and the latest update was fairly recent, relative
+  // to |now|.
+  bool HasSufficientRecentFeedback(
+      const FeedbackSignalAccumulator<base::TimeTicks>& accumulator,
+      base::TimeTicks now);
+
   // Set to false to prevent the oracle from automatically adjusting the capture
   // size in response to end-to-end utilization.
-  const bool auto_throttling_enabled_;
+  bool auto_throttling_enabled_;
 
-  // Incremented every time a paint or update event occurs.
+  // The minimum amount of time that must pass between changes to the capture
+  // size.
+  base::TimeDelta min_size_change_period_;
+
+  // Incremented every time RecordCapture() is called.
   int next_frame_number_;
 
   // Stores the last |event_time| from the last observation/decision.  Used to

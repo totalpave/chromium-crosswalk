@@ -8,9 +8,9 @@
 
 namespace IPC {
 
-MessageRouter::MessageRouter() {}
+MessageRouter::MessageRouter() = default;
 
-MessageRouter::~MessageRouter() {}
+MessageRouter::~MessageRouter() = default;
 
 bool MessageRouter::OnControlMessageReceived(const IPC::Message& msg) {
   NOTREACHED()
@@ -35,6 +35,10 @@ bool MessageRouter::AddRoute(int32_t routing_id, IPC::Listener* listener) {
 
 void MessageRouter::RemoveRoute(int32_t routing_id) {
   routes_.Remove(routing_id);
+}
+
+Listener* MessageRouter::GetRoute(int32_t routing_id) {
+  return routes_.Lookup(routing_id);
 }
 
 bool MessageRouter::OnMessageReceived(const IPC::Message& msg) {

@@ -2,20 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <openssl/evp.h>
-#include <openssl/sha.h>
 #include <stdint.h>
 
 #include <vector>
 
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "components/webcrypto/algorithm_implementation.h"
 #include "components/webcrypto/algorithms/util.h"
 #include "components/webcrypto/crypto_data.h"
 #include "components/webcrypto/status.h"
 #include "crypto/openssl_util.h"
-#include "crypto/scoped_openssl_types.h"
+#include "third_party/boringssl/src/include/openssl/digest.h"
 
 namespace webcrypto {
 
@@ -29,10 +26,9 @@ class DigestorImpl : public blink::WebCryptoDigestor {
  public:
   explicit DigestorImpl(blink::WebCryptoAlgorithmId algorithm_id)
       : initialized_(false),
-        digest_context_(EVP_MD_CTX_create()),
         algorithm_id_(algorithm_id) {}
 
-  bool consume(const unsigned char* data, unsigned int size) override {
+  bool Consume(const unsigned char* data, unsigned int size) override {
     return ConsumeWithStatus(data, size).IsSuccess();
   }
 
@@ -48,7 +44,7 @@ class DigestorImpl : public blink::WebCryptoDigestor {
     return Status::Success();
   }
 
-  bool finish(unsigned char*& result_data,
+  bool Finish(unsigned char*& result_data,
               unsigned int& result_data_size) override {
     Status error = FinishInternal(result_, &result_data_size);
     if (!error.IsSuccess())
@@ -73,10 +69,7 @@ class DigestorImpl : public blink::WebCryptoDigestor {
     if (!digest_algorithm)
       return Status::ErrorUnsupported();
 
-    if (!digest_context_.get())
-      return Status::OperationError();
-
-    if (!EVP_DigestInit_ex(digest_context_.get(), digest_algorithm, NULL))
+    if (!EVP_DigestInit_ex(digest_context_.get(), digest_algorithm, nullptr))
       return Status::OperationError();
 
     initialized_ = true;
@@ -102,7 +95,7 @@ class DigestorImpl : public blink::WebCryptoDigestor {
   }
 
   bool initialized_;
-  crypto::ScopedEVP_MD_CTX digest_context_;
+  bssl::ScopedEVP_MD_CTX digest_context_;
   blink::WebCryptoAlgorithmId algorithm_id_;
   unsigned char result_[EVP_MAX_MD_SIZE];
 };
@@ -112,7 +105,7 @@ class ShaImplementation : public AlgorithmImplementation {
   Status Digest(const blink::WebCryptoAlgorithm& algorithm,
                 const CryptoData& data,
                 std::vector<uint8_t>* buffer) const override {
-    DigestorImpl digestor(algorithm.id());
+    DigestorImpl digestor(algorithm.Id());
     Status error = digestor.ConsumeWithStatus(data.bytes(), data.byte_length());
     // http://crbug.com/366427: the spec does not define any other failures for
     // digest, so none of the subsequent errors are spec compliant.
@@ -125,7 +118,7 @@ class ShaImplementation : public AlgorithmImplementation {
 }  // namespace
 
 std::unique_ptr<AlgorithmImplementation> CreateShaImplementation() {
-  return base::WrapUnique(new ShaImplementation());
+  return std::make_unique<ShaImplementation>();
 }
 
 std::unique_ptr<blink::WebCryptoDigestor> CreateDigestorImplementation(

@@ -15,12 +15,12 @@
 #include "chrome/service/cloud_print/connector_settings.h"
 #include "printing/backend/print_backend.h"
 
-namespace base {
-class DictionaryValue;
-}
-
 namespace gaia {
 struct OAuthClientInfo;
+}
+
+namespace network {
+class NetworkConnectionTracker;
 }
 
 namespace cloud_print {
@@ -51,7 +51,7 @@ class CloudPrintProxyFrontend {
   virtual void OnXmppPingUpdated(int ping_timeout) = 0;
 
  protected:
-  // Don't delete through SyncFrontend interface.
+  // Don't delete through CloudPrintProxyFrontend interface.
   virtual ~CloudPrintProxyFrontend() {}
 
  private:
@@ -60,10 +60,12 @@ class CloudPrintProxyFrontend {
 
 class CloudPrintProxyBackend {
  public:
-  CloudPrintProxyBackend(CloudPrintProxyFrontend* frontend,
-                         const ConnectorSettings& settings,
-                         const gaia::OAuthClientInfo& oauth_client_info,
-                         bool enable_job_poll);
+  CloudPrintProxyBackend(
+      CloudPrintProxyFrontend* frontend,
+      const ConnectorSettings& settings,
+      const gaia::OAuthClientInfo& oauth_client_info,
+      bool enable_job_poll,
+      network::NetworkConnectionTracker* network_connection_tracker);
   ~CloudPrintProxyBackend();
 
   // Legacy mechanism when we have saved user credentials but no saved robot
@@ -80,10 +82,10 @@ class CloudPrintProxyBackend {
   void UnregisterPrinters();
 
  private:
-  bool PostCoreTask(const tracked_objects::Location& from_here,
-                    const base::Closure& task);
+  bool PostCoreTask(const base::Location& from_here, const base::Closure& task);
 
-  // The real guts of SyncBackendHost, to keep the public client API clean.
+  // The real guts of CloudPrintProxyBackend, to keep the public client API
+  // clean.
   class Core;
 
   // A thread dedicated for use to perform initialization and authentication.
@@ -94,7 +96,7 @@ class CloudPrintProxyBackend {
   scoped_refptr<Core> core_;
 
   // A reference to the TaskRunner used to construct |this|, so we know how to
-  // safely talk back to the SyncFrontend.
+  // safely talk back to the CloudPrintProxyFrontend.
   const scoped_refptr<base::SingleThreadTaskRunner> frontend_task_runner_;
 
   // The frontend which is responsible for displaying UI and updating Prefs.

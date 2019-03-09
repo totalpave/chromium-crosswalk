@@ -18,18 +18,23 @@
 #include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/chromeos/app_mode/arc/arc_kiosk_app_manager.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_app_manager.h"
+#include "chrome/browser/chromeos/login/screens/encryption_migration_mode.h"
 #include "chrome/browser/chromeos/login/session/user_session_manager.h"
 #include "chrome/browser/chromeos/login/signin/token_handle_util.h"
 #include "chrome/browser/chromeos/login/ui/login_display.h"
+#include "chrome/browser/chromeos/policy/minimum_version_policy_handler.h"
+#include "chrome/browser/chromeos/policy/pre_signin_policy_fetcher.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chrome/browser/chromeos/settings/device_settings_service.h"
 #include "chromeos/login/auth/login_performer.h"
 #include "chromeos/login/auth/user_context.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "components/user_manager/user.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "third_party/cros_system_api/dbus/cryptohome/dbus-constants.h"
 #include "ui/gfx/geometry/rect.h"
 #include "url/gurl.h"
 
@@ -37,87 +42,96 @@ namespace base {
 class ListValue;
 }
 
+namespace enterprise_management {
+class CloudPolicySettings;
+}
+
 namespace chromeos {
 
-class BootstrapUserContextInitializer;
 class CrosSettings;
-class LoginDisplayHost;
+class LoginDisplay;
 class OAuth2TokenInitializer;
 
 namespace login {
 class NetworkStateHelper;
 }
 
-// ExistingUserController is used to handle login when someone has
-// already logged into the machine.
-// To use ExistingUserController create an instance of it and invoke Init.
-// When Init is called it creates LoginDisplay instance which encapsulates
-// all login UI implementation.
-// ExistingUserController maintains it's own life cycle and deletes itself when
-// the user logs in (or chooses to see other settings).
-class ExistingUserController : public LoginDisplay::Delegate,
-                               public content::NotificationObserver,
-                               public LoginPerformer::Delegate,
-                               public UserSessionManagerDelegate {
+// ExistingUserController is used to handle login when someone has already
+// logged into the machine. ExistingUserController is created and owned by
+// LoginDisplayHost.
+class ExistingUserController
+    : public LoginDisplay::Delegate,
+      public content::NotificationObserver,
+      public LoginPerformer::Delegate,
+      public UserSessionManagerDelegate,
+      public ArcKioskAppManager::ArcKioskAppManagerObserver,
+      public policy::MinimumVersionPolicyHandler::Observer {
  public:
-  // All UI initialization is deferred till Init() call.
-  explicit ExistingUserController(LoginDisplayHost* host);
-  ~ExistingUserController() override;
+  // Returns the current existing user controller fetched from the current
+  // LoginDisplayHost instance.
+  static ExistingUserController* current_controller();
 
-  // Returns the current existing user controller if it has been created.
-  static ExistingUserController* current_controller() {
-    return current_controller_;
-  }
+  // All UI initialization is deferred till Init() call.
+  ExistingUserController();
+  ~ExistingUserController() override;
 
   // Creates and shows login UI for known users.
   void Init(const user_manager::UserList& users);
 
-  // Start the public session auto-login timer.
-  void StartPublicSessionAutoLoginTimer();
+  // Start the auto-login timer.
+  void StartAutoLoginTimer();
 
-  // Stop the public session auto-login timer when a login attempt begins.
-  void StopPublicSessionAutoLoginTimer();
+  // Stop the auto-login timer when a login attempt begins.
+  void StopAutoLoginTimer();
+
+  // Cancels current password changed flow.
+  void CancelPasswordChangedFlow();
+
+  // Decrypt cryptohome using user provided |old_password| and migrate to new
+  // password.
+  void MigrateUserData(const std::string& old_password);
+
+  // Ignore password change, remove existing cryptohome and force full sync of
+  // user data.
+  void ResyncUserData();
 
   // LoginDisplay::Delegate: implementation
-  void CancelPasswordChangedFlow() override;
-  void CompleteLogin(const UserContext& user_context) override;
   base::string16 GetConnectedNetworkName() override;
   bool IsSigninInProgress() const override;
   void Login(const UserContext& user_context,
              const SigninSpecifics& specifics) override;
-  void MigrateUserData(const std::string& old_password) override;
   void OnSigninScreenReady() override;
   void OnStartEnterpriseEnrollment() override;
   void OnStartEnableDebuggingScreen() override;
   void OnStartKioskEnableScreen() override;
   void OnStartKioskAutolaunchScreen() override;
-  void ResetPublicSessionAutoLoginTimer() override;
-  void ResyncUserData() override;
-  void SetDisplayEmail(const std::string& email) override;
+  void ResetAutoLoginTimer() override;
   void ShowWrongHWIDScreen() override;
+  void ShowUpdateRequiredScreen() override;
   void Signout() override;
-  bool IsUserWhitelisted(const AccountId& account_id) override;
+
+  void CompleteLogin(const UserContext& user_context);
+  void OnGaiaScreenReady();
+  void SetDisplayEmail(const std::string& email);
+  void SetDisplayAndGivenName(const std::string& display_name,
+                              const std::string& given_name);
+  bool IsUserWhitelisted(const AccountId& account_id);
 
   // content::NotificationObserver implementation.
   void Observe(int type,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
+  // ArcKioskAppManager::ArcKioskAppManagerObserver overrides.
+  void OnArcKioskAppsChanged() override;
+
+  // policy::MinimumVersionPolicyHandler::Observer overrides.
+  void OnMinimumVersionStateChanged() override;
+
   // Set a delegate that we will pass AuthStatusConsumer events to.
   // Used for testing.
   void set_login_status_consumer(AuthStatusConsumer* consumer) {
     auth_status_consumer_ = consumer;
-  }
-
-  // Returns the LoginDisplay created and owned by this controller.
-  // Used for testing.
-  LoginDisplay* login_display() {
-    return login_display_.get();
-  }
-
-  // Returns the LoginDisplayHost for this controller.
-  LoginDisplayHost* login_display_host() {
-    return host_;
   }
 
   // Returns value of LoginPerformer::auth_mode() (cached if performer is
@@ -134,21 +148,28 @@ class ExistingUserController : public LoginDisplay::Delegate,
   friend class ExistingUserControllerPublicSessionTest;
   friend class MockLoginPerformerDelegate;
 
+  FRIEND_TEST_ALL_PREFIXES(ExistingUserControllerTest, ExistingUserLogin);
+
   void LoginAsGuest();
   void LoginAsPublicSession(const UserContext& user_context);
   void LoginAsKioskApp(const std::string& app_id, bool diagnostic_mode);
-
-  // Retrieve public session auto-login policy and update the timer.
-  void ConfigurePublicSessionAutoLogin();
+  void LoginAsArcKioskApp(const AccountId& account_id);
+  // Retrieve public session and ARC kiosk auto-login policy and update the
+  // timer.
+  void ConfigureAutoLogin();
 
   // Trigger public session auto-login.
   void OnPublicSessionAutoLoginTimerFire();
+  // Trigger ARC kiosk auto-login.
+  void OnArcKioskAutoLoginTimerFire();
 
   // LoginPerformer::Delegate implementation:
   void OnAuthFailure(const AuthFailure& error) override;
   void OnAuthSuccess(const UserContext& user_context) override;
   void OnOffTheRecordAuthSuccess() override;
   void OnPasswordChangeDetected() override;
+  void OnOldEncryptionDetected(const UserContext& user_context,
+                               bool has_incomplete_migration) override;
   void WhiteListCheckFailed(const std::string& email) override;
   void PolicyLoadFailed() override;
   void SetAuthFlowOffline(bool offline) override;
@@ -180,17 +201,21 @@ class ExistingUserController : public LoginDisplay::Delegate,
   // Enters the enterprise enrollment screen.
   void ShowEnrollmentScreen();
 
-  // Shows "reset device" screen.
-  void ShowResetScreen();
-
   // Shows "enable developer features" screen.
   void ShowEnableDebuggingScreen();
+
+  // Shows privacy notification in case of auto lunch managed guest session.
+  void ShowAutoLaunchManagedGuestSessionNotification();
 
   // Shows kiosk feature enable screen.
   void ShowKioskEnableScreen();
 
   // Shows "kiosk auto-launch permission" screen.
   void ShowKioskAutolaunchScreen();
+
+  // Shows "filesystem encryption migration" screen.
+  void ShowEncryptionMigrationScreen(const UserContext& user_context,
+                                     EncryptionMigrationMode migration_mode);
 
   // Shows "critical TPM error" screen.
   void ShowTPMError();
@@ -201,6 +226,19 @@ class ExistingUserController : public LoginDisplay::Delegate,
   // Creates |login_performer_| if necessary and calls login() on it.
   void PerformLogin(const UserContext& user_context,
                     LoginPerformer::AuthorizationMode auth_mode);
+
+  // Calls login() on previously-used |login_performer_|.
+  void ContinuePerformLogin(LoginPerformer::AuthorizationMode auth_mode,
+                            const UserContext& user_context);
+
+  // Removes the constraint that user home mount requires ext4 encryption from
+  // |user_context|, then calls login() on previously-used |login_performer|.
+  void ContinuePerformLoginWithoutMigration(
+      LoginPerformer::AuthorizationMode auth_mode,
+      const UserContext& user_context);
+
+  // Asks the user to enter their password again.
+  void RestartLogin(const UserContext& user_context);
 
   // Updates the |login_display_| attached to this controller.
   void UpdateLoginDisplay(const user_manager::UserList& users);
@@ -223,9 +261,14 @@ class ExistingUserController : public LoginDisplay::Delegate,
   void PerformPreLoginActions(const UserContext& user_context);
 
   // Performs set of actions when login has been completed or has been
-  // cancelled. If |start_public_session_timer| is true than public session
+  // cancelled. If |start_auto_login_timer| is true than
   // auto-login timer is started.
-  void PerformLoginFinishedActions(bool start_public_session_timer);
+  void PerformLoginFinishedActions(bool start_auto_login_timer);
+
+  // Invokes |continuation| after verifying that cryptohome service is
+  // available.
+  void ContinueLoginWhenCryptohomeAvailable(base::OnceClosure continuation,
+                                            bool service_is_available);
 
   // Invokes |continuation| after verifying that the device is not disabled.
   void ContinueLoginIfDeviceNotDisabled(const base::Closure& continuation);
@@ -239,10 +282,6 @@ class ExistingUserController : public LoginDisplay::Delegate,
   void DoLogin(const UserContext& user_context,
                const SigninSpecifics& specifics);
 
-  // Callback invoked when |bootstrap_user_context_initializer_| has finished.
-  void OnBootstrapUserContextInitialized(bool success,
-                                         const UserContext& user_context);
-
   // Callback invoked when |oauth2_token_initializer_| has finished.
   void OnOAuth2TokensFetched(bool success, const UserContext& user_context);
 
@@ -251,14 +290,44 @@ class ExistingUserController : public LoginDisplay::Delegate,
       const AccountId&,
       TokenHandleUtil::TokenHandleStatus token_handle_status);
 
+  // Called on completition of a pre-signin policy fetch, which is performed to
+  // check if there is a user policy governing migration action.
+  void OnPolicyFetchResult(
+      const UserContext& user_context,
+      policy::PreSigninPolicyFetcher::PolicyFetchResult result,
+      std::unique_ptr<enterprise_management::CloudPolicySettings>
+          policy_payload);
+
+  // Called when cryptohome wipe has finished.
+  void WipePerformed(const UserContext& user_context,
+                     base::Optional<cryptohome::BaseReply> reply);
+
+  // Triggers online login for the given |account_id|.
+  void ForceOnlineLoginForAccountId(const AccountId& account_id);
+
+  // Clear the recorded displayed email, displayed name, given name so it won't
+  // affect any future attempts.
+  void ClearRecordedNames();
+
+  // Restart authpolicy daemon in case of Active Directory authentication.
+  // Used to prevent data from leaking from one user session into another.
+  // Should be called to cancel AuthPolicyLoginHelper::TryAuthenticateUser call.
+  void ClearActiveDirectoryState();
+
   // Public session auto-login timer.
   std::unique_ptr<base::OneShotTimer> auto_login_timer_;
 
-  // Public session auto-login timeout, in milliseconds.
-  int public_session_auto_login_delay_;
+  // Auto-login timeout, in milliseconds.
+  int auto_login_delay_;
+
+  // True if a profile has been prepared.
+  bool profile_prepared_ = false;
 
   // AccountId for public session auto-login.
   AccountId public_session_auto_login_account_id_ = EmptyAccountId();
+
+  // AccountId for ARC kiosk auto-login.
+  AccountId arc_kiosk_auto_login_account_id_ = EmptyAccountId();
 
   // Used to execute login operations.
   std::unique_ptr<LoginPerformer> login_performer_;
@@ -270,19 +339,12 @@ class ExistingUserController : public LoginDisplay::Delegate,
   // AccountId of the last login attempt.
   AccountId last_login_attempt_account_id_ = EmptyAccountId();
 
-  // OOBE/login display host.
-  LoginDisplayHost* host_;
-
-  // Login UI implementation instance.
-  std::unique_ptr<LoginDisplay> login_display_;
+  // Whether the last login attempt was an auto login.
+  bool last_login_attempt_was_auto_login_ = false;
 
   // Number of login attempts. Used to show help link when > 1 unsuccessful
   // logins for the same user.
   size_t num_login_attempts_ = 0;
-
-  // Pointer to the current instance of the controller to be used by
-  // automation tests.
-  static ExistingUserController* current_controller_;
 
   // Interface to the signed settings store.
   CrosSettings* cros_settings_;
@@ -296,6 +358,13 @@ class ExistingUserController : public LoginDisplay::Delegate,
   // The displayed email for the next login attempt set by |SetDisplayEmail|.
   std::string display_email_;
 
+  // The displayed name for the next login attempt set by
+  // |SetDisplayAndGivenName|.
+  base::string16 display_name_;
+
+  // The given name for the next login attempt set by |SetDisplayAndGivenName|.
+  base::string16 given_name_;
+
   // Whether login attempt is running.
   bool is_login_in_progress_ = false;
 
@@ -307,9 +376,6 @@ class ExistingUserController : public LoginDisplay::Delegate,
   // Initialized with AUTH_MODE_EXTENSION as more restricted mode.
   LoginPerformer::AuthorizationMode auth_mode_ =
       LoginPerformer::AUTH_MODE_EXTENSION;
-
-  // Whether the sign-in UI is finished loading.
-  bool signin_screen_ready_ = false;
 
   // Indicates use of local (not GAIA) authentication.
   bool auth_flow_offline_ = false;
@@ -335,15 +401,14 @@ class ExistingUserController : public LoginDisplay::Delegate,
       local_account_auto_login_id_subscription_;
   std::unique_ptr<CrosSettings::ObserverSubscription>
       local_account_auto_login_delay_subscription_;
-
-  std::unique_ptr<BootstrapUserContextInitializer>
-      bootstrap_user_context_initializer_;
+  std::unique_ptr<policy::MinimumVersionPolicyHandler>
+      minimum_version_policy_handler_;
 
   std::unique_ptr<OAuth2TokenInitializer> oauth2_token_initializer_;
 
   std::unique_ptr<TokenHandleUtil> token_handle_util_;
 
-  FRIEND_TEST_ALL_PREFIXES(ExistingUserControllerTest, ExistingUserLogin);
+  std::unique_ptr<policy::PreSigninPolicyFetcher> pre_signin_policy_fetcher_;
 
   // Factory of callbacks.
   base::WeakPtrFactory<ExistingUserController> weak_factory_;

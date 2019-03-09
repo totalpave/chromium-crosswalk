@@ -17,13 +17,14 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/command_line.h"
+#include "base/debug/activity_tracker.h"
 #include "base/debug/stack_trace.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/metrics/histogram.h"
 #include "base/process/kill.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/scoped_process_information.h"
 #include "base/win/startup_information.h"
@@ -33,17 +34,10 @@ namespace base {
 
 namespace {
 
-// This exit code is used by the Windows task manager when it kills a
-// process.  It's value is obviously not that unique, and it's
-// surprising to me that the task manager uses this value, but it
-// seems to be common practice on Windows to test for it as an
-// indication that the task manager has killed something if the
-// process goes away.
-const DWORD kProcessKilledExitCode = 1;
-
 bool GetAppOutputInternal(const StringPiece16& cl,
                           bool include_stderr,
-                          std::string* output) {
+                          std::string* output,
+                          int* exit_code) {
   HANDLE out_read = nullptr;
   HANDLE out_write = nullptr;
 
@@ -69,8 +63,7 @@ bool GetAppOutputInternal(const StringPiece16& cl,
     return false;
   }
 
-  FilePath::StringType writable_command_line_string;
-  writable_command_line_string.assign(cl.data(), cl.size());
+  FilePath::StringType writable_command_line_string(cl);
 
   STARTUPINFO start_info = {};
 
@@ -87,14 +80,18 @@ bool GetAppOutputInternal(const StringPiece16& cl,
 
   // Create the child process.
   PROCESS_INFORMATION temp_process_info = {};
-  if (!CreateProcess(nullptr, &writable_command_line_string[0], nullptr,
-                     nullptr,
+  if (!CreateProcess(nullptr, as_writable_wcstr(writable_command_line_string),
+                     nullptr, nullptr,
                      TRUE,  // Handles are inherited.
                      0, nullptr, nullptr, &start_info, &temp_process_info)) {
     NOTREACHED() << "Failed to start process";
     return false;
   }
-  base::win::ScopedProcessInformation proc_info(temp_process_info);
+
+  win::ScopedProcessInformation proc_info(temp_process_info);
+  debug::GlobalActivityTracker* tracker = debug::GlobalActivityTracker::Get();
+  if (tracker)
+    tracker->RecordProcessLaunch(proc_info.process_id(), cl.as_string());
 
   // Close our writing end of pipe now. Otherwise later read would not be able
   // to detect end of child's output.
@@ -107,7 +104,7 @@ bool GetAppOutputInternal(const StringPiece16& cl,
   for (;;) {
     DWORD bytes_read = 0;
     BOOL success =
-        ReadFile(out_read, buffer, kBufferSize, &bytes_read, nullptr);
+        ::ReadFile(out_read, buffer, kBufferSize, &bytes_read, nullptr);
     if (!success || bytes_read == 0)
       break;
     output->append(buffer, bytes_read);
@@ -116,11 +113,12 @@ bool GetAppOutputInternal(const StringPiece16& cl,
   // Let's wait for the process to finish.
   WaitForSingleObject(proc_info.process_handle(), INFINITE);
 
-  int exit_code;
-  base::TerminationStatus status = GetTerminationStatus(
-      proc_info.process_handle(), &exit_code);
-  return status != base::TERMINATION_STATUS_PROCESS_CRASHED &&
-         status != base::TERMINATION_STATUS_ABNORMAL_TERMINATION;
+  TerminationStatus status =
+      GetTerminationStatus(proc_info.process_handle(), exit_code);
+  debug::GlobalActivityTracker::RecordProcessExitIfEnabled(
+      proc_info.process_id(), *exit_code);
+  return status != TERMINATION_STATUS_PROCESS_CRASHED &&
+         status != TERMINATION_STATUS_ABNORMAL_TERMINATION;
 }
 
 }  // namespace
@@ -204,48 +202,48 @@ Process LaunchProcess(const string16& cmdline,
   win::StartupInformation startup_info_wrapper;
   STARTUPINFO* startup_info = startup_info_wrapper.startup_info();
 
-  bool inherit_handles = options.inherit_handles;
+  bool inherit_handles = options.inherit_mode == LaunchOptions::Inherit::kAll;
   DWORD flags = 0;
-  if (options.handles_to_inherit) {
-    if (options.handles_to_inherit->empty()) {
-      inherit_handles = false;
-    } else {
-      if (options.handles_to_inherit->size() >
-              std::numeric_limits<DWORD>::max() / sizeof(HANDLE)) {
-        DLOG(ERROR) << "Too many handles to inherit.";
-        return Process();
-      }
+  if (!options.handles_to_inherit.empty()) {
+    DCHECK_EQ(options.inherit_mode, LaunchOptions::Inherit::kSpecific);
 
-      // Ensure the handles can be inherited.
-      for (HANDLE handle : *options.handles_to_inherit) {
-        BOOL result = SetHandleInformation(handle, HANDLE_FLAG_INHERIT,
-                                           HANDLE_FLAG_INHERIT);
-        PCHECK(result);
-      }
-
-      if (!startup_info_wrapper.InitializeProcThreadAttributeList(1)) {
-        DPLOG(ERROR);
-        return Process();
-      }
-
-      if (!startup_info_wrapper.UpdateProcThreadAttribute(
-              PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-              const_cast<HANDLE*>(&options.handles_to_inherit->at(0)),
-              static_cast<DWORD>(options.handles_to_inherit->size() *
-                  sizeof(HANDLE)))) {
-        DPLOG(ERROR);
-        return Process();
-      }
-
-      inherit_handles = true;
-      flags |= EXTENDED_STARTUPINFO_PRESENT;
+    if (options.handles_to_inherit.size() >
+        std::numeric_limits<DWORD>::max() / sizeof(HANDLE)) {
+      DLOG(ERROR) << "Too many handles to inherit.";
+      return Process();
     }
+
+    // Ensure the handles can be inherited.
+    for (HANDLE handle : options.handles_to_inherit) {
+      BOOL result = SetHandleInformation(handle, HANDLE_FLAG_INHERIT,
+                                         HANDLE_FLAG_INHERIT);
+      PCHECK(result);
+    }
+
+    if (!startup_info_wrapper.InitializeProcThreadAttributeList(1)) {
+      DPLOG(ERROR);
+      return Process();
+    }
+
+    if (!startup_info_wrapper.UpdateProcThreadAttribute(
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            const_cast<HANDLE*>(&options.handles_to_inherit[0]),
+            static_cast<DWORD>(options.handles_to_inherit.size() *
+                               sizeof(HANDLE)))) {
+      DPLOG(ERROR);
+      return Process();
+    }
+
+    inherit_handles = true;
+    flags |= EXTENDED_STARTUPINFO_PRESENT;
   }
 
+  if (options.feedback_cursor_off)
+    startup_info->dwFlags |= STARTF_FORCEOFFFEEDBACK;
   if (options.empty_desktop_name)
     startup_info->lpDesktop = const_cast<wchar_t*>(L"");
-  startup_info->dwFlags = STARTF_USESHOWWINDOW;
-  startup_info->wShowWindow = options.start_hidden ? SW_HIDE : SW_SHOW;
+  startup_info->dwFlags |= STARTF_USESHOWWINDOW;
+  startup_info->wShowWindow = options.start_hidden ? SW_HIDE : SW_SHOWNORMAL;
 
   if (options.stdin_handle || options.stdout_handle || options.stderr_handle) {
     DCHECK(inherit_handles);
@@ -259,8 +257,6 @@ Process LaunchProcess(const string16& cmdline,
   }
 
   if (options.job_handle) {
-    flags |= CREATE_SUSPENDED;
-
     // If this code is run under a debugger, the launched process is
     // automatically associated with a job object created by the debugger.
     // The CREATE_BREAKAWAY_FROM_JOB flag is used to prevent this on Windows
@@ -276,9 +272,13 @@ Process LaunchProcess(const string16& cmdline,
 
   LPCTSTR current_directory = options.current_directory.empty()
                                   ? nullptr
-                                  : options.current_directory.value().c_str();
+                                  : as_wcstr(options.current_directory.value());
 
   string16 writable_cmdline(cmdline);
+  DCHECK(!(flags & CREATE_SUSPENDED))
+      << "Creating a suspended process can lead to hung processes if the "
+      << "launching process is killed before it assigns the process to the"
+      << "job. https://crbug.com/820996";
   if (options.as_user) {
     flags |= CREATE_UNICODE_ENVIRONMENT;
     void* enviroment_block = nullptr;
@@ -289,8 +289,8 @@ Process LaunchProcess(const string16& cmdline,
     }
 
     BOOL launched = CreateProcessAsUser(
-        options.as_user, nullptr, &writable_cmdline[0], nullptr, nullptr,
-        inherit_handles, flags, enviroment_block, current_directory,
+        options.as_user, nullptr, as_writable_wcstr(writable_cmdline), nullptr,
+        nullptr, inherit_handles, flags, enviroment_block, current_directory,
         startup_info, &temp_process_info);
     DestroyEnvironmentBlock(enviroment_block);
     if (!launched) {
@@ -299,31 +299,35 @@ Process LaunchProcess(const string16& cmdline,
       return Process();
     }
   } else {
-    if (!CreateProcess(nullptr, &writable_cmdline[0], nullptr, nullptr,
-                       inherit_handles, flags, nullptr, current_directory,
-                       startup_info, &temp_process_info)) {
+    if (!CreateProcess(nullptr, as_writable_wcstr(writable_cmdline), nullptr,
+                       nullptr, inherit_handles, flags, nullptr,
+                       current_directory, startup_info, &temp_process_info)) {
       DPLOG(ERROR) << "Command line:" << std::endl << UTF16ToUTF8(cmdline)
                    << std::endl;
       return Process();
     }
   }
-  base::win::ScopedProcessInformation process_info(temp_process_info);
+  win::ScopedProcessInformation process_info(temp_process_info);
 
-  if (options.job_handle) {
-    if (0 == AssignProcessToJobObject(options.job_handle,
-                                      process_info.process_handle())) {
-      DLOG(ERROR) << "Could not AssignProcessToObject.";
-      Process scoped_process(process_info.TakeProcessHandle());
-      scoped_process.Terminate(kProcessKilledExitCode, true);
-      return Process();
-    }
+  if (options.job_handle &&
+      !AssignProcessToJobObject(options.job_handle,
+                                process_info.process_handle())) {
+    DPLOG(ERROR) << "Could not AssignProcessToObject";
+    Process scoped_process(process_info.TakeProcessHandle());
+    scoped_process.Terminate(win::kProcessKilledExitCode, true);
+    return Process();
+  }
 
-    ResumeThread(process_info.thread_handle());
+  if (options.grant_foreground_privilege &&
+      !AllowSetForegroundWindow(GetProcId(process_info.process_handle()))) {
+    DPLOG(ERROR) << "Failed to grant foreground privilege to launched process";
   }
 
   if (options.wait)
     WaitForSingleObject(process_info.process_handle(), INFINITE);
 
+  debug::GlobalActivityTracker::RecordProcessLaunchIfEnabled(
+      process_info.process_id(), cmdline);
   return Process(process_info.TakeProcessHandle());
 }
 
@@ -337,10 +341,10 @@ Process LaunchElevatedProcess(const CommandLine& cmdline,
   shex_info.fMask = SEE_MASK_NOCLOSEPROCESS;
   shex_info.hwnd = GetActiveWindow();
   shex_info.lpVerb = L"runas";
-  shex_info.lpFile = file.c_str();
-  shex_info.lpParameters = arguments.c_str();
+  shex_info.lpFile = as_wcstr(file);
+  shex_info.lpParameters = as_wcstr(arguments);
   shex_info.lpDirectory = nullptr;
-  shex_info.nShow = options.start_hidden ? SW_HIDE : SW_SHOW;
+  shex_info.nShow = options.start_hidden ? SW_HIDE : SW_SHOWNORMAL;
   shex_info.hInstApp = nullptr;
 
   if (!ShellExecuteEx(&shex_info)) {
@@ -351,6 +355,8 @@ Process LaunchElevatedProcess(const CommandLine& cmdline,
   if (options.wait)
     WaitForSingleObject(shex_info.hProcess, INFINITE);
 
+  debug::GlobalActivityTracker::RecordProcessLaunchIfEnabled(
+      GetProcessId(shex_info.hProcess), file, arguments);
   return Process(shex_info.hProcess);
 }
 
@@ -369,11 +375,21 @@ bool GetAppOutput(const CommandLine& cl, std::string* output) {
 }
 
 bool GetAppOutputAndError(const CommandLine& cl, std::string* output) {
-  return GetAppOutputInternal(cl.GetCommandLineString(), true, output);
+  int exit_code;
+  return GetAppOutputInternal(
+      cl.GetCommandLineString(), true, output, &exit_code);
+}
+
+bool GetAppOutputWithExitCode(const CommandLine& cl,
+                              std::string* output,
+                              int* exit_code) {
+  return GetAppOutputInternal(
+      cl.GetCommandLineString(), false, output, exit_code);
 }
 
 bool GetAppOutput(const StringPiece16& cl, std::string* output) {
-  return GetAppOutputInternal(cl, false, output);
+  int exit_code;
+  return GetAppOutputInternal(cl, false, output, &exit_code);
 }
 
 void RaiseProcessToHighPriority() {

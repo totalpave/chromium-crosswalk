@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <cmath>
+#include <vector>
 
 #include "base/logging.h"
 #include "base/time/time.h"
@@ -28,14 +29,14 @@ TestAudioBusFactory::TestAudioBusFactory(int num_channels,
   CHECK_LE(volume_, 1.0f);
 }
 
-TestAudioBusFactory::~TestAudioBusFactory() {}
+TestAudioBusFactory::~TestAudioBusFactory() = default;
 
 std::unique_ptr<AudioBus> TestAudioBusFactory::NextAudioBus(
     const base::TimeDelta& duration) {
   const int num_samples = static_cast<int>((sample_rate_ * duration) /
                                            base::TimeDelta::FromSeconds(1));
   std::unique_ptr<AudioBus> bus(AudioBus::Create(num_channels_, num_samples));
-  source_.OnMoreData(bus.get(), 0, 0);
+  source_.OnMoreData(base::TimeDelta(), base::TimeTicks::Now(), 0, bus.get());
   bus->Scale(volume_);
   return bus;
 }
@@ -43,7 +44,7 @@ std::unique_ptr<AudioBus> TestAudioBusFactory::NextAudioBus(
 int CountZeroCrossings(const float* samples, int length) {
   // The sample values must pass beyond |kAmplitudeThreshold| on the opposite
   // side of zero before a crossing will be counted.
-  const float kAmplitudeThreshold = 0.03f;  // 3% of max amplitude.
+  const float kAmplitudeThreshold = 0.02f;  // 2% of max amplitude.
 
   int count = 0;
   int i = 0;

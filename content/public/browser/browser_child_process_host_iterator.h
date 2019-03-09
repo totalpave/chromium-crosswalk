@@ -17,6 +17,7 @@ namespace content {
 class BrowserChildProcessHostDelegate;
 class BrowserChildProcessHostImpl;
 struct ChildProcessData;
+class ChildProcessHost;
 
 // This class allows iteration through either all child processes, or ones of a
 // specific type, depending on which constructor is used.  Note that this should
@@ -35,6 +36,7 @@ class CONTENT_EXPORT BrowserChildProcessHostIterator {
   const ChildProcessData& GetData();
   bool Send(IPC::Message* message);
   BrowserChildProcessHostDelegate* GetDelegate();
+  ChildProcessHost* GetHost();
 
  private:
   bool all_;
@@ -60,6 +62,6 @@ class CONTENT_EXPORT BrowserChildProcessHostTypeIterator
   }
 };
 
-};  // namespace content
+}  // namespace content
 
 #endif  // CONTENT_PUBLIC_BROWSER_BROWSER_CHILD_PROCESS_HOST_ITERATOR_H_

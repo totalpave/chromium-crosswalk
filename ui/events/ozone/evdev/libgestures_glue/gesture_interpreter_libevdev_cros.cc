@@ -8,7 +8,7 @@
 #include <libevdev/libevdev.h>
 #include <linux/input.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/timer/timer.h"
 #include "ui/events/base_event_utils.h"
@@ -211,6 +211,14 @@ void GestureInterpreterLibevdevCros::OnLibEvdevCrosEvent(Evdev* evdev,
     hwstate.buttons_down |= GESTURES_BUTTON_FORWARD;
   }
 
+  // Check if this event has an MSC_TIMESTAMP field
+  if (EvdevBitIsSet(evdev->info.msc_bitmask, MSC_TIMESTAMP)) {
+    hwstate.msc_timestamp = static_cast<stime_t>(Event_Get_Timestamp(evdev)) /
+                            base::Time::kMicrosecondsPerSecond;
+  } else {
+    hwstate.msc_timestamp = 0.0;
+  }
+
   GestureInterpreterPushHardwareState(interpreter_, &hwstate);
 }
 
@@ -272,7 +280,7 @@ void GestureInterpreterLibevdevCros::OnGestureMove(const Gesture* gesture,
   cursor_->MoveCursor(gfx::Vector2dF(move->dx, move->dy));
   // TODO(spang): Use move->ordinal_dx, move->ordinal_dy
   dispatcher_->DispatchMouseMoveEvent(
-      MouseMoveEventParams(id_, cursor_->GetLocation(),
+      MouseMoveEventParams(id_, EF_NONE, cursor_->GetLocation(),
                            PointerDetails(EventPointerType::POINTER_TYPE_MOUSE),
                            StimeToTimeTicks(gesture->end_time)));
 }
@@ -443,7 +451,7 @@ void GestureInterpreterLibevdevCros::DispatchMouseButton(unsigned int button,
 
   bool allow_remap = is_mouse_;
   dispatcher_->DispatchMouseButtonEvent(MouseButtonEventParams(
-      id_, cursor_->GetLocation(), button, down, allow_remap,
+      id_, EF_NONE, cursor_->GetLocation(), button, down, allow_remap,
       PointerDetails(EventPointerType::POINTER_TYPE_MOUSE),
       StimeToTimeTicks(time)));
 }
@@ -454,7 +462,7 @@ void GestureInterpreterLibevdevCros::DispatchChangedKeys(
   unsigned long key_state_diff[EVDEV_BITS_TO_LONGS(KEY_CNT)];
 
   // Find changed keys.
-  for (unsigned long i = 0; i < arraysize(key_state_diff); ++i)
+  for (unsigned long i = 0; i < base::size(key_state_diff); ++i)
     key_state_diff[i] = new_key_state[i] ^ prev_key_state_[i];
 
   // Dispatch events for changed keys.

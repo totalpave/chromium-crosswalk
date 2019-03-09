@@ -22,7 +22,9 @@
 #include "client/crashpad_client.h"
 #include "gtest/gtest.h"
 #include "snapshot/win/process_snapshot_win.h"
-#include "test/paths.h"
+#include "test/errors.h"
+#include "test/gtest_disabled.h"
+#include "test/test_paths.h"
 #include "test/win/child_launcher.h"
 #include "util/file/file_io.h"
 #include "util/thread/thread.h"
@@ -77,7 +79,7 @@ class CrashingDelegate : public ExceptionHandlerServer::Delegate {
       : server_ready_(server_ready),
         completed_test_event_(completed_test_event),
         break_near_(0) {}
-  ~CrashingDelegate() override {}
+  ~CrashingDelegate() {}
 
   void set_break_near(WinVMAddress break_near) { break_near_ = break_near; }
 
@@ -96,12 +98,12 @@ class CrashingDelegate : public ExceptionHandlerServer::Delegate {
 
     // Confirm the exception record was read correctly.
     EXPECT_NE(snapshot.Exception()->ThreadID(), 0u);
-    EXPECT_EQ(snapshot.Exception()->Exception(), EXCEPTION_BREAKPOINT);
+    EXPECT_EQ(EXCEPTION_BREAKPOINT, snapshot.Exception()->Exception());
 
     // Verify the exception happened at the expected location with a bit of
     // slop space to allow for reading the current PC before the exception
     // happens. See TestCrashingChild().
-    const uint64_t kAllowedOffset = 64;
+    constexpr uint64_t kAllowedOffset = 100;
     EXPECT_GT(snapshot.Exception()->ExceptionAddress(), break_near_);
     EXPECT_LT(snapshot.Exception()->ExceptionAddress(),
               break_near_ + kAllowedOffset);
@@ -119,54 +121,65 @@ class CrashingDelegate : public ExceptionHandlerServer::Delegate {
   DISALLOW_COPY_AND_ASSIGN(CrashingDelegate);
 };
 
-void TestCrashingChild(const base::string16& directory_modification) {
+void TestCrashingChild(TestPaths::Architecture architecture) {
   // Set up the registration server on a background thread.
   ScopedKernelHANDLE server_ready(CreateEvent(nullptr, false, false, nullptr));
+  ASSERT_TRUE(server_ready.is_valid()) << ErrorMessage("CreateEvent");
   ScopedKernelHANDLE completed(CreateEvent(nullptr, false, false, nullptr));
+  ASSERT_TRUE(completed.is_valid()) << ErrorMessage("CreateEvent");
   CrashingDelegate delegate(server_ready.get(), completed.get());
 
   ExceptionHandlerServer exception_handler_server(true);
-  std::wstring pipe_name = exception_handler_server.CreatePipe();
+  std::wstring pipe_name(L"\\\\.\\pipe\\test_name");
+  exception_handler_server.SetPipeName(pipe_name);
   RunServerThread server_thread(&exception_handler_server, &delegate);
   server_thread.Start();
   ScopedStopServerAndJoinThread scoped_stop_server_and_join_thread(
       &exception_handler_server, &server_thread);
 
-  WaitForSingleObject(server_ready.get(), INFINITE);
+  EXPECT_EQ(WaitForSingleObject(server_ready.get(), INFINITE), WAIT_OBJECT_0)
+      << ErrorMessage("WaitForSingleObject");
 
   // Spawn a child process, passing it the pipe name to connect to.
-  base::FilePath test_executable = Paths::Executable();
-  std::wstring child_test_executable =
-      test_executable.DirName()
-          .Append(directory_modification)
-          .Append(test_executable.BaseName().RemoveFinalExtension().value() +
-                  L"_crashing_child.exe")
-          .value();
+  base::FilePath child_test_executable =
+      TestPaths::BuildArtifact(L"snapshot",
+                               L"crashing_child",
+                               TestPaths::FileType::kExecutable,
+                               architecture);
   ChildLauncher child(child_test_executable, pipe_name);
-  child.Start();
+  ASSERT_NO_FATAL_FAILURE(child.Start());
 
   // The child tells us (approximately) where it will crash.
   WinVMAddress break_near_address;
-  LoggingReadFile(child.stdout_read_handle(),
-                  &break_near_address,
-                  sizeof(break_near_address));
+  LoggingReadFileExactly(child.stdout_read_handle(),
+                         &break_near_address,
+                         sizeof(break_near_address));
   delegate.set_break_near(break_near_address);
 
   // Wait for the child to crash and the exception information to be validated.
-  WaitForSingleObject(completed.get(), INFINITE);
+  EXPECT_EQ(WaitForSingleObject(completed.get(), INFINITE), WAIT_OBJECT_0)
+      << ErrorMessage("WaitForSingleObject");
+
+  EXPECT_EQ(child.WaitForExit(), EXCEPTION_BREAKPOINT);
 }
 
-TEST(ExceptionSnapshotWinTest, ChildCrash) {
-  TestCrashingChild(FILE_PATH_LITERAL("."));
+#if defined(ADDRESS_SANITIZER)
+// https://crbug.com/845011
+#define MAYBE_ChildCrash DISABLED_ChildCrash
+#else
+#define MAYBE_ChildCrash ChildCrash
+#endif
+TEST(ExceptionSnapshotWinTest, MAYBE_ChildCrash) {
+  TestCrashingChild(TestPaths::Architecture::kDefault);
 }
 
 #if defined(ARCH_CPU_64_BITS)
 TEST(ExceptionSnapshotWinTest, ChildCrashWOW64) {
-#ifndef NDEBUG
-  TestCrashingChild(FILE_PATH_LITERAL("..\\..\\out\\Debug"));
-#else
-  TestCrashingChild(FILE_PATH_LITERAL("..\\..\\out\\Release"));
-#endif
+  if (!TestPaths::Has32BitBuildArtifacts()) {
+    DISABLED_TEST();
+  }
+
+  TestCrashingChild(TestPaths::Architecture::k32Bit);
 }
 #endif  // ARCH_CPU_64_BITS
 
@@ -176,7 +189,7 @@ class SimulateDelegate : public ExceptionHandlerServer::Delegate {
       : server_ready_(server_ready),
         completed_test_event_(completed_test_event),
         dump_near_(0) {}
-  ~SimulateDelegate() override {}
+  ~SimulateDelegate() {}
 
   void set_dump_near(WinVMAddress dump_near) { dump_near_ = dump_near; }
 
@@ -193,18 +206,24 @@ class SimulateDelegate : public ExceptionHandlerServer::Delegate {
                         exception_information_address,
                         debug_critical_section_address);
     EXPECT_TRUE(snapshot.Exception());
-    EXPECT_EQ(0x517a7ed, snapshot.Exception()->Exception());
+    EXPECT_EQ(snapshot.Exception()->Exception(), 0x517a7edu);
 
     // Verify the dump was captured at the expected location with some slop
     // space.
-    const uint64_t kAllowedOffset = 64;
+#if defined(ADDRESS_SANITIZER)
+    // ASan instrumentation inserts more instructions between the expected
+    // location and what's reported. https://crbug.com/845011.
+    constexpr uint64_t kAllowedOffset = 500;
+#else
+    constexpr uint64_t kAllowedOffset = 100;
+#endif
     EXPECT_GT(snapshot.Exception()->Context()->InstructionPointer(),
               dump_near_);
     EXPECT_LT(snapshot.Exception()->Context()->InstructionPointer(),
               dump_near_ + kAllowedOffset);
 
-    EXPECT_EQ(snapshot.Exception()->Context()->InstructionPointer(),
-              snapshot.Exception()->ExceptionAddress());
+    EXPECT_EQ(snapshot.Exception()->ExceptionAddress(),
+              snapshot.Exception()->Context()->InstructionPointer());
 
     SetEvent(completed_test_event_);
 
@@ -219,55 +238,65 @@ class SimulateDelegate : public ExceptionHandlerServer::Delegate {
   DISALLOW_COPY_AND_ASSIGN(SimulateDelegate);
 };
 
-void TestDumpWithoutCrashingChild(
-    const base::string16& directory_modification) {
+void TestDumpWithoutCrashingChild(TestPaths::Architecture architecture) {
   // Set up the registration server on a background thread.
   ScopedKernelHANDLE server_ready(CreateEvent(nullptr, false, false, nullptr));
+  ASSERT_TRUE(server_ready.is_valid()) << ErrorMessage("CreateEvent");
   ScopedKernelHANDLE completed(CreateEvent(nullptr, false, false, nullptr));
+  ASSERT_TRUE(completed.is_valid()) << ErrorMessage("CreateEvent");
   SimulateDelegate delegate(server_ready.get(), completed.get());
 
   ExceptionHandlerServer exception_handler_server(true);
-  std::wstring pipe_name = exception_handler_server.CreatePipe();
+  std::wstring pipe_name(L"\\\\.\\pipe\\test_name");
+  exception_handler_server.SetPipeName(pipe_name);
   RunServerThread server_thread(&exception_handler_server, &delegate);
   server_thread.Start();
   ScopedStopServerAndJoinThread scoped_stop_server_and_join_thread(
       &exception_handler_server, &server_thread);
 
-  WaitForSingleObject(server_ready.get(), INFINITE);
+  EXPECT_EQ(WaitForSingleObject(server_ready.get(), INFINITE), WAIT_OBJECT_0)
+      << ErrorMessage("WaitForSingleObject");
 
   // Spawn a child process, passing it the pipe name to connect to.
-  base::FilePath test_executable = Paths::Executable();
-  std::wstring child_test_executable =
-      test_executable.DirName()
-          .Append(directory_modification)
-          .Append(test_executable.BaseName().RemoveFinalExtension().value() +
-                  L"_dump_without_crashing.exe")
-          .value();
+  base::FilePath child_test_executable =
+      TestPaths::BuildArtifact(L"snapshot",
+                               L"dump_without_crashing",
+                               TestPaths::FileType::kExecutable,
+                               architecture);
   ChildLauncher child(child_test_executable, pipe_name);
-  child.Start();
+  ASSERT_NO_FATAL_FAILURE(child.Start());
 
   // The child tells us (approximately) where it will capture a dump.
   WinVMAddress dump_near_address;
-  LoggingReadFile(child.stdout_read_handle(),
-                  &dump_near_address,
-                  sizeof(dump_near_address));
+  LoggingReadFileExactly(child.stdout_read_handle(),
+                         &dump_near_address,
+                         sizeof(dump_near_address));
   delegate.set_dump_near(dump_near_address);
 
   // Wait for the child to crash and the exception information to be validated.
-  WaitForSingleObject(completed.get(), INFINITE);
+  EXPECT_EQ(WaitForSingleObject(completed.get(), INFINITE), WAIT_OBJECT_0)
+      << ErrorMessage("WaitForSingleObject");
+
+  EXPECT_EQ(child.WaitForExit(), 0u);
 }
 
-TEST(SimulateCrash, ChildDumpWithoutCrashing) {
-  TestDumpWithoutCrashingChild(FILE_PATH_LITERAL("."));
+#if defined(ADDRESS_SANITIZER)
+// https://crbug.com/845011
+#define MAYBE_ChildDumpWithoutCrashing DISABLED_ChildDumpWithoutCrashing
+#else
+#define MAYBE_ChildDumpWithoutCrashing ChildDumpWithoutCrashing
+#endif
+TEST(SimulateCrash, MAYBE_ChildDumpWithoutCrashing) {
+  TestDumpWithoutCrashingChild(TestPaths::Architecture::kDefault);
 }
 
 #if defined(ARCH_CPU_64_BITS)
 TEST(SimulateCrash, ChildDumpWithoutCrashingWOW64) {
-#ifndef NDEBUG
-  TestDumpWithoutCrashingChild(FILE_PATH_LITERAL("..\\..\\out\\Debug"));
-#else
-  TestDumpWithoutCrashingChild(FILE_PATH_LITERAL("..\\..\\out\\Release"));
-#endif
+  if (!TestPaths::Has32BitBuildArtifacts()) {
+    DISABLED_TEST();
+  }
+
+  TestDumpWithoutCrashingChild(TestPaths::Architecture::k32Bit);
 }
 #endif  // ARCH_CPU_64_BITS
 

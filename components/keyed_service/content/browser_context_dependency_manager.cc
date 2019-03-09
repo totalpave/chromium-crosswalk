@@ -4,7 +4,7 @@
 
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "base/trace_event/trace_event.h"
 #include "content/public/browser/browser_context.h"
 
@@ -60,22 +60,21 @@ BrowserContextDependencyManager::
   return will_create_browser_context_services_callbacks_.Add(callback);
 }
 
-#ifndef NDEBUG
 void BrowserContextDependencyManager::AssertBrowserContextWasntDestroyed(
-    content::BrowserContext* context) {
+    content::BrowserContext* context) const {
   DependencyManager::AssertContextWasntDestroyed(context);
 }
 
-void BrowserContextDependencyManager::MarkBrowserContextLiveForTesting(
+void BrowserContextDependencyManager::MarkBrowserContextLive(
     content::BrowserContext* context) {
-  DependencyManager::MarkContextLiveForTesting(context);
+  DependencyManager::MarkContextLive(context);
 }
-#endif  // NDEBUG
 
 // static
 BrowserContextDependencyManager*
 BrowserContextDependencyManager::GetInstance() {
-  return base::Singleton<BrowserContextDependencyManager>::get();
+  static base::NoDestructor<BrowserContextDependencyManager> factory;
+  return factory.get();
 }
 
 BrowserContextDependencyManager::BrowserContextDependencyManager() {
@@ -86,7 +85,7 @@ BrowserContextDependencyManager::~BrowserContextDependencyManager() {
 
 #ifndef NDEBUG
 void BrowserContextDependencyManager::DumpContextDependencies(
-    base::SupportsUserData* context) const {
+    void* context) const {
   // Whenever we try to build a destruction ordering, we should also dump a
   // dependency graph to "/path/to/context/context-dependencies.dot".
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(

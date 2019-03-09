@@ -4,12 +4,14 @@
 
 package org.chromium.net.urlconnection;
 
+import android.annotation.SuppressLint;
+import android.util.Log;
 import android.util.Pair;
 
-import org.chromium.base.Log;
 import org.chromium.net.CronetEngine;
+import org.chromium.net.CronetException;
+import org.chromium.net.ExperimentalUrlRequest;
 import org.chromium.net.UrlRequest;
-import org.chromium.net.UrlRequestException;
 import org.chromium.net.UrlResponseInfo;
 
 import java.io.FileNotFoundException;
@@ -20,6 +22,7 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.ProtocolException;
 import java.net.URL;
+import java.net.URLConnection;
 import java.nio.ByteBuffer;
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -34,19 +37,24 @@ import java.util.TreeMap;
  * {@hide}
  */
 public class CronetHttpURLConnection extends HttpURLConnection {
-    private static final String TAG = "cr_CronetHttpURLConn";
+    private static final String TAG = CronetHttpURLConnection.class.getSimpleName();
     private static final String CONTENT_LENGTH = "Content-Length";
     private final CronetEngine mCronetEngine;
     private final MessageLoop mMessageLoop;
     private UrlRequest mRequest;
     private final List<Pair<String, String>> mRequestHeaders;
+    private boolean mTrafficStatsTagSet;
+    private int mTrafficStatsTag;
+    private boolean mTrafficStatsUidSet;
+    private int mTrafficStatsUid;
 
     private CronetInputStream mInputStream;
     private CronetOutputStream mOutputStream;
     private UrlResponseInfo mResponseInfo;
-    private UrlRequestException mException;
-    private boolean mOnRedirectCalled = false;
-    private boolean mHasResponse = false;
+    private IOException mException;
+    private boolean mOnRedirectCalled;
+    // Whether response headers are received, the request is failed, or the request is canceled.
+    private boolean mHasResponseHeadersOrCompleted;
     private List<Map.Entry<String, String>> mResponseHeadersList;
     private Map<String, List<String>> mResponseHeadersMap;
 
@@ -227,6 +235,8 @@ public class CronetHttpURLConnection extends HttpURLConnection {
      * Helper method to get content length passed in by
      * {@link #setFixedLengthStreamingMode}
      */
+    // TODO(crbug.com/762630): Fix and remove suppression.
+    @SuppressLint("NewApi")
     private long getStreamingModeContentLength() {
         long contentLength = fixedContentLength;
         // Use reflection to see whether fixedContentLengthLong (only added
@@ -238,7 +248,7 @@ public class CronetHttpURLConnection extends HttpURLConnection {
             if (superFixedContentLengthLong != -1) {
                 contentLength = superFixedContentLengthLong;
             }
-        } catch (Exception e) {
+        } catch (NoSuchFieldException | IllegalAccessException e) {
             // Ignored.
         }
         return contentLength;
@@ -251,8 +261,9 @@ public class CronetHttpURLConnection extends HttpURLConnection {
         if (connected) {
             return;
         }
-        final UrlRequest.Builder requestBuilder = new UrlRequest.Builder(
-                getURL().toString(), new CronetUrlRequestCallback(), mMessageLoop, mCronetEngine);
+        final ExperimentalUrlRequest.Builder requestBuilder =
+                (ExperimentalUrlRequest.Builder) mCronetEngine.newUrlRequestBuilder(
+                        getURL().toString(), new CronetUrlRequestCallback(), mMessageLoop);
         if (doOutput) {
             if (method.equals("GET")) {
                 method = "POST";
@@ -286,11 +297,17 @@ public class CronetHttpURLConnection extends HttpURLConnection {
         }
         // Set HTTP method.
         requestBuilder.setHttpMethod(method);
+        if (mTrafficStatsTagSet) {
+            requestBuilder.setTrafficStatsTag(mTrafficStatsTag);
+        }
+        if (mTrafficStatsUidSet) {
+            requestBuilder.setTrafficStatsUid(mTrafficStatsUid);
+        }
 
-        connected = true;
         mRequest = requestBuilder.build();
         // Start the request.
         mRequest.start();
+        connected = true;
     }
 
     /**
@@ -402,7 +419,7 @@ public class CronetHttpURLConnection extends HttpURLConnection {
         // Sockets are assigned to requests according to request priorities
         // when sockets are connected. This requires requests with the same host,
         // domain and port to have same timeout.
-        Log.e(TAG, "setConnectTimeout is not supported by CronetHttpURLConnection");
+        Log.d(TAG, "setConnectTimeout is not supported by CronetHttpURLConnection");
     }
 
     /**
@@ -415,6 +432,54 @@ public class CronetHttpURLConnection extends HttpURLConnection {
     void getMoreData(ByteBuffer byteBuffer) throws IOException {
         mRequest.read(byteBuffer);
         mMessageLoop.loop(getReadTimeout());
+    }
+
+    /**
+     * Sets {@link android.net.TrafficStats} tag to use when accounting socket traffic caused by
+     * this request. See {@link android.net.TrafficStats} for more information. If no tag is
+     * set (e.g. this method isn't called), then Android accounts for the socket traffic caused
+     * by this request as if the tag value were set to 0.
+     * <p>
+     * <b>NOTE:</b>Setting a tag disallows sharing of sockets with requests
+     * with other tags, which may adversely effect performance by prohibiting
+     * connection sharing. In other words use of multiplexed sockets (e.g. HTTP/2
+     * and QUIC) will only be allowed if all requests have the same socket tag.
+     *
+     * @param tag the tag value used to when accounting for socket traffic caused by this
+     *            request. Tags between 0xFFFFFF00 and 0xFFFFFFFF are reserved and used
+     *            internally by system services like {@link android.app.DownloadManager} when
+     *            performing traffic on behalf of an application.
+     */
+    public void setTrafficStatsTag(int tag) {
+        if (connected) {
+            throw new IllegalStateException(
+                    "Cannot modify traffic stats tag after connection is made.");
+        }
+        mTrafficStatsTagSet = true;
+        mTrafficStatsTag = tag;
+    }
+
+    /**
+     * Sets specific UID to use when accounting socket traffic caused by this request. See
+     * {@link android.net.TrafficStats} for more information. Designed for use when performing
+     * an operation on behalf of another application. Caller must hold
+     * {@link android.Manifest.permission#MODIFY_NETWORK_ACCOUNTING} permission. By default
+     * traffic is attributed to UID of caller.
+     * <p>
+     * <b>NOTE:</b>Setting a UID disallows sharing of sockets with requests
+     * with other UIDs, which may adversely effect performance by prohibiting
+     * connection sharing. In other words use of multiplexed sockets (e.g. HTTP/2
+     * and QUIC) will only be allowed if all requests have the same UID set.
+     *
+     * @param uid the UID to attribute socket traffic caused by this request.
+     */
+    public void setTrafficStatsUid(int uid) {
+        if (connected) {
+            throw new IllegalStateException(
+                    "Cannot modify traffic stats UID after connection is made.");
+        }
+        mTrafficStatsUidSet = true;
+        mTrafficStatsUid = uid;
     }
 
     /**
@@ -437,6 +502,7 @@ public class CronetHttpURLConnection extends HttpURLConnection {
         @Override
         public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
             mResponseInfo = info;
+            mHasResponseHeadersOrCompleted = true;
             // Quits the message loop since we have the headers now.
             mMessageLoop.quit();
         }
@@ -479,21 +545,19 @@ public class CronetHttpURLConnection extends HttpURLConnection {
         }
 
         @Override
-        public void onFailed(
-                UrlRequest request, UrlResponseInfo info, UrlRequestException exception) {
+        public void onFailed(UrlRequest request, UrlResponseInfo info, CronetException exception) {
             if (exception == null) {
                 throw new IllegalStateException(
                         "Exception cannot be null in onFailed.");
             }
             mResponseInfo = info;
-            mException = exception;
-            setResponseDataCompleted(mException);
+            setResponseDataCompleted(exception);
         }
 
         @Override
         public void onCanceled(UrlRequest request, UrlResponseInfo info) {
             mResponseInfo = info;
-            setResponseDataCompleted(new IOException("stream closed"));
+            setResponseDataCompleted(new IOException("disconnect() called"));
         }
 
         /**
@@ -503,13 +567,14 @@ public class CronetHttpURLConnection extends HttpURLConnection {
          *            caller tries to read more data.
          */
         private void setResponseDataCompleted(IOException exception) {
+            mException = exception;
             if (mInputStream != null) {
                 mInputStream.setResponseDataCompleted(exception);
             }
             if (mOutputStream != null) {
                 mOutputStream.setRequestCompleted(exception);
             }
-            mHasResponse = true;
+            mHasResponseHeadersOrCompleted = true;
             mMessageLoop.quit();
         }
     }
@@ -526,13 +591,12 @@ public class CronetHttpURLConnection extends HttpURLConnection {
                 mOutputStream.close();
             }
         }
-        if (!mHasResponse) {
+        if (!mHasResponseHeadersOrCompleted) {
             startRequest();
             // Blocks until onResponseStarted or onFailed is called.
             mMessageLoop.loop();
-            mHasResponse = true;
         }
-        checkHasResponse();
+        checkHasResponseHeaders();
     }
 
     /**
@@ -540,8 +604,8 @@ public class CronetHttpURLConnection extends HttpURLConnection {
      * an exception occurred before headers received. This method should only be
      * called after onResponseStarted or onFailed.
      */
-    private void checkHasResponse() throws IOException {
-        if (!mHasResponse) throw new IllegalStateException("No response.");
+    private void checkHasResponseHeaders() throws IOException {
+        if (!mHasResponseHeadersOrCompleted) throw new IllegalStateException("No response.");
         if (mException != null) {
             throw mException;
         } else if (mResponseInfo == null) {

@@ -13,11 +13,6 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
 
-#if defined(OS_ANDROID)
-#include "base/android/jni_android.h"
-#include "ui/gfx/android/gfx_jni_registrar.h"
-#endif
-
 #if defined(OS_MACOSX) && !defined(OS_IOS)
 #include "base/test/mock_chrome_application_mac.h"
 #endif
@@ -29,7 +24,7 @@
 #endif
 
 #if !defined(OS_IOS)
-#include "mojo/edk/embedder/embedder.h"  // nogncheck
+#include "mojo/core/embedder/embedder.h"  // nogncheck
 #endif
 
 namespace {
@@ -46,10 +41,6 @@ class GfxTestSuite : public base::TestSuite {
   void Initialize() override {
     base::TestSuite::Initialize();
 
-#if defined(OS_ANDROID)
-    gfx::android::RegisterJni(base::android::AttachCurrentThread());
-#endif
-
 #if defined(OS_MACOSX) && !defined(OS_IOS)
     mock_cr_app::RegisterMockCrApp();
 #endif
@@ -57,7 +48,7 @@ class GfxTestSuite : public base::TestSuite {
     ui::RegisterPathProvider();
 
     base::FilePath ui_test_pak_path;
-    ASSERT_TRUE(PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
+    ASSERT_TRUE(base::PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
     ui::ResourceBundle::InitSharedInstanceWithPakPath(ui_test_pak_path);
 
 #if defined(OS_WIN)
@@ -99,11 +90,10 @@ int main(int argc, char** argv) {
   GfxTestSuite test_suite(argc, argv);
 
 #if !defined(OS_IOS)
-  mojo::edk::Init();
+  mojo::core::Init();
 #endif
 
   return base::LaunchUnitTests(
-      argc,
-      argv,
-      base::Bind(&GfxTestSuite::Run, base::Unretained(&test_suite)));
+      argc, argv,
+      base::BindOnce(&GfxTestSuite::Run, base::Unretained(&test_suite)));
 }

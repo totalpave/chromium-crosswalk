@@ -6,12 +6,10 @@
 
 #include <cmath>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 #include "base/logging.h"
 #include "ui/gfx/animation/tween.h"
+#include "ui/gfx/geometry/safe_integer_conversions.h"
 
 namespace {
 
@@ -36,9 +34,7 @@ bool MassageRotationIfMultipleOfNinetyDegrees(gfx::Transform* rotation,
   SkMatrix44& m = transform.matrix();
   float degrees_by_ninety = degrees / 90.0f;
 
-  int n = static_cast<int>(degrees_by_ninety > 0
-      ? floor(degrees_by_ninety + 0.5f)
-      : ceil(degrees_by_ninety - 0.5f));
+  int n = gfx::ToRoundedInt(degrees_by_ninety);
 
   n %= 4;
   if (n < 0)
@@ -96,8 +92,9 @@ gfx::Transform InterpolatedTransform::Interpolate(float t) const {
   return result;
 }
 
-void InterpolatedTransform::SetChild(InterpolatedTransform* child) {
-  child_.reset(child);
+void InterpolatedTransform::SetChild(
+    std::unique_ptr<InterpolatedTransform> child) {
+  child_ = std::move(child);
 }
 
 inline float InterpolatedTransform::ValueBetween(float time,
@@ -298,19 +295,19 @@ InterpolatedConstantTransform::~InterpolatedConstantTransform() {}
 //
 
 InterpolatedTransformAboutPivot::InterpolatedTransformAboutPivot(
-  const gfx::Point& pivot,
-  InterpolatedTransform* transform)
+    const gfx::Point& pivot,
+    std::unique_ptr<InterpolatedTransform> transform)
     : InterpolatedTransform() {
-  Init(pivot, transform);
+  Init(pivot, std::move(transform));
 }
 
 InterpolatedTransformAboutPivot::InterpolatedTransformAboutPivot(
-  const gfx::Point& pivot,
-  InterpolatedTransform* transform,
-  float start_time,
-  float end_time)
+    const gfx::Point& pivot,
+    std::unique_ptr<InterpolatedTransform> transform,
+    float start_time,
+    float end_time)
     : InterpolatedTransform() {
-  Init(pivot, transform);
+  Init(pivot, std::move(transform));
 }
 
 InterpolatedTransformAboutPivot::~InterpolatedTransformAboutPivot() {}
@@ -323,21 +320,22 @@ InterpolatedTransformAboutPivot::InterpolateButDoNotCompose(float t) const {
   return gfx::Transform();
 }
 
-void InterpolatedTransformAboutPivot::Init(const gfx::Point& pivot,
-                                           InterpolatedTransform* xform) {
+void InterpolatedTransformAboutPivot::Init(
+    const gfx::Point& pivot,
+    std::unique_ptr<InterpolatedTransform> xform) {
   gfx::Transform to_pivot;
   gfx::Transform from_pivot;
   to_pivot.Translate(SkIntToMScalar(-pivot.x()), SkIntToMScalar(-pivot.y()));
   from_pivot.Translate(SkIntToMScalar(pivot.x()), SkIntToMScalar(pivot.y()));
 
-  std::unique_ptr<InterpolatedTransform> pre_transform(
-      new InterpolatedConstantTransform(to_pivot));
-  std::unique_ptr<InterpolatedTransform> post_transform(
-      new InterpolatedConstantTransform(from_pivot));
+  std::unique_ptr<InterpolatedTransform> pre_transform =
+      std::make_unique<InterpolatedConstantTransform>(to_pivot);
+  std::unique_ptr<InterpolatedTransform> post_transform =
+      std::make_unique<InterpolatedConstantTransform>(from_pivot);
 
-  pre_transform->SetChild(xform);
-  xform->SetChild(post_transform.release());
-  transform_.reset(pre_transform.release());
+  xform->SetChild(std::move(post_transform));
+  pre_transform->SetChild(std::move(xform));
+  transform_ = std::move(pre_transform);
 }
 
 InterpolatedMatrixTransform::InterpolatedMatrixTransform(
@@ -360,12 +358,8 @@ InterpolatedMatrixTransform::~InterpolatedMatrixTransform() {}
 
 gfx::Transform
 InterpolatedMatrixTransform::InterpolateButDoNotCompose(float t) const {
-  gfx::DecomposedTransform blended;
-  bool success = gfx::BlendDecomposedTransforms(&blended,
-                                                end_decomp_,
-                                                start_decomp_,
-                                                t);
-  DCHECK(success);
+  gfx::DecomposedTransform blended =
+      gfx::BlendDecomposedTransforms(end_decomp_, start_decomp_, t);
   return gfx::ComposeTransform(blended);
 }
 

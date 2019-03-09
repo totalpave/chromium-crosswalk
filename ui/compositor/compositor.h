@@ -10,20 +10,28 @@
 #include <memory>
 #include <string>
 
-#include "base/containers/hash_tables.h"
+#include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
 #include "base/single_thread_task_runner.h"
 #include "base/time/time.h"
-#include "cc/output/begin_frame_args.h"
-#include "cc/surfaces/surface_sequence.h"
+#include "build/build_config.h"
+#include "cc/trees/element_id.h"
+#include "cc/trees/layer_tree_host.h"
 #include "cc/trees/layer_tree_host_client.h"
 #include "cc/trees/layer_tree_host_single_thread_client.h"
+#include "components/viz/common/frame_sinks/begin_frame_args.h"
+#include "components/viz/common/surfaces/frame_sink_id.h"
+#include "components/viz/common/surfaces/local_surface_id_allocation.h"
+#include "components/viz/host/host_frame_sink_client.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkMatrix44.h"
 #include "ui/compositor/compositor_animation_observer.h"
 #include "ui/compositor/compositor_export.h"
+#include "ui/compositor/compositor_lock.h"
 #include "ui/compositor/compositor_observer.h"
+#include "ui/compositor/external_begin_frame_client.h"
 #include "ui/compositor/layer_animator_collection.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
@@ -32,56 +40,124 @@
 #include "ui/gfx/native_widget_types.h"
 
 namespace base {
-class RunLoop;
 class SingleThreadTaskRunner;
 }
 
 namespace cc {
+class AnimationHost;
 class AnimationTimeline;
-class ContextProvider;
 class Layer;
 class LayerTreeDebugState;
-class LayerTreeHost;
-class RendererSettings;
-class SharedBitmapManager;
-class SurfaceIdAllocator;
-class SurfaceManager;
+class LayerTreeFrameSink;
 class TaskGraphRunner;
 }
 
 namespace gfx {
+struct PresentationFeedback;
 class Rect;
+class ScrollOffset;
 class Size;
 }
 
 namespace gpu {
 class GpuMemoryBufferManager;
-struct Mailbox;
+}
+
+namespace viz {
+class FrameSinkManagerImpl;
+class ContextProvider;
+class HostFrameSinkManager;
 }
 
 namespace ui {
 
 class Compositor;
 class CompositorVSyncManager;
+class ExternalBeginFrameClient;
 class LatencyInfo;
 class Layer;
 class Reflector;
-class Texture;
+class ScopedAnimationDurationScaleMode;
+class ScrollInputHandler;
 
-const int kCompositorLockTimeoutMs = 67;
+constexpr int kCompositorLockTimeoutMs = 67;
 
 class COMPOSITOR_EXPORT ContextFactoryObserver {
  public:
   virtual ~ContextFactoryObserver() {}
 
-  // Notifies that the ContextProvider returned from
+  // Notifies that the viz::ContextProvider returned from
   // ui::ContextFactory::SharedMainThreadContextProvider was lost.  When this
   // is called, the old resources (e.g. shared context, GL helper) still
   // exist, but are about to be destroyed. Getting a reference to those
   // resources from the ContextFactory (e.g. through
   // SharedMainThreadContextProvider()) will return newly recreated, valid
   // resources.
-  virtual void OnLostResources() = 0;
+  virtual void OnLostSharedContext() = 0;
+
+  // Notifies that the Viz process was lost, eg. crashed, failed to start or
+  // restarted. There are no ordering guarantees for when OnLostSharedContext()
+  // and OnLostVizProcess() will be called. This is only called when OOP-D is
+  // enabled.
+  virtual void OnLostVizProcess() = 0;
+};
+
+// This is privileged interface to the compositor. It is a global object.
+class COMPOSITOR_EXPORT ContextFactoryPrivate {
+ public:
+  virtual ~ContextFactoryPrivate() {}
+
+  // Creates a reflector that copies the content of the |mirrored_compositor|
+  // onto |mirroring_layer|.
+  virtual std::unique_ptr<Reflector> CreateReflector(
+      Compositor* mirrored_compositor,
+      Layer* mirroring_layer) = 0;
+
+  // Removes the reflector, which stops the mirroring.
+  virtual void RemoveReflector(Reflector* reflector) = 0;
+
+  // Allocate a new client ID for the display compositor.
+  virtual viz::FrameSinkId AllocateFrameSinkId() = 0;
+
+  // Gets the frame sink manager.
+  virtual viz::FrameSinkManagerImpl* GetFrameSinkManager() = 0;
+
+  // Gets the frame sink manager host instance.
+  virtual viz::HostFrameSinkManager* GetHostFrameSinkManager() = 0;
+
+  // Inform the display corresponding to this compositor if it is visible. When
+  // false it does not need to produce any frames. Visibility is reset for each
+  // call to CreateLayerTreeFrameSink.
+  virtual void SetDisplayVisible(ui::Compositor* compositor, bool visible) = 0;
+
+  // Resize the display corresponding to this compositor to a particular size.
+  virtual void ResizeDisplay(ui::Compositor* compositor,
+                             const gfx::Size& size) = 0;
+
+  // Attempts to immediately swap a frame with the current size if possible,
+  // then will no longer swap until ResizeDisplay() is called.
+  virtual void DisableSwapUntilResize(ui::Compositor* compositor) = 0;
+
+  // Sets the color matrix used to transform how all output is drawn to the
+  // display underlying this ui::Compositor.
+  virtual void SetDisplayColorMatrix(ui::Compositor* compositor,
+                                     const SkMatrix44& matrix) = 0;
+
+  // Set the output color profile into which this compositor should render.
+  virtual void SetDisplayColorSpace(
+      ui::Compositor* compositor,
+      const gfx::ColorSpace& blending_color_space,
+      const gfx::ColorSpace& output_color_space) = 0;
+
+  // Mac path for transporting vsync parameters to the display.  Other platforms
+  // update it via the BrowserCompositorLayerTreeFrameSink directly.
+  virtual void SetDisplayVSyncParameters(ui::Compositor* compositor,
+                                         base::TimeTicks timebase,
+                                         base::TimeDelta interval) = 0;
+  virtual void IssueExternalBeginFrame(ui::Compositor* compositor,
+                                       const viz::BeginFrameArgs& args) = 0;
+
+  virtual void SetOutputIsSecure(Compositor* compositor, bool secure) = 0;
 };
 
 // This class abstracts the creation of the 3D context for the compositor. It is
@@ -93,34 +169,16 @@ class COMPOSITOR_EXPORT ContextFactory {
   // Creates an output surface for the given compositor. The factory may keep
   // per-compositor data (e.g. a shared context), that needs to be cleaned up
   // by calling RemoveCompositor when the compositor gets destroyed.
-  virtual void CreateOutputSurface(base::WeakPtr<Compositor> compositor) = 0;
-
-  // Creates a reflector that copies the content of the |mirrored_compositor|
-  // onto |mirroring_layer|.
-  virtual std::unique_ptr<Reflector> CreateReflector(
-      Compositor* mirrored_compositor,
-      Layer* mirroring_layer) = 0;
-  // Removes the reflector, which stops the mirroring.
-  virtual void RemoveReflector(Reflector* reflector) = 0;
+  virtual void CreateLayerTreeFrameSink(
+      base::WeakPtr<Compositor> compositor) = 0;
 
   // Return a reference to a shared offscreen context provider usable from the
   // main thread.
-  virtual scoped_refptr<cc::ContextProvider>
-      SharedMainThreadContextProvider() = 0;
+  virtual scoped_refptr<viz::ContextProvider>
+  SharedMainThreadContextProvider() = 0;
 
   // Destroys per-compositor data.
   virtual void RemoveCompositor(Compositor* compositor) = 0;
-
-  // When true, the factory uses test contexts that do not do real GL
-  // operations.
-  virtual bool DoesCreateTestContexts() = 0;
-
-  // Returns the OpenGL target to use for image textures.
-  virtual uint32_t GetImageTextureTarget(gfx::BufferFormat format,
-                                         gfx::BufferUsage usage) = 0;
-
-  // Gets the shared bitmap manager for software mode.
-  virtual cc::SharedBitmapManager* GetSharedBitmapManager() = 0;
 
   // Gets the GPU memory buffer manager.
   virtual gpu::GpuMemoryBufferManager* GetGpuMemoryBufferManager() = 0;
@@ -128,55 +186,11 @@ class COMPOSITOR_EXPORT ContextFactory {
   // Gets the task graph runner.
   virtual cc::TaskGraphRunner* GetTaskGraphRunner() = 0;
 
-  // Creates a Surface ID allocator with a new namespace.
-  virtual std::unique_ptr<cc::SurfaceIdAllocator>
-  CreateSurfaceIdAllocator() = 0;
-
-  // Gets the surface manager.
-  virtual cc::SurfaceManager* GetSurfaceManager() = 0;
-
-  // Resize the display corresponding to this compositor to a particular size.
-  virtual void ResizeDisplay(ui::Compositor* compositor,
-                             const gfx::Size& size) = 0;
-
-  // Set the output color profile into which this compositor should render.
-  virtual void SetDisplayColorSpace(ui::Compositor* compositor,
-                                    const gfx::ColorSpace& color_space) = 0;
-
-  virtual void SetAuthoritativeVSyncInterval(ui::Compositor* compositor,
-                                             base::TimeDelta interval) = 0;
-
-  virtual void SetOutputIsSecure(Compositor* compositor, bool secure) = 0;
-
   virtual void AddObserver(ContextFactoryObserver* observer) = 0;
 
   virtual void RemoveObserver(ContextFactoryObserver* observer) = 0;
-};
 
-// This class represents a lock on the compositor, that can be used to prevent
-// commits to the compositor tree while we're waiting for an asynchronous
-// event. The typical use case is when waiting for a renderer to produce a frame
-// at the right size. The caller keeps a reference on this object, and drops the
-// reference once it desires to release the lock.
-// By default, the lock will be cancelled after a short timeout to ensure
-// responsiveness of the UI, so the compositor tree should be kept in a
-// "reasonable" state while the lock is held. If the compositor sets
-// locks to not time out, then the lock will remain in effect until destroyed.
-// Don't instantiate this class directly, use Compositor::GetCompositorLock.
-class COMPOSITOR_EXPORT CompositorLock
-    : public base::RefCounted<CompositorLock>,
-      public base::SupportsWeakPtr<CompositorLock> {
- private:
-  friend class base::RefCounted<CompositorLock>;
-  friend class Compositor;
-
-  explicit CompositorLock(Compositor* compositor);
-  ~CompositorLock();
-
-  void CancelLock();
-
-  Compositor* compositor_;
-  DISALLOW_COPY_AND_ASSIGN(CompositorLock);
+  virtual bool SyncTokensRequiredForDisplayCompositor() = 0;
 };
 
 // Compositor object to take care of GPU painting.
@@ -184,17 +198,39 @@ class COMPOSITOR_EXPORT CompositorLock
 // displayable form of pixels comprising a single widget's contents. It draws an
 // appropriately transformed texture for each transformed view in the widget's
 // view hierarchy.
-class COMPOSITOR_EXPORT Compositor
-    : NON_EXPORTED_BASE(public cc::LayerTreeHostClient),
-      NON_EXPORTED_BASE(public cc::LayerTreeHostSingleThreadClient) {
+class COMPOSITOR_EXPORT Compositor : public cc::LayerTreeHostClient,
+                                     public cc::LayerTreeHostSingleThreadClient,
+                                     public viz::HostFrameSinkClient {
  public:
-  Compositor(ui::ContextFactory* context_factory,
-             scoped_refptr<base::SingleThreadTaskRunner> task_runner);
+  // |trace_environment_name| is passed to trace events so that tracing
+  // can identify the environment the trace events are from. Examples are,
+  // "ash", and "browser". If no value is supplied, "browser" is used.
+  // See |LayerTreeSettings::automatically_allocate_surface_ids| for details on
+  // |automatically_allocate_surface_ids|.
+  Compositor(const viz::FrameSinkId& frame_sink_id,
+             ui::ContextFactory* context_factory,
+             ui::ContextFactoryPrivate* context_factory_private,
+             scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+             bool enable_pixel_canvas,
+             ExternalBeginFrameClient* external_begin_frame_client = nullptr,
+             bool force_software_compositor = false,
+             const char* trace_environment_name = nullptr,
+             bool automatically_allocate_surface_ids = true);
   ~Compositor() override;
 
   ui::ContextFactory* context_factory() { return context_factory_; }
 
-  void SetOutputSurface(std::unique_ptr<cc::OutputSurface> surface);
+  ui::ContextFactoryPrivate* context_factory_private() {
+    return context_factory_private_;
+  }
+
+  void AddChildFrameSink(const viz::FrameSinkId& frame_sink_id);
+  void RemoveChildFrameSink(const viz::FrameSinkId& frame_sink_id);
+
+  void SetLayerTreeFrameSink(std::unique_ptr<cc::LayerTreeFrameSink> surface);
+
+  // Called when a child surface is about to resize.
+  void OnChildResizing();
 
   // Schedules a redraw of the layer tree associated with this compositor.
   void ScheduleDraw();
@@ -210,14 +246,21 @@ class COMPOSITOR_EXPORT Compositor
 
   cc::AnimationTimeline* GetAnimationTimeline() const;
 
-  // Called when we need the compositor to preserve the alpha channel in the
-  // output for situations when we want to render transparently atop something
-  // else, e.g. Aero glass.
-  void SetHostHasTransparentBackground(bool host_has_transparent_background);
-
   // The scale factor of the device that this compositor is
   // compositing layers on.
   float device_scale_factor() const { return device_scale_factor_; }
+
+  // The color space of the device that this compositor is being displayed on.
+  const gfx::ColorSpace& output_color_space() const {
+    return output_color_space_;
+  }
+
+  // Gets and sets the color matrix used to transform the output colors of what
+  // this compositor renders.
+  const SkMatrix44& display_color_matrix() const {
+    return display_color_matrix_;
+  }
+  void SetDisplayColorMatrix(const SkMatrix44& matrix);
 
   // Where possible, draws are scissored to a damage region calculated from
   // changes to layer properties.  This bypasses that and indicates that
@@ -228,17 +271,29 @@ class COMPOSITOR_EXPORT Compositor
   // from changes to layer properties.
   void ScheduleRedrawRect(const gfx::Rect& damage_rect);
 
-  // Finishes all outstanding rendering and disables swapping on this surface.
-  void FinishAllRendering();
-
   // Finishes all outstanding rendering and disables swapping on this surface
   // until it is resized.
   void DisableSwapUntilResize();
+  void ReenableSwap();
 
   void SetLatencyInfo(const LatencyInfo& latency_info);
 
   // Sets the compositor's device scale factor and size.
-  void SetScaleAndSize(float scale, const gfx::Size& size_in_pixel);
+  void SetScaleAndSize(
+      float scale,
+      const gfx::Size& size_in_pixel,
+      const viz::LocalSurfaceIdAllocation& local_surface_id_allocation);
+
+  // Updates the LocalSurfaceIdAllocation from the parent.
+  viz::LocalSurfaceIdAllocation UpdateLocalSurfaceIdFromParent(
+      const viz::LocalSurfaceIdAllocation& local_surface_id_allocation);
+
+  // Returns the current LocalSurfaceIdAllocation, which may not be valid.
+  viz::LocalSurfaceIdAllocation GetLocalSurfaceIdAllocation() const;
+
+  // Returns a new LocalSurfaceIdAllocation by incrementing the child sequence
+  // number.
+  viz::LocalSurfaceIdAllocation RequestNewChildLocalSurfaceId();
 
   // Set the output color profile into which this compositor should render.
   void SetDisplayColorSpace(const gfx::ColorSpace& color_space);
@@ -256,13 +311,17 @@ class COMPOSITOR_EXPORT Compositor
   // Gets the visibility of the underlying compositor.
   bool IsVisible();
 
-  // The "authoritative" vsync interval, if provided, will override interval
-  // reported from 3D context. This is typically the value reported by a more
-  // reliable source, e.g, the platform display configuration.
-  // In the particular case of ChromeOS -- this is the value queried through
-  // XRandR, which is more reliable than the value queried through the 3D
-  // context.
-  void SetAuthoritativeVSyncInterval(const base::TimeDelta& interval);
+  // Gets or sets the scroll offset for the given layer in step with the
+  // cc::InputHandler. Returns true if the layer is active on the impl side.
+  bool GetScrollOffsetForLayer(cc::ElementId element_id,
+                               gfx::ScrollOffset* offset) const;
+  bool ScrollLayerTo(cc::ElementId element_id, const gfx::ScrollOffset& offset);
+
+  // Most platforms set their vsync info via
+  // BrowerCompositorLayerTreeFrameSink::OnUpdateVSyncParametersFromGpu(), but
+  // Mac routes vsync info via the browser compositor instead through this path.
+  void SetDisplayVSyncParameters(base::TimeTicks timebase,
+                                 base::TimeDelta interval);
 
   // Sets the widget for the compositor to render into.
   void SetAcceleratedWidget(gfx::AcceleratedWidget widget);
@@ -274,6 +333,14 @@ class COMPOSITOR_EXPORT Compositor
 
   // Returns the vsync manager for this compositor.
   scoped_refptr<CompositorVSyncManager> vsync_manager() const;
+
+  // This flag is used to force a compositor into software compositing even tho
+  // in general chrome is using gpu compositing. This allows the compositor to
+  // be created without a gpu context, and does not go through the gpu path at
+  // all. This flag can not be used with a compositor that embeds any external
+  // content via a SurfaceLayer, as they would not agree on what compositing
+  // mode to use for resources, but may be used eg for tooltip windows.
+  bool force_software_compositor() { return force_software_compositor_; }
 
   // Returns the main thread task runner this compositor uses. Users of the
   // compositor generally shouldn't use this.
@@ -291,111 +358,170 @@ class COMPOSITOR_EXPORT Compositor
   void RemoveAnimationObserver(CompositorAnimationObserver* observer);
   bool HasAnimationObserver(const CompositorAnimationObserver* observer) const;
 
-  // Change the timeout behavior for all future locks that are created. Locks
-  // should time out if there is an expectation that the compositor will be
-  // responsive.
-  void SetLocksWillTimeOut(bool locks_will_time_out) {
-    locks_will_time_out_ = locks_will_time_out;
+  // Creates a compositor lock. Returns NULL if it is not possible to lock at
+  // this time (i.e. we're waiting to complete a previous unlock). If the
+  // timeout is null, then no timeout is used.
+  std::unique_ptr<CompositorLock> GetCompositorLock(
+      CompositorLockClient* client,
+      base::TimeDelta timeout =
+          base::TimeDelta::FromMilliseconds(kCompositorLockTimeoutMs)) {
+    return lock_manager_.GetCompositorLock(client, timeout,
+                                           host_->DeferMainFrameUpdate());
   }
 
-  // Creates a compositor lock. Returns NULL if it is not possible to lock at
-  // this time (i.e. we're waiting to complete a previous unlock).
-  scoped_refptr<CompositorLock> GetCompositorLock();
-
-  // Internal functions, called back by command-buffer contexts on swap buffer
-  // events.
-
-  // Signals swap has been posted.
-  void OnSwapBuffersPosted();
-
-  // Signals swap has completed.
-  void OnSwapBuffersComplete();
-
-  // Signals swap has aborted (e.g. lost context).
-  void OnSwapBuffersAborted();
+  // Registers a callback that is run when the next frame successfully makes it
+  // to the screen (it's entirely possible some frames may be dropped between
+  // the time this is called and the callback is run).
+  // See ui/gfx/presentation_feedback.h for details on the args (TimeTicks is
+  // always non-zero).
+  using PresentationTimeCallback =
+      base::OnceCallback<void(const gfx::PresentationFeedback&)>;
+  void RequestPresentationTimeForNextFrame(PresentationTimeCallback callback);
 
   // LayerTreeHostClient implementation.
   void WillBeginMainFrame() override {}
   void DidBeginMainFrame() override {}
-  void BeginMainFrame(const cc::BeginFrameArgs& args) override;
+  void DidUpdateLayers() override;
+  void BeginMainFrame(const viz::BeginFrameArgs& args) override;
   void BeginMainFrameNotExpectedSoon() override;
+  void BeginMainFrameNotExpectedUntil(base::TimeTicks time) override;
   void UpdateLayerTreeHost() override;
-  void ApplyViewportDeltas(const gfx::Vector2dF& inner_delta,
-                           const gfx::Vector2dF& outer_delta,
-                           const gfx::Vector2dF& elastic_overscroll_delta,
-                           float page_scale,
-                           float top_controls_delta) override {}
-  void RequestNewOutputSurface() override;
-  void DidInitializeOutputSurface() override;
-  void DidFailToInitializeOutputSurface() override;
+  void ApplyViewportChanges(const cc::ApplyViewportChangesArgs& args) override {
+  }
+  void RecordWheelAndTouchScrollingCount(bool has_scrolled_by_wheel,
+                                         bool has_scrolled_by_touch) override {}
+  void SendOverscrollEventFromImplSide(
+      const gfx::Vector2dF& overscroll_delta,
+      cc::ElementId scroll_latched_element_id) override {}
+  void SendScrollEndEventFromImplSide(
+      cc::ElementId scroll_latched_element_id) override {}
+  void RequestNewLayerTreeFrameSink() override;
+  void DidInitializeLayerTreeFrameSink() override {}
+  void DidFailToInitializeLayerTreeFrameSink() override;
   void WillCommit() override {}
   void DidCommit() override;
-  void DidCommitAndDrawFrame() override;
-  void DidCompleteSwapBuffers() override;
+  void DidCommitAndDrawFrame() override {}
+  void DidReceiveCompositorFrameAck() override;
   void DidCompletePageScaleAnimation() override {}
+  void DidPresentCompositorFrame(
+      uint32_t frame_token,
+      const gfx::PresentationFeedback& feedback) override;
+  void RecordStartOfFrameMetrics() override {}
+  void RecordEndOfFrameMetrics(base::TimeTicks frame_begin_time) override {}
+  void DidGenerateLocalSurfaceIdAllocation(
+      const viz::LocalSurfaceIdAllocation& allocation) override;
 
   // cc::LayerTreeHostSingleThreadClient implementation.
-  void DidPostSwapBuffers() override;
-  void DidAbortSwapBuffers() override;
+  void DidSubmitCompositorFrame() override;
+  void DidLoseLayerTreeFrameSink() override {}
+  void FrameIntervalUpdated(base::TimeDelta interval) override;
 
-  bool IsLocked() { return compositor_lock_ != NULL; }
+  // viz::HostFrameSinkClient implementation.
+  void OnFirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
+  void OnFrameTokenChanged(uint32_t frame_token) override;
+
+  bool IsLocked() { return lock_manager_.IsLocked(); }
 
   void SetOutputIsSecure(bool output_is_secure);
 
   const cc::LayerTreeDebugState& GetLayerTreeDebugState() const;
   void SetLayerTreeDebugState(const cc::LayerTreeDebugState& debug_state);
-  const cc::RendererSettings& GetRendererSettings() const;
 
   LayerAnimatorCollection* layer_animator_collection() {
     return &layer_animator_collection_;
   }
 
-  cc::SurfaceIdAllocator* surface_id_allocator() {
-    return surface_id_allocator_.get();
+  const viz::FrameSinkId& frame_sink_id() const { return frame_sink_id_; }
+  int activated_frame_count() const { return activated_frame_count_; }
+  float refresh_rate() const { return refresh_rate_; }
+
+  ExternalBeginFrameClient* external_begin_frame_client() {
+    return external_begin_frame_client_;
+  }
+
+  void SetAllowLocksToExtendTimeout(bool allowed) {
+    lock_manager_.set_allow_locks_to_extend_timeout(allowed);
+  }
+
+  // If true, all paint commands are recorded at pixel size instead of DIP.
+  bool is_pixel_canvas() const { return is_pixel_canvas_; }
+
+  ScrollInputHandler* scroll_input_handler() const {
+    return scroll_input_handler_.get();
   }
 
  private:
   friend class base::RefCounted<Compositor>;
-  friend class CompositorLock;
-
-  // Called by CompositorLock.
-  void UnlockCompositor();
-
-  // Called to release any pending CompositorLock
-  void CancelCompositorLock();
 
   gfx::Size size_;
 
   ui::ContextFactory* context_factory_;
+  ui::ContextFactoryPrivate* context_factory_private_;
 
   // The root of the Layer tree drawn by this compositor.
-  Layer* root_layer_;
+  Layer* root_layer_ = nullptr;
 
-  base::ObserverList<CompositorObserver, true> observer_list_;
-  base::ObserverList<CompositorAnimationObserver> animation_observer_list_;
+  base::ObserverList<CompositorObserver, true>::Unchecked observer_list_;
+  base::ObserverList<CompositorAnimationObserver>::Unchecked
+      animation_observer_list_;
 
-  gfx::AcceleratedWidget widget_;
-  bool widget_valid_;
-  bool output_surface_requested_;
-  std::unique_ptr<cc::SurfaceIdAllocator> surface_id_allocator_;
+  gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;
+  // A sequence number of a current compositor frame for use with metrics.
+  int activated_frame_count_ = 0;
+
+  // Current vsync refresh rate per second. Initialized to 60hz as a reasonable
+  // value until first begin frame arrives with the real refresh rate.
+  float refresh_rate_ = 60.f;
+
+  // A map from child id to parent id.
+  std::unordered_set<viz::FrameSinkId, viz::FrameSinkIdHash> child_frame_sinks_;
+  bool widget_valid_ = false;
+  bool layer_tree_frame_sink_requested_ = false;
+  const viz::FrameSinkId frame_sink_id_;
   scoped_refptr<cc::Layer> root_web_layer_;
+  std::unique_ptr<cc::AnimationHost> animation_host_;
   std::unique_ptr<cc::LayerTreeHost> host_;
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
   // The manager of vsync parameters for this compositor.
   scoped_refptr<CompositorVSyncManager> vsync_manager_;
 
+  // Snapshot of last set vsync parameters, to avoid redundant IPCs.
+  base::TimeTicks vsync_timebase_;
+  base::TimeDelta vsync_interval_;
+
+  ExternalBeginFrameClient* const external_begin_frame_client_;
+
+  const bool force_software_compositor_;
+
   // The device scale factor of the monitor that this compositor is compositing
   // layers on.
-  float device_scale_factor_;
-
-  bool locks_will_time_out_;
-  CompositorLock* compositor_lock_;
+  float device_scale_factor_ = 0.f;
 
   LayerAnimatorCollection layer_animator_collection_;
   scoped_refptr<cc::AnimationTimeline> animation_timeline_;
+  std::unique_ptr<ScopedAnimationDurationScaleMode> slow_animations_;
 
-  base::WeakPtrFactory<Compositor> weak_ptr_factory_;
+  SkMatrix44 display_color_matrix_;
+
+  gfx::ColorSpace output_color_space_;
+  gfx::ColorSpace blending_color_space_;
+
+  // If true, all paint commands are recorded at pixel size instead of DIP.
+  const bool is_pixel_canvas_;
+
+  CompositorLockManager lock_manager_;
+
+  std::unique_ptr<ScrollInputHandler> scroll_input_handler_;
+
+  // Set in DisableSwapUntilResize and reset when a resize happens.
+  bool disabled_swap_until_resize_ = false;
+
+  const char* trace_environment_name_;
+
+  viz::LocalSurfaceIdAllocation last_local_surface_id_allocation_;
+
+  base::WeakPtrFactory<Compositor> context_creation_weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(Compositor);
 };

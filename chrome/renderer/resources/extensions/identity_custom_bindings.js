@@ -4,11 +4,10 @@
 
 // Custom binding for the Identity API.
 
-var binding = require('binding').Binding.create('identity');
+var binding = apiBridge || require('binding').Binding.create('identity');
 
 binding.registerCustomHook(function(binding, id, contextType) {
   var apiFunctions = binding.apiFunctions;
-  var identity = binding.compiledApi;
 
   apiFunctions.setHandleRequest('getRedirectURL', function(path) {
     if (path === null || path === undefined)
@@ -21,4 +20,5 @@ binding.registerCustomHook(function(binding, id, contextType) {
   });
 });
 
-exports.$set('binding', binding.generate());
+if (!apiBridge)
+  exports.$set('binding', binding.generate());

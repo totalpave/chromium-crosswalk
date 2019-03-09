@@ -117,8 +117,6 @@ public class BookmarkAddEditFolderActivity extends SynchronousInitializationActi
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        BookmarkUtils.setTaskDescriptionInDocumentMode(this,
-                getString(R.string.bookmark_action_bar_edit_folder));
         mModel = new BookmarkModel();
         mModel.addObserver(mBookmarkModelObserver);
         mIsAddMode = getIntent().getBooleanExtra(INTENT_IS_ADD_MODE, false);
@@ -158,6 +156,12 @@ public class BookmarkAddEditFolderActivity extends SynchronousInitializationActi
         }
 
         mParentTextView.setText(mModel.getBookmarkTitle(mParentId));
+
+        View shadow = findViewById(R.id.shadow);
+        View scrollView = findViewById(R.id.scroll_view);
+        scrollView.getViewTreeObserver().addOnScrollChangedListener(() -> {
+            shadow.setVisibility(scrollView.getScrollY() > 0 ? View.VISIBLE : View.GONE);
+        });
     }
 
     @Override
@@ -180,9 +184,9 @@ public class BookmarkAddEditFolderActivity extends SynchronousInitializationActi
                     .setShowAsActionFlags(MenuItem.SHOW_AS_ACTION_IF_ROOM);
         } else {
             mDeleteButton = menu.add(R.string.bookmark_action_bar_delete)
-                    .setIcon(TintedDrawable.constructTintedDrawable(
-                            getResources(), R.drawable.btn_trash))
-                    .setShowAsActionFlags(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                                    .setIcon(TintedDrawable.constructTintedDrawable(
+                                            this, R.drawable.ic_delete_white_24dp))
+                                    .setShowAsActionFlags(MenuItem.SHOW_AS_ACTION_IF_ROOM);
         }
 
         return super.onCreateOptionsMenu(menu);

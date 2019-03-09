@@ -7,9 +7,8 @@
 
 #include <memory>
 
-#include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "device/core/device_client.h"
+#include "device/base/device_client.h"
 
 namespace extensions {
 
@@ -22,10 +21,8 @@ class ShellDeviceClient : device::DeviceClient {
 
   // device::DeviceClient implementation
   device::UsbService* GetUsbService() override;
-  device::HidService* GetHidService() override;
 
  private:
-  std::unique_ptr<device::HidService> hid_service_;
   std::unique_ptr<device::UsbService> usb_service_;
 
   DISALLOW_COPY_AND_ASSIGN(ShellDeviceClient);

@@ -5,57 +5,30 @@
 #ifndef IOS_CHROME_BROWSER_UI_URL_LOADER_H_
 #define IOS_CHROME_BROWSER_UI_URL_LOADER_H_
 
-#import <UIKit/UIKit.h>
+#import <Foundation/Foundation.h>
 
-#include "base/strings/string16.h"
-#include "ui/base/page_transition_types.h"
+#import "ios/chrome/browser/ui/chrome_load_params.h"
 
-class GURL;
+@class OpenNewTabCommand;
 
 namespace sessions {
 struct SessionTab;
 }
 
-namespace web {
-struct Referrer;
-}
+@protocol UrlLoader
 
-// Describes the intended position for a new tab.
-enum OpenPosition {
-  kCurrentTab,  // Relative to currently selected tab.
-  kLastTab      // Always at end of tab model.
-};
+// Load a new request.
+// TODO(crbug.com/907527): Check if it is possible to merge with the other way
+// of loading a URL.
+- (void)loadURLWithParams:(const ChromeLoadParams&)params;
 
-@protocol UrlLoader<NSObject>
-
-// Load a new url.
-- (void)loadURL:(const GURL&)url
-             referrer:(const web::Referrer&)referrer
-           transition:(ui::PageTransition)transition
-    rendererInitiated:(BOOL)rendererInitiated;
-
-// Load a new URL on a new page/tab. The |referrer| and |windowName| are
-// optional. The tab will be placed in the model according to |appendTo|.
-- (void)webPageOrderedOpen:(const GURL&)url
-                  referrer:(const web::Referrer&)referrer
-                windowName:(NSString*)windowName
-              inBackground:(BOOL)inBackground
-                  appendTo:(OpenPosition)appendTo;
-
-// Load a new URL on a new page/tab. The |referrer| and |windowName| are
-// optional. The tab will be placed in the model according to |appendTo|.
-- (void)webPageOrderedOpen:(const GURL&)url
-                  referrer:(const web::Referrer&)referrer
-                windowName:(NSString*)windowName
-               inIncognito:(BOOL)inIncognito
-              inBackground:(BOOL)inBackground
-                  appendTo:(OpenPosition)appendTo;
-
-// Load a tab with the given session.
-- (void)loadSessionTab:(const sessions::SessionTab*)sessionTab;
-
-// Loads the text entered in the location bar as javascript.
-- (void)loadJavaScriptFromLocationBar:(NSString*)script;
+// Load a new URL on a new page/tab. The |referrer| is optional. The tab will be
+// placed in the model according to |appendTo|. |originPoint| is used when the
+// tab is opened in background as the origin point for the animation, it is not
+// used if the tab is opened in foreground.
+// TODO(crbug.com/907527): Check if it is possible to merge with the other way
+// of loading a URL.
+- (void)webPageOrderedOpen:(OpenNewTabCommand*)command;
 
 @end
 

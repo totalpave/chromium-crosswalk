@@ -6,17 +6,19 @@
 #define CHROMECAST_PUBLIC_MEDIA_MEDIA_PIPELINE_BACKEND_H_
 
 #include <stdint.h>
+
 #include <string>
 
 #include "cast_key_status.h"
+#include "chromecast_export.h"
 #include "decoder_config.h"
 
 namespace chromecast {
+class TaskRunner;
 struct Size;
 
 namespace media {
 class CastDecoderBuffer;
-class DecryptContext;
 
 // Interface for platform-specific output of media.
 // A new MediaPipelineBackend will be instantiated for each media player
@@ -57,7 +59,7 @@ class MediaPipelineBackend {
       virtual void OnEndOfStream() = 0;
 
       // May be called if a decoder error occurs. No more calls to PushBuffer()
-      // will be made after this is called.
+      // should be made after this is called.
       virtual void OnDecoderError() = 0;
 
       // Must be called when a decryption key status changes.
@@ -107,7 +109,7 @@ class MediaPipelineBackend {
     // delay measurement was taken. Both times in microseconds.
     struct RenderingDelay {
       RenderingDelay()
-          : delay_microseconds(INT64_MIN), timestamp_microseconds(INT64_MIN) {}
+          : delay_microseconds(0), timestamp_microseconds(INT64_MIN) {}
       RenderingDelay(int64_t delay_microseconds_in,
                      int64_t timestamp_microseconds_in)
           : delay_microseconds(delay_microseconds_in),
@@ -137,13 +139,25 @@ class MediaPipelineBackend {
 
     // Returns the pipeline latency: i.e. the amount of data
     // in the pipeline that have not been rendered yet, in microseconds.
-    // Returns delay = INT64_MIN if the latency is not available.
+    // Returns a RenderingDelay.timestamp = INT64_MIN if the latency is not
+    // available.
     // Only called when the backend is playing.
     virtual RenderingDelay GetRenderingDelay() = 0;
 
     // Returns the playback statistics since last call to backend Start.  Only
     // called when playing or paused.
     virtual void GetStatistics(Statistics* statistics) = 0;
+
+    // Returns the minimum amount of audio data buffered (in microseconds)
+    // necessary to prevent underrun for the given |config|; ie, if the
+    // rendering delay falls below this value, then underrun may occur.
+    static int64_t GetMinimumBufferedTime(const AudioConfig& config)
+        __attribute__((__weak__));
+
+    // Returns true if the audio decoder requires that encrypted buffers be
+    // decrypted before being passed to PushBuffer().
+    CHROMECAST_EXPORT static bool RequiresDecryption()
+        __attribute__((__weak__));
 
    protected:
     ~AudioDecoder() override {}
@@ -159,8 +173,12 @@ class MediaPipelineBackend {
       uint64_t dropped_frames;  // Reported as webkitDroppedFrames.
     };
 
-    // Provides the video configuration.  Called once before the backend is
-    // initialized, and again any time the configuration changes (in any state).
+    // Provides the video configuration. Called once with the configuration for
+    // the primary stream before the backend is initialized, and the
+    // configuration may contain a pointer to additional configuration for a
+    // secondary stream. Called again with the configuration for either the
+    // primary or secondary stream when either changes after the backend is
+    // initialized.
     // Note that SetConfig() may be called before SetDelegate() is called.
     // Returns true if the configuration is a supported configuration.
     virtual bool SetConfig(const VideoConfig& config) = 0;
@@ -171,6 +189,57 @@ class MediaPipelineBackend {
 
    protected:
     ~VideoDecoder() override {}
+  };
+
+  // This is created/deleted on media thread. All the methods and delegate
+  // methods should be called on media thread.
+  class AudioDecryptor {
+   public:
+    using BufferStatus = MediaPipelineBackend::BufferStatus;
+
+    // Delegate methods must be called on media thread.
+    class Delegate {
+     public:
+      // Called to indicate decryptor can accept more buffers, after
+      // PushBufferForDecrypt returns |kBufferPending|.
+      virtual void OnPushBufferForDecryptComplete(BufferStatus status) = 0;
+
+      // Must be called for each pushed buffer (both clear and encrypted).
+      // Returns false if decryption fails, e.g. license policy violation.
+      virtual void OnDecryptComplete(bool success) = 0;
+
+     protected:
+      virtual ~Delegate() = default;
+    };
+
+    // Aborts all the pending operations once the object is deleted.
+    virtual ~AudioDecryptor() = default;
+
+    // Provides delegate for this decryptor. Called once before any other APIs.
+    virtual void SetDelegate(Delegate* delegate) = 0;
+
+    // Pushes a buffer of data for decrypting. Decrypted data will be put in
+    // |output|. Implementation MUST check the license policy before returning
+    // the clear buffer back.
+    //
+    // Similar to Decoder::PushBuffer, implementation can return
+    // |kBufferPending| to stop caller from pushing more buffers. See comments
+    // of Decoder::PushBuffer for more details on buffer pushing.
+    //
+    // Implementation must invoke Delegate::OnDecryptComplete once data is
+    // decrypted. Both encrypted and clear buffers will be pushed.
+    // Implementation should call the delegate methods in the same sequence as
+    // pushing buffer.
+    //
+    // Once EOS buffer is pushed, implementation should decrypt and return all
+    // the buffers.
+    //
+    // |buffer| and |output| are owned by caller. Caller must not destroy them
+    // until Delegate::OnDecryptComplete is called. |output| must be long
+    // enough to hold clear data. |output| may overlap with the memory carried
+    // by |buffer|. The size of decrypted data should be same as encrypted data.
+    virtual BufferStatus PushBufferForDecrypt(CastDecoderBuffer* buffer,
+                                              uint8_t* output) = 0;
   };
 
   virtual ~MediaPipelineBackend() {}
@@ -205,7 +274,7 @@ class MediaPipelineBackend {
 
   // Returns pipeline to 'Initialized' state.  May be called while playing or
   // paused.  Buffers cannot be pushed in Initialized state.
-  virtual bool Stop() = 0;
+  virtual void Stop() = 0;
 
   // Pauses media playback.  Called only when in playing state.
   virtual bool Pause() = 0;
@@ -221,6 +290,17 @@ class MediaPipelineBackend {
   // of 1.0 is assumed. Returns true if successful. Only called when in
   // the "playing" or "paused" states.
   virtual bool SetPlaybackRate(float rate) = 0;
+
+  // Creates a new AudioDecryptor for extracting clear audio buffers.  Caller
+  // owns the object. This will be called multiple times on media thread. When
+  // the object is deleted, the implementation should abort all the pending
+  // operations.
+  // This function is optional. The correct implementation must return a valid
+  // object. Platforms which support standard CDM decryption APIs do not need to
+  // implement this function.
+  CHROMECAST_EXPORT static AudioDecryptor* CreateAudioDecryptor(
+      const EncryptionScheme& scheme,
+      TaskRunner* task_runner) __attribute__((weak));
 };
 
 }  // namespace media

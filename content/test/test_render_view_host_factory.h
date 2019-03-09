@@ -16,7 +16,6 @@ namespace content {
 class SiteInstance;
 class RenderViewHostDelegate;
 class RenderProcessHostFactory;
-class SessionStorageNamespace;
 
 // Manages creation of the RenderViewHosts using our special subclass. This
 // automatically registers itself when it goes in scope, and unregisters itself
@@ -35,6 +34,7 @@ class TestRenderViewHostFactory : public RenderViewHostFactory {
       RenderWidgetHostDelegate* widget_delegate,
       int32_t routing_id,
       int32_t main_frame_routing_id,
+      int32_t widget_routing_id,
       bool swapped_out) override;
 
  private:

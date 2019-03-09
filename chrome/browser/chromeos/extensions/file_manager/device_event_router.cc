@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/chromeos/extensions/file_manager/device_event_router.h"
+
 #include "base/bind.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/browser/chromeos/extensions/file_manager/device_event_router.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager.h"
+#include "chromeos/disks/disk.h"
 #include "content/public/browser/browser_thread.h"
 
 namespace file_manager {
@@ -30,25 +32,24 @@ DeviceEventRouter::DeviceEventRouter(base::TimeDelta overriding_time_delta)
       weak_factory_(this) {
 }
 
-DeviceEventRouter::~DeviceEventRouter() {
-}
+DeviceEventRouter::~DeviceEventRouter() = default;
 
 void DeviceEventRouter::Startup() {
   is_starting_up_ = true;
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&DeviceEventRouter::StartupDelayed,
-                 weak_factory_.GetWeakPtr()),
+      base::BindOnce(&DeviceEventRouter::StartupDelayed,
+                     weak_factory_.GetWeakPtr()),
       startup_time_delta_);
 }
 
 void DeviceEventRouter::StartupDelayed() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   is_starting_up_ = false;
 }
 
 void DeviceEventRouter::OnDeviceAdded(const std::string& device_path) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   SetDeviceState(device_path, DEVICE_STATE_USUAL);
   if (IsExternalStorageDisabled()) {
@@ -59,26 +60,24 @@ void DeviceEventRouter::OnDeviceAdded(const std::string& device_path) {
 }
 
 void DeviceEventRouter::OnDeviceRemoved(const std::string& device_path) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   SetDeviceState(device_path, DEVICE_STATE_USUAL);
   OnDeviceEvent(file_manager_private::DEVICE_EVENT_TYPE_REMOVED, device_path);
 }
 
-void DeviceEventRouter::OnDiskAdded(
-    const chromeos::disks::DiskMountManager::Disk& disk,
-    bool mounting) {
+void DeviceEventRouter::OnDiskAdded(const chromeos::disks::Disk& disk,
+                                    bool mounting) {
   // Do nothing.
 }
 
-void DeviceEventRouter::OnDiskRemoved(
-    const chromeos::disks::DiskMountManager::Disk& disk) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+void DeviceEventRouter::OnDiskRemoved(const chromeos::disks::Disk& disk) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   if (is_resuming_ || is_starting_up_)
     return;
 
   const std::string& device_path = disk.system_path_prefix();
-  if (!disk.mount_path().empty() &&
+  if (!disk.is_read_only() && disk.is_mounted() &&
       GetDeviceState(device_path) != DEVICE_HARD_UNPLUGGED_AND_REPORTED) {
     OnDeviceEvent(file_manager_private::DEVICE_EVENT_TYPE_HARD_UNPLUGGED,
                   device_path);
@@ -88,7 +87,7 @@ void DeviceEventRouter::OnDiskRemoved(
 
 void DeviceEventRouter::OnVolumeMounted(chromeos::MountError error_code,
                                         const Volume& volume) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   const std::string& device_path = volume.system_path_prefix().AsUTF8Unsafe();
   SetDeviceState(device_path, DEVICE_STATE_USUAL);
@@ -101,7 +100,7 @@ void DeviceEventRouter::OnVolumeUnmounted(chromeos::MountError error_code,
 
 void DeviceEventRouter::OnFormatStarted(const std::string& device_path,
                                         bool success) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   if (success) {
     OnDeviceEvent(file_manager_private::DEVICE_EVENT_TYPE_FORMAT_START,
@@ -114,29 +113,48 @@ void DeviceEventRouter::OnFormatStarted(const std::string& device_path,
 
 void DeviceEventRouter::OnFormatCompleted(const std::string& device_path,
                                           bool success) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   OnDeviceEvent(success ? file_manager_private::DEVICE_EVENT_TYPE_FORMAT_SUCCESS
                         : file_manager_private::DEVICE_EVENT_TYPE_FORMAT_FAIL,
                 device_path);
 }
 
-void DeviceEventRouter::SuspendImminent() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+void DeviceEventRouter::OnRenameStarted(const std::string& device_path,
+                                        bool success) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  OnDeviceEvent(success ? file_manager_private::DEVICE_EVENT_TYPE_RENAME_START
+                        : file_manager_private::DEVICE_EVENT_TYPE_RENAME_FAIL,
+                device_path);
+}
+
+void DeviceEventRouter::OnRenameCompleted(const std::string& device_path,
+                                          bool success) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  OnDeviceEvent(success ? file_manager_private::DEVICE_EVENT_TYPE_RENAME_SUCCESS
+                        : file_manager_private::DEVICE_EVENT_TYPE_RENAME_FAIL,
+                device_path);
+}
+
+void DeviceEventRouter::SuspendImminent(
+    power_manager::SuspendImminent::Reason reason) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   is_resuming_ = true;
 }
 
 void DeviceEventRouter::SuspendDone(const base::TimeDelta& sleep_duration) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&DeviceEventRouter::SuspendDoneDelayed,
-                 weak_factory_.GetWeakPtr()),
+      base::BindOnce(&DeviceEventRouter::SuspendDoneDelayed,
+                     weak_factory_.GetWeakPtr()),
       resume_time_delta_);
 }
 
 void DeviceEventRouter::SuspendDoneDelayed() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   is_resuming_ = false;
 }
 

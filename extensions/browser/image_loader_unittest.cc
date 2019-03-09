@@ -6,16 +6,14 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/json/json_file_value_serializer.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/test/test_browser_context.h"
-#include "content/public/test/test_browser_thread.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/extensions_test.h"
@@ -33,33 +31,24 @@
 #include "ui/gfx/image/image_family.h"
 #include "ui/gfx/image/image_skia.h"
 
-using content::BrowserThread;
-using content::NotificationService;
-
 namespace extensions {
 
 class ImageLoaderTest : public ExtensionsTest {
  public:
-  ImageLoaderTest()
-      : image_loaded_count_(0),
-        quit_in_image_loaded_(false),
-        ui_thread_(BrowserThread::UI, &ui_loop_),
-        file_thread_(BrowserThread::FILE),
-        io_thread_(BrowserThread::IO),
-        notification_service_(NotificationService::Create()) {}
+  ImageLoaderTest() : image_loaded_count_(0), quit_in_image_loaded_(false) {}
 
   void OnImageLoaded(const gfx::Image& image) {
     image_loaded_count_++;
     if (quit_in_image_loaded_)
-      base::MessageLoop::current()->QuitWhenIdle();
+      base::RunLoop::QuitCurrentWhenIdleDeprecated();
     image_ = image;
   }
 
-  void OnImageFamilyLoaded(const gfx::ImageFamily& image_family) {
+  void OnImageFamilyLoaded(gfx::ImageFamily image_family) {
     image_loaded_count_++;
     if (quit_in_image_loaded_)
-      base::MessageLoop::current()->QuitWhenIdle();
-    image_family_ = image_family;
+      base::RunLoop::QuitCurrentWhenIdleDeprecated();
+    image_family_ = std::move(image_family);
   }
 
   void WaitForImageLoad() {
@@ -78,7 +67,7 @@ class ImageLoaderTest : public ExtensionsTest {
                                            Manifest::Location location) {
     // Create and load an extension.
     base::FilePath extension_dir;
-    if (!PathService::Get(DIR_TEST_DATA, &extension_dir)) {
+    if (!base::PathService::Get(DIR_TEST_DATA, &extension_dir)) {
       EXPECT_FALSE(true);
       return NULL;
     }
@@ -106,19 +95,8 @@ class ImageLoaderTest : public ExtensionsTest {
   gfx::ImageFamily image_family_;
 
  private:
-  void SetUp() override {
-    testing::Test::SetUp();
-    file_thread_.Start();
-    io_thread_.Start();
-  }
-
   int image_loaded_count_;
   bool quit_in_image_loaded_;
-  base::MessageLoop ui_loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread file_thread_;
-  content::TestBrowserThread io_thread_;
-  std::unique_ptr<NotificationService> notification_service_;
 };
 
 // Tests loading an image works correctly.
@@ -134,11 +112,9 @@ TEST_F(ImageLoaderTest, LoadImage) {
   gfx::Size max_size(extension_misc::EXTENSION_ICON_SMALLISH,
                      extension_misc::EXTENSION_ICON_SMALLISH);
   ImageLoader loader;
-  loader.LoadImageAsync(extension.get(),
-                        image_resource,
-                        max_size,
-                        base::Bind(&ImageLoaderTest::OnImageLoaded,
-                                   base::Unretained(this)));
+  loader.LoadImageAsync(
+      extension.get(), image_resource, max_size,
+      base::BindOnce(&ImageLoaderTest::OnImageLoaded, base::Unretained(this)));
 
   // The image isn't cached, so we should not have received notification.
   EXPECT_EQ(0, image_loaded_count());
@@ -170,18 +146,16 @@ TEST_F(ImageLoaderTest, DeleteExtensionWhileWaitingForCache) {
   ImageLoader loader;
   std::set<int> sizes;
   sizes.insert(extension_misc::EXTENSION_ICON_SMALLISH);
-  loader.LoadImageAsync(extension.get(),
-                        image_resource,
-                        max_size,
-                        base::Bind(&ImageLoaderTest::OnImageLoaded,
-                                   base::Unretained(this)));
+  loader.LoadImageAsync(
+      extension.get(), image_resource, max_size,
+      base::BindOnce(&ImageLoaderTest::OnImageLoaded, base::Unretained(this)));
 
   // The image isn't cached, so we should not have received notification.
   EXPECT_EQ(0, image_loaded_count());
 
   // Send out notification the extension was uninstalled.
-  ExtensionRegistry::Get(browser_context())->TriggerOnUnloaded(
-      extension.get(), UnloadedExtensionInfo::REASON_UNINSTALL);
+  ExtensionRegistry::Get(browser_context())
+      ->TriggerOnUnloaded(extension.get(), UnloadedExtensionReason::UNINSTALL);
 
   // Chuck the extension, that way if anyone tries to access it we should crash
   // or get valgrind errors.
@@ -207,20 +181,18 @@ TEST_F(ImageLoaderTest, MultipleImages) {
   std::vector<ImageLoader::ImageRepresentation> info_list;
   int sizes[] = {extension_misc::EXTENSION_ICON_BITTY,
                  extension_misc::EXTENSION_ICON_SMALLISH, };
-  for (size_t i = 0; i < arraysize(sizes); ++i) {
+  for (size_t i = 0; i < base::size(sizes); ++i) {
     ExtensionResource resource = IconsInfo::GetIconResource(
         extension.get(), sizes[i], ExtensionIconSet::MATCH_EXACTLY);
     info_list.push_back(ImageLoader::ImageRepresentation(
-        resource,
-        ImageLoader::ImageRepresentation::RESIZE_WHEN_LARGER,
-        gfx::Size(sizes[i], sizes[i]),
-        ui::SCALE_FACTOR_NONE));
+        resource, ImageLoader::ImageRepresentation::RESIZE_WHEN_LARGER,
+        gfx::Size(sizes[i], sizes[i]), 1.f));
   }
 
   ImageLoader loader;
-  loader.LoadImagesAsync(extension.get(), info_list,
-                         base::Bind(&ImageLoaderTest::OnImageLoaded,
-                                    base::Unretained(this)));
+  loader.LoadImagesAsync(
+      extension.get(), info_list,
+      base::BindOnce(&ImageLoaderTest::OnImageLoaded, base::Unretained(this)));
 
   // The image isn't cached, so we should not have received notification.
   EXPECT_EQ(0, image_loaded_count());
@@ -252,14 +224,12 @@ TEST_F(ImageLoaderTest, LoadImageFamily) {
   std::vector<ImageLoader::ImageRepresentation> info_list;
   int sizes[] = {extension_misc::EXTENSION_ICON_BITTY,
                  extension_misc::EXTENSION_ICON_SMALLISH, };
-  for (size_t i = 0; i < arraysize(sizes); ++i) {
+  for (size_t i = 0; i < base::size(sizes); ++i) {
     ExtensionResource resource = IconsInfo::GetIconResource(
         extension.get(), sizes[i], ExtensionIconSet::MATCH_EXACTLY);
     info_list.push_back(ImageLoader::ImageRepresentation(
-        resource,
-        ImageLoader::ImageRepresentation::NEVER_RESIZE,
-        gfx::Size(sizes[i], sizes[i]),
-        ui::SCALE_FACTOR_100P));
+        resource, ImageLoader::ImageRepresentation::NEVER_RESIZE,
+        gfx::Size(sizes[i], sizes[i]), 1.f));
   }
 
   // Add a second icon of 200P which should get grouped with the smaller icon's
@@ -269,17 +239,16 @@ TEST_F(ImageLoaderTest, LoadImageFamily) {
                                  extension_misc::EXTENSION_ICON_SMALLISH,
                                  ExtensionIconSet::MATCH_EXACTLY);
   info_list.push_back(ImageLoader::ImageRepresentation(
-      resource,
-      ImageLoader::ImageRepresentation::NEVER_RESIZE,
+      resource, ImageLoader::ImageRepresentation::NEVER_RESIZE,
       gfx::Size(extension_misc::EXTENSION_ICON_BITTY,
                 extension_misc::EXTENSION_ICON_BITTY),
-      ui::SCALE_FACTOR_200P));
+      2.f));
 
   ImageLoader loader;
-  loader.LoadImageFamilyAsync(extension.get(),
-                              info_list,
-                              base::Bind(&ImageLoaderTest::OnImageFamilyLoaded,
-                                         base::Unretained(this)));
+  loader.LoadImageFamilyAsync(
+      extension.get(), info_list,
+      base::BindOnce(&ImageLoaderTest::OnImageFamilyLoaded,
+                     base::Unretained(this)));
 
   // The image isn't cached, so we should not have received notification.
   EXPECT_EQ(0, image_loaded_count());
@@ -290,7 +259,7 @@ TEST_F(ImageLoaderTest, LoadImageFamily) {
   EXPECT_EQ(1, image_loaded_count());
 
   // Check that all images were loaded.
-  for (size_t i = 0; i < arraysize(sizes); ++i) {
+  for (size_t i = 0; i < base::size(sizes); ++i) {
     const gfx::Image* image = image_family_.GetBest(sizes[i], sizes[i]);
     EXPECT_EQ(sizes[i], image->Width());
   }

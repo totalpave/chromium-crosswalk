@@ -6,16 +6,21 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/environment.h"
+#include "base/memory/ptr_util.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
 #include "media/audio/audio_device_description.h"
+#include "media/audio/audio_device_info_accessor_for_tests.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/audio_manager_base.h"
 #include "media/audio/audio_unittest_util.h"
 #include "media/audio/mac/audio_low_latency_input_mac.h"
+#include "media/audio/test_audio_thread.h"
 #include "media/base/seekable_buffer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -30,18 +35,17 @@ namespace media {
 
 ACTION_P4(CheckCountAndPostQuitTask, count, limit, loop, closure) {
   if (++*count >= limit) {
-    loop->PostTask(FROM_HERE, closure);
+    loop->task_runner()->PostTask(FROM_HERE, closure);
   }
 }
 
 class MockAudioInputCallback : public AudioInputStream::AudioInputCallback {
  public:
-  MOCK_METHOD4(OnData,
-               void(AudioInputStream* stream,
-                    const AudioBus* src,
-                    uint32_t hardware_delay_bytes,
+  MOCK_METHOD3(OnData,
+               void(const AudioBus* src,
+                    base::TimeTicks capture_time,
                     double volume));
-  MOCK_METHOD1(OnError, void(AudioInputStream* stream));
+  MOCK_METHOD0(OnError, void());
 };
 
 // This audio sink implementation should be used for manual tests only since
@@ -80,9 +84,8 @@ class WriteToFileAudioSink : public AudioInputStream::AudioInputCallback {
   }
 
   // AudioInputStream::AudioInputCallback implementation.
-  void OnData(AudioInputStream* stream,
-              const AudioBus* src,
-              uint32_t hardware_delay_bytes,
+  void OnData(const AudioBus* src,
+              base::TimeTicks capture_time,
               double volume) override {
     const int num_samples = src->frames() * src->channels();
     std::unique_ptr<int16_t> interleaved(new int16_t[num_samples]);
@@ -98,7 +101,7 @@ class WriteToFileAudioSink : public AudioInputStream::AudioInputCallback {
     }
   }
 
-  void OnError(AudioInputStream* stream) override {}
+  void OnError() override {}
 
  private:
   media::SeekableBuffer buffer_;
@@ -110,19 +113,17 @@ class MacAudioInputTest : public testing::Test {
  protected:
   MacAudioInputTest()
       : message_loop_(base::MessageLoop::TYPE_UI),
-        audio_manager_(
-            AudioManager::CreateForTesting(message_loop_.task_runner())) {
+        audio_manager_(AudioManager::CreateForTesting(
+            std::make_unique<TestAudioThread>())) {
     // Wait for the AudioManager to finish any initialization on the audio loop.
     base::RunLoop().RunUntilIdle();
   }
 
-  ~MacAudioInputTest() override {
-    audio_manager_.reset();
-    base::RunLoop().RunUntilIdle();
-  }
+  ~MacAudioInputTest() override { audio_manager_->Shutdown(); }
 
   bool InputDevicesAvailable() {
-    return audio_manager_->HasAudioInputDevices();
+    return AudioDeviceInfoAccessorForTests(audio_manager_.get())
+        .HasAudioInputDevices();
   }
 
   // Convenience method which creates a default AudioInputStream object using
@@ -133,7 +134,7 @@ class MacAudioInputTest : public testing::Test {
     int samples_per_packet = fs / 100;
     AudioInputStream* ais = audio_manager_->MakeAudioInputStream(
         AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
-                        CHANNEL_LAYOUT_STEREO, fs, 16, samples_per_packet),
+                        CHANNEL_LAYOUT_STEREO, fs, samples_per_packet),
         AudioDeviceDescription::kDefaultDeviceId,
         base::Bind(&MacAudioInputTest::OnLogMessage, base::Unretained(this)));
     EXPECT_TRUE(ais);
@@ -147,7 +148,7 @@ class MacAudioInputTest : public testing::Test {
     int samples_per_packet = fs / 100;
     AudioInputStream* ais = audio_manager_->MakeAudioInputStream(
         AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY, channel_layout,
-                        fs, 16, samples_per_packet),
+                        fs, samples_per_packet),
         AudioDeviceDescription::kDefaultDeviceId,
         base::Bind(&MacAudioInputTest::OnLogMessage, base::Unretained(this)));
     EXPECT_TRUE(ais);
@@ -157,7 +158,7 @@ class MacAudioInputTest : public testing::Test {
   void OnLogMessage(const std::string& message) { log_message_ = message; }
 
   base::MessageLoop message_loop_;
-  ScopedAudioManagerPtr audio_manager_;
+  std::unique_ptr<AudioManager> audio_manager_;
   std::string log_message_;
 };
 
@@ -213,10 +214,10 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamVerifyMonoRecording) {
   // All should contain valid packets of the same size and a valid delay
   // estimate.
   base::RunLoop run_loop;
-  EXPECT_CALL(sink, OnData(ais, NotNull(), _, _))
+  EXPECT_CALL(sink, OnData(NotNull(), _, _))
       .Times(AtLeast(10))
-      .WillRepeatedly(CheckCountAndPostQuitTask(
-          &count, 10, &message_loop_, run_loop.QuitClosure()));
+      .WillRepeatedly(CheckCountAndPostQuitTask(&count, 10, &message_loop_,
+                                                run_loop.QuitClosure()));
   ais->Start(&sink);
   run_loop.Run();
   ais->Stop();
@@ -248,10 +249,10 @@ TEST_F(MacAudioInputTest, AUAudioInputStreamVerifyStereoRecording) {
   // ensure that we can land the patch but will revisit this test again when
   // more analysis of the delay estimates are done.
   base::RunLoop run_loop;
-  EXPECT_CALL(sink, OnData(ais, NotNull(), _, _))
+  EXPECT_CALL(sink, OnData(NotNull(), _, _))
       .Times(AtLeast(10))
-      .WillRepeatedly(CheckCountAndPostQuitTask(
-          &count, 10, &message_loop_, run_loop.QuitClosure()));
+      .WillRepeatedly(CheckCountAndPostQuitTask(&count, 10, &message_loop_,
+                                                run_loop.QuitClosure()));
   ais->Start(&sink);
   run_loop.Run();
   ais->Stop();
@@ -283,6 +284,56 @@ TEST_F(MacAudioInputTest, DISABLED_AUAudioInputStreamRecordToFile) {
   ais->Stop();
   fprintf(stderr, "               >> Recording has stopped.\n");
   ais->Close();
+}
+
+TEST(MacAudioInputUpmixerTest, Upmix16bit) {
+  constexpr int kNumFrames = 512;
+  constexpr int kBytesPerSample = sizeof(int16_t);
+  int16_t mono[kNumFrames];
+  int16_t stereo[kNumFrames * 2];
+
+  // Fill the mono buffer and the first half of the stereo buffer with data
+  for (int i = 0; i != kNumFrames; ++i) {
+    mono[i] = i;
+    stereo[i] = i;
+  }
+
+  AudioBuffer audio_buffer;
+  audio_buffer.mNumberChannels = 2;
+  audio_buffer.mDataByteSize = kNumFrames * kBytesPerSample * 2;
+  audio_buffer.mData = stereo;
+  AUAudioInputStream::UpmixMonoToStereoInPlace(&audio_buffer, kBytesPerSample);
+
+  // Assert that the samples have been distributed properly
+  for (int i = 0; i != kNumFrames; ++i) {
+    ASSERT_EQ(mono[i], stereo[i * 2]);
+    ASSERT_EQ(mono[i], stereo[i * 2 + 1]);
+  }
+}
+
+TEST(MacAudioInputUpmixerTest, Upmix32bit) {
+  constexpr int kNumFrames = 512;
+  constexpr int kBytesPerSample = sizeof(int32_t);
+  int32_t mono[kNumFrames];
+  int32_t stereo[kNumFrames * 2];
+
+  // Fill the mono buffer and the first half of the stereo buffer with data
+  for (int i = 0; i != kNumFrames; ++i) {
+    mono[i] = i;
+    stereo[i] = i;
+  }
+
+  AudioBuffer audio_buffer;
+  audio_buffer.mNumberChannels = 2;
+  audio_buffer.mDataByteSize = kNumFrames * kBytesPerSample * 2;
+  audio_buffer.mData = stereo;
+  AUAudioInputStream::UpmixMonoToStereoInPlace(&audio_buffer, kBytesPerSample);
+
+  // Assert that the samples have been distributed properly
+  for (int i = 0; i != kNumFrames; ++i) {
+    ASSERT_EQ(mono[i], stereo[i * 2]);
+    ASSERT_EQ(mono[i], stereo[i * 2 + 1]);
+  }
 }
 
 }  // namespace media

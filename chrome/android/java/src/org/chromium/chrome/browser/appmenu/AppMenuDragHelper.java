@@ -9,17 +9,20 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.res.Resources;
 import android.graphics.Rect;
+import android.support.annotation.IntDef;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.ListPopupWindow;
 import android.widget.ListView;
 
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.chrome.R;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 
 /**
@@ -34,9 +37,13 @@ class AppMenuDragHelper {
     private final AppMenu mAppMenu;
 
     // Internally used action constants for dragging.
-    private static final int ITEM_ACTION_HIGHLIGHT = 0;
-    private static final int ITEM_ACTION_PERFORM = 1;
-    private static final int ITEM_ACTION_CLEAR_HIGHLIGHT_ALL = 2;
+    @IntDef({ItemAction.HIGHLIGHT, ItemAction.PERFORM, ItemAction.CLEAR_HIGHLIGHT_ALL})
+    @Retention(RetentionPolicy.SOURCE)
+    private @interface ItemAction {
+        int HIGHLIGHT = 0;
+        int PERFORM = 1;
+        int CLEAR_HIGHLIGHT_ALL = 2;
+    }
 
     private static final float AUTO_SCROLL_AREA_MAX_RATIO = 0.25f;
 
@@ -69,25 +76,21 @@ class AppMenuDragHelper {
         // If user is dragging and the popup ListView is too big to display at once,
         // mDragScrolling animator scrolls mPopup.getListView() automatically depending on
         // the user's touch position.
-        mDragScrolling.setTimeListener(new TimeAnimator.TimeListener() {
-            @Override
-            public void onTimeUpdate(TimeAnimator animation, long totalTime, long deltaTime) {
-                ListPopupWindow popup = mAppMenu.getPopup();
-                if (popup == null || popup.getListView() == null) return;
+        mDragScrolling.setTimeListener((animation, totalTime, deltaTime) -> {
+            if (mAppMenu.getListView() == null) return;
 
-                // We keep both mDragScrollOffset and mDragScrollOffsetRounded because
-                // the actual scrolling is by the rounded value but at the same time we also
-                // want to keep the precise scroll value in float.
-                mDragScrollOffset += (deltaTime * 0.001f) * mDragScrollingVelocity;
-                int diff = Math.round(mDragScrollOffset - mDragScrollOffsetRounded);
-                mDragScrollOffsetRounded += diff;
-                popup.getListView().smoothScrollBy(diff, 0);
+            // We keep both mDragScrollOffset and mDragScrollOffsetRounded because
+            // the actual scrolling is by the rounded value but at the same time we also
+            // want to keep the precise scroll value in float.
+            mDragScrollOffset += (deltaTime * 0.001f) * mDragScrollingVelocity;
+            int diff = Math.round(mDragScrollOffset - mDragScrollOffsetRounded);
+            mDragScrollOffsetRounded += diff;
+            mAppMenu.getListView().smoothScrollBy(diff, 0);
 
-                // Force touch move event to highlight items correctly for the scrolled position.
-                if (!Float.isNaN(mLastTouchX) && !Float.isNaN(mLastTouchY)) {
-                    menuItemAction(Math.round(mLastTouchX), Math.round(mLastTouchY),
-                            ITEM_ACTION_HIGHLIGHT);
-                }
+            // Force touch move event to highlight items correctly for the scrolled position.
+            if (!Float.isNaN(mLastTouchX) && !Float.isNaN(mLastTouchY)) {
+                menuItemAction(
+                        Math.round(mLastTouchX), Math.round(mLastTouchY), ItemAction.HIGHLIGHT);
             }
         });
 
@@ -125,7 +128,7 @@ class AppMenuDragHelper {
         // needed to by menuItemAction. Only clear highlighting if the menu is still showing.
         // See crbug.com/589805.
         if (mAppMenu.getPopup().isShowing()) {
-            menuItemAction(0, 0, ITEM_ACTION_CLEAR_HIGHLIGHT_ALL);
+            menuItemAction(0, 0, ItemAction.CLEAR_HIGHLIGHT_ALL);
         }
         mDragScrolling.cancel();
     }
@@ -153,7 +156,7 @@ class AppMenuDragHelper {
         final int roundedRawY = Math.round(rawY);
         final int eventActionMasked = event.getActionMasked();
         final long timeSinceDown = event.getEventTime() - event.getDownTime();
-        final ListView listView = mAppMenu.getPopup().getListView();
+        final ListView listView = mAppMenu.getListView();
 
         mLastTouchX = rawX;
         mLastTouchY = rawY;
@@ -163,7 +166,7 @@ class AppMenuDragHelper {
             mAppMenu.dismiss();
             return true;
         } else if (eventActionMasked == MotionEvent.ACTION_UP) {
-            nativeRecordAppMenuTouchDuration(timeSinceDown);
+            RecordHistogram.recordTimesHistogram("WrenchMenu.TouchDuration", timeSinceDown);
         }
 
         mIsSingleTapCanceled |= timeSinceDown > mTapTimeout;
@@ -177,14 +180,15 @@ class AppMenuDragHelper {
         if (!mDragScrolling.isRunning()) return false;
 
         boolean didPerformClick = false;
-        int itemAction = ITEM_ACTION_CLEAR_HIGHLIGHT_ALL;
+        @ItemAction
+        int itemAction = ItemAction.CLEAR_HIGHLIGHT_ALL;
         switch (eventActionMasked) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_MOVE:
-                itemAction = ITEM_ACTION_HIGHLIGHT;
+                itemAction = ItemAction.HIGHLIGHT;
                 break;
             case MotionEvent.ACTION_UP:
-                itemAction = ITEM_ACTION_PERFORM;
+                itemAction = ItemAction.PERFORM;
                 break;
             default:
                 break;
@@ -233,8 +237,8 @@ class AppMenuDragHelper {
      * @param action  Action type to perform, it should be one of ITEM_ACTION_* constants.
      * @return true whether or not a menu item is performed (executed).
      */
-    private boolean menuItemAction(int screenX, int screenY, int action) {
-        ListView listView = mAppMenu.getPopup().getListView();
+    private boolean menuItemAction(int screenX, int screenY, @ItemAction int action) {
+        ListView listView = mAppMenu.getListView();
 
         // Starting M, we have a popup menu animation that slides down. If we process dragging
         // events while it's sliding, it will touch many views that are passing by user's finger,
@@ -270,17 +274,17 @@ class AppMenuDragHelper {
                     && getScreenVisibleRect(itemView).contains(screenX, screenY);
 
             switch (action) {
-                case ITEM_ACTION_HIGHLIGHT:
+                case ItemAction.HIGHLIGHT:
                     itemView.setPressed(shouldPerform);
                     break;
-                case ITEM_ACTION_PERFORM:
+                case ItemAction.PERFORM:
                     if (shouldPerform) {
                         RecordUserAction.record("MobileUsingMenuBySwButtonDragging");
                         itemView.performClick();
                         didPerformClick = true;
                     }
                     break;
-                case ITEM_ACTION_CLEAR_HIGHLIGHT_ALL:
+                case ItemAction.CLEAR_HIGHLIGHT_ALL:
                     itemView.setPressed(false);
                     break;
                 default:
@@ -300,6 +304,4 @@ class AppMenuDragHelper {
         mScreenVisibleRect.offset(mScreenVisiblePoint[0], mScreenVisiblePoint[1]);
         return mScreenVisibleRect;
     }
-
-    private static native void nativeRecordAppMenuTouchDuration(long timeMs);
 }

@@ -14,23 +14,23 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "content/browser/appcache/appcache_group.h"
 #include "content/browser/appcache/appcache_histograms.h"
+#include "content/browser/appcache/appcache_update_url_fetcher.h"
+#include "content/browser/appcache/appcache_update_url_loader_request.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/io_buffer.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/base/request_priority.h"
-#include "net/http/http_request_headers.h"
-#include "net/http/http_response_headers.h"
-#include "net/url_request/url_request_context.h"
+#include "third_party/blink/public/mojom/appcache/appcache.mojom.h"
+#include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "url/origin.h"
 
 namespace content {
 
 namespace {
 
-const int kBufferSize = 32768;
+const int kAppCacheFetchBufferSize = 32768;
 const size_t kMaxConcurrentUrlFetches = 2;
-const int kMax503Retries = 3;
 
 std::string FormatUrlErrorMessage(
       const char* format, const GURL& url,
@@ -44,7 +44,7 @@ std::string FormatUrlErrorMessage(
 }
 
 bool IsEvictableError(AppCacheUpdateJob::ResultType result,
-                      const AppCacheErrorDetails& details) {
+                      const blink::mojom::AppCacheErrorDetails& details) {
   switch (result) {
     case AppCacheUpdateJob::DB_ERROR:
     case AppCacheUpdateJob::DISKCACHE_ERROR:
@@ -59,12 +59,37 @@ bool IsEvictableError(AppCacheUpdateJob::ResultType result,
       return true;
 
     case AppCacheUpdateJob::MANIFEST_ERROR:
-      return details.reason == APPCACHE_SIGNATURE_ERROR;
+      return details.reason ==
+             blink::mojom::AppCacheErrorReason::APPCACHE_SIGNATURE_ERROR;
 
     default:
       NOTREACHED();
       return true;
   }
+}
+
+bool CanUseExistingResource(const net::HttpResponseInfo* http_info) {
+  // Check HTTP caching semantics based on max-age and expiration headers.
+  if (!http_info->headers || http_info->headers->RequiresValidation(
+                                 http_info->request_time,
+                                 http_info->response_time, base::Time::Now())) {
+    return false;
+  }
+
+  // Responses with a "vary" header generally get treated as expired,
+  // but we special case the "Origin" header since we know it's invariant.
+  // Also, content decoding is handled by the network library, the appcache
+  // stores decoded response bodies, so we can safely ignore varying on
+  // the "Accept-Encoding" header.
+  std::string value;
+  size_t iter = 0;
+  while (http_info->headers->EnumerateHeader(&iter, "vary", &value)) {
+    if (!base::EqualsCaseInsensitiveASCII(value, "Accept-Encoding") &&
+        !base::EqualsCaseInsensitiveASCII(value, "Origin")) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void EmptyCompletionCallback(int result) {}
@@ -75,65 +100,44 @@ void EmptyCompletionCallback(int result) {}
 // so that only one notification is sent for all hosts using the same frontend.
 class HostNotifier {
  public:
-  typedef std::vector<int> HostIds;
-  typedef std::map<AppCacheFrontend*, HostIds> NotifyHostMap;
-
   // Caller is responsible for ensuring there will be no duplicate hosts.
   void AddHost(AppCacheHost* host) {
-    std::pair<NotifyHostMap::iterator , bool> ret = hosts_to_notify.insert(
-        NotifyHostMap::value_type(host->frontend(), HostIds()));
-    ret.first->second.push_back(host->host_id());
+    hosts_to_notify_.insert(host->frontend());
   }
 
   void AddHosts(const std::set<AppCacheHost*>& hosts) {
-    for (std::set<AppCacheHost*>::const_iterator it = hosts.begin();
-         it != hosts.end(); ++it) {
-      AddHost(*it);
-    }
+    for (AppCacheHost* host : hosts)
+      AddHost(host);
   }
 
-  void SendNotifications(AppCacheEventID event_id) {
-    for (NotifyHostMap::iterator it = hosts_to_notify.begin();
-         it != hosts_to_notify.end(); ++it) {
-      AppCacheFrontend* frontend = it->first;
-      frontend->OnEventRaised(it->second, event_id);
-    }
+  void SendNotifications(blink::mojom::AppCacheEventID event_id) {
+    for (auto* frontend : hosts_to_notify_)
+      frontend->EventRaised(event_id);
   }
 
-  void SendProgressNotifications(
-      const GURL& url, int num_total, int num_complete) {
-    for (NotifyHostMap::iterator it = hosts_to_notify.begin();
-         it != hosts_to_notify.end(); ++it) {
-      AppCacheFrontend* frontend = it->first;
-      frontend->OnProgressEventRaised(it->second, url,
-                                      num_total, num_complete);
-    }
+  void SendProgressNotifications(const GURL& url,
+                                 int num_total,
+                                 int num_complete) {
+    for (auto* frontend : hosts_to_notify_)
+      frontend->ProgressEventRaised(url, num_total, num_complete);
   }
 
-  void SendErrorNotifications(const AppCacheErrorDetails& details) {
+  void SendErrorNotifications(
+      const blink::mojom::AppCacheErrorDetails& details) {
     DCHECK(!details.message.empty());
-    for (NotifyHostMap::iterator it = hosts_to_notify.begin();
-         it != hosts_to_notify.end(); ++it) {
-      AppCacheFrontend* frontend = it->first;
-      frontend->OnErrorEventRaised(it->second, details);
-    }
+    for (auto* frontend : hosts_to_notify_)
+      frontend->ErrorEventRaised(details.Clone());
   }
 
   void SendLogMessage(const std::string& message) {
-    for (NotifyHostMap::iterator it = hosts_to_notify.begin();
-         it != hosts_to_notify.end(); ++it) {
-      AppCacheFrontend* frontend = it->first;
-      for (HostIds::iterator id = it->second.begin();
-           id != it->second.end(); ++id) {
-        frontend->OnLogMessage(*id, APPCACHE_LOG_WARNING, message);
-      }
-    }
+    for (auto* frontend : hosts_to_notify_)
+      frontend->LogMessage(blink::mojom::ConsoleMessageLevel::kWarning,
+                           message);
   }
 
  private:
-  NotifyHostMap hosts_to_notify;
+  std::set<blink::mojom::AppCacheFrontend*> hosts_to_notify_;
 };
-
 AppCacheUpdateJob::UrlToFetch::UrlToFetch(const GURL& url,
                                           bool checked,
                                           AppCacheResponseInfo* info)
@@ -147,247 +151,6 @@ AppCacheUpdateJob::UrlToFetch::UrlToFetch(const UrlToFetch& other) = default;
 AppCacheUpdateJob::UrlToFetch::~UrlToFetch() {
 }
 
-// Helper class to fetch resources. Depending on the fetch type,
-// can either fetch to an in-memory string or write the response
-// data out to the disk cache.
-AppCacheUpdateJob::URLFetcher::URLFetcher(const GURL& url,
-                                          FetchType fetch_type,
-                                          AppCacheUpdateJob* job)
-    : url_(url),
-      job_(job),
-      fetch_type_(fetch_type),
-      retry_503_attempts_(0),
-      buffer_(new net::IOBuffer(kBufferSize)),
-      request_(job->service_->request_context()
-                   ->CreateRequest(url, net::DEFAULT_PRIORITY, this)),
-      result_(UPDATE_OK),
-      redirect_response_code_(-1) {}
-
-AppCacheUpdateJob::URLFetcher::~URLFetcher() {
-}
-
-void AppCacheUpdateJob::URLFetcher::Start() {
-  request_->set_first_party_for_cookies(job_->manifest_url_);
-  request_->set_initiator(url::Origin(job_->manifest_url_));
-  if (fetch_type_ == MANIFEST_FETCH && job_->doing_full_update_check_)
-    request_->SetLoadFlags(request_->load_flags() | net::LOAD_BYPASS_CACHE);
-  else if (existing_response_headers_.get())
-    AddConditionalHeaders(existing_response_headers_.get());
-  request_->Start();
-}
-
-void AppCacheUpdateJob::URLFetcher::OnReceivedRedirect(
-    net::URLRequest* request,
-    const net::RedirectInfo& redirect_info,
-    bool* defer_redirect) {
-  DCHECK_EQ(request_.get(), request);
-  // Redirect is not allowed by the update process.
-  job_->MadeProgress();
-  redirect_response_code_ = request->GetResponseCode();
-  request->Cancel();
-  result_ = REDIRECT_ERROR;
-  OnResponseCompleted();
-}
-
-void AppCacheUpdateJob::URLFetcher::OnResponseStarted(
-    net::URLRequest *request) {
-  DCHECK_EQ(request_.get(), request);
-  int response_code = -1;
-  if (request->status().is_success()) {
-    response_code = request->GetResponseCode();
-    job_->MadeProgress();
-  }
-
-  if ((response_code / 100) != 2) {
-    if (response_code > 0)
-      result_ = SERVER_ERROR;
-    else
-      result_ = NETWORK_ERROR;
-    OnResponseCompleted();
-    return;
-  }
-
-  if (url_.SchemeIsCryptographic()) {
-    // Do not cache content with cert errors.
-    // Also, we willfully violate the HTML5 spec at this point in order
-    // to support the appcaching of cross-origin HTTPS resources.
-    // We've opted for a milder constraint and allow caching unless
-    // the resource has a "no-store" header. A spec change has been
-    // requested on the whatwg list.
-    // See http://code.google.com/p/chromium/issues/detail?id=69594
-    // TODO(michaeln): Consider doing this for cross-origin HTTP too.
-    const net::HttpNetworkSession::Params* session_params =
-        request->context()->GetNetworkSessionParams();
-    bool ignore_cert_errors = session_params &&
-                              session_params->ignore_certificate_errors;
-    if ((net::IsCertStatusError(request->ssl_info().cert_status) &&
-            !ignore_cert_errors) ||
-        (url_.GetOrigin() != job_->manifest_url_.GetOrigin() &&
-            request->response_headers()->
-                HasHeaderValue("cache-control", "no-store"))) {
-      DCHECK_EQ(-1, redirect_response_code_);
-      request->Cancel();
-      result_ = SECURITY_ERROR;
-      OnResponseCompleted();
-      return;
-    }
-  }
-
-  // Write response info to storage for URL fetches. Wait for async write
-  // completion before reading any response data.
-  if (fetch_type_ == URL_FETCH || fetch_type_ == MASTER_ENTRY_FETCH) {
-    response_writer_.reset(job_->CreateResponseWriter());
-    scoped_refptr<HttpResponseInfoIOBuffer> io_buffer(
-        new HttpResponseInfoIOBuffer(
-            new net::HttpResponseInfo(request->response_info())));
-    response_writer_->WriteInfo(
-        io_buffer.get(),
-        base::Bind(&URLFetcher::OnWriteComplete, base::Unretained(this)));
-  } else {
-    ReadResponseData();
-  }
-}
-
-void AppCacheUpdateJob::URLFetcher::OnReadCompleted(
-    net::URLRequest* request, int bytes_read) {
-  DCHECK_EQ(request_.get(), request);
-  bool data_consumed = true;
-  if (request->status().is_success() && bytes_read > 0) {
-    job_->MadeProgress();
-    data_consumed = ConsumeResponseData(bytes_read);
-    if (data_consumed) {
-      bytes_read = 0;
-      while (request->Read(buffer_.get(), kBufferSize, &bytes_read)) {
-        if (bytes_read > 0) {
-          data_consumed = ConsumeResponseData(bytes_read);
-          if (!data_consumed)
-            break;  // wait for async data processing, then read more
-        } else {
-          break;
-        }
-      }
-    }
-  }
-  if (data_consumed && !request->status().is_io_pending()) {
-    DCHECK_EQ(UPDATE_OK, result_);
-    OnResponseCompleted();
-  }
-}
-
-void AppCacheUpdateJob::URLFetcher::AddConditionalHeaders(
-    const net::HttpResponseHeaders* headers) {
-  DCHECK(request_);
-  DCHECK(headers);
-  net::HttpRequestHeaders extra_headers;
-
-  // Add If-Modified-Since header if response info has Last-Modified header.
-  const std::string last_modified = "Last-Modified";
-  std::string last_modified_value;
-  headers->EnumerateHeader(nullptr, last_modified, &last_modified_value);
-  if (!last_modified_value.empty()) {
-    extra_headers.SetHeader(net::HttpRequestHeaders::kIfModifiedSince,
-                            last_modified_value);
-  }
-
-  // Add If-None-Match header if response info has ETag header.
-  const std::string etag = "ETag";
-  std::string etag_value;
-  headers->EnumerateHeader(nullptr, etag, &etag_value);
-  if (!etag_value.empty()) {
-    extra_headers.SetHeader(net::HttpRequestHeaders::kIfNoneMatch,
-                            etag_value);
-  }
-  if (!extra_headers.IsEmpty())
-    request_->SetExtraRequestHeaders(extra_headers);
-}
-
-void  AppCacheUpdateJob::URLFetcher::OnWriteComplete(int result) {
-  if (result < 0) {
-    request_->Cancel();
-    result_ = DISKCACHE_ERROR;
-    OnResponseCompleted();
-    return;
-  }
-  ReadResponseData();
-}
-
-void AppCacheUpdateJob::URLFetcher::ReadResponseData() {
-  InternalUpdateState state = job_->internal_state_;
-  if (state == CACHE_FAILURE || state == CANCELLED || state == COMPLETED)
-    return;
-  int bytes_read = 0;
-  request_->Read(buffer_.get(), kBufferSize, &bytes_read);
-  OnReadCompleted(request_.get(), bytes_read);
-}
-
-// Returns false if response data is processed asynchronously, in which
-// case ReadResponseData will be invoked when it is safe to continue
-// reading more response data from the request.
-bool AppCacheUpdateJob::URLFetcher::ConsumeResponseData(int bytes_read) {
-  DCHECK_GT(bytes_read, 0);
-  switch (fetch_type_) {
-    case MANIFEST_FETCH:
-    case MANIFEST_REFETCH:
-      manifest_data_.append(buffer_->data(), bytes_read);
-      break;
-    case URL_FETCH:
-    case MASTER_ENTRY_FETCH:
-      DCHECK(response_writer_.get());
-      response_writer_->WriteData(
-          buffer_.get(),
-          bytes_read,
-          base::Bind(&URLFetcher::OnWriteComplete, base::Unretained(this)));
-      return false;  // wait for async write completion to continue reading
-    default:
-      NOTREACHED();
-  }
-  return true;
-}
-
-void AppCacheUpdateJob::URLFetcher::OnResponseCompleted() {
-  if (request_->status().is_success())
-    job_->MadeProgress();
-
-  // Retry for 503s where retry-after is 0.
-  if (request_->status().is_success() &&
-      request_->GetResponseCode() == 503 &&
-      MaybeRetryRequest()) {
-    return;
-  }
-
-  switch (fetch_type_) {
-    case MANIFEST_FETCH:
-      job_->HandleManifestFetchCompleted(this);
-      break;
-    case URL_FETCH:
-      job_->HandleUrlFetchCompleted(this);
-      break;
-    case MASTER_ENTRY_FETCH:
-      job_->HandleMasterEntryFetchCompleted(this);
-      break;
-    case MANIFEST_REFETCH:
-      job_->HandleManifestRefetchCompleted(this);
-      break;
-    default:
-      NOTREACHED();
-  }
-
-  delete this;
-}
-
-bool AppCacheUpdateJob::URLFetcher::MaybeRetryRequest() {
-  if (retry_503_attempts_ >= kMax503Retries ||
-      !request_->response_headers()->HasHeaderValue("retry-after", "0")) {
-    return false;
-  }
-  ++retry_503_attempts_;
-  result_ = UPDATE_OK;
-  request_ = job_->service_->request_context()->CreateRequest(
-      url_, net::DEFAULT_PRIORITY, this);
-  Start();
-  return true;
-}
-
 AppCacheUpdateJob::AppCacheUpdateJob(AppCacheServiceImpl* service,
                                      AppCacheGroup* group)
     : service_(service),
@@ -398,12 +161,12 @@ AppCacheUpdateJob::AppCacheUpdateJob(AppCacheServiceImpl* service,
       doing_full_update_check_(false),
       master_entries_completed_(0),
       url_fetches_completed_(0),
-      manifest_fetcher_(NULL),
+      manifest_fetcher_(nullptr),
       manifest_has_valid_mime_type_(false),
       stored_state_(UNSTORED),
       storage_(service->storage()),
       weak_factory_(this) {
-    service_->AddObserver(this);
+  service_->AddObserver(this);
 }
 
 AppCacheUpdateJob::~AppCacheUpdateJob() {
@@ -435,7 +198,7 @@ void AppCacheUpdateJob::StartUpdate(AppCacheHost* host,
     DCHECK(!new_master_resource.has_ref());
     DCHECK(new_master_resource.GetOrigin() == manifest_url_.GetOrigin());
 
-    if (ContainsKey(failed_master_entries_, new_master_resource))
+    if (base::ContainsKey(failed_master_entries_, new_master_resource))
       return;
 
     // Cannot add more to this update if already terminating.
@@ -457,9 +220,11 @@ void AppCacheUpdateJob::StartUpdate(AppCacheHost* host,
   if (update_status == AppCacheGroup::CHECKING ||
       update_status == AppCacheGroup::DOWNLOADING) {
     if (host) {
-      NotifySingleHost(host, APPCACHE_CHECKING_EVENT);
+      NotifySingleHost(host,
+                       blink::mojom::AppCacheEventID::APPCACHE_CHECKING_EVENT);
       if (update_status == AppCacheGroup::DOWNLOADING)
-        NotifySingleHost(host, APPCACHE_DOWNLOADING_EVENT);
+        NotifySingleHost(
+            host, blink::mojom::AppCacheEventID::APPCACHE_DOWNLOADING_EVENT);
 
       // Add to fetch list or an existing entry if already fetched.
       if (!new_master_resource.is_empty()) {
@@ -479,12 +244,14 @@ void AppCacheUpdateJob::StartUpdate(AppCacheHost* host,
     base::TimeDelta time_since_last_check =
         base::Time::Now() - group_->last_full_update_check_time();
     doing_full_update_check_ = time_since_last_check > kFullUpdateInterval;
-    NotifyAllAssociatedHosts(APPCACHE_CHECKING_EVENT);
+    NotifyAllAssociatedHosts(
+        blink::mojom::AppCacheEventID::APPCACHE_CHECKING_EVENT);
   } else {
     update_type_ = CACHE_ATTEMPT;
     doing_full_update_check_ = true;
     DCHECK(host);
-    NotifySingleHost(host, APPCACHE_CHECKING_EVENT);
+    NotifySingleHost(host,
+                     blink::mojom::AppCacheEventID::APPCACHE_CHECKING_EVENT);
   }
 
   if (!new_master_resource.is_empty()) {
@@ -494,19 +261,20 @@ void AppCacheUpdateJob::StartUpdate(AppCacheHost* host,
 
   BrowserThread::PostAfterStartupTask(
       FROM_HERE, base::ThreadTaskRunnerHandle::Get(),
-      base::Bind(&AppCacheUpdateJob::FetchManifest, weak_factory_.GetWeakPtr(),
-                 true));
+      base::BindOnce(&AppCacheUpdateJob::FetchManifest,
+                     weak_factory_.GetWeakPtr(), true));
 }
 
-AppCacheResponseWriter* AppCacheUpdateJob::CreateResponseWriter() {
-  AppCacheResponseWriter* writer =
+std::unique_ptr<AppCacheResponseWriter>
+AppCacheUpdateJob::CreateResponseWriter() {
+  std::unique_ptr<AppCacheResponseWriter> writer =
       storage_->CreateResponseWriter(manifest_url_);
   stored_response_ids_.push_back(writer->response_id());
   return writer;
 }
 
 void AppCacheUpdateJob::HandleCacheFailure(
-    const AppCacheErrorDetails& error_details,
+    const blink::mojom::AppCacheErrorDetails& error_details,
     ResultType result,
     const GURL& failed_resource_url) {
   // 6.9.4 cache failure steps 2-8.
@@ -543,9 +311,9 @@ void AppCacheUpdateJob::HandleCacheFailure(
     // DeleteAppCacheGroup, otherwise that method would delete |this|
     // and we need the stack to unwind prior to deletion.
     group_->SetUpdateAppCacheStatus(AppCacheGroup::IDLE);
-    group_ = NULL;
+    group_ = nullptr;
     service_->DeleteAppCacheGroup(manifest_url_,
-                                  base::Bind(EmptyCompletionCallback));
+                                  base::BindOnce(EmptyCompletionCallback));
   }
 
   DeleteSoon();  // To unwind the stack prior to deletion.
@@ -553,16 +321,18 @@ void AppCacheUpdateJob::HandleCacheFailure(
 
 void AppCacheUpdateJob::FetchManifest(bool is_first_fetch) {
   DCHECK(!manifest_fetcher_);
-  manifest_fetcher_ = new URLFetcher(
-     manifest_url_,
-     is_first_fetch ? URLFetcher::MANIFEST_FETCH :
-                      URLFetcher::MANIFEST_REFETCH,
-     this);
+  manifest_fetcher_ =
+      new URLFetcher(manifest_url_,
+                     is_first_fetch ? URLFetcher::MANIFEST_FETCH
+                                    : URLFetcher::MANIFEST_REFETCH,
+                     this, kAppCacheFetchBufferSize);
 
   if (is_first_fetch) {
     // Maybe load the cached headers to make a condiditional request.
-    AppCacheEntry* entry = (update_type_ == UPGRADE_ATTEMPT) ?
-        group_->newest_complete_cache()->GetEntry(manifest_url_) : NULL;
+    AppCacheEntry* entry =
+        (update_type_ == UPGRADE_ATTEMPT)
+            ? group_->newest_complete_cache()->GetEntry(manifest_url_)
+            : nullptr;
     if (entry && !doing_full_update_check_) {
       // Asynchronously load response info for manifest from newest cache.
       storage_->LoadResponseInfo(manifest_url_, entry->response_id(), this);
@@ -579,29 +349,28 @@ void AppCacheUpdateJob::FetchManifest(bool is_first_fetch) {
   manifest_fetcher_->Start();
 }
 
-
-void AppCacheUpdateJob::HandleManifestFetchCompleted(
-    URLFetcher* fetcher) {
+void AppCacheUpdateJob::HandleManifestFetchCompleted(URLFetcher* fetcher,
+                                                     int net_error) {
   DCHECK_EQ(internal_state_, FETCH_MANIFEST);
   DCHECK_EQ(manifest_fetcher_, fetcher);
-  manifest_fetcher_ = NULL;
 
-  net::URLRequest* request = fetcher->request();
+  manifest_fetcher_ = nullptr;
+
+  UpdateURLLoaderRequest* request = fetcher->request();
   int response_code = -1;
   bool is_valid_response_code = false;
-  if (request->status().is_success()) {
+  if (net_error == net::OK) {
     response_code = request->GetResponseCode();
     is_valid_response_code = (response_code / 100 == 2);
 
-    std::string mime_type;
-    request->GetMimeType(&mime_type);
+    std::string mime_type = request->GetMimeType();
     manifest_has_valid_mime_type_ = (mime_type == "text/cache-manifest");
   }
 
   if (is_valid_response_code) {
     manifest_data_ = fetcher->manifest_data();
     manifest_response_info_.reset(
-        new net::HttpResponseInfo(request->response_info()));
+        new net::HttpResponseInfo(request->GetResponseInfo()));
     if (update_type_ == UPGRADE_ATTEMPT)
       CheckIfManifestChanged();  // continues asynchronously
     else
@@ -615,13 +384,11 @@ void AppCacheUpdateJob::HandleManifestFetchCompleted(
     const char kFormatString[] = "Manifest fetch failed (%d) %s";
     std::string message = FormatUrlErrorMessage(
         kFormatString, manifest_url_, fetcher->result(), response_code);
-    HandleCacheFailure(AppCacheErrorDetails(message,
-                                    APPCACHE_MANIFEST_ERROR,
-                                    manifest_url_,
-                                    response_code,
-                                    false /*is_cross_origin*/),
-                       fetcher->result(),
-                       GURL());
+    HandleCacheFailure(
+        blink::mojom::AppCacheErrorDetails(
+            message, blink::mojom::AppCacheErrorReason::APPCACHE_MANIFEST_ERROR,
+            manifest_url_, response_code, false /*is_cross_origin*/),
+        fetcher->result(), GURL());
   }
 }
 
@@ -629,26 +396,25 @@ void AppCacheUpdateJob::OnGroupMadeObsolete(AppCacheGroup* group,
                                             bool success,
                                             int response_code) {
   DCHECK(master_entry_fetches_.empty());
-  CancelAllMasterEntryFetches(AppCacheErrorDetails(
+  CancelAllMasterEntryFetches(blink::mojom::AppCacheErrorDetails(
       "The cache has been made obsolete, "
       "the manifest file returned 404 or 410",
-      APPCACHE_MANIFEST_ERROR,
-      GURL(),
-      response_code,
-      false /*is_cross_origin*/));
+      blink::mojom::AppCacheErrorReason::APPCACHE_MANIFEST_ERROR, GURL(),
+      response_code, false /*is_cross_origin*/));
   if (success) {
     DCHECK(group->is_obsolete());
-    NotifyAllAssociatedHosts(APPCACHE_OBSOLETE_EVENT);
+    NotifyAllAssociatedHosts(
+        blink::mojom::AppCacheEventID::APPCACHE_OBSOLETE_EVENT);
     internal_state_ = COMPLETED;
     MaybeCompleteUpdate();
   } else {
     // Treat failure to mark group obsolete as a cache failure.
-    HandleCacheFailure(AppCacheErrorDetails(
-                           "Failed to mark the cache as obsolete",
-                           APPCACHE_UNKNOWN_ERROR, GURL(),  0,
-                           false /*is_cross_origin*/),
-                       DB_ERROR,
-                       GURL());
+    HandleCacheFailure(
+        blink::mojom::AppCacheErrorDetails(
+            "Failed to mark the cache as obsolete",
+            blink::mojom::AppCacheErrorReason::APPCACHE_UNKNOWN_ERROR, GURL(),
+            0, false /*is_cross_origin*/),
+        DB_ERROR, GURL());
   }
 }
 
@@ -668,19 +434,19 @@ void AppCacheUpdateJob::ContinueHandleManifestFetchCompleted(bool changed) {
   AppCacheManifest manifest;
   if (!ParseManifest(manifest_url_, manifest_data_.data(),
                      manifest_data_.length(),
-                     manifest_has_valid_mime_type_ ?
-                        PARSE_MANIFEST_ALLOWING_INTERCEPTS :
-                        PARSE_MANIFEST_PER_STANDARD,
+                     manifest_has_valid_mime_type_
+                         ? PARSE_MANIFEST_ALLOWING_DANGEROUS_FEATURES
+                         : PARSE_MANIFEST_PER_STANDARD,
                      manifest)) {
     const char kFormatString[] = "Failed to parse manifest %s";
     const std::string message = base::StringPrintf(kFormatString,
         manifest_url_.spec().c_str());
     HandleCacheFailure(
-        AppCacheErrorDetails(
-            message, APPCACHE_SIGNATURE_ERROR, GURL(), 0,
-            false /*is_cross_origin*/),
-        MANIFEST_ERROR,
-        GURL());
+        blink::mojom::AppCacheErrorDetails(
+            message,
+            blink::mojom::AppCacheErrorReason::APPCACHE_SIGNATURE_ERROR, GURL(),
+            0, false /*is_cross_origin*/),
+        MANIFEST_ERROR, GURL());
     VLOG(1) << message;
     return;
   }
@@ -692,43 +458,48 @@ void AppCacheUpdateJob::ContinueHandleManifestFetchCompleted(bool changed) {
   inprogress_cache_->InitializeWithManifest(&manifest);
 
   // Associate all pending master hosts with the newly created cache.
-  for (PendingMasters::iterator it = pending_master_entries_.begin();
-       it != pending_master_entries_.end(); ++it) {
-    PendingHosts& hosts = it->second;
-    for (PendingHosts::iterator host_it = hosts.begin();
-         host_it != hosts.end(); ++host_it) {
-      (*host_it)
-          ->AssociateIncompleteCache(inprogress_cache_.get(), manifest_url_);
+  for (const auto& pair : pending_master_entries_) {
+    const PendingHosts& hosts = pair.second;
+    for (AppCacheHost* host : hosts) {
+      host->AssociateIncompleteCache(inprogress_cache_.get(), manifest_url_);
     }
   }
 
+  // Warn about dangerous features being ignored due to the wrong content-type
+  // Must be done after associating all pending master hosts.
   if (manifest.did_ignore_intercept_namespaces) {
-    // Must be done after associating all pending master hosts.
     std::string message(
         "Ignoring the INTERCEPT section of the application cache manifest "
         "because the content type is not text/cache-manifest");
     LogConsoleMessageToAll(message);
   }
+  if (manifest.did_ignore_fallback_namespaces) {
+    std::string message(
+        "Ignoring out of scope FALLBACK entries of the application cache "
+        "manifest because the content-type is not text/cache-manifest");
+    LogConsoleMessageToAll(message);
+  }
 
   group_->SetUpdateAppCacheStatus(AppCacheGroup::DOWNLOADING);
-  NotifyAllAssociatedHosts(APPCACHE_DOWNLOADING_EVENT);
+  NotifyAllAssociatedHosts(
+      blink::mojom::AppCacheEventID::APPCACHE_DOWNLOADING_EVENT);
   FetchUrls();
   FetchMasterEntries();
   MaybeCompleteUpdate();  // if not done, continues when async fetches complete
 }
 
-void AppCacheUpdateJob::HandleUrlFetchCompleted(URLFetcher* fetcher) {
+void AppCacheUpdateJob::HandleUrlFetchCompleted(URLFetcher* fetcher,
+                                                int net_error) {
   DCHECK(internal_state_ == DOWNLOADING);
 
-  net::URLRequest* request = fetcher->request();
-  const GURL& url = request->original_url();
+  UpdateURLLoaderRequest* request = fetcher->request();
+  const GURL& url = request->GetURL();
   pending_url_fetches_.erase(url);
   NotifyAllProgress(url);
   ++url_fetches_completed_;
 
-  int response_code = request->status().is_success()
-                          ? request->GetResponseCode()
-                          : fetcher->redirect_response_code();
+  int response_code = net_error == net::OK ? request->GetResponseCode()
+                                           : fetcher->redirect_response_code();
 
   AppCacheEntry& entry = url_file_list_.find(url)->second;
 
@@ -751,8 +522,7 @@ void AppCacheUpdateJob::HandleUrlFetchCompleted(URLFetcher* fetcher) {
     // whose value doesn't match the manifest url of the application cache
     // being processed, mark the entry as being foreign.
   } else {
-    VLOG(1) << "Request status: " << request->status().status()
-            << " error: " << request->status().error()
+    VLOG(1) << "Request error: " << net_error
             << " response code: " << response_code;
     if (entry.IsExplicit() || entry.IsFallback() || entry.IsIntercept()) {
       if (response_code == 304 && fetcher->existing_entry().has_response_id()) {
@@ -769,27 +539,27 @@ void AppCacheUpdateJob::HandleUrlFetchCompleted(URLFetcher* fetcher) {
         switch (result) {
           case DISKCACHE_ERROR:
             HandleCacheFailure(
-                AppCacheErrorDetails(
-                    message, APPCACHE_UNKNOWN_ERROR, GURL(), 0,
-                    is_cross_origin),
-                result,
-                url);
+                blink::mojom::AppCacheErrorDetails(
+                    message,
+                    blink::mojom::AppCacheErrorReason::APPCACHE_UNKNOWN_ERROR,
+                    GURL(), 0, is_cross_origin),
+                result, url);
             break;
           case NETWORK_ERROR:
             HandleCacheFailure(
-                AppCacheErrorDetails(message, APPCACHE_RESOURCE_ERROR, url, 0,
-                    is_cross_origin),
-                result,
-                url);
+                blink::mojom::AppCacheErrorDetails(
+                    message,
+                    blink::mojom::AppCacheErrorReason::APPCACHE_RESOURCE_ERROR,
+                    url, 0, is_cross_origin),
+                result, url);
             break;
           default:
-            HandleCacheFailure(AppCacheErrorDetails(message,
-                                            APPCACHE_RESOURCE_ERROR,
-                                            url,
-                                            response_code,
-                                            is_cross_origin),
-                               result,
-                               url);
+            HandleCacheFailure(
+                blink::mojom::AppCacheErrorDetails(
+                    message,
+                    blink::mojom::AppCacheErrorReason::APPCACHE_RESOURCE_ERROR,
+                    url, response_code, is_cross_origin),
+                result, url);
             break;
         }
         return;
@@ -814,8 +584,8 @@ void AppCacheUpdateJob::HandleUrlFetchCompleted(URLFetcher* fetcher) {
   MaybeCompleteUpdate();
 }
 
-void AppCacheUpdateJob::HandleMasterEntryFetchCompleted(
-    URLFetcher* fetcher) {
+void AppCacheUpdateJob::HandleMasterEntryFetchCompleted(URLFetcher* fetcher,
+                                                        int net_error) {
   DCHECK(internal_state_ == NO_UPDATE || internal_state_ == DOWNLOADING);
 
   // TODO(jennb): Handle downloads completing during cache failure when update
@@ -823,15 +593,14 @@ void AppCacheUpdateJob::HandleMasterEntryFetchCompleted(
   // master entry fetches when entering cache failure state so this will never
   // be called in CACHE_FAILURE state.
 
-  net::URLRequest* request = fetcher->request();
-  const GURL& url = request->original_url();
+  UpdateURLLoaderRequest* request = fetcher->request();
+  const GURL& url = request->GetURL();
   master_entry_fetches_.erase(url);
   ++master_entries_completed_;
 
-  int response_code = request->status().is_success()
-      ? request->GetResponseCode() : -1;
+  int response_code = net_error == net::OK ? request->GetResponseCode() : -1;
 
-  PendingMasters::iterator found = pending_master_entries_.find(url);
+  auto found = pending_master_entries_.find(url);
   DCHECK(found != pending_master_entries_.end());
   PendingHosts& hosts = found->second;
 
@@ -853,16 +622,12 @@ void AppCacheUpdateJob::HandleMasterEntryFetchCompleted(
     if (!inprogress_cache_.get()) {
       // TODO(michaeln): defer until the updated cache has been stored
       DCHECK(cache == group_->newest_complete_cache());
-      for (PendingHosts::iterator host_it = hosts.begin();
-           host_it != hosts.end(); ++host_it) {
-        (*host_it)->AssociateCompleteCache(cache);
-      }
+      for (AppCacheHost* host : hosts)
+        host->AssociateCompleteCache(cache);
     }
   } else {
     HostNotifier host_notifier;
-    for (PendingHosts::iterator host_it = hosts.begin();
-         host_it != hosts.end(); ++host_it) {
-      AppCacheHost* host = *host_it;
+    for (AppCacheHost* host : hosts) {
       host_notifier.AddHost(host);
 
       // In downloading case, disassociate host from inprogress cache.
@@ -877,13 +642,10 @@ void AppCacheUpdateJob::HandleMasterEntryFetchCompleted(
 
     const char kFormatString[] = "Manifest fetch failed (%d) %s";
     std::string message = FormatUrlErrorMessage(
-        kFormatString, request->url(), fetcher->result(), response_code);
-    host_notifier.SendErrorNotifications(
-        AppCacheErrorDetails(message,
-                     APPCACHE_MANIFEST_ERROR,
-                     request->url(),
-                     response_code,
-                     false /*is_cross_origin*/));
+        kFormatString, request->GetURL(), fetcher->result(), response_code);
+    host_notifier.SendErrorNotifications(blink::mojom::AppCacheErrorDetails(
+        message, blink::mojom::AppCacheErrorReason::APPCACHE_MANIFEST_ERROR,
+        request->GetURL(), response_code, false /*is_cross_origin*/));
 
     // In downloading case, update result is different if all master entries
     // failed vs. only some failing.
@@ -894,13 +656,12 @@ void AppCacheUpdateJob::HandleMasterEntryFetchCompleted(
 
       // Section 6.9.4, step 22.3.
       if (update_type_ == CACHE_ATTEMPT && pending_master_entries_.empty()) {
-        HandleCacheFailure(AppCacheErrorDetails(message,
-                                        APPCACHE_MANIFEST_ERROR,
-                                        request->url(),
-                                        response_code,
-                                        false /*is_cross_origin*/),
-                           fetcher->result(),
-                           GURL());
+        HandleCacheFailure(
+            blink::mojom::AppCacheErrorDetails(
+                message,
+                blink::mojom::AppCacheErrorReason::APPCACHE_MANIFEST_ERROR,
+                request->GetURL(), response_code, false /*is_cross_origin*/),
+            fetcher->result(), GURL());
         return;
       }
     }
@@ -911,77 +672,79 @@ void AppCacheUpdateJob::HandleMasterEntryFetchCompleted(
   MaybeCompleteUpdate();
 }
 
-void AppCacheUpdateJob::HandleManifestRefetchCompleted(
-    URLFetcher* fetcher) {
+void AppCacheUpdateJob::HandleManifestRefetchCompleted(URLFetcher* fetcher,
+                                                       int net_error) {
   DCHECK(internal_state_ == REFETCH_MANIFEST);
   DCHECK(manifest_fetcher_ == fetcher);
-  manifest_fetcher_ = NULL;
+  manifest_fetcher_ = nullptr;
 
-  net::URLRequest* request = fetcher->request();
-  int response_code = request->status().is_success()
-      ? request->GetResponseCode() : -1;
+  int response_code =
+      net_error == net::OK ? fetcher->request()->GetResponseCode() : -1;
   if (response_code == 304 || manifest_data_ == fetcher->manifest_data()) {
     // Only need to store response in storage if manifest is not already
     // an entry in the cache.
-    AppCacheEntry* entry = inprogress_cache_->GetEntry(manifest_url_);
+    AppCacheEntry* entry = nullptr;
+    if (inprogress_cache_)
+      entry = inprogress_cache_->GetEntry(manifest_url_);
     if (entry) {
       entry->add_types(AppCacheEntry::MANIFEST);
       StoreGroupAndCache();
     } else {
-      manifest_response_writer_.reset(CreateResponseWriter());
-      scoped_refptr<HttpResponseInfoIOBuffer> io_buffer(
-          new HttpResponseInfoIOBuffer(manifest_response_info_.release()));
+      manifest_response_writer_ = CreateResponseWriter();
+      scoped_refptr<HttpResponseInfoIOBuffer> io_buffer =
+          base::MakeRefCounted<HttpResponseInfoIOBuffer>(
+              std::move(manifest_response_info_));
       manifest_response_writer_->WriteInfo(
           io_buffer.get(),
-          base::Bind(&AppCacheUpdateJob::OnManifestInfoWriteComplete,
-                     base::Unretained(this)));
+          base::BindOnce(&AppCacheUpdateJob::OnManifestInfoWriteComplete,
+                         base::Unretained(this)));
     }
   } else {
-    VLOG(1) << "Request status: " << request->status().status()
-            << " error: " << request->status().error()
+    VLOG(1) << "Request error: " << net_error
             << " response code: " << response_code;
     ScheduleUpdateRetry(kRerunDelayMs);
     if (response_code == 200) {
-      HandleCacheFailure(AppCacheErrorDetails("Manifest changed during update",
-                                      APPCACHE_CHANGED_ERROR,
-                                      GURL(),
-                                      0,
-                                      false /*is_cross_origin*/),
-                         MANIFEST_ERROR,
-                         GURL());
+      HandleCacheFailure(
+          blink::mojom::AppCacheErrorDetails(
+              "Manifest changed during update",
+              blink::mojom::AppCacheErrorReason::APPCACHE_CHANGED_ERROR, GURL(),
+              0, false /*is_cross_origin*/),
+          MANIFEST_ERROR, GURL());
     } else {
       const char kFormatString[] = "Manifest re-fetch failed (%d) %s";
       std::string message = FormatUrlErrorMessage(
           kFormatString, manifest_url_, fetcher->result(), response_code);
-      HandleCacheFailure(AppCacheErrorDetails(message,
-                                      APPCACHE_MANIFEST_ERROR,
-                                      GURL(),
-                                      response_code,
-                                      false /*is_cross_origin*/),
-                         fetcher->result(),
-                         GURL());
+      ResultType result = fetcher->result();
+      if (result == UPDATE_OK) {
+        // URLFetcher considers any 2xx response a success, however in this
+        // particular case we want to treat any non 200 responses as failures.
+        result = SERVER_ERROR;
+      }
+      HandleCacheFailure(
+          blink::mojom::AppCacheErrorDetails(
+              message,
+              blink::mojom::AppCacheErrorReason::APPCACHE_MANIFEST_ERROR,
+              GURL(), response_code, false /*is_cross_origin*/),
+          result, GURL());
     }
   }
 }
 
 void AppCacheUpdateJob::OnManifestInfoWriteComplete(int result) {
   if (result > 0) {
-    scoped_refptr<net::StringIOBuffer> io_buffer(
-        new net::StringIOBuffer(manifest_data_));
+    scoped_refptr<net::StringIOBuffer> io_buffer =
+        base::MakeRefCounted<net::StringIOBuffer>(manifest_data_);
     manifest_response_writer_->WriteData(
-        io_buffer.get(),
-        manifest_data_.length(),
-        base::Bind(&AppCacheUpdateJob::OnManifestDataWriteComplete,
-                   base::Unretained(this)));
+        io_buffer.get(), manifest_data_.length(),
+        base::BindOnce(&AppCacheUpdateJob::OnManifestDataWriteComplete,
+                       base::Unretained(this)));
   } else {
     HandleCacheFailure(
-        AppCacheErrorDetails("Failed to write the manifest headers to storage",
-                     APPCACHE_UNKNOWN_ERROR,
-                     GURL(),
-                     0,
-                     false /*is_cross_origin*/),
-        DISKCACHE_ERROR,
-        GURL());
+        blink::mojom::AppCacheErrorDetails(
+            "Failed to write the manifest headers to storage",
+            blink::mojom::AppCacheErrorReason::APPCACHE_UNKNOWN_ERROR, GURL(),
+            0, false /*is_cross_origin*/),
+        DISKCACHE_ERROR, GURL());
   }
 }
 
@@ -995,13 +758,11 @@ void AppCacheUpdateJob::OnManifestDataWriteComplete(int result) {
     StoreGroupAndCache();
   } else {
     HandleCacheFailure(
-        AppCacheErrorDetails("Failed to write the manifest data to storage",
-                     APPCACHE_UNKNOWN_ERROR,
-                     GURL(),
-                     0,
-                     false /*is_cross_origin*/),
-        DISKCACHE_ERROR,
-        GURL());
+        blink::mojom::AppCacheErrorDetails(
+            "Failed to write the manifest data to storage",
+            blink::mojom::AppCacheErrorReason::APPCACHE_UNKNOWN_ERROR, GURL(),
+            0, false /*is_cross_origin*/),
+        DISKCACHE_ERROR, GURL());
   }
 }
 
@@ -1042,27 +803,27 @@ void AppCacheUpdateJob::OnGroupAndNewestCacheStored(AppCacheGroup* group,
     inprogress_cache_ = newest_cache;
 
   ResultType result = DB_ERROR;
-  AppCacheErrorReason reason = APPCACHE_UNKNOWN_ERROR;
+  blink::mojom::AppCacheErrorReason reason =
+      blink::mojom::AppCacheErrorReason::APPCACHE_UNKNOWN_ERROR;
   std::string message("Failed to commit new cache to storage");
   if (would_exceed_quota) {
     message.append(", would exceed quota");
     result = QUOTA_ERROR;
-    reason = APPCACHE_QUOTA_ERROR;
+    reason = blink::mojom::AppCacheErrorReason::APPCACHE_QUOTA_ERROR;
   }
-  HandleCacheFailure(
-      AppCacheErrorDetails(message, reason, GURL(), 0,
-          false /*is_cross_origin*/),
-      result,
-      GURL());
+  HandleCacheFailure(blink::mojom::AppCacheErrorDetails(
+                         message, reason, GURL(), 0, false /*is_cross_origin*/),
+                     result, GURL());
 }
 
-void AppCacheUpdateJob::NotifySingleHost(AppCacheHost* host,
-                                         AppCacheEventID event_id) {
-  std::vector<int> ids(1, host->host_id());
-  host->frontend()->OnEventRaised(ids, event_id);
+void AppCacheUpdateJob::NotifySingleHost(
+    AppCacheHost* host,
+    blink::mojom::AppCacheEventID event_id) {
+  host->frontend()->EventRaised(event_id);
 }
 
-void AppCacheUpdateJob::NotifyAllAssociatedHosts(AppCacheEventID event_id) {
+void AppCacheUpdateJob::NotifyAllAssociatedHosts(
+    blink::mojom::AppCacheEventID event_id) {
   HostNotifier host_notifier;
   AddAllAssociatedHostsToNotifier(&host_notifier);
   host_notifier.SendNotifications(event_id);
@@ -1080,7 +841,8 @@ void AppCacheUpdateJob::NotifyAllFinalProgress() {
   NotifyAllProgress(GURL());
 }
 
-void AppCacheUpdateJob::NotifyAllError(const AppCacheErrorDetails& details) {
+void AppCacheUpdateJob::NotifyAllError(
+    const blink::mojom::AppCacheErrorDetails& details) {
   HostNotifier host_notifier;
   AddAllAssociatedHostsToNotifier(&host_notifier);
   host_notifier.SendErrorNotifications(details);
@@ -1102,11 +864,8 @@ void AppCacheUpdateJob::AddAllAssociatedHostsToNotifier(
     host_notifier->AddHosts(inprogress_cache_->associated_hosts());
   }
 
-  AppCacheGroup::Caches old_caches = group_->old_caches();
-  for (AppCacheGroup::Caches::const_iterator it = old_caches.begin();
-       it != old_caches.end(); ++it) {
-    host_notifier->AddHosts((*it)->associated_hosts());
-  }
+  for (AppCache* cache : group_->old_caches())
+    host_notifier->AddHosts(cache->associated_hosts());
 
   AppCache* newest_cache = group_->newest_complete_cache();
   if (newest_cache)
@@ -1115,11 +874,10 @@ void AppCacheUpdateJob::AddAllAssociatedHostsToNotifier(
 
 void AppCacheUpdateJob::OnDestructionImminent(AppCacheHost* host) {
   // The host is about to be deleted; remove from our collection.
-  PendingMasters::iterator found =
-      pending_master_entries_.find(host->pending_master_entry_url());
+  auto found = pending_master_entries_.find(host->pending_master_entry_url());
   CHECK(found != pending_master_entries_.end());
   PendingHosts& hosts = found->second;
-  PendingHosts::iterator it = std::find(hosts.begin(), hosts.end(), host);
+  auto it = std::find(hosts.begin(), hosts.end(), host);
   CHECK(it != hosts.end());
   hosts.erase(it);
 }
@@ -1134,7 +892,7 @@ void AppCacheUpdateJob::OnServiceReinitialized(
 
 void AppCacheUpdateJob::CheckIfManifestChanged() {
   DCHECK(update_type_ == UPGRADE_ATTEMPT);
-  AppCacheEntry* entry = NULL;
+  AppCacheEntry* entry = nullptr;
   if (group_->newest_complete_cache())
     entry = group_->newest_complete_cache()->GetEntry(manifest_url_);
   if (!entry) {
@@ -1144,41 +902,38 @@ void AppCacheUpdateJob::CheckIfManifestChanged() {
       // Use a local variable because service_ is reset in HandleCacheFailure.
       AppCacheServiceImpl* service = service_;
       HandleCacheFailure(
-          AppCacheErrorDetails("Manifest entry not found in existing cache",
-                       APPCACHE_UNKNOWN_ERROR,
-                       GURL(),
-                       0,
-                       false /*is_cross_origin*/),
-          DB_ERROR,
-          GURL());
+          blink::mojom::AppCacheErrorDetails(
+              "Manifest entry not found in existing cache",
+              blink::mojom::AppCacheErrorReason::APPCACHE_UNKNOWN_ERROR, GURL(),
+              0, false /*is_cross_origin*/),
+          DB_ERROR, GURL());
       AppCacheHistograms::AddMissingManifestEntrySample();
-      service->DeleteAppCacheGroup(manifest_url_, net::CompletionCallback());
+      service->DeleteAppCacheGroup(manifest_url_,
+                                   net::CompletionOnceCallback());
     }
     return;
   }
 
   // Load manifest data from storage to compare against fetched manifest.
-  manifest_response_reader_.reset(
-      storage_->CreateResponseReader(manifest_url_,
-                                     entry->response_id()));
-  read_manifest_buffer_ = new net::IOBuffer(kBufferSize);
+  manifest_response_reader_ =
+      storage_->CreateResponseReader(manifest_url_, entry->response_id());
+  read_manifest_buffer_ =
+      base::MakeRefCounted<net::IOBuffer>(kAppCacheFetchBufferSize);
   manifest_response_reader_->ReadData(
-      read_manifest_buffer_.get(),
-      kBufferSize,
-      base::Bind(&AppCacheUpdateJob::OnManifestDataReadComplete,
-                 base::Unretained(this)));  // async read
+      read_manifest_buffer_.get(), kAppCacheFetchBufferSize,
+      base::BindOnce(&AppCacheUpdateJob::OnManifestDataReadComplete,
+                     base::Unretained(this)));  // async read
 }
 
 void AppCacheUpdateJob::OnManifestDataReadComplete(int result) {
   if (result > 0) {
     loaded_manifest_data_.append(read_manifest_buffer_->data(), result);
     manifest_response_reader_->ReadData(
-        read_manifest_buffer_.get(),
-        kBufferSize,
-        base::Bind(&AppCacheUpdateJob::OnManifestDataReadComplete,
-                   base::Unretained(this)));  // read more
+        read_manifest_buffer_.get(), kAppCacheFetchBufferSize,
+        base::BindOnce(&AppCacheUpdateJob::OnManifestDataReadComplete,
+                       base::Unretained(this)));  // read more
   } else {
-    read_manifest_buffer_ = NULL;
+    read_manifest_buffer_ = nullptr;
     manifest_response_reader_.reset();
     ContinueHandleManifestFetchCompleted(
         result < 0 || manifest_data_ != loaded_manifest_data_);
@@ -1186,38 +941,21 @@ void AppCacheUpdateJob::OnManifestDataReadComplete(int result) {
 }
 
 void AppCacheUpdateJob::BuildUrlFileList(const AppCacheManifest& manifest) {
-  for (base::hash_set<std::string>::const_iterator it =
-           manifest.explicit_urls.begin();
-       it != manifest.explicit_urls.end(); ++it) {
-    AddUrlToFileList(GURL(*it), AppCacheEntry::EXPLICIT);
-  }
+  for (const std::string& explicit_url : manifest.explicit_urls)
+    AddUrlToFileList(GURL(explicit_url), AppCacheEntry::EXPLICIT);
 
-  const std::vector<AppCacheNamespace>& intercepts =
-      manifest.intercept_namespaces;
-  for (std::vector<AppCacheNamespace>::const_iterator it = intercepts.begin();
-       it != intercepts.end(); ++it) {
-    int flags = AppCacheEntry::INTERCEPT;
-    if (it->is_executable)
-      flags |= AppCacheEntry::EXECUTABLE;
-    AddUrlToFileList(it->target_url, flags);
-  }
+  for (const auto& intercept : manifest.intercept_namespaces)
+    AddUrlToFileList(intercept.target_url, AppCacheEntry::INTERCEPT);
 
-  const std::vector<AppCacheNamespace>& fallbacks =
-      manifest.fallback_namespaces;
-  for (std::vector<AppCacheNamespace>::const_iterator it = fallbacks.begin();
-       it != fallbacks.end(); ++it) {
-     AddUrlToFileList(it->target_url, AppCacheEntry::FALLBACK);
-  }
+  for (const auto& fallback : manifest.fallback_namespaces)
+    AddUrlToFileList(fallback.target_url, AppCacheEntry::FALLBACK);
 
   // Add all master entries from newest complete cache.
   if (update_type_ == UPGRADE_ATTEMPT) {
-    const AppCache::EntryMap& entries =
-        group_->newest_complete_cache()->entries();
-    for (AppCache::EntryMap::const_iterator it = entries.begin();
-         it != entries.end(); ++it) {
-      const AppCacheEntry& entry = it->second;
+    for (const auto& pair : group_->newest_complete_cache()->entries()) {
+      const AppCacheEntry& entry = pair.second;
       if (entry.IsMaster())
-        AddUrlToFileList(it->first, AppCacheEntry::MASTER);
+        AddUrlToFileList(pair.first, AppCacheEntry::MASTER);
     }
   }
 }
@@ -1227,7 +965,7 @@ void AppCacheUpdateJob::AddUrlToFileList(const GURL& url, int type) {
       AppCache::EntryMap::value_type(url, AppCacheEntry(type)));
 
   if (ret.second)
-    urls_to_fetch_.push_back(UrlToFetch(url, false, NULL));
+    urls_to_fetch_.push_back(UrlToFetch(url, false, nullptr));
   else
     ret.first->second.add_types(type);  // URL already exists. Merge types.
 }
@@ -1243,7 +981,7 @@ void AppCacheUpdateJob::FetchUrls() {
     UrlToFetch url_to_fetch = urls_to_fetch_.front();
     urls_to_fetch_.pop_front();
 
-    AppCache::EntryMap::iterator it = url_file_list_.find(url_to_fetch.url);
+    auto it = url_file_list_.find(url_to_fetch.url);
     DCHECK(it != url_file_list_.end());
     AppCacheEntry& entry = it->second;
     if (ShouldSkipUrlFetch(entry)) {
@@ -1256,8 +994,9 @@ void AppCacheUpdateJob::FetchUrls() {
                MaybeLoadFromNewestCache(url_to_fetch.url, entry)) {
       // Continues asynchronously after data is loaded from newest cache.
     } else {
-      URLFetcher* fetcher = new URLFetcher(
-          url_to_fetch.url, URLFetcher::URL_FETCH, this);
+      URLFetcher* fetcher =
+          new URLFetcher(url_to_fetch.url, URLFetcher::URL_FETCH, this,
+                         kAppCacheFetchBufferSize);
       if (url_to_fetch.existing_response_info.get() &&
           group_->newest_complete_cache()) {
         AppCacheEntry* existing_entry =
@@ -1266,8 +1005,8 @@ void AppCacheUpdateJob::FetchUrls() {
         DCHECK(existing_entry->response_id() ==
                url_to_fetch.existing_response_info->response_id());
         fetcher->set_existing_response_headers(
-            url_to_fetch.existing_response_info->http_response_info()->headers
-                .get());
+            url_to_fetch.existing_response_info->http_response_info()
+                .headers.get());
         fetcher->set_existing_entry(*existing_entry);
       }
       fetcher->Start();
@@ -1279,10 +1018,8 @@ void AppCacheUpdateJob::FetchUrls() {
 
 void AppCacheUpdateJob::CancelAllUrlFetches() {
   // Cancel any pending URL requests.
-  for (PendingUrlFetches::iterator it = pending_url_fetches_.begin();
-       it != pending_url_fetches_.end(); ++it) {
-    delete it->second;
-  }
+  for (auto& pair : pending_url_fetches_)
+    delete pair.second;
 
   url_fetches_completed_ +=
       pending_url_fetches_.size() + urls_to_fetch_.size();
@@ -1370,17 +1107,15 @@ void AppCacheUpdateJob::FetchMasterEntries() {
         // TODO(michaeln): defer until the updated cache has been stored.
         DCHECK(!inprogress_cache_.get());
         AppCache* cache = group_->newest_complete_cache();
-        PendingMasters::iterator found = pending_master_entries_.find(url);
+        auto found = pending_master_entries_.find(url);
         DCHECK(found != pending_master_entries_.end());
         PendingHosts& hosts = found->second;
-        for (PendingHosts::iterator host_it = hosts.begin();
-             host_it != hosts.end(); ++host_it) {
-          (*host_it)->AssociateCompleteCache(cache);
-        }
+        for (AppCacheHost* host : hosts)
+          host->AssociateCompleteCache(cache);
       }
     } else {
-      URLFetcher* fetcher = new URLFetcher(
-          url, URLFetcher::MASTER_ENTRY_FETCH, this);
+      URLFetcher* fetcher = new URLFetcher(url, URLFetcher::MASTER_ENTRY_FETCH,
+                                           this, kAppCacheFetchBufferSize);
       fetcher->Start();
       master_entry_fetches_.insert(PendingUrlFetches::value_type(url, fetcher));
     }
@@ -1390,17 +1125,16 @@ void AppCacheUpdateJob::FetchMasterEntries() {
 }
 
 void AppCacheUpdateJob::CancelAllMasterEntryFetches(
-    const AppCacheErrorDetails& error_details) {
+    const blink::mojom::AppCacheErrorDetails& error_details) {
   // For now, cancel all in-progress fetches for master entries and pretend
   // all master entries fetches have completed.
   // TODO(jennb): Delete this when update no longer fetches master entries
   // directly.
 
   // Cancel all in-progress fetches.
-  for (PendingUrlFetches::iterator it = master_entry_fetches_.begin();
-       it != master_entry_fetches_.end(); ++it) {
-    delete it->second;
-    master_entries_to_fetch_.insert(it->first);  // back in unfetched list
+  for (auto& pair : master_entry_fetches_) {
+    delete pair.second;
+    master_entries_to_fetch_.insert(pair.first);  // back in unfetched list
   }
   master_entry_fetches_.clear();
 
@@ -1412,12 +1146,10 @@ void AppCacheUpdateJob::CancelAllMasterEntryFetches(
   HostNotifier host_notifier;
   while (!master_entries_to_fetch_.empty()) {
     const GURL& url = *master_entries_to_fetch_.begin();
-    PendingMasters::iterator found = pending_master_entries_.find(url);
+    auto found = pending_master_entries_.find(url);
     DCHECK(found != pending_master_entries_.end());
     PendingHosts& hosts = found->second;
-    for (PendingHosts::iterator host_it = hosts.begin();
-         host_it != hosts.end(); ++host_it) {
-      AppCacheHost* host = *host_it;
+    for (AppCacheHost* host : hosts) {
       host->AssociateNoCache(GURL());
       host_notifier.AddHost(host);
       host->RemoveObserver(this);
@@ -1450,8 +1182,8 @@ bool AppCacheUpdateJob::MaybeLoadFromNewestCache(const GURL& url,
 void AppCacheUpdateJob::OnResponseInfoLoaded(
     AppCacheResponseInfo* response_info,
     int64_t response_id) {
-  const net::HttpResponseInfo* http_info = response_info ?
-      response_info->http_response_info() : NULL;
+  const net::HttpResponseInfo* http_info =
+      response_info ? &response_info->http_response_info() : nullptr;
 
   // Needed response info for a manifest fetch request.
   if (internal_state_ == FETCH_MANIFEST) {
@@ -1462,42 +1194,31 @@ void AppCacheUpdateJob::OnResponseInfoLoaded(
     return;
   }
 
-  LoadingResponses::iterator found = loading_responses_.find(response_id);
+  auto found = loading_responses_.find(response_id);
   DCHECK(found != loading_responses_.end());
   const GURL& url = found->second;
 
   if (!http_info) {
-    LoadFromNewestCacheFailed(url, NULL);  // no response found
+    LoadFromNewestCacheFailed(url, nullptr);  // no response found
+  } else if (!CanUseExistingResource(http_info)) {
+    LoadFromNewestCacheFailed(url, response_info);
   } else {
-    // Check if response can be re-used according to HTTP caching semantics.
-    // Responses with a "vary" header get treated as expired.
-    const std::string name = "vary";
-    std::string value;
-    size_t iter = 0;
-    if (!http_info->headers.get() ||
-        http_info->headers->RequiresValidation(http_info->request_time,
-                                               http_info->response_time,
-                                               base::Time::Now()) ||
-        http_info->headers->EnumerateHeader(&iter, name, &value)) {
-      LoadFromNewestCacheFailed(url, response_info);
-    } else {
-      DCHECK(group_->newest_complete_cache());
-      AppCacheEntry* copy_me = group_->newest_complete_cache()->GetEntry(url);
-      DCHECK(copy_me);
-      DCHECK(copy_me->response_id() == response_id);
+    DCHECK(group_->newest_complete_cache());
+    AppCacheEntry* copy_me = group_->newest_complete_cache()->GetEntry(url);
+    DCHECK(copy_me);
+    DCHECK_EQ(copy_me->response_id(), response_id);
 
-      AppCache::EntryMap::iterator it = url_file_list_.find(url);
-      DCHECK(it != url_file_list_.end());
-      AppCacheEntry& entry = it->second;
-      entry.set_response_id(response_id);
-      entry.set_response_size(copy_me->response_size());
-      inprogress_cache_->AddOrModifyEntry(url, entry);
-      NotifyAllProgress(url);
-      ++url_fetches_completed_;
-    }
+    auto it = url_file_list_.find(url);
+    DCHECK(it != url_file_list_.end());
+    AppCacheEntry& entry = it->second;
+    entry.set_response_id(response_id);
+    entry.set_response_size(copy_me->response_size());
+    inprogress_cache_->AddOrModifyEntry(url, entry);
+    NotifyAllProgress(url);
+    ++url_fetches_completed_;
   }
-  loading_responses_.erase(found);
 
+  loading_responses_.erase(found);
   MaybeCompleteUpdate();
 }
 
@@ -1546,8 +1267,10 @@ void AppCacheUpdateJob::MaybeCompleteUpdate() {
         if (times_changed)
           storage_->StoreEvictionTimes(group_);
       }
+      group_->SetUpdateAppCacheStatus(AppCacheGroup::IDLE);
       // 6.9.4 steps 7.3-7.7.
-      NotifyAllAssociatedHosts(APPCACHE_NO_UPDATE_EVENT);
+      NotifyAllAssociatedHosts(
+          blink::mojom::AppCacheEventID::APPCACHE_NO_UPDATE_EVENT);
       DiscardDuplicateResponses();
       internal_state_ = COMPLETED;
       break;
@@ -1558,10 +1281,13 @@ void AppCacheUpdateJob::MaybeCompleteUpdate() {
     case REFETCH_MANIFEST:
       DCHECK(stored_state_ == STORED);
       NotifyAllFinalProgress();
+      group_->SetUpdateAppCacheStatus(AppCacheGroup::IDLE);
       if (update_type_ == CACHE_ATTEMPT)
-        NotifyAllAssociatedHosts(APPCACHE_CACHED_EVENT);
+        NotifyAllAssociatedHosts(
+            blink::mojom::AppCacheEventID::APPCACHE_CACHED_EVENT);
       else
-        NotifyAllAssociatedHosts(APPCACHE_UPDATE_READY_EVENT);
+        NotifyAllAssociatedHosts(
+            blink::mojom::AppCacheEventID::APPCACHE_UPDATE_READY_EVENT);
       DiscardDuplicateResponses();
       internal_state_ = COMPLETED;
       LogHistogramStats(UPDATE_OK, GURL());
@@ -1592,19 +1318,15 @@ void AppCacheUpdateJob::Cancel() {
 
   if (manifest_fetcher_) {
     delete manifest_fetcher_;
-    manifest_fetcher_ = NULL;
+    manifest_fetcher_ = nullptr;
   }
 
-  for (PendingUrlFetches::iterator it = pending_url_fetches_.begin();
-       it != pending_url_fetches_.end(); ++it) {
-    delete it->second;
-  }
+  for (auto& pair : pending_url_fetches_)
+    delete pair.second;
   pending_url_fetches_.clear();
 
-  for (PendingUrlFetches::iterator it = master_entry_fetches_.begin();
-       it != master_entry_fetches_.end(); ++it) {
-    delete it->second;
-  }
+  for (auto& pair : master_entry_fetches_)
+    delete pair.second;
   master_entry_fetches_.clear();
 
   ClearPendingMasterEntries();
@@ -1618,13 +1340,10 @@ void AppCacheUpdateJob::Cancel() {
 }
 
 void AppCacheUpdateJob::ClearPendingMasterEntries() {
-  for (PendingMasters::iterator it = pending_master_entries_.begin();
-       it != pending_master_entries_.end(); ++it) {
-    PendingHosts& hosts = it->second;
-    for (PendingHosts::iterator host_it = hosts.begin();
-         host_it != hosts.end(); ++host_it) {
-      (*host_it)->RemoveObserver(this);
-    }
+  for (auto& pair : pending_master_entries_) {
+    PendingHosts& hosts = pair.second;
+    for (AppCacheHost* host : hosts)
+      host->RemoveObserver(this);
   }
 
   pending_master_entries_.clear();
@@ -1635,7 +1354,7 @@ void AppCacheUpdateJob::DiscardInprogressCache() {
     // We can make no assumptions about whether the StoreGroupAndCacheTask
     // actually completed or not. This condition should only be reachable
     // during shutdown. Free things up and return to do no harm.
-    inprogress_cache_ = NULL;
+    inprogress_cache_ = nullptr;
     added_master_entries_.clear();
     return;
   }
@@ -1645,10 +1364,8 @@ void AppCacheUpdateJob::DiscardInprogressCache() {
   if (!inprogress_cache_.get()) {
     // We have to undo the changes we made, if any, to the existing cache.
     if (group_ && group_->newest_complete_cache()) {
-      for (std::vector<GURL>::iterator iter = added_master_entries_.begin();
-           iter != added_master_entries_.end(); ++iter) {
-        group_->newest_complete_cache()->RemoveEntry(*iter);
-      }
+      for (auto& url : added_master_entries_)
+        group_->newest_complete_cache()->RemoveEntry(url);
     }
     added_master_entries_.clear();
     return;
@@ -1658,7 +1375,7 @@ void AppCacheUpdateJob::DiscardInprogressCache() {
   while (!hosts.empty())
     (*hosts.begin())->AssociateNoCache(GURL());
 
-  inprogress_cache_ = NULL;
+  inprogress_cache_ = nullptr;
   added_master_entries_.clear();
 }
 
@@ -1668,7 +1385,8 @@ void AppCacheUpdateJob::DiscardDuplicateResponses() {
 
 void AppCacheUpdateJob::LogHistogramStats(
       ResultType result, const GURL& failed_resource_url) {
-  AppCacheHistograms::CountUpdateJobResult(result, manifest_url_.GetOrigin());
+  AppCacheHistograms::CountUpdateJobResult(result,
+                                           url::Origin::Create(manifest_url_));
   if (result == UPDATE_OK)
     return;
 
@@ -1691,9 +1409,7 @@ void AppCacheUpdateJob::LogHistogramStats(
           (failed_resource_url.GetOrigin() != manifest_url_.GetOrigin());
 
   AppCacheHistograms::LogUpdateFailureStats(
-      manifest_url_.GetOrigin(),
-      percent_complete,
-      was_making_progress,
+      url::Origin::Create(manifest_url_), percent_complete, was_making_progress,
       off_origin_resource_failure);
 }
 
@@ -1702,13 +1418,13 @@ void AppCacheUpdateJob::DeleteSoon() {
   manifest_response_writer_.reset();
   storage_->CancelDelegateCallbacks(this);
   service_->RemoveObserver(this);
-  service_ = NULL;
+  service_ = nullptr;
 
   // Break the connection with the group so the group cannot call delete
   // on this object after we've posted a task to delete ourselves.
   if (group_) {
     group_->SetUpdateAppCacheStatus(AppCacheGroup::IDLE);
-    group_ = NULL;
+    group_ = nullptr;
   }
 
   base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, this);

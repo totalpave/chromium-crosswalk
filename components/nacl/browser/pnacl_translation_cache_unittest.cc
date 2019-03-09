@@ -4,9 +4,9 @@
 
 #include "components/nacl/browser/pnacl_translation_cache.h"
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
 #include "components/nacl/common/pnacl_types.h"
@@ -15,11 +15,6 @@
 #include "net/base/io_buffer.h"
 #include "net/base/test_completion_callback.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-// For fine-grained suppression on flaky tests.
-#if defined(OS_WIN)
-#include "base/win/windows_version.h"
-#endif
 
 using content::BrowserThread;
 using base::FilePath;
@@ -60,7 +55,7 @@ void PnaclTranslationCacheTest::InitBackend(bool in_mem) {
   }
   // Use the private init method so we can control the size
   int rv = cache_->Init(in_mem ? net::MEMORY_CACHE : net::PNACL_CACHE,
-                        temp_dir_.path(),
+                        in_mem ? base::FilePath() : temp_dir_.GetPath(),
                         in_mem ? kMaxMemCacheSize : kTestDiskCacheSize,
                         init_cb.callback());
   if (in_mem)
@@ -72,8 +67,9 @@ void PnaclTranslationCacheTest::InitBackend(bool in_mem) {
 void PnaclTranslationCacheTest::StoreNexe(const std::string& key,
                                           const std::string& nexe) {
   net::TestCompletionCallback store_cb;
-  scoped_refptr<net::DrainableIOBuffer> nexe_buf(
-      new net::DrainableIOBuffer(new net::StringIOBuffer(nexe), nexe.size()));
+  scoped_refptr<net::DrainableIOBuffer> nexe_buf =
+      base::MakeRefCounted<net::DrainableIOBuffer>(
+          base::MakeRefCounted<net::StringIOBuffer>(nexe), nexe.size());
   cache_->StoreNexe(key, nexe_buf.get(), store_cb.callback());
   // Using ERR_IO_PENDING here causes the callback to wait for the result
   // which should be harmless even if it returns OK immediately. This is because
@@ -135,7 +131,7 @@ TEST(PnaclTranslationCacheKeyTest, CacheKeyTest) {
   info.opt_level = 0;
   info.sandbox_isa = "x86-32";
   std::string test_time("Wed, 15 Nov 1995 06:25:24 GMT");
-  base::Time::FromString(test_time.c_str(), &info.last_modified);
+  EXPECT_TRUE(base::Time::FromString(test_time.c_str(), &info.last_modified));
   // Basic check for URL and time components
   EXPECT_EQ("ABI:0;opt:0;URL:http://www.google.com/;"
             "modified:1995:11:15:6:25:24:0:UTC;etag:;"
@@ -204,7 +200,7 @@ TEST(PnaclTranslationCacheKeyTest, CacheKeyTest) {
             "sandbox:x86-32;extra_flags:-mavx-neon;",
             PnaclTranslationCache::GetKey(info));
   test_time.assign("Fri, 29 Feb 2008 13:04:12 GMT");
-  base::Time::FromString(test_time.c_str(), &info.last_modified);
+  EXPECT_TRUE(base::Time::FromString(test_time.c_str(), &info.last_modified));
   EXPECT_EQ("ABI:2;opt:2;URL:http://www.google.com/;"
             "modified:2008:2:29:13:4:12:0:UTC;etag:etag;"
             "sandbox:x86-32;extra_flags:-mavx-neon;",
@@ -235,9 +231,11 @@ TEST_F(PnaclTranslationCacheTest, StoreLargeOnDisk) {
 
 TEST_F(PnaclTranslationCacheTest, InMemSizeLimit) {
   InitBackend(true);
-  scoped_refptr<net::DrainableIOBuffer> large_buffer(new net::DrainableIOBuffer(
-      new net::StringIOBuffer(std::string(kMaxMemCacheSize + 1, 'a')),
-      kMaxMemCacheSize + 1));
+  scoped_refptr<net::DrainableIOBuffer> large_buffer =
+      base::MakeRefCounted<net::DrainableIOBuffer>(
+          base::MakeRefCounted<net::StringIOBuffer>(
+              std::string(kMaxMemCacheSize + 1, 'a')),
+          kMaxMemCacheSize + 1);
   net::TestCompletionCallback store_cb;
   cache_->StoreNexe(test_key, large_buffer.get(), store_cb.callback());
   EXPECT_EQ(net::ERR_FAILED, store_cb.GetResult(net::ERR_IO_PENDING));
@@ -260,11 +258,6 @@ TEST_F(PnaclTranslationCacheTest, GetOneOnDisk) {
 }
 
 TEST_F(PnaclTranslationCacheTest, GetLargeOnDisk) {
-#if defined(OS_WIN)
-  // Flaky on XP bot http://crbug.com/468741
-  if (base::win::GetVersion() <= base::win::VERSION_XP)
-    return;
-#endif
   InitBackend(false);
   const std::string large_buffer(kLargeNexeSize, 'a');
   StoreNexe(test_key, large_buffer);

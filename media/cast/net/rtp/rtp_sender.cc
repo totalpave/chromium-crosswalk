@@ -20,7 +20,7 @@ namespace {
 PacketRef FastCopyPacket(const PacketRef& packet) {
   if (packet->HasOneRef())
     return packet;
-  return make_scoped_refptr(new base::RefCountedData<Packet>(packet->data));
+  return base::WrapRefCounted(new base::RefCountedData<Packet>(packet->data));
 }
 
 }  // namespace
@@ -35,11 +35,18 @@ RtpSender::RtpSender(
   config_.sequence_number = base::RandInt(0, 65535);
 }
 
-RtpSender::~RtpSender() {}
+RtpSender::~RtpSender() = default;
 
 bool RtpSender::Initialize(const CastTransportRtpConfig& config) {
   config_.ssrc = config.ssrc;
-  config_.payload_type = config.rtp_payload_type;
+  // TODO(xjz): Android TV receivers expect the |payload_type| to be one of
+  // these two specific values. This constraint needs to be removed and the
+  // value of the |payload_type| can vary according to the spec:
+  // https://tools.ietf.org/html/rfc3551.
+  if (config.rtp_payload_type <= RtpPayloadType::AUDIO_LAST)
+    config_.payload_type = 127;
+  else
+    config_.payload_type = 96;
   packetizer_.reset(new RtpPacketizer(transport_, &storage_, config_));
   return true;
 }
@@ -55,10 +62,8 @@ void RtpSender::ResendPackets(
     const MissingFramesAndPacketsMap& missing_frames_and_packets,
     bool cancel_rtx_if_not_in_list, const DedupInfo& dedup_info) {
   // Iterate over all frames in the list.
-  for (MissingFramesAndPacketsMap::const_iterator it =
-           missing_frames_and_packets.begin();
-       it != missing_frames_and_packets.end();
-       ++it) {
+  for (auto it = missing_frames_and_packets.begin();
+       it != missing_frames_and_packets.end(); ++it) {
     SendPacketVector packets_to_resend;
     FrameId frame_id = it->first;
     // Set of packets that the receiver wants us to re-send.
@@ -74,8 +79,7 @@ void RtpSender::ResendPackets(
     if (!stored_packets)
       continue;
 
-    for (SendPacketVector::const_iterator it = stored_packets->begin();
-         it != stored_packets->end(); ++it) {
+    for (auto it = stored_packets->begin(); it != stored_packets->end(); ++it) {
       const PacketKey& packet_key = it->first;
       const uint16_t packet_id = packet_key.packet_id;
 
@@ -114,8 +118,7 @@ void RtpSender::CancelSendingFrames(const std::vector<FrameId>& frame_ids) {
     const SendPacketVector* stored_packets = storage_.GetFramePackets(i);
     if (!stored_packets)
       continue;
-    for (SendPacketVector::const_iterator j = stored_packets->begin();
-         j != stored_packets->end(); ++j) {
+    for (auto j = stored_packets->begin(); j != stored_packets->end(); ++j) {
       transport_->CancelSendingPacket(j->first);
     }
     storage_.ReleaseFrame(i);

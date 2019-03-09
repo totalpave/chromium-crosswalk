@@ -5,22 +5,26 @@
 #include "media/audio/win/audio_low_latency_output_win.h"
 
 #include <Functiondiscoverykeys_devpkey.h>
+#include <objbase.h>
+
+#include <climits>
 
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/metrics/histogram.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/win/scoped_propvariant.h"
 #include "media/audio/audio_device_description.h"
 #include "media/audio/win/audio_manager_win.h"
 #include "media/audio/win/avrt_wrapper_win.h"
 #include "media/audio/win/core_audio_util_win.h"
+#include "media/base/audio_sample_types.h"
 #include "media/base/limits.h"
 #include "media/base/media_switches.h"
 
-using base::win::ScopedComPtr;
 using base::win::ScopedCOMInitializer;
 using base::win::ScopedCoMem;
 
@@ -34,26 +38,6 @@ AUDCLNT_SHAREMODE WASAPIAudioOutputStream::GetShareMode() {
   return AUDCLNT_SHAREMODE_SHARED;
 }
 
-// static
-int WASAPIAudioOutputStream::HardwareSampleRate(const std::string& device_id) {
-  WAVEFORMATPCMEX format;
-  ScopedComPtr<IAudioClient> client;
-  if (device_id.empty()) {
-    client = CoreAudioUtil::CreateDefaultClient(eRender, eConsole);
-  } else {
-    ScopedComPtr<IMMDevice> device(CoreAudioUtil::CreateDevice(device_id));
-    if (!device.get())
-      return 0;
-    client = CoreAudioUtil::CreateClient(device.get());
-  }
-
-  if (!client.get() ||
-      FAILED(CoreAudioUtil::GetSharedModeMixFormat(client.get(), &format)))
-    return 0;
-
-  return static_cast<int>(format.Format.nSamplesPerSec);
-}
-
 WASAPIAudioOutputStream::WASAPIAudioOutputStream(AudioManagerWin* manager,
                                                  const std::string& device_id,
                                                  const AudioParameters& params,
@@ -64,14 +48,14 @@ WASAPIAudioOutputStream::WASAPIAudioOutputStream(AudioManagerWin* manager,
       opened_(false),
       volume_(1.0),
       packet_size_frames_(0),
+      requested_iaudioclient3_buffer_size_(0),
       packet_size_bytes_(0),
       endpoint_buffer_size_frames_(0),
       device_id_(device_id),
       device_role_(device_role),
       share_mode_(GetShareMode()),
       num_written_frames_(0),
-      source_(NULL),
-      audio_bus_(AudioBus::Create(params)) {
+      source_(NULL) {
   DCHECK(manager_);
 
   // The empty string is used to indicate a default device and the
@@ -88,6 +72,8 @@ WASAPIAudioOutputStream::WASAPIAudioOutputStream(AudioManagerWin* manager,
   bool avrt_init = avrt::Initialize();
   DCHECK(avrt_init) << "Failed to load the avrt.dll";
 
+  audio_bus_ = AudioBus::Create(params);
+
   // Set up the desired render format specified by the client. We use the
   // WAVE_FORMAT_EXTENSIBLE structure to ensure that multiple channel ordering
   // and high precision data can be supported.
@@ -97,25 +83,37 @@ WASAPIAudioOutputStream::WASAPIAudioOutputStream(AudioManagerWin* manager,
   format->wFormatTag = WAVE_FORMAT_EXTENSIBLE;
   format->nChannels = params.channels();
   format->nSamplesPerSec = params.sample_rate();
-  format->wBitsPerSample = params.bits_per_sample();
+  format->wBitsPerSample = sizeof(float) * 8;
   format->nBlockAlign = (format->wBitsPerSample / 8) * format->nChannels;
   format->nAvgBytesPerSec = format->nSamplesPerSec * format->nBlockAlign;
   format->cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
 
   // Add the parts which are unique to WAVE_FORMAT_EXTENSIBLE.
-  format_.Samples.wValidBitsPerSample = params.bits_per_sample();
+  format_.Samples.wValidBitsPerSample = format->wBitsPerSample;
   format_.dwChannelMask = CoreAudioUtil::GetChannelConfig(device_id, eRender);
-  format_.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+  format_.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 
   // Store size (in different units) of audio packets which we expect to
   // get from the audio endpoint device in each render event.
   packet_size_frames_ = params.frames_per_buffer();
-  packet_size_bytes_ = params.GetBytesPerBuffer();
+  packet_size_bytes_ = params.GetBytesPerBuffer(kSampleFormatF32);
   DVLOG(1) << "Number of bytes per audio frame  : " << format->nBlockAlign;
   DVLOG(1) << "Number of audio frames per packet: " << packet_size_frames_;
   DVLOG(1) << "Number of bytes per packet       : " << packet_size_bytes_;
   DVLOG(1) << "Number of milliseconds per packet: "
-          << params.GetBufferDuration().InMillisecondsF();
+           << params.GetBufferDuration().InMillisecondsF();
+
+  AudioParameters::HardwareCapabilities hardware_capabilities =
+      params.hardware_capabilities().value_or(
+          AudioParameters::HardwareCapabilities());
+
+  // Only request an explicit buffer size if we are requesting the minimum
+  // supported by the hardware, everything else uses the older IAudioClient API.
+  if (params.frames_per_buffer() ==
+      hardware_capabilities.min_frames_per_buffer) {
+    requested_iaudioclient3_buffer_size_ =
+        hardware_capabilities.min_frames_per_buffer;
+  }
 
   // All events are auto-reset events and non-signaled initially.
 
@@ -139,30 +137,20 @@ bool WASAPIAudioOutputStream::Open() {
   if (opened_)
     return true;
 
-  DCHECK(!audio_client_.get());
-  DCHECK(!audio_render_client_.get());
+  DCHECK(!audio_client_.Get());
+  DCHECK(!audio_render_client_.Get());
 
-  // Will be set to true if we ended up opening the default communications
-  // device.
-  bool communications_device = false;
+  const bool communications_device =
+      device_id_.empty() ? (device_role_ == eCommunications) : false;
 
-  // Create an IAudioClient interface for the default rendering IMMDevice.
-  ScopedComPtr<IAudioClient> audio_client;
-  if (device_id_.empty()) {
-    audio_client = CoreAudioUtil::CreateDefaultClient(eRender, device_role_);
-    communications_device = (device_role_ == eCommunications);
-  } else {
-    ScopedComPtr<IMMDevice> device(CoreAudioUtil::CreateDevice(device_id_));
-    DLOG_IF(ERROR, !device.get()) << "Failed to open device: " << device_id_;
-    if (device.get())
-      audio_client = CoreAudioUtil::CreateClient(device.get());
-  }
+  Microsoft::WRL::ComPtr<IAudioClient> audio_client(
+      CoreAudioUtil::CreateClient(device_id_, eRender, device_role_));
 
-  if (!audio_client.get())
+  if (!audio_client.Get())
     return false;
 
   // Extra sanity to ensure that the provided device format is still valid.
-  if (!CoreAudioUtil::IsFormatSupported(audio_client.get(), share_mode_,
+  if (!CoreAudioUtil::IsFormatSupported(audio_client.Get(), share_mode_,
                                         &format_)) {
     LOG(ERROR) << "Audio parameters are not supported.";
     return false;
@@ -173,21 +161,21 @@ bool WASAPIAudioOutputStream::Open() {
     // Initialize the audio stream between the client and the device in shared
     // mode and using event-driven buffer handling.
     hr = CoreAudioUtil::SharedModeInitialize(
-        audio_client.get(), &format_, audio_samples_render_event_.Get(),
-        &endpoint_buffer_size_frames_,
+        audio_client.Get(), &format_, audio_samples_render_event_.Get(),
+        requested_iaudioclient3_buffer_size_, &endpoint_buffer_size_frames_,
         communications_device ? &kCommunicationsSessionId : NULL);
     if (FAILED(hr))
       return false;
 
     REFERENCE_TIME device_period = 0;
     if (FAILED(CoreAudioUtil::GetDevicePeriod(
-            audio_client.get(), AUDCLNT_SHAREMODE_SHARED, &device_period))) {
+            audio_client.Get(), AUDCLNT_SHAREMODE_SHARED, &device_period))) {
       return false;
     }
 
     const int preferred_frames_per_buffer = static_cast<int>(
         format_.Format.nSamplesPerSec *
-            CoreAudioUtil::RefererenceTimeToTimeDelta(device_period)
+            CoreAudioUtil::ReferenceTimeToTimeDelta(device_period)
                 .InSecondsF() +
         0.5);
 
@@ -221,7 +209,7 @@ bool WASAPIAudioOutputStream::Open() {
   } else {
     // TODO(henrika): break out to CoreAudioUtil::ExclusiveModeInitialize()
     // when removing the enable-exclusive-audio flag.
-    hr = ExclusiveModeInitialization(audio_client.get(),
+    hr = ExclusiveModeInitialization(audio_client.Get(),
                                      audio_samples_render_event_.Get(),
                                      &endpoint_buffer_size_frames_);
     if (FAILED(hr))
@@ -239,17 +227,16 @@ bool WASAPIAudioOutputStream::Open() {
   // Create an IAudioRenderClient client for an initialized IAudioClient.
   // The IAudioRenderClient interface enables us to write output data to
   // a rendering endpoint buffer.
-  ScopedComPtr<IAudioRenderClient> audio_render_client =
-      CoreAudioUtil::CreateRenderClient(audio_client.get());
-  if (!audio_render_client.get())
+  Microsoft::WRL::ComPtr<IAudioRenderClient> audio_render_client =
+      CoreAudioUtil::CreateRenderClient(audio_client.Get());
+  if (!audio_render_client.Get())
     return false;
 
   // Store valid COM interfaces.
   audio_client_ = audio_client;
   audio_render_client_ = audio_render_client;
 
-  hr = audio_client_->GetService(__uuidof(IAudioClock),
-                                 audio_clock_.ReceiveVoid());
+  hr = audio_client_->GetService(IID_PPV_ARGS(&audio_clock_));
   if (FAILED(hr)) {
     LOG(ERROR) << "Failed to get IAudioClock service.";
     return false;
@@ -270,17 +257,34 @@ void WASAPIAudioOutputStream::Start(AudioSourceCallback* callback) {
     return;
   }
 
-  source_ = callback;
-
-  // Ensure that the endpoint buffer is prepared with silence.
+  // Ensure that the endpoint buffer is prepared with silence. Also serves as
+  // a sanity check for the IAudioClient and IAudioRenderClient which may have
+  // been invalidated by Windows since the last Stop() call.
+  //
+  // While technically we only need to retry when WASAPI tells us the device has
+  // been invalidated (AUDCLNT_E_DEVICE_INVALIDATED), we retry for all errors
+  // for simplicity and due to large sites like YouTube reporting high success
+  // rates with a simple retry upon detection of an audio output error.
   if (share_mode_ == AUDCLNT_SHAREMODE_SHARED) {
     if (!CoreAudioUtil::FillRenderEndpointBufferWithSilence(
-            audio_client_.get(), audio_render_client_.get())) {
-      LOG(ERROR) << "Failed to prepare endpoint buffers with silence.";
-      callback->OnError(this);
-      return;
+            audio_client_.Get(), audio_render_client_.Get())) {
+      DLOG(WARNING) << "Failed to prepare endpoint buffers with silence. "
+                       "Attempting recovery with a new IAudioClient and "
+                       "IAudioRenderClient.";
+
+      opened_ = false;
+      audio_client_.Reset();
+      audio_render_client_.Reset();
+      if (!Open() || !CoreAudioUtil::FillRenderEndpointBufferWithSilence(
+                         audio_client_.Get(), audio_render_client_.Get())) {
+        DLOG(ERROR) << "Failed recovery of audio clients; Start() failed.";
+        callback->OnError();
+        return;
+      }
     }
   }
+
+  source_ = callback;
   num_written_frames_ = endpoint_buffer_size_frames_;
 
   // Create and start the thread that will drive the rendering by waiting for
@@ -292,7 +296,7 @@ void WASAPIAudioOutputStream::Start(AudioSourceCallback* callback) {
   if (!render_thread_->HasBeenStarted()) {
     LOG(ERROR) << "Failed to start WASAPI render thread.";
     StopThread();
-    callback->OnError(this);
+    callback->OnError();
     return;
   }
 
@@ -301,7 +305,7 @@ void WASAPIAudioOutputStream::Start(AudioSourceCallback* callback) {
   if (FAILED(hr)) {
     PLOG(ERROR) << "Failed to start output streaming: " << std::hex << hr;
     StopThread();
-    callback->OnError(this);
+    callback->OnError();
   }
 }
 
@@ -315,7 +319,7 @@ void WASAPIAudioOutputStream::Stop() {
   HRESULT hr = audio_client_->Stop();
   if (FAILED(hr)) {
     PLOG(ERROR) << "Failed to stop output streaming: " << std::hex << hr;
-    source_->OnError(this);
+    source_->OnError();
   }
 
   // Make a local copy of |source_| since StopThread() will clear it.
@@ -326,7 +330,7 @@ void WASAPIAudioOutputStream::Stop() {
   hr = audio_client_->Reset();
   if (FAILED(hr)) {
     PLOG(ERROR) << "Failed to reset streaming: " << std::hex << hr;
-    callback->OnError(this);
+    callback->OnError();
   }
 
   // Extra safety check to ensure that the buffers are cleared.
@@ -403,10 +407,8 @@ void WASAPIAudioOutputStream::Run() {
   // is signaled. An error event can also break the main thread loop.
   while (playing && !error) {
     // Wait for a close-down event, stream-switch event or a new render event.
-    DWORD wait_result = WaitForMultipleObjects(arraysize(wait_array),
-                                               wait_array,
-                                               FALSE,
-                                               INFINITE);
+    DWORD wait_result = WaitForMultipleObjects(base::size(wait_array),
+                                               wait_array, FALSE, INFINITE);
 
     switch (wait_result) {
       case WAIT_OBJECT_0 + 0:
@@ -424,11 +426,16 @@ void WASAPIAudioOutputStream::Run() {
   }
 
   if (playing && error) {
+    LOG(ERROR) << "WASAPI rendering failed.";
+
     // Stop audio rendering since something has gone wrong in our main thread
     // loop. Note that, we are still in a "started" state, hence a Stop() call
     // is required to join the thread properly.
     audio_client_->Stop();
-    PLOG(ERROR) << "WASAPI rendering failed.";
+
+    // Notify clients that something has gone wrong and that this stream should
+    // be destroyed instead of reused in the future.
+    source_->OnError();
   }
 
   // Disable MMCSS.
@@ -511,41 +518,43 @@ bool WASAPIAudioOutputStream::RenderAudioFromSource(UINT64 device_frequency) {
     // can typically be utilized by an acoustic echo-control (AEC)
     // unit at the render side.
     UINT64 position = 0;
-    uint32_t audio_delay_bytes = 0;
-    hr = audio_clock_->GetPosition(&position, NULL);
+    UINT64 qpc_position = 0;
+    base::TimeDelta delay;
+    base::TimeTicks delay_timestamp;
+    hr = audio_clock_->GetPosition(&position, &qpc_position);
     if (SUCCEEDED(hr)) {
-      // Stream position of the sample that is currently playing
-      // through the speaker.
-      double pos_sample_playing_frames = format_.Format.nSamplesPerSec *
-          (static_cast<double>(position) / device_frequency);
+      // Number of frames already played out through the speaker.
+      const uint64_t played_out_frames =
+          format_.Format.nSamplesPerSec * position / device_frequency;
 
-      // Stream position of the last sample written to the endpoint
-      // buffer. Note that, the packet we are about to receive in
-      // the upcoming callback is also included.
-      size_t pos_last_sample_written_frames =
-          num_written_frames_ + packet_size_frames_;
+      // Number of frames that have been written to the buffer but not yet
+      // played out.
+      const uint64_t delay_frames = num_written_frames_ - played_out_frames;
 
-      // Derive the actual delay value which will be fed to the
-      // render client using the OnMoreData() callback.
-      audio_delay_bytes = (pos_last_sample_written_frames -
-          pos_sample_playing_frames) *  format_.Format.nBlockAlign;
+      // Convert the delay from frames to time.
+      delay = base::TimeDelta::FromMicroseconds(
+          delay_frames * base::Time::kMicrosecondsPerSecond /
+          format_.Format.nSamplesPerSec);
+      // Note: the obtained |qpc_position| value is in 100ns intervals and from
+      // the same time origin as QPC. We can simply convert it into us dividing
+      // by 10.0 since 10x100ns = 1us.
+      delay_timestamp += base::TimeDelta::FromMicroseconds(qpc_position * 0.1);
+    } else {
+      // Use a delay of zero.
+      delay_timestamp = base::TimeTicks::Now();
     }
 
     // Read a data packet from the registered client source and
     // deliver a delay estimate in the same callback to the client.
 
     int frames_filled =
-        source_->OnMoreData(audio_bus_.get(), audio_delay_bytes, 0);
+        source_->OnMoreData(delay, delay_timestamp, 0, audio_bus_.get());
     uint32_t num_filled_bytes = frames_filled * format_.Format.nBlockAlign;
     DCHECK_LE(num_filled_bytes, packet_size_bytes_);
 
-    // Note: If this ever changes to output raw float the data must be
-    // clipped and sanitized since it may come from an untrusted
-    // source such as NaCl.
-    const int bytes_per_sample = format_.Format.wBitsPerSample >> 3;
     audio_bus_->Scale(volume_);
-    audio_bus_->ToInterleaved(
-        frames_filled, bytes_per_sample, audio_data);
+    audio_bus_->ToInterleaved<Float32SampleTypeTraits>(
+        frames_filled, reinterpret_cast<float*>(audio_data));
 
     // Release the buffer space acquired in the GetBuffer() call.
     // Render silence if we were not able to fill up the buffer totally.
@@ -641,7 +650,7 @@ HRESULT WASAPIAudioOutputStream::ExclusiveModeInitialization(
 }
 
 void WASAPIAudioOutputStream::StopThread() {
-  if (render_thread_ ) {
+  if (render_thread_) {
     if (render_thread_->HasBeenStarted()) {
       // Wait until the thread completes and perform cleanup.
       SetEvent(stop_render_event_.Get());

@@ -18,13 +18,14 @@ ProxyConnectRedirectHttpStream::ProxyConnectRedirectHttpStream(
     load_timing_info_ = *load_timing_info;
 }
 
-ProxyConnectRedirectHttpStream::~ProxyConnectRedirectHttpStream() {}
+ProxyConnectRedirectHttpStream::~ProxyConnectRedirectHttpStream() = default;
 
 int ProxyConnectRedirectHttpStream::InitializeStream(
     const HttpRequestInfo* request_info,
+    bool can_send_early,
     RequestPriority priority,
-    const BoundNetLog& net_log,
-    const CompletionCallback& callback) {
+    const NetLogWithSource& net_log,
+    CompletionOnceCallback callback) {
   NOTREACHED();
   return OK;
 }
@@ -32,13 +33,13 @@ int ProxyConnectRedirectHttpStream::InitializeStream(
 int ProxyConnectRedirectHttpStream::SendRequest(
     const HttpRequestHeaders& request_headers,
     HttpResponseInfo* response,
-    const CompletionCallback& callback) {
+    CompletionOnceCallback callback) {
   NOTREACHED();
   return OK;
 }
 
 int ProxyConnectRedirectHttpStream::ReadResponseHeaders(
-    const CompletionCallback& callback) {
+    CompletionOnceCallback callback) {
   NOTREACHED();
   return OK;
 }
@@ -46,7 +47,7 @@ int ProxyConnectRedirectHttpStream::ReadResponseHeaders(
 int ProxyConnectRedirectHttpStream::ReadResponseBody(
     IOBuffer* buf,
     int buf_len,
-    const CompletionCallback& callback) {
+    CompletionOnceCallback callback) {
   NOTREACHED();
   return OK;
 }
@@ -79,6 +80,11 @@ int64_t ProxyConnectRedirectHttpStream::GetTotalSentBytes() const {
   return 0;
 }
 
+bool ProxyConnectRedirectHttpStream::GetAlternativeService(
+    AlternativeService* alternative_service) const {
+  return false;
+}
+
 bool ProxyConnectRedirectHttpStream::GetLoadTimingInfo(
     LoadTimingInfo* load_timing_info) const {
   if (!has_load_timing_info_)
@@ -102,13 +108,6 @@ bool ProxyConnectRedirectHttpStream::GetRemoteEndpoint(IPEndPoint* endpoint) {
   return false;
 }
 
-Error ProxyConnectRedirectHttpStream::GetSignedEKMForTokenBinding(
-    crypto::ECPrivateKey* key,
-    std::vector<uint8_t>* out) {
-  NOTREACHED();
-  return ERR_NOT_IMPLEMENTED;
-}
-
 void ProxyConnectRedirectHttpStream::Drain(HttpNetworkSession* session) {
   NOTREACHED();
 }
@@ -122,13 +121,9 @@ void ProxyConnectRedirectHttpStream::SetPriority(RequestPriority priority) {
   // Nothing to do.
 }
 
-UploadProgress ProxyConnectRedirectHttpStream::GetUploadProgress() const {
-  return UploadProgress();
-}
-
 HttpStream* ProxyConnectRedirectHttpStream::RenewStreamForAuth() {
   NOTREACHED();
   return NULL;
 }
 
-}  // namespace
+}  // namespace net

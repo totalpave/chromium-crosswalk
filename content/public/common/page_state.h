@@ -35,6 +35,13 @@ class CONTENT_EXPORT PageState {
       const char* optional_body_data,
       const base::FilePath* optional_body_file_path);
 
+  // Creates an encoded page state from the |url|, |item_sequence_mnumber| and
+  // |document_sequence_number| parameters.
+  static PageState CreateForTestingWithSequenceNumbers(
+      const GURL& url,
+      int64_t item_sequence_number,
+      int64_t document_sequence_number);
+
   PageState();
 
   bool IsValid() const;
@@ -46,19 +53,17 @@ class CONTENT_EXPORT PageState {
   PageState RemoveScrollOffset() const;
   PageState RemoveReferrer() const;
 
+  // Support DCHECK_EQ(a, b), etc.
+  bool operator==(const PageState& other) const { return this->Equals(other); }
+  bool operator!=(const PageState& other) const {
+    return !(this->Equals(other));
+  }
+
  private:
   PageState(const std::string& data);
 
   std::string data_;
 };
-
-// Support DCHECK_EQ(a, b), etc.
-inline bool operator==(const PageState& a, const PageState& b) {
-  return a.Equals(b);
-}
-inline bool operator!=(const PageState& a, const PageState& b) {
-  return !(a == b);
-}
 
 }  // namespace content
 

@@ -11,13 +11,16 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
+#include "base/optional.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
 #include "build/build_config.h"
 #include "components/policy/core/common/cloud/cloud_policy_service.h"
 #include "components/policy/core/common/policy_bundle.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_switches.h"
+#include "components/policy/core/common/schema_registry.h"
 #include "components/prefs/pref_service.h"
-#include "net/url_request/url_request_context_getter.h"
 
 #if !defined(OS_ANDROID) && !defined(OS_IOS)
 #include "components/policy/core/common/cloud/resource_cache.h"
@@ -30,23 +33,29 @@ CloudPolicyManager::CloudPolicyManager(
     const std::string& settings_entity_id,
     CloudPolicyStore* cloud_policy_store,
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    const scoped_refptr<base::SequencedTaskRunner>& file_task_runner,
-    const scoped_refptr<base::SequencedTaskRunner>& io_task_runner)
-    : core_(policy_type, settings_entity_id, cloud_policy_store, task_runner),
-      waiting_for_policy_refresh_(false),
-      file_task_runner_(file_task_runner),
-      io_task_runner_(io_task_runner) {
+    network::NetworkConnectionTrackerGetter network_connection_tracker_getter)
+    : core_(policy_type,
+            settings_entity_id,
+            cloud_policy_store,
+            task_runner,
+            std::move(network_connection_tracker_getter)),
+      waiting_for_policy_refresh_(false) {}
+
+CloudPolicyManager::~CloudPolicyManager() {}
+
+void CloudPolicyManager::Init(SchemaRegistry* registry) {
+  ConfigurationPolicyProvider::Init(registry);
+
   store()->AddObserver(this);
 
-  // If the underlying store is already initialized, publish the loaded
-  // policy. Otherwise, request a load now.
+  // If the underlying store is already initialized, pretend it was loaded now.
+  // Note: It is not enough to just copy OnStoreLoaded's contents here because
+  // subclasses can override it.
   if (store()->is_initialized())
-    CheckAndPublishPolicy();
+    OnStoreLoaded(store());
   else
     store()->Load();
 }
-
-CloudPolicyManager::~CloudPolicyManager() {}
 
 void CloudPolicyManager::Shutdown() {
   component_policy_service_.reset();
@@ -110,12 +119,14 @@ void CloudPolicyManager::GetChromePolicy(PolicyMap* policy_map) {
 }
 
 void CloudPolicyManager::CreateComponentCloudPolicyService(
+    const std::string& policy_type,
     const base::FilePath& policy_cache_path,
-    const scoped_refptr<net::URLRequestContextGetter>& request_context,
-    CloudPolicyClient* client) {
+    PolicySource policy_source,
+    CloudPolicyClient* client,
+    SchemaRegistry* schema_registry) {
 #if !defined(OS_ANDROID) && !defined(OS_IOS)
   // Init() must have been called.
-  CHECK(schema_registry());
+  CHECK(schema_registry);
   // Called at most once.
   CHECK(!component_policy_service_);
   // The core can't be connected yet.
@@ -128,14 +139,19 @@ void CloudPolicyManager::CreateComponentCloudPolicyService(
     return;
   }
 
-  // TODO(joaodasilva): Move the |file_task_runner_| to the blocking pool.
-  // Currently it's not possible because the ComponentCloudPolicyStore is
-  // NonThreadSafe and doesn't support getting calls from different threads.
-  std::unique_ptr<ResourceCache> resource_cache(
-      new ResourceCache(policy_cache_path, file_task_runner_));
+  // TODO(emaxx, 729082): Make ComponentCloudPolicyStore (and other
+  // implementation details of it) not use the blocking task runner whenever
+  // possible because the real file operations are only done by ResourceCache,
+  // and most of the rest doesn't need the blocking behaviour. Also
+  // ComponentCloudPolicyService's |backend_task_runner| and |cache| must live
+  // on the same task runner.
+  const auto task_runner =
+      base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()});
+  std::unique_ptr<ResourceCache> resource_cache(new ResourceCache(
+      policy_cache_path, task_runner, /* max_cache_size */ base::nullopt));
   component_policy_service_.reset(new ComponentCloudPolicyService(
-      this, schema_registry(), core(), client, std::move(resource_cache),
-      request_context, file_task_runner_, io_task_runner_));
+      policy_type, policy_source, this, schema_registry, core(), client,
+      std::move(resource_cache), task_runner));
 #endif  // !defined(OS_ANDROID) && !defined(OS_IOS)
 }
 

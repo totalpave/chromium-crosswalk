@@ -56,12 +56,16 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
 - (void)updateTrackingAreas {
   [super updateTrackingAreas];
 
-  // NSTrackingInVisibleRect doesn't work correctly with Lion's window resizing,
-  // http://crbug.com/176725 / http://openradar.appspot.com/radar?id=2773401 .
-  // Work around it by reinstalling the tracking area after window resize.
-  // This AppKit bug is fixed on Yosemite, so we only apply this workaround on
-  // 10.9.
-  if (base::mac::IsOSMavericks()) {
+  // NSTrackingInVisibleRect doesn't work correctly with Lion's window
+  // resizing (See https://crbug.com/176725 and
+  // http://openradar.appspot.com/radar?id=2773401). It also doesn't work
+  // correctly when the window enters fullscreen
+  // (See https://crbug.com/170058).
+  //
+  // Work around it by reinstalling the tracking area after the window resizes
+  // or enters fullscreen. This AppKit bug is fixed on High Sierra, so we only
+  // apply this workaround on 10.12 or earlier.
+  if (base::mac::IsAtMostOS10_12()) {
     [self disableTracking];
     [self enableTracking];
   }
@@ -79,6 +83,10 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
 }
 
 - (void)forceTouchEvent:(NSEvent*)theEvent {
+  // This method left intentionally blank.
+}
+
+- (void)tabletEvent:(NSEvent*)theEvent {
   // This method left intentionally blank.
 }
 
@@ -198,6 +206,10 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
   NSRect new_rect(NSRectFromCGRect(rect.ToCGRect()));
   new_rect.origin.y = NSHeight([self bounds]) - NSMaxY(new_rect);
   return new_rect;
+}
+
+- (void)tabletProximity:(NSEvent*)theEvent {
+  [self tabletEvent:theEvent];
 }
 
 @end

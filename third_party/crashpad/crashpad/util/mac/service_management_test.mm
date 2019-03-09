@@ -38,7 +38,7 @@ namespace {
 // requiring that its argv[argc - 1] compare equal to last_arg.
 void ExpectProcessIsRunning(pid_t pid, std::string& last_arg) {
   ProcessInfo process_info;
-  ASSERT_TRUE(process_info.Initialize(pid));
+  ASSERT_TRUE(process_info.InitializeWithPid(pid));
 
   // The process may not have called exec yet, so loop with a small delay while
   // looking for the cookie.
@@ -72,7 +72,7 @@ void ExpectProcessIsRunning(pid_t pid, std::string& last_arg) {
   }
 
   ASSERT_FALSE(job_argv.empty());
-  EXPECT_EQ(last_arg, job_argv.back());
+  EXPECT_EQ(job_argv.back(), last_arg);
 }
 
 // Ensures that the process with the specified PID is not running. Because the
@@ -85,7 +85,8 @@ void ExpectProcessIsNotRunning(pid_t pid, std::string& last_arg) {
   std::vector<std::string> job_argv;
   while (tries--) {
     ProcessInfo process_info;
-    if (!process_info.Initialize(pid) || !process_info.Arguments(&job_argv)) {
+    if (!process_info.InitializeWithPid(pid) ||
+        !process_info.Arguments(&job_argv)) {
       // The PID was not found.
       return;
     }
@@ -103,7 +104,7 @@ void ExpectProcessIsNotRunning(pid_t pid, std::string& last_arg) {
   }
 
   ASSERT_FALSE(job_argv.empty());
-  EXPECT_NE(last_arg, job_argv.back());
+  EXPECT_NE(job_argv.back(), last_arg);
 }
 
 TEST(ServiceManagement, SubmitRemoveJob) {
@@ -114,7 +115,8 @@ TEST(ServiceManagement, SubmitRemoveJob) {
         base::StringPrintf("sleep 10; echo %s", cookie.c_str());
     NSString* shell_script_ns = base::SysUTF8ToNSString(shell_script);
 
-    const char kJobLabel[] = "org.chromium.crashpad.test.service_management";
+    static constexpr char kJobLabel[] =
+        "org.chromium.crashpad.test.service_management";
     NSDictionary* job_dictionary_ns = @{
       @LAUNCH_JOBKEY_LABEL : @"org.chromium.crashpad.test.service_management",
       @LAUNCH_JOBKEY_RUNATLOAD : @YES,
@@ -145,7 +147,7 @@ TEST(ServiceManagement, SubmitRemoveJob) {
     // Remove the job.
     ASSERT_TRUE(ServiceManagementRemoveJob(kJobLabel, true));
     EXPECT_FALSE(ServiceManagementIsJobLoaded(kJobLabel));
-    EXPECT_EQ(0, ServiceManagementIsJobRunning(kJobLabel));
+    EXPECT_EQ(ServiceManagementIsJobRunning(kJobLabel), 0);
 
     // Now that the job is unloaded, a subsequent attempt to unload it should be
     // an error.

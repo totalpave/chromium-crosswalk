@@ -8,11 +8,18 @@
 #include <memory>
 #include <string>
 
+#include "base/at_exit.h"
 #include "base/bind.h"
+#include "base/callback_forward.h"
+#include "base/command_line.h"
 #include "base/location.h"
 #include "base/process/kill.h"
 #include "base/process/process.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chromeos/process_proxy/process_proxy_registry.h"
@@ -26,28 +33,46 @@ const char kTestLineToSend[] = "abcdefgh\n";
 const char kTestLineExpected[] = "abcdefgh\r\n";
 
 const char kCatCommand[] = "cat";
+const char kFakeUserHash[] = "0123456789abcdef";
 const char kStdoutType[] = "stdout";
 const int kTestLineNum = 100;
 
+void RunOnTaskRunner(
+    base::OnceClosure closure,
+    const scoped_refptr<base::SequencedTaskRunner>& task_runner) {
+  task_runner->PostTask(FROM_HERE, std::move(closure));
+}
+
 class TestRunner {
  public:
-  virtual ~TestRunner() {}
-  virtual void SetupExpectations(int terminal_id) = 0;
-  virtual void OnSomeRead(int terminal_id,
+  TestRunner() = default;
+  virtual ~TestRunner() = default;
+  virtual void SetupExpectations(const std::string& id,
+                                 base::ProcessHandle handle) = 0;
+  virtual void OnSomeRead(const std::string& id,
                           const std::string& type,
                           const std::string& output) = 0;
   virtual void StartRegistryTest(ProcessProxyRegistry* registry) = 0;
 
+  void set_done_read_closure(base::OnceClosure done_closure) {
+    done_read_closure_ = std::move(done_closure);
+  }
+
  protected:
-  int terminal_id_;
+  std::string id_;
+  base::ProcessHandle handle_;
+
+  base::OnceClosure done_read_closure_;
 };
 
 class RegistryTestRunner : public TestRunner {
  public:
-  ~RegistryTestRunner() override {}
+  ~RegistryTestRunner() override = default;
 
-  void SetupExpectations(int terminal_id) override {
-    terminal_id_ = terminal_id;
+  void SetupExpectations(const std::string& id,
+                         base::ProcessHandle handle) override {
+    id_ = id;
+    handle_ = handle;
     left_to_check_index_[0] = 0;
     left_to_check_index_[1] = 0;
     // We consider that a line processing has started if a value in
@@ -64,11 +89,11 @@ class RegistryTestRunner : public TestRunner {
   // abc|abcdef|defgh|gh). To deal with that, we allow to test received text
   // against two lines. The lines MUST NOT have two same characters for this
   // algorithm to work.
-  void OnSomeRead(int terminal_id,
+  void OnSomeRead(const std::string& id,
                   const std::string& type,
                   const std::string& output) override {
     EXPECT_EQ(type, kStdoutType);
-    EXPECT_EQ(terminal_id_, terminal_id);
+    EXPECT_EQ(id_, id);
 
     bool valid = true;
     for (size_t i = 0; i < output.length(); i++) {
@@ -80,20 +105,20 @@ class RegistryTestRunner : public TestRunner {
     }
 
     if (!valid || TestSucceeded()) {
-      base::ThreadTaskRunnerHandle::Get()->PostTask(
-          FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+      ASSERT_FALSE(done_read_closure_.is_null());
+      std::move(done_read_closure_).Run();
     }
   }
 
   void StartRegistryTest(ProcessProxyRegistry* registry) override {
     for (int i = 0; i < kTestLineNum; i++) {
-      EXPECT_TRUE(registry->SendInput(terminal_id_, kTestLineToSend));
+      EXPECT_TRUE(registry->SendInput(id_, kTestLineToSend));
     }
   }
 
  private:
   bool ProcessReceivedCharacter(char received, size_t stream) {
-    if (stream >= arraysize(left_to_check_index_))
+    if (stream >= base::size(left_to_check_index_))
       return false;
     bool success = left_to_check_index_[stream] < expected_line_.length() &&
         expected_line_[left_to_check_index_[stream]] == received;
@@ -122,33 +147,36 @@ class RegistryTestRunner : public TestRunner {
 
 class RegistryNotifiedOnProcessExitTestRunner : public TestRunner {
  public:
-  ~RegistryNotifiedOnProcessExitTestRunner() override {}
+  ~RegistryNotifiedOnProcessExitTestRunner() override = default;
 
-  void SetupExpectations(int terminal_id) override {
+  void SetupExpectations(const std::string& id,
+                         base::ProcessHandle handle) override {
     output_received_ = false;
-    terminal_id_ = terminal_id;
+    id_ = id;
+    handle_ = handle;
   }
 
-  void OnSomeRead(int terminal_id,
+  void OnSomeRead(const std::string& id,
                   const std::string& type,
                   const std::string& output) override {
-    EXPECT_EQ(terminal_id_, terminal_id);
+    EXPECT_EQ(id_, id);
     if (!output_received_) {
+      base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync_primitives;
       output_received_ = true;
       EXPECT_EQ(type, "stdout");
       EXPECT_EQ(output, "p");
       base::Process process =
-          base::Process::DeprecatedGetProcessFromHandle(terminal_id_);
+          base::Process::DeprecatedGetProcessFromHandle(handle_);
       process.Terminate(0, true);
       return;
     }
     EXPECT_EQ("exit", type);
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+    ASSERT_FALSE(done_read_closure_.is_null());
+    std::move(done_read_closure_).Run();
   }
 
   void StartRegistryTest(ProcessProxyRegistry* registry) override {
-    EXPECT_TRUE(registry->SendInput(terminal_id_, "p"));
+    EXPECT_TRUE(registry->SendInput(id_, "p"));
   }
 
  private:
@@ -159,71 +187,87 @@ class RegistryNotifiedOnProcessExitTestRunner : public TestRunner {
 
 class ProcessProxyTest : public testing::Test {
  public:
-  ProcessProxyTest() {}
-  ~ProcessProxyTest() override {}
+  ProcessProxyTest() = default;
+  ~ProcessProxyTest() override = default;
 
  protected:
-  void InitRegistryTest() {
+  void InitRegistryTest(base::OnceClosure done_closure) {
     registry_ = ProcessProxyRegistry::Get();
 
-    terminal_id_ = registry_->OpenProcess(
-        kCatCommand,
-        base::Bind(&ProcessProxyTest::HandleRead, base::Unretained(this)));
+    base::CommandLine cmdline{{kCatCommand}};
+    bool success = registry_->OpenProcess(
+        cmdline, kFakeUserHash,
+        base::Bind(&ProcessProxyTest::HandleRead, base::Unretained(this)),
+        &id_);
+    handle_ = registry_->GetProcessHandleForTesting(id_);
 
-    EXPECT_GE(terminal_id_, 0);
-    test_runner_->SetupExpectations(terminal_id_);
+    EXPECT_TRUE(success);
+    test_runner_->set_done_read_closure(std::move(done_closure));
+    test_runner_->SetupExpectations(id_, handle_);
     test_runner_->StartRegistryTest(registry_);
   }
 
-  void HandleRead(int terminal_id,
+  void HandleRead(const std::string& id,
                   const std::string& output_type,
                   const std::string& output) {
-    test_runner_->OnSomeRead(terminal_id, output_type, output);
-    registry_->AckOutput(terminal_id);
+    test_runner_->OnSomeRead(id, output_type, output);
+    registry_->AckOutput(id);
   }
 
-  void EndRegistryTest() {
-    registry_->CloseProcess(terminal_id_);
+  void EndRegistryTest(base::OnceClosure done_closure) {
+    base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync_primitives;
 
+    registry_->CloseProcess(id_);
+
+    int unused_exit_code = 0;
     base::TerminationStatus status =
-        base::GetTerminationStatus(terminal_id_, NULL);
+        base::GetTerminationStatus(handle_, &unused_exit_code);
     EXPECT_NE(base::TERMINATION_STATUS_STILL_RUNNING, status);
     if (status == base::TERMINATION_STATUS_STILL_RUNNING) {
       base::Process process =
-          base::Process::DeprecatedGetProcessFromHandle(terminal_id_);
+          base::Process::DeprecatedGetProcessFromHandle(handle_);
       process.Terminate(0, true);
     }
 
     registry_->ShutDown();
 
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+    std::move(done_closure).Run();
   }
 
   void RunTest() {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&ProcessProxyTest::InitRegistryTest,
-                              base::Unretained(this)));
-
+    base::RunLoop init_registry_waiter;
+    ProcessProxyRegistry::GetTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &ProcessProxyTest::InitRegistryTest, base::Unretained(this),
+            base::BindOnce(&RunOnTaskRunner, init_registry_waiter.QuitClosure(),
+                           base::SequencedTaskRunnerHandle::Get())));
     // Wait until all data from output watcher is received (QuitTask will be
     // fired on watcher thread).
-    base::MessageLoop::current()->Run();
+    init_registry_waiter.Run();
 
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
+    base::RunLoop end_registry_waiter;
+    ProcessProxyRegistry::GetTaskRunner()->PostTask(
         FROM_HERE,
-        base::Bind(&ProcessProxyTest::EndRegistryTest, base::Unretained(this)));
-
+        base::BindOnce(
+            &ProcessProxyTest::EndRegistryTest, base::Unretained(this),
+            base::BindOnce(&RunOnTaskRunner, end_registry_waiter.QuitClosure(),
+                           base::SequencedTaskRunnerHandle::Get())));
     // Wait until we clean up the process proxy.
-    base::MessageLoop::current()->Run();
+    end_registry_waiter.Run();
   }
 
   std::unique_ptr<TestRunner> test_runner_;
 
  private:
-  ProcessProxyRegistry* registry_;
-  int terminal_id_;
+  // Destroys ProcessProxyRegistry LazyInstance after each test.
+  base::ShadowingAtExitManager shadowing_at_exit_manager_;
 
-  base::MessageLoop message_loop_;
+  ProcessProxyRegistry* registry_;
+  std::string id_;
+  base::ProcessHandle handle_;
+
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 };
 
 // Test will open new process that will run cat command, and verify data we

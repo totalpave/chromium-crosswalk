@@ -12,16 +12,24 @@ namespace prefs {
 // Keep alphabetized, and document each in the .cc file.
 
 extern const char kVariationsCompressedSeed[];
+extern const char kVariationsCountry[];
+extern const char kVariationsCrashStreak[];
+extern const char kVariationsFailedToFetchSeedStreak[];
 extern const char kVariationsLastFetchTime[];
 extern const char kVariationsPermanentConsistencyCountry[];
 extern const char kVariationsPermutedEntropyCache[];
-extern const char kVariationsCountry[];
 extern const char kVariationsRestrictParameter[];
-extern const char kVariationsSeed[];
+extern const char kVariationsSafeCompressedSeed[];
+extern const char kVariationsSafeSeedDate[];
+extern const char kVariationsSafeSeedFetchTime[];
+extern const char kVariationsSafeSeedLocale[];
+extern const char kVariationsSafeSeedPermanentConsistencyCountry[];
+extern const char kVariationsSafeSeedSessionConsistencyCountry[];
+extern const char kVariationsSafeSeedSignature[];
 extern const char kVariationsSeedDate[];
 extern const char kVariationsSeedSignature[];
 
 }  // namespace prefs
-}  // namespace metrics
+}  // namespace variations
 
 #endif  // COMPONENTS_VARIATIONS_PREF_NAMES_H_

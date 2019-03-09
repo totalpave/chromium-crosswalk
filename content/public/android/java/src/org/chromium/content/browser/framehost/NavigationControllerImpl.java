@@ -101,10 +101,14 @@ import org.chromium.content_public.common.ResourceRequestBody;
     }
 
     @Override
-    public void requestRestoreLoad() {
-        if (mNativeNavigationControllerAndroid != 0) {
-            nativeRequestRestoreLoad(mNativeNavigationControllerAndroid);
-        }
+    public boolean needsReload() {
+        return mNativeNavigationControllerAndroid != 0
+                && nativeNeedsReload(mNativeNavigationControllerAndroid);
+    }
+
+    @Override
+    public void setNeedsReload() {
+        nativeSetNeedsReload(mNativeNavigationControllerAndroid);
     }
 
     @Override
@@ -115,23 +119,9 @@ import org.chromium.content_public.common.ResourceRequestBody;
     }
 
     @Override
-    public void reloadToRefreshContent(boolean checkForRepost) {
-        if (mNativeNavigationControllerAndroid != 0) {
-            nativeReloadToRefreshContent(mNativeNavigationControllerAndroid, checkForRepost);
-        }
-    }
-
-    @Override
     public void reloadBypassingCache(boolean checkForRepost) {
         if (mNativeNavigationControllerAndroid != 0) {
             nativeReloadBypassingCache(mNativeNavigationControllerAndroid, checkForRepost);
-        }
-    }
-
-    @Override
-    public void reloadDisableLoFi(boolean checkForRepost) {
-        if (mNativeNavigationControllerAndroid != 0) {
-            nativeReloadDisableLoFi(mNativeNavigationControllerAndroid, checkForRepost);
         }
     }
 
@@ -164,7 +154,6 @@ import org.chromium.content_public.common.ResourceRequestBody;
     }
 
     @Override
-    @VisibleForTesting
     public void clearHistory() {
         if (mNativeNavigationControllerAndroid != 0) {
             nativeClearHistory(mNativeNavigationControllerAndroid);
@@ -188,12 +177,6 @@ import org.chromium.content_public.common.ResourceRequestBody;
         nativeGetDirectedNavigationHistory(mNativeNavigationControllerAndroid,
                    history, isForward, itemLimit);
         return history;
-    }
-
-    @Override
-    public String getOriginalUrlForVisibleNavigationEntry() {
-        if (mNativeNavigationControllerAndroid == 0) return null;
-        return nativeGetOriginalUrlForVisibleNavigationEntry(mNativeNavigationControllerAndroid);
     }
 
     @Override
@@ -252,36 +235,21 @@ import org.chromium.content_public.common.ResourceRequestBody;
     }
 
     @Override
-    public boolean canCopyStateOver() {
-        return mNativeNavigationControllerAndroid != 0
-                && nativeCanCopyStateOver(mNativeNavigationControllerAndroid);
+    public String getEntryExtraData(int index, String key) {
+        if (mNativeNavigationControllerAndroid == 0) return null;
+        return nativeGetEntryExtraData(mNativeNavigationControllerAndroid, index, key);
     }
 
     @Override
-    public boolean canPruneAllButLastCommitted() {
-        return mNativeNavigationControllerAndroid != 0
-                && nativeCanPruneAllButLastCommitted(mNativeNavigationControllerAndroid);
-    }
-
-    @Override
-    public void copyStateFrom(NavigationController source) {
+    public void setEntryExtraData(int index, String key, String value) {
         if (mNativeNavigationControllerAndroid == 0) return;
-        NavigationControllerImpl sourceImpl = (NavigationControllerImpl) source;
-        if (sourceImpl.mNativeNavigationControllerAndroid == 0) return;
-        nativeCopyStateFrom(
-                mNativeNavigationControllerAndroid,
-                sourceImpl.mNativeNavigationControllerAndroid);
+        nativeSetEntryExtraData(mNativeNavigationControllerAndroid, index, key, value);
     }
 
     @Override
-    public void copyStateFromAndPrune(NavigationController source, boolean replaceEntry) {
-        if (mNativeNavigationControllerAndroid == 0) return;
-        NavigationControllerImpl sourceImpl = (NavigationControllerImpl) source;
-        if (sourceImpl.mNativeNavigationControllerAndroid == 0) return;
-        nativeCopyStateFromAndPrune(
-                mNativeNavigationControllerAndroid,
-                sourceImpl.mNativeNavigationControllerAndroid,
-                replaceEntry);
+    public boolean isEntryMarkedToBeSkipped(int index) {
+        if (mNativeNavigationControllerAndroid == 0) return false;
+        return nativeIsEntryMarkedToBeSkipped(mNativeNavigationControllerAndroid, index);
     }
 
     @CalledByNative
@@ -290,16 +258,18 @@ import org.chromium.content_public.common.ResourceRequestBody;
     }
 
     @CalledByNative
-    private static NavigationEntry createNavigationEntry(int index, String url,
-            String virtualUrl, String originalUrl, String title, Bitmap favicon, int transition) {
-        return new NavigationEntry(index, url, virtualUrl, originalUrl, title, favicon, transition);
+    private static NavigationEntry createNavigationEntry(int index, String url, String virtualUrl,
+            String originalUrl, String referrerUrl, String title, Bitmap favicon, int transition) {
+        return new NavigationEntry(
+                index, url, virtualUrl, originalUrl, referrerUrl, title, favicon, transition);
     }
 
     private native boolean nativeCanGoBack(long nativeNavigationControllerAndroid);
     private native boolean nativeCanGoForward(long nativeNavigationControllerAndroid);
     private native boolean nativeIsInitialNavigation(long nativeNavigationControllerAndroid);
     private native void nativeLoadIfNecessary(long nativeNavigationControllerAndroid);
-    private native void nativeRequestRestoreLoad(long nativeNavigationControllerAndroid);
+    private native boolean nativeNeedsReload(long nativeNavigationControllerAndroid);
+    private native void nativeSetNeedsReload(long nativeNavigationControllerAndroid);
     private native boolean nativeCanGoToOffset(
             long nativeNavigationControllerAndroid, int offset);
     private native void nativeGoBack(long nativeNavigationControllerAndroid);
@@ -311,11 +281,7 @@ import org.chromium.content_public.common.ResourceRequestBody;
     private native void nativeContinuePendingReload(long nativeNavigationControllerAndroid);
     private native void nativeReload(long nativeNavigationControllerAndroid,
             boolean checkForRepost);
-    private native void nativeReloadToRefreshContent(long nativeNavigationControllerAndroid,
-            boolean checkForRepost);
     private native void nativeReloadBypassingCache(long nativeNavigationControllerAndroid,
-            boolean checkForRepost);
-    private native void nativeReloadDisableLoFi(long nativeNavigationControllerAndroid,
             boolean checkForRepost);
     private native void nativeLoadUrl(long nativeNavigationControllerAndroid, String url,
             int loadUrlType, int transitionType, String referrerUrl, int referrerPolicy,
@@ -328,8 +294,6 @@ import org.chromium.content_public.common.ResourceRequestBody;
             Object history);
     private native void nativeGetDirectedNavigationHistory(long nativeNavigationControllerAndroid,
             NavigationHistory history, boolean isForward, int itemLimit);
-    private native String nativeGetOriginalUrlForVisibleNavigationEntry(
-            long nativeNavigationControllerAndroid);
     private native void nativeClearSslPreferences(long nativeNavigationControllerAndroid);
     private native boolean nativeGetUseDesktopUserAgent(long nativeNavigationControllerAndroid);
     private native void nativeSetUseDesktopUserAgent(long nativeNavigationControllerAndroid,
@@ -340,11 +304,10 @@ import org.chromium.content_public.common.ResourceRequestBody;
     private native int nativeGetLastCommittedEntryIndex(long nativeNavigationControllerAndroid);
     private native boolean nativeRemoveEntryAtIndex(long nativeNavigationControllerAndroid,
             int index);
-    private native boolean nativeCanCopyStateOver(long nativeNavigationControllerAndroid);
-    private native boolean nativeCanPruneAllButLastCommitted(
-            long nativeNavigationControllerAndroid);
-    private native void nativeCopyStateFrom(long nativeNavigationControllerAndroid,
-            long sourceNavigationControllerAndroid);
-    private native void nativeCopyStateFromAndPrune(long nativeNavigationControllerAndroid,
-            long sourceNavigationControllerAndroid, boolean replaceEntry);
+    private native String nativeGetEntryExtraData(
+            long nativeNavigationControllerAndroid, int index, String key);
+    private native void nativeSetEntryExtraData(
+            long nativeNavigationControllerAndroid, int index, String key, String value);
+    private native boolean nativeIsEntryMarkedToBeSkipped(
+            long nativeNavigationControllerAndroid, int index);
 }

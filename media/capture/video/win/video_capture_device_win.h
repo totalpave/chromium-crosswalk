@@ -12,22 +12,24 @@
 #define NO_DSHOW_STRSAFE
 #include <dshow.h>
 #include <stdint.h>
+#include <vidcap.h>
+#include <wrl/client.h>
 
 #include <map>
 #include <string>
 
+#include "base/containers/queue.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
-#include "base/win/scoped_comptr.h"
-#include "media/base/video_capture_types.h"
 #include "media/capture/video/video_capture_device.h"
 #include "media/capture/video/win/capability_list_win.h"
 #include "media/capture/video/win/sink_filter_win.h"
 #include "media/capture/video/win/sink_input_pin_win.h"
+#include "media/capture/video_capture_types.h"
 
-namespace tracked_objects {
+namespace base {
 class Location;
-}  // namespace tracked_objects
+}  // namespace base
 
 namespace media {
 
@@ -55,16 +57,25 @@ class VideoCaptureDeviceWin : public VideoCaptureDevice,
     AM_MEDIA_TYPE* media_type_;
   };
 
+  static void GetDeviceCapabilityList(const std::string& device_id,
+                                      bool query_detailed_frame_rates,
+                                      CapabilityList* out_capability_list);
+  static void GetPinCapabilityList(
+      Microsoft::WRL::ComPtr<IBaseFilter> capture_filter,
+      Microsoft::WRL::ComPtr<IPin> output_capture_pin,
+      bool query_detailed_frame_rates,
+      CapabilityList* out_capability_list);
   static HRESULT GetDeviceFilter(const std::string& device_id,
                                  IBaseFilter** filter);
-  static base::win::ScopedComPtr<IPin> GetPin(IBaseFilter* filter,
-                                              PIN_DIRECTION pin_dir,
-                                              REFGUID category,
-                                              REFGUID major_type);
+  static Microsoft::WRL::ComPtr<IPin> GetPin(IBaseFilter* filter,
+                                             PIN_DIRECTION pin_dir,
+                                             REFGUID category,
+                                             REFGUID major_type);
   static VideoPixelFormat TranslateMediaSubtypeToPixelFormat(
       const GUID& sub_type);
 
-  explicit VideoCaptureDeviceWin(const Name& device_name);
+  explicit VideoCaptureDeviceWin(
+      const VideoCaptureDeviceDescriptor& device_descriptor);
   ~VideoCaptureDeviceWin() override;
   // Opens the device driver for this device.
   bool Init();
@@ -74,6 +85,10 @@ class VideoCaptureDeviceWin : public VideoCaptureDevice,
       const VideoCaptureParams& params,
       std::unique_ptr<VideoCaptureDevice::Client> client) override;
   void StopAndDeAllocate() override;
+  void TakePhoto(TakePhotoCallback callback) override;
+  void GetPhotoState(GetPhotoStateCallback callback) override;
+  void SetPhotoOptions(mojom::PhotoSettingsPtr settings,
+                       SetPhotoOptionsCallback callback) override;
 
  private:
   enum InternalState {
@@ -83,38 +98,55 @@ class VideoCaptureDeviceWin : public VideoCaptureDevice,
                  // User needs to recover by destroying the object.
   };
 
+  bool InitializeVideoAndCameraControls();
+
   // Implements SinkFilterObserver.
   void FrameReceived(const uint8_t* buffer,
                      int length,
+                     const VideoCaptureFormat& format,
                      base::TimeDelta timestamp) override;
+  void FrameDropped(VideoCaptureFrameDropReason reason) override;
 
   bool CreateCapabilityMap();
   void SetAntiFlickerInCaptureFilter(const VideoCaptureParams& params);
-  void SetErrorState(const tracked_objects::Location& from_here,
-                     const std::string& reason);
+  void SetErrorState(media::VideoCaptureError error,
+                     const base::Location& from_here,
+                     const std::string& reason,
+                     HRESULT hr);
 
-  const Name device_name_;
+  const VideoCaptureDeviceDescriptor device_descriptor_;
   InternalState state_;
   std::unique_ptr<VideoCaptureDevice::Client> client_;
 
-  base::win::ScopedComPtr<IBaseFilter> capture_filter_;
+  Microsoft::WRL::ComPtr<IBaseFilter> capture_filter_;
 
-  base::win::ScopedComPtr<IGraphBuilder> graph_builder_;
-  base::win::ScopedComPtr<ICaptureGraphBuilder2> capture_graph_builder_;
+  Microsoft::WRL::ComPtr<IGraphBuilder> graph_builder_;
+  Microsoft::WRL::ComPtr<ICaptureGraphBuilder2> capture_graph_builder_;
 
-  base::win::ScopedComPtr<IMediaControl> media_control_;
-  base::win::ScopedComPtr<IPin> input_sink_pin_;
-  base::win::ScopedComPtr<IPin> output_capture_pin_;
+  Microsoft::WRL::ComPtr<IMediaControl> media_control_;
+  Microsoft::WRL::ComPtr<IPin> input_sink_pin_;
+  Microsoft::WRL::ComPtr<IPin> output_capture_pin_;
 
   scoped_refptr<SinkFilter> sink_filter_;
 
   // Map of all capabilities this device support.
   CapabilityList capabilities_;
+
   VideoCaptureFormat capture_format_;
+
+  Microsoft::WRL::ComPtr<ICameraControl> camera_control_;
+  Microsoft::WRL::ComPtr<IVideoProcAmp> video_control_;
+  // These flags keep the manual/auto mode between cycles of SetPhotoOptions().
+  bool white_balance_mode_manual_;
+  bool exposure_mode_manual_;
 
   base::TimeTicks first_ref_time_;
 
+  base::queue<TakePhotoCallback> take_photo_callbacks_;
+
   base::ThreadChecker thread_checker_;
+
+  bool enable_get_photo_state_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(VideoCaptureDeviceWin);
 };

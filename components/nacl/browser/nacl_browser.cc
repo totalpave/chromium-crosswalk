@@ -9,24 +9,29 @@
 #include "base/command_line.h"
 #include "base/files/file_proxy.h"
 #include "base/files/file_util.h"
+#include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
 #include "base/pickle.h"
 #include "base/rand_util.h"
 #include "base/single_thread_task_runner.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "base/win/windows_version.h"
 #include "build/build_config.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"
+
+#if defined(OS_WIN)
+#include "base/win/windows_version.h"
+#endif
 
 namespace {
 
 // An arbitrary delay to coalesce multiple writes to the cache.
 const int kValidationCacheCoalescingTimeMS = 6000;
-const char kValidationCacheSequenceName[] = "NaClValidationCache";
 const base::FilePath::CharType kValidationCacheFileName[] =
     FILE_PATH_LITERAL("nacl_validation_cache.bin");
 
@@ -96,8 +101,7 @@ void WriteCache(const base::FilePath& filename, const base::Pickle* pickle) {
 void RemoveCache(const base::FilePath& filename,
                  const base::Closure& callback) {
   base::DeleteFile(filename, false);
-  content::BrowserThread::PostTask(content::BrowserThread::IO, FROM_HERE,
-                                   callback);
+  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO}, callback);
 }
 
 void LogCacheQuery(nacl::NaClBrowser::ValidationCacheStatus status) {
@@ -114,6 +118,9 @@ void LogCacheSet(nacl::NaClBrowser::ValidationCacheStatus status) {
 // Crash throttling parameters.
 const size_t kMaxCrashesPerInterval = 3;
 const int64_t kCrashesIntervalInSeconds = 120;
+
+// Holds the NaClBrowserDelegate, which is leaked on shutdown.
+NaClBrowserDelegate* g_browser_delegate = nullptr;
 
 }  // namespace
 
@@ -150,25 +157,38 @@ NaClBrowser::NaClBrowser()
       validation_cache_is_modified_(false),
       validation_cache_state_(NaClResourceUninitialized),
       path_cache_(kFilePathCacheSize),
-      ok_(true),
-      weak_factory_(this) {
+      has_failed_(false) {
 #if !defined(OS_ANDROID)
       validation_cache_is_enabled_ =
           CheckEnvVar("NACL_VALIDATION_CACHE",
                       kValidationCacheEnabledByDefault);
 #endif
+      DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
 }
 
-void NaClBrowser::SetDelegate(NaClBrowserDelegate* delegate) {
-  NaClBrowser* nacl_browser = NaClBrowser::GetInstance();
-  nacl_browser->browser_delegate_.reset(delegate);
+void NaClBrowser::SetDelegate(std::unique_ptr<NaClBrowserDelegate> delegate) {
+  // In the browser SetDelegate is called after threads are initialized.
+  // In tests it is called before initializing BrowserThreads.
+  if (content::BrowserThread::IsThreadInitialized(content::BrowserThread::UI)) {
+    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  }
+  DCHECK(delegate);
+  DCHECK(!g_browser_delegate);
+  g_browser_delegate = delegate.release();
 }
 
 NaClBrowserDelegate* NaClBrowser::GetDelegate() {
-  // The delegate is not owned by the IO thread.  This accessor method can be
-  // called from other threads.
-  DCHECK(GetInstance()->browser_delegate_.get() != NULL);
-  return GetInstance()->browser_delegate_.get();
+  // NaClBrowser calls this on the IO thread, not the UI thread.
+  DCHECK(g_browser_delegate);
+  return g_browser_delegate;
+}
+
+void NaClBrowser::ClearAndDeleteDelegateForTest() {
+  DCHECK(
+      !content::BrowserThread::IsThreadInitialized(content::BrowserThread::UI));
+  DCHECK(g_browser_delegate);
+  delete g_browser_delegate;
+  g_browser_delegate = nullptr;
 }
 
 void NaClBrowser::EarlyStartup() {
@@ -178,6 +198,7 @@ void NaClBrowser::EarlyStartup() {
 }
 
 NaClBrowser::~NaClBrowser() {
+  NOTREACHED();
 }
 
 void NaClBrowser::InitIrtFilePath() {
@@ -193,7 +214,7 @@ void NaClBrowser::InitIrtFilePath() {
     irt_filepath_ = base::FilePath(path_string);
   } else {
     base::FilePath plugin_dir;
-    if (!browser_delegate_->GetPluginDirectory(&plugin_dir)) {
+    if (!GetDelegate()->GetPluginDirectory(&plugin_dir)) {
       DLOG(ERROR) << "Failed to locate the plugins directory, NaCl disabled.";
       MarkAsFailed();
       return;
@@ -204,8 +225,9 @@ void NaClBrowser::InitIrtFilePath() {
 
 #if defined(OS_WIN)
 bool NaClBrowser::GetNaCl64ExePath(base::FilePath* exe_path) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   base::FilePath module_path;
-  if (!PathService::Get(base::FILE_MODULE, &module_path)) {
+  if (!base::PathService::Get(base::FILE_MODULE, &module_path)) {
     LOG(ERROR) << "NaCl process launch failed: could not resolve module";
     return false;
   }
@@ -214,18 +236,29 @@ bool NaClBrowser::GetNaCl64ExePath(base::FilePath* exe_path) {
 }
 #endif
 
+// static
+NaClBrowser* NaClBrowser::GetInstanceInternal() {
+  static NaClBrowser* g_instance = nullptr;
+  if (!g_instance)
+    g_instance = new NaClBrowser();
+  return g_instance;
+}
+
 NaClBrowser* NaClBrowser::GetInstance() {
-  return base::Singleton<NaClBrowser>::get();
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  return GetInstanceInternal();
 }
 
 bool NaClBrowser::IsReady() const {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   return (IsOk() &&
           irt_state_ == NaClResourceReady &&
           validation_cache_state_ == NaClResourceReady);
 }
 
 bool NaClBrowser::IsOk() const {
-  return ok_;
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  return !has_failed_;
 }
 
 const base::File& NaClBrowser::IrtFile() const {
@@ -246,17 +279,16 @@ void NaClBrowser::EnsureIrtAvailable() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   if (IsOk() && irt_state_ == NaClResourceUninitialized) {
     irt_state_ = NaClResourceRequested;
-    // TODO(ncbray) use blocking pool.
-    std::unique_ptr<base::FileProxy> file_proxy(new base::FileProxy(
-        content::BrowserThread::GetMessageLoopProxyForThread(
-            content::BrowserThread::FILE)
-            .get()));
+    auto task_runner = base::CreateTaskRunnerWithTraits(
+        {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+         base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN});
+    std::unique_ptr<base::FileProxy> file_proxy(
+        new base::FileProxy(task_runner.get()));
     base::FileProxy* proxy = file_proxy.get();
-    if (!proxy->CreateOrOpen(irt_filepath_,
-                             base::File::FLAG_OPEN | base::File::FLAG_READ,
-                             base::Bind(&NaClBrowser::OnIrtOpened,
-                                        weak_factory_.GetWeakPtr(),
-                                        Passed(&file_proxy)))) {
+    if (!proxy->CreateOrOpen(
+            irt_filepath_, base::File::FLAG_OPEN | base::File::FLAG_READ,
+            base::BindOnce(&NaClBrowser::OnIrtOpened, base::Unretained(this),
+                           std::move(file_proxy)))) {
       LOG(ERROR) << "Internal error, NaCl disabled.";
       MarkAsFailed();
     }
@@ -280,27 +312,30 @@ void NaClBrowser::OnIrtOpened(std::unique_ptr<base::FileProxy> file_proxy,
 }
 
 void NaClBrowser::SetProcessGdbDebugStubPort(int process_id, int port) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   gdb_debug_stub_port_map_[process_id] = port;
   if (port != kGdbDebugStubPortUnknown &&
       !debug_stub_port_listener_.is_null()) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(debug_stub_port_listener_, port));
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
+                             base::BindOnce(debug_stub_port_listener_, port));
   }
 }
 
-void NaClBrowser::SetGdbDebugStubPortListener(
+// static
+void NaClBrowser::SetGdbDebugStubPortListenerForTest(
     base::Callback<void(int)> listener) {
-  debug_stub_port_listener_ = listener;
+  GetInstanceInternal()->debug_stub_port_listener_ = listener;
 }
 
-void NaClBrowser::ClearGdbDebugStubPortListener() {
-  debug_stub_port_listener_.Reset();
+// static
+void NaClBrowser::ClearGdbDebugStubPortListenerForTest() {
+  GetInstanceInternal()->debug_stub_port_listener_.Reset();
 }
 
 int NaClBrowser::GetProcessGdbDebugStubPort(int process_id) {
-  GdbDebugStubPortMap::iterator i = gdb_debug_stub_port_map_.find(process_id);
+  // Called from TaskManager TaskGroup impl, on CrBrowserMain.
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  auto i = gdb_debug_stub_port_map_.find(process_id);
   if (i != gdb_debug_stub_port_map_.end()) {
     return i->second;
   }
@@ -308,18 +343,19 @@ int NaClBrowser::GetProcessGdbDebugStubPort(int process_id) {
 }
 
 void NaClBrowser::InitValidationCacheFilePath() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   // Determine where the validation cache resides in the file system.  It
   // exists in Chrome's cache directory and is not tied to any specific
   // profile.
   // Start by finding the user data directory.
   base::FilePath user_data_dir;
-  if (!browser_delegate_->GetUserDirectory(&user_data_dir)) {
+  if (!GetDelegate()->GetUserDirectory(&user_data_dir)) {
     RunWithoutValidationCache();
     return;
   }
   // The cache directory may or may not be the user data directory.
   base::FilePath cache_file_path;
-  browser_delegate_->GetCacheDirectory(&cache_file_path);
+  GetDelegate()->GetCacheDirectory(&cache_file_path);
   // Append the base file name to the cache directory.
 
   validation_cache_file_path_ =
@@ -337,14 +373,11 @@ void NaClBrowser::EnsureValidationCacheAvailable() {
       // We can get away not giving this a sequence ID because this is the first
       // task and further file access will not occur until after we get a
       // response.
-      if (!content::BrowserThread::PostBlockingPoolTaskAndReply(
-              FROM_HERE,
-              base::Bind(ReadCache, validation_cache_file_path_, data),
-              base::Bind(&NaClBrowser::OnValidationCacheLoaded,
-                         weak_factory_.GetWeakPtr(),
-                         base::Owned(data)))) {
-        RunWithoutValidationCache();
-      }
+      base::PostTaskWithTraitsAndReply(
+          FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+          base::BindOnce(ReadCache, validation_cache_file_path_, data),
+          base::BindOnce(&NaClBrowser::OnValidationCacheLoaded,
+                         base::Unretained(this), base::Owned(data)));
     } else {
       RunWithoutValidationCache();
     }
@@ -370,6 +403,7 @@ void NaClBrowser::OnValidationCacheLoaded(const std::string *data) {
 }
 
 void NaClBrowser::RunWithoutValidationCache() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   // Be paranoid.
   validation_cache_.Reset();
   validation_cache_is_enabled_ = false;
@@ -384,8 +418,7 @@ void NaClBrowser::CheckWaiting() {
     // re-entrancy problems that could occur if the closure was invoked
     // directly.  For example, this could result in use-after-free of the
     // process host.
-    for (std::vector<base::Closure>::iterator iter = waiting_.begin();
-         iter != waiting_.end(); ++iter) {
+    for (auto iter = waiting_.begin(); iter != waiting_.end(); ++iter) {
       base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, *iter);
     }
     waiting_.clear();
@@ -393,17 +426,20 @@ void NaClBrowser::CheckWaiting() {
 }
 
 void NaClBrowser::MarkAsFailed() {
-  ok_ = false;
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  has_failed_ = true;
   CheckWaiting();
 }
 
 void NaClBrowser::WaitForResources(const base::Closure& reply) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   waiting_.push_back(reply);
   EnsureAllResourcesAvailable();
   CheckWaiting();
 }
 
 const base::FilePath& NaClBrowser::GetIrtFilePath() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   return irt_filepath_;
 }
 
@@ -418,7 +454,7 @@ void NaClBrowser::PutFilePath(const base::FilePath& path,
     if (file_token[0] != 0 || file_token[1] != 0) {
       // If the file_token is in use, ask for another number.
       std::string key(reinterpret_cast<char*>(file_token), sizeof(file_token));
-      PathCacheType::iterator iter = path_cache_.Peek(key);
+      auto iter = path_cache_.Peek(key);
       if (iter == path_cache_.end()) {
         path_cache_.Put(key, path);
         *file_token_lo = file_token[0];
@@ -435,7 +471,7 @@ bool NaClBrowser::GetFilePath(uint64_t file_token_lo,
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   uint64_t file_token[2] = {file_token_lo, file_token_hi};
   std::string key(reinterpret_cast<char*>(file_token), sizeof(file_token));
-  PathCacheType::iterator iter = path_cache_.Peek(key);
+  auto iter = path_cache_.Peek(key);
   if (iter == path_cache_.end()) {
     *path = base::FilePath(FILE_PATH_LITERAL(""));
     return false;
@@ -488,8 +524,7 @@ void NaClBrowser::ClearValidationCache(const base::Closure& callback) {
 
   if (validation_cache_file_path_.empty()) {
     // Can't figure out what file to remove, but don't drop the callback.
-    content::BrowserThread::PostTask(content::BrowserThread::IO, FROM_HERE,
-                                     callback);
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO}, callback);
   } else {
     // Delegate the removal of the cache from the filesystem to another thread
     // to avoid blocking the IO thread.
@@ -497,10 +532,9 @@ void NaClBrowser::ClearValidationCache(const base::Closure& callback) {
     // the user interface for cache clearing is likely waiting for the callback.
     // In addition, we need to make sure the cache is actually cleared before
     // invoking the callback to meet the implicit guarantees of the UI.
-    content::BrowserThread::PostBlockingPoolSequencedTask(
-        kValidationCacheSequenceName,
+    file_task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(RemoveCache, validation_cache_file_path_, callback));
+        base::BindOnce(RemoveCache, validation_cache_file_path_, callback));
   }
 
   // Make sure any delayed tasks to persist the cache to the filesystem are
@@ -516,12 +550,14 @@ void NaClBrowser::ClearValidationCache(const base::Closure& callback) {
 }
 
 void NaClBrowser::MarkValidationCacheAsModified() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   if (!validation_cache_is_modified_) {
     // Wait before persisting to disk.  This can coalesce multiple cache
     // modifications info a single disk write.
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&NaClBrowser::PersistValidationCache,
-                              weak_factory_.GetWeakPtr()),
+        FROM_HERE,
+        base::BindOnce(&NaClBrowser::PersistValidationCache,
+                       base::Unretained(this)),
         base::TimeDelta::FromMilliseconds(kValidationCacheCoalescingTimeMS));
     validation_cache_is_modified_ = true;
   }
@@ -541,16 +577,15 @@ void NaClBrowser::PersistValidationCache() {
     // not allowed on the IO thread (which is the thread this method runs on)
     // because it can degrade the responsiveness of the browser.
     // The task is sequenced so that multiple writes happen in order.
-    content::BrowserThread::PostBlockingPoolSequencedTask(
-        kValidationCacheSequenceName,
-        FROM_HERE,
-        base::Bind(WriteCache, validation_cache_file_path_,
-                   base::Owned(pickle)));
+    file_task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(WriteCache, validation_cache_file_path_,
+                                  base::Owned(pickle)));
   }
   validation_cache_is_modified_ = false;
 }
 
 void NaClBrowser::OnProcessEnd(int process_id) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   gdb_debug_stub_port_map_.erase(process_id);
 }
 

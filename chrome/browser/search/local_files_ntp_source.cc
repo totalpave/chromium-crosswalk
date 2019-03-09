@@ -15,10 +15,10 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/common/url_constants.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/url_data_source.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "third_party/re2/src/re2/stringpiece.h"
@@ -28,7 +28,12 @@ namespace {
 const char kBasePath[] = "chrome/browser/resources/local_ntp";
 
 // Matches lines of form '<include src="foo">' and captures 'foo'.
+// TODO(treib): None of the local NTP files use this. Remove it?
 const char kInlineResourceRegex[] = "<include.*?src\\=[\"'](.+?)[\"'].*?>";
+
+// TODO(treib): local_ntp.css contains url(...) references to images, which get
+// inlined by grit's "flattenhtml" feature during regular builds. Find some way
+// to make that work with local files.
 
 void CallbackWithLoadedResource(
     const std::string& origin,
@@ -37,6 +42,13 @@ void CallbackWithLoadedResource(
   std::string output = content;
   if (!origin.empty())
     base::ReplaceFirstSubstringAfterOffset(&output, 0, "{{ORIGIN}}", origin);
+
+  // Strip out the integrity placeholders. CSP is disabled in local-files mode,
+  // so the integrity values aren't required.
+  base::ReplaceFirstSubstringAfterOffset(&output, 0, "{{CONFIG_INTEGRITY}}",
+                                         std::string());
+  base::ReplaceFirstSubstringAfterOffset(&output, 0, "{{LOCAL_NTP_INTEGRITY}}",
+                                         std::string());
 
   callback.Run(base::RefCountedString::TakeString(&output));
 }
@@ -111,12 +123,12 @@ void SendLocalFileResourceWithOrigin(
     const std::string& origin,
     const content::URLDataSource::GotDataCallback& callback) {
   base::FilePath fullpath;
-  PathService::Get(base::DIR_SOURCE_ROOT, &fullpath);
+  base::PathService::Get(base::DIR_SOURCE_ROOT, &fullpath);
   fullpath = fullpath.AppendASCII(kBasePath).AppendASCII(path);
   content::URLDataSource::GotDataCallback wrapper =
       base::Bind(&CheckLocalIncludes, callback);
-  base::PostTaskAndReplyWithResult(
-      content::BrowserThread::GetBlockingPool(), FROM_HERE,
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::Bind(&ReadFileAndReturn, fullpath),
       base::Bind(&CallbackWithLoadedResource, origin, wrapper));
 }

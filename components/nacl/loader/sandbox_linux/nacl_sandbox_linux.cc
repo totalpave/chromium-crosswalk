@@ -34,12 +34,13 @@
 #include "sandbox/linux/services/resource_limits.h"
 #include "sandbox/linux/services/thread_helpers.h"
 #include "sandbox/linux/suid/client/setuid_sandbox_client.h"
+#include "services/service_manager/sandbox/switches.h"
 
 namespace nacl {
 
 namespace {
 
-// This is a poor man's check on whether we are sandboxed.
+// This is a simplistic check of whether we are sandboxed.
 bool IsSandboxed() {
   int proc_fd = open("/proc/self/exe", O_RDONLY);
   if (proc_fd >= 0) {
@@ -52,7 +53,8 @@ bool IsSandboxed() {
 bool MaybeSetProcessNonDumpable() {
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
-  if (command_line.HasSwitch(switches::kAllowSandboxDebugging)) {
+  if (command_line.HasSwitch(
+          service_manager::switches::kAllowSandboxDebugging)) {
     return true;
   }
 
@@ -76,7 +78,8 @@ void RestrictAddressSpaceUsage() {
   // This could almost certainly be set to zero. GLibc's allocator and others
   // would fall-back to mmap if brk() fails.
   const rlim_t kNewDataSegmentMaxSize = std::numeric_limits<int>::max();
-  CHECK(sandbox::ResourceLimits::Lower(RLIMIT_DATA, kNewDataSegmentMaxSize));
+  CHECK_EQ(0,
+           sandbox::ResourceLimits::Lower(RLIMIT_DATA, kNewDataSegmentMaxSize));
 
 #if defined(ARCH_CPU_64_BITS)
   // NaCl's x86-64 sandbox allocated 88GB address of space during startup:
@@ -92,7 +95,7 @@ void RestrictAddressSpaceUsage() {
   // bits when running under 64 bits kernels. Set a limit in case this happens.
   const rlim_t kNewAddressSpaceLimit = std::numeric_limits<uint32_t>::max();
 #endif
-  CHECK(sandbox::ResourceLimits::Lower(RLIMIT_AS, kNewAddressSpaceLimit));
+  CHECK_EQ(0, sandbox::ResourceLimits::Lower(RLIMIT_AS, kNewAddressSpaceLimit));
 }
 
 }  // namespace

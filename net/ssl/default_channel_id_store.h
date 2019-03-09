@@ -14,7 +14,6 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "net/base/net_export.h"
 #include "net/ssl/channel_id_store.h"
@@ -50,18 +49,19 @@ class NET_EXPORT DefaultChannelIDStore : public ChannelIDStore {
   // ChannelIDStore implementation.
   int GetChannelID(const std::string& server_identifier,
                    std::unique_ptr<crypto::ECPrivateKey>* key_result,
-                   const GetChannelIDCallback& callback) override;
+                   GetChannelIDCallback callback) override;
   void SetChannelID(std::unique_ptr<ChannelID> channel_id) override;
   void DeleteChannelID(const std::string& server_identifier,
-                       const base::Closure& callback) override;
+                       base::OnceClosure callback) override;
   void DeleteForDomainsCreatedBetween(
       const base::Callback<bool(const std::string&)>& domain_predicate,
       base::Time delete_begin,
       base::Time delete_end,
-      const base::Closure& callback) override;
-  void DeleteAll(const base::Closure& callback) override;
-  void GetAllChannelIDs(const GetChannelIDListCallback& callback) override;
-  int GetChannelIDCount() override;
+      base::OnceClosure callback) override;
+  void DeleteAll(base::OnceClosure callback) override;
+  void GetAllChannelIDs(GetChannelIDListCallback callback) override;
+  void Flush() override;
+  size_t GetChannelIDCount() override;
   void SetForceKeepSessionState() override;
   bool IsEphemeral() override;
 
@@ -134,7 +134,6 @@ class NET_EXPORT DefaultChannelIDStore : public ChannelIDStore {
 
   // Tasks that are waiting to be run once we finish loading.
   std::vector<std::unique_ptr<Task>> waiting_tasks_;
-  base::TimeTicks waiting_tasks_start_time_;
 
   scoped_refptr<PersistentStore> store_;
 
@@ -164,6 +163,8 @@ class NET_EXPORT DefaultChannelIDStore::PersistentStore
   virtual void AddChannelID(const ChannelID& channel_id) = 0;
 
   virtual void DeleteChannelID(const ChannelID& channel_id) = 0;
+
+  virtual void Flush() = 0;
 
   // When invoked, instructs the store to keep session related data on
   // destruction.

@@ -10,15 +10,16 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 
 namespace remoting {
 
 class ClientSessionControl;
+class LocalInputMonitor;
 
-class HostWindow : public base::NonThreadSafe {
+class HostWindow {
  public:
-  virtual ~HostWindow() {}
+  virtual ~HostWindow();
 
   // Creates a platform-specific instance of the continue window.
   static std::unique_ptr<HostWindow> CreateContinueWindow();
@@ -26,19 +27,27 @@ class HostWindow : public base::NonThreadSafe {
   // Creates a platform-specific instance of the disconnect window.
   static std::unique_ptr<HostWindow> CreateDisconnectWindow();
 
+  // Creates a platform-specific instance of the disconnect window which hides
+  // after a period of inactivity on the local desktop and shows the window when
+  // local input is observed.
+  static std::unique_ptr<HostWindow> CreateAutoHidingDisconnectWindow(
+      std::unique_ptr<LocalInputMonitor> local_input_monitor);
+
   // Starts the UI state machine. |client_session_control| will be used to
   // notify the caller about the local user's actions.
   virtual void Start(
       const base::WeakPtr<ClientSessionControl>& client_session_control) = 0;
 
  protected:
-  HostWindow() {}
-
- private:
-  // Let |HostWindowProxy| to call DetachFromThread() when passing an instance
-  // of |HostWindow| to a different thread.
+  // Let |HostWindowProxy| to call DetachFromSequence() when passing an instance
+  // of |HostWindow| to a different sequence.
   friend class HostWindowProxy;
 
+  HostWindow() {}
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+ private:
   DISALLOW_COPY_AND_ASSIGN(HostWindow);
 };
 

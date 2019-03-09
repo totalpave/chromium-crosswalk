@@ -6,14 +6,49 @@ Polymer({
   is: 'settings-printing-page',
 
   properties: {
+    /** Preferences state. */
     prefs: {
       type: Object,
       notify: true,
     },
+
+    searchTerm: {
+      type: String,
+    },
+
+    /** @private {!Map<string, string>} */
+    focusConfig_: {
+      type: Object,
+      value: function() {
+        const map = new Map();
+        if (settings.routes.CLOUD_PRINTERS) {
+          map.set(settings.routes.CLOUD_PRINTERS.path, '#cloudPrinters');
+        }
+        // <if expr="chromeos">
+        if (settings.routes.CUPS_PRINTERS) {
+          map.set(settings.routes.CUPS_PRINTERS.path, '#cupsPrinters');
+        }
+        // </if>
+        return map;
+      },
+    },
   },
 
+  // <if expr="chromeos">
   /** @private */
-  onManageTap_: function() {
-    window.open(loadTimeData.getString('devicesUrl'));
+  onTapCupsPrinters_: function() {
+    settings.navigateTo(settings.routes.CUPS_PRINTERS);
+  },
+  // </if>
+
+  // <if expr="not chromeos">
+  onTapLocalPrinters_: function() {
+    settings.PrintingBrowserProxyImpl.getInstance().openSystemPrintDialog();
+  },
+  // </if>
+
+  /** @private */
+  onTapCloudPrinters_: function() {
+    settings.navigateTo(settings.routes.CLOUD_PRINTERS);
   },
 });

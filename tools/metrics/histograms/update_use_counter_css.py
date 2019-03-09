@@ -21,7 +21,7 @@ import update_histogram_enum
 import update_use_counter_feature_enum
 
 
-USE_COUNTER_CPP_PATH = 'third_party/WebKit/Source/core/frame/UseCounter.cpp'
+USE_COUNTER_CPP_PATH = 'third_party/blink/renderer/core/frame/use_counter.cc'
 
 
 def EnumToCssProperty(enum_name):
@@ -36,19 +36,23 @@ def ReadCssProperties(filename):
   with open(path_util.GetInputFile(filename)) as f:
     content = f.readlines()
 
-  # Looking for a line like "case CSSPropertyGrid: return 453;".
+  # Looking for a pair of lines like "case CSSPropertyGrid:\n return 453;".
   ENUM_REGEX = re.compile(r"""CSSProperty(.*):  # capture the enum name
                               \s*return\s*
                               ([0-9]+)          # capture the id
                               """, re.VERBOSE)
 
   properties = {}
+  previous_line = ''
   for line in content:
-    enum_match = ENUM_REGEX.search(line)
+    enum_match = ENUM_REGEX.search(previous_line + '\n' + line)
     if enum_match:
       enum_name = enum_match.group(1)
       property_id = int(enum_match.group(2))
       properties[property_id] = EnumToCssProperty(enum_name)
+      previous_line = ''
+    else:
+      previous_line = line
 
   return properties
 
@@ -68,4 +72,4 @@ if __name__ == '__main__':
   else:
     update_histogram_enum.UpdateHistogramFromDict(
         'MappedCSSProperties', ReadCssProperties(USE_COUNTER_CPP_PATH),
-        USE_COUNTER_CPP_PATH)
+        USE_COUNTER_CPP_PATH, os.path.basename(__file__))

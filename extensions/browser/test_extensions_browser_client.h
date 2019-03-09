@@ -5,6 +5,7 @@
 #ifndef EXTENSIONS_BROWSER_TEST_EXTENSIONS_BROWSER_CLIENT_H_
 #define EXTENSIONS_BROWSER_TEST_EXTENSIONS_BROWSER_CLIENT_H_
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,14 +20,17 @@
 #include "extensions/browser/updater/extension_cache.h"
 
 namespace extensions {
+class KioskDelegate;
 
 // A simplified ExtensionsBrowserClient for a single normal browser context and
 // an optional incognito browser context associated with it. A test that uses
 // this class should call ExtensionsBrowserClient::Set() with its instance.
 class TestExtensionsBrowserClient : public ExtensionsBrowserClient {
  public:
-  // |main_context| is required and must not be an incognito context.
+  // If provided, |main_context| must not be an incognito context.
   explicit TestExtensionsBrowserClient(content::BrowserContext* main_context);
+  // Alternate constructor allowing |main_context_| to be set later.
+  TestExtensionsBrowserClient();
   ~TestExtensionsBrowserClient() override;
 
   void set_process_manager_delegate(ProcessManagerDelegate* delegate) {
@@ -39,9 +43,17 @@ class TestExtensionsBrowserClient : public ExtensionsBrowserClient {
     extension_cache_ = std::move(extension_cache);
   }
 
+  void set_lock_screen_context(content::BrowserContext* context) {
+    lock_screen_context_ = context;
+  }
+
   // Sets a factory to respond to calls of the CreateUpdateClient method.
   void SetUpdateClientFactory(
       const base::Callback<update_client::UpdateClient*(void)>& factory);
+
+  // Sets the main browser context. Only call if a BrowserContext was not
+  // already provided. |main_context| must not be an incognito context.
+  void SetMainContext(content::BrowserContext* main_context);
 
   // Associates an incognito context with |main_context_|.
   void SetIncognitoContext(content::BrowserContext* incognito_context);
@@ -75,10 +87,27 @@ class TestExtensionsBrowserClient : public ExtensionsBrowserClient {
       const base::FilePath& directory_path,
       const std::string& content_security_policy,
       bool send_cors_header) override;
-  bool AllowCrossRendererResourceLoad(net::URLRequest* request,
+  base::FilePath GetBundleResourcePath(
+      const network::ResourceRequest& request,
+      const base::FilePath& extension_resources_path,
+      ComponentExtensionResourceInfo* resource_info) const override;
+  void LoadResourceFromResourceBundle(
+      const network::ResourceRequest& request,
+      network::mojom::URLLoaderRequest loader,
+      const base::FilePath& resource_relative_path,
+      const ComponentExtensionResourceInfo& resource_info,
+      const std::string& content_security_policy,
+      network::mojom::URLLoaderClientPtr client,
+      bool send_cors_header) override;
+
+  bool AllowCrossRendererResourceLoad(const GURL& url,
+                                      content::ResourceType resource_type,
+                                      ui::PageTransition page_transition,
+                                      int child_id,
                                       bool is_incognito,
                                       const Extension* extension,
-                                      InfoMap* extension_info_map) override;
+                                      const ExtensionSet& extensions,
+                                      const ProcessMap& process_map) override;
   PrefService* GetPrefServiceForContext(
       content::BrowserContext* context) override;
   void GetEarlyExtensionPrefsObservers(
@@ -88,13 +117,16 @@ class TestExtensionsBrowserClient : public ExtensionsBrowserClient {
   std::unique_ptr<ExtensionHostDelegate> CreateExtensionHostDelegate() override;
   bool DidVersionUpdate(content::BrowserContext* context) override;
   void PermitExternalProtocolHandler() override;
+  bool IsInDemoMode() override;
+  bool IsScreensaverInDemoMode(const std::string& app_id) override;
   bool IsRunningInForcedAppMode() override;
+  bool IsAppModeForcedForApp(const ExtensionId& extension_id) override;
   bool IsLoggedInAsPublicAccount() override;
   ExtensionSystemProvider* GetExtensionSystemFactory() override;
-  void RegisterExtensionFunctions(
-      ExtensionFunctionRegistry* registry) const override;
-  void RegisterMojoServices(content::RenderFrameHost* render_frame_host,
-                            const Extension* extension) const override;
+  void RegisterExtensionInterfaces(service_manager::BinderRegistryWithArgs<
+                                       content::RenderFrameHost*>* registry,
+                                   content::RenderFrameHost* render_frame_host,
+                                   const Extension* extension) const override;
   std::unique_ptr<RuntimeAPIDelegate> CreateRuntimeAPIDelegate(
       content::BrowserContext* context) const override;
   const ComponentExtensionResourceManager*
@@ -109,21 +141,28 @@ class TestExtensionsBrowserClient : public ExtensionsBrowserClient {
   bool IsMinBrowserVersionSupported(const std::string& min_version) override;
   ExtensionWebContentsObserver* GetExtensionWebContentsObserver(
       content::WebContents* web_contents) override;
+  KioskDelegate* GetKioskDelegate() override;
   scoped_refptr<update_client::UpdateClient> CreateUpdateClient(
       content::BrowserContext* context) override;
+  bool IsLockScreenContext(content::BrowserContext* context) override;
+  std::string GetApplicationLocale() override;
 
   ExtensionSystemProvider* extension_system_factory() {
     return extension_system_factory_;
   }
 
  private:
-  content::BrowserContext* main_context_;       // Not owned.
-  content::BrowserContext* incognito_context_;  // Not owned, defaults to NULL.
+  // Not owned.
+  content::BrowserContext* main_context_;
+  // Not owned, defaults to nullptr.
+  content::BrowserContext* incognito_context_;
+  // Not owned, defaults to nullptr.
+  content::BrowserContext* lock_screen_context_;
 
-  // Not owned, defaults to NULL.
+  // Not owned, defaults to nullptr.
   ProcessManagerDelegate* process_manager_delegate_;
 
-  // Not owned, defaults to NULL.
+  // Not owned, defaults to nullptr.
   ExtensionSystemProvider* extension_system_factory_;
 
   std::unique_ptr<ExtensionCache> extension_cache_;

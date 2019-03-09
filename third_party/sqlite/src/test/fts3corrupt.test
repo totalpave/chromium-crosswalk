@@ -23,6 +23,7 @@ set ::testprefix fts3corrupt
 # extends past the end of the node on which it resides is correctly identified
 # as database corruption.
 #
+sqlite3_db_config db DEFENSIVE 0
 do_execsql_test 1.0 {
   CREATE VIRTUAL TABLE t1 USING fts3;
   INSERT INTO t1 VALUES('hello');
@@ -41,9 +42,9 @@ do_catchsql_test 1.3 {
   INSERT INTO t1 VALUES('world');
 } {1 {database disk image is malformed}}
 do_test 1.3.1 { sqlite3_extended_errcode db } SQLITE_CORRUPT_VTAB
-do_execsql_test 1.4 { 
+do_execsql_test 1.4 {
   DROP TABLE t1;
-} 
+}
 
 # This block of tests checks that corruption is correctly detected if the
 # length field of a term on a leaf node indicates that the term extends past

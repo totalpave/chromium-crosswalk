@@ -8,25 +8,17 @@
 #include <memory>
 #include <string>
 
-#include "base/md5.h"
+#include "base/callback.h"
+#include "components/drive/file_errors.h"
 #include "google_apis/drive/drive_api_error_codes.h"
 #include "google_apis/drive/drive_common_callbacks.h"
 
-class GURL;
-
 namespace base {
 class CancellationFlag;
+class Location;
 class FilePath;
-class Value;
+class TaskRunner;
 }  // namespace base
-
-namespace google_apis {
-class ChangeList;
-class ChangeResource;
-class FileList;
-class FileResource;
-class ResourceEntry;
-}  // namespace google_apis
 
 namespace drive {
 namespace util {
@@ -79,6 +71,13 @@ bool IsKnownHostedDocumentMimeType(const std::string& mime_type);
 // Returns true if the given file path has an extension corresponding to one of
 // hosted document types.
 bool HasHostedDocumentExtension(const base::FilePath& path);
+
+// Runs |task| on |task_runner|, then runs |reply| on the original thread with
+// the resulting error code.
+void RunAsyncTask(base::TaskRunner* task_runner,
+                  const base::Location& from_here,
+                  base::OnceCallback<FileError()> task,
+                  base::OnceCallback<void(FileError)> reply);
 
 }  // namespace util
 }  // namespace drive

@@ -16,13 +16,12 @@
 #include "extensions/common/permissions/base_set_operators.h"
 
 namespace base {
-class ListValue;
+class Value;
 }  // namespace base
 
 namespace extensions {
 
 class APIPermissionSet;
-class Extension;
 
 template<>
 struct BaseSetOperatorsTraits<APIPermissionSet> {
@@ -44,9 +43,8 @@ class APIPermissionSet : public BaseSetOperators<APIPermissionSet> {
 
   void insert(APIPermission::ID id);
 
-  // Insert |permission| into the APIPermissionSet. The APIPermissionSet will
-  // take the ownership of |permission|,
-  void insert(APIPermission* permission);
+  // Inserts |permission| into the APIPermissionSet.
+  void insert(std::unique_ptr<APIPermission> permission);
 
   // Parses permissions from |permissions| and adds the parsed permissions to
   // |api_permissions|. If |source| is kDisallowInternalPermissions, treat
@@ -56,12 +54,11 @@ class APIPermissionSet : public BaseSetOperators<APIPermissionSet> {
   // next permission if invalid data is detected. If |error| is not NULL, it
   // will be set to an error message and false is returned when an invalid
   // permission is found.
-  static bool ParseFromJSON(
-      const base::ListValue* permissions,
-      ParseSource source,
-      APIPermissionSet* api_permissions,
-      base::string16* error,
-      std::vector<std::string>* unhandled_permissions);
+  static bool ParseFromJSON(const base::Value* permissions,
+                            ParseSource source,
+                            APIPermissionSet* api_permissions,
+                            base::string16* error,
+                            std::vector<std::string>* unhandled_permissions);
 };
 
 // An ID representing a single permission that belongs to an app or extension.
@@ -117,6 +114,7 @@ class PermissionIDSet {
   using const_iterator = std::set<PermissionID>::const_iterator;
 
   PermissionIDSet();
+  PermissionIDSet(std::initializer_list<APIPermission::ID> permissions);
   PermissionIDSet(const PermissionIDSet& other);
   virtual ~PermissionIDSet();
 
@@ -133,6 +131,7 @@ class PermissionIDSet {
   std::vector<base::string16> GetAllPermissionParameters() const;
 
   // Check if the set contains a permission with the given ID.
+  bool ContainsID(PermissionID permission_id) const;
   bool ContainsID(APIPermission::ID permission_id) const;
 
   // Check if the set contains permissions with all the given IDs.
@@ -140,6 +139,7 @@ class PermissionIDSet {
 
   // Check if the set contains any permission with one of the given IDs.
   bool ContainsAnyID(const std::set<APIPermission::ID>& permission_ids) const;
+  bool ContainsAnyID(const PermissionIDSet& other) const;
 
   // Returns all the permissions in this set with the given ID.
   PermissionIDSet GetAllPermissionsWithID(
@@ -162,7 +162,7 @@ class PermissionIDSet {
   const_iterator end() const { return permissions_.end(); }
 
  private:
-  PermissionIDSet(const std::set<PermissionID>& permissions);
+  explicit PermissionIDSet(const std::set<PermissionID>& permissions);
 
   std::set<PermissionID> permissions_;
 };

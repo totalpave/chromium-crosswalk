@@ -8,10 +8,10 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/sync_file_system/conflict_resolution_policy.h"
@@ -22,7 +22,7 @@
 #include "chrome/browser/sync_file_system/sync_service_state.h"
 #include "chrome/browser/sync_file_system/task_logger.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/sync_driver/sync_service_observer.h"
+#include "components/sync/driver/sync_service_observer.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "url/gurl.h"
 
@@ -32,7 +32,7 @@ namespace storage {
 class FileSystemContext;
 }
 
-namespace sync_driver {
+namespace syncer {
 class SyncService;
 }
 
@@ -46,7 +46,7 @@ class SyncEventObserver;
 class SyncFileSystemService
     : public KeyedService,
       public SyncProcessRunner::Client,
-      public sync_driver::SyncServiceObserver,
+      public syncer::SyncServiceObserver,
       public FileStatusObserver,
       public extensions::ExtensionRegistryObserver,
       public base::SupportsWeakPtr<SyncFileSystemService> {
@@ -137,18 +137,17 @@ class SyncFileSystemService
   void OnExtensionInstalled(content::BrowserContext* browser_context,
                             const extensions::Extension* extension,
                             bool is_update) override;
-  void OnExtensionUnloaded(
-      content::BrowserContext* browser_context,
-      const extensions::Extension* extension,
-      extensions::UnloadedExtensionInfo::Reason reason) override;
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const extensions::Extension* extension,
+                           extensions::UnloadedExtensionReason reason) override;
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const extensions::Extension* extension,
                               extensions::UninstallReason reason) override;
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const extensions::Extension* extension) override;
 
-  // sync_driver::SyncServiceObserver implementation.
-  void OnStateChanged() override;
+  // syncer::SyncServiceObserver implementation.
+  void OnStateChanged(syncer::SyncService* sync) override;
 
   // SyncFileStatusObserver implementation.
   void OnFileStatusChanged(const storage::FileSystemURL& url,
@@ -160,7 +159,7 @@ class SyncFileSystemService
   // Check the profile's sync preference settings and call
   // remote_file_service_->SetSyncEnabled() to update the status.
   // |profile_sync_service| must be non-null.
-  void UpdateSyncEnabledStatus(sync_driver::SyncService* profile_sync_service);
+  void UpdateSyncEnabledStatus(syncer::SyncService* profile_sync_service);
 
   // Runs the SyncProcessRunner method of all sync runners (e.g. for Local sync
   // and Remote sync).
@@ -172,14 +171,14 @@ class SyncFileSystemService
   std::unique_ptr<RemoteFileSyncService> remote_service_;
 
   // Holds all SyncProcessRunners.
-  ScopedVector<SyncProcessRunner> local_sync_runners_;
-  ScopedVector<SyncProcessRunner> remote_sync_runners_;
+  std::vector<std::unique_ptr<SyncProcessRunner>> local_sync_runners_;
+  std::vector<std::unique_ptr<SyncProcessRunner>> remote_sync_runners_;
 
   // Indicates if sync is currently enabled or not.
   bool sync_enabled_;
 
   TaskLogger task_logger_;
-  base::ObserverList<SyncEventObserver> observers_;
+  base::ObserverList<SyncEventObserver>::Unchecked observers_;
 
   bool promoting_demoted_changes_;
   base::Closure idle_callback_;

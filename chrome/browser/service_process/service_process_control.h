@@ -15,23 +15,26 @@
 
 #include "base/callback.h"
 #include "base/cancelable_callback.h"
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "base/memory/singleton.h"
+#include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "build/build_config.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
-#include "ipc/ipc_channel_proxy.h"
-#include "ipc/ipc_listener.h"
-#include "ipc/ipc_sender.h"
+#include "chrome/browser/upgrade_detector/upgrade_observer.h"
+#include "chrome/common/service_process.mojom.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
+
+#if defined(OS_CHROMEOS)
+#error "Not supported on ChromeOS"
+#endif
 
 namespace base {
 class CommandLine;
 }
 
-namespace cloud_print {
-struct CloudPrintProxyInfo;
-}  // namespace cloud_print
+namespace mojo {
+class IsolatedConnection;
+}
 
 // A ServiceProcessControl works as a portal between the service process and
 // the browser process.
@@ -41,11 +44,8 @@ struct CloudPrintProxyInfo;
 //
 // THREADING
 //
-// This class is accessed on the UI thread through some UI actions. It then
-// talks to the IPC channel on the IO thread.
-class ServiceProcessControl : public IPC::Sender,
-                              public IPC::Listener,
-                              public content::NotificationObserver {
+// This class is accessed on the UI thread through some UI actions.
+class ServiceProcessControl : public UpgradeObserver {
  public:
   enum ServiceProcessEvent {
     SERVICE_EVENT_INITIALIZE,
@@ -67,13 +67,6 @@ class ServiceProcessControl : public IPC::Sender,
     SERVICE_EVENT_MAX,
   };
 
-  typedef IDMap<ServiceProcessControl>::iterator iterator;
-  typedef std::queue<IPC::Message> MessageQueue;
-  typedef base::Callback<void(const cloud_print::CloudPrintProxyInfo&)>
-      CloudPrintProxyInfoCallback;
-  typedef base::Callback<void(const std::vector<std::string>&)>
-      PrintersCallback;
-
   // Returns the singleton instance of this class.
   static ServiceProcessControl* GetInstance();
 
@@ -92,39 +85,21 @@ class ServiceProcessControl : public IPC::Sender,
   // Note that if we are already connected to service process then
   // |success_task| can be invoked in the context of the Launch call.
   // Virtual for testing.
-  virtual void Launch(const base::Closure& success_task,
-                      const base::Closure& failure_task);
+  virtual void Launch(base::OnceClosure success_task,
+                      base::OnceClosure failure_task);
 
   // Disconnect the IPC channel from the service process.
   // Virtual for testing.
   virtual void Disconnect();
 
-  // IPC::Listener implementation.
-  bool OnMessageReceived(const IPC::Message& message) override;
-  void OnChannelConnected(int32_t peer_pid) override;
-  void OnChannelError() override;
-
-  // IPC::Sender implementation
-  bool Send(IPC::Message* message) override;
-
-  // content::NotificationObserver implementation.
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
+  // UpgradeObserver implementation.
+  void OnUpgradeRecommended() override;
 
   // Send a shutdown message to the service process. IPC channel will be
   // destroyed after calling this method.
   // Return true if the message was sent.
   // Virtual for testing.
   virtual bool Shutdown();
-
-  // Send request for cloud print proxy info (enabled state, email, proxy id).
-  // The callback gets the information when received.
-  // Returns true if request was sent. Callback will be called only in case of
-  // reply from service. The method resets any previous callback.
-  // This call starts service if needed.
-  bool GetCloudPrintProxyInfo(
-      const CloudPrintProxyInfoCallback& cloud_print_status_callback);
 
   // Send request for histograms collected in service process.
   // Returns true if request was sent, and callback will be called in case of
@@ -134,12 +109,11 @@ class ServiceProcessControl : public IPC::Sender,
   bool GetHistograms(const base::Closure& cloud_print_status_callback,
                      const base::TimeDelta& timeout);
 
-  // Send request for printers available for cloud print proxy.
-  // The callback gets the information when received.
-  // Returns true if request was sent. Callback will be called only in case of
-  // reply from service. The method resets any previous callback.
-  // This call starts service if needed.
-  bool GetPrinters(const PrintersCallback& enumerate_printers_callback);
+  service_manager::InterfaceProvider& remote_interfaces() {
+    return remote_interfaces_;
+  }
+
+  base::ProcessId GetLaunchedPidForTesting() const { return saved_pid_; }
 
  private:
   // This class is responsible for launching the service process on the
@@ -154,6 +128,7 @@ class ServiceProcessControl : public IPC::Sender,
     void Run(const base::Closure& task);
 
     bool launched() const { return launched_; }
+    base::ProcessId saved_pid() const { return saved_pid_; }
 
    private:
     friend class base::RefCountedThreadSafe<ServiceProcessControl::Launcher>;
@@ -170,23 +145,27 @@ class ServiceProcessControl : public IPC::Sender,
     bool launched_;
     uint32_t retry_count_;
     base::Process process_;
+
+    // Used to save the process id for |process_| upon successful launch.
+    // Only used for testing.
+    base::ProcessId saved_pid_;
   };
 
   friend class MockServiceProcessControl;
   friend class CloudPrintProxyPolicyStartupTest;
+  friend class TestCloudPrintProxyService;
 
   ServiceProcessControl();
   ~ServiceProcessControl() override;
 
   friend struct base::DefaultSingletonTraits<ServiceProcessControl>;
 
-  typedef std::vector<base::Closure> TaskList;
+  using TaskList = std::vector<base::OnceClosure>;
 
-  // Message handlers
-  void OnCloudPrintProxyInfo(
-      const cloud_print::CloudPrintProxyInfo& proxy_info);
+  void OnChannelConnected();
+  void OnChannelError();
+
   void OnHistograms(const std::vector<std::string>& pickled_histograms);
-  void OnPrinters(const std::vector<std::string>& printers);
 
   // Runs callback provided in |GetHistograms()|.
   void RunHistogramsCallback();
@@ -200,13 +179,19 @@ class ServiceProcessControl : public IPC::Sender,
   // Used internally to connect to the service process.
   void ConnectInternal();
 
-  // Takes ownership of the pointer. Split out for testing.
-  void SetChannel(std::unique_ptr<IPC::ChannelProxy> channel);
+  // Called when ConnectInternal's async work is done.
+  void OnPeerConnectionComplete(
+      std::unique_ptr<mojo::IsolatedConnection> connection);
+
+  // Split out for testing.
+  void SetMojoHandle(service_manager::mojom::InterfaceProviderPtr handle);
 
   static void RunAllTasksHelper(TaskList* task_list);
 
-  // IPC channel to the service process.
-  std::unique_ptr<IPC::ChannelProxy> channel_;
+  std::unique_ptr<mojo::IsolatedConnection> mojo_connection_;
+
+  service_manager::InterfaceProvider remote_interfaces_;
+  chrome::mojom::ServiceProcessPtr service_process_;
 
   // Service process launcher.
   scoped_refptr<Launcher> launcher_;
@@ -216,22 +201,22 @@ class ServiceProcessControl : public IPC::Sender,
   // Callbacks that get invoked when there was a connection failure.
   TaskList connect_failure_tasks_;
 
-  // Callback that gets invoked when a printers is received from
-  // the cloud print proxy.
-  PrintersCallback printers_callback_;
-
-  // Callback that gets invoked when a status message is received from
-  // the cloud print proxy.
-  CloudPrintProxyInfoCallback cloud_print_info_callback_;
-
   // Callback that gets invoked when a message with histograms is received from
   // the service process.
   base::Closure histograms_callback_;
 
-  content::NotificationRegistrar registrar_;
-
   // Callback that gets invoked if service didn't reply in time.
   base::CancelableClosure histograms_timeout_callback_;
+
+  // If true changes to UpgradeObserver are applied, if false they are ignored.
+  bool apply_changes_from_upgrade_observer_;
+
+  // Same as |Launcher::saved_pid_|.
+  base::ProcessId saved_pid_;
+
+  base::WeakPtrFactory<ServiceProcessControl> weak_factory_;
+
+  DISALLOW_COPY_AND_ASSIGN(ServiceProcessControl);
 };
 
 #endif  // CHROME_BROWSER_SERVICE_PROCESS_SERVICE_PROCESS_CONTROL_H_

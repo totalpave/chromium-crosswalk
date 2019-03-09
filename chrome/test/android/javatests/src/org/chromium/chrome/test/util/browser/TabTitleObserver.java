@@ -6,15 +6,16 @@ package org.chromium.chrome.test.util.browser;
 import android.text.TextUtils;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.content.browser.test.util.CallbackHelper;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * A utility class to get notified of title change in a tab.
+ * A utility class to get notified of title change in a tab. Subclasses can
+ * override doesTitleMatch() to customize title matching.
  */
 public class TabTitleObserver extends EmptyTabObserver {
     private final String mExpectedTitle;
@@ -51,7 +52,7 @@ public class TabTitleObserver extends EmptyTabObserver {
     }
 
     private boolean notifyCallbackIfTitleMatches(Tab tab) {
-        if (TextUtils.equals(tab.getTitle(), mExpectedTitle)) {
+        if (doesTitleMatch(mExpectedTitle, tab.getTitle())) {
             mCallback.notifyCalled();
             return true;
         }
@@ -61,5 +62,10 @@ public class TabTitleObserver extends EmptyTabObserver {
     @Override
     public void onTitleUpdated(Tab tab) {
         notifyCallbackIfTitleMatches(tab);
+    }
+
+    /** @return Whether the title matches the expected condition. */
+    protected boolean doesTitleMatch(String expectedTitle, String actualTitle) {
+        return TextUtils.equals(expectedTitle, actualTitle);
     }
 }

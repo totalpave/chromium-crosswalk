@@ -3,98 +3,91 @@
 # found in the LICENSE file.
 
 import("//chromecast/chromecast.gni")
+import("//media/media_options.gni")
 import("//testing/test.gni")
 
 group("media") {
   public_deps = [
     "//chromecast/media/audio",
     "//chromecast/media/base",
+    "//chromecast/media/base:media_resource_tracker",
     "//chromecast/media/cdm",
     "//chromecast/media/cma",
   ]
 }
 
-test("cast_media_unittests") {
-  sources = [
-    "audio/cast_audio_output_stream_unittest.cc",
-    "base/media_resource_tracker_unittest.cc",
-    "cma/backend/audio_video_pipeline_device_unittest.cc",
-    "cma/base/balanced_media_task_runner_unittest.cc",
-    "cma/base/buffering_controller_unittest.cc",
-    "cma/base/buffering_frame_provider_unittest.cc",
-    "cma/base/decoder_buffer_adapter_unittest.cc",
-    "cma/base/demuxer_stream_adapter_unittest.cc",
-    "cma/base/demuxer_stream_for_test.cc",
-    "cma/base/demuxer_stream_for_test.h",
-    "cma/base/multi_demuxer_stream_adapter_unittest.cc",
-    "cma/ipc/media_message_fifo_unittest.cc",
-    "cma/ipc/media_message_unittest.cc",
-    "cma/ipc_streamer/av_streamer_unittest.cc",
-    "cma/pipeline/audio_video_pipeline_impl_unittest.cc",
-    "cma/test/frame_generator_for_test.cc",
-    "cma/test/frame_generator_for_test.h",
-    "cma/test/frame_segmenter_for_test.cc",
-    "cma/test/frame_segmenter_for_test.h",
-    "cma/test/mock_frame_consumer.cc",
-    "cma/test/mock_frame_consumer.h",
-    "cma/test/mock_frame_provider.cc",
-    "cma/test/mock_frame_provider.h",
-    "cma/test/run_all_unittests.cc",
-  ]
+# Any component calling CastMediaShlib:: static functions should depend on this.
+# Handles the various differences between (ATV, Things, desktop, device builds).
+group("libcast_media") {
+  if (is_android) {
+    if (is_cast_using_cma_backend) {
+      deps = [
+        "//chromecast/media/cma/backend/android:cast_media_android",
+      ]
+    } else {
+      deps = [
+        "//chromecast/media/cma/backend:cast_media_android_dummy",
+      ]
+    }
+  } else if (is_fuchsia) {
+    deps = [
+      "//chromecast/media/cma/backend/fuchsia:media_backend",
+    ]
+  } else {
+    deps = [
+      "//chromecast/media/cma/backend:libcast_media_1.0",
+    ]
 
-  deps = [
-    ":media",
-    "//base",
-    "//base:i18n",
-    "//base/test:test_support",
-    "//chromecast/base",
-    "//chromecast/base/metrics:test_support",
-    "//chromecast/media/audio",
-    "//chromecast/media/cma/backend",
-    "//chromecast/media/cma/base",
-    "//chromecast/media/cma/ipc",
-    "//chromecast/media/cma/ipc_streamer",
-    "//chromecast/media/cma/pipeline",
-    "//chromecast/public",
-    "//media",
-    "//media/base:test_support",
-    "//testing/gmock",
-    "//testing/gtest",
-    "//ui/display",
-    "//ui/gfx/geometry",
-  ]
-
-  if (chromecast_branding == "public") {
-    # Link default libcast_media_1.0 statically not to link dummy one
-    # dynamically for public unittests.
-    deps += [ "//chromecast/media/base:libcast_media_1.0_default_core" ]
+    if (cast_volume_control_in_avsettings) {
+      deps += [ "//chromecast/media/avsettings:libcast_avsettings_1.0" ]
+    }
   }
 }
 
-test("cast_multizone_backend_unittests") {
+test("cast_media_unittests") {
   sources = [
-    "cma/backend/multizone_backend_unittest.cc",
-    "cma/test/run_all_unittests.cc",
+    "audio/cast_audio_manager_unittest.cc",
+    "audio/cast_audio_mixer_unittest.cc",
+    "audio/cast_audio_output_stream_unittest.cc",
+    "base/media_resource_tracker_unittest.cc",
+    "base/slew_volume_unittests.cc",
+    "base/supported_codec_profile_levels_memo_unittest.cc",
+    "cma/backend/audio_decoder_software_wrapper_unittest.cc",
+    "test/run_all_unittests.cc",
   ]
 
+  if (use_alsa && !is_cast_desktop_build) {
+    sources += [ "audio/cast_audio_manager_alsa_unittest.cc" ]
+  }
+
   deps = [
+    ":libcast_media",
+    ":media",
     "//base",
     "//base/test:test_support",
+    "//chromecast:chromecast_buildflags",
     "//chromecast/base",
     "//chromecast/base/metrics:test_support",
-    "//chromecast/media/base:libcast_media_1.0",
-    "//chromecast/media/cma/backend",
-    "//chromecast/media/cma/base",
+    "//chromecast/common/mojom",
+    "//chromecast/media/cma:test_support",
     "//chromecast/public",
-    "//media",
-    "//media/base:test_support",
+    "//content/test:test_support",
+    "//media:test_support",
+    "//media/mojo:test_support",
+    "//mojo/core/embedder",
+    "//services/service_manager/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
   ]
 
-  if (chromecast_branding == "public") {
-    # Link default libcast_media_1.0 statically not to link dummy one
-    # dynamically for public unittests.
-    deps += [ "//chromecast/media/base:libcast_media_1.0_default_core" ]
+  if (is_cast_using_cma_backend) {
+    deps += [ "//chromecast/media/cma:unittests" ]
+    if (is_android) {
+      deps += [
+        "//chromecast/media/cma/backend/android:audio_track_java",
+        "//media/base/android:media_java",
+      ]
+      shard_timeout = 300
+    }
   }
 }

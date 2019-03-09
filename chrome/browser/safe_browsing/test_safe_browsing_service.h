@@ -7,16 +7,11 @@
 
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 
-#include "chrome/browser/safe_browsing/protocol_manager.h"
-#include "chrome/browser/safe_browsing/protocol_manager_helper.h"
 #include "chrome/browser/safe_browsing/ui_manager.h"
-#include "components/safe_browsing_db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/db/v4_protocol_manager_util.h"
 
 namespace safe_browsing {
-struct SafeBrowsingProtocolConfig;
 class SafeBrowsingDatabaseManager;
-class SafeBrowsingPingManager;
-class SafeBrowsingProtocolManager;
 struct V4ProtocolConfig;
 class TestSafeBrowsingDatabaseManager;
 class TestSafeBrowsingUIManager;
@@ -40,11 +35,11 @@ class TestSafeBrowsingUIManager;
 //   Call base class TearDown() first then call
 //   SafeBrowsingService::RegisterFactory(nullptr) to unregister
 //   test_sb_factory_.
-class TestSafeBrowsingService : public SafeBrowsingService {
+class TestSafeBrowsingService : public SafeBrowsingService,
+                                public ServicesDelegate::ServicesCreator {
  public:
   TestSafeBrowsingService();
   // SafeBrowsingService overrides
-  SafeBrowsingProtocolConfig GetProtocolConfig() const override;
   V4ProtocolConfig GetV4ProtocolConfig() const override;
 
   std::string serilized_download_report();
@@ -60,22 +55,34 @@ class TestSafeBrowsingService : public SafeBrowsingService {
   // following setters), and then initialized.
   void SetUIManager(TestSafeBrowsingUIManager* ui_manager);
   void SetDatabaseManager(TestSafeBrowsingDatabaseManager* database_manager);
-  void SetProtocolConfig(SafeBrowsingProtocolConfig* protocol_config);
   void SetV4ProtocolConfig(V4ProtocolConfig* v4_protocol_config);
+  const scoped_refptr<SafeBrowsingDatabaseManager>& database_manager()
+      const override;
+  void UseV4LocalDatabaseManager();
+  std::unique_ptr<SafeBrowsingService::StateSubscription> RegisterStateCallback(
+      const base::Callback<void(void)>& callback) override;
 
  protected:
   // SafeBrowsingService overrides
   ~TestSafeBrowsingService() override;
-  SafeBrowsingDatabaseManager* CreateDatabaseManager() override;
   SafeBrowsingUIManager* CreateUIManager() override;
-  SafeBrowsingProtocolManagerDelegate* GetProtocolManagerDelegate() override;
   void SendSerializedDownloadReport(const std::string& report) override;
 
+  // ServicesDelegate::ServicesCreator:
+  bool CanCreateDatabaseManager() override;
+  bool CanCreateDownloadProtectionService() override;
+  bool CanCreateIncidentReportingService() override;
+  bool CanCreateResourceRequestDetector() override;
+  SafeBrowsingDatabaseManager* CreateDatabaseManager() override;
+  DownloadProtectionService* CreateDownloadProtectionService() override;
+  IncidentReportingService* CreateIncidentReportingService() override;
+  ResourceRequestDetector* CreateResourceRequestDetector() override;
+
  private:
-  bool protocol_manager_delegate_disabled_;
-  std::unique_ptr<SafeBrowsingProtocolConfig> protocol_config_;
   std::unique_ptr<V4ProtocolConfig> v4_protocol_config_;
   std::string serialized_download_report_;
+  scoped_refptr<SafeBrowsingDatabaseManager> test_database_manager_;
+  bool use_v4_local_db_manager_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(TestSafeBrowsingService);
 };
@@ -96,13 +103,17 @@ class TestSafeBrowsingServiceFactory : public SafeBrowsingServiceFactory {
   void SetTestUIManager(TestSafeBrowsingUIManager* ui_manager);
   void SetTestDatabaseManager(
       TestSafeBrowsingDatabaseManager* database_manager);
-  void SetTestProtocolConfig(const SafeBrowsingProtocolConfig& protocol_config);
+
+  // Be default, the TestSafeBrowsingService creates an instance of the
+  // TestSafeBrowsingDatabaseManager. This function can be used to override that
+  // to use the usual V4LocalDatabaseManager that's used in Chrome on Desktop.
+  void UseV4LocalDatabaseManager();
 
  private:
   TestSafeBrowsingService* test_safe_browsing_service_;
   scoped_refptr<TestSafeBrowsingDatabaseManager> test_database_manager_;
   scoped_refptr<TestSafeBrowsingUIManager> test_ui_manager_;
-  SafeBrowsingProtocolConfig* test_protocol_config_;
+  bool use_v4_local_db_manager_;
 
   DISALLOW_COPY_AND_ASSIGN(TestSafeBrowsingServiceFactory);
 };

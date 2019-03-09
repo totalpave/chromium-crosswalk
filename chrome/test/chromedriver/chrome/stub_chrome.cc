@@ -22,11 +22,57 @@ bool StubChrome::HasCrashedWebView() {
   return false;
 }
 
-Status StubChrome::GetWebViewIds(std::list<std::string>* web_view_ids) {
+Status StubChrome::GetWebViewIdForFirstTab(std::string* web_view_id,
+                                           bool w3c_compliant) {
+  return Status(kOk);
+}
+
+Status StubChrome::GetWebViewIds(std::list<std::string>* web_view_ids,
+                                 bool w3c_compliant) {
   return Status(kOk);
 }
 
 Status StubChrome::GetWebViewById(const std::string& id, WebView** web_view) {
+  return Status(kOk);
+}
+
+Status StubChrome::GetWindowSize(const std::string& id,
+                                 int* width,
+                                 int* height) {
+  return Status(kOk);
+}
+
+Status StubChrome::SetWindowSize(const std::string& id,
+                                 int width,
+                                 int height) {
+  return Status(kOk);
+}
+
+Status StubChrome::SetWindowRect(const std::string& target_id,
+                                 const base::DictionaryValue& params) {
+  return Status(kOk);
+}
+
+Status StubChrome::GetWindowPosition(const std::string& target_id,
+                                     int* x,
+                                     int* y) {
+  return Status(kOk);
+}
+
+Status StubChrome::SetWindowPosition(const std::string& target_id,
+                                     int x, int y) {
+  return Status(kOk);
+}
+
+Status StubChrome::MaximizeWindow(const std::string& target_id) {
+  return Status(kOk);
+}
+
+Status StubChrome::MinimizeWindow(const std::string& target_id) {
+  return Status(kOk);
+}
+
+Status StubChrome::FullScreenWindow(const std::string& target_id) {
   return Status(kOk);
 }
 
@@ -35,6 +81,10 @@ Status StubChrome::CloseWebView(const std::string& id) {
 }
 
 Status StubChrome::ActivateWebView(const std::string& id) {
+  return Status(kOk);
+}
+
+Status StubChrome::SetAcceptInsecureCerts() {
   return Status(kOk);
 }
 
@@ -48,6 +98,10 @@ bool StubChrome::IsMobileEmulationEnabled() const {
 
 bool StubChrome::HasTouchScreen() const {
   return false;
+}
+
+std::string StubChrome::page_load_strategy() const {
+  return std::string();
 }
 
 Status StubChrome::Quit() {

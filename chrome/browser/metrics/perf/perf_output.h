@@ -11,10 +11,12 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "chromeos/dbus/pipe_reader.h"
-#include "dbus/file_descriptor.h"
+
+namespace metrics {
 
 // Class for handling getting output from perf over DBus. Manages the
 // asynchronous DBus call and retrieving data from quipper over a pipe.
@@ -26,25 +28,20 @@ class PerfOutputCall {
   // - Output from "perf record", in PerfDataProto format, OR
   // - Output from "perf stat", in PerfStatProto format, OR
   // - The empty string if there was an error.
-  using DoneCallback = base::Callback<void(const std::string& perf_stdout)>;
+  using DoneCallback = base::OnceCallback<void(const std::string& perf_stdout)>;
 
-  PerfOutputCall(scoped_refptr<base::TaskRunner> blocking_task_runner,
-                 base::TimeDelta duration,
+  PerfOutputCall(base::TimeDelta duration,
                  const std::vector<std::string>& perf_args,
-                 const DoneCallback& callback);
+                 DoneCallback callback);
   ~PerfOutputCall();
 
  private:
   // Internal callbacks.
-  void OnFileDescriptorCreated(dbus::ScopedFileDescriptor file_descriptor);
-  void OnIOComplete();
-  void OnGetPerfOutputError(const std::string& error_name,
-                            const std::string& error_message);
+  void OnIOComplete(base::Optional<std::string> data);
+  void OnGetPerfOutput(base::Optional<uint64_t> result);
 
-  // Used to run IO tasks.
-  scoped_refptr<base::TaskRunner> blocking_task_runner_;
   // Used to capture perf data written to a pipe.
-  std::unique_ptr<chromeos::PipeReaderForString> perf_data_pipe_reader_;
+  std::unique_ptr<chromeos::PipeReader> perf_data_pipe_reader_;
 
   // Saved arguments.
   base::TimeDelta duration_;
@@ -58,5 +55,7 @@ class PerfOutputCall {
 
   DISALLOW_COPY_AND_ASSIGN(PerfOutputCall);
 };
+
+}  // namespace metrics
 
 #endif  // CHROME_BROWSER_METRICS_PERF_PERF_OUTPUT_H_

@@ -6,9 +6,9 @@
 #define CONTENT_PUBLIC_TEST_TEST_WEB_CONTENTS_FACTORY_H_
 
 #include <memory>
+#include <vector>
 
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 
 namespace content {
 class BrowserContext;
@@ -36,12 +36,15 @@ class TestWebContentsFactory {
   // Ownership remains with the TestWebContentsFactory.
   WebContents* CreateWebContents(BrowserContext* context);
 
+  // Destroys the provided WebContents.
+  void DestroyWebContents(WebContents* contents);
+
  private:
   // The test factory (and friends) for creating test web contents.
   std::unique_ptr<RenderViewHostTestEnabler> rvh_enabler_;
 
   // The vector of web contents that this class created.
-  ScopedVector<WebContents> web_contents_;
+  std::vector<std::unique_ptr<WebContents>> web_contents_;
 
   DISALLOW_COPY_AND_ASSIGN(TestWebContentsFactory);
 };

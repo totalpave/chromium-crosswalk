@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "base/files/scoped_temp_dir.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/sync_file_system/drive_backend/drive_backend_constants.h"
 #include "chrome/browser/sync_file_system/drive_backend/drive_backend_test_util.h"
@@ -18,9 +17,9 @@
 #include "chrome/browser/sync_file_system/drive_backend/leveldb_wrapper.h"
 #include "chrome/browser/sync_file_system/drive_backend/metadata_database.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
+#include "third_party/leveldatabase/env_chromium.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 #include "third_party/leveldatabase/src/include/leveldb/db.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
 #include "third_party/leveldatabase/src/include/leveldb/status.h"
 
 namespace sync_file_system {
@@ -41,7 +40,8 @@ class MetadataDatabaseIndexOnDiskTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(database_dir_.CreateUniqueTempDir());
-    in_memory_env_.reset(leveldb::NewMemEnv(leveldb::Env::Default()));
+    in_memory_env_ =
+        leveldb_chrome::NewMemEnv("MetadataDatabaseIndexOnDiskTest");
     db_ = InitializeLevelDB();
     index_ = MetadataDatabaseIndexOnDisk::Create(db_.get());
   }
@@ -116,15 +116,15 @@ class MetadataDatabaseIndexOnDiskTest : public testing::Test {
   }
 
   std::unique_ptr<LevelDBWrapper> InitializeLevelDB() {
-    leveldb::DB* db = nullptr;
-    leveldb::Options options;
+    std::unique_ptr<leveldb::DB> db;
+    leveldb_env::Options options;
     options.create_if_missing = true;
     options.max_open_files = 0;  // Use minimum.
     options.env = in_memory_env_.get();
-    leveldb::Status status =
-        leveldb::DB::Open(options, database_dir_.path().AsUTF8Unsafe(), &db);
+    leveldb::Status status = leveldb_env::OpenDB(
+        options, database_dir_.GetPath().AsUTF8Unsafe(), &db);
     EXPECT_TRUE(status.ok());
-    return base::WrapUnique(new LevelDBWrapper(base::WrapUnique(db)));
+    return std::make_unique<LevelDBWrapper>(std::move(db));
   }
 
  private:
@@ -206,7 +206,7 @@ TEST_F(MetadataDatabaseIndexOnDiskTest, RemoveUnreachableItemsTest) {
   EXPECT_TRUE(db->Commit().ok());
 
   const std::string key =
-      kFileTrackerKeyPrefix + base::Int64ToString(kOrphanedFileTrackerID);
+      kFileTrackerKeyPrefix + base::NumberToString(kOrphanedFileTrackerID);
   std::string value;
   EXPECT_TRUE(db->Get(key, &value).ok());
 

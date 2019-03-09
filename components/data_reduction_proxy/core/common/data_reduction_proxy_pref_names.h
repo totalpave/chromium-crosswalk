@@ -47,15 +47,20 @@ extern const char kDataReductionProxy[];
 extern const char kDataReductionProxyConfig[];
 extern const char kDataUsageReportingEnabled[];
 extern const char kDataReductionProxyWasEnabledBefore[];
+extern const char kDataReductionProxyLastEnabledTime[];
+extern const char kDataReductionProxySavingsClearedNegativeSystemClock[];
 extern const char kHttpOriginalContentLength[];
 extern const char kHttpReceivedContentLength[];
-extern const char kLoFiImplicitOptOutEpoch[];
-extern const char kLoFiSnackbarsShownPerSession[];
-extern const char kLoFiLoadImagesPerSession[];
-extern const char kLoFiConsecutiveSessionDisables[];
-extern const char kLoFiWasUsedThisSession[];
-extern const char kSimulatedConfigRetrieveTime[];
-extern const char kStatisticsPrefsMigrated[];
+extern const char kDataReductionProxyLastConfigRetrievalTime[];
+extern const char kNetworkProperties[];
+
+extern const char kThisWeekNumber[];
+extern const char kThisWeekServicesDownstreamBackgroundKB[];
+extern const char kThisWeekServicesDownstreamForegroundKB[];
+extern const char kLastWeekServicesDownstreamBackgroundKB[];
+extern const char kLastWeekServicesDownstreamForegroundKB[];
+extern const char kThisWeekUserTrafficContentTypeDownstreamKB[];
+extern const char kLastWeekUserTrafficContentTypeDownstreamKB[];
 
 }  // namespace prefs
 }  // namespace data_reduction_proxy

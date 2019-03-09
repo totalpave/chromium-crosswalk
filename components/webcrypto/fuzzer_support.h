@@ -8,13 +8,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "third_party/WebKit/public/platform/WebCryptoKey.h"
+#include "third_party/blink/public/platform/web_crypto_key.h"
 
 namespace webcrypto {
 
 void ImportEcKeyFromDerFuzzData(const uint8_t* data,
                                 size_t size,
                                 blink::WebCryptoKeyFormat format);
+
+void ImportEcKeyFromRawFuzzData(const uint8_t* data, size_t size);
 
 void ImportRsaKeyFromDerFuzzData(const uint8_t* data,
                                  size_t size,

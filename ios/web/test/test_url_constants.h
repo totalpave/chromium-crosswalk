@@ -10,6 +10,12 @@ namespace web {
 // URL scheme for testing WebUI.
 extern const char kTestWebUIScheme[];
 
+// URL scheme for testing Native Content.
+extern const char kTestNativeContentScheme[];
+
+// App specific URL scheme which is neither WebUI nor Native Content.
+extern const char kTestAppSpecificScheme[];
+
 }  // namespace web
 
 #endif  // IOS_WEB_TEST_TEST_URL_CONSTANTS_H_

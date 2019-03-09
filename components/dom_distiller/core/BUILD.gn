@@ -2,11 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# GYP version: components/dom_distiller.gypi:dom_distiller_core
-source_set("core") {
+static_library("core") {
   sources = [
-    "article_attachments_data.cc",
-    "article_attachments_data.h",
     "article_distillation_update.cc",
     "article_distillation_update.h",
     "article_entry.cc",
@@ -46,6 +43,8 @@ source_set("core") {
     "feedback_reporter.h",
     "page_features.cc",
     "page_features.h",
+    "pref_names.cc",
+    "pref_names.h",
     "task_tracker.cc",
     "task_tracker.h",
     "url_constants.cc",
@@ -53,26 +52,27 @@ source_set("core") {
     "url_utils.cc",
     "url_utils.h",
     "url_utils_android.cc",
-    "url_utils_android.h",
     "viewer.cc",
     "viewer.h",
   ]
 
   public_deps = [
     "//components/dom_distiller/core/proto",
+    "//net",
     "//third_party/dom_distiller_js:proto",
   ]
   deps = [
     "//base",
+    "//components/data_use_measurement/core",
     "//components/leveldb_proto",
     "//components/pref_registry",
     "//components/prefs",
     "//components/resources",
     "//components/strings",
+    "//components/sync",
     "//components/variations",
-    "//net",
+    "//services/network/public/cpp:cpp",
     "//skia",
-    "//sync",
     "//third_party/re2",
     "//ui/base",
     "//url",
@@ -87,8 +87,7 @@ source_set("core") {
   }
 }
 
-# GYP version: components/dom_distiller.gypi:dom_distiller_test_support
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "dom_distiller_test_util.cc",
@@ -104,7 +103,7 @@ source_set("test_support") {
     ":core",
     "//base",
     "//components/leveldb_proto:test_support",
-    "//sync",
+    "//components/sync",
     "//testing/gmock",
     "//testing/gtest",
     "//url",
@@ -149,11 +148,13 @@ source_set("unit_tests") {
     ":unit_tests_bundle_data",
     "//base",
     "//components/leveldb_proto:test_support",
-    "//components/pref_registry:test_support",
     "//components/resources",
     "//components/strings",
+    "//components/sync",
+    "//components/sync_preferences:test_support",
     "//net:test_support",
-    "//sync",
+    "//services/network:test_support",
+    "//services/network/public/cpp:cpp",
     "//testing/gmock",
     "//testing/gtest",
     "//ui/base",
@@ -166,10 +167,16 @@ if (is_android) {
 
   generate_jni("jni_headers") {
     sources = [
-      "../android/java/src/org/chromium/components/dom_distiller/core/DistilledPagePrefs.java",
-      "../android/java/src/org/chromium/components/dom_distiller/core/DomDistillerService.java",
-      "../android/java/src/org/chromium/components/dom_distiller/core/DomDistillerUrlUtils.java",
+      "android/java/src/org/chromium/components/dom_distiller/core/DistilledPagePrefs.java",
+      "android/java/src/org/chromium/components/dom_distiller/core/DomDistillerService.java",
+      "android/java/src/org/chromium/components/dom_distiller/core/DomDistillerUrlUtils.java",
     ]
     jni_package = "dom_distiller_core"
+  }
+
+  java_cpp_enum("distiller_type_java") {
+    sources = [
+      "experiments.h",
+    ]
   }
 }

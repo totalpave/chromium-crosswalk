@@ -14,10 +14,8 @@
 class GURL;
 
 namespace blink {
-class WebFrame;
 class WebGestureEvent;
 class WebLocalFrame;
-class WebNode;
 struct WebURLError;
 }
 
@@ -37,45 +35,20 @@ class CONTENT_EXPORT RenderViewObserver : public IPC::Listener,
   virtual void OnDestruct() = 0;
 
   // These match the WebKit API notifications
-  virtual void DidStartLoading() {}
-  virtual void DidStopLoading() {}
-  virtual void DidFinishDocumentLoad(blink::WebLocalFrame* frame) {}
-  virtual void DidFailLoad(blink::WebLocalFrame* frame,
-                           const blink::WebURLError& error) {}
-  virtual void DidFinishLoad(blink::WebLocalFrame* frame) {}
-  virtual void DidStartProvisionalLoad(blink::WebLocalFrame* frame) {}
   virtual void DidFailProvisionalLoad(blink::WebLocalFrame* frame,
                                       const blink::WebURLError& error) {}
   virtual void DidCommitProvisionalLoad(blink::WebLocalFrame* frame,
                                         bool is_new_navigation) {}
-  virtual void DidCreateNewDocument(blink::WebLocalFrame* frame) {}
   virtual void DidClearWindowObject(blink::WebLocalFrame* frame) {}
-  virtual void DidCreateDocumentElement(blink::WebLocalFrame* frame) {}
-  virtual void FrameCreated(blink::WebLocalFrame* parent,
-                            blink::WebFrame* frame) {}
-  virtual void FrameDetached(blink::WebFrame* frame) {}
-  virtual void FrameWillClose(blink::WebFrame* frame) {}
-  virtual void PrintPage(blink::WebLocalFrame* frame, bool user_initiated) {}
-  virtual void FocusedNodeChanged(const blink::WebNode& node) {}
-  virtual void DraggableRegionsChanged(blink::WebFrame* frame) {}
   virtual void DidCommitCompositorFrame() {}
-  virtual void DidUpdateLayout() {}
+  virtual void DidUpdateMainFrameLayout() {}
 
   // These match the RenderView methods.
   virtual void DidHandleGestureEvent(const blink::WebGestureEvent& event) {}
 
-  virtual void OnMouseDown(const blink::WebNode& mouse_down_node) {}
-
   // These match incoming IPCs.
   virtual void Navigate(const GURL& url) {}
-  virtual void ClosePage() {}
 
-  // This indicates that animations to scroll the focused element into view (if
-  // any) have completed. May be called more than once for a single focus. Can
-  // be called from browser, renderer, or compositor.
-  virtual void FocusChangeComplete() {}
-
-  virtual void OnStop() {}
   virtual void OnZoomLevelChanged() {}
 
   // IPC::Listener implementation.

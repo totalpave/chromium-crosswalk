@@ -12,6 +12,7 @@ import android.text.style.StrikethroughSpan;
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.UrlConstants;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
 
@@ -19,7 +20,7 @@ import java.util.Locale;
 
 /**
  * A helper class that emphasizes the various components of a URL. Useful in the
- * Omnibox and Origin Info dialog where different parts of the URL should appear
+ * Omnibox and Page Info popup where different parts of the URL should appear
  * in different colours depending on the scheme, host and connection.
  */
 public class OmniboxUrlEmphasizer {
@@ -58,6 +59,16 @@ public class OmniboxUrlEmphasizer {
         public boolean hasHost() {
             return hostLength > 0;
         }
+
+        /**
+         * @return The scheme extracted from |url|, canonicalized to lowercase.
+         */
+        public String extractScheme(String url) {
+            if (!hasScheme()) return "";
+            return url.subSequence(schemeStart, schemeStart + schemeLength)
+                    .toString()
+                    .toLowerCase(Locale.US);
+        }
     }
 
     /**
@@ -83,8 +94,7 @@ public class OmniboxUrlEmphasizer {
      * Denotes that a span is used for emphasizing the URL.
      */
     @VisibleForTesting
-    interface UrlEmphasisSpan {
-    }
+    public interface UrlEmphasisSpan {}
 
     /**
      * Used for emphasizing the URL text by changing the text color.
@@ -92,12 +102,25 @@ public class OmniboxUrlEmphasizer {
     @VisibleForTesting
     static class UrlEmphasisColorSpan extends ForegroundColorSpan
             implements UrlEmphasisSpan {
+        private int mEmphasisColor;
 
         /**
          * @param color The color to set the text.
          */
         public UrlEmphasisColorSpan(int color) {
             super(color);
+            mEmphasisColor = color;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (!(obj instanceof UrlEmphasisColorSpan)) return false;
+            return ((UrlEmphasisColorSpan) obj).mEmphasisColor == mEmphasisColor;
+        }
+
+        @Override
+        public String toString() {
+            return getClass().getName() + ", color: " + mEmphasisColor;
         }
     }
 
@@ -107,10 +130,14 @@ public class OmniboxUrlEmphasizer {
     @VisibleForTesting
     static class UrlEmphasisSecurityErrorSpan extends StrikethroughSpan
             implements UrlEmphasisSpan {
+        @Override
+        public boolean equals(Object obj) {
+            return obj instanceof UrlEmphasisSecurityErrorSpan;
+        }
     }
 
     /**
-     * Modifies the given URL to emphasize the TLD and second domain.
+     * Modifies the given URL to emphasize the host and scheme.
      * TODO(sashab): Make this take an EmphasizeComponentsResponse object to
      *               prevent calling parseForEmphasizeComponents() again.
      *
@@ -123,11 +150,11 @@ public class OmniboxUrlEmphasizer {
      * @param isInternalPage Whether this page is an internal Chrome page.
      * @param useDarkColors Whether the text colors should be dark (i.e.
      *                      appropriate for use on a light background).
-     * @param emphasizeHttpsScheme Whether the https scheme should be emphasized.
+     * @param emphasizeScheme Whether the scheme should be emphasized.
      */
     public static void emphasizeUrl(Spannable url, Resources resources, Profile profile,
-            int securityLevel, boolean isInternalPage,
-            boolean useDarkColors, boolean emphasizeHttpsScheme) {
+            int securityLevel, boolean isInternalPage, boolean useDarkColors,
+            boolean emphasizeScheme) {
         String urlString = url.toString();
         EmphasizeComponentsResponse emphasizeResponse =
                 parseForEmphasizeComponents(profile, urlString);
@@ -143,7 +170,7 @@ public class OmniboxUrlEmphasizer {
         int startHostIndex = emphasizeResponse.hostStart;
         int endHostIndex = emphasizeResponse.hostStart + emphasizeResponse.hostLength;
 
-        // Color the HTTPS scheme.
+        // Format the scheme, if present, based on the security level.
         ForegroundColorSpan span;
         if (emphasizeResponse.hasScheme()) {
             int colorId = nonEmphasizedColorId;
@@ -152,16 +179,22 @@ public class OmniboxUrlEmphasizer {
                 switch (securityLevel) {
                     case ConnectionSecurityLevel.NONE:
                     // Intentional fall-through:
-                    case ConnectionSecurityLevel.SECURITY_WARNING:
+                    case ConnectionSecurityLevel.HTTP_SHOW_WARNING:
+                        // Draw attention to the data: URI scheme for anti-spoofing reasons.
+                        if (UrlConstants.DATA_SCHEME.equals(
+                                    emphasizeResponse.extractScheme(urlString))) {
+                            colorId = useDarkColors ? R.color.url_emphasis_default_text
+                                                    : R.color.url_emphasis_light_default_text;
+                        }
                         break;
-                    case ConnectionSecurityLevel.SECURITY_ERROR:
-                        if (emphasizeHttpsScheme) colorId = R.color.google_red_700;
+                    case ConnectionSecurityLevel.DANGEROUS:
+                        if (emphasizeScheme) colorId = R.color.google_red_700;
                         strikeThroughScheme = true;
                         break;
                     case ConnectionSecurityLevel.EV_SECURE:
                     // Intentional fall-through:
                     case ConnectionSecurityLevel.SECURE:
-                        if (emphasizeHttpsScheme) colorId = R.color.google_green_700;
+                        if (emphasizeScheme) colorId = R.color.google_green_700;
                         break;
                     default:
                         assert false;
@@ -177,9 +210,8 @@ public class OmniboxUrlEmphasizer {
             url.setSpan(
                     span, startSchemeIndex, endSchemeIndex, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
 
-            // Highlight the portion of the URL visible between the scheme and the host. For
-            // https, this will be ://. For normal pages, this will be empty as we trim off
-            // http://.
+            // Highlight the portion of the URL visible between the scheme and the host,
+            // typically :// or : depending on the scheme.
             if (emphasizeResponse.hasHost()) {
                 span = new UrlEmphasisColorSpan(
                         ApiCompatibilityUtils.getColor(resources, nonEmphasizedColorId));
@@ -204,11 +236,17 @@ public class OmniboxUrlEmphasizer {
                 url.setSpan(span, endHostIndex, urlString.length(),
                         Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
+        } else if (UrlConstants.DATA_SCHEME.equals(emphasizeResponse.extractScheme(urlString))) {
+            // Dim the remainder of the URL for anti-spoofing purposes.
+            span = new UrlEmphasisColorSpan(
+                    ApiCompatibilityUtils.getColor(resources, nonEmphasizedColorId));
+            url.setSpan(span, emphasizeResponse.schemeStart + emphasizeResponse.schemeLength,
+                    urlString.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
     }
 
     /**
-     * Reset the modifications done to emphasize the TLD and second domain of the URL.
+     * Reset the modifications done to emphasize components of the URL.
      *
      * @param url The URL spannable to remove emphasis from. This variable is
      *            modified.
@@ -275,14 +313,11 @@ public class OmniboxUrlEmphasizer {
                 parseForEmphasizeComponents(profile, url.toString());
         if (!emphasizeResponse.hasScheme()) return url.length();
 
-        int startSchemeIndex = emphasizeResponse.schemeStart;
-        int endSchemeIndex = emphasizeResponse.schemeStart + emphasizeResponse.schemeLength;
-        String scheme = url.subSequence(startSchemeIndex, endSchemeIndex).toString().toLowerCase(
-                Locale.US);
+        String scheme = emphasizeResponse.extractScheme(url);
 
-        if (scheme.equals("http") || scheme.equals("https")) {
+        if (scheme.equals(UrlConstants.HTTP_SCHEME) || scheme.equals(UrlConstants.HTTPS_SCHEME)) {
             return emphasizeResponse.hostStart + emphasizeResponse.hostLength;
-        } else if (scheme.equals("data")) {
+        } else if (scheme.equals(UrlConstants.DATA_SCHEME)) {
             return 0;
         } else {
             return url.length();

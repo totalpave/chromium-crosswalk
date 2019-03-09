@@ -6,46 +6,46 @@
 #define CHROME_BROWSER_BROWSER_PROCESS_PLATFORM_PART_CHROMEOS_H_
 
 #include <memory>
+#include <string>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "chrome/browser/browser_process_platform_part_base.h"
 
-namespace base {
-class CommandLine;
-}
+class BrowserProcessPlatformPartTestApi;
 
 namespace chromeos {
+class AccountManagerFactory;
+class ChromeSessionManager;
 class ChromeUserManager;
 class ProfileHelper;
 class TimeZoneResolver;
-}
 
-namespace chromeos {
 namespace system {
 class AutomaticRebootManager;
 class DeviceDisablingManager;
 class DeviceDisablingManagerDefaultDelegate;
 class SystemClock;
 class TimeZoneResolverManager;
-}
+}  // namespace system
+}  // namespace chromeos
+
+namespace component_updater {
+class CrOSComponentManager;
 }
 
 namespace policy {
-class BrowserPolicyConnector;
 class BrowserPolicyConnectorChromeOS;
 }
 
-namespace session_manager {
-class SessionManager;
+namespace ws {
+class InputDeviceControllerClient;
 }
 
-class Profile;
 class ScopedKeepAlive;
 
-class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase,
-                                   public base::NonThreadSafe {
+class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase {
  public:
   BrowserProcessPlatformPart();
   ~BrowserProcessPlatformPart() override;
@@ -59,19 +59,15 @@ class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase,
   void InitializeDeviceDisablingManager();
   void ShutdownDeviceDisablingManager();
 
-  void InitializeSessionManager(const base::CommandLine& parsed_command_line,
-                                Profile* profile,
-                                bool is_running_test);
+  void InitializeSessionManager();
   void ShutdownSessionManager();
+
+  void InitializeCrosComponentManager();
+  void ShutdownCrosComponentManager();
 
   // Disable the offline interstitial easter egg if the device is enterprise
   // enrolled.
   void DisableDinoEasterEggIfEnrolled();
-
-  // Returns the SessionManager instance that is used to initialize and
-  // start user sessions as well as responsible on launching pre-session UI like
-  // out-of-box or login.
-  virtual session_manager::SessionManager* SessionManager();
 
   // Used to register a KeepAlive when Ash is initialized, and release it
   // when until Chrome starts exiting. Ensure we stay running the whole time.
@@ -88,6 +84,10 @@ class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase,
 
   policy::BrowserPolicyConnectorChromeOS* browser_policy_connector_chromeos();
 
+  chromeos::ChromeSessionManager* session_manager() {
+    return session_manager_.get();
+  }
+
   chromeos::ChromeUserManager* user_manager() {
     return chrome_user_manager_.get();
   }
@@ -96,22 +96,32 @@ class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase,
     return device_disabling_manager_.get();
   }
 
+  component_updater::CrOSComponentManager* cros_component_manager() {
+    return cros_component_manager_.get();
+  }
+
   chromeos::system::TimeZoneResolverManager* GetTimezoneResolverManager();
 
   chromeos::TimeZoneResolver* GetTimezoneResolver();
 
   // Overridden from BrowserProcessPlatformPartBase:
   void StartTearDown() override;
-
-  std::unique_ptr<policy::BrowserPolicyConnector> CreateBrowserPolicyConnector()
-      override;
+  std::unique_ptr<policy::ChromeBrowserPolicyConnector>
+  CreateBrowserPolicyConnector() override;
 
   chromeos::system::SystemClock* GetSystemClock();
+  void DestroySystemClock();
+
+  ws::InputDeviceControllerClient* GetInputDeviceControllerClient();
+
+  chromeos::AccountManagerFactory* GetAccountManagerFactory();
 
  private:
+  friend class BrowserProcessPlatformPartTestApi;
+
   void CreateProfileHelper();
 
-  std::unique_ptr<session_manager::SessionManager> session_manager_;
+  std::unique_ptr<chromeos::ChromeSessionManager> session_manager_;
 
   bool created_profile_helper_;
   std::unique_ptr<chromeos::ProfileHelper> profile_helper_;
@@ -133,6 +143,21 @@ class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase,
   std::unique_ptr<chromeos::system::SystemClock> system_clock_;
 
   std::unique_ptr<ScopedKeepAlive> keep_alive_;
+
+  // Whether cros_component_manager_ has been initialized for test. Set by
+  // BrowserProcessPlatformPartTestApi.
+  bool using_testing_cros_component_manager_ = false;
+  std::unique_ptr<component_updater::CrOSComponentManager>
+      cros_component_manager_;
+
+  std::unique_ptr<chromeos::AccountManagerFactory> account_manager_factory_;
+
+#if defined(USE_OZONE)
+  std::unique_ptr<ws::InputDeviceControllerClient>
+      input_device_controller_client_;
+#endif
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(BrowserProcessPlatformPart);
 };

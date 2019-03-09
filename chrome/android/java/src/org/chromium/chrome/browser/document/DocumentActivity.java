@@ -8,11 +8,15 @@ import android.annotation.TargetApi;
 import android.content.Intent;
 import android.os.Build;
 import android.text.TextUtils;
+import android.util.Pair;
 
 import org.chromium.base.Log;
 import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.document.ActivityDelegate;
+import org.chromium.chrome.browser.util.IntentUtils;
 
 /**
  * Deprecated class for running Chrome in document mode.  Kept around to force users into the
@@ -37,7 +41,9 @@ public class DocumentActivity extends ChromeActivity {
 
         // Try to bring this tab forward after migration.
         Intent tabbedIntent = null;
-        if (tabId != Tab.INVALID_TAB_ID) tabbedIntent = Tab.createBringTabToFrontIntent(tabId);
+        if (tabId != Tab.INVALID_TAB_ID) {
+            tabbedIntent = IntentUtils.createBringTabToFrontIntent(tabId);
+        }
 
         if (tabbedIntent == null) {
             tabbedIntent = new Intent(Intent.ACTION_MAIN);
@@ -71,5 +77,21 @@ public class DocumentActivity extends ChromeActivity {
                 || TextUtils.equals(className, DocumentActivity.class.getName())
                 || TextUtils.equals(className, LEGACY_CLASS_NAME)
                 || TextUtils.equals(className, LEGACY_INCOGNITO_CLASS_NAME);
+    }
+
+    @Override
+    protected TabModelSelector createTabModelSelector() {
+        return null;
+    }
+
+    @Override
+    protected Pair<TabCreator, TabCreator> createTabCreators() {
+        return null;
+    }
+
+    @Override
+    protected ChromeFullscreenManager createFullscreenManager() {
+        throw new IllegalStateException("Shouldn't reach. Document Activity must shut down as soon "
+                + "as it's created.");
     }
 }

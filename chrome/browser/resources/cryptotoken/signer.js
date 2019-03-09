@@ -11,9 +11,12 @@
 
 var gnubbySignRequestQueue;
 
+/**
+ * Initialize request queue.
+ */
 function initRequestQueue() {
-  gnubbySignRequestQueue = new OriginKeyedRequestQueue(
-      FACTORY_REGISTRY.getSystemTimer());
+  gnubbySignRequestQueue =
+      new OriginKeyedRequestQueue(FACTORY_REGISTRY.getSystemTimer());
 }
 
 /**
@@ -29,15 +32,16 @@ function handleU2fSignRequest(messageSender, request, sendResponse) {
   var queuedSignRequest;
 
   function sendErrorResponse(error) {
-    sendResponseOnce(sentResponse, queuedSignRequest,
+    sendResponseOnce(
+        sentResponse, queuedSignRequest,
         makeU2fErrorResponse(request, error.errorCode, error.errorMessage),
         sendResponse);
   }
 
   function sendSuccessResponse(challenge, info, browserData) {
     var responseData = makeU2fSignResponseDataFromChallenge(challenge);
-    addSignatureAndBrowserDataToResponseData(responseData, info, browserData,
-        'clientData');
+    addSignatureAndBrowserDataToResponseData(
+        responseData, info, browserData, 'clientData');
     var response = makeU2fSuccessResponse(request, responseData);
     sendResponseOnce(sentResponse, queuedSignRequest, response, sendResponse);
   }
@@ -52,9 +56,8 @@ function handleU2fSignRequest(messageSender, request, sendResponse) {
     return null;
   }
 
-  queuedSignRequest =
-      validateAndEnqueueSignRequest(
-          sender, request, sendErrorResponse, sendSuccessResponse);
+  queuedSignRequest = validateAndEnqueueSignRequest(
+      sender, request, sendErrorResponse, sendSuccessResponse);
   return queuedSignRequest;
 }
 
@@ -64,9 +67,7 @@ function handleU2fSignRequest(messageSender, request, sendResponse) {
  * @return {Object} The responseData object.
  */
 function makeU2fSignResponseDataFromChallenge(challenge) {
-  var responseData = {
-    'keyHandle': challenge['keyHandle']
-  };
+  var responseData = {'keyHandle': challenge['keyHandle']};
   return responseData;
 }
 
@@ -78,8 +79,8 @@ function makeU2fSignResponseDataFromChallenge(challenge) {
  * @param {string} browserDataName The name of the browser data key in the
  *     responseData object.
  */
-function addSignatureAndBrowserDataToResponseData(responseData, signatureData,
-    browserData, browserDataName) {
+function addSignatureAndBrowserDataToResponseData(
+    responseData, signatureData, browserData, browserDataName) {
   responseData[browserDataName] = B64_encode(UTIL_StringToBytes(browserData));
   responseData['signatureData'] = signatureData;
 }
@@ -107,8 +108,8 @@ function validateAndEnqueueSignRequest(sender, request, errorCb, successCb) {
   // The typecast is necessary because getSignChallenges can return undefined.
   // On the other hand, a valid sign request can't contain an undefined sign
   // challenge list, so the typecast is safe.
-  var signChallenges = /** @type {!Array<SignChallenge>} */ (
-      getSignChallenges(request));
+  var signChallenges =
+      /** @type {!Array<SignChallenge>} */ (getSignChallenges(request));
   var appId;
   if (request['appId']) {
     appId = request['appId'];
@@ -125,8 +126,8 @@ function validateAndEnqueueSignRequest(sender, request, errorCb, successCb) {
   // Attenuate watchdog timeout value less than the signer's timeout, so the
   // watchdog only fires after the signer could reasonably have called back,
   // not before.
-  timeoutValueSeconds = attenuateTimeoutInSeconds(timeoutValueSeconds,
-      MINIMUM_TIMEOUT_ATTENUATION_SECONDS / 2);
+  timeoutValueSeconds = attenuateTimeoutInSeconds(
+      timeoutValueSeconds, MINIMUM_TIMEOUT_ATTENUATION_SECONDS / 2);
   var watchdog = new WatchdogRequestHandler(timeoutValueSeconds, timeout);
   var wrappedErrorCb = watchdog.wrapCallback(errorCb);
   var wrappedSuccessCb = watchdog.wrapCallback(successCb);
@@ -137,14 +138,15 @@ function validateAndEnqueueSignRequest(sender, request, errorCb, successCb) {
 
   // Queue sign requests from the same origin, to protect against simultaneous
   // sign-out on many tabs resulting in repeated sign-in requests.
-  var queuedSignRequest = new QueuedSignRequest(signChallenges,
-      timer, sender, wrappedErrorCb, wrappedSuccessCb, request['challenge'],
-      appId, logMsgUrl);
+  var queuedSignRequest = new QueuedSignRequest(
+      signChallenges, timer, sender, wrappedErrorCb, wrappedSuccessCb,
+      request['challenge'], appId, logMsgUrl);
   if (!gnubbySignRequestQueue) {
     initRequestQueue();
   }
-  var requestToken = gnubbySignRequestQueue.queueRequest(appId, sender.origin,
-      queuedSignRequest.begin.bind(queuedSignRequest), timer);
+  var requestToken = gnubbySignRequestQueue.queueRequest(
+      appId, sender.origin, queuedSignRequest.begin.bind(queuedSignRequest),
+      timer);
   queuedSignRequest.setToken(requestToken);
 
   watchdog.setCloseable(queuedSignRequest);
@@ -167,8 +169,8 @@ function isValidSignRequest(request) {
   if (!hasAppId && (!signChallenges || !signChallenges.length)) {
     return false;
   }
-  return isValidSignChallengeArray(signChallenges, !hasDefaultChallenge,
-      !hasAppId);
+  return isValidSignChallengeArray(
+      signChallenges, !hasDefaultChallenge, !hasAppId);
 }
 
 /**
@@ -178,15 +180,16 @@ function isValidSignRequest(request) {
  * @param {WebRequestSender} sender Message sender.
  * @param {function(U2fError)} errorCb Error callback
  * @param {function(SignChallenge, string, string)} successCb Success callback
- * @param {string|undefined} opt_defaultChallenge A default sign challenge
+ * @param {string=} opt_defaultChallenge A default sign challenge
  *     value, if a request does not provide one.
- * @param {string|undefined} opt_appId The app id for the entire request.
- * @param {string|undefined} opt_logMsgUrl Url to post log messages to
+ * @param {string=} opt_appId The app id for the entire request.
+ * @param {string=} opt_logMsgUrl Url to post log messages to
  * @constructor
  * @implements {Closeable}
  */
-function QueuedSignRequest(signChallenges, timer, sender, errorCb,
-    successCb, opt_defaultChallenge, opt_appId, opt_logMsgUrl) {
+function QueuedSignRequest(
+    signChallenges, timer, sender, errorCb, successCb, opt_defaultChallenge,
+    opt_appId, opt_logMsgUrl) {
   /** @private {!Array<SignChallenge>} */
   this.signChallenges_ = signChallenges;
   /** @private {Countdown} */
@@ -211,7 +214,9 @@ function QueuedSignRequest(signChallenges, timer, sender, errorCb,
 
 /** Closes this sign request. */
 QueuedSignRequest.prototype.close = function() {
-  if (this.closed_) return;
+  if (this.closed_) {
+    return;
+  }
   var hadBegunSigning = false;
   if (this.begun_ && this.signer_) {
     this.signer_.close();
@@ -249,11 +254,11 @@ QueuedSignRequest.prototype.begin = function(token) {
   }
   this.begun_ = true;
   this.setToken(token);
-  this.signer_ = new Signer(this.timer_, this.sender_,
-      this.signerFailed_.bind(this), this.signerSucceeded_.bind(this),
-      this.logMsgUrl_);
-  if (!this.signer_.setChallenges(this.signChallenges_, this.defaultChallenge_,
-      this.appId_)) {
+  this.signer_ = new Signer(
+      this.timer_, this.sender_, this.signerFailed_.bind(this),
+      this.signerSucceeded_.bind(this), this.logMsgUrl_);
+  if (!this.signer_.setChallenges(
+          this.signChallenges_, this.defaultChallenge_, this.appId_)) {
     token.complete();
     this.errorCb_({errorCode: ErrorCodes.BAD_REQUEST});
   }
@@ -278,8 +283,8 @@ QueuedSignRequest.prototype.signerFailed_ = function(error) {
  * @param {string} browserData Browser data JSON
  * @private
  */
-QueuedSignRequest.prototype.signerSucceeded_ =
-    function(challenge, info, browserData) {
+QueuedSignRequest.prototype.signerSucceeded_ = function(
+    challenge, info, browserData) {
   this.token_.complete();
   this.successCb_(challenge, info, browserData);
 };
@@ -318,9 +323,9 @@ function Signer(timer, sender, errorCb, successCb, opt_logMsgUrl) {
   // Allow http appIds for http origins. (Broken, but the caller deserves
   // what they get.)
   /** @private {boolean} */
-  this.allowHttp_ = this.sender_.origin ?
-      this.sender_.origin.indexOf('http://') == 0 : false;
-  /** @private {Closeable} */
+  this.allowHttp_ =
+      this.sender_.origin ? this.sender_.origin.indexOf('http://') == 0 : false;
+  /** @private {RequestHandler} */
   this.handler_ = null;
 }
 
@@ -332,10 +337,11 @@ function Signer(timer, sender, errorCb, successCb, opt_logMsgUrl) {
  * @param {string=} opt_appId The app id for the entire request.
  * @return {boolean} Whether the challenges could be set.
  */
-Signer.prototype.setChallenges = function(signChallenges, opt_defaultChallenge,
-    opt_appId) {
-  if (this.challengesSet_ || this.done_)
+Signer.prototype.setChallenges = function(
+    signChallenges, opt_defaultChallenge, opt_appId) {
+  if (this.challengesSet_ || this.done_) {
     return false;
+  }
   if (this.timer_.expired()) {
     this.notifyError_({errorCode: ErrorCodes.TIMEOUT});
     return true;
@@ -385,16 +391,13 @@ Signer.prototype.checkAppIds_ = function() {
  */
 Signer.prototype.originChecked_ = function(appIds, result) {
   if (!result) {
-    var error = {
-      errorCode: ErrorCodes.BAD_REQUEST,
-      errorMessage: 'bad appId'
-    };
+    var error = {errorCode: ErrorCodes.BAD_REQUEST, errorMessage: 'bad appId'};
     this.notifyError_(error);
     return;
   }
   var appIdChecker = FACTORY_REGISTRY.getAppIdCheckerFactory().create();
-  appIdChecker.
-      checkAppIds(
+  appIdChecker
+      .checkAppIds(
           this.timer_.clone(), this.sender_.origin,
           /** @type {!Array<string>} */ (appIds), this.allowHttp_,
           this.logMsgUrl_)
@@ -409,10 +412,7 @@ Signer.prototype.originChecked_ = function(appIds, result) {
  */
 Signer.prototype.appIdChecked_ = function(result) {
   if (!result) {
-    var error = {
-      errorCode: ErrorCodes.BAD_REQUEST,
-      errorMessage: 'bad appId'
-    };
+    var error = {errorCode: ErrorCodes.BAD_REQUEST, errorMessage: 'bad appId'};
     this.notifyError_(error);
     return;
   }
@@ -427,8 +427,9 @@ Signer.prototype.appIdChecked_ = function(result) {
  * @return {boolean} Whether the challenge could be added.
  * @private
  */
-Signer.prototype.doSign_ = function() {
+Signer.prototype.doSign_ = async function() {
   // Create the browser data for each challenge.
+  let challengeVal;
   for (var i = 0; i < this.signChallenges_.length; i++) {
     var challenge = this.signChallenges_[i];
     var serverChallenge;
@@ -437,31 +438,198 @@ Signer.prototype.doSign_ = function() {
     } else {
       serverChallenge = this.defaultChallenge_;
     }
+    challengeVal = serverChallenge;
     if (!serverChallenge) {
       console.warn(UTIL_fmt('challenge missing'));
       return false;
     }
     var keyHandle = challenge['keyHandle'];
 
-    var browserData =
-        makeSignBrowserData(serverChallenge, this.sender_.origin,
-            this.sender_.tlsChannelId);
+    var browserData = makeSignBrowserData(
+        serverChallenge, this.sender_.origin, this.sender_.tlsChannelId);
     this.browserData_[keyHandle] = browserData;
     this.serverChallenges_[keyHandle] = challenge;
   }
 
-  var encodedChallenges = encodeSignChallenges(this.signChallenges_,
-      this.defaultChallenge_, this.appId_, this.getChallengeHash_.bind(this));
+  var encodedChallenges = encodeSignChallenges(
+      this.signChallenges_, this.defaultChallenge_, this.appId_,
+      this.getChallengeHash_.bind(this));
 
   var timeoutSeconds = this.timer_.millisecondsUntilExpired() / 1000.0;
-  var request = makeSignHelperRequest(encodedChallenges, timeoutSeconds,
-      this.logMsgUrl_);
-  this.handler_ =
-      FACTORY_REGISTRY.getRequestHelper()
-          .getHandler(/** @type {HelperRequest} */ (request));
-  if (!this.handler_)
+
+  // Check to see if WebAuthn or legacy U2F requests should be used.
+  await new Promise(resolve => {
+    if (!chrome.cryptotokenPrivate || !window.PublicKeyCredential) {
+      resolve(false);
+    } else {
+      chrome.cryptotokenPrivate.canProxyToWebAuthn(resolve);
+    }
+  }).then(shouldUseWebAuthn => {
+    if (shouldUseWebAuthn) {
+      // If we can proxy to WebAuthn, send the request via WebAuthn.
+      console.log('Proxying sign request to WebAuthn');
+      return this.doSignWebAuthn_(encodedChallenges, challengeVal);
+    }
+    var request = makeSignHelperRequest(
+        encodedChallenges, timeoutSeconds, this.logMsgUrl_);
+    this.handler_ = FACTORY_REGISTRY.getRequestHelper().getHandler(
+        /** @type {HelperRequest} */ (request));
+    if (!this.handler_) {
+      return false;
+    }
+    return this.handler_.run(this.helperComplete_.bind(this));
+  });
+};
+
+/**
+ * Sends the sign request via the WebAuthn API.
+ * @param {!Array<SignHelperChallenge>} encodedChallenges Credential list
+ *     provided by the relying party to be signed.
+ * @param {string} challengeVal Base64 encoded challenge.
+ * @return {boolean} If the message was sent.
+ * @private
+ */
+Signer.prototype.doSignWebAuthn_ = function(encodedChallenges, challengeVal) {
+  // Only try to sign if challenges were provided.
+  if (encodedChallenges.length === 0) {
     return false;
-  return this.handler_.run(this.helperComplete_.bind(this));
+  }
+
+  const decodedChallenge = B64_decode(challengeVal);
+  if (decodedChallenge.length == 0) {
+    this.notifyError_({
+      errorCode: ErrorCodes.BAD_REQUEST,
+      errorMessage: 'challenge must be base64url encoded',
+    });
+    return false;
+  }
+
+  const credentialList = [];
+  for (let i = 0; i < encodedChallenges.length; i++) {
+    const decodedKeyHandle = B64_decode(encodedChallenges[i]['keyHandle']);
+    if (decodedKeyHandle.length == 0) {
+      this.notifyError_({
+        errorCode: ErrorCodes.BAD_REQUEST,
+        errorMessage: 'keyHandle must be base64url encoded',
+      });
+      return false;
+    }
+    credentialList.push({
+      type: 'public-key',
+      id: new Uint8Array(decodedKeyHandle).buffer,
+    });
+  }
+  // App ID could be defined for each challenge or globally.
+  const appid = this.signChallenges_[0].hasOwnProperty('appId') ?
+      this.signChallenges_[0]['appId'] :
+      this.appId_;
+
+  const request = {
+    publicKey: {
+      challenge: new Uint8Array(decodedChallenge).buffer,
+      timeout: this.timer_.millisecondsUntilExpired(),
+      rpId: this.sender_.origin,
+      allowCredentials: credentialList,
+      userVerification: 'discouraged',
+      extensions: {
+        appid: appid,
+      },
+    },
+  };
+  navigator.credentials.get(request)
+      .then(response => {
+        this.handleWebAuthnSuccess_(response);
+      })
+      .catch(exception => {
+        this.handleWebAuthnError_(exception);
+      });
+
+  return true;
+};
+
+/**
+ * Converts the WebAuthn error code to a U2F error code.
+ * @param {*} exception Exception returned from the WebAuthn request.
+ * @private
+ */
+Signer.prototype.handleWebAuthnError_ = function(exception) {
+  const domError = /** @type {!DOMException} */ (exception);
+  let errorCode = ErrorCodes.OTHER_ERROR;
+  let errorDetails;
+
+  if (domError && domError.name) {
+    switch (domError.name) {
+      case 'NotAllowedError':
+        errorCode = ErrorCodes.TIMEOUT;
+        break;
+      case 'InvalidStateError':
+        errorCode = ErrorCodes.DEVICE_INELIGIBLE;
+        break;
+      default:
+        // Fall through
+        break;
+    }
+  }
+
+  this.notifyError_({
+    errorCode: errorCode,
+    errorMessage: domError.toString(),
+  });
+};
+
+/**
+ * Converts the WebAuthn response to the response for cryptotoken.
+ * @param {?PublicKeyCredential} assertion Assertion object received from
+ *     credential request.
+ * @private
+ */
+Signer.prototype.handleWebAuthnSuccess_ = function(assertion) {
+  // Find the challenge to which this assertion corresponds.
+  const assertionKeyHandle = assertion['id'];
+  let signChallenge;
+  for (let i = 0; i < this.signChallenges_.length; i++) {
+    if (this.signChallenges_[i]['keyHandle'] === assertionKeyHandle) {
+      signChallenge = this.signChallenges_[i];
+      break;
+    }
+  }
+
+  if (signChallenge === undefined) {
+    console.warn('Response received from unknown key');
+    this.notifyError_({
+      errorCode: ErrorCodes.DEVICE_INELIGIBLE,
+      errorMessage: 'Response received from unknown key',
+    });
+    return;
+  }
+
+  // First 32 bytes of authenticator data is the rpIdHash.
+  let index = 32;
+  const authenticatorDataBytes =
+      new Uint8Array(assertion['response']['authenticatorData']);
+  if (authenticatorDataBytes.length < index + 4) {
+    // Invalid response length.
+    this.notifyError_({
+      errorCode: ErrorCodes.OTHER_ERROR,
+      errorMessage: 'Invalid response message',
+    });
+    return;
+  }
+
+  const flags = [authenticatorDataBytes[index++] & 0x3];
+  const counter = Array.from(authenticatorDataBytes.slice(index, index + 4));
+  const signature =
+      Array.from(new Uint8Array(assertion['response']['signature']));
+
+  // Combine the flags byte with the counter and signature to recreate the U2F
+  // authentication response message.
+  const signResponse = flags.concat(counter).concat(signature);
+
+  // Decode the ArrayBuffer view of the clientDataJSON into a string.
+  const clientDataJSON = new TextDecoder('utf-8').decode(
+      new Uint8Array(assertion['response']['clientDataJSON']));
+
+  this.notifySuccess_(signChallenge, B64_encode(signResponse), clientDataJSON);
 };
 
 /**
@@ -504,8 +672,9 @@ Signer.prototype.close_ = function(opt_notifying) {
  * @private
  */
 Signer.prototype.notifyError_ = function(error) {
-  if (this.done_)
+  if (this.done_) {
     return;
+  }
   this.done_ = true;
   this.close_(true);
   this.errorCb_(error);
@@ -519,8 +688,9 @@ Signer.prototype.notifyError_ = function(error) {
  * @private
  */
 Signer.prototype.notifySuccess_ = function(challenge, info, browserData) {
-  if (this.done_)
+  if (this.done_) {
     return;
+  }
   this.done_ = true;
   this.close_(true);
   this.successCb_(challenge, info, browserData);
@@ -541,8 +711,14 @@ Signer.prototype.helperComplete_ = function(helperReply, opt_source) {
 
   if (reply.code) {
     var reportedError = mapDeviceStatusCodeToU2fError(reply.code);
-    console.log(UTIL_fmt('helper reported ' + reply.code.toString(16) +
-        ', returning ' + reportedError.errorCode));
+    console.log(UTIL_fmt(
+        'helper reported ' + reply.code.toString(16) + ', returning ' +
+        reportedError.errorCode));
+    // Log non-expected reply codes if we have an url to send them
+    if ((reportedError.errorCode == ErrorCodes.OTHER_ERROR) &&
+        this.logMsgUrl_) {
+      logMessage('log=u2fsign&rc=' + reply.code.toString(16), this.logMsgUrl_);
+    }
     this.notifyError_(reportedError);
   } else {
     if (this.logMsgUrl_ && opt_source) {
@@ -555,7 +731,7 @@ Signer.prototype.helperComplete_ = function(helperReply, opt_source) {
     // Notify with server-provided challenge, not the encoded one: the
     // server-provided challenge contains additional fields it relies on.
     var serverChallenge = this.serverChallenges_[key];
-    this.notifySuccess_(serverChallenge, reply.responseData.signatureData,
-        browserData);
+    this.notifySuccess_(
+        serverChallenge, reply.responseData.signatureData, browserData);
   }
 };

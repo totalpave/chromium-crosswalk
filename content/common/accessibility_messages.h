@@ -2,18 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef CONTENT_COMMON_ACCESSIBILITY_MESSAGES_H_
+#define CONTENT_COMMON_ACCESSIBILITY_MESSAGES_H_
+
 // IPC messages for accessibility.
-// Multiply-included message file, hence no include guard.
 
 #include "content/common/ax_content_node_data.h"
 #include "content/common/content_export.h"
-#include "content/common/view_message_enums.h"
+#include "content/common/content_param_traits.h"
 #include "ipc/ipc_message_macros.h"
 #include "ipc/ipc_message_utils.h"
 #include "ipc/ipc_param_traits.h"
 #include "ipc/param_traits_macros.h"
-#include "third_party/WebKit/public/web/WebAXEnums.h"
+#include "third_party/blink/public/web/web_ax_enums.h"
+#include "ui/accessibility/ax_action_data.h"
+#include "ui/accessibility/ax_event.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/accessibility/ax_relative_bounds.h"
 #include "ui/accessibility/ax_tree_update.h"
 #include "ui/gfx/transform.h"
 
@@ -24,13 +29,31 @@
 
 IPC_ENUM_TRAITS_MAX_VALUE(content::AXContentIntAttribute,
                           content::AX_CONTENT_INT_ATTRIBUTE_LAST)
+IPC_ENUM_TRAITS_MAX_VALUE(ax::mojom::Action, ax::mojom::Action::kMaxValue)
+
+IPC_STRUCT_TRAITS_BEGIN(ui::AXActionData)
+  IPC_STRUCT_TRAITS_MEMBER(action)
+  IPC_STRUCT_TRAITS_MEMBER(target_tree_id)
+  IPC_STRUCT_TRAITS_MEMBER(source_extension_id)
+  IPC_STRUCT_TRAITS_MEMBER(target_node_id)
+  IPC_STRUCT_TRAITS_MEMBER(request_id)
+  IPC_STRUCT_TRAITS_MEMBER(flags)
+  IPC_STRUCT_TRAITS_MEMBER(anchor_node_id)
+  IPC_STRUCT_TRAITS_MEMBER(anchor_offset)
+  IPC_STRUCT_TRAITS_MEMBER(focus_node_id)
+  IPC_STRUCT_TRAITS_MEMBER(focus_offset)
+  IPC_STRUCT_TRAITS_MEMBER(custom_action_id)
+  IPC_STRUCT_TRAITS_MEMBER(target_rect)
+  IPC_STRUCT_TRAITS_MEMBER(target_point)
+  IPC_STRUCT_TRAITS_MEMBER(value)
+  IPC_STRUCT_TRAITS_MEMBER(hit_test_event_to_fire)
+IPC_STRUCT_TRAITS_END()
 
 IPC_STRUCT_TRAITS_BEGIN(content::AXContentNodeData)
   IPC_STRUCT_TRAITS_MEMBER(id)
   IPC_STRUCT_TRAITS_MEMBER(role)
   IPC_STRUCT_TRAITS_MEMBER(state)
-  IPC_STRUCT_TRAITS_MEMBER(location)
-  IPC_STRUCT_TRAITS_MEMBER(transform)
+  IPC_STRUCT_TRAITS_MEMBER(actions)
   IPC_STRUCT_TRAITS_MEMBER(string_attributes)
   IPC_STRUCT_TRAITS_MEMBER(int_attributes)
   IPC_STRUCT_TRAITS_MEMBER(float_attributes)
@@ -39,6 +62,7 @@ IPC_STRUCT_TRAITS_BEGIN(content::AXContentNodeData)
   IPC_STRUCT_TRAITS_MEMBER(html_attributes)
   IPC_STRUCT_TRAITS_MEMBER(child_ids)
   IPC_STRUCT_TRAITS_MEMBER(content_int_attributes)
+  IPC_STRUCT_TRAITS_MEMBER(relative_bounds)
 IPC_STRUCT_TRAITS_END()
 
 IPC_STRUCT_TRAITS_BEGIN(content::AXContentTreeData)
@@ -54,8 +78,10 @@ IPC_STRUCT_TRAITS_BEGIN(content::AXContentTreeData)
   IPC_STRUCT_TRAITS_MEMBER(focus_id)
   IPC_STRUCT_TRAITS_MEMBER(sel_anchor_object_id)
   IPC_STRUCT_TRAITS_MEMBER(sel_anchor_offset)
+  IPC_STRUCT_TRAITS_MEMBER(sel_anchor_affinity)
   IPC_STRUCT_TRAITS_MEMBER(sel_focus_object_id)
   IPC_STRUCT_TRAITS_MEMBER(sel_focus_offset)
+  IPC_STRUCT_TRAITS_MEMBER(sel_focus_affinity)
   IPC_STRUCT_TRAITS_MEMBER(routing_id)
   IPC_STRUCT_TRAITS_MEMBER(parent_routing_id)
 IPC_STRUCT_TRAITS_END()
@@ -66,26 +92,23 @@ IPC_STRUCT_TRAITS_BEGIN(content::AXContentTreeUpdate)
   IPC_STRUCT_TRAITS_MEMBER(node_id_to_clear)
   IPC_STRUCT_TRAITS_MEMBER(root_id)
   IPC_STRUCT_TRAITS_MEMBER(nodes)
+  IPC_STRUCT_TRAITS_MEMBER(event_from)
 IPC_STRUCT_TRAITS_END()
 
-IPC_STRUCT_BEGIN(AccessibilityHostMsg_EventParams)
-  // The tree update.
-  IPC_STRUCT_MEMBER(content::AXContentTreeUpdate, update)
+IPC_STRUCT_BEGIN(AccessibilityHostMsg_EventBundleParams)
+  // Zero or more updates to the accessibility tree to apply first.
+  IPC_STRUCT_MEMBER(std::vector<content::AXContentTreeUpdate>, updates)
 
-  // Type of event.
-  IPC_STRUCT_MEMBER(ui::AXEvent, event_type)
-
-  // ID of the node that the event applies to.
-  IPC_STRUCT_MEMBER(int, id)
+  // Zero or more events to fire after the tree updates have been applied.
+  IPC_STRUCT_MEMBER(std::vector<ui::AXEvent>, events)
 IPC_STRUCT_END()
 
 IPC_STRUCT_BEGIN(AccessibilityHostMsg_LocationChangeParams)
   // ID of the object whose location is changing.
   IPC_STRUCT_MEMBER(int, id)
 
-  // The object's new location, in frame-relative coordinates (same
-  // as the coordinates in AccessibilityNodeData).
-  IPC_STRUCT_MEMBER(gfx::Rect, new_location)
+  // The object's new location info.
+  IPC_STRUCT_MEMBER(ui::AXRelativeBounds, new_location)
 IPC_STRUCT_END()
 
 IPC_STRUCT_BEGIN(AccessibilityHostMsg_FindInPageResultParams)
@@ -110,55 +133,10 @@ IPC_STRUCT_END()
 
 // Messages sent from the browser to the renderer.
 
-// Relay a request from assistive technology to set focus to a given node.
-IPC_MESSAGE_ROUTED1(AccessibilityMsg_SetFocus,
-                    int /* object id */)
-
-// Relay a request from assistive technology to perform the default action
-// on a given node.
-IPC_MESSAGE_ROUTED1(AccessibilityMsg_DoDefaultAction,
-                    int /* object id */)
-
-// Relay a request from assistive technology to make a given object
-// visible by scrolling as many scrollable containers as possible.
-// In addition, if it's not possible to make the entire object visible,
-// scroll so that the |subfocus| rect is visible at least. The subfocus
-// rect is in local coordinates of the object itself.
-IPC_MESSAGE_ROUTED2(AccessibilityMsg_ScrollToMakeVisible,
-                    int /* object id */,
-                    gfx::Rect /* subfocus */)
-
-// Relay a request from assistive technology to show the context menu for a
-// given object.
-IPC_MESSAGE_ROUTED1(AccessibilityMsg_ShowContextMenu, int /* object id */)
-
-// Relay a request from assistive technology to move a given object
-// to a specific location, in the WebContents area coordinate space, i.e.
-// (0, 0) is the top-left corner of the WebContents.
-IPC_MESSAGE_ROUTED2(AccessibilityMsg_ScrollToPoint,
-                    int /* object id */,
-                    gfx::Point /* new location */)
-
-// Relay a request from assistive technology to set the scroll offset
-// of an accessibility object that's a scroll container, to a specific
-// offset.
-IPC_MESSAGE_ROUTED2(AccessibilityMsg_SetScrollOffset,
-                    int /* object id */,
-                    gfx::Point /* new offset */)
-
-// Relay a request from assistive technology to set the cursor or
-// selection within a document.
-IPC_MESSAGE_ROUTED4(AccessibilityMsg_SetSelection,
-                    int /* New anchor object id */,
-                    int /* New anchor offset */,
-                    int /* New focus object id */,
-                    int /* New focus offset */)
-
-// Relay a request from assistive technology to set the value of an
-// editable text element.
-IPC_MESSAGE_ROUTED2(AccessibilityMsg_SetValue,
-                    int /* object id */,
-                    base::string16 /* Value */)
+// Relay a request from assistive technology to perform an action,
+// such as focusing or clicking on a node.
+IPC_MESSAGE_ROUTED1(AccessibilityMsg_PerformAction,
+                    ui::AXActionData  /* action parameters */)
 
 // Determine the accessibility object under a given point.
 //
@@ -166,20 +144,17 @@ IPC_MESSAGE_ROUTED2(AccessibilityMsg_SetValue,
 // result is an iframe element), it responds with
 // AccessibilityHostMsg_ChildFrameHitTestResult so that the
 // hit test can be performed recursively on the child frame. Otherwise
-// it fires an accessibility event of type ui::AX_EVENT_HOVER on the target.
-IPC_MESSAGE_ROUTED1(AccessibilityMsg_HitTest,
-                    gfx::Point /* location to test */)
+// it fires an accessibility event of type |event_to_fire| on the target.
+IPC_MESSAGE_ROUTED3(AccessibilityMsg_HitTest,
+                    gfx::Point /* location to test */,
+                    ax::mojom::Event /* event to fire */,
+                    int /* action request id */)
 
-// Relay a request from assistive technology to set accessibility focus
-// to a given node. On platforms where this is used (currently Android),
-// inline text boxes are only computed for the node with accessibility focus,
-// rather than for the whole tree.
-IPC_MESSAGE_ROUTED1(AccessibilityMsg_SetAccessibilityFocus,
-                    int /* object id */)
-
-// Tells the render view that a AccessibilityHostMsg_Events
-// message was processed and it can send addition events.
-IPC_MESSAGE_ROUTED0(AccessibilityMsg_Events_ACK)
+// Tells the render view that a AccessibilityHostMsg_EventBundle
+// message was processed and it can send additional updates. The argument
+// must be the same as the ack_token passed to
+// AccessibilityHostMsg_EventBundle.
+IPC_MESSAGE_ROUTED1(AccessibilityMsg_EventBundle_ACK, int /* ack_token */)
 
 // Tell the renderer to reset and send a new accessibility tree from
 // scratch because the browser is out of sync. It passes a sequential
@@ -198,21 +173,23 @@ IPC_MESSAGE_ROUTED0(AccessibilityMsg_FatalError)
 // Request a one-time snapshot of the accessibility tree without
 // enabling accessibility if it wasn't already enabled. The passed id
 // will be returned in the AccessibilityHostMsg_SnapshotResponse message.
-IPC_MESSAGE_ROUTED1(AccessibilityMsg_SnapshotTree,
-                    int /* callback id */)
+IPC_MESSAGE_ROUTED2(AccessibilityMsg_SnapshotTree,
+                    int /* callback id */,
+                    ui::AXMode /* ax_mode */)
 
 // Messages sent from the renderer to the browser.
 
 // Sent to notify the browser about renderer accessibility events.
-// The browser responds with a AccessibilityMsg_Events_ACK.
-// The second parameter, reset_token, is set if this IPC was sent in response
+// The browser responds with a AccessibilityMsg_EventBundle_ACK with the same
+// ack_token.
+// The |reset_token| parameter is set if this IPC was sent in response
 // to a reset request from the browser. When the browser requests a reset,
 // it ignores incoming IPCs until it sees one with the correct reset token.
 // Any other time, it ignores IPCs with a reset token.
-IPC_MESSAGE_ROUTED2(
-    AccessibilityHostMsg_Events,
-    std::vector<AccessibilityHostMsg_EventParams> /* events */,
-    int /* reset_token */)
+IPC_MESSAGE_ROUTED3(AccessibilityHostMsg_EventBundle,
+                    AccessibilityHostMsg_EventBundleParams /* params */,
+                    int /* reset_token */,
+                    int /* ack_token */)
 
 // Sent to update the browser of the location of accessibility objects.
 IPC_MESSAGE_ROUTED1(
@@ -225,9 +202,12 @@ IPC_MESSAGE_ROUTED1(
     AccessibilityHostMsg_FindInPageResultParams)
 
 // Sent in response to AccessibilityMsg_HitTest.
-IPC_MESSAGE_ROUTED2(AccessibilityHostMsg_ChildFrameHitTestResult,
+IPC_MESSAGE_ROUTED5(AccessibilityHostMsg_ChildFrameHitTestResult,
+                    int /* action request id of initial caller */,
                     gfx::Point /* location tested */,
-                    int /* node id of result */)
+                    int /* routing id of child frame */,
+                    int /* browser plugin instance id of child frame */,
+                    ax::mojom::Event /* event to fire */)
 
 // Sent in response to AccessibilityMsg_SnapshotTree. The callback id that was
 // passed to the request will be returned in |callback_id|, along with
@@ -235,3 +215,5 @@ IPC_MESSAGE_ROUTED2(AccessibilityHostMsg_ChildFrameHitTestResult,
 IPC_MESSAGE_ROUTED2(AccessibilityHostMsg_SnapshotResponse,
                     int /* callback_id */,
                     content::AXContentTreeUpdate)
+
+#endif  // CONTENT_COMMON_ACCESSIBILITY_MESSAGES_H_

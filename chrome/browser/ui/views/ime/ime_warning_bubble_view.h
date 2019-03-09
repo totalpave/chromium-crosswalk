@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_bar_observer.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
 class BrowserActionsContainer;
 class BrowserView;
@@ -32,7 +32,7 @@ using ImeWarningBubbleResponseCallback =
 // or the parent browser is being destroyed.
 class ImeWarningBubbleView : public views::BubbleDialogDelegateView,
                              public ToolbarActionsBarObserver,
-                             public chrome::BrowserListObserver {
+                             public BrowserListObserver {
  public:
   static void ShowBubble(const extensions::Extension* extension,
                          BrowserView* browser_view,
@@ -41,12 +41,11 @@ class ImeWarningBubbleView : public views::BubbleDialogDelegateView,
   // views::DialogDelegate:
   bool Accept() override;
   bool Cancel() override;
-  bool ShouldDefaultButtonBeBlue() const override;
 
   // ToolbarActionsBarObserver:
   void OnToolbarActionsBarAnimationEnded() override;
 
-  // chrome::BrowserListObserver:
+  // BrowserListObserver:
   void OnBrowserRemoved(Browser* browser) override;
 
  private:
@@ -75,10 +74,10 @@ class ImeWarningBubbleView : public views::BubbleDialogDelegateView,
   // Saves the Browser instance of the browser view, which will be used in
   // OnBrowserRemoved(), as browser_view_->browser() may be null when
   // OnBrowserRemoved() is called.
-  Browser* browser_;
+  Browser* const browser_;
 
-  // True if bubble anchors to the browser action of the extension.
-  bool anchor_to_browser_action_;
+  // True if bubble anchors to the action of the extension.
+  bool anchor_to_action_;
 
   // The check box on the bubble view.
   views::Checkbox* never_show_checkbox_;

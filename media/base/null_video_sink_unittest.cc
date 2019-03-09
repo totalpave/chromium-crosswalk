@@ -9,6 +9,7 @@
 #include "base/macros.h"
 #include "base/message_loop/message_loop.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "media/base/gmock_callback_support.h"
 #include "media/base/null_video_sink.h"
 #include "media/base/test_helpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -20,10 +21,6 @@ using testing::Return;
 
 namespace media {
 
-ACTION_P(RunClosure, closure) {
-  closure.Run();
-}
-
 class NullVideoSinkTest : public testing::Test,
                           public VideoRendererSink::RenderCallback {
  public:
@@ -31,7 +28,7 @@ class NullVideoSinkTest : public testing::Test,
     // Never use null TimeTicks since they have special connotations.
     tick_clock_.Advance(base::TimeDelta::FromMicroseconds(12345));
   }
-  ~NullVideoSinkTest() override {}
+  ~NullVideoSinkTest() override = default;
 
   std::unique_ptr<NullVideoSink> ConstructSink(bool clockless,
                                                base::TimeDelta interval) {
@@ -45,7 +42,7 @@ class NullVideoSinkTest : public testing::Test,
 
   scoped_refptr<VideoFrame> CreateFrame(base::TimeDelta timestamp) {
     const gfx::Size natural_size(8, 8);
-    return VideoFrame::CreateFrame(PIXEL_FORMAT_YV12, natural_size,
+    return VideoFrame::CreateFrame(PIXEL_FORMAT_I420, natural_size,
                                    gfx::Rect(natural_size), natural_size,
                                    timestamp);
   }
@@ -114,7 +111,7 @@ TEST_F(NullVideoSinkTest, BasicFunctionality) {
 
   // The sink shouldn't have to be started to use the paint method.
   EXPECT_CALL(*this, FrameReceived(test_frame));
-  sink->PaintSingleFrame(test_frame);
+  sink->PaintSingleFrame(test_frame, false);
 }
 
 TEST_F(NullVideoSinkTest, ClocklessFunctionality) {

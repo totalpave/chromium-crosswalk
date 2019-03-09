@@ -11,7 +11,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "components/policy/core/common/policy_namespace.h"
 #include "components/policy/core/common/schema.h"
 #include "components/policy/core/common/schema_map.h"
@@ -25,7 +25,7 @@ class SchemaMap;
 // observers to get notified whenever it is updated.
 // This object is not thread safe and must be used from the owner's thread,
 // usually UI.
-class POLICY_EXPORT SchemaRegistry : public base::NonThreadSafe {
+class POLICY_EXPORT SchemaRegistry {
  public:
   class POLICY_EXPORT Observer {
    public:
@@ -74,7 +74,13 @@ class POLICY_EXPORT SchemaRegistry : public base::NonThreadSafe {
   // This indicates that the initial components for |domain| have all been
   // registered. It must be invoked at least once for each policy domain;
   // subsequent calls for the same domain are ignored.
-  void SetReady(PolicyDomain domain);
+  void SetDomainReady(PolicyDomain domain);
+  // This is equivalent to calling |SetDomainReady| with each of the policy
+  // domains.
+  void SetAllDomainsReady();
+  // This is equivalent to calling |SetDomainReady| with each of the domains
+  // that correspond to policy for extensions.
+  void SetExtensionsDomainsReady();
 
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
@@ -85,11 +91,13 @@ class POLICY_EXPORT SchemaRegistry : public base::NonThreadSafe {
  protected:
   void Notify(bool has_new_schemas);
 
+  SEQUENCE_CHECKER(sequence_checker_);
+
   scoped_refptr<SchemaMap> schema_map_;
 
  private:
-  base::ObserverList<Observer, true> observers_;
-  base::ObserverList<InternalObserver, true> internal_observers_;
+  base::ObserverList<Observer, true>::Unchecked observers_;
+  base::ObserverList<InternalObserver, true>::Unchecked internal_observers_;
   bool domains_ready_[POLICY_DOMAIN_SIZE];
 
   DISALLOW_COPY_AND_ASSIGN(SchemaRegistry);
@@ -144,11 +152,14 @@ class POLICY_EXPORT ForwardingSchemaRegistry
 
   // SchemaRegistry::Observer:
   void OnSchemaRegistryUpdated(bool has_new_schemas) override;
+  void OnSchemaRegistryReady() override;
 
   // SchemaRegistry::InternalObserver:
   void OnSchemaRegistryShuttingDown(SchemaRegistry* registry) override;
 
  private:
+  void UpdateReadiness();
+
   SchemaRegistry* wrapped_;
 
   DISALLOW_COPY_AND_ASSIGN(ForwardingSchemaRegistry);

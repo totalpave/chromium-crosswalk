@@ -10,20 +10,18 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 
 namespace base {
 class SingleThreadTaskRunner;
 }  // namespace base
 
-namespace webrtc {
-class DesktopSize;
-}  // namespace webrtc
-
 namespace remoting {
 
+class ScreenResolution;
+
 // Establishes a loopback RDP connection to spawn a new Windows session.
-class RdpClient : public base::NonThreadSafe {
+class RdpClient {
  public:
   class EventHandler {
    public:
@@ -39,7 +37,7 @@ class RdpClient : public base::NonThreadSafe {
 
   RdpClient(scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
             scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-            const webrtc::DesktopSize& screen_size,
+            const ScreenResolution& resolution,
             const std::string& terminal_id,
             DWORD port_number,
             EventHandler* event_handler);
@@ -48,10 +46,15 @@ class RdpClient : public base::NonThreadSafe {
   // Sends Secure Attention Sequence to the session.
   void InjectSas();
 
+  // Change the resolution of the desktop.
+  void ChangeResolution(const ScreenResolution& resolution);
+
  private:
   // The actual implementation resides in Core class.
   class Core;
   scoped_refptr<Core> core_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(RdpClient);
 };

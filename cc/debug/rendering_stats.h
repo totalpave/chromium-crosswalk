@@ -11,16 +11,15 @@
 #include <vector>
 
 #include "base/time/time.h"
-#include "base/trace_event/trace_event_argument.h"
+#include "base/trace_event/traced_value.h"
 #include "base/values.h"
-#include "cc/base/cc_export.h"
-#include "cc/debug/traced_value.h"
+#include "cc/debug/debug_export.h"
 
 namespace cc {
 
-struct CC_EXPORT RenderingStats {
+struct CC_DEBUG_EXPORT RenderingStats {
   // Stores a sequence of TimeDelta objects.
-  class CC_EXPORT TimeDeltaList {
+  class CC_DEBUG_EXPORT TimeDeltaList {
    public:
     TimeDeltaList();
     TimeDeltaList(const TimeDeltaList& other);
@@ -42,9 +41,6 @@ struct CC_EXPORT RenderingStats {
   RenderingStats(const RenderingStats& other);
   ~RenderingStats();
 
-  // Note: when adding new members, please remember to update Add in
-  // rendering_stats.cc.
-
   int64_t frame_count;
   int64_t visible_content_area;
   int64_t approximated_visible_content_area;
@@ -60,7 +56,6 @@ struct CC_EXPORT RenderingStats {
 
   std::unique_ptr<base::trace_event::ConvertableToTraceFormat> AsTraceableData()
       const;
-  void Add(const RenderingStats& other);
 };
 
 }  // namespace cc

@@ -28,11 +28,6 @@ class Size;
 
 namespace printing {
 
-// http://msdn2.microsoft.com/en-us/library/ms535522.aspx
-// Windows 2000/XP: When a page in a spooled file exceeds approximately 350
-// MB, it can fail to print and not send an error message.
-const size_t kMetafileMaxSize = 350*1024*1024;
-
 // Simple wrapper class that manage an EMF data stream and its virtual HDC.
 class PRINTING_EXPORT Emf : public Metafile {
  public:
@@ -57,8 +52,7 @@ class PRINTING_EXPORT Emf : public Metafile {
 
   // Metafile methods.
   bool Init() override;
-  bool InitFromData(const void* src_buffer,
-                    uint32_t src_buffer_size) override;
+  bool InitFromData(const void* src_buffer, size_t src_buffer_size) override;
 
   // Inserts a custom GDICOMMENT records indicating StartPage/EndPage calls
   // (since StartPage and EndPage do not work in a metafile DC). Only valid
@@ -82,17 +76,6 @@ class PRINTING_EXPORT Emf : public Metafile {
   bool SafePlayback(HDC hdc) const override;
 
   HENHMETAFILE emf() const { return emf_; }
-
-  // Returns true if metafile contains alpha blend.
-  bool IsAlphaBlendUsed() const;
-
-  // Returns new metafile with only bitmap created by playback of the current
-  // metafile. Returns NULL if fails.
-  std::unique_ptr<Emf> RasterizeMetafile(int raster_area_in_pixels) const;
-
-  // Returns new metafile where AlphaBlend replaced by bitmaps. Returns NULL
-  // if fails.
-  std::unique_ptr<Emf> RasterizeAlphaBlend() const;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(EmfTest, DC);

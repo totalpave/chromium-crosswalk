@@ -6,7 +6,11 @@
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_STUB_PASSWORD_MANAGER_CLIENT_H_
 
 #include "base/macros.h"
+#include "base/optional.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
+#include "components/password_manager/core/browser/password_manager_metrics_recorder.h"
+#include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/stub_credentials_filter.h"
 #include "components/password_manager/core/browser/stub_log_manager.h"
 
 namespace password_manager {
@@ -21,44 +25,51 @@ class StubPasswordManagerClient : public PasswordManagerClient {
 
   // PasswordManagerClient:
   bool PromptUserToSaveOrUpdatePassword(
-      std::unique_ptr<PasswordFormManager> form_to_save,
-      password_manager::CredentialSourceType type,
+      std::unique_ptr<PasswordFormManagerForUI> form_to_save,
       bool update_password) override;
+  void ShowManualFallbackForSaving(
+      std::unique_ptr<PasswordFormManagerForUI> form_to_save,
+      bool has_generated_password,
+      bool update_password) override;
+  void HideManualFallbackForSaving() override;
   bool PromptUserToChooseCredentials(
-      ScopedVector<autofill::PasswordForm> local_forms,
-      ScopedVector<autofill::PasswordForm> federated_forms,
+      std::vector<std::unique_ptr<autofill::PasswordForm>> local_forms,
       const GURL& origin,
       const CredentialsCallback& callback) override;
-  void NotifyUserAutoSignin(ScopedVector<autofill::PasswordForm> local_forms,
-                            const GURL& origin) override;
+  void NotifyUserAutoSignin(
+      std::vector<std::unique_ptr<autofill::PasswordForm>> local_forms,
+      const GURL& origin) override;
   void NotifyUserCouldBeAutoSignedIn(
       std::unique_ptr<autofill::PasswordForm>) override;
   void NotifySuccessfulLoginWithExistingPassword(
       const autofill::PasswordForm& form) override;
   void NotifyStorePasswordCalled() override;
   void AutomaticPasswordSave(
-      std::unique_ptr<PasswordFormManager> saved_manager) override;
-  PrefService* GetPrefs() override;
+      std::unique_ptr<PasswordFormManagerForUI> saved_manager) override;
+  PrefService* GetPrefs() const override;
   PasswordStore* GetPasswordStore() const override;
   const GURL& GetLastCommittedEntryURL() const override;
   const CredentialsFilter* GetStoreResultFilter() const override;
   const LogManager* GetLogManager() const override;
+#if defined(SAFE_BROWSING_DB_LOCAL)
+  safe_browsing::PasswordProtectionService* GetPasswordProtectionService()
+      const override;
+  void CheckSafeBrowsingReputation(const GURL& form_action,
+                                   const GURL& frame_url) override;
+  void CheckProtectedPasswordEntry(
+      metrics_util::PasswordType reused_password_type,
+      const std::vector<std::string>& matching_domains,
+      bool password_field_exists) override;
+  void LogPasswordReuseDetectedEvent() override;
+#endif
+  ukm::SourceId GetUkmSourceId() override;
+  PasswordManagerMetricsRecorder* GetMetricsRecorder() override;
 
  private:
-  // This filter does not filter out anything, it is a dummy implementation of
-  // the filter interface.
-  class PassThroughCredentialsFilter : public CredentialsFilter {
-   public:
-    PassThroughCredentialsFilter() {}
-
-    // CredentialsFilter:
-    ScopedVector<autofill::PasswordForm> FilterResults(
-        ScopedVector<autofill::PasswordForm> results) const override;
-    bool ShouldSave(const autofill::PasswordForm& form) const override;
-  };
-
-  const PassThroughCredentialsFilter credentials_filter_;
+  const StubCredentialsFilter credentials_filter_;
   StubLogManager log_manager_;
+  ukm::SourceId ukm_source_id_;
+  base::Optional<PasswordManagerMetricsRecorder> metrics_recorder_;
 
   DISALLOW_COPY_AND_ASSIGN(StubPasswordManagerClient);
 };

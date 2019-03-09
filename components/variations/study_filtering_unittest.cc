@@ -11,7 +11,9 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_split.h"
+#include "components/variations/client_filterable_state.h"
 #include "components/variations/processed_study.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -25,37 +27,40 @@ int64_t TimeToProtoTime(const base::Time& time) {
 }
 
 // Adds an experiment to |study| with the specified |name| and |probability|.
-Study_Experiment* AddExperiment(const std::string& name, int probability,
-                                Study* study) {
-  Study_Experiment* experiment = study->add_experiment();
+Study::Experiment* AddExperiment(const std::string& name,
+                                 int probability,
+                                 Study* study) {
+  Study::Experiment* experiment = study->add_experiment();
   experiment->set_name(name);
   experiment->set_probability_weight(probability);
   return experiment;
 }
 
+std::vector<std::string> SplitFilterString(const std::string& input) {
+  return base::SplitString(input, ",", base::TRIM_WHITESPACE,
+                           base::SPLIT_WANT_ALL);
+}
+
 }  // namespace
 
 TEST(VariationsStudyFilteringTest, CheckStudyChannel) {
-  const Study_Channel channels[] = {
-    Study_Channel_CANARY,
-    Study_Channel_DEV,
-    Study_Channel_BETA,
-    Study_Channel_STABLE,
+  const Study::Channel channels[] = {
+      Study::CANARY, Study::DEV, Study::BETA, Study::STABLE,
   };
-  bool channel_added[arraysize(channels)] = { 0 };
+  bool channel_added[base::size(channels)] = {0};
 
-  Study_Filter filter;
+  Study::Filter filter;
 
-  // Check in the forwarded order. The loop cond is <= arraysize(channels)
+  // Check in the forwarded order. The loop cond is <= base::size(channels)
   // instead of < so that the result of adding the last channel gets checked.
-  for (size_t i = 0; i <= arraysize(channels); ++i) {
-    for (size_t j = 0; j < arraysize(channels); ++j) {
+  for (size_t i = 0; i <= base::size(channels); ++i) {
+    for (size_t j = 0; j < base::size(channels); ++j) {
       const bool expected = channel_added[j] || filter.channel_size() == 0;
       const bool result = internal::CheckStudyChannel(filter, channels[j]);
       EXPECT_EQ(expected, result) << "Case " << i << "," << j << " failed!";
     }
 
-    if (i < arraysize(channels)) {
+    if (i < base::size(channels)) {
       filter.add_channel(channels[i]);
       channel_added[i] = true;
     }
@@ -64,15 +69,15 @@ TEST(VariationsStudyFilteringTest, CheckStudyChannel) {
   // Do the same check in the reverse order.
   filter.clear_channel();
   memset(&channel_added, 0, sizeof(channel_added));
-  for (size_t i = 0; i <= arraysize(channels); ++i) {
-    for (size_t j = 0; j < arraysize(channels); ++j) {
+  for (size_t i = 0; i <= base::size(channels); ++i) {
+    for (size_t j = 0; j < base::size(channels); ++j) {
       const bool expected = channel_added[j] || filter.channel_size() == 0;
       const bool result = internal::CheckStudyChannel(filter, channels[j]);
       EXPECT_EQ(expected, result) << "Case " << i << "," << j << " failed!";
     }
 
-    if (i < arraysize(channels)) {
-      const int index = arraysize(channels) - i - 1;
+    if (i < base::size(channels)) {
+      const int index = base::size(channels) - i - 1;
       filter.add_channel(channels[index]);
       channel_added[index] = true;
     }
@@ -80,28 +85,27 @@ TEST(VariationsStudyFilteringTest, CheckStudyChannel) {
 }
 
 TEST(VariationsStudyFilteringTest, CheckStudyFormFactor) {
-  const Study_FormFactor form_factors[] = {
-    Study_FormFactor_DESKTOP,
-    Study_FormFactor_PHONE,
-    Study_FormFactor_TABLET,
+  const Study::FormFactor form_factors[] = {
+      Study::DESKTOP, Study::PHONE, Study::TABLET, Study::KIOSK,
   };
 
-  ASSERT_EQ(Study_FormFactor_FormFactor_ARRAYSIZE,
-            static_cast<int>(arraysize(form_factors)));
+  ASSERT_EQ(Study::FormFactor_ARRAYSIZE,
+            static_cast<int>(base::size(form_factors)));
 
-  bool form_factor_added[arraysize(form_factors)] = { 0 };
-  Study_Filter filter;
+  bool form_factor_added[base::size(form_factors)] = {0};
+  Study::Filter filter;
 
-  for (size_t i = 0; i <= arraysize(form_factors); ++i) {
-    for (size_t j = 0; j < arraysize(form_factors); ++j) {
+  for (size_t i = 0; i <= base::size(form_factors); ++i) {
+    for (size_t j = 0; j < base::size(form_factors); ++j) {
       const bool expected = form_factor_added[j] ||
                             filter.form_factor_size() == 0;
       const bool result = internal::CheckStudyFormFactor(filter,
                                                          form_factors[j]);
-      EXPECT_EQ(expected, result) << "Case " << i << "," << j << " failed!";
+      EXPECT_EQ(expected, result) << "form_factor: case " << i << "," << j
+                                  << " failed!";
     }
 
-    if (i < arraysize(form_factors)) {
+    if (i < base::size(form_factors)) {
       filter.add_form_factor(form_factors[i]);
       form_factor_added[i] = true;
     }
@@ -110,19 +114,59 @@ TEST(VariationsStudyFilteringTest, CheckStudyFormFactor) {
   // Do the same check in the reverse order.
   filter.clear_form_factor();
   memset(&form_factor_added, 0, sizeof(form_factor_added));
-  for (size_t i = 0; i <= arraysize(form_factors); ++i) {
-    for (size_t j = 0; j < arraysize(form_factors); ++j) {
+  for (size_t i = 0; i <= base::size(form_factors); ++i) {
+    for (size_t j = 0; j < base::size(form_factors); ++j) {
       const bool expected = form_factor_added[j] ||
                             filter.form_factor_size() == 0;
       const bool result = internal::CheckStudyFormFactor(filter,
                                                          form_factors[j]);
-      EXPECT_EQ(expected, result) << "Case " << i << "," << j << " failed!";
+      EXPECT_EQ(expected, result) << "form_factor: case " << i << "," << j
+                                  << " failed!";
     }
 
-    if (i < arraysize(form_factors)) {
-      const int index = arraysize(form_factors) - i - 1;
+    if (i < base::size(form_factors)) {
+      const int index = base::size(form_factors) - i - 1;
       filter.add_form_factor(form_factors[index]);
       form_factor_added[index] = true;
+    }
+  }
+
+  // Test exclude_form_factors, forward order.
+  filter.clear_form_factor();
+  bool form_factor_excluded[base::size(form_factors)] = {0};
+  for (size_t i = 0; i <= base::size(form_factors); ++i) {
+    for (size_t j = 0; j < base::size(form_factors); ++j) {
+      const bool expected = filter.exclude_form_factor_size() == 0 ||
+                            !form_factor_excluded[j];
+      const bool result = internal::CheckStudyFormFactor(filter,
+                                                         form_factors[j]);
+      EXPECT_EQ(expected, result) << "exclude_form_factor: case " << i << ","
+                                  << j << " failed!";
+    }
+
+    if (i < base::size(form_factors)) {
+      filter.add_exclude_form_factor(form_factors[i]);
+      form_factor_excluded[i] = true;
+    }
+  }
+
+  // Test exclude_form_factors, reverse order.
+  filter.clear_exclude_form_factor();
+  memset(&form_factor_excluded, 0, sizeof(form_factor_excluded));
+  for (size_t i = 0; i <= base::size(form_factors); ++i) {
+    for (size_t j = 0; j < base::size(form_factors); ++j) {
+      const bool expected = filter.exclude_form_factor_size() == 0 ||
+                            !form_factor_excluded[j];
+      const bool result = internal::CheckStudyFormFactor(filter,
+                                                         form_factors[j]);
+      EXPECT_EQ(expected, result) << "exclude_form_factor: case " << i << ","
+                                  << j << " failed!";
+    }
+
+    if (i < base::size(form_factors)) {
+      const int index = base::size(form_factors) - i - 1;
+      filter.add_exclude_form_factor(form_factors[index]);
+      form_factor_excluded[index] = true;
     }
   }
 }
@@ -130,59 +174,63 @@ TEST(VariationsStudyFilteringTest, CheckStudyFormFactor) {
 TEST(VariationsStudyFilteringTest, CheckStudyLocale) {
   struct {
     const char* filter_locales;
+    const char* exclude_locales;
     bool en_us_result;
     bool en_ca_result;
     bool fr_result;
   } test_cases[] = {
-    {"en-US", true, false, false},
-    {"en-US,en-CA,fr", true, true, true},
-    {"en-US,en-CA,en-GB", true, true, false},
-    {"en-GB,en-CA,en-US", true, true, false},
-    {"ja,kr,vi", false, false, false},
-    {"fr-CA", false, false, false},
-    {"", true, true, true},
+      {"en-US", "", true, false, false},
+      // Tests that locale overrides exclude_locale, when both are given. This
+      // should not occur in practice though.
+      {"en-US", "en-US", true, false, false},
+      {"en-US,en-CA,fr", "", true, true, true},
+      {"en-US,en-CA,en-GB", "", true, true, false},
+      {"en-GB,en-CA,en-US", "", true, true, false},
+      {"ja,kr,vi", "", false, false, false},
+      {"fr-CA", "", false, false, false},
+      {"", "", true, true, true},
+      {"", "en-US", false, true, true},
+      {"", "en-US,en-CA,fr", false, false, false},
+      {"", "en-US,en-CA,en-GB", false, false, true},
+      {"", "en-GB,en-CA,en-US", false, false, true},
+      {"", "ja,kr,vi", true, true, true},
+      {"", "fr-CA", true, true, true},
   };
 
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
-    Study_Filter filter;
-    for (const std::string& locale : base::SplitString(
-             test_cases[i].filter_locales, ",",
-             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL))
+  for (const auto& test : test_cases) {
+    Study::Filter filter;
+    for (const std::string& locale : SplitFilterString(test.filter_locales))
       filter.add_locale(locale);
-    EXPECT_EQ(test_cases[i].en_us_result,
-              internal::CheckStudyLocale(filter, "en-US"));
-    EXPECT_EQ(test_cases[i].en_ca_result,
-              internal::CheckStudyLocale(filter, "en-CA"));
-    EXPECT_EQ(test_cases[i].fr_result,
-              internal::CheckStudyLocale(filter, "fr"));
+    for (const std::string& locale : SplitFilterString(test.exclude_locales))
+      filter.add_exclude_locale(locale);
+
+    EXPECT_EQ(test.en_us_result, internal::CheckStudyLocale(filter, "en-US"));
+    EXPECT_EQ(test.en_ca_result, internal::CheckStudyLocale(filter, "en-CA"));
+    EXPECT_EQ(test.fr_result, internal::CheckStudyLocale(filter, "fr"));
   }
 }
 
 TEST(VariationsStudyFilteringTest, CheckStudyPlatform) {
-  const Study_Platform platforms[] = {
-    Study_Platform_PLATFORM_WINDOWS,
-    Study_Platform_PLATFORM_MAC,
-    Study_Platform_PLATFORM_LINUX,
-    Study_Platform_PLATFORM_CHROMEOS,
-    Study_Platform_PLATFORM_ANDROID,
-    Study_Platform_PLATFORM_IOS,
-  };
-  ASSERT_EQ(Study_Platform_Platform_ARRAYSIZE,
-            static_cast<int>(arraysize(platforms)));
-  bool platform_added[arraysize(platforms)] = { 0 };
+  const Study::Platform platforms[] = {
+      Study::PLATFORM_WINDOWS,         Study::PLATFORM_MAC,
+      Study::PLATFORM_LINUX,           Study::PLATFORM_CHROMEOS,
+      Study::PLATFORM_ANDROID,         Study::PLATFORM_IOS,
+      Study::PLATFORM_ANDROID_WEBVIEW, Study::PLATFORM_FUCHSIA};
+  ASSERT_EQ(Study::Platform_ARRAYSIZE, static_cast<int>(base::size(platforms)));
+  bool platform_added[base::size(platforms)] = {0};
 
-  Study_Filter filter;
+  Study::Filter filter;
 
-  // Check in the forwarded order. The loop cond is <= arraysize(platforms)
-  // instead of < so that the result of adding the last channel gets checked.
-  for (size_t i = 0; i <= arraysize(platforms); ++i) {
-    for (size_t j = 0; j < arraysize(platforms); ++j) {
-      const bool expected = platform_added[j] || filter.platform_size() == 0;
+  // Check in the forwarded order. The loop cond is <= base::size(platforms)
+  // instead of < so that the result of adding the last platform gets checked.
+  for (size_t i = 0; i <= base::size(platforms); ++i) {
+    for (size_t j = 0; j < base::size(platforms); ++j) {
+      const bool expected = platform_added[j];
       const bool result = internal::CheckStudyPlatform(filter, platforms[j]);
       EXPECT_EQ(expected, result) << "Case " << i << "," << j << " failed!";
     }
 
-    if (i < arraysize(platforms)) {
+    if (i < base::size(platforms)) {
       filter.add_platform(platforms[i]);
       platform_added[i] = true;
     }
@@ -191,19 +239,35 @@ TEST(VariationsStudyFilteringTest, CheckStudyPlatform) {
   // Do the same check in the reverse order.
   filter.clear_platform();
   memset(&platform_added, 0, sizeof(platform_added));
-  for (size_t i = 0; i <= arraysize(platforms); ++i) {
-    for (size_t j = 0; j < arraysize(platforms); ++j) {
-      const bool expected = platform_added[j] || filter.platform_size() == 0;
+  for (size_t i = 0; i <= base::size(platforms); ++i) {
+    for (size_t j = 0; j < base::size(platforms); ++j) {
+      const bool expected = platform_added[j];
       const bool result = internal::CheckStudyPlatform(filter, platforms[j]);
       EXPECT_EQ(expected, result) << "Case " << i << "," << j << " failed!";
     }
 
-    if (i < arraysize(platforms)) {
-      const int index = arraysize(platforms) - i - 1;
+    if (i < base::size(platforms)) {
+      const int index = base::size(platforms) - i - 1;
       filter.add_platform(platforms[index]);
       platform_added[index] = true;
     }
   }
+}
+
+TEST(VariationsStudyFilteringTest, CheckStudyLowEndDevice) {
+  Study::Filter filter;
+
+  // Check that if the filter is not set, study applies to either low end value.
+  EXPECT_TRUE(internal::CheckStudyLowEndDevice(filter, true));
+  EXPECT_TRUE(internal::CheckStudyLowEndDevice(filter, false));
+
+  filter.set_is_low_end_device(true);
+  EXPECT_TRUE(internal::CheckStudyLowEndDevice(filter, true));
+  EXPECT_FALSE(internal::CheckStudyLowEndDevice(filter, false));
+
+  filter.set_is_low_end_device(false);
+  EXPECT_FALSE(internal::CheckStudyLowEndDevice(filter, true));
+  EXPECT_TRUE(internal::CheckStudyLowEndDevice(filter, false));
 }
 
 TEST(VariationsStudyFilteringTest, CheckStudyStartDate) {
@@ -213,21 +277,46 @@ TEST(VariationsStudyFilteringTest, CheckStudyStartDate) {
     const base::Time start_date;
     bool expected_result;
   } start_test_cases[] = {
-    { now - delta, true },
-    { now, true },
-    { now + delta, false },
+      {now - delta, true},
+      // Note, the proto start_date is truncated to seconds, but the reference
+      // date isn't.
+      {now, true},
+      {now + delta, false},
   };
 
-  Study_Filter filter;
+  Study::Filter filter;
 
   // Start date not set should result in true.
   EXPECT_TRUE(internal::CheckStudyStartDate(filter, now));
 
-  for (size_t i = 0; i < arraysize(start_test_cases); ++i) {
+  for (size_t i = 0; i < base::size(start_test_cases); ++i) {
     filter.set_start_date(TimeToProtoTime(start_test_cases[i].start_date));
     const bool result = internal::CheckStudyStartDate(filter, now);
     EXPECT_EQ(start_test_cases[i].expected_result, result)
         << "Case " << i << " failed!";
+  }
+}
+
+TEST(VariationsStudyFilteringTest, CheckStudyEndDate) {
+  const base::Time now = base::Time::Now();
+  const base::TimeDelta delta = base::TimeDelta::FromHours(1);
+  const struct {
+    const base::Time end_date;
+    bool expected_result;
+  } start_test_cases[] = {
+      {now - delta, false}, {now + delta, true},
+  };
+
+  Study::Filter filter;
+
+  // End date not set should result in true.
+  EXPECT_TRUE(internal::CheckStudyEndDate(filter, now));
+
+  for (size_t i = 0; i < base::size(start_test_cases); ++i) {
+    filter.set_end_date(TimeToProtoTime(start_test_cases[i].end_date));
+    const bool result = internal::CheckStudyEndDate(filter, now);
+    EXPECT_EQ(start_test_cases[i].expected_result, result) << "Case " << i
+                                                           << " failed!";
   }
 }
 
@@ -273,45 +362,43 @@ TEST(VariationsStudyFilteringTest, CheckStudyVersion) {
     { "1.*", "2.3.4", false },
   };
 
-  Study_Filter filter;
+  Study::Filter filter;
 
   // Min/max version not set should result in true.
   EXPECT_TRUE(internal::CheckStudyVersion(filter, base::Version("1.2.3")));
 
-  for (size_t i = 0; i < arraysize(min_test_cases); ++i) {
+  for (size_t i = 0; i < base::size(min_test_cases); ++i) {
     filter.set_min_version(min_test_cases[i].min_version);
-    const bool result =
-        internal::CheckStudyVersion(filter, Version(min_test_cases[i].version));
+    const bool result = internal::CheckStudyVersion(
+        filter, base::Version(min_test_cases[i].version));
     EXPECT_EQ(min_test_cases[i].expected_result, result) <<
         "Min. version case " << i << " failed!";
   }
   filter.clear_min_version();
 
-  for (size_t i = 0; i < arraysize(max_test_cases); ++i) {
+  for (size_t i = 0; i < base::size(max_test_cases); ++i) {
     filter.set_max_version(max_test_cases[i].max_version);
-    const bool result =
-        internal::CheckStudyVersion(filter, Version(max_test_cases[i].version));
+    const bool result = internal::CheckStudyVersion(
+        filter, base::Version(max_test_cases[i].version));
     EXPECT_EQ(max_test_cases[i].expected_result, result) <<
         "Max version case " << i << " failed!";
   }
 
   // Check intersection semantics.
-  for (size_t i = 0; i < arraysize(min_test_cases); ++i) {
-    for (size_t j = 0; j < arraysize(max_test_cases); ++j) {
+  for (size_t i = 0; i < base::size(min_test_cases); ++i) {
+    for (size_t j = 0; j < base::size(max_test_cases); ++j) {
       filter.set_min_version(min_test_cases[i].min_version);
       filter.set_max_version(max_test_cases[j].max_version);
 
       if (!min_test_cases[i].expected_result) {
-        const bool result =
-            internal::CheckStudyVersion(
-                filter, Version(min_test_cases[i].version));
+        const bool result = internal::CheckStudyVersion(
+            filter, base::Version(min_test_cases[i].version));
         EXPECT_FALSE(result) << "Case " << i << "," << j << " failed!";
       }
 
       if (!max_test_cases[j].expected_result) {
-        const bool result =
-            internal::CheckStudyVersion(
-                filter, Version(max_test_cases[j].version));
+        const bool result = internal::CheckStudyVersion(
+            filter, base::Version(max_test_cases[j].version));
         EXPECT_FALSE(result) << "Case " << i << "," << j << " failed!";
       }
     }
@@ -325,54 +412,46 @@ TEST(VariationsStudyFilteringTest, CheckStudyHardwareClass) {
     const char* actual_hardware_class;
     bool expected_result;
   } test_cases[] = {
-    // Neither filtered nor excluded set:
-    // True since empty is always a match.
-    {"", "", "fancy INTEL pear device", true},
-    {"", "", "", true},
+      // Neither filtered nor excluded set:
+      // True since empty is always a match.
+      {"", "", "fancy INTEL pear device", true},
+      {"", "", "", true},
 
-    // Filtered set:
-    {"apple,pear,orange", "", "apple", true},
-    {"apple,pear,orange", "", "fancy INTEL pear device", true},
-    {"apple,pear,orange", "", "fancy INTEL GRAPE device", false},
-    // Somehow tagged as both, but still valid.
-    {"apple,pear,orange", "", "fancy INTEL pear GRAPE device", true},
-    // Substring, so still valid.
-    {"apple,pear,orange", "", "fancy INTEL SNapple device", true},
-    // No issues with doubling.
-    {"apple,pear,orange", "", "fancy orange orange device", true},
-    // Empty, which is what would happen for non ChromeOS platforms.
-    {"apple,pear,orange", "", "", false},
+      // Filtered set:
+      {"apple,pear,orange", "", "apple", true},
+      {"apple,pear,orange", "", "aPPle", true},
+      {"apple,pear,orange", "", "fancy INTEL pear device", false},
+      {"apple,pear,orange", "", "fancy INTEL GRAPE device", false},
+      // Somehow tagged as both, but still valid.
+      {"apple,pear,orange", "", "fancy INTEL pear GRAPE device", false},
+      // Substring, which should not match.
+      {"apple,pear,orange", "", "fancy INTEL SNapple device", false},
+      // Empty, which is what would happen for non ChromeOS platforms.
+      {"apple,pear,orange", "", "", false},
 
-    // Excluded set:
-    {"", "apple,pear,orange", "apple", false},
-    {"", "apple,pear,orange", "fancy INTEL pear device", false},
-    {"", "apple,pear,orange", "fancy INTEL GRAPE device", true},
-    // Somehow tagged as both. Very excluded!
-    {"", "apple,pear,orange", "fancy INTEL pear GRAPE device", false},
-    // Substring, so still invalid.
-    {"", "apple,pear,orange", "fancy INTEL SNapple device", false},
-    // Empty.
-    {"", "apple,pear,orange", "", true},
+      // Excluded set:
+      {"", "apple,pear,orange", "apple", false},
+      {"", "apple,pear,orange", "fancy INTEL pear device", true},
+      {"", "apple,pear,orange", "fancy INTEL GRAPE device", true},
+      // Empty.
+      {"", "apple,pear,orange", "", true},
 
-    // Not testing when both are set as it should never occur and should be
-    // considered undefined.
+      // Not testing when both are set as it should never occur and should be
+      // considered undefined.
   };
 
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
-    Study_Filter filter;
-    for (const std::string& cur : base::SplitString(
-             test_cases[i].hardware_class, ",",
-             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL))
-      filter.add_hardware_class(cur);
+  for (const auto& test : test_cases) {
+    Study::Filter filter;
+    for (const auto& hw_class : SplitFilterString(test.hardware_class))
+      filter.add_hardware_class(hw_class);
+    for (const auto& hw_class : SplitFilterString(test.exclude_hardware_class))
+      filter.add_exclude_hardware_class(hw_class);
 
-    for (const std::string& cur : base::SplitString(
-             test_cases[i].exclude_hardware_class, ",",
-             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL))
-      filter.add_exclude_hardware_class(cur);
-
-    EXPECT_EQ(test_cases[i].expected_result,
-              internal::CheckStudyHardwareClass(
-                  filter, test_cases[i].actual_hardware_class));
+    EXPECT_EQ(test.expected_result, internal::CheckStudyHardwareClass(
+                                        filter, test.actual_hardware_class))
+        << "hardware_class=" << test.hardware_class << " "
+        << "exclude_hardware_class=" << test.exclude_hardware_class << " "
+        << "actual_hardware_class=" << test.actual_hardware_class;
   }
 }
 
@@ -409,15 +488,11 @@ TEST(VariationsStudyFilteringTest, CheckStudyCountry) {
   };
 
   for (const auto& test : test_cases) {
-    Study_Filter filter;
-    for (const std::string& country : base::SplitString(
-             test.country, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL))
+    Study::Filter filter;
+    for (const std::string& country : SplitFilterString(test.country))
       filter.add_country(country);
-
-    for (const std::string& exclude_country : base::SplitString(
-             test.exclude_country, ",",
-             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL))
-      filter.add_exclude_country(exclude_country);
+    for (const std::string& country : SplitFilterString(test.exclude_country))
+      filter.add_exclude_country(country);
 
     EXPECT_EQ(test.expected_result,
               internal::CheckStudyCountry(filter, test.actual_country));
@@ -447,11 +522,16 @@ TEST(VariationsStudyFilteringTest, FilterAndValidateStudies) {
   AddExperiment("A", 10, study3);
   AddExperiment("Default", 25, study3);
 
+  ClientFilterableState client_state;
+  client_state.locale = "en-CA";
+  client_state.reference_date = base::Time::Now();
+  client_state.version = base::Version("20.0.0.0");
+  client_state.channel = Study::STABLE;
+  client_state.form_factor = Study::DESKTOP;
+  client_state.platform = Study::PLATFORM_ANDROID;
+
   std::vector<ProcessedStudy> processed_studies;
-  FilterAndValidateStudies(seed, "en-CA", base::Time::Now(),
-                           base::Version("20.0.0.0"), Study_Channel_STABLE,
-                           Study_FormFactor_DESKTOP, "", "", "",
-                           &processed_studies);
+  FilterAndValidateStudies(seed, client_state, &processed_studies);
 
   // Check that only the first kTrial1Name study was kept.
   ASSERT_EQ(2U, processed_studies.size());
@@ -465,27 +545,27 @@ TEST(VariationsStudyFilteringTest, FilterAndValidateStudiesWithCountry) {
   const char kPermanentCountry[] = "us";
 
   struct {
-    Study_Consistency consistency;
+    Study::Consistency consistency;
     const char* filter_country;
     const char* filter_exclude_country;
     bool expect_study_kept;
   } test_cases[] = {
       // Country-agnostic studies should be kept regardless of country.
-      {Study_Consistency_SESSION, nullptr, nullptr, true},
-      {Study_Consistency_PERMANENT, nullptr, nullptr, true},
+      {Study::SESSION, nullptr, nullptr, true},
+      {Study::PERMANENT, nullptr, nullptr, true},
 
       // Session-consistency studies should obey the country code in the seed.
-      {Study_Consistency_SESSION, kSessionCountry, nullptr, true},
-      {Study_Consistency_SESSION, nullptr, kSessionCountry, false},
-      {Study_Consistency_SESSION, kPermanentCountry, nullptr, false},
-      {Study_Consistency_SESSION, nullptr, kPermanentCountry, true},
+      {Study::SESSION, kSessionCountry, nullptr, true},
+      {Study::SESSION, nullptr, kSessionCountry, false},
+      {Study::SESSION, kPermanentCountry, nullptr, false},
+      {Study::SESSION, nullptr, kPermanentCountry, true},
 
       // Permanent-consistency studies should obey the permanent-consistency
       // country code.
-      {Study_Consistency_PERMANENT, kPermanentCountry, nullptr, true},
-      {Study_Consistency_PERMANENT, nullptr, kPermanentCountry, false},
-      {Study_Consistency_PERMANENT, kSessionCountry, nullptr, false},
-      {Study_Consistency_PERMANENT, nullptr, kSessionCountry, true},
+      {Study::PERMANENT, kPermanentCountry, nullptr, true},
+      {Study::PERMANENT, nullptr, kPermanentCountry, false},
+      {Study::PERMANENT, kSessionCountry, nullptr, false},
+      {Study::PERMANENT, nullptr, kSessionCountry, true},
   };
 
   for (const auto& test : test_cases) {
@@ -495,19 +575,49 @@ TEST(VariationsStudyFilteringTest, FilterAndValidateStudiesWithCountry) {
     study->set_default_experiment_name("Default");
     AddExperiment("Default", 100, study);
     study->set_consistency(test.consistency);
+    study->mutable_filter()->add_platform(Study::PLATFORM_ANDROID);
     if (test.filter_country)
       study->mutable_filter()->add_country(test.filter_country);
     if (test.filter_exclude_country)
       study->mutable_filter()->add_exclude_country(test.filter_exclude_country);
 
+    ClientFilterableState client_state;
+    client_state.locale = "en-CA";
+    client_state.reference_date = base::Time::Now();
+    client_state.version = base::Version("20.0.0.0");
+    client_state.channel = Study::STABLE;
+    client_state.form_factor = Study::PHONE;
+    client_state.platform = Study::PLATFORM_ANDROID;
+    client_state.session_consistency_country = kSessionCountry;
+    client_state.permanent_consistency_country = kPermanentCountry;
+
     std::vector<ProcessedStudy> processed_studies;
-    FilterAndValidateStudies(seed, "en-CA", base::Time::Now(),
-                             base::Version("20.0.0.0"), Study_Channel_STABLE,
-                             Study_FormFactor_DESKTOP, "", kSessionCountry,
-                             kPermanentCountry, &processed_studies);
+    FilterAndValidateStudies(seed, client_state, &processed_studies);
 
     EXPECT_EQ(test.expect_study_kept, !processed_studies.empty());
   }
+}
+
+TEST(VariationsStudyFilteringTest, GetClientCountryForStudy_Session) {
+  ClientFilterableState client_state;
+  client_state.session_consistency_country = "session_country";
+  client_state.permanent_consistency_country = "permanent_country";
+
+  Study study;
+  study.set_consistency(Study::SESSION);
+  EXPECT_EQ("session_country",
+            internal::GetClientCountryForStudy(study, client_state));
+}
+
+TEST(VariationsStudyFilteringTest, GetClientCountryForStudy_Permanent) {
+  ClientFilterableState client_state;
+  client_state.session_consistency_country = "session_country";
+  client_state.permanent_consistency_country = "permanent_country";
+
+  Study study;
+  study.set_consistency(Study::PERMANENT);
+  EXPECT_EQ("permanent_country",
+            internal::GetClientCountryForStudy(study, client_state));
 }
 
 TEST(VariationsStudyFilteringTest, IsStudyExpired) {
@@ -527,7 +637,7 @@ TEST(VariationsStudyFilteringTest, IsStudyExpired) {
   // Expiry date not set should result in false.
   EXPECT_FALSE(internal::IsStudyExpired(study, now));
 
-  for (size_t i = 0; i < arraysize(expiry_test_cases); ++i) {
+  for (size_t i = 0; i < base::size(expiry_test_cases); ++i) {
     study.set_expiry_date(TimeToProtoTime(expiry_test_cases[i].expiry_date));
     const bool result = internal::IsStudyExpired(study, now);
     EXPECT_EQ(expiry_test_cases[i].expected_result, result)
@@ -539,7 +649,7 @@ TEST(VariationsStudyFilteringTest, ValidateStudy) {
   Study study;
   study.set_default_experiment_name("def");
   AddExperiment("abc", 100, &study);
-  Study_Experiment* default_group = AddExperiment("def", 200, &study);
+  Study::Experiment* default_group = AddExperiment("def", 200, &study);
 
   ProcessedStudy processed_study;
   EXPECT_TRUE(processed_study.Init(&study, false));
@@ -561,8 +671,9 @@ TEST(VariationsStudyFilteringTest, ValidateStudy) {
   study.mutable_filter()->set_max_version("2.3.4");
   EXPECT_TRUE(processed_study.Init(&study, false));
 
+  // A blank default study is allowed.
   study.clear_default_experiment_name();
-  EXPECT_FALSE(processed_study.Init(&study, false));
+  EXPECT_TRUE(processed_study.Init(&study, false));
 
   study.set_default_experiment_name("xyz");
   EXPECT_FALSE(processed_study.Init(&study, false));
@@ -573,7 +684,7 @@ TEST(VariationsStudyFilteringTest, ValidateStudy) {
 
   default_group->set_name("def");
   EXPECT_TRUE(processed_study.Init(&study, false));
-  Study_Experiment* repeated_group = study.add_experiment();
+  Study::Experiment* repeated_group = study.add_experiment();
   repeated_group->set_name("abc");
   repeated_group->set_probability_weight(1);
   EXPECT_FALSE(processed_study.Init(&study, false));

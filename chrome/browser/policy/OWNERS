@@ -1,5 +1,16 @@
-bartfab@chromium.org
 atwilson@chromium.org
-cschuet@chromium.org
-tnagel@chromium.org
+bartfab@chromium.org
+emaxx@chromium.org
 pastarmovj@chromium.org
+pmarko@chromium.org
+poromov@chromium.org
+rsorokin@chromium.org
+
+per-file browser_dm_token_storage*=georgesak@chromium.org
+per-file browser_dm_token_storage*=rogerta@chromium.org
+per-file browser_dm_token_storage*=zmin@chromium.org
+
+per-file machine_level_user_cloud_policy*=rogerta@chromium.org
+per-file machine_level_user_cloud_policy*=zmin@chromium.org
+
+# COMPONENT: Enterprise

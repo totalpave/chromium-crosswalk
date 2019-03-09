@@ -5,154 +5,91 @@
 #ifndef CHROME_BROWSER_PREDICTORS_RESOURCE_PREFETCH_PREDICTOR_TABLES_H_
 #define CHROME_BROWSER_PREDICTORS_RESOURCE_PREFETCH_PREDICTOR_TABLES_H_
 
-#include <stddef.h>
-
+#include <cstddef>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/time/time.h"
+#include "base/sequenced_task_runner.h"
+#include "chrome/browser/predictors/glowplug_key_value_table.h"
 #include "chrome/browser/predictors/predictor_table_base.h"
 #include "chrome/browser/predictors/resource_prefetch_common.h"
-#include "content/public/common/resource_type.h"
-#include "url/gurl.h"
+#include "chrome/browser/predictors/resource_prefetch_predictor.pb.h"
 
-namespace sql {
-class Statement;
+namespace base {
+class Location;
 }
 
 namespace predictors {
 
 // Interface for database tables used by the ResourcePrefetchPredictor.
-// All methods except the constructor and destructor need to be called on the DB
+// All methods except the ExecuteDBTaskOnDBSequence need to be called on the UI
 // thread.
 //
 // Currently manages:
-//  - UrlResourceTable - resources per Urls.
-//  - UrlMetadataTable - misc data for Urls (like last visit time).
-//  - HostResourceTable - resources per host.
-//  - HostMetadataTable - misc data for hosts.
+//  - HostRedirectTable - key: host, value: RedirectData
+//  - OriginTable - key: host, value: OriginData
 class ResourcePrefetchPredictorTables : public PredictorTableBase {
  public:
-  // Used in the UrlResourceTable and HostResourceTable to store resources
-  // required for the page or host.
-  struct ResourceRow {
-    ResourceRow();
-    ResourceRow(const ResourceRow& other);
-    ResourceRow(const std::string& main_frame_url,
-                const std::string& resource_url,
-                content::ResourceType resource_type,
-                int number_of_hits,
-                int number_of_misses,
-                int consecutive_misses,
-                double average_position);
-    void UpdateScore();
-    bool operator==(const ResourceRow& rhs) const;
+  typedef base::OnceCallback<void(sql::Database*)> DBTask;
 
-    // Stores the host for host based data, main frame Url for the Url based
-    // data. This field is cleared for efficiency reasons and the code outside
-    // this class should not assume it is set.
-    std::string primary_key;
+  virtual void ScheduleDBTask(const base::Location& from_here, DBTask task);
 
-    GURL resource_url;
-    content::ResourceType resource_type;
-    size_t number_of_hits;
-    size_t number_of_misses;
-    size_t consecutive_misses;
-    double average_position;
+  virtual void ExecuteDBTaskOnDBSequence(DBTask task);
 
-    // Not stored.
-    float score;
-  };
-  typedef std::vector<ResourceRow> ResourceRows;
+  virtual GlowplugKeyValueTable<RedirectData>* host_redirect_table();
+  virtual GlowplugKeyValueTable<OriginData>* origin_table();
 
-  // Sorts the ResourceRows by score, descending.
-  struct ResourceRowSorter {
-    bool operator()(const ResourceRow& x, const ResourceRow& y) const;
-  };
+  // Removes the redirects with more than |max_consecutive_misses| consecutive
+  // misses from |data|.
+  static void TrimRedirects(RedirectData* data, size_t max_consecutive_misses);
 
-  // Aggregated data for a Url or Host. Although the data differs slightly, we
-  // store them in the same structure, because most of the fields are common and
-  // it allows us to use the same functions.
-  struct PrefetchData {
-    PrefetchData(PrefetchKeyType key_type, const std::string& primary_key);
-    PrefetchData(const PrefetchData& other);
-    ~PrefetchData();
-    bool operator==(const PrefetchData& rhs) const;
+  // Removes the origins with more than |max_consecutive_misses| consecutive
+  // misses from |data|.
+  static void TrimOrigins(OriginData* data, size_t max_consecutive_misses);
 
-    bool is_host() const { return key_type == PREFETCH_KEY_TYPE_HOST; }
+  // Sorts the origins by score, decreasing. Prioritizes |main_frame_origin|
+  // if found in |data|.
+  static void SortOrigins(OriginData* data,
+                          const std::string& main_frame_origin);
 
-    // Is the data a host as opposed to a Url?
-    PrefetchKeyType key_type;  // Not const to be able to assign.
-    std::string primary_key;  // is_host() ? main frame url : host.
-
-    base::Time last_visit;
-    ResourceRows resources;
-  };
-  // Map from primary key to PrefetchData for the key.
-  typedef std::map<std::string, PrefetchData> PrefetchDataMap;
-
-  // Returns data for all Urls and Hosts.
-  virtual void GetAllData(PrefetchDataMap* url_data_map,
-                          PrefetchDataMap* host_data_map);
-
-  // Updates data for a Url and a host. If either of the |url_data| or
-  // |host_data| has an empty primary key, it will be ignored.
-  // Note that the Urls and primary key in |url_data| and |host_data| should be
-  // less than |kMaxStringLength| in length.
-  virtual void UpdateData(const PrefetchData& url_data,
-                          const PrefetchData& host_data);
-
-  // Delete data for the input |urls| and |hosts|.
-  virtual void DeleteData(const std::vector<std::string>& urls,
-                  const std::vector<std::string>& hosts);
-
-  // Wrapper over DeleteData for convenience.
-  virtual void DeleteSingleDataPoint(const std::string& key,
-                                     PrefetchKeyType key_type);
-
-  // Deletes all data in all the tables.
-  virtual void DeleteAllData();
+  // Computes score of |origin|.
+  static float ComputeOriginScore(const OriginStat& origin);
 
   // The maximum length of the string that can be stored in the DB.
-  static const size_t kMaxStringLength;
+  static constexpr size_t kMaxStringLength = 1024;
+
+ protected:
+  // Protected for testing. Use PredictorDatabase::resource_prefetch_tables()
+  // instead of this constructor.
+  ResourcePrefetchPredictorTables(
+      scoped_refptr<base::SequencedTaskRunner> db_task_runner);
+  ~ResourcePrefetchPredictorTables() override;
 
  private:
   friend class PredictorDatabaseInternal;
-  friend class MockResourcePrefetchPredictorTables;
+  FRIEND_TEST_ALL_PREFIXES(ResourcePrefetchPredictorTablesTest,
+                           DatabaseVersionIsSet);
+  FRIEND_TEST_ALL_PREFIXES(ResourcePrefetchPredictorTablesTest,
+                           DatabaseIsResetWhenIncompatible);
 
-  ResourcePrefetchPredictorTables();
-  ~ResourcePrefetchPredictorTables() override;
+  // Database version. Always increment it when any change is made to the data
+  // schema (including the .proto).
+  static constexpr int kDatabaseVersion = 11;
 
-  // Helper functions below help perform functions on the Url and host table
-  // using the same code.
-  void GetAllDataHelper(PrefetchKeyType key_type,
-                        PrefetchDataMap* data_map,
-                        std::vector<std::string>* to_delete);
-  bool UpdateDataHelper(const PrefetchData& data);
-  void DeleteDataHelper(PrefetchKeyType key_type,
-                        const std::vector<std::string>& keys);
-
-  // Returns true if the strings in the |data| are less than |kMaxStringLength|
-  // in length.
-  bool StringsAreSmallerThanDBLimit(const PrefetchData& data) const;
-
-  // PredictorTableBase methods.
+  // PredictorTableBase:
   void CreateTableIfNonExistent() override;
   void LogDatabaseStats() override;
 
-  // Helpers to return Statements for cached Statements. The caller must take
-  // ownership of the return Statements.
-  sql::Statement* GetUrlResourceDeleteStatement();
-  sql::Statement* GetUrlResourceUpdateStatement();
-  sql::Statement* GetUrlMetadataDeleteStatement();
-  sql::Statement* GetUrlMetadataUpdateStatement();
+  static bool DropTablesIfOutdated(sql::Database* db);
+  static int GetDatabaseVersion(sql::Database* db);
+  static bool SetDatabaseVersion(sql::Database* db, int version);
 
-  sql::Statement* GetHostResourceDeleteStatement();
-  sql::Statement* GetHostResourceUpdateStatement();
-  sql::Statement* GetHostMetadataDeleteStatement();
-  sql::Statement* GetHostMetadataUpdateStatement();
+  std::unique_ptr<GlowplugKeyValueTable<RedirectData>> host_redirect_table_;
+  std::unique_ptr<GlowplugKeyValueTable<OriginData>> origin_table_;
 
   DISALLOW_COPY_AND_ASSIGN(ResourcePrefetchPredictorTables);
 };

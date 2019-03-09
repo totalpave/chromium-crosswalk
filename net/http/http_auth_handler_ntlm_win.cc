@@ -11,6 +11,7 @@
 
 #include "base/strings/string_util.h"
 #include "net/base/net_errors.h"
+#include "net/dns/host_resolver.h"
 #include "net/http/http_auth_preferences.h"
 #include "net/http/http_auth_sspi_win.h"
 
@@ -54,7 +55,8 @@ int HttpAuthHandlerNTLM::Factory::CreateAuthHandler(
     const GURL& origin,
     CreateReason reason,
     int digest_nonce_count,
-    const BoundNetLog& net_log,
+    const NetLogWithSource& net_log,
+    HostResolver* host_resolver,
     std::unique_ptr<HttpAuthHandler>* handler) {
   if (is_unsupported_ || reason == CREATE_PREEMPTIVE)
     return ERR_UNSUPPORTED_AUTH_SCHEME;

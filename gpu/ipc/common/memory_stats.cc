@@ -7,16 +7,16 @@
 namespace gpu {
 
 VideoMemoryUsageStats::VideoMemoryUsageStats()
-    : bytes_allocated(0), bytes_allocated_historical_max(0) {}
+    : bytes_allocated(0) {}
 
 VideoMemoryUsageStats::VideoMemoryUsageStats(
     const VideoMemoryUsageStats& other) = default;
 
-VideoMemoryUsageStats::~VideoMemoryUsageStats() {}
+VideoMemoryUsageStats::~VideoMemoryUsageStats() = default;
 
 VideoMemoryUsageStats::ProcessStats::ProcessStats()
     : video_memory(0), has_duplicates(false) {}
 
-VideoMemoryUsageStats::ProcessStats::~ProcessStats() {}
+VideoMemoryUsageStats::ProcessStats::~ProcessStats() = default;
 
 }  // namespace gpu

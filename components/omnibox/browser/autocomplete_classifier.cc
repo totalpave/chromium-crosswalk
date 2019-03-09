@@ -7,33 +7,16 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/feature_list.h"
 #include "build/build_config.h"
-#include "components/metrics/proto/omnibox_event.pb.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
+#include "components/omnibox/browser/document_provider.h"
+#include "components/omnibox/common/omnibox_features.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "url/gurl.h"
-
-// static
-const int AutocompleteClassifier::kDefaultOmniboxProviders =
-#if !defined(OS_ANDROID) && !defined(OS_IOS)
-    // Custom search engines cannot be used on mobile..
-    AutocompleteProvider::TYPE_KEYWORD |
-#endif
-#if !defined(OS_IOS)
-    // "Builtin", "Shortcuts" and "Zero Suggest" are not supported on iOS.
-    AutocompleteProvider::TYPE_BUILTIN |
-    AutocompleteProvider::TYPE_SHORTCUTS |
-    AutocompleteProvider::TYPE_ZERO_SUGGEST |
-#else
-    // "URL from clipboard" can only be used on iOS.
-    AutocompleteProvider::TYPE_CLIPBOARD_URL |
-#endif
-    AutocompleteProvider::TYPE_BOOKMARK |
-    AutocompleteProvider::TYPE_HISTORY_QUICK |
-    AutocompleteProvider::TYPE_HISTORY_URL |
-    AutocompleteProvider::TYPE_SEARCH;
 
 AutocompleteClassifier::AutocompleteClassifier(
     std::unique_ptr<AutocompleteController> controller,
@@ -44,11 +27,30 @@ AutocompleteClassifier::AutocompleteClassifier(
 
 AutocompleteClassifier::~AutocompleteClassifier() {
   // We should only reach here after Shutdown() has been called.
-  DCHECK(!controller_.get());
+  DCHECK(!controller_);
 }
 
 void AutocompleteClassifier::Shutdown() {
   controller_.reset();
+}
+
+// static
+int AutocompleteClassifier::DefaultOmniboxProviders() {
+  return
+#if !defined(OS_ANDROID) && !defined(OS_IOS)
+      // Custom search engines cannot be used on mobile.
+      AutocompleteProvider::TYPE_KEYWORD |
+#else
+      AutocompleteProvider::TYPE_CLIPBOARD |
+#endif
+      AutocompleteProvider::TYPE_ZERO_SUGGEST |
+      (base::FeatureList::IsEnabled(omnibox::kDocumentProvider)
+           ? AutocompleteProvider::TYPE_DOCUMENT
+           : 0) |
+      AutocompleteProvider::TYPE_BOOKMARK | AutocompleteProvider::TYPE_BUILTIN |
+      AutocompleteProvider::TYPE_HISTORY_QUICK |
+      AutocompleteProvider::TYPE_HISTORY_URL |
+      AutocompleteProvider::TYPE_SEARCH | AutocompleteProvider::TYPE_SHORTCUTS;
 }
 
 void AutocompleteClassifier::Classify(
@@ -60,10 +62,20 @@ void AutocompleteClassifier::Classify(
     GURL* alternate_nav_url) {
   DCHECK(!inside_classify_);
   base::AutoReset<bool> reset(&inside_classify_, true);
-  controller_->Start(AutocompleteInput(
-      text, base::string16::npos, std::string(), GURL(), page_classification,
-      true, prefer_keyword, allow_exact_keyword_match, false, false,
-      *scheme_classifier_));
+  AutocompleteInput input(text, page_classification, *scheme_classifier_);
+  input.set_prevent_inline_autocomplete(true);
+  // If the user in keyword mode (which is often the case when |prefer_keyword|
+  // is true), ideally we'd set |input|'s keyword_mode_entry_method field.
+  // However, in the context of this code, we don't know how the keyword mode
+  // was entered. Moreover, we cannot add that as a parameter to Classify()
+  // because many callers do not know how keyword mode was entered. Luckily,
+  // Classify()'s purpose is to determine the default match, and at this time
+  // |keyword_mode_entry_method| only ends up affecting the ranking of
+  // lower-down suggestions.
+  input.set_prefer_keyword(prefer_keyword);
+  input.set_allow_exact_keyword_match(allow_exact_keyword_match);
+  input.set_want_asynchronous_matches(false);
+  controller_->Start(input);
   DCHECK(controller_->done());
   const AutocompleteResult& result = controller_->result();
   if (result.empty()) {

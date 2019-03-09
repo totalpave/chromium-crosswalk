@@ -6,8 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_AUTOFILL_SAVE_CARD_ICON_VIEW_H_
 
 #include "base/macros.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-#include "chrome/browser/ui/views/location_bar/bubble_icon_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 
 class Browser;
 class CommandUpdater;
@@ -19,25 +18,35 @@ class SaveCardBubbleControllerImpl;
 // The location bar icon to show the Save Credit Card bubble where the user can
 // choose to save the credit card info to use again later without re-entering
 // it.
-class SaveCardIconView : public BubbleIconView, public TabStripModelObserver {
+class SaveCardIconView : public PageActionIconView {
  public:
-  explicit SaveCardIconView(CommandUpdater* command_updater, Browser* browser);
+  SaveCardIconView(CommandUpdater* command_updater,
+                   Browser* browser,
+                   PageActionIconView::Delegate* delegate,
+                   const gfx::FontList& font_list);
   ~SaveCardIconView() override;
 
- protected:
-  // BubbleIconView:
-  void OnExecuting(BubbleIconView::ExecuteSource execute_source) override;
+  // PageActionIconView:
   views::BubbleDialogDelegateView* GetBubble() const override;
-  gfx::VectorIconId GetVectorIcon() const override;
+  bool Update() override;
+  base::string16 GetTextForTooltipAndAccessibleName() const override;
+  bool ShouldShowSeparator() const override;
 
-  // TabStripModelObserver:
-  void TabDeactivated(content::WebContents* contents) override;
+ protected:
+  // PageActionIconView:
+  void OnExecuting(PageActionIconView::ExecuteSource execute_source) override;
+  const gfx::VectorIcon& GetVectorIcon() const override;
 
  private:
+  friend class SaveCardBubbleViewsFullFormBrowserTest;
+
   SaveCardBubbleControllerImpl* GetController() const;
 
+  // gfx::AnimationDelegate:
+  void AnimationEnded(const gfx::Animation* animation) override;
+
   // May be nullptr.
-  Browser* browser_;
+  Browser* const browser_;
 
   DISALLOW_COPY_AND_ASSIGN(SaveCardIconView);
 };

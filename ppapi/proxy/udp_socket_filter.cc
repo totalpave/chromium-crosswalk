@@ -6,23 +6,21 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/proxy/error_conversion.h"
 #include "ppapi/proxy/plugin_globals.h"
 #include "ppapi/proxy/ppapi_messages.h"
+#include "ppapi/proxy/udp_socket_resource_constants.h"
 #include "ppapi/thunk/enter.h"
 #include "ppapi/thunk/resource_creation_api.h"
 
 namespace ppapi {
 namespace proxy {
-
-const int32_t UDPSocketFilter::kMaxReadSize = 128 * 1024;
-const int32_t UDPSocketFilter::kMaxReceiveBufferSize =
-    1024 * UDPSocketFilter::kMaxReadSize;
-const size_t UDPSocketFilter::kPluginReceiveBufferSlots = 32u;
 
 namespace {
 
@@ -68,16 +66,16 @@ void UDPSocketFilter::AddUDPResource(
     const base::Closure& slot_available_callback) {
   ProxyLock::AssertAcquired();
   base::AutoLock acquire(lock_);
-  DCHECK(!queues_.contains(resource));
-  queues_.add(resource, std::unique_ptr<RecvQueue>(new RecvQueue(
-                            instance, private_api, slot_available_callback)));
+  DCHECK(queues_.find(resource) == queues_.end());
+  queues_[resource] = std::make_unique<RecvQueue>(instance, private_api,
+                                                  slot_available_callback);
 }
 
 void UDPSocketFilter::RemoveUDPResource(PP_Resource resource) {
   ProxyLock::AssertAcquired();
   base::AutoLock acquire(lock_);
-  DCHECK(queues_.contains(resource));
-  queues_.erase(resource);
+  auto erase_count = queues_.erase(resource);
+  DCHECK_GT(erase_count, 0u);
 }
 
 int32_t UDPSocketFilter::RequestData(
@@ -88,12 +86,12 @@ int32_t UDPSocketFilter::RequestData(
     const scoped_refptr<TrackedCallback>& callback) {
   ProxyLock::AssertAcquired();
   base::AutoLock acquire(lock_);
-  RecvQueue* queue_ptr = queues_.get(resource);
-  if (!queue_ptr) {
+  auto it = queues_.find(resource);
+  if (it == queues_.end()) {
     NOTREACHED();
     return PP_ERROR_FAILED;
   }
-  return queue_ptr->RequestData(num_bytes, buffer, addr, callback);
+  return it->second->RequestData(num_bytes, buffer, addr, callback);
 }
 
 bool UDPSocketFilter::OnResourceReplyReceived(
@@ -111,7 +109,8 @@ bool UDPSocketFilter::OnResourceReplyReceived(
 PP_NetAddress_Private UDPSocketFilter::GetLastAddrPrivate(
     PP_Resource resource) const {
   base::AutoLock acquire(lock_);
-  return queues_.get(resource)->GetLastAddrPrivate();
+  auto it = queues_.find(resource);
+  return it->second->GetLastAddrPrivate();
 }
 
 void UDPSocketFilter::OnPluginMsgPushRecvResult(
@@ -119,15 +118,15 @@ void UDPSocketFilter::OnPluginMsgPushRecvResult(
     int32_t result,
     const std::string& data,
     const PP_NetAddress_Private& addr) {
-  DCHECK(PluginGlobals::Get()->ipc_task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(PluginGlobals::Get()->ipc_task_runner()->RunsTasksInCurrentSequence());
   base::AutoLock acquire(lock_);
-  RecvQueue* queue_ptr = queues_.get(params.pp_resource());
+  auto it = queues_.find(params.pp_resource());
   // The RecvQueue might be gone if there were messages in-flight for a
   // resource that has been destroyed.
-  if (queue_ptr) {
+  if (it != queues_.end()) {
     // TODO(yzshen): Support passing in a non-const string ref, so that we can
     // eliminate one copy when storing the data in the buffer.
-    queue_ptr->DataReceivedOnIOThread(result, data, addr);
+    it->second->DataReceivedOnIOThread(result, data, addr);
   }
 }
 
@@ -153,8 +152,10 @@ void UDPSocketFilter::RecvQueue::DataReceivedOnIOThread(
     int32_t result,
     const std::string& data,
     const PP_NetAddress_Private& addr) {
-  DCHECK(PluginGlobals::Get()->ipc_task_runner()->RunsTasksOnCurrentThread());
-  DCHECK_LT(recv_buffers_.size(), UDPSocketFilter::kPluginReceiveBufferSlots);
+  DCHECK(PluginGlobals::Get()->ipc_task_runner()->RunsTasksInCurrentSequence());
+  DCHECK_LT(recv_buffers_.size(),
+            static_cast<size_t>(
+                UDPSocketResourceConstants::kPluginReceiveBufferSlots));
 
   if (!TrackedCallback::IsPending(recvfrom_callback_) || !read_buffer_) {
     recv_buffers_.push(RecvBuffer());
@@ -214,7 +215,9 @@ int32_t UDPSocketFilter::RecvQueue::RequestData(
 
   if (recv_buffers_.empty()) {
     read_buffer_ = buffer_out;
-    bytes_to_read_ = std::min(num_bytes, UDPSocketFilter::kMaxReadSize);
+    bytes_to_read_ = std::min(
+        num_bytes,
+        static_cast<int32_t>(UDPSocketResourceConstants::kMaxReadSize));
     recvfrom_addr_resource_ = addr_out;
     recvfrom_callback_ = callback;
     return PP_OK_COMPLETIONPENDING;
@@ -224,11 +227,11 @@ int32_t UDPSocketFilter::RecvQueue::RequestData(
     if (static_cast<size_t>(num_bytes) < front.data.size())
       return PP_ERROR_MESSAGE_TOO_BIG;
 
-    int32_t result = static_cast<int32_t>(front.data.size());
     std::unique_ptr<std::string> data_to_pass(new std::string);
     data_to_pass->swap(front.data);
-    SetRecvFromOutput(pp_instance_, std::move(data_to_pass), front.addr,
-                      buffer_out, num_bytes, addr_out, PP_OK);
+    int32_t result =
+        SetRecvFromOutput(pp_instance_, std::move(data_to_pass), front.addr,
+                          buffer_out, num_bytes, addr_out, front.result);
     last_recvfrom_addr_ = front.addr;
     recv_buffers_.pop();
     slot_available_callback_.Run();

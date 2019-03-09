@@ -13,8 +13,16 @@
 #include "ui/base/models/table_model.h"
 #include "ui/base/models/table_model_observer.h"
 #include "ui/gfx/font_list.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/view.h"
 #include "ui/views/views_export.h"
+
+namespace ui {
+
+struct AXActionData;
+struct AXNodeData;
+
+}  // namespace ui
 
 // A TableView is a view that displays multiple rows with any number of columns.
 // TableView is driven by a TableModel. The model returns the contents
@@ -33,11 +41,12 @@
 // sort by way of overriding TableModel::CompareValues().
 namespace views {
 
+class AXVirtualView;
+class FocusRing;
 struct GroupRange;
 class TableGrouper;
 class TableHeader;
 class TableViewObserver;
-class TableViewRowBackgroundPainter;
 class TableViewTestHelper;
 
 // The cells in the first column of a table can contain:
@@ -55,6 +64,14 @@ class VIEWS_EXPORT TableView
  public:
   // Internal class name.
   static const char kViewClassName[];
+
+  // Used by AdvanceActiveVisibleColumn(), AdvanceSelection() and
+  // ResizeColumnViaKeyboard() to determine the direction to change the
+  // selection.
+  enum AdvanceDirection {
+    ADVANCE_DECREMENT,
+    ADVANCE_INCREMENT,
+  };
 
   // Used to track a visible column. Useful only for the header.
   struct VIEWS_EXPORT VisibleColumn {
@@ -106,19 +123,12 @@ class VIEWS_EXPORT TableView
   // Returns a new ScrollView that contains the receiver.
   View* CreateParentIfNecessary();
 
-  void SetRowBackgroundPainter(
-      std::unique_ptr<TableViewRowBackgroundPainter> painter);
-
   // Sets the TableGrouper. TableView does not own |grouper| (common use case is
   // to have TableModel implement TableGrouper).
   void SetGrouper(TableGrouper* grouper);
 
   // Returns the number of rows in the TableView.
   int RowCount() const;
-
-  // Returns the number of selected rows.
-  // TODO(sky): remove this and force callers to use selection_model().
-  int SelectedRowCount();
 
   // Selects the specified item, making sure it's visible.
   void Select(int model_row);
@@ -141,23 +151,40 @@ class VIEWS_EXPORT TableView
   // or not).
   bool HasColumn(int id) const;
 
-  // TODO(sky): rename to set_observer().
-  void SetObserver(TableViewObserver* observer) {
-    table_view_observer_ = observer;
-  }
-  TableViewObserver* observer() const { return table_view_observer_; }
+  // Returns whether an active row and column have been set.
+  bool HasFocusIndicator() const;
+
+  // Moves the focus ring to its new location if the active cell has changed, or
+  // hides the focus ring if the table is not focused.
+  void ResetFocusIndicator();
+
+  void set_observer(TableViewObserver* observer) { observer_ = observer; }
+  TableViewObserver* observer() const { return observer_; }
+
+  int GetActiveVisibleColumnIndex() const;
+
+  void SetActiveVisibleColumnIndex(int index);
 
   const std::vector<VisibleColumn>& visible_columns() const {
     return visible_columns_;
   }
 
+  const VisibleColumn& GetVisibleColumn(int index);
+
   // Sets the width of the column. |index| is in terms of |visible_columns_|.
   void SetVisibleColumnWidth(int index, int width);
 
-  // Toggles the sort order of the specified visible column index.
+  // Modify the table sort order, depending on a clicked column and the previous
+  // table sort order. Does nothing if this column is not sortable.
+  //
+  // When called repeatedly on the same sortable column, the sort order will
+  // cycle through three states in order: sorted -> reverse-sorted -> unsorted.
+  // When switching from one sort column to another, the previous sort column
+  // will be remembered and used as a secondary sort key.
   void ToggleSortOrder(int visible_column_index);
 
   const SortDescriptors& sort_descriptors() const { return sort_descriptors_; }
+  void SetSortDescriptors(const SortDescriptors& descriptors);
   bool is_sorted() const { return !sort_descriptors_.empty(); }
 
   // Maps from the index in terms of the model to that of the view.
@@ -175,7 +202,7 @@ class VIEWS_EXPORT TableView
   // View overrides:
   void Layout() override;
   const char* GetClassName() const override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   bool OnKeyPressed(const ui::KeyEvent& event) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
@@ -183,13 +210,15 @@ class VIEWS_EXPORT TableView
                       base::string16* tooltip) const override;
   bool GetTooltipTextOrigin(const gfx::Point& p,
                             gfx::Point* loc) const override;
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
+  bool HandleAccessibleAction(const ui::AXActionData& action_data) override;
 
   // ui::TableModelObserver overrides:
   void OnModelChanged() override;
   void OnItemsChanged(int start, int length) override;
   void OnItemsAdded(int start, int length) override;
   void OnItemsRemoved(int start, int length) override;
+  void OnItemsMoved(int old_start, int length, int new_start) override;
 
  protected:
   // View overrides:
@@ -217,18 +246,16 @@ class VIEWS_EXPORT TableView
     int max_column;
   };
 
-  // Used by AdvanceSelection() to determine the direction to change the
-  // selection.
-  enum AdvanceDirection {
-    ADVANCE_DECREMENT,
-    ADVANCE_INCREMENT,
-  };
+  // Returns the horizontal margin between the bounds of a cell and its
+  // contents.
+  int GetCellMargin() const;
+
+  // Returns the horizontal spacing between elements (grouper, icon, and text)
+  // in a cell.
+  int GetCellElementSpacing() const;
 
   // Invoked when the number of rows changes in some way.
   void NumRowsChanged();
-
-  // Resets the sort descriptions.
-  void SetSortDescriptors(const SortDescriptors& sort_descriptors);
 
   // Does the actual sort and updates the mappings (|view_to_model_| and
   // |model_to_view_|) appropriately.
@@ -272,11 +299,15 @@ class VIEWS_EXPORT TableView
   // Returns the TableColumn matching the specified id.
   ui::TableColumn FindColumnByID(int id) const;
 
+  // Advances the active visible column (from the active visible column index)
+  // in the specified direction.
+  void AdvanceActiveVisibleColumn(AdvanceDirection direction);
+
   // Sets the selection to the specified index (in terms of the view).
   void SelectByViewIndex(int view_index);
 
   // Sets the selection model to |new_selection|.
-  void SetSelectionModel(const ui::ListSelectionModel& new_selection);
+  void SetSelectionModel(ui::ListSelectionModel new_selection);
 
   // Advances the selection (from the active index) in the specified direction.
   void AdvanceSelection(AdvanceDirection direction);
@@ -304,6 +335,24 @@ class VIEWS_EXPORT TableView
                       base::string16* tooltip,
                       gfx::Point* tooltip_origin) const;
 
+  // Updates a set of accessibility views that expose the visible table contents
+  // to assistive software.
+  void UpdateVirtualAccessibilityChildren();
+
+  // Updates the internal accessibility state and fires the required
+  // accessibility events to indicate to assistive software which row is active
+  // and which cell is focused, if any.
+  void UpdateAccessibilityFocus();
+
+  // Returns the virtual accessibility view corresponding to the specified row.
+  // |row| should be a view index, not a model index.
+  AXVirtualView* GetVirtualAccessibilityRow(int row);
+
+  // Returns the virtual accessibility view corresponding to the specified cell.
+  // |row| should be a view index, not a model index.
+  // |visible_column_index| indexes into |visible_columns_|.
+  AXVirtualView* GetVirtualAccessibilityCell(int row, int visible_column_index);
+
   ui::TableModel* model_;
 
   std::vector<ui::TableColumn> columns_;
@@ -311,6 +360,13 @@ class VIEWS_EXPORT TableView
   // The set of visible columns. The values of these point to |columns_|. This
   // may contain a subset of |columns_|.
   std::vector<VisibleColumn> visible_columns_;
+
+  // The active visible column. Used for keyboard access to functionality such
+  // as sorting and resizing. -1 if no visible column is active.
+  int active_visible_column_index_;
+
+  // Used to draw a focus indicator around the active cell.
+  std::unique_ptr<FocusRing> focus_ring_;
 
   // The header. This is only created if more than one column is specified or
   // the first column has a non-empty title.
@@ -327,8 +383,7 @@ class VIEWS_EXPORT TableView
   // is selected then.
   bool select_on_remove_ = true;
 
-  // TODO(sky): rename to observer_.
-  TableViewObserver* table_view_observer_;
+  TableViewObserver* observer_;
 
   // The selection, in terms of the model.
   ui::ListSelectionModel selection_model_;
@@ -350,8 +405,6 @@ class VIEWS_EXPORT TableView
   // Mappings used when sorted.
   std::vector<int> view_to_model_;
   std::vector<int> model_to_view_;
-
-  std::unique_ptr<TableViewRowBackgroundPainter> row_background_painter_;
 
   TableGrouper* grouper_;
 

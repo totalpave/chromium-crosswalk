@@ -12,37 +12,33 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "base/scoped_observer.h"
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/extension_registry_observer.h"
-
-namespace content {
-class BrowserContext;
-}
 
 namespace gfx {
 class Image;
 }
+
+class Profile;
 
 namespace extensions {
 
 class Extension;
 class ExtensionPrefs;
 class ExtensionRegistry;
-class StorageEventObserver;
+class ExtensionStorageMonitorIOHelper;
 
 // ExtensionStorageMonitor monitors the storage usage of extensions and apps
 // that are granted unlimited storage and displays notifications when high
 // usage is detected.
 class ExtensionStorageMonitor : public KeyedService,
-                                public content::NotificationObserver,
                                 public ExtensionRegistryObserver,
                                 public ExtensionUninstallDialog::Delegate {
  public:
-  static ExtensionStorageMonitor* Get(content::BrowserContext* context);
+  static ExtensionStorageMonitor* Get(Profile* profile);
 
   // Indices of buttons in the notification. Exposed for testing.
   enum ButtonIndex {
@@ -50,21 +46,16 @@ class ExtensionStorageMonitor : public KeyedService,
     BUTTON_UNINSTALL
   };
 
-  explicit ExtensionStorageMonitor(content::BrowserContext* context);
+  explicit ExtensionStorageMonitor(Profile* profile);
   ~ExtensionStorageMonitor() override;
 
  private:
-  // content::NotificationObserver overrides:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
-
   // ExtensionRegistryObserver overrides:
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
   void OnExtensionWillBeInstalled(content::BrowserContext* browser_context,
                                   const Extension* extension,
                                   bool is_update,
@@ -86,15 +77,13 @@ class ExtensionStorageMonitor : public KeyedService,
                      int64_t current_usage,
                      const gfx::Image& image);
   void OnNotificationButtonClick(const std::string& extension_id,
-                                 int button_index);
+                                 base::Optional<int> button_index);
 
   void DisableStorageMonitoring(const std::string& extension_id);
   void StartMonitoringStorage(const Extension* extension);
   void StopMonitoringStorage(const std::string& extension_id);
-  void StopMonitoringAll();
 
   void RemoveNotificationForExtension(const std::string& extension_id);
-  void RemoveAllNotifications();
 
   // Displays the prompt for uninstalling the extension.
   void ShowUninstallPrompt(const std::string& extension_id);
@@ -131,16 +120,16 @@ class ExtensionStorageMonitor : public KeyedService,
   // IDs of extensions that notifications were shown for.
   std::set<std::string> notified_extension_ids_;
 
-  content::BrowserContext* context_;
+  Profile* profile_;
   extensions::ExtensionPrefs* extension_prefs_;
 
-  content::NotificationRegistrar registrar_;
   ScopedObserver<extensions::ExtensionRegistry,
                  extensions::ExtensionRegistryObserver>
       extension_registry_observer_;
 
-  // StorageEventObserver monitors storage for extensions on the IO thread.
-  scoped_refptr<StorageEventObserver> storage_observer_;
+  // ExtensionStorageMonitorIOHelper maintains, on the IO thread, an instance of
+  // SingleExtensionStorageObserver for each extension.
+  scoped_refptr<ExtensionStorageMonitorIOHelper> io_helper_;
 
   // Modal dialog used to confirm removal of an extension.
   std::unique_ptr<ExtensionUninstallDialog> uninstall_dialog_;
@@ -151,7 +140,7 @@ class ExtensionStorageMonitor : public KeyedService,
 
   base::WeakPtrFactory<ExtensionStorageMonitor> weak_ptr_factory_;
 
-  friend class StorageEventObserver;
+  friend class SingleExtensionStorageObserver;
   friend class ExtensionStorageMonitorTest;
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionStorageMonitor);

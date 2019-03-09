@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/callback.h"
+#include "base/cfi_buildflags.h"
+#include "base/command_line.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/path_service.h"
@@ -18,6 +21,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/shell/browser/shell.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -50,13 +54,21 @@ namespace dom_distiller {
 
 const char* kExternalTestResourcesPath =
     "third_party/dom_distiller_js/dist/test/data";
-const char* kTestFilePath = "/war/test.html?console_log=0";
+// TODO(877461): Remove filter once image construction happens synchronously and
+// asserts do not flake anymore when exposed to different garbage collection
+// heuristics.
+const char* kTestFilePath =
+    "/war/test.html?console_log=0&filter="
+    "-*.testImageExtractorWithAttributesCSSHeightCM"
+    ":*.testImageExtractorWithHeightCSS"
+    ":*.testImageExtractorWithOneAttribute"
+    ":*.testImageExtractorWithSettingDimension";
 const char* kRunJsTestsJs =
     "(function() {return org.chromium.distiller.JsTestEntry.run();})();";
 
 class DomDistillerJsTest : public content::ContentBrowserTest {
  public:
-  DomDistillerJsTest() : result_(NULL) {}
+  DomDistillerJsTest() : result_(nullptr) {}
 
   // content::ContentBrowserTest:
   void SetUpOnMainThread() override {
@@ -79,10 +91,10 @@ class DomDistillerJsTest : public content::ContentBrowserTest {
     base::FilePath pak_file;
     base::FilePath pak_dir;
 #if defined(OS_ANDROID)
-    CHECK(PathService::Get(base::DIR_ANDROID_APP_DATA, &pak_dir));
+    CHECK(base::PathService::Get(base::DIR_ANDROID_APP_DATA, &pak_dir));
     pak_dir = pak_dir.Append(FILE_PATH_LITERAL("paks"));
 #else
-    PathService::Get(base::DIR_MODULE, &pak_dir);
+    base::PathService::Get(base::DIR_MODULE, &pak_dir);
 #endif  // OS_ANDROID
     pak_file =
         pak_dir.Append(FILE_PATH_LITERAL("components_tests_resources.pak"));
@@ -92,14 +104,35 @@ class DomDistillerJsTest : public content::ContentBrowserTest {
 
   void SetUpTestServer() {
     base::FilePath path;
-    PathService::Get(base::DIR_SOURCE_ROOT, &path);
+    base::PathService::Get(base::DIR_SOURCE_ROOT, &path);
     path = path.AppendASCII(kExternalTestResourcesPath);
     embedded_test_server()->ServeFilesFromDirectory(path);
     ASSERT_TRUE(embedded_test_server()->Start());
   }
 };
 
-IN_PROC_BROWSER_TEST_F(DomDistillerJsTest, RunJsTests) {
+// Disabled on MSan and Android CFI bots.
+// https://crbug.com/845180
+#if defined(MEMORY_SANITIZER) || defined(OS_WIN) ||              \
+    (defined(OS_ANDROID) &&                                      \
+     (BUILDFLAG(CFI_CAST_CHECK) || BUILDFLAG(CFI_ICALL_CHECK) || \
+      BUILDFLAG(CFI_ENFORCEMENT_DIAGNOSTIC) ||                   \
+      BUILDFLAG(CFI_ENFORCEMENT_TRAP)))
+#define MAYBE_RunJsTests DISABLED_RunJsTests
+#else
+#define MAYBE_RunJsTests RunJsTests
+#endif
+IN_PROC_BROWSER_TEST_F(DomDistillerJsTest, MAYBE_RunJsTests) {
+  // TODO(jaebaek): Revisit this code when the --use-zoom-for-dsf feature on
+  // Android is done. If we remove this code (i.e., enable --use-zoom-for-dsf),
+  // HTMLImageElement::LayoutBoxWidth() returns a value that has a small error
+  // from the real one (i.e., the real is 38, but it returns 37) and it results
+  // in the failure of
+  // EmbedExtractorTest.testImageExtractorWithAttributesCSSHeightCM (See
+  // crrev.com/c/916021). We must solve this precision issue.
+  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+      switches::kEnableUseZoomForDSF, "false");
+
   // Load the test file in content shell and wait until it has fully loaded.
   content::WebContents* web_contents = shell()->web_contents();
   dom_distiller::WebContentsMainFrameObserver::CreateForWebContents(
@@ -128,7 +161,7 @@ IN_PROC_BROWSER_TEST_F(DomDistillerJsTest, RunJsTests) {
   run_loop.Run();
 
   // By now either the timeout has triggered, or there should be a result.
-  ASSERT_TRUE(result_ != NULL) << "No result found. Timeout?";
+  ASSERT_TRUE(result_ != nullptr) << "No result found. Timeout?";
 
   // Convert to dictionary and parse the results.
   const base::DictionaryValue* dict;
@@ -162,6 +195,10 @@ IN_PROC_BROWSER_TEST_F(DomDistillerJsTest, RunJsTests) {
     std::string console_log;
     ASSERT_TRUE(dict->GetString("log", &console_log));
     VLOG(0) << "Console log:\n" << console_log;
+    VLOG(0) << "\n\n"
+        "More info at third_party/dom_distiller_js/README.chromium.\n"
+        "To disable tests, modify the filter parameter in |kTestFilePath|,\n"
+        "in gtest_filter syntax.\n\n";
   }
 }
 

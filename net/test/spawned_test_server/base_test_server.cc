@@ -24,7 +24,9 @@
 #include "net/cert/test_root_certs.h"
 #include "net/cert/x509_certificate.h"
 #include "net/dns/host_resolver.h"
-#include "net/log/net_log.h"
+#include "net/dns/public/dns_query_type.h"
+#include "net/log/net_log_with_source.h"
+#include "net/test/test_data_directory.h"
 #include "url/gurl.h"
 
 namespace net {
@@ -46,8 +48,7 @@ std::string GetHostname(BaseTestServer::Type type,
     }
   }
 
-  // Use the 127.0.0.1 as default.
-  return BaseTestServer::kLocalhost;
+  return "127.0.0.1";
 }
 
 std::string GetClientCertType(SSLClientCertType type) {
@@ -84,18 +85,18 @@ void GetCiphersList(int cipher, base::ListValue* values) {
     values->AppendString("aes128gcm");
 }
 
-base::StringValue* GetTLSIntoleranceType(
+std::unique_ptr<base::Value> GetTLSIntoleranceType(
     BaseTestServer::SSLOptions::TLSIntoleranceType type) {
   switch (type) {
     case BaseTestServer::SSLOptions::TLS_INTOLERANCE_ALERT:
-      return new base::StringValue("alert");
+      return std::make_unique<base::Value>("alert");
     case BaseTestServer::SSLOptions::TLS_INTOLERANCE_CLOSE:
-      return new base::StringValue("close");
+      return std::make_unique<base::Value>("close");
     case BaseTestServer::SSLOptions::TLS_INTOLERANCE_RESET:
-      return new base::StringValue("reset");
+      return std::make_unique<base::Value>("reset");
     default:
       NOTREACHED();
-      return new base::StringValue("");
+      return std::make_unique<base::Value>("");
   }
 }
 
@@ -107,62 +108,84 @@ bool GetLocalCertificatesDir(const base::FilePath& certificates_dir,
   }
 
   base::FilePath src_dir;
-  if (!PathService::Get(base::DIR_SOURCE_ROOT, &src_dir))
+  if (!base::PathService::Get(base::DIR_SOURCE_ROOT, &src_dir))
     return false;
 
   *local_certificates_dir = src_dir.Append(certificates_dir);
   return true;
 }
 
-std::unique_ptr<base::ListValue> GetTokenBindingParams(
-    std::vector<int> params) {
-  std::unique_ptr<base::ListValue> values(new base::ListValue());
-  for (int param : params) {
-    values->AppendInteger(param);
+std::string OCSPStatusToString(
+    const BaseTestServer::SSLOptions::OCSPStatus& ocsp_status) {
+  switch (ocsp_status) {
+    case BaseTestServer::SSLOptions::OCSP_OK:
+      return "ok";
+    case BaseTestServer::SSLOptions::OCSP_REVOKED:
+      return "revoked";
+    case BaseTestServer::SSLOptions::OCSP_INVALID_RESPONSE:
+      return "invalid";
+    case BaseTestServer::SSLOptions::OCSP_UNAUTHORIZED:
+      return "unauthorized";
+    case BaseTestServer::SSLOptions::OCSP_UNKNOWN:
+      return "unknown";
+    case BaseTestServer::SSLOptions::OCSP_TRY_LATER:
+      return "later";
+    case BaseTestServer::SSLOptions::OCSP_INVALID_RESPONSE_DATA:
+      return "invalid_data";
+    case BaseTestServer::SSLOptions::OCSP_MISMATCHED_SERIAL:
+      return "mismatched_serial";
   }
-  return values;
+  NOTREACHED();
+  return std::string();
+}
+
+std::string OCSPDateToString(
+    const BaseTestServer::SSLOptions::OCSPDate& ocsp_date) {
+  switch (ocsp_date) {
+    case BaseTestServer::SSLOptions::OCSP_DATE_VALID:
+      return "valid";
+    case BaseTestServer::SSLOptions::OCSP_DATE_OLD:
+      return "old";
+    case BaseTestServer::SSLOptions::OCSP_DATE_EARLY:
+      return "early";
+    case BaseTestServer::SSLOptions::OCSP_DATE_LONG:
+      return "long";
+    case BaseTestServer::SSLOptions::OCSP_DATE_LONGER:
+      return "longer";
+  }
+  NOTREACHED();
+  return std::string();
+}
+
+std::string OCSPProducedToString(
+    BaseTestServer::SSLOptions::OCSPProduced ocsp_produced) {
+  switch (ocsp_produced) {
+    case BaseTestServer::SSLOptions::OCSPProduced::OCSP_PRODUCED_VALID:
+      return "valid";
+    case BaseTestServer::SSLOptions::OCSPProduced::OCSP_PRODUCED_BEFORE_CERT:
+      return "before";
+    case BaseTestServer::SSLOptions::OCSPProduced::OCSP_PRODUCED_AFTER_CERT:
+      return "after";
+    default:
+      NOTREACHED();
+      return std::string();
+  }
+}
+
+bool RegisterRootCertsInternal(const base::FilePath& file_path) {
+  TestRootCerts* root_certs = TestRootCerts::GetInstance();
+  return root_certs->AddFromFile(file_path.AppendASCII("ocsp-test-root.pem")) &&
+         root_certs->AddFromFile(file_path.AppendASCII("root_ca_cert.pem"));
 }
 
 }  // namespace
 
-BaseTestServer::SSLOptions::SSLOptions()
-    : server_certificate(CERT_OK),
-      ocsp_status(OCSP_OK),
-      cert_serial(0),
-      request_client_certificate(false),
-      key_exchanges(SSLOptions::KEY_EXCHANGE_ANY),
-      bulk_ciphers(SSLOptions::BULK_CIPHER_ANY),
-      record_resume(false),
-      tls_intolerant(TLS_INTOLERANT_NONE),
-      tls_intolerance_type(TLS_INTOLERANCE_ALERT),
-      fallback_scsv_enabled(false),
-      staple_ocsp_response(false),
-      ocsp_server_unavailable(false),
-      alert_after_handshake(false),
-      disable_channel_id(false),
-      disable_extended_master_secret(false) {}
-
-BaseTestServer::SSLOptions::SSLOptions(
-    BaseTestServer::SSLOptions::ServerCertificate cert)
-    : server_certificate(cert),
-      ocsp_status(OCSP_OK),
-      cert_serial(0),
-      request_client_certificate(false),
-      key_exchanges(SSLOptions::KEY_EXCHANGE_ANY),
-      bulk_ciphers(SSLOptions::BULK_CIPHER_ANY),
-      record_resume(false),
-      tls_intolerant(TLS_INTOLERANT_NONE),
-      tls_intolerance_type(TLS_INTOLERANCE_ALERT),
-      fallback_scsv_enabled(false),
-      staple_ocsp_response(false),
-      ocsp_server_unavailable(false),
-      alert_after_handshake(false),
-      disable_channel_id(false),
-      disable_extended_master_secret(false) {}
-
+BaseTestServer::SSLOptions::SSLOptions() = default;
+BaseTestServer::SSLOptions::SSLOptions(ServerCertificate cert)
+    : server_certificate(cert) {}
 BaseTestServer::SSLOptions::SSLOptions(const SSLOptions& other) = default;
 
-BaseTestServer::SSLOptions::~SSLOptions() {}
+BaseTestServer::SSLOptions::~SSLOptions() = default;
 
 base::FilePath BaseTestServer::SSLOptions::GetCertificateFile() const {
   switch (server_certificate) {
@@ -180,6 +203,8 @@ base::FilePath BaseTestServer::SSLOptions::GetCertificateFile() const {
     case CERT_BAD_VALIDITY:
       return base::FilePath(FILE_PATH_LITERAL("bad_validity.pem"));
     case CERT_AUTO:
+    case CERT_AUTO_WITH_INTERMEDIATE:
+    case CERT_AUTO_AIA_INTERMEDIATE:
       return base::FilePath();
     default:
       NOTREACHED();
@@ -188,49 +213,112 @@ base::FilePath BaseTestServer::SSLOptions::GetCertificateFile() const {
 }
 
 std::string BaseTestServer::SSLOptions::GetOCSPArgument() const {
-  if (server_certificate != CERT_AUTO)
+  if (server_certificate != CERT_AUTO &&
+      server_certificate != CERT_AUTO_WITH_INTERMEDIATE) {
     return std::string();
-
-  switch (ocsp_status) {
-    case OCSP_OK:
-      return "ok";
-    case OCSP_REVOKED:
-      return "revoked";
-    case OCSP_INVALID:
-      return "invalid";
-    case OCSP_UNAUTHORIZED:
-      return "unauthorized";
-    case OCSP_UNKNOWN:
-      return "unknown";
-    default:
-      NOTREACHED();
-      return std::string();
   }
+
+  // |ocsp_responses| overrides when it is non-empty.
+  if (!ocsp_responses.empty()) {
+    std::string arg;
+    for (size_t i = 0; i < ocsp_responses.size(); i++) {
+      if (i != 0)
+        arg += ":";
+      arg += OCSPStatusToString(ocsp_responses[i].status);
+    }
+    return arg;
+  }
+
+  return OCSPStatusToString(ocsp_status);
 }
 
-const char BaseTestServer::kLocalhost[] = "127.0.0.1";
+std::string BaseTestServer::SSLOptions::GetOCSPDateArgument() const {
+  if (server_certificate != CERT_AUTO &&
+      server_certificate != CERT_AUTO_WITH_INTERMEDIATE) {
+    return std::string();
+  }
 
-BaseTestServer::BaseTestServer(Type type, const std::string& host)
-    : type_(type),
-      started_(false),
-      log_to_console_(false),
-      ws_basic_auth_(false),
-      no_anonymous_ftp_user_(false) {
-  Init(host);
+  if (!ocsp_responses.empty()) {
+    std::string arg;
+    for (size_t i = 0; i < ocsp_responses.size(); i++) {
+      if (i != 0)
+        arg += ":";
+      arg += OCSPDateToString(ocsp_responses[i].date);
+    }
+    return arg;
+  }
+
+  return OCSPDateToString(ocsp_date);
+}
+
+std::string BaseTestServer::SSLOptions::GetOCSPProducedArgument() const {
+  if (server_certificate != CERT_AUTO &&
+      server_certificate != CERT_AUTO_WITH_INTERMEDIATE) {
+    return std::string();
+  }
+
+  return OCSPProducedToString(ocsp_produced);
+}
+
+std::string BaseTestServer::SSLOptions::GetOCSPIntermediateArgument() const {
+  if (server_certificate != CERT_AUTO_WITH_INTERMEDIATE)
+    return std::string();
+
+  // |ocsp_intermediate_responses| overrides when it is non-empty.
+  if (!ocsp_intermediate_responses.empty()) {
+    std::string arg;
+    for (size_t i = 0; i < ocsp_intermediate_responses.size(); i++) {
+      if (i != 0)
+        arg += ":";
+      arg += OCSPStatusToString(ocsp_intermediate_responses[i].status);
+    }
+    return arg;
+  }
+
+  return OCSPStatusToString(ocsp_intermediate_status);
+}
+
+std::string BaseTestServer::SSLOptions::GetOCSPIntermediateDateArgument()
+    const {
+  if (server_certificate != CERT_AUTO_WITH_INTERMEDIATE)
+    return std::string();
+
+  if (!ocsp_intermediate_responses.empty()) {
+    std::string arg;
+    for (size_t i = 0; i < ocsp_intermediate_responses.size(); i++) {
+      if (i != 0)
+        arg += ":";
+      arg += OCSPDateToString(ocsp_intermediate_responses[i].date);
+    }
+    return arg;
+  }
+
+  return OCSPDateToString(ocsp_intermediate_date);
+}
+
+std::string BaseTestServer::SSLOptions::GetOCSPIntermediateProducedArgument()
+    const {
+  if (server_certificate != CERT_AUTO_WITH_INTERMEDIATE)
+    return std::string();
+
+  return OCSPProducedToString(ocsp_intermediate_produced);
+}
+
+BaseTestServer::BaseTestServer(Type type) : type_(type) {
+  Init(GetHostname(type, ssl_options_));
 }
 
 BaseTestServer::BaseTestServer(Type type, const SSLOptions& ssl_options)
-    : ssl_options_(ssl_options),
-      type_(type),
-      started_(false),
-      log_to_console_(false),
-      ws_basic_auth_(false),
-      no_anonymous_ftp_user_(false) {
+    : ssl_options_(ssl_options), type_(type) {
   DCHECK(UsingSSL(type));
   Init(GetHostname(type, ssl_options));
 }
 
-BaseTestServer::~BaseTestServer() {}
+BaseTestServer::~BaseTestServer() = default;
+
+bool BaseTestServer::Start() {
+  return StartInBackground() && BlockUntilStarted();
+}
 
 const HostPortPair& BaseTestServer::host_port_pair() const {
   DCHECK(started_);
@@ -238,8 +326,7 @@ const HostPortPair& BaseTestServer::host_port_pair() const {
 }
 
 const base::DictionaryValue& BaseTestServer::server_data() const {
-  DCHECK(started_);
-  DCHECK(server_data_.get());
+  DCHECK(server_data_);
   return *server_data_;
 }
 
@@ -268,27 +355,28 @@ bool BaseTestServer::GetAddressList(AddressList* address_list) const {
 
   std::unique_ptr<HostResolver> resolver(
       HostResolver::CreateDefaultResolver(NULL));
-  HostResolver::RequestInfo info(host_port_pair_);
-  // Limit the lookup to IPv4. When started with the default
+
+  // Limit the lookup to IPv4 (DnsQueryType::A). When started with the default
   // address of kLocalhost, testserver.py only supports IPv4.
   // If a custom hostname is used, it's possible that the test
   // server will listen on both IPv4 and IPv6, so this will
   // still work. The testserver does not support explicit
   // IPv6 literal hostnames.
-  info.set_address_family(ADDRESS_FAMILY_IPV4);
+  HostResolver::ResolveHostParameters parameters;
+  parameters.dns_query_type = DnsQueryType::A;
+
+  std::unique_ptr<HostResolver::ResolveHostRequest> request =
+      resolver->CreateRequest(host_port_pair_, NetLogWithSource(), parameters);
+
   TestCompletionCallback callback;
-  int rv = resolver->Resolve(info,
-                             DEFAULT_PRIORITY,
-                             address_list,
-                             callback.callback(),
-                             NULL,
-                             BoundNetLog());
-  if (rv == ERR_IO_PENDING)
-    rv = callback.WaitForResult();
+  int rv = request->Start(callback.callback());
+  rv = callback.GetResult(rv);
   if (rv != OK) {
     LOG(ERROR) << "Failed to resolve hostname: " << host_port_pair_.host();
     return false;
   }
+
+  *address_list = request->GetAddressResults().value();
   return true;
 }
 
@@ -325,9 +413,7 @@ bool BaseTestServer::GetFilePathWithReplacements(
   std::string new_file_path = original_file_path;
   bool first_query_parameter = true;
   const std::vector<StringPair>::const_iterator end = text_to_replace.end();
-  for (std::vector<StringPair>::const_iterator it = text_to_replace.begin();
-       it != end;
-       ++it) {
+  for (auto it = text_to_replace.begin(); it != end; ++it) {
     const std::string& old_text = it->first;
     const std::string& new_text = it->second;
     std::string base64_old;
@@ -350,18 +436,30 @@ bool BaseTestServer::GetFilePathWithReplacements(
   return true;
 }
 
+void BaseTestServer::RegisterTestCerts() {
+  bool added_root_certs = RegisterRootCertsInternal(GetTestCertsDirectory());
+  DCHECK(added_root_certs);
+}
+
 bool BaseTestServer::LoadTestRootCert() const {
   TestRootCerts* root_certs = TestRootCerts::GetInstance();
-  if (!root_certs)
-    return false;
+  DCHECK(root_certs);
 
   // Should always use absolute path to load the root certificate.
   base::FilePath root_certificate_path;
-  if (!GetLocalCertificatesDir(certificates_dir_, &root_certificate_path))
+  if (!GetLocalCertificatesDir(certificates_dir_, &root_certificate_path)) {
+    LOG(ERROR) << "Could not get local certificates directory from "
+               << certificates_dir_ << ".";
     return false;
+  }
 
-  return root_certs->AddFromFile(
-      root_certificate_path.AppendASCII("root_ca_cert.pem"));
+  if (!RegisterRootCertsInternal(root_certificate_path)) {
+    LOG(ERROR) << "Could not register root certificates from "
+               << root_certificate_path << ".";
+    return false;
+  }
+
+  return true;
 }
 
 scoped_refptr<X509Certificate> BaseTestServer::GetCertificate() const {
@@ -405,36 +503,39 @@ void BaseTestServer::SetResourcePath(const base::FilePath& document_root,
   DCHECK(!certificates_dir_.empty());
 }
 
-bool BaseTestServer::ParseServerData(const std::string& server_data) {
+bool BaseTestServer::SetAndParseServerData(const std::string& server_data,
+                                           int* port) {
   VLOG(1) << "Server data: " << server_data;
   base::JSONReader json_reader;
-  std::unique_ptr<base::Value> value(json_reader.ReadToValue(server_data));
-  if (!value.get() || !value->IsType(base::Value::TYPE_DICTIONARY)) {
+  std::unique_ptr<base::Value> value(
+      json_reader.ReadToValueDeprecated(server_data));
+  if (!value.get() || !value->is_dict()) {
     LOG(ERROR) << "Could not parse server data: "
                << json_reader.GetErrorMessage();
     return false;
   }
 
   server_data_.reset(static_cast<base::DictionaryValue*>(value.release()));
-  int port = 0;
-  if (!server_data_->GetInteger("port", &port)) {
+  if (!server_data_->GetInteger("port", port)) {
     LOG(ERROR) << "Could not find port value";
     return false;
   }
-  if ((port <= 0) || (port > std::numeric_limits<uint16_t>::max())) {
+  if ((*port <= 0) || (*port > std::numeric_limits<uint16_t>::max())) {
     LOG(ERROR) << "Invalid port value: " << port;
     return false;
   }
-  host_port_pair_.set_port(port);
 
   return true;
 }
 
 bool BaseTestServer::SetupWhenServerStarted() {
   DCHECK(host_port_pair_.port());
+  DCHECK(!started_);
 
-  if (UsingSSL(type_) && !LoadTestRootCert())
-      return false;
+  if (UsingSSL(type_) && !LoadTestRootCert()) {
+    LOG(ERROR) << "Could not load test root certificate.";
+    return false;
+  }
 
   started_ = true;
   allowed_port_.reset(new ScopedPortException(host_port_pair_.port()));
@@ -462,16 +563,22 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
   arguments->SetString("data-dir", document_root_.value());
 
   if (VLOG_IS_ON(1) || log_to_console_)
-    arguments->Set("log-to-console", base::Value::CreateNullValue());
+    arguments->Set("log-to-console", std::make_unique<base::Value>());
 
   if (ws_basic_auth_) {
     DCHECK(type_ == TYPE_WS || type_ == TYPE_WSS);
-    arguments->Set("ws-basic-auth", base::Value::CreateNullValue());
+    arguments->Set("ws-basic-auth", std::make_unique<base::Value>());
   }
 
   if (no_anonymous_ftp_user_) {
     DCHECK_EQ(TYPE_FTP, type_);
-    arguments->Set("no-anonymous-ftp-user", base::Value::CreateNullValue());
+    arguments->Set("no-anonymous-ftp-user", std::make_unique<base::Value>());
+  }
+
+  if (redirect_connect_to_localhost_) {
+    DCHECK(type_ == TYPE_BASIC_AUTH_PROXY || type_ == TYPE_PROXY);
+    arguments->Set("redirect-connect-to-localhost",
+                   std::make_unique<base::Value>());
   }
 
   if (UsingSSL(type_)) {
@@ -491,7 +598,7 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
 
     // Check the client certificate related arguments.
     if (ssl_options_.request_client_certificate)
-      arguments->Set("ssl-client-auth", base::Value::CreateNullValue());
+      arguments->Set("ssl-client-auth", std::make_unique<base::Value>());
     std::unique_ptr<base::ListValue> ssl_client_certs(new base::ListValue());
 
     std::vector<base::FilePath>::const_iterator it;
@@ -506,7 +613,7 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
     }
 
     if (ssl_client_certs->GetSize())
-      arguments->Set("ssl-client-ca", ssl_client_certs.release());
+      arguments->Set("ssl-client-ca", std::move(ssl_client_certs));
 
     std::unique_ptr<base::ListValue> client_cert_types(new base::ListValue());
     for (size_t i = 0; i < ssl_options_.client_cert_types.size(); i++) {
@@ -514,39 +621,77 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
           GetClientCertType(ssl_options_.client_cert_types[i]));
     }
     if (client_cert_types->GetSize())
-      arguments->Set("ssl-client-cert-type", client_cert_types.release());
+      arguments->Set("ssl-client-cert-type", std::move(client_cert_types));
   }
 
   if (type_ == TYPE_HTTPS) {
-    arguments->Set("https", base::Value::CreateNullValue());
+    arguments->Set("https", std::make_unique<base::Value>());
+
+    if (ssl_options_.server_certificate ==
+        SSLOptions::CERT_AUTO_AIA_INTERMEDIATE)
+      arguments->Set("aia-intermediate", std::make_unique<base::Value>());
 
     std::string ocsp_arg = ssl_options_.GetOCSPArgument();
     if (!ocsp_arg.empty())
       arguments->SetString("ocsp", ocsp_arg);
 
+    std::string ocsp_date_arg = ssl_options_.GetOCSPDateArgument();
+    if (!ocsp_date_arg.empty())
+      arguments->SetString("ocsp-date", ocsp_date_arg);
+
+    std::string ocsp_produced_arg = ssl_options_.GetOCSPProducedArgument();
+    if (!ocsp_produced_arg.empty())
+      arguments->SetString("ocsp-produced", ocsp_produced_arg);
+
+    std::string ocsp_intermediate_arg =
+        ssl_options_.GetOCSPIntermediateArgument();
+    if (!ocsp_intermediate_arg.empty())
+      arguments->SetString("ocsp-intermediate", ocsp_intermediate_arg);
+
+    std::string ocsp_intermediate_date_arg =
+        ssl_options_.GetOCSPIntermediateDateArgument();
+    if (!ocsp_intermediate_date_arg.empty()) {
+      arguments->SetString("ocsp-intermediate-date",
+                           ocsp_intermediate_date_arg);
+    }
+
+    std::string ocsp_intermediate_produced_arg =
+        ssl_options_.GetOCSPIntermediateProducedArgument();
+    if (!ocsp_intermediate_produced_arg.empty()) {
+      arguments->SetString("ocsp-intermediate-produced",
+                           ocsp_intermediate_produced_arg);
+    }
+
     if (ssl_options_.cert_serial != 0) {
       arguments->SetInteger("cert-serial", ssl_options_.cert_serial);
+    }
+
+    if (!ssl_options_.cert_common_name.empty()) {
+      arguments->SetString("cert-common-name", ssl_options_.cert_common_name);
     }
 
     // Check key exchange argument.
     std::unique_ptr<base::ListValue> key_exchange_values(new base::ListValue());
     GetKeyExchangesList(ssl_options_.key_exchanges, key_exchange_values.get());
     if (key_exchange_values->GetSize())
-      arguments->Set("ssl-key-exchange", key_exchange_values.release());
+      arguments->Set("ssl-key-exchange", std::move(key_exchange_values));
     // Check bulk cipher argument.
     std::unique_ptr<base::ListValue> bulk_cipher_values(new base::ListValue());
     GetCiphersList(ssl_options_.bulk_ciphers, bulk_cipher_values.get());
     if (bulk_cipher_values->GetSize())
-      arguments->Set("ssl-bulk-cipher", bulk_cipher_values.release());
+      arguments->Set("ssl-bulk-cipher", std::move(bulk_cipher_values));
     if (ssl_options_.record_resume)
-      arguments->Set("https-record-resume", base::Value::CreateNullValue());
+      arguments->Set("https-record-resume", std::make_unique<base::Value>());
     if (ssl_options_.tls_intolerant != SSLOptions::TLS_INTOLERANT_NONE) {
       arguments->SetInteger("tls-intolerant", ssl_options_.tls_intolerant);
       arguments->Set("tls-intolerance-type", GetTLSIntoleranceType(
           ssl_options_.tls_intolerance_type));
     }
+    if (ssl_options_.tls_max_version != SSLOptions::TLS_MAX_VERSION_DEFAULT) {
+      arguments->SetInteger("tls-max-version", ssl_options_.tls_max_version);
+    }
     if (ssl_options_.fallback_scsv_enabled)
-      arguments->Set("fallback-scsv", base::Value::CreateNullValue());
+      arguments->Set("fallback-scsv", std::make_unique<base::Value>());
     if (!ssl_options_.signed_cert_timestamps_tls_ext.empty()) {
       std::string b64_scts_tls_ext;
       base::Base64Encode(ssl_options_.signed_cert_timestamps_tls_ext,
@@ -554,10 +699,17 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
       arguments->SetString("signed-cert-timestamps-tls-ext", b64_scts_tls_ext);
     }
     if (ssl_options_.staple_ocsp_response)
-      arguments->Set("staple-ocsp-response", base::Value::CreateNullValue());
+      arguments->Set("staple-ocsp-response", std::make_unique<base::Value>());
     if (ssl_options_.ocsp_server_unavailable) {
       arguments->Set("ocsp-server-unavailable",
-                     base::Value::CreateNullValue());
+                     std::make_unique<base::Value>());
+    }
+    if (!ssl_options_.alpn_protocols.empty()) {
+      std::unique_ptr<base::ListValue> alpn_protocols(new base::ListValue());
+      for (const std::string& proto : ssl_options_.alpn_protocols) {
+        alpn_protocols->AppendString(proto);
+      }
+      arguments->Set("alpn-protocols", std::move(alpn_protocols));
     }
     if (!ssl_options_.npn_protocols.empty()) {
       std::unique_ptr<base::ListValue> npn_protocols(new base::ListValue());
@@ -567,20 +719,21 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
       arguments->Set("npn-protocols", std::move(npn_protocols));
     }
     if (ssl_options_.alert_after_handshake)
-      arguments->Set("alert-after-handshake", base::Value::CreateNullValue());
+      arguments->Set("alert-after-handshake", std::make_unique<base::Value>());
 
     if (ssl_options_.disable_channel_id)
-      arguments->Set("disable-channel-id", base::Value::CreateNullValue());
+      arguments->Set("disable-channel-id", std::make_unique<base::Value>());
     if (ssl_options_.disable_extended_master_secret) {
       arguments->Set("disable-extended-master-secret",
-                     base::Value::CreateNullValue());
+                     std::make_unique<base::Value>());
     }
-    if (!ssl_options_.supported_token_binding_params.empty()) {
-      std::unique_ptr<base::ListValue> token_binding_params(
-          new base::ListValue());
-      arguments->Set(
-          "token-binding-params",
-          GetTokenBindingParams(ssl_options_.supported_token_binding_params));
+    if (ssl_options_.simulate_tls13_downgrade) {
+      arguments->Set("simulate-tls13-downgrade",
+                     std::make_unique<base::Value>());
+    }
+    if (ssl_options_.simulate_tls12_downgrade) {
+      arguments->Set("simulate-tls12-downgrade",
+                     std::make_unique<base::Value>());
     }
   }
 

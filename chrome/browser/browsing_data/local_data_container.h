@@ -16,45 +16,28 @@
 #include "base/strings/string16.h"
 #include "chrome/browser/browsing_data/browsing_data_appcache_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_cache_storage_helper.h"
-#include "chrome/browser/browsing_data/browsing_data_channel_id_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_cookie_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_database_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_file_system_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_indexed_db_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_local_storage_helper.h"
+#include "chrome/browser/browsing_data/browsing_data_media_license_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_quota_helper.h"
 #include "chrome/browser/browsing_data/browsing_data_service_worker_helper.h"
-#include "net/ssl/channel_id_store.h"
+#include "chrome/browser/browsing_data/browsing_data_shared_worker_helper.h"
+#include "third_party/blink/public/mojom/appcache/appcache_info.mojom.h"
 
 class BrowsingDataFlashLSOHelper;
 class CookiesTreeModel;
 class LocalDataContainer;
 
+namespace content {
+struct StorageUsageInfo;
+}
+
 namespace net {
 class CanonicalCookie;
 }
-
-// Friendly typedefs for the multiple types of lists used in the model.
-namespace {
-
-typedef std::list<net::CanonicalCookie> CookieList;
-typedef std::list<BrowsingDataDatabaseHelper::DatabaseInfo> DatabaseInfoList;
-typedef std::list<BrowsingDataLocalStorageHelper::LocalStorageInfo>
-    LocalStorageInfoList;
-typedef std::list<BrowsingDataLocalStorageHelper::LocalStorageInfo>
-    SessionStorageInfoList;
-typedef std::list<content::IndexedDBInfo>
-    IndexedDBInfoList;
-typedef std::list<BrowsingDataFileSystemHelper::FileSystemInfo>
-    FileSystemInfoList;
-typedef std::list<BrowsingDataQuotaHelper::QuotaInfo> QuotaInfoList;
-typedef net::ChannelIDStore::ChannelIDList ChannelIDList;
-typedef std::list<content::ServiceWorkerUsageInfo> ServiceWorkerUsageInfoList;
-typedef std::list<content::CacheStorageUsageInfo> CacheStorageUsageInfoList;
-typedef std::map<GURL, std::list<content::AppCacheInfo> > AppCacheInfoMap;
-typedef std::vector<std::string> FlashLSODomainList;
-
-}  // namespace
 
 // LocalDataContainer ---------------------------------------------------------
 // This class is a wrapper around all the BrowsingData*Helper classes. Because
@@ -64,18 +47,39 @@ typedef std::vector<std::string> FlashLSODomainList;
 // the empty string, as no app can have an empty id.
 class LocalDataContainer {
  public:
-  LocalDataContainer(BrowsingDataCookieHelper* cookie_helper,
-                     BrowsingDataDatabaseHelper* database_helper,
-                     BrowsingDataLocalStorageHelper* local_storage_helper,
-                     BrowsingDataLocalStorageHelper* session_storage_helper,
-                     BrowsingDataAppCacheHelper* appcache_helper,
-                     BrowsingDataIndexedDBHelper* indexed_db_helper,
-                     BrowsingDataFileSystemHelper* file_system_helper,
-                     BrowsingDataQuotaHelper* quota_helper,
-                     BrowsingDataChannelIDHelper* channel_id_helper,
-                     BrowsingDataServiceWorkerHelper* service_worker_helper,
-                     BrowsingDataCacheStorageHelper* cache_storage_helper,
-                     BrowsingDataFlashLSOHelper* flash_data_helper);
+  // Friendly typedefs for the multiple types of lists used in the model.
+  using CookieList = std::list<net::CanonicalCookie>;
+  using DatabaseInfoList = std::list<content::StorageUsageInfo>;
+  using LocalStorageInfoList = std::list<content::StorageUsageInfo>;
+  using SessionStorageInfoList = std::list<content::StorageUsageInfo>;
+  using IndexedDBInfoList = std::list<content::StorageUsageInfo>;
+  using FileSystemInfoList =
+      std::list<BrowsingDataFileSystemHelper::FileSystemInfo>;
+  using QuotaInfoList = std::list<BrowsingDataQuotaHelper::QuotaInfo>;
+  using ServiceWorkerUsageInfoList = std::list<content::StorageUsageInfo>;
+  using SharedWorkerInfoList =
+      std::list<BrowsingDataSharedWorkerHelper::SharedWorkerInfo>;
+  using CacheStorageUsageInfoList = std::list<content::StorageUsageInfo>;
+  using AppCacheInfoMap =
+      std::map<url::Origin, std::list<blink::mojom::AppCacheInfo>>;
+  using FlashLSODomainList = std::vector<std::string>;
+  using MediaLicenseInfoList =
+      std::list<BrowsingDataMediaLicenseHelper::MediaLicenseInfo>;
+
+  LocalDataContainer(
+      scoped_refptr<BrowsingDataCookieHelper> cookie_helper,
+      scoped_refptr<BrowsingDataDatabaseHelper> database_helper,
+      scoped_refptr<BrowsingDataLocalStorageHelper> local_storage_helper,
+      scoped_refptr<BrowsingDataLocalStorageHelper> session_storage_helper,
+      scoped_refptr<BrowsingDataAppCacheHelper> appcache_helper,
+      scoped_refptr<BrowsingDataIndexedDBHelper> indexed_db_helper,
+      scoped_refptr<BrowsingDataFileSystemHelper> file_system_helper,
+      scoped_refptr<BrowsingDataQuotaHelper> quota_helper,
+      scoped_refptr<BrowsingDataServiceWorkerHelper> service_worker_helper,
+      scoped_refptr<BrowsingDataSharedWorkerHelper> shared_worker_helper,
+      scoped_refptr<BrowsingDataCacheStorageHelper> cache_storage_helper,
+      scoped_refptr<BrowsingDataFlashLSOHelper> flash_data_helper,
+      scoped_refptr<BrowsingDataMediaLicenseHelper> media_license_helper);
   virtual ~LocalDataContainer();
 
   // This method must be called to start the process of fetching the resources.
@@ -85,6 +89,7 @@ class LocalDataContainer {
  private:
   friend class CookiesTreeModel;
   friend class CookieTreeAppCacheNode;
+  friend class CookieTreeMediaLicenseNode;
   friend class CookieTreeCookieNode;
   friend class CookieTreeDatabaseNode;
   friend class CookieTreeLocalStorageNode;
@@ -92,8 +97,8 @@ class LocalDataContainer {
   friend class CookieTreeIndexedDBNode;
   friend class CookieTreeFileSystemNode;
   friend class CookieTreeQuotaNode;
-  friend class CookieTreeChannelIDNode;
   friend class CookieTreeServiceWorkerNode;
+  friend class CookieTreeSharedWorkerNode;
   friend class CookieTreeCacheStorageNode;
   friend class CookieTreeFlashLSONode;
 
@@ -111,12 +116,13 @@ class LocalDataContainer {
   void OnFileSystemModelInfoLoaded(
       const FileSystemInfoList& file_system_info);
   void OnQuotaModelInfoLoaded(const QuotaInfoList& quota_info);
-  void OnChannelIDModelInfoLoaded(const ChannelIDList& channel_id_list);
   void OnServiceWorkerModelInfoLoaded(
       const ServiceWorkerUsageInfoList& service_worker_info);
+  void OnSharedWorkerInfoLoaded(const SharedWorkerInfoList& shared_worker_info);
   void OnCacheStorageModelInfoLoaded(
       const CacheStorageUsageInfoList& cache_storage_info);
   void OnFlashLSOInfoLoaded(const FlashLSODomainList& domains);
+  void OnMediaLicenseInfoLoaded(const MediaLicenseInfoList& media_license_info);
 
   // Pointers to the helper objects, needed to retreive all the types of locally
   // stored data.
@@ -128,10 +134,11 @@ class LocalDataContainer {
   scoped_refptr<BrowsingDataIndexedDBHelper> indexed_db_helper_;
   scoped_refptr<BrowsingDataFileSystemHelper> file_system_helper_;
   scoped_refptr<BrowsingDataQuotaHelper> quota_helper_;
-  scoped_refptr<BrowsingDataChannelIDHelper> channel_id_helper_;
   scoped_refptr<BrowsingDataServiceWorkerHelper> service_worker_helper_;
+  scoped_refptr<BrowsingDataSharedWorkerHelper> shared_worker_helper_;
   scoped_refptr<BrowsingDataCacheStorageHelper> cache_storage_helper_;
   scoped_refptr<BrowsingDataFlashLSOHelper> flash_lso_helper_;
+  scoped_refptr<BrowsingDataMediaLicenseHelper> media_license_helper_;
 
   // Storage for all the data that was retrieved through the helper objects.
   // The collected data is used for (re)creating the CookiesTreeModel.
@@ -143,10 +150,11 @@ class LocalDataContainer {
   IndexedDBInfoList indexed_db_info_list_;
   FileSystemInfoList file_system_info_list_;
   QuotaInfoList quota_info_list_;
-  ChannelIDList channel_id_list_;
   ServiceWorkerUsageInfoList service_worker_info_list_;
+  SharedWorkerInfoList shared_worker_info_list_;
   CacheStorageUsageInfoList cache_storage_info_list_;
   FlashLSODomainList flash_lso_domain_list_;
+  MediaLicenseInfoList media_license_info_list_;
 
   // A delegate, which must outlive this object. The update callbacks use the
   // delegate to deliver the updated data to the CookieTreeModel.

@@ -11,8 +11,9 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/stringprintf.h"
+#include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/history/chrome_history_client.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -30,7 +31,7 @@
 #include "components/history/core/browser/keyword_search_term.h"
 #include "components/history/core/test/test_history_database.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -74,7 +75,8 @@ class AndroidProviderBackendDelegate : public HistoryBackend::Delegate {
  public:
   AndroidProviderBackendDelegate() {}
 
-  void NotifyProfileError(sql::InitStatus init_status) override {}
+  void NotifyProfileError(sql::InitStatus init_status,
+                          const std::string& diagnostics) override {}
   void SetInMemoryBackend(
       std::unique_ptr<InMemoryHistoryBackend> backend) override {}
   void NotifyFaviconsChanged(const std::set<GURL>& page_urls,
@@ -89,11 +91,8 @@ class AndroidProviderBackendDelegate : public HistoryBackend::Delegate {
   void NotifyURLsModified(const history::URLRows& rows) override {
     modified_details_.reset(new history::URLRows(rows));
   }
-  void NotifyURLsDeleted(bool all_history,
-                         bool expired,
-                         const URLRows& deleted_rows,
-                         const std::set<GURL>& favicon_urls) override {
-    deleted_details_.reset(new history::URLRows(deleted_rows));
+  void NotifyURLsDeleted(DeletionInfo deletion_info) override {
+    deleted_details_.reset(new history::URLRows(deletion_info.deleted_rows()));
   }
   void NotifyKeywordSearchTermUpdated(const URLRow& row,
                                       KeywordID keyword_id,
@@ -135,14 +134,13 @@ class AndroidProviderBackendNotifier : public HistoryBackendNotifier {
                         const history::URLRow& row,
                         const history::RedirectList& redirects,
                         base::Time visit_time) override {}
-  void NotifyURLsModified(const history::URLRows& rows) override {
+  void NotifyURLsModified(const history::URLRows& rows,
+                          bool is_from_expiration) override {
+    EXPECT_FALSE(is_from_expiration);
     modified_details_.reset(new history::URLRows(rows));
   }
-  void NotifyURLsDeleted(bool all_history,
-                         bool expired,
-                         const history::URLRows& rows,
-                         const std::set<GURL>& favicon_urls) override {
-    deleted_details_.reset(new history::URLRows(rows));
+  void NotifyURLsDeleted(DeletionInfo deletion_info) override {
+    deleted_details_.reset(new history::URLRows(deletion_info.deleted_rows()));
   }
 
   history::URLRows* deleted_details() const { return deleted_details_.get(); }
@@ -170,10 +168,13 @@ class AndroidProviderBackendTest : public testing::Test {
   AndroidProviderBackendTest()
       : thumbnail_db_(NULL),
         profile_manager_(TestingBrowserProcess::GetGlobal()),
-        bookmark_model_(NULL),
-        ui_thread_(BrowserThread::UI, &message_loop_),
-        file_thread_(BrowserThread::FILE, &message_loop_) {}
-  ~AndroidProviderBackendTest() override {}
+        bookmark_model_(NULL) {}
+
+  ~AndroidProviderBackendTest() override {
+    // Avoid use after frees by running any unhandled tasks before freeing this
+    // fixture's members.
+    base::RunLoop().RunUntilIdle();
+  }
 
  protected:
   void SetUp() override {
@@ -185,7 +186,8 @@ class AndroidProviderBackendTest : public testing::Test {
     TestingProfile* testing_profile = profile_manager_.CreateTestingProfile(
         chrome::kInitialProfile);
     testing_profile->CreateBookmarkModel(true);
-    bookmark_model_ = BookmarkModelFactory::GetForProfile(testing_profile);
+    bookmark_model_ =
+        BookmarkModelFactory::GetForBrowserContext(testing_profile);
     history_client_.reset(new ChromeHistoryClient(bookmark_model_));
     history_backend_client_ = history_client_->CreateBackendClient();
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model_);
@@ -199,10 +201,10 @@ class AndroidProviderBackendTest : public testing::Test {
     // Setup the database directory and files.
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
 
-    history_db_name_ = temp_dir_.path().AppendASCII(kHistoryFilename);
-    thumbnail_db_name_ = temp_dir_.path().AppendASCII(kFaviconsFilename);
-    android_cache_db_name_ = temp_dir_.path().AppendASCII(
-        "TestAndroidCache.db");
+    history_db_name_ = temp_dir_.GetPath().AppendASCII(kHistoryFilename);
+    thumbnail_db_name_ = temp_dir_.GetPath().AppendASCII(kFaviconsFilename);
+    android_cache_db_name_ =
+        temp_dir_.GetPath().AppendASCII("TestAndroidCache.db");
   }
 
   void AddBookmark(const GURL& url) {
@@ -244,6 +246,8 @@ class AndroidProviderBackendTest : public testing::Test {
     return true;
   }
 
+  content::TestBrowserThreadBundle thread_bundle_;
+
   AndroidProviderBackendNotifier notifier_;
   scoped_refptr<HistoryBackend> history_backend_;
   TestHistoryDatabase history_db_;
@@ -255,12 +259,10 @@ class AndroidProviderBackendTest : public testing::Test {
 
   TestingProfileManager profile_manager_;
   BookmarkModel* bookmark_model_;
-  base::MessageLoopForUI message_loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread file_thread_;
   std::unique_ptr<history::HistoryClient> history_client_;
   std::unique_ptr<history::HistoryBackendClient> history_backend_client_;
 
+ private:
   DISALLOW_COPY_AND_ASSIGN(AndroidProviderBackendTest);
 };
 
@@ -299,11 +301,12 @@ TEST_F(AndroidProviderBackendTest, UpdateTables) {
   // HistoryBackend will shutdown after that.
   {
   scoped_refptr<HistoryBackend> history_backend;
-  history_backend = new HistoryBackend(new AndroidProviderBackendDelegate(),
-                                       history_client_->CreateBackendClient(),
-                                       message_loop_.task_runner());
+  history_backend = base::MakeRefCounted<HistoryBackend>(
+      std::make_unique<AndroidProviderBackendDelegate>(),
+      history_client_->CreateBackendClient(),
+      base::ThreadTaskRunnerHandle::Get());
   history_backend->Init(false,
-                        TestHistoryDatabaseParamsForPath(temp_dir_.path()));
+                        TestHistoryDatabaseParamsForPath(temp_dir_.GetPath()));
   history_backend->AddVisits(url1, visits1, history::SOURCE_SYNCED);
   history_backend->AddVisits(url2, visits2, history::SOURCE_SYNCED);
   URLRow url_row;
@@ -315,7 +318,8 @@ TEST_F(AndroidProviderBackendTest, UpdateTables) {
 
   // Set favicon to url2.
   std::vector<SkBitmap> bitmaps(1u, CreateBitmap());
-  history_backend->SetFavicons(url2, favicon_base::FAVICON, GURL(), bitmaps);
+  history_backend->SetFavicons({url2}, favicon_base::IconType::kFavicon, GURL(),
+                               bitmaps);
   history_backend->Closing();
   }
 
@@ -435,11 +439,12 @@ TEST_F(AndroidProviderBackendTest, QueryHistoryAndBookmarks) {
   // HistoryBackend will shutdown after that.
   {
   scoped_refptr<HistoryBackend> history_backend;
-  history_backend = new HistoryBackend(new AndroidProviderBackendDelegate(),
-                                       history_client_->CreateBackendClient(),
-                                       message_loop_.task_runner());
+  history_backend = base::MakeRefCounted<HistoryBackend>(
+      std::make_unique<AndroidProviderBackendDelegate>(),
+      history_client_->CreateBackendClient(),
+      base::ThreadTaskRunnerHandle::Get());
   history_backend->Init(false,
-                        TestHistoryDatabaseParamsForPath(temp_dir_.path()));
+                        TestHistoryDatabaseParamsForPath(temp_dir_.GetPath()));
   history_backend->AddVisits(url1, visits1, history::SOURCE_SYNCED);
   history_backend->AddVisits(url2, visits2, history::SOURCE_SYNCED);
 
@@ -452,7 +457,8 @@ TEST_F(AndroidProviderBackendTest, QueryHistoryAndBookmarks) {
 
   // Set favicon to url2.
   std::vector<SkBitmap> bitmaps(1u, CreateBitmap());
-  history_backend->SetFavicons(url2, favicon_base::FAVICON, GURL(), bitmaps);
+  history_backend->SetFavicons({url2}, favicon_base::IconType::kFavicon, GURL(),
+                               bitmaps);
   history_backend->Closing();
   }
 
@@ -1198,7 +1204,7 @@ TEST_F(AndroidProviderBackendTest, UpdateFavicon) {
 
   std::vector<IconMapping> icon_mappings;
   EXPECT_TRUE(thumbnail_db_.GetIconMappingsForPageURL(
-      row1.url(), favicon_base::FAVICON, &icon_mappings));
+      row1.url(), {favicon_base::IconType::kFavicon}, &icon_mappings));
   EXPECT_EQ(1u, icon_mappings.size());
   std::vector<FaviconBitmap> favicon_bitmaps;
   EXPECT_TRUE(thumbnail_db_.GetFaviconBitmaps(icon_mappings[0].icon_id,
@@ -1227,7 +1233,7 @@ TEST_F(AndroidProviderBackendTest, UpdateFavicon) {
               notifier_.favicon_changed()->find(row1.url()));
 
   EXPECT_FALSE(thumbnail_db_.GetIconMappingsForPageURL(
-      row1.url(), favicon_base::FAVICON, NULL));
+      row1.url(), {favicon_base::IconType::kFavicon}, NULL));
 }
 
 TEST_F(AndroidProviderBackendTest, UpdateSearchTermTable) {
@@ -1823,11 +1829,12 @@ TEST_F(AndroidProviderBackendTest, QueryWithoutThumbnailDB) {
   // HistoryBackend will shutdown after that.
   {
   scoped_refptr<HistoryBackend> history_backend;
-  history_backend = new HistoryBackend(new AndroidProviderBackendDelegate(),
-                                       history_client_->CreateBackendClient(),
-                                       message_loop_.task_runner());
+  history_backend = base::MakeRefCounted<HistoryBackend>(
+      std::make_unique<AndroidProviderBackendDelegate>(),
+      history_client_->CreateBackendClient(),
+      base::ThreadTaskRunnerHandle::Get());
   history_backend->Init(false,
-                        TestHistoryDatabaseParamsForPath(temp_dir_.path()));
+                        TestHistoryDatabaseParamsForPath(temp_dir_.GetPath()));
   history_backend->AddVisits(url1, visits1, history::SOURCE_SYNCED);
   history_backend->AddVisits(url2, visits2, history::SOURCE_SYNCED);
   URLRow url_row;
@@ -1841,7 +1848,8 @@ TEST_F(AndroidProviderBackendTest, QueryWithoutThumbnailDB) {
 
   // Set favicon to url2.
   std::vector<SkBitmap> bitmaps(1u, CreateBitmap());
-  history_backend->SetFavicons(url2, favicon_base::FAVICON, GURL(), bitmaps);
+  history_backend->SetFavicons({url2}, favicon_base::IconType::kFavicon, GURL(),
+                               bitmaps);
   history_backend->Closing();
   }
 

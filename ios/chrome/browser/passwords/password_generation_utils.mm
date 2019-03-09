@@ -4,14 +4,13 @@
 
 #include "ios/chrome/browser/passwords/password_generation_utils.h"
 
-#include "base/i18n/rtl.h"
-#include "ios/chrome/browser/ui/ui_util.h"
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace passwords {
 
 namespace {
-
-const CGFloat kPadding = IsIPadIdiom() ? 16 : 8;
 
 // The actual implementation of |RunPipeline| that begins with the first block
 // in |blocks|.
@@ -32,16 +31,6 @@ void RunSearchPipeline(NSArray* blocks,
 }
 
 }  // namespace
-
-CGRect GetGenerationAccessoryFrame(CGRect outer_frame, CGRect inner_frame) {
-  CGFloat x = kPadding;
-  if (base::i18n::IsRTL())
-    x = CGRectGetWidth(outer_frame) - CGRectGetWidth(inner_frame) - kPadding;
-  const CGFloat y =
-      (CGRectGetHeight(outer_frame) - CGRectGetHeight(inner_frame)) / 2.0;
-  inner_frame.origin = CGPointMake(x, y);
-  return inner_frame;
-}
 
 void RunSearchPipeline(NSArray* blocks, PipelineCompletionBlock on_complete) {
   RunSearchPipeline(blocks, on_complete, 0);

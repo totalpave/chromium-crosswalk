@@ -1,17 +1,13 @@
-achuith@chromium.org
-aiolos@chromium.org
-dtu@chromium.org
-eakuefner@chromium.org
-nednguyen@google.com
-skyostil@chromium.org
+charliea@chromium.org
+crouleau@chromium.org
+eyaich@chromium.org
 sullivan@chromium.org
-zhenw@chromium.org
 
-# Simple rubberstamp-only oilpan-related changes
-peria@chromium.org
+# For changes related to ChromeOS.
+achuith@chromium.org
 
-# emeritus:
-# marja@chromium.org
-# nduca@chromium.org
-# qyearsley@chromium.org
-# tonyg@chromium.org
+# For system health memory benchmarks & memory-infra related changes.
+perezju@chromium.org
+
+# For page_cycler and loading benchmarks related changes.
+kouhei@chromium.org

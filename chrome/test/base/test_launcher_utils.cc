@@ -8,6 +8,7 @@
 
 #include "base/command_line.h"
 #include "base/environment.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
@@ -24,10 +25,6 @@
 namespace test_launcher_utils {
 
 void PrepareBrowserCommandLineForTests(base::CommandLine* command_line) {
-  // Turn off preconnects because they break the brittle python webserver;
-  // see http://crbug.com/60035.
-  command_line->AppendSwitch(switches::kDisablePreconnect);
-
   // Don't show the first run ui.
   command_line->AppendSwitch(switches::kNoFirstRun);
 
@@ -35,15 +32,14 @@ void PrepareBrowserCommandLineForTests(base::CommandLine* command_line) {
   // default browser) that could conflicts with some tests expectations.
   command_line->AppendSwitch(switches::kNoDefaultBrowserCheck);
 
-  // Enable info level logging to stderr by default so that we can see when
-  // bad stuff happens, but honor the flags specified from the command line.
+  // Enable info level logging to stderr by default so that we can see when bad
+  // stuff happens, but honor the flags specified from the command line. Use the
+  // default logging level (INFO) instead of explicitly passing
+  // switches::kLoggingLevel. Passing the switch explicitly resulted in data
+  // races in tests that start async operations (that use logging) prior to
+  // initializing the browser: https://crbug.com/749066.
   if (!command_line->HasSwitch(switches::kEnableLogging))
     command_line->AppendSwitchASCII(switches::kEnableLogging, "stderr");
-  if (!command_line->HasSwitch(switches::kLoggingLevel))
-    command_line->AppendSwitchASCII(switches::kLoggingLevel, "0");  // info
-
-  // Disable safebrowsing autoupdate.
-  command_line->AppendSwitch(switches::kSbDisableAutoUpdate);
 
   // Don't install default apps.
   command_line->AppendSwitch(switches::kDisableDefaultApps);
@@ -77,8 +73,7 @@ void RemoveCommandLineSwitch(const base::CommandLine& in_command_line,
                              base::CommandLine* out_command_line) {
   const base::CommandLine::SwitchMap& switch_map =
       in_command_line.GetSwitches();
-  for (base::CommandLine::SwitchMap::const_iterator i = switch_map.begin();
-       i != switch_map.end(); ++i) {
+  for (auto i = switch_map.begin(); i != switch_map.end(); ++i) {
     const std::string& switch_name = i->first;
     if (switch_name == switch_to_remove)
       continue;
@@ -90,9 +85,9 @@ void RemoveCommandLineSwitch(const base::CommandLine& in_command_line,
 bool OverrideUserDataDir(const base::FilePath& user_data_dir) {
   bool success = true;
 
-  // PathService::Override() is the best way to change the user data directory.
-  // This matches what is done in ChromeMain().
-  success = PathService::Override(chrome::DIR_USER_DATA, user_data_dir);
+  // base::PathService::Override() is the best way to change the user data
+  // directory. This matches what is done in ChromeMain().
+  success = base::PathService::Override(chrome::DIR_USER_DATA, user_data_dir);
 
 #if defined(OS_POSIX) && !defined(OS_MACOSX)
   // Make sure the cache directory is inside our clear profile. Otherwise
@@ -103,6 +98,12 @@ bool OverrideUserDataDir(const base::FilePath& user_data_dir) {
   // value to the child process. This is the simplest way to do it.
   std::unique_ptr<base::Environment> env(base::Environment::Create());
   success = success && env->SetVar("XDG_CACHE_HOME", user_data_dir.value());
+
+  // Also make sure that the machine policy directory is inside the clear
+  // profile. Otherwise the machine's policies could affect tests.
+  base::FilePath policy_files = user_data_dir.AppendASCII("policies");
+  success = success &&
+            base::PathService::Override(chrome::DIR_POLICY_FILES, policy_files);
 #endif
 
   return success;

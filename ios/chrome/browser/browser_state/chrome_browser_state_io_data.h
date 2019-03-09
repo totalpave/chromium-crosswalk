@@ -42,16 +42,14 @@ enum class ChromeBrowserStateType;
 }
 
 namespace net {
-class CertVerifier;
 class ChannelIDService;
 class CookieStore;
 class HttpServerProperties;
 class HttpTransactionFactory;
 class ProxyConfigService;
-class ProxyService;
+class ProxyResolutionService;
 class ReportSender;
-class ServerBoundCertService;
-class SSLConfigService;
+class SystemCookieStore;
 class TransportSecurityPersister;
 class TransportSecurityState;
 class URLRequestJobFactoryImpl;
@@ -75,7 +73,7 @@ class ChromeBrowserStateIOData {
   static bool IsHandledProtocol(const std::string& scheme);
 
   // Utility to install additional WebUI handlers into the |job_factory|.
-  // Ownership of the handlers is transfered from |protocol_handlers|
+  // Ownership of the handlers is transferred from |protocol_handlers|
   // to the |job_factory|.
   static void InstallProtocolHandlers(
       net::URLRequestJobFactoryImpl* job_factory,
@@ -162,16 +160,18 @@ class ChromeBrowserStateIOData {
     IOSChromeIOThread* io_thread;
     scoped_refptr<content_settings::CookieSettings> cookie_settings;
     scoped_refptr<HostContentSettingsMap> host_content_settings_map;
-    scoped_refptr<net::SSLConfigService> ssl_config_service;
-    scoped_refptr<net::CookieMonsterDelegate> cookie_monster_delegate;
 
     // We need to initialize the ProxyConfigService from the UI thread
-    // because on linux it relies on initializing things through gconf,
+    // because on linux it relies on initializing things through gsettings,
     // and needs to be on the main thread.
     std::unique_ptr<net::ProxyConfigService> proxy_config_service;
 
+    // SystemCookieStore should be initialized from the UI thread as it depends
+    // on the |browser_state|.
+    std::unique_ptr<net::SystemCookieStore> system_cookie_store;
+
     // The browser state this struct was populated from. It's passed as a void*
-    // to ensure it's not accidently used on the IO thread.
+    // to ensure it's not accidentally used on the IO thread.
     void* browser_state;
   };
 
@@ -183,7 +183,6 @@ class ChromeBrowserStateIOData {
 
   std::unique_ptr<net::URLRequestJobFactory> SetUpJobFactoryDefaults(
       std::unique_ptr<net::URLRequestJobFactoryImpl> job_factory,
-      URLRequestInterceptorScopedVector request_interceptors,
       net::NetworkDelegate* network_delegate) const;
 
   // Called when the ChromeBrowserState is destroyed. |context_getters| must
@@ -201,7 +200,9 @@ class ChromeBrowserStateIOData {
   // the channel_id_service_ member and transfers ownership to the base class.
   void set_channel_id_service(net::ChannelIDService* channel_id_service) const;
 
-  net::ProxyService* proxy_service() const { return proxy_service_.get(); }
+  net::ProxyResolutionService* proxy_resolution_service() const {
+    return proxy_resolution_service_.get();
+  }
 
   net::HttpServerProperties* http_server_properties() const;
 
@@ -276,15 +277,14 @@ class ChromeBrowserStateIOData {
   // Member variables which are pointed to by the various context objects.
   mutable BooleanPrefMember enable_referrers_;
   mutable BooleanPrefMember enable_do_not_track_;
-  mutable BooleanPrefMember sync_disabled_;
-  mutable BooleanPrefMember signin_allowed_;
 
   BooleanPrefMember enable_metrics_;
 
   // Pointed to by URLRequestContext.
   mutable std::unique_ptr<net::ChannelIDService> channel_id_service_;
 
-  mutable std::unique_ptr<net::ProxyService> proxy_service_;
+  mutable std::unique_ptr<net::ProxyResolutionService>
+      proxy_resolution_service_;
   mutable std::unique_ptr<net::TransportSecurityState>
       transport_security_state_;
   mutable std::unique_ptr<net::CTVerifier> cert_transparency_verifier_;

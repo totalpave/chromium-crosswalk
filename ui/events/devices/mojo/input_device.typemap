@@ -5,6 +5,7 @@
 mojom = "//ui/events/devices/mojo/input_devices.mojom"
 public_headers = [
   "//ui/events/devices/input_device.h",
+  "//ui/events/devices/stylus_state.h",
   "//ui/events/devices/touchscreen_device.h",
 ]
 traits_headers = [ "//ui/events/devices/mojo/input_device_struct_traits.h" ]
@@ -16,10 +17,12 @@ public_deps = [
 ]
 deps = [
   "//ui/gfx/geometry",
+  "//ui/gfx/geometry/mojo:struct_traits",
 ]
 
 type_mappings = [
   "ui.mojom.InputDeviceType=ui::InputDeviceType",
   "ui.mojom.InputDevice=ui::InputDevice",
+  "ui.mojom.StylusState=ui::StylusState",
   "ui.mojom.TouchscreenDevice=ui::TouchscreenDevice",
 ]

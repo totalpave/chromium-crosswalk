@@ -7,7 +7,8 @@
 #include <stddef.h>
 
 #include "base/bind.h"
-#include "base/macros.h"
+#include "base/callback.h"
+#include "base/stl_util.h"
 #include "chrome/common/importer/imported_bookmark_entry.h"
 #include "chrome/common/importer/importer_bridge.h"
 #include "chrome/common/importer/importer_data_types.h"
@@ -37,21 +38,21 @@ bool CanImportURL(const GURL& url) {
 
   // Filter out the URLs with unsupported schemes.
   const char* const kInvalidSchemes[] = {"wyciwyg", "place"};
-  for (size_t i = 0; i < arraysize(kInvalidSchemes); ++i) {
+  for (size_t i = 0; i < base::size(kInvalidSchemes); ++i) {
     if (url.SchemeIs(kInvalidSchemes[i]))
       return false;
   }
 
   // Check if |url| is about:blank.
-  if (url == GURL(url::kAboutBlankURL))
+  if (url == url::kAboutBlankURL)
     return true;
 
   // If |url| starts with chrome:// or about:, check if it's one of the URLs
   // that we support.
   if (url.SchemeIs(content::kChromeUIScheme) ||
       url.SchemeIs(url::kAboutScheme)) {
-    if (url.host() == chrome::kChromeUIUberHost ||
-        url.host() == chrome::kChromeUIAboutHost)
+    if (url.host_piece() == chrome::kChromeUIUberHost ||
+        url.host_piece() == chrome::kChromeUIAboutHost)
       return true;
 
     GURL fixed_url(url_formatter::FixupURL(url.spec(), std::string()));
@@ -60,8 +61,8 @@ bool CanImportURL(const GURL& url) {
         return true;
     }
 
-    for (int i = 0; i < chrome::kNumberOfChromeDebugURLs; ++i) {
-      if (fixed_url == GURL(chrome::kChromeDebugURLs[i]))
+    for (size_t i = 0; i < chrome::kNumberOfChromeDebugURLs; ++i) {
+      if (fixed_url == chrome::kChromeDebugURLs[i])
         return true;
     }
 

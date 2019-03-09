@@ -5,25 +5,44 @@
 package org.chromium.chrome.browser;
 
 import android.app.Activity;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.SmallTest;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
+import org.chromium.chrome.browser.tab.SadTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabSelectionType;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.ApplicationTestUtils;
+import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
-import org.chromium.content.browser.test.util.CallbackHelper;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 /**
  * Tests for Tab class.
  */
-public class TabTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@RetryOnFailure
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class TabTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
+
     private Tab mTab;
     private CallbackHelper mOnTitleUpdatedHelper;
 
@@ -34,46 +53,43 @@ public class TabTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         }
     };
 
-    public TabTest() {
-        super(ChromeActivity.class);
+    private boolean isShowingSadTab() throws Exception {
+        return ThreadUtils.runOnUiThreadBlocking(() -> SadTab.isShowing(mTab));
     }
 
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityOnBlankPage();
-    }
-
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        mTab = getActivity().getActivityTab();
+    @Before
+    public void setUp() throws Exception {
+        mActivityTestRule.startMainActivityOnBlankPage();
+        mTab = mActivityTestRule.getActivity().getActivityTab();
         mTab.addObserver(mTabObserver);
         mOnTitleUpdatedHelper = new CallbackHelper();
     }
 
+    @Test
     @SmallTest
     @Feature({"Tab"})
     public void testTabContext() throws Throwable {
-        assertFalse("The tab context cannot be an activity",
-                mTab.getContentViewCore().getContext() instanceof Activity);
-        assertNotSame("The tab context's theme should have been updated",
-                mTab.getContentViewCore().getContext().getTheme(),
-                getActivity().getApplication().getTheme());
+        Assert.assertFalse("The tab context cannot be an activity",
+                mTab.getContentView().getContext() instanceof Activity);
+        Assert.assertNotSame("The tab context's theme should have been updated",
+                mTab.getContentView().getContext().getTheme(),
+                mActivityTestRule.getActivity().getApplication().getTheme());
     }
 
+    @Test
     @SmallTest
     @Feature({"Tab"})
     public void testTitleDelayUpdate() throws Throwable {
         final String oldTitle = "oldTitle";
         final String newTitle = "newTitle";
 
-        loadUrl("data:text/html;charset=utf-8,<html><head><title>"
-                + oldTitle + "</title></head><body/></html>");
-        assertEquals("title does not match initial title", oldTitle, mTab.getTitle());
+        mActivityTestRule.loadUrl("data:text/html;charset=utf-8,<html><head><title>" + oldTitle
+                + "</title></head><body/></html>");
+        Assert.assertEquals("title does not match initial title", oldTitle, mTab.getTitle());
         int currentCallCount = mOnTitleUpdatedHelper.getCallCount();
-        runJavaScriptCodeInCurrentTab("document.title='" + newTitle + "';");
+        mActivityTestRule.runJavaScriptCodeInCurrentTab("document.title='" + newTitle + "';");
         mOnTitleUpdatedHelper.waitForCallback(currentCallCount);
-        assertEquals("title does not update", newTitle, mTab.getTitle());
+        Assert.assertEquals("title does not update", newTitle, mTab.getTitle());
     }
 
     /**
@@ -82,29 +98,21 @@ public class TabTest extends ChromeActivityTestCaseBase<ChromeActivity> {
      * Note that document mode is explicitly disabled, as the document activity
      * may be fully recreated if its contents is killed while in the background.
      */
+    @Test
     @SmallTest
     @Feature({"Tab"})
     public void testTabRestoredIfKilledWhileActivityStopped() throws Exception {
         // Ensure the tab is showing before stopping the activity.
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                mTab.show(TabSelectionType.FROM_NEW);
-            }
-        });
+        ThreadUtils.runOnUiThreadBlocking(() -> mTab.show(TabSelectionType.FROM_NEW));
 
-        assertFalse(mTab.needsReload());
-        assertFalse(mTab.isHidden());
-        assertFalse(mTab.isShowingSadTab());
+        Assert.assertFalse(mTab.needsReload());
+        Assert.assertFalse(mTab.isHidden());
+        Assert.assertFalse(isShowingSadTab());
 
         // Stop the activity and simulate a killed renderer.
-        ApplicationTestUtils.fireHomeScreenIntent(getInstrumentation().getTargetContext());
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                mTab.simulateRendererKilledForTesting(false);
-            }
-        });
+        ApplicationTestUtils.fireHomeScreenIntent(InstrumentationRegistry.getTargetContext());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> ChromeTabUtils.simulateRendererKilledForTesting(mTab, false));
 
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
@@ -112,10 +120,10 @@ public class TabTest extends ChromeActivityTestCaseBase<ChromeActivity> {
                 return mTab.isHidden();
             }
         });
-        assertTrue(mTab.needsReload());
-        assertFalse(mTab.isShowingSadTab());
+        Assert.assertTrue(mTab.needsReload());
+        Assert.assertFalse(isShowingSadTab());
 
-        ApplicationTestUtils.launchChrome(getInstrumentation().getTargetContext());
+        ApplicationTestUtils.launchChrome(InstrumentationRegistry.getTargetContext());
 
         // The tab should be restored and visible.
         CriteriaHelper.pollUiThread(new Criteria() {
@@ -124,18 +132,16 @@ public class TabTest extends ChromeActivityTestCaseBase<ChromeActivity> {
                 return !mTab.isHidden();
             }
         });
-        assertFalse(mTab.needsReload());
-        assertFalse(mTab.isShowingSadTab());
+        Assert.assertFalse(mTab.needsReload());
+        Assert.assertFalse(isShowingSadTab());
     }
 
+    @Test
     @SmallTest
     @Feature({"Tab"})
     public void testTabSecurityLevel() {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                assertEquals(ConnectionSecurityLevel.NONE, mTab.getSecurityLevel());
-            }
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                (Runnable) () -> Assert.assertEquals(ConnectionSecurityLevel.NONE,
+                        mTab.getSecurityLevel()));
     }
 }

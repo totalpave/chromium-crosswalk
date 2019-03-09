@@ -8,15 +8,15 @@
 #define JINGLE_GLUE_MOCK_TASK_H_
 
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/webrtc/base/task.h"
+#include "third_party/libjingle_xmpp/task_runner/task.h"
 
 namespace jingle_glue {
 
-class MockTask : public rtc::Task {
+class MockTask : public jingle_xmpp::Task {
  public:
   MockTask(TaskParent* parent);
 
-  virtual ~MockTask();
+  ~MockTask() override;
 
   MOCK_METHOD0(ProcessStart, int());
 };

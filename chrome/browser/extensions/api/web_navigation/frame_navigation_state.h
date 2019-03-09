@@ -14,7 +14,6 @@
 
 namespace content {
 class RenderFrameHost;
-class RenderViewHost;
 }
 
 namespace extensions {
@@ -42,9 +41,8 @@ class FrameNavigationState {
   // Starts to track a document load in |frame_host| to |url|.
   void StartTrackingDocumentLoad(content::RenderFrameHost* frame_host,
                                  const GURL& url,
-                                 bool is_same_page,
-                                 bool is_error_page,
-                                 bool is_iframe_srcdoc);
+                                 bool is_same_document,
+                                 bool is_error_page);
 
   // Adds the |frame_host| to the set of RenderFrameHosts associated with the
   // WebContents this object is tracking. This method and FrameHostDeleted
@@ -55,9 +53,6 @@ class FrameNavigationState {
   // Removes the |frame_host| from the set of RenderFrameHosts associated with
   // the WebContents this object is tracking.
   void FrameHostDeleted(content::RenderFrameHost* frame_host);
-
-  // Update the URL associated with |frame_host|.
-  void UpdateFrame(content::RenderFrameHost* frame_host, const GURL& url);
 
   // Returns true if |frame_host| is a known frame host.
   bool IsValidFrame(content::RenderFrameHost* frame_host) const;
@@ -98,7 +93,6 @@ class FrameNavigationState {
     FrameState();
 
     bool error_occurred;  // True if an error has occurred in this frame.
-    bool is_iframe_srcdoc;  // True if the frame is displaying its srcdoc.
     bool is_loading;        // True if there is a document load going on.
     bool is_parsing;  // True if the frame is still parsing.
     GURL url;  // URL of this frame.

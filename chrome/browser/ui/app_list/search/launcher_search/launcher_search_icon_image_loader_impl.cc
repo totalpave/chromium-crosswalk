@@ -5,7 +5,10 @@
 #include "chrome/browser/ui/app_list/search/launcher_search/launcher_search_icon_image_loader_impl.h"
 
 #include <utility>
+#include <vector>
 
+#include "base/bind.h"
+#include "base/memory/ptr_util.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "extensions/browser/image_loader.h"
 #include "extensions/common/file_util.h"
@@ -24,14 +27,13 @@ LauncherSearchIconImageLoaderImpl::LauncherSearchIconImageLoaderImpl(
                                     profile,
                                     extension,
                                     icon_dimension,
-                                    std::move(error_reporter)),
-      weak_ptr_factory_(this) {}
+                                    std::move(error_reporter)) {}
 
-LauncherSearchIconImageLoaderImpl::~LauncherSearchIconImageLoaderImpl() {
-}
+LauncherSearchIconImageLoaderImpl::~LauncherSearchIconImageLoaderImpl() =
+    default;
 
 const gfx::ImageSkia& LauncherSearchIconImageLoaderImpl::LoadExtensionIcon() {
-  extension_icon_image_.reset(new extensions::IconImage(
+  extension_icon_image_ = base::WrapUnique(new extensions::IconImage(
       profile_, extension_, extensions::IconsInfo::GetIcons(extension_),
       icon_size_.width(), extensions::util::GetDefaultExtensionIcon(), this));
 
@@ -44,8 +46,7 @@ void LauncherSearchIconImageLoaderImpl::LoadIconResourceFromExtension() {
   const extensions::ExtensionResource& resource =
       extension_->GetResource(file_path);
 
-  // Load image as scale factor 2.0. Resizing image to proper size depending on
-  // DPI is done in BadgedIconSource.
+  // Load image as scale factor 2.0 (crbug.com/490597).
   std::vector<extensions::ImageLoader::ImageRepresentation> info_list;
   info_list.push_back(extensions::ImageLoader::ImageRepresentation(
       resource, extensions::ImageLoader::ImageRepresentation::ALWAYS_RESIZE,
@@ -53,8 +54,8 @@ void LauncherSearchIconImageLoaderImpl::LoadIconResourceFromExtension() {
       ui::SCALE_FACTOR_200P));
   extensions::ImageLoader::Get(profile_)->LoadImagesAsync(
       extension_, info_list,
-      base::Bind(&LauncherSearchIconImageLoaderImpl::OnCustomIconImageLoaded,
-                 weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(
+          &LauncherSearchIconImageLoaderImpl::OnCustomIconImageLoaded, this));
 }
 
 void LauncherSearchIconImageLoaderImpl::OnExtensionIconImageChanged(

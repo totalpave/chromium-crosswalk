@@ -19,15 +19,14 @@
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/common/extension.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
+#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
 #endif
 
-class ExtensionService;
 class Profile;
 class TestingProfile;
 
@@ -35,10 +34,14 @@ namespace content {
 class BrowserContext;
 }
 
+namespace sync_preferences {
+class TestingPrefServiceSyncable;
+}
+
 namespace extensions {
 
 class ExtensionRegistry;
-class ManagementPolicy;
+class ExtensionService;
 
 // A unittest infrastructure which creates an ExtensionService. Whenever
 // possible, use this instead of creating a browsertest.
@@ -52,9 +55,10 @@ class ExtensionServiceTestBase : public testing::Test {
     base::FilePath profile_path;
     base::FilePath pref_file;
     base::FilePath extensions_install_dir;
-    bool autoupdate_enabled;    // defaults to false.
-    bool is_first_run;          // defaults to true.
-    bool profile_is_supervised; // defaults to false.
+    bool autoupdate_enabled = false;
+    bool extensions_enabled = true;
+    bool is_first_run = true;
+    bool profile_is_supervised = false;
 
     // Though you could use this constructor, you probably want to use
     // CreateDefaultInitParams(), and then make a change or two.
@@ -72,6 +76,7 @@ class ExtensionServiceTestBase : public testing::Test {
 
   // testing::Test implementation.
   void SetUp() override;
+  void TearDown() override;
 
   // Create a set of InitParams to install an ExtensionService into |temp_dir_|.
   ExtensionServiceInitParams CreateDefaultInitParams();
@@ -95,8 +100,8 @@ class ExtensionServiceTestBase : public testing::Test {
   // Initialize an ExtensionService with autoupdate enabled.
   void InitializeExtensionServiceWithUpdater();
 
-  // Resets the browser thread bundle to one with |options|.
-  void ResetThreadBundle(int options);
+  // Initializes an ExtensionService without extensions enabled.
+  void InitializeExtensionServiceWithExtensionsDisabled();
 
   // Helpers to check the existence and values of extension prefs.
   size_t GetPrefKeyCount();
@@ -118,6 +123,8 @@ class ExtensionServiceTestBase : public testing::Test {
 
   content::BrowserContext* browser_context();
   Profile* profile();
+  TestingProfile* testing_profile() { return profile_.get(); }
+  sync_preferences::TestingPrefServiceSyncable* testing_pref_service();
   ExtensionService* service() { return service_; }
   ExtensionRegistry* registry() { return registry_; }
   const base::FilePath& extensions_install_dir() const {
@@ -135,10 +142,12 @@ class ExtensionServiceTestBase : public testing::Test {
   // after thread_bundle_ in the destruction order.
   base::ShadowingAtExitManager at_exit_manager_;
 
+  // The MessageLoop is used by RenderViewHostTestEnabler, so this must be
+  // created before it.
+  content::TestBrowserThreadBundle thread_bundle_;
+
   // Enable creation of WebContents without initializing a renderer.
   content::RenderViewHostTestEnabler rvh_test_enabler_;
-
-  std::unique_ptr<content::TestBrowserThreadBundle> thread_bundle_;
 
  protected:
   // It's unfortunate that these are exposed to subclasses (rather than used
@@ -156,9 +165,6 @@ class ExtensionServiceTestBase : public testing::Test {
  private:
   void CreateExtensionService(const ExtensionServiceInitParams& params);
 
-  // Whether or not the thread bundle was reset in the test.
-  bool did_reset_thread_bundle_;
-
   // The directory into which extensions are installed.
   base::FilePath extensions_install_dir_;
 
@@ -171,8 +177,7 @@ class ExtensionServiceTestBase : public testing::Test {
   extensions::ExtensionRegistry* registry_;
 
 #if defined OS_CHROMEOS
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
+  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
   chromeos::ScopedTestUserManager test_user_manager_;
 #endif
 

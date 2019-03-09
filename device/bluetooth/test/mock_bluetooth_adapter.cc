@@ -15,8 +15,8 @@ namespace device {
 using testing::Invoke;
 using testing::_;
 
-MockBluetoothAdapter::Observer::Observer() {}
-MockBluetoothAdapter::Observer::~Observer() {}
+MockBluetoothAdapter::Observer::Observer() = default;
+MockBluetoothAdapter::Observer::~Observer() = default;
 
 MockBluetoothAdapter::MockBluetoothAdapter() {
   ON_CALL(*this, AddObserver(_))
@@ -29,27 +29,31 @@ MockBluetoothAdapter::MockBluetoothAdapter() {
       }));
 }
 
-MockBluetoothAdapter::~MockBluetoothAdapter() {}
+MockBluetoothAdapter::~MockBluetoothAdapter() = default;
 
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
 void MockBluetoothAdapter::Shutdown() {
 }
 #endif
 
+bool MockBluetoothAdapter::SetPoweredImpl(bool powered) {
+  return false;
+}
+
 void MockBluetoothAdapter::AddDiscoverySession(
     BluetoothDiscoveryFilter* discovery_filter,
     const base::Closure& callback,
-    const DiscoverySessionErrorCallback& error_callback) {}
+    DiscoverySessionErrorCallback error_callback) {}
 
 void MockBluetoothAdapter::RemoveDiscoverySession(
     BluetoothDiscoveryFilter* discovery_filter,
     const base::Closure& callback,
-    const DiscoverySessionErrorCallback& error_callback) {}
+    DiscoverySessionErrorCallback error_callback) {}
 
 void MockBluetoothAdapter::SetDiscoveryFilter(
     std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
     const base::Closure& callback,
-    const DiscoverySessionErrorCallback& error_callback) {
+    DiscoverySessionErrorCallback error_callback) {
   SetDiscoveryFilterRaw(discovery_filter.get(), callback, error_callback);
 }
 
@@ -66,18 +70,31 @@ void MockBluetoothAdapter::AddMockDevice(
   mock_devices_.push_back(std::move(mock_device));
 }
 
+std::unique_ptr<MockBluetoothDevice> MockBluetoothAdapter::RemoveMockDevice(
+    const std::string& address) {
+  for (auto it = mock_devices_.begin(); it != mock_devices_.end(); ++it) {
+    if ((*it)->GetAddress() != address) {
+      continue;
+    }
+    std::unique_ptr<MockBluetoothDevice> removed_device = std::move(*it);
+    mock_devices_.erase(it);
+    return removed_device;
+  }
+  return nullptr;
+}
+
 BluetoothAdapter::ConstDeviceList MockBluetoothAdapter::GetConstMockDevices() {
   BluetoothAdapter::ConstDeviceList devices;
-  for (auto& it : mock_devices_) {
-    devices.push_back(it);
+  for (const auto& it : mock_devices_) {
+    devices.push_back(it.get());
   }
   return devices;
 }
 
 BluetoothAdapter::DeviceList MockBluetoothAdapter::GetMockDevices() {
   BluetoothAdapter::DeviceList devices;
-  for (auto& it : mock_devices_) {
-    devices.push_back(it);
+  for (const auto& it : mock_devices_) {
+    devices.push_back(it.get());
   }
   return devices;
 }
@@ -85,8 +102,19 @@ BluetoothAdapter::DeviceList MockBluetoothAdapter::GetMockDevices() {
 void MockBluetoothAdapter::RegisterAdvertisement(
     std::unique_ptr<BluetoothAdvertisement::Data> advertisement_data,
     const CreateAdvertisementCallback& callback,
-    const CreateAdvertisementErrorCallback& error_callback) {
+    const AdvertisementErrorCallback& error_callback) {
   callback.Run(new MockBluetoothAdvertisement);
 }
+
+#if defined(OS_CHROMEOS) || defined(OS_LINUX)
+void MockBluetoothAdapter::SetAdvertisingInterval(
+    const base::TimeDelta& min,
+    const base::TimeDelta& max,
+    const base::Closure& callback,
+    const AdvertisementErrorCallback& error_callback) {}
+void MockBluetoothAdapter::ResetAdvertising(
+    const base::Closure& callback,
+    const AdvertisementErrorCallback& error_callback) {}
+#endif
 
 }  // namespace device

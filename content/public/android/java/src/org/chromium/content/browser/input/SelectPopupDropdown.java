@@ -5,13 +5,10 @@
 package org.chromium.content.browser.input;
 
 import android.content.Context;
-import android.graphics.Rect;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.PopupWindow;
 
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.RenderCoordinates;
 import org.chromium.ui.DropdownAdapter;
 import org.chromium.ui.DropdownPopupWindow;
 
@@ -20,20 +17,16 @@ import java.util.List;
 /**
  * Handles the dropdown popup for the <select> HTML tag support.
  */
-public class SelectPopupDropdown implements SelectPopup {
-
-    private final ContentViewCore mContentViewCore;
-    private final Context mContext;
+public class SelectPopupDropdown implements SelectPopup.Ui {
+    private final SelectPopup mSelectPopup;
     private final DropdownPopupWindow mDropdownPopupWindow;
 
     private boolean mSelectionNotified;
 
-    public SelectPopupDropdown(ContentViewCore contentViewCore, List<SelectPopupItem> items,
-            Rect bounds, int[] selected, boolean rightAligned) {
-        mContentViewCore = contentViewCore;
-        mContext = mContentViewCore.getContext();
-        mDropdownPopupWindow = new DropdownPopupWindow(mContext,
-                mContentViewCore.getViewAndroidDelegate());
+    public SelectPopupDropdown(SelectPopup selectPopup, Context context, View anchorView,
+            List<SelectPopupItem> items, int[] selected, boolean rightAligned) {
+        mSelectPopup = selectPopup;
+        mDropdownPopupWindow = new DropdownPopupWindow(context, anchorView);
         mDropdownPopupWindow.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
@@ -47,18 +40,8 @@ public class SelectPopupDropdown implements SelectPopup {
             initialSelection = selected[0];
         }
         mDropdownPopupWindow.setInitialSelection(initialSelection);
-        mDropdownPopupWindow.setAdapter(new DropdownAdapter(mContext, items, null));
+        mDropdownPopupWindow.setAdapter(new DropdownAdapter(context, items, null /* separators */));
         mDropdownPopupWindow.setRtl(rightAligned);
-        RenderCoordinates renderCoordinates = mContentViewCore.getRenderCoordinates();
-        float anchorX = renderCoordinates.fromPixToDip(
-                renderCoordinates.fromLocalCssToPix(bounds.left));
-        float anchorY = renderCoordinates.fromPixToDip(
-                renderCoordinates.fromLocalCssToPix(bounds.top));
-        float anchorWidth = renderCoordinates.fromPixToDip(
-                renderCoordinates.fromLocalCssToPix(bounds.right)) - anchorX;
-        float anchorHeight = renderCoordinates.fromPixToDip(
-                renderCoordinates.fromLocalCssToPix(bounds.bottom)) - anchorY;
-        mDropdownPopupWindow.setAnchorRect(anchorX, anchorY, anchorWidth, anchorHeight);
         mDropdownPopupWindow.setOnDismissListener(
                 new PopupWindow.OnDismissListener() {
                     @Override
@@ -70,7 +53,7 @@ public class SelectPopupDropdown implements SelectPopup {
 
     private void notifySelection(int[] indicies) {
         if (mSelectionNotified) return;
-        mContentViewCore.selectPopupMenuItems(indicies);
+        mSelectPopup.selectMenuItems(indicies);
         mSelectionNotified = true;
     }
 

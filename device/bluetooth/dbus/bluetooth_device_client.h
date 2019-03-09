@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -108,13 +109,41 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceClient : public BluezDBusClient {
     // discovered during inquiry. Read-only.
     dbus::Property<int16_t> rssi;
 
+    // Manufacturer specific advertisement data. Keys are 16 bits Manufacturer
+    // ID followed by its byte array value. Read-only.
+    dbus::Property<std::map<uint16_t, std::vector<uint8_t>>> manufacturer_data;
+
+    // Service advertisement data. Keys are the UUIDs in string format followed
+    // by its byte array value. Read-only.
+    dbus::Property<std::map<std::string, std::vector<uint8_t>>> service_data;
+
     // Indicate whether or not service discovery has been resolved. Read-only.
     dbus::Property<bool> services_resolved;
+
+    // The Advertising Data Flags of the remote device. Read-only.
+    dbus::Property<std::vector<uint8_t>> advertising_data_flags;
+
+    // The MTU used in ATT communication with the remote device. Read-only.
+    dbus::Property<uint16_t> mtu;
+
+    // The EIR advertised by the remote device. Read-only.
+    dbus::Property<std::vector<uint8_t>> eir;
 
     Properties(dbus::ObjectProxy* object_proxy,
                const std::string& interface_name,
                const PropertyChangedCallback& callback);
     ~Properties() override;
+  };
+
+  // Connection parameters that can be passed to SetLEConnectionParameters().
+  struct ConnectionParameters {
+    // The lower bound to request for the connection interval.
+    // In units of 1.25ms.
+    uint16_t min_connection_interval;
+
+    // The upper bound to request for the connection interval.
+    // In units of 1.25ms.
+    uint16_t max_connection_interval;
   };
 
   // Interface for observing changes from a remote bluetooth device.
@@ -202,12 +231,29 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceClient : public BluezDBusClient {
                            const ConnInfoCallback& callback,
                            const ErrorCallback& error_callback) = 0;
 
+  // Sets the connection parameters (e.g. connection interval) for the device.
+  virtual void SetLEConnectionParameters(
+      const dbus::ObjectPath& object_path,
+      const ConnectionParameters& conn_params,
+      const base::Closure& callback,
+      const ErrorCallback& error_callback) = 0;
+
   // Returns the currently discovered service records for the device with
   // object path |object_path|. If the device is not connected, then an error
   // will be returned.
   virtual void GetServiceRecords(const dbus::ObjectPath& object_path,
                                  const ServiceRecordsCallback& callback,
                                  const ErrorCallback& error_callback) = 0;
+
+  // Executes all the privous prepare writes in a reliable write session.
+  virtual void ExecuteWrite(const dbus::ObjectPath& object_path,
+                            const base::Closure& callback,
+                            const ErrorCallback& error_callback) = 0;
+
+  // Aborts all the privous prepare writes in a reliable write session.
+  virtual void AbortWrite(const dbus::ObjectPath& object_path,
+                          const base::Closure& callback,
+                          const ErrorCallback& error_callback) = 0;
 
   // Creates the instance.
   static BluetoothDeviceClient* Create();

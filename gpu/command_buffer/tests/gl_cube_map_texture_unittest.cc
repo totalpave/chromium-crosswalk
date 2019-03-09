@@ -7,11 +7,9 @@
 
 #include <memory>
 
-#include "base/command_line.h"
-#include "base/strings/string_number_conversions.h"
+#include "base/stl_util.h"
 #include "gpu/command_buffer/tests/gl_manager.h"
 #include "gpu/command_buffer/tests/gl_test_utils.h"
-#include "gpu/config/gpu_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace gpu {
@@ -28,12 +26,11 @@ const GLenum kCubeMapTextureTargets[] = {
 class GLCubeMapTextureTest : public testing::TestWithParam<GLenum> {
  protected:
   void SetUp() override {
-    base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
     // ANGLE and NVidia fails ReadPixelsFromIncompleteCubeTexture without this
     // workaround.
-    command_line.AppendSwitchASCII(switches::kGpuDriverBugWorkarounds,
-                                   base::IntToString(gpu::FORCE_CUBE_COMPLETE));
-    gl_.InitializeWithCommandLine(GLManager::Options(), command_line);
+    GpuDriverBugWorkarounds workarounds;
+    workarounds.force_cube_complete = true;
+    gl_.InitializeWithWorkarounds(GLManager::Options(), workarounds);
     DCHECK(gl_.workarounds().force_cube_complete);
     for (int i = 0; i < 256; i++) {
       pixels_[i * 4] = 255u;
@@ -68,9 +65,9 @@ class GLCubeMapTextureTest : public testing::TestWithParam<GLenum> {
   GLuint framebuffer_id_;
 };
 
-INSTANTIATE_TEST_CASE_P(GLCubeMapTextureTests,
-                        GLCubeMapTextureTest,
-                        ::testing::ValuesIn(kCubeMapTextureTargets));
+INSTANTIATE_TEST_SUITE_P(GLCubeMapTextureTests,
+                         GLCubeMapTextureTest,
+                         ::testing::ValuesIn(kCubeMapTextureTargets));
 
 TEST_P(GLCubeMapTextureTest, TexImage2DAfterFBOBinding) {
   GLenum cube_map_target = GetParam();
@@ -95,7 +92,7 @@ TEST_P(GLCubeMapTextureTest, ReadPixels) {
   EXPECT_EQ(static_cast<GLenum>(GL_NO_ERROR), glGetError());
 
   // Make a cube texture complete
-  for (unsigned i = 0; i < arraysize(kCubeMapTextureTargets); i++) {
+  for (unsigned i = 0; i < base::size(kCubeMapTextureTargets); i++) {
     glTexImage2D(kCubeMapTextureTargets[i], 0, GL_RGBA, width_, width_, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, pixels_);
     EXPECT_EQ(static_cast<GLenum>(GL_NO_ERROR), glGetError());
@@ -110,7 +107,7 @@ TEST_P(GLCubeMapTextureTest, ReadPixels) {
   EXPECT_EQ(static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE),
             glCheckFramebufferStatus(GL_FRAMEBUFFER));
 
-  GLTestHelper::CheckPixels(0, 0, width_, width_, 0, pixels_);
+  GLTestHelper::CheckPixels(0, 0, width_, width_, 0, pixels_, nullptr);
   EXPECT_EQ(static_cast<GLenum>(GL_NO_ERROR), glGetError());
 }
 

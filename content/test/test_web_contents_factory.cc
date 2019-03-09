@@ -4,6 +4,7 @@
 
 #include "content/public/test/test_web_contents_factory.h"
 
+#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/test_renderer_host.h"
@@ -32,7 +33,18 @@ WebContents* TestWebContentsFactory::CreateWebContents(
   web_contents_.push_back(
       WebContentsTester::CreateTestWebContents(context, nullptr));
   DCHECK(web_contents_.back());
-  return web_contents_.back();
+  return web_contents_.back().get();
+}
+
+void TestWebContentsFactory::DestroyWebContents(WebContents* contents) {
+  auto it = web_contents_.begin();
+  for (; it != web_contents_.end(); ++it) {
+    if (it->get() == contents)
+      break;
+  }
+  if (it == web_contents_.end())
+    return;
+  web_contents_.erase(it);
 }
 
 }  // namespace content

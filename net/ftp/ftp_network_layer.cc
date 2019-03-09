@@ -4,7 +4,7 @@
 
 #include "net/ftp/ftp_network_layer.h"
 
-#include "base/memory/ptr_util.h"
+#include "base/logging.h"
 #include "net/ftp/ftp_network_session.h"
 #include "net/ftp/ftp_network_transaction.h"
 #include "net/socket/client_socket_factory.h"
@@ -14,17 +14,17 @@ namespace net {
 FtpNetworkLayer::FtpNetworkLayer(HostResolver* host_resolver)
     : session_(new FtpNetworkSession(host_resolver)),
       suspended_(false) {
+  DCHECK(host_resolver);
 }
 
-FtpNetworkLayer::~FtpNetworkLayer() {
-}
+FtpNetworkLayer::~FtpNetworkLayer() = default;
 
 std::unique_ptr<FtpTransaction> FtpNetworkLayer::CreateTransaction() {
   if (suspended_)
     return std::unique_ptr<FtpTransaction>();
 
-  return base::WrapUnique(new FtpNetworkTransaction(
-      session_->host_resolver(), ClientSocketFactory::GetDefaultFactory()));
+  return std::make_unique<FtpNetworkTransaction>(
+      session_->host_resolver(), ClientSocketFactory::GetDefaultFactory());
 }
 
 void FtpNetworkLayer::Suspend(bool suspend) {

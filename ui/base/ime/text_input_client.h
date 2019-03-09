@@ -8,8 +8,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(OS_WIN)
+#include <vector>
+#endif
+
 #include "base/i18n/rtl.h"
 #include "base/strings/string16.h"
+#include "build/build_config.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "ui/base/ime/composition_text.h"
 #include "ui/base/ime/text_input_mode.h"
 #include "ui/base/ime/text_input_type.h"
@@ -29,6 +35,21 @@ enum class TextEditCommand;
 // An interface implemented by a View that needs text input support.
 class UI_BASE_IME_EXPORT TextInputClient {
  public:
+  // The reason the control was focused, used by the virtual keyboard to detect
+  // pen input.
+  enum FocusReason {
+    // Not focused.
+    FOCUS_REASON_NONE,
+    // User initiated with mouse.
+    FOCUS_REASON_MOUSE,
+    // User initiated with touch.
+    FOCUS_REASON_TOUCH,
+    // User initiated with pen.
+    FOCUS_REASON_PEN,
+    // All other reasons (e.g. system initiated, mouse)
+    FOCUS_REASON_OTHER,
+  };
+
   virtual ~TextInputClient();
 
   // Input method result -------------------------------------------------------
@@ -82,60 +103,57 @@ class UI_BASE_IME_EXPORT TextInputClient {
   virtual bool CanComposeInline() const = 0;
 
   // Returns current caret (insertion point) bounds in the universal screen
-  // coordinates. If there is selection, then the selection bounds will be
-  // returned.
-  // Note: On Windows, the returned value is supposed to be DIP (Density
-  // Independent Pixel).
-  // TODO(ime): Have a clear spec whether the returned value is DIP or not.
-  // http://crbug.com/360334
+  // coordinates in DIP (Density Independent Pixel).
+  // If there is selection, then the selection bounds will be returned.
   virtual gfx::Rect GetCaretBounds() const = 0;
 
   // Retrieves the composition character boundary rectangle in the universal
-  // screen coordinates. The |index| is zero-based index of character position
-  // in composition text.
+  // screen coordinates in DIP (Density Independent Pixel).
+  // The |index| is zero-based index of character position in composition text.
   // Returns false if there is no composition text or |index| is out of range.
   // The |rect| is not touched in the case of failure.
-  // Note: On Windows, the returned value is supposed to be DIP
-  // (Density Independent Pixel).
-  // TODO(ime): Have a clear spec whether the returned value is DIP or not.
-  // http://crbug.com/360334
   virtual bool GetCompositionCharacterBounds(uint32_t index,
                                              gfx::Rect* rect) const = 0;
 
   // Returns true if there is composition text.
   virtual bool HasCompositionText() const = 0;
 
+  // Returns how the text input client was focused.
+  virtual FocusReason GetFocusReason() const = 0;
+
   // Document content operations ----------------------------------------------
 
-  // Retrieves the UTF-16 based character range containing accessible text in
+  // Retrieves the UTF-16 code unit range containing accessible text in
   // the View. It must cover the composition and selection range.
   // Returns false if the information cannot be retrieved right now.
   virtual bool GetTextRange(gfx::Range* range) const = 0;
 
-  // Retrieves the UTF-16 based character range of current composition text.
+  // Retrieves the UTF-16 code unit range of current composition text.
   // Returns false if the information cannot be retrieved right now.
   virtual bool GetCompositionTextRange(gfx::Range* range) const = 0;
 
-  // Retrieves the UTF-16 based character range of current selection.
-  // Returns false if the information cannot be retrieved right now.
-  virtual bool GetSelectionRange(gfx::Range* range) const = 0;
+  // Retrieves the UTF-16 code unit range of current selection in the text
+  // input. Returns false if the information cannot be retrieved right now.
+  // Returns false if the selected text is outside of the text input (== the
+  // text input is not focused)
+  virtual bool GetEditableSelectionRange(gfx::Range* range) const = 0;
 
-  // Selects the given UTF-16 based character range. Current composition text
+  // Selects the given UTF-16 code unit range. Current composition text
   // will be confirmed before selecting the range.
   // Returns false if the operation is not supported.
-  virtual bool SetSelectionRange(const gfx::Range& range) = 0;
+  virtual bool SetEditableSelectionRange(const gfx::Range& range) = 0;
 
-  // Deletes contents in the given UTF-16 based character range. Current
+  // Deletes contents in the given UTF-16 code unit range. Current
   // composition text will be confirmed before deleting the range.
   // The input caret will be moved to the place where the range gets deleted.
   // ExtendSelectionAndDelete should be used instead as far as you are deleting
   // characters around current caret. This function with the range based on
-  // GetSelectionRange has a race condition due to asynchronous IPCs between
-  // browser and renderer.
-  // Returns false if the operation is not supported.
+  // GetEditableSelectionRange has a race condition due to asynchronous IPCs
+  // between browser and renderer. Returns false if the operation is not
+  // supported.
   virtual bool DeleteRange(const gfx::Range& range) = 0;
 
-  // Retrieves the text content in a given UTF-16 based character range.
+  // Retrieves the text content in a given UTF-16 code unit range.
   // The result will be stored into |*text|.
   // Returns false if the operation is not supported or the specified range
   // is out of the text range returned by GetTextRange().
@@ -155,20 +173,17 @@ class UI_BASE_IME_EXPORT TextInputClient {
   virtual bool ChangeTextDirectionAndLayoutAlignment(
       base::i18n::TextDirection direction) = 0;
 
-  // Deletes the current selection plus the specified number of characters
+  // Deletes the current selection plus the specified number of char16 values
   // before and after the selection or caret. This function should be used
-  // instead of calling DeleteRange with GetSelectionRange, because
-  // GetSelectionRange may not be the latest value due to asynchronous of IPC
-  // between browser and renderer.
+  // instead of calling DeleteRange with GetEditableSelectionRange, because
+  // GetEditableSelectionRange may not be the latest value due to asynchronous
+  // of IPC between browser and renderer.
   virtual void ExtendSelectionAndDelete(size_t before, size_t after) = 0;
 
-  // Ensure the caret is within |rect|.  |rect| is in screen coordinates and
-  // may extend beyond the bounds of this TextInputClient.
-  // Note: On Windows, the returned value is supposed to be DIP (Density
-  // Independent Pixel).
-  // TODO(ime): Have a clear spec whether the returned value is DIP or not.
-  // http://crbug.com/360334
-  virtual void EnsureCaretInRect(const gfx::Rect& rect) = 0;
+  // Ensure the caret is not in |rect|.  |rect| is in screen coordinates in
+  // DIP (Density Independent Pixel) and may extend beyond the bounds of this
+  // TextInputClient.
+  virtual void EnsureCaretNotInRect(const gfx::Rect& rect) = 0;
 
   // Returns true if |command| is currently allowed to be executed.
   virtual bool IsTextEditCommandEnabled(TextEditCommand command) const = 0;
@@ -179,6 +194,24 @@ class UI_BASE_IME_EXPORT TextInputClient {
   // TextInputClient). The edit command will take into account any OS-specific,
   // or user-specified, keybindings that may be set up.
   virtual void SetTextEditCommandForNextKeyEvent(TextEditCommand command) = 0;
+
+  // Returns a UKM source for identifying the input client (e.g. for web input
+  // clients, the source represents the URL of the page).
+  virtual ukm::SourceId GetClientSourceForMetrics() const = 0;
+
+  // Returns whether text entered into this text client should be used to
+  // improve typing suggestions for the user. This should return false for text
+  // fields that are considered 'private' (e.g. in incognito tabs).
+  virtual bool ShouldDoLearning() = 0;
+
+#if defined(OS_WIN)
+  // Start composition over a given UTF-16 code range from existing text. This
+  // should only be used for composition scenario when IME wants to start
+  // composition on existing text.
+  virtual void SetCompositionFromExistingText(
+      const gfx::Range& range,
+      const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) = 0;
+#endif
 };
 
 }  // namespace ui

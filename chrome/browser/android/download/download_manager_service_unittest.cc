@@ -9,10 +9,11 @@
 #include "base/bind.h"
 #include "base/macros.h"
 #include "base/message_loop/message_loop.h"
-#include "content/public/browser/download_item.h"
+#include "base/run_loop.h"
+#include "components/download/public/common/download_item.h"
+#include "components/download/public/common/download_url_parameters.h"
+#include "components/download/public/common/mock_download_item.h"
 #include "content/public/browser/download_manager.h"
-#include "content/public/browser/download_url_parameters.h"
-#include "content/public/test/mock_download_item.h"
 #include "content/public/test/mock_download_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -29,21 +30,20 @@ struct DownloadCreateInfo;
 
 class MockDownloadManagerService : public DownloadManagerService {
  public:
-  MockDownloadManagerService()
-     : DownloadManagerService(base::android::AttachCurrentThread(), nullptr) {
+  MockDownloadManagerService() : DownloadManagerService() {
     ON_CALL(manager_, GetDownloadByGuid(_)).WillByDefault(
         ::testing::Invoke(this,
                           &MockDownloadManagerService::GetDownloadByGuid));
   }
 
   void CreateDownloadItem(bool can_resume) {
-    download_.reset(new content::MockDownloadItem());
+    download_.reset(new download::MockDownloadItem());
     ON_CALL(*download_, CanResume()).WillByDefault(
         ::testing::Return(can_resume));
   }
 
  protected:
-  content::DownloadItem* GetDownloadByGuid(const std::string&) {
+  download::DownloadItem* GetDownloadByGuid(const std::string&) {
     return download_.get();
   }
 
@@ -53,7 +53,7 @@ class MockDownloadManagerService : public DownloadManagerService {
   }
 
  private:
-  std::unique_ptr<content::MockDownloadItem> download_;
+  std::unique_ptr<download::MockDownloadItem> download_;
   content::MockDownloadManager manager_;
 };
 
@@ -77,11 +77,12 @@ class DownloadManagerServiceTest : public testing::Test {
         env, nullptr,
         JavaParamRef<jstring>(
             env,
-            base::android::ConvertUTF8ToJavaString(env, download_guid).obj()));
+            base::android::ConvertUTF8ToJavaString(env, download_guid).obj()),
+        false, false);
     EXPECT_FALSE(success_);
-    service_->OnHistoryQueryComplete();
+    service_->OnManagerInitialized();
     while (!finished_)
-      message_loop_.RunUntilIdle();
+      base::RunLoop().RunUntilIdle();
   }
 
  protected:

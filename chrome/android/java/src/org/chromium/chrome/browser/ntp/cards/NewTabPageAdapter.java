@@ -4,28 +4,33 @@
 
 package org.chromium.chrome.browser.ntp.cards;
 
-import android.graphics.Canvas;
+import android.support.annotation.Nullable;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.RecyclerView.Adapter;
-import android.support.v7.widget.RecyclerView.ViewHolder;
-import android.support.v7.widget.helper.ItemTouchHelper;
+import android.view.View;
 import android.view.ViewGroup;
 
 import org.chromium.base.Callback;
-import org.chromium.base.Log;
-import org.chromium.chrome.browser.ntp.NewTabPageLayout;
-import org.chromium.chrome.browser.ntp.NewTabPageUma;
-import org.chromium.chrome.browser.ntp.NewTabPageView.NewTabPageManager;
-import org.chromium.chrome.browser.ntp.snippets.DisabledReason;
-import org.chromium.chrome.browser.ntp.snippets.SnippetArticle;
+import org.chromium.base.VisibleForTesting;
+import org.chromium.chrome.browser.native_page.ContextMenuManager;
+import org.chromium.chrome.browser.ntp.cards.NewTabPageViewHolder.PartialBindCallback;
+import org.chromium.chrome.browser.ntp.snippets.CategoryInt;
+import org.chromium.chrome.browser.ntp.snippets.CategoryStatus;
+import org.chromium.chrome.browser.ntp.snippets.KnownCategories;
+import org.chromium.chrome.browser.ntp.snippets.SectionHeaderViewHolder;
 import org.chromium.chrome.browser.ntp.snippets.SnippetArticleViewHolder;
-import org.chromium.chrome.browser.ntp.snippets.SnippetHeaderListItem;
-import org.chromium.chrome.browser.ntp.snippets.SnippetHeaderViewHolder;
 import org.chromium.chrome.browser.ntp.snippets.SnippetsBridge;
-import org.chromium.chrome.browser.ntp.snippets.SnippetsBridge.SnippetsObserver;
+import org.chromium.chrome.browser.ntp.snippets.SuggestionsSource;
+import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
+import org.chromium.chrome.browser.suggestions.DestructionObserver;
+import org.chromium.chrome.browser.suggestions.SuggestionsConfig;
+import org.chromium.chrome.browser.suggestions.SuggestionsRecyclerView;
+import org.chromium.chrome.browser.suggestions.SuggestionsUiDelegate;
+import org.chromium.chrome.browser.widget.displaystyle.UiConfig;
+import org.chromium.ui.modelutil.ListObservable;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A class that handles merging above the fold elements and below the fold cards into an adapter
@@ -33,279 +38,283 @@ import java.util.List;
  * the above-the-fold view (containing the logo, search box, and most visited tiles) and subsequent
  * elements will be the cards shown to the user
  */
-public class NewTabPageAdapter extends Adapter<NewTabPageViewHolder> implements SnippetsObserver {
-    private static final String TAG = "Ntp";
+public class NewTabPageAdapter extends Adapter<NewTabPageViewHolder>
+        implements ListObservable.ListObserver<PartialBindCallback> {
+    private final SuggestionsUiDelegate mUiDelegate;
+    private final ContextMenuManager mContextMenuManager;
+    private final OfflinePageBridge mOfflinePageBridge;
+
+    private final @Nullable View mAboveTheFoldView;
+    private final UiConfig mUiConfig;
+    private SuggestionsRecyclerView mRecyclerView;
+
+    private final InnerNode<NewTabPageViewHolder, PartialBindCallback> mRoot;
+
+    private final SectionList mSections;
+    private final AllDismissedItem mAllDismissed;
+    private final Footer mFooter;
+
+    private final RemoteSuggestionsStatusObserver mRemoteSuggestionsStatusObserver;
 
     /**
-     * Position of the first card in the adapter. This is always going to be a valid position,
-     * occupied either by a card showing content or by a status card.
+     * Creates the adapter that will manage all the cards to display on the NTP.
+     * @param uiDelegate used to interact with the rest of the system.
+     * @param aboveTheFoldView the layout encapsulating all the above-the-fold elements
+     *         (logo, search box, most visited tiles), or null if only suggestions should
+     *         be displayed.
+     * @param uiConfig the NTP UI configuration, to be passed to created views.
+     * @param offlinePageBridge used to determine if articles are available.
+     * @param contextMenuManager used to build context menus.
      */
-    private static final int FIRST_CARD_POSITION = 2;
+    public NewTabPageAdapter(SuggestionsUiDelegate uiDelegate, @Nullable View aboveTheFoldView,
+            UiConfig uiConfig, OfflinePageBridge offlinePageBridge,
+            ContextMenuManager contextMenuManager) {
+        mUiDelegate = uiDelegate;
+        mContextMenuManager = contextMenuManager;
 
-    private final NewTabPageManager mNewTabPageManager;
-    private final NewTabPageLayout mNewTabPageLayout;
-    private final AboveTheFoldListItem mAboveTheFoldListItem;
-    private final SnippetHeaderListItem mHeaderListItem;
-    private StatusListItem mStatusListItem;
-    private final List<NewTabPageListItem> mNewTabPageListItems;
-    private final ItemTouchCallbacks mItemTouchCallbacks;
-    private NewTabPageRecyclerView mRecyclerView;
-    private int mServiceStatus;
+        mAboveTheFoldView = aboveTheFoldView;
+        mUiConfig = uiConfig;
+        mRoot = new InnerNode<>();
+        mSections = new SectionList(mUiDelegate, offlinePageBridge);
+        mAllDismissed = new AllDismissedItem();
 
-    private SnippetsBridge mSnippetsBridge;
+        if (mAboveTheFoldView != null) mRoot.addChildren(new AboveTheFoldItem());
+        mRoot.addChildren(mAllDismissed, mSections);
 
-    private class ItemTouchCallbacks extends ItemTouchHelper.Callback {
-        @Override
-        public void onSwiped(ViewHolder viewHolder, int direction) {
-            mRecyclerView.onItemDismissStarted(viewHolder.itemView);
+        mFooter = new Footer();
+        mRoot.addChildren(mFooter);
 
-            NewTabPageAdapter.this.dismissItem(viewHolder);
-            addStatusCardIfNecessary();
-        }
+        mOfflinePageBridge = offlinePageBridge;
 
-        @Override
-        public void clearView(RecyclerView recyclerView, ViewHolder viewHolder) {
-            // clearView() is called when an interaction with the item is finished, which does
-            // not mean that the user went all the way and dismissed the item before releasing it.
-            // We need to check that the item has been removed.
-            if (viewHolder.getAdapterPosition() == RecyclerView.NO_POSITION) {
-                mRecyclerView.onItemDismissFinished(viewHolder.itemView);
-            }
+        mRemoteSuggestionsStatusObserver = new RemoteSuggestionsStatusObserver();
+        mUiDelegate.addDestructionObserver(mRemoteSuggestionsStatusObserver);
 
-            super.clearView(recyclerView, viewHolder);
-        }
-
-        @Override
-        public boolean onMove(RecyclerView recyclerView, ViewHolder viewHolder, ViewHolder target) {
-            assert false; // Drag and drop not supported, the method will never be called.
-            return false;
-        }
-
-        @Override
-        public int getMovementFlags(RecyclerView recyclerView, ViewHolder viewHolder) {
-            assert viewHolder instanceof NewTabPageViewHolder;
-
-            int swipeFlags = 0;
-            if (((NewTabPageViewHolder) viewHolder).isDismissable()) {
-                swipeFlags = ItemTouchHelper.START | ItemTouchHelper.END;
-            }
-
-            return makeMovementFlags(0 /* dragFlags */, swipeFlags);
-        }
-
-        @Override
-        public void onChildDraw(Canvas c, RecyclerView recyclerView, ViewHolder viewHolder,
-                float dX, float dY, int actionState, boolean isCurrentlyActive) {
-            assert viewHolder instanceof NewTabPageViewHolder;
-
-            ((NewTabPageViewHolder) viewHolder).updateViewStateForDismiss(dX);
-            super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive);
-        }
-    }
-
-    /**
-     * Constructor to create the manager for all the cards to display on the NTP
-     *
-     * @param manager the NewTabPageManager to use to interact with the rest of the system.
-     * @param newTabPageLayout the layout encapsulating all the above-the-fold elements
-     *                         (logo, search box, most visited tiles)
-     * @param snippetsBridge the bridge to interact with the snippets service.
-     */
-    public NewTabPageAdapter(NewTabPageManager manager, NewTabPageLayout newTabPageLayout,
-            SnippetsBridge snippetsBridge) {
-        mNewTabPageManager = manager;
-        mNewTabPageLayout = newTabPageLayout;
-        mAboveTheFoldListItem = new AboveTheFoldListItem();
-        mHeaderListItem = new SnippetHeaderListItem();
-        mItemTouchCallbacks = new ItemTouchCallbacks();
-        mNewTabPageListItems = new ArrayList<NewTabPageListItem>();
-        mServiceStatus = DisabledReason.NONE;
-        mSnippetsBridge = snippetsBridge;
-        mStatusListItem = StatusListItem.create(snippetsBridge.getDisabledReason(), this, manager);
-
-        loadSnippets(new ArrayList<SnippetArticle>());
-        mSnippetsBridge.setObserver(this);
-    }
-
-    /** Returns callbacks to configure the interactions with the RecyclerView's items. */
-    public ItemTouchHelper.Callback getItemTouchCallbacks() {
-        return mItemTouchCallbacks;
+        updateAllDismissedVisibility();
+        mRoot.addObserver(this);
     }
 
     @Override
-    public void onSnippetsReceived(List<SnippetArticle> listSnippets) {
-        // We never want to refresh the suggestions if we already have some content.
-        if (hasSuggestions()) return;
-
-        if (!(mServiceStatus == DisabledReason.NONE
-                    || mServiceStatus == DisabledReason.HISTORY_SYNC_STATE_UNKNOWN)) {
-            return;
-        }
-
-        int newSnippetCount = listSnippets.size();
-        Log.d(TAG, "Received %d new snippets.", newSnippetCount);
-
-        // At first, there might be no snippets available, we wait until they have been fetched.
-        if (newSnippetCount == 0) return;
-
-        loadSnippets(listSnippets);
-
-        NewTabPageUma.recordSnippetAction(NewTabPageUma.SNIPPETS_ACTION_SHOWN);
-    }
-
-    @Override
-    public void onDisabledReasonChanged(int disabledReason) {
-        // Observers should not be registered for that state
-        assert disabledReason != DisabledReason.EXPLICITLY_DISABLED;
-
-        mServiceStatus = disabledReason;
-        mStatusListItem = StatusListItem.create(mServiceStatus, this, mNewTabPageManager);
-
-        // We had suggestions but we just got notified about the service being enabled. Nothing to
-        // do then.
-        if (disabledReason == DisabledReason.NONE && hasSuggestions()) return;
-
-        if (hasSuggestions()) {
-            // We had many items, implies that the service was previously enabled and just
-            // transitioned to a disabled state. We now clear it.
-            loadSnippets(new ArrayList<SnippetArticle>());
-        } else {
-            mNewTabPageListItems.set(FIRST_CARD_POSITION, mStatusListItem);
-
-            // Update both the first card and the spacing item coming after it.
-            notifyItemRangeChanged(FIRST_CARD_POSITION, 2);
-        }
-    }
-
-    @Override
-    @NewTabPageListItem.ViewType
+    @ItemViewType
     public int getItemViewType(int position) {
-        return mNewTabPageListItems.get(position).getType();
+        return mRoot.getItemViewType(position);
     }
 
     @Override
-    public NewTabPageViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+    public NewTabPageViewHolder onCreateViewHolder(ViewGroup parent, @ItemViewType int viewType) {
         assert parent == mRecyclerView;
 
-        if (viewType == NewTabPageListItem.VIEW_TYPE_ABOVE_THE_FOLD) {
-            return new NewTabPageViewHolder(mNewTabPageLayout);
+        switch (viewType) {
+            case ItemViewType.ABOVE_THE_FOLD:
+                return new NewTabPageViewHolder(mAboveTheFoldView);
+
+            case ItemViewType.HEADER:
+                return new SectionHeaderViewHolder(mRecyclerView, mUiConfig);
+
+            case ItemViewType.SNIPPET:
+                return new SnippetArticleViewHolder(mRecyclerView, mContextMenuManager, mUiDelegate,
+                        mUiConfig, mOfflinePageBridge);
+
+            case ItemViewType.STATUS:
+                return new StatusCardViewHolder(mRecyclerView, mContextMenuManager, mUiConfig);
+
+            case ItemViewType.PROGRESS:
+                return new ProgressViewHolder(mRecyclerView);
+
+            case ItemViewType.ACTION:
+                return new ActionItem.ViewHolder(
+                        mRecyclerView, mContextMenuManager, mUiDelegate, mUiConfig);
+
+            case ItemViewType.PROMO:
+                return new PersonalizedPromoViewHolder(
+                        mRecyclerView, mContextMenuManager, mUiConfig);
+
+            case ItemViewType.FOOTER:
+                return new Footer.ViewHolder(mRecyclerView, mUiDelegate.getNavigationDelegate());
+
+            case ItemViewType.ALL_DISMISSED:
+                return new AllDismissedItem.ViewHolder(mRecyclerView, mSections);
         }
 
-        if (viewType == NewTabPageListItem.VIEW_TYPE_HEADER) {
-            return new SnippetHeaderViewHolder(SnippetHeaderListItem.createView(parent));
-        }
-
-        if (viewType == NewTabPageListItem.VIEW_TYPE_SNIPPET) {
-            return new SnippetArticleViewHolder(mRecyclerView, mNewTabPageManager, mSnippetsBridge);
-        }
-
-        if (viewType == NewTabPageListItem.VIEW_TYPE_SPACING) {
-            return new NewTabPageViewHolder(SpacingListItem.createView(parent));
-        }
-
-        if (viewType == NewTabPageListItem.VIEW_TYPE_STATUS) {
-            return new StatusListItem.ViewHolder(mRecyclerView);
-        }
-
+        assert false : viewType;
         return null;
     }
 
     @Override
+    public void onBindViewHolder(NewTabPageViewHolder holder, int position, List<Object> payloads) {
+        if (payloads.isEmpty()) {
+            onBindViewHolder(holder, position);
+            return;
+        }
+
+        for (Object payload : payloads) {
+            mRoot.onBindViewHolder(holder, position, (PartialBindCallback) payload);
+        }
+    }
+
+    @Override
     public void onBindViewHolder(NewTabPageViewHolder holder, final int position) {
-        holder.onBindViewHolder(mNewTabPageListItems.get(position));
+        mRoot.onBindViewHolder(holder, position, null);
     }
 
     @Override
     public int getItemCount() {
-        return mNewTabPageListItems.size();
+        return mRoot.getItemCount();
     }
 
-    /** Start a request for new snippets. */
-    public void reloadSnippets() {
-        SnippetsBridge.fetchSnippets();
+    /** Resets suggestions, pulling the current state as known by the backend. */
+    public void refreshSuggestions() {
+        mSections.refreshSuggestions();
     }
 
-    private void loadSnippets(List<SnippetArticle> listSnippets) {
-        // Copy thumbnails over
-        for (SnippetArticle newSnippet : listSnippets) {
-            int existingSnippetIdx = mNewTabPageListItems.indexOf(newSnippet);
-            if (existingSnippetIdx == -1) continue;
+    public int getFirstHeaderPosition() {
+        return getFirstPositionForType(ItemViewType.HEADER);
+    }
 
-            newSnippet.setThumbnailBitmap(
-                    ((SnippetArticle) mNewTabPageListItems.get(existingSnippetIdx))
-                            .getThumbnailBitmap());
+    public int getFirstCardPosition() {
+        for (int i = 0; i < getItemCount(); ++i) {
+            if (CardViewHolder.isCard(getItemViewType(i))) return i;
         }
+        return RecyclerView.NO_POSITION;
+    }
 
-        boolean hasContentToShow = !listSnippets.isEmpty();
-        mHeaderListItem.setVisible(hasContentToShow);
+    private void updateAllDismissedVisibility() {
+        boolean areRemoteSuggestionsEnabled =
+                mUiDelegate.getSuggestionsSource().areRemoteSuggestionsEnabled();
+        boolean allDismissed = hasAllBeenDismissed() && !areArticlesLoading();
+        boolean isArticleSectionVisible = mSections.getSection(KnownCategories.ARTICLES) != null;
 
-        mNewTabPageListItems.clear();
-        mNewTabPageListItems.add(mAboveTheFoldListItem);
-        mNewTabPageListItems.add(mHeaderListItem);
+        mAllDismissed.setVisible(areRemoteSuggestionsEnabled && allDismissed);
+        mFooter.setVisible(!SuggestionsConfig.scrollToLoad() && !allDismissed
+                && (areRemoteSuggestionsEnabled || isArticleSectionVisible));
+    }
 
-        if (hasContentToShow) {
-            mNewTabPageListItems.addAll(listSnippets);
-        } else {
-            mNewTabPageListItems.add(mStatusListItem);
+    private boolean areArticlesLoading() {
+        for (int category : mUiDelegate.getSuggestionsSource().getCategories()) {
+            if (category != KnownCategories.ARTICLES) continue;
+
+            return mUiDelegate.getSuggestionsSource().getCategoryStatus(KnownCategories.ARTICLES)
+                    == CategoryStatus.AVAILABLE_LOADING;
         }
+        return false;
+    }
 
-        mNewTabPageListItems.add(new SpacingListItem());
+    @Override
+    public void onItemRangeChanged(ListObservable child, int itemPosition, int itemCount,
+            @Nullable PartialBindCallback payload) {
+        assert child == mRoot;
+        notifyItemRangeChanged(itemPosition, itemCount, payload);
+    }
 
-        notifyDataSetChanged();
+    @Override
+    public void onItemRangeInserted(ListObservable child, int itemPosition, int itemCount) {
+        assert child == mRoot;
+        notifyItemRangeInserted(itemPosition, itemCount);
+
+        updateAllDismissedVisibility();
+    }
+
+    @Override
+    public void onItemRangeRemoved(ListObservable child, int itemPosition, int itemCount) {
+        assert child == mRoot;
+        notifyItemRangeRemoved(itemPosition, itemCount);
+
+        updateAllDismissedVisibility();
     }
 
     @Override
     public void onAttachedToRecyclerView(RecyclerView recyclerView) {
         super.onAttachedToRecyclerView(recyclerView);
 
+        if (mRecyclerView == recyclerView) return;
+
         // We are assuming for now that the adapter is used with a single RecyclerView.
         // Getting the reference as we are doing here is going to be broken if that changes.
         assert mRecyclerView == null;
 
-        // FindBugs chokes on the cast below when not checked, raising BC_UNCONFIRMED_CAST
-        assert recyclerView instanceof NewTabPageRecyclerView;
+        mRecyclerView = (SuggestionsRecyclerView) recyclerView;
 
-        mRecyclerView = (NewTabPageRecyclerView) recyclerView;
-    }
-
-    private void dismissItem(ViewHolder itemViewHolder) {
-        assert itemViewHolder.getItemViewType() == NewTabPageListItem.VIEW_TYPE_SNIPPET;
-
-        int position = itemViewHolder.getAdapterPosition();
-        SnippetArticle dismissedSnippet = (SnippetArticle) mNewTabPageListItems.get(position);
-
-        mSnippetsBridge.getSnippedVisited(dismissedSnippet, new Callback<Boolean>() {
-            @Override
-            public void onResult(Boolean result) {
-                NewTabPageUma.recordSnippetAction(result
-                                ? NewTabPageUma.SNIPPETS_ACTION_DISMISSED_VISITED
-                                : NewTabPageUma.SNIPPETS_ACTION_DISMISSED_UNVISITED);
-            }
-        });
-
-        mSnippetsBridge.discardSnippet(dismissedSnippet);
-        mNewTabPageListItems.remove(position);
-        notifyItemRemoved(position);
-    }
-
-    private void addStatusCardIfNecessary() {
-        if (mNewTabPageListItems.size() == 3 /* above-the-fold + header + spacing */) {
-            // TODO(dgn) hack until we refactor the entire class with sections, etc.
-            // (see https://crbug.com/616090)
-            mNewTabPageListItems.add(FIRST_CARD_POSITION, mStatusListItem);
-
-            // We also want to refresh the header and the bottom padding.
-            mHeaderListItem.setVisible(false);
-            notifyDataSetChanged();
+        if (SuggestionsConfig.scrollToLoad()) {
+            mRecyclerView.setScrollToLoadListener(new ScrollToLoadListener(
+                    this, mRecyclerView.getLinearLayoutManager(), mSections));
         }
     }
 
-    /** Returns whether we have some suggested content to display. */
-    private boolean hasSuggestions() {
-        return getItemViewType(FIRST_CARD_POSITION) == NewTabPageListItem.VIEW_TYPE_SNIPPET;
+    @Override
+    public void onDetachedFromRecyclerView(RecyclerView recyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView);
+
+        if (SuggestionsConfig.scrollToLoad()) mRecyclerView.clearScrollToLoadListener();
+
+        mRecyclerView = null;
     }
 
-    List<NewTabPageListItem> getItemsForTesting() {
-        return mNewTabPageListItems;
+    @Override
+    public void onViewRecycled(NewTabPageViewHolder holder) {
+        holder.recycle();
+    }
+
+    /**
+     * @return the set of item positions that should be dismissed simultaneously when dismissing the
+     *         item at the given {@code position} (including the position itself), or an empty set
+     *         if the item can't be dismissed.
+     */
+    public Set<Integer> getItemDismissalGroup(int position) {
+        return mRoot.getItemDismissalGroup(position);
+    }
+
+    /**
+     * Dismisses the item at the provided adapter position. Can also cause the dismissal of other
+     * items or even entire sections.
+     * @param position the position of an item to be dismissed.
+     * @param itemRemovedCallback
+     */
+    public void dismissItem(int position, Callback<String> itemRemovedCallback) {
+        mRoot.dismissItem(position, itemRemovedCallback);
+    }
+
+    private boolean hasAllBeenDismissed() {
+        return mSections.isEmpty();
+    }
+
+    @VisibleForTesting
+    public int getFirstPositionForType(@ItemViewType int viewType) {
+        int count = getItemCount();
+        for (int i = 0; i < count; i++) {
+            if (getItemViewType(i) == viewType) return i;
+        }
+        return RecyclerView.NO_POSITION;
+    }
+
+    public SectionList getSectionListForTesting() {
+        return mSections;
+    }
+
+    public InnerNode getRootForTesting() {
+        return mRoot;
+    }
+
+    @VisibleForTesting
+    SuggestionsSource.Observer getSuggestionsSourceObserverForTesting() {
+        return mRemoteSuggestionsStatusObserver;
+    }
+
+    private class RemoteSuggestionsStatusObserver
+            extends SuggestionsSource.EmptyObserver implements DestructionObserver {
+        public RemoteSuggestionsStatusObserver() {
+            mUiDelegate.getSuggestionsSource().addObserver(this);
+        }
+
+        @Override
+        public void onCategoryStatusChanged(
+                @CategoryInt int category, @CategoryStatus int newStatus) {
+            if (!SnippetsBridge.isCategoryRemote(category)) return;
+
+            updateAllDismissedVisibility();
+        }
+
+        @Override
+        public void onDestroy() {
+            mUiDelegate.getSuggestionsSource().removeObserver(this);
+        }
     }
 }

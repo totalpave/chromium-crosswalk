@@ -16,7 +16,7 @@
 #include "extensions/common/extension_l10n_util.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
-#include "grit/extensions_strings.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace extensions {
@@ -45,7 +45,7 @@ bool DefaultLocaleHandler::Parse(Extension* extension, base::string16* error) {
     *error = base::ASCIIToUTF16(manifest_errors::kInvalidDefaultLocale);
     return false;
   }
-  extension->SetManifestData(keys::kDefaultLocale, info.release());
+  extension->SetManifestData(keys::kDefaultLocale, std::move(info));
   return true;
 }
 
@@ -113,8 +113,9 @@ bool DefaultLocaleHandler::AlwaysValidateForType(Manifest::Type type) const {
   return true;
 }
 
-const std::vector<std::string> DefaultLocaleHandler::Keys() const {
-  return SingleKey(keys::kDefaultLocale);
+base::span<const char* const> DefaultLocaleHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kDefaultLocale};
+  return kKeys;
 }
 
 }  // namespace extensions

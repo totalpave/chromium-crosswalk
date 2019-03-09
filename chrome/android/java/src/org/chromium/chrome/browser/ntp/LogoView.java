@@ -24,7 +24,7 @@ import android.widget.FrameLayout;
 
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ntp.LogoBridge.Logo;
-import org.chromium.chrome.browser.ntp.NewTabPageView.NewTabPageManager;
+import org.chromium.chrome.browser.search_engines.TemplateUrlService;
 import org.chromium.chrome.browser.widget.LoadingView;
 
 import java.lang.ref.WeakReference;
@@ -67,7 +67,7 @@ public class LogoView extends FrameLayout implements OnClickListener {
      */
     private float mTransitionAmount;
 
-    private NewTabPageManager mManager;
+    private Delegate mDelegate;
 
     private final Property<LogoView, Float> mTransitionProperty =
             new Property<LogoView, Float>(Float.class, "") {
@@ -88,12 +88,22 @@ public class LogoView extends FrameLayout implements OnClickListener {
     };
 
     /**
+     * Handles tasks for the {@link LogoView} shown on an NTP.
+     */
+    public interface Delegate {
+        /**
+         * Called when the user clicks on the logo.
+         * @param isAnimatedLogoShowing Whether the animated GIF logo is playing.
+         */
+        void onLogoClicked(boolean isAnimatedLogoShowing);
+    }
+
+    /**
      * Constructor used to inflate a LogoView from XML.
      */
     public LogoView(Context context, AttributeSet attrs) {
         super(context, attrs);
 
-        mLogo = getDefaultLogo();
         mLogoMatrix = new Matrix();
         mLogoIsDefault = true;
 
@@ -115,10 +125,10 @@ public class LogoView extends FrameLayout implements OnClickListener {
     }
 
     /**
-     * Sets the NewTabPageManager to notify when the logo is pressed.
+     * Sets the {@link Delegate} to notify when the logo is pressed.
      */
-    public void setMananger(NewTabPageManager manager) {
-        mManager = manager;
+    public void setDelegate(Delegate delegate) {
+        mDelegate = delegate;
     }
 
     /**
@@ -134,7 +144,7 @@ public class LogoView extends FrameLayout implements OnClickListener {
     /**
      * @return True after we receive an animated logo from the server.
      */
-    public boolean isAnimatedLogoShowing() {
+    private boolean isAnimatedLogoShowing() {
         return mAnimatedLogoDrawable != null;
     }
 
@@ -153,29 +163,53 @@ public class LogoView extends FrameLayout implements OnClickListener {
     }
 
     /**
-     * Lets logo view show a spinning progressbar.
+     * Show a spinning progressbar.
      */
     public void showLoadingView() {
+        mLogo = null;
+        invalidate();
         mLoadingView.showLoadingUI();
+    }
+
+    /**
+     * Show a loading indicator or a baked-in default search provider logo, based on what is
+     * available.
+     */
+    public void showSearchProviderInitialView() {
+        if (maybeShowDefaultLogo()) return;
+
+        showLoadingView();
     }
 
     /**
      * Fades in a new logo over the current logo.
      *
-     * @param logo The new logo to fade in. May be null to reset to the default logo.
+     * @param logo The new logo to fade in.
      */
     public void updateLogo(Logo logo) {
         if (logo == null) {
-            updateLogo(getDefaultLogo(), null, true);
-        } else {
-            String contentDescription = TextUtils.isEmpty(logo.altText) ? null
-                    : getResources().getString(R.string.accessibility_google_doodle, logo.altText);
-            updateLogo(logo.image, contentDescription, false);
+            if (maybeShowDefaultLogo()) return;
+
+            mLogo = null;
+            invalidate();
+            return;
         }
+
+        String contentDescription = TextUtils.isEmpty(logo.altText)
+                ? null
+                : getResources().getString(R.string.accessibility_google_doodle, logo.altText);
+        updateLogo(logo.image, contentDescription, false);
     }
 
     private void updateLogo(Bitmap logo, final String contentDescription, boolean isDefaultLogo) {
+        assert logo != null;
+
         if (mFadeAnimation != null) mFadeAnimation.end();
+
+        mLoadingView.hideLoadingUI();
+
+        // Don't crossfade if the new logo is the same as the old one.
+        if (mLogo != null && mLogo.sameAs(logo)) return;
 
         mNewLogo = logo;
         mNewLogoMatrix = new Matrix();
@@ -216,6 +250,19 @@ public class LogoView extends FrameLayout implements OnClickListener {
     }
 
     /**
+     * Shows the default search engine logo if available.
+     * @return Whether the default search engine logo is available.
+     */
+    private boolean maybeShowDefaultLogo() {
+        Bitmap defaultLogo = getDefaultLogo();
+        if (defaultLogo != null) {
+            updateLogo(defaultLogo, null, true);
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * @return Whether a new logo is currently fading in over the old logo.
      */
     private boolean isTransitioning() {
@@ -238,7 +285,9 @@ public class LogoView extends FrameLayout implements OnClickListener {
         if (preventUpscaling) scale = Math.min(1.0f, scale);
 
         int imageOffsetX = Math.round((width - imageWidth * scale) * 0.5f);
-        int imageOffsetY = Math.round((height - imageHeight * scale) * 0.5f);
+
+        float whitespace = height - imageHeight * scale;
+        int imageOffsetY = Math.round(whitespace * 0.5f);
 
         matrix.setScale(scale, scale);
         matrix.postTranslate(imageOffsetX, imageOffsetY);
@@ -248,10 +297,12 @@ public class LogoView extends FrameLayout implements OnClickListener {
      * @return The default logo.
      */
     private Bitmap getDefaultLogo() {
+        if (!TemplateUrlService.getInstance().isDefaultSearchEngineGoogle()) return null;
+
         Bitmap defaultLogo = sDefaultLogo == null ? null : sDefaultLogo.get();
         if (defaultLogo == null) {
             defaultLogo = BitmapFactory.decodeResource(getResources(), R.drawable.google_logo);
-            sDefaultLogo = new WeakReference<Bitmap>(defaultLogo);
+            sDefaultLogo = new WeakReference<>(defaultLogo);
         }
         return defaultLogo;
     }
@@ -321,8 +372,8 @@ public class LogoView extends FrameLayout implements OnClickListener {
 
     @Override
     public void onClick(View view) {
-        if (view == this && mManager != null && !isTransitioning()) {
-            mManager.onLogoClicked(isAnimatedLogoShowing());
+        if (view == this && mDelegate != null && !isTransitioning()) {
+            mDelegate.onLogoClicked(isAnimatedLogoShowing());
         }
     }
 }

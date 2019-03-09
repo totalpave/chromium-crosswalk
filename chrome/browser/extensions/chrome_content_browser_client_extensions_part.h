@@ -5,13 +5,26 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_CHROME_CONTENT_BROWSER_CLIENT_EXTENSIONS_PART_H_
 #define CHROME_BROWSER_EXTENSIONS_CHROME_CONTENT_BROWSER_CLIENT_EXTENSIONS_PART_H_
 
+#include <memory>
+
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "chrome/browser/chrome_content_browser_client_parts.h"
+#include "content/public/common/resource_type.h"
+#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace content {
+struct Referrer;
+class RenderFrameHost;
+class RenderProcessHost;
 class ResourceContext;
 class VpnServiceProxy;
+}
+
+namespace url {
+class Origin;
 }
 
 namespace extensions {
@@ -25,8 +38,16 @@ class ChromeContentBrowserClientExtensionsPart
 
   // Corresponds to the ChromeContentBrowserClient function of the same name.
   static GURL GetEffectiveURL(Profile* profile, const GURL& url);
+  static bool ShouldCompareEffectiveURLsForSiteInstanceSelection(
+      content::BrowserContext* browser_context,
+      content::SiteInstance* candidate_site_instance,
+      bool is_main_frame,
+      const GURL& candidate_url,
+      const GURL& destination_url);
   static bool ShouldUseProcessPerSite(Profile* profile,
                                       const GURL& effective_url);
+  static bool ShouldUseSpareRenderProcessHost(Profile* profile,
+                                              const GURL& site_url);
   static bool DoesSiteRequireDedicatedProcess(
       content::BrowserContext* browser_context,
       const GURL& effective_site_url);
@@ -34,32 +55,28 @@ class ChromeContentBrowserClientExtensionsPart
                                  const GURL& effective_site_url);
   static bool CanCommitURL(content::RenderProcessHost* process_host,
                            const GURL& url);
-  static bool IsIllegalOrigin(content::ResourceContext* resource_context,
-                              int child_process_id,
-                              const GURL& origin);
   static bool IsSuitableHost(Profile* profile,
                              content::RenderProcessHost* process_host,
                              const GURL& site_url);
   static bool ShouldTryToUseExistingProcessHost(Profile* profile,
                                                 const GURL& url);
+  static bool ShouldSubframesTryToReuseExistingProcess(
+      content::RenderFrameHost* main_frame);
   static bool ShouldSwapBrowsingInstancesForNavigation(
       content::SiteInstance* site_instance,
       const GURL& current_url,
       const GURL& new_url);
-  static bool ShouldSwapProcessesForRedirect(
-      content::ResourceContext* resource_context,
-      const GURL& current_url,
-      const GURL& new_url);
   static bool AllowServiceWorker(const GURL& scope,
                                  const GURL& first_party_url,
-                                 content::ResourceContext* context,
-                                 int render_process_id,
-                                 int render_frame_id);
+                                 content::ResourceContext* context);
+  static void OverrideNavigationParams(content::SiteInstance* site_instance,
+                                       ui::PageTransition* transition,
+                                       bool* is_renderer_initiated,
+                                       content::Referrer* referrer);
 
   // Similiar to ChromeContentBrowserClient::ShouldAllowOpenURL(), but the
   // return value indicates whether to use |result| or not.
   static bool ShouldAllowOpenURL(content::SiteInstance* site_instance,
-                                 const GURL& from_url,
                                  const GURL& to_url,
                                  bool* result);
 
@@ -71,7 +88,49 @@ class ChromeContentBrowserClientExtensionsPart
   static std::unique_ptr<content::VpnServiceProxy> GetVpnServiceProxy(
       content::BrowserContext* browser_context);
 
+  static void LogInitiatorSchemeBypassingDocumentBlocking(
+      const url::Origin& initiator_origin,
+      int render_process_id,
+      content::ResourceType resource_type);
+
+  static network::mojom::URLLoaderFactoryPtrInfo
+  CreateURLLoaderFactoryForNetworkRequests(
+      content::RenderProcessHost* process,
+      network::mojom::NetworkContext* network_context,
+      network::mojom::TrustedURLLoaderHeaderClientPtrInfo* header_client,
+      const url::Origin& request_initiator);
+
+  static bool IsBuiltinComponent(content::BrowserContext* browser_context,
+                                 const url::Origin& origin);
+
  private:
+  FRIEND_TEST_ALL_PREFIXES(ChromeContentBrowserClientExtensionsPartTest,
+                           ShouldAllowOpenURLMetricsForEmptySiteURL);
+  FRIEND_TEST_ALL_PREFIXES(ChromeContentBrowserClientExtensionsPartTest,
+                           ShouldAllowOpenURLMetricsForKnownSchemes);
+  FRIEND_TEST_ALL_PREFIXES(ChromeContentBrowserClientExtensionsPartTest,
+                           IsolatedOriginsAndHostedAppWebExtents);
+
+  // Specifies reasons why web-accessible resource checks in ShouldAllowOpenURL
+  // might fail.
+  //
+  // This enum backs an UMA histogram.  The order of existing values
+  // should not be changed, and new values should only be added before
+  // FAILURE_LAST.
+  enum ShouldAllowOpenURLFailureReason {
+    FAILURE_FILE_SYSTEM_URL = 0,
+    FAILURE_BLOB_URL,
+    FAILURE_SCHEME_NOT_HTTP_OR_HTTPS_OR_EXTENSION,
+    FAILURE_RESOURCE_NOT_WEB_ACCESSIBLE,
+    FAILURE_LAST,
+  };
+
+  // Records metrics when ShouldAllowOpenURL blocks a load.  |site_url|
+  // corresponds to the SiteInstance that initiated the blocked load.
+  static void RecordShouldAllowOpenURLFailure(
+      ShouldAllowOpenURLFailureReason reason,
+      const GURL& site_url);
+
   // ChromeContentBrowserClientParts:
   void RenderProcessWillLaunch(content::RenderProcessHost* host) override;
   void SiteInstanceGotProcess(content::SiteInstance* site_instance) override;
@@ -86,11 +145,13 @@ class ChromeContentBrowserClientExtensionsPart
   void GetAdditionalFileSystemBackends(
       content::BrowserContext* browser_context,
       const base::FilePath& storage_partition_path,
-      ScopedVector<storage::FileSystemBackend>* additional_backends) override;
+      std::vector<std::unique_ptr<storage::FileSystemBackend>>*
+          additional_backends) override;
   void AppendExtraRendererCommandLineSwitches(
       base::CommandLine* command_line,
       content::RenderProcessHost* process,
       Profile* profile) override;
+  void ResourceDispatcherHostCreated() override;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeContentBrowserClientExtensionsPart);
 };
@@ -98,4 +159,3 @@ class ChromeContentBrowserClientExtensionsPart
 }  // namespace extensions
 
 #endif  // CHROME_BROWSER_EXTENSIONS_CHROME_CONTENT_BROWSER_CLIENT_EXTENSIONS_PART_H_
-

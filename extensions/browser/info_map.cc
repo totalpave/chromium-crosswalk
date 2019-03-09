@@ -46,7 +46,16 @@ InfoMap::ExtraData::ExtraData()
 
 InfoMap::ExtraData::~ExtraData() {}
 
-InfoMap::InfoMap() {
+InfoMap::InfoMap() : ruleset_manager_(this) {}
+
+const ExtensionSet& InfoMap::extensions() const {
+  CheckOnValidThread();
+  return extensions_;
+}
+
+const ExtensionSet& InfoMap::disabled_extensions() const {
+  CheckOnValidThread();
+  return disabled_extensions_;
 }
 
 void InfoMap::AddExtension(const Extension* extension,
@@ -63,12 +72,12 @@ void InfoMap::AddExtension(const Extension* extension,
 }
 
 void InfoMap::RemoveExtension(const std::string& extension_id,
-                              const UnloadedExtensionInfo::Reason reason) {
+                              const UnloadedExtensionReason reason) {
   CheckOnValidThread();
   const Extension* extension = extensions_.GetByID(extension_id);
   extra_data_.erase(extension_id);  // we don't care about disabled extra data
-  bool was_uninstalled = (reason != UnloadedExtensionInfo::REASON_DISABLE &&
-                          reason != UnloadedExtensionInfo::REASON_TERMINATE);
+  bool was_uninstalled = (reason != UnloadedExtensionReason::DISABLE &&
+                          reason != UnloadedExtensionReason::TERMINATE);
   if (extension) {
     if (!was_uninstalled)
       disabled_extensions_.Insert(extension);
@@ -87,7 +96,7 @@ void InfoMap::RemoveExtension(const std::string& extension_id,
 }
 
 base::Time InfoMap::GetInstallTime(const std::string& extension_id) const {
-  ExtraDataMap::const_iterator iter = extra_data_.find(extension_id);
+  auto iter = extra_data_.find(extension_id);
   if (iter != extra_data_.end())
     return iter->second.install_time;
   return base::Time();
@@ -95,7 +104,7 @@ base::Time InfoMap::GetInstallTime(const std::string& extension_id) const {
 
 bool InfoMap::IsIncognitoEnabled(const std::string& extension_id) const {
   // Keep in sync with duplicate in extensions/browser/process_manager.cc.
-  ExtraDataMap::const_iterator iter = extra_data_.find(extension_id);
+  auto iter = extra_data_.find(extension_id);
   if (iter != extra_data_.end())
     return iter->second.incognito_enabled;
   return false;
@@ -127,28 +136,6 @@ void InfoMap::UnregisterExtensionProcess(const std::string& extension_id,
 
 void InfoMap::UnregisterAllExtensionsInProcess(int process_id) {
   process_map_.RemoveAllFromProcess(process_id);
-}
-
-bool InfoMap::SecurityOriginHasAPIPermission(
-    const GURL& origin,
-    int process_id,
-    APIPermission::ID permission) const {
-  CheckOnValidThread();
-  if (origin.SchemeIs(kExtensionScheme)) {
-    const std::string& id = origin.host();
-    const Extension* extension = extensions_.GetByID(id);
-    return extension &&
-           extension->permissions_data()->HasAPIPermission(permission) &&
-           process_map_.Contains(id, process_id);
-  }
-  for (const auto& extension : extensions_) {
-    if (extension->web_extent().MatchesSecurityOrigin(origin) &&
-        extension->permissions_data()->HasAPIPermission(permission) &&
-        process_map_.Contains(extension->id(), process_id)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 // This function is security sensitive. Bugs could cause problems that break
@@ -216,17 +203,28 @@ QuotaService* InfoMap::GetQuotaService() {
   return quota_service_.get();
 }
 
+declarative_net_request::RulesetManager* InfoMap::GetRulesetManager() {
+  CheckOnValidThread();
+  return &ruleset_manager_;
+}
+
+const declarative_net_request::RulesetManager* InfoMap::GetRulesetManager()
+    const {
+  CheckOnValidThread();
+  return &ruleset_manager_;
+}
+
 void InfoMap::SetNotificationsDisabled(
     const std::string& extension_id,
     bool notifications_disabled) {
-  ExtraDataMap::iterator iter = extra_data_.find(extension_id);
+  auto iter = extra_data_.find(extension_id);
   if (iter != extra_data_.end())
     iter->second.notifications_disabled = notifications_disabled;
 }
 
 bool InfoMap::AreNotificationsDisabled(
     const std::string& extension_id) const {
-  ExtraDataMap::const_iterator iter = extra_data_.find(extension_id);
+  auto iter = extra_data_.find(extension_id);
   if (iter != extra_data_.end())
     return iter->second.notifications_disabled;
   return false;
@@ -234,6 +232,10 @@ bool InfoMap::AreNotificationsDisabled(
 
 void InfoMap::SetContentVerifier(ContentVerifier* verifier) {
   content_verifier_ = verifier;
+}
+
+void InfoMap::SetIsLockScreenContext(bool is_lock_screen_context) {
+  process_map_.set_is_lock_screen_context(is_lock_screen_context);
 }
 
 InfoMap::~InfoMap() {

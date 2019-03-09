@@ -7,20 +7,21 @@
 #include <memory>
 #include <utility>
 
+#include "ash/public/cpp/ash_pref_names.h"
 #include "base/callback.h"
 #include "base/json/json_reader.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "chrome/browser/ui/ash/chrome_launcher_prefs.h"
 #include "chrome/common/pref_names.h"
+#include "components/arc/arc_prefs.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/external_data_fetcher.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/core/common/schema.h"
+#include "components/policy/policy_constants.h"
 #include "components/prefs/pref_value_map.h"
-#include "policy/policy_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace policy {
@@ -58,44 +59,33 @@ void LoginScreenPowerManagementPolicyHandlerTest::SetUp() {
 TEST_F(ScreenMagnifierPolicyHandlerTest, Default) {
   handler_.ApplyPolicySettings(policy_, &prefs_);
   EXPECT_FALSE(
-      prefs_.GetValue(prefs::kAccessibilityScreenMagnifierEnabled, NULL));
-  EXPECT_FALSE(prefs_.GetValue(prefs::kAccessibilityScreenMagnifierType, NULL));
+      prefs_.GetValue(ash::prefs::kAccessibilityScreenMagnifierEnabled, NULL));
 }
 
 TEST_F(ScreenMagnifierPolicyHandlerTest, Disabled) {
   policy_.Set(key::kScreenMagnifierType, POLICY_LEVEL_MANDATORY,
               POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::FundamentalValue(0)), nullptr);
+              std::make_unique<base::Value>(0), nullptr);
   handler_.ApplyPolicySettings(policy_, &prefs_);
 
   const base::Value* enabled = NULL;
-  EXPECT_TRUE(
-      prefs_.GetValue(prefs::kAccessibilityScreenMagnifierEnabled, &enabled));
+  EXPECT_TRUE(prefs_.GetValue(ash::prefs::kAccessibilityScreenMagnifierEnabled,
+                              &enabled));
   ASSERT_TRUE(enabled);
-  EXPECT_TRUE(base::FundamentalValue(false).Equals(enabled));
-
-  const base::Value* type = NULL;
-  EXPECT_TRUE(prefs_.GetValue(prefs::kAccessibilityScreenMagnifierType, &type));
-  ASSERT_TRUE(type);
-  EXPECT_TRUE(base::FundamentalValue(0).Equals(type));
+  EXPECT_EQ(base::Value(false), *enabled);
 }
 
 TEST_F(ScreenMagnifierPolicyHandlerTest, Enabled) {
   policy_.Set(key::kScreenMagnifierType, POLICY_LEVEL_MANDATORY,
               POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::FundamentalValue(1)), nullptr);
+              std::make_unique<base::Value>(1), nullptr);
   handler_.ApplyPolicySettings(policy_, &prefs_);
 
   const base::Value* enabled = NULL;
-  EXPECT_TRUE(
-      prefs_.GetValue(prefs::kAccessibilityScreenMagnifierEnabled, &enabled));
+  EXPECT_TRUE(prefs_.GetValue(ash::prefs::kAccessibilityScreenMagnifierEnabled,
+                              &enabled));
   ASSERT_TRUE(enabled);
-  EXPECT_TRUE(base::FundamentalValue(true).Equals(enabled));
-
-  const base::Value* type = NULL;
-  EXPECT_TRUE(prefs_.GetValue(prefs::kAccessibilityScreenMagnifierType, &type));
-  ASSERT_TRUE(type);
-  EXPECT_TRUE(base::FundamentalValue(1).Equals(type));
+  EXPECT_EQ(base::Value(true), *enabled);
 }
 
 TEST(ExternalDataPolicyHandlerTest, Empty) {
@@ -109,7 +99,7 @@ TEST(ExternalDataPolicyHandlerTest, WrongType) {
   PolicyMap policy_map;
   policy_map.Set(key::kUserAvatarImage, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::WrapUnique(new base::FundamentalValue(false)), nullptr);
+                 std::make_unique<base::Value>(false), nullptr);
   PolicyErrorMap errors;
   EXPECT_FALSE(ExternalDataPolicyHandler(key::kUserAvatarImage)
                    .CheckPolicySettings(policy_map, &errors));
@@ -237,7 +227,7 @@ TEST(NetworkConfigurationPolicyHandlerTest, ValidONC) {
   PolicyMap policy_map;
   policy_map.Set(key::kOpenNetworkConfiguration, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::WrapUnique(new base::StringValue(kTestONC)), nullptr);
+                 std::make_unique<base::Value>(kTestONC), nullptr);
   std::unique_ptr<NetworkConfigurationPolicyHandler> handler(
       NetworkConfigurationPolicyHandler::CreateForUserPolicy());
   PolicyErrorMap errors;
@@ -249,7 +239,7 @@ TEST(NetworkConfigurationPolicyHandlerTest, WrongType) {
   PolicyMap policy_map;
   policy_map.Set(key::kOpenNetworkConfiguration, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::WrapUnique(new base::FundamentalValue(false)), nullptr);
+                 std::make_unique<base::Value>(false), nullptr);
   std::unique_ptr<NetworkConfigurationPolicyHandler> handler(
       NetworkConfigurationPolicyHandler::CreateForUserPolicy());
   PolicyErrorMap errors;
@@ -262,7 +252,7 @@ TEST(NetworkConfigurationPolicyHandlerTest, JSONParseError) {
   PolicyMap policy_map;
   policy_map.Set(key::kOpenNetworkConfiguration, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::WrapUnique(new base::StringValue(kTestONC)), nullptr);
+                 std::make_unique<base::Value>(kTestONC), nullptr);
   std::unique_ptr<NetworkConfigurationPolicyHandler> handler(
       NetworkConfigurationPolicyHandler::CreateForUserPolicy());
   PolicyErrorMap errors;
@@ -288,7 +278,7 @@ TEST(NetworkConfigurationPolicyHandlerTest, Sanitization) {
   PolicyMap policy_map;
   policy_map.Set(key::kOpenNetworkConfiguration, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::WrapUnique(new base::StringValue(kTestONC)), nullptr);
+                 std::make_unique<base::Value>(kTestONC), nullptr);
   std::unique_ptr<NetworkConfigurationPolicyHandler> handler(
       NetworkConfigurationPolicyHandler::CreateForUserPolicy());
   PolicyErrorMap errors;
@@ -315,20 +305,33 @@ TEST(PinnedLauncherAppsPolicyHandler, PrefTranslation) {
                  nullptr);
   handler.ApplyPolicySettings(policy_map, &prefs);
   EXPECT_TRUE(prefs.GetValue(prefs::kPolicyPinnedLauncherApps, &value));
-  EXPECT_TRUE(base::Value::Equals(&expected_pinned_apps, value));
+  EXPECT_EQ(expected_pinned_apps, *value);
 
-  base::StringValue entry1("abcdefghijklmnopabcdefghijklmnop");
-  base::DictionaryValue* entry1_dict = new base::DictionaryValue();
-  entry1_dict->Set(ash::launcher::kPinnedAppsPrefAppIDPath, entry1.DeepCopy());
-  expected_pinned_apps.Append(entry1_dict);
-  list.Append(entry1.DeepCopy());
+  // Extension IDs are OK.
+  base::Value entry1("abcdefghijklmnopabcdefghijklmnop");
+  auto entry1_dict = std::make_unique<base::DictionaryValue>();
+  entry1_dict->Set(kPinnedAppsPrefAppIDKey, entry1.CreateDeepCopy());
+  expected_pinned_apps.Append(std::move(entry1_dict));
+  list.Append(entry1.CreateDeepCopy());
+
+  // Android appds are OK.
+  base::Value entry2("com.google.android.gm");
+  auto entry2_dict = std::make_unique<base::DictionaryValue>();
+  entry2_dict->Set(kPinnedAppsPrefAppIDKey, entry2.CreateDeepCopy());
+  expected_pinned_apps.Append(std::move(entry2_dict));
+  list.Append(entry2.CreateDeepCopy());
+
+  // Anything else is not OK.
+  base::Value entry3("invalid");
+  list.Append(entry3.CreateDeepCopy());
+
   policy_map.Set(key::kPinnedLauncherApps, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD, list.CreateDeepCopy(),
                  nullptr);
   prefs.Clear();
   handler.ApplyPolicySettings(policy_map, &prefs);
   EXPECT_TRUE(prefs.GetValue(prefs::kPolicyPinnedLauncherApps, &value));
-  EXPECT_TRUE(base::Value::Equals(&expected_pinned_apps, value));
+  EXPECT_EQ(expected_pinned_apps, *value);
 }
 
 TEST_F(LoginScreenPowerManagementPolicyHandlerTest, Empty) {
@@ -341,10 +344,11 @@ TEST_F(LoginScreenPowerManagementPolicyHandlerTest, Empty) {
 
 TEST_F(LoginScreenPowerManagementPolicyHandlerTest, ValidPolicy) {
   PolicyMap policy_map;
-  policy_map.Set(key::kDeviceLoginScreenPowerManagement, POLICY_LEVEL_MANDATORY,
-                 POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::JSONReader::Read(kLoginScreenPowerManagementPolicy),
-                 nullptr);
+  policy_map.Set(
+      key::kDeviceLoginScreenPowerManagement, POLICY_LEVEL_MANDATORY,
+      POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
+      base::JSONReader::ReadDeprecated(kLoginScreenPowerManagementPolicy),
+      nullptr);
   LoginScreenPowerManagementPolicyHandler handler(chrome_schema_);
   PolicyErrorMap errors;
   EXPECT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
@@ -355,12 +359,107 @@ TEST_F(LoginScreenPowerManagementPolicyHandlerTest, WrongType) {
   PolicyMap policy_map;
   policy_map.Set(key::kDeviceLoginScreenPowerManagement, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::WrapUnique(new base::FundamentalValue(false)), nullptr);
+                 std::make_unique<base::Value>(false), nullptr);
   LoginScreenPowerManagementPolicyHandler handler(chrome_schema_);
   PolicyErrorMap errors;
   EXPECT_FALSE(handler.CheckPolicySettings(policy_map, &errors));
   EXPECT_FALSE(
       errors.GetErrors(key::kDeviceLoginScreenPowerManagement).empty());
+}
+
+TEST(ArcServicePolicyHandlerTest, DisabledByDefault) {
+  PolicyMap policy_map;
+  SetEnterpriseUsersDefaults(&policy_map);
+  ArcServicePolicyHandler handler(key::kArcBackupRestoreServiceEnabled,
+                                  arc::prefs::kArcBackupRestoreEnabled);
+  PolicyErrorMap errors;
+  ASSERT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_TRUE(errors.empty());
+  PrefValueMap prefs;
+  handler.ApplyPolicySettings(policy_map, &prefs);
+  const base::Value* enabled = nullptr;
+  EXPECT_TRUE(prefs.GetValue(arc::prefs::kArcBackupRestoreEnabled, &enabled));
+  ASSERT_TRUE(enabled);
+  EXPECT_EQ(base::Value(false), *enabled);
+}
+
+TEST(ArcServicePolicyHandlerTest, UnderUserControlWhenWrongType) {
+  PolicyMap policy_map;
+  policy_map.Set(key::kArcBackupRestoreServiceEnabled, POLICY_LEVEL_MANDATORY,
+                 POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
+                 std::make_unique<base::Value>(false), nullptr);
+  SetEnterpriseUsersDefaults(&policy_map);
+  ArcServicePolicyHandler handler(key::kArcBackupRestoreServiceEnabled,
+                                  arc::prefs::kArcBackupRestoreEnabled);
+  PolicyErrorMap errors;
+  EXPECT_FALSE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_FALSE(errors.GetErrors(key::kArcBackupRestoreServiceEnabled).empty());
+}
+
+TEST(ArcServicePolicyHandlerTest, UnderUserControlWhenOutOfRange) {
+  PolicyMap policy_map;
+  policy_map.Set(key::kArcBackupRestoreServiceEnabled, POLICY_LEVEL_MANDATORY,
+                 POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
+                 std::make_unique<base::Value>(2), nullptr);
+  SetEnterpriseUsersDefaults(&policy_map);
+  ArcServicePolicyHandler handler(key::kArcBackupRestoreServiceEnabled,
+                                  arc::prefs::kArcBackupRestoreEnabled);
+  PolicyErrorMap errors;
+  EXPECT_FALSE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_FALSE(errors.GetErrors(key::kArcBackupRestoreServiceEnabled).empty());
+}
+
+TEST(ArcServicePolicyHandlerTest, DisabledByPolicy) {
+  PolicyMap policy_map;
+  policy_map.Set(key::kArcBackupRestoreServiceEnabled, POLICY_LEVEL_MANDATORY,
+                 POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
+                 std::make_unique<base::Value>(
+                     static_cast<int>(ArcServicePolicyValue::kDisabled)),
+                 nullptr);
+  SetEnterpriseUsersDefaults(&policy_map);
+  ArcServicePolicyHandler handler(key::kArcBackupRestoreServiceEnabled,
+                                  arc::prefs::kArcBackupRestoreEnabled);
+  PolicyErrorMap errors;
+  ASSERT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_TRUE(errors.empty());
+  PrefValueMap prefs;
+  handler.ApplyPolicySettings(policy_map, &prefs);
+  const base::Value* enabled = nullptr;
+  EXPECT_TRUE(prefs.GetValue(arc::prefs::kArcBackupRestoreEnabled, &enabled));
+  ASSERT_TRUE(enabled);
+  EXPECT_EQ(base::Value(false), *enabled);
+}
+
+TEST(ArcServicePolicyHandlerTest, UnderUserControlByPolicy) {
+  PolicyMap policy_map;
+  policy_map.Set(key::kArcBackupRestoreServiceEnabled, POLICY_LEVEL_MANDATORY,
+                 POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
+                 std::make_unique<base::Value>(static_cast<int>(
+                     ArcServicePolicyValue::kUnderUserControl)),
+                 nullptr);
+  SetEnterpriseUsersDefaults(&policy_map);
+  ArcServicePolicyHandler handler(key::kArcBackupRestoreServiceEnabled,
+                                  arc::prefs::kArcBackupRestoreEnabled);
+  PolicyErrorMap errors;
+  ASSERT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_TRUE(errors.empty());
+  PrefValueMap prefs;
+  handler.ApplyPolicySettings(policy_map, &prefs);
+  const base::Value* enabled = nullptr;
+  EXPECT_FALSE(prefs.GetValue(arc::prefs::kArcBackupRestoreEnabled, &enabled));
+}
+
+TEST(ArcServicePolicyHandlerTest, UnserUserControlForConsumer) {
+  PolicyMap policy_map;
+  ArcServicePolicyHandler handler(key::kArcBackupRestoreServiceEnabled,
+                                  arc::prefs::kArcBackupRestoreEnabled);
+  PolicyErrorMap errors;
+  ASSERT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_TRUE(errors.empty());
+  PrefValueMap prefs;
+  handler.ApplyPolicySettings(policy_map, &prefs);
+  const base::Value* enabled = nullptr;
+  EXPECT_FALSE(prefs.GetValue(arc::prefs::kArcBackupRestoreEnabled, &enabled));
 }
 
 }  // namespace policy

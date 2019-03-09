@@ -10,6 +10,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
 
+import org.chromium.base.Callback;
 import org.chromium.base.VisibleForTesting;
 
 import java.util.concurrent.Callable;
@@ -22,6 +23,10 @@ import java.util.concurrent.Callable;
  */
 @VisibleForTesting
 public class AwContentsClientCallbackHelper {
+    /**
+     * Interface to tell CallbackHelper to cancel posted callbacks.
+     */
+    public static interface CancelCallbackPoller { boolean shouldCancelAllCallbacks(); }
 
     // TODO(boliu): Consider removing DownloadInfo and LoginRequestInfo by using native
     // MessageLoop to post directly to AwContents.
@@ -66,6 +71,19 @@ public class AwContentsClientCallbackHelper {
                 AwContentsClient.AwWebResourceError error) {
             mRequest = request;
             mError = error;
+        }
+    }
+
+    private static class OnSafeBrowsingHitInfo {
+        final AwContentsClient.AwWebResourceRequest mRequest;
+        final int mThreatType;
+        final Callback<AwSafeBrowsingResponse> mCallback;
+
+        OnSafeBrowsingHitInfo(AwContentsClient.AwWebResourceRequest request, int threatType,
+                Callback<AwSafeBrowsingResponse> callback) {
+            mRequest = request;
+            mThreatType = threatType;
+            mCallback = callback;
         }
     }
 
@@ -114,17 +132,20 @@ public class AwContentsClientCallbackHelper {
     private static final int MSG_SYNTHESIZE_PAGE_LOADING = 12;
     private static final int MSG_DO_UPDATE_VISITED_HISTORY = 13;
     private static final int MSG_ON_FORM_RESUBMISSION = 14;
+    private static final int MSG_ON_SAFE_BROWSING_HIT = 15;
 
     // Minimum period allowed between consecutive onNewPicture calls, to rate-limit the callbacks.
     private static final long ON_NEW_PICTURE_MIN_PERIOD_MILLIS = 500;
     // Timestamp of the most recent onNewPicture callback.
-    private long mLastPictureTime = 0;
+    private long mLastPictureTime;
     // True when a onNewPicture callback is currenly in flight.
-    private boolean mHasPendingOnNewPicture = false;
+    private boolean mHasPendingOnNewPicture;
 
     private final AwContentsClient mContentsClient;
 
     private final Handler mHandler;
+
+    private CancelCallbackPoller mCancelCallbackPoller;
 
     private class MyHandler extends Handler {
         private MyHandler(Looper looper) {
@@ -133,6 +154,11 @@ public class AwContentsClientCallbackHelper {
 
         @Override
         public void handleMessage(Message msg) {
+            if (mCancelCallbackPoller != null && mCancelCallbackPoller.shouldCancelAllCallbacks()) {
+                removeCallbacksAndMessages(null);
+                return;
+            }
+
             switch(msg.what) {
                 case MSG_ON_LOAD_RESOURCE: {
                     final String url = (String) msg.obj;
@@ -158,6 +184,12 @@ public class AwContentsClientCallbackHelper {
                 case MSG_ON_RECEIVED_ERROR: {
                     OnReceivedErrorInfo info = (OnReceivedErrorInfo) msg.obj;
                     mContentsClient.onReceivedError(info.mRequest, info.mError);
+                    break;
+                }
+                case MSG_ON_SAFE_BROWSING_HIT: {
+                    OnSafeBrowsingHitInfo info = (OnSafeBrowsingHitInfo) msg.obj;
+                    mContentsClient.onSafeBrowsingHit(
+                            info.mRequest, info.mThreatType, info.mCallback);
                     break;
                 }
                 case MSG_ON_NEW_PICTURE: {
@@ -227,6 +259,15 @@ public class AwContentsClientCallbackHelper {
         mContentsClient = contentsClient;
     }
 
+    // Public for tests.
+    public void setCancelCallbackPoller(CancelCallbackPoller poller) {
+        mCancelCallbackPoller = poller;
+    }
+
+    CancelCallbackPoller getCancelCallbackPoller() {
+        return mCancelCallbackPoller;
+    }
+
     public void postOnLoadResource(String url) {
         mHandler.sendMessage(mHandler.obtainMessage(MSG_ON_LOAD_RESOURCE, url));
     }
@@ -251,6 +292,12 @@ public class AwContentsClientCallbackHelper {
             AwContentsClient.AwWebResourceError error) {
         OnReceivedErrorInfo info = new OnReceivedErrorInfo(request, error);
         mHandler.sendMessage(mHandler.obtainMessage(MSG_ON_RECEIVED_ERROR, info));
+    }
+
+    public void postOnSafeBrowsingHit(AwContentsClient.AwWebResourceRequest request, int threatType,
+            Callback<AwSafeBrowsingResponse> callback) {
+        OnSafeBrowsingHitInfo info = new OnSafeBrowsingHitInfo(request, threatType, callback);
+        mHandler.sendMessage(mHandler.obtainMessage(MSG_ON_SAFE_BROWSING_HIT, info));
     }
 
     public void postOnNewPicture(Callable<Picture> pictureProvider) {

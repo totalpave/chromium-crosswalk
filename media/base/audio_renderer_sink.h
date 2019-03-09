@@ -14,7 +14,6 @@
 #include "media/base/audio_bus.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/output_device_info.h"
-#include "url/origin.h"
 
 namespace media {
 
@@ -28,12 +27,15 @@ class AudioRendererSink
   class RenderCallback {
    public:
     // Attempts to completely fill all channels of |dest|, returns actual
-    // number of frames filled. |frames_skipped| contains the number of frames
+    // number of frames filled. |prior_frames_skipped| contains the number of
+    // frames
     // the consumer has skipped, if any.
-    virtual int Render(AudioBus* dest,
-                       uint32_t frames_delayed,
-                       uint32_t frames_skipped) = 0;
-
+    // The |delay| argument represents audio device output latency,
+    // |delay_timestamp| represents the time when |delay| was obtained.
+    virtual int Render(base::TimeDelta delay,
+                       base::TimeTicks delay_timestamp,
+                       int prior_frames_skipped,
+                       AudioBus* dest) = 0;
     // Signals an error has occurred.
     virtual void OnRenderError() = 0;
 
@@ -64,11 +66,31 @@ class AudioRendererSink
   virtual bool SetVolume(double volume) = 0;
 
   // Returns current output device information. If the information is not
-  // available yet, this method may block until it becomes available.
-  // If the sink is not associated with any output device, |device_status| of
-  // OutputDeviceInfo should be set to OUTPUT_DEVICE_STATUS_ERROR_INTERNAL.
-  // Must never be called on the IO thread.
+  // available yet, this method may block until it becomes available. If the
+  // sink is not associated with any output device, |device_status| of
+  // OutputDeviceInfo should be set to OUTPUT_DEVICE_STATUS_ERROR_INTERNAL. Must
+  // never be called on the IO thread.
+  //
+  // Note: Prefer to use GetOutputDeviceInfoAsync instead if possible.
   virtual OutputDeviceInfo GetOutputDeviceInfo() = 0;
+
+  // Same as the above, but does not block and will execute |info_cb| when the
+  // OutputDeviceInfo is available. Callback will be executed on the calling
+  // thread. Prefer this function to the synchronous version, it does not have a
+  // timeout so will result in less spurious timeout errors.
+  //
+  // |info_cb| will always be posted (I.e., executed after this function
+  // returns), even if OutputDeviceInfo is already available.
+  //
+  // Upon destruction if OutputDeviceInfo is still not available, |info_cb| will
+  // be posted with OUTPUT_DEVICE_STATUS_ERROR_INTERNAL. Note: Because |info_cb|
+  // is posted it will execute after destruction, so clients must handle
+  // cancellation of the callback if needed.
+  using OutputDeviceInfoCB = base::OnceCallback<void(OutputDeviceInfo)>;
+  virtual void GetOutputDeviceInfoAsync(OutputDeviceInfoCB info_cb) = 0;
+
+  // Returns |true| if a source with hardware parameters is preferable.
+  virtual bool IsOptimizedForHardwareParameters() = 0;
 
   // If DCHECKs are enabled, this function returns true if called on rendering
   // thread, otherwise false. With DCHECKs disabled, it returns true. Thus, it
@@ -98,8 +120,7 @@ class SwitchableAudioRendererSink : public RestartableAudioRendererSink {
   // the media::OutputDeviceStatus enum.
   // There is no guarantee about the thread where |callback| will be invoked.
   virtual void SwitchOutputDevice(const std::string& device_id,
-                                  const url::Origin& security_origin,
-                                  const OutputDeviceStatusCB& callback) = 0;
+                                  OutputDeviceStatusCB callback) = 0;
 
  protected:
   ~SwitchableAudioRendererSink() override {}

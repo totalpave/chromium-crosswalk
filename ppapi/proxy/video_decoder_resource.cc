@@ -227,7 +227,7 @@ int32_t VideoDecoderResource::Decode(uint32_t decode_id,
     if (!UnpackMessage<PpapiPluginMsg_VideoDecoder_GetShmReply>(reply,
                                                                 &shm_size))
       return PP_ERROR_FAILED;
-    base::SharedMemoryHandle shm_handle = base::SharedMemory::NULLHandle();
+    base::SharedMemoryHandle shm_handle;
     if (!reply_params.TakeSharedMemoryHandleAtIndex(0, &shm_handle))
       return PP_ERROR_NOMEMORY;
     std::unique_ptr<base::SharedMemory> shm(
@@ -238,14 +238,10 @@ int32_t VideoDecoderResource::Decode(uint32_t decode_id,
       return PP_ERROR_NOMEMORY;
 
     available_shm_buffers_.push_back(shm_buffer.get());
-    if (shm_buffers_.size() < kMaximumPendingDecodes) {
-      shm_buffers_.push_back(shm_buffer.release());
-    } else {
-      // Delete manually since ScopedVector won't delete the existing element if
-      // we just assign it.
-      delete shm_buffers_[shm_id];
-      shm_buffers_[shm_id] = shm_buffer.release();
-    }
+    if (shm_buffers_.size() < kMaximumPendingDecodes)
+      shm_buffers_.push_back(std::move(shm_buffer));
+    else
+      shm_buffers_[shm_id] = std::move(shm_buffer);
   }
 
   // At this point we should have shared memory to hold the plugin's buffer.
@@ -377,14 +373,13 @@ void VideoDecoderResource::OnPluginMsgRequestTextures(
     const ResourceMessageReplyParams& params,
     uint32_t num_textures,
     const PP_Size& size,
-    uint32_t texture_target,
-    const std::vector<gpu::Mailbox>& mailboxes) {
+    uint32_t texture_target) {
   DCHECK(num_textures);
   DCHECK(num_textures >= min_picture_count_);
-  DCHECK(mailboxes.empty() || mailboxes.size() == num_textures);
   std::vector<uint32_t> texture_ids(num_textures);
+  std::vector<gpu::Mailbox> mailboxes(num_textures);
   if (gles2_impl_) {
-    gles2_impl_->GenTextures(num_textures, &texture_ids.front());
+    gles2_impl_->GenTextures(num_textures, texture_ids.data());
     for (uint32_t i = 0; i < num_textures; ++i) {
       gles2_impl_->ActiveTexture(GL_TEXTURE0);
       gles2_impl_->BindTexture(texture_target, texture_ids[i]);
@@ -408,10 +403,8 @@ void VideoDecoderResource::OnPluginMsgRequestTextures(
                                 GL_UNSIGNED_BYTE,
                                 NULL);
       }
-      if (!mailboxes.empty()) {
-        gles2_impl_->ProduceTextureCHROMIUM(
-            GL_TEXTURE_2D, reinterpret_cast<const GLbyte*>(mailboxes[i].name));
-      }
+      gles2_impl_->ProduceTextureDirectCHROMIUM(texture_ids[i],
+                                                mailboxes[i].name);
 
       textures_.insert(
           std::make_pair(texture_ids[i], Texture(texture_target, size)));
@@ -427,7 +420,8 @@ void VideoDecoderResource::OnPluginMsgRequestTextures(
     }
   }
 
-  Post(RENDERER, PpapiHostMsg_VideoDecoder_AssignTextures(size, texture_ids));
+  Post(RENDERER, PpapiHostMsg_VideoDecoder_AssignTextures(
+                     size, std::move(texture_ids), std::move(mailboxes)));
 }
 
 void VideoDecoderResource::OnPluginMsgPictureReady(
@@ -486,7 +480,7 @@ void VideoDecoderResource::OnPluginMsgDecodeComplete(
     return;
   }
   // Make the shm buffer available.
-  available_shm_buffers_.push_back(shm_buffers_[shm_id]);
+  available_shm_buffers_.push_back(shm_buffers_[shm_id].get());
   // If the plugin is waiting, let it call Decode again.
   if (decode_callback_.get()) {
     scoped_refptr<TrackedCallback> callback;
@@ -529,11 +523,7 @@ void VideoDecoderResource::OnPluginMsgResetComplete(
 
 void VideoDecoderResource::RunCallbackWithError(
     scoped_refptr<TrackedCallback>* callback) {
-  if (TrackedCallback::IsPending(*callback)) {
-    scoped_refptr<TrackedCallback> temp;
-    callback->swap(temp);
-    temp->Run(decoder_last_error_);
-  }
+  SafeRunCallback(callback, decoder_last_error_);
 }
 
 void VideoDecoderResource::DeleteGLTexture(uint32_t id) {

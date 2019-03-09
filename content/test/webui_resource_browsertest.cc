@@ -6,6 +6,7 @@
 #include "base/files/file_util.h"
 #include "base/macros.h"
 #include "base/path_service.h"
+#include "base/threading/thread_restrictions.h"
 #include "content/grit/content_resources.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_paths.h"
@@ -25,7 +26,11 @@ class WebUIResourceBrowserTest : public ContentBrowserTest {
 
   // Runs all test functions in |file|, waiting for them to complete.
   void RunTest(const base::FilePath& file) {
-    ASSERT_TRUE(PathExists(file));
+    {
+      base::ScopedAllowBlockingForTesting allow_blocking;
+      ASSERT_TRUE(PathExists(file));
+    }
+
     NavigateToURL(shell(), net::FilePathToFileURL(file));
 
     content::WebContents* web_contents = shell()->web_contents();
@@ -34,14 +39,10 @@ class WebUIResourceBrowserTest : public ContentBrowserTest {
   }
 
   void RunMediaInternalsTest(const base::FilePath::CharType* file) {
+    AddLibrary(IDR_WEBUI_JS_UTIL);
     AddLibrary(IDR_WEBUI_JS_CR);
     AddLibrary(IDR_MEDIA_INTERNALS_JS);
-
-    base::FilePath path;
-    PathService::Get(DIR_TEST_DATA, &path);
-    RunTest(path.Append(FILE_PATH_LITERAL("media"))
-        .Append(FILE_PATH_LITERAL("webui"))
-        .Append(file));
+    RunTest(GetTestFilePath("media", "webui").Append(file));
   }
 
   // Queues the library corresponding to |resource_id| for injection into the

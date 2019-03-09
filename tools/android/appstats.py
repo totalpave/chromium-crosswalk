@@ -7,6 +7,7 @@
 
 import argparse
 import curses
+import logging
 import os
 import re
 import sys
@@ -83,7 +84,8 @@ class DeviceHelper(object):
     try:
       process_name = process_name.split(':')[0]
       cmd = ['dumpsys', 'package', process_name]
-      user_id_lines = adb.RunShellCommand(cmd, large_output=True)
+      user_id_lines = adb.RunShellCommand(
+          cmd, large_output=True, check_return=True)
       user_id_lines = Utils.FindLines(user_id_lines, 'userId=')
 
       if not user_id_lines:
@@ -126,25 +128,13 @@ class DeviceHelper(object):
     intersect the two.  The returned result is sorted based on userid."""
     pids = []
     try:
-      pid_lines = adb.RunShellCommand(['ps'], large_output=True)
-      if default_pid:
-        pid_lines = Utils.FindLines(pid_lines, str(default_pid))
-      if process_filter:
-        pid_lines = Utils.FindLines(pid_lines, process_filter)
-      for line in pid_lines:
-        data = re.split('\s+', line.strip())
-        pid = data[1]
-        name = data[-1]
-
-        # Confirm that the pid and name match.  Using a regular grep isn't
-        # reliable when doing it on the whole 'ps' input line.
-        pid_matches = not default_pid or pid == str(default_pid)
-        name_matches = not process_filter or name.find(process_filter) != -1
-        if pid_matches and name_matches:
-          userid = DeviceHelper.__GetUserIdForProcessName(adb, name)
-          pids.append((userid, pid, name))
-    except device_errors.AdbShellCommandFailedError:
-      pass
+      for process in adb.ListProcesses(process_filter):
+        if default_pid and process.pid != default_pid:
+          continue
+        userid = DeviceHelper.__GetUserIdForProcessName(adb, process.name)
+        pids.append((userid, process.pid, process.name))
+    except device_errors.AdbShellCommandFailedError as exc:
+      logging.warning('Error getting PIDs to track: %s', exc)
     return sorted(pids, key=lambda tup: tup[0])
 
 class NetworkHelper(object):
@@ -209,7 +199,8 @@ class MemoryHelper(object):
     found it will return [ 0, 0, 0 ]."""
     results = [0, 0, 0]
 
-    mem_lines = adb.RunShellCommand(['dumpsys', 'meminfo', pid])
+    mem_lines = adb.RunShellCommand(
+        ['dumpsys', 'meminfo', pid], check_return=True)
     for line in mem_lines:
       match = re.split('\s+', line.strip())
 
@@ -263,7 +254,7 @@ class GraphicsHelper(object):
     represents the graphics memory usage.  Will return this as a single entry
     array of [ Graphics ].  If not found, will return [ 0 ]."""
     try:
-      mem_lines = adb.RunShellCommand(['showmap', '-t', pid])
+      mem_lines = adb.RunShellCommand(['showmap', '-t', pid], check_return=True)
       for line in mem_lines:
         match = re.split('[ ]+', line.strip())
         if match[-1] in GraphicsHelper.__SHOWMAP_KEY_MATCHES:
@@ -1009,4 +1000,3 @@ def main(argv):
 
 if __name__ == '__main__':
   sys.exit(main(sys.argv))
-

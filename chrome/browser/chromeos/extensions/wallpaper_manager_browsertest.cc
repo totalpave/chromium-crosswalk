@@ -3,16 +3,16 @@
 // found in the LICENSE file.
 
 #include "base/files/file_path.h"
-#include "chrome/browser/apps/app_browsertest_util.h"
+#include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/version_info/version_info.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/test/extension_test_message_listener.h"
-#include "grit/browser_resources.h"
 
 using extensions::Extension;
 using extensions::ExtensionRegistry;

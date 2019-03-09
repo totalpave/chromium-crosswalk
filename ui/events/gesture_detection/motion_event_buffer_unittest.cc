@@ -46,7 +46,7 @@ class MotionEventBufferTest : public testing::Test,
 
   // MotionEventBufferClient implementation.
   void ForwardMotionEvent(const MotionEvent& event) override {
-    forwarded_events_.push_back(event.Clone().release());
+    forwarded_events_.push_back(event.Clone());
   }
 
   void SetNeedsFlush() override { needs_flush_ = true; }
@@ -57,14 +57,14 @@ class MotionEventBufferTest : public testing::Test,
     return needs_flush;
   }
 
-  ScopedVector<MotionEvent> GetAndResetForwardedEvents() {
-    ScopedVector<MotionEvent> forwarded_events;
+  std::vector<std::unique_ptr<MotionEvent>> GetAndResetForwardedEvents() {
+    std::vector<std::unique_ptr<MotionEvent>> forwarded_events;
     forwarded_events.swap(forwarded_events_);
     return forwarded_events;
   }
 
   const MotionEvent* GetLastEvent() const {
-    return forwarded_events_.empty() ? NULL : forwarded_events_.back();
+    return forwarded_events_.empty() ? nullptr : forwarded_events_.back().get();
   }
 
   static base::TimeDelta LargeDelta() {
@@ -83,8 +83,8 @@ class MotionEventBufferTest : public testing::Test,
                                const MotionEvent& b,
                                bool ignore_history) {
     EXPECT_EQ(a.GetAction(), b.GetAction());
-    if (a.GetAction() == MotionEvent::ACTION_POINTER_DOWN ||
-        a.GetAction() == MotionEvent::ACTION_POINTER_UP) {
+    if (a.GetAction() == MotionEvent::Action::POINTER_DOWN ||
+        a.GetAction() == MotionEvent::Action::POINTER_UP) {
       EXPECT_EQ(a.GetActionIndex(), b.GetActionIndex());
     }
     EXPECT_EQ(a.GetButtonState(), b.GetButtonState());
@@ -102,7 +102,8 @@ class MotionEventBufferTest : public testing::Test,
       EXPECT_EQ(a.GetTouchMinor(i), b.GetTouchMinor(bi));
       EXPECT_EQ(a.GetOrientation(i), b.GetOrientation(bi));
       EXPECT_EQ(a.GetPressure(i), b.GetPressure(bi));
-      EXPECT_EQ(a.GetTilt(i), b.GetTilt(bi));
+      EXPECT_EQ(a.GetTiltX(i), b.GetTiltX(bi));
+      EXPECT_EQ(a.GetTiltY(i), b.GetTiltY(bi));
       EXPECT_EQ(a.GetToolType(i), b.GetToolType(bi));
     }
 
@@ -184,8 +185,8 @@ class MotionEventBufferTest : public testing::Test,
     base::TimeDelta last_dt;
     while (event_time < max_event_time) {
       position += gfx::ScaleVector2d(velocity, event_time_delta.InSecondsF());
-      MockMotionEvent move(
-          MotionEvent::ACTION_MOVE, event_time, position.x(), position.y());
+      MockMotionEvent move(MotionEvent::Action::MOVE, event_time, position.x(),
+                           position.y());
       buffer.OnMotionEvent(move);
       event_time += event_time_delta;
 
@@ -201,7 +202,7 @@ class MotionEventBufferTest : public testing::Test,
 
           base::TimeDelta dt = current_flushed_event->GetEventTime() -
                                last_flushed_event->GetEventTime();
-          EXPECT_GE(dt.ToInternalValue(), 0);
+          EXPECT_GE(dt, base::TimeDelta());
           // A time delta of 0 is possible if the flush rate is greater than the
           // event rate, in which case we can simply skip forward.
           if (dt.is_zero())
@@ -241,7 +242,7 @@ class MotionEventBufferTest : public testing::Test,
   }
 
  private:
-  ScopedVector<MotionEvent> forwarded_events_;
+  std::vector<std::unique_ptr<MotionEvent>> forwarded_events_;
   bool needs_flush_;
 };
 
@@ -257,7 +258,7 @@ TEST_F(MotionEventBufferTest, BufferWithOneMoveNotResampled) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move(MotionEvent::ACTION_MOVE, event_time, 4.f, 4.f);
+  MockMotionEvent move(MotionEvent::Action::MOVE, event_time, 4.f, 4.f);
   buffer.OnMotionEvent(move);
   EXPECT_TRUE(GetAndResetNeedsFlush());
   EXPECT_FALSE(GetLastEvent());
@@ -273,7 +274,7 @@ TEST_F(MotionEventBufferTest, BufferFlushedOnNonActionMove) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 1.f, 1.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 1.f, 1.f);
   buffer.OnMotionEvent(move0);
   EXPECT_TRUE(GetAndResetNeedsFlush());
   EXPECT_FALSE(GetLastEvent());
@@ -281,25 +282,26 @@ TEST_F(MotionEventBufferTest, BufferFlushedOnNonActionMove) {
   event_time += base::TimeDelta::FromMilliseconds(5);
 
   // The second move should remain buffered.
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 2.f, 2.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 2.f, 2.f);
   buffer.OnMotionEvent(move1);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   EXPECT_FALSE(GetLastEvent());
 
   // The third move should remain buffered.
-  MockMotionEvent move2(MotionEvent::ACTION_MOVE, event_time, 3.f, 3.f);
+  MockMotionEvent move2(MotionEvent::Action::MOVE, event_time, 3.f, 3.f);
   buffer.OnMotionEvent(move2);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   EXPECT_FALSE(GetLastEvent());
 
   // The up should flush the buffer.
-  MockMotionEvent up(MotionEvent::ACTION_UP, event_time, 4.f, 4.f);
+  MockMotionEvent up(MotionEvent::Action::UP, event_time, 4.f, 4.f);
   buffer.OnMotionEvent(up);
   EXPECT_FALSE(GetAndResetNeedsFlush());
 
   // The flushed events should include the up and the moves, with the latter
   // combined into a single event with history.
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(2U, events.size());
   EXPECT_EVENT_EQ(up, *events.back());
   EXPECT_EQ(2U, events.front()->GetHistorySize());
@@ -312,7 +314,7 @@ TEST_F(MotionEventBufferTest, BufferFlushedOnIncompatibleActionMove) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 1.f, 1.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 1.f, 1.f);
   buffer.OnMotionEvent(move0);
   EXPECT_TRUE(GetAndResetNeedsFlush());
   EXPECT_FALSE(GetLastEvent());
@@ -320,8 +322,8 @@ TEST_F(MotionEventBufferTest, BufferFlushedOnIncompatibleActionMove) {
   event_time += base::TimeDelta::FromMilliseconds(5);
 
   // The second move has a different pointer count, flushing the first.
-  MockMotionEvent move1(
-      MotionEvent::ACTION_MOVE, event_time, 2.f, 2.f, 3.f, 3.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 2.f, 2.f, 3.f,
+                        3.f);
   buffer.OnMotionEvent(move1);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   ASSERT_TRUE(GetLastEvent());
@@ -331,7 +333,7 @@ TEST_F(MotionEventBufferTest, BufferFlushedOnIncompatibleActionMove) {
 
   // The third move has differing tool types, flushing the second.
   MockMotionEvent move2(move1);
-  move2.SetToolType(0, MotionEvent::TOOL_TYPE_STYLUS);
+  move2.SetToolType(0, MotionEvent::ToolType::STYLUS);
   buffer.OnMotionEvent(move2);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   EXPECT_EVENT_EQ(move1, *GetLastEvent());
@@ -340,7 +342,8 @@ TEST_F(MotionEventBufferTest, BufferFlushedOnIncompatibleActionMove) {
 
   // The flushed event should only include the latest move event.
   buffer.Flush(event_time);
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(3U, events.size());
   EXPECT_EVENT_EQ(move2, *events.back());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -352,13 +355,13 @@ TEST_F(MotionEventBufferTest, BufferFlushedOnIncompatibleActionMove) {
   pointer0.id = 1;
   PointerProperties pointer1(10.f, 10.f, 2.f);
   pointer1.id = 2;
-  MotionEventGeneric move3(MotionEvent::ACTION_MOVE, event_time, pointer0);
+  MotionEventGeneric move3(MotionEvent::Action::MOVE, event_time, pointer0);
   move3.PushPointer(pointer1);
   buffer.OnMotionEvent(move3);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
-  MotionEventGeneric move4(MotionEvent::ACTION_MOVE, event_time, pointer0);
+  MotionEventGeneric move4(MotionEvent::Action::MOVE, event_time, pointer0);
   pointer1.id = 7;
   move4.PushPointer(pointer1);
   buffer.OnMotionEvent(move2);
@@ -371,7 +374,7 @@ TEST_F(MotionEventBufferTest, OnlyActionMoveBuffered) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent down(MotionEvent::ACTION_DOWN, event_time, 1.f, 1.f);
+  MockMotionEvent down(MotionEvent::Action::DOWN, event_time, 1.f, 1.f);
   buffer.OnMotionEvent(down);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   ASSERT_TRUE(GetLastEvent());
@@ -379,7 +382,7 @@ TEST_F(MotionEventBufferTest, OnlyActionMoveBuffered) {
 
   GetAndResetForwardedEvents();
 
-  MockMotionEvent up(MotionEvent::ACTION_UP, event_time, 2.f, 2.f);
+  MockMotionEvent up(MotionEvent::Action::UP, event_time, 2.f, 2.f);
   buffer.OnMotionEvent(up);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   ASSERT_TRUE(GetLastEvent());
@@ -387,7 +390,7 @@ TEST_F(MotionEventBufferTest, OnlyActionMoveBuffered) {
 
   GetAndResetForwardedEvents();
 
-  MockMotionEvent cancel(MotionEvent::ACTION_CANCEL, event_time, 3.f, 3.f);
+  MockMotionEvent cancel(MotionEvent::Action::CANCEL, event_time, 3.f, 3.f);
   buffer.OnMotionEvent(cancel);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   ASSERT_TRUE(GetLastEvent());
@@ -395,7 +398,7 @@ TEST_F(MotionEventBufferTest, OnlyActionMoveBuffered) {
 
   GetAndResetForwardedEvents();
 
-  MockMotionEvent move(MotionEvent::ACTION_MOVE, event_time, 4.f, 4.f);
+  MockMotionEvent move(MotionEvent::Action::MOVE, event_time, 4.f, 4.f);
   buffer.OnMotionEvent(move);
   EXPECT_TRUE(GetAndResetNeedsFlush());
   EXPECT_FALSE(GetLastEvent());
@@ -416,7 +419,7 @@ TEST_F(MotionEventBufferTest, OutOfOrderPointersBuffered) {
   PointerProperties p1(2.f, 1.f, 0.5f);
   p1.id = 2;
 
-  MotionEventGeneric move0(MotionEvent::ACTION_MOVE, event_time, p0);
+  MotionEventGeneric move0(MotionEvent::Action::MOVE, event_time, p0);
   move0.PushPointer(p1);
   buffer.OnMotionEvent(move0);
   EXPECT_TRUE(GetAndResetNeedsFlush());
@@ -426,7 +429,7 @@ TEST_F(MotionEventBufferTest, OutOfOrderPointersBuffered) {
 
   // The second move should remain buffered even if the logical pointers are
   // in a different order.
-  MotionEventGeneric move1(MotionEvent::ACTION_MOVE, event_time, p1);
+  MotionEventGeneric move1(MotionEvent::Action::MOVE, event_time, p1);
   move1.PushPointer(p0);
   buffer.OnMotionEvent(move1);
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -438,7 +441,8 @@ TEST_F(MotionEventBufferTest, OutOfOrderPointersBuffered) {
   buffer.Flush(flush_time);
   EXPECT_FALSE(GetAndResetNeedsFlush());
   ASSERT_TRUE(GetLastEvent());
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events.size());
   EXPECT_EVENT_IGNORING_HISTORY_EQ(move1, *events.front());
   EXPECT_EVENT_HISTORY_EQ(*events.front(), 0, move0);
@@ -448,14 +452,14 @@ TEST_F(MotionEventBufferTest, FlushedEventsNeverLaterThanFlushTime) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 1.f, 1.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 1.f, 1.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += LargeDelta();
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 2.f, 2.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 2.f, 2.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -505,13 +509,13 @@ TEST_F(MotionEventBufferTest, NoResamplingWhenDisabled) {
   MotionEventBuffer buffer(this, resampling_enabled);
 
   // Queue two events.
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 5.f, 10.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 5.f, 10.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   event_time += base::TimeDelta::FromMilliseconds(5);
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 15.f, 30.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 15.f, 30.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -526,7 +530,8 @@ TEST_F(MotionEventBufferTest, NoResamplingWhenDisabled) {
 
   // There should only be one flushed event, with the second remaining buffered
   // and no resampling having occurred.
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events.size());
   EXPECT_EVENT_EQ(move0, *events.front());
 
@@ -538,14 +543,14 @@ TEST_F(MotionEventBufferTest, NoResamplingWhenDisabled) {
   GetAndResetForwardedEvents();
 
   // Now queue two more events.
-  move0 = MockMotionEvent(MotionEvent::ACTION_MOVE, event_time, 5.f, 10.f);
+  move0 = MockMotionEvent(MotionEvent::Action::MOVE, event_time, 5.f, 10.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += base::TimeDelta::FromMilliseconds(5);
-  move1 = MockMotionEvent(MotionEvent::ACTION_MOVE, event_time, 10.f, 20.f);
+  move1 = MockMotionEvent(MotionEvent::Action::MOVE, event_time, 10.f, 20.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -570,14 +575,14 @@ TEST_F(MotionEventBufferTest, NoResamplingWithOutOfOrderActionMove) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 5.f, 10.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 5.f, 10.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += base::TimeDelta::FromMilliseconds(10);
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 10.f, 20.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 10.f, 20.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -594,7 +599,8 @@ TEST_F(MotionEventBufferTest, NoResamplingWithOutOfOrderActionMove) {
   // the two events.
   base::TimeTicks expected_time =
       move1.GetEventTime() + (move1.GetEventTime() - move0.GetEventTime()) / 2;
-  ScopedVector<MotionEvent> events0 = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events0 =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events0.size());
   EXPECT_EQ(2U, events0.front()->GetHistorySize());
   EXPECT_EQ(expected_time, events0.front()->GetEventTime());
@@ -603,14 +609,14 @@ TEST_F(MotionEventBufferTest, NoResamplingWithOutOfOrderActionMove) {
   // Try enqueuing an event *after* the second event but *before* the
   // extrapolated event. It should be dropped.
   event_time = move1.GetEventTime() + base::TimeDelta::FromMilliseconds(1);
-  MockMotionEvent move2(MotionEvent::ACTION_MOVE, event_time, 15.f, 25.f);
+  MockMotionEvent move2(MotionEvent::Action::MOVE, event_time, 15.f, 25.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
 
   // Finally queue an event *after* the extrapolated event.
   event_time = expected_time + base::TimeDelta::FromMilliseconds(1);
-  MockMotionEvent move3(MotionEvent::ACTION_MOVE, event_time, 15.f, 25.f);
+  MockMotionEvent move3(MotionEvent::Action::MOVE, event_time, 15.f, 25.f);
   buffer.OnMotionEvent(move3);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
@@ -619,7 +625,8 @@ TEST_F(MotionEventBufferTest, NoResamplingWithOutOfOrderActionMove) {
   flush_time = event_time + ResampleDelta();
   buffer.Flush(flush_time);
   ASSERT_TRUE(GetLastEvent());
-  ScopedVector<MotionEvent> events1 = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events1 =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events1.size());
   EXPECT_EVENT_EQ(move3, *events1.front());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -630,14 +637,14 @@ TEST_F(MotionEventBufferTest, NoResamplingWithSmallTimeDeltaBetweenMoves) {
   MotionEventBuffer buffer(this, true);
 
   // The first move should be buffered.
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 1.f, 1.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 1.f, 1.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += SmallDelta();
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 2.f, 2.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 2.f, 2.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -648,7 +655,8 @@ TEST_F(MotionEventBufferTest, NoResamplingWithSmallTimeDeltaBetweenMoves) {
 
   // There should only be one flushed event, and no resampling should have
   // occured between the first and the second as they were temporally too close.
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events.size());
   EXPECT_EQ(1U, events.front()->GetHistorySize());
   EXPECT_EVENT_IGNORING_HISTORY_EQ(*events.front(), move1);
@@ -660,14 +668,14 @@ TEST_F(MotionEventBufferTest, NoResamplingWithMismatchBetweenMoves) {
   MotionEventBuffer buffer(this, true);
 
   // The first move should be buffered.
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 1.f, 1.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 1.f, 1.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += SmallDelta();
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 2.f, 2.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 2.f, 2.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -678,7 +686,8 @@ TEST_F(MotionEventBufferTest, NoResamplingWithMismatchBetweenMoves) {
 
   // There should only be one flushed event, and no resampling should have
   // occured between the first and the second as they were temporally too close.
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events.size());
   EXPECT_EQ(1U, events.front()->GetHistorySize());
   EXPECT_EVENT_IGNORING_HISTORY_EQ(*events.front(), move1);
@@ -689,14 +698,14 @@ TEST_F(MotionEventBufferTest, Interpolation) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 5.f, 10.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 5.f, 10.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += base::TimeDelta::FromMilliseconds(5);
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 15.f, 30.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 15.f, 30.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -714,11 +723,11 @@ TEST_F(MotionEventBufferTest, Interpolation) {
   float alpha = (interpolated_time - move0.GetEventTime()).InMillisecondsF() /
                 (move1.GetEventTime() - move0.GetEventTime()).InMillisecondsF();
   MockMotionEvent interpolated_event(
-      MotionEvent::ACTION_MOVE,
-      interpolated_time,
+      MotionEvent::Action::MOVE, interpolated_time,
       move0.GetX(0) + (move1.GetX(0) - move0.GetX(0)) * alpha,
       move0.GetY(0) + (move1.GetY(0) - move0.GetY(0)) * alpha);
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events.size());
   EXPECT_EQ(1U, events.front()->GetHistorySize());
   EXPECT_EVENT_IGNORING_HISTORY_EQ(*events.front(), interpolated_event);
@@ -735,14 +744,14 @@ TEST_F(MotionEventBufferTest, Extrapolation) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 5.f, 10.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 5.f, 10.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += base::TimeDelta::FromMilliseconds(5);
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 10.f, 20.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 10.f, 20.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -766,11 +775,11 @@ TEST_F(MotionEventBufferTest, Extrapolation) {
       (expected_time - move0.GetEventTime()).InMillisecondsF() /
       (move1.GetEventTime() - move0.GetEventTime()).InMillisecondsF();
   MockMotionEvent extrapolated_event(
-      MotionEvent::ACTION_MOVE,
-      expected_time,
+      MotionEvent::Action::MOVE, expected_time,
       move0.GetX(0) + (move1.GetX(0) - move0.GetX(0)) * expected_alpha,
       move0.GetY(0) + (move1.GetY(0) - move0.GetY(0)) * expected_alpha);
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events.size());
   EXPECT_EQ(2U, events.front()->GetHistorySize());
   EXPECT_EVENT_IGNORING_HISTORY_EQ(*events.front(), extrapolated_event);
@@ -782,14 +791,14 @@ TEST_F(MotionEventBufferTest, ExtrapolationHorizonLimited) {
   base::TimeTicks event_time = base::TimeTicks::Now();
   MotionEventBuffer buffer(this, true);
 
-  MockMotionEvent move0(MotionEvent::ACTION_MOVE, event_time, 5.f, 10.f);
+  MockMotionEvent move0(MotionEvent::Action::MOVE, event_time, 5.f, 10.f);
   buffer.OnMotionEvent(move0);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_TRUE(GetAndResetNeedsFlush());
 
   // The second move should remain buffered.
   event_time += base::TimeDelta::FromMilliseconds(24);
-  MockMotionEvent move1(MotionEvent::ACTION_MOVE, event_time, 10.f, 20.f);
+  MockMotionEvent move1(MotionEvent::Action::MOVE, event_time, 10.f, 20.f);
   buffer.OnMotionEvent(move1);
   ASSERT_FALSE(GetLastEvent());
   EXPECT_FALSE(GetAndResetNeedsFlush());
@@ -811,11 +820,11 @@ TEST_F(MotionEventBufferTest, ExtrapolationHorizonLimited) {
       (expected_time - move0.GetEventTime()).InMillisecondsF() /
       (move1.GetEventTime() - move0.GetEventTime()).InMillisecondsF();
   MockMotionEvent extrapolated_event(
-      MotionEvent::ACTION_MOVE,
-      expected_time,
+      MotionEvent::Action::MOVE, expected_time,
       move0.GetX(0) + (move1.GetX(0) - move0.GetX(0)) * expected_alpha,
       move0.GetY(0) + (move1.GetY(0) - move0.GetY(0)) * expected_alpha);
-  ScopedVector<MotionEvent> events = GetAndResetForwardedEvents();
+  std::vector<std::unique_ptr<MotionEvent>> events =
+      GetAndResetForwardedEvents();
   ASSERT_EQ(1U, events.size());
   EXPECT_EQ(2U, events.front()->GetHistorySize());
   EXPECT_EVENT_IGNORING_HISTORY_EQ(*events.front(), extrapolated_event);

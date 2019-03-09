@@ -20,10 +20,12 @@
 #include "chrome/test/chromedriver/chrome/devtools_http_client.h"
 #include "chrome/test/chromedriver/chrome/log.h"
 #include "chrome/test/chromedriver/net/net_util.h"
+#include "chrome/test/chromedriver/session.h"
 
 namespace base {
 class CommandLine;
 class DictionaryValue;
+class ListValue;
 }
 
 class Status;
@@ -80,9 +82,6 @@ struct PerfLoggingPrefs {
 
   InspectorDomainStatus network;
   InspectorDomainStatus page;
-  // TODO(samuong): Timeline was removed in blink 189656 (chromium commit
-  // position 315092) so remove this option once we stop supporting M41.
-  InspectorDomainStatus timeline;
 
   std::string trace_categories;  // Non-empty string enables tracing.
   int buffer_usage_reporting_interval;  // ms between trace buffer usage events.
@@ -98,7 +97,41 @@ struct Capabilities {
   // Return true if android package is specified.
   bool IsAndroid() const;
 
-  Status Parse(const base::DictionaryValue& desired_caps);
+  // Accepts all W3C defined capabilities (including those not yet supported by
+  // ChromeDriver) and all ChromeDriver-specific extensions.
+  Status Parse(const base::DictionaryValue& desired_caps,
+               bool w3c_compliant = true);
+
+  // Check if all specified capabilities are supported by ChromeDriver.
+  // The long term goal is to support all standard capabilities, thus making
+  // this method unnecessary.
+  Status CheckSupport() const;
+
+  //
+  // W3C defined capabilities
+  //
+
+  bool accept_insecure_certs;
+
+  std::string browser_name;
+  std::string browser_version;
+  std::string platform_name;
+
+  std::string page_load_strategy;
+
+  // Data from "proxy" capability are stored in "switches" field.
+
+  base::TimeDelta script_timeout = Session::kDefaultScriptTimeout;
+  base::TimeDelta page_load_timeout = Session::kDefaultPageLoadTimeout;
+  base::TimeDelta implicit_wait_timeout = Session::kDefaultImplicitWaitTimeout;
+
+  bool strict_file_interactability;
+
+  std::string unhandled_prompt_behavior;
+
+  //
+  // ChromeDriver specific capabilities
+  //
 
   std::string android_activity;
 
@@ -107,6 +140,10 @@ struct Capabilities {
   std::string android_package;
 
   std::string android_process;
+
+  std::string android_device_socket;
+
+  std::string android_exec_name;
 
   bool android_use_running_app;
 
@@ -129,6 +166,9 @@ struct Capabilities {
 
   std::vector<std::string> extensions;
 
+  // Time to wait for extension background page to appear. If 0, no waiting.
+  base::TimeDelta extension_load_timeout;
+
   // True if should always use DevTools for taking screenshots.
   // This is experimental and may be removed at a later point.
   bool force_devtools_screenshot;
@@ -142,13 +182,19 @@ struct Capabilities {
   // If set, enable minidump for chrome crashes and save to this directory.
   std::string minidump_path;
 
+  bool network_emulation_enabled;
+
   PerfLoggingPrefs perf_logging_prefs;
+
+  std::unique_ptr<base::ListValue> devtools_events_logging_prefs;
 
   std::unique_ptr<base::DictionaryValue> prefs;
 
   Switches switches;
 
   std::set<WebViewInfo::Type> window_types;
+
+  bool use_automation_extension;
 };
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CAPABILITIES_H_

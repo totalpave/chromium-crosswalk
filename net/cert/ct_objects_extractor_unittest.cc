@@ -30,22 +30,22 @@ class CTObjectsExtractorTest : public ::testing::Test {
     std::string der_test_cert(ct::GetDerEncodedX509Cert());
     test_cert_ = X509Certificate::CreateFromBytes(der_test_cert.data(),
                                                   der_test_cert.length());
+    ASSERT_TRUE(test_cert_);
 
     log_ = CTLogVerifier::Create(ct::GetTestPublicKey(), "testlog",
-                                 "https://ct.example.com");
+                                 "dns.example.com");
     ASSERT_TRUE(log_);
   }
 
   void ExtractEmbeddedSCT(scoped_refptr<X509Certificate> cert,
                           scoped_refptr<SignedCertificateTimestamp>* sct) {
     std::string sct_list;
-    EXPECT_TRUE(ExtractEmbeddedSCTList(cert->os_cert_handle(), &sct_list));
+    ASSERT_TRUE(ExtractEmbeddedSCTList(cert->cert_buffer(), &sct_list));
 
     std::vector<base::StringPiece> parsed_scts;
-    base::StringPiece sct_list_sp(sct_list);
     // Make sure the SCT list can be decoded properly
-    EXPECT_TRUE(DecodeSCTList(&sct_list_sp, &parsed_scts));
-
+    ASSERT_TRUE(DecodeSCTList(sct_list, &parsed_scts));
+    ASSERT_EQ(1u, parsed_scts.size());
     EXPECT_TRUE(DecodeSignedCertificateTimestamp(&parsed_scts[0], sct));
   }
 
@@ -72,12 +72,11 @@ TEST_F(CTObjectsExtractorTest, ExtractEmbeddedSCT) {
 }
 
 TEST_F(CTObjectsExtractorTest, ExtractPrecert) {
-  LogEntry entry;
-  ASSERT_TRUE(GetPrecertLogEntry(precert_chain_[0]->os_cert_handle(),
-                                 precert_chain_[1]->os_cert_handle(),
-                                 &entry));
+  SignedEntryData entry;
+  ASSERT_TRUE(GetPrecertSignedEntry(precert_chain_[0]->cert_buffer(),
+                                    precert_chain_[1]->cert_buffer(), &entry));
 
-  ASSERT_EQ(ct::LogEntry::LOG_ENTRY_TYPE_PRECERT, entry.type);
+  ASSERT_EQ(ct::SignedEntryData::LOG_ENTRY_TYPE_PRECERT, entry.type);
   // Should have empty leaf cert for this log entry type.
   ASSERT_TRUE(entry.leaf_certificate.empty());
   // Compare hash values of issuer spki.
@@ -87,10 +86,10 @@ TEST_F(CTObjectsExtractorTest, ExtractPrecert) {
 }
 
 TEST_F(CTObjectsExtractorTest, ExtractOrdinaryX509Cert) {
-  LogEntry entry;
-  ASSERT_TRUE(GetX509LogEntry(test_cert_->os_cert_handle(), &entry));
+  SignedEntryData entry;
+  ASSERT_TRUE(GetX509SignedEntry(test_cert_->cert_buffer(), &entry));
 
-  ASSERT_EQ(ct::LogEntry::LOG_ENTRY_TYPE_X509, entry.type);
+  ASSERT_EQ(ct::SignedEntryData::LOG_ENTRY_TYPE_X509, entry.type);
   // Should have empty tbs_certificate for this log entry type.
   ASSERT_TRUE(entry.tbs_certificate.empty());
   // Length of leaf_certificate should be 718, see the CT Serialization tests.
@@ -103,23 +102,22 @@ TEST_F(CTObjectsExtractorTest, ExtractedSCTVerifies) {
       new ct::SignedCertificateTimestamp());
   ExtractEmbeddedSCT(precert_chain_[0], &sct);
 
-  LogEntry entry;
-  ASSERT_TRUE(GetPrecertLogEntry(precert_chain_[0]->os_cert_handle(),
-                                 precert_chain_[1]->os_cert_handle(),
-                                 &entry));
+  SignedEntryData entry;
+  ASSERT_TRUE(GetPrecertSignedEntry(precert_chain_[0]->cert_buffer(),
+                                    precert_chain_[1]->cert_buffer(), &entry));
 
   EXPECT_TRUE(log_->Verify(entry, *sct.get()));
 }
 
-// Test that an externally-provided SCT verifies over the LogEntry
+// Test that an externally-provided SCT verifies over the SignedEntryData
 // of a regular X.509 Certificate
 TEST_F(CTObjectsExtractorTest, ComplementarySCTVerifies) {
   scoped_refptr<ct::SignedCertificateTimestamp> sct(
       new ct::SignedCertificateTimestamp());
   GetX509CertSCT(&sct);
 
-  LogEntry entry;
-  ASSERT_TRUE(GetX509LogEntry(test_cert_->os_cert_handle(), &entry));
+  SignedEntryData entry;
+  ASSERT_TRUE(GetX509SignedEntry(test_cert_->cert_buffer(), &entry));
 
   EXPECT_TRUE(log_->Verify(entry, *sct.get()));
 }
@@ -130,10 +128,12 @@ TEST_F(CTObjectsExtractorTest, ExtractSCTListFromOCSPResponse) {
   scoped_refptr<X509Certificate> subject_cert =
       X509Certificate::CreateFromBytes(der_subject_cert.data(),
                                        der_subject_cert.length());
+  ASSERT_TRUE(subject_cert);
   std::string der_issuer_cert(ct::GetDerEncodedFakeOCSPResponseIssuerCert());
   scoped_refptr<X509Certificate> issuer_cert =
       X509Certificate::CreateFromBytes(der_issuer_cert.data(),
                                        der_issuer_cert.length());
+  ASSERT_TRUE(issuer_cert);
 
   std::string fake_sct_list = ct::GetFakeOCSPExtensionValue();
   ASSERT_FALSE(fake_sct_list.empty());
@@ -141,8 +141,8 @@ TEST_F(CTObjectsExtractorTest, ExtractSCTListFromOCSPResponse) {
 
   std::string extracted_sct_list;
   EXPECT_TRUE(ct::ExtractSCTListFromOCSPResponse(
-      issuer_cert->os_cert_handle(), subject_cert->serial_number(),
-      ocsp_response, &extracted_sct_list));
+      issuer_cert->cert_buffer(), subject_cert->serial_number(), ocsp_response,
+      &extracted_sct_list));
   EXPECT_EQ(extracted_sct_list, fake_sct_list);
 }
 
@@ -152,13 +152,14 @@ TEST_F(CTObjectsExtractorTest, ExtractSCTListFromOCSPResponseMatchesSerial) {
   scoped_refptr<X509Certificate> issuer_cert =
       X509Certificate::CreateFromBytes(der_issuer_cert.data(),
                                        der_issuer_cert.length());
+  ASSERT_TRUE(issuer_cert);
 
   std::string ocsp_response = ct::GetDerEncodedFakeOCSPResponse();
 
   std::string extracted_sct_list;
   EXPECT_FALSE(ct::ExtractSCTListFromOCSPResponse(
-      issuer_cert->os_cert_handle(), test_cert_->serial_number(),
-      ocsp_response, &extracted_sct_list));
+      issuer_cert->cert_buffer(), test_cert_->serial_number(), ocsp_response,
+      &extracted_sct_list));
 }
 
 // Test that the extractor honours issuer ID.
@@ -167,14 +168,15 @@ TEST_F(CTObjectsExtractorTest, ExtractSCTListFromOCSPResponseMatchesIssuer) {
   scoped_refptr<X509Certificate> subject_cert =
       X509Certificate::CreateFromBytes(der_subject_cert.data(),
                                        der_subject_cert.length());
+  ASSERT_TRUE(subject_cert);
 
   std::string ocsp_response = ct::GetDerEncodedFakeOCSPResponse();
 
   std::string extracted_sct_list;
   // Use test_cert_ for issuer - it is not the correct issuer of |subject_cert|.
   EXPECT_FALSE(ct::ExtractSCTListFromOCSPResponse(
-      test_cert_->os_cert_handle(), subject_cert->serial_number(),
-      ocsp_response, &extracted_sct_list));
+      test_cert_->cert_buffer(), subject_cert->serial_number(), ocsp_response,
+      &extracted_sct_list));
 }
 
 }  // namespace ct

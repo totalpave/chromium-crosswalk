@@ -7,14 +7,15 @@ button.blue-button {
   border: 5px solid transparent;
   box-sizing: content-box;
   cursor: default;
+  font-size: 14px;
   height: 21px;
   line-height: 21px;
   margin: 0;
   min-height: 21px;
   min-width: 55px;
+  outline: none;
   padding: 0 10px;
   position: relative;
-  outline: none;
   text-align: center;
   z-index: 1;
 }

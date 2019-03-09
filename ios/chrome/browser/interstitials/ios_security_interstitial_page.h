@@ -12,14 +12,8 @@
 #include "ios/web/public/interstitials/web_interstitial_delegate.h"
 #include "url/gurl.h"
 
-class IOSChromeControllerClient;
-
 namespace base {
 class DictionaryValue;
-}
-
-namespace security_interstitials {
-class MetricsHelper;
 }
 
 namespace web {
@@ -27,7 +21,7 @@ class WebInterstitial;
 class WebState;
 }
 
-class IOSSecurityInterstitialPage : public web::HtmlWebInterstitialDelegate {
+class IOSSecurityInterstitialPage : public web::WebInterstitialDelegate {
  public:
   IOSSecurityInterstitialPage(web::WebState* web_state,
                               const GURL& request_url);
@@ -48,7 +42,7 @@ class IOSSecurityInterstitialPage : public web::HtmlWebInterstitialDelegate {
   // |web_interstitial_| will now have a value.
   virtual void AfterShow() = 0;
 
-  // web::HtmlWebInterstitialDelegate implementation.
+  // web::WebInterstitialDelegate implementation.
   std::string GetHtmlContents() const override;
 
   // Returns the formatted host name for the request url.

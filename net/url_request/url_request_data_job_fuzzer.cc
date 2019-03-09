@@ -2,13 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <memory>
+#include <stddef.h>
+#include <stdint.h>
 
-#include "base/memory/ptr_util.h"
+#include <string>
+
 #include "base/memory/singleton.h"
 #include "base/run_loop.h"
-#include "net/base/fuzzed_data_provider.h"
+#include "base/test/fuzzed_data_provider.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "net/http/http_request_headers.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/data_protocol_handler.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_job_factory_impl.h"
@@ -27,9 +31,9 @@ const size_t kMaxLengthForFuzzedRange = 32;
 class URLRequestDataJobFuzzerHarness : public net::URLRequest::Delegate {
  public:
   URLRequestDataJobFuzzerHarness()
-      : context_(true), task_runner_(base::ThreadTaskRunnerHandle::Get()) {
+      : task_runner_(base::ThreadTaskRunnerHandle::Get()), context_(true) {
     job_factory_.SetProtocolHandler(
-        "data", base::WrapUnique(new net::DataProtocolHandler()));
+        "data", std::make_unique<net::DataProtocolHandler>());
     context_.set_job_factory(&job_factory_);
     context_.Init();
   }
@@ -39,46 +43,48 @@ class URLRequestDataJobFuzzerHarness : public net::URLRequest::Delegate {
   }
 
   int CreateAndReadFromDataURLRequest(const uint8_t* data, size_t size) {
-    net::FuzzedDataProvider provider(data, size);
+    base::FuzzedDataProvider provider(data, size);
     read_lengths_.clear();
 
     // Allocate an IOBuffer with fuzzed size.
-    uint32_t buf_size = provider.ConsumeUint32InRange(1, 127);  // 7 bits.
-    scoped_refptr<net::IOBuffer> buf(
-        new net::IOBuffer(static_cast<size_t>(buf_size)));
-    buf_.swap(buf);
+    int buf_size = provider.ConsumeIntegralInRange(1, 127);  // 7 bits.
+    buf_ = base::MakeRefCounted<net::IOBufferWithSize>(buf_size);
 
     // Generate a range header, and a bool determining whether to use it.
     // Generate the header regardless of the bool value to keep the data URL and
     // header in consistent byte addresses so the fuzzer doesn't have to work as
     // hard.
     bool use_range = provider.ConsumeBool();
-    base::StringPiece range(provider.ConsumeBytes(kMaxLengthForFuzzedRange));
+    std::string range = provider.ConsumeBytesAsString(kMaxLengthForFuzzedRange);
 
-    // Generate a sequence of reads sufficient to read the entire data URL.
+    // Generate a sequence of reads sufficient to read the entire data URL,
+    // capping it at 20000 reads, to avoid hangs. Once the limit is reached,
+    // all subsequent reads will be 32k.
     size_t simulated_bytes_read = 0;
-    while (simulated_bytes_read < provider.remaining_bytes()) {
-      size_t read_length = provider.ConsumeUint32InRange(1, buf_size);
+    while (simulated_bytes_read < provider.remaining_bytes() &&
+           read_lengths_.size() < 20000u) {
+      size_t read_length = provider.ConsumeIntegralInRange(1, buf_size);
       read_lengths_.push_back(read_length);
       simulated_bytes_read += read_length;
     }
 
-    // The data URL is the rest of the fuzzed data. If the URL is invalid just
+    // The data URL is the rest of the fuzzed data with "data:" prepended, to
+    // ensure that if it's a URL, it's a data URL. If the URL is invalid just
     // use a test variant, so the fuzzer has a chance to execute something.
-    base::StringPiece data_bytes(provider.ConsumeRemainingBytes());
-    GURL data_url(data_bytes);
+    std::string data_url_string =
+        std::string("data:") + provider.ConsumeRemainingBytesAsString();
+    GURL data_url(data_url_string);
     if (!data_url.is_valid())
       data_url = GURL("data:text/html;charset=utf-8,<p>test</p>");
 
     // Create a URLRequest with the given data URL and start reading
     // from it.
-    std::unique_ptr<net::URLRequest> request =
-        context_.CreateRequest(data_url, net::DEFAULT_PRIORITY, this);
+    std::unique_ptr<net::URLRequest> request = context_.CreateRequest(
+        data_url, net::DEFAULT_PRIORITY, this, TRAFFIC_ANNOTATION_FOR_TESTS);
     if (use_range) {
-      std::string range_str = range.as_string();
-      if (!net::HttpUtil::IsValidHeaderValue(range_str))
-        range_str = "bytes=3-";
-      request->SetExtraRequestHeaderByName("Range", range_str, true);
+      if (!net::HttpUtil::IsValidHeaderValue(range))
+        range = "bytes=3-";
+      request->SetExtraRequestHeaderByName("Range", range, true);
     }
 
     // Block the thread while the request is read.
@@ -96,24 +102,21 @@ class URLRequestDataJobFuzzerHarness : public net::URLRequest::Delegate {
   }
 
   void ReadFromRequest(net::URLRequest* request) {
-    bool sync = false;
+    int bytes_read = 0;
     do {
-      // If possible, pop the next read size. If none exists, then this should
-      // be the last call to Read.
-      bool using_populated_read = read_lengths_.size() > 0;
-      size_t read_size = 1;
-      if (using_populated_read) {
+      size_t read_size = 32 * 1024;
+      // If possible, pop the next read size.
+      if (read_lengths_.size() > 0) {
         read_size = read_lengths_.back();
         read_lengths_.pop_back();
       }
+      if (read_size > static_cast<size_t>(buf_->size()))
+        buf_ = base::MakeRefCounted<net::IOBufferWithSize>(read_size);
 
-      int bytes_read = 0;
-      sync = request->Read(buf_.get(), read_size, &bytes_read);
-      // No more populated reads implies !bytes_read.
-      DCHECK(using_populated_read || !bytes_read);
-    } while (sync);
+      bytes_read = request->Read(buf_.get(), read_size);
+    } while (bytes_read > 0);
 
-    if (!request->status().is_io_pending())
+    if (bytes_read != net::ERR_IO_PENDING)
       QuitLoop();
   }
 
@@ -129,22 +132,23 @@ class URLRequestDataJobFuzzerHarness : public net::URLRequest::Delegate {
   void OnSSLCertificateError(net::URLRequest* request,
                              const net::SSLInfo& ssl_info,
                              bool fatal) override {}
-  void OnBeforeNetworkStart(net::URLRequest* request, bool* defer) override {}
-  void OnResponseStarted(net::URLRequest* request) override {
-    DCHECK(!request->status().is_io_pending());
+  void OnResponseStarted(net::URLRequest* request, int net_error) override {
     DCHECK(buf_.get());
     DCHECK(read_loop_);
-    if (request->status().is_success()) {
+    DCHECK_NE(net::ERR_IO_PENDING, net_error);
+
+    if (net_error == net::OK) {
       ReadFromRequest(request);
     } else {
       QuitLoop();
     }
   }
   void OnReadCompleted(net::URLRequest* request, int bytes_read) override {
-    DCHECK(!request->status().is_io_pending());
+    DCHECK_NE(net::ERR_IO_PENDING, bytes_read);
     DCHECK(buf_.get());
     DCHECK(read_loop_);
-    if (request->status().is_success() && bytes_read > 0) {
+
+    if (bytes_read > 0) {
       ReadFromRequest(request);
     } else {
       QuitLoop();
@@ -154,12 +158,13 @@ class URLRequestDataJobFuzzerHarness : public net::URLRequest::Delegate {
  private:
   friend struct base::DefaultSingletonTraits<URLRequestDataJobFuzzerHarness>;
 
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+
   net::TestURLRequestContext context_;
   net::URLRequestJobFactoryImpl job_factory_;
   std::vector<size_t> read_lengths_;
-  scoped_refptr<net::IOBuffer> buf_;
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
-  base::RunLoop* read_loop_;
+  scoped_refptr<net::IOBufferWithSize> buf_;
+  base::RunLoop* read_loop_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(URLRequestDataJobFuzzerHarness);
 };

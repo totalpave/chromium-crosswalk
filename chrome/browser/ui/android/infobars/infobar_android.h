@@ -7,13 +7,9 @@
 
 #include <string>
 
-#include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "components/infobars/core/infobar.h"
-
-class InfoBarService;
 
 namespace infobars {
 class InfoBarDelegate;
@@ -33,9 +29,6 @@ class InfoBarAndroid : public infobars::InfoBar {
     // Translate infobar
     ACTION_TRANSLATE = 3,
     ACTION_TRANSLATE_SHOW_ORIGINAL = 4,
-    // Download overwrite infobar
-    ACTION_OVERWRITE = 5,
-    ACTION_CREATE_NEW_FILE = 6,
   };
 
   explicit InfoBarAndroid(std::unique_ptr<infobars::InfoBarDelegate> delegate);
@@ -47,13 +40,15 @@ class InfoBarAndroid : public infobars::InfoBar {
 
   virtual void SetJavaInfoBar(
       const base::android::JavaRef<jobject>& java_info_bar);
-  jobject GetJavaInfoBar();
+  const base::android::JavaRef<jobject>& GetJavaInfoBar();
   bool HasSetJavaInfoBar() const;
 
   // Tells the Java-side counterpart of this InfoBar to point to the replacement
   // InfoBar instead of this one.
   void ReassignJavaInfoBar(InfoBarAndroid* replacement);
 
+  int GetInfoBarIdentifier(JNIEnv* env,
+                           const base::android::JavaParamRef<jobject>& obj);
   virtual void OnLinkClicked(JNIEnv* env,
                              const base::android::JavaParamRef<jobject>& obj) {}
   void OnButtonClicked(JNIEnv* env,
@@ -85,8 +80,5 @@ class InfoBarAndroid : public infobars::InfoBar {
 
   DISALLOW_COPY_AND_ASSIGN(InfoBarAndroid);
 };
-
-// Registers the NativeInfoBar's native methods through JNI.
-bool RegisterNativeInfoBar(JNIEnv* env);
 
 #endif  // CHROME_BROWSER_UI_ANDROID_INFOBARS_INFOBAR_ANDROID_H_

@@ -20,11 +20,14 @@
 #include "components/search/search.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/user_prefs/user_prefs.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/buildflags/buildflags.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/drop_target_event.h"
+#include "ui/base/material_design/material_design_controller.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/api/commands/command_service.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_set.h"
@@ -33,12 +36,10 @@
 #if defined(TOOLKIT_VIEWS)
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/paint_vector_icon.h"
-#include "ui/gfx/vector_icons_public.h"
 #endif
 
-#if defined(OS_WIN)
+#if defined(OS_WIN) || defined(OS_MACOSX)
 #include "chrome/grit/theme_resources.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
 #endif
 
@@ -59,7 +60,7 @@ enum BookmarkShortcutDisposition {
 // Indicates how the bookmark shortcut has been changed by extensions associated
 // with |profile|, if at all.
 BookmarkShortcutDisposition GetBookmarkShortcutDisposition(Profile* profile) {
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions::CommandService* command_service =
       extensions::CommandService::Get(profile);
 
@@ -94,8 +95,8 @@ BookmarkShortcutDisposition GetBookmarkShortcutDisposition(Profile* profile) {
 }
 
 #if defined(TOOLKIT_VIEWS) && !defined(OS_WIN)
-gfx::ImageSkia GetFolderIcon(gfx::VectorIconId id, SkColor text_color) {
-  return gfx::CreateVectorIcon(id,
+gfx::ImageSkia GetFolderIcon(const gfx::VectorIcon& icon, SkColor text_color) {
+  return gfx::CreateVectorIcon(icon,
                                color_utils::DeriveDefaultIconColor(text_color));
 }
 #endif
@@ -126,13 +127,20 @@ void ToggleBookmarkBarWhenVisible(content::BrowserContext* browser_context) {
 
 base::string16 FormatBookmarkURLForDisplay(const GURL& url) {
   // Because this gets re-parsed by FixupURL(), it's safe to omit the scheme
-  // and trailing slash, and unescape most characters.  However, it's
+  // and trailing slash, and unescape most characters. However, it's
   // important not to drop any username/password, or unescape anything that
   // changes the URL's meaning.
-  return url_formatter::FormatUrl(
-      url, url_formatter::kFormatUrlOmitAll &
-               ~url_formatter::kFormatUrlOmitUsernamePassword,
-      net::UnescapeRule::SPACES, nullptr, nullptr, nullptr);
+  url_formatter::FormatUrlTypes format_types =
+      url_formatter::kFormatUrlOmitDefaults &
+      ~url_formatter::kFormatUrlOmitUsernamePassword;
+
+  // If username is present, we must not omit the scheme because FixupURL() will
+  // subsequently interpret the username as a scheme. crbug.com/639126
+  if (url.has_username())
+    format_types &= ~url_formatter::kFormatUrlOmitHTTP;
+
+  return url_formatter::FormatUrl(url, format_types, net::UnescapeRule::SPACES,
+                                  nullptr, nullptr, nullptr);
 }
 
 bool IsAppsShortcutEnabled(Profile* profile) {
@@ -141,8 +149,8 @@ bool IsAppsShortcutEnabled(Profile* profile) {
   if (profile->IsLegacySupervised())
     return false;
 
-#if defined(USE_ASH)
-  // Don't show the apps shortcut in ash since the app launcher is enabled.
+#if defined(OS_CHROMEOS)
+  // Chrome OS uses the app list / app launcher.
   return false;
 #else
   return search::IsInstantExtendedAPIEnabled() && !profile->IsOffTheRecord();
@@ -161,7 +169,7 @@ bool ShouldRemoveBookmarkThisPageUI(Profile* profile) {
 }
 
 bool ShouldRemoveBookmarkOpenPagesUI(Profile* profile) {
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions::ExtensionRegistry* registry =
       extensions::ExtensionRegistry::Get(profile);
   if (!registry)
@@ -184,8 +192,8 @@ bool ShouldRemoveBookmarkOpenPagesUI(Profile* profile) {
 int GetBookmarkDragOperation(content::BrowserContext* browser_context,
                              const BookmarkNode* node) {
   PrefService* prefs = user_prefs::UserPrefs::Get(browser_context);
-  Profile* profile = Profile::FromBrowserContext(browser_context);
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(profile);
+  BookmarkModel* model =
+      BookmarkModelFactory::GetForBrowserContext(browser_context);
 
   int move = ui::DragDropTypes::DRAG_MOVE;
   if (!prefs->GetBoolean(bookmarks::prefs::kEditBookmarksEnabled) ||
@@ -224,7 +232,7 @@ int GetBookmarkDropOperation(Profile* profile,
   if (!IsValidBookmarkDropLocation(profile, data, parent, index))
     return ui::DragDropTypes::DRAG_NONE;
 
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(profile);
+  BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile);
   if (!model->client()->CanBeEditedByUser(parent))
     return ui::DragDropTypes::DRAG_NONE;
 
@@ -257,7 +265,7 @@ bool IsValidBookmarkDropLocation(Profile* profile,
   if (!data.is_valid())
     return false;
 
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(profile);
+  BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile);
   if (!model->client()->CanBeEditedByUser(drop_parent))
     return false;
 
@@ -289,17 +297,18 @@ gfx::ImageSkia GetBookmarkFolderIcon(SkColor text_color) {
 #if defined(OS_WIN)
   return *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
       IDR_BOOKMARK_BAR_FOLDER);
+#elif defined(OS_MACOSX)
+  int resource_id = color_utils::IsDark(text_color)
+                        ? IDR_BOOKMARK_BAR_FOLDER
+                        : IDR_BOOKMARK_BAR_FOLDER_WHITE;
+  return *ui::ResourceBundle::GetSharedInstance()
+              .GetNativeImageNamed(resource_id)
+              .ToImageSkia();
 #else
-  return GetFolderIcon(gfx::VectorIconId::FOLDER, text_color);
-#endif
-}
-
-gfx::ImageSkia GetBookmarkSupervisedFolderIcon(SkColor text_color) {
-#if defined(OS_WIN)
-  return *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-      IDR_BOOKMARK_BAR_FOLDER_SUPERVISED);
-#else
-  return GetFolderIcon(gfx::VectorIconId::FOLDER_SUPERVISED, text_color);
+  return GetFolderIcon(ui::MaterialDesignController::touch_ui()
+                           ? vector_icons::kFolderTouchIcon
+                           : vector_icons::kFolderIcon,
+                       text_color);
 #endif
 }
 
@@ -308,7 +317,10 @@ gfx::ImageSkia GetBookmarkManagedFolderIcon(SkColor text_color) {
   return *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
       IDR_BOOKMARK_BAR_FOLDER_MANAGED);
 #else
-  return GetFolderIcon(gfx::VectorIconId::FOLDER_MANAGED, text_color);
+  return GetFolderIcon(ui::MaterialDesignController::touch_ui()
+                           ? vector_icons::kFolderManagedTouchIcon
+                           : vector_icons::kFolderManagedIcon,
+                       text_color);
 #endif
 }
 #endif

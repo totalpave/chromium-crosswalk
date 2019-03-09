@@ -3,9 +3,7 @@
 // found in the LICENSE file.
 
 // This class represents contextual information (cookies, cache, etc.)
-// that's useful when processing resource requests.
-// The class is reference-counted so that it can be cleaned up after any
-// requests that are using it have been completed.
+// that's necessary when processing resource requests.
 
 #ifndef NET_URL_REQUEST_URL_REQUEST_CONTEXT_H_
 #define NET_URL_REQUEST_URL_REQUEST_CONTEXT_H_
@@ -17,15 +15,22 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/threading/thread_checker.h"
+#include "base/trace_event/memory_dump_provider.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_server_properties.h"
 #include "net/http/transport_security_state.h"
-#include "net/log/net_log.h"
-#include "net/ssl/ssl_config_service.h"
+#include "net/net_buildflags.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/url_request.h"
+
+namespace base {
+namespace trace_event {
+class ProcessMemoryDump;
+}
+}
 
 namespace net {
 class CertVerifier;
@@ -37,24 +42,32 @@ class HostResolver;
 class HttpAuthHandlerFactory;
 class HttpTransactionFactory;
 class HttpUserAgentSettings;
+class NetLog;
 class NetworkDelegate;
 class NetworkQualityEstimator;
-class SdchManager;
-class ProxyService;
+class ProxyDelegate;
+class ProxyResolutionService;
+class SSLConfigService;
 class URLRequest;
-class URLRequestBackoffManager;
 class URLRequestJobFactory;
 class URLRequestThrottlerManager;
 
+#if BUILDFLAG(ENABLE_REPORTING)
+class NetworkErrorLoggingService;
+class ReportingService;
+#endif  // BUILDFLAG(ENABLE_REPORTING)
+
 // Subclass to provide application-specific context for URLRequest
-// instances. Note that URLRequestContext typically does not provide storage for
-// these member variables, since they may be shared. For the ones that aren't
-// shared, URLRequestContextStorage can be helpful in defining their storage.
+// instances. URLRequestContext does not own these member variables, since they
+// may be shared with other contexts. URLRequestContextStorage can be used for
+// automatic lifetime management. Most callers should use an existing
+// URLRequestContext rather than creating a new one, as guaranteeing that the
+// URLRequestContext is destroyed before its members can be difficult.
 class NET_EXPORT URLRequestContext
-    : NON_EXPORTED_BASE(public base::NonThreadSafe) {
+    : public base::trace_event::MemoryDumpProvider {
  public:
   URLRequestContext();
-  virtual ~URLRequestContext();
+  ~URLRequestContext() override;
 
   // Copies the state from |other| into this context.
   void CopyFrom(const URLRequestContext* other);
@@ -63,14 +76,32 @@ class NET_EXPORT URLRequestContext
   // session.
   const HttpNetworkSession::Params* GetNetworkSessionParams() const;
 
+  // May return nullptr if this context doesn't have an associated network
+  // session.
+  const HttpNetworkSession::Context* GetNetworkSessionContext() const;
+
+  // This function should not be used in Chromium, please use the version with
+  // NetworkTrafficAnnotationTag in the future.
   std::unique_ptr<URLRequest> CreateRequest(
       const GURL& url,
       RequestPriority priority,
       URLRequest::Delegate* delegate) const;
 
-  NetLog* net_log() const {
-    return net_log_;
-  }
+  // |traffic_annotation| is metadata about the network traffic send via this
+  // URLRequest, see net::DefineNetworkTrafficAnnotation. Note that:
+  // - net provides the API for tagging requests with an opaque identifier.
+  // - tools/traffic_annotation/traffic_annotation.proto contains the Chrome
+  // specific .proto describing the verbose annotation format that Chrome's
+  // callsites are expected to follow.
+  // - tools/traffic_annotation/ contains sample and template for annotation and
+  // tools will be added for verification following crbug.com/690323.
+  std::unique_ptr<URLRequest> CreateRequest(
+      const GURL& url,
+      RequestPriority priority,
+      URLRequest::Delegate* delegate,
+      NetworkTrafficAnnotationTag traffic_annotation) const;
+
+  NetLog* net_log() const { return net_log_; }
 
   void set_net_log(NetLog* net_log) {
     net_log_ = net_log;
@@ -102,15 +133,21 @@ class NET_EXPORT URLRequestContext
   }
 
   // Get the proxy service for this context.
-  ProxyService* proxy_service() const { return proxy_service_; }
-  void set_proxy_service(ProxyService* proxy_service) {
-    proxy_service_ = proxy_service;
+  ProxyResolutionService* proxy_resolution_service() const {
+    return proxy_resolution_service_;
+  }
+  void set_proxy_resolution_service(
+      ProxyResolutionService* proxy_resolution_service) {
+    proxy_resolution_service_ = proxy_resolution_service;
+  }
+
+  ProxyDelegate* proxy_delegate() const { return proxy_delegate_; }
+  void set_proxy_delegate(ProxyDelegate* proxy_delegate) {
+    proxy_delegate_ = proxy_delegate;
   }
 
   // Get the ssl config service for this context.
-  SSLConfigService* ssl_config_service() const {
-    return ssl_config_service_.get();
-  }
+  SSLConfigService* ssl_config_service() const { return ssl_config_service_; }
   void set_ssl_config_service(SSLConfigService* service) {
     ssl_config_service_ = service;
   }
@@ -183,18 +220,6 @@ class NET_EXPORT URLRequestContext
     throttler_manager_ = throttler_manager;
   }
 
-  // May return nullptr.
-  URLRequestBackoffManager* backoff_manager() const { return backoff_manager_; }
-  void set_backoff_manager(URLRequestBackoffManager* backoff_manager) {
-    backoff_manager_ = backoff_manager;
-  }
-
-  // May return nullptr.
-  SdchManager* sdch_manager() const { return sdch_manager_; }
-  void set_sdch_manager(SdchManager* sdch_manager) {
-    sdch_manager_ = sdch_manager;
-  }
-
   // Gets the URLRequest objects that hold a reference to this
   // URLRequestContext.
   std::set<const URLRequest*>* url_requests() const {
@@ -212,7 +237,7 @@ class NET_EXPORT URLRequestContext
     return http_user_agent_settings_;
   }
   void set_http_user_agent_settings(
-      HttpUserAgentSettings* http_user_agent_settings) {
+      const HttpUserAgentSettings* http_user_agent_settings) {
     http_user_agent_settings_ = http_user_agent_settings;
   }
 
@@ -226,16 +251,48 @@ class NET_EXPORT URLRequestContext
     network_quality_estimator_ = network_quality_estimator;
   }
 
+#if BUILDFLAG(ENABLE_REPORTING)
+  ReportingService* reporting_service() const { return reporting_service_; }
+  void set_reporting_service(ReportingService* reporting_service) {
+    reporting_service_ = reporting_service;
+  }
+
+  NetworkErrorLoggingService* network_error_logging_service() const {
+    return network_error_logging_service_;
+  }
+  void set_network_error_logging_service(
+      NetworkErrorLoggingService* network_error_logging_service) {
+    network_error_logging_service_ = network_error_logging_service;
+  }
+#endif  // BUILDFLAG(ENABLE_REPORTING)
+
   void set_enable_brotli(bool enable_brotli) { enable_brotli_ = enable_brotli; }
 
   bool enable_brotli() const { return enable_brotli_; }
 
-  void set_enable_referrer_policy_header(bool enable_referrer_policy_header) {
-    enable_referrer_policy_header_ = enable_referrer_policy_header;
+  // Sets the |check_cleartext_permitted| flag, which controls whether to check
+  // system policy before allowing a cleartext http or ws request.
+  void set_check_cleartext_permitted(bool check_cleartext_permitted) {
+    check_cleartext_permitted_ = check_cleartext_permitted;
   }
 
-  bool enable_referrer_policy_header() const {
-    return enable_referrer_policy_header_;
+  // Returns current value of the |check_cleartext_permitted| flag.
+  bool check_cleartext_permitted() const { return check_cleartext_permitted_; }
+
+  // Sets a name for this URLRequestContext. Currently the name is used in
+  // MemoryDumpProvier to annotate memory usage. The name does not need to be
+  // unique.
+  void set_name(const std::string& name) { name_ = name; }
+  const std::string& name() const { return name_; }
+
+  // MemoryDumpProvider implementation:
+  // This is reported as
+  // "memory:chrome:all_processes:reported_by_chrome:net:effective_size_avg."
+  bool OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
+                    base::trace_event::ProcessMemoryDump* pmd) override;
+
+  void AssertCalledOnValidThread() {
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   }
 
  private:
@@ -251,11 +308,12 @@ class NET_EXPORT URLRequestContext
   CertVerifier* cert_verifier_;
   ChannelIDService* channel_id_service_;
   HttpAuthHandlerFactory* http_auth_handler_factory_;
-  ProxyService* proxy_service_;
-  scoped_refptr<SSLConfigService> ssl_config_service_;
+  ProxyResolutionService* proxy_resolution_service_;
+  ProxyDelegate* proxy_delegate_;
+  SSLConfigService* ssl_config_service_;
   NetworkDelegate* network_delegate_;
   HttpServerProperties* http_server_properties_;
-  HttpUserAgentSettings* http_user_agent_settings_;
+  const HttpUserAgentSettings* http_user_agent_settings_;
   CookieStore* cookie_store_;
   TransportSecurityState* transport_security_state_;
   CTVerifier* cert_transparency_verifier_;
@@ -263,9 +321,11 @@ class NET_EXPORT URLRequestContext
   HttpTransactionFactory* http_transaction_factory_;
   const URLRequestJobFactory* job_factory_;
   URLRequestThrottlerManager* throttler_manager_;
-  URLRequestBackoffManager* backoff_manager_;
-  SdchManager* sdch_manager_;
   NetworkQualityEstimator* network_quality_estimator_;
+#if BUILDFLAG(ENABLE_REPORTING)
+  ReportingService* reporting_service_;
+  NetworkErrorLoggingService* network_error_logging_service_;
+#endif  // BUILDFLAG(ENABLE_REPORTING)
 
   // ---------------------------------------------------------------------------
   // Important: When adding any new members below, consider whether they need to
@@ -276,11 +336,16 @@ class NET_EXPORT URLRequestContext
 
   // Enables Brotli Content-Encoding support.
   bool enable_brotli_;
+  // Enables checking system policy before allowing a cleartext http or ws
+  // request. Only used on Android.
+  bool check_cleartext_permitted_;
 
-  // Enables parsing and applying the Referrer-Policy header when
-  // following redirects. TODO(estark): remove this flag once
-  // Referrer-Policy ships (https://crbug.com/619228).
-  bool enable_referrer_policy_header_;
+  // An optional name which can be set to describe this URLRequestContext.
+  // Used in MemoryDumpProvier to annotate memory usage. The name does not need
+  // to be unique.
+  std::string name_;
+
+  THREAD_CHECKER(thread_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(URLRequestContext);
 };

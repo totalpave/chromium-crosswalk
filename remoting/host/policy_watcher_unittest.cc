@@ -16,7 +16,7 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "components/policy/core/common/fake_async_policy_loader.h"
-#include "policy/policy_constants.h"
+#include "components/policy/policy_constants.h"
 #include "remoting/host/dns_blackhole_checker.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -45,7 +45,7 @@ MATCHER_P(IsPolicies, dict, "") {
 
 class MockPolicyCallback {
  public:
-  MockPolicyCallback(){};
+  MockPolicyCallback() = default;
 
   // TODO(lukasza): gmock cannot mock a method taking std::unique_ptr<T>...
   MOCK_METHOD1(OnPolicyUpdatePtr, void(const base::DictionaryValue* policies));
@@ -71,16 +71,32 @@ class PolicyWatcherTest : public testing::Test {
     // Retaining a raw pointer to keep control over policy contents.
     policy_loader_ =
         new policy::FakeAsyncPolicyLoader(base::ThreadTaskRunnerHandle::Get());
-    policy_watcher_ =
-        PolicyWatcher::CreateFromPolicyLoader(base::WrapUnique(policy_loader_));
+    policy_watcher_ = PolicyWatcher::CreateFromPolicyLoaderForTesting(
+        base::WrapUnique(policy_loader_));
+
+    base::ListValue host_domain;
+    host_domain.AppendString(kHostDomain);
+    base::ListValue client_domain;
+    client_domain.AppendString(kClientDomain);
+    base::ListValue multiple_host_domains;
+    multiple_host_domains.AppendString("a.com");
+    multiple_host_domains.AppendString("b.com");
+    multiple_host_domains.AppendString("c.com");
+    base::ListValue multiple_client_domains;
+    multiple_client_domains.AppendString("d.com");
+    multiple_client_domains.AppendString("e.com");
+    multiple_client_domains.AppendString("f.com");
 
     nat_true_.SetBoolean(key::kRemoteAccessHostFirewallTraversal, true);
     nat_false_.SetBoolean(key::kRemoteAccessHostFirewallTraversal, false);
     nat_one_.SetInteger(key::kRemoteAccessHostFirewallTraversal, 1);
     nat_one_domain_full_.SetInteger(key::kRemoteAccessHostFirewallTraversal, 1);
-    nat_one_domain_full_.SetString(key::kRemoteAccessHostDomain, kHostDomain);
-    domain_empty_.SetString(key::kRemoteAccessHostDomain, std::string());
-    domain_full_.SetString(key::kRemoteAccessHostDomain, kHostDomain);
+    nat_one_domain_full_.Set(key::kRemoteAccessHostDomainList,
+                             host_domain.CreateDeepCopy());
+    domain_empty_.Set(key::kRemoteAccessHostDomainList,
+                      std::make_unique<base::ListValue>());
+    domain_full_.Set(key::kRemoteAccessHostDomainList,
+                     host_domain.CreateDeepCopy());
     SetDefaults(nat_true_others_default_);
     nat_true_others_default_.SetBoolean(key::kRemoteAccessHostFirewallTraversal,
                                         true);
@@ -88,30 +104,32 @@ class PolicyWatcherTest : public testing::Test {
     nat_false_others_default_.SetBoolean(
         key::kRemoteAccessHostFirewallTraversal, false);
     SetDefaults(domain_empty_others_default_);
-    domain_empty_others_default_.SetString(key::kRemoteAccessHostDomain,
-                                           std::string());
+    domain_empty_others_default_.Set(key::kRemoteAccessHostDomainList,
+                                     std::make_unique<base::ListValue>());
     SetDefaults(domain_full_others_default_);
-    domain_full_others_default_.SetString(key::kRemoteAccessHostDomain,
-                                          kHostDomain);
+    domain_full_others_default_.Set(key::kRemoteAccessHostDomainList,
+                                    host_domain.CreateDeepCopy());
     nat_true_domain_empty_.SetBoolean(key::kRemoteAccessHostFirewallTraversal,
                                       true);
-    nat_true_domain_empty_.SetString(key::kRemoteAccessHostDomain,
-                                     std::string());
+    nat_true_domain_empty_.Set(key::kRemoteAccessHostDomainList,
+                               std::make_unique<base::ListValue>());
     nat_true_domain_full_.SetBoolean(key::kRemoteAccessHostFirewallTraversal,
                                      true);
-    nat_true_domain_full_.SetString(key::kRemoteAccessHostDomain, kHostDomain);
+    nat_true_domain_full_.Set(key::kRemoteAccessHostDomainList,
+                              host_domain.CreateDeepCopy());
     nat_false_domain_empty_.SetBoolean(key::kRemoteAccessHostFirewallTraversal,
                                        false);
-    nat_false_domain_empty_.SetString(key::kRemoteAccessHostDomain,
-                                      std::string());
+    nat_false_domain_empty_.Set(key::kRemoteAccessHostDomainList,
+                                std::make_unique<base::ListValue>());
     nat_false_domain_full_.SetBoolean(key::kRemoteAccessHostFirewallTraversal,
                                       false);
-    nat_false_domain_full_.SetString(key::kRemoteAccessHostDomain, kHostDomain);
+    nat_false_domain_full_.Set(key::kRemoteAccessHostDomainList,
+                               host_domain.CreateDeepCopy());
     SetDefaults(nat_true_domain_empty_others_default_);
     nat_true_domain_empty_others_default_.SetBoolean(
         key::kRemoteAccessHostFirewallTraversal, true);
-    nat_true_domain_empty_others_default_.SetString(
-        key::kRemoteAccessHostDomain, std::string());
+    nat_true_domain_empty_others_default_.Set(
+        key::kRemoteAccessHostDomainList, std::make_unique<base::ListValue>());
     unknown_policies_.SetString("UnknownPolicyOne", std::string());
     unknown_policies_.SetString("UnknownPolicyTwo", std::string());
     unknown_policies_.SetBoolean("RemoteAccessHostUnknownPolicyThree", true);
@@ -129,8 +147,8 @@ class PolicyWatcherTest : public testing::Test {
     port_range_malformed_.SetString(key::kRemoteAccessHostUdpPortRange,
                                     "malformed");
     port_range_malformed_domain_full_.MergeDictionary(&port_range_malformed_);
-    port_range_malformed_domain_full_.SetString(key::kRemoteAccessHostDomain,
-                                                kHostDomain);
+    port_range_malformed_domain_full_.Set(key::kRemoteAccessHostDomainList,
+                                          host_domain.CreateDeepCopy());
 
     curtain_true_.SetBoolean(key::kRemoteAccessHostRequireCurtain, true);
     curtain_false_.SetBoolean(key::kRemoteAccessHostRequireCurtain, false);
@@ -148,6 +166,41 @@ class PolicyWatcherTest : public testing::Test {
     third_party_auth_cert_empty_.MergeDictionary(&third_party_auth_partial_);
     third_party_auth_cert_empty_.SetString(
         key::kRemoteAccessHostTokenValidationCertificateIssuer, "");
+    remote_assistance_uiaccess_true_.SetBoolean(
+        key::kRemoteAccessHostAllowUiAccessForRemoteAssistance, true);
+    remote_assistance_uiaccess_false_.SetBoolean(
+        key::kRemoteAccessHostAllowUiAccessForRemoteAssistance, false);
+
+    deprecated_policies_.SetString(key::kRemoteAccessHostDomain, kHostDomain);
+    deprecated_policies_.SetString(key::kRemoteAccessHostClientDomain,
+                                   kClientDomain);
+    // Deprecated policies should get converted if new ones aren't present.
+    SetDefaults(deprecated_policies_expected_);
+    deprecated_policies_expected_.Set(key::kRemoteAccessHostDomainList,
+                                      host_domain.CreateDeepCopy());
+    deprecated_policies_expected_.Set(key::kRemoteAccessHostClientDomainList,
+                                      client_domain.CreateDeepCopy());
+
+    deprecated_and_new_policies_.SetString(key::kRemoteAccessHostDomain,
+                                           kHostDomain);
+    deprecated_and_new_policies_.SetString(key::kRemoteAccessHostClientDomain,
+                                           kClientDomain);
+    deprecated_and_new_policies_.Set(key::kRemoteAccessHostDomainList,
+                                     multiple_host_domains.CreateDeepCopy());
+    deprecated_and_new_policies_.Set(key::kRemoteAccessHostClientDomainList,
+                                     multiple_client_domains.CreateDeepCopy());
+    // Deprecated policies should just be dropped in new ones are present.
+    SetDefaults(deprecated_and_new_policies_expected_);
+    deprecated_and_new_policies_expected_.Set(
+        key::kRemoteAccessHostDomainList,
+        multiple_host_domains.CreateDeepCopy());
+    deprecated_and_new_policies_expected_.Set(
+        key::kRemoteAccessHostClientDomainList,
+        multiple_client_domains.CreateDeepCopy());
+
+    // Empty strings should be treated as not set.
+    deprecated_empty_strings_.SetString(key::kRemoteAccessHostDomain, "");
+    deprecated_empty_strings_.SetString(key::kRemoteAccessHostClientDomain, "");
   }
 
   void TearDown() override {
@@ -186,6 +239,7 @@ class PolicyWatcherTest : public testing::Test {
     return policy_watcher_->GetPolicySchema();
   }
 
+  // TODO(jamiewalch): Update this to use PolicyWatcher::GetDefaultValues()
   const base::DictionaryValue& GetDefaultValues() {
     return *(policy_watcher_->default_values_);
   }
@@ -193,6 +247,7 @@ class PolicyWatcherTest : public testing::Test {
   MOCK_METHOD0(PostPolicyWatcherShutdown, void());
 
   static const char* kHostDomain;
+  static const char* kClientDomain;
   static const char* kPortRange;
   base::MessageLoop message_loop_;
   MockPolicyCallback mock_policy_callback_;
@@ -238,14 +293,23 @@ class PolicyWatcherTest : public testing::Test {
   base::DictionaryValue third_party_auth_full_;
   base::DictionaryValue third_party_auth_partial_;
   base::DictionaryValue third_party_auth_cert_empty_;
+  base::DictionaryValue remote_assistance_uiaccess_true_;
+  base::DictionaryValue remote_assistance_uiaccess_false_;
+  base::DictionaryValue deprecated_policies_;
+  base::DictionaryValue deprecated_policies_expected_;
+  base::DictionaryValue deprecated_and_new_policies_;
+  base::DictionaryValue deprecated_and_new_policies_expected_;
+  base::DictionaryValue deprecated_empty_strings_;
 
  private:
   void SetDefaults(base::DictionaryValue& dict) {
     dict.SetBoolean(key::kRemoteAccessHostFirewallTraversal, true);
     dict.SetBoolean(key::kRemoteAccessHostAllowRelayedConnection, true);
     dict.SetString(key::kRemoteAccessHostUdpPortRange, "");
-    dict.SetString(key::kRemoteAccessHostClientDomain, std::string());
-    dict.SetString(key::kRemoteAccessHostDomain, std::string());
+    dict.Set(key::kRemoteAccessHostClientDomainList,
+             std::make_unique<base::ListValue>());
+    dict.Set(key::kRemoteAccessHostDomainList,
+             std::make_unique<base::ListValue>());
     dict.SetBoolean(key::kRemoteAccessHostMatchUsername, false);
     dict.SetString(key::kRemoteAccessHostTalkGadgetPrefix,
                    kDefaultHostTalkGadgetPrefix);
@@ -255,6 +319,11 @@ class PolicyWatcherTest : public testing::Test {
     dict.SetString(key::kRemoteAccessHostTokenValidationCertificateIssuer, "");
     dict.SetBoolean(key::kRemoteAccessHostAllowClientPairing, true);
     dict.SetBoolean(key::kRemoteAccessHostAllowGnubbyAuth, true);
+    dict.SetBoolean(key::kRemoteAccessHostAllowUiAccessForRemoteAssistance,
+                    false);
+#if !defined(OS_CHROMEOS)
+    dict.SetBoolean(key::kRemoteAccessHostAllowFileTransfer, true);
+#endif
 
     ASSERT_THAT(&dict, IsPolicies(&GetDefaultValues()))
         << "Sanity check that defaults expected by the test code "
@@ -263,6 +332,7 @@ class PolicyWatcherTest : public testing::Test {
 };
 
 const char* PolicyWatcherTest::kHostDomain = "google.com";
+const char* PolicyWatcherTest::kClientDomain = "client.com";
 const char* PolicyWatcherTest::kPortRange = "12400-12409";
 
 TEST_F(PolicyWatcherTest, None) {
@@ -453,7 +523,7 @@ TEST_P(MisspelledPolicyTest, WarningLogged) {
   mock_log.StopCapturingLogs();
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     PolicyWatcherTest,
     MisspelledPolicyTest,
     ::testing::Values("RemoteAccessHostDomainX",
@@ -489,6 +559,26 @@ TEST_F(PolicyWatcherTest, GnubbyAuth) {
   StartWatching();
   SetPolicies(gnubby_auth_false_);
   SetPolicies(gnubby_auth_true_);
+}
+
+TEST_F(PolicyWatcherTest, RemoteAssistanceUiAccess) {
+  testing::InSequence sequence;
+  EXPECT_CALL(mock_policy_callback_,
+              OnPolicyUpdatePtr(IsPolicies(&nat_true_others_default_)));
+#if defined(OS_WIN)
+  // This setting only affects Windows, it is ignored on other platforms so the
+  // 2 SetPolicies calls won't result in any calls to OnPolicyUpdate.
+  EXPECT_CALL(mock_policy_callback_,
+              OnPolicyUpdatePtr(IsPolicies(&remote_assistance_uiaccess_true_)));
+  EXPECT_CALL(
+      mock_policy_callback_,
+      OnPolicyUpdatePtr(IsPolicies(&remote_assistance_uiaccess_false_)));
+#endif  // defined(OS_WIN)
+
+  SetPolicies(empty_);
+  StartWatching();
+  SetPolicies(remote_assistance_uiaccess_true_);
+  SetPolicies(remote_assistance_uiaccess_false_);
 }
 
 TEST_F(PolicyWatcherTest, Relay) {
@@ -610,12 +700,15 @@ TEST_F(PolicyWatcherTest, PolicySchemaAndPolicyWatcherShouldBeInSync) {
   std::map<std::string, base::Value::Type> expected_schema;
   for (base::DictionaryValue::Iterator i(GetDefaultValues()); !i.IsAtEnd();
        i.Advance()) {
-    expected_schema[i.key()] = i.value().GetType();
+    expected_schema[i.key()] = i.value().type();
   }
 #if defined(OS_WIN)
   // RemoteAccessHostMatchUsername is marked in policy_templates.json as not
   // supported on Windows and therefore is (by design) excluded from the schema.
   expected_schema.erase(key::kRemoteAccessHostMatchUsername);
+#else  // !defined(OS_WIN)
+  // RemoteAssistanceHostAllowUiAccess does not exist on non-Windows platforms.
+  expected_schema.erase(key::kRemoteAccessHostAllowUiAccessForRemoteAssistance);
 #endif
 
   std::map<std::string, base::Value::Type> actual_schema;
@@ -626,6 +719,11 @@ TEST_F(PolicyWatcherTest, PolicySchemaAndPolicyWatcherShouldBeInSync) {
     if (key.find("RemoteAccessHost") == std::string::npos) {
       // For now PolicyWatcher::GetPolicySchema() mixes Chrome and Chromoting
       // policies, so we have to skip them here.
+      continue;
+    }
+    if (key == policy::key::kRemoteAccessHostDomain ||
+        key == policy::key::kRemoteAccessHostClientDomain) {
+      // These policies are deprecated and get removed during normalization
       continue;
     }
     actual_schema[key] = it.schema().type();
@@ -643,14 +741,60 @@ TEST_F(PolicyWatcherTest, SchemaTypeCheck) {
   const policy::Schema string_schema =
       schema->GetKnownProperty("RemoteAccessHostDomain");
   EXPECT_TRUE(string_schema.valid());
-  EXPECT_EQ(string_schema.type(), base::Value::Type::TYPE_STRING);
+  EXPECT_EQ(string_schema.type(), base::Value::Type::STRING);
 
   // And check one, random "boolean" policy to see if the type propagated
   // correctly from policy_templates.json file.
   const policy::Schema boolean_schema =
       schema->GetKnownProperty("RemoteAccessHostRequireCurtain");
   EXPECT_TRUE(boolean_schema.valid());
-  EXPECT_EQ(boolean_schema.type(), base::Value::Type::TYPE_BOOLEAN);
+  EXPECT_EQ(boolean_schema.type(), base::Value::Type::BOOLEAN);
+}
+
+TEST_F(PolicyWatcherTest, DeprecatedOnly) {
+  EXPECT_CALL(mock_policy_callback_,
+              OnPolicyUpdatePtr(IsPolicies(&deprecated_policies_expected_)));
+  SetPolicies(deprecated_policies_);
+  StartWatching();
+}
+
+TEST_F(PolicyWatcherTest, DeprecatedAndNew) {
+  EXPECT_CALL(
+      mock_policy_callback_,
+      OnPolicyUpdatePtr(IsPolicies(&deprecated_and_new_policies_expected_)));
+  SetPolicies(deprecated_and_new_policies_);
+  StartWatching();
+}
+
+TEST_F(PolicyWatcherTest, DeprecatedEmpty) {
+  EXPECT_CALL(mock_policy_callback_,
+              OnPolicyUpdatePtr(IsPolicies(&GetDefaultValues())));
+  SetPolicies(deprecated_empty_strings_);
+  StartWatching();
+}
+
+TEST_F(PolicyWatcherTest, GetCurrentPolicies) {
+  testing::InSequence sequence;
+  EXPECT_CALL(mock_policy_callback_,
+              OnPolicyUpdatePtr(IsPolicies(&nat_true_others_default_)));
+  EXPECT_CALL(mock_policy_callback_,
+              OnPolicyUpdatePtr(IsPolicies(&nat_false_)));
+
+  StartWatching();
+  SetPolicies(nat_false_);
+  std::unique_ptr<base::DictionaryValue> current_policies =
+      policy_watcher_->GetCurrentPolicies();
+  ASSERT_TRUE(*current_policies == nat_false_others_default_);
+}
+
+TEST_F(PolicyWatcherTest, GetCurrentPoliciesError) {
+  EXPECT_CALL(mock_policy_callback_, OnPolicyError());
+
+  SetPolicies(nat_one_);
+  StartWatching();
+  std::unique_ptr<base::DictionaryValue> current_policies =
+      policy_watcher_->GetCurrentPolicies();
+  ASSERT_EQ(0u, current_policies->size());
 }
 
 }  // namespace remoting

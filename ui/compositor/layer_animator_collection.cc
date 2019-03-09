@@ -24,7 +24,7 @@ LayerAnimatorCollection::~LayerAnimatorCollection() {
 void LayerAnimatorCollection::StartAnimator(
     scoped_refptr<LayerAnimator> animator) {
   DCHECK_EQ(0U, animators_.count(animator));
-  if (!animators_.size())
+  if (animators_.empty())
     last_tick_time_ = base::TimeTicks::Now();
   animators_.insert(animator);
   if (animators_.size() == 1U && compositor_)
@@ -46,9 +46,7 @@ bool LayerAnimatorCollection::HasActiveAnimators() const {
 void LayerAnimatorCollection::OnAnimationStep(base::TimeTicks now) {
   last_tick_time_ = now;
   std::set<scoped_refptr<LayerAnimator> > list = animators_;
-  for (std::set<scoped_refptr<LayerAnimator> >::iterator iter = list.begin();
-       iter != list.end();
-       ++iter) {
+  for (auto iter = list.begin(); iter != list.end(); ++iter) {
     // Make sure the animator is still valid.
     if (animators_.count(*iter) > 0)
       (*iter)->Step(now);

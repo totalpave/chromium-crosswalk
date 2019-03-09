@@ -13,66 +13,6 @@ import org.chromium.chrome.browser.tab.Tab;
  */
 public interface TabModel extends TabList {
     /**
-     * A list of the various ways tabs can be launched.
-     */
-    public enum TabLaunchType {
-        /**
-         * Opened from a link.  Sets up a relationship between the newly created tab and its parent.
-         */
-        FROM_LINK,
-
-        /** Opened by an external app. */
-        FROM_EXTERNAL_APP,
-
-        /**
-         * Catch-all for Tabs opened by Chrome UI not covered by more specific TabLaunchTypes.
-         * Examples include:
-         * - Tabs created by the options menu.
-         * - Tabs created via the New Tab button in the tab stack overview.
-         * - Tabs created via Push Notifications.
-         * - Tabs opened via a keyboard shortcut.
-         */
-        FROM_CHROME_UI,
-
-        /** Opened during the restoration process on startup. */
-        FROM_RESTORE,
-
-        /**
-         * Opened from the long press context menu.  Will be brought to the foreground.
-         * Like FROM_CHROME_UI, but also sets up a parent/child relationship like FROM_LINK.
-         */
-        FROM_LONGPRESS_FOREGROUND,
-
-        /**
-         * Opened from the long press context menu.  Will not be brought to the foreground.
-         * Like FROM_CHROME_UI, but also sets up a parent/child relationship like FROM_LINK.
-         */
-        FROM_LONGPRESS_BACKGROUND,
-
-        /**
-         * Changed windows by moving from one activity to another. Will be opened in the foreground.
-         */
-        FROM_REPARENTING
-    }
-
-    /**
-     * A list of the various ways tabs can be selected.
-     */
-    public enum TabSelectionType {
-        /** Selection of adjacent tab when the active tab is closed in foreground. */
-        FROM_CLOSE,
-
-        /** Selection of adjacent tab when the active tab is closed upon app exit. */
-        FROM_EXIT,
-
-        /** Selection of newly created tab (e.g. for a URL intent or NTP). */
-        FROM_NEW,
-
-        /** User-originated switch to existing tab or selection of main tab on app startup. */
-        FROM_USER
-    }
-
-    /**
      * @return The profile associated with the current model.
      */
     public Profile getProfile();
@@ -148,6 +88,12 @@ public interface TabModel extends TabList {
     public void cancelTabClosure(int tabId);
 
     /**
+     * Opens the most recently closed tab, bringing the tab back into its original tab model or
+     * this model if the original model no longer exists.
+     */
+    public void openMostRecentlyClosedTab();
+
+    /**
      * @return The complete {@link TabList} this {@link TabModel} represents.  Note that this may
      *         be different than this actual {@link TabModel} if it supports pending closures
      *         {@link #supportsPendingClosures()}, as this will include all pending closure tabs.
@@ -159,7 +105,13 @@ public interface TabModel extends TabList {
      * @param i    The index of the tab to select.
      * @param type The type of selection.
      */
-    public void setIndex(int i, final TabSelectionType type);
+    public void setIndex(int i, final @TabSelectionType int type);
+
+    /**
+     * @return Whether this tab model is currently selected in the correspond
+     *         {@link TabModelSelector}.
+     */
+    boolean isCurrentModel();
 
     /**
      * Moves a tab to a new index.
@@ -183,7 +135,7 @@ public interface TabModel extends TabList {
      * @param index The index where the tab should be inserted. The model may override the index.
      * @param type  How the tab was opened.
      */
-    void addTab(Tab tab, int index, TabLaunchType type);
+    void addTab(Tab tab, int index, @TabLaunchType int type);
 
     /**
      * Removes the given tab from the model without destroying it. The tab should be inserted into

@@ -4,26 +4,27 @@
 
 #include "ui/platform_window/x11/x11_window.h"
 
-#include <X11/extensions/XInput2.h>
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
-
 #include "ui/events/devices/x11/touch_factory_x11.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/platform/platform_event_source.h"
 #include "ui/events/platform/x11/x11_event_source.h"
+#include "ui/gfx/x/x11.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
 namespace ui {
 
-X11Window::X11Window(PlatformWindowDelegate* delegate)
-    : X11WindowBase(delegate) {
+X11Window::X11Window(PlatformWindowDelegate* delegate, const gfx::Rect& bounds)
+    : X11WindowBase(delegate, bounds) {
   DCHECK(PlatformEventSource::GetInstance());
   PlatformEventSource::GetInstance()->AddPlatformEventDispatcher(this);
 }
 
 X11Window::~X11Window() {
+  X11Window::PrepareForShutdown();
+}
+
+void X11Window::PrepareForShutdown() {
   PlatformEventSource::GetInstance()->RemovePlatformEventDispatcher(this);
 }
 
@@ -83,11 +84,8 @@ uint32_t X11Window::DispatchEvent(const PlatformEvent& event) {
   XEvent* xev = event;
   switch (xev->type) {
     case EnterNotify: {
-      // EnterNotify creates ET_MOUSE_MOVED. Mark as synthesized as this is
-      // not real mouse move event.
       MouseEvent mouse_event(xev);
       CHECK_EQ(ET_MOUSE_MOVED, mouse_event.type());
-      mouse_event.set_flags(mouse_event.flags() | EF_IS_SYNTHESIZED);
       delegate()->DispatchEvent(&mouse_event);
       break;
     }
@@ -129,7 +127,7 @@ uint32_t X11Window::DispatchEvent(const PlatformEvent& event) {
     }
 
     case Expose:
-    case FocusOut:
+    case x11::FocusOut:
     case ConfigureNotify:
     case ClientMessage: {
       ProcessXWindowEvent(xev);

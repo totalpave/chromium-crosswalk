@@ -5,12 +5,17 @@
 #ifndef CHROME_BROWSER_ENGAGEMENT_SITE_ENGAGEMENT_SCORE_H_
 #define CHROME_BROWSER_ENGAGEMENT_SITE_ENGAGEMENT_SCORE_H_
 
+#include <array>
 #include <memory>
+#include <string>
+#include <utility>
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "chrome/browser/engagement/site_engagement_details.mojom.h"
+#include "third_party/blink/public/mojom/site_engagement/site_engagement.mojom.h"
 #include "url/gurl.h"
 
 namespace base {
@@ -31,6 +36,14 @@ class SiteEngagementScore {
 
     // The number of points to decay per period.
     DECAY_POINTS,
+
+    // The proportion [0-1] which the current engagement value is multiplied by
+    // at each decay period, before subtracting DECAY_POINTS.
+    DECAY_PROPORTION,
+
+    // A score will be erased from the engagement system if it's less than this
+    // value.
+    SCORE_CLEANUP_THRESHOLD,
 
     // The number of points given for navigations.
     NAVIGATION_POINTS,
@@ -74,6 +87,9 @@ class SiteEngagementScore {
     // period prior to clock_->Now().
     LAST_ENGAGEMENT_GRACE_PERIOD_IN_HOURS,
 
+    // The number of points given for interacting with a displayed notification.
+    NOTIFICATION_INTERACTION_POINTS,
+
     MAX_VARIATION
   };
 
@@ -83,6 +99,8 @@ class SiteEngagementScore {
   static double GetMaxPointsPerDay();
   static double GetDecayPeriodInHours();
   static double GetDecayPoints();
+  static double GetDecayProportion();
+  static double GetScoreCleanupThreshold();
   static double GetNavigationPoints();
   static double GetUserInputPoints();
   static double GetVisibleMediaPoints();
@@ -94,6 +112,11 @@ class SiteEngagementScore {
   static double GetHighEngagementBoundary();
   static double GetMaxDecaysPerScore();
   static double GetLastEngagementGracePeriodInHours();
+  static double GetNotificationInteractionPoints();
+
+  // Sets fixed parameter values for testing site engagement. Ensure that any
+  // newly added parameters receive a fixed value here.
+  static void SetParamValuesForTesting();
 
   // Update the default engagement settings via variations.
   static void UpdateFromVariations(const char* param_name);
@@ -103,7 +126,7 @@ class SiteEngagementScore {
   // SiteEngagementScore.
   SiteEngagementScore(base::Clock* clock,
                       const GURL& origin,
-                      HostContentSettingsMap* settings_map);
+                      HostContentSettingsMap* settings);
   SiteEngagementScore(SiteEngagementScore&& other);
   ~SiteEngagementScore();
 
@@ -113,10 +136,21 @@ class SiteEngagementScore {
   // possible score. Decays the score if it has not been updated recently
   // enough.
   void AddPoints(double points);
-  double GetScore() const;
+
+  // Returns the total score, taking into account the base, bonus and maximum
+  // values.
+  double GetTotalScore() const;
+
+  // Returns a structure containing the origin URL and score, and details
+  // of the base and bonus scores. Note that the |score| is limited to
+  // kMaxPoints, while the detailed scores are returned raw.
+  mojom::SiteEngagementDetails GetDetails() const;
 
   // Writes the values in this score into |settings_map_|.
   void Commit();
+
+  // Returns the discrete engagement level for this score.
+  blink::mojom::EngagementLevel GetEngagementLevel() const;
 
   // Returns true if the maximum number of points today has been added.
   bool MaxPointsPerDayAdded() const;
@@ -142,37 +176,34 @@ class SiteEngagementScore {
   }
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(SiteEngagementScoreTest, FirstDailyEngagementBonus);
   FRIEND_TEST_ALL_PREFIXES(SiteEngagementScoreTest, PartiallyEmptyDictionary);
   FRIEND_TEST_ALL_PREFIXES(SiteEngagementScoreTest, PopulatedDictionary);
   FRIEND_TEST_ALL_PREFIXES(SiteEngagementScoreTest, Reset);
-  FRIEND_TEST_ALL_PREFIXES(SiteEngagementScoreTest, FirstDailyEngagementBonus);
-  friend class ImportantSitesUtilTest;
-  friend class SiteEngagementHelperTest;
   friend class SiteEngagementScoreTest;
   friend class SiteEngagementServiceTest;
 
+  using ParamValues = std::array<std::pair<std::string, double>, MAX_VARIATION>;
+
   // Array holding the values corresponding to each item in Variation array.
-  static double param_values[];
+  static ParamValues& GetParamValues();
 
   // Keys used in the content settings dictionary.
-  static const char* kRawScoreKey;
-  static const char* kPointsAddedTodayKey;
-  static const char* kLastEngagementTimeKey;
-  static const char* kLastShortcutLaunchTimeKey;
+  static const char kRawScoreKey[];
+  static const char kPointsAddedTodayKey[];
+  static const char kLastEngagementTimeKey[];
+  static const char kLastShortcutLaunchTimeKey[];
 
   // This version of the constructor is used in unit tests.
   SiteEngagementScore(base::Clock* clock,
+                      const GURL& origin,
                       std::unique_ptr<base::DictionaryValue> score_dict);
 
   // Determine the score, accounting for any decay.
   double DecayedScore() const;
 
-  // Determine any score bonus from having installed shortcuts.
-  double BonusScore() const;
-
-  // Sets fixed parameter values for testing site engagement. Ensure that any
-  // newly added parameters receive a fixed value here.
-  static void SetParamValuesForTesting();
+  // Determine bonus from being installed, and having been launched recently..
+  double BonusIfShortcutLaunched() const;
 
   // Updates the content settings dictionary |score_dict| with the current score
   // fields. Returns true if |score_dict| changed, otherwise return false.
@@ -204,7 +235,7 @@ class SiteEngagementScore {
   // The origin this score represents.
   GURL origin_;
 
-  // The settings map to write this score to when Commit() is called.
+  // The settings to write this score to when Commit() is called.
   HostContentSettingsMap* settings_map_;
 
   DISALLOW_COPY_AND_ASSIGN(SiteEngagementScore);

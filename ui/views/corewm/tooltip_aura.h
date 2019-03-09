@@ -12,7 +12,7 @@
 #include "ui/views/widget/widget_observer.h"
 
 namespace gfx {
-class FontList;
+class RenderText;
 class Size;
 }  // namespace gfx
 
@@ -21,6 +21,9 @@ namespace views {
 class Widget;
 
 namespace corewm {
+namespace test {
+class TooltipAuraTestApi;
+}
 
 // Implementation of Tooltip that shows the tooltip using a Widget and Label.
 class VIEWS_EXPORT TooltipAura : public Tooltip, public WidgetObserver {
@@ -31,10 +34,13 @@ class VIEWS_EXPORT TooltipAura : public Tooltip, public WidgetObserver {
  private:
   class TooltipView;
 
+  friend class test::TooltipAuraTestApi;
+  gfx::RenderText* GetRenderTextForTest();
+
   // Adjusts the bounds given by the arguments to fit inside the desktop
-  // and applies the adjusted bounds to the label_.
-  void SetTooltipBounds(const gfx::Point& mouse_pos,
-                        const gfx::Size& tooltip_size);
+  // and returns the adjusted bounds.
+  gfx::Rect GetTooltipBounds(const gfx::Point& mouse_pos,
+                             const gfx::Size& tooltip_size);
 
   // Destroys |widget_|.
   void DestroyWidget();

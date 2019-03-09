@@ -11,6 +11,8 @@
 #include <string>
 
 #include "base/base_export.h"
+#include "base/debug/debugging_buildflags.h"
+#include "base/macros.h"
 #include "build/build_config.h"
 
 #if defined(OS_POSIX)
@@ -20,14 +22,6 @@
 #if defined(OS_WIN)
 struct _EXCEPTION_POINTERS;
 struct _CONTEXT;
-#endif
-
-#if defined(OS_POSIX) && ( \
-    defined(__i386__) || defined(__x86_64__) || \
-    (defined(__arm__) && !defined(__thumb__)))
-#define HAVE_TRACE_STACK_FRAME_POINTERS 1
-#else
-#define HAVE_TRACE_STACK_FRAME_POINTERS 0
 #endif
 
 namespace base {
@@ -44,6 +38,17 @@ namespace debug {
 // done in official builds because it has security implications).
 BASE_EXPORT bool EnableInProcessStackDumping();
 
+#if defined(OS_POSIX)
+BASE_EXPORT void SetStackDumpFirstChanceCallback(bool (*handler)(int,
+                                                                 void*,
+                                                                 void*));
+#endif
+
+// Returns end of the stack, or 0 if we couldn't get it.
+#if BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
+BASE_EXPORT uintptr_t GetStackEnd();
+#endif
+
 // A stacktrace can be helpful in debugging. For example, you can include a
 // stacktrace member in a object (probably around #ifndef NDEBUG) so that you
 // can later see where the given object was created from.
@@ -52,9 +57,13 @@ class BASE_EXPORT StackTrace {
   // Creates a stacktrace from the current location.
   StackTrace();
 
+  // Creates a stacktrace from the current location, of up to |count| entries.
+  // |count| will be limited to at most |kMaxTraces|.
+  explicit StackTrace(size_t count);
+
   // Creates a stacktrace from an existing array of instruction
   // pointers (such as returned by Addresses()).  |count| will be
-  // trimmed to |kMaxTraces|.
+  // limited to at most |kMaxTraces|.
   StackTrace(const void* const* trace, size_t count);
 
 #if defined(OS_WIN)
@@ -67,8 +76,6 @@ class BASE_EXPORT StackTrace {
 
   // Copying and assignment are allowed with the default functions.
 
-  ~StackTrace();
-
   // Gets an array of instruction pointer values. |*count| will be set to the
   // number of elements in the returned array.
   const void* const* Addresses(size_t* count) const;
@@ -76,24 +83,40 @@ class BASE_EXPORT StackTrace {
   // Prints the stack trace to stderr.
   void Print() const;
 
-#if !defined(__UCLIBC__)
+  // Prints the stack trace to stderr, prepending the given string before
+  // each output line.
+  void PrintWithPrefix(const char* prefix_string) const;
+
+#if !defined(__UCLIBC__) & !defined(_AIX)
   // Resolves backtrace to symbols and write to stream.
   void OutputToStream(std::ostream* os) const;
+  // Resolves backtrace to symbols and write to stream, with the provided
+  // prefix string prepended to each line.
+  void OutputToStreamWithPrefix(std::ostream* os,
+                                const char* prefix_string) const;
 #endif
 
   // Resolves backtrace to symbols and returns as string.
   std::string ToString() const;
+
+  // Resolves backtrace to symbols and returns as string, prepending the
+  // provided prefix string to each line.
+  std::string ToStringWithPrefix(const char* prefix_string) const;
 
  private:
 #if defined(OS_WIN)
   void InitTrace(const _CONTEXT* context_record);
 #endif
 
-  // From http://msdn.microsoft.com/en-us/library/bb204633.aspx,
-  // the sum of FramesToSkip and FramesToCapture must be less than 63,
-  // so set it to 62. Even if on POSIX it could be a larger value, it usually
-  // doesn't give much more information.
-  static const int kMaxTraces = 62;
+#if defined(OS_ANDROID)
+  // TODO(https://crbug.com/925525): Testing indicates that Android has issues
+  // with a larger value here, so leave Android at 62.
+  static constexpr int kMaxTraces = 62;
+#else
+  // For other platforms, use 250. This seems reasonable without
+  // being huge.
+  static constexpr int kMaxTraces = 250;
+#endif
 
   void* trace_[kMaxTraces];
 
@@ -101,7 +124,14 @@ class BASE_EXPORT StackTrace {
   size_t count_;
 };
 
-#if HAVE_TRACE_STACK_FRAME_POINTERS
+// Forwards to StackTrace::OutputToStream().
+BASE_EXPORT std::ostream& operator<<(std::ostream& os, const StackTrace& s);
+
+// Record a stack trace with up to |count| frames into |trace|. Returns the
+// number of frames read.
+BASE_EXPORT size_t CollectStackTrace(void** trace, size_t count);
+
+#if BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
 // Traces the stack by using frame pointers. This function is faster but less
 // reliable than StackTrace. It should work for debug and profiling builds,
 // but not for release builds (although there are some exceptions).
@@ -113,7 +143,58 @@ class BASE_EXPORT StackTrace {
 BASE_EXPORT size_t TraceStackFramePointers(const void** out_trace,
                                            size_t max_depth,
                                            size_t skip_initial);
-#endif  // HAVE_TRACE_STACK_FRAME_POINTERS
+
+// Links stack frame |fp| to |parent_fp|, so that during stack unwinding
+// TraceStackFramePointers() visits |parent_fp| after visiting |fp|.
+// Both frame pointers must come from __builtin_frame_address().
+// Destructor restores original linkage of |fp| to avoid corrupting caller's
+// frame register on return.
+//
+// This class can be used to repair broken stack frame chain in cases
+// when execution flow goes into code built without frame pointers:
+//
+// void DoWork() {
+//   Call_SomeLibrary();
+// }
+// static __thread void*  g_saved_fp;
+// void Call_SomeLibrary() {
+//   g_saved_fp = __builtin_frame_address(0);
+//   some_library_call(...); // indirectly calls SomeLibrary_Callback()
+// }
+// void SomeLibrary_Callback() {
+//   ScopedStackFrameLinker linker(__builtin_frame_address(0), g_saved_fp);
+//   ...
+//   TraceStackFramePointers(...);
+// }
+//
+// This produces the following trace:
+//
+// #0 SomeLibrary_Callback()
+// #1 <address of the code inside SomeLibrary that called #0>
+// #2 DoWork()
+// ...rest of the trace...
+//
+// SomeLibrary doesn't use frame pointers, so when SomeLibrary_Callback()
+// is called, stack frame register contains bogus value that becomes callback'
+// parent frame address. Without ScopedStackFrameLinker unwinding would've
+// stopped at that bogus frame address yielding just two first frames (#0, #1).
+// ScopedStackFrameLinker overwrites callback's parent frame address with
+// Call_SomeLibrary's frame, so unwinder produces full trace without even
+// noticing that stack frame chain was broken.
+class BASE_EXPORT ScopedStackFrameLinker {
+ public:
+  ScopedStackFrameLinker(void* fp, void* parent_fp);
+  ~ScopedStackFrameLinker();
+
+ private:
+  void* fp_;
+  void* parent_fp_;
+  void* original_parent_fp_;
+
+  DISALLOW_COPY_AND_ASSIGN(ScopedStackFrameLinker);
+};
+
+#endif  // BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
 
 namespace internal {
 

@@ -4,10 +4,10 @@
 
 #include "courgette/disassembler.h"
 
-#include <memory>
-
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "courgette/assembly_program.h"
+#include "courgette/encoded_program.h"
 
 namespace courgette {
 
@@ -33,14 +33,14 @@ RVA Disassembler::RvaVisitor_Rel32::Get() const {
   return *it_ + 4 + Read32LittleEndian(translator_.RVAToPointer(*it_));
 }
 
-Disassembler::Disassembler(const void* start, size_t length)
+Disassembler::Disassembler(const uint8_t* start, size_t length)
     : failure_reason_("uninitialized") {
-  start_ = reinterpret_cast<const uint8_t*>(start);
+  start_ = start;
   length_ = length;
   end_ = start_ + length_;
-};
+}
 
-Disassembler::~Disassembler() {};
+Disassembler::~Disassembler() = default;
 
 const uint8_t* Disassembler::FileOffsetToPointer(FileOffset file_offset) const {
   CHECK_LE(file_offset, static_cast<FileOffset>(end_ - start_));
@@ -53,6 +53,34 @@ const uint8_t* Disassembler::RVAToPointer(RVA rva) const {
     return nullptr;
 
   return FileOffsetToPointer(file_offset);
+}
+
+std::unique_ptr<AssemblyProgram> Disassembler::CreateProgram(bool annotate) {
+  if (!ok() || !ExtractAbs32Locations() || !ExtractRel32Locations())
+    return nullptr;
+
+  std::unique_ptr<AssemblyProgram> program =
+      std::make_unique<AssemblyProgram>(kind(), image_base());
+
+  PrecomputeLabels(program.get());
+  RemoveUnusedRel32Locations(program.get());
+  program->DefaultAssignIndexes();
+
+  if (annotate) {
+    if (!program->AnnotateLabels(GetInstructionGenerator(program.get())))
+      return nullptr;
+  }
+
+  return program;
+}
+
+Status Disassembler::DisassembleAndEncode(AssemblyProgram* program,
+                                          EncodedProgram* encoded) {
+  program->PrepareEncodedProgram(encoded);
+  return encoded->GenerateInstructions(program->kind(),
+                                       GetInstructionGenerator(program))
+             ? C_OK
+             : C_DISASSEMBLY_FAILED;
 }
 
 bool Disassembler::Good() {

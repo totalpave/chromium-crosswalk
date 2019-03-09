@@ -3,7 +3,13 @@
 // found in the LICENSE file.
 
 #include "content/common/service_worker/service_worker_utils.h"
+
+#include "base/command_line.h"
+#include "content/public/common/content_switches.h"
+#include "net/base/load_flags.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+using blink::mojom::FetchCacheMode;
 
 namespace content {
 
@@ -89,6 +95,10 @@ TEST(ServiceWorkerUtilsTest, ScopeMatches) {
   // URLs canonicalize \ to / so this is equivalent to "...//x"
   ASSERT_TRUE(ServiceWorkerUtils::ScopeMatches(
       GURL("http://www.example.com/\\x"), GURL("http://www.example.com//x")));
+
+  // URLs that are in different origin shouldn't match.
+  ASSERT_FALSE(ServiceWorkerUtils::ScopeMatches(
+      GURL("https://evil.com"), GURL("https://evil.com.example.com")));
 }
 
 TEST(ServiceWorkerUtilsTest, FindLongestScopeMatch) {
@@ -162,7 +172,7 @@ TEST(ServiceWorkerUtilsTest, PathRestriction_Basic) {
       GURL("http://example.com/foo/sw.js?key/value")));
 }
 
-TEST(ServiceWorkerUtils, PathRestriction_SelfReference) {
+TEST(ServiceWorkerUtilsTest, PathRestriction_SelfReference) {
   // Self reference is canonicalized.
   ASSERT_EQ(GURL("http://example.com/foo/bar"),
             GURL("http://example.com/././foo/bar"));
@@ -352,7 +362,7 @@ TEST(ServiceWorkerUtilsTest, PathRestriction_DisallowedCharacter) {
       GURL("http://example.com/foo/sw.js?key%5cvalue")));
 }
 
-TEST(ServiceWorkerUtils, PathRestriction_ServiceWorkerAllowed) {
+TEST(ServiceWorkerUtilsTest, PathRestriction_ServiceWorkerAllowed) {
   // Setting header to default max scope changes nothing.
   EXPECT_TRUE(IsPathRestrictionSatisfiedWithServiceWorkerAllowedHeader(
       GURL("http://example.com/"), GURL("http://example.com/sw.js"),
@@ -392,6 +402,72 @@ TEST(ServiceWorkerUtils, PathRestriction_ServiceWorkerAllowed) {
   EXPECT_TRUE(IsPathRestrictionSatisfiedWithServiceWorkerAllowedHeader(
       GURL("http://example.com/sw.js/hi"), GURL("http://example.com/sw.js"),
       ""));
+}
+
+TEST(ServiceWorkerUtilsTest, AllOriginsMatchAndCanAccessServiceWorkers) {
+  std::vector<GURL> https_same_origin = {GURL("https://example.com/1"),
+                                         GURL("https://example.com/2"),
+                                         GURL("https://example.com/3")};
+  EXPECT_TRUE(ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+      https_same_origin));
+
+  std::vector<GURL> http_same_origin = {GURL("http://example.com/1"),
+                                        GURL("http://example.com/2")};
+  EXPECT_FALSE(ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+      http_same_origin));
+
+  std::vector<GURL> localhost_same_origin = {GURL("http://localhost/1"),
+                                             GURL("http://localhost/2")};
+  EXPECT_TRUE(ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+      localhost_same_origin));
+
+  std::vector<GURL> filesystem_same_origin = {
+      GURL("https://example.com/1"), GURL("https://example.com/2"),
+      GURL("filesystem:https://example.com/3")};
+  EXPECT_FALSE(ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+      filesystem_same_origin));
+
+  std::vector<GURL> https_cross_origin = {GURL("https://example.com/1"),
+                                          GURL("https://example.org/2"),
+                                          GURL("https://example.com/3")};
+  EXPECT_FALSE(ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+      https_cross_origin));
+
+  // Cross-origin access is permitted with --disable-web-security.
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  command_line->AppendSwitch(switches::kDisableWebSecurity);
+  EXPECT_TRUE(ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+      https_cross_origin));
+
+  // Disallowed schemes are not permitted even with --disable-web-security.
+  EXPECT_FALSE(ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+      filesystem_same_origin));
+}
+
+TEST(ServiceWorkerFetchRequestTest, CacheModeTest) {
+  EXPECT_EQ(FetchCacheMode::kDefault,
+            ServiceWorkerUtils::GetCacheModeFromLoadFlags(0));
+  EXPECT_EQ(
+      FetchCacheMode::kNoStore,
+      ServiceWorkerUtils::GetCacheModeFromLoadFlags(net::LOAD_DISABLE_CACHE));
+  EXPECT_EQ(
+      FetchCacheMode::kValidateCache,
+      ServiceWorkerUtils::GetCacheModeFromLoadFlags(net::LOAD_VALIDATE_CACHE));
+  EXPECT_EQ(
+      FetchCacheMode::kBypassCache,
+      ServiceWorkerUtils::GetCacheModeFromLoadFlags(net::LOAD_BYPASS_CACHE));
+  EXPECT_EQ(FetchCacheMode::kForceCache,
+            ServiceWorkerUtils::GetCacheModeFromLoadFlags(
+                net::LOAD_SKIP_CACHE_VALIDATION));
+  EXPECT_EQ(FetchCacheMode::kOnlyIfCached,
+            ServiceWorkerUtils::GetCacheModeFromLoadFlags(
+                net::LOAD_ONLY_FROM_CACHE | net::LOAD_SKIP_CACHE_VALIDATION));
+  EXPECT_EQ(
+      FetchCacheMode::kUnspecifiedOnlyIfCachedStrict,
+      ServiceWorkerUtils::GetCacheModeFromLoadFlags(net::LOAD_ONLY_FROM_CACHE));
+  EXPECT_EQ(FetchCacheMode::kUnspecifiedForceCacheMiss,
+            ServiceWorkerUtils::GetCacheModeFromLoadFlags(
+                net::LOAD_ONLY_FROM_CACHE | net::LOAD_BYPASS_CACHE));
 }
 
 }  // namespace content

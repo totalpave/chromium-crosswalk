@@ -5,11 +5,15 @@
 #ifndef CHROME_BROWSER_AUTOFILL_ANDROID_PERSONAL_DATA_MANAGER_ANDROID_H_
 #define CHROME_BROWSER_AUTOFILL_ANDROID_PERSONAL_DATA_MANAGER_ANDROID_H_
 
+#include <string>
+#include <vector>
+
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
 #include "components/autofill/core/browser/personal_data_manager.h"
 #include "components/autofill/core/browser/personal_data_manager_observer.h"
+#include "components/autofill/core/browser/subkey_requester.h"
 
 namespace autofill {
 
@@ -19,6 +23,20 @@ namespace autofill {
 class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
  public:
   PersonalDataManagerAndroid(JNIEnv* env, jobject obj);
+
+  static void PopulateNativeCreditCardFromJava(
+      const base::android::JavaRef<jobject>& jcard,
+      JNIEnv* env,
+      CreditCard* card);
+  static void PopulateNativeProfileFromJava(
+      const base::android::JavaParamRef<jobject>& jprofile,
+      JNIEnv* env,
+      AutofillProfile* profile);
+
+  // Returns true if personal data manager has loaded the initial data.
+  jboolean IsDataLoaded(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj) const;
 
   // These functions act on "web profiles" aka "LOCAL_PROFILE" profiles.
   // -------------------------
@@ -50,6 +68,13 @@ class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
       const base::android::JavaParamRef<jobject>& unused_obj,
       const base::android::JavaParamRef<jobject>& jprofile);
 
+  // Adds or modifies a profile like SetProfile interface if |jprofile| is
+  // local. Otherwise it creates a local copy of it.
+  base::android::ScopedJavaLocalRef<jstring> SetProfileToLocal(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jobject>& jprofile);
+
   // Gets the labels for all known profiles. These labels are useful for
   // distinguishing the profiles from one another.
   //
@@ -61,16 +86,39 @@ class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
   // Gets the labels for the profiles to suggest to the user. These labels are
   // useful for distinguishing the profiles from one another.
   //
-  // The labels never contain the full name, email address, or phone numbers.
+  // The labels never contain the email address, or phone numbers. The
+  // |include_name_in_label| argument controls whether the name is included.
   // All other fields are included in the label.
   base::android::ScopedJavaLocalRef<jobjectArray> GetProfileLabelsToSuggest(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& unused_obj);
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      jboolean include_name_in_label,
+      jboolean include_organization_in_label,
+      jboolean include_country_in_label);
 
-  // Returns the label of the given profile for PaymentRequest. This label does
-  // not contain the full name or the email address. All other fields are
-  // included in the label.
-  base::android::ScopedJavaLocalRef<jstring> GetAddressLabelForPaymentRequest(
+  // Returns the shipping label of the given profile for PaymentRequest. This
+  // label does not contain the full name or the email address. All other fields
+  // are included in the label.
+  base::android::ScopedJavaLocalRef<jstring>
+  GetShippingAddressLabelWithCountryForPaymentRequest(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jobject>& jprofile);
+
+  // Returns the shipping label of the given profile for PaymentRequest. This
+  // label does not contain the full name, the email address or the country. All
+  // other fields are included in the label.
+  base::android::ScopedJavaLocalRef<jstring>
+  GetShippingAddressLabelWithoutCountryForPaymentRequest(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jobject>& jprofile);
+
+  // Returns the billing label of the given profile for PaymentRequest. This
+  // label does not contain the company name, the phone number, the country or
+  // the email address. All other fields are included in the label.
+  base::android::ScopedJavaLocalRef<jstring>
+  GetBillingAddressLabelForPaymentRequest(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& unused_obj,
       const base::android::JavaParamRef<jobject>& jprofile);
@@ -87,7 +135,8 @@ class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
   // PersonalDataManager::GetCreditCardsToSuggest for more details.
   base::android::ScopedJavaLocalRef<jobjectArray> GetCreditCardGUIDsToSuggest(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& unused_obj);
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      bool include_server_cards);
 
   // Returns the credit card with the specified |jguid|, or NULL if there is
   // no credit card with the specified |jguid|.
@@ -113,13 +162,20 @@ class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
       const base::android::JavaParamRef<jobject>& unused_obj,
       const base::android::JavaParamRef<jobject>& jcard);
 
-  // Updates the billing address of a server credit card with server ID
-  // |jcard_server_id|.
+  // Updates the billing address of a server credit card |jcard|.
   void UpdateServerCardBillingAddress(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& unused_obj,
-      const base::android::JavaParamRef<jstring>& jcard_server_id,
-      const base::android::JavaParamRef<jstring>& jbilling_address_id);
+      const base::android::JavaParamRef<jobject>& jcard);
+
+  // Returns the issuer network string according to PaymentRequest spec, or an
+  // empty string if the given card number is not valid and |jempty_if_invalid|
+  // is true.
+  base::android::ScopedJavaLocalRef<jstring> GetBasicCardIssuerNetwork(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jstring>& jcard_number,
+      const jboolean jempty_if_invalid);
 
   // Returns the card type according to PaymentRequest spec, or an empty string
   // if the given card number is not valid.
@@ -160,8 +216,16 @@ class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
   // PersonalDataManagerObserver:
   void OnPersonalDataChanged() override;
 
-  // Registers the JNI bindings for this class.
-  static bool Register(JNIEnv* env);
+  // These functions act on the usage stats of local profiles and credit cards.
+  // --------------------
+
+  // Records the use and log usage metrics for the profile associated with the
+  // |jguid|. Increments the use count of the profile and sets its use date to
+  // the current time.
+  void RecordAndLogProfileUse(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jstring>& jguid);
 
   // These functions act on the usage stats of local profiles and credit cards.
   // --------------------
@@ -243,6 +307,66 @@ class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& unused_obj);
 
+  // These functions help address normalization.
+  // --------------------
+
+  // Starts loading the address validation rules for the specified
+  // |region_code|.
+  void LoadRulesForAddressNormalization(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jstring>& region_code);
+
+  // Starts loading the rules for the specified |region_code| for the further
+  // subkey request.
+  void LoadRulesForSubKeys(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jstring>& region_code);
+
+  // Normalizes the address of the |jprofile| synchronously if the region rules
+  // have finished loading. Otherwise sets up the task to start the address
+  // normalization when the rules have finished loading. Also defines a time
+  // limit for the normalization, in which case the the |jdelegate| will be
+  // notified. If the rules are loaded before the timeout, |jdelegate| will
+  // receive the normalized profile.
+  void StartAddressNormalization(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jobject>& jprofile,
+      jint jtimeout_seconds,
+      const base::android::JavaParamRef<jobject>& jdelegate);
+
+  // Checks whether the Autofill PersonalDataManager has profiles.
+  jboolean HasProfiles(JNIEnv* env,
+                       const base::android::JavaParamRef<jobject>& unused_obj);
+
+  // Checks whether the Autofill PersonalDataManager has credit cards.
+  jboolean HasCreditCards(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj);
+
+  // Gets the subkeys for the region with |jregion_code| code, if the
+  // |jregion_code| rules have finished loading. Otherwise, sets up a task to
+  // get the subkeys, when the rules are loaded.
+  void StartRegionSubKeysRequest(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj,
+      const base::android::JavaParamRef<jstring>& jregion_code,
+      jint jtimeout_seconds,
+      const base::android::JavaParamRef<jobject>& jdelegate);
+
+  // Cancels the pending subkey request task.
+  void CancelPendingGetSubKeys(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj);
+
+  void SetSyncServiceForTesting(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& unused_obj);
+
+  static const char* GetPrefNameExposedToJava(int pref_index);
+
  private:
   ~PersonalDataManagerAndroid() override;
 
@@ -266,13 +390,29 @@ class PersonalDataManagerAndroid : public PersonalDataManagerObserver {
   base::android::ScopedJavaLocalRef<jobjectArray> GetProfileLabels(
       JNIEnv* env,
       bool address_only,
+      bool include_name_in_label,
+      bool include_organization_in_label,
+      bool include_country_in_label,
       std::vector<AutofillProfile*> profiles);
+
+  // Returns the shipping label of the given profile for PaymentRequest. This
+  // label does not contain the full name or the email address but will include
+  // the country depending on the value of |include_country_in_label|. All other
+  // fields are included in the label.
+  base::android::ScopedJavaLocalRef<jstring>
+  GetShippingAddressLabelForPaymentRequest(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& jprofile,
+      bool inlude_country_in_label);
 
   // Pointer to the java counterpart.
   JavaObjectWeakGlobalRef weak_java_obj_;
 
   // Pointer to the PersonalDataManager for the main profile.
   PersonalDataManager* personal_data_manager_;
+
+  // Used for subkey request.
+  SubKeyRequester subkey_requester_;
 
   DISALLOW_COPY_AND_ASSIGN(PersonalDataManagerAndroid);
 };

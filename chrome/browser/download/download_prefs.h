@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_DOWNLOAD_DOWNLOAD_PREFS_H_
 #define CHROME_BROWSER_DOWNLOAD_DOWNLOAD_PREFS_H_
 
+#include <memory>
 #include <set>
 
 #include "base/files/file_path.h"
@@ -12,12 +13,16 @@
 #include "build/build_config.h"
 #include "components/prefs/pref_member.h"
 
-class PrefService;
 class Profile;
+class TrustedSourcesManager;
 
 namespace content {
 class BrowserContext;
 class DownloadManager;
+}
+
+namespace download {
+class DownloadItem;
 }
 
 namespace user_prefs {
@@ -27,10 +32,21 @@ class PrefRegistrySyncable;
 // Stores all download-related preferences.
 class DownloadPrefs {
  public:
+  enum class DownloadRestriction {
+    NONE = 0,
+    DANGEROUS_FILES = 1,
+    POTENTIALLY_DANGEROUS_FILES = 2,
+    ALL_FILES = 3,
+    // MALICIOUS_FILES has a stricter definition of harmful file than
+    // DANGEROUS_FILES and does not block based on file extension.
+    MALICIOUS_FILES = 4,
+  };
   explicit DownloadPrefs(Profile* profile);
   ~DownloadPrefs();
 
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+
+  static void ReinitializeDefaultDownloadDirectoryForTesting();
 
   // Returns the default download directory.
   static const base::FilePath& GetDefaultDownloadDirectory();
@@ -45,12 +61,21 @@ class DownloadPrefs {
   static DownloadPrefs* FromBrowserContext(
       content::BrowserContext* browser_context);
 
+  // Identify whether the downloaded item was downloaded from a trusted source.
+  bool IsFromTrustedSource(const download::DownloadItem& item);
+
   base::FilePath DownloadPath() const;
   void SetDownloadPath(const base::FilePath& path);
   base::FilePath SaveFilePath() const;
   void SetSaveFilePath(const base::FilePath& path);
   int save_file_type() const { return *save_file_type_; }
   void SetSaveFileType(int type);
+  DownloadRestriction download_restriction() const {
+    return static_cast<DownloadRestriction>(*download_restriction_);
+  }
+  bool safebrowsing_for_trusted_sources_enabled() const {
+    return *safebrowsing_for_trusted_sources_enabled_;
+  }
 
   // Returns true if the prompt_for_download preference has been set and the
   // download location is not managed (which means the user shouldn't be able
@@ -94,12 +119,25 @@ class DownloadPrefs {
  private:
   void SaveAutoOpenState();
 
+  // Checks whether |path| is a valid download target path. If it is, returns
+  // it as is. If it isn't returns the default download directory.
+  base::FilePath SanitizeDownloadTargetPath(const base::FilePath& path) const;
+
   Profile* profile_;
 
   BooleanPrefMember prompt_for_download_;
+#if defined(OS_ANDROID)
+  IntegerPrefMember prompt_for_download_android_;
+#endif
+
   FilePathPrefMember download_path_;
   FilePathPrefMember save_file_path_;
   IntegerPrefMember save_file_type_;
+  IntegerPrefMember download_restriction_;
+  BooleanPrefMember safebrowsing_for_trusted_sources_enabled_;
+
+  // To identify if a download URL is from a trusted source.
+  std::unique_ptr<TrustedSourcesManager> trusted_sources_manager_;
 
   // Set of file extensions to open at download completion.
   struct AutoOpenCompareFunctor {

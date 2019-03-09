@@ -17,9 +17,11 @@
 #include <string.h>
 
 #include "base/logging.h"
+#include "base/stl_util.h"
 #include "minidump/minidump_string_writer.h"
 #include "snapshot/system_snapshot.h"
 #include "util/file/file_writer.h"
+#include "util/misc/arraysize.h"
 #include "util/misc/implicit_cast.h"
 
 namespace crashpad {
@@ -64,10 +66,12 @@ uint64_t AMD64FeaturesFromSystemSnapshot(
   MAP_FEATURE(cpuid_features, F_RDRAND, PF_RDRAND_INSTRUCTION_AVAILABLE);
 
 #define FX_XD 20
+#define FX_RDTSCP 27
 #define FX_3DNOW 31
 
   uint64_t extended_features = system_snapshot->CPUX86ExtendedFeatures();
 
+  MAP_FEATURE(extended_features, FX_RDTSCP, PF_RDTSCP_INSTRUCTION_AVAILABLE);
   MAP_FEATURE(extended_features, FX_3DNOW, PF_3DNOW_INSTRUCTIONS_AVAILABLE);
 
 #define F7_FSGSBASE 0
@@ -76,8 +80,8 @@ uint64_t AMD64FeaturesFromSystemSnapshot(
 
   MAP_FEATURE(leaf7_features, F7_FSGSBASE, PF_RDWRFSGSBASE_AVAILABLE);
 
-  // This feature bit should be set if NX (XD, DEP) is enabled, not just if
-  // it’s available on the CPU as indicated by the XF_XD bit.
+  // This feature bit should be set if NX (XD, DEP) is enabled, not just if it’s
+  // available on the CPU as indicated by the FX_XD bit.
   if (system_snapshot->NXEnabled()) {
     minidump_features |= ADD_FEATURE(PF_NX_ENABLED);
   }
@@ -86,10 +90,10 @@ uint64_t AMD64FeaturesFromSystemSnapshot(
     minidump_features |= ADD_FEATURE(PF_SSE_DAZ_MODE_AVAILABLE);
   }
 
-  // PF_SECOND_LEVEL_ADDRESS_TRANSLATION can’t be determined without
-  // consulting model-specific registers, a privileged operation. The exact
-  // use of PF_VIRT_FIRMWARE_ENABLED is unknown. PF_FASTFAIL_AVAILABLE is
-  // irrelevant outside of Windows.
+  // PF_SECOND_LEVEL_ADDRESS_TRANSLATION can’t be determined without consulting
+  // model-specific registers, a privileged operation. The exact use of
+  // PF_VIRT_FIRMWARE_ENABLED is unknown. PF_FASTFAIL_AVAILABLE is irrelevant
+  // outside of Windows.
 
 #undef MAP_FEATURE
 #undef ADD_FEATURE
@@ -119,6 +123,12 @@ void MinidumpSystemInfoWriter::InitializeFromSnapshot(
       break;
     case kCPUArchitectureX86_64:
       cpu_architecture = kMinidumpCPUArchitectureAMD64;
+      break;
+    case kCPUArchitectureARM:
+      cpu_architecture = kMinidumpCPUArchitectureARM;
+      break;
+    case kCPUArchitectureARM64:
+      cpu_architecture = kMinidumpCPUArchitectureARM64;
       break;
     default:
       NOTREACHED();
@@ -157,6 +167,15 @@ void MinidumpSystemInfoWriter::InitializeFromSnapshot(
     case SystemSnapshot::kOperatingSystemWindows:
       operating_system = kMinidumpOSWin32NT;
       break;
+    case SystemSnapshot::kOperatingSystemLinux:
+      operating_system = kMinidumpOSLinux;
+      break;
+    case SystemSnapshot::kOperatingSystemAndroid:
+      operating_system = kMinidumpOSAndroid;
+      break;
+    case SystemSnapshot::kOperatingSystemFuchsia:
+      operating_system = kMinidumpOSFuchsia;
+      break;
     default:
       NOTREACHED();
       operating_system = kMinidumpOSUnknown;
@@ -194,7 +213,7 @@ void MinidumpSystemInfoWriter::SetCPUX86Vendor(uint32_t ebx,
          system_info_.ProcessorArchitecture ==
              kMinidumpCPUArchitectureX86Win64);
 
-  static_assert(arraysize(system_info_.Cpu.X86CpuInfo.VendorId) == 3,
+  static_assert(ArraySize(system_info_.Cpu.X86CpuInfo.VendorId) == 3,
                 "VendorId must have 3 elements");
 
   system_info_.Cpu.X86CpuInfo.VendorId[0] = ebx;
@@ -212,7 +231,7 @@ void MinidumpSystemInfoWriter::SetCPUX86VendorString(
       sizeof(registers) == sizeof(system_info_.Cpu.X86CpuInfo.VendorId),
       "VendorId sizes must be equal");
 
-  for (size_t index = 0; index < arraysize(registers); ++index) {
+  for (size_t index = 0; index < base::size(registers); ++index) {
     memcpy(&registers[index],
            &vendor[index * sizeof(*registers)],
            sizeof(*registers));
@@ -252,7 +271,7 @@ void MinidumpSystemInfoWriter::SetCPUOtherFeatures(uint64_t features_0,
          system_info_.ProcessorArchitecture !=
              kMinidumpCPUArchitectureX86Win64);
 
-  static_assert(arraysize(system_info_.Cpu.OtherCpuInfo.ProcessorFeatures) == 2,
+  static_assert(ArraySize(system_info_.Cpu.OtherCpuInfo.ProcessorFeatures) == 2,
                 "ProcessorFeatures must have 2 elements");
 
   system_info_.Cpu.OtherCpuInfo.ProcessorFeatures[0] = features_0;

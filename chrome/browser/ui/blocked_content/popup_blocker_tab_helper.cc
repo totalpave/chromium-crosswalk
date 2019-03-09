@@ -4,135 +4,159 @@
 
 #include "chrome/browser/ui/blocked_content/popup_blocker_tab_helper.h"
 
-#include "chrome/browser/chrome_notification_types.h"
-#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include <iterator>
+#include <string>
+
+#include "base/metrics/histogram_macros.h"
+#include "build/build_config.h"
 #include "chrome/browser/content_settings/tab_specific_content_settings.h"
-#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/android/content_settings/popup_blocked_infobar_delegate.h"
 #include "chrome/browser/ui/blocked_content/blocked_window_params.h"
+#include "chrome/browser/ui/blocked_content/list_item_position.h"
+#include "chrome/browser/ui/blocked_content/popup_tracker.h"
+#include "chrome/browser/ui/blocked_content/safe_browsing_triggered_popup_blocker.h"
 #include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/features.h"
+#include "chrome/common/chrome_render_frame.mojom.h"
 #include "chrome/common/render_messages.h"
-#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/navigation_details.h"
-#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/page_navigator.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_delegate.h"
-#include "third_party/WebKit/public/web/WebWindowFeatures.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #endif
 
-using blink::WebWindowFeatures;
-
 const size_t kMaximumNumberOfPopups = 25;
 
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(PopupBlockerTabHelper);
-
 struct PopupBlockerTabHelper::BlockedRequest {
-  BlockedRequest(const chrome::NavigateParams& params,
-                 const WebWindowFeatures& window_features)
-      : params(params), window_features(window_features) {}
+  BlockedRequest(NavigateParams&& params,
+                 const blink::mojom::WindowFeatures& window_features,
+                 PopupBlockType block_type)
+      : params(std::move(params)),
+        window_features(window_features),
+        block_type(block_type) {}
 
-  chrome::NavigateParams params;
-  WebWindowFeatures window_features;
+  NavigateParams params;
+  blink::mojom::WindowFeatures window_features;
+  PopupBlockType block_type;
 };
 
-PopupBlockerTabHelper::PopupBlockerTabHelper(
-    content::WebContents* web_contents)
+PopupBlockerTabHelper::PopupBlockerTabHelper(content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents) {
+  SafeBrowsingTriggeredPopupBlocker::MaybeCreate(web_contents);
 }
 
 PopupBlockerTabHelper::~PopupBlockerTabHelper() {
 }
 
-void PopupBlockerTabHelper::DidNavigateMainFrame(
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
+void PopupBlockerTabHelper::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
   // Clear all page actions, blocked content notifications and browser actions
-  // for this tab, unless this is an in-page navigation.
-  if (details.is_in_page)
+  // for this tab, unless this is an same-document navigation. Also only
+  // consider main frame navigations that successfully committed.
+  if (!navigation_handle->IsInMainFrame() ||
+      !navigation_handle->HasCommitted() ||
+      navigation_handle->IsSameDocument()) {
     return;
+  }
 
   // Close blocked popups.
-  if (!blocked_popups_.IsEmpty()) {
-    blocked_popups_.Clear();
-    PopupNotificationVisibilityChanged(false);
+  if (!blocked_popups_.empty()) {
+    blocked_popups_.clear();
+    HidePopupNotification();
   }
 }
 
-void PopupBlockerTabHelper::PopupNotificationVisibilityChanged(
-    bool visible) {
+void PopupBlockerTabHelper::HidePopupNotification() {
   if (!web_contents()->IsBeingDestroyed()) {
-    TabSpecificContentSettings::FromWebContents(web_contents())->
-        SetPopupsBlocked(visible);
+    TabSpecificContentSettings::FromWebContents(web_contents())
+        ->ClearPopupsBlocked();
   }
 }
 
-bool PopupBlockerTabHelper::MaybeBlockPopup(
-    const chrome::NavigateParams& params,
-    const WebWindowFeatures& window_features) {
-  // A page can't spawn popups (or do anything else, either) until its load
-  // commits, so when we reach here, the popup was spawned by the
-  // NavigationController's last committed entry, not the active entry.  For
-  // example, if a page opens a popup in an onunload() handler, then the active
-  // entry is the page to be loaded as we navigate away from the unloading
-  // page.  For this reason, we can't use GetURL() to get the opener URL,
-  // because it returns the active entry.
-  content::NavigationEntry* entry =
-      web_contents()->GetController().GetLastCommittedEntry();
-  GURL creator = entry ? entry->GetVirtualURL() : GURL();
-  Profile* profile =
-      Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-
-  if (creator.is_valid() &&
-      HostContentSettingsMapFactory::GetForProfile(profile)->GetContentSetting(
-          creator, creator, CONTENT_SETTINGS_TYPE_POPUPS, std::string()) ==
-          CONTENT_SETTING_ALLOW) {
-    return false;
-  } else {
-    if (blocked_popups_.size() < kMaximumNumberOfPopups) {
-      blocked_popups_.Add(new BlockedRequest(params, window_features));
-      TabSpecificContentSettings::FromWebContents(web_contents())->
-          OnContentBlocked(CONTENT_SETTINGS_TYPE_POPUPS);
-    }
-    return true;
-  }
-}
-
-void PopupBlockerTabHelper::AddBlockedPopup(const BlockedWindowParams& params) {
-  chrome::NavigateParams nav_params =
-      params.CreateNavigateParams(web_contents());
-
-  if (blocked_popups_.size() < kMaximumNumberOfPopups) {
-    blocked_popups_.Add(new BlockedRequest(nav_params, params.features()));
-    TabSpecificContentSettings::FromWebContents(web_contents())->
-        OnContentBlocked(CONTENT_SETTINGS_TYPE_POPUPS);
-  }
-}
-
-void PopupBlockerTabHelper::ShowBlockedPopup(int32_t id) {
-  BlockedRequest* popup = blocked_popups_.Lookup(id);
-  if (!popup)
+void PopupBlockerTabHelper::AddBlockedPopup(
+    NavigateParams* params,
+    const blink::mojom::WindowFeatures& window_features,
+    PopupBlockType block_type) {
+  LogAction(Action::kBlocked);
+  if (blocked_popups_.size() >= kMaximumNumberOfPopups)
     return;
+
+  int id = next_id_;
+  next_id_++;
+  blocked_popups_[id] = std::make_unique<BlockedRequest>(
+      std::move(*params), window_features, block_type);
+  TabSpecificContentSettings::FromWebContents(web_contents())->
+      OnContentBlocked(CONTENT_SETTINGS_TYPE_POPUPS);
+  manager_.NotifyObservers(id, blocked_popups_[id]->params.url);
+
+#if defined(OS_ANDROID)
+  // Should replace existing popup infobars, with an updated count of how many
+  // popups have been blocked.
+  PopupBlockedInfoBarDelegate::Create(web_contents(), GetBlockedPopupsCount());
+#endif
+}
+
+void PopupBlockerTabHelper::ShowBlockedPopup(
+    int32_t id,
+    WindowOpenDisposition disposition) {
+  auto it = blocked_popups_.find(id);
+  if (it == blocked_popups_.end())
+    return;
+
+  ListItemPosition position = GetListItemPositionFromDistance(
+      std::distance(blocked_popups_.begin(), it), blocked_popups_.size());
+
+  UMA_HISTOGRAM_ENUMERATION("ContentSettings.Popups.ClickThroughPosition",
+                            position);
+
+  BlockedRequest* popup = it->second.get();
+
   // We set user_gesture to true here, so the new popup gets correctly focused.
   popup->params.user_gesture = true;
-#if BUILDFLAG(ANDROID_JAVA_UI)
+  if (disposition != WindowOpenDisposition::CURRENT_TAB)
+    popup->params.disposition = disposition;
+
+#if defined(OS_ANDROID)
   TabModelList::HandlePopupNavigation(&popup->params);
 #else
-  chrome::Navigate(&popup->params);
+  Navigate(&popup->params);
 #endif
-  if (popup->params.target_contents) {
-    popup->params.target_contents->Send(new ChromeViewMsg_SetWindowFeatures(
-        popup->params.target_contents->GetRoutingID(), popup->window_features));
+  if (popup->params.navigated_or_inserted_contents) {
+    auto* tracker = PopupTracker::CreateForWebContents(
+        popup->params.navigated_or_inserted_contents, web_contents());
+    tracker->set_is_trusted(true);
+
+    if (popup->params.disposition == WindowOpenDisposition::NEW_POPUP) {
+      content::RenderFrameHost* host =
+          popup->params.navigated_or_inserted_contents->GetMainFrame();
+      DCHECK(host);
+      chrome::mojom::ChromeRenderFrameAssociatedPtr client;
+      host->GetRemoteAssociatedInterfaces()->GetInterface(&client);
+      client->SetWindowFeatures(popup->window_features.Clone());
+    }
   }
-  blocked_popups_.Remove(id);
-  if (blocked_popups_.IsEmpty())
-    PopupNotificationVisibilityChanged(false);
+
+  switch (popup->block_type) {
+    case PopupBlockType::kNotBlocked:
+      NOTREACHED();
+      break;
+    case PopupBlockType::kNoGesture:
+      LogAction(Action::kClickedThroughNoGesture);
+      break;
+    case PopupBlockType::kAbusive:
+      LogAction(Action::kClickedThroughAbusive);
+      break;
+  }
+
+  blocked_popups_.erase(id);
+  if (blocked_popups_.empty())
+    HidePopupNotification();
 }
 
 size_t PopupBlockerTabHelper::GetBlockedPopupsCount() const {
@@ -142,11 +166,15 @@ size_t PopupBlockerTabHelper::GetBlockedPopupsCount() const {
 PopupBlockerTabHelper::PopupIdMap
     PopupBlockerTabHelper::GetBlockedPopupRequests() {
   PopupIdMap result;
-  for (IDMap<BlockedRequest, IDMapOwnPointer>::const_iterator iter(
-           &blocked_popups_);
-       !iter.IsAtEnd();
-       iter.Advance()) {
-    result[iter.GetCurrentKey()] = iter.GetCurrentValue()->params.url;
+  for (const auto& it : blocked_popups_) {
+    result[it.first] = it.second->params.url;
   }
   return result;
 }
+
+// static
+void PopupBlockerTabHelper::LogAction(Action action) {
+  UMA_HISTOGRAM_ENUMERATION("ContentSettings.Popups.BlockerActions", action);
+}
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(PopupBlockerTabHelper)

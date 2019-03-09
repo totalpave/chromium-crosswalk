@@ -110,20 +110,15 @@ function getSinks(callback) {
   sendMessage({'method': 'getSinks'}, callback);
 }
 
-// Will call |callback(activeSink)| on completion.
-function getActiveSink(callback) {
-  sendMessage({'method': 'getActiveSink'}, callback);
-}
-
-// Will call |callback()| on completion.
-function setActiveSink(sinkId, callback) {
-  sendMessage({'method': 'setActiveSink', 'sinkId': sinkId}, callback);
-}
-
 // Will call |callback(sinkId)| on completion.
 function getAssociatedSink(sourceId, callback) {
   sendMessage({'method': 'getAssociatedSink', 'sourceId': sourceId},
               callback);
+}
+
+// Will call |callback(hardwarePlatformInfo)| on completion.
+function getHardwarePlatformInfo(callback) {
+  sendMessage({'method': 'getHardwarePlatformInfo'}, callback);
 }
 
 // Will call |callback()| on completion. If the extension you send to
@@ -149,8 +144,6 @@ var TESTS = [
   testDisabledLoggingWithStopAndUpload,
   testEnabledLoggingButDiscard,
   testGetSinks,
-  testGetActiveSink,
-  testSetActiveSink,
   testGetAssociatedSink,
   testIsExtensionEnabled,
   testSendingToInvalidExtension,
@@ -330,25 +323,6 @@ function testGetSinks(callback) {
     });
 }
 
-function testGetActiveSink(callback) {
-  getActiveSink(function(sinkId) {
-      if (sinkId == '') {
-        callback('Got empty sink ID.');
-      } else {
-        callback('');
-      }
-    });
-}
-
-function testSetActiveSink(callback) {
-  getSinks(function(sinks) {
-      for (var i = 0; i < sinks.length; ++i) {
-        setActiveSink(sinks[i].sinkId);
-      }
-      callback('');
-    });
-}
-
 function testGetAssociatedSink(callback) {
   getAssociatedSink('noSuchSourceId', function(sinkId) {
       if (sinkId != '') {
@@ -403,6 +377,17 @@ function testStoreLog(callback) {
             });
         });
     });
+}
+
+function testGetHardwarePlatformInfo(callback) {
+  getHardwarePlatformInfo(function(hardwarePlatformInfo) {
+    if (hardwarePlatformInfo.hasOwnProperty('manufacturer') &&
+        hardwarePlatformInfo.hasOwnProperty('model')) {
+      callback('');
+    } else {
+      callback('Missing information in hardwarePlatformInfo');
+    }
+  });
 }
 
 function testTimeout(callback) {

@@ -4,10 +4,13 @@
 
 #include "chrome/browser/platform_util.h"
 
+#include "base/bind.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/platform_util_internal.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
 using content::BrowserThread;
@@ -24,22 +27,24 @@ void VerifyAndOpenItemOnBlockingThread(const base::FilePath& path,
   base::File target_item(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
   if (!base::PathExists(path)) {
     if (!callback.is_null())
-      BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                              base::Bind(callback, OPEN_FAILED_PATH_NOT_FOUND));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::UI},
+          base::BindOnce(callback, OPEN_FAILED_PATH_NOT_FOUND));
     return;
   }
   if (base::DirectoryExists(path) != (type == OPEN_FOLDER)) {
     if (!callback.is_null())
-      BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                              base::Bind(callback, OPEN_FAILED_INVALID_TYPE));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::UI},
+          base::BindOnce(callback, OPEN_FAILED_INVALID_TYPE));
     return;
   }
 
   if (shell_operations_allowed)
     internal::PlatformOpenVerifiedItem(path, type);
   if (!callback.is_null())
-    BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                            base::Bind(callback, OPEN_SUCCEEDED));
+    base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
+                             base::BindOnce(callback, OPEN_SUCCEEDED));
 }
 
 }  // namespace
@@ -57,9 +62,10 @@ void OpenItem(Profile* profile,
               OpenItemType item_type,
               const OpenOperationCallback& callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  BrowserThread::PostBlockingPoolTask(
-      FROM_HERE, base::Bind(&VerifyAndOpenItemOnBlockingThread, full_path,
-                            item_type, callback));
+  base::PostTaskWithTraits(FROM_HERE,
+                           {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+                           base::BindOnce(&VerifyAndOpenItemOnBlockingThread,
+                                          full_path, item_type, callback));
 }
 
 }  // namespace platform_util

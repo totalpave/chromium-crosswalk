@@ -9,47 +9,39 @@ import android.view.ViewGroup;
 
 import org.chromium.base.ObserverList;
 import org.chromium.base.VisibleForTesting;
+import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.chrome.browser.compositor.TitleCache;
+import org.chromium.chrome.browser.compositor.bottombar.OverlayPanel.StateChangeReason;
 import org.chromium.chrome.browser.compositor.layouts.components.LayoutTab;
 import org.chromium.chrome.browser.compositor.layouts.components.VirtualView;
 import org.chromium.chrome.browser.compositor.layouts.content.TabContentManager;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.BlackHoleEventFilter;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EdgeSwipeEventFilter.ScrollDirection;
 import org.chromium.chrome.browser.compositor.layouts.eventfilter.EdgeSwipeHandler;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EventFilter;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.GestureEventFilter;
+import org.chromium.chrome.browser.compositor.layouts.eventfilter.EmptyEdgeSwipeHandler;
+import org.chromium.chrome.browser.compositor.layouts.eventfilter.ScrollDirection;
+import org.chromium.chrome.browser.compositor.layouts.phone.StackLayout;
 import org.chromium.chrome.browser.compositor.overlays.SceneOverlay;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManagementDelegate;
 import org.chromium.chrome.browser.device.DeviceClassManager;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManagerDelegate;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.EmptyTabModelObserver;
-import org.chromium.chrome.browser.tabmodel.EmptyTabModelSelectorObserver;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
-import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabSelectionType;
-import org.chromium.chrome.browser.tabmodel.TabModelObserver;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelector.CloseAllTabsDelegate;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
+import org.chromium.chrome.browser.toolbar.ToolbarManager;
+import org.chromium.chrome.browser.util.AccessibilityUtil;
 import org.chromium.chrome.browser.util.FeatureUtilities;
 import org.chromium.chrome.browser.widget.OverviewListLayout;
-import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.resources.dynamics.DynamicResourceLoader;
 
 import java.util.List;
 
 /**
  * A {@link Layout} controller for the more complicated Chrome browser.  This is currently a
- * superset of {@link LayoutManagerDocument}.
+ * superset of {@link LayoutManager}.
  */
-public class LayoutManagerChrome
-        extends LayoutManagerDocument implements OverviewModeBehavior, CloseAllTabsDelegate {
+public class LayoutManagerChrome extends LayoutManager implements OverviewModeController {
     // Layouts
     /** An {@link Layout} that should be used as the accessibility tab switcher. */
     protected OverviewListLayout mOverviewListLayout;
@@ -57,11 +49,6 @@ public class LayoutManagerChrome
     protected ToolbarSwipeLayout mToolbarSwipeLayout;
     /** A {@link Layout} that should be used when the user is in the tab switcher. */
     protected Layout mOverviewLayout;
-
-    // Event Filters
-    /** A {@link EventFilter} that consumes all touch events. */
-    protected EventFilter mBlackHoleEventFilter;
-    private final GestureEventFilter mGestureEventFilter;
 
     // Event Filter Handlers
     private final EdgeSwipeHandler mToolbarSwipeHandler;
@@ -74,102 +61,12 @@ public class LayoutManagerChrome
     private boolean mEnableAnimations = true;
     private boolean mCreatingNtp;
     private final ObserverList<OverviewModeObserver> mOverviewModeObservers;
-    private TabModelSelectorObserver mTabModelSelectorObserver;
-    private TabModelObserver mTabModelObserver;
-    private TabModelSelectorTabObserver mTabSelectorTabObserver;
-
-    /**
-     * Protected class to handle {@link TabModelObserver} related tasks. Extending classes will
-     * need to override any related calls to add new functionality */
-    protected class LayoutManagerTabModelObserver extends EmptyTabModelObserver {
-        @Override
-        public void didSelectTab(Tab tab, TabSelectionType type, int lastId) {
-            if (tab.getId() != lastId) tabSelected(tab.getId(), lastId, tab.isIncognito());
-        }
-
-        @Override
-        public void willAddTab(Tab tab, TabLaunchType type) {
-            // Open the new tab
-            if (type == TabLaunchType.FROM_RESTORE) return;
-            if (type == TabLaunchType.FROM_REPARENTING) return;
-            if (type == TabLaunchType.FROM_EXTERNAL_APP) return;
-
-            tabCreating(getTabModelSelector().getCurrentTabId(), tab.getUrl(), tab.isIncognito());
-        }
-
-        @Override
-        public void didAddTab(Tab tab, TabLaunchType launchType) {
-            int tabId = tab.getId();
-            if (launchType != TabLaunchType.FROM_RESTORE) {
-                boolean incognito = tab.isIncognito();
-                boolean willBeSelected = launchType != TabLaunchType.FROM_LONGPRESS_BACKGROUND
-                        || (!getTabModelSelector().isIncognitoSelected() && incognito);
-                float lastTapX = LocalizationUtils.isLayoutRtl() ? mLastContentWidthDp : 0.f;
-                float lastTapY = 0.f;
-                if (launchType != TabLaunchType.FROM_CHROME_UI) {
-                    float heightDelta =
-                            mLastFullscreenViewportDp.height() - mLastVisibleViewportDp.height();
-                    lastTapX = mPxToDp * mLastTapX;
-                    lastTapY = mPxToDp * mLastTapY - heightDelta;
-                }
-
-                tabCreated(tabId, getTabModelSelector().getCurrentTabId(), launchType, incognito,
-                        willBeSelected, lastTapX, lastTapY);
-            }
-        }
-
-        @Override
-        public void didCloseTab(int tabId, boolean incognito) {
-            tabClosed(tabId, incognito, false);
-        }
-
-        @Override
-        public void tabPendingClosure(Tab tab) {
-            tabClosed(tab.getId(), tab.isIncognito(), false);
-        }
-
-        @Override
-        public void tabClosureUndone(Tab tab) {
-            tabClosureCancelled(tab.getId(), tab.isIncognito());
-        }
-
-        @Override
-        public void tabClosureCommitted(Tab tab) {
-            LayoutManagerChrome.this.tabClosureCommitted(tab.getId(), tab.isIncognito());
-        }
-
-        @Override
-        public void didMoveTab(Tab tab, int newIndex, int curIndex) {
-            tabMoved(tab.getId(), curIndex, newIndex, tab.isIncognito());
-        }
-
-        @Override
-        public void tabRemoved(Tab tab) {
-            tabClosed(tab.getId(), tab.isIncognito(), true);
-        }
-    }
-
-    /**
-     * Delegate of a factory to create an overview layout.
-     */
-    public interface OverviewLayoutFactoryDelegate {
-        /**
-         * @param context     The current Android's context.
-         * @param updateHost  The {@link LayoutUpdateHost} view for this layout.
-         * @param renderHost  The {@link LayoutRenderHost} view for this layout.
-         * @param eventFilter The {@link EventFilter} that is needed for this view.
-         */
-        Layout createOverviewLayout(Context context, LayoutUpdateHost updateHost,
-                LayoutRenderHost renderHost, EventFilter eventFilter);
-    }
 
     /**
      * Creates the {@link LayoutManagerChrome} instance.
      * @param host              A {@link LayoutManagerHost} instance.
-     * @param overviewLayoutFactoryDelegate A {@link OverviewLayoutFactoryDelegate} instance.
      */
-    public LayoutManagerChrome(
-            LayoutManagerHost host, OverviewLayoutFactoryDelegate overviewLayoutFactoryDelegate) {
+    public LayoutManagerChrome(LayoutManagerHost host, boolean createOverviewLayout) {
         super(host);
         Context context = host.getContext();
         LayoutRenderHost renderHost = host.getLayoutRenderHost();
@@ -177,28 +74,14 @@ public class LayoutManagerChrome
         mOverviewModeObservers = new ObserverList<OverviewModeObserver>();
 
         // Build Event Filter Handlers
-        mToolbarSwipeHandler = new ToolbarSwipeHandler(this);
-
-        // Build Event Filters
-        mBlackHoleEventFilter = new BlackHoleEventFilter(context, this);
-        mGestureEventFilter = new GestureEventFilter(context, this, mGestureHandler);
+        mToolbarSwipeHandler = new ToolbarSwipeHandler();
 
         // Build Layouts
-        mOverviewListLayout =
-                new OverviewListLayout(context, this, renderHost, mBlackHoleEventFilter);
-        mToolbarSwipeLayout =
-                new ToolbarSwipeLayout(context, this, renderHost, mBlackHoleEventFilter);
-        if (overviewLayoutFactoryDelegate != null) {
-            mOverviewLayout = overviewLayoutFactoryDelegate.createOverviewLayout(
-                    context, this, renderHost, mGestureEventFilter);
+        mOverviewListLayout = new OverviewListLayout(context, this, renderHost);
+        mToolbarSwipeLayout = new ToolbarSwipeLayout(context, this, renderHost);
+        if (createOverviewLayout) {
+            mOverviewLayout = new StackLayout(context, this, renderHost);
         }
-    }
-
-    /**
-     * @return The {@link TabModelObserver} instance this class should be using.
-     */
-    protected LayoutManagerTabModelObserver createTabModelObserver() {
-        return new LayoutManagerTabModelObserver();
     }
 
     /**
@@ -215,7 +98,7 @@ public class LayoutManagerChrome
      * @return The {@link EdgeSwipeHandler} responsible for processing swipe events for the toolbar.
      */
     @Override
-    public EdgeSwipeHandler getTopSwipeHandler() {
+    public EdgeSwipeHandler getToolbarSwipeHandler() {
         return mToolbarSwipeHandler;
     }
 
@@ -223,76 +106,34 @@ public class LayoutManagerChrome
     public void init(TabModelSelector selector, TabCreatorManager creator,
             TabContentManager content, ViewGroup androidContentContainer,
             ContextualSearchManagementDelegate contextualSearchDelegate,
-            ReaderModeManagerDelegate readerModeDelegate,
             DynamicResourceLoader dynamicResourceLoader) {
+        super.init(selector, creator, content, androidContentContainer, contextualSearchDelegate,
+                dynamicResourceLoader);
+
         // TODO: TitleCache should be a part of the ResourceManager.
         mTitleCache = mHost.getTitleCache();
 
         // Initialize Layouts
         mToolbarSwipeLayout.setTabModelSelector(selector, content);
         mOverviewListLayout.setTabModelSelector(selector, content);
-        if (mOverviewLayout != null) mOverviewLayout.setTabModelSelector(selector, content);
+        if (mOverviewLayout != null) {
+            mOverviewLayout.setTabModelSelector(selector, content);
+        }
+    }
 
-        super.init(selector, creator, content, androidContentContainer, contextualSearchDelegate,
-                readerModeDelegate, dynamicResourceLoader);
-
-        mTabModelSelectorObserver = new EmptyTabModelSelectorObserver() {
-            @Override
-            public void onTabModelSelected(TabModel newModel, TabModel oldModel) {
-                tabModelSwitched(newModel.isIncognito());
-            }
-        };
-        selector.addObserver(mTabModelSelectorObserver);
-        selector.setCloseAllTabsDelegate(this);
-
-        mTabModelObserver = createTabModelObserver();
-        for (TabModel model : selector.getModels()) model.addObserver(mTabModelObserver);
-
-        mTabSelectorTabObserver = new TabModelSelectorTabObserver(selector) {
-            @Override
-            public void onLoadStarted(Tab tab, boolean toDifferentDocument) {
-                tabLoadStarted(tab.getId(), tab.isIncognito());
-            }
-
-            @Override
-            public void onLoadStopped(Tab tab, boolean toDifferentDocument) {
-                tabLoadFinished(tab.getId(), tab.isIncognito());
-            }
-
-            @Override
-            public void onPageLoadStarted(Tab tab, String url) {
-                tabPageLoadStarted(tab.getId(), tab.isIncognito());
-            }
-
-            @Override
-            public void onPageLoadFinished(Tab tab) {
-                tabPageLoadFinished(tab.getId(), tab.isIncognito());
-            }
-
-            @Override
-            public void onPageLoadFailed(Tab tab, int errorCode) {
-                tabPageLoadFinished(tab.getId(), tab.isIncognito());
-            }
-
-            @Override
-            public void onCrash(Tab tab, boolean sadTabShown) {
-                tabPageLoadFinished(tab.getId(), tab.isIncognito());
-            }
-        };
+    /**
+     * Set the toolbar manager for layouts that need draw to different toolbars.
+     * @param manager The {@link ToolbarManager} for accessing toolbar textures.
+     */
+    public void setToolbarManager(ToolbarManager manager) {
+        if (FeatureUtilities.isBottomToolbarEnabled()) {
+            manager.getBottomToolbarCoordinator().setToolbarSwipeLayout(mToolbarSwipeLayout);
+        }
     }
 
     @Override
     public void destroy() {
         super.destroy();
-        if (mTabModelSelectorObserver != null) {
-            getTabModelSelector().removeObserver(mTabModelSelectorObserver);
-        }
-        if (mTabModelObserver != null) {
-            for (TabModel model : getTabModelSelector().getModels()) {
-                model.removeObserver(mTabModelObserver);
-            }
-        }
-        if (mTabSelectorTabObserver != null) mTabSelectorTabObserver.destroy();
         mOverviewModeObservers.clear();
 
         if (mOverviewLayout != null) {
@@ -312,16 +153,6 @@ public class LayoutManagerChrome
     }
 
     /**
-     * Meant to be overridden by child classes for when they need to extend the toolbar side swipe
-     * functionality.
-     * @param provider A {@link LayoutProvider} instance.
-     * @return         A {@link ToolbarSwipeHandler} instance that will be used by internal layouts.
-     */
-    protected ToolbarSwipeHandler createToolbarSwipeHandler(LayoutProvider provider) {
-        return new ToolbarSwipeHandler(provider);
-    }
-
-    /**
      * Simulates a click on the view at the specified pixel offset
      * from the top left of the view.
      * This is used by UI tests.
@@ -330,7 +161,9 @@ public class LayoutManagerChrome
      */
     @VisibleForTesting
     public void simulateClick(float x, float y) {
-        if (getActiveLayout() != null) getActiveLayout().click(time(), x, y);
+        if (getActiveLayout() instanceof StackLayout) {
+            ((StackLayout) getActiveLayout()).simulateClick(x, y);
+        }
     }
 
     /**
@@ -342,10 +175,8 @@ public class LayoutManagerChrome
      */
     @VisibleForTesting
     public void simulateDrag(float x, float y, float dX, float dY) {
-        if (getActiveLayout() != null) {
-            getActiveLayout().onDown(0, x, y);
-            getActiveLayout().drag(0, x, y, dX, dY);
-            getActiveLayout().onUpOrCancel(time());
+        if (getActiveLayout() instanceof StackLayout) {
+            ((StackLayout) getActiveLayout()).simulateDrag(x, y, dX, dY);
         }
     }
 
@@ -360,11 +191,14 @@ public class LayoutManagerChrome
 
         Layout layoutBeingShown = getActiveLayout();
 
-        // Check if a layout is showing that should hide the contextual search bar.
-        if (mContextualSearchDelegate != null
-                && (isOverviewLayout(layoutBeingShown)
-                           || layoutBeingShown == mToolbarSwipeLayout)) {
-            mContextualSearchDelegate.dismissContextualSearchBar();
+        // Check if a layout is showing that should hide the overlay panels.
+        if (isOverviewLayout(layoutBeingShown) || layoutBeingShown == mToolbarSwipeLayout) {
+            if (mContextualSearchDelegate != null) {
+                mContextualSearchDelegate.dismissContextualSearchBar();
+            }
+            if (getEphemeralTabPanel() != null) {
+                getEphemeralTabPanel().closePanel(StateChangeReason.UNKNOWN, false);
+            }
         }
 
         // Check if we should notify OverviewModeObservers.
@@ -426,136 +260,33 @@ public class LayoutManagerChrome
         }
     }
 
-    @VisibleForTesting
-    public void tabSelected(int tabId, int prevId, boolean incognito) {
-        // Update the model here so we properly set the right selected TabModel.
-        if (getActiveLayout() != null) {
-            getActiveLayout().onTabSelected(time(), tabId, prevId, incognito);
-        }
-    }
-
-    /**
-     * Should be called when a tab created event is triggered.
-     * @param id             The id of the tab that was created.
-     * @param sourceId       The id of the creating tab if any.
-     * @param launchType     How the tab was launched.
-     * @param incognito      Whether or not the created tab is incognito.
-     * @param willBeSelected Whether or not the created tab will be selected.
-     * @param originX        The x coordinate of the action that created this tab in dp.
-     * @param originY        The y coordinate of the action that created this tab in dp.
-     */
-    protected void tabCreated(int id, int sourceId, TabLaunchType launchType, boolean incognito,
-            boolean willBeSelected, float originX, float originY) {
+    @Override
+    protected void tabCreated(int id, int sourceId, @TabLaunchType int launchType,
+            boolean incognito, boolean willBeSelected, float originX, float originY) {
         Tab newTab = TabModelUtils.getTabById(getTabModelSelector().getModel(incognito), id);
         mCreatingNtp = newTab != null && newTab.isNativePage();
-
-        int newIndex = TabModelUtils.getTabIndexById(getTabModelSelector().getModel(incognito), id);
-        getActiveLayout().onTabCreated(
-                time(), id, newIndex, sourceId, incognito, !willBeSelected, originX, originY);
-    }
-
-    /**
-     * Should be called when a tab creating event is triggered (called before the tab is done being
-     * created).
-     * @param sourceId    The id of the creating tab if any.
-     * @param url         The url of the created tab.
-     * @param isIncognito Whether or not created tab will be incognito.
-     */
-    protected void tabCreating(int sourceId, String url, boolean isIncognito) {
-        if (getActiveLayout() != null) getActiveLayout().onTabCreating(sourceId);
-    }
-
-    /**
-     * Should be called when a tab closed event is triggered.
-     * @param id         The id of the closed tab.
-     * @param nextId     The id of the next tab that will be visible, if any.
-     * @param incognito  Whether or not the closed tab is incognito.
-     * @param tabRemoved Whether the tab was removed from the model (e.g. for reparenting), rather
-     *                   than closed and destroyed.
-     */
-    protected void tabClosed(int id, int nextId, boolean incognito, boolean tabRemoved) {
-        if (getActiveLayout() != null) getActiveLayout().onTabClosed(time(), id, nextId, incognito);
-    }
-
-    private void tabClosed(int tabId, boolean incognito, boolean tabRemoved) {
-        Tab currentTab =
-                getTabModelSelector() != null ? getTabModelSelector().getCurrentTab() : null;
-        int nextTabId = currentTab != null ? currentTab.getId() : Tab.INVALID_TAB_ID;
-        tabClosed(tabId, nextTabId, incognito, tabRemoved);
-    }
-
-    /**
-     * Called when a tab closure has been committed and all tab cleanup should happen.
-     * @param id        The id of the closed tab.
-     * @param incognito Whether or not the closed tab is incognito.
-     */
-    protected void tabClosureCommitted(int id, boolean incognito) {
-        if (getActiveLayout() != null) {
-            getActiveLayout().onTabClosureCommitted(time(), id, incognito);
-        }
+        super.tabCreated(id, sourceId, launchType, incognito, willBeSelected, originX, originY);
     }
 
     @Override
     public boolean closeAllTabsRequest(boolean incognito) {
-        if (!isOverviewLayout(getActiveLayout()) || !getActiveLayout().handlesCloseAll()) {
-            return false;
-        }
-        getActiveLayout().onTabsAllClosing(time(), incognito);
-        return true;
-    }
+        if (!isOverviewLayout(getActiveLayout())) return false;
 
-    /**
-     * Called when the selected tab model has switched.
-     * @param incognito Whether or not the new current tab model is incognito.
-     */
-    protected void tabModelSwitched(boolean incognito) {
-        if (getActiveLayout() != null) getActiveLayout().onTabModelSwitched(incognito);
-    }
-
-    private void tabMoved(int id, int oldIndex, int newIndex, boolean incognito) {
-        if (getActiveLayout() != null) {
-            getActiveLayout().onTabMoved(time(), id, oldIndex, newIndex, incognito);
-        }
-    }
-
-    private void tabPageLoadStarted(int id, boolean incognito) {
-        if (getActiveLayout() != null) getActiveLayout().onTabPageLoadStarted(id, incognito);
-    }
-
-    private void tabPageLoadFinished(int id, boolean incognito) {
-        if (getActiveLayout() != null) getActiveLayout().onTabPageLoadFinished(id, incognito);
-    }
-
-    private void tabLoadStarted(int id, boolean incognito) {
-        if (getActiveLayout() != null) getActiveLayout().onTabLoadStarted(id, incognito);
-    }
-
-    private void tabLoadFinished(int id, boolean incognito) {
-        if (getActiveLayout() != null) getActiveLayout().onTabLoadFinished(id, incognito);
-    }
-
-    private void tabClosureCancelled(int id, boolean incognito) {
-        if (getActiveLayout() != null) {
-            getActiveLayout().onTabClosureCancelled(time(), id, incognito);
-        }
+        return super.closeAllTabsRequest(incognito);
     }
 
     @Override
     public void initLayoutTabFromHost(final int tabId) {
-        super.initLayoutTabFromHost(tabId);
-
-        if (getTabModelSelector() == null || getActiveLayout() == null) return;
-
-        TabModelSelector selector = getTabModelSelector();
-        Tab tab = selector.getTabById(tabId);
-        if (tab == null) return;
-
-        LayoutTab layoutTab = getExistingLayoutTab(tabId);
-        if (layoutTab == null) return;
-
-        if (mTitleCache != null && layoutTab.isTitleNeeded()) {
-            mTitleCache.getUpdatedTitle(tab, "");
+        if (mTitleCache != null) {
+            mTitleCache.remove(tabId);
         }
+        super.initLayoutTabFromHost(tabId);
+    }
+
+    @Override
+    public void releaseResourcesForTab(int tabId) {
+        super.releaseResourcesForTab(tabId);
+        mTitleCache.remove(tabId);
     }
 
     /**
@@ -583,20 +314,13 @@ public class LayoutManagerChrome
     }
 
     /**
-     * @return Whether or not to use the accessibility layout.
-     */
-    protected boolean useAccessibilityLayout() {
-        return DeviceClassManager.isAccessibilityModeEnabled(mHost.getContext())
-                || DeviceClassManager.enableAccessibilityLayout();
-    }
-
-    /**
      * Show the overview {@link Layout}.  This is generally a {@link Layout} that visibly represents
      * all of the {@link Tab}s opened by the user.
      * @param animate Whether or not to animate the transition to overview mode.
      */
+    @Override
     public void showOverview(boolean animate) {
-        boolean useAccessibility = useAccessibilityLayout();
+        boolean useAccessibility = DeviceClassManager.enableAccessibilityLayout();
 
         boolean accessibilityIsVisible =
                 useAccessibility && getActiveLayout() == mOverviewListLayout;
@@ -617,6 +341,7 @@ public class LayoutManagerChrome
      * Hides the current {@link Layout}, returning to the default {@link Layout}.
      * @param animate Whether or not to animate the transition to the default {@link Layout}.
      */
+    @Override
     public void hideOverview(boolean animate) {
         Layout activeLayout = getActiveLayout();
         if (activeLayout != null && !activeLayout.isHiding()) {
@@ -664,41 +389,97 @@ public class LayoutManagerChrome
     /**
      * A {@link EdgeSwipeHandler} meant to respond to edge events for the toolbar.
      */
-    protected class ToolbarSwipeHandler extends EdgeSwipeHandlerLayoutDelegate {
+    protected class ToolbarSwipeHandler extends EmptyEdgeSwipeHandler {
+        /** The scroll direction of the current gesture. */
+        private @ScrollDirection int mScrollDirection;
+
         /**
-         * Creates an instance of the {@link ToolbarSwipeHandler}.
-         * @param provider A {@link LayoutProvider} instance.
+         * The range in degrees that a swipe can be from a particular direction to be considered
+         * that direction.
          */
-        public ToolbarSwipeHandler(LayoutProvider provider) {
-            super(provider);
+        private static final float SWIPE_RANGE_DEG = 25;
+
+        @Override
+        public void swipeStarted(@ScrollDirection int direction, float x, float y) {
+            mScrollDirection = ScrollDirection.UNKNOWN;
         }
 
         @Override
-        public void swipeStarted(ScrollDirection direction, float x, float y) {
-            if (direction == ScrollDirection.DOWN) {
-                startShowing(mOverviewLayout, true);
-                super.swipeStarted(direction, x, y);
-            } else if (direction == ScrollDirection.LEFT || direction == ScrollDirection.RIGHT) {
-                startShowing(mToolbarSwipeLayout, true);
-                super.swipeStarted(direction, x, y);
+        public void swipeUpdated(float x, float y, float dx, float dy, float tx, float ty) {
+            if (mToolbarSwipeLayout == null) return;
+
+            // If scroll direction has been computed, send the event to super.
+            if (mScrollDirection != ScrollDirection.UNKNOWN) {
+                mToolbarSwipeLayout.swipeUpdated(time(), x, y, dx, dy, tx, ty);
+                return;
             }
+
+            mScrollDirection = computeScrollDirection(dx, dy);
+            if (mScrollDirection == ScrollDirection.UNKNOWN) return;
+
+            if (mOverviewLayout != null && mScrollDirection == ScrollDirection.DOWN) {
+                RecordUserAction.record("MobileToolbarSwipeOpenStackView");
+                startShowing(mOverviewLayout, true);
+            } else if (mToolbarSwipeLayout != null
+                    && (mScrollDirection == ScrollDirection.LEFT
+                               || mScrollDirection == ScrollDirection.RIGHT)) {
+                startShowing(mToolbarSwipeLayout, true);
+            }
+
+            mToolbarSwipeLayout.swipeStarted(time(), mScrollDirection, x, y);
         }
 
         @Override
-        public boolean isSwipeEnabled(ScrollDirection direction) {
+        public void swipeFinished() {
+            if (mToolbarSwipeLayout == null || !mToolbarSwipeLayout.isActive()) return;
+            mToolbarSwipeLayout.swipeFinished(time());
+        }
+
+        @Override
+        public void swipeFlingOccurred(float x, float y, float tx, float ty, float vx, float vy) {
+            if (mToolbarSwipeLayout == null || !mToolbarSwipeLayout.isActive()) return;
+            mToolbarSwipeLayout.swipeFlingOccurred(time(), x, y, tx, ty, vx, vy);
+        }
+
+        /**
+         * Compute the direction of the scroll.
+         * @param dx The distance traveled on the X axis.
+         * @param dy The distance traveled on the Y axis.
+         * @return The direction of the scroll.
+         */
+        private @ScrollDirection int computeScrollDirection(float dx, float dy) {
+            @ScrollDirection
+            int direction = ScrollDirection.UNKNOWN;
+
+            // Figure out the angle of the swipe. Invert 'dy' so 90 degrees is up.
+            double swipeAngle = (Math.toDegrees(Math.atan2(-dy, dx)) + 360) % 360;
+
+            if (swipeAngle < 180 + SWIPE_RANGE_DEG && swipeAngle > 180 - SWIPE_RANGE_DEG) {
+                direction = ScrollDirection.LEFT;
+            } else if (swipeAngle < SWIPE_RANGE_DEG || swipeAngle > 360 - SWIPE_RANGE_DEG) {
+                direction = ScrollDirection.RIGHT;
+            } else if (swipeAngle < 270 + SWIPE_RANGE_DEG && swipeAngle > 270 - SWIPE_RANGE_DEG) {
+                direction = ScrollDirection.DOWN;
+            }
+
+            return direction;
+        }
+
+        @Override
+        public boolean isSwipeEnabled(@ScrollDirection int direction) {
             FullscreenManager manager = mHost.getFullscreenManager();
             if (getActiveLayout() != mStaticLayout
-                    || !DeviceClassManager.enableToolbarSwipe(
-                               FeatureUtilities.isDocumentMode(mHost.getContext()))
+                    || !DeviceClassManager.enableToolbarSwipe()
                     || (manager != null && manager.getPersistentFullscreenMode())) {
                 return false;
             }
 
-            boolean isAccessibility =
-                    DeviceClassManager.isAccessibilityModeEnabled(mHost.getContext());
-            return direction == ScrollDirection.LEFT || direction == ScrollDirection.RIGHT
-                    || (direction == ScrollDirection.DOWN && mOverviewLayout != null
-                               && !isAccessibility);
+            if (direction == ScrollDirection.DOWN) {
+                boolean isAccessibility = AccessibilityUtil.isAccessibilityEnabled();
+                return mOverviewLayout != null && !isAccessibility;
+            }
+
+            return direction == ScrollDirection.LEFT || direction == ScrollDirection.RIGHT;
         }
     }
 

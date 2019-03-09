@@ -5,11 +5,11 @@
 package org.chromium.chrome.browser.compositor.layouts;
 
 import android.content.Context;
-import android.graphics.Rect;
+import android.graphics.RectF;
 import android.os.Handler;
 
-import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.LayerTitleCache;
+import org.chromium.chrome.browser.compositor.animation.CompositorAnimator;
 import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelManager;
 import org.chromium.chrome.browser.compositor.layouts.components.LayoutTab;
 import org.chromium.chrome.browser.compositor.layouts.content.TabContentManager;
@@ -20,6 +20,8 @@ import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelImpl;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.ui.resources.ResourceManager;
 
 import java.util.Arrays;
@@ -43,10 +45,15 @@ public class StaticLayout extends Layout {
         public void run() {
             mUnstalling = false;
             if (mLayoutTabs == null || mLayoutTabs.length == 0) return;
-            addToAnimation(mLayoutTabs[0], LayoutTab.Property.SATURATION,
-                    mLayoutTabs[0].getSaturation(), 1.0f, HIDE_DURATION_MS, 0);
-            addToAnimation(mLayoutTabs[0], LayoutTab.Property.STATIC_TO_VIEW_BLEND,
-                    mLayoutTabs[0].getStaticToViewBlend(), 0.0f, HIDE_DURATION_MS, 0);
+            CompositorAnimator
+                    .ofFloatProperty(getAnimationHandler(), mLayoutTabs[0], LayoutTab.SATURATION,
+                            mLayoutTabs[0].getSaturation(), 1.0f, HIDE_DURATION_MS)
+                    .start();
+            CompositorAnimator
+                    .ofFloatProperty(getAnimationHandler(), mLayoutTabs[0],
+                            LayoutTab.STATIC_TO_VIEW_BLEND, mLayoutTabs[0].getStaticToViewBlend(),
+                            0.0f, HIDE_DURATION_MS)
+                    .start();
             mLayoutTabs[0].setShouldStall(false);
         }
     }
@@ -61,17 +68,16 @@ public class StaticLayout extends Layout {
      * @param context             The current Android's context.
      * @param updateHost          The {@link LayoutUpdateHost} view for this layout.
      * @param renderHost          The {@link LayoutRenderHost} view for this layout.
-     * @param eventFilter         The {@link EventFilter} that is needed for this view.
      * @param panelManager        The {@link OverlayPanelManager} responsible for showing panels.
      */
     public StaticLayout(Context context, LayoutUpdateHost updateHost, LayoutRenderHost renderHost,
             EventFilter eventFilter, OverlayPanelManager panelManager) {
-        super(context, updateHost, renderHost, eventFilter);
+        super(context, updateHost, renderHost);
 
         mHandler = new Handler();
         mUnstallRunnable = new UnstallRunnable();
         mUnstalling = false;
-        mSceneLayer = new StaticTabSceneLayer(R.id.control_container);
+        mSceneLayer = new StaticTabSceneLayer();
     }
 
     /**
@@ -83,8 +89,8 @@ public class StaticLayout extends Layout {
     }
 
     @Override
-    public int getSizingFlags() {
-        return SizingFlags.HELPER_SUPPORTS_FULLSCREEN;
+    public @ViewportMode int getViewportMode() {
+        return ViewportMode.DYNAMIC_BROWSER_CONTROLS;
     }
 
     /**
@@ -133,9 +139,14 @@ public class StaticLayout extends Layout {
     }
 
     @Override
-    public void onTabPageLoadFinished(int id, boolean incognito) {
-        super.onTabPageLoadFinished(id, incognito);
-        unstallImmediately(id);
+    public void setTabModelSelector(TabModelSelector modelSelector, TabContentManager manager) {
+        super.setTabModelSelector(modelSelector, manager);
+        new TabModelSelectorTabObserver(mTabModelSelector) {
+            @Override
+            public void onPageLoadFinished(Tab tab, String url) {
+                if (isActive()) unstallImmediately(tab.getId());
+            }
+        };
     }
 
     private void setPreHideState() {
@@ -159,7 +170,9 @@ public class StaticLayout extends Layout {
         }
         TabModel model = mTabModelSelector.getModelForTabId(id);
         if (model == null) return;
-        updateCacheVisibleIds(new LinkedList<Integer>(Arrays.asList(id)));
+
+        updateCacheVisibleIdsAndPrimary(new LinkedList<Integer>(Arrays.asList(id)), id);
+
         if (mLayoutTabs == null || mLayoutTabs.length != 1) mLayoutTabs = new LayoutTab[1];
         mLayoutTabs[0] = createLayoutTab(id, model.isIncognito(), NO_CLOSE_BUTTON, NO_TITLE);
         mLayoutTabs[0].setDrawDecoration(false);
@@ -209,8 +222,8 @@ public class StaticLayout extends Layout {
     }
 
     @Override
-    public boolean isTabInteractive() {
-        return mLayoutTabs != null && mLayoutTabs.length > 0;
+    protected EventFilter getEventFilter() {
+        return null;
     }
 
     @Override
@@ -219,7 +232,7 @@ public class StaticLayout extends Layout {
     }
 
     @Override
-    protected void updateSceneLayer(Rect viewport, Rect contentViewport,
+    protected void updateSceneLayer(RectF viewport, RectF contentViewport,
             LayerTitleCache layerTitleCache, TabContentManager tabContentManager,
             ResourceManager resourceManager, ChromeFullscreenManager fullscreenManager) {
         super.updateSceneLayer(viewport, contentViewport, layerTitleCache, tabContentManager,
@@ -233,8 +246,8 @@ public class StaticLayout extends Layout {
         LayoutTab layoutTab = tabs[0];
         final float dpToPx = getContext().getResources().getDisplayMetrics().density;
 
-        mSceneLayer.update(dpToPx, contentViewport, layerTitleCache, tabContentManager,
-                fullscreenManager, layoutTab);
+        mSceneLayer.update(
+                dpToPx, layerTitleCache, tabContentManager, fullscreenManager, layoutTab);
 
         // TODO(dtrainor): Find the best way to properly track this metric for cold starts.
         // We should probably erase the thumbnail when we select a tab that we need to restore.

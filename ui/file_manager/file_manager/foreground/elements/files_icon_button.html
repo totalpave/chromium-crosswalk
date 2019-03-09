@@ -13,10 +13,10 @@
   operation.
 -->
 
-<link rel="import" href="chrome://resources/polymer/v1_0/polymer/polymer.html">
+<link rel="import" href="chrome://resources/html/polymer.html">
 <link rel="import" href="chrome://resources/polymer/v1_0/iron-behaviors/iron-button-state.html">
-<link rel="import" href="chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/foreground/elements/files_ripple.html">
-<link rel="import" href="chrome-extension://hhaomjibdihmijegdhdafkllkbggdgoj/foreground/elements/files_toggle_ripple.html">
+<link rel="import" href="files_ripple.html">
+<link rel="import" href="files_toggle_ripple.html">
 
 <dom-module id="files-icon-button">
   <template>
@@ -46,15 +46,10 @@
         top: 2px;
         width: 28px;
       }
-
-      files-toggle-ripple::shadow .ripple.activated {
-        opacity: 0.1;
-      }
     </style>
 
     <files-ripple hidden="[[toggles]]"></files-ripple>
     <files-toggle-ripple activated="[[active]]"></files-toggle-ripple>
-    <!-- TODO(fukino): Make it possible to insert user-defined element to show them on top of ripple effect. -->
   </template>
 
   <script src="files_icon_button.js"></script>

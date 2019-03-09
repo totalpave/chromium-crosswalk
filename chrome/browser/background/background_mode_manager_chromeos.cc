@@ -4,8 +4,7 @@
 
 #include "chrome/browser/background/background_mode_manager.h"
 
-#include "chrome/grit/generated_resources.h"
-#include "ui/base/l10n/l10n_util.h"
+#include "base/sequenced_task_runner.h"
 
 void BackgroundModeManager::EnableLaunchOnStartup(bool should_launch) {
   NOTREACHED();
@@ -17,6 +16,8 @@ void BackgroundModeManager::DisplayClientInstalledNotification(
   // the time anyway.
 }
 
-base::string16 BackgroundModeManager::GetPreferencesMenuLabel() {
-  return l10n_util::GetStringUTF16(IDS_SETTINGS);
+// static
+scoped_refptr<base::SequencedTaskRunner>
+BackgroundModeManager::CreateTaskRunner() {
+  return nullptr;
 }

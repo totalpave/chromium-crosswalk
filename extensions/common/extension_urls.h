@@ -8,8 +8,12 @@
 #include <string>
 
 #include "base/strings/string16.h"
+#include "base/strings/string_piece.h"
+#include "url/gurl.h"
 
-class GURL;
+namespace url {
+class Origin;
+}
 
 namespace extensions {
 
@@ -38,7 +42,7 @@ extern const char kChromeWebstoreUpdateURL[];
 // Returns the URL prefix for the extension/apps gallery. Can be set via the
 // --apps-gallery-url switch. The URL returned will not contain a trailing
 // slash. Do not use this as a prefix/extent for the store.
-std::string GetWebstoreLaunchURL();
+GURL GetWebstoreLaunchURL();
 
 // Returns the URL to the extensions category on the Web Store. This is
 // derived from GetWebstoreLaunchURL().
@@ -66,6 +70,10 @@ GURL GetWebstoreJsonSearchUrl(const std::string& query,
 // Returns the URL of the web store search results page for |query|.
 GURL GetWebstoreSearchPageUrl(const std::string& query);
 
+// Returns the compile-time constant webstore update url specific to
+// Chrome. Usually you should prefer using GetWebstoreUpdateUrl.
+GURL GetDefaultWebstoreUpdateUrl();
+
 // Return the update URL used by gallery/webstore extensions/apps. This may
 // have been overridden by a command line flag for testing purposes.
 GURL GetWebstoreUpdateUrl();
@@ -81,6 +89,10 @@ bool IsWebstoreUpdateUrl(const GURL& update_url);
 
 // Returns true if the URL points to an extension blacklist.
 bool IsBlacklistUpdateUrl(const GURL& url);
+
+// Returns true if the origin points to an URL used for safebrowsing.
+// TODO(devlin): Update other methods to also take an url::Origin?
+bool IsSafeBrowsingUrl(const url::Origin& origin, base::StringPiece path);
 
 }  // namespace extension_urls
 

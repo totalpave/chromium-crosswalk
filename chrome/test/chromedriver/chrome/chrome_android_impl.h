@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "chrome/test/chromedriver/chrome/chrome_impl.h"
@@ -17,12 +18,12 @@ class DevToolsHttpClient;
 
 class ChromeAndroidImpl : public ChromeImpl {
  public:
-  ChromeAndroidImpl(
-      std::unique_ptr<DevToolsHttpClient> http_client,
-      std::unique_ptr<DevToolsClient> websocket_client,
-      ScopedVector<DevToolsEventListener>& devtools_event_listeners,
-      std::unique_ptr<PortReservation> port_reservation,
-      std::unique_ptr<Device> device);
+  ChromeAndroidImpl(std::unique_ptr<DevToolsHttpClient> http_client,
+                    std::unique_ptr<DevToolsClient> websocket_client,
+                    std::vector<std::unique_ptr<DevToolsEventListener>>
+                        devtools_event_listeners,
+                    std::string page_load_strategy,
+                    std::unique_ptr<Device> device);
   ~ChromeAndroidImpl() override;
 
   // Overridden from Chrome:
@@ -32,6 +33,9 @@ class ChromeAndroidImpl : public ChromeImpl {
   // Overridden from ChromeImpl:
   bool HasTouchScreen() const override;
   Status QuitImpl() override;
+
+ protected:
+  Status GetWindow(const std::string& target_id, Window* window) override;
 
  private:
   std::unique_ptr<Device> device_;

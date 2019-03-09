@@ -7,20 +7,20 @@
 #include "base/logging.h"
 #include "base/strings/string16.h"
 #include "components/google/core/browser/google_url_tracker.h"
-#include "components/google/core/browser/google_util.h"
+#include "components/google/core/common/google_util.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
-#include "components/search/search.h"
 #include "components/version_info/version_info.h"
 #include "ios/chrome/browser/application_context.h"
-#include "ios/chrome/browser/experimental_flags.h"
 #include "ios/chrome/browser/google/google_brand.h"
 #include "ios/chrome/browser/google/google_url_tracker_factory.h"
+#include "ios/chrome/browser/system_flags.h"
 #include "ios/chrome/common/channel_info.h"
 #include "ios/web/public/web_thread.h"
 #include "net/base/escape.h"
+#include "rlz/buildflags/buildflags.h"
 #include "url/gurl.h"
 
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
 #include "components/rlz/rlz_tracker.h"  // nogncheck
 #endif
 
@@ -60,7 +60,7 @@ base::string16 UIThreadSearchTermsData::GetRlzParameterValue(
   DCHECK(!from_app_list);
   DCHECK(thread_checker_.CalledOnValidThread());
   base::string16 rlz_string;
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
   // For organic brandcode do not use rlz at all.
   std::string brand;
   if (ios::google_brand::GetBrand(&brand) &&
@@ -83,24 +83,12 @@ std::string UIThreadSearchTermsData::GetSearchClient() const {
 
 std::string UIThreadSearchTermsData::GetSuggestClient() const {
   DCHECK(thread_checker_.CalledOnValidThread());
-  return search::IsInstantExtendedAPIEnabled() ? "chrome-omni" : "chrome";
+  return "chrome";
 }
 
 std::string UIThreadSearchTermsData::GetSuggestRequestIdentifier() const {
   DCHECK(thread_checker_.CalledOnValidThread());
   return "chrome-ext-ansg";
-}
-
-std::string UIThreadSearchTermsData::InstantExtendedEnabledParam(
-    bool for_search) const {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  return search::InstantExtendedEnabledParam(for_search);
-}
-
-std::string UIThreadSearchTermsData::ForceInstantResultsParam(
-    bool for_prerender) const {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  return search::ForceInstantResultsParam(for_prerender);
 }
 
 std::string UIThreadSearchTermsData::GoogleImageSearchSource() const {

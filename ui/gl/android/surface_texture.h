@@ -20,7 +20,7 @@ namespace gl {
 // This class serves as a bridge for native code to call java functions inside
 // android SurfaceTexture class.
 class GL_EXPORT SurfaceTexture
-    : public base::RefCountedThreadSafe<SurfaceTexture>{
+    : public base::RefCountedThreadSafe<SurfaceTexture> {
  public:
   static scoped_refptr<SurfaceTexture> Create(int texture_id);
 
@@ -29,13 +29,13 @@ class GL_EXPORT SurfaceTexture
   // Note: Since callbacks come in from Java objects that might outlive objects
   // being referenced from the callback, the only robust way here is to create
   // the callback from a weak pointer to your object.
-  void SetFrameAvailableCallback(const base::Closure& callback);
+  void SetFrameAvailableCallback(base::RepeatingClosure callback);
 
   // Set the listener callback, but allow it to be invoked on any thread.  The
   // same caveats apply as SetFrameAvailableCallback, plus whatever other issues
   // show up due to multithreading (e.g., don't bind the Closure to a method
   // via a weak ref).
-  void SetFrameAvailableCallbackOnAnyThread(const base::Closure& callback);
+  void SetFrameAvailableCallbackOnAnyThread(base::RepeatingClosure callback);
 
   // Update the texture image to the most recent frame from the image stream.
   void UpdateTexImage();
@@ -58,15 +58,17 @@ class GL_EXPORT SurfaceTexture
   ANativeWindow* CreateSurface();
 
   // Release the SurfaceTexture back buffers.  The SurfaceTexture is no longer
-  // usable after calling this.  Note that this is not called 'Release', like
-  // the android API, because scoped_refptr<> calls that quite a bit.
-  void ReleaseSurfaceTexture();
+  // usable after calling this but the front buffer is still valid. Note that
+  // this is not called 'Release', like the Android API, because scoped_refptr
+  // calls that quite a bit.
+  void ReleaseBackBuffers();
+
+  // Set the default buffer size for the surface texture.
+  void SetDefaultBufferSize(int width, int height);
 
   const base::android::JavaRef<jobject>& j_surface_texture() const {
     return j_surface_texture_;
   }
-
-  static bool RegisterSurfaceTexture(JNIEnv* env);
 
  protected:
   explicit SurfaceTexture(
@@ -74,7 +76,7 @@ class GL_EXPORT SurfaceTexture
 
  private:
   friend class base::RefCountedThreadSafe<SurfaceTexture>;
-  ~SurfaceTexture();
+  virtual ~SurfaceTexture();
 
   // Java SurfaceTexture instance.
   base::android::ScopedJavaGlobalRef<jobject> j_surface_texture_;

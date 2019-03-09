@@ -10,6 +10,10 @@ class GURL;
 
 @protocol CRWNativeContent;
 
+namespace web {
+class WebState;
+}
+
 // Provide a controller to a native view representing a given URL.
 @protocol CRWNativeContentProvider
 
@@ -19,15 +23,12 @@ class GURL;
 // Returns an autoreleased controller for driving a native view contained
 // within the web content area. This may return nil if the url is unsupported.
 // |url| will be of the form "chrome://foo".
-- (id<CRWNativeContent>)controllerForURL:(const GURL&)url;
-
-// Returns an autoreleased controller for driving a native view contained
-// within the web content area. The native view will contain an error page
-// with information appropriate for the problem described in |error|.
-// |isPost| indicates whether the error was for a post request.
+// |webState| is the webState that triggered the navigation to |url|.
 - (id<CRWNativeContent>)controllerForURL:(const GURL&)url
-                               withError:(NSError*)error
-                                  isPost:(BOOL)isPost;
+                                webState:(web::WebState*)webState;
+
+// Returns the inset from |webState|'s view to lay out provided native content.
+- (UIEdgeInsets)nativeContentInsetForWebState:(web::WebState*)webState;
 
 @end
 

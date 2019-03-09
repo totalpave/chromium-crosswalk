@@ -4,11 +4,15 @@
 
 #include "components/prefs/in_memory_pref_store.h"
 
-#include "base/memory/ptr_util.h"
+#include <memory>
+
+#include "base/test/scoped_task_environment.h"
 #include "base/values.h"
+#include "components/prefs/persistent_pref_store_unittest.h"
 #include "components/prefs/pref_store_observer_mock.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
 namespace {
 const char kTestPref[] = "test.pref";
 
@@ -18,22 +22,23 @@ class InMemoryPrefStoreTest : public testing::Test {
 
   void SetUp() override { store_ = new InMemoryPrefStore(); }
  protected:
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   scoped_refptr<InMemoryPrefStore> store_;
   PrefStoreObserverMock observer_;
 };
 
 TEST_F(InMemoryPrefStoreTest, SetGetValue) {
-  const base::Value* value = NULL;
-  base::Value* mutable_value = NULL;
+  const base::Value* value = nullptr;
+  base::Value* mutable_value = nullptr;
   EXPECT_FALSE(store_->GetValue(kTestPref, &value));
   EXPECT_FALSE(store_->GetMutableValue(kTestPref, &mutable_value));
 
-  store_->SetValue(kTestPref, base::WrapUnique(new base::FundamentalValue(42)),
+  store_->SetValue(kTestPref, std::make_unique<base::Value>(42),
                    WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_TRUE(store_->GetValue(kTestPref, &value));
-  EXPECT_TRUE(base::FundamentalValue(42).Equals(value));
+  EXPECT_TRUE(base::Value(42).Equals(value));
   EXPECT_TRUE(store_->GetMutableValue(kTestPref, &mutable_value));
-  EXPECT_TRUE(base::FundamentalValue(42).Equals(mutable_value));
+  EXPECT_TRUE(base::Value(42).Equals(mutable_value));
 
   store_->RemoveValue(kTestPref, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_FALSE(store_->GetValue(kTestPref, &value));
@@ -58,7 +63,7 @@ TEST_F(InMemoryPrefStoreTest, CallObserver) {
   store_->AddObserver(&observer_);
 
   // Triggers on SetValue.
-  store_->SetValue(kTestPref, base::WrapUnique(new base::FundamentalValue(42)),
+  store_->SetValue(kTestPref, std::make_unique<base::Value>(42),
                    WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   observer_.VerifyAndResetChangedKey(kTestPref);
 
@@ -67,8 +72,7 @@ TEST_F(InMemoryPrefStoreTest, CallObserver) {
   observer_.VerifyAndResetChangedKey(kTestPref);
 
   // But not SetValueSilently.
-  store_->SetValueSilently(kTestPref,
-                           base::WrapUnique(new base::FundamentalValue(42)),
+  store_->SetValueSilently(kTestPref, std::make_unique<base::Value>(42),
                            WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_EQ(0u, observer_.changed_keys.size());
 
@@ -80,7 +84,7 @@ TEST_F(InMemoryPrefStoreTest, CallObserver) {
 
   // Doesn't make call on removed observers.
   store_->RemoveObserver(&observer_);
-  store_->SetValue(kTestPref, base::WrapUnique(new base::FundamentalValue(42)),
+  store_->SetValue(kTestPref, std::make_unique<base::Value>(42),
                    WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   store_->RemoveValue(kTestPref, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   EXPECT_EQ(0u, observer_.changed_keys.size());
@@ -100,6 +104,10 @@ TEST_F(InMemoryPrefStoreTest, GetReadError) {
 
 TEST_F(InMemoryPrefStoreTest, ReadPrefs) {
   EXPECT_EQ(PersistentPrefStore::PREF_READ_ERROR_NONE, store_->ReadPrefs());
+}
+
+TEST_F(InMemoryPrefStoreTest, CommitPendingWriteWithCallback) {
+  TestCommitPendingWriteWithCallback(store_.get(), &scoped_task_environment_);
 }
 
 }  // namespace

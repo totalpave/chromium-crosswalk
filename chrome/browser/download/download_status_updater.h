@@ -5,16 +5,17 @@
 #ifndef CHROME_BROWSER_DOWNLOAD_DOWNLOAD_STATUS_UPDATER_H_
 #define CHROME_BROWSER_DOWNLOAD_DOWNLOAD_STATUS_UPDATER_H_
 
+#include <memory>
 #include <set>
 
 #include "base/macros.h"
-#include "chrome/browser/download/all_download_item_notifier.h"
-#include "content/public/browser/download_item.h"
+#include "components/download/content/public/all_download_item_notifier.h"
+#include "components/download/public/common/download_item.h"
 #include "content/public/browser/download_manager.h"
 
 // Keeps track of download progress for the entire browser.
 class DownloadStatusUpdater
-  : public AllDownloadItemNotifier::Observer {
+    : public download::AllDownloadItemNotifier::Observer {
  public:
   DownloadStatusUpdater();
   ~DownloadStatusUpdater() override;
@@ -34,19 +35,19 @@ class DownloadStatusUpdater
 
   // AllDownloadItemNotifier::Observer
   void OnDownloadCreated(content::DownloadManager* manager,
-                         content::DownloadItem* item) override;
+                         download::DownloadItem* item) override;
   void OnDownloadUpdated(content::DownloadManager* manager,
-                         content::DownloadItem* item) override;
+                         download::DownloadItem* item) override;
 
  protected:
   // Platform-specific function to update the platform UI for download progress.
   // |download| is the download item that changed. Implementations should not
   // hold the value of |download| as it is not guaranteed to remain valid.
   // Virtual to be overridable for testing.
-  virtual void UpdateAppIconDownloadProgress(content::DownloadItem* download);
+  virtual void UpdateAppIconDownloadProgress(download::DownloadItem* download);
 
  private:
-  std::vector<AllDownloadItemNotifier*> notifiers_;
+  std::vector<std::unique_ptr<download::AllDownloadItemNotifier>> notifiers_;
 
   DISALLOW_COPY_AND_ASSIGN(DownloadStatusUpdater);
 };

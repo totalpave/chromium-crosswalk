@@ -9,15 +9,16 @@
 #include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/io_thread.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_io_data.h"
 #include "chrome/browser/profiles/storage_partition_descriptor.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "net/cookies/cookie_store.h"
+#include "content/public/browser/storage_partition.h"
 
 using content::BrowserThread;
 
@@ -63,36 +64,25 @@ class FactoryForMain : public ChromeURLRequestContextFactory {
   content::URLRequestInterceptorScopedVector request_interceptors_;
 };
 
-// Factory that creates the URLRequestContext for extensions.
-class FactoryForExtensions : public ChromeURLRequestContextFactory {
- public:
-  explicit FactoryForExtensions(const ProfileIOData* profile_io_data)
-      : profile_io_data_(profile_io_data) {}
-
-  net::URLRequestContext* Create() override {
-    return profile_io_data_->GetExtensionsRequestContext();
-  }
-
- private:
-  const ProfileIOData* const profile_io_data_;
-};
-
 // Factory that creates the URLRequestContext for a given isolated app.
 class FactoryForIsolatedApp : public ChromeURLRequestContextFactory {
  public:
   FactoryForIsolatedApp(
       const ProfileIOData* profile_io_data,
       const StoragePartitionDescriptor& partition_descriptor,
-      ChromeURLRequestContextGetter* main_context,
       std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
           protocol_handler_interceptor,
       content::ProtocolHandlerMap* protocol_handlers,
-      content::URLRequestInterceptorScopedVector request_interceptors)
+      content::URLRequestInterceptorScopedVector request_interceptors,
+      network::mojom::NetworkContextRequest network_context_request,
+      network::mojom::NetworkContextParamsPtr network_context_params)
       : profile_io_data_(profile_io_data),
         partition_descriptor_(partition_descriptor),
-        main_request_context_getter_(main_context),
+        io_thread_(g_browser_process->io_thread()),
         protocol_handler_interceptor_(std::move(protocol_handler_interceptor)),
-        request_interceptors_(std::move(request_interceptors)) {
+        request_interceptors_(std::move(request_interceptors)),
+        network_context_request_(std::move(network_context_request)),
+        network_context_params_(std::move(network_context_params)) {
     std::swap(protocol_handlers_, *protocol_handlers);
   }
 
@@ -103,20 +93,22 @@ class FactoryForIsolatedApp : public ChromeURLRequestContextFactory {
     // factory is actually destroyed. Thus it is safe to destructively pass
     // state onwards.
     return profile_io_data_->GetIsolatedAppRequestContext(
-        main_request_context_getter_->GetURLRequestContext(),
-        partition_descriptor_, std::move(protocol_handler_interceptor_),
-        &protocol_handlers_, std::move(request_interceptors_));
+        io_thread_, partition_descriptor_,
+        std::move(protocol_handler_interceptor_), &protocol_handlers_,
+        std::move(request_interceptors_), std::move(network_context_request_),
+        std::move(network_context_params_));
   }
 
  private:
   const ProfileIOData* const profile_io_data_;
   const StoragePartitionDescriptor partition_descriptor_;
-  scoped_refptr<ChromeURLRequestContextGetter>
-      main_request_context_getter_;
+  IOThread* io_thread_;
   std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
       protocol_handler_interceptor_;
   content::ProtocolHandlerMap protocol_handlers_;
   content::URLRequestInterceptorScopedVector request_interceptors_;
+  network::mojom::NetworkContextRequest network_context_request_;
+  network::mojom::NetworkContextParamsPtr network_context_params_;
 };
 
 // Factory that creates the media URLRequestContext for a given isolated
@@ -169,17 +161,36 @@ class FactoryForMedia : public ChromeURLRequestContextFactory {
 // ChromeURLRequestContextGetter
 // ----------------------------------------------------------------------------
 
-ChromeURLRequestContextGetter::ChromeURLRequestContextGetter(
-    ChromeURLRequestContextFactory* factory)
-    : factory_(factory),
-      url_request_context_(nullptr) {
-  DCHECK(factory);
-}
+ChromeURLRequestContextGetter::ChromeURLRequestContextGetter()
+    : url_request_context_(nullptr) {}
 
 ChromeURLRequestContextGetter::~ChromeURLRequestContextGetter() {
   // NotifyContextShuttingDown() must have been called.
-  DCHECK(!factory_.get());
   DCHECK(!url_request_context_);
+}
+
+scoped_refptr<ChromeURLRequestContextGetter>
+ChromeURLRequestContextGetter::CreateAndInit(
+    std::unique_ptr<ChromeURLRequestContextFactory> factory) {
+  scoped_refptr<ChromeURLRequestContextGetter> url_request_context_getter(
+      new ChromeURLRequestContextGetter());
+  // This can't be done in the constructor because it's possible for the task to
+  // run and complete before the constructor returns, which would reduce the
+  // reference count from 1 to 0 on completion, and delete the object
+  // immediately.
+  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
+                           base::BindOnce(&ChromeURLRequestContextGetter::Init,
+                                          url_request_context_getter,
+                                          base::Passed(std::move(factory))));
+  return url_request_context_getter;
+}
+
+void ChromeURLRequestContextGetter::Init(
+    std::unique_ptr<ChromeURLRequestContextFactory> factory) {
+  DCHECK(factory);
+  DCHECK(!url_request_context_);
+
+  url_request_context_ = factory->Create();
 }
 
 // Lazily create a URLRequestContext using our factory.
@@ -187,56 +198,44 @@ net::URLRequestContext*
 ChromeURLRequestContextGetter::GetURLRequestContext() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-  if (factory_.get()) {
-    DCHECK(!url_request_context_);
-    url_request_context_ = factory_->Create();
-    factory_.reset();
-  }
-
   return url_request_context_;
 }
 
 void ChromeURLRequestContextGetter::NotifyContextShuttingDown() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-  factory_.reset();
   url_request_context_ = nullptr;
   URLRequestContextGetter::NotifyContextShuttingDown();
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
 ChromeURLRequestContextGetter::GetNetworkTaskRunner() const {
-  return BrowserThread::GetMessageLoopProxyForThread(BrowserThread::IO);
+  return base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO});
 }
 
 // static
-ChromeURLRequestContextGetter* ChromeURLRequestContextGetter::Create(
+scoped_refptr<ChromeURLRequestContextGetter>
+ChromeURLRequestContextGetter::Create(
     Profile* profile,
     const ProfileIOData* profile_io_data,
     content::ProtocolHandlerMap* protocol_handlers,
     content::URLRequestInterceptorScopedVector request_interceptors) {
-  return new ChromeURLRequestContextGetter(new FactoryForMain(
-      profile_io_data, protocol_handlers, std::move(request_interceptors)));
+  return ChromeURLRequestContextGetter::CreateAndInit(
+      std::make_unique<FactoryForMain>(profile_io_data, protocol_handlers,
+                                       std::move(request_interceptors)));
 }
 
 // static
-ChromeURLRequestContextGetter*
+scoped_refptr<ChromeURLRequestContextGetter>
 ChromeURLRequestContextGetter::CreateForMedia(
-    Profile* profile, const ProfileIOData* profile_io_data) {
-  return new ChromeURLRequestContextGetter(
-      new FactoryForMedia(profile_io_data));
+    Profile* profile,
+    const ProfileIOData* profile_io_data) {
+  return ChromeURLRequestContextGetter::CreateAndInit(
+      std::make_unique<FactoryForMedia>(profile_io_data));
 }
 
 // static
-ChromeURLRequestContextGetter*
-ChromeURLRequestContextGetter::CreateForExtensions(
-    Profile* profile, const ProfileIOData* profile_io_data) {
-  return new ChromeURLRequestContextGetter(
-      new FactoryForExtensions(profile_io_data));
-}
-
-// static
-ChromeURLRequestContextGetter*
+scoped_refptr<ChromeURLRequestContextGetter>
 ChromeURLRequestContextGetter::CreateForIsolatedApp(
     Profile* profile,
     const ProfileIOData* profile_io_data,
@@ -244,23 +243,25 @@ ChromeURLRequestContextGetter::CreateForIsolatedApp(
     std::unique_ptr<ProtocolHandlerRegistry::JobInterceptorFactory>
         protocol_handler_interceptor,
     content::ProtocolHandlerMap* protocol_handlers,
-    content::URLRequestInterceptorScopedVector request_interceptors) {
-  ChromeURLRequestContextGetter* main_context =
-      static_cast<ChromeURLRequestContextGetter*>(profile->GetRequestContext());
-  return new ChromeURLRequestContextGetter(new FactoryForIsolatedApp(
-      profile_io_data, partition_descriptor, main_context,
-      std::move(protocol_handler_interceptor), protocol_handlers,
-      std::move(request_interceptors)));
+    content::URLRequestInterceptorScopedVector request_interceptors,
+    network::mojom::NetworkContextRequest network_context_request,
+    network::mojom::NetworkContextParamsPtr network_context_params) {
+  return ChromeURLRequestContextGetter::CreateAndInit(
+      std::make_unique<FactoryForIsolatedApp>(
+          profile_io_data, partition_descriptor,
+          std::move(protocol_handler_interceptor), protocol_handlers,
+          std::move(request_interceptors), std::move(network_context_request),
+          std::move(network_context_params)));
 }
 
 // static
-ChromeURLRequestContextGetter*
+scoped_refptr<ChromeURLRequestContextGetter>
 ChromeURLRequestContextGetter::CreateForIsolatedMedia(
     Profile* profile,
     ChromeURLRequestContextGetter* app_context,
     const ProfileIOData* profile_io_data,
     const StoragePartitionDescriptor& partition_descriptor) {
-  return new ChromeURLRequestContextGetter(
-      new FactoryForIsolatedMedia(
+  return ChromeURLRequestContextGetter::CreateAndInit(
+      std::make_unique<FactoryForIsolatedMedia>(
           profile_io_data, partition_descriptor, app_context));
 }

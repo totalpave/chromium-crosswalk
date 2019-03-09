@@ -13,10 +13,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/sequenced_task_runner_helpers.h"
 #include "ppapi/c/pp_var.h"
-#include "third_party/WebKit/public/web/WebPlugin.h"
+#include "third_party/blink/public/mojom/clipboard/clipboard.mojom.h"
+#include "third_party/blink/public/web/web_plugin.h"
 #include "ui/gfx/geometry/rect.h"
-
-struct _NPP;
 
 namespace blink {
 struct WebPluginParams;
@@ -28,7 +27,6 @@ namespace content {
 class PepperPluginInstanceImpl;
 class PluginInstanceThrottlerImpl;
 class PluginModule;
-class PPB_URLLoader_Impl;
 class RenderFrameImpl;
 
 class PepperWebPluginImpl : public blink::WebPlugin {
@@ -41,67 +39,73 @@ class PepperWebPluginImpl : public blink::WebPlugin {
   PepperPluginInstanceImpl* instance() { return instance_.get(); }
 
   // blink::WebPlugin implementation.
-  blink::WebPluginContainer* container() const override;
-  bool initialize(blink::WebPluginContainer* container) override;
-  void destroy() override;
-  v8::Local<v8::Object> v8ScriptableObject(v8::Isolate* isolate) override;
-  void updateAllLifecyclePhases() override {}
-  void paint(blink::WebCanvas* canvas, const blink::WebRect& rect) override;
-  void updateGeometry(const blink::WebRect& window_rect,
+  blink::WebPluginContainer* Container() const override;
+  bool Initialize(blink::WebPluginContainer* container) override;
+  void Destroy() override;
+  v8::Local<v8::Object> V8ScriptableObject(v8::Isolate* isolate) override;
+  void UpdateAllLifecyclePhases(
+      blink::WebWidget::LifecycleUpdateReason) override {}
+  void Paint(cc::PaintCanvas* canvas, const blink::WebRect& rect) override;
+  void UpdateGeometry(const blink::WebRect& window_rect,
                       const blink::WebRect& clip_rect,
                       const blink::WebRect& unobscured_rect,
-                      const blink::WebVector<blink::WebRect>& cut_outs_rects,
                       bool is_visible) override;
-  void updateFocus(bool focused, blink::WebFocusType focus_type) override;
-  void updateVisibility(bool visible) override;
-  blink::WebInputEventResult handleInputEvent(
-      const blink::WebInputEvent& event,
+  void UpdateFocus(bool focused, blink::WebFocusType focus_type) override;
+  void UpdateVisibility(bool visible) override;
+  blink::WebInputEventResult HandleInputEvent(
+      const blink::WebCoalescedInputEvent& event,
       blink::WebCursorInfo& cursor_info) override;
-  void didReceiveResponse(const blink::WebURLResponse& response) override;
-  void didReceiveData(const char* data, int data_length) override;
-  void didFinishLoading() override;
-  void didFailLoading(const blink::WebURLError&) override;
-  bool hasSelection() const override;
-  blink::WebString selectionAsText() const override;
-  blink::WebString selectionAsMarkup() const override;
-  blink::WebURL linkAtPosition(const blink::WebPoint& position) const override;
-  bool getPrintPresetOptionsFromDocument(
+  void DidReceiveResponse(const blink::WebURLResponse& response) override;
+  void DidReceiveData(const char* data, size_t data_length) override;
+  void DidFinishLoading() override;
+  void DidFailLoading(const blink::WebURLError&) override;
+  bool HasSelection() const override;
+  blink::WebString SelectionAsText() const override;
+  blink::WebString SelectionAsMarkup() const override;
+  bool CanEditText() const override;
+  bool HasEditableText() const override;
+  bool CanUndo() const override;
+  bool CanRedo() const override;
+  bool ExecuteEditCommand(const blink::WebString& name) override;
+  bool ExecuteEditCommand(const blink::WebString& name,
+                          const blink::WebString& value) override;
+  blink::WebURL LinkAtPosition(const blink::WebPoint& position) const override;
+  bool GetPrintPresetOptionsFromDocument(
       blink::WebPrintPresetOptions* preset_options) override;
-  bool startFind(const blink::WebString& search_text,
+  bool StartFind(const blink::WebString& search_text,
                  bool case_sensitive,
                  int identifier) override;
-  void selectFindResult(bool forward, int identifier) override;
-  void stopFind() override;
-  bool supportsPaginatedPrint() override;
-  bool isPrintScalingDisabled() override;
+  void SelectFindResult(bool forward, int identifier) override;
+  void StopFind() override;
+  bool SupportsPaginatedPrint() override;
 
-  int printBegin(const blink::WebPrintParams& print_params) override;
-  void printPage(int page_number, blink::WebCanvas* canvas) override;
-  void printEnd() override;
+  int PrintBegin(const blink::WebPrintParams& print_params) override;
+  void PrintPage(int page_number, cc::PaintCanvas* canvas) override;
+  void PrintEnd() override;
 
-  bool canRotateView() override;
-  void rotateView(RotationType type) override;
-  bool isPlaceholder() override;
+  bool CanRotateView() override;
+  void RotateView(RotationType type) override;
+  bool IsPlaceholder() override;
 
  private:
   friend class base::DeleteHelper<PepperWebPluginImpl>;
 
-  virtual ~PepperWebPluginImpl();
-  struct InitData;
+  ~PepperWebPluginImpl() override;
 
-  std::unique_ptr<InitData>
-      init_data_;  // Cleared upon successful initialization.
+  // Cleared upon successful initialization.
+  struct InitData;
+  std::unique_ptr<InitData> init_data_;
+
   // True if the instance represents the entire document in a frame instead of
   // being an embedded resource.
-  bool full_frame_;
+  const bool full_frame_;
+
   std::unique_ptr<PluginInstanceThrottlerImpl> throttler_;
   scoped_refptr<PepperPluginInstanceImpl> instance_;
   gfx::Rect plugin_rect_;
   PP_Var instance_object_;
   blink::WebPluginContainer* container_;
-
-  // TODO(tommycli): Remove once we fix https://crbug.com/588624.
-  bool destroyed_;
+  blink::mojom::ClipboardHostPtr clipboard_;
 
   DISALLOW_COPY_AND_ASSIGN(PepperWebPluginImpl);
 };

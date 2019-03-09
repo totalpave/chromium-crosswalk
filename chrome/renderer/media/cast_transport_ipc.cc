@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "chrome/common/cast_messages.h"
 #include "chrome/renderer/media/cast_ipc_dispatcher.h"
 #include "ipc/ipc_channel_proxy.h"
@@ -21,14 +21,16 @@ CastTransportIPC::CastTransportIPC(
     const media::cast::PacketReceiverCallback& packet_callback,
     const media::cast::CastTransportStatusCallback& status_cb,
     const media::cast::BulkRawEventsCallback& raw_events_cb)
-    : packet_callback_(packet_callback),
+    : channel_id_(-1),
+      packet_callback_(packet_callback),
       status_callback_(status_cb),
       raw_events_callback_(raw_events_cb) {
   if (CastIPCDispatcher::Get()) {
+    // TODO(miu): CastIPCDispatcher should be provided as a ctor argument.
     channel_id_ = CastIPCDispatcher::Get()->AddSender(this);
+    Send(new CastHostMsg_New(channel_id_, local_end_point, remote_end_point,
+                             *options));
   }
-  Send(new CastHostMsg_New(channel_id_, local_end_point, remote_end_point,
-                           *options));
 }
 
 CastTransportIPC::~CastTransportIPC() {
@@ -38,20 +40,14 @@ CastTransportIPC::~CastTransportIPC() {
   }
 }
 
-void CastTransportIPC::InitializeAudio(
+void CastTransportIPC::InitializeStream(
     const media::cast::CastTransportRtpConfig& config,
     std::unique_ptr<media::cast::RtcpObserver> rtcp_observer) {
-  DCHECK(clients_.find(config.ssrc) == clients_.end());
-  clients_[config.ssrc] = std::move(rtcp_observer);
-  Send(new CastHostMsg_InitializeAudio(channel_id_, config));
-}
-
-void CastTransportIPC::InitializeVideo(
-    const media::cast::CastTransportRtpConfig& config,
-    std::unique_ptr<media::cast::RtcpObserver> rtcp_observer) {
-  DCHECK(clients_.find(config.ssrc) == clients_.end());
-  clients_[config.ssrc] = std::move(rtcp_observer);
-  Send(new CastHostMsg_InitializeVideo(channel_id_, config));
+  if (rtcp_observer) {
+    DCHECK(clients_.find(config.ssrc) == clients_.end());
+    clients_[config.ssrc] = std::move(rtcp_observer);
+  }
+  Send(new CastHostMsg_InitializeStream(channel_id_, config));
 }
 
 void CastTransportIPC::InsertFrame(uint32_t ssrc,
@@ -141,7 +137,7 @@ void CastTransportIPC::OnRawEvents(
 }
 
 void CastTransportIPC::OnRtt(uint32_t rtp_sender_ssrc, base::TimeDelta rtt) {
-  ClientMap::iterator it = clients_.find(rtp_sender_ssrc);
+  auto it = clients_.find(rtp_sender_ssrc);
   if (it == clients_.end()) {
     LOG(ERROR) << "Received RTT report for unknown SSRC: " << rtp_sender_ssrc;
     return;
@@ -152,7 +148,7 @@ void CastTransportIPC::OnRtt(uint32_t rtp_sender_ssrc, base::TimeDelta rtt) {
 void CastTransportIPC::OnRtcpCastMessage(
     uint32_t rtp_sender_ssrc,
     const media::cast::RtcpCastMessage& cast_message) {
-  ClientMap::iterator it = clients_.find(rtp_sender_ssrc);
+  auto it = clients_.find(rtp_sender_ssrc);
   if (it == clients_.end()) {
     LOG(ERROR) << "Received cast message for unknown SSRC: " << rtp_sender_ssrc;
     return;
@@ -161,7 +157,7 @@ void CastTransportIPC::OnRtcpCastMessage(
 }
 
 void CastTransportIPC::OnReceivedPli(uint32_t rtp_sender_ssrc) {
-  ClientMap::iterator it = clients_.find(rtp_sender_ssrc);
+  auto it = clients_.find(rtp_sender_ssrc);
   if (it == clients_.end()) {
     LOG(ERROR) << "Received picture loss indicator for unknown SSRC: "
                << rtp_sender_ssrc;
@@ -182,7 +178,7 @@ void CastTransportIPC::OnReceivedPacket(const media::cast::Packet& packet) {
 }
 
 void CastTransportIPC::Send(IPC::Message* message) {
-  if (CastIPCDispatcher::Get()) {
+  if (CastIPCDispatcher::Get() && channel_id_ != -1) {
     CastIPCDispatcher::Get()->Send(message);
   } else {
     delete message;

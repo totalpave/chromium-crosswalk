@@ -11,26 +11,20 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/logging.h"
 #include "chrome/browser/ui/android/view_android_helper.h"
-#include "chrome/browser/ui/autofill/password_generation_popup_controller.h"
-#include "content/public/browser/android/content_view_core.h"
+#include "chrome/browser/ui/passwords/password_generation_popup_controller.h"
 #include "jni/PasswordGenerationPopupBridge_jni.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/range/range.h"
 
-namespace autofill {
+using base::android::JavaParamRef;
+using base::android::ScopedJavaLocalRef;
 
 PasswordGenerationPopupViewAndroid::PasswordGenerationPopupViewAndroid(
     PasswordGenerationPopupController* controller)
     : controller_(controller) {}
 
-void PasswordGenerationPopupViewAndroid::SavedPasswordsLinkClicked(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
-  if (controller_)
-    controller_->OnSavedPasswordsLinkClicked();
-}
 
 void PasswordGenerationPopupViewAndroid::Dismissed(
     JNIEnv* env,
@@ -48,23 +42,21 @@ void PasswordGenerationPopupViewAndroid::PasswordSelected(
     controller_->PasswordAccepted();
 }
 
-// static
-bool PasswordGenerationPopupViewAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
 PasswordGenerationPopupViewAndroid::~PasswordGenerationPopupViewAndroid() {}
 
 void PasswordGenerationPopupViewAndroid::Show() {
-  JNIEnv* env = base::android::AttachCurrentThread();
   ui::ViewAndroid* view_android = controller_->container_view();
 
   DCHECK(view_android);
 
-  java_object_.Reset(Java_PasswordGenerationPopupBridge_create(
-      env, reinterpret_cast<intptr_t>(this),
-      view_android->GetWindowAndroid()->GetJavaObject().obj(),
-      view_android->GetViewAndroidDelegate().obj()));
+  popup_ = view_android->AcquireAnchorView();
+  const ScopedJavaLocalRef<jobject> view = popup_.view();
+  if (view.is_null())
+    return;
+  JNIEnv* env = base::android::AttachCurrentThread();
+  java_object_.Reset(autofill::Java_PasswordGenerationPopupBridge_create(
+      env, view, reinterpret_cast<intptr_t>(this),
+      view_android->GetWindowAndroid()->GetJavaObject()));
 
   UpdateBoundsAndRedrawPopup();
 }
@@ -72,24 +64,29 @@ void PasswordGenerationPopupViewAndroid::Show() {
 void PasswordGenerationPopupViewAndroid::Hide() {
   controller_ = NULL;
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_PasswordGenerationPopupBridge_hide(env, java_object_.obj());
+  if (!java_object_.is_null()) {
+    autofill::Java_PasswordGenerationPopupBridge_hide(env, java_object_);
+  } else {
+    // Hide() should delete |this| either via Java dismiss or directly.
+    delete this;
+  }
 }
 
-gfx::Size PasswordGenerationPopupViewAndroid::GetPreferredSizeOfPasswordView() {
-  static const int kUnusedSize = 0;
-  return gfx::Size(kUnusedSize, kUnusedSize);
-}
+void PasswordGenerationPopupViewAndroid::UpdateState() {}
 
 void PasswordGenerationPopupViewAndroid::UpdateBoundsAndRedrawPopup() {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  Java_PasswordGenerationPopupBridge_setAnchorRect(
-      env,
-      java_object_.obj(),
-      controller_->element_bounds().x(),
-      controller_->element_bounds().y(),
-      controller_->element_bounds().width(),
-      controller_->element_bounds().height());
+  if (java_object_.is_null())
+    return;
 
+  const ScopedJavaLocalRef<jobject> view = popup_.view();
+  if (view.is_null())
+    return;
+
+  ui::ViewAndroid* view_android = controller_->container_view();
+
+  DCHECK(view_android);
+  view_android->SetAnchorRect(view, controller_->element_bounds());
+  JNIEnv* env = base::android::AttachCurrentThread();
   ScopedJavaLocalRef<jstring> password =
       base::android::ConvertUTF16ToJavaString(env, controller_->password());
   ScopedJavaLocalRef<jstring> suggestion =
@@ -98,16 +95,11 @@ void PasswordGenerationPopupViewAndroid::UpdateBoundsAndRedrawPopup() {
   ScopedJavaLocalRef<jstring> help =
       base::android::ConvertUTF16ToJavaString(env, controller_->HelpText());
 
-  Java_PasswordGenerationPopupBridge_show(
-      env,
-      java_object_.obj(),
-      controller_->IsRTL(),
-      controller_->display_password(),
-      password.obj(),
-      suggestion.obj(),
-      help.obj(),
-      controller_->HelpTextLinkRange().start(),
-      controller_->HelpTextLinkRange().end());
+  autofill::Java_PasswordGenerationPopupBridge_show(
+      env, java_object_, controller_->IsRTL(),
+      controller_->state() ==
+          PasswordGenerationPopupController::kOfferGeneration,
+      password, suggestion, help);
 }
 
 void PasswordGenerationPopupViewAndroid::PasswordSelectionUpdated() {}
@@ -123,5 +115,3 @@ PasswordGenerationPopupView* PasswordGenerationPopupView::Create(
     PasswordGenerationPopupController* controller) {
   return new PasswordGenerationPopupViewAndroid(controller);
 }
-
-}  // namespace autofill

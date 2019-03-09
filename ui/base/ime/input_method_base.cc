@@ -5,26 +5,36 @@
 #include "ui/base/ime/input_method_base.h"
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "ui/base/ime/ime_bridge.h"
 #include "ui/base/ime/input_method_delegate.h"
+#include "ui/base/ime/input_method_keyboard_controller_stub.h"
 #include "ui/base/ime/input_method_observer.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/events/event.h"
 
 namespace ui {
 
-InputMethodBase::InputMethodBase()
-    : sending_key_event_(false),
-      delegate_(nullptr),
-      text_input_client_(nullptr) {}
+ui::IMEEngineHandlerInterface* InputMethodBase::GetEngine() {
+  auto* bridge = ui::IMEBridge::Get();
+  return bridge ? bridge->GetCurrentEngineHandler() : nullptr;
+}
+
+InputMethodBase::InputMethodBase(internal::InputMethodDelegate* delegate)
+    : InputMethodBase(delegate, nullptr) {}
+
+InputMethodBase::InputMethodBase(
+    internal::InputMethodDelegate* delegate,
+    std::unique_ptr<InputMethodKeyboardController> keyboard_controller)
+    : delegate_(delegate),
+      keyboard_controller_(std::move(keyboard_controller)) {}
 
 InputMethodBase::~InputMethodBase() {
-  FOR_EACH_OBSERVER(InputMethodObserver,
-                    observer_list_,
-                    OnInputMethodDestroyed(this));
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnInputMethodDestroyed(this);
   if (ui::IMEBridge::Get() &&
       ui::IMEBridge::Get()->GetInputContextHandler() == this)
     ui::IMEBridge::Get()->SetInputContextHandler(nullptr);
@@ -35,8 +45,11 @@ void InputMethodBase::SetDelegate(internal::InputMethodDelegate* delegate) {
 }
 
 void InputMethodBase::OnFocus() {
-  if (ui::IMEBridge::Get())
-    ui::IMEBridge::Get()->SetInputContextHandler(this);
+  ui::IMEBridge* bridge = ui::IMEBridge::Get();
+  if (bridge) {
+    bridge->SetInputContextHandler(this);
+    bridge->MaybeSwitchEngine();
+  }
 }
 
 void InputMethodBase::OnBlur() {
@@ -44,6 +57,14 @@ void InputMethodBase::OnBlur() {
       ui::IMEBridge::Get()->GetInputContextHandler() == this)
     ui::IMEBridge::Get()->SetInputContextHandler(nullptr);
 }
+
+#if defined(OS_WIN)
+bool InputMethodBase::OnUntranslatedIMEMessage(
+    const MSG event,
+    InputMethod::NativeEventResult* result) {
+  return false;
+}
+#endif
 
 void InputMethodBase::SetFocusedTextInputClient(TextInputClient* client) {
   SetFocusedTextInputClientInternal(client);
@@ -59,10 +80,23 @@ TextInputClient* InputMethodBase::GetTextInputClient() const {
   return text_input_client_;
 }
 
+void InputMethodBase::SetOnScreenKeyboardBounds(const gfx::Rect& new_bounds) {
+  keyboard_bounds_ = new_bounds;
+  if (text_input_client_)
+    text_input_client_->EnsureCaretNotInRect(keyboard_bounds_);
+}
+
 void InputMethodBase::OnTextInputTypeChanged(const TextInputClient* client) {
   if (!IsTextInputClientFocused(client))
     return;
   NotifyTextInputStateChanged(client);
+}
+
+void InputMethodBase::OnInputLocaleChanged() {
+}
+
+bool InputMethodBase::IsInputLocaleCJK() const {
+  return false;
 }
 
 TextInputType InputMethodBase::GetTextInputType() const {
@@ -85,8 +119,16 @@ bool InputMethodBase::CanComposeInline() const {
   return client ? client->CanComposeInline() : true;
 }
 
-void InputMethodBase::ShowImeIfNeeded() {
-  FOR_EACH_OBSERVER(InputMethodObserver, observer_list_, OnShowImeIfNeeded());
+bool InputMethodBase::GetClientShouldDoLearning() {
+  TextInputClient* client = GetTextInputClient();
+  return client && client->ShouldDoLearning();
+}
+
+void InputMethodBase::ShowVirtualKeyboardIfEnabled() {
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnShowVirtualKeyboardIfEnabled();
+  if (auto* keyboard = GetInputMethodKeyboardController())
+    keyboard->DisplayVirtualKeyboard();
 }
 
 void InputMethodBase::AddObserver(InputMethodObserver* observer) {
@@ -95,6 +137,11 @@ void InputMethodBase::AddObserver(InputMethodObserver* observer) {
 
 void InputMethodBase::RemoveObserver(InputMethodObserver* observer) {
   observer_list_.RemoveObserver(observer);
+}
+
+InputMethodKeyboardController*
+InputMethodBase::GetInputMethodKeyboardController() {
+  return keyboard_controller_.get();
 }
 
 bool InputMethodBase::IsTextInputClientFocused(const TextInputClient* client) {
@@ -112,24 +159,28 @@ void InputMethodBase::OnInputMethodChanged() const {
 }
 
 ui::EventDispatchDetails InputMethodBase::DispatchKeyEventPostIME(
-    ui::KeyEvent* event) const {
-  ui::EventDispatchDetails details;
-  if (delegate_)
-    details = delegate_->DispatchKeyEventPostIME(event);
-  return details;
+    ui::KeyEvent* event,
+    ResultCallback result_callback) const {
+  if (delegate_) {
+    return delegate_->DispatchKeyEventPostIME(event,
+                                              std::move(result_callback));
+  }
+
+  if (result_callback)
+    std::move(result_callback).Run(false, false);
+  return EventDispatchDetails();
 }
 
 void InputMethodBase::NotifyTextInputStateChanged(
     const TextInputClient* client) {
-  FOR_EACH_OBSERVER(InputMethodObserver,
-                    observer_list_,
-                    OnTextInputStateChanged(client));
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnTextInputStateChanged(client);
 }
 
 void InputMethodBase::NotifyTextInputCaretBoundsChanged(
     const TextInputClient* client) {
-  FOR_EACH_OBSERVER(
-      InputMethodObserver, observer_list_, OnCaretBoundsChanged(client));
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnCaretBoundsChanged(client);
 }
 
 void InputMethodBase::SetFocusedTextInputClientInternal(
@@ -141,6 +192,10 @@ void InputMethodBase::SetFocusedTextInputClientInternal(
   text_input_client_ = client;  // nullptr allowed.
   OnDidChangeFocusedClient(old, client);
   NotifyTextInputStateChanged(text_input_client_);
+
+  // Move new focused window if necessary.
+  if (text_input_client_)
+    text_input_client_->EnsureCaretNotInRect(keyboard_bounds_);
 }
 
 std::vector<gfx::Rect> InputMethodBase::GetCompositionBounds(
@@ -163,7 +218,7 @@ std::vector<gfx::Rect> InputMethodBase::GetCompositionBounds(
 bool InputMethodBase::SendFakeProcessKeyEvent(bool pressed) const {
   KeyEvent evt(pressed ? ET_KEY_PRESSED : ET_KEY_RELEASED,
                pressed ? VKEY_PROCESSKEY : VKEY_UNKNOWN, EF_IME_FABRICATED_KEY);
-  ignore_result(DispatchKeyEventPostIME(&evt));
+  ignore_result(DispatchKeyEventPostIME(&evt, base::NullCallback()));
   return evt.stopped_propagation();
 }
 
@@ -197,13 +252,29 @@ void InputMethodBase::UpdateCompositionText(const CompositionText& composition_,
 
 void InputMethodBase::DeleteSurroundingText(int32_t offset, uint32_t length) {}
 
+SurroundingTextInfo InputMethodBase::GetSurroundingTextInfo() {
+  gfx::Range text_range;
+  SurroundingTextInfo info;
+  TextInputClient* client = GetTextInputClient();
+  if (!client->GetTextRange(&text_range) ||
+      !client->GetTextFromRange(text_range, &info.surrounding_text) ||
+      !client->GetEditableSelectionRange(&info.selection_range)) {
+    return SurroundingTextInfo();
+  }
+  // Makes the |selection_range| be relative to the |surrounding_text|.
+  info.selection_range.set_start(info.selection_range.start() -
+                                 text_range.start());
+  info.selection_range.set_end(info.selection_range.end() - text_range.start());
+  return info;
+}
+
 void InputMethodBase::SendKeyEvent(KeyEvent* event) {
   sending_key_event_ = true;
   if (track_key_events_for_testing_) {
-    key_events_for_testing_.push_back(
-        std::unique_ptr<ui::KeyEvent>(new KeyEvent(*event)));
+    key_events_for_testing_.push_back(std::make_unique<KeyEvent>(*event));
   }
-  DispatchKeyEvent(event);
+  ui::EventDispatchDetails details = DispatchKeyEvent(event);
+  DCHECK(!details.dispatcher_destroyed);
   sending_key_event_ = false;
 }
 

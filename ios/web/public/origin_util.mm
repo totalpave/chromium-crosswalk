@@ -4,13 +4,14 @@
 
 #import "ios/web/public/origin_util.h"
 
-#import <WebKit/WebKit.h>
-
-#include "base/numerics/safe_conversions.h"
-#include "base/strings/sys_string_conversions.h"
+#include "base/stl_util.h"
 #include "net/base/url_util.h"
 #include "url/gurl.h"
-#include "url/scheme_host_port.h"
+#include "url/url_util.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace web {
 
@@ -23,21 +24,13 @@ bool IsOriginSecure(const GURL& url) {
     return true;
   }
 
-  std::string hostname = url.HostNoBrackets();
-  if (net::IsLocalhost(hostname))
+  if (base::ContainsValue(url::GetSecureSchemes(), url.scheme()))
+    return true;
+
+  if (net::IsLocalhost(url))
     return true;
 
   return false;
-}
-
-GURL GURLOriginWithWKSecurityOrigin(WKSecurityOrigin* origin) {
-  if (!origin)
-    return GURL();
-
-  url::SchemeHostPort origin_tuple(base::SysNSStringToUTF8(origin.protocol),
-                                   base::SysNSStringToUTF8(origin.host),
-                                   base::checked_cast<uint16_t>(origin.port));
-  return GURL(origin_tuple.Serialize());
 }
 
 }  // namespace web

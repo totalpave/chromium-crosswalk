@@ -27,6 +27,12 @@ namespace chrome {
 // DIR_USER_DATA has been overridden by a command-line option.
 bool GetDefaultUserDataDirectory(base::FilePath* result);
 
+#if defined(OS_WIN)
+// Get the path to the roaming user's data directory, regardless of whether
+// DIR_ROAMING_USER_DATA has been overridden by a command-line option.
+bool GetDefaultRoamingUserDataDirectory(base::FilePath* result);
+#endif
+
 // Get the path to the user's cache directory.  This is normally the
 // same as the profile directory, but on Linux it can also be
 // $XDG_CACHE_HOME and on Mac it can be under ~/Library/Caches.
@@ -62,13 +68,6 @@ bool GetUserVideosDirectory(base::FilePath* result);
 // requires be located at spepcific locations.  The versioned directory is
 // in the .app at Contents/Versions/w.x.y.z.
 base::FilePath GetVersionedDirectory();
-
-// This overrides the directory returned by |GetVersionedDirectory()|, to be
-// used when |GetVersionedDirectory()| can't automatically determine the proper
-// location. This is the case when the browser didn't load itself but by, e.g.,
-// the app mode loader. This should be called before |ChromeMain()|. This takes
-// ownership of the object |path| and the caller must not delete it.
-void SetOverrideVersionedDirectory(const base::FilePath* path);
 
 // Most of the application is further contained within the framework.  The
 // framework bundle is located within the versioned directory at a specific

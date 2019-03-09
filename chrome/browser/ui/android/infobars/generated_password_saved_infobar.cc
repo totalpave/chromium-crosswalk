@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/android/infobars/generated_password_saved_infobar.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/android/jni_android.h"
@@ -13,13 +14,15 @@
 #include "content/public/browser/web_contents.h"
 #include "jni/GeneratedPasswordSavedInfoBarDelegate_jni.h"
 
+using base::android::JavaParamRef;
+
 // static
 void GeneratedPasswordSavedInfoBarDelegateAndroid::Create(
     content::WebContents* web_contents) {
   InfoBarService::FromWebContents(web_contents)
-      ->AddInfoBar(base::WrapUnique(new GeneratedPasswordSavedInfoBar(
-          base::WrapUnique(new GeneratedPasswordSavedInfoBarDelegateAndroid(
-              web_contents)))));
+      ->AddInfoBar(
+          std::make_unique<GeneratedPasswordSavedInfoBar>(base::WrapUnique(
+              new GeneratedPasswordSavedInfoBarDelegateAndroid())));
 }
 
 GeneratedPasswordSavedInfoBar::GeneratedPasswordSavedInfoBar(
@@ -36,12 +39,14 @@ GeneratedPasswordSavedInfoBar::CreateRenderInfoBar(JNIEnv* env) {
 
   return Java_GeneratedPasswordSavedInfoBarDelegate_show(
       env, GetEnumeratedIconId(),
+      base::android::ConvertUTF16ToJavaString(env,
+                                              infobar_delegate->message_text()),
       base::android::ConvertUTF16ToJavaString(
-          env, infobar_delegate->message_text()).obj(),
+          env, infobar_delegate->details_message_text()),
       infobar_delegate->inline_link_range().start(),
       infobar_delegate->inline_link_range().end(),
       base::android::ConvertUTF16ToJavaString(
-          env, infobar_delegate->button_label()).obj());
+          env, infobar_delegate->button_label()));
 }
 
 void GeneratedPasswordSavedInfoBar::OnLinkClicked(
@@ -60,8 +65,4 @@ void GeneratedPasswordSavedInfoBar::ProcessButton(int action) {
     return;
 
   RemoveSelf();
-}
-
-bool RegisterGeneratedPasswordSavedInfoBarDelegate(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }

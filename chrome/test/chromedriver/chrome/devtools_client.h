@@ -17,6 +17,7 @@ class DictionaryValue;
 class DevToolsEventListener;
 class Timeout;
 class Status;
+class WebViewImpl;
 
 // A DevTools client of a single DevTools debugger.
 class DevToolsClient {
@@ -56,6 +57,10 @@ class DevToolsClient {
       const Timeout* timeout,
       std::unique_ptr<base::DictionaryValue>* result) = 0;
 
+  virtual Status SendCommandAndIgnoreResponse(
+      const std::string& method,
+      const base::DictionaryValue& params) = 0;
+
   // Adds a listener. This must only be done when the client is disconnected.
   virtual void AddListener(DevToolsEventListener* listener) = 0;
 
@@ -69,6 +74,12 @@ class DevToolsClient {
 
   // Handles events that have been received but not yet handled.
   virtual Status HandleReceivedEvents() = 0;
+
+  // Indicate that we've been detached from the DevTools target.
+  virtual void SetDetached() = 0;
+
+  // Set the owning WebViewImpl, if any.
+  virtual void SetOwner(WebViewImpl* owner) = 0;
 };
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CHROME_DEVTOOLS_CLIENT_H_

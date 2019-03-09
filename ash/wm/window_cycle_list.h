@@ -9,19 +9,35 @@
 #include <vector>
 
 #include "ash/ash_export.h"
-#include "ash/common/wm_window_observer.h"
 #include "ash/wm/window_cycle_controller.h"
 #include "base/macros.h"
+#include "base/scoped_observer.h"
+#include "base/timer/timer.h"
+#include "ui/aura/window_observer.h"
+#include "ui/display/display_observer.h"
+
+namespace aura {
+class Window;
+}
+
+namespace display {
+class Screen;
+}
+
+namespace views {
+class Widget;
+}
 
 namespace ash {
 
-class ScopedShowWindow;
+class WindowCycleView;
 
 // Tracks a set of Windows that can be stepped through. This class is used by
 // the WindowCycleController.
-class ASH_EXPORT WindowCycleList : public WmWindowObserver {
+class ASH_EXPORT WindowCycleList : public aura::WindowObserver,
+                                   public display::DisplayObserver {
  public:
-  using WindowList = std::vector<WmWindow*>;
+  using WindowList = std::vector<aura::Window*>;
 
   explicit WindowCycleList(const WindowList& windows);
   ~WindowCycleList() override;
@@ -33,15 +49,33 @@ class ASH_EXPORT WindowCycleList : public WmWindowObserver {
 
   int current_index() const { return current_index_; }
 
+  void set_user_did_accept(bool user_did_accept) {
+    user_did_accept_ = user_did_accept;
+  }
+
  private:
   friend class WindowCycleControllerTest;
+
+  static void DisableInitialDelayForTesting();
+  const views::Widget* widget() const { return cycle_ui_widget_; }
+
   const WindowList& windows() const { return windows_; }
 
   // aura::WindowObserver overrides:
   // There is a chance a window is destroyed, for example by JS code. We need to
   // take care of that even if it is not intended for the user to close a window
   // while window cycling.
-  void OnWindowDestroying(WmWindow* window) override;
+  void OnWindowDestroying(aura::Window* window) override;
+
+  // display::DisplayObserver overrides:
+  void OnDisplayMetricsChanged(const display::Display& display,
+                               uint32_t changed_metrics) override;
+
+  // Returns true if the window list overlay should be shown.
+  bool ShouldShowUi();
+
+  // Initializes and shows |cycle_view_|.
+  void InitWindowCycleView();
 
   // List of weak pointers to windows to use while cycling with the keyboard.
   // List is built when the user initiates the gesture (i.e. hits alt-tab the
@@ -51,10 +85,24 @@ class ASH_EXPORT WindowCycleList : public WmWindowObserver {
 
   // Current position in the |windows_|. Can be used to query selection depth,
   // i.e., the position of an active window in a global MRU ordering.
-  int current_index_;
+  int current_index_ = 0;
 
-  // Wrapper for the window brought to the front.
-  std::unique_ptr<ScopedShowWindow> showing_window_;
+  // True if the user accepted the window switch (as opposed to cancelling or
+  // interrupting the interaction).
+  bool user_did_accept_ = false;
+
+  // The top level View for the window cycle UI. May be null if the UI is not
+  // showing.
+  WindowCycleView* cycle_view_ = nullptr;
+
+  // The widget that hosts the window cycle UI.
+  views::Widget* cycle_ui_widget_ = nullptr;
+
+  // The window list will dismiss if the display metrics change.
+  ScopedObserver<display::Screen, display::DisplayObserver> screen_observer_;
+
+  // A timer to delay showing the UI. Quick Alt+Tab should not flash a UI.
+  base::OneShotTimer show_ui_timer_;
 
   DISALLOW_COPY_AND_ASSIGN(WindowCycleList);
 };

@@ -7,7 +7,7 @@
 
 Sometimes a C++ API needs to ensure that various usages cannot compile. To
 enable unittesting of these assertions, we use this python script to
-invoke gcc on a source file and assert that compilation fails.
+invoke the compiler on a source file and assert that compilation fails.
 
 For more info, see:
   http://dev.chromium.org/developers/testing/no-compile-tests
@@ -15,13 +15,12 @@ For more info, see:
 
 import StringIO
 import ast
-import locale
 import os
 import re
 import select
-import shlex
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -66,30 +65,32 @@ RESULT_FILE_HEADER = """
 """
 
 
-# The GUnit test function to output on a successful test completion.
-SUCCESS_GUNIT_TEMPLATE = """
-TEST(%s, %s) {
-  LOG(INFO) << "Took %f secs. Started at %f, ended at %f";
-}
+# The log message on a test completion.
+LOG_TEMPLATE = """
+TEST(%s, %s) took %f secs. Started at %f, ended at %f.
 """
 
-# The GUnit test function to output for a disabled test.
-DISABLED_GUNIT_TEMPLATE = """
+# The GUnit test function to output for a successful or disabled test.
+GUNIT_TEMPLATE = """
 TEST(%s, %s) { }
 """
 
 
 # Timeout constants.
-NCTEST_TERMINATE_TIMEOUT_SEC = 60
+NCTEST_TERMINATE_TIMEOUT_SEC = 120
 NCTEST_KILL_TIMEOUT_SEC = NCTEST_TERMINATE_TIMEOUT_SEC + 2
 BUSY_LOOP_MAX_TIME_SEC = NCTEST_KILL_TIMEOUT_SEC * 2
 
 
-def ValidateInput(parallelism, sourcefile_path, cflags, resultfile_path):
+def ValidateInput(compiler, parallelism, sourcefile_path, cflags,
+                  resultfile_path):
   """Make sure the arguments being passed in are sane."""
+  assert os.path.isfile(compiler)
   assert parallelism >= 1
   assert type(sourcefile_path) is str
-  assert type(cflags) is str
+  assert type(cflags) is list
+  for flag in cflags:
+    assert type(flag) is str
   assert type(resultfile_path) is str
 
 
@@ -121,7 +122,7 @@ def ParseExpectation(expectation_string):
 
 
 def ExtractTestConfigs(sourcefile_path, suite_name):
-  """Parses the soruce file for test configurations.
+  """Parses the source file for test configurations.
 
   Each no-compile test in the file is separated by an ifdef macro.  We scan
   the source file with the NCTEST_CONFIG_RE to find all ifdefs that look like
@@ -180,13 +181,13 @@ def ExtractTestConfigs(sourcefile_path, suite_name):
   return test_configs
 
 
-def StartTest(sourcefile_path, cflags, config):
+def StartTest(compiler, sourcefile_path, tempfile_dir, cflags, config):
   """Start one negative compile test.
 
   Args:
     sourcefile_path: The path to the source file.
-    cflags: A string with all the CFLAGS to give to gcc. This string will be
-            split by shelex so be careful with escaping.
+    tempfile_dir: A directory to store temporary data from tests.
+    cflags: An array of strings with all the CFLAGS to give to gcc.
     config: A dictionary describing the test.  See ExtractTestConfigs
       for a description of the config format.
 
@@ -214,23 +215,23 @@ def StartTest(sourcefile_path, cflags, config):
                         ParseExpectation() for the structure.
         }
   """
-  # TODO(ajwong): Get the compiler from gyp.
-  cmdline = [os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                          '../third_party/llvm-build/Release+Asserts/bin',
-                          'clang++')]
-  cmdline.extend(shlex.split(cflags))
+  cmdline = [compiler]
+  cmdline.extend(cflags)
   name = config['name']
   expectations = config['expectations']
   if expectations is not None:
     cmdline.append('-D%s' % name)
-  cmdline.extend(['-std=c++11', '-o', '/dev/null', '-c', '-x', 'c++',
+  cmdline.extend(['-o', '/dev/null', '-c', '-x', 'c++',
                   sourcefile_path])
+  test_stdout = tempfile.TemporaryFile(dir=tempfile_dir)
+  test_stderr = tempfile.TemporaryFile(dir=tempfile_dir)
 
-  process = subprocess.Popen(cmdline, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
+  process = subprocess.Popen(cmdline, stdout=test_stdout, stderr=test_stderr)
   now = time.time()
   return {'proc': process,
           'cmdline': ' '.join(cmdline),
+          'stdout': test_stdout,
+          'stderr': test_stderr,
           'name': name,
           'suite_name': config['suite_name'],
           'terminate_timeout': now + NCTEST_TERMINATE_TIMEOUT_SEC,
@@ -241,24 +242,25 @@ def StartTest(sourcefile_path, cflags, config):
           'expectations': expectations}
 
 
-def PassTest(resultfile, test):
+def PassTest(resultfile, resultlog, test):
   """Logs the result of a test started by StartTest(), or a disabled test
   configuration.
 
   Args:
     resultfile: File object for .cc file that results are written to.
+    resultlog: File object for the log file.
     test: An instance of the dictionary returned by StartTest(), a
           configuration from ExtractTestConfigs().
   """
+  resultfile.write(GUNIT_TEMPLATE % (
+      test['suite_name'], test['name']))
+
   # The 'started_at' key is only added if a test has been started.
   if 'started_at' in test:
-    resultfile.write(SUCCESS_GUNIT_TEMPLATE % (
+    resultlog.write(LOG_TEMPLATE % (
         test['suite_name'], test['name'],
         test['finished_at'] - test['started_at'],
         test['started_at'], test['finished_at']))
-  else:
-    resultfile.write(DISABLED_GUNIT_TEMPLATE % (
-        test['suite_name'], test['name']))
 
 
 def FailTest(resultfile, test, error, stdout=None, stderr=None):
@@ -285,38 +287,49 @@ def FailTest(resultfile, test, error, stdout=None, stderr=None):
   resultfile.write('\n')
 
 
-def WriteStats(resultfile, suite_name, timings):
-  """Logs the peformance timings for each stage of the script into a fake test.
+def WriteStats(resultlog, suite_name, timings):
+  """Logs the peformance timings for each stage of the script.
 
   Args:
-    resultfile: File object for .cc file that results are written to.
+    resultlog: File object for the log file.
     suite_name: The name of the GUnit suite this test belongs to.
     timings: Dictionary with timestamps for each stage of the script run.
   """
-  stats_template = ("Started %f, Ended %f, Total %fs, Extract %fs, "
-                    "Compile %fs, Process %fs")
+  stats_template = """
+TEST(%s): Started %f, Ended %f, Total %fs, Extract %fs, Compile %fs, Process %fs
+"""
   total_secs = timings['results_processed'] - timings['started']
   extract_secs = timings['extract_done'] - timings['started']
   compile_secs = timings['compile_done'] - timings['extract_done']
   process_secs = timings['results_processed'] - timings['compile_done']
-  resultfile.write('TEST(%s, Stats) { LOG(INFO) << "%s"; }\n' % (
-      suite_name, stats_template % (
-          timings['started'], timings['results_processed'], total_secs,
-          extract_secs, compile_secs, process_secs)))
+  resultlog.write(stats_template % (
+      suite_name, timings['started'], timings['results_processed'], total_secs,
+      extract_secs, compile_secs, process_secs))
 
+def ExtractTestOutputAndCleanup(test):
+  """Test output is in temp files. Read those and delete them.
+  Returns: A tuple (stderr, stdout).
+  """
+  outputs = [None, None]
+  for i, stream_name in ((0, "stdout"), (1, "stderr")):
+      stream = test[stream_name]
+      stream.seek(0)
+      outputs[i] = stream.read()
+      stream.close()
 
-def ProcessTestResult(resultfile, test):
+  return outputs
+
+def ProcessTestResult(resultfile, resultlog, test):
   """Interprets and logs the result of a test started by StartTest()
 
   Args:
     resultfile: File object for .cc file that results are written to.
+    resultlog: File object for the log file.
     test: The dictionary from StartTest() to process.
   """
-  # Snap a copy of stdout and stderr into the test dictionary immediately
-  # cause we can only call this once on the Popen object, and lots of stuff
-  # below will want access to it.
   proc = test['proc']
-  (stdout, stderr) = proc.communicate()
+  proc.wait()
+  (stdout, stderr) = ExtractTestOutputAndCleanup(test)
 
   if test['aborted_at'] != 0:
     FailTest(resultfile, test, "Compile timed out. Started %f ended %f." %
@@ -333,14 +346,14 @@ def ProcessTestResult(resultfile, test):
     # Check the output has the right expectations.  If there are no
     # expectations, then we just consider the output "matched" by default.
     if len(test['expectations']) == 0:
-      PassTest(resultfile, test)
+      PassTest(resultfile, resultlog, test)
       return
 
     # Otherwise test against all expectations.
     for regexp in test['expectations']:
       if (regexp.search(stdout) is not None or
           regexp.search(stderr) is not None):
-        PassTest(resultfile, test)
+        PassTest(resultfile, resultlog, test)
         return
     expectation_str = ', '.join(
         ["r'%s'" % regexp.pattern for regexp in test['expectations']])
@@ -350,7 +363,7 @@ def ProcessTestResult(resultfile, test):
     return
 
 
-def CompleteAtLeastOneTest(resultfile, executing_tests):
+def CompleteAtLeastOneTest(executing_tests):
   """Blocks until at least one task is removed from executing_tests.
 
   This function removes completed tests from executing_tests, logging failures
@@ -371,11 +384,13 @@ def CompleteAtLeastOneTest(resultfile, executing_tests):
     # If we don't make progress for too long, assume the code is just dead.
     assert busy_loop_timeout > time.time()
 
-    # Select on the output pipes.
+    # Select on the output files to block until we have something to
+    # do. We ignore the return value from select and just poll all
+    # processes.
     read_set = []
     for test in executing_tests.values():
-      read_set.extend([test['proc'].stderr, test['proc'].stdout])
-    result = select.select(read_set, [], read_set, NCTEST_TERMINATE_TIMEOUT_SEC)
+      read_set.extend([test['stdout'], test['stderr']])
+    select.select(read_set, [], read_set, NCTEST_TERMINATE_TIMEOUT_SEC)
 
     # Now attempt to process results.
     now = time.time()
@@ -391,14 +406,21 @@ def CompleteAtLeastOneTest(resultfile, executing_tests):
         proc.kill()
         test['aborted_at'] = now
 
+    if len(finished_tests) == 0:
+      # We had output from some process but no process had
+      # finished. To avoid busy looping while waiting for a process to
+      # finish, insert a small 100 ms delay here.
+      time.sleep(0.1)
+
   for test in finished_tests:
     del executing_tests[test['name']]
   return finished_tests
 
 
 def main():
-  if len(sys.argv) != 5:
-    print ('Usage: %s <parallelism> <sourcefile> <cflags> <resultfile>' %
+  if len(sys.argv) < 6 or sys.argv[5] != '--':
+    print ('Usage: %s <compiler> <parallelism> <sourcefile> <resultfile> '
+           '-- <cflags...>' %
            sys.argv[0])
     sys.exit(1)
 
@@ -407,14 +429,15 @@ def main():
   # locales.  This makes the expectation writing much easier.
   os.environ['LC_ALL'] = 'C'
 
-  parallelism = int(sys.argv[1])
-  sourcefile_path = sys.argv[2]
-  cflags = sys.argv[3]
+  compiler = sys.argv[1]
+  parallelism = int(sys.argv[2])
+  sourcefile_path = sys.argv[3]
   resultfile_path = sys.argv[4]
+  cflags = sys.argv[6:]
 
   timings = {'started': time.time()}
 
-  ValidateInput(parallelism, sourcefile_path, cflags, resultfile_path)
+  ValidateInput(compiler, parallelism, sourcefile_path, cflags, resultfile_path)
 
   # Convert filename from underscores to CamelCase.
   words = os.path.splitext(os.path.basename(sourcefile_path))[0].split('_')
@@ -425,6 +448,7 @@ def main():
   timings['extract_done'] = time.time()
 
   resultfile = StringIO.StringIO()
+  resultlog = StringIO.StringIO()
   resultfile.write(RESULT_FILE_HEADER % sourcefile_path)
 
   # Run the no-compile tests, but ensure we do not run more than |parallelism|
@@ -433,9 +457,12 @@ def main():
   executing_tests = {}
   finished_tests = []
 
+  cflags.extend(['-MMD', '-MF', resultfile_path + '.d', '-MT', resultfile_path])
   test = StartTest(
+      compiler,
       sourcefile_path,
-      cflags + ' -MMD -MF %s.d -MT %s' % (resultfile_path, resultfile_path),
+      os.path.dirname(resultfile_path),
+      cflags,
       { 'name': 'NCTEST_SANITY',
         'suite_name': suite_name,
         'expectations': None,
@@ -447,38 +474,48 @@ def main():
     # acts as a semaphore.  We cannot use threads + a real semaphore because
     # subprocess forks, which can cause all sorts of hilarity with threads.
     if len(executing_tests) >= parallelism:
-      finished_tests.extend(CompleteAtLeastOneTest(resultfile, executing_tests))
+      finished_tests.extend(CompleteAtLeastOneTest(executing_tests))
 
     if config['name'].startswith('DISABLED_'):
-      PassTest(resultfile, config)
+      PassTest(resultfile, resultlog, config)
     else:
-      test = StartTest(sourcefile_path, cflags, config)
+      test = StartTest(compiler, sourcefile_path,
+                       os.path.dirname(resultfile_path), cflags, config)
       assert test['name'] not in executing_tests
       executing_tests[test['name']] = test
 
   # If there are no more test to start, we still need to drain the running
   # ones.
   while len(executing_tests) > 0:
-    finished_tests.extend(CompleteAtLeastOneTest(resultfile, executing_tests))
+    finished_tests.extend(CompleteAtLeastOneTest(executing_tests))
   timings['compile_done'] = time.time()
 
+  finished_tests = sorted(finished_tests, key=lambda test: test['name'])
   for test in finished_tests:
     if test['name'] == 'NCTEST_SANITY':
-      _, stderr = test['proc'].communicate()
-      return_code = test['proc'].poll()
+      test['proc'].wait()
+      (stdout, stderr) = ExtractTestOutputAndCleanup(test)
+      return_code = test['proc'].returncode
       if return_code != 0:
+        sys.stdout.write(stdout)
         sys.stderr.write(stderr)
       continue
-    ProcessTestResult(resultfile, test)
+    ProcessTestResult(resultfile, resultlog, test)
   timings['results_processed'] = time.time()
 
-  WriteStats(resultfile, suite_name, timings)
+  WriteStats(resultlog, suite_name, timings)
 
+  with open(resultfile_path + '.log', 'w') as fd:
+    fd.write(resultlog.getvalue())
   if return_code == 0:
     with open(resultfile_path, 'w') as fd:
       fd.write(resultfile.getvalue())
 
   resultfile.close()
+  if return_code != 0:
+    print ("No-compile driver failure with return_code %d. Result log:" %
+           return_code)
+    print resultlog.getvalue()
   sys.exit(return_code)
 
 

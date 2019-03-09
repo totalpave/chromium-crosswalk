@@ -40,12 +40,12 @@ void PointerDeviceObserver::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-void PointerDeviceObserver::OnMouseDeviceConfigurationChanged() {
-  CheckDevices();
-}
-
-void PointerDeviceObserver::OnTouchpadDeviceConfigurationChanged() {
-  CheckDevices();
+void PointerDeviceObserver::OnInputDeviceConfigurationChanged(
+    uint8_t input_device_types) {
+  if (input_device_types & (ui::InputDeviceEventObserver::kMouse |
+                            ui::InputDeviceEventObserver::kTouchpad)) {
+    CheckDevices();
+  }
 }
 
 void PointerDeviceObserver::CheckTouchpadExists() {
@@ -61,11 +61,13 @@ void PointerDeviceObserver::CheckMouseExists() {
 }
 
 void PointerDeviceObserver::OnTouchpadExists(bool exists) {
-  FOR_EACH_OBSERVER(Observer, observers_, TouchpadExists(exists));
+  for (auto& observer : observers_)
+    observer.TouchpadExists(exists);
 }
 
 void PointerDeviceObserver::OnMouseExists(bool exists) {
-  FOR_EACH_OBSERVER(Observer, observers_, MouseExists(exists));
+  for (auto& observer : observers_)
+    observer.MouseExists(exists);
 }
 
 PointerDeviceObserver::Observer::~Observer() {

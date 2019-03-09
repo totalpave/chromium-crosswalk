@@ -4,15 +4,13 @@
 
 #include "ui/display/util/x11/edid_parser_x11.h"
 
-#include <X11/extensions/Xrandr.h>
-#include <X11/Xatom.h>
-#include <X11/Xlib.h>
-
 #include "base/strings/string_util.h"
 #include "ui/display/util/edid_parser.h"
+#include "ui/gfx/x/x11.h"
+#include "ui/gfx/x/x11_atom_cache.h"
 #include "ui/gfx/x/x11_types.h"
 
-namespace ui {
+namespace display {
 
 namespace {
 
@@ -33,9 +31,7 @@ bool GetEDIDProperty(XID output, std::vector<uint8_t>* edid) {
 
   Display* display = gfx::GetXDisplay();
 
-  static Atom edid_property = XInternAtom(
-      gfx::GetXDisplay(),
-      RR_PROPERTY_RANDR_EDID, false);
+  Atom edid_property = gfx::GetAtom(RR_PROPERTY_RANDR_EDID);
 
   bool has_edid_property = false;
   int num_properties = 0;
@@ -77,33 +73,18 @@ bool GetEDIDProperty(XID output, std::vector<uint8_t>* edid) {
 
 }  // namespace
 
-EDIDParserX11::EDIDParserX11(XID output_id)
-    : output_id_(output_id) {
+EDIDParserX11::EDIDParserX11(XID output_id) : output_id_(output_id) {
   GetEDIDProperty(output_id_, &edid_);
 }
 
-EDIDParserX11::~EDIDParserX11() {
-}
+EDIDParserX11::~EDIDParserX11() {}
 
 bool EDIDParserX11::GetDisplayId(uint8_t index, int64_t* out_display_id) const {
   if (edid_.empty())
     return false;
 
-  return GetDisplayIdFromEDID(edid_, index, out_display_id, nullptr);
+  *out_display_id = EdidParser(edid_).GetDisplayId(output_id_);
+  return true;
 }
 
-std::string EDIDParserX11::GetDisplayName() const {
-  std::string display_name;
-  ParseOutputDeviceData(edid_, nullptr, nullptr, &display_name, nullptr,
-                        nullptr);
-  return display_name;
-}
-
-bool EDIDParserX11::GetOutputOverscanFlag(bool* out_flag) const {
-  if (edid_.empty())
-    return false;
-
-  return ParseOutputOverscanFlag(edid_, out_flag);
-}
-
-}  // namespace ui
+}  // namespace display

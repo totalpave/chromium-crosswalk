@@ -5,10 +5,10 @@
 #include "chrome/browser/ssl/ssl_client_auth_requestor_mock.h"
 
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "content/public/browser/client_certificate_delegate.h"
+#include "net/cert/x509_certificate.h"
 #include "net/ssl/ssl_cert_request_info.h"
-#include "net/url_request/url_request.h"
+#include "net/ssl/ssl_private_key.h"
 
 namespace {
 
@@ -24,8 +24,9 @@ class FakeClientCertificateDelegate
   }
 
   // content::ClientCertificateDelegate implementation:
-  void ContinueWithCertificate(net::X509Certificate* cert) override {
-    requestor_->CertificateSelected(cert);
+  void ContinueWithCertificate(scoped_refptr<net::X509Certificate> cert,
+                               scoped_refptr<net::SSLPrivateKey> key) override {
+    requestor_->CertificateSelected(cert.get(), key.get());
     requestor_ = nullptr;
   }
 
@@ -38,7 +39,6 @@ class FakeClientCertificateDelegate
 }  // namespace
 
 SSLClientAuthRequestorMock::SSLClientAuthRequestorMock(
-    net::URLRequest* request,
     const scoped_refptr<net::SSLCertRequestInfo>& cert_request_info)
     : cert_request_info_(cert_request_info) {
 }
@@ -47,5 +47,5 @@ SSLClientAuthRequestorMock::~SSLClientAuthRequestorMock() {}
 
 std::unique_ptr<content::ClientCertificateDelegate>
 SSLClientAuthRequestorMock::CreateDelegate() {
-  return base::WrapUnique(new FakeClientCertificateDelegate(this));
+  return std::make_unique<FakeClientCertificateDelegate>(this);
 }

@@ -8,18 +8,20 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/command_line.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/activity_log/activity_action_constants.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/prerender/prerender_handle.h"
 #include "chrome/browser/prerender/prerender_manager.h"
 #include "chrome/browser/prerender/prerender_manager_factory.h"
+#include "chrome/browser/prerender/prerender_test_utils.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
@@ -30,18 +32,11 @@
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/common/dom_action_types.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
-#endif
 
 namespace {
 
-const char kExtensionId[] = "abc";
+const char kExtensionId[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 const char* const kUrlApiCalls[] = {
     "HTMLButtonElement.formAction", "HTMLEmbedElement.src",
@@ -65,9 +60,10 @@ class ActivityLogTest : public ChromeRenderViewHostTestHarness {
   virtual bool enable_activity_logging_switch() const { return true; }
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
-#if defined OS_CHROMEOS
-    test_user_manager_.reset(new chromeos::ScopedTestUserManager());
-#endif
+
+    SetActivityLogTaskRunnerForTesting(
+        base::ThreadTaskRunnerHandle::Get().get());
+
     base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
     if (enable_activity_logging_switch()) {
       base::CommandLine::ForCurrentProcess()->AppendSwitch(
@@ -82,16 +78,19 @@ class ActivityLogTest : public ChromeRenderViewHostTestHarness {
   }
 
   void TearDown() override {
-#if defined OS_CHROMEOS
-    test_user_manager_.reset();
-#endif
     base::RunLoop().RunUntilIdle();
+    SetActivityLogTaskRunnerForTesting(nullptr);
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
   static void RetrieveActions_LogAndFetchActions0(
       std::unique_ptr<std::vector<scoped_refptr<Action>>> i) {
     ASSERT_EQ(0, static_cast<int>(i->size()));
+  }
+
+  static void RetrieveActions_LogAndFetchActions1(
+      std::unique_ptr<std::vector<scoped_refptr<Action>>> i) {
+    ASSERT_EQ(1, static_cast<int>(i->size()));
   }
 
   static void RetrieveActions_LogAndFetchActions2(
@@ -175,7 +174,7 @@ class ActivityLogTest : public ChromeRenderViewHostTestHarness {
 
   static void RetrieveActions_ArgUrlApiCalls(
       std::unique_ptr<std::vector<scoped_refptr<Action>>> actions) {
-    size_t api_calls_size = arraysize(kUrlApiCalls);
+    size_t api_calls_size = base::size(kUrlApiCalls);
     const base::DictionaryValue* other = NULL;
     int dom_verb = -1;
 
@@ -198,12 +197,6 @@ class ActivityLogTest : public ChromeRenderViewHostTestHarness {
   }
 
   ExtensionService* extension_service_;
-
-#if defined OS_CHROMEOS
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
-  std::unique_ptr<chromeos::ScopedTestUserManager> test_user_manager_;
-#endif
 };
 
 TEST_F(ActivityLogTest, Construct) {
@@ -213,7 +206,6 @@ TEST_F(ActivityLogTest, Construct) {
 
 TEST_F(ActivityLogTest, LogAndFetchActions) {
   ActivityLog* activity_log = ActivityLog::GetInstance(profile());
-  std::unique_ptr<base::ListValue> args(new base::ListValue());
   ASSERT_TRUE(GetDatabaseEnabled());
 
   // Write some API calls
@@ -230,13 +222,8 @@ TEST_F(ActivityLogTest, LogAndFetchActions) {
   activity_log->LogAction(action);
 
   activity_log->GetFilteredActions(
-      kExtensionId,
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      0,
-      base::Bind(ActivityLogTest::RetrieveActions_LogAndFetchActions2));
+      kExtensionId, Action::ACTION_ANY, "", "", "", 0,
+      base::BindOnce(ActivityLogTest::RetrieveActions_LogAndFetchActions2));
 }
 
 TEST_F(ActivityLogTest, LogPrerender) {
@@ -254,9 +241,11 @@ TEST_F(ActivityLogTest, LogPrerender) {
   ASSERT_TRUE(GetDatabaseEnabled());
   GURL url("http://www.google.com");
 
+  prerender::test_utils::RestorePrerenderMode restore_prerender_mode;
+  prerender::PrerenderManager::SetMode(
+      prerender::PrerenderManager::PRERENDER_MODE_ENABLED);
   prerender::PrerenderManager* prerender_manager =
-      prerender::PrerenderManagerFactory::GetForProfile(
-          Profile::FromBrowserContext(profile()));
+      prerender::PrerenderManagerFactory::GetForBrowserContext(profile());
 
   const gfx::Size kSize(640, 480);
   std::unique_ptr<prerender::PrerenderHandle> prerender_handle(
@@ -271,28 +260,18 @@ TEST_F(ActivityLogTest, LogPrerender) {
   content::WebContents *contents = contentses[0];
   ASSERT_TRUE(prerender_manager->IsWebContentsPrerendering(contents, NULL));
 
-  ScriptExecutionObserver::ExecutingScriptsMap executing_scripts;
-  executing_scripts[extension->id()].insert("script");
-
-  static_cast<ScriptExecutionObserver*>(activity_log)
-      ->OnScriptsExecuted(contents, executing_scripts, url);
+  activity_log->OnScriptsExecuted(contents, {{extension->id(), {"script"}}},
+                                  url);
 
   activity_log->GetFilteredActions(
-      extension->id(),
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      0,
-      base::Bind(ActivityLogTest::Arguments_Prerender));
+      extension->id(), Action::ACTION_ANY, "", "", "", 0,
+      base::BindOnce(ActivityLogTest::Arguments_Prerender));
 
   prerender_manager->CancelAllPrerenders();
 }
 
 TEST_F(ActivityLogTest, ArgUrlExtraction) {
   ActivityLog* activity_log = ActivityLog::GetInstance(profile());
-  std::unique_ptr<base::ListValue> args(new base::ListValue());
-
   base::Time now = base::Time::Now();
 
   // Submit a DOM API call which should have its URL extracted into the arg_url
@@ -347,13 +326,8 @@ TEST_F(ActivityLogTest, ArgUrlExtraction) {
   activity_log->LogAction(action);
 
   activity_log->GetFilteredActions(
-      kExtensionId,
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(ActivityLogTest::RetrieveActions_ArgUrlExtraction));
+      kExtensionId, Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(ActivityLogTest::RetrieveActions_ArgUrlExtraction));
 }
 
 TEST_F(ActivityLogTest, UninstalledExtension) {
@@ -367,7 +341,6 @@ TEST_F(ActivityLogTest, UninstalledExtension) {
           .Build();
 
   ActivityLog* activity_log = ActivityLog::GetInstance(profile());
-  std::unique_ptr<base::ListValue> args(new base::ListValue());
   ASSERT_TRUE(GetDatabaseEnabled());
 
   // Write some API calls
@@ -385,20 +358,14 @@ TEST_F(ActivityLogTest, UninstalledExtension) {
   activity_log->OnExtensionUninstalled(
       NULL, extension.get(), extensions::UNINSTALL_REASON_FOR_TESTING);
   activity_log->GetFilteredActions(
-      extension->id(),
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(ActivityLogTest::RetrieveActions_LogAndFetchActions0));
+      extension->id(), Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(ActivityLogTest::RetrieveActions_LogAndFetchActions0));
 }
 
 TEST_F(ActivityLogTest, ArgUrlApiCalls) {
   ActivityLog* activity_log = ActivityLog::GetInstance(profile());
-  std::unique_ptr<base::ListValue> args(new base::ListValue());
   base::Time now = base::Time::Now();
-  int api_calls_size = arraysize(kUrlApiCalls);
+  int api_calls_size = base::size(kUrlApiCalls);
   scoped_refptr<Action> action;
 
   for (int i = 0; i < api_calls_size; i++) {
@@ -413,13 +380,34 @@ TEST_F(ActivityLogTest, ArgUrlApiCalls) {
   }
 
   activity_log->GetFilteredActions(
-      kExtensionId,
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(ActivityLogTest::RetrieveActions_ArgUrlApiCalls));
+      kExtensionId, Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(ActivityLogTest::RetrieveActions_ArgUrlApiCalls));
+}
+
+TEST_F(ActivityLogTest, DeleteActivitiesByExtension) {
+  const std::string kOtherExtensionId = std::string(32, 'c');
+
+  ActivityLog* activity_log = ActivityLog::GetInstance(profile());
+  ASSERT_TRUE(GetDatabaseEnabled());
+
+  scoped_refptr<Action> action =
+      base::MakeRefCounted<Action>(kExtensionId, base::Time::Now(),
+                                   Action::ACTION_API_CALL, "tabs.testMethod");
+  activity_log->LogAction(action);
+
+  action =
+      base::MakeRefCounted<Action>(kOtherExtensionId, base::Time::Now(),
+                                   Action::ACTION_DOM_ACCESS, "document.write");
+  action->set_page_url(GURL("http://www.google.com"));
+  activity_log->LogAction(action);
+
+  activity_log->RemoveExtensionData(kExtensionId);
+  activity_log->GetFilteredActions(
+      kExtensionId, Action::ACTION_ANY, "", "", "", 0,
+      base::BindOnce(ActivityLogTest::RetrieveActions_LogAndFetchActions0));
+  activity_log->GetFilteredActions(
+      kOtherExtensionId, Action::ACTION_ANY, "", "", "", 0,
+      base::BindOnce(ActivityLogTest::RetrieveActions_LogAndFetchActions1));
 }
 
 class ActivityLogTestWithoutSwitch : public ActivityLogTest {
@@ -430,24 +418,29 @@ class ActivityLogTestWithoutSwitch : public ActivityLogTest {
 };
 
 TEST_F(ActivityLogTestWithoutSwitch, TestShouldLog) {
+  static_cast<TestExtensionSystem*>(
+      ExtensionSystem::Get(profile()))->SetReady();
   ActivityLog* activity_log = ActivityLog::GetInstance(profile());
   scoped_refptr<const Extension> empty_extension =
-      test_util::CreateEmptyExtension();
+      ExtensionBuilder("Test").Build();
   extension_service_->AddExtension(empty_extension.get());
   // Since the command line switch for logging isn't enabled and there's no
   // watchdog app active, the activity log shouldn't log anything.
   EXPECT_FALSE(activity_log->ShouldLog(empty_extension->id()));
   const char kWhitelistedExtensionId[] = "eplckmlabaanikjjcgnigddmagoglhmp";
   scoped_refptr<const Extension> activity_log_extension =
-      test_util::CreateEmptyExtension(kWhitelistedExtensionId);
+      ExtensionBuilder("Test").SetID(kWhitelistedExtensionId).Build();
   extension_service_->AddExtension(activity_log_extension.get());
   // Loading a watchdog app means the activity log should log other extension
   // activities...
   EXPECT_TRUE(activity_log->ShouldLog(empty_extension->id()));
-  // ... but not those of the watchdog app.
+  // ... but not those of the watchdog app...
   EXPECT_FALSE(activity_log->ShouldLog(activity_log_extension->id()));
+  // ... or activities from the browser/extensions page, represented by an empty
+  // extension ID.
+  EXPECT_FALSE(activity_log->ShouldLog(std::string()));
   extension_service_->DisableExtension(activity_log_extension->id(),
-                                       Extension::DISABLE_USER_ACTION);
+                                       disable_reason::DISABLE_USER_ACTION);
   // Disabling the watchdog app means that we're back to never logging anything.
   EXPECT_FALSE(activity_log->ShouldLog(empty_extension->id()));
 }

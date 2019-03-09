@@ -13,7 +13,7 @@ namespace {
 // Returns true if bounds passed to window in SetBounds should be treated as
 // though they are in screen coordinates.
 bool PositionWindowInScreenCoordinates(aura::Window* window) {
-  if (window->type() == ui::wm::WINDOW_TYPE_POPUP)
+  if (window->type() == aura::client::WINDOW_TYPE_POPUP)
     return true;
 
   Widget* widget = Widget::GetWidgetForNativeView(window);
@@ -29,7 +29,7 @@ DesktopScreenPositionClient::DesktopScreenPositionClient(
 }
 
 DesktopScreenPositionClient::~DesktopScreenPositionClient() {
-  aura::client::SetScreenPositionClient(root_window_, NULL);
+  aura::client::SetScreenPositionClient(root_window_, nullptr);
 }
 
 void DesktopScreenPositionClient::SetBounds(aura::Window* window,
@@ -38,12 +38,13 @@ void DesktopScreenPositionClient::SetBounds(aura::Window* window,
   // TODO(jam): Use the 3rd parameter, |display|.
   aura::Window* root = window->GetRootWindow();
 
-  // This method assumes that |window| does not have an associated
-  // DesktopNativeWidgetAura.
   internal::NativeWidgetPrivate* desktop_native_widget =
       DesktopNativeWidgetAura::ForWindow(root);
-  DCHECK(!desktop_native_widget ||
-         desktop_native_widget->GetNativeView() != window);
+  if (desktop_native_widget &&
+      desktop_native_widget->GetNativeView() == window) {
+    desktop_native_widget->SetBounds(bounds);
+    return;
+  }
 
   if (PositionWindowInScreenCoordinates(window)) {
     // The caller expects windows we consider "embedded" to be placed in the

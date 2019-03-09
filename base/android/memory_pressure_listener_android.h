@@ -14,9 +14,7 @@ namespace android {
 // Implements the C++ counter part of MemoryPressureListener.java
 class BASE_EXPORT MemoryPressureListenerAndroid {
  public:
-  static bool Register(JNIEnv* env);
-
-  static void RegisterSystemCallback(JNIEnv* env);
+  static void Initialize(JNIEnv* env);
 
   // Called by JNI.
   static void OnMemoryPressure(int memory_pressure_type);

@@ -5,14 +5,13 @@
 #include "remoting/signaling/server_log_entry.h"
 
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "remoting/base/constants.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using base::SysInfo;
-using buzz::QName;
-using buzz::XmlElement;
+using jingle_xmpp::QName;
+using jingle_xmpp::XmlElement;
 
 namespace remoting {
 
@@ -33,13 +32,11 @@ const char kKeyCpu[] = "cpu";
 
 }  // namespace
 
-ServerLogEntry::ServerLogEntry() {
-}
+ServerLogEntry::ServerLogEntry() = default;
 
 ServerLogEntry::ServerLogEntry(const ServerLogEntry& other) = default;
 
-ServerLogEntry::~ServerLogEntry() {
-}
+ServerLogEntry::~ServerLogEntry() = default;
 
 void ServerLogEntry::Set(const std::string& key, const std::string& value) {
   values_map_[key] = value;
@@ -74,8 +71,8 @@ void ServerLogEntry::AddEventNameField(const char* name) {
 
 // static
 std::unique_ptr<XmlElement> ServerLogEntry::MakeStanza() {
-  return base::WrapUnique(
-      new XmlElement(QName(kChromotingXmlNamespace, kLogCommand)));
+  return std::make_unique<XmlElement>(
+      QName(kChromotingXmlNamespace, kLogCommand));
 }
 
 std::unique_ptr<XmlElement> ServerLogEntry::ToStanza() const {

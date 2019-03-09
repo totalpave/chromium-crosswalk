@@ -4,16 +4,16 @@
 
 #include <stddef.h>
 
+#include "build/build_config.h"
 #include "cc/layers/content_layer_client.h"
 #include "cc/layers/picture_layer.h"
-#include "cc/output/copy_output_request.h"
-#include "cc/playback/display_item_list.h"
-#include "cc/playback/display_item_list_settings.h"
-#include "cc/playback/drawing_display_item.h"
+#include "cc/paint/display_item_list.h"
+#include "cc/paint/paint_flags.h"
+#include "cc/paint/paint_op_buffer.h"
 #include "cc/test/layer_tree_pixel_test.h"
-#include "cc/test/test_gpu_memory_buffer_manager.h"
-#include "third_party/skia/include/core/SkCanvas.h"
-#include "third_party/skia/include/core/SkPictureRecorder.h"
+#include "components/viz/common/frame_sinks/copy_output_request.h"
+#include "components/viz/test/test_layer_tree_frame_sink.h"
+#include "gpu/command_buffer/client/raster_interface.h"
 
 #if !defined(OS_ANDROID)
 
@@ -25,6 +25,8 @@ enum RasterMode {
   FULL_ONE_COPY,
   PARTIAL_GPU,
   FULL_GPU,
+  PARTIAL_GPU_LOW_BIT_DEPTH,
+  FULL_GPU_LOW_BIT_DEPTH,
   PARTIAL_BITMAP,
   FULL_BITMAP,
 };
@@ -49,14 +51,24 @@ class LayerTreeHostTilesPixelTest : public LayerTreePixelTest {
         settings->use_partial_raster = false;
         break;
       case PARTIAL_GPU:
-        settings->gpu_rasterization_enabled = true;
         settings->gpu_rasterization_forced = true;
         settings->use_partial_raster = true;
         break;
       case FULL_GPU:
-        settings->gpu_rasterization_enabled = true;
         settings->gpu_rasterization_forced = true;
         settings->use_partial_raster = false;
+        break;
+      case PARTIAL_GPU_LOW_BIT_DEPTH:
+        settings->gpu_rasterization_forced = true;
+        settings->use_partial_raster = true;
+        settings->use_rgba_4444 = true;
+        settings->unpremultiply_and_dither_low_bit_depth_tiles = true;
+        break;
+      case FULL_GPU_LOW_BIT_DEPTH:
+        settings->gpu_rasterization_forced = true;
+        settings->use_partial_raster = false;
+        settings->use_rgba_4444 = true;
+        settings->unpremultiply_and_dither_low_bit_depth_tiles = true;
         break;
     }
   }
@@ -84,6 +96,8 @@ class LayerTreeHostTilesPixelTest : public LayerTreePixelTest {
       case FULL_ONE_COPY:
       case PARTIAL_GPU:
       case FULL_GPU:
+      case PARTIAL_GPU_LOW_BIT_DEPTH:
+      case FULL_GPU_LOW_BIT_DEPTH:
         test_type = PIXEL_TEST_GL;
         break;
       case PARTIAL_BITMAP:
@@ -110,30 +124,28 @@ class BlueYellowClient : public ContentLayerClient {
   gfx::Rect PaintableRegion() override { return gfx::Rect(size_); }
   scoped_refptr<DisplayItemList> PaintContentsToDisplayList(
       PaintingControlSetting painting_status) override {
-    DisplayItemListSettings settings;
-    settings.use_cached_picture = false;
-    scoped_refptr<DisplayItemList> display_list =
-        DisplayItemList::Create(PaintableRegion(), settings);
+    auto display_list = base::MakeRefCounted<DisplayItemList>();
 
-    SkPictureRecorder recorder;
-    sk_sp<SkCanvas> canvas =
-        sk_ref_sp(recorder.beginRecording(gfx::RectToSkRect(gfx::Rect(size_))));
+    display_list->StartPaint();
+
     gfx::Rect top(0, 0, size_.width(), size_.height() / 2);
     gfx::Rect bottom(0, size_.height() / 2, size_.width(), size_.height() / 2);
 
     gfx::Rect blue_rect = blue_top_ ? top : bottom;
     gfx::Rect yellow_rect = blue_top_ ? bottom : top;
 
-    SkPaint paint;
-    paint.setStyle(SkPaint::kFill_Style);
+    PaintFlags flags;
+    flags.setStyle(PaintFlags::kFill_Style);
 
-    paint.setColor(SK_ColorBLUE);
-    canvas->drawRect(gfx::RectToSkRect(blue_rect), paint);
-    paint.setColor(SK_ColorYELLOW);
-    canvas->drawRect(gfx::RectToSkRect(yellow_rect), paint);
+    // Use custom colors with 0xF2 rather than the default blue/yellow (which
+    // use 0xFF), as the default won't show dither patterns as it exactly maps
+    // to a 16-bit color.
+    flags.setColor(SkColorSetRGB(0x00, 0x00, 0xF2));
+    display_list->push<DrawRectOp>(gfx::RectToSkRect(blue_rect), flags);
+    flags.setColor(SkColorSetRGB(0xF2, 0xF2, 0x00));
+    display_list->push<DrawRectOp>(gfx::RectToSkRect(yellow_rect), flags);
 
-    display_list->CreateAndAppendItem<DrawingDisplayItem>(
-        PaintableRegion(), recorder.finishRecordingAsPicture());
+    display_list->EndPaintOfUnpaired(PaintableRegion());
     display_list->Finalize();
     return display_list;
   }
@@ -159,13 +171,19 @@ class LayerTreeHostTilesTestPartialInvalidation
   }
 
   void DidCommitAndDrawFrame() override {
-    switch (layer_tree_host()->source_frame_number()) {
+    switch (layer_tree_host()->SourceFrameNumber()) {
       case 1:
-        // We have done one frame, so the layer's content has been rastered.
-        // Now we change the picture behind it to record something completely
-        // different, but we give a smaller invalidation rect. The layer should
-        // only re-raster the stuff in the rect. If it doesn't do partial raster
-        // it would re-raster the whole thing instead.
+        // We have done one frame, but the resource may not be available for
+        // partial raster yet. Force a second frame.
+        picture_layer_->SetNeedsDisplayRect(gfx::Rect(50, 50, 100, 100));
+        break;
+      case 2:
+        // We have done two frames, so the layer's content has been rastered
+        // twice and the first frame's resource is available for partial
+        // raster. Now we change the picture behind it to record something
+        // completely different, but we give a smaller invalidation rect. The
+        // layer should only re-raster the stuff in the rect. If it doesn't do
+        // partial raster it would re-raster the whole thing instead.
         client_.set_blue_top(false);
         Finish();
         picture_layer_->SetNeedsDisplayRect(gfx::Rect(50, 50, 100, 100));
@@ -174,6 +192,18 @@ class LayerTreeHostTilesTestPartialInvalidation
         DoReadback();
         break;
     }
+  }
+
+  void WillPrepareTilesOnThread(LayerTreeHostImpl* host_impl) override {
+    // Issue a GL finish before preparing tiles to ensure resources become
+    // available for use in a timely manner. Needed for the one-copy path.
+    viz::RasterContextProvider* context_provider =
+        host_impl->layer_tree_frame_sink()->worker_context_provider();
+    if (!context_provider)
+      return;
+
+    viz::RasterContextProvider::ScopedRasterContextLock lock(context_provider);
+    lock.RasterInterface()->Finish();
   }
 
  protected:
@@ -195,8 +225,16 @@ TEST_F(LayerTreeHostTilesTestPartialInvalidation,
       base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped.png")));
 }
 
+// Flaky on Linux TSAN. https://crbug.com/707711
+#if defined(OS_LINUX) && defined(THREAD_SANITIZER)
+#define MAYBE_PartialRaster_MultiThread_OneCopy \
+  DISABLED_PartialRaster_MultiThread_OneCopy
+#else
+#define MAYBE_PartialRaster_MultiThread_OneCopy \
+  PartialRaster_MultiThread_OneCopy
+#endif
 TEST_F(LayerTreeHostTilesTestPartialInvalidation,
-       PartialRaster_MultiThread_OneCopy) {
+       MAYBE_PartialRaster_MultiThread_OneCopy) {
   RunRasterPixelTest(
       true, PARTIAL_ONE_COPY, picture_layer_,
       base::FilePath(FILE_PATH_LITERAL("blue_yellow_partial_flipped.png")));
@@ -235,6 +273,20 @@ TEST_F(LayerTreeHostTilesTestPartialInvalidation,
   RunRasterPixelTest(
       false, FULL_GPU, picture_layer_,
       base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped.png")));
+}
+
+TEST_F(LayerTreeHostTilesTestPartialInvalidation,
+       PartialRaster_SingleThread_GpuRaster_LowBitDepth) {
+  RunRasterPixelTest(false, PARTIAL_GPU_LOW_BIT_DEPTH, picture_layer_,
+                     base::FilePath(FILE_PATH_LITERAL(
+                         "blue_yellow_partial_flipped_dither.png")));
+}
+
+TEST_F(LayerTreeHostTilesTestPartialInvalidation,
+       FullRaster_SingleThread_GpuRaster_LowBitDepth) {
+  RunRasterPixelTest(
+      false, FULL_GPU_LOW_BIT_DEPTH, picture_layer_,
+      base::FilePath(FILE_PATH_LITERAL("blue_yellow_flipped_dither.png")));
 }
 
 }  // namespace

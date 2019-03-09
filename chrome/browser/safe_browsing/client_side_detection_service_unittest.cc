@@ -8,29 +8,31 @@
 
 #include <map>
 #include <memory>
-#include <queue>
 #include <string>
 
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/containers/queue.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/metrics/field_trial.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "chrome/common/safe_browsing/client_model.pb.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
+#include "components/safe_browsing/proto/csd.pb.h"
 #include "components/variations/variations_associated_data.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "crypto/sha2.h"
-#include "net/http/http_status_code.h"
-#include "net/url_request/test_url_fetcher_factory.h"
-#include "net/url_request/url_request_status.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+
+#if defined(OS_CHROMEOS)
+#include "chrome/browser/chromeos/settings/stub_install_attributes.h"
+#endif
 
 using ::testing::Invoke;
 using ::testing::Mock;
@@ -44,7 +46,7 @@ namespace {
 class MockModelLoader : public ModelLoader {
  public:
   explicit MockModelLoader(const std::string& model_name)
-      : ModelLoader(base::Closure(), model_name) {}
+      : ModelLoader(base::Closure(), nullptr, model_name) {}
   ~MockModelLoader() override {}
 
   MOCK_METHOD1(ScheduleFetch, void(int64_t));
@@ -69,18 +71,14 @@ class MockClientSideDetectionService : public ClientSideDetectionService {
 class ClientSideDetectionServiceTest : public testing::Test {
  protected:
   void SetUp() override {
-    file_thread_.reset(new content::TestBrowserThread(BrowserThread::FILE,
-                                                      &msg_loop_));
-    factory_.reset(new net::FakeURLFetcherFactory(NULL));
-    browser_thread_.reset(new content::TestBrowserThread(BrowserThread::UI,
-                                                         &msg_loop_));
+    test_shared_loader_factory_ =
+        base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+            &test_url_loader_factory_);
   }
 
   void TearDown() override {
     base::RunLoop().RunUntilIdle();
     csd_service_.reset();
-    file_thread_.reset();
-    browser_thread_.reset();
   }
 
   bool SendClientReportPhishingRequest(const GURL& phishing_url,
@@ -89,108 +87,115 @@ class ClientSideDetectionServiceTest : public testing::Test {
     request->set_url(phishing_url.spec());
     request->set_client_score(score);
     request->set_is_phishing(true);  // client thinks the URL is phishing.
+    base::RunLoop run_loop;
     csd_service_->SendClientReportPhishingRequest(
-        request,
-        false,
+        request, false,
         base::Bind(&ClientSideDetectionServiceTest::SendRequestDone,
-                   base::Unretained(this)));
+                   base::Unretained(this), run_loop.QuitWhenIdleClosure()));
     phishing_url_ = phishing_url;
-    base::RunLoop().Run();  // Waits until callback is called.
+    run_loop.Run();  // Waits until callback is called.
     return is_phishing_;
   }
 
   bool SendClientReportMalwareRequest(const GURL& url) {
     std::unique_ptr<ClientMalwareRequest> request(new ClientMalwareRequest());
     request->set_url(url.spec());
+    base::RunLoop run_loop;
     csd_service_->SendClientReportMalwareRequest(
         request.release(),
         base::Bind(&ClientSideDetectionServiceTest::SendMalwareRequestDone,
-                   base::Unretained(this)));
+                   base::Unretained(this), run_loop.QuitWhenIdleClosure()));
     phishing_url_ = url;
-    base::RunLoop().Run();  // Waits until callback is called.
+    run_loop.Run();  // Waits until callback is called.
     return is_malware_;
   }
 
   void SetModelFetchResponses() {
     // Set reponses for both models.
-    factory_->SetFakeResponse(GURL(ModelLoader::kClientModelUrlPrefix +
-                                   ModelLoader::FillInModelName(false, 0)),
-                              "bogusmodel", net::HTTP_OK,
-                              net::URLRequestStatus::SUCCESS);
-    factory_->SetFakeResponse(GURL(ModelLoader::kClientModelUrlPrefix +
-                                   ModelLoader::FillInModelName(true, 0)),
-                              "bogusmodel", net::HTTP_OK,
-                              net::URLRequestStatus::SUCCESS);
+    test_url_loader_factory_.AddResponse(
+        ModelLoader::kClientModelUrlPrefix +
+            ModelLoader::FillInModelName(false, 0),
+        "bogusmodel");
+    test_url_loader_factory_.AddResponse(
+        ModelLoader::kClientModelUrlPrefix +
+            ModelLoader::FillInModelName(true, 0),
+        "bogusmodel");
   }
 
-  void SetClientReportPhishingResponse(std::string response_data,
-                                       net::HttpStatusCode response_code,
-                                       net::URLRequestStatus::Status status) {
-    factory_->SetFakeResponse(
-        ClientSideDetectionService::GetClientReportUrl(
-            ClientSideDetectionService::kClientReportPhishingUrl),
-        response_data, response_code, status);
+  void SetResponse(const GURL& url,
+                   const std::string& response_data,
+                   int net_error) {
+    if (net_error != net::OK) {
+      test_url_loader_factory_.AddResponse(
+          url, network::ResourceResponseHead(), std::string(),
+          network::URLLoaderCompletionStatus(net_error));
+      return;
+    }
+    test_url_loader_factory_.AddResponse(url.spec(), response_data);
   }
 
-  void SetClientReportMalwareResponse(std::string response_data,
-                                      net::HttpStatusCode response_code,
-                                      net::URLRequestStatus::Status status) {
-    factory_->SetFakeResponse(
-        ClientSideDetectionService::GetClientReportUrl(
-            ClientSideDetectionService::kClientReportMalwareUrl),
-        response_data, response_code, status);
+  void SetClientReportPhishingResponse(const std::string& response_data,
+                                       int net_error) {
+    SetResponse(ClientSideDetectionService::GetClientReportUrl(
+                    ClientSideDetectionService::kClientReportPhishingUrl),
+                response_data, net_error);
   }
 
-  int GetNumReports(std::queue<base::Time>* report_times) {
+  void SetClientReportMalwareResponse(const std::string& response_data,
+                                      int net_error) {
+    SetResponse(ClientSideDetectionService::GetClientReportUrl(
+                    ClientSideDetectionService::kClientReportMalwareUrl),
+                response_data, net_error);
+  }
+
+  int GetNumReports(base::queue<base::Time>* report_times) {
     return csd_service_->GetNumReports(report_times);
   }
 
-  std::queue<base::Time>& GetPhishingReportTimes() {
+  base::queue<base::Time>& GetPhishingReportTimes() {
     return csd_service_->phishing_report_times_;
   }
 
-  std::queue<base::Time>& GetMalwareReportTimes() {
+  base::queue<base::Time>& GetMalwareReportTimes() {
     return csd_service_->malware_report_times_;
   }
 
   void SetCache(const GURL& gurl, bool is_phishing, base::Time time) {
     csd_service_->cache_[gurl] =
-        make_linked_ptr(new ClientSideDetectionService::CacheState(is_phishing,
-                                                                   time));
+        std::make_unique<ClientSideDetectionService::CacheState>(is_phishing,
+                                                                 time);
   }
 
   void TestCache() {
-    ClientSideDetectionService::PhishingCache& cache = csd_service_->cache_;
+    auto& cache = csd_service_->cache_;
     base::Time now = base::Time::Now();
     base::Time time =
         now - base::TimeDelta::FromDays(
             ClientSideDetectionService::kNegativeCacheIntervalDays) +
         base::TimeDelta::FromMinutes(5);
     cache[GURL("http://first.url.com/")] =
-        make_linked_ptr(new ClientSideDetectionService::CacheState(false,
-                                                                   time));
+        std::make_unique<ClientSideDetectionService::CacheState>(false, time);
 
     time =
         now - base::TimeDelta::FromDays(
             ClientSideDetectionService::kNegativeCacheIntervalDays) -
         base::TimeDelta::FromHours(1);
     cache[GURL("http://second.url.com/")] =
-        make_linked_ptr(new ClientSideDetectionService::CacheState(false,
-                                                                   time));
+        std::make_unique<ClientSideDetectionService::CacheState>(false, time);
 
     time =
         now - base::TimeDelta::FromMinutes(
             ClientSideDetectionService::kPositiveCacheIntervalMinutes) -
         base::TimeDelta::FromMinutes(5);
     cache[GURL("http://third.url.com/")] =
-        make_linked_ptr(new ClientSideDetectionService::CacheState(true, time));
+        std::make_unique<ClientSideDetectionService::CacheState>(true, time);
 
     time =
         now - base::TimeDelta::FromMinutes(
             ClientSideDetectionService::kPositiveCacheIntervalMinutes) +
         base::TimeDelta::FromMinutes(5);
     cache[GURL("http://fourth.url.com/")] =
-        make_linked_ptr(new ClientSideDetectionService::CacheState(true, time));
+        std::make_unique<ClientSideDetectionService::CacheState>(true, time);
 
     csd_service_->UpdateCache();
 
@@ -233,27 +238,35 @@ class ClientSideDetectionServiceTest : public testing::Test {
   }
 
  protected:
+  content::TestBrowserThreadBundle browser_thread_bundle_;
   std::unique_ptr<ClientSideDetectionService> csd_service_;
-  std::unique_ptr<net::FakeURLFetcherFactory> factory_;
-  base::MessageLoop msg_loop_;
+
+  network::TestURLLoaderFactory test_url_loader_factory_;
+  scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
+
+#if defined(OS_CHROMEOS)
+  chromeos::ScopedStubInstallAttributes test_install_attributes_;
+#endif
 
  private:
-  void SendRequestDone(GURL phishing_url, bool is_phishing) {
+  void SendRequestDone(base::OnceClosure continuation_callback,
+                       GURL phishing_url,
+                       bool is_phishing) {
     ASSERT_EQ(phishing_url, phishing_url_);
     is_phishing_ = is_phishing;
-    msg_loop_.QuitWhenIdle();
+    std::move(continuation_callback).Run();
   }
 
-  void SendMalwareRequestDone(GURL original_url, GURL malware_url,
+  void SendMalwareRequestDone(base::OnceClosure continuation_callback,
+                              GURL original_url,
+                              GURL malware_url,
                               bool is_malware) {
     ASSERT_EQ(phishing_url_, original_url);
     confirmed_malware_url_ = malware_url;
     is_malware_ = is_malware;
-    msg_loop_.QuitWhenIdle();
+    std::move(continuation_callback).Run();
   }
 
-  std::unique_ptr<content::TestBrowserThread> browser_thread_;
-  std::unique_ptr<content::TestBrowserThread> file_thread_;
   std::unique_ptr<base::FieldTrialList> field_trials_;
 
   GURL phishing_url_;
@@ -265,7 +278,8 @@ class ClientSideDetectionServiceTest : public testing::Test {
 
 TEST_F(ClientSideDetectionServiceTest, ServiceObjectDeletedBeforeCallbackDone) {
   SetModelFetchResponses();
-  csd_service_.reset(ClientSideDetectionService::Create(NULL));
+  csd_service_ =
+      ClientSideDetectionService::Create(test_shared_loader_factory_);
   csd_service_->SetEnabledAndRefreshState(true);
   EXPECT_TRUE(csd_service_.get() != NULL);
   // We delete the client-side detection service class even though the callbacks
@@ -278,7 +292,8 @@ TEST_F(ClientSideDetectionServiceTest, ServiceObjectDeletedBeforeCallbackDone) {
 
 TEST_F(ClientSideDetectionServiceTest, SendClientReportPhishingRequest) {
   SetModelFetchResponses();
-  csd_service_.reset(ClientSideDetectionService::Create(NULL));
+  csd_service_ =
+      ClientSideDetectionService::Create(test_shared_loader_factory_);
   csd_service_->SetEnabledAndRefreshState(true);
 
   GURL url("http://a.com/");
@@ -287,29 +302,26 @@ TEST_F(ClientSideDetectionServiceTest, SendClientReportPhishingRequest) {
   base::Time before = base::Time::Now();
 
   // Invalid response body from the server.
-  SetClientReportPhishingResponse("invalid proto response", net::HTTP_OK,
-                                  net::URLRequestStatus::SUCCESS);
+  SetClientReportPhishingResponse("invalid proto response", net::OK);
   EXPECT_FALSE(SendClientReportPhishingRequest(url, score));
 
   // Normal behavior.
   ClientPhishingResponse response;
   response.set_phishy(true);
-  SetClientReportPhishingResponse(response.SerializeAsString(), net::HTTP_OK,
-                                  net::URLRequestStatus::SUCCESS);
+  SetClientReportPhishingResponse(response.SerializeAsString(), net::OK);
   EXPECT_TRUE(SendClientReportPhishingRequest(url, score));
 
   // This request will fail
   GURL second_url("http://b.com/");
   response.set_phishy(false);
   SetClientReportPhishingResponse(response.SerializeAsString(),
-                                  net::HTTP_INTERNAL_SERVER_ERROR,
-                                  net::URLRequestStatus::FAILED);
+                                  net::ERR_FAILED);
   EXPECT_FALSE(SendClientReportPhishingRequest(second_url, score));
 
   base::Time after = base::Time::Now();
 
   // Check that we have recorded all 3 requests within the correct time range.
-  std::queue<base::Time>& report_times = GetPhishingReportTimes();
+  base::queue<base::Time>& report_times = GetPhishingReportTimes();
   EXPECT_EQ(3U, report_times.size());
   while (!report_times.empty()) {
     base::Time time = report_times.back();
@@ -328,27 +340,28 @@ TEST_F(ClientSideDetectionServiceTest, SendClientReportPhishingRequest) {
 
 TEST_F(ClientSideDetectionServiceTest, SendClientReportMalwareRequest) {
   SetModelFetchResponses();
-  csd_service_.reset(ClientSideDetectionService::Create(NULL));
+  csd_service_ =
+      ClientSideDetectionService::Create(test_shared_loader_factory_);
   csd_service_->SetEnabledAndRefreshState(true);
   GURL url("http://a.com/");
 
   base::Time before = base::Time::Now();
   // Invalid response body from the server.
-  SetClientReportMalwareResponse("invalid proto response", net::HTTP_OK,
+  SetClientReportMalwareResponse("invalid proto response",
                                  net::URLRequestStatus::SUCCESS);
   EXPECT_FALSE(SendClientReportMalwareRequest(url));
 
   // Missing bad_url.
   ClientMalwareResponse response;
   response.set_blacklist(true);
-  SetClientReportMalwareResponse(response.SerializeAsString(), net::HTTP_OK,
+  SetClientReportMalwareResponse(response.SerializeAsString(),
                                  net::URLRequestStatus::SUCCESS);
   EXPECT_FALSE(SendClientReportMalwareRequest(url));
 
   // Normal behavior.
   response.set_blacklist(true);
   response.set_bad_url("http://response-bad.com/");
-  SetClientReportMalwareResponse(response.SerializeAsString(), net::HTTP_OK,
+  SetClientReportMalwareResponse(response.SerializeAsString(),
                                  net::URLRequestStatus::SUCCESS);
   EXPECT_TRUE(SendClientReportMalwareRequest(url));
   CheckConfirmedMalwareUrl(GURL("http://response-bad.com/"));
@@ -356,19 +369,18 @@ TEST_F(ClientSideDetectionServiceTest, SendClientReportMalwareRequest) {
   // This request will fail
   response.set_blacklist(false);
   SetClientReportMalwareResponse(response.SerializeAsString(),
-                                 net::HTTP_INTERNAL_SERVER_ERROR,
                                  net::URLRequestStatus::FAILED);
   EXPECT_FALSE(SendClientReportMalwareRequest(url));
 
   // Server blacklist decision is false, and response is successful
   response.set_blacklist(false);
-  SetClientReportMalwareResponse(response.SerializeAsString(), net::HTTP_OK,
+  SetClientReportMalwareResponse(response.SerializeAsString(),
                                  net::URLRequestStatus::SUCCESS);
   EXPECT_FALSE(SendClientReportMalwareRequest(url));
 
   // Check that we have recorded all 5 requests within the correct time range.
   base::Time after = base::Time::Now();
-  std::queue<base::Time>& report_times = GetMalwareReportTimes();
+  base::queue<base::Time>& report_times = GetMalwareReportTimes();
   EXPECT_EQ(5U, report_times.size());
 
   // Check that the malware report limit was reached.
@@ -386,9 +398,10 @@ TEST_F(ClientSideDetectionServiceTest, SendClientReportMalwareRequest) {
 
 TEST_F(ClientSideDetectionServiceTest, GetNumReportTest) {
   SetModelFetchResponses();
-  csd_service_.reset(ClientSideDetectionService::Create(NULL));
+  csd_service_ =
+      ClientSideDetectionService::Create(test_shared_loader_factory_);
 
-  std::queue<base::Time>& report_times = GetPhishingReportTimes();
+  base::queue<base::Time>& report_times = GetPhishingReportTimes();
   base::Time now = base::Time::Now();
   base::TimeDelta twenty_five_hours = base::TimeDelta::FromHours(25);
   report_times.push(now - twenty_five_hours);
@@ -401,14 +414,16 @@ TEST_F(ClientSideDetectionServiceTest, GetNumReportTest) {
 
 TEST_F(ClientSideDetectionServiceTest, CacheTest) {
   SetModelFetchResponses();
-  csd_service_.reset(ClientSideDetectionService::Create(NULL));
+  csd_service_ =
+      ClientSideDetectionService::Create(test_shared_loader_factory_);
 
   TestCache();
 }
 
 TEST_F(ClientSideDetectionServiceTest, IsPrivateIPAddress) {
   SetModelFetchResponses();
-  csd_service_.reset(ClientSideDetectionService::Create(NULL));
+  csd_service_ =
+      ClientSideDetectionService::Create(test_shared_loader_factory_);
 
   EXPECT_TRUE(csd_service_->IsPrivateIPAddress("10.1.2.3"));
   EXPECT_TRUE(csd_service_->IsPrivateIPAddress("127.0.0.1"));
@@ -418,10 +433,12 @@ TEST_F(ClientSideDetectionServiceTest, IsPrivateIPAddress) {
   EXPECT_TRUE(csd_service_->IsPrivateIPAddress("fec0::"));
   EXPECT_TRUE(csd_service_->IsPrivateIPAddress("fec0:1:2::3"));
   EXPECT_TRUE(csd_service_->IsPrivateIPAddress("::1"));
+  EXPECT_TRUE(csd_service_->IsPrivateIPAddress("::ffff:192.168.1.1"));
 
   EXPECT_FALSE(csd_service_->IsPrivateIPAddress("1.2.3.4"));
   EXPECT_FALSE(csd_service_->IsPrivateIPAddress("200.1.1.1"));
   EXPECT_FALSE(csd_service_->IsPrivateIPAddress("2001:0db8:ac10:fe01::"));
+  EXPECT_FALSE(csd_service_->IsPrivateIPAddress("::ffff:23c5:281b"));
 
   // If the address can't be parsed, the default is true.
   EXPECT_TRUE(csd_service_->IsPrivateIPAddress("blah"));
@@ -429,9 +446,10 @@ TEST_F(ClientSideDetectionServiceTest, IsPrivateIPAddress) {
 
 TEST_F(ClientSideDetectionServiceTest, SetEnabledAndRefreshState) {
   // Check that the model isn't downloaded until the service is enabled.
-  csd_service_.reset(ClientSideDetectionService::Create(NULL));
+  csd_service_ =
+      ClientSideDetectionService::Create(test_shared_loader_factory_);
   EXPECT_FALSE(csd_service_->enabled());
-  EXPECT_TRUE(csd_service_->model_loader_standard_->fetcher_.get() == NULL);
+  EXPECT_TRUE(csd_service_->model_loader_standard_->url_loader_.get() == NULL);
 
   // Use a MockClientSideDetectionService for the rest of the test, to avoid
   // the scheduling delay.

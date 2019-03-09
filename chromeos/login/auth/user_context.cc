@@ -3,31 +3,22 @@
 // found in the LICENSE file.
 
 #include "chromeos/login/auth/user_context.h"
-#include "chromeos/login/user_names.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
+#include "components/user_manager/user_names.h"
 
 namespace chromeos {
 
 UserContext::UserContext() : account_id_(EmptyAccountId()) {}
 
-UserContext::UserContext(const UserContext& other)
-    : account_id_(other.account_id_),
-      key_(other.key_),
-      auth_code_(other.auth_code_),
-      refresh_token_(other.refresh_token_),
-      access_token_(other.access_token_),
-      user_id_hash_(other.user_id_hash_),
-      is_using_oauth_(other.is_using_oauth_),
-      auth_flow_(other.auth_flow_),
-      user_type_(other.user_type_),
-      public_session_locale_(other.public_session_locale_),
-      public_session_input_method_(other.public_session_input_method_),
-      device_id_(other.device_id_),
-      gaps_cookie_(other.gaps_cookie_) {}
+UserContext::UserContext(const UserContext& other) = default;
 
-UserContext::UserContext(const AccountId& account_id)
-    : account_id_(account_id) {
-  account_id_.SetUserEmail(
-      login::CanonicalizeUserID(account_id.GetUserEmail()));
+UserContext::UserContext(const user_manager::User& user)
+    : account_id_(user.GetAccountId()), user_type_(user.GetType()) {
+  if (user_type_ == user_manager::USER_TYPE_REGULAR) {
+    account_id_.SetUserEmail(
+        user_manager::CanonicalizeUserID(account_id_.GetUserEmail()));
+  }
 }
 
 UserContext::UserContext(user_manager::UserType user_type,
@@ -35,11 +26,10 @@ UserContext::UserContext(user_manager::UserType user_type,
     : account_id_(account_id), user_type_(user_type) {
   if (user_type_ == user_manager::USER_TYPE_REGULAR)
     account_id_.SetUserEmail(
-        login::CanonicalizeUserID(account_id_.GetUserEmail()));
+        user_manager::CanonicalizeUserID(account_id_.GetUserEmail()));
 }
 
-UserContext::~UserContext() {
-}
+UserContext::~UserContext() = default;
 
 bool UserContext::operator==(const UserContext& context) const {
   return context.account_id_ == account_id_ && context.key_ == key_ &&
@@ -73,6 +63,24 @@ Key* UserContext::GetKey() {
   return &key_;
 }
 
+const Key* UserContext::GetPasswordKey() const {
+  return &password_key_;
+}
+
+Key* UserContext::GetMutablePasswordKey() {
+  return &password_key_;
+}
+
+const std::vector<ChallengeResponseKey>& UserContext::GetChallengeResponseKeys()
+    const {
+  return challenge_response_keys_;
+}
+
+std::vector<ChallengeResponseKey>*
+UserContext::GetMutableChallengeResponseKeys() {
+  return &challenge_response_keys_;
+}
+
 const std::string& UserContext::GetAuthCode() const {
   return auth_code_;
 }
@@ -91,6 +99,14 @@ const std::string& UserContext::GetUserIDHash() const {
 
 bool UserContext::IsUsingOAuth() const {
   return is_using_oauth_;
+}
+
+bool UserContext::IsUsingPin() const {
+  return is_using_pin_;
+}
+
+bool UserContext::IsForcingDircrypto() const {
+  return is_forcing_dircrypto_;
 }
 
 UserContext::AuthFlow UserContext::GetAuthFlow() const {
@@ -117,9 +133,18 @@ const std::string& UserContext::GetGAPSCookie() const {
   return gaps_cookie_;
 }
 
+const base::Optional<password_manager::PasswordHashData>&
+UserContext::GetSyncPasswordData() const {
+  return sync_password_data_;
+}
+
 bool UserContext::HasCredentials() const {
   return (account_id_.is_valid() && !key_.GetSecret().empty()) ||
          !auth_code_.empty();
+}
+
+bool UserContext::IsUnderAdvancedProtection() const {
+  return is_under_advanced_protection_;
 }
 
 void UserContext::SetAccountId(const AccountId& account_id) {
@@ -128,6 +153,10 @@ void UserContext::SetAccountId(const AccountId& account_id) {
 
 void UserContext::SetKey(const Key& key) {
   key_ = key;
+}
+
+void UserContext::SetPasswordKey(const Key& key) {
+  password_key_ = key;
 }
 
 void UserContext::SetAuthCode(const std::string& auth_code) {
@@ -150,12 +179,16 @@ void UserContext::SetIsUsingOAuth(bool is_using_oauth) {
   is_using_oauth_ = is_using_oauth;
 }
 
-void UserContext::SetAuthFlow(AuthFlow auth_flow) {
-  auth_flow_ = auth_flow;
+void UserContext::SetIsUsingPin(bool is_using_pin) {
+  is_using_pin_ = is_using_pin;
 }
 
-void UserContext::SetUserType(user_manager::UserType user_type) {
-  user_type_ = user_type;
+void UserContext::SetIsForcingDircrypto(bool is_forcing_dircrypto) {
+  is_forcing_dircrypto_ = is_forcing_dircrypto;
+}
+
+void UserContext::SetAuthFlow(AuthFlow auth_flow) {
+  auth_flow_ = auth_flow;
 }
 
 void UserContext::SetPublicSessionLocale(const std::string& locale) {
@@ -174,8 +207,19 @@ void UserContext::SetGAPSCookie(const std::string& gaps_cookie) {
   gaps_cookie_ = gaps_cookie;
 }
 
+void UserContext::SetSyncPasswordData(
+    const password_manager::PasswordHashData& sync_password_data) {
+  sync_password_data_ = {sync_password_data};
+}
+
+void UserContext::SetIsUnderAdvancedProtection(
+    bool is_under_advanced_protection) {
+  is_under_advanced_protection_ = is_under_advanced_protection;
+}
+
 void UserContext::ClearSecrets() {
   key_.ClearSecret();
+  password_key_.ClearSecret();
   auth_code_.clear();
   refresh_token_.clear();
 }

@@ -8,6 +8,7 @@
  */
 
 /** @polymerBehavior */
+// eslint-disable-next-line no-var
 var WebUIListenerBehavior = {
   properties: {
     /**
@@ -17,7 +18,9 @@ var WebUIListenerBehavior = {
      */
     webUIListeners_: {
       type: Array,
-      value: function() { return []; },
+      value: function() {
+        return [];
+      },
     },
   },
 

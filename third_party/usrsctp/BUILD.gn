@@ -2,6 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/toolchain/toolchain.gni")
+
 config("usrsctp_config") {
   include_dirs = [
     "usrsctplib/usrsctplib",
@@ -11,8 +13,15 @@ config("usrsctp_config") {
 
 config("usrsctp_warnings") {
   if (is_clang) {
-    # atomic_init in user_atomic.h is a static function in a header.
-    cflags = [ "-Wno-unused-function" ]
+    cflags = [
+      # atomic_init in user_atomic.h is a static function in a header.
+      "-Wno-unused-function",
+
+      # Use of deprecated OSAtomic* functions in user_atomic.h. This is
+      # what they did in configure.ac. We can remove this once
+      # https://github.com/sctplab/usrsctp/issues/177 is fixed.
+      "-Wno-deprecated-declarations",
+    ]
   }
 }
 
@@ -123,20 +132,14 @@ static_library("usrsctp") {
   }
 
   if (is_win) {
-    defines += [
-      "__Userspace_os_Windows",
-
-      # Manually setting WINVER and _WIN32_WINNT is needed because Chrome
-      # sets WINVER to a newer version of  windows. But compiling usrsctp
-      # this way would is incompatible  with windows XP.
-      "WINVER=0x0502",
-      "_WIN32_WINNT=0x0502",
-    ]
-    configs -= [ "//build/config/win:winver" ]
+    defines += [ "__Userspace_os_Windows" ]
   } else {
     defines += [ "NON_WINDOWS_DEFINE" ]
   }
 
+  if (is_fuchsia) {
+    defines += [ "__Userspace_os_Fuchsia" ]
+  }
   deps = [
     "//third_party/boringssl",
   ]

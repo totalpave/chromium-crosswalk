@@ -17,33 +17,25 @@
 }
 
 #back-button-container {
-  -webkit-padding-end: 4px;
-}
-
-.cast-mode-list {
-  background-color: var(--paper-teal-700);
+  padding-inline-end: 4px;
 }
 
 #close-button {
-  -webkit-margin-start: auto;
   height: 31px;
+  margin-inline-start: auto;
   width: 31px;
 }
 
 #close-button-container {
-  -webkit-margin-start: auto;
-  -webkit-padding-end: 16px;
-  -webkit-padding-start: 24px;
-}
-
-.filter {
-  background-color: var(--paper-deep-purple-500);
+  margin-inline-start: auto;
+  padding-inline-end: 16px;
+  padding-inline-start: 24px;
 }
 
 #header {
-  -webkit-padding-start: 8px;
   align-items: center;
   color: white;
+  padding-inline-start: 8px;
 }
 
 #header-and-arrow-container {
@@ -53,10 +45,11 @@
 }
 
 #header-text {
-  -webkit-padding-end: 4px;
   font-size: 1.175em;
-  margin: 8px;
+  line-height: 36px;
+  margin: 0 8px;
   overflow: hidden;
+  padding-inline-end: 4px;
   text-overflow: ellipsis;
 }
 
@@ -73,16 +66,18 @@ paper-icon-button {
   padding-top: 10px;
 }
 
+.cast-mode-list,
+.filter,
 .route-details,
 .sink-list {
   background-color: var(--paper-blue-700);
 }
 
 #user-email-container {
-  -webkit-padding-start: 8px;
   bottom: 0;
   font-size: 0.917em;
   left: auto;
   padding-bottom: 12px;
+  padding-inline-start: 8px;
   position: absolute;
 }

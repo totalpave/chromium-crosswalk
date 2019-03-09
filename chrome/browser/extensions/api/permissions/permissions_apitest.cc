@@ -5,8 +5,10 @@
 #include "chrome/browser/extensions/api/permissions/permissions_api.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_management_test_util.h"
+#include "chrome/browser/extensions/extension_with_management_policy_apitest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "extensions/browser/extension_prefs.h"
@@ -33,22 +35,15 @@ class ExperimentalApiTest : public ExtensionApiTest {
   }
 };
 
-class ExtensionApiTestWithManagementPolicy : public ExtensionApiTest {
+class PermissionsApiTest : public ExtensionApiTest {
  public:
-  void SetUpInProcessBrowserTestFixture() override {
-    ExtensionApiTest::SetUpInProcessBrowserTestFixture();
-    EXPECT_CALL(policy_provider_, IsInitializationComplete(testing::_))
-        .WillRepeatedly(testing::Return(true));
-    policy_provider_.SetAutoRefresh();
-    policy::BrowserPolicyConnector::SetPolicyProviderForTesting(
-        &policy_provider_);
+  void SetUpOnMainThread() override {
+    ExtensionApiTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
   }
-
- protected:
-  policy::MockConfigurationPolicyProvider policy_provider_;
 };
 
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, PermissionsFail) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, PermissionsFail) {
   ASSERT_TRUE(RunExtensionTest("permissions/disabled")) << message_;
 
   // Since the experimental APIs require a flag, this will fail even though
@@ -64,7 +59,7 @@ IN_PROC_BROWSER_TEST_F(ExperimentalApiTest, PermissionsSucceed) {
   ASSERT_TRUE(RunExtensionTest("permissions/enabled")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ExperimentalPermissionsFail) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, ExperimentalPermissionsFail) {
   // At the time this test is being created, there is no experimental
   // function that will not be graduating soon, and does not require a
   // tab id as an argument.  So, we need the tab permission to get
@@ -73,72 +68,77 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ExperimentalPermissionsFail) {
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, FaviconPermission) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, FaviconPermission) {
   ASSERT_TRUE(RunExtensionTest("permissions/favicon")) << message_;
 }
 
 // Test functions and APIs that are always allowed (even if you ask for no
 // permissions).
-// Disabled: http://crbug.com/125193
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, DISABLED_AlwaysAllowed) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, AlwaysAllowed) {
   ASSERT_TRUE(RunExtensionTest("permissions/always_allowed")) << message_;
 }
 
 // Tests that the optional permissions API works correctly.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsGranted) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, OptionalPermissionsGranted) {
   // Mark all the tested APIs as granted to bypass the confirmation UI.
   APIPermissionSet apis;
   apis.insert(APIPermission::kBookmark);
-  ManifestPermissionSet manifest_permissions;
   URLPatternSet explicit_hosts;
   AddPattern(&explicit_hosts, "http://*.c.com/*");
 
   ExtensionPrefs* prefs = ExtensionPrefs::Get(browser()->profile());
-  prefs->AddGrantedPermissions("kjmkgkdkpedkejedfhmfcenooemhbpbo",
-                               PermissionSet(apis, manifest_permissions,
-                                             explicit_hosts, URLPatternSet()));
+  prefs->AddRuntimeGrantedPermissions(
+      "kjmkgkdkpedkejedfhmfcenooemhbpbo",
+      PermissionSet(std::move(apis), ManifestPermissionSet(),
+                    std::move(explicit_hosts), URLPatternSet()));
 
   PermissionsRequestFunction::SetIgnoreUserGestureForTests(true);
-  host_resolver()->AddRule("*.com", "127.0.0.1");
   ASSERT_TRUE(StartEmbeddedTestServer());
   EXPECT_TRUE(RunExtensionTest("permissions/optional")) << message_;
 }
 
 // Tests that the optional permissions API works correctly.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsAutoConfirm) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, OptionalPermissionsAutoConfirm) {
   // Rather than setting the granted permissions, set the UI autoconfirm flag
   // and run the same tests.
   PermissionsRequestFunction::SetAutoConfirmForTests(true);
   PermissionsRequestFunction::SetIgnoreUserGestureForTests(true);
-  host_resolver()->AddRule("*.com", "127.0.0.1");
   ASSERT_TRUE(StartEmbeddedTestServer());
   EXPECT_TRUE(RunExtensionTest("permissions/optional")) << message_;
 }
 
 // Test that denying the optional permissions confirmation dialog works.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsDeny) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, OptionalPermissionsDeny) {
+  // Mark the management permission as already granted since we auto reject
+  // user prompts.
+  APIPermissionSet apis;
+  apis.insert(APIPermission::kManagement);
+
+  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser()->profile());
+  prefs->AddRuntimeGrantedPermissions(
+      "kjmkgkdkpedkejedfhmfcenooemhbpbo",
+      PermissionSet(std::move(apis), ManifestPermissionSet(), URLPatternSet(),
+                    URLPatternSet()));
+
   PermissionsRequestFunction::SetAutoConfirmForTests(false);
   PermissionsRequestFunction::SetIgnoreUserGestureForTests(true);
-  host_resolver()->AddRule("*.com", "127.0.0.1");
   ASSERT_TRUE(StartEmbeddedTestServer());
   EXPECT_TRUE(RunExtensionTest("permissions/optional_deny")) << message_;
 }
 
 // Tests that the permissions.request function must be called from within a
 // user gesture.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsGesture) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, OptionalPermissionsGesture) {
   PermissionsRequestFunction::SetIgnoreUserGestureForTests(false);
-  host_resolver()->AddRule("*.com", "127.0.0.1");
   ASSERT_TRUE(StartEmbeddedTestServer());
   EXPECT_TRUE(RunExtensionTest("permissions/optional_gesture")) << message_;
 }
 
 // Tests that the user gesture is retained in the permissions.request function
 // callback.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsRetainGesture) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, OptionalPermissionsRetainGesture) {
   PermissionsRequestFunction::SetAutoConfirmForTests(true);
   PermissionsRequestFunction::SetIgnoreUserGestureForTests(false);
-  host_resolver()->AddRule("*.com", "127.0.0.1");
   ASSERT_TRUE(StartEmbeddedTestServer());
   EXPECT_TRUE(RunExtensionTest("permissions/optional_retain_gesture"))
       << message_;
@@ -162,7 +162,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTestWithManagementPolicy,
 
 // Tests that an extension can't gain access to file: URLs without the checkbox
 // entry in prefs. There shouldn't be a warning either.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsFileAccess) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, OptionalPermissionsFileAccess) {
   // There shouldn't be a warning, so we shouldn't need to autoconfirm.
   PermissionsRequestFunction::SetAutoConfirmForTests(false);
   PermissionsRequestFunction::SetIgnoreUserGestureForTests(true);
@@ -185,9 +185,33 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsFileAccess) {
   // EXPECT_TRUE(prefs->AllowFileAccess("hlonmbgfjccgolnaboonlakjckinmhmd"));
 }
 
+// Tests loading of files or directory listings when an extension has file
+// access.
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, FileLoad) {
+  base::ScopedTempDir temp_dir;
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+    base::FilePath empty_file = temp_dir.GetPath().AppendASCII("empty.html");
+    base::FilePath original_empty_file = ui_test_utils::GetTestFilePath(
+        base::FilePath(), base::FilePath().AppendASCII("empty.html"));
+
+    EXPECT_TRUE(base::PathExists(original_empty_file));
+    EXPECT_TRUE(base::CopyFile(original_empty_file, empty_file));
+  }
+  EXPECT_TRUE(RunExtensionTestWithFlagsAndArg(
+      "permissions/file_load", temp_dir.GetPath().MaybeAsASCII().c_str(),
+      kFlagEnableFileAccess))
+      << message_;
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    ASSERT_TRUE(temp_dir.Delete());
+  }
+}
+
 // Test requesting, querying, and removing host permissions for host
 // permissions that are a subset of the optional permissions.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, HostSubsets) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, HostSubsets) {
   PermissionsRequestFunction::SetAutoConfirmForTests(true);
   PermissionsRequestFunction::SetIgnoreUserGestureForTests(true);
   EXPECT_TRUE(RunExtensionTest("permissions/host_subsets")) << message_;
@@ -197,7 +221,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, HostSubsets) {
 // another window open, grants the permission and updates the bindings
 // (chrome.whatever, in this case chrome.alarms). Regression test for
 // crbug.com/435141, see details there for trickiness.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest, OptionalPermissionsUpdatesBindings) {
+IN_PROC_BROWSER_TEST_F(PermissionsApiTest, OptionalPermissionsUpdatesBindings) {
   ASSERT_TRUE(RunExtensionTest("permissions/optional_updates_bindings"))
       << message_;
 }

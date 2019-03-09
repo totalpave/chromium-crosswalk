@@ -5,10 +5,10 @@
 #include <string>
 
 #include "ash/magnifier/magnification_controller.h"
-#include "ash/screen_util.h"
 #include "ash/shell.h"
 #include "base/command_line.h"
 #include "base/macros.h"
+#include "base/run_loop.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/accessibility/magnification_manager.h"
@@ -21,6 +21,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/wm/core/coordinate_conversion.h"
 
 namespace chromeos {
 
@@ -45,7 +46,7 @@ aura::Window* GetRootWindow() {
 }
 
 ash::MagnificationController* GetMagnificationController() {
-  return ash::Shell::GetInstance()->magnification_controller();
+  return ash::Shell::Get()->magnification_controller();
 }
 
 bool IsMagnifierEnabled() {
@@ -98,7 +99,6 @@ class MagnificationControllerTest : public InProcessBrowserTest {
   ~MagnificationControllerTest() override {}
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    InProcessBrowserTest::SetUpCommandLine(command_line);
     // Make screens sufficiently wide to host 2 browsers side by side.
     command_line->AppendSwitchASCII("ash-host-window-bounds", "1200x800");
   }
@@ -151,9 +151,8 @@ class MagnificationControllerTest : public InProcessBrowserTest {
     origin.Offset(view_bounds_in_screen.x(), view_bounds_in_screen.y());
     gfx::Rect rect_in_screen(origin.x(), origin.y(), rect.width(),
                              rect.height());
-
-    return ash::ScreenUtil::ConvertRectFromScreen(GetRootWindow(),
-                                                  rect_in_screen);
+    ::wm::ConvertRectFromScreen(GetRootWindow(), &rect_in_screen);
+    return rect_in_screen;
   }
 
   void SetFocusOnElement(const std::string& element_id) {

@@ -7,42 +7,48 @@
 
 namespace password_manager {
 
-bool PasswordManagerClient::IsAutomaticPasswordSavingEnabled() const {
-  return false;
-}
-
-bool PasswordManagerClient::IsSavingAndFillingEnabledForCurrentPage() const {
+bool PasswordManagerClient::IsSavingAndFillingEnabled(const GURL& url) const {
   return true;
 }
 
-bool PasswordManagerClient::IsFillingEnabledForCurrentPage() const {
+bool PasswordManagerClient::IsFillingEnabled(const GURL& url) const {
   return true;
 }
 
-void PasswordManagerClient::ForceSavePassword() {
+bool PasswordManagerClient::IsFillingFallbackEnabled(const GURL& url) const {
+  return true;
+}
+
+void PasswordManagerClient::PostHSTSQueryForHost(const GURL& origin,
+                                                 HSTSCallback callback) const {
+  std::move(callback).Run(HSTSResult::kError);
+}
+
+bool PasswordManagerClient::OnCredentialManagerUsed() {
+  return true;
 }
 
 void PasswordManagerClient::GeneratePassword() {}
 
 void PasswordManagerClient::PasswordWasAutofilled(
-    const autofill::PasswordFormMap& best_matches,
+    const std::map<base::string16, const autofill::PasswordForm*>& best_matches,
     const GURL& origin,
-    const std::vector<std::unique_ptr<autofill::PasswordForm>>*
-        federated_matches) const {}
+    const std::vector<const autofill::PasswordForm*>* federated_matches) const {
+}
 
-PasswordSyncState PasswordManagerClient::GetPasswordSyncState() const {
-  return NOT_SYNCING_PASSWORDS;
+SyncState PasswordManagerClient::GetPasswordSyncState() const {
+  return NOT_SYNCING;
 }
 
 bool PasswordManagerClient::WasLastNavigationHTTPError() const {
   return false;
 }
 
-bool PasswordManagerClient::DidLastPageLoadEncounterSSLErrors() const {
-  return false;
+net::CertStatus PasswordManagerClient::GetMainFrameCertStatus() const {
+  return 0;
 }
 
-bool PasswordManagerClient::IsOffTheRecord() const {
+bool PasswordManagerClient::IsIncognito() const {
   return false;
 }
 
@@ -55,8 +61,8 @@ PasswordManager* PasswordManagerClient::GetPasswordManager() {
       static_cast<const PasswordManagerClient*>(this)->GetPasswordManager());
 }
 
-autofill::AutofillManager*
-PasswordManagerClient::GetAutofillManagerForMainFrame() {
+autofill::AutofillDownloadManager*
+PasswordManagerClient::GetAutofillDownloadManager() {
   return nullptr;
 }
 
@@ -64,12 +70,33 @@ const GURL& PasswordManagerClient::GetMainFrameURL() const {
   return GURL::EmptyGURL();
 }
 
-bool PasswordManagerClient::IsUpdatePasswordUIEnabled() const {
+bool PasswordManagerClient::IsMainFrameSecure() const {
   return false;
 }
 
 const LogManager* PasswordManagerClient::GetLogManager() const {
   return nullptr;
+}
+
+void PasswordManagerClient::AnnotateNavigationEntry(bool has_password_field) {}
+
+std::string PasswordManagerClient::GetPageLanguage() const {
+  return std::string();
+}
+
+PasswordRequirementsService*
+PasswordManagerClient::GetPasswordRequirementsService() {
+  // Not impemented but that is a valid state as per interface definition.
+  // Therefore, don't call NOTIMPLEMENTED() here.
+  return nullptr;
+}
+
+favicon::FaviconService* PasswordManagerClient::GetFaviconService() {
+  return nullptr;
+}
+
+bool PasswordManagerClient::IsUnderAdvancedProtection() const {
+  return false;
 }
 
 }  // namespace password_manager

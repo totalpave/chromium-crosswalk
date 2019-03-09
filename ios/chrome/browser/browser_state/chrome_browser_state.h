@@ -11,9 +11,8 @@
 #include "base/callback_forward.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
+#include "ios/chrome/browser/net/net_types.h"
 #include "ios/web/public/browser_state.h"
 #include "net/url_request/url_request_job_factory.h"
 
@@ -28,12 +27,7 @@ class SequencedTaskRunner;
 class Time;
 }
 
-namespace net {
-class SSLConfigService;
-class URLRequestInterceptor;
-}
-
-namespace syncable_prefs {
+namespace sync_preferences {
 class PrefServiceSyncable;
 }
 
@@ -96,8 +90,8 @@ class ChromeBrowserState : public web::BrowserState {
   virtual ChromeBrowserStateIOData* GetIOData() = 0;
 
   // Retrieves a pointer to the PrefService that manages the preferences as
-  // a syncable_prefs::PrefServiceSyncable.
-  virtual syncable_prefs::PrefServiceSyncable* GetSyncablePrefs();
+  // a sync_preferences::PrefServiceSyncable.
+  virtual sync_preferences::PrefServiceSyncable* GetSyncablePrefs();
 
   // Deletes all network related data since |time|. It deletes transport
   // security state since |time| and it also deletes HttpServerProperties data.
@@ -115,39 +109,28 @@ class ChromeBrowserState : public web::BrowserState {
   // access to the the proxy configuration possibly defined by preferences.
   virtual PrefProxyConfigTracker* GetProxyConfigTracker() = 0;
 
-  // Returns the SSLConfigService for this browser state.
-  virtual net::SSLConfigService* GetSSLConfigService() = 0;
-
   // Creates the main net::URLRequestContextGetter that will be returned by
   // GetRequestContext(). Should only be called once.
   virtual net::URLRequestContextGetter* CreateRequestContext(
-      std::map<std::string,
-               linked_ptr<net::URLRequestJobFactory::ProtocolHandler>>*
-          protocol_handlers,
-      ScopedVector<net::URLRequestInterceptor> request_interceptors) = 0;
+      ProtocolHandlerMap* protocol_handlers) = 0;
 
   // Creates a isolated net::URLRequestContextGetter. Should only be called once
   // per partition_path per browser state object.
   virtual net::URLRequestContextGetter* CreateIsolatedRequestContext(
       const base::FilePath& partition_path) = 0;
 
-  // Returns the current ChromeBrowserState casted as a TestChromeBrowserState
-  // or null if it is not a TestChromeBrowserState.
-  // TODO(crbug.com/583682): This method should not be used. It is there for
-  // supporting a legacy test, and will be removed as soon as the deprecated
-  // test is removed.
-  virtual TestChromeBrowserState* AsTestChromeBrowserState();
-
   // web::BrowserState
   net::URLRequestContextGetter* GetRequestContext() override;
 
  protected:
-  ChromeBrowserState();
+  explicit ChromeBrowserState(
+      scoped_refptr<base::SequencedTaskRunner> io_task_runner);
 
  private:
   friend class ::TestChromeBrowserState;
   friend class ::TestChromeBrowserStateManager;
 
+  scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
   scoped_refptr<net::URLRequestContextGetter> request_context_getter_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeBrowserState);

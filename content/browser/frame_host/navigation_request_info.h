@@ -8,43 +8,78 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
+#include "base/unguessable_token.h"
 #include "content/common/content_export.h"
 #include "content/common/navigation_params.h"
-#include "content/common/resource_request_body_impl.h"
+#include "content/common/navigation_params.mojom.h"
 #include "content/public/common/referrer.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace content {
-class ResourceRequestBody;
 
 // A struct to hold the parameters needed to start a navigation request in
 // ResourceDispatcherHost. It is initialized on the UI thread, and then passed
 // to the IO thread by a NavigationRequest object.
 struct CONTENT_EXPORT NavigationRequestInfo {
   NavigationRequestInfo(const CommonNavigationParams& common_params,
-                        const BeginNavigationParams& begin_params,
-                        const GURL& first_party_for_cookies,
-                        const url::Origin& request_initiator,
+                        mojom::BeginNavigationParamsPtr begin_params,
+                        const GURL& site_for_cookies,
+                        const base::Optional<url::Origin>& top_frame_origin,
                         bool is_main_frame,
                         bool parent_is_main_frame,
-                        int frame_tree_node_id);
+                        bool are_ancestors_secure,
+                        int frame_tree_node_id,
+                        bool is_for_guests_only,
+                        bool report_raw_headers,
+                        bool is_prerendering,
+                        bool upgrade_if_insecure,
+                        std::unique_ptr<network::SharedURLLoaderFactoryInfo>
+                            blob_url_loader_factory,
+                        const base::UnguessableToken& devtools_navigation_token,
+                        const base::UnguessableToken& devtools_frame_token);
+  NavigationRequestInfo(const NavigationRequestInfo& other);
   ~NavigationRequestInfo();
 
   const CommonNavigationParams common_params;
-  const BeginNavigationParams begin_params;
+  mojom::BeginNavigationParamsPtr begin_params;
 
   // Usually the URL of the document in the top-level window, which may be
   // checked by the third-party cookie blocking policy.
-  const GURL first_party_for_cookies;
+  const GURL site_for_cookies;
 
-  // The origin of the context which initiated the request.
-  const url::Origin request_initiator;
+  // The origin of the navigation if top frame, else the origin of the top
+  // frame.
+  // TODO(crbug.com/910716) Make this required. I believe we just need to add
+  // support for signed exchange redirects.
+  const base::Optional<url::Origin> top_frame_origin;
 
   const bool is_main_frame;
   const bool parent_is_main_frame;
 
+  // Whether all ancestor frames of the frame that is navigating have a secure
+  // origin. True for main frames.
+  const bool are_ancestors_secure;
+
   const int frame_tree_node_id;
+
+  const bool is_for_guests_only;
+
+  const bool report_raw_headers;
+
+  const bool is_prerendering;
+
+  // If set to true, any HTTP redirects of this request will be upgraded to
+  // HTTPS. This only applies for subframe navigations.
+  const bool upgrade_if_insecure;
+
+  // URLLoaderFactory to facilitate loading blob URLs.
+  std::unique_ptr<network::SharedURLLoaderFactoryInfo> blob_url_loader_factory;
+
+  const base::UnguessableToken devtools_navigation_token;
+
+  const base::UnguessableToken devtools_frame_token;
 };
 
 }  // namespace content

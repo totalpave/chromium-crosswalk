@@ -20,7 +20,6 @@
 #include "base/timer/timer.h"
 #include "chrome/browser/chromeos/policy/upload_job.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
-#include "google_apis/gaia/oauth2_token_service.h"
 #include "net/url_request/url_request_context_getter.h"
 #include "ui/snapshot/snapshot.h"
 #include "url/gurl.h"
@@ -103,14 +102,13 @@ class DeviceCommandScreenshotJob : public RemoteCommandJob,
   void OnFailure(UploadJob::ErrorCode error_code) override;
 
   // RemoteCommandJob:
-  bool IsExpired(base::TimeTicks now) override;
   bool ParseCommandPayload(const std::string& command_payload) override;
-  void RunImpl(const CallbackWithResult& succeeded_callback,
-               const CallbackWithResult& failed_callback) override;
+  void RunImpl(CallbackWithResult succeeded_callback,
+               CallbackWithResult failed_callback) override;
   void TerminateImpl() override;
 
   void StoreScreenshot(size_t screen,
-                       scoped_refptr<base::RefCountedBytes> png_data);
+                       scoped_refptr<base::RefCountedMemory> png_data);
 
   void StartScreenshotUpload();
 
@@ -128,7 +126,7 @@ class DeviceCommandScreenshotJob : public RemoteCommandJob,
   int num_pending_screenshots_;
 
   // Caches the already completed screenshots for the different displays.
-  std::map<int, scoped_refptr<base::RefCountedBytes>> screenshots_;
+  std::map<int, scoped_refptr<base::RefCountedMemory>> screenshots_;
 
   // The Delegate is used to acquire screenshots and create UploadJobs.
   std::unique_ptr<Delegate> screenshot_delegate_;

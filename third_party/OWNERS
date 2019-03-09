@@ -2,7 +2,7 @@
 # adding new libraries. Be sure to follow the instructions for adding
 # new third party libraries.
 #
-# http://www.chromium.org/developers/adding-3rd-party-libraries
+# https://chromium.googlesource.com/chromium/src.git/+/master/docs/adding_to_third_party.md
 #
 # For changes to existing code that has no OWNER file, simply TBR= one of
 # people below in addition to getting an appropriate code review. Generally
@@ -11,11 +11,16 @@
 # you're making changes and there isn't a more obvious person, the owner is
 # probably you!
 
-ben@chromium.org
-brettw@chromium.org
-dglazkov@chromium.org
-jam@chromium.org
-jochen@chromium.org
-klobag@chromium.org
-sky@chromium.org
+# Eng reviewer
+file://ENG_REVIEW_OWNERS
+
+# Automatic round-robin assignment of reviewer for third-party licenses.
+# No one receives email to this list, just use it as a reviewer.
+chromium-third-party@google.com
+
 thakis@chromium.org
+
+per-file .gitignore=*
+
+# Translation artifacts:
+per-file *.xtb=file://tools/translation/TRANSLATION_OWNERS

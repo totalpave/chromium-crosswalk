@@ -8,10 +8,13 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/strings/string16.h"
+#include "chrome/browser/ui/find_bar/find_bar_platform_helper.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 
 class FindBar;
+class Browser;
 
 namespace content {
 class WebContents;
@@ -40,7 +43,7 @@ class FindBarController : public content::NotificationObserver {
   };
 
   // FindBar takes ownership of |find_bar_view|.
-  explicit FindBarController(FindBar* find_bar);
+  FindBarController(FindBar* find_bar, Browser* browser);
 
   ~FindBarController() override;
 
@@ -52,6 +55,9 @@ class FindBarController : public content::NotificationObserver {
   // specifies what to do with the contents of the Find box (after ending).
   void EndFindSession(SelectionAction selection_action,
                       ResultAction results_action);
+
+  // The visibility of the find bar view changed.
+  void FindBarVisibilityChanged();
 
   // Accessor for the attached WebContents.
   content::WebContents* web_contents() const { return web_contents_; }
@@ -66,6 +72,12 @@ class FindBarController : public content::NotificationObserver {
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
+  void SetText(base::string16 text);
+
+  // Called when the find text is updated in response to a user action.
+  void OnUserChangedFindText(base::string16 text);
+
+  Browser* browser() const { return browser_; }
   FindBar* find_bar() const { return find_bar_.get(); }
 
   // Reposition |view_location| such that it avoids |avoid_overlapping_rect|,
@@ -76,8 +88,12 @@ class FindBarController : public content::NotificationObserver {
       const gfx::Rect& avoid_overlapping_rect);
 
  private:
-  // Sents an update to the find bar with the tab contents' current result. The
-  // web_contents_ must be non-NULL before this call. Theis handles
+  // Called when we've received notice of a find result for the associated
+  // WebContents.
+  void OnFindResultAvailable();
+
+  // Sends an update to the find bar with the tab contents' current result. The
+  // web_contents_ must be non-NULL before this call. This handles
   // de-flickering in addition to just calling the update function.
   void UpdateFindBarForCurrentResult();
 
@@ -93,11 +109,17 @@ class FindBarController : public content::NotificationObserver {
   std::unique_ptr<FindBar> find_bar_;
 
   // The WebContents we are currently associated with.  Can be NULL.
-  content::WebContents* web_contents_;
+  content::WebContents* web_contents_ = nullptr;
 
-  // The last match count we reported to the user. This is used by
-  // UpdateFindBarForCurrentResult to avoid flickering.
-  int last_reported_matchcount_;
+  // The Browser creating this controller.
+  Browser* const browser_;
+
+  std::unique_ptr<FindBarPlatformHelper> find_bar_platform_helper_;
+
+  // The last match count and ordinal we reported to the user. This is used
+  // by UpdateFindBarForCurrentResult to avoid flickering.
+  int last_reported_matchcount_ = 0;
+  int last_reported_ordinal_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(FindBarController);
 };

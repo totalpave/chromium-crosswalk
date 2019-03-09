@@ -4,15 +4,20 @@
 
 #include "net/log/net_log.h"
 
+#include <limits>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/callback.h"
+#include "base/stl_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/simple_thread.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
+#include "net/log/file_net_log_observer.h"
+#include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source_type.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_entry.h"
 #include "net/log/test_net_log_util.h"
@@ -41,8 +46,7 @@ int CaptureModeToInt(NetLogCaptureMode capture_mode) {
 
 std::unique_ptr<base::Value> CaptureModeToValue(
     NetLogCaptureMode capture_mode) {
-  return base::WrapUnique(
-      new base::FundamentalValue(CaptureModeToInt(capture_mode)));
+  return std::make_unique<base::Value>(CaptureModeToInt(capture_mode));
 }
 
 std::unique_ptr<base::Value> NetCaptureModeCallback(
@@ -58,14 +62,14 @@ TEST(NetLogTest, Basic) {
   net_log.GetEntries(&entries);
   EXPECT_EQ(0u, entries.size());
 
-  net_log.AddGlobalEntry(NetLog::TYPE_CANCELLED);
+  net_log.AddGlobalEntry(NetLogEventType::CANCELLED);
 
   net_log.GetEntries(&entries);
   ASSERT_EQ(1u, entries.size());
-  EXPECT_EQ(NetLog::TYPE_CANCELLED, entries[0].type);
-  EXPECT_EQ(NetLog::SOURCE_NONE, entries[0].source.type);
-  EXPECT_NE(NetLog::Source::kInvalidId, entries[0].source.id);
-  EXPECT_EQ(NetLog::PHASE_NONE, entries[0].phase);
+  EXPECT_EQ(NetLogEventType::CANCELLED, entries[0].type);
+  EXPECT_EQ(NetLogSourceType::NONE, entries[0].source.type);
+  EXPECT_NE(NetLogSource::kInvalidId, entries[0].source.id);
+  EXPECT_EQ(NetLogEventPhase::NONE, entries[0].phase);
   EXPECT_GE(base::TimeTicks::Now(), entries[0].time);
   EXPECT_FALSE(entries[0].params);
 }
@@ -84,17 +88,17 @@ TEST(NetLogTest, CaptureModes) {
     net_log.SetCaptureMode(mode);
     EXPECT_EQ(mode, net_log.GetObserver()->capture_mode());
 
-    net_log.AddGlobalEntry(NetLog::TYPE_SOCKET_ALIVE,
+    net_log.AddGlobalEntry(NetLogEventType::SOCKET_ALIVE,
                            base::Bind(NetCaptureModeCallback));
 
     TestNetLogEntry::List entries;
     net_log.GetEntries(&entries);
 
     ASSERT_EQ(1u, entries.size());
-    EXPECT_EQ(NetLog::TYPE_SOCKET_ALIVE, entries[0].type);
-    EXPECT_EQ(NetLog::SOURCE_NONE, entries[0].source.type);
-    EXPECT_NE(NetLog::Source::kInvalidId, entries[0].source.id);
-    EXPECT_EQ(NetLog::PHASE_NONE, entries[0].phase);
+    EXPECT_EQ(NetLogEventType::SOCKET_ALIVE, entries[0].type);
+    EXPECT_EQ(NetLogSourceType::NONE, entries[0].source.type);
+    EXPECT_NE(NetLogSource::kInvalidId, entries[0].source.id);
+    EXPECT_EQ(NetLogEventPhase::NONE, entries[0].phase);
     EXPECT_GE(base::TimeTicks::Now(), entries[0].time);
 
     int logged_capture_mode;
@@ -112,10 +116,10 @@ class CountingObserver : public NetLog::ThreadSafeObserver {
 
   ~CountingObserver() override {
     if (net_log())
-      net_log()->DeprecatedRemoveObserver(this);
+      net_log()->RemoveObserver(this);
   }
 
-  void OnAddEntry(const NetLog::Entry& entry) override { ++count_; }
+  void OnAddEntry(const NetLogEntry& entry) override { ++count_; }
 
   int count() const { return count_; }
 
@@ -125,14 +129,14 @@ class CountingObserver : public NetLog::ThreadSafeObserver {
 
 class LoggingObserver : public NetLog::ThreadSafeObserver {
  public:
-  LoggingObserver() {}
+  LoggingObserver() = default;
 
   ~LoggingObserver() override {
     if (net_log())
-      net_log()->DeprecatedRemoveObserver(this);
+      net_log()->RemoveObserver(this);
   }
 
-  void OnAddEntry(const NetLog::Entry& entry) override {
+  void OnAddEntry(const NetLogEntry& entry) override {
     std::unique_ptr<base::DictionaryValue> dict =
         base::DictionaryValue::From(entry.ToValue());
     ASSERT_TRUE(dict);
@@ -149,7 +153,7 @@ class LoggingObserver : public NetLog::ThreadSafeObserver {
 };
 
 void AddEvent(NetLog* net_log) {
-  net_log->AddGlobalEntry(NetLog::TYPE_CANCELLED,
+  net_log->AddGlobalEntry(NetLogEventType::CANCELLED,
                           base::Bind(CaptureModeToValue));
 }
 
@@ -190,8 +194,8 @@ class NetLogTestThread : public base::SimpleThread {
 // A thread that adds a bunch of events to the NetLog.
 class AddEventsTestThread : public NetLogTestThread {
  public:
-  AddEventsTestThread() {}
-  ~AddEventsTestThread() override {}
+  AddEventsTestThread() = default;
+  ~AddEventsTestThread() override = default;
 
  private:
   void RunTestThread() override {
@@ -205,7 +209,7 @@ class AddEventsTestThread : public NetLogTestThread {
 // A thread that adds and removes an observer from the NetLog repeatedly.
 class AddRemoveObserverTestThread : public NetLogTestThread {
  public:
-  AddRemoveObserverTestThread() {}
+  AddRemoveObserverTestThread() = default;
 
   ~AddRemoveObserverTestThread() override { EXPECT_TRUE(!observer_.net_log()); }
 
@@ -214,8 +218,8 @@ class AddRemoveObserverTestThread : public NetLogTestThread {
     for (int i = 0; i < kEvents; ++i) {
       ASSERT_FALSE(observer_.net_log());
 
-      net_log_->DeprecatedAddObserver(
-          &observer_, NetLogCaptureMode::IncludeCookiesAndCredentials());
+      net_log_->AddObserver(&observer_,
+                            NetLogCaptureMode::IncludeCookiesAndCredentials());
       ASSERT_EQ(net_log_, observer_.net_log());
       ASSERT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
                 observer_.capture_mode());
@@ -226,7 +230,7 @@ class AddRemoveObserverTestThread : public NetLogTestThread {
       ASSERT_EQ(NetLogCaptureMode::IncludeSocketBytes(),
                 observer_.capture_mode());
 
-      net_log_->DeprecatedRemoveObserver(&observer_);
+      net_log_->RemoveObserver(&observer_);
       ASSERT_TRUE(!observer_.net_log());
     }
   }
@@ -245,14 +249,14 @@ void RunTestThreads(NetLog* net_log) {
       base::WaitableEvent::ResetPolicy::MANUAL,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
 
-  for (size_t i = 0; i < arraysize(threads); ++i) {
+  for (size_t i = 0; i < base::size(threads); ++i) {
     threads[i].Init(net_log, &start_event);
     threads[i].Start();
   }
 
   start_event.Signal();
 
-  for (size_t i = 0; i < arraysize(threads); ++i)
+  for (size_t i = 0; i < base::size(threads); ++i)
     threads[i].Join();
 }
 
@@ -263,9 +267,8 @@ TEST(NetLogTest, NetLogEventThreads) {
   // Attach some observers.  Since they're created after |net_log|, they'll
   // safely detach themselves on destruction.
   CountingObserver observers[3];
-  for (size_t i = 0; i < arraysize(observers); ++i) {
-    net_log.DeprecatedAddObserver(&observers[i],
-                                  NetLogCaptureMode::IncludeSocketBytes());
+  for (size_t i = 0; i < base::size(observers); ++i) {
+    net_log.AddObserver(&observers[i], NetLogCaptureMode::IncludeSocketBytes());
   }
 
   // Run a bunch of threads to completion, each of which will emit events to
@@ -274,7 +277,7 @@ TEST(NetLogTest, NetLogEventThreads) {
 
   // Check that each observer saw the emitted events.
   const int kTotalEvents = kThreads * kEvents;
-  for (size_t i = 0; i < arraysize(observers); ++i)
+  for (size_t i = 0; i < base::size(observers); ++i)
     EXPECT_EQ(kTotalEvents, observers[i].count());
 }
 
@@ -289,8 +292,8 @@ TEST(NetLogTest, NetLogAddRemoveObserver) {
   EXPECT_FALSE(net_log.IsCapturing());
 
   // Add the observer and add an event.
-  net_log.DeprecatedAddObserver(
-      &observer, NetLogCaptureMode::IncludeCookiesAndCredentials());
+  net_log.AddObserver(&observer,
+                      NetLogCaptureMode::IncludeCookiesAndCredentials());
   EXPECT_TRUE(net_log.IsCapturing());
   EXPECT_EQ(&net_log, observer.net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
@@ -311,7 +314,7 @@ TEST(NetLogTest, NetLogAddRemoveObserver) {
   EXPECT_EQ(2, observer.count());
 
   // Remove observer and add an event.
-  net_log.DeprecatedRemoveObserver(&observer);
+  net_log.RemoveObserver(&observer);
   EXPECT_EQ(NULL, observer.net_log());
   EXPECT_FALSE(net_log.IsCapturing());
 
@@ -319,8 +322,7 @@ TEST(NetLogTest, NetLogAddRemoveObserver) {
   EXPECT_EQ(2, observer.count());
 
   // Add the observer a final time, and add an event.
-  net_log.DeprecatedAddObserver(&observer,
-                                NetLogCaptureMode::IncludeSocketBytes());
+  net_log.AddObserver(&observer, NetLogCaptureMode::IncludeSocketBytes());
   EXPECT_EQ(&net_log, observer.net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeSocketBytes(), observer.capture_mode());
   EXPECT_TRUE(net_log.IsCapturing());
@@ -335,8 +337,8 @@ TEST(NetLogTest, NetLogTwoObservers) {
   LoggingObserver observer[2];
 
   // Add first observer.
-  net_log.DeprecatedAddObserver(
-      &observer[0], NetLogCaptureMode::IncludeCookiesAndCredentials());
+  net_log.AddObserver(&observer[0],
+                      NetLogCaptureMode::IncludeCookiesAndCredentials());
   EXPECT_EQ(&net_log, observer[0].net_log());
   EXPECT_EQ(NULL, observer[1].net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
@@ -344,8 +346,7 @@ TEST(NetLogTest, NetLogTwoObservers) {
   EXPECT_TRUE(net_log.IsCapturing());
 
   // Add second observer observer.
-  net_log.DeprecatedAddObserver(&observer[1],
-                                NetLogCaptureMode::IncludeSocketBytes());
+  net_log.AddObserver(&observer[1], NetLogCaptureMode::IncludeSocketBytes());
   EXPECT_EQ(&net_log, observer[0].net_log());
   EXPECT_EQ(&net_log, observer[1].net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
@@ -366,7 +367,7 @@ TEST(NetLogTest, NetLogTwoObservers) {
   EXPECT_EQ(CaptureModeToInt(observer[1].capture_mode()), param);
 
   // Remove second observer.
-  net_log.DeprecatedRemoveObserver(&observer[1]);
+  net_log.RemoveObserver(&observer[1]);
   EXPECT_EQ(&net_log, observer[0].net_log());
   EXPECT_EQ(NULL, observer[1].net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
@@ -379,7 +380,7 @@ TEST(NetLogTest, NetLogTwoObservers) {
   EXPECT_EQ(1U, observer[1].GetNumValues());
 
   // Remove first observer.
-  net_log.DeprecatedRemoveObserver(&observer[0]);
+  net_log.RemoveObserver(&observer[0]);
   EXPECT_EQ(NULL, observer[0].net_log());
   EXPECT_EQ(NULL, observer[1].net_log());
   EXPECT_FALSE(net_log.IsCapturing());
@@ -398,6 +399,114 @@ TEST(NetLogTest, NetLogAddRemoveObserverThreads) {
   // Run a bunch of threads to completion, each of which will repeatedly add
   // and remove an observer, and set its logging level.
   RunTestThreads<AddRemoveObserverTestThread>(&net_log);
+}
+
+// Calls NetLogASCIIStringValue() on |raw| and returns the resulting string
+// (rather than the base::Value).
+std::string GetNetLogString(base::StringPiece raw) {
+  base::Value value = NetLogStringValue(raw);
+  std::string result;
+  EXPECT_TRUE(value.GetAsString(&result));
+  return result;
+}
+
+TEST(NetLogTest, NetLogASCIIStringValue) {
+  // ASCII strings should not be transformed.
+  EXPECT_EQ("ascii\nstrin\0g", GetNetLogString("ascii\nstrin\0g"));
+
+  // Non-ASCII UTF-8 strings should be escaped.
+  EXPECT_EQ("%ESCAPED:\xE2\x80\x8B utf-8 string %E2%98%83",
+            GetNetLogString("utf-8 string \xE2\x98\x83"));
+
+  // The presence of percent should not trigger escaping.
+  EXPECT_EQ("%20", GetNetLogString("%20"));
+
+  // However if the value to be escaped contains percent, it should be escaped
+  // (so can unescape to restore the original string).
+  EXPECT_EQ("%ESCAPED:\xE2\x80\x8B %E2%98%83 %2520",
+            GetNetLogString("\xE2\x98\x83 %20"));
+
+  // Test that when percent escaping, no ASCII value is escaped (excluding %).
+  for (uint8_t c = 0; c <= 0x7F; ++c) {
+    if (c == '%')
+      continue;
+
+    std::string s;
+    s.push_back(c);
+
+    EXPECT_EQ("%ESCAPED:\xE2\x80\x8B %E2 " + s, GetNetLogString("\xE2 " + s));
+  }
+}
+
+TEST(NetLogTest, NetLogBinaryValue) {
+  // Test the encoding for empty bytes.
+  auto value1 = NetLogBinaryValue(nullptr, 0);
+  std::string string1;
+  ASSERT_TRUE(value1.GetAsString(&string1));
+  EXPECT_EQ("", string1);
+
+  // Test the encoding for a non-empty sequence (which needs padding).
+  const uint8_t kBytes[] = {0x00, 0xF3, 0xF8, 0xFF};
+  auto value2 = NetLogBinaryValue(kBytes, base::size(kBytes));
+  std::string string2;
+  ASSERT_TRUE(value2.GetAsString(&string2));
+  EXPECT_EQ("APP4/w==", string2);
+}
+
+template <typename T>
+std::string SerializedNetLogNumber(T num) {
+  auto value = NetLogNumberValue(num);
+
+  EXPECT_TRUE(value.is_string() || value.is_int() || value.is_double());
+
+  return SerializeNetLogValueToJson(value);
+}
+
+std::string SerializedNetLogInt64(int64_t num) {
+  return SerializedNetLogNumber(num);
+}
+
+std::string SerializedNetLogUint64(uint64_t num) {
+  return SerializedNetLogNumber(num);
+}
+
+TEST(NetLogTest, NetLogNumberValue) {
+  const int64_t kMinInt = std::numeric_limits<int32_t>::min();
+  const int64_t kMaxInt = std::numeric_limits<int32_t>::max();
+
+  // Numbers which can be represented by an INTEGER base::Value().
+  EXPECT_EQ("0", SerializedNetLogInt64(0));
+  EXPECT_EQ("0", SerializedNetLogUint64(0));
+  EXPECT_EQ("-1", SerializedNetLogInt64(-1));
+  EXPECT_EQ("-2147483648", SerializedNetLogInt64(kMinInt));
+  EXPECT_EQ("2147483647", SerializedNetLogInt64(kMaxInt));
+
+  // Numbers which are outside of the INTEGER range, but fit within a DOUBLE.
+  EXPECT_EQ("-2147483649", SerializedNetLogInt64(kMinInt - 1));
+  EXPECT_EQ("2147483648", SerializedNetLogInt64(kMaxInt + 1));
+  EXPECT_EQ("4294967294", SerializedNetLogInt64(0xFFFFFFFF - 1));
+
+  // kMaxSafeInteger is the same as JavaScript's Numbers.MAX_SAFE_INTEGER.
+  const int64_t kMaxSafeInteger = 9007199254740991;  // 2^53 - 1
+
+  // Numbers that can be represented with full precision by a DOUBLE.
+  EXPECT_EQ("-9007199254740991", SerializedNetLogInt64(-kMaxSafeInteger));
+  EXPECT_EQ("9007199254740991", SerializedNetLogInt64(kMaxSafeInteger));
+  EXPECT_EQ("9007199254740991", SerializedNetLogUint64(kMaxSafeInteger));
+
+  // Numbers that are just outside of the range of a DOUBLE need to be encoded
+  // as strings.
+  EXPECT_EQ("\"-9007199254740992\"",
+            SerializedNetLogInt64(-kMaxSafeInteger - 1));
+  EXPECT_EQ("\"9007199254740992\"", SerializedNetLogInt64(kMaxSafeInteger + 1));
+  EXPECT_EQ("\"9007199254740992\"",
+            SerializedNetLogUint64(kMaxSafeInteger + 1));
+
+  // Test the 64-bit maximums.
+  EXPECT_EQ("\"9223372036854775807\"",
+            SerializedNetLogInt64(std::numeric_limits<int64_t>::max()));
+  EXPECT_EQ("\"18446744073709551615\"",
+            SerializedNetLogUint64(std::numeric_limits<uint64_t>::max()));
 }
 
 }  // namespace

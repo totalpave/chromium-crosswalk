@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_ACTIVE_TAB_PERMISSION_GRANTER_H_
 #define CHROME_BROWSER_EXTENSIONS_ACTIVE_TAB_PERMISSION_GRANTER_H_
 
+#include <memory>
 #include <set>
 #include <string>
 
@@ -32,10 +33,23 @@ class ActiveTabPermissionGranter
     : public content::WebContentsObserver,
       public extensions::ExtensionRegistryObserver {
  public:
+  // Platform specific delegate.
+  class Delegate {
+   public:
+    virtual ~Delegate() {}
+    // Platform specific check whether the activeTab permission is allowed.
+    virtual bool ShouldGrantActiveTabOrPrompt(
+        const Extension* extension,
+        content::WebContents* web_contents) = 0;
+  };
+
   ActiveTabPermissionGranter(content::WebContents* web_contents,
                              int tab_id,
                              Profile* profile);
   ~ActiveTabPermissionGranter() override;
+
+  // Platform specific delegate should be set during startup.
+  static void SetPlatformDelegate(std::unique_ptr<Delegate> delegate);
 
   // If |extension| has the activeTab or tabCapture permission, grants
   // tab-specific permissions to it until the next page navigation or refresh.
@@ -46,15 +60,14 @@ class ActiveTabPermissionGranter
 
  private:
   // content::WebContentsObserver implementation.
-  void DidNavigateMainFrame(
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void WebContentsDestroyed() override;
 
   // extensions::ExtensionRegistryObserver implementation.
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   // Clears any tab-specific permissions for all extensions on |tab_id_| and
   // notifies renderers.

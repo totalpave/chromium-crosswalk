@@ -40,6 +40,7 @@ class MediaGalleriesDialogViews : public MediaGalleriesDialog,
 
   // views::DialogDelegate implementation:
   base::string16 GetWindowTitle() const override;
+  bool ShouldShowCloseButton() const override;
   void DeleteDelegate() override;
   views::Widget* GetWidget() override;
   const views::Widget* GetWidget() const override;
@@ -86,6 +87,9 @@ class MediaGalleriesDialogViews : public MediaGalleriesDialog,
   // Whether |controller_| has a valid WebContents or not.
   // In unit tests, it may not.
   bool ControllerHasWebContents() const;
+
+  // Callback for MenuRunner.
+  void OnMenuClosed();
 
   MediaGalleriesDialogController* controller_;
 

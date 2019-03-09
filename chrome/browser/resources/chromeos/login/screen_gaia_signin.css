@@ -1,7 +1,6 @@
 /* Copyright (c) 2012 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 #gaia-signin {
   height: 528px;
@@ -13,6 +12,12 @@
   width: 562px;
 }
 
+#gaia-signin.v2 {
+  height: unset;
+  padding: unset;
+  width: unset;
+}
+
 .signin-link {
   color: rgb(37, 79, 155);
   cursor: pointer;
@@ -20,9 +25,9 @@
 }
 
 .signin-link:focus {
-  -webkit-transition: outline-color 200ms;
   /* Note: May use 1px solid here. */
   outline-color: rgb(77, 144, 254);
+  transition: outline-color 200ms;
 }
 
 #gaia-signin-form-container,
@@ -30,10 +35,6 @@
   height: 100%;
   position: relative;
   width: 100%;
-}
-
-.gaia-signin #step-logo {
-  display: none;
 }
 
 #signin-frame {
@@ -46,6 +47,14 @@
 #signin-frame.show {
   opacity: 1;
   transition: opacity 500ms ease-out;
+}
+
+#signin-frame-container-v2 #signin-frame {
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  height: 560px;
+  position: static;
+  width: 768px;
 }
 
 #gaia-signin .step-contents {
@@ -61,6 +70,7 @@
   height: 44px;
   justify-content: center;
   left: 0;
+  min-height: 0;
   position: absolute;
   right: 0;
   top: 0;
@@ -76,6 +86,15 @@
   font-size: 13px;
 }
 
+#gaia-signin.whitelist-error .step-contents,
+#gaia-signin.whitelist-error .gaia-dialog {
+  visibility: hidden;
+}
+
+#gaia-signin.whitelist-error .step-loading {
+  visibility: hidden;
+}
+
 #gaia-whitelist-error {
   bottom: 0;
   display: block;
@@ -86,16 +105,8 @@
   visibility: hidden;
 }
 
-.whitelist-error #gaia-whitelist-error {
+#gaia-signin.whitelist-error #gaia-whitelist-error {
   visibility: visible;
-}
-
-#gaia-signin.whitelist-error .step-contents {
-  visibility: hidden;
-}
-
-#gaia-signin.whitelist-error .step-loading {
-  visibility: hidden;
 }
 
 #gaia-navigation {
@@ -112,3 +123,32 @@
   color: rgba(0, 0, 0, .54);
 }
 
+#gaia-signin.v2 #gaia-navigation,
+#gaia-signin.v2 #gaia-step-contents {
+  display: none;
+}
+
+#gaia-signin:not(.v2) #signin-frame-dialog {
+  display: none;
+}
+
+#gaia-signin.v2.saml #signin-frame {
+  height: 516px;
+  padding-top: 44px;
+}
+
+#signin-frame-dialog #buttons-container {
+  padding: 0 calc(32px - 4px); /* real width - button margin */
+}
+
+#signin-frame-dialog[full-screen-dialog] #buttons-container {
+  padding: 0 calc(64px - 4px); /* real width - button margin */
+}
+
+#gaia-screen-navigation-buttons {
+  height: 100%;
+}
+
+#gaia-screen-buttons-overlay {
+  background: rgba(0, 0, 0, 0.6);
+}

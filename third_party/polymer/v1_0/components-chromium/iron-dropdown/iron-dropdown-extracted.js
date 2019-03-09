@@ -36,7 +36,9 @@
 
           /**
            * An animation config. If provided, this will be used to animate the
-           * opening of the dropdown.
+           * opening of the dropdown. Pass an Array for multiple animations.
+           * See `neon-animation` documentation for more animation configuration
+           * details.
            */
           openAnimationConfig: {
             type: Object
@@ -44,7 +46,9 @@
 
           /**
            * An animation config. If provided, this will be used to animate the
-           * closing of the dropdown.
+           * closing of the dropdown. Pass an Array for multiple animations.
+           * See `neon-animation` documentation for more animation configuration
+           * details.
            */
           closeAnimationConfig: {
             type: Object
@@ -72,10 +76,13 @@
            * to itself when opened.
            * Set to true in order to prevent scroll from being constrained
            * to the dropdown when it opens.
+           * This property is a shortcut to set `scrollAction` to lock or refit.
+           * Prefer directly setting the `scrollAction` property.
            */
           allowOutsideScroll: {
             type: Boolean,
-            value: false
+            value: false,
+            observer: '_allowOutsideScrollChanged'
           }
         },
 
@@ -91,20 +98,31 @@
          * The element that is contained by the dropdown, if any.
          */
         get containedElement() {
-          return Polymer.dom(this.$.content).getDistributedNodes()[0];
+          // Polymer 2.x returns slot.assignedNodes which can contain text nodes.
+          var nodes = Polymer.dom(this.$.content).getDistributedNodes();
+          for (var i = 0, l = nodes.length; i < l; i++) {
+            if (nodes[i].nodeType === Node.ELEMENT_NODE) {
+              return nodes[i];
+            }
+          }
         },
 
-        /**
-         * The element that should be focused when the dropdown opens.
-         * @deprecated
-         */
-        get _focusTarget() {
-          return this.focusTarget || this.containedElement;
+        ready: function() {
+          // Ensure scrollAction is set.
+          if (!this.scrollAction) {
+            this.scrollAction = this.allowOutsideScroll ? 'refit' : 'lock';
+          }
+          this._readied = true;
+        },
+
+        attached: function () {
+          if (!this.sizingTarget || this.sizingTarget === this) {
+            this.sizingTarget = this.containedElement || this;
+          }
         },
 
         detached: function() {
           this.cancelAnimation();
-          Polymer.IronDropdownScrollManager.removeScrollLock(this);
         },
 
         /**
@@ -116,13 +134,7 @@
             this.cancel();
           } else {
             this.cancelAnimation();
-            this.sizingTarget = this.containedElement || this.sizingTarget;
             this._updateAnimationConfig();
-            if (this.opened && !this.allowOutsideScroll) {
-              Polymer.IronDropdownScrollManager.pushScrollLock(this);
-            } else {
-              Polymer.IronDropdownScrollManager.removeScrollLock(this);
-            }
             Polymer.IronOverlayBehaviorImpl._openedChanged.apply(this, arguments);
           }
         },
@@ -165,15 +177,17 @@
             this._finishRenderClosed();
           }
         },
-
+        
         /**
          * Constructs the final animation config from different properties used
          * to configure specific parts of the opening and closing animations.
          */
         _updateAnimationConfig: function() {
-          var animations = (this.openAnimationConfig || []).concat(this.closeAnimationConfig || []);
+          // Update the animation node to be the containedElement.
+          var animationNode = this.containedElement;
+          var animations = [].concat(this.openAnimationConfig || []).concat(this.closeAnimationConfig || []);
           for (var i = 0; i < animations.length; i++) {
-            animations[i].node = this.containedElement;
+            animations[i].node = animationNode;
           }
           this.animationConfig = {
             open: this.openAnimationConfig,
@@ -193,9 +207,25 @@
         },
 
         /**
+         * Sets scrollAction according to the value of allowOutsideScroll.
+         * Prefer setting directly scrollAction.
+         */
+        _allowOutsideScrollChanged: function(allowOutsideScroll) {
+          // Wait until initial values are all set.
+          if (!this._readied) {
+            return;
+          }
+          if (!allowOutsideScroll) {
+            this.scrollAction = 'lock';
+          } else if (!this.scrollAction || this.scrollAction === 'lock') {
+            this.scrollAction = 'refit';
+          }
+        },
+
+        /**
          * Apply focus to focusTarget or containedElement
          */
-        _applyFocus: function () {
+        _applyFocus: function() {
           var focusTarget = this.focusTarget || this.containedElement;
           if (focusTarget && this.opened && !this.noAutoFocus) {
             focusTarget.focus();

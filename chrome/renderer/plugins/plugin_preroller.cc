@@ -8,14 +8,13 @@
 #include "chrome/grit/renderer_resources.h"
 #include "chrome/renderer/plugins/chrome_plugin_placeholder.h"
 #include "chrome/renderer/plugins/power_saver_info.h"
-#include "third_party/WebKit/public/platform/WebRect.h"
-#include "third_party/WebKit/public/web/WebElement.h"
-#include "third_party/WebKit/public/web/WebPlugin.h"
-#include "third_party/WebKit/public/web/WebPluginContainer.h"
+#include "third_party/blink/public/platform/web_rect.h"
+#include "third_party/blink/public/web/web_element.h"
+#include "third_party/blink/public/web/web_plugin.h"
+#include "third_party/blink/public/web/web_plugin_container.h"
 #include "ui/gfx/codec/png_codec.h"
 
 PluginPreroller::PluginPreroller(content::RenderFrame* render_frame,
-                                 blink::WebLocalFrame* frame,
                                  const blink::WebPluginParams& params,
                                  const content::WebPluginInfo& info,
                                  const std::string& identifier,
@@ -23,7 +22,6 @@ PluginPreroller::PluginPreroller(content::RenderFrame* render_frame,
                                  const base::string16& message,
                                  content::PluginInstanceThrottler* throttler)
     : RenderFrameObserver(render_frame),
-      frame_(frame),
       params_(params),
       info_(info),
       identifier_(identifier),
@@ -66,20 +64,20 @@ void PluginPreroller::OnThrottleStateChange() {
 
   ChromePluginPlaceholder* placeholder =
       ChromePluginPlaceholder::CreateBlockedPlugin(
-          render_frame(), frame_, params_, info_, identifier_, name_,
+          render_frame(), params_, info_, identifier_, name_,
           IDR_PLUGIN_POSTER_HTML, message_, power_saver_info);
   placeholder->SetPremadePlugin(throttler_);
   placeholder->AllowLoading();
 
   blink::WebPluginContainer* container =
-      throttler_->GetWebPlugin()->container();
-  container->setPlugin(placeholder->plugin());
+      throttler_->GetWebPlugin()->Container();
+  container->SetPlugin(placeholder->plugin());
 
-  bool success = placeholder->plugin()->initialize(container);
+  bool success = placeholder->plugin()->Initialize(container);
   DCHECK(success);
 
-  container->invalidate();
-  container->reportGeometry();
+  container->Invalidate();
+  container->ReportGeometry();
 
   delete this;
 }

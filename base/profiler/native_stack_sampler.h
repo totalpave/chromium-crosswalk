@@ -14,35 +14,57 @@
 
 namespace base {
 
+class ModuleCache;
 class NativeStackSamplerTestDelegate;
 
 // NativeStackSampler is an implementation detail of StackSamplingProfiler. It
-// abstracts the native implementation required to record a stack sample for a
-// given thread.
+// abstracts the native implementation required to record a set of stack frames
+// for a given thread.
 class NativeStackSampler {
  public:
+  // This class contains a buffer for stack copies that can be shared across
+  // multiple instances of NativeStackSampler.
+  class StackBuffer {
+   public:
+    StackBuffer(size_t buffer_size);
+    ~StackBuffer();
+
+    void* buffer() const { return buffer_.get(); }
+    size_t size() const { return size_; }
+
+   private:
+    // The word-aligned buffer.
+    const std::unique_ptr<uintptr_t[]> buffer_;
+
+    // The size of the buffer.
+    const size_t size_;
+
+    DISALLOW_COPY_AND_ASSIGN(StackBuffer);
+  };
+
   virtual ~NativeStackSampler();
 
-  // Creates a stack sampler that records samples for |thread_handle|. Returns
-  // null if this platform does not support stack sampling.
+  // Creates a stack sampler that records samples for thread with |thread_id|.
+  // Returns null if this platform does not support stack sampling.
   static std::unique_ptr<NativeStackSampler> Create(
       PlatformThreadId thread_id,
+      ModuleCache* module_cache,
       NativeStackSamplerTestDelegate* test_delegate);
+
+  // Gets the required size of the stack buffer.
+  static size_t GetStackBufferSize();
+
+  // Creates an instance of the a stack buffer that can be used for calls to
+  // any NativeStackSampler object.
+  static std::unique_ptr<StackBuffer> CreateStackBuffer();
 
   // The following functions are all called on the SamplingThread (not the
   // thread being sampled).
 
-  // Notifies the sampler that we're starting to record a new profile. Modules
-  // shared across samples in the profile should be recorded in |modules|.
-  virtual void ProfileRecordingStarting(
-      std::vector<StackSamplingProfiler::Module>* modules) = 0;
-
-  // Records a stack sample to |sample|.
-  virtual void RecordStackSample(StackSamplingProfiler::Sample* sample) = 0;
-
-  // Notifies the sampler that we've stopped recording the current
-  // profile.
-  virtual void ProfileRecordingStopped() = 0;
+  // Records a set of frames and returns them.
+  virtual std::vector<StackSamplingProfiler::Frame> RecordStackFrames(
+      StackBuffer* stackbuffer,
+      StackSamplingProfiler::ProfileBuilder* profile_builder) = 0;
 
  protected:
   NativeStackSampler();
@@ -71,4 +93,3 @@ class BASE_EXPORT NativeStackSamplerTestDelegate {
 }  // namespace base
 
 #endif  // BASE_PROFILER_NATIVE_STACK_SAMPLER_H_
-

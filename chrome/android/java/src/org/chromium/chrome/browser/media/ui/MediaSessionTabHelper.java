@@ -8,159 +8,284 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.media.AudioManager;
+import android.os.Build;
+import android.os.Handler;
+import android.support.annotation.Nullable;
 import android.text.TextUtils;
 
-import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.SysUtils;
+import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.favicon.LargeIconBridge;
 import org.chromium.chrome.browser.metrics.MediaNotificationUma;
 import org.chromium.chrome.browser.metrics.MediaSessionUMA;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
-import org.chromium.chrome.browser.util.UrlUtilities;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
+import org.chromium.chrome.browser.util.IntentUtils;
+import org.chromium.components.url_formatter.UrlFormatter;
+import org.chromium.content_public.browser.MediaSession;
+import org.chromium.content_public.browser.MediaSessionObserver;
+import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.content_public.browser.WebContentsObserver;
-import org.chromium.content_public.common.MediaMetadata;
+import org.chromium.media_session.mojom.MediaSessionAction;
+import org.chromium.services.media_session.MediaImage;
+import org.chromium.services.media_session.MediaMetadata;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.List;
+import java.util.Set;
 
 /**
  * A tab helper responsible for enabling/disabling media controls and passing
  * media actions from the controls to the {@link org.chromium.content.browser.MediaSession}
  */
-public class MediaSessionTabHelper {
+public class MediaSessionTabHelper implements MediaImageCallback {
     private static final String TAG = "MediaSession";
 
     private static final String UNICODE_PLAY_CHARACTER = "\u25B6";
-    private static final int MINIMAL_FAVICON_SIZE = 114;
+    @VisibleForTesting
+    static final int HIDE_NOTIFICATION_DELAY_MILLIS = 1000;
 
     private Tab mTab;
-    private Bitmap mFavicon = null;
-    private String mOrigin = null;
-    private WebContents mWebContents;
-    private WebContentsObserver mWebContentsObserver;
+    @VisibleForTesting
+    LargeIconBridge mLargeIconBridge;
+    private Bitmap mPageMediaImage;
+    @VisibleForTesting
+    Bitmap mFavicon;
+    // Set to true if favicon update callback was called at least once for the current tab.
+    private boolean mMaybeHasFavicon;
+    private Bitmap mCurrentMediaImage;
+    private String mOrigin;
+    @VisibleForTesting
+    MediaSessionObserver mMediaSessionObserver;
     private int mPreviousVolumeControlStream = AudioManager.USE_DEFAULT_STREAM_TYPE;
-    private MediaNotificationInfo.Builder mNotificationInfoBuilder = null;
-    private MediaMetadata mFallbackMetadata;
+    private MediaNotificationInfo.Builder mNotificationInfoBuilder;
+    // The fallback title if |mPageMetadata| is null or its title is empty.
+    private String mFallbackTitle;
+    // The metadata set by the page.
+    private MediaMetadata mPageMetadata;
+    // The currently showing metadata.
+    private MediaMetadata mCurrentMetadata;
+    private MediaImageManager mMediaImageManager;
+    private Set<Integer> mMediaSessionActions;
+    private Handler mHandler;
+    // The delayed task to hide notification. Hiding notification can be immediate or delayed.
+    // Delayed hiding will schedule this delayed task to |mHandler|. The task will be canceled when
+    // showing or immediate hiding.
+    private Runnable mHideNotificationDelayedTask;
+
+    // Used to override the MediaSession object get from WebContents. This is to work around the
+    // static getter {@link MediaSession#fromWebContents()}.
+    @VisibleForTesting
+    static MediaSession sOverriddenMediaSession;
+
+    @VisibleForTesting
+    @Nullable
+    MediaSessionObserver getMediaSessionObserverForTesting() {
+        return mMediaSessionObserver;
+    }
 
     private MediaNotificationListener mControlsListener = new MediaNotificationListener() {
         @Override
         public void onPlay(int actionSource) {
-            MediaSessionUMA
-                    .recordPlay(MediaSessionTabHelper.convertMediaActionSourceToUMA(actionSource));
+            if (isNotificationHiddingOrHidden()) return;
 
-            mWebContents.resumeMediaSession();
+            MediaSessionUMA.recordPlay(
+                    MediaSessionTabHelper.convertMediaActionSourceToUMA(actionSource));
+
+            if (mMediaSessionObserver.getMediaSession() == null) return;
+
+            mMediaSessionObserver.getMediaSession().resume();
         }
 
         @Override
         public void onPause(int actionSource) {
+            if (isNotificationHiddingOrHidden()) return;
+
             MediaSessionUMA.recordPause(
                     MediaSessionTabHelper.convertMediaActionSourceToUMA(actionSource));
 
-            mWebContents.suspendMediaSession();
+            if (mMediaSessionObserver.getMediaSession() == null) return;
+
+            mMediaSessionObserver.getMediaSession().suspend();
         }
 
         @Override
         public void onStop(int actionSource) {
-            MediaSessionUMA
-                    .recordStop(MediaSessionTabHelper.convertMediaActionSourceToUMA(actionSource));
+            if (isNotificationHiddingOrHidden()) return;
 
-            mWebContents.stopMediaSession();
+            MediaSessionUMA.recordStop(
+                    MediaSessionTabHelper.convertMediaActionSourceToUMA(actionSource));
+
+            if (mMediaSessionObserver.getMediaSession() != null) {
+                mMediaSessionObserver.getMediaSession().stop();
+            }
+        }
+
+        @Override
+        public void onMediaSessionAction(int action) {
+            if (!MediaSessionAction.isKnownValue(action)) return;
+            if (mMediaSessionObserver != null) {
+                mMediaSessionObserver.getMediaSession().didReceiveAction(action);
+            }
         }
     };
 
-    void hideNotification() {
-        if (mTab == null) {
-            return;
+    private void hideNotificationDelayed() {
+        if (mTab == null) return;
+        if (mHideNotificationDelayedTask != null) return;
+
+        mHideNotificationDelayedTask = new Runnable() {
+            @Override
+            public void run() {
+                mHideNotificationDelayedTask = null;
+                hideNotificationInternal();
+            }
+        };
+        mHandler.postDelayed(mHideNotificationDelayedTask, HIDE_NOTIFICATION_DELAY_MILLIS);
+
+        mNotificationInfoBuilder = null;
+        mFavicon = null;
+    }
+
+    private void hideNotificationImmediately() {
+        if (mTab == null) return;
+        if (mHideNotificationDelayedTask != null) {
+            mHandler.removeCallbacks(mHideNotificationDelayedTask);
+            mHideNotificationDelayedTask = null;
         }
+
+        hideNotificationInternal();
+        mNotificationInfoBuilder = null;
+    }
+
+    /**
+     * This method performs the common steps for hiding the notification. It should only be called
+     * by {@link #hideNotificationDelayed()} and {@link #hideNotificationImmediately()}.
+     */
+    private void hideNotificationInternal() {
         MediaNotificationManager.hide(mTab.getId(), R.id.media_playback_notification);
         Activity activity = getActivityFromTab(mTab);
         if (activity != null) {
             activity.setVolumeControlStream(mPreviousVolumeControlStream);
         }
-        mNotificationInfoBuilder = null;
     }
 
-    private WebContentsObserver createWebContentsObserver(WebContents webContents) {
-        return new WebContentsObserver(webContents) {
+    private void showNotification() {
+        assert mNotificationInfoBuilder != null;
+        if (mHideNotificationDelayedTask != null) {
+            mHandler.removeCallbacks(mHideNotificationDelayedTask);
+            mHideNotificationDelayedTask = null;
+        }
+        MediaNotificationManager.show(mNotificationInfoBuilder.build());
+    }
+
+    private MediaSessionObserver createMediaSessionObserver(MediaSession mediaSession) {
+        return new MediaSessionObserver(mediaSession) {
             @Override
-            public void destroy() {
-                hideNotification();
-                super.destroy();
+            public void mediaSessionDestroyed() {
+                hideNotificationImmediately();
+                cleanupMediaSessionObserver();
             }
 
             @Override
-            public void mediaSessionStateChanged(boolean isControllable, boolean isPaused,
-                    MediaMetadata metadata) {
+            public void mediaSessionStateChanged(boolean isControllable, boolean isPaused) {
                 if (!isControllable) {
-                    hideNotification();
+                    hideNotificationDelayed();
                     return;
                 }
 
-                mFallbackMetadata = null;
-
-                // The page's title is used as a placeholder if no title is specified in the
-                // metadata.
-                if (TextUtils.isEmpty(metadata.getTitle())) {
-                    mFallbackMetadata = new MediaMetadata(
-                            sanitizeMediaTitle(mTab.getTitle()),
-                            metadata.getArtist(),
-                            metadata.getAlbum());
-                    metadata = mFallbackMetadata;
-                }
-
-                Intent contentIntent = Tab.createBringTabToFrontIntent(mTab.getId());
+                Intent contentIntent = IntentUtils.createBringTabToFrontIntent(mTab.getId());
                 if (contentIntent != null) {
                     contentIntent.putExtra(MediaNotificationUma.INTENT_EXTRA_NAME,
-                            MediaNotificationUma.SOURCE_MEDIA);
+                            MediaNotificationUma.Source.MEDIA);
                 }
 
+                if (mFallbackTitle == null) mFallbackTitle = sanitizeMediaTitle(mTab.getTitle());
+
+                mCurrentMetadata = getMetadata();
+                mCurrentMediaImage = getCachedNotificationImage();
                 mNotificationInfoBuilder =
                         new MediaNotificationInfo.Builder()
-                                .setMetadata(metadata)
+                                .setMetadata(mCurrentMetadata)
                                 .setPaused(isPaused)
                                 .setOrigin(mOrigin)
                                 .setTabId(mTab.getId())
                                 .setPrivate(mTab.isIncognito())
-                                .setIcon(R.drawable.audio_playing)
-                                .setLargeIcon(mFavicon)
-                                .setDefaultLargeIcon(R.drawable.audio_playing_square)
+                                .setNotificationSmallIcon(R.drawable.audio_playing)
+                                .setNotificationLargeIcon(mCurrentMediaImage)
+                                .setMediaSessionImage(mPageMediaImage)
                                 .setActions(MediaNotificationInfo.ACTION_PLAY_PAUSE
                                         | MediaNotificationInfo.ACTION_SWIPEAWAY)
                                 .setContentIntent(contentIntent)
                                 .setId(R.id.media_playback_notification)
-                                .setListener(mControlsListener);
+                                .setListener(mControlsListener)
+                                .setMediaSessionActions(mMediaSessionActions);
 
-                MediaNotificationManager.show(ContextUtils.getApplicationContext(),
-                        mNotificationInfoBuilder.build());
-
+                // Do not show notification icon till we get the favicon from the LargeIconBridge
+                // since we do not need to show default icon then change it to favicon. It is ok to
+                // wait here since the favicon is loaded from local cache in favicon service sql
+                // database.
+                // Incognito Tabs need the default icon as they don't show the media icon.
+                if (mTab.isIncognito() || (mCurrentMediaImage == null && !fetchFaviconImage())) {
+                    mNotificationInfoBuilder.setDefaultNotificationLargeIcon(
+                            R.drawable.audio_playing_square);
+                }
+                showNotification();
                 Activity activity = getActivityFromTab(mTab);
                 if (activity != null) {
                     activity.setVolumeControlStream(AudioManager.STREAM_MUSIC);
                 }
             }
+
+            @Override
+            public void mediaSessionMetadataChanged(MediaMetadata metadata) {
+                mPageMetadata = metadata;
+                updateNotificationMetadata();
+            }
+
+            @Override
+            public void mediaSessionActionsChanged(Set<Integer> actions) {
+                mMediaSessionActions = actions;
+                updateNotificationActions();
+            }
+
+            @Override
+            public void mediaSessionArtworkChanged(List<MediaImage> images) {
+                mMediaImageManager.downloadImage(images, MediaSessionTabHelper.this);
+                updateNotificationMetadata();
+            }
         };
     }
 
     private void setWebContents(WebContents webContents) {
-        if (mWebContents == webContents) return;
+        MediaSession mediaSession = getMediaSession(webContents);
+        if (mMediaSessionObserver != null
+                && mediaSession == mMediaSessionObserver.getMediaSession()) {
+            return;
+        }
 
-        cleanupWebContents();
-        mWebContents = webContents;
-        if (mWebContents != null) mWebContentsObserver = createWebContentsObserver(mWebContents);
+        cleanupMediaSessionObserver();
+        mMediaImageManager.setWebContents(webContents);
+        if (mediaSession != null) {
+            mMediaSessionObserver = createMediaSessionObserver(mediaSession);
+        }
     }
 
-    private void cleanupWebContents() {
-        if (mWebContentsObserver != null) mWebContentsObserver.destroy();
-        mWebContentsObserver = null;
-        mWebContents = null;
+    private void cleanupMediaSessionObserver() {
+        if (mMediaSessionObserver == null) return;
+        mMediaSessionObserver.stopObserving();
+        mMediaSessionObserver = null;
+        mMediaSessionActions = null;
     }
 
-    private final TabObserver mTabObserver = new EmptyTabObserver() {
+    @VisibleForTesting
+    final TabObserver mTabObserver = new EmptyTabObserver() {
         @Override
         public void onContentChanged(Tab tab) {
             assert tab == mTab;
@@ -170,77 +295,97 @@ public class MediaSessionTabHelper {
         @Override
         public void onFaviconUpdated(Tab tab, Bitmap icon) {
             assert tab == mTab;
-            // Don't update the large icon if using customized notification. Otherwise, the
-            // lockscreen art will be the favicon.
-            if (!ChromeFeatureList.isEnabled(ChromeFeatureList.MEDIA_STYLE_NOTIFICATION)) return;
-
-            if (!updateFavicon(icon)) return;
-
-            if (mNotificationInfoBuilder == null) return;
-
-            mNotificationInfoBuilder.setLargeIcon(mFavicon);
-            MediaNotificationManager.show(
-                    ContextUtils.getApplicationContext(), mNotificationInfoBuilder.build());
+            updateFavicon(icon);
         }
 
         @Override
-        public void onUrlUpdated(Tab tab) {
+        public void onDidFinishNavigation(Tab tab, NavigationHandle navigation) {
             assert tab == mTab;
+
+            if (!navigation.hasCommitted() || !navigation.isInMainFrame()
+                    || navigation.isSameDocument())
+                return;
 
             String origin = mTab.getUrl();
             try {
-                origin = UrlUtilities.formatUrlForSecurityDisplay(new URI(origin), true);
-            } catch (URISyntaxException e) {
+                URI uri = new URI(origin);
+                origin = UrlFormatter.formatUrlForSecurityDisplay(origin);
+            } catch (URISyntaxException | UnsatisfiedLinkError e) {
+                // UnstatisfiedLinkError can only happen in tests as the natives are not initialized
+                // yet.
                 Log.e(TAG, "Unable to parse the origin from the URL. "
                                 + "Using the full URL instead.");
             }
 
-            if (mOrigin != null && mOrigin.equals(origin)) return;
             mOrigin = origin;
             mFavicon = null;
+            mPageMediaImage = null;
+            mPageMetadata = null;
+            // |mCurrentMetadata| selects either |mPageMetadata| or |mFallbackTitle|. As there is no
+            // guarantee {@link #onTitleUpdated()} will be called before or after this method,
+            // |mFallbackTitle| is not reset in this callback, i.e. relying solely on
+            // {@link #onTitleUpdated()}. The following assignment is to keep |mCurrentMetadata| up
+            // to date as |mPageMetadata| may have changed.
+            mCurrentMetadata = getMetadata();
+            mMediaSessionActions = null;
 
-            if (mNotificationInfoBuilder == null) return;
+            if (isNotificationHiddingOrHidden()) return;
 
             mNotificationInfoBuilder.setOrigin(mOrigin);
-            mNotificationInfoBuilder.setLargeIcon(mFavicon);
-            MediaNotificationManager.show(
-                    ContextUtils.getApplicationContext(), mNotificationInfoBuilder.build());
+            mNotificationInfoBuilder.setNotificationLargeIcon(mFavicon);
+            mNotificationInfoBuilder.setMediaSessionImage(mPageMediaImage);
+            mNotificationInfoBuilder.setMetadata(mCurrentMetadata);
+            mNotificationInfoBuilder.setMediaSessionActions(mMediaSessionActions);
+            showNotification();
         }
 
         @Override
         public void onTitleUpdated(Tab tab) {
             assert tab == mTab;
-            if (mNotificationInfoBuilder == null || mFallbackMetadata == null) return;
+            String newFallbackTitle = sanitizeMediaTitle(tab.getTitle());
+            if (!TextUtils.equals(mFallbackTitle, newFallbackTitle)) {
+                mFallbackTitle = newFallbackTitle;
+                updateNotificationMetadata();
+            }
+        }
 
-            mFallbackMetadata = new MediaMetadata(mFallbackMetadata);
-            mFallbackMetadata.setTitle(sanitizeMediaTitle(mTab.getTitle()));
-            mNotificationInfoBuilder.setMetadata(mFallbackMetadata);
-
-            MediaNotificationManager.show(ContextUtils.getApplicationContext(),
-                    mNotificationInfoBuilder.build());
+        @Override
+        public void onShown(Tab tab, @TabSelectionType int type) {
+            assert tab == mTab;
+            MediaNotificationManager.activateAndroidMediaSession(
+                    tab.getId(), R.id.media_playback_notification);
         }
 
         @Override
         public void onDestroyed(Tab tab) {
             assert mTab == tab;
 
-            cleanupWebContents();
+            cleanupMediaSessionObserver();
 
-            hideNotification();
+            hideNotificationImmediately();
             mTab.removeObserver(this);
             mTab = null;
+            if (mLargeIconBridge != null) {
+                mLargeIconBridge.destroy();
+                mLargeIconBridge = null;
+            }
         }
     };
 
-    private MediaSessionTabHelper(Tab tab) {
+    @VisibleForTesting
+    MediaSessionTabHelper(Tab tab) {
         mTab = tab;
         mTab.addObserver(mTabObserver);
+        mMediaImageManager =
+                new MediaImageManager(MediaNotificationManager.MINIMAL_MEDIA_IMAGE_SIZE_PX,
+                        MediaNotificationManager.getIdealMediaImageSize());
         if (mTab.getWebContents() != null) setWebContents(tab.getWebContents());
 
         Activity activity = getActivityFromTab(mTab);
         if (activity != null) {
             mPreviousVolumeControlStream = activity.getVolumeControlStream();
         }
+        mHandler = new Handler();
     }
 
     /**
@@ -270,17 +415,18 @@ public class MediaSessionTabHelper {
      *               {@link MediaNotificationListener} interface.
      * @return the corresponding histogram value.
      */
-    public static int convertMediaActionSourceToUMA(int source) {
+    public static @MediaSessionUMA.MediaSessionActionSource int convertMediaActionSourceToUMA(
+            int source) {
         if (source == MediaNotificationListener.ACTION_SOURCE_MEDIA_NOTIFICATION) {
-            return MediaSessionUMA.MEDIA_SESSION_ACTION_SOURCE_MEDIA_NOTIFICATION;
+            return MediaSessionUMA.MediaSessionActionSource.MEDIA_NOTIFICATION;
         } else if (source == MediaNotificationListener.ACTION_SOURCE_MEDIA_SESSION) {
-            return MediaSessionUMA.MEDIA_SESSION_ACTION_SOURCE_MEDIA_SESSION;
+            return MediaSessionUMA.MediaSessionActionSource.MEDIA_SESSION;
         } else if (source == MediaNotificationListener.ACTION_SOURCE_HEADSET_UNPLUG) {
-            return MediaSessionUMA.MEDIA_SESSION_ACTION_SOURCE_HEADSET_UNPLUG;
+            return MediaSessionUMA.MediaSessionActionSource.HEADSET_UNPLUG;
         }
 
         assert false;
-        return MediaSessionUMA.MEDIA_SESSION_ACTION_SOURCE_MAX;
+        return MediaSessionUMA.MediaSessionActionSource.NUM_ENTRIES;
     }
 
     private Activity getActivityFromTab(Tab tab) {
@@ -291,20 +437,145 @@ public class MediaSessionTabHelper {
     }
 
     /**
-     * Updates the best favicon if the given icon is better.
-     * @return whether the best favicon is updated.
+     * Updates the best favicon if the given icon is better and the favicon is shown in
+     * notification.
      */
-    private boolean updateFavicon(Bitmap icon) {
-        if (icon == null) return false;
+    private void updateFavicon(Bitmap icon) {
+        if (icon == null) return;
 
-        if (icon.getWidth() < MINIMAL_FAVICON_SIZE || icon.getHeight() < MINIMAL_FAVICON_SIZE) {
-            return false;
-        }
+        mMaybeHasFavicon = true;
+
+        // Store the favicon only if notification is being shown. Otherwise the favicon is
+        // obtained from large icon bridge when needed.
+        if (isNotificationHiddingOrHidden() || mPageMediaImage != null) return;
+
+        // Disable favicons in notifications for low memory devices on O
+        // where the notification icon is optional.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && SysUtils.isLowEndDevice()) return;
+
+        if (!MediaNotificationManager.isBitmapSuitableAsMediaImage(icon)) return;
         if (mFavicon != null && (icon.getWidth() < mFavicon.getWidth()
                                         || icon.getHeight() < mFavicon.getHeight())) {
-            return false;
+            return;
         }
-        mFavicon = icon;
-        return true;
+        mFavicon = MediaNotificationManager.downscaleIconToIdealSize(icon);
+        updateNotificationImage(mFavicon);
+    }
+
+    /**
+     * Updates the metadata in media notification. This method should be called whenever
+     * |mPageMetadata| or |mFallbackTitle| is changed.
+     */
+    private void updateNotificationMetadata() {
+        if (isNotificationHiddingOrHidden()) return;
+
+        MediaMetadata newMetadata = getMetadata();
+        if (mCurrentMetadata.equals(newMetadata)) return;
+
+        mCurrentMetadata = newMetadata;
+        mNotificationInfoBuilder.setMetadata(mCurrentMetadata);
+        showNotification();
+    }
+
+    /**
+     * @return The up-to-date MediaSession metadata. Returns the cached object like |mPageMetadata|
+     * or |mCurrentMetadata| if it reflects the current state. Otherwise will return a new
+     * {@link MediaMetadata} object.
+     */
+    private MediaMetadata getMetadata() {
+        String title = mFallbackTitle;
+        String artist = "";
+        String album = "";
+        if (mPageMetadata != null) {
+            if (!TextUtils.isEmpty(mPageMetadata.getTitle())) return mPageMetadata;
+
+            artist = mPageMetadata.getArtist();
+            album = mPageMetadata.getAlbum();
+        }
+
+        if (mCurrentMetadata != null && TextUtils.equals(title, mCurrentMetadata.getTitle())
+                && TextUtils.equals(artist, mCurrentMetadata.getArtist())
+                && TextUtils.equals(album, mCurrentMetadata.getAlbum())) {
+            return mCurrentMetadata;
+        }
+
+        return new MediaMetadata(title, artist, album);
+    }
+
+    private void updateNotificationActions() {
+        if (isNotificationHiddingOrHidden()) return;
+
+        mNotificationInfoBuilder.setMediaSessionActions(mMediaSessionActions);
+        showNotification();
+    }
+
+    @Override
+    public void onImageDownloaded(Bitmap image) {
+        mPageMediaImage = MediaNotificationManager.downscaleIconToIdealSize(image);
+        mFavicon = null;
+        updateNotificationImage(mPageMediaImage);
+    }
+
+    private void updateNotificationImage(Bitmap newMediaImage) {
+        if (mCurrentMediaImage == newMediaImage) return;
+
+        mCurrentMediaImage = newMediaImage;
+
+        if (isNotificationHiddingOrHidden()) return;
+        mNotificationInfoBuilder.setNotificationLargeIcon(mCurrentMediaImage);
+        mNotificationInfoBuilder.setMediaSessionImage(mPageMediaImage);
+        showNotification();
+    }
+
+    private Bitmap getCachedNotificationImage() {
+        if (mPageMediaImage != null) return mPageMediaImage;
+        if (mFavicon != null) return mFavicon;
+        return null;
+    }
+
+    /**
+     * Fetch favicon image and update the notification when available.
+     * @return if the favicon will be updated.
+     */
+    private boolean fetchFaviconImage() {
+        // The page does not have a favicon yet to fetch since onFaviconUpdated was never called.
+        // Don't waste time trying to find it.
+        if (!mMaybeHasFavicon) return false;
+
+        if (mTab == null) return false;
+        WebContents webContents = mTab.getWebContents();
+        if (webContents == null) return false;
+        String pageUrl = webContents.getLastCommittedUrl();
+        int size = MediaNotificationManager.MINIMAL_MEDIA_IMAGE_SIZE_PX;
+        if (mLargeIconBridge == null) {
+            mLargeIconBridge = new LargeIconBridge(mTab.getProfile());
+        }
+        LargeIconBridge.LargeIconCallback callback = new LargeIconBridge.LargeIconCallback() {
+            @Override
+            public void onLargeIconAvailable(
+                    Bitmap icon, int fallbackColor, boolean isFallbackColorDefault, int iconType) {
+                if (isNotificationHiddingOrHidden()) return;
+                if (icon == null) {
+                    // If we do not have any favicon then make sure we show default sound icon. This
+                    // icon is used by notification manager only if we do not show any icon.
+                    mNotificationInfoBuilder.setDefaultNotificationLargeIcon(
+                            R.drawable.audio_playing_square);
+                    showNotification();
+                } else {
+                    updateFavicon(icon);
+                }
+            }
+        };
+
+        return mLargeIconBridge.getLargeIconForUrl(pageUrl, size, callback);
+    }
+
+    private boolean isNotificationHiddingOrHidden() {
+        return mNotificationInfoBuilder == null;
+    }
+
+    private MediaSession getMediaSession(WebContents contents) {
+        return (sOverriddenMediaSession != null) ? sOverriddenMediaSession
+                                                 : MediaSession.fromWebContents(contents);
     }
 }

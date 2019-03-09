@@ -15,13 +15,10 @@
 
 namespace gl {
 
-GLImageRefCountedMemory::GLImageRefCountedMemory(const gfx::Size& size,
-                                                 unsigned internalformat)
-    : GLImageMemory(size, internalformat) {}
+GLImageRefCountedMemory::GLImageRefCountedMemory(const gfx::Size& size)
+    : GLImageMemory(size) {}
 
-GLImageRefCountedMemory::~GLImageRefCountedMemory() {
-  DCHECK(!ref_counted_memory_.get());
-}
+GLImageRefCountedMemory::~GLImageRefCountedMemory() {}
 
 bool GLImageRefCountedMemory::Initialize(
     base::RefCountedMemory* ref_counted_memory,
@@ -35,11 +32,6 @@ bool GLImageRefCountedMemory::Initialize(
   DCHECK(!ref_counted_memory_.get());
   ref_counted_memory_ = ref_counted_memory;
   return true;
-}
-
-void GLImageRefCountedMemory::Destroy(bool have_context) {
-  GLImageMemory::Destroy(have_context);
-  ref_counted_memory_ = nullptr;
 }
 
 void GLImageRefCountedMemory::OnMemoryDump(

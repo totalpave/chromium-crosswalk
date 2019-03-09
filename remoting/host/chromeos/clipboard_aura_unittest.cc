@@ -10,6 +10,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_timeouts.h"
 #include "remoting/base/constants.h"
@@ -42,14 +43,13 @@ class ClientClipboard : public protocol::ClipboardStub {
   DISALLOW_COPY_AND_ASSIGN(ClientClipboard);
 };
 
-ClientClipboard::ClientClipboard() {
-}
+ClientClipboard::ClientClipboard() = default;
 
 }  // namespace
 
 class ClipboardAuraTest : public testing::Test {
  public:
-  ClipboardAuraTest() {}
+  ClipboardAuraTest() = default;
   void SetUp() override;
   void TearDown() override;
 
@@ -120,13 +120,14 @@ TEST_F(ClipboardAuraTest, MonitorClipboardChanges) {
                                             Eq("Test data.")))).Times(1);
 
   base::RunLoop run_loop;
-  message_loop_.PostDelayedTask(
-      FROM_HERE, base::Bind(&ClipboardAuraTest_MonitorClipboardChanges_Test::
-                                StopAndResetClipboard,
-                            base::Unretained(this)),
+  message_loop_.task_runner()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&ClipboardAuraTest_MonitorClipboardChanges_Test::
+                         StopAndResetClipboard,
+                     base::Unretained(this)),
       TestTimeouts::tiny_timeout());
-  message_loop_.PostDelayedTask(FROM_HERE, run_loop.QuitClosure(),
-                                TestTimeouts::tiny_timeout());
+  message_loop_.task_runner()->PostDelayedTask(
+      FROM_HERE, run_loop.QuitClosure(), TestTimeouts::tiny_timeout());
   run_loop.Run();
 }
 

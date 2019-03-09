@@ -32,7 +32,7 @@ const uint32_t kAudioSsrc = 2;
 
 class StubRtcpObserver : public RtcpObserver {
  public:
-  StubRtcpObserver() {}
+  StubRtcpObserver() = default;
 
   void OnReceivedCastMessage(const RtcpCastMessage& cast_message) final {}
   void OnReceivedRtt(base::TimeDelta round_trip_time) final {}
@@ -96,7 +96,7 @@ class CastTransportImplTest : public ::testing::Test {
     task_runner_ = new FakeSingleThreadTaskRunner(&testing_clock_);
   }
 
-  ~CastTransportImplTest() override {}
+  ~CastTransportImplTest() override = default;
 
   void InitWithoutLogging();
   void InitWithOptions();
@@ -106,18 +106,18 @@ class CastTransportImplTest : public ::testing::Test {
     CastTransportRtpConfig rtp_config;
     rtp_config.ssrc = kVideoSsrc;
     rtp_config.feedback_ssrc = 2;
-    rtp_config.rtp_payload_type = 3;
-    transport_sender_->InitializeVideo(
-        rtp_config, base::WrapUnique(new StubRtcpObserver()));
+    rtp_config.rtp_payload_type = RtpPayloadType::VIDEO_VP8;
+    transport_sender_->InitializeStream(rtp_config,
+                                        std::make_unique<StubRtcpObserver>());
   }
 
   void InitializeAudio() {
     CastTransportRtpConfig rtp_config;
     rtp_config.ssrc = kAudioSsrc;
     rtp_config.feedback_ssrc = 3;
-    rtp_config.rtp_payload_type = 4;
-    transport_sender_->InitializeAudio(
-        rtp_config, base::WrapUnique(new StubRtcpObserver()));
+    rtp_config.rtp_payload_type = RtpPayloadType::AUDIO_OPUS;
+    transport_sender_->InitializeStream(rtp_config,
+                                        std::make_unique<StubRtcpObserver>());
   }
 
   base::SimpleTestTickClock testing_clock_;
@@ -135,13 +135,13 @@ class TransportClient : public CastTransport::Client {
       CastTransportImplTest* cast_transport_sender_impl_test)
       : cast_transport_sender_impl_test_(cast_transport_sender_impl_test) {}
 
-  void OnStatusChanged(CastTransportStatus status) final{};
+  void OnStatusChanged(CastTransportStatus status) final {}
   void OnLoggingEventsReceived(
       std::unique_ptr<std::vector<FrameEvent>> frame_events,
       std::unique_ptr<std::vector<PacketEvent>> packet_events) final {
     CHECK(cast_transport_sender_impl_test_);
     cast_transport_sender_impl_test_->ReceivedLoggingEvents();
-  };
+  }
   void ProcessRtpPacket(std::unique_ptr<Packet> packet) final {}
 
  private:
@@ -156,7 +156,7 @@ void CastTransportImplTest::InitWithoutLogging() {
   transport_ = new FakePacketSender();
   transport_sender_.reset(
       new CastTransportImpl(&testing_clock_, base::TimeDelta(),
-                            base::WrapUnique(new TransportClient(nullptr)),
+                            std::make_unique<TransportClient>(nullptr),
                             base::WrapUnique(transport_), task_runner_));
   task_runner_->RunTasks();
 }
@@ -170,7 +170,7 @@ void CastTransportImplTest::InitWithOptions() {
   transport_ = new FakePacketSender();
   transport_sender_.reset(
       new CastTransportImpl(&testing_clock_, base::TimeDelta(),
-                            base::WrapUnique(new TransportClient(nullptr)),
+                            std::make_unique<TransportClient>(nullptr),
                             base::WrapUnique(transport_), task_runner_));
   transport_sender_->SetOptions(*options);
   task_runner_->RunTasks();
@@ -180,7 +180,7 @@ void CastTransportImplTest::InitWithLogging() {
   transport_ = new FakePacketSender();
   transport_sender_.reset(new CastTransportImpl(
       &testing_clock_, base::TimeDelta::FromMilliseconds(10),
-      base::WrapUnique(new TransportClient(this)), base::WrapUnique(transport_),
+      std::make_unique<TransportClient>(this), base::WrapUnique(transport_),
       task_runner_));
   task_runner_->RunTasks();
 }

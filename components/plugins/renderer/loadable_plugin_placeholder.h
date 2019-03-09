@@ -49,10 +49,8 @@ class LoadablePluginPlaceholder : public PluginPlaceholderBase {
 
  protected:
   LoadablePluginPlaceholder(content::RenderFrame* render_frame,
-                            blink::WebLocalFrame* frame,
                             const blink::WebPluginParams& params,
                             const std::string& html_data);
-
   ~LoadablePluginPlaceholder() override;
 
   void MarkPluginEssential(
@@ -80,7 +78,9 @@ class LoadablePluginPlaceholder : public PluginPlaceholderBase {
   // Javascript callbacks:
   void LoadCallback();
   void DidFinishLoadingCallback();
-  void DidFinishIconRepositionForTestingCallback();
+
+  // True if the power saver heuristic has already been run on this content.
+  bool heuristic_run_before_;
 
  private:
   // WebViewPlugin::Delegate methods:
@@ -88,6 +88,7 @@ class LoadablePluginPlaceholder : public PluginPlaceholderBase {
   v8::Local<v8::Object> GetV8ScriptableObject(
       v8::Isolate* isolate) const override;
   void OnUnobscuredRectUpdate(const gfx::Rect& unobscured_rect) override;
+  bool IsErrorPlaceholder() override;
 
   // RenderFrameObserver methods:
   void WasShown() override;
@@ -99,8 +100,10 @@ class LoadablePluginPlaceholder : public PluginPlaceholderBase {
   // Plugin creation is embedder-specific.
   virtual blink::WebPlugin* CreatePlugin() = 0;
 
-  // Embedder-specific behavior.
-  virtual void OnBlockedTinyContent() = 0;
+  // Embedder-specific behavior. This will only be called once per placeholder.
+  virtual void OnBlockedContent(
+      content::RenderFrame::PeripheralContentStatus status,
+      bool is_same_origin) = 0;
 
   content::WebPluginInfo plugin_info_;
 
@@ -134,9 +137,6 @@ class LoadablePluginPlaceholder : public PluginPlaceholderBase {
   std::string identifier_;
 
   gfx::Rect unobscured_rect_;
-
-  // True if the power saver heuristic has already been run on this content.
-  bool heuristic_run_before_;
 
   base::WeakPtrFactory<LoadablePluginPlaceholder> weak_factory_;
 

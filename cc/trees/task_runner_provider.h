@@ -16,17 +16,13 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "cc/base/cc_export.h"
+#include "cc/cc_export.h"
 
 namespace base {
-namespace trace_event {
-class TracedValue;
-}
 class SingleThreadTaskRunner;
 }
 
 namespace cc {
-class BlockingTaskRunner;
 
 // Class responsible for controlling access to the main and impl task runners.
 // Useful for assertion checks.
@@ -39,6 +35,8 @@ class CC_EXPORT TaskRunnerProvider {
         new TaskRunnerProvider(main_task_runner, impl_task_runner));
   }
 
+  // TODO(vmpstr): Should these return scoped_refptr to task runners? Many
+  // places turn them into scoped_refptrs. How many of them need to?
   base::SingleThreadTaskRunner* MainThreadTaskRunner() const;
   bool HasImplThread() const;
   base::SingleThreadTaskRunner* ImplThreadTaskRunner() const;
@@ -54,10 +52,6 @@ class CC_EXPORT TaskRunnerProvider {
 
   virtual ~TaskRunnerProvider();
 
-  BlockingTaskRunner* blocking_main_thread_task_runner() const {
-    return blocking_main_thread_task_runner_.get();
-  }
-
  protected:
   TaskRunnerProvider(
       scoped_refptr<base::SingleThreadTaskRunner> main_task_runner,
@@ -70,7 +64,6 @@ class CC_EXPORT TaskRunnerProvider {
  private:
   scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> impl_task_runner_;
-  std::unique_ptr<BlockingTaskRunner> blocking_main_thread_task_runner_;
 
 #if DCHECK_IS_ON()
   const base::PlatformThreadId main_thread_id_;

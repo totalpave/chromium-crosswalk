@@ -6,10 +6,15 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/feature_list.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_filter.h"
@@ -23,9 +28,29 @@
 
 namespace {
 
-std::string GetHash(const base::FilePath& relative_path) {
-  size_t int_key = BASE_HASH_NAMESPACE::hash<base::FilePath>()(relative_path);
-  return base::SizeTToString(int_key);
+std::string GetPartitionKey(const base::FilePath& relative_path) {
+  // Create a partition_key string with no '.'s in it.
+  const base::FilePath::StringType& path = relative_path.value();
+  // Prepend "x" to prevent an unlikely collision with an old
+  // partition key (which contained only [0-9]).
+  return "x" +
+         base::HexEncode(
+             path.c_str(),
+             path.size() * sizeof(base::FilePath::StringType::value_type));
+}
+
+const char kZoomLevelPath[] = "zoom_level";
+const char kLastModifiedPath[] = "last_modified";
+
+// Extract a timestamp from |dictionary[kLastModifiedPath]|.
+// Will return base::Time() if no timestamp exists.
+base::Time GetTimeStamp(const base::DictionaryValue* dictionary) {
+  std::string timestamp_str;
+  dictionary->GetStringWithoutPathExpansion(kLastModifiedPath, &timestamp_str);
+  int64_t timestamp = 0;
+  base::StringToInt64(timestamp_str, &timestamp);
+  base::Time last_modified = base::Time::FromInternalValue(timestamp);
+  return last_modified;
 }
 
 }  // namespace
@@ -43,20 +68,16 @@ ChromeZoomLevelPrefs::ChromeZoomLevelPrefs(
   DCHECK(!partition_path.empty());
   DCHECK((partition_path == profile_path) ||
          profile_path.IsParent(partition_path));
-  // Create a partition_key string with no '.'s in it. For the default
-  // StoragePartition, this string will always be "0".
   base::FilePath partition_relative_path;
   profile_path.AppendRelativePath(partition_path, &partition_relative_path);
-  partition_key_ = GetHash(partition_relative_path);
-
+  partition_key_ = GetPartitionKey(partition_relative_path);
 }
 
-ChromeZoomLevelPrefs::~ChromeZoomLevelPrefs() {
-}
+ChromeZoomLevelPrefs::~ChromeZoomLevelPrefs() {}
 
-std::string ChromeZoomLevelPrefs::GetHashForTesting(
+std::string ChromeZoomLevelPrefs::GetPartitionKeyForTesting(
     const base::FilePath& relative_path) {
-  return GetHash(relative_path);
+  return GetPartitionKey(relative_path);
 }
 
 void ChromeZoomLevelPrefs::SetDefaultZoomLevelPref(double level) {
@@ -109,17 +130,25 @@ void ChromeZoomLevelPrefs::OnZoomLevelChanged(
   bool modification_is_removal =
       content::ZoomValuesEqual(level, host_zoom_map_->GetDefaultZoomLevel());
 
-  base::DictionaryValue* host_zoom_dictionary = nullptr;
+  base::DictionaryValue* host_zoom_dictionary_weak = nullptr;
   if (!host_zoom_dictionaries->GetDictionary(partition_key_,
-                                             &host_zoom_dictionary)) {
-    host_zoom_dictionary = new base::DictionaryValue();
-    host_zoom_dictionaries->Set(partition_key_, host_zoom_dictionary);
+                                             &host_zoom_dictionary_weak)) {
+    auto host_zoom_dictionary = std::make_unique<base::DictionaryValue>();
+    host_zoom_dictionary_weak = host_zoom_dictionary.get();
+    host_zoom_dictionaries->Set(partition_key_,
+                                std::move(host_zoom_dictionary));
   }
 
-  if (modification_is_removal)
-    host_zoom_dictionary->RemoveWithoutPathExpansion(change.host, nullptr);
-  else
-    host_zoom_dictionary->SetDoubleWithoutPathExpansion(change.host, level);
+  if (modification_is_removal) {
+    host_zoom_dictionary_weak->RemoveWithoutPathExpansion(change.host, nullptr);
+  } else {
+    base::DictionaryValue dict;
+    dict.SetDouble(kZoomLevelPath, level);
+    dict.SetString(
+        kLastModifiedPath,
+        base::NumberToString(change.last_modified.ToInternalValue()));
+    host_zoom_dictionary_weak->SetKey(change.host, std::move(dict));
+  }
 }
 
 // TODO(wjmaclean): Remove the dictionary_path once the migration code is
@@ -135,8 +164,18 @@ void ChromeZoomLevelPrefs::ExtractPerHostZoomLevels(
        i.Advance()) {
     const std::string& host(i.key());
     double zoom_level = 0;
+    base::Time last_modified;
 
-    bool has_valid_zoom_level = i.value().GetAsDouble(&zoom_level);
+    bool has_valid_zoom_level;
+    if (i.value().is_dict()) {
+      const base::DictionaryValue* dict;
+      i.value().GetAsDictionary(&dict);
+      has_valid_zoom_level = dict->GetDouble(kZoomLevelPath, &zoom_level);
+      last_modified = GetTimeStamp(dict);
+    } else {
+      // Old zoom level that is stored directly as a double.
+      has_valid_zoom_level = i.value().GetAsDouble(&zoom_level);
+    }
 
     // Filter out A) the empty host, B) zoom levels equal to the default; and
     // remember them, so that we can later erase them from Prefs.
@@ -152,7 +191,7 @@ void ChromeZoomLevelPrefs::ExtractPerHostZoomLevels(
       continue;
     }
 
-    host_zoom_map_->SetZoomLevelForHost(host, zoom_level);
+    host_zoom_map_->InitializeZoomLevelForHost(host, zoom_level, last_modified);
   }
 
   // We don't bother sanitizing non-partition dictionaries as they will be

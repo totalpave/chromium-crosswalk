@@ -7,18 +7,21 @@ package org.chromium.chrome.browser.autofill;
 import android.app.Activity;
 import android.content.Context;
 import android.content.DialogInterface;
-import android.os.Handler;
+import android.content.res.Configuration;
 import android.support.v7.app.AlertDialog;
+import android.view.View;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.ChromeFeatureList;
 import org.chromium.chrome.browser.ResourceId;
+import org.chromium.components.autofill.AutofillDelegate;
+import org.chromium.components.autofill.AutofillPopup;
+import org.chromium.components.autofill.AutofillSuggestion;
+import org.chromium.content_public.browser.WebContentsAccessibility;
 import org.chromium.ui.DropdownItem;
-import org.chromium.ui.autofill.AutofillDelegate;
-import org.chromium.ui.autofill.AutofillPopup;
-import org.chromium.ui.autofill.AutofillSuggestion;
-import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
 
 /**
@@ -30,33 +33,29 @@ public class AutofillPopupBridge implements AutofillDelegate, DialogInterface.On
     private final AutofillPopup mAutofillPopup;
     private AlertDialog mDeletionDialog;
     private final Context mContext;
+    private WebContentsAccessibility mWebContentsAccessibility;
 
-    public AutofillPopupBridge(long nativeAutofillPopupViewAndroid, WindowAndroid windowAndroid,
-            ViewAndroidDelegate containerViewDelegate) {
+    public AutofillPopupBridge(View anchorView, long nativeAutofillPopupViewAndroid,
+            WindowAndroid windowAndroid) {
         mNativeAutofillPopup = nativeAutofillPopupViewAndroid;
         Activity activity = windowAndroid.getActivity().get();
-        if (activity == null) {
+        if (activity == null || notEnoughScreenSpace(activity)) {
             mAutofillPopup = null;
             mContext = null;
-            // Clean up the native counterpart.  This is posted to allow the native counterpart
-            // to fully finish the construction of this glue object before we attempt to delete it.
-            new Handler().post(new Runnable() {
-                @Override
-                public void run() {
-                    dismissed();
-                }
-            });
         } else {
-            mAutofillPopup = new AutofillPopup(activity, containerViewDelegate, this);
+            mAutofillPopup = new AutofillPopup(activity, anchorView, this);
             mContext = activity;
+            ChromeActivity chromeActivity = (ChromeActivity) activity;
+            chromeActivity.getManualFillingController().notifyPopupAvailable(mAutofillPopup);
+            mWebContentsAccessibility = WebContentsAccessibility.fromWebContents(
+                    chromeActivity.getCurrentWebContents());
         }
     }
 
     @CalledByNative
-    private static AutofillPopupBridge create(long nativeAutofillPopupViewAndroid,
-            WindowAndroid windowAndroid, ViewAndroidDelegate viewAndroidDelegate) {
-        return new AutofillPopupBridge(
-                nativeAutofillPopupViewAndroid, windowAndroid, viewAndroidDelegate);
+    private static AutofillPopupBridge create(View anchorView, long nativeAutofillPopupViewAndroid,
+            WindowAndroid windowAndroid) {
+        return new AutofillPopupBridge(anchorView, nativeAutofillPopupViewAndroid, windowAndroid);
     }
 
     @Override
@@ -75,6 +74,11 @@ public class AutofillPopupBridge implements AutofillDelegate, DialogInterface.On
     }
 
     @Override
+    public void accessibilityFocusCleared() {
+        mWebContentsAccessibility.onAutofillPopupAccessibilityFocusCleared();
+    }
+
+    @Override
     public void onClick(DialogInterface dialog, int which) {
         assert which == DialogInterface.BUTTON_POSITIVE;
         nativeDeletionConfirmed(mNativeAutofillPopup);
@@ -87,38 +91,54 @@ public class AutofillPopupBridge implements AutofillDelegate, DialogInterface.On
     private void dismiss() {
         if (mAutofillPopup != null) mAutofillPopup.dismiss();
         if (mDeletionDialog != null) mDeletionDialog.dismiss();
+        mWebContentsAccessibility.onAutofillPopupDismissed();
     }
 
     /**
      * Shows an Autofill popup with specified suggestions.
      * @param suggestions Autofill suggestions to be displayed.
+     * @param isRtl @code true if right-to-left text.
      */
     @CalledByNative
     private void show(AutofillSuggestion[] suggestions, boolean isRtl) {
-        if (mAutofillPopup != null) mAutofillPopup.filterAndShow(suggestions, isRtl);
-    }
-
-    /**
-     * Sets the location and size of the Autofill popup anchor (input field).
-     * @param x X coordinate.
-     * @param y Y coordinate.
-     * @param width The width of the anchor.
-     * @param height The height of the anchor.
-     */
-    @CalledByNative
-    private void setAnchorRect(float x, float y, float width, float height) {
-        if (mAutofillPopup != null) mAutofillPopup.setAnchorRect(x, y, width, height);
+        if (mAutofillPopup != null) {
+            mAutofillPopup.filterAndShow(suggestions, isRtl, shouldUseRefreshStyle());
+            mWebContentsAccessibility.onAutofillPopupDisplayed(mAutofillPopup.getListView());
+        }
     }
 
     @CalledByNative
     private void confirmDeletion(String title, String body) {
-        mDeletionDialog = new AlertDialog.Builder(mContext, R.style.AlertDialogTheme)
-                .setTitle(title)
-                .setMessage(body)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.ok, this)
-                .create();
+        mDeletionDialog = new AlertDialog.Builder(mContext, R.style.Theme_Chromium_AlertDialog)
+                                  .setTitle(title)
+                                  .setMessage(body)
+                                  .setNegativeButton(R.string.cancel, null)
+                                  .setPositiveButton(R.string.ok, this)
+                                  .create();
         mDeletionDialog.show();
+    }
+
+    @CalledByNative
+    private boolean wasSuppressed() {
+        return mAutofillPopup == null;
+    }
+
+    private static boolean shouldUseRefreshStyle() {
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_REFRESH_STYLE_ANDROID);
+    }
+
+    private static boolean notEnoughScreenSpace(Context context) {
+        Configuration config = context.getResources().getConfiguration();
+        // In landscape mode, most vertical space is used by the on-screen keyboard. When refresh
+        // style is used, the footer is sticky, so there is not much space to even show the first
+        // suggestion. In those cases, the dropdown should only be shown on very large screen
+        // devices, such as tablets.
+        //
+        // TODO(crbug.com/907634): This is a simple first approach to not provide a degraded
+        //                         experience. Explore other alternatives when this happens such as
+        //                         showing suggestions on the keyboard accessory.
+        return shouldUseRefreshStyle() && config.orientation == Configuration.ORIENTATION_LANDSCAPE
+                && !config.isLayoutSizeAtLeast(Configuration.SCREENLAYOUT_SIZE_XLARGE);
     }
 
     // Helper methods for AutofillSuggestion
@@ -134,17 +154,20 @@ public class AutofillPopupBridge implements AutofillDelegate, DialogInterface.On
      * @param label First line of the suggestion.
      * @param sublabel Second line of the suggestion.
      * @param iconId The resource ID for the icon associated with the suggestion, or 0 for no icon.
+     * @param isIconAtStart {@code true} if {@param iconId} is displayed before {@param label}.
      * @param suggestionId Identifier for the suggestion type.
-     * @param deletable Whether this item is deletable.
+     * @param isDeletable Whether the item can be deleted by the user.
      * @param isLabelMultiline Whether the label should be should over multiple lines.
+     * @param isLabelBold true if {@param label} should be displayed in {@code Typeface.BOLD},
+     * false if {@param label} should be displayed in {@code Typeface.NORMAL}.
      */
     @CalledByNative
     private static void addToAutofillSuggestionArray(AutofillSuggestion[] array, int index,
-            String label, String sublabel, int iconId, int suggestionId, boolean deletable,
-            boolean isLabelMultiline) {
+            String label, String sublabel, int iconId, boolean isIconAtStart,
+            int suggestionId, boolean isDeletable, boolean isLabelMultiline, boolean isLabelBold) {
         int drawableId = iconId == 0 ? DropdownItem.NO_ICON : ResourceId.mapToDrawableId(iconId);
-        array[index] = new AutofillSuggestion(
-                label, sublabel, drawableId, suggestionId, deletable, isLabelMultiline);
+        array[index] = new AutofillSuggestion(label, sublabel, drawableId, isIconAtStart,
+                suggestionId, isDeletable, isLabelMultiline, isLabelBold);
     }
 
     private native void nativeSuggestionSelected(long nativeAutofillPopupViewAndroid,

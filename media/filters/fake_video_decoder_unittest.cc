@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "media/filters/fake_video_decoder.h"
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/macros.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
@@ -10,7 +12,6 @@
 #include "media/base/mock_filters.h"
 #include "media/base/test_helpers.h"
 #include "media/base/video_frame.h"
-#include "media/filters/fake_video_decoder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
@@ -32,6 +33,7 @@ class FakeVideoDecoderTest
  public:
   FakeVideoDecoderTest()
       : decoder_(new FakeVideoDecoder(
+            "FakeVideoDecoder",
             GetParam().decoding_delay,
             GetParam().max_decode_requests,
             base::Bind(&FakeVideoDecoderTest::OnBytesDecoded,
@@ -52,7 +54,8 @@ class FakeVideoDecoderTest
                                            bool success) {
     decoder_->Initialize(
         config, false, nullptr, NewExpectedBoolCB(success),
-        base::Bind(&FakeVideoDecoderTest::FrameReady, base::Unretained(this)));
+        base::Bind(&FakeVideoDecoderTest::FrameReady, base::Unretained(this)),
+        base::NullCallback());
     base::RunLoop().RunUntilIdle();
     current_config_ = config;
   }
@@ -238,14 +241,14 @@ class FakeVideoDecoderTest
   DISALLOW_COPY_AND_ASSIGN(FakeVideoDecoderTest);
 };
 
-INSTANTIATE_TEST_CASE_P(NoParallelDecode,
-                        FakeVideoDecoderTest,
-                        ::testing::Values(FakeVideoDecoderTestParams(9, 1),
-                                          FakeVideoDecoderTestParams(0, 1)));
-INSTANTIATE_TEST_CASE_P(ParallelDecode,
-                        FakeVideoDecoderTest,
-                        ::testing::Values(FakeVideoDecoderTestParams(9, 3),
-                                          FakeVideoDecoderTestParams(0, 3)));
+INSTANTIATE_TEST_SUITE_P(NoParallelDecode,
+                         FakeVideoDecoderTest,
+                         ::testing::Values(FakeVideoDecoderTestParams(9, 1),
+                                           FakeVideoDecoderTestParams(0, 1)));
+INSTANTIATE_TEST_SUITE_P(ParallelDecode,
+                         FakeVideoDecoderTest,
+                         ::testing::Values(FakeVideoDecoderTestParams(9, 3),
+                                           FakeVideoDecoderTestParams(0, 3)));
 
 TEST_P(FakeVideoDecoderTest, Initialize) {
   Initialize();
@@ -276,9 +279,10 @@ TEST_P(FakeVideoDecoderTest, Read_DecodingDelay) {
 }
 
 TEST_P(FakeVideoDecoderTest, Read_ZeroDelay) {
-  decoder_.reset(new FakeVideoDecoder(
-      0, 1, base::Bind(&FakeVideoDecoderTest::OnBytesDecoded,
-                       base::Unretained(this))));
+  decoder_.reset(
+      new FakeVideoDecoder("FakeVideoDecoder", 0, 1,
+                           base::Bind(&FakeVideoDecoderTest::OnBytesDecoded,
+                                      base::Unretained(this))));
   Initialize();
 
   while (num_input_buffers_ < kTotalBuffers) {

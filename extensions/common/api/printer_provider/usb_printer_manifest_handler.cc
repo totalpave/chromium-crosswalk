@@ -26,12 +26,13 @@ bool UsbPrinterManifestHandler::Parse(Extension* extension,
     return false;
   }
 
-  extension->SetManifestData(manifest_keys::kUsbPrinters, data.release());
+  extension->SetManifestData(manifest_keys::kUsbPrinters, std::move(data));
   return true;
 }
 
-const std::vector<std::string> UsbPrinterManifestHandler::Keys() const {
-  return SingleKey(manifest_keys::kUsbPrinters);
+base::span<const char* const> UsbPrinterManifestHandler::Keys() const {
+  static constexpr const char* kKeys[] = {manifest_keys::kUsbPrinters};
+  return kKeys;
 }
 
 }  // namespace extensions

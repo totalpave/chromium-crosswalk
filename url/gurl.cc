@@ -9,59 +9,17 @@
 #include <algorithm>
 #include <ostream>
 
+#include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "url/url_canon_stdstring.h"
 #include "url/url_util.h"
 
-#ifdef WIN32
-#include <windows.h>
-#else
-#include <pthread.h>
-#endif
-
 namespace {
 
-static std::string* empty_string = NULL;
-static GURL* empty_gurl = NULL;
-
-#ifdef WIN32
-
-// Returns a static reference to an empty string for returning a reference
-// when there is no underlying string.
-const std::string& EmptyStringForGURL() {
-  // Avoid static object construction/destruction on startup/shutdown.
-  if (!empty_string) {
-    // Create the string. Be careful that we don't break in the case that this
-    // is being called from multiple threads. Statics are not threadsafe.
-    std::string* new_empty_string = new std::string;
-    if (InterlockedCompareExchangePointer(
-        reinterpret_cast<PVOID*>(&empty_string), new_empty_string, NULL)) {
-      // The old value was non-NULL, so no replacement was done. Another
-      // thread did the initialization out from under us.
-      delete new_empty_string;
-    }
-  }
-  return *empty_string;
-}
-
-#else
-
-static pthread_once_t empty_string_once = PTHREAD_ONCE_INIT;
-static pthread_once_t empty_gurl_once = PTHREAD_ONCE_INIT;
-
-void EmptyStringForGURLOnce(void) {
-  empty_string = new std::string;
-}
-
-const std::string& EmptyStringForGURL() {
-  // Avoid static object construction/destruction on startup/shutdown.
-  pthread_once(&empty_string_once, EmptyStringForGURLOnce);
-  return *empty_string;
-}
-
-#endif  // WIN32
+static base::LazyInstance<GURL>::Leaky empty_gurl = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -76,6 +34,15 @@ GURL::GURL(const GURL& other)
     inner_url_.reset(new GURL(*other.inner_url_));
   // Valid filesystem urls should always have an inner_url_.
   DCHECK(!is_valid_ || !SchemeIsFileSystem() || inner_url_);
+}
+
+GURL::GURL(GURL&& other) noexcept
+    : spec_(std::move(other.spec_)),
+      is_valid_(other.is_valid_),
+      parsed_(other.parsed_),
+      inner_url_(std::move(other.inner_url_)) {
+  other.is_valid_ = false;
+  other.parsed_ = url::Parsed();
 }
 
 GURL::GURL(base::StringPiece url_string) {
@@ -108,9 +75,6 @@ GURL::GURL(std::string canonical_spec, const url::Parsed& parsed, bool is_valid)
 template<typename STR>
 void GURL::InitCanonical(base::BasicStringPiece<STR> input_spec,
                          bool trim_path_end) {
-  // Reserve enough room in the output for the input, plus some extra so that
-  // we have room if we have to escape a few things without reallocating.
-  spec_.reserve(input_spec.size() + 32);
   url::StdStringCanonOutput output(&spec_);
   is_valid_ = url::Canonicalize(
       input_spec.data(), static_cast<int>(input_spec.length()), trim_path_end,
@@ -121,6 +85,8 @@ void GURL::InitCanonical(base::BasicStringPiece<STR> input_spec,
     inner_url_.reset(new GURL(spec_.data(), parsed_.Length(),
                               *parsed_.inner_parsed(), true));
   }
+  // Valid URLs always have non-empty specs.
+  DCHECK(!is_valid_ || !spec_.empty());
 }
 
 void GURL::InitializeFromCanonicalSpec() {
@@ -135,6 +101,7 @@ void GURL::InitializeFromCanonicalSpec() {
   // what we would have produced. Skip checking for invalid URLs have no meaning
   // and we can't always canonicalize then reproducibly.
   if (is_valid_) {
+    DCHECK(!spec_.empty());
     url::Component scheme;
     // We can't do this check on the inner_url of a filesystem URL, as
     // canonical_spec actually points to the start of the outer URL, so we'd
@@ -164,11 +131,31 @@ void GURL::InitializeFromCanonicalSpec() {
 #endif
 }
 
-GURL::~GURL() {
+GURL::~GURL() = default;
+
+GURL& GURL::operator=(const GURL& other) {
+  spec_ = other.spec_;
+  is_valid_ = other.is_valid_;
+  parsed_ = other.parsed_;
+
+  if (!other.inner_url_)
+    inner_url_.reset();
+  else if (inner_url_)
+    *inner_url_ = *other.inner_url_;
+  else
+    inner_url_.reset(new GURL(*other.inner_url_));
+
+  return *this;
 }
 
-GURL& GURL::operator=(GURL other) {
-  Swap(&other);
+GURL& GURL::operator=(GURL&& other) noexcept {
+  spec_ = std::move(other.spec_);
+  is_valid_ = other.is_valid_;
+  parsed_ = other.parsed_;
+  inner_url_ = std::move(other.inner_url_);
+
+  other.is_valid_ = false;
+  other.parsed_ = url::Parsed();
   return *this;
 }
 
@@ -177,15 +164,7 @@ const std::string& GURL::spec() const {
     return spec_;
 
   DCHECK(false) << "Trying to get the spec of an invalid URL!";
-  return EmptyStringForGURL();
-}
-
-bool GURL::operator==(const GURL& other) const {
-  return spec_ == other.spec_;
-}
-
-bool GURL::operator!=(const GURL& other) const {
-  return spec_ != other.spec_;
+  return base::EmptyString();
 }
 
 bool GURL::operator<(const GURL& other) const {
@@ -197,18 +176,13 @@ bool GURL::operator>(const GURL& other) const {
 }
 
 // Note: code duplicated below (it's inconvenient to use a template here).
-GURL GURL::Resolve(const std::string& relative) const {
+GURL GURL::Resolve(base::StringPiece relative) const {
   // Not allowed for invalid URLs.
   if (!is_valid_)
     return GURL();
 
   GURL result;
-
-  // Reserve enough room in the output for the input, plus some extra so that
-  // we have room if we have to escape a few things without reallocating.
-  result.spec_.reserve(spec_.size() + 32);
   url::StdStringCanonOutput output(&result.spec_);
-
   if (!url::ResolveRelative(spec_.data(), static_cast<int>(spec_.length()),
                             parsed_, relative.data(),
                             static_cast<int>(relative.length()),
@@ -228,18 +202,13 @@ GURL GURL::Resolve(const std::string& relative) const {
 }
 
 // Note: code duplicated above (it's inconvenient to use a template here).
-GURL GURL::Resolve(const base::string16& relative) const {
+GURL GURL::Resolve(base::StringPiece16 relative) const {
   // Not allowed for invalid URLs.
   if (!is_valid_)
     return GURL();
 
   GURL result;
-
-  // Reserve enough room in the output for the input, plus some extra so that
-  // we have room if we have to escape a few things without reallocating.
-  result.spec_.reserve(spec_.size() + 32);
   url::StdStringCanonOutput output(&result.spec_);
-
   if (!url::ResolveRelative(spec_.data(), static_cast<int>(spec_.length()),
                             parsed_, relative.data(),
                             static_cast<int>(relative.length()),
@@ -267,11 +236,7 @@ GURL GURL::ReplaceComponents(
   if (!is_valid_)
     return GURL();
 
-  // Reserve enough room in the output for the input, plus some extra so that
-  // we have room if we have to escape a few things without reallocating.
-  result.spec_.reserve(spec_.size() + 32);
   url::StdStringCanonOutput output(&result.spec_);
-
   result.is_valid_ = url::ReplaceComponents(
       spec_.data(), static_cast<int>(spec_.length()), parsed_, replacements,
       NULL, &output, &result.parsed_);
@@ -294,11 +259,7 @@ GURL GURL::ReplaceComponents(
   if (!is_valid_)
     return GURL();
 
-  // Reserve enough room in the output for the input, plus some extra so that
-  // we have room if we have to escape a few things without reallocating.
-  result.spec_.reserve(spec_.size() + 32);
   url::StdStringCanonOutput output(&result.spec_);
-
   result.is_valid_ = url::ReplaceComponents(
       spec_.data(), static_cast<int>(spec_.length()), parsed_, replacements,
       NULL, &output, &result.parsed_);
@@ -369,8 +330,25 @@ GURL GURL::GetWithEmptyPath() const {
   return other;
 }
 
+GURL GURL::GetWithoutFilename() const {
+  return Resolve(".");
+}
+
 bool GURL::IsStandard() const {
   return url::IsStandard(spec_.data(), parsed_.scheme);
+}
+
+bool GURL::IsAboutBlank() const {
+  if (!SchemeIs(url::kAboutScheme))
+    return false;
+
+  if (has_host() || has_username() || has_password() || has_port())
+    return false;
+
+  if (path() != url::kAboutBlankPath && path() != url::kAboutBlankWithHashPath)
+    return false;
+
+  return true;
 }
 
 bool GURL::SchemeIs(base::StringPiece lower_ascii_scheme) const {
@@ -392,6 +370,20 @@ bool GURL::SchemeIsValidForReferrer() const {
 
 bool GURL::SchemeIsWSOrWSS() const {
   return SchemeIs(url::kWsScheme) || SchemeIs(url::kWssScheme);
+}
+
+bool GURL::SchemeIsCryptographic() const {
+  if (parsed_.scheme.len <= 0)
+    return false;
+  return SchemeIsCryptographic(scheme_piece());
+}
+
+bool GURL::SchemeIsCryptographic(base::StringPiece lower_ascii_scheme) {
+  DCHECK(base::IsStringASCII(lower_ascii_scheme));
+  DCHECK(base::ToLowerASCII(lower_ascii_scheme) == lower_ascii_scheme);
+
+  return lower_ascii_scheme == url::kHttpsScheme ||
+         lower_ascii_scheme == url::kWssScheme;
 }
 
 int GURL::IntPort() const {
@@ -434,104 +426,52 @@ std::string GURL::PathForRequest() const {
 }
 
 std::string GURL::HostNoBrackets() const {
+  return HostNoBracketsPiece().as_string();
+}
+
+base::StringPiece GURL::HostNoBracketsPiece() const {
   // If host looks like an IPv6 literal, strip the square brackets.
   url::Component h(parsed_.host);
   if (h.len >= 2 && spec_[h.begin] == '[' && spec_[h.end() - 1] == ']') {
     h.begin++;
     h.len -= 2;
   }
-  return ComponentString(h);
+  return ComponentStringPiece(h);
 }
 
 std::string GURL::GetContent() const {
-  return is_valid_ ? ComponentString(parsed_.GetContent()) : std::string();
+  if (!is_valid_)
+    return std::string();
+  std::string content = ComponentString(parsed_.GetContent());
+  if (!SchemeIs(url::kJavaScriptScheme) && parsed_.ref.len >= 0)
+    content.erase(content.size() - parsed_.ref.len - 1);
+  return content;
 }
 
 bool GURL::HostIsIPAddress() const {
-  if (!is_valid_ || spec_.empty())
-     return false;
-
-  url::RawCanonOutputT<char, 128> ignored_output;
-  url::CanonHostInfo host_info;
-  url::CanonicalizeIPAddress(spec_.c_str(), parsed_.host, &ignored_output,
-                             &host_info);
-  return host_info.IsIPAddress();
-}
-
-#ifdef WIN32
-
-const GURL& GURL::EmptyGURL() {
-  // Avoid static object construction/destruction on startup/shutdown.
-  if (!empty_gurl) {
-    // Create the string. Be careful that we don't break in the case that this
-    // is being called from multiple threads.
-    GURL* new_empty_gurl = new GURL;
-    if (InterlockedCompareExchangePointer(
-        reinterpret_cast<PVOID*>(&empty_gurl), new_empty_gurl, NULL)) {
-      // The old value was non-NULL, so no replacement was done. Another
-      // thread did the initialization out from under us.
-      delete new_empty_gurl;
-    }
-  }
-  return *empty_gurl;
-}
-
-#else
-
-void EmptyGURLOnce(void) {
-  empty_gurl = new GURL;
+  return is_valid_ && url::HostIsIPAddress(host_piece());
 }
 
 const GURL& GURL::EmptyGURL() {
-  // Avoid static object construction/destruction on startup/shutdown.
-  pthread_once(&empty_gurl_once, EmptyGURLOnce);
-  return *empty_gurl;
+  return empty_gurl.Get();
 }
 
-#endif  // WIN32
-
-bool GURL::DomainIs(base::StringPiece lower_ascii_domain) const {
-  if (!is_valid_ || lower_ascii_domain.empty())
+bool GURL::DomainIs(base::StringPiece canonical_domain) const {
+  if (!is_valid_)
     return false;
 
-  // FileSystem URLs have empty parsed_.host, so check this first.
-  if (SchemeIsFileSystem() && inner_url_)
-    return inner_url_->DomainIs(lower_ascii_domain);
+  // FileSystem URLs have empty host_piece, so check this first.
+  if (inner_url_ && SchemeIsFileSystem())
+    return inner_url_->DomainIs(canonical_domain);
+  return url::DomainIs(host_piece(), canonical_domain);
+}
 
-  if (!parsed_.host.is_nonempty())
-    return false;
-
-  // If the host name ends with a dot but the input domain doesn't,
-  // then we ignore the dot in the host name.
-  const char* host_last_pos = spec_.data() + parsed_.host.end() - 1;
-  int host_len = parsed_.host.len;
-  int domain_len = lower_ascii_domain.length();
-  if ('.' == *host_last_pos && '.' != lower_ascii_domain[domain_len - 1]) {
-    host_last_pos--;
-    host_len--;
-  }
-
-  if (host_len < domain_len)
-    return false;
-
-  // |host_first_pos| is the start of the compared part of the host name, not
-  // start of the whole host name.
-  const char* host_first_pos = spec_.data() + parsed_.host.begin +
-                               host_len - domain_len;
-
-  if (!base::LowerCaseEqualsASCII(
-           base::StringPiece(host_first_pos, domain_len), lower_ascii_domain))
-    return false;
-
-  // Make sure there aren't extra characters in host before the compared part;
-  // if the host name is longer than the input domain name, then the character
-  // immediately before the compared part should be a dot. For example,
-  // www.google.com has domain "google.com", but www.iamnotgoogle.com does not.
-  if ('.' != lower_ascii_domain[0] && host_len > domain_len &&
-      '.' != *(host_first_pos - 1))
-    return false;
-
-  return true;
+bool GURL::EqualsIgnoringRef(const GURL& other) const {
+  int ref_position = parsed_.CountCharactersBefore(url::Parsed::REF, true);
+  int ref_position_other =
+      other.parsed_.CountCharactersBefore(url::Parsed::REF, true);
+  return base::StringPiece(spec_).substr(0, ref_position) ==
+         base::StringPiece(other.spec_).substr(0, ref_position_other);
 }
 
 void GURL::Swap(GURL* other) {
@@ -541,6 +481,37 @@ void GURL::Swap(GURL* other) {
   inner_url_.swap(other->inner_url_);
 }
 
+size_t GURL::EstimateMemoryUsage() const {
+  return base::trace_event::EstimateMemoryUsage(spec_) +
+         base::trace_event::EstimateMemoryUsage(inner_url_) +
+         (parsed_.inner_parsed() ? sizeof(url::Parsed) : 0);
+}
+
 std::ostream& operator<<(std::ostream& out, const GURL& url) {
   return out << url.possibly_invalid_spec();
+}
+
+bool operator==(const GURL& x, const GURL& y) {
+  return x.possibly_invalid_spec() == y.possibly_invalid_spec();
+}
+
+bool operator!=(const GURL& x, const GURL& y) {
+  return !(x == y);
+}
+
+bool operator==(const GURL& x, const base::StringPiece& spec) {
+  DCHECK_EQ(GURL(spec).possibly_invalid_spec(), spec);
+  return x.possibly_invalid_spec() == spec;
+}
+
+bool operator==(const base::StringPiece& spec, const GURL& x) {
+  return x == spec;
+}
+
+bool operator!=(const GURL& x, const base::StringPiece& spec) {
+  return !(x == spec);
+}
+
+bool operator!=(const base::StringPiece& spec, const GURL& x) {
+  return !(x == spec);
 }

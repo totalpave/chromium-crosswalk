@@ -6,17 +6,20 @@
 
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "build/build_config.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/view_targeter.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget_deletion_observer.h"
+#include "ui/views/window/dialog_delegate.h"
 
 namespace views {
 namespace test {
 
-typedef ViewsTestBase RootViewTest;
+using RootViewTest = ViewsTestBase;
 
 class DeleteOnKeyEventView : public View {
  public:
@@ -41,9 +44,10 @@ class DeleteOnKeyEventView : public View {
 TEST_F(RootViewTest, DeleteViewDuringKeyEventDispatch) {
   Widget widget;
   Widget::InitParams init_params =
-      CreateParams(Widget::InitParams::TYPE_POPUP);
+      CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   init_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   widget.Init(init_params);
+  widget.Show();
 
   bool got_key_event = false;
 
@@ -109,11 +113,16 @@ class TestContextMenuController : public ContextMenuController {
 // Tests that context menus are shown for certain key events (Shift+F10
 // and VKEY_APPS) by the pre-target handler installed on RootView.
 TEST_F(RootViewTest, ContextMenuFromKeyEvent) {
+#if defined(OS_MACOSX)
+  // This behavior is intentionally unsupported on macOS.
+  return;
+#endif
   Widget widget;
   Widget::InitParams init_params =
-      CreateParams(Widget::InitParams::TYPE_POPUP);
+      CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   init_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   widget.Init(init_params);
+  widget.Show();
   internal::RootView* root_view =
       static_cast<internal::RootView*>(widget.GetRootView());
 
@@ -125,7 +134,8 @@ TEST_F(RootViewTest, ContextMenuFromKeyEvent) {
   focused_view->RequestFocus();
 
   // No context menu should be shown for a keypress of 'A'.
-  ui::KeyEvent nomenu_key_event('a', ui::VKEY_A, ui::EF_NONE);
+  ui::KeyEvent nomenu_key_event('a', ui::VKEY_A, ui::DomCode::NONE,
+                                ui::EF_NONE);
   ui::EventDispatchDetails details =
       root_view->OnEventFromSource(&nomenu_key_event);
   EXPECT_FALSE(details.target_destroyed);
@@ -536,6 +546,53 @@ TEST_F(RootViewTest, DeleteWidgetOnMouseExitDispatchFromChild) {
                              gfx::Point(15, 15), ui::EventTimeForNow(), 0, 0);
   root_view->OnMouseMoved(move_event2);
   EXPECT_FALSE(widget_deletion_observer.IsWidgetAlive());
+}
+
+namespace {
+class RootViewTestDialogDelegate : public DialogDelegateView {
+ public:
+  RootViewTestDialogDelegate() {}
+
+  int layout_count() const { return layout_count_; }
+
+  // DialogDelegateView:
+  gfx::Size CalculatePreferredSize() const override { return preferred_size_; }
+  void Layout() override {
+    EXPECT_EQ(size(), preferred_size_);
+    ++layout_count_;
+  }
+  int GetDialogButtons() const override {
+    return ui::DIALOG_BUTTON_NONE;  // Ensure buttons do not influence size.
+  }
+
+ private:
+  const gfx::Size preferred_size_ = gfx::Size(111, 111);
+
+  int layout_count_ = 0;
+
+  DISALLOW_COPY_AND_ASSIGN(RootViewTestDialogDelegate);
+};
+}  // namespace
+
+// Ensure only one call to Layout() happens during Widget initialization, and
+// ensure it happens at the ContentView's preferred size.
+TEST_F(RootViewTest, SingleLayoutDuringInit) {
+  RootViewTestDialogDelegate* delegate = new RootViewTestDialogDelegate();
+  Widget* widget =
+      DialogDelegate::CreateDialogWidget(delegate, GetContext(), nullptr);
+  EXPECT_EQ(1, delegate->layout_count());
+  widget->CloseNow();
+}
+
+using RootViewDesktopNativeWidgetTest = ViewsTestWithDesktopNativeWidget;
+
+// Also test Aura desktop Widget codepaths.
+TEST_F(RootViewDesktopNativeWidgetTest, SingleLayoutDuringInit) {
+  RootViewTestDialogDelegate* delegate = new RootViewTestDialogDelegate();
+  Widget* widget =
+      DialogDelegate::CreateDialogWidget(delegate, GetContext(), nullptr);
+  EXPECT_EQ(1, delegate->layout_count());
+  widget->CloseNow();
 }
 
 }  // namespace test

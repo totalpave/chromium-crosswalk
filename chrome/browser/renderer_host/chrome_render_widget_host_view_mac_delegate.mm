@@ -6,81 +6,41 @@
 
 #include <cmath>
 
+#include "base/auto_reset.h"
 #include "base/strings/sys_string_conversions.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/profiles/profile.h"
 #import "chrome/browser/renderer_host/chrome_render_widget_host_view_mac_history_swiper.h"
-#include "chrome/browser/spellchecker/spellcheck_platform.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_finder.h"
-#import "chrome/browser/ui/cocoa/browser_window_controller.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/common/spellcheck_messages.h"
 #include "chrome/common/url_constants.h"
 #include "components/prefs/pref_service.h"
+#include "components/spellcheck/browser/pref_names.h"
+#include "components/spellcheck/browser/spellcheck_platform.h"
+#include "components/spellcheck/common/spellcheck_panel.mojom.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_observer.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 
 using content::RenderViewHost;
 
 @interface ChromeRenderWidgetHostViewMacDelegate () <HistorySwiperDelegate>
-- (void)spellCheckEnabled:(BOOL)enabled checked:(BOOL)checked;
 @end
 
-namespace ChromeRenderWidgetHostViewMacDelegateInternal {
-
-// Filters the message sent by the renderer to know if spellchecking is enabled
-// or not for the currently focused element.
-class SpellCheckObserver : public content::WebContentsObserver {
- public:
-  SpellCheckObserver(
-      RenderViewHost* host,
-      ChromeRenderWidgetHostViewMacDelegate* view_delegate)
-      : content::WebContentsObserver(
-            content::WebContents::FromRenderViewHost(host)),
-        view_delegate_(view_delegate) {
-  }
-
-  ~SpellCheckObserver() override {}
-
- private:
-  bool OnMessageReceived(const IPC::Message& message) override {
-    bool handled = true;
-    IPC_BEGIN_MESSAGE_MAP(SpellCheckObserver, message)
-      IPC_MESSAGE_HANDLER(SpellCheckHostMsg_ToggleSpellCheck,
-                          OnToggleSpellCheck)
-      IPC_MESSAGE_UNHANDLED(handled = false)
-    IPC_END_MESSAGE_MAP()
-    return handled;
-  }
-
-  void OnToggleSpellCheck(bool enabled, bool checked) {
-    [view_delegate_ spellCheckEnabled:enabled checked:checked];
-  }
-
-  ChromeRenderWidgetHostViewMacDelegate* view_delegate_;
-};
-
-}  // namespace ChromeRenderWidgetHostViewMacDelegateInternal
-
-@implementation ChromeRenderWidgetHostViewMacDelegate
+@implementation ChromeRenderWidgetHostViewMacDelegate {
+  BOOL resigningFirstResponder_;
+}
 
 - (id)initWithRenderWidgetHost:(content::RenderWidgetHost*)renderWidgetHost {
   self = [super init];
   if (self) {
     renderWidgetHost_ = renderWidgetHost;
-    RenderViewHost* rvh = RenderViewHost::From(renderWidgetHost_);
-    if (rvh) {
-      spellingObserver_.reset(
-          new ChromeRenderWidgetHostViewMacDelegateInternal::SpellCheckObserver(
-              rvh, self));
-    }
-
     historySwiper_.reset([[HistorySwiper alloc] initWithDelegate:self]);
   }
   return self;
@@ -127,14 +87,6 @@ class SpellCheckObserver : public content::WebContentsObserver {
   [historySwiper_ touchesEndedWithEvent:event];
 }
 
-- (BOOL)canRubberbandLeft:(NSView*)view {
-  return [historySwiper_ canRubberbandLeft:view];
-}
-
-- (BOOL)canRubberbandRight:(NSView*)view {
-  return [historySwiper_ canRubberbandRight:view];
-}
-
 // HistorySwiperDelegate methods
 
 - (BOOL)shouldAllowHistorySwiping {
@@ -153,18 +105,29 @@ class SpellCheckObserver : public content::WebContentsObserver {
 }
 
 - (NSView*)viewThatWantsHistoryOverlay {
-  return renderWidgetHost_->GetView()->GetNativeView();
+  return renderWidgetHost_->GetView()->GetNativeView().GetNativeNSView();
 }
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
                       isValidItem:(BOOL*)valid {
   SEL action = [item action];
 
+  Profile* profile = Profile::FromBrowserContext(
+      renderWidgetHost_->GetProcess()->GetBrowserContext());
+  DCHECK(profile);
+  PrefService* pref = profile->GetPrefs();
+  const PrefService::Preference* spellCheckEnablePreference =
+      pref->FindPreference(spellcheck::prefs::kSpellCheckEnable);
+  DCHECK(spellCheckEnablePreference);
+  const bool spellCheckUserModifiable =
+      spellCheckEnablePreference->IsUserModifiable();
+
   // For now, this action is always enabled for render view;
   // this is sub-optimal.
   // TODO(suzhe): Plumb the "can*" methods up from WebCore.
   if (action == @selector(checkSpelling:)) {
-    *valid = RenderViewHost::From(renderWidgetHost_) != nullptr;
+    *valid = spellCheckUserModifiable &&
+             (RenderViewHost::From(renderWidgetHost_) != nullptr);
     return YES;
   }
 
@@ -172,16 +135,18 @@ class SpellCheckObserver : public content::WebContentsObserver {
   // is still necessary.
   if (action == @selector(toggleContinuousSpellChecking:)) {
     if ([(id)item respondsToSelector:@selector(setState:)]) {
-      content::RenderProcessHost* host = renderWidgetHost_->GetProcess();
-      Profile* profile = Profile::FromBrowserContext(host->GetBrowserContext());
-      DCHECK(profile);
-      spellcheckChecked_ =
-          profile->GetPrefs()->GetBoolean(prefs::kEnableContinuousSpellcheck);
       NSCellStateValue checkedState =
-          spellcheckChecked_ ? NSOnState : NSOffState;
+          pref->GetBoolean(spellcheck::prefs::kSpellCheckEnable) ? NSOnState
+                                                                 : NSOffState;
       [(id)item setState:checkedState];
     }
-    *valid = spellcheckEnabled_;
+    *valid = spellCheckUserModifiable;
+    return YES;
+  }
+
+  if (action == @selector(showGuessPanel:) ||
+      action == @selector(toggleGrammarChecking:)) {
+    *valid = spellCheckUserModifiable;
     return YES;
   }
 
@@ -198,6 +163,10 @@ class SpellCheckObserver : public content::WebContentsObserver {
   [historySwiper_ rendererHandledGestureScrollEvent:event consumed:consumed];
 }
 
+- (void)rendererHandledOverscrollEvent:(const ui::DidOverscrollParams&)params {
+  [historySwiper_ onOverscrolled:params];
+}
+
 // Spellchecking methods
 // The next five methods are implemented here since this class is the first
 // responder for anything in the browser.
@@ -212,7 +181,7 @@ class SpellCheckObserver : public content::WebContentsObserver {
     content::WebContents* webContents =
         content::WebContents::FromRenderViewHost(
             RenderViewHost::From(renderWidgetHost_));
-    webContents->Replace(base::SysNSStringToUTF16(newWord));
+    webContents->ReplaceMisspelling(base::SysNSStringToUTF16(newWord));
   }
 }
 
@@ -224,8 +193,14 @@ class SpellCheckObserver : public content::WebContentsObserver {
 // catch this and advance to the next word for you. Thanks Apple.
 // This is also called from the Edit -> Spelling -> Check Spelling menu item.
 - (void)checkSpelling:(id)sender {
-  renderWidgetHost_->Send(new SpellCheckMsg_AdvanceToNextMisspelling(
-      renderWidgetHost_->GetRoutingID()));
+  content::WebContents* webContents = content::WebContents::FromRenderViewHost(
+      RenderViewHost::From(renderWidgetHost_));
+  DCHECK(webContents && webContents->GetFocusedFrame());
+
+  spellcheck::mojom::SpellCheckPanelPtr focused_spell_check_panel_client;
+  webContents->GetFocusedFrame()->GetRemoteInterfaces()->GetInterface(
+      &focused_spell_check_panel_client);
+  focused_spell_check_panel_client->AdvanceToNextMisspelling();
 }
 
 // This message is sent by the spelling panel whenever a word is ignored.
@@ -240,9 +215,16 @@ class SpellCheckObserver : public content::WebContentsObserver {
 }
 
 - (void)showGuessPanel:(id)sender {
-  renderWidgetHost_->Send(new SpellCheckMsg_ToggleSpellPanel(
-      renderWidgetHost_->GetRoutingID(),
-      spellcheck_platform::SpellingPanelVisible()));
+  const bool visible = spellcheck_platform::SpellingPanelVisible();
+
+  content::WebContents* webContents = content::WebContents::FromRenderViewHost(
+      RenderViewHost::From(renderWidgetHost_));
+  DCHECK(webContents && webContents->GetFocusedFrame());
+
+  spellcheck::mojom::SpellCheckPanelPtr focused_spell_check_panel_client;
+  webContents->GetFocusedFrame()->GetRemoteInterfaces()->GetInterface(
+      &focused_spell_check_panel_client);
+  focused_spell_check_panel_client->ToggleSpellPanel(visible);
 }
 
 - (void)toggleContinuousSpellChecking:(id)sender {
@@ -250,15 +232,73 @@ class SpellCheckObserver : public content::WebContentsObserver {
   Profile* profile = Profile::FromBrowserContext(host->GetBrowserContext());
   DCHECK(profile);
   PrefService* pref = profile->GetPrefs();
-  pref->SetBoolean(prefs::kEnableContinuousSpellcheck,
-                   !pref->GetBoolean(prefs::kEnableContinuousSpellcheck));
-}
-
-- (void)spellCheckEnabled:(BOOL)enabled checked:(BOOL)checked {
-  spellcheckEnabled_ = enabled;
-  spellcheckChecked_ = checked;
+  pref->SetBoolean(spellcheck::prefs::kSpellCheckEnable,
+                   !pref->GetBoolean(spellcheck::prefs::kSpellCheckEnable));
 }
 
 // END Spellchecking methods
+
+// If a dialog is visible, make its window key. See becomeFirstResponder.
+- (void)makeAnyDialogKey {
+  if (const auto* contents = content::WebContents::FromRenderViewHost(
+          RenderViewHost::From(renderWidgetHost_))) {
+    if (const auto* manager =
+            web_modal::WebContentsModalDialogManager::FromWebContents(
+                contents)) {
+      // IsDialogActive() returns true if a dialog exists.
+      if (manager->IsDialogActive()) {
+        manager->FocusTopmostDialog();
+      }
+    }
+  }
+}
+
+// If the RenderWidgetHostView becomes first responder while it has a dialog
+// (say, if the user was interacting with the omnibox and then tabs back into
+// the web contents), then make the dialog window key.
+- (void)becomeFirstResponder {
+  [self makeAnyDialogKey];
+}
+
+// If the RenderWidgetHostView is asked to resign first responder while a child
+// window is key, then the user performed some action which targets the browser
+// window, like clicking the omnibox or typing cmd+L. In that case, the browser
+// window should become key.
+- (void)resignFirstResponder {
+  NSWindow* browserWindow =
+      [renderWidgetHost_->GetView()->GetNativeView().GetNativeNSView() window];
+  DCHECK(browserWindow);
+
+  // If the browser window is already key, there's nothing to do.
+  if (browserWindow.isKeyWindow)
+    return;
+
+  // Otherwise, look for it in the key window's chain of parents.
+  NSWindow* keyWindowOrParent = NSApp.keyWindow;
+  while (keyWindowOrParent && keyWindowOrParent != browserWindow)
+    keyWindowOrParent = keyWindowOrParent.parentWindow;
+
+  // If the browser window isn't among the parents, there's nothing to do.
+  if (keyWindowOrParent != browserWindow)
+    return;
+
+  // Otherwise, temporarily set an ivar so that -windowDidBecomeKey, below,
+  // doesn't immediately make the dialog key.
+  base::AutoReset<BOOL> scoped(&resigningFirstResponder_, YES);
+
+  // …then make the browser window key.
+  [browserWindow makeKeyWindow];
+}
+
+// If the browser window becomes key while the RenderWidgetHostView is first
+// responder, make the dialog key (if there is one).
+- (void)windowDidBecomeKey {
+  if (resigningFirstResponder_)
+    return;
+  NSView* view =
+      renderWidgetHost_->GetView()->GetNativeView().GetNativeNSView();
+  if (view.window.firstResponder == view)
+    [self makeAnyDialogKey];
+}
 
 @end

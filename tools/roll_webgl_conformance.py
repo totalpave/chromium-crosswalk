@@ -14,16 +14,30 @@ import time
 
 extra_trybots = [
   {
-    "mastername": "tryserver.chromium.win",
+    "mastername": "luci.chromium.try",
     "buildernames": ["win_optional_gpu_tests_rel"]
   },
   {
-    "mastername": "tryserver.chromium.mac",
+    "mastername": "luci.chromium.try",
     "buildernames": ["mac_optional_gpu_tests_rel"]
   },
   {
-    "mastername": "tryserver.chromium.linux",
+    "mastername": "luci.chromium.try",
     "buildernames": ["linux_optional_gpu_tests_rel"]
+  },
+  {
+    "mastername": "luci.chromium.try",
+    "buildernames": ["android_optional_gpu_tests_rel"]
+  },
+  # Include the ANGLE tryservers which run the WebGL conformance tests
+  # in some non-default configurations.
+  {
+    "mastername": "luci.chromium.try",
+    "buildernames": ["linux_angle_rel_ng"]
+  },
+  {
+    "mastername": "luci.chromium.try",
+    "buildernames": ["win-angle-rel"]
   },
 ]
 
@@ -33,7 +47,6 @@ sys.path.insert(0, os.path.join(SRC_DIR, 'build'))
 import find_depot_tools
 find_depot_tools.add_depot_tools_to_path()
 import roll_dep_svn
-from gclient import GClientKeywords
 from third_party import upload
 
 # Avoid depot_tools/third_party/upload.py print verbose messages.
@@ -41,17 +54,24 @@ upload.verbosity = 0  # Errors only.
 
 CHROMIUM_GIT_URL = 'https://chromium.googlesource.com/chromium/src.git'
 CL_ISSUE_RE = re.compile('^Issue number: ([0-9]+) \((.*)\)$')
-RIETVELD_URL_RE = re.compile('^https?://(.*)/(.*)')
+REVIEW_URL_RE = re.compile('^https?://(.*)/(.*)')
 ROLL_BRANCH_NAME = 'special_webgl_roll_branch'
 TRYJOB_STATUS_SLEEP_SECONDS = 30
 
 # Use a shell for subcommands on Windows to get a PATH search.
 IS_WIN = sys.platform.startswith('win')
 WEBGL_PATH = os.path.join('third_party', 'webgl', 'src')
+WEBGL_REVISION_TEXT_FILE = os.path.join(
+  'content', 'test', 'gpu', 'gpu_tests', 'webgl_conformance_revision.txt')
 
 CommitInfo = collections.namedtuple('CommitInfo', ['git_commit',
                                                    'git_repo_url'])
-CLInfo = collections.namedtuple('CLInfo', ['issue', 'url', 'rietveld_server'])
+CLInfo = collections.namedtuple('CLInfo', ['issue', 'url', 'review_server'])
+
+
+def _VarLookup(local_scope):
+  return lambda var_name: local_scope['vars'][var_name]
+
 
 def _PosixPath(path):
   """Convert a possibly-Windows path to a posix-style path."""
@@ -75,11 +95,8 @@ def _ParseDepsFile(filename):
 
 def _ParseDepsDict(deps_content):
   local_scope = {}
-  var = GClientKeywords.VarImpl({}, local_scope)
   global_scope = {
-    'File': GClientKeywords.FileImpl,
-    'From': GClientKeywords.FromImpl,
-    'Var': var.Lookup,
+    'Var': _VarLookup(local_scope),
     'deps_os': {},
   }
   exec(deps_content, global_scope, local_scope)
@@ -94,16 +111,17 @@ def _GenerateCLDescriptionCommand(webgl_current, webgl_new, bugs):
     return '%s/+log/%s' % (git_repo_url, change_string)
 
   def GetBugString(bugs):
-    bug_str = 'BUG='
+    bug_str = 'Bug: '
     for bug in bugs:
       bug_str += str(bug) + ','
     return bug_str.rstrip(',')
 
-  if webgl_current.git_commit != webgl_new.git_commit:
-    change_str = GetChangeString(webgl_current.git_commit,
-                                 webgl_new.git_commit)
-    changelog_url = GetChangeLogURL(webgl_current.git_repo_url,
-                                    change_str)
+  change_str = GetChangeString(webgl_current.git_commit,
+                               webgl_new.git_commit)
+  changelog_url = GetChangeLogURL(webgl_current.git_repo_url,
+                                  change_str)
+  if webgl_current.git_commit == webgl_new.git_commit:
+    print 'WARNING: WebGL repository is unchanged; proceeding with no-op roll'
 
   def GetExtraTrybotString():
     s = ''
@@ -113,17 +131,14 @@ def _GenerateCLDescriptionCommand(webgl_current, webgl_new, bugs):
       s += t['mastername'] + ':' + ','.join(t['buildernames'])
     return s
 
-  extra_trybot_args = []
-  if extra_trybots:
-    extra_trybot_string = GetExtraTrybotString()
-    extra_trybot_args = ['-m', 'CQ_INCLUDE_TRYBOTS=' + extra_trybot_string]
-
-  return [
-    '-m', 'Roll WebGL ' + change_str,
-    '-m', '%s' % changelog_url,
-    '-m', GetBugString(bugs),
-    '-m', 'TEST=bots',
-  ] + extra_trybot_args
+  return ('Roll WebGL %s\n\n'
+          '%s\n\n'
+          '%s\n'
+          'Cq-Include-Trybots: %s\n') % (
+            change_str,
+            changelog_url,
+            GetBugString(bugs),
+            GetExtraTrybotString())
 
 
 class AutoRoller(object):
@@ -160,7 +175,8 @@ class AutoRoller(object):
     self._RunCommand(['git', 'fetch', 'origin'], working_dir=working_dir)
     revision_range = git_hash or 'origin'
     ret = self._RunCommand(
-        ['git', '--no-pager', 'log', revision_range, '--pretty=full', '-1'],
+        ['git', '--no-pager', 'log', revision_range,
+         '--no-abbrev-commit', '--pretty=full', '-1'],
         working_dir=working_dir)
     return CommitInfo(_ParseGitCommitHash(ret), git_repo_url)
 
@@ -180,13 +196,13 @@ class AutoRoller(object):
     issue_number = int(m.group(1))
     url = m.group(2)
 
-    # Parse the Rietveld host from the URL.
-    m = RIETVELD_URL_RE.match(url)
+    # Parse the codereview host from the URL.
+    m = REVIEW_URL_RE.match(url)
     if not m:
-      logging.error('Cannot parse Rietveld host from URL: %s', url)
+      logging.error('Cannot parse codereview host from URL: %s', url)
       sys.exit(-1)
-    rietveld_server = m.group(1)
-    return CLInfo(issue_number, url, rietveld_server)
+    review_server = m.group(1)
+    return CLInfo(issue_number, url, review_server)
 
   def _GetCurrentBranchName(self):
     return self._RunCommand(
@@ -269,6 +285,7 @@ class AutoRoller(object):
       self._RunCommand(['git', 'config', 'core.autocrlf', 'true'])
 
     self._UpdateDep(deps_filename, WEBGL_PATH, webgl_latest)
+    self._UpdateWebGLRevTextFile(WEBGL_REVISION_TEXT_FILE, webgl_latest)
 
     if self._IsTreeClean():
       logging.debug('Tree is clean - no changes detected.')
@@ -279,7 +296,7 @@ class AutoRoller(object):
           webgl_current, webgl_latest, bugs)
       logging.debug('Committing changes locally.')
       self._RunCommand(['git', 'add', '--update', '.'])
-      self._RunCommand(['git', 'commit'] + description)
+      self._RunCommand(['git', 'commit', '-m', description])
       logging.debug('Uploading changes...')
       self._RunCommand(['git', 'cl', 'upload'],
                        extra_env={'EDITOR': 'true'})
@@ -288,16 +305,6 @@ class AutoRoller(object):
         # Kick off tryjobs.
         base_try_cmd = ['git', 'cl', 'try']
         self._RunCommand(base_try_cmd)
-        if extra_trybots:
-          # Run additional tryjobs.
-          # TODO(kbr): this should not be necessary -- the
-          # CQ_INCLUDE_TRYBOTS directive above should handle it.
-          # http://crbug.com/585237
-          for trybot in extra_trybots:
-            for builder in trybot['buildernames']:
-              self._RunCommand(base_try_cmd + [
-                  '-m', trybot['mastername'],
-                  '-b', builder])
 
       cl_info = self._GetCLInfo()
       print 'Issue: %d URL: %s' % (cl_info.issue, cl_info.url)
@@ -317,6 +324,19 @@ class AutoRoller(object):
     roll_dep_svn.update_deps(deps_filename, dep_relative_to_src, dep_name,
                              commit_info.git_commit, '')
     os.chdir(cwd)
+
+  def _UpdateWebGLRevTextFile(self, txt_filename, commit_info):
+    # Rolling the WebGL conformance tests must cause at least all of
+    # the WebGL tests to run. There are already exclusions in
+    # trybot_analyze_config.json which force all tests to run if
+    # changes under src/content/test/gpu are made. (This rule
+    # typically only takes effect on the GPU bots.) To make sure this
+    # happens all the time, update an autogenerated text file in this
+    # directory.
+    with open(txt_filename, 'w') as fh:
+      print >> fh, '# AUTOGENERATED FILE - DO NOT EDIT'
+      print >> fh, '# SEE roll_webgl_conformance.py'
+      print >> fh, 'Current webgl revision %s' % commit_info.git_commit
 
   def _DeleteRollBranch(self):
     self._RunCommand(['git', 'checkout', 'master'])

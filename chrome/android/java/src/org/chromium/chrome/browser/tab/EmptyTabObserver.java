@@ -7,20 +7,26 @@ package org.chromium.chrome.browser.tab;
 import android.graphics.Bitmap;
 import android.view.ContextMenu;
 
-import org.chromium.content.browser.ContentViewCore;
+import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
+import org.chromium.chrome.browser.tab.Tab.TabHidingType;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.common.BrowserControlsState;
 
 /**
  * An implementation of the {@link TabObserver} which has empty implementations of all methods.
+ *
+ * Note: Do not replace this with TabObserver with default interface methods as it inadvertently
+ * bloats the number of methods. See https://crbug.com/781359.
  */
 public class EmptyTabObserver implements TabObserver {
+    @Override
+    public void onShown(Tab tab, @TabSelectionType int type) {}
 
     @Override
-    public void onShown(Tab tab) { }
-
-    @Override
-    public void onHidden(Tab tab) { }
+    public void onHidden(Tab tab, @TabHidingType int reason) {}
 
     @Override
     public void onClosingStateChanged(Tab tab, boolean closing) { }
@@ -32,22 +38,19 @@ public class EmptyTabObserver implements TabObserver {
     public void onContentChanged(Tab tab) { }
 
     @Override
-    public void onOverlayContentViewCoreAdded(Tab tab, ContentViewCore content) { }
-
-    @Override
-    public void onOverlayContentViewCoreRemoved(Tab tab, ContentViewCore content) { }
-
-    @Override
     public void onLoadUrl(Tab tab, LoadUrlParams params, int loadType) { }
 
     @Override
     public void onPageLoadStarted(Tab tab, String url) { }
 
     @Override
-    public void onPageLoadFinished(Tab tab) { }
+    public void onPageLoadFinished(Tab tab, String url) {}
 
     @Override
     public void onPageLoadFailed(Tab tab, int errorCode) { }
+
+    @Override
+    public void onRestoreStarted(Tab tab) {}
 
     @Override
     public void onFaviconUpdated(Tab tab, Bitmap icon) { }
@@ -62,7 +65,7 @@ public class EmptyTabObserver implements TabObserver {
     public void onSSLStateUpdated(Tab tab) { }
 
     @Override
-    public void onCrash(Tab tab, boolean sadTabShown) { }
+    public void onCrash(Tab tab) {}
 
     @Override
     public void onWebContentsSwapped(Tab tab, boolean didStartLoad, boolean didFinishLoad) { }
@@ -74,7 +77,7 @@ public class EmptyTabObserver implements TabObserver {
     public void onContextualActionBarVisibilityChanged(Tab tab, boolean visible) { }
 
     @Override
-    public void onWebContentsInstantSupportDisabled() { }
+    public void onCloseContents(Tab tab) {}
 
     @Override
     public void onLoadStarted(Tab tab, boolean toDifferentDocument) { }
@@ -89,27 +92,26 @@ public class EmptyTabObserver implements TabObserver {
     public void onUpdateUrl(Tab tab, String url) { }
 
     @Override
-    public void onToggleFullscreenMode(Tab tab, boolean enable) { }
+    public void onEnterFullscreenMode(Tab tab, FullscreenOptions options) {}
 
     @Override
-    public void onDidFailLoad(Tab tab, boolean isProvisionalLoad, boolean isMainFrame,
-            int errorCode, String description, String failingUrl) { }
+    public void onExitFullscreenMode(Tab tab) {}
 
     @Override
-    public void onDidStartProvisionalLoadForFrame(Tab tab, long frameId, long parentFrameId,
-            boolean isMainFrame, String validatedUrl, boolean isErrorPage,
-            boolean isIframeSrcdoc) { }
+    public void onDidFailLoad(
+            Tab tab, boolean isMainFrame, int errorCode, String description, String failingUrl) {}
 
     @Override
-    public void onDidCommitProvisionalLoadForFrame(Tab tab, long frameId, boolean isMainFrame,
-            String url, int transitionType) { }
+    public void onDidStartNavigation(Tab tab, NavigationHandle navigationHandle) {}
 
     @Override
-    public void onDidNavigateMainFrame(Tab tab, String url, String baseUrl,
-            boolean isNavigationToDifferentPage, boolean isFragmentNavigation, int statusCode) { }
+    public void onDidRedirectNavigation(Tab tab, NavigationHandle navigationHandle) {}
 
     @Override
-    public void didFirstVisuallyNonEmptyPaint(Tab tab) { }
+    public void onDidFinishNavigation(Tab tab, NavigationHandle navigationHandle) {}
+
+    @Override
+    public void didFirstVisuallyNonEmptyPaint(Tab tab) {}
 
     @Override
     public void onDidChangeThemeColor(Tab tab, int color) { }
@@ -121,15 +123,29 @@ public class EmptyTabObserver implements TabObserver {
     public void onDidDetachInterstitialPage(Tab tab) { }
 
     @Override
-    public void onDidStartNavigationToPendingEntry(Tab tab, String url) { }
-
-    @Override
     public void onBackgroundColorChanged(Tab tab, int color) { }
 
     @Override
-    public void webContentsCreated(Tab tab, WebContents sourceWebContents, long openerRenderFrameId,
-            String frameName, String targetUrl, WebContents newWebContents) { }
+    public void webContentsCreated(Tab tab, WebContents sourceWebContents,
+            long openerRenderProcessId, long openerRenderFrameId, String frameName,
+            String targetUrl, WebContents newWebContents) {}
 
     @Override
-    public void onReparentingFinished(Tab tab) { }
+    public void onActivityAttachmentChanged(Tab tab, boolean isAttached) {}
+
+    @Override
+    public void onInteractabilityChanged(boolean isInteractable) {}
+
+    @Override
+    public void onRendererResponsiveStateChanged(Tab tab, boolean isResponsive) {}
+
+    @Override
+    public void onNavigationEntriesDeleted(Tab tab) {}
+
+    @Override
+    public void onBrowserControlsConstraintsUpdated(
+            Tab tab, @BrowserControlsState int constraints) {}
+
+    @Override
+    public void didReloadLoFiImages(Tab tab) {}
 }

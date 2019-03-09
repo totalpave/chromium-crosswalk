@@ -12,9 +12,9 @@
 
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
 #include "ipc/ipc_test_base.h"
@@ -51,7 +51,7 @@ IPC_MESSAGE_CONTROL0(MsgClassShutdown)
 namespace {
 
 const char kHelloString[] = "Hello, SyncSocket Client";
-const size_t kHelloStringLength = arraysize(kHelloString);
+const size_t kHelloStringLength = base::size(kHelloString);
 
 // The SyncSocket server listener class processes two sorts of
 // messages from the client.
@@ -100,7 +100,7 @@ class SyncSocketServerListener : public IPC::Listener {
 
   // When the client responds, it sends back a shutdown message,
   // which causes the message loop to exit.
-  void OnMsgClassShutdown() { base::MessageLoop::current()->QuitWhenIdle(); }
+  void OnMsgClassShutdown() { base::RunLoop::QuitCurrentWhenIdleDeprecated(); }
 
   IPC::Channel* chan_;
 
@@ -109,23 +109,19 @@ class SyncSocketServerListener : public IPC::Listener {
 
 // Runs the fuzzing server child mode. Returns when the preset number of
 // messages have been received.
-MULTIPROCESS_IPC_TEST_CLIENT_MAIN(SyncSocketServerClient) {
-  base::MessageLoopForIO main_message_loop;
+DEFINE_IPC_CHANNEL_MOJO_TEST_CLIENT(SyncSocketServerClient) {
   SyncSocketServerListener listener;
-  std::unique_ptr<IPC::Channel> channel(IPC::Channel::CreateClient(
-      IPCTestBase::GetChannelName("SyncSocketServerClient"), &listener));
-  EXPECT_TRUE(channel->Connect());
-  listener.Init(channel.get());
+  Connect(&listener);
+  listener.Init(channel());
   base::RunLoop().Run();
-  return 0;
+  Close();
 }
 
 // The SyncSocket client listener only processes one sort of message,
 // a response from the server.
 class SyncSocketClientListener : public IPC::Listener {
  public:
-  SyncSocketClientListener() {
-  }
+  SyncSocketClientListener() = default;
 
   void Init(base::SyncSocket* socket, IPC::Channel* chan) {
     socket_ = socket;
@@ -156,7 +152,7 @@ class SyncSocketClientListener : public IPC::Listener {
     EXPECT_EQ(0U, socket_->Peek());
     IPC::Message* msg = new MsgClassShutdown();
     EXPECT_TRUE(chan_->Send(msg));
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
   base::SyncSocket* socket_;
@@ -165,15 +161,13 @@ class SyncSocketClientListener : public IPC::Listener {
   DISALLOW_COPY_AND_ASSIGN(SyncSocketClientListener);
 };
 
-class SyncSocketTest : public IPCTestBase {
-};
+using SyncSocketTest = IPCChannelMojoTestBase;
 
 TEST_F(SyncSocketTest, SanityTest) {
   Init("SyncSocketServerClient");
 
   SyncSocketClientListener listener;
   CreateChannel(&listener);
-  ASSERT_TRUE(StartClient());
   // Create a pair of SyncSockets.
   base::SyncSocket pair[2];
   base::SyncSocket::CreatePair(&pair[0], &pair[1]);
@@ -231,8 +225,8 @@ TEST_F(SyncSocketTest, DisconnectTest) {
   char buf[0xff];
   size_t received = 1U;  // Initialize to an unexpected value.
   worker.task_runner()->PostTask(
-      FROM_HERE,
-      base::Bind(&BlockingRead, &pair[0], &buf[0], arraysize(buf), &received));
+      FROM_HERE, base::BindOnce(&BlockingRead, &pair[0], &buf[0],
+                                base::size(buf), &received));
 
   // Wait for the worker thread to say hello.
   char hello[kHelloStringLength] = {0};
@@ -261,9 +255,9 @@ TEST_F(SyncSocketTest, BlockingReceiveTest) {
   // Try to do a blocking read from one of the sockets on the worker thread.
   char buf[kHelloStringLength] = {0};
   size_t received = 1U;  // Initialize to an unexpected value.
-  worker.task_runner()->PostTask(FROM_HERE,
-                                 base::Bind(&BlockingRead, &pair[0], &buf[0],
-                                            kHelloStringLength, &received));
+  worker.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&BlockingRead, &pair[0], &buf[0],
+                                kHelloStringLength, &received));
 
   // Wait for the worker thread to say hello.
   char hello[kHelloStringLength] = {0};

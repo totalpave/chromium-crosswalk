@@ -7,6 +7,7 @@
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "build/build_config.h"
+#include "mojo/core/embedder/embedder.h"
 #include "rlz/lib/rlz_lib.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -24,6 +25,8 @@ int main(int argc, char **argv) {
   testing::InitGoogleMock(&argc, argv);
   testing::InitGoogleTest(&argc, argv);
 
+  mojo::core::Init();
+
   int ret = RUN_ALL_TESTS();
   if (ret == 0) {
     // Now re-run all the tests using a supplementary brand code.  This brand
@@ -33,7 +36,7 @@ int main(int argc, char **argv) {
     // creates and owns RlzValueStore object for its lifetime.
     base::ScopedTempDir temp_dir;
     if (temp_dir.CreateUniqueTempDir())
-      rlz_lib::testing::SetRlzStoreDirectory(temp_dir.path());
+      rlz_lib::testing::SetRlzStoreDirectory(temp_dir.GetPath());
 #endif
     rlz_lib::SupplementaryBranding branding("TEST");
     ret = RUN_ALL_TESTS();

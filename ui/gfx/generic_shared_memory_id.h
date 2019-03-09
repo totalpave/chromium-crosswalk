@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/containers/hash_tables.h"
 #include "base/hash.h"
 #include "base/trace_event/memory_allocator_dump.h"
 #include "ui/gfx/gfx_export.h"
@@ -22,12 +21,14 @@ class GFX_EXPORT GenericSharedMemoryId {
  public:
   int id;
 
-  // Invalid ID is -1 to match semantics of base::StaticAtomicSequenceNumber.
+  // Invalid ID is -1 to match semantics of base::AtomicSequenceNumber.
   GenericSharedMemoryId() : id(-1) {}
   explicit GenericSharedMemoryId(int id) : id(id) {}
   GenericSharedMemoryId(const GenericSharedMemoryId& other) = default;
   GenericSharedMemoryId& operator=(const GenericSharedMemoryId& other) =
       default;
+
+  bool is_valid() const { return id >= 0; }
 
   bool operator==(const GenericSharedMemoryId& other) const {
     return id == other.id;
@@ -41,18 +42,18 @@ class GFX_EXPORT GenericSharedMemoryId {
 // Generates GUID which can be used to trace shared memory using its
 // GenericSharedMemoryId.
 GFX_EXPORT base::trace_event::MemoryAllocatorDumpGuid
-GetGenericSharedMemoryGUIDForTracing(
+GetGenericSharedGpuMemoryGUIDForTracing(
     uint64_t tracing_process_id,
     GenericSharedMemoryId generic_shared_memory_id);
 
 }  // namespace gfx
 
-namespace BASE_HASH_NAMESPACE {
+namespace std {
 
 template <>
 struct hash<gfx::GenericSharedMemoryId> {
   size_t operator()(gfx::GenericSharedMemoryId key) const {
-    return BASE_HASH_NAMESPACE::hash<int>()(key.id);
+    return std::hash<int>()(key.id);
   }
 };
 
@@ -64,6 +65,6 @@ struct hash<std::pair<gfx::GenericSharedMemoryId, Second>> {
   }
 };
 
-}  // namespace BASE_HASH_NAMESPACE
+}  // namespace std
 
 #endif  // UI_GFX_GENERIC_SHARED_MEMORY_ID_H_

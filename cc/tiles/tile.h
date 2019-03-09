@@ -10,47 +10,48 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "cc/paint/draw_image.h"
 #include "cc/raster/tile_task.h"
 #include "cc/tiles/tile_draw_info.h"
+#include "ui/gfx/geometry/axis_transform2d.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace cc {
 
-class PrioritizedTile;
+class PictureLayerTiling;
 class TileManager;
-struct TilePriority;
 
 class CC_EXPORT Tile {
  public:
-  class CC_EXPORT Deleter {
-   public:
-    void operator()(Tile* tile) const;
-  };
-
   class CC_EXPORT CreateInfo {
    public:
+    const PictureLayerTiling* tiling;
     int tiling_i_index;
     int tiling_j_index;
     gfx::Rect enclosing_layer_rect;
     gfx::Rect content_rect;
-    float contents_scale;
+    gfx::AxisTransform2d raster_transform;
 
-    CreateInfo(int tiling_i_index,
+    CreateInfo(const PictureLayerTiling* tiling,
+               int tiling_i_index,
                int tiling_j_index,
                const gfx::Rect& enclosing_layer_rect,
                const gfx::Rect& content_rect,
-               float contents_scale)
-        : tiling_i_index(tiling_i_index),
+               const gfx::AxisTransform2d& raster_transform)
+        : tiling(tiling),
+          tiling_i_index(tiling_i_index),
           tiling_j_index(tiling_j_index),
           enclosing_layer_rect(enclosing_layer_rect),
           content_rect(content_rect),
-          contents_scale(contents_scale) {}
+          raster_transform(raster_transform) {}
   };
 
   enum TileRasterFlags { USE_PICTURE_ANALYSIS = 1 << 0, IS_OPAQUE = 1 << 1 };
 
   typedef uint64_t Id;
+
+  ~Tile();
 
   Id id() const {
     return id_;
@@ -66,6 +67,10 @@ class CC_EXPORT Tile {
     required_for_draw_ = is_required;
   }
 
+  bool is_prepaint() const {
+    return !required_for_activation() && !required_for_draw();
+  }
+
   bool use_picture_analysis() const {
     return !!(flags_ & USE_PICTURE_ANALYSIS);
   }
@@ -77,7 +82,10 @@ class CC_EXPORT Tile {
   const TileDrawInfo& draw_info() const { return draw_info_; }
   TileDrawInfo& draw_info() { return draw_info_; }
 
-  float contents_scale() const { return contents_scale_; }
+  float contents_scale_key() const { return raster_transform_.scale(); }
+  const gfx::AxisTransform2d& raster_transform() const {
+    return raster_transform_;
+  }
   const gfx::Rect& content_rect() const { return content_rect_; }
   const gfx::Rect& enclosing_layer_rect() const {
     return enclosing_layer_rect_;
@@ -107,6 +115,26 @@ class CC_EXPORT Tile {
 
   bool HasRasterTask() const { return !!raster_task_.get(); }
 
+  void set_solid_color_analysis_performed(bool performed) {
+    is_solid_color_analysis_performed_ = performed;
+  }
+  bool is_solid_color_analysis_performed() const {
+    return is_solid_color_analysis_performed_;
+  }
+  bool can_use_lcd_text() const { return can_use_lcd_text_; }
+
+  bool set_raster_task_scheduled_with_checker_images(bool has_checker_images) {
+    bool previous_value = raster_task_scheduled_with_checker_images_;
+    raster_task_scheduled_with_checker_images_ = has_checker_images;
+    return previous_value;
+  }
+  bool raster_task_scheduled_with_checker_images() const {
+    return raster_task_scheduled_with_checker_images_;
+  }
+
+  const PictureLayerTiling* tiling() const { return tiling_; }
+  void set_tiling(const PictureLayerTiling* tiling) { tiling_ = tiling; }
+
  private:
   friend class TileManager;
   friend class FakeTileManager;
@@ -117,13 +145,14 @@ class CC_EXPORT Tile {
        const CreateInfo& info,
        int layer_id,
        int source_frame_number,
-       int flags);
-  ~Tile();
+       int flags,
+       bool can_use_lcd_text);
 
   TileManager* const tile_manager_;
+  const PictureLayerTiling* tiling_;
   const gfx::Rect content_rect_;
   const gfx::Rect enclosing_layer_rect_;
-  const float contents_scale_;
+  const gfx::AxisTransform2d raster_transform_;
 
   TileDrawInfo draw_info_;
 
@@ -134,6 +163,8 @@ class CC_EXPORT Tile {
   const int tiling_j_index_;
   bool required_for_activation_ : 1;
   bool required_for_draw_ : 1;
+  bool is_solid_color_analysis_performed_ : 1;
+  const bool can_use_lcd_text_ : 1;
 
   Id id_;
 
@@ -145,12 +176,13 @@ class CC_EXPORT Tile {
 
   unsigned scheduled_priority_;
 
+  // Set to true if there is a raster task scheduled for this tile that will
+  // rasterize a resource with checker images.
+  bool raster_task_scheduled_with_checker_images_ = false;
   scoped_refptr<TileTask> raster_task_;
 
   DISALLOW_COPY_AND_ASSIGN(Tile);
 };
-
-using ScopedTilePtr = std::unique_ptr<Tile, Tile::Deleter>;
 
 }  // namespace cc
 

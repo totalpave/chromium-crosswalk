@@ -7,7 +7,8 @@
 #include <utility>
 
 #include "base/memory/singleton.h"
-#include "grit/components_strings.h"
+#include "base/stl_util.h"
+#include "components/strings/grit/components_strings.h"
 #include "third_party/icu/source/common/unicode/locid.h"
 
 namespace autofill {
@@ -20,8 +21,11 @@ struct StaticCountryData {
 
 // Maps country codes to localized label string identifiers. Keep this sorted
 // by country code.
+// This list is comprized of countries appearing in both
+// //third_party/icu/source/data/region/en.txt and
+// //third_party/libaddressinput/src/cpp/src/region_data_constants.cc.
 const StaticCountryData kCountryData[] = {
-  // clang-format off
+    // clang-format off
   { "AC", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIRES_CITY } },
@@ -112,6 +116,9 @@ const StaticCountryData kCountryData[] = {
   { "BO", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
+  { "BQ", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
+            IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
+            ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "BR", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_STATE,
             ADDRESS_REQUIRES_CITY_STATE_ZIP } },
@@ -177,6 +184,9 @@ const StaticCountryData kCountryData[] = {
             ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "CV", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_ISLAND,
+            ADDRESS_REQUIREMENTS_UNKNOWN } },
+  { "CW", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
+            IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "CX", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
@@ -340,6 +350,9 @@ const StaticCountryData kCountryData[] = {
   { "IQ", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIRES_CITY_STATE } },
+  { "IR", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
+            IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
+            ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "IS", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
@@ -449,6 +462,9 @@ const StaticCountryData kCountryData[] = {
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "ML", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
+            IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
+            ADDRESS_REQUIREMENTS_UNKNOWN } },
+  { "MM", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "MN", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
@@ -631,12 +647,18 @@ const StaticCountryData kCountryData[] = {
   { "SR", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
+  { "SS", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
+            IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
+            ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "ST", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "SV", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIRES_CITY_STATE } },
+  { "SX", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
+            IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
+            ADDRESS_REQUIREMENTS_UNKNOWN } },
   { "SZ", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
@@ -754,14 +776,14 @@ const StaticCountryData kCountryData[] = {
   { "ZW", { IDS_AUTOFILL_FIELD_LABEL_POSTAL_CODE,
             IDS_AUTOFILL_FIELD_LABEL_PROVINCE,
             ADDRESS_REQUIREMENTS_UNKNOWN } },
-  // clang-format on
+    // clang-format on
 };
 
 // GetCountryCodes and GetCountryData compute the data for CountryDataMap
 // based on |kCountryData|.
 std::vector<std::string> GetCountryCodes() {
   std::vector<std::string> country_codes;
-  country_codes.reserve(arraysize(kCountryData));
+  country_codes.reserve(base::size(kCountryData));
   for (const auto& static_data : kCountryData) {
     country_codes.push_back(static_data.country_code);
   }

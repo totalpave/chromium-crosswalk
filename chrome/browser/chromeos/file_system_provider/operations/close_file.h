@@ -15,10 +15,6 @@
 #include "chrome/browser/chromeos/file_system_provider/request_value.h"
 #include "storage/browser/fileapi/async_file_util.h"
 
-namespace base {
-class FilePath;
-}  // namespace base
-
 namespace extensions {
 class EventRouter;
 }  // namespace extensions
@@ -35,7 +31,7 @@ class CloseFile : public Operation {
   CloseFile(extensions::EventRouter* event_router,
             const ProvidedFileSystemInfo& file_system_info,
             int open_request_id,
-            const storage::AsyncFileUtil::StatusCallback& callback);
+            storage::AsyncFileUtil::StatusCallback callback);
   ~CloseFile() override;
 
   // Operation overrides.
@@ -49,7 +45,7 @@ class CloseFile : public Operation {
 
  private:
   int open_request_id_;
-  const storage::AsyncFileUtil::StatusCallback callback_;
+  storage::AsyncFileUtil::StatusCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(CloseFile);
 };

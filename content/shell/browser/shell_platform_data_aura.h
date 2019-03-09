@@ -14,16 +14,16 @@ namespace aura {
 namespace client {
 class DefaultCaptureClient;
 class FocusClient;
-class WindowTreeClient;
+class WindowParentingClient;
 }
+}
+
+namespace display {
+class Screen;
 }
 
 namespace gfx {
 class Size;
-}
-
-namespace ui {
-class EventHandler;
 }
 
 namespace content {
@@ -39,10 +39,12 @@ class ShellPlatformDataAura {
   aura::WindowTreeHost* host() { return host_.get(); }
 
  private:
+  std::unique_ptr<display::Screen> screen_;
+
   std::unique_ptr<aura::WindowTreeHost> host_;
   std::unique_ptr<aura::client::FocusClient> focus_client_;
   std::unique_ptr<aura::client::DefaultCaptureClient> capture_client_;
-  std::unique_ptr<aura::client::WindowTreeClient> window_tree_client_;
+  std::unique_ptr<aura::client::WindowParentingClient> window_parenting_client_;
 
   DISALLOW_COPY_AND_ASSIGN(ShellPlatformDataAura);
 };

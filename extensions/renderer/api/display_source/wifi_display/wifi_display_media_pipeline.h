@@ -18,12 +18,8 @@
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_audio_encoder.h"
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_media_packetizer.h"
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_video_encoder.h"
-#include "third_party/WebKit/public/platform/WebMediaStreamTrack.h"
+#include "third_party/blink/public/platform/web_media_stream_track.h"
 #include "third_party/wds/src/libwds/public/media_manager.h"
-
-namespace media {
-class AudioBus;
-}  // namespace media
 
 namespace extensions {
 
@@ -37,7 +33,8 @@ class WiFiDisplayMediaPipeline {
   using ErrorCallback = base::Callback<void(const std::string&)>;
   using InitCompletionCallback = base::Callback<void(bool)>;
   using RegisterMediaServiceCallback =
-    base::Callback<void(WiFiDisplayMediaServiceRequest, const base::Closure&)>;
+      base::Callback<void(mojom::WiFiDisplayMediaServiceRequest,
+                          const base::Closure&)>;
 
   static std::unique_ptr<WiFiDisplayMediaPipeline> Create(
       wds::SessionType type,
@@ -102,7 +99,7 @@ class WiFiDisplayMediaPipeline {
 
   RegisterMediaServiceCallback service_callback_;
   ErrorCallback error_callback_;
-  WiFiDisplayMediaServicePtr media_service_;
+  mojom::WiFiDisplayMediaServicePtr media_service_;
 
   base::WeakPtrFactory<WiFiDisplayMediaPipeline> weak_factory_;
 

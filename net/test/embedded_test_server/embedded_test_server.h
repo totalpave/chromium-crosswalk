@@ -20,7 +20,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_checker.h"
-#include "crypto/rsa_private_key.h"
 #include "net/base/address_list.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/ip_endpoint.h"
@@ -52,9 +51,9 @@ struct HttpRequest;
 //
 // void SetUp() {
 //   test_server_.reset(new EmbeddedTestServer());
-//   ASSERT_TRUE(test_server_.Start());
 //   test_server_->RegisterRequestHandler(
 //       base::Bind(&FooTest::HandleRequest, base::Unretained(this)));
+//   ASSERT_TRUE(test_server_.Start());
 // }
 //
 // std::unique_ptr<HttpResponse> HandleRequest(const HttpRequest& request) {
@@ -63,7 +62,7 @@ struct HttpRequest;
 //     return std::unique_ptr<HttpResponse>();
 //
 //   std::unique_ptr<BasicHttpResponse> http_response(new BasicHttpResponse());
-//   http_response->set_code(test_server::SUCCESS);
+//   http_response->set_code(net::HTTP_OK);
 //   http_response->set_content("hello");
 //   http_response->set_content_type("text/plain");
 //   return http_response;
@@ -93,38 +92,52 @@ class EmbeddedTestServer {
     TYPE_HTTPS,
   };
 
+  // A Java counterpart will be generated for this enum.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.net.test
   enum ServerCertificate {
     CERT_OK,
 
     CERT_MISMATCHED_NAME,
     CERT_EXPIRED,
 
-    // A certificate with invalid notBefore and notAfter times. Windows'
-    // certificate library will not parse this certificate.
-    CERT_BAD_VALIDITY,
-
-    // Cross-signed certificate to test PKIX path building. Contains an
-    // intermediate cross-signed by an unknown root, while the client (via
-    // TestRootStore) is expected to have a self-signed version of the
-    // intermediate.
-    CERT_CHAIN_WRONG_ROOT,
-
     // Causes the testserver to use a hostname that is a domain
     // instead of an IP.
     CERT_COMMON_NAME_IS_DOMAIN,
+
+    // A certificate that only contains a commonName, rather than also
+    // including a subjectAltName extension.
+    CERT_COMMON_NAME_ONLY,
+
+    // A certificate that is a leaf certificate signed with SHA-1.
+    CERT_SHA1_LEAF,
+
+    // A certificate that is signed by an intermediate certificate.
+    CERT_OK_BY_INTERMEDIATE,
   };
 
-  typedef base::Callback<std::unique_ptr<HttpResponse>(
+  typedef base::RepeatingCallback<std::unique_ptr<HttpResponse>(
       const HttpRequest& request)>
       HandleRequestCallback;
-  typedef base::Callback<void(const HttpRequest& request)>
+  typedef base::RepeatingCallback<void(const HttpRequest& request)>
       MonitorRequestCallback;
 
   // Creates a http test server. Start() must be called to start the server.
   // |type| indicates the protocol type of the server (HTTP/HTTPS).
+  //
+  //  When a TYPE_HTTPS server is created, EmbeddedTestServer will call
+  // EmbeddedTestServer::RegisterTestCerts(), so that when the default
+  // CertVerifiers are run in-process, they will recognize the test server's
+  // certs. However, if the test server is running in a different process from
+  // the CertVerifiers, EmbeddedTestServer::RegisterTestCerts() must be called
+  // in any process where CertVerifiers are expected to accept the
+  // EmbeddedTestServer's certs.
   EmbeddedTestServer();
   explicit EmbeddedTestServer(Type type);
   ~EmbeddedTestServer();
+
+  // Registers the EmbeddedTestServer's certs for the current process. See
+  // constructor documentation for more information.
+  static void RegisterTestCerts();
 
   // Sets a connection listener, that would be notified when various connection
   // events happen. May only be called before the server is started. Caller
@@ -135,11 +148,11 @@ class EmbeddedTestServer {
   // This is the equivalent of calling InitializeAndListen() followed by
   // StartAcceptingConnections().
   // Returns whether a listening socket has been successfully created.
-  bool Start() WARN_UNUSED_RESULT;
+  bool Start(int port = 0) WARN_UNUSED_RESULT;
 
   // Starts listening for incoming connections but will not yet accept them.
   // Returns whether a listening socket has been succesfully created.
-  bool InitializeAndListen() WARN_UNUSED_RESULT;
+  bool InitializeAndListen(int port = 0) WARN_UNUSED_RESULT;
 
   // Starts the Accept IO Thread and begins accepting connections.
   void StartAcceptingConnections();
@@ -151,6 +164,8 @@ class EmbeddedTestServer {
   bool Started() const {
     return listen_socket_.get() != NULL;
   }
+
+  static base::FilePath GetRootCertPemPath();
 
   HostPortPair host_port_pair() const {
     return HostPortPair::FromURL(base_url_);
@@ -175,11 +190,17 @@ class EmbeddedTestServer {
   // Returns the address list needed to connect to the server.
   bool GetAddressList(AddressList* address_list) const WARN_UNUSED_RESULT;
 
+  // Returns the IP Address to connect to the server as a string.
+  std::string GetIPLiteralString() const;
+
   // Returns the port number used by the server.
   uint16_t port() const { return port_; }
 
   void SetSSLConfig(ServerCertificate cert, const SSLServerConfig& ssl_config);
   void SetSSLConfig(ServerCertificate cert);
+
+  bool ResetSSLConfig(ServerCertificate cert,
+                      const SSLServerConfig& ssl_config);
 
   // Returns the file name of the certificate the server is using. The test
   // certificates can be found in net/data/ssl/certificates/.
@@ -206,16 +227,21 @@ class EmbeddedTestServer {
 
   // The most general purpose method. Any request processing can be added using
   // this method. Takes ownership of the object. The |callback| is called
-  // on UI thread.
+  // on the server's IO thread so all handlers must be registered before the
+  // server is started.
   void RegisterRequestHandler(const HandleRequestCallback& callback);
 
   // Adds request monitors. The |callback| is called before any handlers are
   // called, but can not respond it. This is useful to monitor requests that
-  // will be handled by other request handlers.
+  // will be handled by other request handlers. The |callback| is called
+  // on the server's IO thread so all monitors must be registered before the
+  // server is started.
   void RegisterRequestMonitor(const MonitorRequestCallback& callback);
 
   // Adds default handlers, including those added by AddDefaultHandlers, to be
-  // tried after all other user-specified handlers have been tried.
+  // tried after all other user-specified handlers have been tried. The
+  // |callback| is called on the server's IO thread so all handlers must be
+  // registered before the server is started.
   void RegisterDefaultHandler(const HandleRequestCallback& callback);
 
   bool FlushAllSocketsAndConnectionsOnUIThread();
@@ -224,6 +250,10 @@ class EmbeddedTestServer {
  private:
   // Shuts down the server.
   void ShutdownOnIOThread();
+
+  // Resets the SSLServerConfig on the IO thread.
+  void ResetSSLConfigOnIOThread(ServerCertificate cert,
+                                const SSLServerConfig& ssl_config);
 
   // Upgrade the TCP connection to one over SSL.
   std::unique_ptr<StreamSocket> DoSSLUpgrade(
@@ -278,8 +308,7 @@ class EmbeddedTestServer {
   GURL base_url_;
   IPEndPoint local_endpoint_;
 
-  // Owns the HttpConnection objects.
-  std::map<StreamSocket*, HttpConnection*> connections_;
+  std::map<StreamSocket*, std::unique_ptr<HttpConnection>> connections_;
 
   // Vector of registered and default request handlers and monitors.
   std::vector<HandleRequestCallback> request_handlers_;

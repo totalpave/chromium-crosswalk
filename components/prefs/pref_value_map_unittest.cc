@@ -4,7 +4,6 @@
 
 #include "components/prefs/pref_value_map.h"
 
-#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -13,22 +12,21 @@ namespace {
 
 TEST(PrefValueMapTest, SetValue) {
   PrefValueMap map;
-  const Value* result = NULL;
+  const Value* result = nullptr;
   EXPECT_FALSE(map.GetValue("key", &result));
   EXPECT_FALSE(result);
 
-  EXPECT_TRUE(map.SetValue("key", base::WrapUnique(new StringValue("test"))));
-  EXPECT_FALSE(map.SetValue("key", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(
-      map.SetValue("key", base::WrapUnique(new StringValue("hi mom!"))));
+  EXPECT_TRUE(map.SetValue("key", Value("test")));
+  EXPECT_FALSE(map.SetValue("key", Value("test")));
+  EXPECT_TRUE(map.SetValue("key", Value("hi mom!")));
 
   EXPECT_TRUE(map.GetValue("key", &result));
-  EXPECT_TRUE(StringValue("hi mom!").Equals(result));
+  EXPECT_TRUE(Value("hi mom!").Equals(result));
 }
 
 TEST(PrefValueMapTest, GetAndSetIntegerValue) {
   PrefValueMap map;
-  ASSERT_TRUE(map.SetValue("key", base::WrapUnique(new FundamentalValue(5))));
+  ASSERT_TRUE(map.SetValue("key", Value(5)));
 
   int int_value = 0;
   EXPECT_TRUE(map.GetInteger("key", &int_value));
@@ -41,9 +39,9 @@ TEST(PrefValueMapTest, GetAndSetIntegerValue) {
 
 TEST(PrefValueMapTest, SetDoubleValue) {
   PrefValueMap map;
-  ASSERT_TRUE(map.SetValue("key", base::WrapUnique(new FundamentalValue(5.5))));
+  ASSERT_TRUE(map.SetValue("key", Value(5.5)));
 
-  const Value* result = NULL;
+  const Value* result = nullptr;
   ASSERT_TRUE(map.GetValue("key", &result));
   double double_value = 0.;
   EXPECT_TRUE(result->GetAsDouble(&double_value));
@@ -54,33 +52,30 @@ TEST(PrefValueMapTest, RemoveValue) {
   PrefValueMap map;
   EXPECT_FALSE(map.RemoveValue("key"));
 
-  EXPECT_TRUE(map.SetValue("key", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(map.GetValue("key", NULL));
+  EXPECT_TRUE(map.SetValue("key", Value("test")));
+  EXPECT_TRUE(map.GetValue("key", nullptr));
 
   EXPECT_TRUE(map.RemoveValue("key"));
-  EXPECT_FALSE(map.GetValue("key", NULL));
+  EXPECT_FALSE(map.GetValue("key", nullptr));
 
   EXPECT_FALSE(map.RemoveValue("key"));
 }
 
 TEST(PrefValueMapTest, Clear) {
   PrefValueMap map;
-  EXPECT_TRUE(map.SetValue("key", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(map.GetValue("key", NULL));
+  EXPECT_TRUE(map.SetValue("key", Value("test")));
+  EXPECT_TRUE(map.GetValue("key", nullptr));
 
   map.Clear();
 
-  EXPECT_FALSE(map.GetValue("key", NULL));
+  EXPECT_FALSE(map.GetValue("key", nullptr));
 }
 
 TEST(PrefValueMapTest, GetDifferingKeys) {
   PrefValueMap reference;
-  EXPECT_TRUE(
-      reference.SetValue("b", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(
-      reference.SetValue("c", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(
-      reference.SetValue("e", base::WrapUnique(new StringValue("test"))));
+  EXPECT_TRUE(reference.SetValue("b", Value("test")));
+  EXPECT_TRUE(reference.SetValue("c", Value("test")));
+  EXPECT_TRUE(reference.SetValue("e", Value("test")));
 
   PrefValueMap check;
   std::vector<std::string> differing_paths;
@@ -92,9 +87,9 @@ TEST(PrefValueMapTest, GetDifferingKeys) {
   expected_differing_paths.push_back("e");
   EXPECT_EQ(expected_differing_paths, differing_paths);
 
-  EXPECT_TRUE(check.SetValue("a", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(check.SetValue("c", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(check.SetValue("d", base::WrapUnique(new StringValue("test"))));
+  EXPECT_TRUE(check.SetValue("a", Value("test")));
+  EXPECT_TRUE(check.SetValue("c", Value("test")));
+  EXPECT_TRUE(check.SetValue("d", Value("test")));
 
   reference.GetDifferingKeys(&check, &differing_paths);
   expected_differing_paths.clear();
@@ -107,30 +102,24 @@ TEST(PrefValueMapTest, GetDifferingKeys) {
 
 TEST(PrefValueMapTest, SwapTwoMaps) {
   PrefValueMap first_map;
-  EXPECT_TRUE(
-      first_map.SetValue("a", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(
-      first_map.SetValue("b", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(
-      first_map.SetValue("c", base::WrapUnique(new StringValue("test"))));
+  EXPECT_TRUE(first_map.SetValue("a", Value("test")));
+  EXPECT_TRUE(first_map.SetValue("b", Value("test")));
+  EXPECT_TRUE(first_map.SetValue("c", Value("test")));
 
   PrefValueMap second_map;
-  EXPECT_TRUE(
-      second_map.SetValue("d", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(
-      second_map.SetValue("e", base::WrapUnique(new StringValue("test"))));
-  EXPECT_TRUE(
-      second_map.SetValue("f", base::WrapUnique(new StringValue("test"))));
+  EXPECT_TRUE(second_map.SetValue("d", Value("test")));
+  EXPECT_TRUE(second_map.SetValue("e", Value("test")));
+  EXPECT_TRUE(second_map.SetValue("f", Value("test")));
 
   first_map.Swap(&second_map);
 
-  EXPECT_TRUE(first_map.GetValue("d", NULL));
-  EXPECT_TRUE(first_map.GetValue("e", NULL));
-  EXPECT_TRUE(first_map.GetValue("f", NULL));
+  EXPECT_TRUE(first_map.GetValue("d", nullptr));
+  EXPECT_TRUE(first_map.GetValue("e", nullptr));
+  EXPECT_TRUE(first_map.GetValue("f", nullptr));
 
-  EXPECT_TRUE(second_map.GetValue("a", NULL));
-  EXPECT_TRUE(second_map.GetValue("b", NULL));
-  EXPECT_TRUE(second_map.GetValue("c", NULL));
+  EXPECT_TRUE(second_map.GetValue("a", nullptr));
+  EXPECT_TRUE(second_map.GetValue("b", nullptr));
+  EXPECT_TRUE(second_map.GetValue("c", nullptr));
 }
 
 }  // namespace

@@ -15,16 +15,12 @@
 #include "base/time/time.h"
 #include "net/base/net_export.h"
 
-class GURL;
-
 namespace net {
 
 struct DnsConfig;
-class HistogramWatcher;
 class NetworkChangeNotifierFactory;
 struct NetworkInterface;
 typedef std::vector<NetworkInterface> NetworkInterfaceList;
-class URLRequest;
 
 #if defined(OS_LINUX)
 namespace internal {
@@ -105,6 +101,7 @@ class NET_EXPORT NetworkChangeNotifier {
     SUBTYPE_LAST = SUBTYPE_WIFI_AD
   };
 
+  // DEPRECATED. Please use NetworkChangeObserver instead. crbug.com/754695.
   class NET_EXPORT IPAddressObserver {
    public:
     // Will be called when the IP address of the primary interface changes.
@@ -119,6 +116,7 @@ class NET_EXPORT NetworkChangeNotifier {
     DISALLOW_COPY_AND_ASSIGN(IPAddressObserver);
   };
 
+  // DEPRECATED. Please use NetworkChangeObserver instead. crbug.com/754695.
   class NET_EXPORT ConnectionTypeObserver {
    public:
     // Will be called when the connection type of the system has changed.
@@ -142,6 +140,11 @@ class NET_EXPORT NetworkChangeNotifier {
     virtual void OnDNSChanged() = 0;
     // Will be called when DNS settings of the system have been loaded.
     // Use GetDnsConfig to obtain the current settings.
+    // NOTE(pauljensen): This will not be called if the initial DNS config
+    // has already been read before this observer is registered.
+    // Determining if a DNS config has already been read can be done by
+    // calling GetDnsConfig() after registering an observer, and seeing if
+    // the DnsConfig's IsValid() returns true.
     virtual void OnInitialDNSConfigRead();
 
    protected:
@@ -211,8 +214,11 @@ class NET_EXPORT NetworkChangeNotifier {
   // example an association with a particular WiFi network with a particular
   // SSID or a connection to particular cellular network.
   // The meaning of this handle is target-dependent. On Android NetworkHandles
-  // are equivalent to the framework's concept of NetIDs (e.g. Network.netId).
-  typedef int32_t NetworkHandle;
+  // are equivalent to:
+  //   On Lollipop, the framework's concept of NetIDs (e.g. Network.netId), and
+  //   On Marshmallow and newer releases, network handles
+  //           (e.g. Network.getNetworkHandle()).
+  typedef int64_t NetworkHandle;
 
   // A list of networks.
   typedef std::vector<NetworkHandle> NetworkList;
@@ -251,6 +257,9 @@ class NET_EXPORT NetworkChangeNotifier {
 
   virtual ~NetworkChangeNotifier();
 
+  // Returns the factory or nullptr if it is not set.
+  static NetworkChangeNotifierFactory* GetFactory();
+
   // Replaces the default class factory instance of NetworkChangeNotifier class.
   // The method will take over the ownership of |factory| object.
   static void SetFactory(NetworkChangeNotifierFactory* factory);
@@ -263,17 +272,27 @@ class NET_EXPORT NetworkChangeNotifier {
   // which might try to use it.
   static NetworkChangeNotifier* Create();
 
+  // Returns whether the process-wide, platform-specific NetworkChangeNotifier
+  // has been created.
+  static bool HasNetworkChangeNotifier();
+
   // Returns the connection type.
   // A return value of |CONNECTION_NONE| is a pretty strong indicator that the
   // user won't be able to connect to remote sites. However, another return
   // value doesn't imply that the user will be able to connect to remote sites;
   // even if some link is up, it is uncertain whether a particular connection
   // attempt to a particular remote site will be successful.
-  // The returned value only describes the connection currently used by the
-  // device, and does not take into account other machines on the network. For
-  // example, if the device is connected using Wifi to a 3G gateway to access
-  // the internet, the connection type is CONNECTION_WIFI.
+  // The returned value only describes the first-hop connection, for example if
+  // the device is connected via WiFi to a 4G hotspot, the returned value will
+  // be CONNECTION_WIFI, not CONNECTION_4G.
   static ConnectionType GetConnectionType();
+
+  // Returns the device's current default active network connection's subtype.
+  // The returned value only describes the first-hop connection, for example if
+  // the device is connected via WiFi to a 4G hotspot, the returned value will
+  // reflect WiFi, not 4G. This method may return SUBTYPE_UNKNOWN even if the
+  // connection type is known.
+  static ConnectionSubtype GetConnectionSubtype();
 
   // Sets |max_bandwidth_mbps| to a theoretical upper limit on download
   // bandwidth, potentially based on underlying connection type, signal
@@ -292,8 +311,8 @@ class NET_EXPORT NetworkChangeNotifier {
   // Returns a theoretical upper limit (in Mbps) on download bandwidth given a
   // connection subtype. The mapping of connection type to maximum bandwidth is
   // provided in the NetInfo spec: http://w3c.github.io/netinfo/.
-  // TODO(jkarlin): Rename to GetMaxBandwidthMbpsForConnectionSubtype.
-  static double GetMaxBandwidthForConnectionSubtype(ConnectionSubtype subtype);
+  static double GetMaxBandwidthMbpsForConnectionSubtype(
+      ConnectionSubtype subtype);
 
   // Returns true if the platform supports use of APIs based on NetworkHandles.
   // Public methods that use NetworkHandles are GetNetworkConnectionType(),
@@ -367,7 +386,12 @@ class NET_EXPORT NetworkChangeNotifier {
   // called back with notifications.  This is safe to call if Create() has not
   // been called (as long as it doesn't race the Create() call on another
   // thread), in which case it will simply do nothing.
+
+  // DEPRECATED. IPAddressObserver is deprecated. Please use
+  // NetworkChangeObserver instead. crbug.com/754695.
   static void AddIPAddressObserver(IPAddressObserver* observer);
+  // DEPRECATED. ConnectionTypeObserver is deprecated. Please use
+  // NetworkChangeObserver instead. crbug.com/754695.
   static void AddConnectionTypeObserver(ConnectionTypeObserver* observer);
   static void AddDNSObserver(DNSObserver* observer);
   static void AddNetworkChangeObserver(NetworkChangeObserver* observer);
@@ -381,7 +405,12 @@ class NET_EXPORT NetworkChangeNotifier {
   // nothing.  Technically, it's also safe to call after the notifier object has
   // been destroyed, if the call doesn't race the notifier's destruction, but
   // there's no reason to use the API in this risky way, so don't do it.
+
+  // DEPRECATED. IPAddressObserver is deprecated. Please use
+  // NetworkChangeObserver instead. crbug.com/754695.
   static void RemoveIPAddressObserver(IPAddressObserver* observer);
+  // DEPRECATED. ConnectionTypeObserver is deprecated. Please use
+  // NetworkChangeObserver instead. crbug.com/754695.
   static void RemoveConnectionTypeObserver(ConnectionTypeObserver* observer);
   static void RemoveDNSObserver(DNSObserver* observer);
   static void RemoveNetworkChangeObserver(NetworkChangeObserver* observer);
@@ -392,6 +421,7 @@ class NET_EXPORT NetworkChangeNotifier {
   static void NotifyObserversOfIPAddressChangeForTests();
   static void NotifyObserversOfConnectionTypeChangeForTests(
       ConnectionType type);
+  static void NotifyObserversOfDNSChangeForTests();
   static void NotifyObserversOfNetworkChangeForTests(ConnectionType type);
   static void NotifyObserversOfInitialDNSConfigReadForTests();
   static void NotifyObserversOfMaxBandwidthChangeForTests(
@@ -406,22 +436,6 @@ class NET_EXPORT NetworkChangeNotifier {
 
   // Return a string equivalent to |type|.
   static const char* ConnectionTypeToString(ConnectionType type);
-
-  // Let the NetworkChangeNotifier know we received some data.
-  // This is used for producing histogram data about the accuracy of
-  // the NetworkChangenotifier's online detection and rough network
-  // connection measurements.
-  static void NotifyDataReceived(const URLRequest& request, int bytes_read);
-
-  // Register the Observer callbacks for producing histogram data.  This
-  // should be called from the network thread to avoid race conditions.
-  // ShutdownHistogramWatcher() must be called prior to NetworkChangeNotifier
-  // destruction.
-  static void InitHistogramWatcher();
-
-  // Unregister the Observer callbacks for producing histogram data.  This
-  // should be called from the network thread to avoid race conditions.
-  static void ShutdownHistogramWatcher();
 
   // Invoked at the time a new user metrics log record is being finalized, on
   // the main thread. NCN Histograms that want to be logged once per record
@@ -497,6 +511,7 @@ class NET_EXPORT NetworkChangeNotifier {
   // Implementations must be thread-safe. Implementations must also be
   // cheap as they are called often.
   virtual ConnectionType GetCurrentConnectionType() const = 0;
+  virtual ConnectionSubtype GetCurrentConnectionSubtype() const;
   virtual void GetCurrentMaxBandwidthAndConnectionType(
       double* max_bandwidth_mbps,
       ConnectionType* connection_type) const;
@@ -523,11 +538,16 @@ class NET_EXPORT NetworkChangeNotifier {
   static void NotifyObserversOfSpecificNetworkChange(NetworkChangeType type,
                                                      NetworkHandle network);
 
-  // Stores |config| in NetworkState and notifies OnDNSChanged observers.
+  // Stores |config| in NetworkState and notifies observers. The first
+  // notification will be OnInitialDNSConfigRead, and after that OnDNSChanged.
   static void SetDnsConfig(const DnsConfig& config);
-  // Stores |config| in NetworkState and notifies OnInitialDNSConfigRead
-  // observers.
-  static void SetInitialDnsConfig(const DnsConfig& config);
+
+  // Clears previous DnsConfig, if any, to simulate the first one being set.
+  static void ClearDnsConfigForTesting();
+
+  // Infer connection type from |GetNetworkList|. If all network interfaces
+  // have the same type, return it, otherwise return CONNECTION_UNKNOWN.
+  static ConnectionType ConnectionTypeFromInterfaces();
 
  private:
   friend class HostResolverImplDnsTest;
@@ -563,9 +583,6 @@ class NET_EXPORT NetworkChangeNotifier {
 
   // The current network state. Hosts DnsConfig, exposed via GetDnsConfig.
   std::unique_ptr<NetworkState> network_state_;
-
-  // A little-piggy-back observer that simply logs UMA histogram data.
-  std::unique_ptr<HistogramWatcher> histogram_watcher_;
 
   // Computes NetworkChange signal from IPAddress and ConnectionType signals.
   std::unique_ptr<NetworkChangeCalculator> network_change_calculator_;

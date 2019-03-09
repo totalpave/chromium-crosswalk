@@ -6,22 +6,36 @@
 
 #include <vector>
 
-#include "ui/gl/gl_implementation.h"
+#include "base/stl_util.h"
+#include "ui/gfx/buffer_format_util.h"
+#include "ui/gfx/half_float.h"
+#include "ui/gl/init/gl_factory.h"
 #include "ui/gl/test/gl_surface_test_support.h"
 
 #if defined(USE_OZONE)
 #include "base/run_loop.h"
+#include "ui/ozone/public/ozone_platform.h"
 #endif
 
 namespace gl {
 
 // static
-void GLImageTestSupport::InitializeGL() {
-  std::vector<GLImplementation> allowed_impls;
-  GetAllowedGLImplementations(&allowed_impls);
+void GLImageTestSupport::InitializeGL(
+    base::Optional<GLImplementation> prefered_impl) {
+#if defined(USE_OZONE)
+  ui::OzonePlatform::InitParams params;
+  params.single_process = true;
+  params.using_mojo = true;
+  ui::OzonePlatform::InitializeForGPU(params);
+#endif
+
+  std::vector<GLImplementation> allowed_impls =
+      init::GetAllowedGLImplementations();
   DCHECK(!allowed_impls.empty());
 
-  GLImplementation impl = allowed_impls[0];
+  GLImplementation impl = prefered_impl ? *prefered_impl : allowed_impls[0];
+  DCHECK(base::ContainsValue(allowed_impls, impl));
+
   GLSurfaceTestSupport::InitializeOneOffImplementation(impl, true);
 #if defined(USE_OZONE)
   // Make sure all the tasks posted to the current task runner by the
@@ -32,7 +46,7 @@ void GLImageTestSupport::InitializeGL() {
 
 // static
 void GLImageTestSupport::CleanupGL() {
-  ClearGLBindings();
+  init::ShutdownGL(false);
 }
 
 // static
@@ -45,9 +59,19 @@ void GLImageTestSupport::SetBufferDataToColor(int width,
                                               uint8_t* data) {
   switch (format) {
     case gfx::BufferFormat::R_8:
+    case gfx::BufferFormat::RG_88:
       DCHECK_EQ(0, plane);
       for (int y = 0; y < height; ++y) {
         memset(&data[y * stride], color[0], width);
+      }
+      return;
+    case gfx::BufferFormat::R_16:
+      DCHECK_EQ(0, plane);
+      for (int y = 0; y < height; ++y) {
+        uint16_t* row = reinterpret_cast<uint16_t*>(data + y * stride);
+        for (int x = 0; x < width; ++x) {
+          row[x] = static_cast<uint16_t>(color[0] << 8);
+        }
       }
       return;
     case gfx::BufferFormat::BGR_565:
@@ -93,6 +117,32 @@ void GLImageTestSupport::SetBufferDataToColor(int width,
         }
       }
       return;
+    case gfx::BufferFormat::BGRX_1010102:
+      DCHECK_EQ(0, plane);
+      for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+          *reinterpret_cast<uint32_t*>(&data[y * stride + x * 4]) =
+              0x3 << 30 |  // Alpha channel is unused
+              ((color[0] << 2) | (color[0] >> 6)) << 20 |  // R
+              ((color[1] << 2) | (color[1] >> 6)) << 10 |  // G
+              ((color[2] << 2) | (color[2] >> 6));         // B
+        }
+      }
+      return;
+
+    case gfx::BufferFormat::RGBX_1010102:
+      DCHECK_EQ(0, plane);
+      for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+          *reinterpret_cast<uint32_t*>(&data[y * stride + x * 4]) =
+              0x3 << 30 |  // Alpha channel is unused
+              ((color[2] << 2) | (color[2] >> 6)) << 20 |  // B
+              ((color[1] << 2) | (color[1] >> 6)) << 10 |  // G
+              ((color[0] << 2) | (color[0] >> 6));         // R
+        }
+      }
+      return;
+
     case gfx::BufferFormat::BGRA_8888:
       DCHECK_EQ(0, plane);
       for (int y = 0; y < height; ++y) {
@@ -104,6 +154,25 @@ void GLImageTestSupport::SetBufferDataToColor(int width,
         }
       }
       return;
+    case gfx::BufferFormat::RGBA_F16: {
+      DCHECK_EQ(0, plane);
+      float float_color[4] = {
+          color[0] / 255.f, color[1] / 255.f, color[2] / 255.f,
+          color[3] / 255.f,
+      };
+      uint16_t half_float_color[4];
+      gfx::FloatToHalfFloat(float_color, half_float_color, 4);
+      for (int y = 0; y < height; ++y) {
+        uint16_t* row = reinterpret_cast<uint16_t*>(data + y * stride);
+        for (int x = 0; x < width; ++x) {
+          row[x * 4 + 0] = half_float_color[0];
+          row[x * 4 + 1] = half_float_color[1];
+          row[x * 4 + 2] = half_float_color[2];
+          row[x * 4 + 3] = half_float_color[3];
+        }
+      }
+      return;
+    }
     case gfx::BufferFormat::YVU_420: {
       DCHECK_LT(plane, 3);
       DCHECK_EQ(0, height % 2);
@@ -157,14 +226,9 @@ void GLImageTestSupport::SetBufferDataToColor(int width,
       }
       return;
     }
-    case gfx::BufferFormat::ATC:
-    case gfx::BufferFormat::ATCIA:
-    case gfx::BufferFormat::DXT1:
-    case gfx::BufferFormat::DXT5:
-    case gfx::BufferFormat::ETC1:
     case gfx::BufferFormat::RGBA_4444:
     case gfx::BufferFormat::UYVY_422:
-      NOTREACHED();
+      NOTREACHED() << gfx::BufferFormatToString(format);
       return;
   }
   NOTREACHED();

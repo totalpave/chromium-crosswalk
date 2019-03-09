@@ -7,26 +7,33 @@
 #include <memory>
 #include <string>
 
+#include "base/stl_util.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
 #include "net/base/upload_data_stream.h"
+#include "net/log/net_log_with_source.h"
+#include "net/test/gtest_util.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+using net::test::IsError;
+using net::test::IsOk;
 
 namespace net {
 
 namespace {
 
-const char kTestData[] = "0123456789";
-const size_t kTestDataSize = arraysize(kTestData) - 1;
-const size_t kTestBufferSize = 1 << 14;  // 16KB.
+constexpr char kTestData[] = "0123456789";
+constexpr size_t kTestDataSize = base::size(kTestData) - 1;
+constexpr size_t kTestBufferSize = 1 << 14;  // 16KB.
 
 }  // namespace
 
 // Reads data once from the upload data stream, and returns the data as string.
 // Expects the read to succeed synchronously.
 std::string ReadSync(UploadDataStream* stream, int buffer_size) {
-  scoped_refptr<IOBuffer> buf = new IOBuffer(buffer_size);
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(buffer_size);
   int result = stream->Read(buf.get(),
                             buffer_size,
                             TestCompletionCallback().callback());
@@ -38,16 +45,18 @@ std::string ReadSync(UploadDataStream* stream, int buffer_size) {
 TEST(ChunkedUploadDataStreamTest, AppendOnce) {
   ChunkedUploadDataStream stream(0);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
   EXPECT_FALSE(stream.IsEOF());
 
   TestCompletionCallback callback;
-  scoped_refptr<IOBuffer> buf = new IOBuffer(kTestBufferSize);
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(kTestBufferSize);
   int result = stream.Read(buf.get(), kTestBufferSize, callback.callback());
-  ASSERT_EQ(ERR_IO_PENDING, result);
+  ASSERT_THAT(result, IsError(ERR_IO_PENDING));
 
   stream.AppendData(kTestData, kTestDataSize, true);
   int read = callback.WaitForResult();
@@ -61,7 +70,9 @@ TEST(ChunkedUploadDataStreamTest, AppendOnce) {
 TEST(ChunkedUploadDataStreamTest, AppendOnceBeforeRead) {
   ChunkedUploadDataStream stream(0);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -83,7 +94,9 @@ TEST(ChunkedUploadDataStreamTest, AppendOnceBeforeInit) {
   ChunkedUploadDataStream stream(0);
 
   stream.AppendData(kTestData, kTestDataSize, true);
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -99,14 +112,16 @@ TEST(ChunkedUploadDataStreamTest, AppendOnceBeforeInit) {
 TEST(ChunkedUploadDataStreamTest, MultipleAppends) {
   ChunkedUploadDataStream stream(0);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());
   EXPECT_EQ(0u, stream.position());
   EXPECT_FALSE(stream.IsEOF());
 
   TestCompletionCallback callback;
-  scoped_refptr<IOBuffer> buf = new IOBuffer(kTestBufferSize);
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(kTestBufferSize);
   for (size_t i = 0; i < kTestDataSize; ++i) {
     EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
     EXPECT_EQ(i, stream.position());
@@ -114,7 +129,7 @@ TEST(ChunkedUploadDataStreamTest, MultipleAppends) {
     int bytes_read = stream.Read(buf.get(),
                                  kTestBufferSize,
                                  callback.callback());
-    ASSERT_EQ(ERR_IO_PENDING, bytes_read);
+    ASSERT_THAT(bytes_read, IsError(ERR_IO_PENDING));
     stream.AppendData(&kTestData[i], 1, i == kTestDataSize - 1);
     ASSERT_EQ(1, callback.WaitForResult());
     EXPECT_EQ(kTestData[i], buf->data()[0]);
@@ -128,13 +143,15 @@ TEST(ChunkedUploadDataStreamTest, MultipleAppends) {
 TEST(ChunkedUploadDataStreamTest, MultipleAppendsBetweenReads) {
   ChunkedUploadDataStream stream(0);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
   EXPECT_FALSE(stream.IsEOF());
 
-  scoped_refptr<IOBuffer> buf = new IOBuffer(kTestBufferSize);
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(kTestBufferSize);
   for (size_t i = 0; i < kTestDataSize; ++i) {
     EXPECT_EQ(i, stream.position());
     ASSERT_FALSE(stream.IsEOF());
@@ -157,7 +174,9 @@ TEST(ChunkedUploadDataStreamTest, MultipleAppendsBeforeInit) {
   stream.AppendData(kTestData + 1, 1, false);
   stream.AppendData(kTestData + 2, kTestDataSize - 2, true);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -179,7 +198,9 @@ TEST(ChunkedUploadDataStreamTest, MultipleReads) {
   stream.AppendData(kTestData, kTestDataSize, false);
   stream.AppendData(kTestData, kTestDataSize, true);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -209,16 +230,18 @@ TEST(ChunkedUploadDataStreamTest, MultipleReads) {
 TEST(ChunkedUploadDataStreamTest, EmptyUpload) {
   ChunkedUploadDataStream stream(0);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
   EXPECT_FALSE(stream.IsEOF());
 
   TestCompletionCallback callback;
-  scoped_refptr<IOBuffer> buf = new IOBuffer(kTestBufferSize);
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(kTestBufferSize);
   int result = stream.Read(buf.get(), kTestBufferSize, callback.callback());
-  ASSERT_EQ(ERR_IO_PENDING, result);
+  ASSERT_THAT(result, IsError(ERR_IO_PENDING));
 
   stream.AppendData(NULL, 0, true);
   int read = callback.WaitForResult();
@@ -231,7 +254,9 @@ TEST(ChunkedUploadDataStreamTest, EmptyUploadEndedBeforeInit) {
   ChunkedUploadDataStream stream(0);
   stream.AppendData(NULL, 0, true);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -248,7 +273,9 @@ TEST(ChunkedUploadDataStreamTest, RewindAfterComplete) {
   stream.AppendData(kTestData, 1, false);
   stream.AppendData(kTestData + 1, kTestDataSize - 1, true);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -260,7 +287,9 @@ TEST(ChunkedUploadDataStreamTest, RewindAfterComplete) {
   ASSERT_TRUE(stream.IsEOF());
 
   // Rewind stream and repeat.
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -275,18 +304,22 @@ TEST(ChunkedUploadDataStreamTest, RewindAfterComplete) {
 TEST(ChunkedUploadDataStreamTest, RewindWhileReading) {
   ChunkedUploadDataStream stream(0);
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
   EXPECT_FALSE(stream.IsEOF());
 
   TestCompletionCallback callback;
-  scoped_refptr<IOBuffer> buf = new IOBuffer(kTestBufferSize);
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(kTestBufferSize);
   int result = stream.Read(buf.get(), kTestBufferSize, callback.callback());
-  ASSERT_EQ(ERR_IO_PENDING, result);
+  ASSERT_THAT(result, IsError(ERR_IO_PENDING));
 
-  ASSERT_EQ(OK, stream.Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream.Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
   EXPECT_FALSE(stream.IsInMemory());
   EXPECT_EQ(0u, stream.size());  // Content-Length is 0 for chunked data.
   EXPECT_EQ(0u, stream.position());
@@ -314,7 +347,9 @@ TEST(ChunkedUploadDataStreamTest, ChunkedUploadDataStreamWriter) {
 
   // Write before Init.
   ASSERT_TRUE(writer->AppendData(kTestData, 1, false));
-  ASSERT_EQ(OK, stream->Init(TestCompletionCallback().callback()));
+  ASSERT_THAT(
+      stream->Init(TestCompletionCallback().callback(), NetLogWithSource()),
+      IsOk());
 
   // Write after Init.
   ASSERT_TRUE(writer->AppendData(kTestData + 1, kTestDataSize - 1, false));

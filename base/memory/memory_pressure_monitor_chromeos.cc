@@ -7,11 +7,12 @@
 #include <fcntl.h>
 #include <sys/select.h>
 
+#include "base/bind.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/process/process_metrics.h"
 #include "base/single_thread_task_runner.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 
@@ -19,6 +20,9 @@ namespace base {
 namespace chromeos {
 
 namespace {
+
+// Type-safe version of |g_monitor| from base/memory/memory_pressure_monitor.cc.
+MemoryPressureMonitor* g_monitor = nullptr;
 
 // The time between memory pressure checks. While under critical pressure, this
 // is also the timer to repeat cleanup attempts.
@@ -86,7 +90,7 @@ MemoryPressureListener::MemoryPressureLevel GetMemoryPressureLevelFromFillLevel(
              : MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL;
 }
 
-// This function will be called less then once a second. It will check if
+// This function will be called less than once a second. It will check if
 // the kernel has detected a low memory situation.
 bool IsLowMemoryCondition(int file_descriptor) {
   fd_set fds;
@@ -108,12 +112,18 @@ MemoryPressureMonitor::MemoryPressureMonitor(
     : current_memory_pressure_level_(
           MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE),
       moderate_pressure_repeat_count_(0),
+      seconds_since_reporting_(0),
       moderate_pressure_threshold_percent_(
           GetModerateMemoryThresholdInPercent(thresholds)),
       critical_pressure_threshold_percent_(
           GetCriticalMemoryThresholdInPercent(thresholds)),
       low_mem_file_(HANDLE_EINTR(::open(kLowMemFile, O_RDONLY))),
+      dispatch_callback_(
+          base::Bind(&MemoryPressureListener::NotifyMemoryPressure)),
       weak_ptr_factory_(this) {
+  DCHECK(!g_monitor);
+  g_monitor = this;
+
   StartObserving();
   LOG_IF(ERROR,
          base::SysInfo::IsRunningOnChromeOS() && !low_mem_file_.is_valid())
@@ -121,24 +131,26 @@ MemoryPressureMonitor::MemoryPressureMonitor(
 }
 
 MemoryPressureMonitor::~MemoryPressureMonitor() {
+  DCHECK(g_monitor);
+  g_monitor = nullptr;
+
   StopObserving();
 }
 
 void MemoryPressureMonitor::ScheduleEarlyCheck() {
   ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, Bind(&MemoryPressureMonitor::CheckMemoryPressure,
-                      weak_ptr_factory_.GetWeakPtr()));
+      FROM_HERE, BindOnce(&MemoryPressureMonitor::CheckMemoryPressure,
+                          weak_ptr_factory_.GetWeakPtr()));
 }
 
 MemoryPressureListener::MemoryPressureLevel
-MemoryPressureMonitor::GetCurrentPressureLevel() const {
+MemoryPressureMonitor::GetCurrentPressureLevel() {
   return current_memory_pressure_level_;
 }
 
 // static
 MemoryPressureMonitor* MemoryPressureMonitor::Get() {
-  return static_cast<MemoryPressureMonitor*>(
-      base::MemoryPressureMonitor::Get());
+  return g_monitor;
 }
 
 void MemoryPressureMonitor::StartObserving() {
@@ -156,8 +168,13 @@ void MemoryPressureMonitor::StopObserving() {
 
 void MemoryPressureMonitor::CheckMemoryPressureAndRecordStatistics() {
   CheckMemoryPressure();
-
+  if (seconds_since_reporting_++ == 5) {
+    seconds_since_reporting_ = 0;
+    RecordMemoryPressure(current_memory_pressure_level_, 1);
+  }
   // Record UMA histogram statistics for the current memory pressure level.
+  // TODO(lgrey): Remove this once there's a usable history for the
+  // "Memory.PressureLevel" statistic
   MemoryPressureLevelUMA memory_pressure_level_uma(MEMORY_PRESSURE_LEVEL_NONE);
   switch (current_memory_pressure_level_) {
     case MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE:
@@ -230,7 +247,7 @@ void MemoryPressureMonitor::CheckMemoryPressure() {
     return;
   }
   moderate_pressure_repeat_count_ = 0;
-  MemoryPressureListener::NotifyMemoryPressure(current_memory_pressure_level_);
+  dispatch_callback_.Run(current_memory_pressure_level_);
 }
 
 // Gets the used ChromeOS memory in percent.
@@ -269,6 +286,11 @@ int MemoryPressureMonitor::GetUsedMemoryInPercent() {
   DCHECK(available_memory < total_memory);
   int percentage = ((total_memory - available_memory) * 100) / total_memory;
   return percentage;
+}
+
+void MemoryPressureMonitor::SetDispatchCallback(
+    const DispatchCallback& callback) {
+  dispatch_callback_ = callback;
 }
 
 }  // namespace chromeos

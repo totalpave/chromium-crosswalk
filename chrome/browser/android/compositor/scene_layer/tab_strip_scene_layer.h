@@ -20,7 +20,6 @@ namespace cc {
 class SolidColorLayer;
 }
 
-namespace chrome {
 namespace android {
 
 class LayerTitleCache;
@@ -30,7 +29,7 @@ class TabHandleLayer;
 // added as a subtree.
 class TabStripSceneLayer : public SceneLayer {
  public:
-  TabStripSceneLayer(JNIEnv* env, jobject jobj);
+  TabStripSceneLayer(JNIEnv* env, const base::android::JavaRef<jobject>& jobj);
   ~TabStripSceneLayer() override;
 
   void SetContentTree(
@@ -108,9 +107,11 @@ class TabStripSceneLayer : public SceneLayer {
       jfloat close_button_alpha,
       jboolean is_loading,
       jfloat spinner_rotation,
-      jfloat border_opacity,
       const base::android::JavaParamRef<jobject>& jlayer_title_cache,
       const base::android::JavaParamRef<jobject>& jresource_manager);
+
+  bool ShouldShowBackground() override;
+  SkColor GetBackgroundColor() override;
 
  private:
   scoped_refptr<TabHandleLayer> GetNextLayer(
@@ -134,9 +135,6 @@ class TabStripSceneLayer : public SceneLayer {
   DISALLOW_COPY_AND_ASSIGN(TabStripSceneLayer);
 };
 
-bool RegisterTabStripSceneLayer(JNIEnv* env);
-
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_SCENE_LAYER_TAB_STRIP_SCENE_LAYER_H_

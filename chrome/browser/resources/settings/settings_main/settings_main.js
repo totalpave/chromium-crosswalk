@@ -3,19 +3,20 @@
 // found in the LICENSE file.
 
 /**
+ * @typedef {{about: boolean, settings: boolean}}
+ */
+let MainPageVisibility;
+
+/**
  * @fileoverview
  * 'settings-main' displays the selected settings page.
  */
 Polymer({
   is: 'settings-main',
 
-  properties: {
-    /** @private */
-    isAdvancedMenuOpen_: {
-      type: Boolean,
-      value: false,
-    },
+  behaviors: [settings.RouteObserverBehavior],
 
+  properties: {
     /**
      * Preferences state.
      */
@@ -24,104 +25,218 @@ Polymer({
       notify: true,
     },
 
-    /**
-     * The current active route.
-     * @type {!SettingsRoute}
-     */
-    currentRoute: {
-      type: Object,
+    advancedToggleExpanded: {
+      type: Boolean,
       notify: true,
-      observer: 'currentRouteChanged_',
     },
 
     /** @private */
-    showAdvancedPage_: {
+    overscroll_: {
+      type: Number,
+      observer: 'overscrollChanged_',
+    },
+
+    /**
+     * Controls which main pages are displayed via dom-ifs, based on the current
+     * route.
+     * @private {!MainPageVisibility}
+     */
+    showPages_: {
+      type: Object,
+      value: function() {
+        return {about: false, settings: false};
+      },
+    },
+
+    /**
+     * Whether a search operation is in progress or previous search results are
+     * being displayed.
+     * @private {boolean}
+     */
+    inSearchMode_: {
       type: Boolean,
       value: false,
     },
 
     /** @private */
-    showAdvancedToggle_: {
-      type: Boolean,
-      value: true,
-    },
-
-    /** @private */
-    showBasicPage_: {
-      type: Boolean,
-      value: true,
-    },
-
-    /** @private */
-    showAboutPage_: {
+    showNoResultsFound_: {
       type: Boolean,
       value: false,
     },
-  },
 
-  created: function() {
-    /** @private {!PromiseResolver} */
-    this.resolver_ = new PromiseResolver;
-    settings.main.rendered = this.resolver_.promise;
-  },
+    /** @private */
+    showingSubpage_: {
+      type: Boolean,
+      // TODO(dpapad): Initial value only needed for Polymer 1, remove once
+      // Polymer 2 migration is done.
+      value: false,
+    },
 
-  attached: function() {
-    document.addEventListener('toggle-advanced-page', function(e) {
-      this.showAdvancedPage_ = e.detail;
-      this.isAdvancedMenuOpen_ = e.detail;
-      if (this.showAdvancedPage_) {
-        doWhenReady(
-            function() {
-              var advancedPage = this.$$('settings-advanced-page');
-              return !!advancedPage && advancedPage.scrollHeight > 0;
-            }.bind(this),
-            function() {
-              this.$$('#toggleContainer').scrollIntoView();
-            }.bind(this));
-      }
-    }.bind(this));
+    toolbarSpinnerActive: {
+      type: Boolean,
+      value: false,
+      notify: true,
+    },
 
-    doWhenReady(
-        function() {
-          var basicPage = this.$$('settings-basic-page');
-          return !!basicPage && basicPage.scrollHeight > 0;
-        }.bind(this),
-        function() {
-          this.resolver_.resolve();
-        }.bind(this));
-  },
+    /**
+     * Dictionary defining page visibility.
+     * @type {!GuestModePageVisibility}
+     */
+    pageVisibility: Object,
 
-  /**
-   * @param {boolean} opened Whether the menu is expanded.
-   * @return {string} Which icon to use.
-   * @private
-   * */
-  arrowState_: function(opened) {
-    return opened ? 'settings:arrow-drop-up' : 'cr:arrow-drop-down';
-  },
+    showAndroidApps: Boolean,
 
-  /**
-   * @param {!SettingsRoute} newRoute
-   * @private
-   */
-  currentRouteChanged_: function(newRoute) {
-    var isSubpage = !!newRoute.subpage.length;
-
-    this.showAboutPage_ = newRoute.page == 'about';
-
-    this.showAdvancedToggle_ = !this.showAboutPage_ && !isSubpage;
-
-    this.showBasicPage_ = this.showAdvancedToggle_ || newRoute.page == 'basic';
-
-    this.showAdvancedPage_ =
-        (this.isAdvancedMenuOpen_ && this.showAdvancedToggle_) ||
-        newRoute.page == 'advanced';
-
-    this.style.height = isSubpage ? '100%' : '';
+    havePlayStoreApp: Boolean,
   },
 
   /** @private */
-  toggleAdvancedPage_: function() {
-    this.fire('toggle-advanced-page', !this.isAdvancedMenuOpen_);
+  overscrollChanged_: function() {
+    if (!this.overscroll_ && this.boundScroll_) {
+      this.offsetParent.removeEventListener('scroll', this.boundScroll_);
+      window.removeEventListener('resize', this.boundScroll_);
+      this.boundScroll_ = null;
+    } else if (this.overscroll_ && !this.boundScroll_) {
+      this.boundScroll_ = () => {
+        if (!this.showingSubpage_) {
+          this.setOverscroll_(0);
+        }
+      };
+      this.offsetParent.addEventListener('scroll', this.boundScroll_);
+      window.addEventListener('resize', this.boundScroll_);
+    }
+  },
+
+  /**
+   * Sets the overscroll padding. Never forces a scroll, i.e., always leaves
+   * any currently visible overflow as-is.
+   * @param {number=} opt_minHeight The minimum overscroll height needed.
+   * @private
+   */
+  setOverscroll_: function(opt_minHeight) {
+    const scroller = this.offsetParent;
+    if (!scroller) {
+      return;
+    }
+    const overscroll = this.$.overscroll;
+    const visibleBottom = scroller.scrollTop + scroller.clientHeight;
+    const overscrollBottom = overscroll.offsetTop + overscroll.scrollHeight;
+    // How much of the overscroll is visible (may be negative).
+    const visibleOverscroll =
+        overscroll.scrollHeight - (overscrollBottom - visibleBottom);
+    this.overscroll_ =
+        Math.max(opt_minHeight || 0, Math.ceil(visibleOverscroll));
+  },
+
+  /**
+   * Updates the hidden state of the about and settings pages based on the
+   * current route.
+   * @param {!settings.Route} newRoute
+   */
+  currentRouteChanged: function(newRoute) {
+    const inAbout = settings.routes.ABOUT.contains(settings.getCurrentRoute());
+    this.showPages_ = {about: inAbout, settings: !inAbout};
+
+    if (!newRoute.isSubpage()) {
+      document.title = inAbout ? loadTimeData.getStringF(
+                                     'settingsAltPageTitle',
+                                     loadTimeData.getString('aboutPageTitle')) :
+                                 loadTimeData.getString('settings');
+    }
+  },
+
+  /** @private */
+  onShowingSubpage_: function() {
+    this.showingSubpage_ = true;
+  },
+
+  /** @private */
+  onShowingMainPage_: function() {
+    this.showingSubpage_ = false;
+  },
+
+  /**
+   * A handler for the 'showing-section' event fired from settings-basic-page,
+   * indicating that a section should be scrolled into view as a result of a
+   * navigation.
+   * @param {!CustomEvent<!HTMLElement>} e
+   * @private
+   */
+  onShowingSection_: function(e) {
+    const section = e.detail;
+    // Calculate the height that the overscroll padding should be set to, so
+    // that the given section is displayed at the top of the viewport.
+    // Find the distance from the section's top to the overscroll.
+    const sectionTop = section.offsetParent.offsetTop + section.offsetTop;
+    const distance = this.$.overscroll.offsetTop - sectionTop;
+    const overscroll = Math.max(0, this.offsetParent.clientHeight - distance);
+    this.setOverscroll_(overscroll);
+    section.scrollIntoView();
+  },
+
+  /**
+   * Returns the root page (if it exists) for a route.
+   * @param {!settings.Route} route
+   * @return {(?SettingsAboutPageElement|?SettingsBasicPageElement)}
+   */
+  getPage_: function(route) {
+    if (settings.routes.ABOUT.contains(route)) {
+      return /** @type {?SettingsAboutPageElement} */ (
+          this.$$('settings-about-page'));
+    }
+    if (settings.routes.BASIC.contains(route) ||
+        (settings.routes.ADVANCED &&
+         settings.routes.ADVANCED.contains(route))) {
+      return /** @type {?SettingsBasicPageElement} */ (
+          this.$$('settings-basic-page'));
+    }
+    assertNotReached();
+  },
+
+  /**
+   * @param {string} query
+   * @return {!Promise} A promise indicating that searching finished.
+   */
+  searchContents: function(query) {
+    // Trigger rendering of the basic and advanced pages and search once ready.
+    this.inSearchMode_ = true;
+    this.toolbarSpinnerActive = true;
+
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        const whenSearchDone =
+            assert(this.getPage_(settings.routes.BASIC)).searchContents(query);
+        whenSearchDone.then(result => {
+          resolve();
+          if (result.canceled) {
+            // Nothing to do here. A previous search request was canceled
+            // because a new search request was issued with a different query
+            // before the previous completed.
+            return;
+          }
+
+          this.toolbarSpinnerActive = false;
+          this.inSearchMode_ = !result.wasClearSearch;
+          this.showNoResultsFound_ =
+              this.inSearchMode_ && !result.didFindMatches;
+
+          if (this.inSearchMode_) {
+            Polymer.IronA11yAnnouncer.requestAvailability();
+            this.fire('iron-announce', {
+              text: this.showNoResultsFound_ ?
+                  loadTimeData.getString('searchNoResults') :
+                  loadTimeData.getStringF('searchResults', query)
+            });
+          }
+        });
+      }, 0);
+    });
+  },
+
+  /**
+   * @return {boolean}
+   * @private
+   */
+  showManagedHeader_: function() {
+    return !this.inSearchMode_ && !this.showingSubpage_;
   },
 });

@@ -7,32 +7,40 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 
 namespace chromeos {
 
-class CHROMEOS_EXPORT NetworkTypePattern {
+class COMPONENT_EXPORT(CHROMEOS_NETWORK) NetworkTypePattern {
  public:
   // Matches any network.
   static NetworkTypePattern Default();
 
-  // Matches wireless (WiFi, cellular, etc.) networks
+  // Matches wireless (WiFi, Cellular, etc.) networks
   static NetworkTypePattern Wireless();
 
-  // Matches cellular or wimax networks.
+  // Matches Cellular, WiMAX, or Tether networks.
   static NetworkTypePattern Mobile();
 
-  // Matches non virtual networks.
+  // Matches Physical networks (i.e. excludes Tether and VPN).
+  static NetworkTypePattern Physical();
+
+  // Excludes virtual networks and EthernetEAP.
   static NetworkTypePattern NonVirtual();
 
-  // Matches ethernet networks (with or without EAP).
+  // Matches ethernet networks.
   static NetworkTypePattern Ethernet();
+
+  // Matches ethernet or ethernet EAP networks.
+  static NetworkTypePattern EthernetOrEthernetEAP();
 
   static NetworkTypePattern WiFi();
   static NetworkTypePattern Cellular();
   static NetworkTypePattern VPN();
   static NetworkTypePattern Wimax();
+
+  static NetworkTypePattern Tether();
 
   // Matches only networks of exactly the type |shill_network_type|, which must
   // be one of the types defined in service_constants.h (e.g.
@@ -49,6 +57,8 @@ class CHROMEOS_EXPORT NetworkTypePattern {
   // symmetric and reflexive but not transitive.
   // See the unit test for examples.
   bool MatchesPattern(const NetworkTypePattern& other_pattern) const;
+
+  NetworkTypePattern operator|(const NetworkTypePattern& other) const;
 
   std::string ToDebugString() const;
 

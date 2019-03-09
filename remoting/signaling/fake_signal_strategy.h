@@ -12,9 +12,10 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "remoting/signaling/iq_sender.h"
 #include "remoting/signaling/signal_strategy.h"
+#include "remoting/signaling/signaling_address.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -22,17 +23,16 @@ class SingleThreadTaskRunner;
 
 namespace remoting {
 
-class FakeSignalStrategy : public SignalStrategy,
-                           public base::NonThreadSafe {
+class FakeSignalStrategy : public SignalStrategy {
  public:
   // Calls ConenctTo() to connect |peer1| and |peer2|. Both |peer1| and |peer2|
   // must belong to the current thread.
   static void Connect(FakeSignalStrategy* peer1, FakeSignalStrategy* peer2);
 
-  FakeSignalStrategy(const std::string& jid);
+  FakeSignalStrategy(const SignalingAddress& address);
   ~FakeSignalStrategy() override;
 
-  const std::list<buzz::XmlElement*>& received_messages() {
+  const std::vector<std::unique_ptr<jingle_xmpp::XmlElement>>& received_messages() {
     return received_messages_;
   }
 
@@ -40,47 +40,61 @@ class FakeSignalStrategy : public SignalStrategy,
     send_delay_ = delay;
   }
 
+  void SetState(State state) const;
+
   // Connects current FakeSignalStrategy to receive messages from |peer|.
   void ConnectTo(FakeSignalStrategy* peer);
 
-  void SetLocalJid(const std::string& jid);
+  void SetLocalAddress(const SignalingAddress& address);
+
+  // Simulate IQ messages re-ordering by swapping the delivery order of
+  // next pair of messages.
+  void SimulateMessageReordering();
 
   // SignalStrategy interface.
   void Connect() override;
   void Disconnect() override;
   State GetState() const override;
   Error GetError() const override;
-  std::string GetLocalJid() const override;
+  const SignalingAddress& GetLocalAddress() const override;
   void AddListener(Listener* listener) override;
   void RemoveListener(Listener* listener) override;
-  bool SendStanza(std::unique_ptr<buzz::XmlElement> stanza) override;
+  bool SendStanza(std::unique_ptr<jingle_xmpp::XmlElement> stanza) override;
   std::string GetNextId() override;
 
  private:
-  typedef base::Callback<void(std::unique_ptr<buzz::XmlElement> message)>
+  typedef base::Callback<void(std::unique_ptr<jingle_xmpp::XmlElement> message)>
       PeerCallback;
 
   static void DeliverMessageOnThread(
       scoped_refptr<base::SingleThreadTaskRunner> thread,
       base::WeakPtr<FakeSignalStrategy> target,
-      std::unique_ptr<buzz::XmlElement> stanza);
+      std::unique_ptr<jingle_xmpp::XmlElement> stanza);
 
   // Called by the |peer_|. Takes ownership of |stanza|.
-  void OnIncomingMessage(std::unique_ptr<buzz::XmlElement> stanza);
+  void OnIncomingMessage(std::unique_ptr<jingle_xmpp::XmlElement> stanza);
+  void NotifyListeners(std::unique_ptr<jingle_xmpp::XmlElement> stanza);
   void SetPeerCallback(const PeerCallback& peer_callback);
 
   scoped_refptr<base::SingleThreadTaskRunner> main_thread_;
 
-  std::string jid_;
+  State state_ = CONNECTED;
+
+  SignalingAddress address_;
   PeerCallback peer_callback_;
-  base::ObserverList<Listener, true> listeners_;
+  base::ObserverList<Listener, true>::Unchecked listeners_;
 
   int last_id_;
 
   base::TimeDelta send_delay_;
 
+  bool simulate_reorder_ = false;
+  std::unique_ptr<jingle_xmpp::XmlElement> pending_stanza_;
+
   // All received messages, includes thouse still in |pending_messages_|.
-  std::list<buzz::XmlElement*> received_messages_;
+  std::vector<std::unique_ptr<jingle_xmpp::XmlElement>> received_messages_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   base::WeakPtrFactory<FakeSignalStrategy> weak_factory_;
 

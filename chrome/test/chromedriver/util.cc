@@ -12,7 +12,6 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/format_macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/rand_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_util.h"
@@ -96,7 +95,7 @@ Status UnzipArchive(const base::FilePath& unzip_dir,
   if (!dir.CreateUniqueTempDir())
     return Status(kUnknownError, "unable to create temp dir");
 
-  base::FilePath archive = dir.path().AppendASCII("temp.zip");
+  base::FilePath archive = dir.GetPath().AppendASCII("temp.zip");
   int length = bytes.length();
   if (base::WriteFile(archive, bytes.c_str(), length) != length)
     return Status(kUnknownError, "could not write file to temp dir");
@@ -404,11 +403,8 @@ Status UnzipSoleFile(const base::FilePath& unzip_dir,
 
 Status NotifyCommandListenersBeforeCommand(Session* session,
                                            const std::string& command_name) {
-  for (ScopedVector<CommandListener>::const_iterator it =
-       session->command_listeners.begin();
-       it != session->command_listeners.end();
-       ++it) {
-    Status status = (*it)->BeforeCommand(command_name);
+  for (const auto& listener : session->command_listeners) {
+    Status status = listener->BeforeCommand(command_name);
     if (status.IsError()) {
       // Do not continue if an error is encountered. Mark session for deletion,
       // quit Chrome if necessary, and return a detailed error.
@@ -433,4 +429,121 @@ Status NotifyCommandListenersBeforeCommand(Session* session,
     }
   }
   return Status(kOk);
+}
+
+namespace {
+
+template <typename T>
+bool GetOptionalValue(const base::DictionaryValue* dict,
+                      base::StringPiece path,
+                      T* out_value,
+                      bool* has_value,
+                      bool (base::Value::*getter)(T*) const) {
+  if (has_value != nullptr)
+    *has_value = false;
+  const base::Value* value;
+  if (!dict->Get(path, &value))
+    return true;
+  if ((value->*getter)(out_value)) {
+    if (has_value != nullptr)
+      *has_value = true;
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool GetOptionalBool(const base::DictionaryValue* dict,
+                     base::StringPiece path,
+                     bool* out_value,
+                     bool* has_value) {
+  return GetOptionalValue(dict, path, out_value, has_value,
+                          &base::Value::GetAsBoolean);
+}
+
+bool GetOptionalInt(const base::DictionaryValue* dict,
+                    base::StringPiece path,
+                    int* out_value,
+                    bool* has_value) {
+  if (GetOptionalValue(dict, path, out_value, has_value,
+                       &base::Value::GetAsInteger)) {
+    return true;
+  }
+  // See if we have a double that contains an int value.
+  double d;
+  if (!dict->GetDouble(path, &d))
+    return false;
+  int i = static_cast<int>(d);
+  if (i == d) {
+    *out_value = i;
+    if (has_value != nullptr)
+      *has_value = true;
+    return true;
+  }
+  return false;
+}
+
+bool GetOptionalDouble(const base::DictionaryValue* dict,
+                       base::StringPiece path,
+                       double* out_value,
+                       bool* has_value) {
+  // base::Value::GetAsDouble already converts int to double if needed.
+  return GetOptionalValue(dict, path, out_value, has_value,
+                          &base::Value::GetAsDouble);
+}
+
+bool GetOptionalString(const base::DictionaryValue* dict,
+                       base::StringPiece path,
+                       std::string* out_value,
+                       bool* has_value) {
+  return GetOptionalValue(dict, path, out_value, has_value,
+                          &base::Value::GetAsString);
+}
+
+bool GetOptionalSafeInt(const base::DictionaryValue* dict,
+                        base::StringPiece path,
+                        int64_t* out_value,
+                        bool* has_value) {
+  // Check if we have a normal int, which is always a safe int.
+  int temp_int;
+  bool temp_has_value;
+  if (GetOptionalValue(dict, path, &temp_int, &temp_has_value,
+                       &base::Value::GetAsInteger)) {
+    if (has_value != nullptr)
+      *has_value = temp_has_value;
+    if (temp_has_value)
+      *out_value = temp_int;
+    return true;
+  }
+
+  // Check if we have a double, which may or may not contain a safe int value.
+  double temp_double;
+  if (!dict->GetDouble(path, &temp_double))
+    return false;
+
+  // Verify that the value is an integer.
+  int64_t temp_int64 = static_cast<int64_t>(temp_double);
+  if (temp_int64 != temp_double)
+    return false;
+
+  // Verify that the value is in the range for safe integer.
+  if (temp_int64 >= (1ll << 53) || temp_int64 <= -(1ll << 53))
+    return false;
+
+  // Got a good value.
+  *out_value = temp_int64;
+  if (has_value != nullptr)
+    *has_value = true;
+  return true;
+}
+
+bool SetSafeInt(base::DictionaryValue* dict,
+                const base::StringPiece path,
+                int64_t in_value_64) {
+  int int_value = static_cast<int>(in_value_64);
+  if (in_value_64 == int_value)
+    return dict->SetInteger(path, in_value_64);
+  else
+    return dict->SetDouble(path, in_value_64);
 }

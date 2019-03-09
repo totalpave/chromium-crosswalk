@@ -44,12 +44,15 @@ void URLListToPref(const base::ListValue* url_list, SessionStartupPref* pref) {
 // static
 void SessionStartupPref::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterIntegerPref(
-      prefs::kRestoreOnStartup,
-      TypeToPrefValue(GetDefaultStartupType()),
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterListPref(prefs::kURLsToRestoreOnStartup,
-                             user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+#if defined(OS_ANDROID)
+  uint32_t flags = PrefRegistry::NO_REGISTRATION_FLAGS;
+#else
+  uint32_t flags = user_prefs::PrefRegistrySyncable::SYNCABLE_PREF;
+#endif
+  registry->RegisterIntegerPref(prefs::kRestoreOnStartup,
+                                TypeToPrefValue(GetDefaultStartupType()),
+                                flags);
+  registry->RegisterListPref(prefs::kURLsToRestoreOnStartup, flags);
 }
 
 // static
@@ -87,7 +90,7 @@ void SessionStartupPref::SetStartupPref(PrefService* prefs,
     url_pref_list->Clear();
     for (size_t i = 0; i < pref.urls.size(); ++i) {
       url_pref_list->Set(static_cast<int>(i),
-                         new base::StringValue(pref.urls[i].spec()));
+                         std::make_unique<base::Value>(pref.urls[i].spec()));
     }
   }
 }
@@ -95,7 +98,12 @@ void SessionStartupPref::SetStartupPref(PrefService* prefs,
 // static
 SessionStartupPref SessionStartupPref::GetStartupPref(Profile* profile) {
   DCHECK(profile);
-  return GetStartupPref(profile->GetPrefs());
+
+  // Guest sessions should not store any state, therefore they should never
+  // trigger a restore during startup.
+  return profile->IsGuestSession()
+             ? SessionStartupPref(SessionStartupPref::DEFAULT)
+             : GetStartupPref(profile->GetPrefs());
 }
 
 // static
@@ -130,6 +138,15 @@ bool SessionStartupPref::URLsAreManaged(PrefService* prefs) {
       prefs->FindPreference(prefs::kURLsToRestoreOnStartup);
   DCHECK(pref_urls);
   return pref_urls->IsManaged();
+}
+
+// static
+bool SessionStartupPref::TypeHasRecommendedValue(PrefService* prefs) {
+  DCHECK(prefs);
+  const PrefService::Preference* pref_restore =
+      prefs->FindPreference(prefs::kRestoreOnStartup);
+  DCHECK(pref_restore);
+  return pref_restore->GetRecommendedValue() != nullptr;
 }
 
 // static

@@ -7,27 +7,27 @@
 
 #include "base/lazy_instance.h"
 #include "base/location.h"
+#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "cc/debug/lap_timer.h"
+#include "base/timer/lap_timer.h"
 #include "cc/raster/raster_buffer.h"
-#include "cc/test/begin_frame_args_test.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
+#include "cc/test/fake_layer_tree_frame_sink.h"
+#include "cc/test/fake_layer_tree_frame_sink_client.h"
 #include "cc/test/fake_layer_tree_host_impl.h"
-#include "cc/test/fake_output_surface.h"
-#include "cc/test/fake_output_surface_client.h"
 #include "cc/test/fake_picture_layer_impl.h"
 #include "cc/test/fake_raster_source.h"
 #include "cc/test/fake_tile_manager.h"
 #include "cc/test/fake_tile_manager_client.h"
 #include "cc/test/fake_tile_task_manager.h"
 #include "cc/test/test_layer_tree_host_base.h"
-#include "cc/test/test_shared_bitmap_manager.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/test/test_tile_priorities.h"
 #include "cc/tiles/tile.h"
 #include "cc/tiles/tile_priority.h"
 #include "cc/trees/layer_tree_impl.h"
+#include "components/viz/test/begin_frame_args_test.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/perf/perf_test.h"
@@ -39,9 +39,6 @@ static const int kTimeLimitMillis = 2000;
 static const int kWarmupRuns = 5;
 static const int kTimeCheckInterval = 10;
 
-base::LazyInstance<FakeTileTaskManagerImpl> g_fake_tile_task_manager =
-    LAZY_INSTANCE_INITIALIZER;
-
 class TileManagerPerfTest : public TestLayerTreeHostBase {
  public:
   TileManagerPerfTest()
@@ -49,19 +46,19 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
                base::TimeDelta::FromMilliseconds(kTimeLimitMillis),
                kTimeCheckInterval) {}
 
-  void InitializeRenderer() override {
+  void InitializeFrameSink() override {
     host_impl()->SetVisible(true);
-    host_impl()->InitializeRenderer(output_surface());
+    host_impl()->InitializeFrameSink(layer_tree_frame_sink());
     tile_manager()->SetTileTaskManagerForTesting(
-        g_fake_tile_task_manager.Pointer());
+        std::make_unique<FakeTileTaskManagerImpl>());
   }
 
   void SetupDefaultTreesWithFixedTileSize(const gfx::Size& layer_bounds,
                                           const gfx::Size& tile_size) {
     scoped_refptr<FakeRasterSource> pending_raster_source =
-        FakeRasterSource::CreateFilled(layer_bounds);
+        FakeRasterSource::CreateFilledWithImages(layer_bounds);
     scoped_refptr<FakeRasterSource> active_raster_source =
-        FakeRasterSource::CreateFilled(layer_bounds);
+        FakeRasterSource::CreateFilledWithImages(layer_bounds);
 
     SetupPendingTree(std::move(active_raster_source), tile_size, Region());
     ActivateTree();
@@ -76,7 +73,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
     int priority_count = 0;
 
     std::vector<FakePictureLayerImpl*> layers = CreateLayers(layer_count, 10);
-    for (const auto& layer : layers)
+    for (auto* layer : layers)
       layer->UpdateTiles();
 
     timer_.Reset();
@@ -84,7 +81,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
       std::unique_ptr<RasterTilePriorityQueue> queue(
           host_impl()->BuildRasterQueue(priorities[priority_count],
                                         RasterTilePriorityQueue::Type::ALL));
-      priority_count = (priority_count + 1) % arraysize(priorities);
+      priority_count = (priority_count + 1) % base::size(priorities);
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
@@ -104,7 +101,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
                                  NEW_CONTENT_TAKES_PRIORITY};
 
     std::vector<FakePictureLayerImpl*> layers = CreateLayers(layer_count, 100);
-    for (const auto& layer : layers)
+    for (auto* layer : layers)
       layer->UpdateTiles();
 
     int priority_count = 0;
@@ -119,7 +116,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
         ASSERT_TRUE(queue->Top().tile());
         queue->Pop();
       }
-      priority_count = (priority_count + 1) % arraysize(priorities);
+      priority_count = (priority_count + 1) % base::size(priorities);
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
@@ -140,7 +137,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
     int priority_count = 0;
 
     std::vector<FakePictureLayerImpl*> layers = CreateLayers(layer_count, 10);
-    for (const auto& layer : layers) {
+    for (auto* layer : layers) {
       layer->UpdateTiles();
       for (size_t i = 0; i < layer->num_tilings(); ++i) {
         tile_manager()->InitializeTilesWithResourcesForTesting(
@@ -152,7 +149,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
     do {
       std::unique_ptr<EvictionTilePriorityQueue> queue(
           host_impl()->BuildEvictionQueue(priorities[priority_count]));
-      priority_count = (priority_count + 1) % arraysize(priorities);
+      priority_count = (priority_count + 1) % base::size(priorities);
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
@@ -174,7 +171,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
 
     std::vector<FakePictureLayerImpl*> layers =
         CreateLayers(layer_count, tile_count);
-    for (const auto& layer : layers) {
+    for (auto* layer : layers) {
       layer->UpdateTiles();
       for (size_t i = 0; i < layer->num_tilings(); ++i) {
         tile_manager()->InitializeTilesWithResourcesForTesting(
@@ -192,7 +189,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
         ASSERT_TRUE(queue->Top().tile());
         queue->Pop();
       }
-      priority_count = (priority_count + 1) % arraysize(priorities);
+      priority_count = (priority_count + 1) % base::size(priorities);
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
@@ -220,11 +217,10 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
 
     // Ensure that we start with blank trees and no tiles.
     host_impl()->ResetTreesForTesting();
-    tile_manager()->FreeResourcesAndCleanUpReleasedTilesForTesting();
 
     gfx::Size layer_bounds(width, height);
     gfx::Size viewport(width / 5, height / 5);
-    host_impl()->SetViewportSize(viewport);
+    host_impl()->active_tree()->SetDeviceViewportSize(viewport);
     SetupDefaultTreesWithFixedTileSize(layer_bounds,
                                        settings.default_tile_size);
 
@@ -236,7 +232,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
 
     // Create the rest of the layers as children of the root layer.
     scoped_refptr<FakeRasterSource> raster_source =
-        FakeRasterSource::CreateFilled(layer_bounds);
+        FakeRasterSource::CreateFilledWithImages(layer_bounds);
     while (static_cast<int>(layers.size()) < layer_count) {
       std::unique_ptr<FakePictureLayerImpl> child_layer =
           FakePictureLayerImpl::CreateWithRasterSource(
@@ -251,8 +247,7 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
     // Property trees need to be rebuilt because layers were added above.
     host_impl()->pending_tree()->property_trees()->needs_rebuild = true;
     host_impl()->pending_tree()->BuildLayerListAndPropertyTreesForTesting();
-    bool update_lcd_text = false;
-    host_impl()->pending_tree()->UpdateDrawProperties(update_lcd_text);
+    host_impl()->pending_tree()->UpdateDrawProperties();
     for (FakePictureLayerImpl* layer : layers)
       layer->CreateAllTiles();
 
@@ -281,12 +276,12 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
     timer_.Reset();
     do {
       host_impl()->AdvanceToNextFrame(base::TimeDelta::FromMilliseconds(1));
-      for (const auto& layer : layers)
+      for (auto* layer : layers)
         layer->UpdateTiles();
 
       GlobalStateThatImpactsTilePriority global_state(GlobalStateForTest());
       tile_manager()->PrepareTiles(global_state);
-      tile_manager()->Flush();
+      tile_manager()->CheckForCompletedTasks();
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
@@ -297,10 +292,11 @@ class TileManagerPerfTest : public TestLayerTreeHostBase {
   TileManager* tile_manager() { return host_impl()->tile_manager(); }
 
  protected:
-  LapTimer timer_;
+  base::LapTimer timer_;
 };
 
-TEST_F(TileManagerPerfTest, PrepareTiles) {
+// Failing.  https://crbug.com/792995
+TEST_F(TileManagerPerfTest, DISABLED_PrepareTiles) {
   RunPrepareTilesTest("2_100", 2, 100);
   RunPrepareTilesTest("2_500", 2, 500);
   RunPrepareTilesTest("2_1000", 2, 1000);

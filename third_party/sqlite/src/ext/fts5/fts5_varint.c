@@ -76,7 +76,7 @@ int sqlite3Fts5GetVarint32(const unsigned char *p, u32 *v){
     u8 n;
     p -= 2;
     n = sqlite3Fts5GetVarint(p, &v64);
-    *v = (u32)v64;
+    *v = ((u32)v64) & 0x7FFFFFFF;
     assert( n>3 && n<=9 );
     return n;
   }
@@ -304,7 +304,7 @@ static int FTS5_NOINLINE fts5PutVarint64(unsigned char *p, u64 v){
       v >>= 7;
     }
     return 9;
-  }    
+  }
   n = 0;
   do{
     buf[n++] = (u8)((v & 0x7f) | 0x80);
@@ -333,10 +333,12 @@ int sqlite3Fts5PutVarint(unsigned char *p, u64 v){
 
 
 int sqlite3Fts5GetVarintLen(u32 iVal){
+#if 0
   if( iVal<(1 << 7 ) ) return 1;
+#endif
+  assert( iVal>=(1 << 7) );
   if( iVal<(1 << 14) ) return 2;
   if( iVal<(1 << 21) ) return 3;
   if( iVal<(1 << 28) ) return 4;
   return 5;
 }
-

@@ -8,15 +8,16 @@
 #include <stddef.h>
 
 #include "base/files/scoped_temp_dir.h"
-#include "base/ios/ios_util.h"
 #include "base/mac/scoped_cftyperef.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_task_environment.h"
 #include "components/autofill/core/common/password_form.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
 
 using base::ScopedCFTypeRef;
+using base::UTF16ToUTF8;
 using autofill::PasswordForm;
 
 namespace password_manager {
@@ -27,7 +28,7 @@ class LoginDatabaseIOSTest : public PlatformTest {
     ClearKeychain();
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     base::FilePath login_db_path =
-        temp_dir_.path().AppendASCII("temp_login.db");
+        temp_dir_.GetPath().AppendASCII("temp_login.db");
     login_db_.reset(new password_manager::LoginDatabase(login_db_path));
     login_db_->Init();
   }
@@ -45,13 +46,14 @@ class LoginDatabaseIOSTest : public PlatformTest {
  protected:
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<LoginDatabase> login_db_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 };
 
 void LoginDatabaseIOSTest::ClearKeychain() {
   const void* queryKeys[] = {kSecClass};
   const void* queryValues[] = {kSecClassGenericPassword};
   ScopedCFTypeRef<CFDictionaryRef> query(CFDictionaryCreate(
-      NULL, queryKeys, queryValues, arraysize(queryKeys),
+      NULL, queryKeys, queryValues, base::size(queryKeys),
       &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
   OSStatus status = SecItemDelete(query);
   // iOS7 returns an error of |errSecItemNotFound| if you try to clear an empty
@@ -88,7 +90,7 @@ TEST_F(LoginDatabaseIOSTest, KeychainStorage) {
       base::string16(),
   };
 
-  for (unsigned int i = 0; i < arraysize(test_passwords); i++) {
+  for (unsigned int i = 0; i < base::size(test_passwords); i++) {
     std::string encrypted;
     EXPECT_EQ(LoginDatabase::ENCRYPTION_RESULT_SUCCESS,
               login_db_->EncryptedString(test_passwords[i], &encrypted));
@@ -116,10 +118,8 @@ TEST_F(LoginDatabaseIOSTest, UpdateLogin) {
       login_db_->UpdateLogin(form);
   ASSERT_EQ(1u, changes.size());
 
-  form.password_value = base::string16();
-
-  ScopedVector<PasswordForm> forms;
-  EXPECT_TRUE(login_db_->GetLogins(form, &forms));
+  std::vector<std::unique_ptr<PasswordForm>> forms;
+  EXPECT_TRUE(login_db_->GetLogins(PasswordStore::FormDigest(form), &forms));
 
   ASSERT_EQ(1U, forms.size());
   EXPECT_STREQ("secret", UTF16ToUTF8(forms[0]->password_value).c_str());
@@ -135,10 +135,10 @@ TEST_F(LoginDatabaseIOSTest, RemoveLogin) {
 
   ignore_result(login_db_->AddLogin(form));
 
-  ignore_result(login_db_->RemoveLogin(form));
+  ignore_result(login_db_->RemoveLogin(form, /*changes=*/nullptr));
 
-  ScopedVector<PasswordForm> forms;
-  EXPECT_TRUE(login_db_->GetLogins(form, &forms));
+  std::vector<std::unique_ptr<PasswordForm>> forms;
+  EXPECT_TRUE(login_db_->GetLogins(PasswordStore::FormDigest(form), &forms));
 
   ASSERT_EQ(0U, forms.size());
   ASSERT_EQ(0U, GetKeychainSize());
@@ -164,16 +164,17 @@ TEST_F(LoginDatabaseIOSTest, RemoveLoginsCreatedBetween) {
   forms[2].date_created = base::Time::FromDoubleT(300);
   forms[2].password_value = base::ASCIIToUTF16("pass2");
 
-  for (size_t i = 0; i < arraysize(forms); i++) {
+  for (size_t i = 0; i < base::size(forms); i++) {
     ignore_result(login_db_->AddLogin(forms[i]));
   }
 
   login_db_->RemoveLoginsCreatedBetween(base::Time::FromDoubleT(150),
-                                        base::Time::FromDoubleT(250));
+                                        base::Time::FromDoubleT(250),
+                                        /*changes=*/nullptr);
 
-  PasswordForm form;
-  form.signon_realm = "http://www.example.com";
-  ScopedVector<PasswordForm> logins;
+  PasswordStore::FormDigest form = {PasswordForm::SCHEME_HTML,
+                                    "http://www.example.com", GURL()};
+  std::vector<std::unique_ptr<PasswordForm>> logins;
   EXPECT_TRUE(login_db_->GetLogins(form, &logins));
 
   ASSERT_EQ(2U, logins.size());

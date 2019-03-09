@@ -6,19 +6,16 @@
 
 #include <stddef.h>
 
+#include "cc/base/math_util.h"
 #include "cc/layers/picture_layer_impl.h"
-#include "cc/playback/display_item_list_settings.h"
-#include "cc/playback/drawing_display_item.h"
+#include "cc/paint/paint_op_buffer.h"
 #include "cc/trees/layer_tree_host.h"
-#include "third_party/skia/include/core/SkCanvas.h"
-#include "third_party/skia/include/core/SkImage.h"
-#include "third_party/skia/include/core/SkPictureRecorder.h"
-#include "ui/gfx/skia_util.h"
+#include "cc/trees/layer_tree_settings.h"
 
 namespace cc {
 
 scoped_refptr<PictureImageLayer> PictureImageLayer::Create() {
-  return make_scoped_refptr(new PictureImageLayer());
+  return base::WrapRefCounted(new PictureImageLayer());
 }
 
 PictureImageLayer::PictureImageLayer() : PictureLayer(this) {}
@@ -29,7 +26,7 @@ PictureImageLayer::~PictureImageLayer() {
 
 std::unique_ptr<LayerImpl> PictureImageLayer::CreateLayerImpl(
     LayerTreeImpl* tree_impl) {
-  auto layer_impl = PictureLayerImpl::Create(tree_impl, id(), is_mask());
+  auto layer_impl = PictureLayerImpl::Create(tree_impl, id(), mask_type());
   layer_impl->set_is_directly_composited_image(true);
   return std::move(layer_impl);
 }
@@ -38,15 +35,21 @@ bool PictureImageLayer::HasDrawableContent() const {
   return image_ && PictureLayer::HasDrawableContent();
 }
 
-void PictureImageLayer::SetImage(sk_sp<const SkImage> image) {
+void PictureImageLayer::SetImage(PaintImage image,
+                                 const SkMatrix& matrix,
+                                 bool uses_width_as_height) {
   // SetImage() currently gets called whenever there is any
   // style change that affects the layer even if that change doesn't
   // affect the actual contents of the image (e.g. a CSS animation).
   // With this check in place we avoid unecessary texture uploads.
-  if (image_.get() == image.get())
+  if (image_ == image && matrix_ == matrix &&
+      uses_width_as_height_ == uses_width_as_height) {
     return;
+  }
 
   image_ = std::move(image);
+  matrix_ = matrix;
+  uses_width_as_height_ = uses_width_as_height;
   UpdateDrawsContent(HasDrawableContent());
   SetNeedsDisplay();
 }
@@ -58,34 +61,45 @@ gfx::Rect PictureImageLayer::PaintableRegion() {
 scoped_refptr<DisplayItemList> PictureImageLayer::PaintContentsToDisplayList(
     ContentLayerClient::PaintingControlSetting painting_control) {
   DCHECK(image_);
-  DCHECK_GT(image_->width(), 0);
-  DCHECK_GT(image_->height(), 0);
+  DCHECK_GT(image_.width(), 0);
+  DCHECK_GT(image_.height(), 0);
   DCHECK(layer_tree_host());
 
-  DisplayItemListSettings settings;
-  settings.use_cached_picture =
-      layer_tree_host()->settings().use_cached_picture_raster;
-  scoped_refptr<DisplayItemList> display_list =
-      DisplayItemList::Create(PaintableRegion(), settings);
+  int width = uses_width_as_height_ ? image_.height() : image_.width();
+  int height = uses_width_as_height_ ? image_.width() : image_.height();
 
-  SkPictureRecorder recorder;
-  SkCanvas* canvas =
-      recorder.beginRecording(gfx::RectToSkRect(PaintableRegion()));
+  float content_to_layer_scale_x = static_cast<float>(bounds().width()) / width;
+  float content_to_layer_scale_y =
+      static_cast<float>(bounds().height()) / height;
 
-  SkScalar content_to_layer_scale_x =
-      SkFloatToScalar(static_cast<float>(bounds().width()) / image_->width());
-  SkScalar content_to_layer_scale_y =
-      SkFloatToScalar(static_cast<float>(bounds().height()) / image_->height());
-  canvas->scale(content_to_layer_scale_x, content_to_layer_scale_y);
+  bool has_scale = !MathUtil::IsWithinEpsilon(content_to_layer_scale_x, 1.f) ||
+                   !MathUtil::IsWithinEpsilon(content_to_layer_scale_y, 1.f);
+  bool needs_save = has_scale || !matrix_.isIdentity();
+
+  auto display_list = base::MakeRefCounted<DisplayItemList>();
+
+  display_list->StartPaint();
+
+  if (needs_save)
+    display_list->push<SaveOp>();
+
+  if (has_scale) {
+    display_list->push<ScaleOp>(content_to_layer_scale_x,
+                                content_to_layer_scale_y);
+  }
+
+  if (!matrix_.isIdentity())
+    display_list->push<ConcatOp>(matrix_);
 
   // Because Android WebView resourceless software draw mode rasters directly
-  // to the root canvas, this draw must use the kSrcOver_Mode so that
+  // to the root canvas, this draw must use the SkBlendMode::kSrcOver so that
   // transparent images blend correctly.
-  canvas->drawImage(image_.get(), 0, 0);
+  display_list->push<DrawImageOp>(image_, 0.f, 0.f, nullptr);
 
-  display_list->CreateAndAppendItem<DrawingDisplayItem>(
-      PaintableRegion(), recorder.finishRecordingAsPicture());
+  if (needs_save)
+    display_list->push<RestoreOp>();
 
+  display_list->EndPaintOfUnpaired(PaintableRegion());
   display_list->Finalize();
   return display_list;
 }

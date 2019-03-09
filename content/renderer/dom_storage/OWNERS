@@ -1,5 +1,4 @@
-michaeln@chromium.org
-jsbell@chromium.org
-marja@chromium.org
+file://content/browser/dom_storage/OWNERS
 
-# Please include michaeln@ or marja@ if you make any functional/runtime changes.
+# TEAM: storage-dev@chromium.org
+# COMPONENT: Blink>Storage>DOMStorage

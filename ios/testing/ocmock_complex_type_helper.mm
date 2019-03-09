@@ -5,37 +5,41 @@
 #import "ios/testing/ocmock_complex_type_helper.h"
 
 #include "base/logging.h"
-#include "base/mac/scoped_nsobject.h"
+#import "base/strings/sys_string_conversions.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 @implementation OCMockComplexTypeHelper {
   // Same as the superclass -representedObject, but retained.
-  base::scoped_nsobject<OCMockObject> _object;
+  OCMockObject* _object;
   // All the blocks registered by selector.
-  base::scoped_nsobject<NSMutableDictionary> _blocks;
+  NSMutableDictionary* _blocks;
 }
 
 #pragma mark - public methods.
 
 - (instancetype)initWithRepresentedObject:(id)object {
   if ((self = [super initWithRepresentedObject:object]))
-    _object.reset([object retain]);
+    _object = object;
   return self;
 }
 
 - (void)onSelector:(SEL)selector callBlockExpectation:(id)block {
   if (!_blocks)
-    _blocks.reset([[NSMutableDictionary alloc] init]);
+    _blocks = [[NSMutableDictionary alloc] init];
 
   NSString* key = NSStringFromSelector(selector);
   DCHECK(![_blocks objectForKey:key]) << "Only one expectation per signature";
-  base::scoped_nsobject<id> value([block copy]);
+  id value = [block copy];
   [_blocks setObject:value forKey:key];
 }
 
 - (void)removeBlockExpectationOnSelector:(SEL)selector {
   NSString* key = NSStringFromSelector(selector);
-  DCHECK([_blocks objectForKey:key]) << "No expectation for selector "
-                                     << [key UTF8String];
+  DCHECK([_blocks objectForKey:key])
+      << "No expectation for selector " << base::SysNSStringToUTF8(key);
   [_blocks removeObjectForKey:key];
 }
 
@@ -43,7 +47,7 @@
   NSString* key = NSStringFromSelector(selector);
   id block = [_blocks objectForKey:key];
   DCHECK(block) << "Missing block expectation for selector "
-                << [key UTF8String];
+                << base::SysNSStringToUTF8(key);
   return block;
 }
 

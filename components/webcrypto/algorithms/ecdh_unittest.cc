@@ -12,8 +12,8 @@
 #include "components/webcrypto/crypto_data.h"
 #include "components/webcrypto/jwk.h"
 #include "components/webcrypto/status.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithmParams.h"
-#include "third_party/WebKit/public/platform/WebCryptoKeyAlgorithm.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
 
 namespace webcrypto {
 
@@ -24,20 +24,19 @@ namespace {
 
 blink::WebCryptoAlgorithm CreateEcdhImportAlgorithm(
     blink::WebCryptoNamedCurve named_curve) {
-  return CreateEcImportAlgorithm(blink::WebCryptoAlgorithmIdEcdh, named_curve);
+  return CreateEcImportAlgorithm(blink::kWebCryptoAlgorithmIdEcdh, named_curve);
 }
 
 blink::WebCryptoAlgorithm CreateEcdhDeriveParams(
     const blink::WebCryptoKey& public_key) {
-  return blink::WebCryptoAlgorithm::adoptParamsAndCreate(
-      blink::WebCryptoAlgorithmIdEcdh,
+  return blink::WebCryptoAlgorithm::AdoptParamsAndCreate(
+      blink::kWebCryptoAlgorithmIdEcdh,
       new blink::WebCryptoEcdhKeyDeriveParams(public_key));
 }
 
-blink::WebCryptoAlgorithm CreateAesGcmDerivedKeyParams(
-    unsigned short length_bits) {
-  return blink::WebCryptoAlgorithm::adoptParamsAndCreate(
-      blink::WebCryptoAlgorithmIdAesGcm,
+blink::WebCryptoAlgorithm CreateAesGcmDerivedKeyParams(uint16_t length_bits) {
+  return blink::WebCryptoAlgorithm::AdoptParamsAndCreate(
+      blink::kWebCryptoAlgorithmIdAesGcm,
       new blink::WebCryptoAesDerivedKeyParams(length_bits));
 }
 
@@ -46,12 +45,12 @@ bool ImportKeysFromTest(const base::DictionaryValue* test,
                         blink::WebCryptoKey* public_key,
                         blink::WebCryptoKey* private_key) {
   // Import the public key.
-  const base::DictionaryValue* public_key_json = NULL;
+  const base::DictionaryValue* public_key_json = nullptr;
   EXPECT_TRUE(test->GetDictionary("public_key", &public_key_json));
   blink::WebCryptoNamedCurve curve =
       GetCurveNameFromDictionary(public_key_json);
   EXPECT_EQ(Status::Success(),
-            ImportKey(blink::WebCryptoKeyFormatJwk,
+            ImportKey(blink::kWebCryptoKeyFormatJwk,
                       CryptoData(MakeJsonVector(*public_key_json)),
                       CreateEcdhImportAlgorithm(curve), true, 0, public_key));
 
@@ -61,14 +60,14 @@ bool ImportKeysFromTest(const base::DictionaryValue* test,
   test->GetString("private_key_error", &expected_private_key_error);
 
   // Import the private key.
-  const base::DictionaryValue* private_key_json = NULL;
+  const base::DictionaryValue* private_key_json = nullptr;
   EXPECT_TRUE(test->GetDictionary("private_key", &private_key_json));
   curve = GetCurveNameFromDictionary(private_key_json);
   Status status = ImportKey(
-      blink::WebCryptoKeyFormatJwk,
+      blink::kWebCryptoKeyFormatJwk,
       CryptoData(MakeJsonVector(*private_key_json)),
       CreateEcdhImportAlgorithm(curve), true,
-      blink::WebCryptoKeyUsageDeriveBits | blink::WebCryptoKeyUsageDeriveKey,
+      blink::kWebCryptoKeyUsageDeriveBits | blink::kWebCryptoKeyUsageDeriveKey,
       private_key);
   EXPECT_EQ(expected_private_key_error, StatusToString(status));
   return status.IsSuccess();
@@ -77,14 +76,14 @@ bool ImportKeysFromTest(const base::DictionaryValue* test,
 class WebCryptoEcdhTest : public WebCryptoTestBase {};
 
 TEST_F(WebCryptoEcdhTest, DeriveBitsKnownAnswer) {
-  std::unique_ptr<base::ListValue> tests;
+  base::ListValue tests;
   ASSERT_TRUE(ReadJsonTestFileToList("ecdh.json", &tests));
 
-  for (size_t test_index = 0; test_index < tests->GetSize(); ++test_index) {
+  for (size_t test_index = 0; test_index < tests.GetSize(); ++test_index) {
     SCOPED_TRACE(test_index);
 
     const base::DictionaryValue* test;
-    ASSERT_TRUE(tests->GetDictionary(test_index, &test));
+    ASSERT_TRUE(tests.GetDictionary(test_index, &test));
 
     // Import the keys.
     blink::WebCryptoKey public_key;
@@ -119,15 +118,15 @@ TEST_F(WebCryptoEcdhTest, DeriveBitsKnownAnswer) {
 // 528 bits.
 ::testing::AssertionResult LoadTestKeys(blink::WebCryptoKey* public_key,
                                         blink::WebCryptoKey* private_key) {
-  std::unique_ptr<base::ListValue> tests;
+  base::ListValue tests;
   if (!ReadJsonTestFileToList("ecdh.json", &tests))
     return ::testing::AssertionFailure() << "Failed loading ecdh.json";
 
-  const base::DictionaryValue* test = NULL;
+  const base::DictionaryValue* test = nullptr;
   bool valid_p521_keys = false;
-  for (size_t test_index = 0; test_index < tests->GetSize(); ++test_index) {
+  for (size_t test_index = 0; test_index < tests.GetSize(); ++test_index) {
     SCOPED_TRACE(test_index);
-    EXPECT_TRUE(tests->GetDictionary(test_index, &test));
+    EXPECT_TRUE(tests.GetDictionary(test_index, &test));
     test->GetBoolean("valid_p521_keys", &valid_p521_keys);
     if (valid_p521_keys)
       break;
@@ -139,8 +138,8 @@ TEST_F(WebCryptoEcdhTest, DeriveBitsKnownAnswer) {
 
   ImportKeysFromTest(test, public_key, private_key);
 
-  EXPECT_EQ(blink::WebCryptoNamedCurveP521,
-            public_key->algorithm().ecParams()->namedCurve());
+  EXPECT_EQ(blink::kWebCryptoNamedCurveP521,
+            public_key->Algorithm().EcParams()->NamedCurve());
 
   return ::testing::AssertionSuccess();
 }
@@ -155,9 +154,9 @@ TEST_F(WebCryptoEcdhTest, DeriveKeyBadAesLength) {
 
   ASSERT_EQ(Status::ErrorGetAesKeyLength(),
             DeriveKey(CreateEcdhDeriveParams(public_key), base_key,
-                      CreateAlgorithm(blink::WebCryptoAlgorithmIdAesGcm),
+                      CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesGcm),
                       CreateAesGcmDerivedKeyParams(129), true,
-                      blink::WebCryptoKeyUsageEncrypt, &derived_key));
+                      blink::kWebCryptoKeyUsageEncrypt, &derived_key));
 }
 
 // Try deriving an AES key of length 192 bits.
@@ -170,9 +169,9 @@ TEST_F(WebCryptoEcdhTest, DeriveKeyUnsupportedAesLength) {
 
   ASSERT_EQ(Status::ErrorAes192BitUnsupported(),
             DeriveKey(CreateEcdhDeriveParams(public_key), base_key,
-                      CreateAlgorithm(blink::WebCryptoAlgorithmIdAesGcm),
+                      CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesGcm),
                       CreateAesGcmDerivedKeyParams(192), true,
-                      blink::WebCryptoKeyUsageEncrypt, &derived_key));
+                      blink::kWebCryptoKeyUsageEncrypt, &derived_key));
 }
 
 // Try deriving an HMAC key of length 0 bits.
@@ -184,12 +183,12 @@ TEST_F(WebCryptoEcdhTest, DeriveKeyZeroLengthHmac) {
   blink::WebCryptoKey derived_key;
 
   const blink::WebCryptoAlgorithm import_algorithm =
-      CreateHmacImportAlgorithm(blink::WebCryptoAlgorithmIdSha1, 0);
+      CreateHmacImportAlgorithm(blink::kWebCryptoAlgorithmIdSha1, 0);
 
   ASSERT_EQ(Status::ErrorGetHmacKeyLengthZero(),
             DeriveKey(CreateEcdhDeriveParams(public_key), base_key,
                       import_algorithm, import_algorithm, true,
-                      blink::WebCryptoKeyUsageSign, &derived_key));
+                      blink::kWebCryptoKeyUsageSign, &derived_key));
 }
 
 // Derive an HMAC key of length 19 bits.
@@ -201,25 +200,25 @@ TEST_F(WebCryptoEcdhTest, DeriveKeyHmac19Bits) {
   blink::WebCryptoKey derived_key;
 
   const blink::WebCryptoAlgorithm import_algorithm =
-      CreateHmacImportAlgorithm(blink::WebCryptoAlgorithmIdSha1, 19);
+      CreateHmacImportAlgorithm(blink::kWebCryptoAlgorithmIdSha1, 19);
 
   ASSERT_EQ(Status::Success(),
             DeriveKey(CreateEcdhDeriveParams(public_key), base_key,
                       import_algorithm, import_algorithm, true,
-                      blink::WebCryptoKeyUsageSign, &derived_key));
+                      blink::kWebCryptoKeyUsageSign, &derived_key));
 
-  ASSERT_EQ(blink::WebCryptoAlgorithmIdHmac, derived_key.algorithm().id());
-  ASSERT_EQ(blink::WebCryptoAlgorithmIdSha1,
-            derived_key.algorithm().hmacParams()->hash().id());
-  ASSERT_EQ(19u, derived_key.algorithm().hmacParams()->lengthBits());
+  ASSERT_EQ(blink::kWebCryptoAlgorithmIdHmac, derived_key.Algorithm().Id());
+  ASSERT_EQ(blink::kWebCryptoAlgorithmIdSha1,
+            derived_key.Algorithm().HmacParams()->GetHash().Id());
+  ASSERT_EQ(19u, derived_key.Algorithm().HmacParams()->LengthBits());
 
   // Export the key and verify its contents.
   std::vector<uint8_t> raw_key;
   EXPECT_EQ(Status::Success(),
-            ExportKey(blink::WebCryptoKeyFormatRaw, derived_key, &raw_key));
+            ExportKey(blink::kWebCryptoKeyFormatRaw, derived_key, &raw_key));
   EXPECT_EQ(3u, raw_key.size());
   // The last 7 bits of the key should be zero.
-  EXPECT_EQ(0, raw_key[raw_key.size() - 1] & 0x1f);
+  EXPECT_EQ(0, raw_key.back() & 0x1f);
 }
 
 // Derive an HMAC key with no specified length (just the hash of SHA-256).
@@ -231,22 +230,22 @@ TEST_F(WebCryptoEcdhTest, DeriveKeyHmacSha256NoLength) {
   blink::WebCryptoKey derived_key;
 
   const blink::WebCryptoAlgorithm import_algorithm =
-      CreateHmacImportAlgorithmNoLength(blink::WebCryptoAlgorithmIdSha256);
+      CreateHmacImportAlgorithmNoLength(blink::kWebCryptoAlgorithmIdSha256);
 
   ASSERT_EQ(Status::Success(),
             DeriveKey(CreateEcdhDeriveParams(public_key), base_key,
                       import_algorithm, import_algorithm, true,
-                      blink::WebCryptoKeyUsageSign, &derived_key));
+                      blink::kWebCryptoKeyUsageSign, &derived_key));
 
-  ASSERT_EQ(blink::WebCryptoAlgorithmIdHmac, derived_key.algorithm().id());
-  ASSERT_EQ(blink::WebCryptoAlgorithmIdSha256,
-            derived_key.algorithm().hmacParams()->hash().id());
-  ASSERT_EQ(512u, derived_key.algorithm().hmacParams()->lengthBits());
+  ASSERT_EQ(blink::kWebCryptoAlgorithmIdHmac, derived_key.Algorithm().Id());
+  ASSERT_EQ(blink::kWebCryptoAlgorithmIdSha256,
+            derived_key.Algorithm().HmacParams()->GetHash().Id());
+  ASSERT_EQ(512u, derived_key.Algorithm().HmacParams()->LengthBits());
 
   // Export the key and verify its contents.
   std::vector<uint8_t> raw_key;
   EXPECT_EQ(Status::Success(),
-            ExportKey(blink::WebCryptoKeyFormatRaw, derived_key, &raw_key));
+            ExportKey(blink::kWebCryptoKeyFormatRaw, derived_key, &raw_key));
   EXPECT_EQ(64u, raw_key.size());
 }
 
@@ -267,12 +266,12 @@ TEST_F(WebCryptoEcdhTest, DeriveKeyHmacSha512NoLength) {
   blink::WebCryptoKey derived_key;
 
   const blink::WebCryptoAlgorithm import_algorithm =
-      CreateHmacImportAlgorithmNoLength(blink::WebCryptoAlgorithmIdSha512);
+      CreateHmacImportAlgorithmNoLength(blink::kWebCryptoAlgorithmIdSha512);
 
   ASSERT_EQ(Status::ErrorEcdhLengthTooBig(528),
             DeriveKey(CreateEcdhDeriveParams(public_key), base_key,
                       import_algorithm, import_algorithm, true,
-                      blink::WebCryptoKeyUsageSign, &derived_key));
+                      blink::kWebCryptoKeyUsageSign, &derived_key));
 }
 
 // Try deriving an AES key of length 128 bits.
@@ -285,46 +284,46 @@ TEST_F(WebCryptoEcdhTest, DeriveKeyAes128) {
 
   ASSERT_EQ(Status::Success(),
             DeriveKey(CreateEcdhDeriveParams(public_key), base_key,
-                      CreateAlgorithm(blink::WebCryptoAlgorithmIdAesGcm),
+                      CreateAlgorithm(blink::kWebCryptoAlgorithmIdAesGcm),
                       CreateAesGcmDerivedKeyParams(128), true,
-                      blink::WebCryptoKeyUsageEncrypt, &derived_key));
+                      blink::kWebCryptoKeyUsageEncrypt, &derived_key));
 
-  ASSERT_EQ(blink::WebCryptoAlgorithmIdAesGcm, derived_key.algorithm().id());
-  ASSERT_EQ(128, derived_key.algorithm().aesParams()->lengthBits());
+  ASSERT_EQ(blink::kWebCryptoAlgorithmIdAesGcm, derived_key.Algorithm().Id());
+  ASSERT_EQ(128, derived_key.Algorithm().AesParams()->LengthBits());
 
   // Export the key and verify its contents.
   std::vector<uint8_t> raw_key;
   EXPECT_EQ(Status::Success(),
-            ExportKey(blink::WebCryptoKeyFormatRaw, derived_key, &raw_key));
+            ExportKey(blink::kWebCryptoKeyFormatRaw, derived_key, &raw_key));
   EXPECT_EQ(16u, raw_key.size());
 }
 
 TEST_F(WebCryptoEcdhTest, ImportKeyEmptyUsage) {
   blink::WebCryptoKey key;
 
-  std::unique_ptr<base::ListValue> tests;
+  base::ListValue tests;
   ASSERT_TRUE(ReadJsonTestFileToList("ecdh.json", &tests));
 
   const base::DictionaryValue* test;
-  ASSERT_TRUE(tests->GetDictionary(0, &test));
+  ASSERT_TRUE(tests.GetDictionary(0, &test));
 
   // Import the public key.
-  const base::DictionaryValue* public_key_json = NULL;
+  const base::DictionaryValue* public_key_json = nullptr;
   EXPECT_TRUE(test->GetDictionary("public_key", &public_key_json));
   blink::WebCryptoNamedCurve curve =
       GetCurveNameFromDictionary(public_key_json);
   ASSERT_EQ(Status::Success(),
-            ImportKey(blink::WebCryptoKeyFormatJwk,
+            ImportKey(blink::kWebCryptoKeyFormatJwk,
                       CryptoData(MakeJsonVector(*public_key_json)),
                       CreateEcdhImportAlgorithm(curve), true, 0, &key));
-  EXPECT_EQ(0, key.usages());
+  EXPECT_EQ(0, key.Usages());
 
   // Import the private key.
-  const base::DictionaryValue* private_key_json = NULL;
+  const base::DictionaryValue* private_key_json = nullptr;
   EXPECT_TRUE(test->GetDictionary("private_key", &private_key_json));
   curve = GetCurveNameFromDictionary(private_key_json);
   ASSERT_EQ(Status::ErrorCreateKeyEmptyUsages(),
-            ImportKey(blink::WebCryptoKeyFormatJwk,
+            ImportKey(blink::kWebCryptoKeyFormatJwk,
                       CryptoData(MakeJsonVector(*private_key_json)),
                       CreateEcdhImportAlgorithm(curve), true, 0, &key));
 }

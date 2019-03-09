@@ -13,6 +13,8 @@
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
+#include "base/time/time.h"
 #include "media/audio/audio_io.h"
 #include "media/base/audio_renderer_sink.h"
 #include "media/base/media_export.h"
@@ -26,7 +28,7 @@ namespace media {
 // TODO(dalecurtis): Delete this class once we have a proper mojo audio service;
 // tracked by http://crbug.com/425368
 class MEDIA_EXPORT AudioOutputStreamSink
-    : NON_EXPORTED_BASE(public RestartableAudioRendererSink),
+    : public RestartableAudioRendererSink,
       public AudioOutputStream::AudioSourceCallback {
  public:
   AudioOutputStreamSink();
@@ -40,13 +42,16 @@ class MEDIA_EXPORT AudioOutputStreamSink
   void Play() override;
   bool SetVolume(double volume) override;
   OutputDeviceInfo GetOutputDeviceInfo() override;
+  void GetOutputDeviceInfoAsync(OutputDeviceInfoCB info_cb) override;
+  bool IsOptimizedForHardwareParameters() override;
   bool CurrentThreadIsRenderingThread() override;
 
   // AudioSourceCallback implementation.
-  int OnMoreData(AudioBus* dest,
-                 uint32_t total_bytes_delay,
-                 uint32_t frames_skipped) override;
-  void OnError(AudioOutputStream* stream) override;
+  int OnMoreData(base::TimeDelta delay,
+                 base::TimeTicks delay_timestamp,
+                 int prior_frames_skipped,
+                 AudioBus* dest) override;
+  void OnError() override;
 
  private:
   ~AudioOutputStreamSink() override;
@@ -72,7 +77,7 @@ class MEDIA_EXPORT AudioOutputStreamSink
   // |active_params_| is set on the audio thread and therefore does not need
   // synchronization.
   AudioParameters active_params_;
-  RenderCallback* active_render_callback_;
+  RenderCallback* active_render_callback_ GUARDED_BY(callback_lock_);
 
   // Lock to synchronize setting and clearing of |active_render_callback_|.
   base::Lock callback_lock_;
@@ -86,6 +91,6 @@ class MEDIA_EXPORT AudioOutputStreamSink
   DISALLOW_COPY_AND_ASSIGN(AudioOutputStreamSink);
 };
 
-}  // namepace media
+}  // namespace media
 
 #endif  // MEDIA_AUDIO_AUDIO_OUTPUT_STREAM_SINK_H_

@@ -8,8 +8,11 @@
 #include <stdint.h>
 
 #include <memory>
+#include <random>
 
 #include "base/macros.h"
+#include "base/optional.h"
+#include "build/build_config.h"
 #include "ui/events/events_export.h"
 #include "ui/gfx/x/x11_types.h"
 
@@ -18,9 +21,14 @@ using XEvent = union _XEvent;
 using XID = unsigned long;
 using XWindow = unsigned long;
 
+namespace gfx {
+class Point;
+}
+
 namespace ui {
 
 class X11HotplugEventHandler;
+class XScopedEventSelector;
 
 // Responsible for notifying X11EventSource when new XEvents are available and
 // processing/dispatching XEvents. Implementations will likely be a
@@ -51,28 +59,30 @@ class EVENTS_EXPORT X11EventSource {
   // available X events.
   void DispatchXEvents();
 
-  // Blocks on the X11 event queue until we receive notification from the
-  // xserver that |w| has been mapped; StructureNotifyMask events on |w| are
-  // pulled out from the queue and dispatched out of order.
-  //
-  // For those that know X11, this is really a wrapper around XWindowEvent
-  // which still makes sure the preempted event is dispatched instead of
-  // dropped on the floor. This method exists because mapping a window is
-  // asynchronous (and we receive an XEvent when mapped), while there are also
-  // functions which require a mapped window.
-  void BlockUntilWindowMapped(XID window);
-
-  void BlockUntilWindowUnmapped(XID window);
+  // Dispatches a given event immediately. This is to facilitate sequential
+  // interaction between the gtk event loop (used for IME) and the
+  // main X11 event loop.
+  void DispatchXEventNow(XEvent* event);
 
   XDisplay* display() { return display_; }
-  Time last_seen_server_time() const { return last_seen_server_time_; }
 
-  // Explicitly asks the X11 server for the current timestamp, and updates
-  // |last_seen_server_time| with this value.
-  Time UpdateLastSeenServerTime();
+  // Returns the timestamp of the event currently being dispatched.  Falls back
+  // on GetCurrentServerTime() if there's no event being dispatched, or if the
+  // current event does not have a timestamp.
+  Time GetTimestamp();
+
+#if !defined(USE_OZONE)
+  // Returns the root pointer location only if there is an event being
+  // dispatched that contains that information.
+  base::Optional<gfx::Point> GetRootCursorLocationFromCurrentEvent() const;
+#endif
 
   void StopCurrentEventStream();
   void OnDispatcherListChanged();
+
+  // Explicitly asks the X11 server for the current timestamp, and updates
+  // |last_seen_server_time_| with this value.
+  Time GetCurrentServerTime();
 
  protected:
   // Extracts cookie data from |xevent| if it's of GenericType, and dispatches
@@ -83,10 +93,6 @@ class EVENTS_EXPORT X11EventSource {
   // Handles updates after event has been dispatched.
   void PostDispatchEvent(XEvent* xevent);
 
-  // Block until receiving a structure notify event of |type| on |window|.
-  // Dispatch all encountered events prior to the one we're blocking on.
-  void BlockOnWindowStructureEvent(XID window, int type);
-
  private:
   static X11EventSource* instance_;
 
@@ -95,19 +101,24 @@ class EVENTS_EXPORT X11EventSource {
   // The connection to the X11 server used to receive the events.
   XDisplay* display_;
 
-  // The last timestamp seen in an XEvent.
-  Time last_seen_server_time_;
+  // Event currently being dispatched.
+  XEvent* dispatching_event_;
 
   // State necessary for UpdateLastSeenServerTime
   bool dummy_initialized_;
   XWindow dummy_window_;
   XAtom dummy_atom_;
+  std::unique_ptr<XScopedEventSelector> dummy_window_events_;
 
   // Keeps track of whether this source should continue to dispatch all the
   // available events.
   bool continue_stream_ = true;
 
   std::unique_ptr<X11HotplugEventHandler> hotplug_event_handler_;
+
+  // Used to sample RTT measurements, with frequency 1/1000.
+  std::default_random_engine generator_;
+  std::uniform_int_distribution<int> distribution_;
 
   DISALLOW_COPY_AND_ASSIGN(X11EventSource);
 };

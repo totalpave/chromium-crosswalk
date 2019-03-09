@@ -11,32 +11,31 @@
 
 namespace views {
 namespace test {
-namespace {
 
-Widget* CreateTopLevelPlatformWidgetWithStubbedCapture(
-    ViewsTestBase* test,
-    Widget::InitParams::Type type) {
+void WidgetTest::WidgetCloser::operator()(Widget* widget) const {
+  widget->CloseNow();
+}
+
+WidgetTest::WidgetTest() = default;
+WidgetTest::~WidgetTest() = default;
+
+Widget* WidgetTest::CreateTopLevelPlatformWidget() {
   Widget* widget = new Widget;
-  Widget::InitParams params = test->CreateParams(type);
+  Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
   params.native_widget =
       CreatePlatformNativeWidgetImpl(params, widget, kStubCapture, nullptr);
   widget->Init(params);
   return widget;
 }
 
-}  // namespace
-
-WidgetTest::WidgetTest() {}
-WidgetTest::~WidgetTest() {}
-
-Widget* WidgetTest::CreateTopLevelPlatformWidget() {
-  return CreateTopLevelPlatformWidgetWithStubbedCapture(
-      this, Widget::InitParams::TYPE_WINDOW);
-}
-
 Widget* WidgetTest::CreateTopLevelFramelessPlatformWidget() {
-  return CreateTopLevelPlatformWidgetWithStubbedCapture(
-      this, Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  Widget* widget = new Widget;
+  Widget::InitParams params =
+      CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  params.native_widget =
+      CreatePlatformNativeWidgetImpl(params, widget, kStubCapture, nullptr);
+  widget->Init(params);
+  return widget;
 }
 
 Widget* WidgetTest::CreateChildPlatformWidget(
@@ -68,16 +67,7 @@ Widget* WidgetTest::CreateChildNativeWidgetWithParent(Widget* parent) {
 }
 
 Widget* WidgetTest::CreateChildNativeWidget() {
-  return CreateChildNativeWidgetWithParent(NULL);
-}
-
-Widget* WidgetTest::CreateNativeDesktopWidget() {
-  Widget* widget = new Widget;
-  Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
-  params.native_widget =
-      CreatePlatformDesktopNativeWidgetImpl(params, widget, nullptr);
-  widget->Init(params);
-  return widget;
+  return CreateChildNativeWidgetWithParent(nullptr);
 }
 
 View* WidgetTest::GetMousePressedHandler(internal::RootView* root_view) {
@@ -92,8 +82,18 @@ View* WidgetTest::GetGestureHandler(internal::RootView* root_view) {
   return root_view->gesture_handler_;
 }
 
-TestDesktopWidgetDelegate::TestDesktopWidgetDelegate() : widget_(new Widget) {
+DesktopWidgetTest::DesktopWidgetTest() = default;
+DesktopWidgetTest::~DesktopWidgetTest() = default;
+
+void DesktopWidgetTest::SetUp() {
+  set_native_widget_type(NativeWidgetType::kDesktop);
+  WidgetTest::SetUp();
 }
+
+TestDesktopWidgetDelegate::TestDesktopWidgetDelegate() : widget_(new Widget) {}
+
+TestDesktopWidgetDelegate::TestDesktopWidgetDelegate(Widget* widget)
+    : widget_(widget) {}
 
 TestDesktopWidgetDelegate::~TestDesktopWidgetDelegate() {
   if (widget_)
@@ -103,10 +103,6 @@ TestDesktopWidgetDelegate::~TestDesktopWidgetDelegate() {
 
 void TestDesktopWidgetDelegate::InitWidget(Widget::InitParams init_params) {
   init_params.delegate = this;
-#if !defined(OS_CHROMEOS)
-  init_params.native_widget =
-      CreatePlatformDesktopNativeWidgetImpl(init_params, widget_, nullptr);
-#endif
   init_params.bounds = initial_bounds_;
   widget_->Init(init_params);
 }
@@ -132,6 +128,12 @@ bool TestDesktopWidgetDelegate::ShouldAdvanceFocusToTopLevelWidget() const {
   return true;  // Same default as DefaultWidgetDelegate in widget.cc.
 }
 
+bool TestDesktopWidgetDelegate::OnCloseRequested(
+    Widget::ClosedReason close_reason) {
+  last_closed_reason_ = close_reason;
+  return can_close_;
+}
+
 TestInitialFocusWidgetDelegate::TestInitialFocusWidgetDelegate(
     gfx::NativeWindow context)
     : view_(new View) {
@@ -148,6 +150,68 @@ TestInitialFocusWidgetDelegate::~TestInitialFocusWidgetDelegate() {}
 
 View* TestInitialFocusWidgetDelegate::GetInitiallyFocusedView() {
   return view_;
+}
+
+WidgetActivationWaiter::WidgetActivationWaiter(Widget* widget, bool active)
+    : observed_(false), active_(active) {
+  if (active == widget->IsActive()) {
+    observed_ = true;
+    return;
+  }
+  widget->AddObserver(this);
+}
+
+WidgetActivationWaiter::~WidgetActivationWaiter() {}
+
+void WidgetActivationWaiter::Wait() {
+  if (!observed_)
+    run_loop_.Run();
+}
+
+void WidgetActivationWaiter::OnWidgetActivationChanged(Widget* widget,
+                                                       bool active) {
+  if (active_ != active)
+    return;
+
+  observed_ = true;
+  widget->RemoveObserver(this);
+  if (run_loop_.running())
+    run_loop_.Quit();
+}
+
+WidgetClosingObserver::WidgetClosingObserver(Widget* widget) : widget_(widget) {
+  widget_->AddObserver(this);
+}
+
+WidgetClosingObserver::~WidgetClosingObserver() {
+  if (widget_)
+    widget_->RemoveObserver(this);
+}
+
+void WidgetClosingObserver::Wait() {
+  if (widget_)
+    run_loop_.Run();
+}
+
+void WidgetClosingObserver::OnWidgetClosing(Widget* widget) {
+  DCHECK_EQ(widget_, widget);
+  widget_->RemoveObserver(this);
+  widget_ = nullptr;
+  if (run_loop_.running())
+    run_loop_.Quit();
+}
+
+WidgetDestroyedWaiter::WidgetDestroyedWaiter(Widget* widget) {
+  widget->AddObserver(this);
+}
+
+void WidgetDestroyedWaiter::Wait() {
+  run_loop_.Run();
+}
+
+void WidgetDestroyedWaiter::OnWidgetDestroyed(Widget* widget) {
+  widget->RemoveObserver(this);
+  run_loop_.Quit();
 }
 
 }  // namespace test

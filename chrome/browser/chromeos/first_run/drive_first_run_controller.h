@@ -1,6 +1,7 @@
 // Copyright 2013 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+
 #ifndef CHROME_BROWSER_CHROMEOS_FIRST_RUN_DRIVE_FIRST_RUN_CONTROLLER_H_
 #define CHROME_BROWSER_CHROMEOS_FIRST_RUN_DRIVE_FIRST_RUN_CONTROLLER_H_
 
@@ -81,7 +82,7 @@ class DriveFirstRunController {
   base::OneShotTimer web_contents_timer_;
   base::OneShotTimer initial_delay_timer_;
   bool started_;
-  base::ObserverList<Observer> observer_list_;
+  base::ObserverList<Observer>::Unchecked observer_list_;
 
   int initial_delay_secs_;
   int web_contents_timeout_secs_;

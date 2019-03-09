@@ -14,14 +14,9 @@
 #include "remoting/protocol/audio_stub.h"
 #include "remoting/protocol/channel_dispatcher_base.h"
 
-namespace net {
-class StreamSocket;
-}  // namespace net
-
 namespace remoting {
 namespace protocol {
 
-class Session;
 class SessionConfig;
 
 class AudioWriter : public ChannelDispatcherBase,
@@ -35,7 +30,7 @@ class AudioWriter : public ChannelDispatcherBase,
 
   // AudioStub interface.
   void ProcessAudioPacket(std::unique_ptr<AudioPacket> packet,
-                          const base::Closure& done) override;
+                          base::OnceClosure done) override;
 
  private:
   AudioWriter();

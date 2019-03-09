@@ -4,13 +4,20 @@
 
 #include "chrome/browser/extensions/extension_ui_util.h"
 
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/themes/theme_properties.h"
+#include "chrome/browser/themes/theme_service.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/image_util.h"
+#include "ui/base/theme_provider.h"
 
 namespace extensions {
 
@@ -51,9 +58,28 @@ bool ShouldDisplayInExtensionSettings(const Extension* extension,
   return extension->ShouldDisplayInExtensionSettings();
 }
 
-bool ShouldNotBeVisible(const Extension* extension,
-                        content::BrowserContext* context) {
-  return extension->ShouldNotBeVisible();
+base::string16 GetEnabledExtensionNameForUrl(const GURL& url,
+                                             content::BrowserContext* context) {
+  if (!url.SchemeIs(extensions::kExtensionScheme))
+    return base::string16();
+
+  extensions::ExtensionRegistry* extension_registry =
+      extensions::ExtensionRegistry::Get(context);
+  const extensions::Extension* extension =
+      extension_registry->enabled_extensions().GetByID(url.host());
+  return extension ? base::CollapseWhitespace(
+                         base::UTF8ToUTF16(extension->name()), false)
+                   : base::string16();
+}
+
+bool IsRenderedIconSufficientlyVisibleForBrowserContext(
+    const SkBitmap& bitmap,
+    content::BrowserContext* browser_context) {
+  Profile* const profile = Profile::FromBrowserContext(browser_context);
+  const ui::ThemeProvider& provider =
+      ThemeService::GetThemeProviderForProfile(profile);
+  return extensions::image_util::IsRenderedIconSufficientlyVisible(
+      bitmap, provider.GetColor(ThemeProperties::COLOR_TOOLBAR));
 }
 
 }  // namespace ui_util

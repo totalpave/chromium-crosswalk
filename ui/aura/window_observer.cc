@@ -5,25 +5,13 @@
 #include "ui/aura/window_observer.h"
 
 #include "base/logging.h"
-#include "ui/aura/window.h"
 
 namespace aura {
 
-WindowObserver::WindowObserver() : observing_(0) {
-}
+WindowObserver::WindowObserver() = default;
 
 WindowObserver::~WindowObserver() {
-  CHECK_EQ(0, observing_);
-}
-
-void WindowObserver::OnObservingWindow(aura::Window* window) {
-  if (!window->HasObserver(this))
-    observing_++;
-}
-
-void WindowObserver::OnUnobservingWindow(aura::Window* window) {
-  if (window->HasObserver(this))
-    observing_--;
+  CHECK(!IsInObserverList());
 }
 
 }  // namespace aura

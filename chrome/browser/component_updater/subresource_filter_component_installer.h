@@ -5,10 +5,12 @@
 #ifndef CHROME_BROWSER_COMPONENT_UPDATER_SUBRESOURCE_FILTER_COMPONENT_INSTALLER_H_
 #define CHROME_BROWSER_COMPONENT_UPDATER_SUBRESOURCE_FILTER_COMPONENT_INSTALLER_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "components/component_updater/default_component_installer.h"
+#include "base/gtest_prod_util.h"
+#include "components/component_updater/component_installer.h"
 
 namespace base {
 class FilePath;
@@ -19,21 +21,29 @@ namespace component_updater {
 class ComponentUpdateService;
 
 // Component for receiving Safe Browsing Subresource filtering rules.
-class SubresourceFilterComponentInstallerTraits
-    : public ComponentInstallerTraits {
+class SubresourceFilterComponentInstallerPolicy
+    : public ComponentInstallerPolicy {
  public:
-  SubresourceFilterComponentInstallerTraits();
+  static const char kManifestRulesetFormatKey[];
+  static const int kCurrentRulesetFormat;
 
-  ~SubresourceFilterComponentInstallerTraits() override;
+  SubresourceFilterComponentInstallerPolicy();
+  ~SubresourceFilterComponentInstallerPolicy() override;
 
  private:
   friend class SubresourceFilterComponentInstallerTest;
+  FRIEND_TEST_ALL_PREFIXES(SubresourceFilterComponentInstallerTest,
+                           InstallerTag);
 
-  // ComponentInstallerTraits implementation.
-  bool CanAutoUpdate() const override;
+  static std::string GetInstallerTag();
+
+  // ComponentInstallerPolicy implementation.
+  bool SupportsGroupPolicyEnabledComponentUpdates() const override;
   bool RequiresNetworkEncryption() const override;
-  bool OnCustomInstall(const base::DictionaryValue& manifest,
-                       const base::FilePath& install_dir) override;
+  update_client::CrxInstaller::Result OnCustomInstall(
+      const base::DictionaryValue& manifest,
+      const base::FilePath& install_dir) override;
+  void OnCustomUninstall() override;
   bool VerifyInstallation(const base::DictionaryValue& manifest,
                           const base::FilePath& install_dir) const override;
   void ComponentReady(const base::Version& version,
@@ -43,12 +53,9 @@ class SubresourceFilterComponentInstallerTraits
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
+  std::vector<std::string> GetMimeTypes() const override;
 
-  // Reads and parses the on-disk ruleset file.
-  void LoadSubresourceFilterRulesFromDisk(const base::FilePath& file_path,
-                                          const base::Version& version);
-
-  DISALLOW_COPY_AND_ASSIGN(SubresourceFilterComponentInstallerTraits);
+  DISALLOW_COPY_AND_ASSIGN(SubresourceFilterComponentInstallerPolicy);
 };
 
 void RegisterSubresourceFilterComponent(ComponentUpdateService* cus);

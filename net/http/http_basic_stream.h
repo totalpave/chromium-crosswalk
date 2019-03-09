@@ -11,47 +11,50 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
 #include "net/http/http_basic_state.h"
 #include "net/http/http_stream.h"
 
 namespace net {
 
-class BoundNetLog;
 class ClientSocketHandle;
 class HttpResponseInfo;
 struct HttpRequestInfo;
 class HttpRequestHeaders;
 class HttpStreamParser;
 class IOBuffer;
+class NetLogWithSource;
 
 class NET_EXPORT_PRIVATE HttpBasicStream : public HttpStream {
  public:
   // Constructs a new HttpBasicStream. InitializeStream must be called to
   // initialize it correctly.
-  HttpBasicStream(ClientSocketHandle* connection, bool using_proxy);
+  HttpBasicStream(std::unique_ptr<ClientSocketHandle> connection,
+                  bool using_proxy,
+                  bool http_09_on_non_default_ports_enabled);
   ~HttpBasicStream() override;
 
   // HttpStream methods:
   int InitializeStream(const HttpRequestInfo* request_info,
+                       bool can_send_early,
                        RequestPriority priority,
-                       const BoundNetLog& net_log,
-                       const CompletionCallback& callback) override;
+                       const NetLogWithSource& net_log,
+                       CompletionOnceCallback callback) override;
 
   int SendRequest(const HttpRequestHeaders& headers,
                   HttpResponseInfo* response,
-                  const CompletionCallback& callback) override;
+                  CompletionOnceCallback callback) override;
 
-  UploadProgress GetUploadProgress() const override;
-
-  int ReadResponseHeaders(const CompletionCallback& callback) override;
+  int ReadResponseHeaders(CompletionOnceCallback callback) override;
 
   int ReadResponseBody(IOBuffer* buf,
                        int buf_len,
-                       const CompletionCallback& callback) override;
+                       CompletionOnceCallback callback) override;
 
   void Close(bool not_reusable) override;
 
@@ -71,14 +74,14 @@ class NET_EXPORT_PRIVATE HttpBasicStream : public HttpStream {
 
   bool GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const override;
 
+  bool GetAlternativeService(
+      AlternativeService* alternative_service) const override;
+
   void GetSSLInfo(SSLInfo* ssl_info) override;
 
   void GetSSLCertRequestInfo(SSLCertRequestInfo* cert_request_info) override;
 
   bool GetRemoteEndpoint(IPEndPoint* endpoint) override;
-
-  Error GetSignedEKMForTokenBinding(crypto::ECPrivateKey* key,
-                                    std::vector<uint8_t>* out) override;
 
   void Drain(HttpNetworkSession* session) override;
 
@@ -86,10 +89,13 @@ class NET_EXPORT_PRIVATE HttpBasicStream : public HttpStream {
 
   void SetPriority(RequestPriority priority) override;
 
+  void SetRequestHeadersCallback(RequestHeadersCallback callback) override;
+
  private:
   HttpStreamParser* parser() const { return state_.parser(); }
 
   HttpBasicState state_;
+  RequestHeadersCallback request_headers_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(HttpBasicStream);
 };

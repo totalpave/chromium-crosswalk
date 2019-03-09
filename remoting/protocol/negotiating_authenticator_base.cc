@@ -12,10 +12,10 @@
 #include "base/logging.h"
 #include "base/strings/string_split.h"
 #include "remoting/base/constants.h"
+#include "remoting/base/name_value_map.h"
 #include "remoting/base/rsa_key_pair.h"
 #include "remoting/protocol/channel_authenticator.h"
-#include "remoting/protocol/name_value_map.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting {
 namespace protocol {
@@ -45,23 +45,23 @@ const NameMapElement<NegotiatingAuthenticatorBase::Method>
 
 }  // namespace
 
-const buzz::StaticQName NegotiatingAuthenticatorBase::kMethodAttributeQName = {
+const jingle_xmpp::StaticQName NegotiatingAuthenticatorBase::kMethodAttributeQName = {
     "", "method"};
-const buzz::StaticQName
+const jingle_xmpp::StaticQName
     NegotiatingAuthenticatorBase::kSupportedMethodsAttributeQName = {
         "", "supported-methods"};
 const char NegotiatingAuthenticatorBase::kSupportedMethodsSeparator = ',';
 
-const buzz::StaticQName NegotiatingAuthenticatorBase::kPairingInfoTag = {
+const jingle_xmpp::StaticQName NegotiatingAuthenticatorBase::kPairingInfoTag = {
     kChromotingXmlNamespace, "pairing-info"};
-const buzz::StaticQName NegotiatingAuthenticatorBase::kClientIdAttribute = {
+const jingle_xmpp::StaticQName NegotiatingAuthenticatorBase::kClientIdAttribute = {
     "", "client-id"};
 
 NegotiatingAuthenticatorBase::NegotiatingAuthenticatorBase(
     Authenticator::State initial_state)
     : state_(initial_state) {}
 
-NegotiatingAuthenticatorBase::~NegotiatingAuthenticatorBase() {}
+NegotiatingAuthenticatorBase::~NegotiatingAuthenticatorBase() = default;
 
 Authenticator::State NegotiatingAuthenticatorBase::state() const {
   return state_;
@@ -94,7 +94,7 @@ std::string NegotiatingAuthenticatorBase::MethodToString(Method method) {
 }
 
 void NegotiatingAuthenticatorBase::ProcessMessageInternal(
-    const buzz::XmlElement* message,
+    const jingle_xmpp::XmlElement* message,
     const base::Closure& resume_callback) {
   DCHECK_EQ(state_, PROCESSING_MESSAGE);
 
@@ -130,12 +130,12 @@ void NegotiatingAuthenticatorBase::UpdateState(
   resume_callback.Run();
 }
 
-std::unique_ptr<buzz::XmlElement>
+std::unique_ptr<jingle_xmpp::XmlElement>
 NegotiatingAuthenticatorBase::GetNextMessageInternal() {
   DCHECK_EQ(state(), MESSAGE_READY);
   DCHECK(current_method_ != Method::INVALID);
 
-  std::unique_ptr<buzz::XmlElement> result;
+  std::unique_ptr<jingle_xmpp::XmlElement> result;
   if (current_authenticator_->state() == MESSAGE_READY) {
     result = current_authenticator_->GetNextMessage();
   } else {

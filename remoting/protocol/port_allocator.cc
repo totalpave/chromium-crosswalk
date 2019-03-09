@@ -8,11 +8,14 @@
 #include <map>
 
 #include "base/bind.h"
+#include "base/callback.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "net/base/escape.h"
 #include "net/http/http_status_code.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "remoting/protocol/native_ip_synthesizer.h"
 #include "remoting/protocol/network_settings.h"
 #include "remoting/protocol/transport_context.h"
 
@@ -52,9 +55,13 @@ PortAllocator::PortAllocator(
   // performance when combined with TCP-based transport, so we have to disable
   // TCP ports. ENABLE_SHARED_UFRAG flag is specified so that the same username
   // fragment is shared between all candidates.
+  // TODO(crbug.com/488760): Ideally we want to add
+  // PORTALLOCATOR_DISABLE_COSTLY_NETWORKS, but this is unreliable on iOS and
+  // may end up removing mobile networks when no WiFi is available. We may want
+  // to add this flag only if there is WiFi interface.
   int flags = cricket::PORTALLOCATOR_DISABLE_TCP |
-              cricket::PORTALLOCATOR_ENABLE_SHARED_UFRAG |
-              cricket::PORTALLOCATOR_ENABLE_IPV6;
+              cricket::PORTALLOCATOR_ENABLE_IPV6 |
+              cricket::PORTALLOCATOR_ENABLE_IPV6_ON_WIFI;
 
   NetworkSettings network_settings = transport_context_->network_settings();
 
@@ -67,9 +74,10 @@ PortAllocator::PortAllocator(
   set_flags(flags);
   SetPortRange(network_settings.port_range.min_port,
                network_settings.port_range.max_port);
+  Initialize();
 }
 
-PortAllocator::~PortAllocator() {}
+PortAllocator::~PortAllocator() = default;
 
 cricket::PortAllocatorSession* PortAllocator::CreateSessionInternal(
     const std::string& content_name,
@@ -93,7 +101,7 @@ PortAllocatorSession::PortAllocatorSession(PortAllocator* allocator,
       transport_context_(allocator->transport_context()),
       weak_factory_(this) {}
 
-PortAllocatorSession::~PortAllocatorSession() {}
+PortAllocatorSession::~PortAllocatorSession() = default;
 
 void PortAllocatorSession::GetPortConfigurations() {
   transport_context_->GetIceConfig(base::Bind(
@@ -150,9 +158,44 @@ void PortAllocatorSession::TryCreateRelaySession() {
                     net::EscapeUrlEncodedData(username(), false) +
                     "&password=" +
                     net::EscapeUrlEncodedData(password(), false) + "&sn=1";
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("CRD_relay_session_request", R"(
+        semantics {
+          sender: "Chrome Remote Desktop"
+          description:
+            "Request is sent by Chrome Remote Desktop to allocate relay "
+            "session. Returned relay session credentials are used over UDP to "
+            "connect to Google-owned relay servers, which is required for NAT "
+            "traversal."
+          trigger:
+            "Start of each Chrome Remote Desktop and during connection when "
+            "peer-to-peer transport needs to be reconnected."
+          data:
+            "A temporary authentication token issued by Google services (over "
+            "XMPP connection)."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This feature cannot be disabled by settings. You can block Chrome "
+            "Remote Desktop as specified here: "
+            "https://support.google.com/chrome/?p=remote_desktop"
+          chrome_policy {
+            RemoteAccessHostFirewallTraversal {
+              policy_options {mode: MANDATORY}
+              RemoteAccessHostFirewallTraversal: false
+            }
+          }
+        }
+        comments:
+          "Above specified policy is only applicable on the host side and "
+          "doesn't have effect in Android and iOS client apps. The product "
+          "is shipped separately from Chromium, except on Chrome OS."
+        )");
   std::unique_ptr<UrlRequest> url_request =
       transport_context_->url_request_factory()->CreateUrlRequest(
-          UrlRequest::Type::GET, url);
+          UrlRequest::Type::GET, url, traffic_annotation);
   url_request->AddHeader("X-Talk-Google-Relay-Auth: " +
                          ice_config_.relay_token);
   url_request->AddHeader("X-Google-Relay-Auth: " + ice_config_.relay_token);
@@ -190,8 +233,9 @@ void PortAllocatorSession::OnSessionRequestResult(
       base::StringToUint(relay_port, &relay_port_int)) {
     cricket::RelayServerConfig relay_config(cricket::RELAY_GTURN);
     rtc::SocketAddress address(relay_ip, relay_port_int);
+    // |relay_ip| is in IPv4 so we will need to do an IPv6 synthesis.
     relay_config.ports.push_back(
-        cricket::ProtocolAddress(address, cricket::PROTO_UDP));
+        cricket::ProtocolAddress(ToNativeSocket(address), cricket::PROTO_UDP));
     config->AddRelay(relay_config);
   }
 

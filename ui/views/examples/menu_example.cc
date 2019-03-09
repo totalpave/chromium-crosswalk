@@ -31,8 +31,6 @@ class ExampleMenuModel : public ui::SimpleMenuModel,
   // ui::SimpleMenuModel::Delegate:
   bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
-  bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override;
   void ExecuteCommand(int command_id, int event_flags) override;
 
  private:
@@ -119,13 +117,6 @@ bool ExampleMenuModel::IsCommandIdEnabled(int command_id) const {
   return command_id != COMMAND_GO_HOME;
 }
 
-bool ExampleMenuModel::GetAcceleratorForCommandId(
-    int command_id,
-    ui::Accelerator* accelerator) {
-  // We don't use this in the example.
-  return false;
-}
-
 void ExampleMenuModel::ExecuteCommand(int command_id, int event_flags) {
   switch (command_id) {
     case COMMAND_DO_SOMETHING: {
@@ -164,7 +155,7 @@ void ExampleMenuModel::ExecuteCommand(int command_id, int event_flags) {
         checked_fruit = "Kiwi";
 
       // Update the check status.
-      std::set<int>::iterator iter = checked_fruits_.find(command_id);
+      auto iter = checked_fruits_.find(command_id);
       if (iter == checked_fruits_.end()) {
         DVLOG(1) << "Checked " << checked_fruit;
         checked_fruits_.insert(command_id);
@@ -180,24 +171,18 @@ void ExampleMenuModel::ExecuteCommand(int command_id, int event_flags) {
 // ExampleMenuButton -----------------------------------------------------------
 
 ExampleMenuButton::ExampleMenuButton(const base::string16& test)
-    : MenuButton(test, this, true) {}
+    : MenuButton(test, this) {}
 
-ExampleMenuButton::~ExampleMenuButton() {
-}
+ExampleMenuButton::~ExampleMenuButton() {}
 
 void ExampleMenuButton::OnMenuButtonClicked(MenuButton* source,
                                             const gfx::Point& point,
                                             const ui::Event* event) {
   menu_runner_.reset(new MenuRunner(GetMenuModel(), MenuRunner::HAS_MNEMONICS));
 
-  if (menu_runner_->RunMenuAt(source->GetWidget()->GetTopLevelWidget(),
-                              this,
-                              gfx::Rect(point, gfx::Size()),
-                              MENU_ANCHOR_TOPRIGHT,
-                              ui::MENU_SOURCE_NONE) ==
-      MenuRunner::MENU_DELETED) {
-    return;
-  }
+  menu_runner_->RunMenuAt(source->GetWidget()->GetTopLevelWidget(), this,
+                          gfx::Rect(point, gfx::Size()), MENU_ANCHOR_TOPRIGHT,
+                          ui::MENU_SOURCE_NONE);
 }
 
 ui::SimpleMenuModel* ExampleMenuButton::GetMenuModel() {
@@ -218,7 +203,7 @@ void MenuExample::CreateExampleView(View* container) {
   // We add a button to open a menu.
   ExampleMenuButton* menu_button = new ExampleMenuButton(
       ASCIIToUTF16("Open a menu"));
-  container->SetLayoutManager(new FillLayout);
+  container->SetLayoutManager(std::make_unique<FillLayout>());
   container->AddChildView(menu_button);
 }
 

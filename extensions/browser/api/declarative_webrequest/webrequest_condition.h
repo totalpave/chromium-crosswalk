@@ -11,30 +11,27 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "components/url_matcher/url_matcher.h"
 #include "extensions/browser/api/declarative/declarative_rule.h"
 #include "extensions/browser/api/declarative_webrequest/webrequest_condition_attribute.h"
 #include "net/http/http_response_headers.h"
 
 namespace extensions {
+struct WebRequestInfo;
 
-// Container for information about a URLRequest to determine which
+// Container for information about a URL request to determine which
 // rules apply to the request.
 struct WebRequestData {
-  WebRequestData(net::URLRequest* request, RequestStage stage);
-  WebRequestData(
-      net::URLRequest* request,
-      RequestStage stage,
-      const net::HttpResponseHeaders* original_response_headers);
+  WebRequestData(const WebRequestInfo* request, RequestStage stage);
+  WebRequestData(const WebRequestInfo* request,
+                 RequestStage stage,
+                 const net::HttpResponseHeaders* original_response_headers);
   ~WebRequestData();
 
   // The network request that is currently being processed.
-  net::URLRequest* request;
+  const WebRequestInfo* request;
   // The stage (progress) of the network request.
   RequestStage stage;
-  // Additional information about requests that is not
-  // available in all request stages.
   const net::HttpResponseHeaders* original_response_headers;
 };
 

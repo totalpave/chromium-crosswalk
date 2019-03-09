@@ -14,390 +14,434 @@ login.createScreen('AccountPickerScreen', 'account-picker', function() {
    */
   var MAX_LOGIN_ATTEMPTS_IN_POD = 3;
 
-  return {
-    EXTERNAL_API: [
-      'loadUsers',
-      'runAppForTesting',
-      'setApps',
-      'setShouldShowApps',
-      'showAppError',
-      'updateUserImage',
-      'setCapsLockState',
-      'forceLockedUserPodFocus',
-      'removeUser',
-      'showBannerMessage',
-      'showUserPodCustomIcon',
-      'hideUserPodCustomIcon',
-      'disablePinKeyboardForUser',
-      'setAuthType',
-      'setTouchViewState',
-      'setPublicSessionDisplayName',
-      'setPublicSessionLocales',
-      'setPublicSessionKeyboardLayouts',
-    ],
+  /**
+   * Distance between error bubble and user POD.
+   * @type {number}
+   * @const
+   */
+   var BUBBLE_POD_OFFSET = 4;
 
-    preferredWidth_: 0,
-    preferredHeight_: 0,
+   return {
+     EXTERNAL_API: [
+       'loadUsers',
+       'runAppForTesting',
+       'setApps',
+       'setShouldShowApps',
+       'showAppError',
+       'updateUserImage',
+       'setCapsLockState',
+       'removeUser',
+       'showBannerMessage',
+       'showUserPodCustomIcon',
+       'hideUserPodCustomIcon',
+       'setUserPodFingerprintIcon',
+       'removeUserPodFingerprintIcon',
+       'setPinEnabledForUser',
+       'setAuthType',
+       'setTabletModeState',
+       'setPublicSessionDisplayName',
+       'setPublicSessionLocales',
+       'setPublicSessionKeyboardLayouts',
+     ],
 
-    // Whether this screen is shown for the first time.
-    firstShown_: true,
+     preferredWidth_: 0,
+     preferredHeight_: 0,
 
-    // Whether this screen is currently being shown.
-    showing_: false,
+     // Whether this screen is shown for the first time.
+     firstShown_: true,
 
-    /** @override */
-    decorate: function() {
-      login.PodRow.decorate($('pod-row'));
-    },
+     // Whether this screen is currently being shown.
+     showing_: false,
 
-    /** @override */
-    getPreferredSize: function() {
-      return {width: this.preferredWidth_, height: this.preferredHeight_};
-    },
+     /** @override */
+     decorate: function() {
+       login.PodRow.decorate($('pod-row'));
+     },
 
-    /** @override */
-    onWindowResize: function() {
-      $('pod-row').onWindowResize();
+     /** @override */
+     getPreferredSize: function() {
+       return {width: this.preferredWidth_, height: this.preferredHeight_};
+     },
 
-      // Reposition the error bubble, if it is showing. Since we are just
-      // moving the bubble, the number of login attempts tried doesn't matter.
-      var errorBubble = $('bubble');
-      if (errorBubble && !errorBubble.hidden)
-        this.showErrorBubble(0, undefined  /* Reuses the existing message. */);
-    },
+     /** @override */
+     onWindowResize: function() {
+       $('pod-row').onWindowResize();
 
-    /**
-     * Sets preferred size for account picker screen.
-     */
-    setPreferredSize: function(width, height) {
-      this.preferredWidth_ = width;
-      this.preferredHeight_ = height;
-    },
+       // Reposition the error bubble, if it is showing. Since we are just
+       // moving the bubble, the number of login attempts tried doesn't matter.
+       var errorBubble = $('bubble');
+       if (errorBubble && !errorBubble.hidden)
+         this.showErrorBubble(0, undefined /* Reuses the existing message. */);
+     },
 
-    /**
-     * When the account picker is being used to lock the screen, pressing the
-     * exit accelerator key will sign out the active user as it would when
-     * they are signed in.
-     */
-    exit: function() {
-      // Check and disable the sign out button so that we can never have two
-      // sign out requests generated in a row.
-      if ($('pod-row').lockedPod && !$('sign-out-user-button').disabled) {
-        $('sign-out-user-button').disabled = true;
-        chrome.send('signOutUser');
-      }
-    },
+     /**
+      * Sets preferred size for account picker screen.
+      */
+     setPreferredSize: function(width, height) {
+       this.preferredWidth_ = width;
+       this.preferredHeight_ = height;
+     },
 
-    /* Cancel user adding if ESC was pressed.
-     */
-    cancel: function() {
-      if (Oobe.getInstance().displayType == DISPLAY_TYPE.USER_ADDING)
-        chrome.send('cancelUserAdding');
-    },
+     /* Cancel user adding if ESC was pressed.
+      */
+     cancel: function() {
+       if (Oobe.getInstance().displayType == DISPLAY_TYPE.USER_ADDING)
+         chrome.send('cancelUserAdding');
+     },
 
-    /**
-     * Event handler that is invoked just after the frame is shown.
-     * @param {string} data Screen init payload.
-     */
-    onAfterShow: function(data) {
-      $('pod-row').handleAfterShow();
-    },
+     /**
+      * Event handler that is invoked just after the frame is shown.
+      * @param {string} data Screen init payload.
+      */
+     onAfterShow: function(data) {
+       $('pod-row').handleAfterShow();
+     },
 
-    /**
-     * Event handler that is invoked just before the frame is shown.
-     * @param {string} data Screen init payload.
-     */
-    onBeforeShow: function(data) {
-      this.showing_ = true;
-      chrome.send('loginUIStateChanged', ['account-picker', true]);
-      $('login-header-bar').signinUIState = SIGNIN_UI_STATE.ACCOUNT_PICKER;
-      chrome.send('hideCaptivePortal');
-      var podRow = $('pod-row');
-      podRow.handleBeforeShow();
+     /**
+      * Event handler that is invoked just before the frame is shown.
+      * @param {string} data Screen init payload.
+      */
+     onBeforeShow: function(data) {
+       this.showing_ = true;
+       chrome.send('loginUIStateChanged', ['account-picker', true]);
+       $('login-header-bar').signinUIState = SIGNIN_UI_STATE.ACCOUNT_PICKER;
+       // Header bar should be always visible on Account Picker screen.
+       Oobe.getInstance().headerHidden = false;
+       chrome.send('hideCaptivePortal');
+       var podRow = $('pod-row');
+       podRow.handleBeforeShow();
 
-      // In case of the preselected pod onShow will be called once pod
-      // receives focus.
-      if (!podRow.preselectedPod)
-        this.onShow();
-    },
+       // In case of the preselected pod onShow will be called once pod
+       // receives focus.
+       if (!podRow.preselectedPod)
+         this.onShow();
+     },
 
-    /**
-     * Event handler invoked when the page is shown and ready.
-     */
-    onShow: function() {
-      if (!this.showing_) {
-        // This method may be called asynchronously when the pod row finishes
-        // initializing. However, at that point, the screen may have been hidden
-        // again already. If that happens, ignore the onShow() call.
-        return;
-      }
-      chrome.send('getTouchViewState');
-      if (!this.firstShown_) return;
-      this.firstShown_ = false;
+     /**
+      * Event handler invoked when the page is shown and ready.
+      */
+     onShow: function() {
+       if (!this.showing_) {
+         // This method may be called asynchronously when the pod row finishes
+         // initializing. However, at that point, the screen may have been
+         // hidden again already. If that happens, ignore the onShow() call.
+         return;
+       }
+       chrome.send('getTabletModeState');
+       if (!this.firstShown_)
+         return;
+       this.firstShown_ = false;
 
-      // Ensure that login is actually visible.
-      window.requestAnimationFrame(function() {
-        chrome.send('accountPickerReady');
-        chrome.send('loginVisible', ['account-picker']);
-      });
-    },
+       // Ensure that login is actually visible.
+       window.requestAnimationFrame(function() {
+         chrome.send('accountPickerReady');
+         chrome.send('loginVisible', ['account-picker']);
+       });
+     },
 
-    /**
-     * Event handler that is invoked just before the frame is hidden.
-     */
-    onBeforeHide: function() {
-      $('pod-row').clearFocusedPod();
-      this.showing_ = false;
-      chrome.send('loginUIStateChanged', ['account-picker', false]);
-      $('login-header-bar').signinUIState = SIGNIN_UI_STATE.HIDDEN;
-      $('pod-row').handleHide();
-    },
+     /**
+      * Event handler that is invoked just before the frame is hidden.
+      */
+     onBeforeHide: function() {
+       $('pod-row').clearFocusedPod();
+       this.showing_ = false;
+       chrome.send('loginUIStateChanged', ['account-picker', false]);
+       $('login-header-bar').signinUIState = SIGNIN_UI_STATE.HIDDEN;
+       $('pod-row').handleHide();
+     },
 
-    /**
-     * Shows sign-in error bubble.
-     * @param {number} loginAttempts Number of login attemps tried.
-     * @param {HTMLElement} content Content to show in bubble.
-     */
-    showErrorBubble: function(loginAttempts, error) {
-      var activatedPod = $('pod-row').activatedPod;
-      if (!activatedPod) {
-        $('bubble').showContentForElement($('pod-row'),
-                                          cr.ui.Bubble.Attachment.RIGHT,
-                                          error);
-        return;
-      }
-      // Show web authentication if this is not a supervised user.
-      if (loginAttempts > MAX_LOGIN_ATTEMPTS_IN_POD &&
-          !activatedPod.user.supervisedUser) {
-        chrome.send('maxIncorrectPasswordAttempts',
-            [activatedPod.user.emailAddress]);
-        activatedPod.showSigninUI();
-      } else {
-        if (loginAttempts == 1) {
-          chrome.send('firstIncorrectPasswordAttempt',
-              [activatedPod.user.emailAddress]);
-        }
-        // We want bubble's arrow to point to the first letter of input.
-        /** @const */ var BUBBLE_OFFSET = 7;
-        /** @const */ var BUBBLE_PADDING = 4;
-        $('bubble').showContentForElement(activatedPod.mainInput,
-                                          cr.ui.Bubble.Attachment.BOTTOM,
-                                          error,
-                                          BUBBLE_OFFSET, BUBBLE_PADDING);
-        // Move error bubble up if it overlaps the shelf.
-        var maxHeight =
-            cr.ui.LoginUITools.getMaxHeightBeforeShelfOverlapping($('bubble'));
-        if (maxHeight < $('bubble').offsetHeight) {
-          $('bubble').showContentForElement(activatedPod.mainInput,
-                                            cr.ui.Bubble.Attachment.TOP,
-                                            error,
-                                            BUBBLE_OFFSET, BUBBLE_PADDING);
-        }
-      }
-    },
+     /**
+      * Shows sign-in error bubble.
+      * @param {number} loginAttempts Number of login attemps tried.
+      * @param {HTMLElement} content Content to show in bubble.
+      */
+     showErrorBubble: function(loginAttempts, error) {
+       var activatedPod = $('pod-row').activatedPod;
+       if (!activatedPod) {
+         $('bubble').showContentForElement(
+             $('pod-row'), cr.ui.Bubble.Attachment.RIGHT, error);
+         return;
+       }
+       // Show web authentication if this is not a supervised user.
+       if (loginAttempts > MAX_LOGIN_ATTEMPTS_IN_POD &&
+           !activatedPod.user.supervisedUser) {
+         chrome.send(
+             'maxIncorrectPasswordAttempts', [activatedPod.user.emailAddress]);
+         activatedPod.showSigninUI();
+       } else {
+         if (loginAttempts == 1) {
+           chrome.send(
+               'firstIncorrectPasswordAttempt',
+               [activatedPod.user.emailAddress]);
+         }
+         // Update the pod row display if incorrect password.
+         $('pod-row').setFocusedPodErrorDisplay(true);
 
-    /**
-     * Loads the PIN keyboard if any of the users can login with a PIN.
-     * @param {array} users Array of user instances.
-     */
-    loadPinKeyboardIfNeeded_: function(users) {
-      for (var i = 0; i < users.length; ++i) {
-        var user = users[i];
-        if (user.showPin) {
-          showPinKeyboardAsync();
-          return;
-        }
-      }
-    },
+         /** @const */ var BUBBLE_OFFSET = 25;
+         // -8 = 4(BUBBLE_POD_OFFSET) - 2(bubble margin)
+         //      - 10(internal bubble adjustment)
+         var bubblePositioningPadding = -8;
 
-    /**
-     * Loads given users in pod row.
-     * @param {array} users Array of user.
-     * @param {boolean} showGuest Whether to show guest session button.
-     */
-    loadUsers: function(users, showGuest) {
-      $('pod-row').loadPods(users);
-      $('login-header-bar').showGuestButton = showGuest;
-      // On Desktop, #login-header-bar has a shadow if there are 8+ profiles.
-      if (Oobe.getInstance().displayType == DISPLAY_TYPE.DESKTOP_USER_MANAGER)
-        $('login-header-bar').classList.toggle('shadow', users.length > 8);
+         var bubbleAnchor;
+         var attachment;
+         if (activatedPod.pinContainer &&
+             activatedPod.pinContainer.style.visibility == 'visible') {
+           // Anchor the bubble to the input field.
+           bubbleAnchor =
+               (activatedPod.getElementsByClassName('auth-container'))[0];
+           if (!bubbleAnchor) {
+             console.error('auth-container not found!');
+             bubbleAnchor = activatedPod.mainInput;
+           }
+           attachment = cr.ui.Bubble.Attachment.RIGHT;
+         } else {
+           // Anchor the bubble to the pod instead of the input.
+           bubbleAnchor = activatedPod;
+           attachment = cr.ui.Bubble.Attachment.BOTTOM;
+         }
 
-      this.loadPinKeyboardIfNeeded_(users);
-    },
+         var bubble = $('bubble');
 
-    /**
-     * Runs app with a given id from the list of loaded apps.
-     * @param {!string} app_id of an app to run.
-     * @param {boolean=} opt_diagnostic_mode Whether to run the app in
-     *     diagnostic mode.  Default is false.
-     */
-    runAppForTesting: function(app_id, opt_diagnostic_mode) {
-      $('pod-row').findAndRunAppForTesting(app_id, opt_diagnostic_mode);
-    },
+         // Cannot use cr.ui.LoginUITools.get* on bubble until it is attached to
+         // the element. getMaxHeight/Width rely on the correct up/left element
+         // side positioning that doesn't happen until bubble is attached.
+         var maxHeight = cr.ui.LoginUITools.getMaxHeightBeforeShelfOverlapping(
+                             bubbleAnchor) -
+             bubbleAnchor.offsetHeight - BUBBLE_POD_OFFSET;
+         var maxWidth = cr.ui.LoginUITools.getMaxWidthToFit(bubbleAnchor) -
+             bubbleAnchor.offsetWidth - BUBBLE_POD_OFFSET;
 
-    /**
-     * Adds given apps to the pod row.
-     * @param {array} apps Array of apps.
-     */
-    setApps: function(apps) {
-      $('pod-row').setApps(apps);
-    },
+         // Change bubble visibility temporary to calculate height.
+         var bubbleVisibility = bubble.style.visibility;
+         bubble.style.visibility = 'hidden';
+         bubble.hidden = false;
+         // Now we need the bubble to have the new content before calculating
+         // size. Undefined |error| == reuse old content.
+         if (error !== undefined)
+           bubble.replaceContent(error);
 
-    /**
-     * Sets the flag of whether app pods should be visible.
-     * @param {boolean} shouldShowApps Whether to show app pods.
-     */
-    setShouldShowApps: function(shouldShowApps) {
-      $('pod-row').setShouldShowApps(shouldShowApps);
-    },
+         // Get bubble size.
+         var bubbleOffsetHeight = parseInt(bubble.offsetHeight);
+         var bubbleOffsetWidth = parseInt(bubble.offsetWidth);
+         // Restore attributes.
+         bubble.style.visibility = bubbleVisibility;
+         bubble.hidden = true;
 
-    /**
-     * Shows the given kiosk app error message.
-     * @param {!string} message Error message to show.
-     */
-    showAppError: function(message) {
-      // TODO(nkostylev): Figure out a way to show kiosk app launch error
-      // pointing to the kiosk app pod.
-      /** @const */ var BUBBLE_PADDING = 12;
-      $('bubble').showTextForElement($('pod-row'),
-                                     message,
-                                     cr.ui.Bubble.Attachment.BOTTOM,
-                                     $('pod-row').offsetWidth / 2,
-                                     BUBBLE_PADDING);
-    },
+         if (attachment == cr.ui.Bubble.Attachment.BOTTOM) {
+           // Move error bubble if it overlaps the shelf.
+           if (maxHeight < bubbleOffsetHeight)
+             attachment = cr.ui.Bubble.Attachment.TOP;
+         } else {
+           // Move error bubble if it doesn't fit screen.
+           if (maxWidth < bubbleOffsetWidth) {
+             bubblePositioningPadding = 2;
+             attachment = cr.ui.Bubble.Attachment.LEFT;
+           }
+         }
+         var showBubbleCallback = function() {
+           activatedPod.removeEventListener(
+               'transitionend', showBubbleCallback);
+           $('bubble').showContentForElement(
+               bubbleAnchor, attachment, error, BUBBLE_OFFSET,
+               bubblePositioningPadding, true);
+         };
+         activatedPod.addEventListener('transitionend', showBubbleCallback);
+         ensureTransitionEndEvent(activatedPod);
+       }
+     },
 
-    /**
-     * Updates current image of a user.
-     * @param {string} username User for which to update the image.
-     */
-    updateUserImage: function(username) {
-      $('pod-row').updateUserImage(username);
-    },
+     /**
+      * Loads given users in pod row.
+      * @param {array} users Array of user.
+      * @param {boolean} showGuest Whether to show guest session button.
+      */
+     loadUsers: function(users, showGuest) {
+       $('pod-row').loadPods(users);
+       $('login-header-bar').showGuestButton = showGuest;
+       // On Desktop, #login-header-bar has a shadow if there are 8+ profiles.
+       if (Oobe.getInstance().displayType == DISPLAY_TYPE.DESKTOP_USER_MANAGER)
+         $('login-header-bar').classList.toggle('shadow', users.length > 8);
+     },
 
-    /**
-     * Updates Caps Lock state (for Caps Lock hint in password input field).
-     * @param {boolean} enabled Whether Caps Lock is on.
-     */
-    setCapsLockState: function(enabled) {
-      $('pod-row').classList.toggle('capslock-on', enabled);
-    },
+     /**
+      * Runs app with a given id from the list of loaded apps.
+      * @param {!string} app_id of an app to run.
+      * @param {boolean=} opt_diagnostic_mode Whether to run the app in
+      *     diagnostic mode.  Default is false.
+      */
+     runAppForTesting: function(app_id, opt_diagnostic_mode) {
+       $('pod-row').findAndRunAppForTesting(app_id, opt_diagnostic_mode);
+     },
 
-    /**
-     * Enforces focus on user pod of locked user.
-     */
-    forceLockedUserPodFocus: function() {
-      var row = $('pod-row');
-      if (row.lockedPod)
-        row.focusPod(row.lockedPod, true);
-    },
+     /**
+      * Adds given apps to the pod row.
+      * @param {array} apps Array of apps.
+      */
+     setApps: function(apps) {
+       $('pod-row').setApps(apps);
+     },
 
-    /**
-     * Remove given user from pod row if it is there.
-     * @param {string} user name.
-     */
-    removeUser: function(username) {
-      $('pod-row').removeUserPod(username);
-    },
+     /**
+      * Sets the flag of whether app pods should be visible.
+      * @param {boolean} shouldShowApps Whether to show app pods.
+      */
+     setShouldShowApps: function(shouldShowApps) {
+       $('pod-row').setShouldShowApps(shouldShowApps);
+     },
 
-    /**
-     * Displays a banner containing |message|. If the banner is already present
-     * this function updates the message in the banner. This function is used
-     * by the chrome.screenlockPrivate.showMessage API.
-     * @param {string} message Text to be displayed
-     */
-    showBannerMessage: function(message) {
-      var banner = $('signin-banner');
-      banner.textContent = message;
-      banner.classList.toggle('message-set', true);
-    },
+     /**
+      * Shows the given kiosk app error message.
+      * @param {!string} message Error message to show.
+      */
+     showAppError: function(message) {
+       // TODO(nkostylev): Figure out a way to show kiosk app launch error
+       // pointing to the kiosk app pod.
+       /** @const */ var BUBBLE_PADDING = 12;
+       $('bubble').showTextForElement(
+           $('pod-row'), message, cr.ui.Bubble.Attachment.BOTTOM,
+           $('pod-row').offsetWidth / 2, BUBBLE_PADDING);
+     },
 
-    /**
-     * Shows a custom icon in the user pod of |username|. This function
-     * is used by the chrome.screenlockPrivate API.
-     * @param {string} username Username of pod to add button
-     * @param {!{id: !string,
-     *           hardlockOnClick: boolean,
-     *           isTrialRun: boolean,
-     *           tooltip: ({text: string, autoshow: boolean} | undefined)}} icon
-     *     The icon parameters.
-     */
-    showUserPodCustomIcon: function(username, icon) {
-      $('pod-row').showUserPodCustomIcon(username, icon);
-    },
+     /**
+      * Updates current image of a user.
+      * @param {string} username User for which to update the image.
+      */
+     updateUserImage: function(username) {
+       $('pod-row').updateUserImage(username);
+     },
 
-    /**
-     * Hides the custom icon in the user pod of |username| added by
-     * showUserPodCustomIcon(). This function is used by the
-     * chrome.screenlockPrivate API.
-     * @param {string} username Username of pod to remove button
-     */
-    hideUserPodCustomIcon: function(username) {
-      $('pod-row').hideUserPodCustomIcon(username);
-    },
+     /**
+      * Updates Caps Lock state (for Caps Lock hint in password input field).
+      * @param {boolean} enabled Whether Caps Lock is on.
+      */
+     setCapsLockState: function(enabled) {
+       $('pod-row').classList.toggle('capslock-on', enabled);
+     },
 
-    /**
-     * Sets the authentication type used to authenticate the user.
-     * @param {string} username Username of selected user
-     * @param {number} authType Authentication type, must be a valid value in
-     *                          the AUTH_TYPE enum in user_pod_row.js.
-     * @param {string} value The initial value to use for authentication.
-     */
-    setAuthType: function(username, authType, value) {
-      $('pod-row').setAuthType(username, authType, value);
-    },
+     /**
+      * Remove given user from pod row if it is there.
+      * @param {string} user name.
+      */
+     removeUser: function(username) {
+       $('pod-row').removeUserPod(username);
+     },
 
-    /**
-     * Sets the state of touch view mode.
-     * @param {boolean} isTouchViewEnabled true if the mode is on.
-     */
-    setTouchViewState: function(isTouchViewEnabled) {
-      $('pod-row').setTouchViewState(isTouchViewEnabled);
-    },
+     /**
+      * Displays a banner containing |message|. If the banner is already present
+      * this function updates the message in the banner. This function is used
+      * by the chrome.screenlockPrivate.showMessage API.
+      * @param {string} message Text to be displayed or empty to hide the
+      *     banner.
+      * @param {boolean} isWarning True if the given message is a warning.
+      */
+     showBannerMessage: function(message, isWarning) {
+       var banner = $('signin-banner');
+       banner.textContent = message;
+       banner.classList.toggle('message-set', !!message);
+     },
 
-    /**
-     * Hides the PIN keyboard if it's active.
-     * @param {!user} user The user who can no longer enter a PIN.
-     */
-    disablePinKeyboardForUser: function(user) {
-      $('pod-row').setPinVisibility(user, false);
-    },
+     /**
+      * Shows a custom icon in the user pod of |username|. This function
+      * is used by the chrome.screenlockPrivate API.
+      * @param {string} username Username of pod to add button
+      * @param {!{id: !string,
+      *           hardlockOnClick: boolean,
+      *           isTrialRun: boolean,
+      *           tooltip: ({text: string, autoshow: boolean} | undefined)}}
+      * icon The icon parameters.
+      */
+     showUserPodCustomIcon: function(username, icon) {
+       $('pod-row').showUserPodCustomIcon(username, icon);
+     },
 
-    /**
-     * Updates the display name shown on a public session pod.
-     * @param {string} userID The user ID of the public session
-     * @param {string} displayName The new display name
-     */
-    setPublicSessionDisplayName: function(userID, displayName) {
-      $('pod-row').setPublicSessionDisplayName(userID, displayName);
-    },
+     /**
+      * Hides the custom icon in the user pod of |username| added by
+      * showUserPodCustomIcon(). This function is used by the
+      * chrome.screenlockPrivate API.
+      * @param {string} username Username of pod to remove button
+      */
+     hideUserPodCustomIcon: function(username) {
+       $('pod-row').hideUserPodCustomIcon(username);
+     },
 
-    /**
-     * Updates the list of locales available for a public session.
-     * @param {string} userID The user ID of the public session
-     * @param {!Object} locales The list of available locales
-     * @param {string} defaultLocale The locale to select by default
-     * @param {boolean} multipleRecommendedLocales Whether |locales| contains
-     *     two or more recommended locales
-     */
-    setPublicSessionLocales: function(userID,
-                                      locales,
-                                      defaultLocale,
-                                      multipleRecommendedLocales) {
-      $('pod-row').setPublicSessionLocales(userID,
-                                           locales,
-                                           defaultLocale,
-                                           multipleRecommendedLocales);
-    },
+     /**
+      * Set a fingerprint icon in the user pod of |username|.
+      * @param {string} username Username of the selected user
+      * @param {number} state Fingerprint unlock state
+      */
+     setUserPodFingerprintIcon: function(username, state) {
+       $('pod-row').setUserPodFingerprintIcon(username, state);
+     },
 
-    /**
-     * Updates the list of available keyboard layouts for a public session pod.
-     * @param {string} userID The user ID of the public session
-     * @param {string} locale The locale to which this list of keyboard layouts
-     *     applies
-     * @param {!Object} list List of available keyboard layouts
-     */
-    setPublicSessionKeyboardLayouts: function(userID, locale, list) {
-      $('pod-row').setPublicSessionKeyboardLayouts(userID, locale, list);
-    }
-  };
+     /**
+      * Removes the fingerprint icon in the user pod of |username|.
+      * @param {string} username Username of the selected user.
+      */
+     removeUserPodFingerprintIcon: function(username) {
+       $('pod-row').removeUserPodFingerprintIcon(username);
+     },
+
+     /**
+      * Sets the authentication type used to authenticate the user.
+      * @param {string} username Username of selected user
+      * @param {number} authType Authentication type, must be a valid value in
+      *                          the AUTH_TYPE enum in user_pod_row.js.
+      * @param {string} value The initial value to use for authentication.
+      */
+     setAuthType: function(username, authType, value) {
+       $('pod-row').setAuthType(username, authType, value);
+     },
+
+     /**
+      * Sets the state of tablet mode.
+      * @param {boolean} isTabletModeEnabled true if the mode is on.
+      */
+     setTabletModeState: function(isTabletModeEnabled) {
+       $('pod-row').setTabletModeState(isTabletModeEnabled);
+     },
+
+     /**
+      * Enables or disables the pin keyboard for the given user. This may change
+      * pin keyboard visibility.
+      * @param {!string} user
+      * @param {boolean} enabled
+      */
+     setPinEnabledForUser: function(user, enabled) {
+       $('pod-row').setPinEnabled(user, enabled);
+     },
+
+     /**
+      * Updates the display name shown on a public session pod.
+      * @param {string} userID The user ID of the public session
+      * @param {string} displayName The new display name
+      */
+     setPublicSessionDisplayName: function(userID, displayName) {
+       $('pod-row').setPublicSessionDisplayName(userID, displayName);
+     },
+
+     /**
+      * Updates the list of locales available for a public session.
+      * @param {string} userID The user ID of the public session
+      * @param {!Object} locales The list of available locales
+      * @param {string} defaultLocale The locale to select by default
+      * @param {boolean} multipleRecommendedLocales Whether |locales| contains
+      *     two or more recommended locales
+      */
+     setPublicSessionLocales: function(
+         userID, locales, defaultLocale, multipleRecommendedLocales) {
+       $('pod-row').setPublicSessionLocales(
+           userID, locales, defaultLocale, multipleRecommendedLocales);
+     },
+
+     /**
+      * Updates the list of available keyboard layouts for a public session pod.
+      * @param {string} userID The user ID of the public session
+      * @param {string} locale The locale to which this list of keyboard layouts
+      *     applies
+      * @param {!Object} list List of available keyboard layouts
+      */
+     setPublicSessionKeyboardLayouts: function(userID, locale, list) {
+       $('pod-row').setPublicSessionKeyboardLayouts(userID, locale, list);
+     },
+   };
 });

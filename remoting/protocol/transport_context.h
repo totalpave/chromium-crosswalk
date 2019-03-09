@@ -17,8 +17,13 @@
 #include "remoting/protocol/network_settings.h"
 #include "remoting/protocol/transport.h"
 
+namespace rtc {
+class NetworkManager;
+}  // namespace rtc
+
 namespace remoting {
 
+class OAuthTokenGetter;
 class SignalStrategy;
 class UrlRequestFactory;
 
@@ -51,13 +56,32 @@ class TransportContext : public base::RefCountedThreadSafe<TransportContext> {
                    const NetworkSettings& network_settings,
                    TransportRole role);
 
-  void set_ice_config_url(const std::string& ice_config_url) {
+  void set_turn_ice_config(const IceConfig& ice_config) {
+    ice_config_[TURN] = ice_config;
+  }
+
+  // Sets URL to fetch ICE config. If |oauth_token_getter| is not nullptr then
+  // it's used to get OAuth token for the ICE config request, otherwise the
+  // request is not authenticated.
+  void set_ice_config_url(const std::string& ice_config_url,
+                          OAuthTokenGetter* oauth_token_getter) {
+    DCHECK(!ice_config_url.empty());
     ice_config_url_ = ice_config_url;
+    oauth_token_getter_ = oauth_token_getter;
   }
 
   // Sets relay mode for all future calls of GetIceConfig(). Doesn't affect
   // previous GetIceConfig() requests.
   void set_relay_mode(RelayMode relay_mode) { relay_mode_ = relay_mode; }
+
+  // Sets a reference to the NetworkManager that holds the list of
+  // network interfaces. If the NetworkManager is deleted while this
+  // TransportContext is live, the caller should set this to nullptr.
+  // TODO(crbug.com/848045): This should be a singleton - either a global
+  // instance, or one that is owned by this TransportContext.
+  void set_network_manager(rtc::NetworkManager* network_manager) {
+    network_manager_ = network_manager;
+  }
 
   // Prepares fresh JingleInfo. It may be called while connection is being
   // negotiated to minimize the chance that the following GetIceConfig() will
@@ -75,6 +99,12 @@ class TransportContext : public base::RefCountedThreadSafe<TransportContext> {
   }
   const NetworkSettings& network_settings() const { return network_settings_; }
   TransportRole role() const { return role_; }
+  rtc::NetworkManager* network_manager() const { return network_manager_; }
+
+  // Returns the suggested bandwidth cap for TURN relay connections, or 0 if
+  // no rate-limit is set in the IceConfig. Currently this is not used for
+  // legacy GTURN connections.
+  int GetTurnMaxRateKbps() const;
 
  private:
   friend class base::RefCountedThreadSafe<TransportContext>;
@@ -91,7 +121,11 @@ class TransportContext : public base::RefCountedThreadSafe<TransportContext> {
   TransportRole role_;
 
   std::string ice_config_url_;
+  OAuthTokenGetter* oauth_token_getter_ = nullptr;
+
   RelayMode relay_mode_ = RelayMode::GTURN;
+
+  rtc::NetworkManager* network_manager_ = nullptr;
 
   std::array<std::unique_ptr<IceConfigRequest>, kNumRelayModes>
       ice_config_request_;

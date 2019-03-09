@@ -4,14 +4,15 @@
 
 #include <stddef.h>
 
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "content/browser/streams/stream.h"
 #include "content/browser/streams/stream_read_observer.h"
 #include "content/browser/streams/stream_register_observer.h"
 #include "content/browser/streams/stream_registry.h"
 #include "content/browser/streams/stream_write_observer.h"
+#include "net/base/net_errors.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
@@ -25,7 +26,8 @@ class StreamTest : public testing::Test {
   // Create a new IO buffer of the given |buffer_size| and fill it with random
   // data.
   scoped_refptr<net::IOBuffer> NewIOBuffer(size_t buffer_size) {
-    scoped_refptr<net::IOBuffer> buffer(new net::IOBuffer(buffer_size));
+    scoped_refptr<net::IOBuffer> buffer =
+        base::MakeRefCounted<net::IOBuffer>(buffer_size);
     char *bufferp = buffer->data();
     for (size_t i = 0; i < buffer_size; i++)
       bufferp[i] = (i + producing_seed_key_) % (1 << sizeof(char));
@@ -34,7 +36,7 @@ class StreamTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment task_environment_;
   std::unique_ptr<StreamRegistry> registry_;
 
  private:
@@ -43,13 +45,13 @@ class StreamTest : public testing::Test {
 
 class TestStreamReader : public StreamReadObserver {
  public:
-  TestStreamReader() : buffer_(new net::GrowableIOBuffer()), completed_(false) {
-  }
+  TestStreamReader() : buffer_(base::MakeRefCounted<net::GrowableIOBuffer>()) {}
   ~TestStreamReader() override {}
 
   void Read(Stream* stream) {
     const size_t kBufferSize = 32768;
-    scoped_refptr<net::IOBuffer> buffer(new net::IOBuffer(kBufferSize));
+    scoped_refptr<net::IOBuffer> buffer =
+        base::MakeRefCounted<net::IOBuffer>(kBufferSize);
 
     int bytes_read = 0;
     while (true) {
@@ -63,11 +65,13 @@ class TestStreamReader : public StreamReadObserver {
           break;
         case Stream::STREAM_COMPLETE:
           completed_ = true;
+          status_ = stream->GetStatus();
           return;
         case Stream::STREAM_EMPTY:
           EXPECT_FALSE(completed_);
           return;
         case Stream::STREAM_ABORTED:
+          aborted_ = true;
           EXPECT_FALSE(completed_);
           return;
       }
@@ -82,13 +86,15 @@ class TestStreamReader : public StreamReadObserver {
 
   scoped_refptr<net::GrowableIOBuffer> buffer() { return buffer_; }
 
-  bool completed() const {
-    return completed_;
-  }
+  bool completed() const { return completed_; }
+  bool aborted() const { return aborted_; }
+  int status() const { return status_; }
 
  private:
   scoped_refptr<net::GrowableIOBuffer> buffer_;
-  bool completed_;
+  bool completed_ = false;
+  bool aborted_ = false;
+  int status_ = 0;
 };
 
 class TestStreamWriter : public StreamWriteObserver {
@@ -195,13 +201,42 @@ TEST_F(StreamTest, Stream) {
   const int kBufferSize = 1000000;
   scoped_refptr<net::IOBuffer> buffer(NewIOBuffer(kBufferSize));
   writer.Write(stream.get(), buffer, kBufferSize);
-  stream->Finalize();
+  stream->Finalize(net::OK);
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(reader.completed());
+  EXPECT_EQ(net::OK, reader.status());
 
   ASSERT_EQ(reader.buffer()->capacity(), kBufferSize);
   for (int i = 0; i < kBufferSize; i++)
     EXPECT_EQ(buffer->data()[i], reader.buffer()->data()[i]);
+}
+
+TEST_F(StreamTest, Abort) {
+  TestStreamReader reader;
+  TestStreamWriter writer;
+
+  GURL url("blob://stream");
+  scoped_refptr<Stream> stream(new Stream(registry_.get(), &writer, url));
+  EXPECT_TRUE(stream->SetReadObserver(&reader));
+
+  stream->Abort();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(reader.completed());
+  EXPECT_TRUE(reader.aborted());
+}
+
+TEST_F(StreamTest, Error) {
+  TestStreamReader reader;
+  TestStreamWriter writer;
+
+  GURL url("blob://stream");
+  scoped_refptr<Stream> stream(new Stream(registry_.get(), &writer, url));
+  EXPECT_TRUE(stream->SetReadObserver(&reader));
+
+  stream->Finalize(net::ERR_ACCESS_DENIED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(reader.completed());
+  EXPECT_EQ(net::ERR_ACCESS_DENIED, reader.status());
 }
 
 // Test that even if a reader receives an empty buffer, once TransferData()
@@ -222,10 +257,11 @@ TEST_F(StreamTest, ClosedReaderDoesNotReturnStreamEmpty) {
   const int kBufferSize = 0;
   scoped_refptr<net::IOBuffer> buffer(NewIOBuffer(kBufferSize));
   stream->AddData(buffer, kBufferSize);
-  stream->Finalize();
+  stream->Finalize(net::OK);
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(reader.completed());
   EXPECT_EQ(0, reader.buffer()->capacity());
+  EXPECT_EQ(net::OK, reader.status());
 }
 
 TEST_F(StreamTest, GetStream) {

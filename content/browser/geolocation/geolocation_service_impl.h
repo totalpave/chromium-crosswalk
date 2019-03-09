@@ -1,80 +1,83 @@
-// Copyright 2014 The Chromium Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
-#include <memory>
-
-#include "base/macros.h"
-#include "content/browser/geolocation/geolocation_provider_impl.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "third_party/WebKit/public/platform/modules/geolocation/geolocation.mojom.h"
 
 #ifndef CONTENT_BROWSER_GEOLOCATION_GEOLOCATION_SERVICE_IMPL_H_
 #define CONTENT_BROWSER_GEOLOCATION_GEOLOCATION_SERVICE_IMPL_H_
 
+#include "base/memory/weak_ptr.h"
+#include "content/common/content_export.h"
+#include "mojo/public/cpp/bindings/binding_set.h"
+#include "services/device/public/mojom/geolocation.mojom.h"
+#include "services/device/public/mojom/geolocation_context.mojom.h"
+#include "third_party/blink/public/platform/modules/geolocation/geolocation_service.mojom.h"
+
+namespace blink {
+namespace mojom {
+enum class PermissionStatus;
+}
+}  // namespace blink
+
 namespace content {
+class RenderFrameHost;
+class PermissionControllerImpl;
 
-class GeolocationProvider;
-class GeolocationServiceContext;
-
-// Implements the GeolocationService Mojo interface.
-class GeolocationServiceImpl : public blink::mojom::GeolocationService {
+class GeolocationServiceImplContext {
  public:
-  // |context| must outlive this object. |update_callback| will be called when
-  // location updates are sent, allowing the client to know when the service
-  // is being used.
-  GeolocationServiceImpl(
-      mojo::InterfaceRequest<blink::mojom::GeolocationService> request,
-      GeolocationServiceContext* context,
-      const base::Closure& update_callback);
-  ~GeolocationServiceImpl() override;
-
-  // Starts listening for updates.
-  void StartListeningForUpdates();
-
-  // Pauses and resumes sending updates to the client of this instance.
-  void PauseUpdates();
-  void ResumeUpdates();
-
-  // Enables and disables geolocation override.
-  void SetOverride(const Geoposition& position);
-  void ClearOverride();
+  explicit GeolocationServiceImplContext(
+      PermissionControllerImpl* permission_controller);
+  ~GeolocationServiceImplContext();
+  void RequestPermission(
+      RenderFrameHost* render_frame_host,
+      bool user_gesture,
+      const base::Callback<void(blink::mojom::PermissionStatus)>& callback);
 
  private:
-  // blink::mojom::GeolocationService:
-  void SetHighAccuracy(bool high_accuracy) override;
-  void QueryNextPosition(const QueryNextPositionCallback& callback) override;
+  PermissionControllerImpl* permission_controller_;
+  int request_id_;
 
-  void OnConnectionError();
+  void HandlePermissionStatus(
+      const base::Callback<void(blink::mojom::PermissionStatus)>& callback,
+      blink::mojom::PermissionStatus permission_status);
 
-  void OnLocationUpdate(const Geoposition& position);
-  void ReportCurrentPosition();
+  base::WeakPtrFactory<GeolocationServiceImplContext> weak_factory_;
 
-  // The binding between this object and the other end of the pipe.
-  mojo::Binding<blink::mojom::GeolocationService> binding_;
+  DISALLOW_COPY_AND_ASSIGN(GeolocationServiceImplContext);
+};
 
-  // Owns this object.
-  GeolocationServiceContext* context_;
-  std::unique_ptr<GeolocationProvider::Subscription> geolocation_subscription_;
+class CONTENT_EXPORT GeolocationServiceImpl
+    : public blink::mojom::GeolocationService {
+ public:
+  GeolocationServiceImpl(device::mojom::GeolocationContext* geolocation_context,
+                         PermissionControllerImpl* permission_controller,
+                         RenderFrameHost* render_frame_host);
+  ~GeolocationServiceImpl() override;
 
-  // Callback that allows the instantiator of this class to be notified on
-  // position updates.
-  base::Closure update_callback_;
+  // Binds to the GeolocationService.
+  void Bind(blink::mojom::GeolocationServiceRequest request);
 
-  // The callback passed to QueryNextPosition.
-  QueryNextPositionCallback position_callback_;
+  // Creates a Geolocation instance.
+  // This may not be called a second time until the Geolocation instance has
+  // been created.
+  void CreateGeolocation(device::mojom::GeolocationRequest request,
+                         bool user_gesture) override;
 
-  // Valid iff SetOverride() has been called and ClearOverride() has not
-  // subsequently been called.
-  Geoposition position_override_;
+ private:
+  // Creates the Geolocation Service.
+  void CreateGeolocationWithPermissionStatus(
+      device::mojom::GeolocationRequest request,
+      blink::mojom::PermissionStatus permission_status);
 
-  blink::mojom::Geoposition current_position_;
+  device::mojom::GeolocationContext* geolocation_context_;
+  PermissionControllerImpl* permission_controller_;
+  RenderFrameHost* render_frame_host_;
 
-  // Whether this instance is currently observing location updates with high
-  // accuracy.
-  bool high_accuracy_;
-
-  bool has_position_to_report_;
+  // Along with each GeolocationService, we store a
+  // GeolocationServiceImplContext which primarily exists to manage a
+  // Permission Request ID.
+  mojo::BindingSet<blink::mojom::GeolocationService,
+                   std::unique_ptr<GeolocationServiceImplContext>>
+      binding_set_;
 
   DISALLOW_COPY_AND_ASSIGN(GeolocationServiceImpl);
 };

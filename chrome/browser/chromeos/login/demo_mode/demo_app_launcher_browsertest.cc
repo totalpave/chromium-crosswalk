@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "apps/test/app_window_waiter.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
@@ -9,12 +10,11 @@
 #include "base/path_service.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/chromeos/login/demo_mode/demo_app_launcher.h"
-#include "chrome/browser/chromeos/login/test/app_window_waiter.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_paths.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/network/network_state.h"
 #include "chromeos/network/network_state_handler.h"
 #include "components/user_manager/user_manager.h"
@@ -30,7 +30,7 @@ namespace {
 
 base::FilePath GetTestDemoAppPath() {
   base::FilePath test_data_dir;
-  EXPECT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir));
+  EXPECT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir));
   return test_data_dir.Append(FILE_PATH_LITERAL("chromeos/demo_app"));
 }
 
@@ -39,7 +39,8 @@ Profile* WaitForProfile() {
   if (!user_manager || !user_manager->IsUserLoggedIn()) {
     content::WindowedNotificationObserver(
         chrome::NOTIFICATION_SESSION_STARTED,
-        content::NotificationService::AllSources()).Wait();
+        content::NotificationService::AllSources())
+        .Wait();
   }
 
   return ProfileManager::GetActiveUserProfile();
@@ -47,22 +48,21 @@ Profile* WaitForProfile() {
 
 bool VerifyDemoAppLaunch() {
   Profile* profile = WaitForProfile();
-  return AppWindowWaiter(extensions::AppWindowRegistry::Get(profile),
-                         DemoAppLauncher::kDemoAppId).Wait() != NULL;
+  return apps::AppWindowWaiter(extensions::AppWindowRegistry::Get(profile),
+                               DemoAppLauncher::kDemoAppId)
+             .Wait() != NULL;
 }
 
 bool VerifyNetworksDisabled() {
   NetworkStateHandler* handler = NetworkHandler::Get()->network_state_handler();
-  return !handler->FirstNetworkByType(NetworkTypePattern::NonVirtual());
+  return !handler->DefaultNetwork();
 }
 
 }  // namespace
 
-class DemoAppLauncherTest : public ExtensionBrowserTest {
+class DemoAppLauncherTest : public extensions::ExtensionBrowserTest {
  public:
-  DemoAppLauncherTest() {
-    set_exit_when_last_browser_closes(false);
-  }
+  DemoAppLauncherTest() { set_exit_when_last_browser_closes(false); }
 
   ~DemoAppLauncherTest() override {}
 
@@ -78,7 +78,7 @@ class DemoAppLauncherTest : public ExtensionBrowserTest {
 
   void SetUp() override {
     chromeos::DemoAppLauncher::SetDemoAppPathForTesting(GetTestDemoAppPath());
-    ExtensionBrowserTest::SetUp();
+    extensions::ExtensionBrowserTest::SetUp();
   }
 
  private:

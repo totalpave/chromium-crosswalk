@@ -5,6 +5,7 @@
 #include "chrome/browser/extensions/extension_gcm_app_handler.h"
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
@@ -20,6 +21,8 @@
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
@@ -27,11 +30,10 @@
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
+#include "chrome/browser/gcm/gcm_product_util.h"
+#include "chrome/browser/gcm/gcm_profile_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/services/gcm/gcm_profile_service_factory.h"
-#include "chrome/browser/signin/profile_oauth2_token_service_factory.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_profile.h"
@@ -42,24 +44,28 @@
 #include "components/gcm_driver/gcm_driver.h"
 #include "components/gcm_driver/gcm_profile_service.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/signin/core/browser/signin_manager.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_builder.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/permissions/api_permission.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "extensions/common/verifier_formats.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
+#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #endif
 
@@ -68,6 +74,28 @@ namespace extensions {
 namespace {
 
 const char kTestExtensionName[] = "FooBar";
+
+void RequestProxyResolvingSocketFactoryOnUIThread(
+    Profile* profile,
+    base::WeakPtr<gcm::GCMProfileService> service,
+    network::mojom::ProxyResolvingSocketFactoryRequest request) {
+  if (!service)
+    return;
+  network::mojom::NetworkContext* network_context =
+      content::BrowserContext::GetDefaultStoragePartition(profile)
+          ->GetNetworkContext();
+  network_context->CreateProxyResolvingSocketFactory(std::move(request));
+}
+
+void RequestProxyResolvingSocketFactory(
+    Profile* profile,
+    base::WeakPtr<gcm::GCMProfileService> service,
+    network::mojom::ProxyResolvingSocketFactoryRequest request) {
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(&RequestProxyResolvingSocketFactoryOnUIThread, profile,
+                     service, std::move(request)));
+}
 
 }  // namespace
 
@@ -94,10 +122,9 @@ class Waiter {
 
   // Runs until IO loop becomes idle.
   void PumpIOLoop() {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(&Waiter::OnIOLoopPump, base::Unretained(this)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::IO},
+        base::BindOnce(&Waiter::OnIOLoopPump, base::Unretained(this)));
 
     WaitUntilCompleted();
   }
@@ -112,19 +139,17 @@ class Waiter {
   void OnIOLoopPump() {
     DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
 
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(&Waiter::OnIOLoopPumpCompleted, base::Unretained(this)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::IO},
+        base::BindOnce(&Waiter::OnIOLoopPumpCompleted, base::Unretained(this)));
   }
 
   void OnIOLoopPumpCompleted() {
     DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
 
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI,
-        FROM_HERE,
-        base::Bind(&Waiter::PumpIOLoopCompleted, base::Unretained(this)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::UI},
+        base::BindOnce(&Waiter::PumpIOLoopCompleted, base::Unretained(this)));
   }
 
   std::unique_ptr<base::RunLoop> run_loop_;
@@ -168,7 +193,7 @@ class FakeExtensionGCMAppHandler : public ExtensionGCMAppHandler {
 
   void RemoveAppHandler(const std::string& app_id) override {
     ExtensionGCMAppHandler::RemoveAppHandler(app_id);
-    if (!GetGCMDriver()->app_handlers().size())
+    if (GetGCMDriver()->app_handlers().empty())
       app_handler_count_drop_to_zero_ = true;
   }
 
@@ -197,44 +222,38 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
       content::BrowserContext* context) {
     Profile* profile = Profile::FromBrowserContext(context);
     scoped_refptr<base::SequencedTaskRunner> ui_thread =
-        content::BrowserThread::GetMessageLoopProxyForThread(
-            content::BrowserThread::UI);
+        base::CreateSingleThreadTaskRunnerWithTraits(
+            {content::BrowserThread::UI});
     scoped_refptr<base::SequencedTaskRunner> io_thread =
-        content::BrowserThread::GetMessageLoopProxyForThread(
-            content::BrowserThread::IO);
-    base::SequencedWorkerPool* worker_pool =
-        content::BrowserThread::GetBlockingPool();
+        base::CreateSingleThreadTaskRunnerWithTraits(
+            {content::BrowserThread::IO});
     scoped_refptr<base::SequencedTaskRunner> blocking_task_runner(
-        worker_pool->GetSequencedTaskRunnerWithShutdownBehavior(
-            worker_pool->GetSequenceToken(),
-            base::SequencedWorkerPool::SKIP_ON_SHUTDOWN));
-    return base::WrapUnique(new gcm::GCMProfileService(
-        profile->GetPrefs(), profile->GetPath(), profile->GetRequestContext(),
+        base::CreateSequencedTaskRunnerWithTraits(
+            {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
+    return std::make_unique<gcm::GCMProfileService>(
+        profile->GetPrefs(), profile->GetPath(),
+        base::BindRepeating(&RequestProxyResolvingSocketFactory, profile),
+        content::BrowserContext::GetDefaultStoragePartition(profile)
+            ->GetURLLoaderFactoryForBrowserProcess(),
+        network::TestNetworkConnectionTracker::GetInstance(),
         chrome::GetChannel(),
-        std::unique_ptr<ProfileIdentityProvider>(new ProfileIdentityProvider(
-            SigninManagerFactory::GetForProfile(profile),
-            ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
-            LoginUIServiceFactory::GetShowLoginPopupCallbackForProfile(
-                profile))),
+        gcm::GetProductCategoryForSubtypes(profile->GetPrefs()),
+        IdentityManagerFactory::GetForProfile(profile),
         base::WrapUnique(new gcm::FakeGCMClientFactory(ui_thread, io_thread)),
-        ui_thread, io_thread, blocking_task_runner));
+        ui_thread, io_thread, blocking_task_runner);
   }
 
   ExtensionGCMAppHandlerTest()
-      : extension_service_(NULL),
+      : thread_bundle_(content::TestBrowserThreadBundle::REAL_IO_THREAD),
+        extension_service_(NULL),
         registration_result_(gcm::GCMClient::UNKNOWN_ERROR),
-        unregistration_result_(gcm::GCMClient::UNKNOWN_ERROR) {
-  }
+        unregistration_result_(gcm::GCMClient::UNKNOWN_ERROR) {}
 
   ~ExtensionGCMAppHandlerTest() override {}
 
   // Overridden from test::Test:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-
-    // Make BrowserThread work in unittest.
-    thread_bundle_.reset(new content::TestBrowserThreadBundle(
-        content::TestBrowserThreadBundle::REAL_IO_THREAD));
 
     // Allow extension update to unpack crx in process.
     in_process_utility_thread_helper_.reset(
@@ -257,16 +276,15 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
     TestExtensionSystem* extension_system(
         static_cast<TestExtensionSystem*>(ExtensionSystem::Get(profile())));
     base::FilePath extensions_install_dir =
-        temp_dir_.path().Append(FILE_PATH_LITERAL("Extensions"));
+        temp_dir_.GetPath().Append(FILE_PATH_LITERAL("Extensions"));
     extension_system->CreateExtensionService(
         base::CommandLine::ForCurrentProcess(), extensions_install_dir, false);
     extension_service_ = extension_system->Get(profile())->extension_service();
-    extension_service_->set_extensions_enabled(true);
-    extension_service_->set_show_extensions_prompts(false);
 
     // Create GCMProfileService that talks with fake GCMClient.
     gcm::GCMProfileServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-        profile(), &ExtensionGCMAppHandlerTest::BuildGCMProfileService);
+        profile(), base::BindRepeating(
+                       &ExtensionGCMAppHandlerTest::BuildGCMProfileService));
 
     // Create a fake version of ExtensionGCMAppHandler.
     gcm_app_handler_.reset(new FakeExtensionGCMAppHandler(profile(), &waiter_));
@@ -278,26 +296,21 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
 #endif
 
     waiter_.PumpUILoop();
+    gcm_app_handler_->Shutdown();
+    auto* partition =
+        content::BrowserContext::GetDefaultStoragePartition(profile());
+    if (partition)
+      partition->WaitForDeletionTasksForTesting();
   }
 
   // Returns a barebones test extension.
-  scoped_refptr<Extension> CreateExtension() {
-    base::DictionaryValue manifest;
-    manifest.SetString(manifest_keys::kVersion, "1.0.0.0");
-    manifest.SetString(manifest_keys::kName, kTestExtensionName);
-    base::ListValue* permission_list = new base::ListValue;
-    permission_list->AppendString("gcm");
-    manifest.Set(manifest_keys::kPermissions, permission_list);
-
-    std::string error;
-    scoped_refptr<Extension> extension = Extension::Create(
-        temp_dir_.path(),
-        Manifest::UNPACKED,
-        manifest,
-        Extension::NO_FLAGS,
-        "ldnnhddmnhbkjipkidpdiheffobcpfmf",
-        &error);
-    EXPECT_TRUE(extension.get()) << error;
+  scoped_refptr<const Extension> CreateExtension() {
+    scoped_refptr<const Extension> extension =
+        ExtensionBuilder(kTestExtensionName)
+            .AddPermission("gcm")
+            .SetPath(temp_dir_.GetPath())
+            .SetID("ldnnhddmnhbkjipkidpdiheffobcpfmf")
+            .Build();
     EXPECT_TRUE(
         extension->permissions_data()->HasAPIPermission(APIPermission::kGcm));
 
@@ -318,14 +331,14 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
   void UpdateExtension(const Extension* extension,
                        const std::string& update_crx) {
     base::FilePath data_dir;
-    if (!PathService::Get(chrome::DIR_TEST_DATA, &data_dir)) {
+    if (!base::PathService::Get(chrome::DIR_TEST_DATA, &data_dir)) {
       ADD_FAILURE();
       return;
     }
     data_dir = data_dir.AppendASCII("extensions");
     data_dir = data_dir.AppendASCII(update_crx);
 
-    base::FilePath path = temp_dir_.path();
+    base::FilePath path = temp_dir_.GetPath();
     path = path.Append(data_dir.BaseName());
     ASSERT_TRUE(base::CopyFile(data_dir, path));
 
@@ -334,15 +347,17 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
         extensions::NOTIFICATION_CRX_INSTALLER_DONE,
         base::Bind(&IsCrxInstallerDone, &installer));
     extension_service_->UpdateExtension(
-        extensions::CRXFileInfo(extension->id(), path), true, &installer);
+        extensions::CRXFileInfo(extension->id(),
+                                extensions::GetTestVerifierFormat(), path),
+        true, &installer);
 
     if (installer)
       observer.Wait();
   }
 
   void DisableExtension(const Extension* extension) {
-    extension_service_->DisableExtension(
-        extension->id(), Extension::DISABLE_USER_ACTION);
+    extension_service_->DisableExtension(extension->id(),
+                                         disable_reason::DISABLE_USER_ACTION);
   }
 
   void EnableExtension(const Extension* extension) {
@@ -353,7 +368,6 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
     extension_service_->UninstallExtension(
         extension->id(),
         extensions::UNINSTALL_REASON_FOR_TESTING,
-        base::Bind(&base::DoNothing),
         NULL);
   }
 
@@ -393,7 +407,7 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
   }
 
  private:
-  std::unique_ptr<content::TestBrowserThreadBundle> thread_bundle_;
+  content::TestBrowserThreadBundle thread_bundle_;
   std::unique_ptr<content::InProcessUtilityThreadHelper>
       in_process_utility_thread_helper_;
   std::unique_ptr<TestingProfile> profile_;
@@ -402,8 +416,7 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
 
   // This is needed to create extension service under CrOS.
 #if defined(OS_CHROMEOS)
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
+  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
   std::unique_ptr<chromeos::ScopedTestUserManager> test_user_manager_;
 #endif
 
@@ -416,7 +429,7 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
 };
 
 TEST_F(ExtensionGCMAppHandlerTest, AddAndRemoveAppHandler) {
-  scoped_refptr<Extension> extension(CreateExtension());
+  scoped_refptr<const Extension> extension(CreateExtension());
 
   // App handler is added when extension is loaded.
   LoadExtension(extension.get());
@@ -440,7 +453,7 @@ TEST_F(ExtensionGCMAppHandlerTest, AddAndRemoveAppHandler) {
 }
 
 TEST_F(ExtensionGCMAppHandlerTest, UnregisterOnExtensionUninstall) {
-  scoped_refptr<Extension> extension(CreateExtension());
+  scoped_refptr<const Extension> extension(CreateExtension());
   LoadExtension(extension.get());
 
   // Kick off registration.
@@ -461,7 +474,7 @@ TEST_F(ExtensionGCMAppHandlerTest, UnregisterOnExtensionUninstall) {
 }
 
 TEST_F(ExtensionGCMAppHandlerTest, UpdateExtensionWithGcmPermissionKept) {
-  scoped_refptr<Extension> extension(CreateExtension());
+  scoped_refptr<const Extension> extension(CreateExtension());
 
   // App handler is added when the extension is loaded.
   LoadExtension(extension.get());
@@ -476,7 +489,7 @@ TEST_F(ExtensionGCMAppHandlerTest, UpdateExtensionWithGcmPermissionKept) {
 }
 
 TEST_F(ExtensionGCMAppHandlerTest, UpdateExtensionWithGcmPermissionRemoved) {
-  scoped_refptr<Extension> extension(CreateExtension());
+  scoped_refptr<const Extension> extension(CreateExtension());
 
   // App handler is added when the extension is loaded.
   LoadExtension(extension.get());

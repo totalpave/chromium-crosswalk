@@ -7,21 +7,22 @@ package org.chromium.chrome.test.util;
 import android.content.Context;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.ListView;
 
-import junit.framework.Assert;
+import org.junit.Assert;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.chrome.browser.omnibox.AutocompleteController;
-import org.chromium.chrome.browser.omnibox.AutocompleteController.OnSuggestionsReceivedListener;
 import org.chromium.chrome.browser.omnibox.LocationBarLayout;
 import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
-import org.chromium.chrome.browser.omnibox.OmniboxSuggestion;
-import org.chromium.chrome.browser.omnibox.OmniboxSuggestion.MatchClassification;
 import org.chromium.chrome.browser.omnibox.UrlBar;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteController;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteController.OnSuggestionsReceivedListener;
+import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestion;
+import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestion.MatchClassification;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.TouchCommon;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.TouchCommon;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -75,9 +76,8 @@ public class OmniboxTestUtils {
                 int type, String text, String url) {
             List<MatchClassification> classifications = new ArrayList<>();
             classifications.add(new MatchClassification(0, MatchClassificationStyle.NONE));
-            mSuggestions.add(new OmniboxSuggestion(
-                    type, false, 0, 0, text, classifications, null, classifications,
-                    null, null, "", url, false, false));
+            mSuggestions.add(new OmniboxSuggestion(type, false, 0, 0, text, classifications, null,
+                    classifications, null, "", url, false, false));
             return this;
         }
 
@@ -143,9 +143,8 @@ public class OmniboxTestUtils {
         }
 
         @Override
-        public void start(
-                Profile profile, String url ,
-                final String text, boolean preventInlineAutocomplete) {
+        public void start(Profile profile, String url, final String text, int cursorPosition,
+                boolean preventInlineAutocomplete, boolean focusedFromFakebox) {
             mStartAutocompleteCalled = true;
             mSuggestionsDispatcher = new Runnable() {
                 @Override
@@ -166,7 +165,7 @@ public class OmniboxTestUtils {
         }
 
         @Override
-        public void startZeroSuggest(Profile profile, String omniboxText, String url,
+        public void startZeroSuggest(Profile profile, String omniboxText, String url, String title,
                 boolean focusedFromFakebox) {
             mZeroSuggestCalledCount++;
         }
@@ -210,20 +209,11 @@ public class OmniboxTestUtils {
 
         @Override
         public void start(Profile profile, String url, String text, int cursorPosition,
-                boolean preventInlineAutocomplete) {
-        }
+                boolean preventInlineAutocomplete, boolean focusedFromFakebox) {}
 
         @Override
-        public final void start(
-                Profile profile, String url,
-                final String text, boolean preventInlineAutocomplete) {
-            start(profile, url, text, -1, preventInlineAutocomplete);
-        }
-
-        @Override
-        public void startZeroSuggest(Profile profile, String omniboxText, String url,
-                boolean focusedFromFakebox) {
-        }
+        public void startZeroSuggest(Profile profile, String omniboxText, String url, String title,
+                boolean focusedFromFakebox) {}
 
         @Override
         public void stop(boolean clear) {}
@@ -284,8 +274,7 @@ public class OmniboxTestUtils {
      * @param urlBar The UrlBar whose focus is being changed.
      * @param gainFocus Whether focus should be requested or cleared.
      */
-    public static void toggleUrlBarFocus(final UrlBar urlBar,
-                                         boolean gainFocus) throws InterruptedException {
+    public static void toggleUrlBarFocus(final UrlBar urlBar, boolean gainFocus) {
         if (gainFocus) {
             // During early startup (before completion of its first onDraw), the UrlBar
             // is not focusable. Tests have to wait for that to happen before trying to focus it.
@@ -313,13 +302,17 @@ public class OmniboxTestUtils {
      * @param urlBar The UrlBar whose focus is being inspected.
      * @param active Whether the UrlBar is expected to have focus or not.
      */
-    public static void waitForFocusAndKeyboardActive(final UrlBar urlBar, final boolean active)
-            throws InterruptedException {
+    public static void waitForFocusAndKeyboardActive(final UrlBar urlBar, final boolean active) {
         CriteriaHelper.pollInstrumentationThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                return (doesUrlBarHaveFocus(urlBar) == active)
-                        && (isKeyboardActiveForView(urlBar) == active);
+                if (doesUrlBarHaveFocus(urlBar) != active) {
+                    updateFailureReason("URL Bar did not have expected focus: " + active);
+                    return false;
+                }
+                updateFailureReason(
+                        "The keyboard did not reach the expected active state: " + active);
+                return isKeyboardActiveForView(urlBar) == active;
             }
         });
     }
@@ -329,18 +322,38 @@ public class OmniboxTestUtils {
      *
      * @param locationBar The LocationBar who owns the suggestions.
      */
-    public static void waitForOmniboxSuggestions(final LocationBarLayout locationBar)
-            throws InterruptedException {
+    public static void waitForOmniboxSuggestions(final LocationBarLayout locationBar) {
+        waitForOmniboxSuggestions(locationBar, CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL);
+    }
+
+    /**
+     * Waits for a non-empty list of omnibox suggestions is shown.
+     *
+     * @param locationBar The LocationBar who owns the suggestions.
+     * @param maxPollTimeMs The maximum time to wait for the suggestions to be visible.
+     */
+    public static void waitForOmniboxSuggestions(
+            final LocationBarLayout locationBar, long maxPollTimeMs) {
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                LocationBarLayout.OmniboxSuggestionsList suggestionsList =
-                        locationBar.getSuggestionList();
-                return suggestionsList != null
-                        && suggestionsList.isShown()
-                        && suggestionsList.getCount() >= 1;
+                ListView suggestionsList =
+                        locationBar.getAutocompleteCoordinator().getSuggestionList();
+                if (suggestionsList == null) {
+                    updateFailureReason("suggestionList is null");
+                    return false;
+                }
+                if (!suggestionsList.isShown()) {
+                    updateFailureReason("suggestionList is not shown");
+                    return false;
+                }
+                if (suggestionsList.getCount() == 0) {
+                    updateFailureReason("suggestionList has no entries");
+                    return false;
+                }
+                return true;
             }
-        });
+        }, maxPollTimeMs, CriteriaHelper.DEFAULT_POLLING_INTERVAL);
     }
 
     /**
@@ -349,13 +362,12 @@ public class OmniboxTestUtils {
      * @param expectedCount The number of suggestions expected to be shown.
      */
     public static void waitForOmniboxSuggestions(
-            final LocationBarLayout locationBar, final int expectedCount)
-            throws InterruptedException {
+            final LocationBarLayout locationBar, final int expectedCount) {
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                LocationBarLayout.OmniboxSuggestionsList suggestionsList =
-                        locationBar.getSuggestionList();
+                ListView suggestionsList =
+                        locationBar.getAutocompleteCoordinator().getSuggestionList();
                 return suggestionsList != null
                         && suggestionsList.isShown()
                         && suggestionsList.getCount() == expectedCount;

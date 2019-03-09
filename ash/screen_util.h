@@ -6,70 +6,68 @@
 #define ASH_SCREEN_UTIL_H_
 
 #include "ash/ash_export.h"
-#include "base/macros.h"
 
 namespace aura {
 class Window;
-}
-
-namespace display {
-class Display;
-}
+}  // namespace aura
 
 namespace gfx {
 class Rect;
-class Point;
-}
+}  // namespace gfx
 
 namespace ash {
 
-class ASH_EXPORT ScreenUtil {
- public:
-  // Finds the display that contains |point| in screeen coordinates.
-  // Returns invalid display if there is no display that can satisfy
-  // the condition.
-  static display::Display FindDisplayContainingPoint(const gfx::Point& point);
+namespace screen_util {
 
-  // Returns the bounds for maximized windows in parent coordinates.
-  // Maximized windows trigger auto-hiding the shelf.
-  static gfx::Rect GetMaximizedWindowBoundsInParent(aura::Window* window);
+// Returns the bounds for maximized windows in parent coordinates.
+// Maximized windows trigger auto-hiding the shelf.
+ASH_EXPORT gfx::Rect GetMaximizedWindowBoundsInParent(aura::Window* window);
 
-  // Returns the display bounds in parent coordinates.
-  static gfx::Rect GetDisplayBoundsInParent(aura::Window* window);
+// Returns the display bounds in parent coordinates.
+ASH_EXPORT gfx::Rect GetDisplayBoundsInParent(aura::Window* window);
 
-  // Returns the display's work area bounds in parent coordinates.
-  static gfx::Rect GetDisplayWorkAreaBoundsInParent(aura::Window* window);
+// Returns the bounds of fullscreened windows in the parent coordinates of
+// |window| taking into account the height of the Docked Magnifier and Chromevox
+// panel (if they are enabled).
+ASH_EXPORT gfx::Rect GetFullscreenWindowBoundsInParent(aura::Window* window);
 
-  // Returns the physical display bounds containing the shelf that
-  // shares the same root window as |root|. Physical displays can
-  // differ from logical displays in unified desktop mode.
-  // TODO(oshima): If we need to expand the unified desktop support to
-  // general use, we should consider always using physical display in
-  // window layout instead of root window, and keep the logical
-  // display only in display management code.
-  static gfx::Rect GetShelfDisplayBoundsInRoot(aura::Window* window);
+// Returns the display's work area bounds in parent coordinates.
+ASH_EXPORT gfx::Rect GetDisplayWorkAreaBoundsInParent(aura::Window* window);
 
-  // TODO(oshima): Move following two to wm/coordinate_conversion.h
-  // Converts |rect| from |window|'s coordinates to the virtual screen
-  // coordinates.
-  static gfx::Rect ConvertRectToScreen(aura::Window* window,
-                                       const gfx::Rect& rect);
+// Returns the display's work area bounds in parent coordinates on lock
+// screen, i.e. for work area with forced bottom alignment.
+// Note that unlike |GetDisplayWorkAreaBoundsInParent|, this method uses
+// work area bounds that are updated when the screen is locked. For example
+// if shelf alignment is set to right before screen lock,
+// |GetDisplayWorkAreaBoundsInParent| will return work are bounds for right
+// shelf alignment - this method will return work area for bottom shelf
+// alignment (which is always used on lock screen).
+ASH_EXPORT gfx::Rect GetDisplayWorkAreaBoundsInParentForLockScreen(
+    aura::Window* window);
 
-  // Converts |rect| from virtual screen coordinates to the |window|'s
-  // coordinates.
-  static gfx::Rect ConvertRectFromScreen(aura::Window* window,
-                                         const gfx::Rect& rect);
+// Returns the display's work area bounds on the default container.
+ASH_EXPORT gfx::Rect GetDisplayWorkAreaBoundsInParentForDefaultContainer(
+    aura::Window* window);
+ASH_EXPORT gfx::Rect GetDisplayWorkAreaBoundsInScreenForDefaultContainer(
+    aura::Window* window);
 
-  // Returns a display::Display object for secondary display. Returns
-  // invalid display if there is no secondary display connected.
-  static const display::Display& GetSecondaryDisplay();
+// Returns the bounds of the physical display containing the shelf for
+// |window|. Physical displays can differ from logical displays in unified
+// desktop mode.
+// TODO(oshima): Consider using physical displays in window layout, instead of
+// root windows, and only use logical display in display management code.
+ASH_EXPORT gfx::Rect GetDisplayBoundsWithShelf(aura::Window* window);
 
- private:
-  ScreenUtil() {}
-  ~ScreenUtil() {}
+// Returns an adjusted bounds for the given |bounds| by false snapping it to the
+// edge of the display in pixel space. It will snap the bounds to the display
+// that contains |window|. This will prevent any 1px gaps that you might see at
+// the edges of the display. We achieve this by increasing the height and/or the
+// width of |bounds| so that in pixel space, they cover the edge of the dispaly.
+// |bounds| should be in screen space.
+ASH_EXPORT gfx::Rect SnapBoundsToDisplayEdge(const gfx::Rect& bounds,
+                                             const aura::Window* window);
 
-  DISALLOW_COPY_AND_ASSIGN(ScreenUtil);
-};
+}  // namespace screen_util
 
 }  // namespace ash
 

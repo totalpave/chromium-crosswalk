@@ -8,7 +8,7 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/time/time.h"
-#include "media/base/media_log.h"
+#include "media/base/media_util.h"
 #include "media/base/stream_parser_buffer.h"
 #include "media/formats/mp2t/es_parser_mpeg1audio.h"
 #include "media/formats/mp2t/es_parser_test_base.h"
@@ -28,6 +28,7 @@ class EsParserMpeg1AudioTest : public EsParserTestBase,
   bool Process(const std::vector<Packet>& pes_packets, bool force_timing);
 
  private:
+  NullMediaLog media_log_;
   DISALLOW_COPY_AND_ASSIGN(EsParserMpeg1AudioTest);
 };
 
@@ -41,7 +42,7 @@ bool EsParserMpeg1AudioTest::Process(
       base::Bind(&EsParserMpeg1AudioTest::NewAudioConfig,
                  base::Unretained(this)),
       base::Bind(&EsParserMpeg1AudioTest::EmitBuffer, base::Unretained(this)),
-      new MediaLog());
+      &media_log_);
   return ProcessPesPackets(&es_parser, pes_packets, force_timing);
 }
 

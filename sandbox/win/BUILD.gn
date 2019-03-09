@@ -6,12 +6,15 @@ import("//testing/test.gni")
 
 # This needs to be a static library rather than a sources set because small
 # portions of this are used in some contexts (like chrome_elf), and it
-# doesnn't seem to dead-code strip very well. This saves 12K on chrome_elf.dll,
+# doesn't seem to dead-code strip very well. This saves 12K on chrome_elf.dll,
 # over a source set, for example.
 static_library("sandbox") {
   sources = [
     "src/acl.cc",
     "src/acl.h",
+    "src/app_container_profile.h",
+    "src/app_container_profile_base.cc",
+    "src/app_container_profile_base.h",
     "src/broker_services.cc",
     "src/broker_services.h",
     "src/crosscall_client.h",
@@ -30,6 +33,8 @@ static_library("sandbox") {
     "src/handle_closer.h",
     "src/handle_closer_agent.cc",
     "src/handle_closer_agent.h",
+    "src/heap_helper.cc",
+    "src/heap_helper.h",
     "src/interception.cc",
     "src/interception.h",
     "src/interception_agent.cc",
@@ -37,6 +42,8 @@ static_library("sandbox") {
     "src/interception_internal.h",
     "src/interceptors.h",
     "src/internal_types.h",
+    "src/ipc_args.cc",
+    "src/ipc_args.h",
     "src/ipc_tags.h",
     "src/job.cc",
     "src/job.h",
@@ -100,6 +107,8 @@ static_library("sandbox") {
     "src/sandbox_types.h",
     "src/sandbox_utils.cc",
     "src/sandbox_utils.h",
+    "src/security_capabilities.cc",
+    "src/security_capabilities.h",
     "src/security_level.h",
     "src/service_resolver.cc",
     "src/service_resolver.h",
@@ -131,7 +140,7 @@ static_library("sandbox") {
     "src/window.h",
   ]
 
-  if (current_cpu == "x64") {
+  if (current_cpu == "x64" || current_cpu == "arm64") {
     sources += [
       "src/interceptors_64.cc",
       "src/interceptors_64.h",
@@ -154,31 +163,19 @@ static_library("sandbox") {
     ]
   }
 
+  # Disable sanitizer coverage in the sandbox code. The sandbox code runs before
+  # sanitizer coverage can initialize. http://crbug.com/484711
+  configs -= [ "//build/config/sanitizers:default_sanitizer_flags" ]
+  configs +=
+      [ "//build/config/sanitizers:default_sanitizer_flags_but_coverage" ]
+
   configs += [ "//build/config:precompiled_headers" ]
 
   deps = [
     "//base",
     "//base:base_static",
+    "//sandbox:common",
   ]
-  if (current_cpu == "x86") {
-    deps += [ ":copy_wow_helper" ]
-  }
-}
-
-if (current_cpu == "x86") {
-  # Make a target that copies the wow_helper files to the out dir.
-  #
-  # TODO(brettw) we can probably just build this now that we have proper
-  # toolchain support.
-  copy("copy_wow_helper") {
-    sources = [
-      "wow_helper/wow_helper.exe",
-      "wow_helper/wow_helper.pdb",
-    ]
-    outputs = [
-      "$root_out_dir/{{source_file_part}}",
-    ]
-  }
 }
 
 test("sbox_integration_tests") {
@@ -189,11 +186,16 @@ test("sbox_integration_tests") {
     "src/handle_closer_test.cc",
     "src/handle_inheritance_test.cc",
     "src/integrity_level_test.cc",
+    "src/ipc_leak_test.cc",
     "src/ipc_ping_test.cc",
     "src/lpc_policy_test.cc",
     "src/named_pipe_policy_test.cc",
     "src/policy_target_test.cc",
-    "src/process_mitigations_test.cc",
+    "src/process_mitigations_dyncode_unittest.cc",
+    "src/process_mitigations_extensionpoints_unittest.cc",
+    "src/process_mitigations_imageload_unittest.cc",
+    "src/process_mitigations_unittest.cc",
+    "src/process_mitigations_win32k_unittest.cc",
     "src/process_policy_test.cc",
     "src/registry_policy_test.cc",
     "src/restricted_token_test.cc",
@@ -204,6 +206,7 @@ test("sbox_integration_tests") {
     "tests/common/controller.h",
     "tests/common/test_utils.cc",
     "tests/common/test_utils.h",
+    "tests/integration_tests/cfi_unittest.cc",
     "tests/integration_tests/integration_tests.cc",
     "tests/integration_tests/integration_tests_common.h",
     "tests/integration_tests/integration_tests_test.cc",
@@ -211,26 +214,63 @@ test("sbox_integration_tests") {
 
   deps = [
     ":sandbox",
-    ":sbox_integration_test_hook_dll",
-    ":sbox_integration_test_win_proc",
     "//base/test:test_support",
     "//testing/gtest",
+  ]
+
+  data_deps = [
+    ":cfi_unittest_exe",
+    ":sbox_integration_test_hijack_dll",
+    ":sbox_integration_test_hijack_shim_dll",
+    ":sbox_integration_test_hooking_dll",
+    ":sbox_integration_test_win_proc",
   ]
 
   libs = [ "dxva2.lib" ]
 }
 
-loadable_module("sbox_integration_test_hook_dll") {
+executable("cfi_unittest_exe") {
+  sources = [
+    "tests/integration_tests/cfi_unittest_exe.cc",
+  ]
+  deps = [
+    "//base",
+    "//build/win:default_exe_manifest",
+  ]
+}
+
+shared_library("sbox_integration_test_hijack_dll") {
+  sources = [
+    "tests/integration_tests/hijack_dll.cc",
+    "tests/integration_tests/hijack_dll.def",
+  ]
+}
+
+loadable_module("sbox_integration_test_hijack_shim_dll") {
+  sources = [
+    "tests/integration_tests/hijack_shim_dll.cc",
+    "tests/integration_tests/hijack_shim_dll.def",
+    "tests/integration_tests/hijack_shim_dll.h",
+  ]
+
+  # Implicitly linking hijack_dll as loader import resolution required.
+  deps = [
+    ":sbox_integration_test_hijack_dll",
+    "//base",
+  ]
+}
+
+loadable_module("sbox_integration_test_hooking_dll") {
   sources = [
     "tests/integration_tests/hooking_dll.cc",
-    "tests/integration_tests/integration_tests_common.h",
+    "tests/integration_tests/hooking_dll.h",
   ]
 }
 
 executable("sbox_integration_test_win_proc") {
   sources = [
     "tests/integration_tests/hooking_win_proc.cc",
-    "tests/integration_tests/integration_tests_common.h",
+    "tests/integration_tests/hooking_win_proc.h",
   ]
 
   configs -= [ "//build/config/win:console" ]
@@ -258,6 +298,7 @@ test("sbox_validation_tests") {
 
 test("sbox_unittests") {
   sources = [
+    "src/app_container_unittest.cc",
     "src/interception_unittest.cc",
     "src/ipc_unittest.cc",
     "src/job_unittest.cc",
@@ -289,7 +330,6 @@ test("sandbox_poc") {
     "sandbox_poc/resource.h",
     "sandbox_poc/sandbox.cc",
     "sandbox_poc/sandbox.h",
-    "sandbox_poc/sandbox.ico",
     "sandbox_poc/sandbox.rc",
   ]
 
@@ -311,6 +351,7 @@ shared_library("pocdll") {
     "sandbox_poc/pocdll/handles.cc",
     "sandbox_poc/pocdll/invasive.cc",
     "sandbox_poc/pocdll/network.cc",
+    "sandbox_poc/pocdll/ntundoc.h",
     "sandbox_poc/pocdll/pocdll.cc",
     "sandbox_poc/pocdll/processes_and_threads.cc",
     "sandbox_poc/pocdll/registry.cc",
@@ -319,8 +360,4 @@ shared_library("pocdll") {
   ]
 
   defines = [ "POCDLL_EXPORTS" ]
-
-  deps = [
-    "//build/config/sanitizers:deps",
-  ]
 }

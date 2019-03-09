@@ -6,11 +6,10 @@
 #define CONTENT_TEST_FAKE_COMPOSITOR_DEPENDENCIES_H_
 
 #include "base/macros.h"
-#include "cc/test/test_gpu_memory_buffer_manager.h"
-#include "cc/test/test_shared_bitmap_manager.h"
+#include "base/single_thread_task_runner.h"
 #include "cc/test/test_task_graph_runner.h"
-#include "content/renderer/gpu/compositor_dependencies.h"
-#include "content/test/fake_renderer_scheduler.h"
+#include "content/renderer/compositor/compositor_dependencies.h"
+#include "third_party/blink/public/platform/scheduler/test/web_fake_thread_scheduler.h"
 
 namespace content {
 
@@ -21,35 +20,33 @@ class FakeCompositorDependencies : public CompositorDependencies {
 
   // CompositorDependencies implementation.
   bool IsGpuRasterizationForced() override;
-  bool IsGpuRasterizationEnabled() override;
-  bool IsAsyncWorkerContextEnabled() override;
   int GetGpuRasterizationMSAASampleCount() override;
   bool IsLcdTextEnabled() override;
-  bool IsDistanceFieldTextEnabled() override;
   bool IsZeroCopyEnabled() override;
   bool IsPartialRasterEnabled() override;
   bool IsGpuMemoryBufferCompositorResourcesEnabled() override;
   bool IsElasticOverscrollEnabled() override;
-  std::vector<unsigned> GetImageTextureTargets() override;
+  bool IsUseZoomForDSFEnabled() override;
   scoped_refptr<base::SingleThreadTaskRunner>
   GetCompositorMainThreadTaskRunner() override;
   scoped_refptr<base::SingleThreadTaskRunner>
   GetCompositorImplThreadTaskRunner() override;
-  cc::SharedBitmapManager* GetSharedBitmapManager() override;
-  gpu::GpuMemoryBufferManager* GetGpuMemoryBufferManager() override;
-  scheduler::RendererScheduler* GetRendererScheduler() override;
-  std::unique_ptr<cc::BeginFrameSource> CreateExternalBeginFrameSource(
-      int routing_id) override;
-  cc::ImageSerializationProcessor* GetImageSerializationProcessor() override;
+  blink::scheduler::WebThreadScheduler* GetWebMainThreadScheduler() override;
   cc::TaskGraphRunner* GetTaskGraphRunner() override;
-  bool AreImageDecodeTasksEnabled() override;
-  bool IsThreadedAnimationEnabled() override;
+  bool IsScrollAnimatorEnabled() override;
+  std::unique_ptr<cc::UkmRecorderFactory> CreateUkmRecorderFactory() override;
+#ifdef OS_ANDROID
+  bool UsingSynchronousCompositing() override;
+#endif
+
+  void set_use_zoom_for_dsf_enabled(bool enabled) {
+    use_zoom_for_dsf_ = enabled;
+  }
 
  private:
-  cc::TestSharedBitmapManager shared_bitmap_manager_;
-  cc::TestGpuMemoryBufferManager gpu_memory_buffer_manager_;
   cc::TestTaskGraphRunner task_graph_runner_;
-  FakeRendererScheduler renderer_scheduler_;
+  blink::scheduler::WebFakeThreadScheduler main_thread_scheduler_;
+  bool use_zoom_for_dsf_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(FakeCompositorDependencies);
 };

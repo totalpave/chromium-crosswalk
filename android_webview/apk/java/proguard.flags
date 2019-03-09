@@ -1,22 +1,31 @@
-# Don't rename anything, it makes stack traces unintelligible. We only allow the
-# obfuscation pass to run so that we can discard attributes like local variable
-# tables.
--keepnames class *** { *; }
+# Copyright 2016 The Chromium Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 
-# Keep source file and line number information for stack traces.
--keepattributes SourceFile,LineNumberTable
-
-# Keep all runtime visible annotations.
--keepattributes RuntimeVisibleAnnotations
-
-# Disable optimization as this causes proguard to remove seemingly random stuff,
-# including things explicitly kept in this configuration.
--dontoptimize
+-keepclassmembers class org.chromium.android_webview.AwPdfExporter {
+    android.view.ViewGroup mContainerView;
+}
 
 # Keep the factory and its public members; it's the main entry point used by the
 # framework.
 -keep class com.android.webview.chromium.WebViewChromiumFactoryProvider {
     public *;
+}
+
+-keep class * implements android.webkit.WebViewFactoryProvider$Statics {
+    *;
+}
+
+-keep class com.android.webview.chromium.ContentSettingsAdapter {
+    public *;
+}
+
+-keep class com.android.webview.chromium.WebViewChromiumFactoryProviderFor* {
+    public *;
+}
+
+-keep class com.android.webview.chromium.WebViewDatabaseAdapter {
+  public *;
 }
 
 # This is the main entry point for APIs. It is kept to make developing with
@@ -25,24 +34,10 @@
   public *;
 }
 
-# Keep JNI interfaces.
--keepclasseswithmembers class com.android.webview.chromium.**,org.chromium.** {
-  @**.AccessedByNative <fields>;
-}
--keepclasseswithmembers class com.android.webview.chromium.**,org.chromium.** {
-  @**.CalledByNative <methods>;
-}
--keepclasseswithmembers class com.android.webview.chromium.**,org.chromium.** {
-  @**.CalledByNativeUnchecked <methods>;
-}
--keepclasseswithmembers class com.android.webview.chromium.**,org.chromium.** {
-  native <methods>;
-}
-
-# Keep things explicitly marked as used by reflection
--keepclasseswithmembers class com.android.webview.chromium.**,org.chromium.** {
-  @**.UsedByReflection *;
-}
+# Functor classes with native methods implemented in Android.
+-keep class com.android.webview.chromium.DrawFunctor
+-keep class com.android.webview.chromium.DrawGLFunctor
+-keep class com.android.webview.chromium.GraphicsUtils
 
 # Linker dynamically casts to $TestRunner when running tests. We don't run these
 # tests in WebView.
@@ -69,33 +64,19 @@
   void onHideCustomView();
 }
 
+-keep class org.chromium.android_webview.AwBrowserProcess {
+    java.nio.channels.FileLock sExclusiveFileLock;
+}
+
 # Accessed via reflection but not present in all builds
--keep class com.android.webview.chromium.PlatformServiceBridgeGoogle {
-  void setMetricsSettingListener(...);
-  PlatformServiceBridgeGoogle(...);
+-keep class com.android.webview.chromium.AwSafeBrowsingApiHandler {
+  AwSafeBrowsingApiHandler(...);
 }
--dontnote com.android.webview.chromium.PlatformServiceBridgeGoogle
+-dontnote com.android.webview.chromium.AwSafeBrowsingApiHandler
 
-# AwDebug is accessed by reflection.
--keep class org.chromium.android_webview.AwDebug {
-  public static boolean dumpWithoutCrashing(...);
-}
+# We strip some unused resources when preprocessing the GMS client libs.
+-dontwarn com.google.android.gms.R**
 
-#TODO(hush): remove after N release. crbug.com/546762
--keep class com.android.webview.chromium.ContentSettingsAdapter {
-  public void setDisabledActionModeMenuItems(int);
-  public int getDisabledActionModeMenuItems();
-}
-
-# Ignore notes and warnings about the support library, which uses reflection and
-# may reference classes no longer in the SDK.
--dontnote android.support.**
--dontwarn android.support.**
-
-# Keep all enum values and valueOf methods. See
-# http://proguard.sourceforge.net/index.html#manual/examples.html
-# for the reason for this. Also, see http://crbug.com/248037.
--keepclassmembers enum * {
-    public static **[] values();
-    public static ** valueOf(java.lang.String);
-}
+# Trichrome builds don't include a native library list in the main APK; it's
+# picked up from the library APK at runtime.
+-dontwarn org.chromium.base.library_loader.NativeLibraries

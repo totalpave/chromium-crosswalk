@@ -7,11 +7,11 @@
 
 #include <stdint.h>
 
+#include "base/callback_forward.h"
+#include "base/containers/flat_set.h"
 #include "ui/views/controls/menu/menu_runner.h"
 
 namespace views {
-
-class MenuItemView;
 
 namespace internal {
 
@@ -23,22 +23,23 @@ class MenuRunnerImplInterface {
  public:
   // Creates a concrete instance for running |menu_model|.
   // |run_types| is a bitmask of MenuRunner::RunTypes.
-  static MenuRunnerImplInterface* Create(ui::MenuModel* menu_model,
-                                         int32_t run_types);
+  static MenuRunnerImplInterface* Create(
+      ui::MenuModel* menu_model,
+      int32_t run_types,
+      const base::Closure& on_menu_closed_callback);
 
-  // Returns true if we're in a nested message loop running the menu.
+  // Returns true if we're in a nested run loop running the menu.
   virtual bool IsRunning() const = 0;
 
   // See description above class for details.
   virtual void Release() = 0;
 
   // Runs the menu. See MenuRunner::RunMenuAt for more details.
-  virtual MenuRunner::RunResult RunMenuAt(Widget* parent,
-                                          MenuButton* button,
-                                          const gfx::Rect& bounds,
-                                          MenuAnchorPosition anchor,
-                                          int32_t run_types)
-      WARN_UNUSED_RESULT = 0;
+  virtual void RunMenuAt(Widget* parent,
+                         MenuButton* button,
+                         const gfx::Rect& bounds,
+                         MenuAnchorPosition anchor,
+                         int32_t run_types) = 0;
 
   // Hides and cancels the menu.
   virtual void Cancel() = 0;

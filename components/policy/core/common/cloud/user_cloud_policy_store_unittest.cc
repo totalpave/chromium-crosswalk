@@ -8,13 +8,15 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "components/account_id/account_id.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/mock_cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_store.h"
 #include "components/policy/core/common/cloud/policy_builder.h"
 #include "components/policy/core/common/policy_switches.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "policy/policy_constants.h"
+#include "components/policy/policy_constants.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -52,16 +54,19 @@ bool WriteStringToFile(const base::FilePath path, const std::string& data) {
 
 class UserCloudPolicyStoreTest : public testing::Test {
  public:
-  UserCloudPolicyStoreTest() {}
+  UserCloudPolicyStoreTest()
+      : scoped_task_environment_(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI) {}
 
   void SetUp() override {
     ASSERT_TRUE(tmp_dir_.CreateUniqueTempDir());
     store_.reset(new UserCloudPolicyStore(policy_file(), key_file(),
-                                          GetPolicyVerificationKey(),
-                                          loop_.task_runner()));
+                                          base::ThreadTaskRunnerHandle::Get()));
     external_data_manager_.reset(new MockCloudExternalDataManager);
     external_data_manager_->SetPolicyStore(store_.get());
-    store_->SetSigninUsername(PolicyBuilder::kFakeUsername);
+    store_->SetSigninAccountId(PolicyBuilder::GetFakeAccountIdForTesting());
+    EXPECT_EQ(PolicyBuilder::GetFakeAccountIdForTesting(),
+              store_->signin_account_id());
     store_->AddObserver(&observer_);
 
     // Install an initial public key, so that by default the validation of
@@ -88,11 +93,11 @@ class UserCloudPolicyStoreTest : public testing::Test {
   }
 
   base::FilePath policy_file() {
-    return tmp_dir_.path().AppendASCII("policy");
+    return tmp_dir_.GetPath().AppendASCII("policy");
   }
 
   base::FilePath key_file() {
-    return tmp_dir_.path().AppendASCII("policy_key");
+    return tmp_dir_.GetPath().AppendASCII("policy_key");
   }
 
   // Verifies that store_->policy_map() has the appropriate entries.
@@ -101,7 +106,7 @@ class UserCloudPolicyStoreTest : public testing::Test {
     const PolicyMap::Entry* entry =
         store->policy_map().Get(key::kPasswordManagerEnabled);
     ASSERT_TRUE(entry);
-    EXPECT_TRUE(base::FundamentalValue(true).Equals(entry->value.get()));
+    EXPECT_TRUE(base::Value(true).Equals(entry->value.get()));
     ASSERT_TRUE(store->policy_map().Get(key::kURLBlacklist));
   }
 
@@ -130,10 +135,7 @@ class UserCloudPolicyStoreTest : public testing::Test {
   std::unique_ptr<UserCloudPolicyStore> store_;
   std::unique_ptr<MockCloudExternalDataManager> external_data_manager_;
 
-  // CloudPolicyValidator() requires a FILE thread so declare one here. Both
-  // |ui_thread_| and |file_thread_| share the same MessageLoop |loop_| so
-  // callers can use RunLoop to manage both virtual threads.
-  base::MessageLoopForUI loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 
   base::ScopedTempDir tmp_dir_;
 
@@ -229,7 +231,8 @@ TEST_F(UserCloudPolicyStoreTest, ShouldFailToLoadUnsignedPolicy) {
   // Now mimic a new policy coming down - this should result in a new key
   // being installed.
   StorePolicyAndEnsureLoaded(policy_.policy());
-  EXPECT_EQ(policy_.policy().new_public_key(), store_->policy_key());
+  EXPECT_EQ(policy_.policy().new_public_key(),
+            store_->policy_signature_public_key());
   EXPECT_TRUE(store_->policy()->has_public_key_version());
   EXPECT_TRUE(base::PathExists(key_file()));
 }
@@ -285,7 +288,7 @@ TEST_F(UserCloudPolicyStoreTest, StoreRotatedKey) {
   StorePolicyAndEnsureLoaded(policy_.policy());
   EXPECT_FALSE(policy_.policy().has_new_public_key_signature());
   std::string original_policy_key = policy_.policy().new_public_key();
-  EXPECT_EQ(original_policy_key, store_->policy_key());
+  EXPECT_EQ(original_policy_key, store_->policy_signature_public_key());
 
   // Now do key rotation.
   policy_.SetDefaultSigningKey();
@@ -294,7 +297,8 @@ TEST_F(UserCloudPolicyStoreTest, StoreRotatedKey) {
   EXPECT_TRUE(policy_.policy().has_new_public_key_signature());
   EXPECT_NE(original_policy_key, policy_.policy().new_public_key());
   StorePolicyAndEnsureLoaded(policy_.policy());
-  EXPECT_EQ(policy_.policy().new_public_key(), store_->policy_key());
+  EXPECT_EQ(policy_.policy().new_public_key(),
+            store_->policy_signature_public_key());
 }
 
 TEST_F(UserCloudPolicyStoreTest, ProvisionKeyTwice) {
@@ -348,13 +352,12 @@ TEST_F(UserCloudPolicyStoreTest, StoreThenLoad) {
   // Store a simple policy and make sure it can be read back in.
   // policy.
   StorePolicyAndEnsureLoaded(policy_.policy());
-  EXPECT_FALSE(store_->policy_key().empty());
+  EXPECT_FALSE(store_->policy_signature_public_key().empty());
 
   // Now, make sure the policy can be read back in from a second store.
   std::unique_ptr<UserCloudPolicyStore> store2(new UserCloudPolicyStore(
-      policy_file(), key_file(), GetPolicyVerificationKey(),
-      loop_.task_runner()));
-  store2->SetSigninUsername(PolicyBuilder::kFakeUsername);
+      policy_file(), key_file(), base::ThreadTaskRunnerHandle::Get()));
+  store2->SetSigninAccountId(PolicyBuilder::GetFakeAccountIdForTesting());
   store2->AddObserver(&observer_);
   EXPECT_CALL(observer_, OnStoreLoaded(store2.get()));
   store2->Load();
@@ -367,7 +370,8 @@ TEST_F(UserCloudPolicyStoreTest, StoreThenLoad) {
   EXPECT_EQ(CloudPolicyStore::STATUS_OK, store2->status());
   store2->RemoveObserver(&observer_);
   // Make sure that we properly resurrected the keys.
-  EXPECT_EQ(store2->policy_key(), store_->policy_key());
+  EXPECT_EQ(store2->policy_signature_public_key(),
+            store_->policy_signature_public_key());
 }
 
 TEST_F(UserCloudPolicyStoreTest, StoreThenLoadImmediately) {
@@ -377,9 +381,8 @@ TEST_F(UserCloudPolicyStoreTest, StoreThenLoadImmediately) {
 
   // Now, make sure the policy can be read back in from a second store.
   std::unique_ptr<UserCloudPolicyStore> store2(new UserCloudPolicyStore(
-      policy_file(), key_file(), GetPolicyVerificationKey(),
-      loop_.task_runner()));
-  store2->SetSigninUsername(PolicyBuilder::kFakeUsername);
+      policy_file(), key_file(), base::ThreadTaskRunnerHandle::Get()));
+  store2->SetSigninAccountId(PolicyBuilder::GetFakeAccountIdForTesting());
   store2->AddObserver(&observer_);
   EXPECT_CALL(observer_, OnStoreLoaded(store2.get()));
   store2->LoadImmediately();  // Should load without running the message loop.
@@ -416,15 +419,16 @@ TEST_F(UserCloudPolicyStoreTest, StoreUnsigned) {
 }
 
 TEST_F(UserCloudPolicyStoreTest, LoadValidationError) {
-  // Force a validation error by changing the username after policy is stored.
+  AccountId other_account_id =
+      AccountId::FromUserEmailGaiaId("foobar@foobar.com", "another-gaia-id");
+  // Force a validation error by changing the account id after policy is stored.
   StorePolicyAndEnsureLoaded(policy_.policy());
 
   // Sign out, and sign back in as a different user, and try to load the profile
-  // data (should fail due to mismatched username).
+  // data (should fail due to mismatched account id).
   std::unique_ptr<UserCloudPolicyStore> store2(new UserCloudPolicyStore(
-      policy_file(), key_file(), GetPolicyVerificationKey(),
-      loop_.task_runner()));
-  store2->SetSigninUsername("foobar@foobar.com");
+      policy_file(), key_file(), base::ThreadTaskRunnerHandle::Get()));
+  store2->SetSigninAccountId(other_account_id);
   store2->AddObserver(&observer_);
   ExpectError(store2.get(), CloudPolicyStore::STATUS_VALIDATION_ERROR);
   store2->Load();
@@ -433,11 +437,10 @@ TEST_F(UserCloudPolicyStoreTest, LoadValidationError) {
   ASSERT_FALSE(store2->policy());
   store2->RemoveObserver(&observer_);
 
-  // Sign out - we should be able to load the policy (don't check usernames
+  // Sign out - we should be able to load the policy (don't check users
   // when signed out).
   std::unique_ptr<UserCloudPolicyStore> store3(new UserCloudPolicyStore(
-      policy_file(), key_file(), GetPolicyVerificationKey(),
-      loop_.task_runner()));
+      policy_file(), key_file(), base::ThreadTaskRunnerHandle::Get()));
   store3->AddObserver(&observer_);
   EXPECT_CALL(observer_, OnStoreLoaded(store3.get()));
   store3->Load();
@@ -448,9 +451,8 @@ TEST_F(UserCloudPolicyStoreTest, LoadValidationError) {
 
   // Now start a signin as a different user - this should fail validation.
   std::unique_ptr<UserCloudPolicyStore> store4(new UserCloudPolicyStore(
-      policy_file(), key_file(), GetPolicyVerificationKey(),
-      loop_.task_runner()));
-  store4->SetSigninUsername("foobar@foobar.com");
+      policy_file(), key_file(), base::ThreadTaskRunnerHandle::Get()));
+  store4->SetSigninAccountId(other_account_id);
   store4->AddObserver(&observer_);
   ExpectError(store4.get(), CloudPolicyStore::STATUS_VALIDATION_ERROR);
   store4->Load();
@@ -477,9 +479,8 @@ TEST_F(UserCloudPolicyStoreTest, KeyRotation) {
   // Now load this in a new store - this should trigger key rotation. The keys
   // will still verify using the existing verification key.
   std::unique_ptr<UserCloudPolicyStore> store2(new UserCloudPolicyStore(
-      policy_file(), key_file(), GetPolicyVerificationKey(),
-      loop_.task_runner()));
-  store2->SetSigninUsername(PolicyBuilder::kFakeUsername);
+      policy_file(), key_file(), base::ThreadTaskRunnerHandle::Get()));
+  store2->SetSigninAccountId(PolicyBuilder::GetFakeAccountIdForTesting());
   store2->AddObserver(&observer_);
   EXPECT_CALL(observer_, OnStoreLoaded(store2.get()));
   store2->Load();
@@ -504,9 +505,8 @@ TEST_F(UserCloudPolicyStoreTest, InvalidCachedVerificationSignature) {
   // Now load this in a new store - this should cause a validation error because
   // the key won't verify.
   std::unique_ptr<UserCloudPolicyStore> store2(new UserCloudPolicyStore(
-      policy_file(), key_file(), GetPolicyVerificationKey(),
-      loop_.task_runner()));
-  store2->SetSigninUsername(PolicyBuilder::kFakeUsername);
+      policy_file(), key_file(), base::ThreadTaskRunnerHandle::Get()));
+  store2->SetSigninAccountId(PolicyBuilder::GetFakeAccountIdForTesting());
   store2->AddObserver(&observer_);
   ExpectError(store2.get(), CloudPolicyStore::STATUS_VALIDATION_ERROR);
   store2->Load();

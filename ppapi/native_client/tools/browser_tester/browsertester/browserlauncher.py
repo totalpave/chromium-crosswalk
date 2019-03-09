@@ -268,13 +268,12 @@ class ChromeLauncher(BrowserLauncher):
             # https://code.google.com/p/chromium/issues/detail?id=171836)
             '--enable-logging',
             '--disable-web-resources',
-            '--disable-preconnect',
+            # This prevents Chrome from making "hidden" network requests at
+            # startup and navigation.  These requests could be a source of
+            # non-determinism, and they also add noise to the netlogs.
+            '--disable-features=NetworkPrediction',
             # This is speculative, sync should not occur with a clean profile.
             '--disable-sync',
-            # This prevents Chrome from making "hidden" network requests at
-            # startup.  These requests could be a source of non-determinism,
-            # and they also add noise to the netlogs.
-            '--dns-prefetch-disable',
             '--no-first-run',
             '--no-default-browser-check',
             '--log-level=1',
@@ -294,9 +293,9 @@ class ChromeLauncher(BrowserLauncher):
     # Log network requests to assist debugging.
     cmd.append('--log-net-log=%s' % self.NetLogName())
     if PLATFORM == 'linux':
-      # Explicitly run with mesa on linux. The test infrastructure doesn't have
-      # sufficient native GL contextes to run these tests.
-      cmd.append('--use-gl=osmesa')
+      # Explicitly run with SwiftShader on linux. The test infrastructure
+      # doesn't have sufficient native GL contextes to run these tests.
+      cmd.append('--use-gl=swiftshader')
     if self.options.ppapi_plugin is None:
       cmd.append('--enable-nacl')
       disable_sandbox = False

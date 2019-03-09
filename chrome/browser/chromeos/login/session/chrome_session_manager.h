@@ -5,7 +5,10 @@
 #ifndef CHROME_BROWSER_CHROMEOS_LOGIN_SESSION_CHROME_SESSION_MANAGER_H_
 #define CHROME_BROWSER_CHROMEOS_LOGIN_SESSION_CHROME_SESSION_MANAGER_H_
 
+#include <string>
+
 #include "base/macros.h"
+#include "chrome/browser/chromeos/login/oobe_configuration.h"
 #include "components/session_manager/core/session_manager.h"
 
 namespace base {
@@ -18,15 +21,28 @@ namespace chromeos {
 
 class ChromeSessionManager : public session_manager::SessionManager {
  public:
-  static std::unique_ptr<session_manager::SessionManager> CreateSessionManager(
-      const base::CommandLine& parsed_command_line,
-      Profile* profile,
-      bool is_running_test);
+  ChromeSessionManager();
+  ~ChromeSessionManager() override;
+
+  // Initialize session manager on browser starts up. Runs different code
+  // path based on command line flags and policy. Possible scenarios include:
+  //   - Launches pre-session UI such as  out-of-box or login;
+  //   - Launches the auto launched kiosk app;
+  //   - Resumes user sessions on crash-and-restart;
+  //   - Starts a stub login session for dev or test;
+  void Initialize(const base::CommandLine& parsed_command_line,
+                  Profile* profile,
+                  bool is_running_test);
+
+  // session_manager::SessionManager:
+  void SessionStarted() override;
+  void NotifyUserLoggedIn(const AccountId& user_account_id,
+                          const std::string& user_id_hash,
+                          bool browser_restart,
+                          bool is_child) override;
 
  private:
-  explicit ChromeSessionManager(
-      session_manager::SessionManagerDelegate* delegate);
-  ~ChromeSessionManager() override;
+  std::unique_ptr<chromeos::OobeConfiguration> oobe_configuration_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeSessionManager);
 };

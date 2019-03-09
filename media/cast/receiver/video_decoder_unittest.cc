@@ -31,8 +31,8 @@ const int kStartingWidth = 360;
 const int kStartingHeight = 240;
 const int kFrameRate = 10;
 
-VideoSenderConfig GetVideoSenderConfigForTest() {
-  VideoSenderConfig config = GetDefaultVideoSenderConfig();
+FrameSenderConfig GetVideoSenderConfigForTest() {
+  FrameSenderConfig config = GetDefaultVideoSenderConfig();
   config.max_frame_rate = kFrameRate;
   return config;
 }
@@ -78,7 +78,7 @@ class VideoDecoderTest : public ::testing::TestWithParam<Codec> {
 
     // Prepare a simulated VideoFrame to feed into the VideoEncoder.
     const scoped_refptr<VideoFrame> video_frame = VideoFrame::CreateFrame(
-        PIXEL_FORMAT_YV12, next_frame_size_, gfx::Rect(next_frame_size_),
+        PIXEL_FORMAT_I420, next_frame_size_, gfx::Rect(next_frame_size_),
         next_frame_size_, next_frame_timestamp_);
     const base::TimeTicks reference_time =
         base::TimeTicks::UnixEpoch() + next_frame_timestamp_;
@@ -235,9 +235,9 @@ TEST_P(VideoDecoderTest, DecodesFramesOfVaryingSizes) {
   WaitForAllVideoToBeDecoded();
 }
 
-INSTANTIATE_TEST_CASE_P(,
-                        VideoDecoderTest,
-                        ::testing::Values(CODEC_VIDEO_VP8));
+INSTANTIATE_TEST_SUITE_P(,
+                         VideoDecoderTest,
+                         ::testing::Values(CODEC_VIDEO_VP8));
 
 }  // namespace cast
 }  // namespace media

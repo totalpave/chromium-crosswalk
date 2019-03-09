@@ -15,6 +15,7 @@
 #include "ui/chromeos/ime/candidate_window_constants.h"
 #include "ui/chromeos/strings/grit/ui_chromeos_strings.h"
 #include "ui/gfx/color_utils.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
@@ -56,10 +57,8 @@ class InfolistBorder : public views::BubbleBorder {
 
 InfolistBorder::InfolistBorder()
     : views::BubbleBorder(views::BubbleBorder::LEFT_CENTER,
-                          views::BubbleBorder::NO_SHADOW,
-                          SK_ColorTRANSPARENT) {
-  set_paint_arrow(views::BubbleBorder::PAINT_NONE);
-}
+                          views::BubbleBorder::BIG_SHADOW,
+                          SK_ColorTRANSPARENT) {}
 
 InfolistBorder::~InfolistBorder() {}
 
@@ -72,8 +71,7 @@ gfx::Rect InfolistBorder::GetBounds(const gfx::Rect& anchor_rect,
   // although it doesn't draw the arrow. The arrow offset is the half of
   // |contents_size| by default but can be modified through the off-screen logic
   // in BubbleFrameView.
-  bounds.set_y(anchor_rect.y() + contents_size.height() / 2 -
-               GetArrowOffset(contents_size));
+  bounds.set_y(anchor_rect.y() + contents_size.height() / 2);
   return bounds;
 }
 
@@ -97,7 +95,7 @@ class InfolistEntryView : public views::View {
 
  private:
   // views::View implementation.
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
 
   void UpdateBackground();
 
@@ -116,19 +114,20 @@ InfolistEntryView::InfolistEntryView(const ui::InfolistEntry& entry,
                                      const gfx::FontList& title_font_list,
                                      const gfx::FontList& description_font_list)
     : entry_(entry) {
-  SetLayoutManager(new views::BoxLayout(views::BoxLayout::kVertical, 0, 0, 0));
+  SetLayoutManager(
+      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
 
-  title_label_ = new views::Label(entry.title, title_font_list);
+  title_label_ = new views::Label(entry.title, {title_font_list});
   title_label_->SetPosition(gfx::Point(0, 0));
   title_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  title_label_->SetBorder(views::Border::CreateEmptyBorder(4, 7, 2, 4));
+  title_label_->SetBorder(views::CreateEmptyBorder(4, 7, 2, 4));
 
-  description_label_ = new views::Label(entry.body, description_font_list);
+  description_label_ = new views::Label(entry.body, {description_font_list});
   description_label_->SetPosition(gfx::Point(0, 0));
   description_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   description_label_->SetMultiLine(true);
   description_label_->SizeToFit(kInfolistEntryWidth);
-  description_label_->SetBorder(views::Border::CreateEmptyBorder(2, 17, 4, 4));
+  description_label_->SetBorder(views::CreateEmptyBorder(2, 17, 4, 4));
   AddChildView(title_label_);
   AddChildView(description_label_);
   UpdateBackground();
@@ -146,22 +145,20 @@ void InfolistEntryView::SetEntry(const ui::InfolistEntry& entry) {
   UpdateBackground();
 }
 
-gfx::Size InfolistEntryView::GetPreferredSize() const {
+gfx::Size InfolistEntryView::CalculatePreferredSize() const {
   return gfx::Size(kInfolistEntryWidth, GetHeightForWidth(kInfolistEntryWidth));
 }
 
 void InfolistEntryView::UpdateBackground() {
   if (entry_.highlighted) {
-    set_background(
-      views::Background::CreateSolidBackground(GetNativeTheme()->GetSystemColor(
-          ui::NativeTheme::kColorId_TextfieldSelectionBackgroundFocused)));
-    SetBorder(views::Border::CreateSolidBorder(
-        1,
-        GetNativeTheme()->GetSystemColor(
-            ui::NativeTheme::kColorId_FocusedBorderColor)));
+    SetBackground(views::CreateSolidBackground(GetNativeTheme()->GetSystemColor(
+        ui::NativeTheme::kColorId_TextfieldSelectionBackgroundFocused)));
+    SetBorder(views::CreateSolidBorder(
+        1, GetNativeTheme()->GetSystemColor(
+               ui::NativeTheme::kColorId_FocusedBorderColor)));
   } else {
-    set_background(NULL);
-    SetBorder(views::Border::CreateEmptyBorder(1, 1, 1, 1));
+    SetBackground(nullptr);
+    SetBorder(views::CreateEmptyBorder(1, 1, 1, 1));
   }
   SchedulePaint();
 }
@@ -176,31 +173,30 @@ InfolistWindow::InfolistWindow(views::View* candidate_window,
       title_font_list_(gfx::Font(kJapaneseFontName, kFontSizeDelta + 15)),
       description_font_list_(
           gfx::Font(kJapaneseFontName, kFontSizeDelta + 11)) {
-  set_can_activate(false);
+  SetCanActivate(false);
   set_accept_events(false);
   set_margins(gfx::Insets());
 
-  set_background(
-      views::Background::CreateSolidBackground(GetNativeTheme()->GetSystemColor(
-          ui::NativeTheme::kColorId_WindowBackground)));
-  SetBorder(views::Border::CreateSolidBorder(
-      1,
-      GetNativeTheme()->GetSystemColor(
-          ui::NativeTheme::kColorId_MenuBorderColor)));
+  SetBackground(views::CreateSolidBackground(GetNativeTheme()->GetSystemColor(
+      ui::NativeTheme::kColorId_WindowBackground)));
+  SetBorder(views::CreateSolidBorder(
+      1, GetNativeTheme()->GetSystemColor(
+             ui::NativeTheme::kColorId_MenuBorderColor)));
 
-  SetLayoutManager(new views::BoxLayout(views::BoxLayout::kVertical, 0, 0, 0));
+  SetLayoutManager(
+      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
 
   views::Label* caption_label = new views::Label(
       l10n_util::GetStringUTF16(IDS_CHROMEOS_IME_INFOLIST_WINDOW_TITLE));
   caption_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   caption_label->SetEnabledColor(GetNativeTheme()->GetSystemColor(
       ui::NativeTheme::kColorId_LabelEnabledColor));
-  caption_label->SetBorder(views::Border::CreateEmptyBorder(2, 2, 2, 2));
-  caption_label->set_background(views::Background::CreateSolidBackground(
+  caption_label->SetBorder(views::CreateEmptyBorder(2, 2, 2, 2));
+  caption_label->SetBackground(views::CreateSolidBackground(
       color_utils::AlphaBlend(SK_ColorBLACK,
                               GetNativeTheme()->GetSystemColor(
                                   ui::NativeTheme::kColorId_WindowBackground),
-                              0x10)));
+                              0.0625f)));
 
   AddChildView(caption_label);
 

@@ -7,21 +7,19 @@
 
 #include <string>
 
-#include "ash/common/shell_observer.h"
-#include "base/compiler_specific.h"
+#include "ash/public/interfaces/cros_display_config.mojom.h"
 #include "base/macros.h"
 #include "chrome/browser/chromeos/language_preferences.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_member.h"
-#include "components/syncable_prefs/pref_service_syncable_observer.h"
+#include "components/sync_preferences/pref_service_syncable_observer.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
 
 class PrefRegistrySimple;
-class PrefService;
 class TracingManager;
 
-namespace syncable_prefs {
+namespace sync_preferences {
 class PrefServiceSyncable;
 }
 
@@ -42,8 +40,7 @@ class InputMethodSyncer;
 // is first initialized, it will initialize the OS settings to what's stored in
 // the preferences. These include touchpad settings, etc.
 // When the preferences change, we change the settings to reflect the new value.
-class Preferences : public syncable_prefs::PrefServiceSyncableObserver,
-                    public ash::ShellObserver,
+class Preferences : public sync_preferences::PrefServiceSyncableObserver,
                     public user_manager::UserManager::UserSessionStateObserver {
  public:
   Preferences();
@@ -60,7 +57,7 @@ class Preferences : public syncable_prefs::PrefServiceSyncableObserver,
   void Init(Profile* profile, const user_manager::User* user);
 
   void InitUserPrefsForTesting(
-      syncable_prefs::PrefServiceSyncable* prefs,
+      sync_preferences::PrefServiceSyncable* prefs,
       const user_manager::User* user,
       scoped_refptr<input_method::InputMethodManager::State> ime_state);
   void SetInputMethodListForTesting();
@@ -73,7 +70,7 @@ class Preferences : public syncable_prefs::PrefServiceSyncableObserver,
   };
 
   // Initializes all member prefs.
-  void InitUserPrefs(syncable_prefs::PrefServiceSyncable* prefs);
+  void InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs);
 
   // Callback method for preference changes.
   void OnPreferenceChanged(const std::string& pref_name);
@@ -104,25 +101,19 @@ class Preferences : public syncable_prefs::PrefServiceSyncableObserver,
   // on the cmd line.
   void ForceNaturalScrollDefault();
 
-  // syncable_prefs::PrefServiceSyncableObserver implementation.
+  // sync_preferences::PrefServiceSyncableObserver implementation.
   void OnIsSyncingChanged() override;
-
-  // Overriden from ash::ShellObserver.
-  void OnTouchHudProjectionToggled(bool enabled) override;
 
   // Overriden form user_manager::UserManager::UserSessionStateObserver.
   void ActiveUserChanged(const user_manager::User* active_user) override;
 
-  void ActivateInputMethods(const user_manager::User* active_user);
-
-  syncable_prefs::PrefServiceSyncable* prefs_;
+  sync_preferences::PrefServiceSyncable* prefs_;
 
   input_method::InputMethodManager* input_method_manager_;
   std::unique_ptr<TracingManager> tracing_manager_;
 
   BooleanPrefMember performance_tracing_enabled_;
   BooleanPrefMember tap_to_click_enabled_;
-  BooleanPrefMember tap_dragging_enabled_;
   BooleanPrefMember three_finger_click_enabled_;
   BooleanPrefMember unified_desktop_enabled_by_default_;
   BooleanPrefMember natural_scroll_;
@@ -131,14 +122,19 @@ class Preferences : public syncable_prefs::PrefServiceSyncableObserver,
   IntegerPrefMember mouse_sensitivity_;
   IntegerPrefMember touchpad_sensitivity_;
   BooleanPrefMember primary_mouse_button_right_;
+  BooleanPrefMember mouse_reverse_scroll_;
   FilePathPrefMember download_default_directory_;
-  BooleanPrefMember touch_hud_projection_enabled_;
+
+  StringListPrefMember allowed_languages_;
+  StringPrefMember preferred_languages_;
 
   // Input method preferences.
   StringPrefMember preload_engines_;
   StringPrefMember current_input_method_;
   StringPrefMember previous_input_method_;
-  StringPrefMember enabled_extension_imes_;
+
+  StringListPrefMember allowed_input_methods_;
+  StringPrefMember enabled_imes_;
   BooleanPrefMember ime_menu_activated_;
 
   BooleanPrefMember xkb_auto_repeat_enabled_;
@@ -159,6 +155,8 @@ class Preferences : public syncable_prefs::PrefServiceSyncableObserver,
   scoped_refptr<input_method::InputMethodManager::State> ime_state_;
 
   std::unique_ptr<input_method::InputMethodSyncer> input_method_syncer_;
+
+  ash::mojom::CrosDisplayConfigControllerPtr cros_display_config_ptr_;
 
   DISALLOW_COPY_AND_ASSIGN(Preferences);
 };

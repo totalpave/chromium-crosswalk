@@ -4,7 +4,8 @@
 
 #include "chrome/browser/extensions/settings_api_bubble_delegate.h"
 
-#include "base/metrics/histogram.h"
+#include "base/lazy_instance.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/settings_api_helpers.h"
@@ -18,7 +19,6 @@
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
-#include "grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace extensions {
@@ -29,13 +29,18 @@ namespace {
 // the user's settings (homepage, startup pages, or search engine).
 const char kSettingsBubbleAcknowledged[] = "ack_settings_bubble";
 
+using ProfileSetMap = std::map<std::string, std::set<Profile*>>;
+base::LazyInstance<ProfileSetMap>::Leaky g_settings_api_shown =
+    LAZY_INSTANCE_INITIALIZER;
+
 }  // namespace
 
 SettingsApiBubbleDelegate::SettingsApiBubbleDelegate(
     Profile* profile,
     SettingsApiOverrideType type)
     : ExtensionMessageBubbleController::Delegate(profile),
-      type_(type) {
+      type_(type),
+      profile_(profile) {
   set_acknowledged_flag_pref_name(kSettingsBubbleAcknowledged);
 }
 
@@ -81,7 +86,7 @@ void SettingsApiBubbleDelegate::AcknowledgeExtension(
 
 void SettingsApiBubbleDelegate::PerformAction(const ExtensionIdList& list) {
   for (size_t i = 0; i < list.size(); ++i) {
-    service()->DisableExtension(list[i], Extension::DISABLE_USER_ACTION);
+    service()->DisableExtension(list[i], disable_reason::DISABLE_USER_ACTION);
   }
 }
 
@@ -199,6 +204,34 @@ bool SettingsApiBubbleDelegate::ShouldCloseOnDeactivate() const {
   return type_ != BUBBLE_TYPE_STARTUP_PAGES;
 }
 
+bool SettingsApiBubbleDelegate::ShouldAcknowledgeOnDeactivate() const {
+  return false;
+}
+
+bool SettingsApiBubbleDelegate::ShouldShow(
+    const ExtensionIdList& extensions) const {
+  DCHECK_EQ(1u, extensions.size());
+  return !g_settings_api_shown.Get()[GetKey()].count(profile_);
+}
+
+void SettingsApiBubbleDelegate::OnShown(const ExtensionIdList& extensions) {
+  DCHECK_EQ(1u, extensions.size());
+  DCHECK(!g_settings_api_shown.Get()[GetKey()].count(profile_));
+  g_settings_api_shown.Get()[GetKey()].insert(profile_);
+}
+
+void SettingsApiBubbleDelegate::OnAction() {
+  // We clear the profile set because the user chooses to remove or disable the
+  // extension. Thus if that extension or another takes effect, it is worth
+  // mentioning to the user (ShouldShow() would return true) because it is
+  // contrary to the user's choice.
+  g_settings_api_shown.Get()[GetKey()].clear();
+}
+
+void SettingsApiBubbleDelegate::ClearProfileSetForTesting() {
+  g_settings_api_shown.Get()[GetKey()].clear();
+}
+
 bool SettingsApiBubbleDelegate::ShouldShowExtensionList() const {
   return false;
 }
@@ -238,7 +271,7 @@ void SettingsApiBubbleDelegate::LogAction(
   }
 }
 
-const char* SettingsApiBubbleDelegate::GetKey() {
+const char* SettingsApiBubbleDelegate::GetKey() const {
   switch (type_) {
     case BUBBLE_TYPE_HOME_PAGE:
       return "SettingsApiBubbleDelegate.HomePage";
@@ -249,6 +282,10 @@ const char* SettingsApiBubbleDelegate::GetKey() {
   }
   NOTREACHED();
   return "";
+}
+
+bool SettingsApiBubbleDelegate::SupportsPolicyIndicator() {
+  return true;
 }
 
 }  // namespace extensions

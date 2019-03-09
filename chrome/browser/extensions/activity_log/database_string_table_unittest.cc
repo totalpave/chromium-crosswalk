@@ -8,7 +8,7 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/extensions/activity_log/database_string_table.h"
-#include "sql/connection.h"
+#include "sql/database.h"
 #include "sql/statement.h"
 #include "sql/transaction.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -19,7 +19,7 @@ class DatabaseStringTableTest : public testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    base::FilePath db_file = temp_dir_.path().AppendASCII("StringTable.db");
+    base::FilePath db_file = temp_dir_.GetPath().AppendASCII("StringTable.db");
 
     ASSERT_TRUE(db_.Open(db_file));
   }
@@ -27,7 +27,7 @@ class DatabaseStringTableTest : public testing::Test {
   void TearDown() override { db_.Close(); }
 
   base::ScopedTempDir temp_dir_;
-  sql::Connection db_;
+  sql::Database db_;
 };
 
 // Check that initializing the database works.

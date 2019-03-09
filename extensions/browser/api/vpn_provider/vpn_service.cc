@@ -16,7 +16,6 @@
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -116,7 +115,8 @@ void VpnService::VpnConfiguration::OnPacketReceived(
     pepper_vpn_provider_proxy_->SendOnPacketReceived(data);
   } else {
     std::unique_ptr<base::ListValue> event_args =
-        api_vpn::OnPacketReceived::Create(data);
+        api_vpn::OnPacketReceived::Create(
+            std::vector<uint8_t>(data.begin(), data.end()));
     vpn_service_->SendSignalToExtension(
         extension_id_, extensions::events::VPN_PROVIDER_ON_PACKET_RECEIVED,
         api_vpn::OnPacketReceived::kEventName, std::move(event_args));
@@ -235,16 +235,14 @@ VpnService::VpnService(
   network_state_handler_->AddObserver(this, FROM_HERE);
   network_configuration_handler_->AddObserver(this);
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&VpnService::NetworkListChanged, weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&VpnService::NetworkListChanged,
+                                weak_factory_.GetWeakPtr()));
 }
 
 VpnService::~VpnService() {
   network_configuration_handler_->RemoveObserver(this);
   network_state_handler_->RemoveObserver(this, FROM_HERE);
   extension_registry_->RemoveObserver(this);
-  STLDeleteContainerPairSecondPointers(key_to_configuration_map_.begin(),
-                                       key_to_configuration_map_.end());
 }
 
 void VpnService::SendShowAddDialogToExtension(const std::string& extension_id) {
@@ -281,25 +279,13 @@ std::string VpnService::GetKey(const std::string& extension_id,
   return base::HexEncode(key.data(), key.size());
 }
 
-void VpnService::OnConfigurationCreated(const std::string& service_path,
-                                        const std::string& profile_path,
-                                        const base::DictionaryValue& properties,
-                                        Source source) {
-}
-
 void VpnService::OnConfigurationRemoved(const std::string& service_path,
-                                        const std::string& guid,
-                                        Source source) {
-  if (source == SOURCE_EXTENSION_INSTALL) {
-    // No need to process if the configuration was removed using an extension
-    // API since the API would have already done the cleanup.
-    return;
-  }
-
+                                        const std::string& guid) {
   if (service_path_to_configuration_map_.find(service_path) ==
       service_path_to_configuration_map_.end()) {
     // Ignore removal of a configuration unknown to VPN service, which means the
-    // configuration was created internally by the platform.
+    // configuration was created internally by the platform or already removed
+    // by the extension.
     return;
   }
 
@@ -313,17 +299,6 @@ void VpnService::OnConfigurationRemoved(const std::string& service_path,
                         std::move(event_args));
 
   DestroyConfigurationInternal(configuration);
-}
-
-void VpnService::OnPropertiesSet(const std::string& service_path,
-                                 const std::string& guid,
-                                 const base::DictionaryValue& set_properties,
-                                 Source source) {
-}
-
-void VpnService::OnConfigurationProfileChanged(const std::string& service_path,
-                                               const std::string& profile_path,
-                                               Source source) {
 }
 
 void VpnService::OnGetPropertiesSuccess(
@@ -368,7 +343,7 @@ void VpnService::NetworkListChanged() {
   NetworkStateHandler::NetworkStateList network_list;
   network_state_handler_->GetVisibleNetworkListByType(NetworkTypePattern::VPN(),
                                                       &network_list);
-  for (auto& iter : network_list) {
+  for (auto* iter : network_list) {
     if (service_path_to_configuration_map_.find(iter->path()) !=
         service_path_to_configuration_map_.end()) {
       continue;
@@ -393,7 +368,7 @@ void VpnService::CreateConfiguration(const std::string& extension_id,
   }
 
   const std::string key = GetKey(extension_id, configuration_name);
-  if (ContainsKey(key_to_configuration_map_, key)) {
+  if (base::ContainsKey(key_to_configuration_map_, key)) {
     failure.Run(std::string(), std::string("Name not unique."));
     return;
   }
@@ -411,26 +386,22 @@ void VpnService::CreateConfiguration(const std::string& extension_id,
       CreateConfigurationInternal(extension_id, configuration_name, key);
 
   base::DictionaryValue properties;
-  properties.SetStringWithoutPathExpansion(shill::kTypeProperty,
-                                           shill::kTypeVPN);
-  properties.SetStringWithoutPathExpansion(shill::kNameProperty,
-                                           configuration_name);
-  properties.SetStringWithoutPathExpansion(shill::kProviderHostProperty,
-                                           extension_id);
-  properties.SetStringWithoutPathExpansion(shill::kObjectPathSuffixProperty,
-                                           configuration->key());
-  properties.SetStringWithoutPathExpansion(shill::kProviderTypeProperty,
-                                           shill::kProviderThirdPartyVpn);
-  properties.SetStringWithoutPathExpansion(shill::kProfileProperty,
-                                           profile->path);
+  properties.SetKey(shill::kTypeProperty, base::Value(shill::kTypeVPN));
+  properties.SetKey(shill::kNameProperty, base::Value(configuration_name));
+  properties.SetKey(shill::kProviderHostProperty, base::Value(extension_id));
+  properties.SetKey(shill::kObjectPathSuffixProperty,
+                    base::Value(configuration->key()));
+  properties.SetKey(shill::kProviderTypeProperty,
+                    base::Value(shill::kProviderThirdPartyVpn));
+  properties.SetKey(shill::kProfileProperty, base::Value(profile->path));
 
   // Note: This will not create an entry in |policy_util|. TODO(pneubeck):
   // Determine the correct thing to do here, crbug.com/459278.
   std::string guid = base::GenerateGUID();
-  properties.SetStringWithoutPathExpansion(shill::kGuidProperty, guid);
+  properties.SetKey(shill::kGuidProperty, base::Value(guid));
 
   network_configuration_handler_->CreateShillConfiguration(
-      properties, NetworkConfigurationObserver::SOURCE_EXTENSION_INSTALL,
+      properties,
       base::Bind(&VpnService::OnCreateConfigurationSuccess,
                  weak_factory_.GetWeakPtr(), success, configuration),
       base::Bind(&VpnService::OnCreateConfigurationFailure,
@@ -443,12 +414,12 @@ void VpnService::DestroyConfiguration(const std::string& extension_id,
                                       const FailureCallback& failure) {
   // The ID is the configuration name for now. This may change in the future.
   const std::string key = GetKey(extension_id, configuration_id);
-  if (!ContainsKey(key_to_configuration_map_, key)) {
+  if (!base::ContainsKey(key_to_configuration_map_, key)) {
     failure.Run(std::string(), std::string("Unauthorized access."));
     return;
   }
 
-  VpnConfiguration* configuration = key_to_configuration_map_[key];
+  VpnConfiguration* configuration = key_to_configuration_map_[key].get();
   const std::string service_path = configuration->service_path();
   if (service_path.empty()) {
     failure.Run(std::string(), std::string("Pending create."));
@@ -460,7 +431,7 @@ void VpnService::DestroyConfiguration(const std::string& extension_id,
   DestroyConfigurationInternal(configuration);
 
   network_configuration_handler_->RemoveConfiguration(
-      service_path, NetworkConfigurationObserver::SOURCE_EXTENSION_INSTALL,
+      service_path,
       base::Bind(&VpnService::OnRemoveConfigurationSuccess,
                  weak_factory_.GetWeakPtr(), success),
       base::Bind(&VpnService::OnRemoveConfigurationFailure,
@@ -516,7 +487,7 @@ bool VpnService::VerifyConfigExistsForTesting(
     const std::string& extension_id,
     const std::string& configuration_name) {
   const std::string key = GetKey(extension_id, configuration_name);
-  return ContainsKey(key_to_configuration_map_, key);
+  return base::ContainsKey(key_to_configuration_map_, key);
 }
 
 bool VpnService::VerifyConfigIsConnectedForTesting(
@@ -529,14 +500,14 @@ void VpnService::DestroyConfigurationsForExtension(
   std::vector<VpnConfiguration*> to_be_destroyed;
   for (const auto& iter : key_to_configuration_map_) {
     if (iter.second->extension_id() == extension->id()) {
-      to_be_destroyed.push_back(iter.second);
+      to_be_destroyed.push_back(iter.second.get());
     }
   }
 
-  for (auto& iter : to_be_destroyed) {
+  for (auto* iter : to_be_destroyed) {
     DestroyConfiguration(extension->id(),             // Extension ID
                          iter->configuration_name(),  // Configuration name
-                         base::Bind(base::DoNothing),
+                         base::DoNothing(),
                          base::Bind(DoNothingFailureCallback));
   }
 }
@@ -556,7 +527,7 @@ void VpnService::OnExtensionUninstalled(
 void VpnService::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const extensions::Extension* extension,
-    extensions::UnloadedExtensionInfo::Reason reason) {
+    extensions::UnloadedExtensionReason reason) {
   if (browser_context != browser_context_) {
     NOTREACHED();
     return;
@@ -567,10 +538,10 @@ void VpnService::OnExtensionUnloaded(
     shill_client_->UpdateConnectionState(
         active_configuration_->object_path(),
         static_cast<uint32_t>(api_vpn::VPN_CONNECTION_STATE_FAILURE),
-        base::Bind(base::DoNothing), base::Bind(DoNothingFailureCallback));
+        base::DoNothing(), base::Bind(DoNothingFailureCallback));
   }
-  if (reason == extensions::UnloadedExtensionInfo::REASON_DISABLE ||
-      reason == extensions::UnloadedExtensionInfo::REASON_BLACKLIST) {
+  if (reason == extensions::UnloadedExtensionReason::DISABLE ||
+      reason == extensions::UnloadedExtensionReason::BLACKLIST) {
     DestroyConfigurationsForExtension(extension);
   }
 }
@@ -630,12 +601,13 @@ VpnService::VpnConfiguration* VpnService::CreateConfigurationInternal(
     const std::string& key) {
   VpnConfiguration* configuration = new VpnConfiguration(
       extension_id, configuration_name, key, weak_factory_.GetWeakPtr());
-  // The object is owned by key_to_configuration_map_ henceforth.
-  key_to_configuration_map_[key] = configuration;
+  key_to_configuration_map_[key] = base::WrapUnique(configuration);
   return configuration;
 }
 
 void VpnService::DestroyConfigurationInternal(VpnConfiguration* configuration) {
+  std::unique_ptr<VpnConfiguration> configuration_ptr =
+      std::move(key_to_configuration_map_[configuration->key()]);
   key_to_configuration_map_.erase(configuration->key());
   if (active_configuration_ == configuration) {
     active_configuration_ = nullptr;
@@ -645,7 +617,6 @@ void VpnService::DestroyConfigurationInternal(VpnConfiguration* configuration) {
         configuration->object_path());
     service_path_to_configuration_map_.erase(configuration->service_path());
   }
-  delete configuration;
 }
 
 bool VpnService::DoesActiveConfigurationExistAndIsAccessAuthorized(
@@ -664,14 +635,14 @@ void VpnService::Bind(
         pepper_vpn_provider_proxy) {
   // The ID is the configuration name for now. This may change in the future.
   const std::string key = GetKey(extension_id, configuration_id);
-  if (!ContainsKey(key_to_configuration_map_, key)) {
+  if (!base::ContainsKey(key_to_configuration_map_, key)) {
     failure.Run(std::string(),
                 std::string("Unauthorized access. "
                             "The configuration does not exist."));
     return;
   }
 
-  VpnConfiguration* configuration = key_to_configuration_map_[key];
+  VpnConfiguration* configuration = key_to_configuration_map_[key].get();
   if (active_configuration_ != configuration) {
     failure.Run(std::string(), std::string("Unauthorized access. "
                                            "The configuration is not active."));
@@ -700,6 +671,12 @@ void VpnService::Bind(
 
 std::unique_ptr<content::VpnServiceProxy> VpnService::GetVpnServiceProxy() {
   return base::WrapUnique(new VpnServiceProxyImpl(weak_factory_.GetWeakPtr()));
+}
+
+const std::string VpnService::GetSingleServicepathForTesting() {
+  if (service_path_to_configuration_map_.size() == 1)
+    return service_path_to_configuration_map_.begin()->first;
+  return std::string();
 }
 
 }  // namespace chromeos

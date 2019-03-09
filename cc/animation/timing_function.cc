@@ -4,20 +4,20 @@
 
 #include "cc/animation/timing_function.h"
 
+#include <cmath>
 #include <memory>
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "cc/base/math_util.h"
 
 namespace cc {
 
-TimingFunction::TimingFunction() {}
+TimingFunction::TimingFunction() = default;
 
-TimingFunction::~TimingFunction() {}
+TimingFunction::~TimingFunction() = default;
 
-std::unique_ptr<TimingFunction> CubicBezierTimingFunction::CreatePreset(
-    EaseType ease_type) {
+std::unique_ptr<CubicBezierTimingFunction>
+CubicBezierTimingFunction::CreatePreset(EaseType ease_type) {
   // These numbers come from
   // http://www.w3.org/TR/css3-transitions/#transition-timing-function_tag.
   switch (ease_type) {
@@ -51,29 +51,23 @@ CubicBezierTimingFunction::CubicBezierTimingFunction(EaseType ease_type,
                                                      double y2)
     : bezier_(x1, y1, x2, y2), ease_type_(ease_type) {}
 
-CubicBezierTimingFunction::~CubicBezierTimingFunction() {}
+CubicBezierTimingFunction::~CubicBezierTimingFunction() = default;
 
 TimingFunction::Type CubicBezierTimingFunction::GetType() const {
   return Type::CUBIC_BEZIER;
 }
 
-float CubicBezierTimingFunction::GetValue(double x) const {
-  return static_cast<float>(bezier_.Solve(x));
+double CubicBezierTimingFunction::GetValue(double x) const {
+  return bezier_.Solve(x);
 }
 
-float CubicBezierTimingFunction::Velocity(double x) const {
-  return static_cast<float>(bezier_.Slope(x));
-}
-
-void CubicBezierTimingFunction::Range(float* min, float* max) const {
-  *min = static_cast<float>(bezier_.range_min());
-  *max = static_cast<float>(bezier_.range_max());
+double CubicBezierTimingFunction::Velocity(double x) const {
+  return bezier_.Slope(x);
 }
 
 std::unique_ptr<TimingFunction> CubicBezierTimingFunction::Clone() const {
   return base::WrapUnique(new CubicBezierTimingFunction(*this));
 }
-
 
 std::unique_ptr<StepsTimingFunction> StepsTimingFunction::Create(
     int steps,
@@ -82,45 +76,78 @@ std::unique_ptr<StepsTimingFunction> StepsTimingFunction::Create(
 }
 
 StepsTimingFunction::StepsTimingFunction(int steps, StepPosition step_position)
-    : steps_(steps) {
-  switch (step_position) {
-    case StepPosition::START:
-      steps_start_offset_ = 1;
-      break;
-    case StepPosition::MIDDLE:
-      steps_start_offset_ = 0.5;
-      break;
-    case StepPosition::END:
-      steps_start_offset_ = 0;
-      break;
-  }
-}
+    : steps_(steps), step_position_(step_position) {}
 
-StepsTimingFunction::~StepsTimingFunction() {
-}
+StepsTimingFunction::~StepsTimingFunction() = default;
 
 TimingFunction::Type StepsTimingFunction::GetType() const {
   return Type::STEPS;
 }
 
-float StepsTimingFunction::GetValue(double t) const {
-  const double steps = static_cast<double>(steps_);
-  const double value = MathUtil::ClampToRange(
-      std::floor((steps * t) + steps_start_offset_) / steps, 0.0, 1.0);
-  return static_cast<float>(value);
+double StepsTimingFunction::GetValue(double t) const {
+  return GetPreciseValue(t);
 }
 
 std::unique_ptr<TimingFunction> StepsTimingFunction::Clone() const {
   return base::WrapUnique(new StepsTimingFunction(*this));
 }
 
-void StepsTimingFunction::Range(float* min, float* max) const {
-  *min = 0.0f;
-  *max = 1.0f;
+double StepsTimingFunction::Velocity(double x) const {
+  return 0;
 }
 
-float StepsTimingFunction::Velocity(double x) const {
-  return 0.0f;
+double StepsTimingFunction::GetPreciseValue(double t) const {
+  const double steps = static_cast<double>(steps_);
+  double current_step = std::floor((steps * t) + GetStepsStartOffset());
+  if (t >= 0 && current_step < 0)
+    current_step = 0;
+  if (t <= 1 && current_step > steps)
+    current_step = steps;
+  return current_step / steps;
+}
+
+float StepsTimingFunction::GetStepsStartOffset() const {
+  switch (step_position_) {
+    case StepPosition::START:
+      return 1;
+    case StepPosition::END:
+      return 0;
+    default:
+      NOTREACHED();
+      return 1;
+  }
+}
+
+std::unique_ptr<FramesTimingFunction> FramesTimingFunction::Create(int frames) {
+  return base::WrapUnique(new FramesTimingFunction(frames));
+}
+
+FramesTimingFunction::FramesTimingFunction(int frames) : frames_(frames) {}
+
+FramesTimingFunction::~FramesTimingFunction() = default;
+
+TimingFunction::Type FramesTimingFunction::GetType() const {
+  return Type::FRAMES;
+}
+
+double FramesTimingFunction::GetValue(double t) const {
+  return GetPreciseValue(t);
+}
+
+std::unique_ptr<TimingFunction> FramesTimingFunction::Clone() const {
+  return base::WrapUnique(new FramesTimingFunction(*this));
+}
+
+double FramesTimingFunction::Velocity(double x) const {
+  return 0;
+}
+
+double FramesTimingFunction::GetPreciseValue(double t) const {
+  const double frames = static_cast<double>(frames_);
+  double output_progress = std::floor(frames * t) / (frames - 1);
+  if (t <= 1 && output_progress > 1)
+    output_progress = 1;
+  return output_progress;
 }
 
 }  // namespace cc

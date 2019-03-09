@@ -8,12 +8,14 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/strings/stringize_macros.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "remoting/base/constants.h"
 #include "remoting/base/logging.h"
+#include "remoting/signaling/signaling_address.h"
 
 namespace remoting {
 
@@ -43,6 +45,7 @@ GcdStateUpdater::GcdStateUpdater(
 }
 
 GcdStateUpdater::~GcdStateUpdater() {
+  DCHECK(thread_checker_.CalledOnValidThread());
   signal_strategy_->RemoveListener(this);
 }
 
@@ -68,7 +71,7 @@ void GcdStateUpdater::OnSignalStrategyStateChange(SignalStrategy::State state) {
 }
 
 bool GcdStateUpdater::OnSignalStrategyIncomingStanza(
-    const buzz::XmlElement* stanza) {
+    const jingle_xmpp::XmlElement* stanza) {
   // Ignore all XMPP stanzas.
   return false;
 }
@@ -79,7 +82,7 @@ void GcdStateUpdater::OnPatchStateResult(GcdRestClient::Result result) {
   }
 
   if (result == GcdRestClient::NETWORK_ERROR ||
-      pending_request_jid_ != signal_strategy_->GetLocalJid()) {
+      pending_request_jid_ != signal_strategy_->GetLocalAddress().jid()) {
     // Continue exponential backoff.
     return;
   }
@@ -115,7 +118,7 @@ void GcdStateUpdater::MaybeSendStateUpdate() {
   // Construct an update to the remote state.
   std::unique_ptr<base::DictionaryValue> patch(new base::DictionaryValue);
   std::unique_ptr<base::DictionaryValue> base_state(new base::DictionaryValue);
-  pending_request_jid_ = signal_strategy_->GetLocalJid();
+  pending_request_jid_ = signal_strategy_->GetLocalAddress().jid();
   base_state->SetString("_jabberId", pending_request_jid_);
   base_state->SetString("_hostVersion", STRINGIZE(VERSION));
   patch->Set("base", std::move(base_state));

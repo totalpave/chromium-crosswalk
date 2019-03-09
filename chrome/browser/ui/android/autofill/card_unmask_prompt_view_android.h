@@ -19,6 +19,8 @@ class WebContents;
 
 namespace autofill {
 
+class CardUnmaskPromptController;
+
 class CardUnmaskPromptViewAndroid : public CardUnmaskPromptView {
  public:
   explicit CardUnmaskPromptViewAndroid(CardUnmaskPromptController* controller,
@@ -36,6 +38,8 @@ class CardUnmaskPromptViewAndroid : public CardUnmaskPromptView {
                    jboolean should_store_locally);
   void OnNewCardLinkClicked(JNIEnv* env,
                             const base::android::JavaParamRef<jobject>& obj);
+  int GetExpectedCvcLength(JNIEnv* env,
+                           const base::android::JavaParamRef<jobject>& obj);
   void PromptDismissed(JNIEnv* env,
                        const base::android::JavaParamRef<jobject>& obj);
 
@@ -45,8 +49,6 @@ class CardUnmaskPromptViewAndroid : public CardUnmaskPromptView {
   void DisableAndWaitForVerification() override;
   void GotVerificationResult(const base::string16& error_message,
                              bool allow_retry) override;
-
-  static bool Register(JNIEnv* env);
 
  private:
   ~CardUnmaskPromptViewAndroid() override;

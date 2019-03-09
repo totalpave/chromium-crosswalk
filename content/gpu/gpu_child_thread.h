@@ -15,171 +15,113 @@
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/metrics/field_trial.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "components/viz/service/gl/gpu_service_impl.h"
+#include "components/viz/service/main/viz_main_impl.h"
 #include "content/child/child_thread_impl.h"
-#include "content/common/process_control.mojom.h"
-#include "gpu/command_buffer/service/gpu_preferences.h"
+#include "gpu/config/gpu_feature_info.h"
 #include "gpu/config/gpu_info.h"
+#include "gpu/config/gpu_preferences.h"
 #include "gpu/ipc/service/gpu_channel.h"
 #include "gpu/ipc/service/gpu_channel_manager.h"
 #include "gpu/ipc/service/gpu_channel_manager_delegate.h"
 #include "gpu/ipc/service/gpu_config.h"
 #include "gpu/ipc/service/x_util.h"
+#include "media/base/android_overlay_mojo_factory.h"
+#include "mojo/public/cpp/bindings/associated_binding_set.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
+#include "services/service_manager/public/cpp/service_context_ref.h"
+#include "services/service_manager/public/mojom/service_factory.mojom.h"
+#include "services/viz/privileged/interfaces/viz_main.mojom.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "ui/gfx/native_widget_types.h"
 
-namespace gpu {
-class GpuMemoryBufferFactory;
-class SyncPointManager;
-}
-
-namespace media {
-class MediaService;
-}
-
-namespace sandbox {
-class TargetServices;
-}
-
 namespace content {
-class GpuProcessControlImpl;
-class GpuWatchdogThread;
-struct EstablishChannelParams;
+class GpuServiceFactory;
 
 // The main thread of the GPU child process. There will only ever be one of
 // these per process. It does process initialization and shutdown. It forwards
 // IPC messages to gpu::GpuChannelManager, which is responsible for issuing
 // rendering commands to the GPU.
 class GpuChildThread : public ChildThreadImpl,
-                       public gpu::GpuChannelManagerDelegate,
-                       public base::FieldTrialList::Observer {
+                       public viz::VizMainImpl::Delegate {
  public:
-  typedef std::queue<IPC::Message*> DeferredMessages;
+  GpuChildThread(base::RepeatingClosure quit_closure,
+                 std::unique_ptr<gpu::GpuInit> gpu_init,
+                 viz::VizMainImpl::LogMessages deferred_messages);
 
-  // Returns the one gpu thread for this process. Note that this can only
-  // be accessed when running on the gpu thread itself.
-  static GpuChildThread* current();
-
-  GpuChildThread(GpuWatchdogThread* gpu_watchdog_thread,
-                 bool dead_on_arrival,
-                 const gpu::GPUInfo& gpu_info,
-                 const DeferredMessages& deferred_messages,
-                 gpu::GpuMemoryBufferFactory* gpu_memory_buffer_factory);
-
-  GpuChildThread(const gpu::GpuPreferences& gpu_preferences,
-                 const InProcessChildThreadParams& params,
-                 gpu::GpuMemoryBufferFactory* gpu_memory_buffer_factory);
+  GpuChildThread(const InProcessChildThreadParams& params,
+                 std::unique_ptr<gpu::GpuInit> gpu_init);
 
   ~GpuChildThread() override;
 
-  void Shutdown() override;
-
   void Init(const base::Time& process_start_time);
-  void StopWatchdog();
-
-  gpu::GpuPreferences gpu_preferences() { return gpu_preferences_; }
 
  private:
+  GpuChildThread(base::RepeatingClosure quit_closure,
+                 const ChildThreadImpl::Options& options,
+                 std::unique_ptr<gpu::GpuInit> gpu_init);
+
+  void CreateVizMainService(viz::mojom::VizMainAssociatedRequest request);
+
+  bool in_process_gpu() const;
+
   // ChildThreadImpl:.
   bool Send(IPC::Message* msg) override;
-  bool OnControlMessageReceived(const IPC::Message& msg) override;
-  bool OnMessageReceived(const IPC::Message& msg) override;
-  bool AcceptConnection(shell::Connection* connection) override;
-  shell::InterfaceRegistry* GetInterfaceRegistryForConnection() override;
-  shell::InterfaceProvider* GetInterfaceProviderForConnection() override;
 
-  // gpu::GpuChannelManagerDelegate:
-  void SetActiveURL(const GURL& url) override;
-  void DidCreateOffscreenContext(const GURL& active_url) override;
-  void DidDestroyChannel(int client_id) override;
-  void DidDestroyOffscreenContext(const GURL& active_url) override;
-  void DidLoseContext(bool offscreen,
-                      gpu::error::ContextLostReason reason,
-                      const GURL& active_url) override;
-  void GpuMemoryUmaStats(const gpu::GPUMemoryUmaStats& params) override;
-#if defined(OS_WIN)
-  void SendAcceleratedSurfaceCreatedChildWindow(
-      gpu::SurfaceHandle parent_window,
-      gpu::SurfaceHandle child_window) override;
-#endif
-  void StoreShaderToDisk(int32_t client_id,
-                         const std::string& key,
-                         const std::string& shader) override;
+  // IPC::Listener implementation via ChildThreadImpl:
+  void OnAssociatedInterfaceRequest(
+      const std::string& name,
+      mojo::ScopedInterfaceEndpointHandle handle) override;
 
-  // base::FieldTrialList::Observer:
-  void OnFieldTrialGroupFinalized(const std::string& trial_name,
-                                  const std::string& group_name) override;
+  // viz::VizMainImpl::Delegate:
+  void OnInitializationFailed() override;
+  void OnGpuServiceConnection(viz::GpuServiceImpl* gpu_service) override;
+  void PostCompositorThreadCreated(
+      base::SingleThreadTaskRunner* task_runner) override;
+  void QuitMainMessageLoop() override;
 
-  // Message handlers.
-  void OnInitialize(const gpu::GpuPreferences& gpu_preferences);
-  void OnFinalize();
-  void OnCollectGraphicsInfo();
-  void OnGetVideoMemoryUsageStats();
-  void OnSetVideoMemoryWindowCount(uint32_t window_count);
+  void OnMemoryPressure(
+      base::MemoryPressureListener::MemoryPressureLevel level);
 
-  void OnClean();
-  void OnCrash();
-  void OnHang();
-  void OnDisableWatchdog();
-  void OnGpuSwitched();
+  void BindServiceFactoryRequest(
+      service_manager::mojom::ServiceFactoryRequest request);
 
-  void OnEstablishChannel(const EstablishChannelParams& params);
-  void OnCloseChannel(int32_t client_id);
-  void OnLoadedShader(const std::string& shader);
-  void OnDestroyGpuMemoryBuffer(gfx::GpuMemoryBufferId id,
-                                int client_id,
-                                const gpu::SyncToken& sync_token);
+  // Returns a closure which calls into the VizMainImpl to perform shutdown
+  // before quitting the main message loop. Must be called on the main thread.
+  static base::RepeatingClosure MakeQuitSafelyClosure();
+  static void QuitSafelyHelper(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner);
+
 #if defined(OS_ANDROID)
-  void OnWakeUpGpu();
-  void OnDestroyingVideoSurface(int surface_id);
-#endif
-  void OnLoseAllContexts();
-
-  void BindProcessControlRequest(
-      mojo::InterfaceRequest<mojom::ProcessControl> request);
-
-  gpu::GpuPreferences gpu_preferences_;
-
-  // Set this flag to true if a fatal error occurred before we receive the
-  // OnInitialize message, in which case we just declare ourselves DOA.
-  bool dead_on_arrival_;
-  base::Time process_start_time_;
-  scoped_refptr<GpuWatchdogThread> watchdog_thread_;
-
-#if defined(OS_WIN)
-  // Windows specific client sandbox interface.
-  sandbox::TargetServices* target_services_;
+  static std::unique_ptr<media::AndroidOverlay> CreateAndroidOverlay(
+      scoped_refptr<base::SingleThreadTaskRunner> main_task_runner,
+      const base::UnguessableToken& routing_token,
+      media::AndroidOverlayConfig);
 #endif
 
-  // Can be null if overridden by ContentGpuClient.
-  std::unique_ptr<gpu::SyncPointManager> owned_sync_point_manager_;
+  viz::VizMainImpl viz_main_;
 
-  std::unique_ptr<gpu::GpuChannelManager> gpu_channel_manager_;
+  // ServiceFactory for service_manager::Service hosting.
+  std::unique_ptr<GpuServiceFactory> service_factory_;
 
-  std::unique_ptr<media::MediaService> media_service_;
+  // Bindings to the service_manager::mojom::ServiceFactory impl.
+  mojo::BindingSet<service_manager::mojom::ServiceFactory>
+      service_factory_bindings_;
 
-  // Information about the GPU, such as device and vendor ID.
-  gpu::GPUInfo gpu_info_;
+  blink::AssociatedInterfaceRegistry associated_interfaces_;
 
-  // Error messages collected in gpu_main() before the thread is created.
-  DeferredMessages deferred_messages_;
+  // Holds a closure that releases pending interface requests on the IO thread.
+  base::OnceClosure release_pending_requests_closure_;
 
-  // Whether the GPU thread is running in the browser process.
-  bool in_browser_process_;
+  // A closure which quits the main message loop.
+  base::RepeatingClosure quit_closure_;
 
-  // The gpu::GpuMemoryBufferFactory instance used to allocate GpuMemoryBuffers.
-  gpu::GpuMemoryBufferFactory* const gpu_memory_buffer_factory_;
+  std::unique_ptr<base::MemoryPressureListener> memory_pressure_listener_;
 
-  // Process control for Mojo application hosting.
-  std::unique_ptr<GpuProcessControlImpl> process_control_;
-
-  // Bindings to the mojom::ProcessControl impl.
-  mojo::BindingSet<mojom::ProcessControl> process_control_bindings_;
-
-  base::Closure resume_interface_bindings_callback_;
+  base::WeakPtrFactory<GpuChildThread> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(GpuChildThread);
 };

@@ -6,7 +6,8 @@
 
 #include <xf86drmMode.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
+#include "ui/display/types/display_snapshot.h"
 #include "ui/display/types/gamma_ramp_rgb_entry.h"
 #include "ui/ozone/platform/drm/common/drm_util.h"
 #include "ui/ozone/platform/drm/gpu/drm_device.h"
@@ -20,19 +21,19 @@ const char kContentProtection[] = "Content Protection";
 
 struct ContentProtectionMapping {
   const char* name;
-  HDCPState state;
+  display::HDCPState state;
 };
 
 const ContentProtectionMapping kContentProtectionStates[] = {
-    {"Undesired", HDCP_STATE_UNDESIRED},
-    {"Desired", HDCP_STATE_DESIRED},
-    {"Enabled", HDCP_STATE_ENABLED}};
+    {"Undesired", display::HDCP_STATE_UNDESIRED},
+    {"Desired", display::HDCP_STATE_DESIRED},
+    {"Enabled", display::HDCP_STATE_ENABLED}};
 
 // Converts |state| to the DRM value associated with the it.
 uint32_t GetContentProtectionValue(drmModePropertyRes* property,
-                                   HDCPState state) {
+                                   display::HDCPState state) {
   std::string name;
-  for (size_t i = 0; i < arraysize(kContentProtectionStates); ++i) {
+  for (size_t i = 0; i < base::size(kContentProtectionStates); ++i) {
     if (kContentProtectionStates[i].state == state) {
       name = kContentProtectionStates[i].name;
       break;
@@ -86,13 +87,14 @@ DrmDisplay::DrmDisplay(ScreenManager* screen_manager,
 DrmDisplay::~DrmDisplay() {
 }
 
-DisplaySnapshot_Params DrmDisplay::Update(HardwareDisplayControllerInfo* info,
-                                          size_t device_index) {
-  DisplaySnapshot_Params params = CreateDisplaySnapshotParams(
+std::unique_ptr<display::DisplaySnapshot> DrmDisplay::Update(
+    HardwareDisplayControllerInfo* info,
+    size_t device_index) {
+  std::unique_ptr<display::DisplaySnapshot> params = CreateDisplaySnapshot(
       info, drm_->get_fd(), drm_->device_path(), device_index, origin_);
-  crtc_ = info->crtc()->crtc_id;
+  crtc_ = info->has_associated_crtc() ? info->crtc()->crtc_id : 0;
   connector_ = info->connector()->connector_id;
-  display_id_ = params.display_id;
+  display_id_ = params->display_id();
   modes_ = GetDrmModeVector(info->connector());
   return params;
 }
@@ -123,7 +125,7 @@ bool DrmDisplay::Configure(const drmModeModeInfo* mode,
   return true;
 }
 
-bool DrmDisplay::GetHDCPState(HDCPState* state) {
+bool DrmDisplay::GetHDCPState(display::HDCPState* state) {
   ScopedDrmConnectorPtr connector(drm_->GetConnector(connector_));
   if (!connector) {
     PLOG(ERROR) << "Failed to get connector " << connector_;
@@ -139,7 +141,7 @@ bool DrmDisplay::GetHDCPState(HDCPState* state) {
 
   std::string name =
       GetEnumNameForProperty(connector.get(), hdcp_property.get());
-  for (size_t i = 0; i < arraysize(kContentProtectionStates); ++i) {
+  for (size_t i = 0; i < base::size(kContentProtectionStates); ++i) {
     if (name == kContentProtectionStates[i].name) {
       *state = kContentProtectionStates[i].state;
       VLOG(3) << "HDCP state: " << *state << " (" << name << ")";
@@ -151,7 +153,7 @@ bool DrmDisplay::GetHDCPState(HDCPState* state) {
   return false;
 }
 
-bool DrmDisplay::SetHDCPState(HDCPState state) {
+bool DrmDisplay::SetHDCPState(display::HDCPState state) {
   ScopedDrmConnectorPtr connector(drm_->GetConnector(connector_));
   if (!connector) {
     PLOG(ERROR) << "Failed to get connector " << connector_;
@@ -170,14 +172,22 @@ bool DrmDisplay::SetHDCPState(HDCPState state) {
       GetContentProtectionValue(hdcp_property.get(), state));
 }
 
-void DrmDisplay::SetColorCorrection(
-    const std::vector<GammaRampRGBEntry>& degamma_lut,
-    const std::vector<GammaRampRGBEntry>& gamma_lut,
-    const std::vector<float>& correction_matrix) {
-  if (!drm_->SetColorCorrection(crtc_, degamma_lut, gamma_lut,
-                                correction_matrix)) {
-    LOG(ERROR) << "Failed to set color correction for display: crtc_id = "
-               << crtc_;
+void DrmDisplay::SetColorMatrix(const std::vector<float>& color_matrix) {
+  if (!drm_->plane_manager()->SetColorMatrix(crtc_, color_matrix)) {
+    LOG(ERROR) << "Failed to set color matrix for display: crtc_id = " << crtc_;
+  }
+}
+
+void DrmDisplay::SetBackgroundColor(const uint64_t background_color) {
+  drm_->plane_manager()->SetBackgroundColor(crtc_, background_color);
+}
+
+void DrmDisplay::SetGammaCorrection(
+    const std::vector<display::GammaRampRGBEntry>& degamma_lut,
+    const std::vector<display::GammaRampRGBEntry>& gamma_lut) {
+  if (!drm_->plane_manager()->SetGammaCorrection(crtc_, degamma_lut,
+                                                 gamma_lut)) {
+    LOG(ERROR) << "Failed to set gamma tables for display: crtc_id = " << crtc_;
   }
 }
 

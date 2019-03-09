@@ -6,89 +6,150 @@ package org.chromium.chrome.browser.ntp;
 
 import android.os.SystemClock;
 import android.support.annotation.IntDef;
+import android.view.View;
+import android.view.ViewTreeObserver;
 
+import org.chromium.base.TimeUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.chrome.browser.UrlConstants;
+import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.preferences.PrefServiceBridge;
 import org.chromium.chrome.browser.rappor.RapporServiceBridge;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.EmptyTabModelSelectorObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.util.UrlUtilities;
-import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.PageTransition;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Records UMA stats for which actions the user takes on the NTP in the
- * "NewTabPage.ActionAndroid" histogram.
+ * "NewTabPage.ActionAndroid2" histogram.
  */
-public class NewTabPageUma {
+public final class NewTabPageUma {
+    private NewTabPageUma() {}
+
     // Possible actions taken by the user on the NTP. These values are also defined in
     // histograms.xml. WARNING: these values must stay in sync with histograms.xml.
 
-    // User performed a search using the omnibox
+    /** User performed a search using the omnibox. */
     private static final int ACTION_SEARCHED_USING_OMNIBOX = 0;
-    // User navigated to Google search homepage using the omnibox
+
+    /** User navigated to Google search homepage using the omnibox. */
     private static final int ACTION_NAVIGATED_TO_GOOGLE_HOMEPAGE = 1;
-    // User navigated to any other page using the omnibox
+
+    /** User navigated to any other page using the omnibox. */
     private static final int ACTION_NAVIGATED_USING_OMNIBOX = 2;
-    // User opened a most visited page
-    public static final int ACTION_OPENED_MOST_VISITED_ENTRY = 3;
-    // User opened a recently closed tab
-    public static final int ACTION_OPENED_RECENTLY_CLOSED_ENTRY = 4;
-    // User opened a bookmark
-    public static final int ACTION_OPENED_BOOKMARK = 5;
-    // User opened a foreign session (from recent tabs section)
-    public static final int ACTION_OPENED_FOREIGN_SESSION = 6;
-    // User navigated to the webpage for a snippet shown on the NTP.
-    public static final int ACTION_OPENED_SNIPPET = 7;
-    // User clicked on an interest item.
-    public static final int ACTION_CLICKED_INTEREST = 8;
-    // The number of possible actions
-    private static final int NUM_ACTIONS = 9;
 
-    // User navigated to a page using the omnibox.
+    /** User opened a most visited tile. */
+    public static final int ACTION_OPENED_MOST_VISITED_TILE = 3;
+
+    /** User opened the recent tabs manager. */
+    public static final int ACTION_OPENED_RECENT_TABS_MANAGER = 4;
+
+    /** User opened the history manager. */
+    public static final int ACTION_OPENED_HISTORY_MANAGER = 5;
+
+    /** User opened the bookmarks manager. */
+    public static final int ACTION_OPENED_BOOKMARKS_MANAGER = 6;
+
+    /** User opened the downloads manager. */
+    public static final int ACTION_OPENED_DOWNLOADS_MANAGER = 7;
+
+    /** User navigated to the webpage for a snippet shown on the NTP. */
+    public static final int ACTION_OPENED_SNIPPET = 8;
+
+    /** User clicked on the "learn more" link in the footer. */
+    public static final int ACTION_CLICKED_LEARN_MORE = 9;
+
+    /** User clicked on the "Refresh" button in the "all dismissed" state. */
+    public static final int ACTION_CLICKED_ALL_DISMISSED_REFRESH = 10;
+
+    /** The number of possible actions. */
+    private static final int NUM_ACTIONS = 11;
+
+    /** User navigated to a page using the omnibox. */
     private static final int RAPPOR_ACTION_NAVIGATED_USING_OMNIBOX = 0;
-    // User navigated to a page using one of the suggested tiles.
-    public static final int RAPPOR_ACTION_VISITED_SUGGESTED_TILE = 1;
-    // The number of possible actions pertinent to Rappor
-    private static final int RAPPOR_NUM_ACTIONS = 2;
 
-    // Regular NTP impression (usually when a new tab is opened)
+    /** User navigated to a page using one of the suggested tiles. */
+    public static final int RAPPOR_ACTION_VISITED_SUGGESTED_TILE = 1;
+
+    /** Regular NTP impression (usually when a new tab is opened). */
     public static final int NTP_IMPRESSION_REGULAR = 0;
 
-    // Potential NTP impressions (instead of blank page if no tab is open)
+    /** Potential NTP impressions (instead of blank page if no tab is open). */
     public static final int NTP_IMPESSION_POTENTIAL_NOTAB = 1;
 
-    // The number of possible NTP impression types
+    /** The number of possible NTP impression types */
     private static final int NUM_NTP_IMPRESSION = 2;
 
-    /** Possible interactions with the snippets.
-     * Do not remove or change existing values other than NUM_SNIPPETS_ACTIONS. */
-    @IntDef({SNIPPETS_ACTION_SHOWN, SNIPPETS_ACTION_SCROLLED, SNIPPETS_ACTION_CLICKED,
-             SNIPPETS_ACTION_DISMISSED_OBSOLETE, SNIPPETS_ACTION_DISMISSED_VISITED,
-             SNIPPETS_ACTION_DISMISSED_UNVISITED})
+    /** The maximal number of suggestions per section. Keep in sync with kMaxSuggestionsPerCategory
+     * in content_suggestions_metrics.cc. */
+    private static final int MAX_SUGGESTIONS_PER_SECTION = 20;
+
+    /**
+     * Possible results when updating content suggestions list in the UI. Keep in sync with the
+     * ContentSuggestionsUIUpdateResult enum in histograms.xml. Do not remove or change existing
+     * values other than NUM_UI_UPDATE_RESULTS.
+     */
+    @IntDef({ContentSuggestionsUIUpdateResult.SUCCESS_APPENDED,
+            ContentSuggestionsUIUpdateResult.SUCCESS_REPLACED,
+            ContentSuggestionsUIUpdateResult.FAIL_ALL_SEEN,
+            ContentSuggestionsUIUpdateResult.FAIL_DISABLED})
     @Retention(RetentionPolicy.SOURCE)
-    public @interface SnippetsAction {}
-    /** Snippets are enabled and are being shown to the user. */
-    public static final int SNIPPETS_ACTION_SHOWN = 0;
-    /** The snippet list has been scrolled. */
-    public static final int SNIPPETS_ACTION_SCROLLED = 1;
-    /** A snippet has been clicked. */
-    public static final int SNIPPETS_ACTION_CLICKED = 2;
-    /** A snippet has been dismissed, made obsolete by the next two actions. */
-    public static final int SNIPPETS_ACTION_DISMISSED_OBSOLETE = 3;
-    /** A snippet has been swiped away, it had been viewed by the user (on this device). */
-    public static final int SNIPPETS_ACTION_DISMISSED_VISITED = 4;
-    /** A snippet has been swiped away, it had not been viewed by the user (on this device). */
-    public static final int SNIPPETS_ACTION_DISMISSED_UNVISITED = 5;
-    /** Obsolete. The snippet list has been scrolled below the fold (once per NTP load). */
-    // public static final int SNIPPETS_ACTION_SCROLLED_BELOW_THE_FOLD_ONCE = 6;
-    /** The number of possible actions. */
-    private static final int NUM_SNIPPETS_ACTIONS = 7;
+    public @interface ContentSuggestionsUIUpdateResult {
+        /**
+         * The content suggestions are successfully appended (because they are set for the first
+         * time or explicitly marked to be appended).
+         */
+        int SUCCESS_APPENDED = 0;
+
+        /**
+         * Update successful, suggestions were replaced (some of them possibly seen, the exact
+         * number reported in a separate histogram).
+         */
+        int SUCCESS_REPLACED = 1;
+
+        /** Update failed, all previous content suggestions have been seen (and kept). */
+        int FAIL_ALL_SEEN = 2;
+
+        /** Update failed, because it is disabled by a variation parameter. */
+        int FAIL_DISABLED = 3;
+
+        int NUM_ENTRIES = 4;
+    }
+
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused. This maps directly to
+    // the ContentSuggestionsDisplayStatus enum defined in tools/metrics/enums.xml.
+    @IntDef({ContentSuggestionsDisplayStatus.VISIBLE, ContentSuggestionsDisplayStatus.COLLAPSED,
+            ContentSuggestionsDisplayStatus.DISABLED_BY_POLICY})
+    @Retention(RetentionPolicy.SOURCE)
+    private @interface ContentSuggestionsDisplayStatus {
+        int VISIBLE = 0;
+        int COLLAPSED = 1;
+        int DISABLED_BY_POLICY = 2;
+        int NUM_ENTRIES = 3;
+    }
+
+    /** The NTP was loaded in a cold startup. */
+    private static final int LOAD_TYPE_COLD_START = 0;
+
+    /** The NTP was loaded in a warm startup. */
+    private static final int LOAD_TYPE_WARM_START = 1;
+
+    /**
+     * The NTP was loaded at some other time after activity creation and the user interacted with
+     * the activity in the meantime.
+     */
+    private static final int LOAD_TYPE_OTHER = 2;
+
+    /** The number of load types. */
+    private static final int LOAD_TYPE_COUNT = 3;
 
     /**
      * Records an action taken by the user on the NTP.
@@ -97,24 +158,7 @@ public class NewTabPageUma {
     public static void recordAction(int action) {
         assert action >= 0;
         assert action < NUM_ACTIONS;
-        switch (action) {
-            case ACTION_OPENED_MOST_VISITED_ENTRY:
-                RecordUserAction.record("MobileNTPMostVisited");
-                break;
-            case ACTION_OPENED_RECENTLY_CLOSED_ENTRY:
-                RecordUserAction.record("MobileNTPRecentlyClosed");
-                break;
-            case ACTION_OPENED_BOOKMARK:
-                RecordUserAction.record("MobileNTPBookmark");
-                break;
-            case ACTION_OPENED_FOREIGN_SESSION:
-                RecordUserAction.record("MobileNTPForeignSession");
-                break;
-            default:
-                // No UMA action associated with this type.
-                break;
-        }
-        RecordHistogram.recordEnumeratedHistogram("NewTabPage.ActionAndroid", action, NUM_ACTIONS);
+        RecordHistogram.recordEnumeratedHistogram("NewTabPage.ActionAndroid2", action, NUM_ACTIONS);
     }
 
     /**
@@ -154,12 +198,26 @@ public class NewTabPageUma {
     }
 
     /**
-     * Records important events related to snippets.
-     * @param action action key, one of {@link SnippetsAction}'s values.
+     * Records how content suggestions have been updated in the UI.
+     * @param result result key, one of {@link ContentSuggestionsUIUpdateResult}'s values.
      */
-    public static void recordSnippetAction(@SnippetsAction int action) {
-        RecordHistogram.recordEnumeratedHistogram(
-                "NewTabPage.Snippets.Interactions", action, NUM_SNIPPETS_ACTIONS);
+    public static void recordUIUpdateResult(
+            @ContentSuggestionsUIUpdateResult int result) {
+        RecordHistogram.recordEnumeratedHistogram("NewTabPage.ContentSuggestions.UIUpdateResult2",
+                result, ContentSuggestionsUIUpdateResult.NUM_ENTRIES);
+    }
+
+    /**
+     * Record how many content suggestions have been seen by the user in the UI section before the
+     * section was successfully updated.
+     * @param numberOfSuggestionsSeen The number of content suggestions seen so far in the section.
+     */
+    public static void recordNumberOfSuggestionsSeenBeforeUIUpdateSuccess(
+            int numberOfSuggestionsSeen) {
+        assert numberOfSuggestionsSeen >= 0;
+        RecordHistogram.recordCount100Histogram(
+                "NewTabPage.ContentSuggestions.UIUpdateSuccessNumberOfSuggestionsSeen",
+                numberOfSuggestionsSeen);
     }
 
     /**
@@ -174,65 +232,126 @@ public class NewTabPageUma {
     }
 
     /**
-     * Records stats related to article visits, such as the time spent on the website, or if the
-     * user comes back to the NTP.
-     * @param tab Tab opened to load an article.
+     * Records how often new tabs with a NewTabPage are created. This helps to determine how often
+     * users navigate back to already opened NTPs.
+     * @param tabModelSelector Model selector controlling the creation of new tabs.
      */
-    public static void monitorVisit(Tab tab) {
-        tab.addObserver(new SnippetVisitRecorder());
+    public static void monitorNTPCreation(TabModelSelector tabModelSelector) {
+        tabModelSelector.addObserver(new TabCreationRecorder());
     }
 
     /**
-     * Records stats related to article visits, such as the time spent on the website, or if the
-     * user comes back to the NTP. Use through {@link NewTabPageUma#monitorVisit(Tab)}.
+     * Records the type of load for the NTP, such as cold or warm start.
      */
-    private static class SnippetVisitRecorder extends EmptyTabObserver {
-        private final long mStartTimeNs = SystemClock.elapsedRealtime();
-
-        private SnippetVisitRecorder() {}
-
-        @Override
-        public void onHidden(Tab tab) {
-            endRecording(tab);
+    public static void recordLoadType(ChromeActivity activity) {
+        if (activity.getLastUserInteractionTime() > 0) {
+            RecordHistogram.recordEnumeratedHistogram(
+                    "NewTabPage.LoadType", LOAD_TYPE_OTHER, LOAD_TYPE_COUNT);
+            return;
         }
 
-        @Override
-        public void onDestroyed(Tab tab) {
-            endRecording(null);
+        if (activity.hadWarmStart()) {
+            RecordHistogram.recordEnumeratedHistogram(
+                    "NewTabPage.LoadType", LOAD_TYPE_WARM_START, LOAD_TYPE_COUNT);
+            return;
         }
 
+        RecordHistogram.recordEnumeratedHistogram(
+                "NewTabPage.LoadType", LOAD_TYPE_COLD_START, LOAD_TYPE_COUNT);
+    }
+
+    /**
+     * Records how much time elapsed from start until the search box became available to the user.
+     */
+    public static void recordSearchAvailableLoadTime(ChromeActivity activity) {
+        // Log the time it took for the search box to be displayed at startup, based on the
+        // timestamp on the intent for the activity. If the user has interacted with the
+        // activity already, it's not a startup, and the timestamp on the activity would not be
+        // relevant either.
+        if (activity.getLastUserInteractionTime() != 0) return;
+        long timeFromIntent = SystemClock.elapsedRealtime()
+                - IntentHandler.getTimestampFromIntent(activity.getIntent());
+        if (activity.hadWarmStart()) {
+            RecordHistogram.recordMediumTimesHistogram(
+                    "NewTabPage.SearchAvailableLoadTime2.WarmStart", timeFromIntent);
+        } else {
+            RecordHistogram.recordMediumTimesHistogram(
+                    "NewTabPage.SearchAvailableLoadTime2.ColdStart", timeFromIntent);
+        }
+    }
+
+    /**
+     * Records number of prefetched article suggestions, which were available when content
+     * suggestions surface was opened and there was no network connection.
+     */
+    public static void recordPrefetchedArticleSuggestionsCount(int count) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "NewTabPage.ContentSuggestions.CountOnNtpOpenedIfVisible."
+                        + "Articles.Prefetched.Offline2",
+                count, MAX_SUGGESTIONS_PER_SECTION);
+    }
+
+    /**
+     * Records position of a prefetched article suggestion, which was seen by the user on the
+     * suggestions surface when there was no network connection.
+     */
+    public static void recordPrefetchedArticleSuggestionImpressionPosition(int positionInSection) {
+        RecordHistogram.recordEnumeratedHistogram("NewTabPage.ContentSuggestions.Shown.Articles."
+                        + "Prefetched.Offline2",
+                positionInSection, MAX_SUGGESTIONS_PER_SECTION);
+    }
+
+    /**
+     * Records Content Suggestions Display Status when NTPs opened.
+     */
+    public static void recordContentSuggestionsDisplayStatus() {
+        @ContentSuggestionsDisplayStatus
+        int status = ContentSuggestionsDisplayStatus.VISIBLE;
+        if (!PrefServiceBridge.getInstance().getBoolean(Pref.NTP_ARTICLES_SECTION_ENABLED)) {
+            // Disabled by policy.
+            status = ContentSuggestionsDisplayStatus.DISABLED_BY_POLICY;
+        } else if (!PrefServiceBridge.getInstance().getBoolean(Pref.NTP_ARTICLES_LIST_VISIBLE)) {
+            // Articles are collapsed.
+            status = ContentSuggestionsDisplayStatus.COLLAPSED;
+        }
+
+        RecordHistogram.recordEnumeratedHistogram("ContentSuggestions.Feed.DisplayStatusOnOpen",
+                status, ContentSuggestionsDisplayStatus.NUM_ENTRIES);
+    }
+
+    /**
+     * Records the number of new NTPs opened in a new tab. Use through
+     * {@link NewTabPageUma#monitorNTPCreation(TabModelSelector)}.
+     */
+    private static class TabCreationRecorder extends EmptyTabModelSelectorObserver {
         @Override
-        public void onUpdateUrl(Tab tab, String url) {
-            // onLoadUrl below covers many exit conditions to stop recording but not all,
-            // such as navigating back. We therefore stop recording if a URL change
-            // indicates some non-Web page was visited.
-            if (!url.startsWith(UrlConstants.CHROME_SCHEME)
-                    && !url.startsWith(UrlConstants.CHROME_NATIVE_SCHEME)) {
-                assert !NewTabPage.isNTPUrl(url);
-                return;
+        public void onNewTabCreated(Tab tab) {
+            if (!NewTabPage.isNTPUrl(tab.getUrl())) return;
+            RecordUserAction.record("MobileNTPOpenedInNewTab");
+        }
+    }
+
+    /**
+     * Setups up an onPreDraw listener for the given view to emit a metric exactly once. The view
+     * should be guaranteed to be shown on the page/screen on every load, otherwise the metric
+     * may not be emitted, or worse not emitted promptly.
+     * @param view The UI element to track.
+     * @param constructedTimeNs The timestamp at which the new tab page's construction started.
+     */
+    public static void trackTimeToFirstDraw(View view, long constructedTimeNs) {
+        // Use preDraw instead of draw because api level 25 and earlier doesn't seem to call the
+        // onDraw listener. Also, the onDraw version cannot be removed inside of the
+        // notification, which complicates this.
+        view.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+            @Override
+            public boolean onPreDraw() {
+                long timeToFirstDrawMs = (System.nanoTime() - constructedTimeNs)
+                        / TimeUtils.NANOSECONDS_PER_MILLISECOND;
+                RecordHistogram.recordTimesHistogram(
+                        "NewTabPage.TimeToFirstDraw2", timeToFirstDrawMs);
+                view.getViewTreeObserver().removeOnPreDrawListener(this);
+                return true;
             }
-            if (NewTabPage.isNTPUrl(url)) {
-                RecordUserAction.record("MobileNTP.Snippets.VisitEndBackInNTP");
-            }
-            endRecording(tab);
-        }
-
-        @Override
-        public void onLoadUrl(Tab tab, LoadUrlParams params, int loadType) {
-            // End recording if a new URL gets loaded e.g. after entering a new query in
-            // the omnibox. This doesn't cover the nagivate-back case so we also need
-            // onUpdateUrl.
-            int transitionTypeMask = PageTransition.FROM_ADDRESS_BAR | PageTransition.HOME_PAGE
-                    | PageTransition.CHAIN_START | PageTransition.CHAIN_END;
-
-            if ((params.getTransitionType() & transitionTypeMask) != 0) endRecording(tab);
-        }
-
-        private void endRecording(Tab removeObserverFromTab) {
-            if (removeObserverFromTab != null) removeObserverFromTab.removeObserver(this);
-            RecordUserAction.record("MobileNTP.Snippets.VisitEnd");
-            RecordHistogram.recordLongTimesHistogram("NewTabPage.Snippets.VisitDuration",
-                    SystemClock.elapsedRealtime() - mStartTimeNs, TimeUnit.MILLISECONDS);
-        }
+        });
     }
 }

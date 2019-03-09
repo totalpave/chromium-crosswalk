@@ -19,7 +19,7 @@ namespace safe_browsing {
 class MockFileTypePolicies : public FileTypePolicies {
  public:
   MockFileTypePolicies() {}
-  virtual ~MockFileTypePolicies() {}
+  ~MockFileTypePolicies() override {}
 
   MOCK_METHOD2(RecordUpdateMetrics, void(UpdateResult, const std::string&));
 
@@ -30,7 +30,7 @@ class MockFileTypePolicies : public FileTypePolicies {
 class FileTypePoliciesTest : public testing::Test {
  protected:
   FileTypePoliciesTest() {}
-  ~FileTypePoliciesTest() {}
+  ~FileTypePoliciesTest() override {}
 
  protected:
   NiceMock<MockFileTypePolicies> policies_;
@@ -107,14 +107,14 @@ TEST_F(FileTypePoliciesTest, UnpackResourceBundle) {
             file_type.platform_settings(0).auto_open_hint());
 #endif
 
-  // Lookup .dex that varies on OS_ANDROID
+  // Lookup .dex that varies on OS_ANDROID and OS_CHROMEOS
   base::FilePath dex_file(FILE_PATH_LITERAL("foo.dex"));
   file_type = policies_.PolicyForFile(dex_file);
   EXPECT_EQ("dex", file_type.extension());
   EXPECT_EQ(143, file_type.uma_value());
   EXPECT_FALSE(file_type.is_archive());
   EXPECT_EQ(DownloadFileType::FULL_PING, file_type.ping_setting());
-#if defined(OS_ANDROID)
+#if defined(OS_ANDROID) || defined(OS_CHROMEOS)
   EXPECT_EQ(DownloadFileType::ALLOW_ON_USER_GESTURE,
             file_type.platform_settings(0).danger_level());
   EXPECT_EQ(DownloadFileType::DISALLOW_AUTO_OPEN,
@@ -166,7 +166,7 @@ TEST_F(FileTypePoliciesTest, UnpackResourceBundle) {
   EXPECT_EQ("", file_type.extension());
   EXPECT_EQ(18l, file_type.uma_value());
   EXPECT_FALSE(file_type.is_archive());
-  EXPECT_EQ(DownloadFileType::SAMPLED_PING, file_type.ping_setting());
+  EXPECT_EQ(DownloadFileType::FULL_PING, file_type.ping_setting());
   EXPECT_EQ(DownloadFileType::NOT_DANGEROUS,
             file_type.platform_settings(0).danger_level());
   EXPECT_EQ(DownloadFileType::ALLOW_AUTO_OPEN,
@@ -187,7 +187,8 @@ TEST_F(FileTypePoliciesTest, BadProto) {
             policies_.PopulateFromBinaryPb(cfg.SerializeAsString()));
 
   cfg.mutable_default_file_type()->add_platform_settings();
-  auto file_type = cfg.add_file_types();  // This is missing a platform_setting.
+  // This is missing a platform_setting.
+  auto* file_type = cfg.add_file_types();
   EXPECT_EQ(FileTypePolicies::UpdateResult::FAILED_WRONG_SETTINGS_COUNT,
             policies_.PopulateFromBinaryPb(cfg.SerializeAsString()));
 

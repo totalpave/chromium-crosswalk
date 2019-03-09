@@ -17,10 +17,13 @@
 #include <windows.h>
 #include <string.h>
 
+#include "base/stl_util.h"
 #include "gtest/gtest.h"
 #include "test/win/win_multiprocess.h"
+#include "util/misc/from_pointer_cast.h"
 #include "util/synchronization/semaphore.h"
 #include "util/thread/thread.h"
+#include "util/win/context_wrappers.h"
 #include "util/win/scoped_process_suspend.h"
 
 namespace crashpad {
@@ -38,18 +41,16 @@ TEST(ProcessReaderWin, SelfBasic) {
   EXPECT_TRUE(process_reader.Is64Bit());
 #endif
 
-  EXPECT_EQ(GetCurrentProcessId(), process_reader.GetProcessInfo().ProcessID());
+  EXPECT_EQ(process_reader.GetProcessInfo().ProcessID(), GetCurrentProcessId());
 
-  const char kTestMemory[] = "Some test memory";
-  char buffer[arraysize(kTestMemory)];
-  ASSERT_TRUE(
-      process_reader.ReadMemory(reinterpret_cast<uintptr_t>(kTestMemory),
-                                sizeof(kTestMemory),
-                                &buffer));
+  static constexpr char kTestMemory[] = "Some test memory";
+  char buffer[base::size(kTestMemory)];
+  ASSERT_TRUE(process_reader.Memory()->Read(
+      reinterpret_cast<uintptr_t>(kTestMemory), sizeof(kTestMemory), &buffer));
   EXPECT_STREQ(kTestMemory, buffer);
 }
 
-const char kTestMemory[] = "Read me from another process";
+constexpr char kTestMemory[] = "Read me from another process";
 
 class ProcessReaderChild final : public WinMultiprocess {
  public:
@@ -69,16 +70,16 @@ class ProcessReaderChild final : public WinMultiprocess {
 #endif
 
     WinVMAddress address;
-    CheckedReadFile(ReadPipeHandle(), &address, sizeof(address));
+    CheckedReadFileExactly(ReadPipeHandle(), &address, sizeof(address));
 
     char buffer[sizeof(kTestMemory)];
     ASSERT_TRUE(
-        process_reader.ReadMemory(address, sizeof(kTestMemory), &buffer));
-    EXPECT_EQ(0, strcmp(kTestMemory, buffer));
+        process_reader.Memory()->Read(address, sizeof(kTestMemory), &buffer));
+    EXPECT_EQ(strcmp(kTestMemory, buffer), 0);
   }
 
   void WinMultiprocessChild() override {
-    WinVMAddress address = reinterpret_cast<WinVMAddress>(kTestMemory);
+    WinVMAddress address = FromPointerCast<WinVMAddress>(kTestMemory);
     CheckedWriteFile(WritePipeHandle(), &address, sizeof(address));
 
     // Wait for the parent to signal that it's OK to exit by closing its end of
@@ -106,14 +107,9 @@ TEST(ProcessReaderWin, SelfOneThread) {
   // thread, not exactly one thread.
   ASSERT_GE(threads.size(), 1u);
 
-  EXPECT_EQ(GetCurrentThreadId(), threads[0].id);
-#if defined(ARCH_CPU_64_BITS)
-  EXPECT_NE(0, threads[0].context.native.Rip);
-#else
-  EXPECT_NE(0u, threads[0].context.native.Eip);
-#endif
-
-  EXPECT_EQ(0, threads[0].suspend_count);
+  EXPECT_EQ(threads[0].id, GetCurrentThreadId());
+  EXPECT_NE(ProgramCounterFromCONTEXT(&threads[0].context.native), nullptr);
+  EXPECT_EQ(threads[0].suspend_count, 0u);
 }
 
 class ProcessReaderChildThreadSuspendCount final : public WinMultiprocess {
@@ -134,7 +130,7 @@ class ProcessReaderChildThreadSuspendCount final : public WinMultiprocess {
 
     void ThreadMain() override {
       done_->Wait();
-    };
+    }
 
    private:
     Semaphore* done_;
@@ -142,8 +138,8 @@ class ProcessReaderChildThreadSuspendCount final : public WinMultiprocess {
 
   void WinMultiprocessParent() override {
     char c;
-    CheckedReadFile(ReadPipeHandle(), &c, sizeof(c));
-    ASSERT_EQ(' ', c);
+    CheckedReadFileExactly(ReadPipeHandle(), &c, sizeof(c));
+    ASSERT_EQ(c, ' ');
 
     {
       ProcessReaderWin process_reader;
@@ -153,7 +149,7 @@ class ProcessReaderChildThreadSuspendCount final : public WinMultiprocess {
       const auto& threads = process_reader.Threads();
       ASSERT_GE(threads.size(), kCreatedThreads + 1);
       for (const auto& thread : threads)
-        EXPECT_EQ(0u, thread.suspend_count);
+        EXPECT_EQ(thread.suspend_count, 0u);
     }
 
     {
@@ -168,7 +164,7 @@ class ProcessReaderChildThreadSuspendCount final : public WinMultiprocess {
       const auto& threads = process_reader.Threads();
       ASSERT_GE(threads.size(), kCreatedThreads + 1);
       for (const auto& thread : threads)
-        EXPECT_EQ(0u, thread.suspend_count);
+        EXPECT_EQ(thread.suspend_count, 0u);
     }
   }
 
@@ -189,7 +185,7 @@ class ProcessReaderChildThreadSuspendCount final : public WinMultiprocess {
     // the pipe.
     CheckedReadFileAtEOF(ReadPipeHandle());
 
-    for (int i = 0; i < arraysize(threads); ++i)
+    for (size_t i = 0; i < base::size(threads); ++i)
       done.Signal();
     for (auto& thread : threads)
       thread.Join();

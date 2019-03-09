@@ -15,6 +15,7 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/common/extension_id.h"
 
 namespace content {
 class BrowserContext;
@@ -46,7 +47,8 @@ class RendererStartupHelper : public KeyedService,
                const content::NotificationDetails& details) override;
 
   // Sends a message to the specified |process| activating the given extension
-  // once the process is initialized.
+  // once the process is initialized. OnExtensionLoaded should have already been
+  // called for the extension.
   void ActivateExtensionInProcess(const Extension& extension,
                                   content::RenderProcessHost* process);
 
@@ -58,6 +60,8 @@ class RendererStartupHelper : public KeyedService,
   void OnExtensionLoaded(const Extension& extension);
 
  private:
+  friend class RendererStartupHelperTest;
+
   // Initializes the specified process, informing it of system state and loaded
   // extensions.
   void InitializeProcess(content::RenderProcessHost* process);
@@ -66,6 +70,10 @@ class RendererStartupHelper : public KeyedService,
   void UntrackProcess(content::RenderProcessHost* process);
 
   content::BrowserContext* browser_context_;  // Not owned.
+
+  // Tracks the set of loaded extensions and the processes they are loaded in.
+  std::map<ExtensionId, std::set<content::RenderProcessHost*>>
+      extension_process_map_;
 
   // The set of render processes that have had the initial batch of IPC messages
   // sent, including the set of loaded extensions. Further messages that
@@ -76,7 +84,7 @@ class RendererStartupHelper : public KeyedService,
   // The set of ids for extensions that are active in a process that has not
   // been initialized. The activation message will be sent the process is
   // initialized.
-  std::map<content::RenderProcessHost*, std::set<std::string>>
+  std::map<content::RenderProcessHost*, std::set<ExtensionId>>
       pending_active_extensions_;
 
   content::NotificationRegistrar registrar_;

@@ -7,33 +7,37 @@
 
 #include <string>
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "chrome/browser/chromeos/login/screens/base_screen.h"
-#include "chrome/browser/chromeos/login/screens/enable_debugging_screen_actor.h"
+#include "chrome/browser/chromeos/login/screens/enable_debugging_screen_view.h"
 
 namespace chromeos {
 
 // Representation independent class that controls screen showing enable
 // debugging screen to users.
 class EnableDebuggingScreen : public BaseScreen,
-                              public EnableDebuggingScreenActor::Delegate {
+                              public EnableDebuggingScreenView::Delegate {
  public:
   EnableDebuggingScreen(BaseScreenDelegate* delegate,
-                        EnableDebuggingScreenActor* actor);
+                        EnableDebuggingScreenView* view,
+                        const base::RepeatingClosure& exit_callback);
   ~EnableDebuggingScreen() override;
 
   // BaseScreen implementation:
-  void PrepareToShow() override;
   void Show() override;
   void Hide() override;
-  std::string GetName() const override;
 
   // EnableDebuggingScreenActor::Delegate implementation:
   void OnExit(bool success) override;
-  void OnActorDestroyed(EnableDebuggingScreenActor* actor) override;
+  void OnViewDestroyed(EnableDebuggingScreenView* view) override;
+
+ protected:
+  base::RepeatingClosure* exit_callback() { return &exit_callback_; }
 
  private:
-  EnableDebuggingScreenActor* actor_;
+  EnableDebuggingScreenView* view_;
+  base::RepeatingClosure exit_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(EnableDebuggingScreen);
 };

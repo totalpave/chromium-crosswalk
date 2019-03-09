@@ -7,29 +7,28 @@
 
 #include <stdint.h>
 
+#include <array>
+
 #include "base/callback.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/x/x11_atom_cache.h"
+#include "ui/gfx/x/x11.h"
+#include "ui/gfx/x/x11_types.h"
 #include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/platform_window_delegate.h"
 #include "ui/platform_window/x11/x11_window_export.h"
 
-typedef struct _XDisplay XDisplay;
-typedef unsigned long XID;
-typedef union _XEvent XEvent;
-
 namespace ui {
+
+class XScopedEventSelector;
 
 // Abstract base implementation for a X11 based PlatformWindow. Methods that
 // are platform specific are left unimplemented.
 class X11_WINDOW_EXPORT X11WindowBase : public PlatformWindow {
  public:
-  explicit X11WindowBase(PlatformWindowDelegate* delegate);
+  X11WindowBase(PlatformWindowDelegate* delegate, const gfx::Rect& bounds);
   ~X11WindowBase() override;
-
-  // Creates new underlying XWindow. Does not map XWindow.
-  void Create();
 
   // PlatformWindow:
   void Show() override;
@@ -40,20 +39,29 @@ class X11_WINDOW_EXPORT X11WindowBase : public PlatformWindow {
   void SetTitle(const base::string16& title) override;
   void SetCapture() override;
   void ReleaseCapture() override;
+  bool HasCapture() const override;
   void ToggleFullscreen() override;
   void Maximize() override;
   void Minimize() override;
   void Restore() override;
+  PlatformWindowState GetPlatformWindowState() const override;
   void MoveCursorTo(const gfx::Point& location) override;
   void ConfineCursorToBounds(const gfx::Rect& bounds) override;
   PlatformImeController* GetPlatformImeController() override;
+  void SetRestoredBoundsInPixels(const gfx::Rect& bounds) override;
+  gfx::Rect GetRestoredBoundsInPixels() const override;
 
  protected:
+  // Creates new underlying XWindow. Does not map XWindow.
+  void Create();
+
   void Destroy();
 
   PlatformWindowDelegate* delegate() { return delegate_; }
   XDisplay* xdisplay() { return xdisplay_; }
   XID xwindow() const { return xwindow_; }
+
+  void UnConfineCursor();
 
   // Checks if XEvent is for this XWindow.
   bool IsEventForXWindow(const XEvent& xev) const;
@@ -62,38 +70,38 @@ class X11_WINDOW_EXPORT X11WindowBase : public PlatformWindow {
   void ProcessXWindowEvent(XEvent* xev);
 
  private:
-  PlatformWindowDelegate* delegate_;
+  // Called when WM_STATE property is changed.
+  void OnWMStateUpdated();
+
+  bool IsMaximized() const;
+  bool IsFullscreen() const;
+
+  PlatformWindowDelegate* const delegate_;
 
   XDisplay* xdisplay_;
-  XID xwindow_;
+  XID xwindow_ = x11::None;
   XID xroot_window_;
-  X11AtomCache atom_cache_;
+  std::unique_ptr<ui::XScopedEventSelector> xwindow_events_;
 
   base::string16 window_title_;
 
-  // Setting the bounds is an asynchronous operation in X11. |requested_bounds_|
-  // is the bounds requested using XConfigureWindow, and |confirmed_bounds_| is
-  // the bounds the X11 server has set on the window.
-  gfx::Rect requested_bounds_;
-  gfx::Rect confirmed_bounds_;
+  // The bounds of |xwindow_|.
+  gfx::Rect bounds_;
+
+  // The window manager state bits.
+  base::flat_set<::Atom> window_properties_;
+
+  // Stores current state of this window.
+  ui::PlatformWindowState state_;
+
+  // Keep track of barriers to confine cursor.
+  bool has_pointer_barriers_ = false;
+  std::array<XID, 4> pointer_barriers_;
 
   bool window_mapped_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(X11WindowBase);
 };
-
-namespace test {
-
-// Sets the value of the |override_redirect| flag when creating an X11 window.
-// It is necessary to set this flag on for various tests, otherwise the call to
-// X11WindowBase::Show() blocks because it never receives the MapNotify event.
-// It is
-// unclear why this is necessary, but might be related to calls to
-// XInitThreads().
-X11_WINDOW_EXPORT void SetUseOverrideRedirectWindowByDefault(
-    bool override_redirect);
-
-}  // namespace test
 
 }  // namespace ui
 

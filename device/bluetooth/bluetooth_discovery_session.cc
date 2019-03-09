@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_discovery_filter.h"
 
@@ -16,6 +17,7 @@ BluetoothDiscoverySession::BluetoothDiscoverySession(
     scoped_refptr<BluetoothAdapter> adapter,
     std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter)
     : active_(true),
+      is_stop_in_progress_(false),
       adapter_(adapter),
       discovery_filter_(discovery_filter.release()),
       weak_ptr_factory_(this) {
@@ -24,7 +26,7 @@ BluetoothDiscoverySession::BluetoothDiscoverySession(
 
 BluetoothDiscoverySession::~BluetoothDiscoverySession() {
   if (active_) {
-    Stop(base::Bind(&base::DoNothing), base::Bind(&base::DoNothing));
+    Stop(base::DoNothing(), base::DoNothing());
     MarkAsInactive();
   }
 }
@@ -42,6 +44,17 @@ void BluetoothDiscoverySession::Stop(const base::Closure& success_callback,
     error_callback.Run();
     return;
   }
+
+  if (is_stop_in_progress_) {
+    LOG(WARNING) << "Discovery session Stop in progress.";
+    BluetoothAdapter::RecordBluetoothDiscoverySessionStopOutcome(
+        UMABluetoothDiscoverySessionOutcome::STOP_IN_PROGRESS);
+    error_callback.Run();
+    return;
+  }
+
+  is_stop_in_progress_ = true;
+
   VLOG(1) << "Stopping device discovery session.";
   base::Closure deactive_discovery_session =
       base::Bind(&BluetoothDiscoverySession::DeactivateDiscoverySession,
@@ -52,28 +65,35 @@ void BluetoothDiscoverySession::Stop(const base::Closure& success_callback,
   // exists, but always runs success_callback.
   base::Closure discovery_session_removed_callback =
       base::Bind(&BluetoothDiscoverySession::OnDiscoverySessionRemoved,
-                 deactive_discovery_session, success_callback);
+                 weak_ptr_factory_.GetWeakPtr(), deactive_discovery_session,
+                 success_callback);
   adapter_->RemoveDiscoverySession(
       discovery_filter_.get(), discovery_session_removed_callback,
       base::Bind(&BluetoothDiscoverySession::OnDiscoverySessionRemovalFailed,
-                 error_callback));
+                 weak_ptr_factory_.GetWeakPtr(), error_callback));
 }
 
 // static
 void BluetoothDiscoverySession::OnDiscoverySessionRemoved(
+    base::WeakPtr<BluetoothDiscoverySession> session,
     const base::Closure& deactivate_discovery_session,
     const base::Closure& success_callback) {
   BluetoothAdapter::RecordBluetoothDiscoverySessionStopOutcome(
       UMABluetoothDiscoverySessionOutcome::SUCCESS);
+  if (session)
+    session->is_stop_in_progress_ = false;
   deactivate_discovery_session.Run();
   success_callback.Run();
 }
 
 // static
 void BluetoothDiscoverySession::OnDiscoverySessionRemovalFailed(
+    base::WeakPtr<BluetoothDiscoverySession> session,
     const base::Closure& error_callback,
     UMABluetoothDiscoverySessionOutcome outcome) {
   BluetoothAdapter::RecordBluetoothDiscoverySessionStopOutcome(outcome);
+  if (session)
+    session->is_stop_in_progress_ = false;
   error_callback.Run();
 }
 
@@ -99,7 +119,7 @@ void BluetoothDiscoverySession::SetDiscoveryFilter(
     std::unique_ptr<BluetoothDiscoveryFilter> discovery_filter,
     const base::Closure& callback,
     const ErrorCallback& error_callback) {
-  discovery_filter_.reset(discovery_filter.release());
+  discovery_filter_ = std::move(discovery_filter);
   // BluetoothDiscoverySession::SetDiscoveryFilter is only used from a private
   // extension API, so we don't bother histogramming its failures.
   adapter_->SetDiscoveryFilter(

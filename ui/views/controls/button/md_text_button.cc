@@ -5,162 +5,89 @@
 #include "ui/views/controls/button/md_text_button.h"
 
 #include "base/i18n/case_conversion.h"
-#include "ui/base/material_design/material_design_controller.h"
+#include "base/memory/ptr_util.h"
+#include "build/build_config.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/views/animation/flood_fill_ink_drop_ripple.h"
 #include "ui/views/animation/ink_drop_highlight.h"
+#include "ui/views/animation/ink_drop_impl.h"
 #include "ui/views/animation/ink_drop_painted_layer_delegates.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
-#include "ui/views/controls/button/blue_button.h"
+#include "ui/views/controls/focus_ring.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/painter.h"
+#include "ui/views/style/platform_style.h"
+#include "ui/views/style/typography.h"
 
 namespace views {
-
-namespace {
-
-// Inset between clickable region border and button contents (text).
-const int kHorizontalPadding = 16;
-
-// Minimum size to reserve for the button contents.
-const int kMinWidth = 48;
-
-// The stroke width of the focus border in normal and call to action mode.
-const int kFocusBorderThickness = 1;
-const int kFocusBorderThicknessCta = 2;
-
-// The corner radius of the focus border roundrect.
-const int kFocusBorderCornerRadius = 3;
-
-LabelButton* CreateButton(ButtonListener* listener,
-                          const base::string16& text,
-                          bool md) {
-  if (md)
-    return MdTextButton::CreateMdButton(listener, text);
-
-  LabelButton* button = new LabelButton(listener, text);
-  button->SetStyle(CustomButton::STYLE_BUTTON);
-  return button;
-}
-
-const gfx::FontList& GetMdFontList() {
-  static base::LazyInstance<gfx::FontList>::Leaky font_list =
-      LAZY_INSTANCE_INITIALIZER;
-  const gfx::Font::Weight min_weight = gfx::Font::Weight::MEDIUM;
-  if (font_list.Get().GetFontWeight() < min_weight)
-    font_list.Get() = font_list.Get().DeriveWithWeight(min_weight);
-  return font_list.Get();
-}
-
-}  // namespace
-
-namespace internal {
-
-class MdFocusRing : public View {
- public:
-  MdFocusRing() : thickness_(kFocusBorderThickness) {
-    SetPaintToLayer(true);
-    layer()->SetFillsBoundsOpaquely(false);
-  }
-  ~MdFocusRing() override {}
-
-  int thickness() const { return thickness_; }
-  void set_thickness(int thickness) { thickness_ = thickness; }
-
-  // View:
-  bool CanProcessEventsWithinSubtree() const override { return false; }
-
-  void OnPaint(gfx::Canvas* canvas) override {
-    MdTextButton::PaintMdFocusRing(canvas, this, thickness_, 0x33);
-  }
-
- private:
-  int thickness_;
-
-  DISALLOW_COPY_AND_ASSIGN(MdFocusRing);
-};
-
-}  // namespace internal
-
-// static
-LabelButton* MdTextButton::CreateStandardButton(ButtonListener* listener,
-                                                const base::string16& text) {
-  return CreateButton(listener, text,
-                      ui::MaterialDesignController::IsModeMaterial());
-}
 
 // static
 LabelButton* MdTextButton::CreateSecondaryUiButton(ButtonListener* listener,
                                                    const base::string16& text) {
-  return CreateButton(listener, text,
-                      ui::MaterialDesignController::IsSecondaryUiMaterial());
+  return MdTextButton::Create(listener, text, style::CONTEXT_BUTTON_MD);
 }
 
 // static
 LabelButton* MdTextButton::CreateSecondaryUiBlueButton(
     ButtonListener* listener,
     const base::string16& text) {
-  if (ui::MaterialDesignController::IsSecondaryUiMaterial()) {
-    MdTextButton* md_button = MdTextButton::CreateMdButton(listener, text);
-    md_button->SetCallToAction(true);
-    return md_button;
-  }
-
-  return new BlueButton(listener, text);
+  MdTextButton* md_button =
+      MdTextButton::Create(listener, text, style::CONTEXT_BUTTON_MD);
+  md_button->SetProminent(true);
+  return md_button;
 }
 
 // static
-MdTextButton* MdTextButton::CreateMdButton(ButtonListener* listener,
-                                           const base::string16& text) {
-  MdTextButton* button = new MdTextButton(listener);
+MdTextButton* MdTextButton::Create(ButtonListener* listener,
+                                   const base::string16& text,
+                                   int button_context) {
+  MdTextButton* button = new MdTextButton(listener, button_context);
   button->SetText(text);
   button->SetFocusForPlatform();
+
   return button;
 }
 
-// static
-void MdTextButton::PaintMdFocusRing(gfx::Canvas* canvas,
-                                    views::View* view,
-                                    int thickness,
-                                    SkAlpha alpha) {
-  SkPaint paint;
-  paint.setAntiAlias(true);
-  paint.setColor(SkColorSetA(view->GetNativeTheme()->GetSystemColor(
-                                 ui::NativeTheme::kColorId_CallToActionColor),
-                             alpha));
-  paint.setStyle(SkPaint::kStroke_Style);
-  paint.setStrokeWidth(thickness);
-  gfx::RectF rect(view->GetLocalBounds());
-  rect.Inset(gfx::InsetsF(thickness / 2.f));
-  canvas->DrawRoundRect(rect, kFocusBorderCornerRadius, paint);
-}
+MdTextButton::~MdTextButton() {}
 
-void MdTextButton::SetCallToAction(bool cta) {
-  if (is_cta_ == cta)
+void MdTextButton::SetProminent(bool is_prominent) {
+  if (is_prominent_ == is_prominent)
     return;
 
-  is_cta_ = cta;
-  focus_ring_->set_thickness(cta ? kFocusBorderThicknessCta
-                                 : kFocusBorderThickness);
+  is_prominent_ = is_prominent;
   UpdateColors();
 }
 
-void MdTextButton::Layout() {
-  LabelButton::Layout();
-  gfx::Rect focus_bounds = GetLocalBounds();
-  focus_bounds.Inset(gfx::Insets(-focus_ring_->thickness()));
-  focus_ring_->SetBoundsRect(focus_bounds);
+void MdTextButton::SetBgColorOverride(const base::Optional<SkColor>& color) {
+  bg_color_override_ = color;
+  UpdateColors();
 }
 
-void MdTextButton::OnFocus() {
-  LabelButton::OnFocus();
-  focus_ring_->SetVisible(true);
+void MdTextButton::set_corner_radius(float radius) {
+  corner_radius_ = radius;
+  set_ink_drop_corner_radii(corner_radius_, corner_radius_);
 }
 
-void MdTextButton::OnBlur() {
-  LabelButton::OnBlur();
-  focus_ring_->SetVisible(false);
+void MdTextButton::OnPaintBackground(gfx::Canvas* canvas) {
+  LabelButton::OnPaintBackground(canvas);
+  if (hover_animation().is_animating() || state() == STATE_HOVERED) {
+    bool is_dark_mode = GetNativeTheme()->SystemDarkModeEnabled();
+    int hover_alpha = is_prominent_ ? 0x0C : 0x05;
+    if (is_dark_mode)
+      hover_alpha = 0x0A;
+    const SkColor hover_color =
+        is_dark_mode && !is_prominent_ ? gfx::kGoogleBlue300 : SK_ColorBLACK;
+    SkScalar alpha = hover_animation().CurrentValueBetween(0, hover_alpha);
+    cc::PaintFlags flags;
+    flags.setColor(SkColorSetA(hover_color, alpha));
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setAntiAlias(true);
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), corner_radius_, flags);
+  }
 }
 
 void MdTextButton::OnNativeThemeChanged(const ui::NativeTheme* theme) {
@@ -172,33 +99,44 @@ SkColor MdTextButton::GetInkDropBaseColor() const {
   return color_utils::DeriveDefaultIconColor(label()->enabled_color());
 }
 
+void MdTextButton::StateChanged(ButtonState old_state) {
+  LabelButton::StateChanged(old_state);
+  UpdateColors();
+}
+
+void MdTextButton::OnFocus() {
+  LabelButton::OnFocus();
+  UpdateColors();
+}
+
+void MdTextButton::OnBlur() {
+  LabelButton::OnBlur();
+  UpdateColors();
+}
+
 std::unique_ptr<views::InkDropHighlight> MdTextButton::CreateInkDropHighlight()
     const {
-  if (!ShouldShowInkDropHighlight())
-    return nullptr;
-  if (!is_cta_)
-    return LabelButton::CreateInkDropHighlight();
-
-  // The call to action hover effect is a shadow.
+  bool is_dark_mode = GetNativeTheme()->SystemDarkModeEnabled();
+  // The prominent button hover effect is a shadow.
   const int kYOffset = 1;
-  const int kSkiaBlurRadius = 1;
+  const int kSkiaBlurRadius = 2;
+  const int shadow_alpha = is_prominent_ ? 0x3D : 0x1A;
+  const SkColor shadow_color =
+      is_dark_mode && is_prominent_ ? gfx::kGoogleBlue300 : SK_ColorBLACK;
   std::vector<gfx::ShadowValue> shadows;
   // The notion of blur that gfx::ShadowValue uses is twice the Skia/CSS value.
   // Skia counts the number of pixels outside the mask area whereas
   // gfx::ShadowValue counts together the number of pixels inside and outside
   // the mask bounds.
-  shadows.push_back(gfx::ShadowValue(gfx::Vector2d(0, kYOffset),
-                                     2 * kSkiaBlurRadius,
-                                     SkColorSetA(SK_ColorBLACK, 0x3D)));
-  return base::WrapUnique(new InkDropHighlight(
+  shadows.push_back(gfx::ShadowValue(
+      gfx::Vector2d(0, kYOffset), 2 * kSkiaBlurRadius,
+      SkColorSetA(shadow_color, is_dark_mode ? 0x7F : shadow_alpha)));
+  const SkColor fill_color =
+      SkColorSetA(SK_ColorWHITE, is_prominent_ ? 0x0D : 0x05);
+  return std::make_unique<InkDropHighlight>(
       gfx::RectF(GetLocalBounds()).CenterPoint(),
       base::WrapUnique(new BorderShadowLayerDelegate(
-          shadows, GetLocalBounds(), kInkDropSmallCornerRadius))));
-}
-
-bool MdTextButton::ShouldShowInkDropForFocus() const {
-  // These types of button use |focus_ring_|.
-  return false;
+          shadows, GetLocalBounds(), fill_color, corner_radius_)));
 }
 
 void MdTextButton::SetEnabledTextColors(SkColor color) {
@@ -206,77 +144,136 @@ void MdTextButton::SetEnabledTextColors(SkColor color) {
   UpdateColors();
 }
 
+void MdTextButton::SetText(const base::string16& text) {
+  LabelButton::SetText(text);
+  UpdatePadding();
+}
+
 void MdTextButton::UpdateStyleToIndicateDefaultStatus() {
+  is_prominent_ = is_prominent_ || is_default();
   UpdateColors();
 }
 
-MdTextButton::MdTextButton(ButtonListener* listener)
-    : LabelButton(listener, base::string16()),
-      focus_ring_(new internal::MdFocusRing()),
-      is_cta_(false) {
-  SetHasInkDrop(true);
+MdTextButton::MdTextButton(ButtonListener* listener, int button_context)
+    : LabelButton(listener, base::string16(), button_context),
+      is_prominent_(false) {
+  SetInkDropMode(InkDropMode::ON);
   set_has_ink_drop_action_on_click(true);
+  set_corner_radius(LayoutProvider::Get()->GetCornerRadiusMetric(EMPHASIS_LOW));
   SetHorizontalAlignment(gfx::ALIGN_CENTER);
   SetFocusForPlatform();
-  SetMinSize(gfx::Size(kMinWidth, 0));
-  SetFocusPainter(nullptr);
+  const int minimum_width = LayoutProvider::Get()->GetDistanceMetric(
+      DISTANCE_DIALOG_BUTTON_MINIMUM_WIDTH);
+  SetMinSize(gfx::Size(minimum_width, 0));
+  SetInstallFocusRingOnFocus(true);
   label()->SetAutoColorReadabilityEnabled(false);
-  SetFontList(GetMdFontList());
-
-  AddChildView(focus_ring_);
-  focus_ring_->SetVisible(false);
   set_request_focus_on_press(false);
 
-  // Top and bottom padding depend on the font. Example: if font cap height is
-  // 9dp, use 8dp bottom padding and 7dp top padding to total 24dp.
-  const gfx::FontList& font = label()->font_list();
-  int text_height = font.GetCapHeight();
-  int even_text_height = text_height - (text_height % 2);
-  const int top_padding = even_text_height - (text_height - even_text_height);
-  const int bottom_padding = even_text_height;
-  DCHECK_EQ(3 * even_text_height, top_padding + text_height + bottom_padding);
+  set_animate_on_state_change(true);
 
-  const int inbuilt_top_padding = font.GetBaseline() - font.GetCapHeight();
-  const int inbuilt_bottom_padding =
-      font.GetHeight() - label()->font_list().GetBaseline();
+  // Paint to a layer so that the canvas is snapped to pixel boundaries (useful
+  // for fractional DSF).
+  SetPaintToLayer();
+  layer()->SetFillsBoundsOpaquely(false);
+}
+
+void MdTextButton::UpdatePadding() {
+  // Don't use font-based padding when there's no text visible.
+  if (GetText().empty()) {
+    SetBorder(NullBorder());
+    return;
+  }
+
+  // Text buttons default to 28dp in height on all platforms when the base font
+  // is in use, but should grow or shrink if the font size is adjusted up or
+  // down. When the system font size has been adjusted, the base font will be
+  // larger than normal such that 28dp might not be enough, so also enforce a
+  // minimum height of twice the font size.
+  // Example 1:
+  // * Normal button on ChromeOS, 12pt Roboto. Button height of 28dp.
+  // * Button on ChromeOS that has been adjusted to 14pt Roboto. Button height
+  // of 28 + 2 * 2 = 32dp.
+  // * Linux user sets base system font size to 17dp. For a normal button, the
+  // |size_delta| will be zero, so to adjust upwards we double 17 to get 34.
+  int size_delta =
+      label()->font_list().GetFontSize() -
+      style::GetFont(style::CONTEXT_BUTTON_MD, style::STYLE_PRIMARY)
+          .GetFontSize();
+  // TODO(tapted): This should get |target_height| using LayoutProvider::
+  // GetControlHeightForFont().
+  constexpr int kBaseHeight = 32;
+  int target_height = std::max(kBaseHeight + size_delta * 2,
+                               label()->font_list().GetFontSize() * 2);
+
+  int label_height = label()->GetPreferredSize().height();
+  int top_padding = (target_height - label_height) / 2;
+  int bottom_padding = (target_height - label_height + 1) / 2;
+  DCHECK_EQ(target_height, label_height + top_padding + bottom_padding);
 
   // TODO(estade): can we get rid of the platform style border hoopla if
   // we apply the MD treatment to all buttons, even GTK buttons?
-  SetBorder(Border::CreateEmptyBorder(
-      top_padding - inbuilt_top_padding, kHorizontalPadding,
-      bottom_padding - inbuilt_bottom_padding, kHorizontalPadding));
+  const int horizontal_padding = LayoutProvider::Get()->GetDistanceMetric(
+      DISTANCE_BUTTON_HORIZONTAL_PADDING);
+  SetBorder(CreateEmptyBorder(top_padding, horizontal_padding, bottom_padding,
+                              horizontal_padding));
 }
 
-MdTextButton::~MdTextButton() {}
-
 void MdTextButton::UpdateColors() {
-  ui::NativeTheme::ColorId fg_color_id =
-      is_cta_ ? ui::NativeTheme::kColorId_TextOnCallToActionColor
-              : ui::NativeTheme::kColorId_ButtonEnabledColor;
+  bool is_disabled = state() == STATE_DISABLED;
+  SkColor enabled_text_color =
+      style::GetColor(*this, label()->text_context(),
+                      is_prominent_ ? style::STYLE_DIALOG_BUTTON_DEFAULT
+                                    : style::STYLE_PRIMARY);
+  if (!explicitly_set_normal_color()) {
+    const auto colors = explicitly_set_colors();
+    LabelButton::SetEnabledTextColors(enabled_text_color);
+    // Disabled buttons need the disabled color explicitly set.
+    // This ensures that label()->enabled_color() returns the correct color as
+    // the basis for calculating the stroke color. enabled_text_color isn't used
+    // since a descendant could have overridden the label enabled color.
+    if (is_disabled) {
+      LabelButton::SetTextColor(STATE_DISABLED,
+                                style::GetColor(*this, label()->text_context(),
+                                                style::STYLE_DISABLED));
+    }
+    set_explicitly_set_colors(colors);
+  }
 
-  // When there's no call to action, respect a color override if one has
-  // been set. For call to action styling, don't let individual buttons
-  // specify a color.
   ui::NativeTheme* theme = GetNativeTheme();
-  if (is_cta_ || !explicitly_set_normal_color())
-    LabelButton::SetEnabledTextColors(theme->GetSystemColor(fg_color_id));
-
-  SkColor text_color = label()->enabled_color();
   SkColor bg_color =
-      is_cta_
-          ? theme->GetSystemColor(ui::NativeTheme::kColorId_CallToActionColor)
-          : is_default()
-                ? color_utils::BlendTowardOppositeLuma(text_color, 0xD8)
-                : SK_ColorTRANSPARENT;
+      theme->GetSystemColor(ui::NativeTheme::kColorId_DialogBackground);
 
-  const SkAlpha kStrokeOpacity = 0x1A;
-  SkColor stroke_color = (is_cta_ || color_utils::IsDark(text_color))
-                             ? SkColorSetA(SK_ColorBLACK, kStrokeOpacity)
-                             : SkColorSetA(SK_ColorWHITE, 2 * kStrokeOpacity);
+  if (bg_color_override_) {
+    bg_color = *bg_color_override_;
+  } else if (is_prominent_) {
+    bg_color = theme->GetSystemColor(
+        HasFocus() ? ui::NativeTheme::kColorId_ProminentButtonFocusedColor
+                   : ui::NativeTheme::kColorId_ProminentButtonColor);
+    if (is_disabled) {
+      bg_color = theme->GetSystemColor(
+          ui::NativeTheme::kColorId_ProminentButtonDisabledColor);
+    }
+  }
 
-  set_background(Background::CreateBackgroundPainter(
-      true, Painter::CreateRoundRectWith1PxBorderPainter(
-                bg_color, stroke_color, kInkDropSmallCornerRadius)));
+  if (state() == STATE_PRESSED) {
+    SkColor shade =
+        theme->GetSystemColor(ui::NativeTheme::kColorId_ButtonPressedShade);
+    bg_color = color_utils::GetResultingPaintColor(shade, bg_color);
+  }
+
+  SkColor stroke_color;
+  if (is_prominent_) {
+    stroke_color = SK_ColorTRANSPARENT;
+  } else {
+    stroke_color = SkColorSetA(
+        theme->GetSystemColor(ui::NativeTheme::kColorId_ButtonBorderColor),
+        is_disabled ? 0x43 : SK_AlphaOPAQUE);
+  }
+
+  SetBackground(
+      CreateBackgroundFromPainter(Painter::CreateRoundRectWith1PxBorderPainter(
+          bg_color, stroke_color, corner_radius_)));
+  SchedulePaint();
 }
 
 }  // namespace views

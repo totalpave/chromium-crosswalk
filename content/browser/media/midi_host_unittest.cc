@@ -8,48 +8,23 @@
 #include <stdint.h>
 
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
-#include "content/common/media/midi_messages.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/mock_render_process_host.h"
+#include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "media/midi/midi_manager.h"
+#include "media/midi/midi_service.h"
+#include "mojo/public/cpp/bindings/strong_binding.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
 namespace {
 
-const uint8_t kGMOn[] = {0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7};
-const uint8_t kGSOn[] = {
-    0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7,
-};
+using midi::mojom::PortState;
+
 const uint8_t kNoteOn[] = {0x90, 0x3c, 0x7f};
-const uint8_t kNoteOnWithRunningStatus[] = {
-    0x90, 0x3c, 0x7f, 0x3c, 0x7f, 0x3c, 0x7f,
-};
-const uint8_t kChannelPressure[] = {0xd0, 0x01};
-const uint8_t kChannelPressureWithRunningStatus[] = {
-    0xd0, 0x01, 0x01, 0x01,
-};
-const uint8_t kTimingClock[] = {0xf8};
-const uint8_t kBrokenData1[] = {0x90};
-const uint8_t kBrokenData2[] = {0xf7};
-const uint8_t kBrokenData3[] = {0xf2, 0x00};
-const uint8_t kDataByte0[] = {0x00};
-
-const int kRenderProcessId = 0;
-
-template <typename T, size_t N>
-const std::vector<T> AsVector(const T(&data)[N]) {
-  std::vector<T> buffer;
-  buffer.insert(buffer.end(), data, data + N);
-  return buffer;
-}
-
-template <typename T, size_t N>
-void PushToVector(const T(&data)[N], std::vector<T>* buffer) {
-  buffer->insert(buffer->end(), data, data + N);
-}
 
 enum MidiEventType {
   DISPATCH_SEND_MIDI_DATA,
@@ -59,7 +34,7 @@ struct MidiEvent {
   MidiEvent(MidiEventType in_type,
             uint32_t in_port_index,
             const std::vector<uint8_t>& in_data,
-            double in_timestamp)
+            base::TimeTicks in_timestamp)
       : type(in_type),
         port_index(in_port_index),
         data(in_data),
@@ -68,48 +43,106 @@ struct MidiEvent {
   MidiEventType type;
   uint32_t port_index;
   std::vector<uint8_t> data;
-  double timestamp;
+  base::TimeTicks timestamp;
 };
 
-class FakeMidiManager : public media::midi::MidiManager {
+class FakeMidiManager : public midi::MidiManager {
  public:
-  void DispatchSendMidiData(media::midi::MidiManagerClient* client,
+  explicit FakeMidiManager(midi::MidiService* service)
+      : MidiManager(service), weak_factory_(this) {}
+  ~FakeMidiManager() override = default;
+
+  base::WeakPtr<FakeMidiManager> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
+  void DispatchSendMidiData(midi::MidiManagerClient* client,
                             uint32_t port_index,
                             const std::vector<uint8_t>& data,
-                            double timestamp) override {
-    events_.push_back(MidiEvent(DISPATCH_SEND_MIDI_DATA,
-                                port_index,
-                                data,
-                                timestamp));
+                            base::TimeTicks timestamp) override {
+    events_.push_back(
+        MidiEvent(DISPATCH_SEND_MIDI_DATA, port_index, data, timestamp));
   }
   std::vector<MidiEvent> events_;
+
+  base::WeakPtrFactory<FakeMidiManager> weak_factory_;
+
+  DISALLOW_COPY_AND_ASSIGN(FakeMidiManager);
+};
+
+class FakeMidiManagerFactory : public midi::MidiService::ManagerFactory {
+ public:
+  FakeMidiManagerFactory() : weak_factory_(this) {}
+  ~FakeMidiManagerFactory() override = default;
+  std::unique_ptr<midi::MidiManager> Create(
+      midi::MidiService* service) override {
+    std::unique_ptr<FakeMidiManager> manager =
+        std::make_unique<FakeMidiManager>(service);
+    manager_ = manager->GetWeakPtr();
+    return manager;
+  }
+
+  base::WeakPtr<FakeMidiManagerFactory> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
+  base::WeakPtr<FakeMidiManager> GetCreatedManager() { return manager_; }
+
+ private:
+  base::WeakPtr<FakeMidiManager> manager_;
+
+  base::WeakPtrFactory<FakeMidiManagerFactory> weak_factory_;
+
+  DISALLOW_COPY_AND_ASSIGN(FakeMidiManagerFactory);
 };
 
 class MidiHostForTesting : public MidiHost {
  public:
-  MidiHostForTesting(int renderer_process_id,
-                     media::midi::MidiManager* midi_manager)
-      : MidiHost(renderer_process_id, midi_manager) {}
-
- private:
+  MidiHostForTesting(int renderer_process_id, midi::MidiService* midi_service)
+      : MidiHost(renderer_process_id, midi_service) {}
   ~MidiHostForTesting() override {}
 
-  // BrowserMessageFilter implementation.
-  // Override ShutdownForBadMessage() to do nothing since the original
-  // implementation to kill a malicious renderer process causes a check failure
-  // in unit tests.
-  void ShutdownForBadMessage() override {}
+ private:
+  DISALLOW_COPY_AND_ASSIGN(MidiHostForTesting);
+};
+
+class MidiSessionClientForTesting : public midi::mojom::MidiSessionClient {
+ public:
+  MidiSessionClientForTesting() = default;
+  ~MidiSessionClientForTesting() override = default;
+
+  void AddInputPort(midi::mojom::PortInfoPtr info) override {}
+  void AddOutputPort(midi::mojom::PortInfoPtr info) override {}
+  void SetInputPortState(uint32_t port, PortState state) override {}
+  void SetOutputPortState(uint32_t port, PortState state) override {}
+  void SessionStarted(midi::mojom::Result result) override {}
+  void AcknowledgeSentData(uint32_t bytes) override {}
+  void DataReceived(uint32_t port,
+                    const std::vector<uint8_t>& data,
+                    base::TimeTicks timestamp) override {}
 };
 
 class MidiHostTest : public testing::Test {
  public:
-  MidiHostTest()
-      : io_browser_thread_(BrowserThread::IO, &message_loop_),
-        host_(new MidiHostForTesting(kRenderProcessId, &manager_)),
-        data_(kNoteOn, kNoteOn + arraysize(kNoteOn)),
-        port_id_(0) {}
+  MidiHostTest() : data_(kNoteOn, kNoteOn + base::size(kNoteOn)), port_id_(0) {
+    browser_context_ = std::make_unique<TestBrowserContext>();
+    rph_ = std::make_unique<MockRenderProcessHost>(browser_context_.get());
+    std::unique_ptr<FakeMidiManagerFactory> factory =
+        std::make_unique<FakeMidiManagerFactory>();
+    factory_ = factory->GetWeakPtr();
+    service_ = std::make_unique<midi::MidiService>(std::move(factory));
+    host_ = std::make_unique<MidiHostForTesting>(rph_->GetID(), service_.get());
+    midi::mojom::MidiSessionClientPtr ptr;
+    midi::mojom::MidiSessionClientRequest request = mojo::MakeRequest(&ptr);
+    mojo::MakeStrongBinding(std::make_unique<MidiSessionClientForTesting>(),
+                            std::move(request));
+    midi::mojom::MidiSessionRequest session_request =
+        mojo::MakeRequest(&session_);
+    host_->StartSession(std::move(session_request), std::move(ptr));
+  }
   ~MidiHostTest() override {
-    manager_.Shutdown();
+    session_.reset();
+    service_->Shutdown();
     RunLoopUntilIdle();
   }
 
@@ -119,27 +152,29 @@ class MidiHostTest : public testing::Test {
     const std::string manufacturer("yukatan");
     const std::string name("doki-doki-pi-pine");
     const std::string version("3.14159265359");
-    media::midi::MidiPortState state = media::midi::MIDI_PORT_CONNECTED;
-    media::midi::MidiPortInfo info(id, manufacturer, name, version, state);
+    PortState state = PortState::CONNECTED;
+    midi::mojom::PortInfo info(id, manufacturer, name, version, state);
 
     host_->AddOutputPort(info);
   }
 
   void OnSendData(uint32_t port) {
-    std::unique_ptr<IPC::Message> message(
-        new MidiHostMsg_SendData(port, data_, 0.0));
-    host_->OnMessageReceived(*message.get());
+    host_->SendData(port, data_, base::TimeTicks());
   }
 
   size_t GetEventSize() const {
-    return manager_.events_.size();
+    if (!factory_->GetCreatedManager())
+      return 0U;
+    return factory_->GetCreatedManager()->events_.size();
   }
 
   void CheckSendEventAt(size_t at, uint32_t port) {
-    EXPECT_EQ(DISPATCH_SEND_MIDI_DATA, manager_.events_[at].type);
-    EXPECT_EQ(port, manager_.events_[at].port_index);
-    EXPECT_EQ(data_, manager_.events_[at].data);
-    EXPECT_EQ(0.0, manager_.events_[at].timestamp);
+    base::WeakPtr<FakeMidiManager> manager = factory_->GetCreatedManager();
+    ASSERT_TRUE(manager);
+    EXPECT_EQ(DISPATCH_SEND_MIDI_DATA, manager->events_[at].type);
+    EXPECT_EQ(port, manager->events_[at].port_index);
+    EXPECT_EQ(data_, manager->events_[at].data);
+    EXPECT_EQ(base::TimeTicks(), manager->events_[at].timestamp);
   }
 
   void RunLoopUntilIdle() {
@@ -147,66 +182,24 @@ class MidiHostTest : public testing::Test {
     run_loop.RunUntilIdle();
   }
 
- private:
-  base::MessageLoop message_loop_;
-  TestBrowserThread io_browser_thread_;
+  int GetNumberOfBadMessages() { return rph_->bad_msg_count(); }
 
-  FakeMidiManager manager_;
-  scoped_refptr<MidiHostForTesting> host_;
+ private:
+  TestBrowserThreadBundle thread_bundle_;
+  std::unique_ptr<BrowserContext> browser_context_;
+  std::unique_ptr<MockRenderProcessHost> rph_;
+
   std::vector<uint8_t> data_;
   int32_t port_id_;
+  base::WeakPtr<FakeMidiManagerFactory> factory_;
+  std::unique_ptr<midi::MidiService> service_;
+  std::unique_ptr<MidiHostForTesting> host_;
+  midi::mojom::MidiSessionPtr session_;
 
   DISALLOW_COPY_AND_ASSIGN(MidiHostTest);
 };
 
 }  // namespace
-
-TEST_F(MidiHostTest, IsValidWebMIDIData) {
-  // Test single event scenario
-  EXPECT_TRUE(MidiHost::IsValidWebMIDIData(AsVector(kGMOn)));
-  EXPECT_TRUE(MidiHost::IsValidWebMIDIData(AsVector(kGSOn)));
-  EXPECT_TRUE(MidiHost::IsValidWebMIDIData(AsVector(kNoteOn)));
-  EXPECT_TRUE(MidiHost::IsValidWebMIDIData(AsVector(kChannelPressure)));
-  EXPECT_TRUE(MidiHost::IsValidWebMIDIData(AsVector(kTimingClock)));
-  EXPECT_FALSE(MidiHost::IsValidWebMIDIData(AsVector(kBrokenData1)));
-  EXPECT_FALSE(MidiHost::IsValidWebMIDIData(AsVector(kBrokenData2)));
-  EXPECT_FALSE(MidiHost::IsValidWebMIDIData(AsVector(kBrokenData3)));
-  EXPECT_FALSE(MidiHost::IsValidWebMIDIData(AsVector(kDataByte0)));
-
-  // MIDI running status should be disallowed
-  EXPECT_FALSE(MidiHost::IsValidWebMIDIData(
-      AsVector(kNoteOnWithRunningStatus)));
-  EXPECT_FALSE(MidiHost::IsValidWebMIDIData(
-      AsVector(kChannelPressureWithRunningStatus)));
-
-  // Multiple messages are allowed as long as each of them is complete.
-  {
-    std::vector<uint8_t> buffer;
-    PushToVector(kGMOn, &buffer);
-    PushToVector(kNoteOn, &buffer);
-    PushToVector(kGSOn, &buffer);
-    PushToVector(kTimingClock, &buffer);
-    PushToVector(kNoteOn, &buffer);
-    EXPECT_TRUE(MidiHost::IsValidWebMIDIData(buffer));
-    PushToVector(kBrokenData1, &buffer);
-    EXPECT_FALSE(MidiHost::IsValidWebMIDIData(buffer));
-  }
-
-  // MIDI realtime message can be placed at any position.
-  {
-    const uint8_t kNoteOnWithRealTimeClock[] = {
-        0x90, 0xf8, 0x3c, 0x7f, 0x90, 0xf8, 0x3c, 0xf8, 0x7f, 0xf8,
-    };
-    EXPECT_TRUE(MidiHost::IsValidWebMIDIData(
-        AsVector(kNoteOnWithRealTimeClock)));
-
-    const uint8_t kGMOnWithRealTimeClock[] = {
-        0xf0, 0xf8, 0x7e, 0x7f, 0x09, 0x01, 0xf8, 0xf7,
-    };
-    EXPECT_TRUE(MidiHost::IsValidWebMIDIData(
-        AsVector(kGMOnWithRealTimeClock)));
-  }
-}
 
 // Test if sending data to out of range port is ignored.
 TEST_F(MidiHostTest, OutputPortCheck) {
@@ -225,6 +218,7 @@ TEST_F(MidiHostTest, OutputPortCheck) {
   OnSendData(port1);
   RunLoopUntilIdle();
   EXPECT_EQ(1U, GetEventSize());
+  EXPECT_EQ(1, GetNumberOfBadMessages());
 
   // Two output ports are available from now on.
   AddOutputPort();
@@ -238,4 +232,4 @@ TEST_F(MidiHostTest, OutputPortCheck) {
   CheckSendEventAt(2, port1);
 }
 
-}  // namespace conent
+}  // namespace content

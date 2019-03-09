@@ -19,7 +19,7 @@ var socketId = 0;
 var succeeded = false;
 var waitCount = 0;
 
-// Many thanks to Dennis for his StackOverflow answer: http://goo.gl/UDanx
+// Many thanks to Dennis for the StackOverflow answer: http://goo.gl/UDanx
 // Since amended to handle BlobBuilder deprecation.
 function string2ArrayBuffer(string, callback) {
   var blob = new Blob([string]);
@@ -237,7 +237,7 @@ var testBroadcast = function() {
 
   function onCreate(socketInfo) {
     console.log("socket created: " + socketInfo.socketId);
-    chrome.test.assertTrue(socketId > 0, "failed to create socket");
+    chrome.test.assertTrue(socketInfo.socketId > 0, "failed to create socket");
 
     if (listeningSocketId == undefined) {
       listeningSocketId = socketInfo.socketId;

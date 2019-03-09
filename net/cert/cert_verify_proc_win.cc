@@ -4,12 +4,14 @@
 
 #include "net/cert/cert_verify_proc_win.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "base/memory/free_deleter.h"
-#include "base/sha1.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_local.h"
@@ -23,9 +25,11 @@
 #include "net/cert/cert_verify_result.h"
 #include "net/cert/crl_set.h"
 #include "net/cert/ev_root_ca_metadata.h"
+#include "net/cert/known_roots.h"
+#include "net/cert/known_roots_win.h"
 #include "net/cert/test_root_certs.h"
 #include "net/cert/x509_certificate.h"
-#include "net/cert/x509_certificate_known_roots_win.h"
+#include "net/cert/x509_util_win.h"
 
 #if !defined(CERT_TRUST_HAS_WEAK_SIGNATURE)
 // This was introduced in Windows 8 / Windows Server 2012, but retroactively
@@ -51,21 +55,11 @@ struct FreeCertChainContextFunctor {
   }
 };
 
-struct FreeCertContextFunctor {
-  void operator()(PCCERT_CONTEXT context) const {
-    if (context)
-      CertFreeCertificateContext(context);
-  }
-};
-
 typedef crypto::ScopedCAPIHandle<HCERTCHAINENGINE, FreeChainEngineFunctor>
     ScopedHCERTCHAINENGINE;
 
 typedef std::unique_ptr<const CERT_CHAIN_CONTEXT, FreeCertChainContextFunctor>
     ScopedPCCERT_CHAIN_CONTEXT;
-
-typedef std::unique_ptr<const CERT_CONTEXT, FreeCertContextFunctor>
-    ScopedPCCERT_CONTEXT;
 
 //-----------------------------------------------------------------------------
 
@@ -78,6 +72,8 @@ int MapSecurityError(SECURITY_STATUS err) {
       return ERR_CERT_COMMON_NAME_INVALID;
     case SEC_E_UNTRUSTED_ROOT:  // Schannel
     case CERT_E_UNTRUSTEDROOT:  // CryptoAPI
+    case TRUST_E_CERT_SIGNATURE:  // CryptoAPI. Caused by weak crypto or bad
+                                  // signatures, but not differentiable.
       return ERR_CERT_AUTHORITY_INVALID;
     case SEC_E_CERT_EXPIRED:  // Schannel
     case CERT_E_EXPIRED:  // CryptoAPI
@@ -271,22 +267,6 @@ bool CertSubjectCommonNameHasNull(PCCERT_CONTEXT cert) {
   return false;
 }
 
-// IsIssuedByKnownRoot returns true if the given chain is rooted at a root CA
-// which we recognise as a standard root.
-// static
-bool IsIssuedByKnownRoot(PCCERT_CHAIN_CONTEXT chain_context) {
-  PCERT_SIMPLE_CHAIN first_chain = chain_context->rgpChain[0];
-  int num_elements = first_chain->cElement;
-  if (num_elements < 1)
-    return false;
-  PCERT_CHAIN_ELEMENT* element = first_chain->rgpElement;
-  PCCERT_CONTEXT cert = element[num_elements - 1]->pCertContext;
-
-  SHA256HashValue hash = X509Certificate::CalculateFingerprint256(cert);
-  return IsSHA256HashInSortedArray(hash, &kKnownRootCertSHA256Hashes[0][0],
-                                   sizeof(kKnownRootCertSHA256Hashes));
-}
-
 // Saves some information about the certificate chain |chain_context| in
 // |*verify_result|. The caller MUST initialize |*verify_result| before
 // calling this function.
@@ -324,35 +304,19 @@ void GetCertChainInfo(PCCERT_CHAIN_CONTEXT chain_context,
     } else {
       verified_chain.push_back(cert);
     }
-
-    const char* algorithm = cert->pCertInfo->SignatureAlgorithm.pszObjId;
-    if (strcmp(algorithm, szOID_RSA_MD5RSA) == 0) {
-      // md5WithRSAEncryption: 1.2.840.113549.1.1.4
-      verify_result->has_md5 = true;
-    } else if (strcmp(algorithm, szOID_RSA_MD2RSA) == 0) {
-      // md2WithRSAEncryption: 1.2.840.113549.1.1.2
-      verify_result->has_md2 = true;
-    } else if (strcmp(algorithm, szOID_RSA_MD4RSA) == 0) {
-      // md4WithRSAEncryption: 1.2.840.113549.1.1.3
-      verify_result->has_md4 = true;
-    } else if (strcmp(algorithm, szOID_RSA_SHA1RSA) == 0 ||
-               strcmp(algorithm, szOID_X957_SHA1DSA) == 0 ||
-               strcmp(algorithm, szOID_ECDSA_SHA1) == 0) {
-      // sha1WithRSAEncryption: 1.2.840.113549.1.1.5
-      // id-dsa-with-sha1: 1.2.840.10040.4.3
-      // ecdsa-with-SHA1: 1.2.840.10045.4.1
-      verify_result->has_sha1 = true;
-      if (i == 0)
-        verify_result->has_sha1_leaf = true;
-    }
   }
 
   if (verified_cert) {
     // Add the root certificate, if present, as it was not added above.
     if (has_root_ca)
       verified_chain.push_back(element[num_elements]->pCertContext);
-    verify_result->verified_cert =
-          X509Certificate::CreateFromHandle(verified_cert, verified_chain);
+    scoped_refptr<X509Certificate> verified_cert_with_chain =
+        x509_util::CreateX509CertificateFromCertContexts(verified_cert,
+                                                         verified_chain);
+    if (verified_cert_with_chain)
+      verify_result->verified_cert = std::move(verified_cert_with_chain);
+    else
+      verify_result->cert_status |= CERT_STATUS_INVALID;
   }
 }
 
@@ -399,6 +363,12 @@ bool HashSPKI(PCCERT_CONTEXT cert, std::string* hash) {
 
   *hash = crypto::SHA256HashString(spki);
   return true;
+}
+
+bool GetSubject(PCCERT_CONTEXT cert, base::StringPiece* out_subject) {
+  base::StringPiece der_bytes(
+      reinterpret_cast<const char*>(cert->pbCertEncoded), cert->cbCertEncoded);
+  return asn1::ExtractSubjectFromDERCert(der_bytes, out_subject);
 }
 
 enum CRLSetResult {
@@ -448,18 +418,20 @@ CRLSetResult CheckRevocationWithCRLSet(CRLSet* crl_set,
   DCHECK(crl_set);
   DCHECK(subject_cert);
 
-  // Check to see if |subject_cert|'s SPKI is revoked. The actual revocation
-  // is handled by the SHA-256 hash of the SPKI, so compute that.
+  // Check to see if |subject_cert|'s SPKI or Subject is revoked.
   std::string subject_hash;
-  if (!HashSPKI(subject_cert, &subject_hash)) {
+  base::StringPiece subject_name;
+  if (!HashSPKI(subject_cert, &subject_hash) ||
+      !GetSubject(subject_cert, &subject_name)) {
     NOTREACHED();  // Indicates Windows accepted something irrecoverably bad.
     previous_hash->clear();
     return kCRLSetError;
   }
 
-  CRLSet::Result result = crl_set->CheckSPKI(subject_hash);
-  if (result == CRLSet::REVOKED)
+  if (crl_set->CheckSPKI(subject_hash) == CRLSet::REVOKED ||
+      crl_set->CheckSubject(subject_name, subject_hash) == CRLSet::REVOKED) {
     return kCRLSetRevoked;
+  }
 
   // If no issuer cert is provided, nor a hash of the issuer's SPKI, no
   // further checks can be done.
@@ -494,7 +466,7 @@ CRLSetResult CheckRevocationWithCRLSet(CRLSet* crl_set,
   }
 
   // Look up by serial & issuer SPKI.
-  result = crl_set->CheckSerial(serial, *issuer_hash);
+  const CRLSet::Result result = crl_set->CheckSerial(serial, *issuer_hash);
   if (result == CRLSet::REVOKED)
     return kCRLSetRevoked;
 
@@ -545,17 +517,20 @@ CRLSetResult CheckChainRevocationWithCRLSet(PCCERT_CHAIN_CONTEXT chain,
   return result;
 }
 
-void AppendPublicKeyHashes(PCCERT_CHAIN_CONTEXT chain,
-                           HashValueVector* hashes) {
+void AppendPublicKeyHashesAndUpdateKnownRoot(PCCERT_CHAIN_CONTEXT chain,
+                                             HashValueVector* hashes,
+                                             bool* known_root) {
   if (chain->cChain == 0)
     return;
 
   PCERT_SIMPLE_CHAIN first_chain = chain->rgpChain[0];
   PCERT_CHAIN_ELEMENT* const element = first_chain->rgpElement;
-
   const DWORD num_elements = first_chain->cElement;
-  for (DWORD i = 0; i < num_elements; i++) {
-    PCCERT_CONTEXT cert = element[i]->pCertContext;
+
+  // Walk the chain in reverse, from the probable root to the known leaf, as
+  // an optimization for IsKnownRoot checks.
+  for (DWORD i = num_elements; i > 0; i--) {
+    PCCERT_CONTEXT cert = element[i - 1]->pCertContext;
 
     base::StringPiece der_bytes(
         reinterpret_cast<const char*>(cert->pbCertEncoded),
@@ -564,15 +539,18 @@ void AppendPublicKeyHashes(PCCERT_CHAIN_CONTEXT chain,
     if (!asn1::ExtractSPKIFromDERCert(der_bytes, &spki_bytes))
       continue;
 
-    HashValue sha1(HASH_VALUE_SHA1);
-    base::SHA1HashBytes(reinterpret_cast<const uint8_t*>(spki_bytes.data()),
-                        spki_bytes.size(), sha1.data());
-    hashes->push_back(sha1);
-
     HashValue sha256(HASH_VALUE_SHA256);
     crypto::SHA256HashString(spki_bytes, sha256.data(), crypto::kSHA256Length);
     hashes->push_back(sha256);
+
+    if (!*known_root) {
+      *known_root =
+          GetNetTrustAnchorHistogramIdForSPKI(sha256) != 0 || IsKnownRoot(cert);
+    }
   }
+
+  // Reverse the hash list, such that it's ordered from leaf to root.
+  std::reverse(hashes->begin(), hashes->end());
 }
 
 // Returns true if the certificate is an extended-validation certificate.
@@ -612,11 +590,9 @@ bool CheckEV(PCCERT_CHAIN_CONTEXT chain_context,
 
   // Look up the EV policy OID of the root CA.
   PCCERT_CONTEXT root_cert = element[num_elements - 1]->pCertContext;
-  SHA1HashValue weak_fingerprint;
-  base::SHA1HashBytes(root_cert->pbCertEncoded, root_cert->cbCertEncoded,
-                      weak_fingerprint.data);
+  SHA256HashValue fingerprint = x509_util::CalculateFingerprint256(root_cert);
   EVRootCAMetadata* metadata = EVRootCAMetadata::GetInstance();
-  return metadata->HasEVPolicyOID(weak_fingerprint, policy_oid);
+  return metadata->HasEVPolicyOID(fingerprint, policy_oid);
 }
 
 // Custom revocation provider function that compares incoming certificates with
@@ -644,15 +620,16 @@ class RevocationInjector {
   void SetCRLSet(CRLSet* crl_set) { thread_local_crlset.Set(crl_set); }
 
  private:
-  friend struct base::DefaultLazyInstanceTraits<RevocationInjector>;
+  friend struct base::LazyInstanceTraitsBase<RevocationInjector>;
 
   RevocationInjector() {
     const CRYPT_OID_FUNC_ENTRY kInterceptFunction[] = {
-        {CRYPT_DEFAULT_OID, &CertDllVerifyRevocationWithCRLSet},
+        {CRYPT_DEFAULT_OID,
+         reinterpret_cast<void*>(&CertDllVerifyRevocationWithCRLSet)},
     };
     BOOL ok = CryptInstallOIDFunctionAddress(
         NULL, X509_ASN_ENCODING, CRYPT_OID_VERIFY_REVOCATION_FUNC,
-        arraysize(kInterceptFunction), kInterceptFunction,
+        base::size(kInterceptFunction), kInterceptFunction,
         CRYPT_INSTALL_OID_FUNC_BEFORE_FLAG);
     DCHECK(ok);
   }
@@ -866,15 +843,6 @@ bool CertVerifyProcWin::SupportsAdditionalTrustAnchors() const {
   return false;
 }
 
-bool CertVerifyProcWin::SupportsOCSPStapling() const {
-  // CERT_OCSP_RESPONSE_PROP_ID is only implemented on Vista+, but it can be
-  // set on Windows XP without error. There is some overhead from the server
-  // sending the OCSP response if it supports the extension, for the subset of
-  // XP clients who will request it but be unable to use it, but this is an
-  // acceptable trade-off for simplicity of implementation.
-  return true;
-}
-
 int CertVerifyProcWin::VerifyInternal(
     X509Certificate* cert,
     const std::string& hostname,
@@ -887,9 +855,12 @@ int CertVerifyProcWin::VerifyInternal(
   // CRLSet.
   ScopedThreadLocalCRLSet thread_local_crlset(crl_set);
 
-  PCCERT_CONTEXT cert_handle = cert->os_cert_handle();
-  if (!cert_handle)
-    return ERR_UNEXPECTED;
+  ScopedPCCERT_CONTEXT cert_list = x509_util::CreateCertContextWithChain(
+      cert, x509_util::InvalidIntermediateBehavior::kIgnore);
+  if (!cert_list) {
+    verify_result->cert_status |= CERT_STATUS_INVALID;
+    return ERR_CERT_INVALID;
+  }
 
   // Build and validate certificate chain.
   CERT_CHAIN_PARA chain_para;
@@ -905,27 +876,29 @@ int CertVerifyProcWin::VerifyInternal(
     szOID_SGC_NETSCAPE
   };
   chain_para.RequestedUsage.dwType = USAGE_MATCH_TYPE_OR;
-  chain_para.RequestedUsage.Usage.cUsageIdentifier = arraysize(usage);
+  chain_para.RequestedUsage.Usage.cUsageIdentifier = base::size(usage);
   chain_para.RequestedUsage.Usage.rgpszUsageIdentifier =
       const_cast<LPSTR*>(usage);
 
   // Get the certificatePolicies extension of the certificate.
   std::unique_ptr<CERT_POLICIES_INFO, base::FreeDeleter> policies_info;
   LPSTR ev_policy_oid = NULL;
-  if (flags & CertVerifier::VERIFY_EV_CERT) {
-    GetCertPoliciesInfo(cert_handle, &policies_info);
-    if (policies_info.get()) {
-      EVRootCAMetadata* metadata = EVRootCAMetadata::GetInstance();
-      for (DWORD i = 0; i < policies_info->cPolicyInfo; ++i) {
-        LPSTR policy_oid = policies_info->rgPolicyInfo[i].pszPolicyIdentifier;
-        if (metadata->IsEVPolicyOID(policy_oid)) {
-          ev_policy_oid = policy_oid;
-          chain_para.RequestedIssuancePolicy.dwType = USAGE_MATCH_TYPE_AND;
-          chain_para.RequestedIssuancePolicy.Usage.cUsageIdentifier = 1;
-          chain_para.RequestedIssuancePolicy.Usage.rgpszUsageIdentifier =
-              &ev_policy_oid;
+  GetCertPoliciesInfo(cert_list.get(), &policies_info);
+  if (policies_info) {
+    EVRootCAMetadata* metadata = EVRootCAMetadata::GetInstance();
+    for (DWORD i = 0; i < policies_info->cPolicyInfo; ++i) {
+      LPSTR policy_oid = policies_info->rgPolicyInfo[i].pszPolicyIdentifier;
+      if (metadata->IsEVPolicyOID(policy_oid)) {
+        ev_policy_oid = policy_oid;
+        chain_para.RequestedIssuancePolicy.dwType = USAGE_MATCH_TYPE_AND;
+        chain_para.RequestedIssuancePolicy.Usage.cUsageIdentifier = 1;
+        chain_para.RequestedIssuancePolicy.Usage.rgpszUsageIdentifier =
+            &ev_policy_oid;
+
+        // De-prioritize the CA/Browser forum Extended Validation policy
+        // (2.23.140.1.1). See https://crbug.com/705285.
+        if (!EVRootCAMetadata::IsCaBrowserForumEvOid(ev_policy_oid))
           break;
-        }
       }
     }
   }
@@ -938,8 +911,7 @@ int CertVerifyProcWin::VerifyInternal(
   // Note: The root cert is also checked for revocation status, so that CRLSets
   // will cover revoked SPKIs.
   DWORD chain_flags = CERT_CHAIN_REVOCATION_CHECK_CHAIN;
-  bool rev_checking_enabled =
-      (flags & CertVerifier::VERIFY_REV_CHECKING_ENABLED);
+  bool rev_checking_enabled = (flags & VERIFY_REV_CHECKING_ENABLED);
   if (rev_checking_enabled) {
     verify_result->cert_status |= CERT_STATUS_REV_CHECKING_ENABLED;
   } else {
@@ -949,8 +921,8 @@ int CertVerifyProcWin::VerifyInternal(
   // By default, use the default HCERTCHAINENGINE (aka HCCE_CURRENT_USER). When
   // running tests, use a dynamic HCERTCHAINENGINE. All of the status and cache
   // of verified certificates and chains is tied to the HCERTCHAINENGINE. As
-  // each invocation may have changed the set of known roots, invalid the cache
-  // between runs.
+  // each invocation may have changed the set of known roots, invalidate the
+  // cache between runs.
   //
   // This is not the most efficient means of doing so; it's possible to mark the
   // Root store used by TestRootCerts as changed, via CertControlStore with the
@@ -960,13 +932,11 @@ int CertVerifyProcWin::VerifyInternal(
   if (TestRootCerts::HasInstance())
     chain_engine.reset(TestRootCerts::GetInstance()->GetChainEngine());
 
-  ScopedPCCERT_CONTEXT cert_list(cert->CreateOSCertChainForCert());
-
   // Add stapled OCSP response data, which will be preferred over online checks
   // and used when in cache-only mode.
   if (!ocsp_response.empty()) {
     CRYPT_DATA_BLOB ocsp_response_blob;
-    ocsp_response_blob.cbData = ocsp_response.size();
+    ocsp_response_blob.cbData = base::checked_cast<DWORD>(ocsp_response.size());
     ocsp_response_blob.pbData =
         reinterpret_cast<BYTE*>(const_cast<char*>(ocsp_response.data()));
     CertSetCertificateContextProperty(
@@ -974,16 +944,68 @@ int CertVerifyProcWin::VerifyInternal(
         CERT_SET_PROPERTY_IGNORE_PERSIST_ERROR_FLAG, &ocsp_response_blob);
   }
 
+  CERT_STRONG_SIGN_SERIALIZED_INFO strong_signed_info;
+  memset(&strong_signed_info, 0, sizeof(strong_signed_info));
+  strong_signed_info.dwFlags = 0;  // Don't check OCSP or CRL signatures.
+
+  // Note that the following two configurations result in disabling support for
+  // any CNG-added algorithms, which may result in some disruption for internal
+  // PKI operations that use national forms of crypto (e.g. GOST). However, the
+  // fallback mechanism for this (to support SHA-1 chains) will re-enable them,
+  // so they should continue to work - just with added latency.
+  wchar_t hash_algs[] =
+      L"RSA/SHA256;RSA/SHA384;RSA/SHA512;"
+      L"ECDSA/SHA256;ECDSA/SHA384;ECDSA/SHA512";
+  strong_signed_info.pwszCNGSignHashAlgids = hash_algs;
+
+  // RSA-1024 bit support is intentionally enabled here. More investigation is
+  // needed to determine if setting CERT_STRONG_SIGN_DISABLE_END_CHECK_FLAG in
+  // the dwStrongSignFlags of |chain_para| would allow the ability to disable
+  // support for intermediates/roots < 2048-bits, while still ensuring that
+  // end-entity certs signed with SHA-1 are flagged/rejected.
+  wchar_t key_sizes[] = L"RSA/1024;ECDSA/256";
+  strong_signed_info.pwszCNGPubKeyMinBitLengths = key_sizes;
+
+  CERT_STRONG_SIGN_PARA strong_sign_params;
+  memset(&strong_sign_params, 0, sizeof(strong_sign_params));
+  strong_sign_params.cbSize = sizeof(strong_sign_params);
+  strong_sign_params.dwInfoChoice = CERT_STRONG_SIGN_SERIALIZED_INFO_CHOICE;
+  strong_sign_params.pSerializedInfo = &strong_signed_info;
+
+  chain_para.dwStrongSignFlags = 0;
+  chain_para.pStrongSignPara = &strong_sign_params;
+
   PCCERT_CHAIN_CONTEXT chain_context = nullptr;
-  if (!CertGetCertificateChain(
-           chain_engine,
-           cert_list.get(),
-           NULL,  // current system time
-           cert_list->hCertStore,
-           &chain_para,
-           chain_flags,
-           NULL,  // reserved
-           &chain_context)) {
+
+  // First, try to verify with strong signing enabled. If this fails, or if the
+  // chain is rejected, then clear it from |chain_para| so that all subsequent
+  // calls will use the fallback path.
+  BOOL chain_result =
+      CertGetCertificateChain(chain_engine, cert_list.get(),
+                              NULL,  // current system time
+                              cert_list->hCertStore, &chain_para, chain_flags,
+                              NULL,  // reserved
+                              &chain_context);
+  if (chain_result && chain_context &&
+      (chain_context->TrustStatus.dwErrorStatus &
+       (CERT_TRUST_HAS_WEAK_SIGNATURE | CERT_TRUST_IS_NOT_SIGNATURE_VALID))) {
+    // The attempt to verify with strong-sign (only SHA-2) failed, so fall back
+    // to disabling it. This will allow SHA-1 chains to be returned, which will
+    // then be subsequently signalled as weak if necessary.
+    CertFreeCertificateChain(chain_context);
+    chain_context = nullptr;
+
+    chain_para.pStrongSignPara = nullptr;
+    chain_para.dwStrongSignFlags = 0;
+    chain_result =
+        CertGetCertificateChain(chain_engine, cert_list.get(),
+                                NULL,  // current system time
+                                cert_list->hCertStore, &chain_para, chain_flags,
+                                NULL,  // reserved
+                                &chain_context);
+  }
+
+  if (!chain_result) {
     verify_result->cert_status |= CERT_STATUS_INVALID;
     return MapSecurityError(GetLastError());
   }
@@ -992,16 +1014,13 @@ int CertVerifyProcWin::VerifyInternal(
   // should have prevented invalid paths from being built, the behaviour and
   // timing of how a Revocation Provider is invoked is not well documented. This
   // is just defense in depth.
-  CRLSetResult crl_set_result = kCRLSetUnknown;
-  if (crl_set)
-    crl_set_result = CheckChainRevocationWithCRLSet(chain_context, crl_set);
+  CRLSetResult crl_set_result =
+      CheckChainRevocationWithCRLSet(chain_context, crl_set);
 
   if (crl_set_result == kCRLSetRevoked) {
     verify_result->cert_status |= CERT_STATUS_REVOKED;
-  } else if (crl_set_result == kCRLSetUnknown &&
-             (flags & CertVerifier::VERIFY_REV_CHECKING_ENABLED_EV_ONLY) &&
-             !rev_checking_enabled &&
-             ev_policy_oid != NULL) {
+  } else if (crl_set_result == kCRLSetUnknown && !rev_checking_enabled &&
+             ev_policy_oid) {
     // We don't have fresh information about this chain from the CRLSet and
     // it's probably an EV certificate. Retry with online revocation checking.
     rev_checking_enabled = true;
@@ -1046,7 +1065,7 @@ int CertVerifyProcWin::VerifyInternal(
   CertVerifyResult temp_verify_result = *verify_result;
   GetCertChainInfo(chain_context, verify_result);
   if (!verify_result->is_issued_by_known_root &&
-      (flags & CertVerifier::VERIFY_REV_CHECKING_REQUIRED_LOCAL_ANCHORS)) {
+      (flags & VERIFY_REV_CHECKING_REQUIRED_LOCAL_ANCHORS)) {
     *verify_result = temp_verify_result;
 
     rev_checking_enabled = true;
@@ -1080,7 +1099,7 @@ int CertVerifyProcWin::VerifyInternal(
       chain_context->TrustStatus.dwErrorStatus);
 
   // Flag certificates that have a Subject common name with a NULL character.
-  if (CertSubjectCommonNameHasNull(cert_handle))
+  if (CertSubjectCommonNameHasNull(cert_list.get()))
     verify_result->cert_status |= CERT_STATUS_INVALID;
 
   base::string16 hostname16 = base::ASCIIToUTF16(hostname);
@@ -1093,8 +1112,7 @@ int CertVerifyProcWin::VerifyInternal(
   // routine that has better support for RFC 6125 name matching.
   extra_policy_para.fdwChecks =
       0x00001000;  // SECURITY_FLAG_IGNORE_CERT_CN_INVALID
-  extra_policy_para.pwszServerName =
-      const_cast<base::char16*>(hostname16.c_str());
+  extra_policy_para.pwszServerName = base::as_writable_wcstr(hostname16);
 
   CERT_CHAIN_POLICY_PARA policy_para;
   memset(&policy_para, 0, sizeof(policy_para));
@@ -1123,13 +1141,6 @@ int CertVerifyProcWin::VerifyInternal(
   // compatible with WinHTTP, which doesn't report this error (bug 3004).
   verify_result->cert_status &= ~CERT_STATUS_NO_REVOCATION_MECHANISM;
 
-  // Perform hostname verification independent of
-  // CertVerifyCertificateChainPolicy.
-  if (!cert->VerifyNameMatch(hostname,
-                             &verify_result->common_name_fallback_used)) {
-    verify_result->cert_status |= CERT_STATUS_COMMON_NAME_INVALID;
-  }
-
   if (!rev_checking_enabled) {
     // If we didn't do online revocation checking then Windows will report
     // CERT_UNABLE_TO_CHECK_REVOCATION unless it had cached OCSP or CRL
@@ -1138,8 +1149,9 @@ int CertVerifyProcWin::VerifyInternal(
     verify_result->cert_status &= ~CERT_STATUS_UNABLE_TO_CHECK_REVOCATION;
   }
 
-  AppendPublicKeyHashes(chain_context, &verify_result->public_key_hashes);
-  verify_result->is_issued_by_known_root = IsIssuedByKnownRoot(chain_context);
+  AppendPublicKeyHashesAndUpdateKnownRoot(
+      chain_context, &verify_result->public_key_hashes,
+      &verify_result->is_issued_by_known_root);
 
   if (IsCertStatusError(verify_result->cert_status))
     return MapCertStatusToNetError(verify_result->cert_status);

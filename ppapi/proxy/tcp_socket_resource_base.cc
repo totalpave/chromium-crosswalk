@@ -8,11 +8,12 @@
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "ppapi/c/pp_bool.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/proxy/error_conversion.h"
 #include "ppapi/proxy/ppapi_messages.h"
+#include "ppapi/proxy/tcp_socket_resource_constants.h"
 #include "ppapi/shared_impl/ppapi_globals.h"
 #include "ppapi/shared_impl/private/ppb_x509_certificate_private_shared.h"
 #include "ppapi/shared_impl/socket_option_data.h"
@@ -23,13 +24,6 @@
 
 namespace ppapi {
 namespace proxy {
-
-const int32_t TCPSocketResourceBase::kMaxReadSize = 1024 * 1024;
-const int32_t TCPSocketResourceBase::kMaxWriteSize = 1024 * 1024;
-const int32_t TCPSocketResourceBase::kMaxSendBufferSize =
-    1024 * TCPSocketResourceBase::kMaxWriteSize;
-const int32_t TCPSocketResourceBase::kMaxReceiveBufferSize =
-    1024 * TCPSocketResourceBase::kMaxReadSize;
 
 TCPSocketResourceBase::TCPSocketResourceBase(Connection connection,
                                              PP_Instance instance,
@@ -42,10 +36,10 @@ TCPSocketResourceBase::TCPSocketResourceBase(Connection connection,
       version_(version) {
   local_addr_.size = 0;
   memset(local_addr_.data, 0,
-         arraysize(local_addr_.data) * sizeof(*local_addr_.data));
+         base::size(local_addr_.data) * sizeof(*local_addr_.data));
   remote_addr_.size = 0;
   memset(remote_addr_.data, 0,
-         arraysize(remote_addr_.data) * sizeof(*remote_addr_.data));
+         base::size(remote_addr_.data) * sizeof(*remote_addr_.data));
 }
 
 TCPSocketResourceBase::TCPSocketResourceBase(
@@ -212,7 +206,9 @@ int32_t TCPSocketResourceBase::ReadImpl(
       state_.IsPending(TCPSocketState::SSL_CONNECT))
     return PP_ERROR_INPROGRESS;
   read_buffer_ = buffer;
-  bytes_to_read_ = std::min(bytes_to_read, kMaxReadSize);
+  bytes_to_read_ =
+      std::min(bytes_to_read,
+               static_cast<int32_t>(TCPSocketResourceConstants::kMaxReadSize));
   read_callback_ = callback;
 
   Call<PpapiPluginMsg_TCPSocket_ReadReply>(
@@ -237,8 +233,8 @@ int32_t TCPSocketResourceBase::WriteImpl(
       state_.IsPending(TCPSocketState::SSL_CONNECT))
     return PP_ERROR_INPROGRESS;
 
-  if (bytes_to_write > kMaxWriteSize)
-    bytes_to_write = kMaxWriteSize;
+  if (bytes_to_write > TCPSocketResourceConstants::kMaxWriteSize)
+    bytes_to_write = TCPSocketResourceConstants::kMaxWriteSize;
 
   write_callback_ = callback;
 

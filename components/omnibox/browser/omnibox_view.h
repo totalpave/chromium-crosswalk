@@ -13,6 +13,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 
 #include "base/gtest_prod_util.h"
@@ -21,22 +22,22 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "components/omnibox/browser/omnibox_client.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/range/range.h"
 
 class GURL;
-class OmniboxClient;
 class OmniboxEditController;
 class OmniboxViewMacTest;
-class ToolbarModel;
 class OmniboxEditModel;
-
-namespace gfx {
-enum class VectorIconId;
-}
 
 class OmniboxView {
  public:
+  using IconFetchedCallback = base::OnceCallback<void(const gfx::Image& icon)>;
+
   // Represents the changes between two State objects.  This is used by the
   // model to determine how its internal state should be updated after the view
   // state changes.  See OmniboxEditModel::OnAfterPossibleChange().
@@ -58,9 +59,6 @@ class OmniboxView {
   OmniboxEditModel* model() { return model_.get(); }
   const OmniboxEditModel* model() const { return model_.get(); }
 
-  // Shared cross-platform focus handling.
-  void OnDidKillFocus();
-
   // Called when any relevant state changes other than changing tabs.
   virtual void Update() = 0;
 
@@ -79,7 +77,8 @@ class OmniboxView {
                          WindowOpenDisposition disposition,
                          const GURL& alternate_nav_url,
                          const base::string16& pasted_text,
-                         size_t selected_line);
+                         size_t selected_line,
+                         base::TimeTicks match_selection_timestamp);
 
   // Returns the current text of the edit control, which could be the
   // "temporary" text set by the popup, the "permanent" text set by the
@@ -90,11 +89,14 @@ class OmniboxView {
   // the field is empty.
   bool IsEditingOrEmpty() const;
 
-  // Returns the resource ID of the icon to show for the current text.
-  int GetIcon() const;
-
-  // Like GetIcon(), but returns a vector icon identifier.
-  gfx::VectorIconId GetVectorIcon() const;
+  // Returns the icon to display as the location icon. If a favicon is
+  // available, |on_icon_fetched| may be called later asynchronously.
+  // |search_alternate_color| should match the color used for URL text, and may
+  // be used for search suggestions depending on some flags.
+  gfx::ImageSkia GetIcon(int dip_size,
+                         SkColor color,
+                         SkColor search_alternate_color,
+                         IconFetchedCallback on_icon_fetched) const;
 
   // The user text is the text the user has manually keyed in.  When present,
   // this is shown in preference to the permanent text; hitting escape will
@@ -110,15 +112,16 @@ class OmniboxView {
                                         bool update_popup,
                                         bool notify_text_changed) = 0;
 
+  // Sets the caret position. Removes any selection. Clamps the requested caret
+  // position to the length of the current text.
+  virtual void SetCaretPos(size_t caret_pos) = 0;
+
   // Transitions the user into keyword mode with their default search provider,
   // preserving and selecting the user's text if they already typed in a query.
   virtual void EnterKeywordModeForDefaultSearchProvider() = 0;
 
-  // Returns true if all text is selected or there is no text at all.
+  // Returns true if all text is selected. Returns false if there is no text.
   virtual bool IsSelectAll() const = 0;
-
-  // Returns true if the user deleted the suggested text.
-  virtual bool DeleteAtEndPressed() = 0;
 
   // Fills |start| and |end| with the indexes of the current selection's bounds.
   // It is not guaranteed that |*start < *end|, as the selection can be
@@ -130,20 +133,9 @@ class OmniboxView {
   // avoid selecting the "phantom newline" at the end of the edit.
   virtual void SelectAll(bool reversed) = 0;
 
-  // Sets focus, disables search term replacement, reverts the omnibox, and
-  // selects all.
-  void ShowURL();
-
-  // Enables search term replacement and reverts the omnibox.
-  void HideURL();
-
-  // Re-enables search term replacement on the ToolbarModel, and reverts the
-  // edit and popup back to their unedited state (permanent text showing, popup
-  // closed, no user input in progress).
+  // Reverts the edit and popup back to their unedited state (permanent text
+  // showing, popup closed, no user input in progress).
   virtual void RevertAll();
-
-  // Like RevertAll(), but does not touch the search term replacement state.
-  void RevertWithoutResettingSearchTermReplacement();
 
   // Updates the autocomplete popup and other state after the text has been
   // changed by the user.
@@ -154,7 +146,7 @@ class OmniboxView {
   // defines a method with that name.
   virtual void CloseOmniboxPopup();
 
-  // Sets the focus to the autocomplete view.
+  // Sets the focus to the omnibox.
   virtual void SetFocus() = 0;
 
   // Shows or hides the caret based on whether the model's is_caret_visible() is
@@ -162,11 +154,13 @@ class OmniboxView {
   virtual void ApplyCaretVisibility() = 0;
 
   // Called when the temporary text in the model may have changed.
-  // |display_text| is the new text to show; |save_original_selection| is true
-  // when there wasn't previously a temporary text and thus we need to save off
-  // the user's existing selection. |notify_text_changed| is true if the model
-  // should be notified of the change.
+  // |display_text| is the new text to show; |match_type| is the type of the
+  // match the new text came from. |save_original_selection| is true when there
+  // wasn't previously a temporary text and thus we need to save off the user's
+  // existing selection. |notify_text_changed| is true if the model should be
+  // notified of the change.
   virtual void OnTemporaryTextMaybeChanged(const base::string16& display_text,
+                                           const AutocompleteMatch& match,
                                            bool save_original_selection,
                                            bool notify_text_changed) = 0;
 
@@ -203,19 +197,6 @@ class OmniboxView {
   // the top-most window is the relative window.
   virtual gfx::NativeView GetRelativeWindowForPopup() const = 0;
 
-  // Shows |input| as gray suggested text after what the user has typed.
-  virtual void SetGrayTextAutocompletion(const base::string16& input) = 0;
-
-  // Returns the current gray suggested text.
-  virtual base::string16 GetGrayTextAutocompletion() const = 0;
-
-  // Returns the width in pixels needed to display the current text. The
-  // returned value includes margins.
-  virtual int GetTextWidth() const = 0;
-
-  // Returns the omnibox's width in pixels.
-  virtual int GetWidth() const = 0;
-
   // Returns true if the user is composing something in an IME.
   virtual bool IsImeComposing() const = 0;
 
@@ -223,8 +204,11 @@ class OmniboxView {
   // which may overlap the omnibox's popup window.
   virtual bool IsImeShowingPopup() const;
 
-  // Display a virtual keybaord or alternate input view if enabled.
-  virtual void ShowImeIfNeeded();
+  // Display a virtual keyboard or alternate input view if enabled.
+  virtual void ShowVirtualKeyboardIfEnabled();
+
+  // Hides a virtual keyboard or alternate input view if enabled.
+  virtual void HideImeIfNeeded();
 
   // Returns true if the view is displaying UI that indicates that query
   // refinement will take place when the user selects the current match.  For
@@ -233,19 +217,17 @@ class OmniboxView {
   // only ever return true on mobile ports.
   virtual bool IsIndicatingQueryRefinement() const;
 
-  // Called after a match has been opened.
-  virtual void OnMatchOpened(AutocompleteMatch::Type match_type);
-
   // Returns |text| with any leading javascript schemas stripped.
   static base::string16 StripJavascriptSchemas(const base::string16& text);
 
-  // First, calls StripJavascriptSchemas().  Then automatically collapses
-  // internal whitespace as follows:
+  // Automatically collapses internal whitespace as follows:
   // * If the only whitespace in |text| is newlines, users are most likely
   // pasting in URLs split into multiple lines by terminals, email programs,
   // etc. So all newlines are removed.
   // * Otherwise, users may be pasting in search data, e.g. street addresses. In
   // this case, runs of whitespace are collapsed down to single spaces.
+  //
+  // Finally, calls StripJavascriptSchemas() on the resulting string.
   static base::string16 SanitizeTextForPaste(const base::string16& text);
 
  protected:
@@ -283,9 +265,28 @@ class OmniboxView {
   OmniboxEditController* controller() { return controller_; }
   const OmniboxEditController* controller() const { return controller_; }
 
+  // Marks part (or, if |range| is invalid, all) of the current text as
+  // emphasized or de-emphasized, by changing its color.
+  virtual void SetEmphasis(bool emphasize, const gfx::Range& range) = 0;
+
+  // Sets the color and strikethrough state for |range|, which represents the
+  // current scheme, based on the current security state.  Schemes are displayed
+  // in different ways for different security levels.
+  virtual void UpdateSchemeStyle(const gfx::Range& range) = 0;
+
+  // Parses |display_text|, then invokes SetEmphasis() and UpdateSchemeStyle()
+  // appropriately. If the text is a query string, there is no scheme, and
+  // everything is emphasized equally, whereas for URLs the scheme may be styled
+  // based on the current security state, with parts of the URL de-emphasized to
+  // draw attention to whatever best represents the "identity" of the current
+  // URL. Returns true if the path component is eligible for fadeout.
+  bool UpdateTextStyle(const base::string16& display_text,
+                       const bool text_is_url,
+                       const AutocompleteSchemeClassifier& classifier);
+
  private:
   friend class OmniboxViewMacTest;
-  FRIEND_TEST_ALL_PREFIXES(InstantExtendedTest, ShowURL);
+  friend class TestOmniboxView;
 
   // |model_| can be NULL in tests.
   std::unique_ptr<OmniboxEditModel> model_;

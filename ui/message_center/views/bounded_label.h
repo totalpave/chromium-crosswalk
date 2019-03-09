@@ -38,13 +38,17 @@ class MESSAGE_CENTER_EXPORT BoundedLabel : public views::View {
   BoundedLabel(const base::string16& text);
   ~BoundedLabel() override;
 
-  void SetColors(SkColor textColor, SkColor backgroundColor);
+  void SetColor(SkColor text_color);
   void SetLineHeight(int height);  // Pass in 0 for default height.
   void SetLineLimit(int lines);  // Pass in -1 for no limit.
   void SetText(const base::string16& text);  // Additionally clears caches.
+  void SizeToFit(int fixed_width);  // Same interface as Label::SizeToFit.
 
   int GetLineHeight() const;
   int GetLineLimit() const;
+
+  // Gets the FontList used by this label.
+  const gfx::FontList& font_list() const;
 
   // Pass in a -1 width to use the preferred width, a -1 limit to skip limits.
   int GetLinesForWidthAndLimit(int width, int limit);
@@ -52,11 +56,14 @@ class MESSAGE_CENTER_EXPORT BoundedLabel : public views::View {
 
   // views::View:
   int GetBaseline() const override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   int GetHeightForWidth(int width) const override;
   void OnPaint(gfx::Canvas* canvas) override;
   bool CanProcessEventsWithinSubtree() const override;
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
+  views::View* GetTooltipHandlerForPoint(const gfx::Point& point) override;
+  bool GetTooltipText(const gfx::Point& p,
+                      base::string16* tooltip) const override;
 
  protected:
   // Overridden from views::View.
@@ -70,6 +77,7 @@ class MESSAGE_CENTER_EXPORT BoundedLabel : public views::View {
 
   std::unique_ptr<InnerBoundedLabel> label_;
   int line_limit_;
+  int fixed_width_;
 
   DISALLOW_COPY_AND_ASSIGN(BoundedLabel);
 };

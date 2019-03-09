@@ -15,6 +15,7 @@
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/controls/prefix_delegate.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
+#include "ui/views/controls/tree/tree_view_drawing_provider.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/view.h"
 
@@ -24,9 +25,9 @@ class Rect;
 
 namespace views {
 
+class PrefixSelector;
 class Textfield;
 class TreeViewController;
-class PrefixSelector;
 
 // TreeView displays hierarchical data as returned from a TreeModel. The user
 // can expand, collapse and edit the items. A Controller may be attached to
@@ -35,7 +36,8 @@ class PrefixSelector;
 // Note on implementation. This implementation doesn't scale well. In particular
 // it does not store any row information, but instead calculates it as
 // necessary. But it's more than adequate for current uses.
-class VIEWS_EXPORT TreeView : public ui::TreeModelObserver,
+class VIEWS_EXPORT TreeView : public View,
+                              public ui::TreeModelObserver,
                               public TextfieldController,
                               public FocusChangeListener,
                               public PrefixDelegate {
@@ -119,15 +121,22 @@ class VIEWS_EXPORT TreeView : public ui::TreeModelObserver,
 
   views::Textfield* editor() { return editor_; }
 
+  // Replaces this TreeView's TreeViewDrawingProvider with |provider|.
+  void SetDrawingProvider(std::unique_ptr<TreeViewDrawingProvider> provider);
+
+  TreeViewDrawingProvider* drawing_provider() {
+    return drawing_provider_.get();
+  }
+
   // View overrides:
   void Layout() override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
   void ShowContextMenu(const gfx::Point& p,
                        ui::MenuSourceType source_type) override;
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   const char* GetClassName() const override;
 
   // TreeModelObserver overrides:
@@ -203,8 +212,9 @@ class VIEWS_EXPORT TreeView : public ui::TreeModelObserver,
 
     // Returns the max width of all descendants (including this node). |indent|
     // is how many pixels each child is indented and |depth| is the depth of
-    // this node from its parent.
-    int GetMaxWidth(int indent, int depth);
+    // this node from its parent. The tree this node is being placed inside is
+    // |tree|.
+    int GetMaxWidth(TreeView* tree, int indent, int depth);
 
    private:
     // The node from the model.
@@ -288,21 +298,47 @@ class VIEWS_EXPORT TreeView : public ui::TreeModelObserver,
                           const gfx::Rect& node_bounds,
                           bool expanded);
 
+  // Paints the icon for the specified |node| in |bounds| to |canvas|.
+  void PaintNodeIcon(gfx::Canvas* canvas,
+                     InternalNode* node,
+                     const gfx::Rect& bounds);
+
   // Returns the InternalNode for a model node. |create_type| indicates wheter
   // this should load InternalNode or not.
   InternalNode* GetInternalNodeForModelNode(
       ui::TreeModelNode* model_node,
       GetInternalNodeCreateType create_type);
 
-  // Returns the bounds for a node.
+  // Returns the bounds for a node. This rectangle contains the node's icon,
+  // text, arrow, and auxiliary text (if any). All of the other bounding
+  // rectangles computed by the functions below lie inside this rectangle.
   gfx::Rect GetBoundsForNode(InternalNode* node);
 
-  // Implementation of GetBoundsForNode. Separated out as some callers already
-  // know the row/depth.
-  gfx::Rect GetBoundsForNodeImpl(InternalNode* node, int row, int depth);
+  // Returns the bounds for a node's background.
+  gfx::Rect GetBackgroundBoundsForNode(InternalNode* node);
+
+  // Return the bounds for a node's foreground, which is the part containing the
+  // expand/collapse symbol (if any), the icon (if any), and the text label.
+  gfx::Rect GetForegroundBoundsForNode(InternalNode* node);
+
+  // Returns the bounds for a node's text label.
+  gfx::Rect GetTextBoundsForNode(InternalNode* node);
+
+  // Returns the bounds of a node's auxiliary text label.
+  gfx::Rect GetAuxiliaryTextBoundsForNode(InternalNode* node);
+
+  // Implementation of GetTextBoundsForNode. Separated out as some callers
+  // already know the row/depth.
+  gfx::Rect GetForegroundBoundsForNodeImpl(InternalNode* node,
+                                           int row,
+                                           int depth);
 
   // Returns the row and depth of a node.
   int GetRowForInternalNode(InternalNode* node, int* depth);
+
+  // Returns the InternalNode (if any) whose foreground bounds contain |point|.
+  // If no node's foreground contains |point|, this function returns nullptr.
+  InternalNode* GetNodeAtPoint(const gfx::Point& point);
 
   // Returns the row and depth of the specified node.
   InternalNode* GetNodeByRow(int row, int* depth);
@@ -322,7 +358,7 @@ class VIEWS_EXPORT TreeView : public ui::TreeModelObserver,
   void CollapseOrSelectParent();
 
   // If the selected node is collapsed, it's expanded. Otherwise the first child
-  // is seleected.
+  // is selected.
   void ExpandOrSelectChild();
 
   // Implementation of Expand(). Returns true if at least one node was expanded
@@ -330,6 +366,13 @@ class VIEWS_EXPORT TreeView : public ui::TreeModelObserver,
   bool ExpandImpl(ui::TreeModelNode* model_node);
 
   PrefixSelector* GetPrefixSelector();
+
+  // Returns whether |point| is in the bounds of |node|'s expand/collapse
+  // control.
+  bool IsPointInExpandControl(InternalNode* node, const gfx::Point& point);
+
+  // Sets whether a focus indicator is visible on this control or not.
+  void SetHasFocusIndicator(bool);
 
   // The model, may be null.
   ui::TreeModel* model_;
@@ -387,6 +430,9 @@ class VIEWS_EXPORT TreeView : public ui::TreeModelObserver,
   int text_offset_;
 
   std::unique_ptr<PrefixSelector> selector_;
+
+  // The current drawing provider for this TreeView.
+  std::unique_ptr<TreeViewDrawingProvider> drawing_provider_;
 
   DISALLOW_COPY_AND_ASSIGN(TreeView);
 };

@@ -4,21 +4,24 @@
 
 import("//testing/test.gni")
 
-# GYP version: ui/accelerated_widget_mac/accelerated_widget_mac.gyp:accelerated_widget_mac
 component("accelerated_widget_mac") {
   sources = [
     "accelerated_widget_mac.h",
     "accelerated_widget_mac.mm",
     "accelerated_widget_mac_export.h",
+    "availability_macros.h",
+    "ca_layer_frame_sink.h",
+    "ca_layer_frame_sink.mm",
     "ca_layer_tree_coordinator.h",
     "ca_layer_tree_coordinator.mm",
     "ca_renderer_layer_tree.h",
     "ca_renderer_layer_tree.mm",
+    "ca_transaction_observer.h",
+    "ca_transaction_observer.mm",
+    "display_ca_layer_tree.h",
+    "display_ca_layer_tree.mm",
     "display_link_mac.cc",
     "display_link_mac.h",
-    "fullscreen_low_power_coordinator.h",
-    "gl_renderer_layer_tree.h",
-    "gl_renderer_layer_tree.mm",
     "io_surface_context.h",
     "io_surface_context.mm",
     "window_resize_helper_mac.cc",
@@ -39,7 +42,6 @@ component("accelerated_widget_mac") {
   ]
 
   libs = [
-    "ApplicationServices.framework",  # Temporary hack around https://crbug.com/620127. Remove after https://crbug.com/622481 is fixed.
     "AVFoundation.framework",
     "CoreGraphics.framework",
     "Foundation.framework",
@@ -51,7 +53,6 @@ component("accelerated_widget_mac") {
   ]
 }
 
-# GYP version: ui/accelerated_widget_mac/accelerated_widget_mac.gyp:accelerated_widget_mac_unittests
 test("accelerated_widget_mac_unittests") {
   configs += [ "//build/config:precompiled_headers" ]
   sources = [
@@ -66,7 +67,7 @@ test("accelerated_widget_mac_unittests") {
     "//testing/gmock",
     "//testing/gtest",
     "//ui/gfx:test_support",
-    "//ui/gl:test_support",
+    "//ui/gl",
   ]
   libs = [
     "AVFoundation.framework",

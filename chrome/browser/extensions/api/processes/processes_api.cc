@@ -7,25 +7,33 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <memory>
+#include <set>
+#include <utility>
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/process/process.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/extensions/api/tabs/tabs_constants.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/task_management/task_manager_interface.h"
+#include "chrome/browser/task_manager/task_manager_interface.h"
 #include "chrome/common/extensions/api/processes.h"
 #include "content/public/browser/browser_child_process_host.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/child_process_host.h"
 #include "content/public/common/result_codes.h"
 #include "extensions/common/error_utils.h"
-#include "third_party/WebKit/public/web/WebCache.h"
+#include "third_party/blink/public/platform/web_cache.h"
 
 namespace extensions {
 
@@ -37,65 +45,66 @@ const char kInvalidArgument[] = "Invalid argument: *.";
 
 namespace {
 
-base::LazyInstance<BrowserContextKeyedAPIFactory<ProcessesAPI>>
-    g_processes_api_factory = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<BrowserContextKeyedAPIFactory<ProcessesAPI>>::
+    DestructorAtExit g_processes_api_factory = LAZY_INSTANCE_INITIALIZER;
 
 int64_t GetRefreshTypesFlagOnlyEssentialData() {
   // This is the only non-optional data in the Process as defined by the API in
   // processes.idl.
-  return task_management::REFRESH_TYPE_NACL;
+  return task_manager::REFRESH_TYPE_NACL;
 }
 
 // This does not include memory. The memory refresh flag will only be added once
 // a listener to OnUpdatedWithMemory event is added.
 int64_t GetRefreshTypesForProcessOptionalData() {
-  return task_management::REFRESH_TYPE_CPU |
-      task_management::REFRESH_TYPE_NETWORK_USAGE |
-      task_management::REFRESH_TYPE_SQLITE_MEMORY |
-      task_management::REFRESH_TYPE_V8_MEMORY |
-      task_management::REFRESH_TYPE_WEBCACHE_STATS;
+  return task_manager::REFRESH_TYPE_CPU |
+      task_manager::REFRESH_TYPE_NETWORK_USAGE |
+      task_manager::REFRESH_TYPE_SQLITE_MEMORY |
+      task_manager::REFRESH_TYPE_V8_MEMORY |
+      task_manager::REFRESH_TYPE_WEBCACHE_STATS;
 }
 
 std::unique_ptr<api::processes::Cache> CreateCacheData(
     const blink::WebCache::ResourceTypeStat& stat) {
   std::unique_ptr<api::processes::Cache> cache(new api::processes::Cache());
   cache->size = static_cast<double>(stat.size);
-  cache->live_size = static_cast<double>(stat.liveSize);
+  cache->live_size = static_cast<double>(stat.size);
   return cache;
 }
 
 api::processes::ProcessType GetProcessType(
-    task_management::Task::Type task_type) {
+    task_manager::Task::Type task_type) {
   switch (task_type) {
-    case task_management::Task::BROWSER:
+    case task_manager::Task::BROWSER:
       return api::processes::PROCESS_TYPE_BROWSER;
 
-    case task_management::Task::RENDERER:
+    case task_manager::Task::RENDERER:
       return api::processes::PROCESS_TYPE_RENDERER;
 
-    case task_management::Task::EXTENSION:
-    case task_management::Task::GUEST:
+    case task_manager::Task::EXTENSION:
+    case task_manager::Task::GUEST:
       return api::processes::PROCESS_TYPE_EXTENSION;
 
-    case task_management::Task::PLUGIN:
+    case task_manager::Task::PLUGIN:
       return api::processes::PROCESS_TYPE_PLUGIN;
 
-    case task_management::Task::WORKER:
+    case task_manager::Task::WORKER:
       return api::processes::PROCESS_TYPE_WORKER;
 
-    case task_management::Task::NACL:
+    case task_manager::Task::NACL:
       return api::processes::PROCESS_TYPE_NACL;
 
-    case task_management::Task::UTILITY:
+    case task_manager::Task::UTILITY:
       return api::processes::PROCESS_TYPE_UTILITY;
 
-    case task_management::Task::GPU:
+    case task_manager::Task::GPU:
       return api::processes::PROCESS_TYPE_GPU;
 
-    case task_management::Task::UNKNOWN:
-    case task_management::Task::ARC:
-    case task_management::Task::SANDBOX_HELPER:
-    case task_management::Task::ZYGOTE:
+    case task_manager::Task::UNKNOWN:
+    case task_manager::Task::ARC:
+    case task_manager::Task::CROSTINI:
+    case task_manager::Task::SANDBOX_HELPER:
+    case task_manager::Task::ZYGOTE:
       return api::processes::PROCESS_TYPE_OTHER;
   }
 
@@ -108,8 +117,8 @@ api::processes::ProcessType GetProcessType(
 // optional fields in |api::processes::Process| except for |private_memory|,
 // which should be filled later if needed.
 void FillProcessData(
-    task_management::TaskId id,
-    task_management::TaskManagerInterface* task_manager,
+    task_manager::TaskId id,
+    task_manager::TaskManagerInterface* task_manager,
     bool include_optional,
     api::processes::Process* out_process) {
   DCHECK(out_process);
@@ -121,14 +130,14 @@ void FillProcessData(
   out_process->nacl_debug_port = task_manager->GetNaClDebugStubPort(id);
 
   // Collect the tab IDs of all the tasks sharing this renderer if any.
-  const task_management::TaskIdList tasks_on_process =
+  const task_manager::TaskIdList tasks_on_process =
       task_manager->GetIdsOfTasksSharingSameProcess(id);
   for (const auto& task_id : tasks_on_process) {
     api::processes::TaskInfo task_info;
     task_info.title = base::UTF16ToUTF8(task_manager->GetTitle(task_id));
-    const int tab_id = task_manager->GetTabId(task_id);
-    if (tab_id != -1)
-      task_info.tab_id.reset(new int(tab_id));
+    const SessionID tab_id = task_manager->GetTabId(task_id);
+    if (tab_id.is_valid())
+      task_info.tab_id.reset(new int(tab_id.id()));
 
     out_process->tasks.push_back(std::move(task_info));
   }
@@ -137,8 +146,8 @@ void FillProcessData(
   if (!include_optional)
     return;
 
-  out_process->cpu.reset(new double(task_manager->GetCpuUsage(id)));
-
+  out_process->cpu.reset(
+      new double(task_manager->GetPlatformIndependentCPUUsage(id)));
   out_process->network.reset(new double(static_cast<double>(
       task_manager->GetProcessTotalNetworkUsage(id))));
 
@@ -160,7 +169,7 @@ void FillProcessData(
   if (task_manager->GetWebCacheStats(id, &cache_stats)) {
     out_process->image_cache = CreateCacheData(cache_stats.images);
     out_process->script_cache = CreateCacheData(cache_stats.scripts);
-    out_process->css_cache = CreateCacheData(cache_stats.cssStyleSheets);
+    out_process->css_cache = CreateCacheData(cache_stats.css_style_sheets);
   }
 }
 
@@ -171,8 +180,8 @@ void FillProcessData(
 ////////////////////////////////////////////////////////////////////////////////
 
 ProcessesEventRouter::ProcessesEventRouter(content::BrowserContext* context)
-    : task_management::TaskManagerObserver(base::TimeDelta::FromSeconds(1),
-                                           task_management::REFRESH_TYPE_NONE),
+    : task_manager::TaskManagerObserver(base::TimeDelta::FromSeconds(1),
+                                        task_manager::REFRESH_TYPE_NONE),
       browser_context_(context),
       listeners_(0) {
 }
@@ -185,7 +194,7 @@ void ProcessesEventRouter::ListenerAdded() {
 
   if (listeners_++ == 0) {
     // The first listener to be added.
-    task_management::TaskManagerInterface::GetTaskManager()->AddObserver(this);
+    task_manager::TaskManagerInterface::GetTaskManager()->AddObserver(this);
   }
 }
 
@@ -194,12 +203,12 @@ void ProcessesEventRouter::ListenerRemoved() {
 
   if (--listeners_ == 0) {
     // Last listener to be removed.
-    task_management::TaskManagerInterface::GetTaskManager()->RemoveObserver(
+    task_manager::TaskManagerInterface::GetTaskManager()->RemoveObserver(
         this);
   }
 }
 
-void ProcessesEventRouter::OnTaskAdded(task_management::TaskId id) {
+void ProcessesEventRouter::OnTaskAdded(task_manager::TaskId id) {
   if (!HasEventListeners(api::processes::OnCreated::kEventName))
     return;
 
@@ -217,7 +226,7 @@ void ProcessesEventRouter::OnTaskAdded(task_management::TaskId id) {
                 api::processes::OnCreated::Create(process));
 }
 
-void ProcessesEventRouter::OnTaskToBeRemoved(task_management::TaskId id) {
+void ProcessesEventRouter::OnTaskToBeRemoved(task_manager::TaskId id) {
   if (!HasEventListeners(api::processes::OnExited::kEventName))
     return;
 
@@ -237,7 +246,7 @@ void ProcessesEventRouter::OnTaskToBeRemoved(task_management::TaskId id) {
 }
 
 void ProcessesEventRouter::OnTasksRefreshedWithBackgroundCalculations(
-    const task_management::TaskIdList& task_ids) {
+    const task_manager::TaskIdList& task_ids) {
   const bool has_on_updated_listeners =
       HasEventListeners(api::processes::OnUpdated::kEventName);
   const bool has_on_updated_with_memory_listeners =
@@ -272,16 +281,16 @@ void ProcessesEventRouter::OnTasksRefreshedWithBackgroundCalculations(
                     &process);
 
     if (has_on_updated_with_memory_listeners) {
-      // Append the private memory usage to the process data.
-      const int64_t private_memory =
-          observed_task_manager()->GetPrivateMemoryUsage(task_id);
-      process.private_memory.reset(new double(static_cast<double>(
-          private_memory)));
+      // Append the memory footprint to the process data.
+      const int64_t memory_footprint =
+          observed_task_manager()->GetMemoryFootprintUsage(task_id);
+      process.private_memory =
+          std::make_unique<double>(static_cast<double>(memory_footprint));
     }
 
     // Store each process indexed by the string version of its ChildProcessHost
     // ID.
-    processes_dictionary.Set(base::IntToString(child_process_host_id),
+    processes_dictionary.Set(base::NumberToString(child_process_host_id),
                              process.ToValue());
   }
 
@@ -308,7 +317,7 @@ void ProcessesEventRouter::OnTasksRefreshedWithBackgroundCalculations(
   }
 }
 
-void ProcessesEventRouter::OnTaskUnresponsive(task_management::TaskId id) {
+void ProcessesEventRouter::OnTaskUnresponsive(task_manager::TaskId id) {
   if (!HasEventListeners(api::processes::OnUnresponsive::kEventName))
     return;
 
@@ -341,7 +350,7 @@ bool ProcessesEventRouter::HasEventListeners(
 }
 
 bool ProcessesEventRouter::ShouldReportOnCreatedOrOnExited(
-    task_management::TaskId id,
+    task_manager::TaskId id,
     int* out_child_process_host_id) const {
   // Is it the first task to be created or the last one to be removed?
   if (observed_task_manager()->GetNumberOfTasksOnSameProcess(id) != 1)
@@ -362,17 +371,20 @@ bool ProcessesEventRouter::ShouldReportOnCreatedOrOnExited(
 }
 
 void ProcessesEventRouter::UpdateRefreshTypesFlagsBasedOnListeners() {
-  int64_t refresh_types = task_management::REFRESH_TYPE_NONE;
+  int64_t refresh_types = task_manager::REFRESH_TYPE_NONE;
   if (HasEventListeners(api::processes::OnCreated::kEventName) ||
       HasEventListeners(api::processes::OnUnresponsive::kEventName)) {
     refresh_types |= GetRefreshTypesFlagOnlyEssentialData();
   }
 
+  const int64_t on_updated_types = GetRefreshTypesForProcessOptionalData();
   if (HasEventListeners(api::processes::OnUpdated::kEventName))
-    refresh_types |= GetRefreshTypesForProcessOptionalData();
+    refresh_types |= on_updated_types;
 
-  if (HasEventListeners(api::processes::OnUpdatedWithMemory::kEventName))
-    refresh_types |= task_management::REFRESH_TYPE_MEMORY;
+  if (HasEventListeners(api::processes::OnUpdatedWithMemory::kEventName)) {
+    refresh_types |=
+        (on_updated_types | task_manager::REFRESH_TYPE_MEMORY_FOOTPRINT);
+  }
 
   SetRefreshTypesFlags(refresh_types);
 }
@@ -448,18 +460,16 @@ ExtensionFunction::ResponseAction ProcessesGetProcessIdForTabFunction::Run() {
   content::WebContents* contents = nullptr;
   int tab_index = -1;
   if (!ExtensionTabUtil::GetTabById(
-          tab_id,
-          Profile::FromBrowserContext(browser_context()),
-          include_incognito(),
-          nullptr,
-          nullptr,
-          &contents,
+          tab_id, Profile::FromBrowserContext(browser_context()),
+          include_incognito_information(), nullptr, nullptr, &contents,
           &tab_index)) {
-    return RespondNow(Error(tabs_constants::kTabNotFoundError,
-                            base::IntToString(tab_id)));
+    return RespondNow(
+        Error(tabs_constants::kTabNotFoundError, base::NumberToString(tab_id)));
   }
 
-  const int process_id = contents->GetRenderProcessHost()->GetID();
+  // TODO(https://crbug.com/767563): chrome.processes.getProcessIdForTab API
+  // incorrectly assumes a *single* renderer process per tab.
+  const int process_id = contents->GetMainFrame()->GetProcess()->GetID();
   return RespondNow(ArgumentList(
       api::processes::GetProcessIdForTab::Results::Create(process_id)));
 }
@@ -479,27 +489,26 @@ ExtensionFunction::ResponseAction ProcessesTerminateFunction::Run() {
   child_process_host_id_ = params->process_id;
   if (child_process_host_id_ < 0) {
     return RespondNow(Error(errors::kInvalidArgument,
-                            base::IntToString(child_process_host_id_)));
+                            base::NumberToString(child_process_host_id_)));
   } else if (child_process_host_id_ == 0) {
     // Cannot kill the browser process.
     return RespondNow(Error(errors::kNotAllowedToTerminate,
-                            base::IntToString(child_process_host_id_)));
+                            base::NumberToString(child_process_host_id_)));
   }
 
   // Check if it's a renderer.
   auto* render_process_host =
       content::RenderProcessHost::FromID(child_process_host_id_);
   if (render_process_host)
-    return RespondNow(TerminateIfAllowed(render_process_host->GetHandle()));
+    return RespondNow(
+        TerminateIfAllowed(render_process_host->GetProcess().Handle()));
 
   // This could be a non-renderer child process like a plugin or a nacl
   // process. Try to get its handle from the BrowserChildProcessHost on the
   // IO thread.
-  content::BrowserThread::PostTaskAndReplyWithResult(
-      content::BrowserThread::IO,
-      FROM_HERE,
-      base::Bind(&ProcessesTerminateFunction::GetProcessHandleOnIO,
-                 this,
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {content::BrowserThread::IO},
+      base::Bind(&ProcessesTerminateFunction::GetProcessHandleOnIO, this,
                  child_process_host_id_),
       base::Bind(&ProcessesTerminateFunction::OnProcessHandleOnUI, this));
 
@@ -513,7 +522,7 @@ base::ProcessHandle ProcessesTerminateFunction::GetProcessHandleOnIO(
 
   auto* host = content::BrowserChildProcessHost::FromID(child_process_host_id);
   if (host)
-    return host->GetData().handle;
+    return host->GetData().GetProcess().Handle();
 
   return base::kNullProcessHandle;
 }
@@ -529,25 +538,25 @@ ExtensionFunction::ResponseValue
 ProcessesTerminateFunction::TerminateIfAllowed(base::ProcessHandle handle) {
   if (handle == base::kNullProcessHandle) {
     return Error(errors::kProcessNotFound,
-                 base::IntToString(child_process_host_id_));
+                 base::NumberToString(child_process_host_id_));
   }
 
   if (handle == base::GetCurrentProcessHandle()) {
     // Cannot kill the browser process.
     return Error(errors::kNotAllowedToTerminate,
-                 base::IntToString(child_process_host_id_));
+                 base::NumberToString(child_process_host_id_));
   }
 
   base::Process process = base::Process::Open(base::GetProcId(handle));
   if (!process.IsValid()) {
     return Error(errors::kProcessNotFound,
-                 base::IntToString(child_process_host_id_));
+                 base::NumberToString(child_process_host_id_));
   }
 
   const bool did_terminate =
       process.Terminate(content::RESULT_CODE_KILLED, true /* wait */);
   if (did_terminate)
-    UMA_HISTOGRAM_COUNTS("ChildProcess.KilledByExtensionAPI", 1);
+    UMA_HISTOGRAM_COUNTS_1M("ChildProcess.KilledByExtensionAPI", 1);
 
   return ArgumentList(
       api::processes::Terminate::Results::Create(did_terminate));
@@ -558,7 +567,7 @@ ProcessesTerminateFunction::TerminateIfAllowed(base::ProcessHandle handle) {
 ////////////////////////////////////////////////////////////////////////////////
 
 ProcessesGetProcessInfoFunction::ProcessesGetProcessInfoFunction()
-    : task_management::TaskManagerObserver(
+    : task_manager::TaskManagerObserver(
           base::TimeDelta::FromSeconds(1),
           GetRefreshTypesFlagOnlyEssentialData()) {
 }
@@ -574,7 +583,7 @@ ExtensionFunction::ResponseAction ProcessesGetProcessInfoFunction::Run() {
 
   include_memory_ = params->include_memory;
   if (include_memory_)
-    AddRefreshType(task_management::REFRESH_TYPE_MEMORY);
+    AddRefreshType(task_manager::REFRESH_TYPE_MEMORY_FOOTPRINT);
 
   // Keep this object alive until the first of either OnTasksRefreshed() or
   // OnTasksRefreshedWithBackgroundCalculations() is received depending on
@@ -583,13 +592,13 @@ ExtensionFunction::ResponseAction ProcessesGetProcessInfoFunction::Run() {
 
   // The task manager needs to be enabled for this function.
   // Start observing the task manager and wait for the next refresh event.
-  task_management::TaskManagerInterface::GetTaskManager()->AddObserver(this);
+  task_manager::TaskManagerInterface::GetTaskManager()->AddObserver(this);
 
   return RespondLater();
 }
 
 void ProcessesGetProcessInfoFunction::OnTasksRefreshed(
-    const task_management::TaskIdList& task_ids) {
+    const task_manager::TaskIdList& task_ids) {
   // Memory is background calculated and will be ready when
   // OnTasksRefreshedWithBackgroundCalculations() is invoked.
   if (include_memory_)
@@ -600,7 +609,7 @@ void ProcessesGetProcessInfoFunction::OnTasksRefreshed(
 
 void
 ProcessesGetProcessInfoFunction::OnTasksRefreshedWithBackgroundCalculations(
-    const task_management::TaskIdList& task_ids) {
+    const task_manager::TaskIdList& task_ids) {
   if (!include_memory_)
     return;
 
@@ -610,7 +619,7 @@ ProcessesGetProcessInfoFunction::OnTasksRefreshedWithBackgroundCalculations(
 ProcessesGetProcessInfoFunction::~ProcessesGetProcessInfoFunction() {}
 
 void ProcessesGetProcessInfoFunction::GatherDataAndRespond(
-    const task_management::TaskIdList& task_ids) {
+    const task_manager::TaskIdList& task_ids) {
   // If there are no process IDs specified, it means we need to return all of
   // the ones we know of.
   const bool specific_processes_requested = !process_host_ids_.empty();
@@ -656,25 +665,25 @@ void ProcessesGetProcessInfoFunction::GatherDataAndRespond(
                     &process);
 
     if (include_memory_) {
-      // Append the private memory usage to the process data.
-      const int64_t private_memory =
-          observed_task_manager()->GetPrivateMemoryUsage(task_id);
-      process.private_memory.reset(new double(static_cast<double>(
-          private_memory)));
+      // Append the memory footprint to the process data.
+      const int64_t memory_footprint =
+          observed_task_manager()->GetMemoryFootprintUsage(task_id);
+      process.private_memory =
+          std::make_unique<double>(static_cast<double>(memory_footprint));
     }
 
     // Store each process indexed by the string version of its
     // ChildProcessHost ID.
     processes.additional_properties.Set(
-        base::IntToString(child_process_host_id),
-        process.ToValue());
+        base::NumberToString(child_process_host_id), process.ToValue());
   }
 
   // Report the invalid host ids sent in the arguments.
   for (const auto& host_id : process_host_ids_) {
-    WriteToConsole(content::CONSOLE_MESSAGE_LEVEL_ERROR,
-                   ErrorUtils::FormatErrorMessage(errors::kProcessNotFound,
-                                                  base::IntToString(host_id)));
+    WriteToConsole(
+        content::CONSOLE_MESSAGE_LEVEL_ERROR,
+        ErrorUtils::FormatErrorMessage(errors::kProcessNotFound,
+                                       base::NumberToString(host_id)));
   }
 
   // Send the response.
@@ -682,7 +691,7 @@ void ProcessesGetProcessInfoFunction::GatherDataAndRespond(
       api::processes::GetProcessInfo::Results::Create(processes)));
 
   // Stop observing the task manager, and balance the AddRef() in Run().
-  task_management::TaskManagerInterface::GetTaskManager()->RemoveObserver(this);
+  task_manager::TaskManagerInterface::GetTaskManager()->RemoveObserver(this);
   Release();
 }
 

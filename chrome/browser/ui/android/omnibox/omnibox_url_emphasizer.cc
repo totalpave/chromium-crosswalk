@@ -11,10 +11,13 @@
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "jni/OmniboxUrlEmphasizer_jni.h"
 
+using base::android::JavaParamRef;
+using base::android::ScopedJavaLocalRef;
+
 // static
-ScopedJavaLocalRef<jintArray> ParseForEmphasizeComponents(
+ScopedJavaLocalRef<jintArray>
+JNI_OmniboxUrlEmphasizer_ParseForEmphasizeComponents(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jobject>& jprofile,
     const JavaParamRef<jstring>& jtext) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(jprofile);
@@ -28,9 +31,4 @@ ScopedJavaLocalRef<jintArray> ParseForEmphasizeComponents(
 
   int emphasize_values[] = {scheme.begin, scheme.len, host.begin, host.len};
   return base::android::ToJavaIntArray(env, emphasize_values, 4);
-}
-
-// static
-bool OmniboxUrlEmphasizer::RegisterOmniboxUrlEmphasizer(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }

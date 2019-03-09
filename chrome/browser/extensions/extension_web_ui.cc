@@ -7,15 +7,16 @@
 #include <stddef.h>
 
 #include <set>
+#include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/browser/extensions/api/bookmark_manager_private/bookmark_manager_private_api.h"
+#include "base/values.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
-#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/extension_constants.h"
@@ -29,7 +30,9 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/common/bindings_policy.h"
+#include "extensions/browser/extension_icon_placeholder.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/image_loader.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_icon_set.h"
@@ -65,17 +68,17 @@ const char kActive[] = "active";
 void InitializeOverridesList(base::ListValue* list) {
   base::ListValue migrated;
   std::set<std::string> seen_entries;
-  for (const auto& val : *list) {
+  for (auto& val : *list) {
     std::unique_ptr<base::DictionaryValue> new_dict(
         new base::DictionaryValue());
     std::string entry_name;
     base::DictionaryValue* existing_dict = nullptr;
-    if (val->GetAsDictionary(&existing_dict)) {
+    if (val.GetAsDictionary(&existing_dict)) {
       bool success = existing_dict->GetString(kEntry, &entry_name);
       if (!success)  // See comment about CHECK(success) in ForEachOverrideList.
         continue;
       new_dict->Swap(existing_dict);
-    } else if (val->GetAsString(&entry_name)) {
+    } else if (val.GetAsString(&entry_name)) {
       new_dict->SetString(kEntry, entry_name);
       new_dict->SetBoolean(kActive, true);
     } else {
@@ -94,26 +97,36 @@ void InitializeOverridesList(base::ListValue* list) {
 
 // Adds |override| to |list|, or, if there's already an entry for the override,
 // marks it as active.
-void AddOverridesToList(base::ListValue* list,
-                        const std::string& override) {
-  for (const auto& val : *list) {
+void AddOverridesToList(base::ListValue* list, const GURL& override_url) {
+  const std::string& spec = override_url.spec();
+  for (auto& val : *list) {
     base::DictionaryValue* dict = nullptr;
     std::string entry;
-    if (!val->GetAsDictionary(&dict) || !dict->GetString(kEntry, &entry)) {
+    if (!val.GetAsDictionary(&dict) || !dict->GetString(kEntry, &entry)) {
       NOTREACHED();
       continue;
     }
-    if (entry == override) {
+    if (entry == spec) {
       dict->SetBoolean(kActive, true);
       return;  // All done!
     }
+    GURL entry_url(entry);
+    if (!entry_url.is_valid()) {
+      NOTREACHED();
+      continue;
+    }
+    if (entry_url.host() == override_url.host()) {
+      dict->SetBoolean(kActive, true);
+      dict->SetString(kEntry, spec);
+      return;
+    }
   }
 
-  std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
-  dict->SetString(kEntry, override);
+  auto dict = std::make_unique<base::DictionaryValue>();
+  dict->SetString(kEntry, spec);
   dict->SetBoolean(kActive, true);
   // Add the entry to the front of the list.
-  list->Insert(0, dict.release());
+  list->Insert(0, std::move(dict));
 }
 
 // Validates that each entry in |list| contains a valid url and points to an
@@ -121,10 +134,11 @@ void AddOverridesToList(base::ListValue* list,
 void ValidateOverridesList(const extensions::ExtensionSet* all_extensions,
                            base::ListValue* list) {
   base::ListValue migrated;
-  for (const auto& val : *list) {
+  std::set<std::string> seen_hosts;
+  for (auto& val : *list) {
     base::DictionaryValue* dict = nullptr;
     std::string entry;
-    if (!val->GetAsDictionary(&dict) || !dict->GetString(kEntry, &entry)) {
+    if (!val.GetAsDictionary(&dict) || !dict->GetString(kEntry, &entry)) {
       NOTREACHED();
       continue;
     }
@@ -136,6 +150,11 @@ void ValidateOverridesList(const extensions::ExtensionSet* all_extensions,
       continue;
 
     if (!all_extensions->GetByID(override_url.host()))
+      continue;
+
+    // If we've already seen this extension, remove the entry. Only retain the
+    // most recent entry for each extension.
+    if (!seen_hosts.insert(override_url.host()).second)
       continue;
 
     migrated.Append(std::move(new_dict));
@@ -159,8 +178,10 @@ void UnregisterAndReplaceOverrideForWebContents(const std::string& page,
   // Don't use Reload() since |url| isn't the same as the internal URL that
   // NavigationController has.
   web_contents->GetController().LoadURL(
-      url, content::Referrer::SanitizeForRequest(
-               url, content::Referrer(url, blink::WebReferrerPolicyDefault)),
+      url,
+      content::Referrer::SanitizeForRequest(
+          url,
+          content::Referrer(url, network::mojom::ReferrerPolicy::kDefault)),
       ui::PAGE_TRANSITION_RELOAD, std::string());
 }
 
@@ -174,26 +195,26 @@ enum UpdateBehavior {
 bool UpdateOverridesList(base::ListValue* overrides_list,
                          const std::string& override_url,
                          UpdateBehavior behavior) {
-  base::ListValue::iterator iter =
-      std::find_if(overrides_list->begin(), overrides_list->end(),
-                   [&override_url](const std::unique_ptr<base::Value>& value) {
-                     std::string entry;
-                     const base::DictionaryValue* dict = nullptr;
-                     return value->GetAsDictionary(&dict) &&
-                            dict->GetString(kEntry, &entry) &&
-                            entry == override_url;
-                   });
+  auto iter = std::find_if(
+      overrides_list->begin(), overrides_list->end(),
+      [&override_url](const base::Value& value) {
+        std::string entry;
+        const base::DictionaryValue* dict = nullptr;
+        return value.GetAsDictionary(&dict) &&
+               dict->GetString(kEntry, &entry) && entry == override_url;
+      });
   if (iter != overrides_list->end()) {
     switch (behavior) {
       case UPDATE_DEACTIVATE: {
         base::DictionaryValue* dict = nullptr;
-        bool success = (*iter)->GetAsDictionary(&dict);
+        bool success = iter->GetAsDictionary(&dict);
         // See comment about CHECK(success) in ForEachOverrideList.
         if (success) {
           dict->SetBoolean(kActive, false);
           break;
         }
         // Else fall through and erase the broken pref.
+        FALLTHROUGH;
       }
       case UPDATE_REMOVE:
         overrides_list->Erase(iter, nullptr);
@@ -232,7 +253,7 @@ void UpdateOverridesLists(Profile* profile,
   }
 }
 
-// Run favicon callbck with image result. If no favicon was available then
+// Run favicon callback with image result. If no favicon was available then
 // |image| will be empty.
 void RunFaviconCallbackAsync(
     const favicon_base::FaviconResultsCallback& callback,
@@ -246,15 +267,14 @@ void RunFaviconCallbackAsync(
     const gfx::ImageSkiaRep& image_rep = image_reps[i];
     scoped_refptr<base::RefCountedBytes> bitmap_data(
         new base::RefCountedBytes());
-    if (gfx::PNGCodec::EncodeBGRASkBitmap(image_rep.sk_bitmap(),
-                                          false,
+    if (gfx::PNGCodec::EncodeBGRASkBitmap(image_rep.GetBitmap(), false,
                                           &bitmap_data->data())) {
       favicon_base::FaviconRawBitmapResult bitmap_result;
       bitmap_result.bitmap_data = bitmap_data;
       bitmap_result.pixel_size = gfx::Size(image_rep.pixel_width(),
                                             image_rep.pixel_height());
       // Leave |bitmap_result|'s icon URL as the default of GURL().
-      bitmap_result.icon_type = favicon_base::FAVICON;
+      bitmap_result.icon_type = favicon_base::IconType::kFavicon;
 
       favicon_bitmap_results->push_back(bitmap_result);
     } else {
@@ -264,8 +284,8 @@ void RunFaviconCallbackAsync(
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&favicon::FaviconService::FaviconResultsCallbackRunner,
-                 callback, base::Owned(favicon_bitmap_results)));
+      base::BindOnce(&favicon::FaviconService::FaviconResultsCallbackRunner,
+                     callback, base::Owned(favicon_bitmap_results)));
 }
 
 bool ValidateOverrideURL(const base::Value* override_url_value,
@@ -329,40 +349,6 @@ void ForEachOverrideList(
 
 const char ExtensionWebUI::kExtensionURLOverrides[] =
     "extensions.chrome_url_overrides";
-
-ExtensionWebUI::ExtensionWebUI(content::WebUI* web_ui, const GURL& url)
-    : WebUIController(web_ui),
-      url_(url) {
-  Profile* profile = Profile::FromWebUI(web_ui);
-  const Extension* extension = extensions::ExtensionRegistry::Get(
-      profile)->enabled_extensions().GetExtensionOrAppByURL(url);
-  DCHECK(extension);
-
-  // The base class defaults to enabling WebUI bindings, but we don't need
-  // those (this is also reflected in ChromeWebUIControllerFactory::
-  // UseWebUIBindingsForURL).
-  int bindings = 0;
-  web_ui->SetBindings(bindings);
-
-  // Hack: A few things we specialize just for the bookmark manager.
-  if (extension->id() == extension_misc::kBookmarkManagerId) {
-    bookmark_manager_private_drag_event_router_.reset(
-        new extensions::BookmarkManagerPrivateDragEventRouter(
-            profile, web_ui->GetWebContents()));
-
-    web_ui->SetLinkTransitionType(ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  }
-}
-
-ExtensionWebUI::~ExtensionWebUI() {}
-
-extensions::BookmarkManagerPrivateDragEventRouter*
-ExtensionWebUI::bookmark_manager_private_drag_event_router() {
-  return bookmark_manager_private_drag_event_router_.get();
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// chrome:// URL overrides
 
 // static
 void ExtensionWebUI::RegisterProfilePrefs(
@@ -456,10 +442,10 @@ bool ExtensionWebUI::HandleChromeURLOverrideReverse(
     if (!dict_iter.value().GetAsList(&url_list))
       continue;
 
-    for (base::ListValue::const_iterator list_iter = url_list->begin();
-         list_iter != url_list->end(); ++list_iter) {
+    for (auto list_iter = url_list->begin(); list_iter != url_list->end();
+         ++list_iter) {
       const base::DictionaryValue* dict = nullptr;
-      if (!(*list_iter)->GetAsDictionary(&dict))
+      if (!list_iter->GetAsDictionary(&dict))
         continue;
       std::string override;
       if (!dict->GetString(kEntry, &override))
@@ -503,12 +489,14 @@ void ExtensionWebUI::RegisterOrActivateChromeURLOverrides(
   DictionaryPrefUpdate update(prefs, kExtensionURLOverrides);
   base::DictionaryValue* all_overrides = update.Get();
   for (const auto& page_override_pair : overrides) {
-    base::ListValue* page_overrides = nullptr;
-    if (!all_overrides->GetList(page_override_pair.first, &page_overrides)) {
-      page_overrides = new base::ListValue();
-      all_overrides->Set(page_override_pair.first, page_overrides);
+    base::ListValue* page_overrides_weak = nullptr;
+    if (!all_overrides->GetList(page_override_pair.first,
+                                &page_overrides_weak)) {
+      auto page_overrides = std::make_unique<base::ListValue>();
+      page_overrides_weak = page_overrides.get();
+      all_overrides->Set(page_override_pair.first, std::move(page_overrides));
     }
-    AddOverridesToList(page_overrides, page_override_pair.second.spec());
+    AddOverridesToList(page_overrides_weak, page_override_pair.second);
   }
 }
 
@@ -553,15 +541,33 @@ void ExtensionWebUI::GetFaviconForURL(
                                                ExtensionIconSet::MATCH_BIGGER);
 
     ui::ScaleFactor resource_scale_factor = ui::GetSupportedScaleFactor(scale);
-    info_list.push_back(extensions::ImageLoader::ImageRepresentation(
-        icon_resource,
-        extensions::ImageLoader::ImageRepresentation::ALWAYS_RESIZE,
-        gfx::Size(pixel_size, pixel_size),
-        resource_scale_factor));
+    if (!icon_resource.empty()) {
+      info_list.push_back(extensions::ImageLoader::ImageRepresentation(
+          icon_resource,
+          extensions::ImageLoader::ImageRepresentation::ALWAYS_RESIZE,
+          gfx::Size(pixel_size, pixel_size), resource_scale_factor));
+    }
   }
 
-  // LoadImagesAsync actually can run callback synchronously. We want to force
-  // async.
-  extensions::ImageLoader::Get(profile)->LoadImagesAsync(
-      extension, info_list, base::Bind(&RunFaviconCallbackAsync, callback));
+  if (info_list.empty()) {
+    // Use the placeholder image when no default icon is available.
+    gfx::Image placeholder_image =
+        extensions::ExtensionIconPlaceholder::CreateImage(
+            extension_misc::EXTENSION_ICON_SMALL, extension->name());
+    gfx::ImageSkia placeholder_skia(placeholder_image.AsImageSkia());
+    // Ensure the ImageSkia has representation at all scales we would use for
+    // favicons.
+    std::vector<ui::ScaleFactor> scale_factors = ui::GetSupportedScaleFactors();
+    for (const auto& scale_factor : scale_factors) {
+      placeholder_skia.GetRepresentation(
+          ui::GetScaleForScaleFactor(scale_factor));
+    }
+    RunFaviconCallbackAsync(callback, gfx::Image(placeholder_skia));
+  } else {
+    // LoadImagesAsync actually can run callback synchronously. We want to force
+    // async.
+    extensions::ImageLoader::Get(profile)->LoadImagesAsync(
+        extension, info_list,
+        base::BindOnce(&RunFaviconCallbackAsync, callback));
+  }
 }

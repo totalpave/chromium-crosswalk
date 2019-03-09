@@ -17,14 +17,9 @@
 #include "ppapi/host/resource_host.h"
 #include "ppapi/proxy/resource_message_params.h"
 
-namespace ppapi {
-struct FileRefCreateInfo;
-}
-
 namespace content {
 
 class RendererPpapiHost;
-class RenderViewImpl;
 
 class CONTENT_EXPORT PepperFileChooserHost
     : public ppapi::host::ResourceHost,
@@ -32,8 +27,9 @@ class CONTENT_EXPORT PepperFileChooserHost
  public:
   // Structure to store the information about chosen files.
   struct ChosenFileInfo {
-    ChosenFileInfo(const std::string& path, const std::string& display_name);
-    std::string path;
+    ChosenFileInfo(const base::FilePath& file_path,
+                   const std::string& display_name);
+    base::FilePath file_path;
     std::string display_name;  // May be empty.
   };
 

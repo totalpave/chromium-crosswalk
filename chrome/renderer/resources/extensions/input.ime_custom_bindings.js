@@ -5,41 +5,43 @@
 // Custom binding for the input ime API. Only injected into the
 // v8 contexts for extensions which have permission for the API.
 
-var binding = require('binding').Binding.create('input.ime');
-
-var Event = require('event_bindings').Event;
-
+var binding = apiBridge || require('binding').Binding.create('input.ime');
 var appWindowNatives = requireNative('app_window_natives');
+var registerArgumentMassager = bindingUtil ?
+    $Function.bind(bindingUtil.registerEventArgumentMassager, bindingUtil) :
+    require('event_bindings').registerArgumentMassager;
+
+var keyEventHandled;
+registerArgumentMassager('input.ime.onKeyEvent',
+                         function(args, dispatch) {
+  var keyData = args[1];
+  var result = undefined;
+  try {
+    // dispatch() is weird - it returns an object {results: array<results>} iff
+    // there is at least one result value that !== undefined. Since onKeyEvent
+    // has a maximum of one listener, we know that any result we find is the one
+    // we're interested in.
+    var dispatchResult = dispatch(args);
+    if (dispatchResult && dispatchResult.results)
+      result = dispatchResult.results[0];
+  } catch (e) {
+    result = false;
+    console.error('Error in event handler for onKeyEvent: ' + e.stack);
+  }
+  if (result !== undefined) {
+    keyEventHandled(keyData.requestId, !!result);
+  }
+});
 
 binding.registerCustomHook(function(api) {
-  var input_ime = api.compiledApi;
+  keyEventHandled = api.compiledApi.keyEventHandled;
 
-  input_ime.onKeyEvent.dispatchToListener = function(callback, args) {
-    var engineID = args[0];
-    var keyData = args[1];
-
-    var result = false;
-    try {
-      result = $Function.call(Event.prototype.dispatchToListener,
-          this, callback, args);
-    } catch (e) {
-      console.error('Error in event handler for onKeyEvent: ' + e.stack);
-    }
-    if (!input_ime.onKeyEvent.async) {
-      input_ime.keyEventHandled(keyData.requestId, result);
-    }
-  };
-
-  input_ime.onKeyEvent.addListener = function(cb, opt_extraInfo) {
-    input_ime.onKeyEvent.async = false;
-    if (opt_extraInfo instanceof Array) {
-      for (var i = 0; i < opt_extraInfo.length; ++i) {
-        if (opt_extraInfo[i] == "async") {
-          input_ime.onKeyEvent.async = true;
-        }
-      }
-    }
-    $Function.call(Event.prototype.addListener, this, cb);
+  // TODO(shuchen): override onKeyEvent.addListener only for compatibility.
+  // This should be removed after the IME extension doesn't rely on the
+  // additional "async" parameter.
+  var originalAddListener = api.compiledApi.onKeyEvent.addListener;
+  api.compiledApi.onKeyEvent.addListener = function(cb, opt_extraInfo) {
+    $Function.call(originalAddListener, this, cb);
   };
 
   api.apiFunctions.setCustomCallback('createWindow',
@@ -57,4 +59,5 @@ binding.registerCustomHook(function(api) {
   });
 });
 
-exports.$set('binding', binding.generate());
+if (!apiBridge)
+  exports.$set('binding', binding.generate());

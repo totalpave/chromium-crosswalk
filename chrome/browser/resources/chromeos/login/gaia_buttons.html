@@ -2,11 +2,11 @@
      Use of this source code is governed by a BSD-style license that can be
      found in the LICENSE file. -->
 
-<link rel="import" href="chrome://resources/polymer/v1_0/iron-icons/iron-icons.html">
+<link rel="import" href="chrome://resources/html/polymer.html">
+
 <link rel="import" href="chrome://resources/polymer/v1_0/paper-button/paper-button.html">
 <link rel="import" href="chrome://resources/polymer/v1_0/paper-icon-button/paper-icon-button.html">
 <link rel="import" href="chrome://resources/polymer/v1_0/paper-styles/color.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/polymer/polymer.html">
 
 <!--
   Material design buttons that mimic GAIA's buttons.
@@ -27,14 +27,17 @@
     <div on-click="onClick_" on-tap="onClick_">
       <paper-button id="button" disabled="[[disabled]]"
           on-focused-changed="focusedChanged_">
-        <content></content>
+        <slot></slot>
       </paper-button>
     </div>
   </template>
 </dom-module>
 
 <!--
-  Material desing icon button with a special styling.
+  Material design icon button with a special styling.
+
+  `gaia-icon-button` does not include any icon-set, so containing elements
+  should import the icon-set needed for the specified |icon|.
 
   Example:
     <gaia-icon-button icon="close"></gaia-icon>
@@ -50,9 +53,8 @@
   <template>
     <div on-click="onClick_" on-tap="onClick_">
       <paper-icon-button id="iconButton" icon="[[icon]]" disabled="[[disabled]]"
-          aria-label="[[ariaLabel]]">
+          aria-label$="[[ariaLabel]]">
       </paper-icon-button>
     </div>
   </template>
 </dom-module>
-

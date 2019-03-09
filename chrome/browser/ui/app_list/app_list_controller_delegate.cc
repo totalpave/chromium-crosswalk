@@ -4,7 +4,11 @@
 
 #include "chrome/browser/ui/app_list/app_list_controller_delegate.h"
 
-#include "base/metrics/histogram.h"
+#include <utility>
+
+#include "ash/public/cpp/app_list/app_list_switches.h"
+#include "base/bind.h"
+#include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/install_tracker_factory.h"
@@ -12,7 +16,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/extension_uninstaller.h"
 #include "chrome/browser/ui/apps/app_info_dialog.h"
+#include "chrome/browser/ui/ash/tablet_mode_client.h"
+#include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
@@ -22,14 +29,11 @@
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/manifest_url_handlers.h"
 #include "net/base/url_util.h"
-#include "ui/app_list/app_list_folder_item.h"
-#include "ui/app_list/app_list_item.h"
-#include "ui/app_list/app_list_model.h"
-#include "ui/app_list/app_list_switches.h"
+#include "rlz/buildflags/buildflags.h"
 #include "ui/gfx/geometry/rect.h"
 
-#if defined(ENABLE_RLZ)
-#include "components/rlz/rlz_tracker.h"
+#if BUILDFLAG(ENABLE_RLZ)
+#include "components/rlz/rlz_tracker.h"  // nogncheck
 #endif
 
 using extensions::ExtensionRegistry;
@@ -46,21 +50,14 @@ const extensions::Extension* GetExtension(Profile* profile,
 
 }  // namespace
 
+AppListControllerDelegate::AppListControllerDelegate()
+    : weak_ptr_factory_(this) {}
+
 AppListControllerDelegate::~AppListControllerDelegate() {}
 
-bool AppListControllerDelegate::ForceNativeDesktop() const {
-  return false;
-}
-
-void AppListControllerDelegate::ViewClosing() {}
-
-gfx::Rect AppListControllerDelegate::GetAppListBounds() {
-  return gfx::Rect();
-}
-
-void AppListControllerDelegate::OnShowChildDialog() {
-}
-void AppListControllerDelegate::OnCloseChildDialog() {
+void AppListControllerDelegate::GetAppInfoDialogBounds(
+    GetAppInfoDialogBoundsCallback callback) {
+  std::move(callback).Run(gfx::Rect());
 }
 
 std::string AppListControllerDelegate::AppListSourceToString(
@@ -81,15 +78,10 @@ bool AppListControllerDelegate::UserMayModifySettings(
   const extensions::Extension* extension = GetExtension(profile, app_id);
   const extensions::ManagementPolicy* policy =
       extensions::ExtensionSystem::Get(profile)->management_policy();
-  return extension &&
-         policy->UserMayModifySettings(extension, NULL);
+  return extension && policy->UserMayModifySettings(extension, NULL);
 }
 
 bool AppListControllerDelegate::CanDoShowAppInfoFlow() {
-#if defined(OS_MACOSX)
-  // Cocoa app list doesn't yet support the app info dialog.
-  return false;
-#endif
   return CanShowAppInfoDialog();
 }
 
@@ -97,10 +89,14 @@ void AppListControllerDelegate::DoShowAppInfoFlow(
     Profile* profile,
     const std::string& extension_id) {
   DCHECK(CanDoShowAppInfoFlow());
+
   const extensions::Extension* extension = GetExtension(profile, extension_id);
   DCHECK(extension);
-
-  OnShowChildDialog();
+  if (extension->is_hosted_app() && extension->from_bookmark()) {
+    chrome::ShowSiteSettings(
+        profile, extensions::AppLaunchInfo::GetFullLaunchURL(extension));
+    return;
+  }
 
   UMA_HISTOGRAM_ENUMERATION("Apps.AppInfoDialog.Launches",
                             AppInfoLaunchSource::FROM_APP_LIST,
@@ -108,34 +104,33 @@ void AppListControllerDelegate::DoShowAppInfoFlow(
 
   // Since the AppListControllerDelegate is a leaky singleton, passing its raw
   // pointer around is OK.
-  ShowAppInfoInAppList(
-      GetAppListWindow(),
-      GetAppListBounds(),
-      profile,
-      extension,
-      base::Bind(&AppListControllerDelegate::OnCloseChildDialog,
-                 base::Unretained(this)));
+  GetAppInfoDialogBounds(base::BindOnce(
+      [](base::WeakPtr<AppListControllerDelegate> self, Profile* profile,
+         const std::string& extension_id, const gfx::Rect& bounds) {
+        const extensions::Extension* extension =
+            GetExtension(profile, extension_id);
+        DCHECK(extension);
+        ShowAppInfoInAppList(bounds, profile, extension);
+      },
+      weak_ptr_factory_.GetWeakPtr(), profile, extension_id));
 }
 
 void AppListControllerDelegate::UninstallApp(Profile* profile,
                                              const std::string& app_id) {
   // ExtensionUninstall deletes itself when done or aborted.
-  ExtensionUninstaller* uninstaller =
-      new ExtensionUninstaller(profile, app_id, this);
+  ExtensionUninstaller* uninstaller = new ExtensionUninstaller(profile, app_id);
   uninstaller->Run();
 }
 
-bool AppListControllerDelegate::IsAppFromWebStore(
-    Profile* profile,
-    const std::string& app_id) {
+bool AppListControllerDelegate::IsAppFromWebStore(Profile* profile,
+                                                  const std::string& app_id) {
   const extensions::Extension* extension = GetExtension(profile, app_id);
   return extension && extension->from_webstore();
 }
 
-void AppListControllerDelegate::ShowAppInWebStore(
-    Profile* profile,
-    const std::string& app_id,
-    bool is_search_result) {
+void AppListControllerDelegate::ShowAppInWebStore(Profile* profile,
+                                                  const std::string& app_id,
+                                                  bool is_search_result) {
   const extensions::Extension* extension = GetExtension(profile, app_id);
   if (!extension)
     return;
@@ -144,36 +139,29 @@ void AppListControllerDelegate::ShowAppInWebStore(
   DCHECK_NE(url, GURL::EmptyGURL());
 
   const std::string source = AppListSourceToString(
-      is_search_result ?
-          AppListControllerDelegate::LAUNCH_FROM_APP_LIST_SEARCH :
-          AppListControllerDelegate::LAUNCH_FROM_APP_LIST);
+      is_search_result ? AppListControllerDelegate::LAUNCH_FROM_APP_LIST_SEARCH
+                       : AppListControllerDelegate::LAUNCH_FROM_APP_LIST);
   OpenURL(profile,
-          net::AppendQueryParameter(url,
-                                    extension_urls::kWebstoreSourceField,
+          net::AppendQueryParameter(url, extension_urls::kWebstoreSourceField,
                                     source),
-          ui::PAGE_TRANSITION_LINK,
-          CURRENT_TAB);
+          ui::PAGE_TRANSITION_LINK, WindowOpenDisposition::CURRENT_TAB);
 }
 
-bool AppListControllerDelegate::HasOptionsPage(
-    Profile* profile,
-    const std::string& app_id) {
+bool AppListControllerDelegate::HasOptionsPage(Profile* profile,
+                                               const std::string& app_id) {
   const extensions::Extension* extension = GetExtension(profile, app_id);
   return extensions::util::IsAppLaunchableWithoutEnabling(app_id, profile) &&
          extension && extensions::OptionsPageInfo::HasOptionsPage(extension);
 }
 
-void AppListControllerDelegate::ShowOptionsPage(
-    Profile* profile,
-    const std::string& app_id) {
+void AppListControllerDelegate::ShowOptionsPage(Profile* profile,
+                                                const std::string& app_id) {
   const extensions::Extension* extension = GetExtension(profile, app_id);
   if (!extension)
     return;
 
-  OpenURL(profile,
-          extensions::OptionsPageInfo::GetOptionsPage(extension),
-          ui::PAGE_TRANSITION_LINK,
-          CURRENT_TAB);
+  OpenURL(profile, extensions::OptionsPageInfo::GetOptionsPage(extension),
+          ui::PAGE_TRANSITION_LINK, WindowOpenDisposition::CURRENT_TAB);
 }
 
 extensions::LaunchType AppListControllerDelegate::GetExtensionLaunchType(
@@ -191,7 +179,8 @@ void AppListControllerDelegate::SetExtensionLaunchType(
 }
 
 bool AppListControllerDelegate::IsExtensionInstalled(
-    Profile* profile, const std::string& app_id) {
+    Profile* profile,
+    const std::string& app_id) {
   return !!GetExtension(profile, app_id);
 }
 
@@ -212,7 +201,7 @@ void AppListControllerDelegate::GetApps(Profile* profile,
 }
 
 void AppListControllerDelegate::OnSearchStarted() {
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
   rlz::RLZTracker::RecordAppListSearch();
 #endif
 }

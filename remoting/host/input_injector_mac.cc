@@ -185,7 +185,7 @@ InputInjectorMac::Core::Core(
 void InputInjectorMac::Core::InjectClipboardEvent(const ClipboardEvent& event) {
   if (!task_runner_->BelongsToCurrentThread()) {
     task_runner_->PostTask(
-        FROM_HERE, base::Bind(&Core::InjectClipboardEvent, this, event));
+        FROM_HERE, base::BindOnce(&Core::InjectClipboardEvent, this, event));
     return;
   }
 
@@ -233,8 +233,11 @@ void InputInjectorMac::Core::InjectKeyEvent(const KeyEvent& event) {
   // In addition to the modifier keys pressed right now, we also need to set
   // AlphaShift if caps lock was active at the client (Mac ignores NumLock).
   uint64_t flags = left_modifiers_ | right_modifiers_;
-  if (event.lock_states() & protocol::KeyEvent::LOCK_STATES_CAPSLOCK)
+  if ((event.has_caps_lock_state() && event.caps_lock_state()) ||
+      (event.has_lock_states() &&
+       (event.lock_states() & protocol::KeyEvent::LOCK_STATES_CAPSLOCK) != 0)) {
     flags |= kCGEventFlagMaskAlphaShift;
+  }
 
   CreateAndPostKeyEvent(keycode, event.pressed(), flags, base::string16());
 }
@@ -310,6 +313,8 @@ void InputInjectorMac::Core::InjectMouseEvent(const MouseEvent& event) {
   // in a way that is consistent with how they would be generated using a local
   // mouse, whereas the new APIs expect us to inject these higher-level events
   // directly.
+  //
+  // See crbug.com/677857 for more details.
   CGPoint position = CGPointMake(mouse_pos_.x(), mouse_pos_.y());
   enum {
     LeftBit = 1 << (MouseEvent::BUTTON_LEFT - 1),
@@ -341,7 +346,7 @@ void InputInjectorMac::Core::Start(
   if (!task_runner_->BelongsToCurrentThread()) {
     task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(&Core::Start, this, base::Passed(&client_clipboard)));
+        base::BindOnce(&Core::Start, this, std::move(client_clipboard)));
     return;
   }
 
@@ -350,7 +355,7 @@ void InputInjectorMac::Core::Start(
 
 void InputInjectorMac::Core::Stop() {
   if (!task_runner_->BelongsToCurrentThread()) {
-    task_runner_->PostTask(FROM_HERE, base::Bind(&Core::Stop, this));
+    task_runner_->PostTask(FROM_HERE, base::BindOnce(&Core::Stop, this));
     return;
   }
 
@@ -392,7 +397,8 @@ InputInjectorMac::Core::~Core() {}
 // static
 std::unique_ptr<InputInjector> InputInjector::Create(
     scoped_refptr<base::SingleThreadTaskRunner> main_task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner) {
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+    ui::SystemInputInjectorFactory* chromeos_system_input_injector_factory) {
   return base::WrapUnique(new InputInjectorMac(main_task_runner));
 }
 

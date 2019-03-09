@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/i18n/rtl.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_piece.h"
 #include "base/values.h"
 #include "chrome/grit/chromium_strings.h"
@@ -44,7 +45,7 @@ struct LazyDirectoryListerCacher {
             l10n_util::GetStringUTF16(IDS_PRODUCT_NAME)));
     value.SetString("textdirection", base::i18n::IsRTL() ? "rtl" : "ltr");
     html_data = webui::GetI18nTemplateHtml(
-        ResourceBundle::GetSharedInstance().GetRawDataResource(
+        ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
             IDR_DIR_HEADER_HTML),
         &value);
   }
@@ -57,12 +58,12 @@ struct LazyDirectoryListerCacher {
 namespace chrome_common_net {
 
 base::StringPiece NetResourceProvider(int key) {
-  CR_DEFINE_STATIC_LOCAL(LazyDirectoryListerCacher, lazy_dir_lister, ());
+  static base::NoDestructor<LazyDirectoryListerCacher> lazy_dir_lister;
 
   if (IDR_DIR_HEADER_HTML == key)
-    return base::StringPiece(lazy_dir_lister.html_data);
+    return base::StringPiece(lazy_dir_lister->html_data);
 
-  return ResourceBundle::GetSharedInstance().GetRawDataResource(key);
+  return ui::ResourceBundle::GetSharedInstance().GetRawDataResource(key);
 }
 
 }  // namespace chrome_common_net

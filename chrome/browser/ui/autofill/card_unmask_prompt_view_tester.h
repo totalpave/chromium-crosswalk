@@ -7,10 +7,6 @@
 
 #include <memory>
 
-namespace content {
-class WebContents;
-}
-
 namespace autofill {
 
 class CardUnmaskPromptView;
@@ -25,6 +21,9 @@ class CardUnmaskPromptViewTester {
   virtual ~CardUnmaskPromptViewTester() {}
 
   virtual void Close() = 0;
+
+  // Will enter a CVC value and click "Confirm" to advance to the next step.
+  virtual void EnterCVCAndAccept() = 0;
 };
 
 }  // namespace autofill

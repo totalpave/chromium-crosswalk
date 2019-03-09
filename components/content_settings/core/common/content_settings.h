@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/values.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 
@@ -18,6 +19,9 @@
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.preferences.website
 // GENERATED_JAVA_CLASS_NAME_OVERRIDE: ContentSettingValues
+//
+// TODO(nigeltao): migrate the Java users of this enum to the mojom-generated
+// enum.
 enum ContentSetting {
   CONTENT_SETTING_DEFAULT = 0,
   CONTENT_SETTING_ALLOW,
@@ -40,14 +44,19 @@ int ContentSettingTypeToHistogramValue(ContentSettingsType content_setting,
 struct ContentSettingPatternSource {
   ContentSettingPatternSource(const ContentSettingsPattern& primary_pattern,
                               const ContentSettingsPattern& secondary_patttern,
-                              ContentSetting setting,
+                              base::Value setting_value,
                               const std::string& source,
                               bool incognito);
   ContentSettingPatternSource(const ContentSettingPatternSource& other);
   ContentSettingPatternSource();
+  ContentSettingPatternSource& operator=(
+      const ContentSettingPatternSource& other);
+  ~ContentSettingPatternSource();
+  ContentSetting GetContentSetting() const;
+
   ContentSettingsPattern primary_pattern;
   ContentSettingsPattern secondary_pattern;
-  ContentSetting setting;
+  base::Value setting_value;
   std::string source;
   bool incognito;
 };
@@ -55,11 +64,17 @@ struct ContentSettingPatternSource {
 typedef std::vector<ContentSettingPatternSource> ContentSettingsForOneType;
 
 struct RendererContentSettingRules {
+  // Returns true if |content_type| is a type that is contained in this class.
+  // Any new type added below must also update this method.
+  static bool IsRendererContentSetting(ContentSettingsType content_type);
+
   RendererContentSettingRules();
   ~RendererContentSettingRules();
   ContentSettingsForOneType image_rules;
   ContentSettingsForOneType script_rules;
   ContentSettingsForOneType autoplay_rules;
+  ContentSettingsForOneType client_hints_rules;
+  ContentSettingsForOneType popup_redirect_rules;
 };
 
 namespace content_settings {

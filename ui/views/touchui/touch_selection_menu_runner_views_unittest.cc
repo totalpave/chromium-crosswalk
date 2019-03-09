@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/views/touchui/touch_selection_menu_runner_views.h"
+
 #include "base/macros.h"
 #include "ui/events/event_utils.h"
-#include "ui/strings/grit/ui_strings.h"
 #include "ui/touch_selection/touch_selection_menu_runner.h"
-#include "ui/views/controls/button/button.h"
+#include "ui/views/controls/button/label_button.h"
 #include "ui/views/test/views_test_base.h"
-#include "ui/views/touchui/touch_selection_menu_runner_views.h"
 
 namespace views {
 namespace {
@@ -30,6 +30,12 @@ class TouchSelectionMenuRunnerViewsTest : public ViewsTestBase,
   ~TouchSelectionMenuRunnerViewsTest() override {}
 
  protected:
+  void SetUp() override {
+    ViewsTestBase::SetUp();
+    // These tests expect NativeWidgetAura and so aren't applicable to
+    // aura-mus-client. http://crbug.com/663561.
+  }
+
   void set_no_commmand_available(bool no_command) {
     no_command_available_ = no_command;
   }
@@ -47,6 +53,10 @@ class TouchSelectionMenuRunnerViewsTest : public ViewsTestBase,
   }
 
   void RunContextMenu() override {}
+
+  base::string16 GetSelectedText() override { return base::string16(); }
+
+  bool ShouldShowQuickMenu() override { return false; }
 
   // When set to true, no command would be available and menu should not be
   // shown.
@@ -135,7 +145,7 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, RunningActionClosesProperly) {
 
   // Tap the first action on the menu and check taht the menu is closed
   // properly.
-  Button* button = test_api.GetFirstButton();
+  LabelButton* button = test_api.GetFirstButton();
   DCHECK(button);
   gfx::Point button_center = button->bounds().CenterPoint();
   ui::GestureEventDetails details(ui::ET_GESTURE_TAP);

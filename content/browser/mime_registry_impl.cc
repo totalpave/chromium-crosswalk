@@ -6,30 +6,30 @@
 
 #include "base/files/file_path.h"
 #include "content/public/browser/browser_thread.h"
-#include "mojo/common/common_type_converters.h"
+#include "mojo/public/cpp/bindings/strong_binding.h"
 #include "net/base/mime_util.h"
 
 namespace content {
 
-// static
-void MimeRegistryImpl::Create(blink::mojom::MimeRegistryRequest request) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
-  new MimeRegistryImpl(std::move(request));
-}
-
-MimeRegistryImpl::MimeRegistryImpl(blink::mojom::MimeRegistryRequest request)
-    : binding_(this, std::move(request)) {}
+MimeRegistryImpl::MimeRegistryImpl() = default;
 
 MimeRegistryImpl::~MimeRegistryImpl() = default;
 
+// static
+void MimeRegistryImpl::Create(
+    blink::mojom::MimeRegistryRequest request) {
+  mojo::MakeStrongBinding(std::make_unique<MimeRegistryImpl>(),
+                          std::move(request));
+}
+
 void MimeRegistryImpl::GetMimeTypeFromExtension(
-    const mojo::String& extension,
-    const GetMimeTypeFromExtensionCallback& callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+    const std::string& extension,
+    GetMimeTypeFromExtensionCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   std::string mime_type;
-  net::GetMimeTypeFromExtension(extension.To<base::FilePath::StringType>(),
-                                &mime_type);
-  callback.Run(mime_type);
+  net::GetMimeTypeFromExtension(
+      base::FilePath::FromUTF8Unsafe(extension).value(), &mime_type);
+  std::move(callback).Run(mime_type);
 }
 
 }  // namespace content

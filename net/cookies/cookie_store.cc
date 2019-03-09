@@ -10,57 +10,25 @@
 
 namespace net {
 
-CookieStore::~CookieStore() {}
+CookieStore::~CookieStore() = default;
 
-std::string CookieStore::BuildCookieLine(
-    const std::vector<CanonicalCookie>& cookies) {
-  std::string cookie_line;
-  for (const auto& cookie : cookies) {
-    if (!cookie_line.empty())
-      cookie_line += "; ";
-    // In Mozilla, if you set a cookie like "AAA", it will have an empty token
-    // and a value of "AAA". When it sends the cookie back, it will send "AAA",
-    // so we need to avoid sending "=AAA" for a blank token value.
-    if (!cookie.Name().empty())
-      cookie_line += cookie.Name() + "=";
-    cookie_line += cookie.Value();
-  }
-  return cookie_line;
-}
-
-std::string CookieStore::BuildCookieLine(
-    const std::vector<CanonicalCookie*>& cookies) {
-  std::string cookie_line;
-  for (auto* cookie : cookies) {
-    if (!cookie_line.empty())
-      cookie_line += "; ";
-    // In Mozilla, if you set a cookie like "AAA", it will have an empty token
-    // and a value of "AAA". When it sends the cookie back, it will send "AAA",
-    // so we need to avoid sending "=AAA" for a blank token value.
-    if (!cookie->Name().empty())
-      cookie_line += cookie->Name() + "=";
-    cookie_line += cookie->Value();
-  }
-  return cookie_line;
-}
-
-void CookieStore::DeleteAllAsync(const DeleteCallback& callback) {
-  DeleteAllCreatedBetweenAsync(base::Time(), base::Time::Max(), callback);
+void CookieStore::DeleteAllAsync(DeleteCallback callback) {
+  DeleteAllCreatedInTimeRangeAsync(CookieDeletionInfo::TimeRange(),
+                                   std::move(callback));
 }
 
 void CookieStore::SetForceKeepSessionState() {
   // By default, do nothing.
 }
 
-void CookieStore::GetAllCookiesForURLAsync(
-    const GURL& url,
-    const GetCookieListCallback& callback) {
+void CookieStore::GetAllCookiesForURLAsync(const GURL& url,
+                                           GetCookieListCallback callback) {
   CookieOptions options;
   options.set_include_httponly();
-  options.set_same_site_cookie_mode(
-      CookieOptions::SameSiteCookieMode::INCLUDE_STRICT_AND_LAX);
+  options.set_same_site_cookie_context(
+      CookieOptions::SameSiteCookieContext::SAME_SITE_STRICT);
   options.set_do_not_update_access_time();
-  GetCookieListWithOptionsAsync(url, options, callback);
+  GetCookieListWithOptionsAsync(url, options, std::move(callback));
 }
 
 void CookieStore::SetChannelIDServiceID(int id) {
@@ -71,6 +39,10 @@ void CookieStore::SetChannelIDServiceID(int id) {
 int CookieStore::GetChannelIDServiceID() {
   return channel_id_service_id_;
 }
+
+void CookieStore::DumpMemoryStats(
+    base::trace_event::ProcessMemoryDump* pmd,
+    const std::string& parent_absolute_name) const {}
 
 CookieStore::CookieStore() : channel_id_service_id_(-1) {}
 

@@ -7,9 +7,6 @@
 
 #include <stdint.h>
 
-#include <map>
-#include <memory>
-#include <set>
 #include <string>
 #include <unordered_set>
 
@@ -17,95 +14,74 @@
 #include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "base/strings/string16.h"
-#include "chrome/browser/notifications/notification.h"
+#include "base/task/cancelable_task_tracker.h"
 #include "chrome/browser/notifications/notification_common.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/features.h"
+#include "chrome/common/buildflags.h"
+#include "components/history/core/browser/history_service.h"
+#include "components/history/core/browser/history_types.h"
 #include "content/public/browser/platform_notification_service.h"
-#include "content/public/common/persistent_notification_status.h"
-#include "third_party/WebKit/public/platform/modules/permissions/permission_status.mojom.h"
+#include "ui/message_center/public/cpp/notification.h"
 
-class NotificationDelegate;
-class NotificationDisplayService;
-class ScopedKeepAlive;
+class GURL;
+class Profile;
 
 namespace content {
 class BrowserContext;
 struct NotificationResources;
-}
-
-namespace gcm {
-class PushMessagingBrowserTest;
-}
+}  // namespace content
 
 // The platform notification service is the profile-agnostic entry point through
 // which Web Notifications can be controlled.
 class PlatformNotificationServiceImpl
     : public content::PlatformNotificationService {
  public:
+  // Register profile-specific prefs.
+  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+
   // Returns the active instance of the service in the browser process. Safe to
   // be called from any thread.
   static PlatformNotificationServiceImpl* GetInstance();
 
-  // Load the profile corresponding to |profile_id| and perform the
-  // |operation| on the given notification once it has been loaded.
-  void ProcessPersistentNotificationOperation(
-      NotificationCommon::Operation operation,
-      const std::string& profile_id,
-      bool incognito,
-      const GURL& origin,
-      int64_t persistent_notification_id,
-      int action_index);
-
-  // To be called when a persistent notification has been clicked on. The
-  // Service Worker associated with the registration will be started if
-  // needed, on which the event will be fired. Must be called on the UI thread.
-  void OnPersistentNotificationClick(
-      content::BrowserContext* browser_context,
-      int64_t persistent_notification_id,
-      const GURL& origin,
-      int action_index);
-
-  // To be called when a persistent notification has been closed. The data
-  // associated with the notification has to be pruned from the database in this
-  // case, to make sure that it continues to be in sync. Must be called on the
-  // UI thread.
-  void OnPersistentNotificationClose(content::BrowserContext* browser_context,
-                                     int64_t persistent_notification_id,
-                                     const GURL& origin,
-                                     bool by_user);
+  // Returns whether the notification identified by |notification_id| was
+  // closed programmatically through ClosePersistentNotification().
+  bool WasClosedProgrammatically(const std::string& notification_id);
 
   // content::PlatformNotificationService implementation.
-  blink::mojom::PermissionStatus CheckPermissionOnUIThread(
-      content::BrowserContext* browser_context,
-      const GURL& origin,
-      int render_process_id) override;
-  blink::mojom::PermissionStatus CheckPermissionOnIOThread(
-      content::ResourceContext* resource_context,
-      const GURL& origin,
-      int render_process_id) override;
   void DisplayNotification(
       content::BrowserContext* browser_context,
+      const std::string& notification_id,
       const GURL& origin,
-      const content::PlatformNotificationData& notification_data,
-      const content::NotificationResources& notification_resources,
-      std::unique_ptr<content::DesktopNotificationDelegate> delegate,
-      base::Closure* cancel_callback) override;
+      const blink::PlatformNotificationData& notification_data,
+      const blink::NotificationResources& notification_resources) override;
   void DisplayPersistentNotification(
       content::BrowserContext* browser_context,
-      int64_t persistent_notification_id,
+      const std::string& notification_id,
+      const GURL& service_worker_scope,
       const GURL& origin,
-      const content::PlatformNotificationData& notification_data,
-      const content::NotificationResources& notification_resources) override;
-  void ClosePersistentNotification(
+      const blink::PlatformNotificationData& notification_data,
+      const blink::NotificationResources& notification_resources) override;
+  void CloseNotification(content::BrowserContext* browser_context,
+                         const std::string& notification_id) override;
+  void ClosePersistentNotification(content::BrowserContext* browser_context,
+                                   const std::string& notification_id) override;
+  void GetDisplayedNotifications(
       content::BrowserContext* browser_context,
-      int64_t persistent_notification_id) override;
-  bool GetDisplayedPersistentNotifications(
+      DisplayedNotificationsCallback callback) override;
+  int64_t ReadNextPersistentNotificationId(
+      content::BrowserContext* browser_context) override;
+  void RecordNotificationUkmEvent(
       content::BrowserContext* browser_context,
-      std::set<std::string>* displayed_notifications) override;
+      const content::NotificationDatabaseData& data) override;
+
+  void set_history_query_complete_closure_for_testing(
+      base::OnceClosure closure) {
+    history_query_complete_closure_for_testing_ = std::move(closure);
+  }
 
  private:
   friend struct base::DefaultSingletonTraits<PlatformNotificationServiceImpl>;
+  friend class PersistentNotificationHandlerTest;
   friend class PlatformNotificationServiceBrowserTest;
   friend class PlatformNotificationServiceTest;
   friend class PushMessagingBrowserTest;
@@ -113,60 +89,43 @@ class PlatformNotificationServiceImpl
                            CreateNotificationFromData);
   FRIEND_TEST_ALL_PREFIXES(PlatformNotificationServiceTest,
                            DisplayNameForContextMessage);
+  FRIEND_TEST_ALL_PREFIXES(PlatformNotificationServiceTest,
+                           RecordNotificationUkmEvent);
 
   PlatformNotificationServiceImpl();
   ~PlatformNotificationServiceImpl() override;
 
-  // Persistent notifications fired through the delegate do not care about the
-  // lifetime of the Service Worker responsible for executing the event.
-  void OnClickEventDispatchComplete(
-      content::PersistentNotificationStatus status);
-  void OnCloseEventDispatchComplete(
-      content::PersistentNotificationStatus status);
+  void OnUrlHistoryQueryComplete(const content::NotificationDatabaseData& data,
+                                 bool found_url,
+                                 const history::URLRow& url_row,
+                                 const history::VisitVector& visits);
 
-  // Creates a new Web Notification-based Notification object.
-  // TODO(peter): |delegate| can be a scoped_refptr, but properly passing this
-  // through requires changing a whole lot of Notification constructor calls.
-  Notification CreateNotificationFromData(
+  // Creates a new Web Notification-based Notification object. Should only be
+  // called when the notification is first shown.
+  message_center::Notification CreateNotificationFromData(
       Profile* profile,
       const GURL& origin,
-      const content::PlatformNotificationData& notification_data,
-      const content::NotificationResources& notification_resources,
-      NotificationDelegate* delegate) const;
+      const std::string& notification_id,
+      const blink::PlatformNotificationData& notification_data,
+      const blink::NotificationResources& notification_resources) const;
 
   // Returns a display name for an origin, to be used in the context message
   base::string16 DisplayNameForContextMessage(Profile* profile,
                                               const GURL& origin) const;
 
-  // Returns the notification display service to use.
-  // This can be overriden in tests.
-  // TODO(miguelg): Remove this method in favor of providing a testing factory
-  // to the NotificationDisplayServiceFactory.
-  NotificationDisplayService* GetNotificationDisplayService(Profile* profile);
-
-  void SetNotificationDisplayServiceForTesting(
-      NotificationDisplayService* service);
-
-#if BUILDFLAG(ENABLE_BACKGROUND)
-  // Makes sure we keep the browser alive while the event in being processed.
-  // As we have no control on the click handling, the notification could be
-  // closed before a browser is brought up, thus terminating Chrome if it was
-  // the last KeepAlive. (see https://crbug.com/612815)
-  std::unique_ptr<ScopedKeepAlive> click_dispatch_keep_alive_;
-
-  int pending_click_dispatch_events_;
-#endif
-
-  // Mapping between a persistent notification id and the id of the associated
-  // message_center::Notification object. Must only be used on the UI thread.
-  std::map<int64_t, std::string> persistent_notifications_;
+  // Clears |closed_notifications_|. Should only be used for testing purposes.
+  void ClearClosedNotificationsForTesting() { closed_notifications_.clear(); }
 
   // Tracks the id of persistent notifications that have been closed
   // programmatically to avoid dispatching close events for them.
-  std::unordered_set<int64_t> closed_notifications_;
+  std::unordered_set<std::string> closed_notifications_;
 
-  // Only set and used for tests, owned by the caller in that case.
-  NotificationDisplayService* test_display_service_;
+  // Task tracker used for querying URLs in the history service.
+  base::CancelableTaskTracker task_tracker_;
+
+  // Testing-only closure to observe when querying the history service has been
+  // completed, and the result of logging UKM can be observed.
+  base::OnceClosure history_query_complete_closure_for_testing_;
 
   DISALLOW_COPY_AND_ASSIGN(PlatformNotificationServiceImpl);
 };

@@ -6,17 +6,15 @@
 #define COMPONENTS_WEBDATA_COMMON_WEB_DATABASE_H_
 
 #include <map>
+#include <string>
 
+#include "base/files/file_path.h"
 #include "base/macros.h"
 #include "components/webdata/common/web_database_table.h"
 #include "components/webdata/common/webdata_export.h"
-#include "sql/connection.h"
+#include "sql/database.h"
 #include "sql/init_status.h"
 #include "sql/meta_table.h"
-
-namespace base {
-class FilePath;
-}
 
 // This class manages a SQLite database that stores various web page meta data.
 class WEBDATA_EXPORT WebDatabase {
@@ -29,6 +27,8 @@ class WEBDATA_EXPORT WebDatabase {
   static const int kCurrentVersionNumber;
   // The newest version of the database Chrome will NOT try to migrate.
   static const int kDeprecatedVersionNumber;
+  // Use this as a path to create an in-memory database.
+  static const base::FilePath::CharType kInMemoryPath[];
 
   WebDatabase();
   virtual ~WebDatabase();
@@ -40,6 +40,12 @@ class WEBDATA_EXPORT WebDatabase {
 
   // Retrieves a table based on its |key|.
   WebDatabaseTable* GetTable(WebDatabaseTable::TypeKey key);
+
+  // Call before Init() to set the error callback to be used for the
+  // underlying database connection.
+  void set_error_callback(const sql::Database::ErrorCallback& error_callback) {
+    db_.set_error_callback(error_callback);
+  }
 
   // Initialize the database given a name. The name defines where the SQLite
   // file is. If this returns an error code, no other method should be called.
@@ -53,8 +59,10 @@ class WEBDATA_EXPORT WebDatabase {
   void BeginTransaction();
   void CommitTransaction();
 
+  std::string GetDiagnosticInfo(int extended_error, sql::Statement* statement);
+
   // Exposed for testing only.
-  sql::Connection* GetSQLConnection();
+  sql::Database* GetSQLConnection();
 
  private:
   // Used by |Init()| to migration database schema from older versions to
@@ -70,10 +78,10 @@ class WEBDATA_EXPORT WebDatabase {
   bool MigrateToVersion(int version,
                         bool* update_compatible_version);
 
-  // Migration method for version 58.
   bool MigrateToVersion58DropWebAppsAndIntents();
+  bool MigrateToVersion79DropLoginsTable();
 
-  sql::Connection db_;
+  sql::Database db_;
   sql::MetaTable meta_table_;
 
   // Map of all the different tables that have been added to this

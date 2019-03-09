@@ -2,17 +2,23 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/jumbo.gni")
 import("//build/config/ui.gni")
+import("//ui/gl/features.gni")
 
-component("init") {
+jumbo_component("init") {
   output_name = "gl_init"
 
   public = [
+    "create_gr_gl_interface.h",
     "gl_factory.h",
   ]
 
   sources = [
+    "create_gr_gl_interface.cc",
+    "create_gr_gl_interface.h",
     "gl_factory.cc",
+    "gl_factory.h",
     "gl_init_export.h",
     "gl_initializer.h",
   ]
@@ -21,6 +27,7 @@ component("init") {
   deps = [
     "//base",
     "//ui/gfx",
+    "//ui/gl:buildflags",
   ]
 
   public_deps = [
@@ -32,11 +39,18 @@ component("init") {
       "gl_factory_android.cc",
       "gl_initializer_android.cc",
     ]
-  } else if (is_win) {
+
+    if (use_static_angle) {
+      deps += [ "//third_party/angle:libEGL_static" ]
+    }
+  } else if (is_win && !use_ozone) {
     sources += [
       "gl_factory_win.cc",
       "gl_initializer_win.cc",
     ]
+
+    libs = [ "dwmapi.lib" ]
+    ldflags = [ "/DELAYLOAD:dwmapi.dll" ]
   } else if (is_mac) {
     sources += [
       "gl_factory_mac.cc",
@@ -49,12 +63,13 @@ component("init") {
       "gl_factory_x11.cc",
       "gl_initializer_x11.cc",
     ]
+
+    deps += [ "//ui/gfx/x" ]
   } else if (use_ozone) {
     sources += [
       "gl_factory_ozone.cc",
       "gl_initializer_ozone.cc",
-      "gl_surface_ozone.cc",
-      "gl_surface_ozone.h",
+      "ozone_util.h",
     ]
 
     deps += [ "//ui/ozone" ]

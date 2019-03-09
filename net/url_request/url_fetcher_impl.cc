@@ -17,11 +17,13 @@ namespace net {
 
 static URLFetcherFactory* g_factory = NULL;
 
-URLFetcherImpl::URLFetcherImpl(const GURL& url,
-                               RequestType request_type,
-                               URLFetcherDelegate* d)
-    : core_(new URLFetcherCore(this, url, request_type, d)) {
-}
+URLFetcherImpl::URLFetcherImpl(
+    const GURL& url,
+    RequestType request_type,
+    URLFetcherDelegate* d,
+    net::NetworkTrafficAnnotationTag traffic_annotation)
+    : core_(
+          new URLFetcherCore(this, url, request_type, d, traffic_annotation)) {}
 
 URLFetcherImpl::~URLFetcherImpl() {
   core_->Stop();
@@ -74,6 +76,10 @@ void URLFetcherImpl::SetLoadFlags(int load_flags) {
   core_->SetLoadFlags(load_flags);
 }
 
+void URLFetcherImpl::SetAllowCredentials(bool allow_credentials) {
+  core_->SetAllowCredentials(allow_credentials);
+}
+
 int URLFetcherImpl::GetLoadFlags() const {
   return core_->GetLoadFlags();
 }
@@ -92,8 +98,9 @@ void URLFetcherImpl::SetRequestContext(
   core_->SetRequestContext(request_context_getter);
 }
 
-void URLFetcherImpl::SetInitiatorURL(const GURL& initiator) {
-  core_->SetInitiatorURL(initiator);
+void URLFetcherImpl::SetInitiator(
+    const base::Optional<url::Origin>& initiator) {
+  core_->SetInitiator(initiator);
 }
 
 void URLFetcherImpl::SetURLRequestUserData(
@@ -147,8 +154,12 @@ HttpResponseHeaders* URLFetcherImpl::GetResponseHeaders() const {
   return core_->GetResponseHeaders();
 }
 
-HostPortPair URLFetcherImpl::GetSocketAddress() const {
+IPEndPoint URLFetcherImpl::GetSocketAddress() const {
   return core_->GetSocketAddress();
+}
+
+const ProxyServer& URLFetcherImpl::ProxyServerUsed() const {
+  return core_->ProxyServerUsed();
 }
 
 bool URLFetcherImpl::WasFetchedViaProxy() const {

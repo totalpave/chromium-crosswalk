@@ -4,11 +4,18 @@
 
 #include "ui/views/controls/prefix_selector.h"
 
+#if defined(OS_WIN)
+#include <vector>
+#endif
+
 #include "base/i18n/case_conversion.h"
+#include "base/time/default_tick_clock.h"
+#include "build/build_config.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/text_input_type.h"
 #include "ui/gfx/range/range.h"
 #include "ui/views/controls/prefix_delegate.h"
+#include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
 namespace views {
@@ -17,25 +24,23 @@ namespace {
 
 const int64_t kTimeBeforeClearingMS = 1000;
 
-void ConvertRectToScreen(const views::View* src, gfx::Rect* r) {
-  DCHECK(src);
-
-  gfx::Point new_origin = r->origin();
-  views::View::ConvertPointToScreen(src, &new_origin);
-  r->set_origin(new_origin);
-}
-
 }  // namespace
 
-PrefixSelector::PrefixSelector(PrefixDelegate* delegate)
-    : prefix_delegate_(delegate) {
-}
+PrefixSelector::PrefixSelector(PrefixDelegate* delegate, View* host_view)
+    : prefix_delegate_(delegate),
+      host_view_(host_view),
+      tick_clock_(base::DefaultTickClock::GetInstance()) {}
 
 PrefixSelector::~PrefixSelector() {
 }
 
 void PrefixSelector::OnViewBlur() {
   ClearText();
+}
+
+bool PrefixSelector::ShouldContinueSelection() const {
+  const base::TimeTicks now(tick_clock_->NowTicks());
+  return ((now - time_of_last_key_).InMilliseconds() < kTimeBeforeClearingMS);
 }
 
 void PrefixSelector::SetCompositionText(
@@ -77,10 +82,10 @@ bool PrefixSelector::CanComposeInline() const {
 }
 
 gfx::Rect PrefixSelector::GetCaretBounds() const {
-  gfx::Rect rect(prefix_delegate_->GetVisibleBounds().origin(), gfx::Size());
+  gfx::Rect rect(host_view_->GetVisibleBounds().origin(), gfx::Size());
   // TextInputClient::GetCaretBounds is expected to return a value in screen
   // coordinates.
-  ConvertRectToScreen(prefix_delegate_, &rect);
+  views::View::ConvertRectToScreen(host_view_, &rect);
   return rect;
 }
 
@@ -96,6 +101,12 @@ bool PrefixSelector::HasCompositionText() const {
   return false;
 }
 
+ui::TextInputClient::FocusReason PrefixSelector::GetFocusReason() const {
+  // TODO(https://crbug.com/824604): Implement this correctly.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return ui::TextInputClient::FOCUS_REASON_OTHER;
+}
+
 bool PrefixSelector::GetTextRange(gfx::Range* range) const {
   *range = gfx::Range();
   return false;
@@ -106,12 +117,12 @@ bool PrefixSelector::GetCompositionTextRange(gfx::Range* range) const {
   return false;
 }
 
-bool PrefixSelector::GetSelectionRange(gfx::Range* range) const {
+bool PrefixSelector::GetEditableSelectionRange(gfx::Range* range) const {
   *range = gfx::Range();
   return false;
 }
 
-bool PrefixSelector::SetSelectionRange(const gfx::Range& range) {
+bool PrefixSelector::SetEditableSelectionRange(const gfx::Range& range) {
   return false;
 }
 
@@ -136,8 +147,7 @@ bool PrefixSelector::ChangeTextDirectionAndLayoutAlignment(
 void PrefixSelector::ExtendSelectionAndDelete(size_t before, size_t after) {
 }
 
-void PrefixSelector::EnsureCaretInRect(const gfx::Rect& rect) {
-}
+void PrefixSelector::EnsureCaretNotInRect(const gfx::Rect& rect) {}
 
 bool PrefixSelector::IsTextEditCommandEnabled(
     ui::TextEditCommand command) const {
@@ -146,6 +156,24 @@ bool PrefixSelector::IsTextEditCommandEnabled(
 
 void PrefixSelector::SetTextEditCommandForNextKeyEvent(
     ui::TextEditCommand command) {}
+
+ukm::SourceId PrefixSelector::GetClientSourceForMetrics() const {
+  // TODO(shend): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return ukm::SourceId();
+}
+
+bool PrefixSelector::ShouldDoLearning() {
+  // TODO(https://crbug.com/311180): Implement this method.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
+#if defined(OS_WIN)
+void PrefixSelector::SetCompositionFromExistingText(
+    const gfx::Range& range,
+    const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) {}
+#endif
 
 void PrefixSelector::OnTextInput(const base::string16& text) {
   // Small hack to filter out 'tab' and 'enter' input, as the expectation is
@@ -164,15 +192,14 @@ void PrefixSelector::OnTextInput(const base::string16& text) {
   // while search after the current row, otherwise search starting from the
   // current row.
   int row = std::max(0, prefix_delegate_->GetSelectedRow());
-  const base::TimeTicks now(base::TimeTicks::Now());
-  if ((now - time_of_last_key_).InMilliseconds() < kTimeBeforeClearingMS) {
+  if (ShouldContinueSelection()) {
     current_text_ += text;
   } else {
     current_text_ = text;
     if (prefix_delegate_->GetSelectedRow() >= 0)
       row = (row + 1) % row_count;
   }
-  time_of_last_key_ = now;
+  time_of_last_key_ = tick_clock_->NowTicks();
 
   const int start_row = row;
   const base::string16 lower_text(base::i18n::ToLower(current_text_));

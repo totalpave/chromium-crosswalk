@@ -4,11 +4,11 @@
 
 #include "net/test/url_request/url_request_hanging_read_job.h"
 
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "net/http/http_response_headers.h"
@@ -27,8 +27,8 @@ GURL GetMockUrl(const std::string& scheme, const std::string& hostname) {
 
 class MockJobInterceptor : public URLRequestInterceptor {
  public:
-  MockJobInterceptor() {}
-  ~MockJobInterceptor() override {}
+  MockJobInterceptor() = default;
+  ~MockJobInterceptor() override = default;
 
   // URLRequestInterceptor implementation
   URLRequestJob* MaybeInterceptRequest(
@@ -54,21 +54,15 @@ void URLRequestHangingReadJob::Start() {
   // Start reading asynchronously so that all error reporting and data
   // callbacks happen as they would for network requests.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&URLRequestHangingReadJob::StartAsync,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&URLRequestHangingReadJob::StartAsync,
+                                weak_factory_.GetWeakPtr()));
 }
 
-URLRequestHangingReadJob::~URLRequestHangingReadJob() {}
+URLRequestHangingReadJob::~URLRequestHangingReadJob() = default;
 
 int URLRequestHangingReadJob::ReadRawData(IOBuffer* buf, int buf_size) {
   // Make read hang. It never completes.
   return ERR_IO_PENDING;
-}
-
-int URLRequestHangingReadJob::GetResponseCode() const {
-  HttpResponseInfo info;
-  GetResponseInfoConst(&info);
-  return info.headers->response_code();
 }
 
 // Public virtual version.
@@ -92,6 +86,8 @@ void URLRequestHangingReadJob::GetResponseInfoConst(
 }
 
 void URLRequestHangingReadJob::StartAsync() {
+  if (is_done())
+    return;
   set_expected_content_size(content_length_);
   NotifyHeadersComplete();
 }
@@ -101,9 +97,9 @@ void URLRequestHangingReadJob::AddUrlHandler() {
   // Add |hostname| to URLRequestFilter for HTTP and HTTPS.
   URLRequestFilter* filter = URLRequestFilter::GetInstance();
   filter->AddHostnameInterceptor("http", kMockHostname,
-                                 base::WrapUnique(new MockJobInterceptor()));
+                                 std::make_unique<MockJobInterceptor>());
   filter->AddHostnameInterceptor("https", kMockHostname,
-                                 base::WrapUnique(new MockJobInterceptor()));
+                                 std::make_unique<MockJobInterceptor>());
 }
 
 // static

@@ -4,11 +4,10 @@
 
 #include "chrome/browser/chromeos/external_protocol_dialog.h"
 
-#include "base/metrics/histogram.h"
-#include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/chromeos/arc/intent_helper/arc_external_protocol_dialog.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/tab_contents/tab_util.h"
+#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "content/public/browser/web_contents.h"
@@ -36,6 +35,12 @@ void ExternalProtocolHandler::RunExternalProtocolDialog(
     int routing_id,
     ui::PageTransition page_transition,
     bool has_user_gesture) {
+  // First, check if ARC version of the dialog is available and run ARC version
+  // when possible.
+  if (arc::RunArcExternalProtocolDialog(url, render_process_host_id, routing_id,
+                                        page_transition, has_user_gesture)) {
+    return;
+  }
   WebContents* web_contents = tab_util::GetWebContentsByID(
       render_process_host_id, routing_id);
   new ExternalProtocolDialog(web_contents, url);
@@ -67,15 +72,6 @@ void ExternalProtocolDialog::DeleteDelegate() {
   delete this;
 }
 
-bool ExternalProtocolDialog::Accept() {
-  if (message_box_view_->IsCheckBoxSelected()) {
-    ExternalProtocolHandler::SetBlockState(
-        scheme_, ExternalProtocolHandler::DONT_BLOCK);
-  }
-  // Returning true closes the dialog.
-  return true;
-}
-
 views::View* ExternalProtocolDialog::GetContentsView() {
   return message_box_view_;
 }
@@ -95,19 +91,9 @@ ExternalProtocolDialog::ExternalProtocolDialog(WebContents* web_contents,
                                                const GURL& url)
     : creation_time_(base::TimeTicks::Now()),
       scheme_(url.scheme()) {
-  const size_t kMaxUrlWithoutSchemeSize = 256;
-  base::string16 elided_url_without_scheme;
-  gfx::ElideString(base::ASCIIToUTF16(url.possibly_invalid_spec()),
-      kMaxUrlWithoutSchemeSize, &elided_url_without_scheme);
-
-  views::MessageBoxView::InitParams params(
-      l10n_util::GetStringFUTF16(IDS_EXTERNAL_PROTOCOL_INFORMATION,
-      base::ASCIIToUTF16(url.scheme() + ":"),
-      elided_url_without_scheme) + base::ASCIIToUTF16("\n\n"));
+  views::MessageBoxView::InitParams params((base::string16()));
   params.message_width = kMessageWidth;
   message_box_view_ = new views::MessageBoxView(params);
-  message_box_view_->SetCheckBoxLabel(
-      l10n_util::GetStringUTF16(IDS_EXTERNAL_PROTOCOL_CHECKBOX_TEXT));
 
   gfx::NativeWindow parent_window;
   if (web_contents) {
@@ -117,4 +103,6 @@ ExternalProtocolDialog::ExternalProtocolDialog(WebContents* web_contents,
     parent_window = NULL;
   }
   views::DialogDelegate::CreateDialogWidget(this, NULL, parent_window)->Show();
+  chrome::RecordDialogCreation(
+      chrome::DialogIdentifier::EXTERNAL_PROTOCOL_CHROMEOS);
 }

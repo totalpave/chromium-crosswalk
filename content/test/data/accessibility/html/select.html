@@ -1,10 +1,21 @@
 <!--
 @MAC-ALLOW:AXRoleDescription=*
 @WIN-ALLOW:HASPOPUP
+@WIN-ALLOW:haspopup*
 @WIN-ALLOW:ia2_hypertext=*
 @WIN-ALLOW:MULTISELECTABLE
 @WIN-ALLOW:EXTSELECTABLE
 @WIN-ALLOW:SELECT*
+@BLINK-ALLOW:focus*
+@BLINK-ALLOW:select*
+@BLINK-ALLOW:setSize*
+@BLINK-ALLOW:posInSet*
+@BLINK-ALLOW:haspopup*
+@AURALINUX-ALLOW:haspopup*
+@AURALINUX-ALLOW:posinset*
+@AURALINUX-ALLOW:setsize*
+@AURALINUX-ALLOW:expand*
+@AURALINUX-ALLOW:required
 -->
 <html>
 <body>
@@ -18,7 +29,7 @@
     <option value="2" selected>Option 2</option>
     <option value="3">Option 3</option>
   </select>
-  <select id="C" name="Select C" requried>
+  <select id="C" name="Select C" required>
     <option value="1">Option 1</option>
     <option value="2">Option 2</option>
     <option value="3">Option 3</option>

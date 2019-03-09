@@ -9,28 +9,22 @@
 
 #include "ash/shell.h"
 #include "base/bind.h"
-#include "base/chromeos/logging.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/syslog_logging.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "chrome/browser/chromeos/policy/upload_job_impl.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/http/http_request_headers.h"
-#include "policy/proto/device_management_backend.pb.h"
 
 namespace policy {
 
 namespace {
-
-// Determines the time, measured from the time of issue, after which the command
-// queue will consider this command expired if the command has not been started.
-const int kCommandExpirationTimeInMinutes = 10;
 
 // String constant identifying the result field in the result payload.
 const char* const kResultFieldName = "result";
@@ -60,9 +54,9 @@ const char* const kUploadUrlFieldName = "fileUploadUrl";
 void RunStoreScreenshotOnTaskRunner(
     const ui::GrabWindowSnapshotAsyncPNGCallback& store_screenshot_callback,
     scoped_refptr<base::TaskRunner> task_runner,
-    scoped_refptr<base::RefCountedBytes> png_data) {
+    scoped_refptr<base::RefCountedMemory> png_data) {
   task_runner->PostTask(FROM_HERE,
-                        base::Bind(store_screenshot_callback, png_data));
+                        base::BindOnce(store_screenshot_callback, png_data));
 }
 
 }  // namespace
@@ -90,7 +84,7 @@ DeviceCommandScreenshotJob::Payload::Payload(ResultCode result_code) {
 }
 
 std::unique_ptr<std::string> DeviceCommandScreenshotJob::Payload::Serialize() {
-  return base::WrapUnique(new std::string(payload_));
+  return std::make_unique<std::string>(payload_);
 }
 
 DeviceCommandScreenshotJob::DeviceCommandScreenshotJob(
@@ -110,15 +104,14 @@ enterprise_management::RemoteCommand_Type DeviceCommandScreenshotJob::GetType()
 }
 
 void DeviceCommandScreenshotJob::OnSuccess() {
-  CHROMEOS_SYSLOG(WARNING) << "Upload successful.";
+  SYSLOG(INFO) << "Upload successful.";
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(succeeded_callback_,
-                 base::Passed(base::WrapUnique(new Payload(SUCCESS)))));
+      FROM_HERE, base::BindOnce(std::move(succeeded_callback_),
+                                std::make_unique<Payload>(SUCCESS)));
 }
 
 void DeviceCommandScreenshotJob::OnFailure(UploadJob::ErrorCode error_code) {
-  CHROMEOS_SYSLOG(ERROR) << "Upload failure: " << error_code;
+  SYSLOG(ERROR) << "Upload failure: " << error_code;
   ResultCode result_code = FAILURE_CLIENT;
   switch (error_code) {
     case UploadJob::AUTHENTICATION_ERROR:
@@ -130,20 +123,14 @@ void DeviceCommandScreenshotJob::OnFailure(UploadJob::ErrorCode error_code) {
       break;
   }
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(failed_callback_,
-                 base::Passed(base::WrapUnique(new Payload(result_code)))));
-}
-
-bool DeviceCommandScreenshotJob::IsExpired(base::TimeTicks now) {
-  return now > issued_time() + base::TimeDelta::FromMinutes(
-                                   kCommandExpirationTimeInMinutes);
+      FROM_HERE, base::BindOnce(std::move(failed_callback_),
+                                std::make_unique<Payload>(result_code)));
 }
 
 bool DeviceCommandScreenshotJob::ParseCommandPayload(
     const std::string& command_payload) {
   std::unique_ptr<base::Value> root(
-      base::JSONReader().ReadToValue(command_payload));
+      base::JSONReader().ReadToValueDeprecated(command_payload));
   if (!root.get())
     return false;
   base::DictionaryValue* payload = nullptr;
@@ -158,7 +145,7 @@ bool DeviceCommandScreenshotJob::ParseCommandPayload(
 
 void DeviceCommandScreenshotJob::StoreScreenshot(
     size_t screen,
-    scoped_refptr<base::RefCountedBytes> png_data) {
+    scoped_refptr<base::RefCountedMemory> png_data) {
   screenshots_.insert(std::make_pair(screen, png_data));
   DCHECK_LT(0, num_pending_screenshots_);
   --num_pending_screenshots_;
@@ -175,10 +162,10 @@ void DeviceCommandScreenshotJob::StartScreenshotUpload() {
     header_fields.insert(std::make_pair(net::HttpRequestHeaders::kContentType,
                                         kContentTypeImagePng));
     header_fields.insert(std::make_pair(kCommandIdHeaderName,
-                                        base::Uint64ToString(unique_id())));
-    std::unique_ptr<std::string> data = base::WrapUnique(
-        new std::string((const char*)screenshot_entry.second->front(),
-                        screenshot_entry.second->size()));
+                                        base::NumberToString(unique_id())));
+    std::unique_ptr<std::string> data = std::make_unique<std::string>(
+        (const char*)screenshot_entry.second->front(),
+        screenshot_entry.second->size());
     upload_job_->AddDataSegment(
         base::StringPrintf(kNameFieldTemplate, screenshot_entry.first),
         base::StringPrintf(kFilenameFieldTemplate, screenshot_entry.first),
@@ -187,42 +174,41 @@ void DeviceCommandScreenshotJob::StartScreenshotUpload() {
   upload_job_->Start();
 }
 
-void DeviceCommandScreenshotJob::RunImpl(
-    const CallbackWithResult& succeeded_callback,
-    const CallbackWithResult& failed_callback) {
-  succeeded_callback_ = succeeded_callback;
-  failed_callback_ = failed_callback;
+void DeviceCommandScreenshotJob::RunImpl(CallbackWithResult succeeded_callback,
+                                         CallbackWithResult failed_callback) {
+  succeeded_callback_ = std::move(succeeded_callback);
+  failed_callback_ = std::move(failed_callback);
 
-  CHROMEOS_SYSLOG(WARNING) << "Executing screenshot command.";
+  SYSLOG(INFO) << "Executing screenshot command.";
 
   // Fail if the delegate says screenshots are not allowed in this session.
   if (!screenshot_delegate_->IsScreenshotAllowed()) {
-    CHROMEOS_SYSLOG(ERROR) << "Screenshots are not allowed.";
+    SYSLOG(ERROR) << "Screenshots are not allowed.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(failed_callback_, base::Passed(base::WrapUnique(
-                                         new Payload(FAILURE_USER_INPUT)))));
+        base::BindOnce(std::move(failed_callback_),
+                       std::make_unique<Payload>(FAILURE_USER_INPUT)));
   }
 
   aura::Window::Windows root_windows = ash::Shell::GetAllRootWindows();
 
   // Immediately fail if the upload url is invalid.
   if (!upload_url_.is_valid()) {
-    CHROMEOS_SYSLOG(ERROR) << upload_url_ << " is not a valid URL.";
+    SYSLOG(ERROR) << upload_url_ << " is not a valid URL.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(failed_callback_, base::Passed(base::WrapUnique(
-                                         new Payload(FAILURE_INVALID_URL)))));
+        base::BindOnce(std::move(failed_callback_),
+                       std::make_unique<Payload>(FAILURE_INVALID_URL)));
     return;
   }
 
   // Immediately fail if there are no attached screens.
   if (root_windows.size() == 0) {
-    CHROMEOS_SYSLOG(ERROR) << "No attached screens.";
+    SYSLOG(ERROR) << "No attached screens.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(failed_callback_, base::Passed(base::WrapUnique(new Payload(
-                                         FAILURE_SCREENSHOT_ACQUISITION)))));
+        FROM_HERE, base::BindOnce(std::move(failed_callback_),
+                                  std::make_unique<Payload>(
+                                      FAILURE_SCREENSHOT_ACQUISITION)));
     return;
   }
 

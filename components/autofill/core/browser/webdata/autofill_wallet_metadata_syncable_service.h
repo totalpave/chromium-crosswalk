@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
@@ -15,29 +16,22 @@
 #include "base/threading/thread_checker.h"
 #include "components/autofill/core/browser/webdata/autofill_change.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service_observer.h"
-#include "sync/api/sync_error.h"
-#include "sync/api/sync_merge_result.h"
-#include "sync/api/syncable_service.h"
-#include "sync/protocol/autofill_specifics.pb.h"
+#include "components/sync/model/sync_error.h"
+#include "components/sync/model/sync_merge_result.h"
+#include "components/sync/model/syncable_service.h"
+#include "components/sync/protocol/autofill_specifics.pb.h"
 
 namespace base {
-template <typename, typename>
-class ScopedPtrHashMap;
+class Location;
 }
 
 namespace syncer {
 class SyncChangeProcessor;
-class SyncData;
 class SyncErrorFactory;
-}
-
-namespace tracked_objects {
-class Location;
 }
 
 namespace autofill {
 
-class AutofillDataModel;
 class AutofillProfile;
 class AutofillWebDataBackend;
 class AutofillWebDataService;
@@ -53,9 +47,21 @@ class CreditCard;
 class AutofillWalletMetadataSyncableService
     : public base::SupportsUserData::Data,
       public syncer::SyncableService,
-      public AutofillWebDataServiceObserverOnDBThread {
+      public AutofillWebDataServiceObserverOnDBSequence {
  public:
+  AutofillWalletMetadataSyncableService(
+      AutofillWebDataBackend* web_data_backend,
+      const std::string& app_locale);
+
   ~AutofillWalletMetadataSyncableService() override;
+
+  // Determines whether this bridge should be monitoring the Wallet data. This
+  // should be called whenever the data bridge sync state changes.
+  void OnWalletDataTrackingStateChanged(bool is_tracking);
+
+  base::WeakPtr<AutofillWalletMetadataSyncableService> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
 
   // syncer::SyncableService implementation.
   syncer::SyncMergeResult MergeDataAndStartSyncing(
@@ -66,18 +72,18 @@ class AutofillWalletMetadataSyncableService
   void StopSyncing(syncer::ModelType type) override;
   syncer::SyncDataList GetAllSyncData(syncer::ModelType type) const override;
   syncer::SyncError ProcessSyncChanges(
-      const tracked_objects::Location& from_here,
+      const base::Location& from_here,
       const syncer::SyncChangeList& changes_from_sync) override;
 
-  // AutofillWebDataServiceObserverOnDBThread implementation.
+  // AutofillWebDataServiceObserverOnDBSequence implementation.
   void AutofillProfileChanged(const AutofillProfileChange& change) override;
   void CreditCardChanged(const CreditCardChange& change) override;
   void AutofillMultipleChanged() override;
 
   // Creates a new AutofillWalletMetadataSyncableService and hangs it off of
   // |web_data_service|, which takes ownership. This method should only be
-  // called on |web_data_service|'s DB thread. |web_data_backend| is expected to
-  // outlive this object.
+  // called on |web_data_service|'s DB sequence. |web_data_backend| is expected
+  // to outlive this object.
   static void CreateForWebDataServiceAndBackend(
       AutofillWebDataService* web_data_service,
       AutofillWebDataBackend* web_data_backend,
@@ -89,17 +95,13 @@ class AutofillWalletMetadataSyncableService
       AutofillWebDataService* web_data_service);
 
  protected:
-  AutofillWalletMetadataSyncableService(
-      AutofillWebDataBackend* web_data_backend,
-      const std::string& app_locale);
-
   // Populates the provided |profiles| and |cards| with mappings from server ID
   // to server profiles and server cards read from disk. This data contains the
   // usage stats. Returns true on success.
   virtual bool GetLocalData(
-      base::ScopedPtrHashMap<std::string, std::unique_ptr<AutofillProfile>>*
+      std::unordered_map<std::string, std::unique_ptr<AutofillProfile>>*
           profiles,
-      base::ScopedPtrHashMap<std::string, std::unique_ptr<CreditCard>>* cards)
+      std::unordered_map<std::string, std::unique_ptr<CreditCard>>* cards)
       const;
 
   // Updates the stats for |profile| stored on disk. Does not trigger
@@ -128,12 +130,6 @@ class AutofillWalletMetadataSyncableService
   // is not present locally.
   syncer::SyncMergeResult MergeData(const syncer::SyncDataList& sync_data);
 
-  // Sends updates to the sync server.
-  void AutofillDataModelChanged(
-      const std::string& server_id,
-      const sync_pb::WalletMetadataSpecifics::Type& type,
-      const AutofillDataModel& local);
-
   base::ThreadChecker thread_checker_;
   AutofillWebDataBackend* web_data_backend_;  // Weak ref.
   ScopedObserver<AutofillWebDataBackend, AutofillWalletMetadataSyncableService>
@@ -143,6 +139,18 @@ class AutofillWalletMetadataSyncableService
 
   // Local metadata plus metadata for the data that hasn't synced down yet.
   syncer::SyncDataList cache_;
+
+  // Indicates whether we should rely on wallet data being actively synced. If
+  // true, the service will prune metadata entries without corresponding wallet
+  // data entry.
+  bool track_wallet_data_;
+
+  // Indicates that we should ignore multiple changed notification. This is used
+  // to block reflection and not to act on notification that we've triggered
+  // ourselves.
+  bool ignore_multiple_changed_notification_;
+
+  base::WeakPtrFactory<AutofillWalletMetadataSyncableService> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(AutofillWalletMetadataSyncableService);
 };

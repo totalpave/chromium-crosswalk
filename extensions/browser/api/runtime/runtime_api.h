@@ -5,18 +5,19 @@
 #ifndef EXTENSIONS_BROWSER_API_RUNTIME_RUNTIME_API_H_
 #define EXTENSIONS_BROWSER_API_RUNTIME_RUNTIME_API_H_
 
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
 #include "base/scoped_observer.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/api/runtime/runtime_api_delegate.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
+#include "extensions/browser/events/lazy_event_dispatch_util.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_registry_observer.h"
+#include "extensions/browser/lazy_context_task_queue.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_manager_observer.h"
 #include "extensions/browser/update_observer.h"
@@ -41,17 +42,16 @@ struct PlatformInfo;
 }
 
 class Extension;
-class ExtensionHost;
 class ExtensionRegistry;
 
 // Runtime API dispatches onStartup, onInstalled, and similar events to
 // extensions. There is one instance shared between a browser context and
 // its related incognito instance.
 class RuntimeAPI : public BrowserContextKeyedAPI,
-                   public content::NotificationObserver,
                    public ExtensionRegistryObserver,
                    public UpdateObserver,
-                   public ProcessManagerObserver {
+                   public ProcessManagerObserver,
+                   public LazyEventDispatchUtil::Observer {
  public:
   // The status of the restartAfterDelay request.
   enum class RestartAfterDelayStatus {
@@ -78,11 +78,6 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
   explicit RuntimeAPI(content::BrowserContext* context);
   ~RuntimeAPI() override;
 
-  // content::NotificationObserver overrides:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
-
   void ReloadExtension(const std::string& extension_id);
   bool CheckForUpdates(const std::string& extension_id,
                        const RuntimeAPIDelegate::UpdateCheckCallback& callback);
@@ -94,7 +89,8 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
       const std::string& extension_id,
       int seconds_from_now);
 
-  bool OpenOptionsPage(const Extension* extension);
+  bool OpenOptionsPage(const Extension* extension,
+                       content::BrowserContext* browser_context);
 
  private:
   friend class BrowserContextKeyedAPIFactory<RuntimeAPI>;
@@ -103,16 +99,21 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
   // ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const Extension* extension) override;
-  void OnExtensionWillBeInstalled(content::BrowserContext* browser_context,
-                                  const Extension* extension,
-                                  bool is_update,
-                                  const std::string& old_name) override;
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const Extension* extension,
                               UninstallReason reason) override;
 
+  // LazyEventDispatchUtil::Observer:
+  void OnExtensionInstalledAndLoaded(
+      content::BrowserContext* browser_context,
+      const Extension* extension,
+      const base::Version& previous_version) override;
+
   // Cancels any previously scheduled restart request.
   void MaybeCancelRunningDelayedRestartTimer();
+
+  // Handler for the signal from ExtensionSystem::ready().
+  void OnExtensionsReady();
 
   RestartAfterDelayStatus ScheduleDelayedRestart(const base::Time& now,
                                                  int seconds_from_now);
@@ -133,14 +134,6 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
 
   // ProcessManagerObserver implementation:
   void OnBackgroundHostStartup(const Extension* extension) override;
-
-  // Pref related functions that deals with info about installed extensions that
-  // has not been loaded yet.
-  // Used to send chrome.runtime.onInstalled event upon loading the extensions.
-  bool ReadPendingOnInstallInfoFromPref(const ExtensionId& extension_id,
-                                        base::Version* previous_version);
-  void RemovePendingOnInstallInfoFromPref(const ExtensionId& extension_id);
-  void StorePendingOnInstallInfoToPref(const Extension* extension);
 
   void AllowNonKioskAppsInRestartAfterDelayForTesting();
 
@@ -234,7 +227,8 @@ class RuntimeGetBackgroundPageFunction : public UIThreadExtensionFunction {
   ResponseAction Run() override;
 
  private:
-  void OnPageLoaded(ExtensionHost*);
+  void OnPageLoaded(
+      std::unique_ptr<LazyContextTaskQueue::ContextInfo> context_info);
 };
 
 class RuntimeOpenOptionsPageFunction : public UIThreadExtensionFunction {
@@ -298,8 +292,7 @@ class RuntimeRestartAfterDelayFunction : public UIThreadExtensionFunction {
 
 class RuntimeGetPlatformInfoFunction : public UIThreadExtensionFunction {
  public:
-  DECLARE_EXTENSION_FUNCTION("runtime.getPlatformInfo",
-                             RUNTIME_GETPLATFORMINFO);
+  DECLARE_EXTENSION_FUNCTION("runtime.getPlatformInfo", RUNTIME_GETPLATFORMINFO)
 
  protected:
   ~RuntimeGetPlatformInfoFunction() override {}

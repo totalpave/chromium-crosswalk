@@ -5,7 +5,6 @@
 #include "chrome/renderer/pepper/chrome_renderer_pepper_host_factory.h"
 
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "chrome/renderer/pepper/pepper_flash_drm_renderer_host.h"
 #include "chrome/renderer/pepper/pepper_flash_font_file_host.h"
 #include "chrome/renderer/pepper/pepper_flash_fullscreen_host.h"
@@ -44,19 +43,19 @@ ChromeRendererPepperHostFactory::CreateResourceHost(
           ppapi::PERMISSION_FLASH)) {
     switch (message.type()) {
       case PpapiHostMsg_Flash_Create::ID: {
-        return base::WrapUnique(
-            new PepperFlashRendererHost(host_, instance, resource));
+        return std::make_unique<PepperFlashRendererHost>(host_, instance,
+                                                         resource);
       }
       case PpapiHostMsg_FlashFullscreen_Create::ID: {
-        return base::WrapUnique(
-            new PepperFlashFullscreenHost(host_, instance, resource));
+        return std::make_unique<PepperFlashFullscreenHost>(host_, instance,
+                                                           resource);
       }
       case PpapiHostMsg_FlashMenu_Create::ID: {
         ppapi::proxy::SerializedFlashMenu serialized_menu;
         if (ppapi::UnpackMessage<PpapiHostMsg_FlashMenu_Create>(
                 message, &serialized_menu)) {
-          return base::WrapUnique(new PepperFlashMenuHost(
-              host_, instance, resource, serialized_menu));
+          return std::make_unique<PepperFlashMenuHost>(
+              host_, instance, resource, serialized_menu);
         }
         break;
       }
@@ -69,30 +68,29 @@ ChromeRendererPepperHostFactory::CreateResourceHost(
   if (host_->GetPpapiHost()->permissions().HasPermission(
           ppapi::PERMISSION_FLASH) ||
       host_->GetPpapiHost()->permissions().HasPermission(
-          ppapi::PERMISSION_PRIVATE)) {
+          ppapi::PERMISSION_PDF)) {
     switch (message.type()) {
       case PpapiHostMsg_FlashFontFile_Create::ID: {
         ppapi::proxy::SerializedFontDescription description;
         PP_PrivateFontCharset charset;
         if (ppapi::UnpackMessage<PpapiHostMsg_FlashFontFile_Create>(
                 message, &description, &charset)) {
-          return base::WrapUnique(new PepperFlashFontFileHost(
-              host_, instance, resource, description, charset));
+          return std::make_unique<PepperFlashFontFileHost>(
+              host_, instance, resource, description, charset);
         }
         break;
       }
       case PpapiHostMsg_FlashDRM_Create::ID:
-        return base::WrapUnique(
-            new PepperFlashDRMRendererHost(host_, instance, resource));
+        return std::make_unique<PepperFlashDRMRendererHost>(host_, instance,
+                                                            resource);
     }
   }
 
   if (host_->GetPpapiHost()->permissions().HasPermission(
-          ppapi::PERMISSION_PRIVATE)) {
+          ppapi::PERMISSION_PDF)) {
     switch (message.type()) {
       case PpapiHostMsg_PDF_Create::ID: {
-        return base::WrapUnique(
-            new pdf::PepperPDFHost(host_, instance, resource));
+        return std::make_unique<pdf::PepperPDFHost>(host_, instance, resource);
       }
     }
   }
@@ -103,7 +101,7 @@ ChromeRendererPepperHostFactory::CreateResourceHost(
   // access to the other private interfaces.
   switch (message.type()) {
     case PpapiHostMsg_UMA_Create::ID: {
-      return base::WrapUnique(new PepperUMAHost(host_, instance, resource));
+      return std::make_unique<PepperUMAHost>(host_, instance, resource);
     }
   }
 

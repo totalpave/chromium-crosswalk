@@ -4,7 +4,11 @@
 
 #include "ios/chrome/browser/history/top_sites_factory.h"
 
-#include "base/memory/singleton.h"
+#include <memory>
+
+#include "base/bind.h"
+#include "base/no_destructor.h"
+#include "components/history/core/browser/default_top_sites_provider.h"
 #include "components/history/core/browser/history_constants.h"
 #include "components/history/core/browser/top_sites_impl.h"
 #include "components/keyed_service/core/refcounted_keyed_service.h"
@@ -21,13 +25,14 @@ namespace ios {
 // static
 scoped_refptr<history::TopSites> TopSitesFactory::GetForBrowserState(
     ios::ChromeBrowserState* browser_state) {
-  return make_scoped_refptr(static_cast<history::TopSites*>(
+  return base::WrapRefCounted(static_cast<history::TopSites*>(
       GetInstance()->GetServiceForBrowserState(browser_state, true).get()));
 }
 
 // static
 TopSitesFactory* TopSitesFactory::GetInstance() {
-  return base::Singleton<TopSitesFactory>::get();
+  static base::NoDestructor<TopSitesFactory> instance;
+  return instance.get();
 }
 
 TopSitesFactory::TopSitesFactory()
@@ -44,14 +49,15 @@ scoped_refptr<RefcountedKeyedService> TopSitesFactory::BuildServiceInstanceFor(
     web::BrowserState* context) const {
   ios::ChromeBrowserState* browser_state =
       ios::ChromeBrowserState::FromBrowserState(context);
-  scoped_refptr<history::TopSitesImpl> top_sites(new history::TopSitesImpl(
-      browser_state->GetPrefs(),
+  history::HistoryService* history_service =
       ios::HistoryServiceFactory::GetForBrowserState(
-          browser_state, ServiceAccessType::EXPLICIT_ACCESS),
+          browser_state, ServiceAccessType::EXPLICIT_ACCESS);
+  scoped_refptr<history::TopSitesImpl> top_sites(new history::TopSitesImpl(
+      browser_state->GetPrefs(), history_service,
+      std::make_unique<history::DefaultTopSitesProvider>(history_service),
       history::PrepopulatedPageList(), base::Bind(CanAddURLToHistory)));
   top_sites->Init(
-      browser_state->GetStatePath().Append(history::kTopSitesFilename),
-      web::WebThread::GetTaskRunnerForThread(web::WebThread::DB));
+      browser_state->GetStatePath().Append(history::kTopSitesFilename));
   return top_sites;
 }
 

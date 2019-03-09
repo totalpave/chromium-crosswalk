@@ -6,32 +6,48 @@ package org.chromium.chrome.browser.invalidation;
 
 import android.accounts.Account;
 import android.app.Activity;
-import android.app.Application;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SyncResult;
 import android.os.Bundle;
-import android.test.suitebuilder.annotation.MediumTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.MediumTest;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.CommandLine;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.ScalableTimeout;
 import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
+import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.invalidation.PendingInvalidation;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.sync.AndroidSyncSettings;
-import org.chromium.sync.signin.AccountManagerHelper;
+import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.sync.AndroidSyncSettings;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 /**
  * Tests for ChromeBrowserSyncAdapter.
  */
-public class ChromeBrowserSyncAdapterTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class ChromeBrowserSyncAdapterTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
+
     private static final Account TEST_ACCOUNT =
-            AccountManagerHelper.createAccountFromName("test@gmail.com");
+            AccountManagerFacade.createAccountFromName("test@gmail.com");
     private static final long WAIT_FOR_LAUNCHER_MS = ScalableTimeout.scaleTimeout(10 * 1000);
     private static final long POLL_INTERVAL_MS = 100;
 
@@ -45,8 +61,8 @@ public class ChromeBrowserSyncAdapterTest extends ChromeActivityTestCaseBase<Chr
         private long mVersion;
         private String mPayload;
 
-        public TestSyncAdapter(Context context, Application application) {
-            super(context, application);
+        public TestSyncAdapter(Context context) {
+            super(context);
         }
 
         @Override
@@ -64,28 +80,18 @@ public class ChromeBrowserSyncAdapterTest extends ChromeActivityTestCaseBase<Chr
         }
     }
 
-    public ChromeBrowserSyncAdapterTest() {
-        super(ChromeActivity.class);
-    }
-
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        mSyncAdapter = new TestSyncAdapter(
-                getInstrumentation().getTargetContext(), getActivity().getApplication());
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityOnBlankPage();
+    @Before
+    public void setUp() throws Exception {
+        mActivityTestRule.startMainActivityOnBlankPage();
+        mSyncAdapter = new TestSyncAdapter(InstrumentationRegistry.getTargetContext());
     }
 
     private void performSyncWithBundle(Bundle bundle) {
         mSyncAdapter.onPerformSync(TEST_ACCOUNT, bundle,
-                AndroidSyncSettings.getContractAuthority(getActivity()), null, new SyncResult());
+                AndroidSyncSettings.get().getContractAuthority(), null, new SyncResult());
     }
 
-    private void sendChromeToBackground(Activity activity) throws InterruptedException {
+    private void sendChromeToBackground(Activity activity) {
         Intent intent = new Intent(Intent.ACTION_MAIN);
         intent.addCategory(Intent.CATEGORY_HOME);
         activity.startActivity(intent);
@@ -102,15 +108,18 @@ public class ChromeBrowserSyncAdapterTest extends ChromeActivityTestCaseBase<Chr
         return ApplicationStatus.hasVisibleActivities();
     }
 
+    @Test
     @MediumTest
     @Feature({"Sync"})
+    @RetryOnFailure
     public void testRequestSyncNoInvalidationData() {
         performSyncWithBundle(new Bundle());
-        assertTrue(mSyncAdapter.mInvalidatedAllTypes);
-        assertFalse(mSyncAdapter.mInvalidated);
-        assertTrue(CommandLine.isInitialized());
+        Assert.assertTrue(mSyncAdapter.mInvalidatedAllTypes);
+        Assert.assertFalse(mSyncAdapter.mInvalidated);
+        Assert.assertTrue(CommandLine.isInitialized());
     }
 
+    @Test
     @MediumTest
     @Feature({"Sync"})
     public void testRequestSyncSpecificDataType() {
@@ -122,32 +131,36 @@ public class ChromeBrowserSyncAdapterTest extends ChromeActivityTestCaseBase<Chr
         performSyncWithBundle(
                 PendingInvalidation.createBundle(objectId, objectSource, version, payload));
 
-        assertFalse(mSyncAdapter.mInvalidatedAllTypes);
-        assertTrue(mSyncAdapter.mInvalidated);
-        assertEquals(objectSource, mSyncAdapter.mObjectSource);
-        assertEquals(objectId, mSyncAdapter.mObjectId);
-        assertEquals(version, mSyncAdapter.mVersion);
-        assertEquals(payload, mSyncAdapter.mPayload);
-        assertTrue(CommandLine.isInitialized());
+        Assert.assertFalse(mSyncAdapter.mInvalidatedAllTypes);
+        Assert.assertTrue(mSyncAdapter.mInvalidated);
+        Assert.assertEquals(objectSource, mSyncAdapter.mObjectSource);
+        Assert.assertEquals(objectId, mSyncAdapter.mObjectId);
+        Assert.assertEquals(version, mSyncAdapter.mVersion);
+        Assert.assertEquals(payload, mSyncAdapter.mPayload);
+        Assert.assertTrue(CommandLine.isInitialized());
     }
 
+    @Test
     @MediumTest
     @Feature({"Sync"})
-    public void testRequestSyncWhenChromeInBackground() throws InterruptedException {
-        sendChromeToBackground(getActivity());
+    @RetryOnFailure
+    public void testRequestSyncWhenChromeInBackground() {
+        sendChromeToBackground(mActivityTestRule.getActivity());
         performSyncWithBundle(new Bundle());
-        assertFalse(mSyncAdapter.mInvalidatedAllTypes);
-        assertFalse(mSyncAdapter.mInvalidated);
-        assertTrue(CommandLine.isInitialized());
+        Assert.assertFalse(mSyncAdapter.mInvalidatedAllTypes);
+        Assert.assertFalse(mSyncAdapter.mInvalidated);
+        Assert.assertTrue(CommandLine.isInitialized());
     }
 
+    @Test
     @MediumTest
     @Feature({"Sync"})
-    public void testRequestInitializeSync() throws InterruptedException {
+    @RetryOnFailure
+    public void testRequestInitializeSync() {
         Bundle extras = new Bundle();
         extras.putBoolean(ContentResolver.SYNC_EXTRAS_INITIALIZE, true);
         performSyncWithBundle(extras);
-        assertFalse(mSyncAdapter.mInvalidatedAllTypes);
-        assertFalse(mSyncAdapter.mInvalidated);
+        Assert.assertFalse(mSyncAdapter.mInvalidatedAllTypes);
+        Assert.assertFalse(mSyncAdapter.mInvalidated);
     }
 }

@@ -7,15 +7,26 @@ package org.chromium.android_webview;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.webkit.ValueCallback;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
 
 /**
- * Java twin of the homonymous C++ class. The Java side is only responsible for
- * switching metrics on and off. Since the setting is a platform feature, it
- * must be obtained through PlatformServiceBridge.
+ * Determines user consent and app opt-out for metrics.
+ *
+ * This requires the following steps:
+ * 1) Check the platform's metrics consent setting.
+ * 2) Check if the app has opted out.
+ * 3) Wait for the native AwMetricsServiceClient to call nativeInitialized.
+ * 4) If enabled, inform the native AwMetricsServiceClient via nativeSetHaveMetricsConsent.
+ *
+ * Step 1 is done asynchronously and the result is passed to setConsentSetting, which does step 2.
+ * This happens in parallel with native AwMetricsServiceClient initialization; either
+ * nativeInitialized or setConsentSetting might fire first. Whichever fires second should call
+ * nativeSetHaveMetricsConsent.
  */
 @JNINamespace("android_webview")
 public class AwMetricsServiceClient {
@@ -25,10 +36,20 @@ public class AwMetricsServiceClient {
     // reporting. See https://developer.android.com/reference/android/webkit/WebView.html
     private static final String OPT_OUT_META_DATA_STR = "android.webkit.WebView.MetricsOptOut";
 
-    private static boolean isAppOptedOut(Context applicationContext) {
+    private static boolean sIsClientReady; // Is the native AwMetricsServiceClient initialized?
+    private static boolean sShouldEnable; // Have steps 1 and 2 passed?
+
+    // A GUID in text form is composed of 32 hex digits and 4 hyphens. These values must match those
+    // in aw_metrics_service_client.cc.
+    private static final int GUID_SIZE = 32 + 4;
+    private static final String GUID_FILE_NAME = "metrics_guid";
+
+    private static final String PLAY_STORE_PACKAGE_NAME = "com.android.vending";
+
+    private static boolean isAppOptedOut(Context appContext) {
         try {
-            ApplicationInfo info = applicationContext.getPackageManager().getApplicationInfo(
-                    applicationContext.getPackageName(), PackageManager.GET_META_DATA);
+            ApplicationInfo info = appContext.getPackageManager().getApplicationInfo(
+                    appContext.getPackageName(), PackageManager.GET_META_DATA);
             if (info.metaData == null) {
                 // null means no such tag was found.
                 return false;
@@ -43,19 +64,43 @@ public class AwMetricsServiceClient {
         }
     }
 
-    public AwMetricsServiceClient(Context applicationContext) {
-        if (isAppOptedOut(applicationContext)) {
+    public static void setConsentSetting(Context appContext, boolean userConsent) {
+        ThreadUtils.assertOnUiThread();
+
+        if (!userConsent || isAppOptedOut(appContext)) {
+            // Metrics defaults to off, so no need to call nativeSetHaveMetricsConsent(false).
             return;
         }
 
-        // Check if the user has consented.
-        PlatformServiceBridge.getInstance(applicationContext)
-                .setMetricsSettingListener(new ValueCallback<Boolean>() {
-                    public void onReceiveValue(Boolean enabled) {
-                        nativeSetMetricsEnabled(enabled);
-                    }
-                });
+        sShouldEnable = true;
+        if (sIsClientReady) {
+            nativeSetHaveMetricsConsent(true);
+        }
     }
 
-    public static native void nativeSetMetricsEnabled(boolean enabled);
+    @CalledByNative
+    public static void nativeInitialized() {
+        ThreadUtils.assertOnUiThread();
+        sIsClientReady = true;
+        if (sShouldEnable) {
+            nativeSetHaveMetricsConsent(true);
+        }
+    }
+
+    @CalledByNative
+    private static String getAppPackageName() {
+        Context appCtx = ContextUtils.getApplicationContext();
+        return shouldRecordPackageName(appCtx) ? appCtx.getPackageName() : null;
+    }
+
+    private static boolean shouldRecordPackageName(Context appCtx) {
+        // Only record if it is system apps or installed from PlayStore.
+        String packageName = appCtx.getPackageName();
+        String installerPackageName =
+                appCtx.getPackageManager().getInstallerPackageName(packageName);
+        return (appCtx.getApplicationInfo().flags & ApplicationInfo.FLAG_SYSTEM) != 0
+                || (PLAY_STORE_PACKAGE_NAME.equals(installerPackageName));
+    }
+
+    public static native void nativeSetHaveMetricsConsent(boolean enabled);
 }

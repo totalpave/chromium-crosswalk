@@ -53,7 +53,7 @@ ImeWindowView::ImeWindowView(ImeWindow* ime_window,
   web_view_->SetFocusBehavior(FocusBehavior::NEVER);
   AddChildView(web_view_);
 
-  SetLayoutManager(new views::FillLayout);
+  SetLayoutManager(std::make_unique<views::FillLayout>());
   Layout();
 
   // TODO(shuchen): supports auto cursor/composition aligning for
@@ -144,10 +144,6 @@ void ImeWindowView::OnTitlebarPointerCaptureLost() {
   }
 }
 
-views::View* ImeWindowView::GetContentsView() {
-  return this;
-}
-
 views::NonClientFrameView* ImeWindowView::CreateNonClientFrameView(
     views::Widget* widget) {
   ImeWindowFrameView* frame_view = new ImeWindowFrameView(
@@ -174,10 +170,6 @@ bool ImeWindowView::CanMinimize() const {
 
 base::string16 ImeWindowView::GetWindowTitle() const {
   return base::UTF8ToUTF16(ime_window_->title());
-}
-
-gfx::ImageSkia ImeWindowView::GetWindowAppIcon() {
-  return GetWindowIcon();
 }
 
 gfx::ImageSkia ImeWindowView::GetWindowIcon() {

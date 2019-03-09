@@ -13,18 +13,13 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
-#include "components/component_updater/default_component_installer.h"
+#include "components/component_updater/component_installer.h"
 
-namespace base {
-class FilePath;
-class Value;
-}  // namespace base
-
-namespace net {
-namespace ct {
-class STHObserver;
-}  // namespace ct
-}  // namespace net
+namespace network {
+namespace mojom {
+class NetworkService;
+}  // namespace mojom
+}  // namespace network
 
 namespace component_updater {
 
@@ -36,22 +31,30 @@ class ComponentUpdateService;
 // To identify the log each STH belongs to, the name of the file is
 // hex-encoded Log ID of the log that produced this STH.
 //
-// Notifications of each of the new STHs are sent to the net::ct::STHObserver,
-// so that it can take appropriate steps, including possible persistence.
-class STHSetComponentInstallerTraits : public ComponentInstallerTraits {
+// Notifications of each of the new STHs are sent to the
+// certificate_transparency::STHObserver, on the same task runner that this
+// object is created, so that it can take appropriate steps, including possible
+// persistence.
+class STHSetComponentInstallerPolicy : public ComponentInstallerPolicy {
  public:
-  // The |sth_distributor| will be notified each time a new STH is observed.
-  explicit STHSetComponentInstallerTraits(net::ct::STHObserver* sth_observer);
-  ~STHSetComponentInstallerTraits() override;
+  STHSetComponentInstallerPolicy();
+  ~STHSetComponentInstallerPolicy() override;
+
+  // Update the STHs after a network process crash.
+  static void ReconfigureAfterNetworkRestart();
 
  private:
   friend class STHSetComponentInstallerTest;
+  void SetNetworkServiceForTesting(
+      network::mojom::NetworkService* network_service);
 
-  // ComponentInstallerTraits implementation.
-  bool CanAutoUpdate() const override;
+  // ComponentInstallerPolicy implementation.
+  bool SupportsGroupPolicyEnabledComponentUpdates() const override;
   bool RequiresNetworkEncryption() const override;
-  bool OnCustomInstall(const base::DictionaryValue& manifest,
-                       const base::FilePath& install_dir) override;
+  update_client::CrxInstaller::Result OnCustomInstall(
+      const base::DictionaryValue& manifest,
+      const base::FilePath& install_dir) override;
+  void OnCustomUninstall() override;
   bool VerifyInstallation(const base::DictionaryValue& manifest,
                           const base::FilePath& install_dir) const override;
   void ComponentReady(const base::Version& version,
@@ -61,26 +64,11 @@ class STHSetComponentInstallerTraits : public ComponentInstallerTraits {
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
+  std::vector<std::string> GetMimeTypes() const override;
 
-  // Reads and parses the on-disk json.
-  void LoadSTHsFromDisk(const base::FilePath& sths_file_path,
-                        const base::Version& version);
+  static void ConfigureNetworkService();
 
-  // Handle successful parsing of JSON by distributing the new STH.
-  void OnJsonParseSuccess(const std::string& log_id,
-                          std::unique_ptr<base::Value> parsed_json);
-
-  // STH parsing failed - do nothing.
-  void OnJsonParseError(const std::string& log_id, const std::string& error);
-
-  // The observer is not owned by this class, so the code creating an instance
-  // of this class is expected to ensure the STHObserver lives as long as
-  // this class does. Typically the observer provided will be a global.
-  net::ct::STHObserver* sth_observer_;
-
-  base::WeakPtrFactory<STHSetComponentInstallerTraits> weak_ptr_factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(STHSetComponentInstallerTraits);
+  DISALLOW_COPY_AND_ASSIGN(STHSetComponentInstallerPolicy);
 };
 
 void RegisterSTHSetComponent(ComponentUpdateService* cus,

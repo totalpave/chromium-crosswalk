@@ -9,9 +9,9 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
 #include "base/memory/free_deleter.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
@@ -27,14 +27,16 @@ namespace ui {
 class EVENTS_OZONE_LAYOUT_EXPORT XkbKeyboardLayoutEngine
     : public KeyboardLayoutEngine {
  public:
-  XkbKeyboardLayoutEngine(const XkbKeyCodeConverter& converter);
+  explicit XkbKeyboardLayoutEngine(const XkbKeyCodeConverter& converter);
   ~XkbKeyboardLayoutEngine() override;
-
-  void SetKeymapFromStringForTest(const char* keymap_string);
 
   // KeyboardLayoutEngine:
   bool CanSetCurrentLayout() const override;
   bool SetCurrentLayoutByName(const std::string& layout_name) override;
+  // Required by Ozone/Wayland (at least) for non ChromeOS builds. See
+  // http://xkbcommon.org/doc/current/md_doc_quick-guide.html for further info.
+  bool SetCurrentLayoutFromBuffer(const char* keymap_string,
+                                  size_t size) override;
 
   bool UsesISOLevel5Shift() const override;
   bool UsesAltGr() const override;
@@ -43,6 +45,11 @@ class EVENTS_OZONE_LAYOUT_EXPORT XkbKeyboardLayoutEngine
               int flags,
               DomKey* dom_key,
               KeyboardCode* key_code) const override;
+
+  int UpdateModifiers(uint32_t depressed,
+                      uint32_t latched,
+                      uint32_t locked,
+                      uint32_t group);
 
   static void ParseLayoutName(const std::string& layout_name,
                               std::string* layout_id,
@@ -53,11 +60,16 @@ class EVENTS_OZONE_LAYOUT_EXPORT XkbKeyboardLayoutEngine
   struct XkbFlagMapEntry {
     int ui_flag;
     xkb_mod_mask_t xkb_flag;
+    xkb_mod_index_t xkb_index;
   };
   std::vector<XkbFlagMapEntry> xkb_flag_map_;
 
-  // Flag mask for num lock, which is always considered enabled.
+#if defined(OS_CHROMEOS)
+  // Flag mask for num lock, which is always considered enabled in ChromeOS.
   xkb_mod_mask_t num_lock_mod_mask_ = 0;
+#endif
+  xkb_mod_mask_t shift_mod_mask_ = 0;
+  xkb_mod_mask_t altgr_mod_mask_ = 0;
 
   // Determines the Windows-based KeyboardCode (VKEY) for a character key,
   // accounting for non-US layouts. May return VKEY_UNKNOWN, in which case the
@@ -70,8 +82,16 @@ class EVENTS_OZONE_LAYOUT_EXPORT XkbKeyboardLayoutEngine
                                      xkb_keysym_t xkb_keysym,
                                      base::char16 character) const;
 
+  // Sets a new XKB keymap. This updates xkb_state_ (which takes ownership
+  // of the keymap), and updates xkb_flag_map_ for the new keymap.
+  virtual void SetKeymap(xkb_keymap* keymap);
+
   // Maps DomCode to xkb_keycode_t.
   const XkbKeyCodeConverter& key_code_converter_;
+
+  // libxkbcommon uses explicit reference counting for its structures,
+  // so we need to trigger its cleanup.
+  std::unique_ptr<xkb_state, XkbStateDeleter> xkb_state_;
 
  private:
   struct XkbKeymapEntry {
@@ -79,9 +99,6 @@ class EVENTS_OZONE_LAYOUT_EXPORT XkbKeyboardLayoutEngine
     xkb_keymap* keymap;
   };
   std::vector<XkbKeymapEntry> xkb_keymaps_;
-  // Sets a new XKB keymap. This updates xkb_state_ (which takes ownership
-  // of the keymap), and updates xkb_flag_map_ for the new keymap.
-  void SetKeymap(xkb_keymap* keymap);
 
   // Returns the XKB modifiers flags corresponding to the given EventFlags.
   xkb_mod_mask_t EventFlagsToXkbFlags(int ui_flags) const;
@@ -99,18 +116,17 @@ class EVENTS_OZONE_LAYOUT_EXPORT XkbKeyboardLayoutEngine
   base::char16 XkbSubCharacter(xkb_keycode_t xkb_keycode,
                                xkb_mod_mask_t base_flags,
                                base::char16 base_character,
-                               int ui_flags) const;
+                               xkb_mod_mask_t flags) const;
 
   // Callback when keymap file is loaded complete.
   void OnKeymapLoaded(const std::string& layout_name,
                       std::unique_ptr<char, base::FreeDeleter> keymap_str);
 
-  // libxkbcommon uses explicit reference counting for its structures,
-  // so we need to trigger its cleanup.
   std::unique_ptr<xkb_context, XkbContextDeleter> xkb_context_;
-  std::unique_ptr<xkb_state, XkbStateDeleter> xkb_state_;
 
   std::string current_layout_name_;
+
+  xkb_layout_index_t layout_index_ = 0;
 
   // Support weak pointers for attach & detach callbacks.
   base::WeakPtrFactory<XkbKeyboardLayoutEngine> weak_ptr_factory_;

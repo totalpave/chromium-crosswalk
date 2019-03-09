@@ -4,41 +4,66 @@
 
 package org.chromium.chrome.browser.omnibox.geo;
 
-import android.content.Context;
 import android.location.Location;
 import android.location.LocationManager;
 import android.os.Build;
 import android.os.SystemClock;
-import android.test.InstrumentationTestCase;
-import android.test.UiThreadTest;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.filters.SmallTest;
+import android.util.Base64;
 
-import org.chromium.base.library_loader.ProcessInitException;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
-import org.chromium.chrome.browser.preferences.website.ContentSetting;
-import org.chromium.chrome.browser.preferences.website.GeolocationInfo;
+import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.chrome.browser.preferences.website.ContentSettingValues;
+import org.chromium.chrome.browser.preferences.website.PermissionInfo;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
 /**
  * Tests for GeolocationHeader and GeolocationTracker.
  */
-public class GeolocationHeaderTest extends InstrumentationTestCase {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class GeolocationHeaderTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
 
     private static final String SEARCH_URL_1 = "https://www.google.com/search?q=potatoes";
     private static final String SEARCH_URL_2 = "https://www.google.co.jp/webhp?#q=dinosaurs";
+    private static final String DISABLE_FEATURES = "disable-features=";
+    private static final String ENABLE_FEATURES = "enable-features=";
+    private static final String GOOGLE_BASE_URL_SWITCH = "google-base-url=https://www.google.com";
+    private static final double LOCATION_LAT = 20.3;
+    private static final double LOCATION_LONG = 155.8;
+    private static final float LOCATION_ACCURACY = 20f;
 
+    @Before
+    public void setUp() throws InterruptedException {
+        mActivityTestRule.startMainActivityOnBlankPage();
+    }
+
+    @Test
     @SmallTest
     @Feature({"Location"})
-    @UiThreadTest
-    public void testGeolocationHeader() throws ProcessInitException {
-        Context targetContext = getInstrumentation().getTargetContext();
-        ChromeBrowserInitializer.getInstance(targetContext).handleSynchronousStartup();
-
-        setMockLocation(20.3, 155.8, System.currentTimeMillis());
+    @CommandLineFlags.Add({GOOGLE_BASE_URL_SWITCH})
+    public void testConsistentHeader() {
+        long now = setMockLocationNow();
 
         // X-Geo should be sent for Google search results page URLs.
-        assertNonNullHeader(SEARCH_URL_1, false);
-        assertNonNullHeader(SEARCH_URL_2, false);
+        assertNonNullHeader(SEARCH_URL_1, false, now);
+
+        // But only the current CCTLD.
+        assertNullHeader(SEARCH_URL_2, false);
 
         // X-Geo shouldn't be sent in incognito mode.
         assertNullHeader(SEARCH_URL_1, true);
@@ -52,66 +77,193 @@ public class GeolocationHeaderTest extends InstrumentationTestCase {
         // X-Geo shouldn't be sent over HTTP.
         assertNullHeader("http://www.google.com/search?q=potatoes", false);
         assertNullHeader("http://www.google.com/webhp?#q=dinosaurs", false);
+    }
 
-        // X-Geo shouldn't be sent when location is disallowed for https origin.
-        // If https origin doesn't have a location setting, fall back to value for http origin.
-        assertNotNull(getHeaderWithPermissions(ContentSetting.ALLOW, ContentSetting.ALLOW));
-        assertNotNull(getHeaderWithPermissions(ContentSetting.ALLOW, ContentSetting.DEFAULT));
-        assertNotNull(getHeaderWithPermissions(ContentSetting.ALLOW, ContentSetting.BLOCK));
-        assertNotNull(getHeaderWithPermissions(ContentSetting.DEFAULT, ContentSetting.ALLOW));
-        assertNotNull(getHeaderWithPermissions(ContentSetting.DEFAULT, ContentSetting.DEFAULT));
-        assertNull(getHeaderWithPermissions(ContentSetting.DEFAULT, ContentSetting.BLOCK));
-        assertNull(getHeaderWithPermissions(ContentSetting.BLOCK, ContentSetting.ALLOW));
-        assertNull(getHeaderWithPermissions(ContentSetting.BLOCK, ContentSetting.DEFAULT));
-        assertNull(getHeaderWithPermissions(ContentSetting.BLOCK, ContentSetting.BLOCK));
+    @Test
+    @SmallTest
+    @Feature({"Location"})
+    @CommandLineFlags.Add({GOOGLE_BASE_URL_SWITCH})
+    public void testPermission() {
+        long now = setMockLocationNow();
 
-        // X-Geo should be sent only with non-stale locations.
+        // X-Geo shouldn't be sent when location is disallowed for the origin.
+        checkHeaderWithPermission(ContentSettingValues.ALLOW, now, false);
+        checkHeaderWithPermission(ContentSettingValues.BLOCK, now, true);
+
+        // The default permission for the DSE is to allow access, so the header
+        // should be sent in this case.
+        checkHeaderWithPermission(ContentSettingValues.DEFAULT, now, false);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Location"})
+    public void testProtoEncoding() {
+        long now = setMockLocationNow();
+
+        // X-Geo should be sent for Google search results page URLs using proto encoding.
+        assertNonNullHeader(SEARCH_URL_1, false, now);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Location"})
+    public void testGpsFallback() {
+        // Only GPS location, should be sent when flag is on.
         long now = System.currentTimeMillis();
-        long oneHour = 60 * 60 * 1000;
-        long oneWeek = 7 * 24 * 60 * 60 * 1000;
-        assertNotNull(getHeaderWithLocation(20.3, 155.8, now));
-        assertNotNull(getHeaderWithLocation(20.3, 155.8, now - oneHour));
-        assertNull(getHeaderWithLocation(20.3, 155.8, now - oneWeek));
-        GeolocationTracker.setLocationForTesting(null);
-        assertNullHeader(SEARCH_URL_1, false);
+        Location gpsLocation = generateMockLocation(LocationManager.GPS_PROVIDER, now);
+        GeolocationTracker.setLocationForTesting(null, gpsLocation);
+
+        assertNonNullHeader(SEARCH_URL_1, false, now);
     }
 
-    private String getHeaderWithPermissions(ContentSetting httpsPermission,
-            ContentSetting httpPermission) {
-        GeolocationInfo infoHttps = new GeolocationInfo("https://www.google.de", null, false);
-        GeolocationInfo infoHttp = new GeolocationInfo("http://www.google.de", null, false);
-        infoHttps.setContentSetting(httpsPermission);
-        infoHttp.setContentSetting(httpPermission);
-        return GeolocationHeader.getGeoHeader(getInstrumentation().getTargetContext(),
-                "https://www.google.de/search?q=kartoffelsalat", false);
+    @Test
+    @SmallTest
+    @Feature({"Location"})
+    public void testGpsFallbackYounger() {
+        long now = System.currentTimeMillis();
+        // GPS location is younger.
+        Location gpsLocation = generateMockLocation(LocationManager.GPS_PROVIDER, now + 100);
+        // Network location is older
+        Location netLocation = generateMockLocation(LocationManager.NETWORK_PROVIDER, now);
+        GeolocationTracker.setLocationForTesting(netLocation, gpsLocation);
+
+        // The younger (GPS) should be used.
+        assertNonNullHeader(SEARCH_URL_1, false, now + 100);
     }
 
-    private String getHeaderWithLocation(double latitute, double longitude, long time) {
-        setMockLocation(latitute, longitude, time);
-        return GeolocationHeader.getGeoHeader(getInstrumentation().getTargetContext(),
-                SEARCH_URL_1, false);
+    @Test
+    @SmallTest
+    @Feature({"Location"})
+    public void testGpsFallbackOlder() {
+        long now = System.currentTimeMillis();
+        // GPS location is older.
+        Location gpsLocation = generateMockLocation(LocationManager.GPS_PROVIDER, now - 100);
+        // Network location is younger.
+        Location netLocation = generateMockLocation(LocationManager.NETWORK_PROVIDER, now);
+        GeolocationTracker.setLocationForTesting(netLocation, gpsLocation);
+
+        // The younger (Network) should be used.
+        assertNonNullHeader(SEARCH_URL_1, false, now);
     }
 
-    private void setMockLocation(double latitute, double longitude, long time) {
-        final Location location = new Location(LocationManager.NETWORK_PROVIDER);
-        location.setLatitude(latitute);
-        location.setLongitude(longitude);
-        location.setAccuracy(20f);
+    private void checkHeaderWithPermission(final @ContentSettingValues int httpsPermission,
+            final long locationTime, final boolean shouldBeNull) {
+        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
+            @Override
+            public void run() {
+                PermissionInfo infoHttps = new PermissionInfo(
+                        PermissionInfo.Type.GEOLOCATION, SEARCH_URL_1, null, false);
+                infoHttps.setContentSetting(httpsPermission);
+                String header = GeolocationHeader.getGeoHeader(
+                        SEARCH_URL_1, mActivityTestRule.getActivity().getActivityTab());
+                assertHeaderState(header, locationTime, shouldBeNull);
+            }
+        });
+    }
+
+    private void checkHeaderWithLocation(final long locationTime, final boolean shouldBeNull) {
+        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
+            @Override
+            public void run() {
+                setMockLocation(locationTime);
+                String header = GeolocationHeader.getGeoHeader(SEARCH_URL_1,
+                        mActivityTestRule.getActivity().getActivityTab());
+                assertHeaderState(header, locationTime, shouldBeNull);
+            }
+        });
+    }
+
+    private void assertHeaderState(String header, long locationTime, boolean shouldBeNull) {
+        if (shouldBeNull) {
+            Assert.assertNull(header);
+        } else {
+            assertHeaderEquals(locationTime, header);
+        }
+    }
+
+    private long setMockLocationNow() {
+        long now = System.currentTimeMillis();
+        setMockLocation(now);
+        return now;
+    }
+
+    private Location generateMockLocation(String provider, long time) {
+        Location location = new Location(provider);
+        location.setLatitude(LOCATION_LAT);
+        location.setLongitude(LOCATION_LONG);
+        location.setAccuracy(LOCATION_ACCURACY);
         location.setTime(time);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
             location.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos()
                     + 1000000 * (time - System.currentTimeMillis()));
         }
-        GeolocationTracker.setLocationForTesting(location);
+        return location;
     }
 
-    private void assertNullHeader(String url, boolean isIncognito) {
-        Context targetContext = getInstrumentation().getTargetContext();
-        assertNull(GeolocationHeader.getGeoHeader(targetContext, url, isIncognito));
+    private void setMockLocation(long time) {
+        Location location = generateMockLocation(LocationManager.NETWORK_PROVIDER, time);
+        GeolocationTracker.setLocationForTesting(location, null);
     }
 
-    private void assertNonNullHeader(String url, boolean isIncognito) {
-        Context targetContext = getInstrumentation().getTargetContext();
-        assertNotNull(GeolocationHeader.getGeoHeader(targetContext, url, isIncognito));
+    private void assertNullHeader(final String url, final boolean isIncognito) {
+        try {
+            final Tab tab = mActivityTestRule.loadUrlInNewTab("about:blank", isIncognito);
+            ThreadUtils.runOnUiThreadBlocking(new Runnable() {
+                @Override
+                public void run() {
+                    Assert.assertNull(GeolocationHeader.getGeoHeader(url, tab));
+                }
+            });
+        } catch (InterruptedException e) {
+            Assert.fail(e.getMessage());
+        }
+    }
+
+    private void assertNonNullHeader(
+            final String url, final boolean isIncognito, final long locationTime) {
+        try {
+            final Tab tab = mActivityTestRule.loadUrlInNewTab("about:blank", isIncognito);
+            ThreadUtils.runOnUiThreadBlocking(new Runnable() {
+                @Override
+                public void run() {
+                    assertHeaderEquals(locationTime, GeolocationHeader.getGeoHeader(url, tab));
+                }
+            });
+        } catch (InterruptedException e) {
+            Assert.fail(e.getMessage());
+        }
+    }
+
+    private void assertHeaderEquals(long locationTime, String header) {
+        long timestamp = locationTime * 1000;
+        // Latitude times 1e7.
+        int latitudeE7 = (int) (LOCATION_LAT * 10000000);
+        // Longitude times 1e7.
+        int longitudeE7 = (int) (LOCATION_LONG * 10000000);
+        // Radius of 68% accuracy in mm.
+        int radius = (int) (LOCATION_ACCURACY * 1000);
+
+        // Create a LatLng for the coordinates.
+        PartnerLocationDescriptor.LatLng latlng = PartnerLocationDescriptor.LatLng.newBuilder()
+                                                          .setLatitudeE7(latitudeE7)
+                                                          .setLongitudeE7(longitudeE7)
+                                                          .build();
+
+        // Populate a LocationDescriptor with the LatLng.
+        PartnerLocationDescriptor.LocationDescriptor locationDescriptor =
+                PartnerLocationDescriptor.LocationDescriptor.newBuilder()
+                        .setLatlng(latlng)
+                        // Include role, producer, timestamp and radius.
+                        .setRole(PartnerLocationDescriptor.LocationRole.CURRENT_LOCATION)
+                        .setProducer(PartnerLocationDescriptor.LocationProducer.DEVICE_LOCATION)
+                        .setTimestamp(timestamp)
+                        .setRadius((float) radius)
+                        .build();
+
+        String locationProto = Base64.encodeToString(
+                locationDescriptor.toByteArray(), Base64.NO_WRAP | Base64.URL_SAFE);
+        String expectedHeader = "X-Geo: w " + locationProto;
+        Assert.assertEquals(expectedHeader, header);
     }
 }

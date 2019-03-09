@@ -7,9 +7,9 @@
 #include <stddef.h>
 
 #include "base/i18n/message_formatter.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
 #include "net/base/escape.h"
 #include "net/base/net_errors.h"
 #include "net/cert/cert_status_flags.h"
@@ -32,26 +32,35 @@ ErrorInfo ErrorInfo::CreateError(ErrorType error_type,
   base::string16 details, short_description;
   switch (error_type) {
     case CERT_COMMON_NAME_INVALID: {
-      // If the certificate contains multiple DNS names, we choose the most
-      // representative one -- either the DNS name that's also in the subject
-      // field, or the first one.  If this heuristic turns out to be
-      // inadequate, we can consider choosing the DNS name that is the
-      // "closest match" to the host name in the request URL, or listing all
-      // the DNS names with an HTML <ul>.
       std::vector<std::string> dns_names;
-      cert->GetDNSNames(&dns_names);
-      DCHECK(!dns_names.empty());
+      cert->GetSubjectAltName(&dns_names, nullptr);
+
       size_t i = 0;
-      for (; i < dns_names.size(); ++i) {
-        if (dns_names[i] == cert->subject().common_name)
-          break;
+      if (dns_names.empty()) {
+        // The certificate had no DNS names, display an explanatory string.
+        details = l10n_util::GetStringFUTF16(
+            IDS_CERT_ERROR_NO_SUBJECT_ALTERNATIVE_NAMES_DETAILS,
+            UTF8ToUTF16(request_url.host()));
+      } else {
+        // If the certificate contains multiple DNS names, we choose the most
+        // representative one -- either the DNS name that's also in the subject
+        // field, or the first one. If this heuristic turns out to be
+        // inadequate, we can consider choosing the DNS name that is the
+        // "closest match" to the host name in the request URL, or listing all
+        // the DNS names with an HTML <ul>.
+        for (; i < dns_names.size(); ++i) {
+          if (dns_names[i] == cert->subject().common_name)
+            break;
+        }
+        if (i == dns_names.size())
+          i = 0;
+
+        details = l10n_util::GetStringFUTF16(
+            IDS_CERT_ERROR_COMMON_NAME_INVALID_DETAILS,
+            UTF8ToUTF16(request_url.host()),
+            net::EscapeForHTML(UTF8ToUTF16(dns_names[i])));
       }
-      if (i == dns_names.size())
-        i = 0;
-      details = l10n_util::GetStringFUTF16(
-          IDS_CERT_ERROR_COMMON_NAME_INVALID_DETAILS,
-          UTF8ToUTF16(request_url.host()),
-          net::EscapeForHTML(UTF8ToUTF16(dns_names[i])));
+
       short_description = l10n_util::GetStringUTF16(
           IDS_CERT_ERROR_COMMON_NAME_INVALID_DESCRIPTION);
       break;
@@ -87,6 +96,7 @@ ErrorInfo ErrorInfo::CreateError(ErrorType error_type,
       }
       break;
     case CERT_AUTHORITY_INVALID:
+    case CERT_SYMANTEC_LEGACY:
       details =
           l10n_util::GetStringFUTF16(IDS_CERT_ERROR_AUTHORITY_INVALID_DETAILS,
                                      UTF8ToUTF16(request_url.host()));
@@ -207,6 +217,8 @@ ErrorInfo::ErrorType ErrorInfo::NetErrorToErrorType(int net_error) {
       return CERT_PINNED_KEY_MISSING;
     case net::ERR_CERTIFICATE_TRANSPARENCY_REQUIRED:
       return CERTIFICATE_TRANSPARENCY_REQUIRED;
+    case net::ERR_CERT_SYMANTEC_LEGACY:
+      return CERT_SYMANTEC_LEGACY;
     default:
       NOTREACHED();
       return UNKNOWN;
@@ -232,6 +244,7 @@ void ErrorInfo::GetErrorsForCertStatus(
       net::CERT_STATUS_NAME_CONSTRAINT_VIOLATION,
       net::CERT_STATUS_VALIDITY_TOO_LONG,
       net::CERT_STATUS_CERTIFICATE_TRANSPARENCY_REQUIRED,
+      net::CERT_STATUS_SYMANTEC_LEGACY,
   };
 
   const ErrorType kErrorTypes[] = {
@@ -247,10 +260,11 @@ void ErrorInfo::GetErrorsForCertStatus(
       CERT_NAME_CONSTRAINT_VIOLATION,
       CERT_VALIDITY_TOO_LONG,
       CERTIFICATE_TRANSPARENCY_REQUIRED,
+      CERT_SYMANTEC_LEGACY,
   };
-  DCHECK(arraysize(kErrorFlags) == arraysize(kErrorTypes));
+  DCHECK(base::size(kErrorFlags) == base::size(kErrorTypes));
 
-  for (size_t i = 0; i < arraysize(kErrorFlags); ++i) {
+  for (size_t i = 0; i < base::size(kErrorFlags); ++i) {
     if ((cert_status & kErrorFlags[i]) && errors) {
       errors->push_back(
           ErrorInfo::CreateError(kErrorTypes[i], cert.get(), url));

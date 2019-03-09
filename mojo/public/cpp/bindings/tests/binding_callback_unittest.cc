@@ -9,10 +9,10 @@
 #include "base/logging.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/gtest_util.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/binding.h"
 #include "mojo/public/cpp/bindings/interface_ptr.h"
-#include "mojo/public/cpp/bindings/string.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "mojo/public/cpp/test_support/test_support.h"
 #include "mojo/public/interfaces/bindings/tests/sample_interfaces.mojom.h"
@@ -49,62 +49,51 @@ base::Callback<void(int32_t)> BindValueSaver(int32_t* last_value_seen,
 // All it does is save the values and Callbacks it sees.
 class InterfaceImpl : public sample::Provider {
  public:
-  InterfaceImpl()
-      : last_server_value_seen_(0),
-        callback_saved_(new EchoIntCallback) {}
+  InterfaceImpl() : last_server_value_seen_(0) {}
 
-  ~InterfaceImpl() override {
-    if (callback_saved_) {
-      delete callback_saved_;
-    }
-  }
+  ~InterfaceImpl() override {}
 
   // Run's the callback previously saved from the last invocation
   // of |EchoInt()|.
   bool RunCallback() {
     if (callback_saved_) {
-      callback_saved_->Run(last_server_value_seen_);
+      std::move(callback_saved_).Run(last_server_value_seen_);
       return true;
     }
     return false;
   }
 
   // Delete's the previously saved callback.
-  void DeleteCallback() {
-    delete callback_saved_;
-    callback_saved_ = nullptr;
-  }
+  void DeleteCallback() { callback_saved_.Reset(); }
 
   // sample::Provider implementation
 
   // Saves its two input values in member variables and does nothing else.
-  void EchoInt(int32_t x, const EchoIntCallback& callback) override {
+  void EchoInt(int32_t x, EchoIntCallback callback) override {
     last_server_value_seen_ = x;
-    *callback_saved_ = callback;
+    callback_saved_ = std::move(callback);
     if (!closure_.is_null()) {
       closure_.Run();
       closure_.Reset();
     }
   }
 
-  void EchoString(const String& a,
-                  const EchoStringCallback& callback) override {
+  void EchoString(const std::string& a, EchoStringCallback callback) override {
     CHECK(false) << "Not implemented.";
   }
 
-  void EchoStrings(const String& a,
-                   const String& b,
-                   const EchoStringsCallback& callback) override {
+  void EchoStrings(const std::string& a,
+                   const std::string& b,
+                   EchoStringsCallback callback) override {
     CHECK(false) << "Not implemented.";
   }
 
-  void EchoMessagePipeHandle(
-      ScopedMessagePipeHandle a,
-      const EchoMessagePipeHandleCallback& callback) override {
+  void EchoMessagePipeHandle(ScopedMessagePipeHandle a,
+                             EchoMessagePipeHandleCallback callback) override {
     CHECK(false) << "Not implemented.";
   }
 
-  void EchoEnum(sample::Enum a, const EchoEnumCallback& callback) override {
+  void EchoEnum(sample::Enum a, EchoEnumCallback callback) override {
     CHECK(false) << "Not implemented.";
   }
 
@@ -116,7 +105,7 @@ class InterfaceImpl : public sample::Provider {
 
  private:
   int32_t last_server_value_seen_;
-  EchoIntCallback* callback_saved_;
+  EchoIntCallback callback_saved_;
   base::Closure closure_;
 };
 
@@ -129,7 +118,7 @@ class BindingCallbackTest : public testing::Test {
   int32_t last_client_callback_value_seen_;
   sample::ProviderPtr interface_ptr_;
 
-  void PumpMessages() { loop_.RunUntilIdle(); }
+  void PumpMessages() { base::RunLoop().RunUntilIdle(); }
 
  private:
   base::MessageLoop loop_;
@@ -140,7 +129,7 @@ class BindingCallbackTest : public testing::Test {
 TEST_F(BindingCallbackTest, Basic) {
   // Create the ServerImpl and the Binding.
   InterfaceImpl server_impl;
-  Binding<sample::Provider> binding(&server_impl, GetProxy(&interface_ptr_));
+  Binding<sample::Provider> binding(&server_impl, MakeRequest(&interface_ptr_));
 
   // Initialize the test values.
   server_impl.resetLastServerValueSeen();
@@ -199,7 +188,8 @@ TEST_F(BindingCallbackTest, DeleteBindingThenRunCallback) {
   base::RunLoop run_loop;
   {
     // Create the binding in an inner scope so it can be deleted first.
-    Binding<sample::Provider> binding(&server_impl, GetProxy(&interface_ptr_));
+    Binding<sample::Provider> binding(&server_impl,
+                                      MakeRequest(&interface_ptr_));
     interface_ptr_.set_connection_error_handler(run_loop.QuitClosure());
 
     // Initialize the test values.
@@ -244,7 +234,8 @@ TEST_F(BindingCallbackTest, DeleteBindingThenDeleteCallback) {
   InterfaceImpl server_impl;
   {
     // Create the binding in an inner scope so it can be deleted first.
-    Binding<sample::Provider> binding(&server_impl, GetProxy(&interface_ptr_));
+    Binding<sample::Provider> binding(&server_impl,
+                                      MakeRequest(&interface_ptr_));
 
     // Initialize the test values.
     server_impl.resetLastServerValueSeen();
@@ -275,7 +266,7 @@ TEST_F(BindingCallbackTest, DeleteBindingThenDeleteCallback) {
 TEST_F(BindingCallbackTest, CloseBindingBeforeDeletingCallback) {
   // Create the ServerImpl and the Binding.
   InterfaceImpl server_impl;
-  Binding<sample::Provider> binding(&server_impl, GetProxy(&interface_ptr_));
+  Binding<sample::Provider> binding(&server_impl, MakeRequest(&interface_ptr_));
 
   // Initialize the test values.
   server_impl.resetLastServerValueSeen();
@@ -310,7 +301,7 @@ TEST_F(BindingCallbackTest, CloseBindingBeforeDeletingCallback) {
 TEST_F(BindingCallbackTest, DeleteCallbackBeforeBindingDeathTest) {
   // Create the ServerImpl and the Binding.
   InterfaceImpl server_impl;
-  Binding<sample::Provider> binding(&server_impl, GetProxy(&interface_ptr_));
+  Binding<sample::Provider> binding(&server_impl, MakeRequest(&interface_ptr_));
 
   // Initialize the test values.
   server_impl.resetLastServerValueSeen();
@@ -328,17 +319,7 @@ TEST_F(BindingCallbackTest, DeleteCallbackBeforeBindingDeathTest) {
   EXPECT_EQ(7, server_impl.last_server_value_seen());
   EXPECT_EQ(0, last_client_callback_value_seen_);
 
-#if (!defined(NDEBUG) || defined(DCHECK_ALWAYS_ON)) && !defined(OS_ANDROID)
-  // Delete the callback without running it. This should cause a crash in debug
-  // builds due to a DCHECK.
-  std::string regex("Check failed: !is_valid");
-#if defined(OS_WIN)
-  // TODO(msw): Fix MOJO_DCHECK logs and EXPECT_DEATH* on Win: crbug.com/535014
-  regex.clear();
-#endif  // OS_WIN
-  EXPECT_DEATH_IF_SUPPORTED(server_impl.DeleteCallback(), regex.c_str());
-#endif  // (!defined(NDEBUG) || defined(DCHECK_ALWAYS_ON)) &&
-        // !defined(OS_ANDROID)
+  EXPECT_DCHECK_DEATH(server_impl.DeleteCallback());
 }
 
 }  // namespace

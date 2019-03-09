@@ -3,13 +3,11 @@
 // found in the LICENSE file.
 
 #include "build/build_config.h"
-// Need to include this before most other files because it defines
-// IPC_MESSAGE_LOG_ENABLED. We need to use it to define
-// IPC_MESSAGE_MACROS_LOG_ENABLED so ppapi_messages.h will generate the
-// ViewMsgLog et al. functions.
 
 #include <stdint.h>
 
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "base/threading/thread.h"
 #include "ipc/ipc_logging.h"
 #include "ppapi/nacl_irt/irt_interfaces.h"
@@ -38,11 +36,11 @@ int irt_ppapi_start(const struct PP_StartFunctions* funcs) {
 
   ppapi::PpapiDispatcher ppapi_dispatcher(
       ppapi::GetIOThread()->task_runner(), ppapi::GetShutdownEvent(),
-      ppapi::GetBrowserIPCFileDescriptor(),
-      ppapi::GetRendererIPCFileDescriptor());
+      ppapi::GetBrowserIPCChannelHandle(),
+      ppapi::GetRendererIPCChannelHandle());
   plugin_globals.SetPluginProxyDelegate(&ppapi_dispatcher);
 
-  loop.Run();
+  base::RunLoop().Run();
 
   return 0;
 }

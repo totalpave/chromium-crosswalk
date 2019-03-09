@@ -18,12 +18,14 @@
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/sequenced_task_runner.h"
-#include "base/threading/sequenced_worker_pool.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
+#include "components/download/public/common/download_item.h"
+#include "components/safe_browsing/proto/csd.pb.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/download_item.h"
+#include "content/public/browser/download_item_utils.h"
 
 namespace safe_browsing {
 
@@ -61,22 +63,23 @@ const base::FilePath::CharType kDownloadMetadataBasename[] =
 // it is in progress.
 class DownloadItemData : public base::SupportsUserData::Data {
  public:
+  ~DownloadItemData() override {}
+
   // Sets the ClientDownloadRequest for a given DownloadItem.
   static void SetRequestForDownload(
-      content::DownloadItem* item,
+      download::DownloadItem* item,
       std::unique_ptr<ClientDownloadRequest> request);
 
   // Returns the ClientDownloadRequest for a download or null if there is none.
   static std::unique_ptr<ClientDownloadRequest> TakeRequestForDownload(
-      content::DownloadItem* item);
+      download::DownloadItem* item);
 
  private:
-  // A unique id for associating metadata with a content::DownloadItem.
+  // A unique id for associating metadata with a download::DownloadItem.
   static const void* const kKey_;
 
   explicit DownloadItemData(std::unique_ptr<ClientDownloadRequest> request)
       : request_(std::move(request)) {}
-  ~DownloadItemData() override {}
 
   std::unique_ptr<ClientDownloadRequest> request_;
 
@@ -89,14 +92,15 @@ const void* const DownloadItemData::kKey_ = &DownloadItemData::kKey_;
 
 // static
 void DownloadItemData::SetRequestForDownload(
-    content::DownloadItem* item,
+    download::DownloadItem* item,
     std::unique_ptr<ClientDownloadRequest> request) {
-  item->SetUserData(&kKey_, new DownloadItemData(std::move(request)));
+  item->SetUserData(&kKey_,
+                    base::WrapUnique(new DownloadItemData(std::move(request))));
 }
 
 // static
 std::unique_ptr<ClientDownloadRequest> DownloadItemData::TakeRequestForDownload(
-    content::DownloadItem* item) {
+    download::DownloadItem* item) {
   DownloadItemData* data =
       static_cast<DownloadItemData*>(item->GetUserData(&kKey_));
   if (!data)
@@ -124,7 +128,7 @@ bool MetadataIsValid(const DownloadMetadata& metadata) {
 
 // Reads and parses a DownloadMetadata message from |metadata_path| into
 // |metadata|.
-void ReadMetadataOnWorkerPool(const base::FilePath& metadata_path,
+void ReadMetadataInBackground(const base::FilePath& metadata_path,
                               DownloadMetadata* metadata) {
   using base::File;
   DCHECK(metadata);
@@ -164,7 +168,7 @@ void ReadMetadataOnWorkerPool(const base::FilePath& metadata_path,
 }
 
 // Writes |download_metadata| to |metadata_path|.
-void WriteMetadataOnWorkerPool(const base::FilePath& metadata_path,
+void WriteMetadataInBackground(const base::FilePath& metadata_path,
                                DownloadMetadata* download_metadata) {
   MetadataWriteResult result = NUM_WRITE_RESULTS;
   std::string file_data;
@@ -181,7 +185,7 @@ void WriteMetadataOnWorkerPool(const base::FilePath& metadata_path,
 }
 
 // Deletes |metadata_path|.
-void DeleteMetadataOnWorkerPool(const base::FilePath& metadata_path) {
+void DeleteMetadataInBackground(const base::FilePath& metadata_path) {
   bool success = base::DeleteFile(metadata_path, false /* not recursive */);
   UMA_HISTOGRAM_BOOLEAN("SBIRS.DownloadMetadata.DeleteSuccess", success);
 }
@@ -210,10 +214,9 @@ void ReturnResults(
 // waiting for metadata to load, an instance also tracks callbacks to be run to
 // provide consumers with persisted details of a download.
 class DownloadMetadataManager::ManagerContext
-    : public content::DownloadItem::Observer {
+    : public download::DownloadItem::Observer {
  public:
-  ManagerContext(const scoped_refptr<base::SequencedTaskRunner>& read_runner,
-                 const scoped_refptr<base::SequencedTaskRunner>& write_runner,
+  ManagerContext(scoped_refptr<base::SequencedTaskRunner> task_runner,
                  content::DownloadManager* download_manager);
 
   // Detaches this context from its owner. The owner must not access the context
@@ -223,12 +226,12 @@ class DownloadMetadataManager::ManagerContext
   void Detach(content::DownloadManager* download_manager);
 
   // Notifies the context that |download| has been added to its manager.
-  void OnDownloadCreated(content::DownloadItem* download);
+  void OnDownloadCreated(download::DownloadItem* download);
 
   // Sets |request| as the relevant metadata to persist for |download| if or
   // when it is complete. If |request| is null, the metadata for |download|
   // is/will be removed.
-  void SetRequest(content::DownloadItem* download,
+  void SetRequest(download::DownloadItem* download,
                   std::unique_ptr<ClientDownloadRequest> request);
 
   // Gets the persisted DownloadDetails. |callback| will be run immediately if
@@ -237,10 +240,10 @@ class DownloadMetadataManager::ManagerContext
   void GetDownloadDetails(const GetDownloadDetailsCallback& callback);
 
  protected:
-  // content::DownloadItem::Observer methods.
-  void OnDownloadUpdated(content::DownloadItem* download) override;
-  void OnDownloadOpened(content::DownloadItem* download) override;
-  void OnDownloadRemoved(content::DownloadItem* download) override;
+  // download::DownloadItem::Observer methods.
+  void OnDownloadUpdated(download::DownloadItem* download) override;
+  void OnDownloadOpened(download::DownloadItem* download) override;
+  void OnDownloadRemoved(download::DownloadItem* download) override;
 
  private:
   enum State {
@@ -269,17 +272,17 @@ class DownloadMetadataManager::ManagerContext
   // Commits |request| to the DownloadDetails for |item|'s BrowserContext.
   // Callbacks will be run immediately if the context had been waiting for a
   // load (which will be abandoned).
-  void CommitRequest(content::DownloadItem* item,
+  void CommitRequest(download::DownloadItem* item,
                      std::unique_ptr<ClientDownloadRequest> request);
 
-  // Posts a task in the worker pool to read the metadata from disk.
+  // Posts a background task to read the metadata from disk.
   void ReadMetadata();
 
-  // Posts a task in the worker pool to write the metadata to disk.
+  // Posts a background task to write the metadata to disk.
   void WriteMetadata();
 
-  // Removes metadata for the context from memory and posts a task in the worker
-  // pool to delete it on disk.
+  // Removes metadata for the context from memory and posts a background task to
+  // delete it on disk.
   void RemoveMetadata();
 
   // Clears the |pending_items_| mapping.
@@ -289,7 +292,7 @@ class DownloadMetadataManager::ManagerContext
   void RunCallbacks();
 
   // Returns true if metadata corresponding to |item| is available.
-  bool HasMetadataFor(const content::DownloadItem* item) const;
+  bool HasMetadataFor(const download::DownloadItem* item) const;
 
   // A callback run on the main thread with the results from reading the
   // metadata file from disk.
@@ -298,11 +301,8 @@ class DownloadMetadataManager::ManagerContext
   // Updates the last opened time in the metadata and writes it to disk.
   void UpdateLastOpenedTime(const base::Time& last_opened_time);
 
-  // A task runner to which read tasks are posted.
-  scoped_refptr<base::SequencedTaskRunner> read_runner_;
-
-  // A task runner to which write tasks are posted.
-  scoped_refptr<base::SequencedTaskRunner> write_runner_;
+  // A task runner to which IO tasks are posted.
+  const scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
   // The path to the metadata file for this context.
   base::FilePath metadata_path_;
@@ -338,22 +338,11 @@ class DownloadMetadataManager::ManagerContext
 
 // DownloadMetadataManager -----------------------------------------------------
 
-DownloadMetadataManager::DownloadMetadataManager(
-    const scoped_refptr<base::SequencedWorkerPool>& worker_pool) {
-  base::SequencedWorkerPool::SequenceToken token(
-      worker_pool->GetSequenceToken());
-  // Do not block shutdown on reads since nothing will come of it.
-  read_runner_ = worker_pool->GetSequencedTaskRunnerWithShutdownBehavior(
-      token, base::SequencedWorkerPool::CONTINUE_ON_SHUTDOWN);
-  // Block shutdown on writes only if they've already begun.
-  write_runner_ = worker_pool->GetSequencedTaskRunnerWithShutdownBehavior(
-      token, base::SequencedWorkerPool::SKIP_ON_SHUTDOWN);
-}
-
-DownloadMetadataManager::DownloadMetadataManager(
-    const scoped_refptr<base::SequencedTaskRunner>& task_runner)
-    : read_runner_(task_runner), write_runner_(task_runner) {
-}
+DownloadMetadataManager::DownloadMetadataManager()
+    : task_runner_(base::CreateSequencedTaskRunnerWithTraits(
+          {base::TaskPriority::BEST_EFFORT,
+           base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN,
+           base::MayBlock()})) {}
 
 DownloadMetadataManager::~DownloadMetadataManager() {
   // Destruction may have taken place before managers have gone down.
@@ -371,17 +360,18 @@ void DownloadMetadataManager::AddDownloadManager(
     return;
   download_manager->AddObserver(this);
   contexts_[download_manager] =
-      new ManagerContext(read_runner_, write_runner_, download_manager);
+      new ManagerContext(task_runner_, download_manager);
 }
 
-void DownloadMetadataManager::SetRequest(content::DownloadItem* item,
+void DownloadMetadataManager::SetRequest(download::DownloadItem* item,
                                          const ClientDownloadRequest* request) {
   DCHECK(request);
   content::DownloadManager* download_manager =
-      GetDownloadManagerForBrowserContext(item->GetBrowserContext());
+      GetDownloadManagerForBrowserContext(
+          content::DownloadItemUtils::GetBrowserContext(item));
   DCHECK_EQ(contexts_.count(download_manager), 1U);
   contexts_[download_manager]->SetRequest(
-      item, base::WrapUnique(new ClientDownloadRequest(*request)));
+      item, std::make_unique<ClientDownloadRequest>(*request));
 }
 
 void DownloadMetadataManager::GetDownloadDetails(
@@ -402,11 +392,11 @@ void DownloadMetadataManager::GetDownloadDetails(
 
   // Fire off a task to load the details and return them to the caller.
   DownloadMetadata* metadata = new DownloadMetadata();
-  read_runner_->PostTaskAndReply(
-      FROM_HERE, base::Bind(&ReadMetadataOnWorkerPool,
-                            GetMetadataPath(browser_context), metadata),
-      base::Bind(&ReturnResults, callback,
-                 base::Passed(base::WrapUnique(metadata))));
+  task_runner_->PostTaskAndReply(
+      FROM_HERE,
+      base::BindOnce(&ReadMetadataInBackground,
+                     GetMetadataPath(browser_context), metadata),
+      base::BindOnce(&ReturnResults, callback, base::WrapUnique(metadata)));
 }
 
 content::DownloadManager*
@@ -417,7 +407,7 @@ DownloadMetadataManager::GetDownloadManagerForBrowserContext(
 
 void DownloadMetadataManager::OnDownloadCreated(
     content::DownloadManager* download_manager,
-    content::DownloadItem* item) {
+    download::DownloadItem* item) {
   DCHECK_EQ(contexts_.count(download_manager), 1U);
   contexts_[download_manager]->OnDownloadCreated(item);
 }
@@ -435,11 +425,9 @@ void DownloadMetadataManager::ManagerGoingDown(
 // DownloadMetadataManager::ManagerContext -------------------------------------
 
 DownloadMetadataManager::ManagerContext::ManagerContext(
-    const scoped_refptr<base::SequencedTaskRunner>& read_runner,
-    const scoped_refptr<base::SequencedTaskRunner>& write_runner,
+    scoped_refptr<base::SequencedTaskRunner> task_runner,
     content::DownloadManager* download_manager)
-    : read_runner_(read_runner),
-      write_runner_(write_runner),
+    : task_runner_(std::move(task_runner)),
       metadata_path_(GetMetadataPath(download_manager->GetBrowserContext())),
       state_(WAITING_FOR_LOAD),
       weak_factory_(this) {
@@ -472,17 +460,17 @@ void DownloadMetadataManager::ManagerContext::Detach(
 }
 
 void DownloadMetadataManager::ManagerContext::OnDownloadCreated(
-    content::DownloadItem* download) {
+    download::DownloadItem* download) {
   download->AddObserver(this);
 }
 
 void DownloadMetadataManager::ManagerContext::SetRequest(
-    content::DownloadItem* download,
+    download::DownloadItem* download,
     std::unique_ptr<ClientDownloadRequest> request) {
   DCHECK(request);
   // Hold on to the request for completion time if the download is in progress.
   // Otherwise, commit the request.
-  if (download->GetState() == content::DownloadItem::IN_PROGRESS)
+  if (download->GetState() == download::DownloadItem::IN_PROGRESS)
     DownloadItemData::SetRequestForDownload(download, std::move(request));
   else
     CommitRequest(download, std::move(request));
@@ -493,18 +481,17 @@ void DownloadMetadataManager::ManagerContext::GetDownloadDetails(
   if (state_ != LOAD_COMPLETE) {
     get_details_callbacks_.push_back(callback);
   } else {
-    callback.Run(
-        download_metadata_
-            ? base::WrapUnique(new ClientIncidentReport_DownloadDetails(
-                  download_metadata_->download()))
-            : nullptr);
+    callback.Run(download_metadata_
+                     ? std::make_unique<ClientIncidentReport_DownloadDetails>(
+                           download_metadata_->download())
+                     : nullptr);
   }
 }
 
 void DownloadMetadataManager::ManagerContext::OnDownloadUpdated(
-    content::DownloadItem* download) {
+    download::DownloadItem* download) {
   // Persist metadata for this download if it has just completed.
-  if (download->GetState() == content::DownloadItem::COMPLETE) {
+  if (download->GetState() == download::DownloadItem::COMPLETE) {
     // Ignore downloads we don't have a ClientDownloadRequest for.
     std::unique_ptr<ClientDownloadRequest> request =
         DownloadItemData::TakeRequestForDownload(download);
@@ -514,7 +501,7 @@ void DownloadMetadataManager::ManagerContext::OnDownloadUpdated(
 }
 
 void DownloadMetadataManager::ManagerContext::OnDownloadOpened(
-    content::DownloadItem* download) {
+    download::DownloadItem* download) {
   const base::Time now = base::Time::Now();
   if (state_ != LOAD_COMPLETE)
     pending_items_[download->GetId()].last_opened_time = now;
@@ -523,7 +510,7 @@ void DownloadMetadataManager::ManagerContext::OnDownloadOpened(
 }
 
 void DownloadMetadataManager::ManagerContext::OnDownloadRemoved(
-    content::DownloadItem* download) {
+    download::DownloadItem* download) {
   if (state_ != LOAD_COMPLETE)
     pending_items_[download->GetId()].removed = true;
   else if (HasMetadataFor(download))
@@ -537,9 +524,9 @@ DownloadMetadataManager::ManagerContext::~ManagerContext() {
 }
 
 void DownloadMetadataManager::ManagerContext::CommitRequest(
-    content::DownloadItem* item,
+    download::DownloadItem* item,
     std::unique_ptr<ClientDownloadRequest> request) {
-  DCHECK_EQ(content::DownloadItem::COMPLETE, item->GetState());
+  DCHECK_EQ(download::DownloadItem::COMPLETE, item->GetState());
   if (state_ != LOAD_COMPLETE) {
     // Abandon the read task since |item| is the new top dog.
     weak_factory_.InvalidateWeakPtrs();
@@ -565,20 +552,18 @@ void DownloadMetadataManager::ManagerContext::ReadMetadata() {
 
   DownloadMetadata* metadata = new DownloadMetadata();
   // Do not block shutdown on this read since nothing will come of it.
-  read_runner_->PostTaskAndReply(
+  task_runner_->PostTaskAndReply(
       FROM_HERE,
-      base::Bind(&ReadMetadataOnWorkerPool, metadata_path_, metadata),
-      base::Bind(&DownloadMetadataManager::ManagerContext::OnMetadataReady,
-                 weak_factory_.GetWeakPtr(),
-                 base::Passed(base::WrapUnique(metadata))));
+      base::BindOnce(&ReadMetadataInBackground, metadata_path_, metadata),
+      base::BindOnce(&DownloadMetadataManager::ManagerContext::OnMetadataReady,
+                     weak_factory_.GetWeakPtr(), base::WrapUnique(metadata)));
 }
 
 void DownloadMetadataManager::ManagerContext::WriteMetadata() {
-  write_runner_->PostTask(
+  task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&WriteMetadataOnWorkerPool,
-                 metadata_path_,
-                 base::Owned(new DownloadMetadata(*download_metadata_))));
+      base::BindOnce(&WriteMetadataInBackground, metadata_path_,
+                     base::Owned(new DownloadMetadata(*download_metadata_))));
 }
 
 void DownloadMetadataManager::ManagerContext::RemoveMetadata() {
@@ -591,8 +576,8 @@ void DownloadMetadataManager::ManagerContext::RemoveMetadata() {
   }
   // Remove any metadata.
   download_metadata_.reset();
-  write_runner_->PostTask(
-      FROM_HERE, base::Bind(&DeleteMetadataOnWorkerPool, metadata_path_));
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&DeleteMetadataInBackground, metadata_path_));
   // Run callbacks (only present in case of a transition to LOAD_COMPLETE).
   RunCallbacks();
 }
@@ -604,17 +589,16 @@ void DownloadMetadataManager::ManagerContext::ClearPendingItems() {
 void DownloadMetadataManager::ManagerContext::RunCallbacks() {
   while (!get_details_callbacks_.empty()) {
     const auto& callback = get_details_callbacks_.front();
-    callback.Run(
-        download_metadata_
-            ? base::WrapUnique(new ClientIncidentReport_DownloadDetails(
-                  download_metadata_->download()))
-            : nullptr);
+    callback.Run(download_metadata_
+                     ? std::make_unique<ClientIncidentReport_DownloadDetails>(
+                           download_metadata_->download())
+                     : nullptr);
     get_details_callbacks_.pop_front();
   }
 }
 
 bool DownloadMetadataManager::ManagerContext::HasMetadataFor(
-    const content::DownloadItem* item) const {
+    const download::DownloadItem* item) const {
   // There must not be metadata if the load is not complete.
   DCHECK(state_ == LOAD_COMPLETE || !download_metadata_);
   return (download_metadata_ &&

@@ -25,9 +25,6 @@ class AudioManagerAndroid;
 // AudioRecordInput.java. This class is created and lives on the Audio Manager
 // thread but recorded audio buffers are delivered on a thread managed by
 // the Java class.
-//
-// The Java class makes use of AudioEffect features which are first available
-// in Jelly Bean. It should not be instantiated running against earlier SDKs.
 class MEDIA_EXPORT AudioRecordInputStream : public AudioInputStream {
  public:
   AudioRecordInputStream(AudioManagerAndroid* manager,
@@ -46,14 +43,13 @@ class MEDIA_EXPORT AudioRecordInputStream : public AudioInputStream {
   bool SetAutomaticGainControl(bool enabled) override;
   bool GetAutomaticGainControl() override;
   bool IsMuted() override;
-
-  static bool RegisterAudioRecordInput(JNIEnv* env);
+  void SetOutputDeviceForAec(const std::string& output_device_id) override;
 
   // Called from Java when data is available.
   void OnData(JNIEnv* env,
               const base::android::JavaParamRef<jobject>& obj,
               jint size,
-              jint hardware_delay_bytes);
+              jint hardware_delay_ms);
 
   // Called from Java so that we can cache the address of the Java-managed
   // |byte_buffer| in |direct_buffer_address_|.

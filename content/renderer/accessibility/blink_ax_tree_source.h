@@ -7,22 +7,48 @@
 
 #include <stdint.h>
 
+#include <set>
+
 #include "content/common/ax_content_node_data.h"
-#include "third_party/WebKit/public/web/WebAXObject.h"
+#include "third_party/blink/public/web/web_ax_object.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/ax_tree_source.h"
 
 namespace content {
 
+class AXImageAnnotator;
+class BlinkAXTreeSource;
 class RenderFrameImpl;
+
+// Create this on the stack to freeze BlinkAXTreeSource and automatically
+// un-freeze it when it goes out of scope.
+class ScopedFreezeBlinkAXTreeSource {
+ public:
+  explicit ScopedFreezeBlinkAXTreeSource(BlinkAXTreeSource* tree_source);
+  ~ScopedFreezeBlinkAXTreeSource();
+
+ private:
+  BlinkAXTreeSource* tree_source_;
+
+  DISALLOW_COPY_AND_ASSIGN(ScopedFreezeBlinkAXTreeSource);
+};
 
 class BlinkAXTreeSource
     : public ui::AXTreeSource<blink::WebAXObject,
                               AXContentNodeData,
                               AXContentTreeData> {
  public:
-  BlinkAXTreeSource(RenderFrameImpl* render_frame);
+  BlinkAXTreeSource(RenderFrameImpl* render_frame, ui::AXMode mode);
   ~BlinkAXTreeSource() override;
+
+  // Freeze caches the document, accessibility root, and current focused
+  // object for fast retrieval during a batch of operations. Use
+  // ScopedFreezeBlinkAXTreeSource on the stack rather than calling
+  // these directly.
+  void Freeze();
+  void Thaw();
 
   // It may be necessary to call SetRoot if you're using a WebScopedAXContext,
   // because BlinkAXTreeSource can't get the root of the tree from the
@@ -32,11 +58,31 @@ class BlinkAXTreeSource
   // Walks up the ancestor chain to see if this is a descendant of the root.
   bool IsInTree(blink::WebAXObject node) const;
 
-  // Set the id of the node with accessibility focus. The node with
-  // accessibility focus will force loading inline text box children,
-  // which aren't always loaded by default on all platforms.
-  int accessibility_focus_id() { return accessibility_focus_id_; }
-  void set_accessibility_focus_id(int id) { accessibility_focus_id_ = id; }
+  ui::AXMode accessibility_mode() { return accessibility_mode_; }
+  void SetAccessibilityMode(ui::AXMode new_mode);
+
+  // Set the id of the node to fetch image data for. Normally the content
+  // of images is not part of the accessibility tree, but one node at a
+  // time can be designated as the image data node, which will send the
+  // contents of the image with each accessibility update until another
+  // node is designated.
+  int image_data_node_id() { return image_data_node_id_; }
+  void set_image_data_node_id(int id) { image_data_node_id_ = id; }
+
+  void set_max_image_data_size(const gfx::Size& size) {
+    max_image_data_size_ = size;
+  }
+
+  // The following methods add or remove an image annotator which is used to
+  // provide automatic labels for images.
+  void AddImageAnnotator(AXImageAnnotator* const annotator) {
+    image_annotator_ = annotator;
+  }
+  void RemoveImageAnnotator() { image_annotator_ = nullptr; }
+
+  // Query or update a set of IDs for which we should load inline text boxes.
+  bool ShouldLoadInlineTextBoxes(const blink::WebAXObject& obj) const;
+  void SetLoadInlineTextBoxesForId(int32_t id);
 
   // AXTreeSource implementation.
   bool GetTreeData(AXContentTreeData* tree_data) const override;
@@ -57,10 +103,57 @@ class BlinkAXTreeSource
   blink::WebDocument GetMainDocument() const;
 
  private:
-  RenderFrameImpl* render_frame_;
-  blink::WebAXObject root_;
+  const blink::WebDocument& document() const {
+    DCHECK(frozen_);
+    return document_;
+  }
+  const blink::WebAXObject& root() const {
+    DCHECK(frozen_);
+    return root_;
+  }
+  const blink::WebAXObject& focus() const {
+    DCHECK(frozen_);
+    return focus_;
+  }
 
-  int accessibility_focus_id_;
+  blink::WebAXObject ComputeRoot() const;
+
+  // Max length for attributes such as aria-label.
+  static const uint32_t kMaxStringAttributeLength = 10000;
+  // Max length for a static text name.
+  // Length of War and Peace (http://www.gutenberg.org/files/2600/2600-0.txt).
+  static const uint32_t kMaxStaticTextLength = 3227574;
+  void TruncateAndAddStringAttribute(
+      AXContentNodeData* dst,
+      ax::mojom::StringAttribute attribute,
+      const std::string& value,
+      uint32_t max_len = kMaxStringAttributeLength) const;
+
+  void AddImageAnnotations(blink::WebAXObject node,
+                           AXContentNodeData* out_data) const;
+
+  RenderFrameImpl* render_frame_;
+
+  ui::AXMode accessibility_mode_;
+
+  // An explicit root to use, otherwise it's taken from the WebDocument.
+  blink::WebAXObject explicit_root_;
+
+  // A set of IDs for which we should always load inline text boxes.
+  std::set<int32_t> load_inline_text_boxes_ids_;
+
+  // The ID of the object to fetch image data for.
+  int image_data_node_id_ = -1;
+
+  gfx::Size max_image_data_size_;
+
+  AXImageAnnotator* image_annotator_ = nullptr;
+
+  // These are updated when calling |Freeze|.
+  bool frozen_ = false;
+  blink::WebDocument document_;
+  blink::WebAXObject root_;
+  blink::WebAXObject focus_;
 };
 
 }  // namespace content

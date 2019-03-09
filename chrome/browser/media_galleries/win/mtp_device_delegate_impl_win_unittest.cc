@@ -7,9 +7,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/stl_util.h"
 #include "chrome/browser/browser_process.h"
@@ -28,6 +28,7 @@
 #include "components/storage_monitor/test_volume_mount_watcher_win.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_system.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -47,7 +48,7 @@ void GetGalleryInfoCallback(
     FSInfoMap* results,
     const std::vector<MediaFileSystemInfo>& file_systems) {
   for (size_t i = 0; i < file_systems.size(); ++i) {
-    ASSERT_FALSE(ContainsKey(*results, file_systems[i].pref_id));
+    ASSERT_FALSE(base::ContainsKey(*results, file_systems[i].pref_id));
     (*results)[file_systems[i].pref_id] = file_systems[i];
   }
 }
@@ -111,11 +112,13 @@ void MTPDeviceDelegateImplWinTest::SetUp() {
 }
 
 void MTPDeviceDelegateImplWinTest::TearDown() {
-  // Windows storage monitor must be destroyed on the same thread
-  // as construction.
-  TestStorageMonitor::Destroy();
-
   ChromeRenderViewHostTestHarness::TearDown();
+
+  TestingBrowserProcess::DeleteInstance();
+
+  // Windows storage monitor must be destroyed after the MediaFileSystemRegistry
+  // owned by TestingBrowserProcess because it uses it in its destructor.
+  TestStorageMonitor::Destroy();
 }
 
 void MTPDeviceDelegateImplWinTest::ProcessAttach(
@@ -156,7 +159,8 @@ void MTPDeviceDelegateImplWinTest::CheckGalleryInfo(
     EXPECT_EQ(0UL, info.transient_device_id.size());
 }
 
-TEST_F(MTPDeviceDelegateImplWinTest, GalleryNameMTP) {
+// TODO(https://crbug.com/868254): Failing on Win7 Tests (1). Fix and enable.
+TEST_F(MTPDeviceDelegateImplWinTest, DISABLED_GalleryNameMTP) {
   base::FilePath location(
       PortableDeviceWatcherWin::GetStoragePathFromStorageId(
           TestPortableDeviceWatcherWin::kStorageUniqueIdA));
@@ -168,7 +172,7 @@ TEST_F(MTPDeviceDelegateImplWinTest, GalleryNameMTP) {
   registry->GetMediaFileSystemsForExtension(
       web_contents(), extension_.get(),
       base::Bind(&GetGalleryInfoCallback, base::Unretained(&results)));
-  base::RunLoop().RunUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   ASSERT_EQ(media_directories_.num_galleries() + 1u, results.size());
   bool checked = false;

@@ -44,8 +44,8 @@ function SearchBox(element, searchButton) {
    * Text input of the search box.
    * @type {!HTMLInputElement}
    */
-  this.inputElement = /** @type {!HTMLInputElement} */ (
-      element.querySelector('input'));
+  this.inputElement =
+      /** @type {!HTMLInputElement} */ (element.querySelector('cr-input'));
 
   /**
    * Clear button of the search box.
@@ -71,7 +71,7 @@ function SearchBox(element, searchButton) {
   this.clearButton_.addEventListener(
       'click',
       this.onClearButtonClick_.bind(this));
-  var dispatchItemSelect =
+  const dispatchItemSelect =
       cr.dispatchSimpleEvent.bind(cr, this, SearchBox.EventType.ITEM_SELECT);
   this.autocompleteList.handleEnterKeydown = dispatchItemSelect;
   this.autocompleteList.addEventListener('mousedown', dispatchItemSelect);
@@ -102,7 +102,7 @@ SearchBox.EventType = {
  * @extends {cr.ui.AutocompleteList}
  */
 SearchBox.AutocompleteList = function(document) {
-  var self = cr.ui.AutocompleteList.call(this);
+  const self = cr.ui.AutocompleteList.call(this);
   self.__proto__ = SearchBox.AutocompleteList.prototype;
   self.id = 'autocomplete-list';
   self.autoExpands = true;
@@ -119,7 +119,7 @@ SearchBox.AutocompleteList.prototype = {
  * Do nothing when a suggestion is selected.
  * @override
  */
-SearchBox.AutocompleteList.prototype.handleSelectedSuggestion = function() {};
+SearchBox.AutocompleteList.prototype.handleSelectedSuggestion = () => {};
 
 /**
  * Change the selection by a mouse over instead of just changing the
@@ -136,26 +136,28 @@ SearchBox.AutocompleteList.prototype.handleSelectedSuggestion = function() {};
  * @private
  */
 SearchBox.AutocompleteList.prototype.onMouseOver_ = function(event) {
-  if (event.target.itemInfo)
+  if (event.target.itemInfo) {
     this.selectedItem = event.target.itemInfo;
+  }
 };
 
 /**
  * ListItem element for autocomplete.
  *
  * @param {Document} document Document.
- * @param {Object} item An object representing a suggestion.
+ * @param {SearchItem|chrome.fileManagerPrivate.SearchResult} item An object
+ * representing a suggestion.
  * @constructor
  * @private
  */
 SearchBox.AutocompleteListItem_ = function(document, item) {
-  var li = new cr.ui.ListItem();
+  const li = new cr.ui.ListItem();
   li.itemInfo = item;
 
-  var icon = document.createElement('div');
+  const icon = document.createElement('div');
   icon.className = 'detail-icon';
 
-  var text = document.createElement('div');
+  const text = document.createElement('div');
   text.className = 'detail-text';
 
   if (item.isHeaderItem) {
@@ -163,7 +165,7 @@ SearchBox.AutocompleteListItem_ = function(document, item) {
     text.innerHTML =
         strf('SEARCH_DRIVE_HTML', util.htmlEscape(item.searchQuery));
   } else {
-    var iconType = FileType.getIcon(item.entry);
+    const iconType = FileType.getIcon(item.entry);
     icon.setAttribute('file-type-icon', iconType);
     // highlightedBaseName is a piece of HTML with meta characters properly
     // escaped. See the comment at fileManagerPrivate.searchDriveMetadata().
@@ -189,7 +191,7 @@ SearchBox.prototype.clear = function() {
 SearchBox.prototype.setHidden = function(hidden) {
   this.element.hidden = hidden;
   this.searchButton.hidden = hidden;
-}
+};
 
 /**
  * @private
@@ -208,6 +210,7 @@ SearchBox.prototype.onFocus_ = function() {
   this.autocompleteList.attachToInput(this.inputElement);
   this.updateStyles_();
   this.searchButtonToggleRipple_.activated = true;
+  metrics.recordUserAction('SelectSearch');
 };
 
 /**
@@ -219,6 +222,8 @@ SearchBox.prototype.onBlur_ = function() {
   this.autocompleteList.detach();
   this.updateStyles_();
   this.searchButtonToggleRipple_.activated = false;
+  // When input has any text we keep it displayed with current search.
+  this.inputElement.hidden = this.inputElement.value.length == 0;
 };
 
 /**
@@ -229,8 +234,9 @@ SearchBox.prototype.onBlur_ = function() {
 SearchBox.prototype.onKeyDown_ = function(event) {
   event = /** @type {KeyboardEvent} */ (event);
   // Handle only Esc key now.
-  if (event.key != 'Escape' || this.inputElement.value)
+  if (event.key != 'Escape' || this.inputElement.value) {
     return;
+  }
 
   this.inputElement.tabIndex = -1;  // Focus to default element after blur.
   this.inputElement.blur();
@@ -246,8 +252,9 @@ SearchBox.prototype.onDragEnter_ = function(event) {
   // For normal elements, they does not accept drag drop by default, and accept
   // it by using event.preventDefault. But input elements accept drag drop
   // by default. So disable the input element here to prohibit drag drop.
-  if (event.dataTransfer.types.indexOf('text/plain') === -1)
+  if (event.dataTransfer.types.indexOf('text/plain') === -1) {
     this.inputElement.style.pointerEvents = 'none';
+  }
 };
 
 /**
@@ -263,19 +270,20 @@ SearchBox.prototype.onDragEnd_ = function() {
  * @private
  */
 SearchBox.prototype.updateStyles_ = function() {
-  var hasText = !!this.inputElement.value;
+  const hasText = !!this.inputElement.value;
   this.element.classList.toggle('has-text', hasText);
-  var hasFocusOnInput = this.element.classList.contains('has-cursor');
+  const hasFocusOnInput = this.element.classList.contains('has-cursor');
 
   // See go/filesapp-tabindex for tabindexes.
-  this.inputElement.tabIndex = (hasText || hasFocusOnInput) ? 13 : -1;
-  this.searchButton.tabIndex = (hasText || hasFocusOnInput) ? -1 : 12;
+  this.inputElement.tabIndex = (hasText || hasFocusOnInput) ? 14 : -1;
+  this.searchButton.tabIndex = (hasText || hasFocusOnInput) ? -1 : 13;
 };
 
 /**
  * @private
  */
 SearchBox.prototype.onSearchButtonClick_ = function() {
+  this.inputElement.hidden = false;
   this.inputElement.focus();
 };
 

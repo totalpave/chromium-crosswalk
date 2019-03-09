@@ -5,11 +5,14 @@
 #ifndef NET_QUIC_CRYPTO_CHANNEL_ID_CHROMIUM_H_
 #define NET_QUIC_CRYPTO_CHANNEL_ID_CHROMIUM_H_
 
-#include <set>
+#include <map>
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
-#include "net/quic/crypto/channel_id.h"
+#include "net/base/net_export.h"
+#include "net/third_party/quic/core/crypto/channel_id.h"
+#include "net/third_party/quic/platform/api/quic_string_piece.h"
 
 namespace crypto {
 class ECPrivateKey;
@@ -19,14 +22,14 @@ namespace net {
 
 class ChannelIDService;
 
-class NET_EXPORT_PRIVATE ChannelIDKeyChromium : public ChannelIDKey {
+class NET_EXPORT_PRIVATE ChannelIDKeyChromium : public quic::ChannelIDKey {
  public:
   explicit ChannelIDKeyChromium(
       std::unique_ptr<crypto::ECPrivateKey> ec_private_key);
   ~ChannelIDKeyChromium() override;
 
-  // ChannelIDKey interface
-  bool Sign(base::StringPiece signed_data,
+  // quic::ChannelIDKey interface
+  bool Sign(quic::QuicStringPiece signed_data,
             std::string* out_signature) const override;
   std::string SerializeKey() const override;
 
@@ -34,25 +37,25 @@ class NET_EXPORT_PRIVATE ChannelIDKeyChromium : public ChannelIDKey {
   std::unique_ptr<crypto::ECPrivateKey> ec_private_key_;
 };
 
-// ChannelIDSourceChromium implements the QUIC ChannelIDSource interface.
-class ChannelIDSourceChromium : public ChannelIDSource {
+// ChannelIDSourceChromium implements the QUIC quic::ChannelIDSource interface.
+class ChannelIDSourceChromium : public quic::ChannelIDSource {
  public:
   explicit ChannelIDSourceChromium(ChannelIDService* channel_id_service);
   ~ChannelIDSourceChromium() override;
 
-  // ChannelIDSource interface
-  QuicAsyncStatus GetChannelIDKey(const std::string& hostname,
-                                  std::unique_ptr<ChannelIDKey>* channel_id_key,
-                                  ChannelIDSourceCallback* callback) override;
+  // quic::ChannelIDSource interface
+  quic::QuicAsyncStatus GetChannelIDKey(
+      const std::string& hostname,
+      std::unique_ptr<quic::ChannelIDKey>* channel_id_key,
+      quic::ChannelIDSourceCallback* callback) override;
 
  private:
   class Job;
-  typedef std::set<Job*> JobSet;
 
   void OnJobComplete(Job* job);
 
   // Set owning pointers to active jobs.
-  JobSet active_jobs_;
+  std::map<Job*, std::unique_ptr<Job>> active_jobs_;
 
   // The service for retrieving Channel ID keys.
   ChannelIDService* const channel_id_service_;

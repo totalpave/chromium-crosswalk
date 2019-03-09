@@ -35,6 +35,7 @@ class BluetoothDiscoverySession;
 namespace extensions {
 class BluetoothApiPairingDelegate;
 class ExtensionRegistry;
+struct EventListenerInfo;
 
 class BluetoothEventRouter : public device::BluetoothAdapter::Observer,
                              public content::NotificationObserver,
@@ -47,8 +48,7 @@ class BluetoothEventRouter : public device::BluetoothAdapter::Observer,
   // adapter is available for the current platform.
   bool IsBluetoothSupported() const;
 
-  void GetAdapter(
-      const device::BluetoothAdapterFactory::AdapterCallback& callback);
+  void GetAdapter(device::BluetoothAdapterFactory::AdapterCallback callback);
 
   // Requests that a new device discovery session be initiated for extension
   // with id |extension_id|. |callback| is called, if a session has been
@@ -81,10 +81,10 @@ class BluetoothEventRouter : public device::BluetoothAdapter::Observer,
       const base::Closure& error_callback);
 
   // Called when a bluetooth event listener is added.
-  void OnListenerAdded();
+  void OnListenerAdded(const EventListenerInfo& details);
 
   // Called when a bluetooth event listener is removed.
-  void OnListenerRemoved();
+  void OnListenerRemoved(const EventListenerInfo& details);
 
   // Adds a pairing delegate for an extension.
   void AddPairingDelegate(const std::string& extension_id);
@@ -124,7 +124,7 @@ class BluetoothEventRouter : public device::BluetoothAdapter::Observer,
   // Overridden from ExtensionRegistryObserver.
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   // BrowserContextKeyedAPI implementation.
   static const char* service_name() { return "BluetoothEventRouter"; }
@@ -139,7 +139,7 @@ class BluetoothEventRouter : public device::BluetoothAdapter::Observer,
   void AddPairingDelegateImpl(const std::string& extension_id);
 
   void OnAdapterInitialized(
-      const device::BluetoothAdapterFactory::AdapterCallback& callback,
+      device::BluetoothAdapterFactory::AdapterCallback callback,
       scoped_refptr<device::BluetoothAdapter> adapter);
   void MaybeReleaseAdapter();
   void DispatchAdapterStateEvent();
@@ -159,7 +159,8 @@ class BluetoothEventRouter : public device::BluetoothAdapter::Observer,
   content::BrowserContext* browser_context_;
   scoped_refptr<device::BluetoothAdapter> adapter_;
 
-  int num_event_listeners_;
+  // Map of listener id -> listener count.
+  std::map<std::string, int> event_listener_count_;
 
   // A map that maps extension ids to BluetoothDiscoverySession pointers.
   typedef std::map<std::string, device::BluetoothDiscoverySession*>

@@ -5,10 +5,13 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_FORM_SAVER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_FORM_SAVER_H_
 
+#include <map>
+#include <memory>
 #include <vector>
 
 #include "base/macros.h"
 #include "base/optional.h"
+#include "base/strings/string16.h"
 #include "components/autofill/core/common/password_form.h"
 
 namespace password_manager {
@@ -25,12 +28,11 @@ class FormSaver {
   virtual void PermanentlyBlacklist(autofill::PasswordForm* observed) = 0;
 
   // Saves the |pending| form and updates the stored preference on
-  // |best_matches|. If |old_primary_key| is given, uses it for saving
-  // |pending|. It also updates the password store with all
-  // |credentials_to_update|.
-  virtual void Save(const autofill::PasswordForm& pending,
-                    const autofill::PasswordFormMap& best_matches,
-                    const autofill::PasswordForm* old_primary_key) = 0;
+  // |best_matches|.
+  virtual void Save(
+      const autofill::PasswordForm& pending,
+      const std::map<base::string16, const autofill::PasswordForm*>&
+          best_matches) = 0;
 
   // Updates the |pending| form and updates the stored preference on
   // |best_matches|. If |old_primary_key| is given, uses it for saving
@@ -38,8 +40,9 @@ class FormSaver {
   // |credentials_to_update|.
   virtual void Update(
       const autofill::PasswordForm& pending,
-      const autofill::PasswordFormMap& best_matches,
-      const std::vector<const autofill::PasswordForm*>* credentials_to_update,
+      const std::map<base::string16, const autofill::PasswordForm*>&
+          best_matches,
+      const std::vector<autofill::PasswordForm>* credentials_to_update,
       const autofill::PasswordForm* old_primary_key) = 0;
 
   // Ensures that |generated| is saved in the store. This is in ideal case
@@ -54,16 +57,8 @@ class FormSaver {
   // password.
   virtual void RemovePresavedPassword() = 0;
 
-  // Removes all credentials from |best_matches| which are for the same GAIA
-  // account as |pending|, but with a different (i.e., outdated) password. The
-  // credentials are removed both from the store and from |best_matches|. If
-  // one of the removed credentials is the pointee of |*preferred_match|,
-  // |*preferred_match| is nulled. Do not call this if |pending| is not a GAIA
-  // account.
-  virtual void WipeOutdatedCopies(
-      const autofill::PasswordForm& pending,
-      autofill::PasswordFormMap* best_matches,
-      const autofill::PasswordForm** preferred_match) = 0;
+  // Creates a new FormSaver with the same state as |*this|.
+  virtual std::unique_ptr<FormSaver> Clone() = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(FormSaver);

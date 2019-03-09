@@ -38,18 +38,20 @@ import io.netty.handler.ssl.SupportedCipherSuiteFilter;
  * Wrapper class to start a HTTP/2 test server.
  */
 public final class Http2TestServer {
-    private static final ConditionVariable sBlock = new ConditionVariable();
     private static Channel sServerChannel;
-    private static final String TAG = "Http2TestServer";
+    private static final String TAG = Http2TestServer.class.getSimpleName();
 
     private static final String HOST = "127.0.0.1";
     // Server port.
     private static final int PORT = 8443;
 
+    private static ReportingCollector sReportingCollector;
+
     public static boolean shutdownHttp2TestServer() throws Exception {
         if (sServerChannel != null) {
-            sServerChannel.close();
+            sServerChannel.close().sync();
             sServerChannel = null;
+            sReportingCollector = null;
             return true;
         }
         return false;
@@ -65,6 +67,10 @@ public final class Http2TestServer {
 
     public static String getServerUrl() {
         return "https://" + HOST + ":" + PORT;
+    }
+
+    public static ReportingCollector getReportingCollector() {
+        return sReportingCollector;
     }
 
     public static String getEchoAllHeadersUrl() {
@@ -93,19 +99,42 @@ public final class Http2TestServer {
         return getServerUrl() + Http2TestHandler.ECHO_TRAILERS_PATH;
     }
 
+    /**
+     * @return url of a brotli-encoded server resource.
+     */
+    public static String getServeSimpleBrotliResponse() {
+        return getServerUrl() + Http2TestHandler.SERVE_SIMPLE_BROTLI_RESPONSE;
+    }
+
+    /**
+     * @return url of the reporting collector
+     */
+    public static String getReportingCollectorUrl() {
+        return getServerUrl() + Http2TestHandler.REPORTING_COLLECTOR_PATH;
+    }
+
+    /**
+     * @return url of a resource that includes Reporting and NEL policy headers in its response
+     */
+    public static String getSuccessWithNELHeadersUrl() {
+        return getServerUrl() + Http2TestHandler.SUCCESS_WITH_NEL_HEADERS_PATH;
+    }
+
     public static boolean startHttp2TestServer(
             Context context, String certFileName, String keyFileName) throws Exception {
-        new Thread(
+        sReportingCollector = new ReportingCollector();
+        Http2TestServerRunnable http2TestServerRunnable =
                 new Http2TestServerRunnable(new File(CertTestUtil.CERTS_DIRECTORY + certFileName),
-                        new File(CertTestUtil.CERTS_DIRECTORY + keyFileName)))
-                .start();
-        sBlock.block();
+                        new File(CertTestUtil.CERTS_DIRECTORY + keyFileName));
+        new Thread(http2TestServerRunnable).start();
+        http2TestServerRunnable.blockUntilStarted();
         return true;
     }
 
     private Http2TestServer() {}
 
     private static class Http2TestServerRunnable implements Runnable {
+        private final ConditionVariable mBlock = new ConditionVariable();
         private final SslContext mSslCtx;
 
         Http2TestServerRunnable(File certFile, File keyFile) throws Exception {
@@ -113,34 +142,51 @@ public final class Http2TestServer {
                     Protocol.ALPN, SelectorFailureBehavior.NO_ADVERTISE,
                     SelectedListenerFailureBehavior.ACCEPT, ApplicationProtocolNames.HTTP_2);
 
+            // Don't make netty use java.security.KeyStore.getInstance("JKS") as it doesn't
+            // exist.  Just avoid a KeyManagerFactory as it's unnecessary for our testing.
+            System.setProperty("io.netty.handler.ssl.openssl.useKeyManagerFactory", "false");
+
             mSslCtx = new OpenSslServerContext(certFile, keyFile, null, null,
                     Http2SecurityUtil.CIPHERS, SupportedCipherSuiteFilter.INSTANCE,
                     applicationProtocolConfig, 0, 0);
         }
 
-        public void run() {
-            try {
-                // Configure the server.
-                EventLoopGroup group = new NioEventLoopGroup();
-                try {
-                    ServerBootstrap b = new ServerBootstrap();
-                    b.option(ChannelOption.SO_BACKLOG, 1024);
-                    b.group(group)
-                            .channel(NioServerSocketChannel.class)
-                            .handler(new LoggingHandler(LogLevel.INFO))
-                            .childHandler(new Http2ServerInitializer(mSslCtx));
+        public void blockUntilStarted() {
+            mBlock.block();
+        }
 
-                    sServerChannel = b.bind(PORT).sync().channel();
-                    Log.i(TAG, "Netty HTTP/2 server started on " + getServerUrl());
-                    sBlock.open();
-                    sServerChannel.closeFuture().sync();
-                } finally {
-                    group.shutdownGracefully();
+        @Override
+        public void run() {
+            boolean retry = false;
+            do {
+                try {
+                    // Configure the server.
+                    EventLoopGroup group = new NioEventLoopGroup();
+                    try {
+                        ServerBootstrap b = new ServerBootstrap();
+                        b.option(ChannelOption.SO_BACKLOG, 1024);
+                        b.group(group)
+                                .channel(NioServerSocketChannel.class)
+                                .handler(new LoggingHandler(LogLevel.INFO))
+                                .childHandler(new Http2ServerInitializer(mSslCtx));
+
+                        sServerChannel = b.bind(PORT).sync().channel();
+                        Log.i(TAG, "Netty HTTP/2 server started on " + getServerUrl());
+                        mBlock.open();
+                        sServerChannel.closeFuture().sync();
+                    } finally {
+                        group.shutdownGracefully();
+                    }
+                    Log.i(TAG, "Stopped Http2TestServerRunnable!");
+                    retry = false;
+                } catch (Exception e) {
+                    Log.e(TAG, "Netty server failed to start", e);
+                    // Retry once if we hit https://github.com/netty/netty/issues/2616 before the
+                    // server starts.
+                    retry = !retry && sServerChannel == null
+                            && e.toString().contains("java.nio.channels.ClosedChannelException");
                 }
-                Log.i(TAG, "Stopped Http2TestServerRunnable!");
-            } catch (Exception e) {
-                Log.e(TAG, e.toString());
-            }
+            } while (retry);
         }
     }
 
@@ -169,7 +215,10 @@ public final class Http2TestServer {
         protected void configurePipeline(ChannelHandlerContext ctx, String protocol)
                 throws Exception {
             if (ApplicationProtocolNames.HTTP_2.equals(protocol)) {
-                ctx.pipeline().addLast(new Http2TestHandler.Builder().build());
+                ctx.pipeline().addLast(new Http2TestHandler.Builder()
+                                               .setReportingCollector(sReportingCollector)
+                                               .setServerUrl(getServerUrl())
+                                               .build());
                 return;
             }
 

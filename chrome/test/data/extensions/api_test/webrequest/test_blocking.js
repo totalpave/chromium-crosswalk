@@ -9,12 +9,12 @@ function getURLEchoUserAgent() {
   return getServerURL('echoheader?User-Agent');
 }
 
-function getURLSetCookie() {
-  return getServerURL('set-cookie?Foo=Bar');
+function getURLSetHeader() {
+  return getServerURL('set-header?Foo:%20Bar');
 }
 
-function getURLNonUTF8SetCookie() {
-  return getServerURL('set-header?Set-Cookie%3A%20Foo%3D%FE%D1');
+function getURLNonUTF8SetHeader() {
+  return getServerURL('set-header?Foo%3A%20Bar%3D%FE%D1');
 }
 
 function getURLHttpSimpleLoad() {
@@ -22,6 +22,25 @@ function getURLHttpSimpleLoad() {
 }
 function getURLHttpXHRData() {
   return getServerURL('extensions/api_test/webrequest/xhr/data.json');
+}
+function getURLHttpScriptPage() {
+  return getServerURL('extensions/api_test/webrequest/script/index.html');
+}
+function getURLHttpScriptJS() {
+  return getServerURL('extensions/api_test/webrequest/script/test.js');
+}
+function getDummyScriptDataURL() {
+  let script_text = 'fetch(\'./fetch\');\n';
+  // Make the script larger than 1K to check the behavior of code cache
+  // generation. See: crbug.com/782793.
+  for (let i = 0; i < 100; ++i) {
+    script_text += '/**********/\n';
+  }
+  return 'data:text/javascript;base64,' +
+          btoa(unescape(encodeURIComponent(script_text)));
+}
+function getURLHttpScriptJSFetchedData() {
+  return getServerURL('extensions/api_test/webrequest/script/fetch');
 }
 
 function toCharCodes(str) {
@@ -44,7 +63,8 @@ runTests([
           details: {
             type: "main_frame",
             url: getURL("complexLoad/b.html"),
-            frameUrl: getURL("complexLoad/b.html")
+            frameUrl: getURL("complexLoad/b.html"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           },
           retval: {cancel: true}
         },
@@ -54,7 +74,8 @@ runTests([
           details: {
             url: getURL("complexLoad/b.html"),
             fromCache: false,
-            error: "net::ERR_BLOCKED_BY_CLIENT"
+            error: "net::ERR_BLOCKED_BY_CLIENT",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -79,7 +100,8 @@ runTests([
             method: "GET",
             type: "main_frame",
             url: getURLHttpSimpleLoad(),
-            frameUrl: getURLHttpSimpleLoad()
+            frameUrl: getURLHttpSimpleLoad(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           },
           retval: {cancel: false}
         },
@@ -87,13 +109,15 @@ runTests([
           event: "onBeforeSendHeaders",
           details: {
             url: getURLHttpSimpleLoad(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
             // Note: no requestHeaders because we don't ask for them.
           },
         },
         { label: "onSendHeaders",
           event: "onSendHeaders",
           details: {
-            url: getURLHttpSimpleLoad()
+            url: getURLHttpSimpleLoad(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onHeadersReceived",
@@ -102,6 +126,7 @@ runTests([
             url: getURLHttpSimpleLoad(),
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           },
           retval: {cancel: true}
         },
@@ -111,7 +136,8 @@ runTests([
           details: {
             url: getURLHttpSimpleLoad(),
             fromCache: false,
-            error: "net::ERR_BLOCKED_BY_CLIENT"
+            error: "net::ERR_BLOCKED_BY_CLIENT",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -161,7 +187,7 @@ runTests([
           details: {
             url: getURLHttpSimpleLoad(),
             statusLine: "HTTP/1.1 200 OK",
-            statusCode: 200,
+            statusCode: 200
           }
         },
         { label: "onResponseStarted",
@@ -171,7 +197,7 @@ runTests([
             fromCache: false,
             statusCode: 200,
             ip: "127.0.0.1",
-            statusLine: "HTTP/1.1 200 OK",
+            statusLine: "HTTP/1.1 200 OK"
           }
         },
         { label: "onCompleted",
@@ -181,7 +207,7 @@ runTests([
             fromCache: false,
             statusCode: 200,
             ip: "127.0.0.1",
-            statusLine: "HTTP/1.1 200 OK",
+            statusLine: "HTTP/1.1 200 OK"
           }
         },
       ],
@@ -208,14 +234,16 @@ runTests([
             method: "GET",
             type: "main_frame",
             url: getURLHttpSimpleLoad(),
-            frameUrl: getURLHttpSimpleLoad()
+            frameUrl: getURLHttpSimpleLoad(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           },
         },
         { label: "onBeforeSendHeaders",
           event: "onBeforeSendHeaders",
           details: {
             url: getURLHttpSimpleLoad(),
-            requestHeadersValid: true
+            requestHeadersValid: true,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           },
           retval: {foo: "bar"}
         },
@@ -224,7 +252,8 @@ runTests([
           event: "onSendHeaders",
           details: {
             url: getURLHttpSimpleLoad(),
-            requestHeadersValid: true
+            requestHeadersValid: true,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onHeadersReceived",
@@ -233,6 +262,7 @@ runTests([
             url: getURLHttpSimpleLoad(),
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onResponseStarted",
@@ -243,6 +273,7 @@ runTests([
             statusCode: 200,
             ip: "127.0.0.1",
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onCompleted",
@@ -253,6 +284,7 @@ runTests([
             statusCode: 200,
             ip: "127.0.0.1",
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
       ],
@@ -274,7 +306,8 @@ runTests([
           event: "onBeforeRequest",
           details: {
             url: getURL("complexLoad/a.html"),
-            frameUrl: getURL("complexLoad/a.html")
+            frameUrl: getURL("complexLoad/a.html"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           },
           retval: {redirectUrl: getURL("simpleLoad/a.html")}
         },
@@ -286,6 +319,7 @@ runTests([
             fromCache: false,
             statusLine: "HTTP/1.1 307 Internal Redirect",
             statusCode: 307,
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onBeforeRequest-2",
@@ -293,6 +327,7 @@ runTests([
           details: {
             url: getURL("simpleLoad/a.html"),
             frameUrl: getURL("simpleLoad/a.html"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           },
         },
         { label: "onResponseStarted",
@@ -302,6 +337,7 @@ runTests([
             fromCache: false,
             statusCode: 200,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -312,6 +348,7 @@ runTests([
             fromCache: false,
             statusCode: 200,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -345,13 +382,15 @@ runTests([
           event: "onBeforeRequest",
           details: {
             url: getURLEchoUserAgent(),
-            frameUrl: getURLEchoUserAgent()
+            frameUrl: getURLEchoUserAgent(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onBeforeSendHeaders",
           event: "onBeforeSendHeaders",
           details: {
             url: getURLEchoUserAgent(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
             // Note: no requestHeaders because we don't ask for them.
           },
           retval: {requestHeaders: [{name: "User-Agent", value: "FoobarUA"}]}
@@ -359,7 +398,8 @@ runTests([
         { label: "onSendHeaders",
           event: "onSendHeaders",
           details: {
-            url: getURLEchoUserAgent()
+            url: getURLEchoUserAgent(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onHeadersReceived",
@@ -368,6 +408,7 @@ runTests([
             url: getURLEchoUserAgent(),
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onResponseStarted",
@@ -378,6 +419,7 @@ runTests([
             statusCode: 200,
             ip: "127.0.0.1",
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onCompleted",
@@ -388,6 +430,7 @@ runTests([
             statusCode: 200,
             ip: "127.0.0.1",
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
       ],
@@ -420,13 +463,15 @@ runTests([
           event: "onBeforeRequest",
           details: {
             url: getURLEchoUserAgent(),
-            frameUrl: getURLEchoUserAgent()
+            frameUrl: getURLEchoUserAgent(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onBeforeSendHeaders",
           event: "onBeforeSendHeaders",
           details: {
             url: getURLEchoUserAgent(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
             // Note: no requestHeaders because we don't ask for them.
           },
           retval: {requestHeaders: [{name: "User-Agent",
@@ -435,7 +480,8 @@ runTests([
         { label: "onSendHeaders",
           event: "onSendHeaders",
           details: {
-            url: getURLEchoUserAgent()
+            url: getURLEchoUserAgent(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onHeadersReceived",
@@ -444,6 +490,7 @@ runTests([
             url: getURLEchoUserAgent(),
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onResponseStarted",
@@ -454,6 +501,7 @@ runTests([
             statusCode: 200,
             ip: "127.0.0.1",
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onCompleted",
@@ -464,6 +512,7 @@ runTests([
             statusCode: 200,
             ip: "127.0.0.1",
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
       ],
@@ -485,47 +534,89 @@ runTests([
     });
   },
 
-  // Loads a testserver page that sets a cookie "Foo=Bar" but removes
-  // the cookies from the response headers so that they are not set.
+  // Loads a testserver page that sets a header "Foo: Bar" but removes the
+  // header from the response headers so that it is not set.
   function modifyResponseHeaders() {
     expect(
       [  // events
-        { label: "onBeforeRequest",
+        { label: "a-onBeforeRequest",
           event: "onBeforeRequest",
           details: {
-            method: "GET",
-            type: "main_frame",
-            url: getURLSetCookie(),
-            frameUrl: getURLSetCookie()
+            url: getURL("simpleLoad/a.html"),
+            frameUrl: getURL("simpleLoad/a.html"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           }
         },
-        { label: "onBeforeSendHeaders",
+        { label: "a-onResponseStarted",
+          event: "onResponseStarted",
+          details: {
+            url: getURL("simpleLoad/a.html"),
+            statusCode: 200,
+            fromCache: false,
+            statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED),
+            responseHeadersExist: true
+          }
+        },
+        { label: "a-onCompleted",
+          event: "onCompleted",
+          details: {
+            url: getURL("simpleLoad/a.html"),
+            statusCode: 200,
+            fromCache: false,
+            statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED),
+            responseHeadersExist: true
+          }
+        },
+        {
+          label: "x-onBeforeRequest",
+          event: "onBeforeRequest",
+          details: {
+            url: getURLSetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
+            frameUrl: "unknown frame URL",
+            initiator: getDomain(initiators.WEB_INITIATED)
+          }
+        },
+        {
+          label: "x-onBeforeSendHeaders",
           event: "onBeforeSendHeaders",
           details: {
-            url: getURLSetCookie(),
-            // Note: no requestHeaders because we don't ask for them.
-          },
-        },
-        { label: "onSendHeaders",
-          event: "onSendHeaders",
-          details: {
-            url: getURLSetCookie(),
+            url: getURLSetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
-        { label: "onHeadersReceived",
+        { label: "x-onSendHeaders",
+          event: "onSendHeaders",
+          details: {
+            url: getURLSetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
+            initiator: getDomain(initiators.WEB_INITIATED)
+          }
+        },
+        {
+          label: "x-onHeadersReceived",
           event: "onHeadersReceived",
           details: {
-            url: getURLSetCookie(),
+            url: getURLSetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
             responseHeadersExist: true,
+            initiator: getDomain(initiators.WEB_INITIATED)
           },
           retval_function: function(name, details) {
             responseHeaders = details.responseHeaders;
             var found = false;
             for (var i = 0; i < responseHeaders.length; ++i) {
-              if (responseHeaders[i].name === "Set-Cookie" &&
-                  responseHeaders[i].value.indexOf("Foo") != -1) {
+              if (responseHeaders[i].name === "Foo" &&
+                  responseHeaders[i].value.indexOf("Bar") != -1) {
                 found = true;
                 responseHeaders.splice(i);
                 break;
@@ -535,94 +626,146 @@ runTests([
             return {responseHeaders: responseHeaders};
           }
         },
-        { label: "onResponseStarted",
+        { label: "x-onResponseStarted",
           event: "onResponseStarted",
           details: {
-            url: getURLSetCookie(),
-            fromCache: false,
+            url: getURLSetHeader(),
             statusCode: 200,
+            fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            tabId: 1,
+            type: "xmlhttprequest",
             ip: "127.0.0.1",
-            responseHeadersExist: true,
+            initiator: getDomain(initiators.WEB_INITIATED),
+            responseHeadersExist: true
           }
         },
-        { label: "onCompleted",
+        { label: "x-onCompleted",
           event: "onCompleted",
           details: {
-            url: getURLSetCookie(),
-            fromCache: false,
+            url: getURLSetHeader(),
             statusCode: 200,
+            fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            tabId: 1,
+            type: "xmlhttprequest",
             ip: "127.0.0.1",
-            responseHeadersExist: true,
+            initiator: getDomain(initiators.WEB_INITIATED),
+            responseHeadersExist: true
           }
         },
       ],
       [  // event order
-        ["onBeforeRequest", "onBeforeSendHeaders", "onSendHeaders",
-         "onHeadersReceived", "onResponseStarted", "onCompleted"]
+        ["a-onBeforeRequest", "a-onResponseStarted", "a-onCompleted",
+         "x-onBeforeRequest", "x-onBeforeSendHeaders", "x-onSendHeaders",
+         "x-onHeadersReceived", "x-onResponseStarted", "x-onCompleted"],
       ],
       {urls: ["<all_urls>"]}, ["blocking", "responseHeaders"]);
-    // Check that the cookie was really removed.
-    navigateAndWait(getURLSetCookie(), function() {
-      chrome.test.listenOnce(chrome.extension.onRequest, function(request) {
-        chrome.test.assertTrue(request.pass, "Cookie was not removed.");
+    navigateAndWait(getURL("simpleLoad/a.html"), function() {
+      // Check that the header will be removed from the XMLHttpRequest.
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", getURLSetHeader(), true);
+      xhr.onload = pass(function() {
+        chrome.test.assertTrue(xhr.getResponseHeader('Foo') == null,
+            'Header was not removed.');
       });
-      chrome.tabs.executeScript(tabId,
-      { code: "chrome.extension.sendRequest(" +
-            "{pass: document.cookie.indexOf('Foo') == -1});"
-        });
+      xhr.onerror = function() {
+        chrome.test.fail();
+      }
+      xhr.send();
     });
   },
 
-  // Loads a testserver page that sets a cookie "Foo=U+FDD1" which is not a
+  // Loads a testserver page that sets a header "Foo: BarU+FDD1" which is not a
   // valid UTF-8 code point. Therefore, it cannot be passed to JavaScript
   // as a normal string.
   function handleNonUTF8InModifyResponseHeaders() {
     expect(
       [  // events
-        { label: "onBeforeRequest",
+        { label: "a-onBeforeRequest",
           event: "onBeforeRequest",
           details: {
-            method: "GET",
-            type: "main_frame",
-            url: getURLNonUTF8SetCookie(),
-            frameUrl: getURLNonUTF8SetCookie()
+            url: getURL("simpleLoad/a.html"),
+            frameUrl: getURL("simpleLoad/a.html"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           }
         },
-        { label: "onBeforeSendHeaders",
+        { label: "a-onResponseStarted",
+          event: "onResponseStarted",
+          details: {
+            url: getURL("simpleLoad/a.html"),
+            statusCode: 200,
+            fromCache: false,
+            statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED),
+            responseHeadersExist: true
+          }
+        },
+        { label: "a-onCompleted",
+          event: "onCompleted",
+          details: {
+            url: getURL("simpleLoad/a.html"),
+            statusCode: 200,
+            fromCache: false,
+            statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED),
+            responseHeadersExist: true
+          }
+        },
+        {
+          label: "x-onBeforeRequest",
+          event: "onBeforeRequest",
+          details: {
+            url: getURLNonUTF8SetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
+            frameUrl: "unknown frame URL",
+            initiator: getDomain(initiators.WEB_INITIATED)
+          }
+        },
+        {
+          label: "x-onBeforeSendHeaders",
           event: "onBeforeSendHeaders",
           details: {
-            url: getURLNonUTF8SetCookie(),
-            // Note: no requestHeaders because we don't ask for them.
-          },
-        },
-        { label: "onSendHeaders",
-          event: "onSendHeaders",
-          details: {
-            url: getURLNonUTF8SetCookie(),
+            url: getURLNonUTF8SetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
-        { label: "onHeadersReceived",
+        { label: "x-onSendHeaders",
+          event: "onSendHeaders",
+          details: {
+            url: getURLNonUTF8SetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
+            initiator: getDomain(initiators.WEB_INITIATED)
+          }
+        },
+        {
+          label: "x-onHeadersReceived",
           event: "onHeadersReceived",
           details: {
-            url: getURLNonUTF8SetCookie(),
+            url: getURLNonUTF8SetHeader(),
+            tabId: 1,
+            type: "xmlhttprequest",
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
             responseHeadersExist: true,
+            initiator: getDomain(initiators.WEB_INITIATED)
           },
           retval_function: function(name, details) {
             responseHeaders = details.responseHeaders;
             var found = false;
             var expectedValue = [
-              "F".charCodeAt(0),
-              "o".charCodeAt(0),
-              "o".charCodeAt(0),
+              "B".charCodeAt(0),
+              "a".charCodeAt(0),
+              "r".charCodeAt(0),
               0x3D, 0xFE, 0xD1
               ];
 
             for (var i = 0; i < responseHeaders.length; ++i) {
-              if (responseHeaders[i].name === "Set-Cookie" &&
+              if (responseHeaders[i].name === "Foo" &&
                   deepEq(responseHeaders[i].binaryValue, expectedValue)) {
                 found = true;
                 responseHeaders.splice(i);
@@ -633,43 +776,53 @@ runTests([
             return {responseHeaders: responseHeaders};
           }
         },
-        { label: "onResponseStarted",
+        { label: "x-onResponseStarted",
           event: "onResponseStarted",
           details: {
-            url: getURLNonUTF8SetCookie(),
-            fromCache: false,
+            url: getURLNonUTF8SetHeader(),
             statusCode: 200,
+            fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            tabId: 1,
+            type: "xmlhttprequest",
             ip: "127.0.0.1",
-            responseHeadersExist: true,
+            initiator: getDomain(initiators.WEB_INITIATED),
+            responseHeadersExist: true
           }
         },
-        { label: "onCompleted",
+        { label: "x-onCompleted",
           event: "onCompleted",
           details: {
-            url: getURLNonUTF8SetCookie(),
-            fromCache: false,
+            url: getURLNonUTF8SetHeader(),
             statusCode: 200,
+            fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            tabId: 1,
+            type: "xmlhttprequest",
             ip: "127.0.0.1",
-            responseHeadersExist: true,
+            initiator: getDomain(initiators.WEB_INITIATED),
+            responseHeadersExist: true
           }
         },
       ],
       [  // event order
-        ["onBeforeRequest", "onBeforeSendHeaders", "onSendHeaders",
-         "onHeadersReceived", "onResponseStarted", "onCompleted"]
+        ["a-onBeforeRequest", "a-onResponseStarted", "a-onCompleted",
+         "x-onBeforeRequest", "x-onBeforeSendHeaders", "x-onSendHeaders",
+         "x-onHeadersReceived", "x-onResponseStarted", "x-onCompleted"],
       ],
       {urls: ["<all_urls>"]}, ["blocking", "responseHeaders"]);
-    // Check that the cookie was really removed.
-    navigateAndWait(getURLNonUTF8SetCookie(), function() {
-      chrome.test.listenOnce(chrome.extension.onRequest, function(request) {
-        chrome.test.assertTrue(request.pass, "Cookie was not removed.");
+    navigateAndWait(getURL("simpleLoad/a.html"), function() {
+      // Check that the header will be removed from the XMLHttpRequest.
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", getURLNonUTF8SetHeader(), true);
+      xhr.onload = pass(function() {
+        chrome.test.assertTrue(xhr.getResponseHeader('Foo') == null,
+            'Header was not removed.');
       });
-      chrome.tabs.executeScript(tabId,
-      { code: "chrome.extension.sendRequest(" +
-            "{pass: document.cookie.indexOf('Foo') == -1});"
-        });
+      xhr.onerror = function() {
+        chrome.test.fail();
+      }
+      xhr.send();
     });
   },
 
@@ -685,20 +838,23 @@ runTests([
             method: "GET",
             type: "main_frame",
             url: getURLHttpSimpleLoad(),
-            frameUrl: getURLHttpSimpleLoad()
+            frameUrl: getURLHttpSimpleLoad(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           },
         },
         { label: "onBeforeSendHeaders",
           event: "onBeforeSendHeaders",
           details: {
             url: getURLHttpSimpleLoad(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
             // Note: no requestHeaders because we don't ask for them.
           },
         },
         { label: "onSendHeaders",
           event: "onSendHeaders",
           details: {
-            url: getURLHttpSimpleLoad()
+            url: getURLHttpSimpleLoad(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onHeadersReceived",
@@ -707,6 +863,7 @@ runTests([
             url: getURLHttpSimpleLoad(),
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           },
           retval: {redirectUrl: getURL("simpleLoad/a.html")}
         },
@@ -719,6 +876,7 @@ runTests([
             statusCode: 302,
             fromCache: false,
             ip: "127.0.0.1",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "onBeforeRequest-2",
@@ -726,6 +884,7 @@ runTests([
           details: {
             url: getURL("simpleLoad/a.html"),
             frameUrl: getURL("simpleLoad/a.html"),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
           },
         },
         { label: "onResponseStarted",
@@ -735,6 +894,7 @@ runTests([
             fromCache: false,
             statusCode: 200,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -745,6 +905,7 @@ runTests([
             fromCache: false,
             statusCode: 200,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -759,8 +920,8 @@ runTests([
     navigateAndWait(getURLHttpSimpleLoad());
   },
 
-  // Checks that synchronous XHR requests from ourself are invisible to blocking
-  // handlers.
+  // Checks that synchronous XHR requests from ourself are invisible to
+  // blocking handlers.
   function syncXhrsFromOurselfAreInvisible() {
     expect(
       [  // events
@@ -768,7 +929,8 @@ runTests([
           event: "onBeforeRequest",
           details: {
             url: getURL("simpleLoad/a.html"),
-            frameUrl: getURL("simpleLoad/a.html")
+            frameUrl: getURL("simpleLoad/a.html"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "a-onResponseStarted",
@@ -778,6 +940,7 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -788,17 +951,19 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
-        // We do not see onBeforeRequest for the XHR request here because it is
-        // handled by a blocking handler.
+        // We do not see onBeforeRequest for the XHR request here because it
+        // is handled by a blocking handler.
         { label: "x-onSendHeaders",
           event: "onSendHeaders",
           details: {
             url: getURLHttpXHRData(),
             tabId: 1,
             type: "xmlhttprequest",
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
         { label: "x-onResponseStarted",
@@ -811,6 +976,7 @@ runTests([
             tabId: 1,
             type: "xmlhttprequest",
             ip: "127.0.0.1",
+            initiator: getDomain(initiators.WEB_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -824,6 +990,7 @@ runTests([
             tabId: 1,
             type: "xmlhttprequest",
             ip: "127.0.0.1",
+            initiator: getDomain(initiators.WEB_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -831,7 +998,8 @@ runTests([
           event: "onBeforeRequest",
           details: {
             url: getURL("complexLoad/b.jpg"),
-            frameUrl: getURL("complexLoad/b.jpg")
+            frameUrl: getURL("complexLoad/b.jpg"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "b-onResponseStarted",
@@ -841,6 +1009,7 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -851,6 +1020,7 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -871,8 +1041,8 @@ runTests([
     });
   },
 
-  // Checks that asynchronous XHR requests from ourself are visible to blocking
-  // handlers.
+  // Checks that asynchronous XHR requests from ourself are visible to
+  // blocking handlers.
   function asyncXhrsFromOurselfAreVisible() {
     expect(
       [  // events
@@ -880,7 +1050,8 @@ runTests([
           event: "onBeforeRequest",
           details: {
             url: getURL("simpleLoad/a.html"),
-            frameUrl: getURL("simpleLoad/a.html")
+            frameUrl: getURL("simpleLoad/a.html"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "a-onResponseStarted",
@@ -890,6 +1061,7 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -900,6 +1072,7 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -911,6 +1084,7 @@ runTests([
             tabId: 1,
             type: "xmlhttprequest",
             frameUrl: "unknown frame URL",
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
         {
@@ -920,6 +1094,7 @@ runTests([
             url: getURLHttpXHRData(),
             tabId: 1,
             type: "xmlhttprequest",
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
         { label: "x-onSendHeaders",
@@ -928,6 +1103,7 @@ runTests([
             url: getURLHttpXHRData(),
             tabId: 1,
             type: "xmlhttprequest",
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
         { label: "x-onResponseStarted",
@@ -941,6 +1117,7 @@ runTests([
             type: "xmlhttprequest",
             ip: "127.0.0.1",
             // Request to chrome-extension:// url has no IP.
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
         {
@@ -952,6 +1129,7 @@ runTests([
             type: "xmlhttprequest",
             statusLine: "HTTP/1.1 200 OK",
             statusCode: 200,
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
         { label: "x-onCompleted",
@@ -965,13 +1143,15 @@ runTests([
             type: "xmlhttprequest",
             ip: "127.0.0.1",
             // Request to chrome-extension:// url has no IP.
+            initiator: getDomain(initiators.WEB_INITIATED)
           }
         },
         { label: "b-onBeforeRequest",
           event: "onBeforeRequest",
           details: {
             url: getURL("complexLoad/b.jpg"),
-            frameUrl: getURL("complexLoad/b.jpg")
+            frameUrl: getURL("complexLoad/b.jpg"),
+            initiator: getDomain(initiators.BROWSER_INITIATED)
           }
         },
         { label: "b-onResponseStarted",
@@ -981,6 +1161,7 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -991,6 +1172,7 @@ runTests([
             statusCode: 200,
             fromCache: false,
             statusLine: "HTTP/1.1 200 OK",
+            initiator: getDomain(initiators.BROWSER_INITIATED)
             // Request to chrome-extension:// url has no IP.
           }
         },
@@ -1012,6 +1194,125 @@ runTests([
         navigateAndWait(getURL("complexLoad/b.jpg"));
     });
   },
+
+  // Checks that the script resource request redirection to data url. And also
+  // checks that code cache generation doesn't cause crash (crbug.com/782793).
+  function dataUrlJavaScriptExecution() {
+    expect(
+      [  // events
+        { label: "onBeforeRequest",
+          event: "onBeforeRequest",
+          details: {
+            method: "GET",
+            type: "main_frame",
+            url: getURLHttpScriptPage(),
+            frameUrl: getURLHttpScriptPage(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
+          },
+        },
+        { label: "onBeforeSendHeaders",
+          event: "onBeforeSendHeaders",
+          details: {
+            url: getURLHttpScriptPage(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
+          },
+        },
+        { label: "onSendHeaders",
+          event: "onSendHeaders",
+          details: {
+            url: getURLHttpScriptPage(),
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
+          }
+        },
+        { label: "onHeadersReceived",
+          event: "onHeadersReceived",
+          details: {
+            url: getURLHttpScriptPage(),
+            statusLine: "HTTP/1.1 200 OK",
+            statusCode: 200,
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
+          },
+        },
+        { label: "onResponseStarted",
+          event: "onResponseStarted",
+          details: {
+            url: getURLHttpScriptPage(),
+            fromCache: false,
+            statusCode: 200,
+            ip: "127.0.0.1",
+            statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
+          }
+        },
+        { label: "onCompleted",
+          event: "onCompleted",
+          details: {
+            url: getURLHttpScriptPage(),
+            fromCache: false,
+            statusCode: 200,
+            ip: "127.0.0.1",
+            statusLine: "HTTP/1.1 200 OK",
+            initiator: getServerDomain(initiators.BROWSER_INITIATED)
+          }
+        },
+        { label: "script-onBeforeRequest",
+          event: "onBeforeRequest",
+          details: {
+            method: "GET",
+            type: "script",
+            url: getURLHttpScriptJS(),
+            frameUrl: getURLHttpScriptPage(),
+            initiator: getServerDomain(initiators.WEB_INITIATED)
+          },
+          retval: {
+            redirectUrl: getDummyScriptDataURL()
+          },
+        },
+        { label: "script-onBeforeRedirect",
+          event: "onBeforeRedirect",
+          details: {
+            url: getURLHttpScriptJS(),
+            redirectUrl: getDummyScriptDataURL(),
+            fromCache: false,
+            statusLine: "HTTP/1.1 307 Internal Redirect",
+            statusCode: 307,
+            type: "script",
+            initiator: getServerDomain(initiators.WEB_INITIATED)
+          }
+        },
+        { label: "data-onBeforeRequest",
+          event: "onBeforeRequest",
+          details: {
+            method: "GET",
+            type: "xmlhttprequest",
+            url: getURLHttpScriptJSFetchedData(),
+            frameUrl: getURLHttpScriptPage(),
+            initiator: getServerDomain(initiators.WEB_INITIATED),
+          },
+          retval: {cancel: true}
+        },
+        // Cancelling is considered an error.
+        { label: "data-onErrorOccurred",
+          event: "onErrorOccurred",
+          details: {
+            url: getURLHttpScriptJSFetchedData(),
+            fromCache: false,
+            type: "xmlhttprequest",
+            error: "net::ERR_BLOCKED_BY_CLIENT",
+            initiator: getServerDomain(initiators.WEB_INITIATED)
+          }
+        },
+      ],
+      [  // event order
+        ["onBeforeRequest", "onBeforeSendHeaders", "onSendHeaders",
+         "onHeadersReceived", "onResponseStarted", "onCompleted"],
+        ["script-onBeforeRequest", "script-onBeforeRedirect"],
+        ["data-onBeforeRequest", "data-onErrorOccurred"],
+      ],
+      {urls: ["<all_urls>"]},  // filter
+      ["blocking"]);
+    navigateAndWait(getURLHttpScriptPage());
+  },
 ]);
 
 
@@ -1028,6 +1329,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
       "&src=" + encodeURIComponent(requestedUrl));
   var redirectTarget = getServerURL(
       "extensions/api_test/webrequest/cors/redirect_target.gif", "domain.tld");
+  var initiator = getServerDomain(initiators.WEB_INITIATED);
   expect(
     [  // events
       { label: "onBeforeRequest-1",
@@ -1037,6 +1339,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           url: requestedUrl,
           // Frame URL unavailable because requests are filtered by type=image.
           frameUrl: "unknown frame URL",
+          initiator: initiator
         },
         retval: {redirectUrl: redirectTarget}
       },
@@ -1049,6 +1352,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           statusLine: "HTTP/1.1 307 Internal Redirect",
           statusCode: 307,
           fromCache: false,
+          initiator: initiator
         }
       },
       { label: "onBeforeRequest-2",
@@ -1058,6 +1362,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           url: redirectTarget,
           // Frame URL unavailable because requests are filtered by type=image.
           frameUrl: "unknown frame URL",
+          initiator: initiator
         },
       },
       {
@@ -1066,6 +1371,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
         details: {
           type: "image",
           url: redirectTarget,
+          initiator: initiator
         }
       },
       {
@@ -1074,6 +1380,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
         details: {
           type: "image",
           url: redirectTarget,
+          initiator: initiator
         }
       },
       {
@@ -1084,6 +1391,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           url: redirectTarget,
           statusLine: "HTTP/1.1 200 OK",
           statusCode: 200,
+          initiator: initiator
         }
       },
       { label: "onResponseStarted",
@@ -1095,6 +1403,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           statusCode: 200,
           ip: "127.0.0.1",
           statusLine: "HTTP/1.1 200 OK",
+          initiator: initiator
         }
       },
       { label: "onCompleted",
@@ -1106,6 +1415,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           statusCode: 200,
           ip: "127.0.0.1",
           statusLine: "HTTP/1.1 200 OK",
+          initiator: initiator
         }
       },
       // After the image loads, the test will load the following URL
@@ -1118,6 +1428,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           url: getServerURL("signal_that_image_loaded_successfully"),
           // Frame URL unavailable because requests are filtered by type=image.
           frameUrl: "unknown frame URL",
+          initiator: initiator
         },
         retval: {cancel: true}
       },
@@ -1128,6 +1439,7 @@ function testLoadCORSImage(crossOriginAttributeValue) {
           url: getServerURL("signal_that_image_loaded_successfully"),
           fromCache: false,
           error: "net::ERR_BLOCKED_BY_CLIENT",
+          initiator: initiator
         }
       },
     ],

@@ -20,7 +20,6 @@ class PrefService;
 
 namespace content {
 class BrowserContext;
-class WebContents;
 }
 
 namespace user_prefs {
@@ -34,6 +33,8 @@ class PrefRegistrySyncable;
 // Note that node->GetTitle() returns an original (unmodified) title.
 class PartnerBookmarksShim : public base::SupportsUserData::Data {
  public:
+  ~PartnerBookmarksShim() override;
+
   // Returns an instance of the shim for a given |browser_context|.
   static PartnerBookmarksShim* BuildForBrowserContext(
       content::BrowserContext* browser_context);
@@ -94,8 +95,9 @@ class PartnerBookmarksShim : public base::SupportsUserData::Data {
   const bookmarks::BookmarkNode* GetPartnerBookmarksRoot() const;
 
   // Sets the root node of the partner bookmarks and notifies any observers that
-  // the shim has now been loaded.  Takes ownership of |root_node|.
-  void SetPartnerBookmarksRoot(bookmarks::BookmarkNode* root_node);
+  // the shim has now been loaded.
+  void SetPartnerBookmarksRoot(
+      std::unique_ptr<bookmarks::BookmarkNode> root_node);
 
   // Used as a "unique" identifier of the partner bookmark node for the purposes
   // of node deletion and title editing. Two bookmarks with the same URLs and
@@ -126,7 +128,6 @@ class PartnerBookmarksShim : public base::SupportsUserData::Data {
 
  private:
   explicit PartnerBookmarksShim(PrefService* prefs);
-  ~PartnerBookmarksShim() override;
 
   const bookmarks::BookmarkNode* GetNodeByID(
       const bookmarks::BookmarkNode* parent,
@@ -139,7 +140,7 @@ class PartnerBookmarksShim : public base::SupportsUserData::Data {
   NodeRenamingMap node_rename_remove_map_;
 
   // The observers.
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   DISALLOW_COPY_AND_ASSIGN(PartnerBookmarksShim);
 };

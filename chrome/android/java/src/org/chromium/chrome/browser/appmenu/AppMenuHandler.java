@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.appmenu;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.res.TypedArray;
 import android.graphics.Point;
@@ -12,7 +13,6 @@ import android.graphics.drawable.Drawable;
 import android.view.ContextThemeWrapper;
 import android.view.Menu;
 import android.view.MenuItem;
-import android.view.Surface;
 import android.view.View;
 import android.widget.PopupMenu;
 
@@ -35,6 +35,18 @@ public class AppMenuHandler {
 
     private final AppMenuPropertiesDelegate mDelegate;
     private final Activity mActivity;
+
+    /**
+     * The resource id of the menu item to highlight when the menu next opens. A value of
+     * {@code null} means no item will be highlighted.  This value will be cleared after the menu is
+     * opened.
+     */
+    private Integer mHighlightMenuId;
+
+    /**
+     *  Whether the highlighted item should use a circle highlight or not.
+     */
+    private boolean mCircleHighlight;
 
     /**
      * Constructs an AppMenuHandler object.
@@ -66,19 +78,45 @@ public class AppMenuHandler {
     }
 
     /**
-     * Show the app menu.
-     * @param anchorView         Anchor view (usually a menu button) to be used for the popup, if
-     *                           null is passed then hardware menu button anchor will be used.
-     * @param startDragging      Whether dragging is started. For example, if the app menu is
-     *                           showed by tapping on a button, this should be false. If it is
-     *                           showed by start dragging down on the menu button, this should
-     *                           be true. Note that if anchorView is null, this must
-     *                           be false since we no longer support hardware menu button
-     *                           dragging.
-     * @return True, if the menu is shown, false, if menu is not shown, example reasons:
-     *         the menu is not yet available to be shown, or the menu is already showing.
+     * Clears the menu highlight.
      */
-    public boolean showAppMenu(View anchorView, boolean startDragging) {
+    public void clearMenuHighlight() {
+        setMenuHighlight(null, false);
+    }
+
+    /**
+     * Calls attention to this menu and a particular item in it.  The menu will only stay
+     * highlighted for one menu usage.  After that the highlight will be cleared.
+     * @param highlightItemId The id of a menu item to highlight or {@code null} to turn off the
+     *                        highlight.
+     * @param circleHighlight Whether the highlighted item should use a circle highlight or not.
+     */
+    public void setMenuHighlight(Integer highlightItemId, boolean circleHighlight) {
+        if (mHighlightMenuId == null && highlightItemId == null) return;
+        if (mHighlightMenuId != null && mHighlightMenuId.equals(highlightItemId)) return;
+        mHighlightMenuId = highlightItemId;
+        mCircleHighlight = circleHighlight;
+        boolean highlighting = mHighlightMenuId != null;
+        for (AppMenuObserver observer : mObservers) observer.onMenuHighlightChanged(highlighting);
+    }
+
+    /**
+     * Show the app menu.
+     * @param anchorView    Anchor view (usually a menu button) to be used for the popup, if null is
+     *                      passed then hardware menu button anchor will be used.
+     * @param startDragging Whether dragging is started. For example, if the app menu is showed by
+     *                      tapping on a button, this should be false. If it is showed by start
+     *                      dragging down on the menu button, this should be true. Note that if
+     *                      anchorView is null, this must be false since we no longer support
+     *                      hardware menu button dragging.
+     * @param showFromBottom Whether the menu should be shown from the bottom up.
+     * @return              True, if the menu is shown, false, if menu is not shown, example
+     *                      reasons: the menu is not yet available to be shown, or the menu is
+     *                      already showing.
+     */
+    // TODO(crbug.com/635567): Fix this properly.
+    @SuppressLint("ResourceType")
+    public boolean showAppMenu(View anchorView, boolean startDragging, boolean showFromBottom) {
         if (!mDelegate.shouldShowAppMenu() || isAppMenuShowing()) return false;
         boolean isByPermanentButton = false;
 
@@ -87,19 +125,6 @@ public class AppMenuHandler {
             // This fixes the bug where the bottom of the menu starts at the top of
             // the keyboard, instead of overlapping the keyboard as it should.
             int displayHeight = mActivity.getResources().getDisplayMetrics().heightPixels;
-            int widthHeight = mActivity.getResources().getDisplayMetrics().widthPixels;
-
-            // In appcompat 23.2.1, DisplayMetrics are not updated after rotation change. This is a
-            // workaround for it. See crbug.com/599048.
-            // TODO(ianwen): Remove the rotation check after we roll to 23.3.0.
-            if (rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180) {
-                displayHeight = Math.max(displayHeight, widthHeight);
-            } else if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
-                displayHeight = Math.min(displayHeight, widthHeight);
-            } else {
-                assert false : "Rotation unexpected";
-            }
-
             Rect rect = new Rect();
             mActivity.getWindow().getDecorView().getWindowVisibleDisplayFrame(rect);
             int statusBarHeight = rect.top;
@@ -120,7 +145,8 @@ public class AppMenuHandler {
         }
         mDelegate.prepareMenu(mMenu);
 
-        ContextThemeWrapper wrapper = new ContextThemeWrapper(mActivity, R.style.OverflowMenuTheme);
+        ContextThemeWrapper wrapper =
+                new ContextThemeWrapper(mActivity, R.style.OverflowMenuThemeOverlay);
 
         if (mAppMenu == null) {
             TypedArray a = wrapper.obtainStyledAttributes(new int[]
@@ -129,8 +155,8 @@ public class AppMenuHandler {
             Drawable itemDivider = a.getDrawable(1);
             int itemDividerHeight = itemDivider != null ? itemDivider.getIntrinsicHeight() : 0;
             a.recycle();
-            mAppMenu = new AppMenu(mMenu, itemRowHeight, itemDividerHeight, this,
-                    mActivity.getResources());
+            mAppMenu = new AppMenu(
+                    mMenu, itemRowHeight, itemDividerHeight, this, mActivity.getResources());
             mAppMenuDragHelper = new AppMenuDragHelper(mActivity, mAppMenu, itemRowHeight);
         }
 
@@ -147,9 +173,20 @@ public class AppMenuHandler {
         }
         Point pt = new Point();
         mActivity.getWindowManager().getDefaultDisplay().getSize(pt);
-        mAppMenu.show(wrapper, anchorView, isByPermanentButton,
-                rotation, appRect, pt.y, mDelegate.getFooterResourceId());
+
+        int footerResourceId = 0;
+        if (mDelegate.shouldShowFooter(appRect.height())) {
+            footerResourceId = mDelegate.getFooterResourceId();
+        }
+        int headerResourceId = 0;
+        if (mDelegate.shouldShowHeader(appRect.height())) {
+            headerResourceId = mDelegate.getHeaderResourceId();
+        }
+        mAppMenu.show(wrapper, anchorView, isByPermanentButton, rotation, appRect, pt.y,
+                footerResourceId, headerResourceId, mHighlightMenuId, mCircleHighlight,
+                showFromBottom);
         mAppMenuDragHelper.onShow(startDragging);
+        clearMenuHighlight();
         RecordUserAction.record("MobileMenuShow");
         return true;
     }
@@ -211,5 +248,21 @@ public class AppMenuHandler {
         for (int i = 0; i < mObservers.size(); ++i) {
             mObservers.get(i).onMenuVisibilityChanged(isVisible);
         }
+    }
+
+    /**
+     * A notification that the header view has been inflated.
+     * @param view The inflated view.
+     */
+    void onHeaderViewInflated(View view) {
+        if (mDelegate != null) mDelegate.onHeaderViewInflated(mAppMenu, view);
+    }
+
+    /**
+     * A notification that the footer view has been inflated.
+     * @param view The inflated view.
+     */
+    void onFooterViewInflated(View view) {
+        if (mDelegate != null) mDelegate.onFooterViewInflated(mAppMenu, view);
     }
 }

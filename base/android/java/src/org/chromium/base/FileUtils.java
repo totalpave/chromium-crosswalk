@@ -5,6 +5,7 @@
 package org.chromium.base;
 
 import android.content.Context;
+import android.net.Uri;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -12,6 +13,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.List;
+import java.util.Locale;
 
 /**
  * Helper methods for dealing with Files.
@@ -23,7 +26,7 @@ public class FileUtils {
      * Delete the given File and (if it's a directory) everything within it.
      */
     public static void recursivelyDeleteFile(File currentFile) {
-        assert !ThreadUtils.runningOnUiThread();
+        ThreadUtils.assertOnBackgroundThread();
         if (currentFile.isDirectory()) {
             File[] files = currentFile.listFiles();
             if (files != null) {
@@ -34,6 +37,24 @@ public class FileUtils {
         }
 
         if (!currentFile.delete()) Log.e(TAG, "Failed to delete: " + currentFile);
+    }
+
+    /**
+     * Delete the given files or directories by calling {@link #recursivelyDeleteFile(File)}. This
+     * supports deletion of content URIs.
+     * @param filePaths The file paths or content URIs to delete.
+     */
+    public static void batchDeleteFiles(List<String> filePaths) {
+        ThreadUtils.assertOnBackgroundThread();
+
+        for (String filePath : filePaths) {
+            if (ContentUriUtils.isContentUri(filePath)) {
+                ContentUriUtils.delete(filePath);
+            } else {
+                File file = new File(filePath);
+                if (file.exists()) recursivelyDeleteFile(file);
+            }
+        }
     }
 
     /**
@@ -72,5 +93,63 @@ public class FileUtils {
             }
         }
         return false;
+    }
+
+    /**
+     * Atomically copies the data from an input stream into an output file.
+     * @param is Input file stream to read data from.
+     * @param outFile Output file path.
+     * @param buffer Caller-provided buffer. Provided to avoid allocating the same
+     *         buffer on each call when copying several files in sequence.
+     * @throws IOException in case of I/O error.
+     */
+    public static void copyFileStreamAtomicWithBuffer(InputStream is, File outFile, byte[] buffer)
+            throws IOException {
+        File tmpOutputFile = new File(outFile.getPath() + ".tmp");
+        try (OutputStream os = new FileOutputStream(tmpOutputFile)) {
+            Log.i(TAG, "Writing to %s", outFile);
+
+            int count = 0;
+            while ((count = is.read(buffer, 0, buffer.length)) != -1) {
+                os.write(buffer, 0, count);
+            }
+        }
+        if (!tmpOutputFile.renameTo(outFile)) {
+            throw new IOException();
+        }
+    }
+
+    /**
+     * Returns a URI that points at the file.
+     * @param file File to get a URI for.
+     * @return URI that points at that file, either as a content:// URI or a file:// URI.
+     */
+    public static Uri getUriForFile(File file) {
+        // TODO(crbug/709584): Uncomment this when http://crbug.com/709584 has been fixed.
+        // assert !ThreadUtils.runningOnUiThread();
+        Uri uri = null;
+
+        try {
+            // Try to obtain a content:// URI, which is preferred to a file:// URI so that
+            // receiving apps don't attempt to determine the file's mime type (which often fails).
+            uri = ContentUriUtils.getContentUriFromFile(file);
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Could not create content uri: " + e);
+        }
+
+        if (uri == null) uri = Uri.fromFile(file);
+
+        return uri;
+    }
+
+    /**
+     * Returns the file extension, or an empty string if none.
+     * @param file Name of the file, with or without the full path.
+     * @return empty string if no extension, extension otherwise.
+     */
+    public static String getExtension(String file) {
+        int index = file.lastIndexOf('.');
+        if (index == -1) return "";
+        return file.substring(index + 1).toLowerCase(Locale.US);
     }
 }

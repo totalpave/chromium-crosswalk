@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
@@ -33,6 +33,19 @@ base::char16 DomCodeToUsLayoutCharacter(DomCode dom_code, int flags) {
   return 0;
 }
 
+bool DomCodeToNonPrintableDomKey(DomCode dom_code,
+                                 DomKey* out_dom_key,
+                                 KeyboardCode* out_key_code) {
+  for (const auto& it : kNonPrintableCodeMap) {
+    if (it.dom_code == dom_code) {
+      *out_dom_key = it.dom_key;
+      *out_key_code = NonPrintableDomKeyToKeyboardCode(it.dom_key);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool DomCodeToUsLayoutDomKey(DomCode dom_code,
                              int flags,
                              DomKey* out_dom_key,
@@ -51,14 +64,8 @@ bool DomCodeToUsLayoutDomKey(DomCode dom_code,
       return true;
     }
   }
-  for (const auto& it : kNonPrintableCodeMap) {
-    if (it.dom_code == dom_code) {
-      *out_dom_key = it.dom_key;
-      *out_key_code = NonPrintableDomKeyToKeyboardCode(it.dom_key);
-      return true;
-    }
-  }
-  return false;
+
+  return DomCodeToNonPrintableDomKey(dom_code, out_dom_key, out_key_code);
 }
 
 bool DomCodeToControlCharacter(DomCode dom_code,
@@ -199,14 +206,6 @@ KeyboardCode NonLocatedToLocatedKeyboardCode(KeyboardCode key_code,
       return IsRightSideDomCode(dom_code) ? VKEY_RMENU : VKEY_LMENU;
     case VKEY_LWIN:
       return IsRightSideDomCode(dom_code) ? VKEY_RWIN : VKEY_LWIN;
-    default:
-      return NonLocatedToLocatedKeypadKeyboardCode(key_code, dom_code);
-  }
-}
-
-KeyboardCode NonLocatedToLocatedKeypadKeyboardCode(KeyboardCode key_code,
-                                                   DomCode dom_code) {
-  switch (key_code) {
     case VKEY_0:
       return (dom_code == DomCode::NUMPAD0) ? VKEY_NUMPAD0 : VKEY_0;
     case VKEY_1:
@@ -247,7 +246,7 @@ DomCode UsLayoutKeyboardCodeToDomCode(KeyboardCode key_code) {
 
 KeyboardCode DomCodeToUsLayoutKeyboardCode(DomCode dom_code) {
   const DomCodeToKeyboardCodeEntry* end =
-      kDomCodeToKeyboardCodeMap + arraysize(kDomCodeToKeyboardCodeMap);
+      kDomCodeToKeyboardCodeMap + base::size(kDomCodeToKeyboardCodeMap);
   const DomCodeToKeyboardCodeEntry* found = std::lower_bound(
       kDomCodeToKeyboardCodeMap, end, dom_code,
       [](const DomCodeToKeyboardCodeEntry& a, DomCode b) {
@@ -262,6 +261,36 @@ KeyboardCode DomCodeToUsLayoutKeyboardCode(DomCode dom_code) {
 KeyboardCode DomCodeToUsLayoutNonLocatedKeyboardCode(DomCode dom_code) {
   return LocatedToNonLocatedKeyboardCode(
       DomCodeToUsLayoutKeyboardCode(dom_code));
+}
+
+int ModifierDomKeyToEventFlag(DomKey key) {
+  switch (key) {
+    case DomKey::ALT:
+      return EF_ALT_DOWN;
+    case DomKey::ALT_GRAPH:
+      return EF_ALTGR_DOWN;
+    case DomKey::CAPS_LOCK:
+      return EF_CAPS_LOCK_ON;
+    case DomKey::CONTROL:
+      return EF_CONTROL_DOWN;
+    case DomKey::META:
+      return EF_COMMAND_DOWN;
+    case DomKey::SHIFT:
+      return EF_SHIFT_DOWN;
+    case DomKey::SHIFT_LEVEL5:
+      return EF_MOD3_DOWN;
+    default:
+      return EF_NONE;
+  }
+  // Not represented:
+  //   DomKey::ACCEL
+  //   DomKey::FN
+  //   DomKey::FN_LOCK
+  //   DomKey::HYPER
+  //   DomKey::NUM_LOCK
+  //   DomKey::SCROLL_LOCK
+  //   DomKey::SUPER
+  //   DomKey::SYMBOL_LOCK
 }
 
 }  // namespace ui

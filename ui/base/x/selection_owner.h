@@ -16,10 +16,15 @@
 #include "base/timer/timer.h"
 #include "ui/base/ui_base_export.h"
 #include "ui/base/x/selection_utils.h"
-#include "ui/gfx/x/x11_atom_cache.h"
 #include "ui/gfx/x/x11_types.h"
 
 namespace ui {
+
+class XScopedEventSelector;
+
+UI_BASE_EXPORT extern const char kIncr[];
+UI_BASE_EXPORT extern const char kSaveTargets[];
+UI_BASE_EXPORT extern const char kTargets[];
 
 // Owns a specific X11 selection on an X window.
 //
@@ -63,18 +68,24 @@ class UI_BASE_EXPORT SelectionOwner {
     IncrementalTransfer(XID window,
                         XAtom target,
                         XAtom property,
+                        std::unique_ptr<XScopedEventSelector> event_selector,
                         const scoped_refptr<base::RefCountedMemory>& data,
                         int offset,
-                        base::TimeTicks timeout,
-                        int foreign_window_manager_id);
-    IncrementalTransfer(const IncrementalTransfer& other);
+                        base::TimeTicks timeout);
     ~IncrementalTransfer();
+
+    // Move-only class.
+    IncrementalTransfer(IncrementalTransfer&&);
+    IncrementalTransfer& operator=(IncrementalTransfer&&);
 
     // Parameters from the XSelectionRequest. The data is transferred over
     // |property| on |window|.
     XID window;
     XAtom target;
     XAtom property;
+
+    // Selects events on |window|.
+    std::unique_ptr<XScopedEventSelector> event_selector;
 
     // The data to be transferred.
     scoped_refptr<base::RefCountedMemory> data;
@@ -87,9 +98,8 @@ class UI_BASE_EXPORT SelectionOwner {
     // is taking too long to notify us that we can send the next chunk.
     base::TimeTicks timeout;
 
-    // Used to unselect PropertyChangeMask on |window| when we are done with
-    // the data transfer.
-    int foreign_window_manager_id;
+   private:
+    DISALLOW_COPY_AND_ASSIGN(IncrementalTransfer);
   };
 
   // Attempts to convert the selection to |target|. If the conversion is
@@ -132,8 +142,6 @@ class UI_BASE_EXPORT SelectionOwner {
 
   // Used to abort stale incremental data transfers.
   base::RepeatingTimer incremental_transfer_abort_timer_;
-
-  X11AtomCache atom_cache_;
 
   DISALLOW_COPY_AND_ASSIGN(SelectionOwner);
 };

@@ -18,17 +18,15 @@
 #include "base/files/file_path.h"
 #include "base/files/scoped_file.h"
 #include "base/logging.h"
-#include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/path_service.h"
 #include "base/pickle.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/posix/global_descriptors.h"
-#include "base/posix/unix_domain_socket_linux.h"
+#include "base/posix/unix_domain_socket.h"
 #include "base/process/kill.h"
 #include "base/process/launch.h"
+#include "base/stl_util.h"
 #include "base/strings/string_split.h"
-#include "base/third_party/dynamic_annotations/dynamic_annotations.h"
 #include "build/build_config.h"
 #include "components/nacl/common/nacl_nonsfi_util.h"
 #include "components/nacl/common/nacl_paths.h"
@@ -40,6 +38,7 @@
 #include "sandbox/linux/suid/client/setuid_sandbox_client.h"
 #include "sandbox/linux/suid/client/setuid_sandbox_host.h"
 #include "sandbox/linux/suid/common/sandbox.h"
+#include "services/service_manager/sandbox/switches.h"
 
 namespace {
 
@@ -131,9 +130,12 @@ bool SendIPCRequestAndReadReply(int ipc_channel,
 namespace nacl {
 
 void AddNaClZygoteForkDelegates(
-    ScopedVector<content::ZygoteForkDelegate>* delegates) {
-  delegates->push_back(new NaClForkDelegate(false /* nonsfi_mode */));
-  delegates->push_back(new NaClForkDelegate(true /* nonsfi_mode */));
+    std::vector<std::unique_ptr<service_manager::ZygoteForkDelegate>>*
+        delegates) {
+  delegates->push_back(
+      std::make_unique<NaClForkDelegate>(false /* nonsfi_mode */));
+  delegates->push_back(
+      std::make_unique<NaClForkDelegate>(true /* nonsfi_mode */));
 }
 
 NaClForkDelegate::NaClForkDelegate(bool nonsfi_mode)
@@ -166,16 +168,13 @@ void NaClForkDelegate::Init(const int sandboxdesc,
 
   // For communications between the NaCl loader process and
   // the browser process.
-  int nacl_sandbox_descriptor =
-      base::GlobalDescriptors::kBaseDescriptor + kSandboxIPCChannel;
+  int nacl_sandbox_descriptor = base::GlobalDescriptors::kBaseDescriptor +
+                                service_manager::kSandboxIPCChannel;
   // Confirm a hard-wired assumption.
   DCHECK_EQ(sandboxdesc, nacl_sandbox_descriptor);
 
   int fds[2];
   PCHECK(0 == socketpair(PF_UNIX, SOCK_SEQPACKET, 0, fds));
-  base::FileHandleMappingVector fds_to_map;
-  fds_to_map.push_back(std::make_pair(fds[1], kNaClZygoteDescriptor));
-  fds_to_map.push_back(std::make_pair(sandboxdesc, nacl_sandbox_descriptor));
 
   bool use_nacl_bootstrap = false;
   // For non-SFI mode, we do not use fixed address space.
@@ -203,16 +202,14 @@ void NaClForkDelegate::Init(const int sandboxdesc,
   status_ = kNaClHelperUnused;
   base::FilePath helper_exe;
   base::FilePath helper_bootstrap_exe;
-  if (!PathService::Get(
+  if (!base::PathService::Get(
           nonsfi_mode_ ? nacl::FILE_NACL_HELPER_NONSFI : nacl::FILE_NACL_HELPER,
           &helper_exe)) {
     status_ = kNaClHelperMissing;
   } else if (use_nacl_bootstrap &&
-             !PathService::Get(nacl::FILE_NACL_HELPER_BOOTSTRAP,
-                               &helper_bootstrap_exe)) {
+             !base::PathService::Get(nacl::FILE_NACL_HELPER_BOOTSTRAP,
+                                     &helper_bootstrap_exe)) {
     status_ = kNaClHelperBootstrapMissing;
-  } else if (RunningOnValgrind()) {
-    status_ = kNaClHelperValgrind;
   } else {
     base::CommandLine::StringVector argv_to_launch;
     {
@@ -223,17 +220,17 @@ void NaClForkDelegate::Init(const int sandboxdesc,
         cmd_line.SetProgram(helper_exe);
 
       // Append any switches that need to be forwarded to the NaCl helper.
-      static const char* kForwardSwitches[] = {
-        switches::kAllowSandboxDebugging,
-        switches::kDisableSeccompFilterSandbox,
-        switches::kEnableNaClDebug,
-        switches::kNaClDangerousNoSandboxNonSfi,
-        switches::kNoSandbox,
+      static constexpr const char* kForwardSwitches[] = {
+          service_manager::switches::kAllowSandboxDebugging,
+          service_manager::switches::kDisableSeccompFilterSandbox,
+          service_manager::switches::kNoSandbox,
+          switches::kEnableNaClDebug,
+          switches::kNaClDangerousNoSandboxNonSfi,
       };
       const base::CommandLine& current_cmd_line =
           *base::CommandLine::ForCurrentProcess();
       cmd_line.CopySwitchesFrom(current_cmd_line, kForwardSwitches,
-                                arraysize(kForwardSwitches));
+                                base::size(kForwardSwitches));
 
       // The command line needs to be tightly controlled to use
       // |helper_bootstrap_exe|. So from now on, argv_to_launch should be
@@ -253,6 +250,10 @@ void NaClForkDelegate::Init(const int sandboxdesc,
     }
 
     base::LaunchOptions options;
+    options.fds_to_remap.push_back(
+        std::make_pair(fds[1], kNaClZygoteDescriptor));
+    options.fds_to_remap.push_back(
+        std::make_pair(sandboxdesc, nacl_sandbox_descriptor));
 
     base::ScopedFD dummy_fd;
     if (using_setuid_sandbox) {
@@ -260,11 +261,9 @@ void NaClForkDelegate::Init(const int sandboxdesc,
       // setuid sandbox wrapper manually.
       base::FilePath sandbox_path = setuid_sandbox_host->GetSandboxBinaryPath();
       argv_to_launch.insert(argv_to_launch.begin(), sandbox_path.value());
-      setuid_sandbox_host->SetupLaunchOptions(&options, &fds_to_map, &dummy_fd);
+      setuid_sandbox_host->SetupLaunchOptions(&options, &dummy_fd);
       setuid_sandbox_host->SetupLaunchEnvironment();
     }
-
-    options.fds_to_remap = &fds_to_map;
 
     // The NaCl processes spawned may need to exceed the ambient soft limit
     // on RLIMIT_AS to allocate the untrusted address space and its guard
@@ -458,7 +457,7 @@ void NaClForkDelegate::AddPassthroughEnvToOptions(
   pass_through_vars.push_back(sandbox::kSandboxEnvironmentApiRequest);
   for (size_t i = 0; i < pass_through_vars.size(); ++i) {
     std::string temp;
-    if (env->GetVar(pass_through_vars[i].c_str(), &temp))
+    if (env->GetVar(pass_through_vars[i], &temp))
       options->environ[pass_through_vars[i]] = temp;
   }
 }

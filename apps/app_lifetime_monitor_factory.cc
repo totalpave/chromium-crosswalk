@@ -5,17 +5,18 @@
 #include "apps/app_lifetime_monitor_factory.h"
 
 #include "apps/app_lifetime_monitor.h"
-#include "chrome/browser/profiles/profile.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "content/public/browser/browser_context.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/extensions_browser_client.h"
 
 namespace apps {
 
 // static
-AppLifetimeMonitor* AppLifetimeMonitorFactory::GetForProfile(Profile* profile) {
+AppLifetimeMonitor* AppLifetimeMonitorFactory::GetForBrowserContext(
+    content::BrowserContext* context) {
   return static_cast<AppLifetimeMonitor*>(
-      GetInstance()->GetServiceForBrowserContext(profile, false));
+      GetInstance()->GetServiceForBrowserContext(context, false));
 }
 
 AppLifetimeMonitorFactory* AppLifetimeMonitorFactory::GetInstance() {
@@ -29,11 +30,11 @@ AppLifetimeMonitorFactory::AppLifetimeMonitorFactory()
   DependsOn(extensions::AppWindowRegistry::Factory::GetInstance());
 }
 
-AppLifetimeMonitorFactory::~AppLifetimeMonitorFactory() {}
+AppLifetimeMonitorFactory::~AppLifetimeMonitorFactory() = default;
 
 KeyedService* AppLifetimeMonitorFactory::BuildServiceInstanceFor(
-    content::BrowserContext* profile) const {
-  return new AppLifetimeMonitor(static_cast<Profile*>(profile));
+    content::BrowserContext* context) const {
+  return new AppLifetimeMonitor(context);
 }
 
 bool AppLifetimeMonitorFactory::ServiceIsCreatedWithBrowserContext() const {

@@ -6,27 +6,19 @@
 
 #include "base/logging.h"
 #include "components/content_settings/core/common/content_settings_types.h"
-#include "content/public/browser/permission_type.h"
 
 BackgroundSyncPermissionContext::BackgroundSyncPermissionContext(
     Profile* profile)
     : PermissionContextBase(profile,
-                            content::PermissionType::BACKGROUND_SYNC,
-                            CONTENT_SETTINGS_TYPE_BACKGROUND_SYNC) {}
-
-void BackgroundSyncPermissionContext::CancelPermissionRequest(
-    content::WebContents* web_contents,
-    const PermissionRequestID& id) {
-  // Background sync permission requests are resolved instantly without
-  // prompting the user, there is no way to cancel them.
-  NOTREACHED();
-}
+                            CONTENT_SETTINGS_TYPE_BACKGROUND_SYNC,
+                            blink::mojom::FeaturePolicyFeature::kNotFound) {}
 
 void BackgroundSyncPermissionContext::DecidePermission(
     content::WebContents* web_contents,
     const PermissionRequestID& id,
     const GURL& requesting_origin,
     const GURL& embedding_origin,
+    bool user_gesture,
     const BrowserPermissionCallback& callback) {
   // The user should never be prompted to authorize background sync.
   NOTREACHED();

@@ -10,7 +10,8 @@
 #include "remoting/base/logging.h"
 #include "remoting/signaling/iq_sender.h"
 #include "remoting/signaling/jid_util.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "remoting/signaling/signaling_address.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting {
 
@@ -20,11 +21,8 @@ const char kGooglePushNamespace[] = "google:push";
 
 }  // namespace
 
-PushNotificationSubscriber::Subscription::Subscription() {
-}
-
-PushNotificationSubscriber::Subscription::~Subscription() {
-}
+PushNotificationSubscriber::Subscription::Subscription() = default;
+PushNotificationSubscriber::Subscription::~Subscription() = default;
 
 PushNotificationSubscriber::PushNotificationSubscriber(
     SignalStrategy* signal_strategy,
@@ -48,7 +46,7 @@ void PushNotificationSubscriber::OnSignalStrategyStateChange(
 }
 
 bool PushNotificationSubscriber::OnSignalStrategyIncomingStanza(
-    const buzz::XmlElement* stanza) {
+    const jingle_xmpp::XmlElement* stanza) {
   // Ignore all XMPP stanzas.
   return false;
 }
@@ -58,17 +56,18 @@ void PushNotificationSubscriber::Subscribe(const Subscription& subscription) {
           << subscription.channel << ".";
 
   std::string bare_jid;
-  SplitJidResource(signal_strategy_->GetLocalJid(), &bare_jid, nullptr);
+  SplitJidResource(signal_strategy_->GetLocalAddress().jid(), &bare_jid,
+                   nullptr);
 
   // Build a subscription request.
-  buzz::XmlElement* subscribe_element =
-      new buzz::XmlElement(buzz::QName(kGooglePushNamespace, "subscribe"));
-  buzz::XmlElement* item_element =
-      new buzz::XmlElement(buzz::QName(kGooglePushNamespace, "item"));
+  jingle_xmpp::XmlElement* subscribe_element =
+      new jingle_xmpp::XmlElement(jingle_xmpp::QName(kGooglePushNamespace, "subscribe"));
+  jingle_xmpp::XmlElement* item_element =
+      new jingle_xmpp::XmlElement(jingle_xmpp::QName(kGooglePushNamespace, "item"));
   subscribe_element->AddElement(item_element);
-  item_element->SetAttr(buzz::QName(std::string(), "channel"),
+  item_element->SetAttr(jingle_xmpp::QName(std::string(), "channel"),
                         subscription.channel);
-  item_element->SetAttr(buzz::QName(std::string(), "from"), subscription.from);
+  item_element->SetAttr(jingle_xmpp::QName(std::string(), "from"), subscription.from);
 
   // Send the request.
   iq_sender_.reset(new IqSender(signal_strategy_));
@@ -80,9 +79,9 @@ void PushNotificationSubscriber::Subscribe(const Subscription& subscription) {
 
 void PushNotificationSubscriber::OnSubscriptionResult(
     IqRequest* request,
-    const buzz::XmlElement* response) {
+    const jingle_xmpp::XmlElement* response) {
   std::string response_type =
-      response->Attr(buzz::QName(std::string(), "type"));
+      response->Attr(jingle_xmpp::QName(std::string(), "type"));
   if (response_type != "result") {
     LOG(ERROR) << "Invalid response type for subscription: " << response_type;
   }

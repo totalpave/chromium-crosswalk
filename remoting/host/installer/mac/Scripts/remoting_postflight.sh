@@ -60,6 +60,7 @@ $KSADMIN --register --productid "$KSPID" --version "$KSPVERSION" \
 
 # If there is a backup _enabled file, re-enable the service.
 if [[ -f "$ENABLED_FILE_BACKUP" ]]; then
+  logger Restoring _enabled file
   mv "$ENABLED_FILE_BACKUP" "$ENABLED_FILE"
 fi
 
@@ -102,12 +103,11 @@ if [[ -r "$USERS_TMP_FILE" ]]; then
   for uid in $(sort "$USERS_TMP_FILE" | uniq); do
     logger Starting service for user "$uid".
 
-    sudo_user="sudo -u #$uid"
     load="launchctl load -w -S Aqua $PLIST"
     start="launchctl start $SERVICE_NAME"
 
     if is_el_capitan_or_newer; then
-      boostrap_user="launchctl asuser $uid"
+      bootstrap_user="launchctl asuser $uid"
     else
       # Load the launchd agent in the bootstrap context of user $uid's
       # graphical session, so that screen-capture and input-injection can
@@ -118,10 +118,13 @@ if [[ -r "$USERS_TMP_FILE" ]]; then
       if [[ ! -n "$pid" ]]; then
         exit 1
       fi
+      sudo_user="sudo -u #$uid"
       bootstrap_user="launchctl bsexec $pid"
     fi
 
+    logger $bootstrap_user $sudo_user $load
     $bootstrap_user $sudo_user $load
+    logger $bootstrap_user $sudo_user $start
     $bootstrap_user $sudo_user $start
   done
 fi

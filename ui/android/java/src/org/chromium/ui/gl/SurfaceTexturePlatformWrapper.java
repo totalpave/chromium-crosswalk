@@ -9,14 +9,15 @@ import android.util.Log;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.annotations.MainDex;
 
 /**
  * Wrapper class for the underlying platform's SurfaceTexture in order to
  * provide a stable JNI API.
  */
 @JNINamespace("gl")
+@MainDex
 class SurfaceTexturePlatformWrapper {
-
     private static final String TAG = "SurfaceTexturePlatformWrapper";
 
     @CalledByNative
@@ -64,5 +65,10 @@ class SurfaceTexturePlatformWrapper {
     @CalledByNative
     private static void release(SurfaceTexture surfaceTexture) {
         surfaceTexture.release();
+    }
+
+    @CalledByNative
+    private static void setDefaultBufferSize(SurfaceTexture surfaceTexture, int width, int height) {
+        surfaceTexture.setDefaultBufferSize(width, height);
     }
 }

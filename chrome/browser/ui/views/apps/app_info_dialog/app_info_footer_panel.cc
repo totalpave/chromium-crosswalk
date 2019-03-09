@@ -6,31 +6,31 @@
 
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_dialogs.h"
-#include "chrome/common/extensions/extension_constants.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/grit/generated_resources.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/management_policy.h"
 #include "extensions/browser/uninstall_reason.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/layout/layout_constants.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
-#if defined(USE_ASH)
-#include "ash/shelf/shelf_delegate.h"
-#include "ash/shell.h"
+#if defined(OS_CHROMEOS)
+// gn check complains on Linux Ozone.
+#include "ash/public/cpp/shelf_model.h"  // nogncheck
+#include "chrome/browser/ui/ash/launcher/chrome_launcher_controller.h"
 #include "chrome/browser/ui/ash/launcher/chrome_launcher_controller_util.h"
 #endif
 
-AppInfoFooterPanel::AppInfoFooterPanel(gfx::NativeWindow parent_window,
-                                       Profile* profile,
+AppInfoFooterPanel::AppInfoFooterPanel(Profile* profile,
                                        const extensions::Extension* app)
     : AppInfoPanel(profile, app),
-      parent_window_(parent_window),
       create_shortcuts_button_(NULL),
       pin_to_shelf_button_(NULL),
       unpin_from_shelf_button_(NULL),
@@ -38,10 +38,12 @@ AppInfoFooterPanel::AppInfoFooterPanel(gfx::NativeWindow parent_window,
       weak_ptr_factory_(this) {
   CreateButtons();
 
-  SetLayoutManager(new views::BoxLayout(views::BoxLayout::kHorizontal,
-                                        views::kButtonHEdgeMargin,
-                                        views::kButtonVEdgeMargin,
-                                        views::kRelatedButtonHSpacing));
+  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
+
+  SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::kHorizontal,
+      provider->GetInsetsMetric(views::INSETS_DIALOG_SUBSECTION),
+      provider->GetDistanceMetric(views::DISTANCE_RELATED_BUTTON_HORIZONTAL)));
 
   LayoutButtons();
 }
@@ -56,7 +58,7 @@ void AppInfoFooterPanel::CreateButtons() {
                   IDS_APPLICATION_INFO_CREATE_SHORTCUTS_BUTTON_TEXT));
   }
 
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
   if (CanSetPinnedToShelf()) {
     pin_to_shelf_button_ = views::MdTextButton::CreateSecondaryUiButton(
         this, l10n_util::GetStringUTF16(IDS_APP_LIST_CONTEXT_MENU_PIN));
@@ -87,16 +89,17 @@ void AppInfoFooterPanel::LayoutButtons() {
 }
 
 void AppInfoFooterPanel::UpdatePinButtons(bool focus_visible_button) {
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
   if (pin_to_shelf_button_ && unpin_from_shelf_button_) {
-    bool is_pinned =
-        !ash::Shell::GetInstance()->GetShelfDelegate()->IsAppPinned(app_->id());
-    pin_to_shelf_button_->SetVisible(is_pinned);
-    unpin_from_shelf_button_->SetVisible(!is_pinned);
+    const bool was_pinned =
+        ChromeLauncherController::instance()->shelf_model()->IsAppPinned(
+            app_->id());
+    pin_to_shelf_button_->SetVisible(!was_pinned);
+    unpin_from_shelf_button_->SetVisible(was_pinned);
 
     if (focus_visible_button) {
       views::View* button_to_focus =
-          is_pinned ? pin_to_shelf_button_ : unpin_from_shelf_button_;
+          was_pinned ? unpin_from_shelf_button_ : pin_to_shelf_button_;
       button_to_focus->RequestFocus();
     }
   }
@@ -107,7 +110,7 @@ void AppInfoFooterPanel::ButtonPressed(views::Button* sender,
                                        const ui::Event& event) {
   if (sender == create_shortcuts_button_) {
     CreateShortcuts();
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
   } else if (sender == pin_to_shelf_button_) {
     SetPinnedToShelf(true);
   } else if (sender == unpin_from_shelf_button_) {
@@ -140,47 +143,42 @@ void AppInfoFooterPanel::CreateShortcuts() {
 }
 
 bool AppInfoFooterPanel::CanCreateShortcuts() const {
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
   // Ash platforms can't create shortcuts.
   return false;
 #else
   // Extensions and the Chrome component app can't have shortcuts.
   return app_->id() != extension_misc::kChromeAppId && !app_->is_extension();
-#endif  // USE_ASH
+#endif  // OS_CHROMEOS
 }
 
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
 void AppInfoFooterPanel::SetPinnedToShelf(bool value) {
   DCHECK(CanSetPinnedToShelf());
-  ash::ShelfDelegate* shelf_delegate =
-      ash::Shell::GetInstance()->GetShelfDelegate();
-  DCHECK(shelf_delegate);
+  ash::ShelfModel* shelf_model =
+      ChromeLauncherController::instance()->shelf_model();
+  DCHECK(shelf_model);
   if (value)
-    shelf_delegate->PinAppWithID(app_->id());
+    shelf_model->PinAppWithID(app_->id());
   else
-    shelf_delegate->UnpinAppWithID(app_->id());
+    shelf_model->UnpinAppWithID(app_->id());
 
   UpdatePinButtons(true);
   Layout();
 }
 
 bool AppInfoFooterPanel::CanSetPinnedToShelf() const {
-  // Non-Ash platforms don't have a shelf.
-  if (!ash::Shell::HasInstance())
-    return false;
-
   // The Chrome app can't be unpinned, and extensions can't be pinned.
   return app_->id() != extension_misc::kChromeAppId && !app_->is_extension() &&
          (GetPinnableForAppID(app_->id(), profile_) ==
           AppListControllerDelegate::PIN_EDITABLE);
 }
-#endif  // USE_ASH
+#endif  // OS_CHROMEOS
 
 void AppInfoFooterPanel::UninstallApp() {
   DCHECK(CanUninstallApp());
-  extension_uninstall_dialog_.reset(
-      extensions::ExtensionUninstallDialog::Create(
-          profile_, GetWidget()->GetNativeWindow(), this));
+  extension_uninstall_dialog_ = extensions::ExtensionUninstallDialog::Create(
+      profile_, GetWidget()->GetNativeWindow(), this);
   extension_uninstall_dialog_->ConfirmUninstall(
       app_, extensions::UNINSTALL_REASON_USER_INITIATED,
       extensions::UNINSTALL_SOURCE_APP_INFO_DIALOG);

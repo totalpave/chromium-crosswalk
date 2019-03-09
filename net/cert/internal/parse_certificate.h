@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "base/compiler_specific.h"
@@ -17,6 +18,7 @@
 
 namespace net {
 
+class CertErrors;
 struct ParsedTbsCertificate;
 
 // Returns true if the given serial number (CertificateSerialNumber in RFC 5280)
@@ -44,7 +46,13 @@ struct ParsedTbsCertificate;
 //     Note: Non-conforming CAs may issue certificates with serial numbers
 //     that are negative or zero.  Certificate users SHOULD be prepared to
 //     gracefully handle such certificates.
-NET_EXPORT bool VerifySerialNumber(const der::Input& value) WARN_UNUSED_RESULT;
+//
+// |errors| must be a non-null destination for any errors/warnings. If
+// |warnings_only| is set to true, then what would ordinarily be errors are
+// instead added as warnings.
+NET_EXPORT bool VerifySerialNumber(const der::Input& value,
+                                   bool warnings_only,
+                                   CertErrors* errors) WARN_UNUSED_RESULT;
 
 struct NET_EXPORT ParseCertificateOptions {
   // If set to true, then parsing will skip checks on the certificate's serial
@@ -55,14 +63,17 @@ struct NET_EXPORT ParseCertificateOptions {
 };
 
 // Parses a DER-encoded "Certificate" as specified by RFC 5280. Returns true on
-// success and sets the results in the |out_*| parameters.
+// success and sets the results in the |out_*| parameters. On both the failure
+// and success case, if |out_errors| was non-null it may contain extra error
+// information.
 //
 // Note that on success the out parameters alias data from the input
 // |certificate_tlv|.  Hence the output values are only valid as long as
 // |certificate_tlv| remains valid.
 //
-// On failure the out parameters have an undefined state. Some of them may have
-// been updated during parsing, whereas others may not have been changed.
+// On failure the out parameters have an undefined state, except for
+// out_errors. Some of them may have been updated during parsing, whereas
+// others may not have been changed.
 //
 // The out parameters represent each field of the Certificate SEQUENCE:
 //       Certificate  ::=  SEQUENCE  {
@@ -81,7 +92,7 @@ struct NET_EXPORT ParseCertificateOptions {
 //
 // This contains the full (unverified) Tag-Length-Value for a SEQUENCE. No
 // guarantees are made regarding the value of this SEQUENCE.
-// This can be further parsed using SignatureValue::CreateFromDer().
+// This can be further parsed using SignatureValue::Create().
 //
 // The |out_signature_value| parameter corresponds with "signatureValue" from
 // RFC 5280:
@@ -91,12 +102,15 @@ struct NET_EXPORT ParseCertificateOptions {
 NET_EXPORT bool ParseCertificate(const der::Input& certificate_tlv,
                                  der::Input* out_tbs_certificate_tlv,
                                  der::Input* out_signature_algorithm_tlv,
-                                 der::BitString* out_signature_value)
-    WARN_UNUSED_RESULT;
+                                 der::BitString* out_signature_value,
+                                 CertErrors* out_errors) WARN_UNUSED_RESULT;
 
 // Parses a DER-encoded "TBSCertificate" as specified by RFC 5280. Returns true
 // on success and sets the results in |out|. Certain invalid inputs may
 // be accepted based on the provided |options|.
+//
+// If |errors| was non-null then any warnings/errors that occur during parsing
+// are added to it.
 //
 // Note that on success |out| aliases data from the input |tbs_tlv|.
 // Hence the fields of the ParsedTbsCertificate are only valid as long as
@@ -125,8 +139,8 @@ NET_EXPORT bool ParseCertificate(const der::Input& certificate_tlv,
 //            }
 NET_EXPORT bool ParseTbsCertificate(const der::Input& tbs_tlv,
                                     const ParseCertificateOptions& options,
-                                    ParsedTbsCertificate* out)
-    WARN_UNUSED_RESULT;
+                                    ParsedTbsCertificate* out,
+                                    CertErrors* errors) WARN_UNUSED_RESULT;
 
 // Represents a "Version" from RFC 5280:
 //         Version  ::=  INTEGER  {  v1(0), v2(1), v3(2)  }
@@ -176,7 +190,7 @@ struct NET_EXPORT ParsedTbsCertificate {
   // This contains the full (unverified) Tag-Length-Value for a SEQUENCE. No
   // guarantees are made regarding the value of this SEQUENCE.
   //
-  // This can be further parsed using SignatureValue::CreateFromDer().
+  // This can be further parsed using SignatureValue::Create().
   der::Input signature_algorithm_tlv;
 
   // Corresponds with "issuer" from RFC 5280:
@@ -350,6 +364,13 @@ NET_EXPORT der::Input AdCaIssuersOid();
 // In dotted notation: 1.3.6.1.5.5.7.48.1
 NET_EXPORT der::Input AdOcspOid();
 
+// From RFC 5280:
+//
+//     id-ce-cRLDistributionPoints OBJECT IDENTIFIER ::=  { id-ce 31 }
+//
+// In dotted notation: 2.5.29.31
+NET_EXPORT der::Input CrlDistributionPointsOid();
+
 // Parses the Extensions sequence as defined by RFC 5280. Extensions are added
 // to the map |extensions| keyed by the OID. Parsing guarantees that each OID
 // is unique. Note that certificate verification must consume each extension
@@ -449,6 +470,48 @@ NET_EXPORT bool ParseAuthorityInfoAccess(
     const der::Input& authority_info_access_tlv,
     std::vector<base::StringPiece>* out_ca_issuers_uris,
     std::vector<base::StringPiece>* out_ocsp_uris) WARN_UNUSED_RESULT;
+
+// ParsedDistributionPoint represents a parsed DistributionPoint from RFC 5280.
+// It is simplified compared to that from RFC 5280 as it make assumptions about
+// which OPTIONAL fields are present, and which CHOICEs are used.
+//
+//   DistributionPoint ::= SEQUENCE {
+//    distributionPoint       [0]     DistributionPointName OPTIONAL,
+//    reasons                 [1]     ReasonFlags OPTIONAL,
+//    cRLIssuer               [2]     GeneralNames OPTIONAL }
+struct NET_EXPORT ParsedDistributionPoint {
+  ParsedDistributionPoint();
+  ParsedDistributionPoint(ParsedDistributionPoint&& other);
+  ~ParsedDistributionPoint();
+
+  // The possibly-empty list of URIs from distributionPoint.
+  std::vector<base::StringPiece> uris;
+
+  // TODO(eroman): Include the actual cRLIssuer.
+  bool has_crl_issuer = false;
+};
+
+// Parses the value of a CRL Distribution Points extension (sequence of
+// DistributionPoint). Return true on success, and fills |distribution_points|
+// with values that reference data in |distribution_points_tlv|.
+//
+// Some simplifications are made during parsing.
+//
+//  * Skips DistributionPoints that lack a "distributionPoint" (name) field.
+//
+//  * Skips DistributionPoints that contain a "reasons" field. This is
+//    reasonable under RFC 5280's profile which requires that conforming CAs
+//    "MUST include at least one DistributionPoint that points to a CRL that
+//    covers the certificate for all reasons".
+//
+//  * Only parses URIs from the GeneralNames "distributionPoint". If the
+//    DistributionPoint uses "nameRelativeToCRLIssuer" rather than "fullName" it
+//    is skipped. And if "fullName" includes names ofther than
+//    "uniformResourceIdentifier" they are also skipped.
+NET_EXPORT bool ParseCrlDistributionPoints(
+    const der::Input& distribution_points_tlv,
+    std::vector<ParsedDistributionPoint>* distribution_points)
+    WARN_UNUSED_RESULT;
 
 }  // namespace net
 

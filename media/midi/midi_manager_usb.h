@@ -9,14 +9,14 @@
 #include <stdint.h>
 
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "base/bind.h"
-#include "base/callback.h"
 #include "base/compiler_specific.h"
-#include "base/containers/hash_tables.h"
+#include "base/hash.h"
 #include "base/macros.h"
+#include "base/synchronization/lock.h"
 #include "base/time/time.h"
 #include "media/midi/midi_manager.h"
 #include "media/midi/usb_midi_device.h"
@@ -25,19 +25,17 @@
 #include "media/midi/usb_midi_jack.h"
 #include "media/midi/usb_midi_output_stream.h"
 
-namespace media {
 namespace midi {
 
-class MidiScheduler;
+class MidiService;
 
 // MidiManager for USB-MIDI.
-class USB_MIDI_EXPORT MidiManagerUsb
-    : public MidiManager,
-      public UsbMidiDeviceDelegate,
-      NON_EXPORTED_BASE(public UsbMidiInputStream::Delegate) {
+class USB_MIDI_EXPORT MidiManagerUsb : public MidiManager,
+                                       public UsbMidiDeviceDelegate,
+                                       public UsbMidiInputStream::Delegate {
  public:
-  explicit MidiManagerUsb(
-      std::unique_ptr<UsbMidiDevice::Factory> device_factory);
+  MidiManagerUsb(MidiService* service,
+                 std::unique_ptr<UsbMidiDevice::Factory> device_factory);
   ~MidiManagerUsb() override;
 
   // MidiManager implementation.
@@ -45,7 +43,7 @@ class USB_MIDI_EXPORT MidiManagerUsb
   void DispatchSendMidiData(MidiManagerClient* client,
                             uint32_t port_index,
                             const std::vector<uint8_t>& data,
-                            double timestamp) override;
+                            base::TimeTicks timestamp) override;
 
   // UsbMidiDeviceDelegate implementation.
   void ReceiveUsbMidiData(UsbMidiDevice* device,
@@ -62,40 +60,42 @@ class USB_MIDI_EXPORT MidiManagerUsb
                       size_t size,
                       base::TimeTicks time) override;
 
-  const ScopedVector<UsbMidiOutputStream>& output_streams() const {
+  const std::vector<std::unique_ptr<UsbMidiOutputStream>>& output_streams()
+      const {
     return output_streams_;
   }
   const UsbMidiInputStream* input_stream() const { return input_stream_.get(); }
 
-  // Initializes this object.
-  // When the initialization finishes, |callback| will be called with the
-  // result.
-  // When this factory is destroyed during the operation, the operation
-  // will be canceled silently (i.e. |callback| will not be called).
-  // The function is public just for unit tests. Do not call this function
-  // outside code for testing.
-  void Initialize(base::Callback<void(Result result)> callback);
-
  private:
+  // Initializes this object.
+  // When the initialization finishes, CompleteInitialization will be called
+  // with the result on the same thread, but asynchronously.
+  // When this factory is destroyed during the operation, the operation
+  // will be canceled silently (i.e. CompleteInitialization will not be called).
+  void Initialize();
+
   void OnEnumerateDevicesDone(bool result, UsbMidiDevice::Devices* devices);
   bool AddPorts(UsbMidiDevice* device, int device_id);
 
+  // TODO(toyoshim): Remove |lock_| once dynamic instantiation mode is enabled
+  // by default. This protects objects allocated on the I/O thread from doubly
+  // released on the main thread.
+  base::Lock lock_;
+
   std::unique_ptr<UsbMidiDevice::Factory> device_factory_;
-  ScopedVector<UsbMidiDevice> devices_;
-  ScopedVector<UsbMidiOutputStream> output_streams_;
+  std::vector<std::unique_ptr<UsbMidiDevice>> devices_;
+  std::vector<std::unique_ptr<UsbMidiOutputStream>> output_streams_;
   std::unique_ptr<UsbMidiInputStream> input_stream_;
 
-  base::Callback<void(Result result)> initialize_callback_;
-
   // A map from <endpoint_number, cable_number> to the index of input jacks.
-  base::hash_map<std::pair<int, int>, size_t> input_jack_dictionary_;
-
-  std::unique_ptr<MidiScheduler> scheduler_;
+  std::unordered_map<std::pair<int, int>,
+                     size_t,
+                     base::IntPairHash<std::pair<int, int>>>
+      input_jack_dictionary_;
 
   DISALLOW_COPY_AND_ASSIGN(MidiManagerUsb);
 };
 
 }  // namespace midi
-}  // namespace media
 
 #endif  // MEDIA_MIDI_MIDI_MANAGER_USB_H_

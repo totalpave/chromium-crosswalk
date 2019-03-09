@@ -1,4 +1,0 @@
-Verifies proactive javascript compilation.
-
-0:14 [Error] Uncaught SyntaxError: Unexpected identifier
-

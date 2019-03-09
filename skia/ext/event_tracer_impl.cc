@@ -47,13 +47,15 @@ SkEventTracer::Handle
                                          const uint8_t* argTypes,
                                          const uint64_t* argValues,
                                          uint8_t flags) {
+  base::trace_event::TraceArguments args(
+      numArgs, argNames, argTypes,
+      reinterpret_cast<const unsigned long long*>(argValues));
   base::trace_event::TraceEventHandle handle = TRACE_EVENT_API_ADD_TRACE_EVENT(
       phase, categoryEnabledFlag, name, trace_event_internal::kGlobalScope, id,
-      numArgs, argNames, argTypes, (const long long unsigned int*)argValues,
-      NULL, flags);
-      SkEventTracer::Handle result;
-      memcpy(&result, &handle, sizeof(result));
-      return result;
+      &args, flags);
+  SkEventTracer::Handle result;
+  memcpy(&result, &handle, sizeof(result));
+  return result;
 }
 
 void
@@ -73,6 +75,5 @@ void
 void InitSkiaEventTracer() {
   // Initialize the binding to Skia's tracing events. Skia will
   // take ownership of and clean up the memory allocated here.
-  if (!SkEventTracer::GetInstance())
-    SkEventTracer::SetInstance(new skia::SkChromiumEventTracer());
+  SkEventTracer::SetInstance(new skia::SkChromiumEventTracer());
 }

@@ -4,12 +4,16 @@
 
 #include "chrome/browser/ui/views/apps/glass_app_window_frame_view_win.h"
 
+#include <windows.h>
+
 #include "base/win/windows_version.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "ui/base/hit_test.h"
-#include "ui/display/win/dpi.h"
+#include "ui/base/win/hwnd_metrics.h"
+#include "ui/display/win/screen_win.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
+#include "ui/views/win/hwnd_util.h"
 
 namespace {
 
@@ -27,17 +31,20 @@ GlassAppWindowFrameViewWin::~GlassAppWindowFrameViewWin() {
 }
 
 gfx::Insets GlassAppWindowFrameViewWin::GetGlassInsets() const {
-  int caption_height = display::win::GetSystemMetricsInDIP(SM_CYSIZEFRAME) +
-                       display::win::GetSystemMetricsInDIP(SM_CYCAPTION);
+  int caption_height =
+      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CYSIZEFRAME) +
+      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CYCAPTION);
 
-  int frame_size = base::win::GetVersion() < base::win::VERSION_WIN10
-                       ? display::win::GetSystemMetricsInDIP(SM_CXSIZEFRAME)
-                       : 0;
+  int frame_size =
+      base::win::GetVersion() < base::win::VERSION_WIN10
+          ? display::win::ScreenWin::GetSystemMetricsInDIP(SM_CXSIZEFRAME)
+          : 0;
 
   return gfx::Insets(caption_height, frame_size, frame_size, frame_size);
 }
 
-gfx::Insets GlassAppWindowFrameViewWin::GetClientAreaInsets() const {
+gfx::Insets GlassAppWindowFrameViewWin::GetClientAreaInsets(
+    HMONITOR monitor) const {
   gfx::Insets insets;
   if (base::win::GetVersion() < base::win::VERSION_WIN10) {
     // This tells Windows that most of the window is a client area, meaning
@@ -50,10 +57,8 @@ gfx::Insets GlassAppWindowFrameViewWin::GetClientAreaInsets() const {
     int border_thickness = 1;
     insets.Set(0, 0, border_thickness, border_thickness);
   } else {
-    // On Windows 10 we use a 1 pixel non client border which is too thin as a
-    // resize target. This inset extends the resize region.
-    int resize_border = display::win::GetSystemMetricsInDIP(SM_CXSIZEFRAME);
-    insets.Set(0, resize_border, resize_border, resize_border);
+    const int frame_thickness = ui::GetFrameThickness(monitor);
+    insets.Set(0, frame_thickness, frame_thickness, frame_thickness);
   }
   return insets;
 }
@@ -75,7 +80,8 @@ gfx::Rect GlassAppWindowFrameViewWin::GetWindowBoundsForClientBounds(
     return bounds();
 
   gfx::Insets insets = GetGlassInsets();
-  insets += GetClientAreaInsets();
+  insets += GetClientAreaInsets(
+      MonitorFromWindow(HWNDForView(this), MONITOR_DEFAULTTONEAREST));
   gfx::Rect window_bounds(
       client_bounds.x() - insets.left(), client_bounds.y() - insets.top(),
       client_bounds.width() + insets.left() + insets.right(),
@@ -100,7 +106,8 @@ int GlassAppWindowFrameViewWin::NonClientHitTest(const gfx::Point& point) {
                              : false;
   // Don't allow overlapping resize handles when the window is maximized or
   // fullscreen, as it can't be resized in those states.
-  int resize_border = display::win::GetSystemMetricsInDIP(SM_CXSIZEFRAME);
+  int resize_border =
+      display::win::ScreenWin::GetSystemMetricsInDIP(SM_CXSIZEFRAME);
   int frame_component =
       GetHTComponentForFrame(point,
                              resize_border,
@@ -120,11 +127,11 @@ int GlassAppWindowFrameViewWin::NonClientHitTest(const gfx::Point& point) {
 }
 
 void GlassAppWindowFrameViewWin::GetWindowMask(const gfx::Size& size,
-                                               gfx::Path* window_mask) {
+                                               SkPath* window_mask) {
   // We got nothing to say about no window mask.
 }
 
-gfx::Size GlassAppWindowFrameViewWin::GetPreferredSize() const {
+gfx::Size GlassAppWindowFrameViewWin::CalculatePreferredSize() const {
   gfx::Size pref = widget_->client_view()->GetPreferredSize();
   gfx::Rect bounds(0, 0, pref.width(), pref.height());
   return widget_->non_client_view()

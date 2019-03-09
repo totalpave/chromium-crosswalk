@@ -25,8 +25,6 @@ remoting.SessionLogger = function(role, writeLogEntry) {
   /** @private */
   this.writeLogEntry_ = writeLogEntry;
   /** @private */
-  this.statsAccumulator_ = new remoting.StatsAccumulator();
-  /** @private */
   this.sessionId_ = '';
   /** @private */
   this.sessionIdGenerationTime_ = 0;
@@ -69,6 +67,9 @@ remoting.SessionLogger = function(role, writeLogEntry) {
 
   /** @private {remoting.ChromotingEvent.FeatureTracker} */
   this.featureTracker_ = null;
+
+  /** @private {number} */
+  this.networkInterfaceCount_;
 
   this.setSessionId_();
 };
@@ -172,6 +173,13 @@ remoting.SessionLogger.prototype.setPreviousSessionSummary =
 };
 
 /**
+ * @param {number} count
+ */
+remoting.SessionLogger.prototype.setNetworkInterfaceCount = function(count) {
+  this.networkInterfaceCount_ = count;
+};
+
+/**
  * @return {string} The current session id. This is random GUID, refreshed
  *     every 24hrs.
  */
@@ -235,11 +243,7 @@ remoting.SessionLogger.prototype.logSessionStateChange =
     this.sessionEndTime_ = Date.now();
   }
 
-  // Don't accumulate connection statistics across state changes.
-  this.logAccumulatedStatistics_();
-  this.statsAccumulator_.empty();
-
-    if (state == remoting.ChromotingEvent.SessionState.CLOSED ||
+  if (state == remoting.ChromotingEvent.SessionState.CLOSED ||
       state == remoting.ChromotingEvent.SessionState.CONNECTION_DROPPED) {
     this.flushFeatureTracker();
   }
@@ -248,18 +252,34 @@ remoting.SessionLogger.prototype.logSessionStateChange =
 /**
  * Logs connection statistics.
  *
- * @param {Object<number>} stats The connection statistics
+ * @param {remoting.ClientSession.PerfStats} stats The connection statistics
  */
 remoting.SessionLogger.prototype.logStatistics = function(stats) {
-  this.maybeExpireSessionId_();
-  // Store the statistics.
-  this.statsAccumulator_.add(stats);
-  // Send statistics to the server if they've been accumulating for at least
-  // 60 seconds.
-  if (this.statsAccumulator_.getTimeSinceFirstValue() >=
-      remoting.SessionLogger.CONNECTION_STATS_ACCUMULATE_TIME) {
-    this.logAccumulatedStatistics_();
+  if (stats && remoting.ClientSession.PerfStats.hasValidField(stats)) {
+    this.maybeExpireSessionId_();
+    var entry = this.makeStats_(stats);
+    this.log_(entry);
   }
+};
+
+/**
+ * Logs host and client dimensions.
+ *
+ * @param {{width: number, height: number}} hostSize
+ * @param {number} hostDpi
+ * @param {{width: number, height: number}} clientPluginSize
+ * @param {number} clientDpi
+ * @param {{width: number, height: number}} clientWindowSize
+ * @param {boolean} clientFullscreen
+ */
+remoting.SessionLogger.prototype.logScreenResolutions =
+    function(hostSize, hostDpi, clientPluginSize, clientWindowSize, clientDpi,
+             clientFullscreen) {
+  this.maybeExpireSessionId_();
+  var entry = this.makeScreenResolutions_(hostSize, hostDpi, clientPluginSize,
+                                          clientWindowSize, clientDpi,
+                                          clientFullscreen);
+  this.log_(entry);
 };
 
 /**
@@ -290,6 +310,32 @@ remoting.SessionLogger.prototype.makeSessionStateChange_ =
 };
 
 /**
+ * @param {{width: number, height: number}} hostSize
+ * @param {number} hostDpi
+ * @param {{width: number, height: number}} clientPluginSize
+ * @param {{width: number, height: number}} clientWindowSize
+ * @param {number} clientDpi
+ * @param {boolean} clientFullscreen
+ * @return {remoting.ChromotingEvent}
+ * @private
+ */
+remoting.SessionLogger.prototype.makeScreenResolutions_ =
+    function(hostSize, hostDpi, clientPluginSize, clientWindowSize, clientDpi,
+             clientFullscreen) {
+  var entry = new remoting.ChromotingEvent(
+      remoting.ChromotingEvent.Type.SCREEN_RESOLUTIONS);
+  entry.client_video_size = new remoting.ChromotingEvent.ScreenResolution(
+      clientPluginSize.width, clientPluginSize.height, clientDpi);
+  entry.client_window_size = new remoting.ChromotingEvent.ScreenResolution(
+      clientWindowSize.width, clientWindowSize.height, clientDpi);
+  entry.host_all_screens_size = new remoting.ChromotingEvent.ScreenResolution(
+      hostSize.width, hostSize.height, hostDpi);
+  entry.client_fullscreen = clientFullscreen;
+  this.fillEvent_(entry);
+  return entry;
+};
+
+/**
  * @return {remoting.ChromotingEvent}
  * @private
  */
@@ -312,46 +358,28 @@ remoting.SessionLogger.prototype.makeSessionIdOld_ = function() {
 };
 
 /**
- * @return {remoting.ChromotingEvent}
+ * @param {!remoting.ClientSession.PerfStats} perfStats
+ * @return {!remoting.ChromotingEvent}
  * @private
  */
-remoting.SessionLogger.prototype.makeStats_ = function() {
-  var perfStats = this.statsAccumulator_.getPerfStats();
-  if (Boolean(perfStats)) {
-    var entry = new remoting.ChromotingEvent(
-        remoting.ChromotingEvent.Type.CONNECTION_STATISTICS);
-    this.fillEvent_(entry);
-    entry.video_bandwidth = perfStats.videoBandwidth;
-    entry.capture_latency = perfStats.captureLatency;
-    entry.encode_latency = perfStats.encodeLatency;
-    entry.decode_latency = perfStats.decodeLatency;
-    entry.render_latency = perfStats.renderLatency;
-    entry.roundtrip_latency = perfStats.roundtripLatency;
-    entry.max_capture_latency = perfStats.maxCaptureLatency;
-    entry.max_encode_latency = perfStats.maxEncodeLatency;
-    entry.max_decode_latency = perfStats.maxDecodeLatency;
-    entry.max_render_latency = perfStats.maxRenderLatency;
-    entry.max_roundtrip_latency = perfStats.maxRoundtripLatency;
-    return entry;
-  }
-  return null;
+remoting.SessionLogger.prototype.makeStats_ = function(perfStats) {
+  var entry = new remoting.ChromotingEvent(
+      remoting.ChromotingEvent.Type.CONNECTION_STATISTICS);
+  this.fillEvent_(entry);
+  entry.video_bandwidth = perfStats.videoBandwidth;
+  entry.capture_latency = perfStats.captureLatency;
+  entry.encode_latency = perfStats.encodeLatency;
+  entry.decode_latency = perfStats.decodeLatency;
+  entry.render_latency = perfStats.renderLatency;
+  entry.roundtrip_latency = perfStats.roundtripLatency;
+  entry.max_capture_latency = perfStats.maxCaptureLatency;
+  entry.max_encode_latency = perfStats.maxEncodeLatency;
+  entry.max_decode_latency = perfStats.maxDecodeLatency;
+  entry.max_render_latency = perfStats.maxRenderLatency;
+  entry.max_roundtrip_latency = perfStats.maxRoundtripLatency;
+  return entry;
 };
 
-/**
- * Moves connection statistics from the accumulator to the log server.
- *
- * If all the statistics are zero, then the accumulator is still emptied,
- * but the statistics are not sent to the log server.
- *
- * @private
- */
-remoting.SessionLogger.prototype.logAccumulatedStatistics_ = function() {
-  var entry = this.makeStats_();
-  if (entry) {
-    this.log_(entry);
-  }
-  this.statsAccumulator_.empty();
-};
 
 /**
  * @param {remoting.ChromotingEvent} entry
@@ -384,6 +412,9 @@ remoting.SessionLogger.prototype.fillEvent_ = function(entry) {
   entry.host_version = this.hostVersion_;
   entry.host_os = this.hostOs_;
   entry.host_os_version = this.hostOsVersion_;
+  if (this.networkInterfaceCount_ != undefined) {
+    entry.number_of_network_interfaces = this.networkInterfaceCount_;
+  }
 };
 
 /**
@@ -469,6 +500,10 @@ function toSignalStrategyType(type) {
       return remoting.ChromotingEvent.SignalStrategyType.XMPP;
     case remoting.SignalStrategy.Type.WCS:
       return remoting.ChromotingEvent.SignalStrategyType.WCS;
+    case remoting.SignalStrategy.Type.LCS:
+      return remoting.ChromotingEvent.SignalStrategyType.LCS;
+    case remoting.SignalStrategy.Type.FTL:
+      return remoting.ChromotingEvent.SignalStrategyType.FTL;
     default:
       throw new Error('Unknown signal strategy type : ' + type);
   }
@@ -515,9 +550,5 @@ function toConnectionType(type) {
 
 // The maximum age of a session ID, in milliseconds.
 remoting.SessionLogger.MAX_SESSION_ID_AGE = 24 * 60 * 60 * 1000;
-
-// The time over which to accumulate connection statistics before logging them
-// to the server, in milliseconds.
-remoting.SessionLogger.CONNECTION_STATS_ACCUMULATE_TIME = 60 * 1000;
 
 })();

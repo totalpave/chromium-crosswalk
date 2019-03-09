@@ -6,10 +6,12 @@
 #define CHROMECAST_COMMON_CAST_CONTENT_CLIENT_H_
 
 #include "content/public/common/content_client.h"
+#include "url/gurl.h"
 
 namespace chromecast {
 namespace shell {
 
+// TODO(halliwell) Move this function to its own header.
 std::string GetUserAgent();
 
 class CastContentClient : public content::ContentClient {
@@ -17,10 +19,8 @@ class CastContentClient : public content::ContentClient {
   ~CastContentClient() override;
 
   // content::ContentClient implementation:
-  void AddAdditionalSchemes(std::vector<url::SchemeWithType>* standard_schemes,
-                            std::vector<url::SchemeWithType>* referrer_schemes,
-                            std::vector<std::string>* saveable_shemes) override;
-  std::string GetUserAgent() const override;
+  void SetActiveURL(const GURL& url, std::string top_origin) override;
+  void AddAdditionalSchemes(Schemes* schemes) override;
   base::string16 GetLocalizedString(int message_id) const override;
   base::StringPiece GetDataResource(
       int resource_id,
@@ -29,8 +29,11 @@ class CastContentClient : public content::ContentClient {
       int resource_id) const override;
   gfx::Image& GetNativeImageNamed(int resource_id) const override;
 #if defined(OS_ANDROID)
-  media::MediaClientAndroid* GetMediaClientAndroid() override;
+  ::media::MediaDrmBridgeClient* GetMediaDrmBridgeClient() override;
 #endif  // OS_ANDROID
+
+ private:
+  GURL last_active_url_;
 };
 
 }  // namespace shell

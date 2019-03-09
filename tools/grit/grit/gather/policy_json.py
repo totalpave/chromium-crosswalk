@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -18,7 +17,7 @@ from xml.parsers.expat import ExpatError
 
 class PolicyJson(skeleton_gatherer.SkeletonGatherer):
   '''Collects and translates the following strings from policy_templates.json:
-    - captions,descriptions and labels of policies
+    - captions, descriptions, labels and Android app support details of policies
     - captions of enumeration items
     - misc strings from the 'messages' section
      Translatable strings may have untranslateable placeholders with the same
@@ -145,6 +144,7 @@ class PolicyJson(skeleton_gatherer.SkeletonGatherer):
       'desc': 'Description',
       'caption': 'Caption',
       'label': 'Label',
+      'arc_support': 'Information about the effect on Android apps'
     }
     if item_type == 'policy':
       return '%s of the policy named %s' % (key_map[key], item['name'])
@@ -170,7 +170,7 @@ class PolicyJson(skeleton_gatherer.SkeletonGatherer):
       depth: The level of indentation.
     '''
     self._AddIndentedNontranslateableChunk(depth, "'%s': " % key)
-    if key in ('desc', 'caption', 'label'):
+    if key in ('desc', 'caption', 'label', 'arc_support'):
       self._AddNontranslateableChunk("'''")
       self._ParseMessage(
           item[key],
@@ -204,7 +204,8 @@ class PolicyJson(skeleton_gatherer.SkeletonGatherer):
           self._AddIndentedNontranslateableChunk(depth + 1, "'items': [\n")
           self._AddItems(item1['items'], 'enum_item', item1, depth + 2)
           self._AddIndentedNontranslateableChunk(depth + 1, "],\n")
-        elif key == 'policies':
+        elif key == 'policies' and all(not isinstance(x, str)
+                                       for x in item1['policies']):
           self._AddIndentedNontranslateableChunk(depth + 1, "'policies': [\n")
           self._AddItems(item1['policies'], 'policy', item1, depth + 2)
           self._AddIndentedNontranslateableChunk(depth + 1, "],\n")

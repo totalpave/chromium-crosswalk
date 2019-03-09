@@ -6,7 +6,7 @@
 
 #include <stddef.h>
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/common/cloud_print/cloud_print_constants.h"
@@ -15,6 +15,7 @@
 #include "chrome/service/cloud_print/cloud_print_token_store.h"
 #include "chrome/service/net/service_url_request_context_getter.h"
 #include "chrome/service/service_process.h"
+#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_status_code.h"
 #include "net/url_request/url_fetcher.h"
@@ -89,9 +90,10 @@ CloudPrintURLFetcherFactory* g_test_factory = nullptr;
 CloudPrintURLFetcherFactory::~CloudPrintURLFetcherFactory() {}
 
 // static
-CloudPrintURLFetcher* CloudPrintURLFetcher::Create() {
+CloudPrintURLFetcher* CloudPrintURLFetcher::Create(
+    const net::PartialNetworkTrafficAnnotationTag& partial_traffic_annotation) {
   return g_test_factory ? g_test_factory->CreateCloudPrintURLFetcher()
-                        : new CloudPrintURLFetcher;
+                        : new CloudPrintURLFetcher(partial_traffic_annotation);
 }
 
 // static
@@ -119,19 +121,19 @@ CloudPrintURLFetcher::Delegate::HandleRawData(
 }
 
 CloudPrintURLFetcher::ResponseAction
-CloudPrintURLFetcher::Delegate::HandleJSONData(
-    const net::URLFetcher* source,
-    const GURL& url,
-    const base::DictionaryValue* json_data,
-    bool succeeded) {
+CloudPrintURLFetcher::Delegate::HandleJSONData(const net::URLFetcher* source,
+                                               const GURL& url,
+                                               const base::Value& json_data,
+                                               bool succeeded) {
   return CONTINUE_PROCESSING;
 }
 
-CloudPrintURLFetcher::CloudPrintURLFetcher()
+CloudPrintURLFetcher::CloudPrintURLFetcher(
+    const net::PartialNetworkTrafficAnnotationTag& partial_traffic_annotation)
     : delegate_(NULL),
       num_retries_(0),
-      type_(REQUEST_MAX) {
-}
+      type_(REQUEST_MAX),
+      partial_traffic_annotation_(partial_traffic_annotation) {}
 
 bool CloudPrintURLFetcher::IsSameRequest(const net::URLFetcher* source) {
   return (request_.get() == source);
@@ -195,14 +197,11 @@ void CloudPrintURLFetcher::OnURLFetchComplete(
       // response, we will retry (to handle the case where we got redirected
       // to a non-cloudprint-server URL eg. for authentication).
       bool succeeded = false;
-      std::unique_ptr<base::DictionaryValue> response_dict =
-          ParseResponseJSON(data, &succeeded);
+      base::Value response_dict = ParseResponseJSON(data, &succeeded);
 
-      if (response_dict) {
-        action = delegate_->HandleJSONData(source,
-                                           source->GetURL(),
-                                           response_dict.get(),
-                                           succeeded);
+      if (response_dict.is_dict()) {
+        action = delegate_->HandleJSONData(source, source->GetURL(),
+                                           response_dict, succeeded);
       } else {
         action = RETRY_REQUEST;
       }
@@ -258,7 +257,29 @@ void CloudPrintURLFetcher::StartRequestHelper(
                             REQUEST_MAX);
   // Persist the additional headers in case we need to retry the request.
   additional_headers_ = additional_headers;
-  request_ = net::URLFetcher::Create(0, url, request_type, this);
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::CompleteNetworkTrafficAnnotation("cloud_print",
+                                            partial_traffic_annotation_,
+                                            R"(
+          semantics {
+            sender: "Cloud Print"
+            destination: GOOGLE_OWNED_SERVICE
+          }
+          policy {
+            cookies_allowed: NO
+            setting:
+              "This feature cannot be disabled by settings."
+            chrome_policy {
+              CloudPrintProxyEnabled {
+                policy_options {mode: MANDATORY}
+                CloudPrintProxyEnabled: false
+              }
+            }
+          })");
+  request_ =
+      net::URLFetcher::Create(0, url, request_type, this, traffic_annotation);
+  data_use_measurement::DataUseUserData::AttachToFetcher(
+      request_.get(), data_use_measurement::DataUseUserData::CLOUD_PRINT);
   request_->SetRequestContext(GetRequestContextGetter());
   // Since we implement our own retry logic, disable the retry in URLFetcher.
   request_->SetAutomaticallyRetryOn5xx(false);

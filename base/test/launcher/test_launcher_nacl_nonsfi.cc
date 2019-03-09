@@ -16,11 +16,16 @@
 #include "base/strings/string_piece.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/test/launcher/test_launcher.h"
 #include "base/test/launcher/unit_test_launcher.h"
 #include "base/test/test_switches.h"
 #include "base/test/test_timeouts.h"
+#include "build/build_config.h"
+
+#if defined(OS_POSIX)
+#include "base/files/file_descriptor_watcher_posix.h"
+#endif
 
 namespace base {
 
@@ -61,8 +66,7 @@ void PrintUsage() {
 
 class NonSfiUnitTestPlatformDelegate : public base::UnitTestPlatformDelegate {
  public:
-  NonSfiUnitTestPlatformDelegate() {
-  }
+  NonSfiUnitTestPlatformDelegate() = default;
 
   bool Init(const std::string& test_binary) {
     base::FilePath dir_exe;
@@ -76,12 +80,14 @@ class NonSfiUnitTestPlatformDelegate : public base::UnitTestPlatformDelegate {
   }
 
  private:
-  bool CreateTemporaryFile(base::FilePath* path) override {
+  bool CreateResultsFile(base::FilePath* path) override {
     if (!base::CreateNewTempDirectory(base::FilePath::StringType(), path))
       return false;
     *path = path->AppendASCII("test_results.xml");
     return true;
   }
+
+  bool CreateTemporaryFile(base::FilePath* path) override { return false; }
 
   bool GetTests(std::vector<base::TestIdentifier>* output) override {
     base::FilePath output_file;
@@ -108,7 +114,8 @@ class NonSfiUnitTestPlatformDelegate : public base::UnitTestPlatformDelegate {
 
   base::CommandLine GetCommandLineForChildGTestProcess(
       const std::vector<std::string>& test_names,
-      const base::FilePath& output_file) override {
+      const base::FilePath& output_file,
+      const base::FilePath& flag_file) override {
     base::CommandLine cmd_line(test_path_);
     cmd_line.AppendSwitchPath(
         switches::kTestLauncherOutput, output_file);
@@ -139,6 +146,9 @@ int TestLauncherNonSfiMain(const std::string& test_binary) {
   TestTimeouts::Initialize();
 
   base::MessageLoopForIO message_loop;
+#if defined(OS_POSIX)
+  FileDescriptorWatcher file_descriptor_watcher(message_loop.task_runner());
+#endif
 
   NonSfiUnitTestPlatformDelegate platform_delegate;
   if (!platform_delegate.Init(test_binary)) {

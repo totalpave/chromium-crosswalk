@@ -7,24 +7,24 @@
 #include <stddef.h>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "content/public/renderer/renderer_ppapi_host.h"
 #include "content/renderer/pepper/pepper_file_system_host.h"
 #include "content/renderer/pepper/pepper_media_stream_audio_track_host.h"
 #include "content/renderer/pepper/pepper_media_stream_video_track_host.h"
 #include "ipc/ipc_message.h"
+#include "media/media_buildflags.h"
 #include "ppapi/host/ppapi_host.h"
 #include "ppapi/host/resource_host.h"
 #include "ppapi/proxy/ppapi_messages.h"
 #include "ppapi/shared_impl/resource_var.h"
 #include "ppapi/shared_impl/scoped_pp_var.h"
 #include "storage/common/fileapi/file_system_util.h"
-#include "third_party/WebKit/public/platform/WebFileSystem.h"
-#include "third_party/WebKit/public/platform/WebMediaStreamSource.h"
-#include "third_party/WebKit/public/platform/WebMediaStreamTrack.h"
-#include "third_party/WebKit/public/web/WebDOMFileSystem.h"
-#include "third_party/WebKit/public/web/WebDOMMediaStreamTrack.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "third_party/blink/public/platform/web_file_system_type.h"
+#include "third_party/blink/public/platform/web_media_stream_source.h"
+#include "third_party/blink/public/platform/web_media_stream_track.h"
+#include "third_party/blink/public/web/web_dom_file_system.h"
+#include "third_party/blink/public/web/web_dom_media_stream_track.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 
 using ppapi::ResourceVar;
 
@@ -42,16 +42,15 @@ void FlushComplete(
   callback.Run(true);
 }
 
-// Converts a blink::WebFileSystem::Type to a PP_FileSystemType.
-PP_FileSystemType WebFileSystemTypeToPPAPI(blink::WebFileSystem::Type type) {
+PP_FileSystemType WebFileSystemTypeToPPAPI(blink::WebFileSystemType type) {
   switch (type) {
-    case blink::WebFileSystem::TypeTemporary:
+    case blink::WebFileSystemType::kWebFileSystemTypeTemporary:
       return PP_FILESYSTEMTYPE_LOCALTEMPORARY;
-    case blink::WebFileSystem::TypePersistent:
+    case blink::WebFileSystemType::kWebFileSystemTypePersistent:
       return PP_FILESYSTEMTYPE_LOCALPERSISTENT;
-    case blink::WebFileSystem::TypeIsolated:
+    case blink::WebFileSystemType::kWebFileSystemTypeIsolated:
       return PP_FILESYSTEMTYPE_ISOLATED;
-    case blink::WebFileSystem::TypeExternal:
+    case blink::WebFileSystemType::kWebFileSystemTypeExternal:
       return PP_FILESYSTEMTYPE_EXTERNAL;
     default:
       NOTREACHED();
@@ -67,16 +66,16 @@ bool FileApiFileSystemTypeToWebFileSystemType(
     blink::WebFileSystemType* result_type) {
   switch (type) {
     case storage::kFileSystemTypeTemporary:
-      *result_type = blink::WebFileSystemTypeTemporary;
+      *result_type = blink::kWebFileSystemTypeTemporary;
       return true;
     case storage::kFileSystemTypePersistent:
-      *result_type = blink::WebFileSystemTypePersistent;
+      *result_type = blink::kWebFileSystemTypePersistent;
       return true;
     case storage::kFileSystemTypeIsolated:
-      *result_type = blink::WebFileSystemTypeIsolated;
+      *result_type = blink::kWebFileSystemTypeIsolated;
       return true;
     case storage::kFileSystemTypeExternal:
-      *result_type = blink::WebFileSystemTypeExternal;
+      *result_type = blink::kWebFileSystemTypeExternal;
       return true;
     default:
       return false;
@@ -93,11 +92,11 @@ bool DOMFileSystemToResource(
     int* pending_renderer_id,
     std::unique_ptr<IPC::Message>* create_message,
     std::unique_ptr<IPC::Message>* browser_host_create_message) {
-  DCHECK(!dom_file_system.isNull());
+  DCHECK(!dom_file_system.IsNull());
 
   PP_FileSystemType file_system_type =
-      WebFileSystemTypeToPPAPI(dom_file_system.type());
-  GURL root_url = dom_file_system.rootURL();
+      WebFileSystemTypeToPPAPI(dom_file_system.GetType());
+  GURL root_url = dom_file_system.RootURL();
 
   // Raw external file system access is not allowed, but external file system
   // access through fileapi is allowed. (Without this check, there would be a
@@ -136,15 +135,12 @@ bool ResourceHostToDOMFileSystem(
   blink::WebFileSystemType blink_type;
   if (!FileApiFileSystemTypeToWebFileSystemType(type, &blink_type))
     return false;
-  blink::WebLocalFrame* frame = blink::WebLocalFrame::frameForContext(context);
-  blink::WebDOMFileSystem web_dom_file_system = blink::WebDOMFileSystem::create(
-      frame,
-      blink_type,
-      blink::WebString::fromUTF8(name),
-      root_url,
-      blink::WebDOMFileSystem::SerializableTypeSerializable);
+  blink::WebLocalFrame* frame = blink::WebLocalFrame::FrameForContext(context);
+  blink::WebDOMFileSystem web_dom_file_system = blink::WebDOMFileSystem::Create(
+      frame, blink_type, blink::WebString::FromUTF8(name), root_url,
+      blink::WebDOMFileSystem::kSerializableTypeSerializable);
   *dom_file_system =
-      web_dom_file_system.toV8Value(context->Global(), context->GetIsolate());
+      web_dom_file_system.ToV8Value(context->Global(), context->GetIsolate());
   return true;
 }
 
@@ -164,13 +160,12 @@ bool DOMMediaStreamTrackToResource(
     const blink::WebDOMMediaStreamTrack& dom_media_stream_track,
     int* pending_renderer_id,
     std::unique_ptr<IPC::Message>* create_message) {
-  DCHECK(!dom_media_stream_track.isNull());
+  DCHECK(!dom_media_stream_track.IsNull());
   *pending_renderer_id = 0;
-#if defined(ENABLE_WEBRTC)
-  const blink::WebMediaStreamTrack track = dom_media_stream_track.component();
-  const std::string id = track.source().id().utf8();
+  const blink::WebMediaStreamTrack track = dom_media_stream_track.Component();
+  const std::string id = track.Source().Id().Utf8();
 
-  if (track.source().getType() == blink::WebMediaStreamSource::TypeVideo) {
+  if (track.Source().GetType() == blink::WebMediaStreamSource::kTypeVideo) {
     *pending_renderer_id = host->GetPpapiHost()->AddPendingResourceHost(
         std::unique_ptr<ppapi::host::ResourceHost>(
             new PepperMediaStreamVideoTrackHost(host, instance, 0, track)));
@@ -180,8 +175,8 @@ bool DOMMediaStreamTrackToResource(
     create_message->reset(
         new PpapiPluginMsg_MediaStreamVideoTrack_CreateFromPendingHost(id));
     return true;
-  } else if (track.source().getType() ==
-             blink::WebMediaStreamSource::TypeAudio) {
+  } else if (track.Source().GetType() ==
+             blink::WebMediaStreamSource::kTypeAudio) {
     *pending_renderer_id = host->GetPpapiHost()->AddPendingResourceHost(
         std::unique_ptr<ppapi::host::ResourceHost>(
             new PepperMediaStreamAudioTrackHost(host, instance, 0, track)));
@@ -192,7 +187,6 @@ bool DOMMediaStreamTrackToResource(
         new PpapiPluginMsg_MediaStreamAudioTrack_CreateFromPendingHost(id));
     return true;
   }
-#endif
   return false;
 }
 
@@ -220,8 +214,8 @@ bool ResourceConverterImpl::FromV8Value(v8::Local<v8::Object> val,
   *was_resource = false;
 
   blink::WebDOMFileSystem dom_file_system =
-      blink::WebDOMFileSystem::fromV8Value(val);
-  if (!dom_file_system.isNull()) {
+      blink::WebDOMFileSystem::FromV8Value(val);
+  if (!dom_file_system.IsNull()) {
     int pending_renderer_id;
     std::unique_ptr<IPC::Message> create_message;
     std::unique_ptr<IPC::Message> browser_host_create_message;
@@ -244,8 +238,8 @@ bool ResourceConverterImpl::FromV8Value(v8::Local<v8::Object> val,
   }
 
   blink::WebDOMMediaStreamTrack dom_media_stream_track =
-      blink::WebDOMMediaStreamTrack::fromV8Value(val);
-  if (!dom_media_stream_track.isNull()) {
+      blink::WebDOMMediaStreamTrack::FromV8Value(val);
+  if (!dom_media_stream_track.IsNull()) {
     int pending_renderer_id;
     std::unique_ptr<IPC::Message> create_message;
     if (!DOMMediaStreamTrackToResource(instance_,
@@ -312,7 +306,7 @@ bool ResourceConverterImpl::ToV8Value(const PP_Var& var,
   ::ppapi::host::PpapiHost* ppapi_host = renderer_ppapi_host->GetPpapiHost();
   ::ppapi::host::ResourceHost* resource_host =
       ppapi_host->GetResourceHost(resource_id);
-  if (resource_host == NULL) {
+  if (resource_host == nullptr) {
     LOG(ERROR) << "No resource host for resource #" << resource_id;
     return false;
   }

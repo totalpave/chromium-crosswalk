@@ -10,18 +10,19 @@
 #include "base/bind.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/media/fake_desktop_media_list.h"
+#include "chrome/browser/media/webrtc/fake_desktop_media_list.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_list_view.h"
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_source_view.h"
 #include "components/web_modal/test_web_contents_modal_dialog_host.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/aura/window.h"
 #include "ui/events/event_utils.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane.h"
 #include "ui/views/test/scoped_views_test_helper.h"
+#include "ui/views/test/test_views_delegate.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_client_view.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -40,23 +41,25 @@ class DesktopMediaPickerViewsTest : public testing::Test {
   ~DesktopMediaPickerViewsTest() override {}
 
   void SetUp() override {
-    media_lists_[DesktopMediaID::TYPE_SCREEN] = new FakeDesktopMediaList();
-    media_lists_[DesktopMediaID::TYPE_WINDOW] = new FakeDesktopMediaList();
-    media_lists_[DesktopMediaID::TYPE_WEB_CONTENTS] =
-        new FakeDesktopMediaList();
-    std::unique_ptr<FakeDesktopMediaList> screen_list(
-        media_lists_[DesktopMediaID::TYPE_SCREEN]);
-    std::unique_ptr<FakeDesktopMediaList> window_list(
-        media_lists_[DesktopMediaID::TYPE_WINDOW]);
-    std::unique_ptr<FakeDesktopMediaList> tab_list(
-        media_lists_[DesktopMediaID::TYPE_WEB_CONTENTS]);
+    test_helper_.test_views_delegate()->set_layout_provider(
+        ChromeLayoutProvider::CreateLayoutProvider());
+
+    std::vector<std::unique_ptr<DesktopMediaList>> source_lists;
+    for (auto type : kSourceTypes) {
+      media_lists_[type] = new FakeDesktopMediaList(type);
+      source_lists.push_back(
+          std::unique_ptr<FakeDesktopMediaList>(media_lists_[type]));
+    }
 
     base::string16 app_name = base::ASCIIToUTF16("foo");
 
     picker_views_.reset(new DesktopMediaPickerViews());
-    picker_views_->Show(nullptr, test_helper_.GetContext(), nullptr, app_name,
-                        app_name, std::move(screen_list),
-                        std::move(window_list), std::move(tab_list), true,
+    DesktopMediaPicker::Params picker_params;
+    picker_params.context = test_helper_.GetContext();
+    picker_params.app_name = app_name;
+    picker_params.target_name = app_name;
+    picker_params.request_audio = true;
+    picker_views_->Show(picker_params, std::move(source_lists),
                         base::Bind(&DesktopMediaPickerViewsTest::OnPickerDone,
                                    base::Unretained(this)));
   }
@@ -136,10 +139,8 @@ TEST_F(DesktopMediaPickerViewsTest, SelectMediaSourceViewOnSingleClick) {
     DesktopMediaSourceView* source_view_1 =
         GetPickerDialogView()->GetMediaSourceViewForTesting(1);
 
-    // By default, the first screen is selected, but not for other sharing
-    // types.
-    EXPECT_EQ(source_type == DesktopMediaID::TYPE_SCREEN,
-              source_view_0->is_selected());
+    // By default, nothing should be selected.
+    EXPECT_FALSE(source_view_0->is_selected());
     EXPECT_FALSE(source_view_1->is_selected());
 
     // Source view 0 is selected with mouse click.

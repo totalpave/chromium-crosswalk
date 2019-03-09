@@ -36,19 +36,20 @@
 #include <string>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_string_value_serializer.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/task_runner_util.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/common/chrome_constants.h"
 #include "sql/statement.h"
 #include "sql/transaction.h"
-
-using content::BrowserThread;
 
 namespace {
 
@@ -56,7 +57,7 @@ using extensions::Action;
 
 // Delay between cleaning passes (to delete old action records) through the
 // database.
-const int kCleaningDelayInHours = 12;
+constexpr base::TimeDelta kCleaningDelay = base::TimeDelta::FromHours(12);
 
 // We should log the arguments to these API calls.  Be careful when
 // constructing this whitelist to not keep arguments that might compromise
@@ -170,7 +171,7 @@ CountingPolicy::CountingPolicy(Profile* profile)
       string_table_("string_ids"),
       url_table_("url_ids"),
       retention_time_(base::TimeDelta::FromHours(60)) {
-  for (size_t i = 0; i < arraysize(kAlwaysLog); i++) {
+  for (size_t i = 0; i < base::size(kAlwaysLog); i++) {
     api_arg_whitelist_.insert(
         std::make_pair(kAlwaysLog[i].type, kAlwaysLog[i].name));
   }
@@ -178,21 +179,16 @@ CountingPolicy::CountingPolicy(Profile* profile)
 
 CountingPolicy::~CountingPolicy() {}
 
-bool CountingPolicy::InitDatabase(sql::Connection* db) {
-  if (!Util::DropObsoleteTables(db))
-    return false;
-
+bool CountingPolicy::InitDatabase(sql::Database* db) {
   if (!string_table_.Initialize(db))
     return false;
   if (!url_table_.Initialize(db))
     return false;
 
   // Create the unified activity log entry table.
-  if (!ActivityDatabase::InitializeTable(db,
-                                         kTableName,
-                                         kTableContentFields,
+  if (!ActivityDatabase::InitializeTable(db, kTableName, kTableContentFields,
                                          kTableFieldTypes,
-                                         arraysize(kTableContentFields)))
+                                         base::size(kTableContentFields)))
     return false;
 
   // Create a view for easily accessing the uncompressed form of the data, and
@@ -218,7 +214,7 @@ void CountingPolicy::QueueAction(scoped_refptr<Action> action) {
       activity_database()->AdviseFlush(ActivityDatabase::kFlushImmediately);
     queued_actions_date_ = new_date;
 
-    ActionQueue::iterator queued_entry = queued_actions_.find(action);
+    auto queued_entry = queued_actions_.find(action);
     if (queued_entry == queued_actions_.end()) {
       queued_actions_[action] = 1;
     } else {
@@ -234,7 +230,7 @@ void CountingPolicy::QueueAction(scoped_refptr<Action> action) {
   }
 }
 
-bool CountingPolicy::FlushDatabase(sql::Connection* db) {
+bool CountingPolicy::FlushDatabase(sql::Database* db) {
   // Columns that must match exactly for database rows to be coalesced.
   static const char* const matched_columns[] = {
       "extension_id_x", "action_type", "api_name_x", "args_x", "page_url_x",
@@ -247,8 +243,7 @@ bool CountingPolicy::FlushDatabase(sql::Connection* db) {
   // always check on the first database flush (since there might be a large
   // amount of data to clear).
   bool clean_database = (last_database_cleaning_time_.is_null() ||
-                         Now() - last_database_cleaning_time_ >
-                             base::TimeDelta::FromHours(kCleaningDelayInHours));
+                         Now() - last_database_cleaning_time_ > kCleaningDelay);
 
   if (queue.empty() && !clean_database)
     return true;
@@ -275,21 +270,21 @@ bool CountingPolicy::FlushDatabase(sql::Connection* db) {
       " SET count = count + ?, time = max(?, time)"
       " WHERE rowid = ?";
 
-  for (size_t i = 0; i < arraysize(matched_columns); i++) {
+  for (size_t i = 0; i < base::size(matched_columns); i++) {
     locate_str = base::StringPrintf(
         "%s AND %s IS ?", locate_str.c_str(), matched_columns[i]);
     insert_str =
         base::StringPrintf("%s, %s", insert_str.c_str(), matched_columns[i]);
   }
   insert_str += ") VALUES (?, ?";
-  for (size_t i = 0; i < arraysize(matched_columns); i++) {
+  for (size_t i = 0; i < base::size(matched_columns); i++) {
     insert_str += ", ?";
   }
   locate_str += " ORDER BY time DESC LIMIT 1";
   insert_str += ")";
 
-  for (ActionQueue::iterator i = queue.begin(); i != queue.end(); ++i) {
-    const Action& action = *i->first.get();
+  for (auto i = queue.begin(); i != queue.end(); ++i) {
+    const Action& action = *i->first;
     int count = i->second;
 
     base::Time day_start = action.time().LocalMidnight();
@@ -429,12 +424,13 @@ std::unique_ptr<Action::ActionVector> CountingPolicy::DoReadFilteredData(
     const std::string& page_url,
     const std::string& arg_url,
     const int days_ago) {
+  DCHECK(GetActivityLogTaskRunner()->RunsTasksInCurrentSequence());
   // Ensure data is flushed to the database first so that we query over all
   // data.
   activity_database()->AdviseFlush(ActivityDatabase::kFlushImmediately);
   std::unique_ptr<Action::ActionVector> actions(new Action::ActionVector());
 
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db)
     return actions;
 
@@ -446,7 +442,7 @@ std::unique_ptr<Action::ActionVector> CountingPolicy::DoReadFilteredData(
     where_next = " AND ";
   }
   if (!api_name.empty()) {
-    where_str += where_next + "api_name=?";
+    where_str += where_next + "api_name LIKE ?";
     where_next = " AND ";
   }
   if (type != Action::ACTION_ANY) {
@@ -476,7 +472,7 @@ std::unique_ptr<Action::ActionVector> CountingPolicy::DoReadFilteredData(
   if (!extension_id.empty())
     query.BindString(++i, extension_id);
   if (!api_name.empty())
-    query.BindString(++i, api_name);
+    query.BindString(++i, api_name + "%");
   if (type != Action::ACTION_ANY)
     query.BindInt(++i, static_cast<int>(type));
   if (!page_url.empty())
@@ -501,8 +497,8 @@ std::unique_ptr<Action::ActionVector> CountingPolicy::DoReadFilteredData(
 
     if (query.ColumnType(4) != sql::COLUMN_TYPE_NULL) {
       std::unique_ptr<base::Value> parsed_value =
-          base::JSONReader::Read(query.ColumnString(4));
-      if (parsed_value && parsed_value->IsType(base::Value::TYPE_LIST)) {
+          base::JSONReader::ReadDeprecated(query.ColumnString(4));
+      if (parsed_value && parsed_value->is_list()) {
         action->set_args(base::WrapUnique(
             static_cast<base::ListValue*>(parsed_value.release())));
       }
@@ -514,8 +510,8 @@ std::unique_ptr<Action::ActionVector> CountingPolicy::DoReadFilteredData(
 
     if (query.ColumnType(8) != sql::COLUMN_TYPE_NULL) {
       std::unique_ptr<base::Value> parsed_value =
-          base::JSONReader::Read(query.ColumnString(8));
-      if (parsed_value && parsed_value->IsType(base::Value::TYPE_DICTIONARY)) {
+          base::JSONReader::ReadDeprecated(query.ColumnString(8));
+      if (parsed_value && parsed_value->is_dict()) {
         action->set_other(base::WrapUnique(
             static_cast<base::DictionaryValue*>(parsed_value.release())));
       }
@@ -531,7 +527,7 @@ void CountingPolicy::DoRemoveActions(const std::vector<int64_t>& action_ids) {
   if (action_ids.empty())
     return;
 
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -566,7 +562,7 @@ void CountingPolicy::DoRemoveActions(const std::vector<int64_t>& action_ids) {
 }
 
 void CountingPolicy::DoRemoveURLs(const std::vector<GURL>& restrict_urls) {
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -641,7 +637,7 @@ void CountingPolicy::DoRemoveExtensionData(const std::string& extension_id) {
   if (extension_id.empty())
     return;
 
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -672,7 +668,7 @@ void CountingPolicy::DoRemoveExtensionData(const std::string& extension_id) {
 }
 
 void CountingPolicy::DoDeleteDatabase() {
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -725,20 +721,13 @@ void CountingPolicy::ReadFilteredData(
     const std::string& page_url,
     const std::string& arg_url,
     const int days_ago,
-    const base::Callback<void(std::unique_ptr<Action::ActionVector>)>&
-        callback) {
-  BrowserThread::PostTaskAndReplyWithResult(
-      BrowserThread::DB,
-      FROM_HERE,
-      base::Bind(&CountingPolicy::DoReadFilteredData,
-                 base::Unretained(this),
-                 extension_id,
-                 type,
-                 api_name,
-                 page_url,
-                 arg_url,
-                 days_ago),
-      callback);
+    base::OnceCallback<void(std::unique_ptr<Action::ActionVector>)> callback) {
+  base::PostTaskAndReplyWithResult(
+      GetActivityLogTaskRunner().get(), FROM_HERE,
+      base::BindOnce(&CountingPolicy::DoReadFilteredData,
+                     base::Unretained(this), extension_id, type, api_name,
+                     page_url, arg_url, days_ago),
+      std::move(callback));
 }
 
 void CountingPolicy::RemoveActions(const std::vector<int64_t>& action_ids) {
@@ -766,7 +755,7 @@ void CountingPolicy::OnDatabaseClose() {
 }
 
 // Cleans old records from the activity log database.
-bool CountingPolicy::CleanOlderThan(sql::Connection* db,
+bool CountingPolicy::CleanOlderThan(sql::Database* db,
                                     const base::Time& cutoff) {
   std::string clean_statement =
       "DELETE FROM " + std::string(kTableName) + " WHERE time < ?";
@@ -780,7 +769,7 @@ bool CountingPolicy::CleanOlderThan(sql::Connection* db,
 
 // Cleans unused interned strings from the database.  This should be run after
 // deleting rows from the main log table to clean out stale values.
-bool CountingPolicy::CleanStringTables(sql::Connection* db) {
+bool CountingPolicy::CleanStringTables(sql::Database* db) {
   sql::Statement cleaner1(db->GetCachedStatement(
       sql::StatementID(SQL_FROM_HERE), kStringTableCleanup));
   if (!cleaner1.Run())
@@ -799,8 +788,6 @@ bool CountingPolicy::CleanStringTables(sql::Connection* db) {
 }
 
 void CountingPolicy::Close() {
-  // The policy object should have never been created if there's no DB thread.
-  DCHECK(BrowserThread::IsMessageLoopValid(BrowserThread::DB));
   ScheduleAndForget(activity_database(), &ActivityDatabase::Close);
 }
 

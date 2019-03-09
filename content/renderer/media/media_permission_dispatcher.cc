@@ -9,24 +9,33 @@
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "media/base/bind_to_current_loop.h"
-#include "third_party/WebKit/public/web/WebUserGestureIndicator.h"
+#include "third_party/blink/public/web/web_user_gesture_indicator.h"
 #include "url/gurl.h"
 
 namespace {
 
 using Type = media::MediaPermission::Type;
 
-blink::mojom::PermissionName MediaPermissionTypeToPermissionName(Type type) {
+blink::mojom::PermissionDescriptorPtr MediaPermissionTypeToPermissionDescriptor(
+    Type type) {
+  auto descriptor = blink::mojom::PermissionDescriptor::New();
   switch (type) {
     case Type::PROTECTED_MEDIA_IDENTIFIER:
-      return blink::mojom::PermissionName::PROTECTED_MEDIA_IDENTIFIER;
+      descriptor->name =
+          blink::mojom::PermissionName::PROTECTED_MEDIA_IDENTIFIER;
+      break;
     case Type::AUDIO_CAPTURE:
-      return blink::mojom::PermissionName::AUDIO_CAPTURE;
+      descriptor->name = blink::mojom::PermissionName::AUDIO_CAPTURE;
+      break;
     case Type::VIDEO_CAPTURE:
-      return blink::mojom::PermissionName::VIDEO_CAPTURE;
+      descriptor->name = blink::mojom::PermissionName::VIDEO_CAPTURE;
+      break;
+    default:
+      NOTREACHED() << type;
+      descriptor->name =
+          blink::mojom::PermissionName::PROTECTED_MEDIA_IDENTIFIER;
   }
-  NOTREACHED();
-  return blink::mojom::PermissionName::PROTECTED_MEDIA_IDENTIFIER;
+  return descriptor;
 }
 
 }  // namespace
@@ -34,79 +43,81 @@ blink::mojom::PermissionName MediaPermissionTypeToPermissionName(Type type) {
 namespace content {
 
 MediaPermissionDispatcher::MediaPermissionDispatcher(
-    const ConnectToServiceCB& connect_to_service_cb)
-    : connect_to_service_cb_(connect_to_service_cb),
-      task_runner_(base::ThreadTaskRunnerHandle::Get()),
+    RenderFrameImpl* render_frame)
+    : task_runner_(base::ThreadTaskRunnerHandle::Get()),
       next_request_id_(0),
+      render_frame_(render_frame),
       weak_factory_(this) {
-  DCHECK(!connect_to_service_cb_.is_null());
+  DCHECK(render_frame_);
   weak_ptr_ = weak_factory_.GetWeakPtr();
 }
 
 MediaPermissionDispatcher::~MediaPermissionDispatcher() {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
-  // Fire all pending callbacks with |false|.
-  for (auto& request : requests_)
-    request.second.Run(false);
+  // Clean up pending requests.
+  OnConnectionError();
+}
+
+void MediaPermissionDispatcher::OnNavigation() {
+  // Behave as if there were a connection error. The browser process will be
+  // closing the connection imminently.
+  OnConnectionError();
 }
 
 void MediaPermissionDispatcher::HasPermission(
     Type type,
-    const GURL& security_origin,
     const PermissionStatusCB& permission_status_cb) {
-  if (!task_runner_->RunsTasksOnCurrentThread()) {
+  if (!task_runner_->RunsTasksInCurrentSequence()) {
     task_runner_->PostTask(
-        FROM_HERE, base::Bind(&MediaPermissionDispatcher::HasPermission,
-                              weak_ptr_, type, security_origin,
-                              media::BindToCurrentLoop(permission_status_cb)));
+        FROM_HERE,
+        base::BindOnce(&MediaPermissionDispatcher::HasPermission, weak_ptr_,
+                       type, media::BindToCurrentLoop(permission_status_cb)));
     return;
   }
 
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
-
-  if (!permission_service_)
-    connect_to_service_cb_.Run(mojo::GetProxy(&permission_service_));
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
   int request_id = RegisterCallback(permission_status_cb);
-  DVLOG(2) << __FUNCTION__ << ": request ID " << request_id;
+  DVLOG(2) << __func__ << ": request ID " << request_id;
 
-  permission_service_->HasPermission(
-      MediaPermissionTypeToPermissionName(type), security_origin.spec(),
-      base::Bind(&MediaPermissionDispatcher::OnPermissionStatus, weak_ptr_,
-                 request_id));
+  GetPermissionService()->HasPermission(
+      MediaPermissionTypeToPermissionDescriptor(type),
+      base::BindOnce(&MediaPermissionDispatcher::OnPermissionStatus, weak_ptr_,
+                     request_id));
 }
 
 void MediaPermissionDispatcher::RequestPermission(
     Type type,
-    const GURL& security_origin,
     const PermissionStatusCB& permission_status_cb) {
-  if (!task_runner_->RunsTasksOnCurrentThread()) {
+  if (!task_runner_->RunsTasksInCurrentSequence()) {
     task_runner_->PostTask(
-        FROM_HERE, base::Bind(&MediaPermissionDispatcher::RequestPermission,
-                              weak_ptr_, type, security_origin,
-                              media::BindToCurrentLoop(permission_status_cb)));
+        FROM_HERE,
+        base::BindOnce(&MediaPermissionDispatcher::RequestPermission, weak_ptr_,
+                       type, media::BindToCurrentLoop(permission_status_cb)));
     return;
   }
 
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
-
-  if (!permission_service_)
-    connect_to_service_cb_.Run(mojo::GetProxy(&permission_service_));
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
   int request_id = RegisterCallback(permission_status_cb);
-  DVLOG(2) << __FUNCTION__ << ": request ID " << request_id;
+  DVLOG(2) << __func__ << ": request ID " << request_id;
 
-  permission_service_->RequestPermission(
-      MediaPermissionTypeToPermissionName(type), security_origin.spec(),
-      blink::WebUserGestureIndicator::isProcessingUserGesture(),
-      base::Bind(&MediaPermissionDispatcher::OnPermissionStatus, weak_ptr_,
-                 request_id));
+  GetPermissionService()->RequestPermission(
+      MediaPermissionTypeToPermissionDescriptor(type),
+      blink::WebUserGestureIndicator::IsProcessingUserGesture(
+          render_frame_->GetWebFrame()),
+      base::BindOnce(&MediaPermissionDispatcher::OnPermissionStatus, weak_ptr_,
+                     request_id));
+}
+
+bool MediaPermissionDispatcher::IsEncryptedMediaEnabled() {
+  return render_frame_->GetRendererPreferences().enable_encrypted_media;
 }
 
 uint32_t MediaPermissionDispatcher::RegisterCallback(
     const PermissionStatusCB& permission_status_cb) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
   uint32_t request_id = next_request_id_++;
   DCHECK(!requests_.count(request_id));
@@ -115,19 +126,42 @@ uint32_t MediaPermissionDispatcher::RegisterCallback(
   return request_id;
 }
 
+blink::mojom::PermissionService*
+MediaPermissionDispatcher::GetPermissionService() {
+  if (!permission_service_) {
+    render_frame_->GetRemoteInterfaces()->GetInterface(
+        mojo::MakeRequest(&permission_service_));
+    permission_service_.set_connection_error_handler(base::BindOnce(
+        &MediaPermissionDispatcher::OnConnectionError, base::Unretained(this)));
+  }
+
+  return permission_service_.get();
+}
+
 void MediaPermissionDispatcher::OnPermissionStatus(
     uint32_t request_id,
     blink::mojom::PermissionStatus status) {
-  DVLOG(2) << __FUNCTION__ << ": (" << request_id << ", " << status << ")";
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DVLOG(2) << __func__ << ": (" << request_id << ", " << status << ")";
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
-  RequestMap::iterator iter = requests_.find(request_id);
+  auto iter = requests_.find(request_id);
   DCHECK(iter != requests_.end()) << "Request not found.";
 
   PermissionStatusCB permission_status_cb = iter->second;
   requests_.erase(iter);
 
-  permission_status_cb.Run(status == blink::mojom::PermissionStatus::GRANTED);
+  std::move(permission_status_cb)
+      .Run(status == blink::mojom::PermissionStatus::GRANTED);
+}
+
+void MediaPermissionDispatcher::OnConnectionError() {
+  permission_service_.reset();
+
+  // Fire all pending callbacks with |false|.
+  RequestMap requests;
+  requests.swap(requests_);
+  for (auto& request : requests)
+    request.second.Run(false);
 }
 
 }  // namespace content

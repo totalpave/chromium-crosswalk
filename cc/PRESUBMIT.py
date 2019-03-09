@@ -25,25 +25,17 @@ def CheckAsserts(input_api, output_api, white_list=CC_SOURCE_FILES, black_list=N
   source_file_filter = lambda x: input_api.FilterSourceFile(x, white_list, black_list)
 
   assert_files = []
-  notreached_files = []
 
   for f in input_api.AffectedSourceFiles(source_file_filter):
     contents = input_api.ReadFile(f, 'rb')
     # WebKit ASSERT() is not allowed.
     if re.search(r"\bASSERT\(", contents):
       assert_files.append(f.LocalPath())
-    # WebKit ASSERT_NOT_REACHED() is not allowed.
-    if re.search(r"ASSERT_NOT_REACHED\(", contents):
-      notreached_files.append(f.LocalPath())
 
   if assert_files:
     return [output_api.PresubmitError(
       'These files use ASSERT instead of using DCHECK:',
       items=assert_files)]
-  if notreached_files:
-    return [output_api.PresubmitError(
-      'These files use ASSERT_NOT_REACHED instead of using NOTREACHED:',
-      items=notreached_files)]
   return []
 
 def CheckStdAbs(input_api, output_api,
@@ -103,7 +95,7 @@ def CheckPassByValue(input_api,
 
   local_errors = []
 
-  # Well-defined simple classes containing only <= 4 ints, or <= 2 floats.
+  # Well-defined simple classes the same size as a primitive type.
   pass_by_value_types = ['base::Time',
                          'base::TimeTicks',
                          ]
@@ -131,7 +123,7 @@ def CheckTodos(input_api, output_api):
 
   if errors:
     return [output_api.PresubmitError(
-      'All TODO comments should be of the form TODO(name). ' +
+      'All TODO comments should be of the form TODO(name/bug). ' +
       'Use TODO instead of FIX' + 'ME',
       items=errors)]
   return []
@@ -151,33 +143,6 @@ def CheckDoubleAngles(input_api, output_api, white_list=CC_SOURCE_FILES,
   if errors:
     return [output_api.PresubmitError('Use >> instead of > >:', items=errors)]
   return []
-
-def CheckUniquePtr(input_api, output_api,
-                   white_list=CC_SOURCE_FILES, black_list=None):
-  black_list = tuple(black_list or input_api.DEFAULT_BLACK_LIST)
-  source_file_filter = lambda x: input_api.FilterSourceFile(x,
-                                                            white_list,
-                                                            black_list)
-  errors = []
-  for f in input_api.AffectedSourceFiles(source_file_filter):
-    for line_number, line in f.ChangedContents():
-      # Disallow:
-      # return std::unique_ptr<T>(foo);
-      # bar = std::unique_ptr<T>(foo);
-      # But allow:
-      # return std::unique_ptr<T[]>(foo);
-      # bar = std::unique_ptr<T[]>(foo);
-      if re.search(r'(=|\breturn)\s*std::unique_ptr<.*?(?<!])>\([^)]+\)', line):
-        errors.append(output_api.PresubmitError(
-          ('%s:%d uses explicit std::unique_ptr constructor. ' +
-           'Use base::WrapUnique() instead.') % (f.LocalPath(), line_number)))
-      # Disallow:
-      # std::unique_ptr<T>()
-      if re.search(r'\bstd::unique_ptr<.*?>\(\)', line):
-        errors.append(output_api.PresubmitError(
-          '%s:%d uses std::unique_ptr<T>(). Use nullptr instead.' %
-          (f.LocalPath(), line_number)))
-  return errors
 
 def FindUnquotedQuote(contents, pos):
   match = re.search(r"(?<!\\)(?P<quote>\")", contents[pos:])
@@ -318,36 +283,7 @@ def CheckChangeOnUpload(input_api, output_api):
   results += CheckChangeLintsClean(input_api, output_api)
   results += CheckTodos(input_api, output_api)
   results += CheckDoubleAngles(input_api, output_api)
-  results += CheckUniquePtr(input_api, output_api)
   results += CheckNamespace(input_api, output_api)
   results += CheckForUseOfWrongClock(input_api, output_api)
   results += FindUselessIfdefs(input_api, output_api)
-  results += input_api.canned_checks.CheckPatchFormatted(input_api, output_api)
-  return results
-
-def PostUploadHook(cl, change, output_api):
-  """git cl upload will call this hook after the issue is created/modified.
-
-  This hook adds extra try bots list to the CL description in order to run
-  Blink tests in addition to CQ try bots.
-  """
-  rietveld_obj = cl.RpcServer()
-  issue = cl.issue
-  description = rietveld_obj.get_description(issue)
-  if re.search(r'^CQ_INCLUDE_TRYBOTS=.*', description, re.M | re.I):
-    return []
-
-  bots = [
-    'tryserver.blink:linux_blink_rel',
-  ]
-
-  results = []
-  new_description = description
-  new_description += '\nCQ_INCLUDE_TRYBOTS=%s' % ';'.join(bots)
-  results.append(output_api.PresubmitNotifyResult(
-      'Automatically added Blink trybots to run Blink tests on CQ.'))
-
-  if new_description != description:
-    rietveld_obj.update_description(issue, new_description)
-
   return results

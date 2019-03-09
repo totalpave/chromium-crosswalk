@@ -5,13 +5,15 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_SIGNED_IN_DEVICES_SIGNED_IN_DEVICES_MANAGER_H__
 #define CHROME_BROWSER_EXTENSIONS_API_SIGNED_IN_DEVICES_SIGNED_IN_DEVICES_MANAGER_H__
 
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/scoped_observer.h"
-#include "components/sync_driver/device_info_tracker.h"
+#include "components/sync/device_info/device_info_tracker.h"
+#include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry_observer.h"
@@ -20,9 +22,6 @@ class Profile;
 
 namespace content {
 class BrowserContext;
-class NotificationDetails;
-class NotificationObserver;
-class NotificationRegistrar;
 }  // namespace content
 
 namespace extensions {
@@ -39,7 +38,7 @@ struct EventListenerInfo;
 // public ids for devices(public ids for a device, is not the same for
 // all extensions).
 class SignedInDevicesChangeObserver
-    : public sync_driver::DeviceInfoTracker::Observer {
+    : public syncer::DeviceInfoTracker::Observer {
  public:
   SignedInDevicesChangeObserver(const std::string& extension_id,
                                 Profile* profile);
@@ -69,11 +68,12 @@ class SignedInDevicesManager : public BrowserContextKeyedAPI,
   // BrowserContextKeyedAPI implementation.
   static BrowserContextKeyedAPIFactory<SignedInDevicesManager>*
       GetFactoryInstance();
+  void Shutdown() override;
 
   // ExtensionRegistryObserver implementation.
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   // EventRouter::Observer:
   void OnListenerAdded(const EventListenerInfo& details) override;
@@ -91,7 +91,7 @@ class SignedInDevicesManager : public BrowserContextKeyedAPI,
   void RemoveChangeObserverForExtension(const std::string& extension_id);
 
   Profile* const profile_;
-  ScopedVector<SignedInDevicesChangeObserver> change_observers_;
+  std::vector<std::unique_ptr<SignedInDevicesChangeObserver>> change_observers_;
 
   // Listen to extension unloaded notification.
   ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>

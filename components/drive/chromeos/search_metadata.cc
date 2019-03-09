@@ -5,13 +5,13 @@
 #include "components/drive/chromeos/search_metadata.h"
 
 #include <algorithm>
+#include <map>
 #include <queue>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/i18n/string_search.h"
-#include "base/memory/ptr_util.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -42,24 +42,37 @@ struct ResultCandidate {
 
 // Used to sort the result candidates per the last accessed/modified time. The
 // recently accessed/modified files come first.
-bool CompareByTimestamp(const ResourceEntry& a, const ResourceEntry& b) {
+bool CompareByTimestamp(const ResourceEntry& a,
+                        const ResourceEntry& b,
+                        MetadataSearchOrder order) {
   const PlatformFileInfoProto& a_file_info = a.file_info();
   const PlatformFileInfoProto& b_file_info = b.file_info();
 
-  if (a_file_info.last_accessed() != b_file_info.last_accessed())
-    return a_file_info.last_accessed() > b_file_info.last_accessed();
+  switch (order) {
+    case MetadataSearchOrder::LAST_ACCESSED:
+      if (a_file_info.last_accessed() != b_file_info.last_accessed())
+        return a_file_info.last_accessed() > b_file_info.last_accessed();
 
-  // When the entries have the same last access time (which happens quite often
-  // because Drive server doesn't set the field until an entry is viewed via
-  // drive.google.com), we use last modified time as the tie breaker.
-  return a_file_info.last_modified() > b_file_info.last_modified();
+      // When the entries have the same last access time (which happens quite
+      // often because Drive server doesn't set the field until an entry is
+      /// viewed via drive.google.com), we use last modified time as the tie
+      // breaker.
+      return a_file_info.last_modified() > b_file_info.last_modified();
+    case MetadataSearchOrder::LAST_MODIFIED:
+      return a_file_info.last_modified() > b_file_info.last_modified();
+  }
 }
 
 struct ResultCandidateComparator {
+  explicit ResultCandidateComparator(MetadataSearchOrder order)
+      : order_(order) {}
   bool operator()(const std::unique_ptr<ResultCandidate>& a,
                   const std::unique_ptr<ResultCandidate>& b) const {
-    return CompareByTimestamp(a->entry, b->entry);
+    return CompareByTimestamp(a->entry, b->entry, order_);
   }
+
+ private:
+  const MetadataSearchOrder order_;
 };
 
 typedef std::priority_queue<std::unique_ptr<ResultCandidate>,
@@ -73,9 +86,11 @@ class HiddenEntryClassifier {
   HiddenEntryClassifier(ResourceMetadata* metadata,
                         const std::string& mydrive_local_id)
       : metadata_(metadata) {
-    // Only things under My Drive and drive/other are not hidden.
+    // Only things under My Drive, drive/other and drive/team_drives are not
+    // hidden.
     is_hiding_child_[mydrive_local_id] = false;
     is_hiding_child_[util::kDriveOtherDirLocalId] = false;
+    is_hiding_child_[util::kDriveTeamDrivesDirLocalId] = false;
 
     // Everything else is hidden, including the directories mentioned above
     // themselves.
@@ -123,10 +138,11 @@ class HiddenEntryClassifier {
 FileError MaybeAddEntryToResult(
     ResourceMetadata* resource_metadata,
     ResourceMetadata::Iterator* it,
-    const ScopedVector<
-        base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>& queries,
+    const std::vector<std::unique_ptr<
+        base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>>& queries,
     const SearchMetadataPredicate& predicate,
     size_t at_most_num_matches,
+    MetadataSearchOrder order,
     HiddenEntryClassifier* hidden_entry_classifier,
     ResultCandidateQueue* result_candidates) {
   DCHECK_GE(at_most_num_matches, result_candidates->size());
@@ -137,7 +153,7 @@ FileError MaybeAddEntryToResult(
   // We perform this check first in order to avoid the costly find-and-highlight
   // or FilePath lookup as much as possible.
   if (result_candidates->size() == at_most_num_matches &&
-      !CompareByTimestamp(entry, result_candidates->top()->entry))
+      !CompareByTimestamp(entry, result_candidates->top()->entry, order))
     return FILE_ERROR_OK;
 
   // Add |entry| to the result if the entry is eligible for the given
@@ -158,7 +174,7 @@ FileError MaybeAddEntryToResult(
   if (result_candidates->size() == at_most_num_matches)
     result_candidates->pop();
   result_candidates->push(
-      base::WrapUnique(new ResultCandidate(it->GetID(), entry, highlighted)));
+      std::make_unique<ResultCandidate>(it->GetID(), entry, highlighted));
   return FILE_ERROR_OK;
 }
 
@@ -167,8 +183,9 @@ FileError SearchMetadataOnBlockingPool(ResourceMetadata* resource_metadata,
                                        const std::string& query_text,
                                        const SearchMetadataPredicate& predicate,
                                        int at_most_num_matches,
+                                       MetadataSearchOrder order,
                                        MetadataSearchResultVector* results) {
-  ResultCandidateQueue result_candidates;
+  ResultCandidateQueue result_candidates((ResultCandidateComparator(order)));
 
   // Prepare data structure for searching.
   std::vector<base::string16> keywords =
@@ -176,11 +193,13 @@ FileError SearchMetadataOnBlockingPool(ResourceMetadata* resource_metadata,
                         base::StringPiece16(base::kWhitespaceUTF16),
                         base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
 
-  ScopedVector<base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>
+  std::vector<std::unique_ptr<
+      base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>>
       queries;
   for (const auto& keyword : keywords) {
     queries.push_back(
-        new base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents(
+        std::make_unique<
+            base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>(
             keyword));
   }
 
@@ -199,7 +218,7 @@ FileError SearchMetadataOnBlockingPool(ResourceMetadata* resource_metadata,
   for (; !it->IsAtEnd(); it->Advance()) {
     FileError error = MaybeAddEntryToResult(
         resource_metadata, it.get(), queries, predicate, at_most_num_matches,
-        &hidden_entry_classifier, &result_candidates);
+        order, &hidden_entry_classifier, &result_candidates);
     if (error != FILE_ERROR_OK)
       return error;
   }
@@ -229,13 +248,13 @@ FileError SearchMetadataOnBlockingPool(ResourceMetadata* resource_metadata,
 
 // Runs the SearchMetadataCallback and updates the histogram.
 void RunSearchMetadataCallback(
-    const SearchMetadataCallback& callback,
+    SearchMetadataCallback callback,
     const base::TimeTicks& start_time,
     std::unique_ptr<MetadataSearchResultVector> results,
     FileError error) {
   if (error != FILE_ERROR_OK)
     results.reset();
-  callback.Run(error, std::move(results));
+  std::move(callback).Run(error, std::move(results));
 
   UMA_HISTOGRAM_TIMES("Drive.SearchMetadataTime",
                       base::TimeTicks::Now() - start_time);
@@ -265,8 +284,9 @@ void SearchMetadata(
     const std::string& query,
     const SearchMetadataPredicate& predicate,
     size_t at_most_num_matches,
-    const SearchMetadataCallback& callback) {
-  DCHECK(!callback.is_null());
+    MetadataSearchOrder order,
+    SearchMetadataCallback callback) {
+  DCHECK(callback);
 
   const base::TimeTicks start_time = base::TimeTicks::Now();
 
@@ -275,10 +295,10 @@ void SearchMetadata(
   MetadataSearchResultVector* results_ptr = results.get();
   base::PostTaskAndReplyWithResult(
       blocking_task_runner.get(), FROM_HERE,
-      base::Bind(&SearchMetadataOnBlockingPool, resource_metadata, query,
-                 predicate, at_most_num_matches, results_ptr),
-      base::Bind(&RunSearchMetadataCallback, callback, start_time,
-                 base::Passed(&results)));
+      base::BindOnce(&SearchMetadataOnBlockingPool, resource_metadata, query,
+                     predicate, at_most_num_matches, order, results_ptr),
+      base::BindOnce(&RunSearchMetadataCallback, std::move(callback),
+                     start_time, std::move(results)));
 }
 
 bool MatchesType(int options, const ResourceEntry& entry) {
@@ -302,9 +322,8 @@ bool MatchesType(int options, const ResourceEntry& entry) {
              mime_type == drive::util::kGoogleSpreadsheetMimeType ||
              mime_type == drive::util::kGooglePresentationMimeType ||
              mime_type == drive::util::kGoogleDrawingMimeType;
-    } else {
-      return entry.file_specific_info().cache_state().is_present();
     }
+    return entry.file_specific_info().cache_state().is_present();
   }
 
   return true;
@@ -312,8 +331,8 @@ bool MatchesType(int options, const ResourceEntry& entry) {
 
 bool FindAndHighlight(
     const std::string& text,
-    const ScopedVector<
-        base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>& queries,
+    const std::vector<std::unique_ptr<
+        base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>>& queries,
     std::string* highlighted_text) {
   DCHECK(highlighted_text);
   highlighted_text->clear();
@@ -324,7 +343,7 @@ bool FindAndHighlight(
 
   base::string16 text16 = base::UTF8ToUTF16(text);
   std::vector<bool> highlights(text16.size(), false);
-  for (auto* query : queries) {
+  for (const auto& query : queries) {
     if (!query->Search(text16, &match_start, &match_length))
       return false;
 

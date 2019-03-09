@@ -12,16 +12,15 @@ Polymer({
   is: 'settings-history-deletion-dialog',
 
   /** @override */
-  ready: function() {
-    this.$.dialog.open();
+  attached: function() {
+    this.$.dialog.showModal();
   },
 
   /**
-   * Tap handler for the "OK" buton.
+   * Tap handler for the "OK" button.
    * @private
    */
   onOkTap_: function() {
     this.$.dialog.close();
   },
 });
-

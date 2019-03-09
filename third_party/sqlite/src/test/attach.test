@@ -129,7 +129,7 @@ ifcapable schema_pragmas {
 do_test attach-1.11b {
   db_list db
 } {0 main 2 db2 3 db3 4 db4 5 db5 6 db6 7 db7 8 db8 9 db9}
-} ;# ifcapable schema_pragmas 
+} ;# ifcapable schema_pragmas
 do_test attach-1.12 {
   catchsql {
     ATTACH 'test.db' as db2;
@@ -193,7 +193,7 @@ do_test attach-1.20.2 {
 } ;# ifcapable schema_pragmas
 integrity_check attach-1.20.3
 ifcapable tempdb {
-  execsql {select * from sqlite_temp_master}
+  execsql {select * from temp.sqlite_master}
 }
 do_test attach-1.21 {
   catchsql {
@@ -337,7 +337,7 @@ do_test attach-2.10 {
   } db2
 } {table t2 t2 table tx tx trigger r1 t2 index i2 t2}
 #do_test attach-2.11 {
-#  catchsql { 
+#  catchsql {
 #    SELECT * FROM t2 WHERE x>5;
 #  }
 #} {1 {database schema has changed}}
@@ -608,7 +608,7 @@ ifcapable !compound {
     ATTACH DATABASE 'test2.db' AS db2;
     INSERT INTO db2.t3 VALUES(13,14);
     INSERT INTO main.t3 VALUES(15,16);
-  } 
+  }
 } ;# ifcapable !compound
 
 ifcapable view {
@@ -726,6 +726,32 @@ ifcapable subquery {
     } db2
   } {1 {trigger r5 cannot reference objects in database temp}}
 } ;# endif subquery
+ifcapable json1&&vtab {
+  do_test attach-5.10 {
+    db close
+    catch {db2 close}
+    forcedelete test.db
+    sqlite3 db test.db
+    db eval {
+      CREATE TABLE t1(x);
+      CREATE TABLE t2(a,b);
+      CREATE TRIGGER x1 AFTER INSERT ON t1 BEGIN
+        INSERT INTO t2(a,b) SELECT key, value FROM json_each(NEW.x);
+      END;
+      INSERT INTO t1(x) VALUES('{"a":1}');
+      SELECT * FROM t2;
+    }
+  } {a 1}
+  do_test attach-5.11 {
+    sqlite3 db2 :memory:
+    db2 eval {
+      CREATE TABLE t3(y);
+      ATTACH 'test.db' AS aux;
+      INSERT INTO aux.t1(x) VALUES('{"b":2}');
+      SELECT * FROM aux.t2;
+    }
+  } {a 1 b 2}
+} ;# endif json1
 } ;# endif trigger
 
 # Check to make sure we get a sensible error if unable to open
@@ -776,7 +802,7 @@ ifcapable subquery {
     forcedelete test.db test.db-journal
     sqlite3 db test.db
     catchsql {
-      DETACH RAISE ( IGNORE ) IN ( SELECT "AAAAAA" . * ORDER BY 
+      DETACH RAISE ( IGNORE ) IN ( SELECT "AAAAAA" . * ORDER BY
       REGISTER LIMIT "AAAAAA" . "AAAAAA" OFFSET RAISE ( IGNORE ) NOT NULL )
     }
   } {1 {no such table: AAAAAA}}
@@ -792,7 +818,7 @@ do_test attach-8.1 {
   catchsql {
     ATTACH 'test2.db' AS t2;
   }
-} {1 {file is encrypted or is not a database}}
+} {1 {file is not a database}}
 do_test attach-8.2 {
   db errorcode
 } {26}
@@ -870,5 +896,21 @@ do_execsql_test attach-11.1 {
   SELECT * FROM aux1.t1;
 } {1 2 3 4}
 
+# Ticket https://sqlite.org/src/tktview/a4e06e75a9ab61a1  2017-07-15
+# False positive when running integrity_check on a connection with
+# attached databases.
+#
+db close
+sqlite3 db :memory:
+do_execsql_test attach-12.1 {
+  CREATE TABLE Table1 (col TEXT NOT NULL PRIMARY KEY);
+  ATTACH ':memory:' AS db2;
+  CREATE TABLE db2.Table2(col1 INTEGER, col2 INTEGER, col3 INTEGER, col4);
+  CREATE UNIQUE INDEX db2.idx_col1_unique ON Table2 (col1);
+  CREATE UNIQUE INDEX db2.idx_col23_unique ON Table2 (col2, col3);
+  CREATE INDEX db2.idx_col2 ON Table2 (col2);
+  INSERT INTO Table2 VALUES(1,2,3,4);
+  PRAGMA integrity_check;
+} {ok}
 
 finish_test

@@ -11,10 +11,10 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "components/feedback/feedback_common.h"
+#include "components/feedback/feedback_uploader.h"
 #include "url/gurl.h"
 
 namespace base {
-class FilePath;
 class RefCountedString;
 }
 namespace content {
@@ -25,7 +25,7 @@ namespace feedback {
 
 class FeedbackData : public FeedbackCommon {
  public:
-  FeedbackData();
+  FeedbackData(feedback::FeedbackUploader* uploader);
 
   // Called once we've updated all the data from the feedback page.
   void OnFeedbackPageDataComplete();
@@ -34,19 +34,9 @@ class FeedbackData : public FeedbackCommon {
   // compression.
   void SetAndCompressSystemInfo(std::unique_ptr<SystemLogsMap> sys_info);
 
-  // Sets the histograms for this instance and kicks off its
-  // compression.
-  void SetAndCompressHistograms(std::unique_ptr<std::string> histograms);
-
   // Sets the attached file data and kicks off its compression.
   void AttachAndCompressFileData(
       std::unique_ptr<std::string> attached_filedata);
-
-  // Called once we have compressed our system logs.
-  void OnCompressLogsComplete(std::unique_ptr<std::string> compressed_logs);
-
-  // Called once we have compressed our attached file.
-  void OnCompressFileComplete(std::unique_ptr<std::string> compressed_file);
 
   // Returns true if we've completed all the tasks needed before we can send
   // feedback - at this time this is includes getting the feedback page data
@@ -60,6 +50,10 @@ class FeedbackData : public FeedbackCommon {
   content::BrowserContext* context() const { return context_; }
   const std::string& attached_file_uuid() const { return attached_file_uuid_; }
   const std::string& screenshot_uuid() const { return screenshot_uuid_; }
+  bool from_assistant() const { return from_assistant_; }
+  bool assistant_debug_info_allowed() const {
+    return assistant_debug_info_allowed_;
+  }
 
   // Setters
   void set_context(content::BrowserContext* context) { context_ = context; }
@@ -73,9 +67,11 @@ class FeedbackData : public FeedbackCommon {
     screenshot_uuid_ = uuid;
   }
   void set_trace_id(int trace_id) { trace_id_ = trace_id; }
-  void set_send_report_callback(
-      const base::Callback<void(scoped_refptr<FeedbackData>)>& send_report) {
-    send_report_ = send_report;
+  void set_from_assistant(bool from_assistant) {
+    from_assistant_ = from_assistant;
+  }
+  void set_assistant_debug_info_allowed(bool assistant_debug_info_allowed) {
+    assistant_debug_info_allowed_ = assistant_debug_info_allowed;
   }
 
  private:
@@ -87,7 +83,7 @@ class FeedbackData : public FeedbackCommon {
   void OnGetTraceData(int trace_id,
                       scoped_refptr<base::RefCountedString> trace_data);
 
-  base::Callback<void(scoped_refptr<FeedbackData>)> send_report_;
+  feedback::FeedbackUploader* uploader_;  // Not owned.
 
   content::BrowserContext* context_;
 
@@ -99,6 +95,8 @@ class FeedbackData : public FeedbackCommon {
 
   int pending_op_count_;
   bool report_sent_;
+  bool from_assistant_;
+  bool assistant_debug_info_allowed_;
 
   DISALLOW_COPY_AND_ASSIGN(FeedbackData);
 };

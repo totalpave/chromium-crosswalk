@@ -27,45 +27,51 @@ extern const char kGCMScope[];
 // Instance ID is managed by the InstanceIDDriver.
 class InstanceID {
  public:
+  // Used in UMA. Can add enum values, but never renumber or delete and reuse.
   enum Result {
     // Successful operation.
-    SUCCESS,
+    SUCCESS = 0,
     // Invalid parameter.
-    INVALID_PARAMETER,
+    INVALID_PARAMETER = 1,
     // Instance ID is disabled.
-    DISABLED,
+    DISABLED = 2,
     // Previous asynchronous operation is still pending to finish.
-    ASYNC_OPERATION_PENDING,
+    ASYNC_OPERATION_PENDING = 3,
     // Network socket error.
-    NETWORK_ERROR,
+    NETWORK_ERROR = 4,
     // Problem at the server.
-    SERVER_ERROR,
+    SERVER_ERROR = 5,
+    // 6 is omitted, in case we ever merge this enum with GCMClient::Result.
     // Other errors.
-    UNKNOWN_ERROR
+    UNKNOWN_ERROR = 7,
+
+    // Used for UMA. Keep LAST_RESULT up to date and sync with histograms.xml.
+    LAST_RESULT = UNKNOWN_ERROR
   };
 
   // Asynchronous callbacks. Must not synchronously delete |this| (using
   // InstanceIDDriver::RemoveInstanceID).
-  typedef base::Callback<void(const std::string& app_id,
-                              bool update_id)> TokenRefreshCallback;
-  typedef base::Callback<void(const std::string& id)> GetIDCallback;
-  typedef base::Callback<void(const base::Time& creation_time)>
-      GetCreationTimeCallback;
-  typedef base::Callback<void(const std::string& token,
-                              Result result)> GetTokenCallback;
-  typedef base::Callback<void(const std::string&, const std::string&)>
-      GetEncryptionInfoCallback;
-  typedef base::Callback<void(Result result)> DeleteTokenCallback;
-  typedef base::Callback<void(Result result)> DeleteIDCallback;
+  using TokenRefreshCallback =
+      base::Callback<void(const std::string& app_id, bool update_id)>;
+  using GetIDCallback = base::Callback<void(const std::string& id)>;
+  using GetCreationTimeCallback =
+      base::Callback<void(const base::Time& creation_time)>;
+  using GetTokenCallback =
+      base::Callback<void(const std::string& token, Result result)>;
+  using ValidateTokenCallback = base::Callback<void(bool is_valid)>;
+  using GetEncryptionInfoCallback =
+      base::Callback<void(const std::string&, const std::string&)>;
+  using DeleteTokenCallback = base::Callback<void(Result result)>;
+  using DeleteIDCallback = base::Callback<void(Result result)>;
 
   static const int kInstanceIDByteLength = 8;
 
-  // Creator.
+  // Creator. Should only be used by InstanceIDDriver::GetInstanceID.
   // |app_id|: identifies the application that uses the Instance ID.
   // |handler|: provides the GCM functionality needed to support Instance ID.
   //            Must outlive this class. On Android, this can be null instead.
-  static std::unique_ptr<InstanceID> Create(const std::string& app_id,
-                                            gcm::GCMDriver* gcm_driver);
+  static std::unique_ptr<InstanceID> CreateInternal(const std::string& app_id,
+                                                    gcm::GCMDriver* gcm_driver);
 
   virtual ~InstanceID();
 
@@ -89,11 +95,21 @@ class InstanceID {
   // |options|: allows including a small number of string key/value pairs that
   //            will be associated with the token and may be used in processing
   //            the request.
+  // |is_lazy|: Whether delivery of received messages should be deferred until
+  //            there is a visible activity. Only applicable for Android.
   // |callback|: to be called once the asynchronous operation is done.
   virtual void GetToken(const std::string& authorized_entity,
                         const std::string& scope,
                         const std::map<std::string, std::string>& options,
+                        bool is_lazy,
                         const GetTokenCallback& callback) = 0;
+
+  // Checks that the provided |token| matches the stored token for (|app_id()|,
+  // |authorized_entity|, |scope|).
+  virtual void ValidateToken(const std::string& authorized_entity,
+                             const std::string& scope,
+                             const std::string& token,
+                             const ValidateTokenCallback& callback) = 0;
 
   // Get the public encryption key and authentication secret associated with a
   // GCM-scoped token. If encryption info is not yet associated, it will be

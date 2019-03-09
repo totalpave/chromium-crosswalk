@@ -40,6 +40,8 @@ class NET_EXPORT HostPortPair {
     return std::tie(port_, host_) < std::tie(other.port_, other.host_);
   }
 
+  bool operator==(const HostPortPair& other) const { return Equals(other); }
+
   // Equality test of contents. (Probably another violation of style guide).
   bool Equals(const HostPortPair& other) const {
     return host_ == other.host_ && port_ == other.port_;
@@ -67,6 +69,9 @@ class NET_EXPORT HostPortPair {
 
   // Returns |host_|, adding IPv6 brackets if needed.
   std::string HostForURL() const;
+
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const;
 
  private:
   // If |host_| represents an IPv6 address, this string will not contain

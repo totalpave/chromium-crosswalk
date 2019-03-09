@@ -40,7 +40,7 @@ FakeVideoDecodeAccelerator::FakeVideoDecodeAccelerator(
       flushing_(false),
       weak_this_factory_(this) {}
 
-FakeVideoDecodeAccelerator::~FakeVideoDecodeAccelerator() {}
+FakeVideoDecodeAccelerator::~FakeVideoDecodeAccelerator() = default;
 
 bool FakeVideoDecodeAccelerator::Initialize(const Config& config,
                                             Client* client) {
@@ -49,7 +49,7 @@ bool FakeVideoDecodeAccelerator::Initialize(const Config& config,
     LOG(ERROR) << "unknown codec profile";
     return false;
   }
-  if (config.is_encrypted) {
+  if (config.is_encrypted()) {
     NOTREACHED() << "encrypted streams are not supported";
     return false;
   }
@@ -77,8 +77,8 @@ void FakeVideoDecodeAccelerator::Decode(
   int bitstream_buffer_id = bitstream_buffer.id();
   queued_bitstream_ids_.push(bitstream_buffer_id);
   child_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&FakeVideoDecodeAccelerator::DoPictureReady,
-                            weak_this_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&FakeVideoDecodeAccelerator::DoPictureReady,
+                                weak_this_factory_.GetWeakPtr()));
 }
 
 // Similar to UseOutputBitstreamBuffer for the encode accelerator.
@@ -103,8 +103,8 @@ void FakeVideoDecodeAccelerator::AssignPictureBuffers(
     return;
   }
   for (size_t index = 0; index < buffers.size(); ++index) {
-    DCHECK_LE(1u, buffers[index].texture_ids().size());
-    glBindTexture(GL_TEXTURE_2D, buffers[index].texture_ids()[0]);
+    DCHECK_LE(1u, buffers[index].service_texture_ids().size());
+    glBindTexture(GL_TEXTURE_2D, buffers[index].service_texture_ids()[0]);
     // Every other frame white and the rest black.
     uint8_t* data = index % 2 ? white_data.get() : black_data.get();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, frame_buffer_size_.width(),
@@ -118,22 +118,22 @@ void FakeVideoDecodeAccelerator::AssignPictureBuffers(
     free_output_buffers_.push(buffers[index].id());
   }
   child_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&FakeVideoDecodeAccelerator::DoPictureReady,
-                            weak_this_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&FakeVideoDecodeAccelerator::DoPictureReady,
+                                weak_this_factory_.GetWeakPtr()));
 }
 
 void FakeVideoDecodeAccelerator::ReusePictureBuffer(int32_t picture_buffer_id) {
   free_output_buffers_.push(picture_buffer_id);
   child_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&FakeVideoDecodeAccelerator::DoPictureReady,
-                            weak_this_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&FakeVideoDecodeAccelerator::DoPictureReady,
+                                weak_this_factory_.GetWeakPtr()));
 }
 
 void FakeVideoDecodeAccelerator::Flush() {
   flushing_ = true;
   child_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&FakeVideoDecodeAccelerator::DoPictureReady,
-                            weak_this_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&FakeVideoDecodeAccelerator::DoPictureReady,
+                                weak_this_factory_.GetWeakPtr()));
 }
 
 void FakeVideoDecodeAccelerator::Reset() {
@@ -170,7 +170,8 @@ void FakeVideoDecodeAccelerator::DoPictureReady() {
     free_output_buffers_.pop();
 
     const Picture picture =
-        Picture(buffer_id, bitstream_id, gfx::Rect(frame_buffer_size_), false);
+        Picture(buffer_id, bitstream_id, gfx::Rect(frame_buffer_size_),
+                gfx::ColorSpace(), false);
     client_->PictureReady(picture);
     // Bitstream no longer needed.
     client_->NotifyEndOfBitstreamBuffer(bitstream_id);

@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 # Generates a header with preprocessor defines specified by the build file.
-# The GYP version of this (with instructions) is build/buildflag_header.gypi.
 #
 # The flags are converted to function-style defines with mangled names and
 # code uses an accessor macro to access the values. This is to try to
@@ -80,8 +79,8 @@
 #
 # Example
 #
-#   buildflag_header("foo_features") {
-#     header = "foo_features.h"
+#   buildflag_header("foo_buildflags") {
+#     header = "foo_buildflags.h"
 #
 #     flags = [
 #       # This uses the GN build flag enable_doom_melon as the definition.
@@ -134,5 +133,9 @@ template("buildflag_header") {
                              "testonly",
                              "visibility",
                            ])
+
+    public_deps = [
+      "//build:buildflag_header_h",
+    ]
   }
 }

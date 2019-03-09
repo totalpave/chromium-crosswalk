@@ -4,12 +4,8 @@
 
 package org.chromium.chromecast.shell;
 
-import android.content.Context;
-
-import org.chromium.base.Log;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.chromecast.base.ChromecastConfigAndroid;
 
 /**
  * JNI wrapper class for accessing CastCrashHandler.
@@ -19,14 +15,18 @@ public final class CastCrashHandler {
     private static final String TAG = "cr_CastCrashHandler";
 
     @CalledByNative
-    public static void initializeUploader(Context context, String crashDumpPath,
-            boolean uploadCrashToStaging) {
-        CastCrashUploader uploader = new CastCrashUploader(crashDumpPath, uploadCrashToStaging);
-        if (ChromecastConfigAndroid.canSendUsageStats(context)) {
-            uploader.startPeriodicUpload();
-        } else {
-            Log.d(TAG, "Removing crash dumps instead of uploading");
-            uploader.removeCrashDumps();
-        }
+    public static void uploadOnce(String crashDumpPath, String crashReportsPath, String uuid,
+            String applicationFeedback, boolean uploadCrashToStaging) {
+        CastCrashUploader uploader = CastCrashUploaderFactory.createCastCrashUploader(
+                crashDumpPath, crashReportsPath, uuid, applicationFeedback, uploadCrashToStaging);
+        uploader.uploadOnce();
+    }
+
+    @CalledByNative
+    public static void removeCrashDumps(String crashDumpPath, String crashReportsPath, String uuid,
+            String applicationFeedback, boolean uploadCrashToStaging) {
+        CastCrashUploader uploader = CastCrashUploaderFactory.createCastCrashUploader(
+                crashDumpPath, crashReportsPath, uuid, applicationFeedback, uploadCrashToStaging);
+        uploader.removeCrashDumps();
     }
 }

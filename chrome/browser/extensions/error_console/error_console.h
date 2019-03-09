@@ -9,6 +9,8 @@
 #include <stdint.h>
 
 #include <memory>
+#include <set>
+#include <string>
 
 #include "base/macros.h"
 #include "base/observer_list.h"
@@ -26,7 +28,6 @@ namespace content {
 class BrowserContext;
 class NotificationDetails;
 class NotificationSource;
-class RenderViewHost;
 }
 
 class Profile;
@@ -145,7 +146,7 @@ class ErrorConsole : public KeyedService,
   // installed or uninstalled, we may need to turn the ErrorConsole on/off.
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const Extension* extension) override;
   void OnExtensionInstalled(content::BrowserContext* browser_context,
@@ -177,7 +178,7 @@ class ErrorConsole : public KeyedService,
   base::ThreadChecker thread_checker_;
 
   // The list of all observers for the ErrorConsole.
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   // The errors which we have received so far.
   ErrorMap errors_;

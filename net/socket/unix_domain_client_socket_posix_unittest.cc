@@ -19,7 +19,14 @@
 #include "net/base/test_completion_callback.h"
 #include "net/socket/socket_posix.h"
 #include "net/socket/unix_domain_server_socket_posix.h"
+#include "net/test/gtest_util.h"
+#include "net/test/test_with_scoped_task_environment.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+using net::test::IsError;
+using net::test::IsOk;
 
 namespace net {
 namespace {
@@ -57,8 +64,8 @@ int ReadSynchronously(StreamSocket* socket,
                       int buf_len,
                       int min_data_len) {
   DCHECK_LE(min_data_len, buf_len);
-  scoped_refptr<DrainableIOBuffer> read_buf(
-      new DrainableIOBuffer(buf, buf_len));
+  scoped_refptr<DrainableIOBuffer> read_buf =
+      base::MakeRefCounted<DrainableIOBuffer>(buf, buf_len);
   TestCompletionCallback read_callback;
   // Iterate reading several times (but not infinite) until it reads at least
   // |min_data_len| bytes into |buf|.
@@ -94,16 +101,16 @@ int ReadSynchronously(StreamSocket* socket,
 int WriteSynchronously(StreamSocket* socket,
                        IOBuffer* buf,
                        int buf_len) {
-  scoped_refptr<DrainableIOBuffer> write_buf(
-      new DrainableIOBuffer(buf, buf_len));
+  scoped_refptr<DrainableIOBuffer> write_buf =
+      base::MakeRefCounted<DrainableIOBuffer>(buf, buf_len);
   TestCompletionCallback write_callback;
   // Iterate writing several times (but not infinite) until it writes buf fully.
   for (int retry_count = 10;
        retry_count > 0 && write_buf->BytesRemaining() > 0;
        --retry_count) {
-    int rv = socket->Write(write_buf.get(),
-                           write_buf->BytesRemaining(),
-                           write_callback.callback());
+    int rv =
+        socket->Write(write_buf.get(), write_buf->BytesRemaining(),
+                      write_callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS);
     EXPECT_GE(write_buf->BytesRemaining(), rv);
     if (rv == ERR_IO_PENDING)
       rv = write_callback.WaitForResult();
@@ -116,11 +123,11 @@ int WriteSynchronously(StreamSocket* socket,
   return write_buf->BytesConsumed();
 }
 
-class UnixDomainClientSocketTest : public testing::Test {
+class UnixDomainClientSocketTest : public TestWithScopedTaskEnvironment {
  protected:
   UnixDomainClientSocketTest() {
     EXPECT_TRUE(temp_dir_.CreateUniqueTempDir());
-    socket_path_ = temp_dir_.path().Append(kSocketFilename).value();
+    socket_path_ = temp_dir_.GetPath().Append(kSocketFilename).value();
   }
 
   base::ScopedTempDir temp_dir_;
@@ -132,7 +139,7 @@ TEST_F(UnixDomainClientSocketTest, Connect) {
 
   UnixDomainServerSocket server_socket(CreateAuthCallback(true),
                                        kUseAbstractNamespace);
-  EXPECT_EQ(OK, server_socket.BindAndListen(socket_path_, /*backlog=*/1));
+  EXPECT_THAT(server_socket.BindAndListen(socket_path_, /*backlog=*/1), IsOk());
 
   std::unique_ptr<StreamSocket> accepted_socket;
   TestCompletionCallback accept_callback;
@@ -143,12 +150,12 @@ TEST_F(UnixDomainClientSocketTest, Connect) {
   UnixDomainClientSocket client_socket(socket_path_, kUseAbstractNamespace);
   EXPECT_FALSE(client_socket.IsConnected());
 
-  EXPECT_EQ(OK, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket), IsOk());
   EXPECT_TRUE(client_socket.IsConnected());
   // Server has not yet been notified of the connection.
   EXPECT_FALSE(accepted_socket);
 
-  EXPECT_EQ(OK, accept_callback.WaitForResult());
+  EXPECT_THAT(accept_callback.WaitForResult(), IsOk());
   EXPECT_TRUE(accepted_socket);
   EXPECT_TRUE(accepted_socket->IsConnected());
 }
@@ -158,7 +165,7 @@ TEST_F(UnixDomainClientSocketTest, ConnectWithSocketDescriptor) {
 
   UnixDomainServerSocket server_socket(CreateAuthCallback(true),
                                        kUseAbstractNamespace);
-  EXPECT_EQ(OK, server_socket.BindAndListen(socket_path_, /*backlog=*/1));
+  EXPECT_THAT(server_socket.BindAndListen(socket_path_, /*backlog=*/1), IsOk());
 
   SocketDescriptor accepted_socket_fd = kInvalidSocket;
   TestCompletionCallback accept_callback;
@@ -170,12 +177,12 @@ TEST_F(UnixDomainClientSocketTest, ConnectWithSocketDescriptor) {
   UnixDomainClientSocket client_socket(socket_path_, kUseAbstractNamespace);
   EXPECT_FALSE(client_socket.IsConnected());
 
-  EXPECT_EQ(OK, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket), IsOk());
   EXPECT_TRUE(client_socket.IsConnected());
   // Server has not yet been notified of the connection.
   EXPECT_EQ(kInvalidSocket, accepted_socket_fd);
 
-  EXPECT_EQ(OK, accept_callback.WaitForResult());
+  EXPECT_THAT(accept_callback.WaitForResult(), IsOk());
   EXPECT_NE(kInvalidSocket, accepted_socket_fd);
 
   SocketDescriptor client_socket_fd = client_socket.ReleaseConnectedSocket();
@@ -192,7 +199,8 @@ TEST_F(UnixDomainClientSocketTest, ConnectWithSocketDescriptor) {
 
   // Try to read data.
   const int kReadDataSize = 10;
-  scoped_refptr<IOBuffer> read_buffer(new IOBuffer(kReadDataSize));
+  scoped_refptr<IOBuffer> read_buffer =
+      base::MakeRefCounted<IOBuffer>(kReadDataSize);
   TestCompletionCallback read_callback;
   EXPECT_EQ(ERR_IO_PENDING,
             rewrapped_socket.Read(
@@ -210,7 +218,7 @@ TEST_F(UnixDomainClientSocketTest, ConnectWithAbstractNamespace) {
 #if defined(OS_ANDROID) || defined(OS_LINUX)
   UnixDomainServerSocket server_socket(CreateAuthCallback(true),
                                        kUseAbstractNamespace);
-  EXPECT_EQ(OK, server_socket.BindAndListen(socket_path_, /*backlog=*/1));
+  EXPECT_THAT(server_socket.BindAndListen(socket_path_, /*backlog=*/1), IsOk());
 
   std::unique_ptr<StreamSocket> accepted_socket;
   TestCompletionCallback accept_callback;
@@ -218,16 +226,17 @@ TEST_F(UnixDomainClientSocketTest, ConnectWithAbstractNamespace) {
             server_socket.Accept(&accepted_socket, accept_callback.callback()));
   EXPECT_FALSE(accepted_socket);
 
-  EXPECT_EQ(OK, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket), IsOk());
   EXPECT_TRUE(client_socket.IsConnected());
   // Server has not yet beend notified of the connection.
   EXPECT_FALSE(accepted_socket);
 
-  EXPECT_EQ(OK, accept_callback.WaitForResult());
+  EXPECT_THAT(accept_callback.WaitForResult(), IsOk());
   EXPECT_TRUE(accepted_socket);
   EXPECT_TRUE(accepted_socket->IsConnected());
 #else
-  EXPECT_EQ(ERR_ADDRESS_INVALID, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket),
+              IsError(ERR_ADDRESS_INVALID));
 #endif
 }
 
@@ -236,7 +245,8 @@ TEST_F(UnixDomainClientSocketTest, ConnectToNonExistentSocket) {
 
   UnixDomainClientSocket client_socket(socket_path_, kUseAbstractNamespace);
   EXPECT_FALSE(client_socket.IsConnected());
-  EXPECT_EQ(ERR_FILE_NOT_FOUND, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket),
+              IsError(ERR_FILE_NOT_FOUND));
 }
 
 TEST_F(UnixDomainClientSocketTest,
@@ -248,29 +258,32 @@ TEST_F(UnixDomainClientSocketTest,
 
   TestCompletionCallback connect_callback;
 #if defined(OS_ANDROID) || defined(OS_LINUX)
-  EXPECT_EQ(ERR_CONNECTION_REFUSED, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket),
+              IsError(ERR_CONNECTION_REFUSED));
 #else
-  EXPECT_EQ(ERR_ADDRESS_INVALID, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket),
+              IsError(ERR_ADDRESS_INVALID));
 #endif
 }
 
 TEST_F(UnixDomainClientSocketTest, DisconnectFromClient) {
   UnixDomainServerSocket server_socket(CreateAuthCallback(true), false);
-  EXPECT_EQ(OK, server_socket.BindAndListen(socket_path_, /*backlog=*/1));
+  EXPECT_THAT(server_socket.BindAndListen(socket_path_, /*backlog=*/1), IsOk());
   std::unique_ptr<StreamSocket> accepted_socket;
   TestCompletionCallback accept_callback;
   EXPECT_EQ(ERR_IO_PENDING,
             server_socket.Accept(&accepted_socket, accept_callback.callback()));
   UnixDomainClientSocket client_socket(socket_path_, false);
-  EXPECT_EQ(OK, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket), IsOk());
 
-  EXPECT_EQ(OK, accept_callback.WaitForResult());
+  EXPECT_THAT(accept_callback.WaitForResult(), IsOk());
   EXPECT_TRUE(accepted_socket->IsConnected());
   EXPECT_TRUE(client_socket.IsConnected());
 
   // Try to read data.
   const int kReadDataSize = 10;
-  scoped_refptr<IOBuffer> read_buffer(new IOBuffer(kReadDataSize));
+  scoped_refptr<IOBuffer> read_buffer =
+      base::MakeRefCounted<IOBuffer>(kReadDataSize);
   TestCompletionCallback read_callback;
   EXPECT_EQ(ERR_IO_PENDING,
             accepted_socket->Read(
@@ -289,21 +302,22 @@ TEST_F(UnixDomainClientSocketTest, DisconnectFromClient) {
 
 TEST_F(UnixDomainClientSocketTest, DisconnectFromServer) {
   UnixDomainServerSocket server_socket(CreateAuthCallback(true), false);
-  EXPECT_EQ(OK, server_socket.BindAndListen(socket_path_, /*backlog=*/1));
+  EXPECT_THAT(server_socket.BindAndListen(socket_path_, /*backlog=*/1), IsOk());
   std::unique_ptr<StreamSocket> accepted_socket;
   TestCompletionCallback accept_callback;
   EXPECT_EQ(ERR_IO_PENDING,
             server_socket.Accept(&accepted_socket, accept_callback.callback()));
   UnixDomainClientSocket client_socket(socket_path_, false);
-  EXPECT_EQ(OK, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket), IsOk());
 
-  EXPECT_EQ(OK, accept_callback.WaitForResult());
+  EXPECT_THAT(accept_callback.WaitForResult(), IsOk());
   EXPECT_TRUE(accepted_socket->IsConnected());
   EXPECT_TRUE(client_socket.IsConnected());
 
   // Try to read data.
   const int kReadDataSize = 10;
-  scoped_refptr<IOBuffer> read_buffer(new IOBuffer(kReadDataSize));
+  scoped_refptr<IOBuffer> read_buffer =
+      base::MakeRefCounted<IOBuffer>(kReadDataSize);
   TestCompletionCallback read_callback;
   EXPECT_EQ(ERR_IO_PENDING,
             client_socket.Read(
@@ -322,29 +336,30 @@ TEST_F(UnixDomainClientSocketTest, DisconnectFromServer) {
 
 TEST_F(UnixDomainClientSocketTest, ReadAfterWrite) {
   UnixDomainServerSocket server_socket(CreateAuthCallback(true), false);
-  EXPECT_EQ(OK, server_socket.BindAndListen(socket_path_, /*backlog=*/1));
+  EXPECT_THAT(server_socket.BindAndListen(socket_path_, /*backlog=*/1), IsOk());
   std::unique_ptr<StreamSocket> accepted_socket;
   TestCompletionCallback accept_callback;
   EXPECT_EQ(ERR_IO_PENDING,
             server_socket.Accept(&accepted_socket, accept_callback.callback()));
   UnixDomainClientSocket client_socket(socket_path_, false);
-  EXPECT_EQ(OK, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket), IsOk());
 
-  EXPECT_EQ(OK, accept_callback.WaitForResult());
+  EXPECT_THAT(accept_callback.WaitForResult(), IsOk());
   EXPECT_TRUE(accepted_socket->IsConnected());
   EXPECT_TRUE(client_socket.IsConnected());
 
   // Send data from client to server.
   const int kWriteDataSize = 10;
-  scoped_refptr<IOBuffer> write_buffer(
-      new StringIOBuffer(std::string(kWriteDataSize, 'd')));
+  scoped_refptr<IOBuffer> write_buffer =
+      base::MakeRefCounted<StringIOBuffer>(std::string(kWriteDataSize, 'd'));
   EXPECT_EQ(
       kWriteDataSize,
       WriteSynchronously(&client_socket, write_buffer.get(), kWriteDataSize));
 
   // The buffer is bigger than write data size.
   const int kReadBufferSize = kWriteDataSize * 2;
-  scoped_refptr<IOBuffer> read_buffer(new IOBuffer(kReadBufferSize));
+  scoped_refptr<IOBuffer> read_buffer =
+      base::MakeRefCounted<IOBuffer>(kReadBufferSize);
   EXPECT_EQ(kWriteDataSize,
             ReadSynchronously(accepted_socket.get(),
                               read_buffer.get(),
@@ -391,15 +406,15 @@ TEST_F(UnixDomainClientSocketTest, ReadAfterWrite) {
 
 TEST_F(UnixDomainClientSocketTest, ReadBeforeWrite) {
   UnixDomainServerSocket server_socket(CreateAuthCallback(true), false);
-  EXPECT_EQ(OK, server_socket.BindAndListen(socket_path_, /*backlog=*/1));
+  EXPECT_THAT(server_socket.BindAndListen(socket_path_, /*backlog=*/1), IsOk());
   std::unique_ptr<StreamSocket> accepted_socket;
   TestCompletionCallback accept_callback;
   EXPECT_EQ(ERR_IO_PENDING,
             server_socket.Accept(&accepted_socket, accept_callback.callback()));
   UnixDomainClientSocket client_socket(socket_path_, false);
-  EXPECT_EQ(OK, ConnectSynchronously(&client_socket));
+  EXPECT_THAT(ConnectSynchronously(&client_socket), IsOk());
 
-  EXPECT_EQ(OK, accept_callback.WaitForResult());
+  EXPECT_THAT(accept_callback.WaitForResult(), IsOk());
   EXPECT_TRUE(accepted_socket->IsConnected());
   EXPECT_TRUE(client_socket.IsConnected());
 
@@ -408,15 +423,16 @@ TEST_F(UnixDomainClientSocketTest, ReadBeforeWrite) {
   const int kReadBufferSize = kWriteDataSize * 2;
   const int kSmallReadBufferSize = kWriteDataSize / 3;
   // Read smaller than write data size first.
-  scoped_refptr<IOBuffer> read_buffer(new IOBuffer(kReadBufferSize));
+  scoped_refptr<IOBuffer> read_buffer =
+      base::MakeRefCounted<IOBuffer>(kReadBufferSize);
   TestCompletionCallback read_callback;
   EXPECT_EQ(
       ERR_IO_PENDING,
       accepted_socket->Read(
           read_buffer.get(), kSmallReadBufferSize, read_callback.callback()));
 
-  scoped_refptr<IOBuffer> write_buffer(
-      new StringIOBuffer(std::string(kWriteDataSize, 'd')));
+  scoped_refptr<IOBuffer> write_buffer =
+      base::MakeRefCounted<StringIOBuffer>(std::string(kWriteDataSize, 'd'));
   EXPECT_EQ(
       kWriteDataSize,
       WriteSynchronously(&client_socket, write_buffer.get(), kWriteDataSize));

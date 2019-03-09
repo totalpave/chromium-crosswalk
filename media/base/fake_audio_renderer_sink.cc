@@ -7,6 +7,7 @@
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 
 namespace media {
 
@@ -15,7 +16,6 @@ FakeAudioRendererSink::FakeAudioRendererSink()
           AudioParameters(AudioParameters::AUDIO_FAKE,
                           CHANNEL_LAYOUT_STEREO,
                           AudioParameters::kTelephoneSampleRate,
-                          16,
                           1)) {}
 
 FakeAudioRendererSink::FakeAudioRendererSink(
@@ -24,7 +24,8 @@ FakeAudioRendererSink::FakeAudioRendererSink(
       callback_(nullptr),
       output_device_info_(std::string(),
                           OUTPUT_DEVICE_STATUS_OK,
-                          hardware_params) {}
+                          hardware_params),
+      is_optimized_for_hw_params_(true) {}
 
 FakeAudioRendererSink::~FakeAudioRendererSink() {
   DCHECK(!callback_);
@@ -32,7 +33,7 @@ FakeAudioRendererSink::~FakeAudioRendererSink() {
 
 void FakeAudioRendererSink::Initialize(const AudioParameters& params,
                                        RenderCallback* callback) {
-  DCHECK_EQ(state_, kUninitialized);
+  DCHECK(state_ == kUninitialized || state_ == kStopped);
   DCHECK(!callback_);
   DCHECK(callback);
 
@@ -69,18 +70,28 @@ OutputDeviceInfo FakeAudioRendererSink::GetOutputDeviceInfo() {
   return output_device_info_;
 }
 
+void FakeAudioRendererSink::GetOutputDeviceInfoAsync(
+    OutputDeviceInfoCB info_cb) {
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(info_cb), output_device_info_));
+}
+
+bool FakeAudioRendererSink::IsOptimizedForHardwareParameters() {
+  return is_optimized_for_hw_params_;
+}
+
 bool FakeAudioRendererSink::CurrentThreadIsRenderingThread() {
   NOTIMPLEMENTED();
   return false;
 }
 
 bool FakeAudioRendererSink::Render(AudioBus* dest,
-                                   uint32_t frames_delayed,
+                                   base::TimeDelta delay,
                                    int* frames_written) {
   if (state_ != kPlaying)
     return false;
 
-  *frames_written = callback_->Render(dest, frames_delayed, 0);
+  *frames_written = callback_->Render(delay, base::TimeTicks::Now(), 0, dest);
   return true;
 }
 
@@ -89,6 +100,10 @@ void FakeAudioRendererSink::OnRenderError() {
   DCHECK_NE(state_, kStopped);
 
   callback_->OnRenderError();
+}
+
+void FakeAudioRendererSink::SetIsOptimizedForHardwareParameters(bool value) {
+  is_optimized_for_hw_params_ = value;
 }
 
 void FakeAudioRendererSink::ChangeState(State new_state) {
@@ -101,8 +116,8 @@ void FakeAudioRendererSink::ChangeState(State new_state) {
     "kStopped"
   };
 
-  DVLOG(1) << __FUNCTION__ << " : "
-           << kStateNames[state_] << " -> " << kStateNames[new_state];
+  DVLOG(1) << __func__ << " : " << kStateNames[state_] << " -> "
+           << kStateNames[new_state];
   state_ = new_state;
 }
 

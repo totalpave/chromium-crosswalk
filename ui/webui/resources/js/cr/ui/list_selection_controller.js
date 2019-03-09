@@ -36,8 +36,9 @@ cr.define('cr.ui', function() {
      * @return {number} The index below or -1 if not found.
      */
     getIndexBelow: function(index) {
-      if (index == this.getLastIndex())
+      if (index == this.getLastIndex()) {
         return -1;
+      }
       return index + 1;
     },
 
@@ -81,8 +82,9 @@ cr.define('cr.ui', function() {
      * @return {number} The next index or -1 if not found.
      */
     getNextIndex: function(index) {
-      if (index == this.getLastIndex())
+      if (index == this.getLastIndex()) {
         return -1;
+      }
       return index + 1;
     },
 
@@ -118,9 +120,9 @@ cr.define('cr.ui', function() {
      *     none.
      */
     handlePointerDownUp: function(e, index) {
-      var sm = this.selectionModel;
-      var anchorIndex = sm.anchorIndex;
-      var isDown = (e.type == 'mousedown');
+      const sm = this.selectionModel;
+      const anchorIndex = sm.anchorIndex;
+      const isDown = (e.type == 'mousedown');
 
       sm.beginChange();
 
@@ -131,14 +133,16 @@ cr.define('cr.ui', function() {
         if (cr.isMac || cr.isChromeOS) {
           sm.leadIndex = sm.anchorIndex = -1;
           sm.unselectAll();
-        } else if (!isDown && !e.shiftKey && !e.ctrlKey)
+        } else if (!isDown && !e.shiftKey && !e.ctrlKey) {
           // Keep anchor and lead indexes. Note that this is intentionally
           // different than on the Mac.
-          if (sm.multiple)
+          if (sm.multiple) {
             sm.unselectAll();
+          }
+        }
       } else {
-        if (sm.multiple && (cr.isMac ? e.metaKey :
-                                       (e.ctrlKey && !e.shiftKey))) {
+        if (sm.multiple &&
+            (cr.isMac ? e.metaKey : (e.ctrlKey && !e.shiftKey))) {
           // Selection is handled at mouseUp on windows/linux, mouseDown on mac.
           if (cr.isMac ? isDown : !isDown) {
             // Toggle the current one and make it anchor index.
@@ -151,17 +155,18 @@ cr.define('cr.ui', function() {
           if (isDown) {
             sm.unselectAll();
             sm.leadIndex = index;
-            if (sm.multiple)
+            if (sm.multiple) {
               sm.selectRange(anchorIndex, index);
-            else
+            } else {
               sm.setIndexSelected(index, true);
+            }
           }
         } else {
           // Right click for a context menu needs to not clear the selection.
-          var isRightClick = e.button == 2;
+          const isRightClick = e.button == 2;
 
           // If the index is selected this is handled in mouseup.
-          var indexSelected = sm.getIndexSelected(index);
+          const indexSelected = sm.getIndexSelected(index);
           if ((indexSelected && !isDown || !indexSelected && isDown) &&
               !(indexSelected && isRightClick)) {
             sm.selectedIndex = index;
@@ -173,34 +178,50 @@ cr.define('cr.ui', function() {
     },
 
     /**
+     * Called by the view when it receives either a touchstart, touchmove,
+     * touchend, or touchcancel event.
+     * Sub-classes may override this function to handle touch events separately
+     * from mouse events, instead of waiting for emulated mouse events sent
+     * after the touch events.
+     * @param {Event} e The event.
+     * @param {number} index The index that was under the touched point, -1 if
+     *     none.
+     */
+    handleTouchEvents: function(e, index) {
+      // Do nothing.
+    },
+
+    /**
      * Called by the view when it receives a keydown event.
      * @param {Event} e The keydown event.
      */
     handleKeyDown: function(e) {
-      var SPACE_KEY_CODE = 32;
-      var tagName = e.target.tagName;
+      const tagName = e.target.tagName;
       // If focus is in an input field of some kind, only handle navigation keys
       // that aren't likely to conflict with input interaction (e.g., text
       // editing, or changing the value of a checkbox or select).
       if (tagName == 'INPUT') {
-        var inputType = e.target.type;
+        const inputType = e.target.type;
         // Just protect space (for toggling) for checkbox and radio.
         if (inputType == 'checkbox' || inputType == 'radio') {
-          if (e.keyCode == SPACE_KEY_CODE)
+          if (e.key == ' ') {
             return;
-        // Protect all but the most basic navigation commands in anything else.
-        } else if (e.keyIdentifier != 'Up' && e.keyIdentifier != 'Down') {
+          }
+          // Protect all but the most basic navigation commands in anything
+          // else.
+        } else if (e.key != 'ArrowUp' && e.key != 'ArrowDown') {
           return;
         }
       }
       // Similarly, don't interfere with select element handling.
-      if (tagName == 'SELECT')
+      if (tagName == 'SELECT') {
         return;
+      }
 
-      var sm = this.selectionModel;
-      var newIndex = -1;
-      var leadIndex = sm.leadIndex;
-      var prevent = true;
+      const sm = this.selectionModel;
+      let newIndex = -1;
+      const leadIndex = sm.leadIndex;
+      let prevent = true;
 
       // Ctrl/Meta+A
       if (sm.multiple && e.keyCode == 65 &&
@@ -210,10 +231,9 @@ cr.define('cr.ui', function() {
         return;
       }
 
-      // Space
-      if (e.keyCode == SPACE_KEY_CODE) {
+      if (e.key == ' ') {
         if (leadIndex != -1) {
-          var selected = sm.getIndexSelected(leadIndex);
+          const selected = sm.getIndexSelected(leadIndex);
           if (e.ctrlKey || !selected) {
             sm.setIndexSelected(leadIndex, !selected || !sm.multiple);
             return;
@@ -221,30 +241,30 @@ cr.define('cr.ui', function() {
         }
       }
 
-      switch (e.keyIdentifier) {
+      switch (e.key) {
         case 'Home':
           newIndex = this.getFirstIndex();
           break;
         case 'End':
           newIndex = this.getLastIndex();
           break;
-        case 'Up':
-          newIndex = leadIndex == -1 ?
-              this.getLastIndex() : this.getIndexAbove(leadIndex);
+        case 'ArrowUp':
+          newIndex = leadIndex == -1 ? this.getLastIndex() :
+                                       this.getIndexAbove(leadIndex);
           break;
-        case 'Down':
-          newIndex = leadIndex == -1 ?
-              this.getFirstIndex() : this.getIndexBelow(leadIndex);
+        case 'ArrowDown':
+          newIndex = leadIndex == -1 ? this.getFirstIndex() :
+                                       this.getIndexBelow(leadIndex);
           break;
-        case 'Left':
+        case 'ArrowLeft':
         case 'MediaPreviousTrack':
-          newIndex = leadIndex == -1 ?
-              this.getLastIndex() : this.getIndexBefore(leadIndex);
+          newIndex = leadIndex == -1 ? this.getLastIndex() :
+                                       this.getIndexBefore(leadIndex);
           break;
-        case 'Right':
+        case 'ArrowRight':
         case 'MediaNextTrack':
-          newIndex = leadIndex == -1 ?
-              this.getFirstIndex() : this.getIndexAfter(leadIndex);
+          newIndex = leadIndex == -1 ? this.getFirstIndex() :
+                                       this.getIndexAfter(leadIndex);
           break;
         default:
           prevent = false;
@@ -255,9 +275,10 @@ cr.define('cr.ui', function() {
 
         sm.leadIndex = newIndex;
         if (e.shiftKey) {
-          var anchorIndex = sm.anchorIndex;
-          if (sm.multiple)
+          const anchorIndex = sm.anchorIndex;
+          if (sm.multiple) {
             sm.unselectAll();
+          }
           if (anchorIndex == -1) {
             sm.setIndexSelected(newIndex, true);
             sm.anchorIndex = newIndex;
@@ -268,21 +289,21 @@ cr.define('cr.ui', function() {
           // Setting the lead index is done above.
           // Mac does not allow you to change the lead.
         } else {
-          if (sm.multiple)
+          if (sm.multiple) {
             sm.unselectAll();
+          }
           sm.setIndexSelected(newIndex, true);
           sm.anchorIndex = newIndex;
         }
 
         sm.endChange();
 
-        if (prevent)
+        if (prevent) {
           e.preventDefault();
+        }
       }
     }
   };
 
-  return {
-    ListSelectionController: ListSelectionController
-  };
+  return {ListSelectionController: ListSelectionController};
 });

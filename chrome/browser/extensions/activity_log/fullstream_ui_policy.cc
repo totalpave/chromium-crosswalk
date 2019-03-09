@@ -6,18 +6,21 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/stringprintf.h"
+#include "base/task_runner_util.h"
 #include "chrome/browser/extensions/activity_log/activity_action_constants.h"
 #include "chrome/browser/extensions/activity_log/activity_database.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_switches.h"
@@ -27,9 +30,7 @@
 #include "sql/transaction.h"
 #include "url/gurl.h"
 
-using base::Callback;
 using base::FilePath;
-using base::Time;
 using base::Unretained;
 using content::BrowserThread;
 
@@ -47,7 +48,7 @@ const char* const FullStreamUIPolicy::kTableFieldTypes[] = {
   "LONGVARCHAR", "LONGVARCHAR", "LONGVARCHAR", "LONGVARCHAR"
 };
 const int FullStreamUIPolicy::kTableFieldCount =
-    arraysize(FullStreamUIPolicy::kTableContentFields);
+    base::size(FullStreamUIPolicy::kTableContentFields);
 
 FullStreamUIPolicy::FullStreamUIPolicy(Profile* profile)
     : ActivityLogDatabasePolicy(
@@ -56,19 +57,14 @@ FullStreamUIPolicy::FullStreamUIPolicy(Profile* profile)
 
 FullStreamUIPolicy::~FullStreamUIPolicy() {}
 
-bool FullStreamUIPolicy::InitDatabase(sql::Connection* db) {
-  if (!Util::DropObsoleteTables(db))
-    return false;
-
+bool FullStreamUIPolicy::InitDatabase(sql::Database* db) {
   // Create the unified activity log entry table.
-  return ActivityDatabase::InitializeTable(db,
-                                           kTableName,
-                                           kTableContentFields,
+  return ActivityDatabase::InitializeTable(db, kTableName, kTableContentFields,
                                            kTableFieldTypes,
-                                           arraysize(kTableContentFields));
+                                           base::size(kTableContentFields));
 }
 
-bool FullStreamUIPolicy::FlushDatabase(sql::Connection* db) {
+bool FullStreamUIPolicy::FlushDatabase(sql::Database* db) {
   if (queued_actions_.empty())
     return true;
 
@@ -83,9 +79,8 @@ bool FullStreamUIPolicy::FlushDatabase(sql::Connection* db) {
   sql::Statement statement(db->GetCachedStatement(
       sql::StatementID(SQL_FROM_HERE), sql_str.c_str()));
 
-  Action::ActionVector::size_type i;
-  for (i = 0; i != queued_actions_.size(); ++i) {
-    const Action& action = *queued_actions_[i].get();
+  for (size_t i = 0; i != queued_actions_.size(); ++i) {
+    const Action& action = *queued_actions_[i];
     statement.Reset(true);
     statement.BindString(0, action.extension_id());
     statement.BindInt64(1, action.time().ToInternalValue());
@@ -134,7 +129,7 @@ std::unique_ptr<Action::ActionVector> FullStreamUIPolicy::DoReadFilteredData(
   activity_database()->AdviseFlush(ActivityDatabase::kFlushImmediately);
   std::unique_ptr<Action::ActionVector> actions(new Action::ActionVector());
 
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     return actions;
   }
@@ -147,7 +142,7 @@ std::unique_ptr<Action::ActionVector> FullStreamUIPolicy::DoReadFilteredData(
     where_next = " AND ";
   }
   if (!api_name.empty()) {
-    where_str += where_next + "api_name=?";
+    where_str += where_next + "api_name LIKE ?";
     where_next = " AND ";
   }
   if (type != Action::ACTION_ANY) {
@@ -174,7 +169,7 @@ std::unique_ptr<Action::ActionVector> FullStreamUIPolicy::DoReadFilteredData(
   if (!extension_id.empty())
     query.BindString(++i, extension_id);
   if (!api_name.empty())
-    query.BindString(++i, api_name);
+    query.BindString(++i, api_name + "%");
   if (type != Action::ACTION_ANY)
     query.BindInt(++i, static_cast<int>(type));
   if (!page_url.empty())
@@ -199,8 +194,8 @@ std::unique_ptr<Action::ActionVector> FullStreamUIPolicy::DoReadFilteredData(
 
     if (query.ColumnType(4) != sql::COLUMN_TYPE_NULL) {
       std::unique_ptr<base::Value> parsed_value =
-          base::JSONReader::Read(query.ColumnString(4));
-      if (parsed_value && parsed_value->IsType(base::Value::TYPE_LIST)) {
+          base::JSONReader::ReadDeprecated(query.ColumnString(4));
+      if (parsed_value && parsed_value->is_list()) {
         action->set_args(base::WrapUnique(
             static_cast<base::ListValue*>(parsed_value.release())));
       }
@@ -212,8 +207,8 @@ std::unique_ptr<Action::ActionVector> FullStreamUIPolicy::DoReadFilteredData(
 
     if (query.ColumnType(8) != sql::COLUMN_TYPE_NULL) {
       std::unique_ptr<base::Value> parsed_value =
-          base::JSONReader::Read(query.ColumnString(8));
-      if (parsed_value && parsed_value->IsType(base::Value::TYPE_DICTIONARY)) {
+          base::JSONReader::ReadDeprecated(query.ColumnString(8));
+      if (parsed_value && parsed_value->is_dict()) {
         action->set_other(base::WrapUnique(
             static_cast<base::DictionaryValue*>(parsed_value.release())));
       }
@@ -229,7 +224,7 @@ void FullStreamUIPolicy::DoRemoveActions(
   if (action_ids.empty())
     return;
 
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -262,7 +257,7 @@ void FullStreamUIPolicy::DoRemoveActions(
 }
 
 void FullStreamUIPolicy::DoRemoveURLs(const std::vector<GURL>& restrict_urls) {
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -328,7 +323,7 @@ void FullStreamUIPolicy::DoRemoveExtensionData(
   if (extension_id.empty())
     return;
 
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -351,7 +346,7 @@ void FullStreamUIPolicy::DoRemoveExtensionData(
 }
 
 void FullStreamUIPolicy::DoDeleteDatabase() {
-  sql::Connection* db = GetDatabaseConnection();
+  sql::Database* db = GetDatabaseConnection();
   if (!db) {
     LOG(ERROR) << "Unable to connect to database";
     return;
@@ -387,8 +382,6 @@ void FullStreamUIPolicy::OnDatabaseClose() {
 }
 
 void FullStreamUIPolicy::Close() {
-  // The policy object should have never been created if there's no DB thread.
-  DCHECK(BrowserThread::IsMessageLoopValid(BrowserThread::DB));
   ScheduleAndForget(activity_database(), &ActivityDatabase::Close);
 }
 
@@ -399,20 +392,13 @@ void FullStreamUIPolicy::ReadFilteredData(
     const std::string& page_url,
     const std::string& arg_url,
     const int days_ago,
-    const base::Callback<void(std::unique_ptr<Action::ActionVector>)>&
-        callback) {
-  BrowserThread::PostTaskAndReplyWithResult(
-      BrowserThread::DB,
-      FROM_HERE,
-      base::Bind(&FullStreamUIPolicy::DoReadFilteredData,
-                 base::Unretained(this),
-                 extension_id,
-                 type,
-                 api_name,
-                 page_url,
-                 arg_url,
-                 days_ago),
-      callback);
+    base::OnceCallback<void(std::unique_ptr<Action::ActionVector>)> callback) {
+  base::PostTaskAndReplyWithResult(
+      GetActivityLogTaskRunner().get(), FROM_HERE,
+      base::BindOnce(&FullStreamUIPolicy::DoReadFilteredData,
+                     base::Unretained(this), extension_id, type, api_name,
+                     page_url, arg_url, days_ago),
+      std::move(callback));
 }
 
 void FullStreamUIPolicy::RemoveActions(const std::vector<int64_t>& action_ids) {

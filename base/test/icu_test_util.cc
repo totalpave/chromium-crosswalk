@@ -4,6 +4,9 @@
 
 #include "base/test/icu_test_util.h"
 
+#include "base/base_switches.h"
+#include "base/command_line.h"
+#include "base/i18n/icu_util.h"
 #include "base/i18n/rtl.h"
 #include "third_party/icu/source/common/unicode/uloc.h"
 
@@ -11,10 +14,25 @@ namespace base {
 namespace test {
 
 ScopedRestoreICUDefaultLocale::ScopedRestoreICUDefaultLocale()
-    : default_locale_(uloc_getDefault()) {}
+    : ScopedRestoreICUDefaultLocale(std::string()) {}
+
+ScopedRestoreICUDefaultLocale::ScopedRestoreICUDefaultLocale(
+    const std::string& locale)
+    : default_locale_(uloc_getDefault()) {
+  if (!locale.empty())
+    i18n::SetICUDefaultLocale(locale.data());
+}
 
 ScopedRestoreICUDefaultLocale::~ScopedRestoreICUDefaultLocale() {
   i18n::SetICUDefaultLocale(default_locale_.data());
+}
+
+void InitializeICUForTesting() {
+  if (!CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kTestDoNotInitializeIcu)) {
+    i18n::AllowMultipleInitializeCallsForTesting();
+    i18n::InitializeICU();
+  }
 }
 
 }  // namespace test

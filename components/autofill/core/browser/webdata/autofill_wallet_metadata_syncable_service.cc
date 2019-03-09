@@ -10,11 +10,9 @@
 
 #include "base/base64.h"
 #include "base/bind.h"
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/memory/scoped_vector.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/autofill_data_model.h"
@@ -24,46 +22,60 @@
 #include "components/autofill/core/browser/webdata/autofill_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_backend.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_change_processor.h"
-#include "sync/api/sync_data.h"
-#include "sync/api/sync_error_factory.h"
-#include "sync/protocol/sync.pb.h"
+#include "components/autofill/core/common/autofill_util.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_change_processor.h"
+#include "components/sync/model/sync_data.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "components/sync/protocol/sync.pb.h"
 
 namespace autofill {
 
 namespace {
 
-void* UserDataKey() {
+void* AutofillWalletMetadataSyncableServiceUserDataKey() {
   // Use the address of a static so that COMDAT folding won't ever fold
   // with something else.
   static int user_data_key = 0;
   return reinterpret_cast<void*>(&user_data_key);
 }
 
-// Returns syncable metadata for the |local| profile or credit card.
-syncer::SyncData BuildSyncData(sync_pb::WalletMetadataSpecifics::Type type,
-                               const std::string& server_id,
-                               const AutofillDataModel& local) {
-  sync_pb::EntitySpecifics entity;
-  sync_pb::WalletMetadataSpecifics* metadata = entity.mutable_wallet_metadata();
+// Sets the common syncable |metadata| for the |local_data_model|.
+void SetCommonMetadata(sync_pb::WalletMetadataSpecifics::Type type,
+                       const std::string& server_id,
+                       const AutofillDataModel& local_data_model,
+                       sync_pb::WalletMetadataSpecifics* metadata) {
   metadata->set_type(type);
   metadata->set_id(server_id);
-  metadata->set_use_count(local.use_count());
-  metadata->set_use_date(local.use_date().ToInternalValue());
+  metadata->set_use_count(local_data_model.use_count());
+  metadata->set_use_date(local_data_model.use_date().ToInternalValue());
+}
 
-  std::string sync_tag;
-  switch (type) {
-    case sync_pb::WalletMetadataSpecifics::ADDRESS:
-      sync_tag = "address-" + server_id;
-      break;
-    case sync_pb::WalletMetadataSpecifics::CARD:
-      sync_tag = "card-" + server_id;
-      break;
-    case sync_pb::WalletMetadataSpecifics::UNKNOWN:
-      NOTREACHED();
-      break;
-  }
+// Returns syncable metadata for the |local_profile|.
+syncer::SyncData BuildSyncData(sync_pb::WalletMetadataSpecifics::Type type,
+                               const std::string& server_id,
+                               const AutofillProfile& local_profile) {
+  sync_pb::EntitySpecifics entity;
+  sync_pb::WalletMetadataSpecifics* metadata = entity.mutable_wallet_metadata();
+  SetCommonMetadata(type, server_id, local_profile, metadata);
+  metadata->set_address_has_converted(local_profile.has_converted());
+  std::string sync_tag = "address-" + server_id;
+
+  return syncer::SyncData::CreateLocalData(sync_tag, sync_tag, entity);
+}
+
+// Returns syncable metadata for the |local_card|.
+syncer::SyncData BuildSyncData(sync_pb::WalletMetadataSpecifics::Type type,
+                               const std::string& server_id,
+                               const CreditCard& local_card) {
+  sync_pb::EntitySpecifics entity;
+  sync_pb::WalletMetadataSpecifics* metadata = entity.mutable_wallet_metadata();
+  SetCommonMetadata(type, server_id, local_card, metadata);
+  // The strings must be in valid UTF-8 to sync.
+  std::string billing_address_id;
+  base::Base64Encode(local_card.billing_address_id(), &billing_address_id);
+  metadata->set_card_billing_address_id(billing_address_id);
+  std::string sync_tag = "card-" + server_id;
 
   return syncer::SyncData::CreateLocalData(sync_tag, sync_tag, entity);
 }
@@ -73,11 +85,12 @@ template <class DataType>
 void UndeleteMetadataIfExisting(
     const std::string& server_id,
     const sync_pb::WalletMetadataSpecifics::Type& metadata_type,
-    base::ScopedPtrHashMap<std::string, std::unique_ptr<DataType>>* locals,
+    std::unordered_map<std::string, std::unique_ptr<DataType>>* locals,
     syncer::SyncChangeList* changes_to_sync) {
   const auto& it = locals->find(server_id);
   if (it != locals->end()) {
-    std::unique_ptr<DataType> local_metadata = locals->take_and_erase(it);
+    std::unique_ptr<DataType> local_metadata = std::move(it->second);
+    locals->erase(it);
     changes_to_sync->push_back(syncer::SyncChange(
         FROM_HERE, syncer::SyncChange::ACTION_ADD,
         BuildSyncData(metadata_type, server_id, *local_metadata)));
@@ -142,6 +155,148 @@ void ApplyChangesToCache(const syncer::SyncChangeList& changes,
   }
 }
 
+template <class DataType>
+bool AreLocalUseStatsUpdated(const sync_pb::WalletMetadataSpecifics& remote,
+                             const DataType& local) {
+  return base::checked_cast<size_t>(remote.use_count()) < local.use_count() &&
+         base::Time::FromInternalValue(remote.use_date()) < local.use_date();
+}
+
+bool IsLocalBillingAddressUpdated(
+    const sync_pb::WalletMetadataSpecifics& remote,
+    const CreditCard& local) {
+  std::string remote_billing_address_id;
+  base::Base64Decode(remote.card_billing_address_id(),
+                     &remote_billing_address_id);
+  return local.billing_address_id() != remote_billing_address_id;
+}
+
+bool IsLocalHasConvertedStatusUpdated(
+    const sync_pb::WalletMetadataSpecifics& remote,
+    const AutofillProfile& local) {
+  return remote.address_has_converted() != local.has_converted();
+}
+
+// Merges the metadata of the remote and local versions of the data model.
+void MergeCommonMetadata(
+    const sync_pb::WalletMetadataSpecifics& remote_metadata,
+    AutofillDataModel* local_model,
+    bool* is_remote_outdated,
+    bool* is_local_modified) {
+  size_t remote_use_count =
+      base::checked_cast<size_t>(remote_metadata.use_count());
+  base::Time remote_use_date =
+      base::Time::FromInternalValue(remote_metadata.use_date());
+
+  // If the two models have the same metadata, do nothing.
+  if (local_model->use_count() == remote_use_count &&
+      local_model->use_date() == remote_use_date) {
+    return;
+  }
+
+  // Special case for local models with a use_count of one. This means the local
+  // model was only created, never used. The remote model should always be
+  // preferred.
+  // This situation can happen for new Chromium instances where there is no data
+  // yet on disk, making the use_date artifically high. Once the metadata sync
+  // kicks in, we should use that value.
+  if (local_model->use_count() == 1) {
+    local_model->set_use_date(remote_use_date);
+    local_model->set_use_count(remote_use_count);
+    *is_local_modified = true;
+  } else {
+    // Otherwise, just keep the most recent use date and biggest use count.
+    if (local_model->use_date() < remote_use_date) {
+      local_model->set_use_date(remote_use_date);
+      *is_local_modified = true;
+    } else if (local_model->use_date() > remote_use_date) {
+      *is_remote_outdated = true;
+    }
+
+    if (local_model->use_count() < remote_use_count) {
+      local_model->set_use_count(remote_use_count);
+      *is_local_modified = true;
+    } else if (local_model->use_count() > remote_use_count) {
+      *is_remote_outdated = true;
+    }
+  }
+}
+
+// Merges the metadata of the remote and local versions of the profile.
+void MergeMetadata(const sync_pb::WalletMetadataSpecifics& remote_metadata,
+                   AutofillProfile* local_profile,
+                   bool* is_remote_outdated,
+                   bool* is_local_modified) {
+  // Merge the has_converted status.
+  if (local_profile->has_converted() !=
+      remote_metadata.address_has_converted()) {
+    if (!local_profile->has_converted()) {
+      local_profile->set_has_converted(true);
+      *is_local_modified = true;
+    } else {
+      *is_remote_outdated = true;
+    }
+  }
+
+  // Merge the use_count and use_date.
+  MergeCommonMetadata(remote_metadata, local_profile, is_remote_outdated,
+                      is_local_modified);
+}
+
+// Whether the |current_billing_address_id| is considered outdated compared to
+// the |proposed_billing_address_id|.
+bool IsBillingAddressOutdated(const std::string& current_billing_address_id,
+                              const std::string& proposed_billing_address_id) {
+  DCHECK(current_billing_address_id != proposed_billing_address_id);
+
+  // If the current billing address is empty, or if the current one refers to a
+  // server address and the proposed one refers to a local address, the current
+  // billing address is considered outdated.
+  return current_billing_address_id.empty() ||
+         (current_billing_address_id.size() != kLocalGuidSize &&
+          proposed_billing_address_id.size() == kLocalGuidSize);
+}
+
+// Merges the metadata of the remote and local versions of the credit card.
+void MergeMetadata(const sync_pb::WalletMetadataSpecifics& remote_metadata,
+                   CreditCard* local_card,
+                   bool* is_remote_outdated,
+                   bool* is_local_modified) {
+  // Merge the billing_address_id. Do this before updating the use_count
+  // because it may be used to determine what id to keep.
+  std::string remote_billing_address_id;
+  base::Base64Decode(remote_metadata.card_billing_address_id(),
+                     &remote_billing_address_id);
+
+  if (local_card->billing_address_id() != remote_billing_address_id) {
+    if (IsBillingAddressOutdated(local_card->billing_address_id(),
+                                 remote_billing_address_id)) {
+      local_card->set_billing_address_id(remote_billing_address_id);
+      *is_local_modified = true;
+    } else if (IsBillingAddressOutdated(remote_billing_address_id,
+                                        local_card->billing_address_id())) {
+      *is_remote_outdated = true;
+    } else {
+      // The cards have a different non-empty billing address id and both refer
+      // to the same type of address. Keep the billing address id of the most
+      // recently used card. If both have the same timestamp, the remote version
+      // should be kept in order to stabilize the values.
+      base::Time remote_use_date =
+          base::Time::FromInternalValue(remote_metadata.use_date());
+      if (local_card->use_date() <= remote_use_date) {
+        local_card->set_billing_address_id(remote_billing_address_id);
+        *is_local_modified = true;
+      } else {
+        *is_remote_outdated = true;
+      }
+    }
+  }
+
+  // Merge the use_count and use_date.
+  MergeCommonMetadata(remote_metadata, local_card, is_remote_outdated,
+                      is_local_modified);
+}
+
 // Merges |remote| metadata into a collection of metadata |locals|. Returns true
 // if the corresponding local metadata was found.
 //
@@ -151,7 +306,8 @@ template <class DataType>
 bool MergeRemote(
     const syncer::SyncData& remote,
     const base::Callback<bool(const DataType&)>& updater,
-    base::ScopedPtrHashMap<std::string, std::unique_ptr<DataType>>* locals,
+    bool* is_any_local_modified,
+    std::unordered_map<std::string, std::unique_ptr<DataType>>* locals,
     syncer::SyncChangeList* changes_to_sync) {
   DCHECK(locals);
   DCHECK(changes_to_sync);
@@ -162,27 +318,13 @@ bool MergeRemote(
   if (it == locals->end())
     return false;
 
-  std::unique_ptr<DataType> local_metadata = locals->take_and_erase(it);
+  std::unique_ptr<DataType> local_metadata = std::move(it->second);
+  locals->erase(it);
 
-  size_t remote_use_count =
-      base::checked_cast<size_t>(remote_metadata.use_count());
   bool is_local_modified = false;
   bool is_remote_outdated = false;
-  if (local_metadata->use_count() < remote_use_count) {
-    local_metadata->set_use_count(remote_use_count);
-    is_local_modified = true;
-  } else if (local_metadata->use_count() > remote_use_count) {
-    is_remote_outdated = true;
-  }
-
-  base::Time remote_use_date =
-      base::Time::FromInternalValue(remote_metadata.use_date());
-  if (local_metadata->use_date() < remote_use_date) {
-    local_metadata->set_use_date(remote_use_date);
-    is_local_modified = true;
-  } else if (local_metadata->use_date() > remote_use_date) {
-    is_remote_outdated = true;
-  }
+  MergeMetadata(remote_metadata, local_metadata.get(), &is_remote_outdated,
+                &is_local_modified);
 
   if (is_remote_outdated) {
     changes_to_sync->push_back(syncer::SyncChange(
@@ -191,8 +333,10 @@ bool MergeRemote(
                       *local_metadata)));
   }
 
-  if (is_local_modified)
+  if (is_local_modified) {
     updater.Run(*local_metadata);
+    *is_any_local_modified = true;
+  }
 
   return true;
 }
@@ -208,6 +352,15 @@ std::string GetServerId(const DataType& data) {
 
 AutofillWalletMetadataSyncableService::
     ~AutofillWalletMetadataSyncableService() {}
+
+void AutofillWalletMetadataSyncableService::OnWalletDataTrackingStateChanged(
+    bool is_tracking) {
+  DCHECK_NE(track_wallet_data_, is_tracking);
+  track_wallet_data_ = is_tracking;
+  if (is_tracking && sync_processor_) {
+    MergeData(cache_);
+  }
+}
 
 syncer::SyncMergeResult
 AutofillWalletMetadataSyncableService::MergeDataAndStartSyncing(
@@ -225,7 +378,13 @@ AutofillWalletMetadataSyncableService::MergeDataAndStartSyncing(
 
   cache_ = initial_sync_data;
 
-  syncer::SyncMergeResult result = MergeData(initial_sync_data);
+  syncer::SyncMergeResult result(syncer::AUTOFILL_WALLET_METADATA);
+  if (track_wallet_data_) {
+    result = MergeData(initial_sync_data);
+  }
+
+  // Notify that sync has started. This callback does not currently take into
+  // account whether we're actually tracking wallet data.
   if (web_data_backend_)
     web_data_backend_->NotifyThatSyncHasStarted(type);
   return result;
@@ -247,9 +406,8 @@ syncer::SyncDataList AutofillWalletMetadataSyncableService::GetAllSyncData(
   DCHECK_EQ(syncer::AUTOFILL_WALLET_METADATA, type);
 
   syncer::SyncDataList data_list;
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<AutofillProfile>>
-      profiles;
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<CreditCard>> cards;
+  std::unordered_map<std::string, std::unique_ptr<AutofillProfile>> profiles;
+  std::unordered_map<std::string, std::unique_ptr<CreditCard>> cards;
   if (GetLocalData(&profiles, &cards)) {
     for (const auto& it : profiles) {
       data_list.push_back(BuildSyncData(
@@ -266,15 +424,20 @@ syncer::SyncDataList AutofillWalletMetadataSyncableService::GetAllSyncData(
 }
 
 syncer::SyncError AutofillWalletMetadataSyncableService::ProcessSyncChanges(
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const syncer::SyncChangeList& changes_from_sync) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   ApplyChangesToCache(changes_from_sync, &cache_);
 
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<AutofillProfile>>
-      profiles;
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<CreditCard>> cards;
+  // If we're not tracking wallet data, we can't rely on the local wallet
+  // data being up-to-date, so we should not do any merging with local data.
+  if (!track_wallet_data_) {
+    return syncer::SyncError();
+  }
+
+  std::unordered_map<std::string, std::unique_ptr<AutofillProfile>> profiles;
+  std::unordered_map<std::string, std::unique_ptr<CreditCard>> cards;
   GetLocalData(&profiles, &cards);
 
   // base::Unretained is used because the callbacks are invoked synchronously.
@@ -284,6 +447,8 @@ syncer::SyncError AutofillWalletMetadataSyncableService::ProcessSyncChanges(
   base::Callback<bool(const CreditCard&)> card_updater =
       base::Bind(&AutofillWalletMetadataSyncableService::UpdateCardStats,
                  base::Unretained(this));
+
+  bool is_any_local_modified = false;
 
   syncer::SyncChangeList changes_to_sync;
   for (const syncer::SyncChange& change : changes_from_sync) {
@@ -295,13 +460,13 @@ syncer::SyncError AutofillWalletMetadataSyncableService::ProcessSyncChanges(
       case syncer::SyncChange::ACTION_UPDATE:
         switch (remote_metadata.type()) {
           case sync_pb::WalletMetadataSpecifics::ADDRESS:
-            MergeRemote(change.sync_data(), address_updater, &profiles,
-                        &changes_to_sync);
+            MergeRemote(change.sync_data(), address_updater,
+                        &is_any_local_modified, &profiles, &changes_to_sync);
             break;
 
           case sync_pb::WalletMetadataSpecifics::CARD:
-            MergeRemote(change.sync_data(), card_updater, &cards,
-                        &changes_to_sync);
+            MergeRemote(change.sync_data(), card_updater,
+                        &is_any_local_modified, &cards, &changes_to_sync);
             break;
 
           case sync_pb::WalletMetadataSpecifics::UNKNOWN:
@@ -340,6 +505,15 @@ syncer::SyncError AutofillWalletMetadataSyncableService::ProcessSyncChanges(
   syncer::SyncError status;
   if (!changes_to_sync.empty())
     status = SendChangesToSyncServer(changes_to_sync);
+  if (is_any_local_modified) {
+    // TODO(crbug.com/900607): Remove the need to listen to
+    // AutofillMultipleChanged() in the new USS implementation so that we can
+    // get rid of this hack.
+    DCHECK(!ignore_multiple_changed_notification_);
+    ignore_multiple_changed_notification_ = true;
+    web_data_backend_->NotifyOfMultipleAutofillChanges();
+    ignore_multiple_changed_notification_ = false;
+  }
 
   return status;
 }
@@ -347,29 +521,83 @@ syncer::SyncError AutofillWalletMetadataSyncableService::ProcessSyncChanges(
 void AutofillWalletMetadataSyncableService::AutofillProfileChanged(
     const AutofillProfileChange& change) {
   DCHECK(thread_checker_.CalledOnValidThread());
+  if (!track_wallet_data_) {
+    return;
+  }
 
   if (sync_processor_ && change.data_model() &&
       change.data_model()->record_type() != AutofillProfile::LOCAL_PROFILE) {
-    AutofillDataModelChanged(GetServerId(*change.data_model()),
-                             sync_pb::WalletMetadataSpecifics::ADDRESS,
-                             *change.data_model());
+    std::string server_id = GetServerId(*change.data_model());
+    auto it = FindServerIdAndTypeInCache(
+        server_id, sync_pb::WalletMetadataSpecifics::ADDRESS, &cache_);
+    if (it == cache_.end())
+      return;
+    // Implicitly, we filter out ADD (not in cache) and REMOVE (!data_model()).
+    DCHECK(change.type() == AutofillProfileChange::UPDATE);
+
+    const sync_pb::WalletMetadataSpecifics& remote =
+        it->GetSpecifics().wallet_metadata();
+    const AutofillProfile& local = *change.data_model();
+
+
+    if (!AreLocalUseStatsUpdated(remote, local) &&
+        !IsLocalHasConvertedStatusUpdated(remote, local)) {
+      return;
+    }
+
+    SendChangesToSyncServer(syncer::SyncChangeList(
+        1, syncer::SyncChange(
+               FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+               BuildSyncData(sync_pb::WalletMetadataSpecifics::ADDRESS,
+                             server_id, local))));
   }
 }
 
 void AutofillWalletMetadataSyncableService::CreditCardChanged(
     const CreditCardChange& change) {
   DCHECK(thread_checker_.CalledOnValidThread());
+  if (!track_wallet_data_) {
+    return;
+  }
 
   if (sync_processor_ && change.data_model() &&
       change.data_model()->record_type() != CreditCard::LOCAL_CARD) {
-    AutofillDataModelChanged(GetServerId(*change.data_model()),
-                             sync_pb::WalletMetadataSpecifics::CARD,
-                             *change.data_model());
+    std::string server_id = GetServerId(*change.data_model());
+    auto it = FindServerIdAndTypeInCache(
+        server_id, sync_pb::WalletMetadataSpecifics::CARD, &cache_);
+    if (it == cache_.end())
+      return;
+    // Deletions and creations are treated by Wallet data sync (and propagated
+    // here by AutofillMultipleChanged()). We only treat updates here.
+    if (change.type() != AutofillProfileChange::UPDATE) {
+      return;
+    }
+
+    const sync_pb::WalletMetadataSpecifics& remote =
+        it->GetSpecifics().wallet_metadata();
+    const CreditCard& local = *change.data_model();
+    if (!AreLocalUseStatsUpdated(remote, local) &&
+        !IsLocalBillingAddressUpdated(remote, local)) {
+      return;
+    }
+
+    SendChangesToSyncServer(syncer::SyncChangeList(
+        1,
+        syncer::SyncChange(FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+                           BuildSyncData(sync_pb::WalletMetadataSpecifics::CARD,
+                                         server_id, local))));
   }
 }
 
 void AutofillWalletMetadataSyncableService::AutofillMultipleChanged() {
-  if (sync_processor_)
+  if (ignore_multiple_changed_notification_) {
+    // TODO(crbug.com/900607): Remove the need to listen to
+    // AutofillMultipleChanged() in the new USS implementation so that we can
+    // get rid of this hack.
+    return;
+  }
+
+  if (sync_processor_ && track_wallet_data_)
     MergeData(cache_);
 }
 
@@ -379,8 +607,9 @@ void AutofillWalletMetadataSyncableService::CreateForWebDataServiceAndBackend(
     AutofillWebDataBackend* web_data_backend,
     const std::string& app_locale) {
   web_data_service->GetDBUserData()->SetUserData(
-      UserDataKey(),
-      new AutofillWalletMetadataSyncableService(web_data_backend, app_locale));
+      AutofillWalletMetadataSyncableServiceUserDataKey(),
+      std::make_unique<AutofillWalletMetadataSyncableService>(web_data_backend,
+                                                              app_locale));
 }
 
 // static
@@ -388,38 +617,41 @@ AutofillWalletMetadataSyncableService*
 AutofillWalletMetadataSyncableService::FromWebDataService(
     AutofillWebDataService* web_data_service) {
   return static_cast<AutofillWalletMetadataSyncableService*>(
-      web_data_service->GetDBUserData()->GetUserData(UserDataKey()));
+      web_data_service->GetDBUserData()->GetUserData(
+          AutofillWalletMetadataSyncableServiceUserDataKey()));
 }
 
 AutofillWalletMetadataSyncableService::AutofillWalletMetadataSyncableService(
     AutofillWebDataBackend* web_data_backend,
     const std::string& app_locale)
-    : web_data_backend_(web_data_backend), scoped_observer_(this) {
+    : web_data_backend_(web_data_backend),
+      scoped_observer_(this),
+      track_wallet_data_(false),
+      ignore_multiple_changed_notification_(false),
+      weak_ptr_factory_(this) {
   scoped_observer_.Add(web_data_backend_);
 }
 
 bool AutofillWalletMetadataSyncableService::GetLocalData(
-    base::ScopedPtrHashMap<std::string, std::unique_ptr<AutofillProfile>>*
-        profiles,
-    base::ScopedPtrHashMap<std::string, std::unique_ptr<CreditCard>>* cards)
-    const {
-  ScopedVector<AutofillProfile> profile_list;
+    std::unordered_map<std::string, std::unique_ptr<AutofillProfile>>* profiles,
+    std::unordered_map<std::string, std::unique_ptr<CreditCard>>* cards) const {
+  std::vector<std::unique_ptr<AutofillProfile>> profile_list;
   bool success =
       AutofillTable::FromWebDatabase(web_data_backend_->GetDatabase())
-          ->GetServerProfiles(&profile_list.get());
+          ->GetServerProfiles(&profile_list);
   while (!profile_list.empty()) {
-    profiles->add(GetServerId(*profile_list.front()),
-                  base::WrapUnique(profile_list.front()));
-    profile_list.weak_erase(profile_list.begin());
+    auto server_id = GetServerId(*profile_list.front());
+    (*profiles)[server_id] = std::move(profile_list.front());
+    profile_list.erase(profile_list.begin());
   }
 
-  ScopedVector<CreditCard> card_list;
+  std::vector<std::unique_ptr<CreditCard>> card_list;
   success &= AutofillTable::FromWebDatabase(web_data_backend_->GetDatabase())
-                 ->GetServerCreditCards(&card_list.get());
+                 ->GetServerCreditCards(&card_list);
   while (!card_list.empty()) {
-    cards->add(GetServerId(*card_list.front()),
-               base::WrapUnique(card_list.front()));
-    card_list.weak_erase(card_list.begin());
+    auto server_id = GetServerId(*card_list.front());
+    (*cards)[server_id] = std::move(card_list.front());
+    card_list.erase(card_list.begin());
   }
 
   return success;
@@ -428,13 +660,13 @@ bool AutofillWalletMetadataSyncableService::GetLocalData(
 bool AutofillWalletMetadataSyncableService::UpdateAddressStats(
     const AutofillProfile& profile) {
   return AutofillTable::FromWebDatabase(web_data_backend_->GetDatabase())
-      ->UpdateServerAddressUsageStats(profile);
+      ->UpdateServerAddressMetadata(profile);
 }
 
 bool AutofillWalletMetadataSyncableService::UpdateCardStats(
     const CreditCard& credit_card) {
   return AutofillTable::FromWebDatabase(web_data_backend_->GetDatabase())
-      ->UpdateServerCardUsageStats(credit_card);
+      ->UpdateServerCardMetadata(credit_card);
 }
 
 syncer::SyncError
@@ -447,9 +679,12 @@ AutofillWalletMetadataSyncableService::SendChangesToSyncServer(
 
 syncer::SyncMergeResult AutofillWalletMetadataSyncableService::MergeData(
     const syncer::SyncDataList& sync_data) {
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<AutofillProfile>>
-      profiles;
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<CreditCard>> cards;
+  // If we're not tracking wallet data, we can't rely on the local wallet
+  // data being up-to-date, so we should not do any merging with local data.
+  DCHECK(track_wallet_data_);
+
+  std::unordered_map<std::string, std::unique_ptr<AutofillProfile>> profiles;
+  std::unordered_map<std::string, std::unique_ptr<CreditCard>> cards;
   GetLocalData(&profiles, &cards);
 
   syncer::SyncMergeResult result(syncer::AUTOFILL_WALLET_METADATA);
@@ -463,21 +698,24 @@ syncer::SyncMergeResult AutofillWalletMetadataSyncableService::MergeData(
       base::Bind(&AutofillWalletMetadataSyncableService::UpdateCardStats,
                  base::Unretained(this));
 
+  bool is_any_local_modified = false;
+
   syncer::SyncChangeList changes_to_sync;
   for (const syncer::SyncData& remote : sync_data) {
     DCHECK(remote.IsValid());
     DCHECK_EQ(syncer::AUTOFILL_WALLET_METADATA, remote.GetDataType());
     switch (remote.GetSpecifics().wallet_metadata().type()) {
       case sync_pb::WalletMetadataSpecifics::ADDRESS:
-        if (!MergeRemote(remote, address_updater, &profiles,
-                         &changes_to_sync)) {
+        if (!MergeRemote(remote, address_updater, &is_any_local_modified,
+                         &profiles, &changes_to_sync)) {
           changes_to_sync.push_back(syncer::SyncChange(
               FROM_HERE, syncer::SyncChange::ACTION_DELETE, remote));
         }
         break;
 
       case sync_pb::WalletMetadataSpecifics::CARD:
-        if (!MergeRemote(remote, card_updater, &cards, &changes_to_sync)) {
+        if (!MergeRemote(remote, card_updater, &is_any_local_modified, &cards,
+                         &changes_to_sync)) {
           changes_to_sync.push_back(syncer::SyncChange(
               FROM_HERE, syncer::SyncChange::ACTION_DELETE, remote));
         }
@@ -514,26 +752,17 @@ syncer::SyncMergeResult AutofillWalletMetadataSyncableService::MergeData(
 
   if (!changes_to_sync.empty())
     result.set_error(SendChangesToSyncServer(changes_to_sync));
+  if (is_any_local_modified) {
+    // TODO(crbug.com/900607): Remove the need to listen to
+    // AutofillMultipleChanged() in the new USS implementation so that we can
+    // get rid of this hack.
+    DCHECK(!ignore_multiple_changed_notification_);
+    ignore_multiple_changed_notification_ = true;
+    web_data_backend_->NotifyOfMultipleAutofillChanges();
+    ignore_multiple_changed_notification_ = false;
+  }
 
   return result;
-}
-
-void AutofillWalletMetadataSyncableService::AutofillDataModelChanged(
-    const std::string& server_id,
-    const sync_pb::WalletMetadataSpecifics::Type& type,
-    const AutofillDataModel& local) {
-  auto it = FindServerIdAndTypeInCache(server_id, type, &cache_);
-  if (it == cache_.end())
-    return;
-
-  const sync_pb::WalletMetadataSpecifics& remote =
-      it->GetSpecifics().wallet_metadata();
-  if (base::checked_cast<size_t>(remote.use_count()) < local.use_count() &&
-      base::Time::FromInternalValue(remote.use_date()) < local.use_date()) {
-    SendChangesToSyncServer(syncer::SyncChangeList(
-        1, syncer::SyncChange(FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
-                              BuildSyncData(remote.type(), server_id, local))));
-  }
 }
 
 }  // namespace autofill

@@ -11,7 +11,9 @@ import android.os.Bundle;
 import android.support.v7.app.AlertDialog;
 
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.ProfileAccountManagementMetrics;
+import org.chromium.components.signin.GAIAServiceType;
 
 /**
  * Shows the dialog that explains the user the consequences of signing out of Chrome.
@@ -31,7 +33,7 @@ public class SignOutDialogFragment extends DialogFragment implements
         /**
          * Called when the user clicks "Sign out".
          */
-        public void onSignOutClicked();
+        void onSignOutClicked();
 
         /**
          * Called when the dialog is dismissed.
@@ -39,36 +41,49 @@ public class SignOutDialogFragment extends DialogFragment implements
          * @param signOutClicked Whether the user clicked the "sign out" button before the dialog
          *                       was dismissed.
          */
-        public void onSignOutDialogDismissed(boolean signOutClicked);
+        void onSignOutDialogDismissed(boolean signOutClicked);
     }
 
     private boolean mSignOutClicked;
 
     /**
-     * The GAIA service that's prompted this dialog. Values can be any constant in
-     * signin::GAIAServiceType
+     * The GAIA service that's prompted this dialog.
      */
-    private int mGaiaServiceType;
+    private @GAIAServiceType int mGaiaServiceType = GAIAServiceType.GAIA_SERVICE_TYPE_NONE;
 
     @Override
     public Dialog onCreateDialog(Bundle savedInstanceState) {
-        mGaiaServiceType = AccountManagementScreenHelper.GAIA_SERVICE_TYPE_NONE;
         if (getArguments() != null) {
             mGaiaServiceType = getArguments().getInt(
                     SHOW_GAIA_SERVICE_TYPE_EXTRA, mGaiaServiceType);
         }
 
-        String managementDomain = SigninManager.get(getActivity()).getManagementDomain();
-        String message;
-        if (managementDomain == null) {
-            message = getActivity().getResources().getString(R.string.signout_message);
-        } else {
-            message = getActivity().getResources().getString(
-                    R.string.signout_managed_account_message, managementDomain);
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.UNIFIED_CONSENT)) {
+            return createDialogUnifiedConsentFeatureEnabled();
         }
+        return createDialogPreUnifiedConsent();
+    }
 
-        return new AlertDialog.Builder(getActivity(), R.style.AlertDialogTheme)
+    private Dialog createDialogUnifiedConsentFeatureEnabled() {
+        String domain = SigninManager.get().getManagementDomain();
+        String message = domain == null
+                ? getString(R.string.signout_message)
+                : getString(R.string.signout_managed_account_message, domain);
+        return new AlertDialog.Builder(getActivity(), R.style.Theme_Chromium_AlertDialog)
                 .setTitle(R.string.signout_title)
+                .setPositiveButton(R.string.continue_button, this)
+                .setNegativeButton(R.string.cancel, this)
+                .setMessage(message)
+                .create();
+    }
+
+    private Dialog createDialogPreUnifiedConsent() {
+        String domain = SigninManager.get().getManagementDomain();
+        String message = domain == null
+                ? getString(R.string.signout_message_legacy)
+                : getString(R.string.signout_managed_account_message, domain);
+        return new AlertDialog.Builder(getActivity(), R.style.Theme_Chromium_AlertDialog)
+                .setTitle(R.string.signout_title_legacy)
                 .setPositiveButton(R.string.signout_dialog_positive_button, this)
                 .setNegativeButton(R.string.cancel, this)
                 .setMessage(message)

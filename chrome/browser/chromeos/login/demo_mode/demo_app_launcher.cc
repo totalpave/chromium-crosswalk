@@ -18,11 +18,11 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/grit/browser_resources.h"
-#include "chromeos/login/user_names.h"
 #include "chromeos/network/network_handler.h"
 #include "chromeos/network/network_state_handler.h"
-#include "components/signin/core/account_id/account_id.h"
-#include "components/user_manager/user_manager.h"
+#include "components/account_id/account_id.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user_names.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
@@ -50,13 +50,13 @@ void DemoAppLauncher::StartDemoAppLaunch() {
   DVLOG(1) << "Launching demo app...";
   // user_id = DemoAppUserId, force_emphemeral = true, delegate = this.
   kiosk_profile_loader_.reset(
-      new KioskProfileLoader(login::DemoAccountId(), true, this));
+      new KioskProfileLoader(user_manager::DemoAccountId(), true, this));
   kiosk_profile_loader_->Start();
 }
 
 // static
 bool DemoAppLauncher::IsDemoAppSession(const AccountId& account_id) {
-  return account_id == login::DemoAccountId();
+  return account_id == user_manager::DemoAccountId();
 }
 
 // static
@@ -71,12 +71,11 @@ void DemoAppLauncher::OnProfileLoaded(Profile* profile) {
   kiosk_profile_loader_.reset();
 
   // Load our demo app, then launch it.
-  ExtensionService* extension_service =
+  extensions::ExtensionService* extension_service =
       extensions::ExtensionSystem::Get(profile)->extension_service();
   CHECK(demo_app_path_);
   const std::string extension_id = extension_service->component_loader()->Add(
-      IDR_DEMO_APP_MANIFEST,
-      *demo_app_path_);
+      IDR_DEMO_APP_MANIFEST, *demo_app_path_);
 
   const extensions::Extension* extension =
       extension_service->GetExtensionById(extension_id, true);
@@ -89,24 +88,24 @@ void DemoAppLauncher::OnProfileLoaded(Profile* profile) {
 
   // Disable network before launching the app.
   LOG(WARNING) << "Disabling network before launching demo app..";
-  NetworkStateHandler* handler = NetworkHandler::Get()->network_state_handler();
-  handler->SetTechnologyEnabled(NetworkTypePattern::NonVirtual(),
-                                false,
-                                chromeos::network_handler::ErrorCallback());
+  NetworkHandler::Get()->network_state_handler()->SetTechnologyEnabled(
+      NetworkTypePattern::Physical(), false,
+      chromeos::network_handler::ErrorCallback());
 
-  OpenApplication(
-      AppLaunchParams(profile, extension, extensions::LAUNCH_CONTAINER_WINDOW,
-                      NEW_WINDOW, extensions::SOURCE_CHROME_INTERNAL));
+  OpenApplication(AppLaunchParams(profile, extension,
+                                  extensions::LAUNCH_CONTAINER_WINDOW,
+                                  WindowOpenDisposition::NEW_WINDOW,
+                                  extensions::SOURCE_CHROME_INTERNAL, true));
   KioskAppManager::Get()->InitSession(profile, extension_id);
 
-  user_manager::UserManager::Get()->SessionStarted();
+  session_manager::SessionManager::Get()->SessionStarted();
 
-  LoginDisplayHost::default_host()->Finalize();
+  LoginDisplayHost::default_host()->Finalize(base::OnceClosure());
 }
 
 void DemoAppLauncher::OnProfileLoadFailed(KioskAppLaunchError::Error error) {
-  LOG(ERROR) << "Loading the Kiosk Profile failed: " <<
-      KioskAppLaunchError::GetErrorMessage(error);
+  LOG(ERROR) << "Loading the Kiosk Profile failed: "
+             << KioskAppLaunchError::GetErrorMessage(error);
 }
 
 }  // namespace chromeos

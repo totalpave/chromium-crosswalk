@@ -15,8 +15,9 @@
 namespace registry_util {
 
 namespace {
-const wchar_t kTestKeyPath[] = L"Software\\Chromium\\Foo\\Baz\\TestKey";
-const wchar_t kTestValueName[] = L"TestValue";
+const base::char16 kTestKeyPath[] =
+    STRING16_LITERAL("Software\\Chromium\\Foo\\Baz\\TestKey");
+const base::char16 kTestValueName[] = STRING16_LITERAL("TestValue");
 }  // namespace
 
 class RegistryOverrideManagerTest : public testing::Test {
@@ -55,12 +56,12 @@ class RegistryOverrideManagerTest : public testing::Test {
 
   void CreateKey(const base::string16& key_path) {
     base::win::RegKey key;
-    EXPECT_EQ(ERROR_SUCCESS,
+    ASSERT_EQ(ERROR_SUCCESS,
               key.Create(HKEY_CURRENT_USER, key_path.c_str(), KEY_ALL_ACCESS));
   }
 
   base::string16 FakeOverrideManagerPath(const base::Time& time) {
-    return fake_test_key_root_ + L"\\" +
+    return fake_test_key_root_ + STRING16_LITERAL("\\") +
            base::Int64ToString16(time.ToInternalValue());
   }
 
@@ -74,7 +75,7 @@ class RegistryOverrideManagerTest : public testing::Test {
 };
 
 TEST_F(RegistryOverrideManagerTest, Basic) {
-  CreateManager(base::Time::Now());
+  ASSERT_NO_FATAL_FAILURE(CreateManager(base::Time::Now()));
 
   base::win::RegKey create_key;
   EXPECT_EQ(ERROR_SUCCESS,
@@ -83,7 +84,7 @@ TEST_F(RegistryOverrideManagerTest, Basic) {
   EXPECT_EQ(ERROR_SUCCESS, create_key.WriteValue(kTestValueName, 42));
   create_key.Close();
 
-  AssertKeyExists(kTestKeyPath);
+  ASSERT_NO_FATAL_FAILURE(AssertKeyExists(kTestKeyPath));
 
   DWORD value;
   base::win::RegKey read_key;
@@ -96,7 +97,7 @@ TEST_F(RegistryOverrideManagerTest, Basic) {
 
   manager_.reset();
 
-  AssertKeyAbsent(kTestKeyPath);
+  ASSERT_NO_FATAL_FAILURE(AssertKeyAbsent(kTestKeyPath));
 }
 
 TEST_F(RegistryOverrideManagerTest, DeleteStaleKeys) {
@@ -104,7 +105,8 @@ TEST_F(RegistryOverrideManagerTest, DeleteStaleKeys) {
   base::Time kTestTime;
   EXPECT_TRUE(base::Time::FromUTCExploded(kTestTimeExploded, &kTestTime));
 
-  base::string16 path_garbage = fake_test_key_root_ + L"\\Blah";
+  base::string16 path_garbage =
+      fake_test_key_root_ + STRING16_LITERAL("\\Blah");
   base::string16 path_very_stale =
       FakeOverrideManagerPath(kTestTime - base::TimeDelta::FromDays(100));
   base::string16 path_stale =
@@ -114,20 +116,20 @@ TEST_F(RegistryOverrideManagerTest, DeleteStaleKeys) {
   base::string16 path_future =
       FakeOverrideManagerPath(kTestTime + base::TimeDelta::FromMinutes(1));
 
-  CreateKey(path_garbage);
-  CreateKey(path_very_stale);
-  CreateKey(path_stale);
-  CreateKey(path_current);
-  CreateKey(path_future);
+  ASSERT_NO_FATAL_FAILURE(CreateKey(path_garbage));
+  ASSERT_NO_FATAL_FAILURE(CreateKey(path_very_stale));
+  ASSERT_NO_FATAL_FAILURE(CreateKey(path_stale));
+  ASSERT_NO_FATAL_FAILURE(CreateKey(path_current));
+  ASSERT_NO_FATAL_FAILURE(CreateKey(path_future));
 
-  CreateManager(kTestTime);
+  ASSERT_NO_FATAL_FAILURE(CreateManager(kTestTime));
   manager_.reset();
 
-  AssertKeyAbsent(path_garbage);
-  AssertKeyAbsent(path_very_stale);
-  AssertKeyAbsent(path_stale);
-  AssertKeyExists(path_current);
-  AssertKeyExists(path_future);
+  ASSERT_NO_FATAL_FAILURE(AssertKeyAbsent(path_garbage));
+  ASSERT_NO_FATAL_FAILURE(AssertKeyAbsent(path_very_stale));
+  ASSERT_NO_FATAL_FAILURE(AssertKeyAbsent(path_stale));
+  ASSERT_NO_FATAL_FAILURE(AssertKeyExists(path_current));
+  ASSERT_NO_FATAL_FAILURE(AssertKeyExists(path_future));
 }
 
 }  // namespace registry_util

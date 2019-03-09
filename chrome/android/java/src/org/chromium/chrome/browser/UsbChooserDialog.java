@@ -7,7 +7,6 @@ package org.chromium.chrome.browser;
 import android.app.Activity;
 import android.text.SpannableString;
 import android.text.TextUtils;
-import android.view.View;
 
 import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
@@ -67,27 +66,23 @@ public class UsbChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
 
         String searching = "";
         String noneFound = activity.getString(R.string.usb_chooser_dialog_no_devices_found_prompt);
-        SpannableString statusIdleNoneFound =
-                SpanApplier.applySpans(
-                        activity.getString(R.string.usb_chooser_dialog_footnote_text),
-                        new SpanInfo("<link>", "</link>", new NoUnderlineClickableSpan() {
-                            @Override
-                            public void onClick(View view) {
-                                if (mNativeUsbChooserDialogPtr == 0) {
-                                    return;
-                                }
+        SpannableString statusActive = SpanApplier.applySpans(
+                activity.getString(R.string.usb_chooser_dialog_footnote_text),
+                new SpanInfo("<link>", "</link>",
+                        new NoUnderlineClickableSpan(activity.getResources(), (view) -> {
+                            if (mNativeUsbChooserDialogPtr == 0) return;
 
-                                nativeLoadUsbHelpPage(mNativeUsbChooserDialogPtr);
+                            nativeLoadUsbHelpPage(mNativeUsbChooserDialogPtr);
 
-                                // Get rid of the highlight background on selection.
-                                view.invalidate();
-                            }
-                        }));
-        SpannableString statusIdleSomeFound = statusIdleNoneFound;
+                            // Get rid of the highlight background on selection.
+                            view.invalidate();
+                        })));
+        SpannableString statusIdleNoneFound = statusActive;
+        SpannableString statusIdleSomeFound = statusActive;
         String positiveButton = activity.getString(R.string.usb_chooser_dialog_connect_button_text);
 
         ItemChooserDialog.ItemChooserLabels labels =
-                new ItemChooserDialog.ItemChooserLabels(title, searching, noneFound,
+                new ItemChooserDialog.ItemChooserLabels(title, searching, noneFound, statusActive,
                         statusIdleNoneFound, statusIdleSomeFound, positiveButton);
         mItemChooserDialog = new ItemChooserDialog(activity, this, labels);
     }
@@ -107,9 +102,7 @@ public class UsbChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
     private static UsbChooserDialog create(WindowAndroid windowAndroid, String origin,
             int securityLevel, long nativeUsbChooserDialogPtr) {
         Activity activity = windowAndroid.getActivity().get();
-        if (activity == null) {
-            return null;
-        }
+        if (activity == null) return null;
 
         UsbChooserDialog dialog = new UsbChooserDialog(nativeUsbChooserDialogPtr);
         dialog.show(activity, origin, securityLevel);
@@ -124,14 +117,12 @@ public class UsbChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
     @VisibleForTesting
     @CalledByNative
     void addDevice(String deviceId, String deviceName) {
-        mItemChooserDialog.addItemToList(
-                new ItemChooserDialog.ItemChooserRow(deviceId, deviceName));
+        mItemChooserDialog.addOrUpdateItem(deviceId, deviceName);
     }
 
     @CalledByNative
-    private void removeDevice(String deviceId, String deviceName) {
-        mItemChooserDialog.removeItemFromList(
-                new ItemChooserDialog.ItemChooserRow(deviceId, deviceName));
+    private void removeDevice(String deviceId) {
+        mItemChooserDialog.removeItemFromList(deviceId);
     }
 
     @CalledByNative

@@ -4,7 +4,7 @@
 
 #include "content/renderer/pepper/pepper_video_capture_host.h"
 
-#include "content/renderer/media/media_stream_video_source.h"
+#include "content/renderer/media/stream/media_stream_video_source.h"
 #include "content/renderer/pepper/host_globals.h"
 #include "content/renderer/pepper/pepper_media_device_manager.h"
 #include "content/renderer/pepper/pepper_platform_video_capture.h"
@@ -218,10 +218,10 @@ void PepperVideoCaptureHost::AllocBuffers(const gfx::Size& resolution,
     // Add the serialized shared memory handle to params. FileDescriptor is
     // treated in special case.
     {
-      EnterResourceNoLock<PPB_Buffer_API> enter(res, true);
-      DCHECK(enter.succeeded());
+      EnterResourceNoLock<PPB_Buffer_API> enter2(res, true);
+      DCHECK(enter2.succeeded());
       base::SharedMemory* shm;
-      int32_t result = enter.object()->GetSharedMemory(&shm);
+      int32_t result = enter2.object()->GetSharedMemory(&shm);
       DCHECK(result == PP_OK);
       params.AppendHandle(ppapi::proxy::SerializedHandle(
           dispatcher->ShareSharedMemoryHandleWithRemote(shm->handle()), size));
@@ -261,7 +261,6 @@ int32_t PepperVideoCaptureHost::OnOpen(
       renderer_ppapi_host_->GetRenderFrameForInstance(pp_instance())->
           GetRoutingID(),
       device_id,
-      document_url,
       this));
 
   open_reply_context_ = context->MakeReplyMessageContext();
@@ -409,8 +408,7 @@ bool PepperVideoCaptureHost::SetStatus(PP_VideoCaptureStatus_Dev status,
 }
 
 PepperVideoCaptureHost::BufferInfo::BufferInfo()
-    : in_use(false), data(NULL), buffer() {
-}
+    : in_use(false), data(nullptr), buffer() {}
 
 PepperVideoCaptureHost::BufferInfo::BufferInfo(const BufferInfo& other) =
     default;

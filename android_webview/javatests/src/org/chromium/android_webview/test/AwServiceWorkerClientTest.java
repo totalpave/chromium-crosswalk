@@ -4,20 +4,30 @@
 
 package org.chromium.android_webview.test;
 
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.filters.SmallTest;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwContentsClient.AwWebResourceRequest;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer;
+import org.chromium.base.test.util.DisabledTest;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
 import org.chromium.net.test.util.TestWebServer;
 
 import java.util.List;
-import java.util.concurrent.Callable;
 
 /**
  * Tests Service Worker Client related APIs.
  */
-public class AwServiceWorkerClientTest extends AwTestBase {
+@RunWith(AwJUnit4ClassRunner.class)
+public class AwServiceWorkerClientTest {
+    @Rule
+    public AwActivityTestRule mActivityTestRule = new AwActivityTestRule();
 
     private TestAwContentsClient mContentsClient;
     private AwContents mAwContents;
@@ -43,25 +53,24 @@ public class AwServiceWorkerClientTest extends AwTestBase {
     private static final String SW_HTML = "fetch('fetch.html');";
     private static final String FETCH_HTML = ";)";
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
         mWebServer = TestWebServer.start();
         mContentsClient = new TestAwContentsClient();
-        mTestContainerView = createAwTestContainerViewOnMainSync(mContentsClient);
+        mTestContainerView = mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
         mServiceWorkerClient = new TestAwServiceWorkerClient();
-        getAwBrowserContext().getServiceWorkerController()
-                .setServiceWorkerClient(mServiceWorkerClient);
+        mActivityTestRule.getAwBrowserContext().getServiceWorkerController().setServiceWorkerClient(
+                mServiceWorkerClient);
         mAwContents = mTestContainerView.getAwContents();
-        enableJavaScriptOnUiThread(mAwContents);
+        AwActivityTestRule.enableJavaScriptOnUiThread(mAwContents);
     }
 
-    @Override
-    protected void tearDown() throws Exception {
+    @After
+    public void tearDown() throws Exception {
         if (mWebServer != null) mWebServer.shutdown();
-        super.tearDown();
     }
 
+    @Test
     @SmallTest
     public void testInvokeInterceptCallback() throws Throwable {
         final String fullIndexUrl = mWebServer.setResponse("/index.html", INDEX_HTML, null);
@@ -70,37 +79,77 @@ public class AwServiceWorkerClientTest extends AwTestBase {
 
         TestAwServiceWorkerClient.ShouldInterceptRequestHelper helper =
                 mServiceWorkerClient.getShouldInterceptRequestHelper();
+
+        loadPage(fullIndexUrl, helper, 2);
+        // Check that the two service worker related callbacks were correctly intercepted.
+        List<AwWebResourceRequest> requests = helper.getAwWebResourceRequests();
+        Assert.assertEquals(2, requests.size());
+        Assert.assertEquals(fullSwUrl, requests.get(0).url);
+        Assert.assertEquals(fullFetchUrl, requests.get(1).url);
+    }
+
+    // Verify that WebView ServiceWorker code can properly handle http errors that happened
+    // in ServiceWorker fetches.
+    @Test
+    @SmallTest
+    @DisabledTest(message = "Disable for flakyness http://crbug.com/676422")
+    public void testFetchHttpError() throws Throwable {
+        final String fullIndexUrl = mWebServer.setResponse("/index.html", INDEX_HTML, null);
+        final String fullSwUrl = mWebServer.setResponse("/sw.js", SW_HTML, null);
+        mWebServer.setResponseWithNotFoundStatus("/fetch.html");
+
+        TestAwServiceWorkerClient.ShouldInterceptRequestHelper helper =
+                mServiceWorkerClient.getShouldInterceptRequestHelper();
+
+        loadPage(fullIndexUrl, helper, 1);
+        // Check that the two service worker related callbacks were correctly intercepted.
+        List<AwWebResourceRequest> requests = helper.getAwWebResourceRequests();
+        Assert.assertEquals(2, requests.size());
+        Assert.assertEquals(fullSwUrl, requests.get(0).url);
+    }
+
+    // Verify that WebView ServiceWorker code can properly handle resource loading errors
+    // that happened in ServiceWorker fetches.
+    @Test
+    @SmallTest
+    public void testFetchResourceLoadingError() throws Throwable {
+        final String fullIndexUrl = mWebServer.setResponse("/index.html", INDEX_HTML, null);
+        final String fullSwUrl = mWebServer.setResponse("/sw.js",
+                "fetch('https://google.gov');", null);
+
+        TestAwServiceWorkerClient.ShouldInterceptRequestHelper helper =
+                mServiceWorkerClient.getShouldInterceptRequestHelper();
+        loadPage(fullIndexUrl, helper, 1);
+        // Check that the two service worker related callbacks were correctly intercepted.
+        List<AwWebResourceRequest> requests = helper.getAwWebResourceRequests();
+        Assert.assertEquals(2, requests.size());
+        Assert.assertEquals(fullSwUrl, requests.get(0).url);
+    }
+
+    private void loadPage(final String fullIndexUrl,
+            TestAwServiceWorkerClient.ShouldInterceptRequestHelper helper,
+            int expectedInterceptRequestCount) throws Exception {
         int currentShouldInterceptRequestCount = helper.getCallCount();
 
         TestCallbackHelperContainer.OnPageFinishedHelper onPageFinishedHelper =
                 mContentsClient.getOnPageFinishedHelper();
-        loadUrlSync(mAwContents, onPageFinishedHelper, fullIndexUrl);
-        assertEquals(fullIndexUrl, onPageFinishedHelper.getUrl());
+        mActivityTestRule.loadUrlSync(mAwContents, onPageFinishedHelper, fullIndexUrl);
+        Assert.assertEquals(fullIndexUrl, onPageFinishedHelper.getUrl());
 
         // Check that the service worker has been registered successfully.
-        pollInstrumentationThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() throws Exception {
-                return getSuccessFromJS() == 1;
-            }
-        });
+        AwActivityTestRule.pollInstrumentationThread(() -> getSuccessFromJS() == 1);
 
-        helper.waitForCallback(currentShouldInterceptRequestCount, 2);
-
-        // Check that the two service worker related callbacks were correctly intercepted.
-        List<AwWebResourceRequest> requests = helper.getAwWebResourceRequests();
-        assertEquals(2, requests.size());
-        assertEquals(fullSwUrl, requests.get(0).url);
-        assertEquals(fullFetchUrl, requests.get(1).url);
+        helper.waitForCallback(currentShouldInterceptRequestCount, expectedInterceptRequestCount);
     }
+
 
     private int getSuccessFromJS() {
         int result = -1;
         try {
-            result = Integer.parseInt(executeJavaScriptAndWaitForResult(
+            result = Integer.parseInt(mActivityTestRule.executeJavaScriptAndWaitForResult(
                     mAwContents, mContentsClient, "success"));
         } catch (Exception e) {
-            fail("Unable to get success");
+            Assert.fail("Unable to get success");
         }
         return result;
     }

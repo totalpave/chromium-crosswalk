@@ -5,27 +5,25 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_TABS_WINDOWS_UTIL_H__
 #define CHROME_BROWSER_EXTENSIONS_API_TABS_WINDOWS_UTIL_H__
 
+#include <string>
+
 #include "chrome/browser/extensions/window_controller_list.h"
 
 class UIThreadExtensionFunction;
 
-namespace content {
-class BrowserContext;
-}
-
 namespace extensions {
-class Extension;
 class WindowController;
 }
 
 namespace windows_util {
 
-// Populates |controller| for given |window_id|. If the window is not found,
-// returns false and sets UIThreadExtensionFunction error_.
-bool GetWindowFromWindowID(UIThreadExtensionFunction* function,
-                           int window_id,
-                           extensions::WindowController::TypeFilter filter,
-                           extensions::WindowController** controller);
+// Populates |browser| for given |window_id|. If the window is not found,
+// returns false and sets |error|.
+bool GetBrowserFromWindowID(UIThreadExtensionFunction* function,
+                            int window_id,
+                            extensions::WindowController::TypeFilter filter,
+                            Browser** browser,
+                            std::string* error);
 
 // Returns true if |function| (and the profile and extension that it was
 // invoked from) can operate on the window wrapped by |window_controller|.

@@ -10,39 +10,51 @@
 #include "content/browser/frame_host/render_frame_host_impl.h"
 
 namespace content {
-namespace devtools {
-namespace dom {
+namespace protocol {
 
-typedef DevToolsProtocolClient::Response Response;
-
-DOMHandler::DOMHandler() : host_(nullptr) {
-}
+DOMHandler::DOMHandler(bool allow_file_access)
+    : DevToolsDomainHandler(DOM::Metainfo::domainName),
+      host_(nullptr),
+      allow_file_access_(allow_file_access) {}
 
 DOMHandler::~DOMHandler() {
 }
 
-void DOMHandler::SetRenderFrameHost(RenderFrameHostImpl* host) {
-  host_ = host;
+void DOMHandler::Wire(UberDispatcher* dispatcher) {
+  DOM::Dispatcher::wire(dispatcher, this);
 }
 
-Response DOMHandler::SetFileInputFiles(NodeId node_id,
-                                       const std::vector<std::string>& files) {
+void DOMHandler::SetRenderer(int process_host_id,
+                             RenderFrameHostImpl* frame_host) {
+  host_ = frame_host;
+}
+
+Response DOMHandler::Disable() {
+  return Response::OK();
+}
+
+Response DOMHandler::SetFileInputFiles(
+    std::unique_ptr<protocol::Array<std::string>> files,
+    Maybe<DOM::NodeId> node_id,
+    Maybe<DOM::BackendNodeId> backend_node_id,
+    Maybe<String> in_object_id) {
+  if (!allow_file_access_)
+    return Response::Error("Not allowed");
   if (host_) {
-    for (const auto& file : files) {
+    for (size_t i = 0; i < files->length(); i++) {
 #if defined(OS_WIN)
       ChildProcessSecurityPolicyImpl::GetInstance()->GrantReadFile(
           host_->GetProcess()->GetID(),
-          base::FilePath(base::UTF8ToUTF16(file)));
+          base::FilePath(base::UTF8ToUTF16(files->get(i))));
 #else
       ChildProcessSecurityPolicyImpl::GetInstance()->GrantReadFile(
           host_->GetProcess()->GetID(),
-          base::FilePath(file));
+          base::FilePath(files->get(i)));
 #endif  // OS_WIN
     }
   }
   return Response::FallThrough();
 }
 
-}  // namespace dom
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content

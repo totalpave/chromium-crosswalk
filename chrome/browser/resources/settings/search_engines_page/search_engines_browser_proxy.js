@@ -13,8 +13,12 @@
  *            canBeRemoved: boolean,
  *            default: boolean,
  *            displayName: string,
- *            extension: (Object|undefined),
+ *            extension: ({id: string,
+ *                         name: string,
+ *                         canBeDisabled: boolean,
+ *                         icon: string}|undefined),
  *            iconURL: (string|undefined),
+ *            id: number,
  *            isOmniboxExtension: boolean,
  *            keyword: string,
  *            modelIndex: number,
@@ -23,7 +27,7 @@
  *            urlLocked: boolean}}
  * @see chrome/browser/ui/webui/settings/search_engine_manager_handler.cc
  */
-var SearchEngine;
+let SearchEngine;
 
 /**
  * @typedef {{
@@ -32,108 +36,95 @@ var SearchEngine;
  *   extensions: !Array<!SearchEngine>
  * }}
  */
-var SearchEnginesInfo;
+let SearchEnginesInfo;
 
 cr.define('settings', function() {
   /** @interface */
-  function SearchEnginesBrowserProxy() {}
-
-  SearchEnginesBrowserProxy.prototype = {
+  class SearchEnginesBrowserProxy {
     /** @param {number} modelIndex */
-    setDefaultSearchEngine: function(modelIndex) {},
+    setDefaultSearchEngine(modelIndex) {}
 
     /** @param {number} modelIndex */
-    removeSearchEngine: function(modelIndex) {},
+    removeSearchEngine(modelIndex) {}
 
     /** @param {number} modelIndex */
-    searchEngineEditStarted: function(modelIndex) {},
+    searchEngineEditStarted(modelIndex) {}
 
-    searchEngineEditCancelled: function() {},
+    searchEngineEditCancelled() {}
 
     /**
      * @param {string} searchEngine
      * @param {string} keyword
      * @param {string} queryUrl
      */
-    searchEngineEditCompleted: function(searchEngine, keyword, queryUrl) {},
+    searchEngineEditCompleted(searchEngine, keyword, queryUrl) {}
 
-    /**
-     * @return {!Promise<!SearchEnginesInfo>}
-     */
-    getSearchEnginesList: function() {},
+    /** @return {!Promise<!SearchEnginesInfo>} */
+    getSearchEnginesList() {}
 
     /**
      * @param {string} fieldName
      * @param {string} fieldValue
      * @return {!Promise<boolean>}
      */
-    validateSearchEngineInput: function(fieldName, fieldValue) {},
+    validateSearchEngineInput(fieldName, fieldValue) {}
 
-    /** @param {string} extensionId */
-    disableExtension: function(extensionId) {},
-
-    /** @param {string} extensionId */
-    manageExtension: function(extensionId) {},
-  };
+    turnOnGoogleAssistant() {}
+  }
 
   /**
-   * @constructor
    * @implements {settings.SearchEnginesBrowserProxy}
    */
-  function SearchEnginesBrowserProxyImpl() {}
+  class SearchEnginesBrowserProxyImpl {
+    /** @override */
+    setDefaultSearchEngine(modelIndex) {
+      chrome.send('setDefaultSearchEngine', [modelIndex]);
+    }
+
+    /** @override */
+    removeSearchEngine(modelIndex) {
+      chrome.send('removeSearchEngine', [modelIndex]);
+    }
+
+    /** @override */
+    searchEngineEditStarted(modelIndex) {
+      chrome.send('searchEngineEditStarted', [modelIndex]);
+    }
+
+    /** @override */
+    searchEngineEditCancelled() {
+      chrome.send('searchEngineEditCancelled');
+    }
+
+    /** @override */
+    searchEngineEditCompleted(searchEngine, keyword, queryUrl) {
+      chrome.send('searchEngineEditCompleted', [
+        searchEngine,
+        keyword,
+        queryUrl,
+      ]);
+    }
+
+    /** @override */
+    getSearchEnginesList() {
+      return cr.sendWithPromise('getSearchEnginesList');
+    }
+
+    /** @override */
+    validateSearchEngineInput(fieldName, fieldValue) {
+      return cr.sendWithPromise(
+          'validateSearchEngineInput', fieldName, fieldValue);
+    }
+
+    /** @override */
+    turnOnGoogleAssistant() {
+      chrome.send('turnOnGoogleAssistant');
+    }
+  }
+
   // The singleton instance_ is replaced with a test version of this wrapper
   // during testing.
   cr.addSingletonGetter(SearchEnginesBrowserProxyImpl);
-
-  SearchEnginesBrowserProxyImpl.prototype = {
-    /** @override */
-    setDefaultSearchEngine: function(modelIndex) {
-      chrome.send('setDefaultSearchEngine', [modelIndex]);
-    },
-
-    /** @override */
-    removeSearchEngine: function(modelIndex) {
-      chrome.send('removeSearchEngine', [modelIndex]);
-    },
-
-    /** @override */
-    searchEngineEditStarted: function(modelIndex) {
-      chrome.send('searchEngineEditStarted', [modelIndex]);
-    },
-
-    /** @override */
-    searchEngineEditCancelled: function() {
-      chrome.send('searchEngineEditCancelled');
-    },
-
-    /** @override */
-    searchEngineEditCompleted: function(searchEngine, keyword, queryUrl) {
-      chrome.send('searchEngineEditCompleted', [
-        searchEngine, keyword, queryUrl,
-      ]);
-    },
-
-    /** @override */
-    getSearchEnginesList: function() {
-      return cr.sendWithPromise('getSearchEnginesList');
-    },
-
-    /** @override */
-    validateSearchEngineInput: function(fieldName, fieldValue) {
-      return cr.sendWithPromise(
-          'validateSearchEngineInput', fieldName, fieldValue);
-    },
-
-    /** @override */
-    disableExtension: function(extensionId) {
-      chrome.send('disableExtension', [extensionId]);
-    },
-
-    /** @override */
-    manageExtension: function(extensionId) {
-      window.location = 'chrome://extensions?id=' + extensionId;
-    },
-  };
 
   return {
     SearchEnginesBrowserProxy: SearchEnginesBrowserProxy,

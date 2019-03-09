@@ -6,14 +6,15 @@
 
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/spellchecker/spellcheck_service.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/grit/locale_settings.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
+#include "components/spellcheck/browser/pref_names.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_process_host.h"
+#include "services/service_manager/public/cpp/identity.h"
 #include "ui/base/l10n/l10n_util.h"
 
 // static
@@ -24,15 +25,13 @@ SpellcheckService* SpellcheckServiceFactory::GetForContext(
 }
 
 // static
-SpellcheckService* SpellcheckServiceFactory::GetForRenderProcessId(
-    int render_process_id) {
-  content::RenderProcessHost* host =
-      content::RenderProcessHost::FromID(render_process_id);
-  if (!host)
-    return NULL;
-  content::BrowserContext* context = host->GetBrowserContext();
+SpellcheckService* SpellcheckServiceFactory::GetForRenderer(
+    const service_manager::Identity& renderer_identity) {
+  content::BrowserContext* context =
+      content::BrowserContext::GetBrowserContextForServiceInstanceGroup(
+          renderer_identity.instance_group());
   if (!context)
-    return NULL;
+    return nullptr;
   return GetForContext(context);
 }
 
@@ -61,27 +60,29 @@ KeyedService* SpellcheckServiceFactory::BuildServiceInstanceFor(
 
   // Instantiates Metrics object for spellchecking for use.
   spellcheck->StartRecordingMetrics(
-      prefs->GetBoolean(prefs::kEnableContinuousSpellcheck));
+      prefs->GetBoolean(spellcheck::prefs::kSpellCheckEnable));
 
   return spellcheck;
 }
 
 void SpellcheckServiceFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* user_prefs) {
-  user_prefs->RegisterListPref(prefs::kSpellCheckDictionaries,
-                               new base::ListValue);
+  user_prefs->RegisterListPref(spellcheck::prefs::kSpellCheckDictionaries);
+  user_prefs->RegisterListPref(
+      spellcheck::prefs::kSpellCheckForcedDictionaries);
   // Continue registering kSpellCheckDictionary for preference migration.
-  // TODO(estade): IDS_SPELLCHECK_DICTIONARY should be an ASCII string.
+  // TODO(estade): remove: crbug.com/751275
   user_prefs->RegisterStringPref(
-      prefs::kSpellCheckDictionary,
+      spellcheck::prefs::kSpellCheckDictionary,
       l10n_util::GetStringUTF8(IDS_SPELLCHECK_DICTIONARY));
-  user_prefs->RegisterBooleanPref(prefs::kSpellCheckUseSpellingService, false);
-#if defined(OS_IOS) || defined(OS_ANDROID)
+  user_prefs->RegisterBooleanPref(
+      spellcheck::prefs::kSpellCheckUseSpellingService, false);
+#if defined(OS_ANDROID)
   uint32_t flags = PrefRegistry::NO_REGISTRATION_FLAGS;
 #else
   uint32_t flags = user_prefs::PrefRegistrySyncable::SYNCABLE_PREF;
 #endif
-  user_prefs->RegisterBooleanPref(prefs::kEnableContinuousSpellcheck, true,
+  user_prefs->RegisterBooleanPref(spellcheck::prefs::kSpellCheckEnable, true,
                                   flags);
 }
 

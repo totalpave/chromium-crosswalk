@@ -11,10 +11,11 @@ import sys
 import zipfile
 
 from telemetry import benchmark
-from telemetry.core import discover
 from telemetry.internal.util import command_line
 from telemetry.internal.util import path
 from telemetry.internal.util import path_set
+
+from py_utils import discover
 
 try:
   from modulegraph import modulegraph  # pylint: disable=import-error
@@ -42,6 +43,11 @@ def FindPythonDependencies(module_path):
   logging.info('Finding Python dependencies of %s', module_path)
   if modulegraph is None:
     raise import_error
+
+  prefixes = [sys.prefix]
+  if hasattr(sys, 'real_prefix'):
+    prefixes.append(sys.real_prefix)
+  logging.info('Excluding Prefixes: %r', prefixes)
 
   sys_path = sys.path
   sys.path = list(sys_path)
@@ -72,6 +78,10 @@ def FindPythonDependencies(module_path):
       # we also print out the dependency edges that include python packages
       # that are not in chromium.
       if not path.IsSubpath(module_path, path_util.GetChromiumSrcDir()):
+        continue
+
+      # Exclude any dependencies which exist in the python installation.
+      if any(path.IsSubpath(module_path, pfx) for pfx in prefixes):
         continue
 
       yield module_path
@@ -201,7 +211,7 @@ def ZipDependencies(target_paths, dependencies, options):
 
       relative_path = os.path.relpath(target_path, base_dir)
       link_script = (
-          '#!/usr/bin/env python\n\n'
+          '#!/usr/bin/env vpython\n\n'
           'import os\n'
           'import sys\n\n\n'
           'script = os.path.join(os.path.dirname(__file__), \'%s\')\n'

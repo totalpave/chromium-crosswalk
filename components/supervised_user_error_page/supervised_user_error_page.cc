@@ -5,10 +5,12 @@
 #include "components/supervised_user_error_page/supervised_user_error_page.h"
 
 #include "base/macros.h"
+#include "base/strings/string16.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "grit/components_resources.h"
-#include "grit/components_strings.h"
+#include "components/grit/components_resources.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/jstemplate_builder.h"
@@ -18,39 +20,25 @@ namespace supervised_user_error_page {
 
 namespace {
 
-static const int kAvatarSize1x = 45;
-static const int kAvatarSize2x = 90;
+static const int kAvatarSize1x = 36;
+static const int kAvatarSize2x = 72;
 
-#if defined(GOOGLE_CHROME_BUILD)
 bool ReasonIsAutomatic(FilteringBehaviorReason reason) {
   return reason == ASYNC_CHECKER || reason == BLACKLIST;
 }
-#endif
 
 std::string BuildAvatarImageUrl(const std::string& url, int size) {
   std::string result = url;
   size_t slash = result.rfind('/');
-  if (slash != std::string::npos)
-    result.insert(slash, "/s" + base::IntToString(size));
+  if (slash != std::string::npos) {
+    // Check if the URL already contains the monogram (-mo) option.
+    // In that case, we must use the '-' separator, instead of '/'.
+    std::string separator = result.substr(slash - 3, 3) == "/mo" ? "-" : "/";
+    result.insert(slash, separator + "s" + base::NumberToString(size) + "-c");
+  }
   return result;
 }
 
-int GetBlockHeaderID(FilteringBehaviorReason reason) {
-  switch (reason) {
-    case DEFAULT:
-      return IDS_SUPERVISED_USER_BLOCK_HEADER_DEFAULT;
-    case BLACKLIST:
-    case ASYNC_CHECKER:
-      return IDS_SUPERVISED_USER_BLOCK_HEADER_SAFE_SITES;
-    case WHITELIST:
-      NOTREACHED();
-      break;
-    case MANUAL:
-      return IDS_SUPERVISED_USER_BLOCK_HEADER_MANUAL;
-  }
-  NOTREACHED();
-  return 0;
-}
 }  //  namespace
 
 int GetBlockMessageID(FilteringBehaviorReason reason,
@@ -75,6 +63,8 @@ int GetBlockMessageID(FilteringBehaviorReason reason,
       if (single_parent)
         return IDS_CHILD_BLOCK_MESSAGE_MANUAL_SINGLE_PARENT;
       return IDS_CHILD_BLOCK_MESSAGE_MANUAL_MULTI_PARENT;
+    case NOT_SIGNED_IN:
+      return IDS_SUPERVISED_USER_NOT_SIGNED_IN;
   }
   NOTREACHED();
   return 0;
@@ -83,11 +73,12 @@ int GetBlockMessageID(FilteringBehaviorReason reason,
 std::string BuildHtml(bool allow_access_requests,
                       const std::string& profile_image_url,
                       const std::string& profile_image_url2,
-                      const base::string16& custodian,
-                      const base::string16& custodian_email,
-                      const base::string16& second_custodian,
-                      const base::string16& second_custodian_email,
+                      const std::string& custodian,
+                      const std::string& custodian_email,
+                      const std::string& second_custodian,
+                      const std::string& second_custodian_email,
                       bool is_child_account,
+                      bool is_deprecated,
                       FilteringBehaviorReason reason,
                       const std::string& app_locale) {
   base::DictionaryValue strings;
@@ -106,31 +97,44 @@ std::string BuildHtml(bool allow_access_requests,
   strings.SetString("custodianEmail", custodian_email);
   strings.SetString("secondCustodianName", second_custodian);
   strings.SetString("secondCustodianEmail", second_custodian_email);
+
+  base::string16 custodian16 = base::UTF8ToUTF16(custodian);
+  base::string16 block_header;
   base::string16 block_message;
-  if (allow_access_requests) {
+  if (reason == FilteringBehaviorReason::NOT_SIGNED_IN) {
+    block_header =
+        l10n_util::GetStringUTF16(IDS_BLOCK_INTERSTITIAL_HEADER_NOT_SIGNED_IN);
+  } else if (allow_access_requests) {
     if (is_child_account) {
-      block_message = l10n_util::GetStringUTF16(
-          second_custodian.empty()
-              ? IDS_CHILD_BLOCK_INTERSTITIAL_MESSAGE_SINGLE_PARENT
-              : IDS_CHILD_BLOCK_INTERSTITIAL_MESSAGE_MULTI_PARENT);
-    } else {
+      block_header =
+          l10n_util::GetStringUTF16(IDS_CHILD_BLOCK_INTERSTITIAL_HEADER);
       block_message =
-          l10n_util::GetStringFUTF16(IDS_BLOCK_INTERSTITIAL_MESSAGE, custodian);
+          l10n_util::GetStringUTF16(IDS_CHILD_BLOCK_INTERSTITIAL_MESSAGE);
+    } else {
+      block_header = l10n_util::GetStringFUTF16(IDS_BLOCK_INTERSTITIAL_HEADER,
+                                                custodian16);
+      // For non-child accounts, the block message is empty.
     }
   } else {
-    block_message = l10n_util::GetStringUTF16(
-        IDS_BLOCK_INTERSTITIAL_MESSAGE_ACCESS_REQUESTS_DISABLED);
+    block_header = l10n_util::GetStringUTF16(
+        IDS_BLOCK_INTERSTITIAL_HEADER_ACCESS_REQUESTS_DISABLED);
+
+    if (is_deprecated) {
+      DCHECK(!is_child_account);
+      block_message = l10n_util::GetStringUTF16(
+          IDS_BLOCK_INTERSTITIAL_MESSAGE_SUPERVISED_USERS_DEPRECATED);
+    }
   }
+  strings.SetString("blockPageHeader", block_header);
   strings.SetString("blockPageMessage", block_message);
   strings.SetString("blockReasonMessage",
                     l10n_util::GetStringUTF16(GetBlockMessageID(
                         reason, is_child_account, second_custodian.empty())));
-  strings.SetString("blockReasonHeader",
-                    l10n_util::GetStringUTF16(GetBlockHeaderID(reason)));
-  bool show_feedback = false;
-#if defined(GOOGLE_CHROME_BUILD)
-  show_feedback = is_child_account && ReasonIsAutomatic(reason);
-#endif
+  strings.SetString("blockReasonHeader", l10n_util::GetStringUTF16(
+                                             IDS_SUPERVISED_USER_BLOCK_HEADER));
+  bool show_feedback = ReasonIsAutomatic(reason);
+  DCHECK(is_child_account || !show_feedback);
+
   strings.SetBoolean("showFeedbackLink", show_feedback);
   strings.SetString("feedbackLink", l10n_util::GetStringUTF16(
                                         IDS_BLOCK_INTERSTITIAL_SEND_FEEDBACK));
@@ -160,19 +164,20 @@ std::string BuildHtml(bool allow_access_requests,
     }
   } else {
     request_sent_message = l10n_util::GetStringFUTF16(
-        IDS_BLOCK_INTERSTITIAL_REQUEST_SENT_MESSAGE, custodian);
+        IDS_BLOCK_INTERSTITIAL_REQUEST_SENT_MESSAGE, custodian16);
     request_failed_message = l10n_util::GetStringFUTF16(
-        IDS_BLOCK_INTERSTITIAL_REQUEST_FAILED_MESSAGE, custodian);
+        IDS_BLOCK_INTERSTITIAL_REQUEST_FAILED_MESSAGE, custodian16);
   }
   strings.SetString("requestSentMessage", request_sent_message);
   strings.SetString("requestFailedMessage", request_failed_message);
   webui::SetLoadTimeDataDefaults(app_locale, &strings);
   std::string html =
-      ResourceBundle::GetSharedInstance()
+      ui::ResourceBundle::GetSharedInstance()
           .GetRawDataResource(IDR_SUPERVISED_USER_BLOCK_INTERSTITIAL_HTML)
           .as_string();
   webui::AppendWebUiCssTextDefaults(&html);
-  return webui::GetI18nTemplateHtml(html, &strings);
+  std::string error_html = webui::GetI18nTemplateHtml(html, &strings);
+  return error_html;
 }
 
 }  //  namespace supervised_user_error_page

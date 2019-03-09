@@ -8,7 +8,7 @@
 #include "base/compiler_specific.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/login/auth/auth_status_consumer.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "components/user_manager/user.h"
 
 namespace chromeos {
@@ -28,10 +28,18 @@ class UserFlow {
 
   // Indicates if screen locking should be enabled or disabled for a flow.
   virtual bool CanLockScreen() = 0;
-  virtual bool ShouldShowSettings() = 0;
+  virtual bool CanStartArc() = 0;
+
+  // Whether or not the settings icon should be enabled in the system tray menu.
+  virtual bool ShouldEnableSettings() = 0;
+
+  // Whether or not the notifications tray should be visible.
+  virtual bool ShouldShowNotificationTray() = 0;
+
   virtual bool ShouldLaunchBrowser() = 0;
   virtual bool ShouldSkipPostLoginScreens() = 0;
   virtual bool SupportsEarlyRestartToApplyFlags() = 0;
+  virtual bool AllowsNotificationBalloons() = 0;
   virtual bool HandleLoginFailure(const AuthFailure& failure) = 0;
   virtual void HandleLoginSuccess(const UserContext& context) = 0;
   virtual bool HandlePasswordChangeDetected() = 0;
@@ -40,9 +48,7 @@ class UserFlow {
   virtual void LaunchExtraSteps(Profile* profile) = 0;
   void SetHost(LoginDisplayHost* host);
 
-  LoginDisplayHost* host() {
-    return host_;
-  }
+  LoginDisplayHost* host() { return host_; }
 
  private:
   LoginDisplayHost* host_;
@@ -53,12 +59,16 @@ class DefaultUserFlow : public UserFlow {
  public:
   ~DefaultUserFlow() override;
 
+  // UserFlow:
   void AppendAdditionalCommandLineSwitches() override;
   bool CanLockScreen() override;
-  bool ShouldShowSettings() override;
+  bool CanStartArc() override;
+  bool ShouldEnableSettings() override;
+  bool ShouldShowNotificationTray() override;
   bool ShouldLaunchBrowser() override;
   bool ShouldSkipPostLoginScreens() override;
   bool SupportsEarlyRestartToApplyFlags() override;
+  bool AllowsNotificationBalloons() override;
   bool HandleLoginFailure(const AuthFailure& failure) override;
   void HandleLoginSuccess(const UserContext& context) override;
   bool HandlePasswordChangeDetected() override;
@@ -73,8 +83,11 @@ class ExtendedUserFlow : public UserFlow {
   explicit ExtendedUserFlow(const AccountId& account_id);
   ~ExtendedUserFlow() override;
 
+  // UserFlow:
   void AppendAdditionalCommandLineSwitches() override;
-  bool ShouldShowSettings() override;
+  bool ShouldEnableSettings() override;
+  bool ShouldShowNotificationTray() override;
+  bool AllowsNotificationBalloons() override;
   void HandleOAuthTokenStatusChange(
       user_manager::User::OAuthTokenStatus status) override;
 

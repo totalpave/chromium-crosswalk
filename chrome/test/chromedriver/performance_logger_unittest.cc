@@ -6,10 +6,13 @@
 
 #include <stddef.h>
 
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "base/compiler_specific.h"
 #include "base/format_macros.h"
 #include "base/json/json_reader.h"
-#include "base/memory/scoped_vector.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/chrome/devtools_client_impl.h"
@@ -41,7 +44,7 @@ class FakeDevToolsClient : public StubDevToolsClient {
 
   bool PopSentCommand(DevToolsCommand** out_command) {
     if (sent_commands_.size() > command_index_) {
-      *out_command = sent_commands_.get().at(command_index_++);
+      *out_command = sent_commands_[command_index_++].get();
       return true;
     }
     return false;
@@ -64,8 +67,8 @@ class FakeDevToolsClient : public StubDevToolsClient {
       const std::string& method,
       const base::DictionaryValue& params,
       std::unique_ptr<base::DictionaryValue>* result) override {
-    sent_commands_.push_back(new DevToolsCommand(method,
-                                                 params.DeepCopy()));
+    sent_commands_.push_back(
+        std::make_unique<DevToolsCommand>(method, params.DeepCopy()));
     return Status(kOk);
   }
 
@@ -78,7 +81,8 @@ class FakeDevToolsClient : public StubDevToolsClient {
 
  private:
   const std::string id_;  // WebView id.
-  ScopedVector<DevToolsCommand> sent_commands_;  // Commands that were sent.
+  std::vector<std::unique_ptr<DevToolsCommand>>
+      sent_commands_;                // Commands that were sent.
   DevToolsEventListener* listener_;  // The fake allows only one event listener.
   size_t command_index_;
 };
@@ -103,26 +107,34 @@ class FakeLog : public Log {
                            const std::string& source,
                            const std::string& message) override;
 
-  const ScopedVector<LogEntry>& GetEntries() {
+  bool Emptied() const override;
+
+  const std::vector<std::unique_ptr<LogEntry>>& GetEntries() {
     return entries_;
   }
 
  private:
-  ScopedVector<LogEntry> entries_;
+  std::vector<std::unique_ptr<LogEntry>> entries_;
 };
 
 void FakeLog::AddEntryTimestamped(const base::Time& timestamp,
                                   Level level,
                                   const std::string& source,
                                   const std::string& message) {
-  entries_.push_back(new LogEntry(timestamp, level, source, message));
+  entries_.push_back(
+      std::make_unique<LogEntry>(timestamp, level, source, message));
+}
+
+bool FakeLog::Emptied() const {
+  return true;
 }
 
 std::unique_ptr<base::DictionaryValue> ParseDictionary(
     const std::string& json) {
   std::string error;
-  std::unique_ptr<base::Value> value = base::JSONReader::ReadAndReturnError(
-      json, base::JSON_PARSE_RFC, nullptr, &error);
+  std::unique_ptr<base::Value> value =
+      base::JSONReader::ReadAndReturnErrorDeprecated(json, base::JSON_PARSE_RFC,
+                                                     nullptr, &error);
   if (value == nullptr) {
     SCOPED_TRACE(json.c_str());
     SCOPED_TRACE(error.c_str());
@@ -194,8 +206,8 @@ TEST(PerformanceLogger, OneWebView) {
   ASSERT_EQ(kOk, client.TriggerEvent("Console.bad").code());
 
   ASSERT_EQ(2u, log.GetEntries().size());
-  ValidateLogEntry(log.GetEntries()[0], "webview-1", "Network.gaga");
-  ValidateLogEntry(log.GetEntries()[1], "webview-1", "Page.ulala");
+  ValidateLogEntry(log.GetEntries()[0].get(), "webview-1", "Network.gaga");
+  ValidateLogEntry(log.GetEntries()[1].get(), "webview-1", "Page.ulala");
 }
 
 TEST(PerformanceLogger, TwoWebViews) {
@@ -221,8 +233,8 @@ TEST(PerformanceLogger, TwoWebViews) {
   ASSERT_EQ(kOk, client2.TriggerEvent("Network.gaga2").code());
 
   ASSERT_EQ(2u, log.GetEntries().size());
-  ValidateLogEntry(log.GetEntries()[0], "webview-1", "Page.gaga1");
-  ValidateLogEntry(log.GetEntries()[1], "webview-2", "Network.gaga2");
+  ValidateLogEntry(log.GetEntries()[0].get(), "webview-1", "Page.gaga1");
+  ValidateLogEntry(log.GetEntries()[1].get(), "webview-2", "Network.gaga2");
 }
 
 TEST(PerformanceLogger, PerfLoggingPrefs) {
@@ -239,8 +251,7 @@ TEST(PerformanceLogger, PerfLoggingPrefs) {
   client.AddListener(&logger);
   logger.OnConnected(&client);
   ExpectCommand(&client, "Page.enable");
-  // Do not expect Timeline.enable command since specifying trace categories
-  // implicitly disables Timeline feed.
+
   DevToolsCommand* cmd;
   ASSERT_FALSE(client.PopSentCommand(&cmd));
 }
@@ -285,9 +296,15 @@ TEST(PerformanceLogger, TracingStartStop) {
   DevToolsCommand* cmd;
   ASSERT_TRUE(client.PopSentCommand(&cmd));
   EXPECT_EQ("Tracing.start", cmd->method);
-  std::string expected_cats;
-  EXPECT_TRUE(cmd->params->GetString("categories", &expected_cats));
-  EXPECT_EQ("benchmark,blink.console", expected_cats);
+  base::ListValue* categories;
+  EXPECT_TRUE(cmd->params->GetList("traceConfig.includedCategories",
+                                   &categories));
+  EXPECT_EQ(2u, categories->GetSize());
+  std::string category;
+  EXPECT_TRUE(categories->GetString(0, &category));
+  EXPECT_EQ("benchmark", category);
+  EXPECT_TRUE(categories->GetString(1, &category));
+  EXPECT_EQ("blink.console", category);
   int expected_interval = 0;
   EXPECT_TRUE(cmd->params->GetInteger("bufferUsageReportingInterval",
                                       &expected_interval));
@@ -314,21 +331,21 @@ TEST(PerformanceLogger, RecordTraceEvents) {
   client.AddListener(&logger);
   logger.OnConnected(&client);
   base::DictionaryValue params;
-  base::ListValue* trace_events = new base::ListValue();
-  base::DictionaryValue* event1 = new base::DictionaryValue();
+  auto trace_events = std::make_unique<base::ListValue>();
+  auto event1 = std::make_unique<base::DictionaryValue>();
   event1->SetString("cat", "foo");
-  trace_events->Append(event1);
-  base::DictionaryValue* event2 = new base::DictionaryValue();
+  trace_events->GetList().push_back(event1->Clone());
+  auto event2 = std::make_unique<base::DictionaryValue>();
   event2->SetString("cat", "bar");
-  trace_events->Append(event2);
-  params.Set("value", trace_events);
+  trace_events->GetList().push_back(event2->Clone());
+  params.Set("value", std::move(trace_events));
   ASSERT_EQ(kOk, client.TriggerEvent("Tracing.dataCollected", params).code());
 
   ASSERT_EQ(2u, log.GetEntries().size());
-  ValidateLogEntry(log.GetEntries()[0],
+  ValidateLogEntry(log.GetEntries()[0].get(),
                    DevToolsClientImpl::kBrowserwideDevToolsClientId,
                    "Tracing.dataCollected", *event1);
-  ValidateLogEntry(log.GetEntries()[1],
+  ValidateLogEntry(log.GetEntries()[1].get(),
                    DevToolsClientImpl::kBrowserwideDevToolsClientId,
                    "Tracing.dataCollected", *event2);
 }
@@ -365,11 +382,11 @@ TEST(PerformanceLogger, WarnWhenTraceBufferFull) {
   client.AddListener(&logger);
   logger.OnConnected(&client);
   base::DictionaryValue params;
-  params.SetDouble("value", 1.0);
+  params.SetDouble("percentFull", 1.0);
   ASSERT_EQ(kOk, client.TriggerEvent("Tracing.bufferUsage", params).code());
 
   ASSERT_EQ(1u, log.GetEntries().size());
-  LogEntry* entry = log.GetEntries()[0];
+  LogEntry* entry = log.GetEntries()[0].get();
   EXPECT_EQ(Log::kWarning, entry->level);
   EXPECT_LT(0, entry->timestamp.ToTimeT());
   std::unique_ptr<base::DictionaryValue> message(

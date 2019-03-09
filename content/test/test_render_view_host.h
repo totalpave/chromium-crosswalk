@@ -13,7 +13,8 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "build/build_config.h"
-#include "cc/surfaces/surface_id_allocator.h"
+#include "components/viz/common/surfaces/frame_sink_id.h"
+#include "components/viz/host/host_frame_sink_client.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/public/common/web_preferences.h"
@@ -23,6 +24,10 @@
 #include "ui/base/layout.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/gfx/geometry/vector2d_f.h"
+
+#if defined(USE_AURA)
+#include "ui/aura/window.h"
+#endif
 
 // This file provides a testing framework for mocking out the RenderProcessHost
 // layer. It allows you to test RenderViewHost, WebContentsImpl,
@@ -43,12 +48,10 @@ class SiteInstance;
 class TestRenderFrameHost;
 class TestWebContents;
 struct FrameReplicationState;
-struct TextInputState;
 
 // Utility function to initialize FrameHostMsg_DidCommitProvisionalLoad_Params
 // with given parameters.
 void InitNavigateParams(FrameHostMsg_DidCommitProvisionalLoad_Params* params,
-                        int page_id,
                         int nav_entry_id,
                         bool did_create_new_entry,
                         const GURL& url,
@@ -58,22 +61,20 @@ void InitNavigateParams(FrameHostMsg_DidCommitProvisionalLoad_Params* params,
 
 // Subclass the RenderViewHost's view so that we can call Show(), etc.,
 // without having side-effects.
-class TestRenderWidgetHostView : public RenderWidgetHostViewBase {
+class TestRenderWidgetHostView : public RenderWidgetHostViewBase,
+                                 public viz::HostFrameSinkClient {
  public:
   explicit TestRenderWidgetHostView(RenderWidgetHost* rwh);
   ~TestRenderWidgetHostView() override;
 
-  // RenderWidgetHostView implementation.
+  // RenderWidgetHostView:
   void InitAsChild(gfx::NativeView parent_view) override {}
-  RenderWidgetHost* GetRenderWidgetHost() const override;
   void SetSize(const gfx::Size& size) override {}
   void SetBounds(const gfx::Rect& rect) override {}
-  gfx::Vector2dF GetLastScrollOffset() const override;
   gfx::NativeView GetNativeView() const override;
   gfx::NativeViewAccessible GetNativeViewAccessible() override;
   ui::TextInputClient* GetTextInputClient() override;
   bool HasFocus() const override;
-  bool IsSurfaceAvailableForCopy() const override;
   void Show() override;
   void Hide() override;
   bool IsShowing() override;
@@ -81,67 +82,85 @@ class TestRenderWidgetHostView : public RenderWidgetHostViewBase {
   void WasOccluded() override;
   gfx::Rect GetViewBounds() const override;
 #if defined(OS_MACOSX)
-  ui::AcceleratedWidgetMac* GetAcceleratedWidgetMac() const override;
   void SetActive(bool active) override;
   void ShowDefinitionForSelection() override {}
-  bool SupportsSpeech() const override;
   void SpeakSelection() override;
-  bool IsSpeaking() const override;
-  void StopSpeaking() override;
 #endif  // defined(OS_MACOSX)
-  void OnSwapCompositorFrame(uint32_t output_surface_id,
-                             cc::CompositorFrame frame) override;
+  void DidCreateNewRendererCompositorFrameSink(
+      viz::mojom::CompositorFrameSinkClient* renderer_compositor_frame_sink)
+      override;
+  void SubmitCompositorFrame(
+      const viz::LocalSurfaceId& local_surface_id,
+      viz::CompositorFrame frame,
+      base::Optional<viz::HitTestRegionList> hit_test_region_list) override;
   void ClearCompositorFrame() override {}
 
-  // RenderWidgetHostViewBase implementation.
+  // Advances the fallback surface to the first surface after navigation. This
+  // ensures that stale surfaces are not presented to the user for an indefinite
+  // period of time.
+  void ResetFallbackToFirstNavigationSurface() override {}
+
+  void SetNeedsBeginFrames(bool needs_begin_frames) override {}
+  void SetWantsAnimateOnlyBeginFrames() override {}
+  void TakeFallbackContentFrom(RenderWidgetHostView* view) override;
+  void EnsureSurfaceSynchronizedForWebTest() override {}
+
+  // RenderWidgetHostViewBase:
   void InitAsPopup(RenderWidgetHostView* parent_host_view,
                    const gfx::Rect& bounds) override {}
   void InitAsFullscreen(RenderWidgetHostView* reference_host_view) override {}
   void Focus() override {}
   void SetIsLoading(bool is_loading) override {}
   void UpdateCursor(const WebCursor& cursor) override {}
-  void ImeCancelComposition() override {}
-  void ImeCompositionRangeChanged(
-      const gfx::Range& range,
-      const std::vector<gfx::Rect>& character_bounds) override {}
   void RenderProcessGone(base::TerminationStatus status,
                          int error_code) override;
   void Destroy() override;
   void SetTooltipText(const base::string16& tooltip_text) override {}
-  void SelectionBoundsChanged(
-      const ViewHostMsg_SelectionBounds_Params& params) override {}
-  void CopyFromCompositingSurface(
-      const gfx::Rect& src_subrect,
-      const gfx::Size& dst_size,
-      const ReadbackRequestCallback& callback,
-      const SkColorType preferred_color_type) override;
-  void CopyFromCompositingSurfaceToVideoFrame(
-      const gfx::Rect& src_subrect,
-      const scoped_refptr<media::VideoFrame>& target,
-      const base::Callback<void(const gfx::Rect&, bool)>& callback) override;
-  bool CanCopyToVideoFrame() const override;
-  bool HasAcceleratedSurface(const gfx::Size& desired_size) override;
-  void LockCompositingSurface() override {}
-  void UnlockCompositingSurface() override {}
-  void GetScreenInfo(blink::WebScreenInfo* results) override {}
   gfx::Rect GetBoundsInRootWindow() override;
   bool LockMouse() override;
   void UnlockMouse() override;
-  uint32_t GetSurfaceIdNamespace() override;
+  const viz::FrameSinkId& GetFrameSinkId() const override;
+  const viz::LocalSurfaceIdAllocation& GetLocalSurfaceIdAllocation()
+      const override;
+  viz::SurfaceId GetCurrentSurfaceId() const override;
+  std::unique_ptr<SyntheticGestureTarget> CreateSyntheticGestureTarget()
+      override;
 
   bool is_showing() const { return is_showing_; }
   bool is_occluded() const { return is_occluded_; }
   bool did_swap_compositor_frame() const { return did_swap_compositor_frame_; }
+  void reset_did_swap_compositor_frame() { did_swap_compositor_frame_ = false; }
+  bool did_change_compositor_frame_sink() {
+    return did_change_compositor_frame_sink_;
+  }
+  void reset_did_change_compositor_frame_sink() {
+    did_change_compositor_frame_sink_ = false;
+  }
+#if defined(USE_AURA)
+  void ScheduleEmbed(ws::mojom::WindowTreeClientPtr client,
+                     base::OnceCallback<void(const base::UnguessableToken&)>
+                         callback) override {}
+#endif
+  // viz::HostFrameSinkClient implementation.
+  void OnFirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
+  void OnFrameTokenChanged(uint32_t frame_token) override;
 
  protected:
-  RenderWidgetHostImpl* rwh_;
+  // RenderWidgetHostViewBase:
+  void UpdateBackgroundColor() override;
+
+  viz::FrameSinkId frame_sink_id_;
 
  private:
-  std::unique_ptr<cc::SurfaceIdAllocator> surface_id_allocator_;
   bool is_showing_;
   bool is_occluded_;
   bool did_swap_compositor_frame_;
+  bool did_change_compositor_frame_sink_ = false;
   ui::DummyTextInputClient text_input_client_;
+
+#if defined(USE_AURA)
+  std::unique_ptr<aura::Window> window_;
+#endif
 };
 
 #if defined(COMPILER_MSVC)
@@ -192,6 +211,7 @@ class TestRenderViewHost
   TestRenderViewHost(SiteInstance* instance,
                      std::unique_ptr<RenderWidgetHostImpl> widget,
                      RenderViewHostDelegate* delegate,
+                     int32_t routing_id,
                      int32_t main_frame_routing_id,
                      bool swapped_out);
   ~TestRenderViewHost() override;
@@ -201,16 +221,21 @@ class TestRenderViewHost
   // RenderViewHostImpl, see below.
   void SimulateWasHidden() override;
   void SimulateWasShown() override;
-  WebPreferences TestComputeWebkitPrefs() override;
+  WebPreferences TestComputeWebPreferences() override;
 
-  void TestOnUpdateStateWithFile(
-      int page_id, const base::FilePath& file_path);
+  void TestOnUpdateStateWithFile(const base::FilePath& file_path);
 
   void TestOnStartDragging(const DropData& drop_data);
 
   // If set, *delete_counter is incremented when this object destructs.
   void set_delete_counter(int* delete_counter) {
     delete_counter_ = delete_counter;
+  }
+
+  // If set, *webkit_preferences_changed_counter is incremented when
+  // OnWebkitPreferencesChanged() is called.
+  void set_webkit_preferences_changed_counter(int* counter) {
+    webkit_preferences_changed_counter_ = counter;
   }
 
   // The opener frame route id passed to CreateRenderView().
@@ -222,22 +247,21 @@ class TestRenderViewHost
   bool CreateTestRenderView(const base::string16& frame_name,
                             int opener_frame_route_id,
                             int proxy_route_id,
-                            int32_t max_page_id,
                             bool window_was_created_with_opener) override;
 
   // RenderViewHost overrides --------------------------------------------------
 
   bool CreateRenderView(int opener_frame_route_id,
                         int proxy_route_id,
-                        int32_t max_page_id,
+                        const base::UnguessableToken& devtools_frame_token,
                         const FrameReplicationState& replicated_frame_state,
                         bool window_was_created_with_opener) override;
+  void OnWebkitPreferencesChanged() override;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(RenderViewHostTest, FilterNavigate);
 
-  void SendNavigateWithTransitionAndResponseCode(int page_id,
-                                                 const GURL& url,
+  void SendNavigateWithTransitionAndResponseCode(const GURL& url,
                                                  ui::PageTransition transition,
                                                  int response_code);
 
@@ -245,7 +269,6 @@ class TestRenderViewHost
   // Sets the rest of the parameters in the message to the "typical" values.
   // This is a helper function for simulating the most common types of loads.
   void SendNavigateWithParameters(
-      int page_id,
       const GURL& url,
       ui::PageTransition transition,
       const GURL& original_request_url,
@@ -254,6 +277,9 @@ class TestRenderViewHost
 
   // See set_delete_counter() above. May be NULL.
   int* delete_counter_;
+
+  // See set_webkit_preferences_changed_counter() above. May be NULL.
+  int* webkit_preferences_changed_counter_;
 
   // See opener_frame_route_id() above.
   int opener_frame_route_id_;

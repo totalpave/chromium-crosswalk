@@ -8,10 +8,12 @@ import android.os.Bundle;
 import android.preference.Preference;
 import android.preference.Preference.OnPreferenceChangeListener;
 import android.preference.PreferenceFragment;
+import android.widget.ListView;
 
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.accessibility.FontSizePrefs;
 import org.chromium.chrome.browser.accessibility.FontSizePrefs.FontSizePrefsObserver;
+import org.chromium.chrome.browser.util.AccessibilityUtil;
 
 import java.text.NumberFormat;
 
@@ -23,12 +25,14 @@ public class AccessibilityPreferences extends PreferenceFragment
 
     static final String PREF_TEXT_SCALE = "text_scale";
     static final String PREF_FORCE_ENABLE_ZOOM = "force_enable_zoom";
+    static final String PREF_READER_FOR_ACCESSIBILITY = "reader_for_accessibility";
 
     private NumberFormat mFormat;
     private FontSizePrefs mFontSizePrefs;
 
     private TextScalePreference mTextScalePref;
     private SeekBarLinkedCheckBoxPreference mForceEnableZoomPref;
+    private ChromeBaseCheckBoxPreference mAccessibilityTabSwitcherPref;
 
     private FontSizePrefsObserver mFontSizePrefsObserver = new FontSizePrefsObserver() {
         @Override
@@ -46,7 +50,7 @@ public class AccessibilityPreferences extends PreferenceFragment
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getActivity().setTitle(R.string.prefs_accessibility);
-        addPreferencesFromResource(R.xml.accessibility_preferences);
+        PreferenceUtils.addPreferencesFromResource(this, R.xml.accessibility_preferences);
 
         mFormat = NumberFormat.getPercentInstance();
         mFontSizePrefs = FontSizePrefs.getInstance(getActivity());
@@ -58,6 +62,30 @@ public class AccessibilityPreferences extends PreferenceFragment
                 PREF_FORCE_ENABLE_ZOOM);
         mForceEnableZoomPref.setOnPreferenceChangeListener(this);
         mForceEnableZoomPref.setLinkedSeekBarPreference(mTextScalePref);
+
+        ChromeBaseCheckBoxPreference readerForAccessibilityPref =
+                (ChromeBaseCheckBoxPreference) findPreference(PREF_READER_FOR_ACCESSIBILITY);
+        readerForAccessibilityPref.setChecked(
+                PrefServiceBridge.getInstance().getBoolean(Pref.READER_FOR_ACCESSIBILITY_ENABLED));
+        readerForAccessibilityPref.setOnPreferenceChangeListener(this);
+
+        mAccessibilityTabSwitcherPref = (ChromeBaseCheckBoxPreference) findPreference(
+                ChromePreferenceManager.ACCESSIBILITY_TAB_SWITCHER);
+        if (AccessibilityUtil.isAccessibilityEnabled()) {
+            mAccessibilityTabSwitcherPref.setChecked(
+                    ChromePreferenceManager.getInstance().readBoolean(
+                            ChromePreferenceManager.ACCESSIBILITY_TAB_SWITCHER, true));
+        } else {
+            getPreferenceScreen().removePreference(mAccessibilityTabSwitcherPref);
+        }
+    }
+
+    @Override
+    public void onActivityCreated(Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+
+        ((ListView) getView().findViewById(android.R.id.list)).setItemsCanFocus(true);
+        ((ListView) getView().findViewById(android.R.id.list)).setDivider(null);
     }
 
     @Override
@@ -93,6 +121,9 @@ public class AccessibilityPreferences extends PreferenceFragment
             mFontSizePrefs.setUserFontScaleFactor((Float) newValue);
         } else if (PREF_FORCE_ENABLE_ZOOM.equals(preference.getKey())) {
             mFontSizePrefs.setForceEnableZoomFromUser((Boolean) newValue);
+        } else if (PREF_READER_FOR_ACCESSIBILITY.equals(preference.getKey())) {
+            PrefServiceBridge.getInstance().setBoolean(
+                    Pref.READER_FOR_ACCESSIBILITY_ENABLED, (Boolean) newValue);
         }
         return true;
     }

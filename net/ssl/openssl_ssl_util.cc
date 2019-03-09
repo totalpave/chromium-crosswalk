@@ -5,18 +5,21 @@
 #include "net/ssl/openssl_ssl_util.h"
 
 #include <errno.h>
-#include <openssl/err.h>
-#include <openssl/ssl.h>
 #include <utility>
 
 #include "base/bind.h"
+#include "base/callback.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "crypto/openssl_util.h"
 #include "net/base/net_errors.h"
+#include "net/cert/x509_util.h"
 #include "net/ssl/ssl_connection_status_flags.h"
+#include "third_party/boringssl/src/include/openssl/err.h"
+#include "third_party/boringssl/src/include/openssl/ssl.h"
 
 namespace net {
 
@@ -60,8 +63,13 @@ int OpenSSLNetErrorLib() {
 int MapOpenSSLErrorSSL(uint32_t error_code) {
   DCHECK_EQ(ERR_LIB_SSL, ERR_GET_LIB(error_code));
 
+#if DCHECK_IS_ON()
+  char buf[ERR_ERROR_STRING_BUF_LEN];
+  ERR_error_string_n(error_code, buf, sizeof(buf));
   DVLOG(1) << "OpenSSL SSL error, reason: " << ERR_GET_REASON(error_code)
-           << ", name: " << ERR_error_string(error_code, NULL);
+           << ", name: " << buf;
+#endif
+
   switch (ERR_GET_REASON(error_code)) {
     case SSL_R_READ_TIMEOUT_EXPIRED:
       return ERR_TIMED_OUT;
@@ -83,6 +91,7 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
     case SSL_R_SSLV3_ALERT_CERTIFICATE_UNKNOWN:
     case SSL_R_TLSV1_ALERT_ACCESS_DENIED:
     case SSL_R_TLSV1_ALERT_UNKNOWN_CA:
+    case SSL_R_TLSV1_CERTIFICATE_REQUIRED:
       return ERR_BAD_SSL_CLIENT_AUTH_CERT;
     case SSL_R_SSLV3_ALERT_DECOMPRESSION_FAILURE:
       return ERR_SSL_DECOMPRESSION_FAILURE_ALERT;
@@ -94,12 +103,12 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
       return ERR_SSL_UNRECOGNIZED_NAME_ALERT;
     case SSL_R_BAD_DH_P_LENGTH:
       return ERR_SSL_WEAK_SERVER_EPHEMERAL_DH_KEY;
-    case SSL_R_CERTIFICATE_VERIFY_FAILED:
-      // The only way that the certificate verify callback can fail is if
-      // the leaf certificate changed during a renegotiation.
+    case SSL_R_SERVER_CERT_CHANGED:
       return ERR_SSL_SERVER_CERT_CHANGED;
-    case SSL_R_TLSV1_ALERT_INAPPROPRIATE_FALLBACK:
-      return ERR_SSL_INAPPROPRIATE_FALLBACK;
+    case SSL_R_WRONG_VERSION_ON_EARLY_DATA:
+      return ERR_WRONG_VERSION_ON_EARLY_DATA;
+    case SSL_R_TLS13_DOWNGRADE:
+      return ERR_TLS13_DOWNGRADE_DETECTED;
     // SSL_R_SSLV3_ALERT_HANDSHAKE_FAILURE may be returned from the server after
     // receiving ClientHello if there's no common supported cipher. Map that
     // specific case to ERR_SSL_VERSION_OR_CIPHER_MISMATCH to match the NSS
@@ -138,7 +147,7 @@ std::unique_ptr<base::Value> NetLogOpenSSLErrorCallback(
 
 }  // namespace
 
-void OpenSSLPutNetError(const tracked_objects::Location& location, int err) {
+void OpenSSLPutNetError(const base::Location& location, int err) {
   // Net error codes are negative. Encode them as positive numbers.
   err = -err;
   if (err < 0 || err > 0xfff) {
@@ -164,33 +173,35 @@ int MapOpenSSLErrorWithDetails(int err,
     case SSL_ERROR_WANT_READ:
     case SSL_ERROR_WANT_WRITE:
       return ERR_IO_PENDING;
+    case SSL_ERROR_EARLY_DATA_REJECTED:
+      return ERR_EARLY_DATA_REJECTED;
     case SSL_ERROR_SYSCALL:
-      LOG(ERROR) << "OpenSSL SYSCALL error, earliest error code in "
-                    "error queue: " << ERR_peek_error() << ", errno: "
-                 << errno;
+      PLOG(ERROR) << "OpenSSL SYSCALL error, earliest error code in "
+                     "error queue: "
+                  << ERR_peek_error();
       return ERR_FAILED;
     case SSL_ERROR_SSL:
       // Walk down the error stack to find an SSL or net error.
-      uint32_t error_code;
-      const char* file;
-      int line;
-      do {
-        error_code = ERR_get_error_line(&file, &line);
-        if (ERR_GET_LIB(error_code) == ERR_LIB_SSL) {
-          out_error_info->error_code = error_code;
-          out_error_info->file = file;
-          out_error_info->line = line;
-          return MapOpenSSLErrorSSL(error_code);
-        } else if (ERR_GET_LIB(error_code) == OpenSSLNetErrorLib()) {
-          out_error_info->error_code = error_code;
-          out_error_info->file = file;
-          out_error_info->line = line;
+      while (true) {
+        OpenSSLErrorInfo error_info;
+        error_info.error_code =
+            ERR_get_error_line(&error_info.file, &error_info.line);
+        if (error_info.error_code == 0) {
+          // Map errors to ERR_SSL_PROTOCOL_ERROR by default, reporting the most
+          // recent error in |*out_error_info|.
+          return ERR_SSL_PROTOCOL_ERROR;
+        }
+
+        *out_error_info = error_info;
+        if (ERR_GET_LIB(error_info.error_code) == ERR_LIB_SSL) {
+          return MapOpenSSLErrorSSL(error_info.error_code);
+        }
+        if (ERR_GET_LIB(error_info.error_code) == OpenSSLNetErrorLib()) {
           // Net error codes are negative but encoded in OpenSSL as positive
           // numbers.
-          return -ERR_GET_REASON(error_code);
+          return -ERR_GET_REASON(error_info.error_code);
         }
-      } while (error_code != 0);
-      return ERR_FAILED;
+      }
     default:
       // TODO(joth): Implement full mapping.
       LOG(WARNING) << "Unknown OpenSSL error " << err;
@@ -198,7 +209,7 @@ int MapOpenSSLErrorWithDetails(int err,
   }
 }
 
-NetLog::ParametersCallback CreateNetLogOpenSSLErrorCallback(
+NetLogParametersCallback CreateNetLogOpenSSLErrorCallback(
     int net_error,
     int ssl_error,
     const OpenSSLErrorInfo& error_info) {
@@ -214,34 +225,31 @@ int GetNetSSLVersion(SSL* ssl) {
       return SSL_CONNECTION_VERSION_TLS1_1;
     case TLS1_2_VERSION:
       return SSL_CONNECTION_VERSION_TLS1_2;
+    case TLS1_3_VERSION:
+      return SSL_CONNECTION_VERSION_TLS1_3;
     default:
       NOTREACHED();
       return SSL_CONNECTION_VERSION_UNKNOWN;
   }
 }
 
-ScopedX509 OSCertHandleToOpenSSL(X509Certificate::OSCertHandle os_handle) {
-#if defined(USE_OPENSSL_CERTS)
-  return ScopedX509(X509Certificate::DupOSCertHandle(os_handle));
-#else  // !defined(USE_OPENSSL_CERTS)
-  std::string der_encoded;
-  if (!X509Certificate::GetDEREncoded(os_handle, &der_encoded))
-    return ScopedX509();
-  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(der_encoded.data());
-  return ScopedX509(d2i_X509(NULL, &bytes, der_encoded.size()));
-#endif  // defined(USE_OPENSSL_CERTS)
-}
+bool SetSSLChainAndKey(SSL* ssl,
+                       X509Certificate* cert,
+                       EVP_PKEY* pkey,
+                       const SSL_PRIVATE_KEY_METHOD* custom_key) {
+  std::vector<CRYPTO_BUFFER*> chain_raw;
+  chain_raw.reserve(1 + cert->intermediate_buffers().size());
+  chain_raw.push_back(cert->cert_buffer());
+  for (const auto& handle : cert->intermediate_buffers())
+    chain_raw.push_back(handle.get());
 
-ScopedX509Stack OSCertHandlesToOpenSSL(
-    const X509Certificate::OSCertHandles& os_handles) {
-  ScopedX509Stack stack(sk_X509_new_null());
-  for (size_t i = 0; i < os_handles.size(); i++) {
-    ScopedX509 x509 = OSCertHandleToOpenSSL(os_handles[i]);
-    if (!x509)
-      return nullptr;
-    sk_X509_push(stack.get(), x509.release());
+  if (!SSL_set_chain_and_key(ssl, chain_raw.data(), chain_raw.size(), pkey,
+                             custom_key)) {
+    LOG(WARNING) << "Failed to set client certificate";
+    return false;
   }
-  return stack;
+
+  return true;
 }
 
 }  // namespace net

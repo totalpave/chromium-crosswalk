@@ -9,6 +9,8 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/json/json_reader.h"
+#include "base/stl_util.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
@@ -19,7 +21,7 @@
 #include "chrome/test/chromedriver/chrome/status.h"
 #include "chrome/test/chromedriver/chrome/web_view_impl.h"
 #include "chrome/test/chromedriver/net/net_util.h"
-#include "chrome/test/chromedriver/net/url_request_context_getter.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 
 WebViewInfo::WebViewInfo(const std::string& id,
                          const std::string& debugger_url,
@@ -32,7 +34,8 @@ WebViewInfo::WebViewInfo(const WebViewInfo& other) = default;
 WebViewInfo::~WebViewInfo() {}
 
 bool WebViewInfo::IsFrontend() const {
-  return url.find("chrome-devtools://") == 0u;
+  return base::StartsWith(url, "chrome-devtools://",
+                          base::CompareCase::SENSITIVE);
 }
 
 bool WebViewInfo::IsInactiveBackgroundPage() const {
@@ -64,19 +67,22 @@ const WebViewInfo* WebViewsInfo::GetForId(const std::string& id) const {
 
 DevToolsHttpClient::DevToolsHttpClient(
     const NetAddress& address,
-    scoped_refptr<URLRequestContextGetter> context_getter,
+    network::mojom::URLLoaderFactory* factory,
     const SyncWebSocketFactory& socket_factory,
     std::unique_ptr<DeviceMetrics> device_metrics,
-    std::unique_ptr<std::set<WebViewInfo::Type>> window_types)
-    : context_getter_(context_getter),
+    std::unique_ptr<std::set<WebViewInfo::Type>> window_types,
+    std::string page_load_strategy)
+    : url_loader_factory_(factory),
       socket_factory_(socket_factory),
       server_url_("http://" + address.ToString()),
       web_socket_url_prefix_(base::StringPrintf("ws://%s/devtools/page/",
                                                 address.ToString().c_str())),
       device_metrics_(std::move(device_metrics)),
-      window_types_(std::move(window_types)) {
+      window_types_(std::move(window_types)),
+      page_load_strategy_(page_load_strategy) {
   window_types_->insert(WebViewInfo::kPage);
   window_types_->insert(WebViewInfo::kApp);
+  browser_info_.debugger_address = address;
 }
 
 DevToolsHttpClient::~DevToolsHttpClient() {}
@@ -86,8 +92,7 @@ Status DevToolsHttpClient::Init(const base::TimeDelta& timeout) {
   std::string version_url = server_url_ + "/json/version";
   std::string data;
 
-  while (!FetchUrlAndLog(version_url, context_getter_.get(), &data)
-      || data.empty()) {
+  while (!FetchUrlAndLog(version_url, &data) || data.empty()) {
     if (base::TimeTicks::Now() > deadline)
       return Status(kChromeNotReachable);
     base::PlatformThread::Sleep(base::TimeDelta::FromMilliseconds(50));
@@ -98,7 +103,7 @@ Status DevToolsHttpClient::Init(const base::TimeDelta& timeout) {
 
 Status DevToolsHttpClient::GetWebViewsInfo(WebViewsInfo* views_info) {
   std::string data;
-  if (!FetchUrlAndLog(server_url_ + "/json", context_getter_.get(), &data))
+  if (!FetchUrlAndLog(server_url_ + "/json", &data))
     return Status(kChromeNotReachable);
 
   return internal::ParseWebViewsInfo(data, views_info);
@@ -114,8 +119,7 @@ std::unique_ptr<DevToolsClient> DevToolsHttpClient::CreateClient(
 
 Status DevToolsHttpClient::CloseWebView(const std::string& id) {
   std::string data;
-  if (!FetchUrlAndLog(
-          server_url_ + "/json/close/" + id, context_getter_.get(), &data)) {
+  if (!FetchUrlAndLog(server_url_ + "/json/close/" + id, &data)) {
     return Status(kOk);  // Closing the last web view leads chrome to quit.
   }
 
@@ -138,8 +142,7 @@ Status DevToolsHttpClient::CloseWebView(const std::string& id) {
 
 Status DevToolsHttpClient::ActivateWebView(const std::string& id) {
   std::string data;
-  if (!FetchUrlAndLog(
-          server_url_ + "/json/activate/" + id, context_getter_.get(), &data))
+  if (!FetchUrlAndLog(server_url_ + "/json/activate/" + id, &data))
     return Status(kUnknownError, "cannot activate web view");
   return Status(kOk);
 }
@@ -153,11 +156,10 @@ const DeviceMetrics* DevToolsHttpClient::device_metrics() {
 }
 
 bool DevToolsHttpClient::IsBrowserWindow(const WebViewInfo& view) const {
-  return window_types_->find(view.type) != window_types_->end() ||
-      (view.type == WebViewInfo::kOther &&
-        (view.url.find("chrome-extension://") == 0 ||
-         view.url == "chrome://print/" ||
-         view.url == "chrome://media-router/"));
+  return base::ContainsKey(*window_types_, view.type) ||
+         (view.type == WebViewInfo::kOther &&
+          (view.url == "chrome://print/" ||
+           view.url == "chrome://media-router/"));
 }
 
 Status DevToolsHttpClient::CloseFrontends(const std::string& for_client_id) {
@@ -199,7 +201,8 @@ Status DevToolsHttpClient::CloseFrontends(const std::string& for_client_id) {
     std::unique_ptr<DevToolsClient> client(new DevToolsClientImpl(
         socket_factory_, web_socket_url_prefix_ + *it, *it));
     std::unique_ptr<WebViewImpl> web_view(
-        new WebViewImpl(*it, &browser_info_, std::move(client), NULL));
+        new WebViewImpl(*it, false, &browser_info_, std::move(client), NULL,
+                        page_load_strategy_));
 
     status = web_view->ConnectIfNecessary();
     // Ignore disconnected error, because the debugger might have closed when
@@ -207,7 +210,6 @@ Status DevToolsHttpClient::CloseFrontends(const std::string& for_client_id) {
     if (status.IsError() && status.code() != kDisconnected)
       return status;
 
-    std::unique_ptr<base::Value> result;
     status = CloseWebView(*it);
     // Ignore disconnected error, because it may be closed already.
     if (status.IsError() && status.code() != kDisconnected)
@@ -234,14 +236,13 @@ Status DevToolsHttpClient::CloseFrontends(const std::string& for_client_id) {
 }
 
 bool DevToolsHttpClient::FetchUrlAndLog(const std::string& url,
-                                        URLRequestContextGetter* getter,
                                         std::string* response) {
-  VLOG(1) << "DevTools request: " << url;
-  bool ok = FetchUrl(url, getter, response);
+  VLOG(1) << "DevTools HTTP Request: " << url;
+  bool ok = FetchUrl(url, url_loader_factory_, response);
   if (ok) {
-    VLOG(1) << "DevTools response: " << *response;
+    VLOG(1) << "DevTools HTTP Response: " << *response;
   } else {
-    VLOG(1) << "DevTools request failed";
+    VLOG(1) << "DevTools HTTP Request failed";
   }
   return ok;
 }
@@ -263,6 +264,12 @@ Status ParseType(const std::string& type_as_string, WebViewInfo::Type* type) {
     *type = WebViewInfo::kOther;
   else if (type_as_string == "service_worker")
     *type = WebViewInfo::kServiceWorker;
+  else if (type_as_string == "shared_worker")
+    *type = WebViewInfo::kSharedWorker;
+  else if (type_as_string == "external")
+    *type = WebViewInfo::kExternal;
+  else if (type_as_string == "browser")
+    *type = WebViewInfo::kBrowser;
   else
     return Status(kUnknownError,
                   "DevTools returned unknown type:" + type_as_string);
@@ -272,7 +279,7 @@ Status ParseType(const std::string& type_as_string, WebViewInfo::Type* type) {
 namespace internal {
 
 Status ParseWebViewsInfo(const std::string& data, WebViewsInfo* views_info) {
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(data);
+  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(data);
   if (!value.get())
     return Status(kUnknownError, "DevTools returned invalid JSON");
   base::ListValue* list;

@@ -4,8 +4,7 @@
 
 import("//build/config/features.gni")
 
-# GYP version: components/storage_monitor.gypi:storage_monitor
-source_set("storage_monitor") {
+static_library("storage_monitor") {
   sources = [
     "image_capture_device.h",
     "image_capture_device.mm",
@@ -13,8 +12,6 @@ source_set("storage_monitor") {
     "image_capture_device_manager.mm",
     "media_storage_util.cc",
     "media_storage_util.h",
-    "media_transfer_protocol_device_observer_linux.cc",
-    "media_transfer_protocol_device_observer_linux.h",
     "mtab_watcher_linux.cc",
     "mtab_watcher_linux.h",
     "portable_device_watcher_win.cc",
@@ -45,6 +42,8 @@ source_set("storage_monitor") {
   deps = [
     "//base",
     "//content/public/browser",
+    "//mojo/public/cpp/bindings",
+    "//services/service_manager/public/cpp",
     "//ui/base",
   ]
 
@@ -56,11 +55,13 @@ source_set("storage_monitor") {
     ]
   }
 
-  if (is_linux) {
-    deps += [
-      "//device/media_transfer_protocol",
-      "//device/media_transfer_protocol:mtp_file_entry_proto",
-      "//device/media_transfer_protocol:mtp_storage_info_proto",
+  if (is_chromeos && use_dbus) {
+    deps += [ "//services/device/public/mojom" ]
+    sources += [
+      "mtp_manager_client_chromeos.cc",
+      "mtp_manager_client_chromeos.h",
+      "storage_info_utils.cc",
+      "storage_info_utils.h",
     ]
   }
 
@@ -83,18 +84,17 @@ source_set("storage_monitor") {
       "storage_monitor_linux.cc",
       "storage_monitor_linux.h",
     ]
-    deps += [ "//chromeos" ]
+    deps += [ "//chromeos/disks" ]
   }
 }
 
-# GYP version: components/storage_monitor.gypi:storage_monitor_test_support
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "mock_removable_storage_observer.cc",
     "mock_removable_storage_observer.h",
-    "test_media_transfer_protocol_manager_linux.cc",
-    "test_media_transfer_protocol_manager_linux.h",
+    "test_media_transfer_protocol_manager_chromeos.cc",
+    "test_media_transfer_protocol_manager_chromeos.h",
     "test_portable_device_watcher_win.cc",
     "test_portable_device_watcher_win.h",
     "test_storage_monitor.cc",
@@ -111,11 +111,9 @@ source_set("test_support") {
     "//content/public/browser",
   ]
 
-  if (is_linux) {
+  if (is_chromeos && use_dbus) {
     deps = [
-      "//device/media_transfer_protocol",
-      "//device/media_transfer_protocol:mtp_file_entry_proto",
-      "//device/media_transfer_protocol:mtp_storage_info_proto",
+      "//services/device/public/mojom",
     ]
   }
 
@@ -131,32 +129,34 @@ source_set("unit_tests") {
   sources = [
     "image_capture_device_manager_unittest.mm",
     "media_storage_util_unittest.cc",
-    "media_transfer_protocol_device_observer_linux_unittest.cc",
     "storage_info_unittest.cc",
     "storage_monitor_mac_unittest.mm",
     "storage_monitor_unittest.cc",
     "storage_monitor_win_unittest.cc",
   ]
 
-  configs += [ "//build/config/compiler:no_size_t_to_int_warning" ]
-
   deps = [
     ":test_support",
+    "//base/test:test_support",
     "//content/test:test_support",
     "//testing/gtest",
   ]
 
-  if (is_linux) {
-    deps += [ "//device/media_transfer_protocol" ]
-    if (!is_chromeos) {
+  if (use_dbus) {
+    if (is_chromeos) {
+      deps += [
+        "//services/device/public/mojom",
+        "//testing/gmock",
+      ]
+      sources += [
+        "mtp_manager_client_chromeos_unittest.cc",
+        "storage_monitor_chromeos_unittest.cc",
+      ]
+    } else if (is_linux) {
       sources += [ "storage_monitor_linux_unittest.cc" ]
     }
   }
   if (is_chromeos) {
-    sources += [ "storage_monitor_chromeos_unittest.cc" ]
-    deps += [
-      "//chromeos:test_support",
-      "//testing/gmock",
-    ]
+    deps += [ "//chromeos/disks:test_support" ]
   }
 }

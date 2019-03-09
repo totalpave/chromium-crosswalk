@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # Copyright (c) 2012 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -15,33 +14,36 @@ import shutil
 import sys
 
 from grit import grd_reader
-from grit import util
-from grit.tool import interface
 from grit import shortcuts
+from grit import util
+from grit.format import minifier
+from grit.node import include
+from grit.node import message
+from grit.node import structure
+from grit.tool import interface
 
 
 # It would be cleaner to have each module register itself, but that would
 # require importing all of them on every run of GRIT.
 '''Map from <output> node types to modules under grit.format.'''
 _format_modules = {
-  'android':                  'android_xml',
-  'c_format':                 'c_format',
-  'chrome_messages_json':     'chrome_messages_json',
-  'data_package':             'data_pack',
-  'js_map_format':            'js_map_format',
-  'rc_all':                   'rc',
-  'rc_translateable':         'rc',
-  'rc_nontranslateable':      'rc',
-  'rc_header':                'rc_header',
-  'resource_map_header':      'resource_map',
-  'resource_map_source':      'resource_map',
+  'android': 'android_xml',
+  'c_format': 'c_format',
+  'chrome_messages_json': 'chrome_messages_json',
+  'data_package': 'data_pack',
+  'gzipped_resource_file_map_source': 'resource_map',
+  'gzipped_resource_map_header': 'resource_map',
+  'gzipped_resource_map_source': 'resource_map',
+  'js_map_format': 'js_map_format',
+  'policy_templates': 'policy_templates_json',
+  'rc_all': 'rc',
+  'rc_header': 'rc_header',
+  'rc_nontranslateable': 'rc',
+  'rc_translateable': 'rc',
   'resource_file_map_source': 'resource_map',
+  'resource_map_header': 'resource_map',
+  'resource_map_source': 'resource_map',
 }
-_format_modules.update(
-    (type, 'policy_templates.template_formatter') for type in
-        [ 'adm', 'admx', 'adml', 'reg', 'doc', 'json',
-          'plist', 'plist_strings', 'ios_plist', 'android_policy' ])
-
 
 def GetFormatter(type):
   modulename = 'grit.format.' + _format_modules[type]
@@ -81,6 +83,17 @@ Options:
   -o OUTPUTDIR      Specify what directory output paths are relative to.
                     Defaults to the current directory.
 
+  -p FILE           Specify a file containing a pre-determined mapping from
+                    resource names to resource ids which will be used to assign
+                    resource ids to those resources. Resources not found in this
+                    file will be assigned ids normally. The motivation is to run
+                    your app's startup and have it dump the resources it loads,
+                    and then pass these via this flag. This will pack startup
+                    resources together, thus reducing paging while all other
+                    resources are unperturbed. The file should have the format:
+                      RESOURCE_ONE_NAME 123
+                      RESOURCE_TWO_NAME 124
+
   -D NAME[=VAL]     Specify a C-preprocessor-like define NAME with optional
                     value VAL (defaults to 1) which will be used to control
                     conditional inclusion of resources.
@@ -100,15 +113,9 @@ Options:
                     flag should match what sys.platform would report for your
                     target platform; see grit.node.base.EvaluateCondition.
 
-  -h HEADERFORMAT   Custom format string to use for generating rc header files.
-                    The string should have two placeholders: {textual_id}
-                    and {numeric_id}. E.g. "#define {textual_id} {numeric_id}"
-                    Otherwise it will use the default "#define SYMBOL 1234"
-
-  --output-all-resource-defines
-  --no-output-all-resource-defines  If specified, overrides the value of the
-                    output_all_resource_defines attribute of the root <grit>
-                    element of the input .grd file.
+  --whitelist-support
+                    Generate code to support extracting a resource whitelist
+                    from executables.
 
   --write-only-new flag
                     If flag is non-0, write output files to a temporary file
@@ -123,6 +130,12 @@ Options:
                     generated will depend on a stampfile instead of the first
                     output in the input .grd file.
 
+  --js-minifier     A command to run the Javascript minifier. If not set then
+                    Javascript won't be minified. The command should read the
+                    original Javascript from standard input, and output the
+                    minified Javascript to standard output. A non-zero exit
+                    status will be taken as indicating failure.
+
 Conditional inclusion of resources only affects the output of files which
 control which resources get linked into a binary, e.g. it affects .rc files
 meant for compilation but it does not affect resource header files (that define
@@ -134,23 +147,30 @@ are exported to translation interchange files (e.g. XMB files), etc.
     return 'A tool that builds RC files for compilation.'
 
   def Run(self, opts, args):
+    os.environ['cwd'] = os.getcwd()
     self.output_directory = '.'
     first_ids_file = None
+    predetermined_ids_file = None
     whitelist_filenames = []
     assert_output_files = []
     target_platform = None
     depfile = None
     depdir = None
-    rc_header_format = None
-    output_all_resource_defines = None
+    whitelist_support = False
     write_only_new = False
     depend_on_stamp = False
-    (own_opts, args) = getopt.getopt(args, 'a:o:D:E:f:w:t:h:',
+    js_minifier = None
+    replace_ellipsis = True
+    (own_opts, args) = getopt.getopt(args, 'a:p:o:D:E:f:w:t:',
         ('depdir=','depfile=','assert-file-list=',
+         'help',
          'output-all-resource-defines',
          'no-output-all-resource-defines',
+         'no-replace-ellipsis',
          'depend-on-stamp',
-         'write-only-new='))
+         'js-minifier=',
+         'write-only-new=',
+         'whitelist-support'))
     for (key, val) in own_opts:
       if key == '-a':
         assert_output_files.append(val)
@@ -172,14 +192,12 @@ are exported to translation interchange files (e.g. XMB files), etc.
         first_ids_file = val
       elif key == '-w':
         whitelist_filenames.append(val)
-      elif key == '--output-all-resource-defines':
-        output_all_resource_defines = True
-      elif key == '--no-output-all-resource-defines':
-        output_all_resource_defines = False
+      elif key == '--no-replace-ellipsis':
+        replace_ellipsis = False
+      elif key == '-p':
+        predetermined_ids_file = val
       elif key == '-t':
         target_platform = val
-      elif key == '-h':
-        rc_header_format = val
       elif key == '--depdir':
         depdir = val
       elif key == '--depfile':
@@ -188,6 +206,13 @@ are exported to translation interchange files (e.g. XMB files), etc.
         write_only_new = val != '0'
       elif key == '--depend-on-stamp':
         depend_on_stamp = True
+      elif key == '--js-minifier':
+        js_minifier = val
+      elif key == '--whitelist-support':
+        whitelist_support = True
+      elif key == '--help':
+        self.ShowUsage()
+        sys.exit(0)
 
     if len(args):
       print 'This tool takes no tool-specific arguments.'
@@ -207,26 +232,31 @@ are exported to translation interchange files (e.g. XMB files), etc.
         whitelist_contents = util.ReadFile(whitelist_filename, util.RAW_TEXT)
         self.whitelist_names.update(whitelist_contents.strip().split('\n'))
 
+    if js_minifier:
+      minifier.SetJsMinifier(js_minifier)
+
     self.write_only_new = write_only_new
 
     self.res = grd_reader.Parse(opts.input,
                                 debug=opts.extra_verbose,
                                 first_ids_file=first_ids_file,
+                                predetermined_ids_file=predetermined_ids_file,
                                 defines=self.defines,
                                 target_platform=target_platform)
-
-    # If the output_all_resource_defines option is specified, override the value
-    # found in the grd file.
-    if output_all_resource_defines is not None:
-      self.res.SetShouldOutputAllResourceDefines(output_all_resource_defines)
 
     # Set an output context so that conditionals can use defines during the
     # gathering stage; we use a dummy language here since we are not outputting
     # a specific language.
     self.res.SetOutputLanguage('en')
-    if rc_header_format:
-      self.res.AssignRcHeaderFormat(rc_header_format)
+    self.res.SetWhitelistSupportEnabled(whitelist_support)
     self.res.RunGatherers()
+
+    # Replace ... with the single-character version. http://crbug.com/621772
+    if replace_ellipsis:
+      for node in self.res:
+        if isinstance(node, message.MessageNode):
+          node.SetReplaceEllipsis(True)
+
     self.Process()
 
     if assert_output_files:
@@ -267,9 +297,6 @@ are exported to translation interchange files (e.g. XMB files), etc.
   def AddWhitelistTags(start_node, whitelist_names):
     # Walk the tree of nodes added attributes for the nodes that shouldn't
     # be written into the target files (skip markers).
-    from grit.node import include
-    from grit.node import message
-    from grit.node import structure
     for node in start_node:
       # Same trick data_pack.py uses to see what nodes actually result in
       # real items.
@@ -296,7 +323,32 @@ are exported to translation interchange files (e.g. XMB files), etc.
     formatter = GetFormatter(output_node.GetType())
     formatted = formatter(node, output_node.GetLanguage(), output_dir=base_dir)
     outfile.writelines(formatted)
+    if output_node.GetType() == 'data_package':
+      with open(output_node.GetOutputFilename() + '.info', 'w') as infofile:
+        if node.info:
+          # We terminate with a newline so that when these files are
+          # concatenated later we consistently terminate with a newline so
+          # consumers can account for terminating newlines.
+          infofile.writelines(['\n'.join(node.info), '\n'])
 
+  @staticmethod
+  def _EncodingForOutputType(output_type):
+    # Microsoft's RC compiler can only deal with single-byte or double-byte
+    # files (no UTF-8), so we make all RC files UTF-16 to support all
+    # character sets.
+    if output_type in ('rc_header', 'resource_file_map_source',
+                       'resource_map_header', 'resource_map_source',
+                       'gzipped_resource_file_map_source',
+                       'gzipped_resource_map_header',
+                       'gzipped_resource_map_source',
+                      ):
+      return 'cp1252'
+    if output_type in ('android', 'c_format', 'js_map_format', 'plist',
+                       'plist_strings', 'doc', 'json', 'android_policy',
+                       'chrome_messages_json'):
+      return 'utf_8'
+    # TODO(gfeher) modify here to set utf-8 encoding for admx/adml
+    return 'utf_16'
 
   def Process(self):
     # Update filenames with those provided by SCons if we're being invoked
@@ -312,7 +364,7 @@ are exported to translation interchange files (e.g. XMB files), etc.
     else:
       for output in self.res.GetOutputFiles():
         output.output_filename = os.path.abspath(os.path.join(
-          self.output_directory, output.GetFilename()))
+          self.output_directory, output.GetOutputFilename()))
 
     # If there are whitelisted names, tag the tree once up front, this way
     # while looping through the actual output, it is just an attribute check.
@@ -320,29 +372,17 @@ are exported to translation interchange files (e.g. XMB files), etc.
       self.AddWhitelistTags(self.res, self.whitelist_names)
 
     for output in self.res.GetOutputFiles():
-      self.VerboseOut('Creating %s...' % output.GetFilename())
-
-      # Microsoft's RC compiler can only deal with single-byte or double-byte
-      # files (no UTF-8), so we make all RC files UTF-16 to support all
-      # character sets.
-      if output.GetType() in ('rc_header', 'resource_map_header',
-          'resource_map_source', 'resource_file_map_source'):
-        encoding = 'cp1252'
-      elif output.GetType() in ('android', 'c_format', 'js_map_format', 'plist',
-                                'plist_strings', 'doc', 'json', 'android_policy'):
-        encoding = 'utf_8'
-      elif output.GetType() in ('chrome_messages_json'):
-        # Chrome Web Store currently expects BOM for UTF-8 files :-(
-        encoding = 'utf-8-sig'
-      else:
-        # TODO(gfeher) modify here to set utf-8 encoding for admx/adml
-        encoding = 'utf_16'
+      self.VerboseOut('Creating %s...' % output.GetOutputFilename())
 
       # Set the context, for conditional inclusion of resources
       self.res.SetOutputLanguage(output.GetLanguage())
       self.res.SetOutputContext(output.GetContext())
       self.res.SetFallbackToDefaultLayout(output.GetFallbackToDefaultLayout())
       self.res.SetDefines(self.defines)
+
+      # Assign IDs only once to ensure that all outputs use the same IDs.
+      if self.res.GetIdMap() is None:
+        self.res.InitializeIds()
 
       # Make the output directory if it doesn't exist.
       self.MakeDirectoriesTo(output.GetOutputFilename())
@@ -352,6 +392,7 @@ are exported to translation interchange files (e.g. XMB files), etc.
       outfile = self.fo_create(output.GetOutputFilename() + '.tmp', 'wb')
 
       if output.GetType() != 'data_package':
+        encoding = self._EncodingForOutputType(output.GetType())
         outfile = util.WrapOutputStream(outfile, encoding)
 
       # Iterate in-order through entire resource tree, calling formatters on
@@ -411,7 +452,8 @@ are exported to translation interchange files (e.g. XMB files), etc.
     # Compare the absolute path names, sorted.
     asserted = sorted([os.path.abspath(i) for i in assert_output_files])
     actual = sorted([
-        os.path.abspath(os.path.join(self.output_directory, i.GetFilename()))
+        os.path.abspath(os.path.join(self.output_directory,
+                                     i.GetOutputFilename()))
         for i in self.res.GetOutputFiles()])
 
     if asserted != actual:
@@ -479,7 +521,7 @@ Extra output files:
       # Get the first output file relative to the depdir.
       outputs = self.res.GetOutputFiles()
       output_file = os.path.join(self.output_directory,
-                                 outputs[0].GetFilename())
+                                 outputs[0].GetOutputFilename())
 
     output_file = os.path.relpath(output_file, depdir)
     # The path prefix to prepend to dependencies in the depfile.

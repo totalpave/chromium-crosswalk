@@ -6,10 +6,7 @@
 
 #include <utility>
 
-#include "base/command_line.h"
-#import "chrome/browser/ui/cocoa/media_picker/desktop_media_picker_controller_deprecated.h"
 #import "chrome/browser/ui/cocoa/media_picker/desktop_media_picker_controller.h"
-#include "extensions/common/switches.h"
 
 DesktopMediaPickerCocoa::DesktopMediaPickerCocoa() {
 }
@@ -18,40 +15,13 @@ DesktopMediaPickerCocoa::~DesktopMediaPickerCocoa() {
 }
 
 void DesktopMediaPickerCocoa::Show(
-    content::WebContents* web_contents,
-    gfx::NativeWindow context,
-    gfx::NativeWindow parent,
-    const base::string16& app_name,
-    const base::string16& target_name,
-    std::unique_ptr<DesktopMediaList> screen_list,
-    std::unique_ptr<DesktopMediaList> window_list,
-    std::unique_ptr<DesktopMediaList> tab_list,
-    bool request_audio,
+    const DesktopMediaPicker::Params& params,
+    std::vector<std::unique_ptr<DesktopMediaList>> source_lists,
     const DoneCallback& done_callback) {
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-          extensions::switches::kDisableDesktopCapturePickerOldUI)) {
-    controller_deprecated_.reset([[DesktopMediaPickerControllerDeprecated alloc]
-        initWithScreenList:std::move(screen_list)
-                windowList:std::move(window_list)
-                   tabList:std::move(tab_list)
-                    parent:parent
-                  callback:done_callback
-                   appName:app_name
-                targetName:target_name
-              requestAudio:request_audio]);
-    [controller_deprecated_ showWindow:nil];
-    return;
-  }
-
   controller_.reset([[DesktopMediaPickerController alloc]
-      initWithScreenList:std::move(screen_list)
-              windowList:std::move(window_list)
-                 tabList:std::move(tab_list)
-                  parent:parent
-                callback:done_callback
-                 appName:app_name
-              targetName:target_name
-            requestAudio:request_audio]);
+      initWithSourceLists:std::move(source_lists)
+                 callback:done_callback
+                   params:params]);
   [controller_ showWindow:nil];
 }
 

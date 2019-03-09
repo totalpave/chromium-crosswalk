@@ -6,12 +6,26 @@
 
 #include <CoreServices/CoreServices.h>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/mac/mac_logging.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/metrics/sparse_histogram.h"
+#include "base/trace_event/trace_event.h"
 #include "media/audio/mac/audio_manager_mac.h"
 #include "media/base/audio_bus.h"
 
 namespace media {
+
+namespace {
+// A one-shot timer is created and started in Start() and it triggers
+// CheckInputStartupSuccess() after this amount of time. UMA stats marked
+// Media.Audio.InputStartupSuccessMacHighLatency is then updated where true is
+// added if input callbacks have started, and false otherwise. This constant
+// should ideally be set to about the same value as in
+// audio_low_latency_input_mac.cc, to make comparing them reasonable.
+const int kInputCallbackStartTimeoutInSeconds = 8;
+}
 
 PCMQueueInAudioInputStream::PCMQueueInAudioInputStream(
     AudioManagerMac* manager,
@@ -21,24 +35,28 @@ PCMQueueInAudioInputStream::PCMQueueInAudioInputStream(
       audio_queue_(NULL),
       buffer_size_bytes_(0),
       started_(false),
+      input_callback_is_active_(false),
       audio_bus_(media::AudioBus::Create(params)) {
   // We must have a manager.
   DCHECK(manager_);
+
+  const SampleFormat kSampleFormat = kSampleFormatS16;
+
   // A frame is one sample across all channels. In interleaved audio the per
   // frame fields identify the set of n |channels|. In uncompressed audio, a
   // packet is always one frame.
   format_.mSampleRate = params.sample_rate();
   format_.mFormatID = kAudioFormatLinearPCM;
-  format_.mFormatFlags = kLinearPCMFormatFlagIsPacked |
-                         kLinearPCMFormatFlagIsSignedInteger;
-  format_.mBitsPerChannel = params.bits_per_sample();
+  format_.mFormatFlags =
+      kLinearPCMFormatFlagIsPacked | kLinearPCMFormatFlagIsSignedInteger;
+  format_.mBitsPerChannel = SampleFormatToBitsPerChannel(kSampleFormat);
   format_.mChannelsPerFrame = params.channels();
   format_.mFramesPerPacket = 1;
-  format_.mBytesPerPacket = (params.bits_per_sample() * params.channels()) / 8;
-  format_.mBytesPerFrame = format_.mBytesPerPacket;
+  format_.mBytesPerPacket = format_.mBytesPerFrame =
+      params.GetBytesPerFrame(kSampleFormat);
   format_.mReserved = 0;
 
-  buffer_size_bytes_ = params.GetBytesPerBuffer();
+  buffer_size_bytes_ = params.GetBytesPerBuffer(kSampleFormat);
 }
 
 PCMQueueInAudioInputStream::~PCMQueueInAudioInputStream() {
@@ -88,10 +106,25 @@ void PCMQueueInAudioInputStream::Start(AudioInputCallback* callback) {
   } else {
     started_ = true;
   }
+
+  // For UMA stat purposes, start a one-shot timer which detects when input
+  // callbacks starts indicating if input audio recording starts as intended.
+  // CheckInputStartupSuccess() will check if |input_callback_is_active_| is
+  // true when the timer expires.
+  input_callback_timer_.reset(new base::OneShotTimer());
+  input_callback_timer_->Start(
+      FROM_HERE,
+      base::TimeDelta::FromSeconds(kInputCallbackStartTimeoutInSeconds), this,
+      &PCMQueueInAudioInputStream::CheckInputStartupSuccess);
+  DCHECK(input_callback_timer_->IsRunning());
 }
 
 void PCMQueueInAudioInputStream::Stop() {
   deferred_start_cb_.Cancel();
+  if (input_callback_timer_ != nullptr) {
+    input_callback_timer_->Stop();
+    input_callback_timer_.reset();
+  }
   if (!audio_queue_ || !started_)
     return;
 
@@ -101,6 +134,7 @@ void PCMQueueInAudioInputStream::Stop() {
   if (err != noErr)
     HandleError(err);
 
+  SetInputCallbackIsActive(false);
   started_ = false;
   callback_ = NULL;
 }
@@ -150,9 +184,14 @@ bool PCMQueueInAudioInputStream::GetAutomaticGainControl() {
   return false;
 }
 
+void PCMQueueInAudioInputStream::SetOutputDeviceForAec(
+    const std::string& output_device_id) {
+  // Not supported. Do nothing.
+}
+
 void PCMQueueInAudioInputStream::HandleError(OSStatus err) {
   if (callback_)
-    callback_->OnError(this);
+    callback_->OnError();
   // This point should never be reached.
   OSSTATUS_DCHECK(0, err);
 }
@@ -202,11 +241,15 @@ void PCMQueueInAudioInputStream::HandleInputBuffer(
     const AudioStreamPacketDescription* packet_desc) {
   DCHECK_EQ(audio_queue_, audio_queue);
   DCHECK(audio_buffer->mAudioData);
+  TRACE_EVENT0("audio", "PCMQueueInAudioInputStream::HandleInputBuffer");
   if (!callback_) {
     // This can happen if Stop() was called without start.
     DCHECK_EQ(0U, audio_buffer->mAudioDataByteSize);
     return;
   }
+
+  // Indicate that input callbacks have started.
+  SetInputCallbackIsActive(true);
 
   if (audio_buffer->mAudioDataByteSize) {
     // The AudioQueue API may use a large internal buffer and repeatedly call us
@@ -218,16 +261,30 @@ void PCMQueueInAudioInputStream::HandleInputBuffer(
     // TODO(dalecurtis): This is a HACK.  Long term the AudioQueue path is going
     // away in favor of the AudioUnit based AUAudioInputStream().  Tracked by
     // http://crbug.com/161383.
+    // TODO(dalecurtis): Delete all this. It shouldn't be necessary now that we
+    // have a ring buffer and FIFO on the actual shared memory.
     base::TimeDelta elapsed = base::TimeTicks::Now() - last_fill_;
     const base::TimeDelta kMinDelay = base::TimeDelta::FromMilliseconds(5);
-    if (elapsed < kMinDelay)
+    if (elapsed < kMinDelay) {
+      TRACE_EVENT0("audio",
+                   "PCMQueueInAudioInputStream::HandleInputBuffer sleep");
       base::PlatformThread::Sleep(kMinDelay - elapsed);
+    }
+
+    // TODO(dalecurtis): This should be updated to include the device latency,
+    // but really since Pepper (which ignores the delay value) is on the only
+    // one creating AUDIO_PCM_LINEAR input devices, it doesn't matter.
+    // https://lists.apple.com/archives/coreaudio-api/2017/Jul/msg00035.html
+    const base::TimeTicks capture_time =
+        start_time->mFlags & kAudioTimeStampHostTimeValid
+            ? base::TimeTicks::FromMachAbsoluteTime(start_time->mHostTime)
+            : base::TimeTicks::Now();
 
     uint8_t* audio_data = reinterpret_cast<uint8_t*>(audio_buffer->mAudioData);
-    audio_bus_->FromInterleaved(
-        audio_data, audio_bus_->frames(), format_.mBitsPerChannel / 8);
-    callback_->OnData(
-        this, audio_bus_.get(), audio_buffer->mAudioDataByteSize, 0.0);
+    DCHECK_EQ(format_.mBitsPerChannel, 16u);
+    audio_bus_->FromInterleaved<SignedInt16SampleTypeTraits>(
+        reinterpret_cast<int16_t*>(audio_data), audio_bus_->frames());
+    callback_->OnData(audio_bus_.get(), capture_time, 0.0);
 
     last_fill_ = base::TimeTicks::Now();
   }
@@ -247,6 +304,25 @@ void PCMQueueInAudioInputStream::HandleInputBuffer(
     }
     HandleError(err);
   }
+}
+
+void PCMQueueInAudioInputStream::SetInputCallbackIsActive(bool enabled) {
+  base::subtle::Release_Store(&input_callback_is_active_, enabled);
+}
+
+bool PCMQueueInAudioInputStream::GetInputCallbackIsActive() {
+  return (base::subtle::Acquire_Load(&input_callback_is_active_) != false);
+}
+
+void PCMQueueInAudioInputStream::CheckInputStartupSuccess() {
+  // Check if we have called Start() and input callbacks have actually
+  // started in time as they should. If that is not the case, we have a
+  // problem and the stream is considered dead.
+  const bool input_callback_is_active = GetInputCallbackIsActive();
+  UMA_HISTOGRAM_BOOLEAN("Media.Audio.InputStartupSuccessMac_HighLatency",
+                        input_callback_is_active);
+  DVLOG(1) << "high_latency_input_callback_is_active: "
+           << input_callback_is_active;
 }
 
 }  // namespace media

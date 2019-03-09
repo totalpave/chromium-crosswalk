@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef NET_HTTP_HTTP_TRANSACTION_UNITTEST_H_
-#define NET_HTTP_HTTP_TRANSACTION_UNITTEST_H_
+#ifndef NET_HTTP_HTTP_TRANSACTION_TEST_UTIL_H_
+#define NET_HTTP_HTTP_TRANSACTION_TEST_UTIL_H_
 
 #include "net/http/http_transaction.h"
 
@@ -15,6 +15,7 @@
 #include "base/compiler_specific.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string16.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/io_buffer.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_error_details.h"
@@ -26,7 +27,6 @@
 #include "net/http/http_request_info.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
-#include "net/log/net_log.h"
 #include "net/socket/connection_attempts.h"
 
 namespace net {
@@ -35,6 +35,7 @@ class HttpRequestHeaders;
 class IOBuffer;
 class SSLPrivateKey;
 class X509Certificate;
+class NetLogWithSource;
 struct HttpRequestInfo;
 
 //-----------------------------------------------------------------------------
@@ -83,7 +84,10 @@ struct MockTransaction {
   int ssl_connection_status;
   // Value returned by MockNetworkTransaction::Start (potentially
   // asynchronously if |!(test_mode & TEST_MODE_SYNC_NET_START)|.)
-  Error return_code;
+  Error start_return_code;
+  // Value returned by MockNetworkTransaction::Read (potentially
+  // asynchronously if |!(test_mode & TEST_MODE_SYNC_NET_START)|.)
+  Error read_return_code;
 };
 
 extern const MockTransaction kSimpleGET_Transaction;
@@ -130,7 +134,7 @@ class TestTransactionConsumer {
                           HttpTransactionFactory* factory);
   virtual ~TestTransactionConsumer();
 
-  void Start(const HttpRequestInfo* request, const BoundNetLog& net_log);
+  void Start(const HttpRequestInfo* request, const NetLogWithSource& net_log);
 
   bool is_done() const { return state_ == DONE; }
   int error() const { return error_; }
@@ -184,23 +188,23 @@ class MockNetworkTransaction
   ~MockNetworkTransaction() override;
 
   int Start(const HttpRequestInfo* request,
-            const CompletionCallback& callback,
-            const BoundNetLog& net_log) override;
+            CompletionOnceCallback callback,
+            const NetLogWithSource& net_log) override;
 
-  int RestartIgnoringLastError(const CompletionCallback& callback) override;
+  int RestartIgnoringLastError(CompletionOnceCallback callback) override;
 
-  int RestartWithCertificate(X509Certificate* client_cert,
-                             SSLPrivateKey* client_private_key,
-                             const CompletionCallback& callback) override;
+  int RestartWithCertificate(scoped_refptr<X509Certificate> client_cert,
+                             scoped_refptr<SSLPrivateKey> client_private_key,
+                             CompletionOnceCallback callback) override;
 
   int RestartWithAuth(const AuthCredentials& credentials,
-                      const CompletionCallback& callback) override;
+                      CompletionOnceCallback callback) override;
 
   bool IsReadyToRestartForAuth() override;
 
   int Read(IOBuffer* buf,
            int buf_len,
-           const CompletionCallback& callback) override;
+           CompletionOnceCallback callback) override;
   void PopulateNetErrorDetails(NetErrorDetails* details) const override;
 
   void StopCaching() override;
@@ -216,8 +220,6 @@ class MockNetworkTransaction
   const HttpResponseInfo* GetResponseInfo() const override;
 
   LoadState GetLoadState() const override;
-
-  UploadProgress GetUploadProgress() const override;
 
   void SetQuicServerInfo(QuicServerInfo* quic_server_info) override;
 
@@ -236,6 +238,9 @@ class MockNetworkTransaction
   void SetBeforeHeadersSentCallback(
       const BeforeHeadersSentCallback& callback) override;
 
+  void SetRequestHeadersCallback(RequestHeadersCallback callback) override {}
+  void SetResponseHeadersCallback(ResponseHeadersCallback) override {}
+
   int ResumeNetworkStart() override;
 
   void GetConnectionAttempts(ConnectionAttempts* out) const override;
@@ -243,6 +248,7 @@ class MockNetworkTransaction
   CreateHelper* websocket_handshake_stream_create_helper() {
     return websocket_handshake_stream_create_helper_;
   }
+
   RequestPriority priority() const { return priority_; }
   const HttpRequestInfo* request() const { return request_; }
 
@@ -255,10 +261,10 @@ class MockNetworkTransaction
 
  private:
   int StartInternal(const HttpRequestInfo* request,
-                    const CompletionCallback& callback,
-                    const BoundNetLog& net_log);
-  void CallbackLater(const CompletionCallback& callback, int result);
-  void RunCallback(const CompletionCallback& callback, int result);
+                    CompletionOnceCallback callback,
+                    const NetLogWithSource& net_log);
+  void CallbackLater(CompletionOnceCallback callback, int result);
+  void RunCallback(CompletionOnceCallback callback, int result);
 
   const HttpRequestInfo* request_;
   HttpResponseInfo response_;
@@ -275,11 +281,15 @@ class MockNetworkTransaction
   int64_t sent_bytes_;
 
   // NetLog ID of the fake / non-existent underlying socket used by the
-  // connection. Requires Start() be passed a BoundNetLog with a real NetLog to
+  // connection. Requires Start() be passed a NetLogWithSource with a real
+  // NetLog to
   // be initialized.
   unsigned int socket_log_id_;
 
   bool done_reading_called_;
+  bool reading_;
+
+  CompletionOnceCallback resume_start_callback_;  // used for pause and restart.
 
   base::WeakPtrFactory<MockNetworkTransaction> weak_factory_;
 
@@ -356,4 +366,4 @@ int ReadTransaction(HttpTransaction* trans, std::string* result);
 
 }  // namespace net
 
-#endif  // NET_HTTP_HTTP_TRANSACTION_UNITTEST_H_
+#endif  // NET_HTTP_HTTP_TRANSACTION_TEST_UTIL_H_

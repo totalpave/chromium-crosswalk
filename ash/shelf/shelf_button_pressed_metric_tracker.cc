@@ -4,7 +4,8 @@
 
 #include "ash/shelf/shelf_button_pressed_metric_tracker.h"
 
-#include "ash/common/wm_shell.h"
+#include "ash/metrics/user_metrics_recorder.h"
+#include "ash/shell.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/time/default_tick_clock.h"
 #include "ui/views/controls/button/button.h"
@@ -16,24 +17,24 @@ const char ShelfButtonPressedMetricTracker::
         "Ash.Shelf.TimeBetweenWindowMinimizedAndActivatedActions";
 
 ShelfButtonPressedMetricTracker::ShelfButtonPressedMetricTracker()
-    : tick_clock_(new base::DefaultTickClock()),
+    : tick_clock_(base::DefaultTickClock::GetInstance()),
       time_of_last_minimize_(base::TimeTicks()),
       last_minimized_source_button_(nullptr) {}
 
-ShelfButtonPressedMetricTracker::~ShelfButtonPressedMetricTracker() {}
+ShelfButtonPressedMetricTracker::~ShelfButtonPressedMetricTracker() = default;
 
 void ShelfButtonPressedMetricTracker::ButtonPressed(
     const ui::Event& event,
     const views::Button* sender,
-    ShelfItemDelegate::PerformedAction performed_action) {
+    ShelfAction performed_action) {
   RecordButtonPressedSource(event);
   RecordButtonPressedAction(performed_action);
 
   switch (performed_action) {
-    case ShelfItemDelegate::kExistingWindowMinimized:
+    case SHELF_ACTION_WINDOW_MINIMIZED:
       SetMinimizedData(sender);
       break;
-    case ShelfItemDelegate::kExistingWindowActivated:
+    case SHELF_ACTION_WINDOW_ACTIVATED:
       if (IsSubsequentActivationEvent(sender))
         RecordTimeBetweenMinimizedAndActivated();
       break;
@@ -41,35 +42,39 @@ void ShelfButtonPressedMetricTracker::ButtonPressed(
       break;
   }
 
-  if (performed_action != ShelfItemDelegate::kExistingWindowMinimized)
+  if (performed_action != SHELF_ACTION_WINDOW_MINIMIZED)
     ResetMinimizedData();
 }
 
 void ShelfButtonPressedMetricTracker::RecordButtonPressedSource(
     const ui::Event& event) {
   if (event.IsMouseEvent()) {
-    WmShell::Get()->RecordUserMetricsAction(
+    Shell::Get()->metrics()->RecordUserMetricsAction(
         UMA_LAUNCHER_BUTTON_PRESSED_WITH_MOUSE);
   } else if (event.IsGestureEvent()) {
-    WmShell::Get()->RecordUserMetricsAction(
+    Shell::Get()->metrics()->RecordUserMetricsAction(
         UMA_LAUNCHER_BUTTON_PRESSED_WITH_TOUCH);
   }
 }
 
 void ShelfButtonPressedMetricTracker::RecordButtonPressedAction(
-    ShelfItemDelegate::PerformedAction performed_action) {
+    ShelfAction performed_action) {
   switch (performed_action) {
-    case ShelfItemDelegate::kNoAction:
-    case ShelfItemDelegate::kAppListMenuShown:
+    case SHELF_ACTION_NONE:
+    case SHELF_ACTION_APP_LIST_SHOWN:
+    case SHELF_ACTION_APP_LIST_DISMISSED:
       break;
-    case ShelfItemDelegate::kNewWindowCreated:
-      WmShell::Get()->RecordUserMetricsAction(UMA_LAUNCHER_LAUNCH_TASK);
+    case SHELF_ACTION_NEW_WINDOW_CREATED:
+      Shell::Get()->metrics()->RecordUserMetricsAction(
+          UMA_LAUNCHER_LAUNCH_TASK);
       break;
-    case ShelfItemDelegate::kExistingWindowActivated:
-      WmShell::Get()->RecordUserMetricsAction(UMA_LAUNCHER_SWITCH_TASK);
+    case SHELF_ACTION_WINDOW_ACTIVATED:
+      Shell::Get()->metrics()->RecordUserMetricsAction(
+          UMA_LAUNCHER_SWITCH_TASK);
       break;
-    case ShelfItemDelegate::kExistingWindowMinimized:
-      WmShell::Get()->RecordUserMetricsAction(UMA_LAUNCHER_MINIMIZE_TASK);
+    case SHELF_ACTION_WINDOW_MINIMIZED:
+      Shell::Get()->metrics()->RecordUserMetricsAction(
+          UMA_LAUNCHER_MINIMIZE_TASK);
       break;
   }
 }

@@ -10,19 +10,21 @@ found in the LICENSE file.
       android:versionCode="1"
       android:versionName="1.0">
 
-    <uses-sdk android:minSdkVersion="16" android:targetSdkVersion="23" />
+    <uses-sdk android:minSdkVersion="19" android:targetSdkVersion="23" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.BLUETOOTH"/>
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
+    <uses-permission android:name="android.permission.CHANGE_CONFIGURATION"/>
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.SET_TIME_ZONE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
 
     <application android:label="NativeTests"
-            android:name="org.chromium.base.BaseChromiumApplication">
+            android:name="org.chromium.native_test.NativeTestApplication">
         <uses-library android:name="android.test.runner"/>
         {% if use_native_activity == 'true' %}
         <activity android:name=".NativeUnitTestNativeActivity"
@@ -47,10 +49,23 @@ found in the LICENSE file.
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- If you change the number below, make sure to add/remove actual service classes
+             org/chromium/base/MultiprocessTestClientService*.java -->
+        {% set num_test_client_services = 10 %}
+        <meta-data android:name="org.chromium.native_test.NUM_TEST_CLIENT_SERVICES"
+                   android:value="{{ num_test_client_services }}"/>
+        {% for i in range(num_test_client_services) %}
+        <service android:name="org.chromium.base.MultiprocessTestClientService{{ i }}"
+                 android:process=":test_client_process{{ i }}"
+                 android:isolatedProcess="false"
+                 android:exported="false" />
+        {% endfor %}
     </application>
 
     <instrumentation android:name="org.chromium.native_test.NativeTestInstrumentationTestRunner"
             android:targetPackage="org.chromium.native_test"
-            android:label="Instrumentation entry point for org.chromium.native_test"/>
+            android:label="Instrumentation entry point for org.chromium.native_test"
+            chromium-junit3="true"/>
 
 </manifest>

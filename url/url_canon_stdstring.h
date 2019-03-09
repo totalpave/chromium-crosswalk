@@ -12,9 +12,10 @@
 #include <string>
 
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
+#include "base/macros.h"
 #include "base/strings/string_piece.h"
 #include "url/url_canon.h"
-#include "url/url_export.h"
 
 namespace url {
 
@@ -23,8 +24,7 @@ namespace url {
 // throughout the lifetime of this object.
 //
 // The given string will be appended to; any existing data in the string will
-// be preserved. The caller should reserve() the amount of data in the string
-// they expect to be written. We will resize if necessary, but that's slow.
+// be preserved.
 //
 // Note that when canonicalization is complete, the string will likely have
 // unused space at the end because we make the string very big to start out
@@ -34,7 +34,7 @@ namespace url {
 //
 // Therefore, the user should call Complete() before using the string that
 // this class wrote into.
-class URL_EXPORT StdStringCanonOutput : public CanonOutput {
+class COMPONENT_EXPORT(URL) StdStringCanonOutput : public CanonOutput {
  public:
   StdStringCanonOutput(std::string* str);
   ~StdStringCanonOutput() override;
@@ -46,6 +46,7 @@ class URL_EXPORT StdStringCanonOutput : public CanonOutput {
 
  protected:
   std::string* str_;
+  DISALLOW_COPY_AND_ASSIGN(StdStringCanonOutput);
 };
 
 // An extension of the Replacements class that allows the setters to use

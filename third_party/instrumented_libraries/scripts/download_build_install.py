@@ -6,6 +6,8 @@
 """Downloads, builds (with instrumentation) and installs shared libraries."""
 
 import argparse
+import ast
+import fcntl
 import os
 import platform
 import re
@@ -23,7 +25,12 @@ def unescape_flags(s):
   line, wrapping each flag in double quotes. When flags are passed via
   CFLAGS/LDFLAGS instead, double quotes must be dropped.
   """
-  return ' '.join(shlex.split(s))
+  if not s:
+    return ''
+  try:
+    return ' '.join(ast.literal_eval(s))
+  except (SyntaxError, ValueError):
+    return ' '.join(shlex.split(s))
 
 
 def real_path(path_relative_to_gyp):
@@ -42,8 +49,7 @@ class InstrumentedPackageBuilder(object):
   def __init__(self, args, clobber):
     self._cc = args.cc
     self._cxx = args.cxx
-    self._extra_configure_flags = args.extra_configure_flags
-    self._jobs = args.jobs
+    self._extra_configure_flags = unescape_flags(args.extra_configure_flags)
     self._libdir = args.libdir
     self._package = args.package
     self._patch = real_path(args.patch) if args.patch else None
@@ -92,7 +98,7 @@ class InstrumentedPackageBuilder(object):
     # libappindicator1 needs this.
     self._build_env['CSC'] = '/usr/bin/mono-csc'
 
-  def shell_call(self, command, env=None, cwd=None):
+  def shell_call(self, command, env=None, cwd=None, ignore_ret_code=False):
     """Wrapper around subprocess.Popen().
 
     Calls command with specific environment and verbosity using
@@ -102,6 +108,10 @@ class InstrumentedPackageBuilder(object):
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env=env, shell=True, cwd=cwd)
     stdout, stderr = child.communicate()
+    if ignore_ret_code:
+      if self._verbose:
+        print stdout
+      return
     if self._verbose or child.returncode:
       print stdout
     if child.returncode:
@@ -115,10 +125,16 @@ class InstrumentedPackageBuilder(object):
     """
     get_fresh_source = self._clobber or not os.path.exists(self._working_dir)
     if get_fresh_source:
-      self.shell_call('rm -rf %s' % self._working_dir)
+      shutil.rmtree(self._working_dir, ignore_errors=True)
       os.makedirs(self._working_dir)
+
+      # Download one source package at a time, otherwise, there will
+      # be connection errors in gnutls_handshake().
+      lock = open('apt-source-lock', 'w')
+      fcntl.flock(lock, fcntl.LOCK_EX)
       self.shell_call('apt-get source %s' % self._package,
                       cwd=self._working_dir)
+      fcntl.flock(lock, fcntl.LOCK_UN)
 
     (dirpath, dirnames, filenames) = os.walk(self._working_dir).next()
 
@@ -148,7 +164,7 @@ class InstrumentedPackageBuilder(object):
     For license compliance purposes, every Chromium build that includes
     instrumented libraries must include their full source code.
     """
-    self.shell_call('rm -rf %s' % self._source_archives_dir)
+    shutil.rmtree(self._source_archives_dir, ignore_errors=True)
     os.makedirs(self._source_archives_dir)
     for filename in self._source_archives:
       shutil.copy(filename, self._source_archives_dir)
@@ -161,7 +177,8 @@ class InstrumentedPackageBuilder(object):
       self.patch_source()
       self.copy_source_archives()
 
-    self.shell_call('mkdir -p %s' % self.dest_libdir())
+    if not os.path.exists(self.dest_libdir()):
+      os.makedirs(self.dest_libdir())
 
     try:
       self.build_and_install()
@@ -208,20 +225,19 @@ class InstrumentedPackageBuilder(object):
     # .pc files are not needed.
     self.shell_call('rm %s/pkgconfig -rf' % self.temp_libdir())
 
-  def make(self, args, jobs=None, env=None, cwd=None):
+  def make(self, args, env=None, cwd=None, ignore_ret_code=False):
     """Invokes `make'.
 
     Invokes `make' with the specified args, using self._build_env and
     self._source_dir by default.
     """
-    if jobs is None:
-      jobs = self._jobs
     if cwd is None:
       cwd = self._source_dir
     if env is None:
       env = self._build_env
-    cmd = ['make', '-j%s' % jobs] + args
-    self.shell_call(' '.join(cmd), env=env, cwd=cwd)
+    cmd = ['make'] + args
+    self.shell_call(' '.join(cmd), env=env, cwd=cwd,
+                    ignore_ret_code=ignore_ret_code)
 
   def make_install(self, args, **kwargs):
     """Invokes `make install'."""
@@ -231,7 +247,7 @@ class InstrumentedPackageBuilder(object):
     """Builds and installs the DSOs.
 
     Builds the package with ./configure + make, installs it to a temporary
-    location, then moves the relevant files to their permanent location. 
+    location, then moves the relevant files to their permanent location.
     """
     configure_cmd = './configure --libdir=/%s/ %s' % (
         self._libdir, self._extra_configure_flags)
@@ -242,8 +258,7 @@ class InstrumentedPackageBuilder(object):
     make_args = ['%s=%s' % (name, self.temp_dir()) for name in args]
     self.make(make_args)
 
-    # Some packages don't support parallel install. Use -j1 always.
-    self.make_install(make_args, jobs=1)
+    self.make_install(make_args)
 
     self.cleanup_after_install()
 
@@ -364,9 +379,9 @@ class NSSBuilder(InstrumentedPackageBuilder):
     temp_dir = os.path.join(self._source_dir, 'nss')
     temp_libdir = os.path.join(temp_dir, 'lib')
 
-    # Parallel build is not supported. Also, the build happens in
-    # <source_dir>/nss.
-    self.make(make_args, jobs=1, cwd=temp_dir)
+    # The build happens in <source_dir>/nss.  Building fails after all
+    # the required DSOs have been built, so ignore the error.
+    self.make(make_args, cwd=temp_dir, ignore_ret_code=True)
 
     self.fix_rpaths(temp_libdir)
 
@@ -380,11 +395,21 @@ class NSSBuilder(InstrumentedPackageBuilder):
           shutil.copy(full_path, self.dest_libdir())
 
 
+class StubBuilder(InstrumentedPackageBuilder):
+  def download_build_install(self):
+    self._touch(os.path.join(self._destdir, '%s.txt' % self._package))
+    self.shell_call('mkdir -p %s' % self.dest_libdir())
+    self._touch(os.path.join(self.dest_libdir(), '%s.so.0' % self._package))
+
+  def _touch(self, path):
+    with open(path, 'w'):
+      pass
+
+
 def main():
   parser = argparse.ArgumentParser(
       description='Download, build and install an instrumented package.')
 
-  parser.add_argument('-j', '--jobs', type=int, default=1)
   parser.add_argument('-p', '--package', required=True)
   parser.add_argument(
       '-i', '--product-dir', default='.',
@@ -427,6 +452,8 @@ def main():
     builder = LibcapBuilder(args, clobber)
   elif args.build_method == 'custom_libpci3':
     builder = Libpci3Builder(args, clobber)
+  elif args.build_method == 'stub':
+    builder = StubBuilder(args, clobber)
   else:
     raise Exception('Unrecognized build method: %s' % args.build_method)
 

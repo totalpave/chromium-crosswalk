@@ -4,8 +4,11 @@
 
 package org.chromium.chrome.browser.snackbar;
 
-import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.base.VisibleForTesting;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.snackbar.SnackbarManager.SnackbarController;
 
 /**
@@ -32,6 +35,14 @@ public class Snackbar {
     public static final int TYPE_NOTIFICATION = 1;
 
     /**
+     * Snackbars that need to persist until acknowledged. These snackbars are stored in a queue and
+     * are lower priority than both {@link #TYPE_ACTION}, and {@link #TYPE_NOTIFICATION}. These must
+     * be dismissed one by one via a click. As such, snackbars of this type MUST call
+     * {@link #setAction(String, Object)} so that there is a way to remove them.
+     */
+    public static final int TYPE_PERSISTENT = 2;
+
+    /**
      * UMA Identifiers of features using snackbar. See SnackbarIdentifier enum in histograms.
      */
     public static final int UMA_TEST_SNACKBAR = -2;
@@ -49,6 +60,23 @@ public class Snackbar {
     public static final int UMA_DOWNLOAD_FAILED = 10;
     public static final int UMA_TAB_CLOSE_UNDO = 11;
     public static final int UMA_TAB_CLOSE_ALL_UNDO = 12;
+    public static final int UMA_DOWNLOAD_DELETE_UNDO = 13;
+    public static final int UMA_SPECIAL_LOCALE = 14;
+    // Obsolete; don't use: UMA_BLIMP = 15;
+    public static final int UMA_DATA_REDUCTION_PROMO = 16;
+    public static final int UMA_HISTORY_LINK_COPIED = 17;
+    public static final int UMA_TRANSLATE_ALWAYS = 18;
+    public static final int UMA_TRANSLATE_NEVER = 19;
+    public static final int UMA_TRANSLATE_NEVER_SITE = 20;
+    public static final int UMA_SNIPPET_FETCH_FAILED = 21;
+    // Obsolete; don't use: UMA_CHROME_HOME_OPT_OUT_SURVEY = 22;
+    public static final int UMA_SNIPPET_FETCH_NO_NEW_SUGGESTIONS = 23;
+    public static final int UMA_MISSING_FILES_NO_SD_CARD = 24;
+    public static final int UMA_OFFLINE_INDICATOR = 25;
+    public static final int UMA_FEED_NTP_STREAM = 26;
+    public static final int UMA_WEBAPK_PRIVACY_DISCLOSURE = 27;
+    public static final int UMA_TWA_PRIVACY_DISCLOSURE = 28;
+    public static final int UMA_AUTOFILL_ASSISTANT_STOP_UNDO = 29;
 
     private SnackbarController mController;
     private CharSequence mText;
@@ -56,9 +84,10 @@ public class Snackbar {
     private String mActionText;
     private Object mActionData;
     private int mBackgroundColor;
+    private int mTextApperanceResId;
     private boolean mSingleLine = true;
     private int mDurationMs;
-    private Bitmap mProfileImage;
+    private Drawable mProfileImage;
     private int mType;
     private int mIdentifier = UMA_UNKNOWN;
 
@@ -81,6 +110,12 @@ public class Snackbar {
         s.mController = controller;
         s.mType = type;
         s.mIdentifier = identifier;
+        if (type == TYPE_PERSISTENT) {
+            // For persistent snackbars we set a default action text to ensure the snackbar can be
+            // closed.
+            s.mActionText =
+                    ContextUtils.getApplicationContext().getResources().getString(R.string.ok);
+        }
         return s;
     }
 
@@ -111,7 +146,7 @@ public class Snackbar {
      * If null, there won't be a profile image. The ability to have an icon is exclusive to
      * identity snackbars.
      */
-    public Snackbar setProfileImage(Bitmap profileImage) {
+    public Snackbar setProfileImage(Drawable profileImage) {
         mProfileImage = profileImage;
         return this;
     }
@@ -129,6 +164,7 @@ public class Snackbar {
      * use the default duration.
      */
     public Snackbar setDuration(int durationMs) {
+        assert !isTypePersistent() : "Persistent snackbars do not timeout.";
         mDurationMs = durationMs;
         return this;
     }
@@ -141,7 +177,20 @@ public class Snackbar {
         return this;
     }
 
-    SnackbarController getController() {
+    /**
+     * Sets the text appearance for the snackbar. If 0, the snackbar will use default text
+     * appearance.
+     */
+    public Snackbar setTextAppearance(int resId) {
+        mTextApperanceResId = resId;
+        return this;
+    }
+
+    /**
+     * @return The {@link SnackbarController} that controls this snackbar.
+     */
+    @VisibleForTesting
+    public SnackbarController getController() {
         return mController;
     }
 
@@ -165,7 +214,7 @@ public class Snackbar {
         return mSingleLine;
     }
 
-    int getDuration() {
+    public int getDuration() {
         return mDurationMs;
     }
 
@@ -181,9 +230,16 @@ public class Snackbar {
     }
 
     /**
+     * If method returns zero, then default text appearance for snackbar will be used.
+     */
+    int getTextAppearance() {
+        return mTextApperanceResId;
+    }
+
+    /**
      * If method returns null, then no profileImage will be shown in snackbar.
      */
-    Bitmap getProfileImage() {
+    Drawable getProfileImage() {
         return mProfileImage;
     }
 
@@ -193,4 +249,15 @@ public class Snackbar {
     boolean isTypeAction() {
         return mType == TYPE_ACTION;
     }
+
+    /**
+     * @return Whether the snackbar is of {@link #TYPE_PERSISTENT}.
+     */
+    boolean isTypePersistent() {
+        return mType == TYPE_PERSISTENT;
+    }
+
+    /** So tests can trigger a press on a Snackbar. */
+    @VisibleForTesting
+    public Object getActionDataForTesting() { return mActionData; }
 }

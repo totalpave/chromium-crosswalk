@@ -9,45 +9,35 @@
 #include <utility>
 
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/service/mailbox_manager.h"
-#include "gpu/gpu_export.h"
+#include "gpu/gpu_gles2_export.h"
 
 namespace gpu {
 namespace gles2 {
 
-class Texture;
-class TextureManager;
-
 // Manages resources scoped beyond the context or context group level.
-class GPU_EXPORT MailboxManagerImpl : public MailboxManager {
+class GPU_GLES2_EXPORT MailboxManagerImpl : public MailboxManager {
  public:
   MailboxManagerImpl();
+  ~MailboxManagerImpl() override;
 
   // MailboxManager implementation:
-  Texture* ConsumeTexture(const Mailbox& mailbox) override;
-  void ProduceTexture(const Mailbox& mailbox, Texture* texture) override;
+  TextureBase* ConsumeTexture(const Mailbox& mailbox) override;
+  void ProduceTexture(const Mailbox& mailbox, TextureBase* texture) override;
   bool UsesSync() override;
   void PushTextureUpdates(const SyncToken& token) override {}
   void PullTextureUpdates(const SyncToken& token) override {}
-  void TextureDeleted(Texture* texture) override;
-
- protected:
-  ~MailboxManagerImpl() override;
+  void TextureDeleted(TextureBase* texture) override;
 
  private:
-  friend class base::RefCounted<MailboxManager>;
-
-  void InsertTexture(const Mailbox& mailbox, Texture* texture);
-
   // This is a bidirectional map between mailbox and textures. We can have
   // multiple mailboxes per texture, but one texture per mailbox. We keep an
   // iterator in the MailboxToTextureMap to be able to manage changes to
   // the TextureToMailboxMap efficiently.
-  typedef std::multimap<Texture*, Mailbox> TextureToMailboxMap;
+  typedef std::multimap<TextureBase*, Mailbox> TextureToMailboxMap;
   typedef std::map<Mailbox, TextureToMailboxMap::iterator>
       MailboxToTextureMap;
 

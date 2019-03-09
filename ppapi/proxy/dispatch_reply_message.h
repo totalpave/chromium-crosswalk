@@ -11,8 +11,10 @@
 #define PPAPI_PROXY_DISPATCH_REPLY_MESSAGE_H_
 
 #include <tuple>
+#include <utility>
 
 #include "base/callback.h"
+#include "base/tuple.h"
 #include "ipc/ipc_message_macros.h"
 #include "ppapi/c/pp_errors.h"
 
@@ -21,49 +23,52 @@ namespace proxy {
 
 class ResourceMessageReplyParams;
 
-template <class ObjT, class Method>
-inline void DispatchResourceReply(ObjT* obj, Method method,
-                                  const ResourceMessageReplyParams& params,
-                                  const std::tuple<>& arg) {
-  (obj->*method)(params);
+template <typename ObjT, typename Method, typename TupleType, size_t... indices>
+inline void DispatchResourceReplyImpl(ObjT* obj,
+                                      Method method,
+                                      const ResourceMessageReplyParams& params,
+                                      TupleType&& args_tuple,
+                                      std::index_sequence<indices...>) {
+  (obj->*method)(params,
+                 std::get<indices>(std::forward<TupleType>(args_tuple))...);
 }
 
-template <class ObjT, class Method, class A>
-inline void DispatchResourceReply(ObjT* obj, Method method,
+// Runs |method| on |obj| with |params| and expanded |args_tuple|.
+// I.e. Followings are equivalent.
+//   DispatchResourceReply(obj, &Obj::Method, params, std::tie(a, b, c));
+//   obj->Method(params, a, b, c);
+template <typename ObjT, typename Method, typename TupleType>
+inline void DispatchResourceReply(ObjT* obj,
+                                  Method method,
                                   const ResourceMessageReplyParams& params,
-                                  const std::tuple<A>& arg) {
-  (obj->*method)(params, std::get<0>(arg));
+                                  TupleType&& args_tuple) {
+  constexpr size_t size = std::tuple_size<std::decay_t<TupleType>>::value;
+  DispatchResourceReplyImpl(obj, method, params,
+                            std::forward<TupleType>(args_tuple),
+                            std::make_index_sequence<size>());
 }
 
-template<class ObjT, class Method, class A, class B>
-inline void DispatchResourceReply(ObjT* obj, Method method,
-                                  const ResourceMessageReplyParams& params,
-                                  const std::tuple<A, B>& arg) {
-  (obj->*method)(params, std::get<0>(arg), std::get<1>(arg));
+template <typename CallbackType, typename TupleType, size_t... indices>
+inline void DispatchResourceReplyImpl(CallbackType&& callback,
+                                      const ResourceMessageReplyParams& params,
+                                      TupleType&& args_tuple,
+                                      std::index_sequence<indices...>) {
+  std::forward<CallbackType>(callback).Run(
+      params, std::get<indices>(std::forward<TupleType>(args_tuple))...);
 }
 
-template<class ObjT, class Method, class A, class B, class C>
-inline void DispatchResourceReply(ObjT* obj, Method method,
+// Runs |callback| with |params| and expanded |args_tuple|.
+// I.e. Followings are equivalent.
+//   DispatchResourceReply(callback, params, std::tie(a, b, c));
+//   callback.Run(params, a, b, c);
+template <typename CallbackType, typename TupleType>
+inline void DispatchResourceReply(CallbackType&& callback,
                                   const ResourceMessageReplyParams& params,
-                                  const std::tuple<A, B, C>& arg) {
-  (obj->*method)(params, std::get<0>(arg), std::get<1>(arg),
-                 std::get<2>(arg));
-}
-
-template<class ObjT, class Method, class A, class B, class C, class D>
-inline void DispatchResourceReply(ObjT* obj, Method method,
-                                  const ResourceMessageReplyParams& params,
-                                  const std::tuple<A, B, C, D>& arg) {
-  (obj->*method)(params, std::get<0>(arg), std::get<1>(arg),
-                 std::get<2>(arg), std::get<3>(arg));
-}
-
-template<class ObjT, class Method, class A, class B, class C, class D, class E>
-inline void DispatchResourceReply(ObjT* obj, Method method,
-                                  const ResourceMessageReplyParams& params,
-                                  const std::tuple<A, B, C, D, E>& arg) {
-  (obj->*method)(params, std::get<0>(arg), std::get<1>(arg),
-                 std::get<2>(arg), std::get<3>(arg), std::get<4>(arg));
+                                  TupleType&& args_tuple) {
+  constexpr size_t size = std::tuple_size<std::decay_t<TupleType>>::value;
+  DispatchResourceReplyImpl(std::forward<CallbackType>(callback), params,
+                            std::forward<TupleType>(args_tuple),
+                            std::make_index_sequence<size>());
 }
 
 // Used to dispatch resource replies. In most cases, you should not call this
@@ -119,18 +124,34 @@ void DispatchResourceReplyOrDefaultParams(
   }
 }
 
-// Template specialization for |Callback|s that only accept a
-// |ResourceMessageReplyParams|. In this case |msg| shouldn't contain any
-// arguments, so just call the |method| with the |reply_params|.
-template<class MsgClass, class Method>
+template <typename MsgClass, typename CallbackType>
 void DispatchResourceReplyOrDefaultParams(
-    base::Callback<void(const ResourceMessageReplyParams&)>* obj,
-    Method method,
+    CallbackType&& callback,
     const ResourceMessageReplyParams& reply_params,
     const IPC::Message& msg) {
+  typename MsgClass::Schema::Param msg_params;
+  // We either expect the nested message type to match, or that there is no
+  // nested message. No nested message indicates a default reply sent from
+  // the host: when the resource message handler returns an error, a reply
+  // is implicitly sent with no nested message.
   DCHECK(msg.type() == MsgClass::ID || msg.type() == 0)
       << "Resource reply message of unexpected type.";
-  (obj->*method)(reply_params);
+  if (msg.type() == MsgClass::ID && MsgClass::Read(&msg, &msg_params)) {
+    // Message type matches and the parameters were successfully read.
+    DispatchResourceReply(std::forward<CallbackType>(callback), reply_params,
+                          msg_params);
+  } else {
+    // The nested message is empty because the host handler didn't explicitly
+    // send a reply (likely), or you screwed up and didn't use the correct
+    // message type when calling this function (you should have hit the
+    // assertion above, Einstein).
+    //
+    // Dispatch the reply function with the default parameters. We explicitly
+    // use a new Params() structure since if the Read failed due to an invalid
+    // message, the params could have been partially filled in.
+    DispatchResourceReply(std::forward<CallbackType>(callback), reply_params,
+                          typename MsgClass::Schema::Param());
+  }
 }
 
 // When using PPAPI_DISPATCH_PLUGIN_RESOURCE_CALL* below, use this macro to

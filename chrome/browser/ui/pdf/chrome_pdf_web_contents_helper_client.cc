@@ -5,11 +5,6 @@
 #include "chrome/browser/ui/pdf/chrome_pdf_web_contents_helper_client.h"
 
 #include "chrome/browser/download/download_stats.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/location_bar/location_bar.h"
-#include "chrome/browser/ui/pdf/pdf_unsupported_feature.h"
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 
@@ -19,43 +14,28 @@ content::WebContents* GetWebContentsToUse(
     content::WebContents* web_contents) {
   // If we're viewing the PDF in a MimeHandlerViewGuest, use its embedder
   // WebContents.
-  auto guest_view =
+  auto* guest_view =
       extensions::MimeHandlerViewGuest::FromWebContents(web_contents);
-  if (guest_view)
-    return guest_view->embedder_web_contents();
-  return web_contents;
+  return guest_view ? guest_view->embedder_web_contents() : web_contents;
 }
 
 }  // namespace
 
-ChromePDFWebContentsHelperClient::ChromePDFWebContentsHelperClient() {
-}
+ChromePDFWebContentsHelperClient::ChromePDFWebContentsHelperClient() = default;
 
-ChromePDFWebContentsHelperClient::~ChromePDFWebContentsHelperClient() {
-}
-
-void ChromePDFWebContentsHelperClient::UpdateLocationBar(
-    content::WebContents* contents) {
-  Browser* browser = chrome::FindBrowserWithWebContents(contents);
-  if (!browser)
-    return;
-
-  BrowserWindow* window = browser->window();
-  if (!window)
-    return;
-
-  LocationBar* location_bar = window->GetLocationBar();
-  if (!location_bar)
-    return;
-
-  location_bar->UpdateOpenPDFInReaderPrompt();
-}
+ChromePDFWebContentsHelperClient::~ChromePDFWebContentsHelperClient() = default;
 
 void ChromePDFWebContentsHelperClient::UpdateContentRestrictions(
     content::WebContents* contents,
     int content_restrictions) {
+  // Speculative short-term-fix while we get at the root of
+  // https://crbug.com/752822 .
+  content::WebContents* web_contents_to_use = GetWebContentsToUse(contents);
+  if (!web_contents_to_use)
+    return;
+
   CoreTabHelper* core_tab_helper =
-      CoreTabHelper::FromWebContents(GetWebContentsToUse(contents));
+      CoreTabHelper::FromWebContents(web_contents_to_use);
   // |core_tab_helper| is NULL for WebViewGuest.
   if (core_tab_helper)
     core_tab_helper->UpdateContentRestrictions(content_restrictions);
@@ -63,10 +43,20 @@ void ChromePDFWebContentsHelperClient::UpdateContentRestrictions(
 
 void ChromePDFWebContentsHelperClient::OnPDFHasUnsupportedFeature(
     content::WebContents* contents) {
-  PDFHasUnsupportedFeature(GetWebContentsToUse(contents));
+  // There is no more Adobe plugin for PDF so there is not much we can do in
+  // this case. Maybe simply download the file.
 }
 
 void ChromePDFWebContentsHelperClient::OnSaveURL(
     content::WebContents* contents) {
   RecordDownloadSource(DOWNLOAD_INITIATED_BY_PDF_SAVE);
+}
+
+void ChromePDFWebContentsHelperClient::SetPluginCanSave(
+    content::WebContents* contents,
+    bool can_save) {
+  auto* guest_view =
+      extensions::MimeHandlerViewGuest::FromWebContents(contents);
+  if (guest_view)
+    guest_view->SetPluginCanSave(can_save);
 }

@@ -5,15 +5,9 @@
 #ifndef UI_COMPOSITOR_TEST_TEST_SUITE_H_
 #define UI_COMPOSITOR_TEST_TEST_SUITE_H_
 
-#include <memory>
-
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/test/test_suite.h"
-
-namespace base {
-class MessageLoop;
-}
 
 namespace ui {
 namespace test {
@@ -26,11 +20,8 @@ class CompositorTestSuite : public base::TestSuite {
  protected:
   // Overridden from base::TestSuite:
   void Initialize() override;
-  void Shutdown() override;
 
  private:
-  std::unique_ptr<base::MessageLoop> message_loop_;
-
   DISALLOW_COPY_AND_ASSIGN(CompositorTestSuite);
 };
 

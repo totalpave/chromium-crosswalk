@@ -42,27 +42,67 @@ var injectIframe =
     'iframe.src = "' + iframeUrl + '";\n' +
     'document.body.appendChild(iframe);\n';
 
+var runCount = 0;
 chrome.browserAction.onClicked.addListener(function(tab) {
+  runCount++;
+  if (runCount == 1) {
+    // First pass is done without granting activeTab permission, the extension
+    // shouldn't have access to tab.url here.
+    assertFalse(!!tab.url);
+    chrome.test.succeed();
+    return;
+  } else if (runCount == 3) {
+    // Third pass is done in a public session, and activeTab permission is
+    // granted to the extension. URL should be scrubbed down to the origin
+    // here (tested at the C++ side).
+    chrome.test.sendMessage(tab.url);
+    chrome.test.succeed();
+    return;
+  }
+  // Second pass is done with granting activeTab permission, the extension
+  // should have full access to the page (and also to tab.url).
+
   iframeDone = chrome.test.callbackAdded();
   cachedUrl = tab.url;
-  chrome.tabs.executeScript({ code: injectIframe }, callbackPass());
+  chrome.tabs.executeScript({code: injectIframe}, callbackPass());
   assertTrue(canXhr(tab.url));
 
   chrome.automation.getTree(callbackPass(function(rootNode) {
     assertFalse(rootNode == undefined);
-    assertEq(RoleType.rootWebArea, rootNode.role);
+    assertEq(RoleType.ROOT_WEB_AREA, rootNode.role);
   }));
 });
 
+var navigationCount = 0;
 chrome.webNavigation.onCompleted.addListener(function(details) {
-  chrome.tabs.executeScript({ code: 'true' }, callbackFail(
-         'Cannot access contents of the page. ' +
-         'Extension manifest must request permission to access the ' +
-         'respective host.'));
+  if (!details.url.endsWith('page.html'))
+    return;
+
+  navigationCount++;
+  chrome.test.sendMessage(navigationCount.toString());
+
+  // The second navigation remains on the same site, so we should still have
+  // access.
+  var expectHasAccess = navigationCount === 2;
+
+  if (expectHasAccess) {
+    chrome.tabs.executeScript({code: 'true'}, callbackPass());
+    chrome.automation.getTree(callbackPass());
+    assertTrue(canXhr(details.url));
+    return;
+  }
+
+  chrome.tabs.executeScript(
+      {code: 'true'},
+      callbackFail(
+          'Cannot access contents of the page. ' +
+          'Extension manifest must request permission to access the ' +
+          'respective host.'));
 
   chrome.automation.getTree(callbackFail(
-      'Cannot request automation tree on url "' + details.url +
-        '". Extension manifest must request permission to access this host.'));
+      'Failed request of automation on a page'));
 
   assertFalse(canXhr(details.url));
 });
+
+chrome.test.sendMessage('ready');

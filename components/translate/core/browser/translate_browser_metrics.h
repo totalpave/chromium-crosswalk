@@ -19,13 +19,15 @@ enum MetricsNameIndex {
   UMA_LOCALES_ON_DISABLED_BY_PREFS,
   UMA_UNDISPLAYABLE_LANGUAGE,
   UMA_UNSUPPORTED_LANGUAGE_AT_INITIATION,
+  UMA_TRANSLATE_SOURCE_LANGUAGE,
+  UMA_TRANSLATE_TARGET_LANGUAGE,
   UMA_MAX,
 };
 
 // When Chrome Translate is ready to translate a page, one of following reason
 // decide the next browser action.
 // Note: Don't insert any item. It will change reporting UMA value, and break
-// the UMA dashboard page. Insteads, append it at the end of enum as suggested
+// the UMA dashboard page. Instead, append it at the end of enum as suggested
 // below.
 enum InitiationStatusType {
   INITIATION_STATUS_DISABLED_BY_PREFS,
@@ -40,6 +42,16 @@ enum InitiationStatusType {
   INITIATION_STATUS_SHOW_INFOBAR,
   INITIATION_STATUS_MIME_TYPE_IS_NOT_SUPPORTED,
   INITIATION_STATUS_DISABLED_BY_KEY,
+  INITIATION_STATUS_LANGUAGE_IN_ULP,
+  INITIATION_STATUS_ABORTED_BY_RANKER,
+  INITIATION_STATUS_ABORTED_BY_TOO_OFTEN_DENIED,
+  INITIATION_STATUS_ABORTED_BY_MATCHES_PREVIOUS_LANGUAGE,
+  INITIATION_STATUS_CREATE_INFOBAR,
+  INITIATION_STATUS_SHOW_ICON,
+  INITIATION_STATUS_SUPPRESS_INFOBAR,
+  INITIATION_STATUS_SHOW_UI_PREDEFINED_TARGET_LANGUAGE,
+  INITIATION_STATUS_NO_NETWORK,
+  INITIATION_STATUS_DOESNT_NEED_TRANSLATION,
   // Insert new items here.
   INITIATION_STATUS_MAX,
 };
@@ -58,6 +70,16 @@ void ReportLocalesOnDisabledByPrefs(const std::string& locale);
 void ReportUndisplayableLanguage(const std::string& language);
 
 void ReportUnsupportedLanguageAtInitiation(const std::string& language);
+
+// Called when a request is sent to the translate server to report the source
+// language of the translated page. Buckets are labelled with CLD3LanguageCode
+// values.
+void ReportTranslateSourceLanguage(const std::string& language);
+
+// Called when a request is sent to the translate server to report the target
+// language for the translated page. Buckets are labelled with CLD3LanguageCode
+// values.
+void ReportTranslateTargetLanguage(const std::string& language);
 
 // Provides UMA entry names for unit tests.
 const char* GetMetricsName(MetricsNameIndex index);

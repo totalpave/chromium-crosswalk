@@ -4,6 +4,11 @@
 
 package org.chromium.chrome.browser.preferences.website;
 
+import android.support.annotation.Nullable;
+
+import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.chrome.browser.ContentSettingsType;
+import org.chromium.chrome.browser.preferences.website.WebsitePreferenceBridge.StorageInfoClearedCallback;
 import org.chromium.chrome.browser.util.MathUtils;
 
 import java.io.Serializable;
@@ -14,7 +19,6 @@ import java.util.List;
  * Website is a class for storing information about a website and its associated permissions.
  */
 public class Website implements Serializable {
-
     static final int INVALID_CAMERA_OR_MICROPHONE_ACCESS = 0;
     static final int CAMERA_ACCESS_ALLOWED = 1;
     static final int MICROPHONE_AND_CAMERA_ACCESS_ALLOWED = 2;
@@ -23,46 +27,61 @@ public class Website implements Serializable {
     static final int MICROPHONE_AND_CAMERA_ACCESS_DENIED = 5;
     static final int MICROPHONE_ACCESS_DENIED = 6;
 
-    private final WebsiteAddress mAddress;
-    private final String mTitle;
-    private String mSummary;
+    private final WebsiteAddress mOrigin;
+    private final WebsiteAddress mEmbedder;
 
-    private ContentSettingException mAutoplayExceptionInfo;
-    private ContentSettingException mBackgroundSyncExceptionInfo;
-    private CameraInfo mCameraInfo;
-    private ContentSettingException mCookieException;
-    private FullscreenInfo mFullscreenInfo;
-    private GeolocationInfo mGeolocationInfo;
-    private ContentSettingException mJavaScriptException;
-    private KeygenInfo mKeygenInfo;
+    /**
+     * Indexed by ContentSettingException.Type.
+     */
+    private ContentSettingException mContentSettingException[];
+    /**
+     * Indexed by PermissionInfo.Type.
+     */
+    private PermissionInfo[] mPermissionInfo;
+
     private LocalStorageInfo mLocalStorageInfo;
-    private MicrophoneInfo mMicrophoneInfo;
-    private MidiInfo mMidiInfo;
-    private NotificationInfo mNotificationInfo;
-    private ContentSettingException mPopupException;
-    private ProtectedMediaIdentifierInfo mProtectedMediaIdentifierInfo;
     private final List<StorageInfo> mStorageInfo = new ArrayList<StorageInfo>();
     private int mStorageInfoCallbacksLeft;
 
-    public Website(WebsiteAddress address) {
-        mAddress = address;
-        mTitle = address.getTitle();
+    // The collection of chooser-based permissions (e.g. USB device access) granted to this site.
+    // Each entry declares its own ContentSettingsType and so depending on how this object was
+    // built this list could contain multiple types of objects.
+    private final List<ChosenObjectInfo> mObjectInfo = new ArrayList<ChosenObjectInfo>();
+
+    public Website(WebsiteAddress origin, WebsiteAddress embedder) {
+        mOrigin = origin;
+        mEmbedder = embedder;
+        mPermissionInfo = new PermissionInfo[PermissionInfo.Type.NUM_ENTRIES];
+        mContentSettingException =
+                new ContentSettingException[ContentSettingException.Type.NUM_ENTRIES];
     }
 
     public WebsiteAddress getAddress() {
-        return mAddress;
+        return mOrigin;
     }
 
     public String getTitle() {
-        return mTitle;
+        return mOrigin.getTitle();
     }
 
     public String getSummary() {
-        return mSummary;
+        if (mEmbedder == null) return null;
+        return mEmbedder.getTitle();
     }
 
+    /**
+     * A comparison function for sorting by address (first by origin and then
+     * by embedder).
+     */
     public int compareByAddressTo(Website to) {
-        return this == to ? 0 : mAddress.compareTo(to.mAddress);
+        if (this == to) return 0;
+        int originComparison = mOrigin.compareTo(to.mOrigin);
+        if (originComparison == 0) {
+            if (mEmbedder == null) return to.mEmbedder == null ? 0 : -1;
+            if (to.mEmbedder == null) return 1;
+            return mEmbedder.compareTo(to.mEmbedder);
+        }
+        return originComparison;
     }
 
     /**
@@ -75,377 +94,96 @@ public class Website implements Serializable {
     }
 
     /**
-     * Returns what permission governs Autoplay access.
+     * @return PermissionInfo with permission details of specified type
+     *         (Camera, Clipboard, etc.).
      */
-    public ContentSetting getAutoplayPermission() {
-        return mAutoplayExceptionInfo != null ? mAutoplayExceptionInfo.getContentSetting() : null;
+    public PermissionInfo getPermissionInfo(@PermissionInfo.Type int type) {
+        return mPermissionInfo[type];
     }
 
     /**
-     * Configure Autoplay permission access setting for this site.
+     * Set PermissionInfo for permission details of specified type
+     * (Camera, Clipboard, etc.).
      */
-    public void setAutoplayPermission(ContentSetting value) {
-        if (mAutoplayExceptionInfo != null) {
-            mAutoplayExceptionInfo.setContentSetting(value);
-        }
+    public void setPermissionInfo(PermissionInfo info) {
+        mPermissionInfo[info.getType()] = info;
     }
 
     /**
-     * Sets the Autoplay exception info for this Website.
+     * @return permission value for permission of specified type.
+     *         (Camera, Clipboard, etc.).
      */
-    public void setAutoplayException(ContentSettingException exception) {
-        mAutoplayExceptionInfo = exception;
+    public @ContentSettingValues @Nullable Integer getPermission(@PermissionInfo.Type int type) {
+        return getPermissionInfo(type) != null ? getPermissionInfo(type).getContentSetting() : null;
     }
 
     /**
-     * Sets the background sync setting exception info for this website.
+     * Set permission value for permission of specified type
+     * (Camera, Clipboard, etc.).
      */
-    public void setBackgroundSyncException(ContentSettingException exception) {
-        mBackgroundSyncExceptionInfo = exception;
+    public void setPermission(@PermissionInfo.Type int type, @ContentSettingValues int value) {
+        if (getPermissionInfo(type) != null) getPermissionInfo(type).setContentSetting(value);
     }
 
     /**
-     * @return what permission governs background sync.
+     * Returns the exception info for this Website for specified type.
      */
-    public ContentSetting getBackgroundSyncPermission() {
-        return mBackgroundSyncExceptionInfo != null
-                ? mBackgroundSyncExceptionInfo.getContentSetting()
+    public ContentSettingException getContentSettingException(
+            @ContentSettingException.Type int type) {
+        return mContentSettingException[type];
+    }
+
+    /**
+     * Sets the exception info for this Website for specified type.
+     */
+    public void setContentSettingException(
+            @ContentSettingException.Type int type, ContentSettingException exception) {
+        mContentSettingException[type] = exception;
+    }
+
+    /**
+     * Returns what ContentSettingException governs the setting of specified type.
+     */
+    public @ContentSettingValues @Nullable Integer getContentSettingPermission(
+            @ContentSettingException.Type int type) {
+        return mContentSettingException[type] != null
+                ? mContentSettingException[type].getContentSetting()
                 : null;
     }
 
     /**
-     * Configures the background sync setting for this site.
+     * Sets the permission.
      */
-    public void setBackgroundSyncPermission(ContentSetting value) {
-        if (mBackgroundSyncExceptionInfo != null) {
-            mBackgroundSyncExceptionInfo.setContentSetting(value);
+    public void setContentSettingPermission(
+            @ContentSettingException.Type int type, @ContentSettingValues int value) {
+        if (type == ContentSettingException.Type.ADS) {
+            // It is possible to set the permission without having an existing exception,
+            // because we can show the BLOCK state even when this permission is set to the
+            // default. In that case, just set an exception now to BLOCK to enable changing the
+            // permission.
+            if (mContentSettingException[type] == null) {
+                mContentSettingException[type] =
+                        new ContentSettingException(ContentSettingsType.CONTENT_SETTINGS_TYPE_ADS,
+                                getAddress().getOrigin(), ContentSettingValues.BLOCK, "");
+            }
+        } else if (type == ContentSettingException.Type.SOUND) {
+            // It is possible to set the permission without having an existing exception,
+            // because we always show the sound permission in Site Settings.
+            if (mContentSettingException[type] == null) {
+                mContentSettingException[type] =
+                        new ContentSettingException(ContentSettingsType.CONTENT_SETTINGS_TYPE_SOUND,
+                                getAddress().getHost(), value, "");
+            }
+            if (value == ContentSettingValues.BLOCK) {
+                RecordUserAction.record("SoundContentSetting.MuteBy.SiteSettings");
+            } else {
+                RecordUserAction.record("SoundContentSetting.UnmuteBy.SiteSettings");
+            }
+            // We want setContentSetting to be called even after calling setSoundException
+            // above because this will trigger the actual change on the PrefServiceBridge.
         }
-    }
-
-    /**
-     * Sets camera capture info class.
-     */
-    public void setCameraInfo(CameraInfo info) {
-        mCameraInfo = info;
-        WebsiteAddress embedder = WebsiteAddress.create(info.getEmbedder());
-        if (embedder != null) {
-            mSummary = embedder.getTitle();
-        }
-    }
-
-    public CameraInfo getCameraInfo() {
-        return mCameraInfo;
-    }
-
-    /**
-     * Returns what setting governs camera capture access.
-     */
-    public ContentSetting getCameraPermission() {
-        return mCameraInfo != null ? mCameraInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure camera capture setting for this site.
-     */
-    public void setCameraPermission(ContentSetting value) {
-        if (mCameraInfo != null) mCameraInfo.setContentSetting(value);
-    }
-
-    /**
-     * Sets the Cookie exception info for this site.
-     */
-    public void setCookieException(ContentSettingException exception) {
-        mCookieException = exception;
-    }
-
-    public ContentSettingException getCookieException() {
-        return mCookieException;
-    }
-
-    /**
-     * Gets the permission that governs cookie preferences.
-     */
-    public ContentSetting getCookiePermission() {
-        return mCookieException != null ? mCookieException.getContentSetting() : null;
-    }
-
-    /**
-     * Sets the permission that govers cookie preferences for this site.
-     */
-    public void setCookiePermission(ContentSetting value) {
-        if (mCookieException != null) {
-            mCookieException.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Set fullscreen permission information class.
-     *
-     * @param info Fullscreen information about the website.
-     */
-    public void setFullscreenInfo(FullscreenInfo info) {
-        mFullscreenInfo = info;
-        WebsiteAddress embedder = WebsiteAddress.create(info.getEmbedder());
-        if (embedder != null) {
-            mSummary = embedder.getTitle();
-        }
-    }
-
-    /**
-     * @return fullscreen information of the site.
-     */
-    public FullscreenInfo getFullscreenInfo() {
-        return mFullscreenInfo;
-    }
-
-    /**
-     * @return what permission governs fullscreen access.
-     */
-    public ContentSetting getFullscreenPermission() {
-        return mFullscreenInfo != null ? mFullscreenInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure fullscreen setting for this site.
-     *
-     * @param value Content setting for fullscreen permission.
-     */
-    public void setFullscreenPermission(ContentSetting value) {
-        if (mFullscreenInfo != null) {
-            mFullscreenInfo.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Sets the GeoLocationInfo object for this Website.
-     */
-    public void setGeolocationInfo(GeolocationInfo info) {
-        mGeolocationInfo = info;
-        WebsiteAddress embedder = WebsiteAddress.create(info.getEmbedder());
-        if (embedder != null) {
-            mSummary = embedder.getTitle();
-        }
-    }
-
-    public GeolocationInfo getGeolocationInfo() {
-        return mGeolocationInfo;
-    }
-
-    /**
-     * Returns what permission governs geolocation access.
-     */
-    public ContentSetting getGeolocationPermission() {
-        return mGeolocationInfo != null ? mGeolocationInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure geolocation access setting for this site.
-     */
-    public void setGeolocationPermission(ContentSetting value) {
-        if (mGeolocationInfo != null) {
-            mGeolocationInfo.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Returns what permission governs JavaScript access.
-     */
-    public ContentSetting getJavaScriptPermission() {
-        return mJavaScriptException != null ? mJavaScriptException.getContentSetting() : null;
-    }
-
-    /**
-     * Configure JavaScript permission access setting for this site.
-     */
-    public void setJavaScriptPermission(ContentSetting value) {
-        if (mJavaScriptException != null) {
-            mJavaScriptException.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Sets the JavaScript exception info for this Website.
-     */
-    public void setJavaScriptException(ContentSettingException exception) {
-        mJavaScriptException = exception;
-    }
-
-    /**
-     * Sets the KeygenInfo object for this Website.
-     */
-    public void setKeygenInfo(KeygenInfo info) {
-        mKeygenInfo = info;
-        WebsiteAddress embedder = WebsiteAddress.create(info.getEmbedder());
-        if (embedder != null) {
-            mSummary = embedder.getTitle();
-        }
-    }
-
-    public KeygenInfo getKeygenInfo() {
-        return mKeygenInfo;
-    }
-
-    /**
-     * Returns what permission governs keygen access.
-     */
-    public ContentSetting getKeygenPermission() {
-        return mKeygenInfo != null ? mKeygenInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure keygen access setting for this site.
-     */
-    public void setKeygenPermission(ContentSetting value) {
-        if (mKeygenInfo != null) {
-            mKeygenInfo.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Sets microphone capture info class.
-     */
-    public void setMicrophoneInfo(MicrophoneInfo info) {
-        mMicrophoneInfo = info;
-        WebsiteAddress embedder = WebsiteAddress.create(info.getEmbedder());
-        if (embedder != null) {
-            mSummary = embedder.getTitle();
-        }
-    }
-
-    public MicrophoneInfo getMicrophoneInfo() {
-        return mMicrophoneInfo;
-    }
-
-    /**
-     * Returns what setting governs microphone capture access.
-     */
-    public ContentSetting getMicrophonePermission() {
-        return mMicrophoneInfo != null ? mMicrophoneInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure microphone capture setting for this site.
-     */
-    public void setMicrophonePermission(ContentSetting value) {
-        if (mMicrophoneInfo != null) mMicrophoneInfo.setContentSetting(value);
-    }
-
-    /**
-     * Sets the MidiInfo object for this Website.
-     */
-    public void setMidiInfo(MidiInfo info) {
-        mMidiInfo = info;
-        WebsiteAddress embedder = WebsiteAddress.create(info.getEmbedder());
-        if (embedder != null) {
-            mSummary = embedder.getTitle();
-        }
-    }
-
-    public MidiInfo getMidiInfo() {
-        return mMidiInfo;
-    }
-
-    /**
-     * Returns what permission governs MIDI usage access.
-     */
-    public ContentSetting getMidiPermission() {
-        return mMidiInfo != null ? mMidiInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure Midi usage access setting for this site.
-     */
-    public void setMidiPermission(ContentSetting value) {
-        if (mMidiInfo != null) {
-            mMidiInfo.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Sets Notification access permission information class.
-     */
-    public void setNotificationInfo(NotificationInfo info) {
-        mNotificationInfo = info;
-    }
-
-    public NotificationInfo getNotificationInfo() {
-        return mNotificationInfo;
-    }
-
-    /**
-     * Returns what setting governs notification access.
-     */
-    public ContentSetting getNotificationPermission() {
-        return mNotificationInfo != null ? mNotificationInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure notification setting for this site.
-     */
-    public void setNotificationPermission(ContentSetting value) {
-        if (mNotificationInfo != null) {
-            mNotificationInfo.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Sets the Popup exception info for this Website.
-     */
-    public void setPopupException(ContentSettingException exception) {
-        mPopupException = exception;
-    }
-
-    public ContentSettingException getPopupException() {
-        return mPopupException;
-    }
-
-    /**
-     * Returns what permission governs Popup permission.
-     */
-    public ContentSetting getPopupPermission() {
-        if (mPopupException != null) return mPopupException.getContentSetting();
-        return null;
-    }
-
-    /**
-     * Configure Popup permission access setting for this site.
-     */
-    public void setPopupPermission(ContentSetting value) {
-        if (mPopupException != null) {
-            mPopupException.setContentSetting(value);
-        }
-    }
-
-    /**
-     * Sets protected media identifier access permission information class.
-     */
-    public void setProtectedMediaIdentifierInfo(ProtectedMediaIdentifierInfo info) {
-        mProtectedMediaIdentifierInfo = info;
-        WebsiteAddress embedder = WebsiteAddress.create(info.getEmbedder());
-        if (embedder != null) {
-            mSummary = embedder.getTitle();
-        }
-    }
-
-    public ProtectedMediaIdentifierInfo getProtectedMediaIdentifierInfo() {
-        return mProtectedMediaIdentifierInfo;
-    }
-
-    /**
-     * Returns what permission governs Protected Media Identifier access.
-     */
-    public ContentSetting getProtectedMediaIdentifierPermission() {
-        return mProtectedMediaIdentifierInfo != null
-                ? mProtectedMediaIdentifierInfo.getContentSetting() : null;
-    }
-
-    /**
-     * Configure Protected Media Identifier access setting for this site.
-     */
-    public void setProtectedMediaIdentifierPermission(ContentSetting value) {
-        if (mProtectedMediaIdentifierInfo != null) {
-            mProtectedMediaIdentifierInfo.setContentSetting(value);
-        }
+        if (mContentSettingException[type] != null)
+            mContentSettingException[type].setContentSetting(value);
     }
 
     public void setLocalStorageInfo(LocalStorageInfo info) {
@@ -465,41 +203,45 @@ public class Website implements Serializable {
     }
 
     public void clearAllStoredData(final StoredDataClearedCallback callback) {
+        // Wait for callbacks from each mStorageInfo and another callback from
+        // mLocalStorageInfo.
+        mStorageInfoCallbacksLeft = mStorageInfo.size() + 1;
+        StorageInfoClearedCallback clearedCallback = () -> {
+            if (--mStorageInfoCallbacksLeft == 0) callback.onStoredDataCleared();
+        };
         if (mLocalStorageInfo != null) {
-            mLocalStorageInfo.clear();
+            mLocalStorageInfo.clear(clearedCallback);
             mLocalStorageInfo = null;
-        }
-        mStorageInfoCallbacksLeft = mStorageInfo.size();
-        if (mStorageInfoCallbacksLeft > 0) {
-            for (StorageInfo info : mStorageInfo) {
-                info.clear(new WebsitePreferenceBridge.StorageInfoClearedCallback() {
-                    @Override
-                    public void onStorageInfoCleared() {
-                        if (--mStorageInfoCallbacksLeft == 0) callback.onStoredDataCleared();
-                    }
-                });
-            }
-            mStorageInfo.clear();
         } else {
-            callback.onStoredDataCleared();
+            clearedCallback.onStorageInfoCleared();
         }
+        for (StorageInfo info : mStorageInfo) info.clear(clearedCallback);
+        mStorageInfo.clear();
     }
 
     /**
      * An interface to implement to get a callback when storage info has been cleared.
      */
-    public interface StoredDataClearedCallback {
-        public void onStoredDataCleared();
-    }
+    public interface StoredDataClearedCallback { public void onStoredDataCleared(); }
 
     public long getTotalUsage() {
         long usage = 0;
-        if (mLocalStorageInfo != null) {
-            usage += mLocalStorageInfo.getSize();
-        }
-        for (StorageInfo info : mStorageInfo) {
-            usage += info.getSize();
-        }
+        if (mLocalStorageInfo != null) usage += mLocalStorageInfo.getSize();
+        for (StorageInfo info : mStorageInfo) usage += info.getSize();
         return usage;
+    }
+
+    /**
+     * Add information about an object the user has granted permission for this site to access.
+     */
+    public void addChosenObjectInfo(ChosenObjectInfo info) {
+        mObjectInfo.add(info);
+    }
+
+    /**
+     * Returns the set of objects this website has been granted permission to access.
+     */
+    public List<ChosenObjectInfo> getChosenObjectInfo() {
+        return new ArrayList<ChosenObjectInfo>(mObjectInfo);
     }
 }

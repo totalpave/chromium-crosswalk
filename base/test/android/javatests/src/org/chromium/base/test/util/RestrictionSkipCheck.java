@@ -9,12 +9,10 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.text.TextUtils;
 
-import junit.framework.TestCase;
+import org.junit.runners.model.FrameworkMethod;
 
 import org.chromium.base.Log;
 import org.chromium.base.SysUtils;
-
-import java.lang.reflect.Method;
 
 /**
  * Checks if any restrictions exist and skip the test if it meets those restrictions.
@@ -29,16 +27,20 @@ public class RestrictionSkipCheck extends SkipCheck {
         mTargetContext = targetContext;
     }
 
-    @Override
-    public boolean shouldSkip(TestCase testCase) {
-        Method method = getTestMethod(testCase);
-        if (method == null) return true;
+    protected Context getTargetContext() {
+        return mTargetContext;
+    }
 
-        for (Restriction restriction : getAnnotations(method, Restriction.class)) {
+    @Override
+    public boolean shouldSkip(FrameworkMethod frameworkMethod) {
+        if (frameworkMethod == null) return true;
+
+        for (Restriction restriction : AnnotationProcessingUtils.getAnnotations(
+                     frameworkMethod.getMethod(), Restriction.class)) {
             for (String restrictionVal : restriction.value()) {
                 if (restrictionApplies(restrictionVal)) {
-                    Log.i(TAG, "Test " + testCase.getClass().getName() + "#"
-                            + testCase.getName() + " skipped because of restriction "
+                    Log.i(TAG, "Test " + frameworkMethod.getDeclaringClass().getName() + "#"
+                            + frameworkMethod.getName() + " skipped because of restriction "
                             + restriction);
                     return true;
                 }
@@ -58,6 +60,10 @@ public class RestrictionSkipCheck extends SkipCheck {
         }
         if (TextUtils.equals(restriction, Restriction.RESTRICTION_TYPE_INTERNET)
                 && !isNetworkAvailable()) {
+            return true;
+        }
+        if (TextUtils.equals(restriction, Restriction.RESTRICTION_TYPE_HAS_CAMERA)
+                && !SysUtils.hasCamera(mTargetContext)) {
             return true;
         }
         return false;

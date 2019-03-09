@@ -3,12 +3,19 @@
 // found in the LICENSE file.
 
 #include "base/process/memory.h"
+#include "base/stl_util.h"
+
+#include <windows.h>  // Must be in front of other Windows header files.
 
 #include <new.h>
 #include <psapi.h>
 #include <stddef.h>
 
-#include "base/logging.h"
+#if defined(__clang__)
+// This global constructor is trivial and non-racy (per being const).
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wglobal-constructors"
+#endif
 
 // malloc_unchecked is required to implement UncheckedMalloc properly.
 // It's provided by allocator_shim_win.cc but since that's not always present,
@@ -17,9 +24,13 @@ typedef void* (*MallocFn)(size_t);
 extern "C" void* (*const malloc_unchecked)(size_t);
 extern "C" void* (*const malloc_default)(size_t) = &malloc;
 
+#if defined(__clang__)
+#pragma clang diagnostic pop  // -Wglobal-constructors
+#endif
+
 #if defined(_M_IX86)
 #pragma comment(linker, "/alternatename:_malloc_unchecked=_malloc_default")
-#elif defined(_M_X64) || defined(_M_ARM)
+#elif defined(_M_X64) || defined(_M_ARM) || defined(_M_ARM64)
 #pragma comment(linker, "/alternatename:malloc_unchecked=malloc_default")
 #else
 #error Unsupported platform
@@ -30,24 +41,29 @@ namespace base {
 namespace {
 
 #pragma warning(push)
-#pragma warning(disable: 4702)
+#pragma warning(disable: 4702)  // Unreachable code after the _exit.
 
-int OnNoMemory(size_t size) {
+NOINLINE int OnNoMemory(size_t size) {
   // Kill the process. This is important for security since most of code
   // does not check the result of memory allocation.
-  LOG(FATAL) << "Out of memory, size = " << size;
+  // https://msdn.microsoft.com/en-us/library/het71c37.aspx
+  // Pass the size of the failed request in an exception argument.
+  ULONG_PTR exception_args[] = {size};
+  ::RaiseException(win::kOomExceptionCode, EXCEPTION_NONCONTINUABLE,
+                   base::size(exception_args), exception_args);
 
   // Safety check, make sure process exits here.
-  _exit(1);
+  _exit(win::kOomExceptionCode);
   return 0;
 }
 
 #pragma warning(pop)
 
-// HeapSetInformation function pointer.
-typedef BOOL (WINAPI* HeapSetFn)(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T);
-
 }  // namespace
+
+void TerminateBecauseOutOfMemory(size_t size) {
+  OnNoMemory(size);
+}
 
 void EnableTerminationOnHeapCorruption() {
   // Ignore the result code. Supported on XP SP3 and Vista.

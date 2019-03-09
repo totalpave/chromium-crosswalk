@@ -1,7 +1,6 @@
 /* Copyright (c) 2013 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 #terms-of-service {
   padding: 70px 17px 21px;
@@ -13,8 +12,8 @@
 }
 
 #terms-of-service .step-contents {
-  -webkit-margin-start: 32px;
   margin-bottom: 49px;
+  margin-inline-start: 32px;
 }
 
 #terms-of-service h1 {
@@ -32,13 +31,17 @@
 }
 
 #tos-container {
-  -webkit-margin-end: -2px;
-  overflow: auto;
+  margin-inline-end: -2px;
   width: 630px;
 }
 
 #tos-content {
-  padding: 8px 13px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 8px 13px 0 13px;
 }
 
 #terms-of-service h2 {
@@ -47,7 +50,8 @@
 }
 
 #tos-content-main {
-  white-space: pre-wrap;
+  display: block;
+  flex: 1;
 }
 
 #tos-loading,
@@ -77,6 +81,7 @@
 
 .step.tos-loading #tos-loading {
   display: -webkit-flex;
+  min-height: 0;
 }
 
 .step.error #tos-content,
@@ -86,8 +91,9 @@
 
 .step.error #tos-error {
   display: -webkit-flex;
+  min-height: 0;
 }
 
 #terms-of-service.error #tos-back-button {
-  -webkit-margin-end: 1px;
+  margin-inline-end: 1px;
 }

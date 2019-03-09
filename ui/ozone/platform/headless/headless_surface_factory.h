@@ -5,33 +5,41 @@
 #ifndef UI_OZONE_PLATFORM_HEADLESS_HEADLESS_SURFACE_FACTORY_H_
 #define UI_OZONE_PLATFORM_HEADLESS_HEADLESS_SURFACE_FACTORY_H_
 
+#include <memory>
+#include <vector>
+
+#include "base/files/file_path.h"
 #include "base/macros.h"
+#include "ui/ozone/public/gl_ozone.h"
 #include "ui/ozone/public/surface_factory_ozone.h"
 
 namespace ui {
 
-class HeadlessWindowManager;
-
 class HeadlessSurfaceFactory : public SurfaceFactoryOzone {
  public:
-  HeadlessSurfaceFactory();
-  explicit HeadlessSurfaceFactory(HeadlessWindowManager* window_manager);
+  explicit HeadlessSurfaceFactory(base::FilePath base_path);
   ~HeadlessSurfaceFactory() override;
 
+  base::FilePath GetPathForWidget(gfx::AcceleratedWidget widget);
+
   // SurfaceFactoryOzone:
+  std::vector<gl::GLImplementation> GetAllowedGLImplementations() override;
+  GLOzone* GetGLOzone(gl::GLImplementation implementation) override;
   std::unique_ptr<SurfaceOzoneCanvas> CreateCanvasForWidget(
-      gfx::AcceleratedWidget w) override;
-  bool LoadEGLGLES2Bindings(
-      AddGLLibraryCallback add_gl_library,
-      SetGLGetProcAddressProcCallback set_gl_get_proc_address) override;
-  scoped_refptr<NativePixmap> CreateNativePixmap(
+      gfx::AcceleratedWidget widget) override;
+  scoped_refptr<gfx::NativePixmap> CreateNativePixmap(
       gfx::AcceleratedWidget widget,
       gfx::Size size,
       gfx::BufferFormat format,
       gfx::BufferUsage usage) override;
 
  private:
-  HeadlessWindowManager* window_manager_;
+  void CheckBasePath() const;
+
+  // Base path for window output PNGs.
+  base::FilePath base_path_;
+
+  std::unique_ptr<GLOzone> swiftshader_implementation_;
 
   DISALLOW_COPY_AND_ASSIGN(HeadlessSurfaceFactory);
 };

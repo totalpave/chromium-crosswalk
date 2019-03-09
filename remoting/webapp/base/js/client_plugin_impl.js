@@ -16,6 +16,14 @@
 /** @suppress {duplicate} */
 var remoting = remoting || {};
 
+/**
+ * @type {string} The host configuration which will be sent to host to control
+ *     its experiment behavior. We do not have a short term plan to support host
+ *     experiment in WebApp, so this variable can only be controlled by
+ *     developer console, and it's for debugging purpose only.
+ */
+remoting.hostConfiguration = '';
+
 /** @constructor */
 remoting.ClientPluginMessage = function() {
   /** @type {string} */
@@ -43,7 +51,7 @@ remoting.ClientPluginImpl = function(container, capabilities) {
   /** @private {Array<string>} */
   this.capabilities_ = capabilities;
 
-  /** @private {remoting.ClientPlugin.ConnectionEventHandler} */
+  /** @private {remoting.ClientSession} */
   this.connectionEventHandler_ = null;
 
   /** @private {?function(string, number, number)} */
@@ -257,6 +265,9 @@ remoting.ClientPluginImpl.prototype.handleMessageMethod_ = function(message) {
     } else if (message.method == 'onFirstFrameReceived') {
       handler.onFirstFrameReceived();
 
+    } else if (message.method == 'networkInfo') {
+      handler.getLogger().setNetworkInterfaceCount(
+          base.getNumberAttr(message.data, 'interfaceCount'));
     }
   }
 
@@ -270,10 +281,16 @@ remoting.ClientPluginImpl.prototype.handleMessageMethod_ = function(message) {
     base.getNumberAttr(message.data, 'videoBandwidth');
     base.getNumberAttr(message.data, 'videoFrameRate');
     base.getNumberAttr(message.data, 'captureLatency');
+    base.getNumberAttr(message.data, 'maxCaptureLatency');
     base.getNumberAttr(message.data, 'encodeLatency');
+    base.getNumberAttr(message.data, 'maxEncodeLatency');
     base.getNumberAttr(message.data, 'decodeLatency');
+    base.getNumberAttr(message.data, 'maxDecodeLatency');
     base.getNumberAttr(message.data, 'renderLatency');
+    base.getNumberAttr(message.data, 'maxRenderLatency');
     base.getNumberAttr(message.data, 'roundtripLatency');
+    base.getNumberAttr(message.data, 'maxRoundtripLatency');
+
     this.perfStats_ =
         /** @type {remoting.ClientSession.PerfStats} */ (message.data);
 
@@ -442,6 +459,7 @@ remoting.ClientPluginImpl.prototype.connectWithExperiments_ = function(
 
   this.plugin_.postMessage(JSON.stringify(
       { method: 'delegateLargeCursors', data: {} }));
+
   this.credentials_ = credentialsProvider;
   this.useAsyncPinDialog_();
   this.plugin_.postMessage(JSON.stringify({
@@ -456,7 +474,8 @@ remoting.ClientPluginImpl.prototype.connectWithExperiments_ = function(
       clientPairingId: credentialsProvider.getPairingInfo().clientId,
       clientPairedSecret: credentialsProvider.getPairingInfo().sharedSecret,
       keyFilter: keyFilter,
-      experiments: experiments.join(" ")
+      experiments: experiments.join(" "),
+      hostConfiguration: remoting.hostConfiguration
     }
   }));
 };

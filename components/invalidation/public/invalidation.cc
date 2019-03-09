@@ -114,14 +114,14 @@ void Invalidation::SetAckHandler(
 }
 
 bool Invalidation::SupportsAcknowledgement() const {
-  return !!ack_handler_task_runner_.get();
+  return !!ack_handler_task_runner_;
 }
 
 void Invalidation::Acknowledge() const {
   if (SupportsAcknowledgement()) {
     ack_handler_task_runner_->PostTask(
-        FROM_HERE,
-        base::Bind(&AckHandler::Acknowledge, ack_handler_, id_, ack_handle_));
+        FROM_HERE, base::BindOnce(&AckHandler::Acknowledge, ack_handler_, id_,
+                                  ack_handle_));
   }
 }
 
@@ -129,7 +129,7 @@ void Invalidation::Drop() {
   if (SupportsAcknowledgement()) {
     ack_handler_task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(&AckHandler::Drop, ack_handler_, id_, ack_handle_));
+        base::BindOnce(&AckHandler::Drop, ack_handler_, id_, ack_handle_));
   }
 }
 
@@ -140,12 +140,12 @@ bool Invalidation::Equals(const Invalidation& other) const {
 
 std::unique_ptr<base::DictionaryValue> Invalidation::ToValue() const {
   std::unique_ptr<base::DictionaryValue> value(new base::DictionaryValue());
-  value->Set(kObjectIdKey, ObjectIdToValue(id_).release());
+  value->Set(kObjectIdKey, ObjectIdToValue(id_));
   if (is_unknown_version_) {
     value->SetBoolean(kIsUnknownVersionKey, true);
   } else {
     value->SetBoolean(kIsUnknownVersionKey, false);
-    value->SetString(kVersionKey, base::Int64ToString(version_));
+    value->SetString(kVersionKey, base::NumberToString(version_));
     value->SetString(kPayloadKey, payload_);
   }
   return value;
@@ -155,7 +155,7 @@ std::string Invalidation::ToString() const {
   std::string output;
   JSONStringValueSerializer serializer(&output);
   serializer.set_pretty_print(true);
-  serializer.Serialize(*ToValue().get());
+  serializer.Serialize(*ToValue());
   return output;
 }
 

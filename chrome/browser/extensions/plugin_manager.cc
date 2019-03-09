@@ -2,24 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/extensions/plugin_manager.h"
+
 #include "base/files/file_path.h"
 #include "base/lazy_instance.h"
-#include "base/path_service.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/plugin_manager.h"
 #include "chrome/browser/plugins/chrome_plugin_service_filter.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/chrome_content_client.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/extensions/api/plugins/plugins_handler.h"
 #include "content/public/browser/plugin_service.h"
 #include "content/public/common/pepper_plugin_info.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/mime_types_handler.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
 
-#if !defined(DISABLE_NACL)
+#if BUILDFLAG(ENABLE_NACL)
 #include "components/nacl/common/nacl_constants.h"
 #endif
 
@@ -36,25 +38,24 @@ PluginManager::PluginManager(content::BrowserContext* context)
 PluginManager::~PluginManager() {
 }
 
-static base::LazyInstance<BrowserContextKeyedAPIFactory<PluginManager> >
-    g_factory = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BrowserContextKeyedAPIFactory<PluginManager>>::
+    DestructorAtExit g_plugin_manager_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<PluginManager>*
 PluginManager::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_plugin_manager_factory.Pointer();
 }
 
 void PluginManager::OnExtensionLoaded(content::BrowserContext* browser_context,
                                       const Extension* extension) {
   bool plugins_or_nacl_changed = false;
-#if !defined(DISABLE_NACL)
+#if BUILDFLAG(ENABLE_NACL)
   const NaClModuleInfo::List* nacl_modules =
       NaClModuleInfo::GetNaClModules(extension);
   if (nacl_modules) {
     plugins_or_nacl_changed = true;
-    for (NaClModuleInfo::List::const_iterator module = nacl_modules->begin();
-         module != nacl_modules->end();
+    for (auto module = nacl_modules->begin(); module != nacl_modules->end();
          ++module) {
       RegisterNaClModule(*module);
     }
@@ -70,9 +71,9 @@ void PluginManager::OnExtensionLoaded(content::BrowserContext* browser_context,
     info.type = content::WebPluginInfo::PLUGIN_TYPE_BROWSER_PLUGIN;
     info.name = base::UTF8ToUTF16(extension->name());
     info.path = handler->GetPluginPath();
+    info.background_color = handler->GetBackgroundColor();
 
-    for (std::set<std::string>::const_iterator mime_type =
-         handler->mime_type_set().begin();
+    for (auto mime_type = handler->mime_type_set().begin();
          mime_type != handler->mime_type_set().end(); ++mime_type) {
       content::WebPluginMimeType mime_type_info;
       mime_type_info.mime_type = *mime_type;
@@ -95,15 +96,14 @@ void PluginManager::OnExtensionLoaded(content::BrowserContext* browser_context,
 void PluginManager::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
-    UnloadedExtensionInfo::Reason reason) {
+    UnloadedExtensionReason reason) {
   bool plugins_or_nacl_changed = false;
-#if !defined(DISABLE_NACL)
+#if BUILDFLAG(ENABLE_NACL)
   const NaClModuleInfo::List* nacl_modules =
       NaClModuleInfo::GetNaClModules(extension);
   if (nacl_modules) {
     plugins_or_nacl_changed = true;
-    for (NaClModuleInfo::List::const_iterator module = nacl_modules->begin();
-         module != nacl_modules->end();
+    for (auto module = nacl_modules->begin(); module != nacl_modules->end();
          ++module) {
       UnregisterNaClModule(*module);
     }
@@ -123,7 +123,7 @@ void PluginManager::OnExtensionUnloaded(
     PluginService::GetInstance()->PurgePluginListCache(profile_, false);
 }
 
-#if !defined(DISABLE_NACL)
+#if BUILDFLAG(ENABLE_NACL)
 
 void PluginManager::RegisterNaClModule(const NaClModuleInfo& info) {
   DCHECK(FindNaClModule(info.url) == nacl_module_list_.end());
@@ -131,7 +131,7 @@ void PluginManager::RegisterNaClModule(const NaClModuleInfo& info) {
 }
 
 void PluginManager::UnregisterNaClModule(const NaClModuleInfo& info) {
-  NaClModuleInfo::List::iterator iter = FindNaClModule(info.url);
+  auto iter = FindNaClModule(info.url);
   DCHECK(iter != nacl_module_list_.end());
   nacl_module_list_.erase(iter);
 }
@@ -141,11 +141,10 @@ void PluginManager::UpdatePluginListWithNaClModules() {
   // there is a MIME type that module wants to handle, so we need to add that
   // MIME type to plugins which handle NaCl modules in order to allow the
   // individual modules to handle these types.
-  base::FilePath path;
-  if (!PathService::Get(chrome::FILE_NACL_PLUGIN, &path))
-    return;
+  static const base::NoDestructor<base::FilePath> path(
+      ChromeContentClient::kNaClPluginFileName);
   const content::PepperPluginInfo* pepper_info =
-      PluginService::GetInstance()->GetRegisteredPpapiPluginInfo(path);
+      PluginService::GetInstance()->GetRegisteredPpapiPluginInfo(*path);
   if (!pepper_info)
     return;
 
@@ -168,11 +167,9 @@ void PluginManager::UpdatePluginListWithNaClModules() {
         // manifest file.
         content::WebPluginMimeType mime_type_info;
         mime_type_info.mime_type = iter->mime_type;
-        mime_type_info.additional_param_names.push_back(
-            base::UTF8ToUTF16("nacl"));
-        mime_type_info.additional_param_values.push_back(
-            base::UTF8ToUTF16(iter->url.spec()));
-        info.mime_types.push_back(mime_type_info);
+        mime_type_info.additional_params.emplace_back(
+            base::UTF8ToUTF16("nacl"), base::UTF8ToUTF16(iter->url.spec()));
+        info.mime_types.emplace_back(std::move(mime_type_info));
       }
 
       PluginService::GetInstance()->RefreshPlugins();
@@ -185,14 +182,14 @@ void PluginManager::UpdatePluginListWithNaClModules() {
 }
 
 NaClModuleInfo::List::iterator PluginManager::FindNaClModule(const GURL& url) {
-  for (NaClModuleInfo::List::iterator iter = nacl_module_list_.begin();
-       iter != nacl_module_list_.end(); ++iter) {
+  for (auto iter = nacl_module_list_.begin(); iter != nacl_module_list_.end();
+       ++iter) {
     if (iter->url == url)
       return iter;
   }
   return nacl_module_list_.end();
 }
 
-#endif  // !defined(DISABLE_NACL)
+#endif  // BUILDFLAG(ENABLE_NACL)
 
 }  // namespace extensions

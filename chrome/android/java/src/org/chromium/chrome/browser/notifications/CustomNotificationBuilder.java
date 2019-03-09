@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.notifications;
 
+import static org.chromium.chrome.browser.util.ViewUtils.dpToPx;
+
 import android.app.Notification;
 import android.content.Context;
 import android.content.res.Resources;
@@ -16,7 +18,6 @@ import android.os.StrictMode;
 import android.os.SystemClock;
 import android.text.format.DateFormat;
 import android.util.DisplayMetrics;
-import android.util.TypedValue;
 import android.view.View;
 import android.widget.RemoteViews;
 
@@ -27,7 +28,6 @@ import org.chromium.chrome.R;
 import org.chromium.ui.base.LocalizationUtils;
 
 import java.util.Date;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Builds a notification using the given inputs. Uses RemoteViews to provide a custom layout.
@@ -79,6 +79,7 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
     private final Context mContext;
 
     public CustomNotificationBuilder(Context context) {
+        super(context.getResources());
         mContext = context;
     }
 
@@ -104,13 +105,12 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
         String formattedTime = "";
 
         // Temporarily allowing disk access. TODO: Fix. See http://crbug.com/577185
-        StrictMode.ThreadPolicy oldPolicy = StrictMode.allowThreadDiskReads();
-        StrictMode.allowThreadDiskWrites();
+        StrictMode.ThreadPolicy oldPolicy = StrictMode.allowThreadDiskWrites();
         try {
             long time = SystemClock.elapsedRealtime();
             formattedTime = DateFormat.getTimeFormat(mContext).format(new Date());
             RecordHistogram.recordTimesHistogram("Android.StrictMode.NotificationUIBuildTime",
-                    SystemClock.elapsedRealtime() - time, TimeUnit.MILLISECONDS);
+                    SystemClock.elapsedRealtime() - time);
         } finally {
             StrictMode.setThreadPolicy(oldPolicy);
         }
@@ -120,15 +120,15 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
             view.setTextViewText(R.id.title, mTitle);
             view.setTextViewText(R.id.body, mBody);
             view.setTextViewText(R.id.origin, mOrigin);
-            view.setImageViewBitmap(R.id.icon, mLargeIcon);
+            view.setImageViewBitmap(R.id.icon, getNormalizedLargeIcon());
             view.setViewPadding(R.id.title, 0, scaledPadding, 0, 0);
             view.setViewPadding(R.id.body_container, 0, scaledPadding, 0, scaledPadding);
             addWorkProfileBadge(view);
 
             int smallIconId = useMaterial() ? R.id.small_icon_overlay : R.id.small_icon_footer;
             view.setViewVisibility(smallIconId, View.VISIBLE);
-            if (mSmallIconBitmap != null) {
-                view.setImageViewBitmap(smallIconId, mSmallIconBitmap);
+            if (mSmallIconBitmapForContent != null) {
+                view.setImageViewBitmap(smallIconId, mSmallIconBitmapForContent);
             } else {
                 view.setImageViewResource(smallIconId, mSmallIconId);
             }
@@ -136,15 +136,20 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
         addActionButtons(bigView);
         configureSettingsButton(bigView);
 
-        // Note: this is not a NotificationCompat builder so be mindful of the
+        // Note: under the hood this is not a NotificationCompat builder so be mindful of the
         // API level of methods you call on the builder.
-        Notification.Builder builder = new Notification.Builder(mContext);
+        // TODO(crbug.com/697104) We should probably use a Compat builder.
+        ChromeNotificationBuilder builder =
+                NotificationBuilderFactory.createChromeNotificationBuilder(
+                        false /* preferCompat */, mChannelId, mRemotePackageForBuilderContext);
         builder.setTicker(mTickerText);
         builder.setContentIntent(mContentIntent);
         builder.setDeleteIntent(mDeleteIntent);
+        builder.setPriorityBeforeO(mPriority);
         builder.setDefaults(mDefaults);
-        builder.setVibrate(mVibratePattern);
+        if (mVibratePattern != null) builder.setVibrate(mVibratePattern);
         builder.setWhen(mTimestamp);
+        builder.setShowWhen(true);
         builder.setOnlyAlertOnce(!mRenotify);
         builder.setContent(compactView);
 
@@ -153,18 +158,21 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
         builder.setContentTitle(mTitle);
         builder.setContentText(mBody);
         builder.setSubText(mOrigin);
-        builder.setLargeIcon(mLargeIcon);
-        setSmallIconOnBuilder(builder, mSmallIconId, mSmallIconBitmap);
+        builder.setLargeIcon(getNormalizedLargeIcon());
+        setStatusBarIcon(builder, mSmallIconId, mSmallIconBitmapForStatusBar);
         for (Action action : mActions) {
             addActionToBuilder(builder, action);
         }
         if (mSettingsAction != null) {
             addActionToBuilder(builder, mSettingsAction);
         }
+        setGroupOnBuilder(builder, mOrigin);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            // Public versions only supported since L, and createPublicNotification requires L+.
+            builder.setPublicVersion(createPublicNotification(mContext));
+        }
 
-        Notification notification = builder.build();
-        notification.bigContentView = bigView;
-        return notification;
+        return builder.buildWithBigContentView(bigView);
     }
 
     /**
@@ -204,13 +212,13 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
                     iconWidth = options.outWidth;
                 }
                 iconWidth = dpToPx(
-                        Math.min(pxToDp(iconWidth, metrics), MAX_ACTION_ICON_WIDTH_DP), metrics);
+                        metrics, Math.min(pxToDp(iconWidth, metrics), MAX_ACTION_ICON_WIDTH_DP));
 
                 // Set the padding of the button so the text does not overlap with the icon. Flip
                 // between left and right manually as RemoteViews does not expose a method that sets
                 // padding in a writing-direction independent way.
                 int buttonPadding =
-                        dpToPx(BUTTON_PADDING_START_DP + BUTTON_ICON_PADDING_DP, metrics)
+                        dpToPx(metrics, BUTTON_PADDING_START_DP + BUTTON_ICON_PADDING_DP)
                         + iconWidth;
                 int buttonPaddingLeft = LocalizationUtils.isLayoutRtl() ? 0 : buttonPadding;
                 int buttonPaddingRight = LocalizationUtils.isLayoutRtl() ? buttonPadding : 0;
@@ -225,6 +233,11 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
 
     private void configureSettingsButton(RemoteViews bigView) {
         if (mSettingsAction == null) {
+            bigView.setViewVisibility(R.id.origin_settings_icon, View.GONE);
+            int rightPadding = dpToPx(mContext, BUTTON_ICON_PADDING_DP);
+            int leftPadding =
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP ? rightPadding : 0;
+            bigView.setViewPadding(R.id.origin, leftPadding, 0, rightPadding, 0);
             return;
         }
         bigView.setOnClickPendingIntent(R.id.origin, mSettingsAction.intent);
@@ -239,7 +252,7 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
     private void addWorkProfileBadge(RemoteViews view) {
         Resources resources = mContext.getResources();
         DisplayMetrics metrics = resources.getDisplayMetrics();
-        int size = dpToPx(WORK_PROFILE_BADGE_SIZE_DP, metrics);
+        int size = dpToPx(metrics, WORK_PROFILE_BADGE_SIZE_DP);
         int[] colors = new int[size * size];
 
         // Create an immutable bitmap, so that it can not be reused for painting a badge into it.
@@ -282,7 +295,7 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
      * notification. Never scales the padding below zero.
      *
      * @param fontScale The current system font scaling factor.
-     * @param displayMetrics The display metrics for the current context.
+     * @param metrics The display metrics for the current context.
      * @return The amount of padding to be used, in pixels.
      */
     @VisibleForTesting
@@ -292,14 +305,7 @@ public class CustomNotificationBuilder extends NotificationBuilderBase {
             fontScale = Math.min(fontScale, FONT_SCALE_LARGE);
             paddingScale = (FONT_SCALE_LARGE - fontScale) / (FONT_SCALE_LARGE - 1.0f);
         }
-        return dpToPx(paddingScale * MAX_SCALABLE_PADDING_DP, metrics);
-    }
-
-    /**
-     * Converts a dp value to a px value.
-     */
-    private static int dpToPx(float value, DisplayMetrics metrics) {
-        return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, metrics));
+        return dpToPx(metrics, paddingScale * MAX_SCALABLE_PADDING_DP);
     }
 
     /**

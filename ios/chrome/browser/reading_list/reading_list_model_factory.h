@@ -7,12 +7,8 @@
 
 #include <memory>
 
+#include "base/no_destructor.h"
 #include "components/keyed_service/ios/browser_state_keyed_service_factory.h"
-
-namespace base {
-template <typename T>
-struct DefaultSingletonTraits;
-}  // namespace base
 
 class ReadingListModel;
 
@@ -20,7 +16,7 @@ namespace ios {
 class ChromeBrowserState;
 }
 
-// Singleton that owns the ReadingListModel and associates it with
+// Singleton that creates the ReadingListModel and associates that service with
 // ios::ChromeBrowserState.
 class ReadingListModelFactory : public BrowserStateKeyedServiceFactory {
  public:
@@ -29,9 +25,11 @@ class ReadingListModelFactory : public BrowserStateKeyedServiceFactory {
   static ReadingListModel* GetForBrowserStateIfExists(
       ios::ChromeBrowserState* browser_state);
   static ReadingListModelFactory* GetInstance();
+  void RegisterBrowserStatePrefs(
+      user_prefs::PrefRegistrySyncable* registry) override;
 
  private:
-  friend struct base::DefaultSingletonTraits<ReadingListModelFactory>;
+  friend class base::NoDestructor<ReadingListModelFactory>;
 
   ReadingListModelFactory();
   ~ReadingListModelFactory() override;

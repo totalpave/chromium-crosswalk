@@ -8,7 +8,8 @@
 
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/single_thread_task_runner.h"
+#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/sessions/core/base_session_service_delegate.h"
@@ -24,7 +25,7 @@ namespace {
 void RunIfNotCanceled(
     const base::CancelableTaskTracker::IsCanceledCallback& is_canceled,
     const BaseSessionService::GetCommandsCallback& callback,
-    ScopedVector<SessionCommand> commands) {
+    std::vector<std::unique_ptr<SessionCommand>> commands) {
   if (is_canceled.Run())
     return;
   callback.Run(std::move(commands));
@@ -33,12 +34,12 @@ void RunIfNotCanceled(
 void PostOrRunInternalGetCommandsCallback(
     base::TaskRunner* task_runner,
     const BaseSessionService::GetCommandsCallback& callback,
-    ScopedVector<SessionCommand> commands) {
-  if (task_runner->RunsTasksOnCurrentThread()) {
+    std::vector<std::unique_ptr<SessionCommand>> commands) {
+  if (task_runner->RunsTasksInCurrentSequence()) {
     callback.Run(std::move(commands));
   } else {
     task_runner->PostTask(FROM_HERE,
-                          base::Bind(callback, base::Passed(&commands)));
+                          base::BindOnce(callback, std::move(commands)));
   }
 }
 
@@ -48,17 +49,17 @@ void PostOrRunInternalGetCommandsCallback(
 // backend.
 static const int kSaveDelayMS = 2500;
 
-BaseSessionService::BaseSessionService(
-    SessionType type,
-    const base::FilePath& path,
-    BaseSessionServiceDelegate* delegate)
+BaseSessionService::BaseSessionService(SessionType type,
+                                       const base::FilePath& path,
+                                       BaseSessionServiceDelegate* delegate)
     : pending_reset_(false),
       commands_since_reset_(0),
       delegate_(delegate),
-      sequence_token_(delegate_->GetBlockingPool()->GetSequenceToken()),
+      backend_task_runner_(base::CreateSequencedTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN})),
       weak_factory_(this) {
   backend_ = new SessionBackend(type, path);
-  DCHECK(backend_.get());
+  DCHECK(backend_);
 }
 
 BaseSessionService::~BaseSessionService() {}
@@ -66,35 +67,36 @@ BaseSessionService::~BaseSessionService() {}
 void BaseSessionService::MoveCurrentSessionToLastSession() {
   Save();
   RunTaskOnBackendThread(
-      FROM_HERE, base::Bind(&SessionBackend::MoveCurrentSessionToLastSession,
-                            backend_));
+      FROM_HERE,
+      base::BindOnce(&SessionBackend::MoveCurrentSessionToLastSession,
+                     backend_));
 }
 
 void BaseSessionService::DeleteLastSession() {
   RunTaskOnBackendThread(
-      FROM_HERE,
-      base::Bind(&SessionBackend::DeleteLastSession, backend_));
+      FROM_HERE, base::BindOnce(&SessionBackend::DeleteLastSession, backend_));
 }
 
 void BaseSessionService::ScheduleCommand(
     std::unique_ptr<SessionCommand> command) {
   DCHECK(command);
   commands_since_reset_++;
-  pending_commands_.push_back(command.release());
+  pending_commands_.push_back(std::move(command));
   StartSaveTimer();
 }
 
 void BaseSessionService::AppendRebuildCommand(
     std::unique_ptr<SessionCommand> command) {
   DCHECK(command);
-  pending_commands_.push_back(command.release());
+  pending_commands_.push_back(std::move(command));
 }
 
 void BaseSessionService::EraseCommand(SessionCommand* old_command) {
-  ScopedVector<SessionCommand>::iterator it =
-      std::find(pending_commands_.begin(),
-                pending_commands_.end(),
-                old_command);
+  auto it = std::find_if(
+      pending_commands_.begin(), pending_commands_.end(),
+      [old_command](const std::unique_ptr<SessionCommand>& command_ptr) {
+        return command_ptr.get() == old_command;
+      });
   CHECK(it != pending_commands_.end());
   pending_commands_.erase(it);
 }
@@ -102,13 +104,13 @@ void BaseSessionService::EraseCommand(SessionCommand* old_command) {
 void BaseSessionService::SwapCommand(
     SessionCommand* old_command,
     std::unique_ptr<SessionCommand> new_command) {
-  ScopedVector<SessionCommand>::iterator it =
-      std::find(pending_commands_.begin(),
-                pending_commands_.end(),
-                old_command);
+  auto it = std::find_if(
+      pending_commands_.begin(), pending_commands_.end(),
+      [old_command](const std::unique_ptr<SessionCommand>& command_ptr) {
+        return command_ptr.get() == old_command;
+      });
   CHECK(it != pending_commands_.end());
-  *it = new_command.release();
-  delete old_command;
+  *it = std::move(new_command);
 }
 
 void BaseSessionService::ClearPendingCommands() {
@@ -117,11 +119,11 @@ void BaseSessionService::ClearPendingCommands() {
 
 void BaseSessionService::StartSaveTimer() {
   // Don't start a timer when testing.
-  if (delegate_->ShouldUseDelayedSave() && base::MessageLoop::current() &&
-      !weak_factory_.HasWeakPtrs()) {
+  if (delegate_->ShouldUseDelayedSave() &&
+      base::ThreadTaskRunnerHandle::IsSet() && !weak_factory_.HasWeakPtrs()) {
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&BaseSessionService::Save, weak_factory_.GetWeakPtr()),
+        base::BindOnce(&BaseSessionService::Save, weak_factory_.GetWeakPtr()),
         base::TimeDelta::FromMilliseconds(kSaveDelayMS));
   }
 }
@@ -134,20 +136,16 @@ void BaseSessionService::Save() {
   if (pending_commands_.empty())
     return;
 
-  // We create a new ScopedVector which will receive all elements from the
+  // We create a new vector which will receive all elements from the
   // current commands. This will also clear the current list.
   RunTaskOnBackendThread(
-      FROM_HERE,
-      base::Bind(&SessionBackend::AppendCommands, backend_,
-                 base::Passed(&pending_commands_),
-                 pending_reset_));
+      FROM_HERE, base::BindOnce(&SessionBackend::AppendCommands, backend_,
+                                std::move(pending_commands_), pending_reset_));
 
   if (pending_reset_) {
     commands_since_reset_ = 0;
     pending_reset_ = false;
   }
-
-  delegate_->OnSavedCommands();
 }
 
 base::CancelableTaskTracker::TaskId
@@ -167,24 +165,14 @@ BaseSessionService::ScheduleGetLastSessionCommands(
                  run_if_not_canceled);
 
   RunTaskOnBackendThread(
-      FROM_HERE,
-      base::Bind(&SessionBackend::ReadLastSessionCommands, backend_,
-                 is_canceled, callback_runner));
+      FROM_HERE, base::BindOnce(&SessionBackend::ReadLastSessionCommands,
+                                backend_, is_canceled, callback_runner));
   return id;
 }
 
-void BaseSessionService::RunTaskOnBackendThread(
-    const tracked_objects::Location& from_here,
-    const base::Closure& task) {
-  base::SequencedWorkerPool* pool = delegate_->GetBlockingPool();
-  if (!pool->IsShutdownInProgress()) {
-    pool->PostSequencedWorkerTask(sequence_token_, from_here, task);
-  } else {
-    // Fall back to executing on the main thread if the sequence
-    // worker pool has been requested to shutdown (around shutdown
-    // time).
-    task.Run();
-  }
+void BaseSessionService::RunTaskOnBackendThread(const base::Location& from_here,
+                                                base::OnceClosure task) {
+  backend_task_runner_->PostNonNestableTask(from_here, std::move(task));
 }
 
 }  // namespace sessions

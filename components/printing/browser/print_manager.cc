@@ -10,15 +10,13 @@
 namespace printing {
 
 PrintManager::PrintManager(content::WebContents* contents)
-    : content::WebContentsObserver(contents),
-      number_pages_(0),
-      cookie_(0) {
-}
+    : content::WebContentsObserver(contents) {}
 
-PrintManager::~PrintManager() {
-}
+PrintManager::~PrintManager() = default;
 
-bool PrintManager::OnMessageReceived(const IPC::Message& message) {
+bool PrintManager::OnMessageReceived(
+    const IPC::Message& message,
+    content::RenderFrameHost* render_frame_host) {
   bool handled = true;
   IPC_BEGIN_MESSAGE_MAP(PrintManager, message)
     IPC_MESSAGE_HANDLER(PrintHostMsg_DidGetPrintedPagesCount,
@@ -48,23 +46,14 @@ void PrintManager::OnPrintingFailed(int cookie) {
     return;
   }
 #if defined(OS_ANDROID)
-  PdfWritingDone(false);
+  PdfWritingDone(0);
 #endif
 }
 
-void PrintManager::RenderProcessGone(base::TerminationStatus status) {
+void PrintManager::PrintingRenderFrameDeleted() {
 #if defined(OS_ANDROID)
-  PdfWritingDone(false);
+  PdfWritingDone(0);
 #endif
 }
-
-#if defined(OS_ANDROID)
-void PrintManager::PdfWritingDone(bool result) {
-  if (!pdf_writing_done_callback_.is_null())
-    pdf_writing_done_callback_.Run(file_descriptor().fd, result);
-  // Invalidate the file descriptor so it doesn't get reused.
-  file_descriptor_ = base::FileDescriptor(-1, false);
-}
-#endif
 
 }  // namespace printing

@@ -12,18 +12,13 @@ import android.util.Log;
 import android.view.KeyEvent;
 import android.widget.Toast;
 
-import org.chromium.base.BaseSwitches;
 import org.chromium.base.CommandLine;
 import org.chromium.base.MemoryPressureListener;
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.library_loader.ProcessInitException;
-import org.chromium.content.app.ContentApplication;
-import org.chromium.content.browser.BrowserStartupController;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.DeviceUtils;
-import org.chromium.content.common.ContentSwitches;
+import org.chromium.content_public.browser.BrowserStartupController;
+import org.chromium.content_public.browser.DeviceUtils;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_shell.Shell;
 import org.chromium.content_shell.ShellManager;
@@ -39,29 +34,31 @@ public class ContentShellActivity extends Activity {
     private static final String ACTIVE_SHELL_URL_KEY = "activeUrl";
     public static final String COMMAND_LINE_ARGS_KEY = "commandLineArgs";
 
+    // Native switch - shell_switches::kRunWebTests
+    private static final String RUN_WEB_TESTS_SWITCH = "run-web-tests";
+
     private ShellManager mShellManager;
     private ActivityWindowAndroid mWindowAndroid;
     private Intent mLastSentIntent;
+    private String mStartupUrl;
 
     @Override
-    @SuppressFBWarnings("DM_EXIT")
     protected void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         // Initializing the command line must occur before loading the library.
         if (!CommandLine.isInitialized()) {
-            ContentApplication.initCommandLine(this);
+            ((ContentShellApplication) getApplication()).initCommandLine();
             String[] commandLineParams = getCommandLineParamsFromIntent(getIntent());
             if (commandLineParams != null) {
                 CommandLine.getInstance().appendSwitchesAndArguments(commandLineParams);
             }
         }
-        waitForDebuggerIfNeeded();
 
-        DeviceUtils.addDeviceSpecificUserAgentSwitch(this);
+        DeviceUtils.addDeviceSpecificUserAgentSwitch();
+
         try {
-            LibraryLoader.get(LibraryProcessType.PROCESS_BROWSER)
-                    .ensureInitialized(getApplicationContext());
+            LibraryLoader.getInstance().ensureInitialized(LibraryProcessType.PROCESS_BROWSER);
         } catch (ProcessInitException e) {
             Log.e(TAG, "ContentView initialization failed.", e);
             // Since the library failed to initialize nothing in the application
@@ -81,14 +78,14 @@ public class ContentShellActivity extends Activity {
         mWindowAndroid.setAnimationPlaceholderView(
                 mShellManager.getContentViewRenderView().getSurfaceView());
 
-        String startupUrl = getUrlFromIntent(getIntent());
-        if (!TextUtils.isEmpty(startupUrl)) {
-            mShellManager.setStartupUrl(Shell.sanitizeUrl(startupUrl));
+        mStartupUrl = getUrlFromIntent(getIntent());
+        if (!TextUtils.isEmpty(mStartupUrl)) {
+            mShellManager.setStartupUrl(Shell.sanitizeUrl(mStartupUrl));
         }
 
-        if (CommandLine.getInstance().hasSwitch(ContentSwitches.RUN_LAYOUT_TEST)) {
+        if (CommandLine.getInstance().hasSwitch(RUN_WEB_TESTS_SWITCH)) {
             try {
-                BrowserStartupController.get(this, LibraryProcessType.PROCESS_BROWSER)
+                BrowserStartupController.get(LibraryProcessType.PROCESS_BROWSER)
                         .startBrowserProcessesSync(false);
             } catch (ProcessInitException e) {
                 Log.e(TAG, "Failed to load native library.", e);
@@ -96,12 +93,11 @@ public class ContentShellActivity extends Activity {
             }
         } else {
             try {
-                BrowserStartupController.get(this, LibraryProcessType.PROCESS_BROWSER)
+                BrowserStartupController.get(LibraryProcessType.PROCESS_BROWSER)
                         .startBrowserProcessesAsync(
-                                true,
-                                new BrowserStartupController.StartupCallback() {
+                                true, false, new BrowserStartupController.StartupCallback() {
                                     @Override
-                                    public void onSuccess(boolean alreadyStarted) {
+                                    public void onSuccess() {
                                         finishInitialization(savedInstanceState);
                                     }
 
@@ -118,7 +114,13 @@ public class ContentShellActivity extends Activity {
     }
 
     private void finishInitialization(Bundle savedInstanceState) {
-        String shellUrl = ShellManager.DEFAULT_SHELL_URL;
+        String shellUrl;
+        if (!TextUtils.isEmpty(mStartupUrl)) {
+            shellUrl = mStartupUrl;
+        } else {
+            shellUrl = ShellManager.DEFAULT_SHELL_URL;
+        }
+
         if (savedInstanceState != null
                 && savedInstanceState.containsKey(ACTIVE_SHELL_URL_KEY)) {
             shellUrl = savedInstanceState.getString(ACTIVE_SHELL_URL_KEY);
@@ -137,29 +139,20 @@ public class ContentShellActivity extends Activity {
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-        ContentViewCore contentViewCore = getActiveContentViewCore();
-        if (contentViewCore != null) {
-            outState.putString(ACTIVE_SHELL_URL_KEY, contentViewCore.getWebContents().getUrl());
+        WebContents webContents = getActiveWebContents();
+        if (webContents != null) {
+            outState.putString(ACTIVE_SHELL_URL_KEY, webContents.getLastCommittedUrl());
         }
 
         mWindowAndroid.saveInstanceState(outState);
     }
 
-    private void waitForDebuggerIfNeeded() {
-        if (CommandLine.getInstance().hasSwitch(BaseSwitches.WAIT_FOR_JAVA_DEBUGGER)) {
-            Log.e(TAG, "Waiting for Java debugger to connect...");
-            android.os.Debug.waitForDebugger();
-            Log.e(TAG, "Java debugger connected. Resuming execution.");
-        }
-    }
-
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            ContentViewCore contentViewCore = getActiveContentViewCore();
-            if (contentViewCore != null && contentViewCore.getWebContents()
-                    .getNavigationController().canGoBack()) {
-                contentViewCore.getWebContents().getNavigationController().goBack();
+            WebContents webContents = getActiveWebContents();
+            if (webContents != null && webContents.getNavigationController().canGoBack()) {
+                webContents.getNavigationController().goBack();
                 return true;
             }
         }
@@ -188,8 +181,8 @@ public class ContentShellActivity extends Activity {
     protected void onStart() {
         super.onStart();
 
-        ContentViewCore contentViewCore = getActiveContentViewCore();
-        if (contentViewCore != null) contentViewCore.onShow();
+        WebContents webContents = getActiveWebContents();
+        if (webContents != null) webContents.onShow();
     }
 
     @Override
@@ -235,15 +228,6 @@ public class ContentShellActivity extends Activity {
      */
     public Shell getActiveShell() {
         return mShellManager != null ? mShellManager.getActiveShell() : null;
-    }
-
-    /**
-     * @return The {@link ContentViewCore} owned by the currently visible {@link Shell} or null if
-     *         one is not showing.
-     */
-    public ContentViewCore getActiveContentViewCore() {
-        Shell shell = getActiveShell();
-        return shell != null ? shell.getContentViewCore() : null;
     }
 
     /**

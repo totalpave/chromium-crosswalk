@@ -6,13 +6,14 @@
 #define GPU_IPC_COMMON_SYNC_TOKEN_STRUCT_TRAITS_H_
 
 #include "gpu/command_buffer/common/sync_token.h"
-#include "gpu/ipc/common/sync_token.mojom.h"
+#include "gpu/ipc/common/sync_token.mojom-shared.h"
 
 namespace mojo {
 
 template <>
-struct StructTraits<gpu::mojom::SyncToken, gpu::SyncToken> {
+struct StructTraits<gpu::mojom::SyncTokenDataView, gpu::SyncToken> {
   static bool verified_flush(const gpu::SyncToken& token) {
+    DCHECK(!token.HasData() || token.verified_flush());
     return token.verified_flush();
   }
 
@@ -20,10 +21,6 @@ struct StructTraits<gpu::mojom::SyncToken, gpu::SyncToken> {
       const gpu::SyncToken& token) {
     return static_cast<gpu::mojom::CommandBufferNamespace>(
         token.namespace_id());
-  }
-
-  static int32_t extra_data_field(const gpu::SyncToken& token) {
-    return token.extra_data_field();
   }
 
   static uint64_t command_buffer_id(const gpu::SyncToken& token) {
@@ -37,11 +34,13 @@ struct StructTraits<gpu::mojom::SyncToken, gpu::SyncToken> {
   static bool Read(gpu::mojom::SyncTokenDataView data, gpu::SyncToken* out) {
     *out = gpu::SyncToken(
         static_cast<gpu::CommandBufferNamespace>(data.namespace_id()),
-        data.extra_data_field(),
         gpu::CommandBufferId::FromUnsafeValue(data.command_buffer_id()),
         data.release_count());
-    if (data.verified_flush())
+    if (out->HasData()) {
+      if (!data.verified_flush())
+        return false;
       out->SetVerifyFlush();
+    }
     return true;
   }
 };

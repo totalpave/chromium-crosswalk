@@ -4,77 +4,49 @@
 
 #include "ios/chrome/browser/ui/webui/flags_ui.h"
 
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/macros.h"
-#include "base/memory/ref_counted_memory.h"
+#include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "components/flags_ui/flags_ui_constants.h"
 #include "components/flags_ui/flags_ui_pref_names.h"
 #include "components/flags_ui/pref_service_flags_storage.h"
 #include "components/grit/components_resources.h"
-#include "components/grit/components_scaled_resources.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_chromium_strings.h"
-#include "components/strings/grit/components_google_chrome_strings.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/version_info/version_info.h"
 #include "ios/chrome/browser/about_flags.h"
 #include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/chrome_url_constants.h"
-#include "ios/public/provider/web/web_ui_ios.h"
-#include "ios/public/provider/web/web_ui_ios_message_handler.h"
 #include "ios/web/public/web_ui_ios_data_source.h"
-#include "ios/web/public/web_ui_ios_data_source.h"
+#include "ios/web/public/webui/web_ui_ios.h"
+#include "ios/web/public/webui/web_ui_ios_message_handler.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 
 namespace {
 
-web::WebUIIOSDataSource* CreateFlagsUIHTMLSource(
-    BaseFlagsUI::FlagsUIKind flags_ui_kind) {
-  web::WebUIIOSDataSource* source = web::WebUIIOSDataSource::Create(
-      flags_ui_kind == BaseFlagsUI::FLAGS_UI_APPLE ? kChromeUIAppleFlagsHost
-                                                   : kChromeUIFlagsHost);
+web::WebUIIOSDataSource* CreateFlagsUIHTMLSource() {
+  web::WebUIIOSDataSource* source =
+      web::WebUIIOSDataSource::Create(kChromeUIFlagsHost);
 
-  if (flags_ui_kind == BaseFlagsUI::FLAGS_UI_APPLE) {
-    source->AddLocalizedString(flags_ui::kFlagsTableTitle,
-                               IDS_FLAGS_UI_ALTERNATIVES_UI_TABLE_TITLE);
-    source->AddLocalizedString(
-        flags_ui::kFlagsNoExperimentsAvailable,
-        IDS_FLAGS_UI_ALTERNATIVES_UI_NO_EXPERIMENTS_AVAILABLE);
-  } else {
-    source->AddLocalizedString(flags_ui::kFlagsLongTitle,
-                               IDS_FLAGS_UI_LONG_TITLE);
-    source->AddLocalizedString(flags_ui::kFlagsTableTitle,
-                               IDS_FLAGS_UI_TABLE_TITLE);
-  }
-  source->AddLocalizedString(flags_ui::kFlagsWarningHeader,
-                             IDS_FLAGS_UI_WARNING_HEADER);
-  source->AddLocalizedString(flags_ui::kFlagsBlurb, IDS_FLAGS_UI_WARNING_TEXT);
-  source->AddLocalizedString(flags_ui::kFlagsUnsupportedTableTitle,
-                             IDS_FLAGS_UI_UNSUPPORTED_TABLE_TITLE);
-  source->AddLocalizedString(flags_ui::kFlagsNotSupported,
-                             IDS_FLAGS_UI_NOT_AVAILABLE);
   source->AddLocalizedString(flags_ui::kFlagsRestartNotice,
                              IDS_FLAGS_UI_RELAUNCH_NOTICE);
-  source->AddLocalizedString(flags_ui::kFlagsRestartButton,
-                             IDS_FLAGS_UI_RELAUNCH_BUTTON);
-  source->AddLocalizedString(flags_ui::kResetAllButton,
-                             IDS_FLAGS_UI_RESET_ALL_BUTTON);
-  source->AddLocalizedString(flags_ui::kDisable, IDS_FLAGS_UI_DISABLE);
-  source->AddLocalizedString(flags_ui::kEnable, IDS_FLAGS_UI_ENABLE);
+  source->AddString(flags_ui::kVersion, version_info::GetVersionNumber());
 
   source->SetJsonPath("strings.js");
   source->AddResourcePath(flags_ui::kFlagsJS, IDR_FLAGS_UI_FLAGS_JS);
-  source->SetDefaultResource(flags_ui_kind == BaseFlagsUI::FLAGS_UI_APPLE
-                                 ? IDR_APPLE_FLAGS_HTML
-                                 : IDR_FLAGS_UI_FLAGS_HTML);
+  source->SetDefaultResource(IDR_FLAGS_UI_FLAGS_HTML);
+  source->UseGzip();
   return source;
 }
 
@@ -95,7 +67,8 @@ class FlagsDOMHandler : public web::WebUIIOSMessageHandler {
   // Initializes the DOM handler with the provided flags storage and flags
   // access. If there were flags experiments requested from javascript before
   // this was called, it calls |HandleRequestExperimentalFeatures| again.
-  void Init(flags_ui::FlagsStorage* flags_storage, flags_ui::FlagAccess access);
+  void Init(std::unique_ptr<flags_ui::FlagsStorage> flags_storage,
+            flags_ui::FlagAccess access);
 
   // WebUIMessageHandler implementation.
   void RegisterMessages() override;
@@ -123,25 +96,27 @@ class FlagsDOMHandler : public web::WebUIIOSMessageHandler {
 void FlagsDOMHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       flags_ui::kRequestExperimentalFeatures,
-      base::Bind(&FlagsDOMHandler::HandleRequestExperimentalFeatures,
-                 base::Unretained(this)));
+      base::BindRepeating(&FlagsDOMHandler::HandleRequestExperimentalFeatures,
+                          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       flags_ui::kEnableExperimentalFeature,
-      base::Bind(&FlagsDOMHandler::HandleEnableExperimentalFeatureMessage,
-                 base::Unretained(this)));
+      base::BindRepeating(
+          &FlagsDOMHandler::HandleEnableExperimentalFeatureMessage,
+          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       flags_ui::kRestartBrowser,
-      base::Bind(&FlagsDOMHandler::HandleRestartBrowser,
-                 base::Unretained(this)));
+      base::BindRepeating(&FlagsDOMHandler::HandleRestartBrowser,
+                          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       flags_ui::kResetAllFlags,
-      base::Bind(&FlagsDOMHandler::HandleResetAllFlags,
-                 base::Unretained(this)));
+      base::BindRepeating(&FlagsDOMHandler::HandleResetAllFlags,
+                          base::Unretained(this)));
 }
 
-void FlagsDOMHandler::Init(flags_ui::FlagsStorage* flags_storage,
-                           flags_ui::FlagAccess access) {
-  flags_storage_.reset(flags_storage);
+void FlagsDOMHandler::Init(
+    std::unique_ptr<flags_ui::FlagsStorage> flags_storage,
+    flags_ui::FlagAccess access) {
+  flags_storage_ = std::move(flags_storage);
   access_ = access;
 
   if (experimental_features_requested_)
@@ -158,12 +133,12 @@ void FlagsDOMHandler::HandleRequestExperimentalFeatures(
 
   base::DictionaryValue results;
 
-  std::unique_ptr<base::ListValue> supported_features(new base::ListValue);
-  std::unique_ptr<base::ListValue> unsupported_features(new base::ListValue);
+  auto supported_features = std::make_unique<base::ListValue>();
+  auto unsupported_features = std::make_unique<base::ListValue>();
   GetFlagFeatureEntries(flags_storage_.get(), access_, supported_features.get(),
                         unsupported_features.get());
-  results.Set(flags_ui::kSupportedFeatures, supported_features.release());
-  results.Set(flags_ui::kUnsupportedFeatures, unsupported_features.release());
+  results.Set(flags_ui::kSupportedFeatures, std::move(supported_features));
+  results.Set(flags_ui::kUnsupportedFeatures, std::move(unsupported_features));
   // Cannot restart the browser on iOS.
   results.SetBoolean(flags_ui::kNeedsRestart, false);
   results.SetBoolean(flags_ui::kShowOwnerWarning,
@@ -171,8 +146,10 @@ void FlagsDOMHandler::HandleRequestExperimentalFeatures(
 
   results.SetBoolean(flags_ui::kShowBetaChannelPromotion, false);
   results.SetBoolean(flags_ui::kShowDevChannelPromotion, false);
+
+  std::vector<const base::Value*> params{&results};
   web_ui()->CallJavascriptFunction(flags_ui::kReturnExperimentalFeatures,
-                                   results);
+                                   params);
 }
 
 void FlagsDOMHandler::HandleEnableExperimentalFeatureMessage(
@@ -190,54 +167,22 @@ void FlagsDOMHandler::HandleEnableExperimentalFeatureMessage(
 
   SetFeatureEntryEnabled(flags_storage_.get(), entry_internal_name,
                          enable_str == "true");
+  flags_storage_->CommitPendingWrites();
 }
 
 void FlagsDOMHandler::HandleRestartBrowser(const base::ListValue* args) {
-  NOTREACHED();
+#if CHROMIUM_BUILD
+  CHECK(false);
+#endif  // CHROMIUM_BUILD
 }
 
 void FlagsDOMHandler::HandleResetAllFlags(const base::ListValue* args) {
   DCHECK(flags_storage_);
   ResetAllFlags(flags_storage_.get());
+  flags_storage_->CommitPendingWrites();
 }
 
 }  // namespace
-
-///////////////////////////////////////////////////////////////////////////////
-//
-// BaseFlagsUI
-//
-///////////////////////////////////////////////////////////////////////////////
-
-BaseFlagsUI::BaseFlagsUI(web::WebUIIOS* web_ui, FlagsUIKind flags_ui_kind)
-    : web::WebUIIOSController(web_ui), weak_factory_(this) {
-  Initialize(web_ui, flags_ui_kind);
-}
-
-void BaseFlagsUI::Initialize(web::WebUIIOS* web_ui, FlagsUIKind flags_ui_kind) {
-  FlagsDOMHandler* handler = new FlagsDOMHandler();
-  web_ui->AddMessageHandler(handler);
-
-  flags_ui::FlagAccess flag_access = flags_ui::kOwnerAccessToFlags;
-  if (flags_ui_kind == FLAGS_UI_APPLE)
-    flag_access = flags_ui::kAppleReviewAccessToFlags;
-  handler->Init(new flags_ui::PrefServiceFlagsStorage(
-                    GetApplicationContext()->GetLocalState()),
-                flag_access);
-
-  // Set up the about:flags source.
-  web::WebUIIOSDataSource::Add(ios::ChromeBrowserState::FromWebUIIOS(web_ui),
-                               CreateFlagsUIHTMLSource(flags_ui_kind));
-}
-
-BaseFlagsUI::~BaseFlagsUI() {}
-
-// static
-base::RefCountedMemory* BaseFlagsUI::GetFaviconResourceBytes(
-    ui::ScaleFactor scale_factor) {
-  return ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
-      IDR_FLAGS_FAVICON, scale_factor);
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -246,17 +191,18 @@ base::RefCountedMemory* BaseFlagsUI::GetFaviconResourceBytes(
 ///////////////////////////////////////////////////////////////////////////////
 
 FlagsUI::FlagsUI(web::WebUIIOS* web_ui)
-    : BaseFlagsUI(web_ui, BaseFlagsUI::FLAGS_UI_GENERIC) {}
+    : web::WebUIIOSController(web_ui), weak_factory_(this) {
+  FlagsDOMHandler* handler = new FlagsDOMHandler();
+  web_ui->AddMessageHandler(base::WrapUnique(handler));
+
+  flags_ui::FlagAccess flag_access = flags_ui::kOwnerAccessToFlags;
+  handler->Init(std::make_unique<flags_ui::PrefServiceFlagsStorage>(
+                    GetApplicationContext()->GetLocalState()),
+                flag_access);
+
+  // Set up the about:flags source.
+  web::WebUIIOSDataSource::Add(ios::ChromeBrowserState::FromWebUIIOS(web_ui),
+                               CreateFlagsUIHTMLSource());
+}
 
 FlagsUI::~FlagsUI() {}
-
-///////////////////////////////////////////////////////////////////////////////
-//
-// AppleFlagsUI
-//
-///////////////////////////////////////////////////////////////////////////////
-
-AppleFlagsUI::AppleFlagsUI(web::WebUIIOS* web_ui)
-    : BaseFlagsUI(web_ui, BaseFlagsUI::FLAGS_UI_APPLE) {}
-
-AppleFlagsUI::~AppleFlagsUI() {}

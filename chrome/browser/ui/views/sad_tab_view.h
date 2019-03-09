@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_SAD_TAB_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_SAD_TAB_VIEW_H_
 
-#include "base/compiler_specific.h"
-#include "base/macros.h"
 #include "chrome/browser/ui/sad_tab.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/link_listener.h"
@@ -21,6 +19,11 @@ class WebContents;
 namespace views {
 class Label;
 class LabelButton;
+class WebView;
+}  // namespace views
+
+namespace test {
+class SadTabViewTestApi;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -31,22 +34,22 @@ class LabelButton;
 //  "sad tab" in the browser window when a renderer is destroyed unnaturally.
 //
 ///////////////////////////////////////////////////////////////////////////////
-class SadTabView : public chrome::SadTab,
+class SadTabView : public SadTab,
                    public views::View,
                    public views::LinkListener,
                    public views::ButtonListener {
  public:
-  // Tag to denote which type of action button is displayed.
-  enum ButtonTag {
-    SAD_TAB_BUTTON_FEEDBACK,
-    SAD_TAB_BUTTON_RELOAD,
-  };
+  static const char kViewClassName[];
 
-  SadTabView(content::WebContents* web_contents, chrome::SadTabKind kind);
+  SadTabView(content::WebContents* web_contents, SadTabKind kind);
   ~SadTabView() override;
+
+  // Overridden from SadTab:
+  void ReinstallInWebView() override;
 
   // Overridden from views::View:
   void Layout() override;
+  const char* GetClassName() const override;
 
   // Overridden from views::LinkListener:
   void LinkClicked(views::Link* source, int event_flags) override;
@@ -57,24 +60,22 @@ class SadTabView : public chrome::SadTab,
  protected:
   // Overridden from views::View:
   void OnPaint(gfx::Canvas* canvas) override;
+  void RemovedFromWidget() override;
 
  private:
-  // Overridden from chrome::SadTab:
-  void Show() override;
-  void Close() override;
+  friend class test::SadTabViewTestApi;
 
-  views::Label* CreateLabel(const base::string16& text);
-  views::Link* CreateLink(const base::string16& text, const SkColor& color);
+  // Set this View as the crashed overlay view for the WebView associated
+  // with this object's WebContents.
+  void AttachToWebView();
 
-  content::WebContents* web_contents_;
-  chrome::SadTabKind kind_;
-  bool painted_;
+  bool painted_ = false;
   views::Label* message_;
+  std::vector<views::Label*> bullet_labels_;
   views::Link* help_link_;
   views::LabelButton* action_button_;
   views::Label* title_;
-  views::StyledLabel* help_message_;
-  static int total_crashes_;
+  views::WebView* owner_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(SadTabView);
 };

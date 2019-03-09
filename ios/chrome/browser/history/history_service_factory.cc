@@ -6,8 +6,7 @@
 
 #include <utility>
 
-#include "base/memory/ptr_util.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "components/history/core/browser/history_database_params.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/visit_delegate.h"
@@ -55,7 +54,8 @@ history::HistoryService* HistoryServiceFactory::GetForBrowserStateIfExists(
 
 // static
 HistoryServiceFactory* HistoryServiceFactory::GetInstance() {
-  return base::Singleton<HistoryServiceFactory>::get();
+  static base::NoDestructor<HistoryServiceFactory> instance;
+  return instance.get();
 }
 
 HistoryServiceFactory::HistoryServiceFactory()
@@ -74,14 +74,14 @@ std::unique_ptr<KeyedService> HistoryServiceFactory::BuildServiceInstanceFor(
       ios::ChromeBrowserState::FromBrowserState(context);
   std::unique_ptr<history::HistoryService> history_service(
       new history::HistoryService(
-          base::WrapUnique(new HistoryClientImpl(
-              ios::BookmarkModelFactory::GetForBrowserState(browser_state))),
+          std::make_unique<HistoryClientImpl>(
+              ios::BookmarkModelFactory::GetForBrowserState(browser_state)),
           nullptr));
   if (!history_service->Init(history::HistoryDatabaseParamsForPath(
           browser_state->GetStatePath()))) {
     return nullptr;
   }
-  return std::move(history_service);
+  return history_service;
 }
 
 web::BrowserState* HistoryServiceFactory::GetBrowserStateToUse(

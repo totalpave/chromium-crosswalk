@@ -33,10 +33,9 @@ class MediaTaskRunnerWithNotification : public MediaTaskRunner {
       const base::Closure& shutdown_cb);
 
   // MediaTaskRunner implementation.
-  bool PostMediaTask(
-      const tracked_objects::Location& from_here,
-      const base::Closure& task,
-      base::TimeDelta timestamp) override;
+  bool PostMediaTask(const base::Location& from_here,
+                     const base::Closure& task,
+                     base::TimeDelta timestamp) override;
 
  private:
   ~MediaTaskRunnerWithNotification() override;
@@ -63,7 +62,7 @@ MediaTaskRunnerWithNotification::~MediaTaskRunnerWithNotification() {
 }
 
 bool MediaTaskRunnerWithNotification::PostMediaTask(
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const base::Closure& task,
     base::TimeDelta timestamp) {
   bool may_run_in_future =
@@ -90,14 +89,13 @@ class BalancedMediaTaskRunner
   void ScheduleWork(base::TimeDelta max_timestamp);
 
   // Return the timestamp of the last media task.
-  // Return ::media::kNoTimestamp() if no media task has been posted.
+  // Return ::media::kNoTimestamp if no media task has been posted.
   base::TimeDelta GetMediaTimestamp() const;
 
   // MediaTaskRunner implementation.
-  bool PostMediaTask(
-      const tracked_objects::Location& from_here,
-      const base::Closure& task,
-      base::TimeDelta timestamp) override;
+  bool PostMediaTask(const base::Location& from_here,
+                     const base::Closure& task,
+                     base::TimeDelta timestamp) override;
 
  private:
   ~BalancedMediaTaskRunner() override;
@@ -108,11 +106,11 @@ class BalancedMediaTaskRunner
   mutable base::Lock lock_;
 
   // Possible pending media task.
-  tracked_objects::Location from_here_;
+  base::Location from_here_;
   base::Closure pending_task_;
 
   // Timestamp of the last posted task.
-  // Is initialized to ::media::kNoTimestamp().
+  // Is initialized to ::media::kNoTimestamp.
   base::TimeDelta last_timestamp_;
 
   DISALLOW_COPY_AND_ASSIGN(BalancedMediaTaskRunner);
@@ -120,9 +118,7 @@ class BalancedMediaTaskRunner
 
 BalancedMediaTaskRunner::BalancedMediaTaskRunner(
     const scoped_refptr<base::SingleThreadTaskRunner>& task_runner)
-  : task_runner_(task_runner),
-    last_timestamp_(::media::kNoTimestamp()) {
-}
+    : task_runner_(task_runner), last_timestamp_(::media::kNoTimestamp) {}
 
 BalancedMediaTaskRunner::~BalancedMediaTaskRunner() {
 }
@@ -134,7 +130,7 @@ void BalancedMediaTaskRunner::ScheduleWork(base::TimeDelta max_media_time) {
     if (pending_task_.is_null())
       return;
 
-    if (last_timestamp_ != ::media::kNoTimestamp() &&
+    if (last_timestamp_ != ::media::kNoTimestamp &&
         last_timestamp_ >= max_media_time) {
       return;
     }
@@ -149,14 +145,13 @@ base::TimeDelta BalancedMediaTaskRunner::GetMediaTimestamp() const {
   return last_timestamp_;
 }
 
-bool BalancedMediaTaskRunner::PostMediaTask(
-    const tracked_objects::Location& from_here,
-    const base::Closure& task,
-    base::TimeDelta timestamp) {
+bool BalancedMediaTaskRunner::PostMediaTask(const base::Location& from_here,
+                                            const base::Closure& task,
+                                            base::TimeDelta timestamp) {
   DCHECK(!task.is_null());
 
   // Pass through for a task with no timestamp.
-  if (timestamp == ::media::kNoTimestamp()) {
+  if (timestamp == ::media::kNoTimestamp) {
     return task_runner_->PostTask(from_here, task);
   }
 
@@ -164,8 +159,7 @@ bool BalancedMediaTaskRunner::PostMediaTask(
 
   // Timestamps must be in order.
   // Any task that does not meet that condition is simply discarded.
-  if (last_timestamp_ != ::media::kNoTimestamp() &&
-      timestamp < last_timestamp_) {
+  if (last_timestamp_ != ::media::kNoTimestamp && timestamp < last_timestamp_) {
     return false;
   }
 
@@ -223,7 +217,7 @@ void BalancedMediaTaskRunnerFactory::OnNewTask() {
   for (MediaTaskRunnerSet::const_iterator it = task_runners_.begin();
        it != task_runners_.end(); ++it) {
     base::TimeDelta timestamp((*it)->GetMediaTimestamp());
-    if (timestamp == ::media::kNoTimestamp())
+    if (timestamp == ::media::kNoTimestamp)
       continue;
     runnable_task_runner.insert(
         std::pair<base::TimeDelta, scoped_refptr<BalancedMediaTaskRunner> >(

@@ -10,6 +10,10 @@
 #include "base/logging.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/values.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/common/chrome_features.h"
+#include "chrome/common/pref_names.h"
+#include "components/prefs/pref_service.h"
 
 namespace chrome {
 namespace mac {
@@ -17,27 +21,27 @@ namespace mac {
 NSAppleEventDescriptor* ValueToAppleEventDescriptor(const base::Value* value) {
   NSAppleEventDescriptor* descriptor = nil;
 
-  switch (value->GetType()) {
-    case base::Value::TYPE_NULL:
+  switch (value->type()) {
+    case base::Value::Type::NONE:
       descriptor = [NSAppleEventDescriptor
           descriptorWithTypeCode:cMissingValue];
       break;
 
-    case base::Value::TYPE_BOOLEAN: {
+    case base::Value::Type::BOOLEAN: {
       bool bool_value;
       value->GetAsBoolean(&bool_value);
       descriptor = [NSAppleEventDescriptor descriptorWithBoolean:bool_value];
       break;
     }
 
-    case base::Value::TYPE_INTEGER: {
+    case base::Value::Type::INTEGER: {
       int int_value;
       value->GetAsInteger(&int_value);
       descriptor = [NSAppleEventDescriptor descriptorWithInt32:int_value];
       break;
     }
 
-    case base::Value::TYPE_DOUBLE: {
+    case base::Value::Type::DOUBLE: {
       double double_value;
       value->GetAsDouble(&double_value);
       descriptor = [NSAppleEventDescriptor
@@ -47,7 +51,7 @@ NSAppleEventDescriptor* ValueToAppleEventDescriptor(const base::Value* value) {
       break;
     }
 
-    case base::Value::TYPE_STRING: {
+    case base::Value::Type::STRING: {
       std::string string_value;
       value->GetAsString(&string_value);
       descriptor = [NSAppleEventDescriptor descriptorWithString:
@@ -55,11 +59,11 @@ NSAppleEventDescriptor* ValueToAppleEventDescriptor(const base::Value* value) {
       break;
     }
 
-    case base::Value::TYPE_BINARY:
+    case base::Value::Type::BINARY:
       NOTREACHED();
       break;
 
-    case base::Value::TYPE_DICTIONARY: {
+    case base::Value::Type::DICTIONARY: {
       const base::DictionaryValue* dictionary_value;
       value->GetAsDictionary(&dictionary_value);
       descriptor = [NSAppleEventDescriptor recordDescriptor];
@@ -80,7 +84,7 @@ NSAppleEventDescriptor* ValueToAppleEventDescriptor(const base::Value* value) {
       break;
     }
 
-    case base::Value::TYPE_LIST: {
+    case base::Value::Type::LIST: {
       const base::ListValue* list_value;
       value->GetAsList(&list_value);
       descriptor = [NSAppleEventDescriptor listDescriptor];
@@ -95,6 +99,16 @@ NSAppleEventDescriptor* ValueToAppleEventDescriptor(const base::Value* value) {
   }
 
   return descriptor;
+}
+
+bool IsJavaScriptEnabledForProfile(Profile* profile) {
+  DCHECK(profile);
+  if (!base::FeatureList::IsEnabled(
+          features::kAppleScriptExecuteJavaScriptMenuItem))
+    return YES;
+
+  PrefService* prefs = profile->GetPrefs();
+  return prefs->GetBoolean(prefs::kAllowJavascriptAppleEvents);
 }
 
 }  // namespace mac

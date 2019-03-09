@@ -13,16 +13,19 @@
 #include <vector>
 
 #include "base/callback_forward.h"
+#include "base/containers/span.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "chrome/browser/chromeos/certificate_provider/certificate_info.h"
 #include "chrome/browser/chromeos/certificate_provider/certificate_requests.h"
+#include "chrome/browser/chromeos/certificate_provider/pin_dialog_manager.h"
 #include "chrome/browser/chromeos/certificate_provider/sign_requests.h"
 #include "chrome/browser/chromeos/certificate_provider/thread_safe_certificate_map.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "net/cert/x509_certificate.h"
+#include "net/ssl/client_cert_identity.h"
 #include "net/ssl/ssl_private_key.h"
 
 namespace chromeos {
@@ -78,14 +81,15 @@ class CertificateProviderService : public KeyedService {
     virtual void BroadcastCertificateRequest(int cert_request_id) = 0;
 
     // Dispatches a sign request with the given arguments to the extension with
-    // id |extension_id|. Returns whether that extension is actually a listener
-    // for that event.
+    // id |extension_id|. |algorithm| is a TLS 1.3 SignatureScheme value. See
+    // net::SSLPrivateKey for details. Returns whether that extension is
+    // actually a listener for that event.
     virtual bool DispatchSignRequestToExtension(
         const std::string& extension_id,
         int sign_request_id,
-        net::SSLPrivateKey::Hash hash,
+        uint16_t algorithm,
         const scoped_refptr<net::X509Certificate>& certificate,
-        const std::string& digest) = 0;
+        base::span<const uint8_t> digest) = 0;
 
    private:
     DISALLOW_COPY_AND_ASSIGN(Delegate);
@@ -150,8 +154,10 @@ class CertificateProviderService : public KeyedService {
   // corresponding notification of the ExtensionRegistry is triggered.
   void OnExtensionUnloaded(const std::string& extension_id);
 
+  PinDialogManager* pin_dialog_manager() { return &pin_dialog_manager_; }
+
  private:
-  class CertKeyProviderImpl;
+  class ClientCertIdentity;
   class CertificateProviderImpl;
   class SSLPrivateKey;
 
@@ -160,7 +166,7 @@ class CertificateProviderService : public KeyedService {
   // |extension_to_certificates_| is updated and |callback| is run with the
   // retrieved list of certificates.
   void GetCertificatesFromExtensions(
-      const base::Callback<void(const net::CertificateList&)>& callback);
+      const base::Callback<void(net::ClientCertIdentityList)>& callback);
 
   // Copies the given certificates into the internal
   // |extension_to_certificates_|. Any previously stored certificates are
@@ -168,7 +174,7 @@ class CertificateProviderService : public KeyedService {
   void UpdateCertificatesAndRun(
       const std::map<std::string, CertificateInfoList>&
           extension_to_certificates,
-      const base::Callback<void(const net::CertificateList&)>& callback);
+      const base::Callback<void(net::ClientCertIdentityList)>& callback);
 
   // Terminates the certificate request with id |cert_request_id| by ignoring
   // pending replies from extensions. Certificates that were already reported
@@ -176,20 +182,22 @@ class CertificateProviderService : public KeyedService {
   void TerminateCertificateRequest(int cert_request_id);
 
   // Requests extension with |extension_id| to sign |digest| with the private
-  // key certified by |certificate|. |hash| was used to create |digest|.
-  // |callback| will be run with the reply of the extension or an error.
+  // key certified by |certificate|. |algorithm| is a TLS 1.3 SignatureScheme
+  // value. See net::SSLPrivateKey for details. |digest| was created by
+  // |algorithm|'s prehash.  |callback| will be run with the reply of the
+  // extension or an error.
   void RequestSignatureFromExtension(
       const std::string& extension_id,
       const scoped_refptr<net::X509Certificate>& certificate,
-      net::SSLPrivateKey::Hash hash,
-      const std::string& digest,
-      const net::SSLPrivateKey::SignCallback& callback);
+      uint16_t algorithm,
+      base::span<const uint8_t> digest,
+      net::SSLPrivateKey::SignCallback callback);
 
   std::unique_ptr<Delegate> delegate_;
 
-  // An instance of net::ClientKeyStore::CertKeyProvider that is registered at
-  // the net::ClientKeyStore singleton.
-  std::unique_ptr<CertKeyProviderImpl> cert_key_provider_;
+  // The object to manage the dialog displayed when requestPin is called by the
+  // extension.
+  PinDialogManager pin_dialog_manager_;
 
   // State about all pending sign requests.
   certificate_provider::SignRequests sign_requests_;

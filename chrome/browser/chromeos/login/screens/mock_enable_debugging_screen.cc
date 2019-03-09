@@ -4,31 +4,29 @@
 
 #include "chrome/browser/chromeos/login/screens/mock_enable_debugging_screen.h"
 
-using ::testing::AtLeast;
-using ::testing::NotNull;
-
 namespace chromeos {
 
 MockEnableDebuggingScreen::MockEnableDebuggingScreen(
     BaseScreenDelegate* base_screen_delegate,
-    EnableDebuggingScreenActor* actor)
-    : EnableDebuggingScreen(base_screen_delegate, actor) {
+    EnableDebuggingScreenView* view,
+    const base::RepeatingClosure& exit_callback)
+    : EnableDebuggingScreen(base_screen_delegate, view, exit_callback) {}
+
+MockEnableDebuggingScreen::~MockEnableDebuggingScreen() {}
+
+void MockEnableDebuggingScreen::ExitScreen() {
+  exit_callback()->Run();
 }
 
-MockEnableDebuggingScreen::~MockEnableDebuggingScreen() {
-}
+MockEnableDebuggingScreenView::MockEnableDebuggingScreenView() = default;
 
-MockEnableDebuggingScreenActor::MockEnableDebuggingScreenActor() {
-  EXPECT_CALL(*this, MockSetDelegate(NotNull())).Times(AtLeast(1));
-}
-
-MockEnableDebuggingScreenActor::~MockEnableDebuggingScreenActor() {
+MockEnableDebuggingScreenView::~MockEnableDebuggingScreenView() {
   if (delegate_)
-    delegate_->OnActorDestroyed(this);
+    delegate_->OnViewDestroyed(this);
 }
 
-void MockEnableDebuggingScreenActor::SetDelegate(
-    EnableDebuggingScreenActor::Delegate* delegate) {
+void MockEnableDebuggingScreenView::SetDelegate(
+    EnableDebuggingScreenView::Delegate* delegate) {
   delegate_ = delegate;
   MockSetDelegate(delegate);
 }

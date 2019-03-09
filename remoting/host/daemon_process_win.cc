@@ -14,17 +14,19 @@
 #include "base/bind_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/process/process.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/win_util.h"
+#include "ipc/ipc_channel_handle.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_macros.h"
+#include "mojo/core/embedder/scoped_ipc_support.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/base/scoped_sc_handle_win.h"
 #include "remoting/host/branding.h"
@@ -35,6 +37,7 @@
 #include "remoting/host/ipc_constants.h"
 #include "remoting/host/pairing_registry_delegate_win.h"
 #include "remoting/host/screen_resolution.h"
+#include "remoting/host/switches.h"
 #include "remoting/host/win/launch_process_with_token.h"
 #include "remoting/host/win/security_descriptor.h"
 #include "remoting/host/win/unprivileged_process_delegate.h"
@@ -62,8 +65,10 @@ class WtsTerminalMonitor;
 // The command line parameters that should be copied from the service's command
 // line to the host process.
 const char kEnableVp9SwitchName[] = "enable-vp9";
-const char* kCopiedSwitchNames[] =
-    { switches::kV, switches::kVModule, kEnableVp9SwitchName };
+const char kEnableH264SwitchName[] = "enable-h264";
+const char* kCopiedSwitchNames[] = {switches::kV, switches::kVModule,
+                                    kEnableVp9SwitchName,
+                                    kEnableH264SwitchName};
 
 class DaemonProcessWin : public DaemonProcess {
  public:
@@ -81,8 +86,8 @@ class DaemonProcessWin : public DaemonProcess {
   void SendToNetwork(IPC::Message* message) override;
   bool OnDesktopSessionAgentAttached(
       int terminal_id,
-      base::ProcessHandle desktop_process,
-      IPC::PlatformFileForTransit desktop_pipe) override;
+      int session_id,
+      const IPC::ChannelHandle& desktop_pipe) override;
 
  protected:
   // DaemonProcess implementation.
@@ -90,8 +95,7 @@ class DaemonProcessWin : public DaemonProcess {
       int terminal_id,
       const ScreenResolution& resolution,
       bool virtual_terminal) override;
-  void DoCrashNetworkProcess(
-      const tracked_objects::Location& location) override;
+  void DoCrashNetworkProcess(const base::Location& location) override;
   void LaunchNetworkProcess() override;
 
   // Changes the service start type to 'manual'.
@@ -105,6 +109,11 @@ class DaemonProcessWin : public DaemonProcess {
   bool OpenPairingRegistry();
 
  private:
+  // Mojo keeps the task runner passed to it alive forever, so an
+  // AutoThreadTaskRunner should not be passed to it. Otherwise, the process may
+  // never shut down cleanly.
+  mojo::core::ScopedIPCSupport ipc_support_;
+
   std::unique_ptr<WorkerProcessLauncher> network_launcher_;
 
   // Handle of the network process.
@@ -120,8 +129,9 @@ DaemonProcessWin::DaemonProcessWin(
     scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
     scoped_refptr<AutoThreadTaskRunner> io_task_runner,
     const base::Closure& stopped_callback)
-    : DaemonProcess(caller_task_runner, io_task_runner, stopped_callback) {
-}
+    : DaemonProcess(caller_task_runner, io_task_runner, stopped_callback),
+      ipc_support_(io_task_runner->task_runner(),
+                   mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST) {}
 
 DaemonProcessWin::~DaemonProcessWin() {
 }
@@ -168,25 +178,10 @@ void DaemonProcessWin::SendToNetwork(IPC::Message* message) {
 
 bool DaemonProcessWin::OnDesktopSessionAgentAttached(
     int terminal_id,
-    base::ProcessHandle desktop_process,
-    IPC::PlatformFileForTransit desktop_pipe) {
-  // Prepare |desktop_process| handle for sending over to the network process.
-  base::ProcessHandle desktop_process_for_transit;
-  if (!DuplicateHandle(GetCurrentProcess(),
-                       desktop_process,
-                       network_process_.Get(),
-                       &desktop_process_for_transit,
-                       0,
-                       FALSE,
-                       DUPLICATE_SAME_ACCESS)) {
-    PLOG(ERROR) << "Failed to duplicate the desktop process handle";
-    return false;
-  }
-
-  // |desktop_pipe| is a handle in the desktop process. It will be duplicated
-  // by the network process directly from the desktop process.
+    int session_id,
+    const IPC::ChannelHandle& desktop_pipe) {
   SendToNetwork(new ChromotingDaemonNetworkMsg_DesktopAttached(
-      terminal_id, desktop_process_for_transit, desktop_pipe));
+      terminal_id, session_id, desktop_pipe));
   return true;
 }
 
@@ -205,8 +200,7 @@ std::unique_ptr<DesktopSession> DaemonProcessWin::DoCreateDesktopSession(
   }
 }
 
-void DaemonProcessWin::DoCrashNetworkProcess(
-    const tracked_objects::Location& location) {
+void DaemonProcessWin::DoCrashNetworkProcess(const base::Location& location) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
   network_launcher_->Crash(location);
@@ -226,7 +220,7 @@ void DaemonProcessWin::LaunchNetworkProcess() {
   std::unique_ptr<base::CommandLine> target(new base::CommandLine(host_binary));
   target->AppendSwitchASCII(kProcessTypeSwitchName, kProcessTypeHost);
   target->CopySwitchesFrom(*base::CommandLine::ForCurrentProcess(),
-                           kCopiedSwitchNames, arraysize(kCopiedSwitchNames));
+                           kCopiedSwitchNames, base::size(kCopiedSwitchNames));
 
   std::unique_ptr<UnprivilegedProcessDelegate> delegate(
       new UnprivilegedProcessDelegate(io_task_runner(), std::move(target)));

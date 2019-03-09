@@ -10,7 +10,10 @@ function getStyleURL() {
 
 function getScriptURL() {
   // The file is empty, so JS errors will not be generated upon execution.
-  return getServerURL('empty.html?as-script');
+  //
+  // We load from '127.0.0.1', as that is a whitelistable source of script
+  // from outside the extension's package.
+  return getServerURL('empty.html?as-script', '127.0.0.1');
 }
 
 function getFontURL() {
@@ -21,7 +24,7 @@ function getFontURL() {
 function getWorkerURL() {
   // This file is empty, so it does not generate JavaScript errors when loaded
   // as a worker script.
-  return getServerURL('empty.html?as-worker');
+  return getServerURL('empty.html?as-worker', '127.0.0.1');
 }
 
 function getPingURL() {
@@ -30,6 +33,12 @@ function getPingURL() {
 
 function getBeaconURL() {
   return getServerURL('empty.html?as-beacon');
+}
+
+function getCSPReportURL() {
+  // dont-ignore-me is included so that framework.js does not filter out the
+  // request of type "other".
+  return getServerURL('csp-violation-dont-ignore-me');
 }
 
 // A slow URL used for the beacon test, to make sure that the test fails
@@ -61,6 +70,7 @@ runTests([
           // tabId 0 = tab opened by test runner;
           // tabId 1 = this tab.
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         }
       },
       { label: 'onBeforeSendHeaders',
@@ -69,6 +79,7 @@ runTests([
           type: 'stylesheet',
           url: getStyleURL(),
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onSendHeaders',
@@ -77,6 +88,7 @@ runTests([
           type: 'stylesheet',
           url: getStyleURL(),
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onHeadersReceived',
@@ -87,6 +99,7 @@ runTests([
           tabId: 1,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onResponseStarted',
@@ -99,6 +112,7 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onCompleted',
@@ -111,15 +125,21 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       }],
       [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
-        'onHeadersReceived', 'onResponseStarted', 'onCompleted']]);
-    var style = document.createElement('link');
-    style.rel = 'stylesheet';
-    style.type = 'text/css';
-    style.href = getStyleURL();
-    document.body.appendChild(style);
+        'onHeadersReceived', 'onResponseStarted', 'onCompleted']],
+      {urls: [getStyleURL()]});
+
+    // Load a page to be sure webRequest listeners are set up.
+    navigateAndWait(getURL('simpleLoad/a.html'), function() {
+      var style = document.createElement('link');
+      style.rel = 'stylesheet';
+      style.type = 'text/css';
+      style.href = getStyleURL();
+      document.body.appendChild(style);
+    });
   },
 
   function typeScript() {
@@ -137,6 +157,7 @@ runTests([
           // tabId 0 = tab opened by test runner;
           // tabId 1 = this tab.
           tabId: 1,
+          initiator: "null",
         }
       },
       { label: 'onBeforeSendHeaders',
@@ -147,6 +168,7 @@ runTests([
           frameId: 1,
           parentFrameId: 0,
           tabId: 1,
+          initiator: "null",
         },
       },
       { label: 'onSendHeaders',
@@ -157,6 +179,7 @@ runTests([
           frameId: 1,
           parentFrameId: 0,
           tabId: 1,
+          initiator: "null",
         },
       },
       { label: 'onHeadersReceived',
@@ -169,6 +192,7 @@ runTests([
           tabId: 1,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: "null",
         },
       },
       { label: 'onResponseStarted',
@@ -183,6 +207,7 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: "null",
         },
       },
       { label: 'onCompleted',
@@ -197,18 +222,13 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: "null",
         },
       }],
       [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
         'onHeadersReceived', 'onResponseStarted', 'onCompleted']],
       getScriptFilter());
 
-    // This tab is an extension, and the default Content Security Policy forbids
-    // injecting external scripts in the page. So we just load the script in a
-    // frame via a data:-URL (which is not subject to the extension's CSP).
-    //
-    // data-URLs are not visible to the webRequest API, so we don't have to
-    // include the frame in the expectations - this is a nice side effect.
     var frame = document.createElement('iframe');
     frame.src = 'data:text/html,<script src="' + getScriptURL() + '"></script>';
     document.body.appendChild(frame);
@@ -225,6 +245,7 @@ runTests([
           // tabId 0 = tab opened by test runner;
           // tabId 1 = this tab.
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         }
       },
       { label: 'onBeforeSendHeaders',
@@ -233,7 +254,8 @@ runTests([
           type: 'font',
           url: getFontURL(),
           tabId: 1,
-        },
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
       },
       { label: 'onSendHeaders',
         event: 'onSendHeaders',
@@ -241,7 +263,50 @@ runTests([
           type: 'font',
           url: getFontURL(),
           tabId: 1,
-        },
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
+      },
+      { label: 'onErrorOccurred',
+        event: 'onErrorOccurred',
+        details: {
+          type: 'font',
+          url: getFontURL(),
+          tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED),
+          error: 'net::ERR_CACHE_MISS',
+          fromCache: false,
+        }
+      },
+      { label: 'onBeforeRequest-1',
+        event: 'onBeforeRequest',
+        details: {
+          eventCount: 1,
+          type: 'font',
+          url: getFontURL(),
+          frameUrl: 'unknown frame URL',
+          tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
+      },
+      { label: 'onBeforeSendHeaders-1',
+        event: 'onBeforeSendHeaders',
+        details: {
+          eventCount: 1,
+          type: 'font',
+          url: getFontURL(),
+          tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
+      },
+      { label: 'onSendHeaders-1',
+        event: 'onSendHeaders',
+        details: {
+          eventCount: 1,
+          type: 'font',
+          url: getFontURL(),
+          tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
       },
       { label: 'onHeadersReceived',
         event: 'onHeadersReceived',
@@ -251,7 +316,8 @@ runTests([
           tabId: 1,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
-        },
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
       },
       { label: 'onResponseStarted',
         event: 'onResponseStarted',
@@ -263,7 +329,8 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
-        },
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
       },
       { label: 'onCompleted',
         event: 'onCompleted',
@@ -275,12 +342,20 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
-        },
+          initiator: getDomain(initiators.WEB_INITIATED)
+        }
       }],
       [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
-        'onHeadersReceived', 'onResponseStarted', 'onCompleted']]);
+        'onErrorOccurred', 'onBeforeRequest-1', 'onBeforeSendHeaders-1',
+        'onSendHeaders-1', 'onHeadersReceived', 'onResponseStarted',
+        'onCompleted']],
+      {urls: [getFontURL()]});
 
-    new FontFace('allegedly-a-font-family', 'url(' + getFontURL() + ')').load();
+    // Load a page to be sure webRequest listeners are set up.
+    navigateAndWait(getURL('simpleLoad/a.html'), function() {
+      new FontFace('allegedly-a-font-family',
+          'url(' + getFontURL() + ')').load();
+    });
   },
 
   function typeWorker() {
@@ -294,6 +369,7 @@ runTests([
           // tabId 0 = tab opened by test runner;
           // tabId 1 = this tab.
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         }
       },
       { label: 'onBeforeSendHeaders',
@@ -302,6 +378,7 @@ runTests([
           type: 'script',
           url: getWorkerURL(),
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onSendHeaders',
@@ -310,6 +387,7 @@ runTests([
           type: 'script',
           url: getWorkerURL(),
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onHeadersReceived',
@@ -320,6 +398,7 @@ runTests([
           tabId: 1,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onResponseStarted',
@@ -332,6 +411,7 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onCompleted',
@@ -344,13 +424,17 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       }],
       [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
         'onHeadersReceived', 'onResponseStarted', 'onCompleted']],
       getScriptFilter());
 
-    new Worker(getWorkerURL());
+    // Load a page to be sure webRequest listeners are set up.
+    navigateAndWait(getURL('simpleLoad/a.html'), function() {
+      new Worker(getWorkerURL());
+    });
 
     // TODO(robwu): add tests for SharedWorker and ServiceWorker.
     // (probably same as above, but using -1 because they are not specific to
@@ -369,6 +453,7 @@ runTests([
           frameUrl: 'unknown frame URL',
           frameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         }
       },
       { label: 'onBeforeSendHeaders',
@@ -379,6 +464,7 @@ runTests([
           url: getPingURL(),
           frameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onSendHeaders',
@@ -389,6 +475,7 @@ runTests([
           url: getPingURL(),
           frameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onHeadersReceived',
@@ -401,6 +488,7 @@ runTests([
           tabId: 1,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onResponseStarted',
@@ -415,6 +503,7 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onCompleted',
@@ -429,15 +518,20 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       }],
       [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
-        'onHeadersReceived', 'onResponseStarted', 'onCompleted']]);
+        'onHeadersReceived', 'onResponseStarted', 'onCompleted']],
+      {urls: [getPingURL()]});
 
-    var a = document.createElement('a');
-    a.ping = getPingURL();
-    a.href = 'javascript:';
-    a.click();
+    // Load a page to be sure webRequest listeners are set up.
+    navigateAndWait(getURL('simpleLoad/a.html'), function() {
+      var a = document.createElement('a');
+      a.ping = getPingURL();
+      a.href = 'javascript:';
+      a.click();
+    });
   },
 
   function typeBeacon() {
@@ -451,6 +545,7 @@ runTests([
           frameUrl: 'unknown frame URL',
           frameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         }
       },
       { label: 'onBeforeSendHeaders',
@@ -461,6 +556,7 @@ runTests([
           url: getBeaconURL(),
           frameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onSendHeaders',
@@ -471,6 +567,7 @@ runTests([
           url: getBeaconURL(),
           frameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onHeadersReceived',
@@ -483,6 +580,7 @@ runTests([
           tabId: 1,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onResponseStarted',
@@ -497,6 +595,7 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onCompleted',
@@ -511,12 +610,17 @@ runTests([
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       }],
       [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
-        'onHeadersReceived', 'onResponseStarted', 'onCompleted']]);
+        'onHeadersReceived', 'onResponseStarted', 'onCompleted']],
+      {urls: [getBeaconURL()]});
 
-    navigator.sendBeacon(getBeaconURL(), 'beacon data');
+    // Load a page to be sure webRequest listeners are set up.
+    navigateAndWait(getURL('simpleLoad/a.html'), function() {
+      navigator.sendBeacon(getBeaconURL(), 'beacon data');
+    });
   },
 
   function sendBeaconInFrameOnUnload() {
@@ -531,6 +635,7 @@ runTests([
           frameId: 1,
           parentFrameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         }
       },
       { label: 'onBeforeSendHeaders',
@@ -542,6 +647,7 @@ runTests([
           frameId: 1,
           parentFrameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onSendHeaders',
@@ -553,6 +659,7 @@ runTests([
           frameId: 1,
           parentFrameId: 0,
           tabId: 1,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onHeadersReceived',
@@ -561,14 +668,12 @@ runTests([
           type: 'ping',
           method: 'POST',
           url: getSlowURL(),
-          // TODO(robwu): These IDs should be identical to the previous IDs, but
-          // unfortunately the context is lost when the frames are destroyed.
-          // This should be fixed - https://crbug.com/522129
-          frameId: -1,
-          parentFrameId: -1,
-          tabId: -1,
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onResponseStarted',
@@ -577,13 +682,14 @@ runTests([
           type: 'ping',
           method: 'POST',
           url: getSlowURL(),
-          frameId: -1,
-          parentFrameId: -1,
-          tabId: -1,
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
           ip: '127.0.0.1',
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       },
       { label: 'onCompleted',
@@ -592,25 +698,129 @@ runTests([
           type: 'ping',
           method: 'POST',
           url: getSlowURL(),
-          frameId: -1,
-          parentFrameId: -1,
-          tabId: -1,
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
           ip: '127.0.0.1',
           fromCache: false,
           statusLine: 'HTTP/1.1 200 OK',
           statusCode: 200,
+          initiator: getDomain(initiators.WEB_INITIATED)
         },
       }],
       [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
-        'onHeadersReceived', 'onResponseStarted', 'onCompleted']]);
+        'onHeadersReceived', 'onResponseStarted', 'onCompleted']],
+      {urls: [getSlowURL()]});
+
+    // Load a page to be sure webRequest listeners are set up.
+    navigateAndWait(getURL('simpleLoad/a.html'), function() {
+      var frame = document.createElement('iframe');
+      document.body.appendChild(frame);
+      frame.contentWindow.onunload = function() {
+        console.log('Going to send beacon...');
+        var sentBeacon = frame.contentWindow.navigator.sendBeacon(getSlowURL());
+        chrome.test.assertTrue(sentBeacon);
+      };
+      frame.remove();
+    });
+  },
+
+  function typeOther_cspreport() {
+    expect([
+      { label: 'onBeforeRequest',
+        event: 'onBeforeRequest',
+        details: {
+          type: 'csp_report',
+          method: 'POST',
+          url: getCSPReportURL(),
+          frameUrl: 'unknown frame URL',
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
+          initiator: getServerDomain(initiators.WEB_INITIATED)
+        }
+      },
+      { label: 'onBeforeSendHeaders',
+        event: 'onBeforeSendHeaders',
+        details: {
+          type: 'csp_report',
+          method: 'POST',
+          url: getCSPReportURL(),
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
+          initiator: getServerDomain(initiators.WEB_INITIATED)
+        },
+      },
+      { label: 'onSendHeaders',
+        event: 'onSendHeaders',
+        details: {
+          type: 'csp_report',
+          method: 'POST',
+          url: getCSPReportURL(),
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
+          initiator: getServerDomain(initiators.WEB_INITIATED)
+        },
+      },
+      { label: 'onHeadersReceived',
+        event: 'onHeadersReceived',
+        details: {
+          type: 'csp_report',
+          method: 'POST',
+          url: getCSPReportURL(),
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
+          statusLine: 'HTTP/1.1 404 Not Found',
+          statusCode: 404,
+          initiator: getServerDomain(initiators.WEB_INITIATED)
+        },
+      },
+      { label: 'onResponseStarted',
+        event: 'onResponseStarted',
+        details: {
+          type: 'csp_report',
+          method: 'POST',
+          url: getCSPReportURL(),
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
+          ip: '127.0.0.1',
+          fromCache: false,
+          statusLine: 'HTTP/1.1 404 Not Found',
+          statusCode: 404,
+          initiator: getServerDomain(initiators.WEB_INITIATED)
+        },
+      },
+      { label: 'onCompleted',
+        event: 'onCompleted',
+        details: {
+          type: 'csp_report',
+          method: 'POST',
+          url: getCSPReportURL(),
+          frameId: 1,
+          parentFrameId: 0,
+          tabId: 1,
+          ip: '127.0.0.1',
+          fromCache: false,
+          statusLine: 'HTTP/1.1 404 Not Found',
+          statusCode: 404,
+          initiator: getServerDomain(initiators.WEB_INITIATED)
+        },
+      }],
+      [['onBeforeRequest', 'onBeforeSendHeaders', 'onSendHeaders',
+        'onHeadersReceived', 'onResponseStarted', 'onCompleted']], {
+        urls: ['<all_urls>'], types: ['csp_report']
+      });
 
     var frame = document.createElement('iframe');
+    frame.src =
+      getServerURL('extensions/api_test/webrequest/csp/violation.html');
     document.body.appendChild(frame);
-    frame.contentWindow.onunload = function() {
-      console.log('Going to send beacon...');
-      var sentBeacon = frame.contentWindow.navigator.sendBeacon(getSlowURL());
-      chrome.test.assertTrue(sentBeacon);
-    };
-    frame.remove();
   },
+
+  // Note: The 'websocket' type is tested separately in 'test_websocket.js' and
+  // 'test_websocket_auth.js'.
 ]);

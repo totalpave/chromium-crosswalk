@@ -2,8 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/views/corewm/tooltip_controller.h"
+
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
@@ -11,7 +15,6 @@
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/geometry/point.h"
-#include "ui/views/corewm/tooltip_controller.h"
 #include "ui/views/corewm/tooltip_controller_test_helper.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
@@ -26,7 +29,6 @@ using views::corewm::test::TooltipControllerTestHelper;
 // to be installed.
 
 namespace ash {
-namespace test {
 
 namespace {
 
@@ -37,7 +39,8 @@ views::Widget* CreateNewWidgetWithBoundsOn(int display,
   params.type = views::Widget::InitParams::TYPE_WINDOW_FRAMELESS;
   params.accept_events = true;
   params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-  params.context = Shell::GetAllRootWindows().at(display);
+  params.parent = Shell::Get()->GetContainer(
+      Shell::GetAllRootWindows().at(display), kShellWindowId_DefaultContainer);
   params.bounds = bounds;
   widget->Init(params);
   widget->Show();
@@ -66,15 +69,15 @@ void AddViewToWidgetAndResize(views::Widget* widget, views::View* view) {
 
 TooltipController* GetController() {
   return static_cast<TooltipController*>(
-      aura::client::GetTooltipClient(Shell::GetPrimaryRootWindow()));
+      ::wm::GetTooltipClient(Shell::GetPrimaryRootWindow()));
 }
 
 }  // namespace
 
 class TooltipControllerTest : public AshTestBase {
  public:
-  TooltipControllerTest() {}
-  ~TooltipControllerTest() override {}
+  TooltipControllerTest() = default;
+  ~TooltipControllerTest() override = default;
 
   void SetUp() override {
     AshTestBase::SetUp();
@@ -89,8 +92,7 @@ class TooltipControllerTest : public AshTestBase {
 };
 
 TEST_F(TooltipControllerTest, NonNullTooltipClient) {
-  EXPECT_TRUE(aura::client::GetTooltipClient(Shell::GetPrimaryRootWindow()) !=
-              NULL);
+  EXPECT_TRUE(::wm::GetTooltipClient(Shell::GetPrimaryRootWindow()) != NULL);
   EXPECT_EQ(base::string16(), helper_->GetTooltipText());
   EXPECT_EQ(NULL, helper_->GetTooltipWindow());
   EXPECT_FALSE(helper_->IsTooltipVisible());
@@ -109,27 +111,25 @@ TEST_F(TooltipControllerTest, HideTooltipWhenCursorHidden) {
                                 view->bounds().CenterPoint());
   base::string16 expected_tooltip = base::ASCIIToUTF16("Tooltip Text");
 
-  // Fire tooltip timer so tooltip becomes visible.
-  helper_->FireTooltipTimer();
+  // Mouse event triggers tooltip update so it becomes visible.
   EXPECT_TRUE(helper_->IsTooltipVisible());
 
-  // Hide the cursor and check again.
-  ash::Shell::GetInstance()->cursor_manager()->DisableMouseEvents();
-  helper_->FireTooltipTimer();
+  // Disable mouse event which hides the cursor and check again.
+  ash::Shell::Get()->cursor_manager()->DisableMouseEvents();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(ash::Shell::Get()->cursor_manager()->IsCursorVisible());
+  helper_->UpdateIfRequired();
   EXPECT_FALSE(helper_->IsTooltipVisible());
 
-  // Show the cursor and re-check.
-  RunAllPendingInMessageLoop();
-  ash::Shell::GetInstance()->cursor_manager()->EnableMouseEvents();
-  RunAllPendingInMessageLoop();
-  helper_->FireTooltipTimer();
+  // Enable mouse event which shows the cursor and re-check.
+  ash::Shell::Get()->cursor_manager()->EnableMouseEvents();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(ash::Shell::Get()->cursor_manager()->IsCursorVisible());
+  helper_->UpdateIfRequired();
   EXPECT_TRUE(helper_->IsTooltipVisible());
 }
 
 TEST_F(TooltipControllerTest, TooltipsOnMultiDisplayShouldNotCrash) {
-  if (!SupportsMultipleDisplays())
-    return;
-
   UpdateDisplay("1000x600,600x400");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   std::unique_ptr<views::Widget> widget1(
@@ -150,18 +150,12 @@ TEST_F(TooltipControllerTest, TooltipsOnMultiDisplayShouldNotCrash) {
   ui::test::EventGenerator generator(root_windows[1]);
   generator.MoveMouseRelativeTo(widget2->GetNativeView(),
                                 view2->bounds().CenterPoint());
-  helper_->FireTooltipTimer();
   EXPECT_TRUE(helper_->IsTooltipVisible());
 
   // Get rid of secondary display. This destroy's the tooltip's aura window. If
   // we have handled this case, we will not crash in the following statement.
   UpdateDisplay("1000x600");
-#if !defined(OS_WIN)
-  // TODO(cpu): Detangle the window destruction notification. Currently
-  // the TooltipController::OnWindowDestroyed is not being called then the
-  // display is torn down so the tooltip is is still there.
   EXPECT_FALSE(helper_->IsTooltipVisible());
-#endif
   EXPECT_EQ(widget2->GetNativeView()->GetRootWindow(), root_windows[0]);
 
   // The tooltip should create a new aura window for itself, so we should still
@@ -169,9 +163,7 @@ TEST_F(TooltipControllerTest, TooltipsOnMultiDisplayShouldNotCrash) {
   ui::test::EventGenerator generator1(root_windows[0]);
   generator1.MoveMouseRelativeTo(widget1->GetNativeView(),
                                  view1->bounds().CenterPoint());
-  helper_->FireTooltipTimer();
   EXPECT_TRUE(helper_->IsTooltipVisible());
 }
 
-}  // namespace test
 }  // namespace ash

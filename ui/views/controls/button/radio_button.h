@@ -8,6 +8,7 @@
 #include "base/macros.h"
 #include "base/strings/string16.h"
 #include "ui/views/controls/button/checkbox.h"
+#include "ui/views/controls/focus_ring.h"
 
 namespace views {
 
@@ -23,23 +24,26 @@ class VIEWS_EXPORT RadioButton : public Checkbox {
 
   // Overridden from View:
   const char* GetClassName() const override;
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   View* GetSelectedViewForGroup(int group) override;
   bool IsGroupFocusTraversable() const override;
   void OnFocus() override;
 
   // Overridden from Button:
+  void RequestFocusFromEvent() override;
   void NotifyClick(const ui::Event& event) override;
 
   // Overridden from LabelButton:
   ui::NativeTheme::Part GetThemePart() const override;
-  gfx::ImageSkia GetImage(ButtonState for_state) const override;
 
   // Overridden from Checkbox:
   void SetChecked(bool checked) override;
-  void PaintFocusRing(gfx::Canvas* canvas, const SkPaint& paint) override;
+  const gfx::VectorIcon& GetVectorIcon() const override;
+  SkPath GetFocusRingPath() const override;
 
  private:
+  void GetViewsInGroupFromParent(int group, Views* views);
+
   DISALLOW_COPY_AND_ASSIGN(RadioButton);
 };
 

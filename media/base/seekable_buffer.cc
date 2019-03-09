@@ -18,12 +18,11 @@ SeekableBuffer::SeekableBuffer(int backward_capacity, int forward_capacity)
       backward_bytes_(0),
       forward_capacity_(forward_capacity),
       forward_bytes_(0),
-      current_time_(kNoTimestamp()) {
+      current_time_(kNoTimestamp) {
   current_buffer_ = buffers_.begin();
 }
 
-SeekableBuffer::~SeekableBuffer() {
-}
+SeekableBuffer::~SeekableBuffer() = default;
 
 void SeekableBuffer::Clear() {
   buffers_.clear();
@@ -31,7 +30,7 @@ void SeekableBuffer::Clear() {
   current_buffer_offset_ = 0;
   backward_bytes_ = 0;
   forward_bytes_ = 0;
-  current_time_ = kNoTimestamp();
+  current_time_ = kNoTimestamp;
 }
 
 int SeekableBuffer::Read(uint8_t* data, int size) {
@@ -61,7 +60,7 @@ bool SeekableBuffer::GetCurrentChunk(const uint8_t** data, int* size) const {
 }
 
 bool SeekableBuffer::Append(const scoped_refptr<DataBuffer>& buffer_in) {
-  if (buffers_.empty() && buffer_in->timestamp() != kNoTimestamp()) {
+  if (buffers_.empty() && buffer_in->timestamp() != kNoTimestamp) {
     current_time_ = buffer_in->timestamp();
   }
 
@@ -169,7 +168,7 @@ bool SeekableBuffer::SeekBackward(int size) {
 void SeekableBuffer::EvictBackwardBuffers() {
   // Advances the iterator until we hit the current pointer.
   while (backward_bytes_ > backward_capacity_) {
-    BufferQueue::iterator i = buffers_.begin();
+    auto i = buffers_.begin();
     if (i == current_buffer_)
       break;
     scoped_refptr<DataBuffer> buffer = *i;
@@ -187,7 +186,7 @@ int SeekableBuffer::InternalRead(uint8_t* data,
   // Counts how many bytes are actually read from the buffer queue.
   int taken = 0;
 
-  BufferQueue::iterator current_buffer = current_buffer_;
+  auto current_buffer = current_buffer_;
   int current_buffer_offset = current_buffer_offset_;
 
   int bytes_to_skip = forward_offset;
@@ -233,7 +232,7 @@ int SeekableBuffer::InternalRead(uint8_t* data,
         UpdateCurrentTime(current_buffer, current_buffer_offset);
       }
 
-      BufferQueue::iterator next = current_buffer;
+      auto next = current_buffer;
       ++next;
       // If we are at the last buffer, don't advance.
       if (next == buffers_.end())
@@ -266,8 +265,7 @@ int SeekableBuffer::InternalRead(uint8_t* data,
 void SeekableBuffer::UpdateCurrentTime(BufferQueue::iterator buffer,
                                        int offset) {
   // Garbage values are unavoidable, so this check will remain.
-  if (buffer != buffers_.end() &&
-      (*buffer)->timestamp() != kNoTimestamp()) {
+  if (buffer != buffers_.end() && (*buffer)->timestamp() != kNoTimestamp) {
     int64_t time_offset = ((*buffer)->duration().InMicroseconds() * offset) /
                           (*buffer)->data_size();
 

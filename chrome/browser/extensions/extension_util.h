@@ -8,7 +8,8 @@
 #include <memory>
 #include <string>
 
-#include "url/gurl.h"
+#include "base/optional.h"
+#include "extensions/common/constants.h"
 
 namespace base {
 class DictionaryValue;
@@ -16,25 +17,22 @@ class DictionaryValue;
 
 namespace content {
 class BrowserContext;
+class WebContents;
 }
 
 namespace gfx {
 class ImageSkia;
 }
 
+class Browser;
+class GURL;
 class Profile;
 
 namespace extensions {
 
 class Extension;
-struct ExtensionInfo;
-class PermissionSet;
 
 namespace util {
-
-// Returns true if |extension_id| can run in an incognito window.
-bool IsIncognitoEnabled(const std::string& extension_id,
-                        content::BrowserContext* context);
 
 // Sets whether |extension_id| can run in an incognito window. Reloads the
 // extension if it's enabled since this permission is applied at loading time
@@ -77,31 +75,6 @@ void SetWasInstalledByCustodian(const std::string& extension_id,
                                 content::BrowserContext* context,
                                 bool installed_by_custodian);
 
-// Returns true if the extension with |extension_id| is allowed to execute
-// scripts on all urls (exempting chrome:// urls, etc) without explicit
-// user consent.
-// This should only be used with FeatureSwitch::scripts_require_action()
-// enabled.
-bool AllowedScriptingOnAllUrls(const std::string& extension_id,
-                               content::BrowserContext* context);
-
-// Returns the default value for being allowed to script on all urls.
-bool DefaultAllowedScriptingOnAllUrls();
-
-// Sets whether the extension with |extension_id| is allowed to execute scripts
-// on all urls (exempting chrome:// urls, etc) without explicit user consent.
-// This should only be used with FeatureSwitch::scripts_require_action()
-// enabled.
-void SetAllowedScriptingOnAllUrls(const std::string& extension_id,
-                                  content::BrowserContext* context,
-                                  bool allowed);
-
-// Returns true if the user has set an explicit preference for the specified
-// extension being allowed to script on all urls; this is set to be true
-// whenever SetAllowedScriptingOnAllUrls() is called.
-bool HasSetAllowedScriptingOnAllUrls(const std::string& extension_id,
-                                     content::BrowserContext* context);
-
 // Returns true if |extension_id| can be launched (possibly only after being
 // enabled).
 bool IsAppLaunchable(const std::string& extension_id,
@@ -118,11 +91,6 @@ bool ShouldSync(const Extension* extension, content::BrowserContext* context);
 // as updating.
 bool IsExtensionIdle(const std::string& extension_id,
                      content::BrowserContext* context);
-
-// Returns the site of the |extension_id|, given the associated |context|.
-// Suitable for use with BrowserContext::GetStoragePartitionForSite().
-GURL GetSiteForExtensionId(const std::string& extension_id,
-                           content::BrowserContext* context);
 
 // Sets the name, id, and icon resource path of the given extension into the
 // returned dictionary.
@@ -147,9 +115,20 @@ bool CanHostedAppsOpenInWindows();
 // Returns true for custodian-installed extensions in a supervised profile.
 bool IsExtensionSupervised(const Extension* extension, Profile* profile);
 
-// Returns true if supervised users need approval from their custodian for
-// approving escalated permissions on updated extensions.
-bool NeedCustodianApprovalForPermissionIncrease(const Profile* profile);
+// Finds the first PWA with |url| in its scope, returns nullptr if there are
+// none.
+const Extension* GetInstalledPwaForUrl(
+    content::BrowserContext* context,
+    const GURL& url,
+    base::Optional<LaunchContainer> launch_container_filter = base::nullopt);
+
+// Finds the first PWA with the active tab's url in its scope, returns nullptr
+// if there are none or the tab's is not secure.
+const Extension* GetPwaForSecureActiveTab(Browser* browser);
+
+// Returns true if the |web_contents| belongs to a browser that is a windowed
+// app.
+bool IsWebContentsInAppWindow(content::WebContents* web_contents);
 
 }  // namespace util
 }  // namespace extensions

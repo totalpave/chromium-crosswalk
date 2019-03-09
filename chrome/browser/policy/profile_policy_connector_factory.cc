@@ -19,8 +19,9 @@
 #include "components/policy/core/common/policy_service_impl.h"
 
 #if defined(OS_CHROMEOS)
+#include "chrome/browser/chromeos/policy/active_directory_policy_manager.h"
 #include "chrome/browser/chromeos/policy/user_cloud_policy_manager_chromeos.h"
-#include "chrome/browser/chromeos/policy/user_cloud_policy_manager_factory_chromeos.h"
+#include "chrome/browser/chromeos/policy/user_policy_manager_factory_chromeos.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "components/user_manager/user.h"
 #else  // Non-ChromeOS.
@@ -50,6 +51,14 @@ ProfilePolicyConnectorFactory::CreateForBrowserContext(
                                                         force_immediate_load);
 }
 
+// static
+bool ProfilePolicyConnectorFactory::IsProfileManaged(
+    const content::BrowserContext* context) {
+  // Note: GetForBrowserContextInternal CHECK-fails if there is no
+  // ProfilePolicyConnector for |context| yet.
+  return GetInstance()->GetForBrowserContextInternal(context)->IsManaged();
+}
+
 void ProfilePolicyConnectorFactory::SetServiceForTesting(
     content::BrowserContext* context,
     ProfilePolicyConnector* connector) {
@@ -69,7 +78,7 @@ ProfilePolicyConnectorFactory::ProfilePolicyConnectorFactory()
         BrowserContextDependencyManager::GetInstance()) {
   DependsOn(SchemaRegistryServiceFactory::GetInstance());
 #if defined(OS_CHROMEOS)
-  DependsOn(UserCloudPolicyManagerFactoryChromeOS::GetInstance());
+  DependsOn(UserPolicyManagerFactoryChromeOS::GetInstance());
 #else
   DependsOn(UserCloudPolicyManagerFactory::GetInstance());
 #endif
@@ -81,10 +90,10 @@ ProfilePolicyConnectorFactory::~ProfilePolicyConnectorFactory() {
 
 ProfilePolicyConnector*
 ProfilePolicyConnectorFactory::GetForBrowserContextInternal(
-    content::BrowserContext* context) {
+    const content::BrowserContext* context) const {
   // Get the connector for the original Profile, so that the incognito Profile
   // gets managed settings from the same PolicyService.
-  content::BrowserContext* const original_context =
+  const content::BrowserContext* const original_context =
       chrome::GetBrowserContextRedirectedInIncognito(context);
   const ConnectorMap::const_iterator it = connectors_.find(original_context);
   CHECK(it != connectors_.end());
@@ -97,40 +106,55 @@ ProfilePolicyConnectorFactory::CreateForBrowserContextInternal(
     bool force_immediate_load) {
   DCHECK(connectors_.find(context) == connectors_.end());
 
-  SchemaRegistry* schema_registry = nullptr;
-  CloudPolicyManager* user_cloud_policy_manager = nullptr;
-
-  schema_registry =
+  const user_manager::User* user = nullptr;
+  SchemaRegistry* schema_registry =
       SchemaRegistryServiceFactory::GetForContext(context)->registry();
+
+  ConfigurationPolicyProvider* policy_provider = nullptr;
+  const CloudPolicyStore* policy_store = nullptr;
 
 #if defined(OS_CHROMEOS)
   Profile* const profile = Profile::FromBrowserContext(context);
-  const user_manager::User* user = nullptr;
-  if (!chromeos::ProfileHelper::IsSigninProfile(profile)) {
+  if (!chromeos::ProfileHelper::IsSigninProfile(profile) &&
+      !chromeos::ProfileHelper::IsLockScreenAppProfile(profile)) {
     user = chromeos::ProfileHelper::Get()->GetUserByProfile(profile);
     CHECK(user);
   }
-  user_cloud_policy_manager =
-      UserCloudPolicyManagerFactoryChromeOS::GetForProfile(profile);
+
+  CloudPolicyManager* user_cloud_policy_manager =
+      UserPolicyManagerFactoryChromeOS::GetCloudPolicyManagerForProfile(
+          profile);
+  ActiveDirectoryPolicyManager* active_directory_manager =
+      UserPolicyManagerFactoryChromeOS::
+          GetActiveDirectoryPolicyManagerForProfile(profile);
+  if (user_cloud_policy_manager) {
+    policy_provider = user_cloud_policy_manager;
+    policy_store = user_cloud_policy_manager->core()->store();
+  } else if (active_directory_manager) {
+    policy_provider = active_directory_manager;
+    policy_store = active_directory_manager->store();
+  }
 #else
-  user_cloud_policy_manager =
+  CloudPolicyManager* user_cloud_policy_manager =
       UserCloudPolicyManagerFactory::GetForBrowserContext(context);
+  if (user_cloud_policy_manager) {
+    policy_provider = user_cloud_policy_manager;
+    policy_store = user_cloud_policy_manager->core()->store();
+  }
 #endif  // defined(OS_CHROMEOS)
 
   std::unique_ptr<ProfilePolicyConnector> connector(
       new ProfilePolicyConnector());
 
   if (test_providers_.empty()) {
-    connector->Init(
-#if defined(OS_CHROMEOS)
-        user,
-#endif
-        schema_registry, user_cloud_policy_manager);
+    connector->Init(user, schema_registry, policy_provider, policy_store,
+                    force_immediate_load);
   } else {
     PolicyServiceImpl::Providers providers;
     providers.push_back(test_providers_.front());
     test_providers_.pop_front();
-    std::unique_ptr<PolicyService> service(new PolicyServiceImpl(providers));
+    std::unique_ptr<PolicyServiceImpl> service =
+        std::make_unique<PolicyServiceImpl>(std::move(providers));
     connector->InitForTesting(std::move(service));
   }
 

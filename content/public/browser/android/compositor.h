@@ -8,24 +8,28 @@
 #include "base/callback.h"
 #include "cc/resources/ui_resource_bitmap.h"
 #include "content/common/content_export.h"
+#include "gpu/ipc/common/surface_handle.h"
 #include "ui/android/resources/ui_resource_provider.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/native_widget_types.h"
 
-class SkBitmap;
-
 namespace cc {
 class Layer;
 }
 
-namespace gfx {
-class JavaBitmap;
+namespace gpu {
+struct ContextCreationAttribs;
+struct SharedMemoryLimits;
 }
 
 namespace ui {
 class ResourceManager;
 class UIResourceProvider;
+}
+
+namespace viz {
+class ContextProvider;
 }
 
 namespace content {
@@ -40,16 +44,25 @@ class CONTENT_EXPORT Compositor {
   // instance can be used. This should be called only once.
   static void Initialize();
 
+  // Creates a GL context for the provided |handle|. If a null handle is passed,
+  // an offscreen context is created. This must be called on the UI thread.
+  using ContextProviderCallback =
+      base::Callback<void(scoped_refptr<viz::ContextProvider>)>;
+  static void CreateContextProvider(
+      gpu::SurfaceHandle handle,
+      gpu::ContextCreationAttribs attributes,
+      gpu::SharedMemoryLimits shared_memory_limits,
+      ContextProviderCallback callback);
+
   // Creates and returns a compositor instance.  |root_window| needs to outlive
   // the compositor as it manages callbacks on the compositor.
   static Compositor* Create(CompositorClient* client,
                             gfx::NativeWindow root_window);
 
+  virtual void SetRootWindow(gfx::NativeWindow root_window) = 0;
+
   // Attaches the layer tree.
   virtual void SetRootLayer(scoped_refptr<cc::Layer> root) = 0;
-
-  // Set the scale factor from DIP to pixel.
-  virtual void setDeviceScaleFactor(float factor) = 0;
 
   // Set the output surface bounds.
   virtual void SetWindowBounds(const gfx::Size& size) = 0;
@@ -57,8 +70,13 @@ class CONTENT_EXPORT Compositor {
   // Set the output surface which the compositor renders into.
   virtual void SetSurface(jobject surface) = 0;
 
-  // Tells the view tree to assume a transparent background when rendering.
-  virtual void SetHasTransparentBackground(bool flag) = 0;
+  // Set the background color used by the layer tree host.
+  virtual void SetBackgroundColor(int color) = 0;
+
+  // Tells the compositor to allocate an alpha channel.  This won't take effect
+  // until the compositor selects a new egl config, usually when the underlying
+  // Android Surface changes format.
+  virtual void SetRequiresAlphaChannel(bool flag) = 0;
 
   // Request layout and draw. You only need to call this if you need to trigger
   // Composite *without* having modified the layer tree.

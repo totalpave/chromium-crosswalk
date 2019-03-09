@@ -7,14 +7,13 @@
 
 #include <memory>
 
-#include "base/compiler_specific.h"
-#include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/strings/string16.h"
 #include "chrome/browser/ui/bookmarks/recently_used_folders_combo_model.h"
 #include "chrome/browser/ui/sync/bubble_sync_promo_delegate.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "ui/views/controls/button/button.h"
+#include "ui/views/controls/combobox/combobox.h"
 #include "ui/views/controls/combobox/combobox_listener.h"
 #include "url/gurl.h"
 
@@ -43,6 +42,7 @@ class BookmarkBubbleView : public LocationBarBubbleDelegateView,
   // bubble already exists.
   static views::Widget* ShowBubble(
       views::View* anchor_view,
+      views::Button* highlighted_button,
       const gfx::Rect& anchor_rect,
       gfx::NativeView parent_window,
       bookmarks::BookmarkBubbleObserver* observer,
@@ -57,24 +57,36 @@ class BookmarkBubbleView : public LocationBarBubbleDelegateView,
 
   ~BookmarkBubbleView() override;
 
-  // views::WidgetDelegate:
+  // LocationBarBubbleDelegateView:
+  View* GetInitiallyFocusedView() override;
+  base::string16 GetWindowTitle() const override;
+  bool ShouldShowCloseButton() const override;
+  gfx::ImageSkia GetWindowIcon() override;
+  bool ShouldShowWindowIcon() const override;
   void WindowClosing() override;
-  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
+  views::View* CreateExtraView() override;
+  bool GetExtraViewPadding(int* padding) override;
+  views::View* CreateFootnoteView() override;
+  bool Cancel() override;
+  bool Accept() override;
+  bool Close() override;
+  void UpdateButton(views::LabelButton* button, ui::DialogButton type) override;
+  const char* GetClassName() const override;
+
+  // views::ButtonListener:
+  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
+
+  // views::ComboboxListener:
+  void OnPerformAction(views::Combobox* combobox) override;
 
  protected:
-  // views::BubbleDialogDelegateView method.
+  // LocationBarBubbleDelegateView:
   void Init() override;
-  base::string16 GetWindowTitle() const override;
 
  private:
   friend class BookmarkBubbleViewTest;
-  FRIEND_TEST_ALL_PREFIXES(BookmarkBubbleViewTest, SyncPromoSignedIn);
-  FRIEND_TEST_ALL_PREFIXES(BookmarkBubbleViewTest, SyncPromoNotSignedIn);
-
-  // views::BubbleDialogDelegateView:
-  const char* GetClassName() const override;
-  View* GetInitiallyFocusedView() override;
-  View* CreateFootnoteView() override;
+  friend class BookmarkBubbleViewBrowserTest;
 
   // Creates a BookmarkBubbleView.
   BookmarkBubbleView(views::View* anchor_view,
@@ -84,26 +96,19 @@ class BookmarkBubbleView : public LocationBarBubbleDelegateView,
                      const GURL& url,
                      bool newly_bookmarked);
 
-  // Returns the title to display.
-  base::string16 GetTitle();
+  // Returns the name of the bookmark.
+  base::string16 GetBookmarkName();
 
-  // Overridden from views::View:
-  void GetAccessibleState(ui::AXViewState* state) override;
-
-  // Overridden from views::ButtonListener:
-  // Closes the bubble or opens the edit dialog.
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
-
-  // Overridden from views::ComboboxListener:
-  void OnPerformAction(views::Combobox* combobox) override;
-
-  // Handle the message when the user presses a button.
-  void HandleButtonPressed(views::Button* sender);
+  // Returns the model used to initialize |parent_combobox_|.
+  RecentlyUsedFoldersComboModel* folder_model() {
+    return static_cast<RecentlyUsedFoldersComboModel*>(
+        parent_combobox_->model());
+  }
 
   // Shows the BookmarkEditor.
   void ShowEditor();
 
-  // Sets the title and parent of the node.
+  // Sets the bookmark name and parent of the node.
   void ApplyEdits();
 
   // The bookmark bubble, if we're showing one.
@@ -124,29 +129,28 @@ class BookmarkBubbleView : public LocationBarBubbleDelegateView,
   // If true, the page was just bookmarked.
   const bool newly_bookmarked_;
 
-  RecentlyUsedFoldersComboModel parent_model_;
-
-  // Button for removing the bookmark.
-  views::LabelButton* remove_button_;
-
   // Button to bring up the editor.
-  views::LabelButton* edit_button_;
+  views::LabelButton* edit_button_ = nullptr;
 
-  // Button to close the window.
-  views::LabelButton* close_button_;
-
-  // Textfield showing the title of the bookmark.
-  views::Textfield* title_tf_;
+  // Textfield showing the name of the bookmark.
+  views::Textfield* name_field_ = nullptr;
 
   // Combobox showing a handful of folders the user can choose from, including
   // the current parent.
-  views::Combobox* parent_combobox_;
+  views::Combobox* parent_combobox_ = nullptr;
+
+  // The regular bookmark bubble contents, with all the edit fields and dialog
+  // buttons. TODO(tapted): Move the buttons to the DialogClientView.
+  views::View* bookmark_contents_view_ = nullptr;
+
+  // Footnote view.
+  views::View* footnote_view_ = nullptr;
 
   // When the destructor is invoked should the bookmark be removed?
-  bool remove_bookmark_;
+  bool remove_bookmark_ = false;
 
   // When the destructor is invoked should edits be applied?
-  bool apply_edits_;
+  bool apply_edits_ = true;
 
   DISALLOW_COPY_AND_ASSIGN(BookmarkBubbleView);
 };

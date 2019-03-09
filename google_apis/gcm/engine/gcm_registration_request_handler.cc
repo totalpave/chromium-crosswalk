@@ -4,7 +4,7 @@
 
 #include "google_apis/gcm/engine/gcm_registration_request_handler.h"
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "google_apis/gcm/base/gcm_util.h"
 
 namespace gcm {
@@ -39,7 +39,7 @@ void GCMRegistrationRequestHandler::ReportUMAs(
   if (status != RegistrationRequest::SUCCESS)
     return;
 
-  UMA_HISTOGRAM_COUNTS("GCM.RegistrationRetryCount", retry_count);
+  UMA_HISTOGRAM_COUNTS_1M("GCM.RegistrationRetryCount", retry_count);
   UMA_HISTOGRAM_TIMES("GCM.RegistrationCompleteTime", complete_time);
 }
 

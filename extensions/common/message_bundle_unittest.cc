@@ -8,11 +8,11 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/i18n/rtl.h"
-#include "base/macros.h"
-#include "base/memory/linked_ptr.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -38,66 +38,54 @@ class MessageBundleTest : public testing::Test {
     MESSAGE_PLACEHOLDER_DOESNT_MATCH,
   };
 
-  // Helper method for dictionary building.
-  void SetDictionary(const std::string& name,
-                     base::DictionaryValue* subtree,
-                     base::DictionaryValue* target) {
-    target->Set(name, static_cast<base::Value*>(subtree));
-  }
-
   void CreateContentTree(const std::string& name,
                          const std::string& content,
                          base::DictionaryValue* dict) {
-    base::DictionaryValue* content_tree = new base::DictionaryValue;
+    auto content_tree = std::make_unique<base::DictionaryValue>();
     content_tree->SetString(MessageBundle::kContentKey, content);
-    SetDictionary(name, content_tree, dict);
+    dict->Set(name, std::move(content_tree));
   }
 
   void CreatePlaceholdersTree(base::DictionaryValue* dict) {
-    base::DictionaryValue* placeholders_tree = new base::DictionaryValue;
-    CreateContentTree("a", "A", placeholders_tree);
-    CreateContentTree("b", "B", placeholders_tree);
-    CreateContentTree("c", "C", placeholders_tree);
-    SetDictionary(MessageBundle::kPlaceholdersKey,
-                  placeholders_tree,
-                  dict);
+    auto placeholders_tree = std::make_unique<base::DictionaryValue>();
+    CreateContentTree("a", "A", placeholders_tree.get());
+    CreateContentTree("b", "B", placeholders_tree.get());
+    CreateContentTree("c", "C", placeholders_tree.get());
+    dict->Set(MessageBundle::kPlaceholdersKey, std::move(placeholders_tree));
   }
 
   void CreateMessageTree(const std::string& name,
                          const std::string& message,
                          bool create_placeholder_subtree,
                          base::DictionaryValue* dict) {
-    base::DictionaryValue* message_tree = new base::DictionaryValue;
+    auto message_tree = std::make_unique<base::DictionaryValue>();
     if (create_placeholder_subtree)
-      CreatePlaceholdersTree(message_tree);
+      CreatePlaceholdersTree(message_tree.get());
     message_tree->SetString(MessageBundle::kMessageKey, message);
-    SetDictionary(name, message_tree, dict);
+    dict->Set(name, std::move(message_tree));
   }
 
-  // Caller owns the memory.
-  base::DictionaryValue* CreateGoodDictionary() {
-    base::DictionaryValue* dict = new base::DictionaryValue;
-    CreateMessageTree("n1", "message1 $a$ $b$", true, dict);
-    CreateMessageTree("n2", "message2 $c$", true, dict);
-    CreateMessageTree("n3", "message3", false, dict);
+  std::unique_ptr<base::DictionaryValue> CreateGoodDictionary() {
+    auto dict = std::make_unique<base::DictionaryValue>();
+    CreateMessageTree("n1", "message1 $a$ $b$", true, dict.get());
+    CreateMessageTree("n2", "message2 $c$", true, dict.get());
+    CreateMessageTree("n3", "message3", false, dict.get());
     return dict;
   }
 
-  // Caller owns the memory.
-  base::DictionaryValue* CreateBadDictionary(enum BadDictionary what_is_bad) {
-    base::DictionaryValue* dict = CreateGoodDictionary();
+  std::unique_ptr<base::DictionaryValue> CreateBadDictionary(
+      enum BadDictionary what_is_bad) {
+    std::unique_ptr<base::DictionaryValue> dict = CreateGoodDictionary();
     // Now remove/break things.
     switch (what_is_bad) {
       case INVALID_NAME:
-        CreateMessageTree("n 5", "nevermind", false, dict);
+        CreateMessageTree("n 5", "nevermind", false, dict.get());
         break;
       case NAME_NOT_A_TREE:
         dict->SetString("n4", "whatever");
         break;
-      case EMPTY_NAME_TREE: {
-          base::DictionaryValue* empty_tree = new base::DictionaryValue;
-          SetDictionary("n4", empty_tree, dict);
-        }
+      case EMPTY_NAME_TREE:
+        dict->Set("n4", std::make_unique<base::DictionaryValue>());
         break;
       case MISSING_MESSAGE:
         dict->Remove("n1.message", NULL);
@@ -105,10 +93,8 @@ class MessageBundleTest : public testing::Test {
       case PLACEHOLDER_NOT_A_TREE:
         dict->SetString("n1.placeholders", "whatever");
         break;
-      case EMPTY_PLACEHOLDER_TREE: {
-          base::DictionaryValue* empty_tree = new base::DictionaryValue;
-          SetDictionary("n1.placeholders", empty_tree, dict);
-        }
+      case EMPTY_PLACEHOLDER_TREE:
+        dict->Set("n1.placeholders", std::make_unique<base::DictionaryValue>());
         break;
       case CONTENT_MISSING:
          dict->Remove("n1.placeholders.a.content", NULL);
@@ -161,7 +147,7 @@ class MessageBundleTest : public testing::Test {
   }
 
   std::unique_ptr<MessageBundle> handler_;
-  std::vector<linked_ptr<base::DictionaryValue> > catalogs_;
+  std::vector<std::unique_ptr<base::DictionaryValue>> catalogs_;
 };
 
 TEST_F(MessageBundleTest, ReservedMessagesCount) {
@@ -176,8 +162,7 @@ TEST_F(MessageBundleTest, InitEmptyDictionaries) {
 }
 
 TEST_F(MessageBundleTest, InitGoodDefaultDict) {
-  catalogs_.push_back(
-      linked_ptr<base::DictionaryValue>(CreateGoodDictionary()));
+  catalogs_.push_back(CreateGoodDictionary());
   CreateMessageBundle();
 
   EXPECT_TRUE(handler_.get() != NULL);
@@ -190,10 +175,8 @@ TEST_F(MessageBundleTest, InitGoodDefaultDict) {
 }
 
 TEST_F(MessageBundleTest, InitAppDictConsultedFirst) {
-  catalogs_.push_back(
-      linked_ptr<base::DictionaryValue>(CreateGoodDictionary()));
-  catalogs_.push_back(
-      linked_ptr<base::DictionaryValue>(CreateGoodDictionary()));
+  catalogs_.push_back(CreateGoodDictionary());
+  catalogs_.push_back(CreateGoodDictionary());
 
   base::DictionaryValue* app_dict = catalogs_[0].get();
   // Flip placeholders in message of n1 tree.
@@ -216,10 +199,8 @@ TEST_F(MessageBundleTest, InitAppDictConsultedFirst) {
 }
 
 TEST_F(MessageBundleTest, InitBadAppDict) {
-  catalogs_.push_back(
-      linked_ptr<base::DictionaryValue>(CreateBadDictionary(INVALID_NAME)));
-  catalogs_.push_back(
-      linked_ptr<base::DictionaryValue>(CreateGoodDictionary()));
+  catalogs_.push_back(CreateBadDictionary(INVALID_NAME));
+  catalogs_.push_back(CreateGoodDictionary());
 
   std::string error = CreateMessageBundle();
 
@@ -227,45 +208,44 @@ TEST_F(MessageBundleTest, InitBadAppDict) {
   EXPECT_EQ("Name of a key \"n 5\" is invalid. Only ASCII [a-z], "
             "[A-Z], [0-9] and \"_\" are allowed.", error);
 
-  catalogs_[0].reset(CreateBadDictionary(NAME_NOT_A_TREE));
+  catalogs_[0] = CreateBadDictionary(NAME_NOT_A_TREE);
   handler_.reset(MessageBundle::Create(catalogs_, &error));
   EXPECT_TRUE(handler_.get() == NULL);
   EXPECT_EQ("Not a valid tree for key n4.", error);
 
-  catalogs_[0].reset(CreateBadDictionary(EMPTY_NAME_TREE));
+  catalogs_[0] = CreateBadDictionary(EMPTY_NAME_TREE);
   handler_.reset(MessageBundle::Create(catalogs_, &error));
   EXPECT_TRUE(handler_.get() == NULL);
   EXPECT_EQ("There is no \"message\" element for key n4.", error);
 
-  catalogs_[0].reset(CreateBadDictionary(MISSING_MESSAGE));
+  catalogs_[0] = CreateBadDictionary(MISSING_MESSAGE);
   handler_.reset(MessageBundle::Create(catalogs_, &error));
   EXPECT_TRUE(handler_.get() == NULL);
   EXPECT_EQ("There is no \"message\" element for key n1.", error);
 
-  catalogs_[0].reset(CreateBadDictionary(PLACEHOLDER_NOT_A_TREE));
+  catalogs_[0] = CreateBadDictionary(PLACEHOLDER_NOT_A_TREE);
   handler_.reset(MessageBundle::Create(catalogs_, &error));
   EXPECT_TRUE(handler_.get() == NULL);
   EXPECT_EQ("Not a valid \"placeholders\" element for key n1.", error);
 
-  catalogs_[0].reset(CreateBadDictionary(EMPTY_PLACEHOLDER_TREE));
+  catalogs_[0] = CreateBadDictionary(EMPTY_PLACEHOLDER_TREE);
   handler_.reset(MessageBundle::Create(catalogs_, &error));
   EXPECT_TRUE(handler_.get() == NULL);
   EXPECT_EQ("Variable $a$ used but not defined.", error);
 
-  catalogs_[0].reset(CreateBadDictionary(CONTENT_MISSING));
+  catalogs_[0] = CreateBadDictionary(CONTENT_MISSING);
   handler_.reset(MessageBundle::Create(catalogs_, &error));
   EXPECT_TRUE(handler_.get() == NULL);
   EXPECT_EQ("Invalid \"content\" element for key n1.", error);
 
-  catalogs_[0].reset(CreateBadDictionary(MESSAGE_PLACEHOLDER_DOESNT_MATCH));
+  catalogs_[0] = CreateBadDictionary(MESSAGE_PLACEHOLDER_DOESNT_MATCH);
   handler_.reset(MessageBundle::Create(catalogs_, &error));
   EXPECT_TRUE(handler_.get() == NULL);
   EXPECT_EQ("Variable $a$ used but not defined.", error);
 }
 
 TEST_F(MessageBundleTest, ReservedMessagesOverrideDeveloperMessages) {
-  catalogs_.push_back(
-      linked_ptr<base::DictionaryValue>(CreateGoodDictionary()));
+  catalogs_.push_back(CreateGoodDictionary());
 
   base::DictionaryValue* dict = catalogs_[0].get();
   CreateMessageTree(MessageBundle::kUILocaleKey, "x", false, dict);
@@ -388,7 +368,7 @@ TEST(MessageBundle, ReplaceMessagesInText) {
   messages.insert(std::make_pair("bad name", "Doesn't matter"));
   messages.insert(std::make_pair("d1g1ts_are_ok", "I are d1g1t"));
 
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
+  for (size_t i = 0; i < base::size(test_cases); ++i) {
     std::string text = test_cases[i].original;
     std::string error;
     EXPECT_EQ(test_cases[i].pass,

@@ -5,8 +5,8 @@
 #include "ppapi/proxy/flash_font_file_resource.h"
 
 #include <cstring>
+#include <memory>
 
-#include "base/memory/ptr_util.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/proxy/ppapi_messages.h"
 
@@ -65,16 +65,17 @@ PP_Bool FlashFontFileResource::GetFontTable(uint32_t table,
 }
 
 const std::string* FlashFontFileResource::GetFontTable(uint32_t table) const {
-  FontTableMap::const_iterator found = font_tables_.find(table);
-  return (found != font_tables_.end()) ? found->second : nullptr;
+  auto found = font_tables_.find(table);
+  return (found != font_tables_.end()) ? found->second.get() : nullptr;
 }
 
 const std::string* FlashFontFileResource::AddFontTable(
     uint32_t table,
     const std::string& contents) {
-  FontTableMap::const_iterator it =
-      font_tables_.set(table, base::WrapUnique(new std::string(contents)));
-  return it->second;
+  auto contents_copy = std::make_unique<std::string>(contents);
+  std::string* contents_copy_ptr = contents_copy.get();
+  font_tables_[table] = std::move(contents_copy);
+  return contents_copy_ptr;
 }
 
 }  // namespace proxy

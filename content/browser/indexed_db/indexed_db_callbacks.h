@@ -13,47 +13,88 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/strings/string16.h"
 #include "content/browser/indexed_db/indexed_db_database_error.h"
 #include "content/browser/indexed_db/indexed_db_dispatcher_host.h"
-#include "content/common/indexed_db/indexed_db_key.h"
-#include "content/common/indexed_db/indexed_db_key_path.h"
+#include "content/public/browser/browser_thread.h"
+#include "storage/browser/blob/blob_storage_context.h"
+#include "third_party/blink/public/common/indexeddb/indexeddb_key.h"
+#include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom.h"
 #include "url/origin.h"
+
+namespace base {
+class SequencedTaskRunner;
+}
+
+namespace blink {
+struct IndexedDBDatabaseMetadata;
+}
 
 namespace content {
 class IndexedDBBlobInfo;
 class IndexedDBConnection;
 class IndexedDBCursor;
 class IndexedDBDatabase;
-class IndexedDBDatabaseCallbacks;
-struct IndexedDBDatabaseMetadata;
+struct IndexedDBDataLossInfo;
 struct IndexedDBReturnValue;
 struct IndexedDBValue;
 
 class CONTENT_EXPORT IndexedDBCallbacks
     : public base::RefCounted<IndexedDBCallbacks> {
  public:
-  // Simple payload responses
-  IndexedDBCallbacks(IndexedDBDispatcherHost* dispatcher_host,
-                     int32_t ipc_thread_id,
-                     int32_t ipc_callbacks_id);
+  // IndexedDBValueBlob stores information about a given IndexedDBValue's
+  // blobs so they can be created on the IO thread.
+  class IndexedDBValueBlob {
+   public:
+    // IndexedDBValueBlob() takes a std::vector<IDBBlobInfoPtr>* which it
+    // accesses during its invocation but doesn't keep a copy of it.  The
+    // std::vector<IDBBlobInfoPtr>* must only be alive for the duration of the
+    // invocation.
+    IndexedDBValueBlob(const IndexedDBBlobInfo& blob_info,
+                       blink::mojom::IDBBlobInfoPtr* blob_or_file_info);
+    IndexedDBValueBlob(IndexedDBValueBlob&& other);
+    ~IndexedDBValueBlob();
 
-  // IndexedDBCursor responses
-  IndexedDBCallbacks(IndexedDBDispatcherHost* dispatcher_host,
-                     int32_t ipc_thread_id,
-                     int32_t ipc_callbacks_id,
-                     int32_t ipc_cursor_id);
+    // GetIndexedDBValueBlobs() takes a std::vector<IDBBlobInfoPtr>* which it
+    // passes to IndexedDBValueBlob().  Neither of them hold the pointer after
+    // the call.
+    static void GetIndexedDBValueBlobs(
+        std::vector<IndexedDBValueBlob>* value_blobs,
+        const std::vector<IndexedDBBlobInfo>& blob_info,
+        std::vector<blink::mojom::IDBBlobInfoPtr>* blob_or_file_info);
+    // GetIndexedDBValueBlobs() takes a std::vector<IDBBlobInfoPtr>* which it
+    // passes to IndexedDBValueBlob().  Neither of them hold the pointer after
+    // the call.
+    static std::vector<IndexedDBValueBlob> GetIndexedDBValueBlobs(
+        const std::vector<IndexedDBBlobInfo>& blob_info,
+        std::vector<blink::mojom::IDBBlobInfoPtr>* blob_or_file_info);
 
-  // IndexedDBDatabase responses
-  IndexedDBCallbacks(IndexedDBDispatcherHost* dispatcher_host,
-                     int32_t ipc_thread_id,
-                     int32_t ipc_callbacks_id,
-                     int32_t ipc_database_callbacks_id,
-                     int64_t host_transaction_id,
-                     const url::Origin& origin);
+   private:
+    friend class IndexedDBCallbacks;
+    friend class IndexedDBCursor;
+
+    const IndexedDBBlobInfo& blob_info_;
+    std::string uuid_;
+    blink::mojom::BlobRequest request_;
+  };
+
+  static bool CreateAllBlobs(
+      scoped_refptr<ChromeBlobStorageContext> blob_context,
+      scoped_refptr<base::SequencedTaskRunner> idb_runner,
+      std::vector<IndexedDBValueBlob> value_blobs);
+
+  IndexedDBCallbacks(base::WeakPtr<IndexedDBDispatcherHost> dispatcher_host,
+                     const url::Origin& origin,
+                     blink::mojom::IDBCallbacksAssociatedPtrInfo callbacks_info,
+                     scoped_refptr<base::SequencedTaskRunner> idb_runner);
 
   virtual void OnError(const IndexedDBDatabaseError& error);
+
+  // IndexedDBFactory::databases
+  virtual void OnSuccess(
+      std::vector<blink::mojom::IDBNameAndVersionPtr> names_and_versions);
 
   // IndexedDBFactory::GetDatabaseNames
   virtual void OnSuccess(const std::vector<base::string16>& string);
@@ -62,30 +103,28 @@ class CONTENT_EXPORT IndexedDBCallbacks
   virtual void OnBlocked(int64_t existing_version);
 
   // IndexedDBFactory::Open
-  virtual void OnDataLoss(blink::WebIDBDataLoss data_loss,
-                          std::string data_loss_message);
-  virtual void OnUpgradeNeeded(
-      int64_t old_version,
-      std::unique_ptr<IndexedDBConnection> connection,
-      const content::IndexedDBDatabaseMetadata& metadata);
+  virtual void OnUpgradeNeeded(int64_t old_version,
+                               std::unique_ptr<IndexedDBConnection> connection,
+                               const blink::IndexedDBDatabaseMetadata& metadata,
+                               const IndexedDBDataLossInfo& data_loss_info);
   virtual void OnSuccess(std::unique_ptr<IndexedDBConnection> connection,
-                         const content::IndexedDBDatabaseMetadata& metadata);
+                         const blink::IndexedDBDatabaseMetadata& metadata);
 
   // IndexedDBDatabase::OpenCursor
-  virtual void OnSuccess(scoped_refptr<IndexedDBCursor> cursor,
-                         const IndexedDBKey& key,
-                         const IndexedDBKey& primary_key,
+  virtual void OnSuccess(std::unique_ptr<IndexedDBCursor> cursor,
+                         const blink::IndexedDBKey& key,
+                         const blink::IndexedDBKey& primary_key,
                          IndexedDBValue* value);
 
   // IndexedDBCursor::Continue / Advance
-  virtual void OnSuccess(const IndexedDBKey& key,
-                         const IndexedDBKey& primary_key,
+  virtual void OnSuccess(const blink::IndexedDBKey& key,
+                         const blink::IndexedDBKey& primary_key,
                          IndexedDBValue* value);
 
   // IndexedDBCursor::PrefetchContinue
   virtual void OnSuccessWithPrefetch(
-      const std::vector<IndexedDBKey>& keys,
-      const std::vector<IndexedDBKey>& primary_keys,
+      const std::vector<blink::IndexedDBKey>& keys,
+      const std::vector<blink::IndexedDBKey>& primary_keys,
       std::vector<IndexedDBValue>* values);
 
   // IndexedDBDatabase::Get
@@ -93,54 +132,45 @@ class CONTENT_EXPORT IndexedDBCallbacks
   virtual void OnSuccess(IndexedDBReturnValue* value);
 
   // IndexedDBDatabase::GetAll
-  virtual void OnSuccessArray(std::vector<IndexedDBReturnValue>* values,
-                              const IndexedDBKeyPath& key_path);
+  virtual void OnSuccessArray(std::vector<IndexedDBReturnValue>* values);
 
   // IndexedDBDatabase::Put / IndexedDBCursor::Update
-  virtual void OnSuccess(const IndexedDBKey& key);
+  virtual void OnSuccess(const blink::IndexedDBKey& key);
 
   // IndexedDBDatabase::Count
   // IndexedDBFactory::DeleteDatabase
   // IndexedDBDatabase::DeleteRange
+  // IndexedDBDatabase::GetKeyGeneratorCurrentNumber
   virtual void OnSuccess(int64_t value);
 
   // IndexedDBCursor::Continue / Advance (when complete)
   virtual void OnSuccess();
 
-  blink::WebIDBDataLoss data_loss() const { return data_loss_; }
-
-  void SetConnectionOpenStartTime(const base::TimeTicks& start_time);
-
  protected:
   virtual ~IndexedDBCallbacks();
 
  private:
-  void RegisterBlobsAndSend(const std::vector<IndexedDBBlobInfo>& blob_info,
-                            const base::Closure& callback);
-
   friend class base::RefCounted<IndexedDBCallbacks>;
 
-  // Originally from IndexedDBCallbacks:
-  scoped_refptr<IndexedDBDispatcherHost> dispatcher_host_;
-  int32_t ipc_callbacks_id_;
-  int32_t ipc_thread_id_;
+  class Helper;
 
-  // IndexedDBCursor callbacks ------------------------
-  int32_t ipc_cursor_id_;
+  // Stores if this callbacks object is complete and should not be called again.
+  bool complete_ = false;
 
-  // IndexedDBDatabase callbacks ------------------------
-  int64_t host_transaction_id_;
-  url::Origin origin_;
-  int32_t ipc_database_id_;
-  int32_t ipc_database_callbacks_id_;
+  // Depending on whether the database needs upgrading, we create connections in
+  // different spots. This stores if we've already created the connection so
+  // OnSuccess(Connection) doesn't create an extra one.
+  bool connection_created_ = false;
 
-  // Stored in OnDataLoss, merged with OnUpgradeNeeded response.
-  blink::WebIDBDataLoss data_loss_;
-  std::string data_loss_message_;
+  // Used to assert that OnSuccess is only called if there was no data loss.
+  blink::mojom::IDBDataLoss data_loss_;
 
   // The "blocked" event should be sent at most once per request.
-  bool sent_blocked_;
-  base::TimeTicks connection_open_start_time_;
+  bool sent_blocked_ = false;
+
+  std::unique_ptr<Helper> helper_;
+  SEQUENCE_CHECKER(sequence_checker_);
+
   DISALLOW_COPY_AND_ASSIGN(IndexedDBCallbacks);
 };
 

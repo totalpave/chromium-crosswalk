@@ -9,11 +9,12 @@ import android.app.ProgressDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.support.v4.content.ContextCompat;
 import android.support.v4.graphics.drawable.DrawableCompat;
 import android.support.v4.widget.DrawerLayout;
 import android.support.v7.app.ActionBarDrawerToggle;
@@ -31,18 +32,16 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.Toast;
 
-import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Log;
-import org.chromium.chromoting.NavigationMenuAdapter.NavigationMenuItem;
 import org.chromium.chromoting.accountswitcher.AccountSwitcher;
 import org.chromium.chromoting.accountswitcher.AccountSwitcherFactory;
 import org.chromium.chromoting.base.OAuthTokenFetcher;
-import org.chromium.chromoting.help.CreditsActivity;
 import org.chromium.chromoting.help.HelpContext;
 import org.chromium.chromoting.help.HelpSingleton;
 import org.chromium.chromoting.jni.Client;
 import org.chromium.chromoting.jni.ConnectionListener;
-import org.chromium.chromoting.jni.JniInterface;
+import org.chromium.chromoting.jni.ConnectionListener.State;
+import org.chromium.chromoting.jni.JniOAuthTokenGetter;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -64,9 +63,6 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
 
     /** Result code used for starting {@link DesktopActivity}. */
     public static final int DESKTOP_ACTIVITY = 0;
-
-    /** Result code used for starting {@link CardboardDesktopActivity}. */
-    public static final int CARDBOARD_DESKTOP_ACTIVITY = 1;
 
     /** Preference names for storing selected and recent accounts. */
     private static final String PREFERENCE_SELECTED_ACCOUNT = "account_name";
@@ -113,10 +109,23 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
 
     private ActionBarDrawerToggle mDrawerToggle;
 
+    /**
+     * Task to be run after the navigation drawer is closed. Can be null. This is used to run
+     * Help/Feedback tasks which require a screenshot with the drawer closed.
+     */
+    private Runnable mPendingDrawerCloseTask;
+
     private AccountSwitcher mAccountSwitcher;
 
     /** The currently-connected Client, if any. */
     private Client mClient;
+
+    /**
+     * Set in onActivityResult() if a child Activity for user sign-in reported failure or
+     * cancellation. The flag is used to avoid triggering the sign-in infinitely often, when this
+     * Activity is brought to the foreground.
+     */
+    private boolean mSignInCancelled;
 
     /** Shows a warning explaining that a Google account is required, then closes the activity. */
     private void showNoAccountsDialog() {
@@ -172,32 +181,42 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
         mProgressView.setVisibility(View.GONE);
     }
 
-    private ListView createNavigationMenu() {
-        ListView navigationMenu = (ListView) getLayoutInflater()
-                .inflate(R.layout.navigation_list, null);
+    private void runPendingDrawerCloseTask() {
+        // Avoid potential recursion problems by null-ing the task first.
+        Runnable task = mPendingDrawerCloseTask;
+        mPendingDrawerCloseTask = null;
+        if (task != null) {
+            task.run();
+        }
+    }
 
-        NavigationMenuItem helpItem = new NavigationMenuItem(R.menu.help_list_item,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        HelpSingleton.getInstance().launchHelp(Chromoting.this,
-                                HelpContext.HOST_LIST);
-                    }
-                });
+    private void closeDrawerThenRun(Runnable task) {
+        mPendingDrawerCloseTask = task;
+        if (mDrawerLayout.isDrawerOpen(Gravity.START)) {
+            mDrawerLayout.closeDrawer(Gravity.START);
+        } else {
+            runPendingDrawerCloseTask();
+        }
+    }
 
-        NavigationMenuItem creditsItem = new NavigationMenuItem(R.menu.credits_list_item,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        startActivity(new Intent(Chromoting.this, CreditsActivity.class));
-                    }
-                });
+    /** Closes any navigation drawer, then shows the Help screen. */
+    public void launchHelp(final @HelpContext int helpContext) {
+        closeDrawerThenRun(new Runnable() {
+            @Override
+            public void run() {
+                HelpSingleton.getInstance().launchHelp(Chromoting.this, helpContext);
+            }
+        });
+    }
 
-        NavigationMenuItem[] navigationMenuItems = { helpItem, creditsItem };
-        NavigationMenuAdapter adapter = new NavigationMenuAdapter(this, navigationMenuItems);
-        navigationMenu.setAdapter(adapter);
-        navigationMenu.setOnItemClickListener(adapter);
-        return navigationMenu;
+    /** Closes any navigation drawer, then shows the Feedback screen. */
+    public void launchFeedback() {
+        closeDrawerThenRun(new Runnable() {
+            @Override
+            public void run() {
+                HelpSingleton.getInstance().launchFeedback(Chromoting.this);
+            }
+        });
     }
 
     /**
@@ -232,9 +251,14 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
         findViewById(R.id.host_setup_link_android).setOnClickListener(this);
 
         mDrawerLayout = (DrawerLayout) findViewById(R.id.drawer_layout);
-        mDrawerToggle = new ActionBarDrawerToggle(this, mDrawerLayout, toolbar,
-                R.string.open_navigation_drawer, R.string.close_navigation_drawer);
-        mDrawerLayout.setDrawerListener(mDrawerToggle);
+        mDrawerToggle = new ActionBarDrawerToggle(this, mDrawerLayout, toolbar, 0, 0) {
+            @Override
+            public void onDrawerClosed(View drawerView) {
+                super.onDrawerClosed(drawerView);
+                runPendingDrawerCloseTask();
+            }
+        };
+        mDrawerLayout.addDrawerListener(mDrawerToggle);
 
         // Disable the hamburger icon animation. This is more complex than it ought to be.
         // The animation can be customized by tweaking some style parameters - see
@@ -265,13 +289,14 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
 
         // Set the three-line icon instead of the default which is a tinted arrow icon.
         getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-        Drawable menuIcon = ApiCompatibilityUtils.getDrawable(getResources(), R.drawable.ic_menu);
+        Drawable menuIcon = ContextCompat.getDrawable(this, R.drawable.ic_menu);
         DrawableCompat.setTint(menuIcon.mutate(),
                 ChromotingUtil.getColorAttribute(this, R.attr.colorControlNormal));
         getSupportActionBar().setHomeAsUpIndicator(menuIcon);
+        getSupportActionBar().setHomeActionContentDescription(R.string.actionbar_menu);
 
         mAccountSwitcher = AccountSwitcherFactory.getInstance().createAccountSwitcher(this, this);
-        mAccountSwitcher.setNavigation(createNavigationMenu());
+        mAccountSwitcher.setNavigation(NavigationMenuAdapter.createNavigationMenu(this));
         LinearLayout navigationDrawer = (LinearLayout) findViewById(R.id.navigation_drawer);
         mAccountSwitcher.setDrawer(navigationDrawer);
         View switcherView = mAccountSwitcher.getView();
@@ -329,6 +354,21 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
 
         String[] recentsArray = recents.toArray(new String[recents.size()]);
         mAccountSwitcher.setSelectedAndRecentAccounts(selected, recentsArray);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        // Trigger this in onResume() instead of onStart(), so that it happens after any
+        // onActivityResult() notification which computes the mSignInCancelled flag.
+        // If the user had just backed out of a sign-in screen, it is important not to re-trigger
+        // the sign-in screen otherwise the application is placed in an infinite loop (if the user
+        // is unable or unwilling to sign in to the account). This gives the user an opportunity to
+        // open the navigation drawer and switch accounts if needed.
+        // Note that reloadAccounts() is called here unconditionally, but the resulting call to
+        // refreshHostList() (from onAccountSelected()) is conditional on mSignInCancelled being
+        // false. This is to ensure the accounts list is always up to date.
         mAccountSwitcher.reloadAccounts();
     }
 
@@ -370,6 +410,8 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         mAccountSwitcher.onActivityResult(requestCode, resultCode, data);
 
+        mSignInCancelled = false;
+
         if (requestCode == OAuthTokenFetcher.REQUEST_CODE_RECOVER_FROM_OAUTH_ERROR) {
             if (resultCode == RESULT_OK) {
                 // User gave OAuth permission to this app (or recovered from any OAuth failure),
@@ -381,24 +423,9 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
                 refreshHostList();
             } else {
                 // User denied permission or cancelled the dialog, so cancel the request.
+                mSignInCancelled = true;
                 updateHostListView();
             }
-        }
-    }
-
-    /** Called when a permissions request has returned. */
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            int[] grantResults) {
-        // This is currently only used by AccountSwitcherBasic.
-        // Check that the user has granted the needed permission, and reload the accounts.
-        // Otherwise, assume something unexpected occurred, or the user cancelled the request.
-        if (grantResults.length == 1 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            mAccountSwitcher.reloadAccounts();
-        } else if (permissions.length == 0) {
-            Log.e(TAG, "User cancelled the permission request.");
-        } else {
-            Log.e(TAG, "Permission %s was not granted.", permissions[0]);
         }
     }
 
@@ -473,7 +500,7 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
     /** Called when the user touches hyperlinked text. */
     @Override
     public void onClick(View view) {
-        HelpSingleton.getInstance().launchHelp(this, HelpContext.HOST_SETUP);
+        launchHelp(HelpContext.HOST_SETUP);
     }
 
     private void onDeleteHostClicked(int hostIndex) {
@@ -482,7 +509,7 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
         String message = getString(R.string.confirm_host_delete_android, hostInfo.name);
         new AlertDialog.Builder(this)
                 .setMessage(message)
-                .setPositiveButton(android.R.string.yes,
+                .setPositiveButton(android.R.string.ok,
                         new DialogInterface.OnClickListener() {
                             @Override
                             public void onClick(DialogInterface dialog, int which) {
@@ -490,8 +517,9 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
                                 dialog.dismiss();
                             }
                         })
-                .setNegativeButton(android.R.string.no, null)
-                .create().show();
+                .setNegativeButton(android.R.string.cancel, null)
+                .create()
+                .show();
     }
 
     /** Called when the user taps on a host entry. */
@@ -538,13 +566,13 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
             }
 
             @Override
-            public void onError(OAuthTokenFetcher.Error error) {
+            public void onError(@OAuthTokenFetcher.Error int error) {
                 showAuthErrorMessage(error);
             }
         });
     }
 
-    private void showAuthErrorMessage(OAuthTokenFetcher.Error error) {
+    private void showAuthErrorMessage(@OAuthTokenFetcher.Error int error) {
         String explanation = getString(error == OAuthTokenFetcher.Error.NETWORK
                 ? R.string.error_network_error : R.string.error_unexpected);
         Toast.makeText(Chromoting.this, explanation, Toast.LENGTH_LONG).show();
@@ -561,7 +589,7 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
             }
 
             @Override
-            public void onError(OAuthTokenFetcher.Error error) {
+            public void onError(@OAuthTokenFetcher.Error int error) {
                 showAuthErrorMessage(error);
                 updateHostListView();
             }
@@ -578,7 +606,7 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
             }
 
             @Override
-            public void onError(OAuthTokenFetcher.Error error) {
+            public void onError(@OAuthTokenFetcher.Error int error) {
                 showAuthErrorMessage(error);
                 updateHostListView();
             }
@@ -587,13 +615,25 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
 
     @Override
     public void onAccountSelected(String accountName) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+            String logInAnnouncement =
+                    getString(R.string.log_in_account_accessibility_description, accountName);
+            mAccountSwitcher.getView().announceForAccessibility(logInAnnouncement);
+        }
         mAccount = accountName;
-        JniInterface.setAccountForLogging(accountName);
+        JniOAuthTokenGetter.setAccount(accountName);
 
         // The current host list is no longer valid for the new account, so clear the list.
         mHosts = new HostInfo[0];
         updateUi();
-        refreshHostList();
+
+        // refreshHostList() can trigger an account sign-in screen, so avoid calling it again if
+        // the user had previously cancelled sign-in (or sign-in failed).
+        if (mSignInCancelled) {
+            mSignInCancelled = false;
+        } else {
+            refreshHostList();
+        }
     }
 
     @Override
@@ -628,17 +668,17 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
     }
 
     @Override
-    public void onError(HostListManager.Error error) {
+    public void onError(@HostListManager.Error int error) {
         String explanation = null;
         switch (error) {
-            case AUTH_FAILED:
+            case HostListManager.Error.AUTH_FAILED:
                 break;
-            case NETWORK_ERROR:
+            case HostListManager.Error.NETWORK_ERROR:
                 explanation = getString(R.string.error_network_error);
                 break;
-            case UNEXPECTED_RESPONSE:
-            case SERVICE_UNAVAILABLE:
-            case UNKNOWN:
+            case HostListManager.Error.UNEXPECTED_RESPONSE:
+            case HostListManager.Error.SERVICE_UNAVAILABLE:
+            case HostListManager.Error.UNKNOWN:
                 explanation = getString(R.string.error_unexpected);
                 break;
             default:
@@ -674,29 +714,31 @@ public class Chromoting extends AppCompatActivity implements ConnectionListener,
     }
 
     @Override
-    public void onConnectionState(ConnectionListener.State state, ConnectionListener.Error error) {
+    public void onConnectionState(@State int state, @ConnectionListener.Error int error) {
         boolean dismissProgress = false;
         switch (state) {
-            case INITIALIZING:
-            case CONNECTING:
-            case AUTHENTICATED:
+            case State.INITIALIZING:
+            case State.CONNECTING:
+            case State.AUTHENTICATED:
                 // The connection is still being established.
                 break;
 
-            case CONNECTED:
+            case State.CONNECTED:
                 dismissProgress = true;
                 // Display the remote desktop.
                 startActivityForResult(new Intent(this, Desktop.class), DESKTOP_ACTIVITY);
                 break;
 
-            case FAILED:
+            case State.FAILED:
                 dismissProgress = true;
-                Toast.makeText(this, getString(error.message()), Toast.LENGTH_LONG).show();
+                Toast.makeText(this, getString(ConnectionListener.getErrorStringIdFromError(error)),
+                             Toast.LENGTH_LONG)
+                        .show();
                 // Close the Desktop view, if it is currently running.
                 finishActivity(DESKTOP_ACTIVITY);
                 break;
 
-            case CLOSED:
+            case State.CLOSED:
                 // No need to show toast in this case. Either the connection will have failed
                 // because of an error, which will trigger toast already. Or the disconnection will
                 // have been initiated by the user.

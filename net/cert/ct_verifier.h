@@ -5,19 +5,13 @@
 #ifndef NET_CERT_CT_VERIFIER_H_
 #define NET_CERT_CT_VERIFIER_H_
 
-#include <string>
-
+#include "base/strings/string_piece.h"
 #include "net/base/net_export.h"
+#include "net/cert/signed_certificate_timestamp_and_status.h"
 
 namespace net {
 
-namespace ct {
-struct CTVerifyResult;
-struct SignedCertificateTimestamp;
-}  // namespace ct
-
-class BoundNetLog;
-class CTLogVerifier;
+class NetLogWithSource;
 class X509Certificate;
 
 // Interface for verifying Signed Certificate Timestamps over a certificate.
@@ -27,12 +21,14 @@ class NET_EXPORT CTVerifier {
    public:
     // Called for each Signed Certificate Timestamp from a known log that vas
     // verified successfully (i.e. the signature verifies). |sct| is the
-    // Signed Certificate Timestamp, |cert| is the certificate it applies to.
-    // The certificate is needed to calculate the hash of the log entry,
-    // necessary for checking inclusion in the log.
+    // Signed Certificate Timestamp, |cert| is the certificate it applies to and
+    // |hostname| is the server that presented the certificate (DNS name or IP
+    // address literal). The certificate is needed to calculate the hash of the
+    // log entry, necessary for checking inclusion in the log.
     // Note: The observer (whose implementation is expected to exist outside
     // net/) may store the observed |cert| and |sct|.
-    virtual void OnSCTVerified(X509Certificate* cert,
+    virtual void OnSCTVerified(base::StringPiece hostname,
+                               X509Certificate* cert,
                                const ct::SignedCertificateTimestamp* sct) = 0;
 
    protected:
@@ -49,19 +45,27 @@ class NET_EXPORT CTVerifier {
   // (embedding, TLS extension or OCSP stapling). If no stapled OCSP response
   // is available, |stapled_ocsp_response| should be an empty string. If no SCT
   // TLS extension was negotiated, |sct_list_from_tls_extension| should be an
-  // empty string. |result| will be filled with the SCTs present, divided into
-  // categories based on the verification result.
-  virtual int Verify(X509Certificate* cert,
-                     const std::string& stapled_ocsp_response,
-                     const std::string& sct_list_from_tls_extension,
-                     ct::CTVerifyResult* result,
-                     const BoundNetLog& net_log) = 0;
+  // empty string. |output_scts| will be cleared and filled with the SCTs
+  // present, if any, along with their verification results.
+  // The |hostname| (or IP address literal) of the server that presented |cert|
+  // must be provided so that inclusion checks for |cert| are able to avoid
+  // leaking information about which servers have been visited.
+  virtual void Verify(base::StringPiece hostname,
+                      X509Certificate* cert,
+                      base::StringPiece stapled_ocsp_response,
+                      base::StringPiece sct_list_from_tls_extension,
+                      SignedCertificateTimestampAndStatusList* output_scts,
+                      const NetLogWithSource& net_log) = 0;
 
   // Registers |observer| to receive notifications of validated SCTs. Does not
   // take ownership of the observer as the observer may be performing
   // URLRequests which have to be cancelled before this object is destroyed.
   // Setting |observer| to nullptr has the effect of stopping all notifications.
   virtual void SetObserver(Observer* observer) = 0;
+
+  // Gets the Observer, if any, that is currently receiving notifications of
+  // validated SCTs.
+  virtual Observer* GetObserver() const = 0;
 };
 
 }  // namespace net

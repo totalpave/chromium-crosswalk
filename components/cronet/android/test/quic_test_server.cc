@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "quic_test_server.h"
-
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/path_utils.h"
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/message_loop/message_loop.h"
 #include "base/test/test_support_android.h"
 #include "base/threading/thread.h"
 #include "components/cronet/android/test/cronet_test_util.h"
@@ -18,8 +17,11 @@
 #include "net/base/ip_endpoint.h"
 #include "net/quic/crypto/proof_source_chromium.h"
 #include "net/test/test_data_directory.h"
-#include "net/tools/quic/quic_in_memory_cache.h"
+#include "net/third_party/quic/tools/quic_memory_cache_backend.h"
 #include "net/tools/quic/quic_simple_server.h"
+
+using base::android::JavaParamRef;
+using base::android::ScopedJavaLocalRef;
 
 namespace cronet {
 
@@ -28,6 +30,7 @@ namespace {
 static const int kServerPort = 6121;
 
 base::Thread* g_quic_server_thread = nullptr;
+quic::QuicMemoryCacheBackend* g_quic_memory_cache_backend = nullptr;
 net::QuicSimpleServer* g_quic_server = nullptr;
 
 void StartOnServerThread(const base::FilePath& test_files_root,
@@ -38,20 +41,22 @@ void StartOnServerThread(const base::FilePath& test_files_root,
   // Set up in-memory cache.
   base::FilePath file_dir = test_files_root.Append("quic_data");
   CHECK(base::PathExists(file_dir)) << "Quic data does not exist";
-  net::QuicInMemoryCache::GetInstance()->InitializeFromDirectory(
-      file_dir.value());
-  net::QuicConfig config;
+  g_quic_memory_cache_backend = new quic::QuicMemoryCacheBackend();
+  g_quic_memory_cache_backend->InitializeBackend(file_dir.value());
+  quic::QuicConfig config;
 
   // Set up server certs.
   base::FilePath directory = test_data_dir.Append("net/data/ssl/certificates");
-  // TODO(xunjieli): Use scoped_ptr when crbug.com/545474 is fixed.
-  net::ProofSourceChromium* proof_source = new net::ProofSourceChromium();
+  std::unique_ptr<net::ProofSourceChromium> proof_source(
+      new net::ProofSourceChromium());
   CHECK(proof_source->Initialize(
-      directory.Append("quic_test.example.com.crt"),
-      directory.Append("quic_test.example.com.key.pkcs8"),
-      directory.Append("quic_test.example.com.key.sct")));
-  g_quic_server = new net::QuicSimpleServer(proof_source, config,
-                                            net::QuicSupportedVersions());
+      directory.Append("quic-chain.pem"),
+      directory.Append("quic-leaf-cert.key"),
+      base::FilePath()));
+  g_quic_server = new net::QuicSimpleServer(
+      std::move(proof_source), config,
+      quic::QuicCryptoServerConfig::ConfigOptions(),
+      quic::AllSupportedVersions(), g_quic_memory_cache_backend);
 
   // Start listening.
   int rv = g_quic_server->Listen(
@@ -65,16 +70,17 @@ void ShutdownOnServerThread() {
   DCHECK(g_quic_server_thread->task_runner()->BelongsToCurrentThread());
   g_quic_server->Shutdown();
   delete g_quic_server;
+  delete g_quic_memory_cache_backend;
 }
 
 }  // namespace
 
 // Quic server is currently hardcoded to run on port 6121 of the localhost on
 // the device.
-void StartQuicTestServer(JNIEnv* env,
-                         const JavaParamRef<jclass>& /*jcaller*/,
-                         const JavaParamRef<jstring>& jtest_files_root,
-                         const JavaParamRef<jstring>& jtest_data_dir) {
+void JNI_QuicTestServer_StartQuicTestServer(
+    JNIEnv* env,
+    const JavaParamRef<jstring>& jtest_files_root,
+    const JavaParamRef<jstring>& jtest_data_dir) {
   DCHECK(!g_quic_server_thread);
   base::FilePath test_data_dir(
       base::android::ConvertJavaStringToUTF8(env, jtest_data_dir));
@@ -89,29 +95,18 @@ void StartQuicTestServer(JNIEnv* env,
       base::android::ConvertJavaStringToUTF8(env, jtest_files_root));
   g_quic_server_thread->task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&StartOnServerThread, test_files_root, test_data_dir));
+      base::BindOnce(&StartOnServerThread, test_files_root, test_data_dir));
 }
 
-void ShutdownQuicTestServer(JNIEnv* env,
-                            const JavaParamRef<jclass>& /*jcaller*/) {
+void JNI_QuicTestServer_ShutdownQuicTestServer(JNIEnv* env) {
   DCHECK(!g_quic_server_thread->task_runner()->BelongsToCurrentThread());
   g_quic_server_thread->task_runner()->PostTask(
-      FROM_HERE, base::Bind(&ShutdownOnServerThread));
+      FROM_HERE, base::BindOnce(&ShutdownOnServerThread));
   delete g_quic_server_thread;
 }
 
-ScopedJavaLocalRef<jstring> GetServerHost(
-    JNIEnv* env,
-    const JavaParamRef<jclass>& /*jcaller*/) {
-  return base::android::ConvertUTF8ToJavaString(env, kFakeQuicDomain);
-}
-
-int GetServerPort(JNIEnv* env, const JavaParamRef<jclass>& /*jcaller*/) {
+int JNI_QuicTestServer_GetServerPort(JNIEnv* env) {
   return kServerPort;
-}
-
-bool RegisterQuicTestServer(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace cronet

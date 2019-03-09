@@ -4,9 +4,8 @@
 
 #include "remoting/host/linux/x11_util.h"
 
-#include <X11/extensions/XTest.h>
-
 #include "base/bind.h"
+#include "ui/gfx/x/x11.h"
 
 namespace remoting {
 
@@ -15,10 +14,10 @@ static ScopedXErrorHandler* g_handler = nullptr;
 ScopedXErrorHandler::ScopedXErrorHandler(const Handler& handler):
     handler_(handler),
     ok_(true) {
-  // This is a poor-man's check for incorrect usage. It doesn't handle the case
-  // where a mix of ScopedXErrorHandler and raw XSetErrorHandler calls are used,
-  // and it disallows nested ScopedXErrorHandlers on the same thread, despite
-  // these being perfectly safe.
+  // This is a non-exhaustive check for incorrect usage. It doesn't handle the
+  // case where a mix of ScopedXErrorHandler and raw XSetErrorHandler calls are
+  // used, and it disallows nested ScopedXErrorHandlers on the same thread,
+  // despite these being perfectly safe.
   DCHECK(g_handler == nullptr);
   g_handler = this;
   previous_handler_ = XSetErrorHandler(HandleXErrors);

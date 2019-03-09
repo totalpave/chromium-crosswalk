@@ -9,10 +9,10 @@ Polymer({
 
   properties: {
     /**
-     * The text for the current casting activity status.
+     * Description of the current casting activity, e.g. "Casting YouTube".
      * @private {string|undefined}
      */
-    activityStatus_: {
+    routeDescription_: {
       type: String,
     },
 
@@ -24,16 +24,30 @@ Polymer({
     changeRouteSourceAvailable_: {
       type: Boolean,
       computed: 'computeChangeRouteSourceAvailable_(route, sink,' +
-                    'isAnySinkCurrentlyLaunching, shownCastModeValue)',
+          'isAnySinkCurrentlyLaunching, shownCastModeValue)',
     },
 
     /**
      * Whether a sink is currently launching in the container.
      * @type {boolean}
      */
-    isAnySinkCurrentlyLaunching: {
+    changeRouteSourceAvailable_: {
       type: Boolean,
-      value: false,
+      computed: 'computeChangeRouteSourceAvailable_(route, sink,' +
+                    'isAnySinkCurrentlyLaunching, shownCastModeValue)',
+    },
+
+    /**
+     * The timestamp for when the route details view was opened. We initialize
+     * the value in a function so that the value is set when the element is
+     * loaded, rather than at page load.
+     * @private {number}
+     */
+    openTime_: {
+      type: Number,
+      value: function() {
+        return Date.now();
+      },
     },
 
     /**
@@ -42,7 +56,7 @@ Polymer({
      */
     route: {
       type: Object,
-      observer: 'maybeLoadCustomController_',
+      observer: 'onRouteChange_',
     },
 
     /**
@@ -62,17 +76,6 @@ Polymer({
     sink: {
       type: Object,
       value: null,
-    },
-
-    /**
-     * Whether the custom controller should be hidden.
-     * A custom controller is shown iff |route| specifies customControllerPath
-     * and the view can be loaded.
-     * @private {boolean}
-     */
-    isCustomControllerHidden_: {
-      type: Boolean,
-      value: true,
     },
   },
 
@@ -97,6 +100,10 @@ Polymer({
    *     current route or the current route's sink.
    */
   computeCastButtonHidden_: function(route, changeRouteSourceAvailable) {
+    if (route === undefined || changeRouteSourceAvailable === undefined) {
+      return false;
+    }
+
     return !((route && route.canJoin) || changeRouteSourceAvailable);
   },
 
@@ -155,6 +162,44 @@ Polymer({
   },
 
   /**
+   * Called when the route details view is closed. Resets route-controls.
+   */
+  onClosed: function() {
+    if (this.$$('route-controls')) {
+      this.$$('route-controls').reset();
+    }
+  },
+
+  /**
+   * Called when the route details view is opened.
+   */
+  onOpened: function() {
+    if (this.$$('route-controls')) {
+      media_router.ui.setRouteControls(
+          /** @type {RouteControlsInterface} */ (this.$$('route-controls')));
+    }
+  },
+
+  /**
+   * Updates |routeDescription_| for the default view.
+   * @param {?media_router.Route} route
+   * @private
+   */
+  onRouteChange_: function(route) {
+    this.routeDescription_ = route ? route.description : '';
+  },
+
+  /**
+   * @param {?media_router.Route} route
+   * @return {boolean} Whether the WebUI route controller should be shown
+   *     instead of the default route description element.
+   * @private
+   */
+  shouldShowWebUiControls_: function(route) {
+    return !!route && !!route.supportsWebUiController;
+  },
+
+  /**
    * Fires a join-route-click event if the current route is joinable, otherwise
    * it fires a change-route-source-click event, which changes the source of the
    * current route. This may cause the current route to be closed and a new
@@ -173,42 +218,5 @@ Polymer({
             this.computeSelectedCastMode_(this.shownCastModeValue, this.sink)
       });
     }
-  },
-
-  /**
-   * Loads the custom controller if |route.customControllerPath| exists.
-   * Falls back to the default route details view otherwise, or if load fails.
-   * Updates |activityStatus_| for the default view.
-   *
-   * @private
-   */
-  maybeLoadCustomController_: function() {
-    this.activityStatus_ = this.route ?
-        loadTimeData.getStringF('castingActivityStatus',
-                                this.route.description) :
-        '';
-
-    if (!this.route || !this.route.customControllerPath) {
-      this.isCustomControllerHidden_ = true;
-      return;
-    }
-
-    // Show custom controller
-    var extensionview = this.$['custom-controller'];
-
-    // Do nothing if the url is the same and the view is not hidden.
-    if (this.route.customControllerPath == extensionview.src &&
-        !this.isCustomControllerHidden_)
-      return;
-
-    var that = this;
-    extensionview.load(this.route.customControllerPath)
-    .then(function() {
-      // Load was successful; show the custom controller.
-      that.isCustomControllerHidden_ = false;
-    }, function() {
-      // Load was unsuccessful; fall back to default view.
-      that.isCustomControllerHidden_ = true;
-    });
   },
 });

@@ -5,6 +5,8 @@
 #ifndef EXTENSIONS_BROWSER_API_SYSTEM_NETWORK_SYSTEM_NETWORK_API_H_
 #define EXTENSIONS_BROWSER_API_SYSTEM_NETWORK_SYSTEM_NETWORK_API_H_
 
+#include <memory>
+
 #include "extensions/browser/extension_function.h"
 #include "extensions/common/api/system_network.h"
 #include "net/base/network_interfaces.h"
@@ -13,7 +15,7 @@ namespace extensions {
 namespace api {
 
 class SystemNetworkGetNetworkInterfacesFunction
-    : public AsyncExtensionFunction {
+    : public UIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.network.getNetworkInterfaces",
                              SYSTEM_NETWORK_GETNETWORKINTERFACES)
@@ -23,13 +25,12 @@ class SystemNetworkGetNetworkInterfacesFunction
  protected:
   ~SystemNetworkGetNetworkInterfacesFunction() override;
 
-  // AsyncApiFunction:
-  bool RunAsync() override;
+  // ExtensionFunction:
+  ResponseAction Run() override;
 
  private:
-  void GetListOnFileThread();
-  void HandleGetListError();
-  void SendResponseOnUIThread(const net::NetworkInterfaceList& interface_list);
+  void SendResponseOnUIThread(
+      const base::Optional<net::NetworkInterfaceList>& interface_list);
 };
 
 }  // namespace api

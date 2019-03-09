@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/passwords/account_avatar_fetcher.h"
-#include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/button.h"
 
 namespace autofill {
 struct PasswordForm;
@@ -18,8 +18,10 @@ namespace gfx {
 class ImageSkia;
 }
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+namespace mojom {
+class URLLoaderFactory;
+}
 }
 
 namespace views {
@@ -30,14 +32,14 @@ class Label;
 // CredentialsItemView represents a credential view in the account chooser
 // bubble.
 class CredentialsItemView : public AccountAvatarFetcherDelegate,
-                            public views::LabelButton {
+                            public views::Button {
  public:
   CredentialsItemView(views::ButtonListener* button_listener,
                       const base::string16& upper_text,
                       const base::string16& lower_text,
                       SkColor hover_color,
                       const autofill::PasswordForm* form,
-                      net::URLRequestContextGetter* request_context);
+                      network::mojom::URLLoaderFactory* loader_factory);
   ~CredentialsItemView() override;
 
   const autofill::PasswordForm* form() const { return form_; }
@@ -51,17 +53,18 @@ class CredentialsItemView : public AccountAvatarFetcherDelegate,
   int GetPreferredHeight() const;
 
  private:
-  // views::LabelButton:
-  gfx::Size GetPreferredSize() const override;
+  // views::View:
+  gfx::Size CalculatePreferredSize() const override;
   int GetHeightForWidth(int w) const override;
   void Layout() override;
-  void OnPaint(gfx::Canvas* canvas) override;
+  void OnPaintBackground(gfx::Canvas* canvas) override;
 
   const autofill::PasswordForm* form_;
 
   views::ImageView* image_view_;
   views::Label* upper_label_;
   views::Label* lower_label_;
+  views::ImageView* info_icon_;
 
   SkColor hover_color_;
 

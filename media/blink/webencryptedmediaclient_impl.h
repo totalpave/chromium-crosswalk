@@ -7,13 +7,14 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "base/callback.h"
-#include "base/containers/scoped_ptr_hash_map.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "media/blink/key_system_config_selector.h"
 #include "media/blink/media_blink_export.h"
-#include "third_party/WebKit/public/platform/WebEncryptedMediaClient.h"
+#include "third_party/blink/public/platform/web_encrypted_media_client.h"
 
 namespace blink {
 
@@ -27,20 +28,17 @@ namespace media {
 
 struct CdmConfig;
 class CdmFactory;
-class KeySystems;
 class MediaPermission;
 
 class MEDIA_BLINK_EXPORT WebEncryptedMediaClientImpl
     : public blink::WebEncryptedMediaClient {
  public:
-  WebEncryptedMediaClientImpl(
-      base::Callback<bool(void)> are_secure_codecs_supported_cb,
-      CdmFactory* cdm_factory,
-      MediaPermission* media_permission);
+  WebEncryptedMediaClientImpl(CdmFactory* cdm_factory,
+                              MediaPermission* media_permission);
   ~WebEncryptedMediaClientImpl() override;
 
   // WebEncryptedMediaClient implementation.
-  void requestMediaKeySystemAccess(
+  void RequestMediaKeySystemAccess(
       blink::WebEncryptedMediaRequest request) override;
 
   // Create the CDM for |key_system| and |security_origin|. The caller owns
@@ -65,18 +63,16 @@ class MEDIA_BLINK_EXPORT WebEncryptedMediaClientImpl
       const blink::WebMediaKeySystemConfiguration& accumulated_configuration,
       const CdmConfig& cdm_config);
 
-  // Complete a requestMediaKeySystemAccess() request with an error message.
-  void OnRequestNotSupported(blink::WebEncryptedMediaRequest request,
-                             const blink::WebString& error_message);
+  // Complete a requestMediaKeySystemAccess() request with a NotSupportedError.
+  void OnRequestNotSupported(blink::WebEncryptedMediaRequest request);
 
   // Gets the Reporter for |key_system|. If it doesn't already exist,
   // create one.
   Reporter* GetReporter(const blink::WebString& key_system);
 
   // Reporter singletons.
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<Reporter>> reporters_;
+  std::unordered_map<std::string, std::unique_ptr<Reporter>> reporters_;
 
-  base::Callback<bool(void)> are_secure_codecs_supported_cb_;
   CdmFactory* cdm_factory_;
   KeySystemConfigSelector key_system_config_selector_;
   base::WeakPtrFactory<WebEncryptedMediaClientImpl> weak_factory_;

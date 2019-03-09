@@ -8,7 +8,6 @@
 #include <cmath>
 
 #include "base/logging.h"
-#include "media/base/audio_buffer.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/audio_timestamp_helper.h"
@@ -34,9 +33,10 @@ AudioBufferConverter::AudioBufferConverter(const AudioParameters& output_params)
       buffered_input_frames_(0.0),
       io_sample_rate_ratio_(1.0),
       timestamp_helper_(output_params_.sample_rate()),
-      is_flushing_(false) {}
+      is_flushing_(false),
+      pool_(new AudioBufferMemoryPool()) {}
 
-AudioBufferConverter::~AudioBufferConverter() {}
+AudioBufferConverter::~AudioBufferConverter() = default;
 
 void AudioBufferConverter::AddInput(const scoped_refptr<AudioBuffer>& buffer) {
   // On EOS flush any remaining buffered data.
@@ -56,7 +56,7 @@ void AudioBufferConverter::AddInput(const scoped_refptr<AudioBuffer>& buffer) {
     return;
   }
 
-  if (timestamp_helper_.base_timestamp() == kNoTimestamp())
+  if (timestamp_helper_.base_timestamp() == kNoTimestamp)
     timestamp_helper_.SetBaseTimestamp(buffer->timestamp());
 
   queued_inputs_.push_back(buffer);
@@ -78,7 +78,7 @@ void AudioBufferConverter::Reset() {
   audio_converter_.reset();
   queued_inputs_.clear();
   queued_outputs_.clear();
-  timestamp_helper_.SetBaseTimestamp(kNoTimestamp());
+  timestamp_helper_.SetBaseTimestamp(kNoTimestamp);
   input_params_ = output_params_;
   input_frames_ = 0;
   buffered_input_frames_ = 0.0;
@@ -87,7 +87,7 @@ void AudioBufferConverter::Reset() {
 
 void AudioBufferConverter::ResetTimestampState() {
   Flush();
-  timestamp_helper_.SetBaseTimestamp(kNoTimestamp());
+  timestamp_helper_.SetBaseTimestamp(kNoTimestamp);
 }
 
 double AudioBufferConverter::ProvideInput(AudioBus* audio_bus,
@@ -143,7 +143,6 @@ void AudioBufferConverter::ResetConverter(
       input_params_.format(),
       buffer->channel_layout(),
       buffer->sample_rate(),
-      input_params_.bits_per_sample(),
       // If resampling is needed and the FIFO disabled, the AudioConverter will
       // always request SincResampler::kDefaultRequestSize frames.  Otherwise it
       // will use the output frame size.
@@ -187,12 +186,10 @@ void AudioBufferConverter::ConvertIfPossible() {
   if (!request_frames)
     return;
 
-  scoped_refptr<AudioBuffer> output_buffer =
-      AudioBuffer::CreateBuffer(kSampleFormatPlanarF32,
-                                output_params_.channel_layout(),
-                                output_params_.channels(),
-                                output_params_.sample_rate(),
-                                request_frames);
+  scoped_refptr<AudioBuffer> output_buffer = AudioBuffer::CreateBuffer(
+      kSampleFormatPlanarF32, output_params_.channel_layout(),
+      output_params_.channels(), output_params_.sample_rate(), request_frames,
+      pool_);
   std::unique_ptr<AudioBus> output_bus =
       AudioBus::CreateWrapper(output_buffer->channel_count());
 

@@ -9,10 +9,10 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "chrome/browser/extensions/browsertest_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/browsertest_util.h"
 
 ExtensionJSBrowserTest::ExtensionJSBrowserTest() : libs_loaded_(false) {
 }
@@ -32,15 +32,16 @@ bool ExtensionJSBrowserTest::RunJavascriptTestF(bool is_async,
   EXPECT_TRUE(load_waiter_->browser_context());
   if (!load_waiter_->browser_context())
     return false;
-  ConstValueVector args;
-  args.push_back(new base::StringValue(test_fixture));
-  args.push_back(new base::StringValue(test_name));
+  std::vector<base::Value> args;
+  args.push_back(base::Value(test_fixture));
+  args.push_back(base::Value(test_name));
   std::vector<base::string16> scripts;
   if (!libs_loaded_) {
     BuildJavascriptLibraries(&scripts);
     libs_loaded_ = true;
   }
-  scripts.push_back(BuildRunTestJSCall(is_async, "RUN_TEST_F", args));
+  scripts.push_back(
+      BuildRunTestJSCall(is_async, "RUN_TEST_F", std::move(args)));
 
   base::string16 script_16 =
       base::JoinString(scripts, base::ASCIIToUTF16("\n"));
@@ -52,8 +53,9 @@ bool ExtensionJSBrowserTest::RunJavascriptTestF(bool is_async,
           load_waiter_->extension_id(),
           script);
 
-  std::unique_ptr<base::Value> value_result = base::JSONReader::Read(result);
-  CHECK_EQ(base::Value::TYPE_DICTIONARY, value_result->GetType());
+  std::unique_ptr<base::Value> value_result =
+      base::JSONReader::ReadDeprecated(result);
+  CHECK_EQ(base::Value::Type::DICTIONARY, value_result->type());
   base::DictionaryValue* dict_value =
       static_cast<base::DictionaryValue*>(value_result.get());
   bool test_result;

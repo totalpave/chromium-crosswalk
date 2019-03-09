@@ -9,6 +9,7 @@
 
 #include "ui/events/devices/input_device.h"
 #include "ui/events/devices/mojo/input_devices.mojom.h"
+#include "ui/events/devices/stylus_state.h"
 #include "ui/events/devices/touchscreen_device.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -22,7 +23,7 @@ struct EnumTraits<ui::mojom::InputDeviceType, ui::InputDeviceType> {
 };
 
 template <>
-struct StructTraits<ui::mojom::InputDevice, ui::InputDevice> {
+struct StructTraits<ui::mojom::InputDeviceDataView, ui::InputDevice> {
   static int32_t id(const ui::InputDevice& device) { return device.id; }
 
   static ui::InputDeviceType type(const ui::InputDevice& device) {
@@ -32,6 +33,8 @@ struct StructTraits<ui::mojom::InputDevice, ui::InputDevice> {
   static const std::string& name(const ui::InputDevice& device) {
     return device.name;
   }
+
+  static bool enabled(const ui::InputDevice& device) { return device.enabled; }
 
   static std::string sys_path(const ui::InputDevice& device) {
     return device.sys_path.AsUTF8Unsafe();
@@ -49,7 +52,14 @@ struct StructTraits<ui::mojom::InputDevice, ui::InputDevice> {
 };
 
 template <>
-struct StructTraits<ui::mojom::TouchscreenDevice, ui::TouchscreenDevice> {
+struct EnumTraits<ui::mojom::StylusState, ui::StylusState> {
+  static ui::mojom::StylusState ToMojom(ui::StylusState type);
+  static bool FromMojom(ui::mojom::StylusState type, ui::StylusState* output);
+};
+
+template <>
+struct StructTraits<ui::mojom::TouchscreenDeviceDataView,
+                    ui::TouchscreenDevice> {
   static const ui::InputDevice& input_device(
       const ui::TouchscreenDevice& device) {
     return static_cast<const ui::InputDevice&>(device);
@@ -61,6 +71,10 @@ struct StructTraits<ui::mojom::TouchscreenDevice, ui::TouchscreenDevice> {
 
   static int32_t touch_points(const ui::TouchscreenDevice& device) {
     return device.touch_points;
+  }
+
+  static bool has_stylus(const ui::TouchscreenDevice& device) {
+    return device.has_stylus;
   }
 
   static bool Read(ui::mojom::TouchscreenDeviceDataView data,

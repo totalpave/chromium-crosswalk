@@ -7,10 +7,13 @@
 
 #include <string>
 
-namespace pdf_extension_util {
+#include "pdf/buildflags.h"
 
-// The ResourceIdentifier for the PDF Viewer plugin.
-extern const char kPdfResourceIdentifier[];
+#if !BUILDFLAG(ENABLE_PDF)
+#error "PDF must be enabled"
+#endif
+
+namespace pdf_extension_util {
 
 // Return the extensions manifest for PDF. The manifest is loaded from
 // browser_resources.grd and certain fields are replaced based on what chrome

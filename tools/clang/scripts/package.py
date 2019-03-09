@@ -19,13 +19,15 @@ import tarfile
 THIS_DIR = os.path.dirname(__file__)
 CHROMIUM_DIR = os.path.abspath(os.path.join(THIS_DIR, '..', '..', '..'))
 THIRD_PARTY_DIR = os.path.join(THIS_DIR, '..', '..', '..', 'third_party')
+BUILDTOOLS_DIR = os.path.join(THIS_DIR, '..', '..', '..', 'buildtools')
 LLVM_DIR = os.path.join(THIRD_PARTY_DIR, 'llvm')
 LLVM_BOOTSTRAP_DIR = os.path.join(THIRD_PARTY_DIR, 'llvm-bootstrap')
 LLVM_BOOTSTRAP_INSTALL_DIR = os.path.join(THIRD_PARTY_DIR,
                                           'llvm-bootstrap-install')
 LLVM_BUILD_DIR = os.path.join(THIRD_PARTY_DIR, 'llvm-build')
 LLVM_RELEASE_DIR = os.path.join(LLVM_BUILD_DIR, 'Release+Asserts')
-LLVM_LTO_GOLD_PLUGIN_DIR = os.path.join(THIRD_PARTY_DIR, 'llvm-lto-gold-plugin')
+EU_STRIP = os.path.join(BUILDTOOLS_DIR, 'third_party', 'eu-strip', 'bin',
+                        'eu-strip')
 STAMP_FILE = os.path.join(LLVM_BUILD_DIR, 'cr_build_revision')
 
 
@@ -87,27 +89,74 @@ def RunGsutil(args):
 
 def GsutilArchiveExists(archive_name, platform):
   gsutil_args = ['-q', 'stat',
-                 'gs://chromium-browser-clang/%s/%s.tgz' %
+                 'gs://chromium-browser-clang-staging/%s/%s.tgz' %
                  (platform, archive_name)]
   return RunGsutil(gsutil_args) == 0
 
 
 def MaybeUpload(args, archive_name, platform):
-  # We don't want to rewrite the file, if it already exists on the server,
-  # so -n option to gsutil is used. It will warn, if the upload was aborted.
-  gsutil_args = ['cp', '-n', '-a', 'public-read',
+  gsutil_args = ['cp', '-a', 'public-read',
                   '%s.tgz' % archive_name,
-                  'gs://chromium-browser-clang/%s/%s.tgz' %
+                  'gs://chromium-browser-clang-staging/%s/%s.tgz' %
                  (platform, archive_name)]
   if args.upload:
     print 'Uploading %s to Google Cloud Storage...' % archive_name
     exit_code = RunGsutil(gsutil_args)
     if exit_code != 0:
       print "gsutil failed, exit_code: %s" % exit_code
-      os.exit(exit_code)
+      sys.exit(exit_code)
   else:
     print 'To upload, run:'
     print ('gsutil %s' % ' '.join(gsutil_args))
+
+
+def UploadPDBToSymbolServer():
+  assert sys.platform == 'win32'
+  # Upload PDB and binary to the symbol server on Windows.  Put them into the
+  # chromium-browser-symsrv bucket, since chrome devs have that in their
+  # _NT_SYMBOL_PATH already. Executable and PDB must be at paths following a
+  # certain pattern for the Microsoft debuggers to be able to load them.
+  # Executable:
+  #  chromium-browser-symsrv/clang-cl.exe/ABCDEFAB01234/clang-cl.ex_
+  #    ABCDEFAB is the executable's timestamp in %08X format, 01234 is the
+  #    executable's image size in %x format. tools/symsrc/img_fingerprint.py
+  #    can compute this ABCDEFAB01234 string for us, so use that.
+  #    The .ex_ instead of .exe at the end means that the file is compressed.
+  # PDB:
+  # gs://chromium-browser-symsrv/clang-cl.exe.pdb/AABBCCDD/clang-cl.dll.pd_
+  #   AABBCCDD here is computed from the output of
+  #      dumpbin /all mybinary.exe | find "Format: RSDS"
+  #   but tools/symsrc/pdb_fingerprint_from_img.py can compute it already, so
+  #   again just use that.
+  sys.path.insert(0, os.path.join(CHROMIUM_DIR, 'tools', 'symsrc'))
+  import img_fingerprint, pdb_fingerprint_from_img
+
+  binaries = [ 'bin/clang-cl.exe', 'bin/lld-link.exe' ]
+  for binary_path in binaries:
+    binary_path = os.path.join(LLVM_RELEASE_DIR, binary_path)
+    binary_id = img_fingerprint.GetImgFingerprint(binary_path)
+    (pdb_id, pdb_path) = pdb_fingerprint_from_img.GetPDBInfoFromImg(binary_path)
+
+    # The build process builds clang.exe and then copies it to clang-cl.exe
+    # (both are the same binary and they behave differently on what their
+    # filename is).  Hence, the pdb is at clang.pdb, not at clang-cl.pdb.
+    # Likewise, lld-link.exe's PDB file is called lld.pdb.
+
+    # Compress and upload.
+    for f, f_id in ((binary_path, binary_id), (pdb_path, pdb_id)):
+      subprocess.check_call(
+          ['makecab', '/D', 'CompressionType=LZX', '/D', 'CompressionMemory=21',
+           f, '/L', os.path.dirname(f)], stdout=open(os.devnull, 'w'))
+      f_cab = f[:-1] + '_'
+
+      dest = '%s/%s/%s' % (os.path.basename(f), f_id, os.path.basename(f_cab))
+      print 'Uploading %s to Google Cloud Storage...' % dest
+      gsutil_args = ['cp', '-n', '-a', 'public-read', f_cab,
+                     'gs://chromium-browser-symsrv/' + dest]
+      exit_code = RunGsutil(gsutil_args)
+      if exit_code != 0:
+        print "gsutil failed, exit_code: %s" % exit_code
+        sys.exit(exit_code)
 
 
 def main():
@@ -117,7 +166,7 @@ def main():
   args = parser.parse_args()
 
   # Check that the script is not going to upload a toolchain built from HEAD.
-  use_head_revision = 'LLVM_FORCE_HEAD_REVISION' in os.environ
+  use_head_revision = bool(int(os.environ.get('LLVM_FORCE_HEAD_REVISION', '0')))
   if args.upload and use_head_revision:
     print ("--upload and LLVM_FORCE_HEAD_REVISION could not be used "
            "at the same time.")
@@ -125,7 +174,6 @@ def main():
 
   expected_stamp = GetExpectedStamp()
   pdir = 'clang-' + expected_stamp
-  golddir = 'llvmgold-' + expected_stamp
   print pdir
 
   if sys.platform == 'darwin':
@@ -134,17 +182,6 @@ def main():
     platform = 'Win'
   else:
     platform = 'Linux_x64'
-
-  # Check if Google Cloud Storage already has the artifacts we want to build.
-  if (args.upload and GsutilArchiveExists(pdir, platform) and
-      not sys.platform.startswith('linux') or
-      GsutilArchiveExists(golddir, platform)):
-    print ('Desired toolchain revision %s is already available '
-           'in Google Cloud Storage:') % expected_stamp
-    print 'gs://chromium-browser-clang/%s/%s.tgz' % (platform, pdir)
-    if sys.platform.startswith('linux'):
-      print 'gs://chromium-browser-clang/%s/%s.tgz' % (platform, golddir)
-    return 0
 
   with open('buildlog.txt', 'w') as log:
     Tee('Diff in llvm:\n', log)
@@ -178,7 +215,7 @@ def main():
 
     opt_flags = []
     if sys.platform.startswith('linux'):
-      opt_flags += ['--lto-gold-plugin']
+      opt_flags += ['--lto-lld']
     build_cmd = [sys.executable, os.path.join(THIS_DIR, 'update.py'),
                  '--bootstrap', '--force-local-build',
                  '--run-tests'] + opt_flags
@@ -194,44 +231,146 @@ def main():
   # Copy a whitelist of files to the directory we're going to tar up.
   # This supports the same patterns that the fnmatch module understands.
   exe_ext = '.exe' if sys.platform == 'win32' else ''
-  want = ['bin/llvm-symbolizer' + exe_ext,
-          'lib/clang/*/asan_blacklist.txt',
-          'lib/clang/*/cfi_blacklist.txt',
+  want = ['bin/llvm-pdbutil' + exe_ext,
+          'bin/llvm-symbolizer' + exe_ext,
+          'bin/llvm-undname' + exe_ext,
           # Copy built-in headers (lib/clang/3.x.y/include).
           'lib/clang/*/include/*',
+          'lib/clang/*/share/asan_blacklist.txt',
+          'lib/clang/*/share/cfi_blacklist.txt',
           ]
   if sys.platform == 'win32':
     want.append('bin/clang-cl.exe')
     want.append('bin/lld-link.exe')
   else:
-    so_ext = 'dylib' if sys.platform == 'darwin' else 'so'
-    want.extend(['bin/clang',
-                 'lib/libFindBadConstructs.' + so_ext,
-                 'lib/libBlinkGCPlugin.' + so_ext,
-                 ])
+    want.append('bin/clang')
   if sys.platform == 'darwin':
-    want.extend([# Copy only the OSX (ASan and profile) and iossim (ASan)
-                 # runtime libraries:
-                 'lib/clang/*/lib/darwin/*asan_osx*',
-                 'lib/clang/*/lib/darwin/*asan_iossim*',
-                 'lib/clang/*/lib/darwin/*profile_osx*',
-                 ])
+    want.extend([
+        # AddressSanitizer runtime.
+        'lib/clang/*/lib/darwin/libclang_rt.asan_iossim_dynamic.dylib',
+        'lib/clang/*/lib/darwin/libclang_rt.asan_osx_dynamic.dylib',
+
+        # Fuzzing instrumentation (-fsanitize=fuzzer-no-link).
+        'lib/clang/*/lib/darwin/libclang_rt.fuzzer_no_main_osx.a',
+
+        # OS X and iOS builtin libraries (iossim is lipo'd into ios) for the
+        # _IsOSVersionAtLeast runtime function.
+        'lib/clang/*/lib/darwin/libclang_rt.ios.a',
+        'lib/clang/*/lib/darwin/libclang_rt.osx.a',
+
+        # Profile runtime (used by profiler and code coverage).
+        'lib/clang/*/lib/darwin/libclang_rt.profile_iossim.a',
+        'lib/clang/*/lib/darwin/libclang_rt.profile_osx.a',
+    ])
   elif sys.platform.startswith('linux'):
-    # Copy the libstdc++.so.6 we linked Clang against so it can run.
-    want.append('lib/libstdc++.so.6')
-    # Copy only
-    # lib/clang/*/lib/linux/libclang_rt.{[atm]san,san,ubsan,profile}-*.a ,
-    # but not dfsan.
-    want.extend(['lib/clang/*/lib/linux/*[atm]san*',
-                 'lib/clang/*/lib/linux/*ubsan*',
-                 'lib/clang/*/lib/linux/*libclang_rt.san*',
-                 'lib/clang/*/lib/linux/*profile*',
-                 'lib/clang/*/msan_blacklist.txt',
-                 ])
+    # Add llvm-ar and lld for LTO.
+    want.append('bin/llvm-ar')
+    want.append('bin/lld')
+    want.extend([
+        # AddressSanitizer C runtime (pure C won't link with *_cxx).
+        'lib/clang/*/lib/linux/libclang_rt.asan-i386.a',
+        'lib/clang/*/lib/linux/libclang_rt.asan-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.asan-x86_64.a.syms',
+
+        # AddressSanitizer C++ runtime.
+        'lib/clang/*/lib/linux/libclang_rt.asan_cxx-i386.a',
+        'lib/clang/*/lib/linux/libclang_rt.asan_cxx-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.asan_cxx-x86_64.a.syms',
+
+        # AddressSanitizer Android runtime.
+        'lib/clang/*/lib/linux/libclang_rt.asan-aarch64-android.so',
+        'lib/clang/*/lib/linux/libclang_rt.asan-arm-android.so',
+        'lib/clang/*/lib/linux/libclang_rt.asan-i686-android.so',
+
+        # Fuzzing instrumentation (-fsanitize=fuzzer-no-link).
+        'lib/clang/*/lib/linux/libclang_rt.fuzzer_no_main-x86_64.a',
+
+        # HWASAN Android runtime.
+        'lib/clang/*/lib/linux/libclang_rt.hwasan-aarch64-android.so',
+
+        # MemorySanitizer C runtime (pure C won't link with *_cxx).
+        'lib/clang/*/lib/linux/libclang_rt.msan-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.msan-x86_64.a.syms',
+
+        # MemorySanitizer C++ runtime.
+        'lib/clang/*/lib/linux/libclang_rt.msan_cxx-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.msan_cxx-x86_64.a.syms',
+
+        # Profile runtime (used by profiler and code coverage).
+        'lib/clang/*/lib/linux/libclang_rt.profile-i386.a',
+        'lib/clang/*/lib/linux/libclang_rt.profile-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.profile-aarch64-android.a',
+        'lib/clang/*/lib/linux/libclang_rt.profile-arm-android.a',
+
+        # ThreadSanitizer C runtime (pure C won't link with *_cxx).
+        'lib/clang/*/lib/linux/libclang_rt.tsan-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.tsan-x86_64.a.syms',
+
+        # ThreadSanitizer C++ runtime.
+        'lib/clang/*/lib/linux/libclang_rt.tsan_cxx-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.tsan_cxx-x86_64.a.syms',
+
+        # UndefinedBehaviorSanitizer C runtime (pure C won't link with *_cxx).
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone-i386.a',
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone-x86_64.a.syms',
+
+        # UndefinedBehaviorSanitizer C++ runtime.
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone_cxx-i386.a',
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone_cxx-x86_64.a',
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone_cxx-x86_64.a.syms',
+
+        # UndefinedBehaviorSanitizer Android runtime, needed for CFI.
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone-aarch64-android.so',
+        'lib/clang/*/lib/linux/libclang_rt.ubsan_standalone-arm-android.so',
+
+        # Blacklist for MemorySanitizer (used on Linux only).
+        'lib/clang/*/share/msan_blacklist.txt',
+    ])
   elif sys.platform == 'win32':
-    want.extend(['lib/clang/*/lib/windows/clang_rt.asan*.dll',
-                 'lib/clang/*/lib/windows/clang_rt.asan*.lib',
-                 'lib/clang/*/include_sanitizer/*',
+    want.extend([
+        # AddressSanitizer C runtime (pure C won't link with *_cxx).
+        'lib/clang/*/lib/windows/clang_rt.asan-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.asan-x86_64.lib',
+
+        # AddressSanitizer C++ runtime.
+        'lib/clang/*/lib/windows/clang_rt.asan_cxx-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.asan_cxx-x86_64.lib',
+
+        # Fuzzing instrumentation (-fsanitize=fuzzer-no-link).
+        'lib/clang/*/lib/windows/clang_rt.fuzzer_no_main-x86_64.lib',
+
+        # Thunk for AddressSanitizer needed for static build of a shared lib.
+        'lib/clang/*/lib/windows/clang_rt.asan_dll_thunk-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.asan_dll_thunk-x86_64.lib',
+
+        # AddressSanitizer runtime for component build.
+        'lib/clang/*/lib/windows/clang_rt.asan_dynamic-i386.dll',
+        'lib/clang/*/lib/windows/clang_rt.asan_dynamic-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.asan_dynamic-x86_64.dll',
+        'lib/clang/*/lib/windows/clang_rt.asan_dynamic-x86_64.lib',
+
+        # Thunk for AddressSanitizer for component build of a shared lib.
+        'lib/clang/*/lib/windows/clang_rt.asan_dynamic_runtime_thunk-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib',
+
+        # Profile runtime (used by profiler and code coverage).
+        'lib/clang/*/lib/windows/clang_rt.profile-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.profile-x86_64.lib',
+
+        # UndefinedBehaviorSanitizer C runtime (pure C won't link with *_cxx).
+        'lib/clang/*/lib/windows/clang_rt.ubsan_standalone-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.ubsan_standalone-x86_64.lib',
+
+        # UndefinedBehaviorSanitizer C++ runtime.
+        'lib/clang/*/lib/windows/clang_rt.ubsan_standalone_cxx-i386.lib',
+        'lib/clang/*/lib/windows/clang_rt.ubsan_standalone_cxx-x86_64.lib',
+    ])
+
+  if sys.platform in ('linux2', 'darwin'):
+    # Include libclang_rt.builtins.a for Fuchsia targets.
+    want.extend(['lib/clang/*/aarch64-fuchsia/lib/libclang_rt.builtins.a',
+                 'lib/clang/*/x86_64-fuchsia/lib/libclang_rt.builtins.a',
                  ])
 
   for root, dirs, files in os.walk(LLVM_RELEASE_DIR):
@@ -252,12 +391,28 @@ def main():
         subprocess.call(['strip', '-x', dest])
       elif (sys.platform.startswith('linux') and
             os.path.splitext(f)[1] in ['.so', '.a']):
-        subprocess.call(['strip', '-g', dest])
+        subprocess.call([EU_STRIP, '-g', dest])
+
+  stripped_binaries = ['clang',
+                       'llvm-pdbutil',
+                       'llvm-symbolizer',
+                       'llvm-undname',
+                       ]
+  if sys.platform.startswith('linux'):
+    stripped_binaries.append('lld')
+    stripped_binaries.append('llvm-ar')
+  for f in stripped_binaries:
+    if sys.platform != 'win32':
+      subprocess.call(['strip', os.path.join(pdir, 'bin', f)])
 
   # Set up symlinks.
   if sys.platform != 'win32':
     os.symlink('clang', os.path.join(pdir, 'bin', 'clang++'))
     os.symlink('clang', os.path.join(pdir, 'bin', 'clang-cl'))
+
+  if sys.platform.startswith('linux'):
+    os.symlink('lld', os.path.join(pdir, 'bin', 'ld.lld'))
+    os.symlink('lld', os.path.join(pdir, 'bin', 'lld-link'))
 
   # Copy libc++ headers.
   if sys.platform == 'darwin':
@@ -277,16 +432,94 @@ def main():
 
   MaybeUpload(args, pdir, platform)
 
-  # Zip up gold plugin on Linux.
-  if sys.platform.startswith('linux'):
-    shutil.rmtree(golddir, ignore_errors=True)
-    os.makedirs(os.path.join(golddir, 'lib'))
-    shutil.copy(os.path.join(LLVM_LTO_GOLD_PLUGIN_DIR, 'lib', 'LLVMgold.so'),
-                os.path.join(golddir, 'lib'))
-    with tarfile.open(golddir + '.tgz', 'w:gz') as tar:
-      tar.add(os.path.join(golddir, 'lib'), arcname='lib',
+  # Zip up llvm-code-coverage for code coverage.
+  code_coverage_dir = 'llvm-code-coverage-' + stamp
+  shutil.rmtree(code_coverage_dir, ignore_errors=True)
+  os.makedirs(os.path.join(code_coverage_dir, 'bin'))
+  for filename in ['llvm-cov', 'llvm-profdata']:
+    shutil.copy(os.path.join(LLVM_RELEASE_DIR, 'bin', filename + exe_ext),
+                os.path.join(code_coverage_dir, 'bin'))
+  with tarfile.open(code_coverage_dir + '.tgz', 'w:gz') as tar:
+    tar.add(os.path.join(code_coverage_dir, 'bin'), arcname='bin',
+            filter=PrintTarProgress)
+  MaybeUpload(args, code_coverage_dir, platform)
+
+  # Zip up llvm-objdump and related tools for sanitizer coverage and Supersize.
+  objdumpdir = 'llvmobjdump-' + stamp
+  shutil.rmtree(objdumpdir, ignore_errors=True)
+  os.makedirs(os.path.join(objdumpdir, 'bin'))
+  for filename in ['llvm-bcanalyzer', 'llvm-cxxfilt', 'llvm-nm', 'llvm-objdump',
+                   'llvm-readobj']:
+    shutil.copy(os.path.join(LLVM_RELEASE_DIR, 'bin', filename + exe_ext),
+                os.path.join(objdumpdir, 'bin'))
+  llvmobjdump_stamp_file_base = 'llvmobjdump_build_revision'
+  llvmobjdump_stamp_file = os.path.join(objdumpdir, llvmobjdump_stamp_file_base)
+  with open(llvmobjdump_stamp_file, 'w') as f:
+    f.write(expected_stamp)
+    f.write('\n')
+  if sys.platform != 'win32':
+    os.symlink('llvm-readobj', os.path.join(objdumpdir, 'bin', 'llvm-readelf'))
+  with tarfile.open(objdumpdir + '.tgz', 'w:gz') as tar:
+    tar.add(os.path.join(objdumpdir, 'bin'), arcname='bin',
+            filter=PrintTarProgress)
+    tar.add(llvmobjdump_stamp_file, arcname=llvmobjdump_stamp_file_base,
+            filter=PrintTarProgress)
+  MaybeUpload(args, objdumpdir, platform)
+
+  # Zip up llvm-cfi-verify for CFI coverage.
+  cfiverifydir = 'llvmcfiverify-' + stamp
+  shutil.rmtree(cfiverifydir, ignore_errors=True)
+  os.makedirs(os.path.join(cfiverifydir, 'bin'))
+  shutil.copy(os.path.join(LLVM_RELEASE_DIR, 'bin', 'llvm-cfi-verify' +
+                           exe_ext),
+              os.path.join(cfiverifydir, 'bin'))
+  with tarfile.open(cfiverifydir + '.tgz', 'w:gz') as tar:
+    tar.add(os.path.join(cfiverifydir, 'bin'), arcname='bin',
+            filter=PrintTarProgress)
+  MaybeUpload(args, cfiverifydir, platform)
+
+  # On Mac, lld isn't part of the main zip.  Upload it in a separate zip.
+  if sys.platform == 'darwin':
+    llddir = 'lld-' + stamp
+    shutil.rmtree(llddir, ignore_errors=True)
+    os.makedirs(os.path.join(llddir, 'bin'))
+    shutil.copy(os.path.join(LLVM_RELEASE_DIR, 'bin', 'lld'),
+                os.path.join(llddir, 'bin'))
+    shutil.copy(os.path.join(LLVM_RELEASE_DIR, 'bin', 'llvm-ar'),
+                os.path.join(llddir, 'bin'))
+    os.symlink('lld', os.path.join(llddir, 'bin', 'lld-link'))
+    os.symlink('lld', os.path.join(llddir, 'bin', 'ld.lld'))
+    with tarfile.open(llddir + '.tgz', 'w:gz') as tar:
+      tar.add(os.path.join(llddir, 'bin'), arcname='bin',
               filter=PrintTarProgress)
-    MaybeUpload(args, golddir, platform)
+    MaybeUpload(args, llddir, platform)
+
+    # dsymutil isn't part of the main zip either, and it gets periodically deployed to CIPD
+    # (manually, not as part of clang rolls) for use in the Mac build toolchain.
+    dsymdir = 'dsymutil-' + stamp
+    shutil.rmtree(dsymdir, ignore_errors=True)
+    os.makedirs(os.path.join(dsymdir, 'bin'))
+    shutil.copy(os.path.join(LLVM_RELEASE_DIR, 'bin', 'dsymutil'),
+                os.path.join(dsymdir, 'bin'))
+    with tarfile.open(dsymdir + '.tgz', 'w:gz') as tar:
+      tar.add(os.path.join(dsymdir, 'bin'), arcname='bin',
+              filter=PrintTarProgress)
+    MaybeUpload(args, dsymdir, platform)
+
+  # Zip up the translation_unit tool.
+  translation_unit_dir = 'translation_unit-' + stamp
+  shutil.rmtree(translation_unit_dir, ignore_errors=True)
+  os.makedirs(os.path.join(translation_unit_dir, 'bin'))
+  shutil.copy(os.path.join(LLVM_RELEASE_DIR, 'bin', 'translation_unit' +
+                           exe_ext),
+              os.path.join(translation_unit_dir, 'bin'))
+  with tarfile.open(translation_unit_dir + '.tgz', 'w:gz') as tar:
+    tar.add(os.path.join(translation_unit_dir, 'bin'), arcname='bin',
+            filter=PrintTarProgress)
+  MaybeUpload(args, translation_unit_dir, platform)
+
+  if sys.platform == 'win32' and args.upload:
+    UploadPDBToSymbolServer()
 
   # FIXME: Warn if the file already exists on the server.
 

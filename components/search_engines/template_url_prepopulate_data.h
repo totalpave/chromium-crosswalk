@@ -11,8 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "base/memory/scoped_vector.h"
-#include "base/strings/string16.h"
 #include "components/search_engines/search_engine_type.h"
 
 class GURL;
@@ -36,19 +34,26 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 // file then it returns the version specified there.
 int GetDataVersion(PrefService* prefs);
 
-// Loads the set of TemplateURLs from the prepopulate data. On return,
-// |default_search_provider_index| is set to the index of the default search
-// provider.
-ScopedVector<TemplateURLData> GetPrepopulatedEngines(
+// Returns the prepopulated URLs for the current country.
+// If |default_search_provider_index| is non-null, it is set to the index of the
+// default search provider within the returned vector.
+std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
     PrefService* prefs,
     size_t* default_search_provider_index);
 
+// Returns the prepopulated search engine with the given |prepopulated_id|.
+std::unique_ptr<TemplateURLData> GetPrepopulatedEngine(PrefService* prefs,
+                                                       int prepopulated_id);
+
+#if defined(OS_ANDROID)
+// Returns the prepopulated URLs associated with |locale|.  |locale| should be a
+// two-character uppercase ISO 3166-1 country code.
+std::vector<std::unique_ptr<TemplateURLData>> GetLocalPrepopulatedEngines(
+    const std::string& locale);
+#endif
+
 // Returns all prepopulated engines for all locales. Used only by tests.
 std::vector<const PrepopulatedEngine*> GetAllPrepopulatedEngines();
-
-// Returns a TemplateURLData for the specified prepopulated engine.
-std::unique_ptr<TemplateURLData> MakeTemplateURLDataFromPrepopulatedEngine(
-    const PrepopulatedEngine& engine);
 
 // Removes prepopulated engines and their version stored in user prefs.
 void ClearPrepopulatedEnginesInPrefs(PrefService* prefs);
@@ -63,14 +68,6 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedDefaultSearch(
 // Like the above, but takes a GURL which is expected to represent a search URL.
 // This may be called on any thread.
 SearchEngineType GetEngineType(const GURL& url);
-
-// Returns the identifier for the user current country. Used to update the list
-// of search engines when user switches device region settings. For use on iOS
-// only.
-// TODO(ios): Once user can customize search engines ( http://crbug.com/153047 )
-// this declaration should be removed and the definition in the .cc file be
-// moved back to the anonymous namespace.
-int GetCurrentCountryID();
 
 }  // namespace TemplateURLPrepopulateData
 

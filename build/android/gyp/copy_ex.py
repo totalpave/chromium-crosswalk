@@ -6,6 +6,7 @@
 
 """Copies files to a directory."""
 
+import filecmp
 import itertools
 import optparse
 import os
@@ -30,12 +31,24 @@ def CopyFile(f, dest, deps):
     shutil.copytree(f, os.path.join(dest, os.path.basename(f)))
     deps.extend(_get_all_files(f))
   else:
-    shutil.copy(f, dest)
+    if os.path.isfile(os.path.join(dest, os.path.basename(f))):
+      dest = os.path.join(dest, os.path.basename(f))
+
     deps.append(f)
+
+    if os.path.isfile(dest):
+      if filecmp.cmp(dest, f, shallow=False):
+        return
+      # The shutil.copy() below would fail if the file does not have write
+      # permissions. Deleting the file has similar costs to modifying the
+      # permissions.
+      os.unlink(dest)
+
+    shutil.copy(f, dest)
 
 def DoCopy(options, deps):
   """Copy files or directories given in options.files and update deps."""
-  files = list(itertools.chain.from_iterable(build_utils.ParseGypList(f)
+  files = list(itertools.chain.from_iterable(build_utils.ParseGnList(f)
                                              for f in options.files))
 
   for f in files:
@@ -48,11 +61,11 @@ def DoCopy(options, deps):
 def DoRenaming(options, deps):
   """Copy and rename files given in options.renaming_sources and update deps."""
   src_files = list(itertools.chain.from_iterable(
-                   build_utils.ParseGypList(f)
+                   build_utils.ParseGnList(f)
                    for f in options.renaming_sources))
 
   dest_files = list(itertools.chain.from_iterable(
-                    build_utils.ParseGypList(f)
+                    build_utils.ParseGnList(f)
                     for f in options.renaming_destinations))
 
   if (len(src_files) != len(dest_files)):
@@ -105,8 +118,7 @@ def main(args):
 
   if options.depfile:
     build_utils.WriteDepfile(
-        options.depfile,
-        deps + build_utils.GetPythonDependencies())
+        options.depfile, options.stamp, deps, add_pydeps=False)
 
   if options.stamp:
     build_utils.Touch(options.stamp)
@@ -114,4 +126,3 @@ def main(args):
 
 if __name__ == '__main__':
   sys.exit(main(sys.argv[1:]))
-

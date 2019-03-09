@@ -10,9 +10,11 @@
 #include <utility>
 
 #include "base/format_macros.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/memory/read_only_shared_memory_region.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/persistent_memory_allocator.h"
+#include "base/stl_util.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,18 +23,18 @@ namespace base {
 
 namespace {
 
-const char kFeatureOnByDefaultName[] = "OnByDefault";
+constexpr char kFeatureOnByDefaultName[] = "OnByDefault";
 struct Feature kFeatureOnByDefault {
   kFeatureOnByDefaultName, FEATURE_ENABLED_BY_DEFAULT
 };
 
-const char kFeatureOffByDefaultName[] = "OffByDefault";
+constexpr char kFeatureOffByDefaultName[] = "OffByDefault";
 struct Feature kFeatureOffByDefault {
   kFeatureOffByDefaultName, FEATURE_DISABLED_BY_DEFAULT
 };
 
 std::string SortFeatureListString(const std::string& feature_list) {
-  std::vector<std::string> features =
+  std::vector<base::StringPiece> features =
       FeatureList::SplitFeatureListString(feature_list);
   std::sort(features.begin(), features.end());
   return JoinString(features, ",");
@@ -43,7 +45,7 @@ std::string SortFeatureListString(const std::string& feature_list) {
 class FeatureListTest : public testing::Test {
  public:
   FeatureListTest() : feature_list_(nullptr) {
-    RegisterFeatureListInstance(WrapUnique(new FeatureList));
+    RegisterFeatureListInstance(std::make_unique<FeatureList>());
   }
   ~FeatureListTest() override { ClearFeatureListInstance(); }
 
@@ -87,7 +89,7 @@ TEST_F(FeatureListTest, InitializeFromCommandLine) {
       {"OnByDefault", "OnByDefault,OffByDefault", false, false},
   };
 
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
+  for (size_t i = 0; i < base::size(test_cases); ++i) {
     const auto& test_case = test_cases[i];
     SCOPED_TRACE(base::StringPrintf("Test[%" PRIuS "]: [%s] [%s]", i,
                                     test_case.enable_features,
@@ -143,7 +145,7 @@ TEST_F(FeatureListTest, FieldTrialOverrides) {
   };
 
   FieldTrial::ActiveGroup active_group;
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
+  for (size_t i = 0; i < base::size(test_cases); ++i) {
     const auto& test_case = test_cases[i];
     SCOPED_TRACE(base::StringPrintf("Test[%" PRIuS "]", i));
 
@@ -209,7 +211,7 @@ TEST_F(FeatureListTest, FieldTrialAssociateUseDefault) {
   EXPECT_TRUE(FieldTrialList::IsTrialActive(trial2->trial_name()));
 }
 
-TEST_F(FeatureListTest, CommandLineTakesPrecedenceOverFieldTrial) {
+TEST_F(FeatureListTest, CommandLineEnableTakesPrecedenceOverFieldTrial) {
   ClearFeatureListInstance();
 
   FieldTrialList field_trial_list(nullptr);
@@ -227,6 +229,30 @@ TEST_F(FeatureListTest, CommandLineTakesPrecedenceOverFieldTrial) {
   EXPECT_FALSE(FieldTrialList::IsTrialActive(trial->trial_name()));
   // Command-line should take precedence.
   EXPECT_TRUE(FeatureList::IsEnabled(kFeatureOffByDefault));
+  // Since the feature is on due to the command-line, and not as a result of the
+  // field trial, the field trial should not be activated (since the Associate*
+  // API wasn't used.)
+  EXPECT_FALSE(FieldTrialList::IsTrialActive(trial->trial_name()));
+}
+
+TEST_F(FeatureListTest, CommandLineDisableTakesPrecedenceOverFieldTrial) {
+  ClearFeatureListInstance();
+
+  FieldTrialList field_trial_list(nullptr);
+  std::unique_ptr<FeatureList> feature_list(new FeatureList);
+
+  // The feature is explicitly disabled on the command-line.
+  feature_list->InitializeFromCommandLine("", kFeatureOffByDefaultName);
+
+  // But the FieldTrial would set the feature to enabled.
+  FieldTrial* trial = FieldTrialList::CreateFieldTrial("TrialExample2", "A");
+  feature_list->RegisterFieldTrialOverride(
+      kFeatureOffByDefaultName, FeatureList::OVERRIDE_ENABLE_FEATURE, trial);
+  RegisterFeatureListInstance(std::move(feature_list));
+
+  EXPECT_FALSE(FieldTrialList::IsTrialActive(trial->trial_name()));
+  // Command-line should take precedence.
+  EXPECT_FALSE(FeatureList::IsEnabled(kFeatureOffByDefault));
   // Since the feature is on due to the command-line, and not as a result of the
   // field trial, the field trial should not be activated (since the Associate*
   // API wasn't used.)
@@ -303,7 +329,7 @@ TEST_F(FeatureListTest, AssociateReportingFieldTrial) {
   const char kForcedOnGroupName[] = "ForcedOn";
   const char kForcedOffGroupName[] = "ForcedOff";
 
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
+  for (size_t i = 0; i < base::size(test_cases); ++i) {
     const auto& test_case = test_cases[i];
     SCOPED_TRACE(base::StringPrintf("Test[%" PRIuS "]: [%s] [%s]", i,
                                     test_case.enable_features,
@@ -370,6 +396,11 @@ TEST_F(FeatureListTest, GetFeatureOverrides) {
   FeatureList::GetInstance()->GetFeatureOverrides(&enable_features,
                                                   &disable_features);
   EXPECT_EQ("A,OffByDefault<Trial,X", SortFeatureListString(enable_features));
+  EXPECT_EQ("D", SortFeatureListString(disable_features));
+
+  FeatureList::GetInstance()->GetCommandLineFeatureOverrides(&enable_features,
+                                                             &disable_features);
+  EXPECT_EQ("A,X", SortFeatureListString(enable_features));
   EXPECT_EQ("D", SortFeatureListString(disable_features));
 }
 
@@ -466,6 +497,72 @@ TEST_F(FeatureListTest, UninitializedInstance_IsEnabledReturnsFalse) {
   EXPECT_TRUE(FeatureList::IsEnabled(kFeatureOnByDefault));
   EXPECT_EQ(nullptr, FeatureList::GetInstance());
   EXPECT_FALSE(FeatureList::IsEnabled(kFeatureOffByDefault));
+}
+
+TEST_F(FeatureListTest, StoreAndRetrieveFeaturesFromSharedMemory) {
+  std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
+
+  // Create some overrides.
+  feature_list->RegisterOverride(kFeatureOffByDefaultName,
+                                 FeatureList::OVERRIDE_ENABLE_FEATURE, nullptr);
+  feature_list->RegisterOverride(
+      kFeatureOnByDefaultName, FeatureList::OVERRIDE_DISABLE_FEATURE, nullptr);
+  feature_list->FinalizeInitialization();
+
+  // Create an allocator and store the overrides.
+  base::MappedReadOnlyRegion shm =
+      base::ReadOnlySharedMemoryRegion::Create(4 << 10);
+  WritableSharedPersistentMemoryAllocator allocator(std::move(shm.mapping), 1,
+                                                    "");
+  feature_list->AddFeaturesToAllocator(&allocator);
+
+  std::unique_ptr<base::FeatureList> feature_list2(new base::FeatureList);
+
+  // Check that the new feature list is empty.
+  EXPECT_FALSE(feature_list2->IsFeatureOverriddenFromCommandLine(
+      kFeatureOffByDefaultName, FeatureList::OVERRIDE_ENABLE_FEATURE));
+  EXPECT_FALSE(feature_list2->IsFeatureOverriddenFromCommandLine(
+      kFeatureOnByDefaultName, FeatureList::OVERRIDE_DISABLE_FEATURE));
+
+  feature_list2->InitializeFromSharedMemory(&allocator);
+  // Check that the new feature list now has 2 overrides.
+  EXPECT_TRUE(feature_list2->IsFeatureOverriddenFromCommandLine(
+      kFeatureOffByDefaultName, FeatureList::OVERRIDE_ENABLE_FEATURE));
+  EXPECT_TRUE(feature_list2->IsFeatureOverriddenFromCommandLine(
+      kFeatureOnByDefaultName, FeatureList::OVERRIDE_DISABLE_FEATURE));
+}
+
+TEST_F(FeatureListTest, StoreAndRetrieveAssociatedFeaturesFromSharedMemory) {
+  FieldTrialList field_trial_list(nullptr);
+  std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
+
+  // Create some overrides.
+  FieldTrial* trial1 = FieldTrialList::CreateFieldTrial("TrialExample1", "A");
+  FieldTrial* trial2 = FieldTrialList::CreateFieldTrial("TrialExample2", "B");
+  feature_list->RegisterFieldTrialOverride(
+      kFeatureOnByDefaultName, FeatureList::OVERRIDE_USE_DEFAULT, trial1);
+  feature_list->RegisterFieldTrialOverride(
+      kFeatureOffByDefaultName, FeatureList::OVERRIDE_USE_DEFAULT, trial2);
+  feature_list->FinalizeInitialization();
+
+  // Create an allocator and store the overrides.
+  base::MappedReadOnlyRegion shm =
+      base::ReadOnlySharedMemoryRegion::Create(4 << 10);
+  WritableSharedPersistentMemoryAllocator allocator(std::move(shm.mapping), 1,
+                                                    "");
+  feature_list->AddFeaturesToAllocator(&allocator);
+
+  std::unique_ptr<base::FeatureList> feature_list2(new base::FeatureList);
+  feature_list2->InitializeFromSharedMemory(&allocator);
+  feature_list2->FinalizeInitialization();
+
+  // Check that the field trials are still associated.
+  FieldTrial* associated_trial1 =
+      feature_list2->GetAssociatedFieldTrial(kFeatureOnByDefault);
+  FieldTrial* associated_trial2 =
+      feature_list2->GetAssociatedFieldTrial(kFeatureOffByDefault);
+  EXPECT_EQ(associated_trial1, trial1);
+  EXPECT_EQ(associated_trial2, trial2);
 }
 
 }  // namespace base

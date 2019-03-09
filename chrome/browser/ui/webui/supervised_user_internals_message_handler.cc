@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/supervised_user_internals_message_handler.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -14,18 +15,20 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/account_tracker_service_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/supervised_user/child_accounts/child_account_service.h"
 #include "chrome/browser/supervised_user/supervised_user_service.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_settings_service.h"
 #include "chrome/browser/supervised_user/supervised_user_settings_service_factory.h"
+#include "chrome/browser/supervised_user/supervised_user_url_filter.h"
 #include "chrome/common/channel_info.h"
-#include "components/signin/core/browser/account_tracker_service.h"
 #include "components/supervised_user_error_page/supervised_user_error_page.h"
 #include "components/url_formatter/url_fixer.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_ui.h"
+#include "services/identity/public/cpp/identity_manager.h"
 
 using content::BrowserThread;
 
@@ -41,8 +44,8 @@ base::ListValue* AddSection(base::ListValue* parent_list,
   std::unique_ptr<base::ListValue> section_contents(new base::ListValue);
   section->SetString("title", title);
   // Grab a raw pointer to the result before |Pass()|ing it on.
-  base::ListValue* result = section_contents.get();
-  section->Set("data", std::move(section_contents));
+  base::ListValue* result =
+      section->SetList("data", std::move(section_contents));
   parent_list->Append(std::move(section));
   return result;
 }
@@ -105,67 +108,17 @@ std::string FilteringBehaviorReasonToString(
       return "Manual";
     case supervised_user_error_page::WHITELIST:
       return "Whitelist";
+    case supervised_user_error_page::NOT_SIGNED_IN:
+      // Should never happen, only used for requests from WebView
+      NOTREACHED();
   }
   return "Unknown/invalid";
 }
 
 }  // namespace
 
-// Helper class that lives on the IO thread, listens to the
-// SupervisedUserURLFilter there, and posts results back to the UI thread.
-class SupervisedUserInternalsMessageHandler::IOThreadHelper
-    : public base::RefCountedThreadSafe<IOThreadHelper,
-                                        BrowserThread::DeleteOnIOThread>,
-      public SupervisedUserURLFilter::Observer {
- public:
-  using OnURLCheckedCallback =
-      base::Callback<void(const GURL&,
-                          SupervisedUserURLFilter::FilteringBehavior,
-                          supervised_user_error_page::FilteringBehaviorReason,
-                          bool uncertain)>;
-
-  IOThreadHelper(scoped_refptr<const SupervisedUserURLFilter> filter,
-                 const OnURLCheckedCallback& callback)
-      : filter_(filter), callback_(callback) {
-    BrowserThread::PostTask(BrowserThread::IO,
-                            FROM_HERE,
-                            base::Bind(&IOThreadHelper::InitOnIOThread, this));
-  }
-
- private:
-  friend class base::DeleteHelper<IOThreadHelper>;
-  friend struct BrowserThread::DeleteOnThread<BrowserThread::IO>;
-  virtual ~IOThreadHelper() {
-    DCHECK_CURRENTLY_ON(BrowserThread::IO);
-    filter_->RemoveObserver(this);
-  }
-
-  // SupervisedUserURLFilter::Observer:
-  void OnSiteListUpdated() override {}
-  void OnURLChecked(const GURL& url,
-                    SupervisedUserURLFilter::FilteringBehavior behavior,
-                    supervised_user_error_page::FilteringBehaviorReason reason,
-                    bool uncertain) override {
-    BrowserThread::PostTask(BrowserThread::UI,
-                            FROM_HERE,
-                            base::Bind(callback_,
-                                       url, behavior, reason, uncertain));
-  }
-
-  void InitOnIOThread() {
-    DCHECK_CURRENTLY_ON(BrowserThread::IO);
-    filter_->AddObserver(this);
-  }
-
-  scoped_refptr<const SupervisedUserURLFilter> filter_;
-  OnURLCheckedCallback callback_;
-
-  DISALLOW_COPY_AND_ASSIGN(IOThreadHelper);
-};
-
 SupervisedUserInternalsMessageHandler::SupervisedUserInternalsMessageHandler()
-    : weak_factory_(this) {
-}
+    : scoped_observer_(this), weak_factory_(this) {}
 
 SupervisedUserInternalsMessageHandler::
     ~SupervisedUserInternalsMessageHandler() {
@@ -174,18 +127,22 @@ SupervisedUserInternalsMessageHandler::
 void SupervisedUserInternalsMessageHandler::RegisterMessages() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  web_ui()->RegisterMessageCallback("registerForEvents",
-      base::Bind(&SupervisedUserInternalsMessageHandler::
-                     HandleRegisterForEvents,
-                 base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "registerForEvents",
+      base::BindRepeating(
+          &SupervisedUserInternalsMessageHandler::HandleRegisterForEvents,
+          base::Unretained(this)));
 
-  web_ui()->RegisterMessageCallback("getBasicInfo",
-      base::Bind(&SupervisedUserInternalsMessageHandler::HandleGetBasicInfo,
-                 base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "getBasicInfo",
+      base::BindRepeating(
+          &SupervisedUserInternalsMessageHandler::HandleGetBasicInfo,
+          base::Unretained(this)));
 
-  web_ui()->RegisterMessageCallback("tryURL",
-      base::Bind(&SupervisedUserInternalsMessageHandler::HandleTryURL,
-                 base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "tryURL",
+      base::BindRepeating(&SupervisedUserInternalsMessageHandler::HandleTryURL,
+                          base::Unretained(this)));
 }
 
 void SupervisedUserInternalsMessageHandler::OnURLFilterChanged() {
@@ -202,13 +159,10 @@ SupervisedUserInternalsMessageHandler::GetSupervisedUserService() {
 void SupervisedUserInternalsMessageHandler::HandleRegisterForEvents(
     const base::ListValue* args) {
   DCHECK(args->empty());
+  if (scoped_observer_.IsObservingSources())
+    return;
 
-  if (!io_thread_helper_.get()) {
-    io_thread_helper_ = new IOThreadHelper(
-        GetSupervisedUserService()->GetURLFilterForIOThread(),
-        base::Bind(&SupervisedUserInternalsMessageHandler::OnURLChecked,
-                   weak_factory_.GetWeakPtr()));
-  }
+  scoped_observer_.Add(GetSupervisedUserService()->GetURLFilter());
 }
 
 void SupervisedUserInternalsMessageHandler::HandleGetBasicInfo(
@@ -227,8 +181,7 @@ void SupervisedUserInternalsMessageHandler::HandleTryURL(
   if (!url.is_valid())
     return;
 
-  SupervisedUserURLFilter* filter =
-      GetSupervisedUserService()->GetURLFilterForUIThread();
+  SupervisedUserURLFilter* filter = GetSupervisedUserService()->GetURLFilter();
   std::map<std::string, base::string16> whitelists =
       filter->GetMatchingWhitelistTitles(url);
   filter->GetFilteringBehaviorForURLWithAsyncChecks(
@@ -253,8 +206,7 @@ void SupervisedUserInternalsMessageHandler::SendBasicInfo() {
                   profile->IsLegacySupervised());
   AddSectionEntry(section_profile, "Child", profile->IsChild());
 
-  SupervisedUserURLFilter* filter =
-      GetSupervisedUserService()->GetURLFilterForUIThread();
+  SupervisedUserURLFilter* filter = GetSupervisedUserService()->GetURLFilter();
 
   base::ListValue* section_filter = AddSection(section_list.get(), "Filter");
   AddSectionEntry(section_filter, "Blacklist active", filter->HasBlacklist());
@@ -264,11 +216,12 @@ void SupervisedUserInternalsMessageHandler::SendBasicInfo() {
                   FilteringBehaviorToString(
                       filter->GetDefaultFilteringBehavior()));
 
-  AccountTrackerService* account_tracker =
-      AccountTrackerServiceFactory::GetForProfile(profile);
-  // |account_tracker| is null in incognito and guest profiles.
-  if (account_tracker) {
-    for (const auto& account: account_tracker->GetAccounts()) {
+  identity::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
+  // |identity_manager| is null in incognito and guest profiles.
+  if (identity_manager) {
+    for (const auto& account :
+         identity_manager->GetAccountsWithRefreshTokens()) {
       base::ListValue* section_user = AddSection(section_list.get(),
           "User Information for " + account.full_name);
       AddSectionEntry(section_user, "Account id", account.account_id);
@@ -299,7 +252,7 @@ void SupervisedUserInternalsMessageHandler::SendSupervisedUserSettings(
     const base::DictionaryValue* settings) {
   web_ui()->CallJavascriptFunctionUnsafe(
       "chrome.supervised_user_internals.receiveUserSettings",
-      *(settings ? settings : base::Value::CreateNullValue().get()));
+      *(settings ? settings : std::make_unique<base::Value>().get()));
 }
 
 void SupervisedUserInternalsMessageHandler::OnTryURLResult(
@@ -323,6 +276,8 @@ void SupervisedUserInternalsMessageHandler::OnTryURLResult(
   web_ui()->CallJavascriptFunctionUnsafe(
       "chrome.supervised_user_internals.receiveTryURLResult", result);
 }
+
+void SupervisedUserInternalsMessageHandler::OnSiteListUpdated() {}
 
 void SupervisedUserInternalsMessageHandler::OnURLChecked(
     const GURL& url,

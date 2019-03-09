@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/files/file_util.h"
 #include "components/drive/chromeos/file_system/operation_delegate.h"
 #include "components/drive/chromeos/resource_metadata.h"
@@ -50,9 +51,10 @@ FileError UpdateLocalState(internal::ResourceMetadata* metadata,
     mime_type = kMimeTypeOctetStream;
 
   // Add the entry to the local resource metadata.
-  const base::Time now = base::Time::Now();
-  entry->mutable_file_info()->set_last_modified(now.ToInternalValue());
-  entry->mutable_file_info()->set_last_accessed(now.ToInternalValue());
+  const int64_t now = base::Time::Now().ToInternalValue();
+  entry->mutable_file_info()->set_last_modified(now);
+  entry->set_last_modified_by_me(now);
+  entry->mutable_file_info()->set_last_accessed(now);
   entry->set_title(file_path.BaseName().AsUTF8Unsafe());
   entry->set_parent_local_id(parent.local_id());
   entry->set_metadata_edit_state(ResourceEntry::DIRTY);
@@ -78,15 +80,15 @@ CreateFileOperation::CreateFileOperation(
 }
 
 CreateFileOperation::~CreateFileOperation() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 }
 
 void CreateFileOperation::CreateFile(const base::FilePath& file_path,
                                      bool is_exclusive,
                                      const std::string& mime_type,
                                      const FileOperationCallback& callback) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!callback.is_null());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  DCHECK(callback);
 
   ResourceEntry* entry = new ResourceEntry;
   base::PostTaskAndReplyWithResult(
@@ -111,8 +113,8 @@ void CreateFileOperation::CreateFileAfterUpdateLocalState(
     bool is_exclusive,
     ResourceEntry* entry,
     FileError error) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!callback.is_null());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  DCHECK(callback);
 
   if (error == FILE_ERROR_EXISTS) {
     // Error if an exclusive mode is requested, or the entry is not a file.

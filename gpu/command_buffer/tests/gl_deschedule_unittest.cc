@@ -33,7 +33,7 @@ TEST_F(GLDescheduleTest, Deschedule) {
   glGenTextures(1, &tex);
   glBindTexture(GL_TEXTURE_2D, tex);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-               NULL);
+               nullptr);
 
   GLuint fbo = 0;
   glGenFramebuffers(1, &fbo);
@@ -55,10 +55,6 @@ TEST_F(GLDescheduleTest, Deschedule) {
   glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
                &result);
   EXPECT_EQ(0xFF00FF00u, result);
-
-  // GLManager doesn't implement the callbacks necessary to support
-  // glDescheduleUntilFinishedCHROMIUM, so there should be an error generated.
-  EXPECT_EQ(static_cast<GLenum>(GL_INVALID_OPERATION), glGetError());
 }
 
 }  // namespace gpu

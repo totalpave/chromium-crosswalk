@@ -38,15 +38,6 @@ void RuntimeData::SetBeingUpgraded(const std::string& extension_id,
   SetFlag(extension_id, BEING_UPGRADED, value);
 }
 
-bool RuntimeData::HasUsedWebRequest(const std::string& extension_id) const {
-  return HasFlag(extension_id, HAS_USED_WEBREQUEST);
-}
-
-void RuntimeData::SetHasUsedWebRequest(const std::string& extension_id,
-                                       bool value) {
-  SetFlag(extension_id, HAS_USED_WEBREQUEST, value);
-}
-
 bool RuntimeData::HasExtensionForTesting(
     const std::string& extension_id) const {
   return extension_flags_.find(extension_id) != extension_flags_.end();
@@ -58,15 +49,15 @@ void RuntimeData::ClearAll() {
 
 void RuntimeData::OnExtensionUnloaded(content::BrowserContext* browser_context,
                                       const Extension* extension,
-                                      UnloadedExtensionInfo::Reason reason) {
-  ExtensionFlagsMap::iterator iter = extension_flags_.find(extension->id());
+                                      UnloadedExtensionReason reason) {
+  auto iter = extension_flags_.find(extension->id());
   if (iter != extension_flags_.end())
     iter->second = iter->second & kPersistAcrossUnloadMask;
 }
 
 bool RuntimeData::HasFlag(const std::string& extension_id,
                           RuntimeFlag flag) const {
-  ExtensionFlagsMap::const_iterator it = extension_flags_.find(extension_id);
+  auto it = extension_flags_.find(extension_id);
   if (it == extension_flags_.end())
     return false;
   return !!(it->second & flag);

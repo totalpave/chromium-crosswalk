@@ -16,11 +16,12 @@
 // and a Java land ChromeHttpAuthHandler, which is passed to a
 // ContentViewClient to allow it to respond to HTTP authentication requests
 // by, e.g., showing the user a login dialog.
-class ChromeHttpAuthHandler {
+class ChromeHttpAuthHandler : public password_manager::LoginModelObserver {
  public:
   ChromeHttpAuthHandler(const base::string16& authority,
-                        const base::string16& explanation);
-  ~ChromeHttpAuthHandler();
+                        const base::string16& explanation,
+                        LoginHandler::LoginModelData* login_model_data);
+  ~ChromeHttpAuthHandler() override;
 
   // This must be called before using the object.
   // Constructs a corresponding Java land ChromeHttpAuthHandler.
@@ -31,12 +32,15 @@ class ChromeHttpAuthHandler {
   void SetObserver(LoginHandler* observer);
 
   // Show the dialog prompting for login credentials.
-  void ShowDialog(jobject window_android);
+  void ShowDialog(const base::android::JavaRef<jobject>& window_android);
 
-  // Forwards the autofill data to the Java land object.
-  void OnAutofillDataAvailable(
-      const base::string16& username,
-      const base::string16& password);
+  // Close the dialog if showing.
+  void CloseDialog();
+
+  // password_manager::LoginModelObserver:
+  void OnAutofillDataAvailableInternal(const base::string16& username,
+                                       const base::string16& password) override;
+  void OnLoginModelDestroying() override;
 
   // --------------------------------------------------------------
   // JNI Methods
@@ -55,13 +59,15 @@ class ChromeHttpAuthHandler {
   base::android::ScopedJavaLocalRef<jstring> GetMessageBody(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>&);
-  // Registers the ChromeHttpAuthHandler native methods.
-  static bool RegisterChromeHttpAuthHandler(JNIEnv* env);
  private:
   LoginHandler* observer_;
   base::android::ScopedJavaGlobalRef<jobject> java_chrome_http_auth_handler_;
   base::string16 authority_;
   base::string16 explanation_;
+
+  // If not null, points to a model we need to notify of our own destruction
+  // so it doesn't try and access this when its too late.
+  password_manager::LoginModel* login_model_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeHttpAuthHandler);
 };

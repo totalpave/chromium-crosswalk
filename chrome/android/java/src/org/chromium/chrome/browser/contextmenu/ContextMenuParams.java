@@ -8,25 +8,16 @@ import android.text.TextUtils;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.blink_public.web.WebContextMenuMediaType;
+import org.chromium.chrome.browser.UrlConstants;
 import org.chromium.content_public.common.Referrer;
-
+import org.chromium.ui.base.MenuSourceType;
 /**
  * A list of parameters that explain what kind of context menu to show the user.  This data is
  * generated from content/public/common/context_menu_params.h.
  */
 @JNINamespace("ContextMenuParamsAndroid")
 public class ContextMenuParams {
-    /** Must correspond to the MediaType enum in WebKit/chromium/public/WebContextMenuData.h */
-    @SuppressWarnings("unused")
-    private static interface MediaType {
-        public static final int MEDIA_TYPE_NONE = 0;
-        public static final int MEDIA_TYPE_IMAGE = 1;
-        public static final int MEDIA_TYPE_VIDEO = 2;
-        public static final int MEDIA_TYPE_AUDIO = 3;
-        public static final int MEDIA_TYPE_FILE = 4;
-        public static final int MEDIA_TYPE_PLUGIN = 5;
-    }
-
     private final String mPageUrl;
     private final String mLinkUrl;
     private final String mLinkText;
@@ -39,6 +30,12 @@ public class ContextMenuParams {
     private final boolean mIsAnchor;
     private final boolean mIsImage;
     private final boolean mIsVideo;
+    private final boolean mCanSaveMedia;
+
+    private final int mTriggeringTouchXDp;
+    private final int mTriggeringTouchYDp;
+
+    private final int mSourceType;
 
     /**
      * @return The URL associated with the main frame of the page that triggered the context menu.
@@ -117,9 +114,59 @@ public class ContextMenuParams {
         return mIsVideo;
     }
 
-    private ContextMenuParams(int mediaType, String pageUrl, String linkUrl, String linkText,
-            String unfilteredLinkUrl, String srcUrl, String titleText, boolean imageWasFetchedLoFi,
-            Referrer referrer) {
+    public boolean canSaveMedia() {
+        return mCanSaveMedia;
+    }
+
+    /**
+     * @return Whether or not the context menu is been shown for a download item.
+     */
+    public boolean isFile() {
+        if (!TextUtils.isEmpty(mSrcUrl) && mSrcUrl.startsWith(UrlConstants.FILE_URL_PREFIX)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * @return The x-coordinate of the touch that triggered the context menu in dp relative to the
+     *         render view; 0 corresponds to the left edge.
+     */
+    public int getTriggeringTouchXDp() {
+        return mTriggeringTouchXDp;
+    }
+
+    /**
+     * @return The y-coordinate of the touch that triggered the context menu in dp relative to the
+     *         render view; 0 corresponds to the left edge.
+     */
+    public int getTriggeringTouchYDp() {
+        return mTriggeringTouchYDp;
+    }
+
+    /**
+     * @return The method used to cause the context menu to be shown. For example, right mouse click
+     *         or long press.
+     */
+    public int getSourceType() {
+        return mSourceType;
+    }
+
+    /**
+     * @return The valid url of a ContextMenuParams.
+     */
+    public String getUrl() {
+        if (isAnchor() && !TextUtils.isEmpty(getLinkUrl())) {
+            return getLinkUrl();
+        } else {
+            return getSrcUrl();
+        }
+    }
+
+    public ContextMenuParams(@WebContextMenuMediaType int mediaType, String pageUrl, String linkUrl,
+            String linkText, String unfilteredLinkUrl, String srcUrl, String titleText,
+            boolean imageWasFetchedLoFi, Referrer referrer, boolean canSaveMedia,
+            int triggeringTouchXDp, int triggeringTouchYDp, @MenuSourceType int sourceType) {
         mPageUrl = pageUrl;
         mLinkUrl = linkUrl;
         mLinkText = linkText;
@@ -130,17 +177,24 @@ public class ContextMenuParams {
         mReferrer = referrer;
 
         mIsAnchor = !TextUtils.isEmpty(linkUrl);
-        mIsImage = mediaType == MediaType.MEDIA_TYPE_IMAGE;
-        mIsVideo = mediaType == MediaType.MEDIA_TYPE_VIDEO;
+        mIsImage = mediaType == WebContextMenuMediaType.IMAGE;
+        mIsVideo = mediaType == WebContextMenuMediaType.VIDEO;
+        mCanSaveMedia = canSaveMedia;
+        mTriggeringTouchXDp = triggeringTouchXDp;
+        mTriggeringTouchYDp = triggeringTouchYDp;
+        mSourceType = sourceType;
     }
 
     @CalledByNative
-    private static ContextMenuParams create(int mediaType, String pageUrl, String linkUrl,
-            String linkText, String unfilteredLinkUrl, String srcUrl, String titleText,
-            boolean imageWasFetchedLoFi, String sanitizedReferrer, int referrerPolicy) {
+    private static ContextMenuParams create(@WebContextMenuMediaType int mediaType, String pageUrl,
+            String linkUrl, String linkText, String unfilteredLinkUrl, String srcUrl,
+            String titleText, boolean imageWasFetchedLoFi, String sanitizedReferrer,
+            int referrerPolicy, boolean canSaveMedia, int triggeringTouchXDp,
+            int triggeringTouchYDp, @MenuSourceType int sourceType) {
         Referrer referrer = TextUtils.isEmpty(sanitizedReferrer)
                 ? null : new Referrer(sanitizedReferrer, referrerPolicy);
         return new ContextMenuParams(mediaType, pageUrl, linkUrl, linkText, unfilteredLinkUrl,
-                srcUrl, titleText, imageWasFetchedLoFi, referrer);
+                srcUrl, titleText, imageWasFetchedLoFi, referrer, canSaveMedia, triggeringTouchXDp,
+                triggeringTouchYDp, sourceType);
     }
 }

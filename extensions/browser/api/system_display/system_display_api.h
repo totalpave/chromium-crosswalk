@@ -7,111 +7,191 @@
 
 #include <string>
 
+#include "extensions/browser/api/system_display/display_info_provider.h"
 #include "extensions/browser/extension_function.h"
 
 namespace extensions {
 
-class SystemDisplayFunction : public SyncExtensionFunction {
+class SystemDisplayCrOSRestrictedFunction : public UIThreadExtensionFunction {
  public:
   static const char kCrosOnlyError[];
   static const char kKioskOnlyError[];
 
  protected:
-  ~SystemDisplayFunction() override {}
-  bool CheckValidExtension();
+  ~SystemDisplayCrOSRestrictedFunction() override {}
+  bool PreRunValidation(std::string* error) override;
+
+  // Returns true if this function should be restricted to kiosk-mode apps and
+  // webui. The default is true.
+  virtual bool ShouldRestrictToKioskAndWebUI();
 };
 
-class SystemDisplayGetInfoFunction : public SystemDisplayFunction {
+// This function inherits from UIThreadExtensionFunction because, unlike the
+// rest of this API, it's available on all platforms.
+class SystemDisplayGetInfoFunction : public UIThreadExtensionFunction {
  public:
-  DECLARE_EXTENSION_FUNCTION("system.display.getInfo", SYSTEM_DISPLAY_GETINFO);
+  DECLARE_EXTENSION_FUNCTION("system.display.getInfo", SYSTEM_DISPLAY_GETINFO)
 
  protected:
   ~SystemDisplayGetInfoFunction() override {}
-  bool RunSync() override;
+
+  ResponseAction Run() override;
+
+  void Response(DisplayInfoProvider::DisplayUnitInfoList all_displays_info);
 };
 
-class SystemDisplayGetDisplayLayoutFunction : public SystemDisplayFunction {
+class SystemDisplayGetDisplayLayoutFunction
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.getDisplayLayout",
-                             SYSTEM_DISPLAY_GETDISPLAYLAYOUT);
+                             SYSTEM_DISPLAY_GETDISPLAYLAYOUT)
 
  protected:
   ~SystemDisplayGetDisplayLayoutFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
+  bool ShouldRestrictToKioskAndWebUI() override;
+
+  void Response(DisplayInfoProvider::DisplayLayoutList display_layout);
 };
 
-class SystemDisplaySetDisplayPropertiesFunction : public SystemDisplayFunction {
+class SystemDisplaySetDisplayPropertiesFunction
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.setDisplayProperties",
-                             SYSTEM_DISPLAY_SETDISPLAYPROPERTIES);
+                             SYSTEM_DISPLAY_SETDISPLAYPROPERTIES)
 
  protected:
   ~SystemDisplaySetDisplayPropertiesFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
+
+  void Response(base::Optional<std::string> error);
 };
 
-class SystemDisplaySetDisplayLayoutFunction : public SystemDisplayFunction {
+class SystemDisplaySetDisplayLayoutFunction
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.setDisplayLayout",
-                             SYSTEM_DISPLAY_SETDISPLAYLAYOUT);
+                             SYSTEM_DISPLAY_SETDISPLAYLAYOUT)
 
  protected:
   ~SystemDisplaySetDisplayLayoutFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
+
+  void Response(base::Optional<std::string> error);
 };
 
-class SystemDisplayEnableUnifiedDesktopFunction : public SystemDisplayFunction {
+class SystemDisplayEnableUnifiedDesktopFunction
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.enableUnifiedDesktop",
-                             SYSTEM_DISPLAY_ENABLEUNIFIEDDESKTOP);
+                             SYSTEM_DISPLAY_ENABLEUNIFIEDDESKTOP)
 
  protected:
   ~SystemDisplayEnableUnifiedDesktopFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class SystemDisplayOverscanCalibrationStartFunction
-    : public SystemDisplayFunction {
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.overscanCalibrationStart",
-                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONSTART);
+                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONSTART)
 
  protected:
   ~SystemDisplayOverscanCalibrationStartFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class SystemDisplayOverscanCalibrationAdjustFunction
-    : public SystemDisplayFunction {
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.overscanCalibrationAdjust",
-                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONADJUST);
+                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONADJUST)
 
  protected:
   ~SystemDisplayOverscanCalibrationAdjustFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class SystemDisplayOverscanCalibrationResetFunction
-    : public SystemDisplayFunction {
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.overscanCalibrationReset",
-                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONRESET);
+                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONRESET)
 
  protected:
   ~SystemDisplayOverscanCalibrationResetFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class SystemDisplayOverscanCalibrationCompleteFunction
-    : public SystemDisplayFunction {
+    : public SystemDisplayCrOSRestrictedFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("system.display.overscanCalibrationComplete",
-                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONCOMPLETE);
+                             SYSTEM_DISPLAY_OVERSCANCALIBRATIONCOMPLETE)
 
  protected:
   ~SystemDisplayOverscanCalibrationCompleteFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
+};
+
+class SystemDisplayShowNativeTouchCalibrationFunction
+    : public SystemDisplayCrOSRestrictedFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("system.display.showNativeTouchCalibration",
+                             SYSTEM_DISPLAY_SHOWNATIVETOUCHCALIBRATION)
+
+ protected:
+  ~SystemDisplayShowNativeTouchCalibrationFunction() override {}
+  ResponseAction Run() override;
+
+  void OnCalibrationComplete(base::Optional<std::string> error);
+};
+
+class SystemDisplayStartCustomTouchCalibrationFunction
+    : public SystemDisplayCrOSRestrictedFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("system.display.startCustomTouchCalibration",
+                             SYSTEM_DISPLAY_STARTCUSTOMTOUCHCALIBRATION)
+
+ protected:
+  ~SystemDisplayStartCustomTouchCalibrationFunction() override {}
+  ResponseAction Run() override;
+};
+
+class SystemDisplayCompleteCustomTouchCalibrationFunction
+    : public SystemDisplayCrOSRestrictedFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("system.display.completeCustomTouchCalibration",
+                             SYSTEM_DISPLAY_COMPLETECUSTOMTOUCHCALIBRATION)
+
+ protected:
+  ~SystemDisplayCompleteCustomTouchCalibrationFunction() override {}
+  ResponseAction Run() override;
+};
+
+class SystemDisplayClearTouchCalibrationFunction
+    : public SystemDisplayCrOSRestrictedFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("system.display.clearTouchCalibration",
+                             SYSTEM_DISPLAY_CLEARTOUCHCALIBRATION)
+
+ protected:
+  ~SystemDisplayClearTouchCalibrationFunction() override {}
+  ResponseAction Run() override;
+};
+
+class SystemDisplaySetMirrorModeFunction
+    : public SystemDisplayCrOSRestrictedFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("system.display.setMirrorMode",
+                             SYSTEM_DISPLAY_SETMIRRORMODE)
+
+ protected:
+  ~SystemDisplaySetMirrorModeFunction() override {}
+  ResponseAction Run() override;
+
+  void Response(base::Optional<std::string> error);
 };
 
 }  // namespace extensions

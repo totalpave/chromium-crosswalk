@@ -1,5 +1,4 @@
 {
-   "actionButtonHidden": false,
    "dependentExtensions": [  ],
    "description": "",
    "disableReasons": {
@@ -12,8 +11,8 @@
       "isEnabled": false
    },
    "fileAccess": {
-      "isActive": false,
-      "isEnabled": false
+      "isActive": true,
+      "isEnabled": true
    },
    "homePage": {
       "specified": false,
@@ -25,16 +24,11 @@
       "isEnabled": true
    },
    "installWarnings": [  ],
-   "location": "UNKNOWN",
-   "locationText": "Not from Chrome Web Store.",
+   "location": "UNPACKED",
    "manifestErrors": [  ],
    "mustRemainInstalled": false,
    "name": "My extension 2",
    "offlineEnabled": false,
-   "runOnAllUrls": {
-      "isActive": true,
-      "isEnabled": false
-   },
    "runtimeErrors": [  ],
    "runtimeWarnings": [  ],
    "state": "ENABLED",

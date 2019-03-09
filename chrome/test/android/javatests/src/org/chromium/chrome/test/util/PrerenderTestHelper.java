@@ -4,15 +4,18 @@
 
 package org.chromium.chrome.test.util;
 
-import junit.framework.Assert;
+import android.graphics.Rect;
+
+import org.junit.Assert;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.chrome.browser.TabLoadStatus;
 import org.chromium.chrome.browser.prerender.ExternalPrerenderHandler;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.test.ChromeTabbedActivityTestBase;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.content_public.browser.test.util.Coordinates;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 import java.util.concurrent.Callable;
 
@@ -40,7 +43,7 @@ public class PrerenderTestHelper {
      * make the tests run faster.
      */
     public static boolean waitForPrerenderUrl(final Tab tab, final String url,
-            boolean shortTimeout) throws InterruptedException {
+            boolean shortTimeout) {
         try {
             CriteriaHelper.pollInstrumentationThread(new Criteria() {
                 @Override
@@ -58,23 +61,23 @@ public class PrerenderTestHelper {
     /**
      * Clears the omnibox.
      *
-     * @param testBase ChromeTabbedActivityTestBase instance.
+     * @param testRule ChromeActivityTestRule instance.
      */
-    public static void clearOmnibox(ChromeTabbedActivityTestBase testBase)
+    public static void clearOmnibox(ChromeActivityTestRule<?> testRule)
             throws InterruptedException {
-        testBase.typeInOmnibox("", false);
+        testRule.typeInOmnibox("", false);
     }
 
     /**
      * Clears the omnibox and types in the url character-by-character.
      *
      * @param url url to type into the omnibox.
-     * @param testBase ChromeTabbedActivityTestBase instance.
+     * @param testRule ChromeActivityTestRule<?> instance.
      */
-    public static void clearOmniboxAndTypeUrl(String url, ChromeTabbedActivityTestBase testBase)
+    public static void clearOmniboxAndTypeUrl(String url, ChromeActivityTestRule<?> testRule)
             throws InterruptedException {
-        clearOmnibox(testBase);
-        testBase.typeInOmnibox(url, true);
+        clearOmnibox(testRule);
+        testRule.typeInOmnibox(url, true);
     }
 
     /**
@@ -83,22 +86,20 @@ public class PrerenderTestHelper {
      * @param testUrl Url to prerender
      * @param tab The tab to add the prerender to.
      */
-    public static ExternalPrerenderHandler prerenderUrl(final String testUrl, Tab tab)
-            throws InterruptedException {
+    public static ExternalPrerenderHandler prerenderUrl(final String testUrl, Tab tab) {
         final Tab currentTab = tab;
-
+        final Coordinates coord = Coordinates.createFor(currentTab.getWebContents());
         ExternalPrerenderHandler prerenderHandler = ThreadUtils.runOnUiThreadBlockingNoException(
                 new Callable<ExternalPrerenderHandler>() {
                     @Override
                     public ExternalPrerenderHandler call() throws Exception {
                         ExternalPrerenderHandler prerenderHandler = new ExternalPrerenderHandler();
-                        boolean didPrerender = prerenderHandler.addPrerender(
-                                currentTab.getProfile(), currentTab.getWebContents(), testUrl, null,
-                                currentTab.getContentViewCore().getRenderCoordinates()
-                                        .getContentWidthPixInt(),
-                                currentTab.getContentViewCore().getRenderCoordinates()
-                                        .getContentHeightPixInt(),
-                                false);
+                        Rect bounds = new Rect(0, 0, coord.getContentWidthPixInt(),
+                                coord.getContentHeightPixInt());
+                        boolean didPrerender =
+                                prerenderHandler.addPrerender(currentTab.getProfile(),
+                                        currentTab.getWebContents(), testUrl, null, bounds, true)
+                                != null;
                         Assert.assertTrue("Failed to prerender test url: " + testUrl, didPrerender);
                         return prerenderHandler;
                     }

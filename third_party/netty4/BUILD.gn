@@ -5,7 +5,12 @@
 # References prebuilt Netty Jar file. See http://netty.io/
 
 import("//build/config/android/rules.gni")
+import("netty4.gni")
 
-android_java_prebuilt("netty_all") {
-  jar_path = "src/jar/all-in-one/netty-all-4.1.0.CR1-20160111.120759-50.jar"
+android_java_prebuilt("netty_all_java") {
+  # Uses fasterxml/aalto which doesn't exist in third_party.
+  enable_bytecode_checks = false
+  testonly = true
+  jar_path = NETTY4_JAR_FILE
+  proguard_configs = [ "proguard.flags" ]
 }

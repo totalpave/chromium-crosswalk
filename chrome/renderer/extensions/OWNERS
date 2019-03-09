@@ -1,13 +1,6 @@
-# Extension and apps team owners. Use file history to guide reviewer selection
-# as this list is randomized. If editing, see chrome/browser/extensions/OWNERS
-rockot@chromium.org
-mek@chromium.org
-reillyg@chromium.org
-finnur@chromium.org
-asargent@chromium.org
-benwells@chromium.org
-rdevlin.cronin@chromium.org
+file://extensions/OWNERS
 
-per-file automation_internal_custom_bindings*=aboxhall@chromium.org
-per-file automation_internal_custom_bindings*=dmazzoni@chromium.org
-per-file automation_internal_custom_bindings*=dtseng@chromium.org
+per-file automation_ax_tree_wrapper*=file://ui/accessibility/OWNERS
+per-file automation_internal_custom_bindings*=file://ui/accessibility/OWNERS
+
+# COMPONENT: Platform>Extensions

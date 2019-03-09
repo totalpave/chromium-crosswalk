@@ -14,6 +14,7 @@ USERS_TMP_FILE="$SCRIPT_FILE.users"
 PLIST=/Library/LaunchAgents/org.chromium.chromoting.plist
 ENABLED_FILE="$HELPERTOOLS/$SERVICE_NAME.me2me_enabled"
 ENABLED_FILE_BACKUP="$ENABLED_FILE.backup"
+PREF_PANE=/Library/PreferencePanes/ChromeRemoteDesktop.prefPane
 
 # In case of errors, log the fact, but continue to unload launchd jobs as much
 # as possible. When finished, this preflight script should exit successfully in
@@ -58,6 +59,7 @@ logger Running Chrome Remote Desktop preflight script @@VERSION@@
 
 # If there is an _enabled file, rename it while upgrading.
 if [[ -f "$ENABLED_FILE" ]]; then
+  logger Moving _enabled file
   mv "$ENABLED_FILE" "$ENABLED_FILE_BACKUP"
 fi
 
@@ -67,6 +69,7 @@ fi
 rm -f "$USERS_TMP_FILE"
 
 for uid in $(find_users_with_active_hosts); do
+  logger Unloading service for user "$uid"
   if [[ -n "$uid" ]]; then
     echo "$uid" >> "$USERS_TMP_FILE"
     if [[ "$uid" = "0" ]]; then
@@ -75,12 +78,11 @@ for uid in $(find_users_with_active_hosts); do
       context="Aqua"
     fi
 
-    sudo_user="sudo -u #$uid"
     stop="launchctl stop $SERVICE_NAME"
     unload="launchctl unload -w -S $context $PLIST"
 
     if is_el_capitan_or_newer; then
-      boostrap_user="launchctl asuser $uid"
+      bootstrap_user="launchctl asuser $uid"
     else
       # Load the launchd agent in the bootstrap context of user $uid's
       # graphical session, so that screen-capture and input-injection can
@@ -91,12 +93,19 @@ for uid in $(find_users_with_active_hosts); do
       if [[ ! -n "$pid" ]]; then
         exit 1
       fi
+      sudo_user="sudo -u #$uid"
       bootstrap_user="launchctl bsexec $pid"
     fi
 
+    logger $bootstrap_user $sudo_user $stop
     $bootstrap_user $sudo_user $stop
+    logger $bootstrap_user $sudo_user $unload
     $bootstrap_user $sudo_user $unload
   fi
 done
+
+# The installer no longer includes a preference-pane applet, so remove any
+# pref-pane from a previous installation.
+rm -rf "$PREF_PANE"
 
 exit 0

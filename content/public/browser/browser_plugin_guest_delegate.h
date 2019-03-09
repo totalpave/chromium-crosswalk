@@ -10,10 +10,6 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/web_contents.h"
 
-namespace base {
-class DictionaryValue;
-}  // namespace base
-
 namespace gfx {
 class Size;
 }  // namespace gfx
@@ -21,6 +17,8 @@ class Size;
 namespace content {
 
 class GuestHost;
+class RenderWidgetHost;
+class SiteInstance;
 
 // Objects implement this interface to get notified about changes in the guest
 // WebContents and to provide necessary functionality.
@@ -36,16 +34,10 @@ class CONTENT_EXPORT BrowserPluginGuestDelegate {
   virtual void WillAttach(content::WebContents* embedder_web_contents,
                           int element_instance_id,
                           bool is_full_page_plugin,
-                          const base::Closure& completion_callback) {}
+                          base::OnceClosure completion_callback) {}
 
   virtual WebContents* CreateNewGuestWindow(
       const WebContents::CreateParams& create_params);
-
-  // Asks the delegate whether this guest can run while detached from a
-  // container. A detached guest is a WebContents that has no visual surface
-  // into which it can composite its content. Detached guests can be thought
-  // of as workers with a DOM.
-  virtual bool CanRunInDetachedState() const;
 
   // Notification that the embedder has completed attachment. The
   // |guest_proxy_routing_id| is the routing ID for the RenderView in the
@@ -64,11 +56,6 @@ class CONTENT_EXPORT BrowserPluginGuestDelegate {
   // Returns the WebContents that currently owns this guest.
   virtual WebContents* GetOwnerWebContents() const;
 
-  // Notifies that the content size of the guest has changed.
-  // Note: In autosize mode, it is possible that the guest size may not match
-  // the element size.
-  virtual void GuestSizeChanged(const gfx::Size& new_size) {}
-
   // Asks the delegate if the given guest can lock the pointer.
   // Invoking the |callback| synchronously is OK.
   virtual void RequestPointerLockPermission(
@@ -76,22 +63,24 @@ class CONTENT_EXPORT BrowserPluginGuestDelegate {
       bool last_unlocked_by_target,
       const base::Callback<void(bool)>& callback) {}
 
-  // Find the given |search_text| in the page. Returns true if the find request
-  // is handled by this browser plugin guest delegate.
-  virtual bool HandleFindForEmbedder(int request_id,
-                                     const base::string16& search_text,
-                                     const blink::WebFindOptions& options);
-  virtual bool HandleStopFindingForEmbedder(StopFindAction action);
-
   // Provides the delegate with an interface with which to communicate with the
   // content module.
   virtual void SetGuestHost(GuestHost* guest_host) {}
 
-  // Sets the position of the context menu for the guest contents. The value
-  // reported from the guest renderer should be ignored. The reported value
-  // fromt he guest renderer is incorrect in situations where BrowserPlugin is
-  // subject to CSS transforms.
-  virtual void SetContextMenuPosition(const gfx::Point& position) {}
+  // TODO(ekaramad): A short workaround to force some types of guests to use
+  // a BrowserPlugin even when we are using cross process frames for guests. It
+  // should be removed after resolving https://crbug.com/642826).
+  virtual bool CanUseCrossProcessFrames();
+
+  // Returns the RenderWidgetHost corresponding to the owner frame.
+  virtual RenderWidgetHost* GetOwnerRenderWidgetHost();
+
+  // The site instance of the owner frame.
+  virtual SiteInstance* GetOwnerSiteInstance();
+
+  // Returns true if the corresponding guest is allowed to be embedded inside an
+  // <iframe> which is cross process.
+  virtual bool CanBeEmbeddedInsideCrossProcessFrames();
 };
 
 }  // namespace content

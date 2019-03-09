@@ -8,11 +8,7 @@
 #include "base/test/test_io_thread.h"
 #include "base/test/test_suite.h"
 #include "build/build_config.h"
-#include "mojo/edk/embedder/embedder.h"
-
-#if defined(OS_ANDROID)
-#include "gpu/ipc/client/android/in_process_surface_texture_manager.h"
-#endif
+#include "mojo/core/embedder/embedder.h"
 
 namespace {
 
@@ -21,9 +17,6 @@ class GpuTestSuite : public base::TestSuite {
   GpuTestSuite(int argc, char** argv);
   ~GpuTestSuite() override;
 
- protected:
-  void Initialize() override;
-
  private:
   DISALLOW_COPY_AND_ASSIGN(GpuTestSuite);
 };
@@ -31,15 +24,7 @@ class GpuTestSuite : public base::TestSuite {
 GpuTestSuite::GpuTestSuite(int argc, char** argv)
     : base::TestSuite(argc, argv) {}
 
-GpuTestSuite::~GpuTestSuite() {}
-
-void GpuTestSuite::Initialize() {
-  base::TestSuite::Initialize();
-#if defined(OS_ANDROID)
-  gpu::SurfaceTextureManager::SetInstance(
-      gpu::InProcessSurfaceTextureManager::GetInstance());
-#endif
-}
+GpuTestSuite::~GpuTestSuite() = default;
 
 }  // namespace
 
@@ -47,9 +32,9 @@ int main(int argc, char** argv) {
   base::CommandLine::Init(argc, argv);
   GpuTestSuite test_suite(argc, argv);
 
-  mojo::edk::Init();
+  mojo::core::Init();
 
   return base::LaunchUnitTests(
       argc, argv,
-      base::Bind(&base::TestSuite::Run, base::Unretained(&test_suite)));
+      base::BindOnce(&base::TestSuite::Run, base::Unretained(&test_suite)));
 }

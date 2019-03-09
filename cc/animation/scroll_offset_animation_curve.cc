@@ -18,6 +18,9 @@ using DurationBehavior = cc::ScrollOffsetAnimationCurve::DurationBehavior;
 const double kConstantDuration = 9.0;
 const double kDurationDivisor = 60.0;
 
+// 3 seconds limit for long-distance programmatic scrolls
+const double kDeltaBasedMaxDuration = 180.0;
+
 const double kInverseDeltaRampStartPx = 120.0;
 const double kInverseDeltaRampEndPx = 480.0;
 const double kInverseDeltaMinDuration = 6.0;
@@ -40,30 +43,6 @@ static float MaximumDimension(const gfx::Vector2dF& delta) {
   return std::abs(delta.x()) > std::abs(delta.y()) ? delta.x() : delta.y();
 }
 
-static base::TimeDelta SegmentDuration(const gfx::Vector2dF& delta,
-                                       DurationBehavior behavior) {
-  double duration = kConstantDuration;
-  switch (behavior) {
-    case DurationBehavior::CONSTANT:
-      duration = kConstantDuration;
-      break;
-    case DurationBehavior::DELTA_BASED:
-      duration = std::sqrt(std::abs(MaximumDimension(delta)));
-      break;
-    case DurationBehavior::INVERSE_DELTA:
-      duration = std::min(
-          std::max(kInverseDeltaOffset +
-                       std::abs(MaximumDimension(delta)) * kInverseDeltaSlope,
-                   kInverseDeltaMinDuration),
-          kInverseDeltaMaxDuration);
-      break;
-    default:
-      NOTREACHED();
-  }
-  return base::TimeDelta::FromMicroseconds(duration / kDurationDivisor *
-                                           base::Time::kMicrosecondsPerSecond);
-}
-
 static std::unique_ptr<TimingFunction> EaseOutWithInitialVelocity(
     double velocity) {
   // Clamp velocity to a sane value.
@@ -77,6 +56,9 @@ static std::unique_ptr<TimingFunction> EaseOutWithInitialVelocity(
 }
 
 }  // namespace
+
+base::Optional<double>
+    ScrollOffsetAnimationCurve::animation_duration_for_testing_;
 
 std::unique_ptr<ScrollOffsetAnimationCurve> ScrollOffsetAnimationCurve::Create(
     const gfx::ScrollOffset& target_value,
@@ -95,14 +77,53 @@ ScrollOffsetAnimationCurve::ScrollOffsetAnimationCurve(
       duration_behavior_(duration_behavior),
       has_set_initial_value_(false) {}
 
-ScrollOffsetAnimationCurve::~ScrollOffsetAnimationCurve() {}
+ScrollOffsetAnimationCurve::~ScrollOffsetAnimationCurve() = default;
+
+base::TimeDelta ScrollOffsetAnimationCurve::SegmentDuration(
+    const gfx::Vector2dF& delta,
+    DurationBehavior behavior,
+    base::TimeDelta delayed_by) {
+  double duration = kConstantDuration;
+  if (!animation_duration_for_testing_) {
+    switch (behavior) {
+      case DurationBehavior::CONSTANT:
+        duration = kConstantDuration;
+        break;
+      case DurationBehavior::DELTA_BASED:
+        duration =
+            std::min(double(std::sqrt(std::abs(MaximumDimension(delta)))),
+                     kDeltaBasedMaxDuration);
+        break;
+      case DurationBehavior::INVERSE_DELTA:
+        duration = std::min(
+            std::max(kInverseDeltaOffset +
+                         std::abs(MaximumDimension(delta)) * kInverseDeltaSlope,
+                     kInverseDeltaMinDuration),
+            kInverseDeltaMaxDuration);
+        break;
+      default:
+        NOTREACHED();
+    }
+  } else {
+    duration = animation_duration_for_testing_.value();
+  }
+
+  base::TimeDelta time_delta = base::TimeDelta::FromMicroseconds(
+      duration / kDurationDivisor * base::Time::kMicrosecondsPerSecond);
+
+  time_delta -= delayed_by;
+  if (time_delta >= base::TimeDelta())
+    return time_delta;
+  return base::TimeDelta();
+}
 
 void ScrollOffsetAnimationCurve::SetInitialValue(
-    const gfx::ScrollOffset& initial_value) {
+    const gfx::ScrollOffset& initial_value,
+    base::TimeDelta delayed_by) {
   initial_value_ = initial_value;
   has_set_initial_value_ = true;
   total_animation_duration_ = SegmentDuration(
-      target_value_.DeltaFrom(initial_value_), duration_behavior_);
+      target_value_.DeltaFrom(initial_value_), duration_behavior_, delayed_by);
 }
 
 bool ScrollOffsetAnimationCurve::HasSetInitialValue() const {
@@ -119,6 +140,9 @@ gfx::ScrollOffset ScrollOffsetAnimationCurve::GetValue(
     base::TimeDelta t) const {
   base::TimeDelta duration = total_animation_duration_ - last_retarget_;
   t -= last_retarget_;
+
+  if (duration.is_zero())
+    return target_value_;
 
   if (t <= base::TimeDelta())
     return initial_value_;
@@ -159,63 +183,81 @@ ScrollOffsetAnimationCurve::CloneToScrollOffsetAnimationCurve() const {
   return curve_clone;
 }
 
-static double VelocityBasedDurationBound(gfx::Vector2dF old_delta,
-                                         double old_normalized_velocity,
-                                         double old_duration,
-                                         gfx::Vector2dF new_delta) {
+void ScrollOffsetAnimationCurve::SetAnimationDurationForTesting(
+    base::TimeDelta duration) {
+  animation_duration_for_testing_ = duration.InSecondsF() * kDurationDivisor;
+}
+
+static base::TimeDelta VelocityBasedDurationBound(
+    gfx::Vector2dF old_delta,
+    double old_normalized_velocity,
+    base::TimeDelta old_duration,
+    gfx::Vector2dF new_delta) {
   double old_delta_max_dimension = MaximumDimension(old_delta);
   double new_delta_max_dimension = MaximumDimension(new_delta);
 
   // If we are already at the target, stop animating.
   if (std::abs(new_delta_max_dimension) < kEpsilon)
-    return 0;
+    return base::TimeDelta();
 
   // Guard against division by zero.
   if (std::abs(old_delta_max_dimension) < kEpsilon ||
       std::abs(old_normalized_velocity) < kEpsilon) {
-    return std::numeric_limits<double>::infinity();
+    return base::TimeDelta::Max();
   }
 
   // Estimate how long it will take to reach the new target at our present
   // velocity, with some fudge factor to account for the "ease out".
-  double old_true_velocity =
-      old_normalized_velocity * old_delta_max_dimension / old_duration;
+  double old_true_velocity = old_normalized_velocity * old_delta_max_dimension /
+                             old_duration.InSecondsF();
   double bound = (new_delta_max_dimension / old_true_velocity) * 2.5f;
 
   // If bound < 0 we are moving in the opposite direction.
-  return bound < 0 ? std::numeric_limits<double>::infinity() : bound;
+  return bound < 0 ? base::TimeDelta::Max()
+                   : base::TimeDelta::FromSecondsD(bound);
 }
 
 void ScrollOffsetAnimationCurve::UpdateTarget(
-    double t,
+    base::TimeDelta t,
     const gfx::ScrollOffset& new_target) {
   if (std::abs(MaximumDimension(target_value_.DeltaFrom(new_target))) <
       kEpsilon) {
     target_value_ = new_target;
     return;
   }
-  gfx::ScrollOffset current_position =
-      GetValue(base::TimeDelta::FromSecondsD(t));
+
+  base::TimeDelta delayed_by = std::max(base::TimeDelta(), last_retarget_ - t);
+  t = std::max(t, last_retarget_);
+
+  gfx::ScrollOffset current_position = GetValue(t);
   gfx::Vector2dF old_delta = target_value_.DeltaFrom(initial_value_);
   gfx::Vector2dF new_delta = new_target.DeltaFrom(current_position);
 
-  double old_duration =
-      (total_animation_duration_ - last_retarget_).InSecondsF();
+  // The last segement was of zero duration.
+  if ((total_animation_duration_ - last_retarget_).is_zero()) {
+    DCHECK_EQ(t, last_retarget_);
+    total_animation_duration_ =
+        SegmentDuration(new_delta, duration_behavior_, delayed_by);
+    target_value_ = new_target;
+    return;
+  }
+
+  base::TimeDelta old_duration = total_animation_duration_ - last_retarget_;
   double old_normalized_velocity = timing_function_->Velocity(
-      (t - last_retarget_.InSecondsF()) / old_duration);
+      ((t - last_retarget_).InSecondsF()) / old_duration.InSecondsF());
 
   // Use the velocity-based duration bound when it is less than the constant
   // segment duration. This minimizes the "rubber-band" bouncing effect when
   // old_normalized_velocity is large and new_delta is small.
-  double new_duration =
-      std::min(SegmentDuration(new_delta, duration_behavior_).InSecondsF(),
+  base::TimeDelta new_duration =
+      std::min(SegmentDuration(new_delta, duration_behavior_, delayed_by),
                VelocityBasedDurationBound(old_delta, old_normalized_velocity,
                                           old_duration, new_delta));
 
-  if (new_duration < kEpsilon) {
+  if (new_duration.InSecondsF() < kEpsilon) {
     // We are already at or very close to the new target. Stop animating.
     target_value_ = new_target;
-    total_animation_duration_ = base::TimeDelta::FromSecondsD(t);
+    total_animation_duration_ = t;
     return;
   }
 
@@ -223,13 +265,14 @@ void ScrollOffsetAnimationCurve::UpdateTarget(
   // To match the "true" velocity in px/sec we must adjust this slope for
   // differences in duration and scroll delta between old and new curves.
   double new_normalized_velocity =
-      old_normalized_velocity * (new_duration / old_duration) *
+      old_normalized_velocity *
+      (new_duration.InSecondsF() / old_duration.InSecondsF()) *
       (MaximumDimension(old_delta) / MaximumDimension(new_delta));
 
   initial_value_ = current_position;
   target_value_ = new_target;
-  total_animation_duration_ = base::TimeDelta::FromSecondsD(t + new_duration);
-  last_retarget_ = base::TimeDelta::FromSecondsD(t);
+  total_animation_duration_ = t + new_duration;
+  last_retarget_ = t;
   timing_function_ = EaseOutWithInitialVelocity(new_normalized_velocity);
 }
 

@@ -4,6 +4,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+set -eu
+
 THIS_DIR=$(dirname "$0")
 
 OUT_DIR="$1"
@@ -22,6 +24,10 @@ if [[ ! -d "$1" ]]; then
 fi
 
 generate_test_data() {
+  # `hdiutil convert` cannot overwrite files, so remove items in the output
+  # directory.
+  rm -f "${OUT_DIR}"/*
+
   # HFS Raw Images #############################################################
 
   MAKE_HFS="${THIS_DIR}/make_hfs.sh"
@@ -34,7 +40,7 @@ generate_test_data() {
   echo "This is a test DMG file. It has been generated from " \
       "chrome/test/data/safe_browsing/dmg/generate_test_data.sh" \
           > "${DMG_SOURCE}/README.txt"
-  dd if=/dev/urandom of="${DMG_SOURCE}/random" bs=512 count=4
+  dd if=/dev/urandom of="${DMG_SOURCE}/random" bs=512 count=4 &> /dev/null
 
   DMG_TEMPLATE_FORMAT="UDRO"
   DMG_FORMATS="UDRW UDCO UDZO UDBZ UFBI UDTO UDSP"
@@ -45,8 +51,8 @@ generate_test_data() {
     DMG_NAME="dmg_${DMG_TEMPLATE_FORMAT}_${layout}"
     hdiutil create -srcfolder "${DMG_SOURCE}" \
       -format "${DMG_TEMPLATE_FORMAT}" -layout "${layout}" \
-      -volname "${DMG_NAME}" \
-      -ov "${OUT_DIR}/${DMG_NAME}"
+      -fs JHFS+ -volname "${DMG_NAME}" \
+      "${OUT_DIR}/${DMG_NAME}"
   done
 
   # Convert each template into the different compression format.
@@ -73,12 +79,35 @@ generate_test_data() {
   mkdir "${DMG_SOURCE}/.hidden"
   cp "${THIS_DIR}/../mach_o/lib64.dylib" "${DMG_SOURCE}/.hidden/"
 
+  cp -r "${THIS_DIR}/../mach_o/shell-script.app" "${DMG_SOURCE}"
+
   hdiutil create -srcfolder "${DMG_SOURCE}" \
     -format UDZO -layout SPUD -volname "Mach-O in DMG" -ov \
-    "${OUT_DIR}/mach_o_in_dmg"
+    -fs JHFS+ "${OUT_DIR}/mach_o_in_dmg"
 
   rm -rf "${DMG_SOURCE}"
+
+  # Copy of Mach-O DMG with 'koly' signature overwritten #######################
+  cp "${OUT_DIR}/mach_o_in_dmg.dmg" \
+      "${OUT_DIR}/mach_o_in_dmg_no_koly_signature.dmg"
+  # Gets size of Mach-O DMG copy.
+  SIZE=`stat -f%z "${OUT_DIR}/mach_o_in_dmg_no_koly_signature.dmg"`
+  # Overwrites 'koly' with '????'.
+  printf '\xa1\xa1\xa1\xa1' | dd conv=notrunc \
+      of="${OUT_DIR}/mach_o_in_dmg_no_koly_signature.dmg" \
+      bs=1 seek=$(($SIZE - 512)) &> /dev/null
+
+  # Copy of Mach-O DMG with extension changed to .txt.
+  cp "${OUT_DIR}/mach_o_in_dmg.dmg" "${OUT_DIR}/mach_o_in_dmg.txt"
+
+  # Copy of Mach-O DMG with extension changed to .txt and no 'koly' signature ##
+  cp "${OUT_DIR}/mach_o_in_dmg_no_koly_signature.dmg" \
+      "${OUT_DIR}/mach_o_in_dmg_no_koly_signature.txt"
+
+  # Package Data for CIPD ######################################################
+
+  cipd pkg-build -pkg-def "${THIS_DIR}/cipd.yaml" -out "${THIS_DIR}/data.zip"
 }
 
-# Silence any log output.
-generate_test_data &> /dev/null
+# Silence any stdout, but keep stderr.
+generate_test_data > /dev/null

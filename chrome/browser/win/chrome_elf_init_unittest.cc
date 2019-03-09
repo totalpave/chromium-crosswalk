@@ -12,6 +12,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_reg_util_win.h"
 #include "chrome/common/chrome_version.h"
+#include "chrome/install_static/install_util.h"
 #include "chrome_elf/chrome_elf_constants.h"
 #include "components/variations/entropy_provider.h"
 #include "components/variations/variations_associated_data.h"
@@ -21,8 +22,6 @@
 
 namespace {
 
-const char kBrowserBlacklistTrialEnabledGroupName[] = "Enabled";
-
 class ChromeBlacklistTrialTest : public testing::Test {
  protected:
   ChromeBlacklistTrialTest() {}
@@ -31,11 +30,14 @@ class ChromeBlacklistTrialTest : public testing::Test {
   void SetUp() override {
     testing::Test::SetUp();
 
-    override_manager_.OverrideRegistry(HKEY_CURRENT_USER);
+    ASSERT_NO_FATAL_FAILURE(
+        override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
 
     blacklist_registry_key_.reset(
         new base::win::RegKey(HKEY_CURRENT_USER,
-                              blacklist::kRegistryBeaconPath,
+                              install_static::GetRegistryPath()
+                                  .append(blacklist::kRegistryBeaconKeyName)
+                                  .c_str(),
                               KEY_QUERY_VALUE | KEY_SET_VALUE));
   }
 
@@ -76,7 +78,8 @@ TEST_F(ChromeBlacklistTrialTest, DefaultRun) {
 
   // Ensure the beacon values are now correct, indicating the
   // blacklist beacon was setup.
-  ASSERT_EQ(blacklist::BLACKLIST_ENABLED, GetBlacklistState());
+  ASSERT_EQ(static_cast<DWORD>(blacklist::BLACKLIST_ENABLED),
+            GetBlacklistState());
   base::string16 version(base::UTF8ToUTF16(version_info::GetVersionNumber()));
   ASSERT_EQ(version, GetBlacklistVersion());
 }
@@ -91,7 +94,7 @@ TEST_F(ChromeBlacklistTrialTest, BlacklistDisabledRun) {
 
   // Create the field trial with the blacklist disabled group.
   base::FieldTrialList field_trial_list(
-    new metrics::SHA1EntropyProvider("test"));
+      std::make_unique<variations::SHA1EntropyProvider>("test"));
 
   scoped_refptr<base::FieldTrial> trial(
     base::FieldTrialList::CreateFieldTrial(
@@ -102,7 +105,8 @@ TEST_F(ChromeBlacklistTrialTest, BlacklistDisabledRun) {
 
   // Ensure invalid values are returned to indicate that the beacon
   // values are indeed gone.
-  ASSERT_EQ(blacklist::BLACKLIST_STATE_MAX, GetBlacklistState());
+  ASSERT_EQ(static_cast<DWORD>(blacklist::BLACKLIST_STATE_MAX),
+            GetBlacklistState());
   ASSERT_EQ(base::string16(), GetBlacklistVersion());
 }
 
@@ -110,7 +114,8 @@ TEST_F(ChromeBlacklistTrialTest, VerifyFirstRun) {
   BrowserBlacklistBeaconSetup();
 
   // Verify the state is properly set after the first run.
-  ASSERT_EQ(blacklist::BLACKLIST_ENABLED, GetBlacklistState());
+  ASSERT_EQ(static_cast<DWORD>(blacklist::BLACKLIST_ENABLED),
+            GetBlacklistState());
 
   base::string16 version(base::UTF8ToUTF16(version_info::GetVersionNumber()));
   ASSERT_EQ(version, GetBlacklistVersion());
@@ -126,7 +131,8 @@ TEST_F(ChromeBlacklistTrialTest, BlacklistFailed) {
 
   BrowserBlacklistBeaconSetup();
 
-  ASSERT_EQ(blacklist::BLACKLIST_DISABLED, GetBlacklistState());
+  ASSERT_EQ(static_cast<DWORD>(blacklist::BLACKLIST_DISABLED),
+            GetBlacklistState());
 }
 
 TEST_F(ChromeBlacklistTrialTest, VersionChanged) {
@@ -143,7 +149,8 @@ TEST_F(ChromeBlacklistTrialTest, VersionChanged) {
   BrowserBlacklistBeaconSetup();
 
   // The beacon should now be marked as enabled for the current version.
-  ASSERT_EQ(blacklist::BLACKLIST_ENABLED, GetBlacklistState());
+  ASSERT_EQ(static_cast<DWORD>(blacklist::BLACKLIST_ENABLED),
+            GetBlacklistState());
 
   base::string16 expected_version(
       base::UTF8ToUTF16(version_info::GetVersionNumber()));
@@ -154,44 +161,6 @@ TEST_F(ChromeBlacklistTrialTest, VersionChanged) {
   blacklist_registry_key_->ReadValueDW(blacklist::kBeaconAttemptCount,
                                        &attempt_count);
   ASSERT_EQ(static_cast<DWORD>(0), attempt_count);
-}
-
-TEST_F(ChromeBlacklistTrialTest, AddFinchBlacklistToRegistry) {
-  // Create the field trial with the blacklist enabled group.
-  base::FieldTrialList field_trial_list(
-      new metrics::SHA1EntropyProvider("test"));
-
-  scoped_refptr<base::FieldTrial> trial(base::FieldTrialList::CreateFieldTrial(
-      kBrowserBlacklistTrialName, kBrowserBlacklistTrialEnabledGroupName));
-
-  // Set up the trial with the desired parameters.
-  std::map<std::string, std::string> desired_params;
-  desired_params["TestDllName1"] = "TestDll1.dll";
-  desired_params["TestDllName2"] = "TestDll2.dll";
-
-  variations::AssociateVariationParams(
-      kBrowserBlacklistTrialName,
-      kBrowserBlacklistTrialEnabledGroupName,
-      desired_params);
-
-  // This should add the dlls in those parameters to the registry.
-  AddFinchBlacklistToRegistry();
-
-  // Check that all the values in desired_params were added to the registry.
-  base::win::RegKey finch_blacklist_registry_key(
-      HKEY_CURRENT_USER,
-      blacklist::kRegistryFinchListPath,
-      KEY_QUERY_VALUE | KEY_SET_VALUE);
-
-  ASSERT_EQ(desired_params.size(),
-            finch_blacklist_registry_key.GetValueCount());
-
-  for (std::map<std::string, std::string>::iterator it = desired_params.begin();
-       it != desired_params.end();
-       ++it) {
-    std::wstring name = base::UTF8ToWide(it->first);
-    ASSERT_TRUE(finch_blacklist_registry_key.HasValue(name.c_str()));
-  }
 }
 
 }  // namespace

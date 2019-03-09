@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -14,21 +15,26 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
+#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "components/tracing/common/tracing_switches.h"
 #include "components/version_info/version_info.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/content_switches.h"
+#include "net/base/load_flags.h"
 #include "net/base/mime_util.h"
 #include "net/base/network_delegate.h"
-#include "net/proxy/proxy_config.h"
-#include "net/proxy/proxy_config_service.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_context_builder.h"
-#include "net/url_request/url_request_context_getter.h"
+#include "net/http/http_status_code.h"
+#include "net/proxy_resolution/proxy_config.h"
+#include "net/proxy_resolution/proxy_config_service.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/resource_response.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/zlib/zlib.h"
 #include "url/gurl.h"
 
@@ -37,10 +43,9 @@ using std::string;
 namespace {
 
 const char kUploadURL[] = "https://clients2.google.com/cr/report";
-const char kUploadContentType[] = "multipart/form-data";
-const char kMultipartBoundary[] =
+const char kCrashUploadContentType[] = "multipart/form-data";
+const char kCrashMultipartBoundary[] =
     "----**--yradnuoBgoLtrapitluMklaTelgooG--**----";
-const int kHttpResponseOk = 200;
 
 // Allow up to 10MB for trace upload
 const size_t kMaxUploadBytes = 10000000;
@@ -48,8 +53,9 @@ const size_t kMaxUploadBytes = 10000000;
 }  // namespace
 
 TraceCrashServiceUploader::TraceCrashServiceUploader(
-    net::URLRequestContextGetter* request_context)
-    : request_context_(request_context), max_upload_bytes_(kMaxUploadBytes) {
+    scoped_refptr<network::SharedURLLoaderFactory> factory)
+    : shared_url_loader_factory_(std::move(factory)),
+      max_upload_bytes_(kMaxUploadBytes) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
@@ -77,39 +83,42 @@ void TraceCrashServiceUploader::SetMaxUploadBytes(size_t max_upload_bytes) {
   max_upload_bytes_ = max_upload_bytes;
 }
 
-void TraceCrashServiceUploader::OnURLFetchComplete(
-    const net::URLFetcher* source) {
+void TraceCrashServiceUploader::OnSimpleURLLoaderComplete(
+    std::unique_ptr<std::string> response_body) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK_EQ(source, url_fetcher_.get());
-  int response_code = source->GetResponseCode();
+
   string feedback;
-  bool success = (response_code == kHttpResponseOk);
+  bool success = !!response_body;
   if (success) {
-    source->GetResponseAsString(&feedback);
+    feedback = std::move(*response_body);
   } else {
-    feedback =
-        "Uploading failed, response code: " + base::IntToString(response_code);
+    int response_code = -1;
+    if (simple_url_loader_->ResponseInfo() &&
+        simple_url_loader_->ResponseInfo()->headers) {
+      response_code =
+          simple_url_loader_->ResponseInfo()->headers->response_code();
+    }
+    feedback = "Uploading failed, response code: " +
+               base::NumberToString(response_code);
   }
 
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI, FROM_HERE,
-      base::Bind(done_callback_, success, feedback));
-  url_fetcher_.reset();
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(std::move(done_callback_), success, feedback));
+  simple_url_loader_.reset();
 }
 
-void TraceCrashServiceUploader::OnURLFetchUploadProgress(
-    const net::URLFetcher* source,
-    int64_t current,
-    int64_t total) {
-  DCHECK(url_fetcher_.get());
+void TraceCrashServiceUploader::OnURLLoaderUploadProgress(uint64_t current,
+                                                          uint64_t total) {
+  DCHECK(simple_url_loader_);
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   LOG(WARNING) << "Upload progress: " << current << " of " << total;
 
   if (progress_callback_.is_null())
     return;
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI, FROM_HERE,
-      base::Bind(progress_callback_, current, total));
+  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                           base::BindOnce(progress_callback_, current, total));
 }
 
 void TraceCrashServiceUploader::DoUpload(
@@ -117,28 +126,25 @@ void TraceCrashServiceUploader::DoUpload(
     UploadMode upload_mode,
     std::unique_ptr<const base::DictionaryValue> metadata,
     const UploadProgressCallback& progress_callback,
-    const UploadDoneCallback& done_callback) {
+    UploadDoneCallback done_callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  content::BrowserThread::PostTask(
-      content::BrowserThread::FILE, FROM_HERE,
-      base::Bind(&TraceCrashServiceUploader::DoUploadOnFileThread,
-                 base::Unretained(this), file_contents, upload_mode,
-                 upload_url_, base::Passed(std::move(metadata)),
-                 progress_callback, done_callback));
+
+  progress_callback_ = progress_callback;
+  done_callback_ = std::move(done_callback);
+
+  base::PostTaskWithTraits(
+      FROM_HERE, {base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&TraceCrashServiceUploader::DoCompressOnBackgroundThread,
+                     base::Unretained(this), file_contents, upload_mode,
+                     upload_url_, std::move(metadata)));
 }
 
-void TraceCrashServiceUploader::DoUploadOnFileThread(
+void TraceCrashServiceUploader::DoCompressOnBackgroundThread(
     const std::string& file_contents,
     UploadMode upload_mode,
     const std::string& upload_url,
-    std::unique_ptr<const base::DictionaryValue> metadata,
-    const UploadProgressCallback& progress_callback,
-    const UploadDoneCallback& done_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
-  DCHECK(!url_fetcher_.get());
-
-  progress_callback_ = progress_callback;
-  done_callback_ = done_callback;
+    std::unique_ptr<const base::DictionaryValue> metadata) {
+  DCHECK(!simple_url_loader_.get());
 
   if (upload_url.empty()) {
     OnUploadError("Upload URL empty or invalid");
@@ -149,12 +155,14 @@ void TraceCrashServiceUploader::DoUploadOnFileThread(
   const char product[] = "Chrome";
 #elif defined(OS_MACOSX)
   const char product[] = "Chrome_Mac";
+#elif defined(OS_CHROMEOS)
+  // On ChromeOS, defined(OS_LINUX) also evalutes to true, so the
+  // defined(OS_CHROMEOS) block must come first.
+  const char product[] = "Chrome_ChromeOS";
 #elif defined(OS_LINUX)
   const char product[] = "Chrome_Linux";
 #elif defined(OS_ANDROID)
   const char product[] = "Chrome_Android";
-#elif defined(OS_CHROMEOS)
-  const char product[] = "Chrome_ChromeOS";
 #else
 #error Platform not supported.
 #endif
@@ -172,7 +180,7 @@ void TraceCrashServiceUploader::DoUploadOnFileThread(
     version = "unknown";
   }
 
-  if (url_fetcher_.get()) {
+  if (simple_url_loader_) {
     OnUploadError("Already uploading.");
     return;
   }
@@ -200,18 +208,18 @@ void TraceCrashServiceUploader::DoUploadOnFileThread(
   SetupMultipart(product, version, std::move(metadata), "trace.json.gz",
                  compressed_contents, &post_data);
 
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI, FROM_HERE,
-      base::Bind(&TraceCrashServiceUploader::CreateAndStartURLFetcher,
-                 base::Unretained(this), upload_url, post_data));
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(&TraceCrashServiceUploader::CreateAndStartURLLoader,
+                     base::Unretained(this), upload_url, post_data));
 }
 
 void TraceCrashServiceUploader::OnUploadError(
     const std::string& error_message) {
   LOG(ERROR) << error_message;
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI, FROM_HERE,
-      base::Bind(done_callback_, false, error_message));
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(std::move(done_callback_), false, error_message));
 }
 
 void TraceCrashServiceUploader::SetupMultipart(
@@ -221,17 +229,17 @@ void TraceCrashServiceUploader::SetupMultipart(
     const std::string& trace_filename,
     const std::string& trace_contents,
     std::string* post_data) {
-  net::AddMultipartValueForUpload("prod", product, kMultipartBoundary, "",
+  net::AddMultipartValueForUpload("prod", product, kCrashMultipartBoundary, "",
                                   post_data);
-  net::AddMultipartValueForUpload("ver", version + "-trace", kMultipartBoundary,
-                                  "", post_data);
-  net::AddMultipartValueForUpload("guid", "0", kMultipartBoundary, "",
+  net::AddMultipartValueForUpload("ver", version + "-trace",
+                                  kCrashMultipartBoundary, "", post_data);
+  net::AddMultipartValueForUpload("guid", "0", kCrashMultipartBoundary, "",
                                   post_data);
-  net::AddMultipartValueForUpload("type", "trace", kMultipartBoundary, "",
+  net::AddMultipartValueForUpload("type", "trace", kCrashMultipartBoundary, "",
                                   post_data);
   // No minidump means no need for crash to process the report.
-  net::AddMultipartValueForUpload("should_process", "false", kMultipartBoundary,
-                                  "", post_data);
+  net::AddMultipartValueForUpload("should_process", "false",
+                                  kCrashMultipartBoundary, "", post_data);
   if (metadata) {
     for (base::DictionaryValue::Iterator it(*metadata); !it.IsAtEnd();
          it.Advance()) {
@@ -241,21 +249,21 @@ void TraceCrashServiceUploader::SetupMultipart(
           continue;
       }
 
-      net::AddMultipartValueForUpload(it.key(), value, kMultipartBoundary, "",
-                                      post_data);
+      net::AddMultipartValueForUpload(it.key(), value, kCrashMultipartBoundary,
+                                      "", post_data);
     }
   }
 
   AddTraceFile(trace_filename, trace_contents, post_data);
 
-  net::AddMultipartFinalDelimiterForUpload(kMultipartBoundary, post_data);
+  net::AddMultipartFinalDelimiterForUpload(kCrashMultipartBoundary, post_data);
 }
 
 void TraceCrashServiceUploader::AddTraceFile(const std::string& trace_filename,
                                              const std::string& trace_contents,
                                              std::string* post_data) {
   post_data->append("--");
-  post_data->append(kMultipartBoundary);
+  post_data->append(kCrashMultipartBoundary);
   post_data->append("\r\n");
   post_data->append("Content-Disposition: form-data; name=\"trace\"");
   post_data->append("; filename=\"");
@@ -298,19 +306,73 @@ bool TraceCrashServiceUploader::Compress(std::string input,
   return success;
 }
 
-void TraceCrashServiceUploader::CreateAndStartURLFetcher(
+void TraceCrashServiceUploader::CreateAndStartURLLoader(
     const std::string& upload_url,
     const std::string& post_data) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!url_fetcher_.get());
+  DCHECK(!simple_url_loader_);
 
-  std::string content_type = kUploadContentType;
+  std::string content_type = kCrashUploadContentType;
   content_type.append("; boundary=");
-  content_type.append(kMultipartBoundary);
+  content_type.append(kCrashMultipartBoundary);
 
-  url_fetcher_ =
-      net::URLFetcher::Create(GURL(upload_url), net::URLFetcher::POST, this);
-  url_fetcher_->SetRequestContext(request_context_);
-  url_fetcher_->SetUploadData(content_type, post_data);
-  url_fetcher_->Start();
+  // Create traffic annotation tag.
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("background_performance_tracer", R"(
+        semantics {
+          sender: "Background Performance Traces"
+          description:
+            "Under certain conditions, Chromium will send anonymized "
+            "performance timeline data to Google for the purposes of improving "
+            "Chromium performance. We can set up a percentage of the "
+            "population to send back trace reports when a certain UMA "
+            "histogram bucket is incremented, for example, 'For 1% of the Beta "
+            "population, send us a trace if it ever takes more than 1 seconds "
+            "for the Omnibox to respond to a typed character'. The possible "
+            "types of triggers right now are UMA histograms, and manually "
+            "triggered events from code (think of them like asserts, that'll "
+            "cause a report to be sent if enabled for that population)."
+          trigger:
+            "Google-controlled triggering conditions, usually when a bad "
+            "performance situation occurs."
+          data: "An anonymized Chromium trace (see about://tracing)."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "You can enable or disable this feature via 'Automatically send "
+            "usage statistics and crash reports to Google' in Chromium's "
+            "settings under Advanced, Privacy. This feature is enabled by "
+            "default."
+          chrome_policy {
+            MetricsReportingEnabled {
+              policy_options {mode: MANDATORY}
+              MetricsReportingEnabled: false
+            }
+          }
+        })");
+
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = GURL(upload_url);
+  resource_request->method = "POST";
+  resource_request->enable_upload_progress = true;
+  resource_request->load_flags =
+      net::LOAD_DO_NOT_SEND_COOKIES | net::LOAD_DO_NOT_SAVE_COOKIES;
+
+  // TODO(https://crbug.com/808498): Re-add data use measurement once
+  // SimpleURLLoader supports it.
+  // ID=data_use_measurement::DataUseUserData::TRACING_UPLOADER
+  simple_url_loader_ = network::SimpleURLLoader::Create(
+      std::move(resource_request), traffic_annotation);
+  simple_url_loader_->AttachStringForUpload(post_data, content_type);
+
+  simple_url_loader_->SetOnUploadProgressCallback(
+      base::BindRepeating(&TraceCrashServiceUploader::OnURLLoaderUploadProgress,
+                          base::Unretained(this)));
+
+  simple_url_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      shared_url_loader_factory_.get(),
+      base::BindOnce(&TraceCrashServiceUploader::OnSimpleURLLoaderComplete,
+                     base::Unretained(this)));
 }

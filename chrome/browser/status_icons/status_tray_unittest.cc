@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/status_icons/status_tray.h"
+
 #include "base/compiler_specific.h"
 #include "chrome/browser/status_icons/status_icon.h"
-#include "chrome/browser/status_icons/status_tray.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_unittest_util.h"
-#include "ui/message_center/notifier_settings.h"
+#include "ui/message_center/public/cpp/notifier_id.h"
 
 namespace {
 
@@ -24,11 +25,11 @@ class MockStatusIcon : public StatusIcon {
 
 class TestStatusTray : public StatusTray {
  public:
-  StatusIcon* CreatePlatformStatusIcon(
+  std::unique_ptr<StatusIcon> CreatePlatformStatusIcon(
       StatusIconType type,
       const gfx::ImageSkia& image,
       const base::string16& tool_tip) override {
-    return new MockStatusIcon();
+    return std::make_unique<MockStatusIcon>();
   }
 
   const StatusIcons& GetStatusIconsForTest() const { return status_icons(); }

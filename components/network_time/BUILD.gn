@@ -14,9 +14,11 @@ static_library("network_time") {
     "//base",
     "//base:i18n",
     "//components/client_update_protocol",
+    "//components/data_use_measurement/core",
     "//components/prefs",
     "//components/variations",
     "//net",
+    "//services/network/public/cpp:cpp",
   ]
 }
 
@@ -28,10 +30,30 @@ source_set("unit_tests") {
 
   deps = [
     ":network_time",
+    ":network_time_test_support",
     "//base",
     "//base/test:test_support",
     "//components/client_update_protocol",
     "//components/prefs:test_support",
+    "//components/variations",
+    "//net",
+    "//net:test_support",
+    "//services/network:test_support",
+    "//testing/gtest",
+  ]
+}
+
+source_set("network_time_test_support") {
+  testonly = true
+  sources = [
+    "network_time_test_utils.cc",
+    "network_time_test_utils.h",
+  ]
+
+  deps = [
+    ":network_time",
+    "//base",
+    "//base/test:test_support",
     "//components/variations",
     "//net",
     "//net:test_support",

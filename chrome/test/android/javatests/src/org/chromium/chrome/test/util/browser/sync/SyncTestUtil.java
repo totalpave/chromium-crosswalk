@@ -9,17 +9,17 @@ import static org.chromium.base.test.util.ScalableTimeout.scaleTimeout;
 import android.content.Context;
 import android.util.Pair;
 
-import junit.framework.Assert;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.junit.Assert;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.chrome.browser.invalidation.InvalidationServiceFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.sync.ProfileSyncService;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -52,6 +52,18 @@ public final class SyncTestUtil {
     }
 
     /**
+     * Returns whether sync-the-feature can start.
+     */
+    public static boolean canSyncFeatureStart() {
+        return ThreadUtils.runOnUiThreadBlockingNoException(new Callable<Boolean>() {
+            @Override
+            public Boolean call() {
+                return ProfileSyncService.get().canSyncFeatureStart();
+            }
+        });
+    }
+
+    /**
      * Returns whether sync is active.
      */
     public static boolean isSyncActive() {
@@ -66,7 +78,7 @@ public final class SyncTestUtil {
     /**
      * Waits for sync to become active.
      */
-    public static void waitForSyncActive() throws InterruptedException {
+    public static void waitForSyncActive() {
         CriteriaHelper.pollUiThread(new Criteria("Timed out waiting for sync to become active.") {
             @Override
             public boolean isSatisfied() {
@@ -76,14 +88,14 @@ public final class SyncTestUtil {
     }
 
     /**
-     * Waits for sync's backend to be initialized.
+     * Waits for sync's engine to be initialized.
      */
-    public static void waitForBackendInitialized() throws InterruptedException {
+    public static void waitForEngineInitialized() {
         CriteriaHelper.pollUiThread(
-                new Criteria("Timed out waiting for sync's backend to initialize.") {
+                new Criteria("Timed out waiting for sync's engine to initialize.") {
                     @Override
                     public boolean isSatisfied() {
-                        return ProfileSyncService.get().isBackendInitialized();
+                        return ProfileSyncService.get().isEngineInitialized();
                     }
                 },
                 TIMEOUT_MS, INTERVAL_MS);
@@ -109,7 +121,7 @@ public final class SyncTestUtil {
      * one that it triggered. Therefore this method should only be used where it can result in
      * false positives (e.g. checking that something doesn't sync), not false negatives.
      */
-    public static void triggerSyncAndWaitForCompletion() throws InterruptedException {
+    public static void triggerSyncAndWaitForCompletion() {
         final long oldSyncTime = getCurrentSyncTime();
         triggerSync();
         CriteriaHelper.pollInstrumentationThread(new Criteria(
@@ -188,7 +200,12 @@ public final class SyncTestUtil {
             bookmarkSpecifics.put("parent_id", node.getString("PARENT_ID"));
             return bookmarkSpecifics;
         }
-        return specifics.getJSONObject(key);
+
+        JSONObject model_type_info = specifics.getJSONObject(key);
+        if (node.has("metadata")) {
+            model_type_info.put("metadata", node.getJSONObject("metadata"));
+        }
+        return model_type_info;
     }
 
     /**
@@ -246,7 +263,8 @@ public final class SyncTestUtil {
                 new ArrayList<Pair<String, JSONObject>>(datatypeNodes.length());
         for (int i = 0; i < datatypeNodes.length(); i++) {
             JSONObject entity = datatypeNodes.getJSONObject(i);
-            if (!entity.getString("UNIQUE_SERVER_TAG").isEmpty()) {
+            if (entity.has("UNIQUE_SERVER_TAG")
+                    && !entity.getString("UNIQUE_SERVER_TAG").isEmpty()) {
                 // Ignore permanent items (e.g., root datatype folders).
                 continue;
             }
@@ -254,5 +272,24 @@ public final class SyncTestUtil {
             localDataForDatatype.add(Pair.create(id, extractSpecifics(entity)));
         }
         return localDataForDatatype;
+    }
+
+    /**
+     * Encrypts the profile with the input |passphrase|. It will then block until the sync server
+     * is successfully using the passphrase.
+     */
+    public static void encryptWithPassphrase(final String passphrase) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> ProfileSyncService.get().setEncryptionPassphrase(passphrase));
+        // Make sure the new encryption settings make it to the server.
+        SyncTestUtil.triggerSyncAndWaitForCompletion();
+    }
+
+    /**
+     * Decrypts the profile using the input |passphrase|.
+     */
+    public static void decryptWithPassphrase(final String passphrase) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> { ProfileSyncService.get().setDecryptionPassphrase(passphrase); });
     }
 }

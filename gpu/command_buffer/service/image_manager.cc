@@ -12,18 +12,9 @@
 namespace gpu {
 namespace gles2 {
 
-ImageManager::ImageManager() {
-}
+ImageManager::ImageManager() = default;
 
-ImageManager::~ImageManager() {
-}
-
-void ImageManager::Destroy(bool have_context) {
-  for (GLImageMap::const_iterator iter = images_.begin(); iter != images_.end();
-       ++iter)
-    iter->second.get()->Destroy(have_context);
-  images_.clear();
-}
+ImageManager::~ImageManager() = default;
 
 void ImageManager::AddImage(gl::GLImage* image, int32_t service_id) {
   DCHECK(images_.find(service_id) == images_.end());
@@ -31,10 +22,8 @@ void ImageManager::AddImage(gl::GLImage* image, int32_t service_id) {
 }
 
 void ImageManager::RemoveImage(int32_t service_id) {
-  GLImageMap::iterator iter = images_.find(service_id);
-  DCHECK(iter != images_.end());
-  iter->second.get()->Destroy(true);
-  images_.erase(iter);
+  DCHECK(images_.find(service_id) != images_.end());
+  images_.erase(service_id);
 }
 
 gl::GLImage* ImageManager::LookupImage(int32_t service_id) {
@@ -42,7 +31,7 @@ gl::GLImage* ImageManager::LookupImage(int32_t service_id) {
   if (iter != images_.end())
     return iter->second.get();
 
-  return NULL;
+  return nullptr;
 }
 
 }  // namespace gles2

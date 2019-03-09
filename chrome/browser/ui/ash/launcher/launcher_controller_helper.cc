@@ -8,7 +8,12 @@
 
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/arc/arc_support_host.h"
+#include "chrome/browser/chromeos/arc/arc_session_manager.h"
+#include "chrome/browser/chromeos/arc/arc_util.h"
+#include "chrome/browser/chromeos/crostini/crostini_registry_service.h"
+#include "chrome/browser/chromeos/crostini/crostini_registry_service_factory.h"
+#include "chrome/browser/chromeos/crostini/crostini_util.h"
+#include "chrome/browser/chromeos/login/demo_mode/demo_session.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/launch_util.h"
@@ -16,12 +21,18 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
+#include "chrome/browser/ui/app_list/internal_app/internal_app_metadata.h"
+#include "chrome/browser/ui/ash/launcher/arc_app_shelf_id.h"
+#include "chrome/browser/ui/ash/launcher/arc_app_window_launcher_controller.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/extensions/extension_enable_flow.h"
-#include "chrome/browser/web_applications/web_app.h"
+#include "chrome/browser/web_applications/components/web_app_helpers.h"
+#include "chrome/browser/web_applications/extensions/bookmark_app_util.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
+#include "components/arc/arc_util.h"
+#include "components/arc/metrics/arc_metrics_constants.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_registry.h"
@@ -29,13 +40,14 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_set.h"
 #include "net/base/url_util.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/events/event_constants.h"
 
 namespace {
 
 const extensions::Extension* GetExtensionForTab(Profile* profile,
                                                 content::WebContents* tab) {
-  ExtensionService* extension_service =
+  extensions::ExtensionService* extension_service =
       extensions::ExtensionSystem::Get(profile)->extension_service();
   if (!extension_service || !extension_service->extensions_enabled())
     return nullptr;
@@ -51,7 +63,7 @@ const extensions::Extension* GetExtensionForTab(Profile* profile,
   // use the tab's url for app tabs.
   if (browser && browser->is_app()) {
     return registry->GetExtensionById(
-        web_app::GetExtensionIdFromApplicationName(browser->app_name()),
+        web_app::GetAppIdFromApplicationName(browser->app_name()),
         extensions::ExtensionRegistry::EVERYTHING);
   }
 
@@ -66,7 +78,8 @@ const extensions::Extension* GetExtensionForTab(Profile* profile,
   if (extensions::util::IsNewBookmarkAppsEnabled()) {
     for (const auto& i : extensions) {
       if (i.get()->from_bookmark() &&
-          extensions::AppLaunchInfo::GetLaunchWebURL(i.get()) == url &&
+          extensions::IsInNavigationScopeForLaunchUrl(
+              extensions::AppLaunchInfo::GetLaunchWebURL(i.get()), url) &&
           !extensions::LaunchesInWindow(profile, i.get())) {
         return i.get();
       }
@@ -81,7 +94,7 @@ const extensions::Extension* GetExtensionByID(Profile* profile,
       id, extensions::ExtensionRegistry::EVERYTHING);
 }
 
-std::string GetSourceFromAppListSource(ash::LaunchSource source) {
+std::string GetSourceFromAppListSource(ash::ShelfLaunchSource source) {
   switch (source) {
     case ash::LAUNCH_FROM_APP_LIST:
       return std::string(extension_urls::kLaunchSourceAppList);
@@ -103,25 +116,37 @@ LauncherControllerHelper::~LauncherControllerHelper() {}
 base::string16 LauncherControllerHelper::GetAppTitle(
     Profile* profile,
     const std::string& app_id) {
-  base::string16 title;
   if (app_id.empty())
-    return title;
+    return base::string16();
 
-  // Get title if the app is an Arc app.
-  ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(profile);
-  if (arc_prefs && arc_prefs->IsRegistered(app_id)) {
+  // Get the title if the app is an ARC app.
+  if (arc::IsArcItem(profile, app_id)) {
     std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =
-        arc_prefs->GetApp(app_id);
+        ArcAppListPrefs::Get(profile)->GetApp(
+            arc::ArcAppShelfId::FromString(app_id).app_id());
     DCHECK(app_info.get());
     if (app_info)
-      title = base::UTF8ToUTF16(app_info->name);
-    return title;
+      return base::UTF8ToUTF16(app_info->name);
+  }
+
+  crostini::CrostiniRegistryService* registry_service =
+      crostini::CrostiniRegistryServiceFactory::GetForProfile(profile);
+  if (registry_service && registry_service->IsCrostiniShelfAppId(app_id)) {
+    base::Optional<crostini::CrostiniRegistryService::Registration>
+        registration = registry_service->GetRegistration(app_id);
+    if (!registration)
+      return base::string16();
+    return base::UTF8ToUTF16(registration->Name());
   }
 
   const extensions::Extension* extension = GetExtensionByID(profile, app_id);
   if (extension)
-    title = base::UTF8ToUTF16(extension->name());
-  return title;
+    return base::UTF8ToUTF16(extension->name());
+
+  if (app_list::IsInternalApp(app_id))
+    return app_list::GetInternalAppNameById(app_id);
+
+  return base::string16();
 }
 
 std::string LauncherControllerHelper::GetAppID(content::WebContents* tab) {
@@ -130,7 +155,7 @@ std::string LauncherControllerHelper::GetAppID(content::WebContents* tab) {
     const std::vector<Profile*> profile_list =
         profile_manager->GetLoadedProfiles();
     if (!profile_list.empty()) {
-      for (const auto& i : profile_list) {
+      for (auto* i : profile_list) {
         const extensions::Extension* extension = GetExtensionForTab(i, tab);
         if (extension)
           return extension->id();
@@ -148,32 +173,66 @@ bool LauncherControllerHelper::IsValidIDForCurrentUser(
   const ArcAppListPrefs* arc_prefs = GetArcAppListPrefs();
   if (arc_prefs && arc_prefs->IsRegistered(id))
     return true;
+
+  crostini::CrostiniRegistryService* registry_service =
+      crostini::CrostiniRegistryServiceFactory::GetForProfile(profile_);
+  if (registry_service && registry_service->IsCrostiniShelfAppId(id)) {
+    return crostini::IsCrostiniUIAllowedForProfile(profile_) &&
+           registry_service->GetRegistration(id).has_value();
+  }
+
+  if (app_list::IsInternalApp(id))
+    return true;
+
   if (!GetExtensionByID(profile_, id))
     return false;
-  if (id == ArcSupportHost::kHostAppId) {
-    if (!arc::ArcAuthService::IsAllowedForProfile(profile()))
+  if (id == arc::kPlayStoreAppId) {
+    if (!arc::IsArcAllowedForProfile(profile()) || !arc::IsPlayStoreAvailable())
       return false;
-    const arc::ArcAuthService* arc_auth_service = arc::ArcAuthService::Get();
-    DCHECK(arc_auth_service);
-    if (!arc_auth_service->IsAllowed())
+    const arc::ArcSessionManager* arc_session_manager =
+        arc::ArcSessionManager::Get();
+    DCHECK(arc_session_manager);
+    if (!arc_session_manager->IsAllowed())
       return false;
-    if (!arc_auth_service->IsArcEnabled() && arc_auth_service->IsArcManaged())
+    if (!arc::IsArcPlayStoreEnabledForProfile(profile()) &&
+        arc::IsArcPlayStoreEnabledPreferenceManagedForProfile(profile()))
       return false;
   }
 
   return true;
 }
 
-void LauncherControllerHelper::SetCurrentUser(Profile* profile) {
-  profile_ = profile;
-}
+void LauncherControllerHelper::LaunchApp(const ash::ShelfID& id,
+                                         ash::ShelfLaunchSource source,
+                                         int event_flags,
+                                         int64_t display_id) {
+  // Handle recording app launch source from the Shelf in Demo Mode.
+  if (source == ash::ShelfLaunchSource::LAUNCH_FROM_SHELF) {
+    chromeos::DemoSession::RecordAppLaunchSourceIfInDemoMode(
+        chromeos::DemoSession::AppLaunchSource::kShelf);
+  }
 
-void LauncherControllerHelper::LaunchApp(const std::string& app_id,
-                                         ash::LaunchSource source,
-                                         int event_flags) {
+  const std::string& app_id = id.app_id;
   const ArcAppListPrefs* arc_prefs = GetArcAppListPrefs();
   if (arc_prefs && arc_prefs->IsRegistered(app_id)) {
-    arc::LaunchApp(profile_, app_id);
+    arc::LaunchApp(profile_, app_id, event_flags,
+                   arc::UserInteractionType::APP_STARTED_FROM_SHELF,
+                   display_id);
+    return;
+  }
+
+  crostini::CrostiniRegistryService* registry_service =
+      crostini::CrostiniRegistryServiceFactory::GetForProfile(profile_);
+  if (registry_service && registry_service->IsCrostiniShelfAppId(app_id)) {
+    // This expects a valid app list id, which is fine as we only get here for
+    // shelf entries associated with an actual app and not arbitrary Crostini
+    // windows.
+    crostini::LaunchCrostiniApp(profile_, app_id, display_id);
+    return;
+  }
+
+  if (app_list::IsInternalApp(app_id)) {
+    app_list::OpenInternalApp(app_id, profile_, event_flags);
     return;
   }
 
@@ -195,8 +254,10 @@ void LauncherControllerHelper::LaunchApp(const std::string& app_id,
 
   // The app will be created for the currently active profile.
   AppLaunchParams params = CreateAppLaunchParamsWithEventFlags(
-      profile_, extension, event_flags, extensions::SOURCE_APP_LAUNCHER);
-  if (source != ash::LAUNCH_FROM_UNKNOWN &&
+      profile_, extension, event_flags, extensions::SOURCE_APP_LAUNCHER,
+      display_id);
+  if ((source == ash::LAUNCH_FROM_APP_LIST ||
+       source == ash::LAUNCH_FROM_APP_LIST_SEARCH) &&
       app_id == extensions::kWebStoreAppId) {
     // Get the corresponding source string.
     std::string source_value = GetSourceFromAppListSource(source);
@@ -206,6 +267,7 @@ void LauncherControllerHelper::LaunchApp(const std::string& app_id,
     params.override_url = net::AppendQueryParameter(
         extension_url, extension_urls::kWebstoreSourceField, source_value);
   }
+  params.launch_id = id.launch_id;
 
   OpenApplication(params);
 }
@@ -215,8 +277,8 @@ ArcAppListPrefs* LauncherControllerHelper::GetArcAppListPrefs() const {
 }
 
 void LauncherControllerHelper::ExtensionEnableFlowFinished() {
-  LaunchApp(extension_enable_flow_->extension_id(), ash::LAUNCH_FROM_UNKNOWN,
-            ui::EF_NONE);
+  LaunchApp(ash::ShelfID(extension_enable_flow_->extension_id()),
+            ash::LAUNCH_FROM_UNKNOWN, ui::EF_NONE, display::kInvalidDisplayId);
   extension_enable_flow_.reset();
 }
 

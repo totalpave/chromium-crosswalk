@@ -39,7 +39,7 @@ class AudioPullFifoTest
         last_frame_delay_(-1) {
     EXPECT_EQ(kMaxFramesInFifo, pull_fifo_.SizeInFrames());
   }
-  virtual ~AudioPullFifoTest() {}
+  virtual ~AudioPullFifoTest() = default;
 
   void VerifyValue(const float data[], int size, float start_value) {
     float value = start_value;
@@ -96,8 +96,9 @@ TEST_P(AudioPullFifoTest, Consume) {
 
 // Test common |frames_to_consume| values which will be used as input
 // parameter to AudioPullFifo::Consume() when the consumer asks for data.
-INSTANTIATE_TEST_CASE_P(
-    AudioPullFifoTest, AudioPullFifoTest,
+INSTANTIATE_TEST_SUITE_P(
+    AudioPullFifoTest,
+    AudioPullFifoTest,
     testing::Values(544, 512, 512, 512, 512, 2048, 544, 441, 440, 433, 500));
 
 }  // namespace media

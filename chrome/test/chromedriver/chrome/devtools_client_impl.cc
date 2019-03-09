@@ -16,6 +16,7 @@
 #include "chrome/test/chromedriver/chrome/log.h"
 #include "chrome/test/chromedriver/chrome/status.h"
 #include "chrome/test/chromedriver/chrome/util.h"
+#include "chrome/test/chromedriver/chrome/web_view_impl.h"
 #include "chrome/test/chromedriver/net/sync_websocket.h"
 #include "chrome/test/chromedriver/net/url_request_context_getter.h"
 
@@ -31,7 +32,8 @@ const char kOldInspectorContextError[] =
     "Execution context with given id not found.";
 
 Status ParseInspectorError(const std::string& error_json) {
-  std::unique_ptr<base::Value> error = base::JSONReader::Read(error_json);
+  std::unique_ptr<base::Value> error =
+      base::JSONReader::ReadDeprecated(error_json);
   base::DictionaryValue* error_dict;
   if (!error || !error->GetAsDictionary(&error_dict))
     return Status(kUnknownError, "inspector error with no error message");
@@ -88,13 +90,18 @@ DevToolsClientImpl::DevToolsClientImpl(const SyncWebSocketFactory& factory,
                                        const std::string& id)
     : socket_(factory.Run()),
       url_(url),
+      parent_(nullptr),
+      owner_(nullptr),
       crashed_(false),
+      detached_(false),
       id_(id),
       frontend_closer_func_(base::Bind(&FakeCloseFrontends)),
       parser_func_(base::Bind(&internal::ParseInspectorMessage)),
       unnotified_event_(NULL),
       next_id_(1),
-      stack_count_(0) {}
+      stack_count_(0) {
+  socket_->SetId(id_);
+}
 
 DevToolsClientImpl::DevToolsClientImpl(
     const SyncWebSocketFactory& factory,
@@ -103,13 +110,34 @@ DevToolsClientImpl::DevToolsClientImpl(
     const FrontendCloserFunc& frontend_closer_func)
     : socket_(factory.Run()),
       url_(url),
+      parent_(nullptr),
+      owner_(nullptr),
       crashed_(false),
+      detached_(false),
       id_(id),
       frontend_closer_func_(frontend_closer_func),
       parser_func_(base::Bind(&internal::ParseInspectorMessage)),
       unnotified_event_(NULL),
       next_id_(1),
-      stack_count_(0) {}
+      stack_count_(0) {
+  socket_->SetId(id_);
+}
+
+DevToolsClientImpl::DevToolsClientImpl(DevToolsClientImpl* parent,
+                                       const std::string& session_id)
+    : parent_(parent),
+      owner_(nullptr),
+      session_id_(session_id),
+      crashed_(false),
+      detached_(false),
+      id_(session_id),
+      frontend_closer_func_(base::BindRepeating(&FakeCloseFrontends)),
+      parser_func_(base::BindRepeating(&internal::ParseInspectorMessage)),
+      unnotified_event_(NULL),
+      next_id_(1),
+      stack_count_(0) {
+  parent->children_[session_id] = this;
+}
 
 DevToolsClientImpl::DevToolsClientImpl(
     const SyncWebSocketFactory& factory,
@@ -119,15 +147,23 @@ DevToolsClientImpl::DevToolsClientImpl(
     const ParserFunc& parser_func)
     : socket_(factory.Run()),
       url_(url),
+      parent_(nullptr),
+      owner_(nullptr),
       crashed_(false),
+      detached_(false),
       id_(id),
       frontend_closer_func_(frontend_closer_func),
       parser_func_(parser_func),
       unnotified_event_(NULL),
       next_id_(1),
-      stack_count_(0) {}
+      stack_count_(0) {
+  socket_->SetId(id_);
+}
 
-DevToolsClientImpl::~DevToolsClientImpl() {}
+DevToolsClientImpl::~DevToolsClientImpl() {
+  if (parent_ != nullptr)
+    parent_->children_.erase(session_id_);
+}
 
 void DevToolsClientImpl::SetParserFuncForTesting(
     const ParserFunc& parser_func) {
@@ -146,16 +182,18 @@ Status DevToolsClientImpl::ConnectIfNecessary() {
   if (stack_count_)
     return Status(kUnknownError, "cannot connect when nested");
 
-  if (socket_->IsConnected())
-    return Status(kOk);
+  if (parent_ == nullptr) {
+    if (socket_->IsConnected())
+      return Status(kOk);
 
-  if (!socket_->Connect(url_)) {
-    // Try to close devtools frontend and then reconnect.
-    Status status = frontend_closer_func_.Run();
-    if (status.IsError())
-      return status;
-    if (!socket_->Connect(url_))
-      return Status(kDisconnected, "unable to connect to renderer");
+    if (!socket_->Connect(url_)) {
+      // Try to close devtools frontend and then reconnect.
+      Status status = frontend_closer_func_.Run();
+      if (status.IsError())
+        return status;
+      if (!socket_->Connect(url_))
+        return Status(kDisconnected, "unable to connect to renderer");
+    }
   }
 
   unnotified_connect_listeners_ = listeners_;
@@ -179,14 +217,14 @@ Status DevToolsClientImpl::SendCommandWithTimeout(
     const base::DictionaryValue& params,
     const Timeout* timeout) {
   std::unique_ptr<base::DictionaryValue> result;
-  return SendCommandInternal(method, params, &result, true, timeout);
+  return SendCommandInternal(method, params, &result, true, true, timeout);
 }
 
 Status DevToolsClientImpl::SendAsyncCommand(
     const std::string& method,
     const base::DictionaryValue& params) {
   std::unique_ptr<base::DictionaryValue> result;
-  return SendCommandInternal(method, params, &result, false, nullptr);
+  return SendCommandInternal(method, params, &result, false, false, nullptr);
 }
 
 Status DevToolsClientImpl::SendCommandAndGetResult(
@@ -203,13 +241,19 @@ Status DevToolsClientImpl::SendCommandAndGetResultWithTimeout(
     std::unique_ptr<base::DictionaryValue>* result) {
   std::unique_ptr<base::DictionaryValue> intermediate_result;
   Status status = SendCommandInternal(
-      method, params, &intermediate_result, true, timeout);
+      method, params, &intermediate_result, true, true, timeout);
   if (status.IsError())
     return status;
   if (!intermediate_result)
     return Status(kUnknownError, "inspector response missing result");
-  result->reset(intermediate_result.release());
+  *result = std::move(intermediate_result);
   return Status(kOk);
+}
+
+Status DevToolsClientImpl::SendCommandAndIgnoreResponse(
+    const std::string& method,
+    const base::DictionaryValue& params) {
+  return SendCommandInternal(method, params, nullptr, true, false, nullptr);
 }
 
 void DevToolsClientImpl::AddListener(DevToolsEventListener* listener) {
@@ -243,6 +287,14 @@ Status DevToolsClientImpl::HandleEventsUntil(
   }
 }
 
+void DevToolsClientImpl::SetDetached() {
+  detached_ = true;
+}
+
+void DevToolsClientImpl::SetOwner(WebViewImpl* owner) {
+  owner_ = owner;
+}
+
 DevToolsClientImpl::ResponseInfo::ResponseInfo(const std::string& method)
     : state(kWaiting), method(method) {}
 
@@ -252,48 +304,65 @@ Status DevToolsClientImpl::SendCommandInternal(
     const std::string& method,
     const base::DictionaryValue& params,
     std::unique_ptr<base::DictionaryValue>* result,
+    bool expect_response,
     bool wait_for_response,
     const Timeout* timeout) {
-  if (!socket_->IsConnected())
+  if (parent_ == nullptr && !socket_->IsConnected())
     return Status(kDisconnected, "not connected to DevTools");
 
   int command_id = next_id_++;
   base::DictionaryValue command;
   command.SetInteger("id", command_id);
   command.SetString("method", method);
-  command.Set("params", params.DeepCopy());
+  command.SetKey("params", params.Clone());
   std::string message = SerializeValue(&command);
   if (IsVLogOn(1)) {
-    VLOG(1) << "DEVTOOLS COMMAND " << method << " (id=" << command_id << ") "
-            << FormatValueForDisplay(params);
+    // Note: ChromeDriver log-replay depends on the format of this logging.
+    // see chromedriver/log_replay/devtools_log_reader.cc.
+    VLOG(1) << "DevTools WebSocket Command: " << method << " (id=" << command_id
+            << ") " << id_ << " " << FormatValueForDisplay(params);
   }
-  if (!socket_->Send(message))
+  if (parent_ != nullptr) {
+    base::DictionaryValue params2;
+    params2.SetString("sessionId", session_id_);
+    params2.SetString("message", message);
+    Status status = parent_->SendCommandInternal(
+        "Target.sendMessageToTarget", params2, nullptr, true, false, timeout);
+    if (status.IsError())
+      return status;
+  } else if (!socket_->Send(message)) {
     return Status(kDisconnected, "unable to send message to renderer");
+  }
 
-  if (wait_for_response) {
-    linked_ptr<ResponseInfo> response_info =
-        make_linked_ptr(new ResponseInfo(method));
+  if (expect_response) {
+    scoped_refptr<ResponseInfo> response_info =
+        base::MakeRefCounted<ResponseInfo>(method);
     if (timeout)
       response_info->command_timeout = *timeout;
     response_info_map_[command_id] = response_info;
-    while (response_info->state == kWaiting) {
-      Status status = ProcessNextMessage(
-          command_id, Timeout(base::TimeDelta::FromMinutes(10), timeout));
-      if (status.IsError()) {
-        if (response_info->state == kReceived)
-          response_info_map_.erase(command_id);
-        return status;
+
+    if (wait_for_response) {
+      while (response_info->state == kWaiting) {
+        Status status = ProcessNextMessage(
+            command_id, Timeout(base::TimeDelta::FromMinutes(10), timeout));
+        if (status.IsError()) {
+          if (response_info->state == kReceived)
+            response_info_map_.erase(command_id);
+          return status;
+        }
       }
+      if (response_info->state == kBlocked) {
+        response_info->state = kIgnored;
+        return Status(kUnexpectedAlertOpen);
+      }
+      CHECK_EQ(response_info->state, kReceived);
+      internal::InspectorCommandResponse& response = response_info->response;
+      if (!response.result)
+        return ParseInspectorError(response.error);
+      *result = std::move(response.result);
     }
-    if (response_info->state == kBlocked) {
-      response_info->state = kIgnored;
-      return Status(kUnexpectedAlertOpen);
-    }
-    CHECK_EQ(response_info->state, kReceived);
-    internal::InspectorCommandResponse& response = response_info->response;
-    if (!response.result)
-      return ParseInspectorError(response.error);
-    *result = std::move(response.result);
+  } else {
+    CHECK(!wait_for_response);
   }
   return Status(kOk);
 }
@@ -317,13 +386,19 @@ Status DevToolsClientImpl::ProcessNextMessage(
   // have been deleted from |response_info_map_|) or blocked while notifying
   // listeners.
   if (expected_id != -1) {
-    ResponseInfoMap::iterator iter = response_info_map_.find(expected_id);
+    auto iter = response_info_map_.find(expected_id);
     if (iter == response_info_map_.end() || iter->second->state != kWaiting)
       return Status(kOk);
   }
 
   if (crashed_)
     return Status(kTabCrashed);
+
+  if (detached_)
+    return Status(kTargetDetached);
+
+  if (parent_ != nullptr)
+    return parent_->ProcessNextMessage(-1, timeout);
 
   std::string message;
   switch (socket_->ReceiveNextMessage(&message, timeout)) {
@@ -346,6 +421,11 @@ Status DevToolsClientImpl::ProcessNextMessage(
       break;
   }
 
+  return HandleMessage(expected_id, message);
+}
+
+Status DevToolsClientImpl::HandleMessage(int expected_id,
+                                         const std::string& message) {
   internal::InspectorMessageType type;
   internal::InspectorEvent event;
   internal::InspectorCommandResponse response;
@@ -362,7 +442,9 @@ Status DevToolsClientImpl::ProcessNextMessage(
 
 Status DevToolsClientImpl::ProcessEvent(const internal::InspectorEvent& event) {
   if (IsVLogOn(1)) {
-    VLOG(1) << "DEVTOOLS EVENT " << event.method << " "
+    // Note: ChromeDriver log-replay depends on the format of this logging.
+    // see chromedriver/log_replay/devtools_log_reader.cc.
+    VLOG(1) << "DevTools WebSocket Event: " << event.method << " " << id_ << " "
             << FormatValueForDisplay(*event.params);
   }
   unnotified_event_listeners_ = listeners_;
@@ -391,7 +473,7 @@ Status DevToolsClientImpl::ProcessEvent(const internal::InspectorEvent& event) {
     base::DictionaryValue enable_params;
     enable_params.SetString("purpose", "detect if alert blocked any cmds");
     Status enable_status = SendCommand("Inspector.enable", enable_params);
-    for (ResponseInfoMap::const_iterator iter = response_info_map_.begin();
+    for (auto iter = response_info_map_.begin();
          iter != response_info_map_.end(); ++iter) {
       if (iter->first > max_id)
         continue;
@@ -401,12 +483,33 @@ Status DevToolsClientImpl::ProcessEvent(const internal::InspectorEvent& event) {
     if (enable_status.IsError())
       return status;
   }
+  if (event.method == "Target.receivedMessageFromTarget") {
+    std::string session_id;
+    if (!event.params->GetString("sessionId", &session_id))
+      return Status(
+          kUnknownError,
+          "missing sessionId in Target.receivedMessageFromTarget event");
+    if (children_.count(session_id) == 0)
+      // ChromeDriver only cares about iframe targets. If we don't know about
+      // this sessionId, then it must be of a different target type and should
+      // be ignored.
+      return Status(kOk);
+    DevToolsClientImpl* child = children_[session_id];
+    std::string message;
+    if (!event.params->GetString("message", &message))
+      return Status(
+          kUnknownError,
+          "missing message in Target.receivedMessageFromTarget event");
+
+    WebViewImplHolder childHolder(child->owner_);
+    return child->HandleMessage(-1, message);
+  }
   return Status(kOk);
 }
 
 Status DevToolsClientImpl::ProcessCommandResponse(
     const internal::InspectorCommandResponse& response) {
-  ResponseInfoMap::iterator iter = response_info_map_.find(response.id);
+  auto iter = response_info_map_.find(response.id);
   if (IsVLogOn(1)) {
     std::string method, result;
     if (iter != response_info_map_.end())
@@ -415,14 +518,16 @@ Status DevToolsClientImpl::ProcessCommandResponse(
       result = FormatValueForDisplay(*response.result);
     else
       result = response.error;
-    VLOG(1) << "DEVTOOLS RESPONSE " << method << " (id=" << response.id
-            << ") " << result;
+    // Note: ChromeDriver log-replay depends on the format of this logging.
+    // see chromedriver/log_replay/devtools_log_reader.cc.
+    VLOG(1) << "DevTools WebSocket Response: " << method
+            << " (id=" << response.id << ") " << id_ << " " << result;
   }
 
   if (iter == response_info_map_.end())
     return Status(kUnknownError, "unexpected command response");
 
-  linked_ptr<ResponseInfo> response_info = response_info_map_[response.id];
+  scoped_refptr<ResponseInfo> response_info = response_info_map_[response.id];
   response_info_map_.erase(response.id);
 
   if (response_info->state != kIgnored) {
@@ -461,8 +566,10 @@ Status DevToolsClientImpl::EnsureListenersNotifiedOfEvent() {
     unnotified_event_listeners_.pop_front();
     Status status = listener->OnEvent(
         this, unnotified_event_->method, *unnotified_event_->params);
-    if (status.IsError())
+    if (status.IsError()) {
+      unnotified_event_listeners_.clear();
       return status;
+    }
   }
   return Status(kOk);
 }
@@ -491,7 +598,10 @@ bool ParseInspectorMessage(
     InspectorMessageType* type,
     InspectorEvent* event,
     InspectorCommandResponse* command_response) {
-  std::unique_ptr<base::Value> message_value = base::JSONReader::Read(message);
+  // We want to allow invalid characters in case they are valid ECMAScript
+  // strings. For example, webplatform tests use this to check string handling
+  std::unique_ptr<base::Value> message_value = base::JSONReader::ReadDeprecated(
+      message, base::JSON_REPLACE_INVALID_CHARACTERS);
   base::DictionaryValue* message_dict;
   if (!message_value || !message_value->GetAsDictionary(&message_dict))
     return false;

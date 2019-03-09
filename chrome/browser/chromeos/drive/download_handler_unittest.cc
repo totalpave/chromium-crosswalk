@@ -6,13 +6,15 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
 #include "chrome/browser/chromeos/drive/file_system_util.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/download/public/common/mock_download_item.h"
 #include "components/drive/chromeos/dummy_file_system.h"
 #include "components/drive/file_system_core_util.h"
-#include "content/public/test/mock_download_item.h"
 #include "content/public/test/mock_download_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
@@ -33,10 +35,10 @@ class DownloadHandlerTestFileSystem : public DummyFileSystem {
 
   // FileSystemInterface overrides.
   void GetResourceEntry(const base::FilePath& file_path,
-                        const GetResourceEntryCallback& callback) override {
-    callback.Run(error_, std::unique_ptr<ResourceEntry>(error_ == FILE_ERROR_OK
-                                                            ? new ResourceEntry
-                                                            : NULL));
+                        GetResourceEntryCallback callback) override {
+    std::move(callback).Run(
+        error_, std::unique_ptr<ResourceEntry>(
+                    error_ == FILE_ERROR_OK ? new ResourceEntry : nullptr));
   }
 
   void CreateDirectory(const base::FilePath& directory_path,
@@ -71,7 +73,7 @@ class DownloadHandlerTestDownloadManager : public content::MockDownloadManager {
   content::DownloadManager::DownloadVector test_downloads_;
 };
 
-class DownloadHandlerTestDownloadItem : public content::MockDownloadItem {
+class DownloadHandlerTestDownloadItem : public download::MockDownloadItem {
  public:
   bool IsDone() const override { return is_done_; }
 
@@ -96,10 +98,10 @@ class DownloadHandlerTest : public testing::Test {
 
     // Set expectations for download item.
     EXPECT_CALL(download_item_, GetState())
-        .WillRepeatedly(testing::Return(content::DownloadItem::IN_PROGRESS));
+        .WillRepeatedly(testing::Return(download::DownloadItem::IN_PROGRESS));
 
-    download_handler_.reset(new DownloadHandler(&test_file_system_));
-    download_handler_->Initialize(download_manager_.get(), temp_dir_.path());
+    download_handler_ = std::make_unique<DownloadHandler>(&test_file_system_);
+    download_handler_->Initialize(download_manager_.get(), temp_dir_.GetPath());
     download_handler_->SetFreeDiskSpaceDelayForTesting(
         base::TimeDelta::FromMilliseconds(0));
   }
@@ -113,7 +115,7 @@ class DownloadHandlerTest : public testing::Test {
       incognito_download_manager_;
   DownloadHandlerTestFileSystem test_file_system_;
   std::unique_ptr<DownloadHandler> download_handler_;
-  content::MockDownloadItem download_item_;
+  download::MockDownloadItem download_item_;
 };
 
 TEST_F(DownloadHandlerTest, SubstituteDriveDownloadPathNonDrivePath) {
@@ -126,7 +128,7 @@ TEST_F(DownloadHandlerTest, SubstituteDriveDownloadPathNonDrivePath) {
       non_drive_path,
       &download_item_,
       google_apis::test_util::CreateCopyResultCallback(&substituted_path));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Check the result.
   EXPECT_EQ(non_drive_path, substituted_path);
@@ -146,10 +148,10 @@ TEST_F(DownloadHandlerTest, SubstituteDriveDownloadPath) {
       drive_path,
       &download_item_,
       google_apis::test_util::CreateCopyResultCallback(&substituted_path));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Check the result.
-  EXPECT_TRUE(temp_dir_.path().IsParent(substituted_path));
+  EXPECT_TRUE(temp_dir_.GetPath().IsParent(substituted_path));
   ASSERT_TRUE(download_handler_->IsDriveDownload(&download_item_));
   EXPECT_EQ(drive_path, download_handler_->GetTargetPath(&download_item_));
 }
@@ -168,7 +170,7 @@ TEST_F(DownloadHandlerTest, SubstituteDriveDownloadPathGetEntryFailure) {
       drive_path,
       &download_item_,
       google_apis::test_util::CreateCopyResultCallback(&substituted_path));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Check the result.
   EXPECT_TRUE(substituted_path.empty());
@@ -185,12 +187,12 @@ TEST_F(DownloadHandlerTest, SubstituteDriveDownloadPathForSavePackage) {
   base::FilePath substituted_path;
   download_handler_->SubstituteDriveDownloadPath(
       drive_path,
-      NULL,  // DownloadItem is not available at this moment.
+      nullptr,  // DownloadItem is not available at this moment.
       google_apis::test_util::CreateCopyResultCallback(&substituted_path));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Check the result of SubstituteDriveDownloadPath().
-  EXPECT_TRUE(temp_dir_.path().IsParent(substituted_path));
+  EXPECT_TRUE(temp_dir_.GetPath().IsParent(substituted_path));
 
   // |download_item_| is not a drive download yet.
   EXPECT_FALSE(download_handler_->IsDriveDownload(&download_item_));
@@ -220,7 +222,7 @@ TEST_F(DownloadHandlerTest, CheckForFileExistence) {
   download_handler_->CheckForFileExistence(
       &download_item_,
       google_apis::test_util::CreateCopyResultCallback(&file_exists));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Check the result.
   EXPECT_TRUE(file_exists);
@@ -232,7 +234,7 @@ TEST_F(DownloadHandlerTest, CheckForFileExistence) {
   download_handler_->CheckForFileExistence(
       &download_item_,
       google_apis::test_util::CreateCopyResultCallback(&file_exists));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Check the result.
   EXPECT_FALSE(file_exists);
@@ -269,7 +271,8 @@ TEST_F(DownloadHandlerTest, FreeDiskSpace) {
 
   // Observe incognito download manager and add another download item.
   // FreeDiskSpace should be called with considering both download items.
-  incognito_download_manager_.reset(new DownloadHandlerTestDownloadManager);
+  incognito_download_manager_ =
+      std::make_unique<DownloadHandlerTestDownloadManager>();
   download_handler_->ObserveIncognitoDownloadManager(
       incognito_download_manager_.get());
 

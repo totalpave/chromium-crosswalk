@@ -22,7 +22,7 @@ namespace crashpad {
 namespace test {
 namespace {
 
-const uint64_t kNanosecondsPerSecond = static_cast<uint64_t>(1E9);
+constexpr uint64_t kNanosecondsPerSecond = static_cast<uint64_t>(1E9);
 
 class WorkDelegate : public WorkerThread::Delegate {
  public:
@@ -30,8 +30,11 @@ class WorkDelegate : public WorkerThread::Delegate {
   ~WorkDelegate() {}
 
   void DoWork(const WorkerThread* thread) override {
-    if (++work_count_ == waiting_for_count_)
-      semaphore_.Signal();
+    if (work_count_ < waiting_for_count_) {
+      if (++work_count_ == waiting_for_count_) {
+        semaphore_.Signal();
+      }
+    }
   }
 
   void SetDesiredWorkCount(int times) {
@@ -59,6 +62,7 @@ TEST(WorkerThread, DoWork) {
   WorkerThread thread(0.05, &delegate);
 
   uint64_t start = ClockMonotonicNanoseconds();
+
   delegate.SetDesiredWorkCount(2);
   thread.Start(0);
   EXPECT_TRUE(thread.is_running());
@@ -67,7 +71,18 @@ TEST(WorkerThread, DoWork) {
   thread.Stop();
   EXPECT_FALSE(thread.is_running());
 
-  EXPECT_GE(1 * kNanosecondsPerSecond, ClockMonotonicNanoseconds() - start);
+// Fuchsia's scheduler is very antagonistic. The assumption that the two work
+// items complete in some particular amount of time is strictly incorrect, but
+// also somewhat useful. The expected time "should" be ~40-50ms with a work
+// interval of 0.05s, but on Fuchsia, 1200ms was observed. So, on Fuchsia, use a
+// much larger timeout. See https://crashpad.chromium.org/bug/231.
+#if defined(OS_FUCHSIA)
+  constexpr uint64_t kUpperBoundTime = 10;
+#else
+  constexpr uint64_t kUpperBoundTime = 1;
+#endif
+  EXPECT_GE(kUpperBoundTime * kNanosecondsPerSecond,
+            ClockMonotonicNanoseconds() - start);
 }
 
 TEST(WorkerThread, StopBeforeDoWork) {
@@ -77,7 +92,7 @@ TEST(WorkerThread, StopBeforeDoWork) {
   thread.Start(15);
   thread.Stop();
 
-  EXPECT_EQ(0, delegate.work_count());
+  EXPECT_EQ(delegate.work_count(), 0);
 }
 
 TEST(WorkerThread, Restart) {
@@ -103,20 +118,20 @@ TEST(WorkerThread, DoWorkNow) {
   WorkDelegate delegate;
   WorkerThread thread(100, &delegate);
 
+  uint64_t start = ClockMonotonicNanoseconds();
+
   delegate.SetDesiredWorkCount(1);
   thread.Start(0);
   EXPECT_TRUE(thread.is_running());
 
-  uint64_t start = ClockMonotonicNanoseconds();
-
   delegate.WaitForWorkCount();
-  EXPECT_EQ(1, delegate.work_count());
+  EXPECT_EQ(delegate.work_count(), 1);
 
   delegate.SetDesiredWorkCount(2);
   thread.DoWorkNow();
   delegate.WaitForWorkCount();
   thread.Stop();
-  EXPECT_EQ(2, delegate.work_count());
+  EXPECT_EQ(delegate.work_count(), 2);
 
   EXPECT_GE(100 * kNanosecondsPerSecond, ClockMonotonicNanoseconds() - start);
 }
@@ -133,7 +148,7 @@ TEST(WorkerThread, DoWorkNowAtStart) {
 
   thread.DoWorkNow();
   delegate.WaitForWorkCount();
-  EXPECT_EQ(1, delegate.work_count());
+  EXPECT_EQ(delegate.work_count(), 1);
 
   EXPECT_GE(100 * kNanosecondsPerSecond, ClockMonotonicNanoseconds() - start);
 

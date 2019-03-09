@@ -5,8 +5,11 @@
 #ifndef CONTENT_BROWSER_WEBUI_SHARED_RESOURCES_DATA_SOURCE_H_
 #define CONTENT_BROWSER_WEBUI_SHARED_RESOURCES_DATA_SOURCE_H_
 
+#include <string>
+
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/single_thread_task_runner.h"
 #include "content/public/browser/url_data_source.h"
 
 namespace content {
@@ -20,16 +23,28 @@ class SharedResourcesDataSource : public URLDataSource {
   std::string GetSource() const override;
   void StartDataRequest(
       const std::string& path,
-      int render_process_id,
-      int render_frame_id,
+      const ResourceRequestInfo::WebContentsGetter& wc_getter,
       const URLDataSource::GotDataCallback& callback) override;
+  bool AllowCaching() const override;
   std::string GetMimeType(const std::string& path) const override;
-  base::MessageLoop* MessageLoopForRequestPath(
-        const std::string& path) const override;
+  bool ShouldServeMimeTypeAsContentTypeHeader() const override;
+  scoped_refptr<base::SingleThreadTaskRunner> TaskRunnerForRequestPath(
+      const std::string& path) const override;
   std::string GetAccessControlAllowOriginForOrigin(
       const std::string& origin) const override;
+  bool IsGzipped(const std::string& path) const override;
+#if defined(OS_CHROMEOS)
+  void DisablePolymer2ForHost(const std::string& host) override;
+#endif  // defined (OS_CHROMEOS)
 
  private:
+#if defined(OS_CHROMEOS)
+  std::string disabled_polymer2_host_;
+
+  bool IsPolymer2DisabledForPage(
+      const ResourceRequestInfo::WebContentsGetter& wc_getter);
+#endif  // defined (OS_CHROMEOS)
+
   ~SharedResourcesDataSource() override;
 
   DISALLOW_COPY_AND_ASSIGN(SharedResourcesDataSource);

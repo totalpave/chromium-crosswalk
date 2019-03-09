@@ -10,12 +10,10 @@
 #include <utility>
 
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/trace_event/trace_event.h"
 #include "components/exo/buffer.h"
-#include "gpu/command_buffer/client/gpu_memory_buffer_manager.h"
+#include "gpu/ipc/common/gpu_memory_buffer_impl_shared_memory.h"
 #include "third_party/khronos/GLES2/gl2.h"
-#include "ui/aura/env.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/geometry/size.h"
@@ -36,8 +34,8 @@ bool IsSupportedFormat(gfx::BufferFormat format) {
 ////////////////////////////////////////////////////////////////////////////////
 // SharedMemory, public:
 
-SharedMemory::SharedMemory(const base::SharedMemoryHandle& handle)
-    : shared_memory_(handle, true /* read-only */) {}
+SharedMemory::SharedMemory(base::UnsafeSharedMemoryRegion shared_memory_region)
+    : shared_memory_region_(std::move(shared_memory_region)) {}
 
 SharedMemory::~SharedMemory() {}
 
@@ -65,15 +63,14 @@ std::unique_ptr<Buffer> SharedMemory::CreateBuffer(const gfx::Size& size,
 
   gfx::GpuMemoryBufferHandle handle;
   handle.type = gfx::SHARED_MEMORY_BUFFER;
-  handle.handle = base::SharedMemory::DuplicateHandle(shared_memory_.handle());
+  handle.region = shared_memory_region_.Duplicate();
   handle.offset = offset;
   handle.stride = stride;
 
   std::unique_ptr<gfx::GpuMemoryBuffer> gpu_memory_buffer =
-      aura::Env::GetInstance()
-          ->context_factory()
-          ->GetGpuMemoryBufferManager()
-          ->CreateGpuMemoryBufferFromHandle(handle, size, format);
+      gpu::GpuMemoryBufferImplSharedMemory::CreateFromHandle(
+          std::move(handle), size, format, gfx::BufferUsage::GPU_READ,
+          gpu::GpuMemoryBufferImpl::DestructionCallback());
   if (!gpu_memory_buffer) {
     LOG(ERROR) << "Failed to create GpuMemoryBuffer from handle";
     return nullptr;
@@ -84,14 +81,14 @@ std::unique_ptr<Buffer> SharedMemory::CreateBuffer(const gfx::Size& size,
   // buffers. Making the copy explicit allows the buffer to be reused earlier.
   bool use_zero_copy = false;
 
-  return base::WrapUnique(
-      new Buffer(std::move(gpu_memory_buffer), GL_TEXTURE_2D,
-                 // COMMANDS_ISSUED queries are sufficient for shared memory
-                 // buffers as binding to texture is implemented using a call to
-                 // glTexImage2D and the buffer can be reused as soon as that
-                 // command has been issued.
-                 GL_COMMANDS_ISSUED_CHROMIUM, use_zero_copy,
-                 false /* is_overlay_candidate */));
+  return std::make_unique<Buffer>(
+      std::move(gpu_memory_buffer), GL_TEXTURE_2D,
+      // COMMANDS_ISSUED queries are sufficient for shared memory
+      // buffers as binding to texture is implemented using a call to
+      // glTexImage2D and the buffer can be reused as soon as that
+      // command has been issued.
+      GL_COMMANDS_ISSUED_CHROMIUM, use_zero_copy,
+      false /* is_overlay_candidate */, false /* y_invert */);
 }
 
 }  // namespace exo

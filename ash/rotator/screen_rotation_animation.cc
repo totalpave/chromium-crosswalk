@@ -4,6 +4,8 @@
 
 #include "ash/rotator/screen_rotation_animation.h"
 
+#include <memory>
+
 #include "base/time/time.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_delegate.h"
@@ -28,18 +30,19 @@ ScreenRotationAnimation::ScreenRotationAnimation(ui::Layer* layer,
       tween_type_(tween_type),
       initial_opacity_(initial_opacity),
       target_opacity_(target_opacity) {
-  std::unique_ptr<ui::InterpolatedTransform> rotation(
-      new ui::InterpolatedTransformAboutPivot(
-          pivot, new ui::InterpolatedRotation(start_degrees, end_degrees)));
+  std::unique_ptr<ui::InterpolatedTransform> rotation =
+      std::make_unique<ui::InterpolatedTransformAboutPivot>(
+          pivot, std::make_unique<ui::InterpolatedRotation>(start_degrees,
+                                                            end_degrees));
 
   // Use the target transform/bounds in case the layer is already animating.
   gfx::Transform current_transform = layer->GetTargetTransform();
   interpolated_transform_.reset(
       new ui::InterpolatedConstantTransform(current_transform));
-  interpolated_transform_->SetChild(rotation.release());
+  interpolated_transform_->SetChild(std::move(rotation));
 }
 
-ScreenRotationAnimation::~ScreenRotationAnimation() {}
+ScreenRotationAnimation::~ScreenRotationAnimation() = default;
 
 void ScreenRotationAnimation::OnStart(ui::LayerAnimationDelegate* delegate) {}
 
@@ -47,9 +50,11 @@ bool ScreenRotationAnimation::OnProgress(double current,
                                          ui::LayerAnimationDelegate* delegate) {
   const double tweened = gfx::Tween::CalculateValue(tween_type_, current);
   delegate->SetTransformFromAnimation(
-      interpolated_transform_->Interpolate(tweened));
-  delegate->SetOpacityFromAnimation(gfx::Tween::FloatValueBetween(
-      tweened, initial_opacity_, target_opacity_));
+      interpolated_transform_->Interpolate(tweened),
+      ui::PropertyChangeReason::FROM_ANIMATION);
+  delegate->SetOpacityFromAnimation(
+      gfx::Tween::FloatValueBetween(tweened, initial_opacity_, target_opacity_),
+      ui::PropertyChangeReason::FROM_ANIMATION);
   return true;
 }
 
@@ -58,9 +63,15 @@ void ScreenRotationAnimation::OnGetTarget(TargetValue* target) const {
 }
 
 void ScreenRotationAnimation::OnAbort(ui::LayerAnimationDelegate* delegate) {
+  // ui::Layer's d'tor passes its ui::LayerAnimator a null delegate before
+  // deleting it. This is then passed here: http://crbug.com/661313
+  if (!delegate)
+    return;
+
   TargetValue target_value;
   OnGetTarget(&target_value);
-  delegate->SetTransformFromAnimation(target_value.transform);
+  delegate->SetTransformFromAnimation(target_value.transform,
+                                      ui::PropertyChangeReason::FROM_ANIMATION);
 }
 
 }  // namespace ash

@@ -11,6 +11,7 @@
 #include "base/values.h"
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/test/base/testing_profile.h"
+#include "extensions/browser/api/file_system/saved_file_entry.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/extension.h"
@@ -22,13 +23,13 @@
     expression;                \
   } while (0)
 
-using apps::SavedFileEntry;
 using apps::SavedFilesService;
+using extensions::SavedFileEntry;
 
 namespace {
 
 std::string GenerateId(int i) {
-  return base::IntToString(i) + ":filename.ext";
+  return base::NumberToString(i) + ":filename.ext";
 }
 
 }  // namespace
@@ -37,7 +38,7 @@ class SavedFilesServiceUnitTest : public testing::Test {
  protected:
   void SetUp() override {
     testing::Test::SetUp();
-    extension_ = env_.MakeExtension(*base::test::ParseJson(
+    extension_ = env_.MakeExtension(*base::test::ParseJsonDeprecated(
         "{"
         "  \"app\": {"
         "    \"background\": {"
@@ -146,7 +147,7 @@ TEST_F(SavedFilesServiceUnitTest, RetainTwoFilesTest) {
 }
 
 TEST_F(SavedFilesServiceUnitTest, NoRetainEntriesPermissionTest) {
-  extension_ = env_.MakeExtension(*base::test::ParseJson(
+  extension_ = env_.MakeExtension(*base::test::ParseJsonDeprecated(
       "{\"app\": {\"background\": {\"scripts\": [\"background.js\"]}},"
       "\"permissions\": [\"fileSystem\"]}"));
   service_->RegisterFileEntry(extension_->id(), GenerateId(1), path_, true);

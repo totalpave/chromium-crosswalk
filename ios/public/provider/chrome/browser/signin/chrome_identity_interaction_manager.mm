@@ -4,23 +4,14 @@
 
 #import "ios/public/provider/chrome/browser/signin/chrome_identity_interaction_manager.h"
 
-#import "base/ios/weak_nsobject.h"
 #include "base/logging.h"
 
-@interface ChromeIdentityInteractionManager () {
-  base::WeakNSProtocol<id<ChromeIdentityInteractionManagerDelegate>> _delegate;
-}
-@end
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 @implementation ChromeIdentityInteractionManager
-
-- (id<ChromeIdentityInteractionManagerDelegate>)delegate {
-  return _delegate;
-}
-
-- (void)setDelegate:(id<ChromeIdentityInteractionManagerDelegate>)delegate {
-  _delegate.reset(delegate);
-}
+@synthesize delegate = _delegate;
 
 - (BOOL)isCanceling {
   return NO;
@@ -34,12 +25,6 @@
 - (void)reauthenticateUserWithID:(NSString*)userID
                            email:(NSString*)userEmail
                       completion:(SigninCompletionCallback)completion {
-  NOTREACHED() << "Subclasses must override this";
-  completion(nil, nil);
-}
-
-- (void)reauthenticateUserWithEmail:(NSString*)email
-                         completion:(SigninCompletionCallback)completion {
   NOTREACHED() << "Subclasses must override this";
   completion(nil, nil);
 }

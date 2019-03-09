@@ -5,13 +5,11 @@
 #ifndef MOJO_PUBLIC_CPP_BINDINGS_TESTS_MESSAGE_QUEUE_H_
 #define MOJO_PUBLIC_CPP_BINDINGS_TESTS_MESSAGE_QUEUE_H_
 
-#include <queue>
-
+#include "base/containers/queue.h"
 #include "base/macros.h"
+#include "mojo/public/cpp/bindings/message.h"
 
 namespace mojo {
-class Message;
-
 namespace test {
 
 // A queue for Message objects.
@@ -34,7 +32,7 @@ class MessageQueue {
  private:
   void Pop();
 
-  std::queue<Message*> queue_;
+  base::queue<Message> queue_;
 
   DISALLOW_COPY_AND_ASSIGN(MessageQueue);
 };

@@ -5,7 +5,7 @@
 #ifndef STORAGE_COMMON_FILEAPI_FILE_SYSTEM_TYPES_H_
 #define STORAGE_COMMON_FILEAPI_FILE_SYSTEM_TYPES_H_
 
-#include "third_party/WebKit/public/platform/WebFileSystemType.h"
+#include "third_party/blink/public/platform/web_file_system_type.h"
 
 namespace storage {
 
@@ -24,11 +24,11 @@ enum FileSystemType {
   // They are sandboxed filesystems; all the files in the filesystems are
   // placed under the profile directory with path obfuscation and quota
   // enforcement.
-  kFileSystemTypeTemporary = blink::WebFileSystemTypeTemporary,
-  kFileSystemTypePersistent = blink::WebFileSystemTypePersistent,
+  kFileSystemTypeTemporary = blink::kWebFileSystemTypeTemporary,
+  kFileSystemTypePersistent = blink::kWebFileSystemTypePersistent,
 
   // Indicates non-sandboxed isolated filesystem.
-  kFileSystemTypeIsolated = blink::WebFileSystemTypeIsolated,
+  kFileSystemTypeIsolated = blink::kWebFileSystemTypeIsolated,
 
   // Indicates filesystems that are mounted externally via
   // ExternalMountPoints with a well-known mount name.  The mounted
@@ -36,7 +36,7 @@ enum FileSystemType {
   // non-sandboxed removable media folder with a name 'removable', while
   // chrome.syncFileSystem mounts a sandboxed filesystem with a name
   // 'syncfs'.)
-  kFileSystemTypeExternal = blink::WebFileSystemTypeExternal,
+  kFileSystemTypeExternal = blink::kWebFileSystemTypeExternal,
 
   // ------------------------------------------------------------------------
   // Marks the beginning of internal type enum. (This is not the actual fs type)
@@ -74,12 +74,6 @@ enum FileSystemType {
   // Indicates media filesystem to which we need special protocol to access,
   // such as MTP or PTP.
   kFileSystemTypeDeviceMedia,
-
-  // Indicates a Picasa virtual filesystem provided by Media Galleries API.
-  kFileSystemTypePicasa,
-
-  // Indicates a synthetic iTunes filesystem.
-  kFileSystemTypeItunes,
 
   // Indicates a Drive filesystem which provides access to Google Drive.
   kFileSystemTypeDrive,
@@ -122,6 +116,17 @@ enum FileSystemType {
   // A media filesystem such as MTP or PTP, mounted as a file storage not
   // limited to media files.
   kFileSystemTypeDeviceMediaAsFileStorage,
+
+  // A filesystem to provide access to contents managed by ARC.
+  kFileSystemTypeArcContent,
+
+  // A filesystem to provide access to documents providers in ARC.
+  kFileSystemTypeArcDocumentsProvider,
+
+  // Indicates a DriveFS filesystem which provides access to Google Drive.
+  kFileSystemTypeDriveFs,
+
+  kFileSystemTypeLast = kFileSystemTypeDriveFs,
 
   // --------------------------------------------------------------------
   // Marks the end of internal type enum. (This is not the actual fs type)

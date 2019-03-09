@@ -1,106 +1,135 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2018 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 package org.chromium.chrome.browser.download;
 
-import android.content.Context;
-import android.test.InstrumentationTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.os.Handler;
+import android.os.Looper;
+import android.support.test.filters.SmallTest;
 
-import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.AdvancedMockContext;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.download.DownloadInfo.Builder;
+import org.chromium.chrome.browser.test.ChromeBrowserTestRule;
+import org.chromium.components.offline_items_collection.ContentId;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 import java.util.UUID;
 
 /**
  * Tests of {@link SystemDownloadNotifier}.
  */
-public class SystemDownloadNotifierTest extends InstrumentationTestCase {
-    private MockSystemDownloadNotifier mDownloadNotifier;
-    private MockDownloadNotificationService mService;
+@RunWith(BaseJUnit4ClassRunner.class)
+public class SystemDownloadNotifierTest {
+    @Rule
+    public final ChromeBrowserTestRule mBrowserTestRule = new ChromeBrowserTestRule();
 
-    static class MockSystemDownloadNotifier extends SystemDownloadNotifier {
-        boolean mStarted = false;
+    private final SystemDownloadNotifier mSystemDownloadNotifier = new SystemDownloadNotifier();
+    private MockDownloadNotificationService mMockDownloadNotificationService;
 
-        MockSystemDownloadNotifier(Context context) {
-            super(context);
-        }
-
-        @Override
-        void startService() {
-            mStarted = true;
-        }
-
-        @Override
-        void stopService() {
-            mStarted = false;
-        }
-
-        @Override
-        void onSuccessNotificationShown(
-                final SystemDownloadNotifier.PendingNotificationInfo notificationInfo,
-                final int notificationId) {
-        }
-    }
-
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
-        mDownloadNotifier = new MockSystemDownloadNotifier(getInstrumentation().getTargetContext());
+        Looper.prepare();
+        mMockDownloadNotificationService = new MockDownloadNotificationService();
+        mSystemDownloadNotifier.setDownloadNotificationService(mMockDownloadNotificationService);
+        mSystemDownloadNotifier.setHandler(new Handler(Looper.getMainLooper()));
     }
 
-    /**
-     * Helper method to simulate that the DownloadNotificationService is connected.
-     */
-    private void onServiceConnected() {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
+    private DownloadInfo getDownloadInfo(ContentId id) {
+        return new Builder()
+                .setFileName("foo")
+                .setBytesReceived(100)
+                .setDownloadGuid(UUID.randomUUID().toString())
+                .setContentId(id)
+                .build();
+    }
+
+    private void waitForNotifications(int numberOfNotifications) {
+        CriteriaHelper.pollUiThread(new Criteria() {
             @Override
-            public void run() {
-                mService = new MockDownloadNotificationService();
-                mService.setContext(new AdvancedMockContext(
-                        getInstrumentation().getTargetContext().getApplicationContext()));
-                mService.onCreate();
+            public boolean isSatisfied() {
+                return mMockDownloadNotificationService.getNumberOfNotifications()
+                        == numberOfNotifications;
             }
         });
-        mDownloadNotifier.setDownloadNotificationService(mService);
-        mDownloadNotifier.handlePendingNotifications();
     }
 
     /**
-     * Tests that pending notifications will be handled after service is connected.
+     * Tests that a single notification update will be immediately processed
      */
+    @Test
     @SmallTest
     @Feature({"Download"})
-    public void testNotificationNotHandledUntilServiceConnection() {
-        DownloadInfo info = new DownloadInfo.Builder()
-                .setDownloadGuid(UUID.randomUUID().toString()).build();
-        mDownloadNotifier.notifyDownloadProgress(info, 1L, true);
-        assertTrue(mDownloadNotifier.mStarted);
-
-        onServiceConnected();
-        assertEquals(1, mService.getNotificationIds().size());
+    public void testSingleNotification() {
+        mSystemDownloadNotifier.notifyDownloadProgress(
+                getDownloadInfo(new ContentId("download", "1")), 100,
+                true /* canDownloadWhileMetered */);
+        Assert.assertEquals(1, mMockDownloadNotificationService.getNumberOfNotifications());
     }
 
     /**
-     * Tests that service will be stopped once all notifications are inactive.
+     * Tests that consecutive progress notifications can be merged together, and will be handled in
+     * order.
      */
+    @Test
     @SmallTest
     @Feature({"Download"})
-    public void testServiceStoppedWhenAllDownloadsFinish() {
-        onServiceConnected();
-        DownloadInfo info = new DownloadInfo.Builder()
-                .setDownloadGuid(UUID.randomUUID().toString()).build();
-        mDownloadNotifier.notifyDownloadProgress(info, 1L, true);
-        assertTrue(mDownloadNotifier.mStarted);
-        DownloadInfo info2 = new DownloadInfo.Builder()
-                .setDownloadGuid(UUID.randomUUID().toString()).build();
-        mDownloadNotifier.notifyDownloadProgress(info2, 1L, true);
+    public void testConsecutiveProgressNotifications() {
+        DownloadInfo info = getDownloadInfo(new ContentId("download", "1"));
+        mSystemDownloadNotifier.notifyDownloadProgress(
+                info, 100, true /* canDownloadWhileMetered */);
+        // Create 2 more progress updates on the same download and one of them will be skipped.
+        mSystemDownloadNotifier.notifyDownloadProgress(
+                info, 100, true /* canDownloadWhileMetered */);
+        mSystemDownloadNotifier.notifyDownloadProgress(
+                info, 100, true /* canDownloadWhileMetered */);
+        // Create a progress update from a new download, this should create a new notification.
+        mSystemDownloadNotifier.notifyDownloadProgress(
+                getDownloadInfo(new ContentId("download", "2")), 100,
+                true /* canDownloadWhileMetered */);
+        Assert.assertEquals(1, mMockDownloadNotificationService.getNumberOfNotifications());
+        int notificationId = mMockDownloadNotificationService.getLastNotificationId();
+        waitForNotifications(2);
+        Assert.assertEquals(
+                notificationId, mMockDownloadNotificationService.getLastNotificationId());
+        waitForNotifications(3);
+        Assert.assertNotEquals(
+                notificationId, mMockDownloadNotificationService.getLastNotificationId());
+    }
 
-        mDownloadNotifier.notifyDownloadFailed(info);
-        assertTrue(mDownloadNotifier.mStarted);
-        mDownloadNotifier.notifyDownloadSuccessful(info2, 100L, true, null);
-        assertFalse(mDownloadNotifier.mStarted);
+    /**
+     * Tests that higher priority notification will be handled before progress notification.
+     */
+    @Test
+    @SmallTest
+    @Feature({"Download"})
+    public void testNotificationWithDifferentPriorities() {
+        DownloadInfo info = getDownloadInfo(new ContentId("download", "1"));
+        mSystemDownloadNotifier.notifyDownloadProgress(
+                info, 100, true /* canDownloadWhileMetered */);
+        mSystemDownloadNotifier.notifyDownloadProgress(
+                info, 100, true /* canDownloadWhileMetered */);
+        mSystemDownloadNotifier.notifyDownloadSuccessful(
+                getDownloadInfo(new ContentId("download", "2")), 1, true /* canResolve */,
+                true /* isSupportedMimeType */);
+        Assert.assertEquals(1, mMockDownloadNotificationService.getNumberOfNotifications());
+        int notificationId = mMockDownloadNotificationService.getLastNotificationId();
+
+        // The second notification should come from the 2nd download, as it has higher priority.
+        waitForNotifications(2);
+        Assert.assertNotEquals(
+                notificationId, mMockDownloadNotificationService.getLastNotificationId());
+
+        waitForNotifications(3);
+        Assert.assertEquals(
+                notificationId, mMockDownloadNotificationService.getLastNotificationId());
     }
 }

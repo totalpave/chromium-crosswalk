@@ -6,18 +6,21 @@
 
 #include <stddef.h>
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
+#include "chrome/browser/chromeos/app_mode/arc/arc_kiosk_app_manager.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/chromeos/login/existing_user_controller.h"
 #include "chrome/browser/chromeos/login/screens/network_error.h"
 #include "chrome/grit/generated_resources.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/web_ui.h"
@@ -45,11 +48,13 @@ KioskAppMenuHandler::KioskAppMenuHandler(
       weak_ptr_factory_(this) {
   KioskAppManager::Get()->AddObserver(this);
   network_state_informer_->AddObserver(this);
+  ArcKioskAppManager::Get()->AddObserver(this);
 }
 
 KioskAppMenuHandler::~KioskAppMenuHandler() {
   KioskAppManager::Get()->RemoveObserver(this);
   network_state_informer_->RemoveObserver(this);
+  ArcKioskAppManager::Get()->RemoveObserver(this);
 }
 
 void KioskAppMenuHandler::GetLocalizedStrings(
@@ -72,15 +77,18 @@ void KioskAppMenuHandler::GetLocalizedStrings(
 }
 
 void KioskAppMenuHandler::RegisterMessages() {
-  web_ui()->RegisterMessageCallback("initializeKioskApps",
-      base::Bind(&KioskAppMenuHandler::HandleInitializeKioskApps,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("kioskAppsLoaded",
-      base::Bind(&KioskAppMenuHandler::HandleKioskAppsLoaded,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("checkKioskAppLaunchError",
-      base::Bind(&KioskAppMenuHandler::HandleCheckKioskAppLaunchError,
-                 base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "initializeKioskApps",
+      base::BindRepeating(&KioskAppMenuHandler::HandleInitializeKioskApps,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "kioskAppsLoaded",
+      base::BindRepeating(&KioskAppMenuHandler::HandleKioskAppsLoaded,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "checkKioskAppLaunchError",
+      base::BindRepeating(&KioskAppMenuHandler::HandleCheckKioskAppLaunchError,
+                          base::Unretained(this)));
 }
 
 // static
@@ -101,15 +109,19 @@ void KioskAppMenuHandler::SendKioskApps() {
   for (size_t i = 0; i < apps.size(); ++i) {
     const KioskAppManager::App& app_data = apps[i];
 
-    std::unique_ptr<base::DictionaryValue> app_info(new base::DictionaryValue);
+    std::unique_ptr<base::DictionaryValue> app_info(
+        new base::DictionaryValue());
     app_info->SetBoolean("isApp", true);
     app_info->SetString("id", app_data.app_id);
+    app_info->SetBoolean("isAndroidApp", false);
+    // Unused for native apps. Added for consistency with Android apps.
+    app_info->SetString("account_email", app_data.account_id.GetUserEmail());
     app_info->SetString("label", app_data.name);
 
     std::string icon_url;
     if (app_data.icon.isNull()) {
       icon_url =
-          webui::GetBitmapDataUrl(*ResourceBundle::GetSharedInstance()
+          webui::GetBitmapDataUrl(*ui::ResourceBundle::GetSharedInstance()
                                        .GetImageNamed(IDR_APP_DEFAULT_ICON)
                                        .ToSkBitmap());
     } else {
@@ -117,7 +129,33 @@ void KioskAppMenuHandler::SendKioskApps() {
     }
     app_info->SetString("iconUrl", icon_url);
 
-    apps_list.Append(app_info.release());
+    apps_list.Append(std::move(app_info));
+  }
+
+  ArcKioskAppManager::Apps arc_apps;
+  ArcKioskAppManager::Get()->GetAllApps(&arc_apps);
+  for (size_t i = 0; i < arc_apps.size(); ++i) {
+    std::unique_ptr<base::DictionaryValue> app_info(
+        new base::DictionaryValue());
+    app_info->SetBoolean("isApp", true);
+    app_info->SetBoolean("isAndroidApp", true);
+    app_info->SetString("id", arc_apps[i]->app_id());
+    app_info->SetString("account_email",
+                        arc_apps[i]->account_id().GetUserEmail());
+    app_info->SetString("label", arc_apps[i]->name());
+
+    std::string icon_url;
+    if (arc_apps[i]->icon().isNull()) {
+      icon_url =
+          webui::GetBitmapDataUrl(*ui::ResourceBundle::GetSharedInstance()
+                                       .GetImageNamed(IDR_APP_DEFAULT_ICON)
+                                       .ToSkBitmap());
+    } else {
+      icon_url = webui::GetBitmapDataUrl(*arc_apps[i]->icon().bitmap());
+    }
+    app_info->SetString("iconUrl", icon_url);
+
+    apps_list.Append(std::move(app_info));
   }
 
   web_ui()->CallJavascriptFunctionUnsafe(
@@ -145,13 +183,13 @@ void KioskAppMenuHandler::HandleCheckKioskAppLaunchError(
   KioskAppLaunchError::Error error = KioskAppLaunchError::Get();
   if (error == KioskAppLaunchError::NONE)
     return;
-  KioskAppLaunchError::Clear();
+  KioskAppLaunchError::RecordMetricAndClear();
 
   const std::string error_message = KioskAppLaunchError::GetErrorMessage(error);
   bool new_kiosk_ui = EnableNewKioskUI();
   web_ui()->CallJavascriptFunctionUnsafe(
       new_kiosk_ui ? kKioskShowErrorNewAPI : kKioskShowErrorOldAPI,
-      base::StringValue(error_message));
+      base::Value(error_message));
 }
 
 void KioskAppMenuHandler::OnKioskAppsSettingsChanged() {
@@ -169,6 +207,10 @@ void KioskAppMenuHandler::OnKioskAppDataLoadFailure(const std::string& app_id) {
 void KioskAppMenuHandler::UpdateState(NetworkError::ErrorReason reason) {
   if (network_state_informer_->state() == NetworkStateInformer::ONLINE)
     KioskAppManager::Get()->RetryFailedAppDataFetch();
+}
+
+void KioskAppMenuHandler::OnArcKioskAppsChanged() {
+  SendKioskApps();
 }
 
 }  // namespace chromeos

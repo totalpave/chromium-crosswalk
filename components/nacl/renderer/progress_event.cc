@@ -9,8 +9,8 @@
 #include "components/nacl/renderer/ppb_nacl_private.h"
 #include "content/public/renderer/pepper_plugin_instance.h"
 #include "ppapi/shared_impl/ppapi_globals.h"
-#include "third_party/WebKit/public/platform/WebString.h"
-#include "third_party/WebKit/public/web/WebPluginContainer.h"
+#include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/public/web/web_plugin_container.h"
 
 using blink::WebString;
 using blink::WebPluginContainer;
@@ -52,12 +52,10 @@ void DispatchProgressEventOnMainThread(PP_Instance instance,
   if (!container)
     return;
 
-  container->dispatchProgressEvent(
-      WebString::fromUTF8(EventTypeToName(event.event_type)),
-      event.length_is_computable,
-      event.loaded_bytes,
-      event.total_bytes,
-      WebString::fromUTF8(event.resource_url));
+  container->DispatchProgressEvent(
+      WebString::FromUTF8(EventTypeToName(event.event_type)),
+      event.length_is_computable, event.loaded_bytes, event.total_bytes,
+      WebString::FromUTF8(event.resource_url));
 }
 
 }  // namespace
@@ -65,7 +63,7 @@ void DispatchProgressEventOnMainThread(PP_Instance instance,
 void DispatchProgressEvent(PP_Instance instance, const ProgressEvent& event) {
   ppapi::PpapiGlobals::Get()->GetMainThreadMessageLoop()->PostTask(
       FROM_HERE,
-      base::Bind(&DispatchProgressEventOnMainThread, instance, event));
+      base::BindOnce(&DispatchProgressEventOnMainThread, instance, event));
 }
 
 }  // namespace nacl

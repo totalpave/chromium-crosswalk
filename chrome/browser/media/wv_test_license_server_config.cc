@@ -13,6 +13,7 @@
 #include "build/build_config.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
+#include "net/log/net_log_source.h"
 #include "net/socket/tcp_server_socket.h"
 #include "net/test/python_utils.h"
 
@@ -107,7 +108,7 @@ bool WVTestLicenseServerConfig::SelectServerPort() {
   uint16_t try_port = 0;
   for (uint16_t i = 0; i < kPortRangeSize; ++i) {
     try_port = kMinPort + (start_seed + i) % kPortRangeSize;
-    net::NetLog::Source source;
+    net::NetLogSource source;
     net::TCPServerSocket sock(NULL, source);
     if (sock.Listen(net::IPEndPoint(net::IPAddress::IPv4Localhost(), try_port),
                     1) == net::OK) {
@@ -148,7 +149,7 @@ void WVTestLicenseServerConfig::GetLicenseServerPath(base::FilePath *path) {
 void WVTestLicenseServerConfig::GetLicenseServerRootPath(
     base::FilePath* path) {
   base::FilePath source_root;
-  PathService::Get(base::DIR_SOURCE_ROOT, &source_root);
+  base::PathService::Get(base::DIR_SOURCE_ROOT, &source_root);
   *path = source_root.Append(FILE_PATH_LITERAL("third_party"))
                      .Append(FILE_PATH_LITERAL("widevine"))
                      .Append(FILE_PATH_LITERAL("test"))

@@ -13,21 +13,36 @@
 // LibsecretLoader
 //
 
+namespace {
+
+// TODO(crbug.com/660005) A message that is attached to useless entries that we
+// create, to explain its existence.
+const char kExplanationMessage[] =
+    "Because of quirks in the gnome libsecret API, Chrome needs to store a "
+    "dummy entry to guarantee that this keyring was properly unlocked. More "
+    "details at http://crbug.com/660005.";
+
+}  // namespace
+
 decltype(
-    &::secret_password_store_sync) LibsecretLoader::secret_password_store_sync;
+    &::secret_password_store_sync) LibsecretLoader::secret_password_store_sync =
+    nullptr;
 decltype(
-    &::secret_service_search_sync) LibsecretLoader::secret_service_search_sync;
+    &::secret_service_search_sync) LibsecretLoader::secret_service_search_sync =
+    nullptr;
 decltype(
-    &::secret_password_clear_sync) LibsecretLoader::secret_password_clear_sync;
-decltype(&::secret_item_get_secret) LibsecretLoader::secret_item_get_secret;
-decltype(&::secret_value_get_text) LibsecretLoader::secret_value_get_text;
+    &::secret_password_clear_sync) LibsecretLoader::secret_password_clear_sync =
+    nullptr;
+decltype(&::secret_item_get_secret) LibsecretLoader::secret_item_get_secret =
+    nullptr;
+decltype(&::secret_value_get_text) LibsecretLoader::secret_value_get_text =
+    nullptr;
 decltype(
-    &::secret_item_get_attributes) LibsecretLoader::secret_item_get_attributes;
+    &::secret_item_get_attributes) LibsecretLoader::secret_item_get_attributes =
+    nullptr;
 decltype(&::secret_item_load_secret_sync)
-    LibsecretLoader::secret_item_load_secret_sync;
-decltype(&::secret_value_unref) LibsecretLoader::secret_value_unref;
-decltype(
-    &::secret_service_lookup_sync) LibsecretLoader::secret_service_lookup_sync;
+    LibsecretLoader::secret_item_load_secret_sync = nullptr;
+decltype(&::secret_value_unref) LibsecretLoader::secret_value_unref = nullptr;
 
 bool LibsecretLoader::libsecret_loaded_ = false;
 
@@ -42,13 +57,30 @@ const LibsecretLoader::FunctionInfo LibsecretLoader::kFunctions[] = {
      reinterpret_cast<void**>(&secret_password_clear_sync)},
     {"secret_password_store_sync",
      reinterpret_cast<void**>(&secret_password_store_sync)},
-    {"secret_service_lookup_sync",
-     reinterpret_cast<void**>(&secret_service_lookup_sync)},
     {"secret_service_search_sync",
      reinterpret_cast<void**>(&secret_service_search_sync)},
     {"secret_value_get_text", reinterpret_cast<void**>(&secret_value_get_text)},
     {"secret_value_unref", reinterpret_cast<void**>(&secret_value_unref)},
 };
+
+LibsecretLoader::SearchHelper::SearchHelper() = default;
+LibsecretLoader::SearchHelper::~SearchHelper() {
+  if (error_)
+    g_error_free(error_);
+  if (results_)
+    g_list_free_full(results_, &g_object_unref);
+}
+
+void LibsecretLoader::SearchHelper::Search(const SecretSchema* schema,
+                                           GHashTable* attrs,
+                                           int flags) {
+  DCHECK(!results_);
+  results_ = LibsecretLoader::secret_service_search_sync(
+      nullptr,  // default secret service
+      schema, attrs, static_cast<SecretSearchFlags>(flags),
+      nullptr,  // no cancellable object
+      &error_);
+}
 
 // static
 bool LibsecretLoader::EnsureLibsecretLoaded() {
@@ -101,19 +133,35 @@ bool LibsecretLoader::LibsecretIsAvailable() {
       {{"application", SECRET_SCHEMA_ATTRIBUTE_STRING},
        {nullptr, SECRET_SCHEMA_ATTRIBUTE_STRING}}};
 
-  GError* error = nullptr;
-  GList* found =
-      secret_service_search_sync(nullptr,  // default secret service
-                                 &kDummySchema, attrs.Get(), SECRET_SEARCH_ALL,
-                                 nullptr,  // no cancellable ojbect
-                                 &error);
-  bool success = (error == nullptr);
-  if (error)
-    g_error_free(error);
-  if (found)
-    g_list_free(found);
+  SearchHelper helper;
+  helper.Search(&kDummySchema, attrs.Get(),
+                SECRET_SEARCH_ALL | SECRET_SEARCH_UNLOCK);
+  return helper.success();
+}
 
-  return success;
+// TODO(crbug.com/660005) This is needed to properly unlock the default keyring.
+// We don't need to ever read it.
+void LibsecretLoader::EnsureKeyringUnlocked() {
+  const SecretSchema kDummySchema = {
+      "_chrome_dummy_schema_for_unlocking",
+      SECRET_SCHEMA_NONE,
+      {{"explanation", SECRET_SCHEMA_ATTRIBUTE_STRING},
+       {nullptr, SECRET_SCHEMA_ATTRIBUTE_STRING}}};
+
+  GError* error = nullptr;
+  bool success = LibsecretLoader::secret_password_store_sync(
+      &kDummySchema, nullptr /* default keyring */,
+      "Chrome Safe Storage Control" /* entry title */,
+      "The meaning of life" /* password */, nullptr, &error, "explanation",
+      kExplanationMessage,
+      nullptr /* null-terminated variable argument list */);
+  if (error) {
+    VLOG(1) << "Dummy store to unlock the default keyring failed: "
+            << error->message;
+    g_error_free(error);
+  } else if (!success) {
+    VLOG(1) << "Dummy store to unlock the default keyring failed.";
+  }
 }
 
 //
@@ -143,5 +191,5 @@ void LibsecretAttributesBuilder::Append(const std::string& name,
 
 void LibsecretAttributesBuilder::Append(const std::string& name,
                                         int64_t value) {
-  Append(name, base::Int64ToString(value));
+  Append(name, base::NumberToString(value));
 }

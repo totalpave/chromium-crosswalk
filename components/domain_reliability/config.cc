@@ -13,8 +13,6 @@
 #include <utility>
 
 #include "base/json/json_reader.h"
-#include "base/json/json_value_converter.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_util.h"
 
@@ -52,7 +50,7 @@ DomainReliabilityConfig::~DomainReliabilityConfig() {}
 // static
 std::unique_ptr<const DomainReliabilityConfig>
 DomainReliabilityConfig::FromJSON(const base::StringPiece& json) {
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(json);
+  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(json);
   base::JSONValueConverter<DomainReliabilityConfig> converter;
   std::unique_ptr<DomainReliabilityConfig> config(
       new DomainReliabilityConfig());

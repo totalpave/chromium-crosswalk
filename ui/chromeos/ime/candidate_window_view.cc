@@ -10,11 +10,18 @@
 
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
+#include "mojo/public/cpp/bindings/type_converter.h"
+#include "services/ws/public/cpp/property_type_converters.h"
+#include "services/ws/public/mojom/window_manager.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/ime/candidate_view.h"
 #include "ui/chromeos/ime/candidate_window_constants.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/display_constants.h"
+#include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
@@ -31,13 +38,12 @@ namespace {
 
 class CandidateWindowBorder : public views::BubbleBorder {
  public:
-  explicit CandidateWindowBorder(gfx::NativeView parent)
+  CandidateWindowBorder()
       : views::BubbleBorder(views::BubbleBorder::TOP_CENTER,
-                            views::BubbleBorder::NO_SHADOW,
-                            SK_ColorTRANSPARENT),
-        parent_(parent),
+                            views::BubbleBorder::BIG_SHADOW,
+                            gfx::kPlaceholderColor),
         offset_(0) {
-    set_paint_arrow(views::BubbleBorder::PAINT_NONE);
+    set_use_theme_background_color(true);
   }
   ~CandidateWindowBorder() override {}
 
@@ -56,9 +62,8 @@ class CandidateWindowBorder : public views::BubbleBorder {
     // It cannot use the normal logic of arrow offset for horizontal offscreen,
     // because the arrow must be in the content's edge. But CandidateWindow has
     // to be visible even when |anchor_rect| is out of the screen.
-    gfx::Rect work_area = display::Screen::GetScreen()
-                              ->GetDisplayNearestWindow(parent_)
-                              .work_area();
+    gfx::Rect work_area =
+        display::Screen::GetScreen()->GetDisplayForNewWindows().work_area();
     if (bounds.right() > work_area.right())
       bounds.set_x(work_area.right() - bounds.width());
     if (bounds.x() < work_area.x())
@@ -69,7 +74,6 @@ class CandidateWindowBorder : public views::BubbleBorder {
 
   gfx::Insets GetInsets() const override { return gfx::Insets(); }
 
-  gfx::NativeView parent_;
   int offset_;
 
   DISALLOW_COPY_AND_ASSIGN(CandidateWindowBorder);
@@ -100,15 +104,15 @@ class InformationTextArea : public views::View {
       : min_width_(min_width) {
     label_ = new views::Label;
     label_->SetHorizontalAlignment(align);
-    label_->SetBorder(views::Border::CreateEmptyBorder(2, 2, 2, 4));
+    label_->SetBorder(views::CreateEmptyBorder(2, 2, 2, 4));
 
-    SetLayoutManager(new views::FillLayout());
+    SetLayoutManager(std::make_unique<views::FillLayout>());
     AddChildView(label_);
-    set_background(views::Background::CreateSolidBackground(
+    SetBackground(views::CreateSolidBackground(
         color_utils::AlphaBlend(SK_ColorBLACK,
                                 GetNativeTheme()->GetSystemColor(
                                     ui::NativeTheme::kColorId_WindowBackground),
-                                0x10)));
+                                0.0625f)));
   }
 
   // Sets the text alignment.
@@ -123,18 +127,15 @@ class InformationTextArea : public views::View {
 
   // Sets the border thickness for top/bottom.
   void SetBorderFromPosition(BorderPosition position) {
-    SetBorder(views::Border::CreateSolidSidedBorder(
-        (position == TOP) ? 1 : 0,
-        0,
-        (position == BOTTOM) ? 1 : 0,
-        0,
+    SetBorder(views::CreateSolidSidedBorder(
+        (position == TOP) ? 1 : 0, 0, (position == BOTTOM) ? 1 : 0, 0,
         GetNativeTheme()->GetSystemColor(
             ui::NativeTheme::kColorId_MenuBorderColor)));
   }
 
  protected:
-  gfx::Size GetPreferredSize() const override {
-    gfx::Size size = views::View::GetPreferredSize();
+  gfx::Size CalculatePreferredSize() const override {
+    gfx::Size size = views::View::CalculatePreferredSize();
     size.SetToMax(gfx::Size(min_width_, 0));
     return size;
   }
@@ -146,24 +147,24 @@ class InformationTextArea : public views::View {
   DISALLOW_COPY_AND_ASSIGN(InformationTextArea);
 };
 
-CandidateWindowView::CandidateWindowView(gfx::NativeView parent)
+CandidateWindowView::CandidateWindowView(gfx::NativeView parent,
+                                         int window_shell_id)
     : selected_candidate_index_in_page_(-1),
       should_show_at_composition_head_(false),
       should_show_upper_side_(false),
-      was_candidate_window_open_(false) {
-  set_can_activate(false);
+      was_candidate_window_open_(false),
+      window_shell_id_(window_shell_id) {
+  SetCanActivate(false);
+  DCHECK(parent || features::IsUsingWindowService());
   set_parent_window(parent);
   set_margins(gfx::Insets());
 
-  // Set the background and the border of the view.
-  ui::NativeTheme* theme = GetNativeTheme();
-  set_background(
-      views::Background::CreateSolidBackground(theme->GetSystemColor(
-          ui::NativeTheme::kColorId_WindowBackground)));
-  SetBorder(views::Border::CreateSolidBorder(
-      1, theme->GetSystemColor(ui::NativeTheme::kColorId_MenuBorderColor)));
+  SetBorder(views::CreateSolidBorder(
+      1, GetNativeTheme()->GetSystemColor(
+             ui::NativeTheme::kColorId_MenuBorderColor)));
 
-  SetLayoutManager(new views::BoxLayout(views::BoxLayout::kVertical, 0, 0, 0));
+  SetLayoutManager(
+      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
   auxiliary_text_ = new InformationTextArea(gfx::ALIGN_RIGHT, 0);
   preedit_ = new InformationTextArea(gfx::ALIGN_LEFT, kMinPreeditAreaWidth);
   candidate_area_ = new views::View;
@@ -176,16 +177,16 @@ CandidateWindowView::CandidateWindowView(gfx::NativeView parent)
     AddChildView(candidate_area_);
     AddChildView(auxiliary_text_);
     auxiliary_text_->SetBorderFromPosition(InformationTextArea::TOP);
-    candidate_area_->SetLayoutManager(new views::BoxLayout(
-        views::BoxLayout::kVertical, 0, 0, 0));
+    candidate_area_->SetLayoutManager(
+        std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
   } else {
     AddChildView(preedit_);
     AddChildView(auxiliary_text_);
     AddChildView(candidate_area_);
     auxiliary_text_->SetAlignment(gfx::ALIGN_LEFT);
     auxiliary_text_->SetBorderFromPosition(InformationTextArea::BOTTOM);
-    candidate_area_->SetLayoutManager(new views::BoxLayout(
-        views::BoxLayout::kHorizontal, 0, 0, 0));
+    candidate_area_->SetLayoutManager(
+        std::make_unique<views::BoxLayout>(views::BoxLayout::kHorizontal));
   }
 }
 
@@ -195,12 +196,12 @@ CandidateWindowView::~CandidateWindowView() {
 views::Widget* CandidateWindowView::InitWidget() {
   views::Widget* widget = BubbleDialogDelegateView::CreateBubble(this);
 
-  wm::SetWindowVisibilityAnimationType(
-      widget->GetNativeView(),
-      wm::WINDOW_VISIBILITY_ANIMATION_TYPE_FADE);
+  wm::SetWindowVisibilityAnimationTransition(widget->GetNativeView(),
+                                             wm::ANIMATE_NONE);
 
-  GetBubbleFrameView()->SetBubbleBorder(std::unique_ptr<views::BubbleBorder>(
-      new CandidateWindowBorder(parent_window())));
+  GetBubbleFrameView()->SetBubbleBorder(
+      std::make_unique<CandidateWindowBorder>());
+  GetBubbleFrameView()->OnNativeThemeChanged(widget->GetNativeTheme());
   return widget;
 }
 
@@ -250,14 +251,14 @@ void CandidateWindowView::UpdateCandidates(
         ReorderChildView(auxiliary_text_, -1);
         auxiliary_text_->SetAlignment(gfx::ALIGN_RIGHT);
         auxiliary_text_->SetBorderFromPosition(InformationTextArea::TOP);
-        candidate_area_->SetLayoutManager(new views::BoxLayout(
-            views::BoxLayout::kVertical, 0, 0, 0));
+        candidate_area_->SetLayoutManager(
+            std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
       } else {
         ReorderChildView(auxiliary_text_, 1);
         auxiliary_text_->SetAlignment(gfx::ALIGN_LEFT);
         auxiliary_text_->SetBorderFromPosition(InformationTextArea::BOTTOM);
-        candidate_area_->SetLayoutManager(new views::BoxLayout(
-            views::BoxLayout::kHorizontal, 0, 0, 0));
+        candidate_area_->SetLayoutManager(
+            std::make_unique<views::BoxLayout>(views::BoxLayout::kHorizontal));
       }
     }
 
@@ -280,7 +281,7 @@ void CandidateWindowView::UpdateCandidates(
     for (size_t i = 0; i < candidate_views_.size(); ++i) {
       const size_t index_in_page = i;
       const size_t candidate_index = start_from + index_in_page;
-      CandidateView* candidate_view = candidate_views_[index_in_page];
+      CandidateView* candidate_view = candidate_views_[index_in_page].get();
       // Set the candidate text.
       if (candidate_index < new_candidate_window.candidates().size()) {
         const ui::CandidateWindow::Entry& entry =
@@ -304,8 +305,8 @@ void CandidateWindowView::UpdateCandidates(
       }
     }
     if (new_candidate_window.orientation() == ui::CandidateWindow::VERTICAL) {
-      for (size_t i = 0; i < candidate_views_.size(); ++i)
-        candidate_views_[i]->SetWidths(max_shortcut_width, max_candidate_width);
+      for (const auto& view : candidate_views_)
+        view->SetWidths(max_shortcut_width, max_candidate_width);
     }
 
     CandidateWindowBorder* border = static_cast<CandidateWindowBorder*>(
@@ -359,16 +360,16 @@ void CandidateWindowView::MaybeInitializeCandidateViews(
 
   // Reset all candidate_views_ when orientation changes.
   if (orientation != candidate_window_.orientation())
-    STLDeleteElements(&candidate_views_);
+    candidate_views_.clear();
 
-  while (page_size < candidate_views_.size()) {
-    delete candidate_views_.back();
+  while (page_size < candidate_views_.size())
     candidate_views_.pop_back();
-  }
+
   while (page_size > candidate_views_.size()) {
-    CandidateView* new_candidate = new CandidateView(this, orientation);
-    candidate_area_->AddChildView(new_candidate);
-    candidate_views_.push_back(new_candidate);
+    std::unique_ptr<CandidateView> new_candidate =
+        std::make_unique<CandidateView>(this, orientation);
+    candidate_area_->AddChildView(new_candidate.get());
+    candidate_views_.push_back(std::move(new_candidate));
   }
 }
 
@@ -405,11 +406,24 @@ int CandidateWindowView::GetDialogButtons() const {
   return ui::DIALOG_BUTTON_NONE;
 }
 
+void CandidateWindowView::OnBeforeBubbleWidgetInit(
+    views::Widget::InitParams* params,
+    views::Widget* widget) const {
+  using ws::mojom::WindowManager;
+  params->mus_properties[WindowManager::kContainerId_InitProperty] =
+      mojo::ConvertTo<std::vector<uint8_t>>(
+          static_cast<int32_t>(window_shell_id_));
+  params->mus_properties[WindowManager::kDisplayId_InitProperty] =
+      mojo::ConvertTo<std::vector<uint8_t>>(
+          display::Screen::GetScreen()->GetDisplayForNewWindows().id());
+}
+
 void CandidateWindowView::ButtonPressed(views::Button* sender,
                                         const ui::Event& event) {
   for (size_t i = 0; i < candidate_views_.size(); ++i) {
-    if (sender == candidate_views_[i]) {
-      FOR_EACH_OBSERVER(Observer, observers_, OnCandidateCommitted(i));
+    if (sender == candidate_views_[i].get()) {
+      for (Observer& observer : observers_)
+        observer.OnCandidateCommitted(i);
       return;
     }
   }

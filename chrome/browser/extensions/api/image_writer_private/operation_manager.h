@@ -12,7 +12,6 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observer.h"
-#include "base/stl_util.h"
 #include "chrome/browser/extensions/api/image_writer_private/image_writer_private_api.h"
 #include "chrome/browser/extensions/api/image_writer_private/operation.h"
 #include "chrome/common/extensions/api/image_writer_private.h"
@@ -20,11 +19,10 @@
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/extension_registry_observer.h"
+#include "extensions/common/extension_id.h"
 #include "url/gurl.h"
 
 namespace image_writer_api = extensions::api::image_writer_private;
-
-class Profile;
 
 namespace content {
 class BrowserContext;
@@ -44,8 +42,6 @@ class OperationManager : public BrowserContextKeyedAPI,
                          public extensions::ExtensionRegistryObserver,
                          public base::SupportsWeakPtr<OperationManager> {
  public:
-  typedef std::string ExtensionId;
-
   explicit OperationManager(content::BrowserContext* context);
   ~OperationManager() override;
 
@@ -56,22 +52,22 @@ class OperationManager : public BrowserContextKeyedAPI,
                          GURL url,
                          const std::string& hash,
                          const std::string& device_path,
-                         const Operation::StartWriteCallback& callback);
+                         Operation::StartWriteCallback callback);
 
   // Starts a WriteFromFile operation.
   void StartWriteFromFile(const ExtensionId& extension_id,
                           const base::FilePath& path,
                           const std::string& device_path,
-                          const Operation::StartWriteCallback& callback);
+                          Operation::StartWriteCallback callback);
 
   // Cancels the extensions current operation if any.
   void CancelWrite(const ExtensionId& extension_id,
-                   const Operation::CancelWriteCallback& callback);
+                   Operation::CancelWriteCallback callback);
 
   // Starts a write that removes the partition table.
   void DestroyPartitions(const ExtensionId& extension_id,
                          const std::string& device_path,
-                         const Operation::StartWriteCallback& callback);
+                         Operation::StartWriteCallback callback);
 
   // Callback for progress events.
   virtual void OnProgress(const ExtensionId& extension_id,
@@ -90,8 +86,11 @@ class OperationManager : public BrowserContextKeyedAPI,
   static BrowserContextKeyedAPIFactory<OperationManager>* GetFactoryInstance();
   static OperationManager* Get(content::BrowserContext* context);
 
- private:
+ protected:
+  // Overridden in test.
+  virtual std::unique_ptr<service_manager::Connector> CreateConnector();
 
+ private:
   static const char* service_name() {
     return "OperationManager";
   }
@@ -104,10 +103,13 @@ class OperationManager : public BrowserContextKeyedAPI,
   // ExtensionRegistryObserver implementation.
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   Operation* GetOperation(const ExtensionId& extension_id);
   void DeleteOperation(const ExtensionId& extension_id);
+
+  // Accessor to the associated profile download folder
+  base::FilePath GetAssociatedDownloadFolder();
 
   friend class BrowserContextKeyedAPIFactory<OperationManager>;
   typedef std::map<ExtensionId, scoped_refptr<Operation> > OperationMap;

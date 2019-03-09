@@ -6,6 +6,7 @@
 
 #include "base/command_line.h"
 #include "base/macros.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/values_test_util.h"
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/common/extensions/permissions/chrome_permission_message_provider.h"
@@ -19,7 +20,7 @@
 
 namespace extensions {
 
-const char kWhitelistedExtensionID[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const char kAllowlistedExtensionID[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 // Tests that ChromePermissionMessageProvider produces the expected messages for
 // various combinations of app/extension permissions.
@@ -27,7 +28,7 @@ class PermissionMessageCombinationsUnittest : public testing::Test {
  public:
   PermissionMessageCombinationsUnittest()
       : message_provider_(new ChromePermissionMessageProvider()),
-        whitelisted_extension_id_(kWhitelistedExtensionID) {}
+        allowlisted_extension_id_(kAllowlistedExtensionID) {}
   ~PermissionMessageCombinationsUnittest() override {}
 
   // Overridden from testing::Test:
@@ -43,8 +44,8 @@ class PermissionMessageCombinationsUnittest : public testing::Test {
     std::replace(json_manifest_with_double_quotes.begin(),
                  json_manifest_with_double_quotes.end(), '\'', '"');
     app_ = env_.MakeExtension(
-        *base::test::ParseJson(json_manifest_with_double_quotes),
-        kWhitelistedExtensionID);
+        *base::test::ParseJsonDeprecated(json_manifest_with_double_quotes),
+        kAllowlistedExtensionID);
   }
 
   // Checks whether the currently installed app or extension produces the given
@@ -199,9 +200,9 @@ class PermissionMessageCombinationsUnittest : public testing::Test {
   extensions::TestExtensionEnvironment env_;
   std::unique_ptr<ChromePermissionMessageProvider> message_provider_;
   scoped_refptr<const Extension> app_;
-  // Whitelist a known extension id so we can test all permissions. This ID
-  // will be used for each test app.
-  extensions::SimpleFeature::ScopedWhitelistForTest whitelisted_extension_id_;
+  // Add a known extension id to the explicit allowlist so we can test all
+  // permissions. This ID will be used for each test app.
+  SimpleFeature::ScopedThreadUnsafeAllowlistForTest allowlisted_extension_id_;
 
   DISALLOW_COPY_AND_ASSIGN(PermissionMessageCombinationsUnittest);
 };
@@ -1129,9 +1130,8 @@ TEST_F(PermissionMessageCombinationsUnittest, PermissionMessageCombos) {
 
 }
 
-// Tests that the 'plugin' manifest key produces the correct permission.
+// Tests that the deprecated 'plugins' manifest key produces no permission.
 TEST_F(PermissionMessageCombinationsUnittest, PluginPermission) {
-  // Extensions can have plugins.
   CreateAndInstall(
       "{"
       "  'plugins': ["
@@ -1139,27 +1139,44 @@ TEST_F(PermissionMessageCombinationsUnittest, PluginPermission) {
       "  ]"
       "}");
 
-#ifdef OS_CHROMEOS
   ASSERT_TRUE(CheckManifestProducesPermissions());
-#else
-  ASSERT_TRUE(CheckManifestProducesPermissions(
-      "Read and change all your data on your computer and the websites you "
-      "visit"));
-#endif
+}
 
-  // Apps can't have plugins.
-  CreateAndInstall(
+TEST_F(PermissionMessageCombinationsUnittest, ClipboardPermissionMessages) {
+  const char kManifest[] =
       "{"
       "  'app': {"
       "    'background': {"
       "      'scripts': ['background.js']"
       "    }"
       "  },"
-      "  'plugins': ["
-      "    { 'path': 'extension_plugin.dll' }"
-      "  ]"
-      "}");
-  ASSERT_TRUE(CheckManifestProducesPermissions());
+      "  'permissions': [%s]"
+      "}";
+
+  CreateAndInstall(base::StringPrintf(kManifest, "'clipboardRead'"));
+  ASSERT_TRUE(CheckManifestProducesPermissions("Read data you copy and paste"));
+
+  CreateAndInstall(
+      base::StringPrintf(kManifest, "'clipboardRead', 'clipboardWrite'"));
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Read and modify data you copy and paste"));
+
+  CreateAndInstall(base::StringPrintf(kManifest, "'clipboardWrite'"));
+  ASSERT_TRUE(
+      CheckManifestProducesPermissions("Modify data you copy and paste"));
+}
+
+TEST_F(PermissionMessageCombinationsUnittest, NewTabPagePermissionMessages) {
+  const char kManifest[] =
+      "{"
+      "  'chrome_url_overrides': {"
+      "    'newtab': 'newtab.html'"
+      "  }"
+      "}";
+
+  CreateAndInstall(kManifest);
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Replace the page you see when opening a new tab"));
 }
 
 // TODO(sashab): Add a test that checks that messages are generated correctly

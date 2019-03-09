@@ -6,29 +6,25 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/ios/weak_nsobject.h"
 #include "base/logging.h"
-#include "base/mac/scoped_nsobject.h"
 #include "components/strings/grit/components_strings.h"
+#include "ios/chrome/browser/ui/util/top_view_controller.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
-#include "ios/chrome/grit/ios_google_chrome_strings.h"
-#include "ios/chrome/grit/ios_strings.h"
 #include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
-@interface OmniboxGeolocationAuthorizationAlert () {
-  base::WeakNSProtocol<id<OmniboxGeolocationAuthorizationAlertDelegate>>
-      delegate_;
-}
-@end
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 @implementation OmniboxGeolocationAuthorizationAlert
+@synthesize delegate = _delegate;
 
 - (instancetype)initWithDelegate:
         (id<OmniboxGeolocationAuthorizationAlertDelegate>)delegate {
   self = [super init];
   if (self) {
-    delegate_.reset(delegate);
+    _delegate = delegate;
   }
   return self;
 }
@@ -37,23 +33,15 @@
   return [self initWithDelegate:nil];
 }
 
-- (id<OmniboxGeolocationAuthorizationAlertDelegate>)delegate {
-  return delegate_.get();
-}
-
-- (void)setDelegate:(id<OmniboxGeolocationAuthorizationAlertDelegate>)delegate {
-  delegate_.reset(delegate);
-}
-
 - (void)showAuthorizationAlert {
   NSString* message =
       l10n_util::GetNSString(IDS_IOS_LOCATION_AUTHORIZATION_ALERT);
-  NSString* cancel = l10n_util::GetNSString(IDS_IOS_LOCATION_USAGE_CANCEL);
+  NSString* cancel = l10n_util::GetNSString(IDS_NOT_NOW);
   NSString* ok = l10n_util::GetNSString(IDS_OK);
 
   // Use a UIAlertController to match the style of the iOS system location
   // alert.
-  base::WeakNSObject<OmniboxGeolocationAuthorizationAlert> weakSelf(self);
+  __weak OmniboxGeolocationAuthorizationAlert* weakSelf = self;
   UIAlertController* alert =
       [UIAlertController alertControllerWithTitle:nil
                                           message:message
@@ -63,8 +51,7 @@
       actionWithTitle:ok
                 style:UIAlertActionStyleDefault
               handler:^(UIAlertAction* action) {
-                base::scoped_nsobject<OmniboxGeolocationAuthorizationAlert>
-                    strongSelf([weakSelf retain]);
+                OmniboxGeolocationAuthorizationAlert* strongSelf = weakSelf;
                 if (strongSelf) {
                   [[strongSelf delegate]
                       authorizationAlertDidAuthorize:strongSelf];
@@ -76,8 +63,7 @@
       actionWithTitle:cancel
                 style:UIAlertActionStyleCancel
               handler:^(UIAlertAction* action) {
-                base::scoped_nsobject<OmniboxGeolocationAuthorizationAlert>
-                    strongSelf([weakSelf retain]);
+                OmniboxGeolocationAuthorizationAlert* strongSelf = weakSelf;
                 if (strongSelf) {
                   [[strongSelf delegate]
                       authorizationAlertDidCancel:strongSelf];
@@ -85,10 +71,10 @@
               }];
   [alert addAction:cancelAction];
 
-  [[[[UIApplication sharedApplication] keyWindow] rootViewController]
-      presentViewController:alert
-                   animated:YES
-                 completion:nil];
+  // TODO(crbug.com/754642): Remove use of TopPresentedViewController().
+  [top_view_controller::TopPresentedViewController() presentViewController:alert
+                                                                  animated:YES
+                                                                completion:nil];
 }
 
 @end

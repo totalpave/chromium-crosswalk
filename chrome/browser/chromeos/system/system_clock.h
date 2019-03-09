@@ -10,7 +10,7 @@
 #include "base/callback_list.h"
 #include "base/i18n/time_formatting.h"
 #include "base/macros.h"
-#include "chromeos/login/login_state.h"
+#include "chromeos/login/login_state/login_state.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
@@ -31,8 +31,6 @@ class SystemClockObserver;
 // that is responsible for correct time formatting. It listens to events that
 // modify on-screen time representation (like ActiveUserChanged) and notifies
 // observers.
-//
-// (Most of) this code used to be a part of ash::SystemTrayDelegate.
 class SystemClock : public chromeos::LoginState::Observer,
                     public content::NotificationObserver,
                     public user_manager::UserManager::UserSessionStateObserver {
@@ -53,7 +51,7 @@ class SystemClock : public chromeos::LoginState::Observer,
                const content::NotificationDetails& details) override;
 
   // user_manager::UserManager::UserSessionStateObserver overrides
-  void ActiveUserChanged(const user_manager::User* user) override;
+  void ActiveUserChanged(const user_manager::User* active_user) override;
 
  private:
   // Should be the same as CrosSettings::ObserverSubscription.
@@ -77,7 +75,7 @@ class SystemClock : public chromeos::LoginState::Observer,
   std::unique_ptr<content::NotificationRegistrar> registrar_;
   std::unique_ptr<PrefChangeRegistrar> user_pref_registrar_;
 
-  base::ObserverList<SystemClockObserver> observer_list_;
+  base::ObserverList<SystemClockObserver>::Unchecked observer_list_;
 
   std::unique_ptr<CrosSettingsObserverSubscription> device_settings_observer_;
 

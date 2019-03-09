@@ -1,11 +1,20 @@
 include_rules = [
-  "+components/network_session_configurator/switches.h",
   "-content/shell/browser/layout_test",
-  "+services/shell/public/cpp",
+  "+components/keyed_service/content",
+  "+components/network_session_configurator/common",
+  "+services/device/public/cpp",
+  "+services/network/public",
+  "+services/service_manager/public/cpp",
+  "+services/service_manager/sandbox",
+  "+services/ws/public",
+  "+ui/ozone/public",
 ]
 
 specific_include_rules = {
   "shell\.cc": [
+    "+content/shell/browser/layout_test",
+  ],
+  "shell_devtools_manager_delegate\.cc": [
     "+content/shell/browser/layout_test",
   ],
 }

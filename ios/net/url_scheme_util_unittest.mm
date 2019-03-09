@@ -6,9 +6,14 @@
 
 #import <Foundation/Foundation.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #import "testing/gtest_mac.h"
+#include "testing/platform_test.h"
 #include "url/gurl.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace net {
 
@@ -20,8 +25,10 @@ const char* kSchemeTestData[] = {
     "chrome://settings",
 };
 
-TEST(URLSchemeUtilTest, NSURLHasDataScheme) {
-  for (unsigned int i = 0; i < arraysize(kSchemeTestData); ++i) {
+using URLSchemeUtilTest = PlatformTest;
+
+TEST_F(URLSchemeUtilTest, NSURLHasDataScheme) {
+  for (unsigned int i = 0; i < base::size(kSchemeTestData); ++i) {
     const char* url = kSchemeTestData[i];
     bool nsurl_result = UrlHasDataScheme(
         [NSURL URLWithString:[NSString stringWithUTF8String:url]]);

@@ -4,12 +4,15 @@
 
 #include "chrome/browser/chromeos/extensions/device_local_account_management_policy_provider.h"
 
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/files/file_path.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/string16.h"
 #include "base/values.h"
+#include "chromeos/login/login_state/scoped_test_public_session_login_state.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
@@ -20,6 +23,7 @@ namespace chromeos {
 namespace {
 
 const char kWhitelistedId[] = "cbkkbcmdlboombapidmoeolnmdacpkch";
+const char kBogusId[] = "bogus";
 
 scoped_refptr<const extensions::Extension> CreateExtensionFromValues(
     const std::string& id,
@@ -28,6 +32,7 @@ scoped_refptr<const extensions::Extension> CreateExtensionFromValues(
     int flags) {
   values->SetString(extensions::manifest_keys::kName, "test");
   values->SetString(extensions::manifest_keys::kVersion, "0.1");
+  values->SetInteger(extensions::manifest_keys::kManifestVersion, 2);
   std::string error;
   return extensions::Extension::Create(base::FilePath(),
                                        location,
@@ -56,8 +61,10 @@ scoped_refptr<const extensions::Extension> CreateExternalComponentExtension() {
 
 scoped_refptr<const extensions::Extension> CreateHostedApp() {
   base::DictionaryValue values;
-  values.Set(extensions::manifest_keys::kApp, new base::DictionaryValue);
-  values.Set(extensions::manifest_keys::kWebURLs, new base::ListValue);
+  values.Set(extensions::manifest_keys::kApp,
+             std::make_unique<base::DictionaryValue>());
+  values.Set(extensions::manifest_keys::kWebURLs,
+             std::make_unique<base::ListValue>());
   return CreateExtensionFromValues(std::string(),
                                    extensions::Manifest::INTERNAL,
                                    &values,
@@ -86,6 +93,8 @@ scoped_refptr<const extensions::Extension> CreatePlatformApp() {
 TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   DeviceLocalAccountManagementPolicyProvider
       provider(policy::DeviceLocalAccount::TYPE_PUBLIC_SESSION);
+  // Set the login state to a public session.
+  ScopedTestPublicSessionLoginState login_state;
 
   // Verify that if an extension's location has been whitelisted for use in
   // public sessions, the extension can be installed.
@@ -172,15 +181,15 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     base::DictionaryValue values;
     values.SetString(extensions::manifest_keys::kDescription, "something");
     values.SetString(extensions::manifest_keys::kShortName, "something else");
-    base::ListValue* permissions = new base::ListValue();
+    auto permissions = std::make_unique<base::ListValue>();
     permissions->AppendString("alarms");
     permissions->AppendString("background");
-    values.Set(extensions::manifest_keys::kPermissions, permissions);
-    base::ListValue* optional_permissions = new base::ListValue();
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
+    auto optional_permissions = std::make_unique<base::ListValue>();
     optional_permissions->AppendString("alarms");
     optional_permissions->AppendString("background");
     values.Set(extensions::manifest_keys::kOptionalPermissions,
-               optional_permissions);
+               std::move(optional_permissions));
     extension = CreatePlatformAppWithExtraValues(
         &values,
         extensions::Manifest::EXTERNAL_POLICY,
@@ -214,7 +223,8 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   // individually.
   {
     base::DictionaryValue values;
-    values.Set("commands", new base::DictionaryValue());
+    values.Set("chrome_settings_overrides",
+               std::make_unique<base::DictionaryValue>());
     extension = CreatePlatformAppWithExtraValues(
         &values,
         extensions::Manifest::EXTERNAL_POLICY,
@@ -242,13 +252,68 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     error.clear();
   }
 
+  // Verify that a platform app with a safe manifest entry under "app" can be
+  // installed.
+  {
+    base::DictionaryValue values;
+    values.SetString("app.content_security_policy", "something2");
+    extension = CreatePlatformAppWithExtraValues(
+        &values,
+        extensions::Manifest::EXTERNAL_POLICY,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(base::string16(), error);
+    error.clear();
+  }
+
+  // Verify that a hosted app with a safe manifest entry under "app" can be
+  // installed.
+  {
+    base::DictionaryValue values;
+    values.Set(extensions::manifest_keys::kApp,
+               std::make_unique<base::DictionaryValue>());
+    values.Set(extensions::manifest_keys::kWebURLs,
+               std::make_unique<base::ListValue>());
+    values.SetString("app.content_security_policy", "something2");
+    extension = CreateExtensionFromValues(
+        std::string(),
+        extensions::Manifest::EXTERNAL_POLICY,
+        &values,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(base::string16(), error);
+    error.clear();
+  }
+
+  // Verify that a theme with a safe manifest entry under "app" cannot be
+  // installed.
+  {
+    base::DictionaryValue values;
+    values.Set("theme", std::make_unique<base::DictionaryValue>());
+    values.SetString("app.content_security_policy", "something2");
+    extension = CreateExtensionFromValues(
+        std::string(),
+        extensions::Manifest::EXTERNAL_POLICY,
+        &values,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_NE(base::string16(), error);
+    error.clear();
+  }
+
   // Verify that a platform app with an unknown permission entry cannot be
   // installed.
   {
-    base::ListValue* const permissions = new base::ListValue();
+    auto permissions = std::make_unique<base::ListValue>();
     permissions->AppendString("not_whitelisted_permission");
     base::DictionaryValue values;
-    values.Set(extensions::manifest_keys::kPermissions, permissions);
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
         &values,
@@ -265,10 +330,10 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   // installed.  Since the program logic is based entirely on whitelists, there
   // is no significant advantage in testing all unsafe permissions individually.
   {
-    base::ListValue* const permissions = new base::ListValue();
-    permissions->AppendString("audioCapture");
+    auto permissions = std::make_unique<base::ListValue>();
+    permissions->AppendString("experimental");
     base::DictionaryValue values;
-    values.Set(extensions::manifest_keys::kPermissions, permissions);
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
         &values,
@@ -284,10 +349,11 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   // Verify that a platform app with an unsafe optional permission entry cannot
   // be installed.
   {
-    base::ListValue* const permissions = new base::ListValue();
-    permissions->AppendString("audioCapture");
+    auto permissions = std::make_unique<base::ListValue>();
+    permissions->AppendString("experimental");
     base::DictionaryValue values;
-    values.Set(extensions::manifest_keys::kOptionalPermissions, permissions);
+    values.Set(extensions::manifest_keys::kOptionalPermissions,
+               std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
         &values,
@@ -303,10 +369,10 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   // Verify that a platform app with an url_handlers manifest entry and which is
   // not installed through the web store cannot be installed.
   {
-    base::ListValue* const matches = new base::ListValue();
+    auto matches = std::make_unique<base::ListValue>();
     matches->AppendString("https://example.com/*");
     base::DictionaryValue values;
-    values.Set("url_handlers.example_com.matches", matches);
+    values.Set("url_handlers.example_com.matches", std::move(matches));
     values.SetString("url_handlers.example_com.title", "example title");
 
     extension = CreatePlatformAppWithExtraValues(
@@ -323,10 +389,10 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   // Verify that a platform app with a url_handlers manifest entry and which is
   // installed through the web store can be installed.
   {
-    base::ListValue* const matches = new base::ListValue();
+    auto matches = std::make_unique<base::ListValue>();
     matches->AppendString("https://example.com/*");
     base::DictionaryValue values;
-    values.Set("url_handlers.example_com.matches", matches);
+    values.Set("url_handlers.example_com.matches", std::move(matches));
     values.SetString("url_handlers.example_com.title", "example title");
 
     extension = CreatePlatformAppWithExtraValues(
@@ -342,12 +408,12 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
 
   // Verify that a platform app with remote URL permissions can be installed.
   {
-    base::ListValue* const permissions = new base::ListValue();
+    auto permissions = std::make_unique<base::ListValue>();
     permissions->AppendString("https://example.com/");
     permissions->AppendString("http://example.com/");
     permissions->AppendString("ftp://example.com/");
     base::DictionaryValue values;
-    values.Set(extensions::manifest_keys::kPermissions, permissions);
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
         &values,
@@ -360,12 +426,33 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
     error.clear();
   }
 
+  // Verify that an extension with remote URL permissions cannot be installed.
+  {
+    auto permissions = std::make_unique<base::ListValue>();
+    permissions->AppendString("https://example.com/");
+    permissions->AppendString("http://example.com/");
+    permissions->AppendString("ftp://example.com/");
+    base::DictionaryValue values;
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
+
+    extension = CreateExtensionFromValues(
+        std::string(),
+        extensions::Manifest::EXTERNAL_POLICY,
+        &values,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_NE(base::string16(), error);
+    error.clear();
+  }
+
   // Verify that a platform app with a local URL permission cannot be installed.
   {
-    base::ListValue* const permissions = new base::ListValue();
+    auto permissions = std::make_unique<base::ListValue>();
     permissions->AppendString("file:///some/where");
     base::DictionaryValue values;
-    values.Set(extensions::manifest_keys::kPermissions, permissions);
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
         &values,
@@ -381,14 +468,14 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   // Verify that a platform app with socket dictionary permission can be
   // installed.
   {
-    base::DictionaryValue* const socket = new base::DictionaryValue();
-    base::ListValue* const tcp_list = new base::ListValue();
+    auto socket = std::make_unique<base::DictionaryValue>();
+    auto tcp_list = std::make_unique<base::ListValue>();
     tcp_list->AppendString("tcp-connect");
-    socket->Set("socket", tcp_list);
-    base::ListValue* const permissions = new base::ListValue();
-    permissions->Append(socket);
+    socket->Set("socket", std::move(tcp_list));
+    auto permissions = std::make_unique<base::ListValue>();
+    permissions->Append(std::move(socket));
     base::DictionaryValue values;
-    values.Set(extensions::manifest_keys::kPermissions, permissions);
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
         &values,
@@ -404,18 +491,82 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, PublicSession) {
   // Verify that a platform app with unknown dictionary permission cannot be
   // installed.
   {
-    base::DictionaryValue* const socket = new base::DictionaryValue();
-    base::ListValue* const tcp_list = new base::ListValue();
+    auto socket = std::make_unique<base::DictionaryValue>();
+    auto tcp_list = std::make_unique<base::ListValue>();
     tcp_list->AppendString("unknown_value");
-    socket->Set("unknown_key", tcp_list);
-    base::ListValue* const permissions = new base::ListValue();
-    permissions->Append(socket);
+    socket->Set("unknown_key", std::move(tcp_list));
+    auto permissions = std::make_unique<base::ListValue>();
+    permissions->Append(std::move(socket));
     base::DictionaryValue values;
-    values.Set(extensions::manifest_keys::kPermissions, permissions);
+    values.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
     extension = CreatePlatformAppWithExtraValues(
         &values,
         extensions::Manifest::EXTERNAL_POLICY,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_FALSE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_NE(base::string16(), error);
+    error.clear();
+  }
+
+  // Verify that an extension can be installed.
+  {
+    base::DictionaryValue values;
+    extension = CreateExtensionFromValues(
+        std::string(),
+        extensions::Manifest::EXTERNAL_POLICY,
+        &values,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(base::string16(), error);
+    error.clear();
+  }
+
+  // Verify that a shared_module can be installed.
+  {
+    base::DictionaryValue values;
+    values.Set("export.whitelist", std::make_unique<base::ListValue>());
+    extension = CreateExtensionFromValues(
+        std::string(),
+        extensions::Manifest::EXTERNAL_POLICY,
+        &values,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(base::string16(), error);
+    error.clear();
+  }
+
+  // Verify that a theme can be installed.
+  {
+    base::DictionaryValue values;
+    values.Set("theme", std::make_unique<base::DictionaryValue>());
+    extension = CreateExtensionFromValues(
+        std::string(),
+        extensions::Manifest::EXTERNAL_POLICY,
+        &values,
+        extensions::Extension::NO_FLAGS);
+    ASSERT_TRUE(extension);
+
+    EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
+    EXPECT_EQ(base::string16(), error);
+    error.clear();
+  }
+
+  // Verify that a legacy_packaged_app cannot be installed and that it cannot
+  // have an "app" manifest entry.
+  {
+    base::DictionaryValue values;
+    values.SetString("app.launch.local_path", "something");
+    extension = CreateExtensionFromValues(
+        std::string(),
+        extensions::Manifest::EXTERNAL_POLICY,
+        &values,
         extensions::Extension::NO_FLAGS);
     ASSERT_TRUE(extension);
 
@@ -463,6 +614,16 @@ TEST(DeviceLocalAccountManagementPolicyProviderTest, KioskAppSession) {
   EXPECT_TRUE(provider.UserMayLoad(extension.get(), &error));
   EXPECT_EQ(base::string16(), error);
   error.clear();
+}
+
+TEST(DeviceLocalAccountManagementPolicyProviderTest, IsWhitelisted) {
+  // Whitelisted extension, Chrome Remote Desktop.
+  EXPECT_TRUE(DeviceLocalAccountManagementPolicyProvider::IsWhitelisted(
+      kWhitelistedId));
+
+  // Bogus extension ID (never true).
+  EXPECT_FALSE(DeviceLocalAccountManagementPolicyProvider::IsWhitelisted(
+      kBogusId));
 }
 
 }  // namespace chromeos

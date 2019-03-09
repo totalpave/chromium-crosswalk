@@ -13,12 +13,11 @@
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "components/sync/model/syncable_service.h"
 #include "extensions/browser/api/storage/settings_observer.h"
 #include "extensions/browser/api/storage/settings_storage_quota_enforcer.h"
 #include "extensions/browser/value_store/value_store_factory.h"
-#include "sync/api/syncable_service.h"
 
 namespace syncer {
 class SyncErrorFactory;
@@ -37,9 +36,9 @@ class SyncStorageBackend : public syncer::SyncableService {
  public:
   // |storage_factory| is use to create leveldb storage areas.
   // |observers| is the list of observers to settings changes.
-  SyncStorageBackend(const scoped_refptr<ValueStoreFactory>& storage_factory,
+  SyncStorageBackend(scoped_refptr<ValueStoreFactory> storage_factory,
                      const SettingsStorageQuotaEnforcer::Limits& quota,
-                     const scoped_refptr<SettingsObserverList>& observers,
+                     scoped_refptr<SettingsObserverList> observers,
                      syncer::ModelType sync_type,
                      const syncer::SyncableService::StartSyncFlare& flare);
 
@@ -56,7 +55,7 @@ class SyncStorageBackend : public syncer::SyncableService {
       std::unique_ptr<syncer::SyncChangeProcessor> sync_processor,
       std::unique_ptr<syncer::SyncErrorFactory> sync_error_factory) override;
   syncer::SyncError ProcessSyncChanges(
-      const tracked_objects::Location& from_here,
+      const base::Location& from_here,
       const syncer::SyncChangeList& change_list) override;
   void StopSyncing(syncer::ModelType type) override;
 
@@ -87,8 +86,8 @@ class SyncStorageBackend : public syncer::SyncableService {
 
   // A cache of ValueStore objects that have already been created.
   // Ensure that there is only ever one created per extension.
-  typedef std::map<std::string, linked_ptr<SyncableSettingsStorage> >
-      StorageObjMap;
+  using StorageObjMap =
+      std::map<std::string, std::unique_ptr<SyncableSettingsStorage>>;
   mutable StorageObjMap storage_objs_;
 
   // Current sync model type. Either EXTENSION_SETTINGS or APP_SETTINGS.

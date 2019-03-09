@@ -20,20 +20,4 @@ WebContents* NavigationHandle::GetWebContents() {
       static_cast<NavigationHandleImpl*>(this)->GetDelegate());
 }
 
-// static
-std::unique_ptr<NavigationHandle>
-NavigationHandle::CreateNavigationHandleForTesting(
-    const GURL& url,
-    RenderFrameHost* render_frame_host) {
-  std::unique_ptr<NavigationHandleImpl> handle_impl =
-      NavigationHandleImpl::Create(
-          url, static_cast<RenderFrameHostImpl*>(render_frame_host)
-                   ->frame_tree_node(),
-          true,   // is_renderer_initiated
-          false,  // is_synchronous
-          false,  // is_srcdoc
-          base::TimeTicks::Now(), 0);
-  return std::unique_ptr<NavigationHandle>(std::move(handle_impl));
-}
-
 }  // namespace content

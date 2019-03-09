@@ -8,14 +8,18 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "gin/gin_export.h"
 #include "gin/public/v8_idle_task_runner.h"
 #include "v8/include/v8.h"
 
+namespace base {
+class SingleThreadTaskRunner;
+}
+
 namespace gin {
 
 class PerIsolateData;
-class RunMicrotasksObserver;
 class V8IsolateMemoryDumpProvider;
 
 // To embed Gin, first initialize gin using IsolateHolder::Initialize and then
@@ -36,14 +40,42 @@ class GIN_EXPORT IsolateHolder {
     kUseLocker
   };
 
-  // Indicates whether V8 works with stable or experimental v8 extras.
-  enum V8ExtrasMode {
-    kStableV8Extras,
-    kStableAndExperimentalV8Extras,
+  // Whether Atomics.wait can be called on this isolate.
+  enum AllowAtomicsWaitMode {
+    kDisallowAtomicsWait,
+    kAllowAtomicsWait
   };
 
-  IsolateHolder();
-  explicit IsolateHolder(AccessMode access_mode);
+  // Indicates how the Isolate instance will be created.
+  enum class IsolateCreationMode {
+    kNormal,
+    kCreateSnapshot,
+  };
+
+  // Isolate type used for UMA/UKM reporting:
+  // - kBlinkMainThread: the main isolate of Blink.
+  // - kBlinkWorkerThread: the isolate of a Blink worker.
+  // - kTest: used only in tests.
+  // - kUtility: the isolate of PDFium and ProxyResolver.
+  enum class IsolateType {
+    kBlinkMainThread,
+    kBlinkWorkerThread,
+    kTest,
+    kUtility
+  };
+
+  explicit IsolateHolder(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+      IsolateType isolate_type);
+  IsolateHolder(scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+                AccessMode access_mode,
+                IsolateType isolate_type);
+  IsolateHolder(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+      AccessMode access_mode,
+      AllowAtomicsWaitMode atomics_wait_mode,
+      IsolateType isolate_type,
+      IsolateCreationMode isolate_creation_mode = IsolateCreationMode::kNormal);
   ~IsolateHolder();
 
   // Should be invoked once before creating IsolateHolder instances to
@@ -54,26 +86,23 @@ class GIN_EXPORT IsolateHolder {
   // snapshot file is available, it should also be loaded (by calling
   // V8Initializer::LoadV8SnapshotFromFD or
   // V8Initializer::LoadV8Snapshot) before calling this method.
+  // If the snapshot file contains customised contexts which have static
+  // external references, |reference_table| needs to point an array of those
+  // reference pointers. Otherwise, it can be nullptr.
   static void Initialize(ScriptMode mode,
-                         V8ExtrasMode v8_extras_mode,
-                         v8::ArrayBuffer::Allocator* allocator);
+                         v8::ArrayBuffer::Allocator* allocator,
+                         const intptr_t* reference_table = nullptr);
 
   v8::Isolate* isolate() { return isolate_; }
 
-  // The implementations of Object.observe() and Promise enqueue v8 Microtasks
-  // that should be executed just before control is returned to the message
-  // loop. This method adds a MessageLoop TaskObserver which runs any pending
-  // Microtasks each time a Task is completed. This method should be called
-  // once, when a MessageLoop is created and it should be called on the
-  // MessageLoop's thread.
-  void AddRunMicrotasksObserver();
-
-  // This method should also only be called once, and on the MessageLoop's
-  // thread.
-  void RemoveRunMicrotasksObserver();
-
   // This method returns if v8::Locker is needed to access isolate.
   AccessMode access_mode() const { return access_mode_; }
+
+  IsolateType isolate_type() const { return isolate_type_; }
+
+  v8::SnapshotCreator* snapshot_creator() const {
+    return snapshot_creator_.get();
+  }
 
   void EnableIdleTasks(std::unique_ptr<V8IdleTaskRunner> idle_task_runner);
 
@@ -85,11 +114,14 @@ class GIN_EXPORT IsolateHolder {
   }
 
  private:
+  void SetUp(scoped_refptr<base::SingleThreadTaskRunner> task_runner);
+
+  std::unique_ptr<v8::SnapshotCreator> snapshot_creator_;
   v8::Isolate* isolate_;
   std::unique_ptr<PerIsolateData> isolate_data_;
-  std::unique_ptr<RunMicrotasksObserver> task_observer_;
   std::unique_ptr<V8IsolateMemoryDumpProvider> isolate_memory_dump_provider_;
   AccessMode access_mode_;
+  IsolateType isolate_type_;
 
   DISALLOW_COPY_AND_ASSIGN(IsolateHolder);
 };

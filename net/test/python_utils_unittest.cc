@@ -15,6 +15,15 @@
 #include "base/strings/stringprintf.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+TEST(PythonUtils, Clear) {
+  std::unique_ptr<base::Environment> env(base::Environment::Create());
+  env->SetVar(kPythonPathEnv, "foo");
+  EXPECT_TRUE(env->HasVar(kPythonPathEnv));
+
+  ClearPythonPath();
+  EXPECT_FALSE(env->HasVar(kPythonPathEnv));
+}
+
 TEST(PythonUtils, Append) {
   const base::FilePath::CharType kAppendDir1[] =
       FILE_PATH_LITERAL("test/path_append1");
@@ -45,12 +54,7 @@ TEST(PythonUtils, Append) {
 #endif
 }
 
-#if defined(OS_ANDROID)
-#define MAYBE_PythonRunTime DISABLED_PythonRunTime
-#else
-#define MAYBE_PythonRunTime PythonRunTime
-#endif
-TEST(PythonUtils, MAYBE_PythonRunTime) {
+TEST(PythonUtils, PythonRunTime) {
   base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
   EXPECT_TRUE(GetPythonCommand(&cmd_line));
 

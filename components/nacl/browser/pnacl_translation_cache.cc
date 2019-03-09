@@ -8,19 +8,22 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_checker.h"
 #include "components/nacl/common/pnacl_types.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/disk_cache.h"
 
-using base::IntToString;
+using base::NumberToString;
 using content::BrowserThread;
 
 namespace {
@@ -42,7 +45,7 @@ const int kMaxMemCacheSize = 100 * 1024 * 1024;
 // operations. It also tracks the open disk_cache::Entry
 // and ensures that the entry is closed.
 class PnaclTranslationCacheEntry
-    : public base::RefCounted<PnaclTranslationCacheEntry> {
+    : public base::RefCountedThreadSafe<PnaclTranslationCacheEntry> {
  public:
   static PnaclTranslationCacheEntry* GetReadEntry(
       base::WeakPtr<PnaclTranslationCache> cache,
@@ -76,7 +79,7 @@ class PnaclTranslationCacheEntry
   };
 
  private:
-  friend class base::RefCounted<PnaclTranslationCacheEntry>;
+  friend class base::RefCountedThreadSafe<PnaclTranslationCacheEntry>;
   PnaclTranslationCacheEntry(base::WeakPtr<PnaclTranslationCache> cache,
                              const std::string& key,
                              bool is_read);
@@ -149,17 +152,15 @@ PnaclTranslationCacheEntry::~PnaclTranslationCacheEntry() {
   // Ensure we have called the user's callback
   if (step_ != FINISHED) {
     if (!read_callback_.is_null()) {
-      BrowserThread::PostTask(
-          BrowserThread::IO,
-          FROM_HERE,
-          base::Bind(read_callback_,
-                     net::ERR_ABORTED,
-                     scoped_refptr<net::DrainableIOBuffer>()));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::IO},
+          base::BindOnce(read_callback_, net::ERR_ABORTED,
+                         scoped_refptr<net::DrainableIOBuffer>()));
     }
     if (!write_callback_.is_null()) {
-      BrowserThread::PostTask(BrowserThread::IO,
-                              FROM_HERE,
-                              base::Bind(write_callback_, net::ERR_ABORTED));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::IO},
+          base::BindOnce(write_callback_, net::ERR_ABORTED));
     }
   }
 }
@@ -174,18 +175,16 @@ void PnaclTranslationCacheEntry::Start() {
 // from DispatchNext, so they know that cache_ is still valid.
 void PnaclTranslationCacheEntry::OpenEntry() {
   int rv = cache_->backend()->OpenEntry(
-      key_,
-      &entry_,
-      base::Bind(&PnaclTranslationCacheEntry::DispatchNext, this));
+      key_, net::HIGHEST, &entry_,
+      base::BindOnce(&PnaclTranslationCacheEntry::DispatchNext, this));
   if (rv != net::ERR_IO_PENDING)
     DispatchNext(rv);
 }
 
 void PnaclTranslationCacheEntry::CreateEntry() {
   int rv = cache_->backend()->CreateEntry(
-      key_,
-      &entry_,
-      base::Bind(&PnaclTranslationCacheEntry::DispatchNext, this));
+      key_, net::HIGHEST, &entry_,
+      base::BindOnce(&PnaclTranslationCacheEntry::DispatchNext, this));
   if (rv != net::ERR_IO_PENDING)
     DispatchNext(rv);
 }
@@ -193,23 +192,16 @@ void PnaclTranslationCacheEntry::CreateEntry() {
 void PnaclTranslationCacheEntry::WriteEntry(int offset, int len) {
   DCHECK(io_buf_->BytesRemaining() == len);
   int rv = entry_->WriteData(
-      1,
-      offset,
-      io_buf_.get(),
-      len,
-      base::Bind(&PnaclTranslationCacheEntry::DispatchNext, this),
-      false);
+      1, offset, io_buf_.get(), len,
+      base::BindOnce(&PnaclTranslationCacheEntry::DispatchNext, this), false);
   if (rv != net::ERR_IO_PENDING)
     DispatchNext(rv);
 }
 
 void PnaclTranslationCacheEntry::ReadEntry(int offset, int len) {
   int rv = entry_->ReadData(
-      1,
-      offset,
-      io_buf_.get(),
-      len,
-      base::Bind(&PnaclTranslationCacheEntry::DispatchNext, this));
+      1, offset, io_buf_.get(), len,
+      base::BindOnce(&PnaclTranslationCacheEntry::DispatchNext, this));
   if (rv != net::ERR_IO_PENDING)
     DispatchNext(rv);
 }
@@ -220,8 +212,8 @@ void PnaclTranslationCacheEntry::CloseEntry(int rv) {
     LOG(ERROR) << "Failed to close entry: " << net::ErrorToString(rv);
     entry_->Doom();
   }
-  BrowserThread::PostTask(
-      BrowserThread::IO, FROM_HERE, base::Bind(&CloseDiskCacheEntry, entry_));
+  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
+                           base::BindOnce(&CloseDiskCacheEntry, entry_));
   Finish(rv);
 }
 
@@ -229,14 +221,13 @@ void PnaclTranslationCacheEntry::Finish(int rv) {
   step_ = FINISHED;
   if (is_read_) {
     if (!read_callback_.is_null()) {
-      BrowserThread::PostTask(BrowserThread::IO,
-                              FROM_HERE,
-                              base::Bind(read_callback_, rv, io_buf_));
+      base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
+                               base::BindOnce(read_callback_, rv, io_buf_));
     }
   } else {
     if (!write_callback_.is_null()) {
-      BrowserThread::PostTask(
-          BrowserThread::IO, FROM_HERE, base::Bind(write_callback_, rv));
+      base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
+                               base::BindOnce(write_callback_, rv));
     }
   }
   cache_->OpComplete(this);
@@ -258,8 +249,9 @@ void PnaclTranslationCacheEntry::DispatchNext(int rv) {
         step_ = TRANSFER_ENTRY;
         if (is_read_) {
           int bytes_to_transfer = entry_->GetDataSize(1);
-          io_buf_ = new net::DrainableIOBuffer(
-              new net::IOBuffer(bytes_to_transfer), bytes_to_transfer);
+          io_buf_ = base::MakeRefCounted<net::DrainableIOBuffer>(
+              base::MakeRefCounted<net::IOBuffer>(bytes_to_transfer),
+              bytes_to_transfer);
           ReadEntry(0, bytes_to_transfer);
         } else {
           WriteEntry(0, io_buf_->size());
@@ -338,15 +330,11 @@ int PnaclTranslationCache::Init(net::CacheType cache_type,
                                 int cache_size,
                                 const CompletionCallback& callback) {
   int rv = disk_cache::CreateCacheBackend(
-      cache_type,
-      net::CACHE_BACKEND_DEFAULT,
-      cache_dir,
-      cache_size,
-      true /* force_initialize */,
-      BrowserThread::GetMessageLoopProxyForThread(BrowserThread::CACHE).get(),
-      NULL, /* dummy net log */
+      cache_type, net::CACHE_BACKEND_DEFAULT, cache_dir, cache_size,
+      true /* force_initialize */, NULL, /* dummy net log */
       &disk_cache_,
-      base::Bind(&PnaclTranslationCache::OnCreateBackendComplete, AsWeakPtr()));
+      base::BindOnce(&PnaclTranslationCache::OnCreateBackendComplete,
+                     AsWeakPtr()));
   if (rv == net::ERR_IO_PENDING) {
     init_callback_ = callback;
   }
@@ -359,8 +347,8 @@ void PnaclTranslationCache::OnCreateBackendComplete(int rv) {
   }
   // Invoke our client's callback function.
   if (!init_callback_.is_null()) {
-    BrowserThread::PostTask(
-        BrowserThread::IO, FROM_HERE, base::Bind(init_callback_, rv));
+    base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
+                             base::BindOnce(init_callback_, rv));
   }
 }
 
@@ -410,8 +398,8 @@ std::string PnaclTranslationCache::GetKey(const nacl::PnaclCacheInfo& info) {
       info.extra_flags.size() > 512)
     return std::string();
   std::string retval("ABI:");
-  retval += IntToString(info.abi_version) + ";" + "opt:" +
-            IntToString(info.opt_level) +
+  retval += NumberToString(info.abi_version) + ";" +
+            "opt:" + NumberToString(info.opt_level) +
             (info.use_subzero ? "subzero;" : ";") + "URL:";
   // Filter the username, password, and ref components from the URL
   GURL::Replacements replacements;
@@ -428,12 +416,13 @@ std::string PnaclTranslationCache::GetKey(const nacl::PnaclCacheInfo& info) {
   if (info.last_modified.is_null() || !exploded.HasValidValues()) {
     memset(&exploded, 0, sizeof(exploded));
   }
-  retval += "modified:" + IntToString(exploded.year) + ":" +
-            IntToString(exploded.month) + ":" +
-            IntToString(exploded.day_of_month) + ":" +
-            IntToString(exploded.hour) + ":" + IntToString(exploded.minute) +
-            ":" + IntToString(exploded.second) + ":" +
-            IntToString(exploded.millisecond) + ":UTC;";
+  retval += "modified:" + NumberToString(exploded.year) + ":" +
+            NumberToString(exploded.month) + ":" +
+            NumberToString(exploded.day_of_month) + ":" +
+            NumberToString(exploded.hour) + ":" +
+            NumberToString(exploded.minute) + ":" +
+            NumberToString(exploded.second) + ":" +
+            NumberToString(exploded.millisecond) + ":UTC;";
   retval += "etag:" + info.etag + ";";
   retval += "sandbox:" + info.sandbox_isa + ";";
   retval += "extra_flags:" + info.extra_flags + ";";

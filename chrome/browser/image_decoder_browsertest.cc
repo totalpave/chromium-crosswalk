@@ -18,7 +18,7 @@ using content::BrowserThread;
 
 namespace {
 
-std::string GetValidPngString() {
+std::vector<uint8_t> GetValidPngData() {
   // 1x1 PNG. Does not get much smaller than this.
   static const char kPngData[] =
       "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52"
@@ -27,12 +27,12 @@ std::string GetValidPngString() {
       "\x00\x05\xfe\x02\xfe\xdc\xcc\x59\xe7\x00\x00\x00\x00\x49\x45\x4e"
       "\x44\xae\x42\x60\x82";
   // Need to specify the buffer size because it contains NULs.
-  return std::string(kPngData, sizeof(kPngData) - 1);
+  return std::vector<uint8_t>(kPngData, kPngData + sizeof(kPngData) - 1);
 }
 
 #if defined(OS_CHROMEOS)
 
-std::string GetValidJpgString() {
+std::vector<uint8_t> GetValidJpgData() {
   // 1x1 JPG created from the 1x1 PNG above.
   static const char kJpgData[] =
       "\xFF\xD8\xFF\xE0\x00\x10\x4A\x46\x49\x46\x00\x01\x01\x01\x00\x48"
@@ -54,7 +54,7 @@ std::string GetValidJpgString() {
       "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xDA\x00\x0C\x03\x01"
       "\x00\x02\x11\x03\x11\x00\x3F\x00\xA0\x00\xFF\xD9";
   // Need to specify the buffer size because it contains NULs.
-  return std::string(kJpgData, sizeof(kJpgData) - 1);
+  return std::vector<uint8_t>(kJpgData, kJpgData + sizeof(kJpgData) - 1);
 }
 
 #endif  // defined(OS_CHROMEOS)
@@ -99,61 +99,6 @@ class TestImageRequest : public ImageDecoder::ImageRequest {
   DISALLOW_COPY_AND_ASSIGN(TestImageRequest);
 };
 
-class KillProcessObserver : public content::BrowserChildProcessObserver {
- public:
-  KillProcessObserver()
-      : did_kill_(false),
-        utility_process_name_(
-            l10n_util::GetStringUTF16(IDS_UTILITY_PROCESS_IMAGE_DECODER_NAME)) {
-    Add(this);
-  }
-
-  ~KillProcessObserver() override {
-    Remove(this);
-  }
-
-  bool did_kill() const { return did_kill_; }
-
- private:
-  void BrowserChildProcessHostConnected(
-      const content::ChildProcessData& data) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    if (data.handle == base::kNullProcessHandle ||
-        data.name != utility_process_name_) {
-      return;
-    }
-
-    ASSERT_FALSE(did_kill_);
-    base::ProcessHandle handle = data.handle;
-
-#if defined(OS_WIN)
-    // On windows, duplicate the process handle since base::Process closes it on
-    // destruction.
-    base::ProcessHandle out_handle;
-    if (!::DuplicateHandle(GetCurrentProcess(), handle,
-                           GetCurrentProcess(), &out_handle,
-                           0, FALSE, DUPLICATE_SAME_ACCESS)) {
-      return;
-    }
-    handle = out_handle;
-#endif
-
-    // Use a non-zero exit code so it counts as a crash.
-    // Don't wait for the process after sending the termination signal
-    // (SIGTERM). According to POSIX, doing so causes the resulting zombie to be
-    // removed from the process table. However, Chromium treats an error on
-    // |waitpid| (in this case, ECHILD) as a "normal" termination and doesn't
-    // invoke the process host delegate's OnProcessCrashed().
-    EXPECT_TRUE(base::Process(handle).Terminate(1, false));
-    did_kill_ = true;
-  }
-
-  bool did_kill_;
-  const base::string16 utility_process_name_;
-
-  DISALLOW_COPY_AND_ASSIGN(KillProcessObserver);
-};
-
 }  // namespace
 
 class ImageDecoderBrowserTest : public InProcessBrowserTest {
@@ -163,20 +108,33 @@ IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, Basic) {
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
   TestImageRequest test_request(runner->QuitClosure());
-  ImageDecoder::Start(&test_request, std::string());
+  ImageDecoder::Start(&test_request, std::vector<uint8_t>());
   runner->Run();
   EXPECT_FALSE(test_request.decode_succeeded());
 }
 
 #if defined(OS_CHROMEOS)
 
+IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, BasicDecodeWithOptionsString) {
+  scoped_refptr<content::MessageLoopRunner> runner =
+      new content::MessageLoopRunner;
+  TestImageRequest test_request(runner->QuitClosure());
+  const std::vector<uint8_t> data = GetValidPngData();
+  ImageDecoder::StartWithOptions(&test_request,
+                                 std::string(data.begin(), data.end()),
+                                 ImageDecoder::ROBUST_PNG_CODEC,
+                                 /*shrink_to_fit=*/false);
+  runner->Run();
+  EXPECT_TRUE(test_request.decode_succeeded());
+}
+
 IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, RobustJpegCodecWithJpegData) {
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
   TestImageRequest test_request(runner->QuitClosure());
-  ImageDecoder::StartWithOptions(&test_request, GetValidJpgString(),
-                                 ImageDecoder::ROBUST_JPEG_CODEC,
-                                 false /* shrink_to_fit */);
+  ImageDecoder::StartWithOptions(
+      &test_request, GetValidJpgData(), ImageDecoder::ROBUST_JPEG_CODEC,
+      /*shrink_to_fit=*/false, /*desired_image_frame_size=*/gfx::Size());
   runner->Run();
   EXPECT_TRUE(test_request.decode_succeeded());
 }
@@ -185,9 +143,9 @@ IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, RobustJpegCodecWithPngData) {
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
   TestImageRequest test_request(runner->QuitClosure());
-  ImageDecoder::StartWithOptions(&test_request, GetValidPngString(),
-                                 ImageDecoder::ROBUST_JPEG_CODEC,
-                                 false /* shrink_to_fit */);
+  ImageDecoder::StartWithOptions(
+      &test_request, GetValidPngData(), ImageDecoder::ROBUST_JPEG_CODEC,
+      /*shrink_to_fit=*/false, /*desired_image_frame_size=*/gfx::Size());
   runner->Run();
   // Should fail with PNG data because only JPEG data is allowed.
   EXPECT_FALSE(test_request.decode_succeeded());
@@ -197,9 +155,9 @@ IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, RobustPngCodecWithPngData) {
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
   TestImageRequest test_request(runner->QuitClosure());
-  ImageDecoder::StartWithOptions(&test_request, GetValidPngString(),
-                                 ImageDecoder::ROBUST_PNG_CODEC,
-                                 false /* shrink_to_fit */);
+  ImageDecoder::StartWithOptions(
+      &test_request, GetValidPngData(), ImageDecoder::ROBUST_PNG_CODEC,
+      /*shrink_to_fit=*/false, /*desired_image_frame_size=*/gfx::Size());
   runner->Run();
   EXPECT_TRUE(test_request.decode_succeeded());
 }
@@ -208,9 +166,9 @@ IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, RobustPngCodecWithJpegData) {
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
   TestImageRequest test_request(runner->QuitClosure());
-  ImageDecoder::StartWithOptions(&test_request, GetValidJpgString(),
-                                 ImageDecoder::ROBUST_PNG_CODEC,
-                                 false /* shrink_to_fit */);
+  ImageDecoder::StartWithOptions(
+      &test_request, GetValidJpgData(), ImageDecoder::ROBUST_PNG_CODEC,
+      /*shrink_to_fit=*/false, /*desired_image_frame_size=*/gfx::Size());
   runner->Run();
   // Should fail with JPEG data because only PNG data is allowed.
   EXPECT_FALSE(test_request.decode_succeeded());
@@ -222,7 +180,17 @@ IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, BasicDecode) {
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
   TestImageRequest test_request(runner->QuitClosure());
-  ImageDecoder::Start(&test_request, GetValidPngString());
+  ImageDecoder::Start(&test_request, GetValidPngData());
+  runner->Run();
+  EXPECT_TRUE(test_request.decode_succeeded());
+}
+
+IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, BasicDecodeString) {
+  scoped_refptr<content::MessageLoopRunner> runner =
+      new content::MessageLoopRunner;
+  TestImageRequest test_request(runner->QuitClosure());
+  const std::vector<uint8_t> data = GetValidPngData();
+  ImageDecoder::Start(&test_request, std::string(data.begin(), data.end()));
   runner->Run();
   EXPECT_TRUE(test_request.decode_succeeded());
 }
@@ -232,36 +200,7 @@ IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, StartAndDestroy) {
       new content::MessageLoopRunner;
   std::unique_ptr<TestImageRequest> test_request(
       new TestImageRequest(runner->QuitClosure()));
-  ImageDecoder::Start(test_request.get(), std::string());
+  ImageDecoder::Start(test_request.get(), std::vector<uint8_t>());
   test_request.reset();
   runner->Run();
-}
-
-// Killing the utility process counts as a crash. Thus the request fails.
-// If ImageDecoder did not handle the crash properly, the request never finishes
-// and this test would hang.
-// Note: This test is inherently racy because KillProcessObserver lives on the
-// UI thread but ImageDecoder does its work mainly on the IO thread. So the test
-// checks for both possible valid outcomes.
-//
-// Flaky timeouts on Linux ASan / LSan, and on Mac. crbug.com/618206
-#if (defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER)) && defined(OS_LINUX)
-#define MAYBE_StartAndKillProcess DISABLED_StartAndKillProcess
-#elif defined(OS_MACOSX)
-#define MAYBE_StartAndKillProcess DISABLED_StartAndKillProcess
-#else
-#define MAYBE_StartAndKillProcess StartAndKillProcess
-#endif
-IN_PROC_BROWSER_TEST_F(ImageDecoderBrowserTest, MAYBE_StartAndKillProcess) {
-  KillProcessObserver observer;
-  scoped_refptr<content::MessageLoopRunner> runner =
-      new content::MessageLoopRunner;
-  TestImageRequest test_request(runner->QuitClosure());
-  ImageDecoder::Start(&test_request, GetValidPngString());
-  runner->Run();
-  if (!test_request.decode_succeeded()) {
-    // The UI thread won the race. Make sure the utility process did get killed.
-    EXPECT_TRUE(observer.did_kill());
-  }
-  // Else the IO thread won the race and the image got decoded. Oh well.
 }

@@ -10,85 +10,22 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/process/process.h"
-#include "base/rand_util.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
-#include "chrome/browser/chrome_notification_types.h"
+#include "chrome/browser/hang_monitor/hang_crash_dump.h"
 #include "chrome/browser/infobars/infobar_service.h"
+#include "chrome/browser/plugins/hung_plugin_infobar_delegate.h"
 #include "chrome/common/channel_info.h"
-#include "chrome/grit/generated_resources.h"
-#include "chrome/grit/locale_settings.h"
-#include "components/infobars/core/confirm_infobar_delegate.h"
 #include "components/infobars/core/infobar.h"
-#include "components/version_info/version_info.h"
 #include "content/public/browser/browser_child_process_host_iterator.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
-#include "content/public/browser/notification_details.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/browser/plugin_service.h"
-#include "content/public/browser/render_process_host.h"
 #include "content/public/common/process_type.h"
 #include "content/public/common/result_codes.h"
-#include "grit/theme_resources.h"
-#include "ui/base/l10n/l10n_util.h"
-
-#if defined(OS_WIN)
-#include "base/win/scoped_handle.h"
-#include "chrome/browser/hang_monitor/hang_crash_dump_win.h"
-#endif
-
 
 namespace {
-
-#if defined(OS_WIN)
-
-// OwnedHandleVector ----------------------------------------------------------
-
-class OwnedHandleVector {
- public:
-  typedef std::vector<HANDLE> Handles;
-  OwnedHandleVector();
-  ~OwnedHandleVector();
-
-  Handles* data() { return &data_; }
-
- private:
-  Handles data_;
-
-  DISALLOW_COPY_AND_ASSIGN(OwnedHandleVector);
-};
-
-OwnedHandleVector::OwnedHandleVector() {
-}
-
-OwnedHandleVector::~OwnedHandleVector() {
-  for (Handles::iterator iter = data_.begin(); iter != data_.end(); ++iter)
-    ::CloseHandle(*iter);
-}
-
-
-// Helpers --------------------------------------------------------------------
-
-const char kDumpChildProcessesSequenceName[] = "DumpChildProcesses";
-
-void DumpBrowserInBlockingPool() {
-  CrashDumpForHangDebugging(::GetCurrentProcess());
-}
-
-void DumpRenderersInBlockingPool(OwnedHandleVector* renderer_handles) {
-  for (OwnedHandleVector::Handles::const_iterator iter =
-           renderer_handles->data()->begin();
-       iter != renderer_handles->data()->end(); ++iter) {
-    CrashDumpForHangDebugging(*iter);
-  }
-}
-
-void DumpAndTerminatePluginInBlockingPool(
-    base::win::ScopedHandle* plugin_handle) {
-  CrashDumpAndTerminateHungChildProcess(plugin_handle->Get());
-}
-
-#endif  // defined(OS_WIN)
 
 // Called on the I/O thread to actually kill the plugin with the given child
 // ID. We specifically don't want this to be a member function since if the
@@ -103,22 +40,8 @@ void KillPluginOnIOThread(int child_id) {
   while (!iter.Done()) {
     const content::ChildProcessData& data = iter.GetData();
     if (data.id == child_id) {
-#if defined(OS_WIN)
-      HANDLE handle = NULL;
-      HANDLE current_process = ::GetCurrentProcess();
-      ::DuplicateHandle(current_process, data.handle, current_process, &handle,
-                        0, FALSE, DUPLICATE_SAME_ACCESS);
-      // Run it in blocking pool so that it won't block the I/O thread. Besides,
-      // we would like to make sure that it happens after dumping renderers.
-      content::BrowserThread::PostBlockingPoolSequencedTask(
-          kDumpChildProcessesSequenceName, FROM_HERE,
-          base::Bind(&DumpAndTerminatePluginInBlockingPool,
-                     base::Owned(new base::win::ScopedHandle(handle))));
-#else
-      base::Process process =
-          base::Process::DeprecatedGetProcessFromHandle(data.handle);
-      process.Terminate(content::RESULT_CODE_HUNG, false);
-#endif
+      CrashDumpHungChildProcess(data.GetProcess().Handle());
+      data.GetProcess().Terminate(content::RESULT_CODE_HUNG, false);
       break;
     }
     ++iter;
@@ -128,93 +51,6 @@ void KillPluginOnIOThread(int child_id) {
 }
 
 }  // namespace
-
-
-// HungPluginInfoBarDelegate --------------------------------------------------
-
-class HungPluginInfoBarDelegate : public ConfirmInfoBarDelegate {
- public:
-  // Creates a hung plugin infobar and delegate and adds the infobar to
-  // |infobar_service|.  Returns the infobar if it was successfully added.
-  static infobars::InfoBar* Create(InfoBarService* infobar_service,
-                                   HungPluginTabHelper* helper,
-                                   int plugin_child_id,
-                                   const base::string16& plugin_name);
-
- private:
-  HungPluginInfoBarDelegate(HungPluginTabHelper* helper,
-                            int plugin_child_id,
-                            const base::string16& plugin_name);
-  ~HungPluginInfoBarDelegate() override;
-
-  // ConfirmInfoBarDelegate:
-  infobars::InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
-  int GetIconId() const override;
-  base::string16 GetMessageText() const override;
-  int GetButtons() const override;
-  base::string16 GetButtonLabel(InfoBarButton button) const override;
-  bool Accept() override;
-
-  HungPluginTabHelper* helper_;
-  int plugin_child_id_;
-
-  base::string16 message_;
-  base::string16 button_text_;
-};
-
-// static
-infobars::InfoBar* HungPluginInfoBarDelegate::Create(
-    InfoBarService* infobar_service,
-    HungPluginTabHelper* helper,
-    int plugin_child_id,
-    const base::string16& plugin_name) {
-  return infobar_service->AddInfoBar(infobar_service->CreateConfirmInfoBar(
-      std::unique_ptr<ConfirmInfoBarDelegate>(new HungPluginInfoBarDelegate(
-          helper, plugin_child_id, plugin_name))));
-}
-
-HungPluginInfoBarDelegate::HungPluginInfoBarDelegate(
-    HungPluginTabHelper* helper,
-    int plugin_child_id,
-    const base::string16& plugin_name)
-    : ConfirmInfoBarDelegate(),
-      helper_(helper),
-      plugin_child_id_(plugin_child_id),
-      message_(l10n_util::GetStringFUTF16(
-          IDS_BROWSER_HANGMONITOR_PLUGIN_INFOBAR, plugin_name)),
-      button_text_(l10n_util::GetStringUTF16(
-          IDS_BROWSER_HANGMONITOR_PLUGIN_INFOBAR_KILLBUTTON)) {
-}
-
-HungPluginInfoBarDelegate::~HungPluginInfoBarDelegate() {
-}
-
-infobars::InfoBarDelegate::InfoBarIdentifier
-HungPluginInfoBarDelegate::GetIdentifier() const {
-  return HUNG_PLUGIN_INFOBAR_DELEGATE;
-}
-
-int HungPluginInfoBarDelegate::GetIconId() const {
-  return IDR_INFOBAR_PLUGIN_CRASHED;
-}
-
-base::string16 HungPluginInfoBarDelegate::GetMessageText() const {
-  return message_;
-}
-
-int HungPluginInfoBarDelegate::GetButtons() const {
-  return BUTTON_OK;
-}
-
-base::string16 HungPluginInfoBarDelegate::GetButtonLabel(
-    InfoBarButton button) const {
-  return button_text_;
-}
-
-bool HungPluginInfoBarDelegate::Accept() {
-  helper_->KillPlugin(plugin_child_id_);
-  return true;
-}
 
 
 // HungPluginTabHelper::PluginState -------------------------------------------
@@ -239,7 +75,7 @@ struct HungPluginTabHelper::PluginState {
   base::TimeDelta next_reshow_delay;
 
   // Handles calling the helper when the infobar should be re-shown.
-  base::Timer timer;
+  base::OneShotTimer timer;
 
  private:
   // Initial delay in seconds before re-showing the hung plugin message.
@@ -258,9 +94,7 @@ HungPluginTabHelper::PluginState::PluginState(const base::FilePath& p,
     : path(p),
       name(n),
       infobar(NULL),
-      next_reshow_delay(base::TimeDelta::FromSeconds(kInitialReshowDelaySec)),
-      timer(false, false) {
-}
+      next_reshow_delay(base::TimeDelta::FromSeconds(kInitialReshowDelaySec)) {}
 
 HungPluginTabHelper::PluginState::~PluginState() {
 }
@@ -268,13 +102,8 @@ HungPluginTabHelper::PluginState::~PluginState() {
 
 // HungPluginTabHelper --------------------------------------------------------
 
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(HungPluginTabHelper);
-
 HungPluginTabHelper::HungPluginTabHelper(content::WebContents* contents)
-    : content::WebContentsObserver(contents) {
-  registrar_.Add(this, chrome::NOTIFICATION_TAB_CONTENTS_INFOBAR_REMOVED,
-                 content::NotificationService::AllSources());
-}
+    : content::WebContentsObserver(contents), infobar_observer_(this) {}
 
 HungPluginTabHelper::~HungPluginTabHelper() {
 }
@@ -291,8 +120,7 @@ void HungPluginTabHelper::PluginCrashed(const base::FilePath& plugin_path,
 
   // For now, just do a brute-force search to see if we have this plugin. Since
   // we'll normally have 0 or 1, this is fast.
-  for (PluginStateMap::iterator i = hung_plugins_.begin();
-       i != hung_plugins_.end(); ++i) {
+  for (auto i = hung_plugins_.begin(); i != hung_plugins_.end(); ++i) {
     if (i->second->path == plugin_path) {
       if (i->second->infobar)
         infobar_service->RemoveInfoBar(i->second->infobar);
@@ -310,8 +138,10 @@ void HungPluginTabHelper::PluginHungStatusChanged(
       InfoBarService::FromWebContents(web_contents());
   if (!infobar_service)
     return;
+  if (!infobar_observer_.IsObserving(infobar_service))
+    infobar_observer_.Add(infobar_service);
 
-  PluginStateMap::iterator found = hung_plugins_.find(plugin_child_id);
+  auto found = hung_plugins_.find(plugin_child_id);
   if (found != hung_plugins_.end()) {
     if (!is_hung) {
       // Hung plugin became un-hung, close the infobar and delete our info.
@@ -326,23 +156,17 @@ void HungPluginTabHelper::PluginHungStatusChanged(
       content::PluginService::GetInstance()->GetPluginDisplayNameByPath(
           plugin_path);
 
-  linked_ptr<PluginState> state(new PluginState(plugin_path, plugin_name));
-  hung_plugins_[plugin_child_id] = state;
-  ShowBar(plugin_child_id, state.get());
+  hung_plugins_[plugin_child_id] =
+      std::make_unique<PluginState>(plugin_path, plugin_name);
+  ShowBar(plugin_child_id, hung_plugins_[plugin_child_id].get());
 }
 
-void HungPluginTabHelper::Observe(
-    int type,
-    const content::NotificationSource& source,
-    const content::NotificationDetails& details) {
-  DCHECK_EQ(chrome::NOTIFICATION_TAB_CONTENTS_INFOBAR_REMOVED, type);
-  infobars::InfoBar* infobar =
-      content::Details<infobars::InfoBar::RemovedDetails>(details)->first;
-  for (PluginStateMap::iterator i = hung_plugins_.begin();
-       i != hung_plugins_.end(); ++i) {
+void HungPluginTabHelper::OnInfoBarRemoved(infobars::InfoBar* infobar,
+                                           bool animate) {
+  for (auto i = hung_plugins_.begin(); i != hung_plugins_.end(); ++i) {
     PluginState* state = i->second.get();
     if (state->infobar == infobar) {
-      state->infobar = NULL;
+      state->infobar = nullptr;
 
       // Schedule the timer to re-show the infobar if the plugin continues to be
       // hung.
@@ -358,57 +182,24 @@ void HungPluginTabHelper::Observe(
   }
 }
 
-void HungPluginTabHelper::KillPlugin(int child_id) {
-#if defined(OS_WIN)
-  // Dump renderers that are sending or receiving pepper messages, in order to
-  // diagnose inter-process deadlocks.
-  // Only do that on the Canary channel, for 20% of pepper plugin hangs.
-  if (base::RandInt(0, 100) < 20) {
-    version_info::Channel channel = chrome::GetChannel();
-    if (channel == version_info::Channel::CANARY) {
-      std::unique_ptr<OwnedHandleVector> renderer_handles(
-          new OwnedHandleVector);
-      HANDLE current_process = ::GetCurrentProcess();
-      content::RenderProcessHost::iterator renderer_iter =
-          content::RenderProcessHost::AllHostsIterator();
-      for (; !renderer_iter.IsAtEnd(); renderer_iter.Advance()) {
-        content::RenderProcessHost* host = renderer_iter.GetCurrentValue();
-        HANDLE handle = NULL;
-        ::DuplicateHandle(current_process, host->GetHandle(), current_process,
-                          &handle, 0, FALSE, DUPLICATE_SAME_ACCESS);
-        renderer_handles->data()->push_back(handle);
-      }
-      // If there are a lot of renderer processes, it is likely that we will
-      // generate too many crash dumps. They might not all be uploaded/recorded
-      // due to our crash dump uploading restrictions. So we just don't generate
-      // renderer crash dumps in that case.
-      if (renderer_handles->data()->size() > 0 &&
-          renderer_handles->data()->size() < 4) {
-        content::BrowserThread::PostBlockingPoolSequencedTask(
-            kDumpChildProcessesSequenceName, FROM_HERE,
-            base::Bind(&DumpBrowserInBlockingPool));
-        content::BrowserThread::PostBlockingPoolSequencedTask(
-            kDumpChildProcessesSequenceName, FROM_HERE,
-            base::Bind(&DumpRenderersInBlockingPool,
-                       base::Owned(renderer_handles.release())));
-      }
-    }
-  }
-#endif
+void HungPluginTabHelper::OnManagerShuttingDown(
+    infobars::InfoBarManager* manager) {
+  infobar_observer_.Remove(manager);
+}
 
-  PluginStateMap::iterator found = hung_plugins_.find(child_id);
+void HungPluginTabHelper::KillPlugin(int child_id) {
+  auto found = hung_plugins_.find(child_id);
   DCHECK(found != hung_plugins_.end());
 
-  content::BrowserThread::PostTask(content::BrowserThread::IO,
-                                   FROM_HERE,
-                                   base::Bind(&KillPluginOnIOThread, child_id));
+  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
+                           base::BindOnce(&KillPluginOnIOThread, child_id));
   CloseBar(found->second.get());
 }
 
 void HungPluginTabHelper::OnReshowTimer(int child_id) {
   // The timer should have been cancelled if the record isn't in our map
   // anymore.
-  PluginStateMap::iterator found = hung_plugins_.find(child_id);
+  auto found = hung_plugins_.find(child_id);
   DCHECK(found != hung_plugins_.end());
   DCHECK(!found->second->infobar);
   ShowBar(child_id, found->second.get());
@@ -433,3 +224,5 @@ void HungPluginTabHelper::CloseBar(PluginState* state) {
     state->infobar = NULL;
   }
 }
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(HungPluginTabHelper)

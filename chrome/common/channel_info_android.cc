@@ -7,11 +7,12 @@
 #include "base/android/build_info.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
+#include "components/version_info/android/channel_getter.h"
 #include "components/version_info/version_info.h"
 
 namespace chrome {
 
-std::string GetChannelString() {
+std::string GetChannelName() {
   switch (GetChannel()) {
     case version_info::Channel::UNKNOWN: return "unknown";
     case version_info::Channel::CANARY: return "canary";
@@ -24,20 +25,7 @@ std::string GetChannelString() {
 }
 
 version_info::Channel GetChannel() {
-  const base::android::BuildInfo* bi = base::android::BuildInfo::GetInstance();
-  DCHECK(bi && bi->package_name());
-
-  if (!strcmp(bi->package_name(), "com.android.chrome") ||
-      !strcmp(bi->package_name(), "com.chrome.work"))
-    return version_info::Channel::STABLE;
-  if (!strcmp(bi->package_name(), "com.chrome.beta"))
-    return version_info::Channel::BETA;
-  if (!strcmp(bi->package_name(), "com.chrome.dev"))
-    return version_info::Channel::DEV;
-  if (!strcmp(bi->package_name(), "com.chrome.canary"))
-    return version_info::Channel::CANARY;
-
-  return version_info::Channel::UNKNOWN;
+  return version_info::android::GetChannel();
 }
 
 }  // namespace chrome

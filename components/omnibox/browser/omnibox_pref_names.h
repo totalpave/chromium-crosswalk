@@ -10,8 +10,9 @@ namespace omnibox {
 // Alphabetical list of preference names specific to the omnibox component.
 // Keep alphabetized, and document each in the .cc file.
 
+extern const char kDocumentSuggestEnabled[];
 extern const char kZeroSuggestCachedResults[];
 
-}  // namespace metrics
+}  // namespace omnibox
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_OMNIBOX_PREF_NAMES_H_

@@ -14,6 +14,12 @@ Add this to your gdb by amending your ~/.gdbinit as follows:
 Use
   (gdb) p /r any_variable
 to print |any_variable| without using any printers.
+
+To interactively type Python for development of the printers:
+  (gdb) python foo = gdb.parse_and_eval('bar')
+to put the C++ value 'bar' in the current scope into a Python variable 'foo'.
+Then you can interact with that variable:
+  (gdb) python print foo['impl_']
 """
 
 import datetime
@@ -24,9 +30,14 @@ import sys
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    '..', '..', 'third_party', 'WebKit', 'Tools', 'gdb'))
+    'util'))
+import class_methods
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    '..', '..', 'third_party', 'blink', 'tools', 'gdb'))
 try:
-  import webkit
+  import blink
 finally:
   sys.path.pop(0)
 
@@ -82,7 +93,7 @@ class StringPrinter(Printer):
 
 class String16Printer(StringPrinter):
     def to_string(self):
-        return webkit.ustring_to_string(self.val['_M_dataplus']['_M_p'])
+        return blink.ustring_to_string(self.val['_M_dataplus']['_M_p'])
 pp_set.add_printer(
     'string16',
     '^string16|std::basic_string<(unsigned short|base::char16).*>$',
@@ -99,26 +110,6 @@ class FilePathPrinter(StringPrinter):
     def to_string(self):
         return self.val['path_']['_M_dataplus']['_M_p']
 pp_set.add_printer('FilePath', '^FilePath$', FilePathPrinter)
-
-
-class SizePrinter(Printer):
-    def to_string(self):
-        return '%sx%s' % (self.val['width_'], self.val['height_'])
-pp_set.add_printer('gfx::Size', '^gfx::(Size|SizeF|SizeBase<.*>)$', SizePrinter)
-
-
-class PointPrinter(Printer):
-    def to_string(self):
-        return '%s,%s' % (self.val['x_'], self.val['y_'])
-pp_set.add_printer('gfx::Point', '^gfx::(Point|PointF|PointBase<.*>)$',
-                   PointPrinter)
-
-
-class RectPrinter(Printer):
-    def to_string(self):
-        return '%s %s' % (self.val['origin_'], self.val['size_'])
-pp_set.add_printer('gfx::Rect', '^gfx::(Rect|RectF|RectBase<.*>)$',
-                   RectPrinter)
 
 
 class SmartPtrPrinter(Printer):
@@ -169,7 +160,7 @@ class LocationPrinter(Printer):
         return '%s()@%s:%s' % (self.val['function_name_'].string(),
                                self.val['file_name_'].string(),
                                self.val['line_number_'])
-pp_set.add_printer('tracked_objects::Location', '^tracked_objects::Location$',
+pp_set.add_printer('base::Location', '^base::Location$',
                    LocationPrinter)
 
 
@@ -229,6 +220,59 @@ class TimePrinter(object):
     def to_string(self):
         return str(self._datetime)
 pp_set.add_printer('base::Time', '^base::Time$', TimePrinter)
+
+
+class FlatTreePrinter(object):
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        # It would be nice to match the output of std::map which is a little
+        # nicer than printing the vector of pairs. But iterating over it in
+        # Python is much more complicated and this output is reasonable.
+        # (Without this printer, a flat_map will output 7 lines of internal
+        # template goop before the vector contents.)
+        return 'base::flat_tree with ' + str(self.val['impl_']['body_'])
+pp_set.add_printer('base::flat_map', '^base::flat_map<.*>$', FlatTreePrinter)
+pp_set.add_printer('base::flat_set', '^base::flat_set<.*>$', FlatTreePrinter)
+pp_set.add_printer('base::flat_tree', '^base::internal::flat_tree<.*>$',
+                   FlatTreePrinter)
+
+
+class ValuePrinter(object):
+    def __init__(self, val):
+        self.val = val
+
+    def get_type(self):
+        return self.val['type_']
+
+    def to_string(self):
+        typestr = str(self.get_type())
+        # Trim prefix to just get the emum short name.
+        typestr = typestr[typestr.rfind(':') + 1: ]
+
+        if typestr == 'NONE':
+            return 'base::Value of type NONE'
+        if typestr == 'BOOLEAN':
+            valuestr = self.val['bool_value_']
+        if typestr == 'INTEGER':
+            valuestr = self.val['int_value_']
+        if typestr == 'DOUBLE':
+            valuestr = self.val['double_value_']
+        if typestr == 'STRING':
+            valuestr = self.val['string_value_']
+        if typestr == 'BINARY':
+            valuestr = self.val['binary_value_']
+        if typestr == 'DICTIONARY':
+            valuestr = self.val['dict_']
+        if typestr == 'LIST':
+            valuestr = self.val['list_']
+
+        return "base::Value of type %s = %s" % (typestr, str(valuestr))
+pp_set.add_printer('base::Value', '^base::Value$', ValuePrinter)
+pp_set.add_printer('base::ListValue', '^base::ListValue$', ValuePrinter)
+pp_set.add_printer('base::DictionaryValue', '^base::DictionaryValue$',
+                   ValuePrinter)
 
 
 class IpcMessagePrinter(Printer):
@@ -336,3 +380,29 @@ pp_set.add_printer('content::RenderProcessHostImpl',
 
 
 gdb.printing.register_pretty_printer(gdb, pp_set, replace=_DEBUGGING)
+
+
+"""Implementations of inlined libc++ std container functions."""
+@class_methods.Class('std::__1::vector', template_types=['T'])
+class LibcppVector(object):
+    @class_methods.member_function('T&', 'operator[]', ['int'])
+    def element(obj, i):
+        return obj['__begin_'][i]
+
+    @class_methods.member_function('size_t', 'size', [])
+    def size(obj):
+        return obj['__end_'] - obj['__begin_']
+
+@class_methods.Class('std::__1::unique_ptr', template_types=['T'])
+class LibcppUniquePtr(object):
+    @class_methods.member_function('T*', 'get', [])
+    def get(obj):
+        return obj['__ptr_']['__value_']
+
+    @class_methods.member_function('T*', 'operator->', [])
+    def arrow(obj):
+        return obj['__ptr_']['__value_']
+
+    @class_methods.member_function('T&', 'operator*', [])
+    def dereference(obj):
+        return obj['__ptr_']['__value_'].dereference()

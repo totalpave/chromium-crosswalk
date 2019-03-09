@@ -94,6 +94,19 @@ SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictGetrusage();
 // about the state of the host OS.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictClockID();
 
+// Restrict the flags argument to getrandom() to allow only no flags, or
+// GRND_NONBLOCK.
+SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictGetRandom();
+
+// Restrict |pid| to the calling process (or 0) for prlimit64().  This allows
+// getting and setting rlimits only on the current process.  Otherwise, fail
+// gracefully; see crbug.com/160157.
+SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictPrlimit(pid_t target_pid);
+
+// Restrict ptrace() to just read operations that are needed for crash
+// reporting. See https://crbug.com/933418 for details.
+SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictPtrace();
+
 }  // namespace sandbox.
 
 #endif  // SANDBOX_LINUX_SECCOMP_BPF_HELPERS_SYSCALL_PARAMETERS_RESTRICTIONS_H_

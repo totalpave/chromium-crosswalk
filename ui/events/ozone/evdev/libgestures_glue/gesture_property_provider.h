@@ -14,11 +14,10 @@
 #include <memory>
 #include <ostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "ui/events/ozone/evdev/event_device_info.h"
 #include "ui/events/ozone/evdev/events_ozone_evdev_export.h"
 
@@ -37,14 +36,14 @@ struct ConfigurationSection;
 // A struct holding device properties that are useful when interacting with
 // the gestures lib.
 struct GestureDeviceProperties {
-  int area_left;
-  int area_right;
-  int area_top;
-  int area_bottom;
-  int res_y;
-  int res_x;
-  int orientation_minimum;
-  int orientation_maximum;
+  int area_left = 0;
+  int area_right = 0;
+  int area_top = 0;
+  int area_bottom = 0;
+  int res_y = 0;
+  int res_x = 0;
+  int orientation_minimum = 0;
+  int orientation_maximum = 0;
   GesturesPropBool raw_passthrough;
   GesturesPropBool dump_debug_log;
 };
@@ -112,14 +111,6 @@ class EVENTS_OZONE_EVDEV_EXPORT GesturePropertyProvider {
   // Mapping table from a device id to its device pointer.
   typedef std::map<DeviceId, DevicePtr> DeviceMap;
 
-  // Mapping table from a device id to its property data.
-  // GestureDevicePropertyData contains both properties in use and default
-  // properties whose values will be applied upon the device attachment.
-  typedef base::ScopedPtrHashMap<
-      DeviceId,
-      std::unique_ptr<internal::GestureDevicePropertyData>>
-      ScopedDeviceDataMap;
-
   // Register a device. Setup data-structures and the device's default
   // properties.
   void RegisterDevice(const DeviceId id, const DevicePtr device);
@@ -166,9 +157,12 @@ class EVENTS_OZONE_EVDEV_EXPORT GesturePropertyProvider {
   // Map from device ids to device pointers.
   DeviceMap device_map_;
 
-  // GestureDevicePropertyData indexed by their respective device ids. Owns the
-  // objects.
-  ScopedDeviceDataMap device_data_map_;
+  // Mapping table from a device id to its property data.
+  // GestureDevicePropertyData contains both properties in use and default
+  // properties whose values will be applied upon the device attachment.
+  std::unordered_map<DeviceId,
+                     std::unique_ptr<internal::GestureDevicePropertyData>>
+      device_data_map_;
 
   // A vector of parsed sections in configuration files. Owns MatchCriterias,
   // GesturesProps and ConfigurationSections in it.
@@ -336,9 +330,9 @@ struct GesturesProp {
 
   // Handler function pointers and the data to be passed to them when the
   // property is accessed.
-  GesturesPropGetHandler get_;
-  GesturesPropSetHandler set_;
-  void* handler_data_;
+  GesturesPropGetHandler get_ = nullptr;
+  GesturesPropSetHandler set_ = nullptr;
+  void* handler_data_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(GesturesProp);
 };

@@ -66,17 +66,18 @@ void MouseCursorMonitorAura::Capture() {
 }
 
 void MouseCursorMonitorAura::NotifyCursorChanged(const ui::Cursor& cursor) {
-  std::unique_ptr<SkBitmap> cursor_bitmap(new SkBitmap());
-  gfx::Point cursor_hotspot;
-
-  if (cursor.native_type() == ui::kCursorNone) {
+  if (cursor.native_type() == ui::CursorType::kNone) {
     callback_->OnMouseCursor(CreateEmptyMouseCursor());
     return;
   }
 
-  if (!ui::GetCursorBitmap(cursor, cursor_bitmap.get(), &cursor_hotspot)) {
+  std::unique_ptr<SkBitmap> cursor_bitmap =
+      std::make_unique<SkBitmap>(cursor.GetBitmap());
+  gfx::Point cursor_hotspot = cursor.GetHotspot();
+
+  if (cursor_bitmap->isNull()) {
     LOG(ERROR) << "Failed to load bitmap for cursor type:"
-               << cursor.native_type();
+               << static_cast<int>(cursor.native_type());
     callback_->OnMouseCursor(CreateEmptyMouseCursor());
     return;
   }
@@ -92,7 +93,8 @@ void MouseCursorMonitorAura::NotifyCursorChanged(const ui::Cursor& cursor) {
   if (cursor_hotspot.x() >= cursor_bitmap->width() ||
       cursor_hotspot.y() >= cursor_bitmap->height()) {
     LOG(WARNING) << "Cursor hotspot is out of bounds for type: "
-                 << cursor.native_type() << ".  Setting to (0,0) instead";
+                 << static_cast<int>(cursor.native_type())
+                 << ".  Setting to (0,0) instead";
     cursor_hotspot.SetPoint(0, 0);
   }
 

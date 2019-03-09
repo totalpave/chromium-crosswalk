@@ -20,29 +20,29 @@ namespace extensions {
 
 // Cancel file selection Dialog.  Closes the dialog window.
 class FileManagerPrivateCancelDialogFunction
-    : public LoggedAsyncExtensionFunction {
+    : public LoggedUIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileManagerPrivate.cancelDialog",
                              FILEMANAGERPRIVATE_CANCELDIALOG)
 
  protected:
-  ~FileManagerPrivateCancelDialogFunction() override {}
+  ~FileManagerPrivateCancelDialogFunction() override = default;
 
-  // AsyncExtensionFunction overrides.
-  bool RunAsync() override;
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
 };
 
 class FileManagerPrivateSelectFileFunction
-    : public LoggedAsyncExtensionFunction {
+    : public LoggedUIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileManagerPrivate.selectFile",
                              FILEMANAGERPRIVATE_SELECTFILE)
 
  protected:
-  ~FileManagerPrivateSelectFileFunction() override {}
+  ~FileManagerPrivateSelectFileFunction() override = default;
 
-  // AsyncExtensionFunction overrides.
-  bool RunAsync() override;
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
 
  private:
   // A callback method to handle the result of GetSelectedFileInfo.
@@ -53,16 +53,16 @@ class FileManagerPrivateSelectFileFunction
 
 // Select multiple files.  Closes the dialog window.
 class FileManagerPrivateSelectFilesFunction
-    : public LoggedAsyncExtensionFunction {
+    : public LoggedUIThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("fileManagerPrivate.selectFiles",
                              FILEMANAGERPRIVATE_SELECTFILES)
 
  protected:
-  ~FileManagerPrivateSelectFilesFunction() override {}
+  ~FileManagerPrivateSelectFilesFunction() override = default;
 
-  // AsyncExtensionFunction overrides.
-  bool RunAsync() override;
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
 
  private:
   // A callback method to handle the result of GetSelectedFileInfo.

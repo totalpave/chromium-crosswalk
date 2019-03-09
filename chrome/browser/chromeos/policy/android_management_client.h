@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_CHROMEOS_POLICY_ANDROID_MANAGEMENT_CLIENT_H_
 
 #include <memory>
+#include <ostream>
 #include <string>
 
 #include "base/callback.h"
@@ -13,12 +14,22 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
-#include "google_apis/gaia/oauth2_token_service.h"
-#include "net/url_request/url_request_context_getter.h"
 
 namespace enterprise_management {
 class DeviceManagementResponse;
 }
+
+namespace identity {
+class AccessTokenFetcher;
+class IdentityManager;
+struct AccessTokenInfo;
+}  // namespace identity
+
+namespace network {
+class SharedURLLoaderFactory;
+}
+
+class GoogleServiceAuthError;
 
 namespace policy {
 
@@ -28,13 +39,13 @@ class DeviceManagementService;
 // Interacts with the device management service and determines whether Android
 // management is enabled for the user or not. Uses the OAuth2TokenService to
 // acquire access tokens for the device management.
-class AndroidManagementClient : public OAuth2TokenService::Consumer {
+class AndroidManagementClient {
  public:
   // Indicates result of the android management check.
-  enum Result {
-    RESULT_MANAGED,    // Android management is enabled.
-    RESULT_UNMANAGED,  // Android management is disabled.
-    RESULT_ERROR,      // Received a error.
+  enum class Result {
+    MANAGED,    // Android management is enabled.
+    UNMANAGED,  // Android management is disabled.
+    ERROR,      // Received a error.
   };
 
   // A callback which receives Result status of an operation.
@@ -42,10 +53,10 @@ class AndroidManagementClient : public OAuth2TokenService::Consumer {
 
   AndroidManagementClient(
       DeviceManagementService* service,
-      scoped_refptr<net::URLRequestContextGetter> request_context,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const std::string& account_id,
-      OAuth2TokenService* token_service);
-  ~AndroidManagementClient() override;
+      identity::IdentityManager* identity_manager);
+  ~AndroidManagementClient();
 
   // Starts sending of check Android management request to DM server, issues
   // access token if neccessary. |callback| is called on check Android
@@ -57,12 +68,8 @@ class AndroidManagementClient : public OAuth2TokenService::Consumer {
   static void SetAccessTokenForTesting(const char* access_token);
 
  private:
-  // OAuth2TokenService::Consumer:
-  void OnGetTokenSuccess(const OAuth2TokenService::Request* request,
-                         const std::string& access_token,
-                         const base::Time& expiration_time) override;
-  void OnGetTokenFailure(const OAuth2TokenService::Request* request,
-                         const GoogleServiceAuthError& error) override;
+  void OnAccessTokenFetchComplete(GoogleServiceAuthError error,
+                                  identity::AccessTokenInfo token_info);
 
   // Requests an access token.
   void RequestAccessToken();
@@ -78,15 +85,14 @@ class AndroidManagementClient : public OAuth2TokenService::Consumer {
 
   // Used to communicate with the device management service.
   DeviceManagementService* const device_management_service_;
-  scoped_refptr<net::URLRequestContextGetter> request_context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   std::unique_ptr<DeviceManagementRequestJob> request_job_;
 
   // The account ID that will be used for the access token fetch.
   const std::string account_id_;
-  // The token service used to retrieve the access token.
-  OAuth2TokenService* const token_service_;
-  // The OAuth request to receive the access token.
-  std::unique_ptr<OAuth2TokenService::Request> token_request_;
+
+  identity::IdentityManager* identity_manager_;
+  std::unique_ptr<identity::AccessTokenFetcher> access_token_fetcher_;
 
   StatusCallback callback_;
 
@@ -94,6 +100,10 @@ class AndroidManagementClient : public OAuth2TokenService::Consumer {
 
   DISALLOW_COPY_AND_ASSIGN(AndroidManagementClient);
 };
+
+// Outputs the stringified |result| to |os|. This is only for logging purposes.
+std::ostream& operator<<(std::ostream& os,
+                         AndroidManagementClient::Result result);
 
 }  // namespace policy
 

@@ -25,6 +25,13 @@ class StubWebView : public WebView {
   Status GetUrl(std::string* url) override;
   Status Load(const std::string& url, const Timeout* timeout) override;
   Status Reload(const Timeout* timeout) override;
+  Status Freeze(const Timeout* timeout) override;
+  Status Resume(const Timeout* timeout) override;
+  Status SendCommand(const std::string& cmd,
+                     const base::DictionaryValue& params) override;
+  Status SendCommandAndGetResult(const std::string& cmd,
+                                 const base::DictionaryValue& params,
+                                 std::unique_ptr<base::Value>* value) override;
   Status TraverseHistory(int delta, const Timeout* timeout) override;
   Status EvaluateScript(const std::string& frame,
                         const std::string& function,
@@ -52,8 +59,20 @@ class StubWebView : public WebView {
   Status DispatchTouchEvent(const TouchEvent& event) override;
   Status DispatchTouchEvents(const std::list<TouchEvent>& events) override;
   Status DispatchKeyEvents(const std::list<KeyEvent>& events) override;
-  Status GetCookies(std::unique_ptr<base::ListValue>* cookies) override;
-  Status DeleteCookie(const std::string& name, const std::string& url) override;
+  Status GetCookies(std::unique_ptr<base::ListValue>* cookies,
+                    const std::string& current_page_url) override;
+  Status DeleteCookie(const std::string& name,
+                      const std::string& url,
+                      const std::string& domain,
+                      const std::string& path) override;
+  Status AddCookie(const std::string& name,
+                   const std::string& url,
+                   const std::string& value,
+                   const std::string& domain,
+                   const std::string& path,
+                   bool secure,
+                   bool httpOnly,
+                   double expiry) override;
   Status WaitForPendingNavigations(const std::string& frame_id,
                                    const Timeout& timeout,
                                    bool stop_load_on_timeout) override;
@@ -64,7 +83,9 @@ class StubWebView : public WebView {
   Status OverrideGeolocation(const Geoposition& geoposition) override;
   Status OverrideNetworkConditions(
       const NetworkConditions& network_conditions) override;
-  Status CaptureScreenshot(std::string* screenshot) override;
+  Status CaptureScreenshot(
+      std::string* screenshot,
+      const base::DictionaryValue& params) override;
   Status SetFileInputFiles(const std::string& frame,
                            const base::DictionaryValue& element,
                            const std::vector<base::FilePath>& files) override;
@@ -80,6 +101,13 @@ class StubWebView : public WebView {
                                  int xoffset,
                                  int yoffset) override;
   Status SynthesizePinchGesture(int x, int y, double scale_factor) override;
+  Status GetScreenOrientation(std::string* orientation) override;
+  Status SetScreenOrientation(std::string orientation) override;
+  Status DeleteScreenOrientation() override;
+  bool IsOOPIF(const std::string& frame_id) override;
+  FrameTracker* GetFrameTracker() const override;
+  std::unique_ptr<base::Value> GetCastSinks() override;
+  std::unique_ptr<base::Value> GetCastIssueMessage() override;
 
  private:
   std::string id_;

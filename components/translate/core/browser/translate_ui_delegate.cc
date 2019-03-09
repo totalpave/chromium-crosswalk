@@ -16,6 +16,7 @@
 #include "components/translate/core/common/translate_constants.h"
 #include "components/variations/variations_associated_data.h"
 #include "third_party/icu/source/i18n/unicode/coll.h"
+#include "third_party/metrics_proto/translate_event.pb.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -59,12 +60,14 @@ TranslateUIDelegate::TranslateUIDelegate(
       translate_manager_(translate_manager),
       original_language_index_(kNoIndex),
       initial_original_language_index_(kNoIndex),
-      target_language_index_(kNoIndex) {
+      target_language_index_(kNoIndex),
+      prefs_(translate_manager_->translate_client()->GetTranslatePrefs()) {
   DCHECK(translate_driver_);
   DCHECK(translate_manager_);
 
   std::vector<std::string> language_codes;
-  TranslateDownloadManager::GetSupportedLanguages(&language_codes);
+  TranslateDownloadManager::GetSupportedLanguages(
+      prefs_->IsTranslateAllowedByPolicy(), &language_codes);
 
   // Preparing for the alphabetical order in the locale.
   std::string locale =
@@ -108,7 +111,6 @@ TranslateUIDelegate::TranslateUIDelegate(
       target_language_index_ = iter - languages_.begin();
   }
 
-  prefs_ = translate_manager_->translate_client()->GetTranslatePrefs();
 }
 
 TranslateUIDelegate::~TranslateUIDelegate() {}
@@ -146,9 +148,12 @@ void TranslateUIDelegate::UpdateOriginalLanguageIndex(size_t language_index) {
 
 void TranslateUIDelegate::UpdateOriginalLanguage(
     const std::string& language_code) {
+  DCHECK(translate_manager_ != nullptr);
   for (size_t i = 0; i < languages_.size(); ++i) {
     if (languages_[i].first.compare(language_code) == 0) {
       UpdateOriginalLanguageIndex(i);
+      translate_manager_->mutable_translate_event()
+          ->set_modified_source_language(language_code);
       return;
     }
   }
@@ -169,9 +174,12 @@ void TranslateUIDelegate::UpdateTargetLanguageIndex(size_t language_index) {
 
 void TranslateUIDelegate::UpdateTargetLanguage(
     const std::string& language_code) {
+  DCHECK(translate_manager_ != nullptr);
   for (size_t i = 0; i < languages_.size(); ++i) {
     if (languages_[i].first.compare(language_code) == 0) {
       UpdateTargetLanguageIndex(i);
+      translate_manager_->mutable_translate_event()
+          ->set_modified_target_language(language_code);
       return;
     }
   }
@@ -202,13 +210,16 @@ std::string TranslateUIDelegate::GetTargetLanguageCode() const {
 }
 
 void TranslateUIDelegate::Translate() {
-  if (!translate_driver_->IsOffTheRecord()) {
+  if (!translate_driver_->IsIncognito()) {
     prefs_->ResetTranslationDeniedCount(GetOriginalLanguageCode());
     prefs_->ResetTranslationIgnoredCount(GetOriginalLanguageCode());
     prefs_->IncrementTranslationAcceptedCount(GetOriginalLanguageCode());
+    prefs_->SetRecentTargetLanguage(GetTargetLanguageCode());
   }
 
   if (translate_manager_) {
+    translate_manager_->RecordTranslateEvent(
+        metrics::TranslateEventProto::USER_ACCEPT);
     translate_manager_->TranslatePage(GetOriginalLanguageCode(),
                                       GetTargetLanguageCode(), false);
     UMA_HISTOGRAM_BOOLEAN(kPerformTranslate, true);
@@ -223,7 +234,7 @@ void TranslateUIDelegate::RevertTranslation() {
 }
 
 void TranslateUIDelegate::TranslationDeclined(bool explicitly_closed) {
-  if (!translate_driver_->IsOffTheRecord()) {
+  if (!translate_driver_->IsIncognito()) {
     const std::string& language = GetOriginalLanguageCode();
     if (explicitly_closed) {
       prefs_->ResetTranslationAcceptedCount(language);
@@ -239,25 +250,36 @@ void TranslateUIDelegate::TranslationDeclined(bool explicitly_closed) {
   // when getting a LANGUAGE_DETERMINED from the page, which happens when a load
   // stops. That could happen multiple times, including after the user already
   // declined the translation.)
-  if (explicitly_closed && translate_manager_) {
-    translate_manager_->GetLanguageState().set_translation_declined(true);
-    UMA_HISTOGRAM_BOOLEAN(kDeclineTranslate, true);
+  if (translate_manager_) {
+    translate_manager_->RecordTranslateEvent(
+        explicitly_closed ? metrics::TranslateEventProto::USER_DECLINE
+                          : metrics::TranslateEventProto::USER_IGNORE);
+    if (explicitly_closed)
+      translate_manager_->GetLanguageState().set_translation_declined(true);
   }
 
-  if (!explicitly_closed) {
+  if (explicitly_closed) {
+    UMA_HISTOGRAM_BOOLEAN(kDeclineTranslate, true);
+  } else {
     UMA_HISTOGRAM_BOOLEAN(kDeclineTranslateDismissUI, true);
   }
 }
 
-bool TranslateUIDelegate::IsLanguageBlocked() {
+bool TranslateUIDelegate::IsLanguageBlocked() const {
   return prefs_->IsBlockedLanguage(GetOriginalLanguageCode());
 }
 
 void TranslateUIDelegate::SetLanguageBlocked(bool value) {
   if (value) {
-    prefs_->BlockLanguage(GetOriginalLanguageCode());
+    prefs_->AddToLanguageList(GetOriginalLanguageCode(),
+                              /*force_blocked=*/true);
     if (translate_manager_) {
       translate_manager_->GetLanguageState().SetTranslateEnabled(false);
+      // Translation has been blocked for this language. Capture that in the
+      // metrics. Note that we don't capture a language being unblocked... which
+      // is not the same as accepting a given translation for this language.
+      translate_manager_->RecordTranslateEvent(
+          metrics::TranslateEventProto::USER_NEVER_TRANSLATE_LANGUAGE);
     }
   } else {
     prefs_->UnblockLanguage(GetOriginalLanguageCode());
@@ -266,9 +288,13 @@ void TranslateUIDelegate::SetLanguageBlocked(bool value) {
   UMA_HISTOGRAM_BOOLEAN(kNeverTranslateLang, value);
 }
 
-bool TranslateUIDelegate::IsSiteBlacklisted() {
+bool TranslateUIDelegate::IsSiteBlacklisted() const {
   std::string host = GetPageHost();
   return !host.empty() && prefs_->IsSiteBlacklisted(host);
+}
+
+bool TranslateUIDelegate::CanBlacklistSite() const {
+  return !GetPageHost().empty();
 }
 
 void TranslateUIDelegate::SetSiteBlacklist(bool value) {
@@ -280,6 +306,11 @@ void TranslateUIDelegate::SetSiteBlacklist(bool value) {
     prefs_->BlacklistSite(host);
     if (translate_manager_) {
       translate_manager_->GetLanguageState().SetTranslateEnabled(false);
+      // Translation has been blocked for this site. Capture that in the metrics
+      // Note that we don't capture a language being unblocked... which is not
+      // the same as accepting a given translation for this site.
+      translate_manager_->RecordTranslateEvent(
+          metrics::TranslateEventProto::USER_NEVER_TRANSLATE_SITE);
     }
   } else {
     prefs_->RemoveSiteFromBlacklist(host);
@@ -288,47 +319,48 @@ void TranslateUIDelegate::SetSiteBlacklist(bool value) {
   UMA_HISTOGRAM_BOOLEAN(kNeverTranslateSite, value);
 }
 
-bool TranslateUIDelegate::ShouldAlwaysTranslate() {
+bool TranslateUIDelegate::ShouldAlwaysTranslate() const {
   return prefs_->IsLanguagePairWhitelisted(GetOriginalLanguageCode(),
                                            GetTargetLanguageCode());
 }
 
-bool TranslateUIDelegate::ShouldAlwaysTranslateBeCheckedByDefault() {
-  if (ShouldAlwaysTranslate())
-    return true;
+bool TranslateUIDelegate::ShouldAlwaysTranslateBeCheckedByDefault() const {
+  return ShouldAlwaysTranslate();
+}
 
-  std::map<std::string, std::string> params;
-  if (!variations::GetVariationParams(translate::kTranslateUI2016Q2TrialName,
-                                      &params))
-    return false;
-  int threshold = 0;
-  base::StringToInt(params[translate::kAlwaysTranslateOfferThreshold],
-                    &threshold);
-  if (threshold <= 0)
-    return false;
+bool TranslateUIDelegate::ShouldShowAlwaysTranslateShortcut() const {
+  return !translate_driver_->IsIncognito() &&
+         prefs_->GetTranslationAcceptedCount(GetOriginalLanguageCode()) >=
+             kAlwaysTranslateShortcutMinimumAccepts;
+}
 
-  // After N clicks on Translate for the same language.
-  // We check for == N instead of >= N because if the user translates with the
-  // "Always do this?" on, then the next time the bubble won't show up.
-  // The only chance the bubble will show up is after the user manually unchecks
-  // "Always do this?". In that case, since it is after user explictly unchecks,
-  // we should show as it as unchecked so we only check == N instead of >= N.
-  return prefs_->GetTranslationAcceptedCount(GetOriginalLanguageCode()) ==
-         threshold;
+bool TranslateUIDelegate::ShouldShowNeverTranslateShortcut() const {
+  return !translate_driver_->IsIncognito() &&
+         prefs_->GetTranslationDeniedCount(GetOriginalLanguageCode()) >=
+             kNeverTranslateShortcutMinimumDenials;
 }
 
 void TranslateUIDelegate::SetAlwaysTranslate(bool value) {
   const std::string& original_lang = GetOriginalLanguageCode();
   const std::string& target_lang = GetTargetLanguageCode();
-  if (value)
+  if (value) {
     prefs_->WhitelistLanguagePair(original_lang, target_lang);
-  else
+    // A default translation mapping has been accepted for this language.
+    // Capture that in the metrics. Note that we don't capture a language being
+    // unmapped... which is not the same as accepting some other translation
+    // for this language.
+    if (translate_manager_) {
+      translate_manager_->RecordTranslateEvent(
+          metrics::TranslateEventProto::USER_ALWAYS_TRANSLATE_LANGUAGE);
+    }
+  } else {
     prefs_->RemoveLanguagePairFromWhitelist(original_lang, target_lang);
+  }
 
   UMA_HISTOGRAM_BOOLEAN(kAlwaysTranslateLang, value);
 }
 
-std::string TranslateUIDelegate::GetPageHost() {
+std::string TranslateUIDelegate::GetPageHost() const {
   if (!translate_driver_->HasCurrentPage())
     return std::string();
   return translate_driver_->GetLastCommittedURL().HostNoBrackets();

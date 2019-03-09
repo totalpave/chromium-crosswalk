@@ -11,6 +11,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/strings/string_split.h"
+#include "base/time/time.h"
 #include "net/http/http_status_code.h"
 
 namespace net {
@@ -79,6 +80,22 @@ class BasicHttpResponse : public HttpResponse {
   DISALLOW_COPY_AND_ASSIGN(BasicHttpResponse);
 };
 
+class DelayedHttpResponse : public BasicHttpResponse {
+ public:
+  DelayedHttpResponse(const base::TimeDelta delay);
+  ~DelayedHttpResponse() override;
+
+  // Issues a delayed send to the to the task runner.
+  void SendResponse(const SendBytesCallback& send,
+                    const SendCompleteCallback& done) override;
+
+ private:
+  // The delay time for the response.
+  const base::TimeDelta delay_;
+
+  DISALLOW_COPY_AND_ASSIGN(DelayedHttpResponse);
+};
+
 class RawHttpResponse : public HttpResponse {
  public:
   RawHttpResponse(const std::string& headers, const std::string& contents);
@@ -94,6 +111,20 @@ class RawHttpResponse : public HttpResponse {
   const std::string contents_;
 
   DISALLOW_COPY_AND_ASSIGN(RawHttpResponse);
+};
+
+// "Response" where the server doesn't actually respond until the server is
+// destroyed.
+class HungResponse : public HttpResponse {
+ public:
+  HungResponse() {}
+  ~HungResponse() override {}
+
+  void SendResponse(const SendBytesCallback& send,
+                    const SendCompleteCallback& done) override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(HungResponse);
 };
 
 }  // namespace test_server

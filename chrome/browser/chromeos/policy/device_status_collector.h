@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#include <deque>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,17 +15,25 @@
 #include "base/callback_forward.h"
 #include "base/callback_list.h"
 #include "base/compiler_specific.h"
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequenced_task_runner.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/chromeos/child_accounts/usage_time_state_notifier.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chromeos/system/version_loader.h"
-#include "content/public/browser/geolocation_provider.h"
-#include "content/public/common/geoposition.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "chromeos/dbus/cryptohome_client.h"
+#include "chromeos/dbus/power_manager_client.h"
+#include "chromeos/dbus/runtime_probe/runtime_probe.pb.h"
+#include "chromeos/dbus/runtime_probe_client.h"
+#include "components/policy/proto/device_management_backend.pb.h"
+#include "components/prefs/pref_member.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/core/session_manager_observer.h"
 #include "ui/base/idle/idle.h"
 
 namespace chromeos {
@@ -35,27 +43,79 @@ class StatisticsProvider;
 }
 }
 
-namespace content {
-class NotificationDetails;
-class NotificationSource;
+namespace cryptohome {
+struct TpmStatusInfo;
 }
 
+namespace power_manager {
+class PowerSupplyProperties;
+}
+
+namespace user_manager {
+class User;
+}
+
+class PrefChangeRegistrar;
 class PrefRegistrySimple;
 class PrefService;
+class Profile;
 
 namespace policy {
 
 struct DeviceLocalAccount;
+class GetStatusState;
+
+// Holds TPM status info.  Cf. TpmStatusInfo in device_management_backend.proto.
+struct TpmStatusInfo {
+  TpmStatusInfo();
+  TpmStatusInfo(const TpmStatusInfo&);
+  TpmStatusInfo(bool enabled,
+                bool owned,
+                bool initialized,
+                bool attestation_prepared,
+                bool attestation_enrolled,
+                int32_t dictionary_attack_counter,
+                int32_t dictionary_attack_threshold,
+                bool dictionary_attack_lockout_in_effect,
+                int32_t dictionary_attack_lockout_seconds_remaining,
+                bool boot_lockbox_finalized);
+  ~TpmStatusInfo();
+
+  bool enabled = false;
+  bool owned = false;
+  bool initialized = false;
+  bool attestation_prepared = false;
+  bool attestation_enrolled = false;
+  int32_t dictionary_attack_counter = 0;
+  int32_t dictionary_attack_threshold = 0;
+  bool dictionary_attack_lockout_in_effect = false;
+  int32_t dictionary_attack_lockout_seconds_remaining = 0;
+  bool boot_lockbox_finalized = false;
+};
+
+// Sampled hardware measurement data for single time point.
+class SampledData {
+ public:
+  SampledData();
+  ~SampledData();
+
+  // Sampling timestamp.
+  base::Time timestamp;
+  // Battery samples for each battery.
+  std::map<std::string, enterprise_management::BatterySample> battery_samples;
+  // Thermal samples for each thermal point.
+  std::map<std::string, enterprise_management::ThermalSample> thermal_samples;
+  // CPU thermal samples.
+  std::map<std::string, enterprise_management::CPUTempInfo> cpu_samples;
+
+  DISALLOW_COPY_AND_ASSIGN(SampledData);
+};
 
 // Collects and summarizes the status of an enterprised-managed ChromeOS device.
-class DeviceStatusCollector {
+class DeviceStatusCollector : public session_manager::SessionManagerObserver,
+                              public chromeos::UsageTimeStateNotifier::Observer,
+                              public chromeos::PowerManagerClient::Observer {
  public:
-  // TODO(bartfab): Remove this once crbug.com/125931 is addressed and a proper
-  // way to mock geolocation exists.
-  typedef base::Callback<void(
-      const content::GeolocationProvider::LocationUpdateCallback& callback)>
-          LocationUpdateRequester;
-
   using VolumeInfoFetcher = base::Callback<
     std::vector<enterprise_management::VolumeInfo>(
         const std::vector<std::string>& mount_points)>;
@@ -73,36 +133,66 @@ class DeviceStatusCollector {
   using CPUTempFetcher =
       base::Callback<std::vector<enterprise_management::CPUTempInfo>()>;
 
-  // Constructor. Callers can inject their own VolumeInfoFetcher,
-  // CPUStatisticsFetcher and CPUTempFetcher. These callbacks are executed on
-  // Blocking Pool. A null callback can be passed for either parameter, to use
-  // the default implementation.
-  DeviceStatusCollector(
-      PrefService* local_state,
-      chromeos::system::StatisticsProvider* provider,
-      const LocationUpdateRequester& location_update_requester,
-      const VolumeInfoFetcher& volume_info_fetcher,
-      const CPUStatisticsFetcher& cpu_statistics_fetcher,
-      const CPUTempFetcher& cpu_temp_fetcher);
-  virtual ~DeviceStatusCollector();
+  // Passed into asynchronous mojo interface for communicating with Android.
+  using AndroidStatusReceiver =
+      base::Callback<void(const std::string&, const std::string&)>;
+  // Calls the enterprise reporting mojo interface, passing over the
+  // AndroidStatusReceiver. Returns false if the mojo interface isn't available,
+  // in which case no asynchronous query is emitted and the android status query
+  // fails synchronously. The |AndroidStatusReceiver| is not called in this
+  // case.
+  using AndroidStatusFetcher =
+      base::Callback<bool(const AndroidStatusReceiver&)>;
 
-  // Fills in the passed proto with device status information. Will return
-  // false if no status information is filled in (because status reporting
-  // is disabled).
-  virtual bool GetDeviceStatus(
-      enterprise_management::DeviceStatusReportRequest* status);
+  // Format of the function that asynchronously receives TpmStatusInfo.
+  using TpmStatusReceiver = base::OnceCallback<void(const TpmStatusInfo&)>;
+  // Gets the TpmStatusInfo and passes it to TpmStatusReceiver.
+  using TpmStatusFetcher = base::RepeatingCallback<void(TpmStatusReceiver)>;
 
-  // Fills in the passed proto with session status information. Will return
-  // false if no status information is filled in (because status reporting
-  // is disabled, or because the active session is not a kiosk session).
-  virtual bool GetDeviceSessionStatus(
-      enterprise_management::SessionStatusReportRequest* status);
+  // Format of the function that asynchronously receives ProbeResult / sampled
+  // data.
+  using ProbeDataReceiver = base::OnceCallback<void(
+      const base::Optional<runtime_probe::ProbeResult>&,
+      const base::circular_deque<std::unique_ptr<SampledData>>&)>;
+  // Gets the ProbeResult/sampled data and passes it to ProbeDataReceiver.
+  using ProbeDataFetcher = base::RepeatingCallback<void(ProbeDataReceiver)>;
+
+  // Called in the UI thread after the device and session status have been
+  // collected asynchronously in GetDeviceAndSessionStatusAsync. Null pointers
+  // indicate errors or that device or session status reporting is disabled.
+  using StatusCallback = base::Callback<void(
+      std::unique_ptr<enterprise_management::DeviceStatusReportRequest>,
+      std::unique_ptr<enterprise_management::SessionStatusReportRequest>)>;
+  // Constructor. Callers can inject their own *Fetcher callbacks, e.g. for unit
+  // testing. A null callback can be passed for any *Fetcher parameter, to use
+  // the default implementation. These callbacks are always executed on Blocking
+  // Pool. Caller is responsible for passing already initialized |pref_service|.
+  // |activity_day_start| indicates what time does the new day start for
+  // activity reporting daily data aggregation. It is represented by the
+  // distance from midnight. If |is_enterprise_device| additional enterprise
+  // relevant status data will be reported.
+  DeviceStatusCollector(PrefService* pref_service,
+                        chromeos::system::StatisticsProvider* provider,
+                        const VolumeInfoFetcher& volume_info_fetcher,
+                        const CPUStatisticsFetcher& cpu_statistics_fetcher,
+                        const CPUTempFetcher& cpu_temp_fetcher,
+                        const AndroidStatusFetcher& android_status_fetcher,
+                        const TpmStatusFetcher& tpm_status_fetcher,
+                        base::TimeDelta activity_day_start,
+                        bool is_enterprise_reporting);
+  ~DeviceStatusCollector() override;
+
+  // Gathers device and session status information and calls the passed response
+  // callback. Null pointers passed into the response indicate errors or that
+  // device or session status reporting is disabled.
+  virtual void GetDeviceAndSessionStatusAsync(const StatusCallback& response);
 
   // Called after the status information has successfully been submitted to
   // the server.
-  void OnSubmittedSuccessfully();
+  virtual void OnSubmittedSuccessfully();
 
   static void RegisterPrefs(PrefRegistrySimple* registry);
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   // Returns the DeviceLocalAccount associated with the currently active
   // kiosk session, if the session was auto-launched with zero delay
@@ -110,127 +200,212 @@ class DeviceStatusCollector {
   // Virtual to allow mocking.
   virtual std::unique_ptr<DeviceLocalAccount> GetAutoLaunchedKioskSessionInfo();
 
+  bool report_activity_times() const { return report_activity_times_; }
+  bool report_network_interfaces() const { return report_network_interfaces_; }
+  bool report_users() const { return report_users_; }
+  bool report_hardware_status() const { return report_hardware_status_; }
+
   // How often, in seconds, to poll to see if the user is idle.
   static const unsigned int kIdlePollIntervalSeconds = 30;
 
   // The total number of hardware resource usage samples cached internally.
   static const unsigned int kMaxResourceUsageSamples = 10;
 
+  // Returns the amount of time the child has used so far today. If the user is
+  // not a child or if there is no user logged in, it returns 0.
+  base::TimeDelta GetActiveChildScreenTime();
+
  protected:
+  using PowerStatusCallback = base::OnceCallback<void(
+      const power_manager::PowerSupplyProperties& prop)>;
+
   // Check whether the user has been idle for a certain period of time.
   virtual void CheckIdleState();
 
   // Used instead of base::Time::Now(), to make testing possible.
   virtual base::Time GetCurrentTime();
 
-  // Callback which receives the results of the idle state check.
-  void IdleStateCallback(ui::IdleState state);
+  // Handles the results of the idle state check.
+  void ProcessIdleState(ui::IdleState state);
 
   // Gets the version of the passed app. Virtual to allow mocking.
   virtual std::string GetAppVersion(const std::string& app_id);
 
-  // Samples the current hardware status to be sent up with the next device
-  // status update.
-  void SampleHardwareStatus();
+  // Gets the DMToken associated with a profile. Returns an empty string if no
+  // DMToken could be retrieved. Virtual to allow mocking.
+  virtual std::string GetDMTokenForProfile(Profile* profile);
 
-  // The number of days in the past to store device activity.
+  // Samples the current hardware resource usage to be sent up with the
+  // next device status update.
+  void SampleResourceUsage();
+
+  // session_manager::SessionManagerObserver:
+  void OnSessionStateChanged() override;
+
+  // chromeos::UsageTimeStateNotifier::Observer:
+  void OnUsageTimeStateChange(
+      chromeos::UsageTimeStateNotifier::UsageTimeState state) override;
+
+  // power_manager::PowerManagerClient::Observer:
+  void ScreenIdleStateChanged(
+      const power_manager::ScreenIdleState& state) override;
+
+  // power_manager::PowerManagerClient::Observer:
+  void SuspendImminent(power_manager::SuspendImminent::Reason reason) override;
+
+  // power_manager::PowerManagerClient::Observer:
+  void SuspendDone(const base::TimeDelta& sleep_duration) override;
+
+  // power_manager::PowerManagerClient::Observer:
+  void PowerChanged(const power_manager::PowerSupplyProperties& prop) override;
+
+  // The timeout in the past to store device activity.
   // This is kept in case device status uploads fail for a number of days.
-  unsigned int max_stored_past_activity_days_;
+  base::TimeDelta max_stored_past_activity_interval_;
 
-  // The number of days in the future to store device activity.
+  // The timeout in the future to store device activity.
   // When changing the system time and/or timezones, it's possible to record
   // activity time that is slightly in the future.
-  unsigned int max_stored_future_activity_days_;
+  base::TimeDelta max_stored_future_activity_interval_;
+
+  // Updates the child's active time.
+  void UpdateChildUsageTime();
 
  private:
-  // Prevents the local store of activity periods from growing too large by
-  // removing entries that are outside the reporting window.
-  void PruneStoredActivityPeriods(base::Time base_time);
+  class ActivityStorage;
 
-  // Trims the store activity periods to only retain data within the
-  // [|min_day_key|, |max_day_key|). The record for |min_day_key| will be
-  // adjusted by subtracting |min_day_trim_duration|.
-  void TrimStoredActivityPeriods(int64_t min_day_key,
-                                 int min_day_trim_duration,
-                                 int64_t max_day_key);
+  // Callbacks used during sampling data collection, that allows to pass
+  // additional data using partial function application.
+  using SamplingProbeResultCallback =
+      base::OnceCallback<void(base::Optional<runtime_probe::ProbeResult>)>;
+  using SamplingCallback = base::OnceCallback<void()>;
 
-  void AddActivePeriod(base::Time start, base::Time end);
-
-  // Clears the cached hardware status.
-  void ClearCachedHardwareStatus();
+  // Clears the cached hardware resource usage.
+  void ClearCachedResourceUsage();
 
   // Callbacks from chromeos::VersionLoader.
   void OnOSVersion(const std::string& version);
   void OnOSFirmware(const std::string& version);
+  void OnTpmVersion(
+      const chromeos::CryptohomeClient::TpmVersionInfo& tpm_version_info);
 
-  // Helpers for the various portions of the status.
-  void GetActivityTimes(
-      enterprise_management::DeviceStatusReportRequest* request);
-  void GetVersionInfo(
-      enterprise_management::DeviceStatusReportRequest* request);
-  void GetBootMode(
-      enterprise_management::DeviceStatusReportRequest* request);
-  void GetLocation(
-      enterprise_management::DeviceStatusReportRequest* request);
-  void GetNetworkInterfaces(
-      enterprise_management::DeviceStatusReportRequest* request);
-  void GetUsers(
-      enterprise_management::DeviceStatusReportRequest* request);
-  void GetHardwareStatus(
-      enterprise_management::DeviceStatusReportRequest* request);
+  void GetDeviceStatus(scoped_refptr<GetStatusState> state);
+  void GetSessionStatus(scoped_refptr<GetStatusState> state);
+
+  bool GetSessionStatusForUser(
+      scoped_refptr<GetStatusState> state,
+      enterprise_management::SessionStatusReportRequest* status,
+      const user_manager::User* user);
+  // Helpers for the various portions of DEVICE STATUS. Return true if they
+  // actually report any status. Functions that queue async queries take
+  // a |GetStatusState| instance.
+  bool GetActivityTimes(
+      enterprise_management::DeviceStatusReportRequest* status);
+  bool GetVersionInfo(enterprise_management::DeviceStatusReportRequest* status);
+  bool GetBootMode(enterprise_management::DeviceStatusReportRequest* status);
+  bool GetWriteProtectSwitch(
+      enterprise_management::DeviceStatusReportRequest* status);
+  bool GetNetworkInterfaces(
+      enterprise_management::DeviceStatusReportRequest* status);
+  bool GetUsers(enterprise_management::DeviceStatusReportRequest* status);
+  bool GetHardwareStatus(
+      enterprise_management::DeviceStatusReportRequest* status,
+      scoped_refptr<GetStatusState> state);  // Queues async queries!
+  bool GetOsUpdateStatus(
+      enterprise_management::DeviceStatusReportRequest* status);
+  bool GetRunningKioskApp(
+      enterprise_management::DeviceStatusReportRequest* status);
+
+  // Helpers for the various portions of SESSION STATUS. Return true if they
+  // actually report any status. Functions that queue async queries take
+  // a |GetStatusState| instance.
+  bool GetKioskSessionStatus(
+      enterprise_management::SessionStatusReportRequest* status);
+  bool GetAndroidStatus(
+      enterprise_management::SessionStatusReportRequest* status,
+      const scoped_refptr<GetStatusState>& state);  // Queues async queries!
+  bool GetCrostiniUsage(
+      enterprise_management::SessionStatusReportRequest* status,
+      Profile* profile);
 
   // Update the cached values of the reporting settings.
   void UpdateReportingSettings();
 
-  void ScheduleGeolocationUpdateRequest();
-
-  // content::GeolocationUpdateCallback implementation.
-  void ReceiveGeolocationUpdate(const content::Geoposition&);
-
-  // Callback invoked to update our cached disk information.
-  void ReceiveVolumeInfo(
-      const std::vector<enterprise_management::VolumeInfo>& info);
-
   // Callback invoked to update our cpu usage information.
-  void ReceiveCPUStatistics(const std::string& statistics);
+  void ReceiveCPUStatistics(const base::Time& timestamp,
+                            const std::string& statistics);
 
-  // Callback invoked to update our CPU temp information.
-  void StoreCPUTempInfo(
-      const std::vector<enterprise_management::CPUTempInfo>& info);
+  // Callback for RuntimeProbe that samples probe live data. |callback| will be
+  // called once all sampling is finished.
+  void SampleProbeData(std::unique_ptr<SampledData> sample,
+                       SamplingProbeResultCallback callback,
+                       base::Optional<runtime_probe::ProbeResult> result);
 
-  // Helper routine to convert from Shill-provided signal strength (percent)
-  // to dBm units expected by server.
-  int ConvertWifiSignalStrength(int signal_strength);
+  // Callback triggered from PowerManagedClient that samples battery discharge
+  // rate. |callback| will be called once all sampling is finished.
+  void SampleDischargeRate(std::unique_ptr<SampledData> sample,
+                           SamplingCallback callback,
+                           const power_manager::PowerSupplyProperties& prop);
 
-  PrefService* local_state_;
+  // Callback invoked to update our cpu temperature information.
+  void ReceiveCPUTemperature(std::unique_ptr<SampledData> sample,
+                             SamplingCallback callback,
+                             std::vector<enterprise_management::CPUTempInfo>);
+
+  // Final sampling step that records data sample, invokes |callback|.
+  void AddDataSample(std::unique_ptr<SampledData> sample,
+                     SamplingCallback callback);
+
+  // ProbeDataReceiver interface implementation, fetches data from
+  // RuntimeProbe passes it to |callback| via OnProbeDataFetched().
+  void FetchProbeData(
+      policy::DeviceStatusCollector::ProbeDataReceiver callback);
+
+  // Callback for RuntimeProbe that performs final sampling and
+  // actually invokes |callback|.
+  void OnProbeDataFetched(
+      policy::DeviceStatusCollector::ProbeDataReceiver callback,
+      base::Optional<runtime_probe::ProbeResult> reply);
+
+  // Callback invoked when reporting users pref is changed.
+  void ReportingUsersChanged();
+
+  // Returns user's email if it should be included in the activity reports or
+  // empty string otherwise. Primary user is used as unique identifier of a
+  // single session, even for multi-user sessions.
+  std::string GetUserForActivityReporting() const;
+
+  // Returns whether users' email addresses should be included in activity
+  // reports.
+  bool IncludeEmailsInActivityReports() const;
+
+  // Pref service that is mainly used to store activity periods for reporting.
+  PrefService* const pref_service_;
 
   // The last time an idle state check was performed.
   base::Time last_idle_check_;
 
-  // The maximum key that went into the last report generated by
-  // GetDeviceStatus(), and the duration for it. This is used to trim the
-  // stored data in OnSubmittedSuccessfully(). Trimming is delayed so
-  // unsuccessful uploads don't result in dropped data.
-  int64_t last_reported_day_;
-  int duration_for_last_reported_day_;
+  // The last time an active state check was performed.
+  base::Time last_active_check_;
 
-  // Whether a geolocation update is currently in progress.
-  bool geolocation_update_in_progress_;
+  // Whether the last state of the device was active. This is used for child
+  // accounts only. Active is defined as having the screen turned on.
+  bool last_state_active_;
+
+  // The maximum key that went into the last report generated by
+  // GetDeviceStatusAsync(), and the duration for it. This is used to trim
+  // the stored data in OnSubmittedSuccessfully(). Trimming is delayed so
+  // unsuccessful uploads don't result in dropped data.
+  int64_t last_reported_day_ = 0;
+  int duration_for_last_reported_day_ = 0;
 
   base::RepeatingTimer idle_poll_timer_;
-  base::RepeatingTimer hardware_status_sampling_timer_;
-  base::OneShotTimer geolocation_update_timer_;
+  base::RepeatingTimer update_child_usage_timer_;
+  base::RepeatingTimer resource_usage_sampling_timer_;
 
   std::string os_version_;
   std::string firmware_version_;
-
-  content::Geoposition position_;
-
-  // Cached disk volume information.
-  std::vector<enterprise_management::VolumeInfo> volume_info_;
-
-  // Cached CPU temp information.
-  std::vector<enterprise_management::CPUTempInfo> cpu_temp_info_;
+  chromeos::CryptohomeClient::TpmVersionInfo tpm_version_info_;
 
   struct ResourceUsage {
     // Sample of percentage-of-CPU-used.
@@ -243,7 +418,11 @@ class DeviceStatusCollector {
 
   // Samples of resource usage (contains multiple samples taken
   // periodically every kHardwareStatusSampleIntervalSeconds).
-  std::deque<ResourceUsage> resource_usage_;
+  base::circular_deque<ResourceUsage> resource_usage_;
+
+  // Samples of probe data (contains multiple samples taken
+  // periodically every kHardwareStatusSampleIntervalSeconds)
+  base::circular_deque<std::unique_ptr<SampledData>> sampled_data_;
 
   // Callback invoked to fetch information about the mounted disk volumes.
   VolumeInfoFetcher volume_info_fetcher_;
@@ -254,30 +433,54 @@ class DeviceStatusCollector {
   // Callback invoked to fetch information about cpu temperature.
   CPUTempFetcher cpu_temp_fetcher_;
 
-  chromeos::system::StatisticsProvider* statistics_provider_;
+  AndroidStatusFetcher android_status_fetcher_;
 
-  chromeos::CrosSettings* cros_settings_;
+  TpmStatusFetcher tpm_status_fetcher_;
+
+  ProbeDataFetcher probe_data_fetcher_;
+
+  PowerStatusCallback power_status_callback_;
+
+  chromeos::system::StatisticsProvider* const statistics_provider_;
+
+  chromeos::CrosSettings* const cros_settings_;
+
+  // Power manager client. Used to listen to suspend and idle events.
+  chromeos::PowerManagerClient* const power_manager_;
+
+  // Session manager. Used to listen to session state changes.
+  session_manager::SessionManager* const session_manager_;
+
+  // Runtime probe client. Used to fetch hardware data.
+  chromeos::RuntimeProbeClient* const runtime_probe_;
+
+  // Stores and filters activity periods used for reporting.
+  std::unique_ptr<ActivityStorage> activity_storage_;
 
   // The most recent CPU readings.
-  uint64_t last_cpu_active_;
-  uint64_t last_cpu_idle_;
-
-  // TODO(bartfab): Remove this once crbug.com/125931 is addressed and a proper
-  // way to mock geolocation exists.
-  LocationUpdateRequester location_update_requester_;
-
-  std::unique_ptr<content::GeolocationProvider::Subscription>
-      geolocation_subscription_;
+  uint64_t last_cpu_active_ = 0;
+  uint64_t last_cpu_idle_ = 0;
 
   // Cached values of the reporting settings from the device policy.
-  bool report_version_info_;
-  bool report_activity_times_;
-  bool report_boot_mode_;
-  bool report_location_;
-  bool report_network_interfaces_;
-  bool report_users_;
-  bool report_hardware_status_;
-  bool report_session_status_;
+  bool report_version_info_ = false;
+  bool report_activity_times_ = false;
+  bool report_boot_mode_ = false;
+  bool report_network_interfaces_ = false;
+  bool report_users_ = false;
+  bool report_hardware_status_ = false;
+  bool report_kiosk_session_status_ = false;
+  bool report_os_update_status_ = false;
+  bool report_running_kiosk_app_ = false;
+  bool report_power_status_ = false;
+  bool report_storage_status_ = false;
+  bool report_board_status_ = false;
+
+  // Whether reporting is for enterprise or consumer.
+  bool is_enterprise_reporting_ = false;
+
+  // New day start time used to separate the children usage time into different
+  // days.
+  const base::TimeDelta activity_day_start_;
 
   std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
       version_info_subscription_;
@@ -286,8 +489,6 @@ class DeviceStatusCollector {
   std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
       boot_mode_subscription_;
   std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
-      location_subscription_;
-  std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
       network_interfaces_subscription_;
   std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
       users_subscription_;
@@ -295,6 +496,22 @@ class DeviceStatusCollector {
       hardware_status_subscription_;
   std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
       session_status_subscription_;
+  std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
+      os_update_status_subscription_;
+  std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
+      running_kiosk_app_subscription_;
+  std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
+      power_status_subscription_;
+  std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
+      storage_status_subscription_;
+  std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
+      board_status_subscription_;
+
+  std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
+
+  // Task runner in the creation thread where responses are sent to.
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
+  base::ThreadChecker thread_checker_;
 
   base::WeakPtrFactory<DeviceStatusCollector> weak_factory_;
 

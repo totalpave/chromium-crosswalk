@@ -7,24 +7,30 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <memory>
 
 #include "base/callback.h"
 #include "base/memory/shared_memory.h"
 #include "base/metrics/user_metrics_action.h"
+#include "base/single_thread_task_runner.h"
 #include "content/common/content_export.h"
 #include "content/public/child/child_thread.h"
 #include "ipc/ipc_channel_proxy.h"
+#include "third_party/blink/public/platform/web_string.h"
 
 class GURL;
 
 namespace base {
-class MessageLoop;
 class WaitableEvent;
 }
 
-namespace cc {
-class SharedBitmapManager;
+namespace blink {
+struct UserAgentMetadata;
+
+namespace scheduler {
+enum class WebRendererProcessType;
 }
+}  // namespace blink
 
 namespace IPC {
 class MessageFilter;
@@ -53,8 +59,6 @@ class CONTENT_EXPORT RenderThread : virtual public ChildThread {
   virtual IPC::SyncChannel* GetChannel() = 0;
   virtual std::string GetLocale() = 0;
   virtual IPC::SyncMessageFilter* GetSyncMessageFilter() = 0;
-  virtual scoped_refptr<base::SingleThreadTaskRunner>
-  GetIOMessageLoopProxy() = 0;
 
   // Called to add or remove a listener for a particular message routing ID.
   // These methods normally get delegated to a MessageRouter.
@@ -79,23 +83,8 @@ class CONTENT_EXPORT RenderThread : virtual public ChildThread {
   virtual std::unique_ptr<base::SharedMemory> HostAllocateSharedMemoryBuffer(
       size_t buffer_size) = 0;
 
-  virtual cc::SharedBitmapManager* GetSharedBitmapManager() = 0;
-
   // Registers the given V8 extension with WebKit.
-  virtual void RegisterExtension(v8::Extension* extension) = 0;
-
-  // Schedule a call to IdleHandler with the given initial delay.
-  virtual void ScheduleIdleHandler(int64_t initial_delay_ms) = 0;
-
-  // A task we invoke periodically to assist with idle cleanup.
-  virtual void IdleHandler() = 0;
-
-  // Get/Set the delay for how often the idle handler is called.
-  virtual int64_t GetIdleNotificationDelayInMs() const = 0;
-  virtual void SetIdleNotificationDelayInMs(
-      int64_t idle_notification_delay_in_ms) = 0;
-
-  virtual void UpdateHistograms(int sequence_number) = 0;
+  virtual void RegisterExtension(std::unique_ptr<v8::Extension> extension) = 0;
 
   // Post task to all worker threads. Returns number of workers.
   virtual int PostTaskToAllWebWorkers(const base::Closure& closure) = 0;
@@ -107,6 +96,21 @@ class CONTENT_EXPORT RenderThread : virtual public ChildThread {
 
   // Gets the shutdown event for the process.
   virtual base::WaitableEvent* GetShutdownEvent() = 0;
+
+  // Retrieve the process ID of the browser process.
+  virtual int32_t GetClientId() = 0;
+
+  // Get the online status of the browser - false when there is no network
+  // access.
+  virtual bool IsOnline() = 0;
+
+  // Set the renderer process type.
+  virtual void SetRendererProcessType(
+      blink::scheduler::WebRendererProcessType type) = 0;
+
+  // Returns the user-agent string.
+  virtual blink::WebString GetUserAgent() = 0;
+  virtual const blink::UserAgentMetadata& GetUserAgentMetadata() = 0;
 };
 
 }  // namespace content

@@ -6,6 +6,10 @@ if (typeof Polymer == 'undefined') {
   Polymer = {
     dom: 'shadow',
     lazyRegister: true,
+    legacyOptimizations: true,
+    preserveStyleIncludes: true,  // Only matters when using polymer-css-build.
+    suppressBindingNotifications: true,
+    suppressTemplateNotifications: true,
     useNativeCSSProperties: true,
   };
 } else {

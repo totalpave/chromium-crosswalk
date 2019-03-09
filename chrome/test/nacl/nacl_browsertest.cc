@@ -11,6 +11,7 @@
 
 #define TELEMETRY 1
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/environment.h"
 #include "base/path_service.h"
@@ -18,7 +19,6 @@
 #include "base/process/launch.h"
 #include "base/process/process.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/win/windows_version.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
@@ -26,6 +26,11 @@
 #include "components/nacl/browser/nacl_browser.h"
 #include "components/nacl/common/nacl_switches.h"
 #include "content/public/common/content_switches.h"
+#include "services/service_manager/sandbox/switches.h"
+
+#if defined(OS_WIN)
+#include "base/win/windows_version.h"
+#endif
 
 namespace {
 
@@ -239,7 +244,7 @@ NACL_BROWSER_TEST_F(NaClBrowserTest, MAYBE_SysconfNprocessorsOnln, {
     RunNaClIntegrationTest(path);
 })
 
-IN_PROC_BROWSER_TEST_F(NaClBrowserTestStatic, CrossOriginCORS) {
+IN_PROC_BROWSER_TEST_F(NaClBrowserTestStatic, CrossOriginCors) {
   RunLoadTest(FILE_PATH_LITERAL("cross_origin/cors.html"));
 }
 
@@ -251,7 +256,7 @@ IN_PROC_BROWSER_TEST_F(NaClBrowserTestStatic, SameOriginCookie) {
   RunLoadTest(FILE_PATH_LITERAL("cross_origin/same_origin_cookie.html"));
 }
 
-IN_PROC_BROWSER_TEST_F(NaClBrowserTestStatic, CORSNoCookie) {
+IN_PROC_BROWSER_TEST_F(NaClBrowserTestStatic, CorsNoCookie) {
   RunLoadTest(FILE_PATH_LITERAL("cross_origin/cors_no_cookie.html"));
 }
 
@@ -269,7 +274,7 @@ class NaClBrowserTestPnaclDebug : public NaClBrowserTestPnacl {
     // On windows, the debug stub requires --no-sandbox:
     // crbug.com/265624
 #if defined(OS_WIN)
-    command_line->AppendSwitch(switches::kNoSandbox);
+    command_line->AppendSwitch(service_manager::switches::kNoSandbox);
 #endif
   }
 
@@ -295,10 +300,10 @@ class NaClBrowserTestPnaclDebug : public NaClBrowserTestPnacl {
     // lets the app continue, so that the load progress event completes.
     base::CommandLine cmd(base::FilePath(FILE_PATH_LITERAL("python")));
     base::FilePath script;
-    PathService::Get(chrome::DIR_TEST_DATA, &script);
+    base::PathService::Get(chrome::DIR_TEST_DATA, &script);
     script = script.AppendASCII("nacl/debug_stub_browser_tests.py");
     cmd.AppendArgPath(script);
-    cmd.AppendArg(base::IntToString(debug_stub_port));
+    cmd.AppendArg(base::NumberToString(debug_stub_port));
     cmd.AppendArg("continue");
     LOG(INFO) << cmd.GetCommandLineString();
     *test_process = base::LaunchProcess(cmd, base::LaunchOptions());
@@ -307,14 +312,14 @@ class NaClBrowserTestPnaclDebug : public NaClBrowserTestPnacl {
   void RunWithTestDebugger(const base::FilePath::StringType& test_url) {
     base::Process test_script;
     std::unique_ptr<base::Environment> env(base::Environment::Create());
-    nacl::NaClBrowser::GetInstance()->SetGdbDebugStubPortListener(
+    nacl::NaClBrowser::SetGdbDebugStubPortListenerForTest(
         base::Bind(&NaClBrowserTestPnaclDebug::StartTestScript,
                    base::Unretained(this), &test_script));
     // Turn on debug stub logging.
     env->SetVar("NACLVERBOSITY", "1");
     RunLoadTest(test_url);
     env->UnSetVar("NACLVERBOSITY");
-    nacl::NaClBrowser::GetInstance()->ClearGdbDebugStubPortListener();
+    nacl::NaClBrowser::ClearGdbDebugStubPortListenerForTest();
     int exit_code;
     LOG(INFO) << "Waiting for script to exit (which waits for embed to die).";
     test_script.WaitForExit(&exit_code);
@@ -372,9 +377,9 @@ IN_PROC_BROWSER_TEST_F(NaClBrowserTestPnaclDebugMasked,
       "pnacl_debug_url.html?nmf_file=pnacl_has_debug_flag_off.nmf"));
 }
 
-// NaClBrowserTestPnacl{,Subzero}.PnaclErrorHandling are flaky on Win XP.
-// http://crbug.com/499878
-#if defined(OS_WIN)
+// NaClBrowserTestPnacl.PnaclErrorHandling is flaky on Win, Mac, and Linux.
+// http://crbug.com/704980, http://crbug.com/870309
+#if defined(OS_WIN) || defined(OS_MACOSX) || defined(OS_LINUX)
 #define MAYBE_PnaclErrorHandling DISABLED_PnaclErrorHandling
 #else
 #define MAYBE_PnaclErrorHandling PnaclErrorHandling
@@ -387,8 +392,7 @@ IN_PROC_BROWSER_TEST_F(NaClBrowserTestPnacl,
 
 // Test Subzero. Subzero is triggered by the O0 option so reuse
 // test harnesses that use "optlevel": 0.
-IN_PROC_BROWSER_TEST_F(NaClBrowserTestPnaclSubzero,
-                       MAYBE_PnaclErrorHandling) {
+IN_PROC_BROWSER_TEST_F(NaClBrowserTestPnaclSubzero, MAYBE_PnaclErrorHandling) {
   RunNaClIntegrationTest(FILE_PATH_LITERAL("pnacl_error_handling.html"));
 }
 

@@ -45,12 +45,13 @@ bool OmniboxHandler::Parse(Extension* extension, base::string16* error) {
     *error = base::ASCIIToUTF16(manifest_errors::kInvalidOmniboxKeyword);
     return false;
   }
-  extension->SetManifestData(manifest_keys::kOmnibox, info.release());
+  extension->SetManifestData(manifest_keys::kOmnibox, std::move(info));
   return true;
 }
 
-const std::vector<std::string> OmniboxHandler::Keys() const {
-  return SingleKey(manifest_keys::kOmnibox);
+base::span<const char* const> OmniboxHandler::Keys() const {
+  static constexpr const char* kKeys[] = {manifest_keys::kOmnibox};
+  return kKeys;
 }
 
 }  // namespace extensions

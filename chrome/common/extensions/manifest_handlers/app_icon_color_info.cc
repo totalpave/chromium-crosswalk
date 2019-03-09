@@ -6,7 +6,7 @@
 
 #include <memory>
 
-#include "base/lazy_instance.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "extensions/common/image_util.h"
@@ -20,13 +20,12 @@ namespace errors = manifest_errors;
 
 namespace {
 
-static base::LazyInstance<AppIconColorInfo> g_empty_app_icon_color_info =
-    LAZY_INSTANCE_INITIALIZER;
+const AppIconColorInfo& GetAppIconColorInfo(const Extension* extension) {
+  static const base::NoDestructor<AppIconColorInfo> fallback;
 
-const AppIconColorInfo& GetInfo(const Extension* extension) {
   AppIconColorInfo* info = static_cast<AppIconColorInfo*>(
       extension->GetManifestData(keys::kAppIconColor));
-  return info ? *info : g_empty_app_icon_color_info.Get();
+  return info ? *info : *fallback;
 }
 
 }  // namespace
@@ -39,13 +38,13 @@ AppIconColorInfo::~AppIconColorInfo() {
 
 // static
 SkColor AppIconColorInfo::GetIconColor(const Extension* extension) {
-  return GetInfo(extension).icon_color_;
+  return GetAppIconColorInfo(extension).icon_color_;
 }
 
 // static
 const std::string& AppIconColorInfo::GetIconColorString(
     const Extension* extension) {
-  return GetInfo(extension).icon_color_string_;
+  return GetAppIconColorInfo(extension).icon_color_string_;
 }
 
 AppIconColorHandler::AppIconColorHandler() {
@@ -75,12 +74,13 @@ bool AppIconColorHandler::Parse(Extension* extension, base::string16* error) {
   }
 
   extension->SetManifestData(keys::kAppIconColor,
-                             app_icon_color_info.release());
+                             std::move(app_icon_color_info));
   return true;
 }
 
-const std::vector<std::string> AppIconColorHandler::Keys() const {
-  return SingleKey(keys::kAppIconColor);
+base::span<const char* const> AppIconColorHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kAppIconColor};
+  return kKeys;
 }
 
 }  // namespace extensions

@@ -23,8 +23,6 @@ class NET_EXPORT ParsedCookie {
 
   // The maximum length of a cookie string we will try to parse
   static const size_t kMaxCookieSize = 4096;
-  // The maximum number of Token/Value pairs.  Shouldn't have more than 8.
-  static const int kMaxPairs = 16;
 
   // Construct from a cookie string like "BLAH=1; path=/; domain=.google.com"
   // Format is according to RFC 6265. Cookies with both name and value empty
@@ -84,7 +82,8 @@ class NET_EXPORT ParsedCookie {
   // returns as output arguments token_start and token_end to the start and end
   // positions of a cookie attribute token name parsed from the segment, and
   // updates the segment iterator to point to the next segment to be parsed.
-  // If no token is found, the function returns false.
+  // If no token is found, the function returns false and the segment iterator
+  // is set to end.
   static bool ParseToken(std::string::const_iterator* it,
                          const std::string::const_iterator& end,
                          std::string::const_iterator* token_start,
@@ -103,6 +102,9 @@ class NET_EXPORT ParsedCookie {
   // desired token/value and nothing else.
   static std::string ParseTokenString(const std::string& token);
   static std::string ParseValueString(const std::string& value);
+
+  // Is the string valid as the value of a cookie attribute?
+  static bool IsValidCookieAttributeValue(const std::string& value);
 
  private:
   void ParseTokenValuePairs(const std::string& cookie_line);
@@ -129,10 +131,6 @@ class NET_EXPORT ParsedCookie {
   // |index| refers to a position in |pairs_|.
   void ClearAttributePair(size_t index);
 
-  // Returns false if a 'SameSite' attribute is present, but has an unrecognized
-  // value. In particular, this includes attributes with empty values.
-  bool IsSameSiteAttributeValid() const;
-
   PairList pairs_;
   // These will default to 0, but that should never be valid since the
   // 0th index is the user supplied token/value, not an attribute.
@@ -152,4 +150,4 @@ class NET_EXPORT ParsedCookie {
 
 }  // namespace net
 
-#endif  // NET_COOKIES_COOKIE_MONSTER_H_
+#endif  // NET_COOKIES_PARSED_COOKIE_H_

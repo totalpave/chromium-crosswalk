@@ -6,7 +6,7 @@
  * Base class to represent a "view". A view is an absolutely positioned box on
  * the page.
  */
-var View = (function() {
+const View = (function() {
   'use strict';
 
   /**
@@ -82,8 +82,7 @@ var View = (function() {
      * values.  It's included separately so most views don't have to depend on
      * its specifics.
      */
-    onLoadLogStart: function(polledData, tabData, logDump) {
-    },
+    onLoadLogStart: function(polledData, tabData, logDump) {},
 
     /**
      * Called as the final step of loading a log file.  Arguments are the same
@@ -103,11 +102,11 @@ var View = (function() {
 /**
  * DivView is an implementation of View that wraps a DIV.
  */
-var DivView = (function() {
+const DivView = (function() {
   'use strict';
 
   // We inherit from View.
-  var superClass = View;
+  const superClass = View;
 
   /**
    * @constructor
@@ -117,8 +116,9 @@ var DivView = (function() {
     superClass.call(this);
 
     this.node_ = $(divId);
-    if (!this.node_)
+    if (!this.node_) {
       throw new Error('Element ' + divId + ' not found');
+    }
 
     // Initialize the default values to those of the DIV.
     this.width_ = this.node_.offsetWidth;
@@ -161,11 +161,11 @@ var DivView = (function() {
  *
  * @param {!View} childView The child view.
  */
-var WindowView = (function() {
+const WindowView = (function() {
   'use strict';
 
   // We inherit from View.
-  var superClass = View;
+  const superClass = View;
 
   /**
    * @constructor
@@ -193,8 +193,9 @@ var WindowView = (function() {
     },
 
     resetGeometry: function() {
-      this.setGeometry(0, 0, document.documentElement.clientWidth,
-                       document.documentElement.clientHeight);
+      this.setGeometry(
+          0, 0, document.documentElement.clientWidth,
+          document.documentElement.clientHeight);
     }
   };
 
@@ -218,11 +219,11 @@ var WindowView = (function() {
  *  |                                   |
  *  +-----------------------------------+
  */
-var VerticalSplitView = (function() {
+const VerticalSplitView = (function() {
   'use strict';
 
   // We inherit from View.
-  var superClass = View;
+  const superClass = View;
 
   /**
    * @param {!View} topView The top view.
@@ -244,7 +245,7 @@ var VerticalSplitView = (function() {
     setGeometry: function(left, top, width, height) {
       superClass.prototype.setGeometry.call(this, left, top, width, height);
 
-      var fixedHeight = this.topView_.getHeight();
+      const fixedHeight = this.topView_.getHeight();
       this.topView_.setGeometry(left, top, width, fixedHeight);
 
       this.bottomView_.setGeometry(
@@ -280,11 +281,11 @@ var VerticalSplitView = (function() {
  *  |          |                          |
  *  +----------+--------------------------+
  */
-var HorizontalSplitView = (function() {
+const HorizontalSplitView = (function() {
   'use strict';
 
   // We inherit from View.
-  var superClass = View;
+  const superClass = View;
 
   /**
    * @param {!View} leftView The left view.
@@ -306,7 +307,7 @@ var HorizontalSplitView = (function() {
     setGeometry: function(left, top, width, height) {
       superClass.prototype.setGeometry.call(this, left, top, width, height);
 
-      var fixedWidth = this.leftView_.getWidth();
+      const fixedWidth = this.leftView_.getWidth();
       this.leftView_.setGeometry(left, top, fixedWidth, height);
 
       this.rightView_.setGeometry(

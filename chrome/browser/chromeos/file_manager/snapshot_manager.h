@@ -7,12 +7,9 @@
 
 #include <stdint.h>
 
-#include <deque>
-
 #include "base/callback_forward.h"
-#include "base/files/file.h"
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 
 class Profile;
@@ -25,10 +22,6 @@ namespace storage {
 class FileSystemURL;
 }  // namespace storage
 
-namespace storage {
-class ShareableFileReference;
-}  // namespace storage
-
 namespace file_manager {
 
 // Utility class for creating a snapshot of a file system file on local disk.
@@ -38,7 +31,7 @@ namespace file_manager {
 class SnapshotManager {
  public:
   // The callback type for CreateManagedSnapshot.
-  typedef base::Callback<void(const base::FilePath&)> LocalPathCallback;
+  typedef base::OnceCallback<void(const base::FilePath&)> LocalPathCallback;
 
   explicit SnapshotManager(Profile* profile);
   ~SnapshotManager();
@@ -46,37 +39,19 @@ class SnapshotManager {
   // Creates a snapshot file copy of a file system file |absolute_file_path| and
   // returns back to |callback|. Returns empty path for failure.
   void CreateManagedSnapshot(const base::FilePath& absolute_file_path,
-                             const LocalPathCallback& callback);
-
-  // Struct for keeping the snapshot file reference with its file size used for
-  // computing the necessity of clean up.
-  struct FileReferenceWithSizeInfo {
-    FileReferenceWithSizeInfo(
-        scoped_refptr<storage::ShareableFileReference> ref,
-        int64_t size);
-    FileReferenceWithSizeInfo(const FileReferenceWithSizeInfo& other);
-    ~FileReferenceWithSizeInfo();
-    scoped_refptr<storage::ShareableFileReference> file_ref;
-    int64_t file_size;
-  };
+                             LocalPathCallback callback);
 
  private:
+  class FileRefsHolder;
+
   // Part of CreateManagedSnapshot.
   void CreateManagedSnapshotAfterSpaceComputed(
       const storage::FileSystemURL& filesystem_url,
-      const LocalPathCallback& callback,
+      LocalPathCallback callback,
       int64_t needed_space);
 
-  // Part of CreateManagedSnapshot.
-  void OnCreateSnapshotFile(
-      const LocalPathCallback& callback,
-      base::File::Error result,
-      const base::File::Info& file_info,
-      const base::FilePath& platform_path,
-      const scoped_refptr<storage::ShareableFileReference>& file_ref);
-
   Profile* profile_;
-  std::deque<FileReferenceWithSizeInfo> file_refs_;
+  scoped_refptr<FileRefsHolder> holder_;
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate the weak pointers before any other members are destroyed.

@@ -22,7 +22,7 @@ class PluginUMAReporter {
  public:
   enum ReportType {
     MISSING_PLUGIN,
-    DISABLED_PLUGIN
+    DISABLED_PLUGIN,
   };
 
   // Make sure the enum list in tools/histogram/histograms.xml is updated with
@@ -39,7 +39,7 @@ class PluginUMAReporter {
     // NOTE: Add new unsupported types only immediately above this line.
     BROWSER_PLUGIN = 10,
     SHOCKWAVE_FLASH,
-    WIDEVINE_CDM,
+    WIDEVINE_CDM = 12,  // Obsolete March 2018
     // NOTE: Add new plugin types only immediately above this line.
     PLUGIN_TYPE_MAX
   };

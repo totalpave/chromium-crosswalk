@@ -7,31 +7,28 @@
 #include "base/logging.h"
 #include "content/common/dom_storage/dom_storage_types.h"
 #include "content/renderer/dom_storage/webstoragearea_impl.h"
-#include "third_party/WebKit/public/platform/URLConversion.h"
-#include "third_party/WebKit/public/platform/WebString.h"
+#include "third_party/blink/public/platform/url_conversion.h"
+#include "third_party/blink/public/platform/web_security_origin.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 using blink::WebStorageArea;
 using blink::WebStorageNamespace;
-using blink::WebString;
 
 namespace content {
 
-WebStorageNamespaceImpl::WebStorageNamespaceImpl()
-    : namespace_id_(kLocalStorageNamespaceId) {
-}
-
-WebStorageNamespaceImpl::WebStorageNamespaceImpl(int64_t namespace_id)
+WebStorageNamespaceImpl::WebStorageNamespaceImpl(
+    const std::string& namespace_id)
     : namespace_id_(namespace_id) {
-  DCHECK_NE(kInvalidSessionStorageNamespaceId, namespace_id);
+  DCHECK(!namespace_id.empty());
 }
 
 WebStorageNamespaceImpl::~WebStorageNamespaceImpl() {
 }
 
-WebStorageArea* WebStorageNamespaceImpl::createStorageArea(
-    const WebString& origin) {
-  return new WebStorageAreaImpl(namespace_id_, blink::WebStringToGURL(origin));
+WebStorageArea* WebStorageNamespaceImpl::CreateStorageArea(
+    const blink::WebSecurityOrigin& origin) {
+  return new WebStorageAreaImpl(namespace_id_, url::Origin(origin).GetURL());
 }
 
 WebStorageNamespace* WebStorageNamespaceImpl::copy() {
@@ -39,14 +36,16 @@ WebStorageNamespace* WebStorageNamespaceImpl::copy() {
   // session storage is used.  In the WebViewClient::createView, we do the
   // book-keeping necessary to make it a true copy-on-write despite not doing
   // anything here, now.
-  return NULL;
+  return nullptr;
 }
 
-bool WebStorageNamespaceImpl::isSameNamespace(
+blink::WebString WebStorageNamespaceImpl::GetNamespaceId() const {
+  return blink::WebString::FromASCII(namespace_id_);
+}
+
+bool WebStorageNamespaceImpl::IsSameNamespace(
     const WebStorageNamespace& other) const {
-  const WebStorageNamespaceImpl* other_impl =
-      static_cast<const WebStorageNamespaceImpl*>(&other);
-  return namespace_id_ == other_impl->namespace_id_;
+  return GetNamespaceId() == other.GetNamespaceId();
 }
 
 }  // namespace content

@@ -10,45 +10,38 @@
 namespace chromeos {
 
 WrongHWIDScreen::WrongHWIDScreen(BaseScreenDelegate* base_screen_delegate,
-                                 WrongHWIDScreenActor* actor)
-    : BaseScreen(base_screen_delegate), actor_(actor) {
-  DCHECK(actor_);
-  if (actor_)
-    actor_->SetDelegate(this);
+                                 WrongHWIDScreenView* view,
+                                 const base::RepeatingClosure& exit_callback)
+    : BaseScreen(base_screen_delegate, OobeScreen::SCREEN_WRONG_HWID),
+      view_(view),
+      exit_callback_(exit_callback) {
+  DCHECK(view_);
+  if (view_)
+    view_->SetDelegate(this);
 }
 
 WrongHWIDScreen::~WrongHWIDScreen() {
-  if (actor_)
-    actor_->SetDelegate(NULL);
-}
-
-void WrongHWIDScreen::PrepareToShow() {
-  if (actor_)
-    actor_->PrepareToShow();
+  if (view_)
+    view_->SetDelegate(nullptr);
 }
 
 void WrongHWIDScreen::Show() {
-  if (actor_)
-    actor_->Show();
+  if (view_)
+    view_->Show();
 }
 
 void WrongHWIDScreen::Hide() {
-  if (actor_)
-    actor_->Hide();
-}
-
-std::string WrongHWIDScreen::GetName() const {
-  return WizardController::kWrongHWIDScreenName;
+  if (view_)
+    view_->Hide();
 }
 
 void WrongHWIDScreen::OnExit() {
-  Finish(BaseScreenDelegate::WRONG_HWID_WARNING_SKIPPED);
+  exit_callback_.Run();
 }
 
-void WrongHWIDScreen::OnActorDestroyed(WrongHWIDScreenActor* actor) {
-  if (actor_ == actor)
-    actor_ = NULL;
+void WrongHWIDScreen::OnViewDestroyed(WrongHWIDScreenView* view) {
+  if (view_ == view)
+    view_ = nullptr;
 }
 
 }  // namespace chromeos
-

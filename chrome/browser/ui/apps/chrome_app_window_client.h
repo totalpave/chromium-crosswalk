@@ -7,6 +7,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "build/build_config.h"
 #include "extensions/browser/app_window/app_window_client.h"
 
 namespace base {
@@ -30,6 +31,10 @@ class ChromeAppWindowClient : public extensions::AppWindowClient {
   extensions::AppWindow* CreateAppWindow(
       content::BrowserContext* context,
       const extensions::Extension* extension) override;
+  extensions::AppWindow* CreateAppWindowForLockScreenAction(
+      content::BrowserContext* context,
+      const extensions::Extension* extension,
+      extensions::api::app_runtime::ActionType action) override;
   extensions::NativeAppWindow* CreateNativeAppWindow(
       extensions::AppWindow* window,
       extensions::AppWindow::CreateParams* params) override;

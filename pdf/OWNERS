@@ -1,5 +1,9 @@
-gene@chromium.org
-jam@chromium.org
+dsinclair@chromium.org
+hnakashima@chromium.org
 jochen@chromium.org
-raymes@chromium.org
 thestig@chromium.org
+
+# Pepper-related questions/reviews only.
+raymes@chromium.org
+
+# COMPONENT: Internals>Plugins>PDF

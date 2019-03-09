@@ -10,7 +10,9 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/bind.h"
 #include "base/macros.h"
+#include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
@@ -26,7 +28,7 @@
 #include "components/history/core/browser/android/android_time.h"
 #include "components/history/core/browser/history_service.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -34,7 +36,6 @@ namespace {
 
 using base::Bind;
 using base::Time;
-using content::BrowserThread;
 using history::AndroidStatement;
 using history::HistoryAndBookmarkRow;
 using history::SearchRow;
@@ -44,12 +45,7 @@ using history::SearchRow;
 class SQLiteCursorTest : public testing::Test,
                          public SQLiteCursor::TestObserver {
  public:
-  SQLiteCursorTest()
-      : profile_manager_(
-          TestingBrowserProcess::GetGlobal()),
-        ui_thread_(BrowserThread::UI, &message_loop_),
-        file_thread_(BrowserThread::FILE, &message_loop_) {
-  }
+  SQLiteCursorTest() : profile_manager_(TestingBrowserProcess::GetGlobal()) {}
   ~SQLiteCursorTest() override {}
 
  protected:
@@ -64,7 +60,7 @@ class SQLiteCursorTest : public testing::Test,
 
     testing_profile_->CreateBookmarkModel(true);
     bookmarks::test::WaitForBookmarkModelToLoad(
-        BookmarkModelFactory::GetForProfile(testing_profile_));
+        BookmarkModelFactory::GetForBrowserContext(testing_profile_));
 
     testing_profile_->CreateFaviconService();
     ASSERT_TRUE(testing_profile_->CreateHistoryService(true, false));
@@ -73,34 +69,39 @@ class SQLiteCursorTest : public testing::Test,
         testing_profile_, ServiceAccessType::EXPLICIT_ACCESS);
   }
 
-  void TearDown() override {
-    testing_profile_->DestroyHistoryService();
-    profile_manager_.DeleteTestingProfile(chrome::kInitialProfile);
-    testing_profile_ = NULL;
-  }
-
   // Override SQLiteCursor::TestObserver.
-  void OnPostMoveToTask() override { base::MessageLoop::current()->Run(); }
+  void OnPostMoveToTask() override {
+    ASSERT_FALSE(run_loop_);
+    run_loop_ = std::make_unique<base::RunLoop>();
+    run_loop_->Run();
+    run_loop_ = nullptr;
+  }
 
   void OnGetMoveToResult() override {
-    base::MessageLoop::current()->QuitWhenIdle();
+    ASSERT_TRUE(run_loop_);
+    run_loop_->QuitWhenIdle();
   }
 
-  void OnPostGetFaviconTask() override { base::MessageLoop::current()->Run(); }
+  void OnPostGetFaviconTask() override {
+    ASSERT_FALSE(run_loop_);
+    run_loop_ = std::make_unique<base::RunLoop>();
+    run_loop_->Run();
+    run_loop_ = nullptr;
+  }
 
   void OnGetFaviconResult() override {
-    base::MessageLoop::current()->QuitWhenIdle();
+    ASSERT_TRUE(run_loop_);
+    run_loop_->QuitWhenIdle();
   }
 
  protected:
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
   TestingProfileManager profile_manager_;
-  base::MessageLoop message_loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread file_thread_;
   std::unique_ptr<AndroidHistoryProviderService> service_;
   base::CancelableTaskTracker cancelable_tracker_;
   TestingProfile* testing_profile_;
   history::HistoryService* hs_;
+  std::unique_ptr<base::RunLoop> run_loop_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(SQLiteCursorTest);
@@ -123,13 +124,13 @@ class CallbackHelper : public base::RefCountedThreadSafe<CallbackHelper> {
 
   void OnInserted(int64_t id) {
     success_ = id != 0;
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
   void OnQueryResult(AndroidStatement* statement) {
     success_ = statement != NULL;
     statement_ = statement;
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
  private:
@@ -165,7 +166,7 @@ TEST_F(SQLiteCursorTest, Run) {
       Bind(&CallbackHelper::OnInserted, callback.get()),
       &cancelable_tracker_);
 
-  base::MessageLoop::current()->Run();
+  base::RunLoop().Run();
   EXPECT_TRUE(callback->success());
 
   std::vector<HistoryAndBookmarkRow::ColumnID> projections;
@@ -182,7 +183,7 @@ TEST_F(SQLiteCursorTest, Run) {
       std::string(),
       Bind(&CallbackHelper::OnQueryResult, callback.get()),
       &cancelable_tracker_);
-  base::MessageLoop::current()->Run();
+  base::RunLoop().Run();
   ASSERT_TRUE(callback->success());
 
   AndroidStatement* statement = callback->statement();
@@ -210,7 +211,7 @@ TEST_F(SQLiteCursorTest, Run) {
   base::android::ScopedJavaLocalRef<jbyteArray> data =
       cursor->GetBlob(env, NULL, 3);
   std::vector<uint8_t> out;
-  base::android::JavaByteArrayToByteVector(env, data.obj(), &out);
+  base::android::JavaByteArrayToByteVector(env, data, &out);
   EXPECT_EQ(data_bytes->data().size(), out.size());
   EXPECT_EQ(data_bytes->data()[0], out[0]);
   cursor->Destroy(env, NULL);

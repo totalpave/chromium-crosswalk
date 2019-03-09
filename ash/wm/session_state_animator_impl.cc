@@ -4,11 +4,14 @@
 
 #include "ash/wm/session_state_animator_impl.h"
 
+#include <memory>
+#include <utility>
 #include <vector>
 
-#include "ash/common/shell_window_ids.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
-#include "ash/wm/window_animations.h"
+#include "ash/wm/wm_window_animations.h"
+#include "base/barrier_closure.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/compositor/layer_animation_observer.h"
@@ -30,10 +33,9 @@ const float kPartialFadeRatio = 0.3f;
 const float kMinimumScale = 1e-4f;
 
 // Returns the primary root window's container.
-aura::Window* GetBackground() {
+aura::Window* GetWallpaper() {
   aura::Window* root_window = Shell::GetPrimaryRootWindow();
-  return Shell::GetContainer(root_window,
-                             kShellWindowId_DesktopBackgroundContainer);
+  return Shell::GetContainer(root_window, kShellWindowId_WallpaperContainer);
 }
 
 // Returns the transform that should be applied to containers for the slow-close
@@ -42,8 +44,8 @@ gfx::Transform GetSlowCloseTransform() {
   gfx::Size root_size = Shell::GetPrimaryRootWindow()->bounds().size();
   gfx::Transform transform;
   transform.Translate(
-      floor(0.5 * (1.0 - kSlowCloseSizeRatio) * root_size.width() + 0.5),
-      floor(0.5 * (1.0 - kSlowCloseSizeRatio) * root_size.height() + 0.5));
+      std::round(0.5 * (1.0 - kSlowCloseSizeRatio) * root_size.width()),
+      std::round(0.5 * (1.0 - kSlowCloseSizeRatio) * root_size.height()));
   transform.Scale(kSlowCloseSizeRatio, kSlowCloseSizeRatio);
   return transform;
 }
@@ -54,8 +56,8 @@ gfx::Transform GetFastCloseTransform() {
   gfx::Size root_size = Shell::GetPrimaryRootWindow()->bounds().size();
   gfx::Transform transform;
 
-  transform.Translate(floor(0.5 * root_size.width() + 0.5),
-                      floor(0.5 * root_size.height() + 0.5));
+  transform.Translate(std::round(0.5 * root_size.width()),
+                      std::round(0.5 * root_size.height()));
   transform.Scale(kMinimumScale, kMinimumScale);
   return transform;
 }
@@ -255,20 +257,20 @@ void StartGrayscaleBrightnessAnimationForWindow(
     ui::LayerAnimationObserver* observer) {
   ui::LayerAnimator* animator = window->layer()->GetAnimator();
 
-  std::unique_ptr<ui::LayerAnimationSequence> brightness_sequence(
-      new ui::LayerAnimationSequence());
-  std::unique_ptr<ui::LayerAnimationSequence> grayscale_sequence(
-      new ui::LayerAnimationSequence());
+  std::unique_ptr<ui::LayerAnimationSequence> brightness_sequence =
+      std::make_unique<ui::LayerAnimationSequence>();
+  std::unique_ptr<ui::LayerAnimationSequence> grayscale_sequence =
+      std::make_unique<ui::LayerAnimationSequence>();
 
-  std::unique_ptr<ui::LayerAnimationElement> brightness_element(
-      ui::LayerAnimationElement::CreateBrightnessElement(target, duration));
+  std::unique_ptr<ui::LayerAnimationElement> brightness_element =
+      ui::LayerAnimationElement::CreateBrightnessElement(target, duration);
   brightness_element->set_tween_type(tween_type);
-  brightness_sequence->AddElement(brightness_element.release());
+  brightness_sequence->AddElement(std::move(brightness_element));
 
-  std::unique_ptr<ui::LayerAnimationElement> grayscale_element(
-      ui::LayerAnimationElement::CreateGrayscaleElement(target, duration));
+  std::unique_ptr<ui::LayerAnimationElement> grayscale_element =
+      ui::LayerAnimationElement::CreateGrayscaleElement(target, duration);
   grayscale_element->set_tween_type(tween_type);
-  grayscale_sequence->AddElement(grayscale_element.release());
+  grayscale_sequence->AddElement(std::move(grayscale_element));
 
   std::vector<ui::LayerAnimationSequence*> animations;
   animations.push_back(brightness_sequence.release());
@@ -289,7 +291,7 @@ class CallbackAnimationObserver : public ui::LayerAnimationObserver {
  public:
   explicit CallbackAnimationObserver(base::Closure callback)
       : callback_(callback) {}
-  ~CallbackAnimationObserver() override {}
+  ~CallbackAnimationObserver() override = default;
 
  private:
   // Overridden from ui::LayerAnimationObserver:
@@ -389,16 +391,16 @@ void GetContainersInRootWindow(int container_mask,
     containers->push_back(root_window);
   }
 
-  if (container_mask & SessionStateAnimator::DESKTOP_BACKGROUND) {
-    containers->push_back(Shell::GetContainer(
-        root_window, kShellWindowId_DesktopBackgroundContainer));
+  if (container_mask & SessionStateAnimator::WALLPAPER) {
+    containers->push_back(
+        Shell::GetContainer(root_window, kShellWindowId_WallpaperContainer));
   }
-  if (container_mask & SessionStateAnimator::LAUNCHER) {
+  if (container_mask & SessionStateAnimator::SHELF) {
     containers->push_back(
         Shell::GetContainer(root_window, kShellWindowId_ShelfContainer));
   }
   if (container_mask & SessionStateAnimator::NON_LOCK_SCREEN_CONTAINERS) {
-    // TODO(antrim): Figure out a way to eliminate a need to exclude launcher
+    // TODO(antrim): Figure out a way to eliminate a need to exclude shelf
     // in such way.
     aura::Window* non_lock_screen_containers = Shell::GetContainer(
         root_window, kShellWindowId_NonLockScreenContainersContainer);
@@ -411,9 +413,9 @@ void GetContainersInRootWindow(int container_mask,
       }
     }
   }
-  if (container_mask & SessionStateAnimator::LOCK_SCREEN_BACKGROUND) {
+  if (container_mask & SessionStateAnimator::LOCK_SCREEN_WALLPAPER) {
     containers->push_back(Shell::GetContainer(
-        root_window, kShellWindowId_LockScreenBackgroundContainer));
+        root_window, kShellWindowId_LockScreenWallpaperContainer));
   }
   if (container_mask & SessionStateAnimator::LOCK_SCREEN_CONTAINERS) {
     containers->push_back(Shell::GetContainer(
@@ -441,8 +443,8 @@ class SessionStateAnimatorImpl::AnimationSequence
       public ui::LayerAnimationObserver {
  public:
   explicit AnimationSequence(SessionStateAnimatorImpl* animator,
-                             base::Closure callback)
-      : SessionStateAnimator::AnimationSequence(callback),
+                             base::OnceClosure callback)
+      : SessionStateAnimator::AnimationSequence(std::move(callback)),
         animator_(animator),
         sequences_attached_(0),
         sequences_completed_(0) {}
@@ -455,7 +457,7 @@ class SessionStateAnimatorImpl::AnimationSequence
   }
 
  private:
-  ~AnimationSequence() override {}
+  ~AnimationSequence() override = default;
 
   // ui::LayerAnimationObserver:
   void OnLayerAnimationEnded(ui::LayerAnimationSequence* sequence) override {
@@ -511,9 +513,9 @@ bool SessionStateAnimatorImpl::TestApi::RootWindowIsAnimated(
   return IsLayerAnimated(layer, type);
 }
 
-SessionStateAnimatorImpl::SessionStateAnimatorImpl() {}
+SessionStateAnimatorImpl::SessionStateAnimatorImpl() = default;
 
-SessionStateAnimatorImpl::~SessionStateAnimatorImpl() {}
+SessionStateAnimatorImpl::~SessionStateAnimatorImpl() = default;
 
 // Fills |containers| with the containers described by |container_mask|.
 void SessionStateAnimatorImpl::GetContainers(
@@ -545,38 +547,40 @@ void SessionStateAnimatorImpl::StartAnimationWithCallback(
     int container_mask,
     AnimationType type,
     AnimationSpeed speed,
-    base::Closure callback) {
+    base::OnceClosure callback) {
   aura::Window::Windows containers;
   GetContainers(container_mask, &containers);
+  base::Closure animation_done_closure =
+      base::BarrierClosure(containers.size(), std::move(callback));
   for (aura::Window::Windows::const_iterator it = containers.begin();
        it != containers.end(); ++it) {
     ui::LayerAnimationObserver* observer =
-        new CallbackAnimationObserver(callback);
+        new CallbackAnimationObserver(animation_done_closure);
     RunAnimationForWindow(*it, type, speed, observer);
   }
 }
 
 SessionStateAnimator::AnimationSequence*
-SessionStateAnimatorImpl::BeginAnimationSequence(base::Closure callback) {
-  return new AnimationSequence(this, callback);
+SessionStateAnimatorImpl::BeginAnimationSequence(base::OnceClosure callback) {
+  return new AnimationSequence(this, std::move(callback));
 }
 
-bool SessionStateAnimatorImpl::IsBackgroundHidden() const {
-  return !GetBackground()->IsVisible();
+bool SessionStateAnimatorImpl::IsWallpaperHidden() const {
+  return !GetWallpaper()->IsVisible();
 }
 
-void SessionStateAnimatorImpl::ShowBackground() {
+void SessionStateAnimatorImpl::ShowWallpaper() {
   ui::ScopedLayerAnimationSettings settings(
-      GetBackground()->layer()->GetAnimator());
+      GetWallpaper()->layer()->GetAnimator());
   settings.SetTransitionDuration(base::TimeDelta());
-  GetBackground()->Show();
+  GetWallpaper()->Show();
 }
 
-void SessionStateAnimatorImpl::HideBackground() {
+void SessionStateAnimatorImpl::HideWallpaper() {
   ui::ScopedLayerAnimationSettings settings(
-      GetBackground()->layer()->GetAnimator());
+      GetWallpaper()->layer()->GetAnimator());
   settings.SetTransitionDuration(base::TimeDelta());
-  GetBackground()->Hide();
+  GetWallpaper()->Hide();
 }
 
 void SessionStateAnimatorImpl::StartAnimationInSequence(

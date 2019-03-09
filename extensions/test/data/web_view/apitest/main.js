@@ -19,6 +19,8 @@ embedder.setUp_ = function(config) {
   embedder.redirectGuestURLDest =
       embedder.baseGuestURL + '/guest_redirect.html';
   embedder.windowOpenGuestURL = embedder.baseGuestURL + '/guest.html';
+  embedder.sameDocumentNavigationURL =
+      embedder.baseGuestURL + '/guest_same_document_navigation.html';
 };
 
 window.runTest = function(testName) {
@@ -34,9 +36,11 @@ window.runTest = function(testName) {
 
 embedder.test = {};
 
-embedder.test.assertEq = function(a, b) {
+embedder.test.assertEq = function(a, b, message) {
   if (a != b) {
-    window.console.warn('assertion failed: ' + a + ' != ' + b);
+    window.console.warn(
+        'assertion failed: ' + a + ' != ' + b +
+        (message ? (': ' + message) : ''));
     embedder.test.fail();
   }
 };
@@ -94,36 +98,51 @@ function testAllowTransparencyAttribute() {
 }
 
 function testAPIMethodExistence() {
-  var apiMethodsToCheck = [
+  // See public-facing API functions in web_view_api_methods.js
+  var WEB_VIEW_API_METHODS = [
+    'addContentScripts',
     'back',
-    'find',
-    'forward',
     'canGoBack',
     'canGoForward',
+    'captureVisibleRegion',
     'clearData',
+    'executeScript',
+    'find',
+    'forward',
+    'getAudioState',
     'getProcessId',
+    'getUserAgent',
     'getZoom',
+    'getZoomMode',
     'go',
+    'insertCSS',
+    'isAudioMuted',
+    'isSpatialNavigationEnabled',
+    'isUserAgentOverridden',
+    'loadDataWithBaseUrl',
     'print',
+    'removeContentScripts',
     'reload',
+    'setAudioMuted',
+    'setSpatialNavigationEnabled',
+    'setUserAgentOverride',
     'setZoom',
+    'setZoomMode',
     'stop',
     'stopFinding',
-    'terminate',
-    'executeScript',
-    'insertCSS',
-    'getUserAgent',
-    'isUserAgentOverridden',
-    'setUserAgentOverride'
+    'terminate'
   ];
+
   var webview = document.createElement('webview');
+
+  for (var methodName of WEB_VIEW_API_METHODS) {
+    embedder.test.assertEq(
+        'function', typeof webview[methodName],
+        methodName + ' should be defined');
+  }
+
   webview.setAttribute('partition', arguments.callee.name);
   webview.addEventListener('loadstop', function(e) {
-    for (var i = 0; i < apiMethodsToCheck.length; ++i) {
-      embedder.test.assertEq('function',
-                             typeof webview[apiMethodsToCheck[i]]);
-    }
-
     // Check contentWindow.
     embedder.test.assertEq('object', typeof webview.contentWindow);
     embedder.test.assertEq('function',
@@ -132,6 +151,28 @@ function testAPIMethodExistence() {
   });
   webview.setAttribute('src', 'data:text/html,webview check api');
   document.body.appendChild(webview);
+}
+
+function testCustomElementCallbacksInaccessible() {
+  var CUSTOM_ELEMENT_CALLBACKS = [
+    'connectedCallback',
+    'disconnectedCallback',
+    'attributeChangedCallback',
+    'adoptedCallback'
+  ];
+
+  var webview = document.createElement('webview');
+  for (var callbackName of CUSTOM_ELEMENT_CALLBACKS) {
+    embedder.test.assertEq(
+        'undefined', typeof webview[callbackName],
+        callbackName + ' should not be accessible');
+  }
+
+  embedder.test.assertEq(
+      'undefined', typeof webview.constructor['observedAttributes'],
+      'observedAttributes should not be accessible');
+
+  embedder.test.succeed();
 }
 
 // This test verifies that assigning the src attribute the same value it had
@@ -170,9 +211,6 @@ function testAutosizeAfterNavigation() {
   var sizeChangeHandler = function(e) {
     switch (step) {
       case 1:
-        // This would be triggered after we set autosize attribute.
-        embedder.test.assertEq(50, e.oldWidth);
-        embedder.test.assertEq(100, e.oldHeight);
         embedder.test.assertTrue(e.newWidth >= 60 && e.newWidth <= 70);
         embedder.test.assertTrue(e.newHeight >= 110 && e.newHeight <= 120);
 
@@ -246,23 +284,19 @@ function testAutosizeHeight() {
   webview.maxheight = 200;
 
   var step = 1;
+  var finalWidth = 200;
+  var finalHeight = 50;
   webview.addEventListener('sizechanged', function(e) {
-    switch (step) {
-      case 1:
-        embedder.test.assertEq(200, e.newHeight);
-        // Change the maxheight to verify that we see the change.
-        webview.maxheight = 50;
-        break;
-      case 2:
-        embedder.test.assertEq(200, e.oldHeight);
-        embedder.test.assertEq(50, e.newHeight);
-        embedder.test.succeed();
-        break;
-      default:
-        window.console.log('Unexpected sizechanged event, step = ' + step);
-        embedder.test.fail();
-        break;
-    }
+    embedder.test.assertTrue(e.newHeight >= webview.minheight);
+    embedder.test.assertTrue(e.newHeight <= webview.maxheight);
+    embedder.test.assertTrue(e.newWidth >= webview.minwidth);
+    embedder.test.assertTrue(e.newWidth <= webview.maxwidth);
+    if (step == 1)
+      webview.maxheight = 50;
+
+    // We are done once the size settles on the final width and height.
+    if (e.newHeight == finalHeight && e.newWidth == finalWidth)
+      embedder.test.succeed();
     ++step;
   });
 
@@ -460,6 +494,28 @@ function testChromeExtensionURL() {
     embedder.test.succeed();
   });
   webview.setAttribute('src', localResource);
+  document.body.appendChild(webview);
+}
+
+// This test verifies that guests are blocked from navigating the webview to a
+// data URL.
+function testContentInitiatedNavigationToDataUrlBlocked() {
+  var navUrl = "data:text/html,foo";
+  var webview = document.createElement('webview');
+  webview.addEventListener('consolemessage', function(e) {
+    if (e.message.startsWith(
+        'Not allowed to navigate top frame to data URL:')) {
+      embedder.test.succeed();
+    }
+  });
+  webview.addEventListener('loadstop', function(e) {
+    if (webview.getAttribute('src') == navUrl) {
+      embedder.test.fail();
+    }
+  });
+  webview.setAttribute('src',
+      'data:text/html,<script>window.location.href = "' + navUrl +
+      '";</scr' + 'ipt>');
   document.body.appendChild(webview);
 }
 
@@ -1029,6 +1085,23 @@ function testLoadAbortInvalidNavigation() {
   document.body.appendChild(webview);
 }
 
+// This test verifies that canGoBack is true for failed navigations.
+function testCanGoBack() {
+  var testPage = 'data:text/html,test page';
+  var badUrl = 'http://foo.bar/';
+  var webview = document.createElement('webview');
+  webview.addEventListener('loadcommit', function(evt) {
+    if (evt.url == testPage) {
+      webview.src = badUrl;
+    } else if (evt.url == badUrl) {
+      embedder.test.assertTrue(webview.canGoBack());
+      embedder.test.succeed();
+    }
+  });
+  webview.src = testPage;
+  document.body.appendChild(webview);
+}
+
 // Verifies that navigation to a URL that is valid but not web-safe or
 // pseudo-scheme fires loadabort and doesn't cause a crash.
 function testLoadAbortNonWebSafeScheme() {
@@ -1049,6 +1122,49 @@ function testLoadAbortNonWebSafeScheme() {
   webview.src = chromeGuestURL;
   document.body.appendChild(webview);
 };
+
+// Verifies that cancelling a navigation due to an unsupported protocol doesn't
+// cause a crash.
+function testLoadAbortUnknownScheme() {
+  var webview = document.createElement('webview');
+  var ftpURL = 'ftp://example.com/';
+  webview.addEventListener('loadabort', function(e) {
+    embedder.test.assertEq('ERR_UNKNOWN_URL_SCHEME', e.reason);
+    embedder.test.assertEq(ftpURL, e.url);
+  });
+  webview.addEventListener('loadstop', function(e) {
+    embedder.test.assertEq(ftpURL, webview.src);
+    embedder.test.succeed();
+  });
+  webview.addEventListener('exit', function(e) {
+    // We should not crash.
+    embedder.test.fail();
+  });
+  webview.src = ftpURL;
+  document.body.appendChild(webview);
+}
+
+// This test verifies that the loadStart isn't sent for same-document
+// navigations, while loadCommit is (per docs).
+function testLoadEventsSameDocumentNavigation() {
+  var webview = new WebView();
+  var loadStartCount = 0;
+  var loadCommitCount = 0;
+  webview.addEventListener('loadstart', function(evt) {
+    loadStartCount++;
+  });
+  webview.addEventListener('loadcommit', function(e) {
+    loadCommitCount++;
+  });
+  webview.addEventListener('loadstop', function(evt) {
+    embedder.test.assertEq(1, loadStartCount);
+    embedder.test.assertEq(2, loadCommitCount);
+    embedder.test.succeed();
+  });
+
+  webview.src = embedder.sameDocumentNavigationURL;
+  document.body.appendChild(webview);
+}
 
 // Tests that the 'loadprogress' event is triggered correctly.
 function testLoadProgressEvent() {
@@ -1091,21 +1207,6 @@ function testLoadStartLoadRedirect() {
       embedder.test.fail();
     }
   });
-  document.body.appendChild(webview);
-}
-
-function testNavigationToExternalProtocol() {
-  var webview = document.createElement('webview');
-  webview.addEventListener('loadstop', function(e) {
-    webview.addEventListener('loadabort', function(e) {
-      embedder.test.assertEq('ERR_UNKNOWN_URL_SCHEME', e.reason);
-      embedder.test.succeed();
-    });
-    webview.executeScript({
-      code: 'window.location.href = "tel:+12223334444";'
-    }, function(results) {});
-  });
-  webview.setAttribute('src', 'data:text/html,navigate to external protocol');
   document.body.appendChild(webview);
 }
 
@@ -1205,6 +1306,12 @@ function testNavOnSrcAttributeChange() {
 }
 
 // This test verifies that new window attachment functions as expected.
+//
+// TODO(crbug.com/594215) Test that opening a new window with a data URL is
+// blocked. There is currently no way to test this, as the block message is
+// printed on the new window which never gets created, so the message is lost.
+// Also test that opening a new window with a data URL when the webview is
+// already on a data URL is allowed.
 function testNewWindow() {
   var webview = document.createElement('webview');
   webview.addEventListener('newwindow', function(e) {
@@ -1605,33 +1712,103 @@ function testWebRequestAPIWithHeaders() {
   }, requestFilter, extraInfoSpec);
 
   var loadstartCalled = false;
-  webview.addEventListener('loadstart', function(e) {
-    embedder.test.assertTrue(e.isTopLevel);
-    embedder.test.assertEq(embedder.detectUserAgentURL, e.url);
-    loadstartCalled = true;
-  });
 
-  webview.addEventListener('loadredirect', function(e) {
-    embedder.test.assertTrue(e.isTopLevel);
-    embedder.test.assertEq(embedder.detectUserAgentURL,
-        e.oldUrl.replace('127.0.0.1', 'localhost'));
-    embedder.test.assertEq(embedder.redirectGuestURLDest,
-        e.newUrl.replace('127.0.0.1', 'localhost'));
-    if (loadstartCalled) {
-      embedder.test.succeed();
-    } else {
-      embedder.test.fail();
-    }
-  });
-  webview.src = embedder.detectUserAgentURL;
+  var listener = function() {
+    webview.removeEventListener('loadstop', listener);
+    // Now load the real URL for the test.
+    webview.src = embedder.detectUserAgentURL;
+
+    webview.addEventListener('loadstart', function(e) {
+      embedder.test.assertTrue(e.isTopLevel);
+      embedder.test.assertEq(embedder.detectUserAgentURL, e.url);
+      loadstartCalled = true;
+    });
+
+    webview.addEventListener('loadredirect', function(e) {
+      embedder.test.assertTrue(e.isTopLevel);
+      embedder.test.assertEq(embedder.detectUserAgentURL,
+          e.oldUrl.replace('127.0.0.1', 'localhost'));
+      embedder.test.assertEq(embedder.redirectGuestURLDest,
+          e.newUrl.replace('127.0.0.1', 'localhost'));
+      if (loadstartCalled) {
+        embedder.test.succeed();
+      } else {
+        embedder.test.fail();
+      }
+    });
+  };
+  webview.addEventListener('loadstop', listener);
+
+  // Load an empty URL to wait for the webRequest listener to be set up.
+  webview.src = embedder.emptyGuestURL;
+  document.body.appendChild(webview);
+}
+
+// Tests web request api support for "extraHeaders" with webviews. Regression
+// test for crbug.com/938095.
+function testWebRequestAPIWithExtraHeaders() {
+  var echoCookieUrl = embedder.baseGuestURL + '/echoheader?Cookie';
+  var setCookieUrl = embedder.baseGuestURL + '/set-cookie?foo=bar';
+
+  var webview = new WebView();
+
+  var requestFilter = {urls: [echoCookieUrl]};
+  webview.request.onBeforeSendHeaders.addListener(function(details) {
+    var cookieHeader = details.requestHeaders.find(function(header) {
+      return header.name.toLowerCase() == 'cookie';
+    });
+    embedder.test.assertTrue(cookieHeader);
+    embedder.test.assertEq('foo=bar', cookieHeader.value);
+    // Modify the Cookie header.
+    cookieHeader.value = 'foo=new_value';
+    return {requestHeaders: details.requestHeaders};
+  }, requestFilter, ['requestHeaders', 'blocking', 'extraHeaders']);
+
+  var onSendHeadersSeen = false;
+  webview.request.onSendHeaders.addListener(function(details) {
+    var cookieHeader = details.requestHeaders.find(function(header) {
+      return header.name.toLowerCase() == 'cookie';
+    });
+    embedder.test.assertTrue(cookieHeader);
+    onSendHeadersSeen = true;
+    // Verify the Cookie header was modified.
+    chrome.test.assertEq('foo=new_value', cookieHeader.value);
+  }, requestFilter, ['requestHeaders', 'extraHeaders']);
+
+  var listener = function() {
+    webview.removeEventListener('loadstop', listener);
+
+    webview.addEventListener('loadstart', function(e) {
+      embedder.test.assertTrue(e.isTopLevel);
+      embedder.test.assertEq(echoCookieUrl, e.url);
+    });
+
+    webview.addEventListener('loadstop', function() {
+      embedder.test.assertTrue(onSendHeadersSeen);
+
+      // Ensure the header was modified.
+      webview.executeScript(
+          {code: 'document.body.innerText'}, function(results) {
+            embedder.test.assertEq('foo=new_value', results[0]);
+            embedder.test.succeed();
+          });
+    });
+
+    // Now load a url to echo the cookie header.
+    webview.src = echoCookieUrl;
+  };
+  webview.addEventListener('loadstop', listener);
+
+  // Load a URL to set a cookie so that the Cookie header is set for future
+  // requests.
+  webview.src = setCookieUrl;
   document.body.appendChild(webview);
 }
 
 function testWebRequestAPIExistence() {
-  var apiPropertiesToCheck = [
+  var regularEventsToCheck = [
     // Declarative WebRequest API.
     'onMessage',
-    'onRequest',
     // WebRequest API.
     'onBeforeRequest',
     'onBeforeSendHeaders',
@@ -1643,24 +1820,24 @@ function testWebRequestAPIExistence() {
     'onCompleted',
     'onErrorOccurred'
   ];
+  var declarativeEventsToCheck = [
+    'onRequest',
+  ];
   var webview = document.createElement('webview');
   webview.setAttribute('partition', arguments.callee.name);
   webview.addEventListener('loadstop', function(e) {
-    for (var i = 0; i < apiPropertiesToCheck.length; ++i) {
-      embedder.test.assertEq('object',
-                             typeof webview.request[apiPropertiesToCheck[i]]);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].addListener);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].addRules);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].getRules);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].removeRules);
+    for (var i = 0; i < regularEventsToCheck.length; ++i) {
+      var eventName = regularEventsToCheck[i];
+      var event = webview.request[eventName];
+      embedder.test.assertEq('object', typeof event);
+      embedder.test.assertEq('function', typeof event.addListener);
+    }
+    for (var i = 0; i < declarativeEventsToCheck.length; ++i) {
+      var eventName = declarativeEventsToCheck[i];
+      var event = webview.request[eventName];
+      embedder.test.assertEq('function', typeof event.addRules);
+      embedder.test.assertEq('function', typeof event.getRules);
+      embedder.test.assertEq('function', typeof event.removeRules);
     }
 
     // Try to overwrite webview.request, shall not succeed.
@@ -1701,11 +1878,11 @@ function testCaptureVisibleRegion() {
                 chrome.runtime.lastError.message);
             embedder.test.fail();
           } else {
-            if (imgdata.indexOf('data:image/jpeg;base64') != 0) {
-              console_log('imgdata = ' + imgdata);
-            }
+            if (!imgdata.startsWith('data:image/jpeg;base64'))
+              console.log('imgdata = ' + imgdata);
+
             embedder.test.assertTrue(
-                imgdata.indexOf('data:image/jpeg;base64') == 0);
+                imgdata.startsWith('data:image/jpeg;base64'));
             embedder.test.succeed();
           }
         });
@@ -1715,20 +1892,48 @@ function testCaptureVisibleRegion() {
 
 function captureVisibleRegionDoCapture() {}
 
+// Ensure we use the closed encapsulation mode for the guest view shadow DOM
+// to prevent script from interfering with our internal elements and producing
+// unexpected behaviour.
+function testClosedShadowRoot() {
+  // Script could overwrite attachShadow to ignore the provided encapsulation
+  // mode. Ensure this does not happen when creating the guest view shadow
+  // DOM.
+  Element.prototype.realAttachShadow = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function() {
+    window.console.log('Tainted attachShadow was called.');
+    embedder.test.fail();
+    return this.realAttachShadow({mode: 'open'});
+  };
+
+  var webview = document.createElement('webview');
+  webview.src = 'data:text/html,webview test'
+  webview.addEventListener('loadstop', () => {
+    embedder.test.assertFalse(webview.shadowRoot);
+    embedder.test.succeed();
+  });
+  document.body.appendChild(webview);
+}
+
 // Tests end.
 
 embedder.test.testList = {
   'testAllowTransparencyAttribute': testAllowTransparencyAttribute,
   'testAPIMethodExistence': testAPIMethodExistence,
+  'testCustomElementCallbacksInaccessible':
+      testCustomElementCallbacksInaccessible,
   'testAssignSrcAfterCrash': testAssignSrcAfterCrash,
   'testAutosizeAfterNavigation': testAutosizeAfterNavigation,
   'testAutosizeBeforeNavigation': testAutosizeBeforeNavigation,
   'testAutosizeHeight': testAutosizeHeight,
   'testAutosizeRemoveAttributes': testAutosizeRemoveAttributes,
   'testAutosizeWithPartialAttributes': testAutosizeWithPartialAttributes,
+  'testCanGoBack': testCanGoBack,
   'testCannotMutateEventName': testCannotMutateEventName,
   'testChromeExtensionRelativePath': testChromeExtensionRelativePath,
   'testChromeExtensionURL': testChromeExtensionURL,
+  'testContentInitiatedNavigationToDataUrlBlocked':
+      testContentInitiatedNavigationToDataUrlBlocked,
   'testContentLoadEvent': testContentLoadEvent,
   'testDeclarativeWebRequestAPI': testDeclarativeWebRequestAPI,
   'testDeclarativeWebRequestAPISendMessage':
@@ -1756,10 +1961,11 @@ embedder.test.testList = {
   'testLoadAbortIllegalJavaScriptURL': testLoadAbortIllegalJavaScriptURL,
   'testLoadAbortInvalidNavigation': testLoadAbortInvalidNavigation,
   'testLoadAbortNonWebSafeScheme': testLoadAbortNonWebSafeScheme,
+  'testLoadAbortUnknownScheme': testLoadAbortUnknownScheme,
+  'testLoadEventsSameDocumentNavigation': testLoadEventsSameDocumentNavigation,
   'testLoadProgressEvent': testLoadProgressEvent,
   'testLoadStartLoadRedirect': testLoadStartLoadRedirect,
   'testNavigateAfterResize': testNavigateAfterResize,
-  'testNavigationToExternalProtocol': testNavigationToExternalProtocol,
   'testNavOnConsecutiveSrcAttributeChanges':
       testNavOnConsecutiveSrcAttributeChanges,
   'testNavOnSrcAttributeChange': testNavOnSrcAttributeChange,
@@ -1781,9 +1987,11 @@ embedder.test.testList = {
   'testTerminateAfterExit': testTerminateAfterExit,
   'testWebRequestAPI': testWebRequestAPI,
   'testWebRequestAPIWithHeaders': testWebRequestAPIWithHeaders,
+  'testWebRequestAPIWithExtraHeaders': testWebRequestAPIWithExtraHeaders,
   'testWebRequestAPIExistence': testWebRequestAPIExistence,
   'testWebRequestAPIGoogleProperty': testWebRequestAPIGoogleProperty,
-  'testCaptureVisibleRegion': testCaptureVisibleRegion
+  'testCaptureVisibleRegion': testCaptureVisibleRegion,
+  'testClosedShadowRoot': testClosedShadowRoot,
 };
 
 onload = function() {

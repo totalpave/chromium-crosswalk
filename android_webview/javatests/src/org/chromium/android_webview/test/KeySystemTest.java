@@ -4,15 +4,19 @@
 
 package org.chromium.android_webview.test;
 
-import android.os.Build;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.filters.SmallTest;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.permission.AwPermissionRequest;
 import org.chromium.android_webview.permission.Resource;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
-
-import java.util.concurrent.Callable;
 
 /**
  * TestSuite for EME key systems.
@@ -21,7 +25,11 @@ import java.util.concurrent.Callable;
  * Although, WebView requires Lollipop for the onPermissionRequest() API,
  * this test intercepts this path and thus can run on KitKat.
  */
-public class KeySystemTest extends AwTestBase {
+@RunWith(AwJUnit4ClassRunner.class)
+public class KeySystemTest {
+    @Rule
+    public AwActivityTestRule mActivityTestRule = new AwActivityTestRule();
+
     /**
      * AwContentsClient subclass that allows permissions requests for the
      * protected media ID. This is required for all supported key systems other
@@ -30,7 +38,7 @@ public class KeySystemTest extends AwTestBase {
     private static class EmeAllowingAwContentsClient extends TestAwContentsClient {
         @Override
         public void onPermissionRequest(AwPermissionRequest awPermissionRequest) {
-            if (awPermissionRequest.getResources() == Resource.ProtectedMediaId) {
+            if (awPermissionRequest.getResources() == Resource.PROTECTED_MEDIA_ID) {
                 awPermissionRequest.grant();
             } else {
                 awPermissionRequest.deny();
@@ -41,111 +49,96 @@ public class KeySystemTest extends AwTestBase {
     private TestAwContentsClient mContentsClient = new EmeAllowingAwContentsClient();
     private AwContents mAwContents;
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-
+    @Before
+    public void setUp() throws Exception {
         final AwTestContainerView testContainerView =
-                createAwTestContainerViewOnMainSync(mContentsClient);
+                mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
         mAwContents = testContainerView.getAwContents();
-        enableJavaScriptOnUiThread(mAwContents);
+        AwActivityTestRule.enableJavaScriptOnUiThread(mAwContents);
 
-        loadDataSync(mAwContents, mContentsClient.getOnPageFinishedHelper(),
-                getKeySystemTestPage(), "text/html", false);
-    }
-
-    private String getKeySystemTestPage() {
-        return "<html> <script>"
-                + "var result;"
-                + "function success(keySystemAccess) {"
-                + "  result = 'supported';"
-                + "}"
-                + "function failure(error){"
-                + "  result = error.name;"
-                + "}"
-                + "function isKeySystemSupported(keySystem) {"
-                + "  navigator.requestMediaKeySystemAccess(keySystem, [{}]).then("
-                + "      success, failure);"
-                + "}"
-                + "function areProprietaryCodecsSupported() {"
-                + "  var video = document.createElement('video');"
-                + "  return video.canPlayType('video/mp4; codecs=\"avc1\"');"
-                + "}"
-                + "</script> </html>";
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(),
+                "file:///android_asset/key-system-test.html");
     }
 
     private String isKeySystemSupported(String keySystem) throws Exception {
-        executeJavaScriptAndWaitForResult(
+        mActivityTestRule.executeJavaScriptAndWaitForResult(
                 mAwContents, mContentsClient, "isKeySystemSupported('" + keySystem + "')");
 
-        pollInstrumentationThread(new Callable<Boolean>() {
-            @Override
-            public Boolean call() throws Exception {
-                return !getResultFromJS().equals("null");
-            }
-        });
+        AwActivityTestRule.pollInstrumentationThread(() -> !getResultFromJS().equals("null"));
 
         return getResultFromJS();
     }
 
     private boolean areProprietaryCodecsSupported() throws Exception {
-        String result = executeJavaScriptAndWaitForResult(
-                mAwContents, mContentsClient, "areProprietaryCodecsSupported()");
+        String result = mActivityTestRule.maybeStripDoubleQuotes(
+                mActivityTestRule.executeJavaScriptAndWaitForResult(
+                        mAwContents, mContentsClient, "areProprietaryCodecsSupported()"));
         return !result.isEmpty();
     }
 
     private String getResultFromJS() {
         String result = "null";
         try {
-            result = executeJavaScriptAndWaitForResult(
+            result = mActivityTestRule.executeJavaScriptAndWaitForResult(
                     mAwContents, mContentsClient, "result");
         } catch (Exception e) {
-            fail("Unable to get result");
+            Assert.fail("Unable to get result");
         }
         return result;
     }
 
     private String getPlatformKeySystemExpectations() throws Exception {
-        // Android key systems only support non-proprietary codecs on Lollipop+.
-        // When neither is true isKeySystemSupported() will return an error for
-        // all key systems except ClearKey (which is handled by Chrome itself).
-        if (!areProprietaryCodecsSupported()
-                && Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-            return "\"NotSupportedError\"";
+        // isKeySystemSupported() calls navigator.requestMediaKeySystemAccess()
+        // with a video/mp4 configuration. mp4 is only supported if
+        // areProprietaryCodecsSupported().
+        if (areProprietaryCodecsSupported()) {
+            return "\"supported\"";
         }
 
-        return "\"supported\"";
+        return "\"NotSupportedError\"";
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testSupportClearKeySystem() throws Throwable {
-        assertEquals("\"supported\"", isKeySystemSupported("org.w3.clearkey"));
+        // Clear Key is always supported. However, isKeySystemSupported()
+        // specifies a video/mp4 configuration, so it only succeeds if
+        // proprietary codecs are supported.
+        Assert.assertEquals(
+                getPlatformKeySystemExpectations(), isKeySystemSupported("org.w3.clearkey"));
     }
 
+    @Test
     @Feature({"AndroidWebView"})
-    @SmallTest
+    @DisabledTest
+    // crbug/701916
     public void testSupportWidevineKeySystem() throws Throwable {
-        assertEquals(
+        Assert.assertEquals(
                 getPlatformKeySystemExpectations(), isKeySystemSupported("com.widevine.alpha"));
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testNotSupportFooKeySystem() throws Throwable {
-        assertEquals("\"NotSupportedError\"", isKeySystemSupported("com.foo.keysystem"));
+        Assert.assertEquals("\"NotSupportedError\"", isKeySystemSupported("com.foo.keysystem"));
     }
 
+    @Test
     @Feature({"AndroidWebView"})
-    @SmallTest
+    @DisabledTest
+    // crbug/701916
     public void testSupportPlatformKeySystem() throws Throwable {
-        assertEquals(getPlatformKeySystemExpectations(),
+        Assert.assertEquals(getPlatformKeySystemExpectations(),
                 isKeySystemSupported("x-com.oem.test-keysystem"));
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testSupportPlatformKeySystemNoPrefix() throws Throwable {
-        assertEquals("\"NotSupportedError\"", isKeySystemSupported("com.oem.test-keysystem"));
+        Assert.assertEquals(
+                "\"NotSupportedError\"", isKeySystemSupported("com.oem.test-keysystem"));
     }
 }

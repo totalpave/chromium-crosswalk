@@ -7,14 +7,12 @@
 
 #include <memory>
 
-#include "cc/output/output_surface.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
 #include "cc/test/fake_layer_tree_host_impl.h"
 #include "cc/test/fake_picture_layer_impl.h"
-#include "cc/test/test_gpu_memory_buffer_manager.h"
-#include "cc/test/test_shared_bitmap_manager.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/tiles/tile_priority.h"
+#include "cc/trees/layer_tree_frame_sink.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -28,34 +26,38 @@ class TestLayerTreeHostBase : public testing::Test {
   void SetUp() override;
 
   virtual LayerTreeSettings CreateSettings();
-  virtual std::unique_ptr<OutputSurface> CreateOutputSurface();
+  virtual std::unique_ptr<LayerTreeFrameSink> CreateLayerTreeFrameSink();
   virtual std::unique_ptr<FakeLayerTreeHostImpl> CreateHostImpl(
       const LayerTreeSettings& settings,
       TaskRunnerProvider* task_runner_provider,
-      SharedBitmapManager* shared_bitmap_manager,
-      TaskGraphRunner* task_graph_runner,
-      gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager_);
+      TaskGraphRunner* task_graph_runner);
   virtual std::unique_ptr<TaskGraphRunner> CreateTaskGraphRunner();
-  virtual void InitializeRenderer();
+  virtual void InitializeFrameSink();
 
-  void ResetOutputSurface(std::unique_ptr<OutputSurface> output_surface);
+  void ResetLayerTreeFrameSink(
+      std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink);
   std::unique_ptr<FakeLayerTreeHostImpl> TakeHostImpl();
 
   void SetupDefaultTrees(const gfx::Size& layer_bounds);
   void SetupTrees(scoped_refptr<RasterSource> pending_raster_source,
                   scoped_refptr<RasterSource> active_raster_source);
   void SetupPendingTree(scoped_refptr<RasterSource> raster_source);
-  void SetupPendingTree(scoped_refptr<RasterSource> raster_source,
-                        const gfx::Size& tile_size,
-                        const Region& invalidation);
+  void SetupPendingTree(
+      scoped_refptr<RasterSource> raster_source,
+      const gfx::Size& tile_size,
+      const Region& invalidation,
+      Layer::LayerMaskType mask_type = Layer::LayerMaskType::NOT_MASK);
   void ActivateTree();
+  void PerformImplSideInvalidation();
   void RebuildPropertyTreesOnPendingTree();
 
   FakeLayerTreeHostImpl* host_impl() const { return host_impl_.get(); }
   TaskGraphRunner* task_graph_runner() const {
     return task_graph_runner_.get();
   }
-  OutputSurface* output_surface() const { return output_surface_.get(); }
+  LayerTreeFrameSink* layer_tree_frame_sink() const {
+    return layer_tree_frame_sink_.get();
+  }
   FakePictureLayerImpl* pending_layer() const { return pending_layer_; }
   FakePictureLayerImpl* active_layer() const { return active_layer_; }
   FakePictureLayerImpl* old_pending_layer() const { return old_pending_layer_; }
@@ -65,10 +67,8 @@ class TestLayerTreeHostBase : public testing::Test {
   void SetInitialTreePriority();
 
   FakeImplTaskRunnerProvider task_runner_provider_;
-  TestSharedBitmapManager shared_bitmap_manager_;
   std::unique_ptr<TaskGraphRunner> task_graph_runner_;
-  TestGpuMemoryBufferManager gpu_memory_buffer_manager_;
-  std::unique_ptr<OutputSurface> output_surface_;
+  std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink_;
   std::unique_ptr<FakeLayerTreeHostImpl> host_impl_;
 
   FakePictureLayerImpl* pending_layer_;

@@ -11,19 +11,20 @@
 #include "base/strings/string16.h"
 #include "base/win/registry.h"
 
+namespace {
+
 // NOTE: Keep these in order since we need test all those paths according
 // to priority. For example. One machine has multiple users. One non-admin
 // user installs Firefox 2, which causes there is a Firefox2 entry under HKCU.
 // One admin user installs Firefox 3, which causes there is a Firefox 3 entry
 // under HKLM. So when the non-admin user log in, we should deal with Firefox 2
 // related data instead of Firefox 3.
-static const HKEY kFireFoxRegistryPaths[] = {
-  HKEY_CURRENT_USER,
-  HKEY_LOCAL_MACHINE
-};
+const HKEY kFireFoxRegistryPaths[] = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
-static const wchar_t* kFirefoxPath = L"Software\\Mozilla\\Mozilla Firefox";
-static const wchar_t* kCurrentVersion = L"CurrentVersion";
+constexpr const wchar_t* kFirefoxPath = L"Software\\Mozilla\\Mozilla Firefox";
+constexpr const wchar_t* kCurrentVersion = L"CurrentVersion";
+
+}  // namespace
 
 int GetCurrentFirefoxMajorVersionFromRegistry() {
   TCHAR ver_buffer[128];
@@ -70,7 +71,7 @@ base::FilePath GetProfilesINI() {
   base::FilePath ini_file;
   // The default location of the profile folder containing user data is
   // under the "Application Data" folder in Windows XP, Vista, and 7.
-  if (!PathService::Get(base::DIR_APP_DATA, &ini_file))
+  if (!base::PathService::Get(base::DIR_APP_DATA, &ini_file))
     return base::FilePath();
 
   ini_file = ini_file.AppendASCII("Mozilla");

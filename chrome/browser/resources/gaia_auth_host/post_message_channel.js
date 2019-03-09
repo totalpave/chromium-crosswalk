@@ -9,26 +9,23 @@
  */
 'use strict';
 
-<include src="../gaia_auth/channel.js">
+// <include src="channel.js">
 
-var PostMessageChannel = (function() {
+const PostMessageChannel = (function() {
   /**
    * Allowed origins of the hosting page.
    * @type {Array<string>}
    */
-  var ALLOWED_ORIGINS = [
-    'chrome://oobe',
-    'chrome://chrome-signin'
-  ];
+  const ALLOWED_ORIGINS = ['chrome://oobe', 'chrome://chrome-signin'];
 
   /** @const */
-  var PORT_MESSAGE = 'post-message-port-message';
+  const PORT_MESSAGE = 'post-message-port-message';
 
   /** @const */
-  var CHANNEL_INIT_MESSAGE = 'post-message-channel-init';
+  const CHANNEL_INIT_MESSAGE = 'post-message-channel-init';
 
   /** @const */
-  var CHANNEL_CONNECT_MESSAGE = 'post-message-channel-connect';
+  const CHANNEL_CONNECT_MESSAGE = 'post-message-channel-connect';
 
   /**
    * Whether the script runs in a top level window.
@@ -56,7 +53,7 @@ var PostMessageChannel = (function() {
      * Dispatches a given event to all listeners.
      */
     dispatch: function(e) {
-      for (var i = 0; i < this.listeners_.length; ++i) {
+      for (let i = 0; i < this.listeners_.length; ++i) {
         this.listeners_[i].call(undefined, e);
       }
     }
@@ -137,9 +134,10 @@ var PostMessageChannel = (function() {
      */
     createPort: function(
         channelId, channelName, opt_targetWindow, opt_targetOrigin) {
-      var port = new PostMessagePort(channelId, channelName);
-      if (opt_targetWindow)
+      const port = new PostMessagePort(channelId, channelName);
+      if (opt_targetWindow) {
         port.setTarget(opt_targetWindow, opt_targetOrigin);
+      }
       this.channels_[channelId] = port;
       return port;
     },
@@ -149,7 +147,9 @@ var PostMessageChannel = (function() {
      * @private
      */
     getProxyPortForwardHandler_: function(proxyPort) {
-      return function(msg) { proxyPort.postMessage(msg); };
+      return function(msg) {
+        proxyPort.postMessage(msg);
+      };
     },
 
     /**
@@ -161,8 +161,8 @@ var PostMessageChannel = (function() {
      */
     createProxyPort: function(
         channelId, channelName, targetWindow, targetOrigin) {
-      var port = this.createPort(
-          channelId, channelName, targetWindow, targetOrigin);
+      const port =
+          this.createPort(channelId, channelName, targetWindow, targetOrigin);
       port.onMessage.addListener(this.getProxyPortForwardHandler_(port));
       return port;
     },
@@ -179,7 +179,7 @@ var PostMessageChannel = (function() {
         return;
       }
 
-      var port = this.createPort(this.createChannelId_(), name);
+      const port = this.createPort(this.createChannelId_(), name);
       if (this.upperWindow) {
         port.setTarget(this.upperWindow, this.upperOrigin);
       } else {
@@ -199,8 +199,8 @@ var PostMessageChannel = (function() {
      * @private
      */
     dispatchMessageToPort_: function(e) {
-      var channelId = e.data.channelId;
-      var port = this.channels_[channelId];
+      const channelId = e.data.channelId;
+      const port = this.channels_[channelId];
       if (!port) {
         console.error('Error: Unable to dispatch message. Unknown channel.');
         return;
@@ -213,8 +213,7 @@ var PostMessageChannel = (function() {
      * Window 'message' handler.
      */
     onMessage_: function(e) {
-      if (typeof e.data != 'object' ||
-          !e.data.hasOwnProperty('type')) {
+      if (typeof e.data != 'object' || !e.data.hasOwnProperty('type')) {
         return;
       }
 
@@ -229,33 +228,34 @@ var PostMessageChannel = (function() {
           this.postToUpperWindow(e.data);
         }
       } else if (e.data.type === CHANNEL_CONNECT_MESSAGE) {
-        var channelId = e.data.channelId;
-        var channelName = e.data.channelName;
+        const channelId = e.data.channelId;
+        const channelName = e.data.channelName;
 
         if (this.isDaemon) {
-          var port = this.createPort(
-              channelId, channelName, e.source, e.origin);
+          const port =
+              this.createPort(channelId, channelName, e.source, e.origin);
           this.onConnect.dispatch(port);
         } else {
           this.createProxyPort(channelId, channelName, e.source, e.origin);
           this.postToUpperWindow(e.data);
         }
       } else if (e.data.type === CHANNEL_INIT_MESSAGE) {
-        if (ALLOWED_ORIGINS.indexOf(e.origin) == -1)
+        if (ALLOWED_ORIGINS.indexOf(e.origin) == -1) {
           return;
+        }
 
         this.upperWindow = e.source;
         this.upperOrigin = e.origin;
 
-        for (var i = 0; i < this.deferredUpperWindowMessages_.length; ++i) {
-          this.upperWindow.postMessage(this.deferredUpperWindowMessages_[i],
-                                       this.upperOrigin);
+        for (let i = 0; i < this.deferredUpperWindowMessages_.length; ++i) {
+          this.upperWindow.postMessage(
+              this.deferredUpperWindowMessages_[i], this.upperOrigin);
         }
         this.deferredUpperWindowMessages_ = [];
 
-        for (var i = 0; i < this.deferredUpperWindowPorts_.length; ++i) {
-          this.deferredUpperWindowPorts_[i].setTarget(this.upperWindow,
-                                                      this.upperOrigin);
+        for (let i = 0; i < this.deferredUpperWindowPorts_.length; ++i) {
+          this.deferredUpperWindowPorts_[i].setTarget(
+              this.upperWindow, this.upperOrigin);
         }
         this.deferredUpperWindowPorts_ = [];
       }
@@ -266,7 +266,7 @@ var PostMessageChannel = (function() {
    * Singleton instance of ChannelManager.
    * @type {ChannelManager}
    */
-  var channelManager = new ChannelManager();
+  const channelManager = new ChannelManager();
 
   /**
    * A HTML5 postMessage based port that provides the same port interface
@@ -282,7 +282,7 @@ var PostMessageChannel = (function() {
     this.deferredMessages_ = [];
 
     this.onMessage = new EventTarget();
-  };
+  }
 
   PostMessagePort.prototype = {
     /**
@@ -294,7 +294,7 @@ var PostMessageChannel = (function() {
       this.targetWindow = targetWindow;
       this.targetOrigin = targetOrigin;
 
-      for (var i = 0; i < this.deferredMessages_.length; ++i) {
+      for (let i = 0; i < this.deferredMessages_.length; ++i) {
         this.postMessage(this.deferredMessages_[i]);
       }
       this.deferredMessages_ = [];
@@ -306,11 +306,9 @@ var PostMessageChannel = (function() {
         return;
       }
 
-      this.targetWindow.postMessage({
-        type: PORT_MESSAGE,
-        channelId: this.channelId,
-        payload: msg
-      }, this.targetOrigin);
+      this.targetWindow.postMessage(
+          {type: PORT_MESSAGE, channelId: this.channelId, payload: msg},
+          this.targetOrigin);
     },
 
     handleWindowMessage: function(e) {
@@ -325,7 +323,7 @@ var PostMessageChannel = (function() {
    */
   function PostMessageChannel() {
     Channel.apply(this, arguments);
-  };
+  }
 
   PostMessageChannel.prototype = {
     __proto__: Channel.prototype,
@@ -342,9 +340,7 @@ var PostMessageChannel = (function() {
    * @param {DOMWindow} webViewContentWindow Content window of the webview.
    */
   PostMessageChannel.init = function(webViewContentWindow) {
-    webViewContentWindow.postMessage({
-      type: CHANNEL_INIT_MESSAGE
-    }, '*');
+    webViewContentWindow.postMessage({type: CHANNEL_INIT_MESSAGE}, '*');
   };
 
   /**
@@ -358,7 +354,7 @@ var PostMessageChannel = (function() {
   PostMessageChannel.runAsDaemon = function(callback) {
     channelManager.isDaemon = true;
 
-    var onConnect = function(port) {
+    const onConnect = function(port) {
       callback(port);
     };
     channelManager.onConnect.addListener(onConnect);

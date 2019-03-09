@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/containers/flat_set.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/i18n/time_formatting.h"
 #include "base/macros.h"
@@ -27,8 +28,8 @@
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_usage_data.h"
 #include "components/history/core/browser/history_service.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "grit/components_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -58,7 +59,7 @@ class BookmarkHTMLWriterTest : public testing::Test {
   void SetUp() override {
     testing::Test::SetUp();
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    path_ = temp_dir_.path().AppendASCII("bookmarks.html");
+    path_ = temp_dir_.GetPath().AppendASCII("bookmarks.html");
   }
 
   // Converts an ImportedBookmarkEntry to a string suitable for assertion
@@ -156,7 +157,7 @@ TEST_F(BookmarkHTMLWriterTest, Test) {
   profile.CreateFaviconService();
   profile.CreateBookmarkModel(true);
 
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(&profile);
+  BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(&profile);
   bookmarks::test::WaitForBookmarkModelToLoad(model);
 
   // Create test PNG representing favicon for url1.
@@ -209,7 +210,7 @@ TEST_F(BookmarkHTMLWriterTest, Test) {
       ->AddPage(url1, base::Time::Now(), history::SOURCE_BROWSED);
   FaviconServiceFactory::GetForProfile(&profile,
                                        ServiceAccessType::EXPLICIT_ACCESS)
-      ->SetFavicons(url1, url1_favicon, favicon_base::FAVICON,
+      ->SetFavicons({url1}, url1_favicon, favicon_base::IconType::kFavicon,
                     gfx::Image::CreateFrom1xBitmap(bitmap));
   const BookmarkNode* f2 = model->AddFolder(f1, 1, f2_title);
   model->AddURLWithCreationTimeAndMetaInfo(f2, 0, url2_title, url2, t2, NULL);
@@ -244,7 +245,8 @@ TEST_F(BookmarkHTMLWriterTest, Test) {
   // Clear favicon so that it would be read from file.
   FaviconServiceFactory::GetForProfile(&profile,
                                        ServiceAccessType::EXPLICIT_ACCESS)
-      ->SetFavicons(url1, url1_favicon, favicon_base::FAVICON, gfx::Image());
+      ->SetFavicons({url1}, url1_favicon, favicon_base::IconType::kFavicon,
+                    gfx::Image());
 
   // Read the bookmarks back in.
   std::vector<ImportedBookmarkEntry> parsed_bookmarks;
@@ -262,7 +264,7 @@ TEST_F(BookmarkHTMLWriterTest, Test) {
   for (size_t i = 0; i < favicons.size(); i++) {
     if (url1_favicon == favicons[i].favicon_url) {
       EXPECT_EQ(1U, favicons[i].urls.size());
-      std::set<GURL>::const_iterator iter = favicons[i].urls.find(url1);
+      auto iter = favicons[i].urls.find(url1);
       ASSERT_TRUE(iter != favicons[i].urls.end());
       ASSERT_TRUE(*iter == url1);
       ASSERT_TRUE(favicons[i].png_data == icon_data);

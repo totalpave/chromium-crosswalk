@@ -6,9 +6,12 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "components/country_codes/country_codes.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/search_engines_pref_names.h"
 #include "components/search_engines/template_url_prepopulate_data.h"
@@ -27,7 +30,7 @@ void UpdateSearchEngine(TemplateURLService* service) {
   DCHECK(service->loaded());
   std::vector<TemplateURL*> old_engines = service->GetTemplateURLs();
   size_t default_engine;
-  ScopedVector<TemplateURLData> new_engines =
+  std::vector<std::unique_ptr<TemplateURLData>> new_engines =
       TemplateURLPrepopulateData::GetPrepopulatedEngines(nullptr,
                                                          &default_engine);
   DCHECK(default_engine == 0);
@@ -38,25 +41,19 @@ void UpdateSearchEngine(TemplateURLService* service) {
   // It is not possible to add all the new ones first, because the service gets
   // confused when a prepopulated engine is there more than once.
   // Instead, this will in a first pass makes google as the default engine. In
-  // a second pass, it will remove all other search engine. At last, in a third
-  // pass, it will add all new engine but google.
-  for (const auto& engine : old_engines) {
+  // a second pass, it will remove all other search engines. At last, in a third
+  // pass, it will add all new engines but google.
+  for (auto* engine : old_engines) {
     if (engine->prepopulate_id() == kGoogleEnginePrepopulatedId)
       service->SetUserSelectedDefaultSearchProvider(engine);
   }
-  for (const auto& engine : old_engines) {
+  for (auto* engine : old_engines) {
     if (engine->prepopulate_id() != kGoogleEnginePrepopulatedId)
       service->Remove(engine);
   }
-  ScopedVector<TemplateURLData>::iterator it = new_engines.begin();
-  while (it != new_engines.end()) {
-    if ((*it)->prepopulate_id != kGoogleEnginePrepopulatedId) {
-      // service->Add takes ownership on Added TemplateURL.
-      service->Add(new TemplateURL(**it));
-      it = new_engines.weak_erase(it);
-    } else {
-      ++it;
-    }
+  for (const auto& engine : new_engines) {
+    if (engine->prepopulate_id != kGoogleEnginePrepopulatedId)
+      service->Add(std::make_unique<TemplateURL>(*engine));
   }
 }
 
@@ -90,17 +87,18 @@ namespace search_engines {
 
 void UpdateSearchEnginesIfNeeded(PrefService* preferences,
                                  TemplateURLService* service) {
-  if (!preferences->HasPrefPath(prefs::kCountryIDAtInstall)) {
+  if (!preferences->HasPrefPath(country_codes::kCountryIDAtInstall)) {
     // No search engines were ever installed, just return.
     return;
   }
-  int old_country_id = preferences->GetInteger(prefs::kCountryIDAtInstall);
-  int country_id = TemplateURLPrepopulateData::GetCurrentCountryID();
+  int old_country_id =
+      preferences->GetInteger(country_codes::kCountryIDAtInstall);
+  int country_id = country_codes::GetCurrentCountryID();
   if (country_id == old_country_id) {
     // User's locale did not change, just return.
     return;
   }
-  preferences->SetInteger(prefs::kCountryIDAtInstall, country_id);
+  preferences->SetInteger(country_codes::kCountryIDAtInstall, country_id);
   // If the current search engine is managed by policy then we can't set the
   // default search engine, which is required by UpdateSearchEngine(). This
   // isn't a problem as long as the default search engine is enforced via
@@ -112,6 +110,15 @@ void UpdateSearchEnginesIfNeeded(PrefService* preferences,
     UpdateSearchEngine(service);
   else
     new LoadedObserver(service);  // The observer manages its own lifetime.
+}
+
+bool SupportsSearchByImage(TemplateURLService* service) {
+  if (!service) {
+    return false;
+  }
+  const TemplateURL* default_url = service->GetDefaultSearchProvider();
+  return default_url && !default_url->image_url().empty() &&
+         default_url->image_url_ref().IsValid(service->search_terms_data());
 }
 
 }  // namespace search_engines

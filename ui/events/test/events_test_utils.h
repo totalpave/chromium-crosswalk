@@ -76,8 +76,10 @@ class EventTargetTestApi {
  public:
   explicit EventTargetTestApi(EventTarget* target);
 
-  const EventHandlerList& pre_target_handlers() {
-    return target_->pre_target_list_;
+  ui::EventHandlerList GetPreTargetHandlers() {
+    ui::EventHandlerList list;
+    target_->GetPreTargetHandlers(&list);
+    return list;
   }
 
  private:
@@ -92,7 +94,7 @@ class EventSourceTestApi {
  public:
   explicit EventSourceTestApi(EventSource* event_source);
 
-  EventDispatchDetails SendEventToProcessor(Event* event) WARN_UNUSED_RESULT;
+  EventDispatchDetails SendEventToSink(Event* event) WARN_UNUSED_RESULT;
 
  private:
   EventSourceTestApi();

@@ -30,11 +30,12 @@ void PolicyChangeRegistrar::OnPolicyUpdated(const PolicyNamespace& ns,
                                             const PolicyMap& current) {
   if (ns != ns_)
     return;
-  for (CallbackMap::iterator it = callback_map_.begin();
-       it != callback_map_.end(); ++it) {
+  for (auto it = callback_map_.begin(); it != callback_map_.end(); ++it) {
     const base::Value* prev = previous.GetValue(it->first);
     const base::Value* cur = current.GetValue(it->first);
-    if (!base::Value::Equals(prev, cur))
+
+    // Check if the values pointed to by |prev| and |cur| are different.
+    if ((!prev ^ !cur) || (prev && cur && *prev != *cur))
       it->second.Run(prev, cur);
   }
 }

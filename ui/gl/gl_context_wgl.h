@@ -23,13 +23,11 @@ class GL_EXPORT GLContextWGL : public GLContextReal {
 
   // Implement GLContext.
   bool Initialize(GLSurface* compatible_surface,
-                  GpuPreference gpu_preference) override;
+                  const GLContextAttribs& attribs) override;
   bool MakeCurrent(GLSurface* surface) override;
   void ReleaseCurrent(GLSurface* surface) override;
   bool IsCurrent(GLSurface* surface) override;
   void* GetHandle() override;
-  void OnSetSwapInterval(int interval) override;
-  std::string GetExtensions() override;
 
  private:
   ~GLContextWGL() override;

@@ -10,6 +10,8 @@
 #include "chrome/browser/profiles/profile_android.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "components/sessions/core/live_tab.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "content/public/browser/web_contents.h"
 #include "jni/RecentlyClosedBridge_jni.h"
@@ -17,47 +19,49 @@
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF16ToJavaString;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::ScopedJavaLocalRef;
+using base::android::JavaParamRef;
+using base::android::JavaRef;
+using base::android::ScopedJavaGlobalRef;
 
 namespace {
 
-void AddTabToList(JNIEnv* env,
-                  sessions::TabRestoreService::Entry* entry,
-                  jobject jtabs_list) {
-  const sessions::TabRestoreService::Tab* tab =
-      static_cast<sessions::TabRestoreService::Tab*>(entry);
+void JNI_RecentlyClosedBridge_AddTabToList(
+    JNIEnv* env,
+    const sessions::TabRestoreService::Tab& tab,
+    const JavaRef<jobject>& jtabs_list) {
   const sessions::SerializedNavigationEntry& current_navigation =
-      tab->navigations.at(tab->current_navigation_index);
+      tab.navigations.at(tab.current_navigation_index);
   Java_RecentlyClosedBridge_pushTab(
-      env, jtabs_list, entry->id,
-      ConvertUTF16ToJavaString(env, current_navigation.title()).obj(),
-      ConvertUTF8ToJavaString(env, current_navigation.virtual_url().spec())
-          .obj());
+      env, jtabs_list, tab.id.id(),
+      ConvertUTF16ToJavaString(env, current_navigation.title()),
+      ConvertUTF8ToJavaString(env, current_navigation.virtual_url().spec()));
 }
 
-void AddTabsToList(JNIEnv* env,
-                   const sessions::TabRestoreService::Entries& entries,
-                   jobject jtabs_list,
-                   int max_tab_count) {
+void JNI_RecentlyClosedBridge_AddTabsToList(
+    JNIEnv* env,
+    const sessions::TabRestoreService::Entries& entries,
+    const JavaRef<jobject>& jtabs_list,
+    int max_tab_count) {
   int added_count = 0;
-  for (sessions::TabRestoreService::Entries::const_iterator it =
-           entries.begin();
-       it != entries.end() && added_count < max_tab_count; ++it) {
-    sessions::TabRestoreService::Entry* entry = *it;
+  for (const auto& entry : entries) {
     DCHECK_EQ(entry->type, sessions::TabRestoreService::TAB);
     if (entry->type == sessions::TabRestoreService::TAB) {
-      AddTabToList(env, entry, jtabs_list);
-      ++added_count;
+      auto& tab = static_cast<const sessions::TabRestoreService::Tab&>(*entry);
+      JNI_RecentlyClosedBridge_AddTabToList(env, tab, jtabs_list);
+      if (++added_count == max_tab_count)
+        break;
     }
   }
 }
 
 }  // namespace
 
-RecentlyClosedTabsBridge::RecentlyClosedTabsBridge(Profile* profile)
-    : profile_(profile),
-      tab_restore_service_(NULL) {
-}
+RecentlyClosedTabsBridge::RecentlyClosedTabsBridge(
+    ScopedJavaGlobalRef<jobject> jbridge,
+    Profile* profile)
+    : bridge_(std::move(jbridge)),
+      profile_(profile),
+      tab_restore_service_(nullptr) {}
 
 RecentlyClosedTabsBridge::~RecentlyClosedTabsBridge() {
   if (tab_restore_service_)
@@ -69,13 +73,6 @@ void RecentlyClosedTabsBridge::Destroy(JNIEnv* env,
   delete this;
 }
 
-void RecentlyClosedTabsBridge::SetRecentlyClosedCallback(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& jcallback) {
-  callback_.Reset(env, jcallback);
-}
-
 jboolean RecentlyClosedTabsBridge::GetRecentlyClosedTabs(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj,
@@ -85,8 +82,8 @@ jboolean RecentlyClosedTabsBridge::GetRecentlyClosedTabs(
   if (!tab_restore_service_)
     return false;
 
-  AddTabsToList(env, tab_restore_service_->entries(), jtabs_list,
-                max_tab_count);
+  JNI_RecentlyClosedBridge_AddTabsToList(env, tab_restore_service_->entries(),
+                                         jtabs_list, max_tab_count);
   return true;
 }
 
@@ -102,7 +99,8 @@ jboolean RecentlyClosedTabsBridge::OpenRecentlyClosedTab(
   // Find and remove the corresponding tab entry from TabRestoreService.
   // We take ownership of the returned tab.
   std::unique_ptr<sessions::TabRestoreService::Tab> tab_entry(
-      tab_restore_service_->RemoveTabEntryById(recent_tab_id));
+      tab_restore_service_->RemoveTabEntryById(
+          SessionID::FromSerializedValue(recent_tab_id)));
   if (!tab_entry)
     return false;
 
@@ -126,6 +124,23 @@ jboolean RecentlyClosedTabsBridge::OpenRecentlyClosedTab(
   return true;
 }
 
+jboolean RecentlyClosedTabsBridge::OpenMostRecentlyClosedTab(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj) {
+  EnsureTabRestoreService();
+  if (!tab_restore_service_ || TabModelList::empty() ||
+      tab_restore_service_->entries().empty())
+    return false;
+
+  // Passing nullptr here because LiveTabContext will be determined later by
+  // a call to AndroidLiveTabContext::FindLiveTabContextWithID in
+  // ChromeTabRestoreServiceClient.
+  std::vector<sessions::LiveTab*> restored_tab =
+      tab_restore_service_->RestoreMostRecentEntry(nullptr);
+
+  return !restored_tab.empty();
+}
+
 void RecentlyClosedTabsBridge::ClearRecentlyClosedTabs(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj) {
@@ -136,10 +151,7 @@ void RecentlyClosedTabsBridge::ClearRecentlyClosedTabs(
 
 void RecentlyClosedTabsBridge::TabRestoreServiceChanged(
     sessions::TabRestoreService* service) {
-  if (callback_.is_null())
-    return;
-  JNIEnv* env = AttachCurrentThread();
-  Java_RecentlyClosedCallback_onUpdated(env, callback_.obj());
+  Java_RecentlyClosedBridge_onUpdated(AttachCurrentThread(), bridge_);
 }
 
 void RecentlyClosedTabsBridge::TabRestoreServiceDestroyed(
@@ -163,15 +175,12 @@ void RecentlyClosedTabsBridge::EnsureTabRestoreService() {
   }
 }
 
-static jlong Init(JNIEnv* env,
-                  const JavaParamRef<jobject>& obj,
-                  const JavaParamRef<jobject>& jprofile) {
+static jlong JNI_RecentlyClosedBridge_Init(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& jbridge,
+    const JavaParamRef<jobject>& jprofile) {
   RecentlyClosedTabsBridge* bridge = new RecentlyClosedTabsBridge(
+      ScopedJavaGlobalRef<jobject>(env, jbridge.obj()),
       ProfileAndroid::FromProfileAndroid(jprofile));
   return reinterpret_cast<intptr_t>(bridge);
-}
-
-// static
-bool RecentlyClosedTabsBridge::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }

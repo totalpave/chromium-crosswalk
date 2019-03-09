@@ -6,7 +6,7 @@
 
 #include "base/memory/ref_counted.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sessions/session_tab_helper.h"
+#include "chrome/common/buildflags.h"
 #include "components/sessions/content/content_serialized_navigation_builder.h"
 #include "components/sync_sessions/sync_sessions_client.h"
 #include "components/sync_sessions/synced_window_delegate.h"
@@ -15,19 +15,17 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/buildflags/buildflags.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/tab_helper.h"
-#include "extensions/common/extension.h"
 #endif
 
-#if defined(ENABLE_SUPERVISED_USERS)
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
 #include "chrome/browser/supervised_user/supervised_user_navigation_observer.h"
 #endif
 
 using content::NavigationEntry;
-
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(TabContentsSyncedTabDelegate);
 
 namespace {
 
@@ -43,32 +41,21 @@ NavigationEntry* GetPossiblyPendingEntryAtIndex(
 
 }  // namespace
 
-TabContentsSyncedTabDelegate::TabContentsSyncedTabDelegate(
-    content::WebContents* web_contents)
-    : web_contents_(web_contents), sync_session_id_(0) {}
+TabContentsSyncedTabDelegate::TabContentsSyncedTabDelegate()
+    : web_contents_(nullptr) {}
 
 TabContentsSyncedTabDelegate::~TabContentsSyncedTabDelegate() {}
-
-SessionID::id_type TabContentsSyncedTabDelegate::GetWindowId() const {
-  return SessionTabHelper::FromWebContents(web_contents_)->window_id().id();
-}
-
-SessionID::id_type TabContentsSyncedTabDelegate::GetSessionId() const {
-  return SessionTabHelper::FromWebContents(web_contents_)->session_id().id();
-}
 
 bool TabContentsSyncedTabDelegate::IsBeingDestroyed() const {
   return web_contents_->IsBeingDestroyed();
 }
 
 std::string TabContentsSyncedTabDelegate::GetExtensionAppId() const {
-#if defined(ENABLE_EXTENSIONS)
-  const scoped_refptr<const extensions::Extension> extension_app(
-      extensions::TabHelper::FromWebContents(web_contents_)->extension_app());
-  if (extension_app.get())
-    return extension_app->id();
-#endif
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  return extensions::TabHelper::FromWebContents(web_contents_)->GetAppId();
+#else
   return std::string();
+#endif
 }
 
 bool TabContentsSyncedTabDelegate::IsInitialBlankNavigation() const {
@@ -90,22 +77,33 @@ GURL TabContentsSyncedTabDelegate::GetVirtualURLAtIndex(int i) const {
 
 GURL TabContentsSyncedTabDelegate::GetFaviconURLAtIndex(int i) const {
   NavigationEntry* entry = GetPossiblyPendingEntryAtIndex(web_contents_, i);
-  return (entry->GetFavicon().valid ? entry->GetFavicon().url : GURL());
+  return entry ? (entry->GetFavicon().valid ? entry->GetFavicon().url : GURL())
+               : GURL();
 }
 
 ui::PageTransition TabContentsSyncedTabDelegate::GetTransitionAtIndex(
     int i) const {
   NavigationEntry* entry = GetPossiblyPendingEntryAtIndex(web_contents_, i);
-  return entry->GetTransitionType();
+  // If we don't have an entry, there's not a coherent PageTransition we can
+  // supply. There's no PageTransition::Unknown, so we just use the default,
+  // which is PageTransition::LINK.
+  return entry ? entry->GetTransitionType()
+               : ui::PageTransition::PAGE_TRANSITION_LINK;
 }
 
 void TabContentsSyncedTabDelegate::GetSerializedNavigationAtIndex(
     int i,
     sessions::SerializedNavigationEntry* serialized_entry) const {
   NavigationEntry* entry = GetPossiblyPendingEntryAtIndex(web_contents_, i);
-  *serialized_entry =
-      sessions::ContentSerializedNavigationBuilder::FromNavigationEntry(i,
-                                                                        *entry);
+  if (entry) {
+    // Explicitly exclude page state when serializing the navigation entry.
+    // Sync ignores the page state anyway (e.g. form data is not synced), and
+    // the page state can be expensive to serialize.
+    *serialized_entry =
+        sessions::ContentSerializedNavigationBuilder::FromNavigationEntry(
+            i, entry,
+            sessions::ContentSerializedNavigationBuilder::EXCLUDE_PAGE_STATE);
+  }
 }
 
 bool TabContentsSyncedTabDelegate::ProfileIsSupervised() const {
@@ -113,29 +111,17 @@ bool TabContentsSyncedTabDelegate::ProfileIsSupervised() const {
       ->IsSupervised();
 }
 
-const std::vector<const sessions::SerializedNavigationEntry*>*
+const std::vector<std::unique_ptr<const sessions::SerializedNavigationEntry>>*
 TabContentsSyncedTabDelegate::GetBlockedNavigations() const {
-#if defined(ENABLE_SUPERVISED_USERS)
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
   SupervisedUserNavigationObserver* navigation_observer =
       SupervisedUserNavigationObserver::FromWebContents(web_contents_);
   DCHECK(navigation_observer);
-  return navigation_observer->blocked_navigations();
+  return &navigation_observer->blocked_navigations();
 #else
   NOTREACHED();
-  return NULL;
+  return nullptr;
 #endif
-}
-
-bool TabContentsSyncedTabDelegate::IsPlaceholderTab() const {
-  return false;
-}
-
-int TabContentsSyncedTabDelegate::GetSyncId() const {
-  return sync_session_id_;
-}
-
-void TabContentsSyncedTabDelegate::SetSyncId(int sync_id) {
-  sync_session_id_ = sync_id;
 }
 
 bool TabContentsSyncedTabDelegate::ShouldSync(
@@ -145,7 +131,7 @@ bool TabContentsSyncedTabDelegate::ShouldSync(
     return false;
 
   // Is there a valid NavigationEntry?
-  if (ProfileIsSupervised() && GetBlockedNavigations()->size() > 0)
+  if (ProfileIsSupervised() && !GetBlockedNavigations()->empty())
     return true;
 
   if (IsInitialBlankNavigation())
@@ -161,4 +147,17 @@ bool TabContentsSyncedTabDelegate::ShouldSync(
       return true;
   }
   return false;
+}
+
+const content::WebContents* TabContentsSyncedTabDelegate::web_contents() const {
+  return web_contents_;
+}
+
+content::WebContents* TabContentsSyncedTabDelegate::web_contents() {
+  return web_contents_;
+}
+
+void TabContentsSyncedTabDelegate::SetWebContents(
+    content::WebContents* web_contents) {
+  web_contents_ = web_contents;
 }

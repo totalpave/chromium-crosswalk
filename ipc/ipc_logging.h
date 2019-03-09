@@ -5,19 +5,19 @@
 #ifndef IPC_IPC_LOGGING_H_
 #define IPC_IPC_LOGGING_H_
 
+#include "ipc/ipc_buildflags.h"
+
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
+
 #include <stdint.h>
-
-#include "ipc/ipc_message.h"  // For IPC_MESSAGE_LOG_ENABLED.
-
-#ifdef IPC_MESSAGE_LOG_ENABLED
-
+#include <unordered_map>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
+#include "base/component_export.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
 #include "base/single_thread_task_runner.h"
-#include "ipc/ipc_export.h"
+#include "ipc/ipc_message.h"
 
 // Logging function. |name| is a string in ASCII and |params| is a string in
 // UTF-8.
@@ -25,7 +25,7 @@ typedef void (*LogFunction)(std::string* name,
                             const IPC::Message* msg,
                             std::string* params);
 
-typedef base::hash_map<uint32_t, LogFunction > LogFunctionMap;
+typedef std::unordered_map<uint32_t, LogFunction> LogFunctionMap;
 
 namespace IPC {
 
@@ -35,7 +35,7 @@ class Sender;
 // One instance per process.  Needs to be created on the main thread (the UI
 // thread in the browser) but OnPreDispatchMessage/OnPostDispatchMessage
 // can be called on other threads.
-class IPC_EXPORT Logging {
+class COMPONENT_EXPORT(IPC) Logging {
  public:
   // Implemented by consumers of log messages.
   class Consumer {
@@ -67,10 +67,9 @@ class IPC_EXPORT Logging {
   // received.
   void OnReceivedLoggingMessage(const Message& message);
 
-  void OnSendMessage(Message* message, const std::string& channel_id);
+  void OnSendMessage(Message* message);
   void OnPreDispatchMessage(const Message& message);
-  void OnPostDispatchMessage(const Message& message,
-                             const std::string& channel_id);
+  void OnPostDispatchMessage(const Message& message);
 
   // Like the *MsgLog functions declared for each message class, except this
   // calls the correct one based on the message type automatically.  Defined in
@@ -124,6 +123,6 @@ class IPC_EXPORT Logging {
 
 }  // namespace IPC
 
-#endif // IPC_MESSAGE_LOG_ENABLED
+#endif  // BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
 
 #endif  // IPC_IPC_LOGGING_H_

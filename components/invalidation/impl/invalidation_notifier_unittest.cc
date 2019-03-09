@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/invalidation/impl/fake_invalidation_handler.h"
 #include "components/invalidation/impl/fake_invalidation_state_tracker.h"
@@ -37,7 +38,7 @@ class InvalidationNotifierTestDelegate {
       const std::string& initial_state,
       const base::WeakPtr<InvalidationStateTracker>&
           invalidation_state_tracker) {
-    DCHECK(!invalidator_.get());
+    DCHECK(!invalidator_);
     std::unique_ptr<notifier::PushClient> push_client(
         new notifier::FakePushClient());
     std::unique_ptr<SyncNetworkChannel> network_channel(
@@ -74,13 +75,13 @@ class InvalidationNotifierTestDelegate {
   }
 
  private:
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   std::unique_ptr<InvalidationNotifier> invalidator_;
 };
 
-INSTANTIATE_TYPED_TEST_CASE_P(
-    InvalidationNotifierTest, InvalidatorTest,
-    InvalidationNotifierTestDelegate);
+INSTANTIATE_TYPED_TEST_SUITE_P(InvalidationNotifierTest,
+                               InvalidatorTest,
+                               InvalidationNotifierTestDelegate);
 
 }  // namespace
 

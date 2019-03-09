@@ -7,10 +7,7 @@
 #include <utility>
 
 #include "base/json/json_writer.h"
-#include "base/memory/linked_ptr.h"
 #include "base/values.h"
-
-using content::BrowserThread;
 
 namespace {
 
@@ -57,13 +54,13 @@ testing::AssertionResult SettingsEq(
     const char* _1, const char* _2,
     const base::DictionaryValue& expected,
     ValueStore::ReadResult actual_result) {
-  if (!actual_result->status().ok()) {
-    return testing::AssertionFailure() << "Result has error: "
-                                       << actual_result->status().message;
+  if (!actual_result.status().ok()) {
+    return testing::AssertionFailure()
+           << "Result has error: " << actual_result.status().message;
   }
 
   std::string error;
-  if (!ValuesEqual(&expected, &actual_result->settings(), &error)) {
+  if (!ValuesEqual(&expected, &actual_result.settings(), &error)) {
     return testing::AssertionFailure() << error;
   }
 
@@ -76,29 +73,25 @@ testing::AssertionResult ChangesEq(
     const char* _1, const char* _2,
     const ValueStoreChangeList& expected,
     ValueStore::WriteResult actual_result) {
-  if (!actual_result->status().ok()) {
-    return testing::AssertionFailure() << "Result has error: "
-                                       << actual_result->status().message;
+  if (!actual_result.status().ok()) {
+    return testing::AssertionFailure()
+           << "Result has error: " << actual_result.status().message;
   }
 
-  const ValueStoreChangeList& actual = actual_result->changes();
+  const ValueStoreChangeList& actual = actual_result.changes();
   if (expected.size() != actual.size()) {
     return testing::AssertionFailure() <<
         "Actual has wrong size, expecting " << expected.size() <<
         " but was " << actual.size();
   }
 
-  std::map<std::string, linked_ptr<ValueStoreChange> > expected_as_map;
-  for (ValueStoreChangeList::const_iterator it = expected.begin();
-      it != expected.end(); ++it) {
-    expected_as_map[it->key()] =
-        linked_ptr<ValueStoreChange>(new ValueStoreChange(*it));
-  }
+  std::map<std::string, std::unique_ptr<ValueStoreChange>> expected_as_map;
+  for (const ValueStoreChange& change : expected)
+    expected_as_map[change.key()] = std::make_unique<ValueStoreChange>(change);
 
   std::set<std::string> keys_seen;
 
-  for (ValueStoreChangeList::const_iterator it = actual.begin();
-      it != actual.end(); ++it) {
+  for (auto it = actual.cbegin(); it != actual.cend(); ++it) {
     if (keys_seen.count(it->key())) {
       return testing::AssertionFailure() <<
           "Multiple changes seen for key: " << it->key();
@@ -133,12 +126,10 @@ ValueStoreTest::ValueStoreTest()
       dict1_(new base::DictionaryValue()),
       dict3_(new base::DictionaryValue()),
       dict12_(new base::DictionaryValue()),
-      dict123_(new base::DictionaryValue()),
-      ui_thread_(BrowserThread::UI, base::MessageLoop::current()),
-      file_thread_(BrowserThread::FILE, base::MessageLoop::current()) {
-  val1_.reset(new base::StringValue(key1_ + "Value"));
-  val2_.reset(new base::StringValue(key2_ + "Value"));
-  val3_.reset(new base::StringValue(key3_ + "Value"));
+      dict123_(new base::DictionaryValue()) {
+  val1_.reset(new base::Value(key1_ + "Value"));
+  val2_.reset(new base::Value(key2_ + "Value"));
+  val3_.reset(new base::Value(key3_ + "Value"));
 
   list1_.push_back(key1_);
   list2_.push_back(key2_);
@@ -171,7 +162,7 @@ ValueStoreTest::~ValueStoreTest() {}
 
 void ValueStoreTest::SetUp() {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-  storage_.reset((GetParam())(temp_dir_.path().AppendASCII("dbName")));
+  storage_.reset((GetParam())(temp_dir_.GetPath().AppendASCII("dbName")));
   ASSERT_TRUE(storage_.get());
 }
 
@@ -333,7 +324,7 @@ TEST_P(ValueStoreTest, ClearWhenNotEmpty) {
 // indexing into a dictionary.
 TEST_P(ValueStoreTest, DotsInKeyNames) {
   std::string dot_key("foo.bar");
-  base::StringValue dot_value("baz.qux");
+  base::Value dot_value("baz.qux");
   std::vector<std::string> dot_list;
   dot_list.push_back(dot_key);
   base::DictionaryValue dot_dict;

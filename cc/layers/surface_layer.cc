@@ -9,113 +9,157 @@
 #include "base/macros.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/layers/surface_layer_impl.h"
-#include "cc/output/swap_promise.h"
 #include "cc/trees/layer_tree_host.h"
 
 namespace cc {
 
-class SatisfySwapPromise : public SwapPromise {
- public:
-  SatisfySwapPromise(SurfaceSequence sequence,
-                     const SurfaceLayer::SatisfyCallback& satisfy_callback)
-      : sequence_(sequence), satisfy_callback_(satisfy_callback) {}
-
-  ~SatisfySwapPromise() override {}
-
- private:
-  void DidActivate() override {}
-  void DidSwap(CompositorFrameMetadata* metadata) override {
-    metadata->satisfies_sequences.push_back(sequence_.sequence);
-  }
-
-  void DidNotSwap(DidNotSwapReason reason) override {
-    satisfy_callback_.Run(sequence_);
-  }
-  int64_t TraceId() const override { return 0; }
-
-  SurfaceSequence sequence_;
-  SurfaceLayer::SatisfyCallback satisfy_callback_;
-
-  DISALLOW_COPY_AND_ASSIGN(SatisfySwapPromise);
-};
-
-scoped_refptr<SurfaceLayer> SurfaceLayer::Create(
-    const SatisfyCallback& satisfy_callback,
-    const RequireCallback& require_callback) {
-  return make_scoped_refptr(
-      new SurfaceLayer(satisfy_callback, require_callback));
+scoped_refptr<SurfaceLayer> SurfaceLayer::Create() {
+  return base::WrapRefCounted(new SurfaceLayer());
 }
 
-SurfaceLayer::SurfaceLayer(const SatisfyCallback& satisfy_callback,
-                           const RequireCallback& require_callback)
-    : surface_scale_(1.f),
-      satisfy_callback_(satisfy_callback),
-      require_callback_(require_callback) {}
+scoped_refptr<SurfaceLayer> SurfaceLayer::Create(
+    UpdateSubmissionStateCB update_submission_state_callback) {
+  return base::WrapRefCounted(
+      new SurfaceLayer(std::move(update_submission_state_callback)));
+}
+
+SurfaceLayer::SurfaceLayer() = default;
+
+SurfaceLayer::SurfaceLayer(
+    UpdateSubmissionStateCB update_submission_state_callback)
+    : update_submission_state_callback_(
+          std::move(update_submission_state_callback)) {}
 
 SurfaceLayer::~SurfaceLayer() {
   DCHECK(!layer_tree_host());
-  DCHECK(destroy_sequence_.is_null());
 }
 
-void SurfaceLayer::SetSurfaceId(SurfaceId surface_id,
-                                float scale,
-                                const gfx::Size& size) {
-  SatisfyDestroySequence();
-  surface_id_ = surface_id;
-  surface_size_ = size;
-  surface_scale_ = scale;
-  CreateNewDestroySequence();
+void SurfaceLayer::SetSurfaceId(const viz::SurfaceId& surface_id,
+                                const DeadlinePolicy& deadline_policy) {
+  if (surface_range_.end() == surface_id &&
+      deadline_policy.use_existing_deadline()) {
+    return;
+  }
+  if (surface_id.local_surface_id().is_valid()) {
+    TRACE_EVENT_WITH_FLOW2(
+        TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+        "LocalSurfaceId.Embed.Flow",
+        TRACE_ID_GLOBAL(surface_id.local_surface_id().embed_trace_id()),
+        TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT, "step",
+        "SetSurfaceId", "surface_id", surface_id.ToString());
+  }
 
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->RemoveSurfaceRange(surface_range_);
+
+  surface_range_ = viz::SurfaceRange(surface_range_.start(), surface_id);
+
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->AddSurfaceRange(surface_range_);
+
+  // We should never block or set a deadline on an invalid
+  // |surface_range_|.
+  if (!surface_range_.IsValid()) {
+    deadline_in_frames_ = 0u;
+  } else if (!deadline_policy.use_existing_deadline()) {
+    deadline_in_frames_ = deadline_policy.deadline_in_frames();
+  }
   UpdateDrawsContent(HasDrawableContent());
+  SetNeedsCommit();
+}
+
+void SurfaceLayer::SetOldestAcceptableFallback(
+    const viz::SurfaceId& surface_id) {
+  // The fallback should never move backwards.
+  DCHECK(!surface_range_.start() ||
+         !surface_range_.start()->IsNewerThan(surface_id));
+  if (surface_range_.start() == surface_id)
+    return;
+  TRACE_EVENT_WITH_FLOW2(
+      TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+      "LocalSurfaceId.Submission.Flow",
+      TRACE_ID_GLOBAL(surface_id.local_surface_id().submission_trace_id()),
+      TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT, "step",
+      "SetOldestAcceptableFallback", "surface_id", surface_id.ToString());
+
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->RemoveSurfaceRange(surface_range_);
+
+  surface_range_ = viz::SurfaceRange(
+      surface_id.is_valid() ? base::Optional<viz::SurfaceId>(surface_id)
+                            : base::nullopt,
+      surface_range_.end());
+
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->AddSurfaceRange(surface_range_);
+
+  SetNeedsCommit();
+}
+
+void SurfaceLayer::SetStretchContentToFillBounds(
+    bool stretch_content_to_fill_bounds) {
+  if (stretch_content_to_fill_bounds_ == stretch_content_to_fill_bounds)
+    return;
+  stretch_content_to_fill_bounds_ = stretch_content_to_fill_bounds;
   SetNeedsPushProperties();
+}
+
+void SurfaceLayer::SetSurfaceHitTestable(bool surface_hit_testable) {
+  if (surface_hit_testable_ == surface_hit_testable)
+    return;
+  surface_hit_testable_ = surface_hit_testable;
+}
+
+void SurfaceLayer::SetHasPointerEventsNone(bool has_pointer_events_none) {
+  if (has_pointer_events_none_ == has_pointer_events_none)
+    return;
+  has_pointer_events_none_ = has_pointer_events_none;
+  SetNeedsPushProperties();
+  // Change of pointer-events property triggers an update of viz hit test data,
+  // we need to commit in order to submit the new data with compositor frame.
+  SetNeedsCommit();
+}
+
+void SurfaceLayer::SetMayContainVideo(bool may_contain_video) {
+  may_contain_video_ = may_contain_video;
 }
 
 std::unique_ptr<LayerImpl> SurfaceLayer::CreateLayerImpl(
     LayerTreeImpl* tree_impl) {
-  return SurfaceLayerImpl::Create(tree_impl, id());
+  auto layer_impl = SurfaceLayerImpl::Create(tree_impl, id(),
+                                             update_submission_state_callback_);
+  layer_impl->set_may_contain_video(may_contain_video_);
+  return layer_impl;
 }
 
 bool SurfaceLayer::HasDrawableContent() const {
-  return !surface_id_.is_null() && Layer::HasDrawableContent();
+  return surface_range_.IsValid() && Layer::HasDrawableContent();
 }
 
 void SurfaceLayer::SetLayerTreeHost(LayerTreeHost* host) {
   if (layer_tree_host() == host) {
-    Layer::SetLayerTreeHost(host);
     return;
   }
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->RemoveSurfaceRange(surface_range_);
 
-  SatisfyDestroySequence();
   Layer::SetLayerTreeHost(host);
-  CreateNewDestroySequence();
+
+  if (layer_tree_host() && surface_range_.IsValid())
+    layer_tree_host()->AddSurfaceRange(surface_range_);
 }
 
 void SurfaceLayer::PushPropertiesTo(LayerImpl* layer) {
   Layer::PushPropertiesTo(layer);
   TRACE_EVENT0("cc", "SurfaceLayer::PushPropertiesTo");
   SurfaceLayerImpl* layer_impl = static_cast<SurfaceLayerImpl*>(layer);
-
-  layer_impl->SetSurfaceId(surface_id_);
-  layer_impl->SetSurfaceSize(surface_size_);
-  layer_impl->SetSurfaceScale(surface_scale_);
-}
-
-void SurfaceLayer::CreateNewDestroySequence() {
-  DCHECK(destroy_sequence_.is_null());
-  if (layer_tree_host()) {
-    destroy_sequence_ = layer_tree_host()->CreateSurfaceSequence();
-    require_callback_.Run(surface_id_, destroy_sequence_);
-  }
-}
-
-void SurfaceLayer::SatisfyDestroySequence() {
-  if (!layer_tree_host())
-    return;
-  DCHECK(!destroy_sequence_.is_null());
-  std::unique_ptr<SatisfySwapPromise> satisfy(
-      new SatisfySwapPromise(destroy_sequence_, satisfy_callback_));
-  layer_tree_host()->QueueSwapPromise(std::move(satisfy));
-  destroy_sequence_ = SurfaceSequence();
+  layer_impl->SetRange(surface_range_, std::move(deadline_in_frames_));
+  // Unless the client explicitly calls SetSurfaceId again after this
+  // commit, don't block on |surface_range_| again.
+  deadline_in_frames_ = 0u;
+  layer_impl->SetStretchContentToFillBounds(stretch_content_to_fill_bounds_);
+  layer_impl->SetSurfaceHitTestable(surface_hit_testable_);
+  layer_impl->SetHasPointerEventsNone(has_pointer_events_none_);
 }
 
 }  // namespace cc

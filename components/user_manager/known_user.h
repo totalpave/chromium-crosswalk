@@ -11,12 +11,11 @@
 #include "components/user_manager/user_manager_export.h"
 
 class AccountId;
+enum class AccountType;
 class PrefRegistrySimple;
 
 namespace base {
 class DictionaryValue;
-class ListValue;
-class TaskRunner;
 }
 
 namespace user_manager {
@@ -76,7 +75,8 @@ std::vector<AccountId> USER_MANAGER_EXPORT GetKnownAccountIds();
 // gaia_id.
 // This is a temporary call while migrating to AccountId.
 AccountId USER_MANAGER_EXPORT GetAccountId(const std::string& user_email,
-                                           const std::string& gaia_id);
+                                           const std::string& id,
+                                           const AccountType& account_type);
 
 // Returns true if |subsystem| data was migrated to GaiaId for the |account_id|.
 bool USER_MANAGER_EXPORT GetGaiaIdMigrationStatus(const AccountId& account_id,
@@ -87,11 +87,24 @@ void USER_MANAGER_EXPORT
 SetGaiaIdMigrationStatusDone(const AccountId& account_id,
                              const std::string& subsystem);
 
+// Marks if user is ephemeral and should be removed on log out.
+void SetIsEphemeralUser(const AccountId& account_id, bool is_ephemeral);
+
+// Saves |account_id| into known users. Tries to commit the change on disk. Use
+// only if account_id is not yet in the known user list. Important if Chrome
+// crashes shortly after starting a session. Cryptohome should be able to find
+// known account_id on Chrome restart.
+void USER_MANAGER_EXPORT SaveKnownUser(const AccountId& account_id);
+
 // Updates |gaia_id| for user with |account_id|.
 // TODO(alemate): Update this once AccountId contains GAIA ID
 // (crbug.com/548926).
 void USER_MANAGER_EXPORT UpdateGaiaID(const AccountId& account_id,
                                       const std::string& gaia_id);
+
+// Updates |account_id.account_type_| and |account_id.GetGaiaId()| or
+// |account_id.GetObjGuid()| for user with |account_id|.
+void USER_MANAGER_EXPORT UpdateId(const AccountId& account_id);
 
 // Find GAIA ID for user with |account_id|, fill in |out_value| and return
 // true
@@ -123,6 +136,26 @@ void USER_MANAGER_EXPORT UpdateUsingSAML(const AccountId& account_id,
 // returns false.
 bool USER_MANAGER_EXPORT IsUsingSAML(const AccountId& account_id);
 
+// Enum describing whether a user's profile requires policy. If kPolicyRequired,
+// the profile initialization code will ensure that valid policy is loaded
+// before session initialization completes.
+enum class ProfileRequiresPolicy {
+  kUnknown,
+  kPolicyRequired,
+  kNoPolicyRequired
+};
+
+// Returns whether the current profile requires policy or not (returns UNKNOWN
+// if the profile has never been initialized and so the policy status is
+// not yet known).
+ProfileRequiresPolicy USER_MANAGER_EXPORT
+GetProfileRequiresPolicy(const AccountId& account_id);
+
+// Sets whether the profile requires policy or not.
+void USER_MANAGER_EXPORT
+SetProfileRequiresPolicy(const AccountId& account_id,
+                         ProfileRequiresPolicy policy_required);
+
 // Saves why the user has to go through re-auth flow.
 void USER_MANAGER_EXPORT UpdateReauthReason(const AccountId& account_id,
                                             const int reauth_reason);
@@ -133,9 +166,21 @@ void USER_MANAGER_EXPORT UpdateReauthReason(const AccountId& account_id,
 bool USER_MANAGER_EXPORT FindReauthReason(const AccountId& account_id,
                                           int* out_value);
 
+// Saves that a minimal migration was attempted for this user's cryptohome.
+void USER_MANAGER_EXPORT
+SetUserHomeMinimalMigrationAttempted(const AccountId& account_id,
+                                     bool minimal_migration_attempted);
+
+// Returns true if minimal migration was attempted for this user's cryptohome.
+bool USER_MANAGER_EXPORT
+WasUserHomeMinimalMigrationAttempted(const AccountId& account_id);
+
 // Removes all user preferences associated with |account_id|.
-// (This one used by user_manager only and thus not exported.)
+// Not exported as code should not be calling this outside this component
 void RemovePrefs(const AccountId& account_id);
+
+// Removes all ephemeral users.
+void CleanEphemeralUsers();
 
 // Register known user prefs.
 void USER_MANAGER_EXPORT RegisterPrefs(PrefRegistrySimple* registry);

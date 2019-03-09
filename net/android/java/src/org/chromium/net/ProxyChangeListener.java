@@ -11,12 +11,17 @@ import android.content.IntentFilter;
 import android.net.Proxy;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.Log;
 
+import org.chromium.base.BuildConfig;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.base.annotations.NativeClassQualifiedName;
+import org.chromium.base.annotations.UsedByReflection;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -24,14 +29,21 @@ import java.lang.reflect.Method;
 /**
  * This class partners with native ProxyConfigServiceAndroid to listen for
  * proxy change notifications from Android.
+ *
+ * Unfortunately this is called directly via reflection in a number of WebView applications
+ * to provide a hacky way to set per-application proxy settings, so it must not be mangled by
+ * Proguard.
  */
+@UsedByReflection("WebView embedders call this to override proxy settings")
 @JNINamespace("net")
 public class ProxyChangeListener {
     private static final String TAG = "ProxyChangeListener";
     private static boolean sEnabled = true;
 
+    private final Looper mLooper;
+    private final Handler mHandler;
+
     private long mNativePtr;
-    private Context mContext;
     private ProxyReceiver mProxyReceiver;
     private Delegate mDelegate;
 
@@ -55,8 +67,9 @@ public class ProxyChangeListener {
         public void proxySettingsChanged();
     }
 
-    private ProxyChangeListener(Context context) {
-        mContext = context;
+    private ProxyChangeListener() {
+        mLooper = Looper.myLooper();
+        mHandler = new Handler(mLooper);
     }
 
     public static void setEnabled(boolean enabled) {
@@ -68,8 +81,8 @@ public class ProxyChangeListener {
     }
 
     @CalledByNative
-    public static ProxyChangeListener create(Context context) {
-        return new ProxyChangeListener(context);
+    public static ProxyChangeListener create() {
+        return new ProxyChangeListener();
     }
 
     @CalledByNative
@@ -79,6 +92,7 @@ public class ProxyChangeListener {
 
     @CalledByNative
     public void start(long nativePtr) {
+        assertOnThread();
         assert mNativePtr == 0;
         mNativePtr = nativePtr;
         registerReceiver();
@@ -86,15 +100,23 @@ public class ProxyChangeListener {
 
     @CalledByNative
     public void stop() {
+        assertOnThread();
         mNativePtr = 0;
         unregisterReceiver();
     }
 
+    @UsedByReflection("WebView embedders call this to override proxy settings")
     private class ProxyReceiver extends BroadcastReceiver {
         @Override
-        public void onReceive(Context context, Intent intent) {
+        @UsedByReflection("WebView embedders call this to override proxy settings")
+        public void onReceive(Context context, final Intent intent) {
             if (intent.getAction().equals(Proxy.PROXY_CHANGE_ACTION)) {
-                proxySettingsChanged(extractNewProxy(intent));
+                runOnThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        proxySettingsChanged(ProxyReceiver.this, extractNewProxy(intent));
+                    }
+                });
             }
         }
 
@@ -175,8 +197,12 @@ public class ProxyChangeListener {
         }
     }
 
-    private void proxySettingsChanged(ProxyConfig cfg) {
-        if (!sEnabled) {
+    private void proxySettingsChanged(ProxyReceiver proxyReceiver, ProxyConfig cfg) {
+        if (!sEnabled
+                // Once execution begins on the correct thread, make sure unregisterReceiver()
+                // hasn't been called in the mean time. Ignore the changed signal if
+                // unregisterReceiver() was called.
+                || proxyReceiver != mProxyReceiver) {
             return;
         }
         if (mDelegate != null) {
@@ -202,19 +228,37 @@ public class ProxyChangeListener {
         IntentFilter filter = new IntentFilter();
         filter.addAction(Proxy.PROXY_CHANGE_ACTION);
         mProxyReceiver = new ProxyReceiver();
-        mContext.getApplicationContext().registerReceiver(mProxyReceiver, filter);
+        ContextUtils.getApplicationContext().registerReceiver(mProxyReceiver, filter);
     }
 
     private void unregisterReceiver() {
         if (mProxyReceiver == null) {
             return;
         }
-        mContext.unregisterReceiver(mProxyReceiver);
+        ContextUtils.getApplicationContext().unregisterReceiver(mProxyReceiver);
         mProxyReceiver = null;
     }
 
+    private boolean onThread() {
+        return mLooper == Looper.myLooper();
+    }
+
+    private void assertOnThread() {
+        if (BuildConfig.DCHECK_IS_ON && !onThread()) {
+            throw new IllegalStateException("Must be called on ProxyChangeListener thread.");
+        }
+    }
+
+    private void runOnThread(Runnable r) {
+        if (onThread()) {
+            r.run();
+        } else {
+            mHandler.post(r);
+        }
+    }
+
     /**
-     * See net/proxy/proxy_config_service_android.cc
+     * See net/proxy_resolution/proxy_config_service_android.cc
      */
     @NativeClassQualifiedName("ProxyConfigServiceAndroid::JNIDelegate")
     private native void nativeProxySettingsChangedTo(long nativePtr,

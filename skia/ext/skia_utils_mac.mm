@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "base/logging.h"
+#include "base/mac/mac_util.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/mac/scoped_nsobject.h"
 #include "skia/ext/platform_canvas.h"
@@ -125,8 +126,10 @@ CGRect SkRectToCGRect(const SkRect& rect) {
   return cg_rect;
 }
 
-// Converts CGColorRef to the ARGB layout Skia expects.
 SkColor CGColorRefToSkColor(CGColorRef color) {
+  // TODO(ccameron): This assumes that |color| is already in sRGB. Ideally we'd
+  // use something like CGColorCreateCopyByMatchingToColorSpace, but that's
+  // only available in macOS 10.11.
   DCHECK(CGColorGetNumberOfComponents(color) == 4);
   const CGFloat* components = CGColorGetComponents(color);
   return SkColorSetARGB(SkScalarRoundToInt(255.0 * components[3]), // alpha
@@ -135,12 +138,12 @@ SkColor CGColorRefToSkColor(CGColorRef color) {
                         SkScalarRoundToInt(255.0 * components[2])); // blue
 }
 
-// Converts ARGB to CGColorRef.
 CGColorRef CGColorCreateFromSkColor(SkColor color) {
-  return CGColorCreateGenericRGB(SkColorGetR(color) / 255.0,
-                                 SkColorGetG(color) / 255.0,
-                                 SkColorGetB(color) / 255.0,
-                                 SkColorGetA(color) / 255.0);
+  double components[] = {SkColorGetR(color) / 255.0,
+                         SkColorGetG(color) / 255.0,
+                         SkColorGetB(color) / 255.0,
+                         SkColorGetA(color) / 255.0};
+  return CGColorCreate(base::mac::GetSRGBColorSpace(), components);
 }
 
 // Converts NSColor to ARGB
@@ -184,31 +187,10 @@ NSColor* SkColorToSRGBNSColor(SkColor color) {
 }
 
 SkBitmap CGImageToSkBitmap(CGImageRef image) {
-  if (!image)
-    return SkBitmap();
-
-  int width = CGImageGetWidth(image);
-  int height = CGImageGetHeight(image);
-
-  sk_sp<SkCanvas> canvas(skia::CreatePlatformCanvas(
-      nullptr, width, height, false, RETURN_NULL_ON_FAILURE));
-  ScopedPlatformPaint p(canvas.get());
-  CGContextRef context = p.GetPlatformSurface();
-
-  // We need to invert the y-axis of the canvas so that Core Graphics drawing
-  // happens right-side up. Skia has an upper-left origin and CG has a lower-
-  // left one.
-  CGContextScaleCTM(context, 1.0, -1.0);
-  CGContextTranslateCTM(context, 0, -height);
-
-  // We want to copy transparent pixels from |image|, instead of blending it
-  // onto uninitialized pixels.
-  CGContextSetBlendMode(context, kCGBlendModeCopy);
-
-  CGRect rect = CGRectMake(0, 0, width, height);
-  CGContextDrawImage(context, rect, image);
-
-  return skia::ReadPixels(canvas.get());
+  SkBitmap bitmap;
+  if (image && SkCreateBitmapFromCGImage(&bitmap, image))
+    return bitmap;
+  return SkBitmap();
 }
 
 SkBitmap NSImageToSkBitmapWithColorSpace(
@@ -237,6 +219,8 @@ NSBitmapImageRep* SkBitmapToNSBitmapImageRepWithColorSpace(
   // First convert SkBitmap to CGImageRef.
   base::ScopedCFTypeRef<CGImageRef> cgimage(
       SkCreateCGImageRefWithColorspace(skiaBitmap, colorSpace));
+  if (!cgimage)
+    return nil;
 
   // Now convert to NSBitmapImageRep.
   base::scoped_nsobject<NSBitmapImageRep> bitmap(
@@ -250,8 +234,11 @@ NSImage* SkBitmapToNSImageWithColorSpace(const SkBitmap& skiaBitmap,
     return nil;
 
   base::scoped_nsobject<NSImage> image([[NSImage alloc] init]);
-  [image addRepresentation:
-      SkBitmapToNSBitmapImageRepWithColorSpace(skiaBitmap, colorSpace)];
+  NSBitmapImageRep* imageRep =
+      SkBitmapToNSBitmapImageRepWithColorSpace(skiaBitmap, colorSpace);
+  if (!imageRep)
+    return nil;
+  [image addRepresentation:imageRep];
   [image setSize:NSMakeSize(skiaBitmap.width(), skiaBitmap.height())];
   return [image.release() autorelease];
 }
@@ -260,128 +247,6 @@ NSImage* SkBitmapToNSImage(const SkBitmap& skiaBitmap) {
   base::ScopedCFTypeRef<CGColorSpaceRef> colorSpace(
       CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB));
   return SkBitmapToNSImageWithColorSpace(skiaBitmap, colorSpace.get());
-}
-
-SkiaBitLocker::SkiaBitLocker(SkCanvas* canvas,
-                             const SkIRect& userClipRect,
-                             SkScalar bitmapScaleFactor)
-    : canvas_(canvas),
-      cgContext_(0),
-      bitmapScaleFactor_(bitmapScaleFactor),
-      useDeviceBits_(false),
-      bitmapIsDummy_(false) {
-  canvas_->save();
-  canvas_->clipRect(SkRect::MakeFromIRect(userClipRect));
-}
-
-SkiaBitLocker::~SkiaBitLocker() {
-  releaseIfNeeded();
-  canvas_->restore();
-}
-
-SkIRect SkiaBitLocker::computeDirtyRect() {
-  // If the user specified a clip region, assume that it was tight and that the
-  // dirty rect is approximately the whole bitmap.
-  return SkIRect::MakeWH(offscreen_.width(), offscreen_.height());
-}
-
-// This must be called to balance calls to cgContext
-void SkiaBitLocker::releaseIfNeeded() {
-  if (!cgContext_)
-    return;
-  if (!useDeviceBits_ && !bitmapIsDummy_) {
-    // Find the bits that were drawn to.
-    SkIRect bounds = computeDirtyRect();
-    SkBitmap subset;
-    if (!offscreen_.extractSubset(&subset, bounds)) {
-        return;
-    }
-    subset.setImmutable();  // Prevents a defensive copy inside Skia.
-    canvas_->save();
-    canvas_->setMatrix(SkMatrix::I());  // Reset back to device space.
-    canvas_->translate(bounds.x() + bitmapOffset_.x(),
-                       bounds.y() + bitmapOffset_.y());
-    canvas_->scale(1.f / bitmapScaleFactor_, 1.f / bitmapScaleFactor_);
-    canvas_->drawBitmap(subset, 0, 0);
-    canvas_->restore();
-  }
-  CGContextRelease(cgContext_);
-  cgContext_ = 0;
-  useDeviceBits_ = false;
-  bitmapIsDummy_ = false;
-}
-
-CGContextRef SkiaBitLocker::cgContext() {
-  releaseIfNeeded(); // This flushes any prior bitmap use
-
-  SkIRect clip_bounds;
-  if (!canvas_->getClipDeviceBounds(&clip_bounds)) {
-    // If the clip is empty, then there is nothing to draw. The caller may
-    // attempt to draw (to-be-clipped) results, so ensure there is a dummy
-    // non-NULL CGContext to use.
-    bitmapIsDummy_ = true;
-    clip_bounds = SkIRect::MakeXYWH(0, 0, 1, 1);
-  }
-
-  // remember the top/left, in case we need to compose this later
-  bitmapOffset_.set(clip_bounds.x(), clip_bounds.y());
-
-  // Now make clip_bounds be relative to the current layer/device
-  if (!bitmapIsDummy_) {
-    canvas_->temporary_internal_describeTopLayer(nullptr, &clip_bounds);
-  }
-
-  SkPixmap devicePixels;
-  skia::GetWritablePixels(canvas_, &devicePixels);
-
-  // Only draw directly if we have pixels, and we're only rect-clipped.
-  // If not, we allocate an offscreen and draw into that, relying on the
-  // compositing step to apply skia's clip.
-  useDeviceBits_ = devicePixels.addr() &&
-                   canvas_->isClipRect() &&
-                   !bitmapIsDummy_;
-  base::ScopedCFTypeRef<CGColorSpaceRef> colorSpace(
-      CGColorSpaceCreateDeviceRGB());
-
-  int displayHeight;
-  if (useDeviceBits_) {
-    SkPixmap subset;
-    bool result = devicePixels.extractSubset(&subset, clip_bounds);
-    DCHECK(result);
-    if (!result)
-      return 0;
-    displayHeight = subset.height();
-    cgContext_ = CGBitmapContextCreate(subset.writable_addr(), subset.width(),
-      subset.height(), 8, subset.rowBytes(), colorSpace, 
-      kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst);
-  } else {
-    bool result = offscreen_.tryAllocN32Pixels(
-        SkScalarCeilToInt(bitmapScaleFactor_ * clip_bounds.width()),
-        SkScalarCeilToInt(bitmapScaleFactor_ * clip_bounds.height()));
-    DCHECK(result);
-    if (!result)
-      return 0;
-    offscreen_.eraseColor(0);
-    displayHeight = offscreen_.height();
-    cgContext_ = CGBitmapContextCreate(offscreen_.getPixels(),
-      offscreen_.width(), offscreen_.height(), 8, offscreen_.rowBytes(),
-      colorSpace, kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst);
-  }
-  DCHECK(cgContext_);
-
-  SkMatrix matrix = canvas_->getTotalMatrix();
-  matrix.postTranslate(-SkIntToScalar(bitmapOffset_.x()),
-                       -SkIntToScalar(bitmapOffset_.y()));
-  matrix.postScale(bitmapScaleFactor_, -bitmapScaleFactor_);
-  matrix.postTranslate(0, SkIntToScalar(displayHeight));
-
-  CGContextConcatCTM(cgContext_, SkMatrixToCGAffineTransform(matrix));
-  
-  return cgContext_;
-}
-
-bool SkiaBitLocker::hasEmptyClipRegion() const {
-  return canvas_->isClipEmpty();
 }
 
 }  // namespace skia

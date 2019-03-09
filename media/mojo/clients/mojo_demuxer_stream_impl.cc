@@ -24,98 +24,90 @@ MojoDemuxerStreamImpl::MojoDemuxerStreamImpl(
       stream_(stream),
       weak_factory_(this) {}
 
-MojoDemuxerStreamImpl::~MojoDemuxerStreamImpl() {}
+MojoDemuxerStreamImpl::~MojoDemuxerStreamImpl() = default;
 
 // This is called when our DemuxerStreamClient has connected itself and is
 // ready to receive messages.  Send an initial config and notify it that
 // we are now ready for business.
-void MojoDemuxerStreamImpl::Initialize(const InitializeCallback& callback) {
-  DVLOG(2) << __FUNCTION__;
+void MojoDemuxerStreamImpl::Initialize(InitializeCallback callback) {
+  DVLOG(2) << __func__;
 
   // Prepare the initial config.
-  mojom::AudioDecoderConfigPtr audio_config;
-  mojom::VideoDecoderConfigPtr video_config;
-  if (stream_->type() == media::DemuxerStream::AUDIO) {
-    audio_config =
-        mojom::AudioDecoderConfig::From(stream_->audio_decoder_config());
-  } else if (stream_->type() == media::DemuxerStream::VIDEO) {
-    video_config =
-        mojom::VideoDecoderConfig::From(stream_->video_decoder_config());
+  base::Optional<AudioDecoderConfig> audio_config;
+  base::Optional<VideoDecoderConfig> video_config;
+  if (stream_->type() == Type::AUDIO) {
+    audio_config = stream_->audio_decoder_config();
+  } else if (stream_->type() == Type::VIDEO) {
+    video_config = stream_->video_decoder_config();
   } else {
     NOTREACHED() << "Unsupported stream type: " << stream_->type();
     return;
   }
 
   mojo::ScopedDataPipeConsumerHandle remote_consumer_handle;
-  mojo_decoder_buffer_writer_ =
-      MojoDecoderBufferWriter::Create(stream_->type(), &remote_consumer_handle);
+  mojo_decoder_buffer_writer_ = MojoDecoderBufferWriter::Create(
+      GetDefaultDecoderBufferConverterCapacity(stream_->type()),
+      &remote_consumer_handle);
 
-  callback.Run(static_cast<mojom::DemuxerStream::Type>(stream_->type()),
-               std::move(remote_consumer_handle), std::move(audio_config),
-               std::move(video_config));
+  std::move(callback).Run(stream_->type(), std::move(remote_consumer_handle),
+                          audio_config, video_config);
 }
 
-void MojoDemuxerStreamImpl::Read(const ReadCallback& callback) {
+void MojoDemuxerStreamImpl::Read(ReadCallback callback) {
   stream_->Read(base::Bind(&MojoDemuxerStreamImpl::OnBufferReady,
-                           weak_factory_.GetWeakPtr(), callback));
+                           weak_factory_.GetWeakPtr(),
+                           base::Passed(&callback)));
 }
 
 void MojoDemuxerStreamImpl::EnableBitstreamConverter() {
   stream_->EnableBitstreamConverter();
 }
 
-void MojoDemuxerStreamImpl::OnBufferReady(
-    const ReadCallback& callback,
-    media::DemuxerStream::Status status,
-    const scoped_refptr<media::DecoderBuffer>& buffer) {
-  mojom::AudioDecoderConfigPtr audio_config;
-  mojom::VideoDecoderConfigPtr video_config;
+void MojoDemuxerStreamImpl::OnBufferReady(ReadCallback callback,
+                                          Status status,
+                                          scoped_refptr<DecoderBuffer> buffer) {
+  base::Optional<AudioDecoderConfig> audio_config;
+  base::Optional<VideoDecoderConfig> video_config;
 
-  if (status == media::DemuxerStream::kConfigChanged) {
-    DVLOG(2) << __FUNCTION__ << ": ConfigChange!";
+  if (status == Status::kConfigChanged) {
+    DVLOG(2) << __func__ << ": ConfigChange!";
     // Send the config change so our client can read it once it parses the
     // Status obtained via Run() below.
-    if (stream_->type() == media::DemuxerStream::AUDIO) {
-      audio_config =
-          mojom::AudioDecoderConfig::From(stream_->audio_decoder_config());
-    } else if (stream_->type() == media::DemuxerStream::VIDEO) {
-      video_config =
-          mojom::VideoDecoderConfig::From(stream_->video_decoder_config());
+    if (stream_->type() == Type::AUDIO) {
+      audio_config = stream_->audio_decoder_config();
+    } else if (stream_->type() == Type::VIDEO) {
+      video_config = stream_->video_decoder_config();
     } else {
       NOTREACHED() << "Unsupported config change encountered for type: "
                    << stream_->type();
     }
 
-    callback.Run(mojom::DemuxerStream::Status::CONFIG_CHANGED,
-                 mojom::DecoderBufferPtr(), std::move(audio_config),
-                 std::move(video_config));
+    std::move(callback).Run(Status::kConfigChanged, mojom::DecoderBufferPtr(),
+                            audio_config, video_config);
     return;
   }
 
-  if (status == media::DemuxerStream::kAborted) {
-    callback.Run(mojom::DemuxerStream::Status::ABORTED,
-                 mojom::DecoderBufferPtr(), std::move(audio_config),
-                 std::move(video_config));
+  if (status == Status::kAborted) {
+    std::move(callback).Run(Status::kAborted, mojom::DecoderBufferPtr(),
+                            audio_config, video_config);
     return;
   }
 
-  DCHECK_EQ(status, media::DemuxerStream::kOk);
+  DCHECK_EQ(status, Status::kOk);
 
   mojom::DecoderBufferPtr mojo_buffer =
-      mojo_decoder_buffer_writer_->WriteDecoderBuffer(buffer);
+      mojo_decoder_buffer_writer_->WriteDecoderBuffer(std::move(buffer));
   if (!mojo_buffer) {
-    callback.Run(mojom::DemuxerStream::Status::ABORTED,
-                 mojom::DecoderBufferPtr(), std::move(audio_config),
-                 std::move(video_config));
+    std::move(callback).Run(Status::kAborted, mojom::DecoderBufferPtr(),
+                            audio_config, video_config);
     return;
   }
 
   // TODO(dalecurtis): Once we can write framed data to the DataPipe, fill via
   // the producer handle and then read more to keep the pipe full.  Waiting for
   // space can be accomplished using an AsyncWaiter.
-  callback.Run(static_cast<mojom::DemuxerStream::Status>(status),
-               std::move(mojo_buffer), std::move(audio_config),
-               std::move(video_config));
+  std::move(callback).Run(status, std::move(mojo_buffer), audio_config,
+                          video_config);
 }
 
 }  // namespace media

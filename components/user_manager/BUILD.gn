@@ -4,18 +4,20 @@
 
 component("user_manager") {
   sources = [
-    "empty_user_info.cc",
-    "empty_user_info.h",
     "user_info.cc",
     "user_info.h",
     "user_info_impl.cc",
     "user_info_impl.h",
     "user_manager_export.h",
+    "user_names.cc",
+    "user_names.h",
+    "user_type.h",
   ]
 
   deps = [
     "//base",
-    "//components/signin/core/account_id",
+    "//components/account_id",
+    "//google_apis",
     "//skia",
     "//ui/gfx",
   ]
@@ -27,6 +29,8 @@ component("user_manager") {
       "known_user.cc",
       "known_user.h",
       "remove_user_delegate.h",
+      "scoped_user_manager.cc",
+      "scoped_user_manager.h",
       "user.cc",
       "user.h",
       "user_image/user_image.cc",
@@ -35,12 +39,9 @@ component("user_manager") {
       "user_manager.h",
       "user_manager_base.cc",
       "user_manager_base.h",
-      "user_type.h",
     ]
     deps += [
       "//components/prefs",
-      "//components/session_manager/core",
-      "//google_apis",
       "//url",
     ]
   }
@@ -57,7 +58,7 @@ if (is_chromeos) {
       ":user_manager",
       "//base",
       "//chromeos:chromeos",
-      "//components/signin/core/account_id",
+      "//components/account_id",
       "//skia",
       "//ui/base",
     ]
@@ -70,7 +71,7 @@ if (is_chromeos) {
     ]
     deps = [
       ":user_manager",
-      "//components/signin/core/account_id",
+      "//components/account_id",
       "//skia",
       "//testing/gtest",
       "//ui/gfx",

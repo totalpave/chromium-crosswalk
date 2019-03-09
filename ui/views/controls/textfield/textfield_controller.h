@@ -8,12 +8,15 @@
 #include <set>
 
 #include "base/strings/string16.h"
+#include "ui/base/clipboard/clipboard_format_type.h"
+#include "ui/base/clipboard/clipboard_types.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/views/views_export.h"
 
 namespace ui {
 class KeyEvent;
 class MouseEvent;
+class GestureEvent;
 class SimpleMenuModel;
 }  // namespace ui
 
@@ -31,17 +34,24 @@ class VIEWS_EXPORT TextfieldController {
   virtual void ContentsChanged(Textfield* sender,
                                const base::string16& new_contents) {}
 
-  // This method is called to get notified about keystrokes in the edit.
+  // Called to get notified about keystrokes in the edit.
   // Returns true if the message was handled and should not be processed
   // further. If it returns false the processing continues.
   virtual bool HandleKeyEvent(Textfield* sender,
                               const ui::KeyEvent& key_event);
 
-  // This method is called to get notified about mouse events in the edit.
+  // Called to get notified about mouse events in the edit.
   // Returns true if the message was handled and should not be processed
-  // further. Currently, only mouse down events are sent here.
+  // further. Currently, only mouse down events and mouse wheel events are sent
+  // here.
   virtual bool HandleMouseEvent(Textfield* sender,
                                 const ui::MouseEvent& mouse_event);
+
+  // Called to get notified about gesture events in the edit.
+  // Returns true if the message was handled and should not be processed
+  // further. Currently, only tap events are sent here.
+  virtual bool HandleGestureEvent(Textfield* sender,
+                                  const ui::GestureEvent& gesture_event);
 
   // Called before performing a user action that may change the textfield.
   // It's currently only supported by Views implementation.
@@ -68,7 +78,7 @@ class VIEWS_EXPORT TextfieldController {
   // Enables the controller to append to the accepted drop formats.
   virtual void AppendDropFormats(
       int* formats,
-      std::set<ui::Clipboard::FormatType>* format_types) {}
+      std::set<ui::ClipboardFormatType>* format_types) {}
 
   // Called when a drop of dragged data happens on the textfield. This method is
   // called before regular handling of the drop. If this returns a drag

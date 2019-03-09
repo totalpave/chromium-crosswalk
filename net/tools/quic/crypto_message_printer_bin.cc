@@ -10,25 +10,30 @@
 #include <iostream>
 
 #include "base/command_line.h"
-#include "net/quic/crypto/crypto_framer.h"
-#include "net/quic/quic_utils.h"
+#include "net/third_party/quic/core/crypto/crypto_framer.h"
+#include "net/third_party/quic/platform/api/quic_text_utils.h"
 
+using quic::Perspective;
 using std::cerr;
 using std::cout;
 using std::endl;
 
 namespace net {
 
-class CryptoMessagePrinter : public net::CryptoFramerVisitorInterface {
+class CryptoMessagePrinter : public quic::CryptoFramerVisitorInterface {
  public:
-  void OnHandshakeMessage(const CryptoHandshakeMessage& message) override {
+  explicit CryptoMessagePrinter() {}
+
+  void OnHandshakeMessage(
+      const quic::CryptoHandshakeMessage& message) override {
     cout << message.DebugString() << endl;
   }
 
-  void OnError(CryptoFramer* framer) override {
+  void OnError(quic::CryptoFramer* framer) override {
     cerr << "Error code: " << framer->error() << endl;
     cerr << "Error details: " << framer->error_detail() << endl;
   }
+
 };
 
 }  // namespace net
@@ -36,15 +41,16 @@ class CryptoMessagePrinter : public net::CryptoFramerVisitorInterface {
 int main(int argc, char* argv[]) {
   base::CommandLine::Init(argc, argv);
 
-  if (argc != 2) {
+  if (argc != 1) {
     cerr << "Usage: " << argv[0] << " <hex of message>\n";
     return 1;
   }
 
   net::CryptoMessagePrinter printer;
-  net::CryptoFramer framer;
+  quic::CryptoFramer framer;
   framer.set_visitor(&printer);
-  std::string input = net::QuicUtils::HexDecode(argv[1]);
+  framer.set_process_truncated_messages(true);
+  std::string input = quic::QuicTextUtils::HexDecode(argv[1]);
   if (!framer.ProcessInput(input)) {
     return 1;
   }

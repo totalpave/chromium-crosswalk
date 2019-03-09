@@ -27,8 +27,7 @@ namespace extensions {
 class NetworkingPrivateChromeOS : public NetworkingPrivateDelegate {
  public:
   // |verify_delegate| is passed to NetworkingPrivateDelegate and may be NULL.
-  NetworkingPrivateChromeOS(content::BrowserContext* browser_context,
-                            std::unique_ptr<VerifyDelegate> verify_delegate);
+  explicit NetworkingPrivateChromeOS(content::BrowserContext* browser_context);
   ~NetworkingPrivateChromeOS() override;
 
   // NetworkingPrivateApi
@@ -43,6 +42,7 @@ class NetworkingPrivateChromeOS : public NetworkingPrivateDelegate {
                 const FailureCallback& failure_callback) override;
   void SetProperties(const std::string& guid,
                      std::unique_ptr<base::DictionaryValue> properties,
+                     bool allow_set_shared_config,
                      const VoidCallback& success_callback,
                      const FailureCallback& failure_callback) override;
   void CreateNetwork(bool shared,
@@ -50,6 +50,7 @@ class NetworkingPrivateChromeOS : public NetworkingPrivateDelegate {
                      const StringCallback& success_callback,
                      const FailureCallback& failure_callback) override;
   void ForgetNetwork(const std::string& guid,
+                     bool allow_forget_shared_config,
                      const VoidCallback& success_callback,
                      const FailureCallback& failure_callback) override;
   void GetNetworks(const std::string& network_type,
@@ -90,17 +91,26 @@ class NetworkingPrivateChromeOS : public NetworkingPrivateDelegate {
                            const std::string& new_pin,
                            const VoidCallback& success_callback,
                            const FailureCallback& failure_callback) override;
+  void SelectCellularMobileNetwork(
+      const std::string& guid,
+      const std::string& network_id,
+      const VoidCallback& success_callback,
+      const FailureCallback& failure_callback) override;
   std::unique_ptr<base::ListValue> GetEnabledNetworkTypes() override;
   std::unique_ptr<DeviceStateList> GetDeviceStateList() override;
+  std::unique_ptr<base::DictionaryValue> GetGlobalPolicy() override;
+  std::unique_ptr<base::DictionaryValue> GetCertificateLists() override;
   bool EnableNetworkType(const std::string& type) override;
   bool DisableNetworkType(const std::string& type) override;
-  bool RequestScan() override;
+  bool RequestScan(const std::string& type) override;
 
  private:
   // Callback for both GetProperties and GetManagedProperties. Copies
   // |dictionary| and appends any networkingPrivate API specific properties,
   // then calls |callback| with the result.
-  void GetPropertiesCallback(const DictionaryCallback& callback,
+  void GetPropertiesCallback(const std::string& guid,
+                             bool managed,
+                             const DictionaryCallback& callback,
                              const std::string& service_path,
                              const base::DictionaryValue& dictionary);
 
@@ -109,14 +119,9 @@ class NetworkingPrivateChromeOS : public NetworkingPrivateDelegate {
   // which is not available to the chromeos/network module.
   void AppendThirdPartyProviderName(base::DictionaryValue* dictionary);
 
-  // Handles connection failures, possibly showing UI for configuration
-  // failures, then calls the appropriate callback.
-  void ConnectFailureCallback(
-      const std::string& guid,
-      const VoidCallback& success_callback,
-      const FailureCallback& failure_callback,
-      const std::string& error_name,
-      std::unique_ptr<base::DictionaryValue> error_data);
+  // Sets the active proxy values in managed network configurations.
+  void SetManagedActiveProxyValues(const std::string& guid,
+                                   base::DictionaryValue* dictionary);
 
   content::BrowserContext* browser_context_;
   base::WeakPtrFactory<NetworkingPrivateChromeOS> weak_ptr_factory_;

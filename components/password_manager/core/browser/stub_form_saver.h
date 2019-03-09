@@ -20,20 +20,17 @@ class StubFormSaver : public FormSaver {
   // FormSaver:
   void PermanentlyBlacklist(autofill::PasswordForm* observed) override {}
   void Save(const autofill::PasswordForm& pending,
-            const autofill::PasswordFormMap& best_matches,
-            const autofill::PasswordForm* old_primary_key) override {}
-  void Update(
-      const autofill::PasswordForm& pending,
-      const autofill::PasswordFormMap& best_matches,
-      const std::vector<const autofill::PasswordForm*>* credentials_to_update,
-      const autofill::PasswordForm* old_primary_key) override {}
+            const std::map<base::string16, const autofill::PasswordForm*>&
+                best_matches) override {}
+  void Update(const autofill::PasswordForm& pending,
+              const std::map<base::string16, const autofill::PasswordForm*>&
+                  best_matches,
+              const std::vector<autofill::PasswordForm>* credentials_to_update,
+              const autofill::PasswordForm* old_primary_key) override {}
   void PresaveGeneratedPassword(
       const autofill::PasswordForm& generated) override {}
   void RemovePresavedPassword() override {}
-  void WipeOutdatedCopies(
-      const autofill::PasswordForm& pending,
-      autofill::PasswordFormMap* best_matches,
-      const autofill::PasswordForm** preferred_match) override {}
+  std::unique_ptr<FormSaver> Clone() override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(StubFormSaver);

@@ -18,9 +18,9 @@ namespace {
 
 SkBitmap CreateSmallHolderBitmap() {
   SkBitmap small_bitmap;
-  SkCanvas canvas(small_bitmap);
   small_bitmap.allocPixels(
       SkImageInfo::Make(1, 1, kRGBA_8888_SkColorType, kOpaque_SkAlphaType));
+  SkCanvas canvas(small_bitmap);
   canvas.drawColor(SK_ColorWHITE);
   small_bitmap.setImmutable();
   return small_bitmap;
@@ -74,8 +74,7 @@ void Thumbnail::SetCompressedBitmap(sk_sp<SkPixelRef> compressed_bitmap,
   DCHECK(!content_size.IsEmpty());
   retrieved_ = false;
   ClearUIResourceId();
-  gfx::Size data_size(compressed_bitmap->info().width(),
-                      compressed_bitmap->info().height());
+  gfx::Size data_size(compressed_bitmap->width(), compressed_bitmap->height());
   scaled_content_size_ = gfx::ScaleSize(gfx::SizeF(content_size), 1.f / scale_);
   scaled_data_size_ = gfx::ScaleSize(gfx::SizeF(data_size), 1.f / scale_);
   bitmap_ = cc::UIResourceBitmap(std::move(compressed_bitmap), data_size);
@@ -95,7 +94,7 @@ cc::UIResourceBitmap Thumbnail::GetBitmap(cc::UIResourceId uid,
     // to avoid reentry there.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&Thumbnail::DoInvalidate, weak_factory_.GetWeakPtr()));
+        base::BindOnce(&Thumbnail::DoInvalidate, weak_factory_.GetWeakPtr()));
     return bitmap_;
   }
 

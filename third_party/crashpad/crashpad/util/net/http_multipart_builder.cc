@@ -23,14 +23,15 @@
 #include "base/rand_util.h"
 #include "base/strings/stringprintf.h"
 #include "util/net/http_body.h"
+#include "util/net/http_body_gzip.h"
 
 namespace crashpad {
 
 namespace {
 
-const char kCRLF[] = "\r\n";
+constexpr char kCRLF[] = "\r\n";
 
-const char kBoundaryCRLF[] = "\r\n\r\n";
+constexpr char kBoundaryCRLF[] = "\r\n\r\n";
 
 // Generates a random string suitable for use as a multipart boundary.
 std::string GenerateBoundaryString() {
@@ -39,14 +40,14 @@ std::string GenerateBoundaryString() {
   // characters from the set “'()+_,-./:=? ”, and not ending in a space.
   // However, some servers have been observed as dealing poorly with certain
   // nonalphanumeric characters. See
-  // blink/Source/platform/network/FormDataBuilder.cpp
-  // blink::FormDataBuilder::generateUniqueBoundaryString().
+  // blink/Source/platform/network/FormDataEncoder.cpp
+  // blink::FormDataEncoder::GenerateUniqueBoundaryString().
   //
   // This implementation produces a 56-character string with over 190 bits of
   // randomness (62^32 > 2^190).
   std::string boundary_string = "---MultipartBoundary-";
   for (int index = 0; index < 32; ++index) {
-    const char kCharacters[] =
+    static constexpr char kCharacters[] =
         "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     int random_value =
         base::RandInt(0, static_cast<int>(strlen(kCharacters)) - 1);
@@ -59,17 +60,12 @@ std::string GenerateBoundaryString() {
 // Escapes the specified name to be suitable for the name field of a
 // form-data part.
 std::string EncodeMIMEField(const std::string& name) {
-  // RFC 2388 §3 says to encode non-ASCII field names according to RFC 2047, but
-  // no browsers implement that behavior. Instead, they send field names in the
-  // page hosting the form’s encoding. However, some form of escaping is needed.
   // This URL-escapes the quote character and newline characters, per Blink. See
-  // blink/Source/platform/network/FormDataBuilder.cpp
-  // blink::appendQuotedString().
-  //
-  // TODO(mark): This encoding is not necessarily correct, and the same code in
-  // Blink is marked with a FIXME. Blink does not escape the '%' character,
-  // that’s a local addition, but it seems appropriate to be able to decode the
-  // string properly.
+  // blink/Source/platform/network/FormDataEncoder.cpp
+  // blink::AppendQuotedString(). %-encoding is endorsed by RFC 7578 §2, with
+  // approval for otherwise unencoded UTF-8 given by RFC 7578 §5.1. Blink does
+  // not escape the '%' character, but it seems appropriate to do so in order to
+  // be able to decode the string properly.
   std::string encoded;
   for (char character : name) {
     switch (character) {
@@ -116,10 +112,16 @@ void AssertSafeMIMEType(const std::string& string) {
 }  // namespace
 
 HTTPMultipartBuilder::HTTPMultipartBuilder()
-    : boundary_(GenerateBoundaryString()), form_data_(), file_attachments_() {
-}
+    : boundary_(GenerateBoundaryString()),
+      form_data_(),
+      file_attachments_(),
+      gzip_enabled_(false) {}
 
 HTTPMultipartBuilder::~HTTPMultipartBuilder() {
+}
+
+void HTTPMultipartBuilder::SetGzipEnabled(bool gzip_enabled) {
+  gzip_enabled_ = gzip_enabled;
 }
 
 void HTTPMultipartBuilder::SetFormData(const std::string& key,
@@ -131,13 +133,13 @@ void HTTPMultipartBuilder::SetFormData(const std::string& key,
 void HTTPMultipartBuilder::SetFileAttachment(
     const std::string& key,
     const std::string& upload_file_name,
-    const base::FilePath& path,
+    FileReaderInterface* reader,
     const std::string& content_type) {
   EraseKey(upload_file_name);
 
   FileAttachment attachment;
   attachment.filename = EncodeMIMEField(upload_file_name);
-  attachment.path = path;
+  attachment.reader = reader;
 
   if (content_type.empty()) {
     attachment.content_type = "application/octet-stream";
@@ -172,20 +174,31 @@ std::unique_ptr<HTTPBodyStream> HTTPMultipartBuilder::GetBodyStream() {
         attachment.content_type.c_str(), kBoundaryCRLF);
 
     streams.push_back(new StringHTTPBodyStream(header));
-    streams.push_back(new FileHTTPBodyStream(attachment.path));
+    streams.push_back(new FileReaderHTTPBodyStream(attachment.reader));
     streams.push_back(new StringHTTPBodyStream(kCRLF));
   }
 
   streams.push_back(
       new StringHTTPBodyStream("--"  + boundary_ + "--" + kCRLF));
 
-  return std::unique_ptr<HTTPBodyStream>(new CompositeHTTPBodyStream(streams));
+  auto composite =
+      std::unique_ptr<HTTPBodyStream>(new CompositeHTTPBodyStream(streams));
+  if (gzip_enabled_) {
+    return std::unique_ptr<HTTPBodyStream>(
+        new GzipHTTPBodyStream(std::move(composite)));
+  }
+  return composite;
 }
 
-HTTPHeaders::value_type HTTPMultipartBuilder::GetContentType() const {
+void HTTPMultipartBuilder::PopulateContentHeaders(
+    HTTPHeaders* http_headers) const {
   std::string content_type =
       base::StringPrintf("multipart/form-data; boundary=%s", boundary_.c_str());
-  return std::make_pair(kContentType, content_type);
+  (*http_headers)[kContentType] = content_type;
+
+  if (gzip_enabled_) {
+    (*http_headers)[kContentEncoding] = "gzip";
+  }
 }
 
 void HTTPMultipartBuilder::EraseKey(const std::string& key) {

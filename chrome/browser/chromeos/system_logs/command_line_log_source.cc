@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,8 @@
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/process/launch.h"
+#include "base/system/sys_info.h"
+#include "base/task/post_task.h"
 #include "content/public/browser/browser_thread.h"
 
 using content::BrowserThread;
@@ -29,15 +32,15 @@ void ExecuteCommandLines(system_logs::SystemLogsResponse* response) {
   base::CommandLine command(base::FilePath("/usr/bin/amixer"));
   command.AppendArg("-c0");
   command.AppendArg("contents");
-  commands.push_back(std::make_pair("alsa controls", command));
+  commands.emplace_back("alsa controls", command);
 
   command = base::CommandLine((base::FilePath("/usr/bin/cras_test_client")));
   command.AppendArg("--dump_server_info");
   command.AppendArg("--dump_audio_thread");
-  commands.push_back(std::make_pair("cras", command));
+  commands.emplace_back("cras", command);
 
   command = base::CommandLine((base::FilePath("/usr/bin/audio_diagnostics")));
-  commands.push_back(std::make_pair("audio_diagnostics", command));
+  commands.emplace_back("audio_diagnostics", command);
 
 #if 0
   // This command hangs as of R39. TODO(alhli): Make cras_test_client more
@@ -51,48 +54,37 @@ void ExecuteCommandLines(system_logs::SystemLogsResponse* response) {
   command.AppendArg("--duration_seconds");
   command.AppendArg("0.01");
   command.AppendArg("--show_total_rms");
-  commands.push_back(std::make_pair("cras_rms", command));
+  commands.emplace_back("cras_rms", command);
 #endif
 
   command = base::CommandLine((base::FilePath("/usr/bin/printenv")));
-  commands.push_back(std::make_pair("env", command));
+  commands.emplace_back("env", command);
 
-  command = base::CommandLine(base::FilePath("/usr/bin/setxkbmap"));
-  command.AppendArg("-print");
-  command.AppendArg("-query");
-  commands.push_back(std::make_pair("setxkbmap", command));
-
-  command = base::CommandLine(base::FilePath("/usr/bin/xinput"));
-  command.AppendArg("list");
-  command.AppendArg("--long");
-  commands.push_back(std::make_pair("xinput", command));
-
-#if defined(USE_X11)
-  command = base::CommandLine(base::FilePath("/usr/bin/xrandr"));
-  command.AppendArg("--verbose");
-  commands.push_back(std::make_pair("xrandr", command));
-#elif defined(USE_OZONE)
   command = base::CommandLine(base::FilePath("/usr/bin/modetest"));
-  commands.push_back(std::make_pair("modetest", command));
-#endif
+  commands.emplace_back("modetest", command);
 
-  // Get a list of file sizes for the logged in user (excluding the names of
-  // the files in the Downloads directory for privay reasons).
-  command = base::CommandLine(base::FilePath("/bin/sh"));
-  command.AppendArg("-c");
-  command.AppendArg("/usr/bin/du -h /home/chronos/user |"
-                    " grep -v -e \\/home\\/chronos\\/user\\/Downloads\\/");
-  commands.push_back(std::make_pair("user_files", command));
+  // Get a list of file sizes for the whole system (excluding the names of the
+  // files in the Downloads directory for privay reasons).
+  if (base::SysInfo::IsRunningOnChromeOS()) {
+    // The following command would hang if run in Linux Chrome OS build on a
+    // Linux Workstation.
+    command = base::CommandLine(base::FilePath("/bin/sh"));
+    command.AppendArg("-c");
+    command.AppendArg(
+        "/usr/bin/du -h --max-depth=5 /home/ /mnt/stateful_partition/ | "
+        "grep -v -e Downloads -e IndexedDB -e databases");
+    commands.emplace_back("system_files", command);
+  }
 
   // Get disk space usage information
   command = base::CommandLine(base::FilePath("/bin/df"));
-  commands.push_back(std::make_pair("disk_usage", command));
+  commands.emplace_back("disk_usage", command);
 
-  for (size_t i = 0; i < commands.size(); ++i) {
-    VLOG(1) << "Executting System Logs Command: " << commands[i].first;
+  for (const auto& command : commands) {
+    VLOG(1) << "Executting System Logs Command: " << command.first;
     std::string output;
-    base::GetAppOutput(commands[i].second, &output);
-    (*response)[commands[i].first] = output;
+    base::GetAppOutput(command.second, &output);
+    response->emplace(command.first, output);
   }
 }
 
@@ -106,15 +98,16 @@ CommandLineLogSource::CommandLineLogSource() : SystemLogsSource("CommandLine") {
 CommandLineLogSource::~CommandLineLogSource() {
 }
 
-void CommandLineLogSource::Fetch(const SysLogsSourceCallback& callback) {
+void CommandLineLogSource::Fetch(SysLogsSourceCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(!callback.is_null());
 
-  SystemLogsResponse* response = new SystemLogsResponse;
-  BrowserThread::PostBlockingPoolTaskAndReply(
-      FROM_HERE,
-      base::Bind(&ExecuteCommandLines, response),
-      base::Bind(callback, base::Owned(response)));
+  auto response = std::make_unique<SystemLogsResponse>();
+  SystemLogsResponse* response_ptr = response.get();
+  base::PostTaskWithTraitsAndReply(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&ExecuteCommandLines, response_ptr),
+      base::BindOnce(std::move(callback), std::move(response)));
 }
 
 }  // namespace system_logs

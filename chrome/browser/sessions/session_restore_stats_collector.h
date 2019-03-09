@@ -91,10 +91,10 @@ class SessionRestoreStatsCollector
     base::TimeDelta foreground_tab_first_loaded;
 
     // The time elapsed between |restore_started| and reception of the first
-    // NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE event for any of
-    // the tabs involved in the session restore. If this is zero it is because
-    // it has not been recorded (all visible tabs were closed or switched away
-    // from before they were painted). Corresponds to
+    // NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES event for
+    // any of the tabs involved in the session restore. If this is zero it is
+    // because it has not been recorded (all visible tabs were closed or
+    // switched away from before they were painted). Corresponds to
     // "SessionRestore.ForegroundTabFirstPaint3" and its _XX variants.
     base::TimeDelta foreground_tab_first_paint;
 
@@ -103,10 +103,6 @@ class SessionRestoreStatsCollector
     // (vaguely named for historical reasons, as it predates the concept of
     // deferred tabs).
     base::TimeDelta non_deferred_tabs_loaded;
-
-    // The maximum number of tabs loading in parallel. This corresponds to the
-    // "SessionRestore.ParallelTabLoads" metric.
-    size_t parallel_tab_loads;
   };
 
   // The StatsReportingDelegate is responsible for delivering statistics
@@ -127,6 +123,11 @@ class SessionRestoreStatsCollector
   // Called to indicate that the loading of a tab has been deferred by session
   // restore.
   void DeferTab(content::NavigationController* tab);
+
+  // Called when about to load the next tab. Used as a signal to record how
+  // often timeout happens. Timeout means we want to start loading the next tab
+  // even though the previous tab is still loading.
+  void OnWillLoadNextTab(bool timeout);
 
   // Exposed for unittesting.
   const TabLoaderStats& tab_loader_stats() const { return tab_loader_stats_; }
@@ -186,7 +187,7 @@ class SessionRestoreStatsCollector
   void ReleaseIfDoneTracking();
 
   // Testing seam for configuring the tick clock in use.
-  void set_tick_clock(std::unique_ptr<base::TickClock> tick_clock) {
+  void set_tick_clock(std::unique_ptr<const base::TickClock> tick_clock) {
     tick_clock_ = std::move(tick_clock);
   }
 
@@ -225,7 +226,7 @@ class SessionRestoreStatsCollector
   // The source of ticks used for taking timing information. This is
   // configurable as a testing seam. Defaults to using base::DefaultTickClock,
   // which in turn uses base::TimeTicks.
-  std::unique_ptr<base::TickClock> tick_clock_;
+  std::unique_ptr<const base::TickClock> tick_clock_;
 
   // The reporting delegate used to report gathered statistics.
   std::unique_ptr<StatsReportingDelegate> reporting_delegate_;
@@ -253,6 +254,16 @@ class SessionRestoreStatsCollector::StatsReportingDelegate {
   // Called when a deferred tab has been loaded.
   virtual void ReportDeferredTabLoaded() = 0;
 
+  // Called when a tab starts being tracked. Logs the relative time since last
+  // use of the tab.
+  virtual void ReportTabTimeSinceActive(base::TimeDelta elapsed) = 0;
+
+  // Called when a tab starts being tracked. Logs the relative time since last
+  // use of the tab. The |engagement| is a value that is typically between
+  // 0 and 100, but is technically unbounded. See
+  // chrome/browser/engagement/site_engagement_service.h for details.
+  virtual void ReportTabSiteEngagementScore(double engagement) = 0;
+
  private:
   DISALLOW_COPY_AND_ASSIGN(StatsReportingDelegate);
 };
@@ -268,6 +279,8 @@ class SessionRestoreStatsCollector::UmaStatsReportingDelegate
   void ReportTabLoaderStats(const TabLoaderStats& tab_loader_stats) override;
   void ReportTabDeferred() override;
   void ReportDeferredTabLoaded() override;
+  void ReportTabTimeSinceActive(base::TimeDelta elapsed) override;
+  void ReportTabSiteEngagementScore(double engagement) override;
 
  private:
   // Has ReportTabDeferred been called?

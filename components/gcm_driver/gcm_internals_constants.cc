@@ -17,6 +17,7 @@ const char kSetGcmInternalsRecording[] = "setGcmInternalsRecording";
 
 // GCM internal info.
 const char kAndroidId[] = "androidId";
+const char kAndroidSecret[] = "androidSecret";
 const char kCheckinInfo[] = "checkinInfo";
 const char kConnectionClientCreated[] = "connectionClientCreated";
 const char kConnectionInfo[] = "connectionInfo";
@@ -26,6 +27,8 @@ const char kGcmClientCreated[] = "gcmClientCreated";
 const char kGcmClientState[] = "gcmClientState";
 const char kGcmEnabled[] = "gcmEnabled";
 const char kIsRecording[] = "isRecording";
+const char kLastCheckin[] = "lastCheckin";
+const char kNextCheckin[] = "nextCheckin";
 const char kProfileServiceCreated[] = "profileServiceCreated";
 const char kReceiveInfo[] = "receiveInfo";
 const char kRegisteredAppIds[] = "registeredAppIds";

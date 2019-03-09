@@ -3,46 +3,31 @@
 // found in the LICENSE file.
 
 #include "base/bind.h"
-#include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
-#include "base/single_thread_task_runner.h"
 #include "base/threading/platform_thread.h"
-#include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "chrome/browser/chromeos/attestation/platform_verification_flow.h"
 #include "chrome/browser/chromeos/policy/device_policy_builder.h"
 #include "chrome/browser/chromeos/policy/device_policy_cros_browser_test.h"
-#include "chrome/browser/chromeos/policy/proto/chrome_device_policy.pb.h"
 #include "chrome/browser/chromeos/settings/device_settings_service.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chromeos/dbus/fake_cryptohome_client.h"
+#include "components/policy/proto/chrome_device_policy.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using chromeos::attestation::PlatformVerificationFlow;
 
 namespace policy {
 
-class CustomFakeCryptohomeClient : public chromeos::FakeCryptohomeClient {
- public:
-  void TpmAttestationIsEnrolled(
-      const chromeos::BoolDBusMethodCallback& callback) override {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(callback, chromeos::DBUS_METHOD_CALL_FAILURE, false));
-  }
-};
-
 class AttestationDevicePolicyTest
     : public DevicePolicyCrosBrowserTest,
       public chromeos::DeviceSettingsService::Observer {
  public:
     // DeviceSettingsService::Observer
-  void OwnershipStatusChanged() override {}
   void DeviceSettingsUpdated() override { operation_complete_ = true; }
-  void OnDeviceSettingsServiceShutdown() override {}
 
  protected:
   AttestationDevicePolicyTest() : operation_complete_(false) {}
@@ -81,10 +66,9 @@ class AttestationDevicePolicyTest
         new PlatformVerificationFlow(NULL, NULL, &fake_cryptohome_client_,
                                      NULL));
     verifier->ChallengePlatformKey(
-      browser()->tab_strip_model()->GetActiveWebContents(),
-      "fake_service_id",
-      "fake_challenge",
-      base::Bind(&AttestationDevicePolicyTest::Callback, this));
+        browser()->tab_strip_model()->GetActiveWebContents(), "fake_service_id",
+        "fake_challenge", base::Bind(&AttestationDevicePolicyTest::Callback,
+                                     base::Unretained(this)));
     WaitForAsyncOperation();
     return result_;
   }
@@ -92,7 +76,7 @@ class AttestationDevicePolicyTest
  private:
   bool operation_complete_;
   PlatformVerificationFlow::Result result_;
-  CustomFakeCryptohomeClient fake_cryptohome_client_;
+  chromeos::FakeCryptohomeClient fake_cryptohome_client_;
 
   void WaitForAsyncOperation() {
     while (!operation_complete_) {
@@ -124,4 +108,4 @@ IN_PROC_BROWSER_TEST_F(AttestationDevicePolicyTest, ContentProtectionTest) {
             SyncContentProtectionAttestation());
 }
 
-} // namespace policy
+}  // namespace policy

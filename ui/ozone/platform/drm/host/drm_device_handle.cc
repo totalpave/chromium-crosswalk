@@ -11,11 +11,18 @@
 
 #include "base/files/file_path.h"
 #include "base/posix/eintr_wrapper.h"
-#include "base/threading/thread_restrictions.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/time/time.h"
 
 namespace ui {
 
 namespace {
+
+// Sleep this many milliseconds before retrying after authentication fails.
+const int kAuthFailSleepMs = 100;
+
+// Log a warning after failing to authenticate for this many milliseconds.
+const int kLogAuthFailDelayMs = 1000;
 
 bool Authenticate(int fd) {
   drm_magic_t magic;
@@ -31,8 +38,11 @@ DrmDeviceHandle::DrmDeviceHandle() {
 }
 
 DrmDeviceHandle::~DrmDeviceHandle() {
-  if (file_.is_valid())
-    base::ThreadRestrictions::AssertIOAllowed();
+  if (file_.is_valid()) {
+    base::ScopedBlockingCall scoped_blocking_call(
+        FROM_HERE, base::BlockingType::MAY_BLOCK);
+    file_.reset();
+  }
 }
 
 bool DrmDeviceHandle::Initialize(const base::FilePath& dev_path,
@@ -41,8 +51,12 @@ bool DrmDeviceHandle::Initialize(const base::FilePath& dev_path,
   // expected path, so use a CHECK instead of a DCHECK. The sys_path is only
   // used a label and is otherwise unvalidated.
   CHECK(dev_path.DirName() == base::FilePath("/dev/dri"));
-  base::ThreadRestrictions::AssertIOAllowed();
-  bool print_warning = true;
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+
+  int num_auth_attempts = 0;
+  bool logged_warning = false;
+  const base::TimeTicks start_time = base::TimeTicks::Now();
   while (true) {
     file_.reset();
     int fd = HANDLE_EINTR(open(dev_path.value().c_str(), O_RDWR | O_CLOEXEC));
@@ -54,16 +68,32 @@ bool DrmDeviceHandle::Initialize(const base::FilePath& dev_path,
     file_.reset(fd);
     sys_path_ = sys_path;
 
-    if (Authenticate(file_.get()))
-      break;
+    num_auth_attempts++;
+    if (Authenticate(file_.get())) {
+      struct drm_set_client_cap cap = {DRM_CLIENT_CAP_ATOMIC, 1};
+      has_atomic_capabilities_ =
+          !drmIoctl(file_.get(), DRM_IOCTL_SET_CLIENT_CAP, &cap);
 
-    LOG_IF(WARNING, print_warning) << "Failed to authenticate "
-                                   << dev_path.value();
-    print_warning = false;
-    usleep(100000);
+      cap = {DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1};
+      drmIoctl(file_.get(), DRM_IOCTL_SET_CLIENT_CAP, &cap);
+      break;
+    }
+
+    // To avoid spamming the logs, hold off before logging a warning (some
+    // failures are expected at first) and only log a single message.
+    if (!logged_warning &&
+        (base::TimeTicks::Now() - start_time).InMilliseconds() >=
+            kLogAuthFailDelayMs) {
+      LOG(WARNING) << "Failed to authenticate " << dev_path.value()
+                   << " within " << kLogAuthFailDelayMs << " ms";
+      logged_warning = true;
+    }
+    usleep(kAuthFailSleepMs * 1000);
   }
 
-  VLOG(1) << "Succeeded authenticating " << dev_path.value();
+  VLOG(1) << "Succeeded authenticating " << dev_path.value() << " in "
+          << (base::TimeTicks::Now() - start_time).InMilliseconds() << " ms "
+          << "with " << num_auth_attempts << " attempt(s)";
   return true;
 }
 

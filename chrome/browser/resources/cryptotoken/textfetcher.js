@@ -28,8 +28,7 @@ TextFetcher.prototype.fetch = function(url, opt_method, opt_body) {};
  * @constructor
  * @implements {TextFetcher}
  */
-function XhrTextFetcher() {
-}
+function XhrTextFetcher() {}
 
 /**
  * @param {string} url The URL to fetch.
@@ -54,9 +53,10 @@ XhrTextFetcher.prototype.fetch = function(url, opt_method, opt_body) {
       // Treat any network-level errors as though the page didn't exist.
       reject(404);
     };
-    if (opt_body)
+    if (opt_body) {
       xhr.send(opt_body);
-    else
+    } else {
       xhr.send();
+    }
   });
 };

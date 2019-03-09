@@ -6,27 +6,29 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/singleton.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/user_metrics.h"
 #include "base/synchronization/lock.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "extensions/browser/bad_message.h"
 #include "extensions/browser/extension_function_dispatcher.h"
 #include "extensions/browser/extension_message_filter.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/browser/io_thread_extension_message_filter.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_messages.h"
 
 using content::BrowserThread;
-using content::RenderViewHost;
 using content::WebContents;
 using extensions::ErrorUtils;
 using extensions::ExtensionAPI;
@@ -43,57 +45,66 @@ void LogUma(bool success,
   // long execution time equates to a poorly-performing function.
   if (success) {
     if (elapsed_time < base::TimeDelta::FromMilliseconds(1)) {
-      UMA_HISTOGRAM_SPARSE_SLOWLY(
-          "Extensions.Functions.SucceededTime.LessThan1ms", histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.SucceededTime.LessThan1ms",
+                               histogram_value);
     } else if (elapsed_time < base::TimeDelta::FromMilliseconds(5)) {
-      UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.Functions.SucceededTime.1msTo5ms",
-                                  histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.SucceededTime.1msTo5ms",
+                               histogram_value);
     } else if (elapsed_time < base::TimeDelta::FromMilliseconds(10)) {
-      UMA_HISTOGRAM_SPARSE_SLOWLY(
-          "Extensions.Functions.SucceededTime.5msTo10ms", histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.SucceededTime.5msTo10ms",
+                               histogram_value);
     } else {
-      UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.Functions.SucceededTime.Over10ms",
-                                  histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.SucceededTime.Over10ms",
+                               histogram_value);
     }
     UMA_HISTOGRAM_TIMES("Extensions.Functions.SucceededTotalExecutionTime",
                         elapsed_time);
   } else {
     if (elapsed_time < base::TimeDelta::FromMilliseconds(1)) {
-      UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.Functions.FailedTime.LessThan1ms",
-                                  histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.FailedTime.LessThan1ms",
+                               histogram_value);
     } else if (elapsed_time < base::TimeDelta::FromMilliseconds(5)) {
-      UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.Functions.FailedTime.1msTo5ms",
-                                  histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.FailedTime.1msTo5ms",
+                               histogram_value);
     } else if (elapsed_time < base::TimeDelta::FromMilliseconds(10)) {
-      UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.Functions.FailedTime.5msTo10ms",
-                                  histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.FailedTime.5msTo10ms",
+                               histogram_value);
     } else {
-      UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.Functions.FailedTime.Over10ms",
-                                  histogram_value);
+      base::UmaHistogramSparse("Extensions.Functions.FailedTime.Over10ms",
+                               histogram_value);
     }
     UMA_HISTOGRAM_TIMES("Extensions.Functions.FailedTotalExecutionTime",
                         elapsed_time);
   }
 }
 
+void LogBadMessage(extensions::functions::HistogramValue histogram_value) {
+  base::RecordAction(base::UserMetricsAction("BadMessageTerminate_EFD"));
+  // Track the specific function's |histogram_value|, as this may indicate a
+  // bug in that API's implementation.
+  UMA_HISTOGRAM_ENUMERATION("Extensions.BadMessageFunctionName",
+                            histogram_value,
+                            extensions::functions::ENUM_BOUNDARY);
+}
+
+template <class T>
+void ReceivedBadMessage(T* bad_message_sender,
+                        extensions::bad_message::BadMessageReason reason,
+                        extensions::functions::HistogramValue histogram_value) {
+  LogBadMessage(histogram_value);
+  // The renderer has done validation before sending extension api requests.
+  // Therefore, we should never receive a request that is invalid in a way
+  // that JSON validation in the renderer should have caught. It could be an
+  // attacker trying to exploit the browser, so we crash the renderer instead.
+  extensions::bad_message::ReceivedBadMessage(bad_message_sender, reason);
+}
+
 class ArgumentListResponseValue
     : public ExtensionFunction::ResponseValueObject {
  public:
-  ArgumentListResponseValue(const std::string& function_name,
-                            const char* title,
-                            ExtensionFunction* function,
-                            std::unique_ptr<base::ListValue> result)
-      : function_name_(function_name), title_(title) {
-    if (function->GetResultList()) {
-      DCHECK_EQ(function->GetResultList(), result.get())
-          << "The result set on this function (" << function_name_ << ") "
-          << "either by calling SetResult() or directly modifying |result_| is "
-          << "different to the one passed to " << title_ << "(). "
-          << "The best way to fix this problem is to exclusively use " << title_
-          << "(). SetResult() and |result_| are deprecated.";
-    } else {
-      function->SetResultList(std::move(result));
-    }
+  ArgumentListResponseValue(ExtensionFunction* function,
+                            std::unique_ptr<base::ListValue> result) {
+    SetFunctionResults(function, std::move(result));
     // It would be nice to DCHECK(error.empty()) but some legacy extension
     // function implementations... I'm looking at chrome.input.ime... do this
     // for some reason.
@@ -102,24 +113,15 @@ class ArgumentListResponseValue
   ~ArgumentListResponseValue() override {}
 
   bool Apply() override { return true; }
-
- private:
-  std::string function_name_;
-  const char* title_;
 };
 
 class ErrorWithArgumentsResponseValue : public ArgumentListResponseValue {
  public:
-  ErrorWithArgumentsResponseValue(const std::string& function_name,
-                                  const char* title,
-                                  ExtensionFunction* function,
+  ErrorWithArgumentsResponseValue(ExtensionFunction* function,
                                   std::unique_ptr<base::ListValue> result,
                                   const std::string& error)
-      : ArgumentListResponseValue(function_name,
-                                  title,
-                                  function,
-                                  std::move(result)) {
-    function->SetError(error);
+      : ArgumentListResponseValue(function, std::move(result)) {
+    SetFunctionError(function, error);
   }
 
   ~ErrorWithArgumentsResponseValue() override {}
@@ -132,7 +134,7 @@ class ErrorResponseValue : public ExtensionFunction::ResponseValueObject {
   ErrorResponseValue(ExtensionFunction* function, const std::string& error) {
     // It would be nice to DCHECK(!error.empty()) but too many legacy extension
     // function implementations don't set error but signal failure.
-    function->SetError(error);
+    SetFunctionError(function, error);
   }
 
   ~ErrorResponseValue() override {}
@@ -143,7 +145,7 @@ class ErrorResponseValue : public ExtensionFunction::ResponseValueObject {
 class BadMessageResponseValue : public ExtensionFunction::ResponseValueObject {
  public:
   explicit BadMessageResponseValue(ExtensionFunction* function) {
-    function->set_bad_message(true);
+    function->SetBadMessage();
     NOTREACHED() << function->name() << ": bad message";
   }
 
@@ -174,6 +176,13 @@ class RespondLaterAction : public ExtensionFunction::ResponseActionObject {
   void Execute() override {}
 };
 
+class AlreadyRespondedAction : public ExtensionFunction::ResponseActionObject {
+ public:
+  ~AlreadyRespondedAction() override {}
+
+  void Execute() override {}
+};
+
 // Used in implementation of ScopedUserGestureForTests.
 class UserGestureForTests {
  public:
@@ -192,7 +201,7 @@ class UserGestureForTests {
   UserGestureForTests();
   friend struct base::DefaultSingletonTraits<UserGestureForTests>;
 
-  base::Lock lock_; // for protecting access to count_
+  base::Lock lock_;  // for protecting access to |count_|
   int count_;
 };
 
@@ -221,8 +230,27 @@ void UserGestureForTests::DecrementCount() {
 
 }  // namespace
 
+void ExtensionFunction::ResponseValueObject::SetFunctionResults(
+    ExtensionFunction* function,
+    std::unique_ptr<base::ListValue> results) {
+  DCHECK(!function->results_) << "Function " << function->name_
+                              << "already has results set.";
+  function->results_ = std::move(results);
+}
+
+void ExtensionFunction::ResponseValueObject::SetFunctionError(
+    ExtensionFunction* function,
+    const std::string& error) {
+  DCHECK(function->error_.empty()) << "Function " << function->name_
+                                   << "already has an error.";
+  function->error_ = error;
+}
+
 // static
 bool ExtensionFunction::ignore_all_did_respond_for_testing_do_not_use = false;
+
+// static
+const char ExtensionFunction::kUnknownErrorDoNotUse[] = "Unknown error.";
 
 // static
 void ExtensionFunctionDeleteTraits::Destruct(const ExtensionFunction* x) {
@@ -255,10 +283,6 @@ class UIThreadExtensionFunction::RenderFrameHostTracker
         function_->OnMessageReceived(message);
   }
 
-  bool OnMessageReceived(const IPC::Message& message) override {
-    return function_->OnMessageReceived(message);
-  }
-
   UIThreadExtensionFunction* function_;  // Owns us.
 
   DISALLOW_COPY_AND_ASSIGN(RenderFrameHostTracker);
@@ -269,11 +293,10 @@ ExtensionFunction::ExtensionFunction()
       profile_id_(NULL),
       name_(""),
       has_callback_(false),
-      include_incognito_(false),
+      include_incognito_information_(false),
       user_gesture_(false),
       bad_message_(false),
       histogram_value_(extensions::functions::UNKNOWN),
-      source_tab_id_(-1),
       source_context_type_(Feature::UNSPECIFIED_CONTEXT),
       source_process_id_(-1),
       did_respond_(false) {}
@@ -289,43 +312,35 @@ IOThreadExtensionFunction* ExtensionFunction::AsIOThreadExtensionFunction() {
   return NULL;
 }
 
-bool ExtensionFunction::HasPermission() {
+bool ExtensionFunction::HasPermission() const {
   Feature::Availability availability =
       ExtensionAPI::GetSharedInstance()->IsAvailable(
-          name_, extension_.get(), source_context_type_, source_url());
+          name_, extension_.get(), source_context_type_, source_url(),
+          extensions::CheckAliasStatus::ALLOWED);
   return availability.is_available();
 }
 
 void ExtensionFunction::OnQuotaExceeded(const std::string& violation_error) {
   error_ = violation_error;
-  SendResponse(false);
+  SendResponseImpl(false);
 }
 
-void ExtensionFunction::SetArgs(const base::ListValue* args) {
+void ExtensionFunction::SetArgs(base::Value args) {
+  DCHECK(args.is_list());
   DCHECK(!args_.get());  // Should only be called once.
-  args_ = args->CreateDeepCopy();
-}
-
-void ExtensionFunction::SetResult(std::unique_ptr<base::Value> result) {
-  results_.reset(new base::ListValue());
-  results_->Append(std::move(result));
-}
-
-void ExtensionFunction::SetResultList(
-    std::unique_ptr<base::ListValue> results) {
-  results_ = std::move(results);
+  args_ = base::ListValue::From(base::Value::ToUniquePtrValue(std::move(args)));
 }
 
 const base::ListValue* ExtensionFunction::GetResultList() const {
   return results_.get();
 }
 
-std::string ExtensionFunction::GetError() const {
+const std::string& ExtensionFunction::GetError() const {
   return error_;
 }
 
-void ExtensionFunction::SetError(const std::string& error) {
-  error_ = error;
+void ExtensionFunction::SetBadMessage() {
+  bad_message_ = true;
 }
 
 bool ExtensionFunction::user_gesture() const {
@@ -333,16 +348,15 @@ bool ExtensionFunction::user_gesture() const {
 }
 
 ExtensionFunction::ResponseValue ExtensionFunction::NoArguments() {
-  return ResponseValue(new ArgumentListResponseValue(
-      name(), "NoArguments", this, base::WrapUnique(new base::ListValue())));
+  return ResponseValue(
+      new ArgumentListResponseValue(this, std::make_unique<base::ListValue>()));
 }
 
 ExtensionFunction::ResponseValue ExtensionFunction::OneArgument(
     std::unique_ptr<base::Value> arg) {
   std::unique_ptr<base::ListValue> args(new base::ListValue());
   args->Append(std::move(arg));
-  return ResponseValue(new ArgumentListResponseValue(name(), "OneArgument",
-                                                     this, std::move(args)));
+  return ResponseValue(new ArgumentListResponseValue(this, std::move(args)));
 }
 
 ExtensionFunction::ResponseValue ExtensionFunction::TwoArguments(
@@ -351,14 +365,12 @@ ExtensionFunction::ResponseValue ExtensionFunction::TwoArguments(
   std::unique_ptr<base::ListValue> args(new base::ListValue());
   args->Append(std::move(arg1));
   args->Append(std::move(arg2));
-  return ResponseValue(new ArgumentListResponseValue(name(), "TwoArguments",
-                                                     this, std::move(args)));
+  return ResponseValue(new ArgumentListResponseValue(this, std::move(args)));
 }
 
 ExtensionFunction::ResponseValue ExtensionFunction::ArgumentList(
     std::unique_ptr<base::ListValue> args) {
-  return ResponseValue(new ArgumentListResponseValue(name(), "ArgumentList",
-                                                     this, std::move(args)));
+  return ResponseValue(new ArgumentListResponseValue(this, std::move(args)));
 }
 
 ExtensionFunction::ResponseValue ExtensionFunction::Error(
@@ -393,8 +405,8 @@ ExtensionFunction::ResponseValue ExtensionFunction::Error(
 ExtensionFunction::ResponseValue ExtensionFunction::ErrorWithArguments(
     std::unique_ptr<base::ListValue> args,
     const std::string& error) {
-  return ResponseValue(new ErrorWithArgumentsResponseValue(
-      name(), "ErrorWithArguments", this, std::move(args), error));
+  return ResponseValue(
+      new ErrorWithArgumentsResponseValue(this, std::move(args), error));
 }
 
 ExtensionFunction::ResponseValue ExtensionFunction::BadMessage() {
@@ -404,11 +416,18 @@ ExtensionFunction::ResponseValue ExtensionFunction::BadMessage() {
 ExtensionFunction::ResponseAction ExtensionFunction::RespondNow(
     ResponseValue result) {
   return ResponseAction(new RespondNowAction(
-      std::move(result), base::Bind(&ExtensionFunction::SendResponse, this)));
+      std::move(result),
+      base::Bind(&ExtensionFunction::SendResponseImpl, this)));
 }
 
 ExtensionFunction::ResponseAction ExtensionFunction::RespondLater() {
   return ResponseAction(new RespondLaterAction());
+}
+
+ExtensionFunction::ResponseAction ExtensionFunction::AlreadyResponded() {
+  DCHECK(did_respond()) << "ExtensionFunction did not call Respond(),"
+                           " but Run() returned AlreadyResponded()";
+  return ResponseAction(new AlreadyRespondedAction());
 }
 
 // static
@@ -418,7 +437,7 @@ ExtensionFunction::ResponseAction ExtensionFunction::ValidationFailure(
 }
 
 void ExtensionFunction::Respond(ResponseValue result) {
-  SendResponse(result->Apply());
+  SendResponseImpl(result->Apply());
 }
 
 bool ExtensionFunction::PreRunValidation(std::string* error) {
@@ -440,47 +459,53 @@ bool ExtensionFunction::ShouldSkipQuotaLimiting() const {
 
 bool ExtensionFunction::HasOptionalArgument(size_t index) {
   base::Value* value;
-  return args_->Get(index, &value) && !value->IsType(base::Value::TYPE_NULL);
+  return args_->Get(index, &value) && !value->is_none();
 }
 
 void ExtensionFunction::SendResponseImpl(bool success) {
   DCHECK(!response_callback_.is_null());
+  DCHECK(!did_respond_) << name_;
+  did_respond_ = true;
 
-  ResponseType type = success ? SUCCEEDED : FAILED;
+  ResponseType response = success ? SUCCEEDED : FAILED;
   if (bad_message_) {
-    type = BAD_MESSAGE;
+    response = BAD_MESSAGE;
     LOG(ERROR) << "Bad extension message " << name_;
   }
+  response_type_ = std::make_unique<ResponseType>(response);
 
   // If results were never set, we send an empty argument list.
   if (!results_)
     results_.reset(new base::ListValue());
 
-  response_callback_.Run(type, *results_, GetError(), histogram_value());
+  response_callback_.Run(response, *results_, GetError(), histogram_value());
   LogUma(success, timer_.Elapsed(), histogram_value_);
-}
 
-void ExtensionFunction::OnRespondingLater(ResponseValue value) {
-  SendResponse(value->Apply());
+  OnResponded();
 }
 
 UIThreadExtensionFunction::UIThreadExtensionFunction()
     : context_(nullptr),
       render_frame_host_(nullptr),
-      is_from_service_worker_(false),
-      delegate_(nullptr) {}
+      service_worker_version_id_(blink::mojom::kInvalidServiceWorkerVersionId) {
+}
 
 UIThreadExtensionFunction::~UIThreadExtensionFunction() {
-  if (dispatcher() && render_frame_host())
-    dispatcher()->OnExtensionFunctionCompleted(extension());
+  if (dispatcher() && (render_frame_host() || is_from_service_worker())) {
+    dispatcher()->OnExtensionFunctionCompleted(
+        extension(), is_from_service_worker(), name());
+  }
+
   // The extension function should always respond to avoid leaks in the
   // renderer, dangling callbacks, etc. The exception is if the system is
   // shutting down.
   // TODO(devlin): Duplicate this check in IOThreadExtensionFunction. It's
   // tricky because checking IsShuttingDown has to be called from the UI thread.
-  DCHECK(extensions::ExtensionsBrowserClient::Get()->IsShuttingDown() ||
-         did_respond_ || ignore_all_did_respond_for_testing_do_not_use)
-      << name_;
+  extensions::ExtensionsBrowserClient* browser_client =
+      extensions::ExtensionsBrowserClient::Get();
+  DCHECK(!browser_client || browser_client->IsShuttingDown() || did_respond() ||
+         ignore_all_did_respond_for_testing_do_not_use)
+      << name();
 }
 
 UIThreadExtensionFunction*
@@ -508,6 +533,18 @@ bool UIThreadExtensionFunction::PreRunValidation(std::string* error) {
   return true;
 }
 
+void UIThreadExtensionFunction::SetBadMessage() {
+  ExtensionFunction::SetBadMessage();
+
+  if (render_frame_host()) {
+    ReceivedBadMessage(render_frame_host()->GetProcess(),
+                       is_from_service_worker()
+                           ? extensions::bad_message::EFD_BAD_MESSAGE_WORKER
+                           : extensions::bad_message::EFD_BAD_MESSAGE,
+                       histogram_value());
+  }
+}
+
 bool UIThreadExtensionFunction::OnMessageReceived(const IPC::Message& message) {
   return false;
 }
@@ -516,15 +553,10 @@ void UIThreadExtensionFunction::Destruct() const {
   BrowserThread::DeleteOnUIThread::Destruct(this);
 }
 
-content::RenderViewHost*
-UIThreadExtensionFunction::render_view_host_do_not_use() const {
-  return render_frame_host_ ? render_frame_host_->GetRenderViewHost() : nullptr;
-}
-
 void UIThreadExtensionFunction::SetRenderFrameHost(
     content::RenderFrameHost* render_frame_host) {
   // An extension function from Service Worker does not have a RenderFrameHost.
-  if (is_from_service_worker_) {
+  if (is_from_service_worker()) {
     DCHECK(!render_frame_host);
     return;
   }
@@ -535,29 +567,13 @@ void UIThreadExtensionFunction::SetRenderFrameHost(
       render_frame_host ? new RenderFrameHostTracker(this) : nullptr);
 }
 
-content::WebContents* UIThreadExtensionFunction::GetAssociatedWebContents() {
-  content::WebContents* web_contents = NULL;
-  if (dispatcher())
-    web_contents = dispatcher()->GetAssociatedWebContents();
-
-  return web_contents;
-}
-
 content::WebContents* UIThreadExtensionFunction::GetSenderWebContents() {
   return render_frame_host_ ?
       content::WebContents::FromRenderFrameHost(render_frame_host_) : nullptr;
 }
 
-void UIThreadExtensionFunction::SendResponse(bool success) {
-  DCHECK(!did_respond_) << name_;
-  did_respond_ = true;
-  if (delegate_)
-    delegate_->OnSendResponse(this, success, bad_message_);
-  else
-    SendResponseImpl(success);
-
+void UIThreadExtensionFunction::OnResponded() {
   if (!transferred_blob_uuids_.empty()) {
-    DCHECK(!delegate_) << "Blob transfer not supported with test delegate.";
     render_frame_host_->Send(
         new ExtensionMsg_TransferBlobs(transferred_blob_uuids_));
   }
@@ -578,9 +594,7 @@ void UIThreadExtensionFunction::WriteToConsole(
       ->AddMessageToConsole(level, message);
 }
 
-IOThreadExtensionFunction::IOThreadExtensionFunction()
-    : routing_id_(MSG_ROUTING_NONE) {
-}
+IOThreadExtensionFunction::IOThreadExtensionFunction() {}
 
 IOThreadExtensionFunction::~IOThreadExtensionFunction() {
 }
@@ -590,20 +604,17 @@ IOThreadExtensionFunction::AsIOThreadExtensionFunction() {
   return this;
 }
 
+void IOThreadExtensionFunction::SetBadMessage() {
+  ExtensionFunction::SetBadMessage();
+  if (ipc_sender_) {
+    ReceivedBadMessage(
+        static_cast<content::BrowserMessageFilter*>(ipc_sender_.get()),
+        extensions::bad_message::EFD_BAD_MESSAGE, histogram_value());
+  }
+}
+
 void IOThreadExtensionFunction::Destruct() const {
   BrowserThread::DeleteOnIOThread::Destruct(this);
-}
-
-void IOThreadExtensionFunction::SendResponse(bool success) {
-  DCHECK(!did_respond_) << name_;
-  did_respond_ = true;
-  SendResponseImpl(success);
-}
-
-AsyncExtensionFunction::AsyncExtensionFunction() {
-}
-
-AsyncExtensionFunction::~AsyncExtensionFunction() {
 }
 
 ExtensionFunction::ScopedUserGestureForTests::ScopedUserGestureForTests() {
@@ -612,47 +623,4 @@ ExtensionFunction::ScopedUserGestureForTests::ScopedUserGestureForTests() {
 
 ExtensionFunction::ScopedUserGestureForTests::~ScopedUserGestureForTests() {
   UserGestureForTests::GetInstance()->DecrementCount();
-}
-
-ExtensionFunction::ResponseAction AsyncExtensionFunction::Run() {
-  return RunAsync() ? RespondLater() : RespondNow(Error(error_));
-}
-
-// static
-bool AsyncExtensionFunction::ValidationFailure(
-    AsyncExtensionFunction* function) {
-  return false;
-}
-
-SyncExtensionFunction::SyncExtensionFunction() {
-}
-
-SyncExtensionFunction::~SyncExtensionFunction() {
-}
-
-ExtensionFunction::ResponseAction SyncExtensionFunction::Run() {
-  return RespondNow(RunSync() ? ArgumentList(std::move(results_))
-                              : Error(error_));
-}
-
-// static
-bool SyncExtensionFunction::ValidationFailure(SyncExtensionFunction* function) {
-  return false;
-}
-
-SyncIOThreadExtensionFunction::SyncIOThreadExtensionFunction() {
-}
-
-SyncIOThreadExtensionFunction::~SyncIOThreadExtensionFunction() {
-}
-
-ExtensionFunction::ResponseAction SyncIOThreadExtensionFunction::Run() {
-  return RespondNow(RunSync() ? ArgumentList(std::move(results_))
-                              : Error(error_));
-}
-
-// static
-bool SyncIOThreadExtensionFunction::ValidationFailure(
-    SyncIOThreadExtensionFunction* function) {
-  return false;
 }

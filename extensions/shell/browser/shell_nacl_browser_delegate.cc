@@ -8,6 +8,7 @@
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
+#include "base/logging.h"
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -30,39 +31,6 @@ using content::BrowserThread;
 using content::BrowserPpapiHost;
 
 namespace extensions {
-namespace {
-
-// Handles an extension's NaCl process transitioning in or out of idle state by
-// relaying the state to the extension's process manager. See Chrome's
-// NaClBrowserDelegateImpl for another example.
-void OnKeepaliveOnUIThread(
-    const BrowserPpapiHost::OnKeepaliveInstanceData& instance_data,
-    const base::FilePath& profile_data_directory) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-
-  // Only one instance will exist for NaCl embeds, even when more than one
-  // embed of the same plugin exists on the same page.
-  DCHECK(instance_data.size() == 1);
-  if (instance_data.size() < 1)
-    return;
-
-  ProcessManager::OnKeepaliveFromPlugin(instance_data[0].render_process_id,
-                                        instance_data[0].render_frame_id,
-                                        instance_data[0].document_url.host());
-}
-
-// Calls OnKeepaliveOnUIThread on UI thread.
-void OnKeepalive(const BrowserPpapiHost::OnKeepaliveInstanceData& instance_data,
-                 const base::FilePath& profile_data_directory) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  BrowserThread::PostTask(
-      BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(
-          &OnKeepaliveOnUIThread, instance_data, profile_data_directory));
-}
-
-}  // namespace
 
 ShellNaClBrowserDelegate::ShellNaClBrowserDelegate(BrowserContext* context)
     : browser_context_(context) {
@@ -85,16 +53,16 @@ bool ShellNaClBrowserDelegate::DialogsAreSuppressed() {
 bool ShellNaClBrowserDelegate::GetCacheDirectory(base::FilePath* cache_dir) {
   // Just use the general cache directory, not a subdirectory like Chrome does.
 #if defined(OS_POSIX)
-  return PathService::Get(base::DIR_CACHE, cache_dir);
+  return base::PathService::Get(base::DIR_CACHE, cache_dir);
 #elif defined(OS_WIN)
   // TODO(yoz): Find an appropriate persistent directory to use here.
-  return PathService::Get(base::DIR_TEMP, cache_dir);
+  return base::PathService::Get(base::DIR_TEMP, cache_dir);
 #endif
 }
 
 bool ShellNaClBrowserDelegate::GetPluginDirectory(base::FilePath* plugin_dir) {
   // On Posix, plugins are in the module directory.
-  return PathService::Get(base::DIR_MODULE, plugin_dir);
+  return base::PathService::Get(base::DIR_MODULE, plugin_dir);
 }
 
 bool ShellNaClBrowserDelegate::GetPnaclDirectory(base::FilePath* pnacl_dir) {
@@ -146,11 +114,13 @@ bool ShellNaClBrowserDelegate::MapUrlToLocalFilePath(
     bool use_blocking_api,
     const base::FilePath& profile_directory,
     base::FilePath* file_path) {
-  scoped_refptr<InfoMap> info_map =
-      ExtensionSystem::Get(browser_context_)->info_map();
+  ExtensionSystem* extension_system = ExtensionSystem::Get(browser_context_);
+  DCHECK(extension_system);
+
   // Check that the URL is recognized by the extension system.
   const Extension* extension =
-      info_map->extensions().GetExtensionOrAppByURL(file_url);
+      extension_system->info_map()->extensions().GetExtensionOrAppByURL(
+          file_url);
   if (!extension)
     return false;
 
@@ -180,11 +150,6 @@ bool ShellNaClBrowserDelegate::MapUrlToLocalFilePath(
 
   *file_path = resource_file_path;
   return true;
-}
-
-content::BrowserPpapiHost::OnKeepaliveCallback
-ShellNaClBrowserDelegate::GetOnKeepaliveCallback() {
-  return base::Bind(&OnKeepalive);
 }
 
 bool ShellNaClBrowserDelegate::IsNonSfiModeAllowed(

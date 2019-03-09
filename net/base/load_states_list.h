@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// This file intentionally does not have header guards, it's included
+// inside a macro to generate values. The following line silences a
+// presubmit warning that would otherwise be triggered by this:
+// no-include-guard-because-multiply-included
+
 // This is the list of load states and their values. For the enum values,
 // include the file "net/base/load_states.h".
 //
@@ -48,7 +53,7 @@ LOAD_STATE(WAITING_FOR_APPCACHE, 5)
 
 // This state corresponds to a resource being blocked waiting for the
 // PAC script to be downloaded.
-LOAD_STATE(DOWNLOADING_PROXY_SCRIPT, 6)
+LOAD_STATE(DOWNLOADING_PAC_FILE, 6)
 
 // This state corresponds to a resource load that is blocked waiting for a
 // proxy autoconfig script to return a proxy server to use.
@@ -57,7 +62,7 @@ LOAD_STATE(RESOLVING_PROXY_FOR_URL, 7)
 // This state corresponds to a resource load that is blocked waiting for a
 // proxy autoconfig script to return a proxy server to use, but that proxy
 // script is busy resolving the IP address of a host.
-LOAD_STATE(RESOLVING_HOST_IN_PROXY_SCRIPT, 8)
+LOAD_STATE(RESOLVING_HOST_IN_PAC_FILE, 8)
 
 // This state indicates that we're in the process of establishing a tunnel
 // through the proxy server.

@@ -9,13 +9,13 @@
 #include <string>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
@@ -23,17 +23,19 @@
 #include "base/run_loop.h"
 #include "base/scoped_observer.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "device/core/device_client.h"
+#include "device/base/device_client.h"
 #include "device/test/usb_test_gadget.h"
 #include "device/usb/usb_device.h"
 #include "device/usb/usb_device_handle.h"
 #include "device/usb/usb_service.h"
 #include "net/base/escape.h"
-#include "net/proxy/proxy_service.h"
+#include "net/proxy_resolution/proxy_resolution_service.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_fetcher.h"
 #include "net/url_request/url_fetcher_delegate.h"
 #include "net/url_request/url_request_context.h"
@@ -93,7 +95,7 @@ bool ReadFile(const base::FilePath& file_path, std::string* content) {
     return false;
   }
 
-  STLClearObject(content);
+  base::STLClearObject(content);
   int rv;
   do {
     char buf[4096];
@@ -111,7 +113,7 @@ bool ReadFile(const base::FilePath& file_path, std::string* content) {
 
 bool ReadLocalVersion(std::string* version) {
   base::FilePath file_path;
-  CHECK(PathService::Get(base::DIR_EXE, &file_path));
+  CHECK(base::PathService::Get(base::DIR_EXE, &file_path));
   file_path = file_path.AppendASCII("usb_gadget.zip.md5");
 
   return ReadFile(file_path, version);
@@ -119,7 +121,7 @@ bool ReadLocalVersion(std::string* version) {
 
 bool ReadLocalPackage(std::string* package) {
   base::FilePath file_path;
-  CHECK(PathService::Get(base::DIR_EXE, &file_path));
+  CHECK(base::PathService::Get(base::DIR_EXE, &file_path));
   file_path = file_path.AppendASCII("usb_gadget.zip");
 
   return ReadFile(file_path, package);
@@ -130,8 +132,8 @@ std::unique_ptr<net::URLFetcher> CreateURLFetcher(
     const GURL& url,
     net::URLFetcher::RequestType request_type,
     net::URLFetcherDelegate* delegate) {
-  std::unique_ptr<net::URLFetcher> url_fetcher =
-      net::URLFetcher::Create(url, request_type, delegate);
+  std::unique_ptr<net::URLFetcher> url_fetcher = net::URLFetcher::Create(
+      url, request_type, delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
 
   url_fetcher->SetRequestContext(request_context_getter.get());
 
@@ -145,13 +147,14 @@ class URLRequestContextGetter : public net::URLRequestContextGetter {
       : network_task_runner_(network_task_runner) {}
 
  private:
-  ~URLRequestContextGetter() override {}
+  ~URLRequestContextGetter() override = default;
 
   // net::URLRequestContextGetter implementation
   net::URLRequestContext* GetURLRequestContext() override {
     if (!context_) {
       net::URLRequestContextBuilder context_builder;
-      context_builder.set_proxy_service(net::ProxyService::CreateDirect());
+      context_builder.set_proxy_resolution_service(
+          net::ProxyResolutionService::CreateDirect());
       context_ = context_builder.Build();
     }
     return context_.get();
@@ -168,8 +171,8 @@ class URLRequestContextGetter : public net::URLRequestContextGetter {
 
 class URLFetcherDelegate : public net::URLFetcherDelegate {
  public:
-  URLFetcherDelegate() {}
-  ~URLFetcherDelegate() override {}
+  URLFetcherDelegate() = default;
+  ~URLFetcherDelegate() override = default;
 
   void WaitForCompletion() { run_loop_.Run(); }
 
@@ -208,18 +211,19 @@ class UsbGadgetFactory : public UsbService::Observer,
 
     static uint32_t next_session_id;
     base::ProcessId process_id = base::GetCurrentProcId();
-    session_id_ = base::StringPrintf("%d-%d", process_id, next_session_id++);
+    session_id_ =
+        base::StringPrintf("%" CrPRIdPid "-%d", process_id, next_session_id++);
 
     observer_.Add(usb_service_);
   }
 
-  ~UsbGadgetFactory() override {}
+  ~UsbGadgetFactory() override = default;
 
   std::unique_ptr<UsbTestGadget> WaitForDevice() {
     EnumerateDevices();
     run_loop_.Run();
-    return base::WrapUnique(
-        new UsbTestGadgetImpl(request_context_getter_, usb_service_, device_));
+    return std::make_unique<UsbTestGadgetImpl>(request_context_getter_,
+                                               usb_service_, device_);
   }
 
  private:
@@ -240,8 +244,9 @@ class UsbGadgetFactory : public UsbService::Observer,
       // TODO(reillyg): This timer could be replaced by a way to use long-
       // polling to wait for claimed devices to become unclaimed.
       base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-          FROM_HERE, base::Bind(&UsbGadgetFactory::EnumerateDevices,
-                                weak_factory_.GetWeakPtr()),
+          FROM_HERE,
+          base::BindOnce(&UsbGadgetFactory::EnumerateDevices,
+                         weak_factory_.GetWeakPtr()),
           base::TimeDelta::FromMilliseconds(kReenumeratePeriod));
     }
   }
@@ -380,8 +385,9 @@ class UsbGadgetFactory : public UsbService::Observer,
 
     // Wait a bit and then try again to find an available device.
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&UsbGadgetFactory::EnumerateDevices,
-                              weak_factory_.GetWeakPtr()),
+        FROM_HERE,
+        base::BindOnce(&UsbGadgetFactory::EnumerateDevices,
+                       weak_factory_.GetWeakPtr()),
         base::TimeDelta::FromMilliseconds(kReenumeratePeriod));
   }
 
@@ -410,7 +416,7 @@ class DeviceAddListener : public UsbService::Observer {
         weak_factory_(this) {
     observer_.Add(usb_service_);
   }
-  ~DeviceAddListener() override {}
+  ~DeviceAddListener() override = default;
 
   scoped_refptr<UsbDevice> WaitForAdd() {
     usb_service_->GetDevices(base::Bind(&DeviceAddListener::OnDevicesEnumerated,
@@ -432,7 +438,7 @@ class DeviceAddListener : public UsbService::Observer {
       const uint16_t product_id = device->product_id();
       if (product_id_ == -1) {
         bool found = false;
-        for (size_t i = 0; i < arraysize(kConfigurations); ++i) {
+        for (size_t i = 0; i < base::size(kConfigurations); ++i) {
           if (product_id == kConfigurations[i].product_id) {
             found = true;
             break;
@@ -476,7 +482,7 @@ class DeviceRemoveListener : public UsbService::Observer {
         weak_factory_(this) {
     observer_.Add(usb_service_);
   }
-  ~DeviceRemoveListener() override {}
+  ~DeviceRemoveListener() override = default;
 
   void WaitForRemove() {
     usb_service_->GetDevices(
@@ -564,7 +570,7 @@ bool UsbTestGadgetImpl::Unclaim() {
 
 bool UsbTestGadgetImpl::SetType(Type type) {
   const struct UsbTestGadgetConfiguration* config = NULL;
-  for (size_t i = 0; i < arraysize(kConfigurations); ++i) {
+  for (size_t i = 0; i < base::size(kConfigurations); ++i) {
     if (kConfigurations[i].type == type) {
       config = &kConfigurations[i];
     }

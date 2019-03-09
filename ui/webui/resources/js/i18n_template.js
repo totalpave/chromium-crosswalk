@@ -3,5 +3,4 @@
 // found in the LICENSE file.
 
 // <include src="i18n_template_no_process.js">
-
-i18nTemplate.process(document, loadTimeData);
+// <include src="i18n_template_process.js">

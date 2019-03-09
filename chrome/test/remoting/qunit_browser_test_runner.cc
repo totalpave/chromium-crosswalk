@@ -6,6 +6,7 @@
 
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -22,8 +23,8 @@ void QUnitBrowserTestRunner::QUnitStart(content::WebContents* web_contents) {
       web_contents, "browserTestHarness.run();", &result));
 
   // Read in the JSON.
-  std::unique_ptr<base::Value> value =
-      base::JSONReader::Read(result, base::JSON_ALLOW_TRAILING_COMMAS);
+  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(
+      result, base::JSON_ALLOW_TRAILING_COMMAS);
 
   // Convert to dictionary.
   base::DictionaryValue* dict_value = NULL;
@@ -39,8 +40,11 @@ void QUnitBrowserTestRunner::QUnitStart(content::WebContents* web_contents) {
 }
 
 void QUnitBrowserTestRunner::RunTest(const base::FilePath& file) {
-  ASSERT_TRUE(PathExists(file)) << "Error: The QUnit test suite <"
-                                << file.value() << "> does not exist.";
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    ASSERT_TRUE(PathExists(file)) << "Error: The QUnit test suite <"
+                                  << file.value() << "> does not exist.";
+  }
   ui_test_utils::NavigateToURL(browser(), net::FilePathToFileURL(file));
 
   content::WebContents* web_contents =

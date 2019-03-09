@@ -4,12 +4,13 @@
 
 #include "remoting/protocol/stream_message_pipe_adapter.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/callback_helpers.h"
-#include "base/memory/ptr_util.h"
 #include "net/base/net_errors.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "remoting/base/buffered_socket_writer.h"
 #include "remoting/base/compound_buffer.h"
 #include "remoting/protocol/message_serialization.h"
@@ -22,39 +23,75 @@ namespace protocol {
 StreamMessagePipeAdapter::StreamMessagePipeAdapter(
     std::unique_ptr<P2PStreamSocket> socket,
     const ErrorCallback& error_callback)
-    : socket_(std::move(socket)),
-      error_callback_(error_callback),
-      writer_(new BufferedSocketWriter()) {
+    : socket_(std::move(socket)), error_callback_(error_callback) {
   DCHECK(socket_);
-  DCHECK(!error_callback_.is_null());
+  DCHECK(error_callback_);
+}
 
+StreamMessagePipeAdapter::~StreamMessagePipeAdapter() = default;
+
+void StreamMessagePipeAdapter::Start(EventHandler* event_handler) {
+  DCHECK(event_handler);
+  event_handler_ = event_handler;
+
+  writer_ = std::make_unique<BufferedSocketWriter>();
   writer_->Start(
       base::Bind(&P2PStreamSocket::Write, base::Unretained(socket_.get())),
       base::Bind(&StreamMessagePipeAdapter::CloseOnError,
                  base::Unretained(this)));
-}
 
-StreamMessagePipeAdapter::~StreamMessagePipeAdapter() {}
+  reader_ = std::make_unique<MessageReader>();
+  reader_->StartReading(socket_.get(),
+                        base::Bind(&EventHandler::OnMessageReceived,
+                                   base::Unretained(event_handler_)),
+                        base::Bind(&StreamMessagePipeAdapter::CloseOnError,
+                                   base::Unretained(this)));
 
-void StreamMessagePipeAdapter::StartReceiving(
-    const MessageReceivedCallback& callback) {
-  reader_.StartReading(socket_.get(), callback,
-                       base::Bind(&StreamMessagePipeAdapter::CloseOnError,
-                                  base::Unretained(this)));
+  event_handler_->OnMessagePipeOpen();
 }
 
 void StreamMessagePipeAdapter::Send(google::protobuf::MessageLite* message,
-                                    const base::Closure& done) {
+                                    base::OnceClosure done) {
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("stream_message_pipe_adapter", R"(
+        semantics {
+          sender: "Stream Message Pipe Adapter"
+          description: "Chrome Remote Desktop P2P channel."
+          trigger: "Initiating a Chrome Remote Desktop connection."
+          data:
+            "Chrome Remote Desktop session data, including video and input "
+            "events."
+          destination: OTHER
+          destination_other:
+            "The Chrome Remote Desktop client/host that user is connecting to."
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This request cannot be stopped in settings, but will not be sent "
+            "if user does not use Chrome Remote Desktop."
+          policy_exception_justification:
+            "Not implemented. 'RemoteAccessHostClientDomainList' and "
+            "'RemoteAccessHostDomainList' policies can limit the domains to "
+            "which a connection can be made, but they cannot be used to block "
+            "the request to all domains. Please refer to help desk for other "
+            "approaches to manage this feature."
+        })");
   if (writer_)
-    writer_->Write(SerializeAndFrameMessage(*message), done);
+    writer_->Write(SerializeAndFrameMessage(*message), std::move(done),
+                   traffic_annotation);
 }
 
 void StreamMessagePipeAdapter::CloseOnError(int error) {
-  // Stop writing on error.
+  // Stop reading and writing on error.
   writer_.reset();
+  reader_.reset();
 
-  if (!error_callback_.is_null())
+  if (error == 0) {
+    event_handler_->OnMessagePipeClosed();
+  } else if (error_callback_) {
     base::ResetAndReturn(&error_callback_).Run(error);
+  }
 }
 
 StreamMessageChannelFactoryAdapter::StreamMessageChannelFactoryAdapter(
@@ -63,7 +100,8 @@ StreamMessageChannelFactoryAdapter::StreamMessageChannelFactoryAdapter(
     : stream_channel_factory_(stream_channel_factory),
       error_callback_(error_callback) {}
 
-StreamMessageChannelFactoryAdapter::~StreamMessageChannelFactoryAdapter() {}
+StreamMessageChannelFactoryAdapter::~StreamMessageChannelFactoryAdapter() =
+    default;
 
 void StreamMessageChannelFactoryAdapter::CreateChannel(
     const std::string& name,
@@ -85,8 +123,8 @@ void StreamMessageChannelFactoryAdapter::OnChannelCreated(
     error_callback_.Run(net::ERR_FAILED);
     return;
   }
-  callback.Run(base::WrapUnique(
-      new StreamMessagePipeAdapter(std::move(socket), error_callback_)));
+  callback.Run(std::make_unique<StreamMessagePipeAdapter>(std::move(socket),
+                                                          error_callback_));
 }
 
 }  // namespace protocol

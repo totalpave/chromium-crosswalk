@@ -13,17 +13,13 @@
 #include "base/memory/ref_counted.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/message_bundle.h"
+#include "third_party/skia/include/core/SkColor.h"
 
 class ExtensionIconSet;
 class GURL;
 
-namespace base {
-class FilePath;
-}
-
 namespace extensions {
 class Extension;
-class ExtensionSet;
 struct InstallWarning;
 
 // Utilities for manipulating the on-disk storage of extensions.
@@ -115,16 +111,20 @@ void DeleteFile(const base::FilePath& path, bool recursive);
 // Get a relative file path from a chrome-extension:// URL.
 base::FilePath ExtensionURLToRelativeFilePath(const GURL& url);
 
-// Get a full file path from a chrome-extension-resource:// URL, If the URL
-// points a file outside of root, this function will return empty FilePath.
-base::FilePath ExtensionResourceURLToFilePath(const GURL& url,
-                                              const base::FilePath& root);
+// If |value| is true, when ValidateExtensionIconSet is called for unpacked
+// extensions, an icon which is not sufficiently visible will be reported as
+// an error.
+void SetReportErrorForInvisibleIconForTesting(bool value);
 
-// Returns true if the icons in the icon set exist. Oherwise, populates
-// |error| with the |error_message_id| for an invalid file.
+// Returns true if the icons in |icon_set| exist. Otherwise, populates
+// |error| with the |error_message_id| for an invalid file. If an icon
+// is not sufficiently visible, and error checking is enabled, |error|
+// is populated with a different message, rather than one specified
+// by |error_message_id|.
 bool ValidateExtensionIconSet(const ExtensionIconSet& icon_set,
                               const Extension* extension,
                               int error_message_id,
+                              SkColor background_color,
                               std::string* error);
 
 // Loads extension message catalogs and returns message bundle.
@@ -140,16 +140,31 @@ MessageBundle::SubstitutionMap* LoadMessageBundleSubstitutionMap(
     const std::string& extension_id,
     const std::string& default_locale);
 
-// Loads the extension message bundle substitution map, including messages from
-// Shared Modules that the given extension imports. Contains at least the
-// extension_id item.
-MessageBundle::SubstitutionMap* LoadMessageBundleSubstitutionMapWithImports(
+// Loads the extension message bundle substitution map for a non-localized
+// extension. Contains only the extension_id item.
+// This doesn't require hitting disk, so it's safe to call on any thread.
+MessageBundle::SubstitutionMap* LoadNonLocalizedMessageBundleSubstitutionMap(
+    const std::string& extension_id);
+
+// Loads the extension message bundle substitution map from the specified paths.
+// Contains at least the extension_id item.
+MessageBundle::SubstitutionMap* LoadMessageBundleSubstitutionMapFromPaths(
+    const std::vector<base::FilePath>& paths,
     const std::string& extension_id,
-    const ExtensionSet& extension_set);
+    const std::string& default_locale);
 
 // Helper functions for getting paths for files used in content verification.
 base::FilePath GetVerifiedContentsPath(const base::FilePath& extension_path);
 base::FilePath GetComputedHashesPath(const base::FilePath& extension_path);
+
+// Helper function to get path used for the indexed ruleset by the Declarative
+// Net Request API.
+base::FilePath GetIndexedRulesetPath(const base::FilePath& extension_path);
+
+// Returns the list of file-paths reserved for use by the Extension system in
+// the kMetadataFolder.
+std::vector<base::FilePath> GetReservedMetadataFilePaths(
+    const base::FilePath& extension_path);
 
 }  // namespace file_util
 }  // namespace extensions

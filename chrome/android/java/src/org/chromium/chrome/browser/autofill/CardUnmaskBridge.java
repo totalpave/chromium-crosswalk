@@ -9,9 +9,11 @@ import android.os.Handler;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.chrome.browser.ChromeActivity;
 import org.chromium.chrome.browser.ResourceId;
 import org.chromium.chrome.browser.autofill.CardUnmaskPrompt.CardUnmaskPromptDelegate;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.DialogDismissalCause;
 
 /**
 * JNI call glue for CardUnmaskPrompt C++ and Java objects.
@@ -24,23 +26,20 @@ public class CardUnmaskBridge implements CardUnmaskPromptDelegate {
     public CardUnmaskBridge(long nativeCardUnmaskPromptViewAndroid, String title,
             String instructions, String confirmButtonLabel, int iconId,
             boolean shouldRequestExpirationDate, boolean canStoreLocally,
-            boolean defaultToStoringLocally, WindowAndroid windowAndroid) {
+            boolean defaultToStoringLocally, long successMessageDurationMilliseconds,
+            WindowAndroid windowAndroid) {
         mNativeCardUnmaskPromptViewAndroid = nativeCardUnmaskPromptViewAndroid;
         Activity activity = windowAndroid.getActivity().get();
         if (activity == null) {
             mCardUnmaskPrompt = null;
             // Clean up the native counterpart.  This is posted to allow the native counterpart
             // to fully finish the construction of this glue object before we attempt to delete it.
-            new Handler().post(new Runnable() {
-                @Override
-                public void run() {
-                    dismissed();
-                }
-            });
+            new Handler().post(() -> dismissed());
         } else {
             mCardUnmaskPrompt = new CardUnmaskPrompt(activity, this, title, instructions,
                     confirmButtonLabel, ResourceId.mapToDrawableId(iconId),
-                    shouldRequestExpirationDate, canStoreLocally, defaultToStoringLocally);
+                    shouldRequestExpirationDate, canStoreLocally, defaultToStoringLocally,
+                    successMessageDurationMilliseconds);
         }
     }
 
@@ -48,10 +47,11 @@ public class CardUnmaskBridge implements CardUnmaskPromptDelegate {
     private static CardUnmaskBridge create(long nativeUnmaskPrompt, String title,
             String instructions, String confirmButtonLabel, int iconId,
             boolean shouldRequestExpirationDate, boolean canStoreLocally,
-            boolean defaultToStoringLocally, WindowAndroid windowAndroid) {
+            boolean defaultToStoringLocally, long successMessageDurationMilliseconds,
+            WindowAndroid windowAndroid) {
         return new CardUnmaskBridge(nativeUnmaskPrompt, title, instructions, confirmButtonLabel,
                 iconId, shouldRequestExpirationDate, canStoreLocally, defaultToStoringLocally,
-                windowAndroid);
+                successMessageDurationMilliseconds, windowAndroid);
     }
 
     @Override
@@ -74,12 +74,18 @@ public class CardUnmaskBridge implements CardUnmaskPromptDelegate {
         nativeOnNewCardLinkClicked(mNativeCardUnmaskPromptViewAndroid);
     }
 
+    @Override
+    public int getExpectedCvcLength() {
+        return nativeGetExpectedCvcLength(mNativeCardUnmaskPromptViewAndroid);
+    }
+
     /**
      * Shows a prompt for unmasking a Wallet credit card.
      */
     @CalledByNative
-    private void show() {
-        if (mCardUnmaskPrompt != null) mCardUnmaskPrompt.show();
+    private void show(WindowAndroid windowAndroid) {
+        if (mCardUnmaskPrompt != null)
+            mCardUnmaskPrompt.show((ChromeActivity) (windowAndroid.getActivity().get()));
     }
 
     /**
@@ -101,7 +107,9 @@ public class CardUnmaskBridge implements CardUnmaskPromptDelegate {
      */
     @CalledByNative
     private void dismiss() {
-        if (mCardUnmaskPrompt != null) mCardUnmaskPrompt.dismiss();
+        if (mCardUnmaskPrompt != null) {
+            mCardUnmaskPrompt.dismiss(DialogDismissalCause.DISMISSED_BY_NATIVE);
+        }
     }
 
     /**
@@ -131,4 +139,5 @@ public class CardUnmaskBridge implements CardUnmaskPromptDelegate {
             long nativeCardUnmaskPromptViewAndroid, String cvc, String month, String year,
             boolean shouldStoreLocally);
     private native void nativeOnNewCardLinkClicked(long nativeCardUnmaskPromptViewAndroid);
+    private native int nativeGetExpectedCvcLength(long nativeCardUnmaskPromptViewAndroid);
 }

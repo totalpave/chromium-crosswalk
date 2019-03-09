@@ -34,15 +34,16 @@ class MEDIA_EXPORT MPEGAudioStreamParserBase : public StreamParser {
   ~MPEGAudioStreamParserBase() override;
 
   // StreamParser implementation.
-  void Init(const InitCB& init_cb,
+  void Init(InitCB init_cb,
             const NewConfigCB& config_cb,
             const NewBuffersCB& new_buffers_cb,
             bool ignore_text_tracks,
             const EncryptedMediaInitDataCB& encrypted_media_init_data_cb,
             const NewMediaSegmentCB& new_segment_cb,
             const EndMediaSegmentCB& end_of_segment_cb,
-            const scoped_refptr<MediaLog>& media_log) override;
+            MediaLog* media_log) override;
   void Flush() override;
+  bool GetGenerateTimestampsFlag() const override;
   bool Parse(const uint8_t* buf, int size) override;
 
  protected:
@@ -82,9 +83,10 @@ class MEDIA_EXPORT MPEGAudioStreamParserBase : public StreamParser {
                                int* sample_rate,
                                ChannelLayout* channel_layout,
                                int* sample_count,
-                               bool* metadata_frame) const = 0;
+                               bool* metadata_frame,
+                               std::vector<uint8_t>* extra_data) const = 0;
 
-  const scoped_refptr<MediaLog>& media_log() const { return media_log_; }
+  MediaLog* media_log() const { return media_log_; }
 
  private:
   enum State {
@@ -140,7 +142,7 @@ class MEDIA_EXPORT MPEGAudioStreamParserBase : public StreamParser {
   NewBuffersCB new_buffers_cb_;
   NewMediaSegmentCB new_segment_cb_;
   EndMediaSegmentCB end_of_segment_cb_;
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
 
   ByteQueue queue_;
 

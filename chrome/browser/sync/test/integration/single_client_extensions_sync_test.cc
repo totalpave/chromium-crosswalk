@@ -2,24 +2,30 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/macros.h"
 #include "chrome/browser/sync/test/integration/await_match_status_change_checker.h"
 #include "chrome/browser/sync/test/integration/extensions_helper.h"
-#include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
+#include "chrome/browser/sync/test/integration/feature_toggler.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "components/browser_sync/browser/profile_sync_service.h"
-#include "sync/test/fake_server/tombstone_entity.h"
+#include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
+#include "components/browser_sync/profile_sync_service.h"
+#include "components/sync/driver/sync_driver_switches.h"
+#include "components/sync/test/fake_server/fake_server.h"
+
+namespace {
 
 using extensions_helper::AllProfilesHaveSameExtensionsAsVerifier;
 using extensions_helper::DisableExtension;
 using extensions_helper::GetInstalledExtensions;
 using extensions_helper::InstallExtension;
 using extensions_helper::InstallExtensionForAllProfiles;
-using sync_integration_test_util::AwaitCommitActivityCompletion;
 
-class SingleClientExtensionsSyncTest : public SyncTest {
+class SingleClientExtensionsSyncTest : public FeatureToggler, public SyncTest {
  public:
-  SingleClientExtensionsSyncTest() : SyncTest(SINGLE_CLIENT) {}
+  SingleClientExtensionsSyncTest()
+      : FeatureToggler(switches::kSyncPseudoUSSExtensions),
+        SyncTest(SINGLE_CLIENT) {}
 
   ~SingleClientExtensionsSyncTest() override {}
 
@@ -27,13 +33,12 @@ class SingleClientExtensionsSyncTest : public SyncTest {
   DISALLOW_COPY_AND_ASSIGN(SingleClientExtensionsSyncTest);
 };
 
-IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, StartWithNoExtensions) {
+IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, StartWithNoExtensions) {
   ASSERT_TRUE(SetupSync());
-
   ASSERT_TRUE(AllProfilesHaveSameExtensionsAsVerifier());
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest,
                        StartWithSomeExtensions) {
   ASSERT_TRUE(SetupClients());
 
@@ -44,11 +49,10 @@ IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest,
   }
 
   ASSERT_TRUE(SetupSync());
-
   ASSERT_TRUE(AllProfilesHaveSameExtensionsAsVerifier());
 }
 
-IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, InstallSomeExtensions) {
+IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, InstallSomeExtensions) {
   ASSERT_TRUE(SetupSync());
 
   const int kNumExtensions = 5;
@@ -57,8 +61,7 @@ IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, InstallSomeExtensions) {
     InstallExtension(verifier(), i);
   }
 
-  ASSERT_TRUE(AwaitCommitActivityCompletion(GetSyncService((0))));
-
+  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
   ASSERT_TRUE(AllProfilesHaveSameExtensionsAsVerifier());
 }
 
@@ -70,7 +73,7 @@ static bool ExtensionCountCheck(Profile* profile, size_t expected_count) {
 
 // Tests the case of an uninstall from the server conflicting with a local
 // modification, which we expect to be resolved in favor of the uninstall.
-IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, UninstallWinsConflicts) {
+IN_PROC_BROWSER_TEST_P(SingleClientExtensionsSyncTest, UninstallWinsConflicts) {
   ASSERT_TRUE(SetupClients());
 
   // Start with an extension installed, and setup sync.
@@ -82,9 +85,10 @@ IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, UninstallWinsConflicts) {
   std::vector<sync_pb::SyncEntity> server_extensions =
       GetFakeServer()->GetSyncEntitiesByModelType(syncer::EXTENSIONS);
   ASSERT_EQ(1ul, server_extensions.size());
-  std::string entity_id = server_extensions[0].id_string();
-  std::unique_ptr<fake_server::FakeServerEntity> tombstone(
-      fake_server::TombstoneEntity::Create(entity_id));
+  std::unique_ptr<syncer::LoopbackServerEntity> tombstone(
+      syncer::PersistentTombstoneEntity::CreateNew(
+          server_extensions[0].id_string(),
+          server_extensions[0].client_defined_unique_tag()));
   GetFakeServer()->InjectEntity(std::move(tombstone));
 
   // Modify the extension in the local profile to cause a conflict.
@@ -102,7 +106,12 @@ IN_PROC_BROWSER_TEST_F(SingleClientExtensionsSyncTest, UninstallWinsConflicts) {
   AwaitMatchStatusChangeChecker checker(
       base::Bind(&ExtensionCountCheck, GetProfile(0), 0u),
       "Waiting for profile to have no extensions");
-  checker.Wait();
-  EXPECT_TRUE(!checker.TimedOut());
+  EXPECT_TRUE(checker.Wait());
   EXPECT_TRUE(GetInstalledExtensions(GetProfile(0)).empty());
 }
+
+INSTANTIATE_TEST_SUITE_P(USS,
+                         SingleClientExtensionsSyncTest,
+                         ::testing::Values(false, true));
+
+}  // namespace

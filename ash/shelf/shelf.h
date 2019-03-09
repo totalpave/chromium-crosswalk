@@ -1,26 +1,17 @@
-// Copyright 2013 The Chromium Authors. All rights reserved.
+// Copyright 2016 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef ASH_SHELF_SHELF_H_
 #define ASH_SHELF_SHELF_H_
 
-#include <stdint.h>
-
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/common/shelf/shelf_constants.h"
-#include "ash/common/shelf/shelf_types.h"
+#include "ash/public/cpp/shelf_types.h"
+#include "ash/shelf/shelf_layout_manager_observer.h"
 #include "ash/shelf/shelf_locking_manager.h"
-#include "ash/shelf/shelf_widget.h"
-#include "base/macros.h"
-#include "ui/gfx/geometry/size.h"
-#include "ui/views/widget/widget_observer.h"
-
-namespace app_list {
-class ApplicationDragAndDropHost;
-}
+#include "base/observer_list.h"
 
 namespace aura {
 class Window;
@@ -30,140 +21,210 @@ namespace gfx {
 class Rect;
 }
 
-namespace views {
-class View;
+namespace ui {
+class GestureEvent;
+class MouseWheelEvent;
 }
 
 namespace ash {
-class FocusCycler;
-class ShelfDelegate;
-class ShelfIconObserver;
-class ShelfModel;
+
+enum class AnimationChangeType;
+class ShelfBezelEventHandler;
+class ShelfLayoutManager;
+class ShelfLayoutManagerTest;
+class ShelfLockingManager;
 class ShelfView;
-class WmShelf;
+class ShelfWidget;
+class StatusAreaWidget;
+class ShelfObserver;
+class TrayBackgroundView;
 
-namespace test {
-class ShelfTestAPI;
-}
-
-// Controller for shelf state. All access to state (visibility, auto-hide, etc.)
-// should occur via this class.
-class ASH_EXPORT Shelf {
+// Controller for the shelf state. One per display, because each display might
+// have different shelf alignment, autohide, etc. Exists for the lifetime of the
+// root window controller.
+class ASH_EXPORT Shelf : public ShelfLayoutManagerObserver {
  public:
-  static const char kNativeViewName[];
+  // Used to maintain a lock for the auto-hide shelf. If lock, then we should
+  // not update the state of the auto-hide shelf.
+  class ScopedAutoHideLock {
+   public:
+    explicit ScopedAutoHideLock(Shelf* shelf) : shelf_(shelf) {
+      ++shelf_->auto_hide_lock_;
+    }
+    ~ScopedAutoHideLock() {
+      --shelf_->auto_hide_lock_;
+      DCHECK_GE(shelf_->auto_hide_lock_, 0);
+    }
 
-  Shelf(ShelfModel* model,
-        ShelfDelegate* delegate,
-        WmShelf* wm_shelf,
-        ShelfWidget* widget);
-  virtual ~Shelf();
+   private:
+    Shelf* shelf_;
+  };
 
-  // Return the shelf for the primary display. NULL if no user is logged in yet.
-  // Useful for tests. For production code use ForWindow() because the user may
-  // have multiple displays.
-  static Shelf* ForPrimaryDisplay();
+  Shelf();
+  ~Shelf() override;
 
-  // Return the shelf for the display that |window| is currently on, or a shelf
-  // on primary display if the shelf per display feature is disabled. NULL if no
-  // user is logged in yet.
-  static Shelf* ForWindow(const aura::Window* window);
+  // Returns the shelf for the display that |window| is on. Note that the shelf
+  // widget may not exist, or the shelf may not be visible.
+  static Shelf* ForWindow(aura::Window* window);
+
+  // Launch a 0-indexed shelf item in the shelf. A negative index launches the
+  // last shelf item in the shelf.
+  static void LaunchShelfItem(int item_index);
+
+  // Activates the shelf item specified by the index in the list of shelf items.
+  static void ActivateShelfItem(int item_index);
+
+  // Activates the shelf item specified by the index in the list of shelf items
+  // on the display identified by |display_id|.
+  static void ActivateShelfItemOnDisplay(int item_index, int64_t display_id);
+
+  void CreateShelfWidget(aura::Window* root);
+  void ShutdownShelfWidget();
+  void DestroyShelfWidget();
+
+  // Returns true if the shelf is visible. Shelf can be visible in 1)
+  // SHELF_VISIBLE or 2) SHELF_AUTO_HIDE but in SHELF_AUTO_HIDE_SHOWN. See
+  // details in ShelfLayoutManager::IsVisible.
+  bool IsVisible() const;
+
+  // Returns the window showing the shelf.
+  aura::Window* GetWindow();
 
   void SetAlignment(ShelfAlignment alignment);
-  ShelfAlignment alignment() const { return alignment_; }
+
+  // Returns true if the shelf alignment is horizontal (i.e. at the bottom).
   bool IsHorizontalAlignment() const;
 
-  // Sets the ShelfAutoHideBehavior. See enum description for details.
-  void SetAutoHideBehavior(ShelfAutoHideBehavior auto_hide_behavior);
-  ShelfAutoHideBehavior auto_hide_behavior() const {
-    return auto_hide_behavior_;
-  }
+  // Returns a value based on shelf alignment.
+  int SelectValueForShelfAlignment(int bottom, int left, int right) const;
+
+  // Returns |horizontal| if shelf is horizontal, otherwise |vertical|.
+  int PrimaryAxisValue(int horizontal, int vertical) const;
+
+  void SetAutoHideBehavior(ShelfAutoHideBehavior behavior);
 
   ShelfAutoHideState GetAutoHideState() const;
 
+  // Invoke when the auto-hide state may have changed (for example, when the
+  // system tray bubble opens it should force the shelf to be visible).
+  void UpdateAutoHideState();
+
+  ShelfBackgroundType GetBackgroundType() const;
+
+  void UpdateVisibilityState();
+
+  void MaybeUpdateShelfBackground();
+
   ShelfVisibilityState GetVisibilityState() const;
 
-  // A helper functions that chooses values specific to a shelf alignment.
-  template <typename T>
-  T SelectValueForShelfAlignment(T bottom, T left, T right) const {
-    switch (alignment_) {
-      case SHELF_ALIGNMENT_BOTTOM:
-      case SHELF_ALIGNMENT_BOTTOM_LOCKED:
-        return bottom;
-      case SHELF_ALIGNMENT_LEFT:
-        return left;
-      case SHELF_ALIGNMENT_RIGHT:
-        return right;
-    }
-    NOTREACHED();
-    return right;
-  }
+  int GetAccessibilityPanelHeight() const;
+  void SetAccessibilityPanelHeight(int height);
 
-  // A helper functions that chooses values specific to a shelf alignment type.
-  template <typename T>
-  T PrimaryAxisValue(T horizontal, T vertical) const {
-    return IsHorizontalAlignment() ? horizontal : vertical;
-  }
+  // Returns the height of the Docked Magnifier viewport.
+  int GetDockedMagnifierHeight() const;
+
+  // Returns the ideal bounds of the shelf assuming it is visible.
+  gfx::Rect GetIdealBounds() const;
+
+  gfx::Rect GetUserWorkAreaBounds() const;
 
   // Returns the screen bounds of the item for the specified window. If there is
   // no item for the specified window an empty rect is returned.
-  gfx::Rect GetScreenBoundsOfItemIconForWindow(const aura::Window* window);
+  gfx::Rect GetScreenBoundsOfItemIconForWindow(aura::Window* window);
 
-  // Updates the icon position given the current window bounds. This is used
-  // when dragging panels to reposition them with respect to the other panels.
-  void UpdateIconPositionForWindow(aura::Window* window);
+  // Handles a gesture |event| coming from a source outside the shelf widget
+  // (e.g. the status area widget). Allows support for behaviors like toggling
+  // auto-hide with a swipe, even if that gesture event hits another window.
+  // Returns true if the event was handled.
+  bool ProcessGestureEvent(const ui::GestureEvent& event);
 
-  // Activates the the shelf item specified by the index in the list of shelf
-  // items.
-  void ActivateShelfItem(int index);
+  // Handles a mousewheel scroll event coming from the shelf.
+  void ProcessMouseWheelEvent(const ui::MouseWheelEvent& event);
 
-  // Cycles the window focus linearly over the current shelf items.
-  void CycleWindowLinear(CycleDirection direction);
+  void AddObserver(ShelfObserver* observer);
+  void RemoveObserver(ShelfObserver* observer);
 
-  void AddIconObserver(ShelfIconObserver* observer);
-  void RemoveIconObserver(ShelfIconObserver* observer);
+  void NotifyShelfIconPositionsChanged();
+  StatusAreaWidget* GetStatusAreaWidget() const;
 
-  // Returns true if the shelf is showing a context menu.
-  bool IsShowingMenu() const;
+  // Get the tray button that the system tray bubble and the notification center
+  // bubble will be anchored. See also: StatusAreaWidget::GetSystemTrayAnchor()
+  TrayBackgroundView* GetSystemTrayAnchorView() const;
 
-  bool IsShowingOverflowBubble() const;
+  // Get the anchor rect that the system tray bubble and the notification center
+  // bubble will be anchored.
+  // x() and y() designates anchor point, but width() and height() are dummy.
+  // See also: BubbleDialogDelegateView::GetBubbleBounds()
+  gfx::Rect GetSystemTrayAnchorRect() const;
 
-  void SetVisible(bool visible) const;
-  bool IsVisible() const;
+  // Returns whether this shelf should be hidden on secondary display in a given
+  // |state|.
+  bool ShouldHideOnSecondaryDisplay(session_manager::SessionState state);
 
-  void SchedulePaint();
+  void SetVirtualKeyboardBoundsForTesting(const gfx::Rect& bounds);
+  ShelfLockingManager* GetShelfLockingManagerForTesting();
+  ShelfView* GetShelfViewForTesting();
 
-  views::View* GetAppListButtonView() const;
-
-  // Launch a 0-indexed shelf item in the shelf.
-  // A negative index launches the last shelf item in the shelf.
-  void LaunchAppIndexAt(int item_index);
-
-  ShelfWidget* shelf_widget() { return shelf_widget_; }
-
-  // TODO(msw): ShelfLayoutManager should not be accessed externally.
-  ShelfLayoutManager* shelf_layout_manager() {
-    return shelf_widget_->shelf_layout_manager();
+  ShelfLayoutManager* shelf_layout_manager() const {
+    return shelf_layout_manager_;
   }
+  ShelfWidget* shelf_widget() const { return shelf_widget_.get(); }
+  ShelfAlignment alignment() const { return alignment_; }
+  ShelfAutoHideBehavior auto_hide_behavior() const {
+    return auto_hide_behavior_;
+  }
+  void set_is_tablet_mode_animation_running(bool value) {
+    is_tablet_mode_animation_running_ = value;
+  }
+  bool is_tablet_mode_animation_running() const {
+    return is_tablet_mode_animation_running_;
+  }
+  int auto_hide_lock() const { return auto_hide_lock_; }
 
-  // Returns rectangle bounding all visible shelf items. Used screen coordinate
-  // system.
-  gfx::Rect GetVisibleItemsBoundsInScreen() const;
-
-  // Returns ApplicationDragAndDropHost for this shelf.
-  app_list::ApplicationDragAndDropHost* GetDragAndDropHostForAppList();
+ protected:
+  // ShelfLayoutManagerObserver:
+  void WillDeleteShelfLayoutManager() override;
+  void WillChangeVisibilityState(ShelfVisibilityState new_state) override;
+  void OnAutoHideStateChanged(ShelfAutoHideState new_state) override;
+  void OnBackgroundUpdated(ShelfBackgroundType background_type,
+                           AnimationChangeType change_type) override;
 
  private:
-  friend class test::ShelfTestAPI;
+  class AutoHideEventHandler;
+  friend class ShelfLayoutManagerTest;
 
-  ShelfDelegate* delegate_;
-  // The shelf controller. Owned by the root window controller.
-  WmShelf* wm_shelf_;
-  ShelfWidget* shelf_widget_;
-  ShelfView* shelf_view_;
+  // Layout manager for the shelf container window. Instances are constructed by
+  // ShelfWidget and lifetimes are managed by the container windows themselves.
+  ShelfLayoutManager* shelf_layout_manager_ = nullptr;
+
+  std::unique_ptr<ShelfWidget> shelf_widget_;
+
+  // These initial values hide the shelf until user preferences are available.
+  ShelfAlignment alignment_ = SHELF_ALIGNMENT_BOTTOM_LOCKED;
+  ShelfAutoHideBehavior auto_hide_behavior_ = SHELF_AUTO_HIDE_ALWAYS_HIDDEN;
+
+  // Sets shelf alignment to bottom during login and screen lock.
   ShelfLockingManager shelf_locking_manager_;
 
-  ShelfAlignment alignment_ = SHELF_ALIGNMENT_BOTTOM;
-  ShelfAutoHideBehavior auto_hide_behavior_ = SHELF_AUTO_HIDE_BEHAVIOR_NEVER;
+  base::ObserverList<ShelfObserver>::Unchecked observers_;
+
+  // Forwards mouse and gesture events to ShelfLayoutManager for auto-hide.
+  std::unique_ptr<AutoHideEventHandler> auto_hide_event_handler_;
+
+  // Forwards touch gestures on a bezel sensor to the shelf.
+  std::unique_ptr<ShelfBezelEventHandler> bezel_event_handler_;
+
+  // True while the animation to enter or exit tablet mode is running. Sometimes
+  // this value is true when the shelf movements are not actually animating
+  // (animation value = 0.0). This is because this is set to true when we
+  // enter/exit tablet mode but the animation is not started until a shelf
+  // OnBoundsChanged is called because of tablet mode. Use this value to sync
+  // the animation for AppListButton.
+  bool is_tablet_mode_animation_running_ = false;
+
+  // Used by ScopedAutoHideLock to maintain the state of the lock for auto-hide
+  // shelf.
+  int auto_hide_lock_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(Shelf);
 };

@@ -15,19 +15,19 @@
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/memory/discardable_memory_allocator.h"
-#include "base/metrics/histogram.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "components/discardable_memory/client/client_discardable_shared_memory_manager.h"
 #include "content/child/browser_font_resource_trusted.h"
-#include "content/child/child_discardable_shared_memory_manager.h"
 #include "content/child/child_process.h"
-#include "content/common/child_process_messages.h"
 #include "content/ppapi_plugin/broker_process_dispatcher.h"
 #include "content/ppapi_plugin/plugin_process_dispatcher.h"
 #include "content/ppapi_plugin/ppapi_blink_platform_impl.h"
@@ -35,10 +35,13 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/common/pepper_plugin_info.h"
 #include "content/public/common/sandbox_init.h"
+#include "content/public/common/service_manager_connection.h"
+#include "content/public/common/service_names.mojom.h"
 #include "ipc/ipc_channel_handle.h"
 #include "ipc/ipc_platform_file.h"
 #include "ipc/ipc_sync_channel.h"
 #include "ipc/ipc_sync_message_filter.h"
+#include "media/media_buildflags.h"
 #include "ppapi/c/dev/ppp_network_state_dev.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/c/ppp.h"
@@ -47,28 +50,27 @@
 #include "ppapi/proxy/plugin_message_filter.h"
 #include "ppapi/proxy/ppapi_messages.h"
 #include "ppapi/proxy/resource_reply_thread_registrar.h"
-#include "third_party/WebKit/public/web/WebKit.h"
+#include "services/service_manager/public/cpp/connector.h"
+#include "services/ws/public/mojom/constants.mojom.h"
+#include "third_party/blink/public/web/blink.h"
+#include "ui/base/buildflags.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
 
 #if defined(OS_WIN)
 #include "base/win/win_util.h"
-#include "base/win/windows_version.h"
 #include "content/child/font_warmup_win.h"
 #include "sandbox/win/src/sandbox.h"
-#elif defined(OS_MACOSX)
-#include "content/common/sandbox_init_mac.h"
+#endif
+
+#if defined(OS_MACOSX)
+#include "sandbox/mac/seatbelt_exec.h"
 #endif
 
 #if defined(OS_WIN)
-const char kWidevineCdmAdapterFileName[] = "widevinecdmadapter.dll";
-
 extern sandbox::TargetServices* g_target_services;
 
 // Used by EnumSystemLocales for warming up.
-static BOOL CALLBACK EnumLocalesProc(LPTSTR lpLocaleString) {
-  return TRUE;
-}
-
 static BOOL CALLBACK EnumLocalesProcEx(
     LPWSTR lpLocaleString,
     DWORD dwFlags,
@@ -81,21 +83,8 @@ static void WarmupWindowsLocales(const ppapi::PpapiPermissions& permissions) {
   ::GetUserDefaultLangID();
   ::GetUserDefaultLCID();
 
-  if (permissions.HasPermission(ppapi::PERMISSION_FLASH)) {
-    if (base::win::GetVersion() >= base::win::VERSION_VISTA) {
-      typedef BOOL (WINAPI *PfnEnumSystemLocalesEx)
-          (LOCALE_ENUMPROCEX, DWORD, LPARAM, LPVOID);
-
-      HMODULE handle_kern32 = GetModuleHandleW(L"Kernel32.dll");
-      PfnEnumSystemLocalesEx enum_sys_locales_ex =
-          reinterpret_cast<PfnEnumSystemLocalesEx>
-              (GetProcAddress(handle_kern32, "EnumSystemLocalesEx"));
-
-      enum_sys_locales_ex(EnumLocalesProcEx, LOCALE_WINDOWS, 0, 0);
-    } else {
-      EnumSystemLocalesW(EnumLocalesProc, LCID_INSTALLED);
-    }
-  }
+  if (permissions.HasPermission(ppapi::PERMISSION_FLASH))
+    ::EnumSystemLocalesEx(EnumLocalesProcEx, LOCALE_WINDOWS, 0, 0);
 }
 
 #endif
@@ -105,10 +94,13 @@ namespace content {
 typedef int32_t (*InitializeBrokerFunc)
     (PP_ConnectInstance_Func* connect_instance_func);
 
-PpapiThread::PpapiThread(const base::CommandLine& command_line, bool is_broker)
-    : is_broker_(is_broker),
+PpapiThread::PpapiThread(base::RepeatingClosure quit_closure,
+                         const base::CommandLine& command_line,
+                         bool is_broker)
+    : ChildThreadImpl(std::move(quit_closure)),
+      is_broker_(is_broker),
       plugin_globals_(GetIOTaskRunner()),
-      connect_instance_func_(NULL),
+      connect_instance_func_(nullptr),
       local_pp_module_(base::RandInt(0, std::numeric_limits<PP_Module>::max())),
       next_plugin_dispatcher_id_(1) {
   plugin_globals_.SetPluginProxyDelegate(this);
@@ -116,12 +108,12 @@ PpapiThread::PpapiThread(const base::CommandLine& command_line, bool is_broker)
       command_line.GetSwitchValueASCII(switches::kPpapiFlashArgs));
 
   blink_platform_impl_.reset(new PpapiBlinkPlatformImpl);
-  blink::Platform::initialize(blink_platform_impl_.get());
+  blink::Platform::CreateMainThreadAndInitialize(blink_platform_impl_.get());
 
   if (!is_broker_) {
     scoped_refptr<ppapi::proxy::PluginMessageFilter> plugin_filter(
         new ppapi::proxy::PluginMessageFilter(
-            NULL, plugin_globals_.resource_reply_thread_registrar()));
+            nullptr, plugin_globals_.resource_reply_thread_registrar()));
     channel()->AddFilter(plugin_filter.get());
     plugin_globals_.RegisterResourceMessageFilters(plugin_filter.get());
   }
@@ -129,8 +121,23 @@ PpapiThread::PpapiThread(const base::CommandLine& command_line, bool is_broker)
   // In single process, browser main loop set up the discardable memory
   // allocator.
   if (!command_line.HasSwitch(switches::kSingleProcess)) {
+    discardable_memory::mojom::DiscardableSharedMemoryManagerPtr manager_ptr;
+    if (features::IsMultiProcessMash()) {
+#if defined(USE_AURA)
+      GetServiceManagerConnection()->GetConnector()->BindInterface(
+          ws::mojom::kServiceName, &manager_ptr);
+#else
+      NOTREACHED();
+#endif
+    } else {
+      ChildThread::Get()->GetConnector()->BindInterface(
+          mojom::kBrowserServiceName, mojo::MakeRequest(&manager_ptr));
+    }
+    discardable_shared_memory_manager_ = std::make_unique<
+        discardable_memory::ClientDiscardableSharedMemoryManager>(
+        std::move(manager_ptr), GetIOTaskRunner());
     base::DiscardableMemoryAllocator::SetInstance(
-        ChildThreadImpl::discardable_shared_memory_manager());
+        discardable_shared_memory_manager_.get());
   }
 }
 
@@ -144,12 +151,11 @@ void PpapiThread::Shutdown() {
   if (plugin_entry_points_.shutdown_module)
     plugin_entry_points_.shutdown_module();
   blink_platform_impl_->Shutdown();
-  blink::Platform::shutdown();
 }
 
 bool PpapiThread::Send(IPC::Message* msg) {
   // Allow access from multiple threads.
-  if (base::MessageLoop::current() == message_loop())
+  if (main_thread_runner()->BelongsToCurrentThread())
     return ChildThreadImpl::Send(msg);
 
   return sync_message_filter()->Send(msg);
@@ -201,6 +207,22 @@ base::SharedMemoryHandle PpapiThread::ShareSharedMemoryHandleWithRemote(
   return base::SharedMemory::DuplicateHandle(handle);
 }
 
+base::UnsafeSharedMemoryRegion
+PpapiThread::ShareUnsafeSharedMemoryRegionWithRemote(
+    const base::UnsafeSharedMemoryRegion& region,
+    base::ProcessId remote_pid) {
+  DCHECK(remote_pid != base::kNullProcessId);
+  return region.Duplicate();
+}
+
+base::ReadOnlySharedMemoryRegion
+PpapiThread::ShareReadOnlySharedMemoryRegionWithRemote(
+    const base::ReadOnlySharedMemoryRegion& region,
+    base::ProcessId remote_pid) {
+  DCHECK(remote_pid != base::kNullProcessId);
+  return region.Duplicate();
+}
+
 std::set<PP_Instance>* PpapiThread::GetGloballySeenInstanceIDSet() {
   return &globally_seen_instance_ids_;
 }
@@ -221,7 +243,7 @@ void PpapiThread::PreCacheFontForFlash(const void* logfontw) {
 }
 
 void PpapiThread::SetActiveURL(const std::string& url) {
-  GetContentClient()->SetActiveURL(GURL(url));
+  GetContentClient()->SetActiveURL(GURL(url), std::string());
 }
 
 PP_Resource PpapiThread::CreateBrowserFont(
@@ -261,7 +283,9 @@ void PpapiThread::OnLoadPlugin(const base::FilePath& path,
                                const ppapi::PpapiPermissions& permissions) {
   // In case of crashes, the crash dump doesn't indicate which plugin
   // it came from.
-  base::debug::SetCrashKeyValue("ppapi_path", path.MaybeAsASCII());
+  static auto* ppapi_path_key = base::debug::AllocateCrashKeyString(
+      "ppapi_path", base::debug::CrashKeySize::Size64);
+  base::debug::SetCrashKeyString(ppapi_path_key, path.MaybeAsASCII());
 
   SavePluginName(path);
 
@@ -275,16 +299,17 @@ void PpapiThread::OnLoadPlugin(const base::FilePath& path,
   // client) then fetch the entry points from the embedder, rather than a DLL.
   std::vector<PepperPluginInfo> plugins;
   GetContentClient()->AddPepperPlugins(&plugins);
-  for (size_t i = 0; i < plugins.size(); ++i) {
-    if (plugins[i].is_internal && plugins[i].path == path) {
+  for (const auto& plugin : plugins) {
+    if (plugin.is_internal && plugin.path == path) {
       // An internal plugin is being loaded, so fetch the entry points.
-      plugin_entry_points_ = plugins[i].internal_entry_points;
+      plugin_entry_points_ = plugin.internal_entry_points;
+      break;
     }
   }
 
   // If the plugin isn't internal then load it from |path|.
   base::ScopedNativeLibrary library;
-  if (plugin_entry_points_.initialize_module == NULL) {
+  if (!plugin_entry_points_.initialize_module) {
     // Load the plugin from the specified library.
     base::NativeLibraryLoadError error;
     base::TimeDelta load_time;
@@ -353,27 +378,18 @@ void PpapiThread::OnLoadPlugin(const base::FilePath& path,
   // can be loaded. TODO(cpu): consider changing to the loading style of
   // regular plugins.
   if (g_target_services) {
-    // Let Flash and Widevine CDM adapter load DXVA before lockdown on Vista+.
-    if (permissions.HasPermission(ppapi::PERMISSION_FLASH) ||
-        path.BaseName().MaybeAsASCII() == kWidevineCdmAdapterFileName) {
-      if (base::win::OSInfo::GetInstance()->version() >=
-          base::win::VERSION_VISTA) {
-        LoadLibraryA("dxva2.dll");
-      }
-    }
-
     if (permissions.HasPermission(ppapi::PERMISSION_FLASH)) {
-      if (base::win::OSInfo::GetInstance()->version() >=
-          base::win::VERSION_WIN7) {
-        base::CPU cpu;
-        if (cpu.vendor_name() == "AuthenticAMD") {
-          // The AMD crypto acceleration is only AMD Bulldozer and above.
+      // Let Flash load DXVA before lockdown.
+      LoadLibraryA("dxva2.dll");
+
+      base::CPU cpu;
+      if (cpu.vendor_name() == "AuthenticAMD") {
+        // The AMD crypto acceleration is only AMD Bulldozer and above.
 #if defined(_WIN64)
-          LoadLibraryA("amdhcp64.dll");
+        LoadLibraryA("amdhcp64.dll");
 #else
-          LoadLibraryA("amdhcp32.dll");
+        LoadLibraryA("amdhcp32.dll");
 #endif
-        }
       }
     }
 
@@ -416,15 +432,18 @@ void PpapiThread::OnLoadPlugin(const base::FilePath& path,
     }
   } else {
 #if defined(OS_MACOSX)
-    // We need to do this after getting |PPP_GetInterface()| (or presumably
-    // doing something nontrivial with the library), else the sandbox
-    // intercedes.
-    CHECK(InitializeSandbox());
+    // TODO(kerrnel): Delete this once the V2 sandbox is default.
+    const base::CommandLine* cmdline = base::CommandLine::ForCurrentProcess();
+    if (!cmdline->HasSwitch(sandbox::switches::kSeatbeltClientName)) {
+      // We need to do this after getting |PPP_GetInterface()| (or presumably
+      // doing something nontrivial with the library), else the sandbox
+      // intercedes.
+      CHECK(InitializeSandbox());
+    }
 #endif
 
     int32_t init_error = plugin_entry_points_.initialize_module(
-        local_pp_module_,
-        &ppapi::proxy::PluginDispatcher::GetBrowserInterface);
+        local_pp_module_, &ppapi::proxy::PluginDispatcher::GetBrowserInterface);
     if (init_error != PP_OK) {
       LOG(WARNING) << "InitModule failed with error " << init_error;
       ReportLoadResult(path, INIT_FAILED);
@@ -487,23 +506,18 @@ bool PpapiThread::SetupChannel(base::ProcessId renderer_pid,
                                int renderer_child_id,
                                bool incognito,
                                IPC::ChannelHandle* handle) {
-  DCHECK(is_broker_ == (connect_instance_func_ != NULL));
-  IPC::ChannelHandle plugin_handle;
-  plugin_handle.name = IPC::Channel::GenerateVerifiedChannelID(
-      base::StringPrintf(
-          "%d.r%d", base::GetCurrentProcId(), renderer_child_id));
+  DCHECK(is_broker_ == (connect_instance_func_ != nullptr));
+  mojo::MessagePipe pipe;
 
-  ppapi::proxy::ProxyChannel* dispatcher = NULL;
+  ppapi::proxy::ProxyChannel* dispatcher = nullptr;
   bool init_result = false;
   if (is_broker_) {
     bool peer_is_browser = renderer_pid == base::kNullProcessId;
     BrokerProcessDispatcher* broker_dispatcher =
         new BrokerProcessDispatcher(plugin_entry_points_.get_interface,
                                     connect_instance_func_, peer_is_browser);
-    init_result = broker_dispatcher->InitBrokerWithChannel(this,
-                                                           renderer_pid,
-                                                           plugin_handle,
-                                                           false);
+    init_result = broker_dispatcher->InitBrokerWithChannel(
+        this, renderer_pid, pipe.handle0.release(), false);
     dispatcher = broker_dispatcher;
   } else {
     DCHECK_NE(base::kNullProcessId, renderer_pid);
@@ -511,10 +525,8 @@ bool PpapiThread::SetupChannel(base::ProcessId renderer_pid,
         new PluginProcessDispatcher(plugin_entry_points_.get_interface,
                                     permissions_,
                                     incognito);
-    init_result = plugin_dispatcher->InitPluginWithChannel(this,
-                                                           renderer_pid,
-                                                           plugin_handle,
-                                                           false);
+    init_result = plugin_dispatcher->InitPluginWithChannel(
+        this, renderer_pid, pipe.handle0.release(), false);
     dispatcher = plugin_dispatcher;
   }
 
@@ -522,16 +534,7 @@ bool PpapiThread::SetupChannel(base::ProcessId renderer_pid,
     delete dispatcher;
     return false;
   }
-
-  handle->name = plugin_handle.name;
-#if defined(OS_POSIX)
-  // On POSIX, transfer ownership of the renderer-side (client) FD.
-  // This ensures this process will be notified when it is closed even if a
-  // connection is not established.
-  handle->socket = base::FileDescriptor(dispatcher->TakeRendererFD());
-  if (handle->socket.fd == -1)
-    return false;
-#endif
+  *handle = pipe.handle1.release();
 
   // From here, the dispatcher will manage its own lifetime according to the
   // lifetime of the attached channel.
@@ -572,10 +575,8 @@ void PpapiThread::ReportLoadErrorCode(
 // Only report load error code on Windows because that's the only platform that
 // has a numerical error value.
 #if defined(OS_WIN)
-  // For sparse histograms, we can use the macro, as it does not incorporate a
-  // static.
-  UMA_HISTOGRAM_SPARSE_SLOWLY(
-      GetHistogramName(is_broker_, "LoadErrorCode", path), error.code);
+  base::UmaHistogramSparse(GetHistogramName(is_broker_, "LoadErrorCode", path),
+                           error.code);
 #endif
 }
 

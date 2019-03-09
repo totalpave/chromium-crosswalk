@@ -4,15 +4,21 @@
 
 #include "chrome/browser/chromeos/login/app_launch_signin_screen.h"
 
+#include <memory>
+#include <utility>
+
+#include "base/bind.h"
+#include "base/task/post_task.h"
 #include "base/values.h"
 #include "chrome/browser/chromeos/login/help_app_launcher.h"
 #include "chrome/browser/chromeos/login/screens/user_selection_screen.h"
 #include "chrome/browser/chromeos/login/session/user_session_manager.h"
 #include "chrome/browser/ui/webui/chromeos/login/signin_screen_handler.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/components/proximity_auth/screenlock_bridge.h"
 #include "chromeos/login/auth/user_context.h"
-#include "components/proximity_auth/screenlock_bridge.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -21,12 +27,9 @@ namespace chromeos {
 
 user_manager::UserManager* AppLaunchSigninScreen::test_user_manager_ = NULL;
 
-AppLaunchSigninScreen::AppLaunchSigninScreen(
-    OobeUI* oobe_ui, Delegate* delegate)
-    : oobe_ui_(oobe_ui),
-      delegate_(delegate),
-      webui_handler_(NULL) {
-}
+AppLaunchSigninScreen::AppLaunchSigninScreen(OobeUI* oobe_ui,
+                                             Delegate* delegate)
+    : oobe_ui_(oobe_ui), delegate_(delegate), webui_handler_(NULL) {}
 
 AppLaunchSigninScreen::~AppLaunchSigninScreen() {
   oobe_ui_->ResetSigninScreenHandlerDelegate();
@@ -35,8 +38,7 @@ AppLaunchSigninScreen::~AppLaunchSigninScreen() {
 void AppLaunchSigninScreen::Show() {
   InitOwnerUserList();
   oobe_ui_->web_ui()->CallJavascriptFunctionUnsafe(
-      "login.AccountPickerScreen.setShouldShowApps",
-      base::FundamentalValue(false));
+      "login.AccountPickerScreen.setShouldShowApps", base::Value(false));
   oobe_ui_->ShowSigninScreen(LoginScreenContext(), this, NULL);
 }
 
@@ -48,10 +50,9 @@ void AppLaunchSigninScreen::InitOwnerUserList() {
 
   owner_user_list_.clear();
   for (user_manager::UserList::const_iterator it = all_users.begin();
-       it != all_users.end();
-       ++it) {
+       it != all_users.end(); ++it) {
     user_manager::User* user = *it;
-    if (user->email() == owner_email) {
+    if (user->GetAccountId().GetUserEmail() == owner_email) {
       owner_user_list_.push_back(user);
       break;
     }
@@ -69,15 +70,7 @@ user_manager::UserManager* AppLaunchSigninScreen::GetUserManager() {
                             : user_manager::UserManager::Get();
 }
 
-void AppLaunchSigninScreen::CancelPasswordChangedFlow() {
-  NOTREACHED();
-}
-
 void AppLaunchSigninScreen::CancelUserAdding() {
-  NOTREACHED();
-}
-
-void AppLaunchSigninScreen::CompleteLogin(const UserContext& user_context) {
   NOTREACHED();
 }
 
@@ -86,30 +79,14 @@ void AppLaunchSigninScreen::Login(const UserContext& user_context,
   // Note: CreateAuthenticator doesn't necessarily create
   // a new Authenticator object, and could reuse an existing one.
   authenticator_ = UserSessionManager::GetInstance()->CreateAuthenticator(this);
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI, FROM_HERE,
-      base::Bind(&Authenticator::AuthenticateToUnlock,
-                 authenticator_.get(),
-                 user_context));
+  base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                           base::BindOnce(&Authenticator::AuthenticateToUnlock,
+                                          authenticator_.get(), user_context));
 }
 
-void AppLaunchSigninScreen::MigrateUserData(const std::string& old_password) {
-  NOTREACHED();
-}
-
-void AppLaunchSigninScreen::LoadWallpaper(const AccountId& account_id) {}
-
-void AppLaunchSigninScreen::LoadSigninWallpaper() {
-}
-
-void AppLaunchSigninScreen::OnSigninScreenReady() {
-}
+void AppLaunchSigninScreen::OnSigninScreenReady() {}
 
 void AppLaunchSigninScreen::RemoveUser(const AccountId& account_id) {
-  NOTREACHED();
-}
-
-void AppLaunchSigninScreen::ResyncUserData() {
   NOTREACHED();
 }
 
@@ -129,6 +106,10 @@ void AppLaunchSigninScreen::ShowKioskAutolaunchScreen() {
   NOTREACHED();
 }
 
+void AppLaunchSigninScreen::ShowUpdateRequiredScreen() {
+  NOTREACHED();
+}
+
 void AppLaunchSigninScreen::ShowWrongHWIDScreen() {
   NOTREACHED();
 }
@@ -136,12 +117,6 @@ void AppLaunchSigninScreen::ShowWrongHWIDScreen() {
 void AppLaunchSigninScreen::SetWebUIHandler(
     LoginDisplayWebUIHandler* webui_handler) {
   webui_handler_ = webui_handler;
-}
-
-void AppLaunchSigninScreen::ShowSigninScreenForCreds(
-    const std::string& username,
-    const std::string& password) {
-  NOTREACHED();
 }
 
 const user_manager::UserList& AppLaunchSigninScreen::GetUsers() const {
@@ -159,6 +134,18 @@ bool AppLaunchSigninScreen::IsShowUsers() const {
   return true;
 }
 
+bool AppLaunchSigninScreen::ShowUsersHasChanged() const {
+  return false;
+}
+
+bool AppLaunchSigninScreen::IsAllowNewUser() const {
+  return true;
+}
+
+bool AppLaunchSigninScreen::AllowNewUserChanged() const {
+  return false;
+}
+
 bool AppLaunchSigninScreen::IsSigninInProgress() const {
   // Return true to suppress network processing in the signin screen.
   return true;
@@ -166,10 +153,6 @@ bool AppLaunchSigninScreen::IsSigninInProgress() const {
 
 bool AppLaunchSigninScreen::IsUserSigninCompleted() const {
   return false;
-}
-
-void AppLaunchSigninScreen::SetDisplayEmail(const std::string& email) {
-  return;
 }
 
 void AppLaunchSigninScreen::Signout() {
@@ -193,31 +176,23 @@ void AppLaunchSigninScreen::HandleGetUsers() {
   const user_manager::UserList& users = GetUsers();
 
   for (user_manager::UserList::const_iterator it = users.begin();
-       it != users.end();
-       ++it) {
-    proximity_auth::ScreenlockBridge::LockHandler::AuthType initial_auth_type =
+       it != users.end(); ++it) {
+    proximity_auth::mojom::AuthType initial_auth_type =
         UserSelectionScreen::ShouldForceOnlineSignIn(*it)
-            ? proximity_auth::ScreenlockBridge::LockHandler::ONLINE_SIGN_IN
-            : proximity_auth::ScreenlockBridge::LockHandler::OFFLINE_PASSWORD;
-    base::DictionaryValue* user_dict = new base::DictionaryValue();
+            ? proximity_auth::mojom::AuthType::ONLINE_SIGN_IN
+            : proximity_auth::mojom::AuthType::OFFLINE_PASSWORD;
+    auto user_dict = std::make_unique<base::DictionaryValue>();
     UserSelectionScreen::FillUserDictionary(
-        *it,
-        true,   /* is_owner */
-        false,  /* is_signin_to_add */
-        initial_auth_type,
-        NULL,   /* public_session_recommended_locales */
-        user_dict);
-    users_list.Append(user_dict);
+        *it, true,               /* is_owner */
+        false,                   /* is_signin_to_add */
+        initial_auth_type, NULL, /* public_session_recommended_locales */
+        user_dict.get());
+    users_list.Append(std::move(user_dict));
   }
 
-  webui_handler_->LoadUsers(users_list, false);
+  webui_handler_->LoadUsers(users, users_list);
 }
 
 void AppLaunchSigninScreen::CheckUserStatus(const AccountId& account_id) {}
-
-bool AppLaunchSigninScreen::IsUserWhitelisted(const AccountId& account_id) {
-  NOTREACHED();
-  return true;
-}
 
 }  // namespace chromeos

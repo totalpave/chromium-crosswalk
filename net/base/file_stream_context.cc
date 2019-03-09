@@ -6,9 +6,9 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/location.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/task_runner.h"
 #include "base/task_runner_util.h"
 #include "base/threading/thread_restrictions.h"
@@ -23,8 +23,8 @@ namespace net {
 
 namespace {
 
-void CallInt64ToInt(const CompletionCallback& callback, int64_t result) {
-  callback.Run(static_cast<int>(result));
+void CallInt64ToInt(CompletionOnceCallback callback, int64_t result) {
+  std::move(callback).Run(static_cast<int>(result));
 }
 
 }  // namespace
@@ -47,8 +47,7 @@ FileStream::Context::IOResult FileStream::Context::IOResult::FromOSError(
 
 // ---------------------------------------------------------------------
 
-FileStream::Context::OpenResult::OpenResult() {
-}
+FileStream::Context::OpenResult::OpenResult() = default;
 
 FileStream::Context::OpenResult::OpenResult(base::File file,
                                             IOResult error_code)
@@ -82,57 +81,67 @@ void FileStream::Context::Orphan() {
 
 void FileStream::Context::Open(const base::FilePath& path,
                                int open_flags,
-                               const CompletionCallback& callback) {
+                               CompletionOnceCallback callback) {
   DCHECK(!async_in_progress_);
 
   bool posted = base::PostTaskAndReplyWithResult(
-      task_runner_.get(),
-      FROM_HERE,
-      base::Bind(
-          &Context::OpenFileImpl, base::Unretained(this), path, open_flags),
-      base::Bind(&Context::OnOpenCompleted, base::Unretained(this), callback));
+      task_runner_.get(), FROM_HERE,
+      base::BindOnce(&Context::OpenFileImpl, base::Unretained(this), path,
+                     open_flags),
+      base::BindOnce(&Context::OnOpenCompleted, base::Unretained(this),
+                     std::move(callback)));
   DCHECK(posted);
 
   async_in_progress_ = true;
 }
 
-void FileStream::Context::Close(const CompletionCallback& callback) {
+void FileStream::Context::Close(CompletionOnceCallback callback) {
   DCHECK(!async_in_progress_);
+
   bool posted = base::PostTaskAndReplyWithResult(
-      task_runner_.get(),
-      FROM_HERE,
-      base::Bind(&Context::CloseFileImpl, base::Unretained(this)),
-      base::Bind(&Context::OnAsyncCompleted,
-                 base::Unretained(this),
-                 IntToInt64(callback)));
+      task_runner_.get(), FROM_HERE,
+      base::BindOnce(&Context::CloseFileImpl, base::Unretained(this)),
+      base::BindOnce(&Context::OnAsyncCompleted, base::Unretained(this),
+                     IntToInt64(std::move(callback))));
   DCHECK(posted);
 
   async_in_progress_ = true;
 }
 
 void FileStream::Context::Seek(int64_t offset,
-                               const Int64CompletionCallback& callback) {
+                               Int64CompletionOnceCallback callback) {
   DCHECK(!async_in_progress_);
 
   bool posted = base::PostTaskAndReplyWithResult(
       task_runner_.get(), FROM_HERE,
-      base::Bind(&Context::SeekFileImpl, base::Unretained(this), offset),
-      base::Bind(&Context::OnAsyncCompleted, base::Unretained(this), callback));
+      base::BindOnce(&Context::SeekFileImpl, base::Unretained(this), offset),
+      base::BindOnce(&Context::OnAsyncCompleted, base::Unretained(this),
+                     std::move(callback)));
   DCHECK(posted);
 
   async_in_progress_ = true;
 }
 
-void FileStream::Context::Flush(const CompletionCallback& callback) {
+void FileStream::Context::GetFileInfo(base::File::Info* file_info,
+                                      CompletionOnceCallback callback) {
+  base::PostTaskAndReplyWithResult(
+      task_runner_.get(), FROM_HERE,
+      base::BindOnce(&Context::GetFileInfoImpl, base::Unretained(this),
+                     base::Unretained(file_info)),
+      base::BindOnce(&Context::OnAsyncCompleted, base::Unretained(this),
+                     IntToInt64(std::move(callback))));
+
+  async_in_progress_ = true;
+}
+
+void FileStream::Context::Flush(CompletionOnceCallback callback) {
   DCHECK(!async_in_progress_);
 
   bool posted = base::PostTaskAndReplyWithResult(
-      task_runner_.get(),
-      FROM_HERE,
-      base::Bind(&Context::FlushFileImpl, base::Unretained(this)),
-      base::Bind(&Context::OnAsyncCompleted,
-                 base::Unretained(this),
-                 IntToInt64(callback)));
+      task_runner_.get(), FROM_HERE,
+      base::BindOnce(&Context::FlushFileImpl, base::Unretained(this)),
+      base::BindOnce(&Context::OnAsyncCompleted, base::Unretained(this),
+                     IntToInt64(std::move(callback))));
   DCHECK(posted);
 
   async_in_progress_ = true;
@@ -168,11 +177,20 @@ FileStream::Context::OpenResult FileStream::Context::OpenFileImpl(
 #if defined(OS_ANDROID)
   }
 #endif  // defined(OS_ANDROID)
-  if (!file.IsValid())
+  if (!file.IsValid()) {
     return OpenResult(base::File(),
                       IOResult::FromOSError(logging::GetLastSystemErrorCode()));
+  }
 
   return OpenResult(std::move(file), IOResult(OK, 0));
+}
+
+FileStream::Context::IOResult FileStream::Context::GetFileInfoImpl(
+    base::File::Info* file_info) {
+  bool result = file_.GetInfo(file_info);
+  if (!result)
+    return IOResult::FromOSError(logging::GetLastSystemErrorCode());
+  return IOResult(OK, 0);
 }
 
 FileStream::Context::IOResult FileStream::Context::CloseFileImpl() {
@@ -187,52 +205,44 @@ FileStream::Context::IOResult FileStream::Context::FlushFileImpl() {
   return IOResult::FromOSError(logging::GetLastSystemErrorCode());
 }
 
-void FileStream::Context::OnOpenCompleted(const CompletionCallback& callback,
+void FileStream::Context::OnOpenCompleted(CompletionOnceCallback callback,
                                           OpenResult open_result) {
   file_ = std::move(open_result.file);
   if (file_.IsValid() && !orphaned_)
     OnFileOpened();
 
-  OnAsyncCompleted(IntToInt64(callback), open_result.error_code);
+  OnAsyncCompleted(IntToInt64(std::move(callback)), open_result.error_code);
 }
 
 void FileStream::Context::CloseAndDelete() {
-  // TODO(ananta)
-  // Replace this CHECK with a DCHECK once we figure out the root cause of
-  // http://crbug.com/455066
-  CHECK(!async_in_progress_);
+  DCHECK(!async_in_progress_);
 
   if (file_.IsValid()) {
     bool posted = task_runner_.get()->PostTask(
-        FROM_HERE,
-        base::Bind(base::IgnoreResult(&Context::CloseFileImpl),
-                   base::Owned(this)));
+        FROM_HERE, base::BindOnce(base::IgnoreResult(&Context::CloseFileImpl),
+                                  base::Owned(this)));
     DCHECK(posted);
   } else {
     delete this;
   }
 }
 
-Int64CompletionCallback FileStream::Context::IntToInt64(
-    const CompletionCallback& callback) {
-  return base::Bind(&CallInt64ToInt, callback);
+Int64CompletionOnceCallback FileStream::Context::IntToInt64(
+    CompletionOnceCallback callback) {
+  return base::BindOnce(&CallInt64ToInt, std::move(callback));
 }
 
-void FileStream::Context::OnAsyncCompleted(
-    const Int64CompletionCallback& callback,
-    const IOResult& result) {
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/477117 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "477117 FileStream::Context::OnAsyncCompleted"));
+void FileStream::Context::OnAsyncCompleted(Int64CompletionOnceCallback callback,
+                                           const IOResult& result) {
   // Reset this before Run() as Run() may issue a new async operation. Also it
   // should be reset before Close() because it shouldn't run if any async
   // operation is in progress.
   async_in_progress_ = false;
-  if (orphaned_)
+  if (orphaned_) {
     CloseAndDelete();
-  else
-    callback.Run(result.result);
+  } else {
+    std::move(callback).Run(result.result);
+  }
 }
 
 }  // namespace net

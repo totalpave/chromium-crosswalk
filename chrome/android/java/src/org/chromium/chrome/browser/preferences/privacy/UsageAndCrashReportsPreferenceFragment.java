@@ -10,9 +10,10 @@ import android.preference.Preference.OnPreferenceChangeListener;
 import android.preference.PreferenceFragment;
 
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.metrics.UmaSessionStats;
 import org.chromium.chrome.browser.preferences.ChromeSwitchPreference;
-import org.chromium.chrome.browser.preferences.ManagedPreferenceDelegate;
 import org.chromium.chrome.browser.preferences.PrefServiceBridge;
+import org.chromium.chrome.browser.preferences.PreferenceUtils;
 
 /**
  * Fragment to manage the Usage and crash reports preference and to explain to
@@ -25,39 +26,27 @@ public class UsageAndCrashReportsPreferenceFragment extends PreferenceFragment {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        addPreferencesFromResource(R.xml.usage_and_crash_reports_preferences);
-        getActivity().setTitle(R.string.usage_and_crash_reports_title);
+        PreferenceUtils.addPreferencesFromResource(this, R.xml.usage_and_crash_reports_preferences);
+        getActivity().setTitle(R.string.usage_and_crash_reports_title_legacy);
         initUsageAndCrashReportsSwitch();
     }
 
     private void initUsageAndCrashReportsSwitch() {
         ChromeSwitchPreference usageAndCrashReportsSwitch =
                 (ChromeSwitchPreference) findPreference(PREF_USAGE_AND_CRASH_REPORTS_SWITCH);
-        boolean enabled = PrivacyPreferencesManager.getInstance().isUsageAndCrashReportingEnabled();
+        boolean enabled =
+                PrivacyPreferencesManager.getInstance().isUsageAndCrashReportingPermittedByUser();
         usageAndCrashReportsSwitch.setChecked(enabled);
 
         usageAndCrashReportsSwitch.setOnPreferenceChangeListener(new OnPreferenceChangeListener() {
             @Override
             public boolean onPreferenceChange(Preference preference, Object newValue) {
-                boolean enabled = (boolean) newValue;
-                PrivacyPreferencesManager privacyManager = PrivacyPreferencesManager.getInstance();
-
-                // Update new two-choice android and chromium preferences.
-                PrefServiceBridge.getInstance().setMetricsReportingEnabled(enabled);
-                privacyManager.setUsageAndCrashReporting(enabled);
-
-                // Update old three-choice android and chromium preference.
-                PrefServiceBridge.getInstance().setCrashReportingEnabled(enabled);
-                privacyManager.initCrashUploadPreference(enabled);
+                UmaSessionStats.changeMetricsReportingConsent((boolean) newValue);
                 return true;
             }
         });
 
-        usageAndCrashReportsSwitch.setManagedPreferenceDelegate(new ManagedPreferenceDelegate() {
-            @Override
-            public boolean isPreferenceControlledByPolicy(Preference preference) {
-                return PrefServiceBridge.getInstance().isCrashReportManaged();
-            }
-        });
+        usageAndCrashReportsSwitch.setManagedPreferenceDelegate(
+                preference -> PrefServiceBridge.getInstance().isMetricsReportingManaged());
     }
 }

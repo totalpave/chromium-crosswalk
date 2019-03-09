@@ -4,13 +4,27 @@
 
 #include "chromecast/media/base/media_resource_tracker.h"
 
+#include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "chromecast/base/bind_to_task_runner.h"
 #include "chromecast/public/cast_media_shlib.h"
+#include "chromecast/public/volume_control.h"
 
 namespace chromecast {
 namespace media {
+
+MediaResourceTracker::ScopedUsage::ScopedUsage(MediaResourceTracker* tracker)
+    : tracker_(tracker) {
+  DCHECK(tracker_);
+  DCHECK(tracker_->media_task_runner_->BelongsToCurrentThread());
+  tracker_->IncrementUsageCount();
+}
+
+MediaResourceTracker::ScopedUsage::~ScopedUsage() {
+  DCHECK(tracker_->media_task_runner_->BelongsToCurrentThread());
+  tracker_->DecrementUsageCount();
+}
 
 MediaResourceTracker::MediaResourceTracker(
     const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
@@ -30,19 +44,19 @@ MediaResourceTracker::~MediaResourceTracker() {}
 void MediaResourceTracker::InitializeMediaLib() {
   DCHECK(ui_task_runner_->BelongsToCurrentThread());
   media_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&MediaResourceTracker::CallInitializeOnMediaThread,
-                            base::Unretained(this)));
+      FROM_HERE,
+      base::BindOnce(&MediaResourceTracker::CallInitializeOnMediaThread,
+                     base::Unretained(this)));
 }
 
-void MediaResourceTracker::FinalizeMediaLib(
-    const base::Closure& completion_cb) {
+void MediaResourceTracker::FinalizeMediaLib(base::OnceClosure completion_cb) {
   DCHECK(ui_task_runner_->BelongsToCurrentThread());
   DCHECK(!completion_cb.is_null());
 
   media_task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&MediaResourceTracker::MaybeCallFinalizeOnMediaThread,
-                 base::Unretained(this), completion_cb));
+      base::BindOnce(&MediaResourceTracker::MaybeCallFinalizeOnMediaThread,
+                     base::Unretained(this), std::move(completion_cb)));
 }
 
 void MediaResourceTracker::FinalizeAndDestroy() {
@@ -50,7 +64,7 @@ void MediaResourceTracker::FinalizeAndDestroy() {
 
   media_task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(
+      base::BindOnce(
           &MediaResourceTracker::MaybeCallFinalizeOnMediaThreadAndDeleteSelf,
           base::Unretained(this)));
 }
@@ -58,7 +72,7 @@ void MediaResourceTracker::FinalizeAndDestroy() {
 void MediaResourceTracker::IncrementUsageCount() {
   DCHECK(media_task_runner_->BelongsToCurrentThread());
   DCHECK(media_lib_initialized_);
-  DCHECK(finalize_completion_cb_.is_null());
+  DCHECK(!finalize_completion_cb_);
   media_use_count_++;
 }
 
@@ -67,8 +81,8 @@ void MediaResourceTracker::DecrementUsageCount() {
   media_use_count_--;
 
   if (media_use_count_ == 0 &&
-      (delete_on_finalize_ || !finalize_completion_cb_.is_null())) {
-      CallFinalizeOnMediaThread();
+      (delete_on_finalize_ || finalize_completion_cb_)) {
+    CallFinalizeOnMediaThread();
   }
 }
 
@@ -82,14 +96,15 @@ void MediaResourceTracker::CallInitializeOnMediaThread() {
 }
 
 void MediaResourceTracker::MaybeCallFinalizeOnMediaThread(
-    const base::Closure& completion_cb) {
+    base::OnceClosure completion_cb) {
   DCHECK(media_task_runner_->BelongsToCurrentThread());
-  DCHECK(finalize_completion_cb_.is_null());
+  DCHECK(!finalize_completion_cb_);
 
-  finalize_completion_cb_ = BindToTaskRunner(ui_task_runner_, completion_cb);
+  finalize_completion_cb_ =
+      BindToTaskRunner(ui_task_runner_, std::move(completion_cb));
   if (!media_lib_initialized_) {
-    if (!finalize_completion_cb_.is_null())
-      base::ResetAndReturn(&finalize_completion_cb_).Run();
+    if (finalize_completion_cb_)
+      std::move(finalize_completion_cb_).Run();
     return;
   }
 
@@ -125,8 +140,8 @@ void MediaResourceTracker::CallFinalizeOnMediaThread() {
   DoFinalizeMediaLib();
   media_lib_initialized_ = false;
 
-  if (!finalize_completion_cb_.is_null())
-    base::ResetAndReturn(&finalize_completion_cb_).Run();
+  if (finalize_completion_cb_)
+    std::move(finalize_completion_cb_).Run();
 
   if (delete_on_finalize_)
     ui_task_runner_->DeleteSoon(FROM_HERE, this);
@@ -135,10 +150,12 @@ void MediaResourceTracker::CallFinalizeOnMediaThread() {
 void MediaResourceTracker::DoInitializeMediaLib() {
   base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
   media::CastMediaShlib::Initialize(cmd_line->argv());
+  VolumeControl::Initialize(cmd_line->argv());
 }
 
 void MediaResourceTracker::DoFinalizeMediaLib() {
   CastMediaShlib::Finalize();
+  VolumeControl::Finalize();
 }
 
 }  // namespace media

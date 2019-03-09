@@ -58,23 +58,28 @@ org.chromium.mojo.bindings.MessageHeader.MESSAGE_IS_RESPONSE_FLAG
 public static final {{manager_class(interface, True)}} MANAGER =
         new {{manager_class(interface, True)}}() {
 
+    @Override
     public String getName() {
-        return "{{namespace|replace(".","::")}}::{{interface.name}}";
+        return "{{namespace}}.{{interface.name}}";
     }
 
+    @Override
     public int getVersion() {
       return {{interface.version}};
     }
 
+    @Override
     public Proxy buildProxy(org.chromium.mojo.system.Core core,
                             org.chromium.mojo.bindings.MessageReceiverWithResponder messageReceiver) {
         return new Proxy(core, messageReceiver);
     }
 
+    @Override
     public Stub buildStub(org.chromium.mojo.system.Core core, {{interface|name}} impl) {
         return new Stub(core, impl);
     }
 
+    @Override
     public {{interface|name}}[] buildArray(int size) {
       return new {{interface|name}}[size];
     }
@@ -91,11 +96,11 @@ try {
     }
     switch(header.getType()) {
 {%   if with_response %}
-        case org.chromium.mojo.bindings.InterfaceControlMessagesConstants.RUN_MESSAGE_ID:
+        case org.chromium.mojo.bindings.interfacecontrol.InterfaceControlMessagesConstants.RUN_MESSAGE_ID:
             return org.chromium.mojo.bindings.InterfaceControlMessagesHelper.handleRun(
                     getCore(), {{interface|name}}_Internal.MANAGER, messageWithHeader, receiver);
 {%   else %}
-        case org.chromium.mojo.bindings.InterfaceControlMessagesConstants.RUN_OR_CLOSE_PIPE_MESSAGE_ID:
+        case org.chromium.mojo.bindings.interfacecontrol.InterfaceControlMessagesConstants.RUN_OR_CLOSE_PIPE_MESSAGE_ID:
             return org.chromium.mojo.bindings.InterfaceControlMessagesHelper.handleRunOrClosePipe(
                     {{interface|name}}_Internal.MANAGER, messageWithHeader);
 {%   endif %}

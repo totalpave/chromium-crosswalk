@@ -10,13 +10,12 @@
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/logging.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
+#include "third_party/leveldatabase/env_chromium.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 #include "third_party/leveldatabase/src/include/leveldb/db.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
 
 namespace sync_file_system {
 namespace drive_backend {
@@ -32,7 +31,7 @@ class LevelDBWrapperTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(database_dir_.CreateUniqueTempDir());
-    in_memory_env_.reset(leveldb::NewMemEnv(leveldb::Env::Default()));
+    in_memory_env_ = leveldb_chrome::NewMemEnv("LevelDBWrapperTest");
     InitializeLevelDB();
   }
 
@@ -47,9 +46,9 @@ class LevelDBWrapperTest : public testing::Test {
     // Expected contents are
     // {"a": "1", "ab": "0", "bb": "3", "d": "4"}
     const char* keys[] = {"ab", "a", "d", "bb", "d"};
-    for (size_t i = 0; i < arraysize(keys); ++i) {
+    for (size_t i = 0; i < base::size(keys); ++i) {
       leveldb::Status status =
-          db->Put(leveldb::WriteOptions(), keys[i], base::SizeTToString(i));
+          db->Put(leveldb::WriteOptions(), keys[i], base::NumberToString(i));
       ASSERT_TRUE(status.ok());
     }
   }
@@ -74,16 +73,16 @@ class LevelDBWrapperTest : public testing::Test {
 
  private:
   void InitializeLevelDB() {
-    leveldb::DB* db = nullptr;
-    leveldb::Options options;
+    std::unique_ptr<leveldb::DB> db;
+    leveldb_env::Options options;
     options.create_if_missing = true;
     options.max_open_files = 0;  // Use minimum.
     options.env = in_memory_env_.get();
-    leveldb::Status status =
-        leveldb::DB::Open(options, database_dir_.path().AsUTF8Unsafe(), &db);
+    leveldb::Status status = leveldb_env::OpenDB(
+        options, database_dir_.GetPath().AsUTF8Unsafe(), &db);
     ASSERT_TRUE(status.ok());
 
-    db_.reset(new LevelDBWrapper(base::WrapUnique(db)));
+    db_.reset(new LevelDBWrapper(std::move(db)));
   }
 
   base::ScopedTempDir database_dir_;
@@ -176,7 +175,7 @@ TEST_F(LevelDBWrapperTest, PutTest) {
   GetDB()->Put("bb", "new2");  // Overwrite an entry.
 
   SCOPED_TRACE("PutTest_Pending");
-  CheckDBContents(merged_data, arraysize(merged_data));
+  CheckDBContents(merged_data, base::size(merged_data));
 
   EXPECT_EQ(3, GetDB()->num_puts());
   // Remove all pending transactions.
@@ -184,7 +183,7 @@ TEST_F(LevelDBWrapperTest, PutTest) {
   EXPECT_EQ(0, GetDB()->num_puts());
 
   SCOPED_TRACE("PutTest_Clear");
-  CheckDBContents(orig_data, arraysize(orig_data));
+  CheckDBContents(orig_data, base::size(orig_data));
 
   // Add pending transactions again, with commiting.
   GetDB()->Put("aa", "new0");
@@ -196,7 +195,7 @@ TEST_F(LevelDBWrapperTest, PutTest) {
   GetDB()->Clear();  // Clear just in case.
 
   SCOPED_TRACE("PutTest_Commit");
-  CheckDBContents(merged_data, arraysize(merged_data));
+  CheckDBContents(merged_data, base::size(merged_data));
 }
 
 TEST_F(LevelDBWrapperTest, DeleteTest) {
@@ -217,13 +216,13 @@ TEST_F(LevelDBWrapperTest, DeleteTest) {
   EXPECT_EQ(2, GetDB()->num_deletes());
 
   SCOPED_TRACE("DeleteTest_Pending");
-  CheckDBContents(merged_data, arraysize(merged_data));
+  CheckDBContents(merged_data, base::size(merged_data));
 
   // Remove all pending transactions.
   GetDB()->Clear();
 
   SCOPED_TRACE("DeleteTest_Clear");
-  CheckDBContents(orig_data, arraysize(orig_data));
+  CheckDBContents(orig_data, base::size(orig_data));
 
   // Add pending transactions again, with commiting.
   GetDB()->Put("aa", "new0");
@@ -238,7 +237,7 @@ TEST_F(LevelDBWrapperTest, DeleteTest) {
   EXPECT_EQ(0, GetDB()->num_deletes());
 
   SCOPED_TRACE("DeleteTest_Commit");
-  CheckDBContents(merged_data, arraysize(merged_data));
+  CheckDBContents(merged_data, base::size(merged_data));
 }
 
 }  // namespace drive_backend

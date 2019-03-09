@@ -5,13 +5,14 @@
 #ifndef UI_VIEWS_CONTROLS_SCROLLBAR_COCOA_SCROLL_BAR_H_
 #define UI_VIEWS_CONTROLS_SCROLLBAR_COCOA_SCROLL_BAR_H_
 
-#include "base/macros.h"
 #import "base/mac/scoped_nsobject.h"
+#include "base/macros.h"
+#include "base/timer/timer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/gfx/animation/slide_animation.h"
-#import "ui/views/cocoa/views_scrollbar_bridge.h"
 #include "ui/views/controls/scrollbar/base_scroll_bar.h"
 #include "ui/views/views_export.h"
+#import "ui/views_bridge_mac/views_scrollbar_bridge.h"
 
 namespace views {
 
@@ -26,8 +27,11 @@ class VIEWS_EXPORT CocoaScrollBar : public BaseScrollBar,
   explicit CocoaScrollBar(bool horizontal);
   ~CocoaScrollBar() override;
 
-  // BaseScrollBar:
-  void ScrollToPosition(int position) override;
+  // ScrollBar:
+  void Update(int viewport_size,
+              int content_size,
+              int contents_scroll_offset) override;
+  void ObserveScrollEvent(const ui::ScrollEvent& event) override;
 
   // ViewsScrollbarBridgeDelegate:
   void OnScrollerStyleChanged() override;
@@ -48,6 +52,9 @@ class VIEWS_EXPORT CocoaScrollBar : public BaseScrollBar,
   // Returns the scroller style.
   NSScrollerStyle GetScrollerStyle() const { return scroller_style_; }
 
+  // Returns the thickness of the scrollbar.
+  int ScrollbarThickness() const;
+
   // Returns true if the opacity is 0.0.
   bool IsScrollbarFullyHidden() const;
 
@@ -56,15 +63,17 @@ class VIEWS_EXPORT CocoaScrollBar : public BaseScrollBar,
   gfx::Rect GetTrackBounds() const override;
 
   // ScrollBar:
-  int GetLayoutSize() const override;
-  int GetContentOverlapSize() const override;
+  int GetThickness() const override;
+  bool OverlapsContent() const override;
 
   // View:
   void Layout() override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   void OnPaint(gfx::Canvas* canvas) override;
 
  private:
+  friend class BaseScrollBar;  // For BaseScrollBar::GetHideTimerForTest().
+
   // Methods to change the visibility of the scrollbar.
   void ShowScrollbar();
   void HideScrollbar();
@@ -80,9 +89,6 @@ class VIEWS_EXPORT CocoaScrollBar : public BaseScrollBar,
   // and is not in a hover/pressed state.
   void ResetOverlayScrollbar();
 
-  // Returns the thickness of the scrollbar.
-  int ScrollbarThickness() const;
-
   // Sets the scrolltrack's visibility and then repaints it.
   void SetScrolltrackVisible(bool visible);
 
@@ -93,12 +99,15 @@ class VIEWS_EXPORT CocoaScrollBar : public BaseScrollBar,
   NSScrollerStyle scroller_style_;
 
   // Timer that will start the scrollbar's hiding animation when it reaches 0.
-  base::Timer hide_scrollbar_timer_;
+  base::RetainingOneShotTimer hide_scrollbar_timer_;
 
   // Slide animation that animates the thickness of an overlay scrollbar.
   // The animation expands the scrollbar as the showing animation and shrinks
   // the scrollbar as the hiding animation.
   gfx::SlideAnimation thickness_animation_;
+
+  // The scroll offset from the last adjustment to the scrollbar.
+  int last_contents_scroll_offset_;
 
   // True when the scrollbar is expanded.
   bool is_expanded_;

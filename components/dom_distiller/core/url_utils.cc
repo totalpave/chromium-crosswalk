@@ -9,7 +9,7 @@
 #include "base/guid.h"
 #include "base/strings/string_number_conversions.h"
 #include "components/dom_distiller/core/url_constants.h"
-#include "grit/components_resources.h"
+#include "components/grit/components_resources.h"
 #include "net/base/url_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "url/gurl.h"
@@ -35,8 +35,8 @@ const GURL GetDistillerViewUrlFromUrl(const std::string& scheme,
                                       int64_t start_time_ms) {
   GURL url(scheme + "://" + base::GenerateGUID());
   if (start_time_ms > 0) {
-    url = net::AppendOrReplaceQueryParameter(url, kTimeKey,
-        base::IntToString(start_time_ms));
+    url = net::AppendOrReplaceQueryParameter(
+        url, kTimeKey, base::NumberToString(start_time_ms));
   }
   return net::AppendOrReplaceQueryParameter(url, kUrlKey, view_url.spec());
 }
@@ -90,11 +90,6 @@ bool IsUrlDistillable(const GURL& url) {
 
 bool IsDistilledPage(const GURL& url) {
   return url.is_valid() && url.scheme() == kDomDistillerScheme;
-}
-
-std::string GetIsDistillableJs() {
-  return ResourceBundle::GetSharedInstance()
-      .GetRawDataResource(IDR_IS_DISTILLABLE_JS).as_string();
 }
 
 }  // namespace url_utils

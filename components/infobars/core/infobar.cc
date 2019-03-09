@@ -11,61 +11,26 @@
 #include "build/build_config.h"
 #include "components/infobars/core/infobar_container.h"
 #include "components/infobars/core/infobar_manager.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/gfx/animation/slide_animation.h"
 
 namespace infobars {
 
 InfoBar::InfoBar(std::unique_ptr<InfoBarDelegate> delegate)
-    : owner_(NULL),
+    : owner_(nullptr),
       delegate_(std::move(delegate)),
-      container_(NULL),
+      container_(nullptr),
       animation_(this),
-      arrow_height_(0),
-      arrow_target_height_(0),
-      arrow_half_width_(0),
-      bar_height_(0),
-      bar_target_height_(-1) {
-  DCHECK(delegate_ != NULL);
+      height_(0),
+      target_height_(0) {
+  DCHECK(delegate_ != nullptr);
   animation_.SetTweenType(gfx::Tween::LINEAR);
+  if (!gfx::Animation::ShouldRenderRichAnimation())
+    animation_.SetSlideDuration(0);
   delegate_->set_infobar(this);
 }
 
 InfoBar::~InfoBar() {
   DCHECK(!owner_);
-}
-
-// static
-SkColor InfoBar::GetTopColor(InfoBarDelegate::Type infobar_type) {
-  if (ui::MaterialDesignController::IsModeMaterial()) {
-    static const SkColor kWarningBackgroundColorMd =
-        SkColorSetRGB(0xFF, 0xEC, 0xB3);  // Yellow
-    static const SkColor kPageActionBackgroundColorMd = SK_ColorWHITE;
-
-    return infobar_type == InfoBarDelegate::WARNING_TYPE ?
-        kWarningBackgroundColorMd : kPageActionBackgroundColorMd;
-  }
-
-  static const SkColor kWarningBackgroundColorTop =
-      SkColorSetRGB(255, 242, 183);  // Yellow
-  static const SkColor kPageActionBackgroundColorTop =
-      SkColorSetRGB(237, 237, 237);  // Gray
-  return (infobar_type == InfoBarDelegate::WARNING_TYPE) ?
-      kWarningBackgroundColorTop : kPageActionBackgroundColorTop;
-}
-
-// static
-SkColor InfoBar::GetBottomColor(InfoBarDelegate::Type infobar_type) {
-  // No gradient in MD.
-  if (ui::MaterialDesignController::IsModeMaterial())
-    return GetTopColor(infobar_type);
-
-  static const SkColor kWarningBackgroundColorBottom =
-      SkColorSetRGB(250, 230, 145);  // Yellow
-  static const SkColor kPageActionBackgroundColorBottom =
-      SkColorSetRGB(217, 217, 217);  // Gray
-  return (infobar_type == InfoBarDelegate::WARNING_TYPE) ?
-      kWarningBackgroundColorBottom : kPageActionBackgroundColorBottom;
 }
 
 void InfoBar::SetOwner(InfoBarManager* owner) {
@@ -81,7 +46,7 @@ void InfoBar::Show(bool animate) {
     animation_.Show();
   } else {
     animation_.Reset(1.0);
-    RecalculateHeights(true);
+    RecalculateHeight(true);
   }
 }
 
@@ -99,17 +64,8 @@ void InfoBar::Hide(bool animate) {
   }
 }
 
-void InfoBar::SetArrowTargetHeight(int height) {
-  // Once the closing animation starts, we ignore further requests to change the
-  // target height.
-  if ((arrow_target_height_ != height) && !animation_.IsClosing()) {
-    arrow_target_height_ = height;
-    RecalculateHeights(false);
-  }
-}
-
 void InfoBar::CloseSoon() {
-  owner_ = NULL;
+  owner_ = nullptr;
   PlatformSpecificOnCloseSoon();
   MaybeDelete();
 }
@@ -119,15 +75,15 @@ void InfoBar::RemoveSelf() {
     owner_->RemoveInfoBar(this);
 }
 
-void InfoBar::SetBarTargetHeight(int height) {
-  if (bar_target_height_ != height) {
-    bar_target_height_ = height;
-    RecalculateHeights(false);
+void InfoBar::SetTargetHeight(int height) {
+  if (target_height_ != height) {
+    target_height_ = height;
+    RecalculateHeight(false);
   }
 }
 
 void InfoBar::AnimationProgressed(const gfx::Animation* animation) {
-  RecalculateHeights(false);
+  RecalculateHeight(false);
 }
 
 void InfoBar::AnimationEnded(const gfx::Animation* animation) {
@@ -135,34 +91,29 @@ void InfoBar::AnimationEnded(const gfx::Animation* animation) {
   // the heights haven't changed, lest it never get an "animation finished"
   // notification.  (If the browser doesn't get this notification, it will not
   // bother to re-layout the content area for the new infobar size.)
-  RecalculateHeights(true);
+  RecalculateHeight(true);
   MaybeDelete();
 }
 
-void InfoBar::RecalculateHeights(bool force_notify) {
-  // If there's no container delegate, there's no way to compute new element
-  // sizes, so return immediately.  We don't need to worry that this might leave
-  // us with bogus sizes, because if we're ever re-added to a container, it will
+void InfoBar::RecalculateHeight(bool force_notify) {
+  // If there's no container delegate, there's no way to compute the new height,
+  // so return immediately.  We don't need to worry that this might leave us
+  // with bogus sizes, because if we're ever re-added to a container, it will
   // call Show(false) while re-adding us, which will compute a correct set of
   // sizes.
   if (!container_ || !container_->delegate())
     return;
 
-  int old_arrow_height = arrow_height_;
-  int old_bar_height = bar_height_;
-
-  container_->delegate()->ComputeInfoBarElementSizes(
-      animation_, arrow_target_height_, bar_target_height_, &arrow_height_,
-      &arrow_half_width_, &bar_height_);
+  int old_height = height_;
+  height_ = animation_.CurrentValueBetween(0, target_height_);
 
   // Don't re-layout if nothing has changed, e.g. because the animation step was
-  // not large enough to actually change the heights by at least a pixel.
-  bool heights_differ =
-      (old_arrow_height != arrow_height_) || (old_bar_height != bar_height_);
-  if (heights_differ)
-    PlatformSpecificOnHeightsRecalculated();
+  // not large enough to actually change the height by at least a pixel.
+  bool height_differs = old_height != height_;
+  if (height_differs)
+    PlatformSpecificOnHeightRecalculated();
 
-  if (heights_differ || force_notify)
+  if (height_differs || force_notify)
     container_->OnInfoBarStateChanged(animation_.is_animating());
 }
 

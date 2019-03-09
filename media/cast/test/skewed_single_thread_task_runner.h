@@ -7,6 +7,7 @@
 
 #include <map>
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/test/simple_test_tick_clock.h"
@@ -29,15 +30,15 @@ class SkewedSingleThreadTaskRunner : public base::SingleThreadTaskRunner {
   void SetSkew(double skew);
 
   // base::SingleThreadTaskRunner implementation.
-  bool PostDelayedTask(const tracked_objects::Location& from_here,
-                       const base::Closure& task,
+  bool PostDelayedTask(const base::Location& from_here,
+                       base::OnceClosure task,
                        base::TimeDelta delay) final;
 
-  bool RunsTasksOnCurrentThread() const final;
+  bool RunsTasksInCurrentSequence() const final;
 
   // This function is currently not used, and will return false.
-  bool PostNonNestableDelayedTask(const tracked_objects::Location& from_here,
-                                  const base::Closure& task,
+  bool PostNonNestableDelayedTask(const base::Location& from_here,
+                                  base::OnceClosure task,
                                   base::TimeDelta delay) final;
 
  protected:

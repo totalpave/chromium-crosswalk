@@ -7,9 +7,8 @@
 #include <limits>
 
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/process/process_metrics.h"
-#include "build/build_config.h"
 #include "content/public/common/process_type.h"
 
 #if defined(OS_MACOSX)
@@ -18,29 +17,13 @@
 
 namespace performance_monitor {
 
-namespace {
-
-const char kBrowserProcessTrigger[] =
-    "ProcessMetricsHistory.BrowserProcess.HighCPU";
-const char kGPUProcessTrigger[] = "ProcessMetricsHistory.GPUProcess.HighCPU";
-const char kExtensionPersistentProcessTrigger[] =
-    "ProcessMetricsHistory.ExtensionPersistentProcess.HighCPU";
-
-}  // namespace
-
 // If a process is consistently above this CPU utilization percentage over time,
 // we consider it as high and may take action.
 const float kHighCPUUtilizationThreshold = 90.0f;
 
-ProcessMetricsHistory::ProcessMetricsHistory()
-    : last_update_sequence_(0), cpu_usage_(0.0), trace_trigger_handle_(-1) {
-}
+ProcessMetricsHistory::ProcessMetricsHistory() = default;
 
-ProcessMetricsHistory::ProcessMetricsHistory(
-    const ProcessMetricsHistory& other) = default;
-
-ProcessMetricsHistory::~ProcessMetricsHistory() {
-}
+ProcessMetricsHistory::~ProcessMetricsHistory() = default;
 
 void ProcessMetricsHistory::Initialize(
     const ProcessMetricsMetadata& process_data,
@@ -50,47 +33,40 @@ void ProcessMetricsHistory::Initialize(
   last_update_sequence_ = initial_update_sequence;
 
 #if defined(OS_MACOSX)
-  process_metrics_.reset(base::ProcessMetrics::CreateProcessMetrics(
+  process_metrics_ = base::ProcessMetrics::CreateProcessMetrics(
       process_data_.handle,
-      content::BrowserChildProcessHost::GetPortProvider()));
+      content::BrowserChildProcessHost::GetPortProvider());
 #else
-  process_metrics_.reset(
-      base::ProcessMetrics::CreateProcessMetrics(process_data_.handle));
+  process_metrics_ =
+      base::ProcessMetrics::CreateProcessMetrics(process_data_.handle);
 #endif
-
-  const char* trigger_name = NULL;
-  switch (process_data_.process_type) {
-    case content::PROCESS_TYPE_BROWSER:
-      trigger_name = kBrowserProcessTrigger;
-      break;
-    case content::PROCESS_TYPE_GPU:
-      trigger_name = kGPUProcessTrigger;
-      break;
-  }
-  switch (process_data_.process_subtype) {
-    case kProcessSubtypeExtensionPersistent:
-      trigger_name = kExtensionPersistentProcessTrigger;
-      break;
-    default:
-      break;
-  }
-  if (trigger_name) {
-    trace_trigger_handle_ =
-        content::BackgroundTracingManager::GetInstance()->RegisterTriggerType(
-            trigger_name);
-  }
 }
 
 void ProcessMetricsHistory::SampleMetrics() {
   cpu_usage_ = process_metrics_->GetPlatformIndependentCPUUsage();
+#if defined(OS_WIN)
+  disk_usage_ = process_metrics_->GetDiskUsageBytesPerSecond();
+#endif
+#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_AIX)
+  idle_wakeups_ = process_metrics_->GetIdleWakeupsPerSecond();
+#endif
+#if defined(OS_MACOSX)
+  package_idle_wakeups_ = process_metrics_->GetPackageIdleWakeupsPerSecond();
+#endif
 }
 
 void ProcessMetricsHistory::RunPerformanceTriggers() {
   // We scale up to the equivalent of 64 CPU cores fully loaded. More than this
   // doesn't really matter, as we're already in a terrible place.
-  const int kHistogramMin = 0;
+  const int kHistogramMin = 1;
   const int kHistogramMax = 6400;
   const int kHistogramBucketCount = 50;
+
+#if defined(OS_WIN)
+  const int kDiskUsageHistogramMin = 1;
+  const int kDiskUsageHistogramMax = 200 * 1024 * 1024;  // 200 M/sec.
+  const int kDiskUsageHistogramBucketCount = 50;
+#endif
 
   // The histogram macros don't support variables as histogram names,
   // hence the macro duplication for each process type.
@@ -105,6 +81,21 @@ void ProcessMetricsHistory::RunPerformanceTriggers() {
         UMA_HISTOGRAM_BOOLEAN("PerformanceMonitor.HighCPU.BrowserProcess",
                               true);
       }
+#if defined(OS_WIN)
+      UMA_HISTOGRAM_CUSTOM_COUNTS(
+          "PerformanceMonitor.AverageDisk.BrowserProcess", disk_usage_,
+          kDiskUsageHistogramMin, kDiskUsageHistogramMax,
+          kDiskUsageHistogramBucketCount);
+#endif
+#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_AIX)
+      UMA_HISTOGRAM_COUNTS_10000(
+          "PerformanceMonitor.IdleWakeups.BrowserProcess", idle_wakeups_);
+#endif
+#if defined(OS_MACOSX)
+      UMA_HISTOGRAM_COUNTS_1000(
+          "PerformanceMonitor.PackageExitIdleWakeups.BrowserProcess",
+          package_idle_wakeups_);
+#endif
       break;
     case content::PROCESS_TYPE_RENDERER:
       UMA_HISTOGRAM_CUSTOM_COUNTS(
@@ -114,6 +105,16 @@ void ProcessMetricsHistory::RunPerformanceTriggers() {
         UMA_HISTOGRAM_BOOLEAN("PerformanceMonitor.HighCPU.RendererProcess",
                               true);
       }
+#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_AIX)
+      UMA_HISTOGRAM_COUNTS_10000(
+          "PerformanceMonitor.IdleWakeups.RendererProcess", idle_wakeups_);
+#endif
+#if defined(OS_MACOSX)
+      UMA_HISTOGRAM_COUNTS_1000(
+          "PerformanceMonitor.PackageExitIdleWakeups.RendererProcess",
+          package_idle_wakeups_);
+#endif
+
       break;
     case content::PROCESS_TYPE_GPU:
       UMA_HISTOGRAM_CUSTOM_COUNTS("PerformanceMonitor.AverageCPU.GPUProcess",
@@ -121,6 +122,16 @@ void ProcessMetricsHistory::RunPerformanceTriggers() {
                                   kHistogramBucketCount);
       if (cpu_usage_ > kHighCPUUtilizationThreshold)
         UMA_HISTOGRAM_BOOLEAN("PerformanceMonitor.HighCPU.GPUProcess", true);
+#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_AIX)
+      UMA_HISTOGRAM_COUNTS_10000("PerformanceMonitor.IdleWakeups.GPUProcess",
+                                 idle_wakeups_);
+#endif
+#if defined(OS_MACOSX)
+      UMA_HISTOGRAM_COUNTS_1000(
+          "PerformanceMonitor.PackageExitIdleWakeups.GPUProcess",
+          package_idle_wakeups_);
+#endif
+
       break;
     case content::PROCESS_TYPE_PPAPI_PLUGIN:
       UMA_HISTOGRAM_CUSTOM_COUNTS("PerformanceMonitor.AverageCPU.PPAPIProcess",
@@ -164,13 +175,6 @@ void ProcessMetricsHistory::RunPerformanceTriggers() {
             "PerformanceMonitor.HighCPU.RendererExtensionEventProcess", true);
       }
       break;
-  }
-
-  if (cpu_usage_ > kHighCPUUtilizationThreshold &&
-      trace_trigger_handle_ != -1) {
-    content::BackgroundTracingManager::GetInstance()->TriggerNamedEvent(
-        trace_trigger_handle_,
-        content::BackgroundTracingManager::StartedFinalizingCallback());
   }
 }
 

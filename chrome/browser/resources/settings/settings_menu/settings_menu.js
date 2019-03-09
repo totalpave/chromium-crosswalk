@@ -9,73 +9,70 @@
 Polymer({
   is: 'settings-menu',
 
+  behaviors: [settings.RouteObserverBehavior],
+
   properties: {
-    /** @private */
-    advancedOpened_: Boolean,
+    advancedOpened: {
+      type: Boolean,
+      notify: true,
+    },
 
     /**
-     * The current active route.
-     * @type {!SettingsRoute}
+     * Dictionary defining page visibility.
+     * @type {!GuestModePageVisibility}
      */
-    currentRoute: {
-      type: Object,
-      notify: true,
-      observer: 'currentRouteChanged_',
-    },
+    pageVisibility: Object,
   },
 
-  attached: function() {
-    document.addEventListener('toggle-advanced-page', function(e) {
-      if (e.detail)
-        this.$.advancedPage.open();
-      else
-        this.$.advancedPage.close();
-    }.bind(this));
+  /** @param {!settings.Route} newRoute */
+  currentRouteChanged: function(newRoute) {
+    const currentPath = newRoute.path;
 
-    this.$.advancedPage.addEventListener('paper-submenu-open', function() {
-      this.fire('toggle-advanced-page', true);
-    }.bind(this));
+    // Focus the initially selected path.
+    const anchors = this.root.querySelectorAll('a');
+    for (let i = 0; i < anchors.length; ++i) {
+      if (anchors[i].getAttribute('href') == currentPath) {
+        this.setSelectedUrl_(anchors[i].href);
+        return;
+      }
+    }
 
-    this.$.advancedPage.addEventListener('paper-submenu-close', function() {
-      this.fire('toggle-advanced-page', false);
-    }.bind(this));
-
-    this.fire('toggle-advanced-page', this.currentRoute.page == 'advanced');
+    this.setSelectedUrl_('');  // Nothing is selected.
   },
 
   /**
-   * @param {!SettingsRoute} newRoute
+   * Prevent clicks on sidebar items from navigating. These are only links for
+   * accessibility purposes, taps are handled separately by <iron-selector>.
+   * @param {!Event} event
    * @private
    */
-  currentRouteChanged_: function(newRoute) {
-    // Sync URL changes to the side nav menu.
-
-    if (newRoute.page == 'advanced') {
-      this.$.advancedMenu.selected = this.currentRoute.section;
-      this.$.basicMenu.selected = null;
-    } else if (newRoute.page == 'basic') {
-      this.$.advancedMenu.selected = null;
-      this.$.basicMenu.selected = this.currentRoute.section;
-    } else {
-      this.$.advancedMenu.selected = null;
-      this.$.basicMenu.selected = null;
+  onLinkClick_: function(event) {
+    if (event.target.matches('a:not(#extensionsLink)')) {
+      event.preventDefault();
     }
+  },
+
+  /**
+   * Keeps both menus in sync. |url| needs to come from |element.href| because
+   * |iron-list| uses the entire url. Using |getAttribute| will not work.
+   * @param {string} url
+   */
+  setSelectedUrl_: function(url) {
+    this.$.topMenu.selected = this.$.subMenu.selected = url;
   },
 
   /**
    * @param {!Event} event
    * @private
    */
-  openPage_: function(event) {
-    var submenuRoute = event.currentTarget.parentNode.dataset.page;
-    if (submenuRoute) {
-      this.currentRoute = {
-        page: submenuRoute,
-        section: event.currentTarget.dataset.section,
-        subpage: [],
-        url: '',
-      };
-    }
+  onSelectorActivate_: function(event) {
+    this.setSelectedUrl_(event.detail.selected);
+
+    const path = new URL(event.detail.selected).pathname;
+    const route = settings.getRouteForPath(path);
+    assert(route, 'settings-menu has an entry with an invalid route.');
+    settings.navigateTo(
+        route, /* dynamicParams */ null, /* removeSearch */ true);
   },
 
   /**
@@ -84,6 +81,12 @@ Polymer({
    * @private
    * */
   arrowState_: function(opened) {
-    return opened ? 'settings:arrow-drop-up' : 'cr:arrow-drop-down';
+    return opened ? 'cr:arrow-drop-up' : 'cr:arrow-drop-down';
+  },
+
+  /** @private */
+  onExtensionsLinkClick_: function() {
+    chrome.metricsPrivate.recordUserAction(
+        'SettingsMenu_ExtensionsLinkClicked');
   },
 });

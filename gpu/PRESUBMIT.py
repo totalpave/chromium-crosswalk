@@ -8,33 +8,32 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details about the presubmit API built into depot_tools.
 """
 
-import re
+def CommonChecks(input_api, output_api):
+  import sys
 
-def PostUploadHook(cl, change, output_api):
-  """git cl upload will call this hook after the issue is created/modified.
+  output = []
+  sys_path_backup = sys.path
+  try:
+    sys.path = [
+        input_api.PresubmitLocalPath()
+    ] + sys.path
+    disabled_warnings = [
+        'W0622',  # redefined-builtin
+        'R0923',  # interface-not-implemented
+    ]
+    output.extend(input_api.canned_checks.RunPylint(
+      input_api,
+      output_api,
+      disabled_warnings=disabled_warnings))
+  finally:
+    sys.path = sys_path_backup
 
-  This hook adds extra try bots list to the CL description in order to run
-  Blink tests in addition to CQ try bots.
-  """
-  rietveld_obj = cl.RpcServer()
-  issue = cl.issue
-  description = rietveld_obj.get_description(issue)
-  if re.search(r'^CQ_INCLUDE_TRYBOTS=.*', description, re.M | re.I):
-    return []
+  return output
 
-  bots = [
-    'tryserver.chromium.linux:linux_optional_gpu_tests_rel',
-    'tryserver.chromium.mac:mac_optional_gpu_tests_rel',
-    'tryserver.chromium.win:win_optional_gpu_tests_rel',
-  ]
 
-  results = []
-  new_description = description
-  new_description += '\nCQ_INCLUDE_TRYBOTS=%s' % ';'.join(bots)
-  results.append(output_api.PresubmitNotifyResult(
-      'Automatically added optional GPU tests to run on CQ.'))
+def CheckChangeOnUpload(input_api, output_api):
+  return CommonChecks(input_api, output_api)
 
-  if new_description != description:
-    rietveld_obj.update_description(issue, new_description)
 
-  return results
+def CheckChangeOnCommit(input_api, output_api):
+  return CommonChecks(input_api, output_api)

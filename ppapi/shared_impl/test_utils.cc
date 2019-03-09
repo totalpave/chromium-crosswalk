@@ -8,8 +8,8 @@
 #include <stdint.h>
 
 #include <cmath>
+#include <unordered_map>
 
-#include "base/containers/hash_tables.h"
 #include "base/logging.h"
 #include "ipc/ipc_message.h"
 #include "ppapi/shared_impl/array_var.h"
@@ -29,14 +29,14 @@ namespace {
 bool Equals(const PP_Var& expected,
             const PP_Var& actual,
             bool test_string_references,
-            base::hash_map<int64_t, int64_t>* visited_map) {
+            std::unordered_map<int64_t, int64_t>* visited_map) {
   if (expected.type != actual.type) {
     LOG(ERROR) << "expected type: " << expected.type
                << " actual type: " << actual.type;
     return false;
   }
   if (VarTracker::IsVarTypeRefcounted(expected.type)) {
-    base::hash_map<int64_t, int64_t>::iterator it =
+    std::unordered_map<int64_t, int64_t>::iterator it =
         visited_map->find(expected.value.as_id);
     if (it != visited_map->end()) {
       if (it->second != actual.value.as_id) {
@@ -208,13 +208,16 @@ bool Equals(const PP_Var& expected,
 bool TestEqual(const PP_Var& expected,
                const PP_Var& actual,
                bool test_string_references) {
-  base::hash_map<int64_t, int64_t> visited_map;
+  std::unordered_map<int64_t, int64_t> visited_map;
   return Equals(expected, actual, test_string_references, &visited_map);
 }
 
 std::string StripTestPrefixes(const std::string& test_name) {
-  if (test_name.find("DISABLED_") == 0)
-    return test_name.substr(strlen("DISABLED_"));
+  const char kDisabledPrefix[] = "DISABLED_";
+  if (base::StartsWith(test_name, kDisabledPrefix,
+                       base::CompareCase::SENSITIVE)) {
+    return test_name.substr(sizeof(kDisabledPrefix) - 1);
+  }
   return test_name;
 }
 

@@ -14,13 +14,14 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observer.h"
 #include "chrome/browser/background/background_contents.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
-#include "content/public/common/window_container_type.h"
 #include "extensions/browser/extension_registry_observer.h"
+#include "net/base/backoff_entry.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
@@ -30,7 +31,7 @@ class Profile;
 namespace base {
 class CommandLine;
 class DictionaryValue;
-}
+}  // namespace base
 
 namespace content {
 class SessionStorageNamespace;
@@ -39,7 +40,7 @@ class SessionStorageNamespace;
 namespace extensions {
 class Extension;
 class ExtensionRegistry;
-}
+}  // namespace extensions
 
 namespace gfx {
 class Rect;
@@ -84,29 +85,27 @@ class BackgroundContentsService : private content::NotificationObserver,
 
   // Returns the BackgroundContents associated with the passed application id,
   // or NULL if none.
-  BackgroundContents* GetAppBackgroundContents(const base::string16& appid);
+  BackgroundContents* GetAppBackgroundContents(const std::string& appid);
 
   // Returns true if there's a registered BackgroundContents for this app. It
   // is possible for this routine to return true when GetAppBackgroundContents()
   // returns false, if the BackgroundContents closed due to the render process
   // crashing.
-  bool HasRegisteredBackgroundContents(const base::string16& appid);
+  bool HasRegisteredBackgroundContents(const std::string& appid);
 
   // Returns all currently opened BackgroundContents (used by the task manager).
   std::vector<BackgroundContents*> GetBackgroundContents() const;
 
   // BackgroundContents::Delegate implementation.
-  void AddWebContents(content::WebContents* new_contents,
+  void AddWebContents(std::unique_ptr<content::WebContents> new_contents,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
-                      bool user_gesture,
                       bool* was_blocked) override;
 
   // Gets the parent application id for the passed BackgroundContents. Returns
   // an empty string if no parent application found (e.g. passed
   // BackgroundContents has already shut down).
-  const base::string16& GetParentApplicationId(
-      BackgroundContents* contents) const;
+  const std::string& GetParentApplicationId(BackgroundContents* contents) const;
 
   // Creates a new BackgroundContents using the passed |site| and
   // the |route_id| and begins tracking the object internally so it can be
@@ -116,12 +115,13 @@ class BackgroundContentsService : private content::NotificationObserver,
   // Source..
   BackgroundContents* CreateBackgroundContents(
       scoped_refptr<content::SiteInstance> site,
+      content::RenderFrameHost* opener,
       int32_t route_id,
       int32_t main_frame_route_id,
       int32_t main_frame_widget_route_id,
       Profile* profile,
       const std::string& frame_name,
-      const base::string16& application_id,
+      const std::string& application_id,
       const std::string& partition_id,
       content::SessionStorageNamespace* session_storage_namespace);
 
@@ -149,13 +149,15 @@ class BackgroundContentsService : private content::NotificationObserver,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
+  // Called when ExtensionSystem is ready.
+  void OnExtensionSystemReady(Profile* profile);
+
   // extensions::ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const extensions::Extension* extension) override;
-  void OnExtensionUnloaded(
-      content::BrowserContext* browser_context,
-      const extensions::Extension* extension,
-      extensions::UnloadedExtensionInfo::Reason reason) override;
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const extensions::Extension* extension,
+                           extensions::UnloadedExtensionReason reason) override;
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const extensions::Extension* extension,
                               extensions::UninstallReason reason) override;
@@ -185,7 +187,7 @@ class BackgroundContentsService : private content::NotificationObserver,
   void LoadBackgroundContents(Profile* profile,
                               const GURL& url,
                               const std::string& frame_name,
-                              const base::string16& appid);
+                              const std::string& appid);
 
   // Invoked when a new BackgroundContents is opened.
   void BackgroundContentsOpened(BackgroundContentsOpenedDetails* details,
@@ -205,7 +207,7 @@ class BackgroundContentsService : private content::NotificationObserver,
 
   // Unregisters and deletes the BackgroundContents associated with the
   // passed extension.
-  void ShutdownAssociatedBackgroundContents(const base::string16& appid);
+  void ShutdownAssociatedBackgroundContents(const std::string& appid);
 
   // Returns true if this BackgroundContents is in the contents_list_.
   bool IsTracked(BackgroundContents* contents) const;
@@ -214,6 +216,11 @@ class BackgroundContentsService : private content::NotificationObserver,
   // apps may have changed (used by BackgroundApplicationListModel to update the
   // set of background apps as new background contents are opened/closed).
   void SendChangeNotification(Profile* profile);
+
+  // Checks whether there has been additional |extension_id| failures. If not,
+  // delete the BackoffEntry corresponding to |extension_id|, if exists.
+  void MaybeClearBackoffEntry(const std::string extension_id,
+                              int expected_failure_count);
 
   // Delay (in ms) before restarting a force-installed extension that crashed.
   static int restart_delay_in_ms_;
@@ -235,13 +242,20 @@ class BackgroundContentsService : private content::NotificationObserver,
   // applications.
   // Key: application id
   // Value: BackgroundContentsInfo for the BC associated with that application
-  typedef std::map<base::string16, BackgroundContentsInfo>
-      BackgroundContentsMap;
+  typedef std::map<std::string, BackgroundContentsInfo> BackgroundContentsMap;
   BackgroundContentsMap contents_map_;
+
+  // Map associating component extensions that have attempted to reload with a
+  // BackoffEntry keeping track of retry timing.
+  typedef std::map<extensions::ExtensionId, std::unique_ptr<net::BackoffEntry>>
+      ComponentExtensionBackoffEntryMap;
+  ComponentExtensionBackoffEntryMap component_backoff_map_;
 
   ScopedObserver<extensions::ExtensionRegistry,
                  extensions::ExtensionRegistryObserver>
       extension_registry_observer_;
+
+  base::WeakPtrFactory<BackgroundContentsService> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundContentsService);
 };

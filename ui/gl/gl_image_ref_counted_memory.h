@@ -20,13 +20,12 @@ namespace gl {
 
 class GL_EXPORT GLImageRefCountedMemory : public GLImageMemory {
  public:
-  GLImageRefCountedMemory(const gfx::Size& size, unsigned internalformat);
+  explicit GLImageRefCountedMemory(const gfx::Size& size);
 
   bool Initialize(base::RefCountedMemory* ref_counted_memory,
                   gfx::BufferFormat format);
 
   // Overridden from GLImage:
-  void Destroy(bool have_context) override;
   void OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
                     uint64_t process_tracing_id,
                     const std::string& dump_name) override;

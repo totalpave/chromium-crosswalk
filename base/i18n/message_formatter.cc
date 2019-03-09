@@ -4,6 +4,7 @@
 
 #include "base/i18n/message_formatter.h"
 
+#include "base/i18n/unicodestring.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
@@ -47,7 +48,7 @@ MessageArg::MessageArg(double d) : formattable(new icu::Formattable(d)) {}
 MessageArg::MessageArg(const Time& t)
     : formattable(new icu::Formattable(static_cast<UDate>(t.ToJsTime()))) {}
 
-MessageArg::~MessageArg() {}
+MessageArg::~MessageArg() = default;
 
 // Tests if this argument has a value, and if so increments *count.
 bool MessageArg::has_value(int *count) const {
@@ -91,7 +92,7 @@ string16 MessageFormatter::FormatWithNumberedArgs(
                << u_errorName(error);
     return string16();
   }
-  return string16(formatted.getBuffer(), formatted.length());
+  return i18n::UnicodeStringToString16(formatted);
 }
 
 string16 MessageFormatter::FormatWithNamedArgs(
@@ -134,7 +135,7 @@ string16 MessageFormatter::FormatWithNamedArgs(
                << u_errorName(error);
     return string16();
   }
-  return string16(formatted.getBuffer(), formatted.length());
+  return i18n::UnicodeStringToString16(formatted);
 }
 
 }  // namespace i18n

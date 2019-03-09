@@ -8,9 +8,29 @@
 #include <jni.h>
 
 #include "base/base_export.h"
+#include "base/callback.h"
+#include "base/command_line.h"
+#include "base/metrics/field_trial.h"
 
 namespace base {
+
 namespace android {
+
+namespace internal {
+
+// Manages the selection of a trial that can be overridden by a flag.
+//
+// If the flag is present in the command line, this will return true or false
+// for flag values "on" or "off", respectively. If not present or misspelled,
+// true is returned and an error logged.
+//
+// If the flag is not present, the true is returned by a 50% random choice, and
+// the corresponding flag added to the command line.
+BASE_EXPORT bool GetRandomizedTrial(
+    const std::string& flag_name,
+    CommandLine* command_line = CommandLine::ForCurrentProcess());
+
+}  // namespace internal.
 
 // The process the shared library is loaded in.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.library_loader
@@ -27,17 +47,18 @@ enum LibraryProcessType {
   PROCESS_WEBVIEW_CHILD = 4,
 };
 
+// A randomized trial using switches::kOrderfileMemoryOptimization.
+BASE_EXPORT bool IsUsingOrderfileOptimization();
+
+typedef bool NativeInitializationHook(LibraryProcessType library_process_type);
+
+BASE_EXPORT void SetNativeInitializationHook(
+    NativeInitializationHook native_initialization_hook);
+
 // Record any pending renderer histogram value as histograms.  Pending values
 // are set by RegisterChromiumAndroidLinkerRendererHistogram and
 // RegisterLibraryPreloaderRendererHistogram.
 BASE_EXPORT void RecordLibraryLoaderRendererHistograms();
-
-// Registers the callbacks that allows the entry point of the library to be
-// exposed to the calling java code.  This handles only registering the
-// the callbacks needed by the loader. Any application specific JNI bindings
-// should happen once the native library has fully loaded, either in the library
-// loaded hook function or later.
-BASE_EXPORT bool RegisterLibraryLoaderEntryHook(JNIEnv* env);
 
 // Typedef for hook function to be called (indirectly from Java) once the
 // libraries are loaded. The hook function should register the JNI bindings
@@ -46,7 +67,8 @@ BASE_EXPORT bool RegisterLibraryLoaderEntryHook(JNIEnv* env);
 // Note: this can't use base::Callback because there is no way of initializing
 // the default callback without using static objects, which we forbid.
 typedef bool LibraryLoadedHook(JNIEnv* env,
-                               jclass clazz);
+                               jclass clazz,
+                               LibraryProcessType library_process_type);
 
 // Set the hook function to be called (from Java) once the libraries are loaded.
 // SetLibraryLoadedHook may only be called from JNI_OnLoad. The hook function
@@ -63,9 +85,6 @@ BASE_EXPORT void SetVersionNumber(const char* version_number);
 // Call on exit to delete the AtExitManager which OnLibraryLoadedOnUIThread
 // created.
 BASE_EXPORT void LibraryLoaderExitHook();
-
-// Return the process type the shared library is loaded in.
-BASE_EXPORT LibraryProcessType GetLibraryProcessType(JNIEnv* env);
 
 // Initialize AtExitManager, this must be done at the begining of loading
 // shared library.

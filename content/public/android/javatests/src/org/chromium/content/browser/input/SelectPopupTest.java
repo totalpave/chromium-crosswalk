@@ -6,24 +6,37 @@ package org.chromium.content.browser.input;
 
 import static org.chromium.base.test.util.ScalableTimeout.scaleTimeout;
 
-import android.test.suitebuilder.annotation.LargeTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.LargeTest;
 
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.DOMUtils;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
-import org.chromium.content_shell_apk.ContentShellTestBase;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
+import org.chromium.content_shell_apk.ContentShellActivityTestRule;
+import org.chromium.content_shell_apk.ContentShellActivityTestRule.RerunWithUpdatedContainerView;
 
 import java.util.concurrent.TimeUnit;
 
 /**
  * Integration Tests for SelectPopup.
  */
-public class SelectPopupTest extends ContentShellTestBase {
+@RunWith(BaseJUnit4ClassRunner.class)
+public class SelectPopupTest {
+    @Rule
+    public ContentShellActivityTestRule mActivityTestRule = new ContentShellActivityTestRule();
+
     private static final long WAIT_TIMEOUT_SECONDS = scaleTimeout(2);
     private static final String SELECT_URL = UrlUtils.encodeHtmlDataUri(
             "<html><head><meta name=\"viewport\""
@@ -47,7 +60,7 @@ public class SelectPopupTest extends ContentShellTestBase {
 
         @Override
         public boolean isSatisfied() {
-            return getContentViewCore().getSelectPopupForTest() != null;
+            return mActivityTestRule.getSelectPopup().isVisibleForTesting();
         }
     }
 
@@ -58,55 +71,52 @@ public class SelectPopupTest extends ContentShellTestBase {
 
         @Override
         public boolean isSatisfied() {
-            return getContentViewCore().getSelectPopupForTest() == null;
+            return !mActivityTestRule.getSelectPopup().isVisibleForTesting();
         }
     }
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
-        launchContentShellWithUrl(SELECT_URL);
-        waitForActiveShellToBeDoneLoading();
-        // TODO(aurimas) remove this wait once crbug.com/179511 is fixed.
-        assertWaitForPageScaleFactorMatch(1);
+        mActivityTestRule.launchContentShellWithUrl(SELECT_URL);
+        mActivityTestRule.waitForActiveShellToBeDoneLoading();
     }
 
     /**
      * Tests that showing a select popup and having the page reload while the popup is showing does
      * not assert.
      */
+    @Test
     @LargeTest
     @Feature({"Browser"})
     @RerunWithUpdatedContainerView
+    @RetryOnFailure
     public void testReloadWhilePopupShowing() throws InterruptedException, Exception, Throwable {
         // The popup should be hidden before the click.
-        CriteriaHelper.pollInstrumentationThread(new PopupHiddenCriteria());
+        CriteriaHelper.pollUiThread(new PopupHiddenCriteria());
 
-        final ContentViewCore viewCore = getContentViewCore();
-        final TestCallbackHelperContainer viewClient = new TestCallbackHelperContainer(viewCore);
+        final WebContents webContents = mActivityTestRule.getWebContents();
+        final TestCallbackHelperContainer viewClient = new TestCallbackHelperContainer(webContents);
         final OnPageFinishedHelper onPageFinishedHelper = viewClient.getOnPageFinishedHelper();
 
         // Once clicked, the popup should show up.
-        DOMUtils.clickNode(this, viewCore, "select");
+        DOMUtils.clickNode(webContents, "select");
         CriteriaHelper.pollInstrumentationThread(new PopupShowingCriteria());
 
         // Reload the test page.
         int currentCallCount = onPageFinishedHelper.getCallCount();
-        getInstrumentation().runOnMainSync(new Runnable() {
-            @Override
-            public void run() {
-                // Now reload the page while the popup is showing, it gets hidden.
-                getContentViewCore().getWebContents().getNavigationController().reload(true);
-            }
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            // Now reload the page while the popup is showing, it gets hidden.
+            mActivityTestRule.getWebContents().getNavigationController().reload(true);
         });
         onPageFinishedHelper.waitForCallback(currentCallCount, 1,
                 WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
         // The popup should be hidden after the page reload.
-        CriteriaHelper.pollInstrumentationThread(new PopupHiddenCriteria());
+        CriteriaHelper.pollUiThread(new PopupHiddenCriteria());
 
         // Click the select and wait for the popup to show.
-        DOMUtils.clickNode(this, viewCore, "select");
-        CriteriaHelper.pollInstrumentationThread(new PopupShowingCriteria());
+        DOMUtils.clickNode(webContents, "select");
+        CriteriaHelper.pollUiThread(new PopupShowingCriteria());
     }
 }

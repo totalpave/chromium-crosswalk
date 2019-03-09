@@ -6,16 +6,24 @@
 #define CHROME_BROWSER_UI_SEARCH_SEARCH_IPC_ROUTER_H_
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/time/time.h"
-#include "chrome/common/instant_types.h"
-#include "chrome/common/ntp_logging_events.h"
+#include "build/build_config.h"
+#include "chrome/common/search.mojom.h"
+#include "chrome/common/search/instant_types.h"
+#include "chrome/common/search/ntp_logging_events.h"
+#include "components/ntp_tiles/ntp_tile_impression.h"
 #include "components/omnibox/common/omnibox_focus_state.h"
+#include "content/public/browser/web_contents_binding_set.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "ui/base/window_open_disposition.h"
+
+#if defined(OS_ANDROID)
+#error "Instant is only used on desktop";
+#endif
 
 class GURL;
 
@@ -27,28 +35,46 @@ class SearchIPCRouterTest;
 
 // SearchIPCRouter is responsible for receiving and sending IPC messages between
 // the browser and the Instant page.
-class SearchIPCRouter : public content::WebContentsObserver {
+class SearchIPCRouter : public content::WebContentsObserver,
+                        public chrome::mojom::EmbeddedSearch {
  public:
   // SearchIPCRouter calls its delegate in response to messages received from
   // the page.
   class Delegate {
    public:
-    // Called upon determination of Instant API support in response to the page
-    // load event.
-    virtual void OnInstantSupportDetermined(bool supports_instant) = 0;
+    // Called when the page wants the omnibox to be focused.
+    virtual void FocusOmnibox(bool focus) = 0;
 
-    // Called when the page wants the omnibox to be focused. |state| specifies
-    // the omnibox focus state.
-    virtual void FocusOmnibox(OmniboxFocusState state) = 0;
-
-    // Called when the SearchBox wants to delete a Most Visited item.
+    // Called when the EmbeddedSearch wants to delete a Most Visited item.
     virtual void OnDeleteMostVisitedItem(const GURL& url) = 0;
 
-    // Called when the SearchBox wants to undo a Most Visited deletion.
+    // Called when the EmbeddedSearch wants to undo a Most Visited deletion.
     virtual void OnUndoMostVisitedDeletion(const GURL& url) = 0;
 
-    // Called when the SearchBox wants to undo all Most Visited deletions.
+    // Called when the EmbeddedSearch wants to undo all Most Visited deletions.
     virtual void OnUndoAllMostVisitedDeletions() = 0;
+
+    // Called when the EmbeddedSearch wants to add a custom link.
+    virtual bool OnAddCustomLink(const GURL& url, const std::string& title) = 0;
+
+    // Called when the EmbeddedSearch wants to update a custom link.
+    virtual bool OnUpdateCustomLink(const GURL& url,
+                                    const GURL& new_url,
+                                    const std::string& new_title) = 0;
+
+    // Called when the EmbeddedSearch wants to reorder a custom link.
+    virtual bool OnReorderCustomLink(const GURL& url, int new_pos) = 0;
+
+    // Called when the EmbeddedSearch wants to delete a custom link.
+    virtual bool OnDeleteCustomLink(const GURL& url) = 0;
+
+    // Called when the EmbeddedSearch wants to undo the previous custom link
+    // action.
+    virtual void OnUndoCustomLinkAction() = 0;
+
+    // Called when the EmbeddedSearch wants to delete all custom links and
+    // use Most Visited sites instead.
+    virtual void OnResetCustomLinks() = 0;
 
     // Called to signal that an event has occurred on the New Tab Page at a
     // particular time since navigation start.
@@ -56,29 +82,61 @@ class SearchIPCRouter : public content::WebContentsObserver {
                             base::TimeDelta time) = 0;
 
     // Called to log an impression from a given provider on the New Tab Page.
-    virtual void OnLogMostVisitedImpression(int position,
-                                            const base::string16& provider) = 0;
+    virtual void OnLogMostVisitedImpression(
+        const ntp_tiles::NTPTileImpression& impression) = 0;
 
     // Called to log a navigation from a given provider on the New Tab Page.
-    virtual void OnLogMostVisitedNavigation(int position,
-                                            const base::string16& provider) = 0;
+    virtual void OnLogMostVisitedNavigation(
+        const ntp_tiles::NTPTileImpression& impression) = 0;
 
     // Called when the page wants to paste the |text| (or the clipboard contents
     // if the |text| is empty) into the omnibox.
     virtual void PasteIntoOmnibox(const base::string16& text) = 0;
 
-    // Called when the SearchBox wants to verify the signed-in Chrome identity
-    // against the provided |identity|. Will make a round-trip to the browser
-    // and eventually return the result through SendChromeIdentityCheckResult.
-    // Calls SendChromeIdentityCheckResult with true if the identity matches.
-    virtual void OnChromeIdentityCheck(const base::string16& identity) = 0;
+    // Called when the EmbeddedSearch wants to verify the signed-in Chrome
+    // identity against the provided |identity|.
+    virtual bool ChromeIdentityCheck(const base::string16& identity) = 0;
 
-    // Called when the SearchBox wants to verify the signed-in Chrome identity
-    // against the provided |identity|. Will make a round-trip to the browser
-    // and eventually return the result through SendHistorySyncCheckResult.
-    // Calls SendHistorySyncCheckResult with true if the user syncs their
-    // history.
-    virtual void OnHistorySyncCheck() = 0;
+    // Called when the EmbeddedSearch wants to verify that history sync is
+    // enabled.
+    virtual bool HistorySyncCheck() = 0;
+
+    // Called when a custom background is selected on the NTP.
+    virtual void OnSetCustomBackgroundURL(const GURL& url) = 0;
+
+    // Called when a custom background with attributions is selected on the NTP.
+    // background_url: Url of the background image.
+    // attribution_line_1: First attribution line for the image.
+    // attribution_line_2: Second attribution line for the image.
+    // action_url: Url to learn more about the backgrounds image.
+    virtual void OnSetCustomBackgroundURLWithAttributions(
+        const GURL& background_url,
+        const std::string& attribution_line_1,
+        const std::string& attribution_line_2,
+        const GURL& action_url) = 0;
+
+    // Called to open the file select dialog for selecting a
+    // NTP background image.
+    virtual void OnSelectLocalBackgroundImage() = 0;
+
+    // Called when a search suggestion is blocklisted on the local NTP.
+    virtual void OnBlocklistSearchSuggestion(int task_version,
+                                             long task_id) = 0;
+
+    // Called when a search suggestion is blocklisted on the local NTP and a
+    // hash is provided.
+    virtual void OnBlocklistSearchSuggestionWithHash(int task_version,
+                                                     long task_id,
+                                                     const uint8_t hash[4]) = 0;
+
+    // Called when a search suggestion is selected on the local NTP.
+    virtual void OnSearchSuggestionSelected(int task_version,
+                                            long task_id,
+                                            const uint8_t hash[4]) = 0;
+
+    // Called when a user selected to completely opt out of NTP search
+    // suggestions.
+    virtual void OnOptOutOfSearchSuggestions() = 0;
   };
 
   // An interface to be implemented by consumers of SearchIPCRouter objects to
@@ -94,18 +152,40 @@ class SearchIPCRouter : public content::WebContentsObserver {
     virtual bool ShouldProcessDeleteMostVisitedItem() = 0;
     virtual bool ShouldProcessUndoMostVisitedDeletion() = 0;
     virtual bool ShouldProcessUndoAllMostVisitedDeletions() = 0;
+    virtual bool ShouldProcessAddCustomLink() = 0;
+    virtual bool ShouldProcessUpdateCustomLink() = 0;
+    virtual bool ShouldProcessReorderCustomLink() = 0;
+    virtual bool ShouldProcessDeleteCustomLink() = 0;
+    virtual bool ShouldProcessUndoCustomLinkAction() = 0;
+    virtual bool ShouldProcessResetCustomLinks() = 0;
     virtual bool ShouldProcessLogEvent() = 0;
     virtual bool ShouldProcessPasteIntoOmnibox(bool is_active_tab) = 0;
     virtual bool ShouldProcessChromeIdentityCheck() = 0;
     virtual bool ShouldProcessHistorySyncCheck() = 0;
-    virtual bool ShouldSendSetPromoInformation() = 0;
-    virtual bool ShouldSendSetDisplayInstantResults() = 0;
-    virtual bool ShouldSendSetSuggestionToPrefetch() = 0;
     virtual bool ShouldSendSetInputInProgress(bool is_active_tab) = 0;
     virtual bool ShouldSendOmniboxFocusChanged() = 0;
     virtual bool ShouldSendMostVisitedItems() = 0;
     virtual bool ShouldSendThemeBackgroundInfo() = 0;
-    virtual bool ShouldSubmitQuery() = 0;
+    virtual bool ShouldProcessSetCustomBackgroundURL() = 0;
+    virtual bool ShouldProcessSetCustomBackgroundURLWithAttributions() = 0;
+    virtual bool ShouldProcessSelectLocalBackgroundImage() = 0;
+    virtual bool ShouldProcessBlocklistSearchSuggestion() = 0;
+    virtual bool ShouldProcessBlocklistSearchSuggestionWithHash() = 0;
+    virtual bool ShouldProcessSearchSuggestionSelected() = 0;
+    virtual bool ShouldProcessOptOutOfSearchSuggestions() = 0;
+  };
+
+  // Creates chrome::mojom::EmbeddedSearchClient connections on request.
+  class EmbeddedSearchClientFactory {
+   public:
+    EmbeddedSearchClientFactory() = default;
+    virtual ~EmbeddedSearchClientFactory() = default;
+
+    // The returned pointer is owned by the factory.
+    virtual chrome::mojom::EmbeddedSearchClient* GetEmbeddedSearchClient() = 0;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(EmbeddedSearchClientFactory);
   };
 
   SearchIPCRouter(content::WebContents* web_contents,
@@ -116,27 +196,6 @@ class SearchIPCRouter : public content::WebContentsObserver {
   // Tells the SearchIPCRouter that a new page in an Instant process committed.
   void OnNavigationEntryCommitted();
 
-  // Tells the renderer to determine if the page supports the Instant API, which
-  // results in a call to OnInstantSupportDetermined() when the reply is
-  // received.
-  void DetermineIfPageSupportsInstant();
-
-  // Tells the renderer about the result of the Chrome identity check.
-  void SendChromeIdentityCheckResult(const base::string16& identity,
-                                     bool identity_match);
-
-  // Tells the renderer whether the user syncs history.
-  void SendHistorySyncCheckResult(bool sync_history);
-
-  // Tells the renderer information it needs to display promos.
-  void SetPromoInformation(bool is_app_launcher_enabled);
-
-  // Tells the renderer whether to display the Instant results.
-  void SetDisplayInstantResults();
-
-  // Tells the page the suggestion to be prefetched if any.
-  void SetSuggestionToPrefetch(const InstantSuggestion& suggestion);
-
   // Tells the page that user input started or stopped.
   void SetInputInProgress(bool input_in_progress);
 
@@ -145,14 +204,11 @@ class SearchIPCRouter : public content::WebContentsObserver {
                            OmniboxFocusChangeReason reason);
 
   // Tells the renderer about the most visited items.
-  void SendMostVisitedItems(const std::vector<InstantMostVisitedItem>& items);
+  void SendMostVisitedItems(const std::vector<InstantMostVisitedItem>& items,
+                            bool is_custom_links);
 
   // Tells the renderer about the current theme background.
   void SendThemeBackgroundInfo(const ThemeBackgroundInfo& theme_info);
-
-  // Tells the page that the user pressed Enter in the omnibox.
-  void Submit(const base::string16& text,
-              const EmbeddedSearchRequestParams& params);
 
   // Called when the tab corresponding to |this| instance is activated.
   void OnTabActivated();
@@ -160,43 +216,70 @@ class SearchIPCRouter : public content::WebContentsObserver {
   // Called when the tab corresponding to |this| instance is deactivated.
   void OnTabDeactivated();
 
+  // chrome::mojom::EmbeddedSearch:
+  void FocusOmnibox(int page_id, bool focus) override;
+  void DeleteMostVisitedItem(int page_seq_no, const GURL& url) override;
+  void UndoMostVisitedDeletion(int page_seq_no, const GURL& url) override;
+  void UndoAllMostVisitedDeletions(int page_seq_no) override;
+  void AddCustomLink(int page_seq_no,
+                     const GURL& url,
+                     const std::string& title,
+                     AddCustomLinkCallback callback) override;
+  void UpdateCustomLink(int page_seq_no,
+                        const GURL& url,
+                        const GURL& new_url,
+                        const std::string& new_title,
+                        UpdateCustomLinkCallback callback) override;
+  void ReorderCustomLink(int page_seq_no,
+                         const GURL& url,
+                         int new_pos) override;
+  void DeleteCustomLink(int page_seq_no,
+                        const GURL& url,
+                        DeleteCustomLinkCallback callback) override;
+  void UndoCustomLinkAction(int page_seq_no) override;
+  void ResetCustomLinks(int page_seq_no) override;
+  void LogEvent(int page_seq_no,
+                NTPLoggingEventType event,
+                base::TimeDelta time) override;
+  void LogMostVisitedImpression(
+      int page_seq_no,
+      const ntp_tiles::NTPTileImpression& impression) override;
+  void LogMostVisitedNavigation(
+      int page_seq_no,
+      const ntp_tiles::NTPTileImpression& impression) override;
+  void PasteAndOpenDropdown(int page_seq_no,
+                            const base::string16& text) override;
+  void ChromeIdentityCheck(int page_seq_no,
+                           const base::string16& identity,
+                           ChromeIdentityCheckCallback callback) override;
+  void HistorySyncCheck(int page_seq_no,
+                        HistorySyncCheckCallback callback) override;
+  void SetCustomBackgroundURL(const GURL& url) override;
+  void SetCustomBackgroundURLWithAttributions(
+      const GURL& background_url,
+      const std::string& attribution_line_1,
+      const std::string& attribution_line_2,
+      const GURL& action_url) override;
+  void SelectLocalBackgroundImage() override;
+  void BlocklistSearchSuggestion(int32_t task_version,
+                                 int64_t task_id) override;
+  void BlocklistSearchSuggestionWithHash(
+      int32_t task_version,
+      int64_t task_id,
+      const std::vector<uint8_t>& hash) override;
+  void SearchSuggestionSelected(int32_t task_version,
+                                int64_t task_id,
+                                const std::vector<uint8_t>& hash) override;
+  void OptOutOfSearchSuggestions() override;
+  void set_embedded_search_client_factory_for_testing(
+      std::unique_ptr<EmbeddedSearchClientFactory> factory) {
+    embedded_search_client_factory_ = std::move(factory);
+  }
+
  private:
   friend class SearchIPCRouterPolicyTest;
   friend class SearchIPCRouterTest;
-  FRIEND_TEST_ALL_PREFIXES(SearchTabHelperTest,
-                           DetermineIfPageSupportsInstant_Local);
-  FRIEND_TEST_ALL_PREFIXES(SearchTabHelperTest,
-                           DetermineIfPageSupportsInstant_NonLocal);
-  FRIEND_TEST_ALL_PREFIXES(SearchTabHelperTest,
-                           PageURLDoesntBelongToInstantRenderer);
-  FRIEND_TEST_ALL_PREFIXES(SearchIPCRouterTest,
-                           IgnoreMessageIfThePageIsNotActive);
-  FRIEND_TEST_ALL_PREFIXES(SearchIPCRouterTest,
-                           DoNotSendSetDisplayInstantResultsMsg);
   FRIEND_TEST_ALL_PREFIXES(SearchIPCRouterTest, HandleTabChangedEvents);
-
-  // Overridden from contents::WebContentsObserver:
-  bool OnMessageReceived(const IPC::Message& message) override;
-
-  void OnInstantSupportDetermined(int page_seq_no, bool supports_instant) const;
-  void OnFocusOmnibox(int page_id, OmniboxFocusState state) const;
-  void OnDeleteMostVisitedItem(int page_seq_no, const GURL& url) const;
-  void OnUndoMostVisitedDeletion(int page_seq_no, const GURL& url) const;
-  void OnUndoAllMostVisitedDeletions(int page_seq_no) const;
-  void OnLogEvent(int page_seq_no,
-                  NTPLoggingEventType event,
-                  base::TimeDelta time) const;
-  void OnLogMostVisitedImpression(int page_seq_no,
-                                  int position,
-                                  const base::string16& provider) const;
-  void OnLogMostVisitedNavigation(int page_seq_no,
-                                  int position,
-                                  const base::string16& provider) const;
-  void OnPasteAndOpenDropDown(int page_seq_no,
-                              const base::string16& text) const;
-  void OnChromeIdentityCheck(int page_seq_no,
-                             const base::string16& identity) const;
-  void OnHistorySyncCheck(int page_seq_no) const;
 
   // Used by unit tests to set a fake delegate.
   void set_delegate_for_testing(Delegate* delegate);
@@ -210,6 +293,10 @@ class SearchIPCRouter : public content::WebContentsObserver {
   // Used by unit tests.
   int page_seq_no_for_testing() const { return commit_counter_; }
 
+  chrome::mojom::EmbeddedSearchClient* embedded_search_client() {
+    return embedded_search_client_factory_->GetEmbeddedSearchClient();
+  }
+
   Delegate* delegate_;
   std::unique_ptr<Policy> policy_;
 
@@ -219,6 +306,13 @@ class SearchIPCRouter : public content::WebContentsObserver {
 
   // Set to true, when the tab corresponding to |this| instance is active.
   bool is_active_tab_;
+
+  // Binding for the connected main frame. We only allow one frame to connect at
+  // the moment, but this could be extended to a map of connected frames, if
+  // desired.
+  mojo::AssociatedBinding<chrome::mojom::EmbeddedSearch> binding_;
+
+  std::unique_ptr<EmbeddedSearchClientFactory> embedded_search_client_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(SearchIPCRouter);
 };

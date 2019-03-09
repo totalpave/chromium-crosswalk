@@ -24,19 +24,6 @@ namespace extensions {
 
 namespace {
 
-// An incognito version of a TestBrowserContext.
-class TestBrowserContextIncognito : public TestBrowserContext {
- public:
-  TestBrowserContextIncognito() {}
-  ~TestBrowserContextIncognito() override {}
-
-  // TestBrowserContext implementation.
-  bool IsOffTheRecord() const override { return true; }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(TestBrowserContextIncognito);
-};
-
 // A trivial ProcessManagerDelegate.
 class TestProcessManagerDelegate : public ProcessManagerDelegate {
  public:
@@ -46,7 +33,13 @@ class TestProcessManagerDelegate : public ProcessManagerDelegate {
   ~TestProcessManagerDelegate() override {}
 
   // ProcessManagerDelegate implementation.
-  bool IsBackgroundPageAllowed(BrowserContext* context) const override {
+  bool AreBackgroundPagesAllowedForContext(
+      BrowserContext* context) const override {
+    return is_background_page_allowed_;
+  }
+  bool IsExtensionBackgroundPageAllowed(
+      BrowserContext* context,
+      const Extension& extension) const override {
     return is_background_page_allowed_;
   }
   bool DeferCreatingStartupBackgroundHosts(
@@ -62,20 +55,21 @@ class TestProcessManagerDelegate : public ProcessManagerDelegate {
 
 class ProcessManagerTest : public ExtensionsTest {
  public:
-  ProcessManagerTest()
-      : notification_service_(content::NotificationService::Create()),
-        extension_registry_(browser_context()) {
-    extensions_browser_client()->SetIncognitoContext(&incognito_context_);
+  ProcessManagerTest() {}
+
+  ~ProcessManagerTest() override {}
+
+  void SetUp() override {
+    ExtensionsTest::SetUp();
+    extension_registry_ =
+        std::make_unique<ExtensionRegistry>(browser_context());
     extensions_browser_client()->set_process_manager_delegate(
         &process_manager_delegate_);
   }
 
-  ~ProcessManagerTest() override {}
-
   // Use original_context() to make it clear it is a non-incognito context.
   BrowserContext* original_context() { return browser_context(); }
-  BrowserContext* incognito_context() { return &incognito_context_; }
-  ExtensionRegistry* extension_registry() { return &extension_registry_; }
+  ExtensionRegistry* extension_registry() { return extension_registry_.get(); }
   TestProcessManagerDelegate* process_manager_delegate() {
     return &process_manager_delegate_;
   }
@@ -90,9 +84,8 @@ class ProcessManagerTest : public ExtensionsTest {
   }
 
  private:
-  std::unique_ptr<content::NotificationService> notification_service_;
-  TestBrowserContextIncognito incognito_context_;
-  ExtensionRegistry extension_registry_;  // Shared between BrowserContexts.
+  std::unique_ptr<ExtensionRegistry>
+      extension_registry_;  // Shared between BrowserContexts.
   TestProcessManagerDelegate process_manager_delegate_;
 
   DISALLOW_COPY_AND_ASSIGN(ProcessManagerTest);

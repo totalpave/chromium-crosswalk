@@ -12,14 +12,13 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "net/base/ip_endpoint.h"
 #include "remoting/host/host_status_monitor.h"
 #include "remoting/host/host_status_observer.h"
-#include "remoting/host/remoting_host_messages.h"
+#include "remoting/host/win/remoting_host_messages.h"
 #include "remoting/protocol/transport.h"
 
 namespace remoting {
@@ -28,7 +27,7 @@ namespace {
 
 class HostEventLoggerWin : public HostEventLogger, public HostStatusObserver {
  public:
-  HostEventLoggerWin(base::WeakPtr<HostStatusMonitor> monitor,
+  HostEventLoggerWin(scoped_refptr<HostStatusMonitor> monitor,
                      const std::string& application_name);
 
   ~HostEventLoggerWin() override;
@@ -49,20 +48,19 @@ class HostEventLoggerWin : public HostEventLogger, public HostStatusObserver {
   void LogString(WORD type, DWORD event_id, const std::string& string);
   void Log(WORD type, DWORD event_id, const std::vector<std::string>& strings);
 
-  base::WeakPtr<HostStatusMonitor> monitor_;
+  scoped_refptr<HostStatusMonitor> monitor_;
 
   // The handle of the application event log.
-  HANDLE event_log_;
+  HANDLE event_log_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(HostEventLoggerWin);
 };
 
-} //namespace
+}  // namespace
 
-HostEventLoggerWin::HostEventLoggerWin(base::WeakPtr<HostStatusMonitor> monitor,
+HostEventLoggerWin::HostEventLoggerWin(scoped_refptr<HostStatusMonitor> monitor,
                                        const std::string& application_name)
-    : monitor_(monitor),
-      event_log_(nullptr) {
+    : monitor_(monitor) {
   event_log_ = RegisterEventSourceW(
       nullptr, base::UTF8ToUTF16(application_name).c_str());
   if (event_log_ != nullptr) {
@@ -74,8 +72,7 @@ HostEventLoggerWin::HostEventLoggerWin(base::WeakPtr<HostStatusMonitor> monitor,
 
 HostEventLoggerWin::~HostEventLoggerWin() {
   if (event_log_ != nullptr) {
-    if (monitor_)
-      monitor_->RemoveStatusObserver(this);
+    monitor_->RemoveStatusObserver(this);
     DeregisterEventSource(event_log_);
   }
 }
@@ -128,14 +125,8 @@ void HostEventLoggerWin::Log(WORD type,
     raw_strings[i] = utf16_strings[i].c_str();
   }
 
-  if (!ReportEventW(event_log_,
-                    type,
-                    HOST_CATEGORY,
-                    event_id,
-                    nullptr,
-                    static_cast<WORD>(raw_strings.size()),
-                    0,
-                    &raw_strings[0],
+  if (!ReportEventW(event_log_, type, HOST_CATEGORY, event_id, nullptr,
+                    static_cast<WORD>(raw_strings.size()), 0, &raw_strings[0],
                     nullptr)) {
     PLOG(ERROR) << "Failed to write an event to the event log";
   }
@@ -151,9 +142,9 @@ void HostEventLoggerWin::LogString(WORD type,
 
 // static
 std::unique_ptr<HostEventLogger> HostEventLogger::Create(
-    base::WeakPtr<HostStatusMonitor> monitor,
+    scoped_refptr<HostStatusMonitor> monitor,
     const std::string& application_name) {
-  return base::WrapUnique(new HostEventLoggerWin(monitor, application_name));
+  return std::make_unique<HostEventLoggerWin>(monitor, application_name);
 }
 
 }  // namespace remoting

@@ -8,10 +8,6 @@
 #include "base/macros.h"
 #include "content/public/browser/web_contents_user_data.h"
 
-namespace ui {
-class WindowAndroid;
-}
-
 // Per-tab class to provide access to ViewAndroid object.
 class ViewAndroidHelper
     : public content::WebContentsUserData<ViewAndroidHelper> {
@@ -27,6 +23,8 @@ class ViewAndroidHelper
 
   // The owning view that has a hold of the current window.
   ui::ViewAndroid* view_android_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(ViewAndroidHelper);
 };

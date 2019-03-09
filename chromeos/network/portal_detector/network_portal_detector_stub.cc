@@ -6,9 +6,9 @@
 
 namespace chromeos {
 
-NetworkPortalDetectorStub::NetworkPortalDetectorStub() {}
+NetworkPortalDetectorStub::NetworkPortalDetectorStub() = default;
 
-NetworkPortalDetectorStub::~NetworkPortalDetectorStub() {}
+NetworkPortalDetectorStub::~NetworkPortalDetectorStub() = default;
 
 void NetworkPortalDetectorStub::AddObserver(Observer* observer) {}
 
@@ -31,13 +31,11 @@ bool NetworkPortalDetectorStub::IsEnabled() {
 
 void NetworkPortalDetectorStub::Enable(bool start_detection) {}
 
-bool NetworkPortalDetectorStub::StartDetectionIfIdle() {
+bool NetworkPortalDetectorStub::StartPortalDetection(bool force) {
   return false;
 }
 
 void NetworkPortalDetectorStub::SetStrategy(
     PortalDetectorStrategy::StrategyId id) {}
-
-void NetworkPortalDetectorStub::OnLockScreenRequest() {}
 
 }  // namespace chromeos

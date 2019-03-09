@@ -7,12 +7,17 @@ package org.chromium.chrome.browser.externalauth;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.DialogInterface;
+import android.support.annotation.IntDef;
 
 import com.google.android.gms.common.GoogleApiAvailability;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.chrome.browser.metrics.LaunchMetrics.EnumeratedHistogramSample;
+import org.chromium.base.metrics.CachedMetrics.ActionEvent;
+import org.chromium.base.metrics.CachedMetrics.EnumeratedHistogramSample;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -42,15 +47,26 @@ public abstract class UserRecoverableErrorHandler {
     private static final String ERROR_HANDLER_ACTION_HISTOGRAM_NAME =
             "GooglePlayServices.ErrorHandlerAction";
     // Never remove or reorder histogram values. It is safe to append new values to the end.
-    private static final int ERROR_HANDLER_ACTION_SILENT = 0;
-    private static final int ERROR_HANDLER_ACTION_SYSTEM_NOTIFICATION = 1;
-    private static final int ERROR_HANDLER_ACTION_MODAL_DIALOG = 2;
-    private static final int ERROR_HANDLER_ACTION_IGNORED_AS_REDUNDANT = 3;
-    private static final int ERROR_HANDLER_ACTION_HISTOGRAM_BOUNDARY = 4;
+    @IntDef({ErrorHandlerAction.SILENT, ErrorHandlerAction.SYSTEM_NOTIFICATION,
+            ErrorHandlerAction.MODAL_DIALOG, ErrorHandlerAction.IGNORED_AS_REDUNDANT})
+    @Retention(RetentionPolicy.SOURCE)
+    private @interface ErrorHandlerAction {
+        int SILENT = 0;
+        int SYSTEM_NOTIFICATION = 1;
+        int MODAL_DIALOG = 2;
+        int IGNORED_AS_REDUNDANT = 3;
+        int NUM_ENTRIES = 4;
+    }
 
     private static final EnumeratedHistogramSample sErrorHandlerActionHistogramSample =
-            new EnumeratedHistogramSample(ERROR_HANDLER_ACTION_HISTOGRAM_NAME,
-                    ERROR_HANDLER_ACTION_HISTOGRAM_BOUNDARY);
+            new EnumeratedHistogramSample(
+                    ERROR_HANDLER_ACTION_HISTOGRAM_NAME, ErrorHandlerAction.NUM_ENTRIES);
+
+    private static final ActionEvent sModalDialogShownActionEvent =
+            new ActionEvent("Signin_Android_GmsUserRecoverableDialogShown");
+
+    private static final ActionEvent sModalDialogAcceptedActionEvent =
+            new ActionEvent("Signin_Android_GmsUserRecoverableDialogAccepted");
 
     /**
      * Handles the specified error code from Google Play Services.
@@ -79,7 +95,7 @@ public abstract class UserRecoverableErrorHandler {
     public static final class Silent extends UserRecoverableErrorHandler {
         @Override
         protected final void handle(final Context context, final int errorCode) {
-            sErrorHandlerActionHistogramSample.record(ERROR_HANDLER_ACTION_SILENT);
+            sErrorHandlerActionHistogramSample.record(ErrorHandlerAction.SILENT);
         }
     }
 
@@ -101,12 +117,11 @@ public abstract class UserRecoverableErrorHandler {
         @Override
         protected void handle(final Context context, final int errorCode) {
             if (!sNotificationShown.getAndSet(true)) {
-                sErrorHandlerActionHistogramSample
-                        .record(ERROR_HANDLER_ACTION_IGNORED_AS_REDUNDANT);
+                sErrorHandlerActionHistogramSample.record(ErrorHandlerAction.IGNORED_AS_REDUNDANT);
                 return;
             }
             GoogleApiAvailability.getInstance().showErrorNotification(context, errorCode);
-            sErrorHandlerActionHistogramSample.record(ERROR_HANDLER_ACTION_SYSTEM_NOTIFICATION);
+            sErrorHandlerActionHistogramSample.record(ErrorHandlerAction.SYSTEM_NOTIFICATION);
         }
     }
 
@@ -121,11 +136,55 @@ public abstract class UserRecoverableErrorHandler {
         private static final int NO_RESPONSE_REQUIRED = -1;
 
         /**
+         * This class receives cancel and dismiss events from error dialog and records UMA action
+         * when user accepts the option presented in the dialog (usually it means pressing "Update"
+         * button). It's not possible to use less obscure ways (like setOnClickListener) here,
+         * because the error dialog is created by Google Play Services.
+         */
+        private static class DialogUserActionRecorder
+                implements DialogInterface.OnCancelListener, DialogInterface.OnDismissListener {
+            private boolean mCancelled;
+
+            @Override
+            public void onCancel(DialogInterface dialogInterface) {
+                mCancelled = true;
+            }
+
+            @Override
+            public void onDismiss(DialogInterface dialogInterface) {
+                if (mCancelled) return;
+                // Dialog is being dismissed without being cancelled - user accepted dialog action.
+                sModalDialogAcceptedActionEvent.record();
+            }
+
+            public static void createAndAttachToDialog(Dialog dialog) {
+                DialogUserActionRecorder actionRecorder = new DialogUserActionRecorder();
+                dialog.setOnDismissListener(actionRecorder);
+                dialog.setOnCancelListener(actionRecorder);
+            }
+        }
+
+        /**
          * The activity from which to start the dialog and any subsequent
          * actions, and the activity which will receive the response from those
          * actions.
          */
         private final Activity mActivity;
+
+        /**
+         * The modal dialog that is shown to the user.
+         */
+        private Dialog mDialog;
+
+        /**
+         * Whether the dialog can be canceled by the user.
+         */
+        private final boolean mCancelable;
+
+        /**
+         * Last error code from Google Play Services.
+         */
+        private int mErrorCode;
 
         /**
          * Create a new Modal Dialog handler for the specified activity and error code. The
@@ -134,26 +193,57 @@ public abstract class UserRecoverableErrorHandler {
          * the result via Activity's protected onActivityResult method.
          *
          * @param activity the activity to use
+         * @param cancelable whether the dialog can be canceled by the user
          */
-        public ModalDialog(Activity activity) {
+        public ModalDialog(Activity activity, boolean cancelable) {
             mActivity = activity;
+            mCancelable = cancelable;
         }
 
         /**
          * Displays the dialog in a modal manner using
-         * {@link GoogleApiAvailability#showErrorDialog(int, Activity, int)}.
+         * {@link GoogleApiAvailability#getErrorDialog(Activity, int, int)}.
          * @param context the context in which the error was encountered
          * @param errorCode the error code from Google Play Services
          */
         @Override
         protected final void handle(final Context context, final int errorCode) {
-            final Dialog dialog = GoogleApiAvailability.getInstance().getErrorDialog(
-                    mActivity, errorCode, NO_RESPONSE_REQUIRED);
-            if (dialog != null) {
-                // This can happen if |errorCode| is ConnectionResult.SERVICE_INVALID.
-                dialog.show();
+            // Assume old dialogs generated by the same error handler are obsolete when an error
+            // with a different error code is encountered.
+            if (mErrorCode != errorCode) {
+                cancelDialog();
             }
-            sErrorHandlerActionHistogramSample.record(ERROR_HANDLER_ACTION_MODAL_DIALOG);
+            if (mDialog == null) {
+                mDialog = GoogleApiAvailability.getInstance().getErrorDialog(
+                        mActivity, errorCode, NO_RESPONSE_REQUIRED);
+                mErrorCode = errorCode;
+
+                DialogUserActionRecorder.createAndAttachToDialog(mDialog);
+            }
+            // This can happen if |errorCode| is ConnectionResult.SERVICE_INVALID.
+            if (mDialog != null && !mDialog.isShowing()) {
+                mDialog.setCancelable(mCancelable);
+                mDialog.show();
+                sModalDialogShownActionEvent.record();
+            }
+            sErrorHandlerActionHistogramSample.record(ErrorHandlerAction.MODAL_DIALOG);
+        }
+
+        /**
+         * Cancels the dialog.
+         */
+        public void cancelDialog() {
+            if (mDialog != null) {
+                mDialog.cancel();
+                mDialog = null;
+            }
+        }
+
+        /**
+         * Checks whether dialog is being shown.
+         */
+        public boolean isShowing() {
+            return mDialog != null && mDialog.isShowing();
         }
     }
 }

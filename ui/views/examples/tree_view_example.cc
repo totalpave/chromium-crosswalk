@@ -9,43 +9,66 @@
 #include "ui/views/controls/menu/menu_model_adapter.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/tree/tree_view.h"
+#include "ui/views/controls/tree/tree_view_drawing_provider.h"
 #include "ui/views/layout/grid_layout.h"
 
 using base::ASCIIToUTF16;
+
+namespace {
+
+class ExampleTreeViewDrawingProvider : public views::TreeViewDrawingProvider {
+ public:
+  ExampleTreeViewDrawingProvider() {}
+  ~ExampleTreeViewDrawingProvider() override {}
+
+  base::string16 GetAuxiliaryTextForNode(views::TreeView* tree_view,
+                                         ui::TreeModelNode* node) override {
+    if (tree_view->GetSelectedNode() == node)
+      return base::UTF8ToUTF16("Selected");
+    return views::TreeViewDrawingProvider::GetAuxiliaryTextForNode(tree_view,
+                                                                   node);
+  }
+
+  bool ShouldDrawIconForNode(views::TreeView* tree_view,
+                             ui::TreeModelNode* node) override {
+    return tree_view->GetSelectedNode() != node;
+  }
+};
+
+}  // namespace
 
 namespace views {
 namespace examples {
 
 TreeViewExample::TreeViewExample()
     : ExampleBase("Tree View"),
-      tree_view_(NULL),
-      model_(new NodeType(ASCIIToUTF16("root"), 1)) {
-}
+      model_(std::make_unique<NodeType>(ASCIIToUTF16("root"), 1)) {}
 
 TreeViewExample::~TreeViewExample() {
   // Delete the view before the model.
-  delete tree_view_;
-  tree_view_ = NULL;
+  tree_view_.reset();
 }
 
 void TreeViewExample::CreateExampleView(View* container) {
   // Add some sample data.
-  NodeType* colors_node = new NodeType(ASCIIToUTF16("colors"), 1);
-  model_.GetRoot()->Add(colors_node, 0);
-  colors_node->Add(new NodeType(ASCIIToUTF16("red"), 1), 0);
-  colors_node->Add(new NodeType(ASCIIToUTF16("green"), 1), 1);
-  colors_node->Add(new NodeType(ASCIIToUTF16("blue"), 1), 2);
+  NodeType* colors_node = model_.GetRoot()->Add(
+      std::make_unique<NodeType>(ASCIIToUTF16("colors"), 1), 0);
+  colors_node->Add(std::make_unique<NodeType>(ASCIIToUTF16("red"), 1), 0);
+  colors_node->Add(std::make_unique<NodeType>(ASCIIToUTF16("green"), 1), 1);
+  colors_node->Add(std::make_unique<NodeType>(ASCIIToUTF16("blue"), 1), 2);
 
-  NodeType* sheep_node = new NodeType(ASCIIToUTF16("sheep"), 1);
-  model_.GetRoot()->Add(sheep_node, 0);
-  sheep_node->Add(new NodeType(ASCIIToUTF16("Sheep 1"), 1), 0);
-  sheep_node->Add(new NodeType(ASCIIToUTF16("Sheep 2"), 1), 1);
+  NodeType* sheep_node = model_.GetRoot()->Add(
+      std::make_unique<NodeType>(ASCIIToUTF16("sheep"), 1), 0);
+  sheep_node->Add(std::make_unique<NodeType>(ASCIIToUTF16("Sheep 1"), 1), 0);
+  sheep_node->Add(std::make_unique<NodeType>(ASCIIToUTF16("Sheep 2"), 1), 1);
 
-  tree_view_ = new TreeView();
+  tree_view_ = std::make_unique<TreeView>();
   tree_view_->set_context_menu_controller(this);
   tree_view_->SetRootShown(false);
   tree_view_->SetModel(&model_);
   tree_view_->SetController(this);
+  tree_view_->SetDrawingProvider(
+      std::make_unique<ExampleTreeViewDrawingProvider>());
   add_ = new LabelButton(this, ASCIIToUTF16("Add"));
   add_->SetFocusForPlatform();
   add_->set_request_focus_on_press(true);
@@ -56,8 +79,8 @@ void TreeViewExample::CreateExampleView(View* container) {
   change_title_->SetFocusForPlatform();
   change_title_->set_request_focus_on_press(true);
 
-  GridLayout* layout = new GridLayout(container);
-  container->SetLayoutManager(layout);
+  GridLayout* layout = container->SetLayoutManager(
+      std::make_unique<views::GridLayout>(container));
 
   const int tree_view_column = 0;
   ColumnSet* column_set = layout->AddColumnSet(tree_view_column);
@@ -85,8 +108,9 @@ void TreeViewExample::AddNewNode() {
       static_cast<NodeType*>(tree_view_->GetSelectedNode());
   if (!selected_node)
     selected_node = model_.GetRoot();
-  NodeType* new_node = new NodeType(selected_node->GetTitle(), 1);
-  model_.Add(selected_node, new_node, selected_node->child_count());
+  NodeType* new_node = model_.Add(
+      selected_node, std::make_unique<NodeType>(selected_node->GetTitle(), 1),
+      selected_node->child_count());
   tree_view_->SetSelectedNode(new_node);
 }
 
@@ -130,19 +154,14 @@ bool TreeViewExample::CanEdit(TreeView* tree_view,
 void TreeViewExample::ShowContextMenuForView(View* source,
                                              const gfx::Point& point,
                                              ui::MenuSourceType source_type) {
-  ui::SimpleMenuModel context_menu_model(this);
-  context_menu_model.AddItem(ID_EDIT, ASCIIToUTF16("Edit"));
-  context_menu_model.AddItem(ID_REMOVE, ASCIIToUTF16("Remove"));
-  context_menu_model.AddItem(ID_ADD, ASCIIToUTF16("Add"));
-  context_menu_runner_.reset(new MenuRunner(&context_menu_model, 0));
-  if (context_menu_runner_->RunMenuAt(source->GetWidget(),
-                                      NULL,
-                                      gfx::Rect(point, gfx::Size()),
-                                      MENU_ANCHOR_TOPLEFT,
-                                      source_type) ==
-      MenuRunner::MENU_DELETED) {
-    return;
-  }
+  context_menu_model_.reset(new ui::SimpleMenuModel(this));
+  context_menu_model_->AddItem(ID_EDIT, ASCIIToUTF16("Edit"));
+  context_menu_model_->AddItem(ID_REMOVE, ASCIIToUTF16("Remove"));
+  context_menu_model_->AddItem(ID_ADD, ASCIIToUTF16("Add"));
+  context_menu_runner_.reset(new MenuRunner(context_menu_model_.get(), 0));
+  context_menu_runner_->RunMenuAt(source->GetWidget(), nullptr,
+                                  gfx::Rect(point, gfx::Size()),
+                                  MENU_ANCHOR_TOPLEFT, source_type);
 }
 
 bool TreeViewExample::IsCommandIdChecked(int command_id) const {
@@ -151,12 +170,6 @@ bool TreeViewExample::IsCommandIdChecked(int command_id) const {
 
 bool TreeViewExample::IsCommandIdEnabled(int command_id) const {
   return const_cast<TreeViewExample*>(this)->IsCommandIdEnabled(command_id);
-}
-
-bool TreeViewExample::GetAcceleratorForCommandId(
-    int command_id,
-    ui::Accelerator* accelerator) {
-  return false;
 }
 
 void TreeViewExample::ExecuteCommand(int command_id, int event_flags) {

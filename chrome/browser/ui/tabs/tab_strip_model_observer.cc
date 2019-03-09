@@ -6,52 +6,104 @@
 
 using content::WebContents;
 
-void TabStripModelObserver::TabInsertedAt(WebContents* contents,
-                                          int index,
-                                          bool foreground) {
+////////////////////////////////////////////////////////////////////////////////
+// TabStripModelChange
+//
+// static
+TabStripModelChange::Delta TabStripModelChange::CreateInsertDelta(
+    content::WebContents* contents,
+    int index) {
+  TabStripModelChange::Delta delta;
+  delta.insert = {contents, index};
+  return delta;
 }
 
-void TabStripModelObserver::TabClosingAt(TabStripModel* tab_strip_model,
-                                         WebContents* contents,
-                                         int index) {
+// static
+TabStripModelChange::Delta TabStripModelChange::CreateRemoveDelta(
+    content::WebContents* contents,
+    int index,
+    bool will_be_deleted) {
+  TabStripModelChange::Delta delta;
+  delta.remove = {contents, index, will_be_deleted};
+  return delta;
 }
 
-void TabStripModelObserver::TabDetachedAt(WebContents* contents,
-                                          int index) {
+// static
+TabStripModelChange::Delta TabStripModelChange::CreateMoveDelta(
+    content::WebContents* contents,
+    int from_index,
+    int to_index) {
+  TabStripModelChange::Delta delta;
+  delta.move = {contents, from_index, to_index};
+  return delta;
 }
 
-void TabStripModelObserver::TabDeactivated(WebContents* contents) {
+// static
+TabStripModelChange::Delta TabStripModelChange::CreateReplaceDelta(
+    content::WebContents* old_contents,
+    content::WebContents* new_contents,
+    int index) {
+  TabStripModelChange::Delta delta;
+  delta.replace = {old_contents, new_contents, index};
+  return delta;
 }
 
-void TabStripModelObserver::ActiveTabChanged(WebContents* old_contents,
-                                             WebContents* new_contents,
-                                             int index,
-                                             int reason) {
+TabStripModelChange::TabStripModelChange() = default;
+
+TabStripModelChange::TabStripModelChange(Type type, const Delta& delta)
+    : type_(type), deltas_({delta}) {}
+
+TabStripModelChange::TabStripModelChange(
+    TabStripModelChange::Type type,
+    const std::vector<TabStripModelChange::Delta>& deltas)
+    : type_(type), deltas_(deltas) {}
+
+TabStripModelChange::TabStripModelChange(TabStripModelChange&& other) = default;
+
+TabStripModelChange::~TabStripModelChange() = default;
+
+////////////////////////////////////////////////////////////////////////////////
+// TabStripSelectionChange
+//
+TabStripSelectionChange::TabStripSelectionChange() = default;
+
+TabStripSelectionChange::TabStripSelectionChange(
+    content::WebContents* contents,
+    const ui::ListSelectionModel& selection_model)
+    : old_contents(contents),
+      new_contents(contents),
+      old_model(selection_model),
+      new_model(selection_model),
+      reason(0) {}
+
+TabStripSelectionChange::~TabStripSelectionChange() = default;
+
+TabStripSelectionChange::TabStripSelectionChange(
+    const TabStripSelectionChange& other) = default;
+
+TabStripSelectionChange& TabStripSelectionChange::operator=(
+    const TabStripSelectionChange& other) = default;
+
+////////////////////////////////////////////////////////////////////////////////
+// TabStripModelObserver
+//
+TabStripModelObserver::TabStripModelObserver() {
 }
 
-void TabStripModelObserver::TabSelectionChanged(
+void TabStripModelObserver::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
-    const ui::ListSelectionModel& model) {
-}
-
-void TabStripModelObserver::TabMoved(WebContents* contents,
-                                     int from_index,
-                                     int to_index) {
-}
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {}
 
 void TabStripModelObserver::TabChangedAt(WebContents* contents,
                                          int index,
                                          TabChangeType change_type) {
 }
 
-void TabStripModelObserver::TabReplacedAt(TabStripModel* tab_strip_model,
-                                          WebContents* old_contents,
-                                          WebContents* new_contents,
-                                          int index) {
-}
-
-void TabStripModelObserver::TabPinnedStateChanged(WebContents* contents,
-                                                  int index) {
+void TabStripModelObserver::TabPinnedStateChanged(
+    TabStripModel* tab_strip_model,
+    WebContents* contents,
+    int index) {
 }
 
 void TabStripModelObserver::TabBlockedStateChanged(WebContents* contents,
@@ -61,8 +113,8 @@ void TabStripModelObserver::TabBlockedStateChanged(WebContents* contents,
 void TabStripModelObserver::TabStripEmpty() {
 }
 
-void TabStripModelObserver::WillCloseAllTabs() {
-}
+void TabStripModelObserver::WillCloseAllTabs(TabStripModel* tab_strip_model) {}
 
-void TabStripModelObserver::CloseAllTabsCanceled() {
-}
+void TabStripModelObserver::CloseAllTabsStopped(TabStripModel* tab_strip_model,
+                                                CloseAllStoppedReason reason) {}
+void TabStripModelObserver::SetTabNeedsAttentionAt(int index, bool attention) {}

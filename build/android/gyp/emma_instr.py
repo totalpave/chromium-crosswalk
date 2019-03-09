@@ -19,20 +19,17 @@ Possible commands are:
 
 import collections
 import json
+import optparse
 import os
 import shutil
 import sys
 import tempfile
-
-sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir))
-from pylib.utils import command_option_parser
 
 from util import build_utils
 
 
 def _AddCommonOptions(option_parser):
   """Adds common options to |option_parser|."""
-  build_utils.AddDepfileOption(option_parser)
   option_parser.add_option('--input-path',
                            help=('Path to input file(s). Either the classes '
                                  'directory, or the path to a jar.'))
@@ -40,7 +37,6 @@ def _AddCommonOptions(option_parser):
                            help=('Path to output final file(s) to. Either the '
                                  'final classes directory, or the directory in '
                                  'which to place the instrumented/copied jar.'))
-  option_parser.add_option('--stamp', help='Path to touch when done.')
   option_parser.add_option('--coverage-file',
                            help='File to create with coverage metadata.')
   option_parser.add_option('--sources-list-file',
@@ -58,6 +54,8 @@ def _AddInstrumentOptions(option_parser):
                            help='Space separated list of source files. '
                                 'source-dirs should not be specified if '
                                 'source-files is specified')
+  option_parser.add_option('--java-sources-file',
+                           help='File containing newline-separated .java paths')
   option_parser.add_option('--src-root',
                            help='Root of the src repository.')
   option_parser.add_option('--emma-jar',
@@ -94,25 +92,16 @@ def _RunCopyCommand(_command, options, _, option_parser):
 
   shutil.copy(options.input_path, options.output_path)
 
-  if options.stamp:
-    build_utils.Touch(options.stamp)
 
-  if options.depfile:
-    build_utils.WriteDepfile(options.depfile,
-                             build_utils.GetPythonDependencies())
-
-
-def _GetSourceDirsFromSourceFiles(source_files_string):
-  """Returns list of directories for the files in |source_files_string|.
+def _GetSourceDirsFromSourceFiles(source_files):
+  """Returns list of directories for the files in |source_files|.
 
   Args:
-    source_files_string: String generated from GN or GYP containing the list
-      of source files.
+    source_files: List of source files.
 
   Returns:
     List of source directories.
   """
-  source_files = build_utils.ParseGypList(source_files_string)
   return list(set(os.path.dirname(source_file) for source_file in source_files))
 
 
@@ -158,7 +147,8 @@ def _RunInstrumentCommand(_command, options, _, option_parser):
   """
   if not (options.input_path and options.output_path and
           options.coverage_file and options.sources_list_file and
-          (options.source_files or options.source_dirs) and
+          (options.source_files or options.source_dirs or
+           options.java_sources_file) and
           options.src_root and options.emma_jar):
     option_parser.error('All arguments are required.')
 
@@ -194,18 +184,21 @@ def _RunInstrumentCommand(_command, options, _, option_parser):
     shutil.rmtree(temp_dir)
 
   if options.source_dirs:
-    source_dirs = build_utils.ParseGypList(options.source_dirs)
+    source_dirs = build_utils.ParseGnList(options.source_dirs)
   else:
-    source_dirs = _GetSourceDirsFromSourceFiles(options.source_files)
+    source_files = []
+    if options.source_files:
+      source_files += build_utils.ParseGnList(options.source_files)
+    if options.java_sources_file:
+      source_files.extend(
+          build_utils.ReadSourcesList(options.java_sources_file))
+    source_dirs = _GetSourceDirsFromSourceFiles(source_files)
+
+  # TODO(GYP): In GN, we are passed the list of sources, detecting source
+  # directories, then walking them to re-establish the list of sources.
+  # This can obviously be simplified!
   _CreateSourcesListFile(source_dirs, options.sources_list_file,
                          options.src_root)
-
-  if options.stamp:
-    build_utils.Touch(options.stamp)
-
-  if options.depfile:
-    build_utils.WriteDepfile(options.depfile,
-                             build_utils.GetPythonDependencies())
 
   return 0
 
@@ -220,10 +213,58 @@ VALID_COMMANDS = {
 }
 
 
+class CommandOptionParser(optparse.OptionParser):
+  """Wrapper class for OptionParser to help with listing commands."""
+
+  def __init__(self, *args, **kwargs):
+    """Creates a CommandOptionParser.
+
+    Args:
+      commands_dict: A dictionary mapping command strings to an object defining
+          - add_options_func: Adds options to the option parser
+          - run_command_func: Runs the command itself.
+      example: An example command.
+      everything else: Passed to optparse.OptionParser contructor.
+    """
+    self.commands_dict = kwargs.pop('commands_dict', {})
+    self.example = kwargs.pop('example', '')
+    if not 'usage' in kwargs:
+      kwargs['usage'] = 'Usage: %prog <command> [options]'
+    optparse.OptionParser.__init__(self, *args, **kwargs)
+
+  #override
+  def get_usage(self):
+    normal_usage = optparse.OptionParser.get_usage(self)
+    command_list = self.get_command_list()
+    example = self.get_example()
+    return self.expand_prog_name(normal_usage + example + command_list)
+
+  #override
+  def get_command_list(self):
+    if self.commands_dict.keys():
+      return '\nCommands:\n  %s\n' % '\n  '.join(
+          sorted(self.commands_dict.keys()))
+    return ''
+
+  def get_example(self):
+    if self.example:
+      return '\nExample:\n  %s\n' % self.example
+    return ''
+
+
 def main():
-  option_parser = command_option_parser.CommandOptionParser(
-      commands_dict=VALID_COMMANDS)
-  command_option_parser.ParseAndExecute(option_parser)
+  option_parser = CommandOptionParser(commands_dict=VALID_COMMANDS)
+  argv = sys.argv
+
+  if len(argv) < 2 or argv[1] not in option_parser.commands_dict:
+    # Parse args first, if this is '--help', optparse will print help and exit
+    option_parser.parse_args(argv)
+    option_parser.error('Invalid command.')
+
+  cmd = option_parser.commands_dict[argv[1]]
+  cmd.add_options_func(option_parser)
+  options, args = option_parser.parse_args(argv)
+  return cmd.run_command_func(argv[1], options, args, option_parser)
 
 
 if __name__ == '__main__':

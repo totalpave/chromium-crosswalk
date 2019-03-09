@@ -12,16 +12,18 @@
 #include "build/build_config.h"
 #include "components/printing/test/mock_printer.h"
 #include "ipc/ipc_sync_message.h"
+#include "printing/buildflags/buildflags.h"
 #include "printing/page_range.h"
 #include "printing/print_job_constants.h"
+#include "printing/units.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(ENABLE_PRINTING)
+#if BUILDFLAG(ENABLE_PRINTING)
 #include "components/printing/common/print_messages.h"
 #endif
 
 PrintMockRenderThread::PrintMockRenderThread()
-#if defined(ENABLE_PRINTING)
+#if BUILDFLAG(ENABLE_PRINTING)
     : printer_(new MockPrinter),
       print_dialog_user_response_(true),
       print_preview_cancel_page_number_(-1),
@@ -34,11 +36,11 @@ PrintMockRenderThread::~PrintMockRenderThread() {
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
-PrintMockRenderThread::GetIOMessageLoopProxy() {
+PrintMockRenderThread::GetIOTaskRunner() {
   return io_task_runner_;
 }
 
-void PrintMockRenderThread::set_io_message_loop_proxy(
+void PrintMockRenderThread::set_io_task_runner(
     const scoped_refptr<base::SingleThreadTaskRunner>& task_runner) {
   io_task_runner_ = task_runner;
 }
@@ -50,27 +52,26 @@ bool PrintMockRenderThread::OnMessageReceived(const IPC::Message& msg) {
   // Some messages we do special handling.
   bool handled = true;
   IPC_BEGIN_MESSAGE_MAP(PrintMockRenderThread, msg)
-#if defined(ENABLE_PRINTING)
+#if BUILDFLAG(ENABLE_PRINTING)
     IPC_MESSAGE_HANDLER(PrintHostMsg_GetDefaultPrintSettings,
                         OnGetDefaultPrintSettings)
     IPC_MESSAGE_HANDLER(PrintHostMsg_ScriptedPrint, OnScriptedPrint)
     IPC_MESSAGE_HANDLER(PrintHostMsg_UpdatePrintSettings, OnUpdatePrintSettings)
     IPC_MESSAGE_HANDLER(PrintHostMsg_DidGetPrintedPagesCount,
                         OnDidGetPrintedPagesCount)
-    IPC_MESSAGE_HANDLER(PrintHostMsg_DidPrintPage, OnDidPrintPage)
-#if defined(ENABLE_PRINT_PREVIEW)
-    IPC_MESSAGE_HANDLER(PrintHostMsg_DidGetPreviewPageCount,
-                        OnDidGetPreviewPageCount)
+    IPC_MESSAGE_HANDLER(PrintHostMsg_DidPrintDocument, OnDidPrintDocument)
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+    IPC_MESSAGE_HANDLER(PrintHostMsg_DidStartPreview, OnDidStartPreview)
     IPC_MESSAGE_HANDLER(PrintHostMsg_DidPreviewPage, OnDidPreviewPage)
     IPC_MESSAGE_HANDLER(PrintHostMsg_CheckForCancel, OnCheckForCancel)
 #endif
-#endif  // defined(ENABLE_PRINTING)
+#endif  // BUILDFLAG(ENABLE_PRINTING)
     IPC_MESSAGE_UNHANDLED(handled = false)
   IPC_END_MESSAGE_MAP()
   return handled;
 }
 
-#if defined(ENABLE_PRINTING)
+#if BUILDFLAG(ENABLE_PRINTING)
 
 void PrintMockRenderThread::OnGetDefaultPrintSettings(
     PrintMsg_Print_Params* params) {
@@ -91,30 +92,33 @@ void PrintMockRenderThread::OnDidGetPrintedPagesCount(int cookie,
   printer_->SetPrintedPagesCount(cookie, number_pages);
 }
 
-void PrintMockRenderThread::OnDidPrintPage(
-    const PrintHostMsg_DidPrintPage_Params& params) {
+void PrintMockRenderThread::OnDidPrintDocument(
+    const PrintHostMsg_DidPrintDocument_Params& params) {
   printer_->PrintPage(params);
 }
 
-#if defined(ENABLE_PRINT_PREVIEW)
-void PrintMockRenderThread::OnDidGetPreviewPageCount(
-    const PrintHostMsg_DidGetPreviewPageCount_Params& params) {
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+void PrintMockRenderThread::OnDidStartPreview(
+    const PrintHostMsg_DidStartPreview_Params& params,
+    const PrintHostMsg_PreviewIds& ids) {
   print_preview_pages_remaining_ = params.page_count;
 }
 
 void PrintMockRenderThread::OnDidPreviewPage(
-    const PrintHostMsg_DidPreviewPage_Params& params) {
+    const PrintHostMsg_DidPreviewPage_Params& params,
+    const PrintHostMsg_PreviewIds& ids) {
   DCHECK_GE(params.page_number, printing::FIRST_PAGE_INDEX);
   print_preview_pages_remaining_--;
+  print_preview_pages_.emplace_back(
+      params.page_number, params.content.metafile_data_region.GetSize());
 }
 
-void PrintMockRenderThread::OnCheckForCancel(int32_t preview_ui_id,
-                                             int preview_request_id,
+void PrintMockRenderThread::OnCheckForCancel(const PrintHostMsg_PreviewIds& ids,
                                              bool* cancel) {
   *cancel =
       (print_preview_pages_remaining_ == print_preview_cancel_page_number_);
 }
-#endif  // defined(ENABLE_PRINT_PREVIEW)
+#endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
 
 void PrintMockRenderThread::OnUpdatePrintSettings(
     int document_cookie,
@@ -127,16 +131,16 @@ void PrintMockRenderThread::OnUpdatePrintSettings(
   // We don't actually care about the values.
   std::string dummy_string;
   int margins_type = 0;
-  if (!job_settings.GetBoolean(printing::kSettingLandscape, NULL) ||
-      !job_settings.GetBoolean(printing::kSettingCollate, NULL) ||
-      !job_settings.GetInteger(printing::kSettingColor, NULL) ||
-      !job_settings.GetBoolean(printing::kSettingPrintToPDF, NULL) ||
-      !job_settings.GetBoolean(printing::kIsFirstRequest, NULL) ||
+  if (!job_settings.GetBoolean(printing::kSettingLandscape, nullptr) ||
+      !job_settings.GetBoolean(printing::kSettingCollate, nullptr) ||
+      !job_settings.GetInteger(printing::kSettingColor, nullptr) ||
+      !job_settings.GetBoolean(printing::kSettingPrintToPDF, nullptr) ||
+      !job_settings.GetBoolean(printing::kIsFirstRequest, nullptr) ||
       !job_settings.GetString(printing::kSettingDeviceName, &dummy_string) ||
-      !job_settings.GetInteger(printing::kSettingDuplexMode, NULL) ||
-      !job_settings.GetInteger(printing::kSettingCopies, NULL) ||
-      !job_settings.GetInteger(printing::kPreviewUIID, NULL) ||
-      !job_settings.GetInteger(printing::kPreviewRequestID, NULL) ||
+      !job_settings.GetInteger(printing::kSettingDuplexMode, nullptr) ||
+      !job_settings.GetInteger(printing::kSettingCopies, nullptr) ||
+      !job_settings.GetInteger(printing::kPreviewUIID, nullptr) ||
+      !job_settings.GetInteger(printing::kPreviewRequestID, nullptr) ||
       !job_settings.GetInteger(printing::kSettingMarginsType, &margins_type)) {
     return;
   }
@@ -161,9 +165,33 @@ void PrintMockRenderThread::OnUpdatePrintSettings(
       new_ranges.push_back(range);
     }
   }
-  std::vector<int> pages(printing::PageRange::GetPages(new_ranges));
-  printer_->UpdateSettings(document_cookie, params, pages, margins_type);
 
+  // Get media size
+  const base::DictionaryValue* media_size_value = nullptr;
+  gfx::Size page_size;
+  if (job_settings.GetDictionary(printing::kSettingMediaSize,
+                                 &media_size_value)) {
+    int width_microns = 0;
+    int height_microns = 0;
+    if (media_size_value->GetInteger(printing::kSettingMediaSizeWidthMicrons,
+                                     &width_microns) &&
+        media_size_value->GetInteger(printing::kSettingMediaSizeHeightMicrons,
+                                     &height_microns)) {
+      float device_microns_per_unit =
+          static_cast<float>(printing::kMicronsPerInch) /
+          printing::kDefaultPdfDpi;
+      page_size = gfx::Size(width_microns / device_microns_per_unit,
+                            height_microns / device_microns_per_unit);
+    }
+  }
+
+  // Get scaling
+  int scale_factor = 100;
+  job_settings.GetInteger(printing::kSettingScaleFactor, &scale_factor);
+
+  std::vector<int> pages(printing::PageRange::GetPages(new_ranges));
+  printer_->UpdateSettings(document_cookie, params, pages, margins_type,
+                           page_size, scale_factor);
   job_settings.GetBoolean(printing::kSettingShouldPrintSelectionOnly,
                           &params->params.selection_only);
   job_settings.GetBoolean(printing::kSettingShouldPrintBackgrounds,
@@ -185,4 +213,9 @@ void PrintMockRenderThread::set_print_preview_cancel_page_number(int page) {
 int PrintMockRenderThread::print_preview_pages_remaining() const {
   return print_preview_pages_remaining_;
 }
-#endif  // defined(ENABLE_PRINTING)
+
+const std::vector<std::pair<int, uint32_t>>&
+PrintMockRenderThread::print_preview_pages() const {
+  return print_preview_pages_;
+}
+#endif  // BUILDFLAG(ENABLE_PRINTING)

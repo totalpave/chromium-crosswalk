@@ -5,7 +5,9 @@
 #include "components/omnibox/browser/shortcuts_backend.h"
 
 #include <stddef.h>
+
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,6 +18,7 @@
 #include "base/i18n/case_conversion.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/omnibox/browser/autocomplete_input.h"
@@ -32,8 +35,7 @@ namespace {
 // compacting repetitions if necessary.
 std::string StripMatchMarkers(const ACMatchClassifications& matches) {
   ACMatchClassifications unmatched;
-  for (ACMatchClassifications::const_iterator i(matches.begin());
-       i != matches.end(); ++i) {
+  for (auto i(matches.begin()); i != matches.end(); ++i) {
     AutocompleteMatch::AddLastClassificationIfNecessary(
         &unmatched, i->offset, i->style & ~ACMatchClassification::MATCH);
   }
@@ -68,7 +70,6 @@ ShortcutsBackend::ShortcutsBackend(
     TemplateURLService* template_url_service,
     std::unique_ptr<SearchTermsData> search_terms_data,
     history::HistoryService* history_service,
-    scoped_refptr<base::SequencedTaskRunner> db_runner,
     base::FilePath database_path,
     bool suppress_db)
     : template_url_service_(template_url_service),
@@ -76,7 +77,9 @@ ShortcutsBackend::ShortcutsBackend(
       current_state_(NOT_INITIALIZED),
       history_service_observer_(this),
       main_runner_(base::ThreadTaskRunnerHandle::Get()),
-      db_runner_(db_runner),
+      db_runner_(base::CreateSequencedTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
       no_db_access_(suppress_db) {
   if (!suppress_db)
     db_ = new ShortcutsDatabase(database_path);
@@ -95,7 +98,7 @@ bool ShortcutsBackend::Init() {
 
   current_state_ = INITIALIZING;
   return db_runner_->PostTask(
-      FROM_HERE, base::Bind(&ShortcutsBackend::InitInternal, this));
+      FROM_HERE, base::BindOnce(&ShortcutsBackend::InitInternal, this));
 }
 
 bool ShortcutsBackend::DeleteShortcutsWithURL(const GURL& shortcut_url) {
@@ -117,6 +120,9 @@ void ShortcutsBackend::RemoveObserver(ShortcutsBackendObserver* obs) {
 
 void ShortcutsBackend::AddOrUpdateShortcut(const base::string16& text,
                                            const AutocompleteMatch& match) {
+#if DCHECK_IS_ON()
+  match.Validate();
+#endif  // DCHECK_IS_ON()
   const base::string16 text_lowercase(base::i18n::ToLower(text));
   const base::Time now(base::Time::Now());
   for (ShortcutMap::const_iterator it(
@@ -140,13 +146,7 @@ void ShortcutsBackend::AddOrUpdateShortcut(const base::string16& text,
 }
 
 ShortcutsBackend::~ShortcutsBackend() {
-  if (db_) {
-    auto* db = db_.get();
-    db->AddRef();
-    db_ = nullptr;
-    if (!db_runner_->ReleaseSoon(FROM_HERE, db))
-      db->Release();
-  }
+  db_runner_->ReleaseSoon(FROM_HERE, std::move(db_));
 }
 
 // static
@@ -155,37 +155,40 @@ ShortcutsDatabase::Shortcut::MatchCore ShortcutsBackend::MatchToMatchCore(
     TemplateURLService* template_url_service,
     SearchTermsData* search_terms_data) {
   const AutocompleteMatch::Type match_type = GetTypeForShortcut(match.type);
-  const AutocompleteMatch& normalized_match =
-      AutocompleteMatch::IsSpecializedSearchType(match.type)
-          ? BaseSearchProvider::CreateSearchSuggestion(
-                match.search_terms_args->search_terms, match_type,
-                ui::PageTransitionCoreTypeIs(match.transition,
-                                             ui::PAGE_TRANSITION_KEYWORD),
-                match.GetTemplateURL(template_url_service, false),
-                *search_terms_data)
-          : match;
+
+  const AutocompleteMatch* normalized_match = &match;
+  AutocompleteMatch temp;
+
+  if (AutocompleteMatch::IsSpecializedSearchType(match.type)) {
+    DCHECK(match.search_terms_args);
+    temp = BaseSearchProvider::CreateSearchSuggestion(
+        match.search_terms_args->search_terms, match_type,
+        ui::PageTransitionCoreTypeIs(match.transition,
+                                     ui::PAGE_TRANSITION_KEYWORD),
+        match.GetTemplateURL(template_url_service, false), *search_terms_data);
+    normalized_match = &temp;
+  }
+
   return ShortcutsDatabase::Shortcut::MatchCore(
-      normalized_match.fill_into_edit, normalized_match.destination_url,
-      normalized_match.contents,
-      StripMatchMarkers(normalized_match.contents_class),
-      normalized_match.description,
-      StripMatchMarkers(normalized_match.description_class),
-      normalized_match.transition, match_type, normalized_match.keyword);
+      normalized_match->fill_into_edit, normalized_match->destination_url,
+      normalized_match->contents,
+      StripMatchMarkers(normalized_match->contents_class),
+      normalized_match->description,
+      StripMatchMarkers(normalized_match->description_class),
+      normalized_match->transition, match_type, normalized_match->keyword);
 }
 
 void ShortcutsBackend::ShutdownOnUIThread() {
   history_service_observer_.RemoveAll();
 }
 
-void ShortcutsBackend::OnURLsDeleted(history::HistoryService* history_service,
-                                     bool all_history,
-                                     bool expired,
-                                     const history::URLRows& deleted_rows,
-                                     const std::set<GURL>& favicon_urls) {
+void ShortcutsBackend::OnURLsDeleted(
+    history::HistoryService* history_service,
+    const history::DeletionInfo& deletion_info) {
   if (!initialized())
     return;
 
-  if (all_history) {
+  if (deletion_info.IsAllHistory()) {
     DeleteAllShortcuts();
     return;
   }
@@ -193,10 +196,11 @@ void ShortcutsBackend::OnURLsDeleted(history::HistoryService* history_service,
   ShortcutsDatabase::ShortcutIDs shortcut_ids;
   for (const auto& guid_pair : guid_map_) {
     if (std::find_if(
-            deleted_rows.begin(), deleted_rows.end(),
+            deletion_info.deleted_rows().begin(),
+            deletion_info.deleted_rows().end(),
             history::URLRow::URLRowHasURL(
                 guid_pair.second->second.match_core.destination_url)) !=
-        deleted_rows.end()) {
+        deletion_info.deleted_rows().end()) {
       shortcut_ids.push_back(guid_pair.first);
     }
   }
@@ -216,20 +220,23 @@ void ShortcutsBackend::InitInternal() {
     (*temp_guid_map_)[it->first] = temp_shortcuts_map_->insert(
         std::make_pair(base::i18n::ToLower(it->second.text), it->second));
   }
-  main_runner_->PostTask(FROM_HERE,
-                         base::Bind(&ShortcutsBackend::InitCompleted, this));
+  main_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&ShortcutsBackend::InitCompleted, this));
 }
 
 void ShortcutsBackend::InitCompleted() {
   temp_guid_map_->swap(guid_map_);
   temp_shortcuts_map_->swap(shortcuts_map_);
-  temp_shortcuts_map_.reset(NULL);
-  temp_guid_map_.reset(NULL);
+  temp_shortcuts_map_.reset(nullptr);
+  temp_guid_map_.reset(nullptr);
+  // This histogram is expired but the code was intentionally left behind so
+  // it can be easily re-enabled when launching Shortcuts provider on Android
+  // or iOS.
   UMA_HISTOGRAM_COUNTS_10000("ShortcutsProvider.DatabaseSize",
                              shortcuts_map_.size());
   current_state_ = INITIALIZED;
-  FOR_EACH_OBSERVER(ShortcutsBackendObserver, observer_list_,
-                    OnShortcutsLoaded());
+  for (ShortcutsBackendObserver& observer : observer_list_)
+    observer.OnShortcutsLoaded();
 }
 
 bool ShortcutsBackend::AddShortcut(
@@ -239,31 +246,31 @@ bool ShortcutsBackend::AddShortcut(
   DCHECK(guid_map_.find(shortcut.id) == guid_map_.end());
   guid_map_[shortcut.id] = shortcuts_map_.insert(
       std::make_pair(base::i18n::ToLower(shortcut.text), shortcut));
-  FOR_EACH_OBSERVER(ShortcutsBackendObserver, observer_list_,
-                    OnShortcutsChanged());
+  for (ShortcutsBackendObserver& observer : observer_list_)
+    observer.OnShortcutsChanged();
   return no_db_access_ ||
          db_runner_->PostTask(
              FROM_HERE,
-             base::Bind(base::IgnoreResult(&ShortcutsDatabase::AddShortcut),
-                        db_.get(), shortcut));
+             base::BindOnce(base::IgnoreResult(&ShortcutsDatabase::AddShortcut),
+                            db_.get(), shortcut));
 }
 
 bool ShortcutsBackend::UpdateShortcut(
     const ShortcutsDatabase::Shortcut& shortcut) {
   if (!initialized())
     return false;
-  GuidMap::iterator it(guid_map_.find(shortcut.id));
+  auto it(guid_map_.find(shortcut.id));
   if (it != guid_map_.end())
     shortcuts_map_.erase(it->second);
   guid_map_[shortcut.id] = shortcuts_map_.insert(
       std::make_pair(base::i18n::ToLower(shortcut.text), shortcut));
-  FOR_EACH_OBSERVER(ShortcutsBackendObserver, observer_list_,
-                    OnShortcutsChanged());
+  for (ShortcutsBackendObserver& observer : observer_list_)
+    observer.OnShortcutsChanged();
   return no_db_access_ ||
          db_runner_->PostTask(
-             FROM_HERE,
-             base::Bind(base::IgnoreResult(&ShortcutsDatabase::UpdateShortcut),
-                        db_.get(), shortcut));
+             FROM_HERE, base::BindOnce(base::IgnoreResult(
+                                           &ShortcutsDatabase::UpdateShortcut),
+                                       db_.get(), shortcut));
 }
 
 bool ShortcutsBackend::DeleteShortcutsWithIDs(
@@ -271,18 +278,18 @@ bool ShortcutsBackend::DeleteShortcutsWithIDs(
   if (!initialized())
     return false;
   for (size_t i = 0; i < shortcut_ids.size(); ++i) {
-    GuidMap::iterator it(guid_map_.find(shortcut_ids[i]));
+    auto it(guid_map_.find(shortcut_ids[i]));
     if (it != guid_map_.end()) {
       shortcuts_map_.erase(it->second);
       guid_map_.erase(it);
     }
   }
-  FOR_EACH_OBSERVER(ShortcutsBackendObserver, observer_list_,
-                    OnShortcutsChanged());
+  for (ShortcutsBackendObserver& observer : observer_list_)
+    observer.OnShortcutsChanged();
   return no_db_access_ ||
          db_runner_->PostTask(
              FROM_HERE,
-             base::Bind(
+             base::BindOnce(
                  base::IgnoreResult(&ShortcutsDatabase::DeleteShortcutsWithIDs),
                  db_.get(), shortcut_ids));
 }
@@ -291,7 +298,7 @@ bool ShortcutsBackend::DeleteShortcutsWithURL(const GURL& url,
                                               bool exact_match) {
   const std::string& url_spec = url.spec();
   ShortcutsDatabase::ShortcutIDs shortcut_ids;
-  for (GuidMap::iterator it(guid_map_.begin()); it != guid_map_.end(); ) {
+  for (auto it(guid_map_.begin()); it != guid_map_.end();) {
     if (exact_match ? (it->second->second.match_core.destination_url == url)
                     : base::StartsWith(
                           it->second->second.match_core.destination_url.spec(),
@@ -303,12 +310,12 @@ bool ShortcutsBackend::DeleteShortcutsWithURL(const GURL& url,
       ++it;
     }
   }
-  FOR_EACH_OBSERVER(ShortcutsBackendObserver, observer_list_,
-                    OnShortcutsChanged());
+  for (ShortcutsBackendObserver& observer : observer_list_)
+    observer.OnShortcutsChanged();
   return no_db_access_ ||
          db_runner_->PostTask(
              FROM_HERE,
-             base::Bind(
+             base::BindOnce(
                  base::IgnoreResult(&ShortcutsDatabase::DeleteShortcutsWithURL),
                  db_.get(), url_spec));
 }
@@ -318,11 +325,12 @@ bool ShortcutsBackend::DeleteAllShortcuts() {
     return false;
   shortcuts_map_.clear();
   guid_map_.clear();
-  FOR_EACH_OBSERVER(ShortcutsBackendObserver, observer_list_,
-                    OnShortcutsChanged());
+  for (ShortcutsBackendObserver& observer : observer_list_)
+    observer.OnShortcutsChanged();
   return no_db_access_ ||
          db_runner_->PostTask(
-             FROM_HERE, base::Bind(base::IgnoreResult(
-                                       &ShortcutsDatabase::DeleteAllShortcuts),
-                                   db_.get()));
+             FROM_HERE,
+             base::BindOnce(
+                 base::IgnoreResult(&ShortcutsDatabase::DeleteAllShortcuts),
+                 db_.get()));
 }

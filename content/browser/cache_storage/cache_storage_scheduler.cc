@@ -9,40 +9,57 @@
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "content/browser/cache_storage/cache_storage_histogram_utils.h"
+#include "content/browser/cache_storage/cache_storage_operation.h"
 
 namespace content {
 
-CacheStorageScheduler::CacheStorageScheduler() : operation_running_(false) {
-}
+CacheStorageScheduler::CacheStorageScheduler(
+    CacheStorageSchedulerClient client_type)
+    : client_type_(client_type), weak_ptr_factory_(this) {}
 
-CacheStorageScheduler::~CacheStorageScheduler() {
-}
+CacheStorageScheduler::~CacheStorageScheduler() {}
 
-void CacheStorageScheduler::ScheduleOperation(const base::Closure& closure) {
-  pending_operations_.push_back(closure);
+void CacheStorageScheduler::ScheduleOperation(CacheStorageSchedulerOp op_type,
+                                              base::OnceClosure closure) {
+  RecordCacheStorageSchedulerUMA(CacheStorageSchedulerUMA::kQueueLength,
+                                 client_type_, op_type,
+                                 pending_operations_.size());
+
+  pending_operations_.push_back(std::make_unique<CacheStorageOperation>(
+      std::move(closure), client_type_, op_type,
+      base::ThreadTaskRunnerHandle::Get()));
   RunOperationIfIdle();
 }
 
 void CacheStorageScheduler::CompleteOperationAndRunNext() {
-  DCHECK(operation_running_);
-  operation_running_ = false;
+  DCHECK(running_operation_);
+  running_operation_.reset();
+
   RunOperationIfIdle();
 }
 
 bool CacheStorageScheduler::ScheduledOperations() const {
-  return operation_running_ || !pending_operations_.empty();
+  return running_operation_ || !pending_operations_.empty();
 }
 
 void CacheStorageScheduler::RunOperationIfIdle() {
-  if (!operation_running_ && !pending_operations_.empty()) {
-    operation_running_ = true;
+  if (!running_operation_ && !pending_operations_.empty()) {
     // TODO(jkarlin): Run multiple operations in parallel where allowed.
-    base::Closure closure = pending_operations_.front();
+    running_operation_ = std::move(pending_operations_.front());
     pending_operations_.pop_front();
-    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                  base::Bind(closure));
+
+    RecordCacheStorageSchedulerUMA(
+        CacheStorageSchedulerUMA::kQueueDuration, client_type_,
+        running_operation_->op_type(),
+        base::TimeTicks::Now() - running_operation_->creation_ticks());
+
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, base::BindOnce(&CacheStorageOperation::Run,
+                                  running_operation_->AsWeakPtr()));
   }
 }
 

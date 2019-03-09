@@ -13,8 +13,8 @@
 #include "base/guid.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
@@ -31,8 +31,7 @@ const char PairingRegistry::kClientIdKey[] = "clientId";
 const char PairingRegistry::kClientNameKey[] = "clientName";
 const char PairingRegistry::kSharedSecretKey[] = "sharedSecret";
 
-PairingRegistry::Pairing::Pairing() {
-}
+PairingRegistry::Pairing::Pairing() = default;
 
 PairingRegistry::Pairing::Pairing(const base::Time& created_time,
                                   const std::string& client_name,
@@ -46,8 +45,7 @@ PairingRegistry::Pairing::Pairing(const base::Time& created_time,
 
 PairingRegistry::Pairing::Pairing(const Pairing& other) = default;
 
-PairingRegistry::Pairing::~Pairing() {
-}
+PairingRegistry::Pairing::~Pairing() = default;
 
 PairingRegistry::Pairing PairingRegistry::Pairing::Create(
     const std::string& client_name) {
@@ -55,8 +53,8 @@ PairingRegistry::Pairing PairingRegistry::Pairing::Create(
   std::string client_id = base::GenerateGUID();
   std::string shared_secret;
   char buffer[kKeySize];
-  crypto::RandBytes(buffer, arraysize(buffer));
-  base::Base64Encode(base::StringPiece(buffer, arraysize(buffer)),
+  crypto::RandBytes(buffer, base::size(buffer));
+  base::Base64Encode(base::StringPiece(buffer, base::size(buffer)),
                      &shared_secret);
   return Pairing(created_time, client_name, client_id, shared_secret);
 }
@@ -172,12 +170,11 @@ void PairingRegistry::ClearAllPairings(
   ServiceOrQueueRequest(request);
 }
 
-PairingRegistry::~PairingRegistry() {
-}
+PairingRegistry::~PairingRegistry() = default;
 
 void PairingRegistry::PostTask(
     const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const base::Closure& task) {
   task_runner->PostTask(from_here, task);
 }

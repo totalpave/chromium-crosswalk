@@ -4,30 +4,31 @@
 
 #include "content/public/renderer/document_state.h"
 
-#include "content/public/renderer/navigation_state.h"
-
 namespace content {
 
 DocumentState::DocumentState()
-    : load_histograms_recorded_(false),
-      web_timing_histograms_recorded_(false),
-      was_fetched_via_spdy_(false),
-      was_npn_negotiated_(false),
+    : was_fetched_via_spdy_(false),
+      was_alpn_negotiated_(false),
       was_alternate_protocol_available_(false),
       connection_info_(net::HttpResponseInfo::CONNECTION_INFO_UNKNOWN),
-      was_fetched_via_proxy_(false),
-      was_prefetcher_(false),
-      was_referred_by_prefetcher_(false),
-      was_after_preconnect_request_(false),
       was_load_data_with_base_url_request_(false),
-      load_type_(UNDEFINED_LOAD),
-      can_load_local_resources_(false) {
-}
+      can_load_local_resources_(false) {}
 
 DocumentState::~DocumentState() {}
 
-void DocumentState::set_navigation_state(NavigationState* navigation_state) {
-  navigation_state_.reset(navigation_state);
+std::unique_ptr<DocumentState> DocumentState::Clone() {
+  std::unique_ptr<DocumentState> new_document_state(new DocumentState());
+  new_document_state->set_was_fetched_via_spdy(was_fetched_via_spdy_);
+  new_document_state->set_was_alpn_negotiated(was_alpn_negotiated_);
+  new_document_state->set_alpn_negotiated_protocol(alpn_negotiated_protocol_);
+  new_document_state->set_was_alternate_protocol_available(
+      was_alternate_protocol_available_);
+  new_document_state->set_connection_info(connection_info_);
+  new_document_state->set_was_load_data_with_base_url_request(
+      was_load_data_with_base_url_request_);
+  new_document_state->set_data_url(data_url_);
+  new_document_state->set_can_load_local_resources(can_load_local_resources_);
+  return new_document_state;
 }
 
 }  // namespace content

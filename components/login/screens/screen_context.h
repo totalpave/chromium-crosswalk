@@ -10,9 +10,8 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/strings/string16.h"
-#include "base/threading/non_thread_safe.h"
 #include "base/values.h"
 #include "components/login/base_screen_handler_utils.h"
 #include "components/login/login_export.h"
@@ -27,12 +26,12 @@ namespace login {
 // context.SetInteger("image-index", 0);
 // context.SetDouble("zoom", 1.25);
 // context.GetChangesAndReset(&dictionary);
-// CallJS("onContextChanged", dictionary);
+// CallJS("login.ScreenName.onContextChanged", dictionary);
 //
 // ScreenContext memorizes changed key-value pairs and returns them
 // via GetChangesAndReset() method. After call to this method an
 // internal buffer of changes will be cleared.
-class LOGIN_EXPORT ScreenContext : public base::NonThreadSafe {
+class LOGIN_EXPORT ScreenContext {
  public:
   typedef std::string KeyType;
   typedef base::Value ValueType;
@@ -95,7 +94,7 @@ class LOGIN_EXPORT ScreenContext : public base::NonThreadSafe {
 
   template <typename T>
   T Get(const KeyType& key) const {
-    DCHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     const base::Value* value;
     bool has_key = storage_.Get(key, &value);
     DCHECK(has_key);
@@ -109,7 +108,7 @@ class LOGIN_EXPORT ScreenContext : public base::NonThreadSafe {
 
   template <typename T>
   T Get(const KeyType& key, const T& default_value) const {
-    DCHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (!HasKey(key))
       return default_value;
     return Get<T>(key);
@@ -120,6 +119,8 @@ class LOGIN_EXPORT ScreenContext : public base::NonThreadSafe {
 
   // Contains all pending changes.
   base::DictionaryValue changes_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(ScreenContext);
 };

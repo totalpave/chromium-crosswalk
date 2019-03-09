@@ -6,10 +6,9 @@
 
 #include <stddef.h>
 
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "cc/test/fake_external_begin_frame_source.h"
+#include "cc/test/test_ukm_recorder_factory.h"
 #include "third_party/khronos/GLES2/gl2.h"
 #include "ui/gfx/buffer_types.h"
 
@@ -25,23 +24,11 @@ bool FakeCompositorDependencies::IsGpuRasterizationForced() {
   return false;
 }
 
-bool FakeCompositorDependencies::IsGpuRasterizationEnabled() {
-  return false;
-}
-
-bool FakeCompositorDependencies::IsAsyncWorkerContextEnabled() {
-  return false;
-}
-
 int FakeCompositorDependencies::GetGpuRasterizationMSAASampleCount() {
   return 0;
 }
 
 bool FakeCompositorDependencies::IsLcdTextEnabled() {
-  return false;
-}
-
-bool FakeCompositorDependencies::IsDistanceFieldTextEnabled() {
   return false;
 }
 
@@ -60,9 +47,9 @@ bool FakeCompositorDependencies::IsGpuMemoryBufferCompositorResourcesEnabled() {
 bool FakeCompositorDependencies::IsElasticOverscrollEnabled() {
   return true;
 }
-std::vector<unsigned> FakeCompositorDependencies::GetImageTextureTargets() {
-  return std::vector<unsigned>(static_cast<size_t>(gfx::BufferFormat::LAST) + 1,
-                               GL_TEXTURE_2D);
+
+bool FakeCompositorDependencies::IsUseZoomForDSFEnabled() {
+  return use_zoom_for_dsf_;
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
@@ -75,43 +62,28 @@ FakeCompositorDependencies::GetCompositorImplThreadTaskRunner() {
   return nullptr;  // Currently never threaded compositing in unit tests.
 }
 
-cc::SharedBitmapManager* FakeCompositorDependencies::GetSharedBitmapManager() {
-  return &shared_bitmap_manager_;
-}
-
-gpu::GpuMemoryBufferManager*
-FakeCompositorDependencies::GetGpuMemoryBufferManager() {
-  return &gpu_memory_buffer_manager_;
-}
-
-scheduler::RendererScheduler*
-FakeCompositorDependencies::GetRendererScheduler() {
-  return &renderer_scheduler_;
-}
-
-std::unique_ptr<cc::BeginFrameSource>
-FakeCompositorDependencies::CreateExternalBeginFrameSource(int routing_id) {
-  double refresh_rate = 200.0;
-  bool tick_automatically = true;
-  return base::MakeUnique<cc::FakeExternalBeginFrameSource>(refresh_rate,
-                                                            tick_automatically);
-}
-
-cc::ImageSerializationProcessor*
-FakeCompositorDependencies::GetImageSerializationProcessor() {
-  return nullptr;
+blink::scheduler::WebThreadScheduler*
+FakeCompositorDependencies::GetWebMainThreadScheduler() {
+  return &main_thread_scheduler_;
 }
 
 cc::TaskGraphRunner* FakeCompositorDependencies::GetTaskGraphRunner() {
   return &task_graph_runner_;
 }
 
-bool FakeCompositorDependencies::AreImageDecodeTasksEnabled() {
+bool FakeCompositorDependencies::IsScrollAnimatorEnabled() {
   return false;
 }
 
-bool FakeCompositorDependencies::IsThreadedAnimationEnabled() {
-  return true;
+std::unique_ptr<cc::UkmRecorderFactory>
+FakeCompositorDependencies::CreateUkmRecorderFactory() {
+  return std::make_unique<cc::TestUkmRecorderFactory>();
 }
+
+#ifdef OS_ANDROID
+bool FakeCompositorDependencies::UsingSynchronousCompositing() {
+  return false;
+}
+#endif
 
 }  // namespace content

@@ -21,11 +21,11 @@ std::string TransientDeviceIds::GetTransientIdForDeviceId(
     const std::string& device_id) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  if (!ContainsKey(device_id_map_, device_id)) {
+  if (!base::ContainsKey(device_id_map_, device_id)) {
     std::string transient_id;
     do {
       transient_id = base::GenerateGUID();
-    } while (ContainsKey(transient_id_map_, transient_id));
+    } while (base::ContainsKey(transient_id_map_, transient_id));
 
     device_id_map_[device_id] = transient_id;
     transient_id_map_[transient_id] = device_id;
@@ -36,7 +36,7 @@ std::string TransientDeviceIds::GetTransientIdForDeviceId(
 
 std::string TransientDeviceIds::DeviceIdFromTransientId(
     const std::string& transient_id) const {
-  IdMap::const_iterator it = transient_id_map_.find(transient_id);
+  auto it = transient_id_map_.find(transient_id);
   if (it == transient_id_map_.end())
     return std::string();
   return it->second;

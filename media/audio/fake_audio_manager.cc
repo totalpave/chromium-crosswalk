@@ -4,6 +4,9 @@
 
 #include "media/audio/fake_audio_manager.h"
 
+#include <algorithm>
+#include <utility>
+
 namespace media {
 
 namespace {
@@ -13,25 +16,20 @@ const int kDefaultSampleRate = 48000;
 
 }  // namespace
 
-FakeAudioManager::FakeAudioManager(
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> worker_task_runner,
-    AudioLogFactory* audio_log_factory)
-    : AudioManagerBase(std::move(task_runner),
-                       std::move(worker_task_runner),
-                       audio_log_factory) {
-  LOG(INFO) << __FUNCTION__;
-}
+FakeAudioManager::FakeAudioManager(std::unique_ptr<AudioThread> audio_thread,
+                                   AudioLogFactory* audio_log_factory)
+    : AudioManagerBase(std::move(audio_thread), audio_log_factory) {}
 
-FakeAudioManager::~FakeAudioManager() {
-  LOG(INFO) << __FUNCTION__;
-  Shutdown();
-}
+FakeAudioManager::~FakeAudioManager() = default;
 
 // Implementation of AudioManager.
 bool FakeAudioManager::HasAudioOutputDevices() { return false; }
 
 bool FakeAudioManager::HasAudioInputDevices() { return false; }
+
+const char* FakeAudioManager::GetName() {
+  return "Fake";
+}
 
 // Implementation of AudioManagerBase.
 AudioOutputStream* FakeAudioManager::MakeLinearOutputStream(
@@ -69,23 +67,21 @@ AudioParameters FakeAudioManager::GetPreferredOutputStreamParameters(
   ChannelLayout channel_layout = CHANNEL_LAYOUT_STEREO;
   int sample_rate = kDefaultSampleRate;
   int buffer_size = kDefaultOutputBufferSize;
-  int bits_per_sample = 16;
   if (input_params.IsValid()) {
     sample_rate = input_params.sample_rate();
-    bits_per_sample = input_params.bits_per_sample();
     channel_layout = input_params.channel_layout();
     buffer_size = std::min(input_params.frames_per_buffer(), buffer_size);
   }
 
   return AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY, channel_layout,
-                         sample_rate, bits_per_sample, buffer_size);
+                         sample_rate, buffer_size);
 }
 
 AudioParameters FakeAudioManager::GetInputStreamParameters(
     const std::string& device_id) {
-  return AudioParameters(
-      AudioParameters::AUDIO_PCM_LOW_LATENCY, CHANNEL_LAYOUT_STEREO,
-      kDefaultSampleRate, 16, kDefaultInputBufferSize);
+  return AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
+                         CHANNEL_LAYOUT_STEREO, kDefaultSampleRate,
+                         kDefaultInputBufferSize);
 }
 
 }  // namespace media

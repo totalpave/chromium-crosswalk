@@ -7,45 +7,50 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "content/browser/devtools/protocol/devtools_protocol_dispatcher.h"
-
-namespace base {
-class RefCountedString;
-}
+#include "content/browser/devtools/protocol/devtools_domain_handler.h"
+#include "content/browser/devtools/protocol/io.h"
 
 namespace content {
-namespace devtools {
+class BrowserContext;
 class DevToolsIOContext;
+class StoragePartition;
 
-namespace io {
+namespace protocol {
 
-class IOHandler {
+class IOHandler : public DevToolsDomainHandler,
+                  public IO::Backend {
  public:
-  using Response = DevToolsProtocolClient::Response;
-
   explicit IOHandler(DevToolsIOContext* io_context);
-  ~IOHandler();
+  ~IOHandler() override;
 
-  void SetClient(std::unique_ptr<Client> client);
+  void Wire(UberDispatcher* dispatcher) override;
+  void SetRenderer(int process_host_id,
+                   RenderFrameHostImpl* frame_host) override;
 
   // Protocol methods.
-  Response Read(DevToolsCommandId command_id, const std::string& handle,
-      const int* offset, const int* max_size);
-  Response Close(const std::string& handle);
+  void Read(
+      const std::string& handle,
+      Maybe<int> offset,
+      Maybe<int> max_size,
+      std::unique_ptr<ReadCallback> callback) override;
+  Response Close(const std::string& handle) override;
 
  private:
-  void ReadComplete(DevToolsCommandId command_id,
-      const scoped_refptr<base::RefCountedString>& data, int status);
+  void ReadComplete(std::unique_ptr<ReadCallback> callback,
+                    std::unique_ptr<std::string> data,
+                    bool base64_encoded,
+                    int status);
 
-  std::unique_ptr<Client> client_;
+  std::unique_ptr<IO::Frontend> frontend_;
   DevToolsIOContext* io_context_;
+  BrowserContext* browser_context_;
+  StoragePartition* storage_partition_;
   base::WeakPtrFactory<IOHandler> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(IOHandler);
 };
 
-}  // namespace io
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content
 
-#endif  // CONTENT_BROWSER_DEVTOOLS_PROTOCOL_TRACING_HANDLER_H_
+#endif  // CONTENT_BROWSER_DEVTOOLS_PROTOCOL_IO_HANDLER_H_

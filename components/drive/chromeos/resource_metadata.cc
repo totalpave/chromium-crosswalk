@@ -14,7 +14,7 @@
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "components/drive/chromeos/file_cache.h"
 #include "components/drive/drive.pb.h"
 #include "components/drive/file_system_core_util.h"
@@ -79,26 +79,29 @@ ResourceMetadata::ResourceMetadata(
 }
 
 FileError ResourceMetadata::Initialize() {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   return SetUpDefaultEntries();
 }
 
 void ResourceMetadata::Destroy() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   blocking_task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&ResourceMetadata::DestroyOnBlockingPool,
-                 base::Unretained(this)));
+      FROM_HERE, base::BindOnce(&ResourceMetadata::DestroyOnBlockingPool,
+                                base::Unretained(this)));
 }
 
 FileError ResourceMetadata::Reset() {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   if (!EnoughDiskSpaceIsAvailableForDBOperation(storage_->directory_path()))
     return FILE_ERROR_NO_LOCAL_SPACE;
 
   FileError error = storage_->SetLargestChangestamp(0);
+  if (error != FILE_ERROR_OK)
+    return error;
+
+  error = storage_->SetStartPageToken(std::string());
   if (error != FILE_ERROR_OK)
     return error;
 
@@ -118,11 +121,11 @@ FileError ResourceMetadata::Reset() {
 }
 
 ResourceMetadata::~ResourceMetadata() {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 }
 
 FileError ResourceMetadata::SetUpDefaultEntries() {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   // Initialize "/drive".
   ResourceEntry entry;
@@ -203,31 +206,62 @@ FileError ResourceMetadata::SetUpDefaultEntries() {
   } else if (error != FILE_ERROR_OK) {
     return error;
   }
+
+  // Initialize "/drive/team_drives".
+  error = storage_->GetEntry(util::kDriveTeamDrivesDirLocalId, &entry);
+  if (error == FILE_ERROR_NOT_FOUND) {
+    ResourceEntry team_drives_dir;
+    team_drives_dir.mutable_file_info()->set_is_directory(true);
+    team_drives_dir.set_local_id(util::kDriveTeamDrivesDirLocalId);
+    team_drives_dir.set_parent_local_id(util::kDriveGrandRootLocalId);
+    team_drives_dir.set_title(util::kDriveTeamDrivesDirName);
+    error = PutEntryUnderDirectory(team_drives_dir);
+    if (error != FILE_ERROR_OK)
+      return error;
+  } else if (error != FILE_ERROR_OK) {
+    return error;
+  }
+
+  // Initialize "/drive/Computers".
+  error = storage_->GetEntry(util::kDriveComputersDirLocalId, &entry);
+  if (error == FILE_ERROR_NOT_FOUND) {
+    ResourceEntry computers_dir;
+    computers_dir.mutable_file_info()->set_is_directory(true);
+    computers_dir.set_local_id(util::kDriveComputersDirLocalId);
+    computers_dir.set_parent_local_id(util::kDriveGrandRootLocalId);
+    computers_dir.set_title(util::kDriveComputersDirName);
+    error = PutEntryUnderDirectory(computers_dir);
+    if (error != FILE_ERROR_OK)
+      return error;
+  } else if (error != FILE_ERROR_OK) {
+    return error;
+  }
+
   return FILE_ERROR_OK;
 }
 
 void ResourceMetadata::DestroyOnBlockingPool() {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   delete this;
 }
 
-FileError ResourceMetadata::GetLargestChangestamp(int64_t* out_value) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
-  return storage_->GetLargestChangestamp(out_value);
+FileError ResourceMetadata::GetStartPageToken(std::string* out_value) {
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
+  return storage_->GetStartPageToken(out_value);
 }
 
-FileError ResourceMetadata::SetLargestChangestamp(int64_t value) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+FileError ResourceMetadata::SetStartPageToken(const std::string& value) {
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   if (!EnoughDiskSpaceIsAvailableForDBOperation(storage_->directory_path()))
     return FILE_ERROR_NO_LOCAL_SPACE;
 
-  return storage_->SetLargestChangestamp(value);
+  return storage_->SetStartPageToken(value);
 }
 
 FileError ResourceMetadata::AddEntry(const ResourceEntry& entry,
                                      std::string* out_id) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(entry.local_id().empty());
 
   if (!EnoughDiskSpaceIsAvailableForDBOperation(storage_->directory_path()))
@@ -250,7 +284,7 @@ FileError ResourceMetadata::AddEntry(const ResourceEntry& entry,
 
     if (error == FILE_ERROR_OK)
       return FILE_ERROR_EXISTS;
-    else if (error != FILE_ERROR_NOT_FOUND)
+    if (error != FILE_ERROR_NOT_FOUND)
       return error;
   }
 
@@ -271,7 +305,7 @@ FileError ResourceMetadata::AddEntry(const ResourceEntry& entry,
 }
 
 FileError ResourceMetadata::RemoveEntry(const std::string& id) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   if (!EnoughDiskSpaceIsAvailableForDBOperation(storage_->directory_path()))
     return FILE_ERROR_NO_LOCAL_SPACE;
@@ -290,7 +324,7 @@ FileError ResourceMetadata::RemoveEntry(const std::string& id) {
 
 FileError ResourceMetadata::GetResourceEntryById(const std::string& id,
                                                  ResourceEntry* out_entry) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(!id.empty());
   DCHECK(out_entry);
 
@@ -299,7 +333,7 @@ FileError ResourceMetadata::GetResourceEntryById(const std::string& id,
 
 FileError ResourceMetadata::GetResourceEntryByPath(const base::FilePath& path,
                                                    ResourceEntry* out_entry) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(out_entry);
 
   std::string id;
@@ -313,7 +347,7 @@ FileError ResourceMetadata::GetResourceEntryByPath(const base::FilePath& path,
 FileError ResourceMetadata::ReadDirectoryByPath(
     const base::FilePath& path,
     ResourceEntryVector* out_entries) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(out_entries);
 
   std::string id;
@@ -326,7 +360,7 @@ FileError ResourceMetadata::ReadDirectoryByPath(
 FileError ResourceMetadata::ReadDirectoryById(
     const std::string& id,
     ResourceEntryVector* out_entries) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(out_entries);
 
   ResourceEntry entry;
@@ -353,7 +387,7 @@ FileError ResourceMetadata::ReadDirectoryById(
 }
 
 FileError ResourceMetadata::RefreshEntry(const ResourceEntry& entry) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   if (!EnoughDiskSpaceIsAvailableForDBOperation(storage_->directory_path()))
     return FILE_ERROR_NO_LOCAL_SPACE;
@@ -411,7 +445,7 @@ FileError ResourceMetadata::RefreshEntry(const ResourceEntry& entry) {
 FileError ResourceMetadata::GetSubDirectoriesRecursively(
     const std::string& id,
     std::set<base::FilePath>* sub_directories) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   std::vector<std::string> children;
   FileError error = storage_->GetChildren(id, &children);
@@ -437,19 +471,19 @@ FileError ResourceMetadata::GetSubDirectoriesRecursively(
 FileError ResourceMetadata::GetChildId(const std::string& parent_local_id,
                                        const std::string& base_name,
                                        std::string* out_child_id) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   return storage_->GetChild(parent_local_id, base_name, out_child_id);
 }
 
 std::unique_ptr<ResourceMetadata::Iterator> ResourceMetadata::GetIterator() {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   return storage_->GetIterator();
 }
 
 FileError ResourceMetadata::GetFilePath(const std::string& id,
                                         base::FilePath* out_file_path) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   ResourceEntry entry;
   FileError error = storage_->GetEntry(id, &entry);
@@ -472,7 +506,7 @@ FileError ResourceMetadata::GetFilePath(const std::string& id,
 
 FileError ResourceMetadata::GetIdByPath(const base::FilePath& file_path,
                                         std::string* out_id) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   // Start from the root.
   std::vector<base::FilePath::StringType> components;
@@ -497,12 +531,12 @@ FileError ResourceMetadata::GetIdByPath(const base::FilePath& file_path,
 
 FileError ResourceMetadata::GetIdByResourceId(const std::string& resource_id,
                                               std::string* out_local_id) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   return storage_->GetIdByResourceId(resource_id, out_local_id);
 }
 
 FileError ResourceMetadata::PutEntryUnderDirectory(const ResourceEntry& entry) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(!entry.local_id().empty());
   DCHECK(!entry.parent_local_id().empty());
 
@@ -518,7 +552,7 @@ FileError ResourceMetadata::PutEntryUnderDirectory(const ResourceEntry& entry) {
 FileError ResourceMetadata::GetDeduplicatedBaseName(
     const ResourceEntry& entry,
     std::string* base_name) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(!entry.parent_local_id().empty());
   DCHECK(!entry.title().empty());
 
@@ -581,7 +615,7 @@ FileError ResourceMetadata::GetDeduplicatedBaseName(
 }
 
 FileError ResourceMetadata::RemoveEntryRecursively(const std::string& id) {
-  DCHECK(blocking_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(blocking_task_runner_->RunsTasksInCurrentSequence());
 
   ResourceEntry entry;
   FileError error = storage_->GetEntry(id, &entry);

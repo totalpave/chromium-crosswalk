@@ -9,7 +9,13 @@
 #include "ipc/ipc_param_traits.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
+#include "remoting/base/result.h"
+#include "remoting/host/desktop_environment_options.h"
 #include "remoting/host/screen_resolution.h"
+#include "remoting/proto/action.pb.h"
+#include "remoting/proto/control.pb.h"
+#include "remoting/proto/file_transfer.pb.h"
+#include "remoting/proto/process_stats.pb.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/mouse_cursor.h"
@@ -19,7 +25,6 @@ namespace IPC {
 template <>
 struct ParamTraits<webrtc::DesktopVector> {
   typedef webrtc::DesktopVector param_type;
-  static void GetSize(base::PickleSizer* s, const param_type& p);
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
@@ -30,7 +35,6 @@ struct ParamTraits<webrtc::DesktopVector> {
 template <>
 struct ParamTraits<webrtc::DesktopSize> {
   typedef webrtc::DesktopSize param_type;
-  static void GetSize(base::PickleSizer* s, const param_type& p);
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
@@ -41,7 +45,6 @@ struct ParamTraits<webrtc::DesktopSize> {
 template <>
 struct ParamTraits<webrtc::DesktopRect> {
   typedef webrtc::DesktopRect param_type;
-  static void GetSize(base::PickleSizer* s, const param_type& p);
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
@@ -70,9 +73,8 @@ struct ParamTraits<remoting::ScreenResolution> {
 };
 
 template <>
-struct ParamTraits<net::IPAddress> {
-  typedef net::IPAddress param_type;
-  static void GetSize(base::PickleSizer* s, const param_type& p);
+struct ParamTraits<remoting::DesktopEnvironmentOptions> {
+  typedef remoting::DesktopEnvironmentOptions param_type;
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
@@ -81,9 +83,68 @@ struct ParamTraits<net::IPAddress> {
 };
 
 template <>
-struct ParamTraits<net::IPEndPoint> {
-  typedef net::IPEndPoint param_type;
-  static void GetSize(base::PickleSizer* s, const param_type& p);
+struct ParamTraits<remoting::protocol::ProcessResourceUsage> {
+  typedef remoting::protocol::ProcessResourceUsage param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* p);
+  static void Log(const param_type& p, std::string* l);
+};
+
+template <>
+struct ParamTraits<remoting::protocol::AggregatedProcessResourceUsage> {
+  typedef remoting::protocol::AggregatedProcessResourceUsage param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* p);
+  static void Log(const param_type& p, std::string* l);
+};
+
+template <>
+struct ParamTraits<remoting::protocol::ActionRequest> {
+  typedef remoting::protocol::ActionRequest param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* p);
+  static void Log(const param_type& p, std::string* l);
+};
+
+template <>
+struct ParamTraits<remoting::protocol::VideoLayout> {
+  typedef remoting::protocol::VideoLayout param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* p);
+  static void Log(const param_type& p, std::string* l);
+};
+
+template <>
+struct ParamTraits<remoting::protocol::FileTransfer_Error> {
+  typedef remoting::protocol::FileTransfer_Error param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* p);
+  static void Log(const param_type& p, std::string* l);
+};
+
+template <>
+struct ParamTraits<remoting::Monostate> {
+  typedef remoting::Monostate param_type;
+  static void Write(base::Pickle* m, const param_type& p);
+  static bool Read(const base::Pickle* m,
+                   base::PickleIterator* iter,
+                   param_type* p);
+  static void Log(const param_type& p, std::string* l);
+};
+
+template <typename SuccessType, typename ErrorType>
+struct ParamTraits<remoting::Result<SuccessType, ErrorType>> {
+  typedef remoting::Result<SuccessType, ErrorType> param_type;
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,

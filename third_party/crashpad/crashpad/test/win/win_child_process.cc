@@ -24,18 +24,18 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "gtest/gtest.h"
+#include "test/test_paths.h"
 #include "util/stdlib/string_number_conversion.h"
 #include "util/string/split_string.h"
 #include "util/win/handle.h"
 #include "util/win/scoped_local_alloc.h"
-#include "test/paths.h"
 
 namespace crashpad {
 namespace test {
 
 namespace {
 
-const char kIsMultiprocessChild[] = "--is-multiprocess-child";
+constexpr char kIsMultiprocessChild[] = "--is-multiprocess-child";
 
 bool GetSwitch(const char* switch_name, std::string* value) {
   int num_args;
@@ -70,7 +70,7 @@ ScopedKernelHANDLE LaunchCommandLine(wchar_t* command_line) {
   startup_info.hStdError = GetStdHandle(STD_ERROR_HANDLE);
   startup_info.dwFlags = STARTF_USESTDHANDLES;
   PROCESS_INFORMATION process_info;
-  if (!CreateProcess(Paths::Executable().value().c_str(),
+  if (!CreateProcess(TestPaths::Executable().value().c_str(),
                      &command_line[0],  // This cannot be constant, per MSDN.
                      nullptr,
                      nullptr,
@@ -142,7 +142,7 @@ WinChildProcess::WinChildProcess() {
   // the parent and so are open and have the same value as in the parent. The
   // values are passed to the child on the command line.
   std::string left, right;
-  CHECK(SplitString(switch_value, '|', &left, &right));
+  CHECK(SplitStringFirst(switch_value, '|', &left, &right));
 
   // left and right were formatted as 0x%x, so they need to be converted as
   // unsigned ints.
@@ -182,17 +182,20 @@ std::unique_ptr<WinChildProcess::Handles> WinChildProcess::Launch() {
   }
 
   // Build a command line for the child process that tells it only to run the
-  // current test, and to pass down the values of the pipe handles.
+  // current test, and to pass down the values of the pipe handles. Use
+  // --gtest_also_run_disabled_tests because the test may be DISABLED_, but if
+  // it managed to run in the parent, disabled tests must be running.
   const ::testing::TestInfo* const test_info =
       ::testing::UnitTest::GetInstance()->current_test_info();
   std::wstring command_line =
-      Paths::Executable().value() + L" " +
-      base::UTF8ToUTF16(base::StringPrintf("--gtest_filter=%s.%s %s=0x%x|0x%x",
-                                           test_info->test_case_name(),
-                                           test_info->name(),
-                                           kIsMultiprocessChild,
-                                           HandleToInt(write_for_child.get()),
-                                           HandleToInt(read_for_child.get())));
+      TestPaths::Executable().value() +
+      base::UTF8ToUTF16(base::StringPrintf(
+          " --gtest_filter=%s.%s %s=0x%x|0x%x --gtest_also_run_disabled_tests",
+          test_info->test_case_name(),
+          test_info->name(),
+          kIsMultiprocessChild,
+          HandleToInt(write_for_child.get()),
+          HandleToInt(read_for_child.get())));
 
   // Command-line buffer cannot be constant, per CreateProcess signature.
   handles_for_parent->process = LaunchCommandLine(&command_line[0]);
@@ -203,7 +206,7 @@ std::unique_ptr<WinChildProcess::Handles> WinChildProcess::Launch() {
   // immediately, and test code expects process initialization to have
   // completed so it can, for example, read the process memory.
   char c;
-  if (!LoggingReadFile(handles_for_parent->read.get(), &c, sizeof(c))) {
+  if (!LoggingReadFileExactly(handles_for_parent->read.get(), &c, sizeof(c))) {
     ADD_FAILURE() << "LoggedReadFile";
     return std::unique_ptr<Handles>();
   }
@@ -213,7 +216,7 @@ std::unique_ptr<WinChildProcess::Handles> WinChildProcess::Launch() {
     return std::unique_ptr<Handles>();
   }
 
-  return std::move(handles_for_parent);
+  return handles_for_parent;
 }
 
 FileHandle WinChildProcess::ReadPipeHandle() const {

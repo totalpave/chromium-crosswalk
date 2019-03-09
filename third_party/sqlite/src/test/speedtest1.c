@@ -7,7 +7,7 @@ static const char zHelp[] =
   "Usage: %s [--options] DATABASE\n"
   "Options:\n"
   "  --autovacuum        Enable AUTOVACUUM mode\n"
-  "  --cachesize N       Set the cache size to N\n" 
+  "  --cachesize N       Set the cache size to N\n"
   "  --exclusive         Enable locking_mode=EXCLUSIVE\n"
   "  --explain           Like --sqlonly but with added EXPLAIN keywords\n"
   "  --heap SZ MIN       Memory allocator uses SZ bytes & min allocation MIN\n"
@@ -15,6 +15,7 @@ static const char zHelp[] =
   "  --journal M         Set the journal_mode to M\n"
   "  --key KEY           Set the encryption key to KEY\n"
   "  --lookaside N SZ    Configure lookaside for N slots of SZ bytes each\n"
+  "  --mmap SZ           MMAP the first SZ bytes of the database file\n"
   "  --multithread       Set multithreaded mode\n"
   "  --nomemstat         Disable memory statistics\n"
   "  --nosync            Set PRAGMA synchronous=OFF\n"
@@ -22,15 +23,16 @@ static const char zHelp[] =
   "  --pagesize N        Set the page size to N\n"
   "  --pcache N SZ       Configure N pages of pagecache each of size SZ bytes\n"
   "  --primarykey        Use PRIMARY KEY instead of UNIQUE where appropriate\n"
+  "  --repeat N          Repeat each SELECT N times (default: 1)\n"
   "  --reprepare         Reprepare each statement upon every invocation\n"
-  "  --scratch N SZ      Configure scratch memory for N slots of SZ bytes each\n"
   "  --serialized        Set serialized threading mode\n"
   "  --singlethread      Set single-threaded mode - disables all mutexing\n"
   "  --sqlonly           No-op.  Only show the SQL that would have been run.\n"
   "  --shrink-memory     Invoke sqlite3_db_release_memory() frequently.\n"
   "  --size N            Relative test size.  Default=100\n"
   "  --stats             Show statistics at the end\n"
-  "  --testset T         Run test-set T\n"
+  "  --temp N            N from 0 to 9.  0: no temp table. 9: all temp tables\n"
+  "  --testset T         Run test-set T (main, cte, rtree, orm, fp, debug)\n"
   "  --trace             Turn on SQL tracing\n"
   "  --threads N         Use up to N threads for sorting\n"
   "  --utf16be           Set text encoding to UTF-16BE\n"
@@ -47,14 +49,16 @@ static const char zHelp[] =
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#ifndef _WIN32
+# include <unistd.h>
+#else
+# include <io.h>
+#endif
 #define ISSPACE(X) isspace((unsigned char)(X))
 #define ISDIGIT(X) isdigit((unsigned char)(X))
 
 #if SQLITE_VERSION_NUMBER<3005000
 # define sqlite3_int64 sqlite_int64
-#endif
-#ifdef SQLITE_ENABLE_RBU
-# include "sqlite3rbu.h"
 #endif
 
 /* All global state is held in this structure */
@@ -69,7 +73,9 @@ static struct Global {
   int bExplain;              /* Print SQL with EXPLAIN prefix */
   int bVerify;               /* Try to verify that results are correct */
   int bMemShrink;            /* Call sqlite3_db_release_memory() often */
+  int eTemp;                 /* 0: no TEMP.  9: always TEMP. */
   int szTest;                /* Scale factor for test iterations */
+  int nRepeat;               /* Repeat selects this many times */
   const char *zWR;           /* Might be WITHOUT ROWID */
   const char *zNN;           /* Might be NOT NULL */
   const char *zPK;           /* Might be UNIQUE or PRIMARY KEY */
@@ -77,6 +83,12 @@ static struct Global {
   int nResult;               /* Size of the current result */
   char zResult[3000];        /* Text of the current result */
 } g;
+
+/* Return " TEMP" or "", as appropriate for creating a table.
+*/
+static const char *isTemp(int N){
+  return g.eTemp>=N ? " TEMP" : "";
+}
 
 
 /* Print an error message and exit */
@@ -211,8 +223,8 @@ unsigned roundup_allones(unsigned limit){
 **     speedtest1_numbername(123)   ->  "one hundred twenty three"
 */
 int speedtest1_numbername(unsigned int n, char *zOut, int nOut){
-  static const char *ones[] = {  "zero", "one", "two", "three", "four", "five", 
-                  "six", "seven", "eight", "nine", "ten", "eleven", "twelve", 
+  static const char *ones[] = {  "zero", "one", "two", "three", "four", "five",
+                  "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
                   "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
                   "eighteen", "nineteen" };
   static const char *tens[] = { "", "ten", "twenty", "thirty", "forty",
@@ -321,7 +333,7 @@ static void printSql(const char *zSql){
   if( g.bExplain ) printf("EXPLAIN ");
   printf("%.*s;\n", n, zSql);
   if( g.bExplain
-#if SQLITE_VERSION_NUMBER>=3007017 
+#if SQLITE_VERSION_NUMBER>=3007017
    && ( sqlite3_strglob("CREATE *", zSql)==0
      || sqlite3_strglob("DROP *", zSql)==0
      || sqlite3_strglob("ALTER *", zSql)==0
@@ -413,12 +425,14 @@ void speedtest1_run(void){
   speedtest1_shrink_memory();
 }
 
+#ifndef SQLITE_OMIT_DEPRECATED
 /* The sqlite3_trace() callback function */
 static void traceCallback(void *NotUsed, const char *zSql){
   int n = (int)strlen(zSql);
   while( n>0 && (zSql[n-1]==';' || ISSPACE(zSql[n-1])) ) n--;
   fprintf(stderr,"%.*s;\n", n, zSql);
 }
+#endif /* SQLITE_OMIT_DEPRECATED */
 
 /* Substitute random() function that gives the same random
 ** sequence on each run, for repeatability. */
@@ -443,6 +457,68 @@ static int est_square_root(int x){
   return y0;
 }
 
+
+#if SQLITE_VERSION_NUMBER<3005004
+/*
+** An implementation of group_concat().  Used only when testing older
+** versions of SQLite that lack the built-in group_concat().
+*/
+struct groupConcat {
+  char *z;
+  int nAlloc;
+  int nUsed;
+};
+static void groupAppend(struct groupConcat *p, const char *z, int n){
+  if( p->nUsed+n >= p->nAlloc ){
+    int n2 = (p->nAlloc+n+1)*2;
+    char *z2 = sqlite3_realloc(p->z, n2);
+    if( z2==0 ) return;
+    p->z = z2;
+    p->nAlloc = n2;
+  }
+  memcpy(p->z+p->nUsed, z, n);
+  p->nUsed += n;
+}
+static void groupStep(
+  sqlite3_context *context,
+  int argc,
+  sqlite3_value **argv
+){
+  const char *zVal;
+  struct groupConcat *p;
+  const char *zSep;
+  int nVal, nSep;
+  assert( argc==1 || argc==2 );
+  if( sqlite3_value_type(argv[0])==SQLITE_NULL ) return;
+  p= (struct groupConcat*)sqlite3_aggregate_context(context, sizeof(*p));
+
+  if( p ){
+    int firstTerm = p->nUsed==0;
+    if( !firstTerm ){
+      if( argc==2 ){
+        zSep = (char*)sqlite3_value_text(argv[1]);
+        nSep = sqlite3_value_bytes(argv[1]);
+      }else{
+        zSep = ",";
+        nSep = 1;
+      }
+      if( nSep ) groupAppend(p, zSep, nSep);
+    }
+    zVal = (char*)sqlite3_value_text(argv[0]);
+    nVal = sqlite3_value_bytes(argv[0]);
+    if( zVal ) groupAppend(p, zVal, nVal);
+  }
+}
+static void groupFinal(sqlite3_context *context){
+  struct groupConcat *p;
+  p = sqlite3_aggregate_context(context, 0);
+  if( p && p->z ){
+    p->z[p->nUsed] = 0;
+    sqlite3_result_text(context, p->z, p->nUsed, sqlite3_free);
+  }
+}
+#endif
+
 /*
 ** The main and default testset
 */
@@ -451,16 +527,17 @@ void testset_main(void){
   int n;                        /* iteration count */
   int sz;                       /* Size of the tables */
   int maxb;                     /* Maximum swizzled value */
-  unsigned x1, x2;              /* Parameters */
-  int len;                      /* Length of the zNum[] string */
+  unsigned x1 = 0, x2 = 0;      /* Parameters */
+  int len = 0;                  /* Length of the zNum[] string */
   char zNum[2000];              /* A number name */
 
   sz = n = g.szTest*500;
+  zNum[0] = 0;
   maxb = roundup_allones(sz);
   speedtest1_begin_test(100, "%d INSERTs into table with no index", n);
   speedtest1_exec("BEGIN");
-  speedtest1_exec("CREATE TABLE t1(a INTEGER %s, b INTEGER %s, c TEXT %s);",
-                  g.zNN, g.zNN, g.zNN);
+  speedtest1_exec("CREATE%s TABLE t1(a INTEGER %s, b INTEGER %s, c TEXT %s);",
+                  isTemp(9), g.zNN, g.zNN, g.zNN);
   speedtest1_prepare("INSERT INTO t1 VALUES(?1,?2,?3); --  %d times", n);
   for(i=1; i<=n; i++){
     x1 = swizzle(i,maxb);
@@ -477,8 +554,9 @@ void testset_main(void){
   n = sz;
   speedtest1_begin_test(110, "%d ordered INSERTS with one index/PK", n);
   speedtest1_exec("BEGIN");
-  speedtest1_exec("CREATE TABLE t2(a INTEGER %s %s, b INTEGER %s, c TEXT %s) %s",
-                   g.zNN, g.zPK, g.zNN, g.zNN, g.zWR);
+  speedtest1_exec(
+     "CREATE%s TABLE t2(a INTEGER %s %s, b INTEGER %s, c TEXT %s) %s",
+     isTemp(5), g.zNN, g.zPK, g.zNN, g.zNN, g.zWR);
   speedtest1_prepare("INSERT INTO t2 VALUES(?1,?2,?3); -- %d times", n);
   for(i=1; i<=n; i++){
     x1 = swizzle(i,maxb);
@@ -495,8 +573,9 @@ void testset_main(void){
   n = sz;
   speedtest1_begin_test(120, "%d unordered INSERTS with one index/PK", n);
   speedtest1_exec("BEGIN");
-  speedtest1_exec("CREATE TABLE t3(a INTEGER %s %s, b INTEGER %s, c TEXT %s) %s",
-                   g.zNN, g.zPK, g.zNN, g.zNN, g.zWR);
+  speedtest1_exec(
+      "CREATE%s TABLE t3(a INTEGER %s %s, b INTEGER %s, c TEXT %s) %s",
+      isTemp(3), g.zNN, g.zPK, g.zNN, g.zNN, g.zWR);
   speedtest1_prepare("INSERT INTO t3 VALUES(?1,?2,?3); -- %d times", n);
   for(i=1; i<=n; i++){
     x1 = swizzle(i,maxb);
@@ -509,17 +588,23 @@ void testset_main(void){
   speedtest1_exec("COMMIT");
   speedtest1_end_test();
 
+#if SQLITE_VERSION_NUMBER<3005004
+  sqlite3_create_function(g.db, "group_concat", 1, SQLITE_UTF8, 0,
+                          0, groupStep, groupFinal);
+#endif
 
   n = 25;
   speedtest1_begin_test(130, "%d SELECTS, numeric BETWEEN, unindexed", n);
   speedtest1_exec("BEGIN");
   speedtest1_prepare(
-    "SELECT count(*), avg(b), sum(length(c)) FROM t1\n"
+    "SELECT count(*), avg(b), sum(length(c)), group_concat(c) FROM t1\n"
     " WHERE b BETWEEN ?1 AND ?2; -- %d times", n
   );
   for(i=1; i<=n; i++){
-    x1 = speedtest1_random()%maxb;
-    x2 = speedtest1_random()%10 + sz/5000 + x1;
+    if( (i-1)%g.nRepeat==0 ){
+      x1 = speedtest1_random()%maxb;
+      x2 = speedtest1_random()%10 + sz/5000 + x1;
+    }
     sqlite3_bind_int(g.pStmt, 1, x1);
     sqlite3_bind_int(g.pStmt, 2, x2);
     speedtest1_run();
@@ -532,16 +617,18 @@ void testset_main(void){
   speedtest1_begin_test(140, "%d SELECTS, LIKE, unindexed", n);
   speedtest1_exec("BEGIN");
   speedtest1_prepare(
-    "SELECT count(*), avg(b), sum(length(c)) FROM t1\n"
+    "SELECT count(*), avg(b), sum(length(c)), group_concat(c) FROM t1\n"
     " WHERE c LIKE ?1; -- %d times", n
   );
   for(i=1; i<=n; i++){
-    x1 = speedtest1_random()%maxb;
-    zNum[0] = '%';
-    len = speedtest1_numbername(i, zNum+1, sizeof(zNum)-2);
-    zNum[len] = '%';
-    zNum[len+1] = 0;
-    sqlite3_bind_text(g.pStmt, 1, zNum, len, SQLITE_STATIC);
+    if( (i-1)%g.nRepeat==0 ){
+      x1 = speedtest1_random()%maxb;
+      zNum[0] = '%';
+      len = speedtest1_numbername(i, zNum+1, sizeof(zNum)-2);
+      zNum[len] = '%';
+      zNum[len+1] = 0;
+    }
+    sqlite3_bind_text(g.pStmt, 1, zNum, len+1, SQLITE_STATIC);
     speedtest1_run();
   }
   speedtest1_exec("COMMIT");
@@ -556,12 +643,14 @@ void testset_main(void){
     " ORDER BY a; -- %d times", n
   );
   for(i=1; i<=n; i++){
-    x1 = speedtest1_random()%maxb;
-    zNum[0] = '%';
-    len = speedtest1_numbername(i, zNum+1, sizeof(zNum)-2);
-    zNum[len] = '%';
-    zNum[len+1] = 0;
-    sqlite3_bind_text(g.pStmt, 1, zNum, len, SQLITE_STATIC);
+    if( (i-1)%g.nRepeat==0 ){
+      x1 = speedtest1_random()%maxb;
+      zNum[0] = '%';
+      len = speedtest1_numbername(i, zNum+1, sizeof(zNum)-2);
+      zNum[len] = '%';
+      zNum[len+1] = 0;
+    }
+    sqlite3_bind_text(g.pStmt, 1, zNum, len+1, SQLITE_STATIC);
     speedtest1_run();
   }
   speedtest1_exec("COMMIT");
@@ -575,12 +664,14 @@ void testset_main(void){
     " ORDER BY a LIMIT 10; -- %d times", n
   );
   for(i=1; i<=n; i++){
-    x1 = speedtest1_random()%maxb;
-    zNum[0] = '%';
-    len = speedtest1_numbername(i, zNum+1, sizeof(zNum)-2);
-    zNum[len] = '%';
-    zNum[len+1] = 0;
-    sqlite3_bind_text(g.pStmt, 1, zNum, len, SQLITE_STATIC);
+    if( (i-1)%g.nRepeat==0 ){
+      x1 = speedtest1_random()%maxb;
+      zNum[0] = '%';
+      len = speedtest1_numbername(i, zNum+1, sizeof(zNum)-2);
+      zNum[len] = '%';
+      zNum[len+1] = 0;
+    }
+    sqlite3_bind_text(g.pStmt, 1, zNum, len+1, SQLITE_STATIC);
     speedtest1_run();
   }
   speedtest1_exec("COMMIT");
@@ -602,12 +693,14 @@ void testset_main(void){
   speedtest1_begin_test(160, "%d SELECTS, numeric BETWEEN, indexed", n);
   speedtest1_exec("BEGIN");
   speedtest1_prepare(
-    "SELECT count(*), avg(b), sum(length(c)) FROM t1\n"
+    "SELECT count(*), avg(b), sum(length(c)), group_concat(a) FROM t1\n"
     " WHERE b BETWEEN ?1 AND ?2; -- %d times", n
   );
   for(i=1; i<=n; i++){
-    x1 = speedtest1_random()%maxb;
-    x2 = speedtest1_random()%10 + sz/5000 + x1;
+    if( (i-1)%g.nRepeat==0 ){
+      x1 = speedtest1_random()%maxb;
+      x2 = speedtest1_random()%10 + sz/5000 + x1;
+    }
     sqlite3_bind_int(g.pStmt, 1, x1);
     sqlite3_bind_int(g.pStmt, 2, x2);
     speedtest1_run();
@@ -620,12 +713,14 @@ void testset_main(void){
   speedtest1_begin_test(161, "%d SELECTS, numeric BETWEEN, PK", n);
   speedtest1_exec("BEGIN");
   speedtest1_prepare(
-    "SELECT count(*), avg(b), sum(length(c)) FROM t2\n"
+    "SELECT count(*), avg(b), sum(length(c)), group_concat(a) FROM t2\n"
     " WHERE a BETWEEN ?1 AND ?2; -- %d times", n
   );
   for(i=1; i<=n; i++){
-    x1 = speedtest1_random()%maxb;
-    x2 = speedtest1_random()%10 + sz/5000 + x1;
+    if( (i-1)%g.nRepeat==0 ){
+      x1 = speedtest1_random()%maxb;
+      x2 = speedtest1_random()%10 + sz/5000 + x1;
+    }
     sqlite3_bind_int(g.pStmt, 1, x1);
     sqlite3_bind_int(g.pStmt, 2, x2);
     speedtest1_run();
@@ -638,12 +733,14 @@ void testset_main(void){
   speedtest1_begin_test(170, "%d SELECTS, text BETWEEN, indexed", n);
   speedtest1_exec("BEGIN");
   speedtest1_prepare(
-    "SELECT count(*), avg(b), sum(length(c)) FROM t1\n"
+    "SELECT count(*), avg(b), sum(length(c)), group_concat(a) FROM t1\n"
     " WHERE c BETWEEN ?1 AND (?1||'~'); -- %d times", n
   );
   for(i=1; i<=n; i++){
-    x1 = swizzle(i, maxb);
-    len = speedtest1_numbername(x1, zNum, sizeof(zNum)-1);
+    if( (i-1)%g.nRepeat==0 ){
+      x1 = swizzle(i, maxb);
+      len = speedtest1_numbername(x1, zNum, sizeof(zNum)-1);
+    }
     sqlite3_bind_text(g.pStmt, 1, zNum, len, SQLITE_STATIC);
     speedtest1_run();
   }
@@ -654,12 +751,12 @@ void testset_main(void){
   speedtest1_begin_test(180, "%d INSERTS with three indexes", n);
   speedtest1_exec("BEGIN");
   speedtest1_exec(
-    "CREATE TABLE t4(\n"
+    "CREATE%s TABLE t4(\n"
     "  a INTEGER %s %s,\n"
     "  b INTEGER %s,\n"
     "  c TEXT %s\n"
     ") %s",
-    g.zNN, g.zPK, g.zNN, g.zNN, g.zWR);
+    isTemp(1), g.zNN, g.zPK, g.zNN, g.zNN, g.zWR);
   speedtest1_exec("CREATE INDEX t4b ON t4(b)");
   speedtest1_exec("CREATE INDEX t4c ON t4(c)");
   speedtest1_exec("INSERT INTO t4 SELECT * FROM t1");
@@ -801,6 +898,65 @@ void testset_main(void){
   sqlite3_bind_int(g.pStmt, 1, est_square_root(g.szTest)*50);
   speedtest1_run();
   speedtest1_end_test();
+
+  sz = n = g.szTest*700;
+  zNum[0] = 0;
+  maxb = roundup_allones(sz/3);
+  speedtest1_begin_test(400, "%d REPLACE ops on an IPK", n);
+  speedtest1_exec("BEGIN");
+  speedtest1_exec("CREATE%s TABLE t5(a INTEGER PRIMARY KEY, b %s);",
+                  isTemp(9), g.zNN);
+  speedtest1_prepare("REPLACE INTO t5 VALUES(?1,?2); --  %d times",n);
+  for(i=1; i<=n; i++){
+    x1 = swizzle(i,maxb);
+    speedtest1_numbername(i, zNum, sizeof(zNum));
+    sqlite3_bind_int(g.pStmt, 1, (sqlite3_int64)x1);
+    sqlite3_bind_text(g.pStmt, 2, zNum, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_exec("COMMIT");
+  speedtest1_end_test();
+  speedtest1_begin_test(410, "%d SELECTS on an IPK", n);
+  speedtest1_prepare("SELECT b FROM t5 WHERE a=?1; --  %d times",n);
+  for(i=1; i<=n; i++){
+    x1 = swizzle(i,maxb);
+    sqlite3_bind_int(g.pStmt, 1, (sqlite3_int64)x1);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+
+  sz = n = g.szTest*700;
+  zNum[0] = 0;
+  maxb = roundup_allones(sz/3);
+  speedtest1_begin_test(500, "%d REPLACE on TEXT PK", n);
+  speedtest1_exec("BEGIN");
+  speedtest1_exec("CREATE%s TABLE t6(a TEXT PRIMARY KEY, b %s)%s;",
+                  isTemp(9), g.zNN,
+                  sqlite3_libversion_number()>=3008002 ? "WITHOUT ROWID" : "");
+  speedtest1_prepare("REPLACE INTO t6 VALUES(?1,?2); --  %d times",n);
+  for(i=1; i<=n; i++){
+    x1 = swizzle(i,maxb);
+    speedtest1_numbername(x1, zNum, sizeof(zNum));
+    sqlite3_bind_int(g.pStmt, 2, i);
+    sqlite3_bind_text(g.pStmt, 1, zNum, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_exec("COMMIT");
+  speedtest1_end_test();
+  speedtest1_begin_test(510, "%d SELECTS on a TEXT PK", n);
+  speedtest1_prepare("SELECT b FROM t6 WHERE a=?1; --  %d times",n);
+  for(i=1; i<=n; i++){
+    x1 = swizzle(i,maxb);
+    speedtest1_numbername(x1, zNum, sizeof(zNum));
+    sqlite3_bind_text(g.pStmt, 1, zNum, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+  speedtest1_begin_test(520, "%d SELECT DISTINCT", n);
+  speedtest1_exec("SELECT DISTINCT b FROM t5;");
+  speedtest1_exec("SELECT DISTINCT b FROM t6;");
+  speedtest1_end_test();
+
 
   speedtest1_begin_test(980, "PRAGMA integrity_check");
   speedtest1_exec("PRAGMA integrity_check");
@@ -964,7 +1120,77 @@ void testset_cte(void){
   );
   speedtest1_run();
   speedtest1_end_test();
+}
 
+/*
+** Compute a pseudo-random floating point ascii number.
+*/
+void speedtest1_random_ascii_fp(char *zFP){
+  int x = speedtest1_random();
+  int y = speedtest1_random();
+  int z;
+  z = y%10;
+  if( z<0 ) z = -z;
+  y /= 10;
+  sqlite3_snprintf(100,zFP,"%d.%de%d",y,z,x%200);
+}
+
+/*
+** A testset for floating-point numbers.
+*/
+void testset_fp(void){
+  int n;
+  int i;
+  char zFP1[100];
+  char zFP2[100];
+
+  n = g.szTest*5000;
+  speedtest1_begin_test(100, "Fill a table with %d FP values", n*2);
+  speedtest1_exec("BEGIN");
+  speedtest1_exec("CREATE%s TABLE t1(a REAL %s, b REAL %s);",
+                  isTemp(1), g.zNN, g.zNN);
+  speedtest1_prepare("INSERT INTO t1 VALUES(?1,?2); -- %d times", n);
+  for(i=1; i<=n; i++){
+    speedtest1_random_ascii_fp(zFP1);
+    speedtest1_random_ascii_fp(zFP2);
+    sqlite3_bind_text(g.pStmt, 1, zFP1, -1, SQLITE_STATIC);
+    sqlite3_bind_text(g.pStmt, 2, zFP2, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_exec("COMMIT");
+  speedtest1_end_test();
+
+  n = g.szTest/25 + 2;
+  speedtest1_begin_test(110, "%d range queries", n);
+  speedtest1_prepare("SELECT sum(b) FROM t1 WHERE a BETWEEN ?1 AND ?2");
+  for(i=1; i<=n; i++){
+    speedtest1_random_ascii_fp(zFP1);
+    speedtest1_random_ascii_fp(zFP2);
+    sqlite3_bind_text(g.pStmt, 1, zFP1, -1, SQLITE_STATIC);
+    sqlite3_bind_text(g.pStmt, 2, zFP2, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+
+  speedtest1_begin_test(120, "CREATE INDEX three times");
+  speedtest1_exec("BEGIN;");
+  speedtest1_exec("CREATE INDEX t1a ON t1(a);");
+  speedtest1_exec("CREATE INDEX t1b ON t1(b);");
+  speedtest1_exec("CREATE INDEX t1ab ON t1(a,b);");
+  speedtest1_exec("COMMIT;");
+  speedtest1_end_test();
+
+  n = g.szTest/3 + 2;
+  speedtest1_begin_test(130, "%d indexed range queries", n);
+  speedtest1_prepare("SELECT sum(b) FROM t1 WHERE a BETWEEN ?1 AND ?2");
+  for(i=1; i<=n; i++){
+    speedtest1_random_ascii_fp(zFP1);
+    speedtest1_random_ascii_fp(zFP2);
+    sqlite3_bind_text(g.pStmt, 1, zFP1, -1, SQLITE_STATIC);
+    sqlite3_bind_text(g.pStmt, 2, zFP2, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
 }
 
 #ifdef SQLITE_ENABLE_RTREE
@@ -1021,10 +1247,11 @@ void testset_rtree(int p1, int p2){
   unsigned mxCoord;
   unsigned x0, x1, y0, y1, z0, z1;
   unsigned iStep;
-  int *aCheck = sqlite3_malloc( sizeof(int)*g.szTest*100 );
+  unsigned mxRowid;
+  int *aCheck = sqlite3_malloc( sizeof(int)*g.szTest*500 );
 
   mxCoord = 15000;
-  n = g.szTest*100;
+  mxRowid = n = g.szTest*500;
   speedtest1_begin_test(100, "%d INSERTs into an r-tree", n);
   speedtest1_exec("BEGIN");
   speedtest1_exec("CREATE VIRTUAL TABLE rt1 USING rtree(id,x0,x1,y0,y1,z0,z1)");
@@ -1051,7 +1278,7 @@ void testset_rtree(int p1, int p2){
   speedtest1_exec("INSERT INTO t1 SELECT * FROM rt1");
   speedtest1_end_test();
 
-  n = g.szTest*20;
+  n = g.szTest*200;
   speedtest1_begin_test(110, "%d one-dimensional intersect slice queries", n);
   speedtest1_prepare("SELECT count(*) FROM rt1 WHERE x0>=?1 AND x1<=?2");
   iStep = mxCoord/n;
@@ -1064,7 +1291,7 @@ void testset_rtree(int p1, int p2){
   speedtest1_end_test();
 
   if( g.bVerify ){
-    n = g.szTest*20;
+    n = g.szTest*200;
     speedtest1_begin_test(111, "Verify result from 1-D intersect slice queries");
     speedtest1_prepare("SELECT count(*) FROM t1 WHERE x0>=?1 AND x1<=?2");
     iStep = mxCoord/n;
@@ -1079,8 +1306,8 @@ void testset_rtree(int p1, int p2){
     }
     speedtest1_end_test();
   }
-  
-  n = g.szTest*20;
+
+  n = g.szTest*200;
   speedtest1_begin_test(120, "%d one-dimensional overlap slice queries", n);
   speedtest1_prepare("SELECT count(*) FROM rt1 WHERE y1>=?1 AND y0<=?2");
   iStep = mxCoord/n;
@@ -1093,7 +1320,7 @@ void testset_rtree(int p1, int p2){
   speedtest1_end_test();
 
   if( g.bVerify ){
-    n = g.szTest*20;
+    n = g.szTest*200;
     speedtest1_begin_test(121, "Verify result from 1-D overlap slice queries");
     speedtest1_prepare("SELECT count(*) FROM t1 WHERE y1>=?1 AND y0<=?2");
     iStep = mxCoord/n;
@@ -1108,9 +1335,9 @@ void testset_rtree(int p1, int p2){
     }
     speedtest1_end_test();
   }
-  
 
-  n = g.szTest*20;
+
+  n = g.szTest*200;
   speedtest1_begin_test(125, "%d custom geometry callback queries", n);
   sqlite3_rtree_geometry_callback(g.db, "xslice", xsliceGeometryCallback, 0);
   speedtest1_prepare("SELECT count(*) FROM rt1 WHERE id MATCH xslice(?1,?2)");
@@ -1126,7 +1353,7 @@ void testset_rtree(int p1, int p2){
   }
   speedtest1_end_test();
 
-  n = g.szTest*80;
+  n = g.szTest*400;
   speedtest1_begin_test(130, "%d three-dimensional intersect box queries", n);
   speedtest1_prepare("SELECT count(*) FROM rt1 WHERE x1>=?1 AND x0<=?2"
                      " AND y1>=?1 AND y0<=?2 AND z1>=?1 AND z0<=?2");
@@ -1139,7 +1366,7 @@ void testset_rtree(int p1, int p2){
   }
   speedtest1_end_test();
 
-  n = g.szTest*100;
+  n = g.szTest*500;
   speedtest1_begin_test(140, "%d rowid queries", n);
   speedtest1_prepare("SELECT * FROM rt1 WHERE id=?1");
   for(i=1; i<=n; i++){
@@ -1147,8 +1374,524 @@ void testset_rtree(int p1, int p2){
     speedtest1_run();
   }
   speedtest1_end_test();
+
+  n = g.szTest*50;
+  speedtest1_begin_test(150, "%d UPDATEs using rowid", n);
+  speedtest1_prepare("UPDATE rt1 SET x0=x0+100, x1=x1+100 WHERE id=?1");
+  for(i=1; i<=n; i++){
+    sqlite3_bind_int(g.pStmt, 1, (i*251)%mxRowid + 1);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+
+  n = g.szTest*5;
+  speedtest1_begin_test(155, "%d UPDATEs using one-dimensional overlap", n);
+  speedtest1_prepare("UPDATE rt1 SET x0=x0-100, x1=x1-100"
+                     " WHERE y1>=?1 AND y0<=?1+5");
+  iStep = mxCoord/n;
+  for(i=0; i<n; i++){
+    sqlite3_bind_int(g.pStmt, 1, i*iStep);
+    speedtest1_run();
+    aCheck[i] = atoi(g.zResult);
+  }
+  speedtest1_end_test();
+
+  n = g.szTest*50;
+  speedtest1_begin_test(160, "%d DELETEs using rowid", n);
+  speedtest1_prepare("DELETE FROM rt1 WHERE id=?1");
+  for(i=1; i<=n; i++){
+    sqlite3_bind_int(g.pStmt, 1, (i*257)%mxRowid + 1);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+
+
+  n = g.szTest*5;
+  speedtest1_begin_test(165, "%d DELETEs using one-dimensional overlap", n);
+  speedtest1_prepare("DELETE FROM rt1 WHERE y1>=?1 AND y0<=?1+5");
+  iStep = mxCoord/n;
+  for(i=0; i<n; i++){
+    sqlite3_bind_int(g.pStmt, 1, i*iStep);
+    speedtest1_run();
+    aCheck[i] = atoi(g.zResult);
+  }
+  speedtest1_end_test();
+
+  speedtest1_begin_test(170, "Restore deleted entries using INSERT OR IGNORE");
+  speedtest1_exec("INSERT OR IGNORE INTO rt1 SELECT * FROM t1");
+  speedtest1_end_test();
 }
 #endif /* SQLITE_ENABLE_RTREE */
+
+/*
+** A testset that does key/value storage on tables with many columns.
+** This is the kind of workload generated by ORMs such as CoreData.
+*/
+void testset_orm(void){
+  unsigned i, j, n;
+  unsigned nRow;
+  unsigned x1, len;
+  char zNum[2000];              /* A number name */
+  static const char zType[] =   /* Types for all non-PK columns, in order */
+    "IBBIIITIVVITBTBFBFITTFBTBVBVIFTBBFITFFVBIFIVBVVVBTVTIBBFFIVIBTB"
+    "TVTTFTVTVFFIITIFBITFTTFFFVBIIBTTITFTFFVVVFIIITVBBVFFTVVB";
+
+  nRow = n = g.szTest*250;
+  speedtest1_begin_test(100, "Fill %d rows", n);
+  speedtest1_exec(
+    "BEGIN;"
+    "CREATE TABLE ZLOOKSLIKECOREDATA ("
+    "  ZPK INTEGER PRIMARY KEY,"
+    "  ZTERMFITTINGHOUSINGCOMMAND INTEGER,"
+    "  ZBRIEFGOBYDODGERHEIGHT BLOB,"
+    "  ZCAPABLETRIPDOORALMOND BLOB,"
+    "  ZDEPOSITPAIRCOLLEGECOMET INTEGER,"
+    "  ZFRAMEENTERSIMPLEMOUTH INTEGER,"
+    "  ZHOPEFULGATEHOLECHALK INTEGER,"
+    "  ZSLEEPYUSERGRANDBOWL TIMESTAMP,"
+    "  ZDEWPEACHCAREERCELERY INTEGER,"
+    "  ZHANGERLITHIUMDINNERMEET VARCHAR,"
+    "  ZCLUBRELEASELIZARDADVICE VARCHAR,"
+    "  ZCHARGECLICKHUMANEHIRE INTEGER,"
+    "  ZFINGERDUEPIZZAOPTION TIMESTAMP,"
+    "  ZFLYINGDOCTORTABLEMELODY BLOB,"
+    "  ZLONGFINLEAVEIMAGEOIL TIMESTAMP,"
+    "  ZFAMILYVISUALOWNERMATTER BLOB,"
+    "  ZGOLDYOUNGINITIALNOSE FLOAT,"
+    "  ZCAUSESALAMITERMCYAN BLOB,"
+    "  ZSPREADMOTORBISCUITBACON FLOAT,"
+    "  ZGIFTICEFISHGLUEHAIR INTEGER,"
+    "  ZNOTICEPEARPOLICYJUICE TIMESTAMP,"
+    "  ZBANKBUFFALORECOVERORBIT TIMESTAMP,"
+    "  ZLONGDIETESSAYNATURE FLOAT,"
+    "  ZACTIONRANGEELEGANTNEUTRON BLOB,"
+    "  ZCADETBRIGHTPLANETBANK TIMESTAMP,"
+    "  ZAIRFORGIVEHEADFROG BLOB,"
+    "  ZSHARKJUSTFRUITMOVIE VARCHAR,"
+    "  ZFARMERMORNINGMIRRORCONCERN BLOB,"
+    "  ZWOODPOETRYCOBBLERBENCH VARCHAR,"
+    "  ZHAFNIUMSCRIPTSALADMOTOR INTEGER,"
+    "  ZPROBLEMCLUBPOPOVERJELLY FLOAT,"
+    "  ZEIGHTLEADERWORKERMOST TIMESTAMP,"
+    "  ZGLASSRESERVEBARIUMMEAL BLOB,"
+    "  ZCLAMBITARUGULAFAJITA BLOB,"
+    "  ZDECADEJOYOUSWAVEHABIT FLOAT,"
+    "  ZCOMPANYSUMMERFIBERELF INTEGER,"
+    "  ZTREATTESTQUILLCHARGE TIMESTAMP,"
+    "  ZBROWBALANCEKEYCHOWDER FLOAT,"
+    "  ZPEACHCOPPERDINNERLAKE FLOAT,"
+    "  ZDRYWALLBEYONDBROWNBOWL VARCHAR,"
+    "  ZBELLYCRASHITEMLACK BLOB,"
+    "  ZTENNISCYCLEBILLOFFICER INTEGER,"
+    "  ZMALLEQUIPTHANKSGLUE FLOAT,"
+    "  ZMISSREPLYHUMANLIVING INTEGER,"
+    "  ZKIWIVISUALPRIDEAPPLE VARCHAR,"
+    "  ZWISHHITSKINMOTOR BLOB,"
+    "  ZCALMRACCOONPROGRAMDEBIT VARCHAR,"
+    "  ZSHINYASSISTLIVINGCRAB VARCHAR,"
+    "  ZRESOLVEWRISTWRAPAPPLE VARCHAR,"
+    "  ZAPPEALSIMPLESECONDHOUSING BLOB,"
+    "  ZCORNERANCHORTAPEDIVER TIMESTAMP,"
+    "  ZMEMORYREQUESTSOURCEBIG VARCHAR,"
+    "  ZTRYFACTKEEPMILK TIMESTAMP,"
+    "  ZDIVERPAINTLEATHEREASY INTEGER,"
+    "  ZSORTMISTYQUOTECABBAGE BLOB,"
+    "  ZTUNEGASBUFFALOCAPITAL BLOB,"
+    "  ZFILLSTOPLAWJOYFUL FLOAT,"
+    "  ZSTEELCAREFULPLATENUMBER FLOAT,"
+    "  ZGIVEVIVIDDIVINEMEANING INTEGER,"
+    "  ZTREATPACKFUTURECONVERT VARCHAR,"
+    "  ZCALMLYGEMFINISHEFFECT INTEGER,"
+    "  ZCABBAGESOCKEASEMINUTE BLOB,"
+    "  ZPLANETFAMILYPUREMEMORY TIMESTAMP,"
+    "  ZMERRYCRACKTRAINLEADER BLOB,"
+    "  ZMINORWAYPAPERCLASSY TIMESTAMP,"
+    "  ZEAGLELINEMINEMAIL VARCHAR,"
+    "  ZRESORTYARDGREENLET TIMESTAMP,"
+    "  ZYARDOREGANOVIVIDJEWEL TIMESTAMP,"
+    "  ZPURECAKEVIVIDNEATLY FLOAT,"
+    "  ZASKCONTACTMONITORFUN TIMESTAMP,"
+    "  ZMOVEWHOGAMMAINCH VARCHAR,"
+    "  ZLETTUCEBIRDMEETDEBATE TIMESTAMP,"
+    "  ZGENENATURALHEARINGKITE VARCHAR,"
+    "  ZMUFFINDRYERDRAWFORTUNE FLOAT,"
+    "  ZGRAYSURVEYWIRELOVE FLOAT,"
+    "  ZPLIERSPRINTASKOREGANO INTEGER,"
+    "  ZTRAVELDRIVERCONTESTLILY INTEGER,"
+    "  ZHUMORSPICESANDKIDNEY TIMESTAMP,"
+    "  ZARSENICSAMPLEWAITMUON INTEGER,"
+    "  ZLACEADDRESSGROUNDCAREFUL FLOAT,"
+    "  ZBAMBOOMESSWASABIEVENING BLOB,"
+    "  ZONERELEASEAVERAGENURSE INTEGER,"
+    "  ZRADIANTWHENTRYCARD TIMESTAMP,"
+    "  ZREWARDINSIDEMANGOINTENSE FLOAT,"
+    "  ZNEATSTEWPARTIRON TIMESTAMP,"
+    "  ZOUTSIDEPEAHENCOUNTICE TIMESTAMP,"
+    "  ZCREAMEVENINGLIPBRANCH FLOAT,"
+    "  ZWHALEMATHAVOCADOCOPPER FLOAT,"
+    "  ZLIFEUSELEAFYBELL FLOAT,"
+    "  ZWEALTHLINENGLEEFULDAY VARCHAR,"
+    "  ZFACEINVITETALKGOLD BLOB,"
+    "  ZWESTAMOUNTAFFECTHEARING INTEGER,"
+    "  ZDELAYOUTCOMEHORNAGENCY INTEGER,"
+    "  ZBIGTHINKCONVERTECONOMY BLOB,"
+    "  ZBASEGOUDAREGULARFORGIVE TIMESTAMP,"
+    "  ZPATTERNCLORINEGRANDCOLBY TIMESTAMP,"
+    "  ZCYANBASEFEEDADROIT INTEGER,"
+    "  ZCARRYFLOORMINNOWDRAGON TIMESTAMP,"
+    "  ZIMAGEPENCILOTHERBOTTOM FLOAT,"
+    "  ZXENONFLIGHTPALEAPPLE TIMESTAMP,"
+    "  ZHERRINGJOKEFEATUREHOPEFUL FLOAT,"
+    "  ZCAPYEARLYRIVETBRUSH FLOAT,"
+    "  ZAGEREEDFROGBASKET VARCHAR,"
+    "  ZUSUALBODYHALIBUTDIAMOND VARCHAR,"
+    "  ZFOOTTAPWORDENTRY VARCHAR,"
+    "  ZDISHKEEPBLESTMONITOR FLOAT,"
+    "  ZBROADABLESOLIDCASUAL INTEGER,"
+    "  ZSQUAREGLEEFULCHILDLIGHT INTEGER,"
+    "  ZHOLIDAYHEADPONYDETAIL INTEGER,"
+    "  ZGENERALRESORTSKYOPEN TIMESTAMP,"
+    "  ZGLADSPRAYKIDNEYGUPPY VARCHAR,"
+    "  ZSWIMHEAVYMENTIONKIND BLOB,"
+    "  ZMESSYSULFURDREAMFESTIVE BLOB,"
+    "  ZSKYSKYCLASSICBRIEF VARCHAR,"
+    "  ZDILLASKHOKILEMON FLOAT,"
+    "  ZJUNIORSHOWPRESSNOVA FLOAT,"
+    "  ZSIZETOEAWARDFRESH TIMESTAMP,"
+    "  ZKEYFAILAPRICOTMETAL VARCHAR,"
+    "  ZHANDYREPAIRPROTONAIRPORT VARCHAR,"
+    "  ZPOSTPROTEINHANDLEACTOR BLOB"
+    ");"
+  );
+  speedtest1_prepare(
+    "INSERT INTO ZLOOKSLIKECOREDATA(ZPK,ZAIRFORGIVEHEADFROG,"
+    "ZGIFTICEFISHGLUEHAIR,ZDELAYOUTCOMEHORNAGENCY,ZSLEEPYUSERGRANDBOWL,"
+    "ZGLASSRESERVEBARIUMMEAL,ZBRIEFGOBYDODGERHEIGHT,"
+    "ZBAMBOOMESSWASABIEVENING,ZFARMERMORNINGMIRRORCONCERN,"
+    "ZTREATPACKFUTURECONVERT,ZCAUSESALAMITERMCYAN,ZCALMRACCOONPROGRAMDEBIT,"
+    "ZHOLIDAYHEADPONYDETAIL,ZWOODPOETRYCOBBLERBENCH,ZHAFNIUMSCRIPTSALADMOTOR,"
+    "ZUSUALBODYHALIBUTDIAMOND,ZOUTSIDEPEAHENCOUNTICE,ZDIVERPAINTLEATHEREASY,"
+    "ZWESTAMOUNTAFFECTHEARING,ZSIZETOEAWARDFRESH,ZDEWPEACHCAREERCELERY,"
+    "ZSTEELCAREFULPLATENUMBER,ZCYANBASEFEEDADROIT,ZCALMLYGEMFINISHEFFECT,"
+    "ZHANDYREPAIRPROTONAIRPORT,ZGENENATURALHEARINGKITE,ZBROADABLESOLIDCASUAL,"
+    "ZPOSTPROTEINHANDLEACTOR,ZLACEADDRESSGROUNDCAREFUL,ZIMAGEPENCILOTHERBOTTOM,"
+    "ZPROBLEMCLUBPOPOVERJELLY,ZPATTERNCLORINEGRANDCOLBY,ZNEATSTEWPARTIRON,"
+    "ZAPPEALSIMPLESECONDHOUSING,ZMOVEWHOGAMMAINCH,ZTENNISCYCLEBILLOFFICER,"
+    "ZSHARKJUSTFRUITMOVIE,ZKEYFAILAPRICOTMETAL,ZCOMPANYSUMMERFIBERELF,"
+    "ZTERMFITTINGHOUSINGCOMMAND,ZRESORTYARDGREENLET,ZCABBAGESOCKEASEMINUTE,"
+    "ZSQUAREGLEEFULCHILDLIGHT,ZONERELEASEAVERAGENURSE,ZBIGTHINKCONVERTECONOMY,"
+    "ZPLIERSPRINTASKOREGANO,ZDECADEJOYOUSWAVEHABIT,ZDRYWALLBEYONDBROWNBOWL,"
+    "ZCLUBRELEASELIZARDADVICE,ZWHALEMATHAVOCADOCOPPER,ZBELLYCRASHITEMLACK,"
+    "ZLETTUCEBIRDMEETDEBATE,ZCAPABLETRIPDOORALMOND,ZRADIANTWHENTRYCARD,"
+    "ZCAPYEARLYRIVETBRUSH,ZAGEREEDFROGBASKET,ZSWIMHEAVYMENTIONKIND,"
+    "ZTRAVELDRIVERCONTESTLILY,ZGLADSPRAYKIDNEYGUPPY,ZBANKBUFFALORECOVERORBIT,"
+    "ZFINGERDUEPIZZAOPTION,ZCLAMBITARUGULAFAJITA,ZLONGFINLEAVEIMAGEOIL,"
+    "ZLONGDIETESSAYNATURE,ZJUNIORSHOWPRESSNOVA,ZHOPEFULGATEHOLECHALK,"
+    "ZDEPOSITPAIRCOLLEGECOMET,ZWEALTHLINENGLEEFULDAY,ZFILLSTOPLAWJOYFUL,"
+    "ZTUNEGASBUFFALOCAPITAL,ZGRAYSURVEYWIRELOVE,ZCORNERANCHORTAPEDIVER,"
+    "ZREWARDINSIDEMANGOINTENSE,ZCADETBRIGHTPLANETBANK,ZPLANETFAMILYPUREMEMORY,"
+    "ZTREATTESTQUILLCHARGE,ZCREAMEVENINGLIPBRANCH,ZSKYSKYCLASSICBRIEF,"
+    "ZARSENICSAMPLEWAITMUON,ZBROWBALANCEKEYCHOWDER,ZFLYINGDOCTORTABLEMELODY,"
+    "ZHANGERLITHIUMDINNERMEET,ZNOTICEPEARPOLICYJUICE,ZSHINYASSISTLIVINGCRAB,"
+    "ZLIFEUSELEAFYBELL,ZFACEINVITETALKGOLD,ZGENERALRESORTSKYOPEN,"
+    "ZPURECAKEVIVIDNEATLY,ZKIWIVISUALPRIDEAPPLE,ZMESSYSULFURDREAMFESTIVE,"
+    "ZCHARGECLICKHUMANEHIRE,ZHERRINGJOKEFEATUREHOPEFUL,ZYARDOREGANOVIVIDJEWEL,"
+    "ZFOOTTAPWORDENTRY,ZWISHHITSKINMOTOR,ZBASEGOUDAREGULARFORGIVE,"
+    "ZMUFFINDRYERDRAWFORTUNE,ZACTIONRANGEELEGANTNEUTRON,ZTRYFACTKEEPMILK,"
+    "ZPEACHCOPPERDINNERLAKE,ZFRAMEENTERSIMPLEMOUTH,ZMERRYCRACKTRAINLEADER,"
+    "ZMEMORYREQUESTSOURCEBIG,ZCARRYFLOORMINNOWDRAGON,ZMINORWAYPAPERCLASSY,"
+    "ZDILLASKHOKILEMON,ZRESOLVEWRISTWRAPAPPLE,ZASKCONTACTMONITORFUN,"
+    "ZGIVEVIVIDDIVINEMEANING,ZEIGHTLEADERWORKERMOST,ZMISSREPLYHUMANLIVING,"
+    "ZXENONFLIGHTPALEAPPLE,ZSORTMISTYQUOTECABBAGE,ZEAGLELINEMINEMAIL,"
+    "ZFAMILYVISUALOWNERMATTER,ZSPREADMOTORBISCUITBACON,ZDISHKEEPBLESTMONITOR,"
+    "ZMALLEQUIPTHANKSGLUE,ZGOLDYOUNGINITIALNOSE,ZHUMORSPICESANDKIDNEY)"
+    "VALUES(?1,?26,?20,?93,?8,?33,?3,?81,?28,?60,?18,?47,?109,?29,?30,?104,?86,"
+    "?54,?92,?117,?9,?58,?97,?61,?119,?73,?107,?120,?80,?99,?31,?96,?85,?50,?71,"
+    "?42,?27,?118,?36,?2,?67,?62,?108,?82,?94,?76,?35,?40,?11,?88,?41,?72,?4,"
+    "?83,?102,?103,?112,?77,?111,?22,?13,?34,?15,?23,?116,?7,?5,?90,?57,?56,"
+    "?75,?51,?84,?25,?63,?37,?87,?114,?79,?38,?14,?10,?21,?48,?89,?91,?110,"
+    "?69,?45,?113,?12,?101,?68,?105,?46,?95,?74,?24,?53,?39,?6,?64,?52,?98,"
+    "?65,?115,?49,?70,?59,?32,?44,?100,?55,?66,?16,?19,?106,?43,?17,?78);"
+  );
+  for(i=0; i<n; i++){
+    x1 = speedtest1_random();
+    speedtest1_numbername(x1%1000, zNum, sizeof(zNum));
+    len = (int)strlen(zNum);
+    sqlite3_bind_int(g.pStmt, 1, i^0xf);
+    for(j=0; zType[j]; j++){
+      switch( zType[j] ){
+        case 'I':
+        case 'T':
+          sqlite3_bind_int64(g.pStmt, j+2, x1);
+          break;
+        case 'F':
+          sqlite3_bind_double(g.pStmt, j+2, (double)x1);
+          break;
+        case 'V':
+        case 'B':
+          sqlite3_bind_text64(g.pStmt, j+2, zNum, len,
+                              SQLITE_STATIC, SQLITE_UTF8);
+          break;
+      }
+    }
+    speedtest1_run();
+  }
+  speedtest1_exec("COMMIT;");
+  speedtest1_end_test();
+
+  n = g.szTest*250;
+  speedtest1_begin_test(110, "Query %d rows by rowid", n);
+  speedtest1_prepare(
+    "SELECT ZCYANBASEFEEDADROIT,ZJUNIORSHOWPRESSNOVA,ZCAUSESALAMITERMCYAN,"
+    "ZHOPEFULGATEHOLECHALK,ZHUMORSPICESANDKIDNEY,ZSWIMHEAVYMENTIONKIND,"
+    "ZMOVEWHOGAMMAINCH,ZAPPEALSIMPLESECONDHOUSING,ZHAFNIUMSCRIPTSALADMOTOR,"
+    "ZNEATSTEWPARTIRON,ZLONGFINLEAVEIMAGEOIL,ZDEWPEACHCAREERCELERY,"
+    "ZXENONFLIGHTPALEAPPLE,ZCALMRACCOONPROGRAMDEBIT,ZUSUALBODYHALIBUTDIAMOND,"
+    "ZTRYFACTKEEPMILK,ZWEALTHLINENGLEEFULDAY,ZLONGDIETESSAYNATURE,"
+    "ZLIFEUSELEAFYBELL,ZTREATPACKFUTURECONVERT,ZMEMORYREQUESTSOURCEBIG,"
+    "ZYARDOREGANOVIVIDJEWEL,ZDEPOSITPAIRCOLLEGECOMET,ZSLEEPYUSERGRANDBOWL,"
+    "ZBRIEFGOBYDODGERHEIGHT,ZCLUBRELEASELIZARDADVICE,ZCAPABLETRIPDOORALMOND,"
+    "ZDRYWALLBEYONDBROWNBOWL,ZASKCONTACTMONITORFUN,ZKIWIVISUALPRIDEAPPLE,"
+    "ZNOTICEPEARPOLICYJUICE,ZPEACHCOPPERDINNERLAKE,ZSTEELCAREFULPLATENUMBER,"
+    "ZGLADSPRAYKIDNEYGUPPY,ZCOMPANYSUMMERFIBERELF,ZTENNISCYCLEBILLOFFICER,"
+    "ZIMAGEPENCILOTHERBOTTOM,ZWESTAMOUNTAFFECTHEARING,ZDIVERPAINTLEATHEREASY,"
+    "ZSKYSKYCLASSICBRIEF,ZMESSYSULFURDREAMFESTIVE,ZMERRYCRACKTRAINLEADER,"
+    "ZBROADABLESOLIDCASUAL,ZGLASSRESERVEBARIUMMEAL,ZTUNEGASBUFFALOCAPITAL,"
+    "ZBANKBUFFALORECOVERORBIT,ZTREATTESTQUILLCHARGE,ZBAMBOOMESSWASABIEVENING,"
+    "ZREWARDINSIDEMANGOINTENSE,ZEAGLELINEMINEMAIL,ZCALMLYGEMFINISHEFFECT,"
+    "ZKEYFAILAPRICOTMETAL,ZFINGERDUEPIZZAOPTION,ZCADETBRIGHTPLANETBANK,"
+    "ZGOLDYOUNGINITIALNOSE,ZMISSREPLYHUMANLIVING,ZEIGHTLEADERWORKERMOST,"
+    "ZFRAMEENTERSIMPLEMOUTH,ZBIGTHINKCONVERTECONOMY,ZFACEINVITETALKGOLD,"
+    "ZPOSTPROTEINHANDLEACTOR,ZHERRINGJOKEFEATUREHOPEFUL,ZCABBAGESOCKEASEMINUTE,"
+    "ZMUFFINDRYERDRAWFORTUNE,ZPROBLEMCLUBPOPOVERJELLY,ZGIVEVIVIDDIVINEMEANING,"
+    "ZGENENATURALHEARINGKITE,ZGENERALRESORTSKYOPEN,ZLETTUCEBIRDMEETDEBATE,"
+    "ZBASEGOUDAREGULARFORGIVE,ZCHARGECLICKHUMANEHIRE,ZPLANETFAMILYPUREMEMORY,"
+    "ZMINORWAYPAPERCLASSY,ZCAPYEARLYRIVETBRUSH,ZSIZETOEAWARDFRESH,"
+    "ZARSENICSAMPLEWAITMUON,ZSQUAREGLEEFULCHILDLIGHT,ZSHINYASSISTLIVINGCRAB,"
+    "ZCORNERANCHORTAPEDIVER,ZDECADEJOYOUSWAVEHABIT,ZTRAVELDRIVERCONTESTLILY,"
+    "ZFLYINGDOCTORTABLEMELODY,ZSHARKJUSTFRUITMOVIE,ZFAMILYVISUALOWNERMATTER,"
+    "ZFARMERMORNINGMIRRORCONCERN,ZGIFTICEFISHGLUEHAIR,ZOUTSIDEPEAHENCOUNTICE,"
+    "ZSPREADMOTORBISCUITBACON,ZWISHHITSKINMOTOR,ZHOLIDAYHEADPONYDETAIL,"
+    "ZWOODPOETRYCOBBLERBENCH,ZAIRFORGIVEHEADFROG,ZBROWBALANCEKEYCHOWDER,"
+    "ZDISHKEEPBLESTMONITOR,ZCLAMBITARUGULAFAJITA,ZPLIERSPRINTASKOREGANO,"
+    "ZRADIANTWHENTRYCARD,ZDELAYOUTCOMEHORNAGENCY,ZPURECAKEVIVIDNEATLY,"
+    "ZPATTERNCLORINEGRANDCOLBY,ZHANDYREPAIRPROTONAIRPORT,ZAGEREEDFROGBASKET,"
+    "ZSORTMISTYQUOTECABBAGE,ZFOOTTAPWORDENTRY,ZRESOLVEWRISTWRAPAPPLE,"
+    "ZDILLASKHOKILEMON,ZFILLSTOPLAWJOYFUL,ZACTIONRANGEELEGANTNEUTRON,"
+    "ZRESORTYARDGREENLET,ZCREAMEVENINGLIPBRANCH,ZWHALEMATHAVOCADOCOPPER,"
+    "ZGRAYSURVEYWIRELOVE,ZBELLYCRASHITEMLACK,ZHANGERLITHIUMDINNERMEET,"
+    "ZCARRYFLOORMINNOWDRAGON,ZMALLEQUIPTHANKSGLUE,ZTERMFITTINGHOUSINGCOMMAND,"
+    "ZONERELEASEAVERAGENURSE,ZLACEADDRESSGROUNDCAREFUL"
+    " FROM ZLOOKSLIKECOREDATA WHERE ZPK=?1;"
+  );
+  for(i=0; i<n; i++){
+    x1 = speedtest1_random()%nRow;
+    sqlite3_bind_int(g.pStmt, 1, x1);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+}
+
+/*
+*/
+void testset_trigger(void){
+  int jj, ii;
+  char zNum[2000];              /* A number name */
+
+  const int NROW  = 500*g.szTest;
+  const int NROW2 = 100*g.szTest;
+
+  speedtest1_exec(
+      "BEGIN;"
+      "CREATE TABLE t1(rowid INTEGER PRIMARY KEY, i INTEGER, t TEXT);"
+      "CREATE TABLE t2(rowid INTEGER PRIMARY KEY, i INTEGER, t TEXT);"
+      "CREATE TABLE t3(rowid INTEGER PRIMARY KEY, i INTEGER, t TEXT);"
+      "CREATE VIEW v1 AS SELECT rowid, i, t FROM t1;"
+      "CREATE VIEW v2 AS SELECT rowid, i, t FROM t2;"
+      "CREATE VIEW v3 AS SELECT rowid, i, t FROM t3;"
+  );
+  for(jj=1; jj<=3; jj++){
+    speedtest1_prepare("INSERT INTO t%d VALUES(NULL,?1,?2)", jj);
+    for(ii=0; ii<NROW; ii++){
+      int x1 = speedtest1_random() % NROW;
+      speedtest1_numbername(x1, zNum, sizeof(zNum));
+      sqlite3_bind_int(g.pStmt, 1, x1);
+      sqlite3_bind_text(g.pStmt, 2, zNum, -1, SQLITE_STATIC);
+      speedtest1_run();
+    }
+  }
+  speedtest1_exec(
+      "CREATE INDEX i1 ON t1(t);"
+      "CREATE INDEX i2 ON t2(t);"
+      "CREATE INDEX i3 ON t3(t);"
+      "COMMIT;"
+  );
+
+  speedtest1_begin_test(100, "speed4p-join1");
+  speedtest1_prepare(
+      "SELECT * FROM t1, t2, t3 WHERE t1.oid = t2.oid AND t2.oid = t3.oid"
+  );
+  speedtest1_run();
+  speedtest1_end_test();
+
+  speedtest1_begin_test(110, "speed4p-join2");
+  speedtest1_prepare(
+      "SELECT * FROM t1, t2, t3 WHERE t1.t = t2.t AND t2.t = t3.t"
+  );
+  speedtest1_run();
+  speedtest1_end_test();
+
+  speedtest1_begin_test(120, "speed4p-view1");
+  for(jj=1; jj<=3; jj++){
+    speedtest1_prepare("SELECT * FROM v%d WHERE rowid = ?", jj);
+    for(ii=0; ii<NROW2; ii+=3){
+      sqlite3_bind_int(g.pStmt, 1, ii*3);
+      speedtest1_run();
+    }
+  }
+  speedtest1_end_test();
+
+  speedtest1_begin_test(130, "speed4p-table1");
+  for(jj=1; jj<=3; jj++){
+    speedtest1_prepare("SELECT * FROM t%d WHERE rowid = ?", jj);
+    for(ii=0; ii<NROW2; ii+=3){
+      sqlite3_bind_int(g.pStmt, 1, ii*3);
+      speedtest1_run();
+    }
+  }
+  speedtest1_end_test();
+
+  speedtest1_begin_test(140, "speed4p-table1");
+  for(jj=1; jj<=3; jj++){
+    speedtest1_prepare("SELECT * FROM t%d WHERE rowid = ?", jj);
+    for(ii=0; ii<NROW2; ii+=3){
+      sqlite3_bind_int(g.pStmt, 1, ii*3);
+      speedtest1_run();
+    }
+  }
+  speedtest1_end_test();
+
+  speedtest1_begin_test(150, "speed4p-subselect1");
+  speedtest1_prepare("SELECT "
+      "(SELECT t FROM t1 WHERE rowid = ?1),"
+      "(SELECT t FROM t2 WHERE rowid = ?1),"
+      "(SELECT t FROM t3 WHERE rowid = ?1)"
+  );
+  for(jj=0; jj<NROW2; jj++){
+    sqlite3_bind_int(g.pStmt, 1, jj*3);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+
+  speedtest1_begin_test(160, "speed4p-rowid-update");
+  speedtest1_exec("BEGIN");
+  speedtest1_prepare("UPDATE t1 SET i=i+1 WHERE rowid=?1");
+  for(jj=0; jj<NROW2; jj++){
+    sqlite3_bind_int(g.pStmt, 1, jj);
+    speedtest1_run();
+  }
+  speedtest1_exec("COMMIT");
+  speedtest1_end_test();
+
+  speedtest1_exec("CREATE TABLE t5(t TEXT PRIMARY KEY, i INTEGER);");
+  speedtest1_begin_test(170, "speed4p-insert-ignore");
+  speedtest1_exec("INSERT OR IGNORE INTO t5 SELECT t, i FROM t1");
+  speedtest1_end_test();
+
+  speedtest1_exec(
+      "CREATE TABLE log(op TEXT, r INTEGER, i INTEGER, t TEXT);"
+      "CREATE TABLE t4(rowid INTEGER PRIMARY KEY, i INTEGER, t TEXT);"
+      "CREATE TRIGGER t4_trigger1 AFTER INSERT ON t4 BEGIN"
+      "  INSERT INTO log VALUES('INSERT INTO t4', new.rowid, new.i, new.t);"
+      "END;"
+      "CREATE TRIGGER t4_trigger2 AFTER UPDATE ON t4 BEGIN"
+      "  INSERT INTO log VALUES('UPDATE OF t4', new.rowid, new.i, new.t);"
+      "END;"
+      "CREATE TRIGGER t4_trigger3 AFTER DELETE ON t4 BEGIN"
+      "  INSERT INTO log VALUES('DELETE OF t4', old.rowid, old.i, old.t);"
+      "END;"
+      "BEGIN;"
+  );
+
+  speedtest1_begin_test(180, "speed4p-trigger1");
+  speedtest1_prepare("INSERT INTO t4 VALUES(NULL, ?1, ?2)");
+  for(jj=0; jj<NROW2; jj++){
+    speedtest1_numbername(jj, zNum, sizeof(zNum));
+    sqlite3_bind_int(g.pStmt, 1, jj);
+    sqlite3_bind_text(g.pStmt, 2, zNum, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+
+  /*
+  ** Note: Of the queries, only half actually update a row. This property
+  ** was copied over from speed4p.test, where it was probably introduced
+  ** inadvertantly.
+  */
+  speedtest1_begin_test(190, "speed4p-trigger2");
+  speedtest1_prepare("UPDATE t4 SET i = ?1, t = ?2 WHERE rowid = ?3");
+  for(jj=1; jj<=NROW2*2; jj+=2){
+    speedtest1_numbername(jj*2, zNum, sizeof(zNum));
+    sqlite3_bind_int(g.pStmt, 1, jj*2);
+    sqlite3_bind_text(g.pStmt, 2, zNum, -1, SQLITE_STATIC);
+    sqlite3_bind_int(g.pStmt, 3, jj);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+
+  /*
+  ** Note: Same again.
+  */
+  speedtest1_begin_test(200, "speed4p-trigger3");
+  speedtest1_prepare("DELETE FROM t4 WHERE rowid = ?1");
+  for(jj=1; jj<=NROW2*2; jj+=2){
+    sqlite3_bind_int(g.pStmt, 1, jj*2);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+  speedtest1_exec("COMMIT");
+
+  /*
+  ** The following block contains the same tests as the above block that
+  ** tests triggers, with one crucial difference: no triggers are defined.
+  ** So the difference in speed between these tests and the preceding ones
+  ** is the amount of time taken to compile and execute the trigger programs.
+  */
+  speedtest1_exec(
+      "DROP TABLE t4;"
+      "DROP TABLE log;"
+      "VACUUM;"
+      "CREATE TABLE t4(rowid INTEGER PRIMARY KEY, i INTEGER, t TEXT);"
+      "BEGIN;"
+  );
+  speedtest1_begin_test(210, "speed4p-notrigger1");
+  speedtest1_prepare("INSERT INTO t4 VALUES(NULL, ?1, ?2)");
+  for(jj=0; jj<NROW2; jj++){
+    speedtest1_numbername(jj, zNum, sizeof(zNum));
+    sqlite3_bind_int(g.pStmt, 1, jj);
+    sqlite3_bind_text(g.pStmt, 2, zNum, -1, SQLITE_STATIC);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+  speedtest1_begin_test(210, "speed4p-notrigger2");
+  speedtest1_prepare("UPDATE t4 SET i = ?1, t = ?2 WHERE rowid = ?3");
+  for(jj=1; jj<=NROW2*2; jj+=2){
+    speedtest1_numbername(jj*2, zNum, sizeof(zNum));
+    sqlite3_bind_int(g.pStmt, 1, jj*2);
+    sqlite3_bind_text(g.pStmt, 2, zNum, -1, SQLITE_STATIC);
+    sqlite3_bind_int(g.pStmt, 3, jj);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+  speedtest1_begin_test(220, "speed4p-notrigger3");
+  speedtest1_prepare("DELETE FROM t4 WHERE rowid = ?1");
+  for(jj=1; jj<=NROW2*2; jj+=2){
+    sqlite3_bind_int(g.pStmt, 1, jj*2);
+    speedtest1_run();
+  }
+  speedtest1_end_test();
+  speedtest1_exec("COMMIT");
+}
 
 /*
 ** A testset used for debugging speedtest1 itself.
@@ -1167,6 +1910,54 @@ void testset_debug1(void){
   }
 }
 
+#ifdef __linux__
+#include <sys/types.h>
+#include <unistd.h>
+
+/*
+** Attempt to display I/O stats on Linux using /proc/PID/io
+*/
+static void displayLinuxIoStats(FILE *out){
+  FILE *in;
+  char z[200];
+  sqlite3_snprintf(sizeof(z), z, "/proc/%d/io", getpid());
+  in = fopen(z, "rb");
+  if( in==0 ) return;
+  while( fgets(z, sizeof(z), in)!=0 ){
+    static const struct {
+      const char *zPattern;
+      const char *zDesc;
+    } aTrans[] = {
+      { "rchar: ",                  "Bytes received by read():" },
+      { "wchar: ",                  "Bytes sent to write():"    },
+      { "syscr: ",                  "Read() system calls:"      },
+      { "syscw: ",                  "Write() system calls:"     },
+      { "read_bytes: ",             "Bytes rcvd from storage:"  },
+      { "write_bytes: ",            "Bytes sent to storage:"    },
+      { "cancelled_write_bytes: ",  "Cancelled write bytes:"    },
+    };
+    int i;
+    for(i=0; i<sizeof(aTrans)/sizeof(aTrans[0]); i++){
+      int n = (int)strlen(aTrans[i].zPattern);
+      if( strncmp(aTrans[i].zPattern, z, n)==0 ){
+        fprintf(out, "-- %-28s %s", aTrans[i].zDesc, &z[n]);
+        break;
+      }
+    }
+  }
+  fclose(in);
+}
+#endif
+
+#if SQLITE_VERSION_NUMBER<3006018
+#  define sqlite3_sourceid(X) "(before 3.6.18)"
+#endif
+
+static int xCompileOptions(void *pCtx, int nVal, char **azVal, char **azCol){
+  printf("-- Compile option: %s\n", azVal[0]);
+  return SQLITE_OK;
+}
+
 int main(int argc, char **argv){
   int doAutovac = 0;            /* True for --autovacuum */
   int cacheSize = 0;            /* Desired cache size.  0 means default */
@@ -1175,14 +1966,14 @@ int main(int argc, char **argv){
   int doIncrvac = 0;            /* True for --incrvacuum */
   const char *zJMode = 0;       /* Journal mode */
   const char *zKey = 0;         /* Encryption key */
-  int nLook = 0, szLook = 0;    /* --lookaside configuration */
+  int nLook = -1, szLook = 0;   /* --lookaside configuration */
   int noSync = 0;               /* True for --nosync */
   int pageSize = 0;             /* Desired page size.  0 means default */
   int nPCache = 0, szPCache = 0;/* --pcache configuration */
   int doPCache = 0;             /* True if --pcache is seen */
-  int nScratch = 0, szScratch=0;/* --scratch configuration */
   int showStats = 0;            /* True for --stats */
   int nThread = 0;              /* --threads value */
+  int mmapSize = 0;             /* How big of a memory map to use */
   const char *zTSet = "main";   /* Which --testset torun */
   int doTrace = 0;              /* True for --trace */
   const char *zEncoding = 0;    /* --utf16be or --utf16le */
@@ -1191,16 +1982,20 @@ int main(int argc, char **argv){
   void *pHeap = 0;              /* Allocated heap space */
   void *pLook = 0;              /* Allocated lookaside space */
   void *pPCache = 0;            /* Allocated storage for pcache */
-  void *pScratch = 0;           /* Allocated storage for scratch */
   int iCur, iHi;                /* Stats values, current and "highwater" */
   int i;                        /* Loop counter */
   int rc;                       /* API return code */
+
+  /* Display the version of SQLite being tested */
+  printf("-- Speedtest1 for SQLite %s %.50s\n",
+         sqlite3_libversion(), sqlite3_sourceid());
 
   /* Process command-line arguments */
   g.zWR = "";
   g.zNN = "";
   g.zPK = "UNIQUE";
   g.szTest = 100;
+  g.nRepeat = 1;
   for(i=1; i<argc; i++){
     const char *z = argv[i];
     if( z[0]=='-' ){
@@ -1234,19 +2029,21 @@ int main(int argc, char **argv){
         nLook = integerValue(argv[i+1]);
         szLook = integerValue(argv[i+2]);
         i += 2;
+#if SQLITE_VERSION_NUMBER>=3006000
       }else if( strcmp(z,"multithread")==0 ){
         sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
       }else if( strcmp(z,"nomemstat")==0 ){
         sqlite3_config(SQLITE_CONFIG_MEMSTATUS, 0);
+#endif
+#if SQLITE_VERSION_NUMBER>=3007017
+      }else if( strcmp(z, "mmap")==0 ){
+        if( i>=argc-1 ) fatal_error("missing argument on %s\n", argv[i]);
+        mmapSize = integerValue(argv[++i]);
+ #endif
       }else if( strcmp(z,"nosync")==0 ){
         noSync = 1;
       }else if( strcmp(z,"notnull")==0 ){
         g.zNN = "NOT NULL";
-#ifdef SQLITE_ENABLE_RBU
-      }else if( strcmp(z,"rbu")==0 ){
-        sqlite3ota_create_vfs("rbu", 0);
-        sqlite3_vfs_register(sqlite3_vfs_find("rbu"), 1);
-#endif
       }else if( strcmp(z,"pagesize")==0 ){
         if( i>=argc-1 ) fatal_error("missing argument on %s\n", argv[i]);
         pageSize = integerValue(argv[++i]);
@@ -1258,17 +2055,18 @@ int main(int argc, char **argv){
         i += 2;
       }else if( strcmp(z,"primarykey")==0 ){
         g.zPK = "PRIMARY KEY";
+      }else if( strcmp(z,"repeat")==0 ){
+        if( i>=argc-1 ) fatal_error("missing arguments on %s\n", argv[i]);
+        g.nRepeat = integerValue(argv[i+1]);
+        i += 1;
       }else if( strcmp(z,"reprepare")==0 ){
         g.bReprepare = 1;
-      }else if( strcmp(z,"scratch")==0 ){
-        if( i>=argc-2 ) fatal_error("missing arguments on %s\n", argv[i]);
-        nScratch = integerValue(argv[i+1]);
-        szScratch = integerValue(argv[i+2]);
-        i += 2;
+#if SQLITE_VERSION_NUMBER>=3006000
       }else if( strcmp(z,"serialized")==0 ){
         sqlite3_config(SQLITE_CONFIG_SERIALIZED);
       }else if( strcmp(z,"singlethread")==0 ){
         sqlite3_config(SQLITE_CONFIG_SINGLETHREAD);
+#endif
       }else if( strcmp(z,"sqlonly")==0 ){
         g.bSqlOnly = 1;
       }else if( strcmp(z,"shrink-memory")==0 ){
@@ -1278,6 +2076,13 @@ int main(int argc, char **argv){
         g.szTest = integerValue(argv[++i]);
       }else if( strcmp(z,"stats")==0 ){
         showStats = 1;
+      }else if( strcmp(z,"temp")==0 ){
+        if( i>=argc-1 ) fatal_error("missing argument on %s\n", argv[i]);
+        i++;
+        if( argv[i][0]<'0' || argv[i][0]>'9' || argv[i][1]!=0 ){
+          fatal_error("argument to --temp should be integer between 0 and 9");
+        }
+        g.eTemp = argv[i][0] - '0';
       }else if( strcmp(z,"testset")==0 ){
         if( i>=argc-1 ) fatal_error("missing argument on %s\n", argv[i]);
         zTSet = argv[++i];
@@ -1309,11 +2114,7 @@ int main(int argc, char **argv){
                   argv[i], argv[0]);
     }
   }
-#if 0
-  if( zDbName==0 ){
-    fatal_error(zHelp, argv[0]);
-  }
-#endif
+  if( zDbName!=0 ) unlink(zDbName);
 #if SQLITE_VERSION_NUMBER>=3006001
   if( nHeap>0 ){
     pHeap = malloc( nHeap );
@@ -1330,18 +2131,11 @@ int main(int argc, char **argv){
     rc = sqlite3_config(SQLITE_CONFIG_PAGECACHE, pPCache, szPCache, nPCache);
     if( rc ) fatal_error("pcache configuration failed: %d\n", rc);
   }
-  if( nScratch>0 && szScratch>0 ){
-    pScratch = malloc( nScratch*(sqlite3_int64)szScratch );
-    if( pScratch==0 ) fatal_error("cannot allocate %lld-byte scratch\n",
-                                 nScratch*(sqlite3_int64)szScratch);
-    rc = sqlite3_config(SQLITE_CONFIG_SCRATCH, pScratch, szScratch, nScratch);
-    if( rc ) fatal_error("scratch configuration failed: %d\n", rc);
-  }
-  if( nLook>0 ){
+  if( nLook>=0 ){
     sqlite3_config(SQLITE_CONFIG_LOOKASIDE, 0, 0);
   }
 #endif
- 
+
   /* Open the database and the input file */
   if( sqlite3_open(zDbName, &g.db) ){
     fatal_error("Cannot open database file: %s\n", zDbName);
@@ -1356,7 +2150,12 @@ int main(int argc, char **argv){
 
   /* Set database connection options */
   sqlite3_create_function(g.db, "random", 0, SQLITE_UTF8, 0, randomFunc, 0, 0);
+#ifndef SQLITE_OMIT_DEPRECATED
   if( doTrace ) sqlite3_trace(g.db, traceCallback, 0);
+#endif
+  if( mmapSize>0 ){
+    speedtest1_exec("PRAGMA mmap_size=%d", mmapSize);
+  }
   speedtest1_exec("PRAGMA threads=%d", nThread);
   if( zKey ){
     speedtest1_exec("PRAGMA key('%s')", zKey);
@@ -1388,8 +2187,14 @@ int main(int argc, char **argv){
     testset_main();
   }else if( strcmp(zTSet,"debug1")==0 ){
     testset_debug1();
+  }else if( strcmp(zTSet,"orm")==0 ){
+    testset_orm();
   }else if( strcmp(zTSet,"cte")==0 ){
     testset_cte();
+  }else if( strcmp(zTSet,"fp")==0 ){
+    testset_fp();
+  }else if( strcmp(zTSet,"trigger")==0 ){
+    testset_trigger();
   }else if( strcmp(zTSet,"rtree")==0 ){
 #ifdef SQLITE_ENABLE_RTREE
     testset_rtree(6, 147);
@@ -1398,10 +2203,15 @@ int main(int argc, char **argv){
                 "the R-Tree tests\n");
 #endif
   }else{
-    fatal_error("unknown testset: \"%s\"\nChoices: main debug1 cte rtree\n",
+    fatal_error("unknown testset: \"%s\"\n"
+                "Choices: cte debug1 fp main orm rtree trigger\n",
                  zTSet);
   }
   speedtest1_final();
+
+  if( showStats ){
+    sqlite3_exec(g.db, "PRAGMA compile_options", xCompileOptions, 0, 0);
+  }
 
   /* Database connection statistics printed after both prepared statements
   ** have been finalized */
@@ -1423,12 +2233,12 @@ int main(int argc, char **argv){
     printf("-- Page cache misses:           %d\n", iCur);
 #if SQLITE_VERSION_NUMBER>=3007012
     sqlite3_db_status(g.db, SQLITE_DBSTATUS_CACHE_WRITE, &iCur, &iHi, 1);
-    printf("-- Page cache writes:           %d\n", iCur); 
+    printf("-- Page cache writes:           %d\n", iCur);
 #endif
     sqlite3_db_status(g.db, SQLITE_DBSTATUS_SCHEMA_USED, &iCur, &iHi, 0);
-    printf("-- Schema Heap Usage:           %d bytes\n", iCur); 
+    printf("-- Schema Heap Usage:           %d bytes\n", iCur);
     sqlite3_db_status(g.db, SQLITE_DBSTATUS_STMT_USED, &iCur, &iHi, 0);
-    printf("-- Statement Heap Usage:        %d bytes\n", iCur); 
+    printf("-- Statement Heap Usage:        %d bytes\n", iCur);
   }
 #endif
 
@@ -1446,21 +2256,22 @@ int main(int argc, char **argv){
 #endif
     sqlite3_status(SQLITE_STATUS_PAGECACHE_OVERFLOW, &iCur, &iHi, 0);
     printf("-- Pcache Overflow Bytes:       %d (max %d)\n", iCur,iHi);
-    sqlite3_status(SQLITE_STATUS_SCRATCH_OVERFLOW, &iCur, &iHi, 0);
-    printf("-- Scratch Overflow Bytes:      %d (max %d)\n", iCur,iHi);
     sqlite3_status(SQLITE_STATUS_MALLOC_SIZE, &iCur, &iHi, 0);
     printf("-- Largest Allocation:          %d bytes\n",iHi);
     sqlite3_status(SQLITE_STATUS_PAGECACHE_SIZE, &iCur, &iHi, 0);
     printf("-- Largest Pcache Allocation:   %d bytes\n",iHi);
-    sqlite3_status(SQLITE_STATUS_SCRATCH_SIZE, &iCur, &iHi, 0);
-    printf("-- Largest Scratch Allocation:  %d bytes\n", iHi);
+  }
+#endif
+
+#ifdef __linux__
+  if( showStats ){
+    displayLinuxIoStats(stdout);
   }
 #endif
 
   /* Release memory */
   free( pLook );
   free( pPCache );
-  free( pScratch );
   free( pHeap );
   return 0;
 }

@@ -5,11 +5,12 @@
 package org.chromium.chrome.browser.compositor.scene_layer;
 
 import android.content.Context;
+import android.graphics.RectF;
 
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.LayerTitleCache;
-import org.chromium.chrome.browser.compositor.layouts.Layout.SizingFlags;
+import org.chromium.chrome.browser.compositor.layouts.Layout.ViewportMode;
 import org.chromium.chrome.browser.compositor.layouts.LayoutProvider;
 import org.chromium.chrome.browser.compositor.layouts.LayoutRenderHost;
 import org.chromium.chrome.browser.compositor.layouts.components.VirtualView;
@@ -17,6 +18,9 @@ import org.chromium.chrome.browser.compositor.layouts.eventfilter.EventFilter;
 import org.chromium.chrome.browser.compositor.overlays.SceneOverlay;
 import org.chromium.chrome.browser.device.DeviceClassManager;
 import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
+import org.chromium.chrome.browser.ntp.NewTabPage;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.util.ColorUtils;
 import org.chromium.chrome.browser.widget.ClipDrawableProgressBar.DrawingInfo;
 import org.chromium.chrome.browser.widget.ControlContainer;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -27,9 +31,8 @@ import java.util.List;
 /**
  * A SceneLayer to render layers for the toolbar.
  */
-@JNINamespace("chrome::android")
+@JNINamespace("android")
 public class ToolbarSceneLayer extends SceneOverlayLayer implements SceneOverlay {
-
     /** Pointer to native ToolbarSceneLayer. */
     private long mNativePtr;
 
@@ -60,17 +63,19 @@ public class ToolbarSceneLayer extends SceneOverlayLayer implements SceneOverlay
     /**
      * Update the toolbar and progress bar layers.
      *
-     * @param topControlsBackgroundColor The background color of the top controls.
-     * @param topControlsUrlBarAlpha The alpha of the URL bar.
+     * @param browserControlsBackgroundColor The background color of the browser controls.
+     * @param browserControlsUrlBarAlpha The alpha of the URL bar.
      * @param fullscreenManager A ChromeFullscreenManager instance.
      * @param resourceManager A ResourceManager for loading static resources.
-     * @param forceHideAndroidTopControls True if the Android top controls are being hidden.
-     * @param sizingFlags The sizing flags for the toolbar.
+     * @param forceHideAndroidBrowserControls True if the Android browser controls are being hidden.
+     * @param viewportMode The sizing mode of the viewport being drawn in.
      * @param isTablet If the device is a tablet.
+     * @param windowHeight The height of the window.
      */
-    private void update(int topControlsBackgroundColor, float topControlsUrlBarAlpha,
+    private void update(int browserControlsBackgroundColor, float browserControlsUrlBarAlpha,
             ChromeFullscreenManager fullscreenManager, ResourceManager resourceManager,
-            boolean forceHideAndroidTopControls, int sizingFlags, boolean isTablet) {
+            boolean forceHideAndroidBrowserControls, @ViewportMode int viewportMode,
+            boolean isTablet, float windowHeight) {
         if (!DeviceClassManager.enableFullscreen()) return;
 
         if (fullscreenManager == null) return;
@@ -82,25 +87,34 @@ public class ToolbarSceneLayer extends SceneOverlayLayer implements SceneOverlay
             assert mProgressBarDrawingInfo == null;
         }
 
-        float offset = fullscreenManager.getControlOffset();
-        boolean useTexture = fullscreenManager.drawControlsAsTexture() || offset == 0
-                || forceHideAndroidTopControls;
+        // Texture is always used unless it is completely off-screen.
+        boolean useTexture = !fullscreenManager.areBrowserControlsOffScreen()
+                && viewportMode != ViewportMode.ALWAYS_FULLSCREEN;
+        boolean showShadow = fullscreenManager.drawControlsAsTexture()
+                || forceHideAndroidBrowserControls;
 
-        fullscreenManager.setHideTopControlsAndroidView(forceHideAndroidTopControls);
-
-        if ((sizingFlags & SizingFlags.REQUIRE_FULLSCREEN_SIZE) != 0
-                && (sizingFlags & SizingFlags.ALLOW_TOOLBAR_HIDE) == 0
-                && (sizingFlags & SizingFlags.ALLOW_TOOLBAR_ANIMATE) == 0) {
-            useTexture = false;
+        boolean isLocationBarShownInNtp = false;
+        Tab currentTab = fullscreenManager.getTab();
+        if (currentTab != null) {
+            boolean isNtp =
+                    currentTab != null ? currentTab.getNativePage() instanceof NewTabPage : false;
+            if (isNtp) {
+                isLocationBarShownInNtp =
+                        ((NewTabPage) currentTab.getNativePage()).isLocationBarShownInNTP();
+            }
         }
 
+        int textBoxColor = ColorUtils.getTextBoxColorForToolbarBackground(
+                mContext.getResources(), isLocationBarShownInNtp, browserControlsBackgroundColor);
+        int textBoxResourceId = R.drawable.modern_location_bar;
+
         nativeUpdateToolbarLayer(mNativePtr, resourceManager, R.id.control_container,
-                topControlsBackgroundColor, R.drawable.textbox, topControlsUrlBarAlpha, offset,
-                useTexture, forceHideAndroidTopControls);
+                browserControlsBackgroundColor, textBoxResourceId, browserControlsUrlBarAlpha,
+                textBoxColor, fullscreenManager.getTopControlOffset(), windowHeight, useTexture,
+                showShadow);
 
         if (mProgressBarDrawingInfo == null) return;
-        nativeUpdateProgressBar(mNativePtr,
-                mProgressBarDrawingInfo.progressBarRect.left,
+        nativeUpdateProgressBar(mNativePtr, mProgressBarDrawingInfo.progressBarRect.left,
                 mProgressBarDrawingInfo.progressBarRect.top,
                 mProgressBarDrawingInfo.progressBarRect.width(),
                 mProgressBarDrawingInfo.progressBarRect.height(),
@@ -137,15 +151,21 @@ public class ToolbarSceneLayer extends SceneOverlayLayer implements SceneOverlay
     // SceneOverlay implementation.
 
     @Override
-    public SceneOverlayLayer getUpdatedSceneOverlayTree(LayerTitleCache layerTitleCache,
-            ResourceManager resourceManager, float yOffset) {
-        boolean forceHideTopControlsAndroidView =
-                mLayoutProvider.getActiveLayout().forceHideTopControlsAndroidView();
-        int flags = mLayoutProvider.getActiveLayout().getSizingFlags();
+    public SceneOverlayLayer getUpdatedSceneOverlayTree(RectF viewport, RectF visibleViewport,
+            LayerTitleCache layerTitleCache, ResourceManager resourceManager, float yOffset) {
+        boolean forceHideBrowserControlsAndroidView =
+                mLayoutProvider.getActiveLayout().forceHideBrowserControlsAndroidView();
+        @ViewportMode
+        int viewportMode = mLayoutProvider.getActiveLayout().getViewportMode();
 
-        update(mRenderHost.getTopControlsBackgroundColor(), mRenderHost.getTopControlsUrlBarAlpha(),
+        // In Chrome modern design, the url bar is always opaque since it is drawn in the
+        // compositor.
+        float alpha = 1;
+
+        update(mRenderHost.getBrowserControlsBackgroundColor(), alpha,
                 mLayoutProvider.getFullscreenManager(), resourceManager,
-                forceHideTopControlsAndroidView, flags, DeviceFormFactor.isTablet(mContext));
+                forceHideBrowserControlsAndroidView, viewportMode,
+                DeviceFormFactor.isNonMultiDisplayContextOnTablet(mContext), viewport.height());
 
         return this;
     }
@@ -161,14 +181,14 @@ public class ToolbarSceneLayer extends SceneOverlayLayer implements SceneOverlay
     }
 
     @Override
-    public void onSizeChanged(float width, float height, float visibleViewportOffsetY,
-            int orientation) {}
+    public void onSizeChanged(
+            float width, float height, float visibleViewportOffsetY, int orientation) {}
 
     @Override
     public void getVirtualViews(List<VirtualView> views) {}
 
     @Override
-    public boolean shouldHideAndroidTopControls() {
+    public boolean shouldHideAndroidBrowserControls() {
         return false;
     }
 
@@ -200,46 +220,16 @@ public class ToolbarSceneLayer extends SceneOverlayLayer implements SceneOverlay
     public void tabModelSwitched(boolean incognito) {}
 
     @Override
-    public void tabSelected(long time, boolean incognito, int id, int prevId) {}
-
-    @Override
-    public void tabMoved(long time, boolean incognito, int id, int oldIndex, int newIndex) {}
-
-    @Override
-    public void tabClosed(long time, boolean incognito, int id) {}
-
-    @Override
-    public void tabClosureCancelled(long time, boolean incognito, int id) {}
-
-    @Override
     public void tabCreated(long time, boolean incognito, int id, int prevId, boolean selected) {}
-
-    @Override
-    public void tabPageLoadStarted(int id, boolean incognito) {}
-
-    @Override
-    public void tabPageLoadFinished(int id, boolean incognito) {}
-
-    @Override
-    public void tabLoadStarted(int id, boolean incognito) {}
-
-    @Override
-    public void tabLoadFinished(int id, boolean incognito) {}
 
     private native long nativeInit();
     private native void nativeSetContentTree(
             long nativeToolbarSceneLayer,
             SceneLayer contentTree);
-    private native void nativeUpdateToolbarLayer(
-            long nativeToolbarSceneLayer,
-            ResourceManager resourceManager,
-            int resourceId,
-            int toolbarBackgroundColor,
-            int urlBarResourceId,
-            float urlBarAlpha,
-            float topOffset,
-            boolean visible,
-            boolean showShadow);
+    private native void nativeUpdateToolbarLayer(long nativeToolbarSceneLayer,
+            ResourceManager resourceManager, int resourceId, int toolbarBackgroundColor,
+            int urlBarResourceId, float urlBarAlpha, int urlBarColor, float topOffset,
+            float viewHeight, boolean visible, boolean showShadow);
     private native void nativeUpdateProgressBar(
             long nativeToolbarSceneLayer,
             int progressBarX,

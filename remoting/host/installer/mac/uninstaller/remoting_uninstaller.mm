@@ -8,8 +8,7 @@
 
 #include "base/mac/authorization_util.h"
 #include "base/mac/scoped_authorizationref.h"
-#include "remoting/host/constants_mac.h"
-
+#include "remoting/host/mac/constants_mac.h"
 
 void logOutput(FILE* pipe) {
   char readBuffer[128];
@@ -138,10 +137,11 @@ const char kKeystonePID[] = "com.google.chrome_remote_desktop";
   [self sudoDelete:remoting::kHostBinaryPath usingAuth:authRef];
   [self sudoDelete:remoting::kHostHelperScriptPath usingAuth:authRef];
   [self sudoDelete:remoting::kHostConfigFilePath usingAuth:authRef];
-  [self sudoDelete:remoting::kPrefPaneFilePath usingAuth:authRef];
   [self sudoDelete:remoting::kLogFilePath usingAuth:authRef];
   [self sudoDelete:remoting::kLogFileConfigPath usingAuth:authRef];
-  [self sudoDelete:remoting::kNativeMessagingManifestPath usingAuth:authRef];
+  for (const char* path : remoting::kNativeMessagingManifestPaths) {
+    [self sudoDelete:path usingAuth:authRef];
+  }
   [self sudoDelete:remoting::kBrandedUninstallerPath usingAuth:authRef];
   [self sudoDelete:remoting::kUnbrandedUninstallerPath usingAuth:authRef];
 

@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
@@ -22,11 +23,9 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
 #include "base/strings/string16.h"
 #include "chrome/installer/util/work_item_list.h"
 
-class BrowserDistribution;
 class RegistryEntry;
 
 namespace base {
@@ -44,11 +43,22 @@ class ShellUtil {
     SYSTEM_LEVEL = 0x2   // Make any shell changes only at the system level
   };
 
-  // Chrome's default handler state for a given protocol.
+  // Chrome's default handler state for a given protocol. If the current install
+  // mode is not default, the brand's other modes are checked. This allows
+  // callers to take specific action in case the current mode (e.g., Chrome Dev)
+  // is not the default handler, but another of the brand's modes (e.g., stable
+  // Chrome) is.
   enum DefaultState {
+    // An error occurred while attempting to check the default handler for the
+    // protocol.
     UNKNOWN_DEFAULT,
+    // No install mode for the brand is default for the protocol.
     NOT_DEFAULT,
+    // The current install mode is default.
     IS_DEFAULT,
+    // The current install mode is not default, although one of the brand's
+    // other install modes is.
+    OTHER_MODE_IS_DEFAULT,
   };
 
   // Typical shortcut directories. Resolved in GetShortcutPath().
@@ -94,6 +104,7 @@ class ShellUtil {
       PROPERTIES_APP_ID = 1 << 4,
       PROPERTIES_SHORTCUT_NAME = 1 << 5,
       PROPERTIES_DUAL_MODE = 1 << 6,
+      PROPERTIES_TOAST_ACTIVATOR_CLSID = 1 << 7,
     };
 
     explicit ShortcutProperties(ShellChange level_in);
@@ -136,18 +147,24 @@ class ShellUtil {
       options |= PROPERTIES_ICON;
     }
 
-    // Sets the app model id for the shortcut (Win7+).
+    // Sets the app model id for the shortcut.
     void set_app_id(const base::string16& app_id_in) {
       app_id = app_id_in;
       options |= PROPERTIES_APP_ID;
     }
 
     // Forces the shortcut's name to |shortcut_name_in|.
-    // Default: the current distribution's GetShortcutName().
+    // Default: InstallUtil::GetShortcutName().
     // The ".lnk" extension will automatically be added to this name.
     void set_shortcut_name(const base::string16& shortcut_name_in) {
       shortcut_name = shortcut_name_in;
       options |= PROPERTIES_SHORTCUT_NAME;
+    }
+
+    // Sets the toast activator CLSID to |toast_activator_clsid_in|.
+    void set_toast_activator_clsid(const CLSID& toast_activator_clsid_in) {
+      toast_activator_clsid = toast_activator_clsid_in;
+      options |= PROPERTIES_TOAST_ACTIVATOR_CLSID;
     }
 
     // Sets whether to pin this shortcut to the taskbar after creating it
@@ -181,6 +198,10 @@ class ShellUtil {
       return (options & PROPERTIES_SHORTCUT_NAME) != 0;
     }
 
+    bool has_toast_activator_clsid() const {
+      return (options & PROPERTIES_TOAST_ACTIVATOR_CLSID) != 0;
+    }
+
     // The level to install this shortcut at (CURRENT_USER for a per-user
     // shortcut and SYSTEM_LEVEL for an all-users shortcut).
     ShellChange level;
@@ -192,6 +213,7 @@ class ShellUtil {
     int icon_index;
     base::string16 app_id;
     base::string16 shortcut_name;
+    CLSID toast_activator_clsid;
     bool pin_to_taskbar;
     // Bitfield made of IndividualProperties. Properties set in |options| will
     // be used to create/update the shortcut, others will be ignored on update
@@ -294,8 +316,7 @@ class ShellUtil {
   // Returns true if |chrome_exe| is registered in HKLM with |suffix|.
   // Note: This only checks one deterministic key in HKLM for |chrome_exe| and
   // doesn't otherwise validate a full Chrome install in HKLM.
-  static bool QuickIsChromeRegisteredInHKLM(BrowserDistribution* dist,
-                                            const base::FilePath& chrome_exe,
+  static bool QuickIsChromeRegisteredInHKLM(const base::FilePath& chrome_exe,
                                             const base::string16& suffix);
 
   // Returns true if the current Windows version supports the presence of
@@ -307,21 +328,22 @@ class ShellUtil {
   // all-users path).
   // Returns false on failure.
   static bool GetShortcutPath(ShortcutLocation location,
-                              BrowserDistribution* dist,
                               ShellChange level,
                               base::FilePath* path);
+
+  // Populates the uninitialized members of |properties| with default values.
+  static void AddDefaultShortcutProperties(const base::FilePath& target_exe,
+                                           ShortcutProperties* properties);
 
   // Move an existing shortcut from |old_location| to |new_location| for the
   // set |shortcut_level|.  If the folder containing |old_location| is then
   // empty, it will be removed.
   static bool MoveExistingShortcut(ShortcutLocation old_location,
                                    ShortcutLocation new_location,
-                                   BrowserDistribution* dist,
                                    const ShortcutProperties& properties);
 
   // Updates shortcut in |location| (or creates it if |options| specify
   // SHELL_SHORTCUT_CREATE_ALWAYS).
-  // |dist| gives the type of browser distribution currently in use.
   // |properties| and |operation| affect this method as described on their
   // invidividual definitions above.
   // |location| may be one of SHORTCUT_LOCATION_DESKTOP,
@@ -330,7 +352,6 @@ class ShellUtil {
   // SHORTCUT_LOCATION_START_MENU_CHROME_APPS_DIR.
   static bool CreateOrUpdateShortcut(
       ShortcutLocation location,
-      BrowserDistribution* dist,
       const ShortcutProperties& properties,
       ShortcutOperation operation);
 
@@ -351,14 +372,13 @@ class ShellUtil {
   static base::string16 GetChromeDelegateCommand(
       const base::FilePath& chrome_exe);
 
-  // Gets a mapping of all registered browser names (excluding browsers in the
-  // |dist| distribution) and their reinstall command (which usually sets
-  // browser as default).
+  // Gets a mapping of all registered browser names (excluding the current
+  // browser) and their reinstall command (which usually sets browser as
+  // default).
   // Given browsers can be registered in HKCU (as of Win7) and/or in HKLM, this
   // method looks in both and gives precedence to values in HKCU as per the msdn
   // standard: http://goo.gl/xjczJ.
   static void GetRegisteredBrowsers(
-      BrowserDistribution* dist,
       std::map<base::string16, base::string16>* browsers);
 
   // Returns the suffix this user's Chrome install is registered with.
@@ -378,23 +398,13 @@ class ShellUtil {
   //
   // |chrome_exe| The path to the currently installed (or running) chrome.exe.
   static base::string16 GetCurrentInstallationSuffix(
-      BrowserDistribution* dist,
       const base::FilePath& chrome_exe);
 
-  // Returns the application name of the program under |dist|.
-  // This application name will be suffixed as is appropriate for the current
-  // install.
-  // This is the name that is registered with Default Programs on Windows and
-  // that should thus be used to "make chrome default" and such.
-  static base::string16 GetApplicationName(BrowserDistribution* dist,
-                                           const base::FilePath& chrome_exe);
-
-  // Returns the AppUserModelId for |dist|. This identifier is unconditionally
-  // suffixed with a unique id for this user on user-level installs (in contrast
-  // to other registration entries which are suffixed as described in
+  // Returns the AppUserModelId. This identifier is unconditionally suffixed
+  // with a unique id for this user on user-level installs (in contrast to other
+  // registration entries which are suffixed as described in
   // GetCurrentInstallationSuffix() above).
-  static base::string16 GetBrowserModelId(BrowserDistribution* dist,
-                                          bool is_per_user_install);
+  static base::string16 GetBrowserModelId(bool is_per_user_install);
 
   // Returns an AppUserModelId composed of each member of |components| separated
   // by dots.
@@ -453,10 +463,16 @@ class ShellUtil {
   // chrome_exe: The chrome.exe path to register as default browser.
   // elevate_if_not_admin: On Vista if user is not admin, try to elevate for
   //                       Chrome registration.
-  static bool MakeChromeDefault(BrowserDistribution* dist,
-                                int shell_change,
+  static bool MakeChromeDefault(int shell_change,
                                 const base::FilePath& chrome_exe,
                                 bool elevate_if_not_admin);
+
+#if defined(GOOGLE_CHROME_BUILD)
+  // Opens the Apps & Features page in the Windows settings.
+  //
+  // This function DCHECKS that it is only called on Windows 10 or higher.
+  static bool LaunchUninstallAppsSettings();
+#endif
 
   // Windows 8: Shows and waits for the "How do you want to open webpages?"
   // dialog if Chrome is not already the default HTTP/HTTPS handler. Also does
@@ -467,16 +483,13 @@ class ShellUtil {
   // dialog focused on default apps is launched. The function does not wait
   // in this case.
   //
-  // |dist| gives the type of browser distribution currently in use.
   // |chrome_exe| The chrome.exe path to register as default browser.
-  static bool ShowMakeChromeDefaultSystemUI(BrowserDistribution* dist,
-                                            const base::FilePath& chrome_exe);
+  static bool ShowMakeChromeDefaultSystemUI(const base::FilePath& chrome_exe);
 
   // Make Chrome the default application for a protocol.
   // chrome_exe: The chrome.exe path to register as default browser.
   // protocol: The protocol to register as the default handler for.
-  static bool MakeChromeDefaultProtocolClient(BrowserDistribution* dist,
-                                              const base::FilePath& chrome_exe,
+  static bool MakeChromeDefaultProtocolClient(const base::FilePath& chrome_exe,
                                               const base::string16& protocol);
 
   // Shows and waits for the Windows 8 "How do you want to open links of this
@@ -484,11 +497,9 @@ class ShellUtil {
   // handler. Also does XP-era registrations if Chrome is chosen or was already
   // the default for |protocol|. Do not use on pre-Win8 OSes.
   //
-  // |dist| gives the type of browser distribution currently in use.
   // |chrome_exe| The chrome.exe path to register as default browser.
   // |protocol| is the protocol being registered.
   static bool ShowMakeChromeDefaultProtocolClientSystemUI(
-      BrowserDistribution* dist,
       const base::FilePath& chrome_exe,
       const base::string16& protocol);
 
@@ -517,8 +528,7 @@ class ShellUtil {
   // (e.g. "Make Chrome Default") as it allows this method to UAC.
   //
   // Returns true if Chrome is successfully registered (or already registered).
-  static bool RegisterChromeBrowser(BrowserDistribution* dist,
-                                    const base::FilePath& chrome_exe,
+  static bool RegisterChromeBrowser(const base::FilePath& chrome_exe,
                                     const base::string16& unique_suffix,
                                     bool elevate_if_not_admin);
 
@@ -539,8 +549,7 @@ class ShellUtil {
   // |protocol| The protocol to register as being capable of handling.s
   // |elevate_if_not_admin| if true will make this method try alternate methods
   // as described above.
-  static bool RegisterChromeForProtocol(BrowserDistribution* dist,
-                                        const base::FilePath& chrome_exe,
+  static bool RegisterChromeForProtocol(const base::FilePath& chrome_exe,
                                         const base::string16& unique_suffix,
                                         const base::string16& protocol,
                                         bool elevate_if_not_admin);
@@ -554,7 +563,6 @@ class ShellUtil {
   // Returns true if all shortcuts pointing to |target_exe| are successfully
   // deleted, including the case where no such shortcuts are found.
   static bool RemoveShortcuts(ShortcutLocation location,
-                              BrowserDistribution* dist,
                               ShellChange level,
                               const base::FilePath& target_exe);
 
@@ -568,7 +576,6 @@ class ShellUtil {
   // the vacuous case where no matching shortcuts are found.
   static bool RetargetShortcutsWithArgs(
       ShortcutLocation location,
-      BrowserDistribution* dist,
       ShellChange level,
       const base::FilePath& old_target_exe,
       const base::FilePath& new_target_exe);
@@ -581,7 +588,6 @@ class ShellUtil {
   // non-NULL and gets set at any point during this call.
   static bool ShortcutListMaybeRemoveUnknownArgs(
       ShortcutLocation location,
-      BrowserDistribution* dist,
       ShellChange level,
       const base::FilePath& chrome_exe,
       bool do_removal,
@@ -645,8 +651,9 @@ class ShellUtil {
 
   // This method converts all the RegistryEntries from the given list to
   // Set/CreateRegWorkItems and runs them using WorkItemList.
-  static bool AddRegistryEntries(HKEY root,
-                                 const ScopedVector<RegistryEntry>& entries);
+  static bool AddRegistryEntries(
+      HKEY root,
+      const std::vector<std::unique_ptr<RegistryEntry>>& entries);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ShellUtil);

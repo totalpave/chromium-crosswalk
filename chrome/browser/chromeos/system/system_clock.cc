@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos.h"
@@ -16,7 +17,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/login/login_state.h"
+#include "chromeos/login/login_state/login_state.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -32,7 +33,8 @@ namespace {
 void SetShouldUse24HourClock(bool use_24_hour_clock) {
   user_manager::User* const user =
       user_manager::UserManager::Get()->GetActiveUser();
-  CHECK(user);
+  if (!user)
+    return;  // May occur if not running on a device.
   Profile* const profile = ProfileHelper::Get()->GetProfileByUser(user);
   if (!profile)
     return;  // May occur in tests or if not running on a device.
@@ -121,8 +123,9 @@ void SystemClock::Observe(int type,
   }
 }
 
-void SystemClock::ActiveUserChanged(const user_manager::User* /*user*/) {
-  UpdateClockType();
+void SystemClock::ActiveUserChanged(const user_manager::User* active_user) {
+  if (active_user && active_user->is_profile_created())
+    UpdateClockType();
 }
 
 void SystemClock::AddObserver(SystemClockObserver* observer) {
@@ -141,6 +144,7 @@ void SystemClock::OnActiveProfileChanged(Profile* profile) {
   user_pref_registrar_->Add(
       prefs::kUse24HourClock,
       base::Bind(&SystemClock::UpdateClockType, base::Unretained(this)));
+  UpdateClockType();
 }
 
 bool SystemClock::OnProfileDestroyed(Profile* profile) {
@@ -212,8 +216,8 @@ void SystemClock::UpdateClockType() {
   // a local owner.
   if (user_manager::UserManager::Get()->IsCurrentUserOwner())
     SetShouldUse24HourClock(ShouldUse24HourClock());
-  FOR_EACH_OBSERVER(SystemClockObserver, observer_list_,
-                    OnSystemClockChanged(this));
+  for (auto& observer : observer_list_)
+    observer.OnSystemClockChanged(this);
 }
 
 }  // namespace system

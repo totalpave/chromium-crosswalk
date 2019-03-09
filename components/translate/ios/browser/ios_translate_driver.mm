@@ -5,39 +5,37 @@
 #include "components/translate/ios/browser/ios_translate_driver.h"
 
 #include "base/bind.h"
-#include "base/location.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "components/translate/core/browser/translate_client.h"
 #include "components/translate/core/browser/translate_manager.h"
+#include "components/translate/core/common/language_detection_details.h"
 #include "components/translate/core/common/translate_constants.h"
-#include "components/translate/core/common/translate_errors.h"
 #include "components/translate/core/common/translate_metrics.h"
 #import "components/translate/ios/browser/js_language_detection_manager.h"
 #import "components/translate/ios/browser/js_translate_manager.h"
 #import "components/translate/ios/browser/language_detection_controller.h"
 #import "components/translate/ios/browser/translate_controller.h"
 #include "ios/web/public/browser_state.h"
-#include "ios/web/public/load_committed_details.h"
 #include "ios/web/public/navigation_item.h"
 #include "ios/web/public/navigation_manager.h"
 #include "ios/web/public/referrer.h"
 #include "ios/web/public/web_state/js/crw_js_injection_receiver.h"
+#include "ios/web/public/web_state/navigation_context.h"
 #include "ios/web/public/web_state/web_state.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
 namespace translate {
 
 namespace {
-// The delay we wait in milliseconds before checking whether the translation has
-// finished.
-// Note: This should be kept in sync with the constant of the same name in
-// translate_ios.js.
-const int kTranslateStatusCheckDelayMs = 400;
 // Language name passed to the Translate element for it to detect the language.
 const char kAutoDetectionLanguage[] = "auto";
 
@@ -47,7 +45,7 @@ IOSTranslateDriver::IOSTranslateDriver(
     web::WebState* web_state,
     web::NavigationManager* navigation_manager,
     TranslateManager* translate_manager)
-    : web::WebStateObserver(web_state),
+    : web_state_(web_state),
       navigation_manager_(navigation_manager),
       translate_manager_(translate_manager->GetWeakPtr()),
       page_seq_no_(0),
@@ -55,7 +53,9 @@ IOSTranslateDriver::IOSTranslateDriver(
       weak_method_factory_(this) {
   DCHECK(navigation_manager_);
   DCHECK(translate_manager_);
-  DCHECK(web::WebStateObserver::web_state());
+  DCHECK(web_state_);
+
+  web_state_->AddObserver(this);
 
   CRWJSInjectionReceiver* receiver = web_state->GetJSInjectionReceiver();
   DCHECK(receiver);
@@ -67,10 +67,7 @@ IOSTranslateDriver::IOSTranslateDriver(
   language_detection_controller_.reset(new LanguageDetectionController(
       web_state, language_detection_manager,
       translate_manager_->translate_client()->GetPrefs()));
-  language_detection_callback_subscription_ =
-      language_detection_controller_->RegisterLanguageDetectionCallback(
-          base::Bind(&IOSTranslateDriver::OnLanguageDetermined,
-                     base::Unretained(this)));
+
   // Create the translate controller.
   JsTranslateManager* js_translate_manager = static_cast<JsTranslateManager*>(
       [receiver instanceOfClass:[JsTranslateManager class]]);
@@ -80,36 +77,57 @@ IOSTranslateDriver::IOSTranslateDriver(
 }
 
 IOSTranslateDriver::~IOSTranslateDriver() {
+  if (web_state_) {
+    web_state_->RemoveObserver(this);
+    web_state_ = nullptr;
+  }
+}
+
+language::IOSLanguageDetectionTabHelper::Callback
+IOSTranslateDriver::CreateLanguageDetectionCallback() {
+  return base::Bind(&IOSTranslateDriver::OnLanguageDetermined,
+                    weak_method_factory_.GetWeakPtr());
 }
 
 void IOSTranslateDriver::OnLanguageDetermined(
-    const LanguageDetectionController::DetectionDetails& details) {
+    const translate::LanguageDetectionDetails& details) {
   if (!translate_manager_)
     return;
   translate_manager_->GetLanguageState().LanguageDetermined(
       details.adopted_language, true);
 
-  if (web_state())
+  translate_manager_->translate_client()->RecordLanguageDetectionEvent(details);
+
+  if (web_state_)
     translate_manager_->InitiateTranslation(details.adopted_language);
 }
 
 // web::WebStateObserver methods
 
-void IOSTranslateDriver::NavigationItemCommitted(
-    const web::LoadCommittedDetails& load_details) {
+void IOSTranslateDriver::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  DCHECK_EQ(web_state_, web_state);
+
   // Interrupt pending translations and reset various data when a navigation
   // happens. Desktop does it by tracking changes in the page ID, and
   // through WebContentObserver, but these concepts do not exist on iOS.
-  if (!load_details.is_in_page) {
+  if (!navigation_context->IsSameDocument()) {
     ++page_seq_no_;
     translate_manager_->set_current_seq_no(page_seq_no_);
   }
 
-  // TODO(droger): support navigation types, like content/ does.
+  // TODO(crbug.com/925320): support navigation types, like content/ does.
   const bool reload = ui::PageTransitionCoreTypeIs(
-      load_details.item->GetTransitionType(), ui::PAGE_TRANSITION_RELOAD);
-  translate_manager_->GetLanguageState().DidNavigate(load_details.is_in_page,
-                                                     true, reload);
+      navigation_context->GetPageTransition(), ui::PAGE_TRANSITION_RELOAD);
+  translate_manager_->GetLanguageState().DidNavigate(
+      navigation_context->IsSameDocument(), true, reload, std::string(), false);
+}
+
+void IOSTranslateDriver::WebStateDestroyed(web::WebState* web_state) {
+  DCHECK_EQ(web_state_, web_state);
+  web_state_->RemoveObserver(this);
+  web_state_ = nullptr;
 }
 
 // TranslateDriver methods
@@ -145,20 +163,20 @@ void IOSTranslateDriver::RevertTranslation(int page_seq_no) {
   translate_controller_->RevertTranslation();
 }
 
-bool IOSTranslateDriver::IsOffTheRecord() {
+bool IOSTranslateDriver::IsIncognito() {
   return navigation_manager_->GetBrowserState()->IsOffTheRecord();
 }
 
 const std::string& IOSTranslateDriver::GetContentsMimeType() {
-  return web_state()->GetContentsMimeType();
+  return web_state_->GetContentsMimeType();
 }
 
 const GURL& IOSTranslateDriver::GetLastCommittedURL() {
-  return web_state()->GetLastCommittedURL();
+  return web_state_->GetLastCommittedURL();
 }
 
 const GURL& IOSTranslateDriver::GetVisibleURL() {
-  return web_state()->GetVisibleURL();
+  return web_state_->GetVisibleURL();
 }
 
 bool IOSTranslateDriver::HasCurrentPage() {
@@ -166,9 +184,10 @@ bool IOSTranslateDriver::HasCurrentPage() {
 }
 
 void IOSTranslateDriver::OpenUrlInNewTab(const GURL& url) {
-  web::WebState::OpenURLParams params(url, web::Referrer(), NEW_FOREGROUND_TAB,
+  web::WebState::OpenURLParams params(url, web::Referrer(),
+                                      WindowOpenDisposition::NEW_FOREGROUND_TAB,
                                       ui::PAGE_TRANSITION_LINK, false);
-  web_state()->OpenURL(params);
+  web_state_->OpenURL(params);
 }
 
 void IOSTranslateDriver::TranslationDidSucceed(
@@ -200,31 +219,23 @@ void IOSTranslateDriver::TranslationDidSucceed(
                                      translate_errors);
 }
 
-void IOSTranslateDriver::CheckTranslateStatus(
-    const std::string& source_language,
-    const std::string& target_language,
-    int page_seq_no) {
-  if (!IsPageValid(page_seq_no))
-    return;
-  translate_controller_->CheckTranslateStatus();
-}
-
 bool IOSTranslateDriver::IsPageValid(int page_seq_no) const {
   bool user_navigated_away = page_seq_no != page_seq_no_;
-  return !user_navigated_away && web_state();
+  return !user_navigated_away && web_state_;
 }
 
 // TranslateController::Observer implementation.
 
-void IOSTranslateDriver::OnTranslateScriptReady(bool success,
-                                                double load_time,
-                                                double ready_time) {
+void IOSTranslateDriver::OnTranslateScriptReady(
+    TranslateErrors::Type error_type,
+    double load_time,
+    double ready_time) {
   if (!IsPageValid(pending_page_seq_no_))
     return;
 
-  if (!success) {
+  if (error_type != TranslateErrors::NONE) {
     translate_manager_->PageTranslated(source_language_, target_language_,
-                                       TranslateErrors::INITIALIZATION_ERROR);
+                                       error_type);
     return;
   }
 
@@ -235,25 +246,19 @@ void IOSTranslateDriver::OnTranslateScriptReady(bool success,
                            ? source_language_
                            : kAutoDetectionLanguage;
   translate_controller_->StartTranslation(source_language_, target_language_);
-  // Check the status of the translation -- after a delay.
-  base::MessageLoop::current()->PostDelayedTask(
-      FROM_HERE, base::Bind(&IOSTranslateDriver::CheckTranslateStatus,
-                            weak_method_factory_.GetWeakPtr(), source_language_,
-                            target_language_, pending_page_seq_no_),
-      base::TimeDelta::FromMilliseconds(kTranslateStatusCheckDelayMs));
 }
 
 void IOSTranslateDriver::OnTranslateComplete(
-    bool success,
+    TranslateErrors::Type error_type,
     const std::string& original_language,
     double translation_time) {
   if (!IsPageValid(pending_page_seq_no_))
     return;
 
-  if (!success) {
-    // TODO(toyoshim): Check |errorCode| of translate.js and notify it here.
+  if (error_type != TranslateErrors::NONE) {
     translate_manager_->PageTranslated(source_language_, target_language_,
-                                       TranslateErrors::TRANSLATION_ERROR);
+                                       error_type);
+    return;
   }
 
   TranslationDidSucceed(source_language_, target_language_,

@@ -25,6 +25,7 @@ class SystemThemeX11 : public CustomThemeSupplier {
   void StopUsingTheme() override;
   bool GetTint(int id, color_utils::HSL* hsl) const override;
   bool GetColor(int id, SkColor* color) const override;
+  bool GetDisplayProperty(int id, int* result) const override;
   gfx::Image GetImageNamed(int id) override;
   bool HasCustomImage(int id) const override;
 
@@ -46,7 +47,7 @@ SystemThemeX11::SystemThemeX11(PrefService* pref_service)
 void SystemThemeX11::StartUsingTheme() {
   pref_service_->SetBoolean(prefs::kUsesSystemTheme, true);
   // Have the former theme notify its observers of change.
-  ui::NativeThemeAura::instance()->NotifyObservers();
+  ui::NativeTheme::GetInstanceForNativeUi()->NotifyObservers();
 }
 
 void SystemThemeX11::StopUsingTheme() {
@@ -61,15 +62,19 @@ bool SystemThemeX11::GetTint(int id, color_utils::HSL* hsl) const {
 }
 
 bool SystemThemeX11::GetColor(int id, SkColor* color) const {
-  return linux_ui_ && linux_ui_->GetColor(id, color);
+  return linux_ui_ && linux_ui_->GetColor(id, color, pref_service_);
+}
+
+bool SystemThemeX11::GetDisplayProperty(int id, int* result) const {
+  return linux_ui_ && linux_ui_->GetDisplayProperty(id, result);
 }
 
 gfx::Image SystemThemeX11::GetImageNamed(int id) {
-  return linux_ui_ ? linux_ui_->GetThemeImageNamed(id) : gfx::Image();
+  return gfx::Image();
 }
 
 bool SystemThemeX11::HasCustomImage(int id) const {
-  return linux_ui_ && linux_ui_->HasCustomImage(id);
+  return false;
 }
 
 SystemThemeX11::~SystemThemeX11() {}
@@ -100,4 +105,15 @@ bool ThemeServiceAuraX11::UsingSystemTheme() const {
   const CustomThemeSupplier* theme_supplier = get_theme_supplier();
   return theme_supplier &&
          theme_supplier->get_theme_type() == CustomThemeSupplier::NATIVE_X11;
+}
+
+void ThemeServiceAuraX11::FixInconsistentPreferencesIfNeeded() {
+  PrefService* prefs = profile()->GetPrefs();
+
+  // When using the system theme, the theme ID should match the default. Give
+  // precedence to the non-default theme specified.
+  if (GetThemeID() != ThemeService::kDefaultThemeID &&
+      prefs->GetBoolean(prefs::kUsesSystemTheme)) {
+    prefs->SetBoolean(prefs::kUsesSystemTheme, false);
+  }
 }

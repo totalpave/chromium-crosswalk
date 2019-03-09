@@ -7,34 +7,31 @@
 #include <string.h>
 
 #include "base/bind.h"
-#include "base/strings/stringize_macros.h"
 #include "gpu/command_buffer/service/context_group.h"
 #include "gpu/command_buffer/service/context_state.h"
-#include "gpu/command_buffer/service/gles2_cmd_decoder.h"
+#include "gpu/command_buffer/service/decoder_context.h"
 #include "gpu/command_buffer/service/texture_manager.h"
-#include "gpu/ipc/common/android/surface_texture_peer.h"
+#include "gpu/ipc/common/android/scoped_surface_request_conduit.h"
 #include "gpu/ipc/common/gpu_messages.h"
 #include "gpu/ipc/service/gpu_channel.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gl/gl_context.h"
-#include "ui/gl/gl_helper.h"
-#include "ui/gl/scoped_binders.h"
 #include "ui/gl/scoped_make_current.h"
 
 namespace gpu {
 
 using gles2::ContextGroup;
-using gles2::GLES2Decoder;
 using gles2::TextureManager;
 using gles2::TextureRef;
 
 // static
-bool StreamTexture::Create(GpuCommandBufferStub* owner_stub,
+bool StreamTexture::Create(CommandBufferStub* owner_stub,
                            uint32_t client_texture_id,
                            int stream_id) {
-  GLES2Decoder* decoder = owner_stub->decoder();
-  TextureManager* texture_manager =
-      decoder->GetContextGroup()->texture_manager();
+  gles2::ContextGroup* context_group =
+      owner_stub->decoder_context()->GetContextGroup();
+  DCHECK(context_group);
+  TextureManager* texture_manager = context_group->texture_manager();
   TextureRef* texture = texture_manager->GetTexture(client_texture_id);
 
   if (texture && (!texture->texture()->target() ||
@@ -58,27 +55,21 @@ bool StreamTexture::Create(GpuCommandBufferStub* owner_stub,
   return false;
 }
 
-StreamTexture::StreamTexture(GpuCommandBufferStub* owner_stub,
+StreamTexture::StreamTexture(CommandBufferStub* owner_stub,
                              int32_t route_id,
                              uint32_t texture_id)
-    : surface_texture_(gl::SurfaceTexture::Create(texture_id)),
+    : surface_owner_(SurfaceOwner::Create(texture_id)),
       size_(0, 0),
       has_pending_frame_(false),
       owner_stub_(owner_stub),
       route_id_(route_id),
       has_listener_(false),
       texture_id_(texture_id),
-      framebuffer_(0),
-      vertex_shader_(0),
-      fragment_shader_(0),
-      program_(0),
-      vertex_buffer_(0),
-      u_xform_location_(-1),
       weak_factory_(this) {
   owner_stub->AddDestructionObserver(this);
   memset(current_matrix_, 0, sizeof(current_matrix_));
-  owner_stub->channel()->AddRoute(route_id, owner_stub->stream_id(), this);
-  surface_texture_->SetFrameAvailableCallback(base::Bind(
+  owner_stub->channel()->AddRoute(route_id, owner_stub->sequence_id(), this);
+  surface_owner_->SetFrameAvailableCallback(base::BindRepeating(
       &StreamTexture::OnFrameAvailable, weak_factory_.GetWeakPtr()));
 }
 
@@ -91,65 +82,46 @@ StreamTexture::~StreamTexture() {
 
 // gpu::gles2::GLStreamTextureMatrix implementation
 void StreamTexture::GetTextureMatrix(float xform[16]) {
-  if (surface_texture_) {
+  if (surface_owner_) {
     UpdateTexImage();
-    surface_texture_->GetTransformMatrix(current_matrix_);
+    surface_owner_->GetTransformMatrix(current_matrix_);
   }
   memcpy(xform, current_matrix_, sizeof(current_matrix_));
+  YInvertMatrix(xform);
 }
 
-void StreamTexture::OnWillDestroyStub() {
+void StreamTexture::OnWillDestroyStub(bool have_context) {
   owner_stub_->RemoveDestructionObserver(this);
   owner_stub_->channel()->RemoveRoute(route_id_);
 
-  if (framebuffer_) {
-    std::unique_ptr<ui::ScopedMakeCurrent> scoped_make_current(
-        MakeStubCurrent());
-
-    glDeleteProgram(program_);
-    glDeleteShader(vertex_shader_);
-    glDeleteShader(fragment_shader_);
-    glDeleteBuffersARB(1, &vertex_buffer_);
-    glDeleteFramebuffersEXT(1, &framebuffer_);
-    program_ = 0;
-    vertex_shader_ = 0;
-    fragment_shader_ = 0;
-    vertex_buffer_ = 0;
-    framebuffer_ = 0;
-    u_xform_location_ = -1;
-  }
-
-  owner_stub_ = NULL;
+  owner_stub_ = nullptr;
 
   // If the owner goes away, there is no need to keep the SurfaceTexture around.
   // The GL texture will keep working regardless with the currently bound frame.
-  surface_texture_ = NULL;
-}
-
-void StreamTexture::Destroy(bool have_context) {
-  NOTREACHED();
+  surface_owner_ = nullptr;
 }
 
 std::unique_ptr<ui::ScopedMakeCurrent> StreamTexture::MakeStubCurrent() {
   std::unique_ptr<ui::ScopedMakeCurrent> scoped_make_current;
   bool needs_make_current =
-      !owner_stub_->decoder()->GetGLContext()->IsCurrent(NULL);
+      !owner_stub_->decoder_context()->GetGLContext()->IsCurrent(nullptr);
   if (needs_make_current) {
     scoped_make_current.reset(new ui::ScopedMakeCurrent(
-        owner_stub_->decoder()->GetGLContext(), owner_stub_->surface()));
+        owner_stub_->decoder_context()->GetGLContext(),
+        owner_stub_->surface()));
   }
   return scoped_make_current;
 }
 
 void StreamTexture::UpdateTexImage() {
-  DCHECK(surface_texture_.get());
+  DCHECK(surface_owner_.get());
   DCHECK(owner_stub_);
 
   if (!has_pending_frame_) return;
 
   std::unique_ptr<ui::ScopedMakeCurrent> scoped_make_current(MakeStubCurrent());
 
-  surface_texture_->UpdateTexImage();
+  surface_owner_->UpdateTexImage();
 
   has_pending_frame_ = false;
 
@@ -159,7 +131,7 @@ void StreamTexture::UpdateTexImage() {
     // far as the current context is concerned, but if we temporarily change
     // it, we have to keep the state intact in *that* context also.
     const gles2::ContextState* state =
-        owner_stub_->decoder()->GetContextState();
+        owner_stub_->decoder_context()->GetContextState();
     const gles2::TextureUnit& active_unit =
         state->texture_units[state->active_texture_unit];
     glBindTexture(GL_TEXTURE_EXTERNAL_OES,
@@ -173,8 +145,8 @@ bool StreamTexture::CopyTexImage(unsigned target) {
   if (target != GL_TEXTURE_EXTERNAL_OES)
     return false;
 
-  if (!owner_stub_ || !surface_texture_.get())
-    return true;
+  if (!owner_stub_ || !surface_owner_.get())
+    return false;
 
   GLint texture_id;
   glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &texture_id);
@@ -189,8 +161,10 @@ bool StreamTexture::CopyTexImage(unsigned target) {
 
   UpdateTexImage();
 
-  TextureManager* texture_manager =
-      owner_stub_->decoder()->GetContextGroup()->texture_manager();
+  gles2::ContextGroup* context_group =
+      owner_stub_->decoder_context()->GetContextGroup();
+  DCHECK(context_group);
+  TextureManager* texture_manager = context_group->texture_manager();
   gles2::Texture* texture =
       texture_manager->GetTextureForServiceId(texture_id_);
   if (texture) {
@@ -224,7 +198,8 @@ bool StreamTexture::OnMessageReceived(const IPC::Message& message) {
   bool handled = true;
   IPC_BEGIN_MESSAGE_MAP(StreamTexture, message)
     IPC_MESSAGE_HANDLER(GpuStreamTextureMsg_StartListening, OnStartListening)
-    IPC_MESSAGE_HANDLER(GpuStreamTextureMsg_EstablishPeer, OnEstablishPeer)
+    IPC_MESSAGE_HANDLER(GpuStreamTextureMsg_ForwardForSurfaceRequest,
+                        OnForwardForSurfaceRequest)
     IPC_MESSAGE_HANDLER(GpuStreamTextureMsg_SetSize, OnSetSize)
     IPC_MESSAGE_UNHANDLED(handled = false)
   IPC_END_MESSAGE_MAP()
@@ -238,14 +213,18 @@ void StreamTexture::OnStartListening() {
   has_listener_ = true;
 }
 
-void StreamTexture::OnEstablishPeer(int32_t primary_id, int32_t secondary_id) {
+void StreamTexture::OnForwardForSurfaceRequest(
+    const base::UnguessableToken& request_token) {
   if (!owner_stub_)
     return;
 
-  base::ProcessHandle process = owner_stub_->channel()->GetClientPID();
+  ScopedSurfaceRequestConduit::GetInstance()
+      ->ForwardSurfaceOwnerForSurfaceRequest(request_token,
+                                             surface_owner_.get());
+}
 
-  SurfaceTexturePeer::GetInstance()->EstablishSurfaceTexturePeer(
-      process, surface_texture_, primary_id, secondary_id);
+StreamTexture::BindOrCopy StreamTexture::ShouldBindOrCopy() {
+  return COPY;
 }
 
 bool StreamTexture::BindTexImage(unsigned target) {
@@ -254,7 +233,6 @@ bool StreamTexture::BindTexImage(unsigned target) {
 }
 
 void StreamTexture::ReleaseTexImage(unsigned target) {
-  NOTREACHED();
 }
 
 bool StreamTexture::CopyTexSubImage(unsigned target,
@@ -263,11 +241,14 @@ bool StreamTexture::CopyTexSubImage(unsigned target,
   return false;
 }
 
-bool StreamTexture::ScheduleOverlayPlane(gfx::AcceleratedWidget widget,
-                                         int z_order,
-                                         gfx::OverlayTransform transform,
-                                         const gfx::Rect& bounds_rect,
-                                         const gfx::RectF& crop_rect) {
+bool StreamTexture::ScheduleOverlayPlane(
+    gfx::AcceleratedWidget widget,
+    int z_order,
+    gfx::OverlayTransform transform,
+    const gfx::Rect& bounds_rect,
+    const gfx::RectF& crop_rect,
+    bool enable_blend,
+    std::unique_ptr<gfx::GpuFence> gpu_fence) {
   NOTREACHED();
   return false;
 }

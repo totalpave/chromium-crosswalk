@@ -21,7 +21,13 @@ namespace contents {
 class WebContents;
 }
 
-class WebstoreInstallerTest : public ExtensionBrowserTest {
+namespace net {
+namespace test_server {
+struct HttpRequest;
+}
+}
+
+class WebstoreInstallerTest : public extensions::ExtensionBrowserTest {
  public:
   WebstoreInstallerTest(const std::string& webstore_domain,
                         const std::string& test_data_path,
@@ -31,7 +37,6 @@ class WebstoreInstallerTest : public ExtensionBrowserTest {
   ~WebstoreInstallerTest() override;
 
   void SetUpCommandLine(base::CommandLine* command_line) override;
-  void SetUpInProcessBrowserTestFixture() override;
   void SetUpOnMainThread() override;
 
  protected:
@@ -54,6 +59,10 @@ class WebstoreInstallerTest : public ExtensionBrowserTest {
   // Runs a test without waiting for any results from the renderer.
   void RunTestAsync(const std::string& test_function_name);
 
+  // Can be overridden to inspect requests to the embedded test server.
+  virtual void ProcessServerRequest(
+      const net::test_server::HttpRequest& request);
+
   // Configures command line switches to simulate a user accepting the install
   // prompt.
   void AutoAcceptInstall();
@@ -68,8 +77,6 @@ class WebstoreInstallerTest : public ExtensionBrowserTest {
   std::string verified_domain_;
   std::string unverified_domain_;
   std::string test_gallery_url_;
-
-  base::ScopedTempDir download_directory_;
 
   std::unique_ptr<extensions::ScopedTestDialogAutoConfirm>
       install_auto_confirm_;

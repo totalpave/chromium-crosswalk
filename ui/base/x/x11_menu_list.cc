@@ -8,6 +8,7 @@
 
 #include "base/memory/singleton.h"
 #include "ui/base/x/x11_util.h"
+#include "ui/gfx/x/x11_atom_cache.h"
 
 namespace ui {
 
@@ -17,8 +18,7 @@ XMenuList* XMenuList::GetInstance() {
 }
 
 XMenuList::XMenuList()
-    : menu_type_atom_(GetAtom("_NET_WM_WINDOW_TYPE_MENU")) {
-}
+    : menu_type_atom_(gfx::GetAtom("_NET_WM_WINDOW_TYPE_MENU")) {}
 
 XMenuList::~XMenuList() {
   menus_.clear();
@@ -34,8 +34,7 @@ void XMenuList::MaybeRegisterMenu(XID menu) {
 }
 
 void XMenuList::MaybeUnregisterMenu(XID menu) {
-  std::vector<XID>::iterator iter = std::find(menus_.begin(), menus_.end(),
-                                              menu);
+  auto iter = std::find(menus_.begin(), menus_.end(), menu);
   if (iter == menus_.end())
     return;
   menus_.erase(iter);

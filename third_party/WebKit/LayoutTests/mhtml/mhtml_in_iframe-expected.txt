@@ -1,8 +1,0 @@
-This page has an IFrame that tries to load some MHTML.
-The load should fail.
-
-
---------
-Frame: '<!--framePath //<!--frame0-->-->'
---------
-

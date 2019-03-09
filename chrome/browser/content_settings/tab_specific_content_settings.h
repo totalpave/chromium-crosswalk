@@ -9,6 +9,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 
 #include "base/macros.h"
@@ -16,7 +17,6 @@
 #include "base/observer_list.h"
 #include "base/scoped_observer.h"
 #include "build/build_config.h"
-#include "chrome/browser/browsing_data/cookies_tree_model.h"
 #include "chrome/browser/content_settings/local_shared_objects_container.h"
 #include "chrome/common/custom_handlers/protocol_handler.h"
 #include "components/content_settings/core/browser/content_settings_observer.h"
@@ -30,12 +30,17 @@
 class HostContentSettingsMap;
 
 namespace content {
-class RenderViewHost;
+class NavigationHandle;
 }
 
-namespace net {
-class CookieOptions;
-}
+namespace url {
+class Origin;
+}  // namespace url
+
+// TODO(msramek): Media is storing their state in TabSpecificContentSettings:
+// |microphone_camera_state_| without being tied to a single content setting.
+// This state is not ideal, potential solution is to save this information via
+// content::WebContentsUserData
 
 // This class manages state about permissions, content settings, cookies and
 // site data for a specific WebContents. It tracks which content was accessed
@@ -96,24 +101,23 @@ class TabSpecificContentSettings
   // current page or while loading it. |blocked_by_policy| should be true, if
   // reading cookies was blocked due to the user's content settings. In that
   // case, this function should invoke OnContentBlocked.
-  static void CookiesRead(int render_process_id,
-                          int render_frame_id,
-                          const GURL& url,
-                          const GURL& first_party_url,
-                          const net::CookieList& cookie_list,
-                          bool blocked_by_policy);
+  static void CookiesRead(
+      const base::Callback<content::WebContents*(void)>& wc_getter,
+      const GURL& url,
+      const GURL& first_party_url,
+      const net::CookieList& cookie_list,
+      bool blocked_by_policy);
 
   // Called when a specific cookie in the current page was changed.
   // |blocked_by_policy| should be true, if the cookie was blocked due to the
   // user's content settings. In that case, this function should invoke
   // OnContentBlocked.
-  static void CookieChanged(int render_process_id,
-                            int render_frame_id,
-                            const GURL& url,
-                            const GURL& first_party_url,
-                            const std::string& cookie_line,
-                            const net::CookieOptions& options,
-                            bool blocked_by_policy);
+  static void CookieChanged(
+      const base::Callback<content::WebContents*(void)>& wc_getter,
+      const GURL& url,
+      const GURL& first_party_url,
+      const net::CanonicalCookie& cookie,
+      bool blocked_by_policy);
 
   // Called when a specific Web database in the current page was accessed. If
   // access was blocked due to the user's content settings,
@@ -122,8 +126,6 @@ class TabSpecificContentSettings
   static void WebDatabaseAccessed(int render_process_id,
                                   int render_frame_id,
                                   const GURL& url,
-                                  const base::string16& name,
-                                  const base::string16& display_name,
                                   bool blocked_by_policy);
 
   // Called when a specific DOM storage area in the current page was
@@ -143,7 +145,6 @@ class TabSpecificContentSettings
   static void IndexedDBAccessed(int render_process_id,
                                 int render_frame_id,
                                 const GURL& url,
-                                const base::string16& description,
                                 bool blocked_by_policy);
 
   // Called when a specific file system in the current page was accessed.
@@ -157,45 +158,51 @@ class TabSpecificContentSettings
 
   // Called when a specific Service Worker scope was accessed.
   // If access was blocked due to the user's content settings,
-  // |blocked_by_policy| should be true, and this function should invoke
-  // OnContentBlocked.
-  static void ServiceWorkerAccessed(int render_process_id,
-                                    int render_frame_id,
-                                    const GURL& scope,
-                                    bool blocked_by_policy);
+  // |blocked_by_policy_javascript| or/and |blocked_by_policy_cookie| should be
+  // true, and this function should invoke OnContentBlocked for JavaScript
+  // or/and cookies respectively.
+  static void ServiceWorkerAccessed(
+      const base::Callback<content::WebContents*(void)>& wc_getter,
+      const GURL& scope,
+      bool blocked_by_policy_javascript,
+      bool blocked_by_policy_cookie);
 
-  // Resets the |content_blocked_| and |content_allowed_| arrays, except for
-  // CONTENT_SETTINGS_TYPE_COOKIES related information.
-  // TODO(vabr): Only public for tests. Move to a test client.
-  void ClearBlockedContentSettingsExceptForCookies();
+  // Called when a specific Shared Worker was accessed.
+  static void SharedWorkerAccessed(int render_process_id,
+                                   int render_frame_id,
+                                   const GURL& worker_url,
+                                   const std::string& name,
+                                   const url::Origin& constructor_origin,
+                                   bool blocked_by_policy);
 
-  // Resets all cookies related information.
-  // TODO(vabr): Only public for tests. Move to a test client.
-  void ClearCookieSpecificContentSettings();
+  // Resets the |content_settings_status_|, except for
+  // information which are needed for navigation: CONTENT_SETTINGS_TYPE_COOKIES
+  // for cookies and service workers, and CONTENT_SETTINGS_TYPE_JAVASCRIPT for
+  // service workers.
+  // Only public for tests.
+  void ClearContentSettingsExceptForNavigationRelatedSettings();
+
+  // Resets navigation related information (CONTENT_SETTINGS_TYPE_COOKIES and
+  // CONTENT_SETTINGS_TYPE_JAVASCRIPT).
+  // Only public for tests.
+  void ClearNavigationRelatedContentSettings();
+
+  // Notifies that a Flash download has been blocked.
+  void FlashDownloadBlocked();
 
   // Changes the |content_blocked_| entry for popups.
-  void SetPopupsBlocked(bool blocked);
+  void ClearPopupsBlocked();
 
-  // Changes the |content_blocked_| entry for downloads.
-  void SetDownloadsBlocked(bool blocked);
+  // Called when audio has been blocked on the page.
+  void OnAudioBlocked();
 
   // Returns whether a particular kind of content has been blocked for this
   // page.
   bool IsContentBlocked(ContentSettingsType content_type) const;
 
-  // Returns true if content blockage was indicated to the user.
-  bool IsBlockageIndicated(ContentSettingsType content_type) const;
-
-  void SetBlockageHasBeenIndicated(ContentSettingsType content_type);
-
   // Returns whether a particular kind of content has been allowed. Currently
   // only tracks cookies.
   bool IsContentAllowed(ContentSettingsType content_type) const;
-
-  // Returns the names of plugins that have been blocked for this tab.
-  const std::vector<base::string16>& blocked_plugin_names() const {
-    return blocked_plugin_names_;
-  }
 
   const GURL& media_stream_access_origin() const {
     return media_stream_access_origin_;
@@ -209,12 +216,12 @@ class TabSpecificContentSettings
     return media_stream_requested_video_device_;
   }
 
-  // TODO(vabr): Only public for tests. Move to a test client.
+  // Only public for tests.
   const std::string& media_stream_selected_audio_device() const {
     return media_stream_selected_audio_device_;
   }
 
-  // TODO(vabr): Only public for tests. Move to a test client.
+  // Only public for tests.
   const std::string& media_stream_selected_video_device() const {
     return media_stream_selected_video_device_;
   }
@@ -273,25 +280,15 @@ class TabSpecificContentSettings
     return pending_protocol_handler_setting_;
   }
 
-  // Returns the |LocalSharedObjectsCounter| instances corresponding to all
+  // Returns the |LocalSharedObjectsContainer| instances corresponding to all
   // allowed, and blocked, respectively, local shared objects like cookies,
   // local storage, ... .
-  const LocalSharedObjectsCounter& allowed_local_shared_objects() const {
+  const LocalSharedObjectsContainer& allowed_local_shared_objects() const {
     return allowed_local_shared_objects_;
   }
 
-  const LocalSharedObjectsCounter& blocked_local_shared_objects() const {
+  const LocalSharedObjectsContainer& blocked_local_shared_objects() const {
     return blocked_local_shared_objects_;
-  }
-
-  // Creates a new copy of a CookiesTreeModel for all allowed, and blocked,
-  // respectively, local shared objects.
-  std::unique_ptr<CookiesTreeModel> CreateAllowedCookiesTreeModel() const {
-    return allowed_local_shared_objects_.CreateCookiesTreeModel();
-  }
-
-  std::unique_ptr<CookiesTreeModel> CreateBlockedCookiesTreeModel() const {
-    return blocked_local_shared_objects_.CreateCookiesTreeModel();
   }
 
   bool load_plugins_link_enabled() { return load_plugins_link_enabled_; }
@@ -304,39 +301,38 @@ class TabSpecificContentSettings
   void SetPepperBrokerAllowed(bool allowed);
 
   // Message handlers.
-  // TODO(vabr): Only public for tests. Move to a test client.
+  // Only public for tests.
   void OnContentBlocked(ContentSettingsType type);
   void OnContentBlockedWithDetail(ContentSettingsType type,
                                   const base::string16& details);
   void OnContentAllowed(ContentSettingsType type);
 
   // These methods are invoked on the UI thread by the static functions above.
-  // TODO(vabr): Only public for tests. Move to a test client.
+  // Only public for tests.
   void OnCookiesRead(const GURL& url,
                      const GURL& first_party_url,
                      const net::CookieList& cookie_list,
                      bool blocked_by_policy);
-  void OnCookieChanged(const GURL& url,
-                       const GURL& first_party_url,
-                       const std::string& cookie_line,
-                       const net::CookieOptions& options,
-                       bool blocked_by_policy);
+  void OnCookieChange(const GURL& url,
+                      const GURL& first_party_url,
+                      const net::CanonicalCookie& cookie,
+                      bool blocked_by_policy);
   void OnFileSystemAccessed(const GURL& url,
                             bool blocked_by_policy);
-  void OnIndexedDBAccessed(const GURL& url,
-                           const base::string16& description,
-                           bool blocked_by_policy);
+  void OnIndexedDBAccessed(const GURL& url, bool blocked_by_policy);
   void OnLocalStorageAccessed(const GURL& url,
                               bool local,
                               bool blocked_by_policy);
-  void OnServiceWorkerAccessed(const GURL& scope, bool blocked_by_policy);
-  void OnWebDatabaseAccessed(const GURL& url,
-                             const base::string16& name,
-                             const base::string16& display_name,
-                             bool blocked_by_policy);
+  void OnServiceWorkerAccessed(const GURL& scope,
+                               bool blocked_by_policy_javascript,
+                               bool blocked_by_policy_cookie);
+  void OnSharedWorkerAccessed(const GURL& worker_url,
+                              const std::string& name,
+                              const url::Origin& constructor_origin,
+                              bool blocked_by_policy);
+  void OnWebDatabaseAccessed(const GURL& url, bool blocked_by_policy);
   void OnGeolocationPermissionSet(const GURL& requesting_frame,
                                   bool allowed);
-  void OnDidUseKeygen(const GURL& url);
 #if defined(OS_ANDROID) || defined(OS_CHROMEOS)
   void OnProtectedMediaIdentifierPermissionSet(const GURL& requesting_frame,
                                                bool allowed);
@@ -366,24 +362,32 @@ class TabSpecificContentSettings
   // Block all content. Used for testing content setting bubbles.
   void BlockAllContentForTesting();
 
+  // Stores content settings changed by the user via PageInfo.
+  void ContentSettingChangedViaPageInfo(ContentSettingsType type);
+
+  // Returns true if the user changed the given ContentSettingsType via PageInfo
+  // since the last navigation.
+  bool HasContentSettingChangedViaPageInfo(ContentSettingsType type) const;
+
  private:
   friend class content::WebContentsUserData<TabSpecificContentSettings>;
 
   explicit TabSpecificContentSettings(content::WebContents* tab);
+
+  void MaybeSendRendererContentSettingsRules(
+      content::WebContents* web_contents);
 
   // content::WebContentsObserver overrides.
   void RenderFrameForInterstitialPageCreated(
       content::RenderFrameHost* render_frame_host) override;
   bool OnMessageReceived(const IPC::Message& message,
                          content::RenderFrameHost* render_frame_host) override;
-  void DidNavigateMainFrame(
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
-  void DidStartProvisionalLoadForFrame(
-      content::RenderFrameHost* render_frame_host,
-      const GURL& validated_url,
-      bool is_error_page,
-      bool is_iframe_srcdoc) override;
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
+  void ReadyToCommitNavigation(
+      content::NavigationHandle* navigation_handle) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void AppCacheAccessed(const GURL& manifest_url,
                         bool blocked_by_policy) override;
 
@@ -391,7 +395,7 @@ class TabSpecificContentSettings
   void OnContentSettingChanged(const ContentSettingsPattern& primary_pattern,
                                const ContentSettingsPattern& secondary_pattern,
                                ContentSettingsType content_type,
-                               std::string resource_identifier) override;
+                               const std::string& resource_identifier) override;
 
   // Notifies all registered |SiteDataObserver|s.
   void NotifySiteDataObservers();
@@ -402,23 +406,27 @@ class TabSpecificContentSettings
   // Clears the MIDI settings.
   void ClearMidiContentSettings();
 
+  // Clears settings changed by the user via PageInfo since the last navigation.
+  void ClearContentSettingsChangedViaPageInfo();
+
   // Updates Geolocation settings on navigation.
-  void GeolocationDidNavigate(
-      const content::LoadCommittedDetails& details);
+  void GeolocationDidNavigate(content::NavigationHandle* navigation_handle);
 
   // Updates MIDI settings on navigation.
-  void MidiDidNavigate(const content::LoadCommittedDetails& details);
+  void MidiDidNavigate(content::NavigationHandle* navigation_handle);
 
   // All currently registered |SiteDataObserver|s.
-  base::ObserverList<SiteDataObserver> observer_list_;
+  base::ObserverList<SiteDataObserver>::Unchecked observer_list_;
 
   struct ContentSettingsStatus {
     bool blocked;
-    bool blockage_indicated_to_user;
     bool allowed;
   };
   // Stores which content setting types actually have blocked content.
   std::map<ContentSettingsType, ContentSettingsStatus> content_settings_status_;
+
+  // Profile-bound, this will outlive this class (which is WebContents bound).
+  HostContentSettingsMap* map_;
 
   // Stores the blocked/allowed cookies.
   LocalSharedObjectsContainer allowed_local_shared_objects_;
@@ -445,9 +453,6 @@ class TabSpecificContentSettings
   // the user opens the bubble and makes changes multiple times.
   ContentSetting pending_protocol_handler_setting_;
 
-  // The name(s) of the plugin(s) being blocked.
-  std::vector<base::string16> blocked_plugin_names_;
-
   // Stores whether the user can load blocked plugins on this page.
   bool load_plugins_link_enabled_;
 
@@ -469,6 +474,12 @@ class TabSpecificContentSettings
 
   // Observer to watch for content settings changed.
   ScopedObserver<HostContentSettingsMap, content_settings::Observer> observer_;
+
+  // Stores content settings changed by the user via page info since the last
+  // navigation. Used to determine whether to display the settings in page info.
+  std::set<ContentSettingsType> content_settings_changed_via_page_info_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(TabSpecificContentSettings);
 };

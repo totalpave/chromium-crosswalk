@@ -7,19 +7,21 @@
 
 #include <stdint.h>
 
-#include <deque>
 #include <memory>
 
 #include "base/callback.h"
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/numerics/safe_math.h"
 #include "base/strings/string_piece.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "media/base/audio_codecs.h"
 #include "media/base/media_export.h"
 #include "media/base/video_codecs.h"
 #include "third_party/libwebm/source/mkvmuxer.hpp"
+#include "ui/gfx/geometry/size.h"
 
 namespace gfx {
 class Size;
@@ -35,38 +37,53 @@ class AudioParameters;
 // including at least a Track Section and a number of SimpleBlocks each
 // containing a single encoded video or audio frame. WebM container has no
 // Trailer.
-// Clients will push encoded VPx video frames and Opus audio frames one by one
-// via OnEncoded{Video|Audio}(). libwebm will eventually ping the WriteDataCB
-// passed on contructor with the wrapped encoded data.
+// Clients will push encoded VPx or AV1 video frames and Opus or PCM audio
+// frames one by one via OnEncoded{Video|Audio}(). libwebm will eventually ping
+// the WriteDataCB passed on contructor with the wrapped encoded data.
 // WebmMuxer is designed for use on a single thread.
 // [1] http://www.webmproject.org/docs/container/
 // [2] http://www.matroska.org/technical/specs/index.html
-class MEDIA_EXPORT WebmMuxer : public NON_EXPORTED_BASE(mkvmuxer::IMkvWriter) {
+class MEDIA_EXPORT WebmMuxer : public mkvmuxer::IMkvWriter {
  public:
   // Callback to be called when WebmMuxer is ready to write a chunk of data,
   // either any file header or a SingleBlock.
   using WriteDataCB = base::Callback<void(base::StringPiece)>;
 
-  // |codec| can be VP8 or VP9 and should coincide with whatever is sent in
-  // OnEncodedVideo().
-  WebmMuxer(VideoCodec codec,
+  // Container for the parameters that muxer uses that is extracted from
+  // media::VideoFrame.
+  struct MEDIA_EXPORT VideoParameters {
+    VideoParameters(scoped_refptr<media::VideoFrame> frame);
+    ~VideoParameters();
+    gfx::Size visible_rect_size;
+    double frame_rate;
+  };
+
+  // |video_codec| should coincide with whatever is sent in OnEncodedVideo(),
+  // and the same applies to audio.
+  WebmMuxer(VideoCodec video_codec,
+            AudioCodec audio_codec,
             bool has_video_,
             bool has_audio_,
             const WriteDataCB& write_data_callback);
   ~WebmMuxer() override;
 
   // Functions to add video and audio frames with |encoded_data.data()|
-  // to WebM Segment.
-  void OnEncodedVideo(const scoped_refptr<VideoFrame>& video_frame,
+  // to WebM Segment. Either one returns true on success.
+  // |encoded_alpha| represents the encode output of alpha channel when
+  // available, can be nullptr otherwise.
+  bool OnEncodedVideo(const VideoParameters& params,
                       std::unique_ptr<std::string> encoded_data,
+                      std::unique_ptr<std::string> encoded_alpha,
                       base::TimeTicks timestamp,
                       bool is_key_frame);
-  void OnEncodedAudio(const media::AudioParameters& params,
+  bool OnEncodedAudio(const media::AudioParameters& params,
                       std::unique_ptr<std::string> encoded_data,
                       base::TimeTicks timestamp);
 
   void Pause();
   void Resume();
+
+  void ForceOneLibWebmErrorForTesting() { force_one_libwebm_error_ = true; }
 
  private:
   friend class WebmMuxerTest;
@@ -87,8 +104,9 @@ class MEDIA_EXPORT WebmMuxer : public NON_EXPORTED_BASE(mkvmuxer::IMkvWriter) {
   void ElementStartNotify(mkvmuxer::uint64 element_id,
                           mkvmuxer::int64 position) override;
 
-  // Helper to simplify saving frames.
-  void AddFrame(std::unique_ptr<std::string> encoded_data,
+  // Helper to simplify saving frames. Returns true on success.
+  bool AddFrame(std::unique_ptr<std::string> encoded_data,
+                std::unique_ptr<std::string> encoded_alpha_data,
                 uint8_t track_index,
                 base::TimeDelta timestamp,
                 bool is_key_frame);
@@ -96,8 +114,9 @@ class MEDIA_EXPORT WebmMuxer : public NON_EXPORTED_BASE(mkvmuxer::IMkvWriter) {
   // Used to DCHECK that we are called on the correct thread.
   base::ThreadChecker thread_checker_;
 
-  // Video Codec configured on construction.
+  // Video and audio codecs configured on construction.
   const VideoCodec video_codec_;
+  const AudioCodec audio_codec_;
 
   // Caller-side identifiers to interact with |segment_|, initialised upon
   // first frame arrival to Add{Video, Audio}Track().
@@ -126,23 +145,28 @@ class MEDIA_EXPORT WebmMuxer : public NON_EXPORTED_BASE(mkvmuxer::IMkvWriter) {
 
   // The MkvMuxer active element.
   mkvmuxer::Segment segment_;
+  // Flag to force the next call to a |segment_| method to return false.
+  bool force_one_libwebm_error_;
 
   // Hold on to all encoded video frames to dump them with and when audio is
   // received, if expected, since WebM headers can only be written once.
   struct EncodedVideoFrame {
     EncodedVideoFrame(std::unique_ptr<std::string> data,
+                      std::unique_ptr<std::string> alpha_data,
                       base::TimeTicks timestamp,
                       bool is_keyframe);
     ~EncodedVideoFrame();
 
     std::unique_ptr<std::string> data;
+    std::unique_ptr<std::string> alpha_data;
     base::TimeTicks timestamp;
     bool is_keyframe;
 
    private:
     DISALLOW_IMPLICIT_CONSTRUCTORS(EncodedVideoFrame);
   };
-  std::deque<std::unique_ptr<EncodedVideoFrame>> encoded_frames_queue_;
+  base::circular_deque<std::unique_ptr<EncodedVideoFrame>>
+      encoded_frames_queue_;
 
   DISALLOW_COPY_AND_ASSIGN(WebmMuxer);
 };

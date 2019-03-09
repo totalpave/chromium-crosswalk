@@ -8,20 +8,24 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/metrics/statistics_recorder.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_task_environment.h"
 #include "chrome/browser/chromeos/input_method/input_method_configuration.h"
-#include "chrome/browser/chromeos/input_method/mock_input_method_manager.h"
+#include "chrome/browser/chromeos/input_method/mock_input_method_manager_impl.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client_test_helper.h"
 #include "chrome/browser/ui/input_method/input_method_engine_base.h"
+#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/test_service_manager_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/chromeos/extension_ime_util.h"
 #include "ui/base/ime/chromeos/mock_component_extension_ime_manager_delegate.h"
-#include "ui/base/ime/chromeos/mock_ime_input_context_handler.h"
 #include "ui/base/ime/ime_bridge.h"
 #include "ui/base/ime/ime_engine_handler_interface.h"
+#include "ui/base/ime/mock_ime_input_context_handler.h"
 #include "ui/base/ime/text_input_flags.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -42,7 +46,8 @@ enum CallsBitmap {
   DEACTIVATED = 2U,
   ONFOCUS = 4U,
   ONBLUR = 8U,
-  ONCOMPOSITIONBOUNDSCHANGED = 16U
+  ONCOMPOSITIONBOUNDSCHANGED = 16U,
+  RESET = 32U
 };
 
 void InitInputMethod() {
@@ -66,7 +71,7 @@ void InitInputMethod() {
   comp_ime_manager->Initialize(
       std::unique_ptr<ComponentExtensionIMEManagerDelegate>(delegate));
 
-  MockInputMethodManager* manager = new MockInputMethodManager;
+  MockInputMethodManagerImpl* manager = new MockInputMethodManagerImpl;
   manager->SetComponentExtensionIMEManager(
       std::unique_ptr<ComponentExtensionIMEManager>(comp_ime_manager));
   InitializeForTesting(manager);
@@ -79,9 +84,11 @@ class TestObserver : public InputMethodEngineBase::Observer {
 
   void OnActivate(const std::string& engine_id) override {
     calls_bitmap_ |= ACTIVATE;
+    engine_id_ = engine_id;
   }
   void OnDeactivated(const std::string& engine_id) override {
     calls_bitmap_ |= DEACTIVATED;
+    engine_id_ = engine_id;
   }
   void OnFocus(
       const ui::IMEEngineHandlerInterface::InputContext& context) override {
@@ -92,7 +99,7 @@ class TestObserver : public InputMethodEngineBase::Observer {
   void OnKeyEvent(
       const std::string& engine_id,
       const InputMethodEngineBase::KeyboardEvent& event,
-      ui::IMEEngineHandlerInterface::KeyEventDoneCallback& key_data) override {}
+      ui::IMEEngineHandlerInterface::KeyEventDoneCallback key_data) override {}
   void OnInputContextUpdate(
       const ui::IMEEngineHandlerInterface::InputContext& context) override {}
   void OnCandidateClicked(
@@ -110,7 +117,11 @@ class TestObserver : public InputMethodEngineBase::Observer {
       const std::vector<gfx::Rect>& bounds) override {
     calls_bitmap_ |= ONCOMPOSITIONBOUNDSCHANGED;
   }
-  void OnReset(const std::string& engine_id) override {}
+  void OnScreenProjectionChanged(bool is_projected) override {}
+  void OnReset(const std::string& engine_id) override {
+    calls_bitmap_ |= RESET;
+    engine_id_ = engine_id;
+  }
 
   unsigned char GetCallsBitmapAndReset() {
     unsigned char ret = calls_bitmap_;
@@ -118,26 +129,38 @@ class TestObserver : public InputMethodEngineBase::Observer {
     return ret;
   }
 
+  std::string GetEngineIdAndReset() {
+    std::string engine_id{engine_id_};
+    engine_id_.clear();
+    return engine_id;
+  }
+
  private:
   unsigned char calls_bitmap_;
+  std::string engine_id_;
 
   DISALLOW_COPY_AND_ASSIGN(TestObserver);
 };
 
 class InputMethodEngineTest : public testing::Test {
  public:
-  InputMethodEngineTest() : observer_(NULL), input_view_("inputview.html") {
+  InputMethodEngineTest() : observer_(nullptr), input_view_("inputview.html") {
     languages_.push_back("en-US");
     layouts_.push_back("us");
     InitInputMethod();
     ui::IMEBridge::Initialize();
-    mock_ime_input_context_handler_.reset(new MockIMEInputContextHandler());
+    mock_ime_input_context_handler_.reset(new ui::MockIMEInputContextHandler());
     ui::IMEBridge::Get()->SetInputContextHandler(
         mock_ime_input_context_handler_.get());
+
+    chrome_keyboard_controller_client_test_helper_ =
+        ChromeKeyboardControllerClientTestHelper::InitializeWithFake();
   }
+
   ~InputMethodEngineTest() override {
-    ui::IMEBridge::Get()->SetInputContextHandler(NULL);
+    ui::IMEBridge::Get()->SetInputContextHandler(nullptr);
     engine_.reset();
+    chrome_keyboard_controller_client_test_helper_.reset();
     Shutdown();
   }
 
@@ -153,7 +176,9 @@ class InputMethodEngineTest : public testing::Test {
 
   void FocusIn(ui::TextInputType input_type) {
     ui::IMEEngineHandlerInterface::InputContext input_context(
-        input_type, ui::TEXT_INPUT_MODE_DEFAULT, ui::TEXT_INPUT_FLAG_NONE);
+        input_type, ui::TEXT_INPUT_MODE_DEFAULT, ui::TEXT_INPUT_FLAG_NONE,
+        ui::TextInputClient::FOCUS_REASON_OTHER,
+        false /* should_do_learning */);
     engine_->FocusIn(input_context);
     ui::IMEBridge::Get()->SetCurrentInputContext(input_context);
   }
@@ -166,7 +191,12 @@ class InputMethodEngineTest : public testing::Test {
   GURL options_page_;
   GURL input_view_;
 
-  std::unique_ptr<MockIMEInputContextHandler> mock_ime_input_context_handler_;
+  content::TestBrowserThreadBundle thread_bundle_;
+  content::TestServiceManagerContext service_manager_context_;
+  std::unique_ptr<ui::MockIMEInputContextHandler>
+      mock_ime_input_context_handler_;
+  std::unique_ptr<ChromeKeyboardControllerClientTestHelper>
+      chrome_keyboard_controller_client_test_helper_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(InputMethodEngineTest);
@@ -181,23 +211,29 @@ TEST_F(InputMethodEngineTest, TestSwitching) {
   EXPECT_EQ(NONE, observer_->GetCallsBitmapAndReset());
   engine_->Enable(kTestImeComponentId);
   EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   engine_->Disable();
   EXPECT_EQ(DEACTIVATED, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   // Enable/disable without focus.
   engine_->FocusOut();
   EXPECT_EQ(NONE, observer_->GetCallsBitmapAndReset());
   engine_->Enable(kTestImeComponentId);
   EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   engine_->Disable();
   EXPECT_EQ(DEACTIVATED, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   // Focus change when enabled.
   engine_->Enable(kTestImeComponentId);
   EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   engine_->FocusOut();
   EXPECT_EQ(ONBLUR, observer_->GetCallsBitmapAndReset());
   // Focus change when disabled.
   engine_->Disable();
   EXPECT_EQ(DEACTIVATED, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   FocusIn(ui::TEXT_INPUT_TYPE_TEXT);
   EXPECT_EQ(NONE, observer_->GetCallsBitmapAndReset());
   engine_->FocusOut();
@@ -211,17 +247,21 @@ TEST_F(InputMethodEngineTest, TestSwitching_Password_3rd_Party) {
   EXPECT_EQ(NONE, observer_->GetCallsBitmapAndReset());
   engine_->Enable(kTestImeComponentId);
   EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   engine_->Disable();
   EXPECT_EQ(DEACTIVATED, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   // Focus change when enabled.
   engine_->Enable(kTestImeComponentId);
   EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   engine_->FocusOut();
   EXPECT_EQ(ONBLUR, observer_->GetCallsBitmapAndReset());
   FocusIn(ui::TEXT_INPUT_TYPE_PASSWORD);
   EXPECT_EQ(ONFOCUS, observer_->GetCallsBitmapAndReset());
   engine_->Disable();
   EXPECT_EQ(DEACTIVATED, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
 }
 
 TEST_F(InputMethodEngineTest, TestSwitching_Password_Whitelisted) {
@@ -231,17 +271,36 @@ TEST_F(InputMethodEngineTest, TestSwitching_Password_Whitelisted) {
   EXPECT_EQ(NONE, observer_->GetCallsBitmapAndReset());
   engine_->Enable(kTestImeComponentId);
   EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   engine_->Disable();
   EXPECT_EQ(DEACTIVATED, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   // Focus change when enabled.
   engine_->Enable(kTestImeComponentId);
   EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
   engine_->FocusOut();
   EXPECT_EQ(ONBLUR, observer_->GetCallsBitmapAndReset());
   FocusIn(ui::TEXT_INPUT_TYPE_PASSWORD);
   EXPECT_EQ(ONFOCUS, observer_->GetCallsBitmapAndReset());
   engine_->Disable();
   EXPECT_EQ(DEACTIVATED, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
+}
+
+// Tests input.ime.onReset API.
+TEST_F(InputMethodEngineTest, TestReset) {
+  CreateEngine(false);
+  // Enables the extension with focus.
+  engine_->Enable(kTestImeComponentId);
+  FocusIn(ui::TEXT_INPUT_TYPE_URL);
+  EXPECT_EQ(ACTIVATE | ONFOCUS, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
+
+  // Resets the engine.
+  engine_->Reset();
+  EXPECT_EQ(RESET, observer_->GetCallsBitmapAndReset());
+  EXPECT_EQ(kTestImeComponentId, observer_->GetEngineIdAndReset());
 }
 
 TEST_F(InputMethodEngineTest, TestHistograms) {
@@ -249,16 +308,16 @@ TEST_F(InputMethodEngineTest, TestHistograms) {
   FocusIn(ui::TEXT_INPUT_TYPE_TEXT);
   engine_->Enable(kTestImeComponentId);
   std::vector<InputMethodEngineBase::SegmentInfo> segments;
-  int context = engine_->GetCotextIdForTesting();
+  int context = engine_->GetContextIdForTesting();
   std::string error;
   base::HistogramTester histograms;
-  engine_->SetComposition(context, "test", 0, 0, 0, segments, NULL);
+  engine_->SetComposition(context, "test", 0, 0, 0, segments, nullptr);
   engine_->CommitText(context, "input", &error);
-  engine_->SetComposition(context, "test", 0, 0, 0, segments, NULL);
+  engine_->SetComposition(context, "test", 0, 0, 0, segments, nullptr);
   engine_->CommitText(context,
                       "\xE5\x85\xA5\xE5\x8A\x9B",  // 2 UTF-8 characters
                       &error);
-  engine_->SetComposition(context, "test", 0, 0, 0, segments, NULL);
+  engine_->SetComposition(context, "test", 0, 0, 0, segments, nullptr);
   engine_->CommitText(context, "input\xE5\x85\xA5\xE5\x8A\x9B", &error);
   histograms.ExpectTotalCount("InputMethod.CommitLength", 3);
   histograms.ExpectBucketCount("InputMethod.CommitLength", 5, 1);

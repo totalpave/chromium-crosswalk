@@ -6,12 +6,13 @@
 
 #include <stddef.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "content/browser/frame_host/debug_urls.h"
 #include "content/browser/webui/web_ui_impl.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/url_constants.h"
+#include "content/public/common/url_utils.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -28,18 +29,17 @@ static bool HandleViewSource(GURL* url, BrowserContext* browser_context) {
         url::kHttpScheme,
         url::kHttpsScheme,
         url::kFtpScheme,
-        kChromeDevToolsScheme,
         kChromeUIScheme,
         url::kFileScheme,
         url::kFileSystemScheme
     };
 
     // Merge all the schemes for which view-source is allowed by default, with
-    // the WebUI schemes defined by the ContentBrowserClient.
+    // the view-source schemes defined by the ContentBrowserClient.
     std::vector<std::string> all_allowed_sub_schemes;
-    for (size_t i = 0; i < arraysize(default_allowed_sub_schemes); ++i)
+    for (size_t i = 0; i < base::size(default_allowed_sub_schemes); ++i)
       all_allowed_sub_schemes.push_back(default_allowed_sub_schemes[i]);
-    GetContentClient()->browser()->GetAdditionalWebUISchemes(
+    GetContentClient()->browser()->GetAdditionalViewSourceSchemes(
         &all_allowed_sub_schemes);
 
     bool is_sub_scheme_allowed = false;
@@ -83,7 +83,7 @@ BrowserURLHandler* BrowserURLHandler::GetInstance() {
 // static
 BrowserURLHandler::URLHandler BrowserURLHandler::null_handler() {
   // Required for VS2010: http://connect.microsoft.com/VisualStudio/feedback/details/520043/error-converting-from-null-to-a-pointer-type-in-std-pair
-  return NULL;
+  return nullptr;
 }
 
 // static
@@ -95,10 +95,11 @@ BrowserURLHandlerImpl::BrowserURLHandlerImpl() :
     fixup_handler_(nullptr) {
   AddHandlerPair(&DebugURLHandler, BrowserURLHandlerImpl::null_handler());
 
-  GetContentClient()->browser()->BrowserURLHandlerCreated(this);
-
-  // view-source:
+  // view-source: should take precedence over other rewriters, so it's
+  // important to add it before calling up to the content client.
   AddHandlerPair(&HandleViewSource, &ReverseViewSource);
+
+  GetContentClient()->browser()->BrowserURLHandlerCreated(this);
 }
 
 BrowserURLHandlerImpl::~BrowserURLHandlerImpl() {
@@ -150,6 +151,10 @@ bool BrowserURLHandlerImpl::ReverseURLRewrite(
     }
   }
   return false;
+}
+
+void BrowserURLHandlerImpl::SetFixupHandlerForTesting(URLHandler handler) {
+  fixup_handler_ = handler;
 }
 
 }  // namespace content

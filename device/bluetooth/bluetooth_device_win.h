@@ -7,11 +7,15 @@
 
 #include <stdint.h>
 
+#include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "base/sequenced_task_runner.h"
 #include "device/bluetooth/bluetooth_device.h"
 #include "device/bluetooth/bluetooth_export.h"
 #include "device/bluetooth/bluetooth_task_manager_win.h"
@@ -19,18 +23,19 @@
 namespace device {
 
 class BluetoothAdapterWin;
+class BluetoothRemoteGattServiceWin;
 class BluetoothServiceRecordWin;
 class BluetoothSocketThread;
 
-class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceWin : public BluetoothDevice {
+class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceWin
+    : public BluetoothDevice,
+      public BluetoothAdapter::Observer {
  public:
   explicit BluetoothDeviceWin(
       BluetoothAdapterWin* adapter,
       const BluetoothTaskManagerWin::DeviceState& device_state,
-      const scoped_refptr<base::SequencedTaskRunner>& ui_task_runner,
-      const scoped_refptr<BluetoothSocketThread>& socket_thread,
-      net::NetLog* net_log,
-      const net::NetLog::Source& net_log_source);
+      scoped_refptr<base::SequencedTaskRunner> ui_task_runner,
+      scoped_refptr<BluetoothSocketThread> socket_thread);
   ~BluetoothDeviceWin() override;
 
   // BluetoothDevice override
@@ -41,18 +46,22 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceWin : public BluetoothDevice {
   uint16_t GetProductID() const override;
   uint16_t GetDeviceID() const override;
   uint16_t GetAppearance() const override;
+  base::Optional<std::string> GetName() const override;
   bool IsPaired() const override;
   bool IsConnected() const override;
   bool IsGattConnected() const override;
   bool IsConnectable() const override;
   bool IsConnecting() const override;
-  UUIDList GetUUIDs() const override;
-  int16_t GetInquiryRSSI() const override;
-  int16_t GetInquiryTxPower() const override;
+  UUIDSet GetUUIDs() const override;
+  base::Optional<int8_t> GetInquiryRSSI() const override;
+  base::Optional<int8_t> GetInquiryTxPower() const override;
   bool ExpectingPinCode() const override;
   bool ExpectingPasskey() const override;
   bool ExpectingConfirmation() const override;
   void GetConnectionInfo(const ConnectionInfoCallback& callback) override;
+  void SetConnectionLatency(ConnectionLatency connection_latency,
+                            const base::Closure& callback,
+                            const ErrorCallback& error_callback) override;
   void Connect(PairingDelegate* pairing_delegate,
                const base::Closure& callback,
                const ConnectErrorCallback& error_callback) override;
@@ -73,9 +82,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceWin : public BluetoothDevice {
       const BluetoothUUID& uuid,
       const ConnectToServiceCallback& callback,
       const ConnectToServiceErrorCallback& error_callback) override;
-  void CreateGattConnection(
-      const GattConnectionCallback& callback,
-      const ConnectErrorCallback& error_callback) override;
 
   // Used by BluetoothProfileWin to retrieve the service record for the given
   // |uuid|.
@@ -90,16 +96,17 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceWin : public BluetoothDevice {
   // |device_state|.
   void Update(const BluetoothTaskManagerWin::DeviceState& device_state);
 
+  // Notify |service| discovery complete, |service| is a remote GATT service of
+  // this device.
+  void GattServiceDiscoveryComplete(BluetoothRemoteGattServiceWin* service);
+
  protected:
   // BluetoothDevice override
-  std::string GetDeviceName() const override;
   void CreateGattConnectionImpl() override;
   void DisconnectGatt() override;
 
  private:
   friend class BluetoothAdapterWin;
-
-  typedef ScopedVector<BluetoothServiceRecordWin> ServiceRecordList;
 
   // Used by BluetoothAdapterWin to update the visible state during
   // discovery.
@@ -110,31 +117,31 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceWin : public BluetoothDevice {
 
   // Checks if GATT service with |uuid| and |attribute_handle| has already been
   // discovered.
-  bool IsGattServiceDiscovered(BluetoothUUID& uuid, uint16_t attribute_handle);
+  bool IsGattServiceDiscovered(const BluetoothUUID& uuid,
+                               uint16_t attribute_handle);
 
   // Checks if |service| still exist on device according to newly discovered
   // |service_state|.
   bool DoesGattServiceExist(
-      const ScopedVector<BluetoothTaskManagerWin::ServiceRecordState>&
-          service_state,
+      const std::vector<std::unique_ptr<
+          BluetoothTaskManagerWin::ServiceRecordState>>& service_state,
       BluetoothRemoteGattService* service);
 
   // Updates the GATT services with the services stored in |service_state|.
   void UpdateGattServices(
-      const ScopedVector<BluetoothTaskManagerWin::ServiceRecordState>&
+      const std::vector<
+          std::unique_ptr<BluetoothTaskManagerWin::ServiceRecordState>>&
           service_state);
 
   scoped_refptr<base::SequencedTaskRunner> ui_task_runner_;
   scoped_refptr<BluetoothSocketThread> socket_thread_;
-  net::NetLog* net_log_;
-  net::NetLog::Source net_log_source_;
 
   // The Bluetooth class of the device, a bitmask that may be decoded using
   // https://www.bluetooth.org/Technical/AssignedNumbers/baseband.htm
   uint32_t bluetooth_class_;
 
   // The name of the device, as supplied by the remote device.
-  std::string name_;
+  base::Optional<std::string> name_;
 
   // The Bluetooth address of the device.
   std::string address_;
@@ -143,16 +150,22 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothDeviceWin : public BluetoothDevice {
   // the device.
   bool paired_;
   bool connected_;
+  bool gatt_connected_;
 
   // Used to send change notifications when a device disappears during
   // discovery.
   bool visible_;
 
   // The services (identified by UUIDs) that this device provides.
-  UUIDList uuids_;
+  UUIDSet uuids_;
 
   // The service records retrieved from SDP.
-  ServiceRecordList service_record_list_;
+  std::vector<std::unique_ptr<BluetoothServiceRecordWin>> service_record_list_;
+
+  // The element of the set is the uuid / attribute handle pair of the
+  // BluetoothRemoteGattServiceWin instance.
+  std::set<std::pair<BluetoothUUID, uint16_t>>
+      discovery_completed_included_services_;
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothDeviceWin);
 };

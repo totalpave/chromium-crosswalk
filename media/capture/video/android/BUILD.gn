@@ -12,8 +12,6 @@ assert(is_android)
 
 source_set("android") {
   sources = [
-    "capture_jni_registrar.cc",
-    "capture_jni_registrar.h",
     "photo_capabilities.cc",
     "photo_capabilities.h",
     "video_capture_device_android.cc",
@@ -21,13 +19,15 @@ source_set("android") {
     "video_capture_device_factory_android.cc",
     "video_capture_device_factory_android.h",
   ]
-  configs += [
-    "//media:media_config",
-    "//media:media_implementation",
-  ]
+  configs += [ "//media:media_config" ]
   deps = [
     ":capture_jni_headers",
-    "//media/mojo/interfaces:image_capture",
+    "//media/capture:capture_device_specific",
+    "//media/capture/mojom:image_capture",
+    "//media/capture/mojom:image_capture_types",
+    "//third_party/libyuv",
+    "//ui/gfx:color_space",
+    "//ui/gfx/geometry",
   ]
 }
 
@@ -42,7 +42,9 @@ generate_jni("capture_jni_headers") {
 
 java_cpp_enum("media_java_enums_srcjar") {
   sources = [
-    "../video_capture_device.h",
+    "../../../base/video_facing.h",
+    "../video_capture_device_descriptor.h",
+    "photo_capabilities.h",
     "video_capture_device_android.h",
   ]
 }
@@ -50,6 +52,7 @@ java_cpp_enum("media_java_enums_srcjar") {
 android_library("capture_java") {
   deps = [
     "//base:base_java",
+    "//third_party/android_deps:android_support_annotations_java",
   ]
 
   srcjar_deps = [ ":media_java_enums_srcjar" ]
@@ -57,11 +60,9 @@ android_library("capture_java") {
   java_files = [
     "java/src/org/chromium/media/PhotoCapabilities.java",
     "java/src/org/chromium/media/VideoCapture.java",
-    "java/src/org/chromium/media/VideoCaptureAndroid.java",
     "java/src/org/chromium/media/VideoCaptureCamera.java",
     "java/src/org/chromium/media/VideoCaptureCamera2.java",
     "java/src/org/chromium/media/VideoCaptureFactory.java",
     "java/src/org/chromium/media/VideoCaptureFormat.java",
-    "java/src/org/chromium/media/VideoCaptureTango.java",
   ]
 }

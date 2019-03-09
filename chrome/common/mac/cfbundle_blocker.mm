@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "chrome/common/mac/cfbundle_blocker.h"
+#include "chrome/common/mac/cfbundle_blocker_private.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
@@ -13,32 +14,18 @@
 #include "base/mac/scoped_cftyperef.h"
 #include "base/mac/scoped_nsautorelease_pool.h"
 #import "base/mac/scoped_nsobject.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "third_party/mach_override/mach_override.h"
-
-extern "C" {
-
-// _CFBundleLoadExecutableAndReturnError is the internal implementation that
-// results in a dylib being loaded via dlopen. Both CFBundleLoadExecutable and
-// CFBundleLoadExecutableAndReturnError are funneled into this routine. Other
-// CFBundle functions may also call directly into here, perhaps due to
-// inlining their calls to CFBundleLoadExecutable.
-//
-// See CF-476.19/CFBundle.c (10.5.8), CF-550.43/CFBundle.c (10.6.8), and
-// CF-635/Bundle.c (10.7.0) and the disassembly of the shipping object code.
-//
-// Because this is a private function not declared by
-// <CoreFoundation/CoreFoundation.h>, provide a declaration here.
-Boolean _CFBundleLoadExecutableAndReturnError(CFBundleRef bundle,
-                                              Boolean force_global,
-                                              CFErrorRef* error);
-
-}  // extern "C"
 
 namespace chrome {
 namespace common {
 namespace mac {
+
+// Call this to execute the original implementation of
+// _CFBundleLoadExecutableAndReturnError.
+_CFBundleLoadExecutableAndReturnError_Type
+    g_original_underscore_cfbundle_load_executable_and_return_error;
 
 namespace {
 
@@ -63,22 +50,6 @@ NSArray* BlockedPaths() {
     // Everything in the suffix list has a trailing slash so as to only block
     // loading things contained in these directories.
     NSString* const blocked_suffixes[] = {
-#if !defined(__LP64__)
-      // Contextual menu manager plugins are unavailable to 64-bit processes.
-      // http://developer.apple.com/library/mac/releasenotes/Cocoa/AppKitOlderNotes.html#NSMenu
-      // Contextual menu plugins are loaded when a contextual menu is opened,
-      // for example, from within
-      // +[NSMenu popUpContextMenu:withEvent:forView:].
-      @"Contextual Menu Items/",
-
-      // Input managers are deprecated, would only be loaded under specific
-      // circumstances, and are entirely unavailable to 64-bit processes.
-      // http://developer.apple.com/library/mac/releasenotes/Cocoa/AppKitOlderNotes.html#NSInputManager
-      // Input managers are loaded when the NSInputManager class is
-      // initialized.
-      @"InputManagers/",
-#endif  // __LP64__
-
       // Don't load third-party scripting additions either. Scripting
       // additions are loaded by AppleScript from within AEProcessAppleEvent
       // in response to an Apple Event.
@@ -88,8 +59,8 @@ NSArray* BlockedPaths() {
       // printer drivers or Internet plugins.
     };
 
-    NSUInteger blocked_paths_count = [blocked_prefixes count] *
-                                     arraysize(blocked_suffixes);
+    NSUInteger blocked_paths_count =
+        [blocked_prefixes count] * base::size(blocked_suffixes);
 
     // Not autoreleased here, because the enclosing pool is scoped too
     // narrowly.
@@ -99,7 +70,7 @@ NSArray* BlockedPaths() {
     // Build a flat list by adding each suffix to each prefix.
     for (NSString* blocked_prefix in blocked_prefixes) {
       for (size_t blocked_suffix_index = 0;
-           blocked_suffix_index < arraysize(blocked_suffixes);
+           blocked_suffix_index < base::size(blocked_suffixes);
            ++blocked_suffix_index) {
         NSString* blocked_suffix = blocked_suffixes[blocked_suffix_index];
         NSString* blocked_path =
@@ -141,15 +112,6 @@ bool IsBundlePathBlocked(NSString* bundle_path) {
   // bundle_path is not inside any blocked_path from blocked_paths.
   return false;
 }
-
-typedef Boolean (*_CFBundleLoadExecutableAndReturnError_Type)(CFBundleRef,
-                                                              Boolean,
-                                                              CFErrorRef*);
-
-// Call this to execute the original implementation of
-// _CFBundleLoadExecutableAndReturnError.
-_CFBundleLoadExecutableAndReturnError_Type
-    g_original_underscore_cfbundle_load_executable_and_return_error;
 
 Boolean ChromeCFBundleLoadExecutableAndReturnError(CFBundleRef bundle,
                                                    Boolean force_global,
@@ -226,7 +188,7 @@ Boolean ChromeCFBundleLoadExecutableAndReturnError(CFBundleRef bundle,
 
 }  // namespace
 
-void EnableCFBundleBlocker() {
+bool EnableCFBundleBlocker() {
   mach_error_t err = mach_override_ptr(
       reinterpret_cast<void*>(_CFBundleLoadExecutableAndReturnError),
       reinterpret_cast<void*>(ChromeCFBundleLoadExecutableAndReturnError),
@@ -235,7 +197,9 @@ void EnableCFBundleBlocker() {
   if (err != err_none) {
     DLOG(WARNING) << "mach_override _CFBundleLoadExecutableAndReturnError: "
                   << err;
+    return false;
   }
+  return true;
 }
 
 namespace {
@@ -300,7 +264,7 @@ bool IsBundleAllowed(NSString* bundle_id, NSString* version) {
     { @"com.surteesstudios.BartenderHelperBundle", @"1.2.20" },
   };
 
-  for (size_t index = 0; index < arraysize(kAllowedBundles); ++index) {
+  for (size_t index = 0; index < base::size(kAllowedBundles); ++index) {
     const AllowedBundle& allowed_bundle = kAllowedBundles[index];
     NSString* allowed_bundle_id = allowed_bundle.bundle_id;
     NSUInteger allowed_bundle_id_length = [allowed_bundle_id length];

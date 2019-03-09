@@ -9,6 +9,7 @@
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
@@ -26,6 +27,7 @@
 #include "ui/wm/core/base_focus_rules.h"
 #include "ui/wm/core/default_activation_client.h"
 #include "ui/wm/core/focus_controller.h"
+#include "ui/wm/core/transient_window_manager.h"
 
 namespace views {
 namespace {
@@ -48,11 +50,11 @@ class TestFocusRules : public wm::BaseFocusRules {
   void set_can_activate(bool can_activate) { can_activate_ = can_activate; }
 
   // wm::BaseFocusRules overrides:
-  bool SupportsChildActivation(aura::Window* window) const override {
+  bool SupportsChildActivation(const aura::Window* window) const override {
     return true;
   }
 
-  bool CanActivateWindow(aura::Window* window) const override {
+  bool CanActivateWindow(const aura::Window* window) const override {
     return can_activate_;
   }
 
@@ -74,8 +76,8 @@ class NativeWidgetAuraTest : public aura::test::AuraTestBase {
     AuraTestBase::SetUp();
     test_focus_rules_ = new TestFocusRules;
     focus_controller_.reset(new wm::FocusController(test_focus_rules_));
-    aura::client::SetActivationClient(root_window(), focus_controller_.get());
-    host()->SetBounds(gfx::Rect(640, 480));
+    wm::SetActivationClient(root_window(), focus_controller_.get());
+    host()->SetBoundsInPixels(gfx::Rect(640, 480));
   }
 
  private:
@@ -308,9 +310,10 @@ class PropertyTestLayoutManager : public TestLayoutManagerBase {
  private:
   // aura::LayoutManager:
   void OnWindowAddedToLayout(aura::Window* child) override {
-    EXPECT_TRUE(child->GetProperty(aura::client::kCanMaximizeKey));
-    EXPECT_TRUE(child->GetProperty(aura::client::kCanMinimizeKey));
-    EXPECT_TRUE(child->GetProperty(aura::client::kCanResizeKey));
+    EXPECT_EQ(ws::mojom::kResizeBehaviorCanResize |
+                  ws::mojom::kResizeBehaviorCanMaximize |
+                  ws::mojom::kResizeBehaviorCanMinimize,
+              child->GetProperty(aura::client::kResizeBehaviorKey));
     added_ = true;
   }
 
@@ -337,8 +340,7 @@ class PropertyTestWidgetDelegate : public views::WidgetDelegate {
   DISALLOW_COPY_AND_ASSIGN(PropertyTestWidgetDelegate);
 };
 
-// Verifies that the kCanMaximizeKey/kCanMinimizeKey/kCanResizeKey have the
-// correct value when added to the layout manager.
+// Verifies the resize behavior when added to the layout manager.
 TEST_F(NativeWidgetAuraTest, TestPropertiesWhenAddedToLayout) {
   root_window()->SetBounds(gfx::Rect(0, 0, 640, 480));
   PropertyTestLayoutManager* layout_manager = new PropertyTestLayoutManager();
@@ -414,7 +416,7 @@ TEST_F(NativeWidgetAuraTest, DontCaptureOnGesture) {
   GestureTrackingView* view = new GestureTrackingView();
   GestureTrackingView* child = new GestureTrackingView();
   child->set_consume_gesture_event(false);
-  view->SetLayoutManager(new FillLayout);
+  view->SetLayoutManager(std::make_unique<FillLayout>());
   view->AddChildView(child);
   std::unique_ptr<TestWidget> widget(new TestWidget());
   Widget::InitParams params(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
@@ -426,9 +428,9 @@ TEST_F(NativeWidgetAuraTest, DontCaptureOnGesture) {
   widget->Show();
 
   ui::TouchEvent press(
-      ui::ET_TOUCH_PRESSED, gfx::Point(41, 51), 1, ui::EventTimeForNow());
-  ui::EventDispatchDetails details =
-      event_processor()->OnEventFromSource(&press);
+      ui::ET_TOUCH_PRESSED, gfx::Point(41, 51), ui::EventTimeForNow(),
+      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 1));
+  ui::EventDispatchDetails details = event_sink()->OnEventFromSource(&press);
   ASSERT_FALSE(details.dispatcher_destroyed);
   // Both views should get the press.
   EXPECT_TRUE(view->got_gesture_event());
@@ -441,8 +443,9 @@ TEST_F(NativeWidgetAuraTest, DontCaptureOnGesture) {
   // Release touch. Only |view| should get the release since that it consumed
   // the press.
   ui::TouchEvent release(
-      ui::ET_TOUCH_RELEASED, gfx::Point(250, 251), 1, ui::EventTimeForNow());
-  details = event_processor()->OnEventFromSource(&release);
+      ui::ET_TOUCH_RELEASED, gfx::Point(250, 251), ui::EventTimeForNow(),
+      ui::PointerDetails(ui::EventPointerType::POINTER_TYPE_TOUCH, 1));
+  details = event_sink()->OnEventFromSource(&release);
   ASSERT_FALSE(details.dispatcher_destroyed);
   EXPECT_TRUE(view->got_gesture_event());
   EXPECT_FALSE(child->got_gesture_event());
@@ -484,7 +487,7 @@ TEST_F(NativeWidgetAuraTest, PreferViewLayersToChildWindows) {
   views::View* view_with_layer = new views::View;
   parent_root->AddChildView(view_with_layer);
   view_with_layer->SetBounds(0, 0, 50, 50);
-  view_with_layer->SetPaintToLayer(true);
+  view_with_layer->SetPaintToLayer();
 
   // Make sure that |child| still gets the event.
   EXPECT_EQ(child->GetNativeWindow(),
@@ -514,6 +517,54 @@ TEST_F(NativeWidgetAuraTest, PreferViewLayersToChildWindows) {
   // Work around for bug in NativeWidgetAura.
   // TODO: fix bug and remove this.
   parent->Close();
+}
+
+// Verifies views with layers are targeted for events properly.
+TEST_F(NativeWidgetAuraTest,
+       ShouldDescendIntoChildForEventHandlingChecksVisibleBounds) {
+  // Create two widgets: |parent| and |child|. |child| is a child of |parent|.
+  View* parent_root_view = new View;
+  Widget parent;
+  Widget::InitParams parent_params(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  parent_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
+  parent_params.context = root_window();
+  parent.Init(parent_params);
+  parent.SetContentsView(parent_root_view);
+  parent.SetBounds(gfx::Rect(0, 0, 400, 400));
+  parent.Show();
+
+  Widget child;
+  Widget::InitParams child_params(Widget::InitParams::TYPE_CONTROL);
+  child_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
+  child_params.parent = parent.GetNativeWindow();
+  child.Init(child_params);
+  child.SetBounds(gfx::Rect(0, 0, 200, 200));
+  child.Show();
+
+  // Point is over |child|.
+  EXPECT_EQ(
+      child.GetNativeWindow(),
+      parent.GetNativeWindow()->GetEventHandlerForPoint(gfx::Point(50, 50)));
+
+  View* parent_root_view_child = new View;
+  parent_root_view->AddChildView(parent_root_view_child);
+  parent_root_view_child->SetBounds(0, 0, 10, 10);
+
+  // Create a View whose layer extends outside the bounds of its parent. Event
+  // targetting should only consider the visible bounds.
+  View* parent_root_view_child_child = new View;
+  parent_root_view_child->AddChildView(parent_root_view_child_child);
+  parent_root_view_child_child->SetBounds(0, 0, 100, 100);
+  parent_root_view_child_child->SetPaintToLayer();
+  parent_root_view_child_child->layer()->parent()->StackAtTop(
+      parent_root_view_child_child->layer());
+
+  // 20,20 is over |parent_root_view_child_child|'s layer, but not the visible
+  // bounds of |parent_root_view_child_child|, so |child| should be the event
+  // target.
+  EXPECT_EQ(
+      child.GetNativeWindow(),
+      parent.GetNativeWindow()->GetEventHandlerForPoint(gfx::Point(20, 20)));
 }
 
 // Verifies that widget->FlashFrame() sets aura::client::kDrawAttentionKey,
@@ -599,6 +650,40 @@ TEST_F(NativeWidgetAuraTest, PreventFocusOnNonActivableWindow) {
   views::test::TestInitialFocusWidgetDelegate delegate2(root_window());
   delegate2.GetWidget()->Show();
   EXPECT_TRUE(delegate2.view()->HasFocus());
+}
+
+// Tests that the transient child bubble window is only visible if the parent is
+// visible.
+TEST_F(NativeWidgetAuraTest, VisibilityOfChildBubbleWindow) {
+  // Create a parent window.
+  Widget parent;
+  Widget::InitParams parent_params(Widget::InitParams::TYPE_WINDOW);
+  parent_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
+  parent_params.context = root_window();
+  parent.Init(parent_params);
+  parent.SetBounds(gfx::Rect(0, 0, 480, 320));
+
+  // Add a child bubble window to the above parent window and show it.
+  Widget child;
+  Widget::InitParams child_params(Widget::InitParams::TYPE_BUBBLE);
+  child_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
+  child_params.parent = parent.GetNativeWindow();
+  child.Init(child_params);
+  child.SetBounds(gfx::Rect(0, 0, 200, 200));
+  child.Show();
+
+  // Check that the bubble window is added as the transient child and it is
+  // hidden because parent window is hidden.
+  wm::TransientWindowManager* manager =
+      wm::TransientWindowManager::GetOrCreate(child.GetNativeWindow());
+  EXPECT_EQ(parent.GetNativeWindow(), manager->transient_parent());
+  EXPECT_FALSE(parent.IsVisible());
+  EXPECT_FALSE(child.IsVisible());
+
+  // Show the parent window should make the transient child bubble visible.
+  parent.Show();
+  EXPECT_TRUE(parent.IsVisible());
+  EXPECT_TRUE(child.IsVisible());
 }
 
 }  // namespace

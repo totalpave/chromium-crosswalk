@@ -4,20 +4,35 @@
 
 #include "ui/wm/core/shadow_types.h"
 
-#include "ui/aura/window_property.h"
-
-DECLARE_WINDOW_PROPERTY_TYPE(wm::ShadowType);
+#include "ui/base/class_property.h"
 
 namespace wm {
 
-void SetShadowType(aura::Window* window, ShadowType shadow_type) {
-  window->SetProperty(kShadowTypeKey, shadow_type);
+DEFINE_UI_CLASS_PROPERTY_KEY(int, kShadowElevationKey, kShadowElevationDefault)
+
+void SetShadowElevation(aura::Window* window, int elevation) {
+  window->SetProperty(kShadowElevationKey, elevation);
 }
 
-ShadowType GetShadowType(aura::Window* window) {
-  return window->GetProperty(kShadowTypeKey);
+int GetDefaultShadowElevationForWindow(const aura::Window* window) {
+  switch (window->type()) {
+    case aura::client::WINDOW_TYPE_NORMAL:
+      return kShadowElevationInactiveWindow;
+
+    case aura::client::WINDOW_TYPE_MENU:
+    case aura::client::WINDOW_TYPE_TOOLTIP:
+      return kShadowElevationMenuOrTooltip;
+
+    default:
+      return kShadowElevationNone;
+  }
 }
 
-DEFINE_WINDOW_PROPERTY_KEY(ShadowType, kShadowTypeKey, SHADOW_TYPE_NONE);
+int GetShadowElevationConvertDefault(const aura::Window* window) {
+  int elevation = window->GetProperty(kShadowElevationKey);
+  return elevation == kShadowElevationDefault
+             ? GetDefaultShadowElevationForWindow(window)
+             : elevation;
+}
 
 }  // namespace wm

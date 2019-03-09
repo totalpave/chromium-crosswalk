@@ -7,7 +7,8 @@
 
 #include <stddef.h>
 
-#include "base/containers/hash_tables.h"
+#include <unordered_map>
+
 #include "base/files/file_path.h"
 
 namespace base {
@@ -49,7 +50,7 @@ class SubtreeSet {
   };
 
   typedef base::FilePath::StringType StringType;
-  typedef base::hash_map<StringType, Node> Subtrees;
+  typedef std::unordered_map<StringType, Node> Subtrees;
 
   // Contains the root of subtrees and all upward node to root.
   // Each subtree root has |contained_as_subtree_root| flag true.

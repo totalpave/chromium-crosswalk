@@ -13,7 +13,6 @@
 #include "ui/gfx/native_widget_types.h"
 
 class GURL;
-class PrefService;
 class Profile;
 
 namespace bookmarks {
@@ -53,9 +52,8 @@ void GetURLAndTitleToBookmark(content::WebContents* web_contents,
 // all tabs. This is a preference modifier, not a visual modifier.
 void ToggleBookmarkBarWhenVisible(content::BrowserContext* browser_context);
 
-// Returns a formatted version of |url| appropriate to display to a user with
-// the given |prefs|, which may be NULL.  When re-parsing this URL, clients
-// should call url_formatter::FixupURL().
+// Returns a formatted version of |url| appropriate to display to a user.
+// When re-parsing this URL, clients should call url_formatter::FixupURL().
 base::string16 FormatBookmarkURLForDisplay(const GURL& url);
 
 // Returns whether the Apps shortcut is enabled. If true, then the visibility
@@ -105,9 +103,7 @@ bool IsValidBookmarkDropLocation(Profile* profile,
 #if defined(TOOLKIT_VIEWS)
 // |text_color| is the color of associated text and is used to derive the icon's
 // color.
-// TODO(estade): If Mac wants to use these, return gfx::Image instead.
 gfx::ImageSkia GetBookmarkFolderIcon(SkColor text_color);
-gfx::ImageSkia GetBookmarkSupervisedFolderIcon(SkColor text_color);
 gfx::ImageSkia GetBookmarkManagedFolderIcon(SkColor text_color);
 #endif
 

@@ -5,9 +5,6 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_NTP_NEW_TAB_UI_H_
 #define CHROME_BROWSER_UI_WEBUI_NTP_NEW_TAB_UI_H_
 
-#include <map>
-#include <string>
-
 #include "base/macros.h"
 #include "base/strings/string16.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -38,9 +35,6 @@ class NewTabUI : public content::WebUIController {
   // search::NavEntryIsInstantNTP too!
   static bool IsNewTab(const GURL& url);
 
-  // Returns whether or not to show apps pages.
-  static bool ShouldShowApps();
-
   // TODO(dbeam): why are these static |Set*()| methods on NewTabUI?
 
   // Adds "url", "title", and "direction" keys on incoming dictionary, setting
@@ -63,8 +57,7 @@ class NewTabUI : public content::WebUIController {
     std::string GetSource() const override;
     void StartDataRequest(
         const std::string& path,
-        int render_process_id,
-        int render_frame_id,
+        const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
         const content::URLDataSource::GotDataCallback& callback) override;
     std::string GetMimeType(const std::string&) const override;
     bool ShouldReplaceExistingSource() const override;
@@ -73,24 +66,15 @@ class NewTabUI : public content::WebUIController {
     std::string GetContentSecurityPolicyImgSrc() const override;
     std::string GetContentSecurityPolicyChildSrc() const override;
 
-    // Adds |resource| to the source. |resource_id| is resource id or 0,
-    // which means return empty data set. |mime_type| is mime type of the
-    // resource.
-    void AddResource(const char* resource,
-                     const char* mime_type,
-                     int resource_id);
-
    private:
     // Pointer back to the original profile.
     Profile* profile_;
-
-    // Maps resource files to mime types an resource ids.
-    std::map<std::string, std::pair<std::string, int> > resource_map_;
 
     DISALLOW_COPY_AND_ASSIGN(NewTabHTMLSource);
   };
 
   void OnShowBookmarkBarChanged();
+  void OnDefaultFontSizeChanged();
 
   Profile* GetProfile() const;
 

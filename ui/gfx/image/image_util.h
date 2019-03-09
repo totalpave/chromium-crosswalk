@@ -33,6 +33,10 @@ GFX_EXPORT bool JPEG1xEncodedDataFromImage(const Image& image,
                                            int quality,
                                            std::vector<unsigned char>* dst);
 
+bool JPEG1xEncodedDataFromSkiaRepresentation(const Image& image,
+                                             int quality,
+                                             std::vector<unsigned char>* dst);
+
 // Computes the width of any nearly-transparent regions at the sides of the
 // image and returns them in |left| and |right|.  This checks each column of
 // pixels from the outsides in, looking for anything with alpha above a
@@ -42,6 +46,13 @@ GFX_EXPORT bool JPEG1xEncodedDataFromImage(const Image& image,
 GFX_EXPORT void GetVisibleMargins(const ImageSkia& image,
                                   int* left,
                                   int* right);
+
+// Downsizes the image if its area exceeds kSearchByImageMaxImageArea AND
+// (either its width exceeds kSearchByImageMaxImageWidth OR its height exceeds
+// kSearchByImageMaxImageHeight) in preparation for searching.
+GFX_EXPORT Image ResizedImageForSearchByImage(const Image& image);
+
+Image ResizedImageForSearchByImageSkiaRepresentation(const Image& image);
 
 }  // namespace gfx
 

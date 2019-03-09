@@ -1,9 +1,28 @@
+// This file is generated from a similarly-named Perl script in the BoringSSL
+// source tree. Do not edit by hand.
+
+#if defined(__has_feature)
+#if __has_feature(memory_sanitizer) && !defined(OPENSSL_NO_ASM)
+#define OPENSSL_NO_ASM
+#endif
+#endif
+
+#if !defined(OPENSSL_NO_ASM)
 #if defined(__arm__)
+#if defined(BORINGSSL_PREFIX)
+#include <boringssl_prefix_symbols_asm.h>
+#endif
 #include <openssl/arm_arch.h>
 
+@ Silence ARMv8 deprecated IT instruction warnings. This file is used by both
+@ ARMv7 and ARMv8 processors and does not use ARMv8 instructions.
+.arch	armv7-a
+
 .text
-#if defined(__thumb2__)
+#if defined(__thumb2__) || defined(__clang__)
 .syntax	unified
+#endif
+#if defined(__thumb2__)
 .thumb
 #else
 .code	32
@@ -1457,7 +1476,7 @@ ChaCha20_neon:
 	ldrb	r9,[r12],#1		@ read input
 	subs	r11,r11,#1
 	eor	r8,r8,r9
-	strb	r8,[r14],#1		@ store ouput
+	strb	r8,[r14],#1		@ store output
 	bne	.Loop_tail_neon
 
 .Ldone_neon:
@@ -1469,3 +1488,4 @@ ChaCha20_neon:
 .comm	OPENSSL_armcap_P,4,4
 #endif
 #endif
+#endif  // !OPENSSL_NO_ASM

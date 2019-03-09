@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/common/chrome_paths.h"
@@ -14,6 +15,8 @@
 #include "net/test/url_request/url_request_mock_http_job.h"
 #include "net/test/url_request/url_request_slow_download_job.h"
 #include "net/url_request/url_request_filter.h"
+#include "net/url_request/url_request_test_job.h"
+#include "testing/gtest/include/gtest/gtest.h"
 
 using content::BrowserThread;
 
@@ -36,9 +39,8 @@ void SetUrlRequestMocksEnabled(bool enabled) {
     net::URLRequestSlowDownloadJob::AddUrlHandler();
 
     base::FilePath root_http;
-    PathService::Get(chrome::DIR_TEST_DATA, &root_http);
-    net::URLRequestMockHTTPJob::AddUrlHandlers(
-        root_http, BrowserThread::GetBlockingPool());
+    base::PathService::Get(chrome::DIR_TEST_DATA, &root_http);
+    net::URLRequestMockHTTPJob::AddUrlHandlers(root_http);
   } else {
     // Revert to the default handlers.
     net::URLRequestFilter::GetInstance()->ClearHandlers();

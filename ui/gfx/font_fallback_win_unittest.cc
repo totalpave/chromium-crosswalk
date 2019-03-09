@@ -2,40 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/gfx/font_fallback_win.h"
 #include "base/macros.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gfx/font_fallback_win.h"
 
 namespace gfx {
-
-namespace {
-
-// Subclass of LinkedFontsIterator for testing that allows mocking the linked
-// fonts vector.
-class TestLinkedFontsIterator : public internal::LinkedFontsIterator {
- public:
-  explicit TestLinkedFontsIterator(Font font) : LinkedFontsIterator(font) {
-  }
-
-  ~TestLinkedFontsIterator() override {}
-
-  // Add a linked font to the mocked vector of linked fonts.
-  void AddLinkedFontForTesting(Font font) {
-    test_linked_fonts.push_back(font);
-  }
-
-  const std::vector<Font>* GetLinkedFonts() const override {
-    return &test_linked_fonts;
-  }
-
- private:
-  std::vector<Font> test_linked_fonts;
-
-  DISALLOW_COPY_AND_ASSIGN(TestLinkedFontsIterator);
-};
-
-}  // namespace
 
 TEST(FontFallbackWinTest, ParseFontLinkEntry) {
   std::string file;
@@ -83,36 +56,25 @@ TEST(FontFallbackWinTest, ParseFontFamilyString) {
   EXPECT_EQ("Meiryo UI Italic", font_names[3]);
 }
 
-TEST(FontFallbackWinTest, LinkedFontsIterator) {
-  TestLinkedFontsIterator iterator(Font("Arial", 16));
-  iterator.AddLinkedFontForTesting(Font("Times New Roman", 16));
+TEST(FontFallbackWinTest, FontFallback) {
+  // Needed to bypass DCHECK in GetFallbackFont.
+  base::MessageLoopForUI message_loop;
 
-  Font font;
-  EXPECT_TRUE(iterator.NextFont(&font));
-  ASSERT_EQ("Arial", font.GetFontName());
-
-  EXPECT_TRUE(iterator.NextFont(&font));
-  ASSERT_EQ("Times New Roman", font.GetFontName());
-
-  EXPECT_FALSE(iterator.NextFont(&font));
+  Font base_font("Segoe UI", 14);
+  Font fallback_font;
+  bool result = GetFallbackFont(base_font, L"abc", 3, &fallback_font);
+  EXPECT_TRUE(result);
+  EXPECT_STREQ("Segoe UI", fallback_font.GetFontName().c_str());
 }
 
-TEST(FontFallbackWinTest, LinkedFontsIteratorSetNextFont) {
-  TestLinkedFontsIterator iterator(Font("Arial", 16));
-  iterator.AddLinkedFontForTesting(Font("Times New Roman", 16));
+TEST(FontFallbackWinTest, EmptyStringFallback) {
+  // Needed to bypass DCHECK in GetFallbackFont.
+  base::MessageLoopForUI message_loop;
 
-  Font font;
-  EXPECT_TRUE(iterator.NextFont(&font));
-  ASSERT_EQ("Arial", font.GetFontName());
-
-  iterator.SetNextFont(Font("Tahoma", 16));
-  EXPECT_TRUE(iterator.NextFont(&font));
-  ASSERT_EQ("Tahoma", font.GetFontName());
-
-  EXPECT_TRUE(iterator.NextFont(&font));
-  ASSERT_EQ("Times New Roman", font.GetFontName());
-
-  EXPECT_FALSE(iterator.NextFont(&font));
+  Font base_font;
+  Font fallback_font;
+  bool result = GetFallbackFont(base_font, L"", 0, &fallback_font);
+  EXPECT_FALSE(result);
 }
 
 TEST(FontFallbackWinTest, FontFallback) {

@@ -6,10 +6,12 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/i18n/file_util_icu.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
@@ -17,11 +19,14 @@
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_member.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/download_manager.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/save_page_type.h"
 #include "content/public/browser/web_contents.h"
@@ -42,15 +47,14 @@ namespace {
 // exists only for testing.
 bool g_should_prompt_for_filename = true;
 
-void OnSavePackageDownloadCreated(content::DownloadItem* download) {
+void OnSavePackageDownloadCreated(download::DownloadItem* download) {
   ChromeDownloadManagerDelegate::DisableSafeBrowsing(download);
 }
 
 #if defined(OS_CHROMEOS)
-void OnSavePackageDownloadCreatedChromeOS(
-    Profile* profile,
-    const base::FilePath& drive_path,
-    content::DownloadItem* download) {
+void OnSavePackageDownloadCreatedChromeOS(Profile* profile,
+                                          const base::FilePath& drive_path,
+                                          download::DownloadItem* download) {
   drive::DownloadHandler::GetForProfile(profile)->SetDownloadParams(
       drive_path, download);
   OnSavePackageDownloadCreated(download);
@@ -114,7 +118,40 @@ void AddCompleteFileTypeInfo(
 }
 #endif
 
+// Checks whether this is a blocked page (e.g., when a child user is accessing
+// a mature site).
+// Recall that the blocked page is an interstitial. In the past, old
+// (non-committed) interstitials couldn't be easily identified, while the
+// committed ones can only be matched by page title. To prevent future bugs due
+// to changing the page title, we make a conservative choice here and only
+// check for PAGE_TYPE_ERROR. The result is that we may include a few other
+// error pages (failed DNS lookups, SSL errors, etc), which shouldn't affect
+// functionality.
+bool IsErrorPage(content::WebContents* web_contents) {
+  if (base::FeatureList::IsEnabled(
+          features::kSupervisedUserCommittedInterstitials)) {
+    if (web_contents->GetController().GetActiveEntry() == NULL)
+      return false;
+    return web_contents->GetController()
+               .GetLastCommittedEntry()
+               ->GetPageType() == content::PAGE_TYPE_ERROR;
+  }
+  // Fallback if someone ever disables committed interstitials.
+  return web_contents->ShowingInterstitialPage();
+}
+
 }  // anonymous namespace
+
+// TODO(crbug/928323): REMOVE DIRTY HACK
+// To prevent access to blocked websites, we are temporarily disabling the
+// HTML-only download of error pages for supervised users only.
+// Note that MHTML is still available, so the save functionality is preserved.
+bool SavePackageFilePicker::ShouldSaveAsOnlyHTML(
+    content::WebContents* web_contents) const {
+  Profile* profile =
+      Profile::FromBrowserContext(web_contents->GetBrowserContext());
+  return !profile->IsSupervised() || !IsErrorPage(web_contents);
+}
 
 bool SavePackageFilePicker::ShouldSaveAsMHTML() const {
 #if !defined(OS_CHROMEOS)
@@ -132,7 +169,7 @@ SavePackageFilePicker::SavePackageFilePicker(
     bool can_save_as_complete,
     DownloadPrefs* download_prefs,
     const content::SavePackagePathPickedCallback& callback)
-    : render_process_id_(web_contents->GetRenderProcessHost()->GetID()),
+    : render_process_id_(web_contents->GetMainFrame()->GetProcess()->GetID()),
       can_save_as_complete_(can_save_as_complete),
       download_prefs_(download_prefs),
       callback_(callback) {
@@ -161,8 +198,10 @@ SavePackageFilePicker::SavePackageFilePicker(
       }
     }
 
-    AddHtmlOnlyFileTypeInfo(&file_type_info, extra_extension);
-    save_types_.push_back(content::SAVE_PAGE_TYPE_AS_ONLY_HTML);
+    if (ShouldSaveAsOnlyHTML(web_contents)) {
+      AddHtmlOnlyFileTypeInfo(&file_type_info, extra_extension);
+      save_types_.push_back(content::SAVE_PAGE_TYPE_AS_ONLY_HTML);
+    }
 
     if (ShouldSaveAsMHTML()) {
       AddSingleFileFileTypeInfo(&file_type_info);
@@ -210,7 +249,7 @@ SavePackageFilePicker::SavePackageFilePicker(
 
   if (g_should_prompt_for_filename) {
     select_file_dialog_ = ui::SelectFileDialog::Create(
-        this, new ChromeSelectFilePolicy(web_contents));
+        this, std::make_unique<ChromeSelectFilePolicy>(web_contents));
     select_file_dialog_->SelectFile(
         ui::SelectFileDialog::SELECT_SAVEAS_FILE,
         base::string16(),
@@ -248,10 +287,6 @@ void SavePackageFilePicker::FileSelected(
     if (select_file_dialog_.get() &&
         select_file_dialog_->HasMultipleFileTypeChoices())
       download_prefs_->SetSaveFileType(save_type);
-
-    UMA_HISTOGRAM_ENUMERATION("Download.SavePageType",
-                              save_type,
-                              content::SAVE_PAGE_TYPE_MAX);
   } else {
     // Use "HTML Only" type as a dummy.
     save_type = content::SAVE_PAGE_TYPE_AS_ONLY_HTML;

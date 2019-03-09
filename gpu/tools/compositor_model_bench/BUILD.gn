@@ -4,16 +4,20 @@
 
 import("//build/config/ui.gni")
 
-if (is_linux && !is_chromeos && current_cpu != "arm" && use_x11) {
-  # GYP version: //gpu/tools/tools.gyp:compositor_model_bench
+if (is_linux && use_x11 && current_cpu != "arm") {
   executable("compositor_model_bench") {
     sources = [
       "compositor_model_bench.cc",
       "forward_render_model.cc",
+      "forward_render_model.h",
       "render_model_utils.cc",
+      "render_model_utils.h",
       "render_models.cc",
+      "render_models.h",
       "render_tree.cc",
+      "render_tree.h",
       "shaders.cc",
+      "shaders.h",
     ]
 
     libs = [ "GL" ]
@@ -22,7 +26,6 @@ if (is_linux && !is_chromeos && current_cpu != "arm" && use_x11) {
 
     deps = [
       "//base",
-      "//build/config/sanitizers:deps",
       "//ui/gl",
       "//ui/gl/init",
     ]

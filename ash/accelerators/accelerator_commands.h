@@ -12,6 +12,12 @@
 namespace ash {
 namespace accelerators {
 
+// Change the display zooming up or down.
+ASH_EXPORT bool ZoomDisplay(bool up);
+
+// Reset the display zooming to the default state.
+ASH_EXPORT void ResetDisplayZoom();
+
 // Minimizes the active window, if present. If no windows are active, restores
 // the first unminimized window. Returns true if a window was minimized or
 // restored.
@@ -25,20 +31,12 @@ ASH_EXPORT void ToggleMaximized();
 // by WindowStateDelegate::ToggleFullscreen().
 ASH_EXPORT void ToggleFullscreen();
 
-// Toggles touch HUD.
-ASH_EXPORT void ToggleTouchHudProjection();
+// True if the user can press a key to exit pinned mode (aka forced
+// fullscreen).
+ASH_EXPORT bool CanUnpinWindow();
 
-// True if the desktop zoom accelerator is enabled.
-bool IsInternalDisplayZoomEnabled();
-
-// Change internal display zooming up or down.
-ASH_EXPORT bool ZoomInternalDisplay(bool up);
-
-// Reset the display zooming to the default state.
-ASH_EXPORT void ResetInternalDisplayZoom();
-
-// If it is in the pinned mode, exit from it.
-ASH_EXPORT void Unpin();
+// If a window is pinned (aka forced fullscreen), exit from pinned mode.
+ASH_EXPORT void UnpinWindow();
 
 }  // namespace accelerators
 }  // namespace ash

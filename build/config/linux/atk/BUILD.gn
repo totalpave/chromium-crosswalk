@@ -4,37 +4,50 @@
 
 import("//build/config/features.gni")
 import("//build/config/linux/pkg_config.gni")
+import("//build/config/ui.gni")
 
-# CrOS doesn't install GTK, gconf or any gnome packages.
-assert(!is_chromeos && use_gconf)
+# CrOS doesn't install GTK or any gnome packages.
+assert(!is_chromeos)
 
 # These packages should _only_ be expected when building for a target.
-# If these extra checks are not run, gconf is required when building host
-# tools for a CrOS build.
 assert(current_toolchain == default_toolchain)
 
-pkg_config("atk") {
-  packages = [ "atk" ]
+if (use_atk) {
+  assert(use_glib, "use_atk=true requires that use_glib=true")
+}
+
+pkg_config("atk_base") {
+  packages = [
+    "atk",
+    "atk-bridge-2.0",
+  ]
   atk_lib_dir = exec_script(pkg_config_script,
                             pkg_config_args + [
                                   "--libdir",
                                   "atk",
                                 ],
                             "string")
-  defines = [ "ATK_LIB_DIR=\"$atk_lib_dir\"" ]
+  defines = [
+    "ATK_LIB_DIR=\"$atk_lib_dir\"",
+    "USE_ATK_BRIDGE",
+  ]
 }
 
 # gn orders flags on a target before flags from configs. The default config
 # adds -Wall, and these flags have to be after -Wall -- so they need to
 # come from a config and can't be on the target directly.
-config("warnings") {
-  cflags = [
-    # glib uses the pre-c++11 typedef-as-static_assert hack.
-    "-Wno-unused-local-typedef",
+config("atk") {
+  configs = [ ":atk_base" ]
 
+  cflags = [
     # G_DEFINE_TYPE automatically generates a *get_instance_private
     # inline function after glib 2.37. That's unused. Prevent to
     # complain about it.
     "-Wno-unused-function",
   ]
+
+  if (is_clang) {
+    # glib uses the pre-c++11 typedef-as-static_assert hack.
+    cflags += [ "-Wno-unused-local-typedef" ]
+  }
 }

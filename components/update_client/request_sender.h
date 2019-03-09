@@ -12,29 +12,26 @@
 #include <vector>
 
 #include "base/callback.h"
+#include "base/containers/flat_map.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/thread_checker.h"
-#include "net/url_request/url_fetcher_delegate.h"
 #include "url/gurl.h"
 
 namespace client_update_protocol {
 class Ecdsa;
 }
 
-namespace net {
-class URLFetcher;
-}
-
 namespace update_client {
 
 class Configurator;
+class NetworkFetcher;
 
 // Sends a request to one of the urls provided. The class implements a chain
 // of responsibility design pattern, where the urls are tried in the order they
 // are specified, until the request to one of them succeeds or all have failed.
 // CUP signing is optional.
-class RequestSender : public net::URLFetcherDelegate {
+class RequestSender {
  public:
   // If |error| is 0, then the response is provided in the |response| parameter.
   // |retry_after_sec| contains the value of the X-Retry-After response header,
@@ -42,20 +39,24 @@ class RequestSender : public net::URLFetcherDelegate {
   // range for this value is [-1, 86400]. If |retry_after_sec| is -1 it means
   // that the header could not be found, or trusted, or had an invalid value.
   // The upper bound represents a delay of one day.
-  using RequestSenderCallback = base::Callback<
+  using RequestSenderCallback = base::OnceCallback<
       void(int error, const std::string& response, int retry_after_sec)>;
 
-  static int kErrorResponseNotTrusted;
-
-  explicit RequestSender(const scoped_refptr<Configurator>& config);
-  ~RequestSender() override;
+  explicit RequestSender(scoped_refptr<Configurator> config);
+  ~RequestSender();
 
   // |use_signing| enables CUP signing of protocol messages exchanged using
-  // this class.
-  void Send(bool use_signing,
-            const std::string& request_body,
-            const std::vector<GURL>& urls,
-            const RequestSenderCallback& request_sender_callback);
+  // this class. |is_foreground| controls the presence and the value for the
+  // X-GoogleUpdate-Interactvity header serialized in the protocol request.
+  // If this optional parameter is set, the values of "fg" or "bg" are sent
+  // for true or false values of this parameter. Otherwise the header is not
+  // sent at all.
+  void Send(
+      const std::vector<GURL>& urls,
+      const base::flat_map<std::string, std::string>& request_extra_headers,
+      const std::string& request_body,
+      bool use_signing,
+      RequestSenderCallback request_sender_callback);
 
  private:
   // Combines the |url| and |query_params| parameters.
@@ -64,18 +65,15 @@ class RequestSender : public net::URLFetcherDelegate {
   // Decodes and returns the public key used by CUP.
   static std::string GetKey(const char* key_bytes_base64);
 
-  // Returns the string value of a header of the server response or an empty
-  // string if the header is not available.
-  static std::string GetStringHeaderValue(const net::URLFetcher* source,
-                                          const char* header_name);
+  void OnResponseStarted(const GURL& final_url,
+                         int response_code,
+                         int64_t content_length);
 
-  // Returns the integral value of a header of the server response or -1 if
-  // if the header is not available or a conversion error has occured.
-  static int64_t GetInt64HeaderValue(const net::URLFetcher* source,
-                                     const char* header_name);
-
-  // Overrides for URLFetcherDelegate.
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
+  void OnNetworkFetcherComplete(const GURL& original_url,
+                                std::unique_ptr<std::string> response_body,
+                                int net_error,
+                                const std::string& header_etag,
+                                int64_t xheader_retry_after_sec);
 
   // Implements the error handling and url fallback mechanism.
   void SendInternal();
@@ -93,15 +91,19 @@ class RequestSender : public net::URLFetcherDelegate {
   base::ThreadChecker thread_checker_;
 
   const scoped_refptr<Configurator> config_;
-  bool use_signing_;  // True if CUP signing is used.
+
   std::vector<GURL> urls_;
+  base::flat_map<std::string, std::string> request_extra_headers_;
   std::string request_body_;
+  bool use_signing_ = false;  // True if CUP signing is used.
   RequestSenderCallback request_sender_callback_;
 
   std::string public_key_;
   std::vector<GURL>::const_iterator cur_url_;
-  std::unique_ptr<net::URLFetcher> url_fetcher_;
+  std::unique_ptr<NetworkFetcher> network_fetcher_;
   std::unique_ptr<client_update_protocol::Ecdsa> signer_;
+
+  int response_code_ = -1;
 
   DISALLOW_COPY_AND_ASSIGN(RequestSender);
 };

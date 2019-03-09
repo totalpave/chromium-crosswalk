@@ -6,17 +6,19 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "components/signin/core/browser/account_tracker_service.h"
-#include "components/signin/core/browser/fake_profile_oauth2_token_service.h"
-#include "components/signin/core/browser/fake_signin_manager.h"
-#include "components/signin/core/browser/test_signin_client.h"
+#include "base/values.h"
 #include "net/http/http_status_code.h"
-#include "net/url_request/url_request_test_util.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -31,17 +33,22 @@ namespace {
 class TestingWebHistoryService : public WebHistoryService {
  public:
   explicit TestingWebHistoryService(
-      ProfileOAuth2TokenService* token_service,
-      SigninManagerBase* signin_manager,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context)
-      : WebHistoryService(token_service, signin_manager, request_context),
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+      // NOTE: Simply pass null object for IdentityManager. WebHistoryService's
+      // only usage of this object is to fetch access tokens via RequestImpl,
+      // and TestWebHistoryService deliberately replaces this flow with
+      // TestRequest.
+      : WebHistoryService(nullptr, url_loader_factory),
         expected_url_(GURL()),
         expected_audio_history_value_(false),
         current_expected_post_data_("") {}
   ~TestingWebHistoryService() override {}
 
   WebHistoryService::Request* CreateRequest(
-      const GURL& url, const CompletionCallback& callback) override;
+      const GURL& url,
+      const CompletionCallback& callback,
+      const net::PartialNetworkTrafficAnnotationTag& partial_traffic_annotation)
+      override;
 
   // This is sorta an override but override and static don't mix.
   // This function just calls WebHistoryService::ReadResponse.
@@ -131,8 +138,8 @@ class TestRequest : public WebHistoryService::Request {
   void Start() override {
     is_pending_ = true;
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(&TestRequest::MimicReturnFromFetch, base::Unretained(this)));
+        FROM_HERE, base::BindOnce(&TestRequest::MimicReturnFromFetch,
+                                  base::Unretained(this)));
   }
 
   void MimicReturnFromFetch() {
@@ -155,7 +162,9 @@ class TestRequest : public WebHistoryService::Request {
 };
 
 WebHistoryService::Request* TestingWebHistoryService::CreateRequest(
-    const GURL& url, const CompletionCallback& callback) {
+    const GURL& url,
+    const CompletionCallback& callback,
+    const net::PartialNetworkTrafficAnnotationTag& partial_traffic_annotation) {
   EXPECT_EQ(expected_url_, url);
   WebHistoryService::Request* request =
       new TestRequest(url, callback, this);
@@ -209,13 +218,10 @@ std::string TestingWebHistoryService::GetExpectedAudioHistoryValue() {
 class WebHistoryServiceTest : public testing::Test {
  public:
   WebHistoryServiceTest()
-      : signin_client_(nullptr),
-        signin_manager_(&signin_client_, &account_tracker_),
-        url_request_context_(new net::TestURLRequestContextGetter(
-            base::ThreadTaskRunnerHandle::Get())),
-        web_history_service_(&token_service_,
-                             &signin_manager_,
-                             url_request_context_) {}
+      : test_shared_loader_factory_(
+            base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+                &test_url_loader_factory_)),
+        web_history_service_(test_shared_loader_factory_) {}
 
   ~WebHistoryServiceTest() override {}
 
@@ -231,12 +237,9 @@ class WebHistoryServiceTest : public testing::Test {
   }
 
  private:
-  base::MessageLoop message_loop_;
-  FakeProfileOAuth2TokenService token_service_;
-  AccountTrackerService account_tracker_;
-  TestSigninClient signin_client_;
-  FakeSigninManagerBase signin_manager_;
-  scoped_refptr<net::URLRequestContextGetter> url_request_context_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
+  scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
   TestingWebHistoryService web_history_service_;
 
   DISALLOW_COPY_AND_ASSIGN(WebHistoryServiceTest);
@@ -248,11 +251,12 @@ TEST_F(WebHistoryServiceTest, GetAudioHistoryEnabled) {
   web_history_service()->SetExpectedAudioHistoryValue(true);
   web_history_service()->GetAudioHistoryEnabled(
       base::Bind(&TestingWebHistoryService::GetAudioHistoryCallback,
-                 base::Unretained(web_history_service())));
+                 base::Unretained(web_history_service())),
+      PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS);
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
-                 base::Unretained(web_history_service())));
+      base::BindOnce(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
+                     base::Unretained(web_history_service())));
 }
 
 TEST_F(WebHistoryServiceTest, SetAudioHistoryEnabledTrue) {
@@ -262,12 +266,14 @@ TEST_F(WebHistoryServiceTest, SetAudioHistoryEnabledTrue) {
   web_history_service()->SetExpectedPostData(
       "{\"client\":\"audio\",\"enable_history_recording\":true}");
   web_history_service()->SetAudioHistoryEnabled(
-      true, base::Bind(&TestingWebHistoryService::SetAudioHistoryCallback,
-                       base::Unretained(web_history_service())));
+      true,
+      base::Bind(&TestingWebHistoryService::SetAudioHistoryCallback,
+                 base::Unretained(web_history_service())),
+      PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS);
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
-                 base::Unretained(web_history_service())));
+      base::BindOnce(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
+                     base::Unretained(web_history_service())));
 }
 
 TEST_F(WebHistoryServiceTest, SetAudioHistoryEnabledFalse) {
@@ -277,12 +283,14 @@ TEST_F(WebHistoryServiceTest, SetAudioHistoryEnabledFalse) {
   web_history_service()->SetExpectedPostData(
       "{\"client\":\"audio\",\"enable_history_recording\":false}");
   web_history_service()->SetAudioHistoryEnabled(
-      false, base::Bind(&TestingWebHistoryService::SetAudioHistoryCallback,
-                        base::Unretained(web_history_service())));
+      false,
+      base::Bind(&TestingWebHistoryService::SetAudioHistoryCallback,
+                 base::Unretained(web_history_service())),
+      PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS);
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
-                 base::Unretained(web_history_service())));
+      base::BindOnce(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
+                     base::Unretained(web_history_service())));
 }
 
 TEST_F(WebHistoryServiceTest, MultipleRequests) {
@@ -292,21 +300,24 @@ TEST_F(WebHistoryServiceTest, MultipleRequests) {
   web_history_service()->SetExpectedPostData(
       "{\"client\":\"audio\",\"enable_history_recording\":false}");
   web_history_service()->SetAudioHistoryEnabled(
-      false, base::Bind(&TestingWebHistoryService::MultipleRequestsCallback,
-                        base::Unretained(web_history_service())));
+      false,
+      base::Bind(&TestingWebHistoryService::MultipleRequestsCallback,
+                 base::Unretained(web_history_service())),
+      PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS);
 
   web_history_service()->SetExpectedURL(
       GURL("https://history.google.com/history/api/lookup?client=audio"));
   web_history_service()->SetExpectedPostData("");
   web_history_service()->GetAudioHistoryEnabled(
       base::Bind(&TestingWebHistoryService::MultipleRequestsCallback,
-                 base::Unretained(web_history_service())));
+                 base::Unretained(web_history_service())),
+      PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS);
 
   // Check that both requests are no longer pending.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
-                 base::Unretained(web_history_service())));
+      base::BindOnce(&TestingWebHistoryService::EnsureNoPendingRequestsRemain,
+                     base::Unretained(web_history_service())));
 }
 
 TEST_F(WebHistoryServiceTest, VerifyReadResponse) {

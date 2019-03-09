@@ -10,20 +10,20 @@
 #include "base/gtest_prod_util.h"
 #include "base/logging.h"
 #include "base/strings/string16.h"
+#include "base/values.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/web_ui.h"
 
-class GURL;
 class WebUIBrowserTest;
+class MojoWebUIBrowserTest;
 
 namespace base {
-class DictionaryValue;
 class ListValue;
-class Value;
 }
 
 namespace content {
 
+class TestWebUI;
 class WebUI;
 class WebUIImpl;
 
@@ -49,8 +49,17 @@ class CONTENT_EXPORT WebUIMessageHandler {
   FRIEND_TEST_ALL_PREFIXES(WebUIMessageHandlerTest, ExtractDoubleValue);
   FRIEND_TEST_ALL_PREFIXES(WebUIMessageHandlerTest, ExtractStringValue);
 
-  // Subclasses must call this once the page is ready for JavaScript calls
-  // from this handler.
+  // This method must be called once the handler's corresponding JavaScript
+  // component is initialized. In practice, it should be called from a WebUI
+  // message handler similar to: 'initializeFooPage' or 'getInitialState'.
+  //
+  // There should be ideally one or two calls to this per handler, as JavaScript
+  // components should have a specific message that signals that it's initalized
+  // and ready to receive events from the C++ handler.
+  //
+  // This should never be called from a function that is not a message handler.
+  // This should never be called from a C++ callback used as a reply for a
+  // posted task or asynchronous operation.
   void AllowJavascript();
 
   // Helper methods:
@@ -93,6 +102,16 @@ class CONTENT_EXPORT WebUIMessageHandler {
   void RejectJavascriptCallback(const base::Value& callback_id,
                                 const base::Value& response);
 
+  // Helper method for notifying Javascript listeners added with
+  // cr.addWebUIListener() (defined in cr.js).
+  template <typename... Values>
+  void FireWebUIListener(const std::string& event_name,
+                         const Values&... values) {
+    // cr.webUIListenerCallback is a global JS function exposed from cr.js.
+    CallJavascriptFunction("cr.webUIListenerCallback", base::Value(event_name),
+                           values...);
+  }
+
   // Call a Javascript function by sending its name and arguments down to
   // the renderer.  This is asynchronous; there's no way to get the result
   // of the call, and should be thought of more like sending a message to
@@ -118,8 +137,10 @@ class CONTENT_EXPORT WebUIMessageHandler {
  private:
   // Provide external classes access to web_ui(), set_web_ui(), and
   // RenderViewReused.
+  friend class TestWebUI;
   friend class WebUIImpl;
   friend class ::WebUIBrowserTest;
+  friend class ::MojoWebUIBrowserTest;
 
   // TODO(dbeam): disallow JavaScript when a renderer process crashes.
   // http://crbug.com/610450

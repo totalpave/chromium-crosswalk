@@ -10,6 +10,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/timer/timer.h"
 #include "components/gcm_driver/gcm_client.h"
 #include "components/gcm_driver/gcm_stats_recorder_impl.h"
 
@@ -46,21 +47,24 @@ class FakeGCMClient : public GCMClient {
       const ChromeBuildInfo& chrome_build_info,
       const base::FilePath& store_path,
       const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner,
-      const scoped_refptr<net::URLRequestContextGetter>&
-          url_request_context_getter,
+      base::RepeatingCallback<
+          void(network::mojom::ProxyResolvingSocketFactoryRequest)>
+          get_socket_factory_callback,
+      const scoped_refptr<network::SharedURLLoaderFactory>& url_loader_factory,
+      network::NetworkConnectionTracker* network_connection_tracker,
       std::unique_ptr<Encryptor> encryptor,
       Delegate* delegate) override;
   void Start(StartMode start_mode) override;
   void Stop() override;
-  void Register(const linked_ptr<RegistrationInfo>& registration_info) override;
-  void Unregister(
-      const linked_ptr<RegistrationInfo>& registration_info) override;
+  void Register(scoped_refptr<RegistrationInfo> registration_info) override;
+  bool ValidateRegistration(scoped_refptr<RegistrationInfo> registration_info,
+                            const std::string& registration_id) override;
+  void Unregister(scoped_refptr<RegistrationInfo> registration_info) override;
   void Send(const std::string& app_id,
             const std::string& receiver_id,
             const OutgoingMessage& message) override;
   void RecordDecryptionFailure(const std::string& app_id,
-                               GCMEncryptionProvider::DecryptionResult result)
-      override;
+                               GCMDecryptionResult result) override;
   void SetRecording(bool recording) override;
   void ClearActivityLogs() override;
   GCMStatistics GetStatistics() const override;
@@ -69,7 +73,8 @@ class FakeGCMClient : public GCMClient {
   void UpdateAccountMapping(const AccountMapping& account_mapping) override;
   void RemoveAccountMapping(const std::string& account_id) override;
   void SetLastTokenFetchTime(const base::Time& time) override;
-  void UpdateHeartbeatTimer(std::unique_ptr<base::Timer> timer) override;
+  void UpdateHeartbeatTimer(
+      std::unique_ptr<base::RetainingOneShotTimer> timer) override;
   void AddInstanceIDData(const std::string& app_id,
                          const std::string& instance_id,
                          const std::string& extra_data) override;
@@ -98,11 +103,9 @@ class FakeGCMClient : public GCMClient {
   // Called on IO thread.
   void DoStart();
   void Started();
-  void RegisterFinished(
-      const linked_ptr<RegistrationInfo>& registration_info,
-      const std::string& registrion_id);
-  void UnregisterFinished(
-      const linked_ptr<RegistrationInfo>& registration_info);
+  void RegisterFinished(scoped_refptr<RegistrationInfo> registration_info,
+                        const std::string& registrion_id);
+  void UnregisterFinished(scoped_refptr<RegistrationInfo> registration_info);
   void SendFinished(const std::string& app_id, const OutgoingMessage& message);
   void MessageReceived(const std::string& app_id,
                        const IncomingMessage& message);
@@ -113,6 +116,7 @@ class FakeGCMClient : public GCMClient {
                            const std::string& message_id);
 
   Delegate* delegate_;
+  std::string product_category_for_subtypes_;
   bool started_;
   StartMode start_mode_;
   StartModeOverridding start_mode_overridding_;

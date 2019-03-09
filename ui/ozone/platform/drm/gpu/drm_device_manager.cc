@@ -38,8 +38,7 @@ DrmDeviceManager::~DrmDeviceManager() {
 }
 
 bool DrmDeviceManager::AddDrmDevice(const base::FilePath& path,
-                                    const base::FileDescriptor& fd) {
-  base::File file(fd.fd);
+                                    base::File file) {
   auto it =
       std::find_if(devices_.begin(), devices_.end(), FindByDevicePath(path));
   if (it != devices_.end()) {
@@ -50,12 +49,15 @@ bool DrmDeviceManager::AddDrmDevice(const base::FilePath& path,
   scoped_refptr<DrmDevice> device = drm_device_generator_->CreateDevice(
       path, std::move(file), !primary_device_);
   if (!device) {
-    LOG(ERROR) << "Could not initialize DRM device for " << path.value();
+    // This is expected for non-modesetting devices like VGEM.
+    VLOG(1) << "Could not initialize DRM device for " << path.value();
     return false;
   }
 
-  if (!primary_device_)
+  if (!primary_device_) {
+    VLOG(1) << "Primary DRM device added: " << path;
     primary_device_ = device;
+  }
 
   devices_.push_back(device);
   return true;
@@ -99,10 +101,6 @@ scoped_refptr<DrmDevice> DrmDeviceManager::GetDrmDevice(
     return primary_device_;
 
   return it->second;
-}
-
-scoped_refptr<DrmDevice> DrmDeviceManager::GetPrimaryDrmDevice() {
-  return primary_device_;
 }
 
 const DrmDeviceVector& DrmDeviceManager::GetDrmDevices() const {

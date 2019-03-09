@@ -6,12 +6,14 @@
 #define CC_ANIMATION_TRANSFORM_OPERATIONS_H_
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
+#include "base/gtest_prod_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "cc/animation/animation_export.h"
 #include "cc/animation/transform_operation.h"
-#include "cc/base/cc_export.h"
 #include "ui/gfx/transform.h"
 
 namespace gfx {
@@ -30,14 +32,20 @@ namespace cc {
 // we have two dissimilar sets of transform operations, but the effect may not
 // be what was intended. For more information, see the comments for the blend
 // function below.
-class CC_EXPORT TransformOperations {
+class CC_ANIMATION_EXPORT TransformOperations {
  public:
   TransformOperations();
   TransformOperations(const TransformOperations& other);
   ~TransformOperations();
 
+  TransformOperations& operator=(const TransformOperations& other);
+
   // Returns a transformation matrix representing these transform operations.
   gfx::Transform Apply() const;
+
+  // Returns a transformation matrix representing the set of transform
+  // operations from index |start| to the end of the list.
+  gfx::Transform ApplyRemaining(size_t start) const;
 
   // Given another set of transform operations and a progress in the range
   // [0, 1], returns a transformation matrix representing the intermediate
@@ -46,8 +54,11 @@ class CC_EXPORT TransformOperations {
   // transforms are baked to matrices (using apply), and the matrices are
   // then decomposed and interpolated. For more information, see
   // http://www.w3.org/TR/2011/WD-css3-2d-transforms-20111215/#matrix-decomposition.
-  gfx::Transform Blend(const TransformOperations& from,
-                       SkMScalar progress) const;
+  //
+  // If either of the matrices are non-decomposable for the blend, Blend applies
+  // discrete interpolation between them based on the progress value.
+  TransformOperations Blend(const TransformOperations& from,
+                            SkMScalar progress) const;
 
   // Sets |bounds| be the bounding box for the region within which |box| will
   // exist when it is transformed by the result of calling Blend on |from| and
@@ -59,9 +70,6 @@ class CC_EXPORT TransformOperations {
                            SkMScalar max_progress,
                            gfx::BoxF* bounds) const;
 
-  // Returns true if these operations affect scale.
-  bool AffectsScale() const;
-
   // Returns true if these operations are only translations.
   bool IsTranslation() const;
 
@@ -72,15 +80,21 @@ class CC_EXPORT TransformOperations {
   // as other and its descendants.
   bool MatchesTypes(const TransformOperations& other) const;
 
+  // Returns the number of matching transform operations at the start of the
+  // transform lists. If one list is shorter but pairwise compatible, it will be
+  // extended with matching identity operators per spec
+  // (https://drafts.csswg.org/css-transforms/#interpolation-of-transforms).
+  size_t MatchingPrefixLength(const TransformOperations& other) const;
+
   // Returns true if these operations can be blended. It will only return
   // false if we must resort to matrix interpolation, and matrix interpolation
   // fails (this can happen if either matrix cannot be decomposed).
   bool CanBlendWith(const TransformOperations& other) const;
 
-  // If these operations have no more than one scale operation, and if the only
-  // other operations are translations, sets |scale| to the scale component
-  // of these operations. Otherwise, returns false.
-  bool ScaleComponent(gfx::Vector3dF* scale) const;
+  // If none of these operations have a perspective component, sets |scale| to
+  // be the product of the scale component of every operation. Otherwise,
+  // returns false.
+  bool ScaleComponent(SkMScalar* scale) const;
 
   void AppendTranslate(SkMScalar x, SkMScalar y, SkMScalar z);
   void AppendRotate(SkMScalar x, SkMScalar y, SkMScalar z, SkMScalar degrees);
@@ -89,6 +103,7 @@ class CC_EXPORT TransformOperations {
   void AppendPerspective(SkMScalar depth);
   void AppendMatrix(const gfx::Transform& matrix);
   void AppendIdentity();
+  void Append(const TransformOperation& operation);
   bool IsIdentity() const;
 
   size_t size() const { return operations_.size(); }
@@ -97,21 +112,28 @@ class CC_EXPORT TransformOperations {
     DCHECK_LT(index, size());
     return operations_[index];
   }
+  TransformOperation& at(size_t index) {
+    DCHECK_LT(index, size());
+    return operations_[index];
+  }
+
+  bool ApproximatelyEqual(const TransformOperations& other,
+                          SkMScalar tolerance) const;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(TransformOperationsTest, TestDecompositionCache);
+
   bool BlendInternal(const TransformOperations& from,
                      SkMScalar progress,
-                     gfx::Transform* result) const;
+                     TransformOperations* result) const;
 
   std::vector<TransformOperation> operations_;
 
-  bool ComputeDecomposedTransform() const;
+  bool ComputeDecomposedTransform(size_t start_offset) const;
 
-  // For efficiency, we cache the decomposed transform.
-  mutable std::unique_ptr<gfx::DecomposedTransform> decomposed_transform_;
-  mutable bool decomposed_transform_dirty_;
-
-  DISALLOW_ASSIGN(TransformOperations);
+  // For efficiency, we cache the decomposed transforms.
+  mutable std::unordered_map<size_t, std::unique_ptr<gfx::DecomposedTransform>>
+      decomposed_transforms_;
 };
 
 }  // namespace cc

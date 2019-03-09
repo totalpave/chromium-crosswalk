@@ -6,11 +6,8 @@
 
 #include <utility>
 
-#include "base/memory/ptr_util.h"
 #include "remoting/base/capabilities.h"
 #include "remoting/base/constants.h"
-#include "remoting/client/audio_consumer.h"
-#include "remoting/client/audio_decode_scheduler.h"
 #include "remoting/client/client_context.h"
 #include "remoting/client/client_user_interface.h"
 #include "remoting/protocol/authenticator.h"
@@ -28,27 +25,37 @@
 
 namespace remoting {
 
-ChromotingClient::ChromotingClient(ClientContext* client_context,
-                                   ClientUserInterface* user_interface,
-                                   protocol::VideoRenderer* video_renderer,
-                                   base::WeakPtr<AudioConsumer> audio_consumer)
+ChromotingClient::ChromotingClient(
+    ClientContext* client_context,
+    ClientUserInterface* user_interface,
+    protocol::VideoRenderer* video_renderer,
+    base::WeakPtr<protocol::AudioStub> audio_stream_consumer)
     : user_interface_(user_interface), video_renderer_(video_renderer) {
   DCHECK(client_context->main_task_runner()->BelongsToCurrentThread());
-  if (audio_consumer) {
-    audio_decode_scheduler_.reset(new AudioDecodeScheduler(
-        client_context->main_task_runner(),
-        client_context->audio_decode_task_runner(), audio_consumer));
-  }
+
+  audio_decode_task_runner_ = client_context->audio_decode_task_runner();
+  audio_stream_consumer_ = audio_stream_consumer;
 }
 
 ChromotingClient::~ChromotingClient() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+
   if (signal_strategy_)
       signal_strategy_->RemoveListener(this);
 }
 
 void ChromotingClient::set_protocol_config(
     std::unique_ptr<protocol::CandidateSessionConfig> config) {
+  DCHECK(!connection_)
+      << "set_protocol_config() cannot be called after Start().";
   protocol_config_ = std::move(config);
+}
+
+void ChromotingClient::set_host_experiment_config(
+    const std::string& experiment_config) {
+  DCHECK(!connection_)
+      << "set_host_experiment_config() cannot be called after Start().";
+  host_experiment_sender_.reset(new HostExperimentSender(experiment_config));
 }
 
 void ChromotingClient::SetConnectionToHostForTests(
@@ -63,15 +70,14 @@ void ChromotingClient::Start(
     const std::string& host_jid,
     const std::string& capabilities) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!session_manager_);  // Start must be called more than once.
+  DCHECK(!session_manager_);  // Start must not be called more than once.
 
   host_jid_ = NormalizeJid(host_jid);
   local_capabilities_ = capabilities;
 
-  if (!protocol_config_)
+  if (!protocol_config_) {
     protocol_config_ = protocol::CandidateSessionConfig::CreateDefault();
-  if (!audio_decode_scheduler_)
-    protocol_config_->DisableAudioChannel();
+  }
 
   if (!connection_) {
     if (protocol_config_->webrtc_supported()) {
@@ -89,7 +95,13 @@ void ChromotingClient::Start(
   connection_->set_client_stub(this);
   connection_->set_clipboard_stub(this);
   connection_->set_video_renderer(video_renderer_);
-  connection_->set_audio_stub(audio_decode_scheduler_.get());
+
+  if (audio_stream_consumer_) {
+    connection_->InitializeAudio(audio_decode_task_runner_,
+                                 audio_stream_consumer_);
+  } else {
+    protocol_config_->DisableAudioChannel();
+  }
 
   session_manager_.reset(new protocol::JingleSessionManager(signal_strategy));
   session_manager_->set_protocol_config(std::move(protocol_config_));
@@ -172,11 +184,12 @@ void ChromotingClient::SetVideoLayout(const protocol::VideoLayout& layout) {
   user_interface_->SetDesktopSize(size_pixels,
                                   webrtc::DesktopVector(x_dpi, y_dpi));
 
-  mouse_input_scaler_.set_input_size(size_pixels);
+  mouse_input_scaler_.set_input_size(
+      webrtc::DesktopRect::MakeSize(size_pixels));
   mouse_input_scaler_.set_output_size(
       connection_->config().protocol() == protocol::SessionConfig::Protocol::ICE
-          ? size_pixels
-          : size_dips);
+          ? webrtc::DesktopRect::MakeSize(size_pixels)
+          : webrtc::DesktopRect::MakeSize(size_dips));
 }
 
 void ChromotingClient::InjectClipboardEvent(
@@ -199,9 +212,7 @@ void ChromotingClient::OnConnectionState(
   DCHECK(thread_checker_.CalledOnValidThread());
   VLOG(1) << "ChromotingClient::OnConnectionState(" << state << ")";
 
-  if (state == protocol::ConnectionToHost::AUTHENTICATED) {
-    OnAuthenticated();
-  } else if (state == protocol::ConnectionToHost::CONNECTED) {
+  if (state == protocol::ConnectionToHost::CONNECTED) {
     OnChannelsConnected();
   }
   user_interface_->OnConnectionState(state, error);
@@ -224,7 +235,7 @@ void ChromotingClient::OnSignalStrategyStateChange(
   DCHECK(thread_checker_.CalledOnValidThread());
 
   if (state == SignalStrategy::CONNECTED) {
-    VLOG(1) << "Connected as: " << signal_strategy_->GetLocalJid();
+    VLOG(1) << "Connected as: " << signal_strategy_->GetLocalAddress().jid();
     // After signaling has been connected we can try connecting to the host.
     if (connection_ &&
         connection_->state() == protocol::ConnectionToHost::INITIALIZING) {
@@ -232,6 +243,7 @@ void ChromotingClient::OnSignalStrategyStateChange(
     }
   } else if (state == SignalStrategy::DISCONNECTED) {
     VLOG(1) << "Signaling connection closed.";
+    mouse_input_scaler_.set_input_stub(nullptr);
     connection_.reset();
     user_interface_->OnConnectionState(protocol::ConnectionToHost::CLOSED,
                                        protocol::SIGNALING_ERROR);
@@ -239,27 +251,21 @@ void ChromotingClient::OnSignalStrategyStateChange(
 }
 
 bool ChromotingClient::OnSignalStrategyIncomingStanza(
-    const buzz::XmlElement* stanza) {
+    const jingle_xmpp::XmlElement* stanza) {
   return false;
 }
 
 void ChromotingClient::StartConnection() {
   DCHECK(thread_checker_.CalledOnValidThread());
-  connection_->Connect(
-      session_manager_->Connect(
-          host_jid_,
-          base::WrapUnique(new protocol::NegotiatingClientAuthenticator(
-              NormalizeJid(signal_strategy_->GetLocalJid()), host_jid_,
-              client_auth_config_))),
-      transport_context_, this);
-}
-
-void ChromotingClient::OnAuthenticated() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-
-  // Initialize the decoder.
-  if (connection_->config().is_audio_enabled())
-    audio_decode_scheduler_->Initialize(connection_->config());
+  auto session = session_manager_->Connect(
+      SignalingAddress(host_jid_),
+      std::make_unique<protocol::NegotiatingClientAuthenticator>(
+          signal_strategy_->GetLocalAddress().id(), host_jid_,
+          client_auth_config_));
+  if (host_experiment_sender_) {
+    session->AddPlugin(host_experiment_sender_.get());
+  }
+  connection_->Connect(std::move(session), transport_context_, this);
 }
 
 void ChromotingClient::OnChannelsConnected() {

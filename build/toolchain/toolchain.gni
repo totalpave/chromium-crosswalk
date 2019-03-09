@@ -6,44 +6,55 @@
 # toolchain() rules themselves.
 
 import("//build/config/chrome_build.gni")
+import("//build_overrides/build.gni")
 
 declare_args() {
-  # Enable Link Time Optimization in optimized builds (output programs run
-  # faster, but linking is up to 5-20x slower).
-  # Note: use target_os == "linux" rather than is_linux so that it does not
-  # apply to host_toolchain when target_os="android".
-  allow_posix_link_time_opt =
-      target_os == "linux" && !is_chromeos && target_cpu == "x64" &&
-      is_chrome_branded && is_official_build
-
-  # Set to true to use lld, the LLVM linker. This flag may be used on Windows
-  # with the shipped LLVM toolchain, or on Linux with a self-built top-of-tree
-  # LLVM toolchain (see llvm_force_head_revision in
-  # build/config/compiler/BUILD.gn).
-  use_lld = false
-
-  if (is_clang) {
-    # Clang compiler version. Clang files are placed at version-dependent paths.
-    clang_version = "3.9.0"
-  }
+  # If this is set to true, or if LLVM_FORCE_HEAD_REVISION is set to 1
+  # in the environment, we use the revision in the llvm repo to determine
+  # the CLANG_REVISION to use, instead of the version hard-coded into
+  # //tools/clang/scripts/update.py. This should only be used in
+  # conjunction with setting LLVM_FORCE_HEAD_REVISION in the
+  # environment when `gclient runhooks` is run as well.
+  llvm_force_head_revision = false
 
   # Compile with Xcode version of clang instead of hermetic version shipped
   # with the build. Used on iOS to ship official builds (as they are built
   # with the version of clang shipped with Xcode).
   use_xcode_clang = is_ios && is_official_build
+
+  # Used for binary size analysis.
+  generate_linker_map = is_android && is_official_build
+
+  # Use absolute file paths in the compiler diagnostics and __FILE__ macro
+  # if needed.
+  msvc_use_absolute_paths = false
 }
 
-# Subdirectory within root_out_dir for shared library files.
-# TODO(agrieve): GYP sets this to "lib" for Linux & Android, but this won't work
-#     in GN until support for loadable_module() is added.
-#     See: https://codereview.chromium.org/1236503002/
-shlib_subdir = "."
-
-# Root out dir for shared library files.
-root_shlib_dir = root_out_dir
-if (shlib_subdir != ".") {
-  root_shlib_dir += "/$shlib_subdir"
+if (generate_linker_map) {
+  assert(
+      is_official_build,
+      "Linker map files should only be generated when is_official_build = true")
+  assert(current_os == "android" || target_os == "linux",
+         "Linker map files should only be generated for Android and Linux")
 }
+
+# The path to the hermetic install of Xcode. Only relevant when
+# use_system_xcode = false.
+hermetic_xcode_path =
+    rebase_path("//build/${target_os}_files/Xcode.app", "", root_build_dir)
+
+declare_args() {
+  if (is_clang) {
+    # Clang compiler version. Clang files are placed at version-dependent paths.
+    clang_version = "9.0.0"
+  }
+}
+
+# Check target_os here instead of is_ios as this file is loaded for secondary
+# toolchain (host toolchain in particular) but the argument is the same for
+# all toolchains.
+assert(!use_xcode_clang || target_os == "ios",
+       "Using Xcode's clang is only supported in iOS builds")
 
 # Extension for shared library files (including leading dot).
 if (is_mac || is_ios) {
@@ -52,7 +63,7 @@ if (is_mac || is_ios) {
   # By appending .cr, we prevent name collisions with libraries already
   # loaded by the Android zygote.
   shlib_extension = ".cr.so"
-} else if (is_posix) {
+} else if (is_posix || is_fuchsia) {
   shlib_extension = ".so"
 } else if (is_win) {
   shlib_extension = ".dll"
@@ -61,10 +72,17 @@ if (is_mac || is_ios) {
 }
 
 # Prefix for shared library files.
-if (is_posix) {
+if (is_posix || is_fuchsia) {
   shlib_prefix = "lib"
 } else {
   shlib_prefix = ""
+}
+
+# Directory for shared library files.
+if (is_fuchsia) {
+  shlib_subdir = "/lib"
+} else {
+  shlib_subdir = ""
 }
 
 # While other "tool"s in a toolchain are specific to the target of that
@@ -76,9 +94,12 @@ if (is_posix) {
 stamp_description = "STAMP {{output}}"
 copy_description = "COPY {{source}} {{output}}"
 if (host_os == "win") {
-  stamp_command = "$python_path gyp-win-tool stamp {{output}}"
+  _tool_wrapper_path =
+      rebase_path("//build/toolchain/win/tool_wrapper.py", root_build_dir)
+
+  stamp_command = "cmd /c type nul > \"{{output}}\""
   copy_command =
-      "$python_path gyp-win-tool recursive-mirror {{source}} {{output}}"
+      "$python_path $_tool_wrapper_path recursive-mirror {{source}} {{output}}"
 } else {
   stamp_command = "touch {{output}}"
   copy_command = "ln -f {{source}} {{output}} 2>/dev/null || (rm -rf {{output}} && cp -af {{source}} {{output}})"

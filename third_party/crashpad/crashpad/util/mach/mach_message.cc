@@ -28,7 +28,7 @@ namespace crashpad {
 
 namespace {
 
-const int kNanosecondsPerMillisecond = 1E6;
+constexpr int kNanosecondsPerMillisecond = 1E6;
 
 // TimerRunning() determines whether |deadline| has passed. If |deadline| is
 // kMachMessageDeadlineWaitIndefinitely, |*timeout_options| is set to
@@ -66,7 +66,8 @@ bool TimerRunning(uint64_t deadline,
     uint64_t remaining = deadline - now;
 
     // Round to the nearest millisecond, taking care not to overflow.
-    const int kHalfMillisecondInNanoseconds = kNanosecondsPerMillisecond / 2;
+    constexpr int kHalfMillisecondInNanoseconds =
+        kNanosecondsPerMillisecond / 2;
     if (remaining <=
         std::numeric_limits<uint64_t>::max() - kHalfMillisecondInNanoseconds) {
       *remaining_ms = (remaining + kHalfMillisecondInNanoseconds) /
@@ -197,14 +198,12 @@ void PrepareMIGReplyFromRequest(const mach_msg_header_t* in_header,
                                 mach_msg_header_t* out_header) {
   out_header->msgh_bits =
       MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(in_header->msgh_bits), 0);
-  out_header->msgh_remote_port = in_header->msgh_remote_port;
   out_header->msgh_size = sizeof(mig_reply_error_t);
+  out_header->msgh_remote_port = in_header->msgh_remote_port;
   out_header->msgh_local_port = MACH_PORT_NULL;
+  out_header->msgh_reserved = 0;
   out_header->msgh_id = in_header->msgh_id + 100;
   reinterpret_cast<mig_reply_error_t*>(out_header)->NDR = NDR_record;
-
-  // MIG-generated dispatch routines don’t do this, but they should.
-  out_header->msgh_reserved = 0;
 }
 
 void SetMIGReplyError(mach_msg_header_t* out_header, kern_return_t error) {

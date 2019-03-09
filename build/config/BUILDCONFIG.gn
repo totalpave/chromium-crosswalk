@@ -3,6 +3,18 @@
 # found in the LICENSE file.
 
 # =============================================================================
+# WHAT IS THIS FILE?
+# =============================================================================
+#
+# This is the master GN build configuration. This file is loaded after the
+# build args (args.gn) for the build directory and after the toplevel ".gn"
+# file (which points to this file as the build configuration).
+#
+# This file will be executed and the resulting context will be used to execute
+# every other file in the build. So variables declared here (that don't start
+# with an underscore) will be implicitly global.
+
+# =============================================================================
 # PLATFORM SELECTION
 # =============================================================================
 #
@@ -69,31 +81,31 @@ if (current_os == "") {
 #
 # YOU SHOULD ALMOST NEVER NEED TO ADD FLAGS TO THIS FILE. GN allows any file in
 # the build to declare build flags. If you need a flag for a single component,
-# you can just declare it in the corresponding BUILD.gn file. If you need a
-# flag in multiple components, there are a few options:
+# you can just declare it in the corresponding BUILD.gn file.
 #
-# - If your feature is a single target, say //components/foo, and the targets
-#   depending on foo need to have some define set if foo is enabled: (1) Write
-#   a declare_args block in foo's BUILD.gn file listing your enable_foo build
-#   flag. (2) Write a config in that file listing the define, and list that
-#   config in foo's public_configs. This will propagate that define to all the
-#   targets depending on foo. (3) When foo is not enabled, just make it expand
-#   to an empty group (or whatever's appropriate for the "off" state of your
-#   feature.
+# - If your feature is a single target, say //components/foo, you can put
+#   a declare_args() block in //components/foo/BUILD.gn and use it there.
+#   Nobody else in the build needs to see the flag.
 #
-# - If a semi-random set of targets need to know about a define: (1) In the
-#   lowest level of the build that knows about this feature, add a declare_args
-#   block in the build file for your enable flag. (2) Write a config that adds
-#   a define conditionally based on that build flags. (3) Manually add that
-#   config to the "configs" applying to the targets that need the define.
+# - Defines based on build variables should be implemented via the generated
+#   build flag header system. See //build/buildflag_header.gni. You can put
+#   the buildflag_header target in the same file as the build flag itself. You
+#   should almost never set "defines" directly.
 #
-# - If a semi-random set of targets need to know about the build flag (to do
-#   file inclusion or exclusion, more than just defines): (1) Write a .gni file
-#   in the lowest-level directory that knows about the feature. (2) Put the
-#   declare_args block with your build flag in that .gni file. (3) Import that
-#   .gni file from the BUILD.gn files that need the flag.
+# - If your flag toggles a target on and off or toggles between different
+#   versions of similar things, write a "group" target that forwards to the
+#   right target (or no target) depending on the value of the build flag. This
+#   group can be in the same BUILD.gn file as the build flag, and targets can
+#   depend unconditionally on the group rather than duplicating flag checks
+#   across many targets.
 #
-# Other advice:
+# - If a semi-random set of build files REALLY needs to know about a define and
+#   the above pattern for isolating the build logic in a forwarding group
+#   doesn't work, you can put the argument in a .gni file. This should be put
+#   in the lowest level of the build that knows about this feature (which should
+#   almost always be outside of the //build directory!).
+#
+# Other flag advice:
 #
 # - Use boolean values when possible. If you need a default value that expands
 #   to some complex thing in the default case (like the location of the
@@ -111,11 +123,6 @@ if (current_os == "") {
 #   even if the value is overridden, which is wasteful. See first bullet.
 
 declare_args() {
-  # Component build. Setting to true compiles targets declared as "components"
-  # as shared libraries loaded dynamically. This speeds up development time.
-  # When false, components will be linked statically.
-  is_component_build = false
-
   # Set to enable the official build level of optimization. This has nothing
   # to do with branding, but enables an additional level of optimization above
   # release (!is_debug). This might be better expressed as a tri-state
@@ -123,16 +130,14 @@ declare_args() {
   # separate flags.
   is_official_build = false
 
-  # Debug build. Enabling official builds automatically sets is_debug to false.
-  is_debug = !is_official_build
-
   # Whether we're a traditional desktop unix.
   is_desktop_linux = current_os == "linux"
 
-  # Set to true when compiling with the Clang compiler. Typically this is used
-  # to configure warnings.
-  is_clang = current_os == "mac" || current_os == "ios" ||
-             current_os == "linux" || current_os == "chromeos"
+  # Set to true when compiling with the Clang compiler.
+  is_clang = current_os != "linux" ||
+             (current_cpu != "s390x" && current_cpu != "s390" &&
+              current_cpu != "ppc64" && current_cpu != "ppc" &&
+              current_cpu != "mips" && current_cpu != "mips64")
 
   # Allows the path to a custom target toolchain to be injected as a single
   # argument, and set as the default toolchain.
@@ -143,6 +148,21 @@ declare_args() {
   host_toolchain = ""
 
   # DON'T ADD MORE FLAGS HERE. Read the comment above.
+}
+
+declare_args() {
+  # Debug build. Enabling official builds automatically sets is_debug to false.
+  is_debug = !is_official_build
+}
+
+declare_args() {
+  # Component build. Setting to true compiles targets declared as "components"
+  # as shared libraries loaded dynamically. This speeds up development time.
+  # When false, components will be linked statically.
+  #
+  # For more information see
+  # https://chromium.googlesource.com/chromium/src/+/master/docs/component_build.md
+  is_component_build = is_debug && current_os != "ios"
 }
 
 assert(!(is_debug && is_official_build), "Can't do official debug builds")
@@ -168,10 +188,6 @@ if (host_toolchain == "") {
 
   if (host_os == "linux") {
     if (target_os != "linux") {
-      # TODO(dpranke) - is_clang normally applies only to the target
-      # build, and there is no way to indicate that you want to override
-      # it for both the target build *and* the host build. Do we need to
-      # support this?
       host_toolchain = "//build/toolchain/linux:clang_$host_cpu"
     } else if (is_clang) {
       host_toolchain = "//build/toolchain/linux:clang_$host_cpu"
@@ -181,13 +197,22 @@ if (host_toolchain == "") {
   } else if (host_os == "mac") {
     host_toolchain = "//build/toolchain/mac:clang_$host_cpu"
   } else if (host_os == "win") {
-    # On Windows always use the target CPU for host builds. On the
+    # On Windows always use the target CPU for host builds for x86/x64. On the
     # configurations we support this will always work and it saves build steps.
-    if (is_clang) {
-      host_toolchain = "//build/toolchain/win:clang_$target_cpu"
+    # Windows ARM64 targets require an x64 host for cross build.
+    if (target_cpu == "x86" || target_cpu == "x64") {
+      if (is_clang) {
+        host_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
+      } else {
+        host_toolchain = "//build/toolchain/win:$target_cpu"
+      }
+    } else if (is_clang) {
+      host_toolchain = "//build/toolchain/win:win_clang_$host_cpu"
     } else {
-      host_toolchain = "//build/toolchain/win:$target_cpu"
+      host_toolchain = "//build/toolchain/win:$host_cpu"
     }
+  } else if (host_os == "aix") {
+    host_toolchain = "//build/toolchain/aix:$host_cpu"
   } else {
     assert(false, "Unsupported host_os: $host_os")
   }
@@ -198,42 +223,40 @@ _default_toolchain = ""
 if (target_os == "android") {
   assert(host_os == "linux" || host_os == "mac",
          "Android builds are only supported on Linux and Mac hosts.")
-  if (is_clang) {
-    _default_toolchain = "//build/toolchain/android:clang_$target_cpu"
-  } else {
-    _default_toolchain = "//build/toolchain/android:$target_cpu"
-  }
-} else if (target_os == "chromeos") {
+  _default_toolchain = "//build/toolchain/android:android_clang_$target_cpu"
+} else if (target_os == "chromeos" || target_os == "linux") {
   # See comments in build/toolchain/cros/BUILD.gn about board compiles.
-  assert(host_os == "linux",
-         "ChromeOS builds are only supported on Linux hosts.")
-  if (is_clang) {
-    _default_toolchain = "//build/toolchain/cros:clang_target"
-  } else {
-    _default_toolchain = "//build/toolchain/cros:target"
-  }
-} else if (target_os == "ios") {
-  _default_toolchain = "//build/toolchain/mac:ios_clang_$target_cpu"
-} else if (target_os == "linux") {
   if (is_clang) {
     _default_toolchain = "//build/toolchain/linux:clang_$target_cpu"
   } else {
     _default_toolchain = "//build/toolchain/linux:$target_cpu"
   }
+} else if (target_os == "fuchsia") {
+  _default_toolchain = "//build/toolchain/fuchsia:$target_cpu"
+} else if (target_os == "ios") {
+  _default_toolchain = "//build/toolchain/mac:ios_clang_$target_cpu"
 } else if (target_os == "mac") {
   assert(host_os == "mac", "Mac cross-compiles are unsupported.")
   _default_toolchain = host_toolchain
 } else if (target_os == "win") {
   # On Windows we use the same toolchain for host and target by default.
-  assert(target_os == host_os, "Win cross-compiles only work on win hosts.")
+  # Beware, win cross builds have some caveats, see docs/win_cross.md
+  # TODO(thakis): See if we want to make 32-bit builds on mac hosts work.
+  assert(host_os != "mac" || target_cpu == "x64",
+         "Mac hosts can only build 64-bit chrome/win, https://crbug.com/794838")
   if (is_clang) {
-    _default_toolchain = "//build/toolchain/win:clang_$target_cpu"
+    _default_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
   } else {
     _default_toolchain = "//build/toolchain/win:$target_cpu"
   }
-} else if (target_os == "winrt_81" || target_os == "winrt_81_phone" ||
-           target_os == "winrt_10") {
-  _default_toolchain = "//build/toolchain/win:winrt_$target_cpu"
+} else if (target_os == "winuwp") {
+  # Only target WinUWP on for a Windows store application and only
+  # x86, x64 and arm are supported target CPUs.
+  assert(target_cpu == "x86" || target_cpu == "x64" || target_cpu == "arm" ||
+         target_cpu == "arm64")
+  _default_toolchain = "//build/toolchain/win:uwp_$target_cpu"
+} else if (target_os == "aix") {
+  _default_toolchain = "//build/toolchain/aix:$target_cpu"
 } else {
   assert(false, "Unsupported target_os: $target_os")
 }
@@ -264,74 +287,16 @@ if (custom_toolchain != "") {
 # aix or one of the BSDs. If you need to check these, just check the
 # current_os value directly.
 
-if (current_os == "win" || current_os == "winrt_81" ||
-    current_os == "winrt_81_phone" || current_os == "winrt_10") {
-  is_android = false
-  is_chromeos = false
-  is_ios = false
-  is_linux = false
-  is_mac = false
-  is_nacl = false
-  is_posix = false
-  is_win = true
-} else if (current_os == "mac") {
-  is_android = false
-  is_chromeos = false
-  is_ios = false
-  is_linux = false
-  is_mac = true
-  is_nacl = false
-  is_posix = true
-  is_win = false
-} else if (current_os == "android") {
-  is_android = true
-  is_chromeos = false
-  is_ios = false
-  is_linux = false
-  is_mac = false
-  is_nacl = false
-  is_posix = true
-  is_win = false
-} else if (current_os == "chromeos") {
-  is_android = false
-  is_chromeos = true
-  is_ios = false
-  is_linux = true
-  is_mac = false
-  is_nacl = false
-  is_posix = true
-  is_win = false
-} else if (current_os == "nacl") {
-  # current_os == "nacl" will be passed by the nacl toolchain definition.
-  # It is not set by default or on the command line. We treat is as a
-  # Posix variant.
-  is_android = false
-  is_chromeos = false
-  is_ios = false
-  is_linux = false
-  is_mac = false
-  is_nacl = true
-  is_posix = true
-  is_win = false
-} else if (current_os == "ios") {
-  is_android = false
-  is_chromeos = false
-  is_ios = true
-  is_linux = false
-  is_mac = false
-  is_nacl = false
-  is_posix = true
-  is_win = false
-} else if (current_os == "linux") {
-  is_android = false
-  is_chromeos = false
-  is_ios = false
-  is_linux = true
-  is_mac = false
-  is_nacl = false
-  is_posix = true
-  is_win = false
-}
+is_android = current_os == "android"
+is_chromeos = current_os == "chromeos"
+is_fuchsia = current_os == "fuchsia"
+is_ios = current_os == "ios"
+is_linux = current_os == "chromeos" || current_os == "linux"
+is_mac = current_os == "mac"
+is_nacl = current_os == "nacl"
+is_win = current_os == "win" || current_os == "winuwp"
+
+is_posix = !is_win && !is_fuchsia
 
 # =============================================================================
 # SOURCES FILTERS
@@ -340,25 +305,17 @@ if (current_os == "win" || current_os == "winrt_81" ||
 # These patterns filter out platform-specific files when assigning to the
 # sources variable. The magic variable |sources_assignment_filter| is applied
 # to each assignment or appending to the sources variable and matches are
-# automatcally removed.
+# automatically removed.
 #
 # Note that the patterns are NOT regular expressions. Only "*" and "\b" (path
 # boundary = end of string or slash) are supported, and the entire string
-# muct match the pattern (so you need "*.cc" to match all .cc files, for
+# must match the pattern (so you need "*.cc" to match all .cc files, for
 # example).
 
 # DO NOT ADD MORE PATTERNS TO THIS LIST, see set_sources_assignment_filter call
 # below.
 sources_assignment_filter = []
-if (!is_posix) {
-  sources_assignment_filter += [
-    "*_posix.h",
-    "*_posix.cc",
-    "*_posix_unittest.h",
-    "*_posix_unittest.cc",
-    "*\bposix/*",
-  ]
-}
+
 if (!is_win) {
   sources_assignment_filter += [
     "*_win.cc",
@@ -454,24 +411,40 @@ set_sources_assignment_filter(sources_assignment_filter)
 # The values configured here will be automatically set on the scope of the
 # corresponding target. Target definitions can add or remove to the settings
 # here as needed.
+#
+# WHAT GOES HERE?
+#
+# Other than the main compiler and linker configs, the only reason for a config
+# to be in this list is if some targets need to explicitly override that config
+# by removing it. This is how targets opt-out of flags. If you don't have that
+# requirement and just need to add a config everywhere, reference it as a
+# sub-config of an existing one, most commonly the main "compiler" one.
 
-# Holds all configs used for making native executables and libraries, to avoid
-# duplication in each target below.
-_native_compiler_configs = [
+# Holds all configs used for running the compiler.
+default_compiler_configs = [
   "//build/config:feature_flags",
+  "//build/config/compiler:afdo",
+  "//build/config/compiler:afdo_optimize_size",
+  "//build/config/compiler:assembler_debug_dir",
   "//build/config/compiler:compiler",
-  "//build/config/compiler:clang_stackrealign",
   "//build/config/compiler:compiler_arm_fpu",
+  "//build/config/compiler:compiler_arm_thumb",
   "//build/config/compiler:chromium_code",
   "//build/config/compiler:default_include_dirs",
   "//build/config/compiler:default_optimization",
+  "//build/config/compiler:default_stack_frames",
   "//build/config/compiler:default_symbols",
+  "//build/config/compiler:export_dynamic",
+  "//build/config/compiler:no_exceptions",
   "//build/config/compiler:no_rtti",
   "//build/config/compiler:runtime_library",
+  "//build/config/compiler:thin_archive",
+  "//build/config/coverage:default_coverage",
   "//build/config/sanitizers:default_sanitizer_flags",
 ]
+
 if (is_win) {
-  _native_compiler_configs += [
+  default_compiler_configs += [
     "//build/config/win:default_crt",
     "//build/config/win:lean_and_mean",
     "//build/config/win:nominmax",
@@ -480,24 +453,30 @@ if (is_win) {
     "//build/config/win:vs_code_analysis",
   ]
 }
-if (current_os == "winrt_81" || current_os == "winrt_81_phone" ||
-    current_os == "winrt_10") {
-  _native_compiler_configs += [ "//build/config/win:target_winrt" ]
-}
+
 if (is_posix) {
-  _native_compiler_configs += [
-    "//build/config/gcc:no_exceptions",
-    "//build/config/gcc:symbol_visibility_hidden",
-  ]
+  if (current_os != "aix") {
+    default_compiler_configs +=
+        [ "//build/config/gcc:symbol_visibility_hidden" ]
+  }
+}
+
+if (is_fuchsia) {
+  default_compiler_configs += [ "//build/config/gcc:symbol_visibility_hidden" ]
 }
 
 if (is_android) {
-  _native_compiler_configs +=
-      [ "//build/config/android:default_cygprofile_instrumentation" ]
+  default_compiler_configs +=
+      [ "//build/config/android:default_orderfile_instrumentation" ]
+}
+
+if (is_win) {
+  default_compiler_configs +=
+      [ "//build/config/win:default_cygprofile_instrumentation" ]
 }
 
 if (is_clang && !is_nacl) {
-  _native_compiler_configs += [
+  default_compiler_configs += [
     "//build/config/clang:find_bad_constructs",
     "//build/config/clang:extra_warnings",
   ]
@@ -505,15 +484,25 @@ if (is_clang && !is_nacl) {
 
 # Debug/release-related defines.
 if (is_debug) {
-  _native_compiler_configs += [ "//build/config:debug" ]
+  default_compiler_configs += [ "//build/config:debug" ]
 } else {
-  _native_compiler_configs += [ "//build/config:release" ]
+  default_compiler_configs += [ "//build/config:release" ]
 }
 
+# Static libraries and source sets use only the compiler ones.
+set_defaults("static_library") {
+  configs = default_compiler_configs
+}
+set_defaults("source_set") {
+  configs = default_compiler_configs
+}
+
+# Compute the set of configs common to all linked targets (shared libraries,
+# loadable modules, executables) to avoid duplication below.
 if (is_win) {
   # Many targets remove these configs, so they are not contained within
   # //build/config:executable_config for easy removal.
-  _windows_linker_configs = [
+  _linker_configs = [
     "//build/config/win:default_incremental_linking",
 
     # Default to console-mode apps. Most of our targets are tests and such
@@ -521,100 +510,64 @@ if (is_win) {
     "//build/config/win:console",
   ]
 } else if (is_mac) {
-  _mac_linker_configs = [ "//build/config/mac:strip_all" ]
+  _linker_configs = [ "//build/config/mac:strip_all" ]
+} else {
+  _linker_configs = []
 }
 
 # Executable defaults.
-_executable_configs = _native_compiler_configs + [
-                        "//build/config:default_libs",
-                        "//build/config:executable_config",
-                      ]
-if (is_win) {
-  _executable_configs += _windows_linker_configs
-} else if (is_mac) {
-  _executable_configs += _mac_linker_configs
-}
+default_executable_configs = default_compiler_configs + [
+                               "//build/config:default_libs",
+                               "//build/config:executable_config",
+                             ] + _linker_configs
 set_defaults("executable") {
-  configs = _executable_configs
-}
-
-if (is_ios) {
-  set_defaults("ios_app_bundle") {
-    configs = _executable_configs
-  }
-  set_defaults("ios_appex_bundle") {
-    configs = _executable_configs
-  }
-}
-
-# Static library defaults.
-set_defaults("static_library") {
-  configs = _native_compiler_configs
+  configs = default_executable_configs
 }
 
 # Shared library and loadable module defaults (also for components in component
 # mode).
-_shared_library_configs = _native_compiler_configs + [
-                            "//build/config:default_libs",
-                            "//build/config:shared_library_config",
-                          ]
-if (is_win) {
-  _shared_library_configs += _windows_linker_configs
-} else if (is_android) {
+default_shared_library_configs = default_compiler_configs + [
+                                   "//build/config:default_libs",
+                                   "//build/config:shared_library_config",
+                                 ] + _linker_configs
+if (is_android) {
   # Strip native JNI exports from shared libraries by default. Binaries that
   # want this can remove this config.
-  _shared_library_configs +=
-      [ "//build/config/android:hide_native_jni_exports" ]
-} else if (is_mac) {
-  _shared_library_configs += _mac_linker_configs
+  default_shared_library_configs +=
+      [ "//build/config/android:hide_all_but_jni_onload" ]
 }
 set_defaults("shared_library") {
-  configs = _shared_library_configs
+  configs = default_shared_library_configs
 }
 set_defaults("loadable_module") {
-  configs = _shared_library_configs
-}
-if (is_component_build) {
-  set_defaults("component") {
-    configs = _shared_library_configs
-    if (is_android) {
-      configs -= [ "//build/config/android:hide_native_jni_exports" ]
-    }
-  }
-}
-if (is_ios) {
-  set_defaults("ios_framework_bundle") {
-    configs = _shared_library_configs
-  }
-}
-if (is_mac) {
-  set_defaults("mac_framework_bundle") {
-    configs = _shared_library_configs
-  }
-}
+  configs = default_shared_library_configs
 
-# Source set defaults (also for components in non-component mode).
-set_defaults("source_set") {
-  configs = _native_compiler_configs
-}
-if (!is_component_build) {
-  set_defaults("component") {
-    configs = _native_compiler_configs
-  }
-}
-
-# TODO(brettw) move to //build/split_static_library.gni when set_defaults can
-# be practically implemented outside of this file.
-set_defaults("split_static_library") {
-  configs = _native_compiler_configs
-}
-
-# Test defaults.
-set_defaults("test") {
+  # loadable_modules are generally used by other libs, not just via JNI.
   if (is_android) {
-    configs = _shared_library_configs
-  } else {
-    configs = _executable_configs
+    configs -= [ "//build/config/android:hide_all_but_jni_onload" ]
+  }
+}
+
+# Sets default dependencies for executable and shared_library targets.
+#
+# Variables
+#   no_default_deps: If true, no standard dependencies will be added.
+foreach(_target_type,
+        [
+          "executable",
+          "loadable_module",
+          "shared_library",
+        ]) {
+  template(_target_type) {
+    target(_target_type, target_name) {
+      forward_variables_from(invoker, "*", [ "no_default_deps" ])
+      if (!defined(deps)) {
+        deps = []
+      }
+      if (!defined(invoker.no_default_deps) || !invoker.no_default_deps) {
+        deps += [ "//build/config:${_target_type}_deps" ]
+      }
+    }
   }
 }
 
@@ -640,13 +593,9 @@ template("component") {
     assert(invoker.static_component_type == "static_library" ||
            invoker.static_component_type == "source_set")
     _component_mode = invoker.static_component_type
-  } else if (!defined(invoker.sources) || is_mac) {
+  } else if (!defined(invoker.sources)) {
     # When there are no sources defined, use a source set to avoid creating
     # an empty static library (which generally don't work).
-    #
-    # TODO(brettw) bug 618797: Remove the mac condition. On Mac making these as
-    # static_library causes crashes. Remove the mac condition above when this
-    # is fixed.
     _component_mode = "source_set"
   } else {
     _component_mode = "static_library"
@@ -661,12 +610,17 @@ template("component") {
     # See http://crbug.com/594610
     forward_variables_from(invoker, [ "visibility" ])
     forward_variables_from(invoker, "*", [ "visibility" ])
+  }
+}
 
-    # All shared libraries must have the sanitizer deps to properly link in
-    # asan mode (this target will be empty in other cases).
-    if (!defined(deps)) {
-      deps = []
+# Component defaults
+set_defaults("component") {
+  if (is_component_build) {
+    configs = default_shared_library_configs
+    if (is_android) {
+      configs -= [ "//build/config/android:hide_all_but_jni_onload" ]
     }
-    deps += [ "//build/config/sanitizers:deps" ]
+  } else {
+    configs = default_compiler_configs
   }
 }

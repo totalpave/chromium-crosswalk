@@ -17,8 +17,6 @@ namespace dom_distiller {
 
 class DomDistillerServiceInterface;
 class DomDistillerViewerSourceTest;
-class ViewerHandle;
-class ViewRequestDelegate;
 
 // Serves HTML and resources for viewing distilled articles.
 class DomDistillerViewerSource : public content::URLDataSource {
@@ -34,13 +32,12 @@ class DomDistillerViewerSource : public content::URLDataSource {
   std::string GetSource() const override;
   void StartDataRequest(
       const std::string& path,
-      int render_process_id,
-      int render_frame_id,
+      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
       const content::URLDataSource::GotDataCallback& callback) override;
   std::string GetMimeType(const std::string& path) const override;
-  bool ShouldServiceRequest(const net::URLRequest* request) const override;
-  void WillServiceRequest(const net::URLRequest* request,
-                          std::string* path) const override;
+  bool ShouldServiceRequest(const GURL& url,
+                            content::ResourceContext* resource_context,
+                            int render_process_id) const override;
   std::string GetContentSecurityPolicyStyleSrc() const override;
   std::string GetContentSecurityPolicyChildSrc() const override;
 

@@ -5,10 +5,12 @@
 /**
  * Toggle Ripple.
  *
- * You can change ripple color by the following CSS selector.
+ * You can change ripple color by the following CSS variable.
  *
- * files-toggle-ripple#my-button::shadow .ripple {
- *   background-color: black;
+ * files-toggle-ripple#my-button {
+ *   --files-toggle-ripple: {
+ *     background-color: black;
+ *   }
  * }
  *
  * Ripple size of the activated state is same with the size of this element.
@@ -31,15 +33,17 @@ var FilesToggleRipple = Polymer({
    * @private
    */
   activatedChanged_: function(newValue, oldValue) {
-    if (newValue === oldValue)
+    if (newValue === oldValue) {
       return;
+    }
 
     // Perform animation when it's not initial value change.
     if (oldValue !== undefined) {
-      if (newValue)
+      if (newValue) {
         this.performActivateAnimation_();
-      else
+      } else {
         this.performDeactivateAnimation_();
+      }
     }
 
     this.$.ripple.classList.toggle('activated', !!newValue);
@@ -50,7 +54,7 @@ var FilesToggleRipple = Polymer({
    * @private
    */
   performActivateAnimation_: function() {
-    var borderRadius = Math.min(this.clientWidth, this.clientHeight) / 2;
+    const borderRadius = Math.min(this.clientWidth, this.clientHeight) / 2;
 
     this.$.ripple.animate([
       {opacity: 0, offset: 0, easing: 'linear'},
@@ -98,7 +102,7 @@ var FilesToggleRipple = Polymer({
    * @private
    */
   performDeactivateAnimation_: function() {
-    var borderRadius = Math.min(this.clientWidth, this.clientHeight) / 2;
+    const borderRadius = Math.min(this.clientWidth, this.clientHeight) / 2;
 
     this.$.ripple.animate([
       {opacity: 0.2, offset: 0, easing: 'linear'},

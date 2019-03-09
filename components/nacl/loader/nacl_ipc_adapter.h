@@ -9,11 +9,11 @@
 
 #include <map>
 #include <memory>
-#include <queue>
 #include <string>
 #include <vector>
 
 #include "base/callback.h"
+#include "base/containers/queue.h"
 #include "base/files/scoped_file.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -29,15 +29,14 @@
 
 struct NaClDesc;
 struct NaClImcTypedMsgHdr;
-struct PP_Size;
+
+namespace base {
+class SingleThreadTaskRunner;
+}
 
 namespace IPC {
 class Channel;
 struct ChannelHandle;
-}
-
-namespace ppapi {
-class HostResource;
 }
 
 // Adapts a Chrome IPC channel to an IPC channel that we expose to Native
@@ -105,11 +104,10 @@ class NaClIPCAdapter : public base::RefCountedThreadSafe<NaClIPCAdapter>,
   // |open_resource_cb| may immediately call a OpenResourceReplyCallback
   // function to send a pre-opened resource descriptor to the untrusted side.
   // OpenResourceCallback returns true when OpenResourceReplyCallback is called.
-  NaClIPCAdapter(
-      const IPC::ChannelHandle& handle,
-      base::TaskRunner* runner,
-      ResolveFileTokenCallback resolve_file_token_cb,
-      OpenResourceCallback open_resource_cb);
+  NaClIPCAdapter(const IPC::ChannelHandle& handle,
+                 const scoped_refptr<base::SingleThreadTaskRunner>& runner,
+                 ResolveFileTokenCallback resolve_file_token_cb,
+                 OpenResourceCallback open_resource_cb);
 
   // Initializes with a given channel that's already created for testing
   // purposes. This function will take ownership of the given channel.
@@ -137,10 +135,6 @@ class NaClIPCAdapter : public base::RefCountedThreadSafe<NaClIPCAdapter>,
   // NaClDesc is reference-counted, and a reference is returned.
   NaClDesc* MakeNaClDesc();
 
-#if defined(OS_POSIX)
-  base::ScopedFD TakeClientFileDescriptor();
-#endif
-
   // Listener implementation.
   bool OnMessageReceived(const IPC::Message& message) override;
   void OnChannelConnected(int32_t peer_pid) override;
@@ -159,7 +153,7 @@ class NaClIPCAdapter : public base::RefCountedThreadSafe<NaClIPCAdapter>,
 
     // Messages that we have read off of the Chrome IPC channel that are waiting
     // to be received by the plugin.
-    std::queue< scoped_refptr<RewrittenMessage> > to_be_received_;
+    base::queue<std::unique_ptr<RewrittenMessage>> to_be_received_;
 
     ppapi::proxy::NaClMessageScanner nacl_msg_scanner_;
 
@@ -216,7 +210,7 @@ class NaClIPCAdapter : public base::RefCountedThreadSafe<NaClIPCAdapter>,
   // Saves the message to forward to NaCl. This method assumes that the caller
   // holds the lock for locked_data_.
   void SaveMessage(const IPC::Message& message,
-                   RewrittenMessage* rewritten_message);
+                   std::unique_ptr<RewrittenMessage> rewritten_message);
 
   base::Lock lock_;
   base::ConditionVariable cond_var_;

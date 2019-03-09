@@ -19,26 +19,7 @@ base::string16 MenuDelegate::GetLabel(int id) const {
   return base::string16();
 }
 
-const gfx::FontList* MenuDelegate::GetLabelFontList(int id) const {
-  return NULL;
-}
-
-bool MenuDelegate::GetShouldUseDisabledEmphasizedForegroundColor(
-    int command_id) const {
-  return false;
-}
-
-bool MenuDelegate::GetBackgroundColor(int command_id,
-                                      bool is_hovered,
-                                      SkColor* override_color) const {
-  return false;
-}
-
-bool MenuDelegate::GetForegroundColor(int command_id,
-                                      bool is_hovered,
-                                      SkColor* override_color) const {
-  return false;
-}
+void MenuDelegate::GetLabelStyle(int id, LabelStyle* style) const {}
 
 base::string16 MenuDelegate::GetTooltipText(int id,
                                       const gfx::Point& screen_loc) const {
@@ -100,7 +81,7 @@ bool MenuDelegate::CanDrop(MenuItemView* menu, const OSExchangeData& data) {
 bool MenuDelegate::GetDropFormats(
     MenuItemView* menu,
     int* formats,
-    std::set<ui::Clipboard::FormatType>* format_types) {
+    std::set<ui::ClipboardFormatType>* format_types) {
   return false;
 }
 
@@ -168,6 +149,10 @@ void MenuDelegate::GetHorizontalIconMargins(int command_id,
 }
 
 bool MenuDelegate::ShouldReserveSpaceForSubmenuIndicator() const {
+  return true;
+}
+
+bool MenuDelegate::ShouldTryPositioningBesideAnchor() const {
   return true;
 }
 

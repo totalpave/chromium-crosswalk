@@ -12,12 +12,13 @@
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/chromeos/login/existing_user_controller.h"
 #include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
-#include "chrome/browser/chromeos/policy/enterprise_install_attributes.h"
 #include "chrome/browser/chromeos/policy/server_backed_device_state.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "chromeos/settings/cros_settings_provider.h"
+#include "chromeos/system/statistics_provider.h"
+#include "chromeos/tpm/install_attributes.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
@@ -43,7 +44,6 @@ DeviceDisablingManager::DeviceDisablingManager(
       device_disabled_(false),
       weak_factory_(this) {
   CHECK(delegate_);
-  Init();
 }
 
 DeviceDisablingManager::~DeviceDisablingManager() {
@@ -83,14 +83,13 @@ void DeviceDisablingManager::CacheDisabledMessageAndNotify(
     return;
 
   disabled_message_ = disabled_message;
-  FOR_EACH_OBSERVER(Observer,
-                    observers_,
-                    OnDisabledMessageChanged(disabled_message_));
+  for (auto& observer : observers_)
+    observer.OnDisabledMessageChanged(disabled_message_);
 }
 
 void DeviceDisablingManager::CheckWhetherDeviceDisabledDuringOOBE(
     const DeviceDisabledCheckCallback& callback) {
-  if (policy::GetRestoreMode() != policy::RESTORE_MODE_DISABLED ||
+  if (policy::GetDeviceStateMode() != policy::RESTORE_MODE_DISABLED ||
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDisableDeviceDisabling)) {
     // Indicate that the device is not disabled if it is not marked as such in
@@ -134,6 +133,10 @@ void DeviceDisablingManager::CheckWhetherDeviceDisabledDuringOOBE(
           policy::kDeviceStateManagementDomain,
           &enrollment_domain_);
 
+  // Update the serial number.
+  serial_number_ = chromeos::system::StatisticsProvider::GetInstance()
+                       ->GetEnterpriseMachineID();
+
   // Update the disabled message.
   std::string disabled_message;
   g_browser_process->local_state()->GetDictionary(
@@ -144,6 +147,17 @@ void DeviceDisablingManager::CheckWhetherDeviceDisabledDuringOOBE(
 
   // Indicate that the device is disabled.
   callback.Run(true);
+}
+
+// static
+bool DeviceDisablingManager::IsDeviceDisabledDuringNormalOperation() {
+  bool device_disabled = false;
+  CrosSettings::Get()->GetBoolean(kDeviceDisabled, &device_disabled);
+  if (device_disabled && HonorDeviceDisablingDuringNormalOperation()) {
+    return true;
+  }
+
+  return false;
 }
 
 // static
@@ -219,7 +233,12 @@ void DeviceDisablingManager::UpdateFromCrosSettings() {
   }
 
   // Cache the enrollment domain.
-  enrollment_domain_ = browser_policy_connector_->GetEnterpriseDomain();
+  enrollment_domain_ =
+      browser_policy_connector_->GetEnterpriseEnrollmentDomain();
+
+  // Cache the device serial number.
+  serial_number_ = chromeos::system::StatisticsProvider::GetInstance()
+                       ->GetEnterpriseMachineID();
 
   // If no session or login is in progress, show the device disabled screen.
   delegate_->ShowDeviceDisabledScreen();

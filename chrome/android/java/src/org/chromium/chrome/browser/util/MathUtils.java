@@ -9,6 +9,9 @@ package org.chromium.chrome.browser.util;
  */
 public class MathUtils {
 
+    /** A minimum difference to use when comparing floats for equality. */
+    public static final float EPSILON = 0.001f;
+
     private MathUtils() {}
 
     /**
@@ -123,8 +126,8 @@ public class MathUtils {
         float scale = Math.max(
                 (float) targetWidth / dimensions[0],
                 (float) targetHeight / dimensions[1]);
-        dimensions[0] *= scale;
-        dimensions[1] *= scale;
+        dimensions[0] = (int) (dimensions[0] * scale);
+        dimensions[1] = (int) (dimensions[1] * scale);
         return scale;
     }
 
@@ -157,5 +160,29 @@ public class MathUtils {
      */
     public static int compareLongs(long lhs, long rhs) {
         return lhs < rhs ? -1 : (lhs == rhs ? 0 : 1);
+    }
+
+    /**
+     * Determine if two floats are equal.
+     * @param f1 The first float to compare.
+     * @param f2 The second float to compare.
+     * @return True if the floats are equal.
+     */
+    public static boolean areFloatsEqual(float f1, float f2) {
+        return Math.abs(f1 - f2) < MathUtils.EPSILON;
+    }
+
+    /**
+     * Compute the distance between two points.
+     * @param x1 X of point 1.
+     * @param y1 Y of point 1.
+     * @param x2 X of point 2.
+     * @param y2 Y of point 2.
+     * @return The distance between the two points.
+     */
+    public static float distance(float x1, float y1, float x2, float y2) {
+        float xDist = x2 - x1;
+        float yDist = y2 - y1;
+        return (float) Math.sqrt(xDist * xDist + yDist * yDist);
     }
 }

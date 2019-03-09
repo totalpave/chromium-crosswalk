@@ -5,10 +5,11 @@
 package org.chromium.android_webview;
 
 import android.graphics.Bitmap;
-import android.os.AsyncTask;
 import android.util.Log;
 
-import org.chromium.base.ThreadUtils;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
+import org.chromium.content_public.browser.UiThreadTaskTraits;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,29 +34,23 @@ public class DefaultVideoPosterRequestHandler {
         // Send the request to UI thread to callback to the client, and if it provides a
         // valid bitmap bounce on to the worker thread pool to compress it into the piped
         // input/output stream.
-        ThreadUtils.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                final Bitmap defaultVideoPoster = contentClient.getDefaultVideoPoster();
-                if (defaultVideoPoster == null) {
-                    closeOutputStream(outputStream);
-                    return;
-                }
-                AsyncTask.THREAD_POOL_EXECUTOR.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            defaultVideoPoster.compress(Bitmap.CompressFormat.PNG, 100,
-                                    outputStream);
-                            outputStream.flush();
-                        } catch (IOException e) {
-                            Log.e(TAG, null, e);
-                        } finally {
-                            closeOutputStream(outputStream);
-                        }
-                    }
-                });
+        PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT, () -> {
+            final Bitmap defaultVideoPoster = contentClient.getDefaultVideoPoster();
+            if (defaultVideoPoster == null) {
+                closeOutputStream(outputStream);
+                return;
             }
+            PostTask.postTask(TaskTraits.BEST_EFFORT_MAY_BLOCK, () -> {
+                try {
+                    defaultVideoPoster.compress(Bitmap.CompressFormat.PNG, 100,
+                            outputStream);
+                    outputStream.flush();
+                } catch (IOException e) {
+                    Log.e(TAG, null, e);
+                } finally {
+                    closeOutputStream(outputStream);
+                }
+            });
         });
         return inputStream;
     }

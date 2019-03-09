@@ -8,9 +8,8 @@
 #include <map>
 #include <string>
 
-#include "base/compiler_specific.h"
-#include "base/memory/linked_ptr.h"
-#include "extensions/renderer/module_system.h"
+#include "base/macros.h"
+#include "extensions/renderer/source_map.h"
 #include "v8/include/v8.h"
 
 namespace ui {
@@ -19,20 +18,36 @@ class ResourceBundle;
 
 namespace extensions {
 
-class ResourceBundleSourceMap : public extensions::ModuleSystem::SourceMap {
+class ResourceBundleSourceMap : public SourceMap {
  public:
   explicit ResourceBundleSourceMap(const ui::ResourceBundle* resource_bundle);
   ~ResourceBundleSourceMap() override;
 
-  v8::Local<v8::Value> GetSource(v8::Isolate* isolate,
-                                 const std::string& name) const override;
+  v8::Local<v8::String> GetSource(v8::Isolate* isolate,
+                                  const std::string& name) const override;
   bool Contains(const std::string& name) const override;
 
-  void RegisterSource(const std::string& name, int resource_id);
+  void RegisterSource(const char* const name,
+                      int resource_id,
+                      bool gzipped = false);
 
  private:
+  struct ResourceInfo {
+    ResourceInfo();
+    ResourceInfo(int in_id, bool in_gzipped);
+    ResourceInfo(ResourceInfo&& other);
+    ~ResourceInfo();
+
+    ResourceInfo& operator=(ResourceInfo&& other);
+
+    int id = 0;
+    bool gzipped = false;
+    // Used to cache the uncompressed contents if |gzipped| is true.
+    mutable std::unique_ptr<std::string> cached;
+  };
+
   const ui::ResourceBundle* resource_bundle_;
-  std::map<std::string, int> resource_id_map_;
+  std::map<std::string, ResourceInfo> resource_map_;
 
   DISALLOW_COPY_AND_ASSIGN(ResourceBundleSourceMap);
 };

@@ -6,17 +6,15 @@
 
 #include "base/base64.h"
 #include "base/strings/stringprintf.h"
+#include "base/syslog_logging.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/common/constants.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "ui/display/display.h"
-#include "ui/display/screen.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/codec/png_codec.h"
-#include "ui/gfx/geometry/size_conversions.h"
 
 using content::RenderWidgetHost;
 using content::RenderWidgetHostView;
@@ -26,15 +24,18 @@ namespace extensions {
 
 using api::extension_types::ImageDetails;
 
-bool WebContentsCaptureClient::CaptureAsync(
+WebContentsCaptureClient::CaptureResult WebContentsCaptureClient::CaptureAsync(
     WebContents* web_contents,
     const ImageDetails* image_details,
-    const content::ReadbackRequestCallback callback) {
-  if (!web_contents)
-    return false;
+    base::OnceCallback<void(const SkBitmap&)> callback) {
+  // TODO(crbug/419878): Account for fullscreen render widget?
+  RenderWidgetHostView* const view =
+      web_contents ? web_contents->GetRenderWidgetHostView() : nullptr;
+  if (!view)
+    return FAILURE_REASON_VIEW_INVISIBLE;
 
   if (!IsScreenshotEnabled())
-    return false;
+    return FAILURE_REASON_SCREEN_SHOTS_DISABLED;
 
   // The default format and quality setting used when encoding jpegs.
   const api::extension_types::ImageFormat kDefaultFormat =
@@ -51,55 +52,23 @@ bool WebContentsCaptureClient::CaptureAsync(
       image_quality_ = *image_details->quality;
   }
 
-  // TODO(miu): Account for fullscreen render widget?  http://crbug.com/419878
-  RenderWidgetHostView* const view = web_contents->GetRenderWidgetHostView();
-  RenderWidgetHost* const host = view ? view->GetRenderWidgetHost() : nullptr;
-  if (!view || !host) {
-    OnCaptureFailure(FAILURE_REASON_VIEW_INVISIBLE);
-    return false;
-  }
+  view->CopyFromSurface(gfx::Rect(),  // Copy entire surface area.
+                        gfx::Size(),  // Result contains device-level detail.
+                        std::move(callback));
 
-  // By default, the requested bitmap size is the view size in screen
-  // coordinates.  However, if there's more pixel detail available on the
-  // current system, increase the requested bitmap size to capture it all.
-  const gfx::Size view_size = view->GetViewBounds().size();
-  gfx::Size bitmap_size = view_size;
-  const gfx::NativeView native_view = view->GetNativeView();
-  display::Screen* const screen = display::Screen::GetScreen();
-  const float scale =
-      screen->GetDisplayNearestWindow(native_view).device_scale_factor();
-  if (scale > 1.0f)
-    bitmap_size = gfx::ScaleToCeiledSize(view_size, scale);
+#if defined(OS_CHROMEOS)
+  SYSLOG(INFO) << "Screenshot taken";
+#endif
 
-  host->CopyFromBackingStore(gfx::Rect(view_size), bitmap_size, callback,
-                             kN32_SkColorType);
-  return true;
+  return OK;
 }
 
-void WebContentsCaptureClient::CopyFromBackingStoreComplete(
-    const SkBitmap& bitmap,
-    content::ReadbackResponse response) {
-  if (response == content::READBACK_SUCCESS) {
+void WebContentsCaptureClient::CopyFromSurfaceComplete(const SkBitmap& bitmap) {
+  if (bitmap.drawsNothing()) {
+    OnCaptureFailure(FAILURE_REASON_READBACK_FAILED);
+  } else {
     OnCaptureSuccess(bitmap);
-    return;
   }
-  // TODO(wjmaclean): Improve error reporting. Why aren't we passing more
-  // information here?
-  std::string reason;
-  switch (response) {
-    case content::READBACK_FAILED:
-      reason = "READBACK_FAILED";
-      break;
-    case content::READBACK_SURFACE_UNAVAILABLE:
-      reason = "READBACK_SURFACE_UNAVAILABLE";
-      break;
-    case content::READBACK_BITMAP_ALLOCATION_FAILURE:
-      reason = "READBACK_BITMAP_ALLOCATION_FAILURE";
-      break;
-    default:
-      reason = "<unknown>";
-  }
-  OnCaptureFailure(FAILURE_REASON_UNKNOWN);
 }
 
 // TODO(wjmaclean) can this be static?
@@ -107,16 +76,12 @@ bool WebContentsCaptureClient::EncodeBitmap(const SkBitmap& bitmap,
                                             std::string* base64_result) {
   DCHECK(base64_result);
   std::vector<unsigned char> data;
-  SkAutoLockPixels screen_capture_lock(bitmap);
   const bool should_discard_alpha = !ClientAllowsTransparency();
   bool encoded = false;
   std::string mime_type;
   switch (image_format_) {
     case api::extension_types::IMAGE_FORMAT_JPEG:
-      encoded = gfx::JPEGCodec::Encode(
-          reinterpret_cast<unsigned char*>(bitmap.getAddr32(0, 0)),
-          gfx::JPEGCodec::FORMAT_SkBitmap, bitmap.width(), bitmap.height(),
-          static_cast<int>(bitmap.rowBytes()), image_quality_, &data);
+      encoded = gfx::JPEGCodec::Encode(bitmap, image_quality_, &data);
       mime_type = kMimeTypeJpeg;
       break;
     case api::extension_types::IMAGE_FORMAT_PNG:

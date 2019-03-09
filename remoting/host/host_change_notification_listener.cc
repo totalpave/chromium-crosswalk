@@ -11,11 +11,11 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "remoting/base/constants.h"
 #include "remoting/protocol/jingle_messages.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
-#include "third_party/webrtc/libjingle/xmpp/constants.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmpp/constants.h"
 
-using buzz::QName;
-using buzz::XmlElement;
+using jingle_xmpp::QName;
+using jingle_xmpp::XmlElement;
 
 namespace remoting {
 
@@ -43,8 +43,8 @@ void HostChangeNotificationListener::OnSignalStrategyStateChange(
 }
 
 bool HostChangeNotificationListener::OnSignalStrategyIncomingStanza(
-    const buzz::XmlElement* stanza) {
-  if (stanza->Name() != buzz::QN_IQ || stanza->Attr(buzz::QN_TYPE) != "set")
+    const jingle_xmpp::XmlElement* stanza) {
+  if (stanza->Name() != jingle_xmpp::QN_IQ || stanza->Attr(jingle_xmpp::QN_TYPE) != "set")
     return false;
 
   const XmlElement* host_changed_element =
@@ -54,10 +54,14 @@ bool HostChangeNotificationListener::OnSignalStrategyIncomingStanza(
 
   const std::string& host_id =
       host_changed_element->Attr(QName(kChromotingXmlNamespace, "hostid"));
-  const std::string& from = stanza->Attr(buzz::QN_FROM);
-  const std::string& to = stanza->Attr(buzz::QN_TO);
+  const std::string& from = stanza->Attr(jingle_xmpp::QN_FROM);
+
+  std::string to_error;
+  SignalingAddress to =
+      SignalingAddress::Parse(stanza, SignalingAddress::TO, &to_error);
+
   if (host_id == host_id_ && from == directory_bot_jid_ &&
-      to == signal_strategy_->GetLocalJid()) {
+      to == signal_strategy_->GetLocalAddress()) {
     const std::string& operation =
         host_changed_element->Attr(QName(kChromotingXmlNamespace, "operation"));
     if (operation == "delete") {
@@ -65,8 +69,9 @@ bool HostChangeNotificationListener::OnSignalStrategyIncomingStanza(
       // objects cannot be deleted from a Listener callback, so OnHostDeleted()
       // has to be invoked later.
       base::ThreadTaskRunnerHandle::Get()->PostTask(
-          FROM_HERE, base::Bind(&HostChangeNotificationListener::OnHostDeleted,
-              weak_factory_.GetWeakPtr()));
+          FROM_HERE,
+          base::BindOnce(&HostChangeNotificationListener::OnHostDeleted,
+                         weak_factory_.GetWeakPtr()));
     }
   } else {
     LOG(ERROR) << "Invalid host-changed message received: " << stanza->Str();

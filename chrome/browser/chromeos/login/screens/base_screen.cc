@@ -11,8 +11,7 @@
 namespace chromeos {
 
 BaseScreen::ContextEditor::ContextEditor(BaseScreen& screen)
-    : screen_(screen), context_(screen.context_) {
-}
+    : screen_(screen), context_(screen.context_) {}
 
 BaseScreen::ContextEditor::~ContextEditor() {
   screen_.CommitContextChanges();
@@ -67,61 +66,35 @@ const BaseScreen::ContextEditor& BaseScreen::ContextEditor::SetString16List(
   return *this;
 }
 
-BaseScreen::BaseScreen(BaseScreenDelegate* base_screen_delegate)
-    : channel_(nullptr), base_screen_delegate_(base_screen_delegate) {
-}
+BaseScreen::BaseScreen(BaseScreenDelegate* base_screen_delegate,
+                       OobeScreen screen_id)
+    : base_screen_delegate_(base_screen_delegate), screen_id_(screen_id) {}
 
-BaseScreen::~BaseScreen() {
-}
+BaseScreen::~BaseScreen() {}
 
-void BaseScreen::Initialize(::login::ScreenContext* context) {
-  if (context)
-    context_.CopyFrom(*context);
-}
+void BaseScreen::OnShow() {}
 
-void BaseScreen::OnShow() {
-}
+void BaseScreen::OnHide() {}
 
-void BaseScreen::OnHide() {
-}
+void BaseScreen::OnClose() {}
 
-void BaseScreen::OnClose() {
-}
+void BaseScreen::OnConfigurationChanged() {}
 
 bool BaseScreen::IsStatusAreaDisplayed() {
   return true;
-}
-
-bool BaseScreen::IsPermanent() {
-  return false;
-}
-
-std::string BaseScreen::GetID() const {
-  // TODO (ygorshenin, crbug.com/433797): elimitate intermediate
-  // GetName() ASAP.
-  return GetName();
 }
 
 void BaseScreen::CommitContextChanges() {
   if (!context_.HasChanges())
     return;
   if (!channel_) {
-    LOG(ERROR) << "Model-view channel for " << GetID()
+    LOG(ERROR) << "Model-view channel for " << GetOobeScreenName(screen_id())
                << " is not ready, context changes are not sent to the view.";
     return;
   }
   base::DictionaryValue diff;
   context_.GetChangesAndReset(&diff);
   channel_->CommitContextChanges(diff);
-}
-
-void BaseScreen::Finish(BaseScreenDelegate::ExitCodes exit_code) {
-  base_screen_delegate_->OnExit(*this, exit_code, &context_);
-}
-
-void BaseScreen::SetContext(::login::ScreenContext* context) {
-  if (context)
-    context_.CopyFrom(*context);
 }
 
 void BaseScreen::OnUserAction(const std::string& action_id) {
@@ -142,6 +115,12 @@ void BaseScreen::OnContextChanged(const base::DictionaryValue& diff) {
   context_.ApplyChanges(diff, &keys);
   for (const auto& key : keys)
     OnContextKeyUpdated(key);
+}
+
+void BaseScreen::SetConfiguration(base::Value* configuration, bool notify) {
+  configuration_ = configuration;
+  if (notify)
+    OnConfigurationChanged();
 }
 
 }  // namespace chromeos

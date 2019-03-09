@@ -19,8 +19,13 @@
 #ifndef SANDBOX_WIN_SRC_SANDBOX_H_
 #define SANDBOX_WIN_SRC_SANDBOX_H_
 
+#if !defined(SANDBOX_FUZZ_TARGET)
 #include <windows.h>
+#else
+#include "sandbox/win/fuzzer/fuzzer_types.h"
+#endif
 
+#include "base/memory/ref_counted.h"
 #include "sandbox/win/src/sandbox_policy.h"
 #include "sandbox/win/src/sandbox_types.h"
 
@@ -56,7 +61,7 @@ class BrokerServices {
   // Returns the interface pointer to a new, empty policy object. Use this
   // interface to specify the sandbox policy for new processes created by
   // SpawnTarget()
-  virtual TargetPolicy* CreatePolicy() = 0;
+  virtual scoped_refptr<TargetPolicy> CreatePolicy() = 0;
 
   // Creates a new target (child process) in a suspended state.
   // Parameters:
@@ -79,7 +84,7 @@ class BrokerServices {
   //   ALL_OK if successful. All other return values imply failure.
   virtual ResultCode SpawnTarget(const wchar_t* exe_path,
                                  const wchar_t* command_line,
-                                 TargetPolicy* policy,
+                                 scoped_refptr<TargetPolicy> policy,
                                  ResultCode* last_warning,
                                  DWORD* last_error,
                                  PROCESS_INFORMATION* target) = 0;
@@ -90,6 +95,9 @@ class BrokerServices {
   //   If the return is ERROR_GENERIC, you can call ::GetLastError() to get
   //   more information.
   virtual ResultCode WaitForAllTargets() = 0;
+
+ protected:
+  ~BrokerServices() {}
 };
 
 // TargetServices models the current process from the perspective
@@ -105,7 +113,7 @@ class BrokerServices {
 // The typical usage is as follows:
 //
 //   TargetServices* target_services = Sandbox::GetTargetServices();
-//   if (NULL != target_services) {
+//   if (target_services) {
 //     // We are the target.
 //     target_services->Init();
 //     // Do work that requires high privileges here.
@@ -132,9 +140,11 @@ class TargetServices {
   // information about the current state of the process, such as whether
   // LowerToken has been called or not.
   virtual ProcessState* GetState() = 0;
+
+ protected:
+  ~TargetServices() {}
 };
 
 }  // namespace sandbox
-
 
 #endif  // SANDBOX_WIN_SRC_SANDBOX_H_

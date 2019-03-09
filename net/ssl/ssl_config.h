@@ -26,12 +26,7 @@ enum {
   SSL_PROTOCOL_VERSION_TLS1 = 0x0301,
   SSL_PROTOCOL_VERSION_TLS1_1 = 0x0302,
   SSL_PROTOCOL_VERSION_TLS1_2 = 0x0303,
-};
-
-enum TokenBindingParam {
-  TB_PARAM_RSA2048_PKCS15 = 0,
-  TB_PARAM_RSA2048_PSS = 1,
-  TB_PARAM_ECDSAP256 = 2,
+  SSL_PROTOCOL_VERSION_TLS1_3 = 0x0304,
 };
 
 // Default minimum protocol version.
@@ -39,9 +34,6 @@ NET_EXPORT extern const uint16_t kDefaultSSLVersionMin;
 
 // Default maximum protocol version.
 NET_EXPORT extern const uint16_t kDefaultSSLVersionMax;
-
-// Default minimum protocol version that it's acceptable to fallback to.
-NET_EXPORT extern const uint16_t kDefaultSSLVersionFallbackMin;
 
 // A collection of SSL-related configuration settings.
 struct NET_EXPORT SSLConfig {
@@ -55,31 +47,10 @@ struct NET_EXPORT SSLConfig {
   // be NULL if user doesn't care about the cert status.
   bool IsAllowedBadCert(X509Certificate* cert, CertStatus* cert_status) const;
 
-  // Same as above except works with DER encoded certificates instead
-  // of X509Certificate.
-  bool IsAllowedBadCert(const base::StringPiece& der_cert,
-                        CertStatus* cert_status) const;
-
   // Returns the set of flags to use for certificate verification, which is a
   // bitwise OR of CertVerifier::VerifyFlags that represent this SSLConfig's
   // configuration.
   int GetCertVerifyFlags() const;
-
-  // rev_checking_enabled is true if online certificate revocation checking is
-  // enabled (i.e. OCSP and CRL fetching).
-  //
-  // Regardless of this flag, CRLSet checking is always enabled and locally
-  // cached revocation information will be considered.
-  bool rev_checking_enabled;
-
-  // rev_checking_required_local_anchors is true if revocation checking is
-  // required to succeed when certificates chain to local trust anchors (that
-  // is, non-public CAs). If revocation information cannot be obtained, such
-  // certificates will be treated as revoked ("hard-fail").
-  // Note: This is distinct from rev_checking_enabled. If true, it is
-  // equivalent to also setting rev_checking_enabled, but only when the
-  // certificate chain chains to a local (non-public) trust anchor.
-  bool rev_checking_required_local_anchors;
 
   // The minimum and maximum protocol versions that are enabled.
   // (Use the SSL_PROTOCOL_VERSION_xxx enumerators defined above.)
@@ -88,11 +59,19 @@ struct NET_EXPORT SSLConfig {
   uint16_t version_min;
   uint16_t version_max;
 
-  // version_fallback_min contains the minimum version that is acceptable to
-  // fallback to. Versions before this may be tried to see whether they would
-  // have succeeded and thus to give a better message to the user, but the
-  // resulting connection won't be used in these cases.
-  uint16_t version_fallback_min;
+  // Whether early data is enabled on this connection. Note that early data has
+  // weaker security properties than normal data and changes the
+  // SSLClientSocket's behavior. The caller must only send replayable data prior
+  // to handshake confirmation. See StreamSocket::ConfirmHandshake for details.
+  //
+  // Additionally, early data may be rejected by the server, resulting in some
+  // socket operation failing with ERR_EARLY_DATA_REJECTED or
+  // ERR_WRONG_VERSION_ON_EARLY_DATA before any data is returned from the
+  // server. The caller must handle these cases, typically by retrying the
+  // high-level operation.
+  //
+  // If unsure, do not enable this option.
+  bool early_data_enabled;
 
   // Presorted list of cipher suites which should be explicitly prevented from
   // being used in addition to those disabled by the net built-in policy.
@@ -104,29 +83,15 @@ struct NET_EXPORT SSLConfig {
   // disable TLS_ECDH_ECDSA_WITH_RC4_128_SHA, specify 0xC002.
   std::vector<uint16_t> disabled_cipher_suites;
 
-  // Enables deprecated cipher suites. These cipher suites are selected under a
-  // fallback to distinguish servers which require them from servers which
-  // merely prefer them.
-  //
-  // NOTE: because they are under a fallback, connections are still vulnerable
-  // to them as far as downgrades are concerned, so this should only be used for
-  // measurement of ciphers not to be carried long-term. It is no fix for
-  // servers with bad configurations without full removal.
-  bool deprecated_cipher_suites_enabled;
-
-  // Enables DHE cipher suites.
-  bool dhe_enabled;
+  // Enables the version interference probing mode. While TLS 1.3 has avoided
+  // most endpoint intolerance, middlebox interference with TLS 1.3 is
+  // rampant. This causes the connection to be discarded on success with
+  // ERR_SSL_VERSION_INTERFERENCE.
+  bool version_interference_probe;
 
   bool channel_id_enabled;   // True if TLS channel ID extension is enabled.
 
-  // List of Token Binding key parameters supported by the client. If empty,
-  // Token Binding will be disabled, even if token_binding_enabled is true.
-  std::vector<TokenBindingParam> token_binding_params;
-
   bool false_start_enabled;  // True if we'll use TLS False Start.
-  // True if the Certificate Transparency signed_certificate_timestamp
-  // TLS extension is enabled.
-  bool signed_cert_timestamps_enabled;
 
   // If true, causes only ECDHE cipher suites to be enabled.
   bool require_ecdhe;
@@ -136,10 +101,12 @@ struct NET_EXPORT SSLConfig {
 
   struct NET_EXPORT CertAndStatus {
     CertAndStatus();
+    CertAndStatus(scoped_refptr<X509Certificate> cert, CertStatus status);
+    CertAndStatus(const CertAndStatus&);
     ~CertAndStatus();
 
-    std::string der_cert;
-    CertStatus cert_status;
+    scoped_refptr<X509Certificate> cert;
+    CertStatus cert_status = 0;
   };
 
   // Add any known-bad SSL certificate (with its cert status) to
@@ -148,36 +115,24 @@ struct NET_EXPORT SSLConfig {
   // response to the user explicitly accepting the bad certificate.
   std::vector<CertAndStatus> allowed_bad_certs;
 
+  // True if all certificate errors should be ignored.
+  bool ignore_certificate_errors;
+
+  // True if, for a single connection, any dependent network fetches should
+  // be disabled. This can be used to avoid triggering re-entrancy in the
+  // network layer. For example, fetching a PAC script over HTTPS may cause
+  // AIA, OCSP, or CRL fetches to block on retrieving the PAC script, while
+  // the PAC script fetch is waiting for those dependent fetches, creating a
+  // deadlock.
+  bool disable_cert_verification_network_fetches;
+
   // True if we should send client_cert to the server.
   bool send_client_cert;
-
-  bool verify_ev_cert;  // True if we should verify the certificate for EV.
-
-  bool version_fallback;  // True if we are falling back to an older protocol
-                          // version (one still needs to decrement
-                          // version_max).
-
-  // If cert_io_enabled is false, then certificate verification will not
-  // result in additional HTTP requests. (For example: to fetch missing
-  // intermediates or to perform OCSP/CRL fetches.) It also implies that online
-  // revocation checking is disabled.
-  // NOTE: Only used by NSS.
-  bool cert_io_enabled;
 
   // The list of application level protocols supported with ALPN (Application
   // Layer Protocol Negotation), in decreasing order of preference.  Protocols
   // will be advertised in this order during TLS handshake.
   NextProtoVector alpn_protos;
-
-  // The list of application level protocols supported with NPN (Next Protocol
-  // Negotiation).  The last item on the list is selected if there is no overlap
-  // between |npn_protos| and the protocols supported by the server, otherwise
-  // server preference is observed and the order of |npn_protos| is irrelevant.
-  // Note that due to NSS limitations, ports which use NSS will use
-  // |alpn_protos| for both ALPN and NPN. However, if |npn_protos| is empty, NPN
-  // will still be disabled.
-  // TODO(bnc): Deprecate NPN, see https://crbug.com/526713.
-  NextProtoVector npn_protos;
 
   // True if renegotiation should be allowed for the default application-level
   // protocol when the peer negotiates neither ALPN nor NPN.

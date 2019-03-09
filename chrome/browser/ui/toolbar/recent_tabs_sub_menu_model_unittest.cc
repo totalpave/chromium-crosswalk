@@ -6,43 +6,45 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/test/bind_test_util.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/sessions/chrome_tab_restore_service_client.h"
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
-#include "chrome/browser/sync/profile_sync_test_util.h"
+#include "chrome/browser/sync/device_info_sync_service_factory.h"
+#include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/sync/browser_synced_window_delegates_getter.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/recent_tabs_builder_test_helper.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/menu_model_test.h"
-#include "chrome/test/base/testing_profile.h"
-#include "components/browser_sync/browser/profile_sync_service_mock.h"
-#include "components/sessions/core/persistent_tab_restore_service.h"
 #include "components/sessions/core/serialized_navigation_entry_test_helper.h"
 #include "components/sessions/core/session_types.h"
-#include "components/sync_driver/local_device_info_provider_mock.h"
-#include "components/sync_driver/sync_client.h"
-#include "components/sync_driver/sync_prefs.h"
-#include "components/sync_sessions/sessions_sync_manager.h"
+#include "components/sessions/core/tab_restore_service_impl.h"
+#include "components/sync/device_info/device_info_sync_service.h"
+#include "components/sync/device_info/local_device_info_provider_mock.h"
+#include "components/sync/driver/data_type_controller.h"
+#include "components/sync/engine/data_type_activation_response.h"
+#include "components/sync/model/data_type_activation_request.h"
+#include "components/sync/model/model_type_controller_delegate.h"
+#include "components/sync_sessions/session_sync_service_impl.h"
 #include "components/sync_sessions/synced_session.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/test_utils.h"
-#include "grit/generated_resources.h"
-#include "sync/api/fake_sync_change_processor.h"
-#include "sync/api/sync_error_factory_mock.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -53,9 +55,8 @@ namespace {
 class TestRecentTabsSubMenuModel : public RecentTabsSubMenuModel {
  public:
   TestRecentTabsSubMenuModel(ui::AcceleratorProvider* provider,
-                             Browser* browser,
-                             sync_driver::OpenTabsUIDelegate* delegate)
-      : RecentTabsSubMenuModel(provider, browser, delegate),
+                             Browser* browser)
+      : RecentTabsSubMenuModel(provider, browser),
         execute_count_(0),
         enable_count_(0) {}
 
@@ -90,7 +91,7 @@ class TestRecentTabsMenuModelDelegate : public ui::MenuModelDelegate {
   }
 
   ~TestRecentTabsMenuModelDelegate() override {
-    model_->SetMenuModelDelegate(NULL);
+    model_->SetMenuModelDelegate(nullptr);
   }
 
   // ui::MenuModelDelegate implementation:
@@ -108,74 +109,80 @@ class TestRecentTabsMenuModelDelegate : public ui::MenuModelDelegate {
   DISALLOW_COPY_AND_ASSIGN(TestRecentTabsMenuModelDelegate);
 };
 
-class DummyRouter : public browser_sync::LocalSessionEventRouter {
- public:
-  ~DummyRouter() override {}
-  void StartRoutingTo(
-      browser_sync::LocalSessionEventHandler* handler) override {}
-  void Stop() override {}
-};
-
 }  // namespace
 
 class RecentTabsSubMenuModelTest
     : public BrowserWithTestWindowTest {
  public:
-  RecentTabsSubMenuModelTest()
-      : sync_service_(CreateProfileSyncServiceParamsForTest(&testing_profile_)),
-        local_device_(new sync_driver::LocalDeviceInfoProviderMock(
-            "RecentTabsSubMenuModelTest",
-            "Test Machine",
-            "Chromium 10k",
-            "Chrome 10k",
-            sync_pb::SyncEnums_DeviceType_TYPE_LINUX,
-            "device_id")) {
-    sync_prefs_.reset(new sync_driver::SyncPrefs(testing_profile_.GetPrefs()));
-    manager_.reset(new browser_sync::SessionsSyncManager(
-        sync_service_.GetSyncClient()->GetSyncSessionsClient(),
-        sync_prefs_.get(), local_device_.get(),
-        std::unique_ptr<browser_sync::LocalSessionEventRouter>(
-            new DummyRouter()),
-        base::Closure(), base::Closure()));
-    manager_->MergeDataAndStartSyncing(
-        syncer::SESSIONS, syncer::SyncDataList(),
-        std::unique_ptr<syncer::SyncChangeProcessor>(
-            new syncer::FakeSyncChangeProcessor),
-        std::unique_ptr<syncer::SyncErrorFactory>(
-            new syncer::SyncErrorFactoryMock));
+  RecentTabsSubMenuModelTest() {}
+
+  void WaitForLoadFromLastSession() { content::RunAllTasksUntilIdle(); }
+
+  void SetUp() override {
+    BrowserWithTestWindowTest::SetUp();
+    session_sync_service_ = SessionSyncServiceFactory::GetForProfile(profile());
+
+    syncer::DataTypeActivationRequest activation_request;
+    activation_request.cache_guid = "test_cache_guid";
+    activation_request.error_handler = base::DoNothing();
+
+    DeviceInfoSyncServiceFactory::GetForProfile(profile())->InitLocalCacheGuid(
+        activation_request.cache_guid, "Test Machine");
+
+    std::unique_ptr<syncer::DataTypeActivationResponse> activation_response;
+    base::RunLoop loop;
+    session_sync_service_->GetControllerDelegate()->OnSyncStarting(
+        activation_request,
+        base::BindLambdaForTesting(
+            [&](std::unique_ptr<syncer::DataTypeActivationResponse> response) {
+              activation_response = std::move(response);
+              loop.Quit();
+            }));
+    loop.Run();
+    ASSERT_NE(nullptr, activation_response);
+    ASSERT_NE(nullptr, activation_response->type_processor);
+    sync_processor_ = std::move(activation_response->type_processor);
+
+    EnableSync();
   }
 
-  void WaitForLoadFromLastSession() {
-    content::RunAllBlockingPoolTasksUntilIdle();
+  void EnableSync() {
+    session_sync_service_->ProxyTabsStateChanged(
+        syncer::DataTypeController::RUNNING);
+  }
+
+  void DisableSync() {
+    session_sync_service_->ProxyTabsStateChanged(
+        syncer::DataTypeController::NOT_RUNNING);
   }
 
   static std::unique_ptr<KeyedService> GetTabRestoreService(
       content::BrowserContext* browser_context) {
-    return base::WrapUnique(new sessions::PersistentTabRestoreService(
+    return std::make_unique<sessions::TabRestoreServiceImpl>(
         base::WrapUnique(new ChromeTabRestoreServiceClient(
             Profile::FromBrowserContext(browser_context))),
-        nullptr));
-  }
-
-  sync_driver::OpenTabsUIDelegate* GetOpenTabsDelegate() {
-    return manager_.get();
+        nullptr, nullptr);
   }
 
   void RegisterRecentTabs(RecentTabsBuilderTestHelper* helper) {
-    helper->ExportToSessionsSyncManager(manager_.get());
+    helper->ExportToSessionSync(sync_processor_.get());
+    helper->VerifyExport(static_cast<sync_sessions::SessionSyncServiceImpl*>(
+                             session_sync_service_)
+                             ->GetUnderlyingOpenTabsUIDelegateForTest());
   }
 
  private:
-  TestingProfile testing_profile_;
-  ProfileSyncServiceMock sync_service_;
-  std::unique_ptr<sync_driver::SyncPrefs> sync_prefs_;
-  std::unique_ptr<browser_sync::SessionsSyncManager> manager_;
-  std::unique_ptr<sync_driver::LocalDeviceInfoProviderMock> local_device_;
+  sync_sessions::SessionSyncService* session_sync_service_;
+  std::unique_ptr<syncer::ModelTypeProcessor> sync_processor_;
+
+  DISALLOW_COPY_AND_ASSIGN(RecentTabsSubMenuModelTest);
 };
 
 // Test disabled "Recently closed" header with no foreign tabs.
 TEST_F(RecentTabsSubMenuModelTest, NoTabs) {
-  TestRecentTabsSubMenuModel model(NULL, browser(), NULL);
+  DisableSync();
+
+  TestRecentTabsSubMenuModel model(nullptr, browser());
 
   // Expected menu:
   // Menu index  Menu items
@@ -209,15 +216,18 @@ TEST_F(RecentTabsSubMenuModelTest, NoTabs) {
 
 // Test enabled "Recently closed" header with no foreign tabs.
 TEST_F(RecentTabsSubMenuModelTest, RecentlyClosedTabsFromCurrentSession) {
+  DisableSync();
+
   TabRestoreServiceFactory::GetInstance()->SetTestingFactory(
-      profile(), RecentTabsSubMenuModelTest::GetTabRestoreService);
+      profile(),
+      base::BindRepeating(&RecentTabsSubMenuModelTest::GetTabRestoreService));
 
   // Add 2 tabs and close them.
   AddTab(browser(), GURL("http://foo/1"));
   AddTab(browser(), GURL("http://foo/2"));
   browser()->tab_strip_model()->CloseAllTabs();
 
-  TestRecentTabsSubMenuModel model(NULL, browser(), NULL);
+  TestRecentTabsSubMenuModel model(nullptr, browser());
   // Expected menu:
   // Menu index  Menu items
   // --------------------------------------
@@ -261,19 +271,13 @@ TEST_F(RecentTabsSubMenuModelTest, RecentlyClosedTabsFromCurrentSession) {
   EXPECT_FALSE(model.GetURLAndTitleForItemAtIndex(6, &url, &title));
 }
 
-// TODO(sail): enable this test when dynamic model is enabled in
-// RecentTabsSubMenuModel.
-#if defined(OS_MACOSX)
-#define MAYBE_RecentlyClosedTabsAndWindowsFromLastSession \
-    DISABLED_RecentlyClosedTabsAndWindowsFromLastSession
-#else
-#define MAYBE_RecentlyClosedTabsAndWindowsFromLastSession \
-    RecentlyClosedTabsAndWindowsFromLastSession
-#endif
 TEST_F(RecentTabsSubMenuModelTest,
-       MAYBE_RecentlyClosedTabsAndWindowsFromLastSession) {
+       RecentlyClosedTabsAndWindowsFromLastSession) {
+  DisableSync();
+
   TabRestoreServiceFactory::GetInstance()->SetTestingFactory(
-      profile(), RecentTabsSubMenuModelTest::GetTabRestoreService);
+      profile(),
+      base::BindRepeating(&RecentTabsSubMenuModelTest::GetTabRestoreService));
 
   // Add 2 tabs and close them.
   AddTab(browser(), GURL("http://wnd/tab0"));
@@ -285,8 +289,8 @@ TEST_F(RecentTabsSubMenuModelTest,
   SessionService* session_service = new SessionService(profile());
   SessionServiceFactory::SetForTestProfile(profile(),
                                            base::WrapUnique(session_service));
-  SessionID tab_id;
-  SessionID window_id;
+  SessionID tab_id = SessionID::FromSerializedValue(1);
+  SessionID window_id = SessionID::FromSerializedValue(2);
   session_service->SetWindowType(window_id,
                                  Browser::TYPE_TABBED,
                                  SessionService::TYPE_NORMAL);
@@ -307,11 +311,12 @@ TEST_F(RecentTabsSubMenuModelTest,
   // Create a new TabRestoreService so that it'll load the recently closed tabs
   // and windows afresh.
   TabRestoreServiceFactory::GetInstance()->SetTestingFactory(
-      profile(), RecentTabsSubMenuModelTest::GetTabRestoreService);
+      profile(),
+      base::BindRepeating(&RecentTabsSubMenuModelTest::GetTabRestoreService));
   // Let the shutdown of previous TabRestoreService run.
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
-  TestRecentTabsSubMenuModel model(NULL, browser(), NULL);
+  TestRecentTabsSubMenuModel model(nullptr, browser());
   TestRecentTabsMenuModelDelegate delegate(&model);
   EXPECT_FALSE(delegate.got_changes());
 
@@ -436,7 +441,7 @@ TEST_F(RecentTabsSubMenuModelTest, OtherDevices) {
   // 10          <the only tab of window 0 of session 1>
   // 11-12       <2 tabs of window 1 of session 2>
 
-  TestRecentTabsSubMenuModel model(NULL, browser(), GetOpenTabsDelegate());
+  TestRecentTabsSubMenuModel model(nullptr, browser());
   int num_items = model.GetItemCount();
   EXPECT_EQ(13, num_items);
   model.ActivatedAt(0);
@@ -494,14 +499,123 @@ TEST_F(RecentTabsSubMenuModelTest, OtherDevices) {
   EXPECT_TRUE(model.GetURLAndTitleForItemAtIndex(12, &url, &title));
 }
 
-// Per http://crbug.com/603744, MaxSessionsAndRecenty fails intermittently on
-// windows, linux and mac.
-#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_MACOSX)
-#define MAYBE_MaxSessionsAndRecency DISABLED_MaxSessionsAndRecency
-#else
-#define MAYBE_MaxSessionsAndRecency MaxSessionsAndRecency
-#endif
-TEST_F(RecentTabsSubMenuModelTest, MAYBE_MaxSessionsAndRecency) {
+TEST_F(RecentTabsSubMenuModelTest, OtherDevicesDynamicUpdate) {
+  // Create menu with disabled synchronization.
+  DisableSync();
+
+  // Before creating menu fill foreign sessions.
+  base::Time update_timestamp =
+      base::Time::Now() - base::TimeDelta::FromMinutes(10);
+
+  RecentTabsBuilderTestHelper recent_tabs_builder;
+
+  // Create one session with one window and one tab.
+  recent_tabs_builder.AddSession();
+  recent_tabs_builder.AddWindow(0);
+  recent_tabs_builder.AddTabWithInfo(0, 0, update_timestamp, base::string16());
+
+  RegisterRecentTabs(&recent_tabs_builder);
+
+  // Verify that data is populated correctly in RecentTabsSubMenuModel.
+  // Expected menu:
+  // Menu index  Menu items
+  // -----------------------------------------------------
+  // 0           History
+  // 1           <separator>
+  // 2           Recently closed header (disabled)
+  // 3           <separator>
+  // 4           No tabs from other Devices
+
+  TestRecentTabsSubMenuModel model(nullptr, browser());
+  EXPECT_EQ(5, model.GetItemCount());
+  model.ActivatedAt(4);
+  EXPECT_FALSE(model.IsEnabledAt(4));
+
+  EXPECT_EQ(0, model.enable_count());
+  EXPECT_EQ(1, model.execute_count());
+
+  EXPECT_EQ(nullptr, model.GetLabelFontListAt(4));
+
+  std::string url;
+  base::string16 title;
+  EXPECT_FALSE(model.GetURLAndTitleForItemAtIndex(4, &url, &title));
+
+  // Enable synchronization and notify menu that synchronization was enabled.
+  int previous_enable_count = model.enable_count();
+  int previous_execute_count = model.execute_count();
+
+  EnableSync();
+
+  // Verify that data is populated correctly in RecentTabsSubMenuModel.
+  // Expected menu:
+  // Menu index  Menu items
+  // -----------------------------------------------------
+  // 0           History
+  // 1           <separator>
+  // 2           Recently closed header (disabled)
+  // 3           <separator>
+  // 4           <section header for 1st session>
+  // 5           <tab of the only window of session 0>
+
+  EXPECT_EQ(6, model.GetItemCount());
+  model.ActivatedAt(4);
+  EXPECT_FALSE(model.IsEnabledAt(4));
+  model.ActivatedAt(5);
+  EXPECT_TRUE(model.IsEnabledAt(5));
+
+  EXPECT_EQ(previous_enable_count + 1, model.enable_count());
+  EXPECT_EQ(previous_execute_count + 2, model.execute_count());
+
+  EXPECT_NE(nullptr, model.GetLabelFontListAt(4));
+  EXPECT_EQ(nullptr, model.GetLabelFontListAt(5));
+
+  EXPECT_FALSE(model.GetURLAndTitleForItemAtIndex(4, &url, &title));
+  EXPECT_TRUE(model.GetURLAndTitleForItemAtIndex(5, &url, &title));
+
+  // Make changes dynamically.
+  previous_enable_count = model.enable_count();
+  previous_execute_count = model.execute_count();
+
+  update_timestamp = base::Time::Now() - base::TimeDelta::FromMinutes(5);
+
+  // Add tab to the only window.
+  recent_tabs_builder.AddTabWithInfo(0, 0, update_timestamp, base::string16());
+
+  RegisterRecentTabs(&recent_tabs_builder);
+
+  // Verify that data is populated correctly in RecentTabsSubMenuModel.
+  // Expected menu:
+  // Menu index  Menu items
+  // -----------------------------------------------------
+  // 0           History
+  // 1           <separator>
+  // 2           Recently closed header (disabled)
+  // 3           <separator>
+  // 4           <section header for 1st session>
+  // 5           <new added tab of the only window of session 0>
+  // 6           <tab of the only window of session 0>
+
+  EXPECT_EQ(7, model.GetItemCount());
+  model.ActivatedAt(4);
+  EXPECT_FALSE(model.IsEnabledAt(4));
+  model.ActivatedAt(5);
+  EXPECT_TRUE(model.IsEnabledAt(5));
+  model.ActivatedAt(6);
+  EXPECT_TRUE(model.IsEnabledAt(6));
+
+  EXPECT_EQ(previous_enable_count + 2, model.enable_count());
+  EXPECT_EQ(previous_execute_count + 3, model.execute_count());
+
+  EXPECT_NE(nullptr, model.GetLabelFontListAt(4));
+  EXPECT_EQ(nullptr, model.GetLabelFontListAt(5));
+  EXPECT_EQ(nullptr, model.GetLabelFontListAt(6));
+
+  EXPECT_FALSE(model.GetURLAndTitleForItemAtIndex(4, &url, &title));
+  EXPECT_TRUE(model.GetURLAndTitleForItemAtIndex(5, &url, &title));
+  EXPECT_TRUE(model.GetURLAndTitleForItemAtIndex(6, &url, &title));
+}
+
+TEST_F(RecentTabsSubMenuModelTest, MaxSessionsAndRecency) {
   // Create 4 sessions : each session has 1 window with 1 tab each.
   RecentTabsBuilderTestHelper recent_tabs_builder;
   for (int s = 0; s < 4; ++s) {
@@ -529,7 +643,7 @@ TEST_F(RecentTabsSubMenuModelTest, MAYBE_MaxSessionsAndRecency) {
   // 10          <section header for 3rd session>
   // 11          <the only tab of the only window of session 1>
 
-  TestRecentTabsSubMenuModel model(NULL, browser(), GetOpenTabsDelegate());
+  TestRecentTabsSubMenuModel model(nullptr, browser());
   int num_items = model.GetItemCount();
   EXPECT_EQ(12, num_items);
 
@@ -541,6 +655,8 @@ TEST_F(RecentTabsSubMenuModelTest, MAYBE_MaxSessionsAndRecency) {
 }
 
 TEST_F(RecentTabsSubMenuModelTest, MaxTabsPerSessionAndRecency) {
+  EnableSync();
+
   // Create a session: 2 windows with 5 tabs each.
   RecentTabsBuilderTestHelper recent_tabs_builder;
   recent_tabs_builder.AddSession();
@@ -564,7 +680,7 @@ TEST_F(RecentTabsSubMenuModelTest, MaxTabsPerSessionAndRecency) {
   // 4           <section header for session>
   // 5-8         <4 most-recent tabs of session>
 
-  TestRecentTabsSubMenuModel model(NULL, browser(), GetOpenTabsDelegate());
+  TestRecentTabsSubMenuModel model(nullptr, browser());
   int num_items = model.GetItemCount();
   EXPECT_EQ(9, num_items);
 
@@ -575,6 +691,8 @@ TEST_F(RecentTabsSubMenuModelTest, MaxTabsPerSessionAndRecency) {
 }
 
 TEST_F(RecentTabsSubMenuModelTest, MaxWidth) {
+  EnableSync();
+
   // Create 1 session with 1 window and 1 tab.
   RecentTabsBuilderTestHelper recent_tabs_builder;
   recent_tabs_builder.AddSession();
@@ -591,7 +709,7 @@ TEST_F(RecentTabsSubMenuModelTest, MaxWidth) {
   // 4           <section header for 1st session>
   // 5           <the only tab of the only window of session 1>
 
-  TestRecentTabsSubMenuModel model(NULL, browser(), GetOpenTabsDelegate());
+  TestRecentTabsSubMenuModel model(nullptr, browser());
   EXPECT_EQ(6, model.GetItemCount());
   EXPECT_EQ(-1, model.GetMaxWidthForItemAtIndex(2));
   EXPECT_NE(-1, model.GetMaxWidthForItemAtIndex(3));
@@ -600,6 +718,8 @@ TEST_F(RecentTabsSubMenuModelTest, MaxWidth) {
 }
 
 TEST_F(RecentTabsSubMenuModelTest, MaxWidthNoDevices) {
+  DisableSync();
+
   // Expected menu:
   // Menu index  Menu items
   // --------------------------------------------
@@ -609,7 +729,7 @@ TEST_F(RecentTabsSubMenuModelTest, MaxWidthNoDevices) {
   // 3           <separator>
   // 4           No tabs from other Devices
 
-  TestRecentTabsSubMenuModel model(NULL, browser(), NULL);
+  TestRecentTabsSubMenuModel model(nullptr, browser());
   EXPECT_EQ(5, model.GetItemCount());
   EXPECT_EQ(-1, model.GetMaxWidthForItemAtIndex(2));
   EXPECT_NE(-1, model.GetMaxWidthForItemAtIndex(3));

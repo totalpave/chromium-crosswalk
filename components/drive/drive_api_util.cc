@@ -11,17 +11,16 @@
 
 #include "base/files/file.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/md5.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/cancellation_flag.h"
+#include "base/task_runner_util.h"
 #include "base/values.h"
 #include "google_apis/drive/drive_api_parser.h"
-#include "net/base/escape.h"
-#include "net/base/net_errors.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "url/gurl.h"
 
@@ -175,7 +174,7 @@ std::string GetMd5Digest(const base::FilePath& file_path,
 }
 
 std::string GetHostedDocumentExtension(const std::string& mime_type) {
-  for (size_t i = 0; i < arraysize(kHostedDocumentKinds); ++i) {
+  for (size_t i = 0; i < base::size(kHostedDocumentKinds); ++i) {
     if (mime_type == kHostedDocumentKinds[i].mime_type)
       return kHostedDocumentKinds[i].extension;
   }
@@ -183,7 +182,7 @@ std::string GetHostedDocumentExtension(const std::string& mime_type) {
 }
 
 bool IsKnownHostedDocumentMimeType(const std::string& mime_type) {
-  for (size_t i = 0; i < arraysize(kHostedDocumentKinds); ++i) {
+  for (size_t i = 0; i < base::size(kHostedDocumentKinds); ++i) {
     if (mime_type == kHostedDocumentKinds[i].mime_type)
       return true;
   }
@@ -192,11 +191,19 @@ bool IsKnownHostedDocumentMimeType(const std::string& mime_type) {
 
 bool HasHostedDocumentExtension(const base::FilePath& path) {
   const std::string extension = base::FilePath(path.Extension()).AsUTF8Unsafe();
-  for (size_t i = 0; i < arraysize(kHostedDocumentKinds); ++i) {
+  for (size_t i = 0; i < base::size(kHostedDocumentKinds); ++i) {
     if (extension == kHostedDocumentKinds[i].extension)
       return true;
   }
   return extension == kUnknownHostedDocumentExtension;
+}
+
+void RunAsyncTask(base::TaskRunner* task_runner,
+                  const base::Location& from_here,
+                  base::OnceCallback<FileError()> task,
+                  base::OnceCallback<void(FileError)> reply) {
+  PostTaskAndReplyWithResult(task_runner, from_here, std::move(task),
+                             std::move(reply));
 }
 
 }  // namespace util

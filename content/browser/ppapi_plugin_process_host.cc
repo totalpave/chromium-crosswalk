@@ -10,10 +10,11 @@
 #include <utility>
 
 #include "base/base_switches.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/macros.h"
 #include "base/metrics/field_trial.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -21,65 +22,51 @@
 #include "content/browser/plugin_service_impl.h"
 #include "content/browser/renderer_host/render_message_filter.h"
 #include "content/common/child_process_host_impl.h"
-#include "content/common/child_process_messages.h"
 #include "content/common/content_switches_internal.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/common/content_constants.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/common/mojo_channel_switches.h"
 #include "content/public/common/pepper_plugin_info.h"
 #include "content/public/common/process_type.h"
-#include "content/public/common/sandbox_type.h"
 #include "content/public/common/sandboxed_process_launcher_delegate.h"
-#include "ipc/ipc_switches.h"
-#include "mojo/edk/embedder/embedder.h"
-#include "net/base/network_change_notifier.h"
+#include "content/public/common/service_names.mojom.h"
 #include "ppapi/proxy/ppapi_messages.h"
+#include "services/network/public/cpp/network_connection_tracker.h"
+#include "services/service_manager/sandbox/sandbox_type.h"
+#include "services/service_manager/sandbox/switches.h"
+#include "services/service_manager/zygote/common/zygote_buildflags.h"
 #include "ui/base/ui_base_switches.h"
 
-#if defined(OS_POSIX)
-#include "content/public/browser/zygote_handle_linux.h"
-#endif  // defined(OS_POSIX)
-
 #if defined(OS_WIN)
-#include "content/browser/renderer_host/dwrite_font_proxy_message_filter_win.h"
-#include "content/common/sandbox_win.h"
+#include "base/win/windows_version.h"
 #include "sandbox/win/src/process_mitigations.h"
 #include "sandbox/win/src/sandbox_policy.h"
+#include "services/service_manager/sandbox/win/sandbox_win.h"
 #include "ui/display/win/dpi.h"
+#include "ui/gfx/font_render_params.h"
+#endif
+
+#if BUILDFLAG(USE_ZYGOTE_HANDLE)
+#include "services/service_manager/zygote/common/zygote_handle.h"  // nogncheck
 #endif
 
 namespace content {
-
-#if defined(OS_POSIX) && !defined(OS_ANDROID) && !defined(OS_MACOSX)
-ZygoteHandle g_ppapi_zygote;
-#endif  // defined(OS_POSIX) && !defined(OS_ANDROID) && !defined(OS_MACOSX)
 
 // NOTE: changes to this class need to be reviewed by the security team.
 class PpapiPluginSandboxedProcessLauncherDelegate
     : public content::SandboxedProcessLauncherDelegate {
  public:
-  PpapiPluginSandboxedProcessLauncherDelegate(bool is_broker,
-                                              const PepperPluginInfo& info,
-                                              ChildProcessHost* host)
-#if defined(OS_WIN)
-      : info_(info), is_broker_(is_broker) {
-#elif defined(OS_MACOSX) || defined(OS_ANDROID)
-      : ipc_fd_(host->TakeClientFileDescriptor()) {
-#elif defined(OS_POSIX)
-      : ipc_fd_(host->TakeClientFileDescriptor()), is_broker_(is_broker) {
-#else
-  {
+  explicit PpapiPluginSandboxedProcessLauncherDelegate(bool is_broker)
+#if BUILDFLAG(USE_ZYGOTE_HANDLE) || defined(OS_WIN)
+      : is_broker_(is_broker)
 #endif
+  {
   }
 
   ~PpapiPluginSandboxedProcessLauncherDelegate() override {}
 
 #if defined(OS_WIN)
-  bool ShouldSandbox() override {
-    return !is_broker_;
-  }
-
   bool PreSpawnTarget(sandbox::TargetPolicy* policy) override {
     if (is_broker_)
       return true;
@@ -97,55 +84,46 @@ class PpapiPluginSandboxedProcessLauncherDelegate
         GetContentClient()->browser();
 
 #if !defined(NACL_WIN64)
-    if (IsWin32kRendererLockdownEnabled()) {
-      for (const auto& mime_type : info_.mime_types) {
-        if (browser_client->IsWin32kLockdownEnabledForMimeType(
-                mime_type.mime_type)) {
-          result = AddWin32kLockdownPolicy(policy, true);
-          if (result != sandbox::SBOX_ALL_OK)
-            return false;
-          break;
-        }
-      }
+    // We don't support PPAPI win32k lockdown prior to Windows 10.
+    if (base::win::GetVersion() >= base::win::VERSION_WIN10 &&
+        service_manager::IsWin32kLockdownEnabled()) {
+      result =
+          service_manager::SandboxWin::AddWin32kLockdownPolicy(policy, true);
+      if (result != sandbox::SBOX_ALL_OK)
+        return false;
     }
-#endif
+#endif  // !defined(NACL_WIN64)
     const base::string16& sid =
         browser_client->GetAppContainerSidForSandboxType(GetSandboxType());
     if (!sid.empty())
-      AddAppContainerPolicy(policy, sid.c_str());
+      service_manager::SandboxWin::AddAppContainerPolicy(policy, sid.c_str());
 
     return true;
   }
+#endif  // OS_WIN
 
-#elif defined(OS_POSIX)
-#if !defined(OS_MACOSX) && !defined(OS_ANDROID)
-  ZygoteHandle* GetZygote() override {
+#if BUILDFLAG(USE_ZYGOTE_HANDLE)
+  service_manager::ZygoteHandle GetZygote() override {
     const base::CommandLine& browser_command_line =
         *base::CommandLine::ForCurrentProcess();
     base::CommandLine::StringType plugin_launcher = browser_command_line
         .GetSwitchValueNative(switches::kPpapiPluginLauncher);
     if (is_broker_ || !plugin_launcher.empty())
       return nullptr;
-    return GetGenericZygote();
+    return service_manager::GetGenericZygote();
   }
-#endif  // !defined(OS_MACOSX) && !defined(OS_ANDROID)
+#endif  // BUILDFLAG(USE_ZYGOTE_HANDLE)
 
-  base::ScopedFD TakeIpcFd() override { return std::move(ipc_fd_); }
+  service_manager::SandboxType GetSandboxType() override {
+#if defined(OS_WIN)
+    if (is_broker_)
+      return service_manager::SANDBOX_TYPE_NO_SANDBOX;
 #endif  // OS_WIN
-
-  SandboxType GetSandboxType() override {
-    return SANDBOX_TYPE_PPAPI;
+    return service_manager::SANDBOX_TYPE_PPAPI;
   }
 
  private:
-#if defined(OS_WIN)
-  const PepperPluginInfo& info_;
-#endif // OS_WIN
-#if defined(OS_POSIX)
-  base::ScopedFD ipc_fd_;
-#endif  // OS_POSIX
-#if (defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)) || \
-    defined(OS_WIN)
+#if BUILDFLAG(USE_ZYGOTE_HANDLE) || defined(OS_WIN)
   bool is_broker_;
 #endif
 
@@ -153,40 +131,38 @@ class PpapiPluginSandboxedProcessLauncherDelegate
 };
 
 class PpapiPluginProcessHost::PluginNetworkObserver
-    : public net::NetworkChangeNotifier::IPAddressObserver,
-      public net::NetworkChangeNotifier::ConnectionTypeObserver {
+    : public network::NetworkConnectionTracker::NetworkConnectionObserver {
  public:
   explicit PluginNetworkObserver(PpapiPluginProcessHost* process_host)
-      : process_host_(process_host) {
-    net::NetworkChangeNotifier::AddIPAddressObserver(this);
-    net::NetworkChangeNotifier::AddConnectionTypeObserver(this);
+      : process_host_(process_host),
+        network_connection_tracker_(nullptr),
+        weak_factory_(this) {
+    GetNetworkConnectionTrackerFromUIThread(
+        base::BindOnce(&PluginNetworkObserver::SetNetworkConnectionTracker,
+                       weak_factory_.GetWeakPtr()));
+  }
+
+  void SetNetworkConnectionTracker(
+      network::NetworkConnectionTracker* network_connection_tracker) {
+    DCHECK(network_connection_tracker);
+    network_connection_tracker_ = network_connection_tracker;
+    network_connection_tracker_->AddNetworkConnectionObserver(this);
   }
 
   ~PluginNetworkObserver() override {
-    net::NetworkChangeNotifier::RemoveConnectionTypeObserver(this);
-    net::NetworkChangeNotifier::RemoveIPAddressObserver(this);
+    if (network_connection_tracker_)
+      network_connection_tracker_->RemoveNetworkConnectionObserver(this);
   }
 
-  // IPAddressObserver implementation.
-  void OnIPAddressChanged() override {
-    // TODO(brettw) bug 90246: This doesn't seem correct. The online/offline
-    // notification seems like it should be sufficient, but I don't see that
-    // when I unplug and replug my network cable. Sending this notification when
-    // "something" changes seems to make Flash reasonably happy, but seems
-    // wrong. We should really be able to provide the real online state in
-    // OnConnectionTypeChanged().
-    process_host_->Send(new PpapiMsg_SetNetworkState(true));
-  }
-
-  // ConnectionTypeObserver implementation.
-  void OnConnectionTypeChanged(
-      net::NetworkChangeNotifier::ConnectionType type) override {
+  void OnConnectionChanged(network::mojom::ConnectionType type) override {
     process_host_->Send(new PpapiMsg_SetNetworkState(
-        type != net::NetworkChangeNotifier::CONNECTION_NONE));
+        type != network::mojom::ConnectionType::CONNECTION_NONE));
   }
 
  private:
   PpapiPluginProcessHost* const process_host_;
+  network::NetworkConnectionTracker* network_connection_tracker_;
+  base::WeakPtrFactory<PluginNetworkObserver> weak_factory_;
 };
 
 PpapiPluginProcessHost::~PpapiPluginProcessHost() {
@@ -198,15 +174,15 @@ PpapiPluginProcessHost::~PpapiPluginProcessHost() {
 // static
 PpapiPluginProcessHost* PpapiPluginProcessHost::CreatePluginHost(
     const PepperPluginInfo& info,
-    const base::FilePath& profile_data_directory) {
-  PpapiPluginProcessHost* plugin_host = new PpapiPluginProcessHost(
-      info, profile_data_directory);
-  DCHECK(plugin_host);
+    const base::FilePath& profile_data_directory,
+    const base::Optional<url::Origin>& origin_lock) {
+  PpapiPluginProcessHost* plugin_host =
+      new PpapiPluginProcessHost(info, profile_data_directory, origin_lock);
   if (plugin_host->Init(info))
     return plugin_host;
 
   NOTREACHED();  // Init is not expected to fail.
-  return NULL;
+  return nullptr;
 }
 
 // static
@@ -218,16 +194,8 @@ PpapiPluginProcessHost* PpapiPluginProcessHost::CreateBrokerHost(
     return plugin_host;
 
   NOTREACHED();  // Init is not expected to fail.
-  return NULL;
+  return nullptr;
 }
-
-#if defined(OS_POSIX) && !defined(OS_ANDROID) && !defined(OS_MACOSX)
-// static
-void PpapiPluginProcessHost::EarlyZygoteLaunch() {
-  DCHECK(!g_ppapi_zygote);
-  g_ppapi_zygote = CreateZygote();
-}
-#endif  // defined(OS_POSIX) && !defined(OS_ANDROID) && !defined(OS_MACOSX)
 
 // static
 void PpapiPluginProcessHost::DidCreateOutOfProcessInstance(
@@ -316,55 +284,48 @@ void PpapiPluginProcessHost::OpenChannelToPlugin(Client* client) {
 
 PpapiPluginProcessHost::PpapiPluginProcessHost(
     const PepperPluginInfo& info,
-    const base::FilePath& profile_data_directory)
+    const base::FilePath& profile_data_directory,
+    const base::Optional<url::Origin>& origin_lock)
     : profile_data_directory_(profile_data_directory),
-      is_broker_(false),
-      mojo_child_token_(mojo::edk::GenerateRandomToken()) {
+      origin_lock_(origin_lock),
+      is_broker_(false) {
   uint32_t base_permissions = info.permissions;
 
   // We don't have to do any whitelisting for APIs in this process host, so
   // don't bother passing a browser context or document url here.
-  if (GetContentClient()->browser()->IsPluginAllowedToUseDevChannelAPIs(
-          NULL, GURL()))
+  if (GetContentClient()->browser()->IsPluginAllowedToUseDevChannelAPIs(nullptr,
+                                                                        GURL()))
     base_permissions |= ppapi::PERMISSION_DEV_CHANNEL;
   permissions_ = ppapi::PpapiPermissions::GetForCommandLine(base_permissions);
 
-  process_.reset(new BrowserChildProcessHostImpl(
-      PROCESS_TYPE_PPAPI_PLUGIN, this, mojo_child_token_));
+  process_ = std::make_unique<BrowserChildProcessHostImpl>(
+      PROCESS_TYPE_PPAPI_PLUGIN, this, mojom::kPluginServiceName);
 
-  host_impl_.reset(new BrowserPpapiHostImpl(this, permissions_, info.name,
-                                            info.path, profile_data_directory,
-                                            false /* in_process */,
-                                            false /* external_plugin */));
+  host_impl_ = std::make_unique<BrowserPpapiHostImpl>(
+      this, permissions_, info.name, info.path, profile_data_directory,
+      false /* in_process */, false /* external_plugin */);
 
   filter_ = new PepperMessageFilter();
   process_->AddFilter(filter_.get());
   process_->GetHost()->AddFilter(host_impl_->message_filter().get());
-#if defined(OS_WIN)
-  process_->AddFilter(new DWriteFontProxyMessageFilter());
-#endif
 
   GetContentClient()->browser()->DidCreatePpapiPlugin(host_impl_.get());
 
   // Only request network status updates if the plugin has dev permissions.
   if (permissions_.HasPermission(ppapi::PERMISSION_DEV))
-    network_observer_.reset(new PluginNetworkObserver(this));
+    network_observer_ = std::make_unique<PluginNetworkObserver>(this);
 }
 
-PpapiPluginProcessHost::PpapiPluginProcessHost()
-    : is_broker_(true),
-      mojo_child_token_(mojo::edk::GenerateRandomToken()) {
-  process_.reset(new BrowserChildProcessHostImpl(
-      PROCESS_TYPE_PPAPI_BROKER, this, mojo_child_token_));
+PpapiPluginProcessHost::PpapiPluginProcessHost() : is_broker_(true) {
+  process_ = std::make_unique<BrowserChildProcessHostImpl>(
+      PROCESS_TYPE_PPAPI_BROKER, this, mojom::kPluginServiceName);
 
   ppapi::PpapiPermissions permissions;  // No permissions.
   // The plugin name, path and profile data directory shouldn't be needed for
   // the broker.
-  host_impl_.reset(new BrowserPpapiHostImpl(this, permissions,
-                                            std::string(), base::FilePath(),
-                                            base::FilePath(),
-                                            false /* in_process */,
-                                            false /* external_plugin */));
+  host_impl_ = std::make_unique<BrowserPpapiHostImpl>(
+      this, permissions, std::string(), base::FilePath(), base::FilePath(),
+      false /* in_process */, false /* external_plugin */);
 }
 
 bool PpapiPluginProcessHost::Init(const PepperPluginInfo& info) {
@@ -375,12 +336,7 @@ bool PpapiPluginProcessHost::Init(const PepperPluginInfo& info) {
     process_->SetName(base::UTF8ToUTF16(info.name));
   }
 
-  std::string mojo_channel_token =
-      process_->GetHost()->CreateChannelMojo(mojo_child_token_);
-  if (mojo_channel_token.empty()) {
-    VLOG(1) << "Could not create pepper host channel.";
-    return false;
-  }
+  process_->GetHost()->CreateChannelMojo();
 
   const base::CommandLine& browser_command_line =
       *base::CommandLine::ForCurrentProcess();
@@ -399,11 +355,13 @@ bool PpapiPluginProcessHost::Init(const PepperPluginInfo& info) {
     return false;
   }
 
-  base::CommandLine* cmd_line = new base::CommandLine(exe_path);
+  std::unique_ptr<base::CommandLine> cmd_line =
+      std::make_unique<base::CommandLine>(exe_path);
   cmd_line->AppendSwitchASCII(switches::kProcessType,
                               is_broker_ ? switches::kPpapiBrokerProcess
                                          : switches::kPpapiPluginProcess);
-  cmd_line->AppendSwitchASCII(switches::kMojoChannelToken, mojo_channel_token);
+  BrowserChildProcessHostImpl::CopyFeatureAndFieldTrialFlags(cmd_line.get());
+  BrowserChildProcessHostImpl::CopyTraceStartupFlags(cmd_line.get());
 
 #if defined(OS_WIN)
   cmd_line->AppendArg(is_broker_ ? switches::kPrefetchArgumentPpapiBroker
@@ -415,21 +373,21 @@ bool PpapiPluginProcessHost::Init(const PepperPluginInfo& info) {
     switches::kVModule
   };
   cmd_line->CopySwitchesFrom(browser_command_line, kCommonForwardSwitches,
-                             arraysize(kCommonForwardSwitches));
+                             base::size(kCommonForwardSwitches));
 
   if (!is_broker_) {
     static const char* const kPluginForwardSwitches[] = {
-      switches::kDisableSeccompFilterSandbox,
+      service_manager::switches::kDisableSeccompFilterSandbox,
+      service_manager::switches::kNoSandbox,
 #if defined(OS_MACOSX)
-      switches::kEnableSandboxLogging,
+      service_manager::switches::kEnableSandboxLogging,
 #endif
-      switches::kNoSandbox,
       switches::kPpapiStartupDialog,
     };
     cmd_line->CopySwitchesFrom(browser_command_line, kPluginForwardSwitches,
-                               arraysize(kPluginForwardSwitches));
+                               base::size(kPluginForwardSwitches));
 
-    // Copy any flash args over and introduce field trials if necessary.
+    // Copy any flash args over if necessary.
     // TODO(vtl): Stop passing flash args in the command line, or windows is
     // going to explode.
     std::string existing_args =
@@ -446,7 +404,14 @@ bool PpapiPluginProcessHost::Init(const PepperPluginInfo& info) {
 #if defined(OS_WIN)
   cmd_line->AppendSwitchASCII(
       switches::kDeviceScaleFactor,
-      base::DoubleToString(display::win::GetDPIScale()));
+      base::NumberToString(display::win::GetDPIScale()));
+  const gfx::FontRenderParams font_params =
+      gfx::GetFontRenderParams(gfx::FontRenderParamsQuery(), nullptr);
+  cmd_line->AppendSwitchASCII(switches::kPpapiAntialiasedTextEnabled,
+                              base::NumberToString(font_params.antialiasing));
+  cmd_line->AppendSwitchASCII(
+      switches::kPpapiSubpixelRenderingSetting,
+      base::NumberToString(font_params.subpixel_rendering));
 #endif
 
   if (!plugin_launcher.empty())
@@ -456,17 +421,14 @@ bool PpapiPluginProcessHost::Init(const PepperPluginInfo& info) {
   // we are not using a plugin launcher - having a plugin launcher means we need
   // to use another process instead of just forking the zygote.
   process_->Launch(
-      new PpapiPluginSandboxedProcessLauncherDelegate(is_broker_,
-                                                      info,
-                                                      process_->GetHost()),
-      cmd_line,
-      true);
+      std::make_unique<PpapiPluginSandboxedProcessLauncherDelegate>(is_broker_),
+      std::move(cmd_line), true);
   return true;
 }
 
 void PpapiPluginProcessHost::RequestPluginChannel(Client* client) {
-  base::ProcessHandle process_handle;
-  int renderer_child_id;
+  base::ProcessHandle process_handle = base::kNullProcessHandle;
+  int renderer_child_id = base::kNullProcessId;
   client->GetPpapiChannelInfo(&process_handle, &renderer_child_id);
 
   base::ProcessId process_id = base::kNullProcessId;
@@ -479,7 +441,7 @@ void PpapiPluginProcessHost::RequestPluginChannel(Client* client) {
   // We can't send any sync messages from the browser because it might lead to
   // a hang. See the similar code in PluginProcessHost for more description.
   PpapiMsg_CreateChannel* msg = new PpapiMsg_CreateChannel(
-      process_id, renderer_child_id, client->OffTheRecord());
+      process_id, renderer_child_id, client->Incognito());
   msg->set_unblock(true);
   if (Send(msg)) {
     sent_requests_.push(client);
@@ -562,7 +524,7 @@ void PpapiPluginProcessHost::OnRendererPluginChannelCreated(
   sent_requests_.pop();
 
   const ChildProcessData& data = process_->GetData();
-  client->OnPpapiChannelOpened(channel_handle, base::GetProcId(data.handle),
+  client->OnPpapiChannelOpened(channel_handle, data.GetProcess().Pid(),
                                data.id);
 }
 

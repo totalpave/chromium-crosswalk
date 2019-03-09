@@ -5,6 +5,7 @@
 #include "extensions/common/one_shot_event.h"
 
 #include "base/bind.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/test/test_simple_task_runner.h"
@@ -16,11 +17,51 @@ namespace {
 
 void Increment(int* i) { ++*i; }
 
+// |*did_delete_instance| will be set to true upon its destruction.
+class RefCountedClass : public base::RefCounted<RefCountedClass> {
+ public:
+  explicit RefCountedClass(bool* did_delete_instance)
+      : did_delete_instance_(did_delete_instance) {
+    DCHECK(!*did_delete_instance_);
+  }
+
+  void PerformTask() { did_perform_task_ = true; }
+  bool did_perform_task() const { return did_perform_task_; }
+
+ private:
+  friend class base::RefCounted<RefCountedClass>;
+
+  ~RefCountedClass() { *did_delete_instance_ = true; }
+
+  bool* const did_delete_instance_;  // Not owned.
+
+  bool did_perform_task_ = false;
+
+  DISALLOW_COPY_AND_ASSIGN(RefCountedClass);
+};
+
 TEST(OneShotEventTest, RecordsSignal) {
   OneShotEvent event;
   EXPECT_FALSE(event.is_signaled());
   event.Signal();
   EXPECT_TRUE(event.is_signaled());
+}
+
+TEST(OneShotEventTest, CallsQueueAsDistinctTask) {
+  OneShotEvent event;
+  scoped_refptr<base::TestSimpleTaskRunner> runner(
+      new base::TestSimpleTaskRunner);
+  int i = 0;
+  event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
+  event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
+  EXPECT_EQ(0U, runner->NumPendingTasks());
+  event.Signal();
+
+  auto pending_tasks = runner->TakePendingTasks();
+  ASSERT_EQ(2U, pending_tasks.size());
+  EXPECT_NE(pending_tasks[0].location.line_number(),
+            pending_tasks[1].location.line_number())
+      << "Make sure FROM_HERE is propagated.";
 }
 
 TEST(OneShotEventTest, CallsQueue) {
@@ -30,12 +71,10 @@ TEST(OneShotEventTest, CallsQueue) {
   int i = 0;
   event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
   event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
-  EXPECT_EQ(0U, runner->GetPendingTasks().size());
+  EXPECT_EQ(0U, runner->NumPendingTasks());
   event.Signal();
-  ASSERT_EQ(2U, runner->GetPendingTasks().size());
-  EXPECT_NE(runner->GetPendingTasks()[0].location.line_number(),
-            runner->GetPendingTasks()[1].location.line_number())
-      << "Make sure FROM_HERE is propagated.";
+  ASSERT_EQ(2U, runner->NumPendingTasks());
+
   EXPECT_EQ(0, i);
   runner->RunPendingTasks();
   EXPECT_EQ(2, i);
@@ -49,7 +88,7 @@ TEST(OneShotEventTest, CallsAfterSignalDontRunInline) {
 
   event.Signal();
   event.Post(FROM_HERE, base::Bind(&Increment, &i), runner);
-  EXPECT_EQ(1U, runner->GetPendingTasks().size());
+  EXPECT_EQ(1U, runner->NumPendingTasks());
   EXPECT_EQ(0, i);
   runner->RunPendingTasks();
   EXPECT_EQ(1, i);
@@ -66,7 +105,7 @@ TEST(OneShotEventTest, PostDefaultsToCurrentMessageLoop) {
   event.Post(FROM_HERE, base::Bind(&Increment, &runner_i), runner);
   event.Post(FROM_HERE, base::Bind(&Increment, &loop_i));
   event.Signal();
-  EXPECT_EQ(1U, runner->GetPendingTasks().size());
+  EXPECT_EQ(1U, runner->NumPendingTasks());
   EXPECT_EQ(0, runner_i);
   runner->RunPendingTasks();
   EXPECT_EQ(1, runner_i);
@@ -96,16 +135,40 @@ TEST(OneShotEventTest, IsSignaledAndPostsFromCallbackWork) {
   event.Signal();
 
   // CheckSignaledAndPostIncrement is queued on |runner|.
-  EXPECT_EQ(1U, runner->GetPendingTasks().size());
+  EXPECT_EQ(1U, runner->NumPendingTasks());
   EXPECT_EQ(0, i);
   runner->RunPendingTasks();
   // Increment is queued on |runner|.
-  EXPECT_EQ(1U, runner->GetPendingTasks().size());
+  EXPECT_EQ(1U, runner->NumPendingTasks());
   EXPECT_EQ(0, i);
   runner->RunPendingTasks();
   // Increment has run.
-  EXPECT_EQ(0U, runner->GetPendingTasks().size());
+  EXPECT_EQ(0U, runner->NumPendingTasks());
   EXPECT_EQ(1, i);
+}
+
+// Tests that OneShotEvent does not keep references to tasks once OneShotEvent
+// Signal()s.
+TEST(OneShotEventTest, DropsCallbackRefUponSignalled) {
+  auto runner = base::MakeRefCounted<base::TestSimpleTaskRunner>();
+  bool did_delete_instance = false;
+  OneShotEvent event;
+
+  {
+    auto ref_counted_class =
+        base::MakeRefCounted<RefCountedClass>(&did_delete_instance);
+    event.Post(
+        FROM_HERE,
+        base::BindRepeating(&RefCountedClass::PerformTask, ref_counted_class),
+        runner);
+    event.Signal();
+    runner->RunPendingTasks();
+    EXPECT_TRUE(ref_counted_class->did_perform_task());
+  }
+
+  // Once OneShotEvent doesn't have any queued events, it should have dropped
+  // all the references to the callbacks it received through Post().
+  EXPECT_TRUE(did_delete_instance);
 }
 
 }  // namespace

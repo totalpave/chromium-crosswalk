@@ -3,11 +3,11 @@
 // found in the LICENSE file.
 
 /**
- * Implements an incremental search field which can be shown and hidden.
- * Canonical implementation is <cr-search-field>.
+ * Helper functions for implementing an incremental search field. See
+ * <settings-subpage-search> for a simple implementation.
  * @polymerBehavior
  */
-var CrSearchFieldBehavior = {
+const CrSearchFieldBehavior = {
   properties: {
     label: {
       type: String,
@@ -19,12 +19,10 @@ var CrSearchFieldBehavior = {
       value: '',
     },
 
-    showingSearch: {
+    hasSearchText: {
       type: Boolean,
+      reflectToAttribute: true,
       value: false,
-      notify: true,
-      observer: 'showingSearchChanged_',
-      reflectToAttribute: true
     },
 
     /** @private */
@@ -34,70 +32,92 @@ var CrSearchFieldBehavior = {
     },
   },
 
+  /** @private {number} */
+  searchDelayTimer_: -1,
+
+  /**
+   * @return {!HTMLInputElement} The input field element the behavior should
+   *     use.
+   */
+  getSearchInput: function() {},
+
   /**
    * @return {string} The value of the search field.
    */
   getValue: function() {
-    return this.$.searchInput.value;
+    return this.getSearchInput().value;
   },
 
   /**
    * Sets the value of the search field.
    * @param {string} value
+   * @param {boolean=} opt_noEvent Whether to prevent a 'search-changed' event
+   *     firing for this change.
    */
-  setValue: function(value) {
-    // Use bindValue when setting the input value so that changes propagate
-    // correctly.
-    this.$.searchInput.bindValue = value;
-    this.onValueChanged_(value);
-  },
+  setValue: function(value, opt_noEvent) {
+    const searchInput = this.getSearchInput();
+    searchInput.value = value;
 
-  showAndFocus: function() {
-    this.showingSearch = true;
-    this.focus_();
+    this.onSearchTermInput();
+    this.onValueChanged_(value, !!opt_noEvent);
   },
 
   /** @private */
-  focus_: function() {
-    this.$.searchInput.focus();
+  scheduleSearch_: function() {
+    if (this.searchDelayTimer_ >= 0) {
+      clearTimeout(this.searchDelayTimer_);
+    }
+    // Dispatch 'search' event after:
+    //    0ms if the value is empty
+    //  500ms if the value length is 1
+    //  400ms if the value length is 2
+    //  300ms if the value length is 3
+    //  200ms if the value length is 4 or greater.
+    // The logic here was copied from WebKit's native 'search' event.
+    const length = this.getValue().length;
+    const timeoutMs = length > 0 ? (500 - 100 * (Math.min(length, 4) - 1)) : 0;
+    this.searchDelayTimer_ = setTimeout(() => {
+      this.getSearchInput().dispatchEvent(
+          new CustomEvent('search', {composed: true, detail: this.getValue()}));
+      this.searchDelayTimer_ = -1;
+    }, timeoutMs);
   },
 
   onSearchTermSearch: function() {
-    this.onValueChanged_(this.getValue());
+    this.onValueChanged_(this.getValue(), false);
+  },
+
+  /**
+   * Update the state of the search field whenever the underlying input value
+   * changes. Unlike onsearch or onkeypress, this is reliably called immediately
+   * after any change, whether the result of user input or JS modification.
+   */
+  onSearchTermInput: function() {
+    this.hasSearchText = this.$.searchInput.value != '';
+    this.scheduleSearch_();
   },
 
   /**
    * Updates the internal state of the search field based on a change that has
    * already happened.
    * @param {string} newValue
+   * @param {boolean} noEvent Whether to prevent a 'search-changed' event firing
+   *     for this change.
    * @private
    */
-  onValueChanged_: function(newValue) {
-    if (newValue == this.lastValue_)
-      return;
-
-    this.fire('search-changed', newValue);
-    this.lastValue_ = newValue;
-  },
-
-  onSearchTermKeydown: function(e) {
-    if (e.key == 'Escape')
-      this.showingSearch = false;
-  },
-
-  /** @private */
-  showingSearchChanged_: function() {
-    if (this.showingSearch) {
-      this.focus_();
+  onValueChanged_: function(newValue, noEvent) {
+    // Trim leading whitespace and replace consecutive whitespace with single
+    // space. This will prevent empty string searches and searches for
+    // effectively the same query.
+    const effectiveValue = newValue.replace(/\s+/g, ' ').replace(/^\s/, '');
+    if (effectiveValue == this.lastValue_) {
       return;
     }
 
-    this.setValue('');
-    this.$.searchInput.blur();
-  },
+    this.lastValue_ = effectiveValue;
 
-  /** @private */
-  toggleShowingSearch_: function() {
-    this.showingSearch = !this.showingSearch;
+    if (!noEvent) {
+      this.fire('search-changed', effectiveValue);
+    }
   },
 };

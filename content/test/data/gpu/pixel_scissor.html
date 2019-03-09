@@ -14,7 +14,6 @@ function run() {
   var canvas = document.getElementById("c");
   gl = initGL(canvas);
   if (!gl) {
-    domAutomationController.setAutomationId(1);
     domAutomationController.send("FAILURE");
     return;
   }
@@ -38,9 +37,20 @@ function scissorAndClear() {
   gl.clearColor(0, 1, 0, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
 
-  domAutomationController.setAutomationId(1);
-  domAutomationController.send("SUCCESS");
+  deferredAck();
 }
+
+var swapsBeforeAck = 15;
+function deferredAck()
+{
+  if (swapsBeforeAck == 0) {
+    domAutomationController.send("SUCCESS");
+  } else {
+    --swapsBeforeAck;
+    window.requestAnimationFrame(deferredAck);
+  }
+}
+
 </script>
 </head>
 <body onload="run()">

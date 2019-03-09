@@ -5,7 +5,7 @@
 #include "ui/events/keycodes/dom/keycode_converter.h"
 
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversion_utils.h"
 #include "build/build_config.h"
 #include "ui/events/keycodes/dom/dom_code.h"
@@ -33,7 +33,7 @@ namespace {
 #undef USB_KEYMAP
 #undef USB_KEYMAP_DECLARATION
 
-const size_t kKeycodeMapEntries = arraysize(usb_keycode_map);
+const size_t kKeycodeMapEntries = base::size(usb_keycode_map);
 
 // Table of DomKey enum values and DOM Level 3 |key| strings.
 struct DomKeyMapEntry {
@@ -49,7 +49,7 @@ struct DomKeyMapEntry {
 #undef DOM_KEY_MAP
 #undef DOM_KEY_UNI
 
-const size_t kDomKeyMapEntries = arraysize(dom_key_map);
+const size_t kDomKeyMapEntries = base::size(dom_key_map);
 
 }  // namespace
 
@@ -74,6 +74,9 @@ const char* KeycodeConverter::DomKeyStringForTest(size_t index) {
 int KeycodeConverter::InvalidNativeKeycode() {
   return usb_keycode_map[0].native_keycode;
 }
+
+// TODO(zijiehe): Most of the following functions can be optimized by using
+// either multiple arrays or unordered_map.
 
 // static
 DomCode KeycodeConverter::NativeKeycodeToDomCode(int native_keycode) {
@@ -297,7 +300,7 @@ uint32_t KeycodeConverter::DomCodeToUsbKeycode(DomCode dom_code) {
 }
 
 // static
-uint32_t KeycodeConverter::CodeToUsbKeycode(const std::string& code) {
+uint32_t KeycodeConverter::CodeStringToUsbKeycode(const std::string& code) {
   if (code.empty())
     return InvalidUsbKeycode();
 
@@ -307,6 +310,11 @@ uint32_t KeycodeConverter::CodeToUsbKeycode(const std::string& code) {
     }
   }
   return InvalidUsbKeycode();
+}
+
+// static
+int KeycodeConverter::CodeStringToNativeKeycode(const std::string& code) {
+  return UsbKeycodeToNativeKeycode(CodeStringToUsbKeycode(code));
 }
 
 }  // namespace ui

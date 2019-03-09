@@ -11,17 +11,17 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_app_manager.h"
-#include "chrome/browser/ui/webui/chromeos/login/oobe_screen.h"
+#include "chrome/browser/chromeos/login/oobe_screen.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/session_manager_client.h"
 #include "components/login/localized_values_builder.h"
 #include "components/prefs/pref_service.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
-#include "grit/components_strings.h"
 #include "ui/base/webui/web_ui_util.h"
 
 namespace {
@@ -32,17 +32,16 @@ const char kJsScreenPath[] = "login.AutolaunchScreen";
 
 namespace chromeos {
 
-KioskAutolaunchScreenHandler::KioskAutolaunchScreenHandler()
-    : BaseScreenHandler(kJsScreenPath),
-      delegate_(NULL),
-      show_on_init_(false),
-      is_visible_(false) {
+KioskAutolaunchScreenHandler::KioskAutolaunchScreenHandler(
+    JSCallsContainer* js_calls_container)
+    : BaseScreenHandler(kScreenId, js_calls_container) {
+  set_call_js_prefix(kJsScreenPath);
   KioskAppManager::Get()->AddObserver(this);
 }
 
 KioskAutolaunchScreenHandler::~KioskAutolaunchScreenHandler() {
   if (delegate_)
-    delegate_->OnActorDestroyed(this);
+    delegate_->OnViewDestroyed(this);
 
   KioskAppManager::Get()->RemoveObserver(this);
 }
@@ -53,7 +52,7 @@ void KioskAutolaunchScreenHandler::Show() {
     return;
   }
   UpdateKioskApp();
-  ShowScreen(OobeScreen::SCREEN_KIOSK_AUTOLAUNCH);
+  ShowScreen(kScreenId);
 }
 
 void KioskAutolaunchScreenHandler::SetDelegate(Delegate* delegate) {
@@ -83,7 +82,7 @@ void KioskAutolaunchScreenHandler::UpdateKioskApp() {
     icon_url = webui::GetBitmapDataUrl(*app.icon.bitmap());
 
   app_info.SetString("appIconUrl", icon_url);
-  CallJS("updateApp", app_info);
+  CallJS("login.AutolaunchScreen.updateApp", app_info);
 }
 
 void KioskAutolaunchScreenHandler::DeclareLocalizedValues(

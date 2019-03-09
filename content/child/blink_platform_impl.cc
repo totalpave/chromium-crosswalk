@@ -12,332 +12,303 @@
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/location.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/singleton.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/rand_util.h"
+#include "base/run_loop.h"
+#include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
-#include "base/synchronization/waitable_event.h"
-#include "base/sys_info.h"
-#include "base/threading/platform_thread.h"
-#include "base/threading/thread.h"
+#include "base/system/sys_info.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/trace_event/memory_allocator_dump_guid.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/trace_event.h"
-#include "blink/public/resources/grit/blink_image_resources.h"
-#include "blink/public/resources/grit/blink_resources.h"
 #include "build/build_config.h"
-#include "components/mime_util/mime_util.h"
-#include "components/scheduler/child/web_task_runner_impl.h"
-#include "components/scheduler/child/webthread_impl_for_worker_scheduler.h"
 #include "content/app/resources/grit/content_resources.h"
 #include "content/app/strings/grit/content_strings.h"
-#include "content/child/background_sync/background_sync_provider.h"
 #include "content/child/child_thread_impl.h"
-#include "content/child/content_child_helpers.h"
-#include "content/child/notifications/notification_dispatcher.h"
-#include "content/child/notifications/notification_manager.h"
-#include "content/child/permissions/permission_dispatcher.h"
-#include "content/child/permissions/permission_dispatcher_thread_proxy.h"
-#include "content/child/push_messaging/push_dispatcher.h"
-#include "content/child/push_messaging/push_provider.h"
-#include "content/child/thread_safe_sender.h"
-#include "content/child/web_url_loader_impl.h"
-#include "content/child/web_url_request_util.h"
-#include "content/child/websocket_bridge.h"
-#include "content/child/worker_thread_registry.h"
+#include "content/common/service_worker/service_worker_utils.h"
 #include "content/public/common/content_client.h"
-#include "net/base/data_url.h"
+#include "content/public/common/content_features.h"
+#include "content/public/common/content_switches.h"
+#include "content/public/common/service_manager_connection.h"
+#include "content/public/common/service_names.mojom.h"
 #include "net/base/net_errors.h"
-#include "third_party/WebKit/public/platform/WebData.h"
-#include "third_party/WebKit/public/platform/WebFloatPoint.h"
-#include "third_party/WebKit/public/platform/WebSecurityOrigin.h"
-#include "third_party/WebKit/public/platform/WebString.h"
-#include "third_party/WebKit/public/platform/WebURL.h"
+#include "services/network/public/cpp/features.h"
+#include "third_party/blink/public/platform/web_data.h"
+#include "third_party/blink/public/platform/web_float_point.h"
+#include "third_party/blink/public/platform/web_security_origin.h"
+#include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/public/platform/web_url.h"
+#include "third_party/blink/public/resources/grit/blink_image_resources.h"
+#include "third_party/blink/public/resources/grit/blink_resources.h"
+#include "third_party/zlib/google/compression_utils.h"
 #include "ui/base/layout.h"
 #include "ui/events/gestures/blink/web_gesture_curve_impl.h"
-#include "ui/events/keycodes/dom/keycode_converter.h"
 
 using blink::WebData;
-using blink::WebFallbackThemeEngine;
 using blink::WebLocalizedString;
 using blink::WebString;
 using blink::WebThemeEngine;
 using blink::WebURL;
 using blink::WebURLError;
-using blink::WebURLLoader;
-using scheduler::WebThreadImplForWorkerScheduler;
 
 namespace content {
 
-namespace {
-
-
-}  // namespace
-
 static int ToMessageID(WebLocalizedString::Name name) {
   switch (name) {
-    case WebLocalizedString::AXAMPMFieldText:
+    case WebLocalizedString::kAXAMPMFieldText:
       return IDS_AX_AM_PM_FIELD_TEXT;
-    case WebLocalizedString::AXButtonActionVerb:
-      return IDS_AX_BUTTON_ACTION_VERB;
-    case WebLocalizedString::AXCalendarShowMonthSelector:
+    case WebLocalizedString::kAXCalendarShowDatePicker:
+      return IDS_AX_CALENDAR_SHOW_DATE_PICKER;
+    case WebLocalizedString::kAXCalendarShowMonthSelector:
       return IDS_AX_CALENDAR_SHOW_MONTH_SELECTOR;
-    case WebLocalizedString::AXCalendarShowNextMonth:
+    case WebLocalizedString::kAXCalendarShowNextMonth:
       return IDS_AX_CALENDAR_SHOW_NEXT_MONTH;
-    case WebLocalizedString::AXCalendarShowPreviousMonth:
+    case WebLocalizedString::kAXCalendarShowPreviousMonth:
       return IDS_AX_CALENDAR_SHOW_PREVIOUS_MONTH;
-    case WebLocalizedString::AXCalendarWeekDescription:
+    case WebLocalizedString::kAXCalendarWeekDescription:
       return IDS_AX_CALENDAR_WEEK_DESCRIPTION;
-    case WebLocalizedString::AXCheckedCheckBoxActionVerb:
-      return IDS_AX_CHECKED_CHECK_BOX_ACTION_VERB;
-    case WebLocalizedString::AXDateTimeFieldEmptyValueText:
-      return IDS_AX_DATE_TIME_FIELD_EMPTY_VALUE_TEXT;
-    case WebLocalizedString::AXDayOfMonthFieldText:
+    case WebLocalizedString::kAXDayOfMonthFieldText:
       return IDS_AX_DAY_OF_MONTH_FIELD_TEXT;
-    case WebLocalizedString::AXDefaultActionVerb:
-      return IDS_AX_DEFAULT_ACTION_VERB;
-    case WebLocalizedString::AXHeadingText:
-      return IDS_AX_ROLE_HEADING;
-    case WebLocalizedString::AXHourFieldText:
+    case WebLocalizedString::kAXHourFieldText:
       return IDS_AX_HOUR_FIELD_TEXT;
-    case WebLocalizedString::AXImageMapText:
-      return IDS_AX_ROLE_IMAGE_MAP;
-    case WebLocalizedString::AXLinkActionVerb:
-      return IDS_AX_LINK_ACTION_VERB;
-    case WebLocalizedString::AXLinkText:
-      return IDS_AX_ROLE_LINK;
-    case WebLocalizedString::AXListMarkerText:
-      return IDS_AX_ROLE_LIST_MARKER;
-    case WebLocalizedString::AXMediaDefault:
+    case WebLocalizedString::kAXMediaDefault:
       return IDS_AX_MEDIA_DEFAULT;
-    case WebLocalizedString::AXMediaAudioElement:
+    case WebLocalizedString::kAXMediaAudioElement:
       return IDS_AX_MEDIA_AUDIO_ELEMENT;
-    case WebLocalizedString::AXMediaVideoElement:
+    case WebLocalizedString::kAXMediaVideoElement:
       return IDS_AX_MEDIA_VIDEO_ELEMENT;
-    case WebLocalizedString::AXMediaMuteButton:
+    case WebLocalizedString::kAXMediaMuteButton:
       return IDS_AX_MEDIA_MUTE_BUTTON;
-    case WebLocalizedString::AXMediaUnMuteButton:
+    case WebLocalizedString::kAXMediaUnMuteButton:
       return IDS_AX_MEDIA_UNMUTE_BUTTON;
-    case WebLocalizedString::AXMediaPlayButton:
+    case WebLocalizedString::kAXMediaPlayButton:
       return IDS_AX_MEDIA_PLAY_BUTTON;
-    case WebLocalizedString::AXMediaPauseButton:
+    case WebLocalizedString::kAXMediaPauseButton:
       return IDS_AX_MEDIA_PAUSE_BUTTON;
-    case WebLocalizedString::AXMediaSlider:
-      return IDS_AX_MEDIA_SLIDER;
-    case WebLocalizedString::AXMediaSliderThumb:
-      return IDS_AX_MEDIA_SLIDER_THUMB;
-    case WebLocalizedString::AXMediaCurrentTimeDisplay:
+    case WebLocalizedString::kAXMediaCurrentTimeDisplay:
       return IDS_AX_MEDIA_CURRENT_TIME_DISPLAY;
-    case WebLocalizedString::AXMediaTimeRemainingDisplay:
+    case WebLocalizedString::kAXMediaTimeRemainingDisplay:
       return IDS_AX_MEDIA_TIME_REMAINING_DISPLAY;
-    case WebLocalizedString::AXMediaStatusDisplay:
-      return IDS_AX_MEDIA_STATUS_DISPLAY;
-    case WebLocalizedString::AXMediaEnterFullscreenButton:
+    case WebLocalizedString::kAXMediaEnterFullscreenButton:
       return IDS_AX_MEDIA_ENTER_FULL_SCREEN_BUTTON;
-    case WebLocalizedString::AXMediaExitFullscreenButton:
+    case WebLocalizedString::kAXMediaExitFullscreenButton:
       return IDS_AX_MEDIA_EXIT_FULL_SCREEN_BUTTON;
-    case WebLocalizedString::AXMediaShowClosedCaptionsButton:
-      return IDS_AX_MEDIA_SHOW_CLOSED_CAPTIONS_BUTTON;
-    case WebLocalizedString::AXMediaHideClosedCaptionsButton:
-      return IDS_AX_MEDIA_HIDE_CLOSED_CAPTIONS_BUTTON;
-    case WebLocalizedString::AxMediaCastOffButton:
+    case WebLocalizedString::kAXMediaDisplayCutoutFullscreenButton:
+      return IDS_AX_MEDIA_DISPLAY_CUT_OUT_FULL_SCREEN_BUTTON;
+    case WebLocalizedString::kAXMediaEnterPictureInPictureButton:
+      return IDS_AX_MEDIA_ENTER_PICTURE_IN_PICTURE_BUTTON;
+    case WebLocalizedString::kAXMediaExitPictureInPictureButton:
+      return IDS_AX_MEDIA_EXIT_PICTURE_IN_PICTURE_BUTTON;
+    case WebLocalizedString::kAXMediaShowClosedCaptionsMenuButton:
+      return IDS_AX_MEDIA_SHOW_CLOSED_CAPTIONS_MENU_BUTTON;
+    case WebLocalizedString::kAXMediaHideClosedCaptionsMenuButton:
+      return IDS_AX_MEDIA_HIDE_CLOSED_CAPTIONS_MENU_BUTTON;
+    case WebLocalizedString::kAXMediaLoadingPanel:
+      return IDS_AX_MEDIA_LOADING_PANEL;
+    case WebLocalizedString::kAXMediaCastOffButton:
       return IDS_AX_MEDIA_CAST_OFF_BUTTON;
-    case WebLocalizedString::AxMediaCastOnButton:
+    case WebLocalizedString::kAXMediaCastOnButton:
       return IDS_AX_MEDIA_CAST_ON_BUTTON;
-    case WebLocalizedString::AXMediaAudioElementHelp:
+    case WebLocalizedString::kAXMediaDownloadButton:
+      return IDS_AX_MEDIA_DOWNLOAD_BUTTON;
+    case WebLocalizedString::kAXMediaOverflowButton:
+      return IDS_AX_MEDIA_OVERFLOW_BUTTON;
+    case WebLocalizedString::kAXMediaAudioElementHelp:
       return IDS_AX_MEDIA_AUDIO_ELEMENT_HELP;
-    case WebLocalizedString::AXMediaVideoElementHelp:
+    case WebLocalizedString::kAXMediaVideoElementHelp:
       return IDS_AX_MEDIA_VIDEO_ELEMENT_HELP;
-    case WebLocalizedString::AXMediaMuteButtonHelp:
-      return IDS_AX_MEDIA_MUTE_BUTTON_HELP;
-    case WebLocalizedString::AXMediaUnMuteButtonHelp:
-      return IDS_AX_MEDIA_UNMUTE_BUTTON_HELP;
-    case WebLocalizedString::AXMediaPlayButtonHelp:
-      return IDS_AX_MEDIA_PLAY_BUTTON_HELP;
-    case WebLocalizedString::AXMediaPauseButtonHelp:
-      return IDS_AX_MEDIA_PAUSE_BUTTON_HELP;
-    case WebLocalizedString::AXMediaAudioSliderHelp:
+    case WebLocalizedString::kAXMediaAudioSliderHelp:
       return IDS_AX_MEDIA_AUDIO_SLIDER_HELP;
-    case WebLocalizedString::AXMediaVideoSliderHelp:
+    case WebLocalizedString::kAXMediaVideoSliderHelp:
       return IDS_AX_MEDIA_VIDEO_SLIDER_HELP;
-    case WebLocalizedString::AXMediaSliderThumbHelp:
-      return IDS_AX_MEDIA_SLIDER_THUMB_HELP;
-    case WebLocalizedString::AXMediaCurrentTimeDisplayHelp:
+    case WebLocalizedString::kAXMediaVolumeSliderHelp:
+      return IDS_AX_MEDIA_VOLUME_SLIDER_HELP;
+    case WebLocalizedString::kAXMediaCurrentTimeDisplayHelp:
       return IDS_AX_MEDIA_CURRENT_TIME_DISPLAY_HELP;
-    case WebLocalizedString::AXMediaTimeRemainingDisplayHelp:
+    case WebLocalizedString::kAXMediaTimeRemainingDisplayHelp:
       return IDS_AX_MEDIA_TIME_REMAINING_DISPLAY_HELP;
-    case WebLocalizedString::AXMediaStatusDisplayHelp:
-      return IDS_AX_MEDIA_STATUS_DISPLAY_HELP;
-    case WebLocalizedString::AXMediaEnterFullscreenButtonHelp:
-      return IDS_AX_MEDIA_ENTER_FULL_SCREEN_BUTTON_HELP;
-    case WebLocalizedString::AXMediaExitFullscreenButtonHelp:
-      return IDS_AX_MEDIA_EXIT_FULL_SCREEN_BUTTON_HELP;
-    case WebLocalizedString::AXMediaShowClosedCaptionsButtonHelp:
-      return IDS_AX_MEDIA_SHOW_CLOSED_CAPTIONS_BUTTON_HELP;
-    case WebLocalizedString::AXMediaHideClosedCaptionsButtonHelp:
-      return IDS_AX_MEDIA_HIDE_CLOSED_CAPTIONS_BUTTON_HELP;
-    case WebLocalizedString::AxMediaCastOffButtonHelp:
-      return IDS_AX_MEDIA_CAST_OFF_BUTTON_HELP;
-    case WebLocalizedString::AxMediaCastOnButtonHelp:
-      return IDS_AX_MEDIA_CAST_ON_BUTTON_HELP;
-    case WebLocalizedString::AXMillisecondFieldText:
+    case WebLocalizedString::kAXMediaOverflowButtonHelp:
+      return IDS_AX_MEDIA_OVERFLOW_BUTTON_HELP;
+    case WebLocalizedString::kAXMillisecondFieldText:
       return IDS_AX_MILLISECOND_FIELD_TEXT;
-    case WebLocalizedString::AXMinuteFieldText:
+    case WebLocalizedString::kAXMinuteFieldText:
       return IDS_AX_MINUTE_FIELD_TEXT;
-    case WebLocalizedString::AXMonthFieldText:
+    case WebLocalizedString::kAXMonthFieldText:
       return IDS_AX_MONTH_FIELD_TEXT;
-    case WebLocalizedString::AXPopUpButtonActionVerb:
-      return IDS_AX_POP_UP_BUTTON_ACTION_VERB;
-    case WebLocalizedString::AXRadioButtonActionVerb:
-      return IDS_AX_RADIO_BUTTON_ACTION_VERB;
-    case WebLocalizedString::AXSecondFieldText:
+    case WebLocalizedString::kAXSecondFieldText:
       return IDS_AX_SECOND_FIELD_TEXT;
-    case WebLocalizedString::AXTextFieldActionVerb:
-      return IDS_AX_TEXT_FIELD_ACTION_VERB;
-    case WebLocalizedString::AXUncheckedCheckBoxActionVerb:
-      return IDS_AX_UNCHECKED_CHECK_BOX_ACTION_VERB;
-    case WebLocalizedString::AXWebAreaText:
-      return IDS_AX_ROLE_WEB_AREA;
-    case WebLocalizedString::AXWeekOfYearFieldText:
+    case WebLocalizedString::kAXWeekOfYearFieldText:
       return IDS_AX_WEEK_OF_YEAR_FIELD_TEXT;
-    case WebLocalizedString::AXYearFieldText:
+    case WebLocalizedString::kAXYearFieldText:
       return IDS_AX_YEAR_FIELD_TEXT;
-    case WebLocalizedString::CalendarClear:
+    case WebLocalizedString::kCalendarClear:
       return IDS_FORM_CALENDAR_CLEAR;
-    case WebLocalizedString::CalendarToday:
+    case WebLocalizedString::kCalendarToday:
       return IDS_FORM_CALENDAR_TODAY;
-    case WebLocalizedString::DateFormatDayInMonthLabel:
-      return IDS_FORM_DATE_FORMAT_DAY_IN_MONTH;
-    case WebLocalizedString::DateFormatMonthLabel:
-      return IDS_FORM_DATE_FORMAT_MONTH;
-    case WebLocalizedString::DateFormatYearLabel:
-      return IDS_FORM_DATE_FORMAT_YEAR;
-    case WebLocalizedString::DetailsLabel:
+    case WebLocalizedString::kDetailsLabel:
       return IDS_DETAILS_WITHOUT_SUMMARY_LABEL;
-    case WebLocalizedString::DownloadButtonLabel:
-      return IDS_DOWNLOAD_BUTTON_LABEL;
-    case WebLocalizedString::FileButtonChooseFileLabel:
+    case WebLocalizedString::kFileButtonChooseFileLabel:
       return IDS_FORM_FILE_BUTTON_LABEL;
-    case WebLocalizedString::FileButtonChooseMultipleFilesLabel:
+    case WebLocalizedString::kFileButtonChooseMultipleFilesLabel:
       return IDS_FORM_MULTIPLE_FILES_BUTTON_LABEL;
-    case WebLocalizedString::FileButtonNoFileSelectedLabel:
+    case WebLocalizedString::kFileButtonNoFileSelectedLabel:
       return IDS_FORM_FILE_NO_FILE_LABEL;
-    case WebLocalizedString::InputElementAltText:
+    case WebLocalizedString::kInputElementAltText:
       return IDS_FORM_INPUT_ALT;
-    case WebLocalizedString::KeygenMenuHighGradeKeySize:
-      return IDS_KEYGEN_HIGH_GRADE_KEY;
-    case WebLocalizedString::KeygenMenuMediumGradeKeySize:
-      return IDS_KEYGEN_MED_GRADE_KEY;
-    case WebLocalizedString::MissingPluginText:
+    case WebLocalizedString::kMissingPluginText:
       return IDS_PLUGIN_INITIALIZATION_ERROR;
-    case WebLocalizedString::MultipleFileUploadText:
+    case WebLocalizedString::kAXMediaPlaybackError:
+      return IDS_MEDIA_PLAYBACK_ERROR;
+    case WebLocalizedString::kMediaRemotingCastText:
+      return IDS_MEDIA_REMOTING_CAST_TEXT;
+    case WebLocalizedString::kMediaRemotingCastToUnknownDeviceText:
+      return IDS_MEDIA_REMOTING_CAST_TO_UNKNOWN_DEVICE_TEXT;
+    case WebLocalizedString::kMediaRemotingStopByErrorText:
+      return IDS_MEDIA_REMOTING_STOP_BY_ERROR_TEXT;
+    case WebLocalizedString::kMediaRemotingStopByPlaybackQualityText:
+      return IDS_MEDIA_REMOTING_STOP_BY_PLAYBACK_QUALITY_TEXT;
+    case WebLocalizedString::kMediaRemotingStopNoText:
+      return -1;  // This string name is used only to indicate an empty string.
+    case WebLocalizedString::kMediaRemotingStopText:
+      return IDS_MEDIA_REMOTING_STOP_TEXT;
+    case WebLocalizedString::kMediaScrubbingMessageText:
+      return IDS_MEDIA_SCRUBBING_MESSAGE_TEXT;
+    case WebLocalizedString::kMultipleFileUploadText:
       return IDS_FORM_FILE_MULTIPLE_UPLOAD;
-    case WebLocalizedString::OtherColorLabel:
+    case WebLocalizedString::kOtherColorLabel:
       return IDS_FORM_OTHER_COLOR_LABEL;
-    case WebLocalizedString::OtherDateLabel:
-        return IDS_FORM_OTHER_DATE_LABEL;
-    case WebLocalizedString::OtherMonthLabel:
+    case WebLocalizedString::kOtherDateLabel:
+      return IDS_FORM_OTHER_DATE_LABEL;
+    case WebLocalizedString::kOtherMonthLabel:
       return IDS_FORM_OTHER_MONTH_LABEL;
-    case WebLocalizedString::OtherTimeLabel:
-      return IDS_FORM_OTHER_TIME_LABEL;
-    case WebLocalizedString::OtherWeekLabel:
+    case WebLocalizedString::kOtherWeekLabel:
       return IDS_FORM_OTHER_WEEK_LABEL;
-    case WebLocalizedString::PlaceholderForDayOfMonthField:
+    case WebLocalizedString::kOverflowMenuCaptions:
+      return IDS_MEDIA_OVERFLOW_MENU_CLOSED_CAPTIONS;
+    case WebLocalizedString::kOverflowMenuCaptionsSubmenuTitle:
+      return IDS_MEDIA_OVERFLOW_MENU_CLOSED_CAPTIONS_SUBMENU_TITLE;
+    case WebLocalizedString::kOverflowMenuCast:
+      return IDS_MEDIA_OVERFLOW_MENU_CAST;
+    case WebLocalizedString::kOverflowMenuEnterFullscreen:
+      return IDS_MEDIA_OVERFLOW_MENU_ENTER_FULLSCREEN;
+    case WebLocalizedString::kOverflowMenuExitFullscreen:
+      return IDS_MEDIA_OVERFLOW_MENU_EXIT_FULLSCREEN;
+    case WebLocalizedString::kOverflowMenuMute:
+      return IDS_MEDIA_OVERFLOW_MENU_MUTE;
+    case WebLocalizedString::kOverflowMenuUnmute:
+      return IDS_MEDIA_OVERFLOW_MENU_UNMUTE;
+    case WebLocalizedString::kOverflowMenuPlay:
+      return IDS_MEDIA_OVERFLOW_MENU_PLAY;
+    case WebLocalizedString::kOverflowMenuPause:
+      return IDS_MEDIA_OVERFLOW_MENU_PAUSE;
+    case WebLocalizedString::kOverflowMenuDownload:
+      return IDS_MEDIA_OVERFLOW_MENU_DOWNLOAD;
+    case WebLocalizedString::kOverflowMenuEnterPictureInPicture:
+      return IDS_MEDIA_OVERFLOW_MENU_ENTER_PICTURE_IN_PICTURE;
+    case WebLocalizedString::kOverflowMenuExitPictureInPicture:
+      return IDS_MEDIA_OVERFLOW_MENU_EXIT_PICTURE_IN_PICTURE;
+    case WebLocalizedString::kPictureInPictureInterstitialText:
+      return IDS_MEDIA_PICTURE_IN_PICTURE_INTERSTITIAL_TEXT;
+    case WebLocalizedString::kPlaceholderForDayOfMonthField:
       return IDS_FORM_PLACEHOLDER_FOR_DAY_OF_MONTH_FIELD;
-    case WebLocalizedString::PlaceholderForMonthField:
+    case WebLocalizedString::kPlaceholderForMonthField:
       return IDS_FORM_PLACEHOLDER_FOR_MONTH_FIELD;
-    case WebLocalizedString::PlaceholderForYearField:
+    case WebLocalizedString::kPlaceholderForYearField:
       return IDS_FORM_PLACEHOLDER_FOR_YEAR_FIELD;
-    case WebLocalizedString::ResetButtonDefaultLabel:
+    case WebLocalizedString::kResetButtonDefaultLabel:
       return IDS_FORM_RESET_LABEL;
-    case WebLocalizedString::SearchableIndexIntroduction:
-      return IDS_SEARCHABLE_INDEX_INTRO;
-    case WebLocalizedString::SearchMenuClearRecentSearchesText:
-      return IDS_RECENT_SEARCHES_CLEAR;
-    case WebLocalizedString::SearchMenuNoRecentSearchesText:
-      return IDS_RECENT_SEARCHES_NONE;
-    case WebLocalizedString::SearchMenuRecentSearchesText:
-      return IDS_RECENT_SEARCHES;
-    case WebLocalizedString::SelectMenuListText:
+    case WebLocalizedString::kSelectMenuListText:
       return IDS_FORM_SELECT_MENU_LIST_TEXT;
-    case WebLocalizedString::SubmitButtonDefaultLabel:
+    case WebLocalizedString::kSubmitButtonDefaultLabel:
       return IDS_FORM_SUBMIT_LABEL;
-    case WebLocalizedString::ThisMonthButtonLabel:
+    case WebLocalizedString::kThisMonthButtonLabel:
       return IDS_FORM_THIS_MONTH_LABEL;
-    case WebLocalizedString::ThisWeekButtonLabel:
+    case WebLocalizedString::kThisWeekButtonLabel:
       return IDS_FORM_THIS_WEEK_LABEL;
-    case WebLocalizedString::ValidationBadInputForDateTime:
+    case WebLocalizedString::kValidationBadInputForDateTime:
       return IDS_FORM_VALIDATION_BAD_INPUT_DATETIME;
-    case WebLocalizedString::ValidationBadInputForNumber:
+    case WebLocalizedString::kValidationBadInputForNumber:
       return IDS_FORM_VALIDATION_BAD_INPUT_NUMBER;
-    case WebLocalizedString::ValidationPatternMismatch:
+    case WebLocalizedString::kValidationPatternMismatch:
       return IDS_FORM_VALIDATION_PATTERN_MISMATCH;
-    case WebLocalizedString::ValidationRangeOverflow:
+    case WebLocalizedString::kValidationRangeOverflow:
       return IDS_FORM_VALIDATION_RANGE_OVERFLOW;
-    case WebLocalizedString::ValidationRangeOverflowDateTime:
+    case WebLocalizedString::kValidationRangeOverflowDateTime:
       return IDS_FORM_VALIDATION_RANGE_OVERFLOW_DATETIME;
-    case WebLocalizedString::ValidationRangeUnderflow:
+    case WebLocalizedString::kValidationRangeUnderflow:
       return IDS_FORM_VALIDATION_RANGE_UNDERFLOW;
-    case WebLocalizedString::ValidationRangeUnderflowDateTime:
+    case WebLocalizedString::kValidationRangeUnderflowDateTime:
       return IDS_FORM_VALIDATION_RANGE_UNDERFLOW_DATETIME;
-    case WebLocalizedString::ValidationStepMismatch:
+    case WebLocalizedString::kValidationStepMismatch:
       return IDS_FORM_VALIDATION_STEP_MISMATCH;
-    case WebLocalizedString::ValidationStepMismatchCloseToLimit:
+    case WebLocalizedString::kValidationStepMismatchCloseToLimit:
       return IDS_FORM_VALIDATION_STEP_MISMATCH_CLOSE_TO_LIMIT;
-    case WebLocalizedString::ValidationTooLong:
+    case WebLocalizedString::kValidationTooLong:
       return IDS_FORM_VALIDATION_TOO_LONG;
-    case WebLocalizedString::ValidationTooShort:
+    case WebLocalizedString::kValidationTooShort:
       return IDS_FORM_VALIDATION_TOO_SHORT;
-    case WebLocalizedString::ValidationTypeMismatch:
+    case WebLocalizedString::kValidationTooShortPlural:
+      return IDS_FORM_VALIDATION_TOO_SHORT_PLURAL;
+    case WebLocalizedString::kValidationTypeMismatch:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH;
-    case WebLocalizedString::ValidationTypeMismatchForEmail:
+    case WebLocalizedString::kValidationTypeMismatchForEmail:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL;
-    case WebLocalizedString::ValidationTypeMismatchForEmailEmpty:
+    case WebLocalizedString::kValidationTypeMismatchForEmailEmpty:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_EMPTY;
-    case WebLocalizedString::ValidationTypeMismatchForEmailEmptyDomain:
+    case WebLocalizedString::kValidationTypeMismatchForEmailEmptyDomain:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_EMPTY_DOMAIN;
-    case WebLocalizedString::ValidationTypeMismatchForEmailEmptyLocal:
+    case WebLocalizedString::kValidationTypeMismatchForEmailEmptyLocal:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_EMPTY_LOCAL;
-    case WebLocalizedString::ValidationTypeMismatchForEmailInvalidDomain:
+    case WebLocalizedString::kValidationTypeMismatchForEmailInvalidDomain:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_INVALID_DOMAIN;
-    case WebLocalizedString::ValidationTypeMismatchForEmailInvalidDots:
+    case WebLocalizedString::kValidationTypeMismatchForEmailInvalidDots:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_INVALID_DOTS;
-    case WebLocalizedString::ValidationTypeMismatchForEmailInvalidLocal:
+    case WebLocalizedString::kValidationTypeMismatchForEmailInvalidLocal:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_INVALID_LOCAL;
-    case WebLocalizedString::ValidationTypeMismatchForEmailNoAtSign:
+    case WebLocalizedString::kValidationTypeMismatchForEmailNoAtSign:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_NO_AT_SIGN;
-    case WebLocalizedString::ValidationTypeMismatchForMultipleEmail:
+    case WebLocalizedString::kValidationTypeMismatchForMultipleEmail:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_MULTIPLE_EMAIL;
-    case WebLocalizedString::ValidationTypeMismatchForURL:
+    case WebLocalizedString::kValidationTypeMismatchForURL:
       return IDS_FORM_VALIDATION_TYPE_MISMATCH_URL;
-    case WebLocalizedString::ValidationValueMissing:
+    case WebLocalizedString::kValidationValueMissing:
       return IDS_FORM_VALIDATION_VALUE_MISSING;
-    case WebLocalizedString::ValidationValueMissingForCheckbox:
+    case WebLocalizedString::kValidationValueMissingForCheckbox:
       return IDS_FORM_VALIDATION_VALUE_MISSING_CHECKBOX;
-    case WebLocalizedString::ValidationValueMissingForFile:
+    case WebLocalizedString::kValidationValueMissingForFile:
       return IDS_FORM_VALIDATION_VALUE_MISSING_FILE;
-    case WebLocalizedString::ValidationValueMissingForMultipleFile:
+    case WebLocalizedString::kValidationValueMissingForMultipleFile:
       return IDS_FORM_VALIDATION_VALUE_MISSING_MULTIPLE_FILE;
-    case WebLocalizedString::ValidationValueMissingForRadio:
+    case WebLocalizedString::kValidationValueMissingForRadio:
       return IDS_FORM_VALIDATION_VALUE_MISSING_RADIO;
-    case WebLocalizedString::ValidationValueMissingForSelect:
+    case WebLocalizedString::kValidationValueMissingForSelect:
       return IDS_FORM_VALIDATION_VALUE_MISSING_SELECT;
-    case WebLocalizedString::WeekFormatTemplate:
+    case WebLocalizedString::kWeekFormatTemplate:
       return IDS_FORM_INPUT_WEEK_TEMPLATE;
-    case WebLocalizedString::WeekNumberLabel:
+    case WebLocalizedString::kWeekNumberLabel:
       return IDS_FORM_WEEK_NUMBER_LABEL;
-    case WebLocalizedString::TextTracksNoLabel:
+    case WebLocalizedString::kTextTracksNoLabel:
       return IDS_MEDIA_TRACKS_NO_LABEL;
-    case WebLocalizedString::TextTracksOff:
+    case WebLocalizedString::kTextTracksOff:
       return IDS_MEDIA_TRACKS_OFF;
+    case WebLocalizedString::kUnitsKibibytes:
+      return IDS_UNITS_KIBIBYTES;
+    case WebLocalizedString::kUnitsMebibytes:
+      return IDS_UNITS_MEBIBYTES;
+    case WebLocalizedString::kUnitsGibibytes:
+      return IDS_UNITS_GIBIBYTES;
+    case WebLocalizedString::kUnitsTebibytes:
+      return IDS_UNITS_TEBIBYTES;
+    case WebLocalizedString::kUnitsPebibytes:
+      return IDS_UNITS_PEBIBYTES;
     // This "default:" line exists to avoid compile warnings about enum
     // coverage when we add a new symbol to WebLocalizedString.h in WebKit.
     // After a planned WebKit patch is landed, we need to add a case statement
@@ -348,149 +319,26 @@ static int ToMessageID(WebLocalizedString::Name name) {
   return -1;
 }
 
-class TraceLogObserverAdapter
-    : public base::trace_event::TraceLog::EnabledStateObserver {
- public:
-  TraceLogObserverAdapter(
-      blink::Platform::TraceLogEnabledStateObserver* observer)
-      : observer_(observer) {}
-
-  void OnTraceLogEnabled() override { observer_->onTraceLogEnabled(); }
-
-  void OnTraceLogDisabled() override { observer_->onTraceLogDisabled(); }
-
- private:
-  blink::Platform::TraceLogEnabledStateObserver* observer_;
-  DISALLOW_COPY_AND_ASSIGN(TraceLogObserverAdapter);
-};
-
 // TODO(skyostil): Ensure that we always have an active task runner when
 // constructing the platform.
 BlinkPlatformImpl::BlinkPlatformImpl()
     : BlinkPlatformImpl(base::ThreadTaskRunnerHandle::IsSet()
                             ? base::ThreadTaskRunnerHandle::Get()
-                            : nullptr) {
-}
+                            : nullptr,
+                        nullptr) {}
 
 BlinkPlatformImpl::BlinkPlatformImpl(
-    scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner)
-    : main_thread_task_runner_(main_thread_task_runner),
-      compositor_thread_(nullptr) {
-  InternalInit();
-}
-
-void BlinkPlatformImpl::InternalInit() {
-  // ChildThread may not exist in some tests.
-  if (ChildThreadImpl::current()) {
-    thread_safe_sender_ = ChildThreadImpl::current()->thread_safe_sender();
-    notification_dispatcher_ =
-        ChildThreadImpl::current()->notification_dispatcher();
-    push_dispatcher_ = ChildThreadImpl::current()->push_dispatcher();
-    permission_client_.reset(new PermissionDispatcher(
-        ChildThreadImpl::current()->GetRemoteInterfaces()));
-    main_thread_sync_provider_.reset(
-        new BackgroundSyncProvider(main_thread_task_runner_.get()));
-  }
-}
-
-void BlinkPlatformImpl::WaitUntilWebThreadTLSUpdate(
-    scheduler::WebThreadBase* thread) {
-  base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
-                            base::WaitableEvent::InitialState::NOT_SIGNALED);
-  thread->GetTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&BlinkPlatformImpl::UpdateWebThreadTLS, base::Unretained(this),
-                 base::Unretained(thread), base::Unretained(&event)));
-  event.Wait();
-}
-
-void BlinkPlatformImpl::UpdateWebThreadTLS(blink::WebThread* thread,
-                                           base::WaitableEvent* event) {
-  DCHECK(!current_thread_slot_.Get());
-  current_thread_slot_.Set(thread);
-  event->Signal();
-}
+    scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner,
+    scoped_refptr<base::SingleThreadTaskRunner> io_thread_task_runner)
+    : main_thread_task_runner_(std::move(main_thread_task_runner)),
+      io_thread_task_runner_(std::move(io_thread_task_runner)) {}
 
 BlinkPlatformImpl::~BlinkPlatformImpl() {
 }
 
-blink::WebSocketHandle* BlinkPlatformImpl::createWebSocketHandle() {
-  return new WebSocketBridge;
-}
-
-WebString BlinkPlatformImpl::userAgent() {
-  return blink::WebString::fromUTF8(GetContentClient()->GetUserAgent());
-}
-
-WebData BlinkPlatformImpl::parseDataURL(const WebURL& url,
-                                        WebString& mimetype_out,
-                                        WebString& charset_out) {
-  std::string mime_type, char_set, data;
-  if (net::DataURL::Parse(url, &mime_type, &char_set, &data) &&
-      mime_util::IsSupportedMimeType(mime_type)) {
-    mimetype_out = WebString::fromUTF8(mime_type);
-    charset_out = WebString::fromUTF8(char_set);
-    return data;
-  }
-  return WebData();
-}
-
-WebURLError BlinkPlatformImpl::cancelledError(
-    const WebURL& unreachableURL) const {
-  return CreateWebURLError(unreachableURL, false, net::ERR_ABORTED);
-}
-
-bool BlinkPlatformImpl::parseMultipartHeadersFromBody(
-    const char* bytes,
-    size_t size,
-    blink::WebURLResponse* response,
-    size_t* end) const {
-  return WebURLLoaderImpl::ParseMultipartHeadersFromBody(
-      bytes, size, response, end);
-}
-
-blink::WebThread* BlinkPlatformImpl::createThread(const char* name) {
-  std::unique_ptr<WebThreadImplForWorkerScheduler> thread(
-      new WebThreadImplForWorkerScheduler(name));
-  thread->Init();
-  WaitUntilWebThreadTLSUpdate(thread.get());
-  return thread.release();
-}
-
-void BlinkPlatformImpl::SetCompositorThread(
-    scheduler::WebThreadBase* compositor_thread) {
-  compositor_thread_ = compositor_thread;
-  if (compositor_thread_)
-    WaitUntilWebThreadTLSUpdate(compositor_thread_);
-}
-
-blink::WebThread* BlinkPlatformImpl::currentThread() {
-  return static_cast<blink::WebThread*>(current_thread_slot_.Get());
-}
-
-void BlinkPlatformImpl::recordAction(const blink::UserMetricsAction& name) {
-    if (ChildThread* child_thread = ChildThread::Get())
-        child_thread->RecordComputedAction(name.action());
-}
-
-void BlinkPlatformImpl::addTraceLogEnabledStateObserver(
-    TraceLogEnabledStateObserver* observer) {
-  TraceLogObserverAdapter* adapter = new TraceLogObserverAdapter(observer);
-  bool did_insert =
-      trace_log_observers_.add(observer, base::WrapUnique(adapter)).second;
-  DCHECK(did_insert);
-  base::trace_event::TraceLog::GetInstance()->AddEnabledStateObserver(adapter);
-}
-
-void BlinkPlatformImpl::removeTraceLogEnabledStateObserver(
-    TraceLogEnabledStateObserver* observer) {
-  std::unique_ptr<TraceLogObserverAdapter> adapter =
-      trace_log_observers_.take_and_erase(observer);
-  DCHECK(adapter);
-  DCHECK(base::trace_event::TraceLog::GetInstance()->HasEnabledStateObserver(
-      adapter.get()));
-  base::trace_event::TraceLog::GetInstance()->RemoveEnabledStateObserver(
-      adapter.get());
+void BlinkPlatformImpl::RecordAction(const blink::UserMetricsAction& name) {
+  if (ChildThread* child_thread = ChildThread::Get())
+    child_thread->RecordComputedAction(name.Action());
 }
 
 namespace {
@@ -552,224 +400,120 @@ WebData loadAudioSpatializationResource(const char* name) {
   return WebData();
 }
 
+// This must match third_party/WebKit/public/blink_resources.grd.
+// In particular, |is_gzipped| corresponds to compress="gzip".
 struct DataResource {
   const char* name;
   int id;
   ui::ScaleFactor scale_factor;
+  bool is_gzipped;
 };
 
 const DataResource kDataResources[] = {
-    {"missingImage", IDR_BROKENIMAGE, ui::SCALE_FACTOR_100P},
-    {"missingImage@2x", IDR_BROKENIMAGE, ui::SCALE_FACTOR_200P},
-    {"mediaplayerPause", IDR_MEDIAPLAYER_PAUSE_BUTTON, ui::SCALE_FACTOR_100P},
-    {"mediaplayerPauseNew",
-     IDR_MEDIAPLAYER_PAUSE_BUTTON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerPlay", IDR_MEDIAPLAYER_PLAY_BUTTON, ui::SCALE_FACTOR_100P},
-    {"mediaplayerPlayNew",
-     IDR_MEDIAPLAYER_PLAY_BUTTON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerPlayDisabled",
-     IDR_MEDIAPLAYER_PLAY_BUTTON_DISABLED,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSoundLevel3",
-     IDR_MEDIAPLAYER_SOUND_LEVEL3_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSoundLevel3New",
-     IDR_MEDIAPLAYER_SOUND_LEVEL3_BUTTON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSoundLevel2",
-     IDR_MEDIAPLAYER_SOUND_LEVEL2_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSoundLevel1",
-     IDR_MEDIAPLAYER_SOUND_LEVEL1_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSoundLevel0",
-     IDR_MEDIAPLAYER_SOUND_LEVEL0_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSoundLevel0New",
-     IDR_MEDIAPLAYER_SOUND_LEVEL0_BUTTON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSoundDisabled",
-     IDR_MEDIAPLAYER_SOUND_DISABLED,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSliderThumb",
-     IDR_MEDIAPLAYER_SLIDER_THUMB,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSliderThumbNew",
-     IDR_MEDIAPLAYER_SLIDER_THUMB_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerVolumeSliderThumb",
-     IDR_MEDIAPLAYER_VOLUME_SLIDER_THUMB,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerVolumeSliderThumbNew",
-     IDR_MEDIAPLAYER_VOLUME_SLIDER_THUMB_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerVolumeSliderThumbDisabled",
-     IDR_MEDIAPLAYER_VOLUME_SLIDER_THUMB_DISABLED,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerClosedCaption",
-     IDR_MEDIAPLAYER_CLOSEDCAPTION_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerClosedCaptionNew",
-     IDR_MEDIAPLAYER_CLOSEDCAPTION_BUTTON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerClosedCaptionDisabled",
-     IDR_MEDIAPLAYER_CLOSEDCAPTION_BUTTON_DISABLED,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerClosedCaptionDisabledNew",
-     IDR_MEDIAPLAYER_CLOSEDCAPTION_BUTTON_DISABLED_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerEnterFullscreen",
-     IDR_MEDIAPLAYER_ENTER_FULLSCREEN_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerExitFullscreen",
-     IDR_MEDIAPLAYER_EXIT_FULLSCREEN_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerFullscreen",
-     IDR_MEDIAPLAYER_FULLSCREEN_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerCastOff",
-     IDR_MEDIAPLAYER_CAST_BUTTON_OFF,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerCastOn",
-     IDR_MEDIAPLAYER_CAST_BUTTON_ON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerCastOffNew",
-     IDR_MEDIAPLAYER_CAST_BUTTON_OFF_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerCastOnNew",
-     IDR_MEDIAPLAYER_CAST_BUTTON_ON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerFullscreenDisabled",
-     IDR_MEDIAPLAYER_FULLSCREEN_BUTTON_DISABLED,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerOverlayCastOff",
-     IDR_MEDIAPLAYER_OVERLAY_CAST_BUTTON_OFF,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerOverlayCastOffNew",
-     IDR_MEDIAPLAYER_OVERLAY_CAST_BUTTON_OFF_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerOverlayPlay",
-     IDR_MEDIAPLAYER_OVERLAY_PLAY_BUTTON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerOverlayPlayNew",
-     IDR_MEDIAPLAYER_OVERLAY_PLAY_BUTTON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerTrackSelectionCheckmark",
-     IDR_MEDIAPLAYER_TRACKSELECTION_CHECKMARK,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerTrackSelectionCheckmarkNew",
-     IDR_MEDIAPLAYER_TRACKSELECTION_CHECKMARK_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerClosedCaptionsIcon",
-     IDR_MEDIAPLAYER_CLOSEDCAPTIONS_ICON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerClosedCaptionsIconNew",
-     IDR_MEDIAPLAYER_CLOSEDCAPTIONS_ICON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSubtitlesIcon",
-     IDR_MEDIAPLAYER_SUBTITLES_ICON,
-     ui::SCALE_FACTOR_100P},
-    {"mediaplayerSubtitlesIconNew",
-     IDR_MEDIAPLAYER_SUBTITLES_ICON_NEW,
-     ui::SCALE_FACTOR_100P},
-    {"searchCancel", IDR_SEARCH_CANCEL, ui::SCALE_FACTOR_100P},
-    {"searchCancelPressed", IDR_SEARCH_CANCEL_PRESSED, ui::SCALE_FACTOR_100P},
-    {"textAreaResizeCorner", IDR_TEXTAREA_RESIZER, ui::SCALE_FACTOR_100P},
-    {"textAreaResizeCorner@2x", IDR_TEXTAREA_RESIZER, ui::SCALE_FACTOR_200P},
-    {"generatePassword", IDR_PASSWORD_GENERATION_ICON, ui::SCALE_FACTOR_100P},
-    {"generatePasswordHover",
-     IDR_PASSWORD_GENERATION_ICON_HOVER,
-     ui::SCALE_FACTOR_100P},
-    {"html.css", IDR_UASTYLE_HTML_CSS, ui::SCALE_FACTOR_NONE},
-    {"quirks.css", IDR_UASTYLE_QUIRKS_CSS, ui::SCALE_FACTOR_NONE},
-    {"view-source.css", IDR_UASTYLE_VIEW_SOURCE_CSS, ui::SCALE_FACTOR_NONE},
-#if defined(OS_ANDROID)
-    {"themeChromiumAndroid.css",
-     IDR_UASTYLE_THEME_CHROMIUM_ANDROID_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"fullscreenAndroid.css",
-      IDR_UASTYLE_FULLSCREEN_ANDROID_CSS,
-      ui::SCALE_FACTOR_NONE},
-    {"mediaControlsAndroid.css",
-     IDR_UASTYLE_MEDIA_CONTROLS_ANDROID_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"mediaControlsAndroidNew.css",
-     IDR_UASTYLE_MEDIA_CONTROLS_ANDROID_NEW_CSS,
-     ui::SCALE_FACTOR_NONE},
-#endif
-#if !defined(OS_WIN)
-    {"themeChromiumLinux.css",
-     IDR_UASTYLE_THEME_CHROMIUM_LINUX_CSS,
-     ui::SCALE_FACTOR_NONE},
-#endif
-    {"themeInputMultipleFields.css",
-     IDR_UASTYLE_THEME_INPUT_MULTIPLE_FIELDS_CSS,
-     ui::SCALE_FACTOR_NONE},
+    {"missingImage", IDR_BROKENIMAGE, ui::SCALE_FACTOR_100P, false},
+    {"missingImage@2x", IDR_BROKENIMAGE, ui::SCALE_FACTOR_200P, false},
+    {"searchCancel", IDR_SEARCH_CANCEL, ui::SCALE_FACTOR_100P, false},
+    {"searchCancelPressed", IDR_SEARCH_CANCEL_PRESSED, ui::SCALE_FACTOR_100P,
+     false},
+    {"generatePassword", IDR_PASSWORD_GENERATION_ICON, ui::SCALE_FACTOR_100P,
+     false},
+    {"generatePasswordHover", IDR_PASSWORD_GENERATION_ICON_HOVER,
+     ui::SCALE_FACTOR_100P, false},
+    {"html.css", IDR_UASTYLE_HTML_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"quirks.css", IDR_UASTYLE_QUIRKS_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"view-source.css", IDR_UASTYLE_VIEW_SOURCE_CSS, ui::SCALE_FACTOR_NONE,
+     true},
+    // Not limited to Android since it's used for mobile layouts in inspector.
+    {"android.css", IDR_UASTYLE_THEME_CHROMIUM_ANDROID_CSS,
+     ui::SCALE_FACTOR_NONE, true},
+    // Not limited to Android since it's used for mobile layouts in inspector.
+    {"fullscreenAndroid.css", IDR_UASTYLE_FULLSCREEN_ANDROID_CSS,
+     ui::SCALE_FACTOR_NONE, true},
+    // Not limited to Linux since it's used for mobile layouts in inspector.
+    {"linux.css", IDR_UASTYLE_THEME_CHROMIUM_LINUX_CSS,
+     ui::SCALE_FACTOR_NONE, true},
+    {"input_multiple_fields.css",
+     IDR_UASTYLE_THEME_INPUT_MULTIPLE_FIELDS_CSS, ui::SCALE_FACTOR_NONE, true},
 #if defined(OS_MACOSX)
-    {"themeMac.css", IDR_UASTYLE_THEME_MAC_CSS, ui::SCALE_FACTOR_NONE},
+    {"mac.css", IDR_UASTYLE_THEME_MAC_CSS, ui::SCALE_FACTOR_NONE, true},
 #endif
-    {"themeWin.css", IDR_UASTYLE_THEME_WIN_CSS, ui::SCALE_FACTOR_NONE},
-    {"themeWinQuirks.css",
-     IDR_UASTYLE_THEME_WIN_QUIRKS_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"svg.css", IDR_UASTYLE_SVG_CSS, ui::SCALE_FACTOR_NONE},
-    {"mathml.css", IDR_UASTYLE_MATHML_CSS, ui::SCALE_FACTOR_NONE},
-    {"mediaControls.css",
-     IDR_UASTYLE_MEDIA_CONTROLS_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"mediaControlsNew.css",
-     IDR_UASTYLE_MEDIA_CONTROLS_NEW_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"fullscreen.css", IDR_UASTYLE_FULLSCREEN_CSS, ui::SCALE_FACTOR_NONE},
-    {"xhtmlmp.css", IDR_UASTYLE_XHTMLMP_CSS, ui::SCALE_FACTOR_NONE},
-    {"viewportAndroid.css",
-     IDR_UASTYLE_VIEWPORT_ANDROID_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"viewportTelevision.css",
-     IDR_UASTYLE_VIEWPORT_TELEVISION_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"InspectorOverlayPage.html",
-     IDR_INSPECTOR_OVERLAY_PAGE_HTML,
-     ui::SCALE_FACTOR_NONE},
-    {"DocumentExecCommand.js",
-     IDR_PRIVATE_SCRIPT_DOCUMENTEXECCOMMAND_JS,
-     ui::SCALE_FACTOR_NONE},
-    {"DocumentXMLTreeViewer.css",
-     IDR_PRIVATE_SCRIPT_DOCUMENTXMLTREEVIEWER_CSS,
-     ui::SCALE_FACTOR_NONE},
-    {"DocumentXMLTreeViewer.js",
-     IDR_PRIVATE_SCRIPT_DOCUMENTXMLTREEVIEWER_JS,
-     ui::SCALE_FACTOR_NONE},
-    {"HTMLMarqueeElement.js",
-     IDR_PRIVATE_SCRIPT_HTMLMARQUEEELEMENT_JS,
-     ui::SCALE_FACTOR_NONE},
-    {"PrivateScriptRunner.js",
-     IDR_PRIVATE_SCRIPT_PRIVATESCRIPTRUNNER_JS,
-     ui::SCALE_FACTOR_NONE},
+    {"win.css", IDR_UASTYLE_THEME_WIN_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"win_quirks.css", IDR_UASTYLE_THEME_WIN_QUIRKS_CSS,
+     ui::SCALE_FACTOR_NONE, true},
+    {"svg.css", IDR_UASTYLE_SVG_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"mathml.css", IDR_UASTYLE_MATHML_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"fullscreen.css", IDR_UASTYLE_FULLSCREEN_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"xhtmlmp.css", IDR_UASTYLE_XHTMLMP_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"viewportAndroid.css", IDR_UASTYLE_VIEWPORT_ANDROID_CSS,
+     ui::SCALE_FACTOR_NONE, true},
+    {"viewportTelevision.css", IDR_UASTYLE_VIEWPORT_TELEVISION_CSS,
+     ui::SCALE_FACTOR_NONE, true},
+    {"InspectorOverlayPage.html", IDR_INSPECTOR_OVERLAY_PAGE_HTML,
+     ui::SCALE_FACTOR_NONE, true},
+    {"DocumentXMLTreeViewer.css", IDR_DOCUMENTXMLTREEVIEWER_CSS,
+     ui::SCALE_FACTOR_NONE, true},
+    {"DocumentXMLTreeViewer.js", IDR_DOCUMENTXMLTREEVIEWER_JS,
+     ui::SCALE_FACTOR_NONE, true},
 #ifdef IDR_PICKER_COMMON_JS
-    {"pickerCommon.js", IDR_PICKER_COMMON_JS, ui::SCALE_FACTOR_NONE},
-    {"pickerCommon.css", IDR_PICKER_COMMON_CSS, ui::SCALE_FACTOR_NONE},
-    {"calendarPicker.js", IDR_CALENDAR_PICKER_JS, ui::SCALE_FACTOR_NONE},
-    {"calendarPicker.css", IDR_CALENDAR_PICKER_CSS, ui::SCALE_FACTOR_NONE},
-    {"listPicker.js", IDR_LIST_PICKER_JS, ui::SCALE_FACTOR_NONE},
-    {"listPicker.css", IDR_LIST_PICKER_CSS, ui::SCALE_FACTOR_NONE},
-    {"pickerButton.css", IDR_PICKER_BUTTON_CSS, ui::SCALE_FACTOR_NONE},
-    {"suggestionPicker.js", IDR_SUGGESTION_PICKER_JS, ui::SCALE_FACTOR_NONE},
-    {"suggestionPicker.css", IDR_SUGGESTION_PICKER_CSS, ui::SCALE_FACTOR_NONE},
-    {"colorSuggestionPicker.js",
-     IDR_COLOR_SUGGESTION_PICKER_JS,
-     ui::SCALE_FACTOR_NONE},
-    {"colorSuggestionPicker.css",
-     IDR_COLOR_SUGGESTION_PICKER_CSS,
-     ui::SCALE_FACTOR_NONE},
+    {"pickerCommon.js", IDR_PICKER_COMMON_JS, ui::SCALE_FACTOR_NONE, true},
+    {"pickerCommon.css", IDR_PICKER_COMMON_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"calendarPicker.js", IDR_CALENDAR_PICKER_JS, ui::SCALE_FACTOR_NONE, true},
+    {"calendarPicker.css", IDR_CALENDAR_PICKER_CSS, ui::SCALE_FACTOR_NONE,
+     true},
+    {"listPicker.js", IDR_LIST_PICKER_JS, ui::SCALE_FACTOR_NONE, true},
+    {"listPicker.css", IDR_LIST_PICKER_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"pickerButton.css", IDR_PICKER_BUTTON_CSS, ui::SCALE_FACTOR_NONE, true},
+    {"suggestionPicker.js", IDR_SUGGESTION_PICKER_JS, ui::SCALE_FACTOR_NONE,
+     true},
+    {"suggestionPicker.css", IDR_SUGGESTION_PICKER_CSS, ui::SCALE_FACTOR_NONE,
+     true},
+    {"colorSuggestionPicker.js", IDR_COLOR_SUGGESTION_PICKER_JS,
+     ui::SCALE_FACTOR_NONE, true},
+    {"colorSuggestionPicker.css", IDR_COLOR_SUGGESTION_PICKER_CSS,
+     ui::SCALE_FACTOR_NONE, true},
 #endif
+    {"input_alert.svg", IDR_VALIDATION_BUBBLE_ICON, ui::SCALE_FACTOR_NONE,
+     true},
+    {"validation_bubble.css", IDR_VALIDATION_BUBBLE_CSS, ui::SCALE_FACTOR_NONE,
+     true},
+    {"placeholderIcon", IDR_PLACEHOLDER_ICON, ui::SCALE_FACTOR_100P, false},
+    {"brokenCanvas", IDR_BROKENCANVAS, ui::SCALE_FACTOR_100P, false},
+    {"brokenCanvas@2x", IDR_BROKENCANVAS, ui::SCALE_FACTOR_200P, false},
+};
+
+class NestedMessageLoopRunnerImpl
+    : public blink::Platform::NestedMessageLoopRunner {
+ public:
+  NestedMessageLoopRunnerImpl() = default;
+
+  ~NestedMessageLoopRunnerImpl() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  }
+
+  void Run() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    base::RunLoop* const previous_run_loop = run_loop_;
+    base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
+    run_loop_ = &run_loop;
+    run_loop.Run();
+    run_loop_ = previous_run_loop;
+  }
+
+  void QuitNow() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    DCHECK(run_loop_);
+    run_loop_->Quit();
+  }
+
+ private:
+  base::RunLoop* run_loop_ = nullptr;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 };
 
 }  // namespace
 
-WebData BlinkPlatformImpl::loadResource(const char* name) {
+WebData BlinkPlatformImpl::GetDataResource(const char* name) {
   // Some clients will call into this method with an empty |name| when they have
   // optional resources.  For example, the PopupMenuChromium code can have icons
   // for some Autofill items but not for others.
@@ -783,10 +527,15 @@ WebData BlinkPlatformImpl::loadResource(const char* name) {
 
   // TODO(flackr): We should use a better than linear search here, a trie would
   // be ideal.
-  for (size_t i = 0; i < arraysize(kDataResources); ++i) {
+  for (size_t i = 0; i < base::size(kDataResources); ++i) {
     if (!strcmp(name, kDataResources[i].name)) {
       base::StringPiece resource = GetContentClient()->GetDataResource(
           kDataResources[i].id, kDataResources[i].scale_factor);
+      if (!resource.empty() && kDataResources[i].is_gzipped) {
+        std::string uncompressed;
+        CHECK(compression::GzipUncompress(resource.as_string(), &uncompressed));
+        return WebData(uncompressed.data(), uncompressed.size());
+      }
       return WebData(resource.data(), resource.size());
     }
   }
@@ -795,175 +544,119 @@ WebData BlinkPlatformImpl::loadResource(const char* name) {
   return WebData();
 }
 
-WebString BlinkPlatformImpl::queryLocalizedString(
+WebString BlinkPlatformImpl::QueryLocalizedString(
     WebLocalizedString::Name name) {
   int message_id = ToMessageID(name);
   if (message_id < 0)
     return WebString();
-  return GetContentClient()->GetLocalizedString(message_id);
+  return WebString::FromUTF16(
+      GetContentClient()->GetLocalizedString(message_id));
 }
 
-WebString BlinkPlatformImpl::queryLocalizedString(
-    WebLocalizedString::Name name, int numeric_value) {
-  return queryLocalizedString(name, base::IntToString16(numeric_value));
-}
-
-WebString BlinkPlatformImpl::queryLocalizedString(
-    WebLocalizedString::Name name, const WebString& value) {
+WebString BlinkPlatformImpl::QueryLocalizedString(WebLocalizedString::Name name,
+                                                  const WebString& value) {
   int message_id = ToMessageID(name);
   if (message_id < 0)
     return WebString();
-  return base::ReplaceStringPlaceholders(
-      GetContentClient()->GetLocalizedString(message_id), value, NULL);
+
+  base::string16 format_string =
+      GetContentClient()->GetLocalizedString(message_id);
+
+  // If the ContentClient returned an empty string, e.g. because it's using the
+  // default implementation of ContentClient::GetLocalizedString, return an
+  // empty string instead of crashing with a failed DCHECK in
+  // base::ReplaceStringPlaceholders below. This is useful for tests that don't
+  // specialize a full ContentClient, since this way they can behave as though
+  // there isn't a defined |message_id| for the |name| instead of crashing
+  // outright.
+  if (format_string.empty())
+    return WebString();
+
+  return WebString::FromUTF16(
+      base::ReplaceStringPlaceholders(format_string, value.Utf16(), nullptr));
 }
 
-WebString BlinkPlatformImpl::queryLocalizedString(
-    WebLocalizedString::Name name,
-    const WebString& value1,
-    const WebString& value2) {
+WebString BlinkPlatformImpl::QueryLocalizedString(WebLocalizedString::Name name,
+                                                  const WebString& value1,
+                                                  const WebString& value2) {
   int message_id = ToMessageID(name);
   if (message_id < 0)
     return WebString();
   std::vector<base::string16> values;
   values.reserve(2);
-  values.push_back(value1);
-  values.push_back(value2);
-  return base::ReplaceStringPlaceholders(
-      GetContentClient()->GetLocalizedString(message_id), values, NULL);
+  values.push_back(value1.Utf16());
+  values.push_back(value2.Utf16());
+  return WebString::FromUTF16(base::ReplaceStringPlaceholders(
+      GetContentClient()->GetLocalizedString(message_id), values, nullptr));
 }
 
-blink::WebThread* BlinkPlatformImpl::compositorThread() const {
-  return compositor_thread_;
+bool BlinkPlatformImpl::AllowScriptExtensionForServiceWorker(
+    const blink::WebSecurityOrigin& script_origin) {
+  return GetContentClient()->AllowScriptExtensionForServiceWorker(
+      script_origin);
 }
 
-blink::WebGestureCurve* BlinkPlatformImpl::createFlingAnimationCurve(
-    blink::WebGestureDevice device_source,
-    const blink::WebFloatPoint& velocity,
-    const blink::WebSize& cumulative_scroll) {
-  return ui::WebGestureCurveImpl::CreateFromDefaultPlatformCurve(
-             gfx::Vector2dF(velocity.x, velocity.y),
-             gfx::Vector2dF(cumulative_scroll.width, cumulative_scroll.height),
-             IsMainThread()).release();
-}
-
-void BlinkPlatformImpl::didStartWorkerThread() {
-  WorkerThreadRegistry::Instance()->DidStartCurrentWorkerThread();
-}
-
-void BlinkPlatformImpl::willStopWorkerThread() {
-  WorkerThreadRegistry::Instance()->WillStopCurrentWorkerThread();
-}
-
-bool BlinkPlatformImpl::allowScriptExtensionForServiceWorker(
-    const blink::WebURL& scriptUrl) {
-  return GetContentClient()->AllowScriptExtensionForServiceWorker(scriptUrl);
-}
-
-blink::WebCrypto* BlinkPlatformImpl::crypto() {
+blink::WebCrypto* BlinkPlatformImpl::Crypto() {
   return &web_crypto_;
 }
 
-blink::WebNotificationManager*
-BlinkPlatformImpl::notificationManager() {
-  if (!thread_safe_sender_.get() || !notification_dispatcher_.get())
-    return nullptr;
-
-  return NotificationManager::ThreadSpecificInstance(
-      thread_safe_sender_.get(),
-      notification_dispatcher_.get());
+const char* BlinkPlatformImpl::GetBrowserServiceName() const {
+  return mojom::kBrowserServiceName;
 }
 
-blink::WebPushProvider* BlinkPlatformImpl::pushProvider() {
-  if (!thread_safe_sender_.get() || !push_dispatcher_.get())
-    return nullptr;
-
-  return PushProvider::ThreadSpecificInstance(thread_safe_sender_.get(),
-                                              push_dispatcher_.get());
+blink::WebMediaCapabilitiesClient*
+BlinkPlatformImpl::MediaCapabilitiesClient() {
+  return &media_capabilities_client_;
 }
 
-blink::WebPermissionClient* BlinkPlatformImpl::permissionClient() {
-  if (!permission_client_.get())
-    return nullptr;
-
-  if (IsMainThread())
-    return permission_client_.get();
-
-  return PermissionDispatcherThreadProxy::GetThreadInstance(
-      main_thread_task_runner_.get(), permission_client_.get());
-}
-
-blink::WebSyncProvider* BlinkPlatformImpl::backgroundSyncProvider() {
-  if (IsMainThread())
-    return main_thread_sync_provider_.get();
-
-  return BackgroundSyncProvider::GetOrCreateThreadSpecificInstance(
-      main_thread_task_runner_.get());
-}
-
-WebThemeEngine* BlinkPlatformImpl::themeEngine() {
+WebThemeEngine* BlinkPlatformImpl::ThemeEngine() {
   return &native_theme_engine_;
 }
 
-WebFallbackThemeEngine* BlinkPlatformImpl::fallbackThemeEngine() {
-  return &fallback_theme_engine_;
-}
-
-blink::Platform::FileHandle BlinkPlatformImpl::databaseOpenFile(
-    const blink::WebString& vfs_file_name, int desired_flags) {
+blink::Platform::FileHandle BlinkPlatformImpl::DatabaseOpenFile(
+    const blink::WebString& vfs_file_name,
+    int desired_flags) {
 #if defined(OS_WIN)
   return INVALID_HANDLE_VALUE;
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   return -1;
 #endif
 }
 
-int BlinkPlatformImpl::databaseDeleteFile(
-    const blink::WebString& vfs_file_name, bool sync_dir) {
+int BlinkPlatformImpl::DatabaseDeleteFile(const blink::WebString& vfs_file_name,
+                                          bool sync_dir) {
   return -1;
 }
 
-long BlinkPlatformImpl::databaseGetFileAttributes(
+long BlinkPlatformImpl::DatabaseGetFileAttributes(
     const blink::WebString& vfs_file_name) {
   return 0;
 }
 
-long long BlinkPlatformImpl::databaseGetFileSize(
+long long BlinkPlatformImpl::DatabaseGetFileSize(
     const blink::WebString& vfs_file_name) {
   return 0;
 }
 
-long long BlinkPlatformImpl::databaseGetSpaceAvailableForOrigin(
+long long BlinkPlatformImpl::DatabaseGetSpaceAvailableForOrigin(
     const blink::WebSecurityOrigin& origin) {
   return 0;
 }
 
-bool BlinkPlatformImpl::databaseSetFileSize(
-    const blink::WebString& vfs_file_name, long long size) {
+bool BlinkPlatformImpl::DatabaseSetFileSize(
+    const blink::WebString& vfs_file_name,
+    long long size) {
   return false;
 }
 
-blink::WebString BlinkPlatformImpl::signedPublicKeyAndChallengeString(
-    unsigned key_size_index,
-    const blink::WebString& challenge,
-    const blink::WebURL& url,
-    const blink::WebURL& top_origin) {
-  return blink::WebString("");
-}
-
-size_t BlinkPlatformImpl::actualMemoryUsageMB() {
-  return GetMemoryUsageKB() >> 10;
-}
-
-size_t BlinkPlatformImpl::numberOfProcessors() {
-  return static_cast<size_t>(base::SysInfo::NumberOfProcessors());
-}
-
-size_t BlinkPlatformImpl::maxDecodedImageBytes() {
+size_t BlinkPlatformImpl::MaxDecodedImageBytes() {
+  const int kMB = 1024 * 1024;
+  const int kMaxNumberOfBytesPerPixel = 4;
 #if defined(OS_ANDROID)
   if (base::SysInfo::IsLowEndDevice()) {
     // Limit image decoded size to 3M pixels on low end devices.
     // 4 is maximum number of bytes per pixel.
-    return 3 * 1024 * 1024 * 4;
+    return 3 * kMB * kMaxNumberOfBytesPerPixel;
   }
   // For other devices, limit decoded image size based on the amount of physical
   // memory.
@@ -974,39 +667,31 @@ size_t BlinkPlatformImpl::maxDecodedImageBytes() {
   // common texture size.
   return base::SysInfo::AmountOfPhysicalMemory() / 25;
 #else
-  return noDecodedImageByteLimit;
+  size_t max_decoded_image_byte_limit = kNoDecodedImageByteLimit;
+  base::CommandLine& command_line = *base::CommandLine::ForCurrentProcess();
+  if (command_line.HasSwitch(switches::kMaxDecodedImageSizeMb)) {
+    if (base::StringToSizeT(
+            command_line.GetSwitchValueASCII(switches::kMaxDecodedImageSizeMb),
+            &max_decoded_image_byte_limit)) {
+      max_decoded_image_byte_limit *= kMB * kMaxNumberOfBytesPerPixel;
+    }
+  }
+  return max_decoded_image_byte_limit;
 #endif
 }
 
-uint32_t BlinkPlatformImpl::getUniqueIdForProcess() {
-  // TODO(rickyz): Replace this with base::GetUniqueIdForProcess when that's
-  // ready.
-  return base::trace_event::TraceLog::GetInstance()->process_id();
+bool BlinkPlatformImpl::IsLowEndDevice() {
+  return base::SysInfo::IsLowEndDevice();
 }
 
-bool BlinkPlatformImpl::IsMainThread() const {
-  return main_thread_task_runner_.get() &&
-         main_thread_task_runner_->BelongsToCurrentThread();
+scoped_refptr<base::SingleThreadTaskRunner> BlinkPlatformImpl::GetIOTaskRunner()
+    const {
+  return io_thread_task_runner_;
 }
 
-WebString BlinkPlatformImpl::domCodeStringFromEnum(int dom_code) {
-  return WebString::fromUTF8(ui::KeycodeConverter::DomCodeToCodeString(
-      static_cast<ui::DomCode>(dom_code)));
-}
-
-int BlinkPlatformImpl::domEnumFromCodeString(const WebString& code) {
-  return static_cast<int>(ui::KeycodeConverter::CodeStringToDomCode(
-      code.utf8()));
-}
-
-WebString BlinkPlatformImpl::domKeyStringFromEnum(int dom_key) {
-  return WebString::fromUTF8(ui::KeycodeConverter::DomKeyToKeyString(
-      static_cast<ui::DomKey>(dom_key)));
-}
-
-int BlinkPlatformImpl::domKeyEnumFromString(const WebString& key_string) {
-  return static_cast<int>(
-      ui::KeycodeConverter::KeyStringToDomKey(key_string.utf8()));
+std::unique_ptr<blink::Platform::NestedMessageLoopRunner>
+BlinkPlatformImpl::CreateNestedMessageLoopRunner() const {
+  return std::make_unique<NestedMessageLoopRunnerImpl>();
 }
 
 }  // namespace content

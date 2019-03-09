@@ -8,7 +8,7 @@
 #include <list>
 #include <memory>
 
-#include "cc/base/cc_export.h"
+#include "cc/cc_export.h"
 #include "cc/input/scroll_state_data.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/vector2d.h"
@@ -34,6 +34,10 @@ class CC_EXPORT ScrollState {
   double delta_x() const { return data_.delta_x; }
   // Positive when scrolling down.
   double delta_y() const { return data_.delta_y; }
+  // Positive when scrolling right.
+  double delta_x_hint() const { return data_.delta_x_hint; }
+  // Positive when scrolling down.
+  double delta_y_hint() const { return data_.delta_y_hint; }
   // The location associated with this scroll update. For touch, this is the
   // position of the finger. For mouse, the location of the cursor.
   int position_x() const { return data_.position_x; }
@@ -53,8 +57,6 @@ class CC_EXPORT ScrollState {
   bool is_ending() const { return data_.is_ending; }
   void set_is_ending(bool is_ending) { data_.is_ending = is_ending; }
 
-  // True if this scroll is allowed to bubble upwards.
-  bool should_propagate() const { return data_.should_propagate; }
   // True if the user interacts directly with the screen, e.g., via touch.
   bool is_direct_manipulation() const { return data_.is_direct_manipulation; }
   void set_is_direct_manipulation(bool is_direct_manipulation) {
@@ -62,7 +64,7 @@ class CC_EXPORT ScrollState {
   }
 
   void set_scroll_chain_and_layer_tree(
-      const std::list<const ScrollNode*>& scroll_chain,
+      const std::list<ScrollNode*>& scroll_chain,
       LayerTreeImpl* layer_tree_impl) {
     layer_tree_impl_ = layer_tree_impl;
     scroll_chain_ = scroll_chain;
@@ -93,13 +95,17 @@ class CC_EXPORT ScrollState {
   bool caused_scroll_x() const { return data_.caused_scroll_x; }
   bool caused_scroll_y() const { return data_.caused_scroll_y; }
 
+  void set_is_scroll_chain_cut(bool cut) { data_.is_scroll_chain_cut = cut; }
+
+  bool is_scroll_chain_cut() const { return data_.is_scroll_chain_cut; }
+
   LayerTreeImpl* layer_tree_impl() { return layer_tree_impl_; }
   ScrollStateData* data() { return &data_; }
 
  private:
   ScrollStateData data_;
   LayerTreeImpl* layer_tree_impl_;
-  std::list<const ScrollNode*> scroll_chain_;
+  std::list<ScrollNode*> scroll_chain_;
 };
 
 }  // namespace cc

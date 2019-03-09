@@ -6,8 +6,9 @@
 #define COMPONENTS_METRICS_STABILITY_METRICS_HELPER_H_
 
 #include "base/macros.h"
-#include "base/metrics/user_metrics.h"
+#include "base/optional.h"
 #include "base/process/kill.h"
+#include "base/time/time.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -29,6 +30,13 @@ class StabilityMetricsHelper {
   // Clears the gathered stability metrics.
   void ClearSavedStabilityMetrics();
 
+  // Records a utility process launch with name |metrics_name|.
+  void BrowserUtilityProcessLaunched(const std::string& metrics_name);
+
+  // Records a utility process crash with name |metrics_name|.
+  void BrowserUtilityProcessCrashed(const std::string& metrics_name,
+                                    int exit_code);
+
   // Records a browser child process crash.
   void BrowserChildProcessCrashed();
 
@@ -36,9 +44,13 @@ class StabilityMetricsHelper {
   void LogLoadStarted();
 
   // Records a renderer process crash.
-  void LogRendererCrash(bool was_exception_process,
+  void LogRendererCrash(bool was_extension_process,
                         base::TerminationStatus status,
-                        int exit_code);
+                        int exit_code,
+                        base::Optional<base::TimeDelta> uptime);
+
+  // Records that a new renderer process was successfully launched.
+  void LogRendererLaunched(bool was_extension_process);
 
   // Records a renderer process hang.
   void LogRendererHang();
@@ -46,11 +58,20 @@ class StabilityMetricsHelper {
   // Registers local state prefs used by this class.
   static void RegisterPrefs(PrefRegistrySimple* registry);
 
+  // Increments the RendererCrash pref.
+  void IncreaseRendererCrashCount();
+
+  // Increments the GpuCrash pref.
+  // Note: This is currently only used on Android. If you want to call this on
+  // another platform, server-side processing code needs to be updated for that
+  // platform to use the new data. Server-side currently assumes Android-only.
+  void IncreaseGpuCrashCount();
+
  private:
-  // Increment an Integer pref value specified by |path|.
+  // Increments an Integer pref value specified by |path|.
   void IncrementPrefValue(const char* path);
 
-  // Increment a 64-bit Integer pref value specified by |path|.
+  // Increments a 64-bit Integer pref value specified by |path|.
   void IncrementLongPrefsValue(const char* path);
 
   PrefService* local_state_;

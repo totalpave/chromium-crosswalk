@@ -12,36 +12,24 @@
 #include "base/base_export.h"
 #include "base/files/file_path.h"
 #include "base/files/file_tracing.h"
+#include "base/files/platform_file.h"
 #include "base/files/scoped_file.h"
 #include "base/macros.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 
-#if defined(OS_WIN)
-#include <windows.h>
-#include "base/win/scoped_handle.h"
-#endif
-
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
 #include <sys/stat.h>
 #endif
 
 namespace base {
 
-#if defined(OS_WIN)
-using PlatformFile = HANDLE;
-
-const PlatformFile kInvalidPlatformFile = INVALID_HANDLE_VALUE;
-#elif defined(OS_POSIX)
-using PlatformFile = int;
-
-const PlatformFile kInvalidPlatformFile = -1;
-#if defined(OS_BSD) || defined(OS_MACOSX) || defined(OS_NACL)
+#if defined(OS_BSD) || defined(OS_MACOSX) || defined(OS_NACL) || \
+  defined(OS_FUCHSIA) || (defined(OS_ANDROID) && __ANDROID_API__ < 21)
 typedef struct stat stat_wrapper_t;
-#else
+#elif defined(OS_POSIX)
 typedef struct stat64 stat_wrapper_t;
 #endif
-#endif  // defined(OS_POSIX)
 
 // Thin wrapper around an OS-level file.
 // Note that this class does not provide any support for asynchronous IO, other
@@ -63,33 +51,36 @@ class BASE_EXPORT File {
   // FLAG_EXCLUSIVE_(READ|WRITE) only grant exclusive access to the file on
   // creation on POSIX; for existing files, consider using Lock().
   enum Flags {
-    FLAG_OPEN = 1 << 0,             // Opens a file, only if it exists.
-    FLAG_CREATE = 1 << 1,           // Creates a new file, only if it does not
-                                    // already exist.
-    FLAG_OPEN_ALWAYS = 1 << 2,      // May create a new file.
-    FLAG_CREATE_ALWAYS = 1 << 3,    // May overwrite an old file.
-    FLAG_OPEN_TRUNCATED = 1 << 4,   // Opens a file and truncates it, only if it
-                                    // exists.
+    FLAG_OPEN = 1 << 0,            // Opens a file, only if it exists.
+    FLAG_CREATE = 1 << 1,          // Creates a new file, only if it does not
+                                   // already exist.
+    FLAG_OPEN_ALWAYS = 1 << 2,     // May create a new file.
+    FLAG_CREATE_ALWAYS = 1 << 3,   // May overwrite an old file.
+    FLAG_OPEN_TRUNCATED = 1 << 4,  // Opens a file and truncates it, only if it
+                                   // exists.
     FLAG_READ = 1 << 5,
     FLAG_WRITE = 1 << 6,
     FLAG_APPEND = 1 << 7,
-    FLAG_EXCLUSIVE_READ = 1 << 8,   // EXCLUSIVE is opposite of Windows SHARE.
+    FLAG_EXCLUSIVE_READ = 1 << 8,  // EXCLUSIVE is opposite of Windows SHARE.
     FLAG_EXCLUSIVE_WRITE = 1 << 9,
     FLAG_ASYNC = 1 << 10,
-    FLAG_TEMPORARY = 1 << 11,       // Used on Windows only.
-    FLAG_HIDDEN = 1 << 12,          // Used on Windows only.
+    FLAG_TEMPORARY = 1 << 11,  // Used on Windows only.
+    FLAG_HIDDEN = 1 << 12,     // Used on Windows only.
     FLAG_DELETE_ON_CLOSE = 1 << 13,
-    FLAG_WRITE_ATTRIBUTES = 1 << 14,  // Used on Windows only.
-    FLAG_SHARE_DELETE = 1 << 15,      // Used on Windows only.
-    FLAG_TERMINAL_DEVICE = 1 << 16,   // Serial port flags.
-    FLAG_BACKUP_SEMANTICS = 1 << 17,  // Used on Windows only.
-    FLAG_EXECUTE = 1 << 18,           // Used on Windows only.
-    FLAG_SEQUENTIAL_SCAN = 1 << 19,   // Used on Windows only.
+    FLAG_WRITE_ATTRIBUTES = 1 << 14,     // Used on Windows only.
+    FLAG_SHARE_DELETE = 1 << 15,         // Used on Windows only.
+    FLAG_TERMINAL_DEVICE = 1 << 16,      // Serial port flags.
+    FLAG_BACKUP_SEMANTICS = 1 << 17,     // Used on Windows only.
+    FLAG_EXECUTE = 1 << 18,              // Used on Windows only.
+    FLAG_SEQUENTIAL_SCAN = 1 << 19,      // Used on Windows only.
+    FLAG_CAN_DELETE_ON_CLOSE = 1 << 20,  // Requests permission to delete a file
+                                         // via DeleteOnClose() (Windows only).
+                                         // See DeleteOnClose() for details.
   };
 
-  // This enum has been recorded in multiple histograms. If the order of the
-  // fields needs to change, please ensure that those histograms are obsolete or
-  // have been moved to a different enum.
+  // This enum has been recorded in multiple histograms using PlatformFileError
+  // enum. If the order of the fields needs to change, please ensure that those
+  // histograms are obsolete or have been moved to a different enum.
   //
   // FILE_ERROR_ACCESS_DENIED is returned when a call fails because of a
   // filesystem restriction. FILE_ERROR_SECURITY is returned when a browser
@@ -131,7 +122,7 @@ class BASE_EXPORT File {
   struct BASE_EXPORT Info {
     Info();
     ~Info();
-#if defined(OS_POSIX)
+#if defined(OS_POSIX) || defined(OS_FUCHSIA)
     // Fills this struct with values from |stat_info|.
     void FromStat(const stat_wrapper_t& stat_info);
 #endif
@@ -162,8 +153,13 @@ class BASE_EXPORT File {
   // |path| contains path traversal ('..') components.
   File(const FilePath& path, uint32_t flags);
 
-  // Takes ownership of |platform_file|.
+  // Takes ownership of |platform_file| and sets async to false.
   explicit File(PlatformFile platform_file);
+
+  // Takes ownership of |platform_file| and sets async to the given value.
+  // This constructor exists because on Windows you can't check if platform_file
+  // is async or not.
+  File(PlatformFile platform_file, bool async);
 
   // Creates an object with a specific error_details code.
   explicit File(Error error_details);
@@ -171,9 +167,6 @@ class BASE_EXPORT File {
   File(File&& other);
 
   ~File();
-
-  // Takes ownership of |platform_file|.
-  static File CreateForAsyncHandle(PlatformFile platform_file);
 
   File& operator=(File&& other);
 
@@ -230,7 +223,7 @@ class BASE_EXPORT File {
   // Writes the given buffer into the file at the given offset, overwritting any
   // data that was previously there. Returns the number of bytes written, or -1
   // on error. Note that this function makes a best effort to write all data on
-  // all platforms.
+  // all platforms. |data| can be nullptr when |size| is 0.
   // Ignores the offset and writes to the end of the file if the file was opened
   // with FLAG_APPEND.
   int Write(int64_t offset, const char* data, int size);
@@ -252,6 +245,16 @@ class BASE_EXPORT File {
 
   // Instructs the filesystem to flush the file to disk. (POSIX: fsync, Windows:
   // FlushFileBuffers).
+  // Calling Flush() does not guarantee file integrity and thus is not a valid
+  // substitute for file integrity checks and recovery codepaths for malformed
+  // files. It can also be *really* slow, so avoid blocking on Flush(),
+  // especially please don't block shutdown on Flush().
+  // Latency percentiles of Flush() across all platforms as of July 2016:
+  // 50 %     > 5 ms
+  // 10 %     > 58 ms
+  //  1 %     > 357 ms
+  //  0.1 %   > 1.8 seconds
+  //  0.01 %  > 7.6 seconds
   bool Flush();
 
   // Updates the file times.
@@ -259,6 +262,12 @@ class BASE_EXPORT File {
 
   // Returns some basic information for the given file.
   bool GetInfo(Info* info);
+
+#if !defined(OS_FUCHSIA)  // Fuchsia's POSIX API does not support file locking.
+  enum class LockMode {
+    kShared,
+    kExclusive,
+  };
 
   // Attempts to take an exclusive write lock on the file. Returns immediately
   // (i.e. does not wait for another process to unlock the file). If the lock
@@ -278,27 +287,70 @@ class BASE_EXPORT File {
   // POSIX-specific semantics:
   //  * Locks are advisory only.
   //  * Within a process, locking the same file (by the same or new handle)
-  //    will succeed.
+  //    will succeed. The new lock replaces the old lock.
   //  * Closing any descriptor on a given file releases the lock.
-  Error Lock();
+  Error Lock(LockMode mode = LockMode::kExclusive);
 
   // Unlock a file previously locked.
   Error Unlock();
+
+#endif  // !defined(OS_FUCHSIA)
 
   // Returns a new object referencing this file for use within the current
   // process. Handling of FLAG_DELETE_ON_CLOSE varies by OS. On POSIX, the File
   // object that was created or initialized with this flag will have unlinked
   // the underlying file when it was created or opened. On Windows, the
   // underlying file is deleted when the last handle to it is closed.
-  File Duplicate();
+  File Duplicate() const;
 
   bool async() const { return async_; }
 
 #if defined(OS_WIN)
+  // Sets or clears the DeleteFile disposition on the file. Returns true if
+  // the disposition was set or cleared, as indicated by |delete_on_close|.
+  //
+  // Microsoft Windows deletes a file only when the DeleteFile disposition is
+  // set on a file when the last handle to the last underlying kernel File
+  // object is closed. This disposition is be set by:
+  // - Calling the Win32 DeleteFile function with the path to a file.
+  // - Opening/creating a file with FLAG_DELETE_ON_CLOSE and then closing all
+  //   handles to that File object.
+  // - Opening/creating a file with FLAG_CAN_DELETE_ON_CLOSE and subsequently
+  //   calling DeleteOnClose(true).
+  //
+  // In all cases, all pre-existing handles to the file must have been opened
+  // with FLAG_SHARE_DELETE. Once the disposition has been set by any of the
+  // above means, no new File objects can be created for the file.
+  //
+  // So:
+  // - Use FLAG_SHARE_DELETE when creating/opening a file to allow another
+  //   entity on the system to cause it to be deleted when it is closed. (Note:
+  //   another entity can delete the file the moment after it is closed, so not
+  //   using this permission doesn't provide any protections.)
+  // - Use FLAG_DELETE_ON_CLOSE for any file that is to be deleted after use.
+  //   The OS will ensure it is deleted even in the face of process termination.
+  //   Note that it's possible for deletion to be cancelled via another File
+  //   object referencing the same file using DeleteOnClose(false) to clear the
+  //   DeleteFile disposition after the original File is closed.
+  // - Use FLAG_CAN_DELETE_ON_CLOSE in conjunction with DeleteOnClose() to alter
+  //   the DeleteFile disposition on an open handle. This fine-grained control
+  //   allows for marking a file for deletion during processing so that it is
+  //   deleted in the event of untimely process termination, and then clearing
+  //   this state once the file is suitable for persistence.
+  bool DeleteOnClose(bool delete_on_close);
+#endif
+
+#if defined(OS_WIN)
   static Error OSErrorToFileError(DWORD last_error);
-#elif defined(OS_POSIX)
+#elif defined(OS_POSIX) || defined(OS_FUCHSIA)
   static Error OSErrorToFileError(int saved_errno);
 #endif
+
+  // Gets the last global error (errno or GetLastError()) and converts it to the
+  // closest base::File::Error equivalent via OSErrorToFileError(). The returned
+  // value is only trustworthy immediately after another base::File method
+  // fails. base::File never resets the global error to zero.
+  static Error GetLastFileError();
 
   // Converts an error value to a human-readable form. Used for logging.
   static std::string ErrorToString(Error error);
@@ -310,17 +362,9 @@ class BASE_EXPORT File {
   // traversal ('..') components.
   void DoInitialize(const FilePath& path, uint32_t flags);
 
-  // TODO(tnagel): Reintegrate into Flush() once histogram isn't needed anymore,
-  // cf. issue 473337.
-  bool DoFlush();
-
   void SetPlatformFile(PlatformFile file);
 
-#if defined(OS_WIN)
-  win::ScopedHandle file_;
-#elif defined(OS_POSIX)
-  ScopedFD file_;
-#endif
+  ScopedPlatformFile file_;
 
   // A path to use for tracing purposes. Set if file tracing is enabled during
   // |Initialize()|.
@@ -339,4 +383,3 @@ class BASE_EXPORT File {
 }  // namespace base
 
 #endif  // BASE_FILES_FILE_H_
-

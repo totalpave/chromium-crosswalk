@@ -18,7 +18,6 @@ class ListValue;
 class DictionaryValue;
 }
 
-class DevToolsTargetImpl;
 class Profile;
 
 class DevToolsTargetsUIHandler {
@@ -33,13 +32,15 @@ class DevToolsTargetsUIHandler {
   std::string source_id() const { return source_id_; }
 
   static std::unique_ptr<DevToolsTargetsUIHandler> CreateForLocal(
-      const Callback& callback);
+      const Callback& callback,
+      Profile* profile);
 
   static std::unique_ptr<DevToolsTargetsUIHandler> CreateForAdb(
       const Callback& callback,
       Profile* profile);
 
-  DevToolsTargetImpl* GetTarget(const std::string& target_id);
+  scoped_refptr<content::DevToolsAgentHost> GetTarget(
+      const std::string& target_id);
 
   virtual void Open(const std::string& browser_id, const std::string& url);
 
@@ -49,10 +50,12 @@ class DevToolsTargetsUIHandler {
   virtual void ForceUpdate();
 
  protected:
-  base::DictionaryValue* Serialize(const DevToolsTargetImpl& target);
+  std::unique_ptr<base::DictionaryValue> Serialize(
+      content::DevToolsAgentHost* host);
   void SendSerializedTargets(const base::ListValue& list);
 
-  typedef std::map<std::string, DevToolsTargetImpl*> TargetMap;
+  using TargetMap =
+      std::map<std::string, scoped_refptr<content::DevToolsAgentHost>>;
   TargetMap targets_;
 
  private:

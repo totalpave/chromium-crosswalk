@@ -58,7 +58,9 @@ PepperVideoRenderer2D::PepperVideoRenderer2D()
       callback_factory_(this),
       weak_factory_(this) {}
 
-PepperVideoRenderer2D::~PepperVideoRenderer2D() {}
+PepperVideoRenderer2D::~PepperVideoRenderer2D() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+}
 
 void PepperVideoRenderer2D::SetPepperContext(
     pp::Instance* instance,
@@ -98,10 +100,10 @@ void PepperVideoRenderer2D::EnableDebugDirtyRegion(bool enable) {
 
 bool PepperVideoRenderer2D::Initialize(
     const ClientContext& client_context,
-    protocol::PerformanceTracker* perf_tracker) {
+    protocol::FrameStatsConsumer* stats_consumer) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  return software_video_renderer_.Initialize(client_context, perf_tracker);
+  return software_video_renderer_.Initialize(client_context, stats_consumer);
 }
 
 void PepperVideoRenderer2D::OnSessionConfig(
@@ -121,6 +123,12 @@ protocol::FrameConsumer* PepperVideoRenderer2D::GetFrameConsumer() {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   return software_video_renderer_.GetFrameConsumer();
+}
+
+protocol::FrameStatsConsumer* PepperVideoRenderer2D::GetFrameStatsConsumer() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+
+  return software_video_renderer_.GetFrameStatsConsumer();
 }
 
 std::unique_ptr<webrtc::DesktopFrame> PepperVideoRenderer2D::AllocateFrame(
@@ -170,7 +178,7 @@ void PepperVideoRenderer2D::DrawFrame(
 
   if (!done.is_null()) {
     pending_frames_done_callbacks_.push_back(
-        new base::ScopedClosureRunner(done));
+        std::make_unique<base::ScopedClosureRunner>(done));
   }
 
   need_flush_ = true;

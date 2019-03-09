@@ -8,8 +8,10 @@
 #include <string>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
+#include "chrome/browser/chromeos/file_system_provider/icon_set.h"
 #include "chrome/browser/chromeos/file_system_provider/operations/test_util.h"
 #include "chrome/browser/chromeos/file_system_provider/provided_file_system_interface.h"
 #include "chrome/common/extensions/api/file_system_provider.h"
@@ -41,7 +43,7 @@ class FileSystemProviderOperationsRemoveWatcherTest : public testing::Test {
     file_system_info_ = ProvidedFileSystemInfo(
         kExtensionId, MountOptions(kFileSystemId, "" /* display_name */),
         base::FilePath(), false /* configurable */, true /* watchable */,
-        extensions::SOURCE_FILE);
+        extensions::SOURCE_FILE, IconSet());
   }
 
   ProvidedFileSystemInfo file_system_info_;
@@ -63,7 +65,7 @@ TEST_F(FileSystemProviderOperationsRemoveWatcherTest, Execute) {
   EXPECT_TRUE(remove_watcher.Execute(kRequestId));
 
   ASSERT_EQ(1u, dispatcher.events().size());
-  extensions::Event* event = dispatcher.events()[0];
+  extensions::Event* event = dispatcher.events()[0].get();
   EXPECT_EQ(extensions::api::file_system_provider::OnRemoveWatcherRequested::
                 kEventName,
             event->event_name);

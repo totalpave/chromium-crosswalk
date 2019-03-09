@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -27,32 +27,16 @@
  *            title: string,
  *            url: string}}
  */
-var HistoryEntry;
+let HistoryEntry;
 
 /**
  * The type of the history results info object. The definition is based on
  * chrome/browser/ui/webui/browsing_history_handler.cc:
  *     BrowsingHistoryHandler::QueryComplete()
  * @typedef {{finished: boolean,
- *            hasSyncedResults: boolean,
- *            queryEndTime: string,
- *            queryStartTime: string,
  *            term: string}}
  */
-var HistoryQuery;
-
-/**
- * The type of the foreign session info object. This definition is based on
- * chrome/browser/ui/webui/foreign_session_handler.cc:
- * @typedef {{collapsed: boolean,
- *            deviceType: string,
- *            name: string,
- *            modifiedTime: string,
- *            tag: string,
- *            timestamp: number,
- *            windows: Array}}
- */
-var ForeignSession;
+let HistoryQuery;
 
 /**
  * The type of the foreign session tab object. This definition is based on
@@ -64,4 +48,49 @@ var ForeignSession;
  *            type: string,
  *            url: string}}
  */
-var ForeignSessionTab;
+let ForeignSessionTab;
+
+/**
+ * The type of the foreign session tab object. This definition is based on
+ * chrome/browser/ui/webui/foreign_session_handler.cc:
+ * @typedef {{timestamp: number,
+ *            sessionId: number,
+ *            tabs: Array<ForeignSessionTab>}}
+ */
+let ForeignSessionWindow;
+
+/**
+ * The type of the foreign session info object. This definition is based on
+ * chrome/browser/ui/webui/foreign_session_handler.cc:
+ * @typedef {{collapsed: boolean,
+ *            deviceType: string,
+ *            name: string,
+ *            modifiedTime: string,
+ *            tag: string,
+ *            timestamp: number,
+ *            windows: Array<ForeignSessionWindow>}}
+ */
+let ForeignSession;
+
+/**
+ * @typedef {{incremental: boolean,
+ *            querying: boolean,
+ *            searchTerm: string}}
+ */
+let QueryState;
+
+/**
+ * @typedef {{info: ?HistoryQuery,
+ *            results: ?Array<!HistoryEntry>,
+ *            sessionList: ?Array<!ForeignSession>}}
+ */
+let QueryResult;
+
+/**
+ * @constructor
+ * @extends {MouseEvent}
+ */
+const DomRepeatClickEvent = function() {};
+
+/** @type {Object} */
+DomRepeatClickEvent.prototype.model;

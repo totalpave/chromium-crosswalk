@@ -6,7 +6,8 @@
 
 #include <utility>
 
-#include "base/memory/singleton.h"
+#include "base/bind.h"
+#include "base/no_destructor.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/keyed_service/ios/browser_state_dependency_manager.h"
 #include "components/omnibox/browser/in_memory_url_index.h"
@@ -16,7 +17,6 @@
 #include "ios/chrome/browser/chrome_url_constants.h"
 #include "ios/chrome/browser/history/history_service_factory.h"
 #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
-#include "ios/web/public/web_thread.h"
 
 namespace ios {
 
@@ -36,10 +36,9 @@ std::unique_ptr<KeyedService> BuildInMemoryURLIndex(
       ios::HistoryServiceFactory::GetForBrowserState(
           browser_state, ServiceAccessType::IMPLICIT_ACCESS),
       ios::TemplateURLServiceFactory::GetForBrowserState(browser_state),
-      web::WebThread::GetBlockingPool(), browser_state->GetStatePath(),
-      schemes_to_whilelist));
+      browser_state->GetStatePath(), schemes_to_whilelist));
   in_memory_url_index->Init();
-  return std::move(in_memory_url_index);
+  return in_memory_url_index;
 }
 
 }  // namespace
@@ -53,7 +52,8 @@ InMemoryURLIndex* InMemoryURLIndexFactory::GetForBrowserState(
 
 // static
 InMemoryURLIndexFactory* InMemoryURLIndexFactory::GetInstance() {
-  return base::Singleton<InMemoryURLIndexFactory>::get();
+  static base::NoDestructor<InMemoryURLIndexFactory> instance;
+  return instance.get();
 }
 
 InMemoryURLIndexFactory::InMemoryURLIndexFactory()
@@ -68,9 +68,9 @@ InMemoryURLIndexFactory::InMemoryURLIndexFactory()
 InMemoryURLIndexFactory::~InMemoryURLIndexFactory() {}
 
 // static
-BrowserStateKeyedServiceFactory::TestingFactoryFunction
+BrowserStateKeyedServiceFactory::TestingFactory
 InMemoryURLIndexFactory::GetDefaultFactory() {
-  return &BuildInMemoryURLIndex;
+  return base::BindRepeating(&BuildInMemoryURLIndex);
 }
 
 std::unique_ptr<KeyedService> InMemoryURLIndexFactory::BuildServiceInstanceFor(

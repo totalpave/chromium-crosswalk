@@ -2,20 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/android/rappor/rappor_service_bridge.h"
-
 #include "base/android/jni_string.h"
 #include "chrome/browser/browser_process.h"
-#include "components/rappor/rappor_utils.h"
+#include "components/rappor/public/rappor_utils.h"
+#include "components/rappor/rappor_service_impl.h"
 #include "jni/RapporServiceBridge_jni.h"
 #include "url/gurl.h"
 
+using base::android::JavaParamRef;
+
 namespace rappor {
 
-void SampleDomainAndRegistryFromURL(JNIEnv* env,
-                                    const JavaParamRef<jclass>& caller,
-                                    const JavaParamRef<jstring>& j_metric,
-                                    const JavaParamRef<jstring>& j_url) {
+void JNI_RapporServiceBridge_SampleDomainAndRegistryFromURL(
+    JNIEnv* env,
+    const JavaParamRef<jstring>& j_metric,
+    const JavaParamRef<jstring>& j_url) {
   // TODO(knn): UMA metrics hash the string to prevent frequent re-encoding,
   // perhaps we should do that as well.
   std::string metric(base::android::ConvertJavaStringToUTF8(env, j_metric));
@@ -24,18 +25,14 @@ void SampleDomainAndRegistryFromURL(JNIEnv* env,
                                           metric, gurl);
 }
 
-void SampleString(JNIEnv* env,
-                  const JavaParamRef<jclass>& caller,
-                  const JavaParamRef<jstring>& j_metric,
-                  const JavaParamRef<jstring>& j_value) {
+void JNI_RapporServiceBridge_SampleString(
+    JNIEnv* env,
+    const JavaParamRef<jstring>& j_metric,
+    const JavaParamRef<jstring>& j_value) {
   std::string metric(base::android::ConvertJavaStringToUTF8(env, j_metric));
   std::string value(base::android::ConvertJavaStringToUTF8(env, j_value));
   rappor::SampleString(g_browser_process->rappor_service(),
                        metric, rappor::UMA_RAPPOR_TYPE, value);
-}
-
-bool RegisterRapporServiceBridge(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace rappor

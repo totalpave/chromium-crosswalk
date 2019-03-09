@@ -13,10 +13,10 @@ body {
   /* Don't highlight links when they're tapped. Safari has bugs here that
      show up as flicker when dragging in some situations */
   -webkit-tap-highlight-color: transparent;
-  /* Don't allow selecting text - can occur when dragging */
-  -webkit-user-select: none;
   background-size: auto 100%;
   margin: 0;
+  /* Don't allow selecting text - can occur when dragging */
+  user-select: none;
 }
 
 /* [hidden] does display:none, but its priority is too low in some cases. */
@@ -55,7 +55,7 @@ body {
 }
 
 [is='action-link'] {
-  -webkit-margin-start: 0.5em;
+  margin-inline-start: 0.5em;
 }
 
 #card-slider-frame {
@@ -133,7 +133,7 @@ html[dir='rtl'] #attribution {
 }
 
 .starting-up * {
-  -webkit-transition: none !important;
+  transition: none !important;
 }
 
 /* Login Status. **************************************************************/
@@ -166,14 +166,14 @@ html[dir='rtl'] #login-container {
 }
 
 #login-container [is='action-link'] {
-  -webkit-margin-start: 0;
+  margin-inline-start: 0;
 }
 
 .login-status-icon {
-  -webkit-padding-end: 37px;
   background-position: right center;
   background-repeat: no-repeat;
   min-height: 27px;
+  padding-inline-end: 37px;
 }
 
 html[dir='rtl'] .login-status-icon {
@@ -210,15 +210,15 @@ html[dir='rtl'] .login-status-icon {
 /* Trash. *********************************************************************/
 
 #trash {
-  -webkit-padding-start: 10px;
-  -webkit-transition: top 200ms, opacity 0ms;
-  -webkit-transition-delay: 0ms, 200ms;
   color: #222;
   height: 100%;
   opacity: 0;
+  padding-inline-start: 10px;
   position: absolute;
   right: 0;
   top: 50px;
+  transition: top 200ms, opacity 0ms;
+  transition-delay: 0ms, 200ms;
   width: auto;
 }
 
@@ -228,10 +228,10 @@ html[dir='rtl'] #trash {
 }
 
 #footer.showing-trash-mode #trash {
-  -webkit-transition-delay: 0ms, 0ms;
-  -webkit-transition-duration: 0ms, 200ms;
   opacity: 0.75;
   top: 0;
+  transition-delay: 0ms, 0ms;
+  transition-duration: 0ms, 200ms;
 }
 
 #footer.showing-trash-mode #trash.drag-target {
@@ -239,12 +239,12 @@ html[dir='rtl'] #trash {
 }
 
 #trash > .trash-text {
-  -webkit-padding-end: 7px;
-  -webkit-padding-start: 30px;
   border: 1px dashed #7f7f7f;
   border-radius: 4px;
   display: inline-block;
   padding-bottom: 9px;
+  padding-inline-end: 7px;
+  padding-inline-start: 30px;
   padding-top: 10px;
   position: relative;
   top: 7px;
@@ -262,11 +262,11 @@ html[dir='rtl'] #trash > .can {
 }
 
 #footer.showing-trash-mode #trash.drag-target .lid {
-  -webkit-transform: rotate(-45deg);
+  transform: rotate(-45deg);
 }
 
 html[dir='rtl'] #footer.showing-trash-mode #trash.drag-target .lid {
-  -webkit-transform: rotate(45deg);
+  transform: rotate(45deg);
 }
 
 #fontMeasuringDiv {
@@ -281,7 +281,6 @@ html[dir='rtl'] #footer.showing-trash-mode #trash.drag-target .lid {
 /* Page switcher buttons. *****************************************************/
 
 .page-switcher {
-  -webkit-transition: width 150ms, right 150ms, background-color 150ms;
   background-color: transparent;
   border: none;
   bottom: 0;
@@ -293,6 +292,7 @@ html[dir='rtl'] #footer.showing-trash-mode #trash.drag-target .lid {
   padding: 0;
   position: absolute;
   top: 0;
+  transition: width 150ms, right 150ms, background-color 150ms;
   z-index: 5;
 }
 
@@ -300,22 +300,22 @@ html[dir='rtl'] #footer.showing-trash-mode #trash.drag-target .lid {
 
 #chrome-web-store-link {
   -webkit-order: 3;
-  -webkit-padding-end: 12px;
-  -webkit-transition-delay: 100ms;
   color: inherit;
   cursor: pointer;
   display: inline-block;
   margin: 0;
+  padding-inline-end: 12px;
   text-decoration: none;
+  transition-delay: 100ms;
   white-space: nowrap;
 }
 
 #chrome-web-store-title {
-  -webkit-padding-end: 36px;
-  -webkit-padding-start: 15px;
   background: url(chrome://theme/IDR_WEBSTORE_ICON_24) right 50% no-repeat;
   display: inline-block;
   line-height: 49px;
+  padding-inline-end: 36px;
+  padding-inline-start: 15px;
 }
 
 #chrome-web-store-link:hover {
@@ -328,8 +328,8 @@ html[dir='rtl'] #chrome-web-store-title {
 
 /* In trash mode, hide the menus and web store link. */
 #footer.showing-trash-mode .menu-container {
-  -webkit-transition-delay: 0ms;
   opacity: 0;
+  transition-delay: 0ms;
   visibility: hidden;
 }
 

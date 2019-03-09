@@ -7,7 +7,6 @@
 #include <stdint.h>
 
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/views/controls/combobox/combobox.h"
 #include "ui/views/controls/menu/menu_runner.h"
@@ -24,14 +23,13 @@ class TestMenuRunnerHandler : public MenuRunnerHandler {
  public:
   explicit TestMenuRunnerHandler(int* show_counter)
       : show_counter_(show_counter) {}
-  MenuRunner::RunResult RunMenuAt(Widget* parent,
-                                  MenuButton* button,
-                                  const gfx::Rect& bounds,
-                                  MenuAnchorPosition anchor,
-                                  ui::MenuSourceType source_type,
-                                  int32_t types) override {
+  void RunMenuAt(Widget* parent,
+                 MenuButton* button,
+                 const gfx::Rect& bounds,
+                 MenuAnchorPosition anchor,
+                 ui::MenuSourceType source_type,
+                 int32_t types) override {
     *show_counter_ += 1;
-    return MenuRunner::NORMAL_EXIT;
   }
 
  private:
@@ -51,7 +49,7 @@ void ComboboxTestApi::InstallTestMenuRunner(int* menu_show_count) {
       new MenuRunner(menu_model(), MenuRunner::COMBOBOX));
   test::MenuRunnerTestAPI test_api(combobox_->menu_runner_.get());
   test_api.SetMenuRunnerHandler(
-      base::WrapUnique(new TestMenuRunnerHandler(menu_show_count)));
+      std::make_unique<TestMenuRunnerHandler>(menu_show_count));
 }
 
 gfx::Size ComboboxTestApi::content_size() {
@@ -59,7 +57,7 @@ gfx::Size ComboboxTestApi::content_size() {
 }
 
 ui::MenuModel* ComboboxTestApi::menu_model() {
-  return combobox_->menu_model_adapter_.get();
+  return combobox_->menu_model_.get();
 }
 
 }  // test

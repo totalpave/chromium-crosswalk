@@ -4,7 +4,13 @@
 
 #include "ui/web_dialogs/web_dialog_delegate.h"
 
+#include "ui/base/accelerators/accelerator.h"
+
 namespace ui {
+
+base::string16 WebDialogDelegate::GetAccessibleDialogTitle() const {
+  return GetDialogTitle();
+}
 
 std::string WebDialogDelegate::GetDialogName() const {
   return std::string();
@@ -28,6 +34,7 @@ void WebDialogDelegate::OnDialogCloseFromWebUI(
 }
 
 bool WebDialogDelegate::HandleContextMenu(
+    content::RenderFrameHost* render_frame_host,
     const content::ContextMenuParams& params) {
   return false;
 }
@@ -39,17 +46,16 @@ bool WebDialogDelegate::HandleOpenURLFromTab(
   return false;
 }
 
-bool WebDialogDelegate::HandleAddNewContents(
-    content::WebContents* source,
-    content::WebContents* new_contents,
-    WindowOpenDisposition disposition,
-    const gfx::Rect& initial_rect,
-    bool user_gesture) {
-  return false;
-}
-
 bool WebDialogDelegate::HandleShouldCreateWebContents() {
   return true;
+}
+
+std::vector<Accelerator> WebDialogDelegate::GetAccelerators() {
+  return std::vector<Accelerator>();
+}
+
+bool WebDialogDelegate::AcceleratorPressed(const Accelerator& accelerator) {
+  return false;
 }
 
 }  // namespace ui

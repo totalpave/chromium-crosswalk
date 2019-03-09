@@ -4,64 +4,59 @@
 
 package org.chromium.android_webview.test;
 
+import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.SINGLE_PROCESS;
+
 import android.graphics.Picture;
 import android.os.Handler;
 import android.os.Looper;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.SmallTest;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.android_webview.AwContentsClient;
 import org.chromium.android_webview.AwContentsClientCallbackHelper;
 import org.chromium.android_webview.test.TestAwContentsClient.OnDownloadStartHelper;
+import org.chromium.android_webview.test.TestAwContentsClient.OnLoadResourceHelper;
 import org.chromium.android_webview.test.TestAwContentsClient.OnReceivedLoginRequestHelper;
 import org.chromium.android_webview.test.TestAwContentsClient.PictureListenerHelper;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.content.browser.test.util.CallbackHelper;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnPageStartedHelper;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnReceivedErrorHelper;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageStartedHelper;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnReceivedErrorHelper;
 
 import java.util.concurrent.Callable;
 
 /**
  * Test suite for AwContentsClientCallbackHelper.
  */
-public class AwContentsClientCallbackHelperTest extends AwTestBase {
-    /**
-     * Callback helper for OnLoadedResource.
-     */
-    public static class OnLoadResourceHelper extends CallbackHelper {
-        private String mLastLoadedResource;
+@RunWith(AwJUnit4ClassRunner.class)
+@OnlyRunIn(SINGLE_PROCESS) // These are unit tests. No need to repeat for multiprocess.
+public class AwContentsClientCallbackHelperTest {
+    @Rule
+    public AwActivityTestRule mActivityTestRule = new AwActivityTestRule();
 
-        public String getLastLoadedResource() {
-            assert getCallCount() > 0;
-            return mLastLoadedResource;
+    private static class TestCancelCallbackPoller
+            implements AwContentsClientCallbackHelper.CancelCallbackPoller {
+        private boolean mCancelled;
+        private final CallbackHelper mCallbackHelper = new CallbackHelper();
+
+        public void setCancelled() {
+            mCancelled = true;
         }
 
-        public void notifyCalled(String url) {
-            mLastLoadedResource = url;
-            notifyCalled();
-        }
-    }
-
-    /**
-     * TestAwContentsClient extended with OnLoadResourceHelper.
-     */
-    public static class TestAwContentsClient
-            extends org.chromium.android_webview.test.TestAwContentsClient {
-
-        private final OnLoadResourceHelper mOnLoadResourceHelper;
-
-        public TestAwContentsClient() {
-            super();
-            mOnLoadResourceHelper = new OnLoadResourceHelper();
-        }
-
-        public OnLoadResourceHelper getOnLoadResourceHelper() {
-            return mOnLoadResourceHelper;
+        public CallbackHelper getCallbackHelper() {
+            return mCallbackHelper;
         }
 
         @Override
-        public void onLoadResource(String url) {
-            mOnLoadResourceHelper.notifyCalled(url);
+        public boolean shouldCancelAllCallbacks() {
+            mCallbackHelper.notifyCalled();
+            return mCancelled;
         }
     }
 
@@ -82,16 +77,19 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
 
     private TestAwContentsClient mContentsClient;
     private AwContentsClientCallbackHelper mClientHelper;
+    private TestCancelCallbackPoller mCancelCallbackPoller;
     private Looper mLooper;
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUp() throws Exception {
         mLooper = Looper.getMainLooper();
         mContentsClient = new TestAwContentsClient();
         mClientHelper = new AwContentsClientCallbackHelper(mLooper, mContentsClient);
+        mCancelCallbackPoller = new TestCancelCallbackPoller();
+        mClientHelper.setCancelCallbackPoller(mCancelCallbackPoller);
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testOnLoadResource() throws Exception {
@@ -100,9 +98,10 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         int onLoadResourceCount = loadResourceHelper.getCallCount();
         mClientHelper.postOnLoadResource(TEST_URL);
         loadResourceHelper.waitForCallback(onLoadResourceCount);
-        assertEquals(TEST_URL, loadResourceHelper.getLastLoadedResource());
+        Assert.assertEquals(TEST_URL, loadResourceHelper.getLastLoadedResource());
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testOnPageStarted() throws Exception {
@@ -111,9 +110,10 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         int onPageStartedCount = pageStartedHelper.getCallCount();
         mClientHelper.postOnPageStarted(TEST_URL);
         pageStartedHelper.waitForCallback(onPageStartedCount);
-        assertEquals(TEST_URL, pageStartedHelper.getUrl());
+        Assert.assertEquals(TEST_URL, pageStartedHelper.getUrl());
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testOnDownloadStart() throws Exception {
@@ -123,13 +123,14 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         mClientHelper.postOnDownloadStart(TEST_URL, USER_AGENT, CONTENT_DISPOSITION,
                 MIME_TYPE, CONTENT_LENGTH);
         downloadStartHelper.waitForCallback(onDownloadStartCount);
-        assertEquals(TEST_URL, downloadStartHelper.getUrl());
-        assertEquals(USER_AGENT, downloadStartHelper.getUserAgent());
-        assertEquals(CONTENT_DISPOSITION, downloadStartHelper.getContentDisposition());
-        assertEquals(MIME_TYPE, downloadStartHelper.getMimeType());
-        assertEquals(CONTENT_LENGTH, downloadStartHelper.getContentLength());
+        Assert.assertEquals(TEST_URL, downloadStartHelper.getUrl());
+        Assert.assertEquals(USER_AGENT, downloadStartHelper.getUserAgent());
+        Assert.assertEquals(CONTENT_DISPOSITION, downloadStartHelper.getContentDisposition());
+        Assert.assertEquals(MIME_TYPE, downloadStartHelper.getMimeType());
+        Assert.assertEquals(CONTENT_LENGTH, downloadStartHelper.getContentLength());
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testOnNewPicture() throws Exception {
@@ -138,12 +139,7 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
 
         final Picture thePicture = new Picture();
 
-        final Callable<Picture> pictureProvider = new Callable<Picture>() {
-            @Override
-            public Picture call() {
-                return thePicture;
-            }
-        };
+        final Callable<Picture> pictureProvider = () -> thePicture;
 
         // AwContentsClientCallbackHelper rate limits photo callbacks so two posts in close
         // succession should only result in one callback.
@@ -152,12 +148,9 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         // before mLooper processes the first. To do this we run both posts as a single block
         // and we do it in the thread that is processes the callbacks (mLooper).
         Handler mainHandler = new Handler(mLooper);
-        Runnable postPictures = new Runnable() {
-            @Override
-            public void run() {
-                mClientHelper.postOnNewPicture(pictureProvider);
-                mClientHelper.postOnNewPicture(pictureProvider);
-            }
+        Runnable postPictures = () -> {
+            mClientHelper.postOnNewPicture(pictureProvider);
+            mClientHelper.postOnNewPicture(pictureProvider);
         };
         mainHandler.post(postPictures);
 
@@ -169,17 +162,15 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         // Then we post a runnable on the callback handler thread. Since both posts have happened
         // and the first callback has happened a second callback (if it exists) must be
         // in the queue before this runnable.
-        getInstrumentation().runOnMainSync(new Runnable() {
-            @Override
-            public void run() {
-            }
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
         });
 
         // When that runnable has finished we assert that one and only on callback happened.
-        assertEquals(thePicture, pictureListenerHelper.getPicture());
-        assertEquals(onNewPictureCount + 1, pictureListenerHelper.getCallCount());
+        Assert.assertEquals(thePicture, pictureListenerHelper.getPicture());
+        Assert.assertEquals(onNewPictureCount + 1, pictureListenerHelper.getCallCount());
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testOnReceivedLoginRequest() throws Exception {
@@ -189,11 +180,12 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         int onReceivedLoginRequestCount = receivedLoginRequestHelper.getCallCount();
         mClientHelper.postOnReceivedLoginRequest(REALM, ACCOUNT, ARGS);
         receivedLoginRequestHelper.waitForCallback(onReceivedLoginRequestCount);
-        assertEquals(REALM, receivedLoginRequestHelper.getRealm());
-        assertEquals(ACCOUNT, receivedLoginRequestHelper.getAccount());
-        assertEquals(ARGS, receivedLoginRequestHelper.getArgs());
+        Assert.assertEquals(REALM, receivedLoginRequestHelper.getRealm());
+        Assert.assertEquals(ACCOUNT, receivedLoginRequestHelper.getAccount());
+        Assert.assertEquals(ARGS, receivedLoginRequestHelper.getArgs());
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testOnReceivedError() throws Exception {
@@ -209,11 +201,12 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         error.description = ERROR_MESSAGE;
         mClientHelper.postOnReceivedError(request, error);
         receivedErrorHelper.waitForCallback(onReceivedErrorCount);
-        assertEquals(ERROR_CODE, receivedErrorHelper.getErrorCode());
-        assertEquals(ERROR_MESSAGE, receivedErrorHelper.getDescription());
-        assertEquals(TEST_URL, receivedErrorHelper.getFailingUrl());
+        Assert.assertEquals(ERROR_CODE, receivedErrorHelper.getErrorCode());
+        Assert.assertEquals(ERROR_MESSAGE, receivedErrorHelper.getDescription());
+        Assert.assertEquals(TEST_URL, receivedErrorHelper.getFailingUrl());
     }
 
+    @Test
     @Feature({"AndroidWebView"})
     @SmallTest
     public void testOnScaleChangedScaled() throws Exception {
@@ -223,7 +216,32 @@ public class AwContentsClientCallbackHelperTest extends AwTestBase {
         int onScaleChangeCount = scaleChangedHelper.getCallCount();
         mClientHelper.postOnScaleChangedScaled(OLD_SCALE, NEW_SCALE);
         scaleChangedHelper.waitForCallback(onScaleChangeCount);
-        assertEquals(OLD_SCALE, scaleChangedHelper.getOldScale());
-        assertEquals(NEW_SCALE, scaleChangedHelper.getNewScale());
+        Assert.assertEquals(OLD_SCALE, scaleChangedHelper.getOldScale(), 0);
+        Assert.assertEquals(NEW_SCALE, scaleChangedHelper.getNewScale(), 0);
+    }
+
+    @Test
+    @Feature({"AndroidWebView"})
+    @SmallTest
+    public void testCancelCallbackPoller() throws Exception {
+        mCancelCallbackPoller.setCancelled();
+        CallbackHelper cancelCallbackPollerHelper = mCancelCallbackPoller.getCallbackHelper();
+        OnPageStartedHelper pageStartedHelper = mContentsClient.getOnPageStartedHelper();
+
+        int pollCount = pageStartedHelper.getCallCount();
+        int onPageStartedCount = pageStartedHelper.getCallCount();
+        // Post two callbacks.
+        mClientHelper.postOnPageStarted(TEST_URL);
+        mClientHelper.postOnPageStarted(TEST_URL);
+
+        // Wait for at least one poll.
+        cancelCallbackPollerHelper.waitForCallback(pollCount);
+
+        // Flush main queue.
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+        });
+
+        // Neither callback should actually happen.
+        Assert.assertEquals(onPageStartedCount, pageStartedHelper.getCallCount());
     }
 }

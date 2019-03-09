@@ -6,7 +6,8 @@
 
 #include <utility>
 
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/dom_distiller/content/browser/distiller_page_web_contents.h"
@@ -14,11 +15,11 @@
 #include "components/dom_distiller/core/distiller.h"
 #include "components/dom_distiller/core/dom_distiller_store.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
-#include "components/leveldb_proto/proto_database.h"
-#include "components/leveldb_proto/proto_database_impl.h"
+#include "components/leveldb_proto/public/proto_database.h"
+#include "components/leveldb_proto/public/proto_database_provider.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace dom_distiller {
 
@@ -55,12 +56,11 @@ DomDistillerServiceFactory::~DomDistillerServiceFactory() {}
 KeyedService* DomDistillerServiceFactory::BuildServiceInstanceFor(
     content::BrowserContext* profile) const {
   scoped_refptr<base::SequencedTaskRunner> background_task_runner =
-      content::BrowserThread::GetBlockingPool()->GetSequencedTaskRunner(
-          base::SequencedWorkerPool::GetSequenceToken());
+      base::CreateSequencedTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::BEST_EFFORT});
 
-  std::unique_ptr<leveldb_proto::ProtoDatabaseImpl<ArticleEntry>> db(
-      new leveldb_proto::ProtoDatabaseImpl<ArticleEntry>(
-          background_task_runner));
+  auto db = leveldb_proto::ProtoDatabaseProvider::CreateUniqueDB<ArticleEntry>(
+      background_task_runner);
 
   base::FilePath database_dir(
       profile->GetPath().Append(FILE_PATH_LITERAL("Articles")));
@@ -73,7 +73,7 @@ KeyedService* DomDistillerServiceFactory::BuildServiceInstanceFor(
   std::unique_ptr<DistillerURLFetcherFactory> distiller_url_fetcher_factory(
       new DistillerURLFetcherFactory(
           content::BrowserContext::GetDefaultStoragePartition(profile)
-              ->GetURLRequestContext()));
+              ->GetURLLoaderFactoryForBrowserProcess()));
 
   dom_distiller::proto::DomDistillerOptions options;
   if (VLOG_IS_ON(1)) {

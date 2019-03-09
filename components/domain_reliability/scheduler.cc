@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "base/metrics/field_trial.h"
@@ -95,7 +96,7 @@ DomainReliabilityScheduler::DomainReliabilityScheduler(
 
   for (size_t i = 0; i < num_collectors; ++i) {
     collectors_.push_back(
-      new net::BackoffEntry(&backoff_policy_, time_));
+        std::make_unique<net::BackoffEntry>(&backoff_policy_, time_));
   }
 }
 
@@ -137,13 +138,12 @@ void DomainReliabilityScheduler::OnUploadComplete(
   VLOG(1) << "Upload to collector " << collector_index_
           << (result.is_success() ? " succeeded." : " failed.");
 
-  net::BackoffEntry* backoff = collectors_[collector_index_];
+  net::BackoffEntry* backoff = collectors_[collector_index_].get();
   collector_index_ = kInvalidCollectorIndex;
 
   backoff->InformOfRequest(result.is_success());
   if (result.is_retry_after())
     backoff->SetCustomReleaseTime(time_->NowTicks() + result.retry_after);
-  last_collector_retry_delay_ = backoff->GetTimeUntilRelease();
 
   if (!result.is_success()) {
     // Restore upload_pending_ and first_beacon_time_ to pre-upload state,
@@ -189,7 +189,6 @@ std::unique_ptr<base::Value> DomainReliabilityScheduler::GetWebUIData() const {
     value->SetInteger("failures", collector->failure_count());
     value->SetInteger("next_upload",
         (collector->GetReleaseTime() - now).InSeconds());
-    // Using release instead of Pass because Pass can't implicitly upcast.
     collectors_value->Append(std::move(value));
   }
   data->Set("collectors", std::move(collectors_value));
@@ -231,9 +230,9 @@ void DomainReliabilityScheduler::MaybeScheduleUpload() {
   callback_.Run(min_delay, max_delay);
 }
 
-// TODO(ttuttle): Add min and max interval to config, use that instead.
+// TODO(juliatuttle): Add min and max interval to config, use that instead.
 
-// TODO(ttuttle): Cap min and max intervals received from config.
+// TODO(juliatuttle): Cap min and max intervals received from config.
 
 void DomainReliabilityScheduler::GetNextUploadTimeAndCollector(
     base::TimeTicks now,
@@ -246,7 +245,7 @@ void DomainReliabilityScheduler::GetNextUploadTimeAndCollector(
   size_t min_index = kInvalidCollectorIndex;
 
   for (size_t i = 0; i < collectors_.size(); ++i) {
-    net::BackoffEntry* backoff = collectors_[i];
+    net::BackoffEntry* backoff = collectors_[i].get();
     // If a collector is usable, use the first one in the list.
     if (!backoff->ShouldRejectRequest()) {
       min_time = now;

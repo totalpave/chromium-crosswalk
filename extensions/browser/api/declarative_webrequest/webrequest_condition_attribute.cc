@@ -6,7 +6,6 @@
 
 #include <stddef.h>
 
-#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -14,6 +13,7 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
@@ -22,7 +22,9 @@
 #include "extensions/browser/api/declarative_webrequest/request_stage.h"
 #include "extensions/browser/api/declarative_webrequest/webrequest_condition.h"
 #include "extensions/browser/api/declarative_webrequest/webrequest_constants.h"
+#include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/api/web_request/web_request_api_helpers.h"
+#include "extensions/browser/api/web_request/web_request_resource_type.h"
 #include "extensions/common/error_utils.h"
 #include "net/base/net_errors.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -34,9 +36,7 @@
 using base::CaseInsensitiveCompareASCII;
 using base::DictionaryValue;
 using base::ListValue;
-using base::StringValue;
 using base::Value;
-using content::ResourceType;
 
 namespace helpers = extension_web_request_api_helpers;
 namespace keys = extensions::declarative_webrequest_constants;
@@ -130,8 +130,8 @@ WebRequestConditionAttribute::Create(
 //
 
 WebRequestConditionAttributeResourceType::
-WebRequestConditionAttributeResourceType(
-    const std::vector<ResourceType>& types)
+    WebRequestConditionAttributeResourceType(
+        const std::vector<WebRequestResourceType>& types)
     : types_(types) {}
 
 WebRequestConditionAttributeResourceType::
@@ -154,12 +154,14 @@ WebRequestConditionAttributeResourceType::Create(
 
   size_t number_types = value_as_list->GetSize();
 
-  std::vector<ResourceType> passed_types;
+  std::vector<WebRequestResourceType> passed_types;
   passed_types.reserve(number_types);
   for (size_t i = 0; i < number_types; ++i) {
     std::string resource_type_string;
+    passed_types.push_back(WebRequestResourceType::OTHER);
     if (!value_as_list->GetString(i, &resource_type_string) ||
-        !helpers::ParseResourceType(resource_type_string, &passed_types)) {
+        !ParseWebRequestResourceType(resource_type_string,
+                                     &passed_types.back())) {
       *error = ErrorUtils::FormatErrorMessage(kInvalidValue,
                                               keys::kResourceTypeKey);
       return scoped_refptr<const WebRequestConditionAttribute>(NULL);
@@ -180,12 +182,7 @@ bool WebRequestConditionAttributeResourceType::IsFulfilled(
     const WebRequestData& request_data) const {
   if (!(request_data.stage & GetStages()))
     return false;
-  const content::ResourceRequestInfo* info =
-      content::ResourceRequestInfo::ForRequest(request_data.request);
-  if (!info)
-    return false;
-  return std::find(types_.begin(), types_.end(), info->GetResourceType()) !=
-      types_.end();
+  return base::ContainsValue(types_, request_data.request->web_request_type);
 }
 
 WebRequestConditionAttribute::Type
@@ -235,10 +232,9 @@ WebRequestConditionAttributeContentType::Create(
     return scoped_refptr<const WebRequestConditionAttribute>(NULL);
   }
   std::vector<std::string> content_types;
-  for (base::ListValue::const_iterator it = value_as_list->begin();
-       it != value_as_list->end(); ++it) {
+  for (auto it = value_as_list->begin(); it != value_as_list->end(); ++it) {
     std::string content_type;
-    if (!(*it)->GetAsString(&content_type)) {
+    if (!it->GetAsString(&content_type)) {
       *error = ErrorUtils::FormatErrorMessage(kInvalidValue, name);
       return scoped_refptr<const WebRequestConditionAttribute>(NULL);
     }
@@ -258,6 +254,7 @@ bool WebRequestConditionAttributeContentType::IsFulfilled(
     const WebRequestData& request_data) const {
   if (!(request_data.stage & GetStages()))
     return false;
+
   std::string content_type;
   request_data.original_response_headers->GetNormalizedHeader(
       net::HttpRequestHeaders::kContentType, &content_type);
@@ -268,11 +265,9 @@ bool WebRequestConditionAttributeContentType::IsFulfilled(
       content_type, &mime_type, &charset, &had_charset, NULL);
 
   if (inclusive_) {
-    return std::find(content_types_.begin(), content_types_.end(),
-                     mime_type) != content_types_.end();
+    return base::ContainsValue(content_types_, mime_type);
   } else {
-    return std::find(content_types_.begin(), content_types_.end(),
-                     mime_type) == content_types_.end();
+    return !base::ContainsValue(content_types_, mime_type);
   }
 }
 
@@ -383,10 +378,9 @@ HeaderMatcher::~HeaderMatcher() {}
 std::unique_ptr<const HeaderMatcher> HeaderMatcher::Create(
     const base::ListValue* tests) {
   std::vector<std::unique_ptr<const HeaderMatchTest>> header_tests;
-  for (base::ListValue::const_iterator it = tests->begin();
-       it != tests->end(); ++it) {
+  for (auto it = tests->begin(); it != tests->end(); ++it) {
     const base::DictionaryValue* tests = NULL;
-    if (!(*it)->GetAsDictionary(&tests))
+    if (!it->GetAsDictionary(&tests))
       return std::unique_ptr<const HeaderMatcher>();
 
     std::unique_ptr<const HeaderMatchTest> header_test(
@@ -506,16 +500,16 @@ HeaderMatcher::HeaderMatchTest::Create(const base::DictionaryValue* tests) {
 
     std::vector<std::unique_ptr<const StringMatchTest>>* tests =
         is_name ? &name_match : &value_match;
-    switch (content->GetType()) {
-      case base::Value::TYPE_LIST: {
+    switch (content->type()) {
+      case base::Value::Type::LIST: {
         const base::ListValue* list = NULL;
         CHECK(content->GetAsList(&list));
         for (const auto& it : *list) {
-          tests->push_back(StringMatchTest::Create(*it, match_type, !is_name));
+          tests->push_back(StringMatchTest::Create(it, match_type, !is_name));
         }
         break;
       }
-      case base::Value::TYPE_STRING: {
+      case base::Value::Type::STRING: {
         tests->push_back(
             StringMatchTest::Create(*content, match_type, !is_name));
         break;
@@ -614,7 +608,7 @@ bool WebRequestConditionAttributeRequestHeaders::IsFulfilled(
     return false;
 
   const net::HttpRequestHeaders& headers =
-      request_data.request->extra_request_headers();
+      request_data.request->extra_request_headers;
 
   bool passed = false;  // Did some header pass TestNameValue?
   net::HttpRequestHeaders::Iterator it(headers);
@@ -695,6 +689,9 @@ bool WebRequestConditionAttributeResponseHeaders::IsFulfilled(
   std::string value;
   size_t iter = 0;
   while (!passed && headers->EnumerateHeaderLines(&iter, &name, &value)) {
+    if (ExtensionsAPIClient::Get()->ShouldHideResponseHeader(
+            request_data.request->url, name))
+      continue;
     passed |= header_matcher_->TestNameValue(name, value);
   }
 
@@ -761,9 +758,8 @@ bool WebRequestConditionAttributeThirdParty::IsFulfilled(
   // Request is "1st party" if it gets cookies under 3rd party-blocking policy.
   const net::StaticCookiePolicy block_third_party_policy(
       net::StaticCookiePolicy::BLOCK_ALL_THIRD_PARTY_COOKIES);
-  const int can_get_cookies = block_third_party_policy.CanGetCookies(
-          request_data.request->url(),
-          request_data.request->first_party_for_cookies());
+  const int can_get_cookies = block_third_party_policy.CanAccessCookies(
+      request_data.request->url, request_data.request->site_for_cookies);
   const bool is_first_party = (can_get_cookies == net::OK);
 
   return match_third_party_ ? !is_first_party : is_first_party;
@@ -810,9 +806,8 @@ bool ParseListOfStages(const base::Value& value, int* out_stages) {
 
   int stages = 0;
   std::string stage_name;
-  for (base::ListValue::const_iterator it = list->begin();
-       it != list->end(); ++it) {
-    if (!((*it)->GetAsString(&stage_name)))
+  for (auto it = list->begin(); it != list->end(); ++it) {
+    if (!(it->GetAsString(&stage_name)))
       return false;
     if (stage_name == keys::kOnBeforeRequestEnum) {
       stages |= ON_BEFORE_REQUEST;

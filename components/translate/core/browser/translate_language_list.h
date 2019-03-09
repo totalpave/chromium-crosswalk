@@ -26,8 +26,6 @@ class TranslateURLFetcher;
 // supporting language list.
 class TranslateLanguageList {
  public:
-  static const int kFetcherId = 1;
-
   TranslateLanguageList();
   virtual ~TranslateLanguageList();
 
@@ -36,21 +34,18 @@ class TranslateLanguageList {
   base::Time last_updated() { return last_updated_; }
 
   // Fills |languages| with the list of languages that the translate server can
-  // translate to and from. |languages| will include alpha languages.
-  void GetSupportedLanguages(std::vector<std::string>* languages);
+  // translate to and from. May attempt a language list request unless
+  // |translate_allowed| is false.
+  void GetSupportedLanguages(bool translate_allowed,
+                             std::vector<std::string>* languages);
 
   // Returns the language code that can be used with the Translate method for a
   // specified |language|. (ex. GetLanguageCode("en-US") will return "en", and
   // GetLanguageCode("zh-CN") returns "zh-CN")
   std::string GetLanguageCode(const std::string& language);
 
-  // Returns true if |language| is supported by the translation server. It also
-  // returns true against alpha languages.
+  // Returns true if |language| is supported by the translation server.
   bool IsSupportedLanguage(const std::string& language);
-
-  // Returns true if |language| is supported by the translation server as a
-  // alpha language.
-  bool IsAlphaLanguage(const std::string& language);
 
   // Fetches the language list from the translate server if resource requests
   // are allowed, and otherwise keeps the request as pending until allowed.
@@ -69,22 +64,25 @@ class TranslateLanguageList {
   std::unique_ptr<EventCallbackList::Subscription> RegisterEventCallback(
       const EventCallback& callback);
 
+  // Helper methods used by specific unit tests.
+  GURL LanguageFetchURLForTesting();
+  bool HasOngoingLanguageListLoadingForTesting();
+
   // Disables the language list updater. This is used only for testing now.
   static void DisableUpdate();
 
   // static const values shared with our browser tests.
   static const char kTargetLanguagesKey[];
-  static const char kAlphaLanguagesKey[];
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(TranslateLanguageListTest, IsSupportedLanguage);
   FRIEND_TEST_ALL_PREFIXES(TranslateLanguageListTest, SetSupportedLanguages);
+  FRIEND_TEST_ALL_PREFIXES(TranslateLanguageListTest, TranslateLanguageUrl);
   FRIEND_TEST_ALL_PREFIXES(TranslateLanguageListTest,
-                           SetSupportedLanguagesWithAlphaKey);
+                           GetSupportedLanguagesFetch);
 
   // Callback function called when TranslateURLFetcher::Request() is finished.
-  void OnLanguageListFetchComplete(int id,
-                                   bool success,
-                                   const std::string& data);
+  void OnLanguageListFetchComplete(bool success, const std::string& data);
 
   // Notifies the callback list of a translate event.
   void NotifyEvent(int line, const std::string& message);
@@ -106,14 +104,11 @@ class TranslateLanguageList {
   // True if the list has to be fetched when resource requests are allowed.
   bool request_pending_;
 
-  // All the languages supported by the translation server.
-  std::set<std::string> all_supported_languages_;
-
-  // Alpha languages supported by the translation server.
-  std::set<std::string> alpha_languages_;
+  // The languages supported by the translation server.
+  std::set<std::string> supported_languages_;
 
   // A LanguageListFetcher instance to fetch a server providing supported
-  // language list including alpha languages.
+  // language list.
   std::unique_ptr<TranslateURLFetcher> language_list_fetcher_;
 
   // The last-updated time when the language list is sent.

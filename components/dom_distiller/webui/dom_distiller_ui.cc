@@ -4,15 +4,17 @@
 
 #include "components/dom_distiller/webui/dom_distiller_ui.h"
 
+#include <memory>
+
 #include "components/dom_distiller/core/dom_distiller_constants.h"
 #include "components/dom_distiller/core/dom_distiller_service.h"
 #include "components/dom_distiller/webui/dom_distiller_handler.h"
+#include "components/grit/components_resources.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "grit/components_resources.h"
-#include "grit/components_strings.h"
 
 namespace dom_distiller {
 
@@ -51,7 +53,8 @@ DomDistillerUi::DomDistillerUi(content::WebUI* web_ui,
   source->SetJsonPath("strings.js");
 
   // Add message handler.
-  web_ui->AddMessageHandler(new DomDistillerHandler(service, scheme));
+  web_ui->AddMessageHandler(
+      std::make_unique<DomDistillerHandler>(service, scheme));
 }
 
 DomDistillerUi::~DomDistillerUi() {}

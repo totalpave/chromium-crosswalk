@@ -7,10 +7,11 @@
 
 #include <memory>
 
-#include "base/trace_event/trace_event_argument.h"
-#include "cc/resources/platform_color.h"
-#include "cc/resources/resource_provider.h"
-#include "cc/resources/scoped_resource.h"
+#include "base/trace_event/traced_value.h"
+#include "cc/resources/resource_pool.h"
+#include "components/viz/common/resources/platform_color.h"
+#include "components/viz/common/resources/resource_format_utils.h"
+#include "third_party/skia/include/core/SkColor.h"
 
 namespace cc {
 
@@ -27,7 +28,7 @@ class CC_EXPORT TileDrawInfo {
   bool IsReadyToDraw() const {
     switch (mode_) {
       case RESOURCE_MODE:
-        return !!resource_;
+        return is_resource_ready_to_draw_;
       case SOLID_COLOR_MODE:
       case OOM_MODE:
         return true;
@@ -48,16 +49,22 @@ class CC_EXPORT TileDrawInfo {
     return false;
   }
 
-  ResourceId resource_id() const {
+  viz::ResourceId resource_id_for_export() const {
     DCHECK(mode_ == RESOURCE_MODE);
     DCHECK(resource_);
-    return resource_->id();
+    return resource_.resource_id_for_export();
   }
 
-  gfx::Size resource_size() const {
+  const gfx::Size& resource_size() const {
     DCHECK(mode_ == RESOURCE_MODE);
     DCHECK(resource_);
-    return resource_->size();
+    return resource_.size();
+  }
+
+  const viz::ResourceFormat& resource_format() const {
+    DCHECK(mode_ == RESOURCE_MODE);
+    DCHECK(resource_);
+    return resource_.format();
   }
 
   SkColor solid_color() const {
@@ -66,6 +73,7 @@ class CC_EXPORT TileDrawInfo {
   }
 
   bool contents_swizzled() const { return contents_swizzled_; }
+  bool is_premultiplied() const { return is_premultiplied_; }
 
   bool requires_resource() const {
     return mode_ == RESOURCE_MODE || mode_ == OOM_MODE;
@@ -73,40 +81,49 @@ class CC_EXPORT TileDrawInfo {
 
   inline bool has_resource() const { return !!resource_; }
 
-  inline bool has_compressed_resource() const {
-    return resource_ ? IsResourceFormatCompressed(resource_->format()) : false;
+  const ResourcePool::InUsePoolResource& GetResource();
+
+  bool is_checker_imaged() const {
+    DCHECK(!resource_is_checker_imaged_ || resource_);
+    return resource_is_checker_imaged_;
   }
 
   void SetSolidColorForTesting(SkColor color) { set_solid_color(color); }
 
   void AsValueInto(base::trace_event::TracedValue* state) const;
 
-  void set_was_ever_ready_to_draw() { was_ever_ready_to_draw_ = true; }
-  void set_was_ever_used_to_draw() { was_ever_used_to_draw_ = true; }
-  void set_was_a_prepaint_tile() { was_a_prepaint_tile_ = true; }
-
  private:
   friend class Tile;
   friend class TileManager;
 
-  void set_use_resource() { mode_ = RESOURCE_MODE; }
+  void SetResource(ResourcePool::InUsePoolResource resource,
+                   bool resource_is_checker_imaged,
+                   bool contents_swizzled,
+                   bool is_premultiplied);
+  ResourcePool::InUsePoolResource TakeResource();
+
+  void set_resource_ready_for_draw() {
+    is_resource_ready_to_draw_ = true;
+  }
 
   void set_solid_color(const SkColor& color) {
+    DCHECK(!resource_);
     mode_ = SOLID_COLOR_MODE;
     solid_color_ = color;
   }
 
   void set_oom() { mode_ = OOM_MODE; }
 
-  Mode mode_;
-  SkColor solid_color_;
-  Resource* resource_;
-  bool contents_swizzled_;
+  Mode mode_ = RESOURCE_MODE;
+  SkColor solid_color_ = SK_ColorWHITE;
+  ResourcePool::InUsePoolResource resource_;
+  bool contents_swizzled_ = false;
+  bool is_premultiplied_ = false;
+  bool is_resource_ready_to_draw_ = false;
 
-  // Used for gathering UMA stats.
-  bool was_ever_ready_to_draw_ : 1;
-  bool was_ever_used_to_draw_ : 1;
-  bool was_a_prepaint_tile_ : 1;
+  // Set to true if |resource_| was rasterized with checker-imaged content. The
+  // flag can only be true iff we have a valid |resource_|.
+  bool resource_is_checker_imaged_ = false;
 };
 
 }  // namespace cc

@@ -6,19 +6,21 @@
 #define CHROMEOS_DBUS_FAKE_SHILL_SERVICE_CLIENT_H_
 
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/shill_service_client.h"
 
 namespace chromeos {
 
 // A fake implementation of ShillServiceClient. This works in close coordination
 // with FakeShillManagerClient and is not intended to be used independently.
-class CHROMEOS_EXPORT FakeShillServiceClient
+class COMPONENT_EXPORT(CHROMEOS_DBUS) FakeShillServiceClient
     : public ShillServiceClient,
       public ShillServiceClient::TestInterface {
  public:
@@ -104,7 +106,8 @@ class CHROMEOS_EXPORT FakeShillServiceClient
                           const base::Closure& behavior) override;
 
  private:
-  typedef base::ObserverList<ShillPropertyChangedObserver> PropertyObserverList;
+  typedef base::ObserverList<ShillPropertyChangedObserver>::Unchecked
+      PropertyObserverList;
 
   void NotifyObserversPropertyChanged(const dbus::ObjectPath& service_path,
                                       const std::string& property);
@@ -125,7 +128,8 @@ class CHROMEOS_EXPORT FakeShillServiceClient
   std::map<std::string, base::Closure> connect_behavior_;
 
   // Observer list for each service.
-  std::map<dbus::ObjectPath, PropertyObserverList*> observer_list_;
+  std::map<dbus::ObjectPath, std::unique_ptr<PropertyObserverList>>
+      observer_list_;
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.

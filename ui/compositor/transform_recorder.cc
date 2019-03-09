@@ -4,8 +4,8 @@
 
 #include "ui/compositor/transform_recorder.h"
 
-#include "cc/playback/display_item_list.h"
-#include "cc/playback/transform_display_item.h"
+#include "cc/paint/display_item_list.h"
+#include "cc/paint/paint_op_buffer.h"
 #include "ui/compositor/paint_context.h"
 
 namespace ui {
@@ -14,17 +14,24 @@ TransformRecorder::TransformRecorder(const PaintContext& context)
     : context_(context), transformed_(false) {}
 
 TransformRecorder::~TransformRecorder() {
-  if (transformed_)
-    context_.list_->CreateAndAppendItem<cc::EndTransformDisplayItem>(
-        bounds_in_layer_);
+  if (!transformed_)
+    return;
+
+  context_.list_->StartPaint();
+  context_.list_->push<cc::RestoreOp>();
+  context_.list_->EndPaintOfPairedEnd();
 }
 
-void TransformRecorder::Transform(const gfx::Transform& transform,
-                                  const gfx::Size& size_in_context) {
+void TransformRecorder::Transform(const gfx::Transform& transform) {
   DCHECK(!transformed_);
-  bounds_in_layer_ = context_.ToLayerSpaceBounds(size_in_context);
-  context_.list_->CreateAndAppendItem<cc::TransformDisplayItem>(
-      bounds_in_layer_, transform);
+  if (transform.IsIdentity())
+    return;
+
+  context_.list_->StartPaint();
+  context_.list_->push<cc::SaveOp>();
+  context_.list_->push<cc::ConcatOp>(static_cast<SkMatrix>(transform.matrix()));
+  context_.list_->EndPaintOfPairedBegin();
+
   transformed_ = true;
 }
 

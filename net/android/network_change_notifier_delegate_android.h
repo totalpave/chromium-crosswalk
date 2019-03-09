@@ -5,6 +5,7 @@
 #ifndef NET_ANDROID_NETWORK_CHANGE_NOTIFIER_DELEGATE_ANDROID_H_
 #define NET_ANDROID_NETWORK_CHANGE_NOTIFIER_DELEGATE_ANDROID_H_
 
+#include <map>
 #include <string>
 
 #include "base/android/jni_android.h"
@@ -13,6 +14,7 @@
 #include "base/observer_list_threadsafe.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
+#include "net/base/net_export.h"
 #include "net/base/network_change_notifier.h"
 
 namespace net {
@@ -25,6 +27,7 @@ namespace net {
 class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
  public:
   typedef NetworkChangeNotifier::ConnectionType ConnectionType;
+  typedef NetworkChangeNotifier::ConnectionSubtype ConnectionSubtype;
   typedef NetworkChangeNotifier::NetworkHandle NetworkHandle;
   typedef NetworkChangeNotifier::NetworkList NetworkList;
 
@@ -43,6 +46,14 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
                                        ConnectionType connection_type) = 0;
   };
 
+  // Initializes native (C++) side of NetworkChangeNotifierAndroid that
+  // communicates with Java NetworkChangeNotifier class. The Java
+  // NetworkChangeNotifier must have been previously initialized with calls
+  // like this:
+  //   // Creates global singleton Java NetworkChangeNotifier class instance.
+  //   NetworkChangeNotifier.init();
+  //   // Creates Java NetworkChangeNotifierAutoDetect class instance.
+  //   NetworkChangeNotifier.registerToReceiveNotificationsAlways();
   NetworkChangeNotifierDelegateAndroid();
   ~NetworkChangeNotifierDelegateAndroid();
 
@@ -54,7 +65,7 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       jint new_connection_type,
-      jint default_netid);
+      jlong default_netid);
   jint GetConnectionType(JNIEnv* env, jobject obj) const;
 
   // Called from NetworkChangeNotifier.java on the JNI thread whenever
@@ -64,7 +75,7 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
   void NotifyMaxBandwidthChanged(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      jdouble new_max_bandwidth);
+      jint subtype);
 
   // Called from NetworkChangeNotifier.java on the JNI thread to push
   // down notifications of network connectivity events. These functions in
@@ -77,20 +88,20 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
   // NetworkChangeNotifierAutoDetect.Observer functions of the same names.
   void NotifyOfNetworkConnect(JNIEnv* env,
                               const base::android::JavaParamRef<jobject>& obj,
-                              jint net_id,
+                              jlong net_id,
                               jint connection_type);
   void NotifyOfNetworkSoonToDisconnect(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      jint net_id);
+      jlong net_id);
   void NotifyOfNetworkDisconnect(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      jint net_id);
+      jlong net_id);
   void NotifyPurgeActiveNetworkList(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
-      const base::android::JavaParamRef<jintArray>& active_networks);
+      const base::android::JavaParamRef<jlongArray>& active_networks);
 
   // These methods can be called on any thread. Note that the provided observer
   // will be notified on the thread AddObserver() is called on.
@@ -110,8 +121,14 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
   // Can only be called from the main (Java) thread.
   NetworkChangeNotifier::ConnectionSubtype GetCurrentConnectionSubtype() const;
 
-  // Initializes JNI bindings.
-  static bool Register(JNIEnv* env);
+  // Is the current process bound to a specific network?
+  bool IsProcessBoundToNetwork();
+
+  // Returns true if NetworkCallback failed to register, indicating that
+  // network-specific callbacks will not be issued.
+  bool RegisterNetworkCallbackFailed() const {
+    return register_network_callback_failed_;
+  }
 
  private:
   friend class BaseNetworkChangeNotifierAndroidTest;
@@ -119,11 +136,12 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
   // Map of active connected networks and their connection type.
   typedef std::map<NetworkHandle, ConnectionType> NetworkMap;
 
-  // Converts a Java int[] into a NetworkMap. Expects int[] to contain
+  // Converts a Java long[] into a NetworkMap. Expects long[] to contain
   // repeated instances of: NetworkHandle, ConnectionType
-  static void JavaIntArrayToNetworkMap(JNIEnv* env,
-                                       jintArray int_array,
-                                       NetworkMap* network_map);
+  static void JavaLongArrayToNetworkMap(
+      JNIEnv* env,
+      const base::android::JavaRef<jlongArray>& long_array,
+      NetworkMap* network_map);
 
   // Setters that grab appropriate lock.
   void SetCurrentConnectionType(ConnectionType connection_type);
@@ -139,11 +157,15 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
   void FakeNetworkDisconnected(NetworkHandle network);
   void FakePurgeActiveNetworkList(NetworkList networks);
   void FakeDefaultNetwork(NetworkHandle network, ConnectionType type);
-  void FakeMaxBandwidthChanged(double max_bandwidth_mbps);
+  void FakeConnectionSubtypeChanged(ConnectionSubtype subtype);
 
   base::ThreadChecker thread_checker_;
   scoped_refptr<base::ObserverListThreadSafe<Observer>> observers_;
-  base::android::ScopedJavaGlobalRef<jobject> java_network_change_notifier_;
+  const base::android::ScopedJavaGlobalRef<jobject>
+      java_network_change_notifier_;
+  // True if NetworkCallback failed to register, indicating that
+  // network-specific callbacks will not be issued.
+  const bool register_network_callback_failed_;
 
   mutable base::Lock connection_lock_;  // Protects the state below.
   ConnectionType connection_type_;

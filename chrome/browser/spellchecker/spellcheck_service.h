@@ -13,7 +13,6 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/spellchecker/spellcheck_custom_dictionary.h"
@@ -31,14 +30,13 @@ class SupportsUserData;
 }
 
 namespace content {
-class RenderProcessHost;
 class BrowserContext;
 class NotificationDetails;
 class NotificationSource;
 }
 
-namespace spellcheck {
-class FeedbackSender;
+namespace service_manager {
+class Identity;
 }
 
 // Encapsulates the browser side spellcheck service. There is one of these per
@@ -100,7 +98,7 @@ class SpellcheckService : public KeyedService,
 
   // Pass the renderer some basic initialization information. Note that the
   // renderer will not load Hunspell until it needs to.
-  void InitForRenderer(content::RenderProcessHost* process);
+  void InitForRenderer(const service_manager::Identity& renderer_identity);
 
   // Returns a metrics counter associated with this object,
   // or null when metrics recording is disabled.
@@ -113,10 +111,8 @@ class SpellcheckService : public KeyedService,
   void LoadHunspellDictionaries();
 
   // Returns the instance of the vector of Hunspell dictionaries.
-  const ScopedVector<SpellcheckHunspellDictionary>& GetHunspellDictionaries();
-
-  // Returns the instance of the spelling service feedback sender.
-  spellcheck::FeedbackSender* GetFeedbackSender();
+  const std::vector<std::unique_ptr<SpellcheckHunspellDictionary>>&
+  GetHunspellDictionaries();
 
   // Load a dictionary from a given path. Format specifies how the dictionary
   // is stored. Return value is true if successful.
@@ -137,7 +133,7 @@ class SpellcheckService : public KeyedService,
   // SpellcheckCustomDictionary::Observer implementation.
   void OnCustomDictionaryLoaded() override;
   void OnCustomDictionaryChanged(
-      const SpellcheckCustomDictionary::Change& dictionary_change) override;
+      const SpellcheckCustomDictionary::Change& change) override;
 
   // SpellcheckHunspellDictionary::Observer implementation.
   void OnHunspellDictionaryInitialized(const std::string& language) override;
@@ -171,10 +167,6 @@ class SpellcheckService : public KeyedService,
   // prefs::kAcceptLanguages.
   void OnAcceptLanguagesChanged();
 
-  // Enables the feedback sender if spelling server is available and enabled.
-  // Otherwise disables the feedback sender.
-  void UpdateFeedbackSenderState();
-
   PrefChangeRegistrar pref_change_registrar_;
   content::NotificationRegistrar registrar_;
 
@@ -185,9 +177,8 @@ class SpellcheckService : public KeyedService,
 
   std::unique_ptr<SpellcheckCustomDictionary> custom_dictionary_;
 
-  ScopedVector<SpellcheckHunspellDictionary> hunspell_dictionaries_;
-
-  std::unique_ptr<spellcheck::FeedbackSender> feedback_sender_;
+  std::vector<std::unique_ptr<SpellcheckHunspellDictionary>>
+      hunspell_dictionaries_;
 
   base::WeakPtrFactory<SpellcheckService> weak_ptr_factory_;
 

@@ -21,8 +21,9 @@
 #include "components/invalidation/public/invalidation_handler.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
+#include "components/policy/core/common/cloud/enterprise_metrics.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "google/cacheinvalidation/include/types.h"
-#include "policy/proto/device_management_backend.pb.h"
 
 namespace base {
 class Clock;
@@ -73,7 +74,7 @@ class CloudPolicyInvalidator : public syncer::InvalidationHandler,
       enterprise_management::DeviceRegisterRequest::Type type,
       CloudPolicyCore* core,
       const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-      std::unique_ptr<base::Clock> clock,
+      base::Clock* clock,
       int64_t highest_handled_invalidation_version);
   ~CloudPolicyInvalidator() override;
 
@@ -156,11 +157,12 @@ class CloudPolicyInvalidator : public syncer::InvalidationHandler,
 
   // Get the kMetricPolicyRefresh histogram metric which should be incremented
   // when a policy is stored.
-  int GetPolicyRefreshMetric(bool policy_changed);
+  MetricPolicyRefresh GetPolicyRefreshMetric(bool policy_changed);
 
   // Get the kMetricPolicyInvalidations histogram metric which should be
   // incremented when an invalidation is received.
-  int GetInvalidationMetric(bool is_missing_payload, bool is_expired);
+  PolicyInvalidationType GetInvalidationMetric(bool is_missing_payload,
+                                               bool is_expired);
 
   // Determine if invalidations have been enabled longer than the grace period.
   bool GetInvalidationsEnabled();
@@ -184,7 +186,7 @@ class CloudPolicyInvalidator : public syncer::InvalidationHandler,
   const scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
   // The clock.
-  std::unique_ptr<base::Clock> clock_;
+  base::Clock* clock_;
 
   // The invalidation service.
   invalidation::InvalidationService* invalidation_service_;

@@ -15,13 +15,13 @@
 #include "base/memory/ref_counted.h"
 #include "base/strings/string16.h"
 #include "printing/image.h"
-#include "third_party/WebKit/public/web/WebPrintScalingOption.h"
+#include "third_party/blink/public/web/web_print_scaling_option.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
 struct PrintMsg_Print_Params;
 struct PrintMsg_PrintPages_Params;
-struct PrintHostMsg_DidPrintPage_Params;
+struct PrintHostMsg_DidPrintDocument_Params;
 
 // A class which represents an output page used in the MockPrinter class.
 // The MockPrinter class stores output pages in a vector, so, this class
@@ -85,9 +85,11 @@ class MockPrinter {
   void UpdateSettings(int cookie,
                       PrintMsg_PrintPages_Params* params,
                       const std::vector<int>& page_range_array,
-                      int margins_type);
+                      int margins_type,
+                      const gfx::Size& page_size,
+                      int scale_factor);
   void SetPrintedPagesCount(int cookie, int number_pages);
-  void PrintPage(const PrintHostMsg_DidPrintPage_Params& params);
+  void PrintPage(const PrintHostMsg_DidPrintDocument_Params& params);
 
   // Functions that retrieve the output pages.
   Status GetPrinterStatus() const { return printer_status_; }
@@ -121,9 +123,6 @@ class MockPrinter {
 
   // Specifies dots per inch.
   double dpi_;
-
-  // Desired apparent dpi on paper.
-  int desired_dpi_;
 
   // Print selection.
   bool selection_only_;

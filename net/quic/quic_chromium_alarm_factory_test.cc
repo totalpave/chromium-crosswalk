@@ -4,15 +4,15 @@
 
 #include "net/quic/quic_chromium_alarm_factory.h"
 
-#include "net/quic/test_tools/mock_clock.h"
-#include "net/quic/test_tools/test_task_runner.h"
+#include "net/quic/test_task_runner.h"
+#include "net/third_party/quic/test_tools/mock_clock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
 namespace test {
 namespace {
 
-class TestDelegate : public QuicAlarm::Delegate {
+class TestDelegate : public quic::QuicAlarm::Delegate {
  public:
   TestDelegate() : fired_(false) {}
 
@@ -33,15 +33,15 @@ class QuicChromiumAlarmFactoryTest : public ::testing::Test {
 
   scoped_refptr<TestTaskRunner> runner_;
   QuicChromiumAlarmFactory alarm_factory_;
-  MockClock clock_;
+  quic::MockClock clock_;
 };
 
 TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarm) {
   TestDelegate* delegate = new TestDelegate();
-  std::unique_ptr<QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
+  std::unique_ptr<quic::QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
 
-  QuicTime::Delta delta = QuicTime::Delta::FromMicroseconds(1);
-  alarm->Set(clock_.Now().Add(delta));
+  quic::QuicTime::Delta delta = quic::QuicTime::Delta::FromMicroseconds(1);
+  alarm->Set(clock_.Now() + delta);
 
   // Verify that the alarm task has been posted.
   ASSERT_EQ(1u, runner_->GetPostedTasks().size());
@@ -49,16 +49,16 @@ TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarm) {
             runner_->GetPostedTasks()[0].delay);
 
   runner_->RunNextTask();
-  EXPECT_EQ(QuicTime::Zero().Add(delta), clock_.Now());
+  EXPECT_EQ(quic::QuicTime::Zero() + delta, clock_.Now());
   EXPECT_TRUE(delegate->fired());
 }
 
 TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndCancel) {
   TestDelegate* delegate = new TestDelegate();
-  std::unique_ptr<QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
+  std::unique_ptr<quic::QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
 
-  QuicTime::Delta delta = QuicTime::Delta::FromMicroseconds(1);
-  alarm->Set(clock_.Now().Add(delta));
+  quic::QuicTime::Delta delta = quic::QuicTime::Delta::FromMicroseconds(1);
+  alarm->Set(clock_.Now() + delta);
   alarm->Cancel();
 
   // The alarm task should still be posted.
@@ -67,19 +67,19 @@ TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndCancel) {
             runner_->GetPostedTasks()[0].delay);
 
   runner_->RunNextTask();
-  EXPECT_EQ(QuicTime::Zero().Add(delta), clock_.Now());
+  EXPECT_EQ(quic::QuicTime::Zero() + delta, clock_.Now());
   EXPECT_FALSE(delegate->fired());
 }
 
 TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndReset) {
   TestDelegate* delegate = new TestDelegate();
-  std::unique_ptr<QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
+  std::unique_ptr<quic::QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
 
-  QuicTime::Delta delta = QuicTime::Delta::FromMicroseconds(1);
-  alarm->Set(clock_.Now().Add(delta));
+  quic::QuicTime::Delta delta = quic::QuicTime::Delta::FromMicroseconds(1);
+  alarm->Set(clock_.Now() + delta);
   alarm->Cancel();
-  QuicTime::Delta new_delta = QuicTime::Delta::FromMicroseconds(3);
-  alarm->Set(clock_.Now().Add(new_delta));
+  quic::QuicTime::Delta new_delta = quic::QuicTime::Delta::FromMicroseconds(3);
+  alarm->Set(clock_.Now() + new_delta);
 
   // The alarm task should still be posted.
   ASSERT_EQ(1u, runner_->GetPostedTasks().size());
@@ -87,33 +87,33 @@ TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndReset) {
             runner_->GetPostedTasks()[0].delay);
 
   runner_->RunNextTask();
-  EXPECT_EQ(QuicTime::Zero().Add(delta), clock_.Now());
+  EXPECT_EQ(quic::QuicTime::Zero() + delta, clock_.Now());
   EXPECT_FALSE(delegate->fired());
 
   // The alarm task should be posted again.
   ASSERT_EQ(1u, runner_->GetPostedTasks().size());
 
   runner_->RunNextTask();
-  EXPECT_EQ(QuicTime::Zero().Add(new_delta), clock_.Now());
+  EXPECT_EQ(quic::QuicTime::Zero() + new_delta, clock_.Now());
   EXPECT_TRUE(delegate->fired());
 }
 
 TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndResetEarlier) {
   TestDelegate* delegate = new TestDelegate();
-  std::unique_ptr<QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
+  std::unique_ptr<quic::QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
 
-  QuicTime::Delta delta = QuicTime::Delta::FromMicroseconds(3);
-  alarm->Set(clock_.Now().Add(delta));
+  quic::QuicTime::Delta delta = quic::QuicTime::Delta::FromMicroseconds(3);
+  alarm->Set(clock_.Now() + delta);
   alarm->Cancel();
-  QuicTime::Delta new_delta = QuicTime::Delta::FromMicroseconds(1);
-  alarm->Set(clock_.Now().Add(new_delta));
+  quic::QuicTime::Delta new_delta = quic::QuicTime::Delta::FromMicroseconds(1);
+  alarm->Set(clock_.Now() + new_delta);
 
   // Both alarm tasks will be posted.
   ASSERT_EQ(2u, runner_->GetPostedTasks().size());
 
   // The earlier task will execute and will fire the alarm->
   runner_->RunNextTask();
-  EXPECT_EQ(QuicTime::Zero().Add(new_delta), clock_.Now());
+  EXPECT_EQ(quic::QuicTime::Zero() + new_delta, clock_.Now());
   EXPECT_TRUE(delegate->fired());
   delegate->Clear();
 
@@ -123,20 +123,20 @@ TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndResetEarlier) {
   // When the latter task is executed, the weak ptr will be invalid and
   // the alarm will not fire.
   runner_->RunNextTask();
-  EXPECT_EQ(QuicTime::Zero().Add(delta), clock_.Now());
+  EXPECT_EQ(quic::QuicTime::Zero() + delta, clock_.Now());
   EXPECT_FALSE(delegate->fired());
 }
 
 TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndUpdate) {
   TestDelegate* delegate = new TestDelegate();
-  std::unique_ptr<QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
+  std::unique_ptr<quic::QuicAlarm> alarm(alarm_factory_.CreateAlarm(delegate));
 
-  QuicTime start = clock_.Now();
-  QuicTime::Delta delta = QuicTime::Delta::FromMicroseconds(1);
-  alarm->Set(clock_.Now().Add(delta));
-  QuicTime::Delta new_delta = QuicTime::Delta::FromMicroseconds(3);
-  alarm->Update(clock_.Now().Add(new_delta),
-                QuicTime::Delta::FromMicroseconds(1));
+  quic::QuicTime start = clock_.Now();
+  quic::QuicTime::Delta delta = quic::QuicTime::Delta::FromMicroseconds(1);
+  alarm->Set(clock_.Now() + delta);
+  quic::QuicTime::Delta new_delta = quic::QuicTime::Delta::FromMicroseconds(3);
+  alarm->Update(clock_.Now() + new_delta,
+                quic::QuicTime::Delta::FromMicroseconds(1));
 
   // The alarm task should still be posted.
   ASSERT_EQ(1u, runner_->GetPostedTasks().size());
@@ -144,29 +144,30 @@ TEST_F(QuicChromiumAlarmFactoryTest, CreateAlarmAndUpdate) {
             runner_->GetPostedTasks()[0].delay);
 
   runner_->RunNextTask();
-  EXPECT_EQ(QuicTime::Zero().Add(delta), clock_.Now());
+  EXPECT_EQ(quic::QuicTime::Zero() + delta, clock_.Now());
   EXPECT_FALSE(delegate->fired());
 
   // Move the alarm forward 1us and ensure it doesn't move forward.
-  alarm->Update(clock_.Now().Add(new_delta),
-                QuicTime::Delta::FromMicroseconds(2));
+  alarm->Update(clock_.Now() + new_delta,
+                quic::QuicTime::Delta::FromMicroseconds(2));
 
   ASSERT_EQ(1u, runner_->GetPostedTasks().size());
-  EXPECT_EQ(base::TimeDelta::FromMicroseconds(
-                new_delta.Subtract(delta).ToMicroseconds()),
-            runner_->GetPostedTasks()[0].delay);
+  EXPECT_EQ(
+      base::TimeDelta::FromMicroseconds((new_delta - delta).ToMicroseconds()),
+      runner_->GetPostedTasks()[0].delay);
   runner_->RunNextTask();
-  EXPECT_EQ(start.Add(new_delta), clock_.Now());
+  EXPECT_EQ(start + new_delta, clock_.Now());
   EXPECT_TRUE(delegate->fired());
 
   // Set the alarm via an update call.
-  new_delta = QuicTime::Delta::FromMicroseconds(5);
-  alarm->Update(clock_.Now().Add(new_delta),
-                QuicTime::Delta::FromMicroseconds(1));
+  new_delta = quic::QuicTime::Delta::FromMicroseconds(5);
+  alarm->Update(clock_.Now() + new_delta,
+                quic::QuicTime::Delta::FromMicroseconds(1));
   EXPECT_TRUE(alarm->IsSet());
 
   // Update it with an uninitialized time and ensure it's cancelled.
-  alarm->Update(QuicTime::Zero(), QuicTime::Delta::FromMicroseconds(1));
+  alarm->Update(quic::QuicTime::Zero(),
+                quic::QuicTime::Delta::FromMicroseconds(1));
   EXPECT_FALSE(alarm->IsSet());
 }
 

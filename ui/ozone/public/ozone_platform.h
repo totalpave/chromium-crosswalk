@@ -6,31 +6,41 @@
 #define UI_OZONE_PUBLIC_OZONE_PLATFORM_H_
 
 #include <memory>
+#include <vector>
 
+#include "base/callback.h"
 #include "base/macros.h"
+#include "base/message_loop/message_loop.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
+#include "ui/gfx/buffer_types.h"
 #include "ui/ozone/ozone_export.h"
 
-namespace gfx {
-class Rect;
+namespace display {
+class NativeDisplayDelegate;
 }
 
-namespace shell {
+namespace IPC {
+class MessageFilter;
+}
+
+namespace service_manager {
 class Connector;
-class Connection;
 }
 
 namespace ui {
 
 class CursorFactoryOzone;
 class InputController;
-class GpuPlatformSupport;
 class GpuPlatformSupportHost;
-class NativeDisplayDelegate;
 class OverlayManagerOzone;
+class PlatformScreen;
 class PlatformWindow;
 class PlatformWindowDelegate;
 class SurfaceFactoryOzone;
 class SystemInputInjector;
+class PlatformClipboard;
+
+struct PlatformWindowInitProperties;
 
 // Base class for Ozone platform implementations.
 //
@@ -51,24 +61,64 @@ class OZONE_EXPORT OzonePlatform {
   OzonePlatform();
   virtual ~OzonePlatform();
 
-  // Additional initalization params for the platform. Platforms must not retain
-  // a reference to this structure.
+  // Additional initialization params for the platform. Platforms must not
+  // retain a reference to this structure.
   struct InitParams {
     // Ozone may retain this pointer for later use. An Ozone platform embedder
-    // must set this parameter in order for the Ozone platform implementation to
-    // be able to use Mojo.
-    shell::Connector* connector = nullptr;
+    // may set this value if operating in the idiomatic mojo fashion with a
+    // service manager. Mojo transport does not require a service manager but in
+    // that case ozone will not be able to connect to the DRM and cursor
+    // services. Instead the host must invoke |OnGpuServiceLaunched| as
+    // described in ui/ozone/public/gpu_platform_support_host.h to inform the
+    // ozone host that a process containing these services is running.
+    service_manager::Connector* connector = nullptr;
 
     // Setting this to true indicates that the platform implementation should
     // operate as a single process for platforms (i.e. drm) that are usually
-    // split between a main and gpu specific portion.
+    // split between a host and viz specific portion.
     bool single_process = false;
+
+    // Setting this to true indicates that the platform implementation should
+    // use mojo. Setting this to true requires calling |AddInterfaces|
+    // afterwards in the Viz process and providing a connector as part.
+    bool using_mojo = false;
+
+    // Setting this to true indicates the display compositor will run in the GPU
+    // process (as part of the viz service). Note this param is currently only
+    // checked in Ozone DRM for overlay support. Other Ozone platforms either
+    // don't need to change anything or assume that VizDisplayCompositor is
+    // always enabled.
+    // TODO(crbug.com/936425): Remove after VizDisplayCompositor feature
+    // launches.
+    bool viz_display_compositor = false;
   };
 
-  // Initializes the subsystems/resources necessary for the UI process (e.g.
-  // events, etc.)
-  // TODO(rjkroege): Remove deprecated entry point (http://crbug.com/620934)
-  static void InitializeForUI();
+  // Struct used to indicate platform properties.
+  struct PlatformProperties {
+    // Fuchsia only: set to true when the platforms requires |view_token| field
+    // in PlatformWindowInitProperties when creating a window.
+    bool needs_view_token = false;
+
+    // Determine whether we should default to native decorations or the custom
+    // frame based on the currently-running window manager.
+    bool custom_frame_pref_default = false;
+
+    // Determine whether switching between system and custom frames is
+    // supported.
+    bool use_system_title_bar = false;
+
+    // Determines if the platform requires mojo communication for the IPC.
+    // Currently used only by the Ozone/Wayland platform.
+    bool requires_mojo = false;
+  };
+
+  using StartupCallback = base::OnceCallback<void(OzonePlatform*)>;
+
+  // Ensures the OzonePlatform instance without doing any initialization.
+  // No-op in case the instance is already created.
+  // This is useful in order call virtual methods that depend on the ozone
+  // platform selected at runtime, e.g. ::GetMessageLoopTypeForGpu.
+  static OzonePlatform* EnsureInstance();
 
   // Initializes the subsystems/resources necessary for the UI process (e.g.
   // events) with additional properties to customize the ozone platform
@@ -76,15 +126,19 @@ class OZONE_EXPORT OzonePlatform {
   // InitalizeForUI.
   static void InitializeForUI(const InitParams& args);
 
-  // Initializes the subsystems/resources necessary for rendering (i.e. GPU).
-  // TODO(rjkroege): Remove deprecated entry point (http://crbug.com/620934)
-  static void InitializeForGPU();
-
   // Initializes the subsystems for rendering but with additional properties
   // provided by |args| as with InitalizeForUI.
   static void InitializeForGPU(const InitParams& args);
 
   static OzonePlatform* GetInstance();
+
+  // Registers a callback to be run when the OzonePlatform is initialized. Note
+  // that if an instance already exists, then the callback is called
+  // immediately. If an instance does not exist, and is created later, then the
+  // callback is called once the instance is created and initialized, on the
+  // thread it is initialized on. If the caller requires the callback to run on
+  // a specific thread, then it needs to do ensure that by itself.
+  static void RegisterStartupCallback(StartupCallback callback);
 
   // Factory getters to override in subclasses. The returned objects will be
   // injected into the appropriate layer at startup. Subclasses should not
@@ -93,33 +147,54 @@ class OZONE_EXPORT OzonePlatform {
   virtual ui::OverlayManagerOzone* GetOverlayManager() = 0;
   virtual ui::CursorFactoryOzone* GetCursorFactoryOzone() = 0;
   virtual ui::InputController* GetInputController() = 0;
-  virtual ui::GpuPlatformSupport* GetGpuPlatformSupport() = 0;
+  virtual IPC::MessageFilter* GetGpuMessageFilter();
   virtual ui::GpuPlatformSupportHost* GetGpuPlatformSupportHost() = 0;
   virtual std::unique_ptr<SystemInputInjector> CreateSystemInputInjector() = 0;
   virtual std::unique_ptr<PlatformWindow> CreatePlatformWindow(
       PlatformWindowDelegate* delegate,
-      const gfx::Rect& bounds) = 0;
-  virtual std::unique_ptr<ui::NativeDisplayDelegate>
+      PlatformWindowInitProperties properties) = 0;
+  virtual std::unique_ptr<display::NativeDisplayDelegate>
   CreateNativeDisplayDelegate() = 0;
+  virtual std::unique_ptr<PlatformScreen> CreateScreen();
+  virtual PlatformClipboard* GetPlatformClipboard();
+
+  // Returns true if the specified buffer format is supported.
+  virtual bool IsNativePixmapConfigSupported(gfx::BufferFormat format,
+                                             gfx::BufferUsage usage) const;
+
+  // Returns a struct that contains configuration and requirements for the
+  // current platform implementation.
+  virtual const PlatformProperties& GetPlatformProperties();
+
+  // Returns the message loop type required for OzonePlatform instance that
+  // will be initialized for the GPU process.
+  virtual base::MessageLoop::Type GetMessageLoopTypeForGpu();
 
   // Ozone platform implementations may also choose to expose mojo interfaces to
   // internal functionality. Embedders wishing to take advantage of ozone mojo
-  // implementations must invoke AddInterfaces with a valid shell::Connection*
-  // pointer to export all Mojo interfaces defined within Ozone.
+  // implementations must invoke AddInterfaces with a valid
+  // service_manager::BinderRegistry* pointer to export all Mojo interfaces
+  // defined within Ozone.
+  //
+  // Requests arriving before they can be immediately handled will be queued and
+  // executed later.
   //
   // A default do-nothing implementation is provided to permit platform
   // implementations to opt out of implementing any Mojo interfaces.
-  virtual void AddInterfaces(shell::Connection* connection);
+  virtual void AddInterfaces(service_manager::BinderRegistry* registry);
+
+  // The GPU-specific portion of Ozone would typically run in a sandboxed
+  // process for additional security. Some startup might need to wait until
+  // after the sandbox has been configured. The embedder should use this method
+  // to specify that the sandbox is configured and that GPU-side setup should
+  // complete. A default do-nothing implementation is provided to permit
+  // platform implementations to ignore sandboxing and any associated launch
+  // ordering issues.
+  virtual void AfterSandboxEntry();
 
  private:
-  virtual void InitializeUI() = 0;
-  virtual void InitializeGPU() = 0;
-  virtual void InitializeUI(const InitParams& args);
-  virtual void InitializeGPU(const InitParams& args);
-
-  static void CreateInstance();
-
-  static OzonePlatform* instance_;
+  virtual void InitializeUI(const InitParams& params) = 0;
+  virtual void InitializeGPU(const InitParams& params) = 0;
 
   DISALLOW_COPY_AND_ASSIGN(OzonePlatform);
 };

@@ -18,7 +18,8 @@ class WebContents;
 class GeneratedPasswordSavedInfoBarDelegateAndroid
     : public infobars::InfoBarDelegate {
  public:
-  // Creates and shows the infobar. Implemented in the platform-specific file.
+  // Creates and shows the infobar. Implemented with
+  // GeneratedPasswordSavedInfoBar.
   static void Create(content::WebContents* web_contents);
 
   ~GeneratedPasswordSavedInfoBarDelegateAndroid() override;
@@ -26,7 +27,12 @@ class GeneratedPasswordSavedInfoBarDelegateAndroid
   // Returns the translated text of the message to display.
   const base::string16& message_text() const { return message_text_; }
 
-  // Returns the range of the message text that should be a link.
+  // Returns the translated text of the details message to display. T
+  const base::string16& details_message_text() const {
+    return details_message_text_;
+  }
+
+  // Returns the range of the details message text that should be a link.
   const gfx::Range& inline_link_range() const { return inline_link_range_; }
 
   // Returns the translated label of the button.
@@ -36,27 +42,24 @@ class GeneratedPasswordSavedInfoBarDelegateAndroid
   void OnInlineLinkClicked();
 
  private:
-  explicit GeneratedPasswordSavedInfoBarDelegateAndroid(
-      content::WebContents* web_contents);
+  GeneratedPasswordSavedInfoBarDelegateAndroid();
 
   // infobars::InfoBarDelegate:
-  Type GetInfoBarType() const override;
   infobars::InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
   int GetIconId() const override;
 
   // The translated text of the message to display.
   base::string16 message_text_;
 
-  // The range of the message that should be a link.
+  // The translated text of the details message to display. This message
+  // explains where the generated password is saved.
+  base::string16 details_message_text_;
+
+  // The range of the details message that should be a link.
   gfx::Range inline_link_range_;
 
   // The translated label of the button.
   base::string16 button_label_;
-
-  content::WebContents* web_contents_;
-
-  // If smart lock branding should be used.
-  bool smart_lock_branding_enabled_;
 
   DISALLOW_COPY_AND_ASSIGN(GeneratedPasswordSavedInfoBarDelegateAndroid);
 };

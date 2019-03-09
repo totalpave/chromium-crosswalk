@@ -9,7 +9,17 @@
 
 /**
  * @typedef {{
+ *   vendorId: (number|undefined),
+ *   productId: (number|undefined),
+ *   usagePage: (number|undefined)
+ * }}
+ */
+var GnubbyEnumerationFilter;
+
+/**
+ * @typedef {{
  *   namespace: string,
+ *   enumeratedBy: (GnubbyEnumerationFilter|undefined),
  *   device: number
  * }}
  */
@@ -20,11 +30,7 @@ var GnubbyDeviceId;
  * @const
  * @enum {number}
  */
-var GnubbyEnumerationTypes = {
-  ANY: 0,
-  VID_PID: 1,
-  FIDO_U2F: 2
-};
+var GnubbyEnumerationTypes = {ANY: 0, VID_PID: 1, FIDO_U2F: 2};
 
 /**
  * @typedef {{
@@ -77,7 +83,9 @@ Gnubbies.prototype.registerNamespace = function(namespace, impl) {
  * @return {boolean} Whether the device is a shared access device.
  */
 Gnubbies.prototype.isSharedAccess = function(id) {
-  if (!this.impl_.hasOwnProperty(id.namespace)) return false;
+  if (!this.impl_.hasOwnProperty(id.namespace)) {
+    return false;
+  }
   return this.impl_[id.namespace].isSharedAccess;
 };
 
@@ -163,7 +171,7 @@ Gnubbies.prototype.enumerate = function(cb, opt_type) {
     }
 
     console.log(UTIL_fmt('Enumerated ' + devs.length + ' gnubbies'));
-    console.log(devs);
+    console.log(UTIL_fmt(JSON.stringify(devs)));
 
     var presentDevs = {};
     var deviceIds = [];
@@ -203,7 +211,7 @@ Gnubbies.prototype.enumerate = function(cb, opt_type) {
   function makeEnumerateCb(namespace) {
     return function(devs) {
       enumerated(namespace, deviceIds, devs);
-    }
+    };
   }
 
   this.pendingEnumerate.push(cb);
@@ -230,16 +238,15 @@ Gnubbies.INACTIVITY_TIMEOUT_MARGIN_MILLIS = 30000;
 Gnubbies.SYS_TIMER_ = new WindowTimer();
 
 /**
- * @param {number|undefined} opt_timeoutMillis Timeout in milliseconds
+ * @param {number=} opt_timeoutMillis Timeout in milliseconds
  */
 Gnubbies.prototype.resetInactivityTimer = function(opt_timeoutMillis) {
   var millis = opt_timeoutMillis ?
       opt_timeoutMillis + Gnubbies.INACTIVITY_TIMEOUT_MARGIN_MILLIS :
       Gnubbies.INACTIVITY_TIMEOUT_MARGIN_MILLIS;
   if (!this.inactivityTimer) {
-    this.inactivityTimer =
-        new CountdownTimer(
-            Gnubbies.SYS_TIMER_, millis, this.inactivityTimeout_.bind(this));
+    this.inactivityTimer = new CountdownTimer(
+        Gnubbies.SYS_TIMER_, millis, this.inactivityTimeout_.bind(this));
   } else if (millis > this.inactivityTimer.millisecondsUntilExpired()) {
     this.inactivityTimer.clearTimeout();
     this.inactivityTimer.setTimeout(millis, this.inactivityTimeout_.bind(this));
@@ -255,7 +262,8 @@ Gnubbies.prototype.inactivityTimeout_ = function() {
   for (var namespace in this.openDevs_) {
     for (var dev in this.openDevs_[namespace]) {
       var deviceId = Number(dev);
-      console.warn(namespace + ' device ' + deviceId +
+      console.warn(
+          namespace + ' device ' + deviceId +
           ' still open after inactivity, closing');
       this.openDevs_[namespace][deviceId].destroy();
     }
@@ -278,10 +286,14 @@ Gnubbies.prototype.addClient = function(which, who, cb) {
     if (gnubby.closing) {
       // Device is closing or already closed.
       self.removeClient(gnubby, who);
-      if (cb) { cb(-GnubbyDevice.NODEVICE); }
+      if (cb) {
+        cb(-GnubbyDevice.NODEVICE);
+      }
     } else {
       gnubby.registerClient(who);
-      if (cb) { cb(-GnubbyDevice.OK, gnubby); }
+      if (cb) {
+        cb(-GnubbyDevice.OK, gnubby);
+      }
     }
   }
 
@@ -309,7 +321,9 @@ Gnubbies.prototype.addClient = function(which, who, cb) {
   if (!dev) {
     // Index out of bounds. Device does not exist in current enumeration.
     this.removeClient(null, who);
-    if (cb) { cb(-GnubbyDevice.NODEVICE); }
+    if (cb) {
+      cb(-GnubbyDevice.NODEVICE);
+    }
     return;
   }
 
@@ -377,8 +391,9 @@ Gnubbies.prototype.cancelAddClient = function(which) {
   if (this.pendingOpens_[which.namespace] &&
       this.pendingOpens_[which.namespace][which.device]) {
     var cancelOpenImpl = this.impl_[which.namespace].cancelOpen;
-    if (cancelOpenImpl)
+    if (cancelOpenImpl) {
       cancelOpenImpl(this, which.device, dev);
+    }
   }
 };
 
@@ -396,8 +411,9 @@ Gnubbies.prototype.removeClient = function(whichDev, who) {
   for (var namespace in this.openDevs_) {
     for (var devId in this.openDevs_[namespace]) {
       var deviceId = Number(devId);
-      if (isNaN(deviceId))
+      if (isNaN(deviceId)) {
         deviceId = devId;
+      }
       var dev = this.openDevs_[namespace][deviceId];
       if (dev.hasClient(who)) {
         if (whichDev && dev != whichDev) {

@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,9 +22,7 @@
 
 namespace device {
 
-class BluetoothAdapter;
 class BluetoothDevice;
-class BluetoothRemoteGattCharacteristic;
 
 }  // namespace device
 
@@ -43,16 +41,14 @@ class BluetoothRemoteGattServiceBlueZ
       public BluetoothGattCharacteristicClient::Observer,
       public device::BluetoothRemoteGattService {
  public:
+  ~BluetoothRemoteGattServiceBlueZ() override;
+
   // device::BluetoothRemoteGattService overrides.
   device::BluetoothUUID GetUUID() const override;
   device::BluetoothDevice* GetDevice() const override;
   bool IsPrimary() const override;
-  std::vector<device::BluetoothRemoteGattCharacteristic*> GetCharacteristics()
-      const override;
   std::vector<device::BluetoothRemoteGattService*> GetIncludedServices()
       const override;
-  device::BluetoothRemoteGattCharacteristic* GetCharacteristic(
-      const std::string& identifier) const override;
 
   // Notifies its observers that the GATT service has changed. This is mainly
   // used by BluetoothRemoteGattCharacteristicBlueZ instances to notify
@@ -84,7 +80,6 @@ class BluetoothRemoteGattServiceBlueZ
   BluetoothRemoteGattServiceBlueZ(BluetoothAdapterBlueZ* adapter,
                                   BluetoothDeviceBlueZ* device,
                                   const dbus::ObjectPath& object_path);
-  ~BluetoothRemoteGattServiceBlueZ() override;
 
   // bluez::BluetoothGattServiceClient::Observer override.
   void GattServicePropertyChanged(const dbus::ObjectPath& object_path,
@@ -100,17 +95,6 @@ class BluetoothRemoteGattServiceBlueZ
   // The device this GATT service belongs to. It's ok to store a raw pointer
   // here since |device_| owns this instance.
   BluetoothDeviceBlueZ* device_;
-
-  // TODO(rkc): Investigate and fix ownership of the characteristic objects in
-  // this map. See crbug.com/604166.
-  using CharacteristicMap =
-      std::map<dbus::ObjectPath, BluetoothRemoteGattCharacteristicBlueZ*>;
-
-  // Mapping from GATT characteristic object paths to characteristic objects.
-  // owned by this service. Since the BlueZ implementation uses object
-  // paths as unique identifiers, we also use this mapping to return
-  // characteristics by identifier.
-  CharacteristicMap characteristics_;
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.

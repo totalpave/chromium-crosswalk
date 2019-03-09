@@ -11,36 +11,46 @@
 
 #include "base/memory/ref_counted.h"
 #include "cc/layers/picture_layer.h"
-#include "cc/playback/recording_source.h"
+#include "cc/layers/recording_source.h"
 
 namespace cc {
 class FakePictureLayer : public PictureLayer {
  public:
   static scoped_refptr<FakePictureLayer> Create(ContentLayerClient* client) {
-    return make_scoped_refptr(new FakePictureLayer(client));
+    return base::WrapRefCounted(new FakePictureLayer(client));
   }
 
   static scoped_refptr<FakePictureLayer> CreateWithRecordingSource(
       ContentLayerClient* client,
       std::unique_ptr<RecordingSource> source) {
-    return make_scoped_refptr(new FakePictureLayer(client, std::move(source)));
+    return base::WrapRefCounted(
+        new FakePictureLayer(client, std::move(source)));
   }
 
+  // Layer implementation.
   std::unique_ptr<LayerImpl> CreateLayerImpl(LayerTreeImpl* tree_impl) override;
+  bool Update() override;
+  bool HasSlowPaths() const override;
+  bool HasNonAAPaint() const override;
 
   int update_count() const { return update_count_; }
   void reset_update_count() { update_count_ = 0; }
-
-  size_t push_properties_count() const { return push_properties_count_; }
-  void reset_push_properties_count() { push_properties_count_ = 0; }
 
   void set_always_update_resources(bool always_update_resources) {
     always_update_resources_ = always_update_resources;
   }
 
-  bool Update() override;
+  void set_force_content_has_slow_paths(bool flag) {
+    force_content_has_slow_paths_ = flag;
+  }
 
-  void PushPropertiesTo(LayerImpl* layer) override;
+  void set_force_content_has_non_aa_paint(bool flag) {
+    force_content_has_non_aa_paint_ = flag;
+  }
+
+  void set_fixed_tile_size(gfx::Size fixed_tile_size) {
+    fixed_tile_size_ = fixed_tile_size;
+  }
 
  private:
   explicit FakePictureLayer(ContentLayerClient* client);
@@ -48,9 +58,12 @@ class FakePictureLayer : public PictureLayer {
                    std::unique_ptr<RecordingSource> source);
   ~FakePictureLayer() override;
 
-  int update_count_;
-  size_t push_properties_count_;
-  bool always_update_resources_;
+  int update_count_ = 0;
+  bool always_update_resources_ = false;
+
+  bool force_content_has_slow_paths_ = false;
+  bool force_content_has_non_aa_paint_ = false;
+  gfx::Size fixed_tile_size_;
 };
 
 }  // namespace cc

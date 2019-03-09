@@ -7,18 +7,15 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/browser/component_updater/pepper_flash_component_installer.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pepper_flash.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "ppapi/shared_impl/test_globals.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-using content::BrowserThread;
 
 namespace component_updater {
 
@@ -41,6 +38,16 @@ const base::FilePath::CharType kDataPath[] =
 #else
     FILE_PATH_LITERAL("components\\flapper\\NONEXISTENT");
 #endif
+#elif defined(OS_CHROMEOS)
+#if defined(ARCH_CPU_X86)
+    FILE_PATH_LITERAL("components/flapper/chromeos_intel32");
+#elif defined(ARCH_CPU_X86_64)
+    FILE_PATH_LITERAL("components/flapper/chromeos_intel64");
+#elif defined(ARCH_CPU_ARMEL)
+    FILE_PATH_LITERAL("components/flapper/chromeos_arm32");
+#else
+    FILE_PATH_LITERAL("components/flapper/NONEXISTENT");
+#endif
 #else  // OS_LINUX, etc.
 #if defined(ARCH_CPU_X86)
     FILE_PATH_LITERAL("components/flapper/linux");
@@ -54,8 +61,7 @@ const base::FilePath::CharType kDataPath[] =
 
 // TODO(viettrungluu): Separate out into two separate tests; use a test fixture.
 TEST(ComponentInstallerTest, PepperFlashCheck) {
-  base::MessageLoop message_loop;
-  content::TestBrowserThread ui_thread(BrowserThread::UI, &message_loop);
+  content::TestBrowserThreadBundle test_browser_thread_bundle;
 
   ppapi::PpapiGlobals::PerThreadForTest per_thread_for_test;
   ppapi::TestGlobals test_globals(per_thread_for_test);
@@ -63,7 +69,7 @@ TEST(ComponentInstallerTest, PepperFlashCheck) {
 
   // The test directory is chrome/test/data/components/flapper.
   base::FilePath manifest;
-  PathService::Get(chrome::DIR_TEST_DATA, &manifest);
+  base::PathService::Get(chrome::DIR_TEST_DATA, &manifest);
   manifest = manifest.Append(kDataPath);
   manifest = manifest.AppendASCII("manifest.json");
 
@@ -79,11 +85,11 @@ TEST(ComponentInstallerTest, PepperFlashCheck) {
       base::DictionaryValue::From(deserializer.Deserialize(NULL, &error));
 
   ASSERT_TRUE(root);
-  ASSERT_TRUE(root->IsType(base::Value::TYPE_DICTIONARY));
+  ASSERT_TRUE(root->is_dict());
 
   // This checks that the whole manifest is compatible.
-  Version version;
-  EXPECT_TRUE(chrome::CheckPepperFlashManifest(*root, &version));
+  base::Version version;
+  EXPECT_TRUE(CheckPepperFlashManifest(*root, &version));
   EXPECT_TRUE(version.IsValid());
 }
 

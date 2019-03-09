@@ -16,18 +16,10 @@ function GearMenu(element) {
       (queryRequiredElement('#gear-menu-drive-sync-settings', element));
 
   /**
-   * @type {!HTMLMenuItemElement}
-   * @const
-   */
-  this.hostedButton = /** @type {!HTMLMenuItemElement} */
-      (queryRequiredElement('#gear-menu-drive-hosted-settings', element));
-
-  /**
    * @type {!HTMLElement}
    * @const
-   * @private
    */
-  this.volumeSpaceInfo_ = queryRequiredElement('#volume-space-info', element);
+  this.volumeSpaceInfo = queryRequiredElement('#volume-space-info', element);
 
   /**
    * @type {!HTMLElement}
@@ -63,33 +55,54 @@ function GearMenu(element) {
       HTMLElement);
 
   /**
+   * @type {!HTMLElement}
+   * @const
+   * @private
+   */
+  this.newServiceMenuItem_ =
+      queryRequiredElement('#gear-menu-newservice', element);
+
+  /**
    * Volume space info.
-   * @type {Promise.<MountPointSizeStats>}
+   * @type {Promise<chrome.fileManagerPrivate.MountPointSizeStats>}
    * @private
    */
   this.spaceInfoPromise_ = null;
 
   // Initialize attributes.
   this.syncButton.checkable = true;
-  this.hostedButton.checkable = true;
 }
 
 /**
- * @param {Promise.<MountPointSizeStats>} spaceInfoPromise Promise to be
- *     fulfilled with space info.
+ * @param {!string} commandId Element id of the command that new service menu
+ *     should trigger.
+ * @param {!string} label Text that should be displayed to user in the menu.
+ */
+GearMenu.prototype.setNewServiceCommand = function(commandId, label) {
+  this.newServiceMenuItem_.textContent = label;
+  // Only change command if needed because it does some parsing when setting.
+  if ('#' + this.newServiceMenuItem_.command.id === commandId) {
+    return;
+  }
+  this.newServiceMenuItem_.command = commandId;
+};
+
+/**
+ * @param {Promise<chrome.fileManagerPrivate.MountPointSizeStats>}
+ * spaceInfoPromise Promise to be fulfilled with space info.
  * @param {boolean} showLoadingCaption Whether show loading caption or not.
  */
 GearMenu.prototype.setSpaceInfo = function(
     spaceInfoPromise, showLoadingCaption) {
   this.spaceInfoPromise_ = spaceInfoPromise;
 
-  if (!spaceInfoPromise) {
-    this.volumeSpaceInfo_.hidden = true;
+  if (!spaceInfoPromise || loadTimeData.getBoolean('HIDE_SPACE_INFO')) {
+    this.volumeSpaceInfo.hidden = true;
     this.volumeSpaceInfoSeparator_.hidden = true;
     return;
   }
 
-  this.volumeSpaceInfo_.hidden = false;
+  this.volumeSpaceInfo.hidden = false;
   this.volumeSpaceInfoSeparator_.hidden = false;
   this.volumeSpaceInnerBar_.setAttribute('pending', '');
   if (showLoadingCaption) {
@@ -97,15 +110,16 @@ GearMenu.prototype.setSpaceInfo = function(
     this.volumeSpaceInnerBar_.style.width = '100%';
   }
 
-  spaceInfoPromise.then(function(spaceInfo) {
-    if (this.spaceInfoPromise_ != spaceInfoPromise)
+  spaceInfoPromise.then(spaceInfo => {
+    if (this.spaceInfoPromise_ != spaceInfoPromise) {
       return;
+    }
     this.volumeSpaceInnerBar_.removeAttribute('pending');
     if (spaceInfo) {
-      var sizeStr = util.bytesToString(spaceInfo.remainingSize);
+      const sizeStr = util.bytesToString(spaceInfo.remainingSize);
       this.volumeSpaceInfoLabel_.textContent = strf('SPACE_AVAILABLE', sizeStr);
 
-      var usedSpace = spaceInfo.totalSize - spaceInfo.remainingSize;
+      const usedSpace = spaceInfo.totalSize - spaceInfo.remainingSize;
       this.volumeSpaceInnerBar_.style.width =
           (100 * usedSpace / spaceInfo.totalSize) + '%';
 
@@ -114,5 +128,5 @@ GearMenu.prototype.setSpaceInfo = function(
       this.volumeSpaceOuterBar_.hidden = true;
       this.volumeSpaceInfoLabel_.textContent = str('FAILED_SPACE_INFO');
     }
-  }.bind(this));
+  });
 };

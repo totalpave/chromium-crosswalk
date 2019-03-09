@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROME_BROWSER_EXTENSIONS_API_VPN_PROVIDER_VPN_PROVIDER_API_H_
-#define CHROME_BROWSER_EXTENSIONS_API_VPN_PROVIDER_VPN_PROVIDER_API_H_
+#ifndef EXTENSIONS_BROWSER_API_VPN_PROVIDER_VPN_PROVIDER_API_H_
+#define EXTENSIONS_BROWSER_API_VPN_PROVIDER_VPN_PROVIDER_API_H_
 
 #include <string>
 
@@ -27,7 +27,7 @@ class VpnThreadExtensionFunction : public UIThreadExtensionFunction {
 class VpnProviderCreateConfigFunction : public VpnThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("vpnProvider.createConfig",
-                             VPNPROVIDER_CREATECONFIG);
+                             VPNPROVIDER_CREATECONFIG)
 
  protected:
   ~VpnProviderCreateConfigFunction() override;
@@ -38,7 +38,7 @@ class VpnProviderCreateConfigFunction : public VpnThreadExtensionFunction {
 class VpnProviderDestroyConfigFunction : public VpnThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("vpnProvider.destroyConfig",
-                             VPNPROVIDER_DESTROYCONFIG);
+                             VPNPROVIDER_DESTROYCONFIG)
 
  protected:
   ~VpnProviderDestroyConfigFunction() override;
@@ -49,7 +49,7 @@ class VpnProviderDestroyConfigFunction : public VpnThreadExtensionFunction {
 class VpnProviderSetParametersFunction : public VpnThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("vpnProvider.setParameters",
-                             VPNPROVIDER_SETPARAMETERS);
+                             VPNPROVIDER_SETPARAMETERS)
 
  protected:
   ~VpnProviderSetParametersFunction() override;
@@ -59,7 +59,7 @@ class VpnProviderSetParametersFunction : public VpnThreadExtensionFunction {
 
 class VpnProviderSendPacketFunction : public VpnThreadExtensionFunction {
  public:
-  DECLARE_EXTENSION_FUNCTION("vpnProvider.sendPacket", VPNPROVIDER_SENDPACKET);
+  DECLARE_EXTENSION_FUNCTION("vpnProvider.sendPacket", VPNPROVIDER_SENDPACKET)
 
  protected:
   ~VpnProviderSendPacketFunction() override;
@@ -71,7 +71,7 @@ class VpnProviderNotifyConnectionStateChangedFunction
     : public VpnThreadExtensionFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("vpnProvider.notifyConnectionStateChanged",
-                             VPNPROVIDER_NOTIFYCONNECTIONSTATECHANGED);
+                             VPNPROVIDER_NOTIFYCONNECTIONSTATECHANGED)
 
  protected:
   ~VpnProviderNotifyConnectionStateChangedFunction() override;
@@ -81,4 +81,4 @@ class VpnProviderNotifyConnectionStateChangedFunction
 
 }  // namespace extensions
 
-#endif  // CHROME_BROWSER_EXTENSIONS_API_VPN_PROVIDER_VPN_PROVIDER_API_H_
+#endif  // EXTENSIONS_BROWSER_API_VPN_PROVIDER_VPN_PROVIDER_API_H_

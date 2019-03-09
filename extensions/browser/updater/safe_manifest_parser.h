@@ -5,49 +5,95 @@
 #ifndef EXTENSIONS_BROWSER_UPDATER_SAFE_MANIFEST_PARSER_H_
 #define EXTENSIONS_BROWSER_UPDATER_SAFE_MANIFEST_PARSER_H_
 
+#include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
-#include "base/callback.h"
-#include "base/macros.h"
-#include "content/public/browser/utility_process_host_client.h"
-#include "extensions/browser/updater/manifest_fetch_data.h"
-#include "extensions/common/update_manifest.h"
+#include "base/callback_forward.h"
+#include "base/optional.h"
+#include "url/gurl.h"
+
+namespace service_manager {
+class Connector;
+}
 
 namespace extensions {
 
-// Utility class to handle doing xml parsing in a sandboxed utility process.
-class SafeManifestParser : public content::UtilityProcessHostClient {
- public:
-  // Callback that is invoked when the manifest results are ready.
-  typedef base::Callback<void(const UpdateManifest::Results*)> ResultsCallback;
+struct UpdateManifestResult {
+  UpdateManifestResult();
+  UpdateManifestResult(const UpdateManifestResult& other);
+  ~UpdateManifestResult();
 
-  SafeManifestParser(const std::string& xml,
-                     const ResultsCallback& results_callback);
+  std::string extension_id;
+  std::string version;
+  std::string browser_min_version;
 
-  // Posts a task over to the IO loop to start the parsing of xml_ in a
-  // utility process.
-  void Start();
+  // Attributes for the full update.
+  GURL crx_url;
+  std::string package_hash;
+  int size = 0;
+  std::string package_fingerprint;
 
- private:
-  ~SafeManifestParser() override;
-
-  // Creates the sandboxed utility process and tells it to start parsing.
-  void ParseInSandbox();
-
-  // content::UtilityProcessHostClient implementation.
-  bool OnMessageReceived(const IPC::Message& message) override;
-
-  void OnParseUpdateManifestSucceeded(const UpdateManifest::Results& results);
-  void OnParseUpdateManifestFailed(const std::string& error_message);
-
-  const std::string xml_;
-
-  // Should be accessed only on UI thread.
-  ResultsCallback results_callback_;
-
-  DISALLOW_COPY_AND_ASSIGN(SafeManifestParser);
+  // Attributes for the differential update.
+  GURL diff_crx_url;
+  std::string diff_package_hash;
+  int diff_size = 0;
 };
+
+constexpr int kNoDaystart = -1;
+struct UpdateManifestResults {
+  UpdateManifestResults();
+  UpdateManifestResults(const UpdateManifestResults& other);
+  UpdateManifestResults& operator=(const UpdateManifestResults& other);
+  ~UpdateManifestResults();
+
+  // Group |list| by |extension_id|.
+  std::map<std::string, std::vector<const UpdateManifestResult*>> GroupByID()
+      const;
+
+  std::vector<UpdateManifestResult> list;
+  // This will be >= 0, or kNoDaystart if the <daystart> tag was not present.
+  int daystart_elapsed_seconds = kNoDaystart;
+};
+
+// Parses an update manifest |xml| safely in a utility process and calls
+// |callback| with the results, which will be null on failure. Runs on
+// the UI thread.
+//
+// An update manifest looks like this:
+//
+// <?xml version="1.0" encoding="UTF-8"?>
+// <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+//  <daystart elapsed_seconds="300" />
+//  <app appid="12345" status="ok">
+//   <updatecheck codebase="http://example.com/extension_1.2.3.4.crx"
+//                hash="12345" size="9854" status="ok" version="1.2.3.4"
+//                prodversionmin="2.0.143.0"
+//                codebasediff="http://example.com/diff_1.2.3.4.crx"
+//                hashdiff="123" sizediff="101"
+//                fp="1.123" />
+//  </app>
+// </gupdate>
+//
+// The <daystart> tag contains a "elapsed_seconds" attribute which refers to
+// the server's notion of how many seconds it has been since midnight.
+//
+// The "appid" attribute of the <app> tag refers to the unique id of the
+// extension. The "codebase" attribute of the <updatecheck> tag is the url to
+// fetch the updated crx file, and the "prodversionmin" attribute refers to
+// the minimum version of the chrome browser that the update applies to.
+
+// The diff data members correspond to the differential update package, if
+// a differential update is specified in the response.
+
+// The result of parsing one <app> tag in an xml update check manifest.
+using ParseUpdateManifestCallback =
+    base::OnceCallback<void(std::unique_ptr<UpdateManifestResults> results,
+                            const base::Optional<std::string>& error)>;
+void ParseUpdateManifest(service_manager::Connector* connector,
+                         const std::string& xml,
+                         ParseUpdateManifestCallback callback);
 
 }  // namespace extensions
 

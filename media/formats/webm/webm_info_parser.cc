@@ -18,7 +18,7 @@ WebMInfoParser::WebMInfoParser()
       duration_(-1) {
 }
 
-WebMInfoParser::~WebMInfoParser() {}
+WebMInfoParser::~WebMInfoParser() = default;
 
 int WebMInfoParser::Parse(const uint8_t* buf, int size) {
   timecode_scale_ = -1;
@@ -48,6 +48,11 @@ bool WebMInfoParser::OnListEnd(int id) {
 bool WebMInfoParser::OnUInt(int id, int64_t val) {
   if (id != kWebMIdTimecodeScale)
     return true;
+
+  if (val <= 0) {
+    DVLOG(1) << "TimeCodeScale of " << val << " is invalid. Must be > 0.";
+    return false;
+  }
 
   if (timecode_scale_ != -1) {
     DVLOG(1) << "Multiple values for id " << std::hex << id << " specified";
@@ -86,6 +91,7 @@ bool WebMInfoParser::OnBinary(int id, const uint8_t* data, int size) {
     exploded_epoch.year = 2001;
     exploded_epoch.month = 1;
     exploded_epoch.day_of_month = 1;
+    exploded_epoch.day_of_week = 1;
     exploded_epoch.hour = 0;
     exploded_epoch.minute = 0;
     exploded_epoch.second = 0;

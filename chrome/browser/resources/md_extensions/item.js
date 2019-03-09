@@ -2,65 +2,93 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Closure compiler won't let this be declared inside cr.define().
-/** @enum {string} */
-var SourceType = {
-  WEBSTORE: 'webstore',
-  POLICY: 'policy',
-  SIDELOADED: 'sideloaded',
-  UNPACKED: 'unpacked',
-};
-
 cr.define('extensions', function() {
   /** @interface */
-  var ItemDelegate = function() {};
-
-  ItemDelegate.prototype = {
+  class ItemDelegate {
     /** @param {string} id */
-    deleteItem: assertNotReached,
+    deleteItem(id) {}
 
     /**
      * @param {string} id
      * @param {boolean} isEnabled
      */
-    setItemEnabled: assertNotReached,
+    setItemEnabled(id, isEnabled) {}
 
     /**
      * @param {string} id
      * @param {boolean} isAllowedIncognito
      */
-    setItemAllowedIncognito: assertNotReached,
+    setItemAllowedIncognito(id, isAllowedIncognito) {}
 
     /**
      * @param {string} id
      * @param {boolean} isAllowedOnFileUrls
      */
-    setItemAllowedOnFileUrls: assertNotReached,
+    setItemAllowedOnFileUrls(id, isAllowedOnFileUrls) {}
 
     /**
      * @param {string} id
-     * @param {boolean} isAllowedOnAllSites
+     * @param {!chrome.developerPrivate.HostAccess} hostAccess
      */
-    setItemAllowedOnAllSites: assertNotReached,
+    setItemHostAccess(id, hostAccess) {}
 
     /**
      * @param {string} id
      * @param {boolean} collectsErrors
      */
-    setItemCollectsErrors: assertNotReached,
+    setItemCollectsErrors(id, collectsErrors) {}
 
     /**
-     * @param {string} id,
+     * @param {string} id
      * @param {chrome.developerPrivate.ExtensionView} view
      */
-    inspectItemView: assertNotReached,
+    inspectItemView(id, view) {}
+
+    /**
+     * @param {string} url
+     */
+    openUrl(url) {}
+
+    /**
+     * @param {string} id
+     * @return {!Promise}
+     */
+    reloadItem(id) {}
 
     /** @param {string} id */
-    repairItem: assertNotReached,
-  };
+    repairItem(id) {}
 
-  var Item = Polymer({
+    /** @param {!chrome.developerPrivate.ExtensionInfo} extension */
+    showItemOptionsPage(extension) {}
+
+    /** @param {string} id */
+    showInFolder(id) {}
+
+    /**
+     * @param {string} id
+     * @return {!Promise<string>}
+     */
+    getExtensionSize(id) {}
+
+    /**
+     * @param {string} id
+     * @param {string} host
+     * @return {!Promise<void>}
+     */
+    addRuntimeHostPermission(id, host) {}
+
+    /**
+     * @param {string} id
+     * @param {string} host
+     * @return {!Promise<void>}
+     */
+    removeRuntimeHostPermission(id, host) {}
+  }
+
+  const Item = Polymer({
     is: 'extensions-item',
+
+    behaviors: [I18nBehavior, extensions.ItemBehavior],
 
     properties: {
       // The item's delegate, or null.
@@ -74,37 +102,71 @@ cr.define('extensions', function() {
         value: false,
       },
 
-      // Whether or not the expanded view of the item is shown.
-      showingDetails_: {
-        type: Boolean,
-        value: false,
-      },
-
       // The underlying ExtensionInfo itself. Public for use in declarative
       // bindings.
       /** @type {chrome.developerPrivate.ExtensionInfo} */
       data: {
         type: Object,
       },
-    },
 
-    behaviors: [
-      I18nBehavior,
-    ],
+      // Whether or not the expanded view of the item is shown.
+      /** @private */
+      showingDetails_: {
+        type: Boolean,
+        value: false,
+      },
+    },
 
     observers: [
       'observeIdVisibility_(inDevMode, showingDetails_, data.id)',
     ],
 
+    /** @return {!HTMLElement} The "Details" button. */
+    getDetailsButton: function() {
+      return this.$.detailsButton;
+    },
+
+    /** @return {?HTMLElement} The "Errors" button, if it exists. */
+    getErrorsButton: function() {
+      return /** @type {?HTMLElement} */ (this.$$('#errors-button'));
+    },
+
+    /** @private string */
+    a11yAssociation_: function() {
+      // Don't use I18nBehavior.i18n because of additional checks it performs.
+      // Polymer ensures that this string is not stamped into arbitrary HTML.
+      // |this.data.name| can contain any data including html tags.
+      // ex: "My <video> download extension!"
+      return loadTimeData.getStringF(
+          'extensionA11yAssociation', this.data.name);
+    },
+
     /** @private */
     observeIdVisibility_: function(inDevMode, showingDetails, id) {
       Polymer.dom.flush();
-      var idElement = this.$$('#extension-id');
+      const idElement = this.$$('#extension-id');
       if (idElement) {
         assert(this.data);
         idElement.innerHTML = this.i18n('itemId', this.data.id);
       }
-      this.fire('extension-item-size-changed', {item: this.data});
+    },
+
+    /**
+     * @return {boolean}
+     * @private
+     */
+    shouldShowErrorsButton_: function() {
+      // When the error console is disabled (happens when
+      // --disable-error-console command line flag is used or when in the
+      // Stable/Beta channel), |installWarnings| is populated.
+      if (this.data.installWarnings && this.data.installWarnings.length > 0) {
+        return true;
+      }
+
+      // When error console is enabled |installedWarnings| is not populated.
+      // Instead |manifestErrors| and |runtimeErrors| are used.
+      return this.data.manifestErrors.length > 0 ||
+          this.data.runtimeErrors.length > 0;
     },
 
     /** @private */
@@ -114,13 +176,25 @@ cr.define('extensions', function() {
 
     /** @private */
     onEnableChange_: function() {
-      this.delegate.setItemEnabled(this.data.id,
-                                   this.$['enable-toggle'].checked);
+      this.delegate.setItemEnabled(
+          this.data.id, this.$['enable-toggle'].checked);
+    },
+
+    /** @private */
+    onErrorsTap_: function() {
+      if (this.data.installWarnings && this.data.installWarnings.length > 0) {
+        this.fire('show-install-warnings', this.data.installWarnings);
+        return;
+      }
+
+      extensions.navigation.navigateTo(
+          {page: Page.ERRORS, extensionId: this.data.id});
     },
 
     /** @private */
     onDetailsTap_: function() {
-      this.fire('extension-item-show-details', {element: this});
+      extensions.navigation.navigateTo(
+          {page: Page.DETAILS, extensionId: this.data.id});
     },
 
     /**
@@ -128,7 +202,20 @@ cr.define('extensions', function() {
      * @private
      */
     onInspectTap_: function(e) {
-      this.delegate.inspectItemView(this.data.id, e.model.item);
+      this.delegate.inspectItemView(this.data.id, this.data.views[0]);
+    },
+
+    /** @private */
+    onExtraInspectTap_: function() {
+      extensions.navigation.navigateTo(
+          {page: Page.DETAILS, extensionId: this.data.id});
+    },
+
+    /** @private */
+    onReloadTap_: function() {
+      this.delegate.reloadItem(this.data.id).catch(loadError => {
+        this.fire('load-error', loadError);
+      });
     },
 
     /** @private */
@@ -137,44 +224,58 @@ cr.define('extensions', function() {
     },
 
     /**
-     * Returns true if the extension is enabled, including terminated
-     * extensions.
+     * @return {boolean}
+     * @private
+     */
+    isControlled_: function() {
+      return extensions.isControlled(this.data);
+    },
+
+    /**
      * @return {boolean}
      * @private
      */
     isEnabled_: function() {
-      switch (this.data.state) {
-        case chrome.developerPrivate.ExtensionState.ENABLED:
-        case chrome.developerPrivate.ExtensionState.TERMINATED:
-          return true;
-        case chrome.developerPrivate.ExtensionState.DISABLED:
-          return false;
-      }
-      assertNotReached();  // FileNotFound.
-    },
-
-    /** @private */
-    computeClasses_: function() {
-      return this.isEnabled_() ? 'enabled' : 'disabled';
+      return extensions.isEnabled(this.data.state);
     },
 
     /**
-     * @return {SourceType}
+     * @return {boolean}
      * @private
      */
-    computeSource_: function() {
-      if (this.data.controlledInfo &&
-          this.data.controlledInfo.type ==
-              chrome.developerPrivate.ControllerType.POLICY) {
-        return SourceType.POLICY;
-      } else if (this.data.location ==
-                     chrome.developerPrivate.Location.THIRD_PARTY) {
-        return SourceType.SIDELOADED;
-      } else if (this.data.location ==
-                     chrome.developerPrivate.Location.UNPACKED) {
-        return SourceType.UNPACKED;
+    isEnableToggleEnabled_: function() {
+      return extensions.userCanChangeEnablement(this.data);
+    },
+
+    /**
+     * Returns true if the enable toggle should be shown.
+     * @return {boolean}
+     * @private
+     */
+    showEnableToggle_: function() {
+      return !this.isTerminated_() && !this.data.disableReasons.corruptInstall;
+    },
+
+    /**
+     * Returns true if the extension is in the terminated state.
+     * @return {boolean}
+     * @private
+     */
+    isTerminated_: function() {
+      return this.data.state ==
+          chrome.developerPrivate.ExtensionState.TERMINATED;
+    },
+
+    /**
+     * return {string}
+     * @private
+     */
+    computeClasses_: function() {
+      let classes = this.isEnabled_() ? 'enabled' : 'disabled';
+      if (this.inDevMode) {
+        classes += ' dev-mode';
       }
-      return SourceType.WEBSTORE;
+      return classes;
     },
 
     /**
@@ -182,11 +283,14 @@ cr.define('extensions', function() {
      * @private
      */
     computeSourceIndicatorIcon_: function() {
-      switch (this.computeSource_()) {
+      switch (extensions.getItemSource(this.data)) {
         case SourceType.POLICY:
-          return 'communication:business';
+          return 'extensions-icons:business';
         case SourceType.SIDELOADED:
-          return 'input';
+          return 'extensions-icons:input';
+        case SourceType.UNKNOWN:
+          // TODO(dpapad): Ask UX for a better icon for this case.
+          return 'extensions-icons:input';
         case SourceType.UNPACKED:
           return 'extensions-icons:unpacked';
         case SourceType.WEBSTORE:
@@ -200,37 +304,77 @@ cr.define('extensions', function() {
      * @private
      */
     computeSourceIndicatorText_: function() {
-      switch (this.computeSource_()) {
-        case SourceType.POLICY:
-          return loadTimeData.getString('itemSourcePolicy');
-        case SourceType.SIDELOADED:
-          return loadTimeData.getString('itemSourceSideloaded');
-        case SourceType.UNPACKED:
-          return loadTimeData.getString('itemSourceUnpacked');
-        case SourceType.WEBSTORE:
-          return '';
+      if (this.data.locationText) {
+        return this.data.locationText;
       }
-      assertNotReached();
+
+      const sourceType = extensions.getItemSource(this.data);
+      return sourceType == SourceType.WEBSTORE ?
+          '' :
+          extensions.getItemSourceString(sourceType);
     },
 
     /**
-     * @param {chrome.developerPrivate.ExtensionView} view
+     * @return {boolean}
      * @private
      */
-    computeInspectLabel_: function(view) {
-      // Trim the "chrome-extension://<id>/".
-      var url = new URL(view.url);
-      var label = view.url;
-      if (url.protocol == 'chrome-extension:')
-        label = url.pathname.substring(1);
-      if (label == '_generated_background_page.html')
-        label = this.i18n('viewBackgroundPage');
-      // Add any qualifiers.
-      label += (view.incognito ? ' ' + this.i18n('viewIncognito') : '') +
-               (view.renderProcessId == -1 ?
-                    ' ' + this.i18n('viewInactive') : '') +
-               (view.isIframe ? ' ' + this.i18n('viewIframe') : '');
-      return label;
+    computeInspectViewsHidden_: function() {
+      return !this.data.views || this.data.views.length == 0;
+    },
+
+    /**
+     * @return {string}
+     * @private
+     */
+    computeFirstInspectTitle_: function() {
+      // Note: theoretically, this wouldn't be called without any inspectable
+      // views (because it's in a dom-if="!computeInspectViewsHidden_()").
+      // However, due to the recycling behavior of iron list, it seems that
+      // sometimes it can. Even when it is, the UI behaves properly, but we
+      // need to handle the case gracefully.
+      return this.data.views.length > 0 ?
+          extensions.computeInspectableViewLabel(this.data.views[0]) :
+          '';
+    },
+
+    /**
+     * @return {string}
+     * @private
+     */
+    computeFirstInspectLabel_: function() {
+      const label = this.computeFirstInspectTitle_();
+      return label && this.data.views.length > 1 ? label + ',' : label;
+    },
+
+    /**
+     * @return {boolean}
+     * @private
+     */
+    computeExtraViewsHidden_: function() {
+      return this.data.views.length <= 1;
+    },
+
+    /**
+     * @return {boolean}
+     * @private
+     */
+    computeDevReloadButtonHidden_: function() {
+      // Only display the reload spinner if the extension is unpacked and
+      // enabled. There's no point in reloading a disabled extension, and we'll
+      // show a crashed reload buton if it's terminated.
+      const showIcon =
+          this.data.location == chrome.developerPrivate.Location.UNPACKED &&
+          this.data.state == chrome.developerPrivate.ExtensionState.ENABLED;
+      return !showIcon;
+    },
+
+    /**
+     * @return {string}
+     * @private
+     */
+    computeExtraInspectLabel_: function() {
+      return this.i18n(
+          'itemInspectViewsExtra', (this.data.views.length - 1).toString());
     },
 
     /**
@@ -239,8 +383,8 @@ cr.define('extensions', function() {
      */
     hasWarnings_: function() {
       return this.data.disableReasons.corruptInstall ||
-             this.data.disableReasons.suspiciousInstall ||
-             !!this.data.blacklistText;
+          this.data.disableReasons.suspiciousInstall ||
+          this.data.runtimeWarnings.length > 0 || !!this.data.blacklistText;
     },
 
     /**
@@ -257,4 +401,3 @@ cr.define('extensions', function() {
     ItemDelegate: ItemDelegate,
   };
 });
-

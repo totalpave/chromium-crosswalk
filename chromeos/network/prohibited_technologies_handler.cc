@@ -11,7 +11,7 @@
 
 namespace chromeos {
 
-ProhibitedTechnologiesHandler::ProhibitedTechnologiesHandler() {}
+ProhibitedTechnologiesHandler::ProhibitedTechnologiesHandler() = default;
 
 ProhibitedTechnologiesHandler::~ProhibitedTechnologiesHandler() {
   if (managed_network_configuration_handler_)
@@ -65,7 +65,7 @@ void ProhibitedTechnologiesHandler::SetProhibitedTechnologies(
   prohibited_technologies_.clear();
   for (const auto& item : *prohibited_list) {
     std::string prohibited_technology;
-    bool item_is_string = item->GetAsString(&prohibited_technology);
+    bool item_is_string = item.GetAsString(&prohibited_technology);
     DCHECK(item_is_string);
     std::string translated_tech =
         network_util::TranslateONCTypeToShill(prohibited_technology);

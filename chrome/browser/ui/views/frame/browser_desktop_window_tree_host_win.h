@@ -5,9 +5,6 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_DESKTOP_WINDOW_TREE_HOST_WIN_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_DESKTOP_WINDOW_TREE_HOST_WIN_H_
 
-#include <windows.h>
-#include <uxtheme.h>
-
 #include "base/macros.h"
 #include "chrome/browser/ui/views/frame/browser_desktop_window_tree_host.h"
 #include "chrome/browser/ui/views/frame/minimize_button_metrics_win.h"
@@ -42,10 +39,13 @@ class BrowserDesktopWindowTreeHostWin : public BrowserDesktopWindowTreeHost,
 
   // Overridden from DesktopWindowTreeHostWin:
   int GetInitialShowState() const override;
-  bool GetClientAreaInsets(gfx::Insets* insets) const override;
+  bool GetClientAreaInsets(gfx::Insets* insets,
+                           HMONITOR monitor) const override;
+  bool GetDwmFrameInsetsInPixels(gfx::Insets* insets) const override;
   void HandleCreate() override;
   void HandleDestroying() override;
   void HandleFrameChanged() override;
+  void HandleWindowScaleFactorChanged(float window_scale_factor) override;
   bool PreHandleMSG(UINT message,
                     WPARAM w_param,
                     LPARAM l_param,
@@ -53,11 +53,9 @@ class BrowserDesktopWindowTreeHostWin : public BrowserDesktopWindowTreeHost,
   void PostHandleMSG(UINT message, WPARAM w_param, LPARAM l_param) override;
   views::FrameMode GetFrameMode() const override;
   bool ShouldUseNativeFrame() const override;
-  void FrameTypeChanged() override;
+  bool ShouldWindowContentsBeTransparent() const override;
 
-  void UpdateDWMFrame();
-  gfx::Insets GetClientEdgeThicknesses() const;
-  MARGINS GetDWMFrameMargins() const;
+  bool IsOpaqueHostedAppFrame() const;
 
   BrowserView* browser_view_;
   BrowserFrame* browser_frame_;
@@ -69,9 +67,6 @@ class BrowserDesktopWindowTreeHostWin : public BrowserDesktopWindowTreeHost,
 
   // The wrapped system menu itself.
   std::unique_ptr<views::NativeMenuWin> system_menu_;
-
-  // Necessary to avoid corruption on NC paint in Aero mode.
-  bool did_gdi_clear_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserDesktopWindowTreeHostWin);
 };

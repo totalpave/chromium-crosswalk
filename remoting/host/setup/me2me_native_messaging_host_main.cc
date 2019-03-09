@@ -4,8 +4,9 @@
 
 #include "remoting/host/setup/me2me_native_messaging_host_main.h"
 
-#include <stdint.h>
-
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <utility>
 
 #include "base/at_exit.h"
@@ -15,57 +16,65 @@
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/task_scheduler/task_scheduler.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
+#include "mojo/core/embedder/embedder.h"
 #include "net/url_request/url_fetcher.h"
+#include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/base/breakpad.h"
+#include "remoting/base/gaia_oauth_client.h"
 #include "remoting/base/url_request_context_getter.h"
+#include "remoting/host/chromoting_host_context.h"
 #include "remoting/host/host_exit_codes.h"
 #include "remoting/host/logging.h"
+#include "remoting/host/native_messaging/native_messaging_pipe.h"
 #include "remoting/host/native_messaging/pipe_messaging_channel.h"
 #include "remoting/host/pairing_registry_delegate.h"
-#include "remoting/host/setup/gaia_oauth_client.h"
 #include "remoting/host/setup/me2me_native_messaging_host.h"
+#include "remoting/host/switches.h"
 #include "remoting/host/usage_stats_consent.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/transitional_url_loader_factory_owner.h"
 
 #if defined(OS_MACOSX)
 #include "base/mac/scoped_nsautorelease_pool.h"
 #endif  // defined(OS_MACOSX)
 
 #if defined(OS_WIN)
+#include "base/process/process_info.h"
 #include "base/win/registry.h"
 #include "remoting/host/pairing_registry_delegate_win.h"
-#include "remoting/host/win/elevation_helpers.h"
 #endif  // defined(OS_WIN)
 
-#if defined(OS_LINUX)
+#if defined(USE_GLIB) && !defined(OS_CHROMEOS)
 #include <glib-object.h>
-#endif  // defined(OS_LINUX)
+#endif  // defined(USE_GLIB) && !defined(OS_CHROMEOS)
 
 using remoting::protocol::PairingRegistry;
 
-namespace {
-
-const char kParentWindowSwitchName[] = "parent-window";
-
-}  // namespace
-
 namespace remoting {
 
-int StartMe2MeNativeMessagingHost() {
+int Me2MeNativeMessagingHostMain(int argc, char** argv) {
+  // This object instance is required by Chrome code (such as MessageLoop).
+  base::AtExitManager exit_manager;
+
+  base::CommandLine::Init(argc, argv);
+  remoting::InitHostLogging();
+
 #if defined(OS_MACOSX)
   // Needed so we don't leak objects when threads are created.
   base::mac::ScopedNSAutoreleasePool pool;
 #endif  // defined(OS_MACOSX)
 
-#if defined(OS_LINUX)
+#if defined(USE_GLIB) && !defined(OS_CHROMEOS)
 // g_type_init will be deprecated in 2.36. 2.35 is the development
 // version for 2.36, hence do not call g_type_init starting 2.35.
 // http://developer.gnome.org/gobject/unstable/gobject-Type-Information.html#g-type-init
 #if !GLIB_CHECK_VERSION(2, 35, 0)
   g_type_init();
 #endif
-#endif  // defined(OS_LINUX)
+#endif  // defined(USE_GLIB) && !defined(OS_CHROMEOS)
 
   // Required to find the ICU data file, used by some file_util routines.
   base::i18n::InitializeICU();
@@ -80,15 +89,13 @@ int StartMe2MeNativeMessagingHost() {
   // }
 #endif  // defined(REMOTING_ENABLE_BREAKPAD)
 
-  // Mac OS X requires that the main thread be a UI message loop in order to
-  // receive distributed notifications from the System Preferences pane. An
-  // IO thread is needed for the pairing registry and URL context getter.
+  base::TaskScheduler::CreateAndStartWithDefaultParams("Me2Me");
+
+  mojo::core::Init();
+
+  // An IO thread is needed for the pairing registry and URL context getter.
   base::Thread io_thread("io_thread");
   io_thread.StartWithOptions(
-      base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
-
-  base::Thread file_thread("file_thread");
-  file_thread.StartWithOptions(
       base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
 
   base::MessageLoopForUI message_loop;
@@ -116,9 +123,9 @@ int StartMe2MeNativeMessagingHost() {
   bool needs_elevation = false;
 
 #if defined(OS_WIN)
-  needs_elevation = !IsProcessElevated();
+  needs_elevation = !base::IsCurrentProcessElevated();
 
-  if (command_line->HasSwitch(kElevatingSwitchName)) {
+  if (command_line->HasSwitch(kElevateSwitchName)) {
     DCHECK(!needs_elevation);
 
     // The "elevate" switch is always accompanied by the "input" and "output"
@@ -179,10 +186,11 @@ int StartMe2MeNativeMessagingHost() {
 
   // OAuth client (for credential requests). IO thread is used for blocking
   scoped_refptr<net::URLRequestContextGetter> url_request_context_getter(
-      new URLRequestContextGetter(io_thread.task_runner(),
-                                  file_thread.task_runner()));
+      new URLRequestContextGetter(io_thread.task_runner()));
+  network::TransitionalURLLoaderFactoryOwner url_loader_factory_owner(
+      url_request_context_getter);
   std::unique_ptr<OAuthClient> oauth_client(
-      new GaiaOAuthClient(url_request_context_getter));
+      new GaiaOAuthClient(url_loader_factory_owner.GetURLLoaderFactory()));
 
   net::URLFetcher::SetIgnoreCertificateRequests(true);
 
@@ -235,30 +243,35 @@ int StartMe2MeNativeMessagingHost() {
       CreatePairingRegistry(io_thread.task_runner());
 #endif  // !defined(OS_WIN)
 
+  std::unique_ptr<NativeMessagingPipe> native_messaging_pipe(
+      new NativeMessagingPipe());
+
   // Set up the native messaging channel.
   std::unique_ptr<extensions::NativeMessagingChannel> channel(
       new PipeMessagingChannel(std::move(read_file), std::move(write_file)));
 
+  std::unique_ptr<ChromotingHostContext> context =
+      ChromotingHostContext::Create(new remoting::AutoThreadTaskRunner(
+          message_loop.task_runner(), run_loop.QuitClosure()));
+
   // Create the native messaging host.
-  std::unique_ptr<Me2MeNativeMessagingHost> host(new Me2MeNativeMessagingHost(
-      needs_elevation, static_cast<intptr_t>(native_view_handle),
-      std::move(channel), daemon_controller, pairing_registry,
-      std::move(oauth_client)));
-  host->Start(run_loop.QuitClosure());
+  std::unique_ptr<extensions::NativeMessageHost> host(
+      new Me2MeNativeMessagingHost(needs_elevation,
+                                   static_cast<intptr_t>(native_view_handle),
+                                   std::move(context), daemon_controller,
+                                   pairing_registry, std::move(oauth_client)));
+
+  host->Start(native_messaging_pipe.get());
+
+  native_messaging_pipe->Start(std::move(host), std::move(channel));
 
   // Run the loop until channel is alive.
   run_loop.Run();
+
+  // Block until tasks blocking shutdown have completed their execution.
+  base::TaskScheduler::GetInstance()->Shutdown();
+
   return kSuccessExitCode;
-}
-
-int Me2MeNativeMessagingHostMain(int argc, char** argv) {
-  // This object instance is required by Chrome code (such as MessageLoop).
-  base::AtExitManager exit_manager;
-
-  base::CommandLine::Init(argc, argv);
-  remoting::InitHostLogging();
-
-  return StartMe2MeNativeMessagingHost();
 }
 
 }  // namespace remoting

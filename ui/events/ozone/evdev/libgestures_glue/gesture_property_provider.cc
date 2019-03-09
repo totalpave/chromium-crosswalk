@@ -11,13 +11,13 @@
 #include <string.h>
 
 #include <algorithm>
+#include <unordered_map>
 
-#include "base/containers/hash_tables.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
@@ -33,13 +33,7 @@
 GesturesProp::GesturesProp(const std::string& name,
                            const PropertyType type,
                            const size_t count)
-    : name_(name),
-      type_(type),
-      count_(count),
-      get_(NULL),
-      set_(NULL),
-      handler_data_(NULL) {
-}
+    : name_(name), type_(type), count_(count) {}
 
 std::vector<int> GesturesProp::GetIntValue() const {
   NOTREACHED();
@@ -492,10 +486,10 @@ std::string GetDeviceNodePath(
 // Check if a match criteria is currently implemented. Note that we didn't
 // implemented all of them as some are inapplicable in the non-X world.
 bool IsMatchTypeSupported(const std::string& match_type) {
-  for (size_t i = 0; i < arraysize(kSupportedMatchTypes); ++i)
+  for (size_t i = 0; i < base::size(kSupportedMatchTypes); ++i)
     if (match_type == kSupportedMatchTypes[i])
       return true;
-  for (size_t i = 0; i < arraysize(kUnsupportedMatchTypes); ++i) {
+  for (size_t i = 0; i < base::size(kUnsupportedMatchTypes); ++i) {
     if (match_type == kUnsupportedMatchTypes[i]) {
       LOG(ERROR) << "Unsupported gestures input class match type: "
                  << match_type;
@@ -512,11 +506,11 @@ bool IsMatchDeviceType(const std::string& match_type) {
 
 // Parse a boolean value keyword (e.g., on/off, true/false).
 int ParseBooleanKeyword(const std::string& value) {
-  for (size_t i = 0; i < arraysize(kTrue); ++i) {
+  for (size_t i = 0; i < base::size(kTrue); ++i) {
     if (base::LowerCaseEqualsASCII(value, kTrue[i]))
       return 1;
   }
-  for (size_t i = 0; i < arraysize(kFalse); ++i) {
+  for (size_t i = 0; i < base::size(kFalse); ++i) {
     if (base::LowerCaseEqualsASCII(value, kFalse[i]))
       return -1;
   }
@@ -609,28 +603,17 @@ std::ostream& operator<<(std::ostream& os, const GesturesProp& prop) {
 namespace ui {
 namespace internal {
 
-// Mapping table from a property name to its corresponding GesturesProp
-// object pointer.
-typedef base::hash_map<std::string, GesturesProp*> PropertiesMap;
-typedef base::ScopedPtrHashMap<std::string, std::unique_ptr<GesturesProp>>
-    ScopedPropertiesMap;
-
 // Struct holding properties of a device.
-//
-// Note that we can't define it in GesturePropertyProvider as a nested class
-// because ScopedPtrHashMap will require us to expose the GestureProp's
-// destructor so that it can instantiate the object. This is something we
-// don't want to do.
 struct GestureDevicePropertyData {
   GestureDevicePropertyData() {}
 
   // Properties owned and being used by the device.
-  ScopedPropertiesMap properties;
+  std::unordered_map<std::string, std::unique_ptr<GesturesProp>> properties;
 
   // Unowned default properties (owned by the configuration file). Their values
   // will be applied when a property of the same name is created. These are
   // usually only a small portion of all properties in use.
-  PropertiesMap default_properties;
+  std::unordered_map<std::string, GesturesProp*> default_properties;
 };
 
 // Base class for device match criterias in conf files.
@@ -875,8 +858,7 @@ bool GesturePropertyProvider::GetDeviceIdsByType(
     const EventDeviceType type,
     std::vector<DeviceId>* device_ids) {
   bool exists = false;
-  DeviceMap::const_iterator it = device_map_.begin();
-  for (; it != device_map_.end(); ++it) {
+  for (auto it = device_map_.begin(); it != device_map_.end(); ++it) {
     if (IsDeviceIdOfType(it->first, type)) {
       exists = true;
       if (device_ids)
@@ -888,7 +870,7 @@ bool GesturePropertyProvider::GetDeviceIdsByType(
 
 bool GesturePropertyProvider::IsDeviceIdOfType(const DeviceId device_id,
                                                const EventDeviceType type) {
-  DeviceMap::const_iterator it = device_map_.find(device_id);
+  auto it = device_map_.find(device_id);
   if (it == device_map_.end())
     return false;
   return IsDeviceOfType(it->second, type,
@@ -903,15 +885,15 @@ GesturesProp* GesturePropertyProvider::GetProperty(const DeviceId device_id,
 
 std::vector<std::string> GesturePropertyProvider::GetPropertyNamesById(
     const DeviceId device_id) {
-  internal::GestureDevicePropertyData* device_data =
-      device_data_map_.get(device_id);
-  if (!device_data)
+  auto it = device_data_map_.find(device_id);
+  if (it == device_data_map_.end())
     return std::vector<std::string>();
+
+  internal::GestureDevicePropertyData* device_data = it->second.get();
 
   // Dump all property names of the device.
   std::vector<std::string> names;
-  for (internal::ScopedPropertiesMap::const_iterator it =
-           device_data->properties.begin();
+  for (auto it = device_data->properties.begin();
        it != device_data->properties.end(); ++it)
     names.push_back(it->first);
   return names;
@@ -919,7 +901,7 @@ std::vector<std::string> GesturePropertyProvider::GetPropertyNamesById(
 
 std::string GesturePropertyProvider::GetDeviceNameById(
     const DeviceId device_id) {
-  DeviceMap::const_iterator it = device_map_.find(device_id);
+  auto it = device_map_.find(device_id);
   if (it == device_map_.end())
     return std::string();
   return std::string(it->second->info.name);
@@ -927,14 +909,14 @@ std::string GesturePropertyProvider::GetDeviceNameById(
 
 void GesturePropertyProvider::RegisterDevice(const DeviceId id,
                                              const DevicePtr device) {
-  DeviceMap::const_iterator it = device_map_.find(id);
+  auto it = device_map_.find(id);
   if (it != device_map_.end())
     return;
 
   // Setup data-structures.
   device_map_[id] = device;
-  device_data_map_.set(id, std::unique_ptr<internal::GestureDevicePropertyData>(
-                               new internal::GestureDevicePropertyData));
+  device_data_map_[id] =
+      std::make_unique<internal::GestureDevicePropertyData>();
 
   // Gather default property values for the device from the parsed conf files.
   SetupDefaultProperties(id, device);
@@ -942,7 +924,7 @@ void GesturePropertyProvider::RegisterDevice(const DeviceId id,
 }
 
 void GesturePropertyProvider::UnregisterDevice(const DeviceId id) {
-  DeviceMap::const_iterator it = device_map_.find(id);
+  auto it = device_map_.find(id);
   if (it == device_map_.end())
     return;
   device_data_map_.erase(id);
@@ -956,41 +938,43 @@ void GesturePropertyProvider::AddProperty(
   // The look-up should never fail because ideally a property can only be
   // created with GesturesPropCreate* functions from the gesture lib side.
   // Therefore, we simply return on failure.
-  internal::GestureDevicePropertyData* device_data =
-      device_data_map_.get(device_id);
-  if (device_data)
-    device_data->properties.set(name, std::move(property));
+  auto it = device_data_map_.find(device_id);
+  if (it != device_data_map_.end())
+    it->second->properties[name] = std::move(property);
 }
 
 void GesturePropertyProvider::DeleteProperty(const DeviceId device_id,
                                              const std::string& name) {
-  internal::GestureDevicePropertyData* device_data =
-      device_data_map_.get(device_id);
-  if (device_data)
-    device_data->properties.erase(name);
+  auto it = device_data_map_.find(device_id);
+  if (it != device_data_map_.end())
+    it->second->properties.erase(name);
 }
 
 GesturesProp* GesturePropertyProvider::FindProperty(const DeviceId device_id,
                                                     const std::string& name) {
-  internal::GestureDevicePropertyData* device_data =
-      device_data_map_.get(device_id);
-  if (!device_data)
-    return NULL;
-  return device_data->properties.get(name);
+  auto it = device_data_map_.find(device_id);
+  if (it == device_data_map_.end())
+    return nullptr;
+
+  auto it2 = it->second->properties.find(name);
+  if (it2 == it->second->properties.end())
+    return nullptr;
+
+  return it2->second.get();
 }
 
 GesturesProp* GesturePropertyProvider::GetDefaultProperty(
     const DeviceId device_id,
     const std::string& name) {
-  internal::GestureDevicePropertyData* device_data =
-      device_data_map_.get(device_id);
-  if (!device_data)
-    return NULL;
-  internal::PropertiesMap::const_iterator ib =
-      device_data->default_properties.find(name);
-  if (ib == device_data->default_properties.end())
-    return NULL;
-  return ib->second;
+  auto it = device_data_map_.find(device_id);
+  if (it == device_data_map_.end())
+    return nullptr;
+
+  auto it2 = it->second->default_properties.find(name);
+  if (it2 == it->second->default_properties.end())
+    return nullptr;
+
+  return it2->second;
 }
 
 void GesturePropertyProvider::LoadDeviceConfigurations() {
@@ -1007,9 +991,7 @@ void GesturePropertyProvider::LoadDeviceConfigurations() {
   DVLOG(2) << files.size() << " conf files were found";
 
   // Parse conf files one-by-one.
-  for (std::set<base::FilePath>::iterator file_iter = files.begin();
-       file_iter != files.end();
-       ++file_iter) {
+  for (auto file_iter = files.begin(); file_iter != files.end(); ++file_iter) {
     DVLOG(2) << "Parsing conf file: " << (*file_iter).value();
     std::string content;
     if (!base::ReadFileToString(*file_iter, &content)) {
@@ -1036,16 +1018,17 @@ void GesturePropertyProvider::ParseXorgConfFile(const std::string& content) {
   // Sections are delimited by the "EndSection" keyword.
   // Lines are delimited by "\n".
   // Pieces are delimited by all white-spaces.
-  std::vector<std::string> sections;
-  base::SplitStringUsingSubstr(content, "EndSection", &sections);
-  for (size_t i = 0; i < sections.size(); ++i) {
+  for (const std::string& section :
+       base::SplitStringUsingSubstr(content, "EndSection",
+                                    base::TRIM_WHITESPACE,
+                                    base::SPLIT_WANT_ALL)) {
     // Create a new configuration section.
     configurations_.push_back(
-        base::WrapUnique(new internal::ConfigurationSection()));
+        std::make_unique<internal::ConfigurationSection>());
     internal::ConfigurationSection* config = configurations_.back().get();
 
     // Break the section into lines.
-    base::StringTokenizer lines(sections[i], "\n");
+    base::StringTokenizer lines(section, "\n");
     bool is_input_class_section = true;
     bool has_checked_section_type = false;
     while (is_input_class_section && lines.GetNext()) {
@@ -1078,8 +1061,7 @@ void GesturePropertyProvider::ParseXorgConfFile(const std::string& content) {
         // one.
         if (is_parsing) {
           // Stop parsing the current line if the format is wrong.
-          if (piece.size() <= 2 || piece[0] != '\"' ||
-              piece[piece.size() - 1] != '\"') {
+          if (piece.size() <= 2 || piece[0] != '\"' || piece.back() != '\"') {
             LOG(ERROR) << "Error parsing line: " << lines.token();
             has_error = true;
             if (next_is_section_type)
@@ -1198,17 +1180,17 @@ GesturePropertyProvider::CreateMatchCriteria(const std::string& match_type,
                                              const std::string& arg) {
   DVLOG(2) << "Creating match criteria: (" << match_type << ", " << arg << ")";
   if (match_type == "MatchProduct")
-    return base::WrapUnique(new internal::MatchProduct(arg));
+    return std::make_unique<internal::MatchProduct>(arg);
   if (match_type == "MatchDevicePath")
-    return base::WrapUnique(new internal::MatchDevicePath(arg));
+    return std::make_unique<internal::MatchDevicePath>(arg);
   if (match_type == "MatchUSBID")
-    return base::WrapUnique(new internal::MatchUSBID(arg));
+    return std::make_unique<internal::MatchUSBID>(arg);
   if (match_type == "MatchIsPointer")
-    return base::WrapUnique(new internal::MatchIsPointer(arg));
+    return std::make_unique<internal::MatchIsPointer>(arg);
   if (match_type == "MatchIsTouchpad")
-    return base::WrapUnique(new internal::MatchIsTouchpad(arg));
+    return std::make_unique<internal::MatchIsTouchpad>(arg);
   if (match_type == "MatchIsTouchscreen")
-    return base::WrapUnique(new internal::MatchIsTouchscreen(arg));
+    return std::make_unique<internal::MatchIsTouchscreen>(arg);
   NOTREACHED();
   return NULL;
 }
@@ -1279,8 +1261,7 @@ void GesturePropertyProvider::SetupDefaultProperties(const DeviceId device_id,
            << device_id << ", " << device->info.name << ")";
 
   // Go through all parsed sections.
-  internal::PropertiesMap& property_map =
-      device_data_map_.get(device_id)->default_properties;
+  auto& property_map = device_data_map_[device_id]->default_properties;
   for (const auto& configuration : configurations_) {
     if (configuration->Match(device)) {
       DVLOG(2) << "Conf section \"" << configuration->identifier

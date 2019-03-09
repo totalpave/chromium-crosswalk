@@ -9,7 +9,6 @@
 #include <stdint.h>
 
 #include "base/containers/stack_container.h"
-#include "base/memory/scoped_vector.h"
 #include "ui/events/gesture_detection/gesture_detection_export.h"
 #include "ui/events/gesture_detection/motion_event.h"
 
@@ -37,7 +36,10 @@ struct GESTURE_DETECTION_EXPORT PointerProperties {
   float touch_major;
   float touch_minor;
   float orientation;
-  float tilt;
+  float tilt_x;
+  float tilt_y;
+  float twist;
+  float tangential_pressure;
   // source_device_id is only used on Aura.
   int source_device_id;
 };
@@ -66,7 +68,10 @@ class GESTURE_DETECTION_EXPORT MotionEventGeneric : public MotionEvent {
   float GetTouchMinor(size_t pointer_index) const override;
   float GetOrientation(size_t pointer_index) const override;
   float GetPressure(size_t pointer_index) const override;
-  float GetTilt(size_t pointer_index) const override;
+  float GetTiltX(size_t pointer_index) const override;
+  float GetTiltY(size_t pointer_index) const override;
+  float GetTwist(size_t pointer_index) const override;
+  float GetTangentialPressure(size_t pointer_index) const override;
   ToolType GetToolType(size_t pointer_index) const override;
   int GetButtonState() const override;
   int GetFlags() const override;
@@ -127,7 +132,7 @@ class GESTURE_DETECTION_EXPORT MotionEventGeneric : public MotionEvent {
   int button_state_;
   int flags_;
   base::StackVector<PointerProperties, kTypicalMaxPointerCount> pointers_;
-  ScopedVector<MotionEvent> historical_events_;
+  std::vector<std::unique_ptr<MotionEvent>> historical_events_;
 };
 
 }  // namespace ui

@@ -4,24 +4,32 @@
 
 #include "ui/wm/core/transient_window_controller.h"
 
+#include "ui/aura/client/transient_window_client_observer.h"
 #include "ui/wm/core/transient_window_manager.h"
 
 namespace wm {
 
+// static
+TransientWindowController* TransientWindowController::instance_ = nullptr;
+
 TransientWindowController::TransientWindowController() {
+  DCHECK(!instance_);
+  instance_ = this;
 }
 
 TransientWindowController::~TransientWindowController() {
+  DCHECK_EQ(instance_, this);
+  instance_ = nullptr;
 }
 
 void TransientWindowController::AddTransientChild(aura::Window* parent,
                                                   aura::Window* child) {
-  TransientWindowManager::Get(parent)->AddTransientChild(child);
+  TransientWindowManager::GetOrCreate(parent)->AddTransientChild(child);
 }
 
 void TransientWindowController::RemoveTransientChild(aura::Window* parent,
                                                      aura::Window* child) {
-  TransientWindowManager::Get(parent)->RemoveTransientChild(child);
+  TransientWindowManager::GetOrCreate(parent)->RemoveTransientChild(child);
 }
 
 aura::Window* TransientWindowController::GetTransientParent(
@@ -33,8 +41,27 @@ aura::Window* TransientWindowController::GetTransientParent(
 const aura::Window* TransientWindowController::GetTransientParent(
     const aura::Window* window) {
   const TransientWindowManager* window_manager =
-      TransientWindowManager::Get(window);
-  return window_manager ? window_manager->transient_parent() : NULL;
+      TransientWindowManager::GetIfExists(window);
+  return window_manager ? window_manager->transient_parent() : nullptr;
+}
+
+std::vector<aura::Window*> TransientWindowController::GetTransientChildren(
+    const aura::Window* parent) {
+  const TransientWindowManager* window_manager =
+      TransientWindowManager::GetIfExists(parent);
+  if (!window_manager)
+    return {};
+  return window_manager->transient_children();
+}
+
+void TransientWindowController::AddObserver(
+    aura::client::TransientWindowClientObserver* observer) {
+  observers_.AddObserver(observer);
+}
+
+void TransientWindowController::RemoveObserver(
+    aura::client::TransientWindowClientObserver* observer) {
+  observers_.RemoveObserver(observer);
 }
 
 }  // namespace wm

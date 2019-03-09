@@ -7,12 +7,16 @@
 
 #include <stddef.h>
 
+#include <map>
+#include <utility>
+#include <vector>
+
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/string16.h"
-#include "components/metrics/proto/omnibox_event.pb.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
 
 class AutocompleteInput;
 
@@ -34,6 +38,12 @@ typedef std::vector<metrics::OmniboxEventProto_ProviderInfo> ProvidersInfo;
 // below may have some utility, nothing compares with first-hand
 // investigation and experience.
 //
+// ZERO SUGGEST (empty) input type:
+// --------------------------------------------------------------------|-----
+// Clipboard URL                                                       |  800
+// Zero Suggest (most visited, Android only)                           |  600--
+// Zero Suggest (default, may be overridden by server)                 |  100
+//
 // UNKNOWN input type:
 // --------------------------------------------------------------------|-----
 // Keyword (non-substituting or in keyword UI mode, exact match)       | 1500
@@ -43,17 +53,19 @@ typedef std::vector<metrics::OmniboxEventProto_ProviderInfo> ProvidersInfo;
 // Search Primary Provider (what you typed)                            | 1300
 // HistoryURL (what you typed, some inexact matches)                   | 1200++
 // Keyword (substituting, exact match)                                 | 1100
-// Search Primary Provider (past query in history older than 2 days)   | 1050--
+// Search Primary Provider (past query in history older than 2 days)   | 1050*
 // HistoryURL (some inexact matches)                                   |  900++
-// BookmarkProvider (prefix match in bookmark title)                   |  900+-
+// BookmarkProvider (prefix match in bookmark title or URL)            |  900+-
 // Built-in                                                            |  860++
 // Search Primary Provider (navigational suggestion)                   |  800++
 // Search Primary Provider (suggestion)                                |  600++
 // Keyword (inexact match)                                             |  450
 // Search Secondary Provider (what you typed)                          |  250
-// Search Secondary Provider (past query in history)                   |  200--
+// Search Secondary Provider (past query in history)                   |  200*
 // Search Secondary Provider (navigational suggestion)                 |  150++
 // Search Secondary Provider (suggestion)                              |  100++
+// Non Personalized On Device Head Suggest Provider                    |   99--
+// Document Suggestions (*experimental): value controlled by Finch     |    *
 //
 // URL input type:
 // --------------------------------------------------------------------|-----
@@ -66,11 +78,11 @@ typedef std::vector<metrics::OmniboxEventProto_ProviderInfo> ProvidersInfo;
 // Built-in                                                            |  860++
 // Search Primary Provider (what you typed)                            |  850
 // Search Primary Provider (navigational suggestion)                   |  800++
-// Search Primary Provider (past query in history)                     |  750--
+// Search Primary Provider (past query in history)                     |  750*
 // Keyword (inexact match)                                             |  700
 // Search Primary Provider (suggestion)                                |  300++
 // Search Secondary Provider (what you typed)                          |  250
-// Search Secondary Provider (past query in history)                   |  200--
+// Search Secondary Provider (past query in history)                   |  200*
 // Search Secondary Provider (navigational suggestion)                 |  150++
 // Search Secondary Provider (suggestion)                              |  100++
 //
@@ -81,16 +93,17 @@ typedef std::vector<metrics::OmniboxEventProto_ProviderInfo> ProvidersInfo;
 // Keyword (substituting, exact match)                                 | 1450
 // Search Primary Provider (past query in history within 2 days)       | 1399**
 // Search Primary Provider (what you typed)                            | 1300
-// Search Primary Provider (past query in history older than 2 days)   | 1050--
+// Search Primary Provider (past query in history older than 2 days)   | 1050*
 // HistoryURL (inexact match)                                          |  900++
-// BookmarkProvider (prefix match in bookmark title)                   |  900+-
+// BookmarkProvider (prefix match in bookmark title or URL)            |  900+-
 // Search Primary Provider (navigational suggestion)                   |  800++
 // Search Primary Provider (suggestion)                                |  600++
 // Keyword (inexact match)                                             |  450
 // Search Secondary Provider (what you typed)                          |  250
-// Search Secondary Provider (past query in history)                   |  200--
+// Search Secondary Provider (past query in history)                   |  200*
 // Search Secondary Provider (navigational suggestion)                 |  150++
 // Search Secondary Provider (suggestion)                              |  100++
+// Non Personalized On Device Head Suggest Provider                    |   99--
 //
 // (A search keyword is a keyword with a replacement string; a bookmark keyword
 // is a keyword with no replacement string, that is, a shortcut for a URL.)
@@ -105,7 +118,8 @@ typedef std::vector<metrics::OmniboxEventProto_ProviderInfo> ProvidersInfo;
 //
 // The value column gives the ranking returned from the various providers.
 // ++: a series of matches with relevance from n up to (n + max_matches).
-// --: relevance score falls off over time (discounted 50 points @ 15 minutes,
+// --: a series of matches with relevance from n down to (n - max_matches).
+// *:  relevance score falls off over time (discounted 50 points @ 15 minutes,
 //     450 points @ two weeks)
 // **: relevance score falls off over two days (discounted 99 points after two
 //     days).
@@ -120,15 +134,17 @@ class AutocompleteProvider
  public:
   // Different AutocompleteProvider implementations.
   enum Type {
-    TYPE_BOOKMARK         = 1 << 0,
-    TYPE_BUILTIN          = 1 << 1,
-    TYPE_HISTORY_QUICK    = 1 << 2,
-    TYPE_HISTORY_URL      = 1 << 3,
-    TYPE_KEYWORD          = 1 << 4,
-    TYPE_SEARCH           = 1 << 5,
-    TYPE_SHORTCUTS        = 1 << 6,
-    TYPE_ZERO_SUGGEST     = 1 << 7,
-    TYPE_CLIPBOARD_URL    = 1 << 8,
+    TYPE_BOOKMARK = 1 << 0,
+    TYPE_BUILTIN = 1 << 1,
+    TYPE_HISTORY_QUICK = 1 << 2,
+    TYPE_HISTORY_URL = 1 << 3,
+    TYPE_KEYWORD = 1 << 4,
+    TYPE_SEARCH = 1 << 5,
+    TYPE_SHORTCUTS = 1 << 6,
+    TYPE_ZERO_SUGGEST = 1 << 7,
+    TYPE_CLIPBOARD = 1 << 8,
+    TYPE_DOCUMENT = 1 << 9,
+    TYPE_ON_DEVICE_HEAD = 1 << 10,
   };
 
   explicit AutocompleteProvider(Type type);
@@ -195,6 +211,13 @@ class AutocompleteProvider
   // with the previous session.
   virtual void ResetSession();
 
+  // Estimates dynamic memory usage.
+  // See base/trace_event/memory_usage_estimator.h for more info.
+  //
+  // Note: Subclasses that override this method must call the base class
+  // method and include the response in their estimate.
+  virtual size_t EstimateMemoryUsage() const;
+
   // Returns the set of matches for the current query.
   const ACMatches& matches() const { return matches_; }
 
@@ -206,6 +229,54 @@ class AutocompleteProvider
 
   // Returns a string describing this provider's type.
   const char* GetName() const;
+
+  typedef std::multimap<base::char16, base::string16> WordMap;
+
+  // Returns a map mapping characters to groups of words from |text| that start
+  // with those characters, ordered lexicographically descending so that longer
+  // words appear before their prefixes (if any) within a particular
+  // equal_range().
+  static WordMap CreateWordMapForString(const base::string16& text);
+
+  // Finds all instances of the words from |find_words| within |text|, adds
+  // classifications to |original_class| according to the logic described below,
+  // and returns the result.
+  //
+  //   - if |text_is_search_query| is false, the function adds
+  //   ACMatchClassification::MATCH markers for all such instances.
+  //
+  //   For example, given the |text|
+  //   "Sports and News at sports.somesite.com - visit us!" and |original_class|
+  //   {{0, NONE}, {18, URL}, {37, NONE}} (marking "sports.somesite.com" as a
+  //   URL), calling with |find_text| set to "sp ew" would return
+  //   {{0, MATCH}, {2, NONE}, {12, MATCH}, {14, NONE}, {18, URL|MATCH},
+  //   {20, URL}, {37, NONE}}.
+  //
+  //
+  //   - if |text_is_search_query| is true, applies the same logic, but uses
+  //   NONE for the matching text and MATCH for the non-matching text. This is
+  //   done to mimic the behavior of SearchProvider which decorates matches
+  //   according to the approach used by Google Suggest.
+  //
+  //   For example, given that |text| corresponds to a search query "panama
+  //   canal" and |original class| is {{0, NONE}}, calling with |find_text| set
+  //   to "canal" would return {{0,MATCH}, {7, NONE}}.
+  //
+  // |find_text| is provided as the original string used to create
+  // |find_words|. This is supplied because it's common for this to be a prefix
+  // of |text|, so we can quickly check for that and mark that entire substring
+  // as a match before proceeding with the more generic algorithm.
+  //
+  // |find_words| should be as constructed by CreateWordMapForString(find_text).
+  //
+  // |find_text| (and thus |find_words|) are expected to be lowercase. |text|
+  // will be lowercase in this function.
+  static ACMatchClassifications ClassifyAllMatchesInString(
+      const base::string16& find_text,
+      const WordMap& find_words,
+      const base::string16& text,
+      const bool text_is_search_query,
+      const ACMatchClassifications& original_class = ACMatchClassifications());
 
   // A suggested upper bound for how many matches a provider should return.
   // TODO(pkasting): http://b/1111299 , http://b/933133 This should go away once

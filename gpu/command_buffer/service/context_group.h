@@ -8,9 +8,9 @@
 #include <stdint.h>
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
@@ -19,72 +19,85 @@
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/command_buffer/service/framebuffer_completeness_cache.h"
-#include "gpu/command_buffer/service/gpu_preferences.h"
 #include "gpu/command_buffer/service/shader_translator_cache.h"
-#include "gpu/gpu_export.h"
+#include "gpu/config/gpu_feature_info.h"
+#include "gpu/config/gpu_preferences.h"
+#include "gpu/gpu_gles2_export.h"
+
+namespace gl {
+class ProgressReporter;
+}
 
 namespace gpu {
 
 class ImageFactory;
 struct GpuPreferences;
-class TransferBufferManager;
+class MailboxManager;
+class SharedImageManager;
+class SharedImageRepresentationFactory;
+class ServiceDiscardableManager;
+class PassthroughDiscardableManager;
+class DecoderContext;
+class MemoryTracker;
 
 namespace gles2 {
 
 class ProgramCache;
 class BufferManager;
-class GLES2Decoder;
-class FramebufferManager;
-class MailboxManager;
+class ImageManager;
 class RenderbufferManager;
 class PathManager;
 class ProgramManager;
 class SamplerManager;
 class ShaderManager;
 class TextureManager;
-class MemoryTracker;
 struct DisallowedFeatures;
+struct PassthroughResources;
 
-// A Context Group helps manage multiple GLES2Decoders that share
+DisallowedFeatures AdjustDisallowedFeatures(
+    ContextType context_type,
+    const DisallowedFeatures& disallowed_features);
+
+// A Context Group helps manage multiple DecoderContexts that share
 // resources.
-class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
+class GPU_GLES2_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
  public:
-  ContextGroup(
-      const GpuPreferences& gpu_preferences,
-      const scoped_refptr<MailboxManager>& mailbox_manager,
-      const scoped_refptr<MemoryTracker>& memory_tracker,
-      const scoped_refptr<ShaderTranslatorCache>& shader_translator_cache,
-      const scoped_refptr<FramebufferCompletenessCache>&
-          framebuffer_completeness_cache,
-      const scoped_refptr<FeatureInfo>& feature_info,
-      bool bind_generates_resource,
-      gpu::ImageFactory* image_factory);
+  ContextGroup(const GpuPreferences& gpu_preferences,
+               bool supports_passthrough_command_decoders,
+               MailboxManager* mailbox_manager,
+               std::unique_ptr<MemoryTracker> memory_tracker,
+               ShaderTranslatorCache* shader_translator_cache,
+               FramebufferCompletenessCache* framebuffer_completeness_cache,
+               const scoped_refptr<FeatureInfo>& feature_info,
+               bool bind_generates_resource,
+               ImageManager* image_manager,
+               gpu::ImageFactory* image_factory,
+               gl::ProgressReporter* progress_reporter,
+               const GpuFeatureInfo& gpu_feature_info,
+               ServiceDiscardableManager* discardable_manager,
+               PassthroughDiscardableManager* passthrough_discardable_manager,
+               SharedImageManager* shared_image_manager);
 
-  // This should only be called by GLES2Decoder. This must be paired with a
+  // This should only be called by a DecoderContext. This must be paired with a
   // call to destroy if it succeeds.
-  bool Initialize(
-      GLES2Decoder* decoder,
-      ContextType context_type,
-      const DisallowedFeatures& disallowed_features);
+  gpu::ContextResult Initialize(DecoderContext* decoder,
+                                ContextType context_type,
+                                const DisallowedFeatures& disallowed_features);
 
   // Destroys all the resources when called for the last context in the group.
-  // It should only be called by GLES2Decoder.
-  void Destroy(GLES2Decoder* decoder, bool have_context);
+  // It should only be called by DecoderContext.
+  void Destroy(DecoderContext* decoder, bool have_context);
 
-  MailboxManager* mailbox_manager() const {
-    return mailbox_manager_.get();
-  }
+  MailboxManager* mailbox_manager() const { return mailbox_manager_; }
 
-  MemoryTracker* memory_tracker() const {
-    return memory_tracker_.get();
-  }
+  MemoryTracker* memory_tracker() const { return memory_tracker_.get(); }
 
   ShaderTranslatorCache* shader_translator_cache() const {
-    return shader_translator_cache_.get();
+    return shader_translator_cache_;
   }
 
   FramebufferCompletenessCache* framebuffer_completeness_cache() const {
-    return framebuffer_completeness_cache_.get();
+    return framebuffer_completeness_cache_;
   }
 
   bool bind_generates_resource() {
@@ -147,7 +160,9 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
     return feature_info_.get();
   }
 
-  gpu::ImageFactory* image_factory() { return image_factory_; }
+  ImageManager* image_manager() const { return image_manager_; }
+
+  gpu::ImageFactory* image_factory() const { return image_factory_; }
 
   const GpuPreferences& gpu_preferences() const {
     return gpu_preferences_;
@@ -155,10 +170,6 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
 
   BufferManager* buffer_manager() const {
     return buffer_manager_.get();
-  }
-
-  FramebufferManager* framebuffer_manager() const {
-    return framebuffer_manager_.get();
   }
 
   RenderbufferManager* renderbuffer_manager() const {
@@ -175,24 +186,29 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
     return program_manager_.get();
   }
 
-  bool has_program_cache() const {
-    return program_cache_ != NULL;
-  }
+  bool has_program_cache() const { return program_cache_ != nullptr; }
 
   void set_program_cache(ProgramCache* program_cache) {
     program_cache_ = program_cache;
   }
 
+  ProgramCache* get_program_cache() { return program_cache_; }
+
   ShaderManager* shader_manager() const {
     return shader_manager_.get();
   }
 
-  TransferBufferManager* transfer_buffer_manager() const {
-    return transfer_buffer_manager_.get();
-  }
-
   SamplerManager* sampler_manager() const {
     return sampler_manager_.get();
+  }
+
+  ServiceDiscardableManager* discardable_manager() const {
+    return discardable_manager_;
+  }
+
+  SharedImageRepresentationFactory* shared_image_representation_factory()
+      const {
+    return shared_image_representation_factory_.get();
   }
 
   uint32_t GetMemRepresented() const;
@@ -207,7 +223,7 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
   }
 
   bool GetSyncServiceId(GLuint client_id, GLsync* service_id) const {
-    base::hash_map<GLuint, GLsync>::const_iterator iter =
+    std::unordered_map<GLuint, GLsync>::const_iterator iter =
         syncs_id_map_.find(client_id);
     if (iter == syncs_id_map_.end())
       return false;
@@ -220,6 +236,22 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
     syncs_id_map_.erase(client_id);
   }
 
+  bool use_passthrough_cmd_decoder() const {
+    return use_passthrough_cmd_decoder_;
+  }
+
+  PassthroughResources* passthrough_resources() const {
+    return passthrough_resources_.get();
+  }
+
+  PassthroughDiscardableManager* passthrough_discardable_manager() const {
+    return passthrough_discardable_manager_;
+  }
+
+  const GpuFeatureInfo& gpu_feature_info() const { return gpu_feature_info_; }
+
+  void ReportProgress();
+
  private:
   friend class base::RefCounted<ContextGroup>;
   ~ContextGroup();
@@ -230,12 +262,13 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
   bool QueryGLFeatureU(GLenum pname, GLint min_required, uint32_t* v);
   bool HaveContexts();
 
-  const GpuPreferences& gpu_preferences_;
-  scoped_refptr<MailboxManager> mailbox_manager_;
-  scoped_refptr<MemoryTracker> memory_tracker_;
-  scoped_refptr<ShaderTranslatorCache> shader_translator_cache_;
-  scoped_refptr<FramebufferCompletenessCache> framebuffer_completeness_cache_;
-  scoped_refptr<TransferBufferManager> transfer_buffer_manager_;
+  // It's safer to make a copy of the GpuPreferences struct rather
+  // than refer to the one passed in to the constructor.
+  const GpuPreferences gpu_preferences_;
+  MailboxManager* mailbox_manager_;
+  std::unique_ptr<MemoryTracker> memory_tracker_;
+  ShaderTranslatorCache* shader_translator_cache_;
+  FramebufferCompletenessCache* framebuffer_completeness_cache_;
 
   bool enforce_gl_minimums_;
   bool bind_generates_resource_;
@@ -264,8 +297,6 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
 
   std::unique_ptr<BufferManager> buffer_manager_;
 
-  std::unique_ptr<FramebufferManager> framebuffer_manager_;
-
   std::unique_ptr<RenderbufferManager> renderbuffer_manager_;
 
   std::unique_ptr<TextureManager> texture_manager_;
@@ -280,12 +311,30 @@ class GPU_EXPORT ContextGroup : public base::RefCounted<ContextGroup> {
 
   scoped_refptr<FeatureInfo> feature_info_;
 
+  ImageManager* image_manager_;
+
   gpu::ImageFactory* image_factory_;
 
-  std::vector<base::WeakPtr<gles2::GLES2Decoder> > decoders_;
+  std::vector<base::WeakPtr<DecoderContext>> decoders_;
 
   // Mappings from client side IDs to service side IDs.
-  base::hash_map<GLuint, GLsync> syncs_id_map_;
+  std::unordered_map<GLuint, GLsync> syncs_id_map_;
+
+  bool use_passthrough_cmd_decoder_;
+  std::unique_ptr<PassthroughResources> passthrough_resources_;
+  PassthroughDiscardableManager* passthrough_discardable_manager_;
+
+  // Used to notify the watchdog thread of progress during destruction,
+  // preventing time-outs when destruction takes a long time. May be null when
+  // using in-process command buffer.
+  gl::ProgressReporter* progress_reporter_;
+
+  GpuFeatureInfo gpu_feature_info_;
+
+  ServiceDiscardableManager* discardable_manager_;
+
+  std::unique_ptr<SharedImageRepresentationFactory>
+      shared_image_representation_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ContextGroup);
 };

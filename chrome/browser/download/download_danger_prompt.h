@@ -6,13 +6,14 @@
 #define CHROME_BROWSER_DOWNLOAD_DOWNLOAD_DANGER_PROMPT_H_
 
 #include "base/callback_forward.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
-
-class GURL;
+#include "components/safe_browsing/proto/csd.pb.h"
 
 namespace content {
-class DownloadItem;
 class WebContents;
+}
+
+namespace download {
+class DownloadItem;
 }
 
 // Prompts the user for whether to Keep a dangerous DownloadItem using native
@@ -35,15 +36,15 @@ class DownloadDangerPrompt {
   };
   typedef base::Callback<void(Action)> OnDone;
 
-  // Return a new self-deleting DownloadDangerPrompt. |accepted| or |canceled|
-  // will be run when the the respective action is invoked. |canceled| may also
-  // be called when |item| is either no longer dangerous or no longer in
-  // progress, or if the tab corresponding to |web_contents| is
-  // closing. The returned DownloadDangerPrompt* is only used for testing. The
-  // caller does not own the object and receive no guarantees about lifetime.
-  // If |show_context|, then the prompt message will contain some information
-  // about the download and its danger; otherwise it won't.
-  static DownloadDangerPrompt* Create(content::DownloadItem* item,
+  // Return a new self-deleting DownloadDangerPrompt. The returned
+  // DownloadDangerPrompt* is only used for testing. The caller does not own the
+  // object and receives no guarantees about lifetime. If |show_context|, then
+  // the prompt message will contain some information about the download and its
+  // danger; otherwise it won't. |done| is a callback called when the ACCEPT,
+  // CANCEL or DISMISS action is invoked. |done| may be called with the CANCEL
+  // action even when |item| is either no longer dangerous or no longer in
+  // progress, or if the tab corresponding to |web_contents| is closing.
+  static DownloadDangerPrompt* Create(download::DownloadItem* item,
                                       content::WebContents* web_contents,
                                       bool show_context,
                                       const OnDone& done);
@@ -52,7 +53,6 @@ class DownloadDangerPrompt {
   // respective button click handler.
   virtual void InvokeActionForTesting(Action action) = 0;
 
- protected:
   // Sends download recovery report to safe browsing backend.
   // Since it only records download url (DownloadItem::GetURL()), user's
   // action (click through or not) and its download danger type, it isn't gated
@@ -62,11 +62,14 @@ class DownloadDangerPrompt {
   static void SendSafeBrowsingDownloadReport(
       safe_browsing::ClientSafeBrowsingReportRequest::ReportType report_type,
       bool did_proceed,
-      const content::DownloadItem& download);
+      const download::DownloadItem& download);
 
+ protected:
   // Records UMA stats for a download danger prompt event.
-  static void RecordDownloadDangerPrompt(bool did_proceed,
-                                         const content::DownloadItem& download);
+  static void RecordDownloadDangerPrompt(
+      bool did_proceed,
+      const download::DownloadItem& download);
+
 };
 
 #endif  // CHROME_BROWSER_DOWNLOAD_DOWNLOAD_DANGER_PROMPT_H_

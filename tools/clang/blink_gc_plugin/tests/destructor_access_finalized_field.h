@@ -17,9 +17,9 @@ public:
 class HeapObject;
 
 class PartOther {
-    ALLOW_ONLY_INLINE_ALLOCATION();
+    DISALLOW_NEW_EXCEPT_PLACEMENT_NEW();
 public:
-    void trace(Visitor*);
+    void Trace(Visitor*);
 
     HeapObject* obj() { return m_obj; }
 
@@ -30,7 +30,7 @@ private:
 class HeapObject : public GarbageCollectedFinalized<HeapObject> {
 public:
     ~HeapObject();
-    void trace(Visitor*);
+    void Trace(Visitor*);
     bool foo() { return true; }
     void bar(HeapObject*) { }
 private:

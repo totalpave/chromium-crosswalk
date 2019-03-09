@@ -26,21 +26,19 @@ class NativeCursorManagerDelegate;
 }
 
 namespace views {
-class DesktopCursorLoaderUpdater;
 
 // A NativeCursorManager that performs the desktop-specific setting of cursor
-// state. Similar to AshNativeCursorManager, it also communicates these changes
+// state. Similar to NativeCursorManagerAsh, it also communicates these changes
 // to all root windows.
 class VIEWS_EXPORT DesktopNativeCursorManager
     : public wm::NativeCursorManager {
  public:
-  DesktopNativeCursorManager(
-      std::unique_ptr<DesktopCursorLoaderUpdater> cursor_loader_updater);
+  DesktopNativeCursorManager();
   ~DesktopNativeCursorManager() override;
 
   // Builds a cursor and sets the internal platform representation. The return
   // value should not be cached.
-  gfx::NativeCursor GetInitializedCursor(int type);
+  gfx::NativeCursor GetInitializedCursor(ui::CursorType type);
 
   // Adds |host| to the set |hosts_|.
   void AddHost(aura::WindowTreeHost* host);
@@ -56,8 +54,8 @@ class VIEWS_EXPORT DesktopNativeCursorManager
                  wm::NativeCursorManagerDelegate* delegate) override;
   void SetVisibility(bool visible,
                      wm::NativeCursorManagerDelegate* delegate) override;
-  void SetCursorSet(ui::CursorSetType cursor_set,
-                    wm::NativeCursorManagerDelegate* delegate) override;
+  void SetCursorSize(ui::CursorSize cursor_size,
+                     wm::NativeCursorManagerDelegate* delegate) override;
   void SetMouseEventsEnabled(
       bool enabled,
       wm::NativeCursorManagerDelegate* delegate) override;
@@ -66,7 +64,6 @@ class VIEWS_EXPORT DesktopNativeCursorManager
   typedef std::set<aura::WindowTreeHost*> Hosts;
   Hosts hosts_;
 
-  std::unique_ptr<DesktopCursorLoaderUpdater> cursor_loader_updater_;
   std::unique_ptr<ui::CursorLoader> cursor_loader_;
 
   DISALLOW_COPY_AND_ASSIGN(DesktopNativeCursorManager);
@@ -75,4 +72,3 @@ class VIEWS_EXPORT DesktopNativeCursorManager
 }  // namespace views
 
 #endif  // UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_NATIVE_CURSOR_MANAGER_H_
-

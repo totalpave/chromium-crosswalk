@@ -10,15 +10,18 @@
 #include <memory>
 #include <string>
 
-#include "base/callback_forward.h"
-#include "base/compiler_specific.h"
-#include "net/base/net_export.h"
+#include "base/callback.h"
+#include "net/base/request_priority.h"
+#include "net/dns/dns_util.h"
+#include "net/dns/record_rdata.h"
+#include "url/gurl.h"
 
 namespace net {
 
-class BoundNetLog;
 class DnsResponse;
 class DnsSession;
+class NetLogWithSource;
+class URLRequestContext;
 
 // DnsTransaction implements a stub DNS resolver as defined in RFC 1034.
 // The DnsTransaction takes care of retransmissions, name server fallback (or
@@ -38,6 +41,10 @@ class NET_EXPORT_PRIVATE DnsTransaction {
 
   // Starts the transaction.  Always completes asynchronously.
   virtual void Start() = 0;
+
+  virtual void SetRequestContext(URLRequestContext*) = 0;
+
+  virtual void SetRequestPriority(RequestPriority priority) = 0;
 };
 
 // Creates DnsTransaction which performs asynchronous DNS search.
@@ -48,10 +55,13 @@ class NET_EXPORT_PRIVATE DnsTransactionFactory {
  public:
   // Called with the response or NULL if no matching response was received.
   // Note that the |GetDottedName()| of the response may be different than the
-  // original |hostname| as a result of suffix search.
-  typedef base::Callback<void(DnsTransaction* transaction,
-                              int neterror,
-                              const DnsResponse* response)> CallbackType;
+  // original |hostname| as a result of suffix search. |secure| is true if the
+  // response was obtained using secure DNS.
+  typedef base::OnceCallback<void(DnsTransaction* transaction,
+                                  int neterror,
+                                  const DnsResponse* response,
+                                  bool secure)>
+      CallbackType;
 
   virtual ~DnsTransactionFactory() {}
 
@@ -62,11 +72,22 @@ class NET_EXPORT_PRIVATE DnsTransactionFactory {
   //
   // The transaction will run |callback| upon asynchronous completion.
   // The |net_log| is used as the parent log.
+  //
+  // The |secure_dns_mode| specifies the order in which secure and/or insecure
+  // DNS lookups will be performed. In SECURE mode, only secure lookups will be
+  // perfomed. In AUTOMATIC mode, secure lookups will be performed first when
+  // possible, and insecure lookups will be performed as a fallback. In OFF
+  // mode, only insecure lookups will be performed.
   virtual std::unique_ptr<DnsTransaction> CreateTransaction(
       const std::string& hostname,
       uint16_t qtype,
-      const CallbackType& callback,
-      const BoundNetLog& net_log) WARN_UNUSED_RESULT = 0;
+      CallbackType callback,
+      const NetLogWithSource& net_log,
+      SecureDnsMode secure_dns_mode) WARN_UNUSED_RESULT = 0;
+
+  // The given EDNS0 option will be included in all DNS queries performed by
+  // transactions from this factory.
+  virtual void AddEDNSOption(const OptRecordRdata::Opt& opt) = 0;
 
   // Creates a DnsTransactionFactory which creates DnsTransactionImpl using the
   // |session|.
@@ -77,4 +98,3 @@ class NET_EXPORT_PRIVATE DnsTransactionFactory {
 }  // namespace net
 
 #endif  // NET_DNS_DNS_TRANSACTION_H_
-

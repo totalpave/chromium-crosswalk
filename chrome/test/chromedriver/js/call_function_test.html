@@ -8,10 +8,32 @@ function clearCache() {
   getPageCache().cache_ = {};
 }
 
+function isValidUUID(uuid) {
+  assertEquals(36, uuid.length);
+  var list = uuid.split("-").map(function(x) {return x.length;});
+  assertEquals(5, list.length);
+  assertEquals(8, list[0]);
+  assertEquals(4, list[1]);
+  assertEquals(4, list[2]);
+  assertEquals(4, list[3]);
+  assertEquals(12, list[4]);
+  assert(/[a-z0-9-]{36}/.test(uuid));
+}
+
+function testUUID() {
+  var uuids = {}
+  for (var i = 0; i < 100; i++) {
+    var uuid = generateUUID();
+    isValidUUID(uuid);
+    assertEquals(null, uuids[uuid]);
+    uuids[uuid] = 1;
+  }
+}
+
 function testCallFunctionNoArgs() {
   clearCache();
 
-  var result = callFunction(null, function() { return 1; }, []);
+  var result = callFunction(function() { return 1; }, []);
   assertEquals(0, result.status);
   assertEquals(1, result.value);
 }
@@ -19,12 +41,12 @@ function testCallFunctionNoArgs() {
 function testCallFunctionThrows() {
   clearCache();
 
-  var result = callFunction(null, function() { throw new Error('fake error'); },
+  var result = callFunction(function() { throw new Error('fake error'); },
       []);
-  assertEquals(StatusCode.UNKNOWN_ERROR, result.status);
+  assertEquals(StatusCode.JAVA_SCRIPT_ERROR, result.status);
   assertEquals('fake error', result.value);
 
-  result = callFunction(null, function() {
+  result = callFunction(function() {
     var e = new Error('fake error');
     e.code = 77;
     e.message = 'CUSTOM';
@@ -40,7 +62,7 @@ function testCallFunctionArgs() {
   function func(primitive, elem) {
     return [primitive, elem.querySelector('div')];
   }
-  var result = callFunction(null, func, [1, wrap(document)]);
+  var result = callFunction(func, [1, wrap(document)]);
   assertEquals(0, result.status);
   assertEquals(1, result.value[0]);
   var cache = getPageCache();
@@ -53,7 +75,7 @@ function testCallFunctionArgsUnwrappedReturn() {
   function func(elem) {
     return elem.querySelector('div');
   }
-  var result = callFunction(null, func, [wrap(document)], true);
+  var result = callFunction(func, [wrap(document)], false, true);
   assertEquals(document.querySelector('div'), result);
 }
 
@@ -165,7 +187,7 @@ function testCallFunctionWithShadowHost() {
 
   // Set up something in the shadow DOM.
   var host = document.body.appendChild(document.createElement('div'));
-  var root = host.createShadowRoot();
+  var root = host.attachShadow({ mode: 'open' });
   var shadowDiv = root.appendChild(document.createElement('div'));
 
   function func(element) {
@@ -173,7 +195,7 @@ function testCallFunctionWithShadowHost() {
   }
   var wrappedHost = wrap(host);
   
-  var result = callFunction(null, func, [wrappedHost]);
+  var result = callFunction(func, [wrappedHost]);
   assertEquals(0, result.status);
   assertEquals(wrappedHost['ELEMENT'], result.value['ELEMENT']);
   var cache = getPageCache();
@@ -187,7 +209,7 @@ function testCallFunctionWithShadowRoot() {
 
   // Set up something in the shadow DOM.
   var host = document.body.appendChild(document.createElement('div'));
-  var root = host.createShadowRoot();
+  var root = host.attachShadow({ mode: 'open' });
   var shadowDiv = root.appendChild(document.createElement('div'));
 
   function func(element) {
@@ -196,14 +218,11 @@ function testCallFunctionWithShadowRoot() {
   var wrappedHost = wrap(host);
   var wrappedRoot = wrap(root);
   
-  // Trying without setting the shadow_path should fail.
-  var result = callFunction(null, func, [wrappedRoot]);
-  assertEquals(StatusCode.STALE_ELEMENT_REFERENCE, result.status);
-  // Should succeed with the shadow_path.
-  result = callFunction([wrappedHost['ELEMENT']], func, [wrappedRoot]);
+  // Should handle shadow root as an argument.
+  result = callFunction(func, [wrappedRoot]);
   assertEquals(0, result.status);
   assertEquals(wrappedRoot['ELEMENT'], result.value['ELEMENT']);
-  var cache = getPageCache(root);
+  var cache = getPageCache();
   assertEquals(root, unwrap(result.value, cache));
   
   document.body.removeChild(host);
@@ -215,22 +234,13 @@ function testCacheWithShadowDomAttached() {
   
   // Set up something in the shadow DOM.
   var host = document.body.appendChild(document.createElement('div'));
-  var root = host.createShadowRoot();
+  var root = host.attachShadow({ mode: 'open' });
   var shadowDiv = root.appendChild(document.createElement('div'));
   
   // Test with attached element in shadow DOM.
   var wrappedDiv = wrap(shadowDiv);
-  // It should NOT be in the page cache.
-  try {
-    unwrap(wrappedDiv, pageCache);
-    assert(false);
-  } catch (e) {
-    assertEquals(StatusCode.STALE_ELEMENT_REFERENCE, e.code);
-  }
-  // It should be in the shadow root cache.
-  var rootCache = getPageCache(root);
-  rootCache.clearStale();
-  var unwrappedDiv = unwrap(wrappedDiv, rootCache);
+  pageCache.clearStale();
+  var unwrappedDiv = unwrap(wrappedDiv, pageCache);
   assertEquals(shadowDiv, unwrappedDiv);
   
   document.body.removeChild(host);
@@ -241,13 +251,13 @@ function testCacheWithShadowDomDetachedChild() {
 
   // Set up something in the shadow DOM.
   var host = document.body.appendChild(document.createElement('div'));
-  var root = host.createShadowRoot();
+  var root = host.attachShadow({ mode: 'open' });
   var shadowDiv = root.appendChild(document.createElement('div'));
 
   // Test with detached element in shadow DOM.
   var wrappedDiv = wrap(shadowDiv);
   root.removeChild(shadowDiv);
-  var rootCache = getPageCache(root);
+  var rootCache = getPageCache();
   rootCache.clearStale();
   try {
     unwrap(wrappedDiv, rootCache);

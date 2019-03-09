@@ -4,6 +4,7 @@
 
 #include "cc/test/layer_tree_pixel_resource_test.h"
 
+#include "base/single_thread_task_runner.h"
 #include "cc/layers/layer.h"
 #include "cc/raster/bitmap_raster_buffer_provider.h"
 #include "cc/raster/gpu_raster_buffer_provider.h"
@@ -11,171 +12,119 @@
 #include "cc/raster/raster_buffer_provider.h"
 #include "cc/raster/zero_copy_raster_buffer_provider.h"
 #include "cc/resources/resource_pool.h"
-#include "cc/test/fake_output_surface.h"
+#include "cc/trees/layer_tree_frame_sink.h"
 #include "gpu/GLES2/gl2extchromium.h"
 
 namespace cc {
 
-namespace {
-
-bool IsTestCaseSupported(PixelResourceTestCase test_case) {
-  switch (test_case) {
-    case SOFTWARE:
-    case GL_GPU_RASTER_2D_DRAW:
-    case GL_ZERO_COPY_2D_DRAW:
-    case GL_ZERO_COPY_RECT_DRAW:
-    case GL_ONE_COPY_2D_STAGING_2D_DRAW:
-    case GL_ONE_COPY_RECT_STAGING_2D_DRAW:
-      return true;
-    case GL_ZERO_COPY_EXTERNAL_DRAW:
-    case GL_ONE_COPY_EXTERNAL_STAGING_2D_DRAW:
-      // These should all be enabled in practice.
-      // TODO(enne): look into getting texture external oes enabled.
-      return false;
-  }
-
-  NOTREACHED();
-  return false;
-}
-
-}  // namespace
-
 LayerTreeHostPixelResourceTest::LayerTreeHostPixelResourceTest(
-    PixelResourceTestCase test_case)
-    : draw_texture_target_(GL_INVALID_VALUE),
-      raster_buffer_provider_type_(RASTER_BUFFER_PROVIDER_TYPE_BITMAP),
-      initialized_(false),
-      test_case_(test_case) {
+    PixelResourceTestCase test_case,
+    Layer::LayerMaskType mask_type)
+    : mask_type_(mask_type) {
   InitializeFromTestCase(test_case);
 }
 
-LayerTreeHostPixelResourceTest::LayerTreeHostPixelResourceTest()
-    : draw_texture_target_(GL_INVALID_VALUE),
-      raster_buffer_provider_type_(RASTER_BUFFER_PROVIDER_TYPE_BITMAP),
-      initialized_(false),
-      test_case_(SOFTWARE) {}
+LayerTreeHostPixelResourceTest::LayerTreeHostPixelResourceTest() = default;
 
 void LayerTreeHostPixelResourceTest::InitializeFromTestCase(
     PixelResourceTestCase test_case) {
   DCHECK(!initialized_);
+  test_case_ = test_case;
+  test_type_ = (test_case == SOFTWARE) ? PIXEL_TEST_SOFTWARE : PIXEL_TEST_GL;
   initialized_ = true;
-  switch (test_case) {
-    case SOFTWARE:
-      test_type_ = PIXEL_TEST_SOFTWARE;
-      draw_texture_target_ = GL_INVALID_VALUE;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_BITMAP;
-      return;
-    case GL_GPU_RASTER_2D_DRAW:
-      test_type_ = PIXEL_TEST_GL;
-      draw_texture_target_ = GL_TEXTURE_2D;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_GPU;
-      return;
-    case GL_ONE_COPY_2D_STAGING_2D_DRAW:
-      test_type_ = PIXEL_TEST_GL;
-      draw_texture_target_ = GL_TEXTURE_2D;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_ONE_COPY;
-      return;
-    case GL_ONE_COPY_RECT_STAGING_2D_DRAW:
-      test_type_ = PIXEL_TEST_GL;
-      draw_texture_target_ = GL_TEXTURE_2D;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_ONE_COPY;
-      return;
-    case GL_ONE_COPY_EXTERNAL_STAGING_2D_DRAW:
-      test_type_ = PIXEL_TEST_GL;
-      draw_texture_target_ = GL_TEXTURE_2D;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_ONE_COPY;
-      return;
-    case GL_ZERO_COPY_2D_DRAW:
-      test_type_ = PIXEL_TEST_GL;
-      draw_texture_target_ = GL_TEXTURE_2D;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_ZERO_COPY;
-      return;
-    case GL_ZERO_COPY_RECT_DRAW:
-      test_type_ = PIXEL_TEST_GL;
-      draw_texture_target_ = GL_TEXTURE_RECTANGLE_ARB;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_ZERO_COPY;
-      return;
-    case GL_ZERO_COPY_EXTERNAL_DRAW:
-      test_type_ = PIXEL_TEST_GL;
-      draw_texture_target_ = GL_TEXTURE_EXTERNAL_OES;
-      raster_buffer_provider_type_ = RASTER_BUFFER_PROVIDER_TYPE_ZERO_COPY;
-      return;
-  }
-  NOTREACHED();
 }
 
-void LayerTreeHostPixelResourceTest::CreateResourceAndRasterBufferProvider(
-    LayerTreeHostImpl* host_impl,
-    std::unique_ptr<RasterBufferProvider>* raster_buffer_provider,
-    std::unique_ptr<ResourcePool>* resource_pool) {
-  base::SingleThreadTaskRunner* task_runner =
+std::unique_ptr<RasterBufferProvider>
+LayerTreeHostPixelResourceTest::CreateRasterBufferProvider(
+    LayerTreeHostImpl* host_impl) {
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner =
       task_runner_provider()->HasImplThread()
           ? task_runner_provider()->ImplThreadTaskRunner()
           : task_runner_provider()->MainThreadTaskRunner();
   DCHECK(task_runner);
   DCHECK(initialized_);
 
-  ContextProvider* compositor_context_provider =
-      host_impl->output_surface()->context_provider();
-  ContextProvider* worker_context_provider =
-      host_impl->output_surface()->worker_context_provider();
-  ResourceProvider* resource_provider = host_impl->resource_provider();
+  LayerTreeFrameSink* layer_tree_frame_sink =
+      host_impl->layer_tree_frame_sink();
+  viz::ContextProvider* compositor_context_provider =
+      layer_tree_frame_sink->context_provider();
+  viz::RasterContextProvider* worker_context_provider =
+      layer_tree_frame_sink->worker_context_provider();
+  gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager =
+      layer_tree_frame_sink->gpu_memory_buffer_manager();
   int max_bytes_per_copy_operation = 1024 * 1024;
   int max_staging_buffer_usage_in_bytes = 32 * 1024 * 1024;
 
-  // Create resource pool.
-  *resource_pool = ResourcePool::Create(resource_provider, task_runner);
+  viz::ResourceFormat gpu_raster_format;
+  viz::ResourceFormat sw_raster_format;
+  if (compositor_context_provider) {
+    if (host_impl->settings().use_rgba_4444) {
+      gpu_raster_format = sw_raster_format = viz::RGBA_4444;
+    } else {
+      gpu_raster_format = viz::PlatformColor::BestSupportedRenderBufferFormat(
+          compositor_context_provider->ContextCapabilities());
+      sw_raster_format = viz::PlatformColor::BestSupportedTextureFormat(
+          compositor_context_provider->ContextCapabilities());
+    }
+  }
 
-  switch (raster_buffer_provider_type_) {
-    case RASTER_BUFFER_PROVIDER_TYPE_BITMAP:
+  switch (test_case_) {
+    case SOFTWARE:
       EXPECT_FALSE(compositor_context_provider);
       EXPECT_EQ(PIXEL_TEST_SOFTWARE, test_type_);
 
-      *raster_buffer_provider =
-          BitmapRasterBufferProvider::Create(resource_provider);
-      break;
-    case RASTER_BUFFER_PROVIDER_TYPE_GPU:
+      return std::make_unique<BitmapRasterBufferProvider>(
+          host_impl->layer_tree_frame_sink());
+    case GPU:
       EXPECT_TRUE(compositor_context_provider);
       EXPECT_TRUE(worker_context_provider);
       EXPECT_EQ(PIXEL_TEST_GL, test_type_);
 
-      *raster_buffer_provider = base::MakeUnique<GpuRasterBufferProvider>(
-          compositor_context_provider, worker_context_provider,
-          resource_provider, false, 0, false);
-      break;
-    case RASTER_BUFFER_PROVIDER_TYPE_ZERO_COPY:
+      return std::make_unique<GpuRasterBufferProvider>(
+          compositor_context_provider, worker_context_provider, false, 0,
+          gpu_raster_format, gfx::Size(), true, false);
+    case ZERO_COPY:
       EXPECT_TRUE(compositor_context_provider);
+      EXPECT_TRUE(gpu_memory_buffer_manager);
       EXPECT_EQ(PIXEL_TEST_GL, test_type_);
-      EXPECT_TRUE(host_impl->GetRendererCapabilities().using_image);
 
-      *raster_buffer_provider = ZeroCopyRasterBufferProvider::Create(
-          resource_provider, PlatformColor::BestTextureFormat());
-      break;
-    case RASTER_BUFFER_PROVIDER_TYPE_ONE_COPY:
+      return std::make_unique<ZeroCopyRasterBufferProvider>(
+          gpu_memory_buffer_manager, compositor_context_provider,
+          sw_raster_format);
+    case ONE_COPY:
       EXPECT_TRUE(compositor_context_provider);
       EXPECT_TRUE(worker_context_provider);
       EXPECT_EQ(PIXEL_TEST_GL, test_type_);
-      EXPECT_TRUE(host_impl->GetRendererCapabilities().using_image);
 
-      *raster_buffer_provider = base::MakeUnique<OneCopyRasterBufferProvider>(
+      return std::make_unique<OneCopyRasterBufferProvider>(
           task_runner, compositor_context_provider, worker_context_provider,
-          resource_provider, max_bytes_per_copy_operation, false,
-          max_staging_buffer_usage_in_bytes, PlatformColor::BestTextureFormat(),
-          false);
-      break;
+          gpu_memory_buffer_manager, max_bytes_per_copy_operation, false, false,
+          max_staging_buffer_usage_in_bytes, sw_raster_format);
   }
+  return {};
 }
 
 void LayerTreeHostPixelResourceTest::RunPixelResourceTest(
     scoped_refptr<Layer> content_root,
     base::FilePath file_name) {
-  if (!IsTestCaseSupported(test_case_))
-    return;
   RunPixelTest(test_type_, content_root, file_name);
 }
 
-ParameterizedPixelResourceTest::ParameterizedPixelResourceTest()
-    : LayerTreeHostPixelResourceTest(GetParam()) {
+void LayerTreeHostPixelResourceTest::RunPixelResourceTest(
+    scoped_refptr<Layer> content_root,
+    const SkBitmap& expected_bitmap) {
+  RunPixelTest(test_type_, content_root, expected_bitmap);
 }
+
+void LayerTreeHostPixelResourceTest::RunPixelResourceTestWithLayerList(
+    scoped_refptr<Layer> root_layer,
+    base::FilePath file_name,
+    PropertyTrees* property_trees) {
+  RunPixelTestWithLayerList(test_type_, root_layer, file_name, property_trees);
+}
+
+ParameterizedPixelResourceTest::ParameterizedPixelResourceTest()
+    : LayerTreeHostPixelResourceTest(::testing::get<0>(GetParam()),
+                                     ::testing::get<1>(GetParam())) {}
 
 }  // namespace cc

@@ -30,8 +30,6 @@ class GL_EXPORT SurfaceTextureListener {
   void FrameAvailable(JNIEnv* env,
                       const base::android::JavaParamRef<jobject>& obj);
 
-  static bool RegisterSurfaceTextureListener(JNIEnv* env);
-
  private:
   friend class base::DeleteHelper<SurfaceTextureListener>;
 
@@ -40,12 +38,12 @@ class GL_EXPORT SurfaceTextureListener {
   // If use_any_thread is true, then the FrameAvailable callback will happen
   // on whatever thread calls us.  Otherwise, we will call it back on the same
   // thread that was used to construct us.
-  SurfaceTextureListener(const base::Closure& callback, bool use_any_thread);
+  SurfaceTextureListener(base::RepeatingClosure callback, bool use_any_thread);
   ~SurfaceTextureListener();
 
   friend class SurfaceTexture;
 
-  base::Closure callback_;
+  base::RepeatingClosure callback_;
 
   scoped_refptr<base::SingleThreadTaskRunner> browser_loop_;
 

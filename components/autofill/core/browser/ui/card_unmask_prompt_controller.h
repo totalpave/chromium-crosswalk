@@ -6,6 +6,7 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_UI_CARD_UNMASK_PROMPT_CONTROLLER_H_
 
 #include "base/strings/string16.h"
+#include "components/autofill/core/browser/autofill_client.h"
 
 namespace base {
 class TimeDelta;
@@ -32,11 +33,13 @@ class CardUnmaskPromptController {
   virtual bool CanStoreLocally() const = 0;
   virtual bool GetStoreLocallyStartState() const = 0;
   virtual base::TimeDelta GetSuccessMessageDuration() const = 0;
+  virtual AutofillClient::PaymentsRpcResult GetVerificationResult() const = 0;
 
   // Utilities.
   virtual bool InputCvcIsValid(const base::string16& input_text) const = 0;
   virtual bool InputExpirationIsValid(const base::string16& month,
                                       const base::string16& year) const = 0;
+  virtual int GetExpectedCvcLength() const = 0;
 };
 
 }  // namespace autofill

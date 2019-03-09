@@ -10,11 +10,8 @@
 #include "base/callback.h"
 #include "ui/gfx/native_widget_types.h"
 
-namespace chrome {
-
 // An enum to describe the reason for the password request.
 enum CryptoModulePasswordReason {
-  kCryptoModulePasswordKeygen,
   kCryptoModulePasswordCertEnrollment,
   kCryptoModulePasswordClientAuth,
   kCryptoModulePasswordListCerts,
@@ -35,7 +32,5 @@ void ShowCryptoModulePasswordDialog(
     const std::string& hostname,
     gfx::NativeWindow parent,
     const CryptoModulePasswordCallback& callback);
-
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_UI_CRYPTO_MODULE_PASSWORD_DIALOG_H_

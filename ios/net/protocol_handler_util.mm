@@ -7,10 +7,7 @@
 #include <string>
 
 #include "base/base64.h"
-#include "base/i18n/icu_encoding_detection.h"
-#include "base/i18n/icu_string_conversions.h"
 #include "base/logging.h"
-#include "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/time/time.h"
@@ -21,8 +18,17 @@
 #include "net/http/http_response_headers.h"
 #include "net/http/http_version.h"
 #include "net/url_request/url_request.h"
+#include "url/buildflags.h"
 #include "url/gurl.h"
-#include "url/url_features.h"
+
+#if !BUILDFLAG(USE_PLATFORM_ICU_ALTERNATIVES)
+#include "base/i18n/encoding_detection.h"  // nogncheck
+#include "base/i18n/icu_string_conversions.h"  // nogncheck
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+#endif  // !BUILDFLAG(USE_PLATFORM_ICU_ALTERNATIVES)
 
 namespace {
 
@@ -33,6 +39,8 @@ NSString* const kContentType = @"Content-Type";
 
 namespace net {
 
+NSString* const kNSErrorDomain = @"org.chromium.net.ErrorDomain";
+
 NSError* GetIOSError(NSInteger ns_error_code,
                      int net_error_code,
                      NSString* url,
@@ -42,16 +50,14 @@ NSError* GetIOSError(NSInteger ns_error_code,
   // about the error from our network stack. This dictionary contains the
   // failing URL, and a nested error in which we deposit the original error code
   // passed in from the Chrome network stack.
-  // The nested error has domain:kErrorDomain, code:|original_error_code|, and
-  // userInfo:nil; this NSError is keyed in the dictionary with
+  // The nested error has domain:kNSErrorDomain, code:|original_error_code|,
+  // and userInfo:nil; this NSError is keyed in the dictionary with
   // NSUnderlyingErrorKey.
   NSDate* creation_date = [NSDate
       dateWithTimeIntervalSinceReferenceDate:creation_time.ToCFAbsoluteTime()];
   DCHECK(creation_date);
   NSError* underlying_error =
-      [NSError errorWithDomain:base::SysUTF8ToNSString(kErrorDomain)
-                          code:net_error_code
-                      userInfo:nil];
+      [NSError errorWithDomain:kNSErrorDomain code:net_error_code userInfo:nil];
   DCHECK(url);
   NSDictionary* dictionary = @{
       NSURLErrorFailingURLStringErrorKey : url,
@@ -81,10 +87,10 @@ NSURLResponse* GetNSURLResponseForRequest(URLRequest* request) {
     // The default iOS stack computes the length of the decoded string. If we
     // wanted to do that we would have to decode the string now. However, using
     // the unknown length (-1) seems to be working.
-    return [[[NSURLResponse alloc] initWithURL:url
-                                      MIMEType:mime_type
-                         expectedContentLength:-1
-                              textEncodingName:charset] autorelease];
+    return [[NSURLResponse alloc] initWithURL:url
+                                     MIMEType:mime_type
+                        expectedContentLength:-1
+                             textEncodingName:charset];
   } else {
     // Iterate over all the headers and copy them.
     bool has_content_type_header = false;
@@ -170,10 +176,10 @@ NSURLResponse* GetNSURLResponseForRequest(URLRequest* request) {
                                                   http_version.minor_value()];
     }
 
-    return [[[CRNHTTPURLResponse alloc] initWithURL:url
-                                         statusCode:request->GetResponseCode()
-                                        HTTPVersion:version_string
-                                       headerFields:header_fields] autorelease];
+    return [[CRNHTTPURLResponse alloc] initWithURL:url
+                                        statusCode:request->GetResponseCode()
+                                       HTTPVersion:version_string
+                                      headerFields:header_fields];
   }
 }
 

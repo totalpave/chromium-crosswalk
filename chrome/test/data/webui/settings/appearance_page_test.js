@@ -2,182 +2,352 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/** @fileoverview Runs polymer appearance font settings elements. */
-
-cr.define('settings_appearance', function() {
-  /**
-   * A test version of AppearanceBrowserProxy.
-   *
-   * @constructor
-   * @implements {settings.AppearanceBrowserProxy}
-   * @extends {settings.TestBrowserProxy}
-   */
-  var TestAppearanceBrowserProxy = function() {
-    settings.TestBrowserProxy.call(this, [
-      'getResetThemeEnabled',
+/** @implements {settings.AppearanceBrowserProxy} */
+class TestAppearanceBrowserProxy extends TestBrowserProxy {
+  constructor() {
+    super([
+      'getDefaultZoom',
+      'getThemeInfo',
+      'isSupervised',
+      'isWallpaperSettingVisible',
+      'isWallpaperPolicyControlled',
       'openWallpaperManager',
-      'resetTheme',
+      'useDefaultTheme',
+      'useSystemTheme',
+      'validateStartupPage',
     ]);
 
-    /**
-     * @type {boolean}
-     * @private
-     */
-    this.allowResetTheme_ = false;
-  };
+    /** @private */
+    this.defaultZoom_ = 1;
 
-  TestAppearanceBrowserProxy.prototype = {
-    __proto__: settings.TestBrowserProxy.prototype,
+    /** @private */
+    this.isSupervised_ = false;
 
-    /** @override */
-    getResetThemeEnabled: function() {
-      this.methodCalled('getResetThemeEnabled');
-      return Promise.resolve(this.allowResetTheme_);
-    },
+    /** @private */
+    this.isHomeUrlValid_ = true;
 
-    /** @override */
-    openWallpaperManager: function() {
-      this.methodCalled('openWallpaperManager');
-    },
+    /** @private */
+    this.isWallpaperSettingVisible_ = true;
 
-    /** @override */
-    resetTheme: function() {
-      this.methodCalled('resetTheme');
-    },
+    /** @private */
+    this.isWallpaperPolicyControlled_ = false;
+  }
 
-    /**
-     * @param {boolean} isEnabled Whether the user reset the theme.
-     */
-    setAllowResetTheme: function(isEnabled) {
-      this.allowResetTheme_ = isEnabled;
-      cr.webUIListenerCallback('reset-theme-enabled-changed', isEnabled);
-      Polymer.dom.flush();
-    }
-  };
+  /** @override */
+  getDefaultZoom() {
+    this.methodCalled('getDefaultZoom');
+    return Promise.resolve(this.defaultZoom_);
+  }
+
+  /** @override */
+  getThemeInfo(themeId) {
+    this.methodCalled('getThemeInfo', themeId);
+    return Promise.resolve({name: 'Sports car red'});
+  }
+
+  /** @override */
+  isSupervised() {
+    this.methodCalled('isSupervised');
+    return this.isSupervised_;
+  }
+
+  /** @override */
+  isWallpaperSettingVisible() {
+    this.methodCalled('isWallpaperSettingVisible');
+    return Promise.resolve(this.isWallpaperSettingVisible_);
+  }
+
+  /** @override */
+  isWallpaperPolicyControlled() {
+    this.methodCalled('isWallpaperPolicyControlled');
+    return Promise.resolve(this.isWallpaperPolicyControlled_);
+  }
+
+  /** @override */
+  openWallpaperManager() {
+    this.methodCalled('openWallpaperManager');
+  }
+
+  /** @override */
+  useDefaultTheme() {
+    this.methodCalled('useDefaultTheme');
+  }
+
+  /** @override */
+  useSystemTheme() {
+    this.methodCalled('useSystemTheme');
+  }
+
+  /** @param {number} defaultZoom */
+  setDefaultZoom(defaultZoom) {
+    this.defaultZoom_ = defaultZoom;
+  }
+
+  /** @param {boolean} Whether the user is supervised */
+  setIsSupervised(isSupervised) {
+    this.isSupervised_ = isSupervised;
+  }
+
+  /** @override */
+  validateStartupPage(url) {
+    this.methodCalled('validateStartupPage', url);
+    return Promise.resolve(this.isHomeUrlValid_);
+  }
 
   /**
-   * A test version of FontsBrowserProxy.
-   *
-   * @constructor
-   * @implements {settings.FontsBrowserProxy}
-   * @extends {settings.TestBrowserProxy}
+   * @param {boolean} isValid
    */
-  var TestFontsBrowserProxy = function() {
-    settings.TestBrowserProxy.call(this, [
-      'fetchFontsData',
-      'observeAdvancedFontExtensionAvailable',
-      'openAdvancedFontSettings',
-    ]);
+  setValidStartupPageResponse(isValid) {
+    this.isHomeUrlValid_ = isValid;
+  }
 
-    /** @private {!FontsData} */
-    this.fontsData_ = {
-      'fontList': [['font name', 'alternate', 'ltr']],
-      'encodingList': [['encoding name', 'alternate', 'ltr']],
-    };
-  };
+  /** @param {boolean} Whether the wallpaper is policy controlled. */
+  setIsWallpaperPolicyControlled(isPolicyControlled) {
+    this.isWallpaperPolicyControlled_ = isPolicyControlled;
+  }
+}
 
-  TestFontsBrowserProxy.prototype = {
-    __proto__: settings.TestBrowserProxy.prototype,
+let appearancePage = null;
 
-    /** @override */
-    fetchFontsData: function() {
-      this.methodCalled('fetchFontsData');
-      return Promise.resolve(this.fontsData_);
+/** @type {?TestAppearanceBrowserProxy} */
+let appearanceBrowserProxy = null;
+
+function createAppearancePage() {
+  appearanceBrowserProxy.reset();
+  PolymerTest.clearBody();
+
+  appearancePage = document.createElement('settings-appearance-page');
+  appearancePage.set('prefs', {
+    extensions: {
+      theme: {
+        id: {
+          value: '',
+        },
+        use_system: {
+          value: false,
+        },
+      },
     },
+  });
 
-    /** @override */
-    observeAdvancedFontExtensionAvailable: function() {
-      this.methodCalled('observeAdvancedFontExtensionAvailable');
-    },
+  appearancePage.set('pageVisibility', {
+    setWallpaper: true,
+  });
 
-    /** @override */
-    openAdvancedFontSettings: function() {
-      this.methodCalled('openAdvancedFontSettings');
-    },
-  };
+  document.body.appendChild(appearancePage);
+  Polymer.dom.flush();
+}
 
-  function registerAppearanceSettingsBrowserTest() {
-    var appearancePage = null;
+suite('AppearanceHandler', function() {
+  setup(function() {
+    appearanceBrowserProxy = new TestAppearanceBrowserProxy();
+    settings.AppearanceBrowserProxyImpl.instance_ = appearanceBrowserProxy;
+    createAppearancePage();
+  });
 
-    /** @type {?TestAppearanceBrowserProxy} */
-    var appearanceBrowserProxy = null;
+  teardown(function() {
+    appearancePage.remove();
+  });
 
-    suite('AppearanceHandler', function() {
-      setup(function() {
-        appearanceBrowserProxy = new TestAppearanceBrowserProxy();
-        settings.AppearanceBrowserProxyImpl.instance_ = appearanceBrowserProxy;
+  if (cr.isChromeOS) {
+    test('wallpaperManager', function() {
+      appearanceBrowserProxy.setIsWallpaperPolicyControlled(false);
+      // TODO(dschuyler): This should notice the policy change without needing
+      // the page to be recreated.
+      createAppearancePage();
+      return appearanceBrowserProxy.whenCalled('isWallpaperPolicyControlled')
+          .then(() => {
+            const button = appearancePage.$.wallpaperButton;
+            assertTrue(!!button);
+            assertFalse(button.disabled);
+            button.click();
+            return appearanceBrowserProxy.whenCalled('openWallpaperManager');
+          });
+    });
 
-        PolymerTest.clearBody();
+    test('wallpaperSettingVisible', function() {
+      appearancePage.set('pageVisibility.setWallpaper', false);
+      return appearanceBrowserProxy.whenCalled('isWallpaperSettingVisible')
+          .then(function() {
+            Polymer.dom.flush();
+            assertTrue(appearancePage.$$('#wallpaperButton').hidden);
+          });
+    });
 
-        appearancePage = document.createElement('settings-appearance-page');
-        document.body.appendChild(appearancePage);
-      });
-
-      teardown(function() { appearancePage.remove(); });
-
-      if (cr.isChromeOS) {
-        test('wallpaperManager', function() {
-          var button = appearancePage.$.wallpaperButton;
-          assertTrue(!!button);
-          MockInteractions.tap(button);
-          return appearanceBrowserProxy.whenCalled('openWallpaperManager');
-        });
-      } else {
-        test('noWallpaperManager', function() {
-          // The wallpaper button should not be present.
-          var button = appearancePage.$.wallpaperButton;
-          assertFalse(!!button);
-        });
-      }
-
-      test('resetTheme', function() {
-        appearanceBrowserProxy.setAllowResetTheme(true);
-        var button = appearancePage.$$('#resetTheme');
-        assertTrue(!!button);
-        MockInteractions.tap(button);
-        return appearanceBrowserProxy.whenCalled('resetTheme');
-      });
+    test('wallpaperPolicyControlled', function() {
+      // Should show the wallpaper policy indicator and disable the toggle
+      // button if the wallpaper is policy controlled.
+      appearanceBrowserProxy.setIsWallpaperPolicyControlled(true);
+      createAppearancePage();
+      return appearanceBrowserProxy.whenCalled('isWallpaperPolicyControlled')
+          .then(function() {
+            Polymer.dom.flush();
+            assertFalse(appearancePage.$$('#wallpaperPolicyIndicator').hidden);
+            assertTrue(appearancePage.$$('#wallpaperButton').disabled);
+          });
+    });
+  } else {
+    test('noWallpaperManager', function() {
+      // The wallpaper button should not be present.
+      const button = appearancePage.$.wallpaperButton;
+      assertFalse(!!button);
     });
   }
 
-  function registerAppearanceFontSettingsBrowserTest() {
-    var fontsPage = null;
+  const THEME_ID_PREF = 'prefs.extensions.theme.id.value';
 
-    /** @type {?TestFontsBrowserProxy} */
-    var fontsBrowserProxy = null;
+  if (cr.isLinux && !cr.isChromeOS) {
+    const USE_SYSTEM_PREF = 'prefs.extensions.theme.use_system.value';
 
-    suite('AppearanceFontHandler', function() {
-      setup(function() {
-        fontsBrowserProxy = new TestFontsBrowserProxy();
-        settings.FontsBrowserProxyImpl.instance_ = fontsBrowserProxy;
+    test('useDefaultThemeLinux', function() {
+      assertFalse(!!appearancePage.get(THEME_ID_PREF));
+      assertFalse(appearancePage.get(USE_SYSTEM_PREF));
+      // No custom nor system theme in use; "USE CLASSIC" should be hidden.
+      assertFalse(!!appearancePage.$$('#useDefault'));
 
-        PolymerTest.clearBody();
+      appearancePage.set(USE_SYSTEM_PREF, true);
+      Polymer.dom.flush();
+      // If the system theme is in use, "USE CLASSIC" should show.
+      assertTrue(!!appearancePage.$$('#useDefault'));
 
-        fontsPage = document.createElement('settings-appearance-fonts-page');
-        document.body.appendChild(fontsPage);
-      });
+      appearancePage.set(USE_SYSTEM_PREF, false);
+      appearancePage.set(THEME_ID_PREF, 'fake theme id');
+      Polymer.dom.flush();
 
-      teardown(function() { fontsPage.remove(); });
+      // With a custom theme installed, "USE CLASSIC" should show.
+      const button = appearancePage.$$('#useDefault');
+      assertTrue(!!button);
 
-      test('fetchFontsData', function() {
-        return fontsBrowserProxy.whenCalled('fetchFontsData');
-      });
+      button.click();
+      return appearanceBrowserProxy.whenCalled('useDefaultTheme');
+    });
 
-      test('openAdvancedFontSettings', function() {
-        cr.webUIListenerCallback('advanced-font-settings-installed', [true]);
-        Polymer.dom.flush();
-        var button = fontsPage.$$('#advancedButton');
-        assert(!!button);
-        MockInteractions.tap(button);
-        return fontsBrowserProxy.whenCalled('openAdvancedFontSettings');
-      });
+    test('useSystemThemeLinux', function() {
+      assertFalse(!!appearancePage.get(THEME_ID_PREF));
+      appearancePage.set(USE_SYSTEM_PREF, true);
+      Polymer.dom.flush();
+      // The "USE GTK+" button shouldn't be showing if it's already in use.
+      assertFalse(!!appearancePage.$$('#useSystem'));
+
+      appearanceBrowserProxy.setIsSupervised(true);
+      appearancePage.set(USE_SYSTEM_PREF, false);
+      Polymer.dom.flush();
+      // Supervised users have their own theme and can't use GTK+ theme.
+      assertFalse(!!appearancePage.$$('#useDefault'));
+      assertFalse(!!appearancePage.$$('#useSystem'));
+      // If there's no "USE" buttons, the container should be hidden.
+      assertTrue(appearancePage.$$('#themesSecondaryActions').hidden);
+
+      appearanceBrowserProxy.setIsSupervised(false);
+      appearancePage.set(THEME_ID_PREF, 'fake theme id');
+      Polymer.dom.flush();
+      // If there's "USE" buttons again, the container should be visible.
+      assertTrue(!!appearancePage.$$('#useDefault'));
+      assertFalse(appearancePage.$$('#themesSecondaryActions').hidden);
+
+      const button = appearancePage.$$('#useSystem');
+      assertTrue(!!button);
+
+      button.click();
+      return appearanceBrowserProxy.whenCalled('useSystemTheme');
+    });
+  } else {
+    test('useDefaultTheme', function() {
+      assertFalse(!!appearancePage.get(THEME_ID_PREF));
+      assertFalse(!!appearancePage.$$('#useDefault'));
+
+      appearancePage.set(THEME_ID_PREF, 'fake theme id');
+      Polymer.dom.flush();
+
+      // With a custom theme installed, "RESET TO DEFAULT" should show.
+      const button = appearancePage.$$('#useDefault');
+      assertTrue(!!button);
+
+      button.click();
+      return appearanceBrowserProxy.whenCalled('useDefaultTheme');
     });
   }
 
-  return {
-    registerTests: function() {
-      registerAppearanceFontSettingsBrowserTest();
-      registerAppearanceSettingsBrowserTest();
-    },
-  };
+  test('default zoom handling', function() {
+    function getDefaultZoomText() {
+      const zoomLevel = appearancePage.$.zoomLevel;
+      return zoomLevel.options[zoomLevel.selectedIndex].textContent.trim();
+    }
+
+    return appearanceBrowserProxy.whenCalled('getDefaultZoom')
+        .then(function() {
+          assertEquals('100%', getDefaultZoomText());
+
+          appearanceBrowserProxy.setDefaultZoom(2 / 3);
+          createAppearancePage();
+          return appearanceBrowserProxy.whenCalled('getDefaultZoom');
+        })
+        .then(function() {
+          assertEquals('67%', getDefaultZoomText());
+
+          appearanceBrowserProxy.setDefaultZoom(11 / 10);
+          createAppearancePage();
+          return appearanceBrowserProxy.whenCalled('getDefaultZoom');
+        })
+        .then(function() {
+          assertEquals('110%', getDefaultZoomText());
+
+          appearanceBrowserProxy.setDefaultZoom(1.7499999999999);
+          createAppearancePage();
+          return appearanceBrowserProxy.whenCalled('getDefaultZoom');
+        })
+        .then(function() {
+          assertEquals('175%', getDefaultZoomText());
+        });
+  });
+
+  test('show home button toggling', function() {
+    assertFalse(!!appearancePage.$$('.list-frame'));
+    appearancePage.set('prefs', {
+      browser: {show_home_button: {value: true}},
+      extensions: {theme: {id: {value: ''}}},
+    });
+    Polymer.dom.flush();
+
+    assertTrue(!!appearancePage.$$('.list-frame'));
+  });
+});
+
+suite('HomeUrlInput', function() {
+  let homeUrlInput;
+
+  setup(function() {
+    appearanceBrowserProxy = new TestAppearanceBrowserProxy();
+    settings.AppearanceBrowserProxyImpl.instance_ = appearanceBrowserProxy;
+    PolymerTest.clearBody();
+
+    homeUrlInput = document.createElement('home-url-input');
+    homeUrlInput.set(
+        'pref', {type: chrome.settingsPrivate.PrefType.URL, value: 'test'});
+
+    document.body.appendChild(homeUrlInput);
+    Polymer.dom.flush();
+  });
+
+  test('home button urls', function() {
+    assertFalse(homeUrlInput.invalid);
+    assertEquals(homeUrlInput.value, 'test');
+
+    homeUrlInput.value = '@@@';
+    appearanceBrowserProxy.setValidStartupPageResponse(false);
+    homeUrlInput.$.input.fire('input');
+
+    return appearanceBrowserProxy.whenCalled('validateStartupPage')
+        .then(function(url) {
+          assertEquals(homeUrlInput.value, url);
+          Polymer.dom.flush();
+          assertEquals(homeUrlInput.value, '@@@');  // Value hasn't changed.
+          assertTrue(homeUrlInput.invalid);
+
+          // Should reset to default value on change event.
+          homeUrlInput.$.input.fire('change');
+          Polymer.dom.flush();
+          assertEquals(homeUrlInput.value, 'test');
+        });
+  });
 });

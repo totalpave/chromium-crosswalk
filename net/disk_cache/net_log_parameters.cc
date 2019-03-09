@@ -12,10 +12,13 @@
 #include "base/values.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/disk_cache.h"
+#include "net/log/net_log.h"
+#include "net/log/net_log_capture_mode.h"
+#include "net/log/net_log_source.h"
 
 namespace {
 
-std::unique_ptr<base::Value> NetLogEntryCreationCallback(
+std::unique_ptr<base::Value> NetLogParametersEntryCreationCallback(
     const disk_cache::Entry* entry,
     bool created,
     net::NetLogCaptureMode /* capture_mode */) {
@@ -58,15 +61,13 @@ std::unique_ptr<base::Value> NetLogSparseOperationCallback(
     int buf_len,
     net::NetLogCaptureMode /* capture_mode */) {
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
-  // Values can only be created with at most 32-bit integers.  Using a string
-  // instead circumvents that restriction.
-  dict->SetString("offset", base::Int64ToString(offset));
+  dict->SetKey("offset", net::NetLogNumberValue(offset));
   dict->SetInteger("buf_len", buf_len);
   return std::move(dict);
 }
 
 std::unique_ptr<base::Value> NetLogSparseReadWriteCallback(
-    const net::NetLog::Source& source,
+    const net::NetLogSource& source,
     int child_len,
     net::NetLogCaptureMode /* capture_mode */) {
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
@@ -82,7 +83,7 @@ std::unique_ptr<base::Value> NetLogGetAvailableRangeResultCallback(
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   if (result > 0) {
     dict->SetInteger("length", result);
-    dict->SetString("start",  base::Int64ToString(start));
+    dict->SetKey("start", net::NetLogNumberValue(start));
   } else {
     dict->SetInteger("net_error", result);
   }
@@ -93,40 +94,39 @@ std::unique_ptr<base::Value> NetLogGetAvailableRangeResultCallback(
 
 namespace disk_cache {
 
-net::NetLog::ParametersCallback CreateNetLogEntryCreationCallback(
+net::NetLogParametersCallback CreateNetLogParametersEntryCreationCallback(
     const Entry* entry,
     bool created) {
   DCHECK(entry);
-  return base::Bind(&NetLogEntryCreationCallback, entry, created);
+  return base::Bind(&NetLogParametersEntryCreationCallback, entry, created);
 }
 
-net::NetLog::ParametersCallback CreateNetLogReadWriteDataCallback(
-    int index,
-    int offset,
-    int buf_len,
-    bool truncate) {
+net::NetLogParametersCallback CreateNetLogReadWriteDataCallback(int index,
+                                                                int offset,
+                                                                int buf_len,
+                                                                bool truncate) {
   return base::Bind(&NetLogReadWriteDataCallback,
                     index, offset, buf_len, truncate);
 }
 
-net::NetLog::ParametersCallback CreateNetLogReadWriteCompleteCallback(
+net::NetLogParametersCallback CreateNetLogReadWriteCompleteCallback(
     int bytes_copied) {
   return base::Bind(&NetLogReadWriteCompleteCallback, bytes_copied);
 }
 
-net::NetLog::ParametersCallback CreateNetLogSparseOperationCallback(
+net::NetLogParametersCallback CreateNetLogSparseOperationCallback(
     int64_t offset,
     int buf_len) {
   return base::Bind(&NetLogSparseOperationCallback, offset, buf_len);
 }
 
-net::NetLog::ParametersCallback CreateNetLogSparseReadWriteCallback(
-    const net::NetLog::Source& source,
+net::NetLogParametersCallback CreateNetLogSparseReadWriteCallback(
+    const net::NetLogSource& source,
     int child_len) {
   return base::Bind(&NetLogSparseReadWriteCallback, source, child_len);
 }
 
-net::NetLog::ParametersCallback CreateNetLogGetAvailableRangeResultCallback(
+net::NetLogParametersCallback CreateNetLogGetAvailableRangeResultCallback(
     int64_t start,
     int result) {
   return base::Bind(&NetLogGetAvailableRangeResultCallback, start, result);

@@ -26,9 +26,9 @@
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/test/test_file_util.h"
 #include "base/test/test_timeouts.h"
-#include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -37,31 +37,36 @@
 #include "base/android/path_utils.h"
 #endif  // defined(OS_ANDROID)
 
+#if defined(OS_POSIX)
+#include "base/files/file_descriptor_watcher_posix.h"
+#endif  // defined(OS_POSIX)
+
 namespace base {
 
 namespace {
 
 class TestDelegate;
 
-// Aggregates notifications from the test delegates and breaks the message loop
+// Aggregates notifications from the test delegates and breaks the run loop
 // the test thread is waiting on once they all came in.
 class NotificationCollector
     : public base::RefCountedThreadSafe<NotificationCollector> {
  public:
-  NotificationCollector() : task_runner_(base::ThreadTaskRunnerHandle::Get()) {}
+  NotificationCollector() : task_runner_(ThreadTaskRunnerHandle::Get()) {}
 
   // Called from the file thread by the delegates.
   void OnChange(TestDelegate* delegate) {
     task_runner_->PostTask(
-        FROM_HERE, base::Bind(&NotificationCollector::RecordChange, this,
-                              base::Unretained(delegate)));
+        FROM_HERE, base::BindOnce(&NotificationCollector::RecordChange, this,
+                                  base::Unretained(delegate)));
   }
 
   void Register(TestDelegate* delegate) {
     delegates_.insert(delegate);
   }
 
-  void Reset() {
+  void Reset(base::OnceClosure signal_closure) {
+    signal_closure_ = std::move(signal_closure);
     signaled_.clear();
   }
 
@@ -71,7 +76,7 @@ class NotificationCollector
 
  private:
   friend class base::RefCountedThreadSafe<NotificationCollector>;
-  ~NotificationCollector() {}
+  ~NotificationCollector() = default;
 
   void RecordChange(TestDelegate* delegate) {
     // Warning: |delegate| is Unretained. Do not dereference.
@@ -80,8 +85,8 @@ class NotificationCollector
     signaled_.insert(delegate);
 
     // Check whether all delegates have been signaled.
-    if (signaled_ == delegates_)
-      task_runner_->PostTask(FROM_HERE, MessageLoop::QuitWhenIdleClosure());
+    if (signal_closure_ && signaled_ == delegates_)
+      std::move(signal_closure_).Run();
   }
 
   // Set of registered delegates.
@@ -92,12 +97,15 @@ class NotificationCollector
 
   // The loop we should break after all delegates signaled.
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+
+  // Closure to run when all delegates have signaled.
+  base::OnceClosure signal_closure_;
 };
 
 class TestDelegateBase : public SupportsWeakPtr<TestDelegateBase> {
  public:
-  TestDelegateBase() {}
-  virtual ~TestDelegateBase() {}
+  TestDelegateBase() = default;
+  virtual ~TestDelegateBase() = default;
 
   virtual void OnFileChanged(const FilePath& path, bool error) = 0;
 
@@ -116,7 +124,7 @@ class TestDelegate : public TestDelegateBase {
       : collector_(collector) {
     collector_->Register(this);
   }
-  ~TestDelegate() override {}
+  ~TestDelegate() override = default;
 
   void OnFileChanged(const FilePath& path, bool error) override {
     if (error)
@@ -131,30 +139,20 @@ class TestDelegate : public TestDelegateBase {
   DISALLOW_COPY_AND_ASSIGN(TestDelegate);
 };
 
-void SetupWatchCallback(const FilePath& target,
-                        FilePathWatcher* watcher,
-                        TestDelegateBase* delegate,
-                        bool recursive_watch,
-                        bool* result,
-                        base::WaitableEvent* completion) {
-  *result = watcher->Watch(target, recursive_watch,
-                           base::Bind(&TestDelegateBase::OnFileChanged,
-                                      delegate->AsWeakPtr()));
-  completion->Signal();
-}
-
 class FilePathWatcherTest : public testing::Test {
  public:
   FilePathWatcherTest()
-      : file_thread_("FilePathWatcherTest") {}
+#if defined(OS_POSIX)
+      : scoped_task_environment_(
+            test::ScopedTaskEnvironment::MainThreadType::IO)
+#endif
+  {
+  }
 
-  ~FilePathWatcherTest() override {}
+  ~FilePathWatcherTest() override = default;
 
  protected:
   void SetUp() override {
-    // Create a separate file thread in order to test proper thread usage.
-    base::Thread::Options options(MessageLoop::TYPE_IO, 0);
-    ASSERT_TRUE(file_thread_.StartWithOptions(options));
 #if defined(OS_ANDROID)
     // Watching files is only permitted when all parent directories are
     // accessible, which is not the case for the default temp directory
@@ -171,16 +169,12 @@ class FilePathWatcherTest : public testing::Test {
 
   void TearDown() override { RunLoop().RunUntilIdle(); }
 
-  void DeleteDelegateOnFileThread(TestDelegate* delegate) {
-    file_thread_.task_runner()->DeleteSoon(FROM_HERE, delegate);
-  }
-
   FilePath test_file() {
-    return temp_dir_.path().AppendASCII("FilePathWatcherTest");
+    return temp_dir_.GetPath().AppendASCII("FilePathWatcherTest");
   }
 
   FilePath test_link() {
-    return temp_dir_.path().AppendASCII("FilePathWatcherTest.lnk");
+    return temp_dir_.GetPath().AppendASCII("FilePathWatcherTest.lnk");
   }
 
   // Write |content| to |file|. Returns true on success.
@@ -195,15 +189,24 @@ class FilePathWatcherTest : public testing::Test {
                   bool recursive_watch) WARN_UNUSED_RESULT;
 
   bool WaitForEvents() WARN_UNUSED_RESULT {
-    collector_->Reset();
-    RunLoop().Run();
+    return WaitForEventsWithTimeout(TestTimeouts::action_timeout());
+  }
+
+  bool WaitForEventsWithTimeout(TimeDelta timeout) WARN_UNUSED_RESULT {
+    RunLoop run_loop;
+    collector_->Reset(run_loop.QuitClosure());
+
+    // Make sure we timeout if we don't get notified.
+    ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+        FROM_HERE, run_loop.QuitClosure(), timeout);
+    run_loop.Run();
     return collector_->Success();
   }
 
   NotificationCollector* collector() { return collector_.get(); }
 
-  MessageLoop loop_;
-  base::Thread file_thread_;
+  test::ScopedTaskEnvironment scoped_task_environment_;
+
   ScopedTempDir temp_dir_;
   scoped_refptr<NotificationCollector> collector_;
 
@@ -215,14 +218,9 @@ bool FilePathWatcherTest::SetupWatch(const FilePath& target,
                                      FilePathWatcher* watcher,
                                      TestDelegateBase* delegate,
                                      bool recursive_watch) {
-  base::WaitableEvent completion(WaitableEvent::ResetPolicy::AUTOMATIC,
-                                 WaitableEvent::InitialState::NOT_SIGNALED);
-  bool result;
-  file_thread_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(SetupWatchCallback, target, watcher, delegate,
-                            recursive_watch, &result, &completion));
-  completion.Wait();
-  return result;
+  return watcher->Watch(
+      target, recursive_watch,
+      base::Bind(&TestDelegateBase::OnFileChanged, delegate->AsWeakPtr()));
 }
 
 // Basic test: Create the file and verify that we notice.
@@ -233,7 +231,6 @@ TEST_F(FilePathWatcherTest, NewFile) {
 
   ASSERT_TRUE(WriteFile(test_file(), "content"));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that modifying the file is caught.
@@ -247,12 +244,11 @@ TEST_F(FilePathWatcherTest, ModifiedFile) {
   // Now make sure we get notified if the file is modified.
   ASSERT_TRUE(WriteFile(test_file(), "new content"));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that moving the file into place is caught.
 TEST_F(FilePathWatcherTest, MovedFile) {
-  FilePath source_file(temp_dir_.path().AppendASCII("source"));
+  FilePath source_file(temp_dir_.GetPath().AppendASCII("source"));
   ASSERT_TRUE(WriteFile(source_file, "content"));
 
   FilePathWatcher watcher;
@@ -262,7 +258,6 @@ TEST_F(FilePathWatcherTest, MovedFile) {
   // Now make sure we get notified if the file is modified.
   ASSERT_TRUE(base::Move(source_file, test_file()));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 TEST_F(FilePathWatcherTest, DeletedFile) {
@@ -275,47 +270,43 @@ TEST_F(FilePathWatcherTest, DeletedFile) {
   // Now make sure we get notified if the file is deleted.
   base::DeleteFile(test_file(), false);
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Used by the DeleteDuringNotify test below.
 // Deletes the FilePathWatcher when it's notified.
 class Deleter : public TestDelegateBase {
  public:
-  Deleter(FilePathWatcher* watcher, MessageLoop* loop)
-      : watcher_(watcher),
-        loop_(loop) {
-  }
-  ~Deleter() override {}
+  explicit Deleter(base::OnceClosure done_closure)
+      : watcher_(std::make_unique<FilePathWatcher>()),
+        done_closure_(std::move(done_closure)) {}
+  ~Deleter() override = default;
 
   void OnFileChanged(const FilePath&, bool) override {
     watcher_.reset();
-    loop_->task_runner()->PostTask(FROM_HERE,
-                                   MessageLoop::QuitWhenIdleClosure());
+    std::move(done_closure_).Run();
   }
 
   FilePathWatcher* watcher() const { return watcher_.get(); }
 
  private:
   std::unique_ptr<FilePathWatcher> watcher_;
-  MessageLoop* loop_;
+  base::OnceClosure done_closure_;
 
   DISALLOW_COPY_AND_ASSIGN(Deleter);
 };
 
 // Verify that deleting a watcher during the callback doesn't crash.
 TEST_F(FilePathWatcherTest, DeleteDuringNotify) {
-  FilePathWatcher* watcher = new FilePathWatcher;
-  // Takes ownership of watcher.
-  std::unique_ptr<Deleter> deleter(new Deleter(watcher, &loop_));
-  ASSERT_TRUE(SetupWatch(test_file(), watcher, deleter.get(), false));
+  base::RunLoop run_loop;
+  Deleter deleter(run_loop.QuitClosure());
+  ASSERT_TRUE(SetupWatch(test_file(), deleter.watcher(), &deleter, false));
 
   ASSERT_TRUE(WriteFile(test_file(), "content"));
-  ASSERT_TRUE(WaitForEvents());
+  run_loop.Run();
 
   // We win if we haven't crashed yet.
   // Might as well double-check it got deleted, too.
-  ASSERT_TRUE(deleter->watcher() == NULL);
+  ASSERT_TRUE(deleter.watcher() == nullptr);
 }
 
 // Verify that deleting the watcher works even if there is a pending
@@ -323,11 +314,9 @@ TEST_F(FilePathWatcherTest, DeleteDuringNotify) {
 // Flaky on MacOS (and ARM linux): http://crbug.com/85930
 TEST_F(FilePathWatcherTest, DISABLED_DestroyWithPendingNotification) {
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
-  FilePathWatcher* watcher = new FilePathWatcher;
-  ASSERT_TRUE(SetupWatch(test_file(), watcher, delegate.get(), false));
+  FilePathWatcher watcher;
+  ASSERT_TRUE(SetupWatch(test_file(), &watcher, delegate.get(), false));
   ASSERT_TRUE(WriteFile(test_file(), "content"));
-  file_thread_.task_runner()->DeleteSoon(FROM_HERE, watcher);
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 TEST_F(FilePathWatcherTest, MultipleWatchersSingleFile) {
@@ -339,15 +328,13 @@ TEST_F(FilePathWatcherTest, MultipleWatchersSingleFile) {
 
   ASSERT_TRUE(WriteFile(test_file(), "content"));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate1.release());
-  DeleteDelegateOnFileThread(delegate2.release());
 }
 
 // Verify that watching a file whose parent directory doesn't exist yet works if
 // the directory and file are created eventually.
 TEST_F(FilePathWatcherTest, NonExistentDirectory) {
   FilePathWatcher watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
   FilePath file(dir.AppendASCII("file"));
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
   ASSERT_TRUE(SetupWatch(file, &watcher, delegate.get(), false));
@@ -366,13 +353,12 @@ TEST_F(FilePathWatcherTest, NonExistentDirectory) {
   ASSERT_TRUE(base::DeleteFile(file, false));
   VLOG(1) << "Waiting for file deletion";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Exercises watch reconfiguration for the case that directories on the path
 // are rapidly created.
 TEST_F(FilePathWatcherTest, DirectoryChain) {
-  FilePath path(temp_dir_.path());
+  FilePath path(temp_dir_.GetPath());
   std::vector<std::string> dir_names;
   for (int i = 0; i < 20; i++) {
     std::string dir(base::StringPrintf("d%d", i));
@@ -385,7 +371,7 @@ TEST_F(FilePathWatcherTest, DirectoryChain) {
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
   ASSERT_TRUE(SetupWatch(file, &watcher, delegate.get(), false));
 
-  FilePath sub_path(temp_dir_.path());
+  FilePath sub_path(temp_dir_.GetPath());
   for (std::vector<std::string>::const_iterator d(dir_names.begin());
        d != dir_names.end(); ++d) {
     sub_path = sub_path.AppendASCII(*d);
@@ -399,7 +385,6 @@ TEST_F(FilePathWatcherTest, DirectoryChain) {
   ASSERT_TRUE(WriteFile(file, "content v2"));
   VLOG(1) << "Waiting for file modification";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 #if defined(OS_MACOSX)
@@ -408,7 +393,7 @@ TEST_F(FilePathWatcherTest, DirectoryChain) {
 #endif
 TEST_F(FilePathWatcherTest, DisappearingDirectory) {
   FilePathWatcher watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
   FilePath file(dir.AppendASCII("file"));
   ASSERT_TRUE(base::CreateDirectory(dir));
   ASSERT_TRUE(WriteFile(file, "content"));
@@ -417,7 +402,6 @@ TEST_F(FilePathWatcherTest, DisappearingDirectory) {
 
   ASSERT_TRUE(base::DeleteFile(dir, true));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Tests that a file that is deleted and reappears is tracked correctly.
@@ -434,12 +418,11 @@ TEST_F(FilePathWatcherTest, DeleteAndRecreate) {
   ASSERT_TRUE(WriteFile(test_file(), "content"));
   VLOG(1) << "Waiting for file creation";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 TEST_F(FilePathWatcherTest, WatchDirectory) {
   FilePathWatcher watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
   FilePath file1(dir.AppendASCII("file1"));
   FilePath file2(dir.AppendASCII("file2"));
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
@@ -467,14 +450,13 @@ TEST_F(FilePathWatcherTest, WatchDirectory) {
   ASSERT_TRUE(WriteFile(file2, "content"));
   VLOG(1) << "Waiting for file2 creation";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 TEST_F(FilePathWatcherTest, MoveParent) {
   FilePathWatcher file_watcher;
   FilePathWatcher subdir_watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
-  FilePath dest(temp_dir_.path().AppendASCII("dest"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
+  FilePath dest(temp_dir_.GetPath().AppendASCII("dest"));
   FilePath subdir(dir.AppendASCII("subdir"));
   FilePath file(subdir.AppendASCII("file"));
   std::unique_ptr<TestDelegate> file_delegate(new TestDelegate(collector()));
@@ -493,18 +475,15 @@ TEST_F(FilePathWatcherTest, MoveParent) {
   base::Move(dir, dest);
   VLOG(1) << "Waiting for directory move";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(file_delegate.release());
-  DeleteDelegateOnFileThread(subdir_delegate.release());
 }
 
 TEST_F(FilePathWatcherTest, RecursiveWatch) {
   FilePathWatcher watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
   bool setup_result = SetupWatch(dir, &watcher, delegate.get(), true);
   if (!FilePathWatcher::RecursiveWatchAvailable()) {
     ASSERT_FALSE(setup_result);
-    DeleteDelegateOnFileThread(delegate.release());
     return;
   }
   ASSERT_TRUE(setup_result);
@@ -560,31 +539,29 @@ TEST_F(FilePathWatcherTest, RecursiveWatch) {
   // Delete "$dir/subdir/subdir_child_dir/child_dir_file1".
   ASSERT_TRUE(base::DeleteFile(child_dir_file1, false));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
-#if defined(OS_POSIX)
-#if defined(OS_ANDROID)
+#if defined(OS_POSIX) && !defined(OS_ANDROID)
 // Apps cannot create symlinks on Android in /sdcard as /sdcard uses the
 // "fuse" file system, while /data uses "ext4".  Running these tests in /data
 // would be preferable and allow testing file attributes and symlinks.
 // TODO(pauljensen): Re-enable when crbug.com/475568 is fixed and SetUp() places
 // the |temp_dir_| in /data.
-#define RecursiveWithSymLink DISABLED_RecursiveWithSymLink
-#endif  // defined(OS_ANDROID)
+//
+// This test is disabled on Fuchsia since it doesn't support symlinking.
 TEST_F(FilePathWatcherTest, RecursiveWithSymLink) {
   if (!FilePathWatcher::RecursiveWatchAvailable())
     return;
 
   FilePathWatcher watcher;
-  FilePath test_dir(temp_dir_.path().AppendASCII("test_dir"));
+  FilePath test_dir(temp_dir_.GetPath().AppendASCII("test_dir"));
   ASSERT_TRUE(base::CreateDirectory(test_dir));
   FilePath symlink(test_dir.AppendASCII("symlink"));
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
   ASSERT_TRUE(SetupWatch(symlink, &watcher, delegate.get(), true));
 
   // Link creation.
-  FilePath target1(temp_dir_.path().AppendASCII("target1"));
+  FilePath target1(temp_dir_.GetPath().AppendASCII("target1"));
   ASSERT_TRUE(base::CreateSymbolicLink(target1, symlink));
   ASSERT_TRUE(WaitForEvents());
 
@@ -598,7 +575,7 @@ TEST_F(FilePathWatcherTest, RecursiveWithSymLink) {
   ASSERT_TRUE(WaitForEvents());
 
   // Link change.
-  FilePath target2(temp_dir_.path().AppendASCII("target2"));
+  FilePath target2(temp_dir_.GetPath().AppendASCII("target2"));
   ASSERT_TRUE(base::CreateDirectory(target2));
   ASSERT_TRUE(base::DeleteFile(symlink, false));
   ASSERT_TRUE(base::CreateSymbolicLink(target2, symlink));
@@ -608,18 +585,16 @@ TEST_F(FilePathWatcherTest, RecursiveWithSymLink) {
   FilePath target2_file(target2.AppendASCII("file"));
   ASSERT_TRUE(WriteFile(target2_file, "content"));
   ASSERT_TRUE(WaitForEvents());
-
-  DeleteDelegateOnFileThread(delegate.release());
 }
-#endif  // OS_POSIX
+#endif  // defined(OS_POSIX) && !defined(OS_ANDROID)
 
 TEST_F(FilePathWatcherTest, MoveChild) {
   FilePathWatcher file_watcher;
   FilePathWatcher subdir_watcher;
-  FilePath source_dir(temp_dir_.path().AppendASCII("source"));
+  FilePath source_dir(temp_dir_.GetPath().AppendASCII("source"));
   FilePath source_subdir(source_dir.AppendASCII("subdir"));
   FilePath source_file(source_subdir.AppendASCII("file"));
-  FilePath dest_dir(temp_dir_.path().AppendASCII("dest"));
+  FilePath dest_dir(temp_dir_.GetPath().AppendASCII("dest"));
   FilePath dest_subdir(dest_dir.AppendASCII("subdir"));
   FilePath dest_file(dest_subdir.AppendASCII("file"));
 
@@ -636,8 +611,6 @@ TEST_F(FilePathWatcherTest, MoveChild) {
   // Move the directory into place, s.t. the watched file appears.
   ASSERT_TRUE(base::Move(source_dir, dest_dir));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(file_delegate.release());
-  DeleteDelegateOnFileThread(subdir_delegate.release());
 }
 
 // Verify that changing attributes on a file is caught
@@ -658,7 +631,6 @@ TEST_F(FilePathWatcherTest, FileAttributesChanged) {
   // Now make sure we get notified if the file is modified.
   ASSERT_TRUE(base::MakeFileUnreadable(test_file()));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 #if defined(OS_LINUX)
@@ -674,7 +646,6 @@ TEST_F(FilePathWatcherTest, CreateLink) {
   // Note that test_file() doesn't have to exist.
   ASSERT_TRUE(CreateSymbolicLink(test_file(), test_link()));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that deleting a symlink is caught.
@@ -690,7 +661,6 @@ TEST_F(FilePathWatcherTest, DeleteLink) {
   // Now make sure we get notified if the link is deleted.
   ASSERT_TRUE(base::DeleteFile(test_link(), false));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that modifying a target file that a link is pointing to
@@ -706,7 +676,6 @@ TEST_F(FilePathWatcherTest, ModifiedLinkedFile) {
   // Now make sure we get notified if the file is modified.
   ASSERT_TRUE(WriteFile(test_file(), "new content"));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that creating a target file that a link is pointing to
@@ -721,7 +690,6 @@ TEST_F(FilePathWatcherTest, CreateTargetLinkedFile) {
   // Now make sure we get notified if the target file is created.
   ASSERT_TRUE(WriteFile(test_file(), "content"));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that deleting a target file that a link is pointing to
@@ -737,15 +705,14 @@ TEST_F(FilePathWatcherTest, DeleteTargetLinkedFile) {
   // Now make sure we get notified if the target file is deleted.
   ASSERT_TRUE(base::DeleteFile(test_file(), false));
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that watching a file whose parent directory is a link that
 // doesn't exist yet works if the symlink is created eventually.
 TEST_F(FilePathWatcherTest, LinkedDirectoryPart1) {
   FilePathWatcher watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
-  FilePath link_dir(temp_dir_.path().AppendASCII("dir.lnk"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
+  FilePath link_dir(temp_dir_.GetPath().AppendASCII("dir.lnk"));
   FilePath file(dir.AppendASCII("file"));
   FilePath linkfile(link_dir.AppendASCII("file"));
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
@@ -766,15 +733,14 @@ TEST_F(FilePathWatcherTest, LinkedDirectoryPart1) {
   ASSERT_TRUE(base::DeleteFile(file, false));
   VLOG(1) << "Waiting for file deletion";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that watching a file whose parent directory is a
 // dangling symlink works if the directory is created eventually.
 TEST_F(FilePathWatcherTest, LinkedDirectoryPart2) {
   FilePathWatcher watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
-  FilePath link_dir(temp_dir_.path().AppendASCII("dir.lnk"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
+  FilePath link_dir(temp_dir_.GetPath().AppendASCII("dir.lnk"));
   FilePath file(dir.AppendASCII("file"));
   FilePath linkfile(link_dir.AppendASCII("file"));
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
@@ -796,15 +762,14 @@ TEST_F(FilePathWatcherTest, LinkedDirectoryPart2) {
   ASSERT_TRUE(base::DeleteFile(file, false));
   VLOG(1) << "Waiting for file deletion";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 // Verify that watching a file with a symlink on the path
 // to the file works.
 TEST_F(FilePathWatcherTest, LinkedDirectoryPart3) {
   FilePathWatcher watcher;
-  FilePath dir(temp_dir_.path().AppendASCII("dir"));
-  FilePath link_dir(temp_dir_.path().AppendASCII("dir.lnk"));
+  FilePath dir(temp_dir_.GetPath().AppendASCII("dir"));
+  FilePath link_dir(temp_dir_.GetPath().AppendASCII("dir.lnk"));
   FilePath file(dir.AppendASCII("file"));
   FilePath linkfile(link_dir.AppendASCII("file"));
   std::unique_ptr<TestDelegate> delegate(new TestDelegate(collector()));
@@ -824,7 +789,6 @@ TEST_F(FilePathWatcherTest, LinkedDirectoryPart3) {
   ASSERT_TRUE(base::DeleteFile(file, false));
   VLOG(1) << "Waiting for file deletion";
   ASSERT_TRUE(WaitForEvents());
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 #endif  // OS_LINUX
@@ -875,7 +839,8 @@ bool ChangeFilePermissions(const FilePath& path, Permission perm, bool allow) {
 
 // Verify that changing attributes on a directory works.
 TEST_F(FilePathWatcherTest, DirAttributesChanged) {
-  FilePath test_dir1(temp_dir_.path().AppendASCII("DirAttributesChangedDir1"));
+  FilePath test_dir1(
+      temp_dir_.GetPath().AppendASCII("DirAttributesChangedDir1"));
   FilePath test_dir2(test_dir1.AppendASCII("DirAttributesChangedDir2"));
   FilePath test_file(test_dir2.AppendASCII("DirAttributesChangedFile"));
   // Setup a directory hierarchy.
@@ -890,10 +855,7 @@ TEST_F(FilePathWatcherTest, DirAttributesChanged) {
   // We should not get notified in this case as it hasn't affected our ability
   // to access the file.
   ASSERT_TRUE(ChangeFilePermissions(test_dir1, Read, false));
-  loop_.task_runner()->PostDelayedTask(FROM_HERE,
-                                       MessageLoop::QuitWhenIdleClosure(),
-                                       TestTimeouts::tiny_timeout());
-  ASSERT_FALSE(WaitForEvents());
+  ASSERT_FALSE(WaitForEventsWithTimeout(TestTimeouts::tiny_timeout()));
   ASSERT_TRUE(ChangeFilePermissions(test_dir1, Read, true));
 
   // We should get notified in this case because filepathwatcher can no
@@ -901,7 +863,6 @@ TEST_F(FilePathWatcherTest, DirAttributesChanged) {
   ASSERT_TRUE(ChangeFilePermissions(test_dir1, Execute, false));
   ASSERT_TRUE(WaitForEvents());
   ASSERT_TRUE(ChangeFilePermissions(test_dir1, Execute, true));
-  DeleteDelegateOnFileThread(delegate.release());
 }
 
 #endif  // OS_MACOSX

@@ -13,6 +13,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "components/sessions/core/tab_restore_service.h"
+#include "content/public/browser/notification_service.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test_utils.h"
@@ -47,19 +48,11 @@ void CreateTestTabs(Browser* browser) {
   GURL test_page(ui_test_utils::GetTestUrl(base::FilePath(),
       base::FilePath(FILE_PATH_LITERAL("tab-restore-visibility.html"))));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser, test_page, NEW_FOREGROUND_TAB,
+      browser, test_page, WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser, test_page, NEW_BACKGROUND_TAB,
+      browser, test_page, WindowOpenDisposition::NEW_BACKGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
-}
-
-void CloseBrowser(Browser* browser) {
-  content::WindowedNotificationObserver close_observer(
-      chrome::NOTIFICATION_BROWSER_CLOSED,
-      content::Source<Browser>(browser));
-  chrome::CloseWindow(browser);
-  close_observer.Wait();
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserTabRestoreTest, RecentTabsMenuTabDisposition) {
@@ -69,21 +62,19 @@ IN_PROC_BROWSER_TEST_F(BrowserTabRestoreTest, RecentTabsMenuTabDisposition) {
 
   // Create a new browser.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(),
-      GURL(url::kAboutBlankURL),
-      NEW_WINDOW,
+      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_WINDOW,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   BrowserList* active_browser_list = BrowserList::GetInstance();
   EXPECT_EQ(2u, active_browser_list->size());
 
   // Close the first browser.
-  CloseBrowser(browser());
+  CloseBrowserSynchronously(browser());
   EXPECT_EQ(1u, active_browser_list->size());
 
   // Restore tabs using the browser's recent tabs menu.
   content::DOMMessageQueue queue;
   Browser* browser = active_browser_list->get(0);
-  RecentTabsSubMenuModel menu(NULL, browser, NULL);
+  RecentTabsSubMenuModel menu(nullptr, browser);
   menu.ExecuteCommand(
       RecentTabsSubMenuModel::GetFirstRecentTabsCommandId(), 0);
   AwaitTabsReady(&queue, 2);
@@ -92,6 +83,24 @@ IN_PROC_BROWSER_TEST_F(BrowserTabRestoreTest, RecentTabsMenuTabDisposition) {
   EXPECT_EQ(2u, active_browser_list->size());
   browser = active_browser_list->get(1);
   EXPECT_EQ(3, browser->tab_strip_model()->count());
+  // For the two test tabs we've just received "READY" DOM message.
+  // But there won't be such message from the "about:blank" tab.
+  // And it is possible that TabLoader hasn't loaded it yet.
+  // Thus we should wait for "load stop" event before we will perform
+  // CheckVisbility on "about:blank".
+  {
+    content::WebContents* about_blank_contents =
+        browser->tab_strip_model()->GetWebContentsAt(0);
+    EXPECT_EQ("about:blank", about_blank_contents->GetURL().spec());
+    if (about_blank_contents->IsLoading() ||
+        about_blank_contents->GetController().NeedsReload()) {
+      content::WindowedNotificationObserver load_stop_observer(
+          content::NOTIFICATION_LOAD_STOP,
+          content::Source<content::NavigationController>(
+              &about_blank_contents->GetController()));
+      load_stop_observer.Wait();
+    }
+  }
 
   // The middle tab only should have visible disposition.
   CheckVisbility(browser->tab_strip_model(), 1);
@@ -104,15 +113,13 @@ IN_PROC_BROWSER_TEST_F(BrowserTabRestoreTest, DelegateRestoreTabDisposition) {
 
   // Create a new browser.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(),
-      GURL(url::kAboutBlankURL),
-      NEW_WINDOW,
+      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_WINDOW,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   BrowserList* active_browser_list = BrowserList::GetInstance();
   EXPECT_EQ(2u, active_browser_list->size());
 
   // Close the first browser.
-  CloseBrowser(browser());
+  CloseBrowserSynchronously(browser());
   EXPECT_EQ(1u, active_browser_list->size());
 
   // Check the browser has a delegated restore service.
@@ -136,6 +143,21 @@ IN_PROC_BROWSER_TEST_F(BrowserTabRestoreTest, DelegateRestoreTabDisposition) {
   EXPECT_EQ(2u, active_browser_list->size());
   browser = active_browser_list->get(1);
   EXPECT_EQ(3, browser->tab_strip_model()->count());
+  // The same as in RecentTabsMenuTabDisposition test case.
+  // See there for the explanation.
+  {
+    content::WebContents* about_blank_contents =
+        browser->tab_strip_model()->GetWebContentsAt(0);
+    EXPECT_EQ("about:blank", about_blank_contents->GetURL().spec());
+    if (about_blank_contents->IsLoading() ||
+        about_blank_contents->GetController().NeedsReload()) {
+      content::WindowedNotificationObserver load_stop_observer(
+          content::NOTIFICATION_LOAD_STOP,
+          content::Source<content::NavigationController>(
+              &about_blank_contents->GetController()));
+      load_stop_observer.Wait();
+    }
+  }
 
   // The middle tab only should have visible disposition.
   CheckVisbility(browser->tab_strip_model(), 1);

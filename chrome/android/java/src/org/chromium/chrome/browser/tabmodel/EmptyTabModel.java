@@ -12,7 +12,6 @@ import org.chromium.chrome.browser.tab.Tab;
  * Singleton class intended to stub out Tab model before it has been created.
  */
 public class EmptyTabModel implements TabModel {
-
     /**
      * Used to mock TabModel. Application code should use getInstance() to construct an
      * EmptyTabModel.
@@ -83,7 +82,12 @@ public class EmptyTabModel implements TabModel {
     }
 
     @Override
-    public void setIndex(int i, TabSelectionType type) {}
+    public void setIndex(int i, @TabSelectionType int type) {}
+
+    @Override
+    public boolean isCurrentModel() {
+        return false;
+    }
 
     @Override
     public void moveTab(int id, int newIndex) {}
@@ -107,16 +111,13 @@ public class EmptyTabModel implements TabModel {
     }
 
     @Override
-    public void commitAllTabClosures() {
-    }
+    public void commitAllTabClosures() {}
 
     @Override
-    public void commitTabClosure(int tabId) {
-    }
+    public void commitTabClosure(int tabId) {}
 
     @Override
-    public void cancelTabClosure(int tabId) {
-    }
+    public void cancelTabClosure(int tabId) {}
 
     @Override
     public boolean supportsPendingClosures() {
@@ -124,20 +125,19 @@ public class EmptyTabModel implements TabModel {
     }
 
     @Override
-    public void addTab(Tab tab, int index, TabLaunchType type) {
+    public void addTab(Tab tab, int index, @TabLaunchType int type) {
         assert false;
     }
 
     @Override
-    public void addObserver(TabModelObserver observer) {
-    }
+    public void addObserver(TabModelObserver observer) {}
 
     @Override
-    public void removeObserver(TabModelObserver observer) {
-    }
+    public void removeObserver(TabModelObserver observer) {}
 
     @Override
-    public void removeTab(Tab tab) {
-    }
+    public void removeTab(Tab tab) {}
 
+    @Override
+    public void openMostRecentlyClosedTab() {}
 }

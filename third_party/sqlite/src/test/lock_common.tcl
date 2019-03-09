@@ -15,24 +15,26 @@
 
 proc do_multiclient_test {varname script} {
 
-  foreach code [list {
+  foreach {tn code} [list 1 {
     if {[info exists ::G(valgrind)]} { db close ; continue }
     set ::code2_chan [launch_testfixture]
     set ::code3_chan [launch_testfixture]
     proc code2 {tcl} { testfixture $::code2_chan $tcl }
     proc code3 {tcl} { testfixture $::code3_chan $tcl }
-    set tn 1
-  } {
+  } 2 {
     proc code2 {tcl} { uplevel #0 $tcl }
     proc code3 {tcl} { uplevel #0 $tcl }
-    set tn 2
   }] {
+    # Do not run multi-process tests with the unix-excl VFS.
+    #
+    if {$tn==1 && [permutation]=="unix-excl"} continue
+
     faultsim_delete_and_reopen
 
     proc code1 {tcl} { uplevel #0 $tcl }
-  
+
     # Open connections [db2] and [db3]. Depending on which iteration this
-    # is, the connections may be created in this interpreter, or in 
+    # is, the connections may be created in this interpreter, or in
     # interpreters running in other OS processes. As such, the [db2] and [db3]
     # commands should only be accessed within [code2] and [code3] blocks,
     # respectively.
@@ -40,14 +42,14 @@ proc do_multiclient_test {varname script} {
     eval $code
     code2 { sqlite3 db2 test.db }
     code3 { sqlite3 db3 test.db }
-    
-    # Shorthand commands. Execute SQL using database connection [db2] or 
+
+    # Shorthand commands. Execute SQL using database connection [db2] or
     # [db3]. Return the results.
     #
     proc sql1 {sql} { db eval $sql }
     proc sql2 {sql} { code2 [list db2 eval $sql] }
     proc sql3 {sql} { code3 [list db3 eval $sql] }
-  
+
     proc csql1 {sql} { list [catch { sql1 $sql } msg] $msg }
     proc csql2 {sql} { list [catch { sql2 $sql } msg] $msg }
     proc csql3 {sql} { list [catch { sql3 $sql } msg] $msg }
@@ -74,7 +76,7 @@ proc launch_testfixture {{prg ""}} {
   if {[file tail $prg]==$prg} { set prg [file join . $prg] }
   set chan [open "|$prg tf_main.tcl" r+]
   fconfigure $chan -buffering line
-  set rc [catch { 
+  set rc [catch {
     testfixture $chan "sqlite3_test_control_pending_byte $::sqlite_pending_byte"
   }]
   if {$rc} {
@@ -96,7 +98,7 @@ proc testfixture {chan cmd args} {
     set r ""
     while { 1 } {
       set line [gets $chan]
-      if { $line == "OVER" } { 
+      if { $line == "OVER" } {
         set res [lindex $r 1]
         if { [lindex $r 0] } { error $res }
         return $res

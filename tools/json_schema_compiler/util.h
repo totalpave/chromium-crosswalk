@@ -30,9 +30,9 @@ bool PopulateItem(const base::Value& from, std::string* out);
 bool PopulateItem(const base::Value& from,
                   std::string* out,
                   base::string16* error);
-bool PopulateItem(const base::Value& from, std::vector<char>* out);
+bool PopulateItem(const base::Value& from, std::vector<uint8_t>* out);
 bool PopulateItem(const base::Value& from,
-                  std::vector<char>* out,
+                  std::vector<uint8_t>* out,
                   base::string16* error);
 bool PopulateItem(const base::Value& from,
                   std::unique_ptr<base::Value>* out,
@@ -102,7 +102,7 @@ bool PopulateArrayFromList(const base::ListValue& list, std::vector<T>* out) {
   out->clear();
   T item;
   for (const auto& value : list) {
-    if (!PopulateItem(*value, &item))
+    if (!PopulateItem(value, &item))
       return false;
     // T might not be movable, but in that case it should be copyable, and this
     // will still work.
@@ -121,7 +121,7 @@ bool PopulateArrayFromList(const base::ListValue& list,
   out->clear();
   T item;
   for (const auto& value : list) {
-    if (!PopulateItem(*value, &item, error))
+    if (!PopulateItem(value, &item, error))
       return false;
     out->push_back(std::move(item));
   }
@@ -161,7 +161,7 @@ void AddItemToList(const int from, base::ListValue* out);
 void AddItemToList(const bool from, base::ListValue* out);
 void AddItemToList(const double from, base::ListValue* out);
 void AddItemToList(const std::string& from, base::ListValue* out);
-void AddItemToList(const std::vector<char>& from, base::ListValue* out);
+void AddItemToList(const std::vector<uint8_t>& from, base::ListValue* out);
 void AddItemToList(const std::unique_ptr<base::Value>& from,
                    base::ListValue* out);
 void AddItemToList(const std::unique_ptr<base::DictionaryValue>& from,
@@ -207,12 +207,8 @@ std::unique_ptr<base::Value> CreateValueFromArray(const std::vector<T>& from) {
 template <class T>
 std::unique_ptr<base::Value> CreateValueFromOptionalArray(
     const std::unique_ptr<std::vector<T>>& from) {
-  if (from)
-    return CreateValueFromArray(*from);
-  return nullptr;
+  return from ? CreateValueFromArray(*from) : nullptr;
 }
-
-std::string ValueTypeToString(base::Value::Type type);
 
 }  // namespace util
 }  // namespace json_schema_compiler

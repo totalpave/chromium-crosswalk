@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/sha1.h"
@@ -43,12 +44,10 @@ TEST(SignatureCreatorTest, BasicTest) {
   ASSERT_TRUE(key_original->ExportPublicKey(&public_key_info));
 
   crypto::SignatureVerifier verifier;
-  ASSERT_TRUE(verifier.VerifyInit(
-      crypto::SignatureVerifier::RSA_PKCS1_SHA1, &signature.front(),
-      signature.size(), &public_key_info.front(), public_key_info.size()));
+  ASSERT_TRUE(verifier.VerifyInit(crypto::SignatureVerifier::RSA_PKCS1_SHA1,
+                                  signature, public_key_info));
 
-  verifier.VerifyUpdate(reinterpret_cast<const uint8_t*>(data.c_str()),
-                        data.size());
+  verifier.VerifyUpdate(base::as_bytes(base::make_span(data)));
   ASSERT_TRUE(verifier.VerifyFinal());
 }
 
@@ -77,12 +76,10 @@ TEST(SignatureCreatorTest, SignDigestTest) {
 
   // Verify the input data.
   crypto::SignatureVerifier verifier;
-  ASSERT_TRUE(verifier.VerifyInit(
-      crypto::SignatureVerifier::RSA_PKCS1_SHA1, &signature.front(),
-      signature.size(), &public_key_info.front(), public_key_info.size()));
+  ASSERT_TRUE(verifier.VerifyInit(crypto::SignatureVerifier::RSA_PKCS1_SHA1,
+                                  signature, public_key_info));
 
-  verifier.VerifyUpdate(reinterpret_cast<const uint8_t*>(data.c_str()),
-                        data.size());
+  verifier.VerifyUpdate(base::as_bytes(base::make_span(data)));
   ASSERT_TRUE(verifier.VerifyFinal());
 }
 
@@ -112,11 +109,9 @@ TEST(SignatureCreatorTest, SignSHA256DigestTest) {
 
   // Verify the input data.
   crypto::SignatureVerifier verifier;
-  ASSERT_TRUE(verifier.VerifyInit(
-      crypto::SignatureVerifier::RSA_PKCS1_SHA256, &signature.front(),
-      signature.size(), &public_key_info.front(), public_key_info.size()));
+  ASSERT_TRUE(verifier.VerifyInit(crypto::SignatureVerifier::RSA_PKCS1_SHA256,
+                                  signature, public_key_info));
 
-  verifier.VerifyUpdate(reinterpret_cast<const uint8_t*>(data.c_str()),
-                        data.size());
+  verifier.VerifyUpdate(base::as_bytes(base::make_span(data)));
   ASSERT_TRUE(verifier.VerifyFinal());
 }

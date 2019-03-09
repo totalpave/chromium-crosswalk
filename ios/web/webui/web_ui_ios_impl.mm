@@ -10,10 +10,14 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "ios/public/provider/web/web_ui_ios_controller.h"
-#include "ios/public/provider/web/web_ui_ios_controller_factory.h"
-#include "ios/public/provider/web/web_ui_ios_message_handler.h"
-#include "ios/web/web_state/web_state_impl.h"
+#include "ios/web/public/webui/web_ui_ios_controller.h"
+#include "ios/web/public/webui/web_ui_ios_controller_factory.h"
+#include "ios/web/public/webui/web_ui_ios_message_handler.h"
+#import "ios/web/web_state/web_state_impl.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 using web::WebUIIOSController;
 
@@ -55,58 +59,9 @@ WebUIIOSController* WebUIIOSImpl::GetController() const {
   return controller_.get();
 }
 
-void WebUIIOSImpl::SetController(WebUIIOSController* controller) {
-  controller_.reset(controller);
-}
-
-void WebUIIOSImpl::CallJavascriptFunction(const std::string& function_name) {
-  DCHECK(base::IsStringASCII(function_name));
-  base::string16 javascript = base::ASCIIToUTF16(function_name + "();");
-  ExecuteJavascript(javascript);
-}
-
-void WebUIIOSImpl::CallJavascriptFunction(const std::string& function_name,
-                                          const base::Value& arg) {
-  DCHECK(base::IsStringASCII(function_name));
-  std::vector<const base::Value*> args;
-  args.push_back(&arg);
-  ExecuteJavascript(GetJavascriptCall(function_name, args));
-}
-
-void WebUIIOSImpl::CallJavascriptFunction(const std::string& function_name,
-                                          const base::Value& arg1,
-                                          const base::Value& arg2) {
-  DCHECK(base::IsStringASCII(function_name));
-  std::vector<const base::Value*> args;
-  args.push_back(&arg1);
-  args.push_back(&arg2);
-  ExecuteJavascript(GetJavascriptCall(function_name, args));
-}
-
-void WebUIIOSImpl::CallJavascriptFunction(const std::string& function_name,
-                                          const base::Value& arg1,
-                                          const base::Value& arg2,
-                                          const base::Value& arg3) {
-  DCHECK(base::IsStringASCII(function_name));
-  std::vector<const base::Value*> args;
-  args.push_back(&arg1);
-  args.push_back(&arg2);
-  args.push_back(&arg3);
-  ExecuteJavascript(GetJavascriptCall(function_name, args));
-}
-
-void WebUIIOSImpl::CallJavascriptFunction(const std::string& function_name,
-                                          const base::Value& arg1,
-                                          const base::Value& arg2,
-                                          const base::Value& arg3,
-                                          const base::Value& arg4) {
-  DCHECK(base::IsStringASCII(function_name));
-  std::vector<const base::Value*> args;
-  args.push_back(&arg1);
-  args.push_back(&arg2);
-  args.push_back(&arg3);
-  args.push_back(&arg4);
-  ExecuteJavascript(GetJavascriptCall(function_name, args));
+void WebUIIOSImpl::SetController(
+    std::unique_ptr<WebUIIOSController> controller) {
+  controller_ = std::move(controller);
 }
 
 void WebUIIOSImpl::CallJavascriptFunction(
@@ -114,6 +69,24 @@ void WebUIIOSImpl::CallJavascriptFunction(
     const std::vector<const base::Value*>& args) {
   DCHECK(base::IsStringASCII(function_name));
   ExecuteJavascript(GetJavascriptCall(function_name, args));
+}
+
+void WebUIIOSImpl::ResolveJavascriptCallback(const base::Value& callback_id,
+                                             const base::Value& response) {
+  // cr.webUIResponse is a global JS function exposed from cr.js.
+  base::Value request_successful = base::Value(true);
+  std::vector<const base::Value*> args{&callback_id, &request_successful,
+                                       &response};
+  ExecuteJavascript(GetJavascriptCall("cr.webUIResponse", args));
+}
+
+void WebUIIOSImpl::RejectJavascriptCallback(const base::Value& callback_id,
+                                            const base::Value& response) {
+  // cr.webUIResponse is a global JS function exposed from cr.js.
+  base::Value request_successful = base::Value(false);
+  std::vector<const base::Value*> args{&callback_id, &request_successful,
+                                       &response};
+  ExecuteJavascript(GetJavascriptCall("cr.webUIResponse", args));
 }
 
 void WebUIIOSImpl::RegisterMessageCallback(const std::string& message,
@@ -139,11 +112,12 @@ void WebUIIOSImpl::ProcessWebUIIOSMessage(const GURL& source_url,
 // WebUIIOSImpl, protected:
 // -------------------------------------------------------
 
-void WebUIIOSImpl::AddMessageHandler(WebUIIOSMessageHandler* handler) {
+void WebUIIOSImpl::AddMessageHandler(
+    std::unique_ptr<WebUIIOSMessageHandler> handler) {
   DCHECK(!handler->web_ui());
   handler->set_web_ui(this);
   handler->RegisterMessages();
-  handlers_.push_back(handler);
+  handlers_.push_back(std::move(handler));
 }
 
 void WebUIIOSImpl::ExecuteJavascript(const base::string16& javascript) {

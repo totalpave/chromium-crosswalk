@@ -4,140 +4,151 @@
 
 #include "content/browser/download/url_downloader.h"
 
+#include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/macros.h"
+#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
 #include "base/threading/sequenced_task_runner_handle.h"
+#include "components/download/public/common/download_create_info.h"
+#include "components/download/public/common/download_interrupt_reasons.h"
+#include "components/download/public/common/download_request_handle_interface.h"
+#include "components/download/public/common/download_url_parameters.h"
+#include "components/download/public/common/url_download_request_handle.h"
 #include "content/browser/byte_stream.h"
-#include "content/browser/download/download_create_info.h"
-#include "content/browser/download/download_manager_impl.h"
-#include "content/browser/download/download_request_handle.h"
+#include "content/browser/download/byte_stream_input_stream.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/download_interrupt_reasons.h"
-#include "content/public/browser/download_save_info.h"
+#include "content/public/browser/download_request_utils.h"
+#include "content/public/common/child_process_host.h"
 #include "net/base/io_buffer.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
+#include "net/base/upload_progress.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
+#include "services/network/upload_progress_tracker.h"
 #include "ui/base/page_transition_types.h"
 
 namespace content {
 
-class UrlDownloader::RequestHandle : public DownloadRequestHandleInterface {
- public:
-  RequestHandle(base::WeakPtr<UrlDownloader> downloader,
-                base::WeakPtr<DownloadManagerImpl> download_manager_impl,
-                scoped_refptr<base::SequencedTaskRunner> downloader_task_runner)
-      : downloader_(downloader),
-        download_manager_impl_(download_manager_impl),
-        downloader_task_runner_(downloader_task_runner) {}
-  RequestHandle(RequestHandle&& other)
-      : downloader_(std::move(other.downloader_)),
-        download_manager_impl_(std::move(other.download_manager_impl_)),
-        downloader_task_runner_(std::move(other.downloader_task_runner_)) {}
-  RequestHandle& operator=(RequestHandle&& other) {
-    downloader_ = std::move(other.downloader_);
-    download_manager_impl_ = std::move(other.download_manager_impl_);
-    downloader_task_runner_ = std::move(other.downloader_task_runner_);
-    return *this;
-  }
-
-  // DownloadRequestHandleInterface
-  WebContents* GetWebContents() const override { return nullptr; }
-  DownloadManager* GetDownloadManager() const override {
-    return download_manager_impl_ ? download_manager_impl_.get() : nullptr;
-  }
-  void PauseRequest() const override {
-    downloader_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&UrlDownloader::PauseRequest, downloader_));
-  }
-  void ResumeRequest() const override {
-    downloader_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&UrlDownloader::ResumeRequest, downloader_));
-  }
-  void CancelRequest() const override {
-    downloader_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&UrlDownloader::CancelRequest, downloader_));
-  }
-
- private:
-  base::WeakPtr<UrlDownloader> downloader_;
-  base::WeakPtr<DownloadManagerImpl> download_manager_impl_;
-  scoped_refptr<base::SequencedTaskRunner> downloader_task_runner_;
-
-  DISALLOW_COPY_AND_ASSIGN(RequestHandle);
-};
-
 // static
 std::unique_ptr<UrlDownloader> UrlDownloader::BeginDownload(
-    base::WeakPtr<DownloadManagerImpl> download_manager,
+    base::WeakPtr<download::UrlDownloadHandler::Delegate> delegate,
     std::unique_ptr<net::URLRequest> request,
-    const Referrer& referrer) {
-  if (!referrer.url.is_valid())
-    request->SetReferrer(std::string());
-  else
-    request->SetReferrer(referrer.url.spec());
+    download::DownloadUrlParameters* params,
+    bool is_parallel_request) {
+  Referrer referrer(params->referrer(),
+                    Referrer::NetReferrerPolicyToBlinkReferrerPolicy(
+                        params->referrer_policy()));
+  Referrer sanitized_referrer =
+      Referrer::SanitizeForRequest(request->url(), referrer);
+  Referrer::SetReferrerForRequest(request.get(), sanitized_referrer);
 
+  // TODO(xingliu): Figure out if we can support blob scheme.
   if (request->url().SchemeIs(url::kBlobScheme))
     return nullptr;
 
   // From this point forward, the |UrlDownloader| is responsible for
   // |started_callback|.
-  std::unique_ptr<UrlDownloader> downloader(
-      new UrlDownloader(std::move(request), download_manager));
+  auto downloader = std::make_unique<UrlDownloader>(
+      std::move(request), delegate, is_parallel_request,
+      params->request_origin(), params->follow_cross_origin_redirects(),
+      params->download_source(), params->upload_callback());
   downloader->Start();
 
   return downloader;
 }
 
-UrlDownloader::UrlDownloader(std::unique_ptr<net::URLRequest> request,
-                             base::WeakPtr<DownloadManagerImpl> manager)
+UrlDownloader::UrlDownloader(
+    std::unique_ptr<net::URLRequest> request,
+    base::WeakPtr<download::UrlDownloadHandler::Delegate> delegate,
+    bool is_parallel_request,
+    const std::string& request_origin,
+    bool follow_cross_origin_redirects,
+    download::DownloadSource download_source,
+    const download::DownloadUrlParameters::UploadProgressCallback&
+        upload_callback)
     : request_(std::move(request)),
-      manager_(manager),
-      core_(request_.get(), this),
+      delegate_(delegate),
+      core_(request_.get(),
+            this,
+            is_parallel_request,
+            request_origin,
+            download_source),
+      follow_cross_origin_redirects_(follow_cross_origin_redirects),
+      upload_callback_(upload_callback),
       weak_ptr_factory_(this) {}
 
-UrlDownloader::~UrlDownloader() {
-}
+UrlDownloader::~UrlDownloader() = default;
 
 void UrlDownloader::Start() {
   DCHECK(!request_->is_pending());
 
-  if (!request_->status().is_success())
-    return;
-
+  if (request_->has_upload() && upload_callback_) {
+    upload_progress_tracker_ = std::make_unique<network::UploadProgressTracker>(
+        FROM_HERE,
+        base::BindRepeating(&UrlDownloader::OnUploadProgressReport,
+                            weak_ptr_factory_.GetWeakPtr()),
+        request_.get());
+  }
   request_->set_delegate(this);
   request_->Start();
+}
+
+void UrlDownloader::OnUploadProgressReport(
+    const net::UploadProgress& upload_progress) {
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(upload_callback_, upload_progress.position()));
 }
 
 void UrlDownloader::OnReceivedRedirect(net::URLRequest* request,
                                        const net::RedirectInfo& redirect_info,
                                        bool* defer_redirect) {
-  DVLOG(1) << "OnReceivedRedirect: " << request_->url().spec();
+  DVLOG(1) << __func__ << " , request url: " << request_->url().spec()
+           << " ,redirect url:" << redirect_info.new_url;
+  if (follow_cross_origin_redirects_) {
+    if (!DownloadRequestUtils::IsURLSafe(ChildProcessHost::kInvalidUniqueID,
+                                         redirect_info.new_url)) {
+      core_.OnWillAbort(
+          download::DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST);
+      request_->CancelWithError(net::ERR_UNSAFE_REDIRECT);
+    }
+    return;
+  }
 
-  // We are going to block redirects even if DownloadRequestCore allows it.  No
-  // redirects are expected for download requests that are made without a
-  // renderer, which are currently exclusively resumption requests. Since there
-  // is no security policy being applied here, it's safer to block redirects and
-  // revisit if some previously unknown legitimate use case arises for redirects
-  // while resuming.
-  core_.OnWillAbort(DOWNLOAD_INTERRUPT_REASON_SERVER_UNREACHABLE);
+  // Block redirects since there is no security policy being applied here.
+  core_.OnWillAbort(download::DOWNLOAD_INTERRUPT_REASON_SERVER_UNREACHABLE);
   request_->CancelWithError(net::ERR_UNSAFE_REDIRECT);
 }
 
-void UrlDownloader::OnResponseStarted(net::URLRequest* request) {
+void UrlDownloader::OnResponseStarted(net::URLRequest* request, int net_error) {
+  DCHECK_NE(net::ERR_IO_PENDING, net_error);
+
   DVLOG(1) << "OnResponseStarted: " << request_->url().spec();
 
-  if (!request_->status().is_success()) {
-    ResponseCompleted();
+  if (upload_progress_tracker_)
+    upload_progress_tracker_->OnUploadCompleted();
+
+  if (net_error != net::OK) {
+    ResponseCompleted(net_error);
+    return;
+  }
+
+  if (!DownloadRequestUtils::IsURLSafe(ChildProcessHost::kInvalidUniqueID,
+                                       request_->url())) {
+    core_.OnWillAbort(
+        download::DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST);
+    request_->CancelWithError(net::ERR_DISALLOWED_URL_SCHEME);
     return;
   }
 
   if (core_.OnResponseStarted(std::string()))
     StartReading(false);  // Read the first chunk.
   else
-    ResponseCompleted();
+    ResponseCompleted(net::OK);
 }
 
 void UrlDownloader::StartReading(bool is_continuation) {
@@ -148,21 +159,21 @@ void UrlDownloader::StartReading(bool is_continuation) {
   // doesn't use the buffer.
   scoped_refptr<net::IOBuffer> buf;
   int buf_size;
-  if (!core_.OnWillRead(&buf, &buf_size, -1)) {
-    request_->CancelWithError(net::ERR_ABORTED);
+  if (!core_.OnWillRead(&buf, &buf_size)) {
+    int result = request_->CancelWithError(net::ERR_ABORTED);
     base::SequencedTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&UrlDownloader::ResponseCompleted,
-                              weak_ptr_factory_.GetWeakPtr()));
+        FROM_HERE, base::BindOnce(&UrlDownloader::ResponseCompleted,
+                                  weak_ptr_factory_.GetWeakPtr(), result));
     return;
   }
 
   DCHECK(buf.get());
   DCHECK(buf_size > 0);
 
-  request_->Read(buf.get(), buf_size, &bytes_read);
+  bytes_read = request_->Read(buf.get(), buf_size);
 
   // If IO is pending, wait for the URLRequest to call OnReadCompleted.
-  if (request_->status().is_io_pending())
+  if (bytes_read == net::ERR_IO_PENDING)
     return;
 
   if (!is_continuation || bytes_read <= 0) {
@@ -171,9 +182,9 @@ void UrlDownloader::StartReading(bool is_continuation) {
     // Else, trigger OnReadCompleted asynchronously to avoid starving the IO
     // thread in case the URLRequest can provide data synchronously.
     base::SequencedTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(&UrlDownloader::OnReadCompleted,
-                   weak_ptr_factory_.GetWeakPtr(), request_.get(), bytes_read));
+        FROM_HERE, base::BindOnce(&UrlDownloader::OnReadCompleted,
+                                  weak_ptr_factory_.GetWeakPtr(),
+                                  request_.get(), bytes_read));
   }
 }
 
@@ -181,14 +192,13 @@ void UrlDownloader::OnReadCompleted(net::URLRequest* request, int bytes_read) {
   DVLOG(1) << "OnReadCompleted: \"" << request_->url().spec() << "\""
            << " bytes_read = " << bytes_read;
 
-  // bytes_read == -1 always implies an error.
-  if (bytes_read == -1 || !request_->status().is_success()) {
-    ResponseCompleted();
+  // bytes_read can be an error.
+  if (bytes_read < 0) {
+    ResponseCompleted(bytes_read);
     return;
   }
 
   DCHECK(bytes_read >= 0);
-  DCHECK(request_->status().is_success());
 
   bool defer = false;
   if (!core_.OnReadCompleted(bytes_read, &defer)) {
@@ -198,43 +208,41 @@ void UrlDownloader::OnReadCompleted(net::URLRequest* request, int bytes_read) {
     return;
   }
 
-  if (!request_->status().is_success())
-    return;
-
   if (bytes_read > 0) {
     StartReading(true);  // Read the next chunk.
   } else {
     // URLRequest reported an EOF. Call ResponseCompleted.
     DCHECK_EQ(0, bytes_read);
-    ResponseCompleted();
+    ResponseCompleted(net::OK);
   }
 }
 
-void UrlDownloader::ResponseCompleted() {
+void UrlDownloader::ResponseCompleted(int net_error) {
+  DCHECK_NE(net::ERR_IO_PENDING, net_error);
   DVLOG(1) << "ResponseCompleted: " << request_->url().spec();
 
-  core_.OnResponseCompleted(request_->status());
+  core_.OnResponseCompleted(net::URLRequestStatus::FromError(net_error));
   Destroy();
 }
 
 void UrlDownloader::OnStart(
-    std::unique_ptr<DownloadCreateInfo> create_info,
+    std::unique_ptr<download::DownloadCreateInfo> create_info,
     std::unique_ptr<ByteStreamReader> stream_reader,
-    const DownloadUrlParameters::OnStartedCallback& callback) {
-  create_info->request_handle.reset(
-      new RequestHandle(weak_ptr_factory_.GetWeakPtr(), manager_,
-                        base::SequencedTaskRunnerHandle::Get()));
-  BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                          base::Bind(&DownloadManagerImpl::StartDownload,
-                                     manager_, base::Passed(&create_info),
-                                     base::Passed(&stream_reader), callback));
+    const download::DownloadUrlParameters::OnStartedCallback& callback) {
+  create_info->request_handle.reset(new download::UrlDownloadRequestHandle(
+      weak_ptr_factory_.GetWeakPtr(), base::SequencedTaskRunnerHandle::Get()));
+
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(
+          &download::UrlDownloadHandler::Delegate::OnUrlDownloadStarted,
+          delegate_, std::move(create_info),
+          std::make_unique<ByteStreamInputStream>(std::move(stream_reader)),
+          nullptr, callback));
 }
 
 void UrlDownloader::OnReadyToRead() {
-  if (request_->status().is_success())
     StartReading(false);  // Read the next chunk (OK to complete synchronously).
-  else
-    ResponseCompleted();
 }
 
 void UrlDownloader::PauseRequest() {
@@ -250,9 +258,11 @@ void UrlDownloader::CancelRequest() {
 }
 
 void UrlDownloader::Destroy() {
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&DownloadManagerImpl::RemoveUrlDownloader, manager_, this));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(
+          &download::UrlDownloadHandler::Delegate::OnUrlDownloadStopped,
+          delegate_, this));
 }
 
 }  // namespace content

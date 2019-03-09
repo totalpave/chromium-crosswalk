@@ -7,8 +7,13 @@
 
 #include <memory>
 
+#include "base/bind.h"
+#include "base/containers/circular_deque.h"
 #include "base/mac/scoped_cftyperef.h"
-#include "media/base/mac/videotoolbox_glue.h"
+#include "base/memory/weak_ptr.h"
+#include "base/single_thread_task_runner.h"
+#include "base/threading/thread.h"
+#include "base/threading/thread_checker.h"
 #include "media/base/mac/videotoolbox_helpers.h"
 #include "media/gpu/media_gpu_export.h"
 #include "media/video/video_encode_accelerator.h"
@@ -27,11 +32,7 @@ class MEDIA_GPU_EXPORT VTVideoEncodeAccelerator
 
   // VideoEncodeAccelerator implementation.
   VideoEncodeAccelerator::SupportedProfiles GetSupportedProfiles() override;
-  bool Initialize(VideoPixelFormat format,
-                  const gfx::Size& input_visible_size,
-                  VideoCodecProfile output_profile,
-                  uint32_t initial_bitrate,
-                  Client* client) override;
+  bool Initialize(const Config& config, Client* client) override;
   void Encode(const scoped_refptr<VideoFrame>& frame,
               bool force_keyframe) override;
   void UseOutputBitstreamBuffer(const BitstreamBuffer& buffer) override;
@@ -40,10 +41,6 @@ class MEDIA_GPU_EXPORT VTVideoEncodeAccelerator
   void Destroy() override;
 
  private:
-  using CMSampleBufferRef = CoreMediaGlue::CMSampleBufferRef;
-  using VTCompressionSessionRef = VideoToolboxGlue::VTCompressionSessionRef;
-  using VTEncodeInfoFlags = VideoToolboxGlue::VTEncodeInfoFlags;
-
   // Holds the associated data of a video frame being processed.
   struct InProgressFrameEncode;
 
@@ -86,12 +83,8 @@ class MEDIA_GPU_EXPORT VTVideoEncodeAccelerator
   // is configured using ConfigureCompressionSession().
   bool ResetCompressionSession();
 
-  // Create a compression session, with HW encoder enforced if
-  // |require_hw_encoding| is set.
-  bool CreateCompressionSession(
-      base::ScopedCFTypeRef<CFDictionaryRef> attributes,
-      const gfx::Size& input_size,
-      bool require_hw_encoding);
+  // Create a compression session.
+  bool CreateCompressionSession(const gfx::Size& input_size);
 
   // Configure the current compression session using current encoder settings.
   bool ConfigureCompressionSession();
@@ -101,8 +94,6 @@ class MEDIA_GPU_EXPORT VTVideoEncodeAccelerator
   // encoding work).
   void DestroyCompressionSession();
 
-  // VideoToolboxGlue provides access to VideoToolbox at runtime.
-  const VideoToolboxGlue* videotoolbox_glue_;
   base::ScopedCFTypeRef<VTCompressionSessionRef> compression_session_;
 
   gfx::Size input_visible_size_;
@@ -111,15 +102,17 @@ class MEDIA_GPU_EXPORT VTVideoEncodeAccelerator
   int32_t initial_bitrate_;
   int32_t target_bitrate_;
   int32_t encoder_set_bitrate_;
+  VideoCodecProfile h264_profile_;
 
   // Bitrate adjuster used to fix VideoToolbox's inconsistent bitrate issues.
   webrtc::BitrateAdjuster bitrate_adjuster_;
 
   // Bitstream buffers ready to be used to return encoded output as a FIFO.
-  std::deque<std::unique_ptr<BitstreamBufferRef>> bitstream_buffer_queue_;
+  base::circular_deque<std::unique_ptr<BitstreamBufferRef>>
+      bitstream_buffer_queue_;
 
   // EncodeOutput needs to be copied into a BitstreamBufferRef as a FIFO.
-  std::deque<std::unique_ptr<EncodeOutput>> encoder_output_queue_;
+  base::circular_deque<std::unique_ptr<EncodeOutput>> encoder_output_queue_;
 
   // Our original calling task runner for the child thread.
   const scoped_refptr<base::SingleThreadTaskRunner> client_task_runner_;

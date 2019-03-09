@@ -3,148 +3,322 @@
 // found in the LICENSE file.
 package org.chromium.chrome.browser.ntp.snippets;
 
-import android.graphics.Bitmap;
+import android.annotation.SuppressLint;
+import android.graphics.drawable.Drawable;
+import android.support.annotation.ColorInt;
+import android.support.annotation.Nullable;
 
-import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.chrome.browser.ntp.NewTabPageUma;
-import org.chromium.chrome.browser.ntp.cards.NewTabPageListItem;
+import org.chromium.base.DiscardableReferencePool.DiscardableReference;
+import org.chromium.chrome.browser.ntp.cards.NewTabPageViewHolder.PartialBindCallback;
+import org.chromium.chrome.browser.suggestions.OfflinableSuggestion;
+import org.chromium.ui.modelutil.PropertyObservable;
+
+import java.io.File;
+import java.util.Collection;
+import java.util.Collections;
 
 /**
  * Represents the data for an article card on the NTP.
  */
-public class SnippetArticle implements NewTabPageListItem {
-    public final String mId;
+public class SnippetArticle
+        extends PropertyObservable<PartialBindCallback> implements OfflinableSuggestion {
+    /** The category of this article. */
+    public final int mCategory;
+
+    /** The identifier for this article within the category - not necessarily unique globally. */
+    public final String mIdWithinCategory;
+
+    /** The title of this article. */
     public final String mTitle;
+
+    /** The snippet for this article. */
+    public final String mSnippet;
+
+    /** The canonical publisher name (e.g., New York Times). */
     public final String mPublisher;
-    public final String mPreviewText;
+
+    /** The URL of this article. This may be an AMP url. */
     public final String mUrl;
-    public final String mAmpUrl;
-    public final String mThumbnailUrl;
+
+    /** The time when this article was published. */
     public final long mPublishTimestampMilliseconds;
+
+    /** The score expressing relative quality of the article for the user. */
     public final float mScore;
-    public final int mPosition;
-
-    /** Bitmap of the thumbnail, fetched lazily, when the RecyclerView wants to show the snippet. */
-    private Bitmap mThumbnailBitmap;
-
-    /** Stores whether impression of this article has been tracked already. */
-    private boolean mImpressionTracked;
-
-    /** Specifies ranges of positions for which we store position-specific sub-histograms. */
-    private static final int[] HISTOGRAM_FOR_POSITIONS = {0, 2, 4, 9};
 
     /**
-     * Creates a SnippetArticle object that will hold the data
-     * @param title the title of the article
-     * @param publisher the canonical publisher name (e.g., New York Times)
-     * @param previewText the snippet preview text
-     * @param url the URL of the article
-     * @param mAmpUrl the AMP url for the article (possible for this to be empty)
-     * @param thumbnailUrl the URL of the thumbnail
-     * @param timestamp the time in ms when this article was published
-     * @param score the score expressing relative quality of the article for the user
-     * @param position the position of this article in the list of snippets
+     * The time when the article was fetched from the server. This field is only used for remote
+     * suggestions.
      */
-    public SnippetArticle(String id, String title, String publisher, String previewText, String url,
-            String ampUrl, String thumbnailUrl, long timestamp, float score, int position) {
-        mId = id;
+    public final long mFetchTimestampMilliseconds;
+
+    /** Whether the snippet has a thumbnail to display. **/
+    public final boolean mHasThumbnail;
+
+    /** The flag that indicates whether this is a video suggestion. */
+    public boolean mIsVideoSuggestion;
+
+    /** Stores whether any part of this article has been exposed to the user. */
+    public boolean mExposed;
+
+    /** Stores whether the user has seen a substantial part of this article. */
+    public boolean mSeen;
+
+    /** The rank of this article within its section. */
+    private int mPerSectionRank = -1;
+
+    /** The global rank of this article in the complete list. */
+    private int mGlobalRank = -1;
+
+    /** The thumbnail, fetched lazily when the RecyclerView wants to show the snippet. */
+    private DiscardableReference<Drawable> mThumbnail;
+
+    /**
+     * The favicon of the publisher, fetched lazily when the RecyclerView wants to show the snippet.
+     */
+    private DiscardableReference<Drawable> mPublisherFavicon;
+
+    /** The thumbnail dominant color. */
+    private @ColorInt Integer mThumbnailDominantColor;
+
+    /** Whether the linked article represents an asset download. */
+    private boolean mIsAssetDownload;
+
+    /** The GUID of the asset download (only for asset download articles). */
+    private String mAssetDownloadGuid;
+
+    /** The path to the asset download (only for asset download articles). */
+    private File mAssetDownloadFile;
+
+    /** The mime type of the asset download (only for asset download articles). */
+    private String mAssetDownloadMimeType;
+
+    /** The tab id of the corresponding tab (only for recent tab articles). */
+    private int mRecentTabId;
+
+    /** The offline id of the corresponding offline page, if any. */
+    private Long mOfflinePageOfflineId;
+
+    /** Whether the corresponding offline page has been automatically prefetched. */
+    private boolean mIsPrefetched;
+
+    /**
+     * Creates a SnippetArticleListItem object that will hold the data. Default is to have a
+     * thumbnail and empty snippet.
+     */
+    @SuppressLint("SupportAnnotationUsage") // for ColorInt on an Integer rather than int or long
+    public SnippetArticle(int category, String idWithinCategory, String title, String publisher,
+            String url, long publishTimestamp, float score, long fetchTimestamp,
+            boolean isVideoSuggestion, @ColorInt Integer thumbnailDominantColor) {
+        this(category, idWithinCategory, title, "", publisher, url, publishTimestamp, score,
+                fetchTimestamp, isVideoSuggestion, thumbnailDominantColor, true);
+    }
+
+    /**
+     * Creates a SnippetArticleListItem object that will hold the data.
+     */
+    @SuppressLint("SupportAnnotationUsage") // for ColorInt on an Integer rather than int or long
+    public SnippetArticle(int category, String idWithinCategory, String title, String snippet,
+            String publisher, String url, long publishTimestamp, float score, long fetchTimestamp,
+            boolean isVideoSuggestion, @ColorInt Integer thumbnailDominantColor,
+            boolean hasThumbnail) {
+        mCategory = category;
+        mIdWithinCategory = idWithinCategory;
         mTitle = title;
+        mSnippet = snippet;
         mPublisher = publisher;
-        mPreviewText = previewText;
         mUrl = url;
-        mAmpUrl = ampUrl;
-        mThumbnailUrl = thumbnailUrl;
-        mPublishTimestampMilliseconds = timestamp;
+        mPublishTimestampMilliseconds = publishTimestamp;
         mScore = score;
-        mPosition = position;
+        mFetchTimestampMilliseconds = fetchTimestamp;
+        mIsVideoSuggestion = isVideoSuggestion;
+        mThumbnailDominantColor = thumbnailDominantColor;
+        mHasThumbnail = hasThumbnail;
     }
 
     @Override
     public boolean equals(Object other) {
         if (!(other instanceof SnippetArticle)) return false;
-        return mId.equals(((SnippetArticle) other).mId);
+        SnippetArticle rhs = (SnippetArticle) other;
+        return mCategory == rhs.mCategory && mIdWithinCategory.equals(rhs.mIdWithinCategory);
     }
 
     @Override
     public int hashCode() {
-        return mId.hashCode();
-    }
-
-    @Override
-    public int getType() {
-        return NewTabPageListItem.VIEW_TYPE_SNIPPET;
+        return mCategory ^ mIdWithinCategory.hashCode();
     }
 
     /**
-     * Returns this article's thumbnail as a {@link Bitmap}. Can return {@code null} as it is
-     * initially unset.
+     * Returns this article's thumbnail, or {@code null} if it hasn't been fetched yet or has been
+     * discarded.
      */
-    public Bitmap getThumbnailBitmap() {
-        return mThumbnailBitmap;
+    @Nullable
+    public Drawable getThumbnail() {
+        return mThumbnail == null ? null : mThumbnail.get();
     }
 
     /** Sets the thumbnail bitmap for this article. */
-    public void setThumbnailBitmap(Bitmap bitmap) {
-        mThumbnailBitmap = bitmap;
+    public void setThumbnail(DiscardableReference<Drawable> thumbnail) {
+        mThumbnail = thumbnail;
     }
 
-    /** Tracks click on this NTP snippet in UMA. */
-    public void trackClick() {
-        RecordUserAction.record("MobileNTP.Snippets.Click");
-        RecordHistogram.recordSparseSlowlyHistogram("NewTabPage.Snippets.CardClicked", mPosition);
-        NewTabPageUma.recordSnippetAction(NewTabPageUma.SNIPPETS_ACTION_CLICKED);
-        NewTabPageUma.recordAction(NewTabPageUma.ACTION_OPENED_SNIPPET);
-        recordAgeAndScore("NewTabPage.Snippets.CardClicked");
+    /**
+     * Clears this article's thumbnail if there is one.
+     */
+    public void clearThumbnail() {
+        mThumbnail = null;
     }
 
-    /** Tracks impression of this NTP snippet. */
-    public void trackImpression() {
-        // Track UMA only upon the first impression per life-time of this object.
-        if (mImpressionTracked) return;
-
-        RecordHistogram.recordSparseSlowlyHistogram("NewTabPage.Snippets.CardShown", mPosition);
-        recordAgeAndScore("NewTabPage.Snippets.CardShown");
-        mImpressionTracked = true;
+    /**
+     * Returns the favicon of the publisher for this article, or {@code null} if it hasn't been
+     * fetched yet.
+     */
+    @Nullable
+    public Drawable getPublisherFavicon() {
+        return mPublisherFavicon == null ? null : mPublisherFavicon.get();
     }
 
-    /** Returns whether impression of this SnippetArticle has already been tracked. */
-    public boolean impressionTracked() {
-        return mImpressionTracked;
+    /** Sets he favicon of the publisher for this article. */
+    public void setPublisherFavicon(DiscardableReference<Drawable> favicon) {
+        mPublisherFavicon = favicon;
     }
 
-    private void recordAgeAndScore(String histogramPrefix) {
-        // Track how the (approx.) position relates to age / score of the snippet that is clicked.
-        int ageInMinutes =
-                (int) ((System.currentTimeMillis() - mPublishTimestampMilliseconds) / 60000L);
-        String histogramAge = histogramPrefix + "Age";
-        String histogramScore = histogramPrefix + "ScoreNew";
-
-        recordAge(histogramAge, ageInMinutes);
-        recordScore(histogramScore, mScore);
-        int startPosition = 0;
-        for (int endPosition : HISTOGRAM_FOR_POSITIONS) {
-            if (mPosition >= startPosition && mPosition <= endPosition) {
-                String suffix = "_" + startPosition + "_" + endPosition;
-                recordAge(histogramAge + suffix, ageInMinutes);
-                recordScore(histogramScore + suffix, mScore);
-                break;
-            }
-            startPosition = endPosition + 1;
-        }
+    /**
+     * Returns this article's thumbnail dominant color. Can return {@code null} if there is none.
+     */
+    @Nullable
+    @ColorInt
+    public Integer getThumbnailDominantColor() {
+        return mThumbnailDominantColor;
     }
 
-    private static void recordAge(String histogramName, int ageInMinutes) {
-        // Negative values (when the time of the device is set inappropriately) provide no value.
-        if (ageInMinutes >= 0) {
-            // If the max value below (72 hours) were to be changed, the histogram should be renamed
-            // since it will change the shape of buckets.
-            RecordHistogram.recordCustomCountHistogram(histogramName, ageInMinutes, 1, 72 * 60, 50);
-        }
+    /** @return whether a snippet is a remote suggestion. */
+    public boolean isArticle() {
+        return mCategory == KnownCategories.ARTICLES;
     }
 
-    private static void recordScore(String histogramName, float score) {
-        int recordedScore = Math.min((int) Math.ceil(score), 100000);
-        RecordHistogram.recordCustomCountHistogram(histogramName, recordedScore, 1, 100000, 50);
+    /** @return whether a snippet is a contextual suggestion. */
+    public boolean isContextual() {
+        return mCategory == KnownCategories.CONTEXTUAL;
+    }
+
+    /** @return whether a snippet is either offline page or asset download. */
+    public boolean isDownload() {
+        return mCategory == KnownCategories.DOWNLOADS;
+    }
+
+    /** @return whether a snippet is asset download. */
+    public boolean isAssetDownload() {
+        return mIsAssetDownload;
+    }
+
+    /**
+     * @return the GUID of the asset download. May only be called if {@link #mIsAssetDownload} is
+     * {@code true} (which implies that this snippet belongs to the DOWNLOADS category).
+     */
+    public String getAssetDownloadGuid() {
+        assert isDownload();
+        assert mIsAssetDownload;
+        return mAssetDownloadGuid;
+    }
+
+    /**
+     * @return the asset download path. May only be called if {@link #mIsAssetDownload} is
+     * {@code true} (which implies that this snippet belongs to the DOWNLOADS category).
+     */
+    public File getAssetDownloadFile() {
+        assert isDownload();
+        assert mIsAssetDownload;
+        return mAssetDownloadFile;
+    }
+
+    /**
+     * @return the mime type of the asset download. May only be called if {@link #mIsAssetDownload}
+     * is {@code true} (which implies that this snippet belongs to the DOWNLOADS category).
+     */
+    public String getAssetDownloadMimeType() {
+        assert isDownload();
+        assert mIsAssetDownload;
+        return mAssetDownloadMimeType;
+    }
+
+    /**
+     * Marks the article suggestion as an asset download with the given path and mime type. May only
+     * be called if this snippet belongs to DOWNLOADS category.
+     */
+    public void setAssetDownloadData(String downloadGuid, String filePath, String mimeType) {
+        assert isDownload();
+        mIsAssetDownload = true;
+        mAssetDownloadGuid = downloadGuid;
+        mAssetDownloadFile = new File(filePath);
+        mAssetDownloadMimeType = mimeType;
+    }
+
+    /**
+     * Marks the article suggestion as an offline page download with the given id. May only
+     * be called if this snippet belongs to DOWNLOADS category.
+     */
+    public void setOfflinePageDownloadData(long offlinePageId) {
+        assert isDownload();
+        mIsAssetDownload = false;
+        setOfflinePageOfflineId(offlinePageId);
+    }
+
+    @Override
+    public boolean requiresExactOfflinePage() {
+        return isDownload();
+    }
+
+    @Override
+    public String getUrl() {
+        return mUrl;
+    }
+
+    @Override
+    public void setOfflinePageOfflineId(@Nullable Long offlineId) {
+        mOfflinePageOfflineId = offlineId;
+    }
+
+    @Override
+    @Nullable
+    public Long getOfflinePageOfflineId() {
+        return mOfflinePageOfflineId;
+    }
+
+    public void setIsPrefetched(boolean isPrefetched) {
+        mIsPrefetched = isPrefetched;
+    }
+
+    public boolean isPrefetched() {
+        return mIsPrefetched;
+    }
+
+    @Override
+    public String toString() {
+        // For debugging purposes. Displays the first 42 characters of the title.
+        return String.format("{%s, %1.42s}", getClass().getSimpleName(), mTitle);
+    }
+
+    public void setRank(int perSectionRank, int globalRank) {
+        mPerSectionRank = perSectionRank;
+        mGlobalRank = globalRank;
+    }
+
+    public int getGlobalRank() {
+        return mGlobalRank;
+    }
+
+    public int getPerSectionRank() {
+        return mPerSectionRank;
+    }
+
+    @Override
+    public Collection<PartialBindCallback> getAllSetProperties() {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public Collection<PartialBindCallback> getAllProperties() {
+        return Collections.emptyList();
     }
 }

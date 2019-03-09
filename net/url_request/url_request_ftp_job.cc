@@ -4,6 +4,7 @@
 
 #include "net/url_request/url_request_ftp_job.h"
 
+#include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
@@ -24,6 +25,19 @@
 
 namespace net {
 
+class URLRequestFtpJob::AuthData {
+ public:
+  AuthState state;  // Whether we need, have, or gave up on authentication.
+  AuthCredentials credentials;  // The credentials to use for auth.
+
+  AuthData();
+  ~AuthData();
+};
+
+URLRequestFtpJob::AuthData::AuthData() : state(AUTH_STATE_NEED_AUTH) {}
+
+URLRequestFtpJob::AuthData::~AuthData() = default;
+
 URLRequestFtpJob::URLRequestFtpJob(
     URLRequest* request,
     NetworkDelegate* network_delegate,
@@ -31,14 +45,14 @@ URLRequestFtpJob::URLRequestFtpJob(
     FtpAuthCache* ftp_auth_cache)
     : URLRequestJob(request, network_delegate),
       priority_(DEFAULT_PRIORITY),
-      proxy_service_(request_->context()->proxy_service()),
-      pac_request_(NULL),
+      proxy_resolution_service_(
+          request_->context()->proxy_resolution_service()),
       http_response_info_(NULL),
       read_in_progress_(false),
       ftp_transaction_factory_(ftp_transaction_factory),
       ftp_auth_cache_(ftp_auth_cache),
       weak_factory_(this) {
-  DCHECK(proxy_service_);
+  DCHECK(proxy_resolution_service_);
   DCHECK(ftp_transaction_factory);
   DCHECK(ftp_auth_cache);
 }
@@ -59,12 +73,18 @@ bool URLRequestFtpJob::GetMimeType(std::string* mime_type) const {
       return true;
     }
   } else {
-    // No special handling of MIME type is needed. As opposed to direct FTP
-    // transaction, we do not get a raw directory listing to parse.
-    return http_transaction_->GetResponseInfo()->
-        headers->GetMimeType(mime_type);
+    std::string proxy_mime;
+    http_transaction_->GetResponseInfo()->headers->GetMimeType(&proxy_mime);
+    if (proxy_mime == "text/vnd.chromium.ftp-dir") {
+      *mime_type = "text/vnd.chromium.ftp-dir";
+      return true;
+    }
   }
-  return false;
+
+  // FTP resources other than directory listings ought to be handled as raw
+  // binary data, not sniffed into HTML or etc.
+  *mime_type = "application/octet-stream";
+  return true;
 }
 
 void URLRequestFtpJob::GetResponseInfo(HttpResponseInfo* info) {
@@ -72,15 +92,15 @@ void URLRequestFtpJob::GetResponseInfo(HttpResponseInfo* info) {
     *info = *http_response_info_;
 }
 
-HostPortPair URLRequestFtpJob::GetSocketAddress() const {
+IPEndPoint URLRequestFtpJob::GetResponseRemoteEndpoint() const {
   if (proxy_info_.is_direct()) {
     if (!ftp_transaction_)
-      return HostPortPair();
-    return ftp_transaction_->GetResponseInfo()->socket_address;
+      return IPEndPoint();
+    return ftp_transaction_->GetResponseInfo()->remote_endpoint;
   } else {
     if (!http_transaction_)
-      return HostPortPair();
-    return http_transaction_->GetResponseInfo()->socket_address;
+      return IPEndPoint();
+    return http_transaction_->GetResponseInfo()->remote_endpoint;
   }
 }
 
@@ -91,7 +111,7 @@ void URLRequestFtpJob::SetPriority(RequestPriority priority) {
 }
 
 void URLRequestFtpJob::Start() {
-  DCHECK(!pac_request_);
+  DCHECK(!proxy_resolve_request_);
   DCHECK(!ftp_transaction_);
   DCHECK(!http_transaction_);
 
@@ -99,12 +119,13 @@ void URLRequestFtpJob::Start() {
   if (request_->load_flags() & LOAD_BYPASS_PROXY) {
     proxy_info_.UseDirect();
   } else {
-    DCHECK_EQ(request_->context()->proxy_service(), proxy_service_);
-    rv = proxy_service_->ResolveProxy(
-        request_->url(), "GET", request_->load_flags(), &proxy_info_,
+    DCHECK_EQ(request_->context()->proxy_resolution_service(),
+              proxy_resolution_service_);
+    rv = proxy_resolution_service_->ResolveProxy(
+        request_->url(), "GET", &proxy_info_,
         base::Bind(&URLRequestFtpJob::OnResolveProxyComplete,
                    base::Unretained(this)),
-        &pac_request_, NULL, request_->net_log());
+        &proxy_resolve_request_, request_->net_log());
 
     if (rv == ERR_IO_PENDING)
       return;
@@ -113,9 +134,8 @@ void URLRequestFtpJob::Start() {
 }
 
 void URLRequestFtpJob::Kill() {
-  if (pac_request_) {
-    proxy_service_->CancelPacRequest(pac_request_);
-    pac_request_ = nullptr;
+  if (proxy_resolve_request_) {
+    proxy_resolve_request_.reset();
   }
   if (ftp_transaction_)
     ftp_transaction_.reset();
@@ -126,7 +146,7 @@ void URLRequestFtpJob::Kill() {
 }
 
 void URLRequestFtpJob::OnResolveProxyComplete(int result) {
-  pac_request_ = NULL;
+  proxy_resolve_request_ = NULL;
 
   if (result != OK) {
     OnStartCompletedAsync(result);
@@ -159,9 +179,8 @@ void URLRequestFtpJob::StartFtpTransaction() {
   if (ftp_transaction_) {
     rv = ftp_transaction_->Start(
         &ftp_request_info_,
-        base::Bind(&URLRequestFtpJob::OnStartCompleted,
-                   base::Unretained(this)),
-        request_->net_log());
+        base::Bind(&URLRequestFtpJob::OnStartCompleted, base::Unretained(this)),
+        request_->net_log(), request_->traffic_annotation());
     if (rv == ERR_IO_PENDING)
       return;
   } else {
@@ -185,6 +204,8 @@ void URLRequestFtpJob::StartHttpTransaction() {
   http_request_info_.url = request_->url();
   http_request_info_.method = request_->method();
   http_request_info_.load_flags = request_->load_flags();
+  http_request_info_.traffic_annotation =
+      net::MutableNetworkTrafficAnnotationTag(request_->traffic_annotation());
 
   int rv = request_->context()->http_transaction_factory()->CreateTransaction(
       priority_, &http_transaction_);
@@ -234,8 +255,8 @@ void URLRequestFtpJob::OnStartCompleted(int result) {
 
 void URLRequestFtpJob::OnStartCompletedAsync(int result) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&URLRequestFtpJob::OnStartCompleted,
-                            weak_factory_.GetWeakPtr(), result));
+      FROM_HERE, base::BindOnce(&URLRequestFtpJob::OnStartCompleted,
+                                weak_factory_.GetWeakPtr(), result));
 }
 
 void URLRequestFtpJob::OnReadCompleted(int result) {
@@ -265,8 +286,8 @@ void URLRequestFtpJob::RestartTransactionWithAuth() {
 }
 
 LoadState URLRequestFtpJob::GetLoadState() const {
-  if (pac_request_)
-    return proxy_service_->GetLoadState(pac_request_);
+  if (proxy_resolve_request_)
+    return proxy_resolve_request_->GetLoadState();
   if (proxy_info_.is_direct()) {
     return ftp_transaction_ ?
         ftp_transaction_->GetLoadState() : LOAD_STATE_IDLE;
@@ -291,7 +312,7 @@ void URLRequestFtpJob::GetAuthChallengeInfo(
 
   scoped_refptr<AuthChallengeInfo> auth_info(new AuthChallengeInfo);
   auth_info->is_proxy = false;
-  auth_info->challenger = url::Origin(request_->url());
+  auth_info->challenger = url::Origin::Create(request_->url());
   // scheme and realm are kept empty.
   DCHECK(auth_info->scheme.empty());
   DCHECK(auth_info->realm.empty());
@@ -323,10 +344,6 @@ void URLRequestFtpJob::CancelAuth() {
   // there were no auth.  Schedule this for later so that we don't cause
   // any recursing into the caller as a result of this call.
   OnStartCompletedAsync(OK);
-}
-
-UploadProgress URLRequestFtpJob::GetUploadProgress() const {
-  return UploadProgress();
 }
 
 int URLRequestFtpJob::ReadRawData(IOBuffer* buf, int buf_size) {
@@ -362,7 +379,7 @@ void URLRequestFtpJob::HandleAuthNeededResponse() {
     if (ftp_transaction_ && auth_data_->state == AUTH_STATE_HAVE_AUTH)
       ftp_auth_cache_->Remove(origin, auth_data_->credentials);
   } else {
-    auth_data_ = new AuthData;
+    auth_data_ = std::make_unique<AuthData>();
   }
   auth_data_->state = AUTH_STATE_NEED_AUTH;
 

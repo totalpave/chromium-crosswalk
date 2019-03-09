@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef IOS_CHROME_BROWSER_SYNC_SESSIONS_IOS_CHROME_LOCAL_EVENT_SESSION_ROUTER_H_
-#define IOS_CHROME_BROWSER_SYNC_SESSIONS_IOS_CHROME_LOCAL_EVENT_SESSION_ROUTER_H_
+#ifndef IOS_CHROME_BROWSER_SYNC_SESSIONS_IOS_CHROME_LOCAL_SESSION_EVENT_ROUTER_H_
+#define IOS_CHROME_BROWSER_SYNC_SESSIONS_IOS_CHROME_LOCAL_SESSION_EVENT_ROUTER_H_
 
 #include <stddef.h>
 
@@ -12,9 +12,11 @@
 
 #include "base/callback_list.h"
 #include "base/macros.h"
+#include "components/sync/model/syncable_service.h"
 #include "components/sync_sessions/local_session_event_router.h"
-#include "ios/web/public/web_state/global_web_state_observer.h"
-#include "sync/api/syncable_service.h"
+#import "ios/chrome/browser/tabs/tab_model_list_observer.h"
+#include "ios/chrome/browser/web_state_list/web_state_list_observer.h"
+#include "ios/web/public/web_state/web_state_observer.h"
 
 class GURL;
 
@@ -29,8 +31,10 @@ class SyncSessionsClient;
 // A LocalEventRouter that drives session sync via observation of
 // web::WebState-related events.
 class IOSChromeLocalSessionEventRouter
-    : public browser_sync::LocalSessionEventRouter,
-      public web::GlobalWebStateObserver {
+    : public sync_sessions::LocalSessionEventRouter,
+      public web::WebStateObserver,
+      public WebStateListObserver,
+      public TabModelListObserver {
  public:
   IOSChromeLocalSessionEventRouter(
       ios::ChromeBrowserState* browser_state,
@@ -39,22 +43,48 @@ class IOSChromeLocalSessionEventRouter
   ~IOSChromeLocalSessionEventRouter() override;
 
   // LocalEventRouter:
-  void StartRoutingTo(browser_sync::LocalSessionEventHandler* handler) override;
+  void StartRoutingTo(
+      sync_sessions::LocalSessionEventHandler* handler) override;
   void Stop() override;
 
-  // web::GlobalWebStateObserver:
+  // TabModelListObserver:
+  void TabModelRegisteredWithBrowserState(
+      TabModel* tab_model,
+      ios::ChromeBrowserState* browser_state) override;
+  void TabModelUnregisteredFromBrowserState(
+      TabModel* tab_model,
+      ios::ChromeBrowserState* browser_state) override;
+
+  // web::WebStateObserver:
   void NavigationItemsPruned(web::WebState* web_state,
                              size_t pruned_item_count) override;
-  void NavigationItemChanged(web::WebState* web_state) override;
-  void NavigationItemCommitted(
-      web::WebState* web_state,
-      const web::LoadCommittedDetails& load_details) override;
+  void TitleWasSet(web::WebState* web_state) override;
+  void DidFinishNavigation(web::WebState* web_state,
+                           web::NavigationContext* navigation_context) override;
   void PageLoaded(
       web::WebState* web_state,
       web::PageLoadCompletionStatus load_completion_status) override;
+  void DidChangeBackForwardState(web::WebState* web_state) override;
   void WebStateDestroyed(web::WebState* web_state) override;
 
+  // web::WebStateListObserver:
+  void WebStateInsertedAt(WebStateList* web_state_list,
+                          web::WebState* web_state,
+                          int index,
+                          bool activating) override;
+  void WebStateReplacedAt(WebStateList* web_state_list,
+                          web::WebState* old_web_state,
+                          web::WebState* new_web_state,
+                          int index) override;
+  void WebStateDetachedAt(WebStateList* web_state_list,
+                          web::WebState* web_state,
+                          int index) override;
+
  private:
+  // Methods to add and remove WebStateList observer.
+  void StartObservingWebStateList(WebStateList* web_state_list);
+  void StopObservingWebStateList(WebStateList* web_state_list);
+
   // Called when a tab is parented.
   void OnTabParented(web::WebState* web_state);
 
@@ -68,7 +98,7 @@ class IOSChromeLocalSessionEventRouter
   // and vice versa.
   void OnFaviconsChanged(const std::set<GURL>& page_urls, const GURL& icon_url);
 
-  browser_sync::LocalSessionEventHandler* handler_;
+  sync_sessions::LocalSessionEventHandler* handler_;
   ios::ChromeBrowserState* const browser_state_;
   sync_sessions::SyncSessionsClient* const sessions_client_;
   syncer::SyncableService::StartSyncFlare flare_;
@@ -83,4 +113,4 @@ class IOSChromeLocalSessionEventRouter
   DISALLOW_COPY_AND_ASSIGN(IOSChromeLocalSessionEventRouter);
 };
 
-#endif  // IOS_CHROME_BROWSER_SYNC_SESSIONS_IOS_CHROME_LOCAL_EVENT_SESSION_ROUTER_H_
+#endif  // IOS_CHROME_BROWSER_SYNC_SESSIONS_IOS_CHROME_LOCAL_SESSION_EVENT_ROUTER_H_

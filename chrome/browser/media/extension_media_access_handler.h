@@ -7,8 +7,6 @@
 
 #include "chrome/browser/media/media_access_handler.h"
 
-class MediaStreamCaptureIndicator;
-
 // MediaAccessHandler for extension capturing requests.
 class ExtensionMediaAccessHandler : public MediaAccessHandler {
  public:
@@ -16,16 +14,17 @@ class ExtensionMediaAccessHandler : public MediaAccessHandler {
   ~ExtensionMediaAccessHandler() override;
 
   // MediaAccessHandler implementation.
-  bool SupportsStreamType(const content::MediaStreamType type,
+  bool SupportsStreamType(content::WebContents* web_contents,
+                          const blink::MediaStreamType type,
                           const extensions::Extension* extension) override;
   bool CheckMediaAccessPermission(
-      content::WebContents* web_contents,
+      content::RenderFrameHost* render_frame_host,
       const GURL& security_origin,
-      content::MediaStreamType type,
+      blink::MediaStreamType type,
       const extensions::Extension* extension) override;
   void HandleRequest(content::WebContents* web_contents,
                      const content::MediaStreamRequest& request,
-                     const content::MediaResponseCallback& callback,
+                     content::MediaResponseCallback callback,
                      const extensions::Extension* extension) override;
 };
 

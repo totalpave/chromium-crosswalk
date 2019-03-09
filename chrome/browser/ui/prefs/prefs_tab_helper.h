@@ -9,13 +9,15 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
+#include "chrome/browser/font_pref_change_notifier.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/web_contents_user_data.h"
 
-class OverlayUserPrefStore;
-class PrefService;
+#if !defined(OS_ANDROID)
+#include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
+#endif
+
 class Profile;
 
 namespace content {
@@ -49,20 +51,27 @@ class PrefsTabHelper : public content::NotificationObserver,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
-  // Update the WebContents's RendererPreferences.
+  // Update the WebContents's blink::mojom::RendererPreferences.
   void UpdateRendererPreferences();
 
   void OnFontFamilyPrefChanged(const std::string& pref_name);
   void OnWebPrefChanged(const std::string& pref_name);
+
+  void NotifyWebkitPreferencesChanged(const std::string& pref_name);
 
   content::WebContents* web_contents_;
   Profile* profile_;
   content::NotificationRegistrar registrar_;
   std::unique_ptr<base::CallbackList<void(void)>::Subscription>
       style_sheet_subscription_;
+#if !defined(OS_ANDROID)
   std::unique_ptr<ChromeZoomLevelPrefs::DefaultZoomLevelSubscription>
       default_zoom_level_subscription_;
+  FontPrefChangeNotifier::Registrar font_change_registrar_;
+#endif  // !defined(OS_ANDROID)
   base::WeakPtrFactory<PrefsTabHelper> weak_ptr_factory_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(PrefsTabHelper);
 };

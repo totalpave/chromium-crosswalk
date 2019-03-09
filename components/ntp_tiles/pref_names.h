@@ -8,12 +8,20 @@
 namespace ntp_tiles {
 namespace prefs {
 
-extern const char kNTPSuggestionsURL[];
-extern const char kNTPSuggestionsIsPersonal[];
+extern const char kNumPersonalTiles[];
 
 extern const char kPopularSitesOverrideURL[];
+extern const char kPopularSitesOverrideDirectory[];
 extern const char kPopularSitesOverrideCountry[];
 extern const char kPopularSitesOverrideVersion[];
+
+extern const char kPopularSitesLastDownloadPref[];
+extern const char kPopularSitesURLPref[];
+extern const char kPopularSitesJsonPref[];
+extern const char kPopularSitesVersionPref[];
+
+extern const char kCustomLinksList[];
+extern const char kCustomLinksInitialized[];
 
 }  // namespace prefs
 }  // namespace ntp_tiles

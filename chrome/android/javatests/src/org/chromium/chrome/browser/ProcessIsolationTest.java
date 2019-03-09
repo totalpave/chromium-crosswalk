@@ -4,49 +4,58 @@
 
 package org.chromium.chrome.browser;
 
-import android.test.suitebuilder.annotation.MediumTest;
+import android.support.test.filters.MediumTest;
 import android.text.TextUtils;
 
-import org.chromium.base.BuildInfo;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.ContextUtils;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
+import org.chromium.base.test.util.RetryOnFailure;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Test to make sure browser and renderer are seperated process.
  */
-public class ProcessIsolationTest extends ChromeActivityTestCaseBase<ChromeActivity> {
-    private Pattern mUidPattern;
-
-    public ProcessIsolationTest() {
-        super(ChromeActivity.class);
-    }
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class ProcessIsolationTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
 
     /**
      * Verifies that process isolation works, i.e., that the browser and
      * renderer processes use different user IDs.
      * @throws InterruptedException
      */
+    @Test
     @MediumTest
     @DisableIf.Build(sdk_is_greater_than = 22, message = "crbug.com/517611")
     @Feature({"Browser", "Security"})
-    public void testProcessIsolationForRenderers() throws InterruptedException {
-        int tabsCount = getActivity().getCurrentTabModel().getCount();
+    @RetryOnFailure
+    public void testProcessIsolationForRenderers() throws InterruptedException, IOException {
+        int tabsCount = mActivityTestRule.getActivity().getCurrentTabModel().getCount();
         // The ActivityManager can be used to retrieve the current processes, but the reported UID
         // in the RunningAppProcessInfo for isolated processes is the same as the parent process
         // (see b/7724486, closed as "Working as intended").
         // So we have to resort to parsing the ps output.
-        String packageName = BuildInfo.getPackageName(getInstrumentation().getTargetContext());
-        assertFalse("Failed to retrieve package name for current version of Chrome.",
-                    TextUtils.isEmpty(packageName));
+        String packageName = ContextUtils.getApplicationContext().getPackageName();
+        Assert.assertFalse("Failed to retrieve package name for current version of Chrome.",
+                TextUtils.isEmpty(packageName));
 
         ArrayList<String> uids = new ArrayList<String>();
         BufferedReader reader = null;
@@ -56,12 +65,23 @@ public class ProcessIsolationTest extends ChromeActivityTestCaseBase<ChromeActiv
         try {
             Process psProcess = Runtime.getRuntime().exec("ps");
             reader = new BufferedReader(new InputStreamReader(psProcess.getInputStream()));
-            String line;
+            String line = reader.readLine();
+            Assert.assertNotNull(line);
+            final String[] lineSections = line.split("\\s+");
+            int pidIndex = -1;
+            for (int index = 0; index < lineSections.length; index++) {
+                if ("PID".equals(lineSections[index])) {
+                    pidIndex = index;
+                    break;
+                }
+            }
+            Assert.assertNotSame(-1, pidIndex);
+
             while ((line = reader.readLine()) != null) {
                 sb.append(line).append('\n');
                 if (line.indexOf(packageName) != -1) {
-                    String uid = retrieveUid(line);
-                    assertNotNull("Failed to retrieve UID from " + line, uid);
+                    final String uid = line.split("\\s+")[pidIndex];
+                    Assert.assertNotNull("Failed to retrieve UID from " + line, uid);
                     if (line.indexOf("sandboxed_process") != -1) {
                         // Renderer process.
                         uids.add(uid);
@@ -81,8 +101,6 @@ public class ProcessIsolationTest extends ChromeActivityTestCaseBase<ChromeActiv
                     }
                 }
             }
-        } catch (IOException ioe) {
-            fail("Failed to read ps output.");
         } finally {
             if (reader != null) {
                 try {
@@ -92,31 +110,21 @@ public class ProcessIsolationTest extends ChromeActivityTestCaseBase<ChromeActiv
                 }
             }
         }
-        assertTrue("Browser process not found in ps output: \n" + sb.toString(),
-                 hasBrowserProcess);
+        Assert.assertTrue(
+                "Browser process not found in ps output: \n" + sb.toString(), hasBrowserProcess);
 
         // We should have the same number of process as tabs count. Sometimes
         // there can be extra utility sandbox process so we check for greater than.
-        assertTrue(
-                "Renderer processes not found in ps output: \n" + sb.toString(),
+        Assert.assertTrue("Renderer processes not found in ps output: \n" + sb.toString(),
                 rendererProcessesCount >= tabsCount);
 
-        assertEquals("Found at least two processes with the same UID in ps output: \n"
-                + sb.toString(),
+        Assert.assertEquals(
+                "Found at least two processes with the same UID in ps output: \n" + sb.toString(),
                 uids.size(), new HashSet<String>(uids).size());
     }
 
-    private String retrieveUid(String psLine) {
-        if (mUidPattern == null) {
-            mUidPattern = Pattern.compile("^\\S+");
-        }
-        Matcher m = mUidPattern.matcher(psLine);
-        if (!m.find()) return null;
-        return m.group(0);
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityFromLauncher();
+    @Before
+    public void setUp() throws InterruptedException {
+        mActivityTestRule.startMainActivityFromLauncher();
     }
 }

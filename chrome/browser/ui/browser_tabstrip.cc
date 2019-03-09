@@ -24,14 +24,15 @@ void AddTabAt(Browser* browser, const GURL& url, int idx, bool foreground) {
   // WebContents, but we want to include the time it takes to create the
   // WebContents object too.
   base::TimeTicks new_tab_start_time = base::TimeTicks::Now();
-  chrome::NavigateParams params(browser,
-      url.is_empty() ? GURL(chrome::kChromeUINewTabURL) : url,
-      ui::PAGE_TRANSITION_TYPED);
-  params.disposition = foreground ? NEW_FOREGROUND_TAB : NEW_BACKGROUND_TAB;
+  NavigateParams params(browser,
+                        url.is_empty() ? GURL(chrome::kChromeUINewTabURL) : url,
+                        ui::PAGE_TRANSITION_TYPED);
+  params.disposition = foreground ? WindowOpenDisposition::NEW_FOREGROUND_TAB
+                                  : WindowOpenDisposition::NEW_BACKGROUND_TAB;
   params.tabstrip_index = idx;
-  chrome::Navigate(&params);
+  Navigate(&params);
   CoreTabHelper* core_tab_helper =
-      CoreTabHelper::FromWebContents(params.target_contents);
+      CoreTabHelper::FromWebContents(params.navigated_or_inserted_contents);
   core_tab_helper->set_new_tab_start_time(new_tab_start_time);
 }
 
@@ -40,24 +41,22 @@ content::WebContents* AddSelectedTabWithURL(
     const GURL& url,
     ui::PageTransition transition) {
   NavigateParams params(browser, url, transition);
-  params.disposition = NEW_FOREGROUND_TAB;
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
   Navigate(&params);
-  return params.target_contents;
+  return params.navigated_or_inserted_contents;
 }
 
 void AddWebContents(Browser* browser,
                     content::WebContents* source_contents,
-                    content::WebContents* new_contents,
+                    std::unique_ptr<content::WebContents> new_contents,
                     WindowOpenDisposition disposition,
-                    const gfx::Rect& initial_rect,
-                    bool user_gesture,
-                    bool* was_blocked) {
+                    const gfx::Rect& initial_rect) {
   // No code for this yet.
-  DCHECK(disposition != SAVE_TO_DISK);
+  DCHECK(disposition != WindowOpenDisposition::SAVE_TO_DISK);
   // Can't create a new contents for the current tab - invalid case.
-  DCHECK(disposition != CURRENT_TAB);
+  DCHECK(disposition != WindowOpenDisposition::CURRENT_TAB);
 
-  NavigateParams params(browser, new_contents);
+  NavigateParams params(browser, std::move(new_contents));
   params.source_contents = source_contents;
   params.disposition = disposition;
   params.window_bounds = initial_rect;

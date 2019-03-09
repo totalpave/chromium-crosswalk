@@ -1,20 +1,20 @@
 /* Copyright 2014 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 .popup-overlay {
-  -webkit-transition: 250ms opacity;
   align-items: center;
-  background: rgba(255, 255, 255, .75);
+  background: rgba(0, 0, 0, .5);
   bottom: 0;
   display: flex;
   justify-content: center;
   left: 0;
+  min-height: 0;
   padding: 20px;
   position: fixed;
   right: 0;
   top: 0;
+  transition: 250ms opacity;
   z-index: 5;
 }
 
@@ -30,8 +30,6 @@
 }
 
 .oobe-popup h1 {
-  -webkit-padding-end: 24px;
-  -webkit-user-select: none;
   background: linear-gradient(white, #F8F8F8);
   color: rgb(83, 99, 125);
   font-size: 105%;
@@ -39,6 +37,7 @@
   margin: 0;
   padding: 10px 15px 8px 15px;
   text-shadow: white 0 1px 2px;
+  user-select: none;
 }
 
 .popup-content-area {

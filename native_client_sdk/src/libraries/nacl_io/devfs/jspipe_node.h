@@ -13,12 +13,6 @@
 
 namespace nacl_io {
 
-class MessagingInterface;
-class VarInterface;
-class VarArrayInterface;
-class VarArrayBufferInterface;
-class VarDictionaryInterface;
-
 /**
  * JSPipeNode represents a two-way channel for communicating with JavaScript
  * via calls to PostMessage.  In order to use these some amount of logic on
@@ -33,7 +27,7 @@ class VarDictionaryInterface;
  *   payload: <operations_payload>
  * }
  * The payload for 'write' message is a ArrayBuffer containing binary data.
- * The payload for 'ack' messages is the total number of bytes recieved at
+ * The payload for 'ack' messages is the total number of bytes received at
  * the other end.
  * For example: { pipe: 'jspipe1', operation: 'ack', payload: 234 }
  *

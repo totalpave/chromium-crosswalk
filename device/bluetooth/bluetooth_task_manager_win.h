@@ -14,8 +14,8 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
 #include "base/observer_list.h"
+#include "base/optional.h"
 #include "base/win/scoped_handle.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_export.h"
@@ -24,11 +24,15 @@
 namespace base {
 
 class SequencedTaskRunner;
-class SequencedWorkerPool;
 
 }  // namespace base
 
 namespace device {
+
+namespace win {
+class BluetoothClassicWrapper;
+class BluetoothLowEnergyWrapper;
+}  // namespace win
 
 // Manages the blocking Bluetooth tasks using |SequencedWorkerPool|. It runs
 // bluetooth tasks using |SequencedWorkerPool| and informs its observers of
@@ -64,6 +68,9 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
     // service must use service device path instead of resident device device
     // path.
     base::FilePath path;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(ServiceRecordState);
   };
 
   struct DEVICE_BLUETOOTH_EXPORT DeviceState {
@@ -74,15 +81,18 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
 
     // Properties common to Bluetooth Classic and LE devices.
     std::string address;  // This uniquely identifies the device.
-    std::string name;     // Friendly name
+    base::Optional<std::string> name;  // Friendly name
     bool visible;
     bool connected;
     bool authenticated;
-    ScopedVector<ServiceRecordState> service_record_states;
+    std::vector<std::unique_ptr<ServiceRecordState>> service_record_states;
     // Properties specific to Bluetooth Classic devices.
     uint32_t bluetooth_class;
     // Properties specific to Bluetooth LE devices.
     base::FilePath path;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(DeviceState);
   };
 
   class DEVICE_BLUETOOTH_EXPORT Observer {
@@ -99,10 +109,16 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
      // the associated state can change over time. For example, during a
      // discovery session, the "friendly" name may initially be "unknown" before
      // the actual name is retrieved in subsequent poll events.
-     virtual void DevicesPolled(const ScopedVector<DeviceState>& devices) {}
+     virtual void DevicesPolled(
+         const std::vector<std::unique_ptr<DeviceState>>& devices) {}
   };
 
   explicit BluetoothTaskManagerWin(
+      scoped_refptr<base::SequencedTaskRunner> ui_task_runner);
+
+  static scoped_refptr<BluetoothTaskManagerWin> CreateForTesting(
+      std::unique_ptr<win::BluetoothClassicWrapper> classic_wrapper,
+      std::unique_ptr<win::BluetoothLowEnergyWrapper> le_wrapper,
       scoped_refptr<base::SequencedTaskRunner> ui_task_runner);
 
   static BluetoothUUID BluetoothLowEnergyUuidToBluetoothUuid(
@@ -114,7 +130,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
   void Initialize();
   void InitializeWithBluetoothTaskRunner(
       scoped_refptr<base::SequencedTaskRunner> bluetooth_task_runner);
-  void Shutdown();
 
   void PostSetPoweredBluetoothTask(
       bool powered,
@@ -194,6 +209,10 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
 
   static const int kPollIntervalMs;
 
+  BluetoothTaskManagerWin(
+      std::unique_ptr<win::BluetoothClassicWrapper> classic_wrapper,
+      std::unique_ptr<win::BluetoothLowEnergyWrapper> le_wrapper,
+      scoped_refptr<base::SequencedTaskRunner> ui_task_runner);
   virtual ~BluetoothTaskManagerWin();
 
   // Logs Win32 errors occurring during polling on the worker thread. The method
@@ -205,7 +224,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
   void OnAdapterStateChanged(const AdapterState* state);
   void OnDiscoveryStarted(bool success);
   void OnDiscoveryStopped();
-  void OnDevicesPolled(const ScopedVector<DeviceState>* devices);
+  void OnDevicesPolled(std::vector<std::unique_ptr<DeviceState>> devices);
 
   // Called on BluetoothTaskRunner.
   void StartPolling();
@@ -237,19 +256,21 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
   // exposed by those devices.
   bool SearchDevices(int timeout_multiplier,
                      bool search_cached_devices_only,
-                     ScopedVector<DeviceState>* device_list);
+                     std::vector<std::unique_ptr<DeviceState>>* device_list);
 
   // Sends a device search API call to the adapter to look for Bluetooth Classic
   // devices.
-  bool SearchClassicDevices(int timeout_multiplier,
-                            bool search_cached_devices_only,
-                            ScopedVector<DeviceState>* device_list);
+  bool SearchClassicDevices(
+      int timeout_multiplier,
+      bool search_cached_devices_only,
+      std::vector<std::unique_ptr<DeviceState>>* device_list);
 
   // Enumerate Bluetooth Low Energy devices.
-  bool SearchLowEnergyDevices(ScopedVector<DeviceState>* device_list);
+  bool SearchLowEnergyDevices(
+      std::vector<std::unique_ptr<DeviceState>>* device_list);
 
   // Discover services for the devices in |device_list|.
-  bool DiscoverServices(ScopedVector<DeviceState>* device_list,
+  bool DiscoverServices(std::vector<std::unique_ptr<DeviceState>>* device_list,
                         bool search_cached_services_only);
 
   // Discover Bluetooth Classic services for the given |device_address|.
@@ -257,7 +278,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
       const std::string& device_address,
       const GUID& protocol_uuid,
       bool search_cached_services_only,
-      ScopedVector<ServiceRecordState>* service_record_states);
+      std::vector<std::unique_ptr<ServiceRecordState>>* service_record_states);
 
   // Discover Bluetooth Classic services for the given |device_address|.
   // Returns a Win32 error code.
@@ -265,18 +286,20 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
       const std::string& device_address,
       const GUID& protocol_uuid,
       bool search_cached_services_only,
-      ScopedVector<ServiceRecordState>* service_record_states);
+      std::vector<std::unique_ptr<ServiceRecordState>>* service_record_states);
 
   // Discover Bluetooth Low Energy services for the given |device_path|.
   bool DiscoverLowEnergyDeviceServices(
       const base::FilePath& device_path,
-      ScopedVector<ServiceRecordState>* service_record_states);
+      std::vector<std::unique_ptr<ServiceRecordState>>* service_record_states);
 
   // Search for device paths of the GATT services in |*service_record_states|
   // from |device_address|.
+  // Return true if we were able to match all services with a service device
+  // path.
   bool SearchForGattServiceDevicePaths(
       const std::string device_address,
-      ScopedVector<ServiceRecordState>* service_record_states);
+      std::vector<std::unique_ptr<ServiceRecordState>>* service_record_states);
 
   // GATT service related functions.
   void GetGattIncludedCharacteristics(
@@ -307,22 +330,21 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothTaskManagerWin
   // UI task runner reference.
   scoped_refptr<base::SequencedTaskRunner> ui_task_runner_;
 
-  scoped_refptr<base::SequencedWorkerPool> worker_pool_;
   scoped_refptr<base::SequencedTaskRunner> bluetooth_task_runner_;
 
   // List of observers interested in event notifications.
-  base::ObserverList<Observer> observers_;
-
-  // Weak reference of the adapter handle, let BluetoothClassicWrapper handle
-  // the close of |adapter_handle_|.
-  HANDLE adapter_handle_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   // indicates whether the adapter is in discovery mode or not.
-  bool discovering_;
+  bool discovering_ = false;
 
   // Use for discarding too many log messages.
   base::TimeTicks current_logging_batch_ticks_;
-  int current_logging_batch_count_;
+  int current_logging_batch_count_ = 0;
+
+  // Wrapper around the Windows Bluetooth APIs. Owns the radio handle.
+  std::unique_ptr<win::BluetoothClassicWrapper> classic_wrapper_;
+  std::unique_ptr<win::BluetoothLowEnergyWrapper> le_wrapper_;
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothTaskManagerWin);
 };

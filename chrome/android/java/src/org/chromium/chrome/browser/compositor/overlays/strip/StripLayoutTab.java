@@ -4,18 +4,21 @@
 
 package org.chromium.chrome.browser.compositor.overlays.strip;
 
-import static org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.AnimatableAnimation.createAnimation;
-
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
 import android.graphics.RectF;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.base.ObserverList;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.compositor.layouts.ChromeAnimation;
-import org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.Animatable;
-import org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.Animation;
+import org.chromium.chrome.browser.compositor.animation.CompositorAnimator;
+import org.chromium.chrome.browser.compositor.animation.FloatProperty;
 import org.chromium.chrome.browser.compositor.layouts.LayoutRenderHost;
+import org.chromium.chrome.browser.compositor.layouts.LayoutUpdateHost;
 import org.chromium.chrome.browser.compositor.layouts.components.CompositorButton;
+import org.chromium.chrome.browser.compositor.layouts.components.CompositorButton.CompositorOnClickHandler;
 import org.chromium.chrome.browser.compositor.layouts.components.VirtualView;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabLoadTracker.TabLoadTrackerCallback;
 import org.chromium.chrome.browser.tab.Tab;
@@ -31,17 +34,72 @@ import java.util.List;
  * {@link StripLayoutTab} is used to keep track of the strip position and rendering information for
  * a particular tab so it can draw itself onto the GL canvas.
  */
-public class StripLayoutTab
-        implements ChromeAnimation.Animatable<StripLayoutTab.Property>, VirtualView {
-    /**
-     * Animatable properties that can be used with a {@link ChromeAnimation.Animatable} on a
-     * {@link StripLayoutTab}.
-     */
-    enum Property {
-        X_OFFSET,
-        Y_OFFSET,
-        WIDTH,
+public class StripLayoutTab implements VirtualView {
+    /** An observer interface for StripLayoutTab. */
+    public interface Observer {
+        /** @param visible Whether the StripLayoutTab is visible. */
+        void onVisibilityChanged(boolean visible);
     }
+
+    /**
+     * Delegate for additional tab functionality.
+     */
+    public interface StripLayoutTabDelegate {
+        /**
+         * Handles tab click actions.
+         * @param tab The tab clicked.
+         */
+        void handleTabClick(StripLayoutTab tab);
+
+        /**
+         * Handles close button click actions.
+         * @param tab  The tab whose close button was clicked.
+         * @param time The time the close button was clicked.
+         */
+        void handleCloseButtonClick(StripLayoutTab tab, long time);
+    }
+
+    /** A property for animations to use for changing the X offset of the tab. */
+    public static final FloatProperty<StripLayoutTab> X_OFFSET =
+            new FloatProperty<StripLayoutTab>("offsetX") {
+                @Override
+                public void setValue(StripLayoutTab object, float value) {
+                    object.setOffsetX(value);
+                }
+
+                @Override
+                public Float get(StripLayoutTab object) {
+                    return object.getOffsetX();
+                }
+            };
+
+    /** A property for animations to use for changing the Y offset of the tab. */
+    public static final FloatProperty<StripLayoutTab> Y_OFFSET =
+            new FloatProperty<StripLayoutTab>("offsetY") {
+                @Override
+                public void setValue(StripLayoutTab object, float value) {
+                    object.setOffsetY(value);
+                }
+
+                @Override
+                public Float get(StripLayoutTab object) {
+                    return object.getOffsetY();
+                }
+            };
+
+    /** A property for animations to use for changing the width of the tab. */
+    public static final FloatProperty<StripLayoutTab> WIDTH =
+            new FloatProperty<StripLayoutTab>("width") {
+                @Override
+                public void setValue(StripLayoutTab object, float value) {
+                    object.setWidth(value);
+                }
+
+                @Override
+                public Float get(StripLayoutTab object) {
+                    return object.getHeight();
+                }
+            };
 
     // Behavior Constants
     private static final float VISIBILITY_FADE_CLOSE_BUTTON_PERCENTAGE = 0.99f;
@@ -54,11 +112,13 @@ public class StripLayoutTab
 
     private int mId = Tab.INVALID_TAB_ID;
 
+    private final StripLayoutTabDelegate mDelegate;
     private final TabLoadTracker mLoadTracker;
     private final LayoutRenderHost mRenderHost;
+    private final LayoutUpdateHost mUpdateHost;
 
     private boolean mVisible = true;
-    private boolean mIsDying = false;
+    private boolean mIsDying;
     private boolean mCanShowCloseButton = true;
     private final boolean mIncognito;
     private float mContentOffsetX;
@@ -82,12 +142,14 @@ public class StripLayoutTab
     private final CompositorButton mCloseButton;
 
     // Content Animations
-    private ChromeAnimation<Animatable<?>> mContentAnimations;
+    private CompositorAnimator mButtonOpacityAnimation;
 
     private float mLoadingSpinnerRotationDegrees;
 
     // Preallocated
     private final RectF mClosePlacement = new RectF();
+
+    private ObserverList<Observer> mObservers = new ObserverList<>();
 
     /**
      * Create a {@link StripLayoutTab} that represents the {@link Tab} with an id of
@@ -95,26 +157,44 @@ public class StripLayoutTab
      *
      * @param context An Android context for accessing system resources.
      * @param id The id of the {@link Tab} to visually represent.
+     * @param delegate The delegate for additional strip tab functionality.
      * @param loadTrackerCallback The {@link TabLoadTrackerCallback} to be notified of loading state
      *                            changes.
      * @param renderHost The {@link LayoutRenderHost}.
-     * @param incogntio Whether or not this layout tab is icognito.
+     * @param incognito Whether or not this layout tab is incognito.
      */
-    public StripLayoutTab(Context context, int id, TabLoadTrackerCallback loadTrackerCallback,
-            LayoutRenderHost renderHost, boolean incognito) {
+    public StripLayoutTab(Context context, int id, StripLayoutTabDelegate delegate,
+            TabLoadTrackerCallback loadTrackerCallback, LayoutRenderHost renderHost,
+            LayoutUpdateHost updateHost, boolean incognito) {
         mId = id;
+        mDelegate = delegate;
         mLoadTracker = new TabLoadTracker(id, loadTrackerCallback);
         mRenderHost = renderHost;
+        mUpdateHost = updateHost;
         mIncognito = incognito;
-        mCloseButton = new CompositorButton(context, 0, 0);
+        CompositorOnClickHandler closeClickAction = new CompositorOnClickHandler() {
+            @Override
+            public void onClick(long time) {
+                mDelegate.handleCloseButtonClick(StripLayoutTab.this, time);
+            }
+        };
+        mCloseButton = new CompositorButton(context, 0, 0, closeClickAction);
         mCloseButton.setResources(R.drawable.btn_tab_close_normal, R.drawable.btn_tab_close_pressed,
                 R.drawable.btn_tab_close_white_normal, R.drawable.btn_tab_close_white_pressed);
         mCloseButton.setIncognito(mIncognito);
         mCloseButton.setBounds(getCloseRect());
         mCloseButton.setClickSlop(0.f);
-        String description =
-                context.getResources().getString(R.string.accessibility_tabstrip_btn_close_tab);
-        mCloseButton.setAccessibilityDescription(description, description);
+    }
+
+    /** @param observer The observer to add. */
+    @VisibleForTesting
+    public void addObserver(Observer observer) {
+        mObservers.addObserver(observer);
+    }
+
+    /** @param observer The observer to remove. */
+    public void removeObserver(Observer observer) {
+        mObservers.removeObserver(observer);
     }
 
     /**
@@ -128,10 +208,15 @@ public class StripLayoutTab
     }
 
     /**
+     * Set strip tab and close button accessibility description.
      * @param description   A description for accessibility events.
+     * @param title The title of the tab.
      */
-    public void setAccessibilityDescription(String description) {
+    public void setAccessibilityDescription(String description, String title) {
         mAccessibilityDescription = description;
+        String closeButtonDescription = ContextUtils.getApplicationContext().getString(
+                R.string.accessibility_tabstrip_btn_close_tab, title);
+        mCloseButton.setAccessibilityDescription(closeButtonDescription, closeButtonDescription);
     }
 
     @Override
@@ -146,7 +231,15 @@ public class StripLayoutTab
 
     @Override
     public boolean checkClicked(float x, float y) {
+        // Since both the close button as well as the tab inhabit the same coordinates, the tab
+        // should not consider itself hit if the close button is also hit, since it is on top.
+        if (checkCloseHitTest(x, y)) return false;
         return mTouchTarget.contains(x, y);
+    }
+
+    @Override
+    public void handleClick(long time) {
+        mDelegate.handleTabClick(this);
     }
 
     /**
@@ -173,6 +266,12 @@ public class StripLayoutTab
      */
     public void setVisible(boolean visible) {
         mVisible = visible;
+        if (!visible) {
+            mUpdateHost.releaseResourcesForTab(mId);
+        }
+        for (Observer observer : mObservers) {
+            observer.onVisibilityChanged(mVisible);
+        }
     }
 
     /**
@@ -441,71 +540,12 @@ public class StripLayoutTab
         return mTabOffsetY;
     }
 
-    private void startAnimation(Animation<Animatable<?>> animation, boolean finishPrevious) {
-        if (finishPrevious) finishAnimation();
-
-        if (mContentAnimations == null) {
-            mContentAnimations = new ChromeAnimation<Animatable<?>>();
-        }
-
-        mContentAnimations.add(animation);
-    }
-
     /**
      * Finishes any content animations currently owned and running on this StripLayoutTab.
      */
     public void finishAnimation() {
-        if (mContentAnimations == null) return;
-
-        mContentAnimations.updateAndFinish();
-        mContentAnimations = null;
+        if (mButtonOpacityAnimation != null) mButtonOpacityAnimation.end();
     }
-
-    /**
-     * @return Whether or not there are any content animations running on this StripLayoutTab.
-     */
-    public boolean isAnimating() {
-        return mContentAnimations != null;
-    }
-
-    /**
-     * Updates any content animations on this StripLayoutTab.
-     * @param time      The current time of the app in ms.
-     * @param jumpToEnd Whether or not to force any current animations to end.
-     * @return          Whether or not animations are done.
-     */
-    public boolean onUpdateAnimation(long time, boolean jumpToEnd) {
-        if (mContentAnimations == null) return true;
-
-        boolean finished = true;
-        if (jumpToEnd) {
-            finished = mContentAnimations.finished();
-        } else {
-            finished = mContentAnimations.update(time);
-        }
-
-        if (jumpToEnd || finished) finishAnimation();
-
-        return finished;
-    }
-
-    @Override
-    public void setProperty(Property prop, float val) {
-        switch (prop) {
-            case X_OFFSET:
-                setOffsetX(val);
-                break;
-            case Y_OFFSET:
-                setOffsetY(val);
-                break;
-            case WIDTH:
-                setWidth(val);
-                break;
-        }
-    }
-
-    @Override
-    public void onPropertyAnimationFinished(Property prop) {}
 
     private void resetCloseRect() {
         RectF closeRect = getCloseRect();
@@ -551,18 +591,22 @@ public class StripLayoutTab
         if (shouldShow != mShowingCloseButton) {
             float opacity = shouldShow ? 1.f : 0.f;
             if (animate) {
-                startAnimation(buildCloseButtonOpacityAnimation(opacity), true);
+                if (mButtonOpacityAnimation != null) mButtonOpacityAnimation.end();
+                mButtonOpacityAnimation = CompositorAnimator.ofFloatProperty(
+                        mUpdateHost.getAnimationHandler(), mCloseButton, CompositorButton.OPACITY,
+                        mCloseButton.getOpacity(), opacity, ANIM_TAB_CLOSE_BUTTON_FADE_MS);
+                mButtonOpacityAnimation.addListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        mButtonOpacityAnimation = null;
+                    }
+                });
+                mButtonOpacityAnimation.start();
             } else {
                 mCloseButton.setOpacity(opacity);
             }
             mShowingCloseButton = shouldShow;
             if (!mShowingCloseButton) mCloseButton.setPressed(false);
         }
-    }
-
-    private Animation<Animatable<?>> buildCloseButtonOpacityAnimation(float finalOpacity) {
-        return createAnimation(mCloseButton, CompositorButton.Property.OPACITY,
-                mCloseButton.getOpacity(), finalOpacity, ANIM_TAB_CLOSE_BUTTON_FADE_MS, 0, false,
-                ChromeAnimation.getLinearInterpolator());
     }
 }

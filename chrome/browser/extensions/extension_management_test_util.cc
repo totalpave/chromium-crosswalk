@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "base/run_loop.h"
 #include "components/crx_file/id_util.h"
 #include "components/policy/core/common/configuration_policy_provider.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
@@ -14,7 +15,7 @@
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_namespace.h"
 #include "components/policy/core/common/policy_types.h"
-#include "policy/policy_constants.h"
+#include "components/policy/policy_constants.h"
 
 namespace extensions {
 
@@ -35,6 +36,9 @@ ExtensionManagementPrefUpdaterBase::ExtensionManagementPrefUpdaterBase() {
 }
 
 ExtensionManagementPrefUpdaterBase::~ExtensionManagementPrefUpdaterBase() {
+  // Make asynchronous calls finished to deliver all preference changes to the
+  // NetworkService and extension processes.
+  base::RunLoop().RunUntilIdle();
 }
 
 // Helper functions for per extension settings ---------------------------------
@@ -48,7 +52,7 @@ void ExtensionManagementPrefUpdaterBase::UnsetPerExtensionSettings(
 void ExtensionManagementPrefUpdaterBase::ClearPerExtensionSettings(
     const ExtensionId& id) {
   DCHECK(crx_file::id_util::IdIsValid(id));
-  pref_->SetWithoutPathExpansion(id, new base::DictionaryValue());
+  pref_->SetWithoutPathExpansion(id, std::make_unique<base::DictionaryValue>());
 }
 
 // Helper functions for 'installation_mode' manipulation -----------------------
@@ -60,9 +64,9 @@ void ExtensionManagementPrefUpdaterBase::SetBlacklistedByDefault(bool value) {
 
 void ExtensionManagementPrefUpdaterBase::
     ClearInstallationModesForIndividualExtensions() {
-  for (base::DictionaryValue::Iterator it(*pref_.get()); !it.IsAtEnd();
+  for (base::DictionaryValue::Iterator it(*pref_); !it.IsAtEnd();
        it.Advance()) {
-    DCHECK(it.value().IsType(base::Value::TYPE_DICTIONARY));
+    DCHECK(it.value().is_dict());
     if (it.key() != schema::kWildcard) {
       DCHECK(crx_file::id_util::IdIsValid(it.key()));
       pref_->Remove(make_path(it.key(), schema::kInstallationMode), nullptr);
@@ -160,6 +164,72 @@ void ExtensionManagementPrefUpdaterBase::RemoveBlockedPermission(
                        permission);
 }
 
+// Helper function for 'blocked_install_message' manipulation -----------------
+
+void ExtensionManagementPrefUpdaterBase::SetBlockedInstallMessage(
+    const ExtensionId& id,
+    const std::string& blocked_install_message) {
+  DCHECK(id == schema::kWildcard || crx_file::id_util::IdIsValid(id));
+  pref_->SetString(make_path(id, schema::kBlockedInstallMessage),
+                   blocked_install_message);
+}
+
+// Helper functions for 'runtime_blocked_hosts' manipulation ------------------
+
+void ExtensionManagementPrefUpdaterBase::UnsetPolicyBlockedHosts(
+    const std::string& prefix) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  pref_->Remove(make_path(prefix, schema::kPolicyBlockedHosts), nullptr);
+}
+
+void ExtensionManagementPrefUpdaterBase::ClearPolicyBlockedHosts(
+    const std::string& prefix) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  ClearList(make_path(prefix, schema::kPolicyBlockedHosts));
+}
+
+void ExtensionManagementPrefUpdaterBase::AddPolicyBlockedHost(
+    const std::string& prefix,
+    const std::string& host) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  AddStringToList(make_path(prefix, schema::kPolicyBlockedHosts), host);
+}
+
+void ExtensionManagementPrefUpdaterBase::RemovePolicyBlockedHost(
+    const std::string& prefix,
+    const std::string& host) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  RemoveStringFromList(make_path(prefix, schema::kPolicyBlockedHosts), host);
+}
+
+// Helper functions for 'runtime_allowed_hosts' manipulation ------------------
+
+void ExtensionManagementPrefUpdaterBase::UnsetPolicyAllowedHosts(
+    const std::string& prefix) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  pref_->Remove(make_path(prefix, schema::kPolicyAllowedHosts), nullptr);
+}
+
+void ExtensionManagementPrefUpdaterBase::ClearPolicyAllowedHosts(
+    const std::string& prefix) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  ClearList(make_path(prefix, schema::kPolicyAllowedHosts));
+}
+
+void ExtensionManagementPrefUpdaterBase::AddPolicyAllowedHost(
+    const std::string& prefix,
+    const std::string& host) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  AddStringToList(make_path(prefix, schema::kPolicyAllowedHosts), host);
+}
+
+void ExtensionManagementPrefUpdaterBase::RemovePolicyAllowedHost(
+    const std::string& prefix,
+    const std::string& host) {
+  DCHECK(prefix == schema::kWildcard || crx_file::id_util::IdIsValid(prefix));
+  RemoveStringFromList(make_path(prefix, schema::kPolicyAllowedHosts), host);
+}
+
 // Helper functions for 'allowed_permissions' manipulation ---------------------
 
 void ExtensionManagementPrefUpdaterBase::UnsetAllowedPermissions(
@@ -221,18 +291,20 @@ ExtensionManagementPrefUpdaterBase::TakePref() {
 }
 
 void ExtensionManagementPrefUpdaterBase::ClearList(const std::string& path) {
-  pref_->Set(path, new base::ListValue());
+  pref_->Set(path, std::make_unique<base::ListValue>());
 }
 
 void ExtensionManagementPrefUpdaterBase::AddStringToList(
     const std::string& path,
     const std::string& str) {
-  base::ListValue* list_value = nullptr;
-  if (!pref_->GetList(path, &list_value)) {
-    list_value = new base::ListValue();
-    pref_->Set(path, list_value);
+  base::ListValue* list_value_weak = nullptr;
+  if (!pref_->GetList(path, &list_value_weak)) {
+    auto list_value = std::make_unique<base::ListValue>();
+    list_value_weak = list_value.get();
+    pref_->Set(path, std::move(list_value));
   }
-  CHECK(list_value->AppendIfNotPresent(new base::StringValue(str)));
+  CHECK(
+      list_value_weak->AppendIfNotPresent(std::make_unique<base::Value>(str)));
 }
 
 void ExtensionManagementPrefUpdaterBase::RemoveStringFromList(
@@ -240,7 +312,7 @@ void ExtensionManagementPrefUpdaterBase::RemoveStringFromList(
     const std::string& str) {
   base::ListValue* list_value = nullptr;
   if (pref_->GetList(path, &list_value))
-    CHECK(list_value->Remove(base::StringValue(str), nullptr));
+    CHECK(list_value->Remove(base::Value(str), nullptr));
 }
 
 // ExtensionManagementPolicyUpdater --------------------------------------------

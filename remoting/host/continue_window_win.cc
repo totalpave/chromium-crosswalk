@@ -6,13 +6,14 @@
 
 #include <windows.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/current_module.h"
@@ -54,7 +55,7 @@ ContinueWindowWin::~ContinueWindowWin() {
 }
 
 void ContinueWindowWin::ShowUi() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!hwnd_);
 
   hwnd_ = CreateDialogParam(CURRENT_MODULE(), MAKEINTRESOURCE(IDD_CONTINUE),
@@ -68,7 +69,7 @@ void ContinueWindowWin::ShowUi() {
 }
 
 void ContinueWindowWin::HideUi() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   EndDialog();
 }
@@ -91,7 +92,7 @@ BOOL CALLBACK ContinueWindowWin::DialogProc(HWND hwnd, UINT msg,
 
 BOOL ContinueWindowWin::OnDialogMessage(HWND hwnd, UINT msg,
                                         WPARAM wParam, LPARAM lParam) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   switch (msg) {
     case WM_CLOSE:
@@ -119,7 +120,7 @@ BOOL ContinueWindowWin::OnDialogMessage(HWND hwnd, UINT msg,
 }
 
 void ContinueWindowWin::EndDialog() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (hwnd_) {
     ::DestroyWindow(hwnd_);
@@ -131,7 +132,7 @@ void ContinueWindowWin::EndDialog() {
 
 // static
 std::unique_ptr<HostWindow> HostWindow::CreateContinueWindow() {
-  return base::WrapUnique(new ContinueWindowWin());
+  return std::make_unique<ContinueWindowWin>();
 }
 
 }  // namespace remoting

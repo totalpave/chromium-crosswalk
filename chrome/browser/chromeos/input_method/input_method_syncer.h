@@ -10,10 +10,10 @@
 
 #include "base/memory/weak_ptr.h"
 #include "components/prefs/pref_member.h"
-#include "components/syncable_prefs/pref_service_syncable_observer.h"
+#include "components/sync_preferences/pref_service_syncable_observer.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
 
-namespace syncable_prefs {
+namespace sync_preferences {
 class PrefServiceSyncable;
 }
 
@@ -30,10 +30,10 @@ namespace input_method {
 // except once: when the user first logs into the device.
 // Thus, the user's most recent changes to language and input method preferences
 // will be brought down when signing in to a new device but not in future syncs.
-class InputMethodSyncer : public syncable_prefs::PrefServiceSyncableObserver {
+class InputMethodSyncer : public sync_preferences::PrefServiceSyncableObserver {
  public:
   InputMethodSyncer(
-      syncable_prefs::PrefServiceSyncable* prefs,
+      sync_preferences::PrefServiceSyncable* prefs,
       scoped_refptr<input_method::InputMethodManager::State> ime_state);
   ~InputMethodSyncer() override;
 
@@ -58,28 +58,28 @@ class InputMethodSyncer : public syncable_prefs::PrefServiceSyncableObserver {
       const std::string& synced_pref,
       const char* pref_name);
 
-  // Sets prefs::kLanguagePreferredLanguages and sets |merging_| to false.
+  // Sets language::prefs::kPreferredLanguages and sets |merging_| to false.
   void FinishMerge(const std::string& languages);
 
   // Callback method for preference changes. Updates the syncable prefs using
   // the local pref values.
   void OnPreferenceChanged(const std::string& pref_name);
 
-  // syncable_prefs::PrefServiceSyncableObserver implementation.
+  // sync_preferences::PrefServiceSyncableObserver implementation.
   void OnIsSyncingChanged() override;
 
   StringPrefMember preferred_languages_;
   StringPrefMember preload_engines_;
-  StringPrefMember enabled_extension_imes_;
+  StringPrefMember enabled_imes_;
   // These are syncable variants which don't change the device settings. We can
   // set these to keep track of the user's most recent choices. That way, after
   // the initial sync, we can add the user's synced choices to the values that
   // have already been chosen at OOBE.
   StringPrefMember preferred_languages_syncable_;
   StringPrefMember preload_engines_syncable_;
-  StringPrefMember enabled_extension_imes_syncable_;
+  StringPrefMember enabled_imes_syncable_;
 
-  syncable_prefs::PrefServiceSyncable* prefs_;
+  sync_preferences::PrefServiceSyncable* prefs_;
   scoped_refptr<input_method::InputMethodManager::State> ime_state_;
 
   // Used to ignore PrefChanged events while InputMethodManager is merging.

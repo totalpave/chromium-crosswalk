@@ -46,14 +46,14 @@ class NET_EXPORT_PRIVATE SSLClientAuthCache : public CertDatabase::Observer {
   // overwritten. A NULL |client_cert| indicates a preference that no client
   // certificate should be sent to |server|.
   void Add(const HostPortPair& server,
-           X509Certificate* client_cert,
-           SSLPrivateKey* private_key);
+           scoped_refptr<X509Certificate> client_cert,
+           scoped_refptr<SSLPrivateKey> private_key);
 
   // Remove the client certificate for |server| from the cache, if one exists.
   void Remove(const HostPortPair& server);
 
   // CertDatabase::Observer methods:
-  void OnCertAdded(const X509Certificate* cert) override;
+  void OnCertDBChanged() override;
 
  private:
   typedef HostPortPair AuthCacheKey;

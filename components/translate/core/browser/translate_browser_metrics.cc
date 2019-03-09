@@ -8,9 +8,10 @@
 
 #include <string>
 
-#include "base/macros.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/metrics_hashes.h"
+#include "base/stl_util.h"
 #include "components/language_usage_metrics/language_usage_metrics.h"
 
 namespace translate {
@@ -29,6 +30,10 @@ const char kTranslateUndisplayableLanguage[] =
     "Translate.UndisplayableLanguage";
 const char kTranslateUnsupportedLanguageAtInitiation[] =
     "Translate.UnsupportedLanguageAtInitiation";
+const char kTranslateSourceLanguage[] =
+    "Translate.SourceLanguage";
+const char kTranslateTargetLanguage[] =
+    "Translate.TargetLanguage";
 
 struct MetricsEntry {
   TranslateBrowserMetrics::MetricsNameIndex index;
@@ -47,9 +52,13 @@ const MetricsEntry kMetricsEntries[] = {
     kTranslateUndisplayableLanguage },
   { TranslateBrowserMetrics::UMA_UNSUPPORTED_LANGUAGE_AT_INITIATION,
     kTranslateUnsupportedLanguageAtInitiation },
+  { TranslateBrowserMetrics::UMA_TRANSLATE_SOURCE_LANGUAGE,
+    kTranslateSourceLanguage },
+  { TranslateBrowserMetrics::UMA_TRANSLATE_TARGET_LANGUAGE,
+    kTranslateTargetLanguage },
 };
 
-static_assert(arraysize(kMetricsEntries) == TranslateBrowserMetrics::UMA_MAX,
+static_assert(base::size(kMetricsEntries) == TranslateBrowserMetrics::UMA_MAX,
               "kMetricsEntries should have UMA_MAX elements");
 
 }  // namespace
@@ -67,7 +76,7 @@ void ReportLanguageDetectionError() {
 }
 
 void ReportLocalesOnDisabledByPrefs(const std::string& locale) {
-  UMA_HISTOGRAM_SPARSE_SLOWLY(
+  base::UmaHistogramSparse(
       kTranslateLocalesOnDisabledByPrefs,
       language_usage_metrics::LanguageUsageMetrics::ToLanguageCode(locale));
 }
@@ -75,24 +84,33 @@ void ReportLocalesOnDisabledByPrefs(const std::string& locale) {
 void ReportUndisplayableLanguage(const std::string& language) {
   int language_code =
       language_usage_metrics::LanguageUsageMetrics::ToLanguageCode(language);
-  UMA_HISTOGRAM_SPARSE_SLOWLY(kTranslateUndisplayableLanguage,
-                              language_code);
+  base::UmaHistogramSparse(kTranslateUndisplayableLanguage, language_code);
 }
 
 void ReportUnsupportedLanguageAtInitiation(const std::string& language) {
   int language_code =
       language_usage_metrics::LanguageUsageMetrics::ToLanguageCode(language);
-  UMA_HISTOGRAM_SPARSE_SLOWLY(kTranslateUnsupportedLanguageAtInitiation,
-                              language_code);
+  base::UmaHistogramSparse(kTranslateUnsupportedLanguageAtInitiation,
+                           language_code);
+}
+
+void ReportTranslateSourceLanguage(const std::string& language) {
+  base::UmaHistogramSparse(kTranslateSourceLanguage,
+                           base::HashMetricName(language));
+}
+
+void ReportTranslateTargetLanguage(const std::string& language) {
+  base::UmaHistogramSparse(kTranslateTargetLanguage,
+                           base::HashMetricName(language));
 }
 
 const char* GetMetricsName(MetricsNameIndex index) {
-  for (size_t i = 0; i < arraysize(kMetricsEntries); ++i) {
+  for (size_t i = 0; i < base::size(kMetricsEntries); ++i) {
     if (kMetricsEntries[i].index == index)
       return kMetricsEntries[i].name;
   }
   NOTREACHED();
-  return NULL;
+  return nullptr;
 }
 
 }  // namespace TranslateBrowserMetrics

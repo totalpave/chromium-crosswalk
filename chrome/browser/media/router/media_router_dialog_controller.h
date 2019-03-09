@@ -9,9 +9,12 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/threading/thread_checker.h"
-#include "chrome/browser/media/router/create_presentation_connection_request.h"
+#include "chrome/browser/media/router/presentation/presentation_service_delegate_impl.h"
+#include "chrome/common/media_router/mojo/media_router.mojom.h"
+#include "content/public/browser/presentation_request.h"
+#include "content/public/browser/presentation_service_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "third_party/blink/public/mojom/presentation/presentation.mojom.h"
 
 namespace content {
 class WebContents;
@@ -34,13 +37,14 @@ class MediaRouterDialogController {
   static MediaRouterDialogController* GetOrCreateForWebContents(
       content::WebContents* web_contents);
 
-  // Shows the media router dialog modal to |initiator_| and the parameters
-  // specified in |request|.
-  // Creates the dialog if it did not exist prior to this call, returns true.
-  // If the dialog already exists, brings it to the front but doesn't change the
-  // dialog with |request|, returns false and |request| is deleted.
+  // Shows the media router dialog modal to |initiator_|, with additional
+  // context for a PresentationRequest coming from the page given by the input
+  // parameters.
+  // Returns true if the dialog is created as a result of this call.
+  // If the dialog already exists, or dialog cannot be created, then false is
+  // returned, and |error_cb| will be invoked.
   bool ShowMediaRouterDialogForPresentation(
-      std::unique_ptr<CreatePresentationConnectionRequest> request);
+      std::unique_ptr<StartPresentationContext> context);
 
   // Shows the media router dialog modal to |initiator_|.
   // Creates the dialog if it did not exist prior to this call, returns true.
@@ -59,19 +63,9 @@ class MediaRouterDialogController {
   // instance.
   explicit MediaRouterDialogController(content::WebContents* initiator);
 
-  // Activates the WebContents that initiated the dialog, e.g. focuses the tab.
-  void ActivateInitiatorWebContents();
-
-  // Passes the ownership of the CreatePresentationConnectionRequest to the
-  // caller.
-  std::unique_ptr<CreatePresentationConnectionRequest>
-  TakeCreateConnectionRequest();
-
-  // Returns the CreatePresentationConnectionRequest to the caller but keeps the
-  // ownership with the MediaRouterDialogController.
-  const CreatePresentationConnectionRequest* create_connection_request() const {
-    return create_connection_request_.get();
-  }
+  // Creates a media router dialog if necessary, then activates the WebContents
+  // that initiated the dialog, e.g. focuses the tab.
+  void FocusOnMediaRouterDialog(bool dialog_needs_creation);
 
   // Returns the WebContents that initiated showing the dialog.
   content::WebContents* initiator() const { return initiator_; }
@@ -83,7 +77,9 @@ class MediaRouterDialogController {
   // Closes the media router dialog if it exists.
   virtual void CloseMediaRouterDialog() = 0;
 
-  base::ThreadChecker thread_checker_;
+  // Data for dialogs created at the request of the Presentation API.
+  // Created from arguments passed in via ShowMediaRouterDialogForPresentation.
+  std::unique_ptr<StartPresentationContext> start_presentation_context_;
 
  private:
   class InitiatorWebContentsObserver;
@@ -92,12 +88,6 @@ class MediaRouterDialogController {
   // is destroyed or navigated.
   std::unique_ptr<InitiatorWebContentsObserver> initiator_observer_;
   content::WebContents* const initiator_;
-
-  // Data for dialogs created at the request of the Presentation API.
-  // Passed from the caller via ShowMediaRouterDialogForPresentation to the
-  // dialog when it is initialized.
-  std::unique_ptr<CreatePresentationConnectionRequest>
-      create_connection_request_;
 
   DISALLOW_COPY_AND_ASSIGN(MediaRouterDialogController);
 };

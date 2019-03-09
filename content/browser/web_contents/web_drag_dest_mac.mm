@@ -8,18 +8,27 @@
 
 #include "base/strings/sys_string_conversions.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
+#include "content/browser/renderer_host/render_widget_host_impl.h"
+#include "content/browser/renderer_host/render_widget_host_input_event_router.h"
+#include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_drag_dest_delegate.h"
+#include "content/public/common/child_process_host.h"
 #include "content/public/common/drop_data.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "content/public/common/web_contents_ns_view_bridge.mojom.h"
+#include "third_party/blink/public/platform/web_input_event.h"
 #import "third_party/mozilla/NSPasteboard+Utils.h"
+#include "ui/base/clipboard/clipboard_constants.h"
+#include "ui/base/clipboard/clipboard_util_mac.h"
 #include "ui/base/clipboard/custom_data_helper.h"
 #include "ui/base/cocoa/cocoa_base_utils.h"
 #import "ui/base/dragdrop/cocoa_dnd_util.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/gfx/geometry/point.h"
 
 using blink::WebDragOperationsMask;
+using content::mojom::DraggingInfo;
 using content::DropData;
 using content::OpenURLParams;
 using content::Referrer;
@@ -31,13 +40,13 @@ int GetModifierFlags() {
   int modifier_state = 0;
   UInt32 currentModifiers = GetCurrentKeyModifiers();
   if (currentModifiers & ::shiftKey)
-    modifier_state |= blink::WebInputEvent::ShiftKey;
+    modifier_state |= blink::WebInputEvent::kShiftKey;
   if (currentModifiers & ::controlKey)
-    modifier_state |= blink::WebInputEvent::ControlKey;
+    modifier_state |= blink::WebInputEvent::kControlKey;
   if (currentModifiers & ::optionKey)
-    modifier_state |= blink::WebInputEvent::AltKey;
+    modifier_state |= blink::WebInputEvent::kAltKey;
   if (currentModifiers & ::cmdKey)
-      modifier_state |= blink::WebInputEvent::MetaKey;
+    modifier_state |= blink::WebInputEvent::kMetaKey;
 
   // The return value of 1 << 0 corresponds to the left mouse button,
   // 1 << 1 corresponds to the right mouse button,
@@ -45,13 +54,18 @@ int GetModifierFlags() {
   NSUInteger pressedButtons = [NSEvent pressedMouseButtons];
 
   if (pressedButtons & (1 << 0))
-      modifier_state |= blink::WebInputEvent::LeftButtonDown;
+    modifier_state |= blink::WebInputEvent::kLeftButtonDown;
   if (pressedButtons & (1 << 1))
-      modifier_state |= blink::WebInputEvent::RightButtonDown;
+    modifier_state |= blink::WebInputEvent::kRightButtonDown;
   if (pressedButtons & (1 << 2))
-      modifier_state |= blink::WebInputEvent::MiddleButtonDown;
+    modifier_state |= blink::WebInputEvent::kMiddleButtonDown;
 
   return modifier_state;
+}
+
+content::GlobalRoutingID GetRenderViewHostID(content::RenderViewHost* rvh) {
+  return content::GlobalRoutingID(rvh->GetProcess()->GetID(),
+                                  rvh->GetRoutingID());
 }
 
 }  // namespace
@@ -65,12 +79,15 @@ int GetModifierFlags() {
   if ((self = [super init])) {
     webContents_ = contents;
     canceled_ = false;
+    dragStartProcessID_ = content::ChildProcessHost::kInvalidUniqueID;
+    dragStartViewID_ = content::GlobalRoutingID(
+        content::ChildProcessHost::kInvalidUniqueID, MSG_ROUTING_NONE);
   }
   return self;
 }
 
 - (DropData*)currentDropData {
-  return dropData_.get();
+  return dropDataFiltered_.get();
 }
 
 - (void)setDragDelegate:(content::WebDragDestDelegate*)delegate {
@@ -119,20 +136,39 @@ int GetModifierFlags() {
 // Messages to send during the tracking of a drag, usually upon receiving
 // calls from the view system. Communicates the drag messages to WebCore.
 
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info
-                              view:(NSView*)view {
+- (void)setDropData:(const DropData&)dropData {
+  dropDataUnfiltered_ = std::make_unique<DropData>(dropData);
+}
+
+- (NSDragOperation)draggingEntered:(const DraggingInfo*)info {
   // Save off the RVH so we can tell if it changes during a drag. If it does,
   // we need to send a new enter message in draggingUpdated:.
   currentRVH_ = webContents_->GetRenderViewHost();
 
-  // Fill out a DropData from pasteboard.
-  std::unique_ptr<DropData> dropData;
-  dropData.reset(new DropData());
-  [self populateDropData:dropData.get()
-             fromPasteboard:[info draggingPasteboard]];
-  currentRVH_->FilterDropData(dropData.get());
+  gfx::PointF transformedPt;
+  if (!webContents_->GetRenderWidgetHostView()) {
+    // TODO(ekaramad, paulmeyer): Find a better way than toggling |canceled_|.
+    // This could happen when the renderer process for the top-level RWH crashes
+    // (see https://crbug.com/670645).
+    canceled_ = true;
+    return NSDragOperationNone;
+  }
 
-  NSDragOperation mask = [info draggingSourceOperationMask];
+  content::RenderWidgetHostImpl* targetRWH =
+      [self GetRenderWidgetHostAtPoint:info->location_in_view
+                         transformedPt:&transformedPt];
+  if (![self isValidDragTarget:targetRWH])
+    return NSDragOperationNone;
+
+  // Filter |dropDataUnfiltered_| by currentRWHForDrag_ to populate
+  // |dropDataFiltered_|.
+  DCHECK(dropDataUnfiltered_);
+  std::unique_ptr<DropData> dropData =
+      std::make_unique<DropData>(*dropDataUnfiltered_);
+  currentRWHForDrag_ = targetRWH->GetWeakPtr();
+  currentRWHForDrag_->FilterDropData(dropData.get());
+
+  NSDragOperation mask = info->operation_mask;
 
   // Give the delegate an opportunity to cancel the drag.
   canceled_ = !webContents_->GetDelegate()->CanDragEnter(
@@ -143,7 +179,7 @@ int GetModifierFlags() {
     return NSDragOperationNone;
 
   if ([self onlyAllowsNavigation]) {
-    if ([[info draggingPasteboard] containsURLDataConvertingTextToURL:YES])
+    if (info->url)
       return NSDragOperationCopy;
     return NSDragOperationNone;
   }
@@ -153,19 +189,11 @@ int GetModifierFlags() {
     delegate_->OnDragEnter();
   }
 
-  dropData_.swap(dropData);
+  dropDataFiltered_.swap(dropData);
 
-  // Create the appropriate mouse locations for WebCore. The draggingLocation
-  // is in window coordinates. Both need to be flipped.
-  NSPoint windowPoint = [info draggingLocation];
-  NSPoint viewPoint = [self flipWindowPointToView:windowPoint view:view];
-  NSPoint screenPoint = [self flipWindowPointToScreen:windowPoint view:view];
-  webContents_->GetRenderViewHost()->DragTargetDragEnter(
-      *dropData_,
-      gfx::Point(viewPoint.x, viewPoint.y),
-      gfx::Point(screenPoint.x, screenPoint.y),
-      static_cast<WebDragOperationsMask>(mask),
-      GetModifierFlags());
+  currentRWHForDrag_->DragTargetDragEnter(
+      *dropDataFiltered_, transformedPt, info->location_in_screen,
+      static_cast<WebDragOperationsMask>(mask), GetModifierFlags());
 
   // We won't know the true operation (whether the drag is allowed) until we
   // hear back from the renderer. For now, be optimistic:
@@ -173,7 +201,7 @@ int GetModifierFlags() {
   return currentOperation_;
 }
 
-- (void)draggingExited:(id<NSDraggingInfo>)info {
+- (void)draggingExited {
   DCHECK(currentRVH_);
   if (currentRVH_ != webContents_->GetRenderViewHost())
     return;
@@ -187,36 +215,64 @@ int GetModifierFlags() {
   if (delegate_)
     delegate_->OnDragLeave();
 
-  webContents_->GetRenderViewHost()->DragTargetDragLeave();
-  dropData_.reset();
+  if (currentRWHForDrag_) {
+    currentRWHForDrag_->DragTargetDragLeave(gfx::PointF(), gfx::PointF());
+    currentRWHForDrag_.reset();
+  }
+  dropDataUnfiltered_.reset();
+  dropDataFiltered_.reset();
 }
 
-- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)info
-                              view:(NSView*)view {
-  DCHECK(currentRVH_);
-  if (currentRVH_ != webContents_->GetRenderViewHost())
-    [self draggingEntered:info view:view];
+- (NSDragOperation)draggingUpdated:(const DraggingInfo*)info {
+  if (canceled_) {
+    // TODO(ekaramad,paulmeyer): We probably shouldn't be checking for
+    // |canceled_| twice in this method.
+    return NSDragOperationNone;
+  }
+
+  gfx::PointF transformedPt;
+  content::RenderWidgetHostImpl* targetRWH =
+      [self GetRenderWidgetHostAtPoint:info->location_in_view
+                         transformedPt:&transformedPt];
+
+  if (![self isValidDragTarget:targetRWH])
+    return NSDragOperationNone;
+
+  // TODO(paulmeyer): The dragging delegates may now by invoked multiple times
+  // per drag, even without the drag ever leaving the window.
+  if (targetRWH != currentRWHForDrag_.get()) {
+    if (currentRWHForDrag_) {
+      gfx::PointF transformedLeavePoint = info->location_in_view;
+      gfx::PointF transformedScreenPoint = info->location_in_screen;
+      content::RenderWidgetHostViewBase* rootView =
+          static_cast<content::RenderWidgetHostViewBase*>(
+              webContents_->GetRenderWidgetHostView());
+      content::RenderWidgetHostViewBase* currentDragView =
+          static_cast<content::RenderWidgetHostViewBase*>(
+              currentRWHForDrag_->GetView());
+      rootView->TransformPointToCoordSpaceForView(
+          transformedLeavePoint, currentDragView, &transformedLeavePoint);
+      rootView->TransformPointToCoordSpaceForView(
+          transformedScreenPoint, currentDragView, &transformedScreenPoint);
+      currentRWHForDrag_->DragTargetDragLeave(transformedLeavePoint,
+                                              transformedScreenPoint);
+    }
+    [self draggingEntered:info];
+  }
 
   if (canceled_)
     return NSDragOperationNone;
 
   if ([self onlyAllowsNavigation]) {
-    if ([[info draggingPasteboard] containsURLDataConvertingTextToURL:YES])
+    if (info->url)
       return NSDragOperationCopy;
     return NSDragOperationNone;
   }
 
-  // Create the appropriate mouse locations for WebCore. The draggingLocation
-  // is in window coordinates.
-  NSPoint windowPoint = [info draggingLocation];
-  NSPoint viewPoint = [self flipWindowPointToView:windowPoint view:view];
-  NSPoint screenPoint = [self flipWindowPointToScreen:windowPoint view:view];
-  NSDragOperation mask = [info draggingSourceOperationMask];
-  webContents_->GetRenderViewHost()->DragTargetDragOver(
-      gfx::Point(viewPoint.x, viewPoint.y),
-      gfx::Point(screenPoint.x, screenPoint.y),
-      static_cast<WebDragOperationsMask>(mask),
-      GetModifierFlags());
+  NSDragOperation mask = info->operation_mask;
+  targetRWH->DragTargetDragOver(transformedPt, info->location_in_screen,
+                                static_cast<WebDragOperationsMask>(mask),
+                                GetModifierFlags());
 
   if (delegate_)
     delegate_->OnDragOver();
@@ -224,20 +280,28 @@ int GetModifierFlags() {
   return currentOperation_;
 }
 
-- (BOOL)performDragOperation:(id<NSDraggingInfo>)info
-                              view:(NSView*)view {
-  if (currentRVH_ != webContents_->GetRenderViewHost())
-    [self draggingEntered:info view:view];
+- (BOOL)performDragOperation:(const DraggingInfo*)info {
+  gfx::PointF transformedPt;
+  content::RenderWidgetHostImpl* targetRWH =
+      [self GetRenderWidgetHostAtPoint:info->location_in_view
+                         transformedPt:&transformedPt];
+
+  if (![self isValidDragTarget:targetRWH])
+    return NO;
+
+  if (targetRWH != currentRWHForDrag_.get()) {
+    if (currentRWHForDrag_)
+      currentRWHForDrag_->DragTargetDragLeave(transformedPt,
+                                              info->location_in_screen);
+    [self draggingEntered:info];
+  }
 
   // Check if we only allow navigation and navigate to a url on the pasteboard.
   if ([self onlyAllowsNavigation]) {
-    NSPasteboard* pboard = [info draggingPasteboard];
-    if ([pboard containsURLDataConvertingTextToURL:YES]) {
-      GURL url;
-      ui::PopulateURLAndTitleFromPasteboard(&url, NULL, pboard, YES);
+    if (info->url) {
       webContents_->OpenURL(OpenURLParams(
-          url, Referrer(), CURRENT_TAB, ui::PAGE_TRANSITION_AUTO_BOOKMARK,
-          false));
+          *info->url, Referrer(), WindowOpenDisposition::CURRENT_TAB,
+          ui::PAGE_TRANSITION_AUTO_BOOKMARK, false));
       return YES;
     } else {
       return NO;
@@ -249,25 +313,40 @@ int GetModifierFlags() {
 
   currentRVH_ = NULL;
 
-  // Create the appropriate mouse locations for WebCore. The draggingLocation
-  // is in window coordinates. Both need to be flipped.
-  NSPoint windowPoint = [info draggingLocation];
-  NSPoint viewPoint = [self flipWindowPointToView:windowPoint view:view];
-  NSPoint screenPoint = [self flipWindowPointToScreen:windowPoint view:view];
-  webContents_->GetRenderViewHost()->DragTargetDrop(
-      *dropData_, gfx::Point(viewPoint.x, viewPoint.y),
-      gfx::Point(screenPoint.x, screenPoint.y), GetModifierFlags());
+  targetRWH->DragTargetDrop(*dropDataFiltered_, transformedPt,
+                            info->location_in_screen, GetModifierFlags());
 
-  dropData_.reset();
+  dropDataUnfiltered_.reset();
+  dropDataFiltered_.reset();
 
   return YES;
 }
 
-// Given |data|, which should not be nil, fill it in using the contents of the
-// given pasteboard. The types handled by this method should be kept in sync
-// with [WebContentsViewCocoa registerDragTypes].
-- (void)populateDropData:(DropData*)data
-          fromPasteboard:(NSPasteboard*)pboard {
+- (content::RenderWidgetHostImpl*)
+    GetRenderWidgetHostAtPoint:(const gfx::PointF&)viewPoint
+                 transformedPt:(gfx::PointF*)transformedPt {
+  return webContents_->GetInputEventRouter()->GetRenderWidgetHostAtPoint(
+      webContents_->GetRenderViewHost()->GetWidget()->GetView(), viewPoint,
+      transformedPt);
+}
+
+- (void)setDragStartTrackersForProcess:(int)processID {
+  dragStartProcessID_ = processID;
+  dragStartViewID_ = GetRenderViewHostID(webContents_->GetRenderViewHost());
+}
+
+- (bool)isValidDragTarget:(content::RenderWidgetHostImpl*)targetRWH {
+  return targetRWH->GetProcess()->GetID() == dragStartProcessID_ ||
+         GetRenderViewHostID(webContents_->GetRenderViewHost()) !=
+             dragStartViewID_;
+}
+
+@end
+
+namespace content {
+
+void PopulateDropDataFromPasteboard(content::DropData* data,
+                                    NSPasteboard* pboard) {
   DCHECK(data);
   DCHECK(pboard);
   NSArray* types = [pboard types];
@@ -297,7 +376,7 @@ int GetModifierFlags() {
     NSString* html = [pboard stringForType:ui::kChromeDragImageHTMLPboardType];
     data->html = base::NullableString16(base::SysNSStringToUTF16(html), false);
   } else if ([types containsObject:NSRTFPboardType]) {
-    NSString* html = [pboard htmlFromRtf];
+    NSString* html = ui::ClipboardUtil::GetHTMLFromRTFOnPasteboard(pboard);
     data->html = base::NullableString16(base::SysNSStringToUTF16(html), false);
   }
 
@@ -329,4 +408,4 @@ int GetModifierFlags() {
   }
 }
 
-@end
+}  // namespace content

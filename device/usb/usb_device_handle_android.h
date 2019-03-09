@@ -6,6 +6,7 @@
 #define DEVICE_USB_USB_DEVICE_HANDLE_ANDROID_H_
 
 #include "base/android/scoped_java_ref.h"
+#include "base/memory/ref_counted.h"
 #include "device/usb/usb_device_handle_usbfs.h"
 
 namespace device {
@@ -16,13 +17,9 @@ class UsbDevice;
 // through an instance of android.hardware.usb.UsbDeviceConnection.
 class UsbDeviceHandleAndroid : public UsbDeviceHandleUsbfs {
  public:
-  // Register C++ methods exposed to Java using JNI.
-  static bool RegisterJNI(JNIEnv* env);
-
   static scoped_refptr<UsbDeviceHandleAndroid> Create(
       JNIEnv* env,
       scoped_refptr<UsbDevice> device,
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner,
       const base::android::JavaRef<jobject>& usb_connection);
 
  private:
@@ -30,7 +27,6 @@ class UsbDeviceHandleAndroid : public UsbDeviceHandleUsbfs {
   UsbDeviceHandleAndroid(
       scoped_refptr<UsbDevice> device,
       base::ScopedFD fd,
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner,
       const base::android::JavaRef<jobject>& wrapper);
   ~UsbDeviceHandleAndroid() override;
 

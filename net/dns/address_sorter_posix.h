@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/threading/thread_checker.h"
 #include "net/base/address_list.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_export.h"
@@ -24,7 +24,6 @@ class ClientSocketFactory;
 // thread-safe and always completes synchronously.
 class NET_EXPORT_PRIVATE AddressSorterPosix
     : public AddressSorter,
-      public base::NonThreadSafe,
       public NetworkChangeNotifier::IPAddressObserver {
  public:
   // Generic policy entry.
@@ -52,7 +51,7 @@ class NET_EXPORT_PRIVATE AddressSorterPosix
     unsigned label;
 
     // Values from the OS, matter only if more than one source address is used.
-    unsigned prefix_length;
+    size_t prefix_length;
     bool deprecated;  // vs. preferred RFC4862
     bool home;        // vs. care-of RFC6275
     bool native;
@@ -64,8 +63,7 @@ class NET_EXPORT_PRIVATE AddressSorterPosix
   ~AddressSorterPosix() override;
 
   // AddressSorter:
-  void Sort(const AddressList& list,
-            const CallbackType& callback) const override;
+  void Sort(const AddressList& list, CallbackType callback) const override;
 
  private:
   friend class AddressSorterPosixTest;
@@ -84,6 +82,8 @@ class NET_EXPORT_PRIVATE AddressSorterPosix
   PolicyTable precedence_table_;
   PolicyTable label_table_;
   PolicyTable ipv4_scope_table_;
+
+  THREAD_CHECKER(thread_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(AddressSorterPosix);
 };

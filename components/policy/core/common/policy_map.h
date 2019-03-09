@@ -12,6 +12,8 @@
 #include <set>
 #include <string>
 
+#include "base/callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/values.h"
 #include "components/policy/core/common/external_data_fetcher.h"
@@ -20,34 +22,70 @@
 
 namespace policy {
 
+class PolicyMapTest;
+FORWARD_DECLARE_TEST(PolicyMapTest, BlockedEntry);
+FORWARD_DECLARE_TEST(PolicyMapTest, MergeFrom);
+
 // A mapping of policy names to policy values for a given policy namespace.
 class POLICY_EXPORT PolicyMap {
  public:
   // Each policy maps to an Entry which keeps the policy value as well as other
   // relevant data about the policy.
-  struct POLICY_EXPORT Entry {
-    PolicyLevel level;
-    PolicyScope scope;
+  class POLICY_EXPORT Entry {
+   public:
+    PolicyLevel level = POLICY_LEVEL_RECOMMENDED;
+    PolicyScope scope = POLICY_SCOPE_USER;
+    // For debugging and displaying only. Set by provider delivering the policy.
+    PolicySource source = POLICY_SOURCE_ENTERPRISE_DEFAULT;
     std::unique_ptr<base::Value> value;
     std::unique_ptr<ExternalDataFetcher> external_data_fetcher;
-
-    // For debugging and displaying only. Set by provider delivering the policy.
-    PolicySource source;
+    std::vector<Entry> conflicts;
 
     Entry();
+    Entry(PolicyLevel level,
+          PolicyScope scope,
+          PolicySource source,
+          std::unique_ptr<base::Value> value,
+          std::unique_ptr<ExternalDataFetcher> external_data_fetcher);
     ~Entry();
 
-    Entry(Entry&&);
-    Entry& operator=(Entry&&);
+    Entry(Entry&&) noexcept;
+    Entry& operator=(Entry&&) noexcept;
 
     // Returns a copy of |this|.
     Entry DeepCopy() const;
 
-    // Returns true if |this| has higher priority than |other|.
+    // Returns true if |this| has higher priority than |other|. The priority of
+    // the fields are |level| > |scope| > |source|.
     bool has_higher_priority_than(const Entry& other) const;
 
     // Returns true if |this| equals |other|.
     bool Equals(const Entry& other) const;
+
+    // Add a non-localized error given its UTF-8 string contents.
+    void AddError(base::StringPiece error);
+    // Add a localized error given its l10n message ID.
+    void AddError(int message_id);
+
+    // Adds a conflicting policy.
+    void AddConflictingPolicy(const Entry& conflict);
+
+    bool IsBlocked() const;
+
+    void SetBlocked();
+
+    // Callback used to look up a localized string given its l10n message ID. It
+    // should return a UTF-16 string.
+    typedef base::RepeatingCallback<base::string16(int message_id)>
+        L10nLookupFunction;
+
+    // Returns localized errors added through AddError(), as UTF-16, and
+    // separated with LF characters.
+    base::string16 GetLocalizedErrors(L10nLookupFunction lookup) const;
+
+   private:
+    std::string error_strings_;
+    std::set<int> error_message_ids_;
   };
 
   typedef std::map<std::string, Entry> PolicyMapType;
@@ -57,25 +95,49 @@ class POLICY_EXPORT PolicyMap {
   virtual ~PolicyMap();
 
   // Returns a weak reference to the entry currently stored for key |policy|,
-  // or NULL if not found. Ownership is retained by the PolicyMap.
+  // or NULL if untrusted or not found. Ownership is retained by the PolicyMap.
   const Entry* Get(const std::string& policy) const;
+  Entry* GetMutable(const std::string& policy);
 
-  // Returns a weak reference to the value currently stored for key |policy|,
-  // or NULL if not found. Ownership is retained by the PolicyMap.
+  // Returns a weak reference to the value currently stored for key
+  // |policy|, or NULL if not found. Ownership is retained by the PolicyMap.
   // This is equivalent to Get(policy)->value, when it doesn't return NULL.
   const base::Value* GetValue(const std::string& policy) const;
+  base::Value* GetMutableValue(const std::string& policy);
 
   // Overwrites any existing information stored in the map for the key |policy|.
+  // Resets the error for that policy to the empty string.
   void Set(const std::string& policy,
            PolicyLevel level,
            PolicyScope scope,
            PolicySource source,
            std::unique_ptr<base::Value> value,
            std::unique_ptr<ExternalDataFetcher> external_data_fetcher);
+
   void Set(const std::string& policy, Entry entry);
+
+  // Adds non-localized |error| to the map for the key |policy| that should be
+  // shown to the user alongside the value in the policy UI. This should only be
+  // called for policies that are already stored in this map.
+  void AddError(const std::string& policy, const std::string& error);
+
+  // Adds a localized error with |message_id| to the map for the key |policy|
+  // that should be shown to the user alongisde the value in the policy UI. This
+  // should only be called for policies that are already stored in the map.
+  void AddError(const std::string& policy, int message_id);
+
+  // For all policies, overwrite the PolicySource with |source|.
+  void SetSourceForAll(PolicySource source);
 
   // Erase the given |policy|, if it exists in this map.
   void Erase(const std::string& policy);
+
+  // Erase all entries for which |filter| returns true.
+  void EraseMatching(const base::Callback<bool(const const_iterator)>& filter);
+
+  // Erase all entries for which |filter| returns false.
+  void EraseNonmatching(
+      const base::Callback<bool(const const_iterator)>& filter);
 
   // Swaps the internal representation of |this| with |other|.
   void Swap(PolicyMap* other);
@@ -107,12 +169,6 @@ class POLICY_EXPORT PolicyMap {
   void GetDifferingKeys(const PolicyMap& other,
                         std::set<std::string>* differing_keys) const;
 
-  // Removes all policies that don't have the specified |level|. This is a
-  // temporary helper method, until mandatory and recommended levels are served
-  // by a single provider.
-  // TODO(joaodasilva): Remove this. http://crbug.com/108999
-  void FilterLevel(PolicyLevel level);
-
   bool Equals(const PolicyMap& other) const;
   bool empty() const;
   size_t size() const;
@@ -122,9 +178,21 @@ class POLICY_EXPORT PolicyMap {
   void Clear();
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(PolicyMapTest, BlockedEntry);
+  FRIEND_TEST_ALL_PREFIXES(PolicyMapTest, MergeFrom);
+
+  // Returns a weak reference to the entry currently stored for key |policy|,
+  // or NULL if not found. Ownership is retained by the PolicyMap.
+  const Entry* GetUntrusted(const std::string& policy) const;
+  Entry* GetMutableUntrusted(const std::string& policy);
+
   // Helper function for Equals().
   static bool MapEntryEquals(const PolicyMapType::value_type& a,
                              const PolicyMapType::value_type& b);
+
+  // Erase all entries for which |filter| returns |deletion_value|.
+  void FilterErase(const base::Callback<bool(const const_iterator)>& filter,
+                   bool deletion_value);
 
   PolicyMapType map_;
 

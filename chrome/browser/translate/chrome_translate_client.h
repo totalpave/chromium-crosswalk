@@ -8,8 +8,11 @@
 #include <memory>
 #include <string>
 
+#include "base/feature_list.h"
 #include "base/macros.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/translate/translate_bubble_model.h"
+#include "components/language/core/browser/url_language_histogram.h"
 #include "components/translate/content/browser/content_translate_driver.h"
 #include "components/translate/core/browser/translate_client.h"
 #include "components/translate/core/browser/translate_step.h"
@@ -22,10 +25,6 @@ class BrowserContext;
 class WebContents;
 }  // namespace content
 
-namespace test {
-class ScopedCLDDynamicDataHarness;
-}  // namespace test
-
 class PrefService;
 
 namespace translate {
@@ -33,7 +32,11 @@ class LanguageState;
 class TranslateAcceptLanguages;
 class TranslatePrefs;
 class TranslateManager;
+
+struct LanguageDetectionDetails;
 }  // namespace translate
+
+enum class ShowTranslateBubbleResult;
 
 class ChromeTranslateClient
     : public translate::TranslateClient,
@@ -67,9 +70,9 @@ class ChromeTranslateClient
       content::WebContents* web_contents);
 
   // Gets |source| and |target| language for translation.
-  static void GetTranslateLanguages(content::WebContents* web_contents,
-                                    std::string* source,
-                                    std::string* target);
+  void GetTranslateLanguages(content::WebContents* web_contents,
+                             std::string* source,
+                             std::string* target);
 
   // Gets the associated TranslateManager.
   translate::TranslateManager* GetTranslateManager();
@@ -83,13 +86,22 @@ class ChromeTranslateClient
   PrefService* GetPrefs() override;
   std::unique_ptr<translate::TranslatePrefs> GetTranslatePrefs() override;
   translate::TranslateAcceptLanguages* GetTranslateAcceptLanguages() override;
-  int GetInfobarIconID() const override;
-#if !defined(USE_AURA)
+  void RecordTranslateEvent(const metrics::TranslateEventProto&) override;
+#if defined(OS_ANDROID)
   std::unique_ptr<infobars::InfoBar> CreateInfoBar(
       std::unique_ptr<translate::TranslateInfoBarDelegate> delegate)
       const override;
+  int GetInfobarIconID() const override;
+
+  // Trigger a manual translation when the necessary state (e.g. source
+  // language) is ready.
+  void ManualTranslateWhenReady();
 #endif
-  void ShowTranslateUI(translate::TranslateStep step,
+  void SetPredefinedTargetLanguage(const std::string& translate_language_code);
+
+  void RecordLanguageDetectionEvent(
+      const translate::LanguageDetectionDetails& details) const override;
+  bool ShowTranslateUI(translate::TranslateStep step,
                        const std::string& source_language,
                        const std::string& target_language,
                        translate::TranslateErrors::Type error_type,
@@ -107,16 +119,35 @@ class ChromeTranslateClient
  private:
   explicit ChromeTranslateClient(content::WebContents* web_contents);
   friend class content::WebContentsUserData<ChromeTranslateClient>;
+  FRIEND_TEST_ALL_PREFIXES(ChromeTranslateClientTest,
+                           LanguageEventShouldRecord);
+  FRIEND_TEST_ALL_PREFIXES(ChromeTranslateClientTest,
+                           LanguageEventShouldNotRecord);
+  FRIEND_TEST_ALL_PREFIXES(ChromeTranslateClientTest,
+                           TranslationEventShouldRecord);
+  FRIEND_TEST_ALL_PREFIXES(ChromeTranslateClientTest,
+                           TranslationEventShouldNotRecord);
 
   // content::WebContentsObserver implementation.
   void WebContentsDestroyed() override;
 
   // Shows the translate bubble.
-  void ShowBubble(translate::TranslateStep step,
-                  translate::TranslateErrors::Type error_type);
+  ShowTranslateBubbleResult ShowBubble(
+      translate::TranslateStep step,
+      const std::string& source_language,
+      const std::string& target_language,
+      translate::TranslateErrors::Type error_type);
 
   translate::ContentTranslateDriver translate_driver_;
   std::unique_ptr<translate::TranslateManager> translate_manager_;
+
+#if defined(OS_ANDROID)
+  // Whether to trigger a manual translation when ready.
+  // See ChromeTranslateClient::ManualTranslateOnReady
+  bool manual_translate_on_ready_ = false;
+#endif
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(ChromeTranslateClient);
 };

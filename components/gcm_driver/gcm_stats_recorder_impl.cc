@@ -4,14 +4,16 @@
 
 #include "components/gcm_driver/gcm_stats_recorder_impl.h"
 
-#include <deque>
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/format_macros.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "components/gcm_driver/crypto/gcm_decryption_result.h"
+#include "components/gcm_driver/crypto/gcm_encryption_provider.h"
 
 namespace gcm {
 
@@ -22,13 +24,15 @@ namespace {
 
 // Insert an item to the front of deque while maintaining the size of the deque.
 // Overflow item is discarded.
+//
+// DANGER: the returned pointer will not be valind if the queue is modified.
 template <typename T>
-T* InsertCircularBuffer(std::deque<T>* q, const T& item) {
+T* InsertCircularBuffer(base::circular_deque<T>* q, const T& item) {
   DCHECK(q);
-  q->push_front(item);
-  if (q->size() > MAX_LOGGED_ACTIVITY_COUNT) {
+  if (q->size() > MAX_LOGGED_ACTIVITY_COUNT - 1) {
     q->pop_back();
   }
+  q->push_front(item);
   return &q->front();
 }
 
@@ -50,10 +54,11 @@ std::string GetMessageSendStatusString(
       return "NO_CONNECTION_ON_ZERO_TTL";
     case gcm::MCSClient::TTL_EXCEEDED:
       return "TTL_EXCEEDED";
-    default:
+    case gcm::MCSClient::SEND_STATUS_COUNT:
       NOTREACHED();
-      return "UNKNOWN";
+      break;
   }
+  return "UNKNOWN";
 }
 
 // Helper for getting string representation of the
@@ -71,10 +76,13 @@ std::string GetConnectionResetReasonString(
       return "SOCKET_FAILURE";
     case gcm::ConnectionFactory::NETWORK_CHANGE:
       return "NETWORK_CHANGE";
-    default:
+    case gcm::ConnectionFactory::NEW_HEARTBEAT_INTERVAL:
+      return "NEW_HEARTBEAT_INTERVAL";
+    case gcm::ConnectionFactory::CONNECTION_RESET_COUNT:
       NOTREACHED();
-      return "UNKNOWN_REASON";
+      break;
   }
+  return "UNKNOWN_REASON";
 }
 
 // Helper for getting string representation of the RegistrationRequest::Status
@@ -98,14 +106,23 @@ std::string GetRegistrationStatusString(
       return "URL_FETCHING_FAILED";
     case gcm::RegistrationRequest::HTTP_NOT_OK:
       return "HTTP_NOT_OK";
-    case gcm::RegistrationRequest::RESPONSE_PARSING_FAILED:
-      return "RESPONSE_PARSING_FAILED";
+    case gcm::RegistrationRequest::NO_RESPONSE_BODY:
+      return "NO_RESPONSE_BODY";
     case gcm::RegistrationRequest::REACHED_MAX_RETRIES:
       return "REACHED_MAX_RETRIES";
-    default:
+    case gcm::RegistrationRequest::RESPONSE_PARSING_FAILED:
+      return "RESPONSE_PARSING_FAILED";
+    case gcm::RegistrationRequest::INTERNAL_SERVER_ERROR:
+      return "INTERNAL_SERVER_ERROR";
+    case gcm::RegistrationRequest::QUOTA_EXCEEDED:
+      return "QUOTA_EXCEEDED";
+    case gcm::RegistrationRequest::TOO_MANY_REGISTRATIONS:
+      return "TOO_MANY_REGISTRATIONS";
+    case gcm::RegistrationRequest::STATUS_COUNT:
       NOTREACHED();
-      return "UNKNOWN_STATUS";
+      break;
   }
+  return "UNKNOWN_STATUS";
 }
 
 // Helper for getting string representation of the RegistrationRequest::Status
@@ -135,20 +152,22 @@ std::string GetUnregistrationStatusString(
       return "UNKNOWN_ERROR";
     case gcm::UnregistrationRequest::REACHED_MAX_RETRIES:
       return "REACHED_MAX_RETRIES";
-    default:
+    case gcm::UnregistrationRequest::DEVICE_REGISTRATION_ERROR:
+      return "DEVICE_REGISTRATION_ERROR";
+    case gcm::UnregistrationRequest::UNREGISTRATION_STATUS_COUNT:
       NOTREACHED();
-      return "UNKNOWN_STATUS";
+      break;
   }
+  return "UNKNOWN_STATUS";
 }
 
 }  // namespace
 
 GCMStatsRecorderImpl::GCMStatsRecorderImpl()
     : is_recording_(false),
-      delegate_(NULL),
+      delegate_(nullptr),
       data_message_received_since_connected_(false),
-      received_data_message_burst_size_(0) {
-}
+      received_data_message_burst_size_(0) {}
 
 GCMStatsRecorderImpl::~GCMStatsRecorderImpl() {
 }
@@ -171,11 +190,11 @@ void GCMStatsRecorderImpl::NotifyActivityRecorded() {
     delegate_->OnActivityRecorded();
 }
 
-void GCMStatsRecorderImpl::RecordDecryptionFailure(
-    const std::string& app_id,
-    GCMEncryptionProvider::DecryptionResult result) {
-  DCHECK_NE(result, GCMEncryptionProvider::DECRYPTION_RESULT_UNENCRYPTED);
-  DCHECK_NE(result, GCMEncryptionProvider::DECRYPTION_RESULT_DECRYPTED);
+void GCMStatsRecorderImpl::RecordDecryptionFailure(const std::string& app_id,
+                                                   GCMDecryptionResult result) {
+  DCHECK_NE(result, GCMDecryptionResult::UNENCRYPTED);
+  DCHECK_NE(result, GCMDecryptionResult::DECRYPTED_DRAFT_03);
+  DCHECK_NE(result, GCMDecryptionResult::DECRYPTED_DRAFT_08);
   if (!is_recording_)
     return;
 
@@ -183,8 +202,7 @@ void GCMStatsRecorderImpl::RecordDecryptionFailure(
   DecryptionFailureActivity* inserted_data = InsertCircularBuffer(
       &decryption_failure_activities_, data);
   inserted_data->app_id = app_id;
-  inserted_data->details =
-      GCMEncryptionProvider::ToDecryptionResultDetailsString(result);
+  inserted_data->details = ToGCMDecryptionResultDetailsString(result);
 
   NotifyActivityRecorded();
 }
@@ -306,7 +324,7 @@ void GCMStatsRecorderImpl::RecordRegistration(
 void GCMStatsRecorderImpl::RecordRegistrationSent(
     const std::string& app_id,
     const std::string& sender_ids) {
-  UMA_HISTOGRAM_COUNTS("GCM.RegistrationRequest", 1);
+  UMA_HISTOGRAM_COUNTS_1M("GCM.RegistrationRequest", 1);
   if (!is_recording_)
     return;
   RecordRegistration(app_id, sender_ids,
@@ -342,7 +360,7 @@ void GCMStatsRecorderImpl::RecordRegistrationRetryDelayed(
 
 void GCMStatsRecorderImpl::RecordUnregistrationSent(
     const std::string& app_id, const std::string& source) {
-  UMA_HISTOGRAM_COUNTS("GCM.UnregistrationRequest", 1);
+  UMA_HISTOGRAM_COUNTS_1M("GCM.UnregistrationRequest", 1);
   if (!is_recording_)
     return;
   RecordRegistration(app_id, source, "Unregistration request sent",
@@ -398,11 +416,7 @@ void GCMStatsRecorderImpl::RecordDataMessageReceived(
     const std::string& app_id,
     const std::string& from,
     int message_byte_size,
-    bool to_registered_app,
     ReceivedMessageType message_type) {
-  if (to_registered_app)
-    UMA_HISTOGRAM_COUNTS("GCM.DataMessageReceived", 1);
-
   base::TimeTicks new_timestamp = base::TimeTicks::Now();
   if (last_received_data_message_burst_start_time_.is_null()) {
     last_received_data_message_burst_start_time_ = new_timestamp;
@@ -414,8 +428,8 @@ void GCMStatsRecorderImpl::RecordDataMessageReceived(
     UMA_HISTOGRAM_LONG_TIMES(
         "GCM.DataMessageBurstReceivedInterval",
         (new_timestamp - last_received_data_message_burst_start_time_));
-    UMA_HISTOGRAM_COUNTS("GCM.ReceivedDataMessageBurstSize",
-                         received_data_message_burst_size_);
+    UMA_HISTOGRAM_COUNTS_1M("GCM.ReceivedDataMessageBurstSize",
+                            received_data_message_burst_size_);
     last_received_data_message_burst_start_time_ = new_timestamp;
     last_received_data_message_time_within_burst_ = new_timestamp;
     received_data_message_burst_size_ = 1;
@@ -435,25 +449,16 @@ void GCMStatsRecorderImpl::RecordDataMessageReceived(
 
   if (!is_recording_)
     return;
-  if (!to_registered_app) {
-    RecordReceiving(app_id,
-                    from,
-                    message_byte_size,
-                    "Data msg received",
-                    "No such registered app found");
-  } else {
-    switch(message_type) {
-      case GCMStatsRecorderImpl::DATA_MESSAGE:
-        RecordReceiving(app_id, from, message_byte_size, "Data msg received",
-                        std::string());
-        break;
-      case GCMStatsRecorderImpl::DELETED_MESSAGES:
-        RecordReceiving(app_id, from, message_byte_size, "Data msg received",
-                        "Message has been deleted on server");
-        break;
-      default:
-        NOTREACHED();
-    }
+
+  switch (message_type) {
+    case GCMStatsRecorderImpl::DATA_MESSAGE:
+      RecordReceiving(app_id, from, message_byte_size, "Data msg received",
+                      std::string());
+      break;
+    case GCMStatsRecorderImpl::DELETED_MESSAGES:
+      RecordReceiving(app_id, from, message_byte_size, "Data msg received",
+                      "Message has been deleted on server");
+      break;
   }
 }
 
@@ -536,7 +541,7 @@ void GCMStatsRecorderImpl::RecordIncomingSendError(
     const std::string& app_id,
     const std::string& receiver_id,
     const std::string& message_id) {
-  UMA_HISTOGRAM_COUNTS("GCM.IncomingSendErrors", 1);
+  UMA_HISTOGRAM_COUNTS_1M("GCM.IncomingSendErrors", 1);
   if (!is_recording_)
     return;
   RecordSending(app_id, receiver_id, message_id, "Received 'send error' msg",

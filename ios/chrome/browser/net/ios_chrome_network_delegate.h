@@ -48,24 +48,23 @@ class IOSChromeNetworkDelegate : public net::NetworkDelegateImpl {
  private:
   // NetworkDelegate implementation.
   int OnBeforeURLRequest(net::URLRequest* request,
-                         const net::CompletionCallback& callback,
+                         net::CompletionOnceCallback callback,
                          GURL* new_url) override;
-  void OnCompleted(net::URLRequest* request, bool started) override;
-  net::NetworkDelegate::AuthRequiredResponse OnAuthRequired(
-      net::URLRequest* request,
-      const net::AuthChallengeInfo& auth_info,
-      const AuthCallback& callback,
-      net::AuthCredentials* credentials) override;
+  void OnCompleted(net::URLRequest* request,
+                   bool started,
+                   int net_error) override;
   bool OnCanGetCookies(const net::URLRequest& request,
-                       const net::CookieList& cookie_list) override;
+                       const net::CookieList& cookie_list,
+                       bool allowed_from_caller) override;
   bool OnCanSetCookie(const net::URLRequest& request,
-                      const std::string& cookie_line,
-                      net::CookieOptions* options) override;
+                      const net::CanonicalCookie& cookie,
+                      net::CookieOptions* options,
+                      bool allowed_from_caller) override;
   bool OnCanAccessFile(const net::URLRequest& request,
-                       const base::FilePath& path) const override;
-  bool OnCanEnablePrivacyMode(
-      const GURL& url,
-      const GURL& first_party_for_cookies) const override;
+                       const base::FilePath& original_path,
+                       const base::FilePath& absolute_path) const override;
+  bool OnForcePrivacyMode(const GURL& url,
+                          const GURL& site_for_cookies) const override;
   bool OnCancelURLRequestWithPolicyViolatingReferrerHeader(
       const net::URLRequest& request,
       const GURL& target_url,

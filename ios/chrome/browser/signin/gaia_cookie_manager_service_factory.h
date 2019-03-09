@@ -8,12 +8,8 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/no_destructor.h"
 #include "components/keyed_service/ios/browser_state_keyed_service_factory.h"
-
-namespace base {
-template <typename T>
-struct DefaultSingletonTraits;
-}  // namespace base
 
 class GaiaCookieManagerService;
 
@@ -21,8 +17,8 @@ namespace ios {
 
 class ChromeBrowserState;
 
-// Singleton that owns the GaiaCookieManagerService(s) and associates them with
-// browser states.
+// Singleton that creates the GaiaCookieManagerService(s) and associates those
+// services with browser states.
 class GaiaCookieManagerServiceFactory : public BrowserStateKeyedServiceFactory {
  public:
   // Returns the instance of GaiaCookieManagerService associated with this
@@ -36,7 +32,7 @@ class GaiaCookieManagerServiceFactory : public BrowserStateKeyedServiceFactory {
   static GaiaCookieManagerServiceFactory* GetInstance();
 
  private:
-  friend struct base::DefaultSingletonTraits<GaiaCookieManagerServiceFactory>;
+  friend class base::NoDestructor<GaiaCookieManagerServiceFactory>;
 
   GaiaCookieManagerServiceFactory();
   ~GaiaCookieManagerServiceFactory() override;

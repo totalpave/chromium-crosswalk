@@ -4,12 +4,15 @@
 
 #include "chrome/browser/extensions/api/input_ime/input_ime_api.h"
 
+#include <memory>
+#include <utility>
+
 #include "base/lazy_instance.h"
 #include "chrome/browser/chrome_notification_types.h"
-#include "chrome/common/extensions/api/input_ime.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_service.h"
 #include "extensions/browser/extension_registry.h"
+#include "ui/base/ime/ime_bridge.h"
 
 namespace input_ime = extensions::api::input_ime;
 namespace KeyEventHandled = extensions::api::input_ime::KeyEventHandled;
@@ -20,8 +23,8 @@ using ui::IMEEngineHandlerInterface;
 using input_method::InputMethodEngineBase;
 
 namespace {
-const char kErrorEngineNotAvailable[] = "Engine is not available";
-const char kErrorSetKeyEventsFail[] = "Could not send key events";
+const char kInputImeApiErrorEngineNotAvailable[] = "Engine is not available";
+const char kInputImeApiErrorSetKeyEventsFail[] = "Could not send key events";
 }
 namespace ui {
 
@@ -29,7 +32,9 @@ ImeObserver::ImeObserver(const std::string& extension_id, Profile* profile)
     : extension_id_(extension_id), profile_(profile) {}
 
 void ImeObserver::OnActivate(const std::string& component_id) {
-  if (extension_id_.empty() || !HasListener(input_ime::OnActivate::kEventName))
+  // Don't check whether the extension listens on onActivate event here.
+  // Send onActivate event to give the IME a chance to add their listeners.
+  if (extension_id_.empty())
     return;
 
   std::unique_ptr<base::ListValue> args(input_ime::OnActivate::Create(
@@ -51,7 +56,9 @@ void ImeObserver::OnFocus(
       input_ime::ParseInputContextType(ConvertInputContextType(context));
   context_value.auto_correct = ConvertInputContextAutoCorrect(context);
   context_value.auto_complete = ConvertInputContextAutoComplete(context);
+  context_value.auto_capitalize = ConvertInputContextAutoCapitalize(context);
   context_value.spell_check = ConvertInputContextSpellCheck(context);
+  context_value.should_do_learning = context.should_do_learning;
 
   std::unique_ptr<base::ListValue> args(
       input_ime::OnFocus::Create(context_value));
@@ -73,7 +80,7 @@ void ImeObserver::OnBlur(int context_id) {
 void ImeObserver::OnKeyEvent(
     const std::string& component_id,
     const InputMethodEngineBase::KeyboardEvent& event,
-    IMEEngineHandlerInterface::KeyEventDoneCallback& key_data) {
+    IMEEngineHandlerInterface::KeyEventDoneCallback key_data) {
   if (extension_id_.empty())
     return;
 
@@ -82,7 +89,7 @@ void ImeObserver::OnKeyEvent(
   if (!ShouldForwardKeyEvent()) {
     // Continue processing the key event so that the physical keyboard can
     // still work.
-    key_data.Run(false);
+    std::move(key_data).Run(false);
     return;
   }
 
@@ -90,8 +97,9 @@ void ImeObserver::OnKeyEvent(
       extensions::GetInputImeEventRouter(profile_);
   if (!event_router || !event_router->GetActiveEngine(extension_id_))
     return;
-  const std::string request_id = event_router->GetActiveEngine(extension_id_)
-                                     ->AddRequest(component_id, key_data);
+  const std::string request_id =
+      event_router->GetActiveEngine(extension_id_)
+          ->AddRequest(component_id, std::move(key_data));
 
   input_ime::KeyboardEvent key_data_value;
   key_data_value.type = input_ime::ParseKeyboardEventType(event.type);
@@ -174,14 +182,12 @@ bool ImeObserver::ShouldForwardKeyEvent() const {
   // the key events, and therefore, all key events will be eaten.
   // This is for error-tolerance, and it means that onKeyEvent will never wake
   // up lazy background page.
-  const extensions::EventListenerMap::ListenerList& listener_list =
+  const extensions::EventListenerMap::ListenerList& listeners =
       extensions::EventRouter::Get(profile_)
           ->listeners()
           .GetEventListenersByName(input_ime::OnKeyEvent::kEventName);
-  for (extensions::EventListenerMap::ListenerList::const_iterator it =
-           listener_list.begin();
-       it != listener_list.end(); ++it) {
-    if ((*it)->extension_id() == extension_id_ && !(*it)->IsLazy())
+  for (const std::unique_ptr<extensions::EventListener>& listener : listeners) {
+    if (listener->extension_id() == extension_id_ && !listener->IsLazy())
       return true;
   }
   return false;
@@ -189,6 +195,11 @@ bool ImeObserver::ShouldForwardKeyEvent() const {
 
 bool ImeObserver::HasListener(const std::string& event_name) const {
   return extensions::EventRouter::Get(profile_)->HasEventListener(event_name);
+}
+
+bool ImeObserver::ExtensionHasListener(const std::string& event_name) const {
+  return extensions::EventRouter::Get(profile_)->ExtensionHasEventListener(
+      extension_id_, event_name);
 }
 
 std::string ImeObserver::ConvertInputContextType(
@@ -230,6 +241,18 @@ bool ImeObserver::ConvertInputContextAutoComplete(
   return !(input_context.flags & ui::TEXT_INPUT_FLAG_AUTOCOMPLETE_OFF);
 }
 
+input_ime::AutoCapitalizeType ImeObserver::ConvertInputContextAutoCapitalize(
+    ui::IMEEngineHandlerInterface::InputContext input_context) {
+  if (input_context.flags & ui::TEXT_INPUT_FLAG_AUTOCAPITALIZE_NONE)
+    return input_ime::AUTO_CAPITALIZE_TYPE_NONE;
+  if (input_context.flags & ui::TEXT_INPUT_FLAG_AUTOCAPITALIZE_CHARACTERS)
+    return input_ime::AUTO_CAPITALIZE_TYPE_CHARACTERS;
+  if (input_context.flags & ui::TEXT_INPUT_FLAG_AUTOCAPITALIZE_WORDS)
+    return input_ime::AUTO_CAPITALIZE_TYPE_WORDS;
+  // The default value is "sentences".
+  return input_ime::AUTO_CAPITALIZE_TYPE_SENTENCES;
+}
+
 bool ImeObserver::ConvertInputContextSpellCheck(
     ui::IMEEngineHandlerInterface::InputContext input_context) {
   return !(input_context.flags & ui::TEXT_INPUT_FLAG_SPELLCHECK_OFF);
@@ -252,9 +275,18 @@ InputImeEventRouterFactory::~InputImeEventRouterFactory() {
 InputImeEventRouter* InputImeEventRouterFactory::GetRouter(Profile* profile) {
   if (!profile)
     return nullptr;
+  // The |router_map_| is keyed by the original profile.
+  // Refers to the comments in |RemoveProfile| method for the reason.
+  profile = profile->GetOriginalProfile();
   InputImeEventRouter* router = router_map_[profile];
   if (!router) {
-    router = new InputImeEventRouter(profile);
+    // The router must attach to the profile from which the extension can
+    // receive events. If |profile| has an off-the-record profile, attach the
+    // off-the-record profile. e.g. In guest mode, the extension is running with
+    // the incognito profile instead of its original profile.
+    router = new InputImeEventRouter(profile->HasOffTheRecordProfile()
+                                         ? profile->GetOffTheRecordProfile()
+                                         : profile);
     router_map_[profile] = router;
   }
   return router;
@@ -264,6 +296,10 @@ void InputImeEventRouterFactory::RemoveProfile(Profile* profile) {
   if (!profile || router_map_.empty())
     return;
   auto it = router_map_.find(profile);
+  // The routers are common between an incognito profile and its original
+  // profile, and are keyed on the original profiles.
+  // When a profile is removed, exact matching is used to ensure that the router
+  // is deleted only when the original profile is removed.
   if (it != router_map_.end() && it->first == profile) {
     delete it->second;
     router_map_.erase(it);
@@ -285,7 +321,6 @@ ExtensionFunction::ResponseAction InputImeKeyEventHandledFunction::Run() {
 }
 
 ExtensionFunction::ResponseAction InputImeSetCompositionFunction::Run() {
-  bool success = false;
   InputImeEventRouter* event_router =
       GetInputImeEventRouter(Profile::FromBrowserContext(browser_context()));
   InputMethodEngineBase* engine =
@@ -320,17 +355,20 @@ ExtensionFunction::ResponseAction InputImeSetCompositionFunction::Run() {
         params.selection_start ? *params.selection_start : params.cursor;
     int selection_end =
         params.selection_end ? *params.selection_end : params.cursor;
-    success = engine->SetComposition(params.context_id, params.text.c_str(),
-                                     selection_start, selection_end,
-                                     params.cursor, segments, &error_);
+    std::string error;
+    if (!engine->SetComposition(params.context_id, params.text.c_str(),
+                                selection_start, selection_end, params.cursor,
+                                segments, &error)) {
+      std::unique_ptr<base::ListValue> results =
+          std::make_unique<base::ListValue>();
+      results->Append(std::make_unique<base::Value>(false));
+      return RespondNow(ErrorWithArguments(std::move(results), error));
+    }
   }
-  std::unique_ptr<base::ListValue> output =
-      SetComposition::Results::Create(success);
-  return RespondNow(ArgumentList(std::move(output)));
+  return RespondNow(OneArgument(std::make_unique<base::Value>(true)));
 }
 
 ExtensionFunction::ResponseAction InputImeCommitTextFunction::Run() {
-  bool success = false;
   InputImeEventRouter* event_router =
       GetInputImeEventRouter(Profile::FromBrowserContext(browser_context()));
   InputMethodEngineBase* engine =
@@ -339,12 +377,15 @@ ExtensionFunction::ResponseAction InputImeCommitTextFunction::Run() {
     std::unique_ptr<CommitText::Params> parent_params(
         CommitText::Params::Create(*args_));
     const CommitText::Params::Parameters& params = parent_params->parameters;
-    success =
-        engine->CommitText(params.context_id, params.text.c_str(), &error_);
+    std::string error;
+    if (!engine->CommitText(params.context_id, params.text.c_str(), &error)) {
+      std::unique_ptr<base::ListValue> results =
+          std::make_unique<base::ListValue>();
+      results->Append(std::make_unique<base::Value>(false));
+      return RespondNow(ErrorWithArguments(std::move(results), error));
+    }
   }
-  std::unique_ptr<base::ListValue> output =
-      CommitText::Results::Create(success);
-  return RespondNow(ArgumentList(std::move(output)));
+  return RespondNow(OneArgument(std::make_unique<base::Value>(true)));
 }
 
 ExtensionFunction::ResponseAction InputImeSendKeyEventsFunction::Run() {
@@ -353,7 +394,7 @@ ExtensionFunction::ResponseAction InputImeSendKeyEventsFunction::Run() {
   InputMethodEngineBase* engine =
       event_router ? event_router->GetActiveEngine(extension_id()) : nullptr;
   if (!engine)
-    return RespondNow(Error(kErrorEngineNotAvailable));
+    return RespondNow(Error(kInputImeApiErrorEngineNotAvailable));
 
   std::unique_ptr<SendKeyEvents::Params> parent_params(
       SendKeyEvents::Params::Create(*args_));
@@ -374,7 +415,7 @@ ExtensionFunction::ResponseAction InputImeSendKeyEventsFunction::Run() {
     event.caps_lock = key_event.caps_lock ? *(key_event.caps_lock) : false;
   }
   if (!engine->SendKeyEvents(params.context_id, key_data_out))
-    return RespondNow(Error(kErrorSetKeyEventsFail));
+    return RespondNow(Error(kInputImeApiErrorSetKeyEventsFail));
   return RespondNow(NoArguments());
 }
 
@@ -396,24 +437,27 @@ void InputImeAPI::Observe(int type,
       content::Source<Profile>(source).ptr());
 }
 
-InputImeAPI::~InputImeAPI() {
+InputImeAPI::~InputImeAPI() = default;
+
+void InputImeAPI::Shutdown() {
   EventRouter::Get(browser_context_)->UnregisterObserver(this);
   registrar_.RemoveAll();
+  if (observer_ && ui::IMEBridge::Get()) {
+    ui::IMEBridge::Get()->RemoveObserver(observer_.get());
+  }
 }
 
-static base::LazyInstance<BrowserContextKeyedAPIFactory<InputImeAPI> >
-    g_factory = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BrowserContextKeyedAPIFactory<InputImeAPI>>::
+    DestructorAtExit g_input_ime_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<InputImeAPI>* InputImeAPI::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_input_ime_factory.Pointer();
 }
 
 InputImeEventRouter* GetInputImeEventRouter(Profile* profile) {
   if (!profile)
     return nullptr;
-  if (profile->HasOffTheRecordProfile())
-    profile = profile->GetOffTheRecordProfile();
   return extensions::InputImeEventRouterFactory::GetInstance()->GetRouter(
       profile);
 }

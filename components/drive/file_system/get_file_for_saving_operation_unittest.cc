@@ -6,10 +6,14 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/task_runner_util.h"
 #include "components/drive/drive.pb.h"
 #include "components/drive/file_change.h"
@@ -17,7 +21,6 @@
 #include "components/drive/file_system/operation_test_base.h"
 #include "components/drive/file_write_watcher.h"
 #include "components/drive/job_scheduler.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/test/test_utils.h"
 #include "google_apis/drive/test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -64,18 +67,14 @@ class GetFileForSavingOperationTest : public OperationTestBase {
   void SetUp() override {
     OperationTestBase::SetUp();
 
-    file_task_runner_ = content::BrowserThread::GetMessageLoopProxyForThread(
-        content::BrowserThread::FILE);
-
-    operation_.reset(new GetFileForSavingOperation(
-        logger(), blocking_task_runner(), file_task_runner_.get(), &delegate_,
-        scheduler(), metadata(), cache(), temp_dir()));
+    operation_ = std::make_unique<GetFileForSavingOperation>(
+        logger(), blocking_task_runner(), &delegate_, scheduler(), metadata(),
+        cache(), temp_dir());
     operation_->file_write_watcher_for_testing()->DisableDelayForTesting();
   }
 
   TestDelegate delegate_;
   std::unique_ptr<GetFileForSavingOperation> operation_;
-  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner_;
 };
 
 TEST_F(GetFileForSavingOperationTest, GetFileForSaving_Exist) {
@@ -91,7 +90,7 @@ TEST_F(GetFileForSavingOperationTest, GetFileForSaving_Exist) {
       drive_path,
       google_apis::test_util::CreateCopyResultCallback(
           &error, &local_path, &entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Checks that the file is retrieved.
   EXPECT_EQ(FILE_ERROR_OK, error);
@@ -126,7 +125,7 @@ TEST_F(GetFileForSavingOperationTest, GetFileForSaving_NotExist) {
       drive_path,
       google_apis::test_util::CreateCopyResultCallback(
           &error, &local_path, &entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Checks that the file is created and retrieved.
   EXPECT_EQ(FILE_ERROR_OK, error);
@@ -150,7 +149,7 @@ TEST_F(GetFileForSavingOperationTest, GetFileForSaving_Directory) {
       drive_path,
       google_apis::test_util::CreateCopyResultCallback(
           &error, &local_path, &entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Checks that an error is returned.
   EXPECT_EQ(FILE_ERROR_EXISTS, error);

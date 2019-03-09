@@ -3,23 +3,19 @@
 // found in the LICENSE file.
 
 #include "base/macros.h"
-#include "ui/ozone/common/stub_client_native_pixmap_factory.h"
+#include "ui/gfx/client_native_pixmap_factory.h"
 
 namespace ui {
 
 namespace {
 
-class StubClientNativePixmapFactory : public ClientNativePixmapFactory {
+class StubClientNativePixmapFactory : public gfx::ClientNativePixmapFactory {
  public:
   StubClientNativePixmapFactory() {}
   ~StubClientNativePixmapFactory() override {}
 
   // ClientNativePixmapFactory:
-  bool IsConfigurationSupported(gfx::BufferFormat format,
-                                gfx::BufferUsage usage) const override {
-    return false;
-  }
-  std::unique_ptr<ClientNativePixmap> ImportFromHandle(
+  std::unique_ptr<gfx::ClientNativePixmap> ImportFromHandle(
       const gfx::NativePixmapHandle& handle,
       const gfx::Size& size,
       gfx::BufferUsage usage) override {
@@ -33,7 +29,7 @@ class StubClientNativePixmapFactory : public ClientNativePixmapFactory {
 
 }  // namespace
 
-ClientNativePixmapFactory* CreateStubClientNativePixmapFactory() {
+gfx::ClientNativePixmapFactory* CreateStubClientNativePixmapFactory() {
   return new StubClientNativePixmapFactory;
 }
 

@@ -1,3 +1,0 @@
-innerHTML
-Paused on the innerHTML assignment: modifyHTML@:7
-

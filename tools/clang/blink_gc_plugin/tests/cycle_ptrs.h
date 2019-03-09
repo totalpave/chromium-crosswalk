@@ -21,14 +21,14 @@ class E;
 
 class A : public GarbageCollected<A> {
 public:
-    virtual void trace(Visitor*);
+    virtual void Trace(Visitor*);
 private:
     Member<B> m_b;
 };
 
 class B : public GarbageCollectedFinalized<B> {
 public:
-    virtual void trace(Visitor*);
+    virtual void Trace(Visitor*);
 private:
     Member<A> m_a;
     RefPtr<C> m_c;
@@ -36,12 +36,12 @@ private:
 
 class C : public RefCounted<C> {
 private:
-    OwnPtr<D> m_d;
+    std::unique_ptr<D> m_d;
 };
 
 class D {
 private:
-    Vector<OwnPtr<E> > m_es;
+    Vector<std::unique_ptr<E> > m_es;
 };
 
 class E {

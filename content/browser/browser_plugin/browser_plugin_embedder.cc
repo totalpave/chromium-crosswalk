@@ -4,6 +4,8 @@
 
 #include "content/browser/browser_plugin/browser_plugin_embedder.h"
 
+#include "base/bind.h"
+#include "content/browser/bad_message.h"
 #include "content/browser/browser_plugin/browser_plugin_guest.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -13,7 +15,6 @@
 #include "content/public/browser/browser_plugin_guest_manager.h"
 #include "content/public/browser/native_web_keyboard_event.h"
 #include "content/public/browser/render_view_host.h"
-#include "third_party/WebKit/public/web/WebFindOptions.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 namespace content {
@@ -47,24 +48,6 @@ void BrowserPluginEmbedder::DragLeftGuest(BrowserPluginGuest* guest) {
 }
 
 // static
-bool BrowserPluginEmbedder::NotifyScreenInfoChanged(
-    WebContents* guest_web_contents) {
-  if (guest_web_contents->GetRenderViewHost()) {
-    auto render_widget_host = RenderWidgetHostImpl::From(
-        guest_web_contents->GetRenderViewHost()->GetWidget());
-    render_widget_host->NotifyScreenInfoChanged();
-  }
-
-  // Returns false to iterate over all guests.
-  return false;
-}
-
-void BrowserPluginEmbedder::ScreenInfoChanged() {
-  GetBrowserPluginGuestManager()->ForEachGuest(web_contents(), base::Bind(
-      &BrowserPluginEmbedder::NotifyScreenInfoChanged));
-}
-
-// static
 bool BrowserPluginEmbedder::CancelDialogs(WebContents* guest_web_contents) {
   static_cast<WebContentsImpl*>(guest_web_contents)
       ->CancelActiveAndPendingDialogs();
@@ -74,8 +57,12 @@ bool BrowserPluginEmbedder::CancelDialogs(WebContents* guest_web_contents) {
 }
 
 void BrowserPluginEmbedder::CancelGuestDialogs() {
+  if (!GetBrowserPluginGuestManager())
+    return;
+
   GetBrowserPluginGuestManager()->ForEachGuest(
-      web_contents(), base::Bind(&BrowserPluginEmbedder::CancelDialogs));
+      web_contents(),
+      base::BindRepeating(&BrowserPluginEmbedder::CancelDialogs));
 }
 
 void BrowserPluginEmbedder::StartDrag(BrowserPluginGuest* guest) {
@@ -111,13 +98,12 @@ bool BrowserPluginEmbedder::DidSendScreenRectsCallback(
 }
 
 void BrowserPluginEmbedder::DidSendScreenRects() {
+  if (!GetBrowserPluginGuestManager())
+    return;
+
   GetBrowserPluginGuestManager()->ForEachGuest(
       web_contents(),
-      base::Bind(&BrowserPluginEmbedder::DidSendScreenRectsCallback));
-}
-
-bool BrowserPluginEmbedder::OnMessageReceived(const IPC::Message& message) {
-  return OnMessageReceived(message, nullptr);
+      base::BindRepeating(&BrowserPluginEmbedder::DidSendScreenRectsCallback));
 }
 
 bool BrowserPluginEmbedder::OnMessageReceived(
@@ -127,15 +113,17 @@ bool BrowserPluginEmbedder::OnMessageReceived(
   IPC_BEGIN_MESSAGE_MAP_WITH_PARAM(BrowserPluginEmbedder, message,
                                    render_frame_host)
     IPC_MESSAGE_HANDLER(BrowserPluginHostMsg_Attach, OnAttach)
-    IPC_MESSAGE_HANDLER_GENERIC(DragHostMsg_UpdateDragCursor,
-                                OnUpdateDragCursor(&handled));
     IPC_MESSAGE_UNHANDLED(handled = false)
   IPC_END_MESSAGE_MAP()
   return handled;
 }
 
-void BrowserPluginEmbedder::DragSourceEndedAt(int client_x, int client_y,
-    int screen_x, int screen_y, blink::WebDragOperation operation) {
+void BrowserPluginEmbedder::DragSourceEndedAt(
+    float client_x,
+    float client_y,
+    float screen_x,
+    float screen_y,
+    blink::WebDragOperation operation) {
   if (guest_started_drag_) {
     gfx::Point guest_offset =
         guest_started_drag_->GetScreenCoordinates(gfx::Point());
@@ -156,14 +144,20 @@ void BrowserPluginEmbedder::SystemDragEnded() {
   ClearGuestDragStateIfApplicable();
 }
 
-void BrowserPluginEmbedder::OnUpdateDragCursor(bool* handled) {
-  *handled = !!guest_dragging_over_;
+bool BrowserPluginEmbedder::OnUpdateDragCursor() {
+  return !!guest_dragging_over_;
 }
 
 void BrowserPluginEmbedder::OnAttach(
     RenderFrameHost* render_frame_host,
     int browser_plugin_instance_id,
     const BrowserPluginHostMsg_Attach_Params& params) {
+  if (!GetBrowserPluginGuestManager()) {
+    bad_message::ReceivedBadMessage(
+        render_frame_host->GetProcess(),
+        bad_message::BPE_UNEXPECTED_MESSAGE_BEFORE_BPGM_CREATION);
+    return;
+  }
   WebContents* guest_web_contents =
       GetBrowserPluginGuestManager()->GetGuestByInstanceID(
           render_frame_host->GetProcess()->GetID(),
@@ -179,35 +173,19 @@ void BrowserPluginEmbedder::OnAttach(
 
 bool BrowserPluginEmbedder::HandleKeyboardEvent(
     const NativeWebKeyboardEvent& event) {
-  if ((event.windowsKeyCode != ui::VKEY_ESCAPE) ||
-      (event.modifiers & blink::WebInputEvent::InputModifiers)) {
+  if ((event.windows_key_code != ui::VKEY_ESCAPE) ||
+      (event.GetModifiers() & blink::WebInputEvent::kInputModifiers)) {
     return false;
   }
 
   bool event_consumed = false;
   GetBrowserPluginGuestManager()->ForEachGuest(
       web_contents(),
-      base::Bind(&BrowserPluginEmbedder::UnlockMouseIfNecessaryCallback,
-                 &event_consumed));
+      base::BindRepeating(
+          &BrowserPluginEmbedder::UnlockMouseIfNecessaryCallback,
+          &event_consumed));
 
   return event_consumed;
-}
-
-bool BrowserPluginEmbedder::Find(int request_id,
-                                 const base::string16& search_text,
-                                 const blink::WebFindOptions& options) {
-  return GetBrowserPluginGuestManager()->ForEachGuest(
-      web_contents(),
-      base::Bind(&BrowserPluginEmbedder::FindInGuest,
-                 request_id,
-                 search_text,
-                 options));
-}
-
-bool BrowserPluginEmbedder::StopFinding(StopFindAction action) {
-  return GetBrowserPluginGuestManager()->ForEachGuest(
-      web_contents(),
-      base::Bind(&BrowserPluginEmbedder::StopFindingInGuest, action));
 }
 
 BrowserPluginGuest* BrowserPluginEmbedder::GetFullPageGuest() {
@@ -219,14 +197,18 @@ BrowserPluginGuest* BrowserPluginEmbedder::GetFullPageGuest() {
 }
 
 // static
-bool BrowserPluginEmbedder::GuestRecentlyAudibleCallback(WebContents* guest) {
-  return guest->WasRecentlyAudible();
+bool BrowserPluginEmbedder::GuestCurrentlyAudibleCallback(WebContents* guest) {
+  return guest->IsCurrentlyAudible();
 }
 
-bool BrowserPluginEmbedder::WereAnyGuestsRecentlyAudible() {
+bool BrowserPluginEmbedder::AreAnyGuestsCurrentlyAudible() {
+  if (!GetBrowserPluginGuestManager())
+    return false;
+
   return GetBrowserPluginGuestManager()->ForEachGuest(
       web_contents(),
-      base::Bind(&BrowserPluginEmbedder::GuestRecentlyAudibleCallback));
+      base::BindRepeating(
+          &BrowserPluginEmbedder::GuestCurrentlyAudibleCallback));
 }
 
 // static
@@ -238,34 +220,6 @@ bool BrowserPluginEmbedder::UnlockMouseIfNecessaryCallback(bool* mouse_unlocked,
   guest->GotResponseToLockMouseRequest(false);
 
   // Returns false to iterate over all guests.
-  return false;
-}
-
-// static
-bool BrowserPluginEmbedder::FindInGuest(int request_id,
-                                        const base::string16& search_text,
-                                        const blink::WebFindOptions& options,
-                                        WebContents* guest) {
-  if (static_cast<WebContentsImpl*>(guest)
-          ->GetBrowserPluginGuest()
-          ->HandleFindForEmbedder(request_id, search_text, options)) {
-    // There can only ever currently be one browser plugin that handles find so
-    // we can break the iteration at this point.
-    return true;
-  }
-  return false;
-}
-
-// static
-bool BrowserPluginEmbedder::StopFindingInGuest(StopFindAction action,
-                                               WebContents* guest) {
-  if (static_cast<WebContentsImpl*>(guest)
-          ->GetBrowserPluginGuest()
-          ->HandleStopFindingForEmbedder(action)) {
-    // There can only ever currently be one browser plugin that handles find so
-    // we can break the iteration at this point.
-    return true;
-  }
   return false;
 }
 

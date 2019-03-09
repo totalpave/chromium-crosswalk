@@ -1,16 +1,13 @@
 include_rules = [
   "+cc",
-  "-cc/blink",
-  "+components/font_service/public",
-  "+components/bitmap_uploader",
   "+components/gpu",
-  "+components/mus",
+  "+components/viz/common",
   "+mojo/cc",
-  "+mojo/common",
   "+mojo/converters",
+  "+mojo/core/embedder",
   "+mojo/public",
-  "+services/catalog/public",
-  "+services/shell/public",
+  "+services/service_manager/public",
+  "+services/ws",
   "+skia",
   "+ui/aura",
   "+ui/base",
@@ -23,9 +20,3 @@ include_rules = [
   "+ui/platform_window",
   "+ui/wm",
 ]
-
-specific_include_rules = {
-  "views_mus_test_suite.cc": [
-    "+services/shell/background",
-  ],
-}

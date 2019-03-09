@@ -6,14 +6,19 @@
 
 #import <UIKit/UIKit.h>
 
-#include "base/mac/scoped_nsobject.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/gtest_mac.h"
 #include "testing/platform_test.h"
 
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
 namespace {
 
-TEST(StringUtilTest, ParseStringWithLink) {
+using StringUtilTest = PlatformTest;
+
+TEST_F(StringUtilTest, ParseStringWithLink) {
   NSArray* const all_test_data = @[
     @{
       @"input" : @"Text without link.",
@@ -57,7 +62,7 @@ TEST(StringUtilTest, ParseStringWithLink) {
   }
 }
 
-TEST(StringUtilTest, CleanNSStringForDisplay) {
+TEST_F(StringUtilTest, CleanNSStringForDisplay) {
   NSArray* const all_test_data = @[
     @{
       @"input" : @"Clean String",
@@ -96,7 +101,9 @@ TEST(StringUtilTest, CleanNSStringForDisplay) {
   }
 }
 
-TEST(StringUnitTest, SubstringOfWidth) {
+using StringUnitTest = PlatformTest;
+
+TEST_F(StringUnitTest, SubstringOfWidth) {
   // returns nil for zero-length strings
   EXPECT_NSEQ(SubstringOfWidth(@"", @{}, 100, NO), nil);
   EXPECT_NSEQ(SubstringOfWidth(nil, @{}, 100, NO), nil);
@@ -107,7 +114,7 @@ TEST(StringUnitTest, SubstringOfWidth) {
 
   EXPECT_NSEQ(SubstringOfWidth(@"asdf", attributes, 100, NO), @"asdf");
 
-  // construct some string of known lenghts
+  // construct some string of known lengths
   NSString* leading = @"some text";
   NSString* trailing = @"some other text";
   NSString* mid = @"some text for the method to do some actual work";

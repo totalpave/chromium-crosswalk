@@ -46,7 +46,7 @@ FakeBluetoothAdapterClient::Properties::Properties(
           bluetooth_adapter::kBluetoothAdapterInterface,
           callback) {}
 
-FakeBluetoothAdapterClient::Properties::~Properties() {}
+FakeBluetoothAdapterClient::Properties::~Properties() = default;
 
 void FakeBluetoothAdapterClient::Properties::Get(
     dbus::PropertyBase* property,
@@ -77,6 +77,8 @@ FakeBluetoothAdapterClient::FakeBluetoothAdapterClient()
     : visible_(true),
       second_visible_(false),
       discovering_count_(0),
+      pause_count_(0),
+      unpause_count_(0),
       set_discovery_filter_should_fail_(false),
       simulation_interval_ms_(kSimulationIntervalMs),
       last_handle_(0) {
@@ -97,9 +99,11 @@ FakeBluetoothAdapterClient::FakeBluetoothAdapterClient()
   second_properties_->pairable.ReplaceValue(true);
 }
 
-FakeBluetoothAdapterClient::~FakeBluetoothAdapterClient() {}
+FakeBluetoothAdapterClient::~FakeBluetoothAdapterClient() = default;
 
-void FakeBluetoothAdapterClient::Init(dbus::Bus* bus) {}
+void FakeBluetoothAdapterClient::Init(
+    dbus::Bus* bus,
+    const std::string& bluetooth_service_name) {}
 
 void FakeBluetoothAdapterClient::AddObserver(Observer* observer) {
   observers_.AddObserver(observer);
@@ -130,17 +134,17 @@ FakeBluetoothAdapterClient::GetProperties(const dbus::ObjectPath& object_path) {
 
 void FakeBluetoothAdapterClient::StartDiscovery(
     const dbus::ObjectPath& object_path,
-    const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+    ResponseCallback callback) {
   if (object_path != dbus::ObjectPath(kAdapterPath)) {
-    PostDelayedTask(base::Bind(error_callback, kNoResponseError, ""));
+    PostDelayedTask(
+        base::BindOnce(std::move(callback), Error(kNoResponseError, "")));
     return;
   }
 
   ++discovering_count_;
   VLOG(1) << "StartDiscovery: " << object_path.value() << ", "
           << "count is now " << discovering_count_;
-  PostDelayedTask(callback);
+  PostDelayedTask(base::BindOnce(std::move(callback), base::nullopt));
 
   if (discovering_count_ == 1) {
     properties_->discovering.ReplaceValue(true);
@@ -154,23 +158,24 @@ void FakeBluetoothAdapterClient::StartDiscovery(
 
 void FakeBluetoothAdapterClient::StopDiscovery(
     const dbus::ObjectPath& object_path,
-    const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+    ResponseCallback callback) {
   if (object_path != dbus::ObjectPath(kAdapterPath)) {
-    PostDelayedTask(base::Bind(error_callback, kNoResponseError, ""));
+    PostDelayedTask(
+        base::BindOnce(std::move(callback), Error(kNoResponseError, "")));
     return;
   }
 
   if (!discovering_count_) {
     LOG(WARNING) << "StopDiscovery called when not discovering";
-    PostDelayedTask(base::Bind(error_callback, kNoResponseError, ""));
+    PostDelayedTask(
+        base::BindOnce(std::move(callback), Error(kNoResponseError, "")));
     return;
   }
 
   --discovering_count_;
   VLOG(1) << "StopDiscovery: " << object_path.value() << ", "
           << "count is now " << discovering_count_;
-  PostDelayedTask(callback);
+  PostDelayedTask(base::BindOnce(std::move(callback), base::nullopt));
 
   if (discovering_count_ == 0) {
     FakeBluetoothDeviceClient* device_client =
@@ -188,13 +193,29 @@ void FakeBluetoothAdapterClient::StopDiscovery(
   }
 }
 
+void FakeBluetoothAdapterClient::PauseDiscovery(
+    const dbus::ObjectPath& object_path,
+    const base::Closure& callback,
+    ErrorCallback error_callback) {
+  ++pause_count_;
+  callback.Run();
+}
+
+void FakeBluetoothAdapterClient::UnpauseDiscovery(
+    const dbus::ObjectPath& object_path,
+    const base::Closure& callback,
+    ErrorCallback error_callback) {
+  ++unpause_count_;
+  callback.Run();
+}
+
 void FakeBluetoothAdapterClient::RemoveDevice(
     const dbus::ObjectPath& object_path,
     const dbus::ObjectPath& device_path,
     const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+    ErrorCallback error_callback) {
   if (object_path != dbus::ObjectPath(kAdapterPath)) {
-    error_callback.Run(kNoResponseError, "");
+    std::move(error_callback).Run(kNoResponseError, "");
     return;
   }
 
@@ -216,15 +237,17 @@ void FakeBluetoothAdapterClient::SetDiscoveryFilter(
     const dbus::ObjectPath& object_path,
     const DiscoveryFilter& discovery_filter,
     const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+    ErrorCallback error_callback) {
   if (object_path != dbus::ObjectPath(kAdapterPath)) {
-    PostDelayedTask(base::Bind(error_callback, kNoResponseError, ""));
+    PostDelayedTask(
+        base::BindOnce(std::move(error_callback), kNoResponseError, ""));
     return;
   }
   VLOG(1) << "SetDiscoveryFilter: " << object_path.value();
 
   if (set_discovery_filter_should_fail_) {
-    PostDelayedTask(base::Bind(error_callback, kNoResponseError, ""));
+    PostDelayedTask(
+        base::BindOnce(std::move(error_callback), kNoResponseError, ""));
     set_discovery_filter_should_fail_ = false;
     return;
   }
@@ -238,7 +261,7 @@ void FakeBluetoothAdapterClient::CreateServiceRecord(
     const dbus::ObjectPath& object_path,
     const bluez::BluetoothServiceRecordBlueZ& record,
     const ServiceRecordCallback& callback,
-    const ErrorCallback& error_callback) {
+    ErrorCallback error_callback) {
   ++last_handle_;
   records_.insert(
       std::pair<uint32_t, BluetoothServiceRecordBlueZ>(last_handle_, record));
@@ -249,11 +272,12 @@ void FakeBluetoothAdapterClient::RemoveServiceRecord(
     const dbus::ObjectPath& object_path,
     uint32_t handle,
     const base::Closure& callback,
-    const ErrorCallback& error_callback) {
+    ErrorCallback error_callback) {
   auto it = records_.find(handle);
   if (it == records_.end()) {
-    error_callback.Run(bluetooth_adapter::kErrorDoesNotExist,
-                       "Service record does not exist.");
+    std::move(error_callback)
+        .Run(bluetooth_adapter::kErrorDoesNotExist,
+             "Service record does not exist.");
     return;
   }
   records_.erase(it);
@@ -274,15 +298,15 @@ void FakeBluetoothAdapterClient::SetVisible(bool visible) {
     // Adapter becoming visible
     visible_ = visible;
 
-    FOR_EACH_OBSERVER(BluetoothAdapterClient::Observer, observers_,
-                      AdapterAdded(dbus::ObjectPath(kAdapterPath)));
+    for (auto& observer : observers_)
+      observer.AdapterAdded(dbus::ObjectPath(kAdapterPath));
 
   } else if (visible_ && !visible) {
     // Adapter becoming invisible
     visible_ = visible;
 
-    FOR_EACH_OBSERVER(BluetoothAdapterClient::Observer, observers_,
-                      AdapterRemoved(dbus::ObjectPath(kAdapterPath)));
+    for (auto& observer : observers_)
+      observer.AdapterRemoved(dbus::ObjectPath(kAdapterPath));
   }
 }
 
@@ -291,15 +315,15 @@ void FakeBluetoothAdapterClient::SetSecondVisible(bool visible) {
     // Second adapter becoming visible
     second_visible_ = visible;
 
-    FOR_EACH_OBSERVER(BluetoothAdapterClient::Observer, observers_,
-                      AdapterAdded(dbus::ObjectPath(kSecondAdapterPath)));
+    for (auto& observer : observers_)
+      observer.AdapterAdded(dbus::ObjectPath(kSecondAdapterPath));
 
   } else if (second_visible_ && !visible) {
     // Second adapter becoming invisible
     second_visible_ = visible;
 
-    FOR_EACH_OBSERVER(BluetoothAdapterClient::Observer, observers_,
-                      AdapterRemoved(dbus::ObjectPath(kSecondAdapterPath)));
+    for (auto& observer : observers_)
+      observer.AdapterRemoved(dbus::ObjectPath(kSecondAdapterPath));
   }
 }
 
@@ -329,15 +353,15 @@ void FakeBluetoothAdapterClient::OnPropertyChanged(
     }
   }
 
-  FOR_EACH_OBSERVER(
-      BluetoothAdapterClient::Observer, observers_,
-      AdapterPropertyChanged(dbus::ObjectPath(kAdapterPath), property_name));
+  for (auto& observer : observers_) {
+    observer.AdapterPropertyChanged(dbus::ObjectPath(kAdapterPath),
+                                    property_name);
+  }
 }
 
-void FakeBluetoothAdapterClient::PostDelayedTask(
-    const base::Closure& callback) {
+void FakeBluetoothAdapterClient::PostDelayedTask(base::OnceClosure callback) {
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, callback,
+      FROM_HERE, std::move(callback),
       base::TimeDelta::FromMilliseconds(simulation_interval_ms_));
 }
 

@@ -7,27 +7,36 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/sequence_checker.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/browser_thread.h"
+#include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom.h"
 
 namespace content {
+class IndexedDBContextImpl;
 class IndexedDBDatabaseError;
-class IndexedDBDispatcherHost;
+class IndexedDBTransaction;
 
+// Expected to be constructed/called/deleted on IDB sequence.
 class CONTENT_EXPORT IndexedDBDatabaseCallbacks
     : public base::RefCounted<IndexedDBDatabaseCallbacks> {
  public:
-  IndexedDBDatabaseCallbacks(IndexedDBDispatcherHost* dispatcher_host,
-                             int ipc_thread_id,
-                             int ipc_database_callbacks_id);
+  IndexedDBDatabaseCallbacks(
+      scoped_refptr<IndexedDBContextImpl> context,
+      blink::mojom::IDBDatabaseCallbacksAssociatedPtrInfo callbacks_info,
+      base::SequencedTaskRunner* idb_runner);
 
   virtual void OnForcedClose();
   virtual void OnVersionChange(int64_t old_version, int64_t new_version);
 
-  virtual void OnAbort(int64_t host_transaction_id,
+  virtual void OnAbort(const IndexedDBTransaction& transaction,
                        const IndexedDBDatabaseError& error);
-  virtual void OnComplete(int64_t host_transaction_id);
+  virtual void OnComplete(const IndexedDBTransaction& transaction);
+  virtual void OnDatabaseChange(blink::mojom::IDBObserverChangesPtr changes);
 
  protected:
   virtual ~IndexedDBDatabaseCallbacks();
@@ -35,9 +44,12 @@ class CONTENT_EXPORT IndexedDBDatabaseCallbacks
  private:
   friend class base::RefCounted<IndexedDBDatabaseCallbacks>;
 
-  scoped_refptr<IndexedDBDispatcherHost> dispatcher_host_;
-  int ipc_thread_id_;
-  int ipc_database_callbacks_id_;
+  class Helper;
+
+  bool complete_ = false;
+  scoped_refptr<IndexedDBContextImpl> indexed_db_context_;
+  std::unique_ptr<Helper> helper_;
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(IndexedDBDatabaseCallbacks);
 };

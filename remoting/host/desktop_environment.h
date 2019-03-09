@@ -12,10 +12,7 @@
 #include "base/callback_forward.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-
-namespace base {
-class SingleThreadTaskRunner;
-}  // namespace base
+#include "remoting/host/desktop_environment_options.h"
 
 namespace webrtc {
 class DesktopCapturer;
@@ -24,12 +21,10 @@ class MouseCursorMonitor;
 
 namespace remoting {
 
-namespace protocol {
-class ClientStub;
-}  // namespace protocol
-
+class ActionExecutor;
 class AudioCapturer;
 class ClientSessionControl;
+class FileOperations;
 class InputInjector;
 class ScreenControls;
 
@@ -41,12 +36,14 @@ class DesktopEnvironment {
 
   // Factory methods used to create audio/video capturers, event executor, and
   // screen controls object for a particular desktop environment.
+  virtual std::unique_ptr<ActionExecutor> CreateActionExecutor() = 0;
   virtual std::unique_ptr<AudioCapturer> CreateAudioCapturer() = 0;
   virtual std::unique_ptr<InputInjector> CreateInputInjector() = 0;
   virtual std::unique_ptr<ScreenControls> CreateScreenControls() = 0;
   virtual std::unique_ptr<webrtc::DesktopCapturer> CreateVideoCapturer() = 0;
   virtual std::unique_ptr<webrtc::MouseCursorMonitor>
   CreateMouseCursorMonitor() = 0;
+  virtual std::unique_ptr<FileOperations> CreateFileOperations() = 0;
 
   // Returns the set of all capabilities supported by |this|.
   virtual std::string GetCapabilities() const = 0;
@@ -70,10 +67,8 @@ class DesktopEnvironmentFactory {
   // failed to active for instance). |client_session_control| must outlive
   // the created desktop environment.
   virtual std::unique_ptr<DesktopEnvironment> Create(
-      base::WeakPtr<ClientSessionControl> client_session_control) = 0;
-
-  // Enables or disables the curtain mode.
-  virtual void SetEnableCurtaining(bool enable) {}
+      base::WeakPtr<ClientSessionControl> client_session_control,
+      const DesktopEnvironmentOptions& options) = 0;
 
   // Returns |true| if created |DesktopEnvironment| instances support audio
   // capture.

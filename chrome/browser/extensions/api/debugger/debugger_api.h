@@ -13,20 +13,14 @@
 
 #include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/common/extensions/api/debugger.h"
+#include "content/public/browser/devtools_agent_host.h"
 
 using extensions::api::debugger::Debuggee;
 
 // Base debugger function.
 
-class DevToolsTargetImpl;
-
 namespace base {
 class DictionaryValue;
-}
-
-namespace content {
-class DevToolsAgentHost;
-class WebContents;
 }
 
 namespace extensions {
@@ -41,6 +35,7 @@ class DebuggerFunction : public ChromeAsyncExtensionFunction {
 
   bool InitAgentHost();
   bool InitClientHost();
+  ExtensionDevToolsClientHost* FindClientHost();
 
   Debuggee debuggee_;
   scoped_refptr<content::DevToolsAgentHost> agent_host_;
@@ -82,6 +77,7 @@ class DebuggerSendCommandFunction : public DebuggerFunction {
 
   DebuggerSendCommandFunction();
   void SendResponseBody(base::DictionaryValue* result);
+  void SendDetachedError();
 
  protected:
   ~DebuggerSendCommandFunction() override;
@@ -93,7 +89,7 @@ class DebuggerSendCommandFunction : public DebuggerFunction {
 // Implements the debugger.getTargets() extension function.
 class DebuggerGetTargetsFunction : public DebuggerFunction {
  public:
-  DECLARE_EXTENSION_FUNCTION("debugger.getTargets", DEBUGGER_ATTACH)
+  DECLARE_EXTENSION_FUNCTION("debugger.getTargets", DEBUGGER_GETTARGETS)
 
   DebuggerGetTargetsFunction();
 
@@ -104,7 +100,7 @@ class DebuggerGetTargetsFunction : public DebuggerFunction {
   bool RunAsync() override;
 
  private:
-  void SendTargetList(const std::vector<DevToolsTargetImpl*>& target_list);
+  void SendTargetList(const content::DevToolsAgentHost::List& target_list);
 };
 
 }  // namespace extensions

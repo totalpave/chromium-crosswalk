@@ -4,10 +4,11 @@
 
 #include "storage/browser/fileapi/external_mount_points.h"
 
+#include <memory>
+
 #include "base/files/file_path.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "storage/browser/fileapi/file_system_url.h"
 
 namespace {
@@ -43,7 +44,7 @@ class SystemMountPointsLazyWrapper {
       : system_mount_points_(storage::ExternalMountPoints::CreateRefCounted()) {
   }
 
-  ~SystemMountPointsLazyWrapper() {}
+  ~SystemMountPointsLazyWrapper() = default;
 
   storage::ExternalMountPoints* get() { return system_mount_points_.get(); }
 
@@ -66,7 +67,7 @@ class ExternalMountPoints::Instance {
       : type_(type),
         path_(path.StripTrailingSeparators()),
         mount_option_(mount_option) {}
-  ~Instance() {}
+  ~Instance() = default;
 
   FileSystemType type() const { return type_; }
   const base::FilePath& path() const { return path_; }
@@ -103,7 +104,8 @@ bool ExternalMountPoints::RegisterFileSystem(
   if (!ValidateNewMountPoint(mount_name, type, path))
     return false;
 
-  instance_map_[mount_name] = new Instance(type, path, mount_option);
+  instance_map_[mount_name] =
+      std::make_unique<Instance>(type, path, mount_option);
   if (!path.empty() && IsOverlappingMountPathForbidden(type))
     path_to_name_map_.insert(std::make_pair(path, mount_name));
   return true;
@@ -117,13 +119,12 @@ bool ExternalMountPoints::HandlesFileSystemMountType(
 
 bool ExternalMountPoints::RevokeFileSystem(const std::string& mount_name) {
   base::AutoLock locker(lock_);
-  NameToInstance::iterator found = instance_map_.find(mount_name);
+  auto found = instance_map_.find(mount_name);
   if (found == instance_map_.end())
     return false;
-  Instance* instance = found->second;
+  Instance* instance = found->second.get();
   if (IsOverlappingMountPathForbidden(instance->type()))
     path_to_name_map_.erase(NormalizeFilePath(instance->path()));
-  delete found->second;
   instance_map_.erase(found);
   return true;
 }
@@ -132,7 +133,7 @@ bool ExternalMountPoints::GetRegisteredPath(
     const std::string& filesystem_id, base::FilePath* path) const {
   DCHECK(path);
   base::AutoLock locker(lock_);
-  NameToInstance::const_iterator found = instance_map_.find(filesystem_id);
+  auto found = instance_map_.find(filesystem_id);
   if (found == instance_map_.end())
     return false;
   *path = found->second->path();
@@ -159,21 +160,19 @@ bool ExternalMountPoints::CrackVirtualPath(
   if (components.size() < 1)
     return false;
 
-  std::vector<base::FilePath::StringType>::iterator component_iter =
-      components.begin();
+  auto component_iter = components.begin();
   std::string maybe_mount_name =
       base::FilePath(*component_iter++).AsUTF8Unsafe();
 
   base::FilePath cracked_path;
   {
     base::AutoLock locker(lock_);
-    NameToInstance::const_iterator found_instance =
-        instance_map_.find(maybe_mount_name);
+    auto found_instance = instance_map_.find(maybe_mount_name);
     if (found_instance == instance_map_.end())
       return false;
 
     *mount_name = maybe_mount_name;
-    const Instance* instance = found_instance->second;
+    const Instance* instance = found_instance->second.get();
     if (type)
       *type = instance->type();
     cracked_path = instance->path();
@@ -194,7 +193,7 @@ FileSystemURL ExternalMountPoints::CrackURL(const GURL& url) const {
 }
 
 FileSystemURL ExternalMountPoints::CreateCrackedFileSystemURL(
-    const GURL& origin,
+    const url::Origin& origin,
     FileSystemType type,
     const base::FilePath& path) const {
   return CrackFileSystemURL(FileSystemURL(origin, type, path));
@@ -204,9 +203,8 @@ void ExternalMountPoints::AddMountPointInfosTo(
     std::vector<MountPointInfo>* mount_points) const {
   base::AutoLock locker(lock_);
   DCHECK(mount_points);
-  for (NameToInstance::const_iterator iter = instance_map_.begin();
-       iter != instance_map_.end(); ++iter) {
-    mount_points->push_back(MountPointInfo(iter->first, iter->second->path()));
+  for (const auto& pair : instance_map_) {
+    mount_points->push_back(MountPointInfo(pair.first, pair.second->path()));
   }
 }
 
@@ -238,8 +236,7 @@ FileSystemURL ExternalMountPoints::CreateExternalFileSystemURL(
     const std::string& mount_name,
     const base::FilePath& path) const {
   return CreateCrackedFileSystemURL(
-      origin,
-      storage::kFileSystemTypeExternal,
+      url::Origin::Create(origin), storage::kFileSystemTypeExternal,
       // Avoid using FilePath::Append as path may be an absolute path.
       base::FilePath(CreateVirtualRootPath(mount_name).value() +
                      base::FilePath::kSeparators[0] + path.value()));
@@ -249,20 +246,16 @@ void ExternalMountPoints::RevokeAllFileSystems() {
   NameToInstance instance_map_copy;
   {
     base::AutoLock locker(lock_);
-    instance_map_copy = instance_map_;
-    instance_map_.clear();
+    // This swap moves the contents of instance_map_ to the local variable so
+    // they can be freed outside the lock.
+    instance_map_copy.swap(instance_map_);
     path_to_name_map_.clear();
   }
-  STLDeleteContainerPairSecondPointers(instance_map_copy.begin(),
-                                       instance_map_copy.end());
 }
 
-ExternalMountPoints::ExternalMountPoints() {}
+ExternalMountPoints::ExternalMountPoints() = default;
 
-ExternalMountPoints::~ExternalMountPoints() {
-  STLDeleteContainerPairSecondPointers(instance_map_.begin(),
-                                       instance_map_.end());
-}
+ExternalMountPoints::~ExternalMountPoints() = default;
 
 FileSystemURL ExternalMountPoints::CrackFileSystemURL(
     const FileSystemURL& url) const {
@@ -312,7 +305,7 @@ bool ExternalMountPoints::ValidateNewMountPoint(const std::string& mount_name,
     return false;
 
   // Verify there is no registered mount point with the same name.
-  NameToInstance::iterator found = instance_map_.find(mount_name);
+  auto found = instance_map_.find(mount_name);
   if (found != instance_map_.end())
     return false;
 
@@ -335,8 +328,7 @@ bool ExternalMountPoints::ValidateNewMountPoint(const std::string& mount_name,
       }
     }
 
-    std::map<base::FilePath, std::string>::iterator potential_child =
-        path_to_name_map_.upper_bound(path);
+    auto potential_child = path_to_name_map_.upper_bound(path);
     if (potential_child != path_to_name_map_.end()) {
       if (potential_child->first == path ||
           path.IsParent(potential_child->first)) {

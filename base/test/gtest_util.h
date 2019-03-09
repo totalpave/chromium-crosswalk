@@ -10,6 +10,59 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/logging.h"
+#include "build/build_config.h"
+#include "testing/gtest/include/gtest/gtest.h"
+
+// EXPECT/ASSERT_DCHECK_DEATH is intended to replace EXPECT/ASSERT_DEBUG_DEATH
+// when the death is expected to be caused by a DCHECK. Contrary to
+// EXPECT/ASSERT_DEBUG_DEATH however, it doesn't execute the statement in non-
+// dcheck builds as DCHECKs are intended to catch things that should never
+// happen and as such executing the statement results in undefined behavior
+// (|statement| is compiled in unsupported configurations nonetheless).
+// Death tests misbehave on Android.
+#if DCHECK_IS_ON() && defined(GTEST_HAS_DEATH_TEST) && !defined(OS_ANDROID)
+
+// EXPECT/ASSERT_DCHECK_DEATH tests verify that a DCHECK is hit ("Check failed"
+// is part of the error message), but intentionally do not expose the gtest
+// death test's full |regex| parameter to avoid users having to verify the exact
+// syntax of the error message produced by the DCHECK.
+#define EXPECT_DCHECK_DEATH(statement) EXPECT_DEATH(statement, "Check failed")
+#define ASSERT_DCHECK_DEATH(statement) ASSERT_DEATH(statement, "Check failed")
+
+#else
+// DCHECK_IS_ON() && defined(GTEST_HAS_DEATH_TEST) && !defined(OS_ANDROID)
+
+#define EXPECT_DCHECK_DEATH(statement) \
+    GTEST_UNSUPPORTED_DEATH_TEST(statement, "Check failed", )
+#define ASSERT_DCHECK_DEATH(statement) \
+    GTEST_UNSUPPORTED_DEATH_TEST(statement, "Check failed", return)
+
+#endif
+// DCHECK_IS_ON() && defined(GTEST_HAS_DEATH_TEST) && !defined(OS_ANDROID)
+
+// As above, but for CHECK().
+#if defined(GTEST_HAS_DEATH_TEST) && !defined(OS_ANDROID)
+
+// Official builds will CHECK, but also eat stream parameters. So match "".
+#if defined(OFFICIAL_BUILD) && defined(NDEBUG)
+#define EXPECT_CHECK_DEATH(statement) EXPECT_DEATH(statement, "")
+#define ASSERT_CHECK_DEATH(statement) ASSERT_DEATH(statement, "")
+#else
+#define EXPECT_CHECK_DEATH(statement) EXPECT_DEATH(statement, "Check failed")
+#define ASSERT_CHECK_DEATH(statement) ASSERT_DEATH(statement, "Check failed")
+#endif  // defined(OFFICIAL_BUILD) && defined(NDEBUG)
+
+#else  // defined(GTEST_HAS_DEATH_TEST) && !defined(OS_ANDROID)
+
+// Note GTEST_UNSUPPORTED_DEATH_TEST takes a |regex| only to see whether it is a
+// valid regex. It is never evaluated.
+#define EXPECT_CHECK_DEATH(statement) \
+  GTEST_UNSUPPORTED_DEATH_TEST(statement, "", )
+#define ASSERT_CHECK_DEATH(statement) \
+  GTEST_UNSUPPORTED_DEATH_TEST(statement, "", return )
+
+#endif  // defined(GTEST_HAS_DEATH_TEST) && !defined(OS_ANDROID)
 
 namespace base {
 
@@ -29,6 +82,11 @@ struct TestIdentifier {
 // e.g. for test case "A" and test name "B" returns "A.B".
 std::string FormatFullTestName(const std::string& test_case_name,
                                const std::string& test_name);
+
+// Returns the full test name with the "DISABLED_" prefix stripped out.
+// e.g. for the full test names "A.DISABLED_B", "DISABLED_A.B", and
+// "DISABLED_A.DISABLED_B", returns "A.B".
+std::string TestNameWithoutDisabledPrefix(const std::string& full_test_name);
 
 // Returns a vector of gtest-based tests compiled into
 // current executable.

@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.invalidation;
 
 import android.accounts.Account;
-import android.app.Application;
 import android.content.AbstractThreadedSyncAdapter;
 import android.content.ContentProviderClient;
 import android.content.ContentResolver;
@@ -16,14 +15,13 @@ import android.os.Bundle;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.VisibleForTesting;
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.base.library_loader.ProcessInitException;
 import org.chromium.chrome.browser.init.BrowserParts;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.init.EmptyBrowserParts;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.invalidation.PendingInvalidation;
-import org.chromium.sync.signin.ChromeSigninController;
+import org.chromium.components.signin.ChromeSigninController;
 
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -35,18 +33,15 @@ import java.util.concurrent.TimeUnit;
 public class ChromeBrowserSyncAdapter extends AbstractThreadedSyncAdapter {
     private static final String TAG = "invalidation";
 
-    private final Application mApplication;
-
-    public ChromeBrowserSyncAdapter(Context context, Application application) {
+    public ChromeBrowserSyncAdapter(Context context) {
         super(context, false);
-        mApplication = application;
     }
 
     @Override
     public void onPerformSync(Account account, Bundle extras, String authority,
             ContentProviderClient provider, SyncResult syncResult) {
         if (extras.getBoolean(ContentResolver.SYNC_EXTRAS_INITIALIZE)) {
-            Account signedInAccount = ChromeSigninController.get(getContext()).getSignedInUser();
+            Account signedInAccount = ChromeSigninController.get().getSignedInUser();
             if (account.equals(signedInAccount)) {
                 ContentResolver.setIsSyncable(account, authority, 1);
             } else {
@@ -58,7 +53,7 @@ public class ChromeBrowserSyncAdapter extends AbstractThreadedSyncAdapter {
 
         DelayedInvalidationsController controller = DelayedInvalidationsController.getInstance();
         if (!controller.shouldNotifyInvalidation(extras)) {
-            controller.addPendingInvalidation(getContext(), account.name, invalidation);
+            controller.addPendingInvalidation(account.name, invalidation);
             return;
         }
 
@@ -66,8 +61,7 @@ public class ChromeBrowserSyncAdapter extends AbstractThreadedSyncAdapter {
         Semaphore semaphore = new Semaphore(0);
 
         // Configure the BrowserParts with all the data it needs.
-        BrowserParts parts =
-                getBrowserParts(mApplication, account.name, invalidation, syncResult, semaphore);
+        BrowserParts parts = getBrowserParts(account.name, invalidation, syncResult, semaphore);
         startBrowserProcess(parts, syncResult, semaphore);
 
         try {
@@ -89,7 +83,6 @@ public class ChromeBrowserSyncAdapter extends AbstractThreadedSyncAdapter {
         try {
             ThreadUtils.runOnUiThreadBlocking(new Runnable() {
                 @Override
-                @SuppressFBWarnings("DM_EXIT")
                 public void run() {
                     ChromeBrowserInitializer.getInstance(getContext()).handlePreNativeStartup(
                             parts);
@@ -111,9 +104,9 @@ public class ChromeBrowserSyncAdapter extends AbstractThreadedSyncAdapter {
         }
     }
 
-    private BrowserParts getBrowserParts(final Context context,
-            final String account, final PendingInvalidation invalidation,
-            final SyncResult syncResult, final Semaphore semaphore) {
+    private BrowserParts getBrowserParts(final String account,
+            final PendingInvalidation invalidation, final SyncResult syncResult,
+            final Semaphore semaphore) {
         return new EmptyBrowserParts() {
             @Override
             public void finishNativeInitialization() {
@@ -127,7 +120,7 @@ public class ChromeBrowserSyncAdapter extends AbstractThreadedSyncAdapter {
             public void onStartupFailure() {
                 // The startup failed, so we defer the invalidation.
                 DelayedInvalidationsController.getInstance().addPendingInvalidation(
-                        context, account, invalidation);
+                        account, invalidation);
                 // Using numIoExceptions so Android will treat this as a soft error.
                 syncResult.stats.numIoExceptions++;
                 semaphore.release();

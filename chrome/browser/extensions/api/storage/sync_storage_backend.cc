@@ -11,10 +11,9 @@
 #include "chrome/browser/extensions/api/storage/settings_sync_processor.h"
 #include "chrome/browser/extensions/api/storage/settings_sync_util.h"
 #include "chrome/browser/extensions/api/storage/syncable_settings_storage.h"
-#include "content/public/browser/browser_thread.h"
-#include "sync/api/sync_error_factory.h"
-
-using content::BrowserThread;
+#include "components/sync/model/sync_change_processor.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "extensions/browser/api/storage/backend_task_runner.h"
 
 namespace extensions {
 
@@ -31,7 +30,7 @@ void AddAllSyncData(const std::string& extension_id,
 }
 
 std::unique_ptr<base::DictionaryValue> EmptyDictionaryValue() {
-  return base::WrapUnique(new base::DictionaryValue());
+  return std::make_unique<base::DictionaryValue>();
 }
 
 ValueStoreFactory::ModelType ToFactoryModelType(syncer::ModelType sync_type) {
@@ -49,17 +48,17 @@ ValueStoreFactory::ModelType ToFactoryModelType(syncer::ModelType sync_type) {
 }  // namespace
 
 SyncStorageBackend::SyncStorageBackend(
-    const scoped_refptr<ValueStoreFactory>& storage_factory,
+    scoped_refptr<ValueStoreFactory> storage_factory,
     const SettingsStorageQuotaEnforcer::Limits& quota,
-    const scoped_refptr<SettingsObserverList>& observers,
+    scoped_refptr<SettingsObserverList> observers,
     syncer::ModelType sync_type,
     const syncer::SyncableService::StartSyncFlare& flare)
-    : storage_factory_(storage_factory),
+    : storage_factory_(std::move(storage_factory)),
       quota_(quota),
-      observers_(observers),
+      observers_(std::move(observers)),
       sync_type_(sync_type),
       flare_(flare) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   DCHECK(sync_type_ == syncer::EXTENSION_SETTINGS ||
          sync_type_ == syncer::APP_SETTINGS);
 }
@@ -67,21 +66,21 @@ SyncStorageBackend::SyncStorageBackend(
 SyncStorageBackend::~SyncStorageBackend() {}
 
 ValueStore* SyncStorageBackend::GetStorage(const std::string& extension_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   return GetOrCreateStorageWithSyncData(extension_id, EmptyDictionaryValue());
 }
 
 SyncableSettingsStorage* SyncStorageBackend::GetOrCreateStorageWithSyncData(
     const std::string& extension_id,
     std::unique_ptr<base::DictionaryValue> sync_data) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
 
-  StorageObjMap::iterator maybe_storage = storage_objs_.find(extension_id);
+  auto maybe_storage = storage_objs_.find(extension_id);
   if (maybe_storage != storage_objs_.end()) {
     return maybe_storage->second.get();
   }
 
-  std::unique_ptr<SettingsStorageQuotaEnforcer> storage(
+  std::unique_ptr<SettingsStorageQuotaEnforcer> settings_storage(
       new SettingsStorageQuotaEnforcer(
           quota_, storage_factory_->CreateSettingsStore(
                       settings_namespace::SYNC, ToFactoryModelType(sync_type_),
@@ -89,22 +88,24 @@ SyncableSettingsStorage* SyncStorageBackend::GetOrCreateStorageWithSyncData(
 
   // It's fine to create the quota enforcer underneath the sync layer, since
   // sync will only go ahead if each underlying storage operation succeeds.
-  linked_ptr<SyncableSettingsStorage> syncable_storage(
-      new SyncableSettingsStorage(
-          observers_, extension_id, storage.release(), sync_type_, flare_));
-  storage_objs_[extension_id] = syncable_storage;
+  std::unique_ptr<SyncableSettingsStorage> syncable_storage(
+      new SyncableSettingsStorage(observers_, extension_id,
+                                  settings_storage.release(), sync_type_,
+                                  flare_));
+  SyncableSettingsStorage* raw_syncable_storage = syncable_storage.get();
+  storage_objs_[extension_id] = std::move(syncable_storage);
 
   if (sync_processor_.get()) {
-    syncer::SyncError error = syncable_storage->StartSyncing(
+    syncer::SyncError error = raw_syncable_storage->StartSyncing(
         std::move(sync_data), CreateSettingsSyncProcessor(extension_id));
     if (error.IsSet())
-      syncable_storage->StopSyncing();
+      raw_syncable_storage->StopSyncing();
   }
-  return syncable_storage.get();
+  return raw_syncable_storage;
 }
 
 void SyncStorageBackend::DeleteStorage(const std::string& extension_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
 
   // Clear settings when the extension is uninstalled.  Leveldb implementations
   // will also delete the database from disk when the object is destroyed as a
@@ -114,7 +115,7 @@ void SyncStorageBackend::DeleteStorage(const std::string& extension_id) {
   // exists) since the storage area may have been unloaded, but we still want
   // to clear the data from disk.
   // However, this triggers http://crbug.com/111072.
-  StorageObjMap::iterator maybe_storage = storage_objs_.find(extension_id);
+  auto maybe_storage = storage_objs_.find(extension_id);
   if (maybe_storage == storage_objs_.end())
     return;
   maybe_storage->second->Clear();
@@ -123,7 +124,7 @@ void SyncStorageBackend::DeleteStorage(const std::string& extension_id) {
 
 std::set<std::string> SyncStorageBackend::GetKnownExtensionIDs(
     ValueStoreFactory::ModelType model_type) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   std::set<std::string> result;
 
   // Storage areas can be in-memory as well as on disk. |storage_objs_| will
@@ -141,24 +142,23 @@ std::set<std::string> SyncStorageBackend::GetKnownExtensionIDs(
 
 syncer::SyncDataList SyncStorageBackend::GetAllSyncData(syncer::ModelType type)
     const {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   // For all extensions, get all their settings.  This has the effect
   // of bringing in the entire state of extension settings in memory; sad.
   syncer::SyncDataList all_sync_data;
   std::set<std::string> known_extension_ids(
       GetKnownExtensionIDs(ToFactoryModelType(type)));
 
-  for (std::set<std::string>::const_iterator it = known_extension_ids.begin();
-       it != known_extension_ids.end();
+  for (auto it = known_extension_ids.cbegin(); it != known_extension_ids.cend();
        ++it) {
     ValueStore::ReadResult maybe_settings =
         GetOrCreateStorageWithSyncData(*it, EmptyDictionaryValue())->Get();
-    if (!maybe_settings->status().ok()) {
+    if (!maybe_settings.status().ok()) {
       LOG(WARNING) << "Failed to get settings for " << *it << ": "
-                   << maybe_settings->status().message;
+                   << maybe_settings.status().message;
       continue;
     }
-    AddAllSyncData(*it, maybe_settings->settings(), type, &all_sync_data);
+    AddAllSyncData(*it, maybe_settings.settings(), type, &all_sync_data);
   }
 
   return all_sync_data;
@@ -169,7 +169,7 @@ syncer::SyncMergeResult SyncStorageBackend::MergeDataAndStartSyncing(
     const syncer::SyncDataList& initial_sync_data,
     std::unique_ptr<syncer::SyncChangeProcessor> sync_processor,
     std::unique_ptr<syncer::SyncErrorFactory> sync_error_factory) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   DCHECK_EQ(sync_type_, type);
   DCHECK(!sync_processor_.get());
   DCHECK(sync_processor.get());
@@ -227,9 +227,9 @@ syncer::SyncMergeResult SyncStorageBackend::MergeDataAndStartSyncing(
 }
 
 syncer::SyncError SyncStorageBackend::ProcessSyncChanges(
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const syncer::SyncChangeList& sync_changes) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   DCHECK(sync_processor_.get());
 
   // Group changes by extension, to pass all changes in a single method call.
@@ -259,7 +259,7 @@ syncer::SyncError SyncStorageBackend::ProcessSyncChanges(
 }
 
 void SyncStorageBackend::StopSyncing(syncer::ModelType type) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   DCHECK(type == syncer::EXTENSION_SETTINGS || type == syncer::APP_SETTINGS);
   DCHECK_EQ(sync_type_, type);
 

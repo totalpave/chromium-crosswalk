@@ -7,8 +7,8 @@
 #include <stddef.h>
 
 #include "base/logging.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -25,6 +25,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 // TODO(kbr): remove: http://crbug.com/222296
@@ -56,7 +57,7 @@ const char kSetTextBoxValueJS[] =
 const char kStartTestJS[] =
     "window.domAutomationController.send(startTest(%d));";
 
-// Maximum lenght of the result array in KeyEventTestData structure.
+// Maximum length of the result array in KeyEventTestData structure.
 const size_t kMaxResultLength = 10;
 
 // A structure holding test data of a keyboard event.
@@ -119,7 +120,7 @@ class TestFinishObserver : public content::NotificationObserver {
     if (*dom_op_result.ptr() == "\"FINISHED\"") {
       finished_ = true;
       if (waiting_)
-        base::MessageLoopForUI::current()->QuitWhenIdle();
+        base::RunLoop::QuitCurrentWhenIdleDeprecated();
     }
   }
 
@@ -294,8 +295,13 @@ class BrowserKeyEventsTest : public InProcessBrowserTest {
   }
 };
 
-// Flaky: http://crbug.com/129235, http://crbug.com/81451.
-IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_NormalKeyEvents) {
+#if defined(OS_MACOSX)
+// http://crbug.com/81451
+#define MAYBE_NormalKeyEvents DISABLED_NormalKeyEvents
+#else
+#define MAYBE_NormalKeyEvents NormalKeyEvents
+#endif
+IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, MAYBE_NormalKeyEvents) {
   static const KeyEventTestData kTestNoInput[] = {
     // a
     { ui::VKEY_A, false, false, false, false,
@@ -365,7 +371,7 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_NormalKeyEvents) {
   ASSERT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 
   int tab_index = browser()->tab_strip_model()->active_index();
-  for (size_t i = 0; i < arraysize(kTestNoInput); ++i) {
+  for (size_t i = 0; i < base::size(kTestNoInput); ++i) {
     EXPECT_NO_FATAL_FAILURE(TestKeyEvent(tab_index, kTestNoInput[i]))
         << "kTestNoInput[" << i << "] failed:\n"
         << GetTestDataDescription(kTestNoInput[i]);
@@ -373,7 +379,7 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_NormalKeyEvents) {
 
   // Input in normal text box.
   ASSERT_NO_FATAL_FAILURE(SetFocusedElement(tab_index, L"A"));
-  for (size_t i = 0; i < arraysize(kTestWithInput); ++i) {
+  for (size_t i = 0; i < base::size(kTestWithInput); ++i) {
     EXPECT_NO_FATAL_FAILURE(TestKeyEvent(tab_index, kTestWithInput[i]))
         << "kTestWithInput[" << i << "] in text box failed:\n"
         << GetTestDataDescription(kTestWithInput[i]);
@@ -382,7 +388,7 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_NormalKeyEvents) {
 
   // Input in password box.
   ASSERT_NO_FATAL_FAILURE(SetFocusedElement(tab_index, L"B"));
-  for (size_t i = 0; i < arraysize(kTestWithInput); ++i) {
+  for (size_t i = 0; i < base::size(kTestWithInput); ++i) {
     EXPECT_NO_FATAL_FAILURE(TestKeyEvent(tab_index, kTestWithInput[i]))
         << "kTestWithInput[" << i << "] in password box failed:\n"
         << GetTestDataDescription(kTestWithInput[i]);
@@ -392,15 +398,7 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_NormalKeyEvents) {
 
 #if defined(OS_WIN) || defined(OS_LINUX)
 
-#if defined(OS_LINUX) || defined(OS_WIN)
-// Linux: http://crbug.com/129235
-// Win: crbug.com/269564
-#define MAYBE_CtrlKeyEvents DISABLED_CtrlKeyEvents
-#else
-#define MAYBE_CtrlKeyEvents CtrlKeyEvents
-#endif
-
-IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, MAYBE_CtrlKeyEvents) {
+IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, CtrlKeyEvents) {
   static const KeyEventTestData kTestCtrlF = {
     ui::VKEY_F, true, false, false, false,
     false, false, false, false, 2,
@@ -449,6 +447,10 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, MAYBE_CtrlKeyEvents) {
       "U 17 0 true false false false" }
   };
 
+  static const KeyEventTestData kTestEscape = {
+      ui::VKEY_ESCAPE, false, false, false, false, false,
+      false,           false, false, 0,     {}};
+
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
@@ -464,8 +466,7 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, MAYBE_CtrlKeyEvents) {
   EXPECT_TRUE(IsViewFocused(VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
   // Press Escape to close the Find box and move the focus back to the web page.
-  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(
-      browser(), ui::VKEY_ESCAPE, false, false, false, false));
+  EXPECT_NO_FATAL_FAILURE(TestKeyEvent(tab_index, kTestEscape));
   ASSERT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 
   // Press Ctrl+F with keydown suppressed shall not open the find box.
@@ -478,7 +479,7 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, MAYBE_CtrlKeyEvents) {
 }
 #elif defined(OS_MACOSX)
 // http://crbug.com/81451
-IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_CommandKeyEvents) {
+IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, CommandKeyEvents) {
   static const KeyEventTestData kTestCmdF = {
     ui::VKEY_F, false, false, false, true,
     false, false, false, false, 2,
@@ -520,9 +521,21 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_CommandKeyEvents) {
 }
 #endif
 
-// Flaky: http://crbug.com/81451 , http://crbug.com/129235 ,
-// also fails on Windows.
-IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_AccessKeys) {
+#if defined(OS_MACOSX)
+// http://crbug.com/81451 for mac
+#define MAYBE_AccessKeys DISABLED_AccessKeys
+#else
+#define MAYBE_AccessKeys AccessKeys
+#endif
+IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, MAYBE_AccessKeys) {
+  // TODO(crbug.com/916379): this test fails in mash because of differences in
+  // timing. In particular, in classic mode an accelerator that moves focus is
+  // processed *after* text is inserted, where as now the accelerator runs
+  // first, resulting in text going to the wrong place. The right fix likely
+  // entails updating the test for mash.
+  if (features::IsSingleProcessMash())
+    return;
+
 #if defined(OS_MACOSX)
   // On Mac, access keys use ctrl+alt modifiers.
   static const KeyEventTestData kTestAccessA = {
@@ -543,17 +556,6 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_AccessKeys) {
       "D 18 0 true false true false",
       "D 68 0 true false true false",
       "U 68 0 true false true false",
-      "U 18 0 true false true false",
-      "U 17 0 true false false false" }
-  };
-
-  static const KeyEventTestData kTestAccess1 = {
-    ui::VKEY_1, true, false, true, false,
-    false, false, false, false, 6,
-    { "D 17 0 true false false false",
-      "D 18 0 true false true false",
-      "D 49 0 true false true false",
-      "U 49 0 true false true false",
       "U 18 0 true false true false",
       "U 17 0 true false false false" }
   };
@@ -583,16 +585,6 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_AccessKeys) {
       "U 18 0 false false true false" }
   };
 
-#if !defined(USE_ASH)
-  static const KeyEventTestData kTestAccess1 = {
-    ui::VKEY_1, false, false, true, false,
-    false, false, false, false, 4,
-    { "D 18 0 false false true false",
-      "D 49 0 false false true false",
-      "U 49 0 false false true false",
-      "U 18 0 false false true false" }
-  };
-#endif
 #endif
 
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -648,21 +640,9 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_AccessKeys) {
   EXPECT_NO_FATAL_FAILURE(SetFocusedElement(tab_index, L""));
   // Make sure no element is focused.
   EXPECT_NO_FATAL_FAILURE(CheckFocusedElement(tab_index, L""));
-#if !defined(USE_ASH)
-  // On Ash, alt-1..9 are assigned as window selection global accelerators, so
-  // they can not be used as accesskeys.
-  EXPECT_NO_FATAL_FAILURE(TestKeyEvent(tab_index, kTestAccess1));
-  EXPECT_NO_FATAL_FAILURE(CheckFocusedElement(tab_index, L"1"));
-#endif
 }
 
-// Flaky, http://crbug.com/69475.
-#if defined(OS_LINUX) || defined(OS_WIN)
-#define MAYBE_ReservedAccelerators DISABLED_ReservedAccelerators
-#else
-#define MAYBE_ReservedAccelerators ReservedAccelerators
-#endif
-IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, MAYBE_ReservedAccelerators) {
+IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, ReservedAccelerators) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
@@ -784,8 +764,7 @@ IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, EditorKeyBindings) {
 }
 #endif
 
-// See http://crbug.com/147579
-IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, DISABLED_PageUpDownKeys) {
+IN_PROC_BROWSER_TEST_F(BrowserKeyEventsTest, PageUpDownKeys) {
   static const KeyEventTestData kTestPageUp = {
     ui::VKEY_PRIOR, false, false, false, false,
     false, false, false, false, 2,

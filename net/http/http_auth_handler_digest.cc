@@ -15,6 +15,7 @@
 #include "net/base/net_errors.h"
 #include "net/base/net_string_util.h"
 #include "net/base/url_util.h"
+#include "net/dns/host_resolver.h"
 #include "net/http/http_auth.h"
 #include "net/http/http_auth_challenge_tokenizer.h"
 #include "net/http/http_auth_scheme.h"
@@ -49,14 +50,11 @@ namespace net {
 // auth-int |          | req-method:req-uri:MD5(req-entity-body)  |
 //=====================+==========================================+
 
-HttpAuthHandlerDigest::NonceGenerator::NonceGenerator() {
-}
+HttpAuthHandlerDigest::NonceGenerator::NonceGenerator() = default;
 
-HttpAuthHandlerDigest::NonceGenerator::~NonceGenerator() {
-}
+HttpAuthHandlerDigest::NonceGenerator::~NonceGenerator() = default;
 
-HttpAuthHandlerDigest::DynamicNonceGenerator::DynamicNonceGenerator() {
-}
+HttpAuthHandlerDigest::DynamicNonceGenerator::DynamicNonceGenerator() = default;
 
 std::string HttpAuthHandlerDigest::DynamicNonceGenerator::GenerateNonce()
     const {
@@ -82,8 +80,7 @@ HttpAuthHandlerDigest::Factory::Factory()
     : nonce_generator_(new DynamicNonceGenerator()) {
 }
 
-HttpAuthHandlerDigest::Factory::~Factory() {
-}
+HttpAuthHandlerDigest::Factory::~Factory() = default;
 
 void HttpAuthHandlerDigest::Factory::set_nonce_generator(
     const NonceGenerator* nonce_generator) {
@@ -97,7 +94,8 @@ int HttpAuthHandlerDigest::Factory::CreateAuthHandler(
     const GURL& origin,
     CreateReason reason,
     int digest_nonce_count,
-    const BoundNetLog& net_log,
+    const NetLogWithSource& net_log,
+    HostResolver* host_resolver,
     std::unique_ptr<HttpAuthHandler>* handler) {
   // TODO(cbentzel): Move towards model of parsing in the factory
   //                 method and only constructing when valid.
@@ -143,8 +141,10 @@ bool HttpAuthHandlerDigest::Init(HttpAuthChallengeTokenizer* challenge,
 }
 
 int HttpAuthHandlerDigest::GenerateAuthTokenImpl(
-    const AuthCredentials* credentials, const HttpRequestInfo* request,
-    const CompletionCallback& callback, std::string* auth_token) {
+    const AuthCredentials* credentials,
+    const HttpRequestInfo* request,
+    CompletionOnceCallback callback,
+    std::string* auth_token) {
   // Generate a random client nonce.
   std::string cnonce = nonce_generator_->GenerateNonce();
 
@@ -169,8 +169,7 @@ HttpAuthHandlerDigest::HttpAuthHandlerDigest(
   DCHECK(nonce_generator_);
 }
 
-HttpAuthHandlerDigest::~HttpAuthHandlerDigest() {
-}
+HttpAuthHandlerDigest::~HttpAuthHandlerDigest() = default;
 
 // The digest challenge header looks like:
 //   WWW-Authenticate: Digest

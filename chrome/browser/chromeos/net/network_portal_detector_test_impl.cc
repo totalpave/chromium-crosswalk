@@ -13,6 +13,8 @@ NetworkPortalDetectorTestImpl::NetworkPortalDetectorTestImpl()
 }
 
 NetworkPortalDetectorTestImpl::~NetworkPortalDetectorTestImpl() {
+  for (auto& observer : observers_)
+    observer.OnShutdown();
 }
 
 void NetworkPortalDetectorTestImpl::SetDefaultNetworkForTesting(
@@ -39,8 +41,8 @@ void NetworkPortalDetectorTestImpl::NotifyObserversForTesting() {
   CaptivePortalState state;
   if (default_network_ && portal_state_map_.count(default_network_->guid()))
     state = portal_state_map_[default_network_->guid()];
-  FOR_EACH_OBSERVER(Observer, observers_,
-                    OnPortalDetectionCompleted(default_network_.get(), state));
+  for (auto& observer : observers_)
+    observer.OnPortalDetectionCompleted(default_network_.get(), state);
 }
 
 void NetworkPortalDetectorTestImpl::AddObserver(Observer* observer) {
@@ -86,16 +88,13 @@ bool NetworkPortalDetectorTestImpl::IsEnabled() {
 void NetworkPortalDetectorTestImpl::Enable(bool start_detection) {
 }
 
-bool NetworkPortalDetectorTestImpl::StartDetectionIfIdle() {
+bool NetworkPortalDetectorTestImpl::StartPortalDetection(bool force) {
   return false;
 }
 
 void NetworkPortalDetectorTestImpl::SetStrategy(
     PortalDetectorStrategy::StrategyId id) {
   strategy_id_ = id;
-}
-
-void NetworkPortalDetectorTestImpl::OnLockScreenRequest() {
 }
 
 }  // namespace chromeos

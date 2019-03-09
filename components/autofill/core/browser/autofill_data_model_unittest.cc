@@ -9,12 +9,16 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/time/time.h"
+#include "components/autofill/core/browser/autofill_metadata.h"
+#include "components/autofill/core/browser/test_autofill_clock.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill {
 
 namespace {
+
+const base::Time kArbitraryTime = base::Time::FromDoubleT(25);
 
 // Provides concrete implementations for pure virtual methods.
 class TestAutofillDataModel : public AutofillDataModel {
@@ -71,53 +75,102 @@ TEST(AutofillDataModelTest, IsVerified) {
   EXPECT_FALSE(model.IsVerified());
 }
 
-TEST(AutofillDataModelTest, CompareFrecency) {
-  base::Time now = base::Time::Now();
-  enum Expectation { GREATER, LESS };
+TEST(AutofillDataModelTest, GetMetadata) {
+  TestAutofillDataModel model("guid", std::string());
+  model.set_use_count(10);
+  model.set_use_date(kArbitraryTime);
 
-  struct {
-    const std::string guid_a;
-    const int use_count_a;
-    const base::Time use_date_a;
-    const std::string guid_b;
-    const int use_count_b;
-    const base::Time use_date_b;
-    Expectation expectation;
-  } test_cases[] = {
-      // Same frecency, model_a has a smaller GUID (tie breaker).
-      {"guid_a", 8, now, "guid_b", 8, now, LESS},
-      // Same recency, model_a has a bigger frequency.
-      {"guid_a", 10, now, "guid_b", 8, now, GREATER},
-      // Same recency, model_a has a smaller frequency.
-      {"guid_a", 8, now, "guid_b", 10, now, LESS},
-      // Same frequency, model_a is more recent.
-      {"guid_a", 8, now, "guid_b", 8, now - base::TimeDelta::FromDays(1),
-       GREATER},
-      // Same frequency, model_a is less recent.
-      {"guid_a", 8, now - base::TimeDelta::FromDays(1), "guid_b", 8, now, LESS},
-      // Special case: occasional profiles. A profile with relatively low usage
-      // and used recently (model_b) should not rank higher than a more used
-      // profile that has been unused for a short amount of time (model_a).
-      {"guid_a", 300, now - base::TimeDelta::FromDays(5), "guid_b", 10,
-       now - base::TimeDelta::FromDays(1), GREATER},
-      // Special case: moving. A new profile used frequently (model_b) should
-      // rank higher than a profile with more usage that has not been used for a
-      // while (model_a).
-      {"guid_a", 300, now - base::TimeDelta::FromDays(15), "guid_b", 10,
-       now - base::TimeDelta::FromDays(1), LESS},
-  };
-
-  for (auto test_case : test_cases) {
-    TestAutofillDataModel model_a(test_case.guid_a, test_case.use_count_a,
-                                  test_case.use_date_a);
-    TestAutofillDataModel model_b(test_case.guid_b, test_case.use_count_b,
-                                  test_case.use_date_b);
-
-    EXPECT_EQ(test_case.expectation == GREATER,
-              model_a.CompareFrecency(&model_b, now));
-    EXPECT_NE(test_case.expectation == GREATER,
-              model_b.CompareFrecency(&model_a, now));
-  }
+  AutofillMetadata metadata = model.GetMetadata();
+  EXPECT_EQ(model.use_count(), metadata.use_count);
+  EXPECT_EQ(model.use_date(), metadata.use_date);
 }
+
+TEST(AutofillDataModelTest, SetMetadata) {
+  AutofillMetadata metadata;
+  metadata.use_count = 10;
+  metadata.use_date = kArbitraryTime;
+
+  TestAutofillDataModel model("guid", std::string());
+  EXPECT_TRUE(model.SetMetadata(metadata));
+  EXPECT_EQ(metadata.use_count, model.use_count());
+  EXPECT_EQ(metadata.use_date, model.use_date());
+}
+
+TEST(AutofillDataModelTest, IsDeletable) {
+  TestAutofillDataModel model("guid", std::string());
+  model.set_use_date(kArbitraryTime);
+
+  TestAutofillClock test_clock;
+  test_clock.SetNow(kArbitraryTime);
+  EXPECT_FALSE(model.IsDeletable());
+
+  test_clock.SetNow(kArbitraryTime + kDisusedDataModelDeletionTimeDelta +
+                    base::TimeDelta::FromDays(1));
+  EXPECT_TRUE(model.IsDeletable());
+}
+
+enum Expectation { GREATER, LESS };
+struct HasGreaterFrecencyThanTestCase {
+  const std::string guid_a;
+  const int use_count_a;
+  const base::Time use_date_a;
+  const std::string guid_b;
+  const int use_count_b;
+  const base::Time use_date_b;
+  Expectation expectation;
+};
+
+base::Time now = base::Time::Now();
+
+class HasGreaterFrecencyThanTest
+    : public testing::TestWithParam<HasGreaterFrecencyThanTestCase> {};
+
+TEST_P(HasGreaterFrecencyThanTest, HasGreaterFrecencyThan) {
+  auto test_case = GetParam();
+  TestAutofillDataModel model_a(test_case.guid_a, test_case.use_count_a,
+                                test_case.use_date_a);
+  TestAutofillDataModel model_b(test_case.guid_b, test_case.use_count_b,
+                                test_case.use_date_b);
+
+  EXPECT_EQ(test_case.expectation == GREATER,
+            model_a.HasGreaterFrecencyThan(&model_b, now));
+  EXPECT_NE(test_case.expectation == GREATER,
+            model_b.HasGreaterFrecencyThan(&model_a, now));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AutofillDataModelTest,
+    HasGreaterFrecencyThanTest,
+    testing::Values(
+        // Same frecency, model_a has a smaller GUID (tie breaker).
+        HasGreaterFrecencyThanTestCase{"guid_a", 8, now, "guid_b", 8, now,
+                                       LESS},
+        // Same recency, model_a has a bigger frequency.
+        HasGreaterFrecencyThanTestCase{"guid_a", 10, now, "guid_b", 8, now,
+                                       GREATER},
+        // Same recency, model_a has a smaller frequency.
+        HasGreaterFrecencyThanTestCase{"guid_a", 8, now, "guid_b", 10, now,
+                                       LESS},
+        // Same frequency, model_a is more recent.
+        HasGreaterFrecencyThanTestCase{"guid_a", 8, now, "guid_b", 8,
+                                       now - base::TimeDelta::FromDays(1),
+                                       GREATER},
+        // Same frequency, model_a is less recent.
+        HasGreaterFrecencyThanTestCase{"guid_a", 8,
+                                       now - base::TimeDelta::FromDays(1),
+                                       "guid_b", 8, now, LESS},
+        // Special case: occasional profiles. A profile with relatively low
+        // usage and used recently (model_b) should not rank higher than a more
+        // used profile that has been unused for a short amount of time
+        // (model_a).
+        HasGreaterFrecencyThanTestCase{
+            "guid_a", 300, now - base::TimeDelta::FromDays(5), "guid_b", 10,
+            now - base::TimeDelta::FromDays(1), GREATER},
+        // Special case: moving. A new profile used frequently (model_b) should
+        // rank higher than a profile with more usage that has not been used for
+        // a while (model_a).
+        HasGreaterFrecencyThanTestCase{
+            "guid_a", 300, now - base::TimeDelta::FromDays(15), "guid_b", 10,
+            now - base::TimeDelta::FromDays(1), LESS}));
 
 }  // namespace autofill

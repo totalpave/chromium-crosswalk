@@ -47,7 +47,7 @@ static const char* extension(GLenum format) {
     default:
       NOTREACHED();
   }
-  return NULL;
+  return nullptr;
 }
 
 // Index that chooses the given colors (color_0 and color_1),
@@ -233,9 +233,9 @@ TEST_P(CompressedTextureTest, Draw) {
   for (unsigned i = 0; i < kPaletteSize; ++i) {
     origin[0] = kBlockSize * i;
     ToRGB888(kPalette[i], expected_rgba);
-    EXPECT_TRUE(GLTestHelper::CheckPixels(origin[0], origin[1],
-                                          kBlockSize, kBlockSize,
-                                          0, expected_rgba));
+    EXPECT_TRUE(GLTestHelper::CheckPixels(origin[0], origin[1], kBlockSize,
+                                          kBlockSize, 0, expected_rgba,
+                                          nullptr));
   }
   GLTestHelper::CheckGLError("CompressedTextureTest.Draw", __LINE__);
 }
@@ -246,8 +246,8 @@ static const GLenum kFormats[] = {
   GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,
   GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
 };
-INSTANTIATE_TEST_CASE_P(Format,
-                        CompressedTextureTest,
-                        ::testing::ValuesIn(kFormats));
+INSTANTIATE_TEST_SUITE_P(Format,
+                         CompressedTextureTest,
+                         ::testing::ValuesIn(kFormats));
 
 }  // namespace gpu

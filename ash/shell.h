@@ -10,177 +10,221 @@
 #include <vector>
 
 #include "ash/ash_export.h"
-#include "ash/common/shelf/shelf_types.h"
 #include "ash/metrics/user_metrics_recorder.h"
-#include "ash/wm/cursor_manager_chromeos.h"
+#include "ash/public/cpp/shelf_types.h"
+#include "ash/session/session_observer.h"
 #include "ash/wm/system_modal_container_event_filter_delegate.h"
-#include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "ui/aura/window.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/display/screen.h"
 #include "ui/events/event_target.h"
-#include "ui/gfx/geometry/insets.h"
-#include "ui/gfx/geometry/size.h"
 #include "ui/wm/core/cursor_manager.h"
 #include "ui/wm/public/activation_change_observer.h"
 
-namespace app_list {
-class AppListView;
-}
+class PrefRegistrySimple;
+class PrefService;
+
 namespace aura {
-class EventFilter;
+class Env;
 class RootWindow;
 class Window;
-namespace client {
-class ActivationClient;
-class FocusClient;
-}
-}
+}  // namespace aura
 
-namespace base {
-class SequencedWorkerPool;
-}
+namespace display {
+class DisplayChangeObserver;
+class DisplayConfigurator;
+class DisplayManager;
+}  // namespace display
 
-namespace chromeos {
-class AudioA11yController;
-}
+namespace exo {
+class FileHelper;
+}  // namespace exo
 
 namespace gfx {
-class ImageSkia;
+class Insets;
 class Point;
-class Rect;
+}  // namespace gfx
+
+namespace keyboard {
+class KeyboardUIFactory;
+}
+
+namespace service_manager {
+class Connector;
 }
 
 namespace ui {
-class DisplayConfigurator;
-class Layer;
+class ContextFactory;
+class ContextFactoryPrivate;
 class UserActivityDetector;
 class UserActivityPowerManagerNotifier;
-}
+}  // namespace ui
+
 namespace views {
 class NonClientFrameView;
-class PointerWatcher;
 class Widget;
 namespace corewm {
 class TooltipController;
 }
-}
+}  // namespace views
 
 namespace wm {
 class AcceleratorFilter;
+class ActivationClient;
 class CompoundEventFilter;
+class FocusController;
+class FocusRules;
 class ShadowController;
 class VisibilityController;
 class WindowModalityController;
+}  // namespace wm
+
+namespace ws {
+class GpuInterfaceProvider;
 }
 
 namespace ash {
 
 class AcceleratorController;
+class AccessibilityController;
 class AccessibilityDelegate;
-class AppListController;
-class AshNativeCursorManager;
+class AccessibilityFocusRingController;
+class ArcCustomTabController;
+class AshDBusServices;
+class AshDisplayController;
+class AppListControllerImpl;
+class NativeCursorManagerAsh;
+class AshTouchTransformController;
+class AssistantController;
 class AutoclickController;
+class BacklightsForcedOffSetter;
 class BluetoothNotificationController;
-class CaptureController;
-class DesktopBackgroundController;
-class DisplayChangeObserver;
+class BluetoothPowerController;
+class BrightnessControlDelegate;
+class CastConfigController;
+class DisplayOutputProtection;
+class CrosDisplayConfig;
+class DesksController;
+class DetachableBaseHandler;
+class DetachableBaseNotificationController;
 class DisplayColorManager;
 class DisplayConfigurationController;
-class WindowTreeHostManager;
+class DisplayConfigurationObserver;
 class DisplayErrorObserver;
-class DisplayManager;
+class DisplayPrefs;
+class DisplayShutdownObserver;
+class DisplaySpeakerController;
+class DockedMagnifierController;
 class DragDropController;
 class EventClientImpl;
-class EventRewriterEventFilter;
+class EventRewriterController;
 class EventTransformationHandler;
 class FirstRunHelper;
-class GPUSupport;
+class FocusCycler;
 class HighContrastController;
-class KeyboardUMAEventFilter;
-class LinkHandlerModelFactory;
-class LocaleNotificationController;
+class HighlighterController;
+class HomeScreenController;
+class ImeController;
+class ImeFocusHandler;
+class ImmersiveContext;
+class KeyAccessibilityEnabler;
+class KeyboardBrightnessControlDelegate;
+class KioskNextShellController;
+class AshKeyboardController;
+class LaserPointerController;
+class LocaleUpdateController;
 class LockStateController;
-enum class LoginStatus;
+class LogoutConfirmationController;
+class LoginScreenController;
 class MagnificationController;
-class MaximizeModeController;
-class MaximizeModeWindowManager;
+class TabletModeController;
+class MediaController;
+class MediaNotificationController;
+class MessageCenterController;
 class MouseCursorEventFilter;
-class NewWindowDelegate;
+class MruWindowTracker;
+class MultiDeviceNotificationPresenter;
+class NewWindowController;
+class NightLightController;
+class NoteTakingController;
 class OverlayEventFilter;
 class PartialMagnificationController;
-class PointerWatcherDelegate;
+class PeripheralBatteryNotifier;
+class PersistentWindowController;
+class PolicyRecommendationRestorer;
 class PowerButtonController;
 class PowerEventObserver;
+class NotificationReporter;
+class PowerPrefs;
 class ProjectingObserver;
 class ResizeShadowController;
 class ResolutionNotificationController;
 class RootWindowController;
-class ScopedOverviewAnimationSettingsFactoryAura;
-class ScopedTargetRootWindow;
-class ScreenAsh;
+class ScreenLayoutObserver;
 class ScreenOrientationController;
 class ScreenshotController;
 class ScreenPinningController;
 class ScreenPositionController;
-class SessionStateDelegate;
-class Shelf;
-class ShelfDelegate;
-class ShelfItemDelegateManager;
+class ScreenSwitchCheckController;
+class SessionController;
+class ShelfController;
 class ShelfModel;
 class ShelfWindowWatcher;
 class ShellDelegate;
 struct ShellInitParams;
-class SlowAnimationEventFilter;
-class StatusAreaWidget;
+class ShellObserver;
+class ShellState;
+class ShutdownController;
+class SmsObserver;
+class SplitViewController;
 class StickyKeysController;
 class SystemGestureEventFilter;
 class SystemModalContainerEventFilter;
-class SystemTray;
-class ToastManager;
+class SystemNotificationController;
+class SystemTrayModel;
+class SystemTrayNotifier;
+class TimeToFirstPresentRecorder;
 class ToplevelWindowEventHandler;
-class TouchTransformerController;
-class TouchObserverHUD;
-class UserWallpaperDelegate;
-class VirtualKeyboardController;
+class ToastManager;
+class TouchDevicesController;
+class TrayAction;
+class TrayBluetoothHelper;
 class VideoActivityNotifier;
 class VideoDetector;
-class WebNotificationTray;
+class VoiceInteractionController;
+class VpnList;
+class WallpaperController;
+class WaylandServerController;
+class WindowServiceOwner;
 class WindowCycleController;
 class WindowPositioner;
-class WmShellAura;
-class WmWindow;
+class OverviewController;
+class WindowTreeHostManager;
 
-namespace shell {
-class WindowWatcher;
-}
-
-namespace test {
-class ShellTestApi;
-}
+enum class LoginStatus;
 
 // Shell is a singleton object that presents the Shell API and implements the
 // RootWindow's delegate interface.
 //
 // Upon creation, the Shell sets itself as the RootWindow's delegate, which
 // takes ownership of the Shell.
-class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
+class ASH_EXPORT Shell : public SessionObserver,
+                         public SystemModalContainerEventFilterDelegate,
                          public ui::EventTarget,
-                         public aura::client::ActivationChangeObserver {
+                         public ::wm::ActivationChangeObserver {
  public:
   typedef std::vector<RootWindowController*> RootWindowControllerList;
 
-  // A shell must be explicitly created so that it can call |Init()| with the
-  // delegate set. |delegate| can be NULL (if not required for initialization).
-  // Takes ownership of |delegate|.
-  static Shell* CreateInstance(const ShellInitParams& init_params);
+  // Creates the single Shell instance.
+  static Shell* CreateInstance(ShellInitParams init_params);
 
   // Should never be called before |CreateInstance()|.
-  static Shell* GetInstance();
+  static Shell* Get();
 
   // Returns true if the ash shell has been instantiated.
   static bool HasInstance();
@@ -191,6 +235,15 @@ class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
   // TODO(oshima): move this to |RootWindowController|
   static RootWindowController* GetPrimaryRootWindowController();
 
+  // Returns the RootWindowController for the given display id. If there
+  // is no display for |display_id|, null is returned.
+  static RootWindowController* GetRootWindowControllerWithDisplayId(
+      int64_t display_id);
+
+  // Returns the root Window for the given display id. If there is no display
+  // for |display_id| null is returned.
+  static aura::Window* GetRootWindowForDisplayId(int64_t display_id);
+
   // Returns all root window controllers.
   // TODO(oshima): move this to |RootWindowController|
   static RootWindowControllerList GetAllRootWindowControllers();
@@ -199,16 +252,11 @@ class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
   // has a launcher.
   static aura::Window* GetPrimaryRootWindow();
 
-  // Returns a root Window when used as a target when creating a new window.
-  // The root window of the active window is used in most cases, but can
-  // be overridden by using ScopedTargetRootWindow().
-  // If you want to get the root Window of the active window, just use
-  // |wm::GetActiveWindow()->GetRootWindow()|.
-  static aura::Window* GetTargetRootWindow();
-
-  // Returns the id of the display::Display corresponding to the window returned
-  // by |GetTargetRootWindow()|
-  static int64_t GetTargetDisplayId();
+  // Returns the root window that newly created windows should be added to.
+  // Value can be temporarily overridden using ScopedRootWindowForNewWindows.
+  // NOTE: this returns the root, newly created window should be added to the
+  // appropriate container in the returned window.
+  static aura::Window* GetRootWindowForNewWindows();
 
   // Returns all root windows.
   static aura::Window::Windows GetAllRootWindows();
@@ -218,354 +266,410 @@ class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
   static const aura::Window* GetContainer(const aura::Window* root_window,
                                           int container_id);
 
-  // Returns the list of containers that match |container_id| in
-  // all root windows. If |priority_root| is given, the container
-  // in the |priority_root| will be inserted at the top of the list.
-  static std::vector<aura::Window*> GetContainersFromAllRootWindows(
-      int container_id,
-      aura::Window* priority_root);
+  // If a system-modal dialog window is currently open, returns the ID of the
+  // system modal window container that contains the window.
+  // If no system-modal dialogs are open it returns -1.
+  static int GetOpenSystemModalWindowContainerId();
 
-  void set_target_root_window(aura::Window* target_root_window) {
-    target_root_window_ = target_root_window;
-  }
+  // Returns true if a system-modal dialog window is currently open.
+  static bool IsSystemModalWindowOpen();
 
-  // Shows the context menu for the background and launcher at
-  // |location_in_screen| (in screen coordinates).
-  void ShowContextMenu(const gfx::Point& location_in_screen,
-                       ui::MenuSourceType source_type);
+  // Returns true if |window| is a proxy window. A proxy window is a window that
+  // was created by way of a WindowService client (e.g. the keyboard shortcut
+  // viewer app under classic ash, or a browser window under mash).
+  static bool IsProxyWindow(aura::Window* window);
 
-  // Shows the app list. |window| specifies in which display the app
-  // list should be shown. If this is NULL, the active root window
-  // will be used.
-  void ShowAppList(aura::Window* anchor);
+  // Registers all ash related local state prefs to the given |registry|.
+  static void RegisterLocalStatePrefs(PrefRegistrySimple* registry,
+                                      bool for_test);
 
-  // Dismisses the app list.
-  void DismissAppList();
+  // Registers all ash related signin/user profile prefs to the given
+  // |registry|. Can be called before Shell is initialized. When |for_test| is
+  // true this registers foreign user profile prefs (e.g. chrome prefs) as if
+  // they are owned by ash. This allows test code to read the pref values.
+  static void RegisterSigninProfilePrefs(PrefRegistrySimple* registry,
+                                         bool for_test = false);
+  static void RegisterUserProfilePrefs(PrefRegistrySimple* registry,
+                                       bool for_test = false);
 
-  // Shows the app list if it's not visible. Dismisses it otherwise.
-  void ToggleAppList(aura::Window* anchor);
-
-  // Returns app list target visibility.
-  bool GetAppListTargetVisibility() const;
+  // If necessary, initializes the Wayland server.
+  void InitWaylandServer(std::unique_ptr<exo::FileHelper> file_helper);
+  void DestroyWaylandServer();
 
   // Creates a default views::NonClientFrameView for use by windows in the
   // Ash environment.
   views::NonClientFrameView* CreateDefaultNonClientFrameView(
       views::Widget* widget);
 
-  // Sets the work area insets of the display that contains |window|,
-  // this notifies observers too.
-  // TODO(sky): this no longer really replicates what happens and is unreliable.
-  // Remove this.
+  // Sets work area insets of the display containing |window|, pings observers.
   void SetDisplayWorkAreaInsets(aura::Window* window,
                                 const gfx::Insets& insets);
-
-  // Called when the user logs in.
-  void OnLoginStateChanged(LoginStatus status);
-
-  // Called after the logged-in user's profile is ready.
-  void OnLoginUserProfilePrepared();
-
-  // Called when the login status changes.
-  // TODO(oshima): Investigate if we can merge this and |OnLoginStateChanged|.
-  void UpdateAfterLoginStatusChange(LoginStatus status);
-
-  // Called when the application is exiting.
-  void OnAppTerminating();
-
-  // Called when the screen is locked (after the lock window is visible) or
-  // unlocked.
-  void OnLockStateChanged(bool locked);
 
   // Called when a casting session is started or stopped.
   void OnCastingSessionStartedOrStopped(bool started);
 
-  // Called after maximize mode has started, windows might still animate though.
-  void OnMaximizeModeStarted();
-
-  // Called after maximize mode has ended, windows might still be returning to
-  // their original position.
-  void OnMaximizeModeEnded();
-
   // Called when a root window is created.
-  void OnRootWindowAdded(WmWindow* root_window);
+  void OnRootWindowAdded(aura::Window* root_window);
 
-  // Initializes |shelf_|.  Does nothing if it's already initialized.
-  void CreateShelf();
+  // Called when dictation is activated.
+  void OnDictationStarted();
 
-  // Called when the shelf is created for |root_window|.
-  void OnShelfCreatedForRootWindow(WmWindow* root_window);
+  // Called when dictation is ended.
+  void OnDictationEnded();
 
-  // Creates a virtual keyboard. Deletes the old virtual keyboard if it already
-  // exists.
-  void CreateKeyboard();
+  // Enables the keyboard and associate it with the primary root window
+  // controller.
+  void EnableKeyboard();
 
-  // Deactivates the virtual keyboard.
-  void DeactivateKeyboard();
+  // Hides and disables the virtual keyboard.
+  void DisableKeyboard();
 
-  // Show shelf view if it was created hidden (before session has started).
-  void ShowShelf();
-
-  void AddPointerWatcher(views::PointerWatcher* watcher);
-  void RemovePointerWatcher(views::PointerWatcher* watcher);
-
-#if defined(OS_CHROMEOS)
-  // Test if MaximizeModeWindowManager is not enabled, and if
-  // MaximizeModeController is not currently setting a display rotation. Or if
+  // Test if TabletModeWindowManager is not enabled, and if
+  // TabletModeController is not currently setting a display rotation. Or if
   // the |resolution_notification_controller_| is not showing its confirmation
   // dialog. If true then changes to display settings can be saved.
   bool ShouldSaveDisplaySettings();
-#endif
 
   AcceleratorController* accelerator_controller() {
     return accelerator_controller_.get();
   }
+  AccessibilityController* accessibility_controller() {
+    return accessibility_controller_.get();
+  }
+  AccessibilityDelegate* accessibility_delegate() {
+    return accessibility_delegate_.get();
+  }
+  AccessibilityFocusRingController* accessibility_focus_ring_controller() {
+    return accessibility_focus_ring_controller_.get();
+  }
+  ::wm::ActivationClient* activation_client();
+  AppListControllerImpl* app_list_controller() {
+    return app_list_controller_.get();
+  }
+  ArcCustomTabController* arc_custom_tab_controller() {
+    return arc_custom_tab_controller_.get();
+  }
+  AshDisplayController* ash_display_controller() {
+    return ash_display_controller_.get();
+  }
+  AssistantController* assistant_controller() {
+    DCHECK(chromeos::switches::IsAssistantEnabled());
+    return assistant_controller_.get();
+  }
+  AutoclickController* autoclick_controller() {
+    return autoclick_controller_.get();
+  }
+  BacklightsForcedOffSetter* backlights_forced_off_setter() {
+    return backlights_forced_off_setter_.get();
+  }
+  BluetoothPowerController* bluetooth_power_controller() {
+    return bluetooth_power_controller_.get();
+  }
+  BrightnessControlDelegate* brightness_control_delegate() {
+    return brightness_control_delegate_.get();
+  }
+  CastConfigController* cast_config() { return cast_config_.get(); }
+  service_manager::Connector* connector() { return connector_; }
+  CrosDisplayConfig* cros_display_config() {
+    return cros_display_config_.get();
+  }
+  ::wm::CursorManager* cursor_manager() { return cursor_manager_.get(); }
+  DesksController* desks_controller() { return desks_controller_.get(); }
+  DetachableBaseHandler* detachable_base_handler() {
+    return detachable_base_handler_.get();
+  }
 
-  DisplayManager* display_manager() { return display_manager_.get(); }
+  display::DisplayManager* display_manager() { return display_manager_.get(); }
+  DisplayPrefs* display_prefs() { return display_prefs_.get(); }
   DisplayConfigurationController* display_configuration_controller() {
     return display_configuration_controller_.get();
   }
+
+  display::DisplayConfigurator* display_configurator();
+
+  DisplayColorManager* display_color_manager() {
+    return display_color_manager_.get();
+  }
+  DisplayErrorObserver* display_error_observer() {
+    return display_error_observer_.get();
+  }
+  DisplayOutputProtection* display_output_protection() {
+    return display_output_protection_.get();
+  }
+
+  DockedMagnifierController* docked_magnifier_controller();
+  aura::Env* aura_env() { return aura_env_; }
   ::wm::CompoundEventFilter* env_filter() { return env_filter_.get(); }
-  views::corewm::TooltipController* tooltip_controller() {
-    return tooltip_controller_.get();
+  EventRewriterController* event_rewriter_controller() {
+    return event_rewriter_controller_.get();
   }
-  OverlayEventFilter* overlay_filter() { return overlay_filter_.get(); }
-  DesktopBackgroundController* desktop_background_controller() {
-    return desktop_background_controller_.get();
+  EventClientImpl* event_client() { return event_client_.get(); }
+  EventTransformationHandler* event_transformation_handler() {
+    return event_transformation_handler_.get();
   }
-  LinkHandlerModelFactory* link_handler_model_factory() {
-    return link_handler_model_factory_;
+  HomeScreenController* home_screen_controller() {
+    return home_screen_controller_.get();
   }
-  void set_link_handler_model_factory(
-      LinkHandlerModelFactory* link_handler_model_factory) {
-    link_handler_model_factory_ = link_handler_model_factory;
+  FirstRunHelper* first_run_helper() { return first_run_helper_.get(); }
+  ::wm::FocusController* focus_controller() { return focus_controller_.get(); }
+  ::wm::FocusRules* focus_rules() { return focus_rules_; }
+  FocusCycler* focus_cycler() { return focus_cycler_.get(); }
+  HighlighterController* highlighter_controller() {
+    return highlighter_controller_.get();
   }
-  PowerButtonController* power_button_controller() {
-    return power_button_controller_.get();
+  HighContrastController* high_contrast_controller() {
+    return high_contrast_controller_.get();
+  }
+  ImeController* ime_controller() { return ime_controller_.get(); }
+  ImmersiveContext* immersive_context() { return immersive_context_.get(); }
+  KeyAccessibilityEnabler* key_accessibility_enabler() {
+    return key_accessibility_enabler_.get();
+  }
+  KeyboardBrightnessControlDelegate* keyboard_brightness_control_delegate() {
+    return keyboard_brightness_control_delegate_.get();
+  }
+  KioskNextShellController* kiosk_next_shell_controller() {
+    return kiosk_next_shell_controller_.get();
+  }
+  AshKeyboardController* ash_keyboard_controller() {
+    return ash_keyboard_controller_.get();
+  }
+  LaserPointerController* laser_pointer_controller() {
+    return laser_pointer_controller_.get();
+  }
+  LocaleUpdateController* locale_update_controller() {
+    return locale_update_controller_.get();
+  }
+  LoginScreenController* login_screen_controller() {
+    return login_screen_controller_.get();
   }
   LockStateController* lock_state_controller() {
     return lock_state_controller_.get();
   }
-  VideoDetector* video_detector() { return video_detector_.get(); }
-  WindowCycleController* window_cycle_controller() {
-    return window_cycle_controller_.get();
+  LogoutConfirmationController* logout_confirmation_controller() {
+    return logout_confirmation_controller_.get();
   }
-  WindowTreeHostManager* window_tree_host_manager() {
-    return window_tree_host_manager_.get();
+  MagnificationController* magnification_controller() {
+    return magnification_controller_.get();
   }
-#if defined(OS_CHROMEOS)
-  PowerEventObserver* power_event_observer() {
-    return power_event_observer_.get();
+  MediaController* media_controller() { return media_controller_.get(); }
+  MediaNotificationController* media_notification_controller() {
+    return media_notification_controller_.get();
   }
-  TouchTransformerController* touch_transformer_controller() {
-    return touch_transformer_controller_.get();
-  }
-#endif  // defined(OS_CHROMEOS)
-  ScreenshotController* screenshot_controller() {
-    return screenshot_controller_.get();
+  MessageCenterController* message_center_controller() {
+    return message_center_controller_.get();
   }
   MouseCursorEventFilter* mouse_cursor_filter() {
     return mouse_cursor_filter_.get();
   }
-  EventTransformationHandler* event_transformation_handler() {
-    return event_transformation_handler_.get();
+  MruWindowTracker* mru_window_tracker() { return mru_window_tracker_.get(); }
+  NewWindowController* new_window_controller() {
+    return new_window_controller_.get();
   }
-  ::wm::CursorManager* cursor_manager() { return cursor_manager_.get(); }
-
-  ShellDelegate* delegate() { return delegate_.get(); }
-
-  UserWallpaperDelegate* user_wallpaper_delegate() {
-    return user_wallpaper_delegate_.get();
+  NightLightController* night_light_controller();
+  NoteTakingController* note_taking_controller() {
+    return note_taking_controller_.get();
   }
-
-  SessionStateDelegate* session_state_delegate() {
-    return session_state_delegate_.get();
+  NotificationReporter* notification_reporter() {
+    return notification_reporter_.get();
   }
-
-  AccessibilityDelegate* accessibility_delegate() {
-    return accessibility_delegate_.get();
-  }
-
-  NewWindowDelegate* new_window_delegate() {
-    return new_window_delegate_.get();
-  }
-
-  HighContrastController* high_contrast_controller() {
-    return high_contrast_controller_.get();
-  }
-
-  MagnificationController* magnification_controller() {
-    return magnification_controller_.get();
-  }
-
+  OverlayEventFilter* overlay_filter() { return overlay_filter_.get(); }
   PartialMagnificationController* partial_magnification_controller() {
     return partial_magnification_controller_.get();
   }
-
-  AutoclickController* autoclick_controller() {
-    return autoclick_controller_.get();
+  PolicyRecommendationRestorer* policy_recommendation_restorer() {
+    return policy_recommendation_restorer_.get();
+  }
+  PowerButtonController* power_button_controller() {
+    return power_button_controller_.get();
+  }
+  PowerEventObserver* power_event_observer() {
+    return power_event_observer_.get();
+  }
+  ResizeShadowController* resize_shadow_controller() {
+    return resize_shadow_controller_.get();
+  }
+  ResolutionNotificationController* resolution_notification_controller() {
+    return resolution_notification_controller_.get();
+  }
+  ScreenshotController* screenshot_controller() {
+    return screenshot_controller_.get();
+  }
+  ScreenLayoutObserver* screen_layout_observer() {
+    return screen_layout_observer_.get();
+  }
+  ScreenOrientationController* screen_orientation_controller() {
+    return screen_orientation_controller_.get();
+  }
+  ScreenPinningController* screen_pinning_controller() {
+    return screen_pinning_controller_.get();
+  }
+  ScreenSwitchCheckController* screen_switch_check_controller() {
+    return screen_switch_check_controller_.get();
+  }
+  SessionController* session_controller() { return session_controller_.get(); }
+  ::wm::ShadowController* shadow_controller() {
+    return shadow_controller_.get();
+  }
+  ShelfController* shelf_controller() { return shelf_controller_.get(); }
+  ShelfModel* shelf_model();
+  ShellDelegate* shell_delegate() { return shell_delegate_.get(); }
+  ShellState* shell_state() { return shell_state_.get(); }
+  ShutdownController* shutdown_controller() {
+    return shutdown_controller_.get();
+  }
+  SplitViewController* split_view_controller() {
+    return split_view_controller_.get();
+  }
+  StickyKeysController* sticky_keys_controller() {
+    return sticky_keys_controller_.get();
+  }
+  SystemNotificationController* system_notification_controller() {
+    return system_notification_controller_.get();
+  }
+  SystemTrayModel* system_tray_model() { return system_tray_model_.get(); }
+  SystemTrayNotifier* system_tray_notifier() {
+    return system_tray_notifier_.get();
+  }
+  TabletModeController* tablet_mode_controller() {
+    return tablet_mode_controller_.get();
+  }
+  TimeToFirstPresentRecorder* time_to_first_present_recorder() {
+    return time_to_first_present_recorder_.get();
+  }
+  ToastManager* toast_manager() { return toast_manager_.get(); }
+  views::corewm::TooltipController* tooltip_controller() {
+    return tooltip_controller_.get();
+  }
+  TouchDevicesController* touch_devices_controller() {
+    return touch_devices_controller_.get();
+  }
+  AshTouchTransformController* touch_transformer_controller() {
+    return touch_transformer_controller_.get();
+  }
+  TrayAction* tray_action() { return tray_action_.get(); }
+  TrayBluetoothHelper* tray_bluetooth_helper() {
+    return tray_bluetooth_helper_.get();
+  }
+  UserMetricsRecorder* metrics() { return user_metrics_recorder_.get(); }
+  VideoDetector* video_detector() { return video_detector_.get(); }
+  VoiceInteractionController* voice_interaction_controller() {
+    return voice_interaction_controller_.get();
+  }
+  VpnList* vpn_list() { return vpn_list_.get(); }
+  WallpaperController* wallpaper_controller() {
+    return wallpaper_controller_.get();
+  }
+  WindowCycleController* window_cycle_controller() {
+    return window_cycle_controller_.get();
+  }
+  WindowPositioner* window_positioner() { return window_positioner_.get(); }
+  OverviewController* overview_controller() {
+    return overview_controller_.get();
+  }
+  WindowServiceOwner* window_service_owner() {
+    return window_service_owner_.get();
+  }
+  WindowTreeHostManager* window_tree_host_manager() {
+    return window_tree_host_manager_.get();
   }
 
-  aura::client::ActivationClient* activation_client() {
-    return activation_client_;
+  ToplevelWindowEventHandler* toplevel_window_event_handler() {
+    return toplevel_window_event_handler_.get();
   }
-
-  ShelfItemDelegateManager* shelf_item_delegate_manager() {
-    return shelf_item_delegate_manager_.get();
-  }
-
-  base::SequencedWorkerPool* blocking_pool() { return blocking_pool_; }
 
   // Force the shelf to query for it's current visibility state.
   // TODO(jamescook): Move to Shelf.
   void UpdateShelfVisibility();
 
-  // Called when the alignment for a shelf changes.
-  // TODO(jamescook): Move to Shelf.
-  void OnShelfAlignmentChanged(WmWindow* root_window);
-
-  // Called when the auto-hide behavior for a shelf changes.
-  // TODO(jamescook): Move to Shelf.
-  void OnShelfAutoHideBehaviorChanged(WmWindow* root_window);
-
-  // Notifies |observers_| when entering or exiting fullscreen mode in
-  // |root_window|.
-  // TODO(hidehiko): Rename this to NotifyFullscreenStateChanged.
-  void NotifyFullscreenStateChange(bool is_fullscreen, WmWindow* root_window);
-
-  // Creates a modal background (a partially-opaque fullscreen window)
-  // on all displays for |window|.
-  void CreateModalBackground(aura::Window* window);
-
-  // Called when a modal window is removed. It will activate
-  // another modal window if any, or remove modal screens
-  // on all displays.
-  void OnModalWindowRemoved(aura::Window* removed);
-
-  // Returns WebNotificationTray on the primary root window.
-  WebNotificationTray* GetWebNotificationTray();
-
   // Does the primary display have status area?
   bool HasPrimaryStatusArea();
-
-  // Returns the system tray on primary display.
-  SystemTray* GetPrimarySystemTray();
-
-  static void set_initially_hide_cursor(bool hide) {
-    initially_hide_cursor_ = hide;
-  }
-
-  ResizeShadowController* resize_shadow_controller() {
-    return resize_shadow_controller_.get();
-  }
-
-  // Made available for tests.
-  ::wm::ShadowController* shadow_controller() {
-    return shadow_controller_.get();
-  }
 
   // Starts the animation that occurs on first login.
   void DoInitialWorkspaceAnimation();
 
-  MaximizeModeController* maximize_mode_controller() {
-    return maximize_mode_controller_.get();
-  }
+  void SetLargeCursorSizeInDip(int large_cursor_size_in_dip);
 
-#if defined(OS_CHROMEOS)
-  // TODO(oshima): Move these objects to WindowTreeHostManager.
-  ui::DisplayConfigurator* display_configurator() {
-    return display_configurator_.get();
-  }
-  DisplayErrorObserver* display_error_observer() {
-    return display_error_observer_.get();
-  }
-
-  ResolutionNotificationController* resolution_notification_controller() {
-    return resolution_notification_controller_.get();
-  }
-
-  ScreenOrientationController* screen_orientation_controller() {
-    return screen_orientation_controller_.get();
-  }
-
-  VirtualKeyboardController* virtual_keyboard_controller() {
-    return virtual_keyboard_controller_.get();
-  }
-
-  chromeos::AudioA11yController* audio_a11y_controller() {
-    return audio_a11y_controller_.get();
-  }
-#endif  // defined(OS_CHROMEOS)
-
-  ShelfModel* shelf_model() { return shelf_model_.get(); }
-
-  WindowPositioner* window_positioner() { return window_positioner_.get(); }
-
-  // Returns the launcher delegate, creating if necesary.
-  ShelfDelegate* GetShelfDelegate();
-
-  UserMetricsRecorder* metrics() { return user_metrics_recorder_.get(); }
-
-  void SetTouchHudProjectionEnabled(bool enabled);
-
-  bool is_touch_hud_projection_enabled() const {
-    return is_touch_hud_projection_enabled_;
-  }
-
-  // TODO(sky): remove this. This was needed by sysui, but as sysui is going
-  // away it should no longer be needed.
-  bool in_mus() const { return in_mus_; }
-
-#if defined(OS_CHROMEOS)
-  // Creates instance of FirstRunHelper. Caller is responsible for deleting
-  // returned object.
-  ash::FirstRunHelper* CreateFirstRunHelper();
-
-  // Toggles cursor compositing on/off. Native cursor is disabled when cursor
+  // Updates cursor compositing on/off. Native cursor is disabled when cursor
   // compositing is enabled, and vice versa.
+  void UpdateCursorCompositingEnabled();
+
+  // Force setting compositing on/off without checking dependency.
   void SetCursorCompositingEnabled(bool enabled);
 
-  StickyKeysController* sticky_keys_controller() {
-    return sticky_keys_controller_.get();
-  }
+  // Returns true if split view mode is active.
+  bool IsSplitViewModeActive() const;
 
-#endif  // defined(OS_CHROMEOS)
+  // Shows the context menu for the wallpaper or shelf at |location_in_screen|.
+  void ShowContextMenu(const gfx::Point& location_in_screen,
+                       ui::MenuSourceType source_type);
 
-  ScreenPinningController* screen_pinning_controller() {
-    return screen_pinning_controller_.get();
-  }
+  void AddShellObserver(ShellObserver* observer);
+  void RemoveShellObserver(ShellObserver* observer);
 
-  ToastManager* toast_manager() { return toast_manager_.get(); }
+  // Called when the login status changes.
+  // TODO(oshima): Investigate if we can merge this and |OnLoginStateChanged|.
+  void UpdateAfterLoginStatusChange(LoginStatus status);
 
-  GPUSupport* gpu_support() { return gpu_support_.get(); }
+  // Notifies observers that split view mode is about to be started (before the
+  // window gets snapped and activated).
+  void NotifySplitViewModeStarting();
+
+  // Notifies observers that split view mode has been started.
+  void NotifySplitViewModeStarted();
+
+  // Notifies observers that split view mode has ended.
+  void NotifySplitViewModeEnded();
+
+  // Notifies observers that fullscreen mode has changed for |root_window|.
+  void NotifyFullscreenStateChanged(bool is_fullscreen,
+                                    aura::Window* root_window);
+
+  // Notifies observers that |pinned_window| changed its pinned window state.
+  void NotifyPinnedStateChanged(aura::Window* pinned_window);
+
+  // Notifies observers that |root_window|'s shelf changed alignment.
+  // TODO(jamescook): Move to Shelf.
+  void NotifyShelfAlignmentChanged(aura::Window* root_window);
+
+  // Notifies observers that |root_window|'s shelf changed auto-hide behavior.
+  // TODO(jamescook): Move to Shelf.
+  void NotifyShelfAutoHideBehaviorChanged(aura::Window* root_window);
+
+  // Used to provide better error messages for Shell::Get() under mash.
+  static void SetIsBrowserProcessWithMash();
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ExtendedDesktopTest, TestCursor);
   FRIEND_TEST_ALL_PREFIXES(WindowManagerTest, MouseEventCursors);
   FRIEND_TEST_ALL_PREFIXES(WindowManagerTest, TransformActivate);
+  friend class AcceleratorControllerTest;
+  friend class AshTestHelper;
   friend class RootWindowController;
-  friend class ScopedTargetRootWindow;
-  friend class test::ShellTestApi;
-  friend class shell::WindowWatcher;
+  friend class ScopedRootWindowForNewWindows;
+  friend class ShellTestApi;
+  friend class SmsObserverTest;
 
-  typedef std::pair<aura::Window*, gfx::Rect> WindowAndBoundsPair;
-
-  // Takes ownership of |delegate|.
-  Shell(ShellDelegate* delegate, base::SequencedWorkerPool* blocking_pool);
+  Shell(std::unique_ptr<ShellDelegate> shell_delegate,
+        service_manager::Connector* connector);
   ~Shell() override;
 
-  void Init(const ShellInitParams& init_params);
+  void Init(ui::ContextFactory* context_factory,
+            ui::ContextFactoryPrivate* context_factory_private,
+            std::unique_ptr<base::Value> initial_display_prefs,
+            std::unique_ptr<ws::GpuInterfaceProvider> gpu_interface_provider,
+            std::unique_ptr<keyboard::KeyboardUIFactory> keyboard_ui_factory);
 
-  // Initializes virtual keyboard controller.
-  void InitKeyboard();
+  // Initializes the display manager and related components.
+  void InitializeDisplayManager();
 
   // Initializes the root window so that it can host browser windows.
   void InitRootWindow(aura::Window* root_window);
 
-  // Prepares the shelf to be deleted.
-  void ShutdownShelf();
+  // Destroys all child windows including widgets across all roots.
+  void CloseAllRootWindowChildWindows();
 
-  // ash::SystemModalContainerEventFilterDelegate overrides:
+  // SystemModalContainerEventFilterDelegate:
   bool CanWindowReceiveEvents(aura::Window* window) override;
 
   // Overridden from ui::EventTarget:
@@ -574,71 +678,120 @@ class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
   std::unique_ptr<ui::EventTargetIterator> GetChildIterator() const override;
   ui::EventTargeter* GetEventTargeter() override;
 
-  // Overridden from aura::client::ActivationChangeObserver:
-  void OnWindowActivated(
-      aura::client::ActivationChangeObserver::ActivationReason reason,
-      aura::Window* gained_active,
-      aura::Window* lost_active) override;
+  // wm::ActivationChangeObserver:
+  void OnWindowActivated(ActivationReason reason,
+                         aura::Window* gained_active,
+                         aura::Window* lost_active) override;
+
+  // SessionObserver:
+  void OnFirstSessionStarted() override;
+  void OnSessionStateChanged(session_manager::SessionState state) override;
+  void OnLoginStatusChanged(LoginStatus login_status) override;
+  void OnLockStateChanged(bool locked) override;
+
+  // Callback for prefs::ConnectToPrefService.
+  void OnLocalStatePrefServiceInitialized(
+      std::unique_ptr<::PrefService> pref_service);
 
   static Shell* instance_;
 
-  // If set before the Shell is initialized, the mouse cursor will be hidden
-  // when the screen is initially created.
-  static bool initially_hide_cursor_;
+  // |owned_aura_env_| is non-null if Shell created aura::Env. Shell creates
+  // aura::Env only in single-process-mash mode.
+  std::unique_ptr<aura::Env> owned_aura_env_;
 
-  std::unique_ptr<ScopedOverviewAnimationSettingsFactoryAura>
-      scoped_overview_animation_settings_factory_;
-  std::unique_ptr<WmShellAura> wm_shell_;
-
-  // When no explicit target display/RootWindow is given, new windows are
-  // created on |scoped_target_root_window_| , unless NULL in
-  // which case they are created on |target_root_window_|.
-  // |target_root_window_| never becomes NULL during the session.
-  aura::Window* target_root_window_;
-  aura::Window* scoped_target_root_window_;
+  // This is either |owned_aura_env_|, or Env::GetInstance().
+  aura::Env* aura_env_;
 
   // The CompoundEventFilter owned by aura::Env object.
   std::unique_ptr<::wm::CompoundEventFilter> env_filter_;
 
-  std::vector<WindowAndBoundsPair> to_restore_;
+  std::unique_ptr<EventRewriterController> event_rewriter_controller_;
 
   std::unique_ptr<UserMetricsRecorder> user_metrics_recorder_;
-  std::unique_ptr<AcceleratorController> accelerator_controller_;
-  std::unique_ptr<ShellDelegate> delegate_;
-  std::unique_ptr<UserWallpaperDelegate> user_wallpaper_delegate_;
-  std::unique_ptr<SessionStateDelegate> session_state_delegate_;
-  std::unique_ptr<AccessibilityDelegate> accessibility_delegate_;
-  std::unique_ptr<NewWindowDelegate> new_window_delegate_;
-  std::unique_ptr<PointerWatcherDelegate> pointer_watcher_delegate_;
-  std::unique_ptr<ShelfDelegate> shelf_delegate_;
-  std::unique_ptr<ShelfItemDelegateManager> shelf_item_delegate_manager_;
-  std::unique_ptr<ShelfWindowWatcher> shelf_window_watcher_;
-
-  std::unique_ptr<ShelfModel> shelf_model_;
   std::unique_ptr<WindowPositioner> window_positioner_;
 
+  std::unique_ptr<AcceleratorController> accelerator_controller_;
+  std::unique_ptr<AccessibilityController> accessibility_controller_;
+  std::unique_ptr<AccessibilityDelegate> accessibility_delegate_;
+  std::unique_ptr<AccessibilityFocusRingController>
+      accessibility_focus_ring_controller_;
+  std::unique_ptr<AppListControllerImpl> app_list_controller_;
+  std::unique_ptr<ArcCustomTabController> arc_custom_tab_controller_;
+  std::unique_ptr<AshDBusServices> ash_dbus_services_;
+  std::unique_ptr<AshDisplayController> ash_display_controller_;
+  std::unique_ptr<AssistantController> assistant_controller_;
+  std::unique_ptr<BacklightsForcedOffSetter> backlights_forced_off_setter_;
+  std::unique_ptr<BrightnessControlDelegate> brightness_control_delegate_;
+  std::unique_ptr<CastConfigController> cast_config_;
+  std::unique_ptr<CrosDisplayConfig> cros_display_config_;
+  service_manager::Connector* const connector_;
+  std::unique_ptr<DesksController> desks_controller_;
+  std::unique_ptr<DetachableBaseHandler> detachable_base_handler_;
+  std::unique_ptr<DetachableBaseNotificationController>
+      detachable_base_notification_controller_;
+  std::unique_ptr<DisplaySpeakerController> display_speaker_controller_;
   std::unique_ptr<DragDropController> drag_drop_controller_;
+  std::unique_ptr<FirstRunHelper> first_run_helper_;
+  std::unique_ptr<FocusCycler> focus_cycler_;
+  std::unique_ptr<HomeScreenController> home_screen_controller_;
+  std::unique_ptr<ImeController> ime_controller_;
+  std::unique_ptr<ImeFocusHandler> ime_focus_handler_;
+  std::unique_ptr<ImmersiveContext> immersive_context_;
+  std::unique_ptr<KeyboardBrightnessControlDelegate>
+      keyboard_brightness_control_delegate_;
+  std::unique_ptr<KioskNextShellController> kiosk_next_shell_controller_;
+  std::unique_ptr<LocaleUpdateController> locale_update_controller_;
+  std::unique_ptr<LoginScreenController> login_screen_controller_;
+  std::unique_ptr<LogoutConfirmationController> logout_confirmation_controller_;
+  std::unique_ptr<TabletModeController> tablet_mode_controller_;
+  std::unique_ptr<MediaController> media_controller_;
+  std::unique_ptr<MediaNotificationController> media_notification_controller_;
+  std::unique_ptr<MruWindowTracker> mru_window_tracker_;
+  std::unique_ptr<MultiDeviceNotificationPresenter>
+      multidevice_notification_presenter_;
+  std::unique_ptr<NewWindowController> new_window_controller_;
   std::unique_ptr<ResizeShadowController> resize_shadow_controller_;
+  std::unique_ptr<SessionController> session_controller_;
+  std::unique_ptr<NightLightController> night_light_controller_;
+  std::unique_ptr<NoteTakingController> note_taking_controller_;
+  std::unique_ptr<PolicyRecommendationRestorer> policy_recommendation_restorer_;
+  std::unique_ptr<ScreenSwitchCheckController> screen_switch_check_controller_;
+  std::unique_ptr<ShelfController> shelf_controller_;
+  std::unique_ptr<ShelfWindowWatcher> shelf_window_watcher_;
+  std::unique_ptr<ShellDelegate> shell_delegate_;
+  std::unique_ptr<ShellState> shell_state_;
+  std::unique_ptr<ShutdownController> shutdown_controller_;
+  std::unique_ptr<SystemNotificationController> system_notification_controller_;
+  std::unique_ptr<SystemTrayModel> system_tray_model_;
+  std::unique_ptr<SystemTrayNotifier> system_tray_notifier_;
+  std::unique_ptr<ToastManager> toast_manager_;
+  std::unique_ptr<TouchDevicesController> touch_devices_controller_;
+  std::unique_ptr<TimeToFirstPresentRecorder> time_to_first_present_recorder_;
+  std::unique_ptr<TrayAction> tray_action_;
+  std::unique_ptr<VoiceInteractionController> voice_interaction_controller_;
+  std::unique_ptr<VpnList> vpn_list_;
+  std::unique_ptr<WallpaperController> wallpaper_controller_;
+  std::unique_ptr<WindowCycleController> window_cycle_controller_;
+  std::unique_ptr<OverviewController> overview_controller_;
+  // Owned by |focus_controller_|.
+  ::wm::FocusRules* focus_rules_ = nullptr;
   std::unique_ptr<::wm::ShadowController> shadow_controller_;
   std::unique_ptr<::wm::VisibilityController> visibility_controller_;
   std::unique_ptr<::wm::WindowModalityController> window_modality_controller_;
+  std::unique_ptr<PrefService> local_state_;
   std::unique_ptr<views::corewm::TooltipController> tooltip_controller_;
-  std::unique_ptr<DesktopBackgroundController> desktop_background_controller_;
-  LinkHandlerModelFactory* link_handler_model_factory_;
   std::unique_ptr<PowerButtonController> power_button_controller_;
   std::unique_ptr<LockStateController> lock_state_controller_;
   std::unique_ptr<ui::UserActivityDetector> user_activity_detector_;
   std::unique_ptr<VideoDetector> video_detector_;
-  std::unique_ptr<WindowCycleController> window_cycle_controller_;
+  std::unique_ptr<WaylandServerController> wayland_server_controller_;
+  std::unique_ptr<WindowServiceOwner> window_service_owner_;
   std::unique_ptr<WindowTreeHostManager> window_tree_host_manager_;
+  std::unique_ptr<PersistentWindowController> persistent_window_controller_;
   std::unique_ptr<HighContrastController> high_contrast_controller_;
   std::unique_ptr<MagnificationController> magnification_controller_;
-  std::unique_ptr<PartialMagnificationController>
-      partial_magnification_controller_;
   std::unique_ptr<AutoclickController> autoclick_controller_;
-  std::unique_ptr<aura::client::FocusClient> focus_client_;
-
-  aura::client::ActivationClient* activation_client_;
+  std::unique_ptr<::wm::FocusController> focus_controller_;
 
   std::unique_ptr<ScreenshotController> screenshot_controller_;
 
@@ -652,9 +805,6 @@ class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
   // screenshot UI or the keyboard overlay is active.
   std::unique_ptr<OverlayEventFilter> overlay_filter_;
 
-  // An event filter for logging keyboard-related metrics.
-  std::unique_ptr<KeyboardUMAEventFilter> keyboard_metrics_filter_;
-
   // An event filter which handles moving and resizing windows.
   std::unique_ptr<ToplevelWindowEventHandler> toplevel_window_event_handler_;
 
@@ -664,15 +814,17 @@ class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
   // An event filter that pre-handles global accelerators.
   std::unique_ptr<::wm::AcceleratorFilter> accelerator_filter_;
 
-  std::unique_ptr<DisplayManager> display_manager_;
+  std::unique_ptr<display::DisplayManager> display_manager_;
+  std::unique_ptr<DisplayPrefs> display_prefs_;
   std::unique_ptr<DisplayConfigurationController>
       display_configuration_controller_;
+  std::unique_ptr<DisplayConfigurationObserver> display_configuration_observer_;
 
-  std::unique_ptr<LocaleNotificationController> locale_notification_controller_;
   std::unique_ptr<ScreenPinningController> screen_pinning_controller_;
 
-#if defined(OS_CHROMEOS)
+  std::unique_ptr<PeripheralBatteryNotifier> peripheral_battery_notifier_;
   std::unique_ptr<PowerEventObserver> power_event_observer_;
+  std::unique_ptr<PowerPrefs> power_prefs_;
   std::unique_ptr<ui::UserActivityPowerManagerNotifier> user_activity_notifier_;
   std::unique_ptr<VideoActivityNotifier> video_activity_notifier_;
   std::unique_ptr<StickyKeysController> sticky_keys_controller_;
@@ -680,48 +832,64 @@ class ASH_EXPORT Shell : public SystemModalContainerEventFilterDelegate,
       resolution_notification_controller_;
   std::unique_ptr<BluetoothNotificationController>
       bluetooth_notification_controller_;
-  std::unique_ptr<VirtualKeyboardController> virtual_keyboard_controller_;
-  std::unique_ptr<chromeos::AudioA11yController> audio_a11y_controller_;
+  std::unique_ptr<BluetoothPowerController> bluetooth_power_controller_;
+  std::unique_ptr<TrayBluetoothHelper> tray_bluetooth_helper_;
+  std::unique_ptr<AshKeyboardController> ash_keyboard_controller_;
   // Controls video output device state.
-  std::unique_ptr<ui::DisplayConfigurator> display_configurator_;
+  std::unique_ptr<DisplayOutputProtection> display_output_protection_;
   std::unique_ptr<DisplayColorManager> display_color_manager_;
   std::unique_ptr<DisplayErrorObserver> display_error_observer_;
   std::unique_ptr<ProjectingObserver> projecting_observer_;
 
   // Listens for output changes and updates the display manager.
-  std::unique_ptr<DisplayChangeObserver> display_change_observer_;
+  std::unique_ptr<display::DisplayChangeObserver> display_change_observer_;
 
-  // Implements content::ScreenOrientationController for ChromeOS
+  // Listens for shutdown and updates DisplayConfigurator.
+  std::unique_ptr<DisplayShutdownObserver> display_shutdown_observer_;
+
+  // Listens for new sms messages and shows notifications.
+  std::unique_ptr<SmsObserver> sms_observer_;
+
+  // Implements content::ScreenOrientationController for Chrome OS.
   std::unique_ptr<ScreenOrientationController> screen_orientation_controller_;
+  std::unique_ptr<ScreenLayoutObserver> screen_layout_observer_;
 
-  std::unique_ptr<TouchTransformerController> touch_transformer_controller_;
+  std::unique_ptr<AshTouchTransformController> touch_transformer_controller_;
 
   std::unique_ptr<ui::EventHandler> magnifier_key_scroll_handler_;
   std::unique_ptr<ui::EventHandler> speech_feedback_handler_;
-#endif  // defined(OS_CHROMEOS)
+  std::unique_ptr<LaserPointerController> laser_pointer_controller_;
+  std::unique_ptr<PartialMagnificationController>
+      partial_magnification_controller_;
+  std::unique_ptr<HighlighterController> highlighter_controller_;
 
-  std::unique_ptr<ToastManager> toast_manager_;
-  std::unique_ptr<MaximizeModeController> maximize_mode_controller_;
+  std::unique_ptr<DockedMagnifierController> docked_magnifier_controller_;
+
+  // The split view controller for Chrome OS in tablet mode.
+  std::unique_ptr<SplitViewController> split_view_controller_;
 
   // |native_cursor_manager_| is owned by |cursor_manager_|, but we keep a
   // pointer to vend to test code.
-  AshNativeCursorManager* native_cursor_manager_;
+  NativeCursorManagerAsh* native_cursor_manager_;
 
-  // Cursor may be hidden on certain key events in ChromeOS, whereas we never
+  // Cursor may be hidden on certain key events in Chrome OS, whereas we never
   // hide the cursor on Windows.
   std::unique_ptr<::wm::CursorManager> cursor_manager_;
 
+  // Enables spoken feedback accessibility based on a press and hold of both
+  // volume keys.
+  std::unique_ptr<KeyAccessibilityEnabler> key_accessibility_enabler_;
+
   // For testing only: simulate that a modal window is open
-  bool simulate_modal_window_open_for_testing_;
+  bool simulate_modal_window_open_for_test_ = false;
 
-  bool is_touch_hud_projection_enabled_;
+  std::unique_ptr<MessageCenterController> message_center_controller_;
 
-  // Injected content::GPUDataManager support.
-  std::unique_ptr<GPUSupport> gpu_support_;
+  std::unique_ptr<NotificationReporter> notification_reporter_;
 
-  base::SequencedWorkerPool* blocking_pool_;
+  base::ObserverList<ShellObserver>::Unchecked shell_observers_;
 
-  bool in_mus_ = false;
+  base::WeakPtrFactory<Shell> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(Shell);
 };

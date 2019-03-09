@@ -15,9 +15,7 @@ struct PasswordForm;
 
 namespace password_manager {
 
-class CredentialManagerDispatcher;
 class PasswordManagerClient;
-class PasswordManagerDriver;
 
 // A delegate that is notified when CredentialManagerPasswordFormManager
 // finishes working with password forms.
@@ -34,23 +32,34 @@ class CredentialManagerPasswordFormManager : public PasswordFormManager {
   // Given a |client| and an |observed_form|, kick off the process of fetching
   // matching logins from the password store; if |observed_form| doesn't map to
   // a blacklisted origin, provisionally save |saved_form|. Once saved, let the
-  // delegate know that it's safe to poke at the UI.
+  // delegate know that it's safe to poke at the UI. |form_fetcher| is passed
+  // to PasswordFormManager. |form_saver| can be null, in which case it is
+  // created automatically.
   //
   // This class does not take ownership of |delegate|.
   CredentialManagerPasswordFormManager(
       PasswordManagerClient* client,
-      base::WeakPtr<PasswordManagerDriver> driver,
       const autofill::PasswordForm& observed_form,
       std::unique_ptr<autofill::PasswordForm> saved_form,
-      CredentialManagerPasswordFormManagerDelegate* delegate);
+      CredentialManagerPasswordFormManagerDelegate* delegate,
+      std::unique_ptr<FormSaver> form_saver,
+      std::unique_ptr<FormFetcher> form_fetcher);
   ~CredentialManagerPasswordFormManager() override;
 
-  void OnGetPasswordStoreResults(
-      ScopedVector<autofill::PasswordForm> results) override;
+  void ProcessMatches(
+      const std::vector<const autofill::PasswordForm*>& non_federated,
+      size_t filtered_count) override;
+
+  metrics_util::CredentialSourceType GetCredentialSource() override;
 
  private:
+  // Calls OnProvisionalSaveComplete on |delegate_|.
+  void NotifyDelegate();
+
   CredentialManagerPasswordFormManagerDelegate* delegate_;
   std::unique_ptr<autofill::PasswordForm> saved_form_;
+
+  base::WeakPtrFactory<CredentialManagerPasswordFormManager> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(CredentialManagerPasswordFormManager);
 };

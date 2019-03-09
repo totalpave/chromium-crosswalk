@@ -8,22 +8,25 @@
 
 #include <sstream>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/strings/string_piece.h"
 #include "base/time/time.h"
-#include "cc/debug/lap_timer.h"
+#include "base/timer/lap_timer.h"
 #include "cc/layers/nine_patch_layer.h"
 #include "cc/layers/solid_color_layer.h"
 #include "cc/layers/texture_layer.h"
-#include "cc/resources/single_release_callback.h"
-#include "cc/resources/texture_mailbox.h"
 #include "cc/test/fake_content_layer_client.h"
 #include "cc/test/layer_tree_json_parser.h"
 #include "cc/test/layer_tree_test.h"
-#include "cc/test/paths.h"
 #include "cc/trees/layer_tree_impl.h"
+#include "components/viz/common/resources/single_release_callback.h"
+#include "components/viz/test/paths.h"
+#include "components/viz/test/test_layer_tree_frame_sink.h"
+#include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/sync_token.h"
 #include "testing/perf/perf_test.h"
 
 namespace cc {
@@ -45,9 +48,20 @@ class LayerTreeHostPerfTest : public LayerTreeTest {
         measure_commit_cost_(false) {
   }
 
-  void InitializeSettings(LayerTreeSettings* settings) override {
-    settings->wait_for_beginframe_interval = false;
-    settings->renderer_settings.disable_display_vsync = true;
+  std::unique_ptr<viz::TestLayerTreeFrameSink> CreateLayerTreeFrameSink(
+      const viz::RendererSettings& renderer_settings,
+      double refresh_rate,
+      scoped_refptr<viz::ContextProvider> compositor_context_provider,
+      scoped_refptr<viz::RasterContextProvider> worker_context_provider)
+      override {
+    constexpr bool disable_display_vsync = true;
+    bool synchronous_composite =
+        !HasImplThread() &&
+        !layer_tree_host()->GetSettings().single_thread_proxy_scheduler;
+    return std::make_unique<viz::TestLayerTreeFrameSink>(
+        compositor_context_provider, std::move(worker_context_provider),
+        gpu_memory_buffer_manager(), renderer_settings, ImplThreadTaskRunner(),
+        synchronous_composite, disable_display_vsync, refresh_rate);
   }
 
   void BeginTest() override {
@@ -55,11 +69,9 @@ class LayerTreeHostPerfTest : public LayerTreeTest {
     PostSetNeedsCommitToMainThread();
   }
 
-  void BeginMainFrame(const BeginFrameArgs& args) override {
-    if (begin_frame_driven_drawing_ && !TestEnded()) {
-      layer_tree_host()->SetNeedsAnimate();
-      layer_tree_host()->SetNextCommitForcesRedraw();
-    }
+  void BeginMainFrame(const viz::BeginFrameArgs& args) override {
+    if (begin_frame_driven_drawing_ && !TestEnded())
+      layer_tree_host()->SetNeedsCommitWithForcedRedraw();
   }
 
   void BeginCommitOnThread(LayerTreeHostImpl* host_impl) override {
@@ -73,21 +85,21 @@ class LayerTreeHostPerfTest : public LayerTreeTest {
     }
   }
 
-  void DrawLayersOnThread(LayerTreeHostImpl* impl) override {
+  void DrawLayersOnThread(LayerTreeHostImpl* host_impl) override {
     if (TestEnded() || CleanUpStarted())
       return;
     draw_timer_.NextLap();
     if (draw_timer_.HasTimeLimitExpired()) {
-      CleanUpAndEndTest(impl);
+      CleanUpAndEndTest();
       return;
     }
     if (!begin_frame_driven_drawing_)
-      impl->SetNeedsRedraw();
+      host_impl->SetNeedsRedraw();
     if (full_damage_each_frame_)
-      impl->SetFullRootLayerDamage();
+      host_impl->SetFullViewportDamage();
   }
 
-  virtual void CleanUpAndEndTest(LayerTreeHostImpl* host_impl) { EndTest(); }
+  virtual void CleanUpAndEndTest() { EndTest(); }
 
   virtual bool CleanUpStarted() { return false; }
 
@@ -96,16 +108,18 @@ class LayerTreeHostPerfTest : public LayerTreeTest {
   void AfterTest() override {
     CHECK(!test_name_.empty()) << "Must SetTestName() before AfterTest().";
     perf_test::PrintResult("layer_tree_host_frame_time", "", test_name_,
-                           1000 * draw_timer_.MsPerLap(), "us", true);
+                           draw_timer_.TimePerLap().InMicrosecondsF(), "us",
+                           true);
     if (measure_commit_cost_) {
       perf_test::PrintResult("layer_tree_host_commit_time", "", test_name_,
-                             1000 * commit_timer_.MsPerLap(), "us", true);
+                             commit_timer_.TimePerLap().InMicrosecondsF(), "us",
+                             true);
     }
   }
 
  protected:
-  LapTimer draw_timer_;
-  LapTimer commit_timer_;
+  base::LapTimer draw_timer_;
+  base::LapTimer commit_timer_;
 
   std::string test_name_;
   FakeContentLayerClient fake_content_layer_client_;
@@ -128,14 +142,16 @@ class LayerTreeHostPerfTestJsonReader : public LayerTreeHostPerfTest {
 
   void ReadTestFile(const std::string& name) {
     base::FilePath test_data_dir;
-    ASSERT_TRUE(PathService::Get(CCPaths::DIR_TEST_DATA, &test_data_dir));
+    ASSERT_TRUE(
+        base::PathService::Get(viz::Paths::DIR_TEST_DATA, &test_data_dir));
     base::FilePath json_file = test_data_dir.AppendASCII(name + ".json");
     ASSERT_TRUE(base::ReadFileToString(json_file, &json_));
   }
 
   void BuildTree() override {
     gfx::Size viewport = gfx::Size(720, 1038);
-    layer_tree_host()->SetViewportSize(viewport);
+    layer_tree_host()->SetViewportSizeAndScale(viewport, 1.f,
+                                               viz::LocalSurfaceIdAllocation());
     scoped_refptr<Layer> root = ParseTreeFromJson(json_,
                                                   &fake_content_layer_client_);
     ASSERT_TRUE(root.get());
@@ -148,16 +164,28 @@ class LayerTreeHostPerfTestJsonReader : public LayerTreeHostPerfTest {
 };
 
 // Simulates a tab switcher scene with two stacks of 10 tabs each.
-TEST_F(LayerTreeHostPerfTestJsonReader, TenTenSingleThread) {
+// Timed out on Android: http://crbug.com/723821
+#if defined(OS_ANDROID)
+#define MAYBE_TenTenSingleThread DISABLED_TenTenSingleThread
+#else
+#define MAYBE_TenTenSingleThread TenTenSingleThread
+#endif
+TEST_F(LayerTreeHostPerfTestJsonReader, MAYBE_TenTenSingleThread) {
   SetTestName("10_10_single_thread");
   ReadTestFile("10_10_layer_tree");
-  RunTest(CompositorMode::SINGLE_THREADED, false);
+  RunTest(CompositorMode::SINGLE_THREADED);
 }
 
-TEST_F(LayerTreeHostPerfTestJsonReader, TenTenThreaded) {
+// Timed out on Android: http://crbug.com/723821
+#if defined(OS_ANDROID)
+#define MAYBE_TenTenThreaded DISABLED_TenTenThreaded
+#else
+#define MAYBE_TenTenThreaded TenTenThreaded
+#endif
+TEST_F(LayerTreeHostPerfTestJsonReader, MAYBE_TenTenThreaded) {
   SetTestName("10_10_threaded_impl_side");
   ReadTestFile("10_10_layer_tree");
-  RunTest(CompositorMode::THREADED, false);
+  RunTest(CompositorMode::THREADED);
 }
 
 // Simulates a tab switcher scene with two stacks of 10 tabs each.
@@ -166,14 +194,14 @@ TEST_F(LayerTreeHostPerfTestJsonReader,
   full_damage_each_frame_ = true;
   SetTestName("10_10_single_thread_full_damage_each_frame");
   ReadTestFile("10_10_layer_tree");
-  RunTest(CompositorMode::SINGLE_THREADED, false);
+  RunTest(CompositorMode::SINGLE_THREADED);
 }
 
 TEST_F(LayerTreeHostPerfTestJsonReader, TenTenThreaded_FullDamageEachFrame) {
   full_damage_each_frame_ = true;
   SetTestName("10_10_threaded_impl_side_full_damage_each_frame");
   ReadTestFile("10_10_layer_tree");
-  RunTest(CompositorMode::THREADED, false);
+  RunTest(CompositorMode::THREADED);
 }
 
 // Invalidates a leaf layer in the tree on the main thread after every commit.
@@ -207,13 +235,14 @@ class LayerTreeHostPerfTestLeafInvalidates
 TEST_F(LayerTreeHostPerfTestLeafInvalidates, TenTenSingleThread) {
   SetTestName("10_10_single_thread_leaf_invalidates");
   ReadTestFile("10_10_layer_tree");
-  RunTest(CompositorMode::SINGLE_THREADED, false);
+  RunTest(CompositorMode::SINGLE_THREADED);
 }
 
-TEST_F(LayerTreeHostPerfTestLeafInvalidates, TenTenThreaded) {
+// Timed out on Android: http://crbug.com/723821
+TEST_F(LayerTreeHostPerfTestLeafInvalidates, MAYBE_TenTenThreaded) {
   SetTestName("10_10_threaded_impl_side_leaf_invalidates");
   ReadTestFile("10_10_layer_tree");
-  RunTest(CompositorMode::THREADED, false);
+  RunTest(CompositorMode::THREADED);
 }
 
 // Simulates main-thread scrolling on each frame.
@@ -234,45 +263,53 @@ class ScrollingLayerTreePerfTest : public LayerTreeHostPerfTestJsonReader {
       return;
     static const gfx::Vector2d delta = gfx::Vector2d(0, 10);
     scrollable_->SetScrollOffset(
-        gfx::ScrollOffsetWithDelta(scrollable_->scroll_offset(), delta));
+        gfx::ScrollOffsetWithDelta(scrollable_->CurrentScrollOffset(), delta));
   }
 
  private:
   scoped_refptr<Layer> scrollable_;
 };
 
-TEST_F(ScrollingLayerTreePerfTest, LongScrollablePageSingleThread) {
+// Timed out on Android: http://crbug.com/723821
+#if defined(OS_ANDROID)
+#define MAYBE_LongScrollablePageSingleThread \
+    DISABLED_LongScrollablePageSingleThread
+#else
+#define MAYBE_LongScrollablePageSingleThread LongScrollablePageSingleThread
+#endif
+TEST_F(ScrollingLayerTreePerfTest, MAYBE_LongScrollablePageSingleThread) {
   SetTestName("long_scrollable_page");
   ReadTestFile("long_scrollable_page");
-  RunTest(CompositorMode::SINGLE_THREADED, false);
+  RunTest(CompositorMode::SINGLE_THREADED);
 }
 
-TEST_F(ScrollingLayerTreePerfTest, LongScrollablePageThreaded) {
+// Timed out on Android: http://crbug.com/723821
+#if defined(OS_ANDROID)
+#define MAYBE_LongScrollablePageThreaded DISABLED_LongScrollablePageThreaded
+#else
+#define MAYBE_LongScrollablePageThreaded LongScrollablePageThreaded
+#endif
+TEST_F(ScrollingLayerTreePerfTest, MAYBE_LongScrollablePageThreaded) {
   SetTestName("long_scrollable_page_threaded_impl_side");
   ReadTestFile("long_scrollable_page");
-  RunTest(CompositorMode::THREADED, false);
+  RunTest(CompositorMode::THREADED);
 }
-
-static void EmptyReleaseCallback(const gpu::SyncToken& sync_token,
-                                 bool lost_resource) {}
 
 // Simulates main-thread scrolling on each frame.
 class BrowserCompositorInvalidateLayerTreePerfTest
     : public LayerTreeHostPerfTestJsonReader {
  public:
-  BrowserCompositorInvalidateLayerTreePerfTest()
-      : LayerTreeHostPerfTestJsonReader(),
-        next_fence_sync_(1),
-        clean_up_started_(false) {}
+  BrowserCompositorInvalidateLayerTreePerfTest() = default;
 
   void BuildTree() override {
     LayerTreeHostPerfTestJsonReader::BuildTree();
-    tab_contents_ =
-        static_cast<TextureLayer*>(
-            layer_tree_host()->root_layer()->children()[0]->
-                                             children()[0]->
-                                             children()[0]->
-                                             children()[0].get());
+    tab_contents_ = static_cast<TextureLayer*>(layer_tree_host()
+                                                   ->root_layer()
+                                                   ->children()[0]
+                                                   ->children()[0]
+                                                   ->children()[0]
+                                                   ->children()[0]
+                                                   .get());
     ASSERT_TRUE(tab_contents_.get());
   }
 
@@ -284,17 +321,22 @@ class BrowserCompositorInvalidateLayerTreePerfTest
     name_stream << "name" << next_fence_sync_;
     gpu_mailbox.SetName(
         reinterpret_cast<const int8_t*>(name_stream.str().c_str()));
-    std::unique_ptr<SingleReleaseCallback> callback =
-        SingleReleaseCallback::Create(base::Bind(&EmptyReleaseCallback));
+    std::unique_ptr<viz::SingleReleaseCallback> callback =
+        viz::SingleReleaseCallback::Create(base::BindOnce(
+            &BrowserCompositorInvalidateLayerTreePerfTest::ReleaseMailbox,
+            base::Unretained(this)));
 
-    gpu::SyncToken next_sync_token(gpu::CommandBufferNamespace::GPU_IO, 0,
+    gpu::SyncToken next_sync_token(gpu::CommandBufferNamespace::GPU_IO,
                                    gpu::CommandBufferId::FromUnsafeValue(1),
                                    next_fence_sync_);
     next_sync_token.SetVerifyFlush();
-    TextureMailbox mailbox(gpu_mailbox, next_sync_token, GL_TEXTURE_2D);
+    viz::TransferableResource resource = viz::TransferableResource::MakeGL(
+        gpu_mailbox, GL_LINEAR, GL_TEXTURE_2D, next_sync_token);
     next_fence_sync_++;
 
-    tab_contents_->SetTextureMailbox(mailbox, std::move(callback));
+    tab_contents_->SetTransferableResource(resource, std::move(callback));
+    ++sent_mailboxes_count_;
+    tab_contents_->SetNeedsDisplay();
   }
 
   void DidCommit() override {
@@ -303,42 +345,58 @@ class BrowserCompositorInvalidateLayerTreePerfTest
     layer_tree_host()->SetNeedsCommit();
   }
 
-  void CleanUpAndEndTest(LayerTreeHostImpl* host_impl) override {
+  void CleanUpAndEndTest() override {
     clean_up_started_ = true;
     MainThreadTaskRunner()->PostTask(
         FROM_HERE,
-        base::Bind(&BrowserCompositorInvalidateLayerTreePerfTest::
-                        CleanUpAndEndTestOnMainThread,
-                   base::Unretained(this)));
+        base::BindOnce(&BrowserCompositorInvalidateLayerTreePerfTest::
+                           CleanUpAndEndTestOnMainThread,
+                       base::Unretained(this)));
   }
 
   void CleanUpAndEndTestOnMainThread() {
-    tab_contents_->SetTextureMailbox(TextureMailbox(), nullptr);
-    EndTest();
+    tab_contents_->ClearTexture();
+    // ReleaseMailbox will end the test when we get the last mailbox back.
+  }
+
+  void ReleaseMailbox(const gpu::SyncToken& sync_token, bool lost_resource) {
+    ++released_mailboxes_count_;
+    if (released_mailboxes_count_ == sent_mailboxes_count_) {
+      DCHECK(CleanUpStarted());
+      EndTest();
+    }
   }
 
   bool CleanUpStarted() override { return clean_up_started_; }
 
  private:
   scoped_refptr<TextureLayer> tab_contents_;
-  uint64_t next_fence_sync_;
-  bool clean_up_started_;
+  uint64_t next_fence_sync_ = 1;
+  bool clean_up_started_ = false;
+  int sent_mailboxes_count_ = 0;
+  int released_mailboxes_count_ = 0;
 };
 
 TEST_F(BrowserCompositorInvalidateLayerTreePerfTest, DenseBrowserUIThreaded) {
   measure_commit_cost_ = true;
   SetTestName("dense_layer_tree");
   ReadTestFile("dense_layer_tree");
-  RunTest(CompositorMode::THREADED, false);
+  RunTest(CompositorMode::THREADED);
 }
 
 // Simulates a page with several large, transformed and animated layers.
-TEST_F(LayerTreeHostPerfTestJsonReader, HeavyPageThreaded) {
+// Timed out on Android: http://crbug.com/723821
+#if defined(OS_ANDROID)
+#define MAYBE_HeavyPageThreaded DISABLED_HeavyPageThreaded
+#else
+#define MAYBE_HeavyPageThreaded HeavyPageThreaded
+#endif
+TEST_F(LayerTreeHostPerfTestJsonReader, MAYBE_HeavyPageThreaded) {
   begin_frame_driven_drawing_ = true;
   measure_commit_cost_ = true;
   SetTestName("heavy_page");
   ReadTestFile("heavy_layer_tree");
-  RunTest(CompositorMode::THREADED, false);
+  RunTest(CompositorMode::THREADED);
 }
 
 }  // namespace

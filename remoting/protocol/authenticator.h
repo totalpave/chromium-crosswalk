@@ -10,9 +10,9 @@
 
 #include "base/callback_forward.h"
 
-namespace buzz {
+namespace jingle_xmpp {
 class XmlElement;
-}  // namespace buzz
+}  // namespace jingle_xmpp
 
 namespace remoting {
 namespace protocol {
@@ -53,7 +53,7 @@ class Authenticator {
     // Next message is ready to be sent to the peer.
     MESSAGE_READY,
 
-    // Session is authenticated successufully.
+    // Session is authenticated successfully.
     ACCEPTED,
 
     // Session is rejected.
@@ -64,9 +64,20 @@ class Authenticator {
   };
 
   enum RejectionReason {
+    // The account credentials were not valid (i.e. incorrect PIN).
     INVALID_CREDENTIALS,
+
+    // The client JID was not valid (i.e. violated a policy or was malformed).
     INVALID_ACCOUNT,
+
+    // Generic error used when something goes wrong establishing a session.
     PROTOCOL_ERROR,
+
+    // Session was rejected by the user (i.e. via the confirmation dialog).
+    REJECTED_BY_USER,
+
+    // Multiple, valid connection requests were received for the same session.
+    TOO_MANY_CONNECTIONS,
   };
 
   // Callback used for layered Authenticator implementations, particularly
@@ -78,15 +89,15 @@ class Authenticator {
       CreateBaseAuthenticatorCallback;
 
   // Returns true if |message| is an Authenticator message.
-  static bool IsAuthenticatorMessage(const buzz::XmlElement* message);
+  static bool IsAuthenticatorMessage(const jingle_xmpp::XmlElement* message);
 
   // Creates an empty Authenticator message, owned by the caller.
-  static std::unique_ptr<buzz::XmlElement> CreateEmptyAuthenticatorMessage();
+  static std::unique_ptr<jingle_xmpp::XmlElement> CreateEmptyAuthenticatorMessage();
 
   // Finds Authenticator message among child elements of |message|, or
   // returns nullptr otherwise.
-  static const buzz::XmlElement* FindAuthenticatorMessage(
-      const buzz::XmlElement* message);
+  static const jingle_xmpp::XmlElement* FindAuthenticatorMessage(
+      const jingle_xmpp::XmlElement* message);
 
   Authenticator() {}
   virtual ~Authenticator() {}
@@ -107,12 +118,12 @@ class Authenticator {
   // ownership of |message|. |resume_callback| will be called when processing is
   // finished. The implementation must guarantee that |resume_callback| is not
   // called after the Authenticator is destroyed.
-  virtual void ProcessMessage(const buzz::XmlElement* message,
+  virtual void ProcessMessage(const jingle_xmpp::XmlElement* message,
                               const base::Closure& resume_callback) = 0;
 
   // Must be called when in MESSAGE_READY state. Returns next
   // authentication message that needs to be sent to the peer.
-  virtual std::unique_ptr<buzz::XmlElement> GetNextMessage() = 0;
+  virtual std::unique_ptr<jingle_xmpp::XmlElement> GetNextMessage() = 0;
 
   // Returns the auth key received as result of the authentication handshake.
   virtual const std::string& GetAuthKey() const = 0;
@@ -133,7 +144,7 @@ class AuthenticatorFactory {
   // authenticator for the new session. |first_message| specifies
   // authentication part of the session-initiate stanza so that
   // appropriate type of Authenticator can be chosen for the session
-  // (useful when multiple authenticators is supported). Returns nullptr
+  // (useful when multiple authenticators are supported). Returns nullptr
   // if the |first_message| is invalid and the session should be
   // rejected. ProcessMessage() should be called with |first_message|
   // for the result of this method.

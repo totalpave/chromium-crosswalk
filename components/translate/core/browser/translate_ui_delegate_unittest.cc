@@ -7,13 +7,16 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "components/infobars/core/infobar.h"
+#include "components/language/core/browser/language_model.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/pref_registry/testing_pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/translate/core/browser/mock_translate_client.h"
 #include "components/translate/core/browser/mock_translate_driver.h"
+#include "components/translate/core/browser/mock_translate_ranker.h"
 #include "components/translate/core/browser/translate_client.h"
 #include "components/translate/core/browser/translate_infobar_delegate.h"
 #include "components/translate/core/browser/translate_manager.h"
@@ -21,93 +24,56 @@
 #include "components/variations/variations_associated_data.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/metrics_proto/translate_event.pb.h"
 #include "url/gurl.h"
 
+using testing::_;
 using testing::Return;
 using testing::Test;
+using translate::testing::MockTranslateClient;
 using translate::testing::MockTranslateDriver;
+using translate::testing::MockTranslateRanker;
 
 namespace translate {
 
-#if defined(OS_CHROMEOS)
-const char* preferred_languages_prefs = "settings.language.preferred_languages";
-#else
-const char* preferred_languages_prefs = NULL;
-#endif
-
-class MockTranslateClient : public TranslateClient {
- public:
-  MockTranslateClient(TranslateDriver* driver, PrefService* prefs)
-      : driver_(driver), prefs_(prefs) {}
-
-  TranslateDriver* GetTranslateDriver() { return driver_; }
-  PrefService* GetPrefs() { return prefs_; }
-
-  std::unique_ptr<TranslatePrefs> GetTranslatePrefs() {
-    return base::WrapUnique(new TranslatePrefs(prefs_, "intl.accept_languages",
-                                               preferred_languages_prefs));
+class MockLanguageModel : public language::LanguageModel {
+  std::vector<LanguageDetails> GetLanguages() override {
+    return {LanguageDetails("en", 1.0)};
   }
-
-  MOCK_METHOD0(GetTranslateAcceptLanguages, TranslateAcceptLanguages*());
-  MOCK_CONST_METHOD0(GetInfobarIconID, int());
-
-  MOCK_CONST_METHOD1(CreateInfoBarMock,
-                     infobars::InfoBar*(TranslateInfoBarDelegate*));
-  std::unique_ptr<infobars::InfoBar> CreateInfoBar(
-      std::unique_ptr<TranslateInfoBarDelegate> delegate) const {
-    return base::WrapUnique(CreateInfoBarMock(std::move(delegate).get()));
-  }
-
-  MOCK_METHOD5(ShowTranslateUI,
-               void(translate::TranslateStep,
-                    const std::string&,
-                    const std::string&,
-                    TranslateErrors::Type,
-                    bool));
-  MOCK_METHOD1(IsTranslatableURL, bool(const GURL&));
-  MOCK_METHOD1(ShowReportLanguageDetectionErrorUI, void(const GURL&));
-
- private:
-  TranslateDriver* driver_;
-  PrefService* prefs_;
 };
 
 class TranslateUIDelegateTest : public ::testing::Test {
  public:
-  TranslateUIDelegateTest() : ::testing::Test() {}
+  TranslateUIDelegateTest() {}
 
   void SetUp() override {
-    pref_service_.reset(new user_prefs::TestingPrefServiceSyncable());
+    pref_service_.reset(new sync_preferences::TestingPrefServiceSyncable());
     pref_service_->registry()->RegisterStringPref(
         "settings.language.preferred_languages", std::string());
     pref_service_->registry()->RegisterStringPref("intl.accept_languages",
                                                   std::string());
+    pref_service_->registry()->RegisterBooleanPref("translate.enabled", true);
     TranslatePrefs::RegisterProfilePrefs(pref_service_->registry());
 
     client_.reset(new MockTranslateClient(&driver_, pref_service_.get()));
-
-    manager_.reset(new TranslateManager(client_.get(), "hi"));
+    ranker_.reset(new MockTranslateRanker());
+    language_model_.reset(new MockLanguageModel());
+    manager_.reset(new TranslateManager(client_.get(), ranker_.get(),
+                                        language_model_.get()));
     manager_->GetLanguageState().set_translation_declined(false);
 
     delegate_.reset(
         new TranslateUIDelegate(manager_->GetWeakPtr(), "ar", "fr"));
 
     ASSERT_FALSE(client_->GetTranslatePrefs()->IsTooOftenDenied("ar"));
-    base::FeatureList::ClearInstanceForTesting();
-    base::FeatureList::SetInstance(base::WrapUnique(new base::FeatureList));
   }
 
-  void TurnOnTranslate2016Q2UIFlag() {
-    base::FeatureList::ClearInstanceForTesting();
-    std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
-    feature_list->InitializeFromCommandLine(translate::kTranslateUI2016Q2.name,
-                                            std::string());
-    base::FeatureList::SetInstance(std::move(feature_list));
-  }
-
+  // Do not reorder. These are ordered for dependency on creation/destruction.
   MockTranslateDriver driver_;
+  std::unique_ptr<sync_preferences::TestingPrefServiceSyncable> pref_service_;
   std::unique_ptr<MockTranslateClient> client_;
-  std::unique_ptr<user_prefs::TestingPrefServiceSyncable> pref_service_;
+  std::unique_ptr<MockTranslateRanker> ranker_;
+  std::unique_ptr<MockLanguageModel> language_model_;
   std::unique_ptr<TranslateManager> manager_;
   std::unique_ptr<TranslateUIDelegate> delegate_;
 
@@ -116,6 +82,11 @@ class TranslateUIDelegateTest : public ::testing::Test {
 };
 
 TEST_F(TranslateUIDelegateTest, CheckDeclinedFalse) {
+  EXPECT_CALL(*ranker_, RecordTranslateEvent(
+                            metrics::TranslateEventProto::USER_IGNORE, _, _))
+      .Times(1);
+  EXPECT_CALL(*client_, RecordTranslateEvent(_)).Times(1);
+
   std::unique_ptr<TranslatePrefs> prefs(client_->GetTranslatePrefs());
   for (int i = 0; i < 10; i++) {
     prefs->IncrementTranslationAcceptedCount("ar");
@@ -135,6 +106,11 @@ TEST_F(TranslateUIDelegateTest, CheckDeclinedFalse) {
 }
 
 TEST_F(TranslateUIDelegateTest, CheckDeclinedTrue) {
+  EXPECT_CALL(*ranker_, RecordTranslateEvent(
+                            metrics::TranslateEventProto::USER_DECLINE, _, _))
+      .Times(1);
+  EXPECT_CALL(*client_, RecordTranslateEvent(_)).Times(1);
+
   std::unique_ptr<TranslatePrefs> prefs(client_->GetTranslatePrefs());
   for (int i = 0; i < 10; i++) {
     prefs->IncrementTranslationAcceptedCount("ar");
@@ -152,6 +128,13 @@ TEST_F(TranslateUIDelegateTest, CheckDeclinedTrue) {
 }
 
 TEST_F(TranslateUIDelegateTest, SetLanguageBlocked) {
+  EXPECT_CALL(
+      *ranker_,
+      RecordTranslateEvent(
+          metrics::TranslateEventProto::USER_NEVER_TRANSLATE_LANGUAGE, _, _))
+      .Times(1);
+  EXPECT_CALL(*client_, RecordTranslateEvent(_)).Times(1);
+
   std::unique_ptr<TranslatePrefs> prefs(client_->GetTranslatePrefs());
   manager_->GetLanguageState().SetTranslateEnabled(true);
   EXPECT_TRUE(manager_->GetLanguageState().translate_enabled());
@@ -183,33 +166,59 @@ TEST_F(TranslateUIDelegateTest, ShouldAlwaysTranslateBeCheckedByDefaultNever) {
   }
 }
 
-TEST_F(TranslateUIDelegateTest, ShouldAlwaysTranslateBeCheckedByDefault2) {
-  const char kGroupName[] = "GroupA";
-  std::map<std::string, std::string> params = {
-      {kAlwaysTranslateOfferThreshold, "2"}};
-  variations::AssociateVariationParams(translate::kTranslateUI2016Q2TrialName,
-                                       kGroupName, params);
-  // need a trial_list to init the global instance used internally
-  // inside CreateFieldTrial().
-  base::FieldTrialList trial_list(nullptr);
-  base::FieldTrialList::CreateFieldTrial(translate::kTranslateUI2016Q2TrialName,
-                                         kGroupName);
-
-  std::unique_ptr<TranslatePrefs> prefs(client_->GetTranslatePrefs());
-  prefs->ResetTranslationAcceptedCount("ar");
-
-  for (int i = 0; i < 2; i++) {
-    EXPECT_FALSE(delegate_->ShouldAlwaysTranslateBeCheckedByDefault());
+TEST_F(TranslateUIDelegateTest, ShouldShowAlwaysTranslateShortcut) {
+  std::unique_ptr<TranslatePrefs> prefs = client_->GetTranslatePrefs();
+  for (int i = 0; i < kAlwaysTranslateShortcutMinimumAccepts; i++) {
+    EXPECT_FALSE(delegate_->ShouldShowAlwaysTranslateShortcut())
+        << " at iteration #" << i;
     prefs->IncrementTranslationAcceptedCount("ar");
   }
-  EXPECT_TRUE(delegate_->ShouldAlwaysTranslateBeCheckedByDefault());
-  prefs->IncrementTranslationAcceptedCount("ar");
-
-  EXPECT_FALSE(delegate_->ShouldAlwaysTranslateBeCheckedByDefault());
+  EXPECT_TRUE(delegate_->ShouldShowAlwaysTranslateShortcut());
+  driver_.set_incognito();
+  EXPECT_FALSE(delegate_->ShouldShowAlwaysTranslateShortcut());
 }
 
-// TODO(ftang) Currently this file only test TranslationDeclined(), we
-// need to add the test for other functions soon to increase the test
-// coverage.
+TEST_F(TranslateUIDelegateTest, ShouldShowNeverTranslateShortcut) {
+  std::unique_ptr<TranslatePrefs> prefs = client_->GetTranslatePrefs();
+  for (int i = 0; i < kNeverTranslateShortcutMinimumDenials; i++) {
+    EXPECT_FALSE(delegate_->ShouldShowNeverTranslateShortcut())
+        << " at iteration #" << i;
+    prefs->IncrementTranslationDeniedCount("ar");
+  }
+  EXPECT_TRUE(delegate_->ShouldShowNeverTranslateShortcut());
+  driver_.set_incognito();
+  EXPECT_FALSE(delegate_->ShouldShowNeverTranslateShortcut());
+}
+
+TEST_F(TranslateUIDelegateTest, LanguageCodes) {
+  // Test language codes.
+  EXPECT_EQ("ar", delegate_->GetOriginalLanguageCode());
+  EXPECT_EQ("fr", delegate_->GetTargetLanguageCode());
+
+  // Test language indicies.
+  const size_t ar_index = delegate_->GetOriginalLanguageIndex();
+  EXPECT_EQ("ar", delegate_->GetLanguageCodeAt(ar_index));
+  const size_t fr_index = delegate_->GetTargetLanguageIndex();
+  EXPECT_EQ("fr", delegate_->GetLanguageCodeAt(fr_index));
+
+  // Test updating original / target codes.
+  delegate_->UpdateOriginalLanguage("es");
+  EXPECT_EQ("es", delegate_->GetOriginalLanguageCode());
+  delegate_->UpdateTargetLanguage("de");
+  EXPECT_EQ("de", delegate_->GetTargetLanguageCode());
+
+  // Test updating original / target indicies. Note that this also returns
+  // the delegate to the starting state.
+  delegate_->UpdateOriginalLanguageIndex(ar_index);
+  EXPECT_EQ("ar", delegate_->GetOriginalLanguageCode());
+  delegate_->UpdateTargetLanguageIndex(fr_index);
+  EXPECT_EQ("fr", delegate_->GetTargetLanguageCode());
+}
+
+TEST_F(TranslateUIDelegateTest, GetPageHost) {
+  const GURL url("https://www.example.com/hello/world?fg=1");
+  driver_.SetLastCommittedURL(url);
+  EXPECT_EQ("www.example.com", delegate_->GetPageHost());
+}
 
 }  // namespace translate

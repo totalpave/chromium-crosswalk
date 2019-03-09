@@ -7,12 +7,9 @@
 
 #include <memory>
 
+#include "base/test/scoped_feature_list.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_base.h"
-
-namespace base {
-class FilePath;
-}
 
 namespace content {
 class BrowserContext;
@@ -30,12 +27,13 @@ class AppShellTest : public content::BrowserTestBase {
 
   // content::BrowserTestBase implementation.
   void SetUp() override;
-  void SetUpOnMainThread() override;
-  void RunTestOnMainThreadLoop() override;
+  void PreRunTestOnMainThread() override;
+  void PostRunTestOnMainThread() override;
 
   content::BrowserContext* browser_context() { return browser_context_; }
 
  protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
   content::BrowserContext* browser_context_;
   ShellExtensionSystem* extension_system_;
 };

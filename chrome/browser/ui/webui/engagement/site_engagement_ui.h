@@ -6,22 +6,20 @@
 #define CHROME_BROWSER_UI_WEBUI_ENGAGEMENT_SITE_ENGAGEMENT_UI_H_
 
 #include "base/macros.h"
-#include "chrome/browser/ui/webui/engagement/site_engagement.mojom.h"
-#include "chrome/browser/ui/webui/mojo_web_ui_controller.h"
+#include "chrome/browser/engagement/site_engagement_details.mojom.h"
+#include "ui/webui/mojo_web_ui_controller.h"
 
 // The UI for chrome://site-engagement/.
-class SiteEngagementUI
-    : public MojoWebUIController<mojom::SiteEngagementUIHandler> {
+class SiteEngagementUI : public ui::MojoWebUIController {
  public:
   explicit SiteEngagementUI(content::WebUI* web_ui);
   ~SiteEngagementUI() override;
 
  private:
-  // MojoWebUIController overrides:
-  void BindUIHandler(
-      mojo::InterfaceRequest<mojom::SiteEngagementUIHandler> request) override;
+  void BindSiteEngagementDetailsProvider(
+      mojom::SiteEngagementDetailsProviderRequest request);
 
-  std::unique_ptr<mojom::SiteEngagementUIHandler> ui_handler_;
+  std::unique_ptr<mojom::SiteEngagementDetailsProvider> ui_handler_;
 
   DISALLOW_COPY_AND_ASSIGN(SiteEngagementUI);
 };

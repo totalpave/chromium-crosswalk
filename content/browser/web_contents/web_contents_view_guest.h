@@ -51,6 +51,7 @@ class WebContentsViewGuest : public WebContentsView,
   void SetInitialFocus() override;
   void StoreFocus() override;
   void RestoreFocus() override;
+  void FocusThroughTabTraversal(bool reverse) override;
   DropData* GetDropData() const override;
   gfx::Rect GetViewBounds() const override;
   void CreateView(const gfx::Size& initial_size,
@@ -58,17 +59,16 @@ class WebContentsViewGuest : public WebContentsView,
   RenderWidgetHostViewBase* CreateViewForWidget(
       RenderWidgetHost* render_widget_host,
       bool is_guest_view_hack) override;
-  RenderWidgetHostViewBase* CreateViewForPopupWidget(
+  RenderWidgetHostViewBase* CreateViewForChildWidget(
       RenderWidgetHost* render_widget_host) override;
   void SetPageTitle(const base::string16& title) override;
   void RenderViewCreated(RenderViewHost* host) override;
-  void RenderViewSwappedIn(RenderViewHost* host) override;
+  void RenderViewReady() override;
+  void RenderViewHostChanged(RenderViewHost* old_host,
+                             RenderViewHost* new_host) override;
   void SetOverscrollControllerEnabled(bool enabled) override;
 #if defined(OS_MACOSX)
-  void SetAllowOtherViews(bool allow) override;
-  bool GetAllowOtherViews() const override;
-  bool IsEventTracking() const override;
-  void CloseTabAfterEventTracking() override;
+  bool CloseTabAfterEventTrackingIfNeeded() override;
 #endif
 
   // Backend implementation of RenderViewHostDelegateView.
@@ -78,10 +78,9 @@ class WebContentsViewGuest : public WebContentsView,
                      blink::WebDragOperationsMask allowed_ops,
                      const gfx::ImageSkia& image,
                      const gfx::Vector2d& image_offset,
-                     const DragEventSourceInfo& event_info) override;
+                     const DragEventSourceInfo& event_info,
+                     RenderWidgetHostImpl* source_rwh) override;
   void UpdateDragCursor(blink::WebDragOperation operation) override;
-  void GotFocus() override;
-  void TakeFocus(bool reverse) override;
 
  private:
   // The WebContentsImpl whose contents we display.

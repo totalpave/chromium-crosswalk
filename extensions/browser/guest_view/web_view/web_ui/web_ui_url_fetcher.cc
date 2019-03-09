@@ -4,52 +4,76 @@
 
 #include "extensions/browser/guest_view/web_view/web_ui/web_ui_url_fetcher.h"
 
-#include "content/public/browser/browser_context.h"
-#include "content/public/browser/storage_partition.h"
-#include "content/public/common/url_fetcher.h"
+#include "base/bind.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_ui_url_loader_factory.h"
 #include "net/base/load_flags.h"
-#include "net/url_request/url_fetcher.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 
-WebUIURLFetcher::WebUIURLFetcher(content::BrowserContext* context,
-                                 int render_process_id,
-                                 int render_view_id,
+WebUIURLFetcher::WebUIURLFetcher(int render_process_id,
+                                 int render_frame_id,
                                  const GURL& url,
-                                 const WebUILoadFileCallback& callback)
-    : context_(context),
-      render_process_id_(render_process_id),
-      render_view_id_(render_view_id),
+                                 WebUILoadFileCallback callback)
+    : render_process_id_(render_process_id),
+      render_frame_id_(render_frame_id),
       url_(url),
-      callback_(callback) {
-}
+      callback_(std::move(callback)) {}
 
 WebUIURLFetcher::~WebUIURLFetcher() {
 }
 
 void WebUIURLFetcher::Start() {
-  fetcher_ = net::URLFetcher::Create(url_, net::URLFetcher::GET, this);
-  fetcher_->SetRequestContext(
-      content::BrowserContext::GetDefaultStoragePartition(context_)->
-          GetURLRequestContext());
-  fetcher_->SetLoadFlags(net::LOAD_DO_NOT_SAVE_COOKIES);
+  content::RenderFrameHost* rfh =
+      content::RenderFrameHost::FromID(render_process_id_, render_frame_id_);
+  if (!rfh) {
+    std::move(callback_).Run(false, nullptr);
+    return;
+  }
 
-  content::AssociateURLFetcherWithRenderFrame(
-      fetcher_.get(), url_, render_process_id_, render_view_id_);
-  fetcher_->Start();
+  auto factory = content::CreateWebUIURLLoader(rfh, url_.scheme(),
+                                               base::flat_set<std::string>());
+
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("webui_content_scripts_download", R"(
+        semantics {
+          sender: "WebView"
+          description:
+            "When a WebView is embedded within a WebUI, it needs to fetch the "
+            "embedder's content scripts from Chromium's network stack for its "
+            "content scripts injection API."
+          trigger: "The content script injection API is called."
+          data: "URL of the script file to be downloaded."
+          destination: LOCAL
+        }
+        policy {
+          cookies_allowed: NO
+          setting: "It is not possible to disable this feature from settings."
+          policy_exception_justification:
+            "Not Implemented, considered not useful as the request doesn't "
+            "go to the network."
+        })");
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = url_;
+  resource_request->load_flags =
+      net::LOAD_DO_NOT_SAVE_COOKIES | net::LOAD_DO_NOT_SEND_COOKIES;
+  fetcher_ = network::SimpleURLLoader::Create(std::move(resource_request),
+                                              traffic_annotation);
+  fetcher_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      factory.get(), base::BindOnce(&WebUIURLFetcher::OnURLLoaderComplete,
+                                    base::Unretained(this)));
 }
 
-void WebUIURLFetcher::OnURLFetchComplete(const net::URLFetcher* source) {
-  CHECK_EQ(fetcher_.get(), source);
+void WebUIURLFetcher::OnURLLoaderComplete(
+    std::unique_ptr<std::string> response_body) {
+  int response_code = 0;
+  if (fetcher_->ResponseInfo() && fetcher_->ResponseInfo()->headers)
+    response_code = fetcher_->ResponseInfo()->headers->response_code();
 
-  std::string data;
-  bool result = false;
-  if (fetcher_->GetStatus().status() == net::URLRequestStatus::SUCCESS) {
-    result = fetcher_->GetResponseAsString(&data);
-    DCHECK(result);
-  }
   fetcher_.reset();
-  // We cache the callback and reset it so that any references stored within it
-  // are destroyed at the end of the method.
-  auto callback_cache = callback_;
-  callback_.Reset();
-  callback_cache.Run(result, data);
+  std::unique_ptr<std::string> data(new std::string());
+  if (response_body)
+    data = std::move(response_body);
+  std::move(callback_).Run(response_code == 200, std::move(data));
 }

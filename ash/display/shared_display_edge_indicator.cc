@@ -4,7 +4,8 @@
 
 #include "ash/display/shared_display_edge_indicator.h"
 
-#include "ash/common/shell_window_ids.h"
+#include "ash/public/cpp/shell_window_ids.h"
+#include "ash/root_window_controller.h"
 #include "ash/shell.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/aura/client/screen_position_client.h"
@@ -23,8 +24,8 @@ const int kIndicatorAnimationDurationMs = 1000;
 
 class IndicatorView : public views::View {
  public:
-  IndicatorView() {}
-  ~IndicatorView() override {}
+  IndicatorView() = default;
+  ~IndicatorView() override = default;
 
   void SetColor(SkColor color) {
     color_ = color;
@@ -37,26 +38,25 @@ class IndicatorView : public views::View {
   }
 
  private:
-  SkColor color_;
+  SkColor color_ = SK_ColorTRANSPARENT;
   DISALLOW_COPY_AND_ASSIGN(IndicatorView);
 };
 
 views::Widget* CreateWidget(const gfx::Rect& bounds,
                             views::View* contents_view) {
+  display::Display display =
+      display::Screen::GetScreen()->GetDisplayMatching(bounds);
   views::Widget* widget = new views::Widget;
   views::Widget::InitParams params(views::Widget::InitParams::TYPE_POPUP);
+  params.context = Shell::GetRootWindowControllerWithDisplayId(display.id())
+                       ->GetRootWindow();
   params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
   params.keep_on_top = true;
-  // We set the context to the primary root window; this is OK because the ash
-  // stacking controller will still place us in the correct RootWindow.
-  params.context = Shell::GetPrimaryRootWindow();
   widget->set_focus_on_creation(false);
   widget->Init(params);
   widget->SetVisibilityChangedAnimationsEnabled(false);
   widget->GetNativeWindow()->SetName("SharedEdgeIndicator");
   widget->SetContentsView(contents_view);
-  display::Display display =
-      display::Screen::GetScreen()->GetDisplayMatching(bounds);
   aura::Window* window = widget->GetNativeWindow();
   aura::client::ScreenPositionClient* screen_position_client =
       aura::client::GetScreenPositionClient(window->GetRootWindow());

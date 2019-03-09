@@ -32,13 +32,13 @@ class VideoEncoderVpx : public VideoEncoder {
 
   ~VideoEncoderVpx() override;
 
-  void SetTickClockForTests(base::TickClock* tick_clock);
+  void SetTickClockForTests(const base::TickClock* tick_clock);
 
   // VideoEncoder interface.
   void SetLosslessEncode(bool want_lossless) override;
   void SetLosslessColor(bool want_lossless) override;
-  std::unique_ptr<VideoPacket> Encode(const webrtc::DesktopFrame& frame,
-                                      uint32_t flags) override;
+  std::unique_ptr<VideoPacket> Encode(
+      const webrtc::DesktopFrame& frame) override;
 
  private:
   explicit VideoEncoderVpx(bool use_vp9);
@@ -88,8 +88,7 @@ class VideoEncoderVpx : public VideoEncoder {
   // Used to help initialize VideoPackets from DesktopFrames.
   VideoEncoderHelper helper_;
 
-  base::DefaultTickClock default_tick_clock_;
-  base::TickClock* clock_;
+  const base::TickClock* clock_;
 
   DISALLOW_COPY_AND_ASSIGN(VideoEncoderVpx);
 };

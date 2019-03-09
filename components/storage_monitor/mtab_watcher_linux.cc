@@ -11,8 +11,8 @@
 #include <stdio.h>
 
 #include "base/bind.h"
-#include "base/macros.h"
-#include "content/public/browser/browser_thread.h"
+#include "base/stl_util.h"
+#include "base/threading/scoped_blocking_call.h"
 
 namespace {
 
@@ -36,11 +36,9 @@ const char* const kKnownFileSystems[] = {
 namespace storage_monitor {
 
 MtabWatcherLinux::MtabWatcherLinux(const base::FilePath& mtab_path,
-                                   base::WeakPtr<Delegate> delegate)
-    : mtab_path_(mtab_path),
-      delegate_(delegate),
-      weak_ptr_factory_(this) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
+                                   const UpdateMtabCallback& callback)
+    : mtab_path_(mtab_path), callback_(callback), weak_ptr_factory_(this) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   bool ret = file_watcher_.Watch(
       mtab_path_, false,
       base::Bind(&MtabWatcherLinux::OnFilePathChanged,
@@ -54,11 +52,13 @@ MtabWatcherLinux::MtabWatcherLinux(const base::FilePath& mtab_path,
 }
 
 MtabWatcherLinux::~MtabWatcherLinux() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 void MtabWatcherLinux::ReadMtab() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
 
   FILE* fp = setmntent(mtab_path_.value().c_str(), "r");
   if (!fp)
@@ -72,7 +72,7 @@ void MtabWatcherLinux::ReadMtab() const {
   // devices that have been mounted over.
   while (getmntent_r(fp, &entry, buf, sizeof(buf))) {
     // We only care about real file systems.
-    for (size_t i = 0; i < arraysize(kKnownFileSystems); ++i) {
+    for (size_t i = 0; i < base::size(kKnownFileSystems); ++i) {
       if (strcmp(kKnownFileSystems[i], entry.mnt_type) == 0) {
         device_map[base::FilePath(entry.mnt_dir)] =
             base::FilePath(entry.mnt_fsname);
@@ -82,14 +82,12 @@ void MtabWatcherLinux::ReadMtab() const {
   }
   endmntent(fp);
 
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI, FROM_HERE,
-      base::Bind(&Delegate::UpdateMtab, delegate_, device_map));
+  callback_.Run(device_map);
 }
 
 void MtabWatcherLinux::OnFilePathChanged(
     const base::FilePath& path, bool error) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (path != mtab_path_) {
     // This cannot happen unless FilePathWatcher is buggy. Just ignore this

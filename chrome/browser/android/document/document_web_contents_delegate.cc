@@ -4,9 +4,11 @@
 
 #include "chrome/browser/android/document/document_web_contents_delegate.h"
 
-#include "components/web_contents_delegate_android/web_contents_delegate_android.h"
+#include "components/embedder_support/android/delegate/web_contents_delegate_android.h"
 #include "content/public/browser/web_contents.h"
 #include "jni/DocumentWebContentsDelegate_jni.h"
+
+using base::android::JavaParamRef;
 
 DocumentWebContentsDelegate::DocumentWebContentsDelegate(JNIEnv* env,
                                                          jobject obj)
@@ -25,13 +27,9 @@ void DocumentWebContentsDelegate::AttachContents(
   web_contents->SetDelegate(this);
 }
 
-bool DocumentWebContentsDelegate::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
 void DocumentWebContentsDelegate::AddNewContents(
     content::WebContents* source,
-    content::WebContents* new_contents,
+    std::unique_ptr<content::WebContents> new_contents,
     WindowOpenDisposition disposition,
     const gfx::Rect& initial_pos,
     bool user_gesture,
@@ -45,10 +43,13 @@ void DocumentWebContentsDelegate::CloseContents(content::WebContents* source) {
 
 bool DocumentWebContentsDelegate::ShouldCreateWebContents(
     content::WebContents* web_contents,
+    content::RenderFrameHost* opener,
+    content::SiteInstance* source_site_instance,
     int32_t route_id,
     int32_t main_frame_route_id,
     int32_t main_frame_widget_route_id,
-    WindowContainerType window_container_type,
+    content::mojom::WindowContainerType window_container_type,
+    const GURL& opener_url,
     const std::string& frame_name,
     const GURL& target_url,
     const std::string& partition_id,
@@ -57,6 +58,8 @@ bool DocumentWebContentsDelegate::ShouldCreateWebContents(
   return false;
 }
 
-static jlong Initialize(JNIEnv* env, const JavaParamRef<jobject>& obj) {
+static jlong JNI_DocumentWebContentsDelegate_Initialize(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj) {
   return reinterpret_cast<intptr_t>(new DocumentWebContentsDelegate(env, obj));
 }

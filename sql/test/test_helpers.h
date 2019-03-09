@@ -20,7 +20,7 @@ class FilePath;
 }
 
 namespace sql {
-class Connection;
+class Database;
 }
 
 namespace sql {
@@ -33,6 +33,10 @@ namespace test {
 // actual file size.  The resulting file will return SQLITE_CORRUPT
 // for most operations unless PRAGMA writable_schema is turned ON.
 //
+// This function operates on the raw database file, outstanding database
+// connections may not see the change because of the database cache.  See
+// CorruptSizeInHeaderWithLock().
+//
 // Returns false if any error occurs accessing the file.
 bool CorruptSizeInHeader(const base::FilePath& db_path) WARN_UNUSED_RESULT;
 
@@ -40,6 +44,12 @@ bool CorruptSizeInHeader(const base::FilePath& db_path) WARN_UNUSED_RESULT;
 // memory. Shared between CorruptSizeInHeader() and the the mojo proxy testing
 // code.
 void CorruptSizeInHeaderMemory(unsigned char* header, int64_t db_size);
+
+// Call CorruptSizeInHeader() while holding a SQLite-compatible lock
+// on the database.  This can be used to corrupt a database which is
+// already open elsewhere.  Blocks until a write lock can be acquired.
+bool CorruptSizeInHeaderWithLock(
+    const base::FilePath& db_path) WARN_UNUSED_RESULT;
 
 // Frequently corruption is a result of failure to atomically update
 // pages in different structures.  For instance, if an index update
@@ -62,19 +72,19 @@ bool CorruptTableOrIndex(const base::FilePath& db_path,
                          const char* update_sql) WARN_UNUSED_RESULT;
 
 // Return the number of tables in sqlite_master.
-size_t CountSQLTables(sql::Connection* db) WARN_UNUSED_RESULT;
+size_t CountSQLTables(sql::Database* db) WARN_UNUSED_RESULT;
 
 // Return the number of indices in sqlite_master.
-size_t CountSQLIndices(sql::Connection* db) WARN_UNUSED_RESULT;
+size_t CountSQLIndices(sql::Database* db) WARN_UNUSED_RESULT;
 
 // Returns the number of columns in the named table.  0 indicates an
 // error (probably no such table).
-size_t CountTableColumns(sql::Connection* db, const char* table)
-    WARN_UNUSED_RESULT;
+size_t CountTableColumns(sql::Database* db,
+                         const char* table) WARN_UNUSED_RESULT;
 
 // Sets |*count| to the number of rows in |table|.  Returns false in
 // case of error, such as the table not existing.
-bool CountTableRows(sql::Connection* db, const char* table, size_t* count);
+bool CountTableRows(sql::Database* db, const char* table, size_t* count);
 
 // Creates a SQLite database at |db_path| from the sqlite .dump output
 // at |sql_path|.  Returns false if |db_path| already exists, or if
@@ -84,9 +94,30 @@ bool CreateDatabaseFromSQL(const base::FilePath& db_path,
                            const base::FilePath& sql_path) WARN_UNUSED_RESULT;
 
 // Return the results of running "PRAGMA integrity_check" on |db|.
-// TODO(shess): sql::Connection::IntegrityCheck() is basically the
+// TODO(shess): sql::Database::IntegrityCheck() is basically the
 // same, but not as convenient for testing.  Maybe combine.
-std::string IntegrityCheck(sql::Connection* db) WARN_UNUSED_RESULT;
+std::string IntegrityCheck(sql::Database* db) WARN_UNUSED_RESULT;
+
+// ExecuteWithResult() executes |sql| and returns the first column of the first
+// row as a string.  The empty string is returned for no rows.  This makes it
+// easier to test simple query results using EXPECT_EQ().  For instance:
+//   EXPECT_EQ("1024", ExecuteWithResult(db, "PRAGMA page_size"));
+//
+// ExecuteWithResults() stringifies a larger result set by putting |column_sep|
+// between columns and |row_sep| between rows.  For instance:
+//   EXPECT_EQ("1,3,5", ExecuteWithResults(
+//       db, "SELECT id FROM t ORDER BY id", "|", ","));
+// Note that EXPECT_EQ() can nicely diff when using \n as |row_sep|.
+//
+// To test NULL, use the COALESCE() function:
+//   EXPECT_EQ("<NULL>", ExecuteWithResult(
+//       db, "SELECT c || '<NULL>' FROM t WHERE id = 1"));
+// To test blobs use the HEX() function.
+std::string ExecuteWithResult(sql::Database* db, const char* sql);
+std::string ExecuteWithResults(sql::Database* db,
+                               const char* sql,
+                               const char* column_sep,
+                               const char* row_sep);
 
 }  // namespace test
 }  // namespace sql

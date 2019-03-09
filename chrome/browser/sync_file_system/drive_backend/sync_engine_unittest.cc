@@ -7,10 +7,12 @@
 #include <stddef.h>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/test/sequenced_worker_pool_owner.h"
+#include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/sync_file_system/drive_backend/callback_helper.h"
 #include "chrome/browser/sync_file_system/drive_backend/fake_sync_worker.h"
@@ -21,7 +23,7 @@
 #include "components/drive/service/fake_drive_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "net/url_request/url_request_context_getter.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace sync_file_system {
@@ -32,7 +34,7 @@ class SyncEngineTest : public testing::Test,
  public:
   typedef RemoteFileSyncService::OriginStatusMap RemoteOriginStatusMap;
 
-  SyncEngineTest() : worker_pool_owner_(1, "Worker") {}
+  SyncEngineTest() {}
   ~SyncEngineTest() override {}
 
   void SetUp() override {
@@ -43,21 +45,18 @@ class SyncEngineTest : public testing::Test,
 
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner =
         base::ThreadTaskRunnerHandle::Get();
-    worker_task_runner_ =
-        worker_pool_owner_.pool()->GetSequencedTaskRunnerWithShutdownBehavior(
-            worker_pool_owner_.pool()->GetSequenceToken(),
-            base::SequencedWorkerPool::SKIP_ON_SHUTDOWN);
+    worker_task_runner_ = base::CreateSequencedTaskRunnerWithTraits(
+        {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
 
     sync_engine_.reset(new drive_backend::SyncEngine(
         ui_task_runner.get(), worker_task_runner_.get(),
         nullptr,  // drive_task_runner
-        worker_pool_owner_.pool().get(), profile_dir_.path(),
+        profile_dir_.GetPath(),
         nullptr,    // task_logger
         nullptr,    // notification_manager
         nullptr,    // extension_service
-        nullptr,    // signin_manager
-        nullptr,    // token_service
-        nullptr,    // request_context
+        nullptr,    // identity_manager
+        nullptr,    // url_loader_factory
         nullptr,    // drive_service_factory
         nullptr));  // in_memory_env
 
@@ -97,11 +96,9 @@ class SyncEngineTest : public testing::Test,
   void PostUpdateServiceState(RemoteServiceState state,
                               const std::string& description) {
     worker_task_runner_->PostTask(
-        FROM_HERE,
-        base::Bind(&FakeSyncWorker::UpdateServiceState,
-                   base::Unretained(fake_sync_worker()),
-                   state,
-                   description));
+        FROM_HERE, base::BindOnce(&FakeSyncWorker::UpdateServiceState,
+                                  base::Unretained(fake_sync_worker()), state,
+                                  description));
     WaitForWorkerTaskRunner();
   }
 
@@ -128,7 +125,6 @@ class SyncEngineTest : public testing::Test,
   base::ScopedTempDir profile_dir_;
   std::unique_ptr<drive_backend::SyncEngine> sync_engine_;
 
-  base::SequencedWorkerPoolOwner worker_pool_owner_;
   scoped_refptr<base::SequencedTaskRunner> worker_task_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(SyncEngineTest);
@@ -217,7 +213,7 @@ TEST_F(SyncEngineTest, UpdateServiceState) {
     {REMOTE_SERVICE_DISABLED, "DISABLED"},
   };
 
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     PostUpdateServiceState(test_data[i].state, test_data[i].description);
     EXPECT_EQ(test_data[i].state, sync_engine()->GetCurrentState())
         << "Expected state: REMOTE_SERVICE_" << test_data[i].description;

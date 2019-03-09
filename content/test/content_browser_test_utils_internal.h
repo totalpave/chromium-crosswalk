@@ -10,29 +10,31 @@
 // Note: If a function here also works with browser_tests, it should be in
 // the content public API.
 
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "cc/surfaces/surface_id.h"
-#include "content/public/browser/navigation_handle.h"
+#include "base/optional.h"
+#include "base/run_loop.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "build/build_config.h"
+#include "content/browser/bad_message.h"
+#include "content/common/frame_messages.h"
 #include "content/public/browser/resource_dispatcher_host_delegate.h"
 #include "content/public/browser/web_contents_delegate.h"
-#include "content/public/browser/web_contents_observer.h"
+#include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_utils.h"
+#include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 #include "url/gurl.h"
-
-namespace cc {
-class SurfaceManager;
-}
 
 namespace content {
 
 class FrameTreeNode;
-class MessageLoopRunner;
 class RenderFrameHost;
-class RenderWidgetHostViewChildFrame;
 class Shell;
 class SiteInstance;
 class ToRenderFrameHost;
@@ -42,11 +44,19 @@ class ToRenderFrameHost;
 void NavigateFrameToURL(FrameTreeNode* node, const GURL& url);
 
 // Sets the DialogManager to proceed by default or not when showing a
-// BeforeUnload dialog.
-void SetShouldProceedOnBeforeUnload(Shell* shell, bool proceed);
+// BeforeUnload dialog, and if it proceeds, what value to return.
+void SetShouldProceedOnBeforeUnload(Shell* shell, bool proceed, bool success);
 
 // Extends the ToRenderFrameHost mechanism to FrameTreeNodes.
 RenderFrameHost* ConvertToRenderFrameHost(FrameTreeNode* frame_tree_node);
+
+// Helper function to navigate a window to a |url|, using a browser-initiated
+// navigation that will stay in the same BrowsingInstance.  Most
+// browser-initiated navigations swap BrowsingInstances, but some tests need a
+// navigation to swap processes for cross-site URLs (even outside of
+// --site-per-process) while staying in the same BrowsingInstance.
+WARN_UNUSED_RESULT bool NavigateToURLInSameBrowsingInstance(Shell* window,
+                                                            const GURL& url);
 
 // Creates compact textual representations of the state of the frame tree that
 // is appropriate for use in assertions.
@@ -96,105 +106,192 @@ Shell* OpenPopup(const ToRenderFrameHost& opener,
                  const GURL& url,
                  const std::string& name);
 
-// This class can be used to stall any resource request, based on an URL match.
-// There is no explicit way to resume the request; it should be used carefully.
-// Note: This class likely doesn't work with PlzNavigate.
-// TODO(nasko): Reimplement this class using NavigationThrottle, once it has
-// the ability to defer navigation requests.
-class NavigationStallDelegate : public ResourceDispatcherHostDelegate {
- public:
-  explicit NavigationStallDelegate(const GURL& url);
-
- private:
-  // ResourceDispatcherHostDelegate
-  void RequestBeginning(
-      net::URLRequest* request,
-      content::ResourceContext* resource_context,
-      content::AppCacheService* appcache_service,
-      ResourceType resource_type,
-      ScopedVector<content::ResourceThrottle>* throttles) override;
-
-  GURL url_;
-};
-
-// This class can be used to pause and resume navigations, based on a URL
-// match. Note that it only keeps track of one navigation at a time.
-class TestNavigationManager : public WebContentsObserver {
- public:
-  // Currently this monitors any frame in WebContents.
-  // TODO(clamy): Extend this class so that it can monitor a specific frame.
-  TestNavigationManager(WebContents* web_contents, const GURL& url);
-  ~TestNavigationManager() override;
-
-  // Waits until the navigation request is ready to be sent to the network
-  // stack. The navigation will be paused until it is resumed by calling
-  // ResumeNavigation.
-  void WaitForWillStartRequest();
-
-  // Resumes the navigation if it was previously paused.
-  void ResumeNavigation();
-
-  // Waits until the navigation has been finished. Users of this method should
-  // first use WaitForWillStartRequest, then call ResumeNavigation, and only
-  // then WaitForNavigationFinished.
-  // TODO(clamy): Do not pause the navigation in WillStartRequest by default.
-  void WaitForNavigationFinished();
-
- private:
-  // WebContentsObserver implementation.
-  void DidStartNavigation(NavigationHandle* handle) override;
-  void DidFinishNavigation(NavigationHandle* handle) override;
-
-  // Called when the NavigationThrottle pauses the navigation in
-  // WillStartRequest.
-  void OnWillStartRequest();
-
-  const GURL url_;
-  bool navigation_paused_;
-  NavigationHandle* handle_;
-  scoped_refptr<MessageLoopRunner> loop_runner_;
-
-  base::WeakPtrFactory<TestNavigationManager> weak_factory_;
-};
-
-// Helper class to assist with hit testing surfaces in multiple processes.
-// WaitForSurfaceReady() will only return after a Surface from |target_view|
-// has been composited in the top-level frame's Surface. At that point,
-// browser process hit testing to target_view's Surface can succeed.
-class SurfaceHitTestReadyNotifier {
- public:
-  SurfaceHitTestReadyNotifier(RenderWidgetHostViewChildFrame* target_view);
-  ~SurfaceHitTestReadyNotifier() {}
-
-  void WaitForSurfaceReady();
-
- private:
-  bool ContainsSurfaceId(cc::SurfaceId container_surface_id);
-
-  cc::SurfaceManager* surface_manager_;
-  cc::SurfaceId root_surface_id_;
-  RenderWidgetHostViewChildFrame* target_view_;
-
-  DISALLOW_COPY_AND_ASSIGN(SurfaceHitTestReadyNotifier);
-};
-
 // Helper for mocking choosing a file via a file dialog.
 class FileChooserDelegate : public WebContentsDelegate {
  public:
   // Constructs a WebContentsDelegate that mocks a file dialog.
   // The mocked file dialog will always reply that the user selected |file|.
-  FileChooserDelegate(const base::FilePath& file);
+  // |callback| is invoked when RunFileChooser() is called.
+  FileChooserDelegate(const base::FilePath& file, base::OnceClosure callback);
+  ~FileChooserDelegate() override;
 
   // Implementation of WebContentsDelegate::RunFileChooser.
   void RunFileChooser(RenderFrameHost* render_frame_host,
-                      const FileChooserParams& params) override;
+                      std::unique_ptr<content::FileSelectListener> listener,
+                      const blink::mojom::FileChooserParams& params) override;
 
-  // Whether the file dialog was shown.
-  bool file_chosen() { return file_chosen_; }
+  // The params passed to RunFileChooser.
+  const blink::mojom::FileChooserParams& params() const { return *params_; }
 
  private:
   base::FilePath file_;
-  bool file_chosen_;
+  base::OnceClosure callback_;
+  blink::mojom::FileChooserParamsPtr params_;
+};
+
+// This class is a TestNavigationManager that only monitors notifications within
+// the given frame tree node.
+class FrameTestNavigationManager : public TestNavigationManager {
+ public:
+  FrameTestNavigationManager(int frame_tree_node_id,
+                             WebContents* web_contents,
+                             const GURL& url);
+
+ private:
+  // TestNavigationManager:
+  bool ShouldMonitorNavigation(NavigationHandle* handle) override;
+
+  // Notifications are filtered so only this frame is monitored.
+  int filtering_frame_tree_node_id_;
+
+  DISALLOW_COPY_AND_ASSIGN(FrameTestNavigationManager);
+};
+
+// An observer that can wait for a specific URL to be committed in a specific
+// frame.
+// Note: it does not track the start of a navigation, unlike other observers.
+class UrlCommitObserver : WebContentsObserver {
+ public:
+  explicit UrlCommitObserver(FrameTreeNode* frame_tree_node, const GURL& url);
+  ~UrlCommitObserver() override;
+
+  void Wait();
+
+ private:
+  void DidFinishNavigation(NavigationHandle* navigation_handle) override;
+
+  // The id of the FrameTreeNode in which navigations are peformed.
+  int frame_tree_node_id_;
+
+  // The URL this observer is expecting to be committed.
+  GURL url_;
+
+  // The RunLoop used to spin the message loop.
+  base::RunLoop run_loop_;
+
+  DISALLOW_COPY_AND_ASSIGN(UrlCommitObserver);
+};
+
+// Waits for a kill of the given RenderProcessHost and returns the
+// BadMessageReason that caused a //content-triggerred kill.
+//
+// Example usage:
+//   RenderProcessHostKillWaiter kill_waiter(render_process_host);
+//   ... test code that triggers a renderer kill ...
+//   EXPECT_EQ(bad_message::RFH_INVALID_ORIGIN_ON_COMMIT, kill_waiter.Wait());
+//
+// Tests that don't expect kills (e.g. tests where a renderer process exits
+// normally, like RenderFrameHostManagerTest.ProcessExitWithSwappedOutViews)
+// should use RenderProcessHostWatcher instead of RenderProcessHostKillWaiter.
+class RenderProcessHostKillWaiter {
+ public:
+  explicit RenderProcessHostKillWaiter(RenderProcessHost* render_process_host);
+
+  // Waits until the renderer process exits.  Returns the bad message that made
+  // //content kill the renderer.  |base::nullopt| is returned if the renderer
+  // was killed outside of //content or exited normally.
+  base::Optional<bad_message::BadMessageReason> Wait() WARN_UNUSED_RESULT;
+
+ private:
+  RenderProcessHostWatcher exit_watcher_;
+  base::HistogramTester histogram_tester_;
+
+  DISALLOW_COPY_AND_ASSIGN(RenderProcessHostKillWaiter);
+};
+
+class ShowWidgetMessageFilter : public content::BrowserMessageFilter {
+ public:
+  ShowWidgetMessageFilter();
+
+  bool OnMessageReceived(const IPC::Message& message) override;
+
+  gfx::Rect last_initial_rect() const { return initial_rect_; }
+
+  int last_routing_id() const { return routing_id_; }
+
+  void Wait();
+
+  void Reset();
+
+ private:
+  ~ShowWidgetMessageFilter() override;
+
+  void OnShowWidget(int route_id, const gfx::Rect& initial_rect);
+
+#if defined(OS_MACOSX) || defined(OS_ANDROID)
+  void OnShowPopup(const FrameHostMsg_ShowPopup_Params& params);
+#endif
+
+  void OnShowWidgetOnUI(int route_id, const gfx::Rect& initial_rect);
+
+  scoped_refptr<content::MessageLoopRunner> message_loop_runner_;
+  gfx::Rect initial_rect_;
+  int routing_id_ = MSG_ROUTING_NONE;
+
+  DISALLOW_COPY_AND_ASSIGN(ShowWidgetMessageFilter);
+};
+
+// A BrowserMessageFilter that drops a blacklisted message.
+class DropMessageFilter : public BrowserMessageFilter {
+ public:
+  DropMessageFilter(uint32_t message_class, uint32_t drop_message_id);
+
+ protected:
+  ~DropMessageFilter() override;
+
+ private:
+  // BrowserMessageFilter:
+  bool OnMessageReceived(const IPC::Message& message) override;
+
+  const uint32_t drop_message_id_;
+
+  DISALLOW_COPY_AND_ASSIGN(DropMessageFilter);
+};
+
+// A BrowserMessageFilter that observes a message without handling it, and
+// reports when it was seen.
+class ObserveMessageFilter : public BrowserMessageFilter {
+ public:
+  ObserveMessageFilter(uint32_t message_class, uint32_t watch_message_id);
+
+  bool has_received_message() { return received_; }
+
+  // Spins a RunLoop until the message is observed.
+  void Wait();
+
+ protected:
+  ~ObserveMessageFilter() override;
+
+  // BrowserMessageFilter:
+  bool OnMessageReceived(const IPC::Message& message) override;
+
+ private:
+  void QuitWait();
+
+  const uint32_t watch_message_id_;
+  bool received_ = false;
+  base::OnceClosure quit_closure_;
+
+  DISALLOW_COPY_AND_ASSIGN(ObserveMessageFilter);
+};
+
+// This observer waits until WebContentsObserver::OnRendererUnresponsive
+// notification.
+class UnresponsiveRendererObserver : public WebContentsObserver {
+ public:
+  explicit UnresponsiveRendererObserver(WebContents* web_contents);
+  ~UnresponsiveRendererObserver() override;
+
+  RenderProcessHost* Wait(base::TimeDelta timeout = base::TimeDelta::Max());
+
+ private:
+  // WebContentsObserver:
+  void OnRendererUnresponsive(RenderProcessHost* render_process_host) override;
+
+  RenderProcessHost* captured_render_process_host_ = nullptr;
+  base::RunLoop run_loop_;
+
+  DISALLOW_COPY_AND_ASSIGN(UnresponsiveRendererObserver);
 };
 
 }  // namespace content

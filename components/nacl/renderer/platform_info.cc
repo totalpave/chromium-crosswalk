@@ -4,6 +4,7 @@
 
 #include "base/cpu.h"
 #include "base/logging.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #if defined(OS_WIN)
@@ -23,10 +24,10 @@ const char* GetSandboxArch() {
   // We have to check the host architecture on Windows.
   // See sandbox_isa.h for an explanation why.
   if (base::win::OSInfo::GetInstance()->architecture() ==
-      base::win::OSInfo::X64_ARCHITECTURE)
+      base::win::OSInfo::X64_ARCHITECTURE) {
     return "x86-64";
-  else
-    return "x86-32";
+  }
+  return "x86-32";
 #elif ARCH_CPU_64_BITS
   return "x86-64";
 #else
@@ -59,7 +60,7 @@ std::string GetCpuFeatures() {
   //           doesn't handle other architectures very well, and we
   //           should at least detect the presence of ARM's integer
   //           divide.
-  std::vector<std::string> features;
+  std::vector<base::StringPiece> features;
   base::CPU cpu;
 
   // On x86, SSE features are ordered: the most recent one implies the
@@ -75,7 +76,9 @@ std::string GetCpuFeatures() {
   // TODO: SSE 3
   else if (cpu.has_sse2()) features.push_back("+sse2");
 
-  // TODO: AES, POPCNT, LZCNT, ...
+  if (cpu.has_popcnt()) features.push_back("+popcnt");
+
+  // TODO: AES, LZCNT, ...
   return base::JoinString(features, ",");
 }
 

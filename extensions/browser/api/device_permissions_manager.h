@@ -2,14 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef EXTENSIONS_DEVICE_PERMISSION_MANAGER_H_
-#define EXTENSIONS_DEVICE_PERMISSION_MANAGER_H_
+#ifndef EXTENSIONS_BROWSER_API_DEVICE_PERMISSIONS_MANAGER_H_
+#define EXTENSIONS_BROWSER_API_DEVICE_PERMISSIONS_MANAGER_H_
 
 #include <stdint.h>
 
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "base/gtest_prod_util.h"
@@ -20,8 +21,9 @@
 #include "base/threading/thread_checker.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "device/hid/hid_service.h"
+#include "device/usb/public/mojom/device.mojom.h"
 #include "device/usb/usb_service.h"
+#include "services/device/public/mojom/hid.mojom.h"
 
 namespace base {
 template <typename T>
@@ -43,8 +45,9 @@ class DevicePermissionEntry : public base::RefCounted<DevicePermissionEntry> {
     HID,
   };
 
-  DevicePermissionEntry(scoped_refptr<device::UsbDevice> device);
-  DevicePermissionEntry(scoped_refptr<device::HidDeviceInfo> device);
+  explicit DevicePermissionEntry(const device::mojom::UsbDeviceInfo& device);
+
+  explicit DevicePermissionEntry(const device::mojom::HidDeviceInfo& device);
   DevicePermissionEntry(Type type,
                         uint16_t vendor_id,
                         uint16_t product_id,
@@ -81,13 +84,8 @@ class DevicePermissionEntry : public base::RefCounted<DevicePermissionEntry> {
 
   void set_last_used(const base::Time& last_used) { last_used_ = last_used; }
 
-  // The USB device tracked by this entry. Will be nullptr if this entry was
-  // restored from ExtensionPrefs or type_ is not Type::USB.
-  scoped_refptr<device::UsbDevice> usb_device_;
-  // The HID device tracked by this entry. Will be nullptr if this entry was
-  // restored from ExtensionPrefs or type_ is not Type::HID.
-  scoped_refptr<device::HidDeviceInfo> hid_device_;
-
+  // The device guid of a hid/USB device tracked by this entry.
+  std::string device_guid_;
   // The type of device this entry represents.
   Type type_;
   // The vendor ID of this device.
@@ -112,8 +110,10 @@ class DevicePermissions {
   // Attempts to find a permission entry matching the given device.
   scoped_refptr<DevicePermissionEntry> FindUsbDeviceEntry(
       scoped_refptr<device::UsbDevice> device) const;
+  scoped_refptr<DevicePermissionEntry> FindUsbDeviceEntry(
+      const device::mojom::UsbDeviceInfo& device) const;
   scoped_refptr<DevicePermissionEntry> FindHidDeviceEntry(
-      scoped_refptr<device::HidDeviceInfo> device) const;
+      const device::mojom::HidDeviceInfo& device) const;
 
   const std::set<scoped_refptr<DevicePermissionEntry>>& entries() const {
     return entries_;
@@ -127,9 +127,9 @@ class DevicePermissions {
                     const std::string& extension_id);
 
   std::set<scoped_refptr<DevicePermissionEntry>> entries_;
-  std::map<device::UsbDevice*, scoped_refptr<DevicePermissionEntry>>
+  std::map<std::string, scoped_refptr<DevicePermissionEntry>>
       ephemeral_usb_devices_;
-  std::map<device::HidDeviceInfo*, scoped_refptr<DevicePermissionEntry>>
+  std::map<std::string, scoped_refptr<DevicePermissionEntry>>
       ephemeral_hid_devices_;
 
   DISALLOW_COPY_AND_ASSIGN(DevicePermissions);
@@ -137,8 +137,7 @@ class DevicePermissions {
 
 // Manages saved device permissions for all extensions.
 class DevicePermissionsManager : public KeyedService,
-                                 public device::UsbService::Observer,
-                                 public device::HidService::Observer {
+                                 public device::UsbService::Observer {
  public:
   static DevicePermissionsManager* Get(content::BrowserContext* context);
 
@@ -159,9 +158,9 @@ class DevicePermissionsManager : public KeyedService,
       const std::string& extension_id) const;
 
   void AllowUsbDevice(const std::string& extension_id,
-                      scoped_refptr<device::UsbDevice> device);
+                      const device::mojom::UsbDeviceInfo& device_info);
   void AllowHidDevice(const std::string& extension_id,
-                      scoped_refptr<device::HidDeviceInfo> device);
+                      const device::mojom::HidDeviceInfo& device);
 
   // Updates the "last used" timestamp on the given device entry and writes it
   // out to ExtensionPrefs.
@@ -172,15 +171,18 @@ class DevicePermissionsManager : public KeyedService,
   void RemoveEntry(const std::string& extension_id,
                    scoped_refptr<DevicePermissionEntry> entry);
 
+  // Revokes permission for an ephemeral hid/USB device by its guid.
+  void RemoveEntryByDeviceGUID(DevicePermissionEntry::Type type,
+                               const std::string& guid);
+
   // Revokes permission for the extension to access all allowed devices.
   void Clear(const std::string& extension_id);
 
  private:
-
   friend class DevicePermissionsManagerFactory;
   FRIEND_TEST_ALL_PREFIXES(DevicePermissionsManagerTest, SuspendExtension);
 
-  DevicePermissionsManager(content::BrowserContext* context);
+  explicit DevicePermissionsManager(content::BrowserContext* context);
   ~DevicePermissionsManager() override;
 
   DevicePermissions* GetInternal(const std::string& extension_id) const;
@@ -188,17 +190,11 @@ class DevicePermissionsManager : public KeyedService,
   // UsbService::Observer implementation
   void OnDeviceRemovedCleanup(scoped_refptr<device::UsbDevice> device) override;
 
-  // HidService::Observer implementation
-  void OnDeviceRemovedCleanup(
-      scoped_refptr<device::HidDeviceInfo> device) override;
-
   base::ThreadChecker thread_checker_;
   content::BrowserContext* context_;
   std::map<std::string, DevicePermissions*> extension_id_to_device_permissions_;
   ScopedObserver<device::UsbService, device::UsbService::Observer>
       usb_service_observer_;
-  ScopedObserver<device::HidService, device::HidService::Observer>
-      hid_service_observer_;
 
   DISALLOW_COPY_AND_ASSIGN(DevicePermissionsManager);
 };
@@ -227,4 +223,4 @@ class DevicePermissionsManagerFactory
 
 }  // namespace extensions
 
-#endif  // EXTENSIONS_DEVICE_PERMISSION_MANAGER_H_
+#endif  // EXTENSIONS_BROWSER_API_DEVICE_PERMISSIONS_MANAGER_H_

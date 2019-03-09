@@ -44,7 +44,7 @@ class QuickAnswersHeuristic extends ContextualSearchHeuristic {
     }
 
     @Override
-    protected boolean isConditionSatisfied() {
+    protected boolean isConditionSatisfiedAndEnabled() {
         return mIsConditionSatisfied;
     }
 
@@ -54,5 +54,11 @@ class QuickAnswersHeuristic extends ContextualSearchHeuristic {
             ContextualSearchUma.logQuickAnswerSeen(
                     wasSearchContentViewSeen, mIsConditionSatisfied, mDidAnswer);
         }
+    }
+
+    @Override
+    protected void logRankerTapSuppressionOutcome(ContextualSearchInteractionRecorder logger) {
+        logger.logOutcome(ContextualSearchInteractionRecorder.Feature.OUTCOME_WAS_QUICK_ANSWER_SEEN,
+                mDidAnswer);
     }
 }

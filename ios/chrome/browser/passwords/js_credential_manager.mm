@@ -1,103 +1,114 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "ios/chrome/browser/passwords/js_credential_manager.h"
+#include "ios/chrome/browser/passwords/js_credential_manager.h"
 
-#include "base/json/json_writer.h"
 #include "base/json/string_escape.h"
-#include "base/logging.h"
-#include "base/strings/sys_string_conversions.h"
-#include "base/values.h"
-#include "ios/web/public/web_state/js/credential_util.h"
+#include "base/strings/string16.h"
+#include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
+#import "ios/web/public/web_state/web_state.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 
-// Sanitizes |JSON| and wraps it in quotes so it can be injected safely in
-// JavaScript.
-NSString* JSONEscape(NSString* JSON) {
-  return base::SysUTF8ToNSString(
-      base::GetQuotedJSONString(base::SysNSStringToUTF8(JSON)));
+// Takes CredentialInfo and returns string representing invocation of
+// Credential's constructor with proper values and type.
+std::string CredentialInfoToJsCredential(
+    const password_manager::CredentialInfo& info) {
+  if (info.type ==
+      password_manager::CredentialType::CREDENTIAL_TYPE_FEDERATED) {
+    return base::StringPrintf(
+        "new FederatedCredential({id: %s, name: %s, iconURL: %s, provider: "
+        "%s})",
+        base::GetQuotedJSONString(info.id.value_or(base::string16())).c_str(),
+        base::GetQuotedJSONString(info.name.value_or(base::string16())).c_str(),
+        base::GetQuotedJSONString(info.icon.spec()).c_str(),
+        base::GetQuotedJSONString(info.federation.GetURL().spec()).c_str());
+  }
+  if (info.type == password_manager::CredentialType::CREDENTIAL_TYPE_PASSWORD) {
+    return base::StringPrintf(
+        "new PasswordCredential({id: %s, name: %s, iconURL: %s, password: %s})",
+        base::GetQuotedJSONString(info.id.value_or(base::string16())).c_str(),
+        base::GetQuotedJSONString(info.name.value_or(base::string16())).c_str(),
+        base::GetQuotedJSONString(info.icon.spec()).c_str(),
+        base::GetQuotedJSONString(info.password.value_or(base::string16()))
+            .c_str());
+  }
+  /* if (info.type == CREDENTIAL_TYPE_EMPTY) */
+  return std::string();
+}
+
+void ResolveOrRejectPromise(web::WebState* web_state,
+                            int promise_id,
+                            bool resolve,
+                            const std::string& script) {
+  DCHECK(web_state);
+  std::string js_code = base::StringPrintf(
+      "__gCrWeb.credentialManager.%s[%d](%s); delete "
+      "__gCrWeb.credentialManager.%s[%d];",
+      resolve ? "resolvers_" : "rejecters_", promise_id, script.c_str(),
+      resolve ? "resolvers_" : "rejecters_", promise_id);
+  web_state->ExecuteJavaScript(base::UTF8ToUTF16(js_code));
 }
 
 }  // namespace
 
-const char kCredentialsPendingRequestErrorType[] = "PendingRequestError";
-const char kCredentialsPendingRequestErrorMessage[] =
-    "There is already an outstanding request";
-const char kCredentialsSecurityErrorType[] = "SecurityError";
-const char kCredentialsPasswordStoreUnavailableErrorType[] =
-    "PasswordStoreUnavailableError";
-const char kCredentialsPasswordStoreUnavailableErrorMessage[] =
-    "The password store is unavailable";
-const char kCredentialsSecurityErrorMessageUntrustedOrigin[] =
-    "The origin is untrusted";
-
-@interface JSCredentialManager ()
-
-// Evaluates the JavaScript in |script|, which should evaluate to a JavaScript
-// boolean value. That value will be passed to |completionHandler|.
-- (void)evaluateScript:(NSString*)script
-     completionHandler:(void (^)(BOOL))completionHandler;
-
-@end
-
-@implementation JSCredentialManager
-
-- (void)resolvePromiseWithRequestID:(NSInteger)requestID
-                         credential:(const web::Credential&)credential
-                  completionHandler:(void (^)(BOOL))completionHandler {
-  base::DictionaryValue credentialData;
-  web::CredentialToDictionaryValue(credential, &credentialData);
-  std::string credentialDataJSON;
-  base::JSONWriter::Write(credentialData, &credentialDataJSON);
-  NSString* script = [NSString
-      stringWithFormat:@"__gCrWeb['credentialManager'].resolve(%ld, %@)",
-                       static_cast<long>(requestID),
-                       base::SysUTF8ToNSString(credentialDataJSON)];
-  [self evaluate:script
-      stringResultHandler:^(NSString* result, NSError* error) {
-        if (completionHandler)
-          completionHandler(!error && [result isEqualToString:@"true"]);
-      }];
+void ResolveCredentialPromiseWithCredentialInfo(
+    web::WebState* web_state,
+    int promise_id,
+    const base::Optional<password_manager::CredentialInfo>& info) {
+  DCHECK(web_state);
+  std::string credential_str = info.has_value()
+                                   ? CredentialInfoToJsCredential(info.value())
+                                   : std::string();
+  ResolveOrRejectPromise(web_state, promise_id, /*resolve=*/true,
+                         credential_str);
 }
 
-- (void)resolvePromiseWithRequestID:(NSInteger)requestID
-                  completionHandler:(void (^)(BOOL))completionHandler {
-  NSString* script =
-      [NSString stringWithFormat:@"__gCrWeb['credentialManager'].resolve(%ld)",
-                                 static_cast<long>(requestID)];
-  [self evaluateScript:script completionHandler:completionHandler];
+void ResolveCredentialPromiseWithUndefined(web::WebState* web_state,
+                                           int promise_id) {
+  DCHECK(web_state);
+  ResolveOrRejectPromise(web_state, promise_id, /*resolve=*/true,
+                         std::string());
 }
 
-- (void)rejectPromiseWithRequestID:(NSInteger)requestID
-                         errorType:(NSString*)errorType
-                           message:(NSString*)message
-                 completionHandler:(void (^)(BOOL))completionHandler {
-  NSString* script = [NSString
-      stringWithFormat:@"__gCrWeb['credentialManager'].reject(%ld, %@, %@)",
-                       static_cast<long>(requestID), JSONEscape(errorType),
-                       JSONEscape(message)];
-  [self evaluateScript:script completionHandler:completionHandler];
+void RejectCredentialPromiseWithTypeError(web::WebState* web_state,
+                                          int promise_id,
+                                          const base::StringPiece16& message) {
+  DCHECK(web_state);
+  std::string type_error_str = base::StringPrintf(
+      "new TypeError(%s)", base::GetQuotedJSONString(message).c_str());
+  ResolveOrRejectPromise(web_state, promise_id, /*resolve=*/false,
+                         type_error_str);
 }
 
-- (void)evaluateScript:(NSString*)script
-     completionHandler:(void (^)(BOOL))completionHandler {
-  [self evaluate:script
-      stringResultHandler:^(NSString* result, NSError* error) {
-        if (completionHandler)
-          completionHandler(!error && [result isEqualToString:@"true"]);
-      }];
+void RejectCredentialPromiseWithInvalidStateError(
+    web::WebState* web_state,
+    int promise_id,
+    const base::StringPiece16& message) {
+  DCHECK(web_state);
+  std::string invalid_state_err_str = base::StringPrintf(
+      "Object.create(DOMException.prototype, "
+      "{name:{value:DOMException.INVALID_STATE_ERR}, message:{value:%s}})",
+      base::GetQuotedJSONString(message).c_str());
+  ResolveOrRejectPromise(web_state, promise_id, /*resolve=*/false,
+                         invalid_state_err_str);
 }
 
-#pragma mark - Protected methods
-
-- (NSString*)scriptPath {
-  return @"credential_manager";
+void RejectCredentialPromiseWithNotSupportedError(
+    web::WebState* web_state,
+    int promise_id,
+    const base::StringPiece16& message) {
+  DCHECK(web_state);
+  std::string not_supported_err_str = base::StringPrintf(
+      "Object.create(DOMException.prototype, "
+      "{name:{value:DOMException.NOT_SUPPORTED_ERR}, message:{value:%s}})",
+      base::GetQuotedJSONString(message).c_str());
+  ResolveOrRejectPromise(web_state, promise_id, /*resolve=*/false,
+                         not_supported_err_str);
 }
-
-- (NSString*)presenceBeacon {
-  return @"__gCrWeb.credentialManager";
-}
-
-@end

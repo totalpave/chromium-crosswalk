@@ -2,14 +2,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import ast
+"""Contains common helpers for GN action()s."""
+
+import collections
 import contextlib
+import filecmp
 import fnmatch
 import json
 import os
 import pipes
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -17,18 +19,23 @@ import sys
 import tempfile
 import zipfile
 
+# Any new non-system import must be added to:
+#     //build/config/android/internal_rules.gni
+
 # Some clients do not add //build/android/gyp to PYTHONPATH.
 import md5_check  # pylint: disable=relative-import
 
-sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-from pylib.constants import host_paths
+sys.path.append(os.path.join(os.path.dirname(__file__),
+                             os.pardir, os.pardir, os.pardir))
+import gn_helpers
 
-COLORAMA_ROOT = os.path.join(host_paths.DIR_SOURCE_ROOT,
-                             'third_party', 'colorama', 'src')
-# aapt should ignore OWNERS files in addition the default ignore pattern.
-AAPT_IGNORE_PATTERN = ('!OWNERS:!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:' +
-                       '!CVS:!thumbs.db:!picasa.ini:!*~:!*.d.stamp')
-_HERMETIC_TIMESTAMP = (2001, 1, 1, 0, 0, 0)
+# Definition copied from pylib/constants/__init__.py to avoid adding
+# a dependency on pylib.
+DIR_SOURCE_ROOT = os.environ.get('CHECKOUT_SOURCE_ROOT',
+    os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                 os.pardir, os.pardir, os.pardir, os.pardir)))
+
+HERMETIC_TIMESTAMP = (2001, 1, 1, 0, 0, 0)
 _HERMETIC_FILE_ATTR = (0644 << 16L)
 
 
@@ -70,39 +77,39 @@ def FindInDirectory(directory, filename_filter):
   return files
 
 
-def FindInDirectories(directories, filename_filter):
-  all_files = []
-  for directory in directories:
-    all_files.extend(FindInDirectory(directory, filename_filter))
-  return all_files
+def ReadBuildVars(path):
+  """Parses a build_vars.txt into a dict."""
+  with open(path) as f:
+    return dict(l.rstrip().split('=', 1) for l in f)
 
 
-def ParseGnList(gn_string):
-  # TODO(brettw) bug 573132: This doesn't handle GN escaping properly, so any
-  # weird characters like $ or \ in the strings will be corrupted.
-  #
-  # The code should import build/gn_helpers.py and then do:
-  #   parser = gn_helpers.GNValueParser(gn_string)
-  #   return return parser.ParseList()
-  # As of this writing, though, there is a CastShell build script that sends
-  # JSON through this function, and using correct GN parsing corrupts that.
-  #
-  # We need to be consistent about passing either JSON or GN lists through
-  # this function.
-  return ast.literal_eval(gn_string)
+def ParseGnList(value):
+  """Converts a "GN-list" command-line parameter into a list.
 
+  Conversions handled:
+    * None -> []
+    * '' -> []
+    * 'asdf' -> ['asdf']
+    * '["a", "b"]' -> ['a', 'b']
+    * ['["a", "b"]', 'c'] -> ['a', 'b', 'c']  (flattened list)
 
-def ParseGypList(gyp_string):
-  # The ninja generator doesn't support $ in strings, so use ## to
-  # represent $.
-  # TODO(cjhopman): Remove when
-  # https://code.google.com/p/gyp/issues/detail?id=327
-  # is addressed.
-  gyp_string = gyp_string.replace('##', '$')
-
-  if gyp_string.startswith('['):
-    return ParseGnList(gyp_string)
-  return shlex.split(gyp_string)
+  The common use for this behavior is in the Android build where things can
+  take lists of @FileArg references that are expanded via ExpandFileArgs.
+  """
+  # Convert None to [].
+  if not value:
+    return []
+  # Convert a list of GN lists to a flattened list.
+  if isinstance(value, list):
+    ret = []
+    for arg in value:
+      ret.extend(ParseGnList(arg))
+    return ret
+  # Convert normal GN list.
+  if value.startswith('['):
+    return gn_helpers.GNValueParser(value).ParseList()
+  # Convert a single string value to a list.
+  return [value]
 
 
 def CheckOptions(options, parser, required=None):
@@ -126,9 +133,39 @@ def WriteJson(obj, path, only_if_changed=False):
       outfile.write(new_dump)
 
 
-def ReadJson(path):
-  with open(path, 'r') as jsonfile:
-    return json.load(jsonfile)
+@contextlib.contextmanager
+def AtomicOutput(path, only_if_changed=True):
+  """Helper to prevent half-written outputs.
+
+  Args:
+    path: Path to the final output file, which will be written atomically.
+    only_if_changed: If True (the default), do not touch the filesystem
+      if the content has not changed.
+  Returns:
+    A python context manager that yelds a NamedTemporaryFile instance
+    that must be used by clients to write the data to. On exit, the
+    manager will try to replace the final output file with the
+    temporary one if necessary. The temporary file is always destroyed
+    on exit.
+  Example:
+    with build_utils.AtomicOutput(output_path) as tmp_file:
+      subprocess.check_call(['prog', '--output', tmp_file.name])
+  """
+  # Create in same directory to ensure same filesystem when moving.
+  with tempfile.NamedTemporaryFile(suffix=os.path.basename(path),
+                                   dir=os.path.dirname(path),
+                                   delete=False) as f:
+    try:
+      yield f
+
+      # file should be closed before comparison/move.
+      f.close()
+      if not (only_if_changed and os.path.exists(path) and
+              filecmp.cmp(f.name, path)):
+        shutil.move(f.name, path)
+    finally:
+      if os.path.exists(f.name):
+        os.unlink(f.name)
 
 
 class CalledProcessError(Exception):
@@ -147,6 +184,22 @@ class CalledProcessError(Exception):
     copyable_command = '( cd {}; {} )'.format(os.path.abspath(self.cwd),
         ' '.join(map(pipes.quote, self.args)))
     return 'Command failed: {}\n{}'.format(copyable_command, self.output)
+
+
+def FilterLines(output, filter_string):
+  """Output filter from build_utils.CheckOutput.
+
+  Args:
+    output: Executable output as from build_utils.CheckOutput.
+    filter_string: An RE string that will filter (remove) matching
+        lines from |output|.
+
+  Returns:
+    The filtered output, as a single string.
+  """
+  re_filter = re.compile(filter_string)
+  return '\n'.join(
+      line for line in output.splitlines() if not re_filter.search(line))
 
 
 # This can be used in most cases like subprocess.check_output(). The output,
@@ -198,19 +251,14 @@ def IsTimeStale(output, inputs):
   return False
 
 
-def IsDeviceReady():
-  device_state = CheckOutput(['adb', 'get-state'])
-  return device_state.strip() == 'device'
-
-
-def CheckZipPath(name):
+def _CheckZipPath(name):
   if os.path.normpath(name) != name:
     raise Exception('Non-canonical zip path: %s' % name)
   if os.path.isabs(name):
     raise Exception('Absolute zip path: %s' % name)
 
 
-def IsSymlink(zip_file, name):
+def _IsSymlink(zip_file, name):
   zi = zip_file.getinfo(name)
 
   # The two high-order bytes of ZipInfo.external_attr represent
@@ -228,28 +276,34 @@ def ExtractAll(zip_path, path=None, no_clobber=True, pattern=None,
   if not zipfile.is_zipfile(zip_path):
     raise Exception('Invalid zip file: %s' % zip_path)
 
+  extracted = []
   with zipfile.ZipFile(zip_path) as z:
     for name in z.namelist():
       if name.endswith('/'):
+        MakeDirectory(os.path.join(path, name))
         continue
       if pattern is not None:
         if not fnmatch.fnmatch(name, pattern):
           continue
       if predicate and not predicate(name):
         continue
-      CheckZipPath(name)
+      _CheckZipPath(name)
       if no_clobber:
         output_path = os.path.join(path, name)
         if os.path.exists(output_path):
           raise Exception(
               'Path already exists from zip: %s %s %s'
               % (zip_path, name, output_path))
-      if IsSymlink(z, name):
+      if _IsSymlink(z, name):
         dest = os.path.join(path, name)
         MakeDirectory(os.path.dirname(dest))
         os.symlink(z.read(name), dest)
+        extracted.append(dest)
       else:
         z.extract(name, path)
+        extracted.append(os.path.join(path, name))
+
+  return extracted
 
 
 def AddToZipHermetic(zip_file, zip_path, src_path=None, data=None,
@@ -261,13 +315,13 @@ def AddToZipHermetic(zip_file, zip_path, src_path=None, data=None,
     zip_path: Destination path within the zip file.
     src_path: Path of the source file. Mutually exclusive with |data|.
     data: File data as a string.
-    compress: Whether to enable compression. Default is take from ZipFile
+    compress: Whether to enable compression. Default is taken from ZipFile
         constructor.
   """
   assert (src_path is None) != (data is None), (
       '|src_path| and |data| are mutually exclusive.')
-  CheckZipPath(zip_path)
-  zipinfo = zipfile.ZipInfo(filename=zip_path, date_time=_HERMETIC_TIMESTAMP)
+  _CheckZipPath(zip_path)
+  zipinfo = zipfile.ZipInfo(filename=zip_path, date_time=HERMETIC_TIMESTAMP)
   zipinfo.external_attr = _HERMETIC_FILE_ATTR
 
   if src_path and os.path.islink(src_path):
@@ -276,8 +330,18 @@ def AddToZipHermetic(zip_file, zip_path, src_path=None, data=None,
     zip_file.writestr(zipinfo, os.readlink(src_path))
     return
 
+  # zipfile.write() does
+  #     external_attr = (os.stat(src_path)[0] & 0xFFFF) << 16L
+  # but we want to use _HERMETIC_FILE_ATTR, so manually set
+  # the few attr bits we care about.
   if src_path:
-    with file(src_path) as f:
+    st = os.stat(src_path)
+    for mode in (stat.S_IXUSR, stat.S_IXGRP, stat.S_IXOTH):
+      if st.st_mode & mode:
+        zipinfo.external_attr |= mode << 16L
+
+  if src_path:
+    with open(src_path, 'rb') as f:
       data = f.read()
 
   # zipfile will deflate even when it makes the file bigger. To avoid
@@ -293,14 +357,20 @@ def AddToZipHermetic(zip_file, zip_path, src_path=None, data=None,
   zip_file.writestr(zipinfo, data, compress_type)
 
 
-def DoZip(inputs, output, base_dir=None):
+def DoZip(inputs, output, base_dir=None, compress_fn=None,
+          zip_prefix_path=None):
   """Creates a zip file from a list of files.
 
   Args:
     inputs: A list of paths to zip, or a list of (zip_path, fs_path) tuples.
-    output: Destination .zip file.
+    output: Path, fileobj, or ZipFile instance to add files to.
     base_dir: Prefix to strip from inputs.
+    compress_fn: Applied to each input to determine whether or not to compress.
+        By default, items will be |zipfile.ZIP_STORED|.
+    zip_prefix_path: Path prepended to file path in zip file.
   """
+  if base_dir is None:
+    base_dir = '.'
   input_tuples = []
   for tup in inputs:
     if isinstance(tup, basestring):
@@ -309,18 +379,32 @@ def DoZip(inputs, output, base_dir=None):
 
   # Sort by zip path to ensure stable zip ordering.
   input_tuples.sort(key=lambda tup: tup[0])
-  with zipfile.ZipFile(output, 'w') as outfile:
+
+  out_zip = output
+  if not isinstance(output, zipfile.ZipFile):
+    out_zip = zipfile.ZipFile(output, 'w')
+
+  try:
     for zip_path, fs_path in input_tuples:
-      AddToZipHermetic(outfile, zip_path, src_path=fs_path)
+      if zip_prefix_path:
+        zip_path = os.path.join(zip_prefix_path, zip_path)
+      compress = compress_fn(zip_path) if compress_fn else None
+      AddToZipHermetic(out_zip, zip_path, src_path=fs_path, compress=compress)
+  finally:
+    if output is not out_zip:
+      out_zip.close()
 
 
-def ZipDir(output, base_dir):
+def ZipDir(output, base_dir, compress_fn=None, zip_prefix_path=None):
   """Creates a zip file from a directory."""
   inputs = []
   for root, _, files in os.walk(base_dir):
     for f in files:
       inputs.append(os.path.join(root, f))
-  DoZip(inputs, output, base_dir)
+
+  with AtomicOutput(output) as f:
+    DoZip(inputs, f, base_dir, compress_fn=compress_fn,
+          zip_prefix_path=zip_prefix_path)
 
 
 def MatchesGlob(path, filters):
@@ -328,85 +412,93 @@ def MatchesGlob(path, filters):
   return filters and any(fnmatch.fnmatch(path, f) for f in filters)
 
 
-def MergeZips(output, inputs, exclude_patterns=None, path_transform=None):
-  path_transform = path_transform or (lambda p, z: p)
+def MergeZips(output, input_zips, path_transform=None, compress=None):
+  """Combines all files from |input_zips| into |output|.
+
+  Args:
+    output: Path, fileobj, or ZipFile instance to add files to.
+    input_zips: Iterable of paths to zip files to merge.
+    path_transform: Called for each entry path. Returns a new path, or None to
+        skip the file.
+    compress: Overrides compression setting from origin zip entries.
+  """
+  path_transform = path_transform or (lambda p: p)
   added_names = set()
 
-  with zipfile.ZipFile(output, 'w') as out_zip:
-    for in_file in inputs:
+  out_zip = output
+  if not isinstance(output, zipfile.ZipFile):
+    out_zip = zipfile.ZipFile(output, 'w')
+
+  try:
+    for in_file in input_zips:
       with zipfile.ZipFile(in_file, 'r') as in_zip:
+        # ijar creates zips with null CRCs.
         in_zip._expected_crc = None
         for info in in_zip.infolist():
           # Ignore directories.
           if info.filename[-1] == '/':
             continue
-          dst_name = path_transform(info.filename, in_file)
+          dst_name = path_transform(info.filename)
+          if not dst_name:
+            continue
           already_added = dst_name in added_names
-          if not already_added and not MatchesGlob(dst_name, exclude_patterns):
-            AddToZipHermetic(out_zip, dst_name, data=in_zip.read(info))
+          if not already_added:
+            if compress is not None:
+              compress_entry = compress
+            else:
+              compress_entry = info.compress_type != zipfile.ZIP_STORED
+            AddToZipHermetic(
+                out_zip,
+                dst_name,
+                data=in_zip.read(info),
+                compress=compress_entry)
             added_names.add(dst_name)
-
-
-def PrintWarning(message):
-  print 'WARNING: ' + message
-
-
-def PrintBigWarning(message):
-  print '*****     ' * 8
-  PrintWarning(message)
-  print '*****     ' * 8
+  finally:
+    if output is not out_zip:
+      out_zip.close()
 
 
 def GetSortedTransitiveDependencies(top, deps_func):
   """Gets the list of all transitive dependencies in sorted order.
 
-  There should be no cycles in the dependency graph.
+  There should be no cycles in the dependency graph (crashes if cycles exist).
 
   Args:
-    top: a list of the top level nodes
-    deps_func: A function that takes a node and returns its direct dependencies.
+    top: A list of the top level nodes
+    deps_func: A function that takes a node and returns a list of its direct
+        dependencies.
   Returns:
     A list of all transitive dependencies of nodes in top, in order (a node will
     appear in the list at a higher index than all of its dependencies).
   """
-  def Node(dep):
-    return (dep, deps_func(dep))
+  # Find all deps depth-first, maintaining original order in the case of ties.
+  deps_map = collections.OrderedDict()
+  def discover(nodes):
+    for node in nodes:
+      if node in deps_map:
+        continue
+      deps = deps_func(node)
+      discover(deps)
+      deps_map[node] = deps
 
-  # First: find all deps
-  unchecked_deps = list(top)
-  all_deps = set(top)
-  while unchecked_deps:
-    dep = unchecked_deps.pop()
-    new_deps = deps_func(dep).difference(all_deps)
-    unchecked_deps.extend(new_deps)
-    all_deps = all_deps.union(new_deps)
-
-  # Then: simple, slow topological sort.
-  sorted_deps = []
-  unsorted_deps = dict(map(Node, all_deps))
-  while unsorted_deps:
-    for library, dependencies in unsorted_deps.items():
-      if not dependencies.intersection(unsorted_deps.keys()):
-        sorted_deps.append(library)
-        del unsorted_deps[library]
-
-  return sorted_deps
+  discover(top)
+  return deps_map.keys()
 
 
-def GetPythonDependencies():
+def _ComputePythonDependencies():
   """Gets the paths of imported non-system python modules.
 
   A path is assumed to be a "system" import if it is outside of chromium's
   src/. The paths will be relative to the current directory.
   """
+  _ForceLazyModulesToLoad()
   module_paths = (m.__file__ for m in sys.modules.itervalues()
                   if m is not None and hasattr(m, '__file__'))
-
   abs_module_paths = map(os.path.abspath, module_paths)
 
-  assert os.path.isabs(host_paths.DIR_SOURCE_ROOT)
+  assert os.path.isabs(DIR_SOURCE_ROOT)
   non_system_module_paths = [
-      p for p in abs_module_paths if p.startswith(host_paths.DIR_SOURCE_ROOT)]
+      p for p in abs_module_paths if p.startswith(DIR_SOURCE_ROOT)]
   def ConvertPycToPy(s):
     if s.endswith('.pyc'):
       return s[:-1]
@@ -417,6 +509,23 @@ def GetPythonDependencies():
   return sorted(set(non_system_module_paths))
 
 
+def _ForceLazyModulesToLoad():
+  """Forces any lazily imported modules to fully load themselves.
+
+  Inspecting the modules' __file__ attribute causes lazily imported modules
+  (e.g. from email) to get fully imported and update sys.modules. Iterate
+  over the values until sys.modules stabilizes so that no modules are missed.
+  """
+  while True:
+    num_modules_before = len(sys.modules.keys())
+    for m in sys.modules.values():
+      if m is not None and hasattr(m, '__file__'):
+        _ = m.__file__
+    num_modules_after = len(sys.modules.keys())
+    if num_modules_before == num_modules_after:
+      break
+
+
 def AddDepfileOption(parser):
   # TODO(agrieve): Get rid of this once we've moved to argparse.
   if hasattr(parser, 'add_option'):
@@ -424,14 +533,21 @@ def AddDepfileOption(parser):
   else:
     func = parser.add_argument
   func('--depfile',
-       help='Path to depfile. Must be specified as the action\'s first output.')
+       help='Path to depfile (refer to `gn help depfile`)')
 
 
-def WriteDepfile(path, dependencies):
-  with open(path, 'w') as depfile:
-    depfile.write(path)
+def WriteDepfile(depfile_path, first_gn_output, inputs=None, add_pydeps=True):
+  assert depfile_path != first_gn_output  # http://crbug.com/646165
+  assert not isinstance(inputs, basestring)  # Easy mistake to make
+  inputs = inputs or []
+  if add_pydeps:
+    inputs = _ComputePythonDependencies() + inputs
+  MakeDirectory(os.path.dirname(depfile_path))
+  # Ninja does not support multiple outputs in depfiles.
+  with open(depfile_path, 'w') as depfile:
+    depfile.write(first_gn_output.replace(' ', '\\ '))
     depfile.write(': ')
-    depfile.write(' '.join(dependencies))
+    depfile.write(' '.join(i.replace(' ', '\\ ') for i in inputs))
     depfile.write('\n')
 
 
@@ -463,26 +579,41 @@ def ExpandFileArgs(args):
     lookup_path = match.group(1).split(':')
     file_path = lookup_path[0]
     if not file_path in file_jsons:
-      file_jsons[file_path] = ReadJson(file_path)
+      with open(file_path) as f:
+        file_jsons[file_path] = json.load(f)
 
     expansion = file_jsons[file_path]
     for k in lookup_path[1:]:
       expansion = expansion[k]
 
-    new_args[i] = arg[:match.start()] + str(expansion)
+    # This should match ParseGnList. The output is either a GN-formatted list
+    # or a literal (with no quotes).
+    if isinstance(expansion, list):
+      new_args[i] = arg[:match.start()] + gn_helpers.ToGNString(expansion)
+    else:
+      new_args[i] = arg[:match.start()] + str(expansion)
 
   return new_args
+
+
+def ReadSourcesList(sources_list_file_name):
+  """Reads a GN-written file containing list of file names and returns a list.
+
+  Note that this function should not be used to parse response files.
+  """
+  with open(sources_list_file_name) as f:
+    return [file_name.strip() for file_name in f]
 
 
 def CallAndWriteDepfileIfStale(function, options, record_path=None,
                                input_paths=None, input_strings=None,
                                output_paths=None, force=False,
-                               pass_changes=False,
-                               depfile_deps=None):
-  """Wraps md5_check.CallAndRecordIfStale() and also writes dep & stamp files.
+                               pass_changes=False, depfile_deps=None,
+                               add_pydeps=True):
+  """Wraps md5_check.CallAndRecordIfStale() and writes a depfile if applicable.
 
-  Depfiles and stamp files are automatically added to output_paths when present
-  in the |options| argument. They are then created after |function| is called.
+  Depfiles are automatically added to output_paths when present in the |options|
+  argument. They are then created after |function| is called.
 
   By default, only python dependencies are added to the depfile. If there are
   other input paths that are not captured by GN deps, then they should be listed
@@ -498,24 +629,19 @@ def CallAndWriteDepfileIfStale(function, options, record_path=None,
 
   python_deps = None
   if hasattr(options, 'depfile') and options.depfile:
-    python_deps = GetPythonDependencies()
+    python_deps = _ComputePythonDependencies()
     input_paths += python_deps
     output_paths += [options.depfile]
-
-  stamp_file = hasattr(options, 'stamp') and options.stamp
-  if stamp_file:
-    output_paths += [stamp_file]
 
   def on_stale_md5(changes):
     args = (changes,) if pass_changes else ()
     function(*args)
     if python_deps is not None:
-      all_depfile_deps = list(python_deps)
+      all_depfile_deps = list(python_deps) if add_pydeps else []
       if depfile_deps:
         all_depfile_deps.extend(depfile_deps)
-      WriteDepfile(options.depfile, all_depfile_deps)
-    if stamp_file:
-      Touch(stamp_file)
+      WriteDepfile(options.depfile, output_paths[0], all_depfile_deps,
+                   add_pydeps=False)
 
   md5_check.CallAndRecordIfStale(
       on_stale_md5,
@@ -525,4 +651,3 @@ def CallAndWriteDepfileIfStale(function, options, record_path=None,
       output_paths=output_paths,
       force=force,
       pass_changes=True)
-

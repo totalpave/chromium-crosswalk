@@ -20,7 +20,7 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "media/base/audio_buffer.h"
 #include "media/base/audio_bus.h"
 #include "media/base/channel_layout.h"
@@ -80,25 +80,45 @@ class AudioRendererAlgorithmTest : public testing::Test {
         bytes_per_sample_(0) {
   }
 
-  ~AudioRendererAlgorithmTest() override {}
+  ~AudioRendererAlgorithmTest() override = default;
 
   void Initialize() {
-    Initialize(CHANNEL_LAYOUT_STEREO, kSampleFormatS16, 3000, 300);
+    Initialize(CHANNEL_LAYOUT_STEREO, kSampleFormatS16, kSamplesPerSecond,
+               kSamplesPerSecond / 10);
   }
 
   void Initialize(ChannelLayout channel_layout,
                   SampleFormat sample_format,
                   int samples_per_second,
                   int frames_per_buffer) {
+    Initialize(
+        channel_layout, sample_format, samples_per_second, frames_per_buffer,
+        std::vector<bool>(ChannelLayoutToChannelCount(channel_layout), true));
+  }
+
+  void Initialize(ChannelLayout channel_layout,
+                  SampleFormat sample_format,
+                  int samples_per_second,
+                  int frames_per_buffer,
+                  std::vector<bool> channel_mask) {
     channels_ = ChannelLayoutToChannelCount(channel_layout);
     samples_per_second_ = samples_per_second;
     channel_layout_ = channel_layout;
     sample_format_ = sample_format;
     bytes_per_sample_ = SampleFormatToBytesPerChannel(sample_format);
-    AudioParameters params(media::AudioParameters::AUDIO_PCM_LINEAR,
-                           channel_layout, samples_per_second,
-                           bytes_per_sample_ * 8, frames_per_buffer);
-    algorithm_.Initialize(params);
+
+    media::AudioParameters::Format format =
+        media::AudioParameters::AUDIO_PCM_LINEAR;
+    if (sample_format == kSampleFormatAc3)
+      format = media::AudioParameters::AUDIO_BITSTREAM_AC3;
+    else if (sample_format == kSampleFormatEac3)
+      format = media::AudioParameters::AUDIO_BITSTREAM_EAC3;
+
+    AudioParameters params(format, channel_layout, samples_per_second,
+                           frames_per_buffer);
+    bool is_encrypted = false;
+    algorithm_.Initialize(params, is_encrypted);
+    algorithm_.SetChannelMask(std::move(channel_mask));
     FillAlgorithmQueue();
   }
 
@@ -108,23 +128,30 @@ class AudioRendererAlgorithmTest : public testing::Test {
     scoped_refptr<AudioBuffer> buffer;
     while (!algorithm_.IsQueueFull()) {
       switch (sample_format_) {
+        case kSampleFormatAc3:
+        case kSampleFormatEac3:
+          buffer = MakeBitstreamAudioBuffer(
+              sample_format_, channel_layout_,
+              ChannelLayoutToChannelCount(channel_layout_), samples_per_second_,
+              1, 1, kFrameSize, kFrameSize, kNoTimestamp);
+          break;
         case kSampleFormatU8:
           buffer = MakeAudioBuffer<uint8_t>(
               sample_format_, channel_layout_,
               ChannelLayoutToChannelCount(channel_layout_), samples_per_second_,
-              1, 1, kFrameSize, kNoTimestamp());
+              1, 1, kFrameSize, kNoTimestamp);
           break;
         case kSampleFormatS16:
           buffer = MakeAudioBuffer<int16_t>(
               sample_format_, channel_layout_,
               ChannelLayoutToChannelCount(channel_layout_), samples_per_second_,
-              1, 1, kFrameSize, kNoTimestamp());
+              1, 1, kFrameSize, kNoTimestamp);
           break;
         case kSampleFormatS32:
           buffer = MakeAudioBuffer<int32_t>(
               sample_format_, channel_layout_,
               ChannelLayoutToChannelCount(channel_layout_), samples_per_second_,
-              1, 1, kFrameSize, kNoTimestamp());
+              1, 1, kFrameSize, kNoTimestamp);
           break;
         default:
           NOTREACHED() << "Unrecognized format " << sample_format_;
@@ -181,8 +208,6 @@ class AudioRendererAlgorithmTest : public testing::Test {
       return;
     }
 
-    bool expect_muted = (playback_rate < 0.5 || playback_rate > 4);
-
     int frames_remaining = total_frames_requested;
     bool first_fill_buffer = true;
     while (frames_remaining > 0) {
@@ -198,7 +223,7 @@ class AudioRendererAlgorithmTest : public testing::Test {
       // if at very first buffer-fill only one frame is written, that is zero
       // which might cause exception in CheckFakeData().
       if (!first_fill_buffer || frames_written > 1)
-        ASSERT_EQ(expect_muted, AudioDataIsMuted(bus.get(), frames_written));
+        ASSERT_FALSE(AudioDataIsMuted(bus.get(), frames_written));
       first_fill_buffer = false;
       frames_remaining -= frames_written;
 
@@ -234,13 +259,13 @@ class AudioRendererAlgorithmTest : public testing::Test {
   void WsolaTest(double playback_rate) {
     const int kSampleRateHz = 48000;
     const ChannelLayout kChannelLayout = CHANNEL_LAYOUT_STEREO;
-    const int kBytesPerSample = 2;
     const int kNumFrames = kSampleRateHz / 100;  // 10 milliseconds.
 
     channels_ = ChannelLayoutToChannelCount(kChannelLayout);
     AudioParameters params(AudioParameters::AUDIO_PCM_LINEAR, kChannelLayout,
-                           kSampleRateHz, kBytesPerSample * 8, kNumFrames);
-    algorithm_.Initialize(params);
+                           kSampleRateHz, kNumFrames);
+    bool is_encrypted = false;
+    algorithm_.Initialize(params, is_encrypted);
 
     // A pulse is 6 milliseconds (even number of samples).
     const int kPulseWidthSamples = 6 * kSampleRateHz / 1000;
@@ -326,6 +351,12 @@ TEST_F(AudioRendererAlgorithmTest, InitializeWithLargeParameters) {
   EXPECT_LT(kBufferSize, algorithm_.QueueCapacity());
   algorithm_.FlushBuffers();
   EXPECT_LT(kBufferSize, algorithm_.QueueCapacity());
+}
+
+TEST_F(AudioRendererAlgorithmTest, FillBuffer_Bitstream) {
+  Initialize(CHANNEL_LAYOUT_STEREO, kSampleFormatEac3, kSamplesPerSecond,
+             kSamplesPerSecond / 100);
+  TestPlaybackRate(1.0, kFrameSize, 16 * kFrameSize);
 }
 
 TEST_F(AudioRendererAlgorithmTest, FillBuffer_NormalRate) {
@@ -652,15 +683,15 @@ TEST_F(AudioRendererAlgorithmTest, WsolaSpeedup) {
 
 TEST_F(AudioRendererAlgorithmTest, FillBufferOffset) {
   Initialize();
+  algorithm_.IncreaseQueueCapacity();
 
   std::unique_ptr<AudioBus> bus = AudioBus::Create(channels_, kFrameSize);
 
   // Verify that the first half of |bus| remains zero and the last half is
-  // filled appropriately at normal, above normal, below normal, and muted
-  // rates.
+  // filled appropriately at normal, above normal, and below normal.
   const int kHalfSize = kFrameSize / 2;
-  const float kAudibleRates[] = {1.0f, 2.0f, 0.5f};
-  for (size_t i = 0; i < arraysize(kAudibleRates); ++i) {
+  const float kAudibleRates[] = {1.0f, 2.0f, 0.5f, 5.0f, 0.25f};
+  for (size_t i = 0; i < base::size(kAudibleRates); ++i) {
     SCOPED_TRACE(kAudibleRates[i]);
     bus->Zero();
 
@@ -671,19 +702,40 @@ TEST_F(AudioRendererAlgorithmTest, FillBufferOffset) {
     ASSERT_FALSE(VerifyAudioData(bus.get(), kHalfSize, kHalfSize, 0));
     FillAlgorithmQueue();
   }
+}
 
-  const float kMutedRates[] = {5.0f, 0.25f};
-  for (size_t i = 0; i < arraysize(kMutedRates); ++i) {
-    SCOPED_TRACE(kMutedRates[i]);
-    for (int ch = 0; ch < bus->channels(); ++ch)
-      std::fill(bus->channel(ch), bus->channel(ch) + bus->frames(), 1.0f);
+TEST_F(AudioRendererAlgorithmTest, FillBuffer_ChannelMask) {
+  // Setup a quad channel layout where even channels are always muted.
+  Initialize(CHANNEL_LAYOUT_QUAD, kSampleFormatS16, 44100, 441,
+             {true, false, true, false});
 
-    const int frames_filled =
-        algorithm_.FillBuffer(bus.get(), kHalfSize, kHalfSize, kMutedRates[i]);
-    ASSERT_EQ(kHalfSize, frames_filled);
-    ASSERT_FALSE(VerifyAudioData(bus.get(), 0, kHalfSize, 0));
-    ASSERT_TRUE(VerifyAudioData(bus.get(), kHalfSize, kHalfSize, 0));
-    FillAlgorithmQueue();
+  std::unique_ptr<AudioBus> bus = AudioBus::Create(channels_, kFrameSize);
+  int frames_filled = algorithm_.FillBuffer(bus.get(), 0, kFrameSize, 2.0);
+  ASSERT_GT(frames_filled, 0);
+
+  // Verify the channels are muted appropriately; even though the created buffer
+  // actually has audio data in it.
+  for (int ch = 0; ch < bus->channels(); ++ch) {
+    double sum = 0;
+    for (int i = 0; i < bus->frames(); ++i)
+      sum += bus->channel(ch)[i];
+    if (ch % 2 == 1)
+      ASSERT_EQ(sum, 0);
+    else
+      ASSERT_NE(sum, 0);
+  }
+
+  // Update the channel mask and verify it's reflected correctly.
+  algorithm_.SetChannelMask({true, true, true, true});
+  frames_filled = algorithm_.FillBuffer(bus.get(), 0, kFrameSize, 2.0);
+  ASSERT_GT(frames_filled, 0);
+
+  // Verify no channels are muted now.
+  for (int ch = 0; ch < bus->channels(); ++ch) {
+    double sum = 0;
+    for (int i = 0; i < bus->frames(); ++i)
+      sum += bus->channel(ch)[i];
+    ASSERT_NE(sum, 0);
   }
 }
 

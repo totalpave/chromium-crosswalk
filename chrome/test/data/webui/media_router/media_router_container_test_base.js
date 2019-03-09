@@ -26,12 +26,31 @@ cr.define('media_router_container_test_base', function() {
      *     should be visible.
      */
     var checkElementsVisibleWithId = function(elementIdList) {
-      for (var i = 0; i < elementIdList.length; i++)
-        checkElementVisibleWithId(true, elementIdList[i]);
+      for (var id of elementIdList) {
+        checkElementVisibleWithId(true, id);
+      }
 
-      for (var j = 0; j < hiddenCheckElementIdList.length; j++) {
-        if (elementIdList.indexOf(hiddenCheckElementIdList[j]) == -1)
-          checkElementVisibleWithId(false, hiddenCheckElementIdList[j]);
+      for (id of hiddenCheckElementIdList) {
+        if (!elementIdList.includes(id)) {
+          if (id === 'first-run-flow-cloud-pref' &&
+              !elementIdList.includes('first-run-flow')) {
+            // If 'first-run-flow' is already expected to be hidden, don't check
+            // first-run-flow-cloud-pref which is a child of it. Polymer2
+            // optimizes <dom-if>s that are false, by no longer updating its
+            // contents.
+            continue;
+          }
+          if ((id === 'search-results' || id === 'no-search-matches') &&
+              !elementIdList.includes('search-results-container')) {
+            // If 'search-results-container' is already expected to be hidden,
+            // don't check search-results or no-search-matches which are
+            // children of it. Polymer2 optimizes <dom-if>s that are false, by
+            // no longer updating its contents.
+            continue;
+          }
+
+          checkElementVisibleWithId(false, id);
+        }
       }
     };
 
@@ -44,8 +63,8 @@ cr.define('media_router_container_test_base', function() {
      * @param {?string} elementId Optional element id to display.
      */
     var checkElementVisible = function(visible, element, elementId) {
-      var elementVisible = !!element && !element.hidden &&
-          element.style.display != 'none';
+      var elementVisible =
+          !!element && !element.hidden && element.style.display != 'none';
       assertEquals(visible, elementVisible, elementId);
     };
 
@@ -77,27 +96,62 @@ cr.define('media_router_container_test_base', function() {
      * @type {!media_router.Issue}
      */
     var fakeBlockingIssue = new media_router.Issue(
-        'issue id 1', 'Issue Title 1', 'Issue Message 1', 0, 1,
-        'route id 1', true, 1234);
+        1, 'Issue Title 1', 'Issue Message 1', 0, 1, 'route id 1', true, 1234);
 
     /**
      * The list of CastModes to show.
      * @type {!Array<!media_router.CastMode>}
      */
     var fakeCastModeList = [
-      new media_router.CastMode(0x1, 'Description 0', 'google.com'),
-      new media_router.CastMode(0x2, 'Description 1', null),
-      new media_router.CastMode(0x4, 'Description 2', null),
+      new media_router.CastMode(
+          media_router.CastModeType.PRESENTATION, 'Cast google.com',
+          'google.com', false),
+      new media_router.CastMode(
+          media_router.CastModeType.TAB_MIRROR, 'Description 1', null, false),
+      new media_router.CastMode(
+          media_router.CastModeType.DESKTOP_MIRROR, 'Description 2', null,
+          false),
     ];
 
     /**
-     * The list of CastModes to show with non-default modes only.
+     * The list of CastModes to show with non-PRESENTATION modes only.
      * @type {!Array<!media_router.CastMode>}
      */
-    var fakeCastModeListWithNonDefaultModesOnly = [
-      new media_router.CastMode(0x2, 'Description 1', null),
-      new media_router.CastMode(0x4, 'Description 2', null),
-      new media_router.CastMode(0x8, 'Description 3', null),
+    var fakeCastModeListWithNonPresentationModesOnly = [
+      new media_router.CastMode(
+          media_router.CastModeType.TAB_MIRROR, 'Description 1', null, false),
+      new media_router.CastMode(
+          media_router.CastModeType.DESKTOP_MIRROR, 'Description 2', null,
+          false),
+    ];
+
+    /**
+     * The list of CastModes to show with PRESENTATION forced.
+     * @type {!Array<!media_router.CastMode>}
+     */
+    var fakeCastModeListWithPresentationModeForced = [
+      new media_router.CastMode(
+          media_router.CastModeType.PRESENTATION, 'Cast google.com',
+          'google.com', true),
+      new media_router.CastMode(
+          media_router.CastModeType.DESKTOP_MIRROR, 'Description 2', null,
+          false),
+      new media_router.CastMode(
+          media_router.CastModeType.LOCAL_FILE, 'Description 3', null, false),
+    ];
+
+    /**
+     * The list of CastModes to show with Local media on the list
+     * @type {!Array<!media_router.CastMode>}
+     */
+    var fakeCastModeListWithLocalMedia = [
+      new media_router.CastMode(
+          media_router.CastModeType.TAB_MIRROR, 'Description 1', null, false),
+      new media_router.CastMode(
+          media_router.CastModeType.DESKTOP_MIRROR, 'Description 2', null,
+          false),
+      new media_router.CastMode(
+          media_router.CastModeType.LOCAL_FILE, 'Description 3', null, false),
     ];
 
     /**
@@ -105,8 +159,7 @@ cr.define('media_router_container_test_base', function() {
      * @type {!media_router.Issue}
      */
     var fakeNonBlockingIssue = new media_router.Issue(
-        'issue id 2', 'Issue Title 2', 'Issue Message 2', 0, 1,
-        'route id 2', false, 1234);
+        2, 'Issue Title 2', 'Issue Message 2', 0, 1, 'route id 2', false, 1234);
 
     /**
      * The list of current routes.
@@ -133,14 +186,14 @@ cr.define('media_router_container_test_base', function() {
      * @type {!Array<!media_router.Sink>}
      */
     var fakeSinkList = [
-      new media_router.Sink('sink id 1', 'Sink 1', null, null,
-          media_router.SinkIconType.CAST,
+      new media_router.Sink(
+          'sink id 1', 'Sink 1', null, null, media_router.SinkIconType.CAST,
           media_router.SinkStatus.ACTIVE, castModeBitset),
-      new media_router.Sink('sink id 2', 'Sink 2', null, null,
-          media_router.SinkIconType.CAST,
+      new media_router.Sink(
+          'sink id 2', 'Sink 2', null, null, media_router.SinkIconType.CAST,
           media_router.SinkStatus.ACTIVE, castModeBitset),
-      new media_router.Sink('sink id 3', 'Sink 3', null, null,
-          media_router.SinkIconType.CAST,
+      new media_router.Sink(
+          'sink id 3', 'Sink 3', null, null, media_router.SinkIconType.CAST,
           media_router.SinkStatus.PENDING, castModeBitset),
     ];
 
@@ -158,6 +211,7 @@ cr.define('media_router_container_test_base', function() {
       'no-search-matches',
       'route-details',
       'search-results',
+      'search-results-container',
       'sink-list',
       'sink-list-view',
     ];
@@ -188,8 +242,11 @@ cr.define('media_router_container_test_base', function() {
       checkElementText: checkElementText,
       fakeBlockingIssue: fakeBlockingIssue,
       fakeCastModeList: fakeCastModeList,
-      fakeCastModeListWithNonDefaultModesOnly:
-          fakeCastModeListWithNonDefaultModesOnly,
+      fakeCastModeListWithNonPresentationModesOnly:
+          fakeCastModeListWithNonPresentationModesOnly,
+      fakeCastModeListWithPresentationModeForced:
+          fakeCastModeListWithPresentationModeForced,
+      fakeCastModeListWithLocalMedia: fakeCastModeListWithLocalMedia,
       fakeNonBlockingIssue: fakeNonBlockingIssue,
       fakeRouteList: fakeRouteList,
       fakeRouteListWithLocalRoutesOnly: fakeRouteListWithLocalRoutesOnly,

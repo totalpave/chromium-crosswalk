@@ -4,12 +4,14 @@
 
 package org.chromium.chrome.browser.tabmodel.document;
 
-import junit.framework.Assert;
+import org.junit.Assert;
 
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
 
 /**
  * Mocks out all of the DocumentTabModel calls to fail.  Override specific ones as needed.
@@ -83,7 +85,7 @@ public class MockDocumentTabModel implements DocumentTabModel {
     }
 
     @Override
-    public void setIndex(int i, TabSelectionType type) {
+    public void setIndex(int i, @TabSelectionType int type) {
         Assert.fail();
     }
 
@@ -98,7 +100,7 @@ public class MockDocumentTabModel implements DocumentTabModel {
     }
 
     @Override
-    public void addTab(Tab tab, int index, TabLaunchType type) {
+    public void addTab(Tab tab, int index, @TabLaunchType int type) {
         Assert.fail();
     }
 
@@ -120,6 +122,11 @@ public class MockDocumentTabModel implements DocumentTabModel {
     @Override
     public boolean isIncognito() {
         return mIsIncognito;
+    }
+
+    @Override
+    public boolean isCurrentModel() {
+        return false;
     }
 
     @Override
@@ -157,4 +164,7 @@ public class MockDocumentTabModel implements DocumentTabModel {
         Assert.fail();
         return null;
     }
+
+    @Override
+    public void openMostRecentlyClosedTab() {}
 }

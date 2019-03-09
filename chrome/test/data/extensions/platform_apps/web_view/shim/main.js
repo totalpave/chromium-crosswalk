@@ -87,9 +87,11 @@ embedder.test.fail = function() {
   chrome.test.sendMessage('TEST_FAILED');
 };
 
-embedder.test.assertEq = function(a, b) {
+embedder.test.assertEq = function(a, b, message) {
   if (a != b) {
-    console.log('assertion failed: ' + a + ' != ' + b);
+    console.log(
+        'assertion failed: ' + a + ' != ' + b +
+        (message ? (': ' + message) : ''));
     embedder.test.fail();
   }
 };
@@ -150,23 +152,19 @@ function testAutosizeHeight() {
   webview.maxheight = 200;
 
   var step = 1;
+  var finalWidth = 200;
+  var finalHeight = 50;
   webview.addEventListener('sizechanged', function(e) {
-    switch (step) {
-      case 1:
-        embedder.test.assertEq(200, e.newHeight);
-        // Change the maxheight to verify that we see the change.
-        webview.maxheight = 50;
-        break;
-      case 2:
-        embedder.test.assertEq(200, e.oldHeight);
-        embedder.test.assertEq(50, e.newHeight);
-        embedder.test.succeed();
-        break;
-      default:
-        window.console.log('Unexpected sizechanged event, step = ' + step);
-        embedder.test.fail();
-        break;
-    }
+    embedder.test.assertTrue(e.newHeight >= webview.minheight);
+    embedder.test.assertTrue(e.newHeight <= webview.maxheight);
+    embedder.test.assertTrue(e.newWidth >= webview.minwidth);
+    embedder.test.assertTrue(e.newWidth <= webview.maxwidth);
+    if (step == 1)
+      webview.maxheight = 50;
+
+    // We are done once the size settles on the final width and height.
+    if (e.newHeight == finalHeight && e.newWidth == finalWidth)
+      embedder.test.succeed();
     ++step;
   });
 
@@ -367,25 +365,51 @@ function testAutosizeRemoveAttributes() {
 }
 
 function testAPIMethodExistence() {
-  var apiMethodsToCheck = [
+  // See public-facing API functions in web_view_api_methods.js
+  var WEB_VIEW_API_METHODS = [
+    'addContentScripts',
     'back',
     'canGoBack',
     'canGoForward',
+    'captureVisibleRegion',
+    'clearData',
+    'executeScript',
+    'find',
     'forward',
+    'getAudioState',
     'getProcessId',
+    'getUserAgent',
+    'getZoom',
+    'getZoomMode',
     'go',
+    'insertCSS',
+    'isAudioMuted',
+    'isSpatialNavigationEnabled',
+    'isUserAgentOverridden',
+    'loadDataWithBaseUrl',
+    'print',
+    'removeContentScripts',
     'reload',
+    'setAudioMuted',
+    'setSpatialNavigationEnabled',
+    'setUserAgentOverride',
+    'setZoom',
+    'setZoomMode',
     'stop',
+    'stopFinding',
     'terminate'
   ];
+
   var webview = document.createElement('webview');
+
+  for (var methodName of WEB_VIEW_API_METHODS) {
+    embedder.test.assertEq(
+        'function', typeof webview[methodName],
+        methodName + ' should be defined');
+  }
+
   webview.setAttribute('partition', arguments.callee.name);
   webview.addEventListener('loadstop', function(e) {
-    for (var i = 0; i < apiMethodsToCheck.length; ++i) {
-      embedder.test.assertEq('function',
-                           typeof webview[apiMethodsToCheck[i]]);
-    }
-
     // Check contentWindow.
     embedder.test.assertEq('object', typeof webview.contentWindow);
     embedder.test.assertEq('function',
@@ -394,6 +418,28 @@ function testAPIMethodExistence() {
   });
   webview.setAttribute('src', 'data:text/html,webview check api');
   document.body.appendChild(webview);
+}
+
+function testCustomElementCallbacksInaccessible() {
+  var CUSTOM_ELEMENT_CALLBACKS = [
+    'connectedCallback',
+    'disconnectedCallback',
+    'attributeChangedCallback',
+    'adoptedCallback'
+  ];
+
+  var webview = document.createElement('webview');
+  for (var callbackName of CUSTOM_ELEMENT_CALLBACKS) {
+    embedder.test.assertEq(
+        'undefined', typeof webview[callbackName],
+        callbackName + ' should not be accessible');
+  }
+
+  embedder.test.assertEq(
+      'undefined', typeof webview.constructor['observedAttributes'],
+      'observedAttributes should not be accessible');
+
+  embedder.test.succeed();
 }
 
 // This test verifies that the loadstop event fires when loading a webview
@@ -427,6 +473,28 @@ function testChromeExtensionRelativePath() {
     embedder.test.succeed();
   });
   webview.setAttribute('src', 'guest_with_inline_script.html');
+  document.body.appendChild(webview);
+}
+
+// This test verifies that guests are blocked from navigating the webview to a
+// data URL.
+function testContentInitiatedNavigationToDataUrlBlocked() {
+  var navUrl = "data:text/html,foo";
+  var webview = document.createElement('webview');
+  webview.addEventListener('consolemessage', function(e) {
+    if (e.message.startsWith(
+        'Not allowed to navigate top frame to data URL:')) {
+      embedder.test.succeed();
+    }
+  });
+  webview.addEventListener('loadstop', function(e) {
+    if (webview.getAttribute('src') == navUrl) {
+      embedder.test.fail();
+    }
+  });
+  webview.setAttribute('src',
+      'data:text/html,<script>window.location.href = "' + navUrl +
+      '";</scr' + 'ipt>');
   document.body.appendChild(webview);
 }
 
@@ -517,10 +585,9 @@ function testInvalidChromeExtensionURL() {
 }
 
 function testWebRequestAPIExistence() {
-  var apiPropertiesToCheck = [
+  var regularEventsToCheck = [
     // Declarative WebRequest API.
     'onMessage',
-    'onRequest',
     // WebRequest API.
     'onBeforeRequest',
     'onBeforeSendHeaders',
@@ -532,24 +599,29 @@ function testWebRequestAPIExistence() {
     'onCompleted',
     'onErrorOccurred'
   ];
+  var declarativeEventsToCheck = [
+    // Declarative WebRequest API.
+    'onRequest',
+  ];
   var webview = document.createElement('webview');
   webview.setAttribute('partition', arguments.callee.name);
   webview.addEventListener('loadstop', function(e) {
-    for (var i = 0; i < apiPropertiesToCheck.length; ++i) {
-      embedder.test.assertEq('object',
-                             typeof webview.request[apiPropertiesToCheck[i]]);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].addListener);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].addRules);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].getRules);
-      embedder.test.assertEq(
-          'function',
-          typeof webview.request[apiPropertiesToCheck[i]].removeRules);
+    for (var i = 0; i < regularEventsToCheck.length; ++i) {
+      var eventName = regularEventsToCheck[i];
+      var event = webview.request[eventName];
+      embedder.test.assertEq('object', typeof event);
+      embedder.test.assertEq('function', typeof event.addListener);
+    }
+
+    // Ensure that the "onActionIgnored" event is not supported for webviews.
+    embedder.test.assertFalse('onActionIgnored' in webview.request);
+
+    for (var i = 0; i < declarativeEventsToCheck.length; ++i) {
+      var eventName = declarativeEventsToCheck[i];
+      var event = webview.request[eventName];
+      embedder.test.assertEq('function', typeof event.addRules);
+      embedder.test.assertEq('function', typeof event.getRules);
+      embedder.test.assertEq('function', typeof event.removeRules);
     }
 
     // Try to overwrite webview.request, shall not succeed.
@@ -1228,6 +1300,52 @@ function testAddContentScriptWithCode() {
   document.body.appendChild(webview);
 }
 
+function testAddMultipleContentScriptsWithCodeAndCheckGeneratedScriptUrl() {
+  var webview = document.createElement('webview');
+
+  console.log('Step 1: call <webview>.addContentScripts.');
+  var getCode = function(id) {
+    return 'var e = new Error();\n' +
+           'var n = document.createElement("span");\n' +
+           'n.id = "textnode' + id + '";\n' +
+           'n.textContent = e.stack;\n' +
+           'document.body.appendChild(n);\n';
+  }
+  var code0 = getCode('0');
+  var code1 = getCode('1');
+  webview.addContentScripts(
+      [{name: 'myrule0',
+        matches: ['http://*/extensions/*'],
+        js: {code: code0},
+        run_at: 'document_end'}]);
+  webview.addContentScripts(
+      [{name: 'myrule1',
+        matches: ['http://*/extensions/*'],
+        js: {code: code1},
+        run_at: 'document_end'}]);
+
+  webview.addEventListener('loadstop', function() {
+    console.log('Step 2: call webview.executeScript() to check result.')
+    webview.executeScript({
+      code: '[document.getElementById("textnode0").textContent,' +
+            'document.getElementById("textnode1").textContent];'},
+      function(results) {
+        embedder.test.assertEq(1, results.length);
+        var contents = results[0];
+        embedder.test.assertEq(2, contents.length);
+        embedder.test.assertTrue(
+            contents[0].indexOf('generated_script_file:') != -1);
+        embedder.test.assertTrue(
+            contents[1].indexOf('generated_script_file:') != -1);
+        embedder.test.assertTrue(contents[0] != contents[1]);
+        embedder.test.succeed();
+    });
+  });
+
+  webview.src = embedder.emptyGuestURL;
+  document.body.appendChild(webview);
+}
+
 function testExecuteScriptFail() {
   var webview = document.createElement('webview');
   document.body.appendChild(webview);
@@ -1412,6 +1530,10 @@ function testNestedCrossOriginSubframes() {
     window.console.log('guest.consolemessage ' + e.message);
   };
   webview.onloadstop = function() {
+    // Only consider the first load stop, not the following one due to the
+    // iframe navigation.
+    webview.onloadstop = undefined;
+
     window.onmessage = function(e) {
       if (e.data == 'frames-loaded') {
         embedder.test.succeed();
@@ -1436,6 +1558,10 @@ function testNestedSubframes() {
     window.console.log('guest.consolemessage ' + e.message);
   };
   webview.onloadstop = function() {
+    // Only consider the first load stop, not the following one due to the
+    // iframe navigation.
+    webview.onloadstop = undefined;
+
     window.onmessage = function(e) {
       if (e.data == 'frames-loaded') {
         embedder.test.succeed();
@@ -1705,6 +1831,15 @@ function testWebRequestAPI() {
   document.body.appendChild(webview);
 }
 
+// Like above, but ensures that a webview doesn't get events for other webviews.
+function testWebRequestAPIOnlyForInstance() {
+  var tempWebview = new WebView();
+  tempWebview.request.onBeforeRequest.addListener(function(e) {
+    embedder.test.fail();
+  }, { urls: ['<all_urls>']}) ;
+  testWebRequestAPI();
+}
+
 // This test verifies that the WebRequest API onBeforeSendHeaders event fires on
 // webview and supports headers. This tests verifies that we can modify HTTP
 // headers via the WebRequest API and those modified headers will be sent to the
@@ -1826,6 +1961,11 @@ function testDeclarativeWebRequestAPISendMessage() {
   });
   webview.src = embedder.emptyGuestURL;
   document.body.appendChild(webview);
+}
+
+function testDeclarativeWebRequestAPISendMessageSecondWebView() {
+  var tempWebview = new WebView();
+  testDeclarativeWebRequestAPISendMessage();
 }
 
 // This test verifies that setting a <webview>'s style.display = 'block' does
@@ -2510,19 +2650,22 @@ function testZoomAPI() {
   document.body.appendChild(webview);
 };
 
+var testFindPage =
+    'data:text/html,Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
+    'Dog dog dog Dog dog dogcatDog dogDogdog.<br><br>' +
+    '<a href="about:blank">Click here!</a>';
+
 function testFindAPI() {
   var webview = new WebView();
-  webview.src = 'data:text/html,Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br><br>' +
-      '<a href="about:blank">Click here!</a>';
+  webview.src = testFindPage;
 
   var loadstopListener2 = function(e) {
     embedder.test.assertEq(webview.src, "about:blank");
@@ -2594,26 +2737,18 @@ function testFindAPI() {
   document.body.appendChild(webview);
 };
 
+// TODO(paulmeyer): Make sure this test is not still flaky. If it is, it is
+// likely because the search for "dog" compelted too quickly. crbug.com/710486.
 function testFindAPI_findupdate() {
   var webview = new WebView();
-  webview.src = 'data:text/html,Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br>' +
-      'Dog dog dog Dog dog dogcatDog dogDogdog.<br><br>' +
-      '<a href="about:blank">Click here!</a>';
+  webview.src = testFindPage;
+
   var canceledTest = false;
   webview.addEventListener('loadstop', function(e) {
     // Test the |findupdate| event.
     webview.addEventListener('findupdate', function(e) {
       if (e.activeMatchOrdinal > 0) {
-        // embedder.test.assertTrue(e.numberOfMatches >= e.activeMatchOrdinal)
-        // This currently fails because of http://crbug.com/342445 .
+        embedder.test.assertTrue(e.numberOfMatches >= e.activeMatchOrdinal)
         embedder.test.assertTrue(e.selectionRect.width > 0);
         embedder.test.assertTrue(e.selectionRect.height > 0);
       }
@@ -2622,21 +2757,65 @@ function testFindAPI_findupdate() {
         if (e.canceled) {
           canceledTest = true;
         } else {
-          embedder.test.assertEq(e.searchText, "dog");
-          embedder.test.assertEq(e.numberOfMatches, 100);
+          embedder.test.assertEq(e.searchText, "cat");
+          embedder.test.assertEq(e.numberOfMatches, 10);
           embedder.test.assertEq(e.activeMatchOrdinal, 1);
           embedder.test.assertTrue(canceledTest);
           embedder.test.succeed();
         }
       }
     });
-    wv.find("dog");
-    wv.find("cat");
-    wv.find("dog");
+    webview.find("dog");
+    webview.find("dog");
+    webview.find("cat");
   });
 
   document.body.appendChild(webview);
 };
+
+function testFindInMultipleWebViews() {
+  var webviews = [new WebView(), new WebView(), new WebView()];
+  var promises = [];
+
+  // Search in all WebViews simultaneously.
+  for (var i in webviews) {
+    webviews[i].src = testFindPage;
+    promises[i] = new Promise((resolve, reject) => {
+      webviews[i].addEventListener('loadstop', function(id, event) {
+        LOG("Searching WebView " + id + ".");
+
+        var webview = webviews[id];
+        webview.find("dog", {}, (results_a) => {
+          embedder.test.assertEq(results_a.numberOfMatches, 100);
+          embedder.test.assertTrue(results_a.selectionRect.width > 0);
+          embedder.test.assertTrue(results_a.selectionRect.height > 0);
+
+          // Test finding next active matches.
+          webview.find("dog");
+          webview.find("dog");
+          webview.find("dog");
+          webview.find("dog");
+          webview.find("dog", {}, (results_b) => {
+            embedder.test.assertEq(results_b.activeMatchOrdinal, 6);
+            LOG("Searched WebView " + id + " successfully.");
+            resolve();
+          });
+        });
+      }.bind(undefined, i));
+    });
+    document.body.appendChild(webviews[i]);
+  }
+
+  Promise.all(promises)
+      .then(() => {
+        LOG("All searches finished.");
+        embedder.test.succeed();
+      })
+      .catch((error) => {
+        LOG("Failing test.");
+        embedder.test.fail(error);
+      });
+}
 
 function testLoadDataAPI() {
   var webview = new WebView();
@@ -2754,15 +2933,40 @@ function testPerViewZoomMode() {
   webview2.addEventListener('loadstop', function(e) {
     // Set |webview2| to 'per-view' mode and zoom it. Make sure that the
     // zoom did not affect |webview1|.
-    webview2.setZoomMode('per-view', function() {
-      webview2.getZoomMode(function(zoomMode) {
-        embedder.test.assertEq(zoomMode, 'per-view');
-        webview2.setZoom(0.45, function() {
-          webview1.getZoom(function(zoom) {
-            embedder.test.assertFalse(zoom == 0.45);
-            webview2.getZoom(function(zoom) {
-              embedder.test.assertEq(zoom, 0.45);
-              embedder.test.succeed();
+    // We need to verify that the page actually is zooming by comparing
+    // |window.innerWidth| before and after the zoom to prevent regressions like
+    // https://crbug.com/860511.
+    webview1.executeScript({code: 'window.innerWidth'}, function(result) {
+      var webview1_original_width = result[0];
+      webview2.executeScript({code: 'window.innerWidth'}, function(result) {
+        var webview2_original_width = result[0];
+        webview2.setZoomMode('per-view', function() {
+          webview2.getZoomMode(function(zoomMode) {
+            embedder.test.assertEq(zoomMode, 'per-view');
+            webview2.setZoom(0.45, function() {
+              webview1.getZoom(function(zoom) {
+                embedder.test.assertFalse(zoom == 0.45);
+                webview1.executeScript(
+                    {code: 'window.innerWidth'}, function(result) {
+                      var webview1_new_width = result[0];
+                      // Verify that inner width has not been changed for
+                      // for this WebView.
+                      embedder.test.assertEq(
+                          webview1_new_width, webview1_original_width);
+                      webview2.getZoom(function(zoom) {
+                        embedder.test.assertEq(zoom, 0.45);
+                        webview2.executeScript(
+                            {code: 'window.innerWidth'}, function(result) {
+                              var webview2_new_width = result[0];
+                              // Verify that inner width has been updated for
+                              // the second WebView.
+                              embedder.test.assertTrue(
+                                  webview2_original_width < webview2_new_width);
+                              embedder.test.succeed();
+                            });
+                      });
+                    });
+              });
             });
           });
         });
@@ -2870,8 +3074,11 @@ function testFocusWhileFocused() {
     // Focus twice, then make sure that the internal element is still focused.
     webview.focus();
     webview.focus();
-    embedder.test.assertTrue(document.activeElement = webview);
-    embedder.test.assertTrue(webview.shadowRoot.activeElement);
+    embedder.test.assertEq(document.activeElement, webview);
+    var webviewPrivates =
+        chrome.test.getModuleSystem(webview).privates(webview);
+    var shadowRoot = webviewPrivates.internal.shadowRoot;
+    embedder.test.assertTrue(shadowRoot.activeElement);
     embedder.test.succeed();
   });
 
@@ -2886,6 +3093,24 @@ function testPDFInWebview() {
   webview.onloadstop = embedder.test.succeed;
   webview.onloadabort = embedder.test.fail;
   webview.setAttribute('src', pdfUrl);
+  document.body.appendChild(webview);
+}
+
+function testNavigateToPDFInWebview() {
+  var webview = document.createElement('webview');
+  var pdfUrl = 'test.pdf';
+  // partition 'foobar' has access to local resource |pdfUrl|.
+  webview.partition = 'foobar';
+  webview.onloadabort = embedder.test.fail;
+
+  var loadstopHandler = function(e) {
+    webview.removeEventListener('loadstop', loadstopHandler);
+    webview.addEventListener('loadstop', embedder.test.succeed);
+    webview.setAttribute('src', pdfUrl);
+  };
+  webview.addEventListener('loadstop', loadstopHandler);
+
+  webview.setAttribute('src', 'about:blank');
   document.body.appendChild(webview);
 }
 
@@ -2908,6 +3133,28 @@ function testMailtoLink() {
       embedder.test.succeed();
     };
     webview.executeScript({code:'document.getElementById("mailto").click()'});
+  };
+
+  document.body.appendChild(webview);
+}
+
+// This test verifies that an embedder can navigate a WebView to a blob URL it
+// creates.
+function testBlobURL() {
+  var webview = new WebView();
+  var blob = new Blob(['<html><body>Blob content</body></html>'],
+                      {type: 'text/html'});
+  var blobURL = URL.createObjectURL(blob);
+  webview.src = blobURL;
+
+  webview.onloadabort = function() {
+    // The blob: URL load should not trigger a loadabort.
+    window.console.log('Blob URL load was aborted.');
+    embedder.test.fail();
+  };
+  webview.onloadstop = function() {
+    embedder.test.assertTrue(webview.src == blobURL);
+    embedder.test.succeed();
   };
 
   document.body.appendChild(webview);
@@ -2957,6 +3204,56 @@ function testRendererNavigationRedirectWhileUnattached() {
   webview.src = 'about:blank';
 };
 
+function testWebViewAndEmbedderInNewWindow() {
+  var webview = document.createElement('webview');
+  webview.addEventListener('newwindow', function(e) {
+    e.preventDefault();
+    var url = 'new_window_main.html';
+    chrome.app.window.create(url, {}, function (app_new_window) {
+      if (chrome.runtime.lastError) {
+        console.log('Error:' + chrome.runtime.lastError.message);
+        embedder.test.fail();
+        return;
+      }
+
+      var new_window = app_new_window.contentWindow;
+      new_window.onload = function(evt) {
+        var newwebview = new_window.document.createElement('webview');
+        // We could use e.targetUrl here I suppose, but it's about:blank so
+        // it doesn't seem to trigger a loadstop.
+        newwebview.setAttribute('src', embedder.emptyGuestURL);
+        newwebview.addEventListener('loadstop', function (evt2) {
+          // After this test exits, we'll still need to compare embedders in the
+          // C++ part of this test.
+          embedder.test.succeed();
+        });
+        // Be sure to do the attach before appending to document.
+        e.window.attach(newwebview);
+        new_window.document.body.appendChild(newwebview);
+      };
+    });
+  });
+  webview.setAttribute('src', embedder.windowOpenGuestURL);
+  document.body.appendChild(webview);
+}
+
+function testSelectPopupPositionInMac() {
+  var webview = document.createElement('webview');
+  webview.id = 'popup-test-mac';
+  webview.partition = 'foobar';
+  // Offset the <webview> location inside the app so that the corner is almost
+  // 250 pixels off from app window's origin.
+  webview.style = 'position: fixed; left: 240px; top: 70px; border: solid;';
+  webview.addEventListener('loadstop', function() {
+    // This lets the browser know that it can start sending down input events
+    // for the remainder of the test.
+    embedder.test.succeed();
+  });
+
+  webview.setAttribute('src', chrome.runtime.getURL('guest_with_select.html'));
+  document.body.appendChild(webview);
+}
+
 embedder.test.testList = {
   'testAllowTransparencyAttribute': testAllowTransparencyAttribute,
   'testAutosizeHeight': testAutosizeHeight,
@@ -2965,6 +3262,8 @@ embedder.test.testList = {
   'testAutosizeRemoveAttributes': testAutosizeRemoveAttributes,
   'testAutosizeWithPartialAttributes': testAutosizeWithPartialAttributes,
   'testAPIMethodExistence': testAPIMethodExistence,
+  'testCustomElementCallbacksInaccessible':
+      testCustomElementCallbacksInaccessible,
   'testChromeExtensionURL': testChromeExtensionURL,
   'testChromeExtensionRelativePath': testChromeExtensionRelativePath,
   'testDisplayNoneWebviewLoad': testDisplayNoneWebviewLoad,
@@ -2991,11 +3290,15 @@ embedder.test.testList = {
   'testAddAndRemoveContentScripts': testAddAndRemoveContentScripts,
   'testAddContentScriptsWithNewWindowAPI':
       testAddContentScriptsWithNewWindowAPI,
+  'testContentInitiatedNavigationToDataUrlBlocked':
+      testContentInitiatedNavigationToDataUrlBlocked,
   'testContentScriptIsInjectedAfterTerminateAndReloadWebView':
       testContentScriptIsInjectedAfterTerminateAndReloadWebView,
   'testContentScriptExistsAsLongAsWebViewTagExists':
       testContentScriptExistsAsLongAsWebViewTagExists,
   'testAddContentScriptWithCode': testAddContentScriptWithCode,
+  'testAddMultipleContentScriptsWithCodeAndCheckGeneratedScriptUrl':
+      testAddMultipleContentScriptsWithCodeAndCheckGeneratedScriptUrl,
   'testExecuteScriptFail': testExecuteScriptFail,
   'testExecuteScript': testExecuteScript,
   'testExecuteScriptIsAbortedWhenWebViewSourceIsChanged':
@@ -3022,8 +3325,11 @@ embedder.test.testList = {
   'testDeclarativeWebRequestAPI': testDeclarativeWebRequestAPI,
   'testDeclarativeWebRequestAPISendMessage':
       testDeclarativeWebRequestAPISendMessage,
+  'testDeclarativeWebRequestAPISendMessageSecondWebView':
+      testDeclarativeWebRequestAPISendMessageSecondWebView,
   'testDisplayBlock': testDisplayBlock,
   'testWebRequestAPI': testWebRequestAPI,
+  'testWebRequestAPIOnlyForInstance': testWebRequestAPIOnlyForInstance,
   'testWebRequestAPIErrorOccurred': testWebRequestAPIErrorOccurred,
   'testWebRequestAPIWithHeaders': testWebRequestAPIWithHeaders,
   'testWebRequestAPIGoogleProperty': testWebRequestAPIGoogleProperty,
@@ -3053,7 +3359,8 @@ embedder.test.testList = {
   'testScreenshotCapture' : testScreenshotCapture,
   'testZoomAPI' : testZoomAPI,
   'testFindAPI': testFindAPI,
-  'testFindAPI_findupdate': testFindAPI,
+  'testFindAPI_findupdate': testFindAPI_findupdate,
+  'testFindInMultipleWebViews': testFindInMultipleWebViews,
   'testLoadDataAPI': testLoadDataAPI,
   'testResizeEvents': testResizeEvents,
   'testPerOriginZoomMode': testPerOriginZoomMode,
@@ -3065,9 +3372,13 @@ embedder.test.testList = {
   'testCloseNewWindowCleanup': testCloseNewWindowCleanup,
   'testFocusWhileFocused': testFocusWhileFocused,
   'testPDFInWebview': testPDFInWebview,
+  'testNavigateToPDFInWebview': testNavigateToPDFInWebview,
   'testMailtoLink': testMailtoLink,
   'testRendererNavigationRedirectWhileUnattached':
-       testRendererNavigationRedirectWhileUnattached
+       testRendererNavigationRedirectWhileUnattached,
+  'testBlobURL': testBlobURL,
+  'testWebViewAndEmbedderInNewWindow': testWebViewAndEmbedderInNewWindow,
+  'testSelectPopupPositionInMac': testSelectPopupPositionInMac
 };
 
 onload = function() {

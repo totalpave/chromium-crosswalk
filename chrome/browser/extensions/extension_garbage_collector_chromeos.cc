@@ -4,12 +4,12 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/extensions/extension_assets_manager_chromeos.h"
 #include "chrome/browser/extensions/extension_garbage_collector_chromeos.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "components/user_manager/user_manager.h"
-#include "extensions/browser/extension_system.h"
+#include "extensions/browser/extension_file_task_runner.h"
 
 namespace extensions {
 
@@ -77,13 +77,12 @@ bool ExtensionGarbageCollectorChromeOS::CanGarbageCollectSharedExtensions() {
 void ExtensionGarbageCollectorChromeOS::GarbageCollectSharedExtensions() {
   std::multimap<std::string, base::FilePath> paths;
   if (ExtensionAssetsManagerChromeOS::CleanUpSharedExtensions(&paths)) {
-    ExtensionService* service =
-        ExtensionSystem::Get(context_)->extension_service();
-    if (!service->GetFileTaskRunner()->PostTask(
+    if (!GetExtensionFileTaskRunner()->PostTask(
             FROM_HERE,
-            base::Bind(&GarbageCollectExtensionsOnFileThread,
-                       ExtensionAssetsManagerChromeOS::GetSharedInstallDir(),
-                       paths))) {
+            base::BindOnce(
+                &GarbageCollectExtensionsOnFileThread,
+                ExtensionAssetsManagerChromeOS::GetSharedInstallDir(),
+                paths))) {
       NOTREACHED();
     }
   }

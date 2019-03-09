@@ -7,10 +7,12 @@
 
 #include <memory>
 
+#include "ash/ash_export.h"
 #include "base/macros.h"
 
 namespace gfx {
 class Insets;
+class Rect;
 class Size;
 class Transform;
 }
@@ -21,7 +23,7 @@ class RootWindowTransformer;
 
 // A helper class to handle ash specific feature that requires
 // transforming a root window (such as rotation, UI zooming).
-class TransformerHelper {
+class ASH_EXPORT TransformerHelper {
  public:
   explicit TransformerHelper(AshWindowTreeHost* ash_host);
   ~TransformerHelper();
@@ -44,9 +46,9 @@ class TransformerHelper {
   gfx::Transform GetTransform() const;
   gfx::Transform GetInverseTransform() const;
 
-  // Updates the root window size based on the host size and
+  // Returns the transformed root window bounds based on the host size and
   // current transform.
-  void UpdateWindowSize(const gfx::Size& host_size);
+  gfx::Rect GetTransformedWindowBounds(const gfx::Size& host_size) const;
 
  private:
   AshWindowTreeHost* ash_host_;

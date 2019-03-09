@@ -6,12 +6,12 @@
 
 #include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/net/prediction_options.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -22,7 +22,8 @@
 #include "components/content_settings/core/browser/website_settings_registry.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/pref_names.h"
-#include "components/syncable_prefs/pref_service_syncable.h"
+#include "components/safe_browsing/common/safe_browsing_prefs.h"
+#include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
@@ -52,15 +53,15 @@ class PrefsFunctionalTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(PrefsFunctionalTest, TestDownloadDirPref) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  base::ScopedTempDir new_download_dir;
-  ASSERT_TRUE(new_download_dir.CreateUniqueTempDir());
 
+  base::FilePath new_download_dir =
+      DownloadPrefs(browser()->profile()).DownloadPath().AppendASCII("subdir");
   base::FilePath downloaded_pkg =
-      new_download_dir.path().AppendASCII("a_zip_file.zip");
+      new_download_dir.AppendASCII("a_zip_file.zip");
 
   // Set pref to download in new_download_dir.
   browser()->profile()->GetPrefs()->SetFilePath(
-      prefs::kDownloadDefaultDirectory, new_download_dir.path());
+      prefs::kDownloadDefaultDirectory, new_download_dir);
 
   // Create a downloads observer.
   std::unique_ptr<content::DownloadTestObserver> downloads_observer(
@@ -69,6 +70,8 @@ IN_PROC_BROWSER_TEST_F(PrefsFunctionalTest, TestDownloadDirPref) {
       browser(), embedded_test_server()->GetURL("/downloads/a_zip_file.zip"));
   // Waits for the download to complete.
   downloads_observer->WaitForFinished();
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
   EXPECT_TRUE(base::PathExists(downloaded_pkg));
 }
 
@@ -237,5 +240,7 @@ IN_PROC_BROWSER_TEST_F(PrefsFunctionalTest, TestPrivacySecurityPrefs) {
 
 // Verify that we have some Local State prefs.
 IN_PROC_BROWSER_TEST_F(PrefsFunctionalTest, TestHaveLocalStatePrefs) {
-  EXPECT_TRUE(g_browser_process->local_state()->GetPreferenceValues().get());
+  EXPECT_TRUE(g_browser_process->local_state()
+                  ->GetPreferenceValues(PrefService::INCLUDE_DEFAULTS)
+                  .get());
 }

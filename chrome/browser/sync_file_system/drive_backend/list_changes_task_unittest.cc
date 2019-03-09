@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/format_macros.h"
 #include "base/macros.h"
@@ -24,8 +25,7 @@
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "google_apis/drive/drive_api_parser.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 
 namespace sync_file_system {
 namespace drive_backend {
@@ -45,14 +45,14 @@ class ListChangesTaskTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(database_dir_.CreateUniqueTempDir());
-    in_memory_env_.reset(leveldb::NewMemEnv(leveldb::Env::Default()));
+    in_memory_env_ = leveldb_chrome::NewMemEnv("ListChangesTaskTest");
 
     std::unique_ptr<drive::FakeDriveService> fake_drive_service(
         new drive::FakeDriveService);
 
     std::unique_ptr<drive::DriveUploaderInterface> drive_uploader(
         new drive::DriveUploader(fake_drive_service.get(),
-                                 base::ThreadTaskRunnerHandle::Get()));
+                                 base::ThreadTaskRunnerHandle::Get(), nullptr));
 
     fake_drive_service_helper_.reset(
         new FakeDriveServiceHelper(fake_drive_service.get(),
@@ -61,15 +61,13 @@ class ListChangesTaskTest : public testing::Test {
 
     sync_task_manager_.reset(new SyncTaskManager(
         base::WeakPtr<SyncTaskManager::Client>(),
-        10 /* maximum_background_task */,
-        base::ThreadTaskRunnerHandle::Get(),
-        nullptr /* worker_pool */));
+        10 /* maximum_background_task */, base::ThreadTaskRunnerHandle::Get()));
     sync_task_manager_->Initialize(SYNC_STATUS_OK);
 
     context_.reset(new SyncEngineContext(
         std::move(fake_drive_service), std::move(drive_uploader),
         nullptr /* task_logger */, base::ThreadTaskRunnerHandle::Get(),
-        base::ThreadTaskRunnerHandle::Get(), nullptr /* worker_pool */));
+        base::ThreadTaskRunnerHandle::Get()));
 
     SetUpRemoteFolders();
 
@@ -168,10 +166,8 @@ class ListChangesTaskTest : public testing::Test {
 
   void InitializeMetadataDatabase() {
     SyncStatusCode status = SYNC_STATUS_UNKNOWN;
-    SyncEngineInitializer* initializer =
-        new SyncEngineInitializer(context_.get(),
-                                  database_dir_.path(),
-                                  in_memory_env_.get());
+    SyncEngineInitializer* initializer = new SyncEngineInitializer(
+        context_.get(), database_dir_.GetPath(), in_memory_env_.get());
 
     sync_task_manager_->ScheduleSyncTask(
         FROM_HERE, std::unique_ptr<SyncTask>(initializer),
@@ -240,6 +236,21 @@ TEST_F(ListChangesTaskTest, UnderTrackedFolder) {
   size_t num_dirty_trackers = CountDirtyTracker();
 
   SetUpChangesInFolder(app_root_folder_id());
+
+  EXPECT_EQ(SYNC_STATUS_OK, RunTask(std::unique_ptr<SyncTask>(
+                                new ListChangesTask(GetSyncEngineContext()))));
+
+  EXPECT_EQ(num_dirty_trackers + 4, CountDirtyTracker());
+}
+
+TEST_F(ListChangesTaskTest, TeamDriveChangeInChangeList) {
+  size_t num_dirty_trackers = CountDirtyTracker();
+
+  SetUpChangesInFolder(app_root_folder_id());
+
+  // Adding a team drive will return a TeamDriveResource entry when the
+  // change list is retrieved.
+  fake_drive_service_helper()->AddTeamDrive("team_drive_id", "team_drive_name");
 
   EXPECT_EQ(SYNC_STATUS_OK, RunTask(std::unique_ptr<SyncTask>(
                                 new ListChangesTask(GetSyncEngineContext()))));

@@ -9,10 +9,11 @@
 
 namespace ui {
 class Accelerator;
-class AcceleratorTarget;
 }
 
 namespace views {
+
+class View;
 
 // Delegate interface for views::FocusManager.
 class VIEWS_EXPORT FocusManagerDelegate {
@@ -26,6 +27,9 @@ class VIEWS_EXPORT FocusManagerDelegate {
   // target, and so on.
   // Returns true if an accelerator was activated.
   virtual bool ProcessAccelerator(const ui::Accelerator& accelerator) = 0;
+
+  // Called after focus state has changed.
+  virtual void OnDidChangeFocus(View* focused_before, View* focused_now) = 0;
 };
 
 }  // namespace views

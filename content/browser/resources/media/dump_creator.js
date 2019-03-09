@@ -33,41 +33,53 @@ var DumpCreator = (function() {
         '</button></a></div>' +
         '<p><label><input type=checkbox>' +
         'Enable diagnostic audio recordings</label></p>' +
-        '<p class=audio-recordings-info>A diagnostic audio recording is used' +
-        ' for analyzing audio problems. It consists of two files and contains' +
-        ' the audio played out from the speaker and recorded from the' +
-        ' microphone and is saved to the local disk. Checking this box will' +
-        ' enable the recording for ongoing WebRTC calls and for future WebRTC' +
-        ' calls. When the box is unchecked or this page is closed, all' +
-        ' ongoing recordings will be stopped and this recording' +
-        ' functionality will be disabled for future WebRTC calls. Recordings' +
-        ' in multiple tabs are supported as well as multiple recordings in' +
-        ' the same tab. When enabling, you select a base filename to which' +
-        ' suffixes will be appended as</p>' +
+        '<p class=audio-diagnostic-dumps-info>A diagnostic audio recording is' +
+        ' used for analyzing audio problems. It consists of several files and' +
+        ' contains the audio played out to the speaker (output) and captured' +
+        ' from the microphone (input). The data is saved locally.' +
+        ' Checking this box will enable recordings of all ongoing input and' +
+        ' output audio streams (including non-WebRTC streams) and for future' +
+        ' audio streams. When the box is unchecked or this page is closed,' +
+        ' all ongoing recordings will be stopped and this recording' +
+        ' functionality disabled. Recording audio from multiple tabs is' +
+        ' supported as well as multiple recordings from the same tab.</p>' +
+        '<p>When enabling, select a base filename to which the following' +
+        ' suffixes will be added:</p>' +
         '<p><div>&lt;base filename&gt;.&lt;render process ID&gt;' +
-        '.aec_dump.&lt;recording ID&gt;</div>' +
-        '<div>&lt;base filename&gt;.&lt;render process ID&gt;' +
-        '.source_input.&lt;stream ID&gt;.wav</div></p>' +
-        '<p class=audio-recordings-info>If recordings are disabled and then' +
-        ' enabled using the same base filename, the microphone recording file' +
-        ' will be overwritten, and the AEC dump file will be appended to and' +
-        ' may become invalid. It is recommended to choose a new base filename' +
-        ' each time or move the produced files before enabling again.</p>' +
-        '<p><label><input type=checkbox>' +
-        'Enable diagnostic packet and event recording</label></p>' +
-        '<p class=audio-recordings-info>A diagnostic packet and event' +
+        '.aec_dump.&lt;AEC dump recording ID&gt;</div>' +
+        '<div>&lt;base filename&gt;.input.&lt;stream recording ID&gt;.wav' +
+        '</div><div>' +
+        '&lt;base filename&gt;.output.&lt;stream recording ID&gt;.wav' +
+        '</div></p>' +
+        '<p class=audio-diagnostic-dumps-info>It is recommended to choose a' +
+        ' new base filename each time the feature is enabled to avoid ending' +
+        ' up with partially overwritten or unusable audio files.</p>' +
+        '<p><label><input type=checkbox disabled=true>' +
+        'Enable diagnostic packet and event recording' +
+        '<label name="placeholder_for_warning"/></label></p>' +
+        '<p class=audio-diagnostic-dumps-info>A diagnostic packet and event' +
         ' recording can be used for analyzing various issues related to' +
         ' thread starvation, jitter buffers or bandwidth estimation. Two' +
         ' types of data are logged. First, incoming and outgoing RTP headers' +
         ' and RTCP packets are logged. These do not include any audio or' +
         ' video information, nor any other types of personally identifiable' +
         ' information (so no IP addresses or URLs). Checking this box will' +
-        ' enable the recording for currently ongoing WebRTC calls. When' +
-        ' the box is unchecked or this page is closed, all active recordings' +
-        ' will be stopped. Recording in multiple tabs or multiple recordings' +
-        ' in the same tab is currently not supported. When enabling, a' +
-        ' filename for the recording can be selected. If an existing file is' +
-        ' selected, it will be overwritten. </p>';
+        ' enable the recording for ongoing WebRTC calls and for future' +
+        ' WebRTC calls. When the box is unchecked or this page is closed,' +
+        ' all ongoing recordings will be stopped and this recording' +
+        ' functionality will be disabled for future WebRTC calls. Recording' +
+        ' in multiple tabs or multiple recordings in the same tab will cause' +
+        ' multiple log files to be created. When enabling, a filename for the' +
+        ' recording can be entered. The entered filename is used as a' +
+        ' base, to which the following suffixes will be appended.</p>' +
+        ' <p>&lt;base filename&gt;_&lt;date&gt;_&lt;timestamp&gt;_&lt;render ' +
+        'process ID&gt;_&lt;recording ID&gt;</p>' +
+        '<p class=audio-diagnostic-dumps-info>If a file with the same name' +
+        ' already exists, it will be overwritten. No more than 5 logfiles ' +
+        ' will be created, and each of them is limited to 60MB of storage. ' +
+        ' On Android these limits are 3 files of at most 10MB each. ' +
+        ' When the limit is reached, the checkbox must be unchecked and ' +
+        ' rechecked to resume logging.</p>';
     content.getElementsByTagName('a')[0].addEventListener(
         'click', this.onDownloadData_.bind(this));
     content.getElementsByTagName('input')[0].addEventListener(
@@ -78,23 +90,36 @@ var DumpCreator = (function() {
 
   DumpCreator.prototype = {
     // Mark the diagnostic audio recording checkbox checked.
-    enableAudioDebugRecordings: function() {
+    setAudioDebugRecordingsCheckbox: function() {
       this.root_.getElementsByTagName('input')[0].checked = true;
     },
 
     // Mark the diagnostic audio recording checkbox unchecked.
-    disableAudioDebugRecordings: function() {
+    clearAudioDebugRecordingsCheckbox: function() {
       this.root_.getElementsByTagName('input')[0].checked = false;
     },
 
     // Mark the event log recording checkbox checked.
-    enableEventLogRecordings: function() {
+    setEventLogRecordingsCheckbox: function() {
       this.root_.getElementsByTagName('input')[1].checked = true;
     },
 
     // Mark the event log recording checkbox unchecked.
-    disableEventLogRecordings: function() {
+    clearEventLogRecordingsCheckbox: function() {
       this.root_.getElementsByTagName('input')[1].checked = false;
+    },
+
+    // Mark the event log recording checkbox as mutable/immutable.
+    setEventLogRecordingsCheckboxMutability: function(mutable) {
+      // TODO(eladalon): Remove reliance on number and order of elements.
+      // https://crbug.com/817391
+      this.root_.getElementsByTagName('input')[1].disabled = !mutable;
+      if (!mutable) {
+        var label = this.root_.getElementsByTagName('label')[2];
+        label.style = 'color:red;';
+        label.textContent =
+            ' WebRTC event logging\'s state was set by a command line flag.';
+      }
     },
 
     /**
@@ -103,13 +128,13 @@ var DumpCreator = (function() {
      * @private
      */
     onDownloadData_: function() {
-      var dump_object =
-      {
+      var dump_object = {
         'getUserMedia': userMediaRequests,
         'PeerConnections': peerConnectionDataStore,
+        'UserAgent': navigator.userAgent,
       };
-      var textBlob = new Blob([JSON.stringify(dump_object, null, ' ')],
-                              {type: 'octet/stream'});
+      var textBlob = new Blob(
+          [JSON.stringify(dump_object, null, ' ')], {type: 'octet/stream'});
       var URL = window.URL.createObjectURL(textBlob);
 
       var anchor = this.root_.getElementsByTagName('a')[0];

@@ -4,25 +4,41 @@
 
 #include "chrome/browser/chrome_content_browser_client.h"
 
+#include <list>
 #include <map>
+#include <memory>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/metrics/field_trial.h"
+#include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_command_line.h"
 #include "build/build_config.h"
+#include "chrome/browser/browsing_data/browsing_data_helper.h"
+#include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/test/base/testing_profile.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/variations/entropy_provider.h"
 #include "components/variations/variations_associated_data.h"
 #include "components/version_info/version_info.h"
+#include "content/public/browser/browsing_data_filter_builder.h"
+#include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/test_browser_thread_bundle.h"
+#include "media/media_buildflags.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "url/gurl.h"
 
 #if !defined(OS_ANDROID)
@@ -33,7 +49,69 @@
 #include "chrome/test/base/search_test_utils.h"
 #endif
 
+#if defined(OS_CHROMEOS)
+#include "ash/public/interfaces/constants.mojom.h"
+#include "content/public/common/service_names.mojom.h"
+#include "services/ws/public/mojom/constants.mojom.h"
+#endif
+
+using content::BrowsingDataFilterBuilder;
+using testing::_;
 using ChromeContentBrowserClientTest = testing::Test;
+
+namespace {
+
+void CheckUserAgentStringOrdering(bool mobile_device) {
+  std::vector<std::string> pieces;
+
+  // Check if the pieces of the user agent string come in the correct order.
+  ChromeContentBrowserClient content_browser_client;
+  std::string buffer = content_browser_client.GetUserAgent();
+
+  pieces = base::SplitStringUsingSubstr(
+      buffer, "Mozilla/5.0 (", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  ASSERT_EQ(2u, pieces.size());
+  buffer = pieces[1];
+  EXPECT_EQ("", pieces[0]);
+
+  pieces = base::SplitStringUsingSubstr(
+      buffer, ") AppleWebKit/", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  ASSERT_EQ(2u, pieces.size());
+  buffer = pieces[1];
+  std::string os_str = pieces[0];
+
+  pieces =
+      base::SplitStringUsingSubstr(buffer, " (KHTML, like Gecko) ",
+                                   base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  ASSERT_EQ(2u, pieces.size());
+  buffer = pieces[1];
+  std::string webkit_version_str = pieces[0];
+
+  pieces = base::SplitStringUsingSubstr(
+      buffer, " Safari/", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  ASSERT_EQ(2u, pieces.size());
+  std::string product_str = pieces[0];
+  std::string safari_version_str = pieces[1];
+
+  // Not sure what can be done to better check the OS string, since it's highly
+  // platform-dependent.
+  EXPECT_FALSE(os_str.empty());
+
+  // Check that the version numbers match.
+  EXPECT_FALSE(webkit_version_str.empty());
+  EXPECT_FALSE(safari_version_str.empty());
+  EXPECT_EQ(webkit_version_str, safari_version_str);
+
+  EXPECT_TRUE(
+      base::StartsWith(product_str, "Chrome/", base::CompareCase::SENSITIVE));
+  if (mobile_device) {
+    // "Mobile" gets tacked on to the end for mobile devices, like phones.
+    EXPECT_TRUE(
+        base::EndsWith(product_str, " Mobile", base::CompareCase::SENSITIVE));
+  }
+}
+
+}  // namespace
 
 TEST_F(ChromeContentBrowserClientTest, ShouldAssignSiteForURL) {
   ChromeContentBrowserClient client;
@@ -74,18 +152,17 @@ TEST_F(ChromeContentBrowserClientWindowTest, OpenURL) {
                   GURL("https://www.chromium.org") };
 
   for (const GURL& url : urls) {
-    content::OpenURLParams params(url,
-                                  content::Referrer(),
-                                  NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                                  false);
+    content::OpenURLParams params(url, content::Referrer(),
+                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false);
     // TODO(peter): We should have more in-depth browser tests for the window
     // opening functionality, which also covers Android. This test can currently
     // only be ran on platforms where OpenURL is implemented synchronously.
     // See https://crbug.com/457667.
     content::WebContents* web_contents = nullptr;
-    client.OpenURL(browser()->profile(),
-                   params,
+    scoped_refptr<content::SiteInstance> site_instance =
+        content::SiteInstance::Create(browser()->profile());
+    client.OpenURL(site_instance.get(), params,
                    base::Bind(&DidOpenURLForWindowTest, &web_contents));
 
     EXPECT_TRUE(web_contents);
@@ -100,8 +177,6 @@ TEST_F(ChromeContentBrowserClientWindowTest, OpenURL) {
 }
 
 #endif  // !defined(OS_ANDROID)
-
-#if defined(ENABLE_WEBRTC)
 
 // NOTE: Any updates to the expectations in these tests should also be done in
 // the browser test WebRtcDisableEncryptionFlagBrowserTest.
@@ -159,14 +234,10 @@ TEST_F(DisableWebRtcEncryptionFlagTest, StableChannel) {
   EXPECT_FALSE(to_command_line_.HasSwitch(switches::kDisableWebRtcEncryption));
 }
 
-#endif  // ENABLE_WEBRTC
-
 class BlinkSettingsFieldTrialTest : public testing::Test {
  public:
-  static const char kParserFieldTrialName[];
-  static const char kIFrameFieldTrialName[];
+  static const char kDisallowFetchFieldTrialName[];
   static const char kFakeGroupName[];
-  static const char kDefaultGroupName[];
 
   BlinkSettingsFieldTrialTest()
       : trial_list_(NULL),
@@ -219,12 +290,9 @@ class BlinkSettingsFieldTrialTest : public testing::Test {
   content::TestBrowserThreadBundle thread_bundle_;
 };
 
-const char BlinkSettingsFieldTrialTest::kParserFieldTrialName[] =
-    "BackgroundHtmlParserTokenLimits";
-const char BlinkSettingsFieldTrialTest::kIFrameFieldTrialName[] =
-    "LowPriorityIFrames";
+const char BlinkSettingsFieldTrialTest::kDisallowFetchFieldTrialName[] =
+    "DisallowFetchForDocWrittenScriptsInMainFrame";
 const char BlinkSettingsFieldTrialTest::kFakeGroupName[] = "FakeGroup";
-const char BlinkSettingsFieldTrialTest::kDefaultGroupName[] = "Default";
 
 TEST_F(BlinkSettingsFieldTrialTest, NoFieldTrial) {
   AppendContentBrowserClientSwitches();
@@ -232,14 +300,14 @@ TEST_F(BlinkSettingsFieldTrialTest, NoFieldTrial) {
 }
 
 TEST_F(BlinkSettingsFieldTrialTest, FieldTrialWithoutParams) {
-  CreateFieldTrial(kParserFieldTrialName, kFakeGroupName);
+  CreateFieldTrial(kDisallowFetchFieldTrialName, kFakeGroupName);
   AppendContentBrowserClientSwitches();
   EXPECT_FALSE(command_line().HasSwitch(switches::kBlinkSettings));
 }
 
 TEST_F(BlinkSettingsFieldTrialTest, BlinkSettingsSwitchAlreadySpecified) {
   AppendBlinkSettingsSwitch("foo");
-  CreateFieldTrialWithParams(kParserFieldTrialName, kFakeGroupName,
+  CreateFieldTrialWithParams(kDisallowFetchFieldTrialName, kFakeGroupName,
                              "key1", "value1", "key2", "value2");
   AppendContentBrowserClientSwitches();
   EXPECT_TRUE(command_line().HasSwitch(switches::kBlinkSettings));
@@ -248,33 +316,11 @@ TEST_F(BlinkSettingsFieldTrialTest, BlinkSettingsSwitchAlreadySpecified) {
 }
 
 TEST_F(BlinkSettingsFieldTrialTest, FieldTrialEnabled) {
-  CreateFieldTrialWithParams(kParserFieldTrialName, kFakeGroupName,
+  CreateFieldTrialWithParams(kDisallowFetchFieldTrialName, kFakeGroupName,
                              "key1", "value1", "key2", "value2");
   AppendContentBrowserClientSwitches();
   EXPECT_TRUE(command_line().HasSwitch(switches::kBlinkSettings));
   EXPECT_EQ("key1=value1,key2=value2",
-            command_line().GetSwitchValueASCII(switches::kBlinkSettings));
-}
-
-TEST_F(BlinkSettingsFieldTrialTest, MultipleFieldTrialsEnabled) {
-  CreateFieldTrialWithParams(kParserFieldTrialName, kFakeGroupName,
-                             "key1", "value1", "key2", "value2");
-  CreateFieldTrialWithParams(kIFrameFieldTrialName, kFakeGroupName,
-                             "keyA", "valueA", "keyB", "valueB");
-  AppendContentBrowserClientSwitches();
-  EXPECT_TRUE(command_line().HasSwitch(switches::kBlinkSettings));
-  EXPECT_EQ("key1=value1,key2=value2,keyA=valueA,keyB=valueB",
-            command_line().GetSwitchValueASCII(switches::kBlinkSettings));
-}
-
-TEST_F(BlinkSettingsFieldTrialTest, MultipleFieldTrialsDuplicateKeys) {
-  CreateFieldTrialWithParams(kParserFieldTrialName, kFakeGroupName,
-                             "key1", "value1", "key2", "value2");
-  CreateFieldTrialWithParams(kIFrameFieldTrialName, kFakeGroupName,
-                             "key2", "duplicate", "key3", "value3");
-  AppendContentBrowserClientSwitches();
-  EXPECT_TRUE(command_line().HasSwitch(switches::kBlinkSettings));
-  EXPECT_EQ("key1=value1,key2=value2,key2=duplicate,key3=value3",
             command_line().GetSwitchValueASCII(switches::kBlinkSettings));
 }
 
@@ -286,12 +332,13 @@ class InstantNTPURLRewriteTest : public BrowserWithTestWindowTest {
   void SetUp() override {
     BrowserWithTestWindowTest::SetUp();
     field_trial_list_.reset(new base::FieldTrialList(
-        new metrics::SHA1EntropyProvider("42")));
+        std::make_unique<variations::SHA1EntropyProvider>("42")));
   }
 
   void InstallTemplateURLWithNewTabPage(GURL new_tab_page_url) {
     TemplateURLServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-        profile(), &TemplateURLServiceFactory::BuildInstanceFor);
+        profile(),
+        base::BindRepeating(&TemplateURLServiceFactory::BuildInstanceFor));
     TemplateURLService* template_url_service =
         TemplateURLServiceFactory::GetForProfile(browser()->profile());
     search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service);
@@ -300,9 +347,8 @@ class InstantNTPURLRewriteTest : public BrowserWithTestWindowTest {
     data.SetShortName(base::ASCIIToUTF16("foo.com"));
     data.SetURL("http://foo.com/url?bar={searchTerms}");
     data.new_tab_url = new_tab_page_url.spec();
-    TemplateURL* template_url = new TemplateURL(data);
-    // Takes ownership.
-    template_url_service->Add(template_url);
+    TemplateURL* template_url =
+        template_url_service->Add(std::make_unique<TemplateURL>(data));
     template_url_service->SetUserSelectedDefaultSearchProvider(template_url);
   }
 
@@ -328,3 +374,128 @@ TEST_F(InstantNTPURLRewriteTest, UberURLHandler_InstantExtendedNewTabPage) {
 
 }  // namespace content
 #endif  // !defined(OS_ANDROID)
+
+class ChromeContentBrowserClientGetLoggingFileTest : public testing::Test {};
+
+TEST_F(ChromeContentBrowserClientGetLoggingFileTest, GetLoggingFile) {
+  base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
+  ChromeContentBrowserClient client;
+  base::FilePath log_file_name;
+  EXPECT_FALSE(client.GetLoggingFileName(cmd_line).empty());
+}
+
+TEST_F(ChromeContentBrowserClientGetLoggingFileTest,
+       GetLoggingFileFromCommandLine) {
+  base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
+  cmd_line.AppendSwitchASCII(switches::kLogFile, "test_log.txt");
+  ChromeContentBrowserClient client;
+  base::FilePath log_file_name;
+  EXPECT_EQ(base::FilePath(FILE_PATH_LITERAL("test_log.txt")).value(),
+            client.GetLoggingFileName(cmd_line).value());
+}
+
+class TestChromeContentBrowserClient : public ChromeContentBrowserClient {
+ public:
+  using ChromeContentBrowserClient::HandleWebUI;
+  using ChromeContentBrowserClient::HandleWebUIReverse;
+};
+
+TEST(ChromeContentBrowserClientTest, HandleWebUI) {
+  TestChromeContentBrowserClient test_content_browser_client;
+  const GURL http_help("http://help/");
+  GURL should_not_redirect = http_help;
+  test_content_browser_client.HandleWebUI(&should_not_redirect, nullptr);
+  EXPECT_EQ(http_help, should_not_redirect);
+
+  const GURL chrome_help("chrome://help/");
+  GURL should_redirect = chrome_help;
+  test_content_browser_client.HandleWebUI(&should_redirect, nullptr);
+  EXPECT_NE(chrome_help, should_redirect);
+}
+
+TEST(ChromeContentBrowserClientTest, HandleWebUIReverse) {
+  TestChromeContentBrowserClient test_content_browser_client;
+  GURL http_settings("http://settings/");
+  EXPECT_FALSE(
+      test_content_browser_client.HandleWebUIReverse(&http_settings, nullptr));
+  GURL chrome_settings("chrome://settings/");
+  EXPECT_TRUE(test_content_browser_client.HandleWebUIReverse(&chrome_settings,
+                                                             nullptr));
+}
+
+TEST(ChromeContentBrowserClientTest, GetMetricSuffixForURL) {
+  ChromeContentBrowserClient client;
+  // Search is detected.
+  EXPECT_EQ("search", client.GetMetricSuffixForURL(GURL(
+                          "https://www.google.co.jp/search?q=whatsgoingon")));
+  // Not a Search host.
+  EXPECT_EQ("", client.GetMetricSuffixForURL(GURL(
+                    "https://www.google.example.com/search?q=whatsgoingon")));
+  // For now, non-https is considered a Search host.
+  EXPECT_EQ("search", client.GetMetricSuffixForURL(
+                          GURL("http://www.google.com/search?q=whatsgoingon")));
+  // Not a Search result page (no query).
+  EXPECT_EQ("", client.GetMetricSuffixForURL(
+                    GURL("https://www.google.com/search?notaquery=nope")));
+}
+
+TEST(ChromeContentBrowserClient, UserAgentStringOrdering) {
+#if defined(OS_ANDROID)
+  const char* const kArguments[] = {"chrome"};
+  base::test::ScopedCommandLine scoped_command_line;
+  base::CommandLine* command_line = scoped_command_line.GetProcessCommandLine();
+  command_line->InitFromArgv(1, kArguments);
+
+  // Do it for regular devices.
+  ASSERT_FALSE(command_line->HasSwitch(switches::kUseMobileUserAgent));
+  CheckUserAgentStringOrdering(false);
+
+  // Do it for mobile devices.
+  command_line->AppendSwitch(switches::kUseMobileUserAgent);
+  ASSERT_TRUE(command_line->HasSwitch(switches::kUseMobileUserAgent));
+  CheckUserAgentStringOrdering(true);
+#else
+  CheckUserAgentStringOrdering(false);
+#endif
+}
+
+TEST(ChromeContentBrowserClient, UserAgentMetadata) {
+  ChromeContentBrowserClient content_browser_client;
+  auto metadata = content_browser_client.GetUserAgentMetadata();
+
+  EXPECT_EQ(metadata.brand, version_info::GetProductName());
+  EXPECT_EQ(metadata.full_version, version_info::GetVersionNumber());
+  EXPECT_EQ(metadata.major_version, version_info::GetMajorVersionNumber());
+  EXPECT_EQ(metadata.platform, version_info::GetOSType());
+  EXPECT_EQ(metadata.architecture, "");
+  EXPECT_EQ(metadata.model, "");
+}
+
+#if defined(OS_CHROMEOS)
+
+TEST(ChromeContentBrowserClientTest, ShouldTerminateOnServiceQuit) {
+  const struct {
+    std::string service_name;
+    bool expect_terminate;
+  } kTestCases[] = {
+      // Don't terminate for invalid service names.
+      {"x", false},
+      {"unknown-name", false},
+      // Don't terminate for some well-known browser services.
+      {content::mojom::kBrowserServiceName, false},
+      {content::mojom::kGpuServiceName, false},
+      {content::mojom::kRendererServiceName, false},
+      // Do terminate for some mash-specific cases.
+      {ws::mojom::kServiceName, true},
+      {ash::mojom::kServiceName, true},
+  };
+  ChromeContentBrowserClient client;
+  for (const auto& test : kTestCases) {
+    service_manager::Identity id(test.service_name, base::Token{1, 2},
+                                 base::Token{}, base::Token{3, 4});
+    EXPECT_EQ(test.expect_terminate, client.ShouldTerminateOnServiceQuit(id))
+        << "for service name " << test.service_name;
+  }
+}
+
+#endif  // defined(OS_CHROMEOS)

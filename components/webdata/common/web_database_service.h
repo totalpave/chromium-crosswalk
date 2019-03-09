@@ -16,7 +16,7 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/ref_counted_delete_on_message_loop.h"
+#include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/single_thread_task_runner.h"
@@ -25,13 +25,8 @@
 #include "components/webdata/common/webdata_export.h"
 
 class WebDatabaseBackend;
-class WebDataRequestManager;
 
-namespace content {
-class BrowserContext;
-}
-
-namespace tracked_objects {
+namespace base {
 class Location;
 }
 
@@ -48,20 +43,22 @@ class WebDataServiceConsumer;
 ////////////////////////////////////////////////////////////////////////////////
 
 class WEBDATA_EXPORT WebDatabaseService
-    : public base::RefCountedDeleteOnMessageLoop<WebDatabaseService> {
+    : public base::RefCountedDeleteOnSequence<WebDatabaseService> {
  public:
-  typedef base::Callback<std::unique_ptr<WDTypedResult>(WebDatabase*)> ReadTask;
-  typedef base::Callback<WebDatabase::State(WebDatabase*)> WriteTask;
+  using ReadTask = base::Callback<std::unique_ptr<WDTypedResult>(WebDatabase*)>;
+  using WriteTask = base::Callback<WebDatabase::State(WebDatabase*)>;
 
   // Types for managing DB loading callbacks.
-  typedef base::Closure DBLoadedCallback;
-  typedef base::Callback<void(sql::InitStatus)> DBLoadErrorCallback;
+  using DBLoadedCallback = base::Closure;
+  using DBLoadErrorCallback =
+      base::Callback<void(sql::InitStatus, const std::string&)>;
 
-  // Takes the path to the WebDatabase file.
-  // WebDatabaseService lives on |ui_thread| and posts tasks to |db_thread|.
-  WebDatabaseService(const base::FilePath& path,
-                     scoped_refptr<base::SingleThreadTaskRunner> ui_thread,
-                     scoped_refptr<base::SingleThreadTaskRunner> db_thread);
+  // WebDatabaseService lives on the UI sequence and posts tasks to the DB
+  // sequence.  |path| points to the WebDatabase file.
+  WebDatabaseService(
+      const base::FilePath& path,
+      scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+      scoped_refptr<base::SingleThreadTaskRunner> db_task_runner);
 
   // Adds |table| as a WebDatabaseTable that will participate in
   // managing the database, transferring ownership. All calls to this
@@ -81,18 +78,17 @@ class WEBDATA_EXPORT WebDatabaseService
   // Returns a pointer to the WebDatabaseBackend.
   scoped_refptr<WebDatabaseBackend> GetBackend() const;
 
-  // Schedule an update/write task on the DB thread.
-  virtual void ScheduleDBTask(
-      const tracked_objects::Location& from_here,
-      const WriteTask& task);
+  // Schedule an update/write task on the DB sequence.
+  virtual void ScheduleDBTask(const base::Location& from_here,
+                              const WriteTask& task);
 
-  // Schedule a read task on the DB thread.
+  // Schedule a read task on the DB sequence.
   virtual WebDataServiceBase::Handle ScheduleDBTaskWithResult(
-      const tracked_objects::Location& from_here,
+      const base::Location& from_here,
       const ReadTask& task,
       WebDataServiceConsumer* consumer);
 
-  // Cancel an existing request for a task on the DB thread.
+  // Cancel an existing request for a task on the DB sequence.
   // TODO(caitkp): Think about moving the definition of the Handle type to
   // somewhere else.
   virtual void CancelRequest(WebDataServiceBase::Handle h);
@@ -111,25 +107,26 @@ class WEBDATA_EXPORT WebDatabaseService
   // be stored or called.
   void RegisterDBErrorCallback(const DBLoadErrorCallback& callback);
 
-  bool db_loaded() const { return db_loaded_; };
+  bool db_loaded() const { return db_loaded_; }
 
  private:
   class BackendDelegate;
   friend class BackendDelegate;
-  friend class base::RefCountedDeleteOnMessageLoop<WebDatabaseService>;
+  friend class base::RefCountedDeleteOnSequence<WebDatabaseService>;
   friend class base::DeleteHelper<WebDatabaseService>;
 
-  typedef std::vector<DBLoadedCallback> LoadedCallbacks;
-  typedef std::vector<DBLoadErrorCallback> ErrorCallbacks;
+  using LoadedCallbacks = std::vector<DBLoadedCallback>;
+  using ErrorCallbacks = std::vector<DBLoadErrorCallback>;
 
   virtual ~WebDatabaseService();
 
-  void OnDatabaseLoadDone(sql::InitStatus status);
+  void OnDatabaseLoadDone(sql::InitStatus status,
+                          const std::string& diagnostics);
 
   base::FilePath path_;
 
   // The primary owner is |WebDatabaseService| but is refcounted because
-  // PostTask on DB thread may outlive us.
+  // PostTask on DB sequence may outlive us.
   scoped_refptr<WebDatabaseBackend> web_db_backend_;
 
   // Callbacks to be called once the DB has loaded.
@@ -141,7 +138,7 @@ class WEBDATA_EXPORT WebDatabaseService
   // True if the WebDatabase has loaded.
   bool db_loaded_;
 
-  scoped_refptr<base::SingleThreadTaskRunner> db_thread_;
+  scoped_refptr<base::SingleThreadTaskRunner> db_task_runner_;
 
   // All vended weak pointers are invalidated in ShutdownDatabase().
   base::WeakPtrFactory<WebDatabaseService> weak_ptr_factory_;

@@ -5,6 +5,7 @@
 #include "ui/aura/test/test_cursor_client.h"
 
 #include "ui/aura/client/cursor_client_observer.h"
+#include "ui/display/display.h"
 
 namespace aura {
 namespace test {
@@ -28,26 +29,25 @@ void TestCursorClient::SetCursor(gfx::NativeCursor cursor) {
 }
 
 gfx::NativeCursor TestCursorClient::GetCursor() const {
-  return ui::kCursorNull;
+  return ui::CursorType::kNull;
 }
 
 void TestCursorClient::ShowCursor() {
   visible_ = true;
-  FOR_EACH_OBSERVER(aura::client::CursorClientObserver, observers_,
-                    OnCursorVisibilityChanged(true));
+  for (aura::client::CursorClientObserver& observer : observers_)
+    observer.OnCursorVisibilityChanged(true);
 }
 
 void TestCursorClient::HideCursor() {
   visible_ = false;
-  FOR_EACH_OBSERVER(aura::client::CursorClientObserver, observers_,
-                    OnCursorVisibilityChanged(false));
+  for (aura::client::CursorClientObserver& observer : observers_)
+    observer.OnCursorVisibilityChanged(false);
 }
 
-void TestCursorClient::SetCursorSet(ui::CursorSetType cursor_set) {
-}
+void TestCursorClient::SetCursorSize(ui::CursorSize cursor_size) {}
 
-ui::CursorSetType TestCursorClient::GetCursorSet() const {
-  return ui::CURSOR_SET_NORMAL;
+ui::CursorSize TestCursorClient::GetCursorSize() const {
+  return ui::CursorSize::kNormal;
 }
 
 bool TestCursorClient::IsCursorVisible() const {
@@ -67,6 +67,11 @@ bool TestCursorClient::IsMouseEventsEnabled() const {
 }
 
 void TestCursorClient::SetDisplay(const display::Display& display) {}
+
+const display::Display& TestCursorClient::GetDisplay() const {
+  static const display::Display display;
+  return display;
+}
 
 void TestCursorClient::LockCursor() {
   cursor_lock_count_++;

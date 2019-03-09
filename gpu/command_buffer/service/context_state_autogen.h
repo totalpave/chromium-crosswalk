@@ -22,6 +22,8 @@ struct EnableFlags {
   bool cached_depth_test;
   bool dither;
   bool cached_dither;
+  bool framebuffer_srgb_ext;
+  bool cached_framebuffer_srgb_ext;
   bool polygon_offset_fill;
   bool cached_polygon_offset_fill;
   bool sample_alpha_to_coverage;
@@ -76,6 +78,7 @@ GLclampf z_far;
 GLenum front_face;
 GLenum hint_generate_mipmap;
 GLenum hint_fragment_shader_derivative;
+GLenum hint_texture_filtering;
 GLfloat line_width;
 GLfloat modelview_matrix[16];
 GLfloat projection_matrix[16];
@@ -120,6 +123,8 @@ GLint viewport_x;
 GLint viewport_y;
 GLsizei viewport_width;
 GLsizei viewport_height;
+GLenum window_rectangles_mode;
+GLint num_window_rectangles;
 
 inline void SetDeviceCapabilityState(GLenum cap, bool enable) {
   switch (cap) {
@@ -142,6 +147,12 @@ inline void SetDeviceCapabilityState(GLenum cap, bool enable) {
       if (enable_flags.cached_dither == enable && !ignore_cached_state)
         return;
       enable_flags.cached_dither = enable;
+      break;
+    case GL_FRAMEBUFFER_SRGB_EXT:
+      if (enable_flags.cached_framebuffer_srgb_ext == enable &&
+          !ignore_cached_state)
+        return;
+      enable_flags.cached_framebuffer_srgb_ext = enable;
       break;
     case GL_POLYGON_OFFSET_FILL:
       if (enable_flags.cached_polygon_offset_fill == enable &&
@@ -198,8 +209,8 @@ inline void SetDeviceCapabilityState(GLenum cap, bool enable) {
       return;
   }
   if (enable)
-    glEnable(cap);
+    api()->glEnableFn(cap);
   else
-    glDisable(cap);
+    api()->glDisableFn(cap);
 }
 #endif  // GPU_COMMAND_BUFFER_SERVICE_CONTEXT_STATE_AUTOGEN_H_

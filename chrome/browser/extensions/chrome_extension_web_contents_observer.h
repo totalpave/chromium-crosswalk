@@ -21,28 +21,34 @@ class RenderFrameHost;
 namespace extensions {
 
 // An ExtensionWebContentsObserver that adds support for the extension error
-// console, reloading crashed extensions and routing extension messages between
-// renderers.
+// console, reloading crashed extensions, routing extension messages between
+// renderers and updating autoplay policy.
 class ChromeExtensionWebContentsObserver
     : public ExtensionWebContentsObserver,
       public content::WebContentsUserData<ChromeExtensionWebContentsObserver> {
+ public:
+  ~ChromeExtensionWebContentsObserver() override;
+
+  // Creates and initializes an instance of this class for the given
+  // |web_contents|, if it doesn't already exist.
+  static void CreateForWebContents(content::WebContents* web_contents);
+
  private:
   friend class content::WebContentsUserData<ChromeExtensionWebContentsObserver>;
 
   explicit ChromeExtensionWebContentsObserver(
       content::WebContents* web_contents);
-  ~ChromeExtensionWebContentsObserver() override;
 
   // ExtensionWebContentsObserver:
   void InitializeRenderFrame(
       content::RenderFrameHost* render_frame_host) override;
 
   // content::WebContentsObserver overrides.
-  void RenderViewCreated(content::RenderViewHost* render_view_host) override;
-  void DidCommitProvisionalLoadForFrame(
-      content::RenderFrameHost* render_frame_host,
-      const GURL& url,
-      ui::PageTransition transition_type) override;
+  void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
+  void ReadyToCommitNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
   // Silence a warning about hiding a virtual function.
   bool OnMessageReceived(const IPC::Message& message,
@@ -57,11 +63,9 @@ class ChromeExtensionWebContentsObserver
       int32_t severity_level);
 
   // Reloads an extension if it is on the terminated list.
-  void ReloadIfTerminated(content::RenderViewHost* render_view_host);
+  void ReloadIfTerminated(content::RenderFrameHost* render_frame_host);
 
-  // Determines which bucket of a synthetic field trial this client belongs
-  // to and sets it.
-  void SetExtensionIsolationTrial(content::RenderFrameHost* render_frame_host);
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(ChromeExtensionWebContentsObserver);
 };

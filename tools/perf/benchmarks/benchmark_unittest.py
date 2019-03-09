@@ -5,26 +5,22 @@
 """For all the benchmarks that set options, test that the options are valid."""
 
 from collections import defaultdict
-import os
 import unittest
 
+from core import path_util
 from core import perf_benchmark
 
 from telemetry import benchmark as benchmark_module
-from telemetry.core import discover
+from telemetry import decorators
 from telemetry.internal.browser import browser_options
 from telemetry.testing import progress_reporter
 
-
-def _GetPerfDir(*subdirs):
-  perf_dir = os.path.dirname(os.path.dirname(__file__))
-  return os.path.join(perf_dir, *subdirs)
-
+from py_utils import discover
 
 def _GetAllPerfBenchmarks():
   return discover.DiscoverClasses(
-      _GetPerfDir('benchmarks'), _GetPerfDir(), benchmark_module.Benchmark,
-      index_by_class_name=True).values()
+      path_util.GetPerfBenchmarksDir(), path_util.GetPerfDir(),
+      benchmark_module.Benchmark, index_by_class_name=True).values()
 
 
 def _BenchmarkOptionsTestGenerator(benchmark):
@@ -51,7 +47,28 @@ class TestNoBenchmarkNamesDuplication(unittest.TestCase):
                         'found: %s' % (n, str(names_to_benchmarks[n])))
 
 
-class TestNoOverrideCustomizeBrowserOptions(unittest.TestCase):
+class TestBenchmarkNamingMobile(unittest.TestCase):
+
+  # TODO(rnephew): This needs to be fixed after we move to CanRunOnBrowser.
+  @decorators.Disabled('all')
+  def runTest(self):
+    all_benchmarks = _GetAllPerfBenchmarks()
+    names_to_benchmarks = defaultdict(list)
+    for b in all_benchmarks:
+      names_to_benchmarks[b.Name()] = b
+
+    for n, bench in names_to_benchmarks.items():
+      if 'mobile' in n:
+        enabled_tags = decorators.GetEnabledAttributes(bench)
+        disabled_tags = decorators.GetDisabledAttributes(bench)
+
+        self.assertTrue('all' in disabled_tags or 'android' in enabled_tags,
+                        ','.join([
+                            str(bench), bench.Name(),
+                            str(disabled_tags), str(enabled_tags)]))
+
+
+class TestNoOverrideCustomizeOptions(unittest.TestCase):
 
   def runTest(self):
     all_benchmarks = _GetAllPerfBenchmarks()
@@ -61,9 +78,9 @@ class TestNoOverrideCustomizeBrowserOptions(unittest.TestCase):
                         'Benchmark %s needs to subclass from PerfBenchmark'
                         % benchmark.Name())
       self.assertEquals(
-          benchmark.CustomizeBrowserOptions,
-          perf_benchmark.PerfBenchmark.CustomizeBrowserOptions,
-          'Benchmark %s should not override CustomizeBrowserOptions' %
+          benchmark.CustomizeOptions,
+          perf_benchmark.PerfBenchmark.CustomizeOptions,
+          'Benchmark %s should not override CustomizeOptions' %
           benchmark.Name())
 
 
@@ -81,12 +98,12 @@ def _AddBenchmarkOptionsTests(suite):
     setattr(BenchmarkOptionsTest, benchmark.Name(),
             _BenchmarkOptionsTestGenerator(benchmark))
     suite.addTest(BenchmarkOptionsTest(benchmark.Name()))
-  suite.addTest(TestNoBenchmarkNamesDuplication())
-  suite.addTest(TestNoOverrideCustomizeBrowserOptions())
 
 
 def load_tests(loader, standard_tests, pattern):
-  del loader, standard_tests, pattern  # unused
+  del loader, pattern  # unused
   suite = progress_reporter.TestSuite()
+  for t in standard_tests:
+    suite.addTests(t)
   _AddBenchmarkOptionsTests(suite)
   return suite

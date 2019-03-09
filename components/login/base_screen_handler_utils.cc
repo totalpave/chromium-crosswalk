@@ -4,7 +4,7 @@
 
 #include "components/login/base_screen_handler_utils.h"
 
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 
 namespace login {
 
@@ -12,7 +12,7 @@ namespace {
 
 template <typename StringListType>
 bool ParseStringList(const base::Value* value, StringListType* out_value) {
-  const base::ListValue* list = NULL;
+  const base::ListValue* list = nullptr;
   if (!value->GetAsList(&list))
     return false;
   out_value->resize(list->GetSize());
@@ -67,33 +67,34 @@ bool ParseValue(const base::Value* value, AccountId* out_value) {
   if (AccountId::Deserialize(serialized, out_value))
     return true;
 
-  LOG(ERROR) << "Failed to deserialize '" << serialized << "'";
   *out_value = AccountId::FromUserEmail(serialized);
+  LOG(ERROR) << "Failed to deserialize, parse as email, valid="
+             << out_value->is_valid();
   return true;
 }
 
-base::FundamentalValue MakeValue(bool v) {
-  return base::FundamentalValue(v);
+base::Value MakeValue(bool v) {
+  return base::Value(v);
 }
 
-base::FundamentalValue MakeValue(int v) {
-  return base::FundamentalValue(v);
+base::Value MakeValue(int v) {
+  return base::Value(v);
 }
 
-base::FundamentalValue MakeValue(double v) {
-  return base::FundamentalValue(v);
+base::Value MakeValue(double v) {
+  return base::Value(v);
 }
 
-base::StringValue MakeValue(const std::string& v) {
-  return base::StringValue(v);
+base::Value MakeValue(const std::string& v) {
+  return base::Value(v);
 }
 
-base::StringValue MakeValue(const base::string16& v) {
-  return base::StringValue(v);
+base::Value MakeValue(const base::string16& v) {
+  return base::Value(v);
 }
 
-base::StringValue MakeValue(const AccountId& v) {
-  return base::StringValue(v.Serialize());
+base::Value MakeValue(const AccountId& v) {
+  return base::Value(v.Serialize());
 }
 
 ParsedValueContainer<AccountId>::ParsedValueContainer() {

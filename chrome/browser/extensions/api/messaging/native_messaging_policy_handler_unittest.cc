@@ -8,8 +8,8 @@
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
+#include "components/policy/policy_constants.h"
 #include "components/prefs/pref_value_map.h"
-#include "policy/policy_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
@@ -81,7 +81,7 @@ TEST(NativeMessagingHostListPolicyHandlerTest, ApplyPolicySettings) {
                  policy::POLICY_SOURCE_CLOUD, policy.CreateDeepCopy(), nullptr);
   handler.ApplyPolicySettings(policy_map, &prefs);
   EXPECT_TRUE(prefs.GetValue(kTestPref, &value));
-  EXPECT_TRUE(base::Value::Equals(&expected, value));
+  EXPECT_EQ(expected, *value);
 
   policy.AppendString("*");
   expected.AppendString("*");
@@ -91,7 +91,7 @@ TEST(NativeMessagingHostListPolicyHandlerTest, ApplyPolicySettings) {
                  policy::POLICY_SOURCE_CLOUD, policy.CreateDeepCopy(), nullptr);
   handler.ApplyPolicySettings(policy_map, &prefs);
   EXPECT_TRUE(prefs.GetValue(kTestPref, &value));
-  EXPECT_TRUE(base::Value::Equals(&expected, value));
+  EXPECT_EQ(expected, *value);
 
   policy.AppendString("invalid Name");
   policy_map.Set(policy::key::kNativeMessagingBlacklist,
@@ -99,7 +99,7 @@ TEST(NativeMessagingHostListPolicyHandlerTest, ApplyPolicySettings) {
                  policy::POLICY_SOURCE_CLOUD, policy.CreateDeepCopy(), nullptr);
   handler.ApplyPolicySettings(policy_map, &prefs);
   EXPECT_TRUE(prefs.GetValue(kTestPref, &value));
-  EXPECT_TRUE(base::Value::Equals(&expected, value));
+  EXPECT_EQ(expected, *value);
 }
 
 }  // namespace extensions

@@ -7,7 +7,7 @@
 #include <algorithm>
 
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/utf_offset_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -30,19 +30,19 @@ TEST(UTFOffsetStringConversionsTest, AdjustOffset) {
     {"", kNpos, kNpos},
     {"\xe4\xbd\xa0\xe5\xa5\xbd", 1, kNpos},
     {"\xe4\xbd\xa0\xe5\xa5\xbd", 3, 1},
-    {"\xed\xb0\x80z", 3, 1},
+    {"\xed\xb0\x80z", 3, 3},
     {"A\xF0\x90\x8C\x80z", 1, 1},
     {"A\xF0\x90\x8C\x80z", 2, kNpos},
     {"A\xF0\x90\x8C\x80z", 5, 3},
     {"A\xF0\x90\x8C\x80z", 6, 4},
     {"A\xF0\x90\x8C\x80z", kNpos, kNpos},
   };
-  for (size_t i = 0; i < arraysize(utf8_to_utf16_cases); ++i) {
-    const size_t offset = utf8_to_utf16_cases[i].input_offset;
+  for (const auto& i : utf8_to_utf16_cases) {
+    const size_t offset = i.input_offset;
     std::vector<size_t> offsets;
     offsets.push_back(offset);
-    UTF8ToUTF16AndAdjustOffsets(utf8_to_utf16_cases[i].utf8, &offsets);
-    EXPECT_EQ(utf8_to_utf16_cases[i].output_offset, offsets[0]);
+    UTF8ToUTF16AndAdjustOffsets(i.utf8, &offsets);
+    EXPECT_EQ(i.output_offset, offsets[0]);
   }
 
   struct UTF16ToUTF8Case {
@@ -67,7 +67,7 @@ TEST(UTFOffsetStringConversionsTest, AdjustOffset) {
       {{'A', 0xd800, 0xdf00, 'z'}, 3, 5},
       {{'A', 0xd800, 0xdf00, 'z'}, 4, 6},
   };
-  for (size_t i = 0; i < arraysize(utf16_to_utf8_cases); ++i) {
+  for (size_t i = 0; i < base::size(utf16_to_utf8_cases); ++i) {
     size_t offset = utf16_to_utf8_cases[i].input_offset;
     std::vector<size_t> offsets;
     offsets.push_back(offset);
@@ -77,31 +77,30 @@ TEST(UTFOffsetStringConversionsTest, AdjustOffset) {
 }
 
 TEST(UTFOffsetStringConversionsTest, LimitOffsets) {
+  const OffsetAdjuster::Adjustments kNoAdjustments;
   const size_t kLimit = 10;
   const size_t kItems = 20;
   std::vector<size_t> size_ts;
-  for (size_t t = 0; t < kItems; ++t)
+  for (size_t t = 0; t < kItems; ++t) {
     size_ts.push_back(t);
-  std::for_each(size_ts.begin(), size_ts.end(),
-                LimitOffset<string16>(kLimit));
+    OffsetAdjuster::AdjustOffset(kNoAdjustments, &size_ts.back(), kLimit);
+  }
   size_t unlimited_count = 0;
-  for (std::vector<size_t>::iterator ti = size_ts.begin(); ti != size_ts.end();
-       ++ti) {
-    if (*ti != kNpos)
+  for (auto ti : size_ts) {
+    if (ti != kNpos)
       ++unlimited_count;
   }
   EXPECT_EQ(11U, unlimited_count);
 
   // Reverse the values in the vector and try again.
   size_ts.clear();
-  for (size_t t = kItems; t > 0; --t)
+  for (size_t t = kItems; t > 0; --t) {
     size_ts.push_back(t - 1);
-  std::for_each(size_ts.begin(), size_ts.end(),
-                LimitOffset<string16>(kLimit));
+    OffsetAdjuster::AdjustOffset(kNoAdjustments, &size_ts.back(), kLimit);
+  }
   unlimited_count = 0;
-  for (std::vector<size_t>::iterator ti = size_ts.begin(); ti != size_ts.end();
-       ++ti) {
-    if (*ti != kNpos)
+  for (auto ti : size_ts) {
+    if (ti != kNpos)
       ++unlimited_count;
   }
   EXPECT_EQ(11U, unlimited_count);
@@ -119,8 +118,8 @@ TEST(UTFOffsetStringConversionsTest, AdjustOffsets) {
     adjustments.push_back(OffsetAdjuster::Adjustment(3, 3, 1));
     OffsetAdjuster::AdjustOffsets(adjustments, &offsets);
     size_t expected_1[] = {0, 1, 2, 3, kNpos, kNpos, 4, 5, 6, 7};
-    EXPECT_EQ(offsets.size(), arraysize(expected_1));
-    for (size_t i = 0; i < arraysize(expected_1); ++i)
+    EXPECT_EQ(offsets.size(), base::size(expected_1));
+    for (size_t i = 0; i < base::size(expected_1); ++i)
       EXPECT_EQ(expected_1[i], offsets[i]);
   }
 
@@ -139,8 +138,8 @@ TEST(UTFOffsetStringConversionsTest, AdjustOffsets) {
       0, kNpos, kNpos, 1, 2, kNpos, kNpos, kNpos, 4, 5, 6, kNpos, kNpos, kNpos,
       kNpos, kNpos, kNpos, 10, 11, 12, 13, kNpos, kNpos, 14
     };
-    EXPECT_EQ(offsets.size(), arraysize(expected_2));
-    for (size_t i = 0; i < arraysize(expected_2); ++i)
+    EXPECT_EQ(offsets.size(), base::size(expected_2));
+    for (size_t i = 0; i < base::size(expected_2); ++i)
       EXPECT_EQ(expected_2[i], offsets[i]);
   }
 
@@ -159,8 +158,8 @@ TEST(UTFOffsetStringConversionsTest, AdjustOffsets) {
       0, kNpos, kNpos, 0, 1, kNpos, kNpos, kNpos, 5, 6, 7, 8, kNpos, kNpos, 11,
       12, kNpos, 12
     };
-    EXPECT_EQ(offsets.size(), arraysize(expected_3));
-    for (size_t i = 0; i < arraysize(expected_3); ++i)
+    EXPECT_EQ(offsets.size(), base::size(expected_3));
+    for (size_t i = 0; i < base::size(expected_3); ++i)
       EXPECT_EQ(expected_3[i], offsets[i]);
   }
 }
@@ -177,8 +176,8 @@ TEST(UTFOffsetStringConversionsTest, UnadjustOffsets) {
     adjustments.push_back(OffsetAdjuster::Adjustment(3, 3, 1));
     OffsetAdjuster::UnadjustOffsets(adjustments, &offsets);
     size_t expected_1[] = {0, 1, 2, 3, 6, 7, 8, 9};
-    EXPECT_EQ(offsets.size(), arraysize(expected_1));
-    for (size_t i = 0; i < arraysize(expected_1); ++i)
+    EXPECT_EQ(offsets.size(), base::size(expected_1));
+    for (size_t i = 0; i < base::size(expected_1); ++i)
       EXPECT_EQ(expected_1[i], offsets[i]);
   }
 
@@ -196,8 +195,8 @@ TEST(UTFOffsetStringConversionsTest, UnadjustOffsets) {
     size_t expected_2[] = {
       0, 3, 4, kNpos, 8, 9, 10, kNpos, kNpos, kNpos, 17, 18, 19, 20, 23
     };
-    EXPECT_EQ(offsets.size(), arraysize(expected_2));
-    for (size_t i = 0; i < arraysize(expected_2); ++i)
+    EXPECT_EQ(offsets.size(), base::size(expected_2));
+    for (size_t i = 0; i < base::size(expected_2); ++i)
       EXPECT_EQ(expected_2[i], offsets[i]);
   }
 
@@ -217,8 +216,8 @@ TEST(UTFOffsetStringConversionsTest, UnadjustOffsets) {
       4, kNpos, kNpos, kNpos, 8, 9, 10, 11, kNpos, kNpos, 14,
       15  // this could just as easily be 17
     };
-    EXPECT_EQ(offsets.size(), arraysize(expected_3));
-    for (size_t i = 0; i < arraysize(expected_3); ++i)
+    EXPECT_EQ(offsets.size(), base::size(expected_3));
+    for (size_t i = 0; i < base::size(expected_3); ++i)
       EXPECT_EQ(expected_3[i], offsets[i]);
   }
 }

@@ -8,20 +8,26 @@
 #include <stdio.h>
 
 #include "base/at_exit.h"
+#include "base/bind.h"
 #include "base/command_line.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/task_scheduler/task_scheduler.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
+#include "mojo/core/embedder/embedder.h"
 #include "net/url_request/url_fetcher.h"
 #include "net/url_request/url_request_context_getter.h"
 #include "remoting/base/logging.h"
+#include "remoting/base/oauth_helper.h"
+#include "remoting/base/service_urls.h"
 #include "remoting/base/url_request_context_getter.h"
-#include "remoting/host/service_urls.h"
 #include "remoting/host/setup/host_starter.h"
-#include "remoting/host/setup/oauth_helper.h"
 #include "remoting/host/setup/pin_validator.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/transitional_url_loader_factory_owner.h"
 
 #if defined(OS_POSIX)
 #include <termios.h>
@@ -29,7 +35,7 @@
 #endif  // defined(OS_POSIX)
 
 #if defined(OS_WIN)
-#include "remoting/host/win/elevation_helpers.h"
+#include "base/process/process_info.h"
 #endif  // defined(OS_WIN)
 
 namespace remoting {
@@ -41,6 +47,9 @@ bool g_started = false;
 
 // The main message loop.
 base::MessageLoop* g_message_loop = nullptr;
+
+// The active RunLoop.
+base::RunLoop* g_active_run_loop = nullptr;
 
 // Lets us hide the PIN that a user types.
 void SetEcho(bool echo) {
@@ -89,7 +98,7 @@ std::string ReadString(bool no_echo) {
 void OnDone(HostStarter::Result result) {
   if (!g_message_loop->task_runner()->BelongsToCurrentThread()) {
     g_message_loop->task_runner()->PostTask(FROM_HERE,
-                                            base::Bind(&OnDone, result));
+                                            base::BindOnce(&OnDone, result));
     return;
   }
   switch (result) {
@@ -107,11 +116,7 @@ void OnDone(HostStarter::Result result) {
       break;
   }
 
-  g_message_loop->QuitNow();
-}
-
-std::string GetAuthorizationCodeUri() {
-  return remoting::GetOauthStartUrl(remoting::GetDefaultOauthRedirectUrl());
+  g_active_run_loop->Quit();
 }
 
 }  // namespace
@@ -130,6 +135,10 @@ int StartHostMain(int argc, char** argv) {
   settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
   logging::InitLogging(settings);
 
+  base::TaskScheduler::CreateAndStartWithDefaultParams("RemotingHostSetup");
+
+  mojo::core::Init();
+
   std::string host_name = command_line->GetSwitchValueASCII("name");
   std::string host_pin = command_line->GetSwitchValueASCII("pin");
   std::string auth_code = command_line->GetSwitchValueASCII("code");
@@ -147,20 +156,33 @@ int StartHostMain(int argc, char** argv) {
 #if defined(OS_WIN)
   // The tool must be run elevated on Windows so the host has access to the
   // directories used to store the configuration JSON files.
-  if (!remoting::IsProcessElevated()) {
+  if (!base::IsCurrentProcessElevated()) {
     fprintf(stderr, "Error: %s must be run as an elevated process.", argv[0]);
     return 1;
   }
 #endif  // defined(OS_WIN)
 
-  if (host_name.empty()) {
+  if (command_line->HasSwitch("help") || command_line->HasSwitch("h") ||
+      command_line->HasSwitch("?") || !command_line->GetArgs().empty()) {
     fprintf(stderr,
-            "Usage: %s --name=<hostname> [--code=<auth-code>] [--pin=<PIN>] "
+            "Usage: %s [--name=<hostname>] [--code=<auth-code>] [--pin=<PIN>] "
             "[--redirect-url=<redirectURL>]\n",
             argv[0]);
-    fprintf(stderr, "\nAuthorization URL for Production services:\n");
-    fprintf(stderr, "%s\n", GetAuthorizationCodeUri().c_str());
     return 1;
+  }
+
+  if (auth_code.empty() || redirect_url.empty()) {
+    fprintf(stdout,
+            "You need a web browser to use this command. Please visit\n");
+    fprintf(stdout,
+            "https://remotedesktop.google.com/headless for instructions.\n");
+    return 1;
+  }
+
+  if (host_name.empty()) {
+    fprintf(stdout, "Enter a name for this computer: ");
+    fflush(stdout);
+    host_name = ReadString(false);
   }
 
   if (host_pin.empty()) {
@@ -192,43 +214,35 @@ int StartHostMain(int argc, char** argv) {
     }
   }
 
-  if (auth_code.empty()) {
-    fprintf(stdout, "Enter an authorization code: ");
-    fflush(stdout);
-    auth_code = ReadString(true);
-  }
-
   // Provide message loops and threads for the URLRequestContextGetter.
   base::MessageLoop message_loop;
   g_message_loop = &message_loop;
   base::Thread::Options io_thread_options(base::MessageLoop::TYPE_IO, 0);
   base::Thread io_thread("IO thread");
   io_thread.StartWithOptions(io_thread_options);
-  base::Thread file_thread("file thread");
-  file_thread.StartWithOptions(io_thread_options);
 
   scoped_refptr<net::URLRequestContextGetter> url_request_context_getter(
-      new remoting::URLRequestContextGetter(io_thread.task_runner(),
-                                            file_thread.task_runner()));
+      new remoting::URLRequestContextGetter(io_thread.task_runner()));
+  network::TransitionalURLLoaderFactoryOwner url_loader_factory_owner(
+      url_request_context_getter);
 
   net::URLFetcher::SetIgnoreCertificateRequests(true);
 
   // Start the host.
   std::unique_ptr<HostStarter> host_starter(HostStarter::Create(
       remoting::ServiceUrls::GetInstance()->directory_hosts_url(),
-      url_request_context_getter.get()));
-  if (redirect_url.empty()) {
-    redirect_url = remoting::GetDefaultOauthRedirectUrl();
-  }
+      url_loader_factory_owner.GetURLLoaderFactory()));
   host_starter->StartHost(host_name, host_pin,
                           /*consent_to_data_collection=*/true, auth_code,
                           redirect_url, base::Bind(&OnDone));
 
   // Run the message loop until the StartHost completion callback.
   base::RunLoop run_loop;
+  g_active_run_loop = &run_loop;
   run_loop.Run();
 
   g_message_loop = nullptr;
+  g_active_run_loop = nullptr;
 
   // Destroy the HostStarter and URLRequestContextGetter before stopping the
   // IO thread.

@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef SkUserConfig_DEFINED
-#define SkUserConfig_DEFINED
-
-#include "skia/ext/skia_histogram.h"
+#ifndef SKIA_CONFIG_SKUSERCONFIG_H_
+#define SKIA_CONFIG_SKUSERCONFIG_H_
 
 /*  SkTypes.h, the root of the public header files, does the following trick:
 
@@ -38,7 +36,7 @@
 
     Below are optional defines that add, subtract, or change default behavior
     in Skia. Your port can locally edit this file to enable/disable flags as
-    you choose, or these can be delared on your command line (i.e. -Dfoo).
+    you choose, or these can be declared on your command line (i.e. -Dfoo).
 
     By default, this include file will always default to having all of the flags
     commented out, so including it will have no effect.
@@ -63,68 +61,10 @@
     #define SK_DEBUG
 #endif
 
-/*  If, in debugging mode, Skia needs to stop (presumably to invoke a debugger)
-    it will call SK_CRASH(). If this is not defined it, it is defined in
-    SkPostConfig.h to write to an illegal address
- */
-//#define SK_CRASH() *(int *)(uintptr_t)0 = 0
-
-
-/*  preconfig will have attempted to determine the endianness of the system,
-    but you can change these mutually exclusive flags here.
- */
-//#define SK_CPU_BENDIAN
-//#define SK_CPU_LENDIAN
-
-/*  If zlib is available and you want to support the flate compression
-    algorithm (used in PDF generation), define SK_ZLIB_INCLUDE to be the
-    include path.
- */
-//#define SK_ZLIB_INCLUDE <zlib.h>
-#define SK_ZLIB_INCLUDE "third_party/zlib/zlib.h"
-
 /*  Define this to provide font subsetter for font subsetting when generating
     PDF documents.
  */
-#define SK_SFNTLY_SUBSETTER \
-    "third_party/sfntly/src/cpp/src/sample/chromium/font_subsetter.h"
-
-/*  To write debug messages to a console, skia will call SkDebugf(...) following
-    printf conventions (e.g. const char* format, ...). If you want to redirect
-    this to something other than printf, define yours here
- */
-//#define SkDebugf(...)  MyFunction(__VA_ARGS__)
-
-
-/*  If SK_DEBUG is defined, then you can optionally define SK_SUPPORT_UNITTEST
-    which will run additional self-tests at startup. These can take a long time,
-    so this flag is optional.
- */
-#ifdef SK_DEBUG
-#define SK_SUPPORT_UNITTEST
-#endif
-
-/* If cross process SkPictureImageFilters are not explicitly enabled then
-   they are always disabled.
- */
-#ifndef SK_ALLOW_CROSSPROCESS_PICTUREIMAGEFILTERS
-    #ifndef SK_DISALLOW_CROSSPROCESS_PICTUREIMAGEFILTERS
-        #define SK_DISALLOW_CROSSPROCESS_PICTUREIMAGEFILTERS
-    #endif
-#endif
-
-
-/* If your system embeds skia and has complex event logging, define this
-   symbol to name a file that maps the following macros to your system's
-   equivalents:
-       SK_TRACE_EVENT0(event)
-       SK_TRACE_EVENT1(event, name1, value1)
-       SK_TRACE_EVENT2(event, name1, value1, name2, value2)
-   src/utils/SkDebugTrace.h has a trivial implementation that writes to
-   the debug output stream. If SK_USER_TRACE_INCLUDE_FILE is not defined,
-   SkTrace.h will define the above three macros to do nothing.
-*/
-#undef SK_USER_TRACE_INCLUDE_FILE
+#define SK_PDF_USE_SFNTLY
 
 // ===== Begin Chrome-specific definitions =====
 
@@ -134,13 +74,8 @@
 #define SK_REF_CNT_MIXIN_INCLUDE "sk_ref_cnt_ext_release.h"
 #endif
 
-#define SK_SCALAR_IS_FLOAT
-#undef SK_SCALAR_IS_FIXED
-
 #define SK_MSCALAR_IS_FLOAT
 #undef SK_MSCALAR_IS_DOUBLE
-
-#define GR_MAX_OFFSCREEN_AA_DIM     512
 
 // Log the file and line number for assertions.
 #define SkDebugf(...) SkDebugf_FileLine(__FILE__, __LINE__, false, __VA_ARGS__)
@@ -161,14 +96,7 @@ SK_API void SkDebugf_FileLine(const char* file, int line, bool fatal,
 #define SK_B32_SHIFT    0
 #endif
 
-#if defined(SK_BUILD_FOR_WIN32)
-
-#define SK_BUILD_FOR_WIN
-
-// Skia uses this deprecated bzero function to fill zeros into a string.
-#define bzero(str, len) memset(str, 0, len)
-
-#elif defined(SK_BUILD_FOR_MAC)
+#if defined(SK_BUILD_FOR_MAC)
 
 #define SK_CPU_LENDIAN
 #undef  SK_CPU_BENDIAN
@@ -202,14 +130,6 @@ SK_API void SkDebugf_FileLine(const char* file, int line, bool fatal,
 // until we update our call-sites (typically these are for API changes).
 //
 // Remove these as we update our sites.
-//
-#ifndef    SK_SUPPORT_LEGACY_GETTOPDEVICE
-#   define SK_SUPPORT_LEGACY_GETTOPDEVICE
-#endif
-
-#ifndef    SK_SUPPORT_LEGACY_GETDEVICE
-#   define SK_SUPPORT_LEGACY_GETDEVICE
-#endif
 
 // Workaround for poor anisotropic mipmap quality,
 // pending Skia ripmap support.
@@ -218,21 +138,43 @@ SK_API void SkDebugf_FileLine(const char* file, int line, bool fatal,
 #   define SK_SUPPORT_LEGACY_ANISOTROPIC_MIPMAP_SCALE
 #endif
 
-#ifndef    SK_IGNORE_ETC1_SUPPORT
-#   define SK_IGNORE_ETC1_SUPPORT
+// Remove this after we fixed all the issues related to the new SDF algorithm
+// (https://codereview.chromium.org/1643143002)
+#ifndef SK_USE_LEGACY_DISTANCE_FIELDS
+#define SK_USE_LEGACY_DISTANCE_FIELDS
 #endif
 
-#ifndef    SK_IGNORE_GPU_DITHER
-#   define SK_IGNORE_GPU_DITHER
+// skbug.com/4783
+#ifndef SK_SUPPORT_LEGACY_DRAWLOOPER
+#define SK_SUPPORT_LEGACY_DRAWLOOPER
 #endif
 
-#ifndef    SK_SUPPORT_LEGACY_EVAL_CUBIC
-#   define SK_SUPPORT_LEGACY_EVAL_CUBIC
+// Skia is enabling this feature soon. Chrome probably does
+// not want it for M64
+#ifndef SK_DISABLE_EXPLICIT_GPU_RESOURCE_ALLOCATION
+#define SK_DISABLE_EXPLICIT_GPU_RESOURCE_ALLOCATION
 #endif
 
-#ifndef    SK_SUPPORT_LEGACY_COMPUTESAVELAYER_FLAG
-#   define SK_SUPPORT_LEGACY_COMPUTESAVELAYER_FLAG
+#ifndef SK_IGNORE_LINEONLY_AA_CONVEX_PATH_OPTS
+#define SK_IGNORE_LINEONLY_AA_CONVEX_PATH_OPTS
 #endif
+
+// Max. verb count for paths rendered by the edge-AA tessellating path renderer.
+#define GR_AA_TESSELLATOR_MAX_VERB_COUNT 100
+
+#ifndef SK_SUPPORT_LEGACY_AAA_CHOICE
+#define SK_SUPPORT_LEGACY_AAA_CHOICE
+#endif
+
+// We're turning this off indefinitely,
+// until we can figure out some fundamental problems with its approach.
+//
+// See chromium:913223, skia:6886.
+#define SK_DISABLE_DAA
+
+// Staging for lowp::bilerp_clamp_8888, and for planned misc. others.
+#define SK_DISABLE_LOWP_BILERP_CLAMP_CLAMP_STAGE
+#define SK_DISABLE_NEXT_BATCH_OF_LOWP_STAGES
 
 ///////////////////////// Imported from BUILD.gn and skia_common.gypi
 
@@ -241,23 +183,13 @@ SK_API void SkDebugf_FileLine(const char* file, int line, bool fatal,
  */
 #define SK_ALLOW_STATIC_GLOBAL_INITIALIZERS 0
 
-/* This flag forces Skia not to use typographic metrics with GDI.
- */
-#define SK_GDI_ALWAYS_USE_TEXTMETRICS_FOR_FONT_METRICS
+/* Restrict formats for Skia font matching to SFNT type fonts. */
+#define SK_FONT_CONFIG_INTERFACE_ONLY_ALLOW_SFNT_FONTS
 
 #define SK_IGNORE_BLURRED_RRECT_OPT
 #define SK_USE_DISCARDABLE_SCALEDIMAGECACHE
-#define SK_WILL_NEVER_DRAW_PERSPECTIVE_TEXT
 
 #define SK_ATTR_DEPRECATED          SK_NOTHING_ARG1
-#define SK_ENABLE_INST_COUNT        0
 #define GR_GL_CUSTOM_SETUP_HEADER   "GrGLConfig_chrome.h"
-
-// mtklein's fiddling with Src / SrcOver.  Will rebaseline these only once when done.
-#define SK_SUPPORT_LEGACY_X86_BLITS
-
-#define SK_DISABLE_TILE_IMAGE_FILTER_OPTIMIZATION
-
-// ===== End Chrome-specific definitions =====
 
 #endif

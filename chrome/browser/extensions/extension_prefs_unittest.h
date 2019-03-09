@@ -8,14 +8,9 @@
 #include <stddef.h>
 
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "chrome/browser/extensions/test_extension_prefs.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-namespace base {
-class Value;
-}
 
 namespace user_prefs {
 class PrefRegistrySyncable;
@@ -51,9 +46,7 @@ class ExtensionPrefsTest : public testing::Test {
   ExtensionPrefs* prefs() { return prefs_.prefs(); }
   ChromeAppSorting* app_sorting() { return prefs_.app_sorting(); }
 
-  base::MessageLoop message_loop_;
-  content::TestBrowserThread ui_thread_;
-
+  content::TestBrowserThreadBundle thread_bundle_;
   TestExtensionPrefs prefs_;
 
  private:
@@ -63,7 +56,7 @@ class ExtensionPrefsTest : public testing::Test {
 
 class PrefsPrepopulatedTestBase : public ExtensionPrefsTest {
  public:
-  static const size_t kNumInstalledExtensions = 4;
+  static const size_t kNumInstalledExtensions = 5;
 
   PrefsPrepopulatedTestBase();
   ~PrefsPrepopulatedTestBase() override;
@@ -72,14 +65,19 @@ class PrefsPrepopulatedTestBase : public ExtensionPrefsTest {
   Extension* extension2() { return extension2_.get(); }
   Extension* extension3() { return extension3_.get(); }
   Extension* extension4() { return extension4_.get(); }
+  Extension* internal_extension() { return internal_extension_.get(); }
 
  protected:
   bool installed_[kNumInstalledExtensions];
 
+  // The following extensions all have Manifest::Location set to EXTERNAL_PREF.
   scoped_refptr<Extension> extension1_;
   scoped_refptr<Extension> extension2_;
   scoped_refptr<Extension> extension3_;
   scoped_refptr<Extension> extension4_;
+
+  // This extension has a location of Manifest::INTERNAL.
+  scoped_refptr<Extension> internal_extension_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PrefsPrepopulatedTestBase);

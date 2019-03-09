@@ -9,11 +9,15 @@
 #include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_util.h"
-#include "ios/web/public/web_client.h"
+#import "ios/web/public/web_client.h"
 #include "net/base/mime_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/resources/grit/webui_resources.h"
 #include "ui/resources/grit/webui_resources_map.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace web {
 
@@ -23,16 +27,14 @@ namespace {
 // TODO(stuartmorgan): Revisit how to share this in a more maintainable way.
 const char kWebUIResourcesHost[] = "resources";
 
-int PathToIDR(const std::string& path) {
-  int idr = -1;
+// Maps a path name (i.e. "/js/path.js") to a resource map entry. Returns
+// nullptr if not found.
+const GzippedGritResourceMap* PathToResource(const std::string& path) {
   for (size_t i = 0; i < kWebuiResourcesSize; ++i) {
-    if (path == kWebuiResources[i].name) {
-      idr = kWebuiResources[i].value;
-      break;
-    }
+    if (path == kWebuiResources[i].name)
+      return &kWebuiResources[i];
   }
-
-  return idr;
+  return nullptr;
 }
 
 }  // namespace
@@ -48,12 +50,13 @@ std::string SharedResourcesDataSourceIOS::GetSource() const {
 void SharedResourcesDataSourceIOS::StartDataRequest(
     const std::string& path,
     const URLDataSourceIOS::GotDataCallback& callback) {
-  int idr = PathToIDR(path);
-  DCHECK_NE(-1, idr) << " path: " << path;
+  const GzippedGritResourceMap* resource = PathToResource(path);
+  DCHECK(resource) << " path: " << path;
   scoped_refptr<base::RefCountedMemory> bytes;
 
   WebClient* web_client = GetWebClient();
 
+  int idr = resource ? resource->value : -1;
   if (idr == IDR_WEBUI_CSS_TEXT_DEFAULTS) {
     std::string css = webui::GetWebUiCssTextDefaults();
     bytes = base::RefCountedString::TakeString(&css);
@@ -69,6 +72,11 @@ std::string SharedResourcesDataSourceIOS::GetMimeType(
   std::string mime_type;
   net::GetMimeTypeFromFile(base::FilePath().AppendASCII(path), &mime_type);
   return mime_type;
+}
+
+bool SharedResourcesDataSourceIOS::IsGzipped(const std::string& path) const {
+  const GzippedGritResourceMap* resource = PathToResource(path);
+  return resource && resource->gzipped;
 }
 
 }  // namespace web

@@ -16,14 +16,16 @@ namespace extensions {
 
 WarningService::WarningService(content::BrowserContext* browser_context)
     : browser_context_(browser_context), extension_registry_observer_(this) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (browser_context_) {
     extension_registry_observer_.Add(ExtensionRegistry::Get(
         ExtensionsBrowserClient::Get()->GetOriginalContext(browser_context_)));
   }
 }
 
-WarningService::~WarningService() {}
+WarningService::~WarningService() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+}
 
 // static
 WarningService* WarningService::Get(content::BrowserContext* browser_context) {
@@ -32,10 +34,9 @@ WarningService* WarningService::Get(content::BrowserContext* browser_context) {
 
 void WarningService::ClearWarnings(
     const std::set<Warning::WarningType>& types) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   ExtensionIdSet affected_extensions;
-  for (WarningSet::iterator i = warnings_.begin();
-       i != warnings_.end();) {
+  for (auto i = warnings_.begin(); i != warnings_.end();) {
     if (types.find(i->warning_type()) != types.end()) {
       affected_extensions.insert(i->extension_id());
       warnings_.erase(i++);
@@ -50,10 +51,9 @@ void WarningService::ClearWarnings(
 
 std::set<Warning::WarningType> WarningService::
     GetWarningTypesAffectingExtension(const std::string& extension_id) const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   std::set<Warning::WarningType> result;
-  for (WarningSet::const_iterator i = warnings_.begin();
-       i != warnings_.end(); ++i) {
+  for (auto i = warnings_.cbegin(); i != warnings_.cend(); ++i) {
     if (i->extension_id() == extension_id)
       result.insert(i->warning_type());
   }
@@ -62,14 +62,13 @@ std::set<Warning::WarningType> WarningService::
 
 std::vector<std::string> WarningService::GetWarningMessagesForExtension(
     const std::string& extension_id) const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   std::vector<std::string> result;
 
   const ExtensionSet& extension_set =
       ExtensionRegistry::Get(browser_context_)->enabled_extensions();
 
-  for (WarningSet::const_iterator i = warnings_.begin();
-       i != warnings_.end(); ++i) {
+  for (auto i = warnings_.cbegin(); i != warnings_.cend(); ++i) {
     if (i->extension_id() == extension_id)
       result.push_back(i->GetLocalizedMessage(&extension_set));
   }
@@ -77,7 +76,7 @@ std::vector<std::string> WarningService::GetWarningMessagesForExtension(
 }
 
 void WarningService::AddWarnings(const WarningSet& warnings) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   ExtensionIdSet affected_extensions;
   for (const Warning& warning : warnings) {
@@ -117,14 +116,14 @@ void WarningService::RemoveObserver(Observer* observer) {
 
 void WarningService::NotifyWarningsChanged(
     const ExtensionIdSet& affected_extensions) {
-  FOR_EACH_OBSERVER(Observer, observer_list_,
-                    ExtensionWarningsChanged(affected_extensions));
+  for (auto& observer : observer_list_)
+    observer.ExtensionWarningsChanged(affected_extensions);
 }
 
 void WarningService::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
-    UnloadedExtensionInfo::Reason reason) {
+    UnloadedExtensionReason reason) {
   // Unloading one extension might have solved the problems of others.
   // Therefore, we clear warnings of this type for all extensions.
   std::set<Warning::WarningType> warning_types =

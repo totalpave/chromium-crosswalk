@@ -7,7 +7,7 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/memory/ptr_util.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/keyed_service/ios/browser_state_dependency_manager.h"
 #include "components/search_engines/default_search_manager.h"
@@ -20,8 +20,9 @@
 #include "ios/chrome/browser/search_engines/template_url_service_client_impl.h"
 #include "ios/chrome/browser/search_engines/ui_thread_search_terms_data.h"
 #include "ios/chrome/browser/web_data_service_factory.h"
+#include "rlz/buildflags/buildflags.h"
 
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
 #include "components/rlz/rlz_tracker.h"  // nogncheck
 #endif
 
@@ -29,7 +30,7 @@ namespace ios {
 namespace {
 
 base::Closure GetDefaultSearchProviderChangedCallback() {
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
   return base::Bind(base::IgnoreResult(&rlz::RLZTracker::RecordProductEvent),
                     rlz_lib::CHROME, rlz::RLZTracker::ChromeOmnibox(),
                     rlz_lib::SET_TO_GOOGLE);
@@ -42,7 +43,7 @@ std::unique_ptr<KeyedService> BuildTemplateURLService(
     web::BrowserState* context) {
   ios::ChromeBrowserState* browser_state =
       ios::ChromeBrowserState::FromBrowserState(context);
-  return base::WrapUnique(new TemplateURLService(
+  return std::make_unique<TemplateURLService>(
       browser_state->GetPrefs(),
       base::WrapUnique(new ios::UIThreadSearchTermsData(browser_state)),
       ios::WebDataServiceFactory::GetKeywordWebDataForBrowserState(
@@ -51,8 +52,8 @@ std::unique_ptr<KeyedService> BuildTemplateURLService(
           ios::HistoryServiceFactory::GetForBrowserState(
               browser_state, ServiceAccessType::EXPLICIT_ACCESS))),
       ios::GoogleURLTrackerFactory::GetForBrowserState(browser_state),
-      GetApplicationContext()->GetRapporService(),
-      GetDefaultSearchProviderChangedCallback()));
+      GetApplicationContext()->GetRapporServiceImpl(),
+      GetDefaultSearchProviderChangedCallback());
 }
 
 }  // namespace
@@ -66,13 +67,14 @@ TemplateURLService* TemplateURLServiceFactory::GetForBrowserState(
 
 // static
 TemplateURLServiceFactory* TemplateURLServiceFactory::GetInstance() {
-  return base::Singleton<TemplateURLServiceFactory>::get();
+  static base::NoDestructor<TemplateURLServiceFactory> instance;
+  return instance.get();
 }
 
 // static
-BrowserStateKeyedServiceFactory::TestingFactoryFunction
+BrowserStateKeyedServiceFactory::TestingFactory
 TemplateURLServiceFactory::GetDefaultFactory() {
-  return &BuildTemplateURLService;
+  return base::BindRepeating(&BuildTemplateURLService);
 }
 
 TemplateURLServiceFactory::TemplateURLServiceFactory()

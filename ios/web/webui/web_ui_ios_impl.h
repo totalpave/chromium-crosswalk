@@ -7,12 +7,12 @@
 
 #include <map>
 #include <memory>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
-#include "ios/public/provider/web/web_ui_ios.h"
+#include "ios/web/public/webui/web_ui_ios.h"
 
 namespace web {
 class WebStateImpl;
@@ -29,32 +29,22 @@ class WebUIIOSImpl : public web::WebUIIOS,
   // WebUIIOS implementation:
   WebState* GetWebState() const override;
   WebUIIOSController* GetController() const override;
-  void SetController(WebUIIOSController* controller) override;
-  void AddMessageHandler(WebUIIOSMessageHandler* handler) override;
+  void SetController(std::unique_ptr<WebUIIOSController> controller) override;
+  void AddMessageHandler(
+      std::unique_ptr<WebUIIOSMessageHandler> handler) override;
   typedef base::Callback<void(const base::ListValue*)> MessageCallback;
   void RegisterMessageCallback(const std::string& message,
                                const MessageCallback& callback) override;
   void ProcessWebUIIOSMessage(const GURL& source_url,
                               const std::string& message,
                               const base::ListValue& args) override;
-  void CallJavascriptFunction(const std::string& function_name) override;
-  void CallJavascriptFunction(const std::string& function_name,
-                              const base::Value& arg) override;
-  void CallJavascriptFunction(const std::string& function_name,
-                              const base::Value& arg1,
-                              const base::Value& arg2) override;
-  void CallJavascriptFunction(const std::string& function_name,
-                              const base::Value& arg1,
-                              const base::Value& arg2,
-                              const base::Value& arg3) override;
-  void CallJavascriptFunction(const std::string& function_name,
-                              const base::Value& arg1,
-                              const base::Value& arg2,
-                              const base::Value& arg3,
-                              const base::Value& arg4) override;
   void CallJavascriptFunction(
       const std::string& function_name,
       const std::vector<const base::Value*>& args) override;
+  void ResolveJavascriptCallback(const base::Value& callback_id,
+                                 const base::Value& response) override;
+  void RejectJavascriptCallback(const base::Value& callback_id,
+                                const base::Value& response) override;
 
  private:
   // Executes JavaScript asynchronously on the page.
@@ -65,7 +55,7 @@ class WebUIIOSImpl : public web::WebUIIOS,
   MessageCallbackMap message_callbacks_;
 
   // The WebUIIOSMessageHandlers we own.
-  ScopedVector<WebUIIOSMessageHandler> handlers_;
+  std::vector<std::unique_ptr<WebUIIOSMessageHandler>> handlers_;
 
   // Non-owning pointer to the WebStateImpl this WebUIIOS is associated with.
   WebStateImpl* web_state_;

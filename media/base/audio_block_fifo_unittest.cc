@@ -7,7 +7,6 @@
 
 #include "base/macros.h"
 #include "base/time/time.h"
-#include "media/audio/audio_power_monitor.h"
 #include "media/base/audio_block_fifo.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -15,11 +14,14 @@ namespace media {
 
 class AudioBlockFifoTest : public testing::Test {
  public:
-  AudioBlockFifoTest() {}
-  ~AudioBlockFifoTest() override {}
+  AudioBlockFifoTest() = default;
+  ~AudioBlockFifoTest() override = default;
 
-  void PushAndVerify(AudioBlockFifo* fifo, int frames_to_push,
-                     int channels, int block_frames, int max_frames) {
+  void PushAndVerify(AudioBlockFifo* fifo,
+                     int frames_to_push,
+                     int channels,
+                     int block_frames,
+                     int max_frames) {
     for (int filled_frames = max_frames - fifo->GetUnfilledFrames();
          filled_frames + frames_to_push <= max_frames;) {
       Push(fifo, frames_to_push, channels);
@@ -39,7 +41,8 @@ class AudioBlockFifoTest : public testing::Test {
     fifo->Push(data.get(), frames_to_push, bytes_per_sample);
   }
 
-  void ConsumeAndVerify(AudioBlockFifo* fifo, int expected_unfilled_frames,
+  void ConsumeAndVerify(AudioBlockFifo* fifo,
+                        int expected_unfilled_frames,
                         int expected_available_blocks) {
     const AudioBus* bus = fifo->Consume();
     EXPECT_EQ(fifo->GetUnfilledFrames(), expected_unfilled_frames);
@@ -123,10 +126,9 @@ TEST_F(AudioBlockFifoTest, PushAndConsume) {
   fifo.Clear();
   int new_push_frames = 128;
   // Change the input frame and try to fill up the FIFO.
-  PushAndVerify(&fifo, new_push_frames, channels, frames,
-                frames * blocks);
+  PushAndVerify(&fifo, new_push_frames, channels, frames, frames * blocks);
   EXPECT_TRUE(fifo.GetUnfilledFrames() != 0);
-  EXPECT_TRUE(fifo.available_blocks() == blocks -1);
+  EXPECT_TRUE(fifo.available_blocks() == blocks - 1);
 
   // Consume all the existing filled blocks of data.
   while (fifo.available_blocks()) {
@@ -145,8 +147,7 @@ TEST_F(AudioBlockFifoTest, PushAndConsume) {
 
   // Completely fill up the buffer again.
   new_push_frames = frames * blocks - remain_frames;
-  PushAndVerify(&fifo, new_push_frames, channels, frames,
-                frames * blocks);
+  PushAndVerify(&fifo, new_push_frames, channels, frames, frames * blocks);
   EXPECT_TRUE(fifo.GetUnfilledFrames() == 0);
   EXPECT_TRUE(fifo.available_blocks() == blocks);
 }
@@ -167,6 +168,24 @@ TEST_F(AudioBlockFifoTest, PushAndConsumeOneBlockFifo) {
   EXPECT_TRUE(frames == bus->frames());
   EXPECT_TRUE(fifo.available_blocks() == 0);
   EXPECT_TRUE(fifo.GetUnfilledFrames() == frames);
+}
+
+TEST_F(AudioBlockFifoTest, PushAndConsumeSilence) {
+  static const int channels = 2;
+  static const int frames = 441;
+  static const int blocks = 2;
+  AudioBlockFifo fifo(channels, frames, blocks);
+  // First push non-zero data.
+  Push(&fifo, frames, channels);
+  // Then push silence.
+  fifo.PushSilence(frames);
+  EXPECT_TRUE(fifo.GetUnfilledFrames() == 0);
+  EXPECT_TRUE(fifo.available_blocks() == blocks);
+
+  // Consume two blocks of data. The first should not be zero, but the second
+  // should be.
+  EXPECT_FALSE(fifo.Consume()->AreFramesZero());
+  EXPECT_TRUE(fifo.Consume()->AreFramesZero());
 }
 
 // Dynamically increase the capacity of FIFO and verify buffers are correct.

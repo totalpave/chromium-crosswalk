@@ -12,6 +12,7 @@
 #include "base/macros.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/api/tabs/tabs_constants.h"
+#include "chrome/browser/extensions/browser_extension_window_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "components/crx_file/id_util.h"
@@ -50,7 +51,11 @@ class TestFunctionDispatcherDelegate
 namespace extension_function_test_utils {
 
 base::ListValue* ParseList(const std::string& data) {
-  std::unique_ptr<base::Value> result = base::JSONReader::Read(data);
+  std::unique_ptr<base::Value> result = base::JSONReader::ReadDeprecated(data);
+  if (!result) {
+    ADD_FAILURE() << "Failed to parse: " << data;
+    return nullptr;
+  }
   base::ListValue* list = NULL;
   result->GetAsList(&list);
   ignore_result(result.release());
@@ -59,13 +64,13 @@ base::ListValue* ParseList(const std::string& data) {
 
 base::DictionaryValue* ToDictionary(base::Value* val) {
   EXPECT_TRUE(val);
-  EXPECT_EQ(base::Value::TYPE_DICTIONARY, val->GetType());
+  EXPECT_EQ(base::Value::Type::DICTIONARY, val->type());
   return static_cast<base::DictionaryValue*>(val);
 }
 
 base::ListValue* ToList(base::Value* val) {
   EXPECT_TRUE(val);
-  EXPECT_EQ(base::Value::TYPE_LIST, val->GetType());
+  EXPECT_EQ(base::Value::Type::LIST, val->type());
   return static_cast<base::ListValue*>(val);
 }
 
@@ -81,17 +86,23 @@ bool HasPrivacySensitiveFields(base::DictionaryValue* val) {
 std::string RunFunctionAndReturnError(UIThreadExtensionFunction* function,
                                       const std::string& args,
                                       Browser* browser) {
-  return RunFunctionAndReturnError(function, args, browser, NONE);
+  return RunFunctionAndReturnError(function, args, browser,
+                                   extensions::api_test_utils::NONE);
 }
-std::string RunFunctionAndReturnError(UIThreadExtensionFunction* function,
-                                      const std::string& args,
-                                      Browser* browser,
-                                      RunFunctionFlags flags) {
+std::string RunFunctionAndReturnError(
+    UIThreadExtensionFunction* function,
+    const std::string& args,
+    Browser* browser,
+    extensions::api_test_utils::RunFunctionFlags flags) {
   scoped_refptr<ExtensionFunction> function_owner(function);
-  // Without a callback the function will not generate a result.
-  function->set_has_callback(true);
   RunFunction(function, args, browser, flags);
-  EXPECT_FALSE(function->GetResultList()) << "Did not expect a result";
+  // When sending a response, the function will set an empty list value if there
+  // is no specified result.
+  const base::ListValue* results = function->GetResultList();
+  CHECK(results);
+  EXPECT_TRUE(results->empty()) << "Did not expect a result";
+  CHECK(function->response_type());
+  EXPECT_EQ(ExtensionFunction::FAILED, *function->response_type());
   return function->GetError();
 }
 
@@ -99,16 +110,15 @@ base::Value* RunFunctionAndReturnSingleResult(
     UIThreadExtensionFunction* function,
     const std::string& args,
     Browser* browser) {
-  return RunFunctionAndReturnSingleResult(function, args, browser, NONE);
+  return RunFunctionAndReturnSingleResult(function, args, browser,
+                                          extensions::api_test_utils::NONE);
 }
 base::Value* RunFunctionAndReturnSingleResult(
     UIThreadExtensionFunction* function,
     const std::string& args,
     Browser* browser,
-    RunFunctionFlags flags) {
+    extensions::api_test_utils::RunFunctionFlags flags) {
   scoped_refptr<ExtensionFunction> function_owner(function);
-  // Without a callback the function will not generate a result.
-  function->set_has_callback(true);
   RunFunction(function, args, browser, flags);
   EXPECT_TRUE(function->GetError().empty()) << "Unexpected error: "
       << function->GetError();
@@ -120,49 +130,10 @@ base::Value* RunFunctionAndReturnSingleResult(
   return NULL;
 }
 
-// This helps us be able to wait until an UIThreadExtensionFunction calls
-// SendResponse.
-class SendResponseDelegate
-    : public UIThreadExtensionFunction::DelegateForTests {
- public:
-  SendResponseDelegate() : should_post_quit_(false) {}
-
-  virtual ~SendResponseDelegate() {}
-
-  void set_should_post_quit(bool should_quit) {
-    should_post_quit_ = should_quit;
-  }
-
-  bool HasResponse() {
-    return response_.get() != NULL;
-  }
-
-  bool GetResponse() {
-    EXPECT_TRUE(HasResponse());
-    return *response_.get();
-  }
-
-  void OnSendResponse(UIThreadExtensionFunction* function,
-                      bool success,
-                      bool bad_message) override {
-    ASSERT_FALSE(bad_message);
-    ASSERT_FALSE(HasResponse());
-    response_.reset(new bool);
-    *response_ = success;
-    if (should_post_quit_) {
-      base::MessageLoopForUI::current()->QuitWhenIdle();
-    }
-  }
-
- private:
-  std::unique_ptr<bool> response_;
-  bool should_post_quit_;
-};
-
 bool RunFunction(UIThreadExtensionFunction* function,
                  const std::string& args,
                  Browser* browser,
-                 RunFunctionFlags flags) {
+                 extensions::api_test_utils::RunFunctionFlags flags) {
   std::unique_ptr<base::ListValue> parsed_args(ParseList(args));
   EXPECT_TRUE(parsed_args.get())
       << "Could not parse extension function arguments: " << args;
@@ -172,16 +143,14 @@ bool RunFunction(UIThreadExtensionFunction* function,
 bool RunFunction(UIThreadExtensionFunction* function,
                  std::unique_ptr<base::ListValue> args,
                  Browser* browser,
-                 RunFunctionFlags flags) {
+                 extensions::api_test_utils::RunFunctionFlags flags) {
   TestFunctionDispatcherDelegate dispatcher_delegate(browser);
   std::unique_ptr<extensions::ExtensionFunctionDispatcher> dispatcher(
       new extensions::ExtensionFunctionDispatcher(browser->profile()));
   dispatcher->set_delegate(&dispatcher_delegate);
-  // TODO(yoz): The cast is a hack; these flags should be defined in
-  // only one place.  See crbug.com/394840.
-  return extensions::api_test_utils::RunFunction(
-      function, std::move(args), browser->profile(), std::move(dispatcher),
-      static_cast<extensions::api_test_utils::RunFunctionFlags>(flags));
+  return extensions::api_test_utils::RunFunction(function, std::move(args),
+                                                 browser->profile(),
+                                                 std::move(dispatcher), flags);
 }
 
 } // namespace extension_function_test_utils

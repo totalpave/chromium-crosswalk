@@ -2,28 +2,41 @@ include_rules = [
   "-android_webview",
   "+android_webview/browser",
   "+android_webview/common",
-  "+android_webview/native/public",
-  "+android_webview/public/browser",
-
+  "+android_webview/grit",
+  "+android_webview/jni",
   "+cc",
-  "-cc/blink",
-
-  "+components/auto_login_parser",
+  "+components/autofill/android",
   "+components/autofill/content/browser",
+  "+components/autofill/content/common",
   "+components/autofill/core/browser",
   "+components/autofill/core/common",
   "+components/cdm/browser",
+  "+components/crash/content/app",
   "+components/crash/content/browser",
+  "+components/crash/core",
+  "+components/download/public/common",
+  "+components/heap_profiling",
+  "+components/minidump_uploader",
   "+components/navigation_interception",
-  "+components/network_session_configurator/switches.h",
   "+components/policy/core/browser",
   "+components/policy/core/common",
+  "+components/policy/content",
   "+components/pref_registry",
   "+components/printing/browser",
   "+components/printing/common",
+  "+components/safe_browsing",
+  "+components/security_interstitials",
+  "+components/spellcheck/browser",
+  "+components/spellcheck/common",
   "+components/url_formatter",
   "+components/user_prefs",
+  "+components/variations",
   "+components/visitedlink/browser",
+  "+components/viz/common",
+  "+components/viz/service/display",
+  "+components/viz/service/display_embedder",
+  "+components/viz/service/frame_sinks",
+  "+components/viz/test",
   "+components/webdata/common",
 
   "+content/public/browser",
@@ -35,19 +48,45 @@ include_rules = [
 
   "+media/base/android",
 
-  "+policy/policy_constants.h",
+  "+components/policy/policy_constants.h",
+  "+components/embedder_support/android",
 
   "+printing",
 
+  "+services/network/public",
+  "+services/service_manager/public/cpp",
+
+  # network service related unit tests
+  "+services/network/test",
+  "+mojo/core/embedder/embedder.h",
+  "+mojo/public/cpp/system",
+
+  "+storage/browser/quota",
+  "+storage/common/quota",
+
+  "+third_party/crashpad/crashpad/client",
+  "+third_party/crashpad/crashpad/util",
+
   "+ui/gfx",
   "+ui/gl",
+  "+ui/touch_selection/touch_handle.h",
 
   # Temporary until we bundle our own favicon. See
   # AwContentBrowserClient::GetDefaultFavicon
   "!ui/resources/grit/ui_resources.h",
 
-  # POD structure required by the find-in-page IPC messages.
-  "+third_party/WebKit/public/web/WebFindOptions.h",
+  # Required for MediaStreams.
+  "+third_party/blink/public/common/mediastream",
+  # QuotaStatusCode required by AwQuotaManagerBridge.
+  "+third_party/blink/public/mojom/quota",
   # Interface required for in-process input event handling.
-  "+third_party/WebKit/public/web/WebCompositorInputHandler.h"
+  "+third_party/blink/public/web/WebCompositorInputHandler.h",
+  # For find-in-page
+  "+third_party/blink/public/mojom/frame",
+  # Required for the Web Speech API.
+  "+third_party/blink/public/mojom/speech",
+  # Required by AwSettings.
+  "+third_party/blink/public/mojom/renderer_preferences.mojom.h",
+  # For the content_browser overlay manifest
+  "+third_party/blink/public/mojom/input",
 ]

@@ -8,83 +8,73 @@
 #include <utility>
 
 #include "base/logging.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "cc/paint/paint_canvas.h"
+#include "cc/paint/paint_flags.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/layout.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/gfx/path.h"
 #include "ui/gfx/skia_util.h"
 #include "ui/native_theme/common_theme.h"
-#include "ui/native_theme/native_theme_switches.h"
+#include "ui/native_theme/native_theme_features.h"
+#include "ui/native_theme/overlay_scrollbar_constants_aura.h"
 
 namespace ui {
 
 namespace {
 
-SkAlpha ThumbAlphaForState(NativeTheme::State state) {
-  bool overlay = IsOverlayScrollbarEnabled();
-  switch (state) {
-    case NativeTheme::kDisabled:
-      return 0x00;
-    case NativeTheme::kHovered:
-      return overlay ? 0xB2 : 0x4D;
-    case NativeTheme::kNormal:
-      return overlay ? 0x8C : 0x33;
-    case NativeTheme::kPressed:
-      return overlay ? 0xB2 : 0x80;
-    case NativeTheme::kNumStates:
-      break;
-  }
+// Constants for painting overlay scrollbars. Other properties needed outside
+// this painting code are defined in overlay_scrollbar_constants_aura.h.
+constexpr int kOverlayScrollbarMinimumLength = 32;
 
-  NOTREACHED();
-  return 0xFF;
-}
-
-SkAlpha ThumbStrokeAlphaForState(NativeTheme::State state) {
-  DCHECK(IsOverlayScrollbarEnabled());
-  switch (state) {
-    case NativeTheme::kDisabled:
-      return 0x00;
-    case NativeTheme::kHovered:
-    case NativeTheme::kPressed:
-      return 0x33;
-    case NativeTheme::kNormal:
-      return 0x26;
-    case NativeTheme::kNumStates:
-      break;
-  }
-
-  NOTREACHED();
-  return 0xFF;
-}
+// 2 pixel border with 1 pixel center patch. The border is 2 pixels despite the
+// stroke width being 1 so that the inner pixel can match the center tile
+// color. This prevents color interpolation between the patches.
+constexpr int kOverlayScrollbarBorderPatchWidth = 2;
+constexpr int kOverlayScrollbarCenterPatchSize = 1;
 
 const SkColor kTrackColor = SkColorSetRGB(0xF1, 0xF1, 0xF1);
 
 }  // namespace
 
-#if !defined(OS_WIN)
+////////////////////////////////////////////////////////////////////////////////
+// NativeTheme:
+
+#if !defined(OS_MACOSX)
 // static
 NativeTheme* NativeTheme::GetInstanceForWeb() {
+  return NativeThemeAura::web_instance();
+}
+
+#if !defined(OS_WIN)
+// static
+NativeTheme* NativeTheme::GetInstanceForNativeUi() {
   return NativeThemeAura::instance();
 }
+#endif  // OS_WIN
+#endif  // !OS_MACOSX
 
-// static
-NativeThemeAura* NativeThemeAura::instance() {
-  CR_DEFINE_STATIC_LOCAL(NativeThemeAura, s_native_theme, ());
-  return &s_native_theme;
-}
-#endif
+////////////////////////////////////////////////////////////////////////////////
+// NativeThemeAura:
 
-NativeThemeAura::NativeThemeAura() {
-  // We don't draw scrollbar buttons.
+NativeThemeAura::NativeThemeAura(bool use_overlay_scrollbars)
+    : use_overlay_scrollbars_(use_overlay_scrollbars) {
+// We don't draw scrollbar buttons.
 #if defined(OS_CHROMEOS)
   set_scrollbar_button_length(0);
 #endif
+
+  if (use_overlay_scrollbars_) {
+    scrollbar_width_ =
+        kOverlayScrollbarThumbWidthPressed + kOverlayScrollbarStrokeWidth;
+  }
 
   // Images and alphas declarations assume the following order.
   static_assert(kDisabled == 0, "states unexpectedly changed");
@@ -93,7 +83,19 @@ NativeThemeAura::NativeThemeAura() {
   static_assert(kPressed == 3, "states unexpectedly changed");
 }
 
-NativeThemeAura::~NativeThemeAura() {
+NativeThemeAura::~NativeThemeAura() {}
+
+// static
+NativeThemeAura* NativeThemeAura::instance() {
+  static base::NoDestructor<NativeThemeAura> s_native_theme(false);
+  return s_native_theme.get();
+}
+
+// static
+NativeThemeAura* NativeThemeAura::web_instance() {
+  static base::NoDestructor<NativeThemeAura> s_native_theme_for_web(
+      IsOverlayScrollbarEnabled());
+  return s_native_theme_for_web.get();
 }
 
 // This implementation returns hardcoded colors.
@@ -102,17 +104,17 @@ SkColor NativeThemeAura::GetSystemColor(ColorId color_id) const {
 }
 
 void NativeThemeAura::PaintMenuPopupBackground(
-    SkCanvas* canvas,
+    cc::PaintCanvas* canvas,
     const gfx::Size& size,
     const MenuBackgroundExtraParams& menu_background) const {
   SkColor color = GetSystemColor(NativeTheme::kColorId_MenuBackgroundColor);
   if (menu_background.corner_radius > 0) {
-    SkPaint paint;
-    paint.setStyle(SkPaint::kFill_Style);
-    paint.setFlags(SkPaint::kAntiAlias_Flag);
-    paint.setColor(color);
+    cc::PaintFlags flags;
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setAntiAlias(true);
+    flags.setColor(color);
 
-    gfx::Path path;
+    SkPath path;
     SkRect rect = SkRect::MakeWH(SkIntToScalar(size.width()),
                                  SkIntToScalar(size.height()));
     SkScalar radius = SkIntToScalar(menu_background.corner_radius);
@@ -120,21 +122,21 @@ void NativeThemeAura::PaintMenuPopupBackground(
                          radius, radius, radius, radius};
     path.addRoundRect(rect, radii);
 
-    canvas->drawPath(path, paint);
+    canvas->drawPath(path, flags);
   } else {
-    canvas->drawColor(color, SkXfermode::kSrc_Mode);
+    canvas->drawColor(color, SkBlendMode::kSrc);
   }
 }
 
 void NativeThemeAura::PaintMenuItemBackground(
-    SkCanvas* canvas,
+    cc::PaintCanvas* canvas,
     State state,
     const gfx::Rect& rect,
     const MenuItemExtraParams& menu_item) const {
   CommonThemePaintMenuItemBackground(this, canvas, state, rect, menu_item);
 }
 
-void NativeThemeAura::PaintArrowButton(SkCanvas* canvas,
+void NativeThemeAura::PaintArrowButton(cc::PaintCanvas* canvas,
                                        const gfx::Rect& rect,
                                        Part direction,
                                        State state) const {
@@ -147,7 +149,7 @@ void NativeThemeAura::PaintArrowButton(SkCanvas* canvas,
       break;
     case kHovered:
       bg_color = SkColorSetRGB(0xD2, 0xD2, 0xD2);
-    // Fall through.
+      FALLTHROUGH;
     case kNormal:
       arrow_color = SkColorSetRGB(0x50, 0x50, 0x50);
       break;
@@ -160,59 +162,116 @@ void NativeThemeAura::PaintArrowButton(SkCanvas* canvas,
   }
   DCHECK_NE(arrow_color, gfx::kPlaceholderColor);
 
-  SkPaint paint;
-  paint.setColor(bg_color);
-  canvas->drawIRect(gfx::RectToSkIRect(rect), paint);
+  cc::PaintFlags flags;
+  flags.setColor(bg_color);
+  canvas->drawIRect(gfx::RectToSkIRect(rect), flags);
 
   PaintArrow(canvas, rect, direction, arrow_color);
 }
 
 void NativeThemeAura::PaintScrollbarTrack(
-    SkCanvas* canvas,
+    cc::PaintCanvas* canvas,
     Part part,
     State state,
     const ScrollbarTrackExtraParams& extra_params,
     const gfx::Rect& rect) const {
   // Overlay Scrollbar should never paint a scrollbar track.
-  DCHECK(!IsOverlayScrollbarEnabled());
-  SkPaint paint;
-  paint.setColor(kTrackColor);
-  canvas->drawIRect(gfx::RectToSkIRect(rect), paint);
+  DCHECK(!use_overlay_scrollbars_);
+  cc::PaintFlags flags;
+  flags.setColor(kTrackColor);
+  canvas->drawIRect(gfx::RectToSkIRect(rect), flags);
 }
 
-void NativeThemeAura::PaintScrollbarThumb(SkCanvas* canvas,
-                                          Part part,
-                                          State state,
-                                          const gfx::Rect& rect) const {
+void NativeThemeAura::PaintScrollbarThumb(
+    cc::PaintCanvas* canvas,
+    Part part,
+    State state,
+    const gfx::Rect& rect,
+    ScrollbarOverlayColorTheme theme) const {
   // Do not paint if state is disabled.
   if (state == kDisabled)
     return;
 
-  PaintScrollbarThumbStateTransition(canvas, part, state, state, 1.0, rect);
-}
+  TRACE_EVENT0("blink", "NativeThemeAura::PaintScrollbarThumb");
 
-void NativeThemeAura::PaintScrollbarThumbStateTransition(
-    SkCanvas* canvas,
-    Part part,
-    State start_state,
-    State end_state,
-    double progress,
-    const gfx::Rect& rect) const {
+  SkAlpha thumb_alpha = SK_AlphaTRANSPARENT;
   gfx::Rect thumb_rect(rect);
-  if (IsOverlayScrollbarEnabled()) {
-    // In overlay mode, draw a stroke (border).
-    const int kStrokeWidth = 1;
-    SkAlpha stroke_alpha = gfx::Tween::IntValueBetween(
-        progress, ThumbStrokeAlphaForState(start_state),
-        ThumbStrokeAlphaForState(end_state));
-    SkPaint paint;
-    paint.setColor(SkColorSetA(SK_ColorWHITE, stroke_alpha));
-    paint.setStyle(SkPaint::kStroke_Style);
-    paint.setStrokeWidth(kStrokeWidth);
-    canvas->drawIRect(gfx::RectToSkIRect(thumb_rect), paint);
+  SkColor thumb_color;
 
-    thumb_rect.Inset(kStrokeWidth, kStrokeWidth, kStrokeWidth, kStrokeWidth);
+  if (use_overlay_scrollbars_) {
+    // Indexed by ScrollbarOverlayColorTheme.
+    constexpr SkColor kOverlayScrollbarThumbColor[] = {SK_ColorBLACK,
+                                                       SK_ColorWHITE};
+    constexpr SkColor kOverlayScrollbarStrokeColor[] = {SK_ColorWHITE,
+                                                        SK_ColorBLACK};
+
+    thumb_color = kOverlayScrollbarThumbColor[theme];
+
+    SkAlpha stroke_alpha = SK_AlphaTRANSPARENT;
+    switch (state) {
+      case NativeTheme::kDisabled:
+        thumb_alpha = SK_AlphaTRANSPARENT;
+        stroke_alpha = SK_AlphaTRANSPARENT;
+        break;
+      case NativeTheme::kHovered:
+        thumb_alpha = SK_AlphaOPAQUE * kOverlayScrollbarThumbHoverAlpha;
+        stroke_alpha = SK_AlphaOPAQUE * kOverlayScrollbarStrokeHoverAlpha;
+        break;
+      case NativeTheme::kNormal:
+        thumb_alpha = SK_AlphaOPAQUE * kOverlayScrollbarThumbNormalAlpha;
+        stroke_alpha = SK_AlphaOPAQUE * kOverlayScrollbarStrokeNormalAlpha;
+        break;
+      case NativeTheme::kPressed:
+        thumb_alpha = SK_AlphaOPAQUE * kOverlayScrollbarThumbHoverAlpha;
+        stroke_alpha = SK_AlphaOPAQUE * kOverlayScrollbarStrokeHoverAlpha;
+        break;
+      case NativeTheme::kNumStates:
+        NOTREACHED();
+        break;
+    }
+
+    // In overlay mode, draw a stroke (border).
+    constexpr int kStrokeWidth = kOverlayScrollbarStrokeWidth;
+    cc::PaintFlags flags;
+    flags.setColor(
+        SkColorSetA(kOverlayScrollbarStrokeColor[theme], stroke_alpha));
+    flags.setStyle(cc::PaintFlags::kStroke_Style);
+    flags.setStrokeWidth(kStrokeWidth);
+
+    gfx::RectF stroke_rect(thumb_rect);
+    gfx::InsetsF stroke_insets(kStrokeWidth / 2.f);
+    // The edge to which the scrollbar is attached shouldn't have a border.
+    gfx::Insets edge_adjust_insets;
+    if (part == NativeTheme::kScrollbarHorizontalThumb)
+      edge_adjust_insets = gfx::Insets(0, 0, -kStrokeWidth, 0);
+    else
+      edge_adjust_insets = gfx::Insets(0, 0, 0, -kStrokeWidth);
+    stroke_rect.Inset(stroke_insets + edge_adjust_insets);
+    canvas->drawRect(gfx::RectFToSkRect(stroke_rect), flags);
+
+    // Inset the all the edges edges so we fill-in the stroke below.
+    // For left vertical scrollbar, we will horizontally flip the canvas in
+    // ScrollbarThemeOverlay::paintThumb.
+    gfx::Insets fill_insets(kStrokeWidth);
+    thumb_rect.Inset(fill_insets + edge_adjust_insets);
   } else {
+    switch (state) {
+      case NativeTheme::kDisabled:
+        thumb_alpha = SK_AlphaTRANSPARENT;
+        break;
+      case NativeTheme::kHovered:
+        thumb_alpha = 0x4D;
+        break;
+      case NativeTheme::kNormal:
+        thumb_alpha = 0x33;
+        break;
+      case NativeTheme::kPressed:
+        thumb_alpha = 0x80;
+        break;
+      case NativeTheme::kNumStates:
+        NOTREACHED();
+        break;
+    }
     // If there are no scrollbuttons then provide some padding so that the thumb
     // doesn't touch the top of the track.
     const int kThumbPadding = 2;
@@ -222,23 +281,71 @@ void NativeThemeAura::PaintScrollbarThumbStateTransition(
       thumb_rect.Inset(kThumbPadding, extra_padding);
     else
       thumb_rect.Inset(extra_padding, kThumbPadding);
+
+    thumb_color = SK_ColorBLACK;
   }
 
-  SkPaint paint;
-  SkAlpha alpha = gfx::Tween::IntValueBetween(
-      progress, ThumbAlphaForState(start_state), ThumbAlphaForState(end_state));
-  paint.setColor(SkColorSetA(SK_ColorBLACK, alpha));
-  canvas->drawIRect(gfx::RectToSkIRect(thumb_rect), paint);
+  cc::PaintFlags flags;
+  flags.setColor(SkColorSetA(thumb_color, thumb_alpha));
+  canvas->drawIRect(gfx::RectToSkIRect(thumb_rect), flags);
 }
 
-void NativeThemeAura::PaintScrollbarCorner(SkCanvas* canvas,
+void NativeThemeAura::PaintScrollbarCorner(cc::PaintCanvas* canvas,
                                            State state,
                                            const gfx::Rect& rect) const {
   // Overlay Scrollbar should never paint a scrollbar corner.
-  DCHECK(!IsOverlayScrollbarEnabled());
-  SkPaint paint;
-  paint.setColor(SkColorSetRGB(0xDC, 0xDC, 0xDC));
-  canvas->drawIRect(RectToSkIRect(rect), paint);
+  DCHECK(!use_overlay_scrollbars_);
+  cc::PaintFlags flags;
+  flags.setColor(SkColorSetRGB(0xDC, 0xDC, 0xDC));
+  canvas->drawIRect(RectToSkIRect(rect), flags);
+}
+
+gfx::Size NativeThemeAura::GetPartSize(Part part,
+                                       State state,
+                                       const ExtraParams& extra) const {
+  if (use_overlay_scrollbars_) {
+    constexpr int minimum_length =
+        kOverlayScrollbarMinimumLength + 2 * kOverlayScrollbarStrokeWidth;
+
+    // Aura overlay scrollbars need a slight tweak from the base sizes.
+    switch (part) {
+      case kScrollbarHorizontalThumb:
+        return gfx::Size(minimum_length, scrollbar_width_);
+      case kScrollbarVerticalThumb:
+        return gfx::Size(scrollbar_width_, minimum_length);
+
+      default:
+        // TODO(bokan): We should probably make sure code using overlay
+        // scrollbars isn't asking for part sizes that don't exist.
+        // crbug.com/657159.
+        break;
+    }
+  }
+
+  return NativeThemeBase::GetPartSize(part, state, extra);
+}
+
+bool NativeThemeAura::SupportsNinePatch(Part part) const {
+  if (!IsOverlayScrollbarEnabled())
+    return false;
+
+  return part == kScrollbarHorizontalThumb || part == kScrollbarVerticalThumb;
+}
+
+gfx::Size NativeThemeAura::GetNinePatchCanvasSize(Part part) const {
+  DCHECK(SupportsNinePatch(part));
+
+  return gfx::Size(
+      kOverlayScrollbarBorderPatchWidth * 2 + kOverlayScrollbarCenterPatchSize,
+      kOverlayScrollbarBorderPatchWidth * 2 + kOverlayScrollbarCenterPatchSize);
+}
+
+gfx::Rect NativeThemeAura::GetNinePatchAperture(Part part) const {
+  DCHECK(SupportsNinePatch(part));
+
+  return gfx::Rect(
+      kOverlayScrollbarBorderPatchWidth, kOverlayScrollbarBorderPatchWidth,
+      kOverlayScrollbarCenterPatchSize, kOverlayScrollbarCenterPatchSize);
 }
 
 }  // namespace ui

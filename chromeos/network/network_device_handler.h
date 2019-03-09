@@ -6,10 +6,11 @@
 #define CHROMEOS_NETWORK_NETWORK_DEVICE_HANDLER_H_
 
 #include <string>
+#include <vector>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/network/network_handler_callbacks.h"
 
 namespace base {
@@ -35,7 +36,7 @@ namespace chromeos {
 // |error_callback| will be called with information about the error, including a
 // symbolic name for the error and often some error message that is suitable for
 // logging. None of the error message text is meant for user consumption.
-class CHROMEOS_EXPORT NetworkDeviceHandler {
+class COMPONENT_EXPORT(CHROMEOS_NETWORK) NetworkDeviceHandler {
  public:
   // Constants for |error_name| from |error_callback|.
   static const char kErrorDeviceMissing[];
@@ -73,21 +74,6 @@ class CHROMEOS_EXPORT NetworkDeviceHandler {
   // |device_path| if it exists. This will apply any newly configured
   // properties and renew the DHCP lease.
   virtual void RequestRefreshIPConfigs(
-      const std::string& device_path,
-      const base::Closure& callback,
-      const network_handler::ErrorCallback& error_callback) = 0;
-
-  // Requests a network scan on the device specified by |device_path|.
-  // For cellular networks, the result of this call gets asynchronously stored
-  // in the corresponding DeviceState object through a property update. For all
-  // other technologies a service gets created for each found network, which
-  // can be accessed through the corresponding NetworkState object.
-  //
-  // TODO(armansito): Device.ProposeScan is deprecated and the preferred method
-  // of requesting a network scan is Manager.RequestScan, however shill
-  // currently doesn't support cellular network scans via Manager.RequestScan.
-  // Remove this method once shill supports it (crbug.com/262356).
-  virtual void ProposeScan(
       const std::string& device_path,
       const base::Closure& callback,
       const network_handler::ErrorCallback& error_callback) = 0;
@@ -225,10 +211,24 @@ class CHROMEOS_EXPORT NetworkDeviceHandler {
       const base::Closure& callback,
       const network_handler::ErrorCallback& error_callback) = 0;
 
+  // Adds |types| to the list of packet types that the device should monitor to
+  // wake the system from suspend.
+  virtual void AddWifiWakeOnPacketOfTypes(
+      const std::vector<std::string>& types,
+      const base::Closure& callback,
+      const network_handler::ErrorCallback& error_callback) = 0;
+
   // Removes |ip_endpoint| from the list of tcp connections that the wifi device
   // should monitor to wake the system from suspend.
   virtual void RemoveWifiWakeOnPacketConnection(
       const net::IPEndPoint& ip_endpoint,
+      const base::Closure& callback,
+      const network_handler::ErrorCallback& error_callback) = 0;
+
+  // Removes |types| from the list of packet types that the device should
+  // monitor to wake the system from suspend.
+  virtual void RemoveWifiWakeOnPacketOfTypes(
+      const std::vector<std::string>& types,
       const base::Closure& callback,
       const network_handler::ErrorCallback& error_callback) = 0;
 

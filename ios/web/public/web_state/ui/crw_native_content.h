@@ -10,6 +10,10 @@
 #import "ios/web/public/block_types.h"
 #include "url/gurl.h"
 
+namespace web {
+struct ContextMenuParams;
+}  // namespace web;
+
 @protocol CRWNativeContentDelegate;
 
 // Abstract methods needed for manipulating native content in the web content
@@ -25,10 +29,6 @@
 
 // The view to insert into the content area displayed to the user.
 - (UIView*)view;
-
-// Called when memory is low. Release anything (such as views) that can be
-// easily re-created to free up RAM.
-- (void)handleLowMemory;
 
 // Returns YES if there is currently a live view in the tab (e.g., the view
 // hasn't been discarded due to low memory).
@@ -50,23 +50,11 @@
 // Notifies the CRWNativeContent that it has been hidden.
 - (void)wasHidden;
 
-// Evaluates JavaScript on the native view. |handler| is called with the results
+// Executes JavaScript on the native view. |handler| is called with the results
 // of the evaluation. If the native view cannot evaluate JS at the moment,
 // |handler| is called with an NSError.
-- (void)evaluateJavaScript:(NSString*)script
-       stringResultHandler:(web::JavaScriptCompletion)handler;
-
-// Returns |YES| if CRWNativeContent wants the keyboard shield when the keyboard
-// is up.
-- (BOOL)wantsKeyboardShield;
-
-// Returns |YES| if CRWNativeContent wants the hint text displayed.
-// TODO(crbug.com/374984): Remove this. This is chrome level concept and should
-// not exist in the web/ layer.
-- (BOOL)wantsLocationBarHintText;
-
-// Dismisses on-screen keyboard if necessary.
-- (void)dismissKeyboard;
+- (void)executeJavaScript:(NSString*)script
+        completionHandler:(web::JavaScriptResultBlock)handler;
 
 // Dismisses any outstanding modal interaction elements (e.g. modal view
 // controllers, context menus, etc).
@@ -85,6 +73,17 @@
 // Called when a snapshot of the content will be taken.
 - (void)willUpdateSnapshot;
 
+// Notifies the CRWNativeContent that it will be removed from superview.
+- (void)willBeDismissed;
+
+// The URL that will be displayed to the user when presenting this native
+// content.
+- (GURL)virtualURL;
+
+// The content inset and offset of this native view.
+- (CGPoint)contentOffset;
+- (UIEdgeInsets)contentInset;
+
 @end
 
 // CRWNativeContent delegate protocol.
@@ -93,6 +92,10 @@
 @optional
 // Called when the content supplies a new title.
 - (void)nativeContent:(id)content titleDidChange:(NSString*)title;
+
+// Called when the content triggers a context menu.
+- (void)nativeContent:(id)content
+    handleContextMenu:(const web::ContextMenuParams&)params;
 
 @end
 

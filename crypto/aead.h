@@ -7,6 +7,8 @@
 
 #include <stddef.h>
 
+#include <string>
+
 #include "base/strings/string_piece.h"
 #include "crypto/crypto_export.h"
 
@@ -14,10 +16,10 @@ struct evp_aead_st;
 
 namespace crypto {
 
-// This class exposes the AES-128-CTR-HMAC-SHA256 AEAD.
+// This class exposes the AES-128-CTR-HMAC-SHA256 and AES_256_GCM AEAD.
 class CRYPTO_EXPORT Aead {
  public:
-  enum AeadAlgorithm { AES_128_CTR_HMAC_SHA256 };
+  enum AeadAlgorithm { AES_128_CTR_HMAC_SHA256, AES_256_GCM, AES_256_GCM_SIV };
 
   explicit Aead(AeadAlgorithm algorithm);
 
@@ -25,14 +27,14 @@ class CRYPTO_EXPORT Aead {
 
   void Init(const std::string* key);
 
-  bool Seal(const base::StringPiece& plaintext,
-            const base::StringPiece& nonce,
-            const base::StringPiece& additional_data,
+  bool Seal(base::StringPiece plaintext,
+            base::StringPiece nonce,
+            base::StringPiece additional_data,
             std::string* ciphertext) const;
 
-  bool Open(const base::StringPiece& ciphertext,
-            const base::StringPiece& nonce,
-            const base::StringPiece& additional_data,
+  bool Open(base::StringPiece ciphertext,
+            base::StringPiece nonce,
+            base::StringPiece additional_data,
             std::string* plaintext) const;
 
   size_t KeyLength() const;
@@ -46,4 +48,4 @@ class CRYPTO_EXPORT Aead {
 
 }  // namespace crypto
 
-#endif  // CRYPTO_ENCRYPTOR_H_
+#endif  // CRYPTO_AEAD_H_

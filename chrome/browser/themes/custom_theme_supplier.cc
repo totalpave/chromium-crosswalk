@@ -5,11 +5,26 @@
 #include "chrome/browser/themes/custom_theme_supplier.h"
 
 #include "base/memory/ref_counted_memory.h"
+#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/image/image.h"
 
+namespace {
+
+// Creates a sequenced task runner to delete an instance of CustomThemeSupplier
+// on.
+scoped_refptr<base::SequencedTaskRunner> CreateTaskRunnerForDeletion() {
+  return base::CreateSequencedTaskRunnerWithTraits(
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT});
+}
+
+}  // namespace
+
 CustomThemeSupplier::CustomThemeSupplier(ThemeType theme_type)
-    : theme_type_(theme_type) {}
+    : base::RefCountedDeleteOnSequence<CustomThemeSupplier>(
+          CreateTaskRunnerForDeletion()),
+      theme_type_(theme_type) {}
 
 CustomThemeSupplier::~CustomThemeSupplier() {}
 

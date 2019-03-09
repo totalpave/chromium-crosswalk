@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<grit latest_public_release="0" current_release="1">
+<grit latest_public_release="0" current_release="1" output_all_resource_defines="false">
   <outputs>
     <output filename="grit/ui_chromeos_resources.h" type="rc_header" context="default_100_percent">
       <emit emit_type='prepend'></emit>
@@ -11,54 +11,11 @@
   </outputs>
   <release seq="1">
     <structures fallback_to_low_resolution="true">
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_1X" file="network/statusbar_network_1x.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_3G_DARK" file="network/statusbar_network_3g_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_3G_LIGHT" file="network/statusbar_network_3g_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_4G_DARK" file="network/statusbar_network_4g_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_4G_LIGHT" file="network/statusbar_network_4g_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_ARCS_DARK" file="network/statusbar_network_arcs_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_ARCS_LIGHT" file="network/statusbar_network_arcs_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_BARS_DARK" file="network/statusbar_network_bars_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_BARS_LIGHT" file="network/statusbar_network_bars_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_CONTROLLED" file="network/status_captive_portal_access.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_EDGE_DARK" file="network/statusbar_network_edge_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_EDGE_LIGHT" file="network/statusbar_network_edge_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_EVDO_DARK" file="network/statusbar_network_evdo_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_EVDO_LIGHT" file="network/statusbar_network_evdo_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_FAILED" file="network/status_network_failed.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_FAILED_CELLULAR" file="network/status_cellular_failed.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_GPRS_DARK" file="network/statusbar_network_gprs_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_GPRS_LIGHT" file="network/statusbar_network_gprs_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_HSPA_DARK" file="network/statusbar_network_hspa_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_HSPA_LIGHT" file="network/statusbar_network_hspa_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_HSPA_PLUS_DARK" file="network/statusbar_network_hspa_plus_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_HSPA_PLUS_LIGHT" file="network/statusbar_network_hspa_plus_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_LTE_ADVANCED_DARK" file="network/statusbar_network_lte_advanced_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_LTE_ADVANCED_LIGHT" file="network/statusbar_network_lte_advanced_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_LTE_DARK" file="network/statusbar_network_lte_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_LTE_LIGHT" file="network/statusbar_network_lte_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_PORTAL_DARK" file="network/statusbar_network_active_portal_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_PORTAL_LIGHT" file="network/statusbar_network_active_portal_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_ROAMING_DARK" file="network/statusbar_network_roaming_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_ROAMING_LIGHT" file="network/statusbar_network_roaming_light.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_SECURE_DARK" file="network/statusbar_network_secure_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_VPN" file="network/statusbar_vpn_dark.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_VPN_BADGE" file="network/statusbar_network_vpn_badge.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NETWORK_WIRED" file="network/statusbar_wired.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NOTIFICATION_3G" file="network/notification_3g.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NOTIFICATION_DATASAVER" file="network/notification_datasaver.png" />
-      <structure type="chrome_scaled_image" name="IDR_AURA_UBER_TRAY_NOTIFICATION_LTE" file="network/notification_lte.png" />
-
-      <!-- Filesystem notification icons. -->
-      <structure type="chrome_scaled_image" name="IDR_DISK_SPACE_NOTIFICATION_LOW" file="filesystem/notification_disk_space_low.png" />
-      <structure type="chrome_scaled_image" name="IDR_DISK_SPACE_NOTIFICATION_CRITICAL" file="filesystem/notification_disk_space_critical.png" />
-      <structure type="chrome_scaled_image" name="IDR_STORAGE_MANAGER_BUTTON" file="filesystem/button_storage_manager.png" />
-
       <!-- Badge for Chrome Apps if Arc is enabled. -->
       <structure type="chrome_scaled_image" name="IDR_ARC_DUAL_ICON_BADGE" file="arc/dual-icon-badge.png" />
 
       <!-- Default user profile images. -->
-      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER" file="default_user_images/avatar_beaker.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER" file="default_user_images/avatar_anonymous.png" />
       <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_1" file="default_user_images/avatar_bee.png" />
       <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_2" file="default_user_images/avatar_briefcase.png" />
       <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_3" file="default_user_images/avatar_circles.png" />
@@ -92,6 +49,56 @@
       <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_31" file="default_user_images/avatar_recordplayer.png" />
       <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_32" file="default_user_images/avatar_upsidedown.png" />
       <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_33" file="default_user_images/avatar_cat.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_34" file="default_user_images/origami/avatar_penguin.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_35" file="default_user_images/origami/avatar_fox.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_36" file="default_user_images/origami/avatar_snail.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_37" file="default_user_images/origami/avatar_redbutterfly.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_38" file="default_user_images/origami/avatar_cat.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_39" file="default_user_images/origami/avatar_corgi.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_40" file="default_user_images/origami/avatar_rabbit.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_41" file="default_user_images/origami/avatar_pinkbutterfly.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_42" file="default_user_images/origami/avatar_monkey.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_43" file="default_user_images/origami/avatar_dragon.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_44" file="default_user_images/origami/avatar_elephant.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_45" file="default_user_images/origami/avatar_panda.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_46" file="default_user_images/origami/avatar_unicorn.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_47" file="default_user_images/origami/avatar_butterflies.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_48" file="default_user_images/illustration/avatar_bird.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_49" file="default_user_images/illustration/avatar_ramen.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_50" file="default_user_images/illustration/avatar_tamagotchi.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_51" file="default_user_images/illustration/avatar_cheese.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_52" file="default_user_images/illustration/avatar_football.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_53" file="default_user_images/illustration/avatar_basketball.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_54" file="default_user_images/illustration/avatar_vinyl.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_55" file="default_user_images/illustration/avatar_sushi.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_56" file="default_user_images/illustration/avatar_bike.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_57" file="default_user_images/illustration/avatar_sunglasses.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_58" file="default_user_images/abstract/avatar_pizza.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_59" file="default_user_images/abstract/avatar_sandwich.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_60" file="default_user_images/abstract/avatar_cappuccino.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_61" file="default_user_images/abstract/avatar_icewater.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_62" file="default_user_images/abstract/avatar_icecream.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_63" file="default_user_images/abstract/avatar_onigiri.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_64" file="default_user_images/abstract/avatar_melon.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_65" file="default_user_images/abstract/avatar_avocado.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_66" file="default_user_images/geo/avatar_geo1.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_67" file="default_user_images/geo/avatar_geo2.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_68" file="default_user_images/geo/avatar_geo3.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_69" file="default_user_images/geo/avatar_geo4.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_DEFAULT_USER_70" file="default_user_images/geo/avatar_geo5.png" />
+
+      <!-- Print Job Notification images. -->
+      <structure type="chrome_scaled_image" name="IDR_PRINT_NOTIFICATION_CANCEL" file="print_notification/cancel.png" />
+      <structure type="chrome_scaled_image" name="IDR_PRINT_NOTIFICATION_PAUSE" file="print_notification/pause.png" />
+      <structure type="chrome_scaled_image" name="IDR_PRINT_NOTIFICATION_PLAY" file="print_notification/play.png" />
+      <structure type="chrome_scaled_image" name="IDR_PRINT_NOTIFICATION_HELP" file="print_notification/help.png" />
+
+      <!-- Fingerprint images. -->
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_FINGERPRINT_ICON_ANIMATION" file="fingerprint/fingerprint.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_FINGERPRINT_ENROLLMENT_COMPLETE_ANIMATION" file="fingerprint/tick.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_FINGERPRINT_SCANNER_TABLET_ANIMATION" file="fingerprint/fingerprint_scanner.png" />
+      <structure type="chrome_scaled_image" name="IDR_LOGIN_FINGERPRINT_SCANNER_LAPTOP_ANIMATION" file="fingerprint/fingerprint_scanner_laptop.png" />
+
     </structures>
   </release>
 </grit>

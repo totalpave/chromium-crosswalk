@@ -7,8 +7,9 @@
 #include <stdint.h>
 #include <unicode/ulocdata.h>
 
+#include <memory>
+
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "printing/metafile.h"
 #include "printing/print_job_constants.h"
@@ -16,10 +17,12 @@
 
 namespace printing {
 
+#if !defined(USE_CUPS)
 // static
 std::unique_ptr<PrintingContext> PrintingContext::Create(Delegate* delegate) {
-  return base::WrapUnique(new PrintingContextNoSystemDialog(delegate));
+  return std::make_unique<PrintingContextNoSystemDialog>(delegate);
 }
+#endif  // !defined(USE_CUPS)
 
 PrintingContextNoSystemDialog::PrintingContextNoSystemDialog(Delegate* delegate)
     : PrintingContext(delegate) {
@@ -33,9 +36,9 @@ void PrintingContextNoSystemDialog::AskUserForSettings(
     int max_pages,
     bool has_selection,
     bool is_scripted,
-    const PrintSettingsCallback& callback) {
+    PrintSettingsCallback callback) {
   // We don't want to bring up a dialog here.  Ever.  Just signal the callback.
-  callback.Run(OK);
+  std::move(callback).Run(OK);
 }
 
 PrintingContext::Result PrintingContextNoSystemDialog::UseDefaultSettings() {
@@ -68,8 +71,7 @@ gfx::Size PrintingContextNoSystemDialog::GetPdfPaperSizeDeviceUnits() {
   } else {
     // ulocdata_getPaperSize returns the width and height in mm.
     // Convert this to pixels based on the dpi.
-    float multiplier = 100 * settings_.device_units_per_inch();
-    multiplier /= kHundrethsMMPerInch;
+    float multiplier = settings_.device_units_per_inch() / kMicronsPerMil;
     width *= multiplier;
     height *= multiplier;
   }
@@ -84,15 +86,6 @@ PrintingContext::Result PrintingContextNoSystemDialog::UpdatePrinterSettings(
 
   if (settings_.dpi() == 0)
     UseDefaultSettings();
-
-  return OK;
-}
-
-PrintingContext::Result PrintingContextNoSystemDialog::InitWithSettings(
-    const PrintSettings& settings) {
-  DCHECK(!in_print_job_);
-
-  settings_ = settings;
 
   return OK;
 }
@@ -143,9 +136,9 @@ void PrintingContextNoSystemDialog::ReleaseContext() {
   // Intentional No-op.
 }
 
-gfx::NativeDrawingContext PrintingContextNoSystemDialog::context() const {
+printing::NativeDrawingContext PrintingContextNoSystemDialog::context() const {
   // Intentional No-op.
-  return NULL;
+  return nullptr;
 }
 
 }  // namespace printing

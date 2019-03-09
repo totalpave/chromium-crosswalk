@@ -10,7 +10,7 @@
 // WebDriver standard status codes.
 enum StatusCode {
   kOk = 0,
-  kNoSuchSession = 6,
+  kInvalidSessionId = 6,
   kNoSuchElement = 7,
   kNoSuchFrame = 8,
   kUnknownCommand = 9,
@@ -23,17 +23,25 @@ enum StatusCode {
   kTimeout = 21,
   kNoSuchWindow = 23,
   kInvalidCookieDomain = 24,
+  kUnableToSetCookie = 25,
   kUnexpectedAlertOpen = 26,
-  kNoAlertOpen = 27,
+  kNoSuchAlert = 27,
   kScriptTimeout = 28,
   kInvalidSelector = 32,
-  kSessionNotCreatedException = 33,
+  kSessionNotCreated = 33,
+  kMoveTargetOutOfBounds = 34,
+  kElementNotInteractable = 60,
+  kInvalidArgument = 61,
+  kNoSuchCookie = 62,
+  kElementClickIntercepted = 64,
+  kUnsupportedOperation = 405,
   // Chrome-specific status codes.
   kChromeNotReachable = 100,
   kNoSuchExecutionContext,
   kDisconnected,
   kForbidden = 103,
   kTabCrashed,
+  kTargetDetached,
 };
 
 // Represents a WebDriver status, which may be an error or ok.
@@ -54,9 +62,12 @@ class Status {
 
   const std::string& message() const;
 
+  const std::string& stack_trace() const;
+
  private:
   StatusCode code_;
   std::string msg_;
+  std::string stack_trace_;
 };
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CHROME_STATUS_H_

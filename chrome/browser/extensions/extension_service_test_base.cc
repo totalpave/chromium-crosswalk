@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/memory/ref_counted.h"
@@ -15,9 +16,10 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/extension_error_reporter.h"
+#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_garbage_collector_factory.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/load_error_reporter.h"
 #include "chrome/browser/extensions/shared_module_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
@@ -27,11 +29,14 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/syncable_prefs/pref_service_mock_factory.h"
-#include "components/syncable_prefs/pref_service_syncable.h"
+#include "components/sync_preferences/pref_service_mock_factory.h"
+#include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/storage_partition.h"
+#include "content/public/common/service_manager_connection.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/pref_names.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/extensions/install_limiter.h"
@@ -41,25 +46,22 @@ namespace extensions {
 
 namespace {
 
-// By default, we run on the IO loop.
-const int kThreadOptions = content::TestBrowserThreadBundle::IO_MAINLOOP;
-
 // Create a testing profile according to |params|.
 std::unique_ptr<TestingProfile> BuildTestingProfile(
     const ExtensionServiceTestBase::ExtensionServiceInitParams& params) {
   TestingProfile::Builder profile_builder;
   // Create a PrefService that only contains user defined preference values.
-  syncable_prefs::PrefServiceMockFactory factory;
+  sync_preferences::PrefServiceMockFactory factory;
   // If pref_file is empty, TestingProfile automatically creates
-  // syncable_prefs::TestingPrefServiceSyncable instance.
+  // sync_preferences::TestingPrefServiceSyncable instance.
   if (!params.pref_file.empty()) {
     factory.SetUserPrefsFile(params.pref_file,
                              base::ThreadTaskRunnerHandle::Get().get());
     scoped_refptr<user_prefs::PrefRegistrySyncable> registry(
         new user_prefs::PrefRegistrySyncable);
-    std::unique_ptr<syncable_prefs::PrefServiceSyncable> prefs(
+    std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs(
         factory.CreateSyncable(registry.get()));
-    chrome::RegisterUserProfilePrefs(registry.get());
+    RegisterUserProfilePrefs(registry.get());
     profile_builder.SetPrefService(std::move(prefs));
   }
 
@@ -73,24 +75,19 @@ std::unique_ptr<TestingProfile> BuildTestingProfile(
 }  // namespace
 
 ExtensionServiceTestBase::ExtensionServiceInitParams::
-    ExtensionServiceInitParams()
-    : autoupdate_enabled(false),
-      is_first_run(true),
-      profile_is_supervised(false) {
-}
+    ExtensionServiceInitParams() {}
 
 ExtensionServiceTestBase::ExtensionServiceInitParams::
     ExtensionServiceInitParams(const ExtensionServiceInitParams& other) =
         default;
 
 ExtensionServiceTestBase::ExtensionServiceTestBase()
-    : thread_bundle_(new content::TestBrowserThreadBundle(kThreadOptions)),
-      service_(NULL),
+    : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP),
+      service_(nullptr),
       testing_local_state_(TestingBrowserProcess::GetGlobal()),
-      did_reset_thread_bundle_(false),
-      registry_(NULL) {
+      registry_(nullptr) {
   base::FilePath test_data_dir;
-  if (!PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir)) {
+  if (!base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir)) {
     ADD_FAILURE();
     return;
   }
@@ -98,11 +95,6 @@ ExtensionServiceTestBase::ExtensionServiceTestBase()
 }
 
 ExtensionServiceTestBase::~ExtensionServiceTestBase() {
-  // Parts of destruction have to happen on an IO thread, so if the thread
-  // bundle is reset, we need to change it back.
-  if (did_reset_thread_bundle_)
-    ResetThreadBundle(kThreadOptions);
-
   // Why? Because |profile_| has to be destroyed before |at_exit_manager_|, but
   // is declared above it in the class definition since it's protected.
   profile_.reset();
@@ -112,7 +104,7 @@ ExtensionServiceTestBase::ExtensionServiceInitParams
 ExtensionServiceTestBase::CreateDefaultInitParams() {
   ExtensionServiceInitParams params;
   EXPECT_TRUE(temp_dir_.CreateUniqueTempDir());
-  base::FilePath path = temp_dir_.path();
+  base::FilePath path = temp_dir_.GetPath();
   path = path.Append(FILE_PATH_LITERAL("TestingExtensionsPath"));
   EXPECT_TRUE(base::DeleteFile(path, true));
   base::File::Error error = base::File::FILE_OK;
@@ -141,7 +133,8 @@ void ExtensionServiceTestBase::InitializeExtensionService(
 
   // Garbage collector is typically NULL during tests, so give it a build.
   ExtensionGarbageCollectorFactory::GetInstance()->SetTestingFactoryAndUse(
-      profile_.get(), &ExtensionGarbageCollectorFactory::BuildInstanceFor);
+      profile_.get(),
+      base::BindRepeating(&ExtensionGarbageCollectorFactory::BuildInstanceFor));
 }
 
 void ExtensionServiceTestBase::InitializeEmptyExtensionService() {
@@ -152,7 +145,7 @@ void ExtensionServiceTestBase::InitializeInstalledExtensionService(
     const base::FilePath& prefs_file,
     const base::FilePath& source_install_dir) {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-  base::FilePath path = temp_dir_.path();
+  base::FilePath path = temp_dir_.GetPath();
 
   path = path.Append(FILE_PATH_LITERAL("TestingExtensionsPath"));
   ASSERT_TRUE(base::DeleteFile(path, true));
@@ -191,15 +184,16 @@ void ExtensionServiceTestBase::InitializeExtensionServiceWithUpdater() {
   service_->updater()->Start();
 }
 
-void ExtensionServiceTestBase::ResetThreadBundle(int options) {
-  did_reset_thread_bundle_ = true;
-  thread_bundle_.reset();
-  thread_bundle_.reset(new content::TestBrowserThreadBundle(options));
+void ExtensionServiceTestBase::
+    InitializeExtensionServiceWithExtensionsDisabled() {
+  ExtensionServiceInitParams params = CreateDefaultInitParams();
+  params.extensions_enabled = false;
+  InitializeExtensionService(params);
 }
 
 size_t ExtensionServiceTestBase::GetPrefKeyCount() {
   const base::DictionaryValue* dict =
-      profile()->GetPrefs()->GetDictionary("extensions.settings");
+      profile()->GetPrefs()->GetDictionary(pref_names::kExtensions);
   if (!dict) {
     ADD_FAILURE();
     return 0;
@@ -221,7 +215,7 @@ testing::AssertionResult ExtensionServiceTestBase::ValidateBooleanPref(
 
   PrefService* prefs = profile()->GetPrefs();
   const base::DictionaryValue* dict =
-      prefs->GetDictionary("extensions.settings");
+      prefs->GetDictionary(pref_names::kExtensions);
   if (!dict) {
     return testing::AssertionFailure()
         << "extension.settings does not exist " << msg;
@@ -248,13 +242,13 @@ void ExtensionServiceTestBase::ValidateIntegerPref(
     const std::string& extension_id,
     const std::string& pref_path,
     int expected_val) {
-  std::string msg = base::StringPrintf("while checking: %s %s == %s",
-                                       extension_id.c_str(), pref_path.c_str(),
-                                       base::IntToString(expected_val).c_str());
+  std::string msg = base::StringPrintf(
+      "while checking: %s %s == %s", extension_id.c_str(), pref_path.c_str(),
+      base::NumberToString(expected_val).c_str());
 
   PrefService* prefs = profile()->GetPrefs();
   const base::DictionaryValue* dict =
-      prefs->GetDictionary("extensions.settings");
+      prefs->GetDictionary(pref_names::kExtensions);
   ASSERT_TRUE(dict != NULL) << msg;
   const base::DictionaryValue* pref = NULL;
   ASSERT_TRUE(dict->GetDictionary(extension_id, &pref)) << msg;
@@ -273,7 +267,7 @@ void ExtensionServiceTestBase::ValidateStringPref(
                                        expected_val.c_str());
 
   const base::DictionaryValue* dict =
-      profile()->GetPrefs()->GetDictionary("extensions.settings");
+      profile()->GetPrefs()->GetDictionary(pref_names::kExtensions);
   ASSERT_TRUE(dict != NULL) << msg;
   const base::DictionaryValue* pref = NULL;
   std::string manifest_path = extension_id + ".manifest";
@@ -285,12 +279,24 @@ void ExtensionServiceTestBase::ValidateStringPref(
 }
 
 void ExtensionServiceTestBase::SetUp() {
-  ExtensionErrorReporter::GetInstance()->ClearErrors();
+  LoadErrorReporter::GetInstance()->ClearErrors();
+
+  // Force TabManager/TabLifecycleUnitSource creation.
+  g_browser_process->resource_coordinator_parts();
+}
+
+void ExtensionServiceTestBase::TearDown() {
+  if (profile_) {
+    auto* partition =
+        content::BrowserContext::GetDefaultStoragePartition(profile_.get());
+    if (partition)
+      partition->WaitForDeletionTasksForTesting();
+  }
 }
 
 void ExtensionServiceTestBase::SetUpTestCase() {
   // Safe to call multiple times.
-  ExtensionErrorReporter::Init(false);  // no noisy errors.
+  LoadErrorReporter::Init(false);  // no noisy errors.
 }
 
 // These are declared in the .cc so that all inheritors don't need to know
@@ -303,6 +309,11 @@ Profile* ExtensionServiceTestBase::profile() {
   return profile_.get();
 }
 
+sync_preferences::TestingPrefServiceSyncable*
+ExtensionServiceTestBase::testing_pref_service() {
+  return profile_->GetTestingPrefService();
+}
+
 void ExtensionServiceTestBase::CreateExtensionService(
     const ExtensionServiceInitParams& params) {
   TestExtensionSystem* system =
@@ -310,15 +321,10 @@ void ExtensionServiceTestBase::CreateExtensionService(
   if (!params.is_first_run)
     ExtensionPrefs::Get(profile_.get())->SetAlertSystemFirstRun();
 
-  service_ =
-      system->CreateExtensionService(base::CommandLine::ForCurrentProcess(),
-                                     params.extensions_install_dir,
-                                     params.autoupdate_enabled);
+  service_ = system->CreateExtensionService(
+      base::CommandLine::ForCurrentProcess(), params.extensions_install_dir,
+      params.autoupdate_enabled, params.extensions_enabled);
 
-  service_->SetFileTaskRunnerForTesting(
-      base::ThreadTaskRunnerHandle::Get().get());
-  service_->set_extensions_enabled(true);
-  service_->set_show_extensions_prompts(false);
   service_->component_loader()->set_ignore_whitelist_for_testing(true);
 
   // When we start up, we want to make sure there is no external provider,

@@ -7,98 +7,96 @@
 
 #include <stddef.h>
 
-#include <string>
-#include <vector>
+#include <memory>
 
 #include "base/base_export.h"
 #include "base/macros.h"
 #include "base/strings/string_piece.h"
 
-// These functions add metadata to the upload payload when sending crash reports
-// to the crash server.
-//
-// IMPORTANT: On OS X and Linux, the key/value pairs are only sent as part of
-// the upload and are not included in the minidump!
-
 namespace base {
 namespace debug {
 
-class StackTrace;
+// A crash key is an annotation that is carried along with a crash report, to
+// provide additional debugging information beyond a stack trace. Crash keys
+// have a name and a string value.
+//
+// The preferred API is //components/crash/core/common:crash_key, however not
+// all clients can hold a direct dependency on that target. The API provided
+// in this file indirects the dependency.
+//
+// Example usage:
+//   static CrashKeyString* crash_key =
+//       AllocateCrashKeyString("name", CrashKeySize::Size32);
+//   SetCrashKeyString(crash_key, "value");
+//   ClearCrashKeyString(crash_key);
 
-// Sets or clears a specific key-value pair from the crash metadata. Keys and
-// values are terminated at the null byte.
-BASE_EXPORT void SetCrashKeyValue(const base::StringPiece& key,
-                                  const base::StringPiece& value);
-BASE_EXPORT void ClearCrashKey(const base::StringPiece& key);
+// The maximum length for a crash key's value must be one of the following
+// pre-determined values.
+enum class CrashKeySize {
+  Size32 = 32,
+  Size64 = 64,
+  Size256 = 256,
+};
 
-// Records the given StackTrace into a crash key.
-BASE_EXPORT void SetCrashKeyToStackTrace(const base::StringPiece& key,
-                                         const StackTrace& trace);
+struct CrashKeyString;
 
-// Formats |count| instruction pointers from |addresses| using %p and
-// sets the resulting string as a value for crash key |key|. A maximum of 23
-// items will be encoded, since breakpad limits values to 255 bytes.
-BASE_EXPORT void SetCrashKeyFromAddresses(const base::StringPiece& key,
-                                          const void* const* addresses,
-                                          size_t count);
+// Allocates a new crash key with the specified |name| with storage for a
+// value up to length |size|. This will return null if the crash key system is
+// not initialized.
+BASE_EXPORT CrashKeyString* AllocateCrashKeyString(const char name[],
+                                                   CrashKeySize size);
+
+// Stores |value| into the specified |crash_key|. The |crash_key| may be null
+// if AllocateCrashKeyString() returned null. If |value| is longer than the
+// size with which the key was allocated, it will be truncated.
+BASE_EXPORT void SetCrashKeyString(CrashKeyString* crash_key,
+                                   base::StringPiece value);
+
+// Clears any value that was stored in |crash_key|. The |crash_key| may be
+// null.
+BASE_EXPORT void ClearCrashKeyString(CrashKeyString* crash_key);
 
 // A scoper that sets the specified key to value for the lifetime of the
 // object, and clears it on destruction.
-class BASE_EXPORT ScopedCrashKey {
+class BASE_EXPORT ScopedCrashKeyString {
  public:
-  ScopedCrashKey(const base::StringPiece& key, const base::StringPiece& value);
-  ~ScopedCrashKey();
+  ScopedCrashKeyString(CrashKeyString* crash_key, base::StringPiece value);
+  ~ScopedCrashKeyString();
 
  private:
-  std::string key_;
+  CrashKeyString* const crash_key_;
 
-  DISALLOW_COPY_AND_ASSIGN(ScopedCrashKey);
+  DISALLOW_COPY_AND_ASSIGN(ScopedCrashKeyString);
 };
 
-// Before setting values for a key, all the keys must be registered.
-struct BASE_EXPORT CrashKey {
-  // The name of the crash key, used in the above functions.
-  const char* key_name;
+////////////////////////////////////////////////////////////////////////////////
+// The following declarations are used to initialize the crash key system
+// in //base by providing implementations for the above functions.
 
-  // The maximum length for a value. If the value is longer than this, it will
-  // be truncated. If the value is larger than the |chunk_max_length| passed to
-  // InitCrashKeys() but less than this value, it will be split into multiple
-  // numbered chunks.
-  size_t max_length;
+// The virtual interface that provides the implementation for the crash key
+// API. This is implemented by a higher-layer component, and the instance is
+// set using the function below.
+class CrashKeyImplementation {
+ public:
+  virtual ~CrashKeyImplementation() = default;
+
+  virtual CrashKeyString* Allocate(const char name[], CrashKeySize size) = 0;
+  virtual void Set(CrashKeyString* crash_key, base::StringPiece value) = 0;
+  virtual void Clear(CrashKeyString* crash_key) = 0;
 };
 
-// Before the crash key logging mechanism can be used, all crash keys must be
-// registered with this function. The function returns the amount of space
-// the crash reporting implementation should allocate space for the registered
-// crash keys. |chunk_max_length| is the maximum size that a value in a single
-// chunk can be.
-BASE_EXPORT size_t InitCrashKeys(const CrashKey* const keys, size_t count,
-                                 size_t chunk_max_length);
+// Initializes the crash key system in base by replacing the existing
+// implementation, if it exists, with |impl|. The |impl| is copied into base.
+BASE_EXPORT void SetCrashKeyImplementation(
+    std::unique_ptr<CrashKeyImplementation> impl);
 
-// Returns the corresponding crash key object or NULL for a given key.
-BASE_EXPORT const CrashKey* LookupCrashKey(const base::StringPiece& key);
-
-// In the platform crash reporting implementation, these functions set and
-// clear the NUL-terminated key-value pairs.
-typedef void (*SetCrashKeyValueFuncT)(const base::StringPiece&,
-                                      const base::StringPiece&);
-typedef void (*ClearCrashKeyValueFuncT)(const base::StringPiece&);
-
-// Sets the function pointers that are used to integrate with the platform-
-// specific crash reporting libraries.
-BASE_EXPORT void SetCrashKeyReportingFunctions(
-    SetCrashKeyValueFuncT set_key_func,
-    ClearCrashKeyValueFuncT clear_key_func);
-
-// Helper function that breaks up a value according to the parameters
-// specified by the crash key object.
-BASE_EXPORT std::vector<std::string> ChunkCrashKeyValue(
-    const CrashKey& crash_key,
-    const base::StringPiece& value,
-    size_t chunk_max_length);
-
-// Resets the crash key system so it can be reinitialized. For testing only.
-BASE_EXPORT void ResetCrashLoggingForTesting();
+// The base structure for a crash key, storing the allocation metadata.
+struct CrashKeyString {
+  constexpr CrashKeyString(const char name[], CrashKeySize size)
+      : name(name), size(size) {}
+  const char* const name;
+  const CrashKeySize size;
+};
 
 }  // namespace debug
 }  // namespace base

@@ -25,8 +25,10 @@ namespace ui {
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.ui.base
 enum PageTransition {
+  PAGE_TRANSITION_FIRST = 0,
+
   // User got to this page by clicking a link on another page.
-  PAGE_TRANSITION_LINK = 0,
+  PAGE_TRANSITION_LINK = PAGE_TRANSITION_FIRST,
 
   // User got this page by typing the URL in the URL bar.  This should not be
   // used for cases where the user selected a choice that didn't look at all
@@ -160,7 +162,7 @@ UI_BASE_EXPORT bool PageTransitionTypeIncludingQualifiersIs(PageTransition lhs,
 UI_BASE_EXPORT PageTransition PageTransitionStripQualifier(
     PageTransition type);
 
-bool PageTransitionIsValidType(int32_t type);
+UI_BASE_EXPORT bool PageTransitionIsValidType(int32_t type);
 
 UI_BASE_EXPORT PageTransition PageTransitionFromInt(int32_t type);
 
@@ -186,19 +188,18 @@ UI_BASE_EXPORT bool PageTransitionIsWebTriggerable(PageTransition type);
 UI_BASE_EXPORT const char* PageTransitionGetCoreTransitionString(
     PageTransition type);
 
-// TODO(joth): Remove the #if guard here; requires all chrome layer code to
-// be fixed up not to use operator==
-#if defined(CONTENT_IMPLEMENTATION)
 // Declare a dummy class that is intentionally never defined.
 class DontUseOperatorEquals;
 
-// Ban operator== as it's way too easy to forget to strip the qualifiers. Use
-// PageTransitionCoreTypeIs() instead or, in rare cases,
+// Ban operator== and operator!= as it's way too easy to forget to strip the
+// qualifiers. Use PageTransitionCoreTypeIs() instead or, in rare cases,
 // PageTransitionTypeIncludingQualifiersIs().
 DontUseOperatorEquals operator==(PageTransition, PageTransition);
 DontUseOperatorEquals operator==(PageTransition, int);
 DontUseOperatorEquals operator==(int, PageTransition);
-#endif  // defined(CONTENT_IMPLEMENTATION)
+DontUseOperatorEquals operator!=(PageTransition, PageTransition);
+DontUseOperatorEquals operator!=(PageTransition, int);
+DontUseOperatorEquals operator!=(int, PageTransition);
 
 }  // namespace ui
 

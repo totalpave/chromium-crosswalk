@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/signin/gaia_auth_extension_loader.h"
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/lazy_instance.h"
@@ -17,11 +18,11 @@
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/grit/browser_resources.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
 #include "extensions/browser/extension_system.h"
-#include "grit/browser_resources.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/system/input_device_settings.h"
@@ -30,11 +31,12 @@
 using content::BrowserContext;
 using content::BrowserThread;
 
+namespace extensions {
+
 namespace {
 
-extensions::ComponentLoader* GetComponentLoader(BrowserContext* context) {
-  extensions::ExtensionSystem* extension_system =
-      extensions::ExtensionSystem::Get(context);
+ComponentLoader* GetComponentLoader(BrowserContext* context) {
+  ExtensionSystem* extension_system = ExtensionSystem::Get(context);
   ExtensionService* extension_service = extension_system->extension_service();
   return extension_service->component_loader();
 }
@@ -42,12 +44,12 @@ extensions::ComponentLoader* GetComponentLoader(BrowserContext* context) {
 void LoadGaiaAuthExtension(BrowserContext* context) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  extensions::ComponentLoader* component_loader = GetComponentLoader(context);
+  ComponentLoader* component_loader = GetComponentLoader(context);
   const base::CommandLine* command_line =
       base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kAuthExtensionPath)) {
+  if (command_line->HasSwitch(::switches::kAuthExtensionPath)) {
     base::FilePath auth_extension_path =
-        command_line->GetSwitchValuePath(switches::kAuthExtensionPath);
+        command_line->GetSwitchValuePath(::switches::kAuthExtensionPath);
     component_loader->Add(IDR_GAIA_AUTH_MANIFEST, auth_extension_path);
     return;
   }
@@ -58,17 +60,14 @@ void LoadGaiaAuthExtension(BrowserContext* context) {
 
 void UnloadGaiaAuthExtension(BrowserContext* context) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  GetComponentLoader(context)->Remove(extensions::kGaiaAuthExtensionId);
+  GetComponentLoader(context)->Remove(kGaiaAuthExtensionId);
 }
 
 }  // namespace
 
-namespace extensions {
-
 GaiaAuthExtensionLoader::GaiaAuthExtensionLoader(BrowserContext* context)
     : browser_context_(context),
       load_count_(0),
-      last_data_id_(0),
       weak_ptr_factory_(this) {
 }
 
@@ -84,32 +83,15 @@ void GaiaAuthExtensionLoader::LoadIfNeeded() {
 
 void GaiaAuthExtensionLoader::UnloadIfNeededAsync() {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&GaiaAuthExtensionLoader::UnloadIfNeeded,
-                 weak_ptr_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&GaiaAuthExtensionLoader::UnloadIfNeeded,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
 void GaiaAuthExtensionLoader::UnloadIfNeeded() {
   --load_count_;
   if (load_count_ == 0) {
     UnloadGaiaAuthExtension(browser_context_);
-    data_.clear();
   }
-}
-
-int GaiaAuthExtensionLoader::AddData(const std::string& data) {
-  ++last_data_id_;
-  data_[last_data_id_] = data;
-  return last_data_id_;
-}
-
-bool GaiaAuthExtensionLoader::GetData(int data_id, std::string* data) {
-  auto it = data_.find(data_id);
-  if (it == data_.end())
-    return false;
-
-  *data = it->second;
-  return true;
 }
 
 void GaiaAuthExtensionLoader::Shutdown() {
@@ -117,7 +99,6 @@ void GaiaAuthExtensionLoader::Shutdown() {
     UnloadGaiaAuthExtension(browser_context_);
     load_count_ = 0;
   }
-  data_.clear();
 }
 
 // static
@@ -126,13 +107,13 @@ GaiaAuthExtensionLoader* GaiaAuthExtensionLoader::Get(BrowserContext* context) {
 }
 
 static base::LazyInstance<
-    BrowserContextKeyedAPIFactory<GaiaAuthExtensionLoader> > g_factory =
-    LAZY_INSTANCE_INITIALIZER;
+    BrowserContextKeyedAPIFactory<GaiaAuthExtensionLoader>>::DestructorAtExit
+    g_gaia_auth_extension_loader_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<GaiaAuthExtensionLoader>*
 GaiaAuthExtensionLoader::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_gaia_auth_extension_loader_factory.Pointer();
 }
 
 } // namespace extensions

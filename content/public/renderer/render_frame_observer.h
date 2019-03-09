@@ -9,22 +9,38 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/optional.h"
 #include "base/strings/string16.h"
 #include "content/common/content_export.h"
+#include "content/public/common/resource_type.h"
 #include "ipc/ipc_listener.h"
 #include "ipc/ipc_sender.h"
-#include "third_party/WebKit/public/platform/WebLoadingBehaviorFlag.h"
-#include "third_party/WebKit/public/platform/WebVector.h"
-#include "third_party/WebKit/public/web/WebMeaningfulLayout.h"
+#include "mojo/public/cpp/bindings/scoped_interface_endpoint_handle.h"
+#include "mojo/public/cpp/system/message_pipe.h"
+#include "third_party/blink/public/mojom/web_client_hints/web_client_hints_types.mojom.h"
+#include "third_party/blink/public/mojom/web_feature/web_feature.mojom.h"
+#include "third_party/blink/public/platform/web_loading_behavior_flag.h"
+#include "third_party/blink/public/platform/web_vector.h"
+#include "third_party/blink/public/web/web_meaningful_layout.h"
+#include "third_party/blink/public/web/web_navigation_type.h"
+#include "ui/base/page_transition_types.h"
 #include "v8/include/v8.h"
 
+class GURL;
+
 namespace blink {
+class WebDocumentLoader;
 class WebFormElement;
-class WebFrame;
 class WebNode;
 class WebString;
 struct WebURLError;
+class WebWorkerFetchContext;
 }
+
+namespace network {
+struct ResourceResponseHead;
+struct URLLoaderCompletionStatus;
+}  // namespace network
 
 namespace content {
 
@@ -55,17 +71,48 @@ class CONTENT_EXPORT RenderFrameObserver : public IPC::Listener,
   // Called when associated widget is about to close.
   virtual void WidgetWillClose() {}
 
+  // Navigation callbacks.
+  //
+  // Each navigation starts with a DidStartNavigation call. Then it may be
+  // followed by a ReadyToCommitNavigation (if the navigation has succeeded),
+  // and should always end with a DidFinishNavigation.
+  //
+  // Unfortunately, this is currently a mess. For example, some started
+  // navigations which did not commit won't receive any further notifications.
+  // DidCommitProvisionalLoad will be called for same-document navigations,
+  // without any other notifications. DidFailProvisionalLoad will be called
+  // when committing error pages, in addition to all the methods (start, ready,
+  // commit) for the error page load itself.
+
+  // Called when the RenderFrame has started a navigation.
+  // |url| is a url being navigated to. Note that final url might be different
+  // due to redirects.
+  // |navigation_type| is only present for renderer-initiated navigations, e.g.
+  // JavaScript call, link click, form submit. User-initiated navigations from
+  // the browser process (e.g. by typing a url) won't have a navigation type.
+  virtual void DidStartNavigation(
+      const GURL& url,
+      base::Optional<blink::WebNavigationType> navigation_type) {}
+
+  // Called when a navigation is about to be committed and |document_loader|
+  // will start loading a new document in the RenderFrame.
+  virtual void ReadyToCommitNavigation(
+      blink::WebDocumentLoader* document_loader) {}
+
   // These match the Blink API notifications
   virtual void DidCreateNewDocument() {}
   virtual void DidCreateDocumentElement() {}
-  virtual void DidCommitProvisionalLoad(bool is_new_navigation,
-                                        bool is_same_page_navigation) {}
-  virtual void DidStartProvisionalLoad() {}
+  // Called when a provisional load is about to commit in a frame. This is
+  // dispatched just before the Javascript unload event.
+  virtual void WillCommitProvisionalLoad() {}
+  // TODO(dgozman): replace next two methods with DidFinishNavigation.
+  virtual void DidCommitProvisionalLoad(bool is_same_document_navigation,
+                                        ui::PageTransition transition) {}
   virtual void DidFailProvisionalLoad(const blink::WebURLError& error) {}
   virtual void DidFinishLoad() {}
   virtual void DidFinishDocumentLoad() {}
+  virtual void DidHandleOnloadEvents() {}
   virtual void DidCreateScriptContext(v8::Local<v8::Context> context,
-                                      int extension_group,
                                       int world_id) {}
   virtual void WillReleaseScriptContext(v8::Local<v8::Context> context,
                                         int world_id) {}
@@ -78,16 +125,10 @@ class CONTENT_EXPORT RenderFrameObserver : public IPC::Listener,
       const blink::WebVector<blink::WebString>& newly_matching_selectors,
       const blink::WebVector<blink::WebString>& stopped_matching_selectors) {}
 
-  // Called before FrameWillClose, when this frame has been detached from the
-  // view, but has not been closed yet. This *will* be called when parent frames
-  // are closing. Since the frame is already detached from the DOM at this time
-  // it should not be inspected.
+  // Called when this frame has been detached from the view. This *will* be
+  // called for child frames when a parent frame is detached. Since the frame is
+  // already detached from the DOM at this time, it should not be inspected.
   virtual void FrameDetached() {}
-
-  // Called when the frame will soon be closed. This is the last opportunity to
-  // send messages to the host (e.g., for clean-up, shutdown, etc.). This is
-  // *not* called on child frames when parent frames are being closed.
-  virtual void FrameWillClose() {}
 
   // Called when we receive a console message from Blink for which we requested
   // extra details (like the stack trace). |message| is the error message,
@@ -108,19 +149,78 @@ class CONTENT_EXPORT RenderFrameObserver : public IPC::Listener,
   // The interestingness of layouts is explained in WebMeaningfulLayout.h.
   virtual void DidMeaningfulLayout(blink::WebMeaningfulLayout layout_type) {}
 
-  // Called when a compositor frame has committed.
-  virtual void DidCommitCompositorFrame() {}
-
   // Notifications when |PerformanceTiming| data becomes available
   virtual void DidChangePerformanceTiming() {}
+
+  // Notifications when a cpu timing update becomes available, when a frame
+  // has performed at least 100ms of tasks.
+  virtual void DidChangeCpuTiming(base::TimeDelta time) {}
 
   // Notification when the renderer uses a particular code path during a page
   // load. This is used for metrics collection.
   virtual void DidObserveLoadingBehavior(
       blink::WebLoadingBehaviorFlag behavior) {}
 
+  // Notification when the renderer observes a new use counter usage during a
+  // page load. This is used for UseCounter metrics.
+  virtual void DidObserveNewFeatureUsage(blink::mojom::WebFeature feature) {}
+  virtual void DidObserveNewCssPropertyUsage(int css_property,
+                                             bool is_animated) {}
+
+  // Reports that visible elements in the frame shifted (bit.ly/lsm-explainer).
+  // This is called once for each janking animation frame, with the jank
+  // fraction for that frame.  The cumulative jank score can be inferred by
+  // summing the jank fractions.
+  virtual void DidObserveLayoutJank(double jank_fraction) {}
+
+  // Notification when the renderer a response started, completed or canceled.
+  // Complete or Cancel is guaranteed to be called for a response that started.
+  // |request_id| uniquely identifies the request within this render frame.
+  virtual void DidStartResponse(
+      const GURL& response_url,
+      int request_id,
+      const network::ResourceResponseHead& response_head,
+      content::ResourceType resource_type) {}
+  virtual void DidCompleteResponse(
+      int request_id,
+      const network::URLLoaderCompletionStatus& status) {}
+  virtual void DidCancelResponse(int request_id) {}
+
+  // Notification when the renderer observes data used during the page load.
+  // This is used for page load metrics. |received_data_length| is the received
+  // network bytes. |resource_id| uniquely identifies the resource within this
+  // render frame.
+  virtual void DidReceiveTransferSizeUpdate(int resource_id,
+                                            int received_data_length) {}
+
   // Called when the focused node has changed to |node|.
   virtual void FocusedNodeChanged(const blink::WebNode& node) {}
+
+  // Called when accessibility is enabled or disabled.
+  virtual void AccessibilityModeChanged() {}
+
+  // Called when script in the page calls window.print().
+  virtual void ScriptedPrint(bool user_initiated) {}
+
+  // Called when draggable regions change.
+  virtual void DraggableRegionsChanged() {}
+
+  // Called when a worker fetch context will be created.
+  virtual void WillCreateWorkerFetchContext(blink::WebWorkerFetchContext*) {}
+
+  // Called to give the embedder an opportunity to bind an interface request
+  // for a frame. If the request can be bound, |interface_pipe| will be taken.
+  virtual void OnInterfaceRequestForFrame(
+      const std::string& interface_name,
+      mojo::ScopedMessagePipeHandle* interface_pipe) {}
+
+  // Similar to above but for handling Channel-associated interface requests.
+  // Returns |true| if the request is handled by the implementation (taking
+  // ownership of |*handle|) and |false| otherwise (leaving |*handle|
+  // unmodified).
+  virtual bool OnAssociatedInterfaceRequestForFrame(
+      const std::string& interface_name,
+      mojo::ScopedInterfaceEndpointHandle* handle);
 
   // IPC::Listener implementation.
   bool OnMessageReceived(const IPC::Message& message) override;

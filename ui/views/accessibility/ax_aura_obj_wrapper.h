@@ -15,6 +15,7 @@
 #include "ui/views/views_export.h"
 
 namespace ui {
+struct AXActionData;
 struct AXNodeData;
 }  // namespace ui
 
@@ -26,19 +27,18 @@ class VIEWS_EXPORT AXAuraObjWrapper {
  public:
   virtual ~AXAuraObjWrapper() {}
 
+  // See ViewAccessibility for details.
+  virtual bool IsIgnored() = 0;
+
   // Traversal and serialization.
   virtual AXAuraObjWrapper* GetParent() = 0;
   virtual void GetChildren(
       std::vector<AXAuraObjWrapper*>* out_children) = 0;
   virtual void Serialize(ui::AXNodeData* out_node_data) = 0;
-  virtual int32_t GetID() = 0;
+  virtual int32_t GetUniqueId() const = 0;
 
   // Actions.
-  virtual void DoDefault() {}
-  virtual void Focus() {}
-  virtual void MakeVisible() {}
-  virtual void SetSelection(int32_t start, int32_t end) {}
-  virtual void ShowContextMenu() {}
+  virtual bool HandleAccessibleAction(const ui::AXActionData& action);
 };
 
 }  // namespace views

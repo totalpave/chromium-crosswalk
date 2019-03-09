@@ -2,36 +2,32 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file. */
 
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+div {
+  margin: 10px 0;
+}
+
 paper-button[raised].colored {
   background: rgb(66, 133, 244);
   color: white;
 }
 
-#header {
-  margin: 5px;
-}
-
-#header a {
-  padding: 0 4px;
-}
-
-#header cr-network-icon {
-  height: 40px;
-  width: 40px;
-}
-
-cr-network-select {
-  padding: 5px;
+#select-div {
+  display: flex;
+  height: 100px;
   width: 500px;
-}
-
-#refresh {
-  margin-top: 10px;
-  padding: 5px;
 }
 
 .state-table {
   border-collapse: collapse;
+}
+
+.state-table tr {
+  min-width: 800px;
 }
 
 .state-table tr td {
@@ -58,14 +54,15 @@ cr-network-select {
 }
 
 .state-table-expanded-cell {
+  min-width: 400px;
   white-space: pre-wrap;
 }
 
-.state-table cr-network-icon {
-  height: 25px;
-  width: 25px;
+.state-table-icon-cell {
+  height: 32px;
+  width: 32px;
 }
 
-#advanced-options {
-  margin-top: 10px;
+cr-network-select {
+  flex: 1;
 }

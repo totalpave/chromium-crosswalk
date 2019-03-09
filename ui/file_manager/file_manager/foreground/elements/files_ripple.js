@@ -26,10 +26,16 @@ var FilesRipple = Polymer({
    */
   pressAnimationPromise_: null,
 
+  ready: function() {
+    /** @type {HTMLElement} */
+    this.ripple_ = this.$.ripple;
+  },
+
   attached: function() {
+    const node = assert(this.parentElement || this.parentNode.host);
     // Listen events of parent element.
-    this.listen(assert(this.parentElement), 'down', 'onDown_');
-    this.listen(assert(this.parentElement), 'up', 'onUp_');
+    this.listen(node, 'down', 'onDown_');
+    this.listen(node, 'up', 'onUp_');
   },
 
   /**
@@ -50,7 +56,8 @@ var FilesRipple = Polymer({
    * Performs press animation.
    */
   performPressAnimation: function() {
-    var animationPlayer = this.$.ripple.animate([
+    /** @type {EventTarget} */
+    const animationPlayer = this.ripple_.animate([
       {
         width: '2%',
         height: '2%',
@@ -68,23 +75,25 @@ var FilesRipple = Polymer({
 
     this._setPressed(true);
 
-    this.pressAnimationPromise_ = new Promise(
-        animationPlayer.addEventListener.bind(animationPlayer, 'finish'));
+    this.pressAnimationPromise_ = new Promise((resolve, reject) => {
+      animationPlayer.addEventListener('finish', resolve, false);
+      animationPlayer.addEventListener('cancel', reject, false);
+    });
   },
 
   /**
    * Performs burst animation.
    */
   performBurstAnimation: function() {
-    var pressAnimationPromise = this.pressAnimationPromise_ !== null ?
+    const pressAnimationPromise = this.pressAnimationPromise_ !== null ?
         this.pressAnimationPromise_ : Promise.resolve();
     this.pressAnimationPromise_ = null;
 
     // Wait if press animation is performing.
-    pressAnimationPromise.then(function() {
+    pressAnimationPromise.then(() => {
       this._setPressed(false);
 
-      this.$.ripple.animate([
+      this.ripple_.animate([
         {
           opacity: 0.2,
           offset: 0,
@@ -95,7 +104,7 @@ var FilesRipple = Polymer({
           offset: 1
         }
       ], 150);
-      this.$.ripple.animate([
+      this.ripple_.animate([
         {
           width: '50%',
           height: '50%',
@@ -108,6 +117,6 @@ var FilesRipple = Polymer({
           offset: 1
         }
       ], 150);
-    }.bind(this));
+    });
   }
 });

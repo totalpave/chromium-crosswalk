@@ -5,10 +5,13 @@
 #ifndef CHROME_BROWSER_DOWNLOAD_DOWNLOAD_TARGET_INFO_H_
 #define CHROME_BROWSER_DOWNLOAD_DOWNLOAD_TARGET_INFO_H_
 
+#include <string>
+
 #include "base/files/file_path.h"
 #include "chrome/common/safe_browsing/download_file_types.pb.h"
-#include "content/public/browser/download_danger_type.h"
-#include "content/public/browser/download_item.h"
+#include "components/download/public/common/download_danger_type.h"
+#include "components/download/public/common/download_interrupt_reasons.h"
+#include "components/download/public/common/download_item.h"
 
 struct DownloadTargetInfo {
   DownloadTargetInfo();
@@ -22,10 +25,12 @@ struct DownloadTargetInfo {
   // Disposition. This will be TARGET_DISPOSITION_PROMPT if the user was
   // prompted during the process of determining the download target. Otherwise
   // it will be TARGET_DISPOSITION_OVERWRITE.
-  content::DownloadItem::TargetDisposition target_disposition;
+  // TODO(asanka): This should be has_user_confirmation or somesuch that
+  // indicates that the user has seen and confirmed the download path.
+  download::DownloadItem::TargetDisposition target_disposition;
 
   // Danger type of the download.
-  content::DownloadDangerType danger_type;
+  download::DownloadDangerType danger_type;
 
   // The danger type of the download could be set to MAYBE_DANGEROUS_CONTENT if
   // the file type is handled by SafeBrowsing. However, if the SafeBrowsing
@@ -69,6 +74,9 @@ struct DownloadTargetInfo {
   // opens should be handled. The file is considered to be handled safely if the
   // filetype is supported by the renderer or a sandboxed plugin.
   bool is_filetype_handled_safely;
+
+  // Result of the download target determination.
+  download::DownloadInterruptReason result;
 };
 
 #endif  // CHROME_BROWSER_DOWNLOAD_DOWNLOAD_TARGET_INFO_H_

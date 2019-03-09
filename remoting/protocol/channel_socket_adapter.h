@@ -12,26 +12,31 @@
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
 #include "remoting/protocol/p2p_datagram_socket.h"
-#include "third_party/webrtc/base/asyncpacketsocket.h"
-#include "third_party/webrtc/base/sigslot.h"
-#include "third_party/webrtc/base/socketaddress.h"
-
-namespace cricket {
-class TransportChannel;
-}  // namespace cricket
+// TODO(zhihuang):Replace #include by forward declaration once proper
+// inheritance is defined for cricket::IceTransportInternal and
+// cricket::P2PTransportChannel.
+#include "third_party/webrtc/p2p/base/ice_transport_internal.h"
+// TODO(johan): Replace #include by forward declaration once proper
+// inheritance is defined for rtc::PacketTransportInterface and
+// cricket::TransportChannel.
+#include "third_party/webrtc/p2p/base/packet_transport_interface.h"
+#include "third_party/webrtc/rtc_base/async_packet_socket.h"
+#include "third_party/webrtc/rtc_base/socket_address.h"
+#include "third_party/webrtc/rtc_base/third_party/sigslot/sigslot.h"
 
 namespace remoting {
 namespace protocol {
 
 // TransportChannelSocketAdapter implements P2PDatagramSocket interface on
-// top of libjingle's TransportChannel. It is used by IceTransport to provide
+// top of cricket::IceTransportInternal. It is used by IceTransport to provide
 // P2PDatagramSocket interface for channels.
 class TransportChannelSocketAdapter : public P2PDatagramSocket,
                                       public sigslot::has_slots<> {
  public:
   // Doesn't take ownership of the |channel|. The |channel| must outlive
   // this adapter.
-  explicit TransportChannelSocketAdapter(cricket::TransportChannel* channel);
+  explicit TransportChannelSocketAdapter(
+      cricket::IceTransportInternal* ice_transport);
   ~TransportChannelSocketAdapter() override;
 
   // Sets callback that should be called when the adapter is being
@@ -51,17 +56,17 @@ class TransportChannelSocketAdapter : public P2PDatagramSocket,
            const net::CompletionCallback& callback) override;
 
  private:
-  void OnNewPacket(cricket::TransportChannel* channel,
+  void OnNewPacket(rtc::PacketTransportInterface* transport,
                    const char* data,
                    size_t data_size,
-                   const rtc::PacketTime& packet_time,
+                   const int64_t& packet_time,
                    int flags);
-  void OnWritableState(cricket::TransportChannel* channel);
-  void OnChannelDestroyed(cricket::TransportChannel* channel);
+  void OnWritableState(rtc::PacketTransportInterface* transport);
+  void OnChannelDestroyed(cricket::IceTransportInternal* ice_transport);
 
   base::ThreadChecker thread_checker_;
 
-  cricket::TransportChannel* channel_;
+  cricket::IceTransportInternal* channel_;
 
   base::Closure destruction_callback_;
 

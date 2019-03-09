@@ -5,7 +5,8 @@
 package org.chromium.chrome.browser.tabmodel;
 
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabAttributeKeys;
+import org.chromium.chrome.browser.tab.TabAttributes;
 
 /**
  * This class acts as a controller for determining where tabs should be inserted
@@ -13,7 +14,6 @@ import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
  * tab_strip_model.cc
  */
 public class TabModelOrderController {
-
     private static final int NO_TAB = -1;
     private final TabModelSelector mTabModelSelector;
 
@@ -29,7 +29,8 @@ public class TabModelOrderController {
      * @param position The provided position.
      * @return Where to insert the tab.
      */
-    public int determineInsertionIndex(TabLaunchType type, int position, Tab newTab) {
+    public int determineInsertionIndex(@TabLaunchType int type, int position, Tab newTab) {
+        if (type == TabLaunchType.FROM_BROWSER_ACTIONS) return -1;
         if (linkClicked(type)) {
             position = determineInsertionIndex(type, newTab);
         }
@@ -49,17 +50,18 @@ public class TabModelOrderController {
      * @param type The launch type of the new tab.
      * @return Where to insert the tab.
      */
-    public int determineInsertionIndex(TabLaunchType type, Tab newTab) {
+    public int determineInsertionIndex(@TabLaunchType int type, Tab newTab) {
         TabModel currentModel = mTabModelSelector.getCurrentModel();
-        Tab currentTab = TabModelUtils.getCurrentTab(currentModel);
-        if (currentTab == null) {
-            assert (currentModel.getCount() == 0);
-            return 0;
-        }
-        int currentId = currentTab.getId();
-        int currentIndex = TabModelUtils.getTabIndexById(currentModel, currentId);
 
         if (sameModelType(currentModel, newTab)) {
+            Tab currentTab = TabModelUtils.getCurrentTab(currentModel);
+            if (currentTab == null) {
+                assert (currentModel.getCount() == 0);
+                return 0;
+            }
+            int currentId = currentTab.getId();
+            int currentIndex = TabModelUtils.getTabIndexById(currentModel, currentId);
+
             if (willOpenInForeground(type, newTab.isIncognito())) {
                 // If the tab was opened in the foreground, insert it adjacent to
                 // the tab that opened that link.
@@ -95,7 +97,8 @@ public class TabModelOrderController {
         int count = currentModel.getCount();
         for (int i = count - 1; i >= startIndex; i--) {
             Tab tab = currentModel.getTabAt(i);
-            if (tab.getParentId() == openerId && tab.isGroupedWithParent()) {
+            if (tab.getParentId() == openerId
+                    && TabAttributes.from(tab).get(TabAttributeKeys.GROUPED_WITH_PARENT, true)) {
                 return i;
             }
         }
@@ -109,14 +112,15 @@ public class TabModelOrderController {
         TabModel currentModel = mTabModelSelector.getCurrentModel();
         int count = currentModel.getCount();
         for (int i = 0; i < count; i++) {
-            currentModel.getTabAt(i).setGroupedWithParent(false);
+            TabAttributes.from(currentModel.getTabAt(i))
+                    .set(TabAttributeKeys.GROUPED_WITH_PARENT, false);
         }
     }
 
     /**
      * Determine if a launch type is the result of linked being clicked.
      */
-    static boolean linkClicked(TabLaunchType type) {
+    static boolean linkClicked(@TabLaunchType int type) {
         return type == TabLaunchType.FROM_LINK
                 || type == TabLaunchType.FROM_LONGPRESS_FOREGROUND
                 || type == TabLaunchType.FROM_LONGPRESS_BACKGROUND;
@@ -129,9 +133,11 @@ public class TabModelOrderController {
      * @param isNewTabIncognito  True if the new opened tab is incognito.
      * @return                   True if the tab will be in the foreground
      */
-    public boolean willOpenInForeground(TabLaunchType type, boolean isNewTabIncognito) {
+    public boolean willOpenInForeground(@TabLaunchType int type, boolean isNewTabIncognito) {
         // Restore is handling the active index by itself.
-        if (type == TabLaunchType.FROM_RESTORE) return false;
+        if (type == TabLaunchType.FROM_RESTORE || type == TabLaunchType.FROM_BROWSER_ACTIONS) {
+            return false;
+        }
         return type != TabLaunchType.FROM_LONGPRESS_BACKGROUND
                 || (!mTabModelSelector.isIncognitoSelected() && isNewTabIncognito);
     }
@@ -142,5 +148,4 @@ public class TabModelOrderController {
     static boolean sameModelType(TabModel model, Tab tab) {
         return model.isIncognito() == tab.isIncognito();
     }
-
 }

@@ -8,19 +8,23 @@
 
 #include "base/bind.h"
 #include "base/run_loop.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/chromeos/login/login_manager_test.h"
 #include "chrome/browser/chromeos/login/startup_utils.h"
 #include "chrome/browser/chromeos/login/ui/user_adding_screen.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/cert/nss_cert_database.h"
 
 namespace {
 
-const char kTestUser1[] = "test-user1@gmail.com";
-const char kTestUser2[] = "test-user2@gmail.com";
+constexpr char kTestUser1[] = "test-user1@gmail.com";
+constexpr char kTestUser1GaiaId[] = "1111111111";
+constexpr char kTestUser2[] = "test-user2@gmail.com";
+constexpr char kTestUser2GaiaId[] = "2222222222";
 
 void NotCalledDbCallback(net::NSSCertDatabase* db) { ASSERT_TRUE(false); }
 
@@ -38,13 +42,11 @@ class DBTester {
   // Returns true if the database was retrieved successfully.
   bool DoGetDBTests() {
     base::RunLoop run_loop;
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(&DBTester::GetDBAndDoTestsOnIOThread,
-                   base::Unretained(this),
-                   profile_->GetResourceContext(),
-                   run_loop.QuitClosure()));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::IO},
+        base::BindOnce(&DBTester::GetDBAndDoTestsOnIOThread,
+                       base::Unretained(this), profile_->GetResourceContext(),
+                       run_loop.QuitClosure()));
     run_loop.Run();
     return !!db_;
   }
@@ -52,13 +54,11 @@ class DBTester {
   // Test retrieving the database again, should be called after DoGetDBTests.
   void DoGetDBAgainTests() {
     base::RunLoop run_loop;
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(&DBTester::DoGetDBAgainTestsOnIOThread,
-                   base::Unretained(this),
-                   profile_->GetResourceContext(),
-                   run_loop.QuitClosure()));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::IO},
+        base::BindOnce(&DBTester::DoGetDBAgainTestsOnIOThread,
+                       base::Unretained(this), profile_->GetResourceContext(),
+                       run_loop.QuitClosure()));
     run_loop.Run();
   }
 
@@ -95,8 +95,8 @@ class DBTester {
       EXPECT_EQ(db->GetPublicSlot().get(), db->GetPrivateSlot().get());
     }
 
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI, FROM_HERE, done_callback);
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                             done_callback);
   }
 
   void DoGetDBAgainTestsOnIOThread(content::ResourceContext* context,
@@ -108,8 +108,8 @@ class DBTester {
     // Should return the same db as before.
     EXPECT_EQ(db_, db);
 
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI, FROM_HERE, done_callback);
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                             done_callback);
   }
 
   Profile* profile_;
@@ -158,14 +158,15 @@ class UserAddingFinishObserver : public chromeos::UserAddingScreen::Observer {
 class NSSContextChromeOSBrowserTest : public chromeos::LoginManagerTest {
  public:
   NSSContextChromeOSBrowserTest()
-      : LoginManagerTest(true /* should_launch_browser */) {}
+      : LoginManagerTest(true /* should_launch_browser */,
+                         true /* should_initialize_webui */) {}
   ~NSSContextChromeOSBrowserTest() override {}
 };
 
 IN_PROC_BROWSER_TEST_F(NSSContextChromeOSBrowserTest, PRE_TwoUsers) {
   // Initialization for ChromeOS multi-profile test infrastructure.
-  RegisterUser(kTestUser1);
-  RegisterUser(kTestUser2);
+  RegisterUser(AccountId::FromUserEmailGaiaId(kTestUser1, kTestUser1GaiaId));
+  RegisterUser(AccountId::FromUserEmailGaiaId(kTestUser2, kTestUser2GaiaId));
   chromeos::StartupUtils::MarkOobeCompleted();
 }
 
@@ -173,9 +174,11 @@ IN_PROC_BROWSER_TEST_F(NSSContextChromeOSBrowserTest, TwoUsers) {
   user_manager::UserManager* user_manager = user_manager::UserManager::Get();
 
   // Log in first user and get their DB.
-  LoginUser(kTestUser1);
+  const AccountId account_id1(
+      AccountId::FromUserEmailGaiaId(kTestUser1, kTestUser1GaiaId));
+  LoginUser(account_id1);
   Profile* profile1 = chromeos::ProfileHelper::Get()->GetProfileByUserUnsafe(
-      user_manager->FindUser(AccountId::FromUserEmail(kTestUser1)));
+      user_manager->FindUser(account_id1));
   ASSERT_TRUE(profile1);
 
   DBTester tester1(profile1);
@@ -185,11 +188,14 @@ IN_PROC_BROWSER_TEST_F(NSSContextChromeOSBrowserTest, TwoUsers) {
   UserAddingFinishObserver observer;
   chromeos::UserAddingScreen::Get()->Start();
   base::RunLoop().RunUntilIdle();
-  AddUser(kTestUser2);
+
+  const AccountId account_id2(
+      AccountId::FromUserEmailGaiaId(kTestUser2, kTestUser2GaiaId));
+  AddUser(account_id2);
   observer.WaitUntilUserAddingFinishedOrCancelled();
 
   Profile* profile2 = chromeos::ProfileHelper::Get()->GetProfileByUserUnsafe(
-      user_manager->FindUser(AccountId::FromUserEmail(kTestUser2)));
+      user_manager->FindUser(account_id2));
   ASSERT_TRUE(profile2);
 
   DBTester tester2(profile2);

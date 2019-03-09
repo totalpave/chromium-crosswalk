@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-<include src="media_router_data.js">
-<include src="media_router_ui_interface.js">
+// <include src="media_router_browser_api.js">
+// <include src="media_router_data.js">
+// <include src="media_router_ui_interface.js">
 
 // Handles user events for the Media Router UI.
 cr.define('media_router', function() {
@@ -11,7 +12,7 @@ cr.define('media_router', function() {
 
   /**
    * The media-router-container element. Initialized after polymer is ready.
-   * @type {?MediaRouterContainerElement}
+   * @type {?MediaRouterContainerInterface}
    */
   var container = null;
 
@@ -21,45 +22,45 @@ cr.define('media_router', function() {
    */
   function initialize() {
     // For non-Mac platforms, request data immediately after initialization.
-    if (!cr.isMac)
+    if (!cr.isMac) {
       onRequestInitialData();
+    }
 
-    container = /** @type {!MediaRouterContainerElement} */
+    container = /** @type {!MediaRouterContainerInterface} */
         ($('media-router-container'));
 
-    media_router.ui.setElements(container,
-        /** @type {!MediaRouterHeaderElement} */
-        (container.$['container-header']));
+    media_router.ui.setElements(container, container.header);
 
-    container.addEventListener('acknowledge-first-run-flow',
-                               onAcknowledgeFirstRunFlow);
+    container.addEventListener(
+        'acknowledge-first-run-flow', onAcknowledgeFirstRunFlow);
     container.addEventListener('back-click', onNavigateToSinkList);
     container.addEventListener('cast-mode-selected', onCastModeSelected);
-    container.addEventListener('change-route-source-click',
-                               onChangeRouteSourceClick);
+    container.addEventListener(
+        'change-route-source-click', onChangeRouteSourceClick);
     container.addEventListener('close-dialog', onCloseDialog);
     container.addEventListener('close-route', onCloseRoute);
     container.addEventListener('create-route', onCreateRoute);
     container.addEventListener('issue-action-click', onIssueActionClick);
     container.addEventListener('join-route-click', onJoinRouteClick);
-    container.addEventListener('navigate-sink-list-to-details',
-                               onNavigateToDetails);
-    container.addEventListener('navigate-to-cast-mode-list',
-                               onNavigateToCastMode);
+    container.addEventListener(
+        'navigate-sink-list-to-details', onNavigateToDetails);
+    container.addEventListener(
+        'navigate-to-cast-mode-list', onNavigateToCastMode);
+    container.addEventListener(
+        'select-local-media-file', onSelectLocalMediaFile);
     container.addEventListener('report-filter', onFilter);
     container.addEventListener('report-initial-action', onInitialAction);
-    container.addEventListener('report-initial-action-close',
-                               onInitialActionClose);
+    container.addEventListener(
+        'report-initial-action-close', onInitialActionClose);
     container.addEventListener('report-route-creation', onReportRouteCreation);
-    container.addEventListener('report-sink-click-time',
-                               onSinkClickTimeReported);
+    container.addEventListener(
+        'report-sink-click-time', onSinkClickTimeReported);
     container.addEventListener('report-sink-count', onSinkCountReported);
-    container.addEventListener('report-resolved-route',
-                               onReportRouteCreationOutcome);
-    container.addEventListener('request-initial-data',
-                               onRequestInitialData);
-    container.addEventListener('search-sinks-and-create-route',
-                               onSearchSinksAndCreateRoute);
+    container.addEventListener(
+        'report-resolved-route', onReportRouteCreationOutcome);
+    container.addEventListener('request-initial-data', onRequestInitialData);
+    container.addEventListener(
+        'search-sinks-and-create-route', onSearchSinksAndCreateRoute);
     container.addEventListener('show-initial-state', onShowInitialState);
     container.addEventListener('sink-click', onSinkClick);
 
@@ -112,6 +113,13 @@ cr.define('media_router', function() {
     var detail = event.detail;
     media_router.browserApi.changeRouteSource(
         detail.route, detail.selectedCastMode);
+  }
+
+  /**
+   * Sends a request to the browser to select a local file.
+   */
+  function onSelectLocalMediaFile() {
+    media_router.browserApi.selectLocalMediaFile();
   }
 
   /**
@@ -199,11 +207,10 @@ cr.define('media_router', function() {
    *   helpPageId - the numeric help center ID.
    */
   function onIssueActionClick(event) {
-    /** @type {{id: string, actionType: number, helpPageId: number}} */
+    /** @type {{id: number, actionType: number, helpPageId: number}} */
     var detail = event.detail;
-    media_router.browserApi.actOnIssue(detail.id,
-                                       detail.actionType,
-                                       detail.helpPageId);
+    media_router.browserApi.actOnIssue(
+        detail.id, detail.actionType, detail.helpPageId);
     container.issue = null;
   }
 
@@ -217,10 +224,10 @@ cr.define('media_router', function() {
    *   selectedCastModeValue - cast mode selected by the user.
    */
   function onCreateRoute(event) {
-    /** @type {{sinkId: string, selectedCastModeValue, number}} */
+    /** @type {{sinkId: string, selectedCastModeValue: number}} */
     var detail = event.detail;
-    media_router.browserApi.requestRoute(detail.sinkId,
-                                         detail.selectedCastModeValue);
+    media_router.browserApi.requestRoute(
+        detail.sinkId, detail.selectedCastModeValue);
   }
 
   /**
@@ -290,6 +297,7 @@ cr.define('media_router', function() {
    *   success - whether or not the route creation was successful.
    */
   function onReportRouteCreation(event) {
+    /** @type {{success: boolean}} */
     var detail = event.detail;
     media_router.browserApi.reportRouteCreation(detail.success);
   }

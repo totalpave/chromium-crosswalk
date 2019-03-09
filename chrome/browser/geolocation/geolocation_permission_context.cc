@@ -9,15 +9,17 @@
 #include "chrome/browser/permissions/permission_request_id.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/geolocation_provider.h"
-#include "content/public/browser/permission_type.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/service_manager_connection.h"
+#include "services/device/public/mojom/constants.mojom.h"
+#include "services/service_manager/public/cpp/connector.h"
+#include "url/origin.h"
 
 GeolocationPermissionContext::GeolocationPermissionContext(Profile* profile)
     : PermissionContextBase(profile,
-                            content::PermissionType::GEOLOCATION,
-                            CONTENT_SETTINGS_TYPE_GEOLOCATION),
+                            CONTENT_SETTINGS_TYPE_GEOLOCATION,
+                            blink::mojom::FeaturePolicyFeature::kGeolocation),
       extensions_context_(profile) {}
 
 GeolocationPermissionContext::~GeolocationPermissionContext() {
@@ -28,14 +30,15 @@ void GeolocationPermissionContext::DecidePermission(
     const PermissionRequestID& id,
     const GURL& requesting_origin,
     const GURL& embedding_origin,
+    bool user_gesture,
     const BrowserPermissionCallback& callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   bool permission_set;
   bool new_permission;
   if (extensions_context_.DecidePermission(
-      web_contents, id, id.request_id(), requesting_origin, callback,
-      &permission_set, &new_permission)) {
+      web_contents, id, id.request_id(), requesting_origin, user_gesture,
+      callback, &permission_set, &new_permission)) {
     if (permission_set) {
       ContentSetting content_setting =
           new_permission ? CONTENT_SETTING_ALLOW : CONTENT_SETTING_BLOCK;
@@ -53,17 +56,8 @@ void GeolocationPermissionContext::DecidePermission(
                                           id,
                                           requesting_origin,
                                           embedding_origin,
+                                          user_gesture,
                                           callback);
-}
-
-void GeolocationPermissionContext::CancelPermissionRequest(
-    content::WebContents* web_contents,
-    const PermissionRequestID& id) {
-
-    if (extensions_context_.CancelPermissionRequest(
-        web_contents, id.request_id()))
-      return;
-    PermissionContextBase::CancelPermissionRequest(web_contents, id);
 }
 
 void GeolocationPermissionContext::UpdateTabContext(
@@ -81,11 +75,26 @@ void GeolocationPermissionContext::UpdateTabContext(
         requesting_frame.GetOrigin(), allowed);
 
   if (allowed) {
-    content::GeolocationProvider::GetInstance()
-        ->UserDidOptIntoLocationServices();
+    GetGeolocationControl()->UserDidOptIntoLocationServices();
   }
 }
 
 bool GeolocationPermissionContext::IsRestrictedToSecureOrigins() const {
   return true;
+}
+
+device::mojom::GeolocationControl*
+GeolocationPermissionContext::GetGeolocationControl() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (geolocation_control_)
+    return geolocation_control_.get();
+
+  auto request = mojo::MakeRequest(&geolocation_control_);
+  if (!content::ServiceManagerConnection::GetForProcess())
+    return geolocation_control_.get();
+
+  service_manager::Connector* connector =
+      content::ServiceManagerConnection::GetForProcess()->GetConnector();
+  connector->BindInterface(device::mojom::kServiceName, std::move(request));
+  return geolocation_control_.get();
 }

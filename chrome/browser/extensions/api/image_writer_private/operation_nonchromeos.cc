@@ -4,9 +4,8 @@
 
 #include <stdint.h>
 
-#include "base/files/file_enumerator.h"
+#include "base/bind.h"
 #include "base/files/file_util.h"
-#include "base/threading/worker_pool.h"
 #include "chrome/browser/extensions/api/image_writer_private/error_messages.h"
 #include "chrome/browser/extensions/api/image_writer_private/operation.h"
 #include "chrome/browser/extensions/api/image_writer_private/operation_manager.h"
@@ -18,7 +17,7 @@ namespace image_writer {
 using content::BrowserThread;
 
 void Operation::Write(const base::Closure& continuation) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsRunningInCorrectSequence());
   if (IsCancelled()) {
     return;
   }
@@ -32,21 +31,14 @@ void Operation::Write(const base::Closure& continuation) {
     return;
   }
 
-  BrowserThread::PostTask(
-      BrowserThread::IO,
-      FROM_HERE,
-      base::Bind(
-          &ImageWriterUtilityClient::Write,
-          image_writer_client_,
-          base::Bind(&Operation::WriteImageProgress, this, file_size),
-          base::Bind(&Operation::CompleteAndContinue, this, continuation),
-          base::Bind(&Operation::Error, this),
-          image_path_,
-          device_path_));
+  image_writer_client_->Write(
+      base::Bind(&Operation::WriteImageProgress, this, file_size),
+      base::Bind(&Operation::CompleteAndContinue, this, continuation),
+      base::Bind(&Operation::Error, this), image_path_, device_path_);
 }
 
 void Operation::VerifyWrite(const base::Closure& continuation) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsRunningInCorrectSequence());
 
   if (IsCancelled()) {
     return;
@@ -61,17 +53,10 @@ void Operation::VerifyWrite(const base::Closure& continuation) {
     return;
   }
 
-  BrowserThread::PostTask(
-      BrowserThread::IO,
-      FROM_HERE,
-      base::Bind(
-          &ImageWriterUtilityClient::Verify,
-          image_writer_client_,
-          base::Bind(&Operation::WriteImageProgress, this, file_size),
-          base::Bind(&Operation::CompleteAndContinue, this, continuation),
-          base::Bind(&Operation::Error, this),
-          image_path_,
-          device_path_));
+  image_writer_client_->Verify(
+      base::Bind(&Operation::WriteImageProgress, this, file_size),
+      base::Bind(&Operation::CompleteAndContinue, this, continuation),
+      base::Bind(&Operation::Error, this), image_path_, device_path_);
 }
 
 }  // namespace image_writer

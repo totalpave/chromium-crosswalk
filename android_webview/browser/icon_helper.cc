@@ -66,7 +66,7 @@ void IconHelper::DidUpdateFaviconURL(
       continue;
 
     switch(i->icon_type) {
-      case content::FaviconURL::FAVICON:
+      case content::FaviconURL::IconType::kFavicon:
         if ((listener_ && !listener_->ShouldDownloadFavicon(i->icon_url)) ||
             WasUnableToDownloadFavicon(i->icon_url)) {
           break;
@@ -78,15 +78,15 @@ void IconHelper::DidUpdateFaviconURL(
             base::Bind(
                 &IconHelper::DownloadFaviconCallback, base::Unretained(this)));
         break;
-      case content::FaviconURL::TOUCH_ICON:
+      case content::FaviconURL::IconType::kTouchIcon:
         if (listener_)
           listener_->OnReceivedTouchIconUrl(i->icon_url.spec(), false);
         break;
-      case content::FaviconURL::TOUCH_PRECOMPOSED_ICON:
+      case content::FaviconURL::IconType::kTouchPrecomposedIcon:
         if (listener_)
           listener_->OnReceivedTouchIconUrl(i->icon_url.spec(), true);
         break;
-      case content::FaviconURL::INVALID_ICON:
+      case content::FaviconURL::IconType::kInvalid:
         // Silently ignore it. Only trigger a callback on valid icons.
         break;
       default:
@@ -98,8 +98,8 @@ void IconHelper::DidUpdateFaviconURL(
 
 void IconHelper::DidStartNavigationToPendingEntry(
     const GURL& url,
-    content::NavigationController::ReloadType reload_type) {
-  if (reload_type == content::NavigationController::RELOAD_BYPASSING_CACHE)
+    content::ReloadType reload_type) {
+  if (reload_type == content::ReloadType::BYPASSING_CACHE)
     ClearUnableToDownloadFavicons();
 }
 

@@ -4,172 +4,145 @@
 
 #include "components/arc/ime/arc_ime_bridge_impl.h"
 
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/arc/arc_bridge_service.h"
+#include "components/arc/arc_service_manager.h"
 #include "ui/base/ime/composition_text.h"
+#include "ui/base/ime/text_input_flags.h"
 #include "ui/base/ime/text_input_type.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace arc {
 namespace {
 
-constexpr int kMinVersionForOnKeyboardsBoundsChanging = 3;
-constexpr int kMinVersionForExtendSelectionAndDelete = 4;
-
-ui::TextInputType ConvertTextInputType(arc::mojom::TextInputType ipc_type) {
-  // The two enum types are similar, but intentionally made not identical.
-  // We cannot force them to be in sync. If we do, updates in ui::TextInputType
-  // must always be propagated to the arc::mojom::TextInputType mojo definition
-  // in
-  // ARC container side, which is in a different repository than Chromium.
-  // We don't want such dependency.
-  //
-  // That's why we need a lengthy switch statement instead of static_cast
-  // guarded by a static assert on the two enums to be in sync.
-  switch (ipc_type) {
-    case arc::mojom::TextInputType::NONE:
-      return ui::TEXT_INPUT_TYPE_NONE;
-    case arc::mojom::TextInputType::TEXT:
-      return ui::TEXT_INPUT_TYPE_TEXT;
-    case arc::mojom::TextInputType::PASSWORD:
-      return ui::TEXT_INPUT_TYPE_PASSWORD;
-    case arc::mojom::TextInputType::SEARCH:
-      return ui::TEXT_INPUT_TYPE_SEARCH;
-    case arc::mojom::TextInputType::EMAIL:
-      return ui::TEXT_INPUT_TYPE_EMAIL;
-    case arc::mojom::TextInputType::NUMBER:
-      return ui::TEXT_INPUT_TYPE_NUMBER;
-    case arc::mojom::TextInputType::TELEPHONE:
-      return ui::TEXT_INPUT_TYPE_TELEPHONE;
-    case arc::mojom::TextInputType::URL:
-      return ui::TEXT_INPUT_TYPE_URL;
-    case arc::mojom::TextInputType::DATE:
-      return ui::TEXT_INPUT_TYPE_DATE;
-    case arc::mojom::TextInputType::TIME:
-      return ui::TEXT_INPUT_TYPE_TIME;
-    case arc::mojom::TextInputType::DATETIME:
-      return ui::TEXT_INPUT_TYPE_DATE_TIME_LOCAL;
-    default:
-      return ui::TEXT_INPUT_TYPE_TEXT;
-  }
-}
-
-mojo::Array<arc::mojom::CompositionSegmentPtr> ConvertSegments(
+std::vector<mojom::CompositionSegmentPtr> ConvertSegments(
     const ui::CompositionText& composition) {
-  mojo::Array<arc::mojom::CompositionSegmentPtr> segments =
-      mojo::Array<arc::mojom::CompositionSegmentPtr>::New(0);
-  for (const ui::CompositionUnderline& underline : composition.underlines) {
-    arc::mojom::CompositionSegmentPtr segment =
-        arc::mojom::CompositionSegment::New();
-    segment->start_offset = underline.start_offset;
-    segment->end_offset = underline.end_offset;
+  std::vector<mojom::CompositionSegmentPtr> segments;
+  for (const ui::ImeTextSpan& ime_text_span : composition.ime_text_spans) {
+    mojom::CompositionSegmentPtr segment = mojom::CompositionSegment::New();
+    segment->start_offset = ime_text_span.start_offset;
+    segment->end_offset = ime_text_span.end_offset;
     segment->emphasized =
-        (underline.thick ||
-         (composition.selection.start() == underline.start_offset &&
-          composition.selection.end() == underline.end_offset));
+        (ime_text_span.thickness == ui::ImeTextSpan::Thickness::kThick ||
+         (composition.selection.start() == ime_text_span.start_offset &&
+          composition.selection.end() == ime_text_span.end_offset));
     segments.push_back(std::move(segment));
   }
   return segments;
+}
+
+// Converts mojom::TEXT_INPUT_FLAG_* to ui::TextInputFlags.
+int ConvertTextInputFlags(int32_t flags) {
+  if (flags & mojom::TEXT_INPUT_FLAG_AUTOCAPITALIZE_NONE)
+    return ui::TextInputFlags::TEXT_INPUT_FLAG_AUTOCAPITALIZE_NONE;
+  if (flags & mojom::TEXT_INPUT_FLAG_AUTOCAPITALIZE_CHARACTERS)
+    return ui::TextInputFlags::TEXT_INPUT_FLAG_AUTOCAPITALIZE_CHARACTERS;
+  if (flags & mojom::TEXT_INPUT_FLAG_AUTOCAPITALIZE_WORDS)
+    return ui::TextInputFlags::TEXT_INPUT_FLAG_AUTOCAPITALIZE_WORDS;
+  return ui::TextInputFlags::TEXT_INPUT_FLAG_NONE;
 }
 
 }  // namespace
 
 ArcImeBridgeImpl::ArcImeBridgeImpl(Delegate* delegate,
                                    ArcBridgeService* bridge_service)
-    : binding_(this), delegate_(delegate), bridge_service_(bridge_service) {
-  bridge_service_->ime()->AddObserver(this);
+    : delegate_(delegate), bridge_service_(bridge_service) {
+  bridge_service_->ime()->SetHost(this);
 }
 
 ArcImeBridgeImpl::~ArcImeBridgeImpl() {
-  bridge_service_->ime()->RemoveObserver(this);
-}
-
-void ArcImeBridgeImpl::OnInstanceReady() {
-  bridge_service_->ime()->instance()->Init(
-      binding_.CreateInterfacePtrAndBind());
+  bridge_service_->ime()->SetHost(nullptr);
 }
 
 void ArcImeBridgeImpl::SendSetCompositionText(
     const ui::CompositionText& composition) {
-  mojom::ImeInstance* ime_instance = bridge_service_->ime()->instance();
-  if (!ime_instance) {
-    LOG(ERROR) << "ArcImeInstance method called before being ready.";
+  auto* ime_instance =
+      ARC_GET_INSTANCE_FOR_METHOD(bridge_service_->ime(), SetCompositionText);
+  if (!ime_instance)
     return;
-  }
 
   ime_instance->SetCompositionText(base::UTF16ToUTF8(composition.text),
                                    ConvertSegments(composition));
 }
 
 void ArcImeBridgeImpl::SendConfirmCompositionText() {
-  mojom::ImeInstance* ime_instance = bridge_service_->ime()->instance();
-  if (!ime_instance) {
-    LOG(ERROR) << "ArcImeInstance method called before being ready.";
+  auto* ime_instance = ARC_GET_INSTANCE_FOR_METHOD(bridge_service_->ime(),
+                                                   ConfirmCompositionText);
+  if (!ime_instance)
     return;
-  }
 
   ime_instance->ConfirmCompositionText();
 }
 
 void ArcImeBridgeImpl::SendInsertText(const base::string16& text) {
-  mojom::ImeInstance* ime_instance = bridge_service_->ime()->instance();
-  if (!ime_instance) {
-    LOG(ERROR) << "ArcImeInstance method called before being ready.";
+  auto* ime_instance =
+      ARC_GET_INSTANCE_FOR_METHOD(bridge_service_->ime(), InsertText);
+  if (!ime_instance)
     return;
-  }
 
   ime_instance->InsertText(base::UTF16ToUTF8(text));
 }
 
-void ArcImeBridgeImpl::SendOnKeyboardBoundsChanging(
-    const gfx::Rect& new_bounds) {
-  mojom::ImeInstance* ime_instance = bridge_service_->ime()->instance();
-  if (!ime_instance) {
-    LOG(ERROR) << "ArcImeInstance method called before being ready.";
-    return;
-  }
-  if (bridge_service_->ime()->version() <
-      kMinVersionForOnKeyboardsBoundsChanging) {
-    LOG(ERROR) << "ArcImeInstance is too old for OnKeyboardsBoundsChanging.";
-    return;
-  }
-
-  ime_instance->OnKeyboardBoundsChanging(new_bounds);
-}
-
 void ArcImeBridgeImpl::SendExtendSelectionAndDelete(
     size_t before, size_t after) {
-  mojom::ImeInstance* ime_instance = bridge_service_->ime()->instance();
-  if (!ime_instance) {
-    LOG(ERROR) << "ArcImeInstance method called before being ready.";
+  auto* ime_instance = ARC_GET_INSTANCE_FOR_METHOD(bridge_service_->ime(),
+                                                   ExtendSelectionAndDelete);
+  if (!ime_instance)
     return;
-  }
-  if (bridge_service_->ime()->version() <
-      kMinVersionForExtendSelectionAndDelete) {
-    LOG(ERROR) << "ArcImeInstance is too old for ExtendSelectionAndDelete.";
-    return;
-  }
 
   ime_instance->ExtendSelectionAndDelete(before, after);
 }
 
-void ArcImeBridgeImpl::OnTextInputTypeChanged(arc::mojom::TextInputType type) {
-  delegate_->OnTextInputTypeChanged(ConvertTextInputType(type));
+void ArcImeBridgeImpl::SendOnKeyboardAppearanceChanging(
+    const gfx::Rect& new_bounds,
+    bool is_available) {
+  auto* ime_instance = ARC_GET_INSTANCE_FOR_METHOD(
+      bridge_service_->ime(), OnKeyboardAppearanceChanging);
+  if (!ime_instance)
+    return;
+
+  ime_instance->OnKeyboardAppearanceChanging(new_bounds, is_available);
 }
 
-void ArcImeBridgeImpl::OnCursorRectChanged(arc::mojom::CursorRectPtr rect) {
-  delegate_->OnCursorRectChanged(gfx::Rect(rect->left, rect->top,
-                                           rect->right - rect->left,
-                                           rect->bottom - rect->top));
+void ArcImeBridgeImpl::OnTextInputTypeChanged(
+    ui::TextInputType type,
+    bool is_personalized_learning_allowed,
+    int32_t flags) {
+  delegate_->OnTextInputTypeChanged(type, is_personalized_learning_allowed,
+                                    ConvertTextInputFlags(flags));
+}
+
+void ArcImeBridgeImpl::OnCursorRectChanged(const gfx::Rect& rect,
+                                           bool is_screen_coordinates) {
+  delegate_->OnCursorRectChanged(rect, is_screen_coordinates);
 }
 
 void ArcImeBridgeImpl::OnCancelComposition() {
   delegate_->OnCancelComposition();
 }
 
-void ArcImeBridgeImpl::ShowImeIfNeeded() {
-  delegate_->ShowImeIfNeeded();
+void ArcImeBridgeImpl::ShowVirtualKeyboardIfEnabled() {
+  delegate_->ShowVirtualKeyboardIfEnabled();
+}
+
+void ArcImeBridgeImpl::OnCursorRectChangedWithSurroundingText(
+    const gfx::Rect& rect,
+    const gfx::Range& text_range,
+    const std::string& text_in_range,
+    const gfx::Range& selection_range,
+    bool is_screen_coordinates) {
+  delegate_->OnCursorRectChangedWithSurroundingText(
+      rect, text_range, base::UTF8ToUTF16(text_in_range), selection_range,
+      is_screen_coordinates);
+}
+
+void ArcImeBridgeImpl::RequestHideIme() {
+  delegate_->RequestHideIme();
 }
 
 }  // namespace arc

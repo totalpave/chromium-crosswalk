@@ -6,20 +6,22 @@
 
 #include <utility>
 
+#include "ash/public/cpp/app_list/internal_app_id_constants.h"
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
-#include "base/macros.h"
 #include "base/path_service.h"
+#include "base/stl_util.h"
+#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/genius_app/app_id.h"
+#include "chrome/browser/chromeos/extensions/default_web_app_ids.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
+#include "chrome/browser/ui/app_list/page_break_constants.h"
 #include "chrome/common/extensions/extension_constants.h"
-#include "chromeos/chromeos_paths.h"
-#include "content/public/browser/browser_thread.h"
+#include "chromeos/constants/chromeos_paths.h"
 #include "extensions/common/constants.h"
 
 namespace chromeos {
@@ -39,28 +41,41 @@ const char kImportDefaultOrderAttr[] = "import_default_order";
 const char* const kDefaultAppOrder[] = {
     extension_misc::kChromeAppId,
     arc::kPlayStoreAppId,
-    extensions::kWebStoreAppId,
-    "nplnnjkbeijcggmpdcecpabgbjgeiedc",  // Play Games
-    genius_app::kGeniusAppId,
-    extension_misc::kYoutubeAppId,
+    extension_misc::kFilesManagerAppId,
     extension_misc::kGmailAppId,
-    "ejjicmeblgpmajnghnpcppodonldlgfn",  // Calendar
-    "kjebfhglflhjjjiceimfkgicifkhjlnm",  // Scratchpad
-    "lneaknkopdijkpnocmklfnjbeapigfbh",  // Google Maps
-    "apdfllckaahabafndbhieahigkjlhalf",  // Drive
     extension_misc::kGoogleDocAppId,
-    extension_misc::kGoogleSheetsAppId,
     extension_misc::kGoogleSlidesAppId,
-    "dlppkpafhbajpcmmoheippocdidnckmm",  // Google+
-    "hcglmfcclpfgljeaiahehebeoaiicbko",  // Google Photos
-    "hhaomjibdihmijegdhdafkllkbggdgoj",  // Files
-    extension_misc::kGooglePlayMusicAppId,
-    "mmimngoggfoobjdlefbcabngfnmieonb",  // Play Books
-    "gdijeikdkaembjbdobgfkoidjkpbmlkd",  // Play Movies & TV
-    "fobcpibfeplaikcclojfdhfdmbbeofai",  // Games
-    "joodangkbfjnajiiifokapkpmhfnpleo",  // Calculator
-    "hfhhnacclhffhdffklopdkcgdhifgngh",  // Camera
-    "gbchcmhmhahfdphkhkmpfmihenigjmpp",  // Chrome Remote Desktop
+    extension_misc::kGoogleSheetsAppId,
+    extension_misc::kDriveHostedAppId,
+    extension_misc::kGoogleKeepAppId,
+    extension_misc::kCalendarAppId,
+    extension_misc::kYoutubeAppId,
+    arc::kPlayMoviesAppId,                   // Play Movies & TV ARC app
+    extension_misc::kGooglePlayMoviesAppId,  // Play Movies & TV Chrome app
+    arc::kPlayMusicAppId,                    // Play Music ARC app
+    extension_misc::kGooglePlayMusicAppId,   // Play Music Chrome app
+    arc::kPlayGamesAppId,
+    arc::kPlayBooksAppId,                   // Play Books ARC app
+    extension_misc::kGooglePlayBooksAppId,  // Play Books Chrome app
+    app_list::kInternalAppIdCamera,
+    extension_misc::kCameraAppId,
+    extension_misc::kGooglePhotosAppId,
+    app_list::kDefaultPageBreak1,  // First default page break
+    extension_misc::kGoogleMapsAppId,
+    app_list::kInternalAppIdSettings,
+    app_list::kInternalAppIdDiscover,
+    extension_misc::kGeniusAppId,
+    extension_misc::kCalculatorAppId,
+    default_web_apps::kCanvasAppId,
+    extension_misc::kTextEditorAppId,
+    arc::kGoogleDuo,
+    default_web_apps::kYoutubeTVAppId,
+    arc::kLightRoom,
+    arc::kInfinitePainter,
+    default_web_apps::kShowtimeAppId,
+    extension_misc::kGooglePlusAppId,
+    extension_misc::kChromeRemoteDesktopAppId,
+    extensions::kWebStoreAppId,
 };
 
 // Reads external ordinal json file and returned the parsed value. Returns NULL
@@ -117,13 +132,13 @@ std::string GetLocaleSpecificStringImpl(
 
 // Gets built-in default app order.
 void GetDefault(std::vector<std::string>* app_ids) {
-  for (size_t i = 0; i < arraysize(kDefaultAppOrder); ++i)
+  for (size_t i = 0; i < base::size(kDefaultAppOrder); ++i)
     app_ids->push_back(std::string(kDefaultAppOrder[i]));
 }
 
 }  // namespace
 
-const size_t kDefaultAppOrderCount = arraysize(kDefaultAppOrder);
+const size_t kDefaultAppOrderCount = base::size(kDefaultAppOrder);
 
 ExternalLoader::ExternalLoader(bool async)
     : loaded_(base::WaitableEvent::ResetPolicy::MANUAL,
@@ -132,8 +147,9 @@ ExternalLoader::ExternalLoader(bool async)
   loader_instance = this;
 
   if (async) {
-    content::BrowserThread::PostBlockingPoolTask(FROM_HERE,
-        base::Bind(&ExternalLoader::Load, base::Unretained(this)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+        base::BindOnce(&ExternalLoader::Load, base::Unretained(this)));
   } else {
     Load();
   }
@@ -159,7 +175,8 @@ const std::string& ExternalLoader::GetOemAppsFolderName() {
 
 void ExternalLoader::Load() {
   base::FilePath ordinals_file;
-  CHECK(PathService::Get(chromeos::FILE_DEFAULT_APP_ORDER, &ordinals_file));
+  CHECK(
+      base::PathService::Get(chromeos::FILE_DEFAULT_APP_ORDER, &ordinals_file));
 
   std::unique_ptr<base::ListValue> ordinals_value =
       ReadExternalOrdinalFile(ordinals_file);

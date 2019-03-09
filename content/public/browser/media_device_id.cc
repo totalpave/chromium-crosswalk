@@ -3,8 +3,10 @@
 // found in the LICENSE file.
 #include "content/public/browser/media_device_id.h"
 
+#include "base/strings/string_util.h"
 #include "content/browser/browser_main_loop.h"
 #include "content/browser/renderer_host/media/media_stream_manager.h"
+#include "media/audio/audio_device_description.h"
 
 namespace content {
 
@@ -23,7 +25,7 @@ bool DoesMediaDeviceIDMatchHMAC(const std::string& salt,
       salt, security_origin, device_guid, raw_unique_id);
 }
 
-bool GetMediaDeviceIDForHMAC(MediaStreamType stream_type,
+bool GetMediaDeviceIDForHMAC(blink::MediaStreamType stream_type,
                              const std::string& salt,
                              const url::Origin& security_origin,
                              const std::string& source_id,
@@ -31,9 +33,23 @@ bool GetMediaDeviceIDForHMAC(MediaStreamType stream_type,
   content::MediaStreamManager* manager =
       content::BrowserMainLoop::GetInstance()->media_stream_manager();
 
-  return manager->TranslateSourceIdToDeviceId(
-      content::MEDIA_DEVICE_VIDEO_CAPTURE, salt, security_origin, source_id,
-      device_id);
+  return manager->TranslateSourceIdToDeviceId(blink::MEDIA_DEVICE_VIDEO_CAPTURE,
+                                              salt, security_origin, source_id,
+                                              device_id);
+}
+
+bool IsValidDeviceId(const std::string& device_id) {
+  constexpr int hash_size = 64;  // 32 bytes * 2 char/byte hex encoding
+  if (media::AudioDeviceDescription::IsDefaultDevice(device_id) ||
+      device_id == media::AudioDeviceDescription::kCommunicationsDeviceId)
+    return true;
+
+  if (device_id.length() != hash_size)
+    return false;
+
+  return std::all_of(device_id.cbegin(), device_id.cend(), [](const char& c) {
+    return base::IsAsciiLower(c) || base::IsAsciiDigit(c);
+  });
 }
 
 }  // namespace content

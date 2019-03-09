@@ -12,27 +12,19 @@
 #include "base/synchronization/lock.h"
 #include "content/public/browser/resource_context.h"
 
-namespace net {
-class URLRequestContextGetter;
-}
+class GURL;
 
 namespace android_webview {
 
 class AwResourceContext : public content::ResourceContext {
  public:
-  explicit AwResourceContext(net::URLRequestContextGetter* getter);
+  AwResourceContext();
   ~AwResourceContext() override;
 
   void SetExtraHeaders(const GURL& url, const std::string& headers);
   std::string GetExtraHeaders(const GURL& url);
 
-  // content::ResourceContext implementation.
-  net::HostResolver* GetHostResolver() override;
-  net::URLRequestContext* GetRequestContext() override;
-
  private:
-  net::URLRequestContextGetter* getter_;
-
   base::Lock extra_headers_lock_;
   std::map<std::string, std::string> extra_headers_;
 

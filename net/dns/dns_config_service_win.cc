@@ -23,8 +23,8 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
-#include "base/threading/non_thread_safe.h"
-#include "base/threading/thread_restrictions.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_checker.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/win/registry.h"
@@ -32,7 +32,7 @@
 #include "net/base/ip_address.h"
 #include "net/base/network_change_notifier.h"
 #include "net/dns/dns_hosts.h"
-#include "net/dns/dns_protocol.h"
+#include "net/dns/public/dns_protocol.h"
 #include "net/dns/serial_worker.h"
 #include "url/url_canon.h"
 
@@ -46,18 +46,18 @@ namespace {
 const int kRetryIntervalSeconds = 5;
 
 // Registry key paths.
-const wchar_t* const kTcpipPath =
-    L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters";
-const wchar_t* const kTcpip6Path =
-    L"SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters";
-const wchar_t* const kDnscachePath =
-    L"SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters";
-const wchar_t* const kPolicyPath =
-    L"SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient";
-const wchar_t* const kPrimaryDnsSuffixPath =
-    L"SOFTWARE\\Policies\\Microsoft\\System\\DNSClient";
-const wchar_t* const kNRPTPath =
-    L"SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient\\DnsPolicyConfig";
+const base::char16 kTcpipPath[] =
+    STRING16_LITERAL("SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters");
+const base::char16 kTcpip6Path[] =
+    STRING16_LITERAL("SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters");
+const base::char16 kDnscachePath[] = STRING16_LITERAL(
+    "SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters");
+const base::char16 kPolicyPath[] =
+    STRING16_LITERAL("SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient");
+const base::char16 kPrimaryDnsSuffixPath[] =
+    STRING16_LITERAL("SOFTWARE\\Policies\\Microsoft\\System\\DNSClient");
+const base::char16 kNRPTPath[] = STRING16_LITERAL(
+    "SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient\\DnsPolicyConfig");
 
 enum HostsParseWinResult {
   HOSTS_PARSE_WIN_OK = 0,
@@ -69,16 +69,18 @@ enum HostsParseWinResult {
 };
 
 // Convenience for reading values using RegKey.
-class RegistryReader : public base::NonThreadSafe {
+class RegistryReader {
  public:
-  explicit RegistryReader(const wchar_t* key) {
+  explicit RegistryReader(const base::char16* key) {
     // Ignoring the result. |key_.Valid()| will catch failures.
     key_.Open(HKEY_LOCAL_MACHINE, key, KEY_QUERY_VALUE);
   }
 
-  bool ReadString(const wchar_t* name,
+  ~RegistryReader() { DCHECK_CALLED_ON_VALID_THREAD(thread_checker_); }
+
+  bool ReadString(const base::char16* name,
                   DnsSystemSettings::RegString* out) const {
-    DCHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     out->set = false;
     if (!key_.Valid()) {
       // Assume that if the |key_| is invalid then the key is missing.
@@ -92,9 +94,9 @@ class RegistryReader : public base::NonThreadSafe {
     return (result == ERROR_FILE_NOT_FOUND);
   }
 
-  bool ReadDword(const wchar_t* name,
+  bool ReadDword(const base::char16* name,
                  DnsSystemSettings::RegDword* out) const {
-    DCHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     out->set = false;
     if (!key_.Valid()) {
       // Assume that if the |key_| is invalid then the key is missing.
@@ -111,13 +113,16 @@ class RegistryReader : public base::NonThreadSafe {
  private:
   base::win::RegKey key_;
 
+  THREAD_CHECKER(thread_checker_);
+
   DISALLOW_COPY_AND_ASSIGN(RegistryReader);
 };
 
 // Wrapper for GetAdaptersAddresses. Returns NULL if failed.
 std::unique_ptr<IP_ADAPTER_ADDRESSES, base::FreeDeleter> ReadIpHelper(
     ULONG flags) {
-  base::ThreadRestrictions::AssertIOAllowed();
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
 
   std::unique_ptr<IP_ADAPTER_ADDRESSES, base::FreeDeleter> out;
   ULONG len = 15000;  // As recommended by MSDN for GetAdaptersAddresses.
@@ -134,43 +139,18 @@ std::unique_ptr<IP_ADAPTER_ADDRESSES, base::FreeDeleter> ReadIpHelper(
   return out;
 }
 
-// Converts a base::string16 domain name to ASCII, possibly using punycode.
-// Returns true if the conversion succeeds and output is not empty. In case of
-// failure, |domain| might become dirty.
-bool ParseDomainASCII(base::StringPiece16 widestr, std::string* domain) {
-  DCHECK(domain);
-  if (widestr.empty())
-    return false;
-
-  // Check if already ASCII.
-  if (base::IsStringASCII(widestr)) {
-    domain->assign(widestr.begin(), widestr.end());
-    return true;
-  }
-
-  // Otherwise try to convert it from IDN to punycode.
-  const int kInitialBufferSize = 256;
-  url::RawCanonOutputT<base::char16, kInitialBufferSize> punycode;
-  if (!url::IDNToASCII(widestr.data(), widestr.length(), &punycode))
-    return false;
-
-  // |punycode_output| should now be ASCII; convert it to a std::string.
-  // (We could use UTF16ToASCII() instead, but that requires an extra string
-  // copy. Since ASCII is a subset of UTF8 the following is equivalent).
-  bool success = base::UTF16ToUTF8(punycode.data(), punycode.length(), domain);
-  DCHECK(success);
-  DCHECK(base::IsStringASCII(*domain));
-  return success && !domain->empty();
-}
-
 bool ReadDevolutionSetting(const RegistryReader& reader,
                            DnsSystemSettings::DevolutionSetting* setting) {
-  return reader.ReadDword(L"UseDomainNameDevolution", &setting->enabled) &&
-         reader.ReadDword(L"DomainNameDevolutionLevel", &setting->level);
+  return reader.ReadDword(STRING16_LITERAL("UseDomainNameDevolution"),
+                          &setting->enabled) &&
+         reader.ReadDword(STRING16_LITERAL("DomainNameDevolutionLevel"),
+                          &setting->level);
 }
 
 // Reads DnsSystemSettings from IpHelper and registry.
 ConfigParseWinResult ReadSystemSettings(DnsSystemSettings* settings) {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   settings->addresses = ReadIpHelper(GAA_FLAG_SKIP_ANYCAST |
                                      GAA_FLAG_SKIP_UNICAST |
                                      GAA_FLAG_SKIP_MULTICAST |
@@ -184,15 +164,17 @@ ConfigParseWinResult ReadSystemSettings(DnsSystemSettings* settings) {
   RegistryReader policy_reader(kPolicyPath);
   RegistryReader primary_dns_suffix_reader(kPrimaryDnsSuffixPath);
 
-  if (!policy_reader.ReadString(L"SearchList",
+  if (!policy_reader.ReadString(STRING16_LITERAL("SearchList"),
                                 &settings->policy_search_list)) {
     return CONFIG_PARSE_WIN_READ_POLICY_SEARCHLIST;
   }
 
-  if (!tcpip_reader.ReadString(L"SearchList", &settings->tcpip_search_list))
+  if (!tcpip_reader.ReadString(STRING16_LITERAL("SearchList"),
+                               &settings->tcpip_search_list))
     return CONFIG_PARSE_WIN_READ_TCPIP_SEARCHLIST;
 
-  if (!tcpip_reader.ReadString(L"Domain", &settings->tcpip_domain))
+  if (!tcpip_reader.ReadString(STRING16_LITERAL("Domain"),
+                               &settings->tcpip_domain))
     return CONFIG_PARSE_WIN_READ_DOMAIN;
 
   if (!ReadDevolutionSetting(policy_reader, &settings->policy_devolution))
@@ -204,13 +186,14 @@ ConfigParseWinResult ReadSystemSettings(DnsSystemSettings* settings) {
   if (!ReadDevolutionSetting(tcpip_reader, &settings->tcpip_devolution))
     return CONFIG_PARSE_WIN_READ_TCPIP_DEVOLUTION;
 
-  if (!policy_reader.ReadDword(L"AppendToMultiLabelName",
+  if (!policy_reader.ReadDword(STRING16_LITERAL("AppendToMultiLabelName"),
                                &settings->append_to_multi_label_name)) {
     return CONFIG_PARSE_WIN_READ_APPEND_MULTILABEL;
   }
 
-  if (!primary_dns_suffix_reader.ReadString(L"PrimaryDnsSuffix",
-                                            &settings->primary_dns_suffix)) {
+  if (!primary_dns_suffix_reader.ReadString(
+          STRING16_LITERAL("PrimaryDnsSuffix"),
+          &settings->primary_dns_suffix)) {
     return CONFIG_PARSE_WIN_READ_PRIMARY_SUFFIX;
   }
 
@@ -232,10 +215,11 @@ HostsParseWinResult AddLocalhostEntries(DnsHosts* hosts) {
   hosts->insert(std::make_pair(DnsHostsKey("localhost", ADDRESS_FAMILY_IPV6),
                                loopback_ipv6));
 
-  WCHAR buffer[MAX_PATH];
+  base::char16 buffer[MAX_PATH];
   DWORD size = MAX_PATH;
   std::string localname;
-  if (!GetComputerNameExW(ComputerNameDnsHostname, buffer, &size) ||
+  if (!GetComputerNameExW(ComputerNameDnsHostname,
+                          base::as_writable_wcstr(buffer), &size) ||
       !ParseDomainASCII(buffer, &localname)) {
     return HOSTS_PARSE_WIN_COMPUTER_NAME_FAILED;
   }
@@ -287,13 +271,15 @@ HostsParseWinResult AddLocalhostEntries(DnsHosts* hosts) {
 }
 
 // Watches a single registry key for changes.
-class RegistryWatcher : public base::NonThreadSafe {
+class RegistryWatcher {
  public:
   typedef base::Callback<void(bool succeeded)> CallbackType;
   RegistryWatcher() {}
 
-  bool Watch(const wchar_t* key, const CallbackType& callback) {
-    DCHECK(CalledOnValidThread());
+  ~RegistryWatcher() { DCHECK_CALLED_ON_VALID_THREAD(thread_checker_); }
+
+  bool Watch(const base::char16* key, const CallbackType& callback) {
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     DCHECK(!callback.is_null());
     DCHECK(callback_.is_null());
     callback_ = callback;
@@ -305,7 +291,7 @@ class RegistryWatcher : public base::NonThreadSafe {
   }
 
   void OnObjectSignaled() {
-    DCHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     DCHECK(!callback_.is_null());
     if (key_.StartWatching(base::Bind(&RegistryWatcher::OnObjectSignaled,
                                       base::Unretained(this)))) {
@@ -319,6 +305,8 @@ class RegistryWatcher : public base::NonThreadSafe {
  private:
   CallbackType callback_;
   base::win::RegKey key_;
+
+  THREAD_CHECKER(thread_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(RegistryWatcher);
 };
@@ -336,8 +324,8 @@ bool IsStatelessDiscoveryAddress(const IPAddress& address) {
 
 // Returns the path to the HOSTS file.
 base::FilePath GetHostsPath() {
-  TCHAR buffer[MAX_PATH];
-  UINT rc = GetSystemDirectory(buffer, MAX_PATH);
+  base::char16 buffer[MAX_PATH];
+  UINT rc = GetSystemDirectory(base::as_writable_wcstr(buffer), MAX_PATH);
   DCHECK(0 < rc && rc < MAX_PATH);
   return base::FilePath(buffer).Append(
       FILE_PATH_LITERAL("drivers\\etc\\hosts"));
@@ -457,6 +445,32 @@ DnsSystemSettings::DnsSystemSettings()
 DnsSystemSettings::~DnsSystemSettings() {
 }
 
+bool ParseDomainASCII(base::StringPiece16 widestr, std::string* domain) {
+  DCHECK(domain);
+  if (widestr.empty())
+    return false;
+
+  // Check if already ASCII.
+  if (base::IsStringASCII(widestr)) {
+    domain->assign(widestr.begin(), widestr.end());
+    return true;
+  }
+
+  // Otherwise try to convert it from IDN to punycode.
+  const int kInitialBufferSize = 256;
+  url::RawCanonOutputT<base::char16, kInitialBufferSize> punycode;
+  if (!url::IDNToASCII(widestr.data(), widestr.length(), &punycode))
+    return false;
+
+  // |punycode_output| should now be ASCII; convert it to a std::string.
+  // (We could use UTF16ToASCII() instead, but that requires an extra string
+  // copy. Since ASCII is a subset of UTF8 the following is equivalent).
+  bool success = base::UTF16ToUTF8(punycode.data(), punycode.length(), domain);
+  DCHECK(success);
+  DCHECK(base::IsStringASCII(*domain));
+  return success && !domain->empty();
+}
+
 bool ParseSearchList(const base::string16& value,
                      std::vector<std::string>* output) {
   DCHECK(output);
@@ -469,8 +483,9 @@ bool ParseSearchList(const base::string16& value,
   // Although nslookup and network connection property tab ignore such
   // fragments ("a,b,,c" becomes ["a", "b", "c"]), our reference is getaddrinfo
   // (which sees ["a", "b"]). WMI queries also return a matching search list.
-  for (const base::StringPiece16& t : base::SplitStringPiece(
-           value, L",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
+  for (const base::StringPiece16& t :
+       base::SplitStringPiece(value, STRING16_LITERAL(","),
+                              base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
     // Convert non-ASCII to punycode, although getaddrinfo does not properly
     // handle such suffixes.
     std::string parsed;
@@ -522,7 +537,7 @@ ConfigParseWinResult ConvertSettingsToDnsConfig(
     // obtained via DHCP (regkey: Tcpip\Parameters\Interfaces\{XXX}\DhcpDomain)
     // or specified by the user (regkey: Tcpip\Parameters\Domain).
     std::string dns_suffix;
-    if (ParseDomainASCII(adapter->DnsSuffix, &dns_suffix))
+    if (ParseDomainASCII(base::as_u16cstr(adapter->DnsSuffix), &dns_suffix))
       config->search.push_back(dns_suffix);
   }
 
@@ -626,7 +641,7 @@ class DnsConfigServiceWin::Watcher
   DISALLOW_COPY_AND_ASSIGN(Watcher);
 };
 
-// Reads config from registry and IpHelper. All work performed on WorkerPool.
+// Reads config from registry and IpHelper. All work performed in TaskScheduler.
 class DnsConfigServiceWin::ConfigReader : public SerialWorker {
  public:
   explicit ConfigReader(DnsConfigServiceWin* service)
@@ -637,7 +652,6 @@ class DnsConfigServiceWin::ConfigReader : public SerialWorker {
   ~ConfigReader() override {}
 
   void DoWork() override {
-    // Should be called on WorkerPool.
     base::TimeTicks start_time = base::TimeTicks::Now();
     DnsSystemSettings settings = {};
     ConfigParseWinResult result = ReadSystemSettings(&settings);
@@ -647,13 +661,12 @@ class DnsConfigServiceWin::ConfigReader : public SerialWorker {
                 result == CONFIG_PARSE_WIN_UNHANDLED_OPTIONS);
     UMA_HISTOGRAM_ENUMERATION("AsyncDNS.ConfigParseWin",
                               result, CONFIG_PARSE_WIN_MAX);
-    UMA_HISTOGRAM_BOOLEAN("AsyncDNS.ConfigParseResult", success_);
     UMA_HISTOGRAM_TIMES("AsyncDNS.ConfigParseDuration",
                         base::TimeTicks::Now() - start_time);
   }
 
   void OnWorkFinished() override {
-    DCHECK(loop()->BelongsToCurrentThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DCHECK(!IsCancelled());
     if (success_) {
       service_->OnConfigRead(dns_config_);
@@ -661,7 +674,7 @@ class DnsConfigServiceWin::ConfigReader : public SerialWorker {
       LOG(WARNING) << "Failed to read DnsConfig.";
       // Try again in a while in case DnsConfigWatcher missed the signal.
       base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-          FROM_HERE, base::Bind(&ConfigReader::WorkNow, this),
+          FROM_HERE, base::BindOnce(&ConfigReader::WorkNow, this),
           base::TimeDelta::FromSeconds(kRetryIntervalSeconds));
     }
   }
@@ -673,7 +686,7 @@ class DnsConfigServiceWin::ConfigReader : public SerialWorker {
 };
 
 // Reads hosts from HOSTS file and fills in localhost and local computer name if
-// necessary. All work performed on WorkerPool.
+// necessary. All work performed in TaskScheduler.
 class DnsConfigServiceWin::HostsReader : public SerialWorker {
  public:
   explicit HostsReader(DnsConfigServiceWin* service)
@@ -687,6 +700,8 @@ class DnsConfigServiceWin::HostsReader : public SerialWorker {
 
   void DoWork() override {
     base::TimeTicks start_time = base::TimeTicks::Now();
+    base::ScopedBlockingCall scoped_blocking_call(
+        FROM_HERE, base::BlockingType::MAY_BLOCK);
     HostsParseWinResult result = HOSTS_PARSE_WIN_UNREADABLE_HOSTS_FILE;
     if (ParseHostsFile(path_, &hosts_))
       result = AddLocalhostEntries(&hosts_);
@@ -699,7 +714,7 @@ class DnsConfigServiceWin::HostsReader : public SerialWorker {
   }
 
   void OnWorkFinished() override {
-    DCHECK(loop()->BelongsToCurrentThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (success_) {
       service_->OnHostsRead(hosts_);
     } else {

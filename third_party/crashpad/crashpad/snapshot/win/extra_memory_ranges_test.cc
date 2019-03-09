@@ -25,7 +25,8 @@
 #include "client/simple_address_range_bag.h"
 #include "gtest/gtest.h"
 #include "snapshot/win/process_snapshot_win.h"
-#include "test/paths.h"
+#include "test/gtest_disabled.h"
+#include "test/test_paths.h"
 #include "test/win/child_launcher.h"
 #include "util/file/file_io.h"
 #include "util/win/process_info.h"
@@ -43,22 +44,20 @@ enum TestType {
 };
 
 void TestExtraMemoryRanges(TestType type,
-                           const base::string16& directory_modification) {
+                           TestPaths::Architecture architecture) {
   // Spawn a child process, passing it the pipe name to connect to.
-  base::FilePath test_executable = Paths::Executable();
-  std::wstring child_test_executable =
-      test_executable.DirName()
-          .Append(directory_modification)
-          .Append(test_executable.BaseName().RemoveFinalExtension().value() +
-                  L"_extra_memory_ranges.exe")
-          .value();
+  base::FilePath child_test_executable =
+      TestPaths::BuildArtifact(L"snapshot",
+                               L"extra_memory_ranges",
+                               TestPaths::FileType::kExecutable,
+                               architecture);
   ChildLauncher child(child_test_executable, L"");
-  child.Start();
+  ASSERT_NO_FATAL_FAILURE(child.Start());
 
   // Wait for the child process to indicate that it's done setting up its
   // annotations via the CrashpadInfo interface.
   char c;
-  CheckedReadFile(child.stdout_read_handle(), &c, sizeof(c));
+  CheckedReadFileExactly(child.stdout_read_handle(), &c, sizeof(c));
 
   ProcessSnapshotWin snapshot;
   ASSERT_TRUE(snapshot.Initialize(
@@ -71,15 +70,15 @@ void TestExtraMemoryRanges(TestType type,
       all_ranges.insert(range);
   }
 
-  EXPECT_EQ(5u, all_ranges.size());
-  EXPECT_NE(all_ranges.end(), all_ranges.find(CheckedRange<uint64_t>(0, 1)));
-  EXPECT_NE(all_ranges.end(), all_ranges.find(CheckedRange<uint64_t>(1, 0)));
-  EXPECT_NE(all_ranges.end(),
-            all_ranges.find(CheckedRange<uint64_t>(1234, 5678)));
-  EXPECT_NE(all_ranges.end(),
-            all_ranges.find(CheckedRange<uint64_t>(0x1000000000ULL, 0x1000)));
-  EXPECT_NE(all_ranges.end(),
-            all_ranges.find(CheckedRange<uint64_t>(0x2000, 0x2000000000ULL)));
+  EXPECT_EQ(all_ranges.size(), 5u);
+  EXPECT_NE(all_ranges.find(CheckedRange<uint64_t>(0, 1)), all_ranges.end());
+  EXPECT_NE(all_ranges.find(CheckedRange<uint64_t>(1, 0)), all_ranges.end());
+  EXPECT_NE(all_ranges.find(CheckedRange<uint64_t>(1234, 5678)),
+            all_ranges.end());
+  EXPECT_NE(all_ranges.find(CheckedRange<uint64_t>(0x1000000000ULL, 0x1000)),
+            all_ranges.end());
+  EXPECT_NE(all_ranges.find(CheckedRange<uint64_t>(0x2000, 0x2000000000ULL)),
+            all_ranges.end());
 
   // Tell the child process to continue.
   DWORD expected_exit_code;
@@ -97,34 +96,32 @@ void TestExtraMemoryRanges(TestType type,
   }
   CheckedWriteFile(child.stdin_write_handle(), &c, sizeof(c));
 
-  EXPECT_EQ(expected_exit_code, child.WaitForExit());
+  EXPECT_EQ(child.WaitForExit(), expected_exit_code);
 }
 
 TEST(ExtraMemoryRanges, DontCrash) {
-  TestExtraMemoryRanges(kDontCrash, FILE_PATH_LITERAL("."));
+  TestExtraMemoryRanges(kDontCrash, TestPaths::Architecture::kDefault);
 }
 
 TEST(ExtraMemoryRanges, CrashDebugBreak) {
-  TestExtraMemoryRanges(kCrashDebugBreak, FILE_PATH_LITERAL("."));
+  TestExtraMemoryRanges(kCrashDebugBreak, TestPaths::Architecture::kDefault);
 }
 
 #if defined(ARCH_CPU_64_BITS)
 TEST(ExtraMemoryRanges, DontCrashWOW64) {
-#ifndef NDEBUG
-  TestExtraMemoryRanges(kDontCrash, FILE_PATH_LITERAL("..\\..\\out\\Debug"));
-#else
-  TestExtraMemoryRanges(kDontCrash, FILE_PATH_LITERAL("..\\..\\out\\Release"));
-#endif
+  if (!TestPaths::Has32BitBuildArtifacts()) {
+    DISABLED_TEST();
+  }
+
+  TestExtraMemoryRanges(kDontCrash, TestPaths::Architecture::k32Bit);
 }
 
 TEST(ExtraMemoryRanges, CrashDebugBreakWOW64) {
-#ifndef NDEBUG
-  TestExtraMemoryRanges(kCrashDebugBreak,
-                        FILE_PATH_LITERAL("..\\..\\out\\Debug"));
-#else
-  TestExtraMemoryRanges(kCrashDebugBreak,
-                        FILE_PATH_LITERAL("..\\..\\out\\Release"));
-#endif
+  if (!TestPaths::Has32BitBuildArtifacts()) {
+    DISABLED_TEST();
+  }
+
+  TestExtraMemoryRanges(kCrashDebugBreak, TestPaths::Architecture::k32Bit);
 }
 #endif  // ARCH_CPU_64_BITS
 

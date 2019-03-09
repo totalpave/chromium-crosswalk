@@ -6,16 +6,17 @@
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/chromeos/login/screens/network_error.h"
-#include "chrome/browser/chromeos/net/proxy_config_handler.h"
+#include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
 #include "chromeos/network/network_state.h"
 #include "chromeos/network/network_state_handler.h"
+#include "chromeos/network/proxy/proxy_config_handler.h"
+#include "chromeos/network/proxy/ui_proxy_config_service.h"
 #include "components/proxy_config/proxy_config_dictionary.h"
 #include "components/proxy_config/proxy_prefs.h"
-#include "net/proxy/proxy_config.h"
+#include "net/proxy_resolution/proxy_config.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
 namespace chromeos {
@@ -27,20 +28,6 @@ const char kNetworkStateOnline[] = "online";
 const char kNetworkStateCaptivePortal[] = "behind captive portal";
 const char kNetworkStateConnecting[] = "connecting";
 const char kNetworkStateProxyAuthRequired[] = "proxy auth required";
-
-bool HasDefaultNetworkProxyConfigured() {
-  const NetworkState* network =
-      NetworkHandler::Get()->network_state_handler()->DefaultNetwork();
-  if (!network)
-    return false;
-  onc::ONCSource onc_source = onc::ONC_SOURCE_NONE;
-  std::unique_ptr<ProxyConfigDictionary> proxy_dict =
-      proxy_config::GetProxyConfigForNetwork(
-          NULL, g_browser_process->local_state(), *network, &onc_source);
-  ProxyPrefs::ProxyMode mode;
-  return (proxy_dict && proxy_dict->GetMode(&mode) &&
-          mode == ProxyPrefs::MODE_FIXED_SERVERS);
-}
 
 NetworkStateInformer::State GetStateForDefaultNetwork() {
   const NetworkState* network =
@@ -61,13 +48,17 @@ NetworkStateInformer::State GetStateForDefaultNetwork() {
     // NetworkPortalDetector's state of current network is unknown.
     if (status == NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE ||
         (status == NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_UNKNOWN &&
-         !HasDefaultNetworkProxyConfigured() &&
+         !NetworkHandler::Get()
+              ->ui_proxy_config_service()
+              ->HasDefaultNetworkProxyConfigured() &&
          network->connection_state() == shill::kStateOnline)) {
       return NetworkStateInformer::ONLINE;
     }
     if (status ==
             NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PROXY_AUTH_REQUIRED &&
-        HasDefaultNetworkProxyConfigured()) {
+        NetworkHandler::Get()
+            ->ui_proxy_config_service()
+            ->HasDefaultNetworkProxyConfigured()) {
       return NetworkStateInformer::PROXY_AUTH_REQUIRED;
     }
     if (status == NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_PORTAL ||
@@ -82,6 +73,17 @@ NetworkStateInformer::State GetStateForDefaultNetwork() {
     if (network->is_captive_portal())
       return NetworkStateInformer::CAPTIVE_PORTAL;
   }
+
+  // If there is no connection to the internet report it as online for the
+  // Active Directory devices. These devices does not have to be online to reach
+  // the server.
+  // TODO(rsorokin): Fix reporting network connectivity for Active Directory
+  // devices. (see crbug.com/685691)
+  policy::BrowserPolicyConnectorChromeOS* connector =
+      g_browser_process->platform_part()->browser_policy_connector_chromeos();
+  if (connector->IsActiveDirectoryManaged())
+    return NetworkStateInformer::ONLINE;
+
   return NetworkStateInformer::OFFLINE;
 }
 
@@ -107,9 +109,6 @@ void NetworkStateInformer::Init() {
 
   network_portal_detector::GetInstance()->AddAndFireObserver(this);
 
-  registrar_.Add(this,
-                 chrome::NOTIFICATION_LOGIN_PROXY_CHANGED,
-                 content::NotificationService::AllSources());
   registrar_.Add(this,
                  chrome::NOTIFICATION_SESSION_STARTED,
                  content::NotificationService::AllSources());
@@ -141,8 +140,6 @@ void NetworkStateInformer::Observe(
     const content::NotificationDetails& details) {
   if (type == chrome::NOTIFICATION_SESSION_STARTED)
     registrar_.RemoveAll();
-  else if (type == chrome::NOTIFICATION_LOGIN_PROXY_CHANGED)
-    SendStateToObservers(NetworkError::ERROR_REASON_PROXY_CONFIG_CHANGED);
   else
     NOTREACHED() << "Unknown notification: " << type;
 }
@@ -175,38 +172,52 @@ bool NetworkStateInformer::UpdateState() {
       NetworkHandler::Get()->network_state_handler()->DefaultNetwork();
   State new_state = GetStateForDefaultNetwork();
   std::string new_network_path;
-  std::string new_network_type;
-  if (default_network) {
+  if (default_network)
     new_network_path = default_network->path();
-    new_network_type = default_network->type();
-  }
 
-  bool updated = (new_state != state_) ||
-      (new_network_path != network_path_) ||
-      (new_network_type != network_type_);
+  if (new_state == state_ && new_network_path == network_path_)
+    return false;
+
   state_ = new_state;
   network_path_ = new_network_path;
-  network_type_ = new_network_type;
+  proxy_config_.reset();
 
-  if (updated && state_ == ONLINE) {
-    FOR_EACH_OBSERVER(NetworkStateInformerObserver, observers_,
-                      OnNetworkReady());
+  if (state_ == ONLINE) {
+    for (NetworkStateInformerObserver& observer : observers_)
+      observer.OnNetworkReady();
   }
 
-  return updated;
+  return true;
+}
+
+bool NetworkStateInformer::UpdateProxyConfig() {
+  const NetworkState* default_network =
+      NetworkHandler::Get()->network_state_handler()->DefaultNetwork();
+  if (!default_network || !default_network->proxy_config())
+    return false;
+
+  if (proxy_config_ && *proxy_config_ == *default_network->proxy_config())
+    return false;
+  proxy_config_ =
+      std::make_unique<base::Value>(default_network->proxy_config()->Clone());
+  return true;
 }
 
 void NetworkStateInformer::UpdateStateAndNotify() {
-  if (UpdateState())
+  bool state_changed = UpdateState();
+  bool proxy_config_changed = UpdateProxyConfig();
+  if (state_changed)
     SendStateToObservers(NetworkError::ERROR_REASON_NETWORK_STATE_CHANGED);
+  else if (proxy_config_changed)
+    SendStateToObservers(NetworkError::ERROR_REASON_PROXY_CONFIG_CHANGED);
   else
     SendStateToObservers(NetworkError::ERROR_REASON_UPDATE);
 }
 
 void NetworkStateInformer::SendStateToObservers(
     NetworkError::ErrorReason reason) {
-  FOR_EACH_OBSERVER(NetworkStateInformerObserver, observers_,
-      UpdateState(reason));
+  for (NetworkStateInformerObserver& observer : observers_)
+    observer.UpdateState(reason);
 }
 
 }  // namespace chromeos

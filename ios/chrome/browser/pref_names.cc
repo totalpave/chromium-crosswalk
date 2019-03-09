@@ -13,6 +13,9 @@ const char kAcceptLanguages[] = "intl.accept_languages";
 // The application locale.
 const char kApplicationLocale[] = "intl.app_locale";
 
+// Boolean that is true when Suggest support is enabled.
+const char kArticlesForYouEnabled[] = "suggestions.articles_enabled";
+
 // A map of browser state data directory to cached information. This cache can
 // be used to display information about browser states without actually having
 // to load them.
@@ -57,16 +60,32 @@ const char kEnableDoNotTrack[] = "enable_do_not_track";
 // Prefs for persisting HttpServerProperties.
 const char kHttpServerProperties[] = "net.http_server_properties";
 
+// Caches the folder id of user's position in the bookmark hierarchy navigator.
+const char kIosBookmarkCachedFolderId[] = "ios.bookmark.cached_folder_id";
+
+// Caches the scroll position of Bookmarks.
+const char kIosBookmarkCachedTopMostRow[] = "ios.bookmark.cached_top_most_row";
+
 // Preference that keep information about where to create a new bookmark.
 const char kIosBookmarkFolderDefault[] = "ios.bookmark.default_folder";
 
 // Preference that hold a boolean indicating if the user has already dismissed
-// the bookmark promo dialog.
+// the sign-in promo in bookmark view.
 const char kIosBookmarkPromoAlreadySeen[] = "ios.bookmark.promo_already_seen";
 
-// Whether Chrome should attempt to hand off the current URL to other Apple
-// devices that share an iCloud account.
-const char kIosHandoffToOtherDevices[] = "ios.handoff_to_other_devices";
+// Integer to represent the number of time the sign-in promo has been displayed
+// in the bookmark view.
+const char kIosBookmarkSigninPromoDisplayedCount[] =
+    "ios.bookmark.signin_promo_displayed_count";
+
+// Preference that hold a boolean indicating if the user has already dismissed
+// the sign-in promo in settings view.
+const char kIosSettingsPromoAlreadySeen[] = "ios.settings.promo_already_seen";
+
+// Integer to represent the number of time the sign-in promo has been displayed
+// in the settings view.
+const char kIosSettingsSigninPromoDisplayedCount[] =
+    "ios.settings.signin_promo_displayed_count";
 
 // True if the previous session exited cleanly.
 // This can be different from kStabilityExitedCleanly, because the last run of
@@ -75,10 +94,6 @@ const char kIosHandoffToOtherDevices[] = "ios.handoff_to_other_devices";
 // session.
 const char kLastSessionExitedCleanly[] =
     "ios.user_experience_metrics.last_session_exited_cleanly";
-
-// True if the previous session was selected into the WKWebView control group.
-const char kLastSessionUsedWKWebViewControlGroup[] =
-    "ios.wkwebview_trial.was_control";
 
 // Preference that hold a boolean indicating whether metrics reporting should
 // be limited to wifi (when enabled).
@@ -110,23 +125,12 @@ const char kNtpShownBookmarksFolder[] = "ntp.shown_bookmarks_folder";
 // True if the memory debugging tools should be visible.
 const char kShowMemoryDebuggingTools[] = "ios.memory.show_debugging_tools";
 
-// User preferred speech input language for voice search.
-const char kVoiceSearchLocale[] = "ios.speechinput.voicesearch_locale";
-
-// Boolean which indicates if TTS after voice search is enabled.
-const char kVoiceSearchTTS[] = "ios.speechinput.voicesearch_tts";
-
 // List which contains the last known list of accounts.
 const char kSigninLastAccounts[] = "ios.signin.last_accounts";
 
 // Boolean which indicates if the pref which contains the last known list of
 // accounts was migrated to use account ids instead of emails.
 const char kSigninLastAccountsMigrated[] = "ios.signin.last_accounts_migrated";
-
-// String which contains the user id of the user signed in with shared
-// authentication.
-const char kSigninSharedAuthenticationUserId[] =
-    "ios.signin.shared_authentication_user_id";
 
 // Boolean which indicates if user should be prompted to sign in again
 // when a new tab is created.
@@ -143,15 +147,5 @@ const char kOmniboxGeolocationAuthorizationState[] =
 // authorization alert.
 const char kOmniboxGeolocationLastAuthorizationAlertVersion[] =
     "ios.omnibox.geolocation_last_authorization_alert_version";
-
-// Integer which contains the timestamp at which the "Rate This App" dialog was
-// last shown.
-const char kRateThisAppDialogLastShownTime[] =
-    "ios.ratethisapp.dialog_last_shown_time";
-
-// TODO(vasilii): drop the pref in M54.
-// True if the safe browsing cookie store was deleted on the disk.
-extern const char kDroppedSafeBrowsingCookies[] =
-    "safebrowsing.cookie_store_deleted";
 
 }  // namespace prefs

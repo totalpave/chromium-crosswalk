@@ -3,17 +3,14 @@
 // found in the LICENSE file.
 
 #include "base/json/json_file_value_serializer.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "chrome/common/chrome_paths.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/browser/info_map.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-using content::BrowserThread;
 
 namespace extensions {
 namespace {
@@ -21,7 +18,7 @@ namespace {
 scoped_refptr<Extension> LoadManifest(const std::string& dir,
                                       const std::string& test_file) {
   base::FilePath path;
-  PathService::Get(chrome::DIR_TEST_DATA, &path);
+  base::PathService::Get(chrome::DIR_TEST_DATA, &path);
   path = path.AppendASCII("extensions").AppendASCII(dir).AppendASCII(test_file);
 
   JSONFileValueDeserializer deserializer(path);
@@ -47,14 +44,10 @@ scoped_refptr<Extension> LoadManifest(const std::string& dir,
 // (specifically, notifications) that do not exist in src/extensions.
 class ChromeInfoMapTest : public testing::Test {
  public:
-  ChromeInfoMapTest()
-      : ui_thread_(BrowserThread::UI, &message_loop_),
-        io_thread_(BrowserThread::IO, &message_loop_) {}
+  ChromeInfoMapTest() = default;
 
  private:
-  base::MessageLoop message_loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread io_thread_;
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
 };
 
 // Tests API access permissions given both extension and app URLs.

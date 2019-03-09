@@ -11,7 +11,7 @@
 #include "base/timer/elapsed_timer.h"
 #include "chrome/browser/password_manager/password_manager_infobar_delegate_android.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
-#include "components/password_manager/core/browser/password_form_manager.h"
+#include "components/password_manager/core/browser/password_form_manager_for_ui.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "ui/gfx/range/range.h"
 
@@ -32,11 +32,9 @@ class SavePasswordInfoBarDelegate : public PasswordManagerInfoBarDelegate {
   // for |web_contents|.
   static void Create(
       content::WebContents* web_contents,
-      std::unique_ptr<password_manager::PasswordFormManager> form_to_save);
+      std::unique_ptr<password_manager::PasswordFormManagerForUI> form_to_save);
 
   ~SavePasswordInfoBarDelegate() override;
-
-  base::string16 GetFirstRunExperienceMessage();
 
   // ConfirmInfoBarDelegate:
   infobars::InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
@@ -49,14 +47,13 @@ class SavePasswordInfoBarDelegate : public PasswordManagerInfoBarDelegate {
   // Makes a ctor available in tests.
   SavePasswordInfoBarDelegate(
       content::WebContents* web_contents,
-      std::unique_ptr<password_manager::PasswordFormManager> form_to_save,
-      bool is_smartlock_branding_enabled,
-      bool should_show_first_run_experience);
+      std::unique_ptr<password_manager::PasswordFormManagerForUI> form_to_save,
+      bool is_smartlock_branding_enabled);
 
  private:
   // The PasswordFormManager managing the form we're asking the user about,
-  // and should update as per her decision.
-  std::unique_ptr<password_manager::PasswordFormManager> form_to_save_;
+  // and should update as per their decision.
+  std::unique_ptr<password_manager::PasswordFormManagerForUI> form_to_save_;
 
   // Used to track the results we get from the info bar.
   password_manager::metrics_util::UIDismissalReason infobar_response_;
@@ -64,10 +61,6 @@ class SavePasswordInfoBarDelegate : public PasswordManagerInfoBarDelegate {
   // Measures the "Save password?" prompt lifetime. Used to report an UMA
   // signal.
   base::ElapsedTimer timer_;
-
-  bool should_show_first_run_experience_;
-
-  content::WebContents* web_contents_;
 
   DISALLOW_COPY_AND_ASSIGN(SavePasswordInfoBarDelegate);
 };

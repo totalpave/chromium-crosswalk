@@ -108,10 +108,10 @@ function ToolbarController(toolbar,
       'relayout', this.onNavigationListRelayout_.bind(this));
 
   // Watch visibility of toolbar buttons to update the width of location line.
-  var observer = new MutationObserver(this.onToolbarButtonsMutated_.bind(this));
-  var toolbarButtons =
+  const observer = new MutationObserver(this.onToolbarButtonsMutated_.bind(this));
+  const toolbarButtons =
       this.toolbar_.querySelectorAll('.icon-button, .combobutton');
-  for (var i = 0; i < toolbarButtons.length; i++) {
+  for (let i = 0; i < toolbarButtons.length; i++) {
     observer.observe(toolbarButtons[i],
                      /** @type MutationObserverInit */({attributes: true}));
   }
@@ -122,30 +122,37 @@ function ToolbarController(toolbar,
  * @private
  */
 ToolbarController.prototype.onSelectionChanged_ = function() {
-  var selection = this.selectionHandler_.selection;
+  const selection = this.selectionHandler_.selection;
 
   // Update the label "x files selected." on the header.
-  var text;
+  let text;
   if (selection.totalCount === 0) {
     text = '';
   } else if (selection.totalCount === 1) {
-    if (selection.directoryCount == 0)
+    if (selection.directoryCount == 0) {
       text = str('ONE_FILE_SELECTED');
-    else if (selection.fileCount == 0)
+    } else if (selection.fileCount == 0) {
       text = str('ONE_DIRECTORY_SELECTED');
+    }
   } else {
-    if (selection.directoryCount == 0)
+    if (selection.directoryCount == 0) {
       text = strf('MANY_FILES_SELECTED', selection.fileCount);
-    else if (selection.fileCount == 0)
+    } else if (selection.fileCount == 0) {
       text = strf('MANY_DIRECTORIES_SELECTED', selection.directoryCount);
-    else
+    } else {
       text = strf('MANY_ENTRIES_SELECTED', selection.totalCount);
+    }
   }
   this.filesSelectedLabel_.textContent = text;
 
   // Update visibility of the delete button.
   this.deleteButton_.hidden =
-      selection.totalCount === 0 || this.directoryModel_.isReadOnly();
+      (selection.totalCount === 0 || this.directoryModel_.isReadOnly() ||
+       selection.hasReadOnlyEntry() ||
+       (util.isMyFilesVolumeEnabled() &&
+        this.directoryModel_.getCurrentRootType() ==
+            VolumeManagerCommon.RootType.DOWNLOADS &&
+        selection.entries.some(entry => entry.fullPath === '/Downloads')));
 
   // Set .selecting class to containing element to change the view accordingly.
   // TODO(fukino): This code changes the state of body, not the toolbar, to
@@ -153,13 +160,18 @@ ToolbarController.prototype.onSelectionChanged_ = function() {
   // controller which controls whole app window. Or, both toolbar and FileGrid
   // should listen to the FileSelectionHandler.
   if (this.directoryModel_.getFileListSelection().multiple) {
-    this.filesSelectedLabel_.ownerDocument.body.classList.toggle(
-        'selecting', selection.totalCount > 0);
-    this.filesSelectedLabel_.ownerDocument.body.classList.toggle(
-        'check-select',
-        this.directoryModel_.getFileListSelection().getCheckSelectMode());
+    const bodyClassList = this.filesSelectedLabel_.ownerDocument.body.classList;
+    bodyClassList.toggle('selecting', selection.totalCount > 0);
+    if (bodyClassList.contains('check-select') !=
+        /** @type {!FileListSelectionModel} */
+        (this.directoryModel_.getFileListSelection()).getCheckSelectMode()) {
+      bodyClassList.toggle('check-select');
+      // Some custom styles depend on |check-select| class. We need to
+      // re-evaluate the custom styles when the class value is changed.
+      Polymer.updateStyles();
+    }
   }
-}
+};
 
 /**
  * Handles click event for cancel button to change the selection state.
@@ -167,7 +179,7 @@ ToolbarController.prototype.onSelectionChanged_ = function() {
  */
 ToolbarController.prototype.onCancelSelectionButtonClicked_ = function() {
   this.directoryModel_.selectEntries([]);
-}
+};
 
 /**
  * Handles click event for delete button to execute the delete command.
@@ -177,7 +189,7 @@ ToolbarController.prototype.onDeleteButtonClicked_ = function() {
   this.deleteButton_.blur();
   this.deleteCommand_.canExecuteChange(this.listContainer_.currentList);
   this.deleteCommand_.execute(this.listContainer_.currentList);
-}
+};
 
 /**
  * Handles the relayout event occured on the navigation list.
@@ -185,10 +197,10 @@ ToolbarController.prototype.onDeleteButtonClicked_ = function() {
  */
 ToolbarController.prototype.onNavigationListRelayout_ = function() {
   // Make the width of spacer same as the width of navigation list.
-  var navWidth = parseFloat(
+  const navWidth = parseFloat(
       window.getComputedStyle(this.navigationList_).width);
   this.cancelSelectionButtonWrapper_.style.width = navWidth + 'px';
-}
+};
 
 /**
  * Handles the mutation event occurd on attibutes of toolbar buttons.
@@ -197,4 +209,4 @@ ToolbarController.prototype.onNavigationListRelayout_ = function() {
  */
 ToolbarController.prototype.onToolbarButtonsMutated_ = function() {
   this.locationLine_.truncate();
-}
+};

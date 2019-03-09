@@ -9,11 +9,9 @@
 #include <algorithm>
 
 #include "base/lazy_instance.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/time/time.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-namespace chrome {
 
 class InternalAuthTest : public ::testing::Test {
  public:
@@ -28,7 +26,7 @@ class InternalAuthTest : public ::testing::Test {
 
   void TearDown() override {}
 
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   std::string long_string_;
 };
 
@@ -184,5 +182,3 @@ TEST_F(InternalAuthTest, ChangeKey) {
   // Passport should not survive series of key changes.
   ASSERT_FALSE(InternalAuthVerification::VerifyPassport(token, "zapata", map));
 }
-
-}  // namespace chrome

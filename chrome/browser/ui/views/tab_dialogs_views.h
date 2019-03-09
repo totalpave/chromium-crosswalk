@@ -17,19 +17,19 @@ class TabDialogsViews : public TabDialogs {
   // TabDialogs:
   gfx::NativeView GetDialogParentView() const override;
   void ShowCollectedCookies() override;
-  void ShowHungRendererDialog() override;
-  void HideHungRendererDialog() override;
+  void ShowHungRendererDialog(
+      content::RenderWidgetHost* render_widget_host,
+      base::RepeatingClosure hang_monitor_restarter) override;
+  void HideHungRendererDialog(
+      content::RenderWidgetHost* render_widget_host) override;
+  bool IsShowingHungRendererDialog() override;
   void ShowProfileSigninConfirmation(
       Browser* browser,
       Profile* profile,
       const std::string& username,
-      ui::ProfileSigninConfirmationDelegate* delegate) override;
+      std::unique_ptr<ui::ProfileSigninConfirmationDelegate> delegate) override;
   void ShowManagePasswordsBubble(bool user_action) override;
   void HideManagePasswordsBubble() override;
-  base::WeakPtr<ValidationMessageBubble> ShowValidationMessage(
-      const gfx::Rect& anchor_in_root_view,
-      const base::string16& main_text,
-      const base::string16& sub_text) override;
 
  private:
   content::WebContents* web_contents_;  // Weak. Owns this.

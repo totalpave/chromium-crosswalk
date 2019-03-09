@@ -21,11 +21,11 @@ namespace ui {
 
 class DrmDisplayHostManager;
 class DrmCursor;
-class DrmGpuWindow;
 class DrmOverlayManager;
 class DrmWindowHostManager;
 class EventFactoryEvdev;
 class GpuThreadAdapter;
+class PlatformWindowDelegate;
 
 // Implementation of the platform window. This object and its handle |widget_|
 // uniquely identify a window. Since the DRI/GBM platform is split into 2
@@ -61,41 +61,48 @@ class DrmWindowHost : public PlatformWindow,
   void Show() override;
   void Hide() override;
   void Close() override;
+  void PrepareForShutdown() override;
   void SetBounds(const gfx::Rect& bounds) override;
   gfx::Rect GetBounds() override;
   void SetTitle(const base::string16& title) override;
   void SetCapture() override;
   void ReleaseCapture() override;
+  bool HasCapture() const override;
   void ToggleFullscreen() override;
   void Maximize() override;
   void Minimize() override;
   void Restore() override;
+  PlatformWindowState GetPlatformWindowState() const override;
   void SetCursor(PlatformCursor cursor) override;
   void MoveCursorTo(const gfx::Point& location) override;
   void ConfineCursorToBounds(const gfx::Rect& bounds) override;
   PlatformImeController* GetPlatformImeController() override;
+  void SetRestoredBoundsInPixels(const gfx::Rect& bounds) override;
+  gfx::Rect GetRestoredBoundsInPixels() const override;
 
   // PlatformEventDispatcher:
   bool CanDispatchEvent(const PlatformEvent& event) override;
   uint32_t DispatchEvent(const PlatformEvent& event) override;
 
   // GpuThreadObserver:
+  void OnGpuProcessLaunched() override;
   void OnGpuThreadReady() override;
   void OnGpuThreadRetired() override;
 
  private:
   void SendBoundsChange();
 
-  PlatformWindowDelegate* delegate_;                   // Not owned.
-  GpuThreadAdapter* sender_;                           // Not owned.
-  EventFactoryEvdev* event_factory_;                   // Not owned.
-  DrmCursor* cursor_;                                  // Not owned.
-  DrmWindowHostManager* window_manager_;               // Not owned.
-  DrmDisplayHostManager* display_manager_;             // Not owned.
-  DrmOverlayManager* overlay_manager_;                 // Not owned.
+  PlatformWindowDelegate* const delegate_;        // Not owned.
+  GpuThreadAdapter* const sender_;                // Not owned.
+  EventFactoryEvdev* const event_factory_;        // Not owned.
+  DrmCursor* const cursor_;                       // Not owned.
+  DrmWindowHostManager* const window_manager_;    // Not owned.
+  DrmDisplayHostManager* const display_manager_;  // Not owned.
+  // TODO(crbug.com/936425): Remove after VizDisplayCompositor feature launches.
+  DrmOverlayManager* const overlay_manager_;      // Not owned.
 
   gfx::Rect bounds_;
-  gfx::AcceleratedWidget widget_;
+  const gfx::AcceleratedWidget widget_;
 
   gfx::Rect cursor_confined_bounds_;
 

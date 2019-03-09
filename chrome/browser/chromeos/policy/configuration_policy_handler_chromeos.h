@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_CHROMEOS_POLICY_CONFIGURATION_POLICY_HANDLER_CHROMEOS_H_
 #define CHROME_BROWSER_CHROMEOS_POLICY_CONFIGURATION_POLICY_HANDLER_CHROMEOS_H_
 
+#include <string>
+
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "chrome/browser/extensions/policy_handlers.h"
@@ -13,7 +15,6 @@
 #include "components/policy/core/browser/configuration_policy_handler.h"
 
 namespace base {
-class DictionaryValue;
 class Value;
 }
 
@@ -78,16 +79,24 @@ class NetworkConfigurationPolicyHandler : public TypeCheckingPolicyHandler {
   DISALLOW_COPY_AND_ASSIGN(NetworkConfigurationPolicyHandler);
 };
 
-// Maps the PinnedLauncherApps policy to the corresponding pref.
-class PinnedLauncherAppsPolicyHandler
-    : public extensions::ExtensionListPolicyHandler {
+// Maps the PinnedLauncherApps policy to the corresponding pref. List entries
+// may be Android app ids or extension ids.
+class PinnedLauncherAppsPolicyHandler : public ListPolicyHandler {
  public:
   PinnedLauncherAppsPolicyHandler();
   ~PinnedLauncherAppsPolicyHandler() override;
 
-  // ExtensionListPolicyHandler methods:
-  void ApplyPolicySettings(const PolicyMap& policies,
-                           PrefValueMap* prefs) override;
+ protected:
+  // ListPolicyHandler methods:
+
+  // Returns true if |value| contains an Android app id (using a heuristic) or
+  // an extension id.
+  bool CheckListEntry(const base::Value& value) override;
+
+  // Converts the list of strings |filtered_list| to a list of dictionaries and
+  // sets the pref.
+  void ApplyList(std::unique_ptr<base::ListValue> filtered_list,
+                 PrefValueMap* prefs) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PinnedLauncherAppsPolicyHandler);
@@ -164,6 +173,42 @@ class ScreenLockDelayPolicyHandler : public SchemaValidatingPolicyHandler {
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ScreenLockDelayPolicyHandler);
+};
+
+class ScreenBrightnessPercentPolicyHandler
+    : public SchemaValidatingPolicyHandler {
+ public:
+  explicit ScreenBrightnessPercentPolicyHandler(const Schema& chrome_schema);
+  ~ScreenBrightnessPercentPolicyHandler() override;
+
+  // SchemaValidatingPolicyHandler:
+  void ApplyPolicySettings(const PolicyMap& policies,
+                           PrefValueMap* prefs) override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(ScreenBrightnessPercentPolicyHandler);
+};
+
+// Supported values for the |ArcBackupRestoreServiceEnabled| and
+// |ArcGoogleLocationServicesEnabled| policies.
+enum class ArcServicePolicyValue { kDisabled = 0, kUnderUserControl = 1 };
+
+// Instantiated once each for the |ArcBackupRestoreServiceEnabled| and
+// |ArcGoogleLocationServicesEnabled| policies to handle their special logic:
+// If the policy is set to |kUnderUserControl|, the pref is unmanaged, as if no
+// policy was set.
+class ArcServicePolicyHandler : public IntRangePolicyHandlerBase {
+ public:
+  ArcServicePolicyHandler(const char* policy, const char* pref);
+
+  // IntRangePolicyHandlerBase:
+  void ApplyPolicySettings(const PolicyMap& policies,
+                           PrefValueMap* prefs) override;
+
+ private:
+  const std::string pref_;
+
+  DISALLOW_COPY_AND_ASSIGN(ArcServicePolicyHandler);
 };
 
 }  // namespace policy

@@ -9,26 +9,25 @@
 #include "base/values.h"
 #include "content/browser/tracing/background_tracing_config_impl.h"
 #include "content/browser/tracing/background_tracing_rule.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
 
 class BackgroundTracingConfigTest : public testing::Test {
  public:
-  BackgroundTracingConfigTest()
-      : ui_thread_(BrowserThread::UI, &message_loop_) {}
+  BackgroundTracingConfigTest() = default;
 
  protected:
-  base::MessageLoop message_loop_;
-  TestBrowserThread ui_thread_;
+  TestBrowserThreadBundle test_browser_thread_bundle_;
 };
 
 std::unique_ptr<BackgroundTracingConfigImpl> ReadFromJSONString(
     const std::string& json_text) {
-  std::unique_ptr<base::Value> json_value(base::JSONReader::Read(json_text));
+  std::unique_ptr<base::Value> json_value(
+      base::JSONReader::ReadDeprecated(json_text));
 
-  base::DictionaryValue* dict = NULL;
+  base::DictionaryValue* dict = nullptr;
   if (json_value)
     json_value->GetAsDictionary(&dict);
 
@@ -49,7 +48,7 @@ std::string ConfigToString(const BackgroundTracingConfig* config) {
   return "";
 }
 
-std::string RuleToString(const BackgroundTracingRule* rule) {
+std::string RuleToString(const std::unique_ptr<BackgroundTracingRule>& rule) {
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
 
   rule->IntoDict(dict.get());
@@ -286,6 +285,10 @@ TEST_F(BackgroundTracingConfigTest, ValidPreemptiveCategoryToString) {
       BackgroundTracingConfigImpl::BENCHMARK_MEMORY_HEAVY,
       BackgroundTracingConfigImpl::BENCHMARK_MEMORY_LIGHT,
       BackgroundTracingConfigImpl::BENCHMARK_EXECUTION_METRIC,
+      BackgroundTracingConfigImpl::BENCHMARK_NAVIGATION,
+      BackgroundTracingConfigImpl::BENCHMARK_RENDERERS,
+      BackgroundTracingConfigImpl::BENCHMARK_SERVICEWORKER,
+      BackgroundTracingConfigImpl::BENCHMARK_POWER,
       BackgroundTracingConfigImpl::BLINK_STYLE,
   };
 
@@ -298,6 +301,10 @@ TEST_F(BackgroundTracingConfigTest, ValidPreemptiveCategoryToString) {
                                     "BENCHMARK_MEMORY_HEAVY",
                                     "BENCHMARK_MEMORY_LIGHT",
                                     "BENCHMARK_EXECUTION_METRIC",
+                                    "BENCHMARK_NAVIGATION",
+                                    "BENCHMARK_RENDERERS",
+                                    "BENCHMARK_SERVICEWORKER",
+                                    "BENCHMARK_POWER",
                                     "BLINK_STYLE"};
   for (size_t i = 0;
        i <
@@ -381,14 +388,17 @@ TEST_F(BackgroundTracingConfigTest, ReactiveConfigFromValidString) {
             "\"trigger_delay\":30,\"trigger_name\":\"foo2\"}");
   config = ReadFromJSONString(
       "{\"mode\":\"REACTIVE_TRACING_MODE\",\"configs\": [{\"rule\": "
-      "\"TRACE_AT_RANDOM_INTERVALS\",\"category\": \"BENCHMARK_DEEP\","
+      "\"TRACE_AT_RANDOM_INTERVALS\","
+      "\"stop_tracing_on_repeated_reactive\": true,"
+      "\"category\": \"BENCHMARK_DEEP\","
       "\"timeout_min\":10, \"timeout_max\":20}]}");
   EXPECT_TRUE(config);
   EXPECT_EQ(config->tracing_mode(), BackgroundTracingConfig::REACTIVE);
   EXPECT_EQ(config->rules().size(), 1u);
   EXPECT_EQ(RuleToString(config->rules()[0]),
             "{\"category\":\"BENCHMARK_DEEP\",\"rule\":\"TRACE_AT_RANDOM_"
-            "INTERVALS\",\"timeout_max\":20,\"timeout_min\":10}");
+            "INTERVALS\",\"stop_tracing_on_repeated_reactive\":true,"
+            "\"timeout_max\":20,\"timeout_min\":10}");
 }
 
 TEST_F(BackgroundTracingConfigTest, ValidPreemptiveConfigToString) {
@@ -626,4 +636,4 @@ TEST_F(BackgroundTracingConfigTest, ValidReactiveConfigToString) {
   }
 }
 
-}  // namspace content
+}  // namespace content

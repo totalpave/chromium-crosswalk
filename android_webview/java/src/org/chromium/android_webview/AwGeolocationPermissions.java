@@ -5,9 +5,9 @@
 package org.chromium.android_webview;
 
 import android.content.SharedPreferences;
-import android.webkit.ValueCallback;
 
-import org.chromium.base.ThreadUtils;
+import org.chromium.base.task.PostTask;
+import org.chromium.content_public.browser.UiThreadTaskTraits;
 import org.chromium.net.GURLUtils;
 
 import java.util.HashSet;
@@ -23,6 +23,12 @@ public final class AwGeolocationPermissions {
     private static final String PREF_PREFIX =
             "AwGeolocationPermissions%";
     private final SharedPreferences mSharedPreferences;
+
+    /** See {@link android.webkit.GeolocationPermissions}. */
+    public interface Callback {
+        /* See {@link android.webkit.GeolocationPermissions}. */
+        public void invoke(String origin, boolean allow, boolean retain);
+    }
 
     public AwGeolocationPermissions(SharedPreferences sharedPreferences) {
         mSharedPreferences = sharedPreferences;
@@ -93,32 +99,22 @@ public final class AwGeolocationPermissions {
     /**
      * Asynchronous method to get if an origin set to be allowed.
      */
-    public void getAllowed(String origin, final ValueCallback<Boolean> callback) {
+    public void getAllowed(String origin, final org.chromium.base.Callback<Boolean> callback) {
         final boolean finalAllowed = isOriginAllowed(origin);
-        ThreadUtils.postOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                callback.onReceiveValue(finalAllowed);
-            }
-        });
+        PostTask.postTask(UiThreadTaskTraits.DEFAULT, () -> callback.onResult(finalAllowed));
     }
 
     /**
      * Async method to get the domains currently allowed or denied.
      */
-    public void getOrigins(final ValueCallback<Set<String>> callback) {
+    public void getOrigins(final org.chromium.base.Callback<Set<String>> callback) {
         final Set<String> origins = new HashSet<String>();
         for (String name : mSharedPreferences.getAll().keySet()) {
             if (name.startsWith(PREF_PREFIX)) {
                 origins.add(name.substring(PREF_PREFIX.length()));
             }
         }
-        ThreadUtils.postOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                callback.onReceiveValue(origins);
-            }
-        });
+        PostTask.postTask(UiThreadTaskTraits.DEFAULT, () -> callback.onResult(origins));
     }
 
     /**

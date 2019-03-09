@@ -5,22 +5,29 @@
 package org.chromium.chrome.browser.compositor.bottombar;
 
 import android.content.Context;
-import android.test.InstrumentationTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.annotation.UiThreadTest;
+import android.support.test.filters.SmallTest;
+import android.support.test.rule.UiThreadTestRule;
 import android.view.MotionEvent;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EventFilterHost;
 import org.chromium.chrome.browser.compositor.layouts.eventfilter.OverlayPanelEventFilter;
-import org.chromium.content.browser.ContentViewCore;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
 /**
  * Class responsible for testing the OverlayPanelEventFilter.
  */
-public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
-
+@RunWith(ChromeJUnit4ClassRunner.class)
+public class OverlayPanelEventFilterTest {
     private static final float PANEL_ALMOST_MAXIMIZED_OFFSET_Y_DP = 50.f;
     private static final float BAR_HEIGHT_DP = 100.f;
 
@@ -53,13 +60,15 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
     // OverlayPanelEventFilterWrapper
     // --------------------------------------------------------------------------------------------
 
+    @Rule
+    public UiThreadTestRule mRule = new UiThreadTestRule();
+
     /**
      * Wrapper around OverlayPanelEventFilter used by tests.
      */
     public final class OverlayPanelEventFilterWrapper extends OverlayPanelEventFilter {
-        public OverlayPanelEventFilterWrapper(Context context, EventFilterHost host,
-                OverlayPanel panel) {
-            super(context, host, panel);
+        public OverlayPanelEventFilterWrapper(Context context, OverlayPanel panel) {
+            super(context, panel);
         }
 
         @Override
@@ -68,9 +77,9 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         }
 
         @Override
-        protected void propagateEventToContentViewCore(MotionEvent e) {
+        protected void propagateEventToContent(MotionEvent e) {
             mEventPropagatedToContent = MotionEvent.obtain(e);
-            super.propagateEventToContentViewCore(e);
+            super.propagateEventToContent(e);
             mEventPropagatedToContent.recycle();
         }
 
@@ -90,17 +99,40 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
     }
 
     // --------------------------------------------------------------------------------------------
-    // StubbedContentViewCore
+    // MockOverlayPanel
     // --------------------------------------------------------------------------------------------
 
-    private final class StubbedContentViewCore extends ContentViewCore {
-        public StubbedContentViewCore(Context context) {
-            super(context);
+    /**
+     * Mocks an OverlayPanel, so it doesn't create WebContents or animations.
+     */
+    private final class MockOverlayPanel extends OverlayPanel {
+        private boolean mWasTapDetectedOnPanel;
+        private boolean mWasScrollDetectedOnPanel;
+
+        public MockOverlayPanel(Context context, OverlayPanelManager panelManager) {
+            super(context, null, panelManager);
+        }
+
+        @Override
+        public OverlayPanelContent createNewOverlayPanelContent() {
+            return new MockOverlayPanelContent();
+        }
+
+        /**
+         * Override creation and destruction of the WebContents as they rely on native methods.
+         */
+        private class MockOverlayPanelContent extends OverlayPanelContent {
+            public MockOverlayPanelContent() {
+                super(null, null, null, false, 0);
+            }
+
+            @Override
+            public void removeLastHistoryEntry(String url, long timeInMs) {}
         }
 
         @Override
         public ViewGroup getContainerView() {
-            return new ViewGroup(getContext()) {
+            return new ViewGroup(InstrumentationRegistry.getContext()) {
                 @Override
                 public boolean dispatchTouchEvent(MotionEvent e) {
                     if (e.getActionMasked() != MotionEvent.ACTION_CANCEL) {
@@ -111,7 +143,7 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
                         if (!mShouldLockHorizontalMotionInContent) {
                             float propagatedEventY = mEventPropagatedToContent.getY();
                             float offsetY = mPanel.getContentY() * mDpToPx;
-                            assertEquals(propagatedEventY - offsetY, e.getY(), EPSILON);
+                            Assert.assertEquals(propagatedEventY - offsetY, e.getY(), EPSILON);
                         }
                     } else {
                         mWasScrollDetectedOnContent = false;
@@ -124,45 +156,13 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
                 public void onLayout(boolean changed, int l, int t, int r, int b) {}
             };
         }
-    }
-
-    // --------------------------------------------------------------------------------------------
-    // MockOverlayPanel
-    // --------------------------------------------------------------------------------------------
-
-    /**
-     * Mocks an OverlayPanel, so it doesn't create ContentViewCore.
-     */
-    public final class MockOverlayPanel extends OverlayPanel {
-        private boolean mWasTapDetectedOnPanel = false;
-        private boolean mWasScrollDetectedOnPanel = false;
-        private ContentViewCore mContentViewCore;
-
-        public MockOverlayPanel(Context context, OverlayPanelManager panelManager) {
-            super(context, null, null, panelManager);
-            mContentViewCore = new StubbedContentViewCore(context);
-        }
 
         @Override
-        public OverlayPanelContent createNewOverlayPanelContent() {
-            return new MockOverlayPanelContent();
-        }
-
-        /**
-         * Override creation and destruction of the ContentViewCore as they rely on native methods.
-         */
-        private class MockOverlayPanelContent extends OverlayPanelContent {
-            public MockOverlayPanelContent() {
-                super(null, null, null);
-            }
-
-            @Override
-            public void removeLastHistoryEntry(String url, long timeInMs) {}
-        }
+        protected void resizePanelContentView() {}
 
         @Override
-        public ContentViewCore getContentViewCore() {
-            return mContentViewCore;
+        protected void animatePanelTo(float height, long duration) {
+            // Do not create animations for tests.
         }
 
         public boolean getWasTapDetected() {
@@ -205,17 +205,15 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
     // Test Suite
     // --------------------------------------------------------------------------------------------
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-
-        Context context = getInstrumentation().getTargetContext();
+    @Before
+    public void setUp() throws Exception {
+        Context context = InstrumentationRegistry.getTargetContext();
 
         mDpToPx = context.getResources().getDisplayMetrics().density;
         mTouchSlopDp = ViewConfiguration.get(context).getScaledTouchSlop() / mDpToPx;
 
         mPanel = new MockOverlayPanel(context, new OverlayPanelManager());
-        mEventFilter = new OverlayPanelEventFilterWrapper(context, null, mPanel);
+        mEventFilter = new OverlayPanelEventFilterWrapper(context, mPanel);
 
         mPanel.setSearchBarHeightForTesting(BAR_HEIGHT_DP);
         mPanel.setHeightForTesting(LAYOUT_HEIGHT_DP);
@@ -223,7 +221,7 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
 
         // NOTE(pedrosimonetti): This should be called after calling the method
         // setIsFullWidthSizePanelForTesting(), otherwise it will crash the test.
-        mPanel.onSizeChanged(LAYOUT_WIDTH_DP, LAYOUT_HEIGHT_DP);
+        mPanel.onSizeChanged(LAYOUT_WIDTH_DP, LAYOUT_HEIGHT_DP, 0, 0);
 
         setContentViewVerticalScroll(0);
 
@@ -237,8 +235,10 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         mShouldLockHorizontalMotionInContent = false;
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testTapContentView() {
         positionPanelInAlmostMaximizedState();
 
@@ -246,15 +246,17 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionDownEvent(0.f, mAlmostMaximizedContentOffsetYDp + 1.f);
         simulateActionUpEvent(0.f, mAlmostMaximizedContentOffsetYDp + 1.f);
 
-        assertFalse(mPanel.getWasScrollDetected());
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertFalse(mPanel.getWasScrollDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertTrue(mWasTapDetectedOnContent);
-        assertFalse(mWasScrollDetectedOnContent);
+        Assert.assertTrue(mWasTapDetectedOnContent);
+        Assert.assertFalse(mWasScrollDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testScrollingContentViewDragsPanel() {
         positionPanelInAlmostMaximizedState();
 
@@ -263,15 +265,17 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionMoveEvent(0.f, mMaximizedContentOffsetYDp);
         simulateActionUpEvent(0.f, mMaximizedContentOffsetYDp);
 
-        assertTrue(mPanel.getWasScrollDetected());
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertTrue(mPanel.getWasScrollDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertFalse(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertFalse(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testScrollUpContentView() {
         positionPanelInMaximizedState();
 
@@ -280,15 +284,17 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionMoveEvent(0.f, mMaximizedContentOffsetYDp);
         simulateActionUpEvent(0.f, mMaximizedContentOffsetYDp);
 
-        assertFalse(mPanel.getWasScrollDetected());
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertFalse(mPanel.getWasScrollDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertTrue(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertTrue(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testScrollDownContentView() {
         positionPanelInMaximizedState();
 
@@ -301,15 +307,17 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionMoveEvent(0.f, mAlmostMaximizedContentOffsetYDp);
         simulateActionUpEvent(0.f, mAlmostMaximizedContentOffsetYDp);
 
-        assertFalse(mPanel.getWasScrollDetected());
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertFalse(mPanel.getWasScrollDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertTrue(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertTrue(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testDragByOverscrollingContentView() {
         positionPanelInMaximizedState();
 
@@ -322,15 +330,17 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionMoveEvent(0.f, mAlmostMaximizedContentOffsetYDp);
         simulateActionUpEvent(0.f, mAlmostMaximizedContentOffsetYDp);
 
-        assertTrue(mPanel.getWasScrollDetected());
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertTrue(mPanel.getWasScrollDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertFalse(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertFalse(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testUnwantedScrollDoesNotHappenInContentView() {
         positionPanelInAlmostMaximizedState();
 
@@ -343,7 +353,7 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         positionPanelInMaximizedState();
 
         // Confirm that the Panel got a scroll event.
-        assertTrue(mPanel.getWasScrollDetected());
+        Assert.assertTrue(mPanel.getWasScrollDetected());
 
         // Continue the swipe up for one more dp. From now on, the events might be forwarded
         // to the ContentView.
@@ -355,16 +365,18 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         // of the touch gesture is greater than the touch slop.
         float contentViewOffsetDelta =
                 contentViewOffsetYStart - contentViewOffsetYEnd;
-        assertTrue(Math.abs(contentViewOffsetDelta) > mTouchSlopDp);
+        Assert.assertTrue(Math.abs(contentViewOffsetDelta) > mTouchSlopDp);
 
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertFalse(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertFalse(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testDragPanelThenContinuouslyScrollContentView() {
         positionPanelInAlmostMaximizedState();
 
@@ -374,7 +386,7 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         positionPanelInMaximizedState();
 
         // Confirm that the Panel got a scroll event.
-        assertTrue(mPanel.getWasScrollDetected());
+        Assert.assertTrue(mPanel.getWasScrollDetected());
 
         // Continue the swipe up for one more dp. From now on, the events might be forwarded
         // to the ContentView.
@@ -385,14 +397,16 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionMoveEvent(0.f, mMaximizedContentOffsetYDp - 2 * mTouchSlopDp);
         simulateActionUpEvent(0.f, mMaximizedContentOffsetYDp - 2 * mTouchSlopDp);
 
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertTrue(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertTrue(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testTapPanel() {
         positionPanelInAlmostMaximizedState();
 
@@ -400,15 +414,17 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionDownEvent(0.f, mAlmostMaximizedContentOffsetYDp - 1.f);
         simulateActionUpEvent(0.f, mAlmostMaximizedContentOffsetYDp - 1.f);
 
-        assertFalse(mPanel.getWasScrollDetected());
-        assertTrue(mPanel.getWasTapDetected());
+        Assert.assertFalse(mPanel.getWasScrollDetected());
+        Assert.assertTrue(mPanel.getWasTapDetected());
 
-        assertFalse(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertFalse(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
+    @Test
     @SmallTest
     @Feature({"OverlayPanel"})
+    @UiThreadTest
     public void testScrollPanel() {
         positionPanelInAlmostMaximizedState();
 
@@ -417,11 +433,11 @@ public class OverlayPanelEventFilterTest extends InstrumentationTestCase {
         simulateActionMoveEvent(0.f, mMaximizedContentOffsetYDp);
         simulateActionUpEvent(0.f, mMaximizedContentOffsetYDp);
 
-        assertTrue(mPanel.getWasScrollDetected());
-        assertFalse(mPanel.getWasTapDetected());
+        Assert.assertTrue(mPanel.getWasScrollDetected());
+        Assert.assertFalse(mPanel.getWasTapDetected());
 
-        assertFalse(mWasScrollDetectedOnContent);
-        assertFalse(mWasTapDetectedOnContent);
+        Assert.assertFalse(mWasScrollDetectedOnContent);
+        Assert.assertFalse(mWasTapDetectedOnContent);
     }
 
     // --------------------------------------------------------------------------------------------

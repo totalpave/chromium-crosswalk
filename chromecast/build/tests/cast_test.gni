@@ -38,14 +38,21 @@
 #   # Here is another cast_test_group target which builds a bunch of other
 #   # test binaries, and wants to apply some filters.
 #   cast_test_group("external_tests") {
+#     filters = []
 #     tests = [
 #       "//path/to/widget:widget_unittests",
 #       "//even/more/foo:foo_unittests",
 #     ]
 #
-#     filters = [
-#       "widget_unittests --gtest_filter=-WidgetTest.TestToBeFiltered",
-#     ]
+#     widget_unittests_filter = {
+#       test_name = "widgets_unittests"
+#       gtest_includes = [ "WidgetTest.*" ]
+#       gtest_excludes = [ "WidgetTest.TestToBeFilteredOut",
+#                          "WidgetTest.MoreTestsToFilterOut" ]
+#       args = [ "--extra_arg",
+#                "--another_arg", ]
+#     }
+#     filters += [ widget_unittests_filter ]
 #   }
 #
 #   # Build this to create build and run lists for bar and foo tests.
@@ -56,11 +63,19 @@
 #     ]
 #
 #     build_list_paths = "$root_out_dir/path/to/test/build_list.txt"
-#
 #     run_list_path = "$root_out_dir/path/to/list/run_list.txt"
+#     runtime_deps_path = "$root_out_dir/path/to/list/runtime_deps.json"
 #   }
 
+import("//chromecast/chromecast.gni")
 import("//testing/test.gni")
+
+declare_args() {
+  # Set this true to build all tests in a cast_test_group_list by default. This
+  # can be overriden in each cast_test_group_list instance by setting
+  # |build_tests|.
+  build_cast_tests_by_default = true
+}
 
 # Do not allow mixing of gtests and junit tests. All gtests must go into one
 # directory, while all junit tests must go into another directory.
@@ -82,10 +97,23 @@ _junit_gen_dir = "$root_gen_dir/chromecast/junit"
 #       executable it builds.
 #
 #   filters (optional)
-#       A list of strings of format: "<test_name> --gtest_filter=<filter_logic>"
-#       The <test_name> used must correspond to a test in |tests|. Please see
-#       //chromecast/tools/build/generate_test_lists.py for more information.
-#       If this is not defined, no filters are applied.
+#        A list of scopes, where each scope has the has the follow variables:
+#          test_name (required): The name of the test executable. This must
+#              correspond to a test in |tests|.
+#          gtest_includes (optional): A list of gtest filter pattern strings.
+#              Only tests that match one of the positive patterns (if provided)\
+#              will be run.
+#              Example: gtest_includes = [ "Foo.*", "Bar.Test1", "Bar.Test2" ]
+#              will get translated to "--gtest_filter=Foo.*:Bar.Test1:Bar.Test2"
+#          gtest_excludes (optional): A list of gtest filter pattern strings.
+#              Only tests that do not match any of the negative patterns
+#              (if provided) will be run.
+#              Example: gtest_excludes = [ "Baz.*", "Biz.Test" ]
+#              will get translated to "--gtest_filter=-Baz.*:Biz.Test1"
+#          args (optional): A list of additional args to pass to the test.
+#        Please see //chromecast/tools/build/generate_test_lists.py for more
+#        information.
+#        If |filters| is not defined, no filters are applied.
 #
 #   priority (optional)
 #       A string which takes any single-digit integer bewtween "1" and "9",
@@ -116,7 +144,48 @@ template("cast_test_group") {
   # If a set of filters has not been defined, use the empty list.
   _filters = []
   if (defined(invoker.filters)) {
-    _filters = invoker.filters
+    foreach(filter, invoker.filters) {
+      assert(defined(filter.test_name), "A filter must have a test_name.")
+      _test_name = filter.test_name
+
+      _gtest_include_filter = ""
+      if (defined(filter.gtest_includes)) {
+        foreach(include, filter.gtest_includes) {
+          _gtest_include_filter = "${_gtest_include_filter}:${include}"
+        }
+      }
+
+      _gtest_exclude_filter = ""
+      if (defined(filter.gtest_excludes)) {
+        foreach(exclude, filter.gtest_excludes) {
+          _gtest_exclude_filter = "${_gtest_exclude_filter}:${exclude}"
+        }
+      }
+
+      _gtest_filter = ""
+      if (_gtest_include_filter != "" || _gtest_exclude_filter != "") {
+        _gtest_filter += "--gtest_filter="
+        if (_gtest_include_filter != "") {
+          _gtest_filter += _gtest_include_filter
+        }
+        if (_gtest_exclude_filter != "") {
+          _gtest_filter += "-" + _gtest_exclude_filter
+        }
+      }
+
+      _args = ""
+      if (defined(filter.args)) {
+        foreach(arg, filter.args) {
+          _args = "${_args} ${arg}"
+        }
+      }
+
+      # Only add filters that actually do something, otherwise the
+      # generate script will get confused.
+      if (_args != "" || _gtest_filter != "") {
+        _filters += [ "${_test_name} ${_args} ${_gtest_filter}" ]
+      }
+    }
   }
 
   # If priority has not been set, set the priority to "1", the lowest priority.
@@ -140,6 +209,21 @@ template("cast_test_group") {
     _test_names += [ get_label_info(_test, "name") ]
   }
 
+  # Create a dummy target so that we can get the runtime deps for each test
+  # and output them into a file. The runtime deps include all of the data files,
+  # data directories, and shared libraries that a test needs in order to run.
+  foreach(_test, invoker.tests) {
+    _test_name = get_label_info(_test, "name")
+    group(_test_name + "_cast_runtime_deps") {
+      testonly = true
+      data_deps = [
+        _test,
+      ]
+      write_runtime_deps =
+          "${_shared_dir}/runtime_deps/${_test_name}_runtime_deps.txt"
+    }
+  }
+
   # This action generates a list of target names to build and run. It will be
   # depended upon by the "pack_build" action of the cast_test_group_list
   # instance which depends on this cast_test_group.
@@ -152,7 +236,7 @@ template("cast_test_group") {
 
     args = [
       "-o",
-      rebase_path("$_output_prefix.tests"),
+      rebase_path("$_output_prefix.tests", root_build_dir),
       "create_list",
     ]
 
@@ -178,7 +262,7 @@ template("cast_test_group") {
 
     args = [
       "-o",
-      rebase_path("$_output_prefix.filters"),
+      rebase_path("$_output_prefix.filters", root_build_dir),
       "create_list",
     ]
 
@@ -223,13 +307,20 @@ template("cast_test_group") {
 #       The absolute filepath of the output file which will hold the list of
 #       tests to be run, each with filters assigned by cast_groups.
 #
+#   runtime_deps_path (required)
+#       The absolute filepath of the output file which will hold the json dict
+#       of runtime dependencies for each test to be run.
+#
 #   additional_options (optional)
 #       Options which are passed to the python script, and applied to every test
 #
 #   build_tests (optional)
-#       Set this to true to build all of the tests included in |test_groups|.
-#       Defaults to false. Note that if this is set to true, the test targets
-#       will be built after all the lists are generated.
+#       If true, all of the tests included in |test_groups| will be built as
+#       dependencies of this target. If false, only the lists will be generated.
+#       If not explicitly set, this defaults to the value of
+#       |build_cast_tests_by_default|. Note that if this is set to true,
+#       the test targets will be built after all the lists are generated.
+#
 #   test_type (optional)
 #       A string, which must be either "junit" or "gtest". If not defined,
 #       defaults to "gtest".
@@ -239,6 +330,8 @@ template("cast_test_group_list") {
   assert(defined(invoker.run_list_path), "$target_name needs 'run_list_path'")
   assert(defined(invoker.build_list_path),
          "$target_name needs 'build_list_path'")
+  assert(defined(invoker.runtime_deps_path),
+         "$target_name needs 'runtime_deps_path'")
 
   _pack_build_action = target_name + "_pack_build"
 
@@ -254,6 +347,12 @@ template("cast_test_group_list") {
     _shared_dir = _junit_gen_dir
   }
 
+  # Add the run list to runtime data dependencies
+  data = [
+    invoker.run_list_path,
+    invoker.runtime_deps_path,
+  ]
+
   # Generate a list of the "create_list" actions for each group. These will be
   # depended upon to ensure they're run before the "pack_build" step.
   _build_actions = []
@@ -268,12 +367,18 @@ template("cast_test_group_list") {
     _filter_actions += [ _test_group + "_filters" ]
   }
 
+  # Decide whether tests are built as dependencies.
+  _build_cast_tests = build_cast_tests_by_default
+  if (defined(invoker.build_tests)) {
+    _build_cast_tests = invoker.build_tests
+  }
+
   # Generate a list of the groups of targets, so that they can be depended upon
   # by the "pack_run" step and built when this target is invoked.
-  if (defined(invoker.build_tests) && invoker.build_tests) {
-    _build_tests = []
+  if (_build_cast_tests) {
+    _build_test_targets = []
     foreach(_test_group, invoker.test_groups) {
-      _build_tests += [ _test_group + "_build_tests" ]
+      _build_test_targets += [ _test_group + "_build_tests" ]
     }
   }
 
@@ -290,9 +395,9 @@ template("cast_test_group_list") {
 
     args = [
       "-o",
-      rebase_path(invoker.build_list_path),
+      rebase_path(invoker.build_list_path, root_build_dir),
       "-t",
-      rebase_path(_shared_dir),
+      rebase_path(_shared_dir, root_build_dir),
       "pack_build",
     ]
 
@@ -312,13 +417,16 @@ template("cast_test_group_list") {
 
     outputs = [
       invoker.run_list_path,
+      invoker.runtime_deps_path,
     ]
 
     args = [
       "-o",
-      rebase_path(invoker.run_list_path),
+      rebase_path(invoker.run_list_path, root_build_dir),
+      "-d",
+      rebase_path(invoker.runtime_deps_path, root_build_dir),
       "-t",
-      rebase_path(_shared_dir),
+      rebase_path(_shared_dir, root_build_dir),
       "pack_run",
     ]
 
@@ -337,10 +445,14 @@ template("cast_test_group_list") {
     # script executes.
     deps += _filter_actions
 
-    # If |build_tests| has been set to true, depend on the testing targets so
-    # that the tests are built.
-    if (defined(_build_tests)) {
-      deps += _build_tests
+    # If |_build_cast_tests| has been set to true, depend on the testing targets
+    # so that the tests are built.
+    if (_build_cast_tests) {
+      deps += _build_test_targets
+    }
+
+    if (chromecast_branding != "public") {
+      deps += [ "//chromecast/internal:cast_test_checker" ]
     }
   }
 }

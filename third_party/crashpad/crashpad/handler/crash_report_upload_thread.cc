@@ -17,154 +17,93 @@
 #include <errno.h>
 #include <time.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <vector>
 
 #include "base/logging.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "client/settings.h"
+#include "handler/minidump_to_upload_parameters.h"
 #include "snapshot/minidump/process_snapshot_minidump.h"
 #include "snapshot/module_snapshot.h"
 #include "util/file/file_reader.h"
+#include "util/misc/metrics.h"
 #include "util/misc/uuid.h"
 #include "util/net/http_body.h"
 #include "util/net/http_multipart_builder.h"
 #include "util/net/http_transport.h"
+#include "util/net/url.h"
 #include "util/stdlib/map_insert.h"
+
+#if defined(OS_MACOSX)
+#include "handler/mac/file_limit_annotation.h"
+#endif  // OS_MACOSX
 
 namespace crashpad {
 
-namespace {
-
-void InsertOrReplaceMapEntry(std::map<std::string, std::string>* map,
-                             const std::string& key,
-                             const std::string& value) {
-  std::string old_value;
-  if (!MapInsertOrReplace(map, key, value, &old_value)) {
-    LOG(WARNING) << "duplicate key " << key << ", discarding value "
-                 << old_value;
-  }
-}
-
-// Given a minidump file readable by |minidump_file_reader|, returns a map of
-// key-value pairs to use as HTTP form parameters for upload to a Breakpad
-// server. The map is built by combining the process simple annotations map with
-// each module’s simple annotations map. In the case of duplicate keys, the map
-// will retain the first value found for any key, and will log a warning about
-// discarded values. Each module’s annotations vector is also examined and built
-// into a single string value, with distinct elements separated by newlines, and
-// stored at the key named “list_annotations”, which supersedes any other key
-// found by that name. The client ID stored in the minidump is converted to
-// a string and stored at the key named “guid”, which supersedes any other key
-// found by that name.
-//
-// In the event of an error reading the minidump file, a message will be logged.
-std::map<std::string, std::string> BreakpadHTTPFormParametersFromMinidump(
-    FileReader* minidump_file_reader) {
-  ProcessSnapshotMinidump minidump_process_snapshot;
-  if (!minidump_process_snapshot.Initialize(minidump_file_reader)) {
-    return std::map<std::string, std::string>();
-  }
-
-  std::map<std::string, std::string> parameters =
-      minidump_process_snapshot.AnnotationsSimpleMap();
-
-  std::string list_annotations;
-  for (const ModuleSnapshot* module : minidump_process_snapshot.Modules()) {
-    for (const auto& kv : module->AnnotationsSimpleMap()) {
-      if (!parameters.insert(kv).second) {
-        LOG(WARNING) << "duplicate key " << kv.first << ", discarding value "
-                     << kv.second;
-      }
-    }
-
-    for (std::string annotation : module->AnnotationsVector()) {
-      list_annotations.append(annotation);
-      list_annotations.append("\n");
-    }
-  }
-
-  if (!list_annotations.empty()) {
-    // Remove the final newline character.
-    list_annotations.resize(list_annotations.size() - 1);
-
-    InsertOrReplaceMapEntry(&parameters, "list_annotations", list_annotations);
-  }
-
-  UUID client_id;
-  minidump_process_snapshot.ClientID(&client_id);
-  InsertOrReplaceMapEntry(&parameters, "guid", client_id.ToString());
-
-  return parameters;
-}
-
-// Calls CrashReportDatabase::RecordUploadAttempt() with |successful| set to
-// false upon destruction unless disarmed by calling Fire() or Disarm(). Fire()
-// triggers an immediate call. Armed upon construction.
-class CallRecordUploadAttempt {
- public:
-  CallRecordUploadAttempt(CrashReportDatabase* database,
-                          const CrashReportDatabase::Report* report)
-      : database_(database),
-        report_(report) {
-  }
-
-  ~CallRecordUploadAttempt() {
-    Fire();
-  }
-
-  void Fire() {
-    if (report_) {
-      database_->RecordUploadAttempt(report_, false, std::string());
-    }
-
-    Disarm();
-  }
-
-  void Disarm() {
-    report_ = nullptr;
-  }
-
- private:
-  CrashReportDatabase* database_;  // weak
-  const CrashReportDatabase::Report* report_;  // weak
-
-  DISALLOW_COPY_AND_ASSIGN(CallRecordUploadAttempt);
-};
-
-}  // namespace
-
 CrashReportUploadThread::CrashReportUploadThread(CrashReportDatabase* database,
                                                  const std::string& url,
-                                                 bool rate_limit)
-    : url_(url),
-      // Check for pending reports every 15 minutes, even in the absence of a
-      // signal from the handler thread. This allows for failed uploads to be
-      // retried periodically, and for pending reports written by other
-      // processes to be recognized.
-      thread_(15 * 60, this),
-      database_(database),
-      rate_limit_(rate_limit) {
+                                                 const Options& options)
+    : options_(options),
+      url_(url),
+      // When watching for pending reports, check every 15 minutes, even in the
+      // absence of a signal from the handler thread. This allows for failed
+      // uploads to be retried periodically, and for pending reports written by
+      // other processes to be recognized.
+      thread_(options.watch_pending_reports ? 15 * 60.0
+                                            : WorkerThread::kIndefiniteWait,
+              this),
+      known_pending_report_uuids_(),
+      database_(database) {
+  DCHECK(!url_.empty());
 }
 
 CrashReportUploadThread::~CrashReportUploadThread() {
 }
 
+void CrashReportUploadThread::ReportPending(const UUID& report_uuid) {
+  known_pending_report_uuids_.PushBack(report_uuid);
+  thread_.DoWorkNow();
+}
+
 void CrashReportUploadThread::Start() {
-  thread_.Start(0);
+  thread_.Start(
+      options_.watch_pending_reports ? 0.0 : WorkerThread::kIndefiniteWait);
 }
 
 void CrashReportUploadThread::Stop() {
   thread_.Stop();
 }
 
-void CrashReportUploadThread::ReportPending() {
-  thread_.DoWorkNow();
-}
-
 void CrashReportUploadThread::ProcessPendingReports() {
+  std::vector<UUID> known_report_uuids = known_pending_report_uuids_.Drain();
+  for (const UUID& report_uuid : known_report_uuids) {
+    CrashReportDatabase::Report report;
+    if (database_->LookUpCrashReport(report_uuid, &report) !=
+        CrashReportDatabase::kNoError) {
+      continue;
+    }
+
+    ProcessPendingReport(report);
+
+    // Respect Stop() being called after at least one attempt to process a
+    // report.
+    if (!thread_.is_running()) {
+      return;
+    }
+  }
+
+  // Known pending reports are always processed (above). The rest of this
+  // function is concerned with scanning for pending reports not already known
+  // to this thread.
+  if (!options_.watch_pending_reports) {
+    return;
+  }
+
   std::vector<CrashReportDatabase::Report> reports;
   if (database_->GetPendingReports(&reports) != CrashReportDatabase::kNoError) {
     // The database is sick. It might be prudent to stop trying to poke it from
@@ -175,6 +114,15 @@ void CrashReportUploadThread::ProcessPendingReports() {
   }
 
   for (const CrashReportDatabase::Report& report : reports) {
+    if (std::find(known_report_uuids.begin(),
+                  known_report_uuids.end(),
+                  report.uuid) != known_report_uuids.end()) {
+      // An attempt to process the report already occurred above. The report is
+      // still pending, so upload must have failed. Don’t retry it immediately,
+      // it can wait until at least the next pass through this method.
+      continue;
+    }
+
     ProcessPendingReport(report);
 
     // Respect Stop() being called after at least one attempt to process a
@@ -187,15 +135,20 @@ void CrashReportUploadThread::ProcessPendingReports() {
 
 void CrashReportUploadThread::ProcessPendingReport(
     const CrashReportDatabase::Report& report) {
+#if defined(OS_MACOSX)
+  RecordFileLimitAnnotation();
+#endif  // OS_MACOSX
+
   Settings* const settings = database_->GetSettings();
 
   bool uploads_enabled;
-  if (!settings->GetUploadsEnabled(&uploads_enabled) ||
-      !uploads_enabled ||
-      url_.empty()) {
-    // If the upload-enabled state can’t be determined, uploads are disabled, or
-    // there’s no URL to upload to, don’t attempt to upload the new report.
-    database_->SkipReportUpload(report.uuid);
+  if (!report.upload_explicitly_requested &&
+      (!settings->GetUploadsEnabled(&uploads_enabled) || !uploads_enabled)) {
+    // Don’t attempt an upload if there’s no URL to upload to. Allow upload if
+    // it has been explicitly requested by the user, otherwise, respect the
+    // upload-enabled state stored in the database’s settings.
+    database_->SkipReportUpload(report.uuid,
+                                Metrics::CrashSkippedReason::kUploadsDisabled);
     return;
   }
 
@@ -204,9 +157,12 @@ void CrashReportUploadThread::ProcessPendingReport(
   // hour, and retire reports that would exceed this limit or for which the
   // upload fails on the first attempt.
   //
+  // If upload was requested explicitly (i.e. by user action), we do not
+  // throttle the upload.
+  //
   // TODO(mark): Provide a proper rate-limiting strategy and allow for failed
   // upload attempts to be retried.
-  if (rate_limit_) {
+  if (!report.upload_explicitly_requested && options_.rate_limit) {
     time_t last_upload_attempt_time;
     if (settings->GetLastUploadAttemptTime(&last_upload_attempt_time)) {
       time_t now = time(nullptr);
@@ -214,9 +170,10 @@ void CrashReportUploadThread::ProcessPendingReport(
         // If the most recent upload attempt occurred within the past hour,
         // don’t attempt to upload the new report. If it happened longer ago,
         // attempt to upload the report.
-        const int kUploadAttemptIntervalSeconds = 60 * 60;  // 1 hour
+        constexpr int kUploadAttemptIntervalSeconds = 60 * 60;  // 1 hour
         if (now - last_upload_attempt_time < kUploadAttemptIntervalSeconds) {
-          database_->SkipReportUpload(report.uuid);
+          database_->SkipReportUpload(
+              report.uuid, Metrics::CrashSkippedReason::kUploadThrottled);
           return;
         }
       } else {
@@ -225,16 +182,17 @@ void CrashReportUploadThread::ProcessPendingReport(
         // upload attempt time is bogus, and attempt to upload the report. If
         // the most recent upload time is in the future but within one day,
         // accept it and don’t attempt to upload the report.
-        const int kBackwardsClockTolerance = 60 * 60 * 24;  // 1 day
+        constexpr int kBackwardsClockTolerance = 60 * 60 * 24;  // 1 day
         if (last_upload_attempt_time - now < kBackwardsClockTolerance) {
-          database_->SkipReportUpload(report.uuid);
+          database_->SkipReportUpload(
+              report.uuid, Metrics::CrashSkippedReason::kUnexpectedTime);
           return;
         }
       }
     }
   }
 
-  const CrashReportDatabase::Report* upload_report;
+  std::unique_ptr<const CrashReportDatabase::UploadReport> upload_report;
   CrashReportDatabase::OperationStatus status =
       database_->GetReportForUploading(report.uuid, &upload_report);
   switch (status) {
@@ -242,60 +200,84 @@ void CrashReportUploadThread::ProcessPendingReport(
       break;
 
     case CrashReportDatabase::kBusyError:
+    case CrashReportDatabase::kReportNotFound:
+      // Someone else may have gotten to it first. If they’re working on it now,
+      // this will be kBusyError. If they’ve already finished with it, it’ll be
+      // kReportNotFound.
       return;
 
-    case CrashReportDatabase::kReportNotFound:
     case CrashReportDatabase::kFileSystemError:
     case CrashReportDatabase::kDatabaseError:
       // In these cases, SkipReportUpload() might not work either, but it’s best
       // to at least try to get the report out of the way.
-      database_->SkipReportUpload(report.uuid);
+      database_->SkipReportUpload(report.uuid,
+                                  Metrics::CrashSkippedReason::kDatabaseError);
+      return;
+
+    case CrashReportDatabase::kCannotRequestUpload:
+      NOTREACHED();
       return;
   }
 
-  CallRecordUploadAttempt call_record_upload_attempt(database_, upload_report);
-
   std::string response_body;
-  UploadResult upload_result = UploadReport(upload_report, &response_body);
+  UploadResult upload_result =
+      UploadReport(upload_report.get(), &response_body);
   switch (upload_result) {
     case UploadResult::kSuccess:
-      call_record_upload_attempt.Disarm();
-      database_->RecordUploadAttempt(upload_report, true, response_body);
+      database_->RecordUploadComplete(std::move(upload_report), response_body);
       break;
     case UploadResult::kPermanentFailure:
+      upload_report.reset();
+      database_->SkipReportUpload(
+          report.uuid, Metrics::CrashSkippedReason::kPrepareForUploadFailed);
+      break;
     case UploadResult::kRetry:
-      call_record_upload_attempt.Fire();
+      upload_report.reset();
 
       // TODO(mark): Deal with retries properly: don’t call SkipReportUplaod()
       // if the result was kRetry and the report hasn’t already been retried
       // too many times.
-      database_->SkipReportUpload(report.uuid);
+      database_->SkipReportUpload(report.uuid,
+                                  Metrics::CrashSkippedReason::kUploadFailed);
       break;
   }
 }
 
 CrashReportUploadThread::UploadResult CrashReportUploadThread::UploadReport(
-    const CrashReportDatabase::Report* report,
+    const CrashReportDatabase::UploadReport* report,
     std::string* response_body) {
+#if defined(OS_ANDROID)
+  // TODO(jperaza): This method can be enabled on Android after HTTPTransport is
+  // implemented and Crashpad takes over upload responsibilty on Android.
+  NOTREACHED();
+  return UploadResult::kPermanentFailure;
+#else
   std::map<std::string, std::string> parameters;
 
-  {
-    FileReader minidump_file_reader;
-    if (!minidump_file_reader.Open(report->file_path)) {
-      // If the minidump file can’t be opened, all hope is lost.
-      return UploadResult::kPermanentFailure;
-    }
+  FileReader* reader = report->Reader();
+  FileOffset start_offset = reader->SeekGet();
+  if (start_offset < 0) {
+    return UploadResult::kPermanentFailure;
+  }
 
-    // If the minidump file could be opened, ignore any errors that might occur
-    // when attempting to interpret it. This may result in its being uploaded
-    // with few or no parameters, but as long as there’s a dump file, the server
-    // can decide what to do with it.
-    parameters = BreakpadHTTPFormParametersFromMinidump(&minidump_file_reader);
+  // Ignore any errors that might occur when attempting to interpret the
+  // minidump file. This may result in its being uploaded with few or no
+  // parameters, but as long as there’s a dump file, the server can decide what
+  // to do with it.
+  ProcessSnapshotMinidump minidump_process_snapshot;
+  if (minidump_process_snapshot.Initialize(reader)) {
+    parameters =
+        BreakpadHTTPFormParametersFromMinidump(&minidump_process_snapshot);
+  }
+
+  if (!reader->SeekSet(start_offset)) {
+    return UploadResult::kPermanentFailure;
   }
 
   HTTPMultipartBuilder http_multipart_builder;
+  http_multipart_builder.SetGzipEnabled(options_.upload_gzip);
 
-  const char kMinidumpKey[] = "upload_file_minidump";
+  static constexpr char kMinidumpKey[] = "upload_file_minidump";
 
   for (const auto& kv : parameters) {
     if (kv.first == kMinidumpKey) {
@@ -306,30 +288,57 @@ CrashReportUploadThread::UploadResult CrashReportUploadThread::UploadReport(
     }
   }
 
-  http_multipart_builder.SetFileAttachment(
-      kMinidumpKey,
-#if defined(OS_WIN)
-      base::UTF16ToUTF8(report->file_path.BaseName().value()),
-#else
-      report->file_path.BaseName().value(),
-#endif
-      report->file_path,
-      "application/octet-stream");
+  for (const auto& it : report->GetAttachments()) {
+    http_multipart_builder.SetFileAttachment(
+        it.first, it.first, it.second, "application/octet-stream");
+  }
+
+  http_multipart_builder.SetFileAttachment(kMinidumpKey,
+                                           report->uuid.ToString() + ".dmp",
+                                           reader,
+                                           "application/octet-stream");
 
   std::unique_ptr<HTTPTransport> http_transport(HTTPTransport::Create());
-  http_transport->SetURL(url_);
-  HTTPHeaders::value_type content_type =
-      http_multipart_builder.GetContentType();
-  http_transport->SetHeader(content_type.first, content_type.second);
+  HTTPHeaders content_headers;
+  http_multipart_builder.PopulateContentHeaders(&content_headers);
+  for (const auto& content_header : content_headers) {
+    http_transport->SetHeader(content_header.first, content_header.second);
+  }
   http_transport->SetBodyStream(http_multipart_builder.GetBodyStream());
   // TODO(mark): The timeout should be configurable by the client.
   http_transport->SetTimeout(60.0);  // 1 minute.
+
+  std::string url = url_;
+  if (options_.identify_client_via_url) {
+    // Add parameters to the URL which identify the client to the server.
+    static constexpr struct {
+      const char* key;
+      const char* url_field_name;
+    } kURLParameterMappings[] = {
+        {"prod", "product"},
+        {"ver", "version"},
+        {"guid", "guid"},
+    };
+
+    for (const auto& parameter_mapping : kURLParameterMappings) {
+      const auto it = parameters.find(parameter_mapping.key);
+      if (it != parameters.end()) {
+        url.append(
+            base::StringPrintf("%c%s=%s",
+                               url.find('?') == std::string::npos ? '?' : '&',
+                               parameter_mapping.url_field_name,
+                               URLEncode(it->second).c_str()));
+      }
+    }
+  }
+  http_transport->SetURL(url);
 
   if (!http_transport->ExecuteSynchronously(response_body)) {
     return UploadResult::kRetry;
   }
 
   return UploadResult::kSuccess;
+#endif  // OS_ANDROID
 }
 
 void CrashReportUploadThread::DoWork(const WorkerThread* thread) {

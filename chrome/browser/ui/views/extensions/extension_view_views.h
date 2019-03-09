@@ -57,10 +57,10 @@ class ExtensionViewViews : public views::WebView,
   void ResizeDueToAutoResize(content::WebContents* web_contents,
                              const gfx::Size& new_size) override;
   void RenderViewCreated(content::RenderViewHost* render_view_host) override;
-  void HandleKeyboardEvent(
+  bool HandleKeyboardEvent(
       content::WebContents* source,
       const content::NativeWebKeyboardEvent& event) override;
-  void DidStopLoading() override;
+  void OnLoaded() override;
 
   // views::WebView:
   gfx::NativeCursor GetCursor(const ui::MouseEvent& event) override;
@@ -72,7 +72,7 @@ class ExtensionViewViews : public views::WebView,
   extensions::ExtensionHost* host_;
 
   // The browser window that this view is in.
-  Browser* browser_;
+  Browser* const browser_;
 
   // What we should set the preferred width to once the ExtensionViewViews has
   // loaded.

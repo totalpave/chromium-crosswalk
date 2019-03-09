@@ -6,7 +6,7 @@
 
 #include <utility>
 
-#include "cc/output/compositor_frame.h"
+#include "components/viz/common/quads/compositor_frame.h"
 
 namespace content {
 
@@ -26,22 +26,22 @@ void TestSynchronousCompositor::SetClient(SynchronousCompositorClient* client) {
     client_->DidInitializeCompositor(this, process_id_, routing_id_);
 }
 
-SynchronousCompositor::Frame TestSynchronousCompositor::DemandDrawHw(
-    const gfx::Size& surface_size,
-    const gfx::Transform& transform,
-    const gfx::Rect& viewport,
-    const gfx::Rect& clip,
+scoped_refptr<SynchronousCompositor::FrameFuture>
+TestSynchronousCompositor::DemandDrawHwAsync(
+    const gfx::Size& viewport_size,
     const gfx::Rect& viewport_rect_for_tile_priority,
     const gfx::Transform& transform_for_tile_priority) {
-  return std::move(hardware_frame_);
+  auto future = base::MakeRefCounted<FrameFuture>();
+  future->SetFrame(std::move(hardware_frame_));
+  return future;
 }
 
 void TestSynchronousCompositor::ReturnResources(
-    uint32_t output_surface_id,
-    const cc::CompositorFrameAck& frame_ack) {
+    uint32_t layer_tree_frame_sink_id,
+    const std::vector<viz::ReturnedResource>& resources) {
   ReturnedResources returned_resources;
-  returned_resources.output_surface_id = output_surface_id;
-  returned_resources.resources = frame_ack.resources;
+  returned_resources.layer_tree_frame_sink_id = layer_tree_frame_sink_id;
+  returned_resources.resources = resources;
   frame_ack_array_.push_back(returned_resources);
 }
 
@@ -56,14 +56,15 @@ bool TestSynchronousCompositor::DemandDrawSw(SkCanvas* canvas) {
 }
 
 void TestSynchronousCompositor::SetHardwareFrame(
-    uint32_t output_surface_id,
-    std::unique_ptr<cc::CompositorFrame> frame) {
-  hardware_frame_.output_surface_id = output_surface_id;
-  hardware_frame_.frame = std::move(frame);
+    uint32_t layer_tree_frame_sink_id,
+    std::unique_ptr<viz::CompositorFrame> frame) {
+  hardware_frame_ = std::make_unique<Frame>();
+  hardware_frame_->layer_tree_frame_sink_id = layer_tree_frame_sink_id;
+  hardware_frame_->frame = std::move(frame);
 }
 
 TestSynchronousCompositor::ReturnedResources::ReturnedResources()
-    : output_surface_id(0u) {}
+    : layer_tree_frame_sink_id(0u) {}
 
 TestSynchronousCompositor::ReturnedResources::ReturnedResources(
     const ReturnedResources& other) = default;

@@ -1,12 +1,12 @@
-/* Copyright 2016 The Chromium Authors. All rights reserved.
+/* Copyright 2018 The Chromium Authors. All rights reserved.
    Use of this source code is governed by a BSD-style license that can be
    found in the LICENSE file. */
 
-:host {
-  display: inline-block;
+paper-button {
+  padding-inline-end: 8px;
+  padding-inline-start: 16px;
 }
-paper-fab {
-  background-color: var(--google-blue-500);
-  color: white;
-  font-size: 14px;
+
+hd-iron-icon {
+  padding-inline-start: 4px;
 }

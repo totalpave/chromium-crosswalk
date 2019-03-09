@@ -4,8 +4,8 @@
 
 #include "content/renderer/manifest/manifest_uma_util.h"
 
-#include "base/metrics/histogram.h"
-#include "content/public/common/manifest.h"
+#include "base/metrics/histogram_macros.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 
 namespace content {
 
@@ -21,6 +21,7 @@ enum ManifestFetchResultType {
   MANIFEST_FETCH_SUCCESS = 0,
   MANIFEST_FETCH_ERROR_EMPTY_URL = 1,
   MANIFEST_FETCH_ERROR_UNSPECIFIED = 2,
+  MANIFEST_FETCH_ERROR_FROM_UNIQUE_ORIGIN = 3,
 
   // Must stay at the end.
   MANIFEST_FETCH_RESULT_TYPE_COUNT
@@ -28,7 +29,7 @@ enum ManifestFetchResultType {
 
 } // anonymous namespace
 
-void ManifestUmaUtil::ParseSucceeded(const Manifest& manifest) {
+void ManifestUmaUtil::ParseSucceeded(const blink::Manifest& manifest) {
   UMA_HISTOGRAM_BOOLEAN(kUMANameParseSuccess, true);
   UMA_HISTOGRAM_BOOLEAN("Manifest.IsEmpty", manifest.IsEmpty());
   if (manifest.IsEmpty())
@@ -40,10 +41,13 @@ void ManifestUmaUtil::ParseSucceeded(const Manifest& manifest) {
   UMA_HISTOGRAM_BOOLEAN("Manifest.HasProperty.start_url",
       !manifest.start_url.is_empty());
   UMA_HISTOGRAM_BOOLEAN("Manifest.HasProperty.display",
-      manifest.display != blink::WebDisplayModeUndefined);
-  UMA_HISTOGRAM_BOOLEAN("Manifest.HasProperty.orientation",
-      manifest.orientation != blink::WebScreenOrientationLockDefault);
+                        manifest.display != blink::kWebDisplayModeUndefined);
+  UMA_HISTOGRAM_BOOLEAN(
+      "Manifest.HasProperty.orientation",
+      manifest.orientation != blink::kWebScreenOrientationLockDefault);
   UMA_HISTOGRAM_BOOLEAN("Manifest.HasProperty.icons", !manifest.icons.empty());
+  UMA_HISTOGRAM_BOOLEAN("Manifest.HasProperty.share_target",
+                        manifest.share_target.has_value());
   UMA_HISTOGRAM_BOOLEAN("Manifest.HasProperty.gcm_sender_id",
       !manifest.gcm_sender_id.is_null());
 }
@@ -63,6 +67,9 @@ void ManifestUmaUtil::FetchFailed(FetchFailureReason reason) {
   switch (reason) {
     case FETCH_EMPTY_URL:
       fetch_result_type = MANIFEST_FETCH_ERROR_EMPTY_URL;
+      break;
+    case FETCH_FROM_UNIQUE_ORIGIN:
+      fetch_result_type = MANIFEST_FETCH_ERROR_FROM_UNIQUE_ORIGIN;
       break;
     case FETCH_UNSPECIFIED_REASON:
       fetch_result_type = MANIFEST_FETCH_ERROR_UNSPECIFIED;

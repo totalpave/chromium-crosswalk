@@ -29,7 +29,7 @@ bool FakePluginService::GetPluginInfo(int render_process_id,
                                       int render_frame_id,
                                       ResourceContext* context,
                                       const GURL& url,
-                                      const GURL& page_url,
+                                      const url::Origin& main_frame_origin,
                                       const std::string& mime_type,
                                       bool allow_wildcard,
                                       bool* is_stale,
@@ -49,10 +49,9 @@ base::string16 FakePluginService::GetPluginDisplayNameByPath(
   return base::string16();
 }
 
-void FakePluginService::GetPlugins(const GetPluginsCallback& callback) {
-}
+void FakePluginService::GetPlugins(GetPluginsCallback callback) {}
 
-PepperPluginInfo* FakePluginService::GetRegisteredPpapiPluginInfo(
+const PepperPluginInfo* FakePluginService::GetRegisteredPpapiPluginInfo(
     const base::FilePath& plugin_path) {
   return nullptr;
 }
@@ -87,6 +86,12 @@ bool FakePluginService::PpapiDevChannelSupported(
     BrowserContext* browser_context,
     const GURL& document_url) {
   return false;
+}
+
+int FakePluginService::CountPpapiPluginProcessesForProfile(
+    const base::FilePath& plugin_path,
+    const base::FilePath& profile_data_directory) {
+  return 0;
 }
 
 }  // namespace content

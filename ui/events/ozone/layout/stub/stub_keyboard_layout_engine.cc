@@ -4,13 +4,10 @@
 
 #include "ui/events/ozone/layout/stub/stub_keyboard_layout_engine.h"
 
-#include <algorithm>
-
 #include "base/strings/string16.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
-#include "ui/events/ozone/layout/layout_util.h"
 
 namespace ui {
 
@@ -26,6 +23,12 @@ bool StubKeyboardLayoutEngine::CanSetCurrentLayout() const {
 
 bool StubKeyboardLayoutEngine::SetCurrentLayoutByName(
     const std::string& layout_name) {
+  return false;
+}
+
+bool StubKeyboardLayoutEngine::SetCurrentLayoutFromBuffer(
+    const char* keymap_str,
+    size_t size) {
   return false;
 }
 

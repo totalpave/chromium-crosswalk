@@ -4,6 +4,7 @@
 
 #include "ppapi/cpp/input_event.h"
 
+#include "ppapi/cpp/input_event_interface_name.h"
 #include "ppapi/cpp/instance_handle.h"
 #include "ppapi/cpp/module.h"
 #include "ppapi/cpp/module_impl.h"
@@ -14,10 +15,6 @@
 namespace pp {
 
 namespace {
-
-template <> const char* interface_name<PPB_InputEvent_1_0>() {
-  return PPB_INPUT_EVENT_INTERFACE_1_0;
-}
 
 template <> const char* interface_name<PPB_KeyboardInputEvent_1_2>() {
   return PPB_KEYBOARD_INPUT_EVENT_INTERFACE_1_2;
@@ -37,6 +34,11 @@ template <> const char* interface_name<PPB_WheelInputEvent_1_0>() {
 
 template <> const char* interface_name<PPB_TouchInputEvent_1_0>() {
   return PPB_TOUCH_INPUT_EVENT_INTERFACE_1_0;
+}
+
+template <>
+const char* interface_name<PPB_TouchInputEvent_1_4>() {
+  return PPB_TOUCH_INPUT_EVENT_INTERFACE_1_4;
 }
 
 template <> const char* interface_name<PPB_IMEInputEvent_1_0>() {
@@ -324,14 +326,32 @@ TouchPoint TouchInputEvent::GetTouchById(PP_TouchListType list,
                                              uint32_t id) const {
   if (!has_interface<PPB_TouchInputEvent_1_0>())
     return TouchPoint();
-  return TouchPoint(get_interface<PPB_TouchInputEvent_1_0>()->
-                        GetTouchById(pp_resource(), list, id));
+
+  if (has_interface<PPB_TouchInputEvent_1_4>()) {
+    return TouchPoint(
+        get_interface<PPB_TouchInputEvent_1_4>()->GetTouchById(pp_resource(),
+                                                               list, id),
+        get_interface<PPB_TouchInputEvent_1_4>()->GetTouchTiltById(
+            pp_resource(), list, id));
+  }
+
+  return TouchPoint(get_interface<PPB_TouchInputEvent_1_0>()->GetTouchById(
+      pp_resource(), list, id));
 }
 
 TouchPoint TouchInputEvent::GetTouchByIndex(PP_TouchListType list,
                                                 uint32_t index) const {
   if (!has_interface<PPB_TouchInputEvent_1_0>())
     return TouchPoint();
+
+  if (has_interface<PPB_TouchInputEvent_1_4>()) {
+    return TouchPoint(
+        get_interface<PPB_TouchInputEvent_1_4>()->GetTouchByIndex(pp_resource(),
+                                                                  list, index),
+        get_interface<PPB_TouchInputEvent_1_4>()->GetTouchTiltByIndex(
+            pp_resource(), list, index));
+  }
+
   return TouchPoint(get_interface<PPB_TouchInputEvent_1_0>()->
                         GetTouchByIndex(pp_resource(), list, index));
 }

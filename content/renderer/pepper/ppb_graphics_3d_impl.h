@@ -10,7 +10,7 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "base/memory/shared_memory.h"
+#include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/weak_ptr.h"
 #include "gpu/command_buffer/client/gpu_control_client.h"
 #include "gpu/command_buffer/common/command_buffer_id.h"
@@ -22,6 +22,7 @@
 namespace gpu {
 struct Capabilities;
 class CommandBufferProxyImpl;
+struct ContextCreationAttribs;
 }
 
 namespace content {
@@ -29,12 +30,13 @@ namespace content {
 class PPB_Graphics3D_Impl : public ppapi::PPB_Graphics3D_Shared,
                             public gpu::GpuControlClient {
  public:
-  static PP_Resource CreateRaw(PP_Instance instance,
-                               PP_Resource share_context,
-                               const int32_t* attrib_list,
-                               gpu::Capabilities* capabilities,
-                               base::SharedMemoryHandle* shared_state_handle,
-                               gpu::CommandBufferId* command_buffer_id);
+  static PP_Resource CreateRaw(
+      PP_Instance instance,
+      PP_Resource share_context,
+      const gpu::ContextCreationAttribs& attrib_helper,
+      gpu::Capabilities* capabilities,
+      const base::UnsafeSharedMemoryRegion** shared_state_region,
+      gpu::CommandBufferId* command_buffer_id);
 
   // PPB_Graphics3D_API trusted implementation.
   PP_Bool SetGetBuffer(int32_t transfer_buffer_id) override;
@@ -44,8 +46,10 @@ class PPB_Graphics3D_Impl : public ppapi::PPB_Graphics3D_Shared,
   PP_Bool Flush(int32_t put_offset) override;
   gpu::CommandBuffer::State WaitForTokenInRange(int32_t start,
                                                 int32_t end) override;
-  gpu::CommandBuffer::State WaitForGetOffsetInRange(int32_t start,
-                                                    int32_t end) override;
+  gpu::CommandBuffer::State WaitForGetOffsetInRange(
+      uint32_t set_get_buffer_count,
+      int32_t start,
+      int32_t end) override;
   void EnsureWorkVisible() override;
   void TakeFrontBuffer() override;
   void ReturnFrontBuffer(const gpu::Mailbox& mailbox,
@@ -70,21 +74,27 @@ class PPB_Graphics3D_Impl : public ppapi::PPB_Graphics3D_Shared,
   // ppapi::PPB_Graphics3D_Shared overrides.
   gpu::CommandBuffer* GetCommandBuffer() override;
   gpu::GpuControl* GetGpuControl() override;
-  int32_t DoSwapBuffers(const gpu::SyncToken& sync_token) override;
+  int32_t DoSwapBuffers(const gpu::SyncToken& sync_token,
+                        const gfx::Size& size) override;
 
  private:
   explicit PPB_Graphics3D_Impl(PP_Instance instance);
 
   bool InitRaw(PPB_Graphics3D_API* share_context,
-               const int32_t* attrib_list,
+               const gpu::ContextCreationAttribs& requested_attribs,
                gpu::Capabilities* capabilities,
-               base::SharedMemoryHandle* shared_state_handle,
+               const base::UnsafeSharedMemoryRegion** shared_state_region,
                gpu::CommandBufferId* command_buffer_id);
 
   // GpuControlClient implementation.
   void OnGpuControlLostContext() final;
   void OnGpuControlLostContextMaybeReentrant() final;
   void OnGpuControlErrorMessage(const char* msg, int id) final;
+  void OnGpuControlSwapBuffersCompleted(
+      const gpu::SwapBuffersCompleteParams& params) final;
+  void OnSwapBufferPresented(uint64_t swap_id,
+                             const gfx::PresentationFeedback& feedback) final {}
+  void OnGpuControlReturnData(base::span<const uint8_t> data) final;
 
   // Other notifications from the GPU process.
   void OnSwapBuffers();
@@ -111,6 +121,7 @@ class PPB_Graphics3D_Impl : public ppapi::PPB_Graphics3D_Shared,
 #endif
 
   bool has_alpha_;
+  const bool use_image_chromium_;
   std::unique_ptr<gpu::CommandBufferProxyImpl> command_buffer_;
 
   base::WeakPtrFactory<PPB_Graphics3D_Impl> weak_ptr_factory_;

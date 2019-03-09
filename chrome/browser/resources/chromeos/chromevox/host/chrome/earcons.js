@@ -29,16 +29,14 @@ goog.inherits(cvox.ChromeEarcons, cvox.AbstractEarcons);
 /**
  * @override
  */
-cvox.ChromeEarcons.prototype.playEarcon = function(earcon) {
+cvox.ChromeEarcons.prototype.playEarcon = function(earcon, opt_location) {
   goog.base(this, 'playEarcon', earcon);
   if (!cvox.AbstractEarcons.enabled) {
     return;
   }
 
-  cvox.ExtensionBridge.send({
-                              'target': 'EARCON',
-                              'action': 'play',
-                              'earcon': earcon});
+  cvox.ExtensionBridge.send(
+      {'target': 'EARCON', 'action': 'play', 'earcon': earcon});
 };
 
 

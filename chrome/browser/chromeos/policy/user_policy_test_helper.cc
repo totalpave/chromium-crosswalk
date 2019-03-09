@@ -14,7 +14,8 @@
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/policy/user_cloud_policy_manager_chromeos.h"
-#include "chrome/browser/chromeos/policy/user_cloud_policy_manager_factory_chromeos.h"
+#include "chrome/browser/chromeos/policy/user_policy_manager_factory_chromeos.h"
+#include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/policy/profile_policy_connector_factory.h"
 #include "chrome/browser/policy/test/local_policy_test_server.h"
@@ -25,7 +26,7 @@
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/core/common/policy_service.h"
 #include "components/policy/core/common/policy_switches.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -51,8 +52,8 @@ std::string BuildPolicy(const base::DictionaryValue& mandatory,
   root_dict.SetWithoutPathExpansion(policyType, std::move(policy_type_dict));
   root_dict.SetWithoutPathExpansion("managed_users",
                                     std::move(managed_users_list));
-  root_dict.SetStringWithoutPathExpansion("policy_user", account_id);
-  root_dict.SetIntegerWithoutPathExpansion("current_key_index", 0);
+  root_dict.SetKey("policy_user", base::Value(account_id));
+  root_dict.SetKey("current_key_index", base::Value(0));
 
   std::string json_policy;
   base::JSONWriter::WriteWithOptions(
@@ -91,7 +92,9 @@ void UserPolicyTestHelper::WaitForInitialPolicy(Profile* profile) {
   connector->ScheduleServiceInitialization(0);
 
   UserCloudPolicyManagerChromeOS* const policy_manager =
-      UserCloudPolicyManagerFactoryChromeOS::GetForProfile(profile);
+      UserPolicyManagerFactoryChromeOS::GetCloudPolicyManagerForProfile(
+          profile);
+  DCHECK(!policy_manager->IsInitializationComplete(POLICY_DOMAIN_CHROME));
 
   // Give a bogus OAuth token to the |policy_manager|. This should make its
   // CloudPolicyClient fetch the DMToken.
@@ -101,7 +104,10 @@ void UserPolicyTestHelper::WaitForInitialPolicy(Profile* profile) {
   policy_manager->core()->client()->Register(
       registration_type,
       enterprise_management::DeviceRegisterRequest::FLAVOR_USER_REGISTRATION,
-      "bogus", std::string(), std::string(), std::string());
+      enterprise_management::DeviceRegisterRequest::LIFETIME_INDEFINITE,
+      enterprise_management::LicenseType::UNDEFINED,
+      "oauth_token_unused" /* oauth_token */, std::string() /* client_id */,
+      std::string() /* requisition */, std::string() /* current_state_key */);
 
   policy::ProfilePolicyConnector* const profile_connector =
       policy::ProfilePolicyConnectorFactory::GetForBrowserContext(profile);
@@ -130,6 +136,7 @@ void UserPolicyTestHelper::UpdatePolicy(
 }
 
 void UserPolicyTestHelper::DeletePolicyFile() {
+  base::ScopedAllowBlockingForTesting allow_io;
   base::DeleteFile(PolicyFilePath(), false);
 }
 
@@ -138,13 +145,15 @@ void UserPolicyTestHelper::WritePolicyFile(
     const base::DictionaryValue& recommended) {
   const std::string policy = BuildPolicy(
       mandatory, recommended, dm_protocol::kChromeUserPolicyType, account_id_);
+
+  base::ScopedAllowBlockingForTesting allow_io;
   const int bytes_written =
       base::WriteFile(PolicyFilePath(), policy.data(), policy.size());
   ASSERT_EQ(static_cast<int>(policy.size()), bytes_written);
 }
 
 base::FilePath UserPolicyTestHelper::PolicyFilePath() const {
-  return temp_dir_.path().AppendASCII("policy.json");
+  return temp_dir_.GetPath().AppendASCII("policy.json");
 }
 
 }  // namespace policy

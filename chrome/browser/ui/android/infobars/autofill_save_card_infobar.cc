@@ -8,7 +8,7 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
-#include "base/memory/ptr_util.h"
+#include "chrome/browser/android/android_theme_resources.h"
 #include "chrome/browser/android/resource_mapper.h"
 #include "chrome/browser/infobars/infobar_service.h"
 #include "components/autofill/core/browser/autofill_save_card_infobar_delegate_mobile.h"
@@ -19,11 +19,13 @@
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 
+using base::android::ScopedJavaLocalRef;
+
 namespace autofill {
 
 std::unique_ptr<infobars::InfoBar> CreateSaveCardInfoBarMobile(
     std::unique_ptr<AutofillSaveCardInfoBarDelegateMobile> delegate) {
-  return base::WrapUnique(new AutofillSaveCardInfoBar(std::move(delegate)));
+  return std::make_unique<AutofillSaveCardInfoBar>(std::move(delegate));
 }
 
 }  // namespace autofill
@@ -41,50 +43,43 @@ void AutofillSaveCardInfoBar::OnLegalMessageLinkClicked(JNIEnv* env,
       GURL(base::android::ConvertJavaStringToUTF16(env, url)));
 }
 
-// static
-bool AutofillSaveCardInfoBar::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
 base::android::ScopedJavaLocalRef<jobject>
 AutofillSaveCardInfoBar::CreateRenderInfoBar(JNIEnv* env) {
   autofill::AutofillSaveCardInfoBarDelegateMobile* delegate =
       GetSaveCardDelegate();
-  ScopedJavaLocalRef<jobject> java_bitmap;
-  if (delegate->GetIconId() == infobars::InfoBarDelegate::kNoIconID &&
-      !delegate->GetIcon().IsEmpty()) {
-    java_bitmap = gfx::ConvertToJavaBitmap(delegate->GetIcon().ToSkBitmap());
-  }
 
   base::android::ScopedJavaLocalRef<jobject> java_delegate =
       Java_AutofillSaveCardInfoBar_create(
           env, reinterpret_cast<intptr_t>(this), GetEnumeratedIconId(),
-          java_bitmap.obj(),
+          ScopedJavaLocalRef<jobject>(),
+          base::android::ConvertUTF16ToJavaString(env,
+                                                  delegate->GetMessageText()),
+          base::android::ConvertUTF16ToJavaString(env, delegate->GetLinkText()),
           base::android::ConvertUTF16ToJavaString(
-              env, delegate->GetMessageText()).obj(),
+              env, GetTextFor(ConfirmInfoBarDelegate::BUTTON_OK)),
           base::android::ConvertUTF16ToJavaString(
-              env, delegate->GetLinkText()).obj(),
-          base::android::ConvertUTF16ToJavaString(
-              env, GetTextFor(ConfirmInfoBarDelegate::BUTTON_OK)).obj(),
-          base::android::ConvertUTF16ToJavaString(
-              env, GetTextFor(ConfirmInfoBarDelegate::BUTTON_CANCEL)).obj());
+              env, GetTextFor(ConfirmInfoBarDelegate::BUTTON_CANCEL)),
+          delegate->IsGooglePayBrandingEnabled());
+
+  Java_AutofillSaveCardInfoBar_setDescriptionText(
+      env, java_delegate,
+      base::android::ConvertUTF16ToJavaString(env,
+                                              delegate->GetDescriptionText()));
 
   Java_AutofillSaveCardInfoBar_addDetail(
-      env, java_delegate.obj(),
+      env, java_delegate,
       ResourceMapper::MapFromChromiumId(delegate->issuer_icon_id()),
-      base::android::ConvertUTF16ToJavaString(
-          env, delegate->card_label()).obj(),
-      base::android::ConvertUTF16ToJavaString(
-          env, delegate->card_sub_label()).obj());
+      base::android::ConvertUTF16ToJavaString(env, delegate->card_label()),
+      base::android::ConvertUTF16ToJavaString(env, delegate->card_sub_label()));
 
   for (const auto& line : delegate->legal_messages()) {
     Java_AutofillSaveCardInfoBar_addLegalMessageLine(
-        env, java_delegate.obj(),
-        base::android::ConvertUTF16ToJavaString(env, line.text()).obj());
+        env, java_delegate,
+        base::android::ConvertUTF16ToJavaString(env, line.text()));
     for (const auto& link : line.links()) {
       Java_AutofillSaveCardInfoBar_addLinkToLastLegalMessageLine(
-          env, java_delegate.obj(), link.range.start(), link.range.end(),
-          base::android::ConvertUTF8ToJavaString(env, link.url.spec()).obj());
+          env, java_delegate, link.range.start(), link.range.end(),
+          base::android::ConvertUTF8ToJavaString(env, link.url.spec()));
     }
   }
 

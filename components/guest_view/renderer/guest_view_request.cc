@@ -11,9 +11,9 @@
 #include "components/guest_view/renderer/guest_view_container.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_view.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebRemoteFrame.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_remote_frame.h"
+#include "third_party/blink/public/web/web_view.h"
 
 namespace guest_view {
 
@@ -45,7 +45,8 @@ void GuestViewRequest::ExecuteCallbackIfAvailable(
   v8::MicrotasksScope microtasks(
       isolate(), v8::MicrotasksScope::kDoNotRunMicrotasks);
 
-  callback->Call(context->Global(), argc, argv.get());
+  callback->Call(context, context->Global(), argc, argv.get())
+      .FromMaybe(v8::Local<v8::Value>());
 }
 
 GuestViewAttachRequest::GuestViewAttachRequest(
@@ -90,16 +91,8 @@ void GuestViewAttachRequest::HandleResponse(const IPC::Message& message) {
     return;
 
   v8::HandleScope handle_scope(isolate());
-  blink::WebFrame* frame = guest_proxy_render_view->GetWebView()->mainFrame();
-  // TODO(lazyboy,nasko): The WebLocalFrame branch is not used when running
-  // on top of out-of-process iframes. Remove it once the code is converted.
-  v8::Local<v8::Value> window;
-  if (frame->isWebLocalFrame()) {
-    window = frame->mainWorldScriptContext()->Global();
-  } else {
-    window =
-        frame->toWebRemoteFrame()->deprecatedMainWorldScriptContext()->Global();
-  }
+  blink::WebFrame* frame = guest_proxy_render_view->GetWebView()->MainFrame();
+  v8::Local<v8::Value> window = frame->GlobalProxy();
 
   const int argc = 1;
   std::unique_ptr<v8::Local<v8::Value>[]> argv(new v8::Local<v8::Value>[argc]);

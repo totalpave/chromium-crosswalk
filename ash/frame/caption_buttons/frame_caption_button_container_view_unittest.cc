@@ -2,18 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/frame/caption_buttons/frame_caption_button_container_view.h"
+#include "ash/public/cpp/caption_buttons/frame_caption_button_container_view.h"
 
-#include "ash/common/ash_layout_constants.h"
-#include "ash/frame/caption_buttons/frame_caption_button.h"
+#include "ash/public/cpp/vector_icons/vector_icons.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/wm/maximize_mode/maximize_mode_controller.h"
-#include "grit/ash_resources.h"
+#include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/vector_icons_public.h"
+#include "ui/views/test/test_views.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
+#include "ui/views/window/caption_button_layout_constants.h"
+#include "ui/views/window/frame_caption_button.h"
+#include "ui/views/window/vector_icons/vector_icons.h"
 
 namespace ash {
 
@@ -23,7 +24,7 @@ class TestWidgetDelegate : public views::WidgetDelegateView {
  public:
   TestWidgetDelegate(bool can_maximize, bool can_minimize)
       : can_maximize_(can_maximize), can_minimize_(can_minimize) {}
-  ~TestWidgetDelegate() override {}
+  ~TestWidgetDelegate() override = default;
 
   bool CanMaximize() const override { return can_maximize_; }
 
@@ -38,15 +39,15 @@ class TestWidgetDelegate : public views::WidgetDelegateView {
 
 }  // namespace
 
-class FrameCaptionButtonContainerViewTest : public ash::test::AshTestBase {
+class FrameCaptionButtonContainerViewTest : public AshTestBase {
  public:
   enum MaximizeAllowed { MAXIMIZE_ALLOWED, MAXIMIZE_DISALLOWED };
 
   enum MinimizeAllowed { MINIMIZE_ALLOWED, MINIMIZE_DISALLOWED };
 
-  FrameCaptionButtonContainerViewTest() {}
+  FrameCaptionButtonContainerViewTest() = default;
 
-  ~FrameCaptionButtonContainerViewTest() override {}
+  ~FrameCaptionButtonContainerViewTest() override = default;
 
   // Creates a widget which allows maximizing based on |maximize_allowed|.
   // The caller takes ownership of the returned widget.
@@ -67,18 +68,19 @@ class FrameCaptionButtonContainerViewTest : public ash::test::AshTestBase {
   // Sets arbitrary images for the icons and assign the default caption button
   // size to the buttons in |container|.
   void InitContainer(FrameCaptionButtonContainerView* container) {
-    container->SetButtonSize(
-        GetAshLayoutSize(AshLayoutSize::NON_BROWSER_CAPTION_BUTTON));
-    for (int icon = 0; icon < CAPTION_BUTTON_ICON_COUNT; ++icon) {
-      container->SetButtonImage(static_cast<CaptionButtonIcon>(icon),
-                                gfx::VectorIconId::WINDOW_CONTROL_CLOSE);
+    container->SetButtonSize(views::GetCaptionButtonLayoutSize(
+        views::CaptionButtonLayoutSize::kNonBrowserCaption));
+    for (int icon = 0; icon < views::CAPTION_BUTTON_ICON_COUNT; ++icon) {
+      container->SetButtonImage(static_cast<views::CaptionButtonIcon>(icon),
+                                views::kWindowControlCloseIcon);
     }
+    container->SizeToPreferredSize();
   }
 
   // Tests that |leftmost| and |rightmost| are at |container|'s edges.
   bool CheckButtonsAtEdges(FrameCaptionButtonContainerView* container,
-                           const ash::FrameCaptionButton& leftmost,
-                           const ash::FrameCaptionButton& rightmost) {
+                           const views::FrameCaptionButton& leftmost,
+                           const views::FrameCaptionButton& rightmost) {
     gfx::Rect expected(container->GetPreferredSize());
 
     gfx::Rect container_size(container->GetPreferredSize());
@@ -105,7 +107,7 @@ TEST_F(FrameCaptionButtonContainerViewTest, ButtonVisibility) {
   // All the buttons should be visible when minimizing and maximizing are
   // allowed.
   FrameCaptionButtonContainerView container1(
-      CreateTestWidget(MAXIMIZE_ALLOWED, MINIMIZE_ALLOWED));
+      CreateTestWidget(MAXIMIZE_ALLOWED, MINIMIZE_ALLOWED), nullptr);
   InitContainer(&container1);
   container1.Layout();
   FrameCaptionButtonContainerView::TestApi t1(&container1);
@@ -118,7 +120,7 @@ TEST_F(FrameCaptionButtonContainerViewTest, ButtonVisibility) {
   // The minimize button should be visible when minimizing is allowed but
   // maximizing is disallowed.
   FrameCaptionButtonContainerView container2(
-      CreateTestWidget(MAXIMIZE_DISALLOWED, MINIMIZE_ALLOWED));
+      CreateTestWidget(MAXIMIZE_DISALLOWED, MINIMIZE_ALLOWED), nullptr);
   InitContainer(&container2);
   container2.Layout();
   FrameCaptionButtonContainerView::TestApi t2(&container2);
@@ -131,7 +133,7 @@ TEST_F(FrameCaptionButtonContainerViewTest, ButtonVisibility) {
   // Neither the minimize button nor the size button should be visible when
   // neither minimizing nor maximizing are allowed.
   FrameCaptionButtonContainerView container3(
-      CreateTestWidget(MAXIMIZE_DISALLOWED, MINIMIZE_DISALLOWED));
+      CreateTestWidget(MAXIMIZE_DISALLOWED, MINIMIZE_DISALLOWED), nullptr);
   InitContainer(&container3);
   container3.Layout();
   FrameCaptionButtonContainerView::TestApi t3(&container3);
@@ -147,55 +149,63 @@ TEST_F(FrameCaptionButtonContainerViewTest, ButtonVisibility) {
 TEST_F(FrameCaptionButtonContainerViewTest,
        TestUpdateSizeButtonVisibilityAnimation) {
   FrameCaptionButtonContainerView container(
-      CreateTestWidget(MAXIMIZE_ALLOWED, MINIMIZE_ALLOWED));
+      CreateTestWidget(MAXIMIZE_ALLOWED, MINIMIZE_ALLOWED), nullptr);
+
+  // Add an extra button to the left of the size button to verify that it is
+  // repositioned similarly to the minimize button. This simulates the PWA menu
+  // button being added to the left of the minimize button.
+  views::View* extra_button = new views::StaticSizedView(gfx::Size(32, 32));
+  container.AddChildViewAt(extra_button, 0);
+
   InitContainer(&container);
-  container.SetBoundsRect(gfx::Rect(container.GetPreferredSize()));
   container.Layout();
 
   FrameCaptionButtonContainerView::TestApi test(&container);
+  gfx::Rect initial_extra_button_bounds = extra_button->bounds();
   gfx::Rect initial_minimize_button_bounds = test.minimize_button()->bounds();
   gfx::Rect initial_size_button_bounds = test.size_button()->bounds();
   gfx::Rect initial_close_button_bounds = test.close_button()->bounds();
   gfx::Rect initial_container_bounds = container.bounds();
 
+  ASSERT_EQ(initial_minimize_button_bounds.x(),
+            initial_extra_button_bounds.right());
   ASSERT_EQ(initial_size_button_bounds.x(),
             initial_minimize_button_bounds.right());
   ASSERT_EQ(initial_close_button_bounds.x(),
             initial_size_button_bounds.right());
 
-  // Hidden size button should result in minimize button animating to the
-  // right. The size button should not be visible, but should not have moved.
-  Shell::GetInstance()
-      ->maximize_mode_controller()
-      ->EnableMaximizeModeWindowManager(true);
-  container.UpdateSizeButtonVisibility();
+  // Button positions should be the same when entering tablet mode.
+  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(true);
+  container.UpdateCaptionButtonState(false /*=animate*/);
   test.EndAnimations();
   // Parent needs to layout in response to size change.
   container.Layout();
 
   EXPECT_TRUE(test.minimize_button()->visible());
-  EXPECT_FALSE(test.size_button()->visible());
+  EXPECT_TRUE(test.size_button()->visible());
   EXPECT_TRUE(test.close_button()->visible());
+  gfx::Rect extra_button_bounds = extra_button->bounds();
   gfx::Rect minimize_button_bounds = test.minimize_button()->bounds();
+  gfx::Rect size_button_bounds = test.size_button()->bounds();
   gfx::Rect close_button_bounds = test.close_button()->bounds();
-  EXPECT_EQ(close_button_bounds.x(), minimize_button_bounds.right());
+  EXPECT_EQ(minimize_button_bounds.x(), extra_button_bounds.right());
+  EXPECT_EQ(size_button_bounds.x(), minimize_button_bounds.right());
+  EXPECT_EQ(close_button_bounds.x(), size_button_bounds.right());
   EXPECT_EQ(initial_size_button_bounds, test.size_button()->bounds());
   EXPECT_EQ(initial_close_button_bounds.size(), close_button_bounds.size());
-  EXPECT_LT(container.GetPreferredSize().width(),
+  EXPECT_EQ(container.GetPreferredSize().width(),
             initial_container_bounds.width());
 
-  // Revealing the size button should cause the minimize button to return to its
-  // original position.
-  Shell::GetInstance()
-      ->maximize_mode_controller()
-      ->EnableMaximizeModeWindowManager(false);
-  container.UpdateSizeButtonVisibility();
+  // Button positions should be the same when leaving tablet mode.
+  Shell::Get()->tablet_mode_controller()->EnableTabletModeWindowManager(false);
+  container.UpdateCaptionButtonState(false /*=animate*/);
   // Calling code needs to layout in response to size change.
   container.Layout();
   test.EndAnimations();
   EXPECT_TRUE(test.minimize_button()->visible());
   EXPECT_TRUE(test.size_button()->visible());
   EXPECT_TRUE(test.close_button()->visible());
+  EXPECT_EQ(initial_extra_button_bounds, extra_button->bounds());
   EXPECT_EQ(initial_minimize_button_bounds, test.minimize_button()->bounds());
   EXPECT_EQ(initial_size_button_bounds, test.size_button()->bounds());
   EXPECT_EQ(initial_close_button_bounds, test.close_button()->bounds());

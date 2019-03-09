@@ -12,6 +12,8 @@
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/gtest_util.h"
+#include "base/test/test_timeouts.h"
 #include "base/threading/thread.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -31,7 +33,8 @@ class OffThreadObjectCreator {
       Thread creator_thread("creator_thread");
       creator_thread.Start();
       creator_thread.task_runner()->PostTask(
-          FROM_HERE, base::Bind(OffThreadObjectCreator::CreateObject, &result));
+          FROM_HERE,
+          base::BindOnce(OffThreadObjectCreator::CreateObject, &result));
     }
     DCHECK(result);  // We synchronized on thread destruction above.
     return result;
@@ -49,9 +52,29 @@ struct Derived : public Base {};
 
 struct TargetBase {};
 struct Target : public TargetBase, public SupportsWeakPtr<Target> {
-  virtual ~Target() {}
+  virtual ~Target() = default;
 };
+
 struct DerivedTarget : public Target {};
+
+// A class inheriting from Target and defining a nested type called 'Base'.
+// To guard against strange compilation errors.
+struct DerivedTargetWithNestedBase : public Target {
+  using Base = void;
+};
+
+// A struct with a virtual destructor.
+struct VirtualDestructor {
+  virtual ~VirtualDestructor() = default;
+};
+
+// A class inheriting from Target where Target is not the first base, and where
+// the first base has a virtual method table. This creates a structure where the
+// Target base is not positioned at the beginning of
+// DerivedTargetMultipleInheritance.
+struct DerivedTargetMultipleInheritance : public VirtualDestructor,
+                                          public Target {};
+
 struct Arrow {
   WeakPtr<Target> target;
 };
@@ -72,8 +95,8 @@ class BackgroundThread : public Thread {
     WaitableEvent completion(WaitableEvent::ResetPolicy::MANUAL,
                              WaitableEvent::InitialState::NOT_SIGNALED);
     task_runner()->PostTask(
-        FROM_HERE, base::Bind(&BackgroundThread::DoCreateArrowFromTarget, arrow,
-                              target, &completion));
+        FROM_HERE, base::BindOnce(&BackgroundThread::DoCreateArrowFromTarget,
+                                  arrow, target, &completion));
     completion.Wait();
   }
 
@@ -81,8 +104,8 @@ class BackgroundThread : public Thread {
     WaitableEvent completion(WaitableEvent::ResetPolicy::MANUAL,
                              WaitableEvent::InitialState::NOT_SIGNALED);
     task_runner()->PostTask(
-        FROM_HERE, base::Bind(&BackgroundThread::DoCreateArrowFromArrow, arrow,
-                              other, &completion));
+        FROM_HERE, base::BindOnce(&BackgroundThread::DoCreateArrowFromArrow,
+                                  arrow, other, &completion));
     completion.Wait();
   }
 
@@ -91,7 +114,7 @@ class BackgroundThread : public Thread {
                              WaitableEvent::InitialState::NOT_SIGNALED);
     task_runner()->PostTask(
         FROM_HERE,
-        base::Bind(&BackgroundThread::DoDeleteTarget, object, &completion));
+        base::BindOnce(&BackgroundThread::DoDeleteTarget, object, &completion));
     completion.Wait();
   }
 
@@ -99,8 +122,8 @@ class BackgroundThread : public Thread {
     WaitableEvent completion(WaitableEvent::ResetPolicy::MANUAL,
                              WaitableEvent::InitialState::NOT_SIGNALED);
     task_runner()->PostTask(
-        FROM_HERE, base::Bind(&BackgroundThread::DoCopyAndAssignArrow, object,
-                              &completion));
+        FROM_HERE, base::BindOnce(&BackgroundThread::DoCopyAndAssignArrow,
+                                  object, &completion));
     completion.Wait();
   }
 
@@ -108,8 +131,8 @@ class BackgroundThread : public Thread {
     WaitableEvent completion(WaitableEvent::ResetPolicy::MANUAL,
                              WaitableEvent::InitialState::NOT_SIGNALED);
     task_runner()->PostTask(
-        FROM_HERE, base::Bind(&BackgroundThread::DoCopyAndAssignArrowBase,
-                              object, &completion));
+        FROM_HERE, base::BindOnce(&BackgroundThread::DoCopyAndAssignArrowBase,
+                                  object, &completion));
     completion.Wait();
   }
 
@@ -118,7 +141,7 @@ class BackgroundThread : public Thread {
                              WaitableEvent::InitialState::NOT_SIGNALED);
     task_runner()->PostTask(
         FROM_HERE,
-        base::Bind(&BackgroundThread::DoDeleteArrow, object, &completion));
+        base::BindOnce(&BackgroundThread::DoDeleteArrow, object, &completion));
     completion.Wait();
   }
 
@@ -126,8 +149,9 @@ class BackgroundThread : public Thread {
     WaitableEvent completion(WaitableEvent::ResetPolicy::MANUAL,
                              WaitableEvent::InitialState::NOT_SIGNALED);
     Target* result = nullptr;
-    task_runner()->PostTask(FROM_HERE, base::Bind(&BackgroundThread::DoDeRef,
-                                                  arrow, &result, &completion));
+    task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(&BackgroundThread::DoDeRef, arrow, &result,
+                                  &completion));
     completion.Wait();
     return result;
   }
@@ -287,6 +311,22 @@ TEST(WeakPtrTest, DerivedTarget) {
   EXPECT_EQ(&target, ptr.get());
 }
 
+TEST(WeakPtrTest, DerivedTargetWithNestedBase) {
+  DerivedTargetWithNestedBase target;
+  WeakPtr<DerivedTargetWithNestedBase> ptr = AsWeakPtr(&target);
+  EXPECT_EQ(&target, ptr.get());
+}
+
+TEST(WeakPtrTest, DerivedTargetMultipleInheritance) {
+  DerivedTargetMultipleInheritance d;
+  Target& b = d;
+  EXPECT_NE(static_cast<void*>(&d), static_cast<void*>(&b));
+  const WeakPtr<Target> pb = AsWeakPtr(&b);
+  EXPECT_EQ(pb.get(), &b);
+  const WeakPtr<DerivedTargetMultipleInheritance> pd = AsWeakPtr(&d);
+  EXPECT_EQ(pd.get(), &d);
+}
+
 TEST(WeakPtrFactoryTest, BooleanTesting) {
   int data;
   WeakPtrFactory<int> factory(&data);
@@ -350,6 +390,90 @@ TEST(WeakPtrTest, InvalidateWeakPtrs) {
   factory.InvalidateWeakPtrs();
   EXPECT_EQ(nullptr, ptr2.get());
   EXPECT_FALSE(factory.HasWeakPtrs());
+}
+
+// Tests that WasInvalidated() is true only for invalidated WeakPtrs (not
+// nullptr) and doesn't DCHECK (e.g. because of a dereference attempt).
+TEST(WeakPtrTest, WasInvalidatedByFactoryDestruction) {
+  WeakPtr<int> ptr;
+  EXPECT_FALSE(ptr.WasInvalidated());
+
+  // Test |data| destroyed. That is, the typical pattern when |data| (and its
+  // associated factory) go out of scope.
+  {
+    int data = 0;
+    WeakPtrFactory<int> factory(&data);
+    ptr = factory.GetWeakPtr();
+
+    // Verify that a live WeakPtr is not reported as Invalidated.
+    EXPECT_FALSE(ptr.WasInvalidated());
+  }
+
+  // Checking validity shouldn't read beyond the stack frame.
+  EXPECT_TRUE(ptr.WasInvalidated());
+  ptr = nullptr;
+  EXPECT_FALSE(ptr.WasInvalidated());
+}
+
+// As above, but testing InvalidateWeakPtrs().
+TEST(WeakPtrTest, WasInvalidatedByInvalidateWeakPtrs) {
+  int data = 0;
+  WeakPtrFactory<int> factory(&data);
+  WeakPtr<int> ptr = factory.GetWeakPtr();
+  EXPECT_FALSE(ptr.WasInvalidated());
+  factory.InvalidateWeakPtrs();
+  EXPECT_TRUE(ptr.WasInvalidated());
+  ptr = nullptr;
+  EXPECT_FALSE(ptr.WasInvalidated());
+}
+
+// A WeakPtr should not be reported as 'invalidated' if nullptr was assigned to
+// it.
+TEST(WeakPtrTest, WasInvalidatedWhilstNull) {
+  int data = 0;
+  WeakPtrFactory<int> factory(&data);
+  WeakPtr<int> ptr = factory.GetWeakPtr();
+  EXPECT_FALSE(ptr.WasInvalidated());
+  ptr = nullptr;
+  EXPECT_FALSE(ptr.WasInvalidated());
+  factory.InvalidateWeakPtrs();
+  EXPECT_FALSE(ptr.WasInvalidated());
+}
+
+TEST(WeakPtrTest, MaybeValidOnSameSequence) {
+  int data;
+  WeakPtrFactory<int> factory(&data);
+  WeakPtr<int> ptr = factory.GetWeakPtr();
+  EXPECT_TRUE(ptr.MaybeValid());
+  factory.InvalidateWeakPtrs();
+  // Since InvalidateWeakPtrs() ran on this sequence, MaybeValid() should be
+  // false.
+  EXPECT_FALSE(ptr.MaybeValid());
+}
+
+TEST(WeakPtrTest, MaybeValidOnOtherSequence) {
+  int data;
+  WeakPtrFactory<int> factory(&data);
+  WeakPtr<int> ptr = factory.GetWeakPtr();
+  EXPECT_TRUE(ptr.MaybeValid());
+
+  base::Thread other_thread("other_thread");
+  other_thread.StartAndWaitForTesting();
+  other_thread.task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](WeakPtr<int> ptr) {
+            // Check that MaybeValid() _eventually_ returns false.
+            const TimeDelta timeout = TestTimeouts::tiny_timeout();
+            const TimeTicks begin = TimeTicks::Now();
+            while (ptr.MaybeValid() && (TimeTicks::Now() - begin) < timeout)
+              PlatformThread::YieldCurrentThread();
+            EXPECT_FALSE(ptr.MaybeValid());
+          },
+          ptr));
+  factory.InvalidateWeakPtrs();
+  // |other_thread|'s destructor will join, ensuring we wait for the task to be
+  // run.
 }
 
 TEST(WeakPtrTest, HasWeakPtrs) {
@@ -563,8 +687,6 @@ TEST(WeakPtrTest, NonOwnerThreadCanDeleteWeakPtr) {
   background.DeleteArrow(arrow);
 }
 
-#if (!defined(NDEBUG) || defined(DCHECK_ALWAYS_ON)) && GTEST_HAS_DEATH_TEST
-
 TEST(WeakPtrDeathTest, WeakPtrCopyDoesNotChangeThreadBinding) {
   // The default style "fast" does not support multi-threaded tests
   // (introduces deadlock on Linux).
@@ -588,7 +710,7 @@ TEST(WeakPtrDeathTest, WeakPtrCopyDoesNotChangeThreadBinding) {
 
   // Although background thread created the copy, it can not deref the copied
   // WeakPtr.
-  ASSERT_DEATH(background.DeRef(arrow_copy), "");
+  ASSERT_DCHECK_DEATH(background.DeRef(arrow_copy));
 
   background.DeleteArrow(arrow_copy);
 }
@@ -610,7 +732,7 @@ TEST(WeakPtrDeathTest, NonOwnerThreadDereferencesWeakPtrAfterReference) {
   // Background thread tries to deref target, which violates thread ownership.
   BackgroundThread background;
   background.Start();
-  ASSERT_DEATH(background.DeRef(&arrow), "");
+  ASSERT_DCHECK_DEATH(background.DeRef(&arrow));
 }
 
 TEST(WeakPtrDeathTest, NonOwnerThreadDeletesWeakPtrAfterReference) {
@@ -630,7 +752,7 @@ TEST(WeakPtrDeathTest, NonOwnerThreadDeletesWeakPtrAfterReference) {
   background.DeRef(&arrow);
 
   // Main thread deletes Target, violating thread binding.
-  ASSERT_DEATH(target.reset(), "");
+  ASSERT_DCHECK_DEATH(target.reset());
 
   // |target.reset()| died so |target| still holds the object, so we
   // must pass it to the background thread to teardown.
@@ -653,7 +775,7 @@ TEST(WeakPtrDeathTest, NonOwnerThreadDeletesObjectAfterReference) {
   // Background thread tries to delete target, volating thread binding.
   BackgroundThread background;
   background.Start();
-  ASSERT_DEATH(background.DeleteTarget(target.release()), "");
+  ASSERT_DCHECK_DEATH(background.DeleteTarget(target.release()));
 }
 
 TEST(WeakPtrDeathTest, NonOwnerThreadReferencesObjectAfterDeletion) {
@@ -673,9 +795,7 @@ TEST(WeakPtrDeathTest, NonOwnerThreadReferencesObjectAfterDeletion) {
   background.DeleteTarget(target.release());
 
   // Main thread attempts to dereference the target, violating thread binding.
-  ASSERT_DEATH(arrow.target.get(), "");
+  ASSERT_DCHECK_DEATH(arrow.target.get());
 }
-
-#endif
 
 }  // namespace base

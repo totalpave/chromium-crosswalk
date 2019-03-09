@@ -269,62 +269,62 @@ TEST_F(PrefValueStoreTest, GetValue) {
   // test whether overrides work correctly.
 
   // Test getting a managed value.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetValue(prefs::kManagedPref,
-                                          base::Value::TYPE_STRING, &value));
+                                          base::Value::Type::STRING, &value));
   std::string actual_str_value;
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(managed_pref::kManagedValue, actual_str_value);
 
   // Test getting a supervised user value.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetValue(prefs::kSupervisedUserPref,
-                                          base::Value::TYPE_STRING, &value));
+                                          base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(supervised_user_pref::kSupervisedUserValue, actual_str_value);
 
   // Test getting an extension value.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetValue(prefs::kExtensionPref,
-                                          base::Value::TYPE_STRING, &value));
+                                          base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(extension_pref::kExtensionValue, actual_str_value);
 
   // Test getting a command-line value.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetValue(prefs::kCommandLinePref,
-                                          base::Value::TYPE_STRING, &value));
+                                          base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(command_line_pref::kCommandLineValue, actual_str_value);
 
   // Test getting a user-set value.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetValue(prefs::kUserPref,
-                                          base::Value::TYPE_STRING, &value));
+                                          base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(user_pref::kUserValue, actual_str_value);
 
   // Test getting a user set value overwriting a recommended value.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetValue(prefs::kRecommendedPref,
-                                          base::Value::TYPE_STRING, &value));
+                                          base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(recommended_pref::kRecommendedValue,
             actual_str_value);
 
   // Test getting a default value.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetValue(prefs::kDefaultPref,
-                                          base::Value::TYPE_STRING, &value));
+                                          base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(default_pref::kDefaultValue, actual_str_value);
 
   // Test getting a preference value that the |PrefValueStore|
   // does not contain.
-  base::FundamentalValue tmp_dummy_value(true);
+  base::Value tmp_dummy_value(true);
   value = &tmp_dummy_value;
   ASSERT_FALSE(pref_value_store_->GetValue(prefs::kMissingPref,
-                                           base::Value::TYPE_STRING, &value));
+                                           base::Value::Type::STRING, &value));
   ASSERT_FALSE(value);
 }
 
@@ -336,61 +336,61 @@ TEST_F(PrefValueStoreTest, GetRecommendedValue) {
   // test whether overrides do not clutter the recommended value.
 
   // Test getting recommended value when a managed value is present.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetRecommendedValue(
       prefs::kManagedPref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   std::string actual_str_value;
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(recommended_pref::kManagedValue, actual_str_value);
 
   // Test getting recommended value when a supervised user value is present.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetRecommendedValue(
       prefs::kSupervisedUserPref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(recommended_pref::kSupervisedUserValue, actual_str_value);
 
   // Test getting recommended value when an extension value is present.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetRecommendedValue(
       prefs::kExtensionPref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(recommended_pref::kExtensionValue, actual_str_value);
 
   // Test getting recommended value when a command-line value is present.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetRecommendedValue(
       prefs::kCommandLinePref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(recommended_pref::kCommandLineValue, actual_str_value);
 
   // Test getting recommended value when a user-set value is present.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetRecommendedValue(
       prefs::kUserPref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(recommended_pref::kUserValue, actual_str_value);
 
   // Test getting recommended value when no higher-priority value is present.
-  value = NULL;
+  value = nullptr;
   ASSERT_TRUE(pref_value_store_->GetRecommendedValue(
       prefs::kRecommendedPref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   EXPECT_TRUE(value->GetAsString(&actual_str_value));
   EXPECT_EQ(recommended_pref::kRecommendedValue,
             actual_str_value);
 
   // Test getting recommended value when no recommended value is present.
-  base::FundamentalValue tmp_dummy_value(true);
+  base::Value tmp_dummy_value(true);
   value = &tmp_dummy_value;
   ASSERT_FALSE(pref_value_store_->GetRecommendedValue(
       prefs::kDefaultPref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   ASSERT_FALSE(value);
 
   // Test getting a preference value that the |PrefValueStore|
@@ -398,7 +398,7 @@ TEST_F(PrefValueStoreTest, GetRecommendedValue) {
   value = &tmp_dummy_value;
   ASSERT_FALSE(pref_value_store_->GetRecommendedValue(
       prefs::kMissingPref,
-      base::Value::TYPE_STRING, &value));
+      base::Value::Type::STRING, &value));
   ASSERT_FALSE(value);
 }
 

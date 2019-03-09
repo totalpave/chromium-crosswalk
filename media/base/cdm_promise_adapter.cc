@@ -6,23 +6,26 @@
 
 #include <utility>
 
-#include "media/base/media_keys.h"
-
 namespace media {
 
-CdmPromiseAdapter::CdmPromiseAdapter() : next_promise_id_(1) {
-}
+CdmPromiseAdapter::CdmPromiseAdapter()
+    : next_promise_id_(kInvalidPromiseId + 1) {}
 
 CdmPromiseAdapter::~CdmPromiseAdapter() {
-  DCHECK(promises_.empty());
   DCHECK(thread_checker_.CalledOnValidThread());
+  DLOG_IF(WARNING, !promises_.empty()) << "There are unfulfilled promises";
   Clear();
 }
 
 uint32_t CdmPromiseAdapter::SavePromise(std::unique_ptr<CdmPromise> promise) {
   DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_NE(kInvalidPromiseId, next_promise_id_);
+
   uint32_t promise_id = next_promise_id_++;
-  promises_.add(promise_id, std::move(promise));
+  if (next_promise_id_ == kInvalidPromiseId)
+    next_promise_id_++;
+
+  promises_[promise_id] = std::move(promise);
   return promise_id;
 }
 
@@ -31,7 +34,7 @@ void CdmPromiseAdapter::ResolvePromise(uint32_t promise_id,
                                        const T&... result) {
   std::unique_ptr<CdmPromise> promise = TakePromise(promise_id);
   if (!promise) {
-    NOTREACHED() << "Promise not found for " << promise_id;
+    LOG(ERROR) << "Promise not found for " << promise_id;
     return;
   }
 
@@ -39,7 +42,7 @@ void CdmPromiseAdapter::ResolvePromise(uint32_t promise_id,
   CdmPromise::ResolveParameterType type = promise->GetResolveParameterType();
   CdmPromise::ResolveParameterType expected = CdmPromiseTraits<T...>::kType;
   if (type != expected) {
-    NOTREACHED() << "Promise type mismatch: " << type << " vs " << expected;
+    LOG(ERROR) << "Promise type mismatch: " << type << " vs " << expected;
     return;
   }
 
@@ -47,12 +50,12 @@ void CdmPromiseAdapter::ResolvePromise(uint32_t promise_id,
 }
 
 void CdmPromiseAdapter::RejectPromise(uint32_t promise_id,
-                                      MediaKeys::Exception exception_code,
+                                      CdmPromise::Exception exception_code,
                                       uint32_t system_code,
                                       const std::string& error_message) {
   std::unique_ptr<CdmPromise> promise = TakePromise(promise_id);
   if (!promise) {
-    NOTREACHED() << "No promise found for promise_id " << promise_id;
+    LOG(ERROR) << "Promise not found for " << promise_id;
     return;
   }
 
@@ -63,21 +66,28 @@ void CdmPromiseAdapter::Clear() {
   // Reject all outstanding promises.
   DCHECK(thread_checker_.CalledOnValidThread());
   for (auto& promise : promises_)
-    promise.second->reject(MediaKeys::UNKNOWN_ERROR, 0, "Operation aborted.");
+    promise.second->reject(CdmPromise::Exception::INVALID_STATE_ERROR, 0,
+                           "Operation aborted.");
   promises_.clear();
 }
 
 std::unique_ptr<CdmPromise> CdmPromiseAdapter::TakePromise(
     uint32_t promise_id) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  PromiseMap::iterator it = promises_.find(promise_id);
+  auto it = promises_.find(promise_id);
   if (it == promises_.end())
     return nullptr;
-  return promises_.take_and_erase(it);
+
+  std::unique_ptr<CdmPromise> result = std::move(it->second);
+  promises_.erase(it);
+  return result;
 }
 
 // Explicit instantiation of function templates.
 template MEDIA_EXPORT void CdmPromiseAdapter::ResolvePromise(uint32_t);
+template MEDIA_EXPORT void CdmPromiseAdapter::ResolvePromise(
+    uint32_t,
+    const CdmKeyInformation::KeyStatus&);
 template MEDIA_EXPORT void CdmPromiseAdapter::ResolvePromise(
     uint32_t,
     const std::string&);

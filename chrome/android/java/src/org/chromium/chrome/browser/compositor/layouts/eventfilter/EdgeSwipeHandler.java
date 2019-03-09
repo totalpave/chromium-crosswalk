@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.compositor.layouts.eventfilter;
 
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EdgeSwipeEventFilter.ScrollDirection;
-
 /**
  * Interface to implement to handle swipe from edge of the screen.
  */
@@ -16,7 +14,7 @@ public interface EdgeSwipeHandler {
      * @param x         The horizontal coordinate the swipe started at in dp.
      * @param y         The vertical coordinate the swipe started at in dp.
      */
-    public void swipeStarted(ScrollDirection direction, float x, float y);
+    public void swipeStarted(@ScrollDirection int direction, float x, float y);
 
     /**
      * Called each time the swipe gets a new event updating the swipe position.
@@ -52,5 +50,5 @@ public interface EdgeSwipeHandler {
      * @param direction The direction of the swipe.
      * @return Whether or not the swipe is allowed.
      */
-    public boolean isSwipeEnabled(ScrollDirection direction);
+    public boolean isSwipeEnabled(@ScrollDirection int direction);
 }

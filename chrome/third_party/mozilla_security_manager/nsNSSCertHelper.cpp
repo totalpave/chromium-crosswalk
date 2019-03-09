@@ -48,24 +48,16 @@
 
 #include "base/i18n/number_formatting.h"
 #include "base/lazy_instance.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/common/net/x509_certificate_model.h"
+#include "chrome/common/net/x509_certificate_model_nss.h"
 #include "chrome/grit/generated_resources.h"
 #include "crypto/scoped_nss_types.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "ui/base/l10n/l10n_util.h"
-
-#if !defined(CERTDB_TERMINAL_RECORD)
-/* NSS 3.13 renames CERTDB_VALID_PEER to CERTDB_TERMINAL_RECORD
- * and marks CERTDB_VALID_PEER as deprecated.
- * If we're using an older version, rename it ourselves.
- */
-#define CERTDB_TERMINAL_RECORD CERTDB_VALID_PEER
-#endif
 
 namespace {
 
@@ -126,8 +118,6 @@ SECOidTag eku_ms_lifetime_signing = SEC_OID_UNKNOWN;
 SECOidTag eku_ms_smart_card_logon = SEC_OID_UNKNOWN;
 SECOidTag eku_ms_key_recovery_agent = SEC_OID_UNKNOWN;
 SECOidTag eku_netscape_international_step_up = SEC_OID_UNKNOWN;
-SECOidTag cert_attribute_business_category = SEC_OID_UNKNOWN;
-SECOidTag cert_attribute_ev_incorporation_country = SEC_OID_UNKNOWN;
 
 class DynamicOidRegisterer {
  public:
@@ -155,13 +145,6 @@ class DynamicOidRegisterer {
     eku_ms_key_recovery_agent = RegisterDynamicOid("1.3.6.1.4.1.311.21.6");
     eku_netscape_international_step_up = RegisterDynamicOid(
         "2.16.840.1.113730.4.1");
-
-    // These two OIDs will be built-in as SEC_OID_BUSINESS_CATEGORY and
-    // SEC_OID_EV_INCORPORATION_COUNTRY starting in NSS 3.13.  Until then,
-    // we need to add them dynamically.
-    cert_attribute_business_category = RegisterDynamicOid("2.5.4.15");
-    cert_attribute_ev_incorporation_country = RegisterDynamicOid(
-        "1.3.6.1.4.1.311.60.2.1.3");
   }
 };
 
@@ -189,6 +172,7 @@ std::string GetOIDText(SECItem* oid) {
   int string_id;
   SECOidTag oid_tag = SECOID_FindOIDTag(oid);
   switch (oid_tag) {
+    // Distinguished Name fields:
     case SEC_OID_AVA_COMMON_NAME:
       string_id = IDS_CERT_OID_AVA_COMMON_NAME;
       break;
@@ -225,6 +209,28 @@ std::string GetOIDText(SECItem* oid) {
     case SEC_OID_PKCS9_EMAIL_ADDRESS:
       string_id = IDS_CERT_OID_PKCS9_EMAIL_ADDRESS;
       break;
+
+    // Extended Validation (EV) name fields:
+    case SEC_OID_BUSINESS_CATEGORY:
+      string_id = IDS_CERT_OID_BUSINESS_CATEGORY;
+      break;
+    case SEC_OID_EV_INCORPORATION_LOCALITY:
+      string_id = IDS_CERT_OID_EV_INCORPORATION_LOCALITY;
+      break;
+    case SEC_OID_EV_INCORPORATION_STATE:
+      string_id = IDS_CERT_OID_EV_INCORPORATION_STATE;
+      break;
+    case SEC_OID_EV_INCORPORATION_COUNTRY:
+      string_id = IDS_CERT_OID_EV_INCORPORATION_COUNTRY;
+      break;
+    case SEC_OID_AVA_STREET_ADDRESS:
+      string_id = IDS_CERT_OID_AVA_STREET_ADDRESS;
+      break;
+    case SEC_OID_AVA_POSTAL_CODE:
+      string_id = IDS_CERT_OID_AVA_POSTAL_CODE;
+      break;
+
+    // Algorithm fields:
     case SEC_OID_PKCS1_RSA_ENCRYPTION:
       string_id = IDS_CERT_OID_PKCS1_RSA_ENCRYPTION;
       break;
@@ -249,6 +255,32 @@ std::string GetOIDText(SECItem* oid) {
     case SEC_OID_PKCS1_SHA512_WITH_RSA_ENCRYPTION:
       string_id = IDS_CERT_OID_PKCS1_SHA512_WITH_RSA_ENCRYPTION;
       break;
+    case SEC_OID_ANSIX962_ECDSA_SHA1_SIGNATURE:
+      string_id = IDS_CERT_OID_ANSIX962_ECDSA_SHA1_SIGNATURE;
+      break;
+    case SEC_OID_ANSIX962_ECDSA_SHA256_SIGNATURE:
+      string_id = IDS_CERT_OID_ANSIX962_ECDSA_SHA256_SIGNATURE;
+      break;
+    case SEC_OID_ANSIX962_ECDSA_SHA384_SIGNATURE:
+      string_id = IDS_CERT_OID_ANSIX962_ECDSA_SHA384_SIGNATURE;
+      break;
+    case SEC_OID_ANSIX962_ECDSA_SHA512_SIGNATURE:
+      string_id = IDS_CERT_OID_ANSIX962_ECDSA_SHA512_SIGNATURE;
+      break;
+    case SEC_OID_ANSIX962_EC_PUBLIC_KEY:
+      string_id = IDS_CERT_OID_ANSIX962_EC_PUBLIC_KEY;
+      break;
+    case SEC_OID_SECG_EC_SECP256R1:
+      string_id = IDS_CERT_OID_SECG_EC_SECP256R1;
+      break;
+    case SEC_OID_SECG_EC_SECP384R1:
+      string_id = IDS_CERT_OID_SECG_EC_SECP384R1;
+      break;
+    case SEC_OID_SECG_EC_SECP521R1:
+      string_id = IDS_CERT_OID_SECG_EC_SECP521R1;
+      break;
+
+    // Extension fields (including details of extensions):
     case SEC_OID_NS_CERT_EXT_CERT_TYPE:
       string_id = IDS_CERT_EXT_NS_CERT_TYPE;
       break;
@@ -321,6 +353,14 @@ std::string GetOIDText(SECItem* oid) {
     case SEC_OID_X509_AUTH_INFO_ACCESS:
       string_id = IDS_CERT_X509_AUTH_INFO_ACCESS;
       break;
+    case SEC_OID_PKIX_CPS_POINTER_QUALIFIER:
+      string_id = IDS_CERT_PKIX_CPS_POINTER_QUALIFIER;
+      break;
+    case SEC_OID_PKIX_USER_NOTICE_QUALIFIER:
+      string_id = IDS_CERT_PKIX_USER_NOTICE_QUALIFIER;
+      break;
+
+    // Extended Key Usages:
     case SEC_OID_EXT_KEY_USAGE_SERVER_AUTH:
       string_id = IDS_CERT_EKU_TLS_WEB_SERVER_AUTHENTICATION;
       break;
@@ -339,18 +379,17 @@ std::string GetOIDText(SECItem* oid) {
     case SEC_OID_OCSP_RESPONDER:
       string_id = IDS_CERT_EKU_OCSP_SIGNING;
       break;
-    case SEC_OID_PKIX_CPS_POINTER_QUALIFIER:
-      string_id = IDS_CERT_PKIX_CPS_POINTER_QUALIFIER;
-      break;
-    case SEC_OID_PKIX_USER_NOTICE_QUALIFIER:
-      string_id = IDS_CERT_PKIX_USER_NOTICE_QUALIFIER;
-      break;
+
+    // Explicitly handle UNKNOWN to avoid the conditional below.
     case SEC_OID_UNKNOWN:
       string_id = -1;
       break;
 
-    // There are a billionty other OIDs we could add here.  I tried to get the
-    // important ones...
+    // OIDs that are not directly registered with NSS, and thus cannot be
+    // used as part of a switch tag. While there is a potentially boundless
+    // set here, only list ones that either other platforms list or which
+    // might otherwise be encountered in the Web PKI or mainstream Enterprise
+    // deployments.
     default:
       if (oid_tag == ms_cert_ext_certtype)
         string_id = IDS_CERT_EXT_MS_CERT_TYPE;
@@ -390,10 +429,6 @@ std::string GetOIDText(SECItem* oid) {
         string_id = IDS_CERT_EKU_MS_KEY_RECOVERY_AGENT;
       else if (oid_tag == eku_netscape_international_step_up)
         string_id = IDS_CERT_EKU_NETSCAPE_INTERNATIONAL_STEP_UP;
-      else if (oid_tag == cert_attribute_business_category)
-        string_id = IDS_CERT_OID_BUSINESS_CATEGORY;
-      else if (oid_tag == cert_attribute_ev_incorporation_country)
-        string_id = IDS_CERT_OID_EV_INCORPORATION_COUNTRY;
       else
         string_id = -1;
       break;
@@ -677,7 +712,7 @@ std::string ProcessUserNotice(SECItem* der_notice) {
         if (itemList != notice->noticeReference.noticeNumbers)
           rv += ", ";
         rv += '#';
-        rv += base::UTF16ToUTF8(base::Uint64ToString16(number));
+        rv += base::NumberToString(number);
       }
       itemList++;
     }
@@ -806,7 +841,7 @@ std::string ProcessCrlDistPoints(SECItem* extension_data) {
     if (point->reasons.len) {
       rv += ' ';
       comma = false;
-      for (size_t i = 0; i < arraysize(reason_string_map); ++i) {
+      for (size_t i = 0; i < base::size(reason_string_map); ++i) {
         if (point->reasons.data[0] & reason_string_map[i].reason) {
           if (comma)
             rv += ',';
@@ -934,7 +969,7 @@ std::string ProcessNSCertTypeExtension(SECItem* extension_data) {
     {NS_CERT_TYPE_OBJECT_SIGNING_CA, IDS_CERT_USAGE_OBJECT_SIGNER},
   };
   return ProcessBitStringExtension(extension_data, usage_string_map,
-                                   arraysize(usage_string_map), '\n');
+                                   base::size(usage_string_map), '\n');
 }
 
 static const MaskIdPair key_usage_string_map[] = {
@@ -952,12 +987,12 @@ static const MaskIdPair key_usage_string_map[] = {
 
 std::string ProcessKeyUsageBitString(SECItem* bitstring, char sep) {
   return ProcessBitField(bitstring, key_usage_string_map,
-                         arraysize(key_usage_string_map), sep);
+                         base::size(key_usage_string_map), sep);
 }
 
 std::string ProcessKeyUsageExtension(SECItem* extension_data) {
   return ProcessBitStringExtension(extension_data, key_usage_string_map,
-                                   arraysize(key_usage_string_map), '\n');
+                                   base::size(key_usage_string_map), '\n');
 }
 
 std::string ProcessExtKeyUsage(SECItem* extension_data) {
@@ -1046,9 +1081,9 @@ std::string ProcessSubjectPublicKeyInfo(CERTSubjectPublicKeyInfo* spki) {
       case rsaKey: {
         rv = l10n_util::GetStringFUTF8(
             IDS_CERT_RSA_PUBLIC_KEY_DUMP_FORMAT,
-            base::UintToString16(key->u.rsa.modulus.len * 8),
+            base::NumberToString16(key->u.rsa.modulus.len * 8),
             base::UTF8ToUTF16(ProcessRawBytes(&key->u.rsa.modulus)),
-            base::UintToString16(key->u.rsa.publicExponent.len * 8),
+            base::NumberToString16(key->u.rsa.publicExponent.len * 8),
             base::UTF8ToUTF16(ProcessRawBytes(&key->u.rsa.publicExponent)));
         break;
       }

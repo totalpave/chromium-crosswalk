@@ -31,10 +31,6 @@ scoped_refptr<Layer> ParseTreeFromValue(const base::Value& val,
   int width, height;
   success &= list->GetInteger(0, &width);
   success &= list->GetInteger(1, &height);
-  success &= dict->GetList("Position", &list);
-  double position_x, position_y;
-  success &= list->GetDouble(0, &position_x);
-  success &= list->GetDouble(1, &position_y);
 
   bool draws_content;
   success &= dict->GetBoolean("DrawsContent", &draws_content);
@@ -80,13 +76,12 @@ scoped_refptr<Layer> ParseTreeFromValue(const base::Value& val,
 
     new_layer = nine_patch_layer;
   } else if (layer_type == "TextureLayer") {
-    new_layer = TextureLayer::CreateForMailbox(NULL);
+    new_layer = TextureLayer::CreateForMailbox(nullptr);
   } else if (layer_type == "PictureLayer") {
     new_layer = PictureLayer::Create(content_client);
   } else {  // Type "Layer" or "unknown"
     new_layer = Layer::Create();
   }
-  new_layer->SetPosition(gfx::PointF(position_x, position_y));
   new_layer->SetBounds(gfx::Size(width, height));
   new_layer->SetIsDrawable(draws_content);
 
@@ -98,29 +93,6 @@ scoped_refptr<Layer> ParseTreeFromValue(const base::Value& val,
   if (dict->GetBoolean("ContentsOpaque", &contents_opaque))
     new_layer->SetContentsOpaque(contents_opaque);
 
-  bool scrollable;
-  // TODO(wjmaclean) At some time in the future we may wish to test that a
-  // reconstructed layer tree contains the correct linkage for the scroll
-  // clip layer. This is complicated by the fact that the json output doesn't
-  // (currently) re-construct the tree with the same layer IDs as the original.
-  // But, since a clip layer is always an ancestor of the scrollable layer, we
-  // can just count the number of upwards hops to the clip layer and write that
-  // into the json file (with 0 hops implying no clip layer, i.e. not
-  // scrollable). Reconstructing the tree can then be accomplished by passing
-  // the parent pointer to this function and traversing the same number of
-  // ancestors to determine the pointer to the clip layer. The LayerTreesMatch()
-  // function should then check that both original and reconstructed layers
-  // have the same positioning with respect to their clip layers.
-  //
-  // For now, we can safely indicate a layer is scrollable by giving it a
-  // pointer to itself, something not normally allowed in a working tree.
-  //
-  // https://code.google.com/p/chromium/issues/detail?id=330622
-  //
-  if (dict->GetBoolean("Scrollable", &scrollable))
-    new_layer->SetScrollClipLayerId(scrollable ? new_layer->id()
-                                               : Layer::INVALID_ID);
-
   bool is_3d_sorted;
   if (dict->GetBoolean("Is3DSorted", &is_3d_sorted)) {
     // A non-zero context ID will put the layer into a 3D sorting context
@@ -129,16 +101,17 @@ scoped_refptr<Layer> ParseTreeFromValue(const base::Value& val,
 
   if (dict->HasKey("TouchRegion")) {
     success &= dict->GetList("TouchRegion", &list);
-    Region touch_region;
+    TouchActionRegion touch_action_region;
     for (size_t i = 0; i < list->GetSize(); ) {
       int rect_x, rect_y, rect_width, rect_height;
       success &= list->GetInteger(i++, &rect_x);
       success &= list->GetInteger(i++, &rect_y);
       success &= list->GetInteger(i++, &rect_width);
       success &= list->GetInteger(i++, &rect_height);
-      touch_region.Union(gfx::Rect(rect_x, rect_y, rect_width, rect_height));
+      touch_action_region.Union(
+          kTouchActionNone, gfx::Rect(rect_x, rect_y, rect_width, rect_height));
     }
-    new_layer->SetTouchEventHandlerRegion(touch_region);
+    new_layer->SetTouchActionRegion(std::move(touch_action_region));
   }
 
   success &= dict->GetList("Transform", &list);
@@ -152,11 +125,11 @@ scoped_refptr<Layer> ParseTreeFromValue(const base::Value& val,
 
   success &= dict->GetList("Children", &list);
   for (const auto& value : *list) {
-    new_layer->AddChild(ParseTreeFromValue(*value, content_client));
+    new_layer->AddChild(ParseTreeFromValue(value, content_client));
   }
 
   if (!success)
-    return NULL;
+    return nullptr;
 
   return new_layer;
 }
@@ -165,7 +138,7 @@ scoped_refptr<Layer> ParseTreeFromValue(const base::Value& val,
 
 scoped_refptr<Layer> ParseTreeFromJson(std::string json,
                                        ContentLayerClient* content_client) {
-  std::unique_ptr<base::Value> val = base::test::ParseJson(json);
+  std::unique_ptr<base::Value> val = base::test::ParseJsonDeprecated(json);
   return ParseTreeFromValue(*val, content_client);
 }
 

@@ -31,9 +31,10 @@ enum AudioCodec : int {
   kCodecAC3,
   kCodecDTS,
   kCodecFLAC,
+  kCodecMpegHAudio,
 
   kAudioCodecMin = kAudioCodecUnknown,
-  kAudioCodecMax = kCodecFLAC,
+  kAudioCodecMax = kCodecMpegHAudio,
 };
 
 enum SampleFormat : int {
@@ -80,7 +81,7 @@ enum VideoProfile : int {
   kH264High444Predictive,
   kH264ScalableBaseline,
   kH264ScalableHigh,
-  kH264Stereohigh,
+  kH264StereoHigh,
   kH264MultiviewHigh,
   kVP8ProfileAny,
   kVP9Profile0,
@@ -91,9 +92,18 @@ enum VideoProfile : int {
   kDolbyVisionCompatible_BL_EL_MD,
   kDolbyVisionNonCompatible_BL_MD,
   kDolbyVisionNonCompatible_BL_EL_MD,
+  kHEVCMain,
+  kHEVCMain10,
+  kHEVCMainStillPicture,
 
   kVideoProfileMin = kVideoProfileUnknown,
-  kVideoProfileMax = kDolbyVisionNonCompatible_BL_EL_MD,
+  kVideoProfileMax = kHEVCMainStillPicture,
+};
+
+struct CodecProfileLevel {
+  VideoCodec codec;
+  VideoProfile profile;
+  int level;
 };
 
 // Specification of whether and how the stream is encrypted (in whole or part).
@@ -158,6 +168,120 @@ inline EncryptionScheme AesCtrEncryptionScheme() {
                           EncryptionScheme::Pattern());
 }
 
+// ---- Begin copy/paste from //media/base/video_color_space.h ----
+// Described in ISO 23001-8:2016
+
+// Table 2
+enum class PrimaryID : uint8_t {
+  INVALID = 0,
+  BT709 = 1,
+  UNSPECIFIED = 2,
+  BT470M = 4,
+  BT470BG = 5,
+  SMPTE170M = 6,
+  SMPTE240M = 7,
+  FILM = 8,
+  BT2020 = 9,
+  SMPTEST428_1 = 10,
+  SMPTEST431_2 = 11,
+  SMPTEST432_1 = 12,
+  EBU_3213_E = 22
+};
+
+// Table 3
+enum class TransferID : uint8_t {
+  INVALID = 0,
+  BT709 = 1,
+  UNSPECIFIED = 2,
+  GAMMA22 = 4,
+  GAMMA28 = 5,
+  SMPTE170M = 6,
+  SMPTE240M = 7,
+  LINEAR = 8,
+  LOG = 9,
+  LOG_SQRT = 10,
+  IEC61966_2_4 = 11,
+  BT1361_ECG = 12,
+  IEC61966_2_1 = 13,
+  BT2020_10 = 14,
+  BT2020_12 = 15,
+  SMPTEST2084 = 16,
+  SMPTEST428_1 = 17,
+
+  // Not yet standardized
+  ARIB_STD_B67 = 18,  // AKA hybrid-log gamma, HLG.
+};
+
+// Table 4
+enum class MatrixID : uint8_t {
+  RGB = 0,
+  BT709 = 1,
+  UNSPECIFIED = 2,
+  FCC = 4,
+  BT470BG = 5,
+  SMPTE170M = 6,
+  SMPTE240M = 7,
+  YCOCG = 8,
+  BT2020_NCL = 9,
+  BT2020_CL = 10,
+  YDZDX = 11,
+  INVALID = 255,
+};
+// ---- End copy/pasted from media/base/video_color_space.h ----
+
+// This corresponds to the WebM Range enum which is part of WebM color data
+// (see http://www.webmproject.org/docs/container/#Range).
+// H.264 only uses a bool, which corresponds to the LIMITED/FULL values.
+// ---- Begin copy/paste from //ui/gfx/color_space.h ----
+enum class RangeID : int8_t {
+  INVALID = 0,
+  // Limited Rec. 709 color range with RGB values ranging from 16 to 235.
+  LIMITED = 1,
+  // Full RGB color range with RGB valees from 0 to 255.
+  FULL = 2,
+  // Range is defined by TransferID/MatrixID.
+  DERIVED = 3,
+  LAST = DERIVED
+};
+// ---- Begin copy/paste from //ui/gfx/color_space.h ----
+
+// ---- Begin copy/paste from media/base/hdr_metadata.h ----
+// SMPTE ST 2086 mastering metadata.
+struct MasteringMetadata {
+  float primary_r_chromaticity_x = 0;
+  float primary_r_chromaticity_y = 0;
+  float primary_g_chromaticity_x = 0;
+  float primary_g_chromaticity_y = 0;
+  float primary_b_chromaticity_x = 0;
+  float primary_b_chromaticity_y = 0;
+  float white_point_chromaticity_x = 0;
+  float white_point_chromaticity_y = 0;
+  float luminance_max = 0;
+  float luminance_min = 0;
+
+  MasteringMetadata();
+  MasteringMetadata(const MasteringMetadata& rhs);
+};
+
+// HDR metadata common for HDR10 and WebM/VP9-based HDR formats.
+struct HDRMetadata {
+  MasteringMetadata mastering_metadata;
+  unsigned max_content_light_level = 0;
+  unsigned max_frame_average_light_level = 0;
+
+  HDRMetadata();
+  HDRMetadata(const HDRMetadata& rhs);
+};
+
+inline MasteringMetadata::MasteringMetadata() {}
+inline MasteringMetadata::MasteringMetadata(const MasteringMetadata& rhs) =
+    default;
+
+inline HDRMetadata::HDRMetadata() {}
+inline HDRMetadata::HDRMetadata(const HDRMetadata& rhs) = default;
+// ---- End copy/paste from media/base/hdr_metadata.h ----
+
+constexpr int kChannelAll = -1;
 
 // TODO(erickung): Remove constructor once CMA backend implementation doesn't
 // create a new object to reset the configuration and use IsValidConfig() to
@@ -193,8 +317,7 @@ inline AudioConfig::AudioConfig()
       sample_format(kUnknownSampleFormat),
       bytes_per_channel(0),
       channel_number(0),
-      samples_per_second(0) {
-}
+      samples_per_second(0) {}
 inline AudioConfig::AudioConfig(const AudioConfig& other) = default;
 inline AudioConfig::~AudioConfig() {
 }
@@ -223,6 +346,15 @@ struct VideoConfig {
   std::vector<uint8_t> extra_data;
   // Encryption scheme (if any) used for the content.
   EncryptionScheme encryption_scheme;
+
+  // ColorSpace info
+  PrimaryID primaries = PrimaryID::UNSPECIFIED;
+  TransferID transfer = TransferID::UNSPECIFIED;
+  MatrixID matrix = MatrixID::UNSPECIFIED;
+  RangeID range = RangeID::INVALID;
+
+  bool have_hdr_metadata = false;
+  HDRMetadata hdr_metadata;
 };
 
 inline VideoConfig::VideoConfig()
@@ -241,17 +373,19 @@ inline VideoConfig::~VideoConfig() {
 // are to keep existing CMA backend implementation consistent until the clean up
 // is done. These SHOULD NOT be used in New CMA backend implementation.
 inline bool IsValidConfig(const AudioConfig& config) {
-  return config.codec >= kAudioCodecMin &&
-      config.codec <= kAudioCodecMax &&
-      config.codec != kAudioCodecUnknown &&
-      config.sample_format >= kSampleFormatMin &&
-      config.sample_format <= kSampleFormatMax &&
-      config.sample_format != kUnknownSampleFormat &&
-      config.channel_number > 0 &&
-      config.bytes_per_channel > 0 &&
-      config.bytes_per_channel <= kMaxBytesPerSample &&
-      config.samples_per_second > 0 &&
-      config.samples_per_second <= kMaxSampleRate;
+  return config.codec >= kAudioCodecMin && config.codec <= kAudioCodecMax &&
+         config.codec != kAudioCodecUnknown &&
+         config.sample_format >= kSampleFormatMin &&
+         config.sample_format <= kSampleFormatMax &&
+         config.sample_format != kUnknownSampleFormat &&
+         // TODO(servolk): Add channel_layout field to the AudioConfig in the
+         // next Cast system update and change this condition to
+         // (channel_number > 0 || channel_layout == CHANNEL_LAYOUT_BITSTREAM)
+         (config.channel_number > 0 || config.codec == kCodecMpegHAudio) &&
+         config.bytes_per_channel > 0 &&
+         config.bytes_per_channel <= kMaxBytesPerSample &&
+         config.samples_per_second > 0 &&
+         config.samples_per_second <= kMaxSampleRate;
 }
 
 inline bool IsValidConfig(const VideoConfig& config) {

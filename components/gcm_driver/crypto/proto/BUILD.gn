@@ -4,9 +4,11 @@
 
 import("//third_party/protobuf/proto_library.gni")
 
-# GYP version: components/gcm_driver.gypi:gcm_driver_crypto_proto
 proto_library("proto") {
-  visibility = [ "//components/gcm_driver/crypto" ]
+  visibility = [
+    "//components/gcm_driver/crypto:crypto",
+    "//components/gcm_driver/crypto:unit_tests",
+  ]
 
   sources = [
     "gcm_encryption_data.proto",

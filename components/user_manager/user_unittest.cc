@@ -4,7 +4,7 @@
 
 #include "components/user_manager/user.h"
 
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace user_manager {
@@ -40,6 +40,8 @@ TEST(UserTest, DeviceLocalAccountAffiliation) {
   ScopedUser public_session_user(User::CreatePublicAccountUser(account_id));
   EXPECT_TRUE(public_session_user.IsAffiliated());
 
+  ScopedUser arc_kiosk_user(User::CreateArcKioskAppUser(account_id));
+  EXPECT_TRUE(arc_kiosk_user.IsAffiliated());
 }
 
 }  // namespace user_manager

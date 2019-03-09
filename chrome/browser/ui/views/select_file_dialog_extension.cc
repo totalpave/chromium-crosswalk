@@ -13,15 +13,17 @@
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
-#include "chrome/browser/apps/app_window_registry_util.h"
+#include "chrome/browser/apps/platform_apps/app_window_registry_util.h"
 #include "chrome/browser/chromeos/file_manager/app_id.h"
 #include "chrome/browser/chromeos/file_manager/fileapi_util.h"
 #include "chrome/browser/chromeos/file_manager/select_file_dialog_util.h"
 #include "chrome/browser/chromeos/file_manager/url_util.h"
 #include "chrome/browser/chromeos/login/ui/login_web_dialog.h"
+#include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
@@ -30,7 +32,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/extension_dialog.h"
 #include "chrome/common/pref_names.h"
-#include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/native_app_window.h"
@@ -38,6 +39,12 @@
 #include "ui/base/base_window.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "ui/views/widget/widget.h"
+
+#if defined(OS_CHROMEOS)
+#include "chrome/browser/chromeos/login/ui/login_display_host.h"
+#include "chrome/browser/chromeos/login/ui/webui_login_view.h"
+#include "chrome/browser/chromeos/profiles/profile_helper.h"
+#endif
 
 using extensions::AppWindow;
 using content::BrowserThread;
@@ -93,6 +100,14 @@ scoped_refptr<SelectFileDialogExtension> PendingDialog::Find(
   return it->second;
 }
 
+#if defined(OS_CHROMEOS)
+// Return the Chrome OS WebUI login WebContents, if applicable.
+content::WebContents* GetLoginWebContents() {
+  chromeos::LoginDisplayHost* host = chromeos::LoginDisplayHost::default_host();
+  return host ? host->GetOobeWebContents() : nullptr;
+}
+#endif
+
 // Given |owner_window| finds corresponding |base_window|, it's associated
 // |web_contents| and |profile|.
 void FindRuntimeContext(gfx::NativeWindow owner_window,
@@ -118,7 +133,6 @@ void FindRuntimeContext(gfx::NativeWindow owner_window,
   }
 
   if (app_window) {
-    DCHECK(!app_window->window_type_is_panel());
     *base_window = app_window->GetBaseWindow();
     *web_contents = app_window->web_contents();
   } else {
@@ -138,7 +152,11 @@ void FindRuntimeContext(gfx::NativeWindow owner_window,
   if (chrome::IsRunningInForcedAppMode() && !(*web_contents))
     *web_contents = chromeos::LoginWebDialog::GetCurrentWebContents();
 
-  CHECK(web_contents);
+#if defined(OS_CHROMEOS)
+  // Check for a WebContents used for the Chrome OS WebUI login flow.
+  if (!*web_contents)
+    *web_contents = GetLoginWebContents();
+#endif
 }
 
 }  // namespace
@@ -159,22 +177,21 @@ SelectFileDialogExtension::GetRoutingIDFromWebContents(
 // static
 SelectFileDialogExtension* SelectFileDialogExtension::Create(
     Listener* listener,
-    ui::SelectFilePolicy* policy) {
-  return new SelectFileDialogExtension(listener, policy);
+    std::unique_ptr<ui::SelectFilePolicy> policy) {
+  return new SelectFileDialogExtension(listener, std::move(policy));
 }
 
 SelectFileDialogExtension::SelectFileDialogExtension(
     Listener* listener,
-    ui::SelectFilePolicy* policy)
-    : SelectFileDialog(listener, policy),
+    std::unique_ptr<ui::SelectFilePolicy> policy)
+    : SelectFileDialog(listener, std::move(policy)),
       has_multiple_file_type_choices_(false),
       routing_id_(),
       profile_(NULL),
       owner_window_(NULL),
       selection_type_(CANCEL),
       selection_index_(0),
-      params_(NULL) {
-}
+      params_(NULL) {}
 
 SelectFileDialogExtension::~SelectFileDialogExtension() {
   if (extension_dialog_.get())
@@ -221,10 +238,11 @@ void SelectFileDialogExtension::ExtensionTerminated(
   if (profile_) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&ExtensionService::ReloadExtension,
-                   base::Unretained(extensions::ExtensionSystem::Get(profile_)
-                                        ->extension_service()),
-                   extension_id));
+        base::BindOnce(
+            &extensions::ExtensionService::ReloadExtension,
+            base::Unretained(extensions::ExtensionSystem::Get(profile_)
+                                 ->extension_service()),
+            extension_id));
   }
 
   dialog->GetWidget()->Close();
@@ -273,6 +291,11 @@ content::RenderViewHost* SelectFileDialogExtension::GetRenderViewHost() {
   if (extension_dialog_.get())
     return extension_dialog_->host()->render_view_host();
   return NULL;
+}
+
+bool SelectFileDialogExtension::IsResizeable() const {
+  DCHECK(extension_dialog_.get());
+  return extension_dialog_->CanResize();
 }
 
 void SelectFileDialogExtension::NotifyListener() {
@@ -329,9 +352,17 @@ void SelectFileDialogExtension::SelectFileImpl(
   // The web contents to associate the dialog with.
   content::WebContents* web_contents = NULL;
   FindRuntimeContext(owner_window, &base_window, &web_contents);
-  CHECK(web_contents);
-  profile_ = Profile::FromBrowserContext(web_contents->GetBrowserContext());
-  CHECK(profile_);
+  if (web_contents)
+    profile_ = Profile::FromBrowserContext(web_contents->GetBrowserContext());
+
+#if defined(OS_CHROMEOS)
+  // Handle the cases where |web_contents| is not available or |web_contents| is
+  // associated with Default profile.
+  if (!web_contents || chromeos::ProfileHelper::IsSigninProfile(profile_))
+    profile_ = ProfileManager::GetActiveUserProfile();
+#endif
+
+  DCHECK(profile_);
 
   // Check if we have another dialog opened for the contents. It's unlikely, but
   // possible. In such situation, discard this request.
@@ -339,11 +370,8 @@ void SelectFileDialogExtension::SelectFileImpl(
   if (PendingExists(routing_id))
     return;
 
-  const PrefService* pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
-
   base::FilePath download_default_path(
-      pref_service->GetFilePath(prefs::kDownloadDefaultDirectory));
+      DownloadPrefs::FromBrowserContext(profile_)->DownloadPath());
 
   base::FilePath selection_path = default_path.IsAbsolute() ?
       default_path : download_default_path.Append(default_path.BaseName());
@@ -405,13 +433,9 @@ void SelectFileDialogExtension::SelectFileImpl(
 
   ExtensionDialog* dialog = ExtensionDialog::Show(
       file_manager_url,
-      base_window ? base_window->GetNativeWindow() : owner_window,
-      profile_,
-      web_contents,
-      kFileManagerWidth,
-      kFileManagerHeight,
-      kFileManagerMinimumWidth,
-      kFileManagerMinimumHeight,
+      base_window ? base_window->GetNativeWindow() : owner_window, profile_,
+      web_contents, (owner_window != nullptr) /* is_modal */, kFileManagerWidth,
+      kFileManagerHeight, kFileManagerMinimumWidth, kFileManagerMinimumHeight,
       file_manager::util::GetSelectFileDialogTitle(type),
       this /* ExtensionDialog::Observer */);
   if (!dialog) {

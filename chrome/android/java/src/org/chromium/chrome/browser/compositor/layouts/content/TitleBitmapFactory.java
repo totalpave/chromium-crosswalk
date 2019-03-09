@@ -10,8 +10,6 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Paint.FontMetrics;
-import android.graphics.drawable.BitmapDrawable;
-import android.graphics.drawable.Drawable;
 import android.text.Layout;
 import android.text.TextPaint;
 import android.text.TextUtils;
@@ -33,7 +31,6 @@ public class TitleBitmapFactory {
     private static final int MAX_NUM_TITLE_CHAR = 1000;
 
     private final int mMaxWidth;
-    private final int mNullFaviconResourceId;
 
     private final TextPaint mTextPaint;
     private int mFaviconDimension;
@@ -44,33 +41,19 @@ public class TitleBitmapFactory {
     /**
      * @param context   The current Android's context.
      * @param incognito Whether the title are for incognito mode.
-     * @param nullFaviconResourceId A drawable resource id of a default favicon.
      */
-    public TitleBitmapFactory(Context context, boolean incognito, int nullFaviconResourceId) {
-        mNullFaviconResourceId = nullFaviconResourceId;
-
+    public TitleBitmapFactory(Context context, boolean incognito) {
         Resources res = context.getResources();
         int textColor = ApiCompatibilityUtils.getColor(res, incognito
                 ? R.color.compositor_tab_title_bar_text_incognito
                 : R.color.compositor_tab_title_bar_text);
-        int shadowColor = ApiCompatibilityUtils.getColor(res, incognito
-                ? R.color.compositor_tab_title_bar_shadow_incognito
-                : R.color.compositor_tab_title_bar_shadow);
-        int shadowXOffset = res.getDimensionPixelOffset(incognito
-                ? R.dimen.compositor_tab_title_bar_shadow_x_offset_incognito
-                : R.dimen.compositor_tab_title_bar_shadow_x_offset);
-        int shadowYOffset = res.getDimensionPixelOffset(incognito
-                ? R.dimen.compositor_tab_title_bar_shadow_y_offset_incognito
-                : R.dimen.compositor_tab_title_bar_shadow_y_offset);
         float textSize = res.getDimension(R.dimen.compositor_tab_title_text_size);
 
         boolean fakeBoldText = res.getBoolean(R.bool.compositor_tab_title_fake_bold_text);
 
         mTextPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         mTextPaint.setColor(textColor);
-        if (shadowXOffset != 0 && shadowYOffset != 0) {
-            mTextPaint.setShadowLayer(0.001f, shadowXOffset, shadowYOffset, shadowColor);
-        }
+
         mTextPaint.setTextSize(textSize);
         mTextPaint.setFakeBoldText(fakeBoldText);
         mTextPaint.density = res.getDisplayMetrics().density;
@@ -93,29 +76,27 @@ public class TitleBitmapFactory {
     /**
      * Generates the favicon bitmap.
      *
-     * @param context   Android's UI context.
      * @param favicon   The favicon of the tab.
      * @return          The Bitmap with the favicon.
      */
-    public Bitmap getFaviconBitmap(Context context, Bitmap favicon) {
+    public Bitmap getFaviconBitmap(Bitmap favicon) {
+        assert favicon != null;
         try {
             Bitmap b = Bitmap.createBitmap(
                     mFaviconDimension, mFaviconDimension, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(b);
-            if (favicon == null) {
-                Drawable drawable = ApiCompatibilityUtils.getDrawable(
-                        context.getResources(), mNullFaviconResourceId);
-                if (drawable instanceof BitmapDrawable) {
-                    favicon = ((BitmapDrawable) drawable).getBitmap();
-                }
+            if (favicon.getWidth() > mFaviconDimension || favicon.getHeight() > mFaviconDimension) {
+                float scale = (float) mFaviconDimension
+                        / Math.max(favicon.getWidth(), favicon.getHeight());
+                c.scale(scale, scale);
+            } else {
+                c.translate(Math.round((mFaviconDimension - favicon.getWidth()) / 2.0f),
+                        Math.round((mFaviconDimension - favicon.getHeight()) / 2.0f));
             }
-            if (favicon != null) {
-                c.drawBitmap(favicon, Math.round((mFaviconDimension - favicon.getWidth()) / 2.0f),
-                        Math.round((mFaviconDimension - favicon.getHeight()) / 2.0f), null);
-            }
+            c.drawBitmap(favicon, 0, 0, null);
             return b;
         } catch (OutOfMemoryError ex) {
-            Log.w(TAG, "OutOfMemoryError while building favicon texture.");
+            Log.e(TAG, "OutOfMemoryError while building favicon texture.");
         } catch (InflateException ex) {
             Log.w(TAG, "InflateException while building favicon texture.");
         }
@@ -146,7 +127,7 @@ public class TitleBitmapFactory {
             }
             return b;
         } catch (OutOfMemoryError ex) {
-            Log.w(TAG, "OutOfMemoryError while building title texture.");
+            Log.e(TAG, "OutOfMemoryError while building title texture.");
         } catch (InflateException ex) {
             Log.w(TAG, "InflateException while building title texture.");
         }

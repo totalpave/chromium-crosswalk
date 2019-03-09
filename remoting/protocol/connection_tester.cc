@@ -5,9 +5,10 @@
 #include "remoting/protocol/connection_tester.h"
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "remoting/proto/video.pb.h"
 #include "remoting/protocol/message_pipe.h"
 #include "remoting/protocol/message_serialization.h"
@@ -22,18 +23,16 @@ StreamConnectionTester::StreamConnectionTester(P2PStreamSocket* client_socket,
                                                P2PStreamSocket* host_socket,
                                                int message_size,
                                                int message_count)
-    : message_loop_(base::MessageLoop::current()),
+    : task_runner_(base::ThreadTaskRunnerHandle::Get()),
       host_socket_(host_socket),
       client_socket_(client_socket),
       message_size_(message_size),
       test_data_size_(message_size * message_count),
       done_(false),
       write_errors_(0),
-      read_errors_(0) {
-}
+      read_errors_(0) {}
 
-StreamConnectionTester::~StreamConnectionTester() {
-}
+StreamConnectionTester::~StreamConnectionTester() = default;
 
 void StreamConnectionTester::Start() {
   InitBuffers();
@@ -56,17 +55,18 @@ void StreamConnectionTester::CheckResults() {
 
 void StreamConnectionTester::Done() {
   done_ = true;
-  message_loop_->PostTask(FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+  task_runner_->PostTask(FROM_HERE,
+                         base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
 }
 
 void StreamConnectionTester::InitBuffers() {
-  output_buffer_ = new net::DrainableIOBuffer(
-      new net::IOBuffer(test_data_size_), test_data_size_);
+  output_buffer_ = base::MakeRefCounted<net::DrainableIOBuffer>(
+      base::MakeRefCounted<net::IOBuffer>(test_data_size_), test_data_size_);
   for (int i = 0; i < test_data_size_; ++i) {
     output_buffer_->data()[i] = static_cast<char>(i);
   }
 
-  input_buffer_ = new net::GrowableIOBuffer();
+  input_buffer_ = base::MakeRefCounted<net::GrowableIOBuffer>();
 }
 
 void StreamConnectionTester::DoWrite() {
@@ -78,9 +78,9 @@ void StreamConnectionTester::DoWrite() {
     int bytes_to_write = std::min(output_buffer_->BytesRemaining(),
                                   message_size_);
     result = client_socket_->Write(
-        output_buffer_.get(),
-        bytes_to_write,
-        base::Bind(&StreamConnectionTester::OnWritten, base::Unretained(this)));
+        output_buffer_.get(), bytes_to_write,
+        base::Bind(&StreamConnectionTester::OnWritten, base::Unretained(this)),
+        TRAFFIC_ANNOTATION_FOR_TESTS);
     HandleWriteResult(result);
   }
 }
@@ -137,7 +137,7 @@ DatagramConnectionTester::DatagramConnectionTester(
     int message_size,
     int message_count,
     int delay_ms)
-    : message_loop_(base::MessageLoop::current()),
+    : task_runner_(base::ThreadTaskRunnerHandle::Get()),
       host_socket_(host_socket),
       client_socket_(client_socket),
       message_size_(message_size),
@@ -152,8 +152,7 @@ DatagramConnectionTester::DatagramConnectionTester(
   sent_packets_.resize(message_count_);
 }
 
-DatagramConnectionTester::~DatagramConnectionTester() {
-}
+DatagramConnectionTester::~DatagramConnectionTester() = default;
 
 void DatagramConnectionTester::Start() {
   DoRead();
@@ -174,7 +173,8 @@ void DatagramConnectionTester::CheckResults() {
 
 void DatagramConnectionTester::Done() {
   done_ = true;
-  message_loop_->PostTask(FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+  task_runner_->PostTask(FROM_HERE,
+                         base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
 }
 
 void DatagramConnectionTester::DoWrite() {
@@ -183,7 +183,8 @@ void DatagramConnectionTester::DoWrite() {
     return;
   }
 
-  scoped_refptr<net::IOBuffer> packet(new net::IOBuffer(message_size_));
+  scoped_refptr<net::IOBuffer> packet(
+      base::MakeRefCounted<net::IOBuffer>(message_size_));
   for (int i = 0; i < message_size_; ++i) {
     packet->data()[i] = static_cast<char>(i);
   }
@@ -209,9 +210,10 @@ void DatagramConnectionTester::HandleWriteResult(int result) {
   } else if (result > 0) {
     EXPECT_EQ(message_size_, result);
     packets_sent_++;
-    message_loop_->PostDelayedTask(
+    task_runner_->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&DatagramConnectionTester::DoWrite, base::Unretained(this)),
+        base::BindOnce(&DatagramConnectionTester::DoWrite,
+                       base::Unretained(this)),
         base::TimeDelta::FromMilliseconds(delay_ms_));
   }
 }
@@ -220,7 +222,7 @@ void DatagramConnectionTester::DoRead() {
   int result = 1;
   while (result > 0) {
     int kReadSize = message_size_ * 2;
-    read_buffer_ = new net::IOBuffer(kReadSize);
+    read_buffer_ = base::MakeRefCounted<net::IOBuffer>(kReadSize);
 
     result = host_socket_->Recv(
         read_buffer_.get(), kReadSize,
@@ -260,45 +262,81 @@ void DatagramConnectionTester::HandleReadResult(int result) {
   }
 }
 
+class MessagePipeConnectionTester::MessageSender
+    : public MessagePipe::EventHandler {
+ public:
+  MessageSender(MessagePipe* pipe, int message_size, int message_count)
+      : pipe_(pipe),
+        message_size_(message_size),
+        message_count_(message_count) {}
+
+  void Start() { pipe_->Start(this); }
+
+  const std::vector<std::unique_ptr<VideoPacket>>& sent_messages() {
+    return sent_messages_;
+  }
+
+  // MessagePipe::EventHandler interface.
+  void OnMessagePipeOpen() override {
+    for (int i = 0; i < message_count_; ++i) {
+      std::unique_ptr<VideoPacket> message(new VideoPacket());
+      message->mutable_data()->resize(message_size_);
+      for (int p = 0; p < message_size_; ++p) {
+        message->mutable_data()[0] = static_cast<char>(i + p);
+      }
+      pipe_->Send(message.get(), base::Closure());
+      sent_messages_.push_back(std::move(message));
+    }
+  }
+  void OnMessageReceived(std::unique_ptr<CompoundBuffer> message) override {
+    NOTREACHED();
+  }
+  void OnMessagePipeClosed() override { NOTREACHED(); }
+
+ private:
+  MessagePipe* pipe_;
+  int message_size_;
+  int message_count_;
+
+  std::vector<std::unique_ptr<VideoPacket>> sent_messages_;
+};
+
 MessagePipeConnectionTester::MessagePipeConnectionTester(
-    MessagePipe* client_pipe,
     MessagePipe* host_pipe,
+    MessagePipe* client_pipe,
     int message_size,
     int message_count)
-    : host_pipe_(host_pipe),
-      client_pipe_(client_pipe),
-      message_size_(message_size),
-      message_count_(message_count) {}
-MessagePipeConnectionTester::~MessagePipeConnectionTester() {}
+    : client_pipe_(client_pipe),
+      sender_(new MessageSender(host_pipe, message_size, message_count)) {}
+
+MessagePipeConnectionTester::~MessagePipeConnectionTester() = default;
 
 void MessagePipeConnectionTester::RunAndCheckResults() {
-  host_pipe_->StartReceiving(base::Bind(
-      &MessagePipeConnectionTester::OnMessageReceived, base::Unretained(this)));
-
-  for (int i = 0; i < message_count_; ++i) {
-    std::unique_ptr<VideoPacket> message(new VideoPacket());
-    message->mutable_data()->resize(message_size_);
-    for (int p = 0; p < message_size_; ++p) {
-      message->mutable_data()[0] = static_cast<char>(i + p);
-    }
-    client_pipe_->Send(message.get(), base::Closure());
-    sent_messages_.push_back(std::move(message));
-  }
+  sender_->Start();
+  client_pipe_->Start(this);
 
   run_loop_.Run();
 
-  ASSERT_EQ(sent_messages_.size(), received_messages_.size());
-  for (size_t i = 0; i < sent_messages_.size(); ++i) {
-    EXPECT_TRUE(sent_messages_[i]->data() == received_messages_[i]->data());
+  ASSERT_EQ(sender_->sent_messages().size(), received_messages_.size());
+  for (size_t i = 0; i < sender_->sent_messages().size(); ++i) {
+    EXPECT_TRUE(sender_->sent_messages()[i]->data() ==
+                received_messages_[i]->data());
   }
 }
+
+void MessagePipeConnectionTester::OnMessagePipeOpen() {}
 
 void MessagePipeConnectionTester::OnMessageReceived(
     std::unique_ptr<CompoundBuffer> message) {
   received_messages_.push_back(ParseMessage<VideoPacket>(message.get()));
-  if (received_messages_.size() >= sent_messages_.size()) {
+  if (received_messages_.size() >= sender_->sent_messages().size()) {
     run_loop_.Quit();
   }
+}
+
+void MessagePipeConnectionTester::OnMessagePipeClosed() {
+  run_loop_.Quit();
+  FAIL();
 }
 
 }  // namespace protocol

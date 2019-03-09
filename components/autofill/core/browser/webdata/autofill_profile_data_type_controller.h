@@ -5,66 +5,83 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_WEBDATA_AUTOFILL_PROFILE_DATA_TYPE_CONTROLLER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_WEBDATA_AUTOFILL_PROFILE_DATA_TYPE_CONTROLLER_H_
 
+#include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/scoped_observer.h"
+#include "base/single_thread_task_runner.h"
 #include "components/autofill/core/browser/personal_data_manager_observer.h"
-#include "components/sync_driver/non_ui_data_type_controller.h"
+#include "components/prefs/pref_change_registrar.h"
+#include "components/sync/driver/async_directory_type_controller.h"
 
 namespace autofill {
 class AutofillWebDataService;
 class PersonalDataManager;
 }  // namespace autofill
 
+namespace syncer {
+class SyncClient;
+class SyncService;
+}  // namespace syncer
+
 namespace browser_sync {
 
 // Controls syncing of the AUTOFILL_PROFILE data type.
 class AutofillProfileDataTypeController
-    : public sync_driver::NonUIDataTypeController,
+    : public syncer::AsyncDirectoryTypeController,
       public autofill::PersonalDataManagerObserver {
  public:
-  AutofillProfileDataTypeController(
-      const scoped_refptr<base::SingleThreadTaskRunner>& ui_thread,
-      const scoped_refptr<base::SingleThreadTaskRunner>& db_thread,
-      const base::Closure& error_callback,
-      sync_driver::SyncClient* sync_client,
-      const scoped_refptr<autofill::AutofillWebDataService>& web_data_service);
+  using PersonalDataManagerProvider =
+      base::RepeatingCallback<autofill::PersonalDataManager*()>;
 
-  // NonUIDataTypeController:
-  syncer::ModelType type() const override;
-  syncer::ModelSafeGroup model_safe_group() const override;
+  // |dump_stack| is called when an unrecoverable error occurs.
+  AutofillProfileDataTypeController(
+      scoped_refptr<base::SingleThreadTaskRunner> db_thread,
+      const base::Closure& dump_stack,
+      syncer::SyncService* sync_service,
+      syncer::SyncClient* sync_client,
+      const PersonalDataManagerProvider& pdm_provider,
+      const scoped_refptr<autofill::AutofillWebDataService>& web_data_service);
+  ~AutofillProfileDataTypeController() override;
 
   // PersonalDataManagerObserver:
   void OnPersonalDataChanged() override;
 
  protected:
-  ~AutofillProfileDataTypeController() override;
-
-  // NonUIDataTypeController:
-  bool PostTaskOnBackendThread(const tracked_objects::Location& from_here,
-                               const base::Closure& task) override;
+  // AsyncDirectoryTypeController:
   bool StartModels() override;
   void StopModels() override;
+  bool ReadyForStart() const override;
 
  private:
   // Callback to notify that WebDatabase has loaded.
   void WebDatabaseLoaded();
 
-  // A reference to the UI thread's task runner.
-  const scoped_refptr<base::SingleThreadTaskRunner> ui_thread_;
+  // Callback for changes to the autofill pref.
+  void OnUserPrefChanged();
 
-  // A reference to the DB thread's task runner.
-  const scoped_refptr<base::SingleThreadTaskRunner> db_thread_;
+  // Returns true if the pref is set such that autofill sync should be enabled.
+  bool IsEnabled();
 
-  // A pointer to the sync client.
-  sync_driver::SyncClient* const sync_client_;
+  // Report an error (which will stop the datatype asynchronously).
+  void DisableForPolicy();
+
+  // Callback that allows accessing PersonalDataManager lazily.
+  const PersonalDataManagerProvider pdm_provider_;
 
   // A reference to the AutofillWebDataService for this controller.
   scoped_refptr<autofill::AutofillWebDataService> web_data_service_;
 
   // Whether the database loaded callback has been registered.
   bool callback_registered_;
+
+  // Registrar for listening to kAutofillWEnabled status.
+  PrefChangeRegistrar pref_registrar_;
+
+  // Stores whether we're currently syncing autofill data. This is the last
+  // value computed by IsEnabled.
+  bool currently_enabled_;
 
   DISALLOW_COPY_AND_ASSIGN(AutofillProfileDataTypeController);
 };

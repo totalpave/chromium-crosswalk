@@ -31,7 +31,7 @@ const double kConstantFPSFactor = 0.45;
 static void HistogramCadenceChangeCount(int cadence_changes) {
   const int kCadenceChangeMax = 10;
   UMA_HISTOGRAM_CUSTOM_COUNTS("Media.VideoRenderer.CadenceChanges",
-                              cadence_changes, 0, kCadenceChangeMax,
+                              cadence_changes, 1, kCadenceChangeMax,
                               kCadenceChangeMax);
 }
 
@@ -80,8 +80,7 @@ VideoCadenceEstimator::VideoCadenceEstimator(
   Reset();
 }
 
-VideoCadenceEstimator::~VideoCadenceEstimator() {
-}
+VideoCadenceEstimator::~VideoCadenceEstimator() = default;
 
 void VideoCadenceEstimator::Reset() {
   cadence_.clear();
@@ -189,6 +188,8 @@ VideoCadenceEstimator::Cadence VideoCadenceEstimator::CalculateCadence(
   // within minimum_time_until_max_drift.
   if (max_acceptable_drift >= minimum_time_until_max_drift_) {
     int cadence_value = round(perfect_cadence);
+    if (cadence_value < 0)
+      return Cadence();
     if (cadence_value == 0)
       cadence_value = 1;
     Cadence result = ConstructCadence(cadence_value, 1);

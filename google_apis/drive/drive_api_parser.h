@@ -10,11 +10,11 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/strings/string_piece.h"
 #include "base/time/time.h"
 #include "url/gurl.h"
@@ -87,237 +87,189 @@ class AboutResource {
   // This class is copyable on purpose.
 };
 
-// DriveAppIcon represents an icon for Drive Application.
-// https://developers.google.com/drive/v2/reference/apps
-class DriveAppIcon {
+// Capabilities of a Team Drive indicate the permissions granted to the user
+// for the Team Drive and items within the Team Drive.
+// See "capabilities" in
+// https://developers.google.com/drive/v2/reference/teamdrives#resource.
+class TeamDriveCapabilities {
  public:
-  enum IconCategory {
-    UNKNOWN,          // Uninitialized state.
-    DOCUMENT,         // Icon for a file associated with the app.
-    APPLICATION,      // Icon for the application.
-    SHARED_DOCUMENT,  // Icon for a shared file associated with the app.
-  };
-
-  DriveAppIcon();
-  ~DriveAppIcon();
+  TeamDriveCapabilities();
+  TeamDriveCapabilities(const TeamDriveCapabilities& src);
+  ~TeamDriveCapabilities();
 
   // Registers the mapping between JSON field names and the members in this
   // class.
   static void RegisterJSONConverter(
-      base::JSONValueConverter<DriveAppIcon>* converter);
+      base::JSONValueConverter<TeamDriveCapabilities>* converter);
 
-  // Creates drive app icon instance from parsed JSON.
-  static std::unique_ptr<DriveAppIcon> CreateFrom(const base::Value& value);
+  // Creates Team Drive resource from parsed JSON.
+  static std::unique_ptr<TeamDriveCapabilities>
+      CreateFrom(const base::Value& value);
 
-  // Category of the icon.
-  IconCategory category() const { return category_; }
-
-  // Size in pixels of one side of the icon (icons are always square).
-  int icon_side_length() const { return icon_side_length_; }
-
-  // Returns URL for this icon.
-  const GURL& icon_url() const { return icon_url_; }
-
-  void set_category(IconCategory category) {
-    category_ = category;
+  // Whether the current user can add children to folders in this Team Drive.
+  bool can_add_children() const { return can_add_children_; }
+  void set_can_add_children(bool can_add_children) {
+    can_add_children_ = can_add_children;
   }
-  void set_icon_side_length(int icon_side_length) {
-    icon_side_length_ = icon_side_length;
+  // Whether the current user can comment on files in this Team Drive.
+  bool can_comment() const { return can_comment_; }
+  void set_can_comment(bool can_comment) { can_comment_ = can_comment; }
+  // Whether files in this Team Drive can be copied by the current user.
+  bool can_copy() const { return can_copy_; }
+  void set_can_copy(bool can_copy) { can_copy_ = can_copy; }
+  // Whether this Team Drive can be deleted by the current user.
+  bool can_delete_team_drive() const { return can_delete_team_drive_; }
+  void set_can_delete_team_drive(bool can_delete_team_drive) {
+    can_delete_team_drive_ = can_delete_team_drive;
   }
-  void set_icon_url(const GURL& icon_url) {
-    icon_url_ = icon_url;
+  // Whether files in this Team Drive can be edited by the current user.
+  bool can_download() const { return can_download_; }
+  void set_can_download(bool can_download) { can_download_ = can_download; }
+  // Whether files in this Team Drive can be edited by current user.
+  bool can_edit() const { return can_edit_; }
+  void set_can_edit(bool can_edit) { can_edit_ = can_edit; }
+  // Whether the current user can list the children of folders in this Team
+  // Drive.
+  bool can_list_children() const { return can_list_children_; }
+  void set_can_list_children(bool can_list_children) {
+    can_list_children_ = can_list_children;
   }
+  // Whether the current user can add members to this Team Drive or remove them
+  // or change their role.
+  bool can_manage_members() const { return can_manage_members_; }
+  void set_can_manage_members(bool can_manage_members) {
+    can_manage_members_ = can_manage_members;
+  }
+  // Whether the current user has read access to the Revisions resource of files
+  // in this Team Drive.
+  bool can_read_revisions() const { return can_read_revisions_; }
+  void set_can_read_revisions(bool can_read_revisions) {
+    can_read_revisions_ = can_read_revisions;
+  }
+  // Whether the current user can remove children from folders in this Team
+  // Drive.
+  bool can_remove_children() const { return can_remove_children_; }
+  void set_can_remove_children(bool can_remove_children) {
+    can_remove_children_ = can_remove_children;
+  }
+  // Whether files or folders in this Team Drive can be renamed by the current
+  // user.
+  bool can_rename() const { return can_rename_; }
+  void set_can_rename(bool can_rename) { can_rename_ = can_rename; }
+  // Whether this Team Drive can be renamed by the current user.
+  bool can_rename_team_drive() const { return can_rename_team_drive_; }
+  void set_can_rename_team_drive(bool can_rename_team_drive) {
+    can_rename_team_drive_ = can_rename_team_drive;
+  }
+  // Whether files or folders in this Team Drive can be shared by the current
+  // user.
+  bool can_share() const { return can_share_; }
+  void set_can_share(bool can_share) { can_share_ = can_share; }
 
  private:
-  // Parses and initializes data members from content of |value|.
-  // Return false if parsing fails.
-  bool Parse(const base::Value& value);
-
-  // Extracts the icon category from the given string. Returns false and does
-  // not change |result| when |scheme| has an unrecognizable value.
-  static bool GetIconCategory(const base::StringPiece& category,
-                              IconCategory* result);
-
-  friend class base::internal::RepeatedMessageConverter<DriveAppIcon>;
-  friend class AppResource;
-
-  IconCategory category_;
-  int icon_side_length_;
-  GURL icon_url_;
-
-  DISALLOW_COPY_AND_ASSIGN(DriveAppIcon);
+  bool can_add_children_;
+  bool can_comment_;
+  bool can_copy_;
+  bool can_delete_team_drive_;
+  bool can_download_;
+  bool can_edit_;
+  bool can_list_children_;
+  bool can_manage_members_;
+  bool can_read_revisions_;
+  bool can_remove_children_;
+  bool can_rename_;
+  bool can_rename_team_drive_;
+  bool can_share_;
 };
 
-// AppResource represents a Drive Application.
-// https://developers.google.com/drive/v2/reference/apps
-class AppResource {
+// Team Drive resource represents the metadata about Team Drive itself, such as
+// the name.
+class TeamDriveResource {
  public:
-  ~AppResource();
-  AppResource();
+  TeamDriveResource();
+  ~TeamDriveResource();
 
   // Registers the mapping between JSON field names and the members in this
   // class.
   static void RegisterJSONConverter(
-      base::JSONValueConverter<AppResource>* converter);
+      base::JSONValueConverter<TeamDriveResource>* converter);
 
-  // Creates app resource from parsed JSON.
-  static std::unique_ptr<AppResource> CreateFrom(const base::Value& value);
+  // Creates Team Drive resource from parsed JSON.
+  static std::unique_ptr<TeamDriveResource>
+      CreateFrom(const base::Value& value);
 
-  // Returns application ID, which is 12-digit decimals (e.g. "123456780123").
-  const std::string& application_id() const { return application_id_; }
-
-  // Returns application name.
+  // The ID of this Team Drive. The ID is the same as the top-level folder for
+  // this Team Drive.
+  const std::string& id() const { return id_; }
+  void set_id(const std::string& id) { id_ = id; }
+  // The name of this Team Drive.
   const std::string& name() const { return name_; }
-
-  // Returns the name of the type of object this application creates.
-  // This is used for displaying in "Create" menu item for this app.
-  // If empty, application name is used instead.
-  const std::string& object_type() const { return object_type_; }
-
-  // Returns the product ID.
-  const std::string& product_id() const { return product_id_; }
-
-  // Returns whether this application supports creating new objects.
-  bool supports_create() const { return supports_create_; }
-
-  // Returns whether this application is removable by apps.delete API.
-  bool is_removable() const { return removable_; }
-
-  // Returns the create URL, i.e., the URL for opening a new file by the app.
-  const GURL& create_url() const { return create_url_; }
-
-  // List of primary mime types supported by this WebApp. Primary status should
-  // trigger this WebApp becoming the default handler of file instances that
-  // have these mime types.
-  const ScopedVector<std::string>& primary_mimetypes() const {
-    return primary_mimetypes_;
-  }
-
-  // List of secondary mime types supported by this WebApp. Secondary status
-  // should make this WebApp show up in "Open with..." pop-up menu of the
-  // default action menu for file with matching mime types.
-  const ScopedVector<std::string>& secondary_mimetypes() const {
-    return secondary_mimetypes_;
-  }
-
-  // List of primary file extensions supported by this WebApp. Primary status
-  // should trigger this WebApp becoming the default handler of file instances
-  // that match these extensions.
-  const ScopedVector<std::string>& primary_file_extensions() const {
-    return primary_file_extensions_;
-  }
-
-  // List of secondary file extensions supported by this WebApp. Secondary
-  // status should make this WebApp show up in "Open with..." pop-up menu of the
-  // default action menu for file with matching extensions.
-  const ScopedVector<std::string>& secondary_file_extensions() const {
-    return secondary_file_extensions_;
-  }
-
-  // Returns Icons for this application.  An application can have multiple
-  // icons for different purpose (application, document, shared document)
-  // in several sizes.
-  const ScopedVector<DriveAppIcon>& icons() const {
-    return icons_;
-  }
-
-  void set_application_id(const std::string& application_id) {
-    application_id_ = application_id;
-  }
   void set_name(const std::string& name) { name_ = name; }
-  void set_object_type(const std::string& object_type) {
-    object_type_ = object_type;
+  // Capabilities the current user has on this Team Drive.
+  const TeamDriveCapabilities& capabilities() const { return capabilities_; }
+  void set_capabilities(const TeamDriveCapabilities& capabilities) {
+    capabilities_ = capabilities;
   }
-  void set_product_id(const std::string& id) { product_id_ = id; }
-  void set_supports_create(bool supports_create) {
-    supports_create_ = supports_create;
-  }
-  void set_removable(bool removable) { removable_ = removable; }
-  void set_primary_mimetypes(
-      ScopedVector<std::string> primary_mimetypes) {
-    primary_mimetypes_ = std::move(primary_mimetypes);
-  }
-  void set_secondary_mimetypes(
-      ScopedVector<std::string> secondary_mimetypes) {
-    secondary_mimetypes_ = std::move(secondary_mimetypes);
-  }
-  void set_primary_file_extensions(
-      ScopedVector<std::string> primary_file_extensions) {
-    primary_file_extensions_ = std::move(primary_file_extensions);
-  }
-  void set_secondary_file_extensions(
-      ScopedVector<std::string> secondary_file_extensions) {
-    secondary_file_extensions_ = std::move(secondary_file_extensions);
-  }
-  void set_icons(ScopedVector<DriveAppIcon> icons) {
-    icons_ = std::move(icons);
-  }
-  void set_create_url(const GURL& url) {
-    create_url_ = url;
-  }
-
- private:
-  friend class base::internal::RepeatedMessageConverter<AppResource>;
-  friend class AppList;
-
-  // Parses and initializes data members from content of |value|.
-  // Return false if parsing fails.
-  bool Parse(const base::Value& value);
-
-  std::string application_id_;
-  std::string name_;
-  std::string object_type_;
-  std::string product_id_;
-  bool supports_create_;
-  bool removable_;
-  GURL create_url_;
-  ScopedVector<std::string> primary_mimetypes_;
-  ScopedVector<std::string> secondary_mimetypes_;
-  ScopedVector<std::string> primary_file_extensions_;
-  ScopedVector<std::string> secondary_file_extensions_;
-  ScopedVector<DriveAppIcon> icons_;
-
-  DISALLOW_COPY_AND_ASSIGN(AppResource);
-};
-
-// AppList represents a list of Drive Applications.
-// https://developers.google.com/drive/v2/reference/apps/list
-class AppList {
- public:
-  AppList();
-  ~AppList();
-
-  // Registers the mapping between JSON field names and the members in this
-  // class.
-  static void RegisterJSONConverter(
-      base::JSONValueConverter<AppList>* converter);
-
-  // Creates app list from parsed JSON.
-  static std::unique_ptr<AppList> CreateFrom(const base::Value& value);
-
-  // ETag for this resource.
-  const std::string& etag() const { return etag_; }
-
-  // Returns a vector of applications.
-  const ScopedVector<AppResource>& items() const { return items_; }
-
-  void set_etag(const std::string& etag) {
-    etag_ = etag;
-  }
-  void set_items(ScopedVector<AppResource> items) { items_ = std::move(items); }
 
  private:
   friend class DriveAPIParserTest;
-  FRIEND_TEST_ALL_PREFIXES(DriveAPIParserTest, AppListParser);
+  FRIEND_TEST_ALL_PREFIXES(DriveAPIParserTest, TeamDriveResourceParser);
 
   // Parses and initializes data members from content of |value|.
   // Return false if parsing fails.
   bool Parse(const base::Value& value);
 
-  std::string etag_;
-  ScopedVector<AppResource> items_;
+  std::string id_;
+  std::string name_;
+  TeamDriveCapabilities capabilities_;
+};
 
-  DISALLOW_COPY_AND_ASSIGN(AppList);
+// TeamDriveList represents a collection of Team Drives.
+// https://developers.google.com/drive/v2/reference/teamdrives/list
+class TeamDriveList {
+ public:
+  TeamDriveList();
+  ~TeamDriveList();
+
+  // Registers the mapping between JSON field names and the members in this
+  // class.
+  static void RegisterJSONConverter(
+      base::JSONValueConverter<TeamDriveList>* converter);
+
+  // Returns true if the |value| has kind field for TeamDriveList.
+  static bool HasTeamDriveListKind(const base::Value& value);
+
+  // Creates file list from parsed JSON.
+  static std::unique_ptr<TeamDriveList> CreateFrom(const base::Value& value);
+
+  // Returns a page token for the next page of Team Drives.
+  const std::string& next_page_token() const { return next_page_token_; }
+
+  void set_next_page_token(const std::string& next_page_token) {
+    this->next_page_token_ = next_page_token;
+  }
+
+  // Returns a set of Team Drives in this list.
+  const std::vector<std::unique_ptr<TeamDriveResource>>& items() const {
+    return items_;
+  }
+
+  std::vector<std::unique_ptr<TeamDriveResource>>* mutable_items() {
+    return &items_;
+  }
+
+ private:
+  friend class DriveAPIParserTest;
+  FRIEND_TEST_ALL_PREFIXES(DriveAPIParserTest, TeamDriveListParser);
+
+  // Parses and initializes data members from content of |value|.
+  // Return false if parsing fails.
+  bool Parse(const base::Value& value);
+
+  std::string next_page_token_;
+  std::vector<std::unique_ptr<TeamDriveResource>> items_;
+
+  DISALLOW_COPY_AND_ASSIGN(TeamDriveList);
 };
 
 // ParentReference represents a directory.
@@ -338,13 +290,7 @@ class ParentReference {
   // Returns the file id of the reference.
   const std::string& file_id() const { return file_id_; }
 
-  // Returns the URL for the parent in Drive.
-  const GURL& parent_link() const { return parent_link_; }
-
   void set_file_id(const std::string& file_id) { file_id_ = file_id; }
-  void set_parent_link(const GURL& parent_link) {
-    parent_link_ = parent_link;
-  }
 
  private:
   // Parses and initializes data members from content of |value|.
@@ -352,7 +298,6 @@ class ParentReference {
   bool Parse(const base::Value& value);
 
   std::string file_id_;
-  GURL parent_link_;
 };
 
 // FileLabels represents labels for file or folder.
@@ -372,8 +317,11 @@ class FileLabels {
 
   // Whether this file has been trashed.
   bool is_trashed() const { return trashed_; }
+  // Whether this file is starred by the user.
+  bool is_starred() const { return starred_; }
 
   void set_trashed(bool trashed) { trashed_ = trashed; }
+  void set_starred(bool starred) { starred_ = starred; }
 
  private:
   friend class FileResource;
@@ -383,6 +331,7 @@ class FileLabels {
   bool Parse(const base::Value& value);
 
   bool trashed_;
+  bool starred_;
 };
 
 // ImageMediaMetadata represents image metadata for a file.
@@ -422,6 +371,130 @@ class ImageMediaMetadata {
   int width_;
   int height_;
   int rotation_;
+};
+
+// Capabilities of a file resource indicate the permissions granted to the user
+// for the file (or items within the folder).
+// See "capabilities" in
+// https://developers.google.com/drive/v2/reference/files#resource.
+class FileResourceCapabilities {
+ public:
+  FileResourceCapabilities();
+  FileResourceCapabilities(const FileResourceCapabilities& src);
+  ~FileResourceCapabilities();
+
+  // Registers the mapping between JSON field names and the members in this
+  // class.
+  static void RegisterJSONConverter(
+      base::JSONValueConverter<FileResourceCapabilities>* converter);
+
+  // Creates a FileResourceCapabilities from parsed JSON.
+  static std::unique_ptr<FileResourceCapabilities> CreateFrom(
+      const base::Value& value);
+
+  // Whether the current user can add children to this folder. This is always
+  // false when the item is not a folder.
+  bool can_add_children() const { return can_add_children_; }
+  void set_can_add_children(bool can_add_children) {
+    can_add_children_ = can_add_children;
+  }
+  // Whether the current user can change the restricted download label of this
+  // file.
+  bool can_change_restricted_download() const {
+    return can_change_restricted_download_;
+  }
+  void set_can_change_restricted_download(bool can_change_restricted_download) {
+    can_change_restricted_download_ = can_change_restricted_download;
+  }
+  // Whether the current user can comment on this file.
+  bool can_comment() const { return can_comment_; }
+  void set_can_comment(bool can_comment) { can_comment_ = can_comment; }
+  // Whether the current user can copy this file. For a Team Drive item, whether
+  // the current user can copy non-folder descendants of this item, or this item
+  // itself if it is not a folder.
+  bool can_copy() const { return can_copy_; }
+  void set_can_copy(bool can_copy) { can_copy_ = can_copy; }
+  // Whether the current user can delete this file.
+  bool can_delete() const { return can_delete_; }
+  void set_can_delete(bool can_delete) { can_delete_ = can_delete; }
+  // Whether the current user can download this file.
+  bool can_download() const { return can_download_; }
+  void set_can_download(bool can_download) { can_download_ = can_download; }
+  // Whether the current user can edit this file.
+  bool can_edit() const { return can_edit_; }
+  void set_can_edit(bool can_edit) { can_edit_ = can_edit; }
+  // Whether the current user can list the children of this folder. This is
+  // always false when the item is not a folder.
+  bool can_list_children() const { return can_list_children_; }
+  void set_can_list_children(bool can_list_children) {
+    can_list_children_ = can_list_children;
+  }
+  // Whether the current user can move this item into a Team Drive. If the item
+  // is in a Team Drive, this field is equivalent to canMoveTeamDriveItem.
+  bool can_move_item_into_team_drive() const {
+    return can_move_item_into_team_drive_;
+  }
+  void set_can_move_item_into_team_drive(bool can_move_item_into_team_drive) {
+    can_move_item_into_team_drive_ = can_move_item_into_team_drive;
+  }
+  // Whether the current user can move this Team Drive item by changing its
+  // parent. Note that a request to change the parent for this item may still
+  // fail depending on the new parent that is being added. Only populated for
+  // Team Drive files.
+  bool can_move_team_drive_item() const { return can_move_team_drive_item_; }
+  void set_can_move_team_drive_item(bool can_move_team_drive_item) {
+    can_move_team_drive_item_ = can_move_team_drive_item;
+  }
+  // Whether the current user can read the revisions resource of this file. For
+  // a Team Drive item, whether revisions of non-folder descendants of this
+  // item, or this item itself if it is not a folder, can be read.
+  bool can_read_revisions() const { return can_read_revisions_; }
+  void set_can_read_revisions(bool can_read_revisions) {
+    can_read_revisions_ = can_read_revisions;
+  }
+  // Whether the current user can read the Team Drive to which this file
+  // belongs. Only populated for Team Drive files.
+  bool can_read_team_drive() const { return can_read_team_drive_; }
+  void set_can_read_team_drive(bool can_read_team_drive) {
+    can_read_team_drive_ = can_read_team_drive;
+  }
+  // Whether the current user can remove children from this folder. This is
+  // always false when the item is not a folder.
+  bool can_remove_children() const { return can_remove_children_; }
+  void set_can_remove_children(bool can_remove_children) {
+    can_remove_children_ = can_remove_children;
+  }
+  // Whether the current user can rename this file.
+  bool can_rename() const { return can_rename_; }
+  void set_can_rename(bool can_rename) { can_rename_ = can_rename; }
+  // Whether the current user can modify the sharing settings for this file.
+  bool can_share() const { return can_share_; }
+  void set_can_share(bool can_share) { can_share_ = can_share; }
+  // Whether the current user can move this file to trash.
+  bool can_trash() const { return can_trash_; }
+  void set_can_trash(bool can_trash) { can_trash_ = can_trash; }
+  // Whether the current user can restore this file from trash.
+  bool can_untrash() const { return can_untrash_; }
+  void set_can_untrash(bool can_untrash) { can_untrash_ = can_untrash; }
+
+ private:
+  bool can_add_children_;
+  bool can_change_restricted_download_;
+  bool can_comment_;
+  bool can_copy_;
+  bool can_delete_;
+  bool can_download_;
+  bool can_edit_;
+  bool can_list_children_;
+  bool can_move_item_into_team_drive_;
+  bool can_move_team_drive_item_;
+  bool can_read_revisions_;
+  bool can_read_team_drive_;
+  bool can_remove_children_;
+  bool can_rename_;
+  bool can_share_;
+  bool can_trash_;
+  bool can_untrash_;
 };
 
 // FileResource represents a file or folder metadata in Drive.
@@ -483,6 +556,9 @@ class FileResource {
   // Returns modified time of this file.
   const base::Time& modified_date() const { return modified_date_; }
 
+  // Returns last modified time by the user.
+  const base::Time& modified_by_me_date() const { return modified_by_me_date_; }
+
   // Returns last access time by the user.
   const base::Time& last_viewed_by_me_date() const {
     return last_viewed_by_me_date_;
@@ -541,6 +617,9 @@ class FileResource {
   void set_modified_date(const base::Time& modified_date) {
     modified_date_ = modified_date;
   }
+  void set_modified_by_me_date(const base::Time& modified_by_me_date) {
+    modified_by_me_date_ = modified_by_me_date;
+  }
   void set_last_viewed_by_me_date(const base::Time& last_viewed_by_me_date) {
     last_viewed_by_me_date_ = last_viewed_by_me_date;
   }
@@ -564,6 +643,18 @@ class FileResource {
   std::vector<OpenWithLink>* mutable_open_with_links() {
     return &open_with_links_;
   }
+  // Capabilities the current user has on this file resource.
+  const FileResourceCapabilities& capabilities() const { return capabilities_; }
+  void set_capabilities(const FileResourceCapabilities& capabilities) {
+    capabilities_ = capabilities;
+  }
+
+  // ID of the Team Drive the file resides in. Will be empty if the file
+  // is not in a team drive.
+  const std::string& team_drive_id() const { return team_drive_id_; }
+  void set_team_drive_id(const std::string& team_drive_id) {
+    team_drive_id_ = team_drive_id;
+  }
 
  private:
   friend class base::internal::RepeatedMessageConverter<FileResource>;
@@ -582,6 +673,7 @@ class FileResource {
   ImageMediaMetadata image_media_metadata_;
   base::Time created_date_;
   base::Time modified_date_;
+  base::Time modified_by_me_date_;
   base::Time last_viewed_by_me_date_;
   base::Time shared_with_me_date_;
   bool shared_;
@@ -591,6 +683,8 @@ class FileResource {
   GURL share_link_;
   std::vector<ParentReference> parents_;
   std::vector<OpenWithLink> open_with_links_;
+  FileResourceCapabilities capabilities_;
+  std::string team_drive_id_;
 };
 
 // FileList represents a collection of files and folders.
@@ -616,8 +710,12 @@ class FileList {
   const GURL& next_link() const { return next_link_; }
 
   // Returns a set of files in this list.
-  const ScopedVector<FileResource>& items() const { return items_; }
-  ScopedVector<FileResource>* mutable_items() { return &items_; }
+  const std::vector<std::unique_ptr<FileResource>>& items() const {
+    return items_;
+  }
+  std::vector<std::unique_ptr<FileResource>>* mutable_items() {
+    return &items_;
+  }
 
   void set_next_link(const GURL& next_link) {
     next_link_ = next_link;
@@ -632,7 +730,7 @@ class FileList {
   bool Parse(const base::Value& value);
 
   GURL next_link_;
-  ScopedVector<FileResource> items_;
+  std::vector<std::unique_ptr<FileResource>> items_;
 
   DISALLOW_COPY_AND_ASSIGN(FileList);
 };
@@ -641,6 +739,11 @@ class FileList {
 // https://developers.google.com/drive/v2/reference/changes
 class ChangeResource {
  public:
+  enum ChangeType {
+    UNKNOWN,  // Uninitialized state.
+    FILE,
+    TEAM_DRIVE,
+  };
   ChangeResource();
   ~ChangeResource();
 
@@ -656,20 +759,52 @@ class ChangeResource {
   // number.
   int64_t change_id() const { return change_id_; }
 
+  // Returns whether this is a change of a file or a team drive.
+  ChangeType type() const { return type_; }
+
   // Returns a string file ID for corresponding file of the change.
-  const std::string& file_id() const { return file_id_; }
+  // Valid only when type == FILE.
+  const std::string& file_id() const {
+    DCHECK_EQ(FILE, type_);
+    return file_id_;
+  }
 
   // Returns true if this file is deleted in the change.
   bool is_deleted() const { return deleted_; }
 
   // Returns FileResource of the file which the change refers to.
-  const FileResource* file() const { return file_.get(); }
-  FileResource* mutable_file() { return file_.get(); }
+  // Valid only when type == FILE.
+  const FileResource* file() const {
+    DCHECK_EQ(FILE, type_);
+    return file_.get();
+  }
+  FileResource* mutable_file() {
+    DCHECK_EQ(FILE, type_);
+    return file_.get();
+  }
+
+  // Returns TeamDriveResource which the change refers to.
+  // Valid only when type == TEAM_DRIVE.
+  const TeamDriveResource* team_drive() const {
+    DCHECK_EQ(TEAM_DRIVE, type_);
+    return team_drive_.get();
+  }
+  TeamDriveResource* mutable_team_drive() {
+    DCHECK_EQ(TEAM_DRIVE, type_);
+    return team_drive_.get();
+  }
+
+  // Returns the ID of the Team Drive. Valid only when type == TEAM_DRIVE.
+  const std::string& team_drive_id() const {
+    DCHECK_EQ(TEAM_DRIVE, type_);
+    return team_drive_id_;
+  }
 
   // Returns the time of this modification.
   const base::Time& modification_date() const { return modification_date_; }
 
   void set_change_id(int64_t change_id) { change_id_ = change_id; }
+  void set_type(ChangeType type) { type_ = type; }
   void set_file_id(const std::string& file_id) {
     file_id_ = file_id;
   }
@@ -677,6 +812,12 @@ class ChangeResource {
     deleted_ = deleted;
   }
   void set_file(std::unique_ptr<FileResource> file) { file_ = std::move(file); }
+  void set_team_drive(std::unique_ptr<TeamDriveResource> team_drive) {
+    team_drive_ = std::move(team_drive);
+  }
+  void set_team_drive_id(const std::string& team_drive_id) {
+    team_drive_id_ = team_drive_id;
+  }
   void set_modification_date(const base::Time& modification_date) {
     modification_date_ = modification_date;
   }
@@ -689,11 +830,19 @@ class ChangeResource {
   // Return false if parsing fails.
   bool Parse(const base::Value& value);
 
+  // Extracts the change type from the given string. Returns false and does
+  // not change |result| when |type_name| has an unrecognizable value.
+  static bool GetType(base::StringPiece type_name,
+                      ChangeResource::ChangeType* result);
+
   int64_t change_id_;
+  ChangeType type_;
   std::string file_id_;
   bool deleted_;
   std::unique_ptr<FileResource> file_;
   base::Time modification_date_;
+  std::string team_drive_id_;
+  std::unique_ptr<TeamDriveResource> team_drive_;
 
   DISALLOW_COPY_AND_ASSIGN(ChangeResource);
 };
@@ -723,15 +872,28 @@ class ChangeList {
   // Returns the largest change ID number.
   int64_t largest_change_id() const { return largest_change_id_; }
 
+  // Returns the new start page token, only if the end of current change list
+  // was reached.
+  const std::string& new_start_page_token() const {
+    return new_start_page_token_;
+  }
+
   // Returns a set of changes in this list.
-  const ScopedVector<ChangeResource>& items() const { return items_; }
-  ScopedVector<ChangeResource>* mutable_items() { return &items_; }
+  const std::vector<std::unique_ptr<ChangeResource>>& items() const {
+    return items_;
+  }
+  std::vector<std::unique_ptr<ChangeResource>>* mutable_items() {
+    return &items_;
+  }
 
   void set_next_link(const GURL& next_link) {
     next_link_ = next_link;
   }
   void set_largest_change_id(int64_t largest_change_id) {
     largest_change_id_ = largest_change_id;
+  }
+  void set_new_start_page_token(const std::string& new_start_page_token) {
+    new_start_page_token_ = new_start_page_token;
   }
 
  private:
@@ -744,9 +906,40 @@ class ChangeList {
 
   GURL next_link_;
   int64_t largest_change_id_;
-  ScopedVector<ChangeResource> items_;
+  std::string new_start_page_token_;
+  std::vector<std::unique_ptr<ChangeResource>> items_;
 
   DISALLOW_COPY_AND_ASSIGN(ChangeList);
+};
+
+// StartPageToken represets the starting pageToken for listing changes in the
+// users corpus or in a team drive.
+// https://developers.google.com/drive/v2/reference/changes/getStartPageToken
+class StartPageToken {
+ public:
+  StartPageToken();
+  ~StartPageToken();
+
+  // Registers the mapping between JSON field names and the members in this
+  // class.
+  static void RegisterJSONConverter(
+      base::JSONValueConverter<StartPageToken>* converter);
+
+  // Creates StartPageToken from parsed JSON
+  static std::unique_ptr<StartPageToken> CreateFrom(const base::Value& value);
+
+  const std::string& start_page_token() const { return start_page_token_; }
+
+  void set_start_page_token(const std::string& token) {
+    start_page_token_ = token;
+  }
+
+ private:
+  // Pareses and initializes data members from content of |value|.
+  // Returns false if parsing fails.
+  bool Parse(const base::Value& value);
+
+  std::string start_page_token_;
 };
 
 }  // namespace google_apis

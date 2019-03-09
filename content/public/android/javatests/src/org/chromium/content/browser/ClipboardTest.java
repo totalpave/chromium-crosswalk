@@ -7,21 +7,36 @@ package org.chromium.content.browser;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
-import android.test.suitebuilder.annotation.LargeTest;
+import android.support.test.filters.LargeTest;
 import android.text.TextUtils;
 
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.BaseJUnit4ClassRunner;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content_public.browser.WebContents;
-import org.chromium.content_shell_apk.ContentShellTestBase;
+import org.chromium.content.browser.webcontents.WebContentsImpl;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_shell_apk.ContentShellActivityTestRule;
+import org.chromium.content_shell_apk.ContentShellActivityTestRule.RerunWithUpdatedContainerView;
+
+import java.util.concurrent.Callable;
 
 /**
  * Tests rich text clipboard functionality.
  */
-public class ClipboardTest extends ContentShellTestBase {
+@RunWith(BaseJUnit4ClassRunner.class)
+public class ClipboardTest {
+    @Rule
+    public ContentShellActivityTestRule mActivityTestRule = new ContentShellActivityTestRule();
+
     private static final String TEST_PAGE_DATA_URL = UrlUtils.encodeHtmlDataUri(
             "<html><body>Hello, <a href=\"http://www.example.com/\">world</a>, how <b> "
                     + "Chromium</b> doing today?</body></html>");
@@ -31,11 +46,10 @@ public class ClipboardTest extends ContentShellTestBase {
     // String to search for in the HTML representation on the clipboard.
     private static final String EXPECTED_HTML_NEEDLE = "http://www.example.com/";
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        launchContentShellWithUrl(TEST_PAGE_DATA_URL);
-        waitForActiveShellToBeDoneLoading();
+    @Before
+    public void setUp() throws Exception {
+        mActivityTestRule.launchContentShellWithUrl(TEST_PAGE_DATA_URL);
+        mActivityTestRule.waitForActiveShellToBeDoneLoading();
     }
 
     /**
@@ -43,19 +57,28 @@ public class ClipboardTest extends ContentShellTestBase {
      * of the contents on the clipboard. For Android JellyBean and higher, we also expect
      * the HTML representation of the fragment to be available.
      */
+    @Test
     @LargeTest
     @Feature({"Clipboard", "TextInput"})
     @RerunWithUpdatedContainerView
+    @DisabledTest(message = "https://crbug.com/791021")
     public void testCopyDocumentFragment() throws Throwable {
-        final ClipboardManager clipboardManager = (ClipboardManager)
-                getActivity().getSystemService(Context.CLIPBOARD_SERVICE);
-        assertNotNull(clipboardManager);
+        ClipboardManager clipboardManager =
+                ThreadUtils.runOnUiThreadBlockingNoException(new Callable<ClipboardManager>() {
+                    @Override
+                    public ClipboardManager call() {
+                        return (ClipboardManager) mActivityTestRule.getActivity().getSystemService(
+                                Context.CLIPBOARD_SERVICE);
+                    }
+                });
+
+        Assert.assertNotNull(clipboardManager);
 
         // Clear the clipboard to make sure we start with a clean state.
         clipboardManager.setPrimaryClip(ClipData.newPlainText(null, ""));
-        assertFalse(hasPrimaryClip(clipboardManager));
+        Assert.assertFalse(hasPrimaryClip(clipboardManager));
 
-        final WebContents webContents = getContentViewCore().getWebContents();
+        final WebContentsImpl webContents = (WebContentsImpl) mActivityTestRule.getWebContents();
         selectAll(webContents);
         copy(webContents);
 
@@ -69,15 +92,21 @@ public class ClipboardTest extends ContentShellTestBase {
 
         // Verify that the data on the clipboard is what we expect it to be. For Android JB MR2
         // and higher we expect HTML content, for other versions the plain-text representation.
-        final ClipData clip = clipboardManager.getPrimaryClip();
-        assertEquals(EXPECTED_TEXT_RESULT, clip.getItemAt(0).coerceToText(getActivity()));
+        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
+            @Override
+            public void run() {
+                final ClipData clip = clipboardManager.getPrimaryClip();
+                Assert.assertEquals(EXPECTED_TEXT_RESULT,
+                        clip.getItemAt(0).coerceToText(mActivityTestRule.getActivity()));
 
-        String htmlText = clip.getItemAt(0).getHtmlText();
-        assertNotNull(htmlText);
-        assertTrue(htmlText.contains(EXPECTED_HTML_NEEDLE));
+                String htmlText = clip.getItemAt(0).getHtmlText();
+                Assert.assertNotNull(htmlText);
+                Assert.assertTrue(htmlText.contains(EXPECTED_HTML_NEEDLE));
+            }
+        });
     }
 
-    private void copy(final WebContents webContents) {
+    private void copy(final WebContentsImpl webContents) {
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
@@ -86,7 +115,7 @@ public class ClipboardTest extends ContentShellTestBase {
         });
     }
 
-    private void selectAll(final WebContents webContents) {
+    private void selectAll(final WebContentsImpl webContents) {
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {

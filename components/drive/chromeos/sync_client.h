@@ -25,7 +25,6 @@ class SequencedTaskRunner;
 
 namespace drive {
 
-class FileCacheEntry;
 class JobScheduler;
 class ResourceEntry;
 struct ClientContext;
@@ -37,7 +36,6 @@ class OperationDelegate;
 
 namespace internal {
 
-class ChangeListLoader;
 class EntryUpdatePerformer;
 class FileCache;
 class LoaderController;
@@ -186,7 +184,7 @@ class SyncClient {
   // The delay is used for delaying retry of tasks on server errors.
   base::TimeDelta long_delay_;
 
-  base::ThreadChecker thread_checker_;
+  THREAD_CHECKER(thread_checker_);
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.

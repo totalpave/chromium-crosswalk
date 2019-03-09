@@ -6,10 +6,10 @@
 #define IOS_WEB_WEBUI_MOJO_FACADE_H_
 
 #include <map>
+#include <memory>
 #include <string>
 
-#import "base/ios/weak_nsobject.h"
-#import "mojo/public/cpp/system/watcher.h"
+#include "mojo/public/cpp/system/simple_watcher.h"
 
 @protocol CRWJSInjectionEvaluator;
 
@@ -18,11 +18,11 @@ class DictionaryValue;
 class Value;
 }  // base
 
-namespace shell {
+namespace service_manager {
 namespace mojom {
 class InterfaceProvider;
 }  // mojom
-}  // shell
+}  // service_manager
 
 namespace web {
 
@@ -33,7 +33,7 @@ class MojoFacade {
  public:
   // Constructs MojoFacade. The calling code must retain the ownership of
   // |interface_provider| and |script_evaluator|, both can not be null.
-  MojoFacade(shell::mojom::InterfaceProvider* interface_provider,
+  MojoFacade(service_manager::mojom::InterfaceProvider* interface_provider,
              id<CRWJSInjectionEvaluator> script_evaluator);
   ~MojoFacade();
 
@@ -43,13 +43,13 @@ class MojoFacade {
   // a string representing the name of Mojo message and "args" is a dictionary
   // with arguments specific for each message name.
   // Supported message names with their handler methods in parenthesis:
-  //   service_provider.connectToService (HandleServiceProviderConnectToService)
-  //   core.close (HandleCoreClose)
-  //   core.createMessagePipe (HandleCoreCreateMessagePipe)
-  //   core.writeMessage (HandleCoreWriteMessage)
-  //   core.readMessage (HandleCoreReadMessage)
-  //   support.watch (HandleSupportWatch)
-  //   support.cancelWatch (HandleSupportCancelWatch)
+  //   Mojo.bindInterface (HandleMojoBindInterface)
+  //   MojoHandle.close (HandleMojoHandleClose)
+  //   Mojo.createMessagePipe (HandleMojoCreateMessagePipe)
+  //   MojoHandle.writeMessage (HandleMojoHandleWriteMessage)
+  //   MojoHandle.readMessage (HandleMojoHandleReadMessage)
+  //   MojoHandle.watch (HandleMojoHandleWatch)
+  //   MojoWatcher.cancel (HandleMojoWatcherCancel)
   std::string HandleMojoMessage(const std::string& mojo_message_as_json);
 
  private:
@@ -61,27 +61,27 @@ class MojoFacade {
       std::string* out_name,
       std::unique_ptr<base::DictionaryValue>* out_args);
 
-  // Connects to specified Mojo interface. |args| is a dictionary which must
-  // contain "serviceName" key, which is a string representing a service name.
-  // Returns MojoHandle as a number.
-  std::unique_ptr<base::Value> HandleServiceProviderConnectToService(
+  // Connects to specified Mojo interface. |args| is a dictionary with the
+  // following keys:
+  //   - "interfaceName" (a string representing an interface name);
+  //   - "requestHandle" (a number representing MojoHandle of the interface
+  //     request).
+  // Always returns null.
+  std::unique_ptr<base::Value> HandleMojoBindInterface(
       const base::DictionaryValue* args);
 
   // Closes the given handle. |args| is a dictionary which must contain "handle"
   // key, which is a number representing a MojoHandle.
-  // Returns MojoResult as a number.
-  std::unique_ptr<base::Value> HandleCoreClose(
+  // Always returns null.
+  std::unique_ptr<base::Value> HandleMojoHandleClose(
       const base::DictionaryValue* args);
 
-  // Creates a Mojo message pipe. |args| is a dictionary which must contain
-  // "optionsDict" key. optionsDict is a dictionary with the following keys:
-  //   - "struct_size" (a number representing the size of this struct; used to
-  //     allow for future extensions);
-  //   - "flags" (a number representing MojoCreateMessagePipeOptionsFlags; used
-  //     to specify different modes of operation);
-  // Returns a dictionary with "handle0" and "handle1" keys (the numbers
-  // representing two ports for the message pipe).
-  std::unique_ptr<base::Value> HandleCoreCreateMessagePipe(
+  // Creates a Mojo message pipe. |args| is unused.
+  // Returns a dictionary with the following keys:
+  //   - "result" (a number representing MojoResult);
+  //   - "handle0" and "handle1" (the numbers representing two endpoints of the
+  //     message pipe).
+  std::unique_ptr<base::Value> HandleMojoCreateMessagePipe(
       base::DictionaryValue* args);
 
   // Writes a message to the message pipe endpoint given by handle. |args| is a
@@ -89,49 +89,47 @@ class MojoFacade {
   //   - "handle" (a number representing MojoHandle, the endpoint to write to);
   //   - "buffer" (a dictionary representing the message data; may be empty);
   //   - "handles" (an array representing any handles to attach; handles are
-  //       transferred on success and will no longer be valid; may be empty);
-  //   - "flags" (a number representing MojoWriteMessageFlags);
+  //     transferred and will no longer be valid; may be empty);
   // Returns MojoResult as a number.
-  std::unique_ptr<base::Value> HandleCoreWriteMessage(
+  std::unique_ptr<base::Value> HandleMojoHandleWriteMessage(
       base::DictionaryValue* args);
 
   // Reads a message from the message pipe endpoint given by handle. |args| is
-  // a dictionary which must contain the following keys:
-  //   - "handle" (a number representing MojoHandle, the endpoint to read from);
-  //   - "flags" (a number representing MojoWriteMessageFlags);
+  // a dictionary which must contain the keys "handle" (a number representing
+  // MojoHandle, the endpoint to read from).
   // Returns a dictionary with the following keys:
-  //   - "result" (a number  representing MojoResult);
+  //   - "result" (a number representing MojoResult);
   //   - "buffer" (an array representing message data; non-empty only on
   //     success);
-  //   - "handles" (an array representing MojoHandles transferred, if any);
-  std::unique_ptr<base::Value> HandleCoreReadMessage(
+  //   - "handles" (an array representing MojoHandles received, if any);
+  std::unique_ptr<base::Value> HandleMojoHandleReadMessage(
       const base::DictionaryValue* args);
 
   // Begins watching a handle for signals to be satisfied or unsatisfiable.
   // |args| is a dictionary which must contain the following keys:
-  //   - "handle" (a number representing a MojoHandle), "signals" (a number
-  //     representing MojoHandleSignals to watch);
+  //   - "handle" (a number representing a MojoHandle);
+  //   - "signals" (a number representing MojoHandleSignals to watch);
   //   - "callbackId" (a number representing the id which should be passed to
-  //     __crWeb.mojo.mojoWatchSignal call);
+  //     Mojo.internal.signalWatch call).
   // Returns watch id as a number.
-  std::unique_ptr<base::Value> HandleSupportWatch(
+  std::unique_ptr<base::Value> HandleMojoHandleWatch(
       const base::DictionaryValue* args);
 
-  // Cancels a handle watch initiated by "support.watch". |args| is a dictionary
-  // which must contain "watchId" key (a number representing id returned from
-  // "support.watch").
+  // Cancels a handle watch initiated by "MojoHandle.watch". |args| is a
+  // dictionary which must contain "watchId" key (a number representing id
+  // returned from "MojoHandle.watch").
   // Returns null.
-  std::unique_ptr<base::Value> HandleSupportCancelWatch(
+  std::unique_ptr<base::Value> HandleMojoWatcherCancel(
       const base::DictionaryValue* args);
 
-  // Provides service interfaces.
-  shell::mojom::InterfaceProvider* interface_provider_;
+  // Provides interfaces.
+  service_manager::mojom::InterfaceProvider* interface_provider_;
   // Runs JavaScript on WebUI page.
-  base::WeakNSProtocol<id<CRWJSInjectionEvaluator>> script_evaluator_;
+  __weak id<CRWJSInjectionEvaluator> script_evaluator_ = nil;
   // Id of the last created watch.
   int last_watch_id_;
   // Currently active watches created through this facade.
-  std::map<int, mojo::Watcher> watchers_;
+  std::map<int, std::unique_ptr<mojo::SimpleWatcher>> watchers_;
 };
 
 }  // web

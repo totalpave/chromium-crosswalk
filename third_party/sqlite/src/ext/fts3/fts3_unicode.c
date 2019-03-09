@@ -82,7 +82,7 @@ typedef struct unicode_cursor unicode_cursor;
 
 struct unicode_tokenizer {
   sqlite3_tokenizer base;
-  int bRemoveDiacritic;
+  int eRemoveDiacritic;
   int nException;
   int *aiException;
 };
@@ -118,7 +118,7 @@ static int unicodeDestroy(sqlite3_tokenizer *pTokenizer){
 **
 ** For each codepoint in the zIn/nIn string, this function checks if the
 ** sqlite3FtsUnicodeIsalnum() function already returns the desired result.
-** If so, no action is taken. Otherwise, the codepoint is added to the 
+** If so, no action is taken. Otherwise, the codepoint is added to the
 ** unicode_tokenizer.aiException[] array. For the purposes of tokenization,
 ** the return value of sqlite3FtsUnicodeIsalnum() is inverted for all
 ** codepoints in the aiException[] array.
@@ -136,16 +136,16 @@ static int unicodeAddExceptions(
 ){
   const unsigned char *z = (const unsigned char *)zIn;
   const unsigned char *zTerm = &z[nIn];
-  int iCode;
+  unsigned int iCode;
   int nEntry = 0;
 
   assert( bAlnum==0 || bAlnum==1 );
 
   while( z<zTerm ){
     READ_UTF8(z, zTerm, iCode);
-    assert( (sqlite3FtsUnicodeIsalnum(iCode) & 0xFFFFFFFE)==0 );
-    if( sqlite3FtsUnicodeIsalnum(iCode)!=bAlnum 
-     && sqlite3FtsUnicodeIsdiacritic(iCode)==0 
+    assert( (sqlite3FtsUnicodeIsalnum((int)iCode) & 0xFFFFFFFE)==0 );
+    if( sqlite3FtsUnicodeIsalnum((int)iCode)!=bAlnum
+     && sqlite3FtsUnicodeIsdiacritic((int)iCode)==0
     ){
       nEntry++;
     }
@@ -155,20 +155,20 @@ static int unicodeAddExceptions(
     int *aNew;                    /* New aiException[] array */
     int nNew;                     /* Number of valid entries in array aNew[] */
 
-    aNew = sqlite3_realloc(p->aiException, (p->nException+nEntry)*sizeof(int));
+    aNew = sqlite3_realloc64(p->aiException,(p->nException+nEntry)*sizeof(int));
     if( aNew==0 ) return SQLITE_NOMEM;
     nNew = p->nException;
 
     z = (const unsigned char *)zIn;
     while( z<zTerm ){
       READ_UTF8(z, zTerm, iCode);
-      if( sqlite3FtsUnicodeIsalnum(iCode)!=bAlnum 
-       && sqlite3FtsUnicodeIsdiacritic(iCode)==0
+      if( sqlite3FtsUnicodeIsalnum((int)iCode)!=bAlnum
+       && sqlite3FtsUnicodeIsdiacritic((int)iCode)==0
       ){
         int i, j;
-        for(i=0; i<nNew && aNew[i]<iCode; i++);
+        for(i=0; i<nNew && aNew[i]<(int)iCode; i++);
         for(j=nNew; j>i; j--) aNew[j] = aNew[j-1];
-        aNew[i] = iCode;
+        aNew[i] = (int)iCode;
         nNew++;
       }
     }
@@ -227,17 +227,20 @@ static int unicodeCreate(
   pNew = (unicode_tokenizer *) sqlite3_malloc(sizeof(unicode_tokenizer));
   if( pNew==NULL ) return SQLITE_NOMEM;
   memset(pNew, 0, sizeof(unicode_tokenizer));
-  pNew->bRemoveDiacritic = 1;
+  pNew->eRemoveDiacritic = 1;
 
   for(i=0; rc==SQLITE_OK && i<nArg; i++){
     const char *z = azArg[i];
     int n = (int)strlen(z);
 
     if( n==19 && memcmp("remove_diacritics=1", z, 19)==0 ){
-      pNew->bRemoveDiacritic = 1;
+      pNew->eRemoveDiacritic = 1;
     }
     else if( n==19 && memcmp("remove_diacritics=0", z, 19)==0 ){
-      pNew->bRemoveDiacritic = 0;
+      pNew->eRemoveDiacritic = 0;
+    }
+    else if( n==19 && memcmp("remove_diacritics=2", z, 19)==0 ){
+      pNew->eRemoveDiacritic = 2;
     }
     else if( n>=11 && memcmp("tokenchars=", z, 11)==0 ){
       rc = unicodeAddExceptions(pNew, 1, &z[11], n-11);
@@ -262,7 +265,7 @@ static int unicodeCreate(
 /*
 ** Prepare to begin tokenizing a particular string.  The input
 ** string to be tokenized is pInput[0..nBytes-1].  A cursor
-** used to incrementally tokenize this string is returned in 
+** used to incrementally tokenize this string is returned in
 ** *ppCursor.
 */
 static int unicodeOpen(
@@ -318,7 +321,7 @@ static int unicodeNext(
 ){
   unicode_cursor *pCsr = (unicode_cursor *)pC;
   unicode_tokenizer *p = ((unicode_tokenizer *)pCsr->base.pTokenizer);
-  int iCode = 0;
+  unsigned int iCode = 0;
   char *zOut;
   const unsigned char *z = &pCsr->aInput[pCsr->iOff];
   const unsigned char *zStart = z;
@@ -326,11 +329,11 @@ static int unicodeNext(
   const unsigned char *zTerm = &pCsr->aInput[pCsr->nInput];
 
   /* Scan past any delimiter characters before the start of the next token.
-  ** Return SQLITE_DONE early if this takes us all the way to the end of 
+  ** Return SQLITE_DONE early if this takes us all the way to the end of
   ** the input.  */
   while( z<zTerm ){
     READ_UTF8(z, zTerm, iCode);
-    if( unicodeIsAlnum(p, iCode) ) break;
+    if( unicodeIsAlnum(p, (int)iCode) ) break;
     zStart = z;
   }
   if( zStart>=zTerm ) return SQLITE_DONE;
@@ -341,7 +344,7 @@ static int unicodeNext(
 
     /* Grow the output buffer if required. */
     if( (zOut-pCsr->zToken)>=(pCsr->nAlloc-4) ){
-      char *zNew = sqlite3_realloc(pCsr->zToken, pCsr->nAlloc+64);
+      char *zNew = sqlite3_realloc64(pCsr->zToken, pCsr->nAlloc+64);
       if( !zNew ) return SQLITE_NOMEM;
       zOut = &zNew[zOut - pCsr->zToken];
       pCsr->zToken = zNew;
@@ -350,7 +353,7 @@ static int unicodeNext(
 
     /* Write the folded case of the last character read to the output */
     zEnd = z;
-    iOut = sqlite3FtsUnicodeFold(iCode, p->bRemoveDiacritic);
+    iOut = sqlite3FtsUnicodeFold((int)iCode, p->eRemoveDiacritic);
     if( iOut ){
       WRITE_UTF8(zOut, iOut);
     }
@@ -358,8 +361,8 @@ static int unicodeNext(
     /* If the cursor is not at EOF, read the next character */
     if( z>=zTerm ) break;
     READ_UTF8(z, zTerm, iCode);
-  }while( unicodeIsAlnum(p, iCode) 
-       || sqlite3FtsUnicodeIsdiacritic(iCode)
+  }while( unicodeIsAlnum(p, (int)iCode)
+       || sqlite3FtsUnicodeIsdiacritic((int)iCode)
   );
 
   /* Set the output variables and return. */
@@ -373,7 +376,7 @@ static int unicodeNext(
 }
 
 /*
-** Set *ppModule to a pointer to the sqlite3_tokenizer_module 
+** Set *ppModule to a pointer to the sqlite3_tokenizer_module
 ** structure for the unicode tokenizer.
 */
 void sqlite3Fts3UnicodeTokenizer(sqlite3_tokenizer_module const **ppModule){

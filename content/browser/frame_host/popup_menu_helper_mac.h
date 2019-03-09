@@ -5,13 +5,15 @@
 #ifndef CONTENT_BROWSER_FRAME_HOST_POPUP_MENU_HELPER_MAC_H_
 #define CONTENT_BROWSER_FRAME_HOST_POPUP_MENU_HELPER_MAC_H_
 
+#include <memory>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
+#include "base/scoped_observer.h"
 #include "content/common/content_export.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
+#include "content/public/browser/render_widget_host_observer.h"
 #include "ui/gfx/geometry/rect.h"
 
 #ifdef __OBJC__
@@ -20,6 +22,10 @@
 class WebMenuRunner;
 #endif
 
+namespace base {
+class ScopedPumpMessagesInPrivateModes;
+}
+
 namespace content {
 
 class RenderFrameHost;
@@ -27,11 +33,18 @@ class RenderFrameHostImpl;
 class RenderWidgetHostViewMac;
 struct MenuItem;
 
-class PopupMenuHelper : public NotificationObserver {
+class PopupMenuHelper : public RenderWidgetHostObserver {
  public:
+  class Delegate {
+   public:
+    virtual void OnMenuClosed() = 0;
+  };
+
   // Creates a PopupMenuHelper that will notify |render_frame_host| when a user
-  // selects or cancels the popup.
-  explicit PopupMenuHelper(RenderFrameHost* render_frame_host);
+  // selects or cancels the popup. |delegate| is notified when the menu is
+  // closed.
+  PopupMenuHelper(Delegate* delegate, RenderFrameHost* render_frame_host);
+  ~PopupMenuHelper() override;
   void Hide();
 
   // Shows the popup menu and notifies the RenderFrameHost of the selection/
@@ -50,15 +63,23 @@ class PopupMenuHelper : public NotificationObserver {
  protected:
   virtual RenderWidgetHostViewMac* GetRenderWidgetHostView() const;
 
-  // NotificationObserver implementation:
-  void Observe(int type,
-               const NotificationSource& source,
-               const NotificationDetails& details) override;
+ private:
+  // RenderWidgetHostObserver implementation:
+  void RenderWidgetHostVisibilityChanged(RenderWidgetHost* widget_host,
+                                         bool became_visible) override;
+  void RenderWidgetHostDestroyed(RenderWidgetHost* widget_host) override;
 
-  NotificationRegistrar notification_registrar_;
+  Delegate* delegate_;  // Weak. Owns |this|.
+
+  ScopedObserver<RenderWidgetHost, RenderWidgetHostObserver> observer_;
   RenderFrameHostImpl* render_frame_host_;
   WebMenuRunner* menu_runner_;
   bool popup_was_hidden_;
+
+  // Controls whether messages can be pumped during the menu fade.
+  std::unique_ptr<base::ScopedPumpMessagesInPrivateModes> pump_in_fade_;
+
+  base::WeakPtrFactory<PopupMenuHelper> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(PopupMenuHelper);
 };

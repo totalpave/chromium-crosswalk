@@ -13,7 +13,9 @@
 #include "net/dns/mock_host_resolver.h"
 
 namespace base {
-class MessageLoop;
+namespace test {
+class ScopedTaskEnvironment;
+}
 }
 
 namespace net {
@@ -44,7 +46,6 @@ class NetTestSuite : public base::TestSuite {
 
  private:
   std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
-  std::unique_ptr<base::MessageLoop> message_loop_;
   scoped_refptr<net::RuleBasedHostResolverProc> host_resolver_proc_;
   net::ScopedDefaultHostResolverProc scoped_host_resolver_proc_;
 };

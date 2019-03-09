@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -14,8 +15,9 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/browser/notification_types.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/browser/render_view_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
@@ -32,7 +34,6 @@
 using content::ExecuteScript;
 using content::ExecuteScriptAndExtractString;
 using content::NavigationController;
-using content::RenderViewHost;
 using content::WebContents;
 
 namespace extensions {
@@ -104,6 +105,11 @@ std::unique_ptr<net::test_server::HttpResponse> HandleExpectAndSetCookieRequest(
 
 class IsolatedAppTest : public ExtensionBrowserTest {
  public:
+  void SetUpOnMainThread() override {
+    ExtensionBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+  }
+
   // Returns whether the given tab's current URL has the given cookie.
   bool WARN_UNUSED_RESULT HasCookie(WebContents* contents,
                                     const std::string& cookie) {
@@ -118,10 +124,11 @@ class IsolatedAppTest : public ExtensionBrowserTest {
     content::BrowserContext* browser_context = contents->GetBrowserContext();
     ExtensionRegistry* registry = ExtensionRegistry::Get(browser_context);
     std::set<std::string> extension_ids =
-        ProcessMap::Get(browser_context)->GetExtensionsInProcess(
-            contents->GetRenderViewHost()->GetProcess()->GetID());
-    for (std::set<std::string>::iterator iter = extension_ids.begin();
-         iter != extension_ids.end(); ++iter) {
+        ProcessMap::Get(browser_context)
+            ->GetExtensionsInProcess(
+                contents->GetMainFrame()->GetProcess()->GetID());
+    for (auto iter = extension_ids.begin(); iter != extension_ids.end();
+         ++iter) {
       const Extension* installed_app =
           registry->enabled_extensions().GetByID(*iter);
       if (installed_app && installed_app->is_app())
@@ -138,7 +145,6 @@ class IsolatedAppTest : public ExtensionBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CrossProcessClientRedirect) {
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("isolated_apps/app1")));
@@ -159,9 +165,9 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CrossProcessClientRedirect) {
   // If bug fixed, we cannot go back anymore.
   // If not fixed, we will redirect back to app2 and can go back again.
   EXPECT_TRUE(chrome::CanGoBack(browser()));
-  chrome::GoBack(browser(), CURRENT_TAB);
+  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
   EXPECT_TRUE(chrome::CanGoBack(browser()));
-  chrome::GoBack(browser(), CURRENT_TAB);
+  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
   EXPECT_FALSE(chrome::CanGoBack(browser()));
 
   // We also need to test script-initialized navigation (document.location.href)
@@ -170,7 +176,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CrossProcessClientRedirect) {
   // the previous history entry.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("non_app/main.html"),
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
 
   WebContents* tab0 = browser()->tab_strip_model()->GetWebContentsAt(1);
 
@@ -189,7 +196,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CrossProcessClientRedirect) {
 
   // This kind of navigation should not replace previous navigation entry.
   EXPECT_TRUE(chrome::CanGoBack(browser()));
-  chrome::GoBack(browser(), CURRENT_TAB);
+  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
   EXPECT_FALSE(chrome::CanGoBack(browser()));
 }
 
@@ -200,7 +207,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CrossProcessClientRedirect) {
 // extent.  These origins should also be isolated, but still have origin-based
 // separation as you would expect.
 IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CookieIsolation) {
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("isolated_apps/app1")));
@@ -216,10 +222,12 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CookieIsolation) {
   ui_test_utils::NavigateToURL(browser(), base_url.Resolve("app1/main.html"));
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("app2/main.html"),
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("non_app/main.html"),
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
 
   ASSERT_EQ(3, browser()->tab_strip_model()->count());
 
@@ -285,7 +293,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CookieIsolation) {
       content::Source<NavigationController>(
           &browser()->tab_strip_model()->GetActiveWebContents()->
               GetController()));
-  chrome::Reload(browser(), CURRENT_TAB);
+  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
   observer.Wait();
   EXPECT_TRUE(HasCookie(tab0, "app1=3"));
   EXPECT_FALSE(HasCookie(tab0, "app2"));
@@ -295,7 +303,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, CookieIsolation) {
 // This test is disabled due to being flaky. http://crbug.com/145588
 // Ensure that cookies are not isolated if the isolated apps are not installed.
 IN_PROC_BROWSER_TEST_F(IsolatedAppTest, DISABLED_NoCookieIsolationWithoutApp) {
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   // The app under test acts on URLs whose host is "localhost",
@@ -308,10 +315,12 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, DISABLED_NoCookieIsolationWithoutApp) {
   ui_test_utils::NavigateToURL(browser(), base_url.Resolve("app1/main.html"));
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("app2/main.html"),
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("non_app/main.html"),
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
 
   ASSERT_EQ(3, browser()->tab_strip_model()->count());
 
@@ -374,7 +383,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, MAYBE_SubresourceCookieIsolation) {
   embedded_test_server()->RegisterRequestHandler(
       base::Bind(&HandleExpectAndSetCookieRequest, embedded_test_server()));
 
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("isolated_apps/app1")));
@@ -395,7 +403,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, MAYBE_SubresourceCookieIsolation) {
   ASSERT_FALSE(GetInstalledApp(tab0));
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("app1/main.html"),
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   WebContents* tab1 = browser()->tab_strip_model()->GetWebContentsAt(1);
   ASSERT_TRUE(GetInstalledApp(tab1));
 
@@ -425,8 +434,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, MAYBE_SubresourceCookieIsolation) {
 
   // Also create a non-app tab to ensure no new cookies were set in that jar.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), root_url,
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      browser(), root_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   WebContents* tab2 = browser()->tab_strip_model()->GetWebContentsAt(2);
   EXPECT_FALSE(HasCookie(tab2, "nonAppMedia=1"));
   EXPECT_FALSE(HasCookie(tab2, "app1Media=1"));
@@ -442,11 +451,15 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, MAYBE_SubresourceCookieIsolation) {
 #define MAYBE_IsolatedAppProcessModel IsolatedAppProcessModel
 #endif  // defined(OS_WIN)
 
-// Tests that isolated apps processes do not render top-level non-app pages.
-// This is true even in the case of the OAuth workaround for hosted apps,
-// where non-app popups may be kept in the hosted app process.
+// This test used to check that isolated apps processes do not render top-level
+// non-app pages, and that this is true even in the case of the OAuth
+// workaround for hosted apps, where non-app popups may be kept in the hosted
+// app process.  After fixing https://crbug.com/828720, this workaround will
+// apply to all SiteInstances that utilize effective URLs, which includes
+// isolated apps.  Therefore, this test is now checking that when an isolated
+// app window.opens a non-app same-site URL, the popup does stay in the
+// isolated app process.
 IN_PROC_BROWSER_TEST_F(IsolatedAppTest, MAYBE_IsolatedAppProcessModel) {
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("isolated_apps/app1")));
@@ -462,39 +475,65 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, MAYBE_IsolatedAppProcessModel) {
   ui_test_utils::NavigateToURL(browser(), base_url.Resolve("app1/main.html"));
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), base_url.Resolve("app1/main.html"),
-      NEW_FOREGROUND_TAB, ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
   // For the third tab, use window.open to keep it in process with an opener.
   OpenWindow(browser()->tab_strip_model()->GetWebContentsAt(0),
-             base_url.Resolve("app1/main.html"), true, NULL);
+             base_url.Resolve("app1/main.html"), true, true, nullptr);
 
-  // In a fourth tab, use window.open to a non-app URL.  It should open in a
-  // separate process, even though this would trigger the OAuth workaround
-  // for hosted apps (from http://crbug.com/59285).
+  // In a fourth tab, use window.open to a non-app same-site URL.  It should
+  // stay in the app process and SiteInstance, due to the workaround in
+  // https://crbug.com/828720 which keeps same-site non-app popups in the app
+  // process.
+  //
+  // TODO(alexmos,creis): the workaround for https://crbug.com/828720 could be
+  // restricted to hosted apps only, allowing this to go to a separate non-app
+  // process.  We would need to consider this if isolated apps are ever
+  // shipped.
   OpenWindow(browser()->tab_strip_model()->GetWebContentsAt(0),
-             base_url.Resolve("non_app/main.html"), false, NULL);
+             base_url.Resolve("non_app/main.html"),
+             true /* newtab_process_should_equal_opener */,
+             true /* should_succeed */, nullptr);
 
   // We should now have four tabs, the first and third sharing a process.
   // The second one is an independent instance in a separate process.
   ASSERT_EQ(4, browser()->tab_strip_model()->count());
-  int process_id_0 = browser()->tab_strip_model()->GetWebContentsAt(0)->
-      GetRenderProcessHost()->GetID();
-  int process_id_1 = browser()->tab_strip_model()->GetWebContentsAt(1)->
-      GetRenderProcessHost()->GetID();
+  int process_id_0 = browser()
+                         ->tab_strip_model()
+                         ->GetWebContentsAt(0)
+                         ->GetMainFrame()
+                         ->GetProcess()
+                         ->GetID();
+  int process_id_1 = browser()
+                         ->tab_strip_model()
+                         ->GetWebContentsAt(1)
+                         ->GetMainFrame()
+                         ->GetProcess()
+                         ->GetID();
   EXPECT_NE(process_id_0, process_id_1);
-  EXPECT_EQ(process_id_0,
-            browser()->tab_strip_model()->GetWebContentsAt(2)->
-                GetRenderProcessHost()->GetID());
-  EXPECT_NE(process_id_0,
-            browser()->tab_strip_model()->GetWebContentsAt(3)->
-                GetRenderProcessHost()->GetID());
+  EXPECT_EQ(process_id_0, browser()
+                              ->tab_strip_model()
+                              ->GetWebContentsAt(2)
+                              ->GetMainFrame()
+                              ->GetProcess()
+                              ->GetID());
+  EXPECT_EQ(process_id_0, browser()
+                              ->tab_strip_model()
+                              ->GetWebContentsAt(3)
+                              ->GetMainFrame()
+                              ->GetProcess()
+                              ->GetID());
 
   // Navigating the second tab out of the app should cause a process swap.
   const GURL& non_app_url(base_url.Resolve("non_app/main.html"));
   NavigateInRenderer(browser()->tab_strip_model()->GetWebContentsAt(1),
                      non_app_url);
-  EXPECT_NE(process_id_1,
-            browser()->tab_strip_model()->GetWebContentsAt(1)->
-                GetRenderProcessHost()->GetID());
+  EXPECT_NE(process_id_1, browser()
+                              ->tab_strip_model()
+                              ->GetWebContentsAt(1)
+                              ->GetMainFrame()
+                              ->GetProcess()
+                              ->GetID());
 }
 
 // This test no longer passes, since we don't properly isolate sessionStorage
@@ -503,7 +542,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedAppTest, MAYBE_IsolatedAppProcessModel) {
 // TODO(nasko): If isolated apps is no longer developed, this test should be
 // removed. http://crbug.com/159932
 IN_PROC_BROWSER_TEST_F(IsolatedAppTest, DISABLED_SessionStorage) {
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("isolated_apps/app1")));

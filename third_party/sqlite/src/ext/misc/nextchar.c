@@ -17,9 +17,9 @@
 ** non-empty string, then it is an SQL expression that limits the entries
 ** in T.F that will be considered.  If C exists and is a non-empty string,
 ** then it is the name of the collating sequence to use for comparison.  If
-** 
-** Only the first three arguments are required.  If the C parameter is 
-** omitted or is NULL or is an empty string, then the default collating 
+**
+** Only the first three arguments are required.  If the C parameter is
+** omitted or is NULL or is an empty string, then the default collating
 ** sequence of T.F is used for comparision.  If the W parameter is omitted
 ** or is NULL or is an empty string, then no filtering of the output is
 ** done.
@@ -85,7 +85,7 @@ static void nextCharAppend(nextCharContext *p, unsigned c){
   if( p->nUsed+1 > p->nAlloc ){
     unsigned int *aNew;
     int n = p->nAlloc*2 + 30;
-    aNew = sqlite3_realloc(p->aResult, n*sizeof(unsigned int));
+    aNew = sqlite3_realloc64(p->aResult, n*sizeof(unsigned int));
     if( aNew==0 ){
       p->mallocFailed = 1;
       return;
@@ -165,7 +165,7 @@ static void findNextChars(nextCharContext *p){
   unsigned cPrev = 0;
   unsigned char zPrev[8];
   int n, rc;
-  
+
   for(;;){
     sqlite3_bind_text(p->pStmt, 1, (char*)p->zPrefix, p->nPrefix,
                       SQLITE_STATIC);
@@ -232,7 +232,7 @@ static void nextCharFunc(
   }
   if( argc>=5
    && (zCollName = sqlite3_value_text(argv[4]))!=0
-   && zCollName[0]!=0 
+   && zCollName[0]!=0
   ){
     zColl = sqlite3_mprintf("collate \"%w\"", zCollName);
     if( zColl==0 ){
@@ -269,7 +269,7 @@ static void nextCharFunc(
     sqlite3_result_error_nomem(context);
   }else{
     unsigned char *pRes;
-    pRes = sqlite3_malloc( c.nUsed*4 + 1 );
+    pRes = sqlite3_malloc64( c.nUsed*4 + 1 );
     if( pRes==0 ){
       sqlite3_result_error_nomem(context);
     }else{
@@ -290,8 +290,8 @@ static void nextCharFunc(
 __declspec(dllexport)
 #endif
 int sqlite3_nextchar_init(
-  sqlite3 *db, 
-  char **pzErrMsg, 
+  sqlite3 *db,
+  char **pzErrMsg,
   const sqlite3_api_routines *pApi
 ){
   int rc = SQLITE_OK;

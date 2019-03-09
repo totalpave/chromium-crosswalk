@@ -99,7 +99,15 @@ TEST(ScopedHandleTest, ActiveVerifierUntrackedHandle) {
   ASSERT_TRUE(::CloseHandle(handle));
 }
 
-TEST(ScopedHandleTest, MultiProcess) {
+// Under ASan, the multi-process test crashes during process shutdown for
+// unknown reasons. Disable it for now. http://crbug.com/685262
+#if defined(ADDRESS_SANITIZER)
+#define MAYBE_MultiProcess DISABLED_MultiProcess
+#else
+#define MAYBE_MultiProcess MultiProcess
+#endif
+
+TEST(ScopedHandleTest, MAYBE_MultiProcess) {
   // Initializing ICU in the child process causes a scoped handle to be created
   // before the test gets a chance to test the race condition, so disable ICU
   // for the child process here.
@@ -116,7 +124,8 @@ TEST(ScopedHandleTest, MultiProcess) {
 }
 
 MULTIPROCESS_TEST_MAIN(ActiveVerifierChildProcess) {
-  ScopedNativeLibrary module(FilePath(L"scoped_handle_test_dll.dll"));
+  ScopedNativeLibrary module(
+      FilePath(FILE_PATH_LITERAL("scoped_handle_test_dll.dll")));
 
   if (!module.is_valid())
     return 1;

@@ -18,7 +18,6 @@ from util import build_utils
 
 def main(argv):
   option_parser = optparse.OptionParser()
-  build_utils.AddDepfileOption(option_parser)
   option_parser.add_option('--aidl-path', help='Path to the aidl binary.')
   option_parser.add_option('--imports', help='Files to import.')
   option_parser.add_option('--includes',
@@ -32,11 +31,11 @@ def main(argv):
       output = os.path.join(temp_dir, classname + '.java')
       aidl_cmd = [options.aidl_path]
       aidl_cmd += [
-        '-p' + s for s in build_utils.ParseGypList(options.imports)
+        '-p' + s for s in build_utils.ParseGnList(options.imports)
       ]
       if options.includes is not None:
         aidl_cmd += [
-          '-I' + s for s in build_utils.ParseGypList(options.includes)
+          '-I' + s for s in build_utils.ParseGnList(options.includes)
         ]
       aidl_cmd += [
         f,
@@ -44,18 +43,15 @@ def main(argv):
       ]
       build_utils.CheckOutput(aidl_cmd)
 
-    with zipfile.ZipFile(options.srcjar, 'w') as srcjar:
-      for path in build_utils.FindInDirectory(temp_dir, '*.java'):
-        with open(path) as fileobj:
-          data = fileobj.read()
-        pkg_name = re.search(r'^\s*package\s+(.*?)\s*;', data, re.M).group(1)
-        arcname = '%s/%s' % (pkg_name.replace('.', '/'), os.path.basename(path))
-        srcjar.writestr(arcname, data)
-
-  if options.depfile:
-    build_utils.WriteDepfile(
-        options.depfile,
-        build_utils.GetPythonDependencies())
+    with build_utils.AtomicOutput(options.srcjar) as f:
+      with zipfile.ZipFile(f, 'w') as srcjar:
+        for path in build_utils.FindInDirectory(temp_dir, '*.java'):
+          with open(path) as fileobj:
+            data = fileobj.read()
+          pkg_name = re.search(r'^\s*package\s+(.*?)\s*;', data, re.M).group(1)
+          arcname = '%s/%s' % (
+              pkg_name.replace('.', '/'), os.path.basename(path))
+          build_utils.AddToZipHermetic(srcjar, arcname, data=data)
 
 
 if __name__ == '__main__':

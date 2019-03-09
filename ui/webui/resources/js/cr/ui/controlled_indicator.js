@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 cr.define('cr.ui', function() {
-  /** @const */ var BubbleButton = cr.ui.BubbleButton;
+  /** @const */ const BubbleButton = cr.ui.BubbleButton;
 
   /**
    * An indicator that can be placed on a UI element as a hint to the user that
@@ -12,14 +12,14 @@ cr.define('cr.ui', function() {
    * @constructor
    * @extends {cr.ui.BubbleButton}
    */
-  var ControlledIndicator = cr.ui.define('span');
+  const ControlledIndicator = cr.ui.define('span');
 
   /**
    * Only a single bubble can be shown at a time. |bubble| holds a reference to
    * the bubble, if any.
    * @private
    */
-  var bubble;
+  let bubble;
 
   ControlledIndicator.prototype = {
     __proto__: cr.ui.BubbleButton.prototype,
@@ -51,8 +51,9 @@ cr.define('cr.ui', function() {
      * Hides the currently visible bubble, if any.
      */
     hideBubble: function() {
-      if (bubble)
+      if (bubble) {
         bubble.hide();
+      }
     },
 
     /**
@@ -63,20 +64,23 @@ cr.define('cr.ui', function() {
      * implementation does not set any strings.
      * @return {Object}
      */
-    getDefaultStrings: function() { return {}; },
+    getDefaultStrings: function() {
+      return {};
+    },
 
     /**
      * Returns the text shown in the bubble.
      * @return {string}
      */
     getBubbleText: function() {
-      var defaultStrings = this.getDefaultStrings();
-      var text = defaultStrings[this.controlledBy];
+      const defaultStrings = this.getDefaultStrings();
+      let text = defaultStrings[this.controlledBy];
 
-      if (this.hasAttribute('text' + this.controlledBy))
+      if (this.hasAttribute('text' + this.controlledBy)) {
         text = this.getAttribute('text' + this.controlledBy);
-      else if (this.controlledBy == 'extension' && this['extensionName'])
+      } else if (this.controlledBy == 'extension' && this['extensionName']) {
         text = defaultStrings['extensionWithName'];
+      }
 
       return text || '';
     },
@@ -86,7 +90,7 @@ cr.define('cr.ui', function() {
      * @param {string} text to be shown in the bubble.
      */
     createDomTree: function(text) {
-      var content = document.createElement('div');
+      const content = document.createElement('div');
       content.textContent = text;
       return content;
     },
@@ -96,10 +100,11 @@ cr.define('cr.ui', function() {
      * @override
      */
     toggleBubble: function() {
-      if (this.showingBubble)
+      if (this.showingBubble) {
         this.hideBubble();
-      else
+      } else {
         this.showBubble(this.createDomTree(this.getBubbleText()));
+      }
     },
   };
 
@@ -117,10 +122,7 @@ cr.define('cr.ui', function() {
    *                        modified (Chrome OS only).
    * - unset:               The value is controlled by the user alone.
    */
-  cr.defineProperty(ControlledIndicator, 'controlledBy',
-                    cr.PropertyKind.ATTR);
+  cr.defineProperty(ControlledIndicator, 'controlledBy', cr.PropertyKind.ATTR);
 
-  return {
-    ControlledIndicator: ControlledIndicator
-  };
+  return {ControlledIndicator: ControlledIndicator};
 });

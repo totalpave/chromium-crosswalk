@@ -18,10 +18,16 @@ FilteredGestureProvider::FilteredGestureProvider(
     const GestureProvider::Config& config,
     GestureProviderClient* client)
     : client_(client),
-      gesture_provider_(config, this),
+      gesture_provider_(std::make_unique<GestureProvider>(config, this)),
       gesture_filter_(this),
       handling_event_(false),
-      any_touch_moved_beyond_slop_region_(false) {
+      any_touch_moved_beyond_slop_region_(false) {}
+
+FilteredGestureProvider::~FilteredGestureProvider() = default;
+
+void FilteredGestureProvider::UpdateConfig(
+    const GestureProvider::Config& config) {
+  gesture_provider_ = std::make_unique<ui::GestureProvider>(config, this);
 }
 
 FilteredGestureProvider::TouchHandlingResult
@@ -31,10 +37,10 @@ FilteredGestureProvider::OnTouchEvent(const MotionEvent& event) {
 
   pending_gesture_packet_ = GestureEventDataPacket::FromTouch(event);
 
-  if (event.GetAction() == MotionEvent::ACTION_DOWN)
+  if (event.GetAction() == MotionEvent::Action::DOWN)
     any_touch_moved_beyond_slop_region_ = false;
 
-  if (!gesture_provider_.OnTouchEvent(event))
+  if (!gesture_provider_->OnTouchEvent(event))
     return TouchHandlingResult();
 
   TouchDispositionGestureFilter::PacketResult filter_result =
@@ -50,31 +56,38 @@ FilteredGestureProvider::OnTouchEvent(const MotionEvent& event) {
   return result;
 }
 
-void FilteredGestureProvider::OnTouchEventAck(uint32_t unique_event_id,
-                                              bool event_consumed) {
-  gesture_filter_.OnTouchEventAck(unique_event_id, event_consumed);
+void FilteredGestureProvider::OnTouchEventAck(
+    uint32_t unique_event_id,
+    bool event_consumed,
+    bool is_source_touch_event_set_non_blocking) {
+  gesture_filter_.OnTouchEventAck(unique_event_id, event_consumed,
+                                  is_source_touch_event_set_non_blocking);
+}
+
+void FilteredGestureProvider::ResetGestureHandlingState() {
+  gesture_filter_.ResetGestureHandlingState();
 }
 
 void FilteredGestureProvider::ResetDetection() {
-  gesture_provider_.ResetDetection();
+  gesture_provider_->ResetDetection();
 }
 
 void FilteredGestureProvider::SetMultiTouchZoomSupportEnabled(
     bool enabled) {
-  gesture_provider_.SetMultiTouchZoomSupportEnabled(enabled);
+  gesture_provider_->SetMultiTouchZoomSupportEnabled(enabled);
 }
 
 void FilteredGestureProvider::SetDoubleTapSupportForPlatformEnabled(
     bool enabled) {
-  gesture_provider_.SetDoubleTapSupportForPlatformEnabled(enabled);
+  gesture_provider_->SetDoubleTapSupportForPlatformEnabled(enabled);
 }
 
 void FilteredGestureProvider::SetDoubleTapSupportForPageEnabled(bool enabled) {
-  gesture_provider_.SetDoubleTapSupportForPageEnabled(enabled);
+  gesture_provider_->SetDoubleTapSupportForPageEnabled(enabled);
 }
 
 const ui::MotionEvent* FilteredGestureProvider::GetCurrentDownEvent() const {
-  return gesture_provider_.current_down_event();
+  return gesture_provider_->current_down_event();
 }
 
 void FilteredGestureProvider::OnGestureEvent(const GestureEventData& event) {
@@ -88,6 +101,10 @@ void FilteredGestureProvider::OnGestureEvent(const GestureEventData& event) {
 
   gesture_filter_.OnGesturePacket(
       GestureEventDataPacket::FromTouchTimeout(event));
+}
+
+bool FilteredGestureProvider::RequiresDoubleTapGestureEvents() const {
+  return client_->RequiresDoubleTapGestureEvents();
 }
 
 void FilteredGestureProvider::ForwardGestureEvent(

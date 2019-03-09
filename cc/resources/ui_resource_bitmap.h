@@ -10,15 +10,15 @@
 #include <memory>
 
 #include "base/memory/ref_counted.h"
-#include "cc/base/cc_export.h"
+#include "cc/cc_export.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkPixelRef.h"
 #include "ui/gfx/geometry/size.h"
 
 class SkBitmap;
 
 namespace cc {
-
-class ETC1PixelRef;
 
 // A bitmap class that contains a ref-counted reference to a SkPixelRef that
 // holds the content of the bitmap (cannot use SkBitmap because of ETC1).
@@ -32,10 +32,13 @@ class CC_EXPORT UIResourceBitmap {
     ETC1
   };
 
-  gfx::Size GetSize() const { return size_; }
+  gfx::Size GetSize() const { return gfx::Size(info_.width(), info_.height()); }
   UIResourceFormat GetFormat() const { return format_; }
-  bool GetOpaque() const { return opaque_; }
-  void SetOpaque(bool opaque) { opaque_ = opaque; }
+  bool GetOpaque() const { return info_.isOpaque(); }
+
+  // Draw the UIResourceBitmap onto the provided |canvas| using the style
+  // information specified by |paint|.
+  void DrawToCanvas(SkCanvas* canvas, SkPaint* paint);
 
   // User must ensure that |skbitmap| is immutable.  The SkBitmap Format should
   // be 32-bit RGBA or 8-bit ALPHA.
@@ -45,27 +48,25 @@ class CC_EXPORT UIResourceBitmap {
   UIResourceBitmap(const UIResourceBitmap& other);
   ~UIResourceBitmap();
 
+  // Returns the memory usage of the bitmap.
+  size_t EstimateMemoryUsage() const {
+    return pixel_ref_ ? pixel_ref_->rowBytes() * info_.height() : 0;
+  }
+
+  const uint8_t* GetPixels() const {
+    return static_cast<const uint8_t*>(pixel_ref_->pixels());
+  }
+
  private:
   friend class AutoLockUIResourceBitmap;
 
   void Create(sk_sp<SkPixelRef> pixel_ref,
-              const gfx::Size& size,
+              const SkImageInfo& info,
               UIResourceFormat format);
 
   sk_sp<SkPixelRef> pixel_ref_;
   UIResourceFormat format_;
-  gfx::Size size_;
-  bool opaque_;
-};
-
-class CC_EXPORT AutoLockUIResourceBitmap {
- public:
-  explicit AutoLockUIResourceBitmap(const UIResourceBitmap& bitmap);
-  ~AutoLockUIResourceBitmap();
-  const uint8_t* GetPixels() const;
-
- private:
-  const UIResourceBitmap& bitmap_;
+  SkImageInfo info_;
 };
 
 }  // namespace cc

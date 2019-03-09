@@ -2,13 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/message_loop/message_loop.h"
-#include "base/test/test_simple_task_runner.h"
 #include "components/drive/service/drive_api_service.h"
+
+#include <utility>
+
+#include "base/test/test_simple_task_runner.h"
 #include "google_apis/drive/dummy_auth_service.h"
 #include "google_apis/drive/request_sender.h"
 #include "google_apis/drive/test_util.h"
-#include "net/url_request/url_request_test_util.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace drive {
@@ -39,16 +43,21 @@ TEST(DriveAPIServiceTest, BatchRequestConfiguratorWithAuthFailure) {
   google_apis::DriveApiUrlGenerator url_generator(test_base_url, test_base_url);
   scoped_refptr<base::TestSimpleTaskRunner> task_runner =
       new base::TestSimpleTaskRunner();
-  scoped_refptr<net::TestURLRequestContextGetter> request_context_getter =
-      new net::TestURLRequestContextGetter(task_runner.get());
-  google_apis::RequestSender sender(new TestAuthService,
-                                    request_context_getter.get(),
-                                    task_runner.get(), kTestUserAgent);
-  google_apis::drive::BatchUploadRequest* const request =
-      new google_apis::drive::BatchUploadRequest(&sender, url_generator);
-  sender.StartRequestWithAuthRetry(request);
+  network::TestURLLoaderFactory test_url_loader_factory;
+  scoped_refptr<network::WeakWrapperSharedURLLoaderFactory>
+      test_shared_loader_factory =
+          base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+              &test_url_loader_factory);
+  google_apis::RequestSender sender(
+      std::make_unique<TestAuthService>(), test_shared_loader_factory,
+      task_runner.get(), kTestUserAgent, TRAFFIC_ANNOTATION_FOR_TESTS);
+  std::unique_ptr<google_apis::drive::BatchUploadRequest> request =
+      std::make_unique<google_apis::drive::BatchUploadRequest>(&sender,
+                                                               url_generator);
+  google_apis::drive::BatchUploadRequest* request_ptr = request.get();
+  sender.StartRequestWithAuthRetry(std::move(request));
   BatchRequestConfigurator configurator(
-      request->GetWeakPtrAsBatchUploadRequest(), task_runner.get(),
+      request_ptr->GetWeakPtrAsBatchUploadRequest(), task_runner.get(),
       url_generator, google_apis::CancelCallback());
   static_cast<TestAuthService*>(sender.auth_service())->SendHttpError();
 

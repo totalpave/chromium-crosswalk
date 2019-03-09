@@ -15,6 +15,37 @@ enum BreakType {
   LINE_BREAK,          // Stop cursor movement on line ends as shown on screen.
 };
 
+// Specifies the selection behavior for a move/move-and-select command. For
+// example consider the state "ab|cd|e", i.e. cd is selected. Assume the
+// selection direction is from left to right. If we move to the beginning of the
+// line (LINE_BREAK, CURSOR_LEFT), the resultant state is:
+// "|ab|cde" for SELECTION_RETAIN, selection direction from right to left.
+// "|abcd|e" for SELECTION_EXTEND, selection direction from right to left.
+// "ab|cde" for SELECTION_CARET.
+// "|abcde" for SELECTION_NONE.
+enum SelectionBehavior {
+  // Default behavior for a move-and-select command. The selection start point
+  // remains the same. For example, this is the behavior of textfields on Mac
+  // for the command moveUpAndModifySelection (Shift + Up).
+  SELECTION_RETAIN,
+
+  // Use for move-and-select commands that want the existing selection to be
+  // extended in the opposite direction, when the selection direction is
+  // reversed. For example, this is the behavior for textfields on Mac for the
+  // command moveToLeftEndOfLineAndModifySelection (Command + Shift + Left).
+  SELECTION_EXTEND,
+
+  // Use for move-and-select commands that want the existing selection to reduce
+  // to a caret, when the selection direction is reversed. For example, this is
+  // the behavior for textfields on Mac for the command
+  // moveWordLeftAndModifySelection (Alt + Shift + Left).
+  SELECTION_CARET,
+
+  // No selection. To be used for move commands that don't want to cause a
+  // selection, and that want to collapse any pre-existing selection.
+  SELECTION_NONE,
+};
+
 // Specifies the word wrapping behavior when a word would exceed the available
 // display width. All words that are too wide will be put on a new line, and
 // then:
@@ -35,20 +66,24 @@ enum HorizontalAlignment {
 
 // The directionality modes used to determine the base text direction.
 enum DirectionalityMode {
-  DIRECTIONALITY_FROM_TEXT = 0, // Use the first strong character's direction.
-  DIRECTIONALITY_FROM_UI,       // Use the UI locale's text reading direction.
-  DIRECTIONALITY_FORCE_LTR,     // Use LTR regardless of content or UI locale.
-  DIRECTIONALITY_FORCE_RTL,     // Use RTL regardless of content or UI locale.
+  DIRECTIONALITY_FROM_TEXT = 0,  // Use the first strong character's direction.
+  DIRECTIONALITY_FROM_UI,        // Use the UI locale's text reading direction.
+  DIRECTIONALITY_FORCE_LTR,      // Use LTR regardless of content or UI locale.
+  DIRECTIONALITY_FORCE_RTL,      // Use RTL regardless of content or UI locale.
+  // Note: Unless the experimental feature LeftToRightUrls is enabled,
+  // DIRECTIONALITY_AS_URL is the same as DIRECTIONALITY_FORCE_LTR.
+  DIRECTIONALITY_AS_URL,  // FORCE_LTR with additional rules for URLs.
 };
 
 // Text styles and adornments.
 // TODO(msw): Merge with gfx::Font::FontStyle.
 enum TextStyle {
-  ITALIC = 0,
-  STRIKE,
-  DIAGONAL_STRIKE,
-  UNDERLINE,
-  NUM_TEXT_STYLES,
+  TEXT_STYLE_ITALIC = 0,
+  TEXT_STYLE_STRIKE,
+  TEXT_STYLE_UNDERLINE,
+  TEXT_STYLE_HEAVY_UNDERLINE,
+
+  TEXT_STYLE_COUNT,
 };
 
 // Text baseline offset types.
@@ -79,6 +114,27 @@ enum ElideBehavior {
   ELIDE_TAIL,   // Add an ellipsis at the end of the string.
   ELIDE_EMAIL,  // Add ellipses to username and domain substrings.
   FADE_TAIL,    // Fade the string's end opposite of its horizontal alignment.
+};
+
+// The typesetter that will be used for text when displayed in UI. This can
+// influence things like string width in subtle ways and is necessary to help
+// transition Mac to the Harfbuzz typesetter (http://crbug.com/454835).
+enum class Typesetter {
+  // The typesetter that is used by UI parts of the browser window on this
+  // platform.
+  BROWSER,
+
+  // The Harfbuzz typesetter, which is typically used for secondary UI.
+  HARFBUZZ,
+
+  // The typesetter used for native UI such as tooltips, native menus and system
+  // notifications.
+  NATIVE,
+
+  // The typesetter used for function default arguments. The default can be used
+  // from locations that are unaffected by the Mac Harfbuzz transition. Cocoa UI
+  // on Mac must specify something else.
+  DEFAULT = HARFBUZZ
 };
 
 }  // namespace gfx

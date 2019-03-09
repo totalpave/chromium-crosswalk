@@ -8,8 +8,8 @@
 #include <memory>
 #include <string>
 
-#include "chrome/browser/media/router/media_route.h"
 #include "chrome/browser/media/router/media_router.h"
+#include "chrome/common/media_router/media_route.h"
 #include "chrome/test/media_router/media_router_integration_browsertest.h"
 #include "chrome/test/media_router/test_media_sinks_observer.h"
 
@@ -31,7 +31,8 @@ class MediaRouterE2EBrowserTest : public MediaRouterIntegrationBrowserTest {
 
   // Callback from MediaRouter when a response to a media route request is
   // received.
-  void OnRouteResponseReceived(const RouteRequestResult& result);
+  void OnRouteResponseReceived(mojom::RoutePresentationConnectionPtr,
+                               const RouteRequestResult& result);
 
   // Initializes |observer_| to listen for sinks compatible with |source|,
   // finds sink with name matching receiver_, and establishes media
@@ -44,7 +45,7 @@ class MediaRouterE2EBrowserTest : public MediaRouterIntegrationBrowserTest {
   // requesting JoinRoute() must have the same origin as the page that
   // requested CreateRoute()).
   void CreateMediaRoute(const MediaSource& source,
-                        const GURL& origin,
+                        const url::Origin& origin,
                         content::WebContents* web_contents);
 
   // Stops the established media route and unregisters |observer_|.

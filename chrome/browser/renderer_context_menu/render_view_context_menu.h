@@ -14,21 +14,25 @@
 #include "base/observer_list.h"
 #include "base/strings/string16.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry.h"
+#include "chrome/browser/ui/browser.h"
 #include "components/renderer_context_menu/context_menu_content_type.h"
 #include "components/renderer_context_menu/render_view_context_menu_base.h"
 #include "components/renderer_context_menu/render_view_context_menu_observer.h"
 #include "components/renderer_context_menu/render_view_context_menu_proxy.h"
 #include "content/public/common/context_menu_params.h"
+#include "extensions/buildflags/buildflags.h"
+#include "ppapi/buildflags/buildflags.h"
+#include "printing/buildflags/buildflags.h"
 #include "ui/base/models/simple_menu_model.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/vector2d.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/context_menu_matcher.h"
 #include "chrome/browser/extensions/menu_manager.h"
 #endif
 
-class OpenWithMenuObserver;
+class AccessibilityLabelsMenuObserver;
 class PrintPreviewContextMenuObserver;
 class Profile;
 class SpellingMenuObserver;
@@ -60,25 +64,28 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
 
   ~RenderViewContextMenu() override;
 
-  // Returns the offset amount if the context menu requires off-setting.
-  //
-  // If |render_frame_host| belongs to a WebContents that is nested within
-  // other WebContents(s), then this value is the offset between the topmost
-  // WebContents and the frame's WebContents.
-  static gfx::Vector2d GetOffset(content::RenderFrameHost* render_frame_host);
-
   // Adds the spell check service item to the context menu.
   static void AddSpellCheckServiceItem(ui::SimpleMenuModel* menu,
                                        bool is_checked);
 
   // RenderViewContextMenuBase:
   bool IsCommandIdChecked(int command_id) const override;
+  bool IsCommandIdVisible(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
   void ExecuteCommand(int command_id, int event_flags) override;
   void AddSpellCheckServiceItem(bool is_checked) override;
+  void AddAccessibilityLabelsServiceItem(bool is_checked) override;
+
+  // Registers a one-time callback that will be called the next time a context
+  // menu is shown.
+  static void RegisterMenuShownCallbackForTesting(
+      base::OnceCallback<void(RenderViewContextMenu*)> cb);
 
  protected:
-  Profile* GetProfile();
+  Profile* GetProfile() const;
+
+  // This may return nullptr (e.g. for WebUI dialogs).
+  Browser* GetBrowser() const;
 
   // Returns a (possibly truncated) version of the current selection text
   // suitable for putting in the title of a menu item.
@@ -87,18 +94,27 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   // Helper function to escape "&" as "&&".
   void EscapeAmpersands(base::string16* text);
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions::ContextMenuMatcher extension_items_;
 #endif
   void RecordUsedItem(int id) override;
 
+  // Returns true if the browser is in HTML fullscreen mode, initiated by the
+  // page (as opposed to the user). Used to determine which shortcut to display.
+  bool IsHTML5Fullscreen() const;
+
+  // Returns true if keyboard lock is active and requires the user to press and
+  // hold escape to exit exclusive access mode.
+  bool IsPressAndHoldEscRequiredToExitFullscreen() const;
+
  private:
   friend class RenderViewContextMenuTest;
   friend class TestRenderViewContextMenu;
+  friend class FormatUrlForClipboardTest;
 
   static bool IsDevToolsURL(const GURL& url);
   static bool IsInternalResourcesURL(const GURL& url);
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   static bool ExtensionContextAndPatternMatch(
       const content::ContextMenuParams& params,
       const extensions::MenuItem::ContextList& contexts,
@@ -107,23 +123,36 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
                                     const extensions::MenuItem* item);
 #endif
 
+  // Formats a URL to be written to the clipboard and returns the formatted
+  // string. Used by WriteURLToClipboard(), but kept in a separate function so
+  // the formatting behavior can be tested without having to initialize the
+  // clipboard. |url| must be valid and non-empty.
+  static base::string16 FormatURLForClipboard(const GURL& url);
+
+  // Writes the specified text/url to the system clipboard.
+  static void WriteURLToClipboard(const GURL& url);
+
   // RenderViewContextMenuBase:
   void InitMenu() override;
   void RecordShownItem(int id) override;
-#if defined(ENABLE_PLUGINS)
+#if BUILDFLAG(ENABLE_PLUGINS)
   void HandleAuthorizeAllPlugins() override;
 #endif
   void NotifyMenuShown() override;
-  void NotifyURLOpened(const GURL& url,
-                       content::WebContents* new_contents) override;
 
   // Gets the extension (if any) associated with the WebContents that we're in.
   const extensions::Extension* GetExtension() const;
+
+  // Queries the translate service to obtain the user's transate target
+  // language.
+  std::string GetTargetLanguage() const;
 
   void AppendDeveloperItems();
   void AppendDevtoolsForUnpackedExtensions();
   void AppendLinkItems();
   void AppendOpenWithLinkItems();
+  void AppendSmartSelectionActionItems();
+  void AppendOpenInBookmarkAppLinkItems();
   void AppendImageItems();
   void AppendAudioItems();
   void AppendCanvasItems();
@@ -131,6 +160,7 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void AppendMediaItems();
   void AppendPluginItems();
   void AppendPageItems();
+  void AppendExitFullscreenItem();
   void AppendCopyItem();
   void AppendPrintItem();
   void AppendMediaRouterItem();
@@ -138,8 +168,9 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void AppendEditableItems();
   void AppendLanguageSettings();
   void AppendSpellingSuggestionItems();
+  void AppendAccessibilityLabelsItems();
   void AppendSearchProvider();
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   void AppendAllExtensionItems();
   void AppendCurrentExtensionItems();
 #endif
@@ -147,6 +178,7 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void AppendSearchWebForImageItems();
   void AppendProtocolHandlerSubMenu();
   void AppendPasswordItems();
+  void AppendPictureInPictureItem();
 
   // Command enabled query functions.
   bool IsReloadEnabled() const;
@@ -159,20 +191,23 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   bool IsSavePageEnabled() const;
   bool IsPasteEnabled() const;
   bool IsPasteAndMatchStyleEnabled() const;
+  bool IsPrintPreviewEnabled() const;
   bool IsRouteMediaEnabled() const;
+  bool IsOpenLinkOTREnabled() const;
 
   // Command execution functions.
-  void ExecOpenLinkNewTab();
+  void ExecOpenBookmarkApp();
   void ExecProtocolHandler(int event_flags, int handler_index);
   void ExecOpenLinkInProfile(int profile_index);
   void ExecInspectElement();
   void ExecInspectBackgroundPage();
   void ExecSaveLinkAs();
   void ExecSaveAs();
+  void ExecExitFullscreen();
   void ExecCopyLinkText();
   void ExecCopyImageAt();
   void ExecSearchWebForImage();
-  void ExecLoadOriginalImage();
+  void ExecLoadImage();
   void ExecPlayPause();
   void ExecMute();
   void ExecLoop();
@@ -186,9 +221,7 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   void ExecTranslate();
   void ExecLanguageSettings(int event_flags);
   void ExecProtocolHandlerSettings(int event_flags);
-
-  // Writes the specified text/url to the system clipboard
-  void WriteURLToClipboard(const GURL& url);
+  void ExecPictureInPicture();
 
   void MediaPlayerActionAt(const gfx::Point& location,
                            const blink::WebMediaPlayerAction& action);
@@ -213,6 +246,11 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
   // "Ask Google for suggestions" items.
   std::unique_ptr<SpellingMenuObserver> spelling_suggestions_menu_observer_;
 
+  // An observer that handles accessibility labels items.
+  std::unique_ptr<AccessibilityLabelsMenuObserver>
+      accessibility_labels_menu_observer_;
+  ui::SimpleMenuModel accessibility_labels_submenu_model_;
+
 #if !defined(OS_MACOSX)
   // An observer that handles the submenu for showing spelling options. This
   // submenu lets users select the spelling language, for example.
@@ -220,10 +258,15 @@ class RenderViewContextMenu : public RenderViewContextMenuBase {
       spelling_options_submenu_observer_;
 #endif
 
+#if defined(OS_CHROMEOS)
   // An observer that handles "Open with <app>" items.
   std::unique_ptr<RenderViewContextMenuObserver> open_with_menu_observer_;
+  // An observer that handles smart text selection action items.
+  std::unique_ptr<RenderViewContextMenuObserver>
+      start_smart_selection_action_menu_observer_;
+#endif
 
-#if defined(ENABLE_PRINT_PREVIEW)
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
   // An observer that disables menu items when print preview is active.
   std::unique_ptr<PrintPreviewContextMenuObserver> print_preview_menu_observer_;
 #endif

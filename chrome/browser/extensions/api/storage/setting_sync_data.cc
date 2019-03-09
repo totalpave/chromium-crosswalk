@@ -8,10 +8,10 @@
 
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "sync/api/sync_data.h"
-#include "sync/protocol/app_setting_specifics.pb.h"
-#include "sync/protocol/extension_setting_specifics.pb.h"
-#include "sync/protocol/sync.pb.h"
+#include "components/sync/model/sync_data.h"
+#include "components/sync/protocol/app_setting_specifics.pb.h"
+#include "components/sync/protocol/extension_setting_specifics.pb.h"
+#include "components/sync/protocol/sync.pb.h"
 
 namespace extensions {
 
@@ -52,7 +52,7 @@ void SettingSyncData::ExtractSyncData(const syncer::SyncData& sync_data) {
 
   extension_id_ = extension_specifics.extension_id();
   key_ = extension_specifics.key();
-  value_ = base::JSONReader::Read(extension_specifics.value());
+  value_ = base::JSONReader::ReadDeprecated(extension_specifics.value());
 
   if (!value_) {
     LOG(WARNING) << "Specifics for " << extension_id_ << "/" << key_

@@ -4,27 +4,43 @@
 
 #include "chrome/browser/chromeos/login/screen_manager.h"
 
+#include <utility>
+
+#include "base/memory/ptr_util.h"
+#include "chrome/browser/chromeos/login/wizard_controller.h"
+
 namespace chromeos {
 
-ScreenManager::ScreenManager() {
-}
+ScreenManager::ScreenManager() = default;
 
-ScreenManager::~ScreenManager() {
-}
+ScreenManager::~ScreenManager() = default;
 
-BaseScreen* ScreenManager::GetScreen(const std::string& screen_name) {
-  ScreenMap::const_iterator iter = screens_.find(screen_name);
-  if (iter != screens_.end()) {
+BaseScreen* ScreenManager::GetScreen(OobeScreen screen) {
+  auto iter = screens_.find(screen);
+  if (iter != screens_.end())
     return iter->second.get();
-  }
-  BaseScreen* result = CreateScreen(screen_name);
-  DCHECK(result) << "Can not create screen named " << screen_name;
-  screens_[screen_name] = make_linked_ptr(result);
-  return result;
+
+  std::unique_ptr<BaseScreen> result =
+      WizardController::default_controller()->CreateScreen(screen);
+  DCHECK(result) << "Can not create screen named " << GetOobeScreenName(screen);
+  BaseScreen* unowned_result = result.get();
+  screens_[screen] = std::move(result);
+  return unowned_result;
 }
 
-bool ScreenManager::HasScreen(const std::string& screen_name) {
-  return screens_.count(screen_name) > 0;
+bool ScreenManager::HasScreen(OobeScreen screen) {
+  return screens_.count(screen) > 0;
+}
+
+void ScreenManager::SetScreenForTesting(std::unique_ptr<BaseScreen> value) {
+  // Capture screen id to avoid using `value` after moving it; = is not a
+  // sequence point.
+  auto id = value->screen_id();
+  screens_[id] = std::move(value);
+}
+
+void ScreenManager::DeleteScreenForTesting(OobeScreen screen) {
+  screens_[screen] = nullptr;
 }
 
 }  // namespace chromeos

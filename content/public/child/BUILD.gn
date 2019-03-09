@@ -2,7 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//content/child/child.gni")
+import("//build/config/jumbo.gni")
+import("//ppapi/buildflags/buildflags.gni")
 
 # See //content/BUILD.gn for how this works.
 group("child") {
@@ -15,21 +16,23 @@ group("child") {
       ":child_sources",
     ]
     if (!is_android) {
-      public_deps += [
-        "//content/gpu",
-        "//content/ppapi_plugin",
-      ]
+      public_deps += [ "//content/gpu" ]
+    }
+    if (enable_plugins) {
+      public_deps += [ "//content/ppapi_plugin" ]
     }
   }
 }
 
-source_set("child_sources") {
+jumbo_source_set("child_sources") {
   # External code should depend in via ":child" above.
   visibility = [ "//content/*" ]
 
-  sources = rebase_path(content_child_gypi_values.public_child_sources,
-                        ".",
-                        "//content")
+  sources = [
+    "child_thread.h",
+    "dwrite_font_proxy_init_win.h",
+    "image_decoder_utils.h",
+  ]
 
   configs += [
     "//build/config/compiler:wexit_time_destructors",
@@ -40,6 +43,7 @@ source_set("child_sources") {
     "//content/child",  # Must not be public_deps!
     "//content/public/common:common_sources",
     "//gin",
+    "//ppapi/c",
   ]
 
   allow_circular_includes_from = [

@@ -19,7 +19,10 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/sequenced_task_runner.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/url_fetcher.h"
 
 namespace net {
@@ -34,7 +37,8 @@ class NET_EXPORT_PRIVATE URLFetcherImpl : public URLFetcher {
   // |d| the object that will receive the callback on fetch completion.
   URLFetcherImpl(const GURL& url,
                  RequestType request_type,
-                 URLFetcherDelegate* d);
+                 URLFetcherDelegate* d,
+                 net::NetworkTrafficAnnotationTag traffic_annotation);
   ~URLFetcherImpl() override;
 
   // URLFetcher implementation:
@@ -53,6 +57,7 @@ class NET_EXPORT_PRIVATE URLFetcherImpl : public URLFetcher {
   void AppendChunkToUpload(const std::string& data,
                            bool is_last_chunk) override;
   void SetLoadFlags(int load_flags) override;
+  void SetAllowCredentials(bool allow_credentials) override;
   int GetLoadFlags() const override;
   void SetReferrer(const std::string& referrer) override;
   void SetReferrerPolicy(URLRequest::ReferrerPolicy referrer_policy) override;
@@ -61,7 +66,7 @@ class NET_EXPORT_PRIVATE URLFetcherImpl : public URLFetcher {
   void AddExtraRequestHeader(const std::string& header_line) override;
   void SetRequestContext(
       URLRequestContextGetter* request_context_getter) override;
-  void SetInitiatorURL(const GURL& initiator) override;
+  void SetInitiator(const base::Optional<url::Origin>& initiator) override;
   void SetURLRequestUserData(
       const void* key,
       const CreateDataCallback& create_data_callback) override;
@@ -79,7 +84,8 @@ class NET_EXPORT_PRIVATE URLFetcherImpl : public URLFetcher {
   void SaveResponseWithWriter(
       std::unique_ptr<URLFetcherResponseWriter> response_writer) override;
   HttpResponseHeaders* GetResponseHeaders() const override;
-  HostPortPair GetSocketAddress() const override;
+  IPEndPoint GetSocketAddress() const override;
+  const ProxyServer& ProxyServerUsed() const override;
   bool WasFetchedViaProxy() const override;
   bool WasCached() const override;
   int64_t GetReceivedResponseContentLength() const override;

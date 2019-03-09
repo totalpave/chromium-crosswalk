@@ -32,32 +32,27 @@ CastKeySystem DecryptContextImpl::GetKeySystem() {
 }
 
 bool DecryptContextImpl::Decrypt(CastDecoderBuffer* buffer,
-                                 std::vector<uint8_t>* output) {
-  output->resize(buffer->data_size());
-  return Decrypt(buffer, output->data(), 0);
-}
-
-bool DecryptContextImpl::Decrypt(CastDecoderBuffer* buffer,
-                                 uint8_t* output,
+                                 uint8_t* opaque_handle,
                                  size_t data_offset) {
   bool called = false;
   bool success = false;
-  DecryptAsync(buffer, output, data_offset,
-               base::Bind(&BufferDecryptCB, &called, &success));
+  DecryptAsync(buffer, opaque_handle, data_offset, false /* clear_output */,
+               base::BindOnce(&BufferDecryptCB, &called, &success));
   CHECK(called) << "Sync Decrypt isn't supported";
 
   return success;
 }
 
 void DecryptContextImpl::DecryptAsync(CastDecoderBuffer* buffer,
-                                      uint8_t* output,
+                                      uint8_t* output_or_handle,
                                       size_t data_offset,
-                                      const DecryptCB& decrypt_cb) {
-  decrypt_cb.Run(false);
+                                      bool clear_output,
+                                      DecryptCB decrypt_cb) {
+  std::move(decrypt_cb).Run(false);
 }
 
-bool DecryptContextImpl::CanDecryptToBuffer() const {
-  return false;
+DecryptContextImpl::OutputType DecryptContextImpl::GetOutputType() const {
+  return OutputType::kSecure;
 }
 
 }  // namespace media

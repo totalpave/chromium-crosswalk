@@ -4,13 +4,16 @@
 
 #include "chrome/browser/feedback/feedback_profile_observer.h"
 
+#include "base/bind.h"
 #include "base/callback.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/chrome_notification_types.h"
+#include "chrome/browser/feedback/feedback_uploader_chrome.h"
+#include "chrome/browser/feedback/feedback_uploader_factory_chrome.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/feedback/feedback_report.h"
-#include "components/feedback/feedback_uploader.h"
-#include "components/feedback/feedback_uploader_factory.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
 
@@ -49,21 +52,23 @@ void FeedbackProfileObserver::Observe(
 
 void FeedbackProfileObserver::QueueSingleReport(
     feedback::FeedbackUploader* uploader,
-    const std::string& data) {
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE, base::Bind(&FeedbackUploader::QueueReport,
-                                               uploader->AsWeakPtr(), data));
+    std::unique_ptr<std::string> data) {
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&FeedbackUploaderChrome::QueueReport,
+                     uploader->AsWeakPtr(), std::move(data)));
 }
 
 void FeedbackProfileObserver::QueueUnsentReports(
     content::BrowserContext* context) {
-  feedback::FeedbackUploader* uploader =
-      feedback::FeedbackUploaderFactory::GetForBrowserContext(context);
-  BrowserThread::PostBlockingPoolTask(FROM_HERE,
-      base::Bind(
-          &FeedbackReport::LoadReportsAndQueue,
-          uploader->GetFeedbackReportsPath(),
-          base::Bind(&FeedbackProfileObserver::QueueSingleReport, uploader)));
+  feedback::FeedbackUploaderChrome* uploader =
+      feedback::FeedbackUploaderFactoryChrome::GetForBrowserContext(context);
+  uploader->task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&FeedbackReport::LoadReportsAndQueue,
+                                uploader->feedback_reports_path(),
+                                base::BindRepeating(
+                                    &FeedbackProfileObserver::QueueSingleReport,
+                                    uploader)));
 }
 
 }  // namespace feedback

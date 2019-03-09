@@ -10,13 +10,16 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/browser/url_and_title.h"
 #include "crypto/sha2.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 
 using bookmarks::BookmarkModel;
+using bookmarks::UrlAndTitle;
 using net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES;
 using net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES;
-using net::registry_controlled_domains::GetRegistryLength;
+using net::registry_controlled_domains::GetCanonicalHostRegistryLength;
 
 namespace {
 
@@ -26,11 +29,11 @@ const int kSHA256ByteSize = 32;
 const size_t kUrlLengthLimit = 20 * 1024 * 1024; // 20M
 const size_t kUrlLengthWidth = 8;
 
-void StripTopLevelDomain(std::string* host) {
-  size_t registry_length = GetRegistryLength(
-      *host, EXCLUDE_UNKNOWN_REGISTRIES, EXCLUDE_PRIVATE_REGISTRIES);
+void StripTopLevelDomain(std::string* canonical_host) {
+  size_t registry_length = GetCanonicalHostRegistryLength(
+      *canonical_host, EXCLUDE_UNKNOWN_REGISTRIES, EXCLUDE_PRIVATE_REGISTRIES);
   if (registry_length != 0 && registry_length != std::string::npos)
-    host->erase(host->length() - (registry_length + 1));
+    canonical_host->erase(canonical_host->length() - (registry_length + 1));
 }
 
 void StripCommonSubDomains(std::string* host) {
@@ -142,8 +145,7 @@ void DeltaFileEntryWithData::SetData(const history::URLRow& data) {
   data_ = data;
 }
 
-void DeltaFileEntryWithData::MarkAsBookmark(
-    const BookmarkModel::URLAndTitle& bookmark) {
+void DeltaFileEntryWithData::MarkAsBookmark(const UrlAndTitle& bookmark) {
   is_bookmark_ = true;
   bookmark_title_ = bookmark.title;
 }

@@ -14,11 +14,51 @@ var Manager = (function() {
 
   function Manager(clientRenderer) {
     this.players_ = {};
+    this.audioInfo_ = {};
     this.audioComponents_ = [];
     this.clientRenderer_ = clientRenderer;
+
+    var copyAllPlayerButton = $('copy-all-player-button');
+    var copyAllAudioButton = $('copy-all-audio-button');
+    var hidePlayersButton = $('hide-players-button');
+
+    // In tests we may not have these buttons.
+    if (copyAllPlayerButton) {
+      copyAllPlayerButton.onclick = function() {
+        this.clientRenderer_.showClipboard(
+            JSON.stringify(this.players_, null, 2));
+      }.bind(this);
+    }
+    if (copyAllAudioButton) {
+      copyAllAudioButton.onclick = function() {
+        this.clientRenderer_.showClipboard(
+            JSON.stringify(this.audioInfo_, null, 2) + '\n\n' +
+            JSON.stringify(this.audioComponents_, null, 2));
+      }.bind(this);
+    }
+    if (hidePlayersButton) {
+      hidePlayersButton.onclick = this.hidePlayers_.bind(this);
+    }
   }
 
   Manager.prototype = {
+    /**
+     * Updates the audio focus state.
+     * @param sessions A list of media sessions that contain the current state.
+     */
+    updateAudioFocusSessions: function(sessions) {
+      this.clientRenderer_.audioFocusSessionUpdated(sessions);
+    },
+
+    /**
+     * Updates the general audio information.
+     * @param audioInfo The map of information.
+     */
+    updateGeneralAudioInformation: function(audioInfo) {
+      this.audioInfo_ = audioInfo;
+      this.clientRenderer_.generalAudioInformationSet(this.audioInfo_);
+    },
+
     /**
      * Updates an audio-component.
      * @param componentType Integer AudioComponent enum value; must match values
@@ -27,8 +67,9 @@ var Manager = (function() {
      * @param componentData The actual component data dictionary.
      */
     updateAudioComponent: function(componentType, componentId, componentData) {
-      if (!(componentType in this.audioComponents_))
+      if (!(componentType in this.audioComponents_)) {
         this.audioComponents_[componentType] = {};
+      }
       if (!(componentId in this.audioComponents_[componentType])) {
         this.audioComponents_[componentType][componentId] = componentData;
       } else {
@@ -78,6 +119,12 @@ var Manager = (function() {
       this.clientRenderer_.playerRemoved(this.players_, playerRemoved);
     },
 
+    hidePlayers_: function() {
+      util.object.forEach(this.players_, function(playerInfo, id) {
+        this.removePlayer(id);
+      }, this);
+    },
+
     updatePlayerInfoNoRecord: function(id, timestamp, key, value) {
       if (!this.players_[id]) {
         console.error('[updatePlayerInfo] Id ' + id + ' does not exist');
@@ -85,10 +132,8 @@ var Manager = (function() {
       }
 
       this.players_[id].addPropertyNoRecord(timestamp, key, value);
-      this.clientRenderer_.playerUpdated(this.players_,
-                                         this.players_[id],
-                                         key,
-                                         value);
+      this.clientRenderer_.playerUpdated(
+          this.players_, this.players_[id], key, value);
     },
 
     /**
@@ -106,10 +151,8 @@ var Manager = (function() {
       }
 
       this.players_[id].addProperty(timestamp, key, value);
-      this.clientRenderer_.playerUpdated(this.players_,
-                                         this.players_[id],
-                                         key,
-                                         value);
+      this.clientRenderer_.playerUpdated(
+          this.players_, this.players_[id], key, value);
     },
 
     parseVideoCaptureFormat_: function(format) {
@@ -134,7 +177,7 @@ var Manager = (function() {
           }
           formatDict[kv[0]] = kv[1];
         } else {
-          kv = parts[i].split("@");
+          kv = parts[i].split('@');
           if (kv.length == 2) {
             formatDict['resolution'] = kv[0].replace(/[)(]/g, '');
             // Round down the FPS to 2 decimals.
@@ -153,12 +196,12 @@ var Manager = (function() {
         for (var j in videoCaptureCapabilities[i]['formats']) {
           videoCaptureCapabilities[i]['formats'][j] =
               this.parseVideoCaptureFormat_(
-                    videoCaptureCapabilities[i]['formats'][j]);
+                  videoCaptureCapabilities[i]['formats'][j]);
         }
       }
 
       // The keys of each device to be shown in order of appearance.
-      var videoCaptureDeviceKeys = ['name','formats','captureApi','id'];
+      var videoCaptureDeviceKeys = ['name', 'formats', 'captureApi', 'id'];
 
       this.clientRenderer_.redrawVideoCaptureCapabilities(
           videoCaptureCapabilities, videoCaptureDeviceKeys);

@@ -1,62 +1,64 @@
-<link rel="import" href="chrome://resources/html/polymer.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/iron-selector/iron-selector.html">
+<link rel="import" href="../../html/polymer.html">
+
+<link rel="import" href="../shared_vars_css.html">
+<link rel="import" href="../../html/icon.html">
 <link rel="import" href="chrome://resources/polymer/v1_0/paper-button/paper-button.html">
+<link rel="import" href="chrome://resources/polymer/v1_0/paper-styles/color.html">
+<link rel="import" href="cr_profile_avatar_selector_grid.html">
 
 <dom-module id="cr-profile-avatar-selector">
   <template>
     <style>
       :host {
+        --avatar-size: 96px;
         --avatar-spacing: 24px;
         display: inline-flex;
 
-        @apply(--avatar-selector);
+        @apply --avatar-selector;
       }
 
-      #selector {
-        display: flex;
-        flex-wrap: wrap;
-        margin: calc(var(--avatar-spacing) / -2);
-      }
-
-      .avatar {
-        --paper-button: {
-          background-color: var(--paper-grey-300);
-        };
-        --paper-button-flat-keyboard-focus: {
-          background-color: var(--paper-grey-400);
-        };
-        align-items: center;
-        border-radius: 2px;
+      #avatar-grid .avatar {
+        background-color: var(--paper-grey-300);
+        background-position: center;
+        background-repeat: no-repeat;
         border: 1px solid rgba(0, 0, 0, .12);
+        border-radius: 100%;
         display: flex;
-        height: 48px;
-        justify-content: center;
+        height: var(--avatar-size);
         margin: calc(var(--avatar-spacing) / 2);
         min-width: 0;
         padding: 0;
-        width: 48px;
+        width: var(--avatar-size);
 
-        @apply(--avatar-selector-avatar);
+        @apply --avatar-selector-avatar;
       }
 
-      .avatar:hover {
-        @apply(--avatar-selector-avatar-hovered);
+      #avatar-grid .avatar.keyboard-focus {
+        background-color: var(--paper-grey-400);
       }
 
-      .avatar.iron-selected {
-        border: 1px solid var(--google-blue-500);
+      #avatar-grid .avatar.iron-selected {
+        border: 2px solid var(--google-blue-500);
+      }
 
-        @apply(--avatar-selector-avatar-selected);
+      paper-button {
+        background-size: var(--avatar-size);
+      }
+
+      :host-context([dark]) #avatar-grid .avatar.iron-selected {
+        border-color: var(--google-blue-refresh-300);
       }
     </style>
-    <iron-selector id="selector" selected="{{selectedAvatarUrl}}"
-        attr-for-selected="data-avatar-url">
+    <cr-profile-avatar-selector-grid id="avatar-grid"
+        ignore-modified-key-events="[[ignoreModifiedKeyEvents]]">
       <template is="dom-repeat" items="[[avatars]]">
-        <paper-button class="avatar" data-avatar-url$="[[item.url]]">
-          <img src="[[item.url]]" alt="[[item.label]]">
+        <paper-button class$="avatar [[getSelectedClass_(item.selected)]]"
+            title="[[item.label]]"
+            style$="background-image: [[getIconImageSet_(item.url)]]"
+            on-tap="onAvatarTap_">
         </paper-button>
       </template>
-    </iron-selector>
+    </cr-profile-avatar-selector-grid>
   </template>
   <script src="cr_profile_avatar_selector.js"></script>
 </dom-module>

@@ -4,10 +4,9 @@
 
 #include "ash/shell/toplevel_window.h"
 
-#include "ash/common/wm/window_positioner.h"
-#include "ash/common/wm/window_state.h"
 #include "ash/shell.h"
-#include "ash/wm/window_state_aura.h"
+#include "ash/wm/window_positioner.h"
+#include "ash/wm/window_state.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
@@ -39,7 +38,7 @@ views::Widget* ToplevelWindow::CreateToplevelWindow(
       new ToplevelWindow(params), Shell::GetPrimaryRootWindow());
   widget->GetNativeView()->SetName("Examples:ToplevelWindow");
   wm::WindowState* window_state = wm::GetWindowState(widget->GetNativeView());
-  window_state->set_window_position_managed(true);
+  window_state->SetWindowPositionManaged(true);
   widget->Show();
   return widget;
 }
@@ -52,7 +51,7 @@ void ToplevelWindow::ClearSavedStateForTest() {
 
 ToplevelWindow::ToplevelWindow(const CreateParams& params) : params_(params) {}
 
-ToplevelWindow::~ToplevelWindow() {}
+ToplevelWindow::~ToplevelWindow() = default;
 
 void ToplevelWindow::OnPaint(gfx::Canvas* canvas) {
   canvas->FillRect(GetLocalBounds(), SK_ColorDKGRAY);
@@ -83,12 +82,8 @@ bool ToplevelWindow::GetSavedWindowPlacement(
     bounds->SetRect(10, 150, 300, 300);
   }
   WindowPositioner::GetBoundsAndShowStateForNewWindow(
-      nullptr, is_saved_bounds, *show_state, bounds, show_state);
+      is_saved_bounds, *show_state, bounds, show_state);
   return true;
-}
-
-views::View* ToplevelWindow::GetContentsView() {
-  return this;
 }
 
 bool ToplevelWindow::CanResize() const {

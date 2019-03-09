@@ -6,7 +6,7 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/task_management/task_manager_browsertest_util.h"
+#include "chrome/browser/task_manager/task_manager_browsertest_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_dialogs.h"
@@ -21,6 +21,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
+#include "printing/buildflags/buildflags.h"
 #include "url/url_constants.h"
 
 #if defined(OS_WIN)
@@ -28,17 +29,17 @@
 #include "ui/aura/window_tree_host.h"
 #endif
 
-using task_management::browsertest_util::MatchAboutBlankTab;
-using task_management::browsertest_util::MatchAnyPrint;
-using task_management::browsertest_util::MatchAnyTab;
-using task_management::browsertest_util::MatchPrint;
-using task_management::browsertest_util::WaitForTaskManagerRows;
+using task_manager::browsertest_util::MatchAboutBlankTab;
+using task_manager::browsertest_util::MatchAnyPrint;
+using task_manager::browsertest_util::MatchAnyTab;
+using task_manager::browsertest_util::MatchPrint;
+using task_manager::browsertest_util::WaitForTaskManagerRows;
 
 namespace {
 
-class PrintPreviewTest : public InProcessBrowserTest {
+class PrintPreviewBrowserTest : public InProcessBrowserTest {
  public:
-  PrintPreviewTest() {}
+  PrintPreviewBrowserTest() {}
 
   void Print() {
     content::TestNavigationObserver nav_observer(NULL);
@@ -49,18 +50,20 @@ class PrintPreviewTest : public InProcessBrowserTest {
   }
 };
 
-IN_PROC_BROWSER_TEST_F(PrintPreviewTest, PrintCommands) {
+IN_PROC_BROWSER_TEST_F(PrintPreviewBrowserTest, PrintCommands) {
   // We start off at about:blank page.
   // Make sure there is 1 tab and print is enabled.
   ASSERT_EQ(1, browser()->tab_strip_model()->count());
 
   ASSERT_TRUE(chrome::IsCommandEnabled(browser(), IDC_PRINT));
 
-#if defined(ENABLE_BASIC_PRINTING)
+#if BUILDFLAG(ENABLE_PRINTING) && !defined(OS_CHROMEOS)
+  // This is analagous to ENABLE_BASIC_PRINT_DIALOG but helps to verify
+  // that it is defined as expected.
   bool is_basic_print_expected = true;
 #else
   bool is_basic_print_expected = false;
-#endif  // ENABLE_BASIC_PRINTING
+#endif
 
   ASSERT_EQ(is_basic_print_expected,
             chrome::IsCommandEnabled(browser(), IDC_BASIC_PRINT));
@@ -75,7 +78,7 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewTest, PrintCommands) {
 
   content::TestNavigationObserver reload_observer(
       browser()->tab_strip_model()->GetActiveWebContents());
-  chrome::Reload(browser(), CURRENT_TAB);
+  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
   reload_observer.Wait();
 
   ASSERT_TRUE(chrome::IsCommandEnabled(browser(), IDC_PRINT));
@@ -90,7 +93,8 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewTest, PrintCommands) {
 #else
 #define MAYBE_TaskManagerNewPrintPreview TaskManagerNewPrintPreview
 #endif
-IN_PROC_BROWSER_TEST_F(PrintPreviewTest, MAYBE_TaskManagerNewPrintPreview) {
+IN_PROC_BROWSER_TEST_F(PrintPreviewBrowserTest,
+                       MAYBE_TaskManagerNewPrintPreview) {
   chrome::ShowTaskManager(browser());  // Show task manager BEFORE print dialog.
 
   ASSERT_NO_FATAL_FAILURE(WaitForTaskManagerRows(1, MatchAboutBlankTab()));
@@ -108,7 +112,7 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewTest, MAYBE_TaskManagerNewPrintPreview) {
 }
 
 // http://crbug/367665.
-IN_PROC_BROWSER_TEST_F(PrintPreviewTest,
+IN_PROC_BROWSER_TEST_F(PrintPreviewBrowserTest,
                        DISABLED_TaskManagerExistingPrintPreview) {
   // Create the print preview dialog.
   Print();
@@ -124,20 +128,23 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewTest,
 
 #if defined(OS_WIN)
 // http://crbug.com/396360
-IN_PROC_BROWSER_TEST_F(PrintPreviewTest, DISABLED_NoCrashOnCloseWithOtherTabs) {
+IN_PROC_BROWSER_TEST_F(PrintPreviewBrowserTest,
+                       DISABLED_NoCrashOnCloseWithOtherTabs) {
   // Now print preview.
   Print();
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), NEW_FOREGROUND_TAB,
+      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
 
-  browser()->tab_strip_model()->ActivateTabAt(0, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      0, {TabStripModel::GestureType::kOther});
 
   // Navigate main tab to hide print preview.
   ui_test_utils::NavigateToURL(browser(), GURL("about:blank"));
 
-  browser()->tab_strip_model()->ActivateTabAt(1, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      1, {TabStripModel::GestureType::kOther});
 }
 #endif  // defined(OS_WIN)
 

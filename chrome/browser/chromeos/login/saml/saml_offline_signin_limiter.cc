@@ -5,12 +5,14 @@
 #include "chrome/browser/chromeos/login/saml/saml_offline_signin_limiter.h"
 
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/time/clock.h"
+#include "base/time/default_clock.h"
 #include "base/time/time.h"
 #include "chrome/browser/chromeos/login/reauth_stats.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
@@ -77,23 +79,27 @@ void SAMLOfflineSigninLimiter::SignedIn(UserContext::AuthFlow auth_flow) {
   UpdateLimit();
 }
 
+void SAMLOfflineSigninLimiter::SetTimerForTesting(
+    std::unique_ptr<base::OneShotTimer> timer) {
+  offline_signin_limit_timer_ = std::move(timer);
+}
+
 void SAMLOfflineSigninLimiter::Shutdown() {
+  offline_signin_limit_timer_->Stop();
   pref_change_registrar_.RemoveAll();
-  offline_signin_limit_timer_.reset();
 }
 
 SAMLOfflineSigninLimiter::SAMLOfflineSigninLimiter(Profile* profile,
                                                    base::Clock* clock)
     : profile_(profile),
-      clock_(clock ? clock : &default_clock_) {
-}
+      clock_(clock ? clock : base::DefaultClock::GetInstance()),
+      offline_signin_limit_timer_(std::make_unique<base::OneShotTimer>()) {}
 
-SAMLOfflineSigninLimiter::~SAMLOfflineSigninLimiter() {
-}
+SAMLOfflineSigninLimiter::~SAMLOfflineSigninLimiter() {}
 
 void SAMLOfflineSigninLimiter::UpdateLimit() {
   // Stop the |offline_signin_limit_timer_|.
-  offline_signin_limit_timer_.reset();
+  offline_signin_limit_timer_->Stop();
 
   PrefService* prefs = pref_change_registrar_.prefs();
   const base::TimeDelta offline_signin_time_limit =
@@ -127,11 +133,8 @@ void SAMLOfflineSigninLimiter::UpdateLimit() {
 
   // Arm |offline_signin_limit_timer_| so that it sets the flag enforcing online
   // login when the limit expires.
-  offline_signin_limit_timer_.reset(new base::OneShotTimer);
   offline_signin_limit_timer_->Start(
-      FROM_HERE,
-      offline_signin_time_limit - time_since_last_gaia_signin,
-      this,
+      FROM_HERE, offline_signin_time_limit - time_since_last_gaia_signin, this,
       &SAMLOfflineSigninLimiter::ForceOnlineLogin);
 }
 
@@ -146,7 +149,7 @@ void SAMLOfflineSigninLimiter::ForceOnlineLogin() {
   user_manager::UserManager::Get()->SaveForceOnlineSignin(user->GetAccountId(),
                                                           true);
   RecordReauthReason(user->GetAccountId(), ReauthReason::SAML_REAUTH_POLICY);
-  offline_signin_limit_timer_.reset();
+  offline_signin_limit_timer_->Stop();
 }
 
 }  // namespace chromeos

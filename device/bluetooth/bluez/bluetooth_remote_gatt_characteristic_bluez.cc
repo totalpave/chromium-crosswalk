@@ -6,17 +6,19 @@
 
 #include <iterator>
 #include <limits>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "dbus/property.h"
 #include "device/bluetooth/bluetooth_device.h"
 #include "device/bluetooth/bluetooth_gatt_characteristic.h"
+#include "device/bluetooth/bluetooth_gatt_notify_session.h"
 #include "device/bluetooth/bluetooth_gatt_service.h"
 #include "device/bluetooth/bluez/bluetooth_adapter_bluez.h"
-#include "device/bluetooth/bluez/bluetooth_gatt_notify_session_bluez.h"
 #include "device/bluetooth/bluez/bluetooth_remote_gatt_descriptor_bluez.h"
 #include "device/bluetooth/bluez/bluetooth_remote_gatt_service_bluez.h"
 #include "device/bluetooth/dbus/bluetooth_gatt_characteristic_client.h"
@@ -30,8 +32,7 @@ namespace {
 // Stream operator for logging vector<uint8_t>.
 std::ostream& operator<<(std::ostream& out, const std::vector<uint8_t> bytes) {
   out << "[";
-  for (std::vector<uint8_t>::const_iterator iter = bytes.begin();
-       iter != bytes.end(); ++iter) {
+  for (auto iter = bytes.begin(); iter != bytes.end(); ++iter) {
     out << base::StringPrintf("%02X", *iter);
   }
   return out << "]";
@@ -43,9 +44,9 @@ BluetoothRemoteGattCharacteristicBlueZ::BluetoothRemoteGattCharacteristicBlueZ(
     BluetoothRemoteGattServiceBlueZ* service,
     const dbus::ObjectPath& object_path)
     : BluetoothGattCharacteristicBlueZ(object_path),
-      num_notify_sessions_(0),
-      notify_call_pending_(false),
+      has_notify_session_(false),
       service_(service),
+      num_of_characteristic_value_read_in_progress_(0),
       weak_ptr_factory_(this) {
   VLOG(1) << "Creating remote GATT characteristic with identifier: "
           << GetIdentifier() << ", UUID: " << GetUUID().canonical_value();
@@ -58,8 +59,7 @@ BluetoothRemoteGattCharacteristicBlueZ::BluetoothRemoteGattCharacteristicBlueZ(
       bluez::BluezDBusManager::Get()
           ->GetBluetoothGattDescriptorClient()
           ->GetDescriptors();
-  for (std::vector<dbus::ObjectPath>::const_iterator iter = gatt_descs.begin();
-       iter != gatt_descs.end(); ++iter)
+  for (auto iter = gatt_descs.begin(); iter != gatt_descs.end(); ++iter)
     GattDescriptorAdded(*iter);
 }
 
@@ -68,19 +68,6 @@ BluetoothRemoteGattCharacteristicBlueZ::
   bluez::BluezDBusManager::Get()
       ->GetBluetoothGattDescriptorClient()
       ->RemoveObserver(this);
-
-  // Clean up all the descriptors. There isn't much point in notifying service
-  // observers for each descriptor that gets removed, so just delete them.
-  for (DescriptorMap::iterator iter = descriptors_.begin();
-       iter != descriptors_.end(); ++iter)
-    delete iter->second;
-
-  // Report an error for all pending calls to StartNotifySession.
-  while (!pending_start_notify_calls_.empty()) {
-    PendingStartNotifyCall callbacks = pending_start_notify_calls_.front();
-    pending_start_notify_calls_.pop();
-    callbacks.second.Run(device::BluetoothRemoteGattService::GATT_ERROR_FAILED);
-  }
 }
 
 device::BluetoothUUID BluetoothRemoteGattCharacteristicBlueZ::GetUUID() const {
@@ -102,8 +89,7 @@ BluetoothRemoteGattCharacteristicBlueZ::GetProperties() const {
 
   Properties props = PROPERTY_NONE;
   const std::vector<std::string>& flags = properties->flags.value();
-  for (std::vector<std::string>::const_iterator iter = flags.begin();
-       iter != flags.end(); ++iter) {
+  for (auto iter = flags.begin(); iter != flags.end(); ++iter) {
     if (*iter == bluetooth_gatt_characteristic::kFlagBroadcast)
       props |= PROPERTY_BROADCAST;
     if (*iter == bluetooth_gatt_characteristic::kFlagRead)
@@ -160,79 +146,10 @@ bool BluetoothRemoteGattCharacteristicBlueZ::IsNotifying() const {
           ->GetProperties(object_path());
   DCHECK(properties);
 
-  return properties->notifying.value();
-}
-
-std::vector<device::BluetoothRemoteGattDescriptor*>
-BluetoothRemoteGattCharacteristicBlueZ::GetDescriptors() const {
-  std::vector<device::BluetoothRemoteGattDescriptor*> descriptors;
-  for (DescriptorMap::const_iterator iter = descriptors_.begin();
-       iter != descriptors_.end(); ++iter)
-    descriptors.push_back(iter->second);
-  return descriptors;
-}
-
-device::BluetoothRemoteGattDescriptor*
-BluetoothRemoteGattCharacteristicBlueZ::GetDescriptor(
-    const std::string& identifier) const {
-  DescriptorMap::const_iterator iter =
-      descriptors_.find(dbus::ObjectPath(identifier));
-  if (iter == descriptors_.end())
-    return nullptr;
-  return iter->second;
-}
-
-void BluetoothRemoteGattCharacteristicBlueZ::StartNotifySession(
-    const NotifySessionCallback& callback,
-    const ErrorCallback& error_callback) {
-  VLOG(1) << __func__;
-
-  if (num_notify_sessions_ > 0) {
-    // The characteristic might have stopped notifying even though the session
-    // count is nonzero. This means that notifications stopped outside of our
-    // control and we should reset the count. If the characteristic is still
-    // notifying, then return success. Otherwise, reset the count and treat
-    // this call as if the count were 0.
-    if (IsNotifying()) {
-      // Check for overflows, though unlikely.
-      if (num_notify_sessions_ == std::numeric_limits<size_t>::max()) {
-        error_callback.Run(
-            device::BluetoothRemoteGattService::GATT_ERROR_FAILED);
-        return;
-      }
-
-      ++num_notify_sessions_;
-      DCHECK(service_);
-      DCHECK(service_->GetAdapter());
-      DCHECK(service_->GetDevice());
-      std::unique_ptr<device::BluetoothGattNotifySession> session(
-          new BluetoothGattNotifySessionBlueZ(
-              service_->GetAdapter(), service_->GetDevice()->GetAddress(),
-              service_->GetIdentifier(), GetIdentifier(), object_path()));
-      callback.Run(std::move(session));
-      return;
-    }
-
-    num_notify_sessions_ = 0;
-  }
-
-  // Queue the callbacks if there is a pending call to bluetoothd.
-  if (notify_call_pending_) {
-    pending_start_notify_calls_.push(std::make_pair(callback, error_callback));
-    return;
-  }
-
-  notify_call_pending_ = true;
-  bluez::BluezDBusManager::Get()
-      ->GetBluetoothGattCharacteristicClient()
-      ->StartNotify(
-          object_path(),
-          base::Bind(
-              &BluetoothRemoteGattCharacteristicBlueZ::OnStartNotifySuccess,
-              weak_ptr_factory_.GetWeakPtr(), callback),
-          base::Bind(
-              &BluetoothRemoteGattCharacteristicBlueZ::OnStartNotifyError,
-              weak_ptr_factory_.GetWeakPtr(), error_callback));
+  // It is not enough to only check notifying.value(). Bluez also
+  // needs a notify client/session in order to deliver the
+  // notifications.
+  return has_notify_session_ && properties->notifying.value();
 }
 
 void BluetoothRemoteGattCharacteristicBlueZ::ReadRemoteCharacteristic(
@@ -242,54 +159,78 @@ void BluetoothRemoteGattCharacteristicBlueZ::ReadRemoteCharacteristic(
           << GetIdentifier() << ", UUID: " << GetUUID().canonical_value()
           << ".";
 
+  DCHECK_GE(num_of_characteristic_value_read_in_progress_, 0);
+  ++num_of_characteristic_value_read_in_progress_;
+
   bluez::BluezDBusManager::Get()
       ->GetBluetoothGattCharacteristicClient()
-      ->ReadValue(object_path(), callback,
-                  base::Bind(&BluetoothRemoteGattCharacteristicBlueZ::OnError,
-                             weak_ptr_factory_.GetWeakPtr(), error_callback));
+      ->ReadValue(
+          object_path(), callback,
+          base::Bind(&BluetoothRemoteGattCharacteristicBlueZ::OnReadError,
+                     weak_ptr_factory_.GetWeakPtr(), error_callback));
 }
 
 void BluetoothRemoteGattCharacteristicBlueZ::WriteRemoteCharacteristic(
-    const std::vector<uint8_t>& new_value,
+    const std::vector<uint8_t>& value,
     const base::Closure& callback,
     const ErrorCallback& error_callback) {
   VLOG(1) << "Sending GATT characteristic write request to characteristic: "
           << GetIdentifier() << ", UUID: " << GetUUID().canonical_value()
-          << ", with value: " << new_value << ".";
+          << ", with value: " << value << ".";
 
   bluez::BluezDBusManager::Get()
       ->GetBluetoothGattCharacteristicClient()
-      ->WriteValue(object_path(), new_value, callback,
-                   base::Bind(&BluetoothRemoteGattCharacteristicBlueZ::OnError,
-                              weak_ptr_factory_.GetWeakPtr(), error_callback));
+      ->WriteValue(
+          object_path(), value, callback,
+          base::Bind(&BluetoothRemoteGattCharacteristicBlueZ::OnWriteError,
+                     weak_ptr_factory_.GetWeakPtr(), error_callback));
 }
 
-void BluetoothRemoteGattCharacteristicBlueZ::RemoveNotifySession(
-    const base::Closure& callback) {
-  VLOG(1) << __func__;
+#if defined(OS_CHROMEOS)
+void BluetoothRemoteGattCharacteristicBlueZ::PrepareWriteRemoteCharacteristic(
+    const std::vector<uint8_t>& value,
+    const base::Closure& callback,
+    const ErrorCallback& error_callback) {
+  VLOG(1) << "Sending GATT characteristic prepare write request to "
+          << "characteristic: " << GetIdentifier()
+          << ", UUID: " << GetUUID().canonical_value()
+          << ", with value: " << value << ".";
 
-  if (num_notify_sessions_ > 1) {
-    DCHECK(!notify_call_pending_);
-    --num_notify_sessions_;
-    callback.Run();
-    return;
-  }
+  bluez::BluezDBusManager::Get()
+      ->GetBluetoothGattCharacteristicClient()
+      ->PrepareWriteValue(
+          object_path(), value, callback,
+          base::Bind(&BluetoothRemoteGattCharacteristicBlueZ::OnWriteError,
+                     weak_ptr_factory_.GetWeakPtr(), error_callback));
+}
+#endif
 
-  // Notifications may have stopped outside our control. If the characteristic
-  // is no longer notifying, return success.
-  if (!IsNotifying()) {
-    num_notify_sessions_ = 0;
-    callback.Run();
-    return;
-  }
+void BluetoothRemoteGattCharacteristicBlueZ::SubscribeToNotifications(
+    device::BluetoothRemoteGattDescriptor* ccc_descriptor,
+#if defined(OS_CHROMEOS)
+    NotificationType notification_type,
+#endif
+    const base::Closure& callback,
+    const ErrorCallback& error_callback) {
+  bluez::BluezDBusManager::Get()
+      ->GetBluetoothGattCharacteristicClient()
+      ->StartNotify(
+          object_path(),
+#if defined(OS_CHROMEOS)
+          notification_type,
+#endif
+          base::Bind(
+              &BluetoothRemoteGattCharacteristicBlueZ::OnStartNotifySuccess,
+              weak_ptr_factory_.GetWeakPtr(), callback),
+          base::Bind(
+              &BluetoothRemoteGattCharacteristicBlueZ::OnStartNotifyError,
+              weak_ptr_factory_.GetWeakPtr(), error_callback));
+}
 
-  if (notify_call_pending_ || num_notify_sessions_ == 0) {
-    callback.Run();
-    return;
-  }
-
-  DCHECK(num_notify_sessions_ == 1);
-  notify_call_pending_ = true;
+void BluetoothRemoteGattCharacteristicBlueZ::UnsubscribeFromNotifications(
+    device::BluetoothRemoteGattDescriptor* ccc_descriptor,
+    const base::Closure& callback,
+    const ErrorCallback& error_callback) {
   bluez::BluezDBusManager::Get()
       ->GetBluetoothGattCharacteristicClient()
       ->StopNotify(
@@ -303,7 +244,7 @@ void BluetoothRemoteGattCharacteristicBlueZ::RemoveNotifySession(
 
 void BluetoothRemoteGattCharacteristicBlueZ::GattDescriptorAdded(
     const dbus::ObjectPath& object_path) {
-  if (descriptors_.find(object_path) != descriptors_.end()) {
+  if (descriptors_.find(object_path.value()) != descriptors_.end()) {
     VLOG(1) << "Remote GATT characteristic descriptor already exists: "
             << object_path.value();
     return;
@@ -322,9 +263,10 @@ void BluetoothRemoteGattCharacteristicBlueZ::GattDescriptorAdded(
   VLOG(1) << "Adding new remote GATT descriptor for GATT characteristic: "
           << GetIdentifier() << ", UUID: " << GetUUID().canonical_value();
 
+  // NOTE: Can't use std::make_unique due to private constructor.
   BluetoothRemoteGattDescriptorBlueZ* descriptor =
       new BluetoothRemoteGattDescriptorBlueZ(this, object_path);
-  descriptors_[object_path] = descriptor;
+  AddDescriptor(base::WrapUnique(descriptor));
   DCHECK(descriptor->GetIdentifier() == object_path.value());
   DCHECK(descriptor->GetUUID().IsValid());
   DCHECK(service_);
@@ -335,7 +277,7 @@ void BluetoothRemoteGattCharacteristicBlueZ::GattDescriptorAdded(
 
 void BluetoothRemoteGattCharacteristicBlueZ::GattDescriptorRemoved(
     const dbus::ObjectPath& object_path) {
-  DescriptorMap::iterator iter = descriptors_.find(object_path);
+  auto iter = descriptors_.find(object_path.value());
   if (iter == descriptors_.end()) {
     VLOG(2) << "Unknown descriptor removed: " << object_path.value();
     return;
@@ -344,21 +286,22 @@ void BluetoothRemoteGattCharacteristicBlueZ::GattDescriptorRemoved(
   VLOG(1) << "Removing remote GATT descriptor from characteristic: "
           << GetIdentifier() << ", UUID: " << GetUUID().canonical_value();
 
-  BluetoothRemoteGattDescriptorBlueZ* descriptor = iter->second;
-  DCHECK(descriptor->object_path() == object_path);
+  auto descriptor = std::move(iter->second);
+  auto* descriptor_bluez =
+      static_cast<BluetoothRemoteGattDescriptorBlueZ*>(descriptor.get());
+  DCHECK(descriptor_bluez->object_path() == object_path);
   descriptors_.erase(iter);
 
   DCHECK(service_);
   static_cast<BluetoothRemoteGattServiceBlueZ*>(service_)
-      ->NotifyDescriptorAddedOrRemoved(this, descriptor, false /* added */);
-
-  delete descriptor;
+      ->NotifyDescriptorAddedOrRemoved(this, descriptor_bluez,
+                                       false /* added */);
 }
 
 void BluetoothRemoteGattCharacteristicBlueZ::GattDescriptorPropertyChanged(
     const dbus::ObjectPath& object_path,
     const std::string& property_name) {
-  DescriptorMap::iterator iter = descriptors_.find(object_path);
+  auto iter = descriptors_.find(object_path.value());
   if (iter == descriptors_.end()) {
     VLOG(2) << "Unknown descriptor removed: " << object_path.value();
     return;
@@ -376,30 +319,18 @@ void BluetoothRemoteGattCharacteristicBlueZ::GattDescriptorPropertyChanged(
 
   DCHECK(service_);
   static_cast<BluetoothRemoteGattServiceBlueZ*>(service_)
-      ->NotifyDescriptorValueChanged(this, iter->second,
-                                     properties->value.value());
+      ->NotifyDescriptorValueChanged(
+          this,
+          static_cast<BluetoothRemoteGattDescriptorBlueZ*>(iter->second.get()),
+          properties->value.value());
 }
 
 void BluetoothRemoteGattCharacteristicBlueZ::OnStartNotifySuccess(
-    const NotifySessionCallback& callback) {
+    const base::Closure& callback) {
   VLOG(1) << "Started notifications from characteristic: "
           << object_path().value();
-  DCHECK(num_notify_sessions_ == 0);
-  DCHECK(notify_call_pending_);
-
-  ++num_notify_sessions_;
-  notify_call_pending_ = false;
-
-  // Invoke the queued callbacks for this operation.
-  DCHECK(service_);
-  DCHECK(service_->GetDevice());
-  std::unique_ptr<device::BluetoothGattNotifySession> session(
-      new BluetoothGattNotifySessionBlueZ(
-          service_->GetAdapter(), service_->GetDevice()->GetAddress(),
-          service_->GetIdentifier(), GetIdentifier(), object_path()));
-  callback.Run(std::move(session));
-
-  ProcessStartNotifyQueue();
+  has_notify_session_ = true;
+  callback.Run();
 }
 
 void BluetoothRemoteGattCharacteristicBlueZ::OnStartNotifyError(
@@ -409,27 +340,14 @@ void BluetoothRemoteGattCharacteristicBlueZ::OnStartNotifyError(
   VLOG(1) << "Failed to start notifications from characteristic: "
           << object_path().value() << ": " << error_name << ", "
           << error_message;
-  DCHECK(num_notify_sessions_ == 0);
-  DCHECK(notify_call_pending_);
-
-  notify_call_pending_ = false;
-
   error_callback.Run(
       BluetoothRemoteGattServiceBlueZ::DBusErrorToServiceError(error_name));
-
-  ProcessStartNotifyQueue();
 }
 
 void BluetoothRemoteGattCharacteristicBlueZ::OnStopNotifySuccess(
     const base::Closure& callback) {
-  DCHECK(notify_call_pending_);
-  DCHECK(num_notify_sessions_ == 1);
-
-  notify_call_pending_ = false;
-  --num_notify_sessions_;
+  has_notify_session_ = false;
   callback.Run();
-
-  ProcessStartNotifyQueue();
 }
 
 void BluetoothRemoteGattCharacteristicBlueZ::OnStopNotifyError(
@@ -444,15 +362,19 @@ void BluetoothRemoteGattCharacteristicBlueZ::OnStopNotifyError(
   OnStopNotifySuccess(callback);
 }
 
-void BluetoothRemoteGattCharacteristicBlueZ::ProcessStartNotifyQueue() {
-  while (!pending_start_notify_calls_.empty()) {
-    PendingStartNotifyCall callbacks = pending_start_notify_calls_.front();
-    pending_start_notify_calls_.pop();
-    StartNotifySession(callbacks.first, callbacks.second);
-  }
+void BluetoothRemoteGattCharacteristicBlueZ::OnReadError(
+    const ErrorCallback& error_callback,
+    const std::string& error_name,
+    const std::string& error_message) {
+  VLOG(1) << "Operation failed: " << error_name
+          << ", message: " << error_message;
+  --num_of_characteristic_value_read_in_progress_;
+  DCHECK_GE(num_of_characteristic_value_read_in_progress_, 0);
+  error_callback.Run(
+      BluetoothGattServiceBlueZ::DBusErrorToServiceError(error_name));
 }
 
-void BluetoothRemoteGattCharacteristicBlueZ::OnError(
+void BluetoothRemoteGattCharacteristicBlueZ::OnWriteError(
     const ErrorCallback& error_callback,
     const std::string& error_name,
     const std::string& error_message) {

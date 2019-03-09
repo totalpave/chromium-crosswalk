@@ -10,7 +10,7 @@
 #include "base/bind.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/media.h"
 #include "media/base/media_util.h"
@@ -25,10 +25,8 @@ namespace media {
 
 class FFmpegCommonTest : public testing::Test {
  public:
-  FFmpegCommonTest() {
-    FFmpegGlue::InitializeFFmpeg();
-  }
-  ~FFmpegCommonTest() override{};
+  FFmpegCommonTest() {}
+  ~FFmpegCommonTest() override = default;
 };
 
 uint8_t kExtraData[5] = {0x00, 0x01, 0x02, 0x03, 0x04};
@@ -42,46 +40,49 @@ void TestConfigConvertExtraData(
   EXPECT_TRUE(converter_fn.Run(stream, decoder_config));
 
   // Store orig to let FFmpeg free whatever it allocated.
-  AVCodecContext* codec_context = stream->codec;
-  uint8_t* orig_extradata = codec_context->extradata;
-  int orig_extradata_size = codec_context->extradata_size;
+  AVCodecParameters* codec_parameters = stream->codecpar;
+  uint8_t* orig_extradata = codec_parameters->extradata;
+  int orig_extradata_size = codec_parameters->extradata_size;
 
-  // Valid combination: extra_data = NULL && size = 0.
-  codec_context->extradata = NULL;
-  codec_context->extradata_size = 0;
+  // Valid combination: extra_data = nullptr && size = 0.
+  codec_parameters->extradata = nullptr;
+  codec_parameters->extradata_size = 0;
   EXPECT_TRUE(converter_fn.Run(stream, decoder_config));
-  EXPECT_EQ(static_cast<size_t>(codec_context->extradata_size),
+  EXPECT_EQ(static_cast<size_t>(codec_parameters->extradata_size),
             decoder_config->extra_data().size());
 
-  // Valid combination: extra_data = non-NULL && size > 0.
-  codec_context->extradata = &kExtraData[0];
-  codec_context->extradata_size = arraysize(kExtraData);
+  // Valid combination: extra_data = non-nullptr && size > 0.
+  codec_parameters->extradata = &kExtraData[0];
+  codec_parameters->extradata_size = base::size(kExtraData);
   EXPECT_TRUE(converter_fn.Run(stream, decoder_config));
-  EXPECT_EQ(static_cast<size_t>(codec_context->extradata_size),
+  EXPECT_EQ(static_cast<size_t>(codec_parameters->extradata_size),
             decoder_config->extra_data().size());
-  EXPECT_EQ(0, memcmp(codec_context->extradata,
-                      &decoder_config->extra_data()[0],
-                      decoder_config->extra_data().size()));
+  EXPECT_EQ(
+      0, memcmp(codec_parameters->extradata, &decoder_config->extra_data()[0],
+                decoder_config->extra_data().size()));
 
-  // Invalid combination: extra_data = NULL && size != 0.
-  codec_context->extradata = NULL;
-  codec_context->extradata_size = 10;
-  EXPECT_FALSE(converter_fn.Run(stream, decoder_config));
+  // Possible combination: extra_data = nullptr && size != 0, but the converter
+  // function considers this valid and having no extra_data, due to behavior of
+  // avcodec_parameters_to_context().
+  codec_parameters->extradata = nullptr;
+  codec_parameters->extradata_size = 10;
+  EXPECT_TRUE(converter_fn.Run(stream, decoder_config));
+  EXPECT_EQ(0UL, decoder_config->extra_data().size());
 
-  // Invalid combination: extra_data = non-NULL && size = 0.
-  codec_context->extradata = &kExtraData[0];
-  codec_context->extradata_size = 0;
+  // Invalid combination: extra_data = non-nullptr && size = 0.
+  codec_parameters->extradata = &kExtraData[0];
+  codec_parameters->extradata_size = 0;
   EXPECT_FALSE(converter_fn.Run(stream, decoder_config));
 
   // Restore orig values for sane cleanup.
-  codec_context->extradata = orig_extradata;
-  codec_context->extradata_size = orig_extradata_size;
+  codec_parameters->extradata = orig_extradata;
+  codec_parameters->extradata_size = orig_extradata_size;
 }
 
 TEST_F(FFmpegCommonTest, AVStreamToDecoderConfig) {
   // Open a file to get a real AVStreams from FFmpeg.
   base::MemoryMappedFile file;
-  file.Initialize(GetTestDataFilePath("bear-320x240.webm"));
+  ASSERT_TRUE(file.Initialize(GetTestDataFilePath("bear-320x240.webm")));
   InMemoryUrlProtocol protocol(file.data(), file.length(), false);
   FFmpegGlue glue(&protocol);
   ASSERT_TRUE(glue.OpenContext());
@@ -95,8 +96,8 @@ TEST_F(FFmpegCommonTest, AVStreamToDecoderConfig) {
        i < format_context->nb_streams && (!found_audio || !found_video);
        ++i) {
     AVStream* stream = format_context->streams[i];
-    AVCodecContext* codec_context = stream->codec;
-    AVMediaType codec_type = codec_context->codec_type;
+    AVCodecParameters* codec_parameters = stream->codecpar;
+    AVMediaType codec_type = codec_parameters->codec_type;
 
     if (codec_type == AVMEDIA_TYPE_AUDIO) {
       if (found_audio)
@@ -122,21 +123,72 @@ TEST_F(FFmpegCommonTest, AVStreamToDecoderConfig) {
   ASSERT_TRUE(found_video);
 }
 
-TEST_F(FFmpegCommonTest, OpusAudioDecoderConfig) {
-  AVCodecContext context = {0};
-  context.codec_type = AVMEDIA_TYPE_AUDIO;
-  context.codec_id = AV_CODEC_ID_OPUS;
-  context.channel_layout = CHANNEL_LAYOUT_STEREO;
-  context.channels = 2;
-  context.sample_fmt = AV_SAMPLE_FMT_FLT;
+TEST_F(FFmpegCommonTest, AVStreamToAudioDecoderConfig_OpusAmbisonics_4ch) {
+  base::MemoryMappedFile file;
+  ASSERT_TRUE(file.Initialize(
+      GetTestDataFilePath("bear-opus-end-trimming-4ch-channelmapping2.webm")));
+  InMemoryUrlProtocol protocol(file.data(), file.length(), false);
+  FFmpegGlue glue(&protocol);
+  ASSERT_TRUE(glue.OpenContext());
 
-  // During conversion this sample rate should be changed to 48kHz.
-  context.sample_rate = 44100;
+  AVFormatContext* format_context = glue.format_context();
+  EXPECT_EQ(static_cast<unsigned int>(1), format_context->nb_streams);
+  AVStream* stream = format_context->streams[0];
 
-  AudioDecoderConfig decoder_config;
-  ASSERT_TRUE(AVCodecContextToAudioDecoderConfig(&context, Unencrypted(),
-                                                 &decoder_config));
-  EXPECT_EQ(48000, decoder_config.samples_per_second());
+  AVCodecParameters* codec_parameters = stream->codecpar;
+  EXPECT_EQ(AVMEDIA_TYPE_AUDIO, codec_parameters->codec_type);
+
+  AudioDecoderConfig audio_config;
+  ASSERT_TRUE(AVStreamToAudioDecoderConfig(stream, &audio_config));
+
+  EXPECT_EQ(kCodecOpus, audio_config.codec());
+  EXPECT_EQ(CHANNEL_LAYOUT_QUAD, audio_config.channel_layout());
+  EXPECT_EQ(4, audio_config.channels());
+}
+
+TEST_F(FFmpegCommonTest, AVStreamToAudioDecoderConfig_OpusAmbisonics_11ch) {
+  base::MemoryMappedFile file;
+  ASSERT_TRUE(file.Initialize(
+      GetTestDataFilePath("bear-opus-end-trimming-11ch-channelmapping2.webm")));
+  InMemoryUrlProtocol protocol(file.data(), file.length(), false);
+  FFmpegGlue glue(&protocol);
+  ASSERT_TRUE(glue.OpenContext());
+
+  AVFormatContext* format_context = glue.format_context();
+  EXPECT_EQ(static_cast<unsigned int>(1), format_context->nb_streams);
+  AVStream* stream = format_context->streams[0];
+
+  AVCodecParameters* codec_parameters = stream->codecpar;
+  EXPECT_EQ(AVMEDIA_TYPE_AUDIO, codec_parameters->codec_type);
+
+  AudioDecoderConfig audio_config;
+  ASSERT_TRUE(AVStreamToAudioDecoderConfig(stream, &audio_config));
+
+  EXPECT_EQ(kCodecOpus, audio_config.codec());
+  EXPECT_EQ(CHANNEL_LAYOUT_DISCRETE, audio_config.channel_layout());
+  EXPECT_EQ(11, audio_config.channels());
+}
+
+TEST_F(FFmpegCommonTest, AVStreamToAudioDecoderConfig_9ch_wav) {
+  base::MemoryMappedFile file;
+  ASSERT_TRUE(file.Initialize(GetTestDataFilePath("9ch.wav")));
+  InMemoryUrlProtocol protocol(file.data(), file.length(), false);
+  FFmpegGlue glue(&protocol);
+  ASSERT_TRUE(glue.OpenContext());
+
+  AVFormatContext* format_context = glue.format_context();
+  EXPECT_EQ(static_cast<unsigned int>(1), format_context->nb_streams);
+  AVStream* stream = format_context->streams[0];
+
+  AVCodecParameters* codec_parameters = stream->codecpar;
+  EXPECT_EQ(AVMEDIA_TYPE_AUDIO, codec_parameters->codec_type);
+
+  AudioDecoderConfig audio_config;
+  ASSERT_TRUE(AVStreamToAudioDecoderConfig(stream, &audio_config));
+
+  EXPECT_EQ(kCodecPCM, audio_config.codec());
+  EXPECT_EQ(CHANNEL_LAYOUT_DISCRETE, audio_config.channel_layout());
+  EXPECT_EQ(9, audio_config.channels());
 }
 
 TEST_F(FFmpegCommonTest, TimeBaseConversions) {
@@ -144,7 +196,7 @@ TEST_F(FFmpegCommonTest, TimeBaseConversions) {
       {1, 2, 1, 500000, 1}, {1, 3, 1, 333333, 1}, {1, 3, 2, 666667, 2},
   };
 
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     SCOPED_TRACE(i);
 
     AVRational time_base;
@@ -184,59 +236,6 @@ TEST_F(FFmpegCommonTest, VerifyFormatSizes) {
   }
 }
 
-TEST_F(FFmpegCommonTest, UTCDateToTime_Valid) {
-  base::Time result;
-  EXPECT_TRUE(FFmpegUTCDateToTime("2012-11-10 12:34:56", &result));
-
-  base::Time::Exploded exploded;
-  result.UTCExplode(&exploded);
-  EXPECT_TRUE(exploded.HasValidValues());
-  EXPECT_EQ(2012, exploded.year);
-  EXPECT_EQ(11, exploded.month);
-  EXPECT_EQ(6, exploded.day_of_week);
-  EXPECT_EQ(10, exploded.day_of_month);
-  EXPECT_EQ(12, exploded.hour);
-  EXPECT_EQ(34, exploded.minute);
-  EXPECT_EQ(56, exploded.second);
-  EXPECT_EQ(0, exploded.millisecond);
-}
-
-TEST_F(FFmpegCommonTest, UTCDateToTime_Invalid) {
-  const char* invalid_date_strings[] = {
-    "",
-    "2012-11-10",
-    "12:34:56",
-    "-- ::",
-    "2012-11-10 12:34:",
-    "2012-11-10 12::56",
-    "2012-11-10 :34:56",
-    "2012-11- 12:34:56",
-    "2012--10 12:34:56",
-    "-11-10 12:34:56",
-    "2012-11 12:34:56",
-    "2012-11-10-12 12:34:56",
-    "2012-11-10 12:34",
-    "2012-11-10 12:34:56:78",
-    "ABCD-11-10 12:34:56",
-    "2012-EF-10 12:34:56",
-    "2012-11-GH 12:34:56",
-    "2012-11-10 IJ:34:56",
-    "2012-11-10 12:JL:56",
-    "2012-11-10 12:34:MN",
-    "2012-11-10 12:34:56.123",
-    "2012-11-1012:34:56",
-    "2012-11-10 12:34:56 UTC",
-  };
-
-  for (size_t i = 0; i < arraysize(invalid_date_strings); ++i) {
-    const char* date_string = invalid_date_strings[i];
-    base::Time result;
-    EXPECT_FALSE(FFmpegUTCDateToTime(date_string, &result))
-        << "date_string '" << date_string << "'";
-    EXPECT_TRUE(result.is_null());
-  }
-}
-
 // Verifies there are no collisions of the codec name hashes used for UMA.  Also
 // includes code for updating the histograms XML.
 TEST_F(FFmpegCommonTest, VerifyUmaCodecHashes) {
@@ -263,11 +262,65 @@ TEST_F(FFmpegCommonTest, VerifyUmaCodecHashes) {
   // should only be used to *ADD* values to histograms file.  Never delete any
   // values; diff should verify.
 #if 0
-  printf("<enum name=\"FFmpegCodecHashes\" type=\"int\">\n");
+  static const std::vector<std::pair<std::string, int32_t>> kDeprecatedHashes =
+      {
+          {"brender_pix_deprecated", -1866047250},
+          {"adpcm_vima_deprecated", -1782518388},
+          {"pcm_s32le_planar_deprecated", -1328796639},
+          {"webp_deprecated", -993429906},
+          {"paf_video_deprecated", -881893142},
+          {"vima_deprecated", -816209197},
+          {"iff_byterun1", -777478450},
+          {"paf_audio_deprecated", -630356729},
+
+          {"exr_deprecated", -418117523},
+          {"hevc_deprecated", -414733739},
+          {"vp7_deprecated", -197551526},
+          {"escape130_deprecated", 73149662},
+          {"tak_deprecated", 1041617024},
+          {"opus_deprecated", 1165132763},
+          {"g2m_deprecated", 1194572884},
+
+          {"pcm_s24le_planar_deprecated", 1535518292},
+          {"sanm_deprecated", 2047102762},
+
+          {"mpegvideo_xvmc_deprecated", 1550758811},
+          {"voxware_deprecated", 1656834662}
+      };
+
+  for (auto& kv : kDeprecatedHashes)
+    sorted_hashes[kv.second] = kv.first.c_str();
+  printf("<enum name=\"FFmpegCodecHashes\">\n");
   for (const auto& kv : sorted_hashes)
     printf("  <int value=\"%d\" label=\"%s\"/>\n", kv.first, kv.second);
   printf("</enum>\n");
 #endif
 }
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
+TEST_F(FFmpegCommonTest, VerifyH264Profile) {
+  // Open a file to get a real AVStreams from FFmpeg.
+  base::MemoryMappedFile file;
+  ASSERT_TRUE(file.Initialize(GetTestDataFilePath("bear-1280x720.mp4")));
+  InMemoryUrlProtocol protocol(file.data(), file.length(), false);
+  FFmpegGlue glue(&protocol);
+  ASSERT_TRUE(glue.OpenContext());
+  AVFormatContext* format_context = glue.format_context();
+
+  for (size_t i = 0; i < format_context->nb_streams; ++i) {
+    AVStream* stream = format_context->streams[i];
+    AVCodecParameters* codec_parameters = stream->codecpar;
+    AVMediaType codec_type = codec_parameters->codec_type;
+
+    if (codec_type == AVMEDIA_TYPE_VIDEO) {
+      VideoDecoderConfig video_config;
+      EXPECT_TRUE(AVStreamToVideoDecoderConfig(stream, &video_config));
+      EXPECT_EQ(H264PROFILE_HIGH, video_config.profile());
+    } else {
+      // Only process video.
+      continue;
+    }
+  }
+}
+#endif
 
 }  // namespace media

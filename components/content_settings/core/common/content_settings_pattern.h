@@ -7,14 +7,21 @@
 #ifndef COMPONENTS_CONTENT_SETTINGS_CORE_COMMON_CONTENT_SETTINGS_PATTERN_H_
 #define COMPONENTS_CONTENT_SETTINGS_CORE_COMMON_CONTENT_SETTINGS_PATTERN_H_
 
+#include <memory>
 #include <string>
 
 #include "base/gtest_prod_util.h"
+#include "base/strings/string_piece_forward.h"
+#include "mojo/public/cpp/bindings/struct_traits.h"
 
 class GURL;
 
 namespace content_settings {
 class PatternParser;
+
+namespace mojom {
+class ContentSettingsPatternDataView;
+}
 }
 
 // A pattern used in content setting rules. See |IsValid| for a description of
@@ -54,8 +61,10 @@ class ContentSettingsPattern {
   };
 
   // This enum is used to back an UMA histogram, the order of existing values
-  // should not be changed. New values should only append before SCHEME_MAX.
-  // Also keep it consistent with kSchemeNames in content_settings_pattern.cc.
+  // should not be changed.
+  // New values should only be appended before SCHEME_MAX.
+  // Also keep it consistent with kSchemeNames in content_settings_pattern.cc,
+  // and the ContentSettingScheme enum in histograms/enums.xml.
   enum SchemeType {
     SCHEME_WILDCARD,
     SCHEME_OTHER,
@@ -63,13 +72,18 @@ class ContentSettingsPattern {
     SCHEME_HTTPS,
     SCHEME_FILE,
     SCHEME_CHROMEEXTENSION,
+    SCHEME_CHROMESEARCH,
     SCHEME_MAX,
   };
 
   struct PatternParts {
     PatternParts();
     PatternParts(const PatternParts& other);
+    PatternParts(PatternParts&& other);
     ~PatternParts();
+
+    PatternParts& operator=(const PatternParts& other);
+    PatternParts& operator=(PatternParts&& other);
 
     // Lowercase string of the URL scheme to match. This string is empty if the
     // |is_scheme_wildcard| flag is set.
@@ -82,7 +96,7 @@ class ContentSettingsPattern {
     // - IPv4 or IPv6
     // - hostname
     // - domain
-    // - empty string if the |is_host_wildcard flag is set.
+    // - empty string if the |is_host_wildcard| flag is set.
     std::string host;
 
     // True if the domain wildcard is set.
@@ -131,7 +145,7 @@ class ContentSettingsPattern {
     virtual ContentSettingsPattern Build() = 0;
   };
 
-  static BuilderInterface* CreateBuilder(bool use_legacy_validate);
+  static std::unique_ptr<BuilderInterface> CreateBuilder();
 
   // The version of the pattern format implemented.
   static const int kContentSettingsPatternVersion;
@@ -156,16 +170,21 @@ class ContentSettingsPattern {
   //   - file://path (The path has to be an absolute path and start with a '/')
   //   - a.b.c.d (matches an exact IPv4 ip)
   //   - [a:b:c:d:e:f:g:h] (matches an exact IPv6 ip)
-  static ContentSettingsPattern FromString(const std::string& pattern_spec);
+  static ContentSettingsPattern FromString(base::StringPiece pattern_spec);
 
-  // Sets the scheme that doesn't support domain wildcard and port.
+  // Sets schemes that do not support domain wildcards and ports.
   // Needs to be called by the embedder before using ContentSettingsPattern.
-  // |scheme| can't be NULL, and the pointed string must remain alive until the
-  // app terminates.
-  static void SetNonWildcardDomainNonPortScheme(const char* scheme);
+  // |schemes| can't be NULL, and the pointed to strings must remain alive
+  // until the app terminates.
+  // The method should only be called once. If called again, the parameters
+  // must have values equal to the parameter values of the first call.
+  // The |count| parameter represents the number of strings that
+  // |schemes| points to.
+  static void SetNonWildcardDomainNonPortSchemes(const char* const* schemes,
+                                                 size_t count);
 
-  // Compares |scheme| against the scheme set by the embedder.
-  static bool IsNonWildcardDomainNonPortScheme(const std::string& scheme);
+  // Compares |scheme| against the schemes set by the embedder.
+  static bool IsNonWildcardDomainNonPortScheme(base::StringPiece scheme);
 
   // Constructs an empty pattern. Empty patterns are invalid patterns. Invalid
   // patterns match nothing.
@@ -186,6 +205,13 @@ class ContentSettingsPattern {
   // Returns scheme type of pattern.
   ContentSettingsPattern::SchemeType GetScheme() const;
 
+  // Returns the host of a pattern.
+  const std::string& GetHost() const;
+
+  // True if this pattern has a non-empty path.  Can only be used for patterns
+  // with file: schemes.
+  bool HasPath() const;
+
   // Compares the pattern with a given |other| pattern and returns the
   // |Relation| of the two patterns.
   Relation Compare(const ContentSettingsPattern& other) const;
@@ -204,7 +230,9 @@ class ContentSettingsPattern {
 
  private:
   friend class content_settings::PatternParser;
-  friend class ContentSettingsPatternSerializer;
+  friend struct mojo::StructTraits<
+      content_settings::mojom::ContentSettingsPatternDataView,
+      ContentSettingsPattern>;
   FRIEND_TEST_ALL_PREFIXES(ContentSettingsPatternParserTest, SerializePatterns);
 
   class Builder;
@@ -225,7 +253,7 @@ class ContentSettingsPattern {
       const ContentSettingsPattern::PatternParts& parts,
       const ContentSettingsPattern::PatternParts& other_parts);
 
-  ContentSettingsPattern(const PatternParts& parts, bool valid);
+  ContentSettingsPattern(PatternParts parts, bool valid);
 
   PatternParts parts_;
 

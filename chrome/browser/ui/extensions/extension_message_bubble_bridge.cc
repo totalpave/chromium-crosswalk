@@ -7,6 +7,11 @@
 #include <utility>
 
 #include "chrome/browser/extensions/extension_message_bubble_controller.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/grit/generated_resources.h"
+#include "components/vector_icons/vector_icons.h"
+#include "extensions/browser/extension_registry.h"
+#include "ui/base/l10n/l10n_util.h"
 
 ExtensionMessageBubbleBridge::ExtensionMessageBubbleBridge(
     std::unique_ptr<extensions::ExtensionMessageBubbleController> controller)
@@ -20,6 +25,12 @@ bool ExtensionMessageBubbleBridge::ShouldShow() {
 
 bool ExtensionMessageBubbleBridge::ShouldCloseOnDeactivate() {
   return controller_->CloseOnDeactivate();
+}
+
+bool ExtensionMessageBubbleBridge::IsPolicyIndicationNeeded(
+    const extensions::Extension* extension) {
+  return controller_->delegate()->SupportsPolicyIndicator() &&
+         extensions::Manifest::IsPolicyLocation(extension->location());
 }
 
 base::string16 ExtensionMessageBubbleBridge::GetHeadingText() {
@@ -37,6 +48,21 @@ base::string16 ExtensionMessageBubbleBridge::GetItemListText() {
 }
 
 base::string16 ExtensionMessageBubbleBridge::GetActionButtonText() {
+  const extensions::ExtensionIdList& list = controller_->GetExtensionIdList();
+  DCHECK(!list.empty());
+  // Normally, the extension is enabled, but this might not be the case (such as
+  // for the SuspiciousExtensionBubbleDelegate, which warns the user about
+  // disabled extensions).
+  const extensions::Extension* extension =
+      extensions::ExtensionRegistry::Get(controller_->profile())
+          ->GetExtensionById(list[0],
+                             extensions::ExtensionRegistry::EVERYTHING);
+
+  DCHECK(extension);
+  // An empty string is returned so that we don't display the button prompting
+  // to remove policy-installed extensions.
+  if (IsPolicyIndicationNeeded(extension))
+    return base::string16();
   return controller_->delegate()->GetActionButtonLabel();
 }
 
@@ -44,8 +70,10 @@ base::string16 ExtensionMessageBubbleBridge::GetDismissButtonText() {
   return controller_->delegate()->GetDismissButtonLabel();
 }
 
-base::string16 ExtensionMessageBubbleBridge::GetLearnMoreButtonText() {
-  return controller_->delegate()->GetLearnMoreLabel();
+ui::DialogButton ExtensionMessageBubbleBridge::GetDefaultDialogButton() {
+  // TODO(estade): we should set a default where appropriate. See
+  // http://crbug.com/751279
+  return ui::DIALOG_BUTTON_NONE;
 }
 
 std::string ExtensionMessageBubbleBridge::GetAnchorActionId() {
@@ -54,8 +82,9 @@ std::string ExtensionMessageBubbleBridge::GetAnchorActionId() {
              : std::string();
 }
 
-void ExtensionMessageBubbleBridge::OnBubbleShown() {
-  controller_->OnShown();
+void ExtensionMessageBubbleBridge::OnBubbleShown(
+    const base::Closure& close_bubble_callback) {
+  controller_->OnShown(close_bubble_callback);
 }
 
 void ExtensionMessageBubbleBridge::OnBubbleClosed(CloseAction action) {
@@ -73,4 +102,33 @@ void ExtensionMessageBubbleBridge::OnBubbleClosed(CloseAction action) {
       controller_->OnLinkClicked();
       break;
   }
+}
+
+std::unique_ptr<ToolbarActionsBarBubbleDelegate::ExtraViewInfo>
+ExtensionMessageBubbleBridge::GetExtraViewInfo() {
+  const extensions::ExtensionIdList& list = controller_->GetExtensionIdList();
+  int include_mask = controller_->delegate()->ShouldLimitToEnabledExtensions() ?
+      extensions::ExtensionRegistry::ENABLED :
+      extensions::ExtensionRegistry::EVERYTHING;
+  const extensions::Extension* extension =
+      extensions::ExtensionRegistry::Get(controller_->profile())
+          ->GetExtensionById(list[0], include_mask);
+
+  DCHECK(extension);
+
+  std::unique_ptr<ExtraViewInfo> extra_view_info =
+      std::make_unique<ExtraViewInfo>();
+
+  if (IsPolicyIndicationNeeded(extension)) {
+    DCHECK_EQ(1u, list.size());
+    extra_view_info->resource = &vector_icons::kBusinessIcon;
+    extra_view_info->text =
+        l10n_util::GetStringUTF16(IDS_EXTENSIONS_INSTALLED_BY_ADMIN);
+    extra_view_info->is_learn_more = false;
+  } else {
+    extra_view_info->text = controller_->delegate()->GetLearnMoreLabel();
+    extra_view_info->is_learn_more = true;
+  }
+
+  return extra_view_info;
 }

@@ -9,19 +9,19 @@
 
 #include <vector>
 
-#include "cc/base/cc_export.h"
+#include "base/time/time.h"
+#include "cc/cc_export.h"
 #include "cc/debug/layer_tree_debug_state.h"
-#include "cc/output/managed_memory_policy.h"
-#include "cc/output/renderer_settings.h"
 #include "cc/scheduler/scheduler_settings.h"
+#include "cc/tiles/tile_manager_settings.h"
+#include "cc/trees/managed_memory_policy.h"
+#include "components/viz/common/display/renderer_settings.h"
+#include "components/viz/common/resources/resource_format.h"
+#include "components/viz/common/resources/resource_settings.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace cc {
-
-namespace proto {
-class LayerTreeSettings;
-}  // namespace proto
 
 class CC_EXPORT LayerTreeSettings {
  public:
@@ -29,40 +29,38 @@ class CC_EXPORT LayerTreeSettings {
   LayerTreeSettings(const LayerTreeSettings& other);
   virtual ~LayerTreeSettings();
 
-  bool operator==(const LayerTreeSettings& other) const;
-
-  void ToProtobuf(proto::LayerTreeSettings* proto) const;
-  void FromProtobuf(const proto::LayerTreeSettings& proto);
-
   SchedulerSettings ToSchedulerSettings() const;
+  TileManagerSettings ToTileManagerSettings() const;
 
-  RendererSettings renderer_settings;
+  viz::ResourceSettings resource_settings;
   bool single_thread_proxy_scheduler = true;
-  // TODO(enne): Remove this after everything uses output surface begin frames.
-  bool use_external_begin_frame_source = false;
-  // TODO(enne): Temporary staging for unified begin frame source work.
-  bool use_output_surface_begin_frame_source = false;
   bool main_frame_before_activation_enabled = false;
   bool using_synchronous_renderer_compositor = false;
+  bool enable_early_damage_check = false;
+  // When |enable_early_damage_check| is true, the early damage check is
+  // performed if one of the last |damaged_frame_limit| frames had no damage.
+  int damaged_frame_limit = 3;
+  bool enable_latency_recovery = true;
   bool can_use_lcd_text = true;
-  bool use_distance_field_text = false;
-  bool gpu_rasterization_enabled = false;
   bool gpu_rasterization_forced = false;
-  bool async_worker_context_enabled = false;
   int gpu_rasterization_msaa_sample_count = 0;
   float gpu_rasterization_skewport_target_time_in_seconds = 0.2f;
   bool create_low_res_tiling = false;
+  bool use_stream_video_draw_quad = false;
 
   enum ScrollbarAnimator {
     NO_ANIMATOR,
-    LINEAR_FADE,
-    THINNING,
+    ANDROID_OVERLAY,
+    AURA_OVERLAY,
   };
   ScrollbarAnimator scrollbar_animator = NO_ANIMATOR;
-  int scrollbar_fade_delay_ms = 0;
-  int scrollbar_fade_resize_delay_ms = 0;
-  int scrollbar_fade_duration_ms = 0;
+  base::TimeDelta scrollbar_fade_delay;
+  base::TimeDelta scrollbar_fade_duration;
+  base::TimeDelta scrollbar_thinning_duration;
+  bool scrollbar_flash_after_any_scroll_update = false;
+  bool scrollbar_flash_when_mouse_enter = false;
   SkColor solid_color_scrollbar_color = SK_ColorWHITE;
+  base::TimeDelta scroll_animation_duration_for_testing;
   bool timeout_and_draw_when_animation_checkerboards = true;
   bool layer_transforms_should_scale_layer_contents = false;
   bool layers_always_allowed_lcd_text = false;
@@ -73,6 +71,9 @@ class CC_EXPORT LayerTreeSettings {
   double background_animation_rate = 1.0;
   gfx::Size default_tile_size;
   gfx::Size max_untiled_layer_size;
+  // If set, indicates the largest tile size we will use for GPU Raster. If not
+  // set, no limit is enforced.
+  gfx::Size max_gpu_raster_tile_size;
   gfx::Size minimum_occlusion_tracking_size;
   // 3000 pixels should give sufficient area for prepainting.
   // Note this value is specified with an ideal contents scale in mind. That
@@ -85,27 +86,93 @@ class CC_EXPORT LayerTreeSettings {
   bool use_zero_copy = false;
   bool use_partial_raster = false;
   bool enable_elastic_overscroll = false;
-  // An array of image texture targets for each GpuMemoryBuffer format.
-  std::vector<unsigned> use_image_texture_targets;
   bool ignore_root_layer_flings = false;
   size_t scheduled_raster_task_limit = 32;
   bool use_occlusion_for_tile_prioritization = false;
-  bool verify_clip_tree_calculations = false;
-  bool image_decode_tasks_enabled = false;
-  bool wait_for_beginframe_interval = true;
-  bool abort_commit_before_output_surface_creation = true;
   bool use_layer_lists = false;
   int max_staging_buffer_usage_in_bytes = 32 * 1024 * 1024;
-  ManagedMemoryPolicy memory_policy_;
-  size_t gpu_decoded_image_budget_bytes = 96 * 1024 * 1024;
-  size_t software_decoded_image_budget_bytes = 128 * 1024 * 1024;
+  ManagedMemoryPolicy memory_policy;
+  size_t decoded_image_working_set_budget_bytes = 128 * 1024 * 1024;
   int max_preraster_distance_in_screen_pixels = 1000;
+  bool use_rgba_4444 = false;
+  bool unpremultiply_and_dither_low_bit_depth_tiles = false;
 
-  // If set to true, the display item list will internally cache a SkPicture for
-  // raster rather than directly using the display items.
-  bool use_cached_picture_raster = true;
+  bool enable_mask_tiling = true;
+
+  // If set to true, the compositor may selectively defer image decodes to the
+  // Image Decode Service and raster tiles without images until the decode is
+  // ready.
+  bool enable_checker_imaging = false;
+
+  // The minimum size of an image we should considering decoding using the
+  // deferred path.
+  size_t min_image_bytes_to_checker = 1 * 1024 * 1024;  // 1MB.
+
+  // Disables checkering of images when not using gpu rasterization.
+  bool only_checker_images_with_gpu_raster = false;
 
   LayerTreeDebugState initial_debug_state;
+
+  // Indicates that the LayerTreeHost should defer commits unless it has a valid
+  // viz::LocalSurfaceId set.
+  bool enable_surface_synchronization = false;
+
+  // Indicates the case when a sub-frame gets its own LayerTree because it's
+  // rendered in a different process from its ancestor frames.
+  bool is_layer_tree_for_subframe = false;
+
+  // Determines whether we disallow non-exact matches when finding resources
+  // in ResourcePool. Only used for layout or pixel tests, as non-deterministic
+  // resource sizes can lead to floating point error and noise in these tests.
+  bool disallow_non_exact_resource_reuse = false;
+
+  // Whether the Scheduler should wait for all pipeline stages before attempting
+  // to draw. If |true|, they will block indefinitely until all stages have
+  // completed the current BeginFrame before triggering their own BeginFrame
+  // deadlines.
+  bool wait_for_all_pipeline_stages_before_draw = false;
+
+  // Whether layer tree commits should be made directly to the active
+  // tree on the impl thread. If |false| LayerTreeHostImpl creates a
+  // pending layer tree and produces that as the 'sync tree' with
+  // which LayerTreeHost synchronizes. If |true| LayerTreeHostImpl
+  // produces the active tree as its 'sync tree'.
+  bool commit_to_active_tree = true;
+
+  // Whether image animations can be reset to the beginning to avoid skipping
+  // many frames.
+  bool enable_image_animation_resync = true;
+
+  // Whether to use edge anti-aliasing for all layer types that supports it.
+  bool enable_edge_anti_aliasing = true;
+
+  // Whether SetViewportSizeAndScale should update the painted scale factor or
+  // the device scale factor.
+  bool use_painted_device_scale_factor = false;
+
+  // Whether a HitTestRegionList should be built from the active layer tree when
+  // submitting a CompositorFrame.
+  bool build_hit_test_data = false;
+
+  // When false, sync tokens are expected to be present, and are verified,
+  // before transfering gpu resources to the display compositor.
+  bool delegated_sync_points_required = true;
+
+  // When true, LayerTreeHostImplClient will be posting a task to call
+  // DidReceiveCompositorFrameAck, used by the Compositor but not the
+  // LayerTreeView.
+  bool send_compositor_frame_ack = true;
+
+  // When false, scroll deltas accumulated on the impl thread are rounded to
+  // integer values when sent to Blink on commit. This flag should eventually
+  // go away and CC should send Blink fractional values:
+  // https://crbug.com/414283.
+  bool commit_fractional_scroll_deltas = false;
+
+  // If true, LayerTreeHostImpl automatically allocates LocalSurfaceIds as
+  // necessary. If false, it is clients generate LocalSurfaceIds as necessary.
+  // TODO(sky): remove this once https://crbug.com/921129 is fixed.
+  bool automatically_allocate_surface_ids = true;
 };
 
 }  // namespace cc

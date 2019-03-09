@@ -8,8 +8,8 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/macros.h"
 #include "base/sha1.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -227,9 +227,10 @@ bool GServicesSettings::UpdateFromCheckinResponse(
       return false;
     }
 
-    if (settings_diff && name.find(kDeleteSettingPrefix) == 0) {
+    if (settings_diff && base::StartsWith(name, kDeleteSettingPrefix,
+                                          base::CompareCase::SENSITIVE)) {
       std::string setting_to_delete =
-          name.substr(arraysize(kDeleteSettingPrefix) - 1);
+          name.substr(base::size(kDeleteSettingPrefix) - 1);
       new_settings.erase(setting_to_delete);
       DVLOG(1) << "Setting deleted: " << setting_to_delete;
     } else {
@@ -304,7 +305,7 @@ GURL GServicesSettings::GetMCSMainEndpoint() const {
   else
     mcs_hostname = kDefaultMCSHostname;
 
-  // Get alternative secure port or use defualt.
+  // Get alternative secure port or use default.
   int mcs_secure_port = 0;
   iter = settings_.find(kMCSSecurePortKey);
   if (iter == settings_.end() || iter->second.empty() ||

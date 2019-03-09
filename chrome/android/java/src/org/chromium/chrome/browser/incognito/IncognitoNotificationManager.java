@@ -7,10 +7,16 @@ package org.chromium.chrome.browser.incognito;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.content.Context;
-import android.support.v4.app.NotificationCompat;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.notifications.ChromeNotificationBuilder;
+import org.chromium.chrome.browser.notifications.NotificationBuilderFactory;
+import org.chromium.chrome.browser.notifications.NotificationConstants;
+import org.chromium.chrome.browser.notifications.NotificationMetadata;
+import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
+import org.chromium.chrome.browser.notifications.channels.ChannelDefinitions;
 
 /**
  * Manages the notification indicating that there are incognito tabs opened in Document mode.
@@ -24,23 +30,38 @@ public class IncognitoNotificationManager {
      */
     public static void showIncognitoNotification() {
         Context context = ContextUtils.getApplicationContext();
-        String actionMessage =
-                context.getResources().getString(R.string.close_all_incognito_notification);
+        String actionMessage = context.getResources().getString(
+                ChromeFeatureList.isEnabled(ChromeFeatureList.INCOGNITO_STRINGS)
+                        ? R.string.close_all_private_notification
+                        : R.string.close_all_incognito_notification);
         String title = context.getResources().getString(R.string.app_name);
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(context)
-                .setContentTitle(title)
-                .setContentIntent(
-                        IncognitoNotificationService.getRemoveAllIncognitoTabsIntent(context))
-                .setContentText(actionMessage)
-                .setOngoing(true)
-                .setVisibility(Notification.VISIBILITY_SECRET)
-                .setSmallIcon(R.drawable.incognito_statusbar)
-                .setShowWhen(false)
-                .setLocalOnly(true);
+        ChromeNotificationBuilder builder =
+                NotificationBuilderFactory
+                        .createChromeNotificationBuilder(true /* preferCompat */,
+                                ChannelDefinitions.ChannelId.INCOGNITO,
+                                null /* remoteAppPackageName */,
+                                new NotificationMetadata(
+                                        NotificationUmaTracker.SystemNotificationType
+                                                .CLOSE_INCOGNITO,
+                                        INCOGNITO_TABS_OPEN_TAG, INCOGNITO_TABS_OPEN_ID))
+                        .setContentTitle(title)
+                        .setContentIntent(
+                                IncognitoNotificationService.getRemoveAllIncognitoTabsIntent(
+                                        context))
+                        .setContentText(actionMessage)
+                        .setOngoing(true)
+                        .setVisibility(Notification.VISIBILITY_SECRET)
+                        .setSmallIcon(R.drawable.incognito_simple)
+                        .setShowWhen(false)
+                        .setLocalOnly(true)
+                        .setGroup(NotificationConstants.GROUP_INCOGNITO);
         NotificationManager nm =
                 (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        nm.notify(INCOGNITO_TABS_OPEN_TAG, INCOGNITO_TABS_OPEN_ID, builder.build());
+        Notification notification = builder.build();
+        nm.notify(INCOGNITO_TABS_OPEN_TAG, INCOGNITO_TABS_OPEN_ID, notification);
+        NotificationUmaTracker.getInstance().onNotificationShown(
+                NotificationUmaTracker.SystemNotificationType.CLOSE_INCOGNITO, notification);
     }
 
     /**

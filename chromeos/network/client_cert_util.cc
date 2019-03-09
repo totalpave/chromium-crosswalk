@@ -10,6 +10,7 @@
 
 #include <list>
 
+#include "base/optional.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
@@ -27,76 +28,51 @@ namespace chromeos {
 
 namespace client_cert {
 
-namespace {
-
 const char kDefaultTPMPin[] = "111111";
 
-std::string GetStringFromDictionary(const base::DictionaryValue& dict,
-                                    const std::string& key) {
-  std::string s;
-  dict.GetStringWithoutPathExpansion(key, &s);
-  return s;
-}
+namespace {
 
-void GetClientCertTypeAndPattern(
-    const base::DictionaryValue& dict_with_client_cert,
-    ClientCertConfig* cert_config) {
-  dict_with_client_cert.GetStringWithoutPathExpansion(
-      ::onc::eap::kIdentity, &cert_config->policy_identity);
+// Extracts the type and descriptor (referenced GUID or client cert pattern) of
+// a ONC-specified client certificate specification for a network
+// (|dict_with_client_cert|) and stores it in |cert_config|.
+void GetClientCertTypeAndDescriptor(onc::ONCSource onc_source,
+                                    const base::Value& dict_with_client_cert,
+                                    ClientCertConfig* cert_config) {
+  cert_config->onc_source = onc_source;
+
+  const std::string* identity =
+      dict_with_client_cert.FindStringKey(::onc::eap::kIdentity);
+  if (identity)
+    cert_config->policy_identity = *identity;
 
   using namespace ::onc::client_cert;
-  dict_with_client_cert.GetStringWithoutPathExpansion(
-      kClientCertType, &cert_config->client_cert_type);
+  const std::string* client_cert_type =
+      dict_with_client_cert.FindStringKey(kClientCertType);
+  if (client_cert_type)
+    cert_config->client_cert_type = *client_cert_type;
 
   if (cert_config->client_cert_type == kPattern) {
-    const base::DictionaryValue* pattern = NULL;
-    dict_with_client_cert.GetDictionaryWithoutPathExpansion(kClientCertPattern,
-                                                            &pattern);
-    if (pattern) {
-      bool success = cert_config->pattern.ReadFromONCDictionary(*pattern);
-      DCHECK(success);
+    const base::Value* pattern_value = dict_with_client_cert.FindKeyOfType(
+        kClientCertPattern, base::Value::Type::DICTIONARY);
+    if (pattern_value) {
+      base::Optional<OncCertificatePattern> pattern =
+          OncCertificatePattern::ReadFromONCDictionary(*pattern_value);
+      if (!pattern.has_value()) {
+        LOG(ERROR) << "ClientCertPattern invalid";
+        return;
+      }
+      cert_config->pattern = pattern.value();
     }
+  } else if (cert_config->client_cert_type == kRef) {
+    const base::Value* client_cert_ref_key =
+        dict_with_client_cert.FindKeyOfType(kClientCertRef,
+                                            base::Value::Type::STRING);
+    if (client_cert_ref_key)
+      cert_config->guid = client_cert_ref_key->GetString();
   }
 }
 
 }  // namespace
-
-// Returns true only if any fields set in this pattern match exactly with
-// similar fields in the principal.  If organization_ or organizational_unit_
-// are set, then at least one of the organizations or units in the principal
-// must match.
-bool CertPrincipalMatches(const IssuerSubjectPattern& pattern,
-                          const net::CertPrincipal& principal) {
-  if (!pattern.common_name().empty() &&
-      pattern.common_name() != principal.common_name) {
-    return false;
-  }
-
-  if (!pattern.locality().empty() &&
-      pattern.locality() != principal.locality_name) {
-    return false;
-  }
-
-  if (!pattern.organization().empty()) {
-    if (std::find(principal.organization_names.begin(),
-                  principal.organization_names.end(),
-                  pattern.organization()) ==
-        principal.organization_names.end()) {
-      return false;
-    }
-  }
-
-  if (!pattern.organizational_unit().empty()) {
-    if (std::find(principal.organization_unit_names.begin(),
-                  principal.organization_unit_names.end(),
-                  pattern.organizational_unit()) ==
-        principal.organization_unit_names.end()) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 std::string GetPkcs11AndSlotIdFromEapCertId(const std::string& cert_id,
                                             int* slot_id) {
@@ -183,77 +159,72 @@ void GetClientCertFromShillProperties(
 void SetShillProperties(const ConfigType cert_config_type,
                         const int tpm_slot,
                         const std::string& pkcs11_id,
-                        base::DictionaryValue* properties) {
+                        base::Value* properties) {
   switch (cert_config_type) {
     case CONFIG_TYPE_NONE: {
       return;
     }
     case CONFIG_TYPE_OPENVPN: {
-      properties->SetStringWithoutPathExpansion(shill::kOpenVPNPinProperty,
-                                                kDefaultTPMPin);
-      properties->SetStringWithoutPathExpansion(
-          shill::kOpenVPNClientCertIdProperty, pkcs11_id);
+      properties->SetKey(shill::kOpenVPNPinProperty,
+                         base::Value(kDefaultTPMPin));
+      // Note: OpemVPN does not have a slot property, see crbug.com/769550.
+      properties->SetKey(shill::kOpenVPNClientCertIdProperty,
+                         base::Value(pkcs11_id));
       break;
     }
     case CONFIG_TYPE_IPSEC: {
-      properties->SetStringWithoutPathExpansion(shill::kL2tpIpsecPinProperty,
-                                                kDefaultTPMPin);
-      properties->SetStringWithoutPathExpansion(
-          shill::kL2tpIpsecClientCertSlotProperty, base::IntToString(tpm_slot));
-      properties->SetStringWithoutPathExpansion(
-          shill::kL2tpIpsecClientCertIdProperty, pkcs11_id);
+      properties->SetKey(shill::kL2tpIpsecPinProperty,
+                         base::Value(kDefaultTPMPin));
+      properties->SetKey(shill::kL2tpIpsecClientCertSlotProperty,
+                         base::Value(base::NumberToString(tpm_slot)));
+      properties->SetKey(shill::kL2tpIpsecClientCertIdProperty,
+                         base::Value(pkcs11_id));
       break;
     }
     case CONFIG_TYPE_EAP: {
-      properties->SetStringWithoutPathExpansion(shill::kEapPinProperty,
-                                                kDefaultTPMPin);
+      properties->SetKey(shill::kEapPinProperty, base::Value(kDefaultTPMPin));
       std::string key_id =
           base::StringPrintf("%i:%s", tpm_slot, pkcs11_id.c_str());
 
       // Shill requires both CertID and KeyID for TLS connections, despite the
       // fact that by convention they are the same ID, because one identifies
       // the certificate and the other the private key.
-      properties->SetStringWithoutPathExpansion(shill::kEapCertIdProperty,
-                                                key_id);
-      properties->SetStringWithoutPathExpansion(shill::kEapKeyIdProperty,
-                                                key_id);
+      properties->SetKey(shill::kEapCertIdProperty, base::Value(key_id));
+      properties->SetKey(shill::kEapKeyIdProperty, base::Value(key_id));
       break;
     }
   }
 }
 
 void SetEmptyShillProperties(const ConfigType cert_config_type,
-                             base::DictionaryValue* properties) {
+                             base::Value* properties) {
   switch (cert_config_type) {
     case CONFIG_TYPE_NONE: {
       return;
     }
     case CONFIG_TYPE_OPENVPN: {
-      properties->SetStringWithoutPathExpansion(shill::kOpenVPNPinProperty,
-                                                std::string());
-      properties->SetStringWithoutPathExpansion(
-          shill::kOpenVPNClientCertIdProperty, std::string());
+      properties->SetKey(shill::kOpenVPNPinProperty,
+                         base::Value(std::string()));
+      properties->SetKey(shill::kOpenVPNClientCertIdProperty,
+                         base::Value(std::string()));
       break;
     }
     case CONFIG_TYPE_IPSEC: {
-      properties->SetStringWithoutPathExpansion(shill::kL2tpIpsecPinProperty,
-                                                std::string());
-      properties->SetStringWithoutPathExpansion(
-          shill::kL2tpIpsecClientCertSlotProperty, std::string());
-      properties->SetStringWithoutPathExpansion(
-          shill::kL2tpIpsecClientCertIdProperty, std::string());
+      properties->SetKey(shill::kL2tpIpsecPinProperty,
+                         base::Value(std::string()));
+      properties->SetKey(shill::kL2tpIpsecClientCertSlotProperty,
+                         base::Value(std::string()));
+      properties->SetKey(shill::kL2tpIpsecClientCertIdProperty,
+                         base::Value(std::string()));
       break;
     }
     case CONFIG_TYPE_EAP: {
-      properties->SetStringWithoutPathExpansion(shill::kEapPinProperty,
-                                                std::string());
+      properties->SetKey(shill::kEapPinProperty, base::Value(std::string()));
       // Shill requires both CertID and KeyID for TLS connections, despite the
       // fact that by convention they are the same ID, because one identifies
       // the certificate and the other the private key.
-      properties->SetStringWithoutPathExpansion(shill::kEapCertIdProperty,
-                                                std::string());
-      properties->SetStringWithoutPathExpansion(shill::kEapKeyIdProperty,
-                                                std::string());
+      properties->SetKey(shill::kEapCertIdProperty, base::Value(std::string()));
+      properties->SetKey(shill::kEapKeyIdProperty, base::Value(std::string()));
       break;
     }
   }
@@ -266,7 +237,10 @@ ClientCertConfig::ClientCertConfig()
 
 ClientCertConfig::ClientCertConfig(const ClientCertConfig& other) = default;
 
-void OncToClientCertConfig(const base::DictionaryValue& network_config,
+ClientCertConfig::~ClientCertConfig() = default;
+
+void OncToClientCertConfig(::onc::ONCSource onc_source,
+                           const base::DictionaryValue& network_config,
                            ClientCertConfig* cert_config) {
   using namespace ::onc;
 
@@ -317,44 +291,10 @@ void OncToClientCertConfig(const base::DictionaryValue& network_config,
     cert_config->location = CONFIG_TYPE_EAP;
   }
 
-  if (dict_with_client_cert)
-    GetClientCertTypeAndPattern(*dict_with_client_cert, cert_config);
-}
-
-bool IsCertificateConfigured(const ConfigType cert_config_type,
-                             const base::DictionaryValue& service_properties) {
-  // VPN certificate properties are read from the Provider dictionary.
-  const base::DictionaryValue* provider_properties = NULL;
-  service_properties.GetDictionaryWithoutPathExpansion(
-      shill::kProviderProperty, &provider_properties);
-  switch (cert_config_type) {
-    case CONFIG_TYPE_NONE:
-      return true;
-    case CONFIG_TYPE_OPENVPN:
-      // OpenVPN generally requires a passphrase and we don't know whether or
-      // not one is required, so always return false here.
-      return false;
-    case CONFIG_TYPE_IPSEC: {
-      if (!provider_properties)
-        return false;
-
-      std::string client_cert_id;
-      provider_properties->GetStringWithoutPathExpansion(
-          shill::kL2tpIpsecClientCertIdProperty, &client_cert_id);
-      return !client_cert_id.empty();
-    }
-    case CONFIG_TYPE_EAP: {
-      std::string cert_id = GetStringFromDictionary(
-          service_properties, shill::kEapCertIdProperty);
-      std::string key_id = GetStringFromDictionary(
-          service_properties, shill::kEapKeyIdProperty);
-      std::string identity = GetStringFromDictionary(
-          service_properties, shill::kEapIdentityProperty);
-      return !cert_id.empty() && !key_id.empty() && !identity.empty();
-    }
+  if (dict_with_client_cert) {
+    GetClientCertTypeAndDescriptor(onc_source, *dict_with_client_cert,
+                                   cert_config);
   }
-  NOTREACHED();
-  return false;
 }
 
 }  // namespace client_cert

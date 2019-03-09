@@ -8,34 +8,41 @@
 #include <string>
 
 #include "base/macros.h"
-#include "components/arc/arc_bridge_service.h"
-#include "components/arc/arc_service.h"
-#include "components/arc/instance_holder.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "components/arc/common/crash_collector.mojom.h"
+#include "components/keyed_service/core/keyed_service.h"
+
+namespace content {
+class BrowserContext;
+}  // namespace content
 
 namespace arc {
 
+class ArcBridgeService;
+
 // Relays dumps for non-native ARC crashes to the crash reporter in Chrome OS.
 class ArcCrashCollectorBridge
-    : public ArcService,
-      public InstanceHolder<mojom::CrashCollectorInstance>::Observer,
+    : public KeyedService,
       public mojom::CrashCollectorHost {
  public:
-  explicit ArcCrashCollectorBridge(ArcBridgeService* bridge);
+  // Returns singleton instance for the given BrowserContext,
+  // or nullptr if the browser |context| is not allowed to use ARC.
+  static ArcCrashCollectorBridge* GetForBrowserContext(
+      content::BrowserContext* context);
+
+  ArcCrashCollectorBridge(content::BrowserContext* context,
+                          ArcBridgeService* bridge);
+
   ~ArcCrashCollectorBridge() override;
 
-  // InstanceHolder<mojom::CrashCollectorInstance>::Observer overrides.
-  void OnInstanceReady() override;
-
   // mojom::CrashCollectorHost overrides.
-  void DumpCrash(const mojo::String& type, mojo::ScopedHandle pipe) override;
+  void DumpCrash(const std::string& type, mojo::ScopedHandle pipe) override;
 
-  void SetBuildProperties(const mojo::String& device,
-                          const mojo::String& board,
-                          const mojo::String& cpu_abi) override;
+  void SetBuildProperties(const std::string& device,
+                          const std::string& board,
+                          const std::string& cpu_abi) override;
 
  private:
-  mojo::Binding<mojom::CrashCollectorHost> binding_;
+  ArcBridgeService* const arc_bridge_service_;  // Owned by ArcServiceManager.
 
   std::string device_;
   std::string board_;

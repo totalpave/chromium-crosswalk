@@ -6,6 +6,7 @@
 #define COMPONENTS_POLICY_CORE_COMMON_POLICY_BUNDLE_H_
 
 #include <map>
+#include <memory>
 #include <string>
 
 #include "base/macros.h"
@@ -18,14 +19,14 @@ namespace policy {
 // Maps policy namespaces to PolicyMaps.
 class POLICY_EXPORT PolicyBundle {
  public:
-  typedef std::map<PolicyNamespace, PolicyMap*> MapType;
-  typedef MapType::iterator iterator;
-  typedef MapType::const_iterator const_iterator;
+  using MapType = std::map<PolicyNamespace, std::unique_ptr<PolicyMap>>;
+  using iterator = MapType::iterator;
+  using const_iterator = MapType::const_iterator;
 
   PolicyBundle();
   virtual ~PolicyBundle();
 
-  // Returns the PolicyMap for namespace |ns|.
+  // Returns the PolicyMap for namespace |ns|. Creates a new map if necessary.
   PolicyMap& Get(const PolicyNamespace& ns);
   const PolicyMap& Get(const PolicyNamespace& ns) const;
 

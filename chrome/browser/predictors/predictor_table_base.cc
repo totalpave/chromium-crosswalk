@@ -4,22 +4,30 @@
 
 #include "chrome/browser/predictors/predictor_table_base.h"
 
+#include <utility>
+
 #include "base/logging.h"
+#include "base/sequenced_task_runner.h"
 #include "content/public/browser/browser_thread.h"
-#include "sql/connection.h"
+#include "sql/database.h"
 
 using content::BrowserThread;
 
 namespace predictors {
 
-PredictorTableBase::PredictorTableBase() : db_(NULL) {
+base::SequencedTaskRunner* PredictorTableBase::GetTaskRunner() {
+  return db_task_runner_.get();
 }
+
+PredictorTableBase::PredictorTableBase(
+    scoped_refptr<base::SequencedTaskRunner> db_task_runner)
+    : db_task_runner_(std::move(db_task_runner)), db_(nullptr) {}
 
 PredictorTableBase::~PredictorTableBase() {
 }
 
-void PredictorTableBase::Initialize(sql::Connection* db) {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::DB));
+void PredictorTableBase::Initialize(sql::Database* db) {
+  DCHECK(db_task_runner_->RunsTasksInCurrentSequence());
   db_ = db;
   CreateTableIfNonExistent();
 }
@@ -28,18 +36,22 @@ void PredictorTableBase::SetCancelled() {
   cancelled_.Set();
 }
 
-sql::Connection* PredictorTableBase::DB() {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::DB));
+bool PredictorTableBase::IsCancelled() {
+  return cancelled_.IsSet();
+}
+
+sql::Database* PredictorTableBase::DB() {
+  DCHECK(db_task_runner_->RunsTasksInCurrentSequence());
   return db_;
 }
 
 void PredictorTableBase::ResetDB() {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::DB));
-  db_ = NULL;
+  DCHECK(db_task_runner_->RunsTasksInCurrentSequence());
+  db_ = nullptr;
 }
 
 bool PredictorTableBase::CantAccessDatabase() {
-  CHECK(BrowserThread::CurrentlyOn(BrowserThread::DB));
+  DCHECK(db_task_runner_->RunsTasksInCurrentSequence());
   return cancelled_.IsSet() || !db_;
 }
 

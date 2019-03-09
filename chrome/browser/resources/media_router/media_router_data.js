@@ -16,11 +16,12 @@ cr.exportPath('media_router');
 media_router.CastModeType = {
   // Note: AUTO mode is only used to configure the sink list container to show
   // all sinks. Individual sinks are configured with a specific cast mode
-  // (DEFAULT, TAB_MIRROR, DESKTOP_MIRROR).
+  // (PRESENTATION, TAB_MIRROR, DESKTOP_MIRROR).
   AUTO: -1,
-  DEFAULT: 0x1,
+  PRESENTATION: 0x1,
   TAB_MIRROR: 0x2,
   DESKTOP_MIRROR: 0x4,
+  LOCAL_FILE: 0x8,
 };
 
 /**
@@ -75,15 +76,29 @@ media_router.MediaRouterView = {
 media_router.MINIMUM_SINKS_FOR_SEARCH = 20;
 
 /**
- * This corresponds to the C++ MediaSink IconType.
+ * The states that media can be in.
+ * @enum {number}
+ */
+media_router.PlayState = {
+  PLAYING: 0,
+  PAUSED: 1,
+  BUFFERING: 2,
+};
+
+/**
+ * This corresponds to the C++ MediaSink IconType, and the order must stay in
+ * sync.
  * @enum {number}
  */
 media_router.SinkIconType = {
   CAST: 0,
-  CAST_AUDIO: 1,
-  CAST_AUDIO_GROUP: 2,
-  GENERIC: 3,
+  CAST_AUDIO_GROUP: 1,
+  CAST_AUDIO: 2,
+  MEETING: 3,
   HANGOUT: 4,
+  EDUCATION: 5,
+  WIRED_DISPLAY: 6,
+  GENERIC: 7,
 };
 
 /**
@@ -102,10 +117,11 @@ cr.define('media_router', function() {
    * @param {number} type The type of cast mode.
    * @param {string} description The description of the cast mode.
    * @param {?string} host The hostname of the site to cast.
+   * @param {boolean} isForced True if the mode is forced.
    * @constructor
    * @struct
    */
-  var CastMode = function(type, description, host) {
+  var CastMode = function(type, description, host, isForced) {
     /** @type {number} */
     this.type = type;
 
@@ -114,17 +130,21 @@ cr.define('media_router', function() {
 
     /** @type {?string} */
     this.host = host || null;
+
+    /** @type {boolean} */
+    this.isForced = isForced;
   };
 
   /**
    * Placeholder object for AUTO cast mode. See comment in CastModeType.
    * @const {!media_router.CastMode}
    */
-  var AUTO_CAST_MODE = new CastMode(media_router.CastModeType.AUTO,
-      loadTimeData.getString('autoCastMode'), null);
+  var AUTO_CAST_MODE = new CastMode(
+      media_router.CastModeType.AUTO, loadTimeData.getString('autoCastMode'),
+      null, false);
 
   /**
-   * @param {string} id The ID of this issue.
+   * @param {number} id The ID of this issue.
    * @param {string} title The issue title.
    * @param {string} message The issue message.
    * @param {number} defaultActionType The type of default action.
@@ -136,10 +156,10 @@ cr.define('media_router', function() {
    * @constructor
    * @struct
    */
-  var Issue = function(id, title, message, defaultActionType,
-                       secondaryActionType, routeId, isBlocking,
-                       helpPageId) {
-    /** @type {string} */
+  var Issue = function(
+      id, title, message, defaultActionType, secondaryActionType, routeId,
+      isBlocking, helpPageId) {
+    /** @type {number} */
     this.id = id;
 
     /** @type {string} */
@@ -164,7 +184,6 @@ cr.define('media_router', function() {
     this.helpPageId = helpPageId;
   };
 
-
   /**
    * @param {string} id The media route ID.
    * @param {string} sinkId The ID of the media sink running this route.
@@ -178,8 +197,8 @@ cr.define('media_router', function() {
    * @constructor
    * @struct
    */
-  var Route = function(id, sinkId, description, tabId, isLocal, canJoin,
-      customControllerPath) {
+  var Route = function(
+      id, sinkId, description, tabId, isLocal, canJoin, customControllerPath) {
     /** @type {string} */
     this.id = id;
 
@@ -203,8 +222,74 @@ cr.define('media_router', function() {
 
     /** @type {?string} */
     this.customControllerPath = customControllerPath;
+
+    /** @type {boolean} */
+    this.supportsWebUiController = false;
   };
 
+  /**
+   * @param {string} title The title of the route.
+   * @param {boolean} canPlayPause Whether the route can be played/paused.
+   * @param {boolean} canMute Whether the route can be muted/unmuted.
+   * @param {boolean} canSetVolume Whether the route volume can be changed.
+   * @param {boolean} canSeek Whether the route's playback position can be
+   *     changed.
+   * @param {boolean} isPaused Whether the route is paused.
+   * @param {boolean} isMuted Whether the route is muted.
+   * @param {number} volume The route's volume, between 0 and 1.
+   * @param {number} duration The route's duration in seconds.
+   * @param {number} currentTime The route's current position in seconds.
+   *     Must not be greater than |duration|.
+   * @param {!{mediaRemotingEnabled: boolean}=} mirroringExtraData Only set for
+   *     mirroring routes.
+   * @param {!{localPresent: boolean}=} hangoutsExtraData Only set for Hangouts
+   *     routes.
+   * @constructor
+   * @struct
+   */
+  var RouteStatus = function(
+      title = '', canPlayPause = false, canMute = false, canSetVolume = false,
+      canSeek = false, playState = media_router.PlayState.PLAYING,
+      isPaused = false, isMuted = false, volume = 0, duration = 0,
+      currentTime = 0, hangoutsExtraData = undefined,
+      mirroringExtraData = undefined) {
+
+    /** @type {string} */
+    this.title = title;
+
+    /** @type {boolean} */
+    this.canPlayPause = canPlayPause;
+
+    /** @type {boolean} */
+    this.canMute = canMute;
+
+    /** @type {boolean} */
+    this.canSetVolume = canSetVolume;
+
+    /** @type {boolean} */
+    this.canSeek = canSeek;
+
+    /** @type {media_router.PlayState} */
+    this.playState = playState;
+
+    /** @type {boolean} */
+    this.isMuted = isMuted;
+
+    /** @type {number} */
+    this.volume = volume;
+
+    /** @type {number} */
+    this.duration = duration;
+
+    /** @type {number} */
+    this.currentTime = currentTime;
+
+    /** @type {!{localPresent: boolean}|undefined} */
+    this.hangoutsExtraData = hangoutsExtraData;
+
+    /** @type {!{mediaRemotingEnabled: boolean}|undefined} */
+    this.mirroringExtraData = mirroringExtraData;
+  };
 
   /**
    * @param {string} id The ID of the media sink.
@@ -217,8 +302,8 @@ cr.define('media_router', function() {
    * @constructor
    * @struct
    */
-  var Sink = function(id, name, description, domain, iconType, status,
-      castModes) {
+  var Sink = function(
+      id, name, description, domain, iconType, status, castModes) {
     /** @type {string} */
     this.id = id;
 
@@ -244,7 +329,6 @@ cr.define('media_router', function() {
     this.isPseudoSink = false;
   };
 
-
   /**
    * @param {number} tabId The current tab ID.
    * @param {string} domain The domain of the current tab.
@@ -264,6 +348,7 @@ cr.define('media_router', function() {
     CastMode: CastMode,
     Issue: Issue,
     Route: Route,
+    RouteStatus: RouteStatus,
     Sink: Sink,
     TabInfo: TabInfo,
   };

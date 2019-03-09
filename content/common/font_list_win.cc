@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <set>
+#include <utility>
 
 #include "base/strings/string16.h"
 #include "base/values.h"
@@ -45,10 +46,10 @@ std::unique_ptr<base::ListValue> GetFontList_SlowBlocking() {
   std::unique_ptr<base::ListValue> font_list(new base::ListValue);
   std::set<base::string16>::iterator iter;
   for (iter = font_names.begin(); iter != font_names.end(); ++iter) {
-    base::ListValue* font_item = new base::ListValue();
-    font_item->Append(new base::StringValue(*iter));
-    font_item->Append(new base::StringValue(*iter));
-    font_list->Append(font_item);
+    auto font_item = std::make_unique<base::ListValue>();
+    font_item->AppendString(*iter);
+    font_item->AppendString(*iter);
+    font_list->Append(std::move(font_item));
   }
   return font_list;
 }

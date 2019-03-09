@@ -7,56 +7,23 @@
 
 #import <UIKit/UIKit.h>
 
-#include "base/mac/objc_property_releaser.h"
-#include "base/mac/scoped_nsobject.h"
 #include "base/time/time.h"
-#import "ios/chrome/browser/snapshots/lru_cache.h"
 
-typedef void (^GreyBlock)(UIImage*);
+@protocol SnapshotCacheObserver;
 
 // A singleton providing an in-memory and on-disk cache of tab snapshots.
 // A snapshot is a full-screen image of the contents of the page at the current
-// scroll offset and zoom level, used to stand in for the UIWebView if it has
+// scroll offset and zoom level, used to stand in for the WKWebView if it has
 // been purged from memory or when quickly switching tabs.
 // Persists to disk on a background thread each time a snapshot changes.
-@interface SnapshotCache : NSObject {
- @private
-  // Dictionary to hold color snapshots in memory. n.b. Color snapshots are not
-  // kept in memory on tablets.
-  base::scoped_nsobject<NSMutableDictionary> imageDictionary_;
-
-  // Cache to hold color snapshots in memory. n.b. Color snapshots are not
-  // kept in memory on tablets. It is used in place of the imageDictionary_ when
-  // the LRU cache snapshot experiment is enabled.
-  base::scoped_nsobject<LRUCache> lruCache_;
-
-  // Temporary dictionary to hold grey snapshots for tablet side swipe. This
-  // will be nil before -createGreyCache is called and after -removeGreyCache
-  // is called.
-  base::scoped_nsobject<NSMutableDictionary> greyImageDictionary_;
-  NSSet* pinnedIDs_;
-
-  // Session ID of most recent pending grey snapshot request.
-  base::scoped_nsobject<NSString> mostRecentGreySessionId_;
-  // Block used by pending request for a grey snapshot.
-  base::scoped_nsprotocol<GreyBlock> mostRecentGreyBlock_;
-
-  // Session ID and correspoinding UIImage for the snapshot that will likely
-  // be requested to be saved to disk when the application is backgrounded.
-  base::scoped_nsobject<NSString> backgroundingImageSessionId_;
-  base::scoped_nsobject<UIImage> backgroundingColorImage_;
-
-  base::mac::ObjCPropertyReleaser propertyReleaser_SnapshotCache_;
-}
+@interface SnapshotCache : NSObject
 
 // Track session IDs to not release on low memory and to reload on
 // |UIApplicationDidBecomeActiveNotification|.
-@property(nonatomic, retain) NSSet* pinnedIDs;
-
-+ (SnapshotCache*)sharedInstance;
+@property(nonatomic, strong) NSSet* pinnedIDs;
 
 // The scale that should be used for snapshots.
-+ (CGFloat)snapshotScaleForDevice;
+- (CGFloat)snapshotScaleForDevice;
 
 // Retrieve a cached snapshot for the |sessionID| and return it via the callback
 // if it exists. The callback is guaranteed to be called synchronously if the
@@ -71,7 +38,24 @@ typedef void (^GreyBlock)(UIImage*);
                              callback:(void (^)(UIImage*))callback;
 
 - (void)setImage:(UIImage*)img withSessionID:(NSString*)sessionID;
+
+// Removes the image from both the LRU and disk cache, unless it is marked for
+// deferred deletion. Images marked for deferred deletion can only be removed by
+// calling |-removeMarkedImages|.
 - (void)removeImageWithSessionID:(NSString*)sessionID;
+
+// Marks an image for deferred deletion. The image will not be immediately
+// deleted when |-removeImageWithSessionID:| is called. Images marked for
+// deferred deletion can only be removed by calling |-removeMarkedImages|.
+- (void)markImageWithSessionID:(NSString*)sessionID;
+
+// Removes all marked images from both the LRU and disk cache.
+- (void)removeMarkedImages;
+
+// Unmarks all images, so they remain in the cache. They are no longer marked
+// for deferred deletion.
+- (void)unmarkAllImages;
+
 // Purge the cache of snapshots that are older than |date|. The snapshots for
 // the sessions given in |liveSessionIds| will be kept. This will be done
 // asynchronously on a background thread.
@@ -95,6 +79,17 @@ typedef void (^GreyBlock)(UIImage*);
 // Write a grey copy of the snapshot for |sessionID| to disk, but if and only if
 // a color version of the snapshot already exists in memory or on disk.
 - (void)saveGreyInBackgroundForSessionID:(NSString*)sessionID;
+
+// Adds an observer to this snapshot cache.
+- (void)addObserver:(id<SnapshotCacheObserver>)observer;
+
+// Removes an observer from this snapshot cache.
+- (void)removeObserver:(id<SnapshotCacheObserver>)observer;
+
+// Invoked before the instance is deallocated. Needs to release all reference
+// to C++ objects. Object will soon be deallocated.
+- (void)shutdown;
+
 @end
 
 // Additionnal methods that should only be used for tests.

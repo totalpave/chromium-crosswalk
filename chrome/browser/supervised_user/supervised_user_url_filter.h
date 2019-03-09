@@ -12,39 +12,35 @@
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "base/values.h"
 #include "chrome/browser/supervised_user/supervised_user_site_list.h"
 #include "chrome/browser/supervised_user/supervised_users.h"
+#include "components/safe_search_api/url_checker.h"
 #include "components/supervised_user_error_page/supervised_user_error_page.h"
 
 class GURL;
 class SupervisedUserBlacklist;
 
-namespace net {
-class URLRequestContextGetter;
+namespace base {
+class TaskRunner;
 }
 
-class GURL;
-class SupervisedUserAsyncURLChecker;
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
-// This class manages the filtering behavior for a given URL, i.e. it tells
-// callers if a given URL should be allowed, blocked or warned about. It uses
-// information from multiple sources:
+// This class manages the filtering behavior for URLs, i.e. it tells callers
+// if a URL should be allowed, blocked or warned about. It uses information
+// from multiple sources:
 //   * A default setting (allow, block or warn).
 //   * The set of installed and enabled whitelists which contain URL patterns
 //     and hostname hashes that should be allowed.
 //   * User-specified manual overrides (allow or block) for either sites
 //     (hostnames) or exact URLs, which take precedence over the previous
 //     sources.
-// References to it can be passed around on different threads (the refcounting
-// is thread-safe), but the object itself should always be accessed on the same
-// thread (member access isn't thread-safe).
-class SupervisedUserURLFilter
-    : public base::RefCountedThreadSafe<SupervisedUserURLFilter>,
-      public base::NonThreadSafe {
+class SupervisedUserURLFilter {
  public:
   enum FilteringBehavior {
     ALLOW,
@@ -53,14 +49,18 @@ class SupervisedUserURLFilter
     INVALID
   };
 
-  using FilteringBehaviorCallback =
-      base::Callback<void(FilteringBehavior,
-                          supervised_user_error_page::FilteringBehaviorReason,
-                          bool /* uncertain */)>;
+  using FilteringBehaviorCallback = base::OnceCallback<void(
+      FilteringBehavior,
+      supervised_user_error_page::FilteringBehaviorReason,
+      bool /* uncertain */)>;
 
   class Observer {
    public:
+    // Called whenever the whitelists are updated. This does *not* include
+    // SetManualHosts/SetManualURLs.
     virtual void OnSiteListUpdated() = 0;
+    // Called whenever a check started via
+    // GetFilteringBehaviorForURLWithAsyncChecks completes.
     virtual void OnURLChecked(
         const GURL& url,
         FilteringBehavior behavior,
@@ -71,14 +71,12 @@ class SupervisedUserURLFilter
   struct Contents;
 
   SupervisedUserURLFilter();
+  ~SupervisedUserURLFilter();
 
   static FilteringBehavior BehaviorFromInt(int behavior_value);
 
   static bool ReasonIsAutomatic(
       supervised_user_error_page::FilteringBehaviorReason reason);
-
-  // Normalizes a URL for matching purposes.
-  static GURL Normalize(const GURL& url);
 
   // Returns true if the URL has a standard scheme. Only URLs with standard
   // schemes are filtered.
@@ -97,7 +95,7 @@ class SupervisedUserURLFilter
   // Asterisks in other parts of the pattern are not allowed.
   // |host| and |pattern| are assumed to be normalized to lower-case.
   // This method is public for testing.
-  static bool HostMatchesPattern(const std::string& host,
+  static bool HostMatchesPattern(const std::string& canonical_host,
                                  const std::string& pattern);
 
   // Returns the filtering behavior for a given URL, based on the default
@@ -117,7 +115,7 @@ class SupervisedUserURLFilter
   // Returns true if |callback| was called synchronously.
   bool GetFilteringBehaviorForURLWithAsyncChecks(
       const GURL& url,
-      const FilteringBehaviorCallback& callback) const;
+      FilteringBehaviorCallback callback) const;
 
   // Gets all the whitelists that the url is part of. Returns id->name of each
   // whitelist.
@@ -147,13 +145,14 @@ class SupervisedUserURLFilter
       const std::vector<scoped_refptr<SupervisedUserSiteList>>& site_lists);
 
   // Sets the set of manually allowed or blocked hosts.
-  void SetManualHosts(const std::map<std::string, bool>* host_map);
+  void SetManualHosts(std::map<std::string, bool> host_map);
 
   // Sets the set of manually allowed or blocked URLs.
-  void SetManualURLs(const std::map<GURL, bool>* url_map);
+  void SetManualURLs(std::map<GURL, bool> url_map);
 
   // Initializes the experimental asynchronous checker.
-  void InitAsyncURLChecker(net::URLRequestContextGetter* context);
+  void InitAsyncURLChecker(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
 
   // Clears any asynchronous checker.
   void ClearAsyncURLChecker();
@@ -173,8 +172,7 @@ class SupervisedUserURLFilter
       const scoped_refptr<base::TaskRunner>& task_runner);
 
  private:
-  friend class base::RefCountedThreadSafe<SupervisedUserURLFilter>;
-  ~SupervisedUserURLFilter();
+  friend class SupervisedUserURLFilterTest;
 
   void SetContents(std::unique_ptr<Contents> url_matcher);
 
@@ -182,14 +180,15 @@ class SupervisedUserURLFilter
       const GURL& url,
       bool manual_only,
       supervised_user_error_page::FilteringBehaviorReason* reason) const;
+  FilteringBehavior GetManualFilteringBehaviorForURL(const GURL& url) const;
 
-  void CheckCallback(const FilteringBehaviorCallback& callback,
+  void CheckCallback(FilteringBehaviorCallback callback,
                      const GURL& url,
-                     FilteringBehavior behavior,
+                     safe_search_api::Classification classification,
                      bool uncertain) const;
 
   // This is mutable to allow notification in const member functions.
-  mutable base::ObserverList<Observer> observers_;
+  mutable base::ObserverList<Observer>::Unchecked observers_;
 
   FilteringBehavior default_behavior_;
   std::unique_ptr<Contents> contents_;
@@ -205,9 +204,13 @@ class SupervisedUserURLFilter
   // Not owned.
   const SupervisedUserBlacklist* blacklist_;
 
-  std::unique_ptr<SupervisedUserAsyncURLChecker> async_url_checker_;
+  std::unique_ptr<safe_search_api::URLChecker> async_url_checker_;
 
   scoped_refptr<base::TaskRunner> blocking_task_runner_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  base::WeakPtrFactory<SupervisedUserURLFilter> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(SupervisedUserURLFilter);
 };

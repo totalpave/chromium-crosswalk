@@ -6,31 +6,27 @@
 #define COMPONENTS_PASSWORD_MANAGER_CONTENT_BROWSER_CONTENT_PASSWORD_MANAGER_DRIVER_H_
 
 #include <map>
+#include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "components/autofill/content/common/autofill_agent.mojom.h"
 #include "components/autofill/core/common/password_form_field_prediction_map.h"
 #include "components/autofill/core/common/password_form_generation_data.h"
 #include "components/password_manager/core/browser/password_autofill_manager.h"
 #include "components/password_manager/core/browser/password_generation_manager.h"
 #include "components/password_manager/core/browser/password_manager.h"
 #include "components/password_manager/core/browser/password_manager_driver.h"
+#include "mojo/public/cpp/bindings/associated_binding.h"
 
 namespace autofill {
-class AutofillManager;
 struct PasswordForm;
 }
 
 namespace content {
-struct FrameNavigateParams;
-struct LoadCommittedDetails;
+class NavigationHandle;
 class RenderFrameHost;
-class WebContents;
-}
-
-namespace IPC {
-class Message;
 }
 
 namespace password_manager {
@@ -56,6 +52,8 @@ class ContentPasswordManagerDriver : public PasswordManagerDriver {
       const autofill::PasswordForm& form) override;
   void FormsEligibleForGenerationFound(
       const std::vector<autofill::PasswordFormGenerationData>& forms) override;
+  void FormEligibleForGenerationFound(
+      const autofill::NewPasswordFormGenerationData& form) override;
   void AutofillDataReceived(
       const std::map<autofill::FormData,
                      autofill::PasswordFormFieldPredictionMap>& predictions)
@@ -63,54 +61,56 @@ class ContentPasswordManagerDriver : public PasswordManagerDriver {
   void GeneratedPasswordAccepted(const base::string16& password) override;
   void FillSuggestion(const base::string16& username,
                       const base::string16& password) override;
+  void FillIntoFocusedField(bool is_password,
+                            const base::string16& credential,
+                            base::OnceCallback<void(autofill::FillingStatus)>
+                                compeleted_callback) override;
   void PreviewSuggestion(const base::string16& username,
                          const base::string16& password) override;
   void ShowInitialPasswordAccountSuggestions(
       const autofill::PasswordFormFillData& form_data) override;
   void ClearPreviewedForm() override;
-  void ForceSavePassword() override;
-  void GeneratePassword() override;
-  void SendLoggingAvailability() override;
-  void AllowToRunFormClassifier() override;
-
   PasswordGenerationManager* GetPasswordGenerationManager() override;
   PasswordManager* GetPasswordManager() override;
   PasswordAutofillManager* GetPasswordAutofillManager() override;
+  void SendLoggingAvailability() override;
+  autofill::AutofillDriver* GetAutofillDriver() override;
+  bool IsMainFrame() const override;
+  GURL GetLastCommittedURL() const override;
 
-  bool HandleMessage(const IPC::Message& message);
-  void DidNavigateFrame(const content::LoadCommittedDetails& details,
-                        const content::FrameNavigateParams& params);
+  void DidNavigateFrame(content::NavigationHandle* navigation_handle);
+  // Notify the renderer that the user wants to generate password manually.
+  void GeneratePassword(autofill::mojom::PasswordGenerationAgent::
+                            UserTriggeredGeneratePasswordCallback callback);
 
-  // Pass-throughs to PasswordManager.
-  void OnPasswordFormsParsed(const std::vector<autofill::PasswordForm>& forms);
-  void OnPasswordFormsParsedNoRenderCheck(
-      const std::vector<autofill::PasswordForm>& forms);
-  void OnPasswordFormsRendered(
-      const std::vector<autofill::PasswordForm>& visible_forms,
-      bool did_stop_loading);
-  void OnPasswordFormSubmitted(const autofill::PasswordForm& password_form);
-  void OnInPageNavigation(const autofill::PasswordForm& password_form);
-  void OnPresaveGeneratedPassword(const autofill::PasswordForm& password_form);
-  void OnPasswordNoLongerGenerated(const autofill::PasswordForm& password_form);
-  void OnFocusedPasswordFormFound(const autofill::PasswordForm& password_form);
-  void OnSaveGenerationFieldDetectedByClassifier(
-      const autofill::PasswordForm& password_form,
-      const base::string16& generation_field);
+  content::RenderFrameHost* render_frame_host() const {
+    return render_frame_host_;
+  }
 
  private:
-  bool CheckChildProcessSecurityPolicy(const GURL& url,
-                                       BadMessageReason reason);
+  const autofill::mojom::AutofillAgentAssociatedPtr& GetAutofillAgent();
+
+  const autofill::mojom::PasswordAutofillAgentAssociatedPtr&
+  GetPasswordAutofillAgent();
+
+  const autofill::mojom::PasswordGenerationAgentAssociatedPtr&
+  GetPasswordGenerationAgent();
 
   content::RenderFrameHost* render_frame_host_;
   PasswordManagerClient* client_;
   PasswordGenerationManager password_generation_manager_;
   PasswordAutofillManager password_autofill_manager_;
 
-  // Every instance of PasswordFormFillData created by |*this| and sent to
-  // PasswordAutofillManager and PasswordAutofillAgent is given an ID, so that
-  // the latter two classes can reference to the same instance without sending
-  // it to each other over IPC. The counter below is used to generate new IDs.
-  int next_free_key_;
+  // It should be filled in the constructor, since later the frame might be
+  // detached and it would be impossible to check whether the frame is a main
+  // frame.
+  const bool is_main_frame_;
+
+  autofill::mojom::PasswordAutofillAgentAssociatedPtr password_autofill_agent_;
+
+  autofill::mojom::PasswordGenerationAgentAssociatedPtr password_gen_agent_;
+
+  base::WeakPtrFactory<ContentPasswordManagerDriver> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ContentPasswordManagerDriver);
 };

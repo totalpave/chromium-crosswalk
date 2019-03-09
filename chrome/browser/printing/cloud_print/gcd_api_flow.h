@@ -7,11 +7,26 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "base/bind.h"
+#include "base/callback.h"
 #include "base/macros.h"
-#include "google_apis/gaia/oauth2_token_service.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_context_getter.h"
+#include "base/memory/scoped_refptr.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "url/gurl.h"
+
+namespace base {
+class DictionaryValue;
+}
+
+namespace identity {
+class IdentityManager;
+}
+
+namespace network {
+class SharedURLLoaderFactory;
+}
 
 namespace cloud_print {
 
@@ -32,36 +47,38 @@ class GCDApiFlow {
   // Parses results of requests.
   class Request {
    public:
-    Request();
+    enum NetworkTrafficAnnotation {
+      TYPE_SEARCH,
+      TYPE_PRIVET_REGISTER,
+    };
+
     virtual ~Request();
 
+    // Called if the API flow fails.
     virtual void OnGCDApiFlowError(Status status) = 0;
 
+    // Called when the API flow finishes.
     virtual void OnGCDApiFlowComplete(const base::DictionaryValue& value) = 0;
 
+    // Returns the URL for this request.
     virtual GURL GetURL() = 0;
 
+    // Returns the scope parameter for use with OAuth.
     virtual std::string GetOAuthScope() = 0;
 
-    virtual net::URLFetcher::RequestType GetRequestType();
-
+    // Returns extra headers, if any, to send with this request.
     virtual std::vector<std::string> GetExtraRequestHeaders() = 0;
 
-    // If there is no data, set upload_type and upload_data to ""
-    virtual void GetUploadData(std::string* upload_type,
-                               std::string* upload_data);
-
-   private:
-    DISALLOW_COPY_AND_ASSIGN(Request);
+    // Returns the network traffic annotation tag for this request.
+    virtual NetworkTrafficAnnotation GetNetworkTrafficAnnotationType() = 0;
   };
 
   GCDApiFlow();
   virtual ~GCDApiFlow();
 
   static std::unique_ptr<GCDApiFlow> Create(
-      net::URLRequestContextGetter* request_context,
-      OAuth2TokenService* token_service,
-      const std::string& account_id);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      identity::IdentityManager* identity_manager);
 
   virtual void Start(std::unique_ptr<Request> request) = 0;
 

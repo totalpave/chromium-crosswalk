@@ -6,25 +6,29 @@
 
 #include "base/bind_helpers.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/extensions/extension_action_test_util.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/test_extension_dir.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/extensions/extension_message_bubble_factory.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_bar.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "components/omnibox/browser/omnibox_edit_model.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_builder.h"
 #include "extensions/common/feature_switch.h"
 #include "extensions/test/extension_test_message_listener.h"
+#include "extensions/test/test_extension_dir.h"
 
 ExtensionMessageBubbleBrowserTest::ExtensionMessageBubbleBrowserTest() {
 }
@@ -67,7 +71,7 @@ void ExtensionMessageBubbleBrowserTest::AddSettingsOverrideExtension(
     "  }\n"
     "}", settings_override_value.c_str());
   custom_extension_dir_->WriteManifestWithSingleQuotes(manifest);
-  ASSERT_TRUE(LoadExtension(custom_extension_dir_->unpacked_path()));
+  ASSERT_TRUE(LoadExtension(custom_extension_dir_->UnpackedPath()));
 }
 
 void ExtensionMessageBubbleBrowserTest::CheckBubble(
@@ -100,13 +104,15 @@ void ExtensionMessageBubbleBrowserTest::CloseBubble(Browser* browser) {
 
 void ExtensionMessageBubbleBrowserTest::TestBubbleAnchoredToExtensionAction() {
   scoped_refptr<const extensions::Extension> action_extension =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "action_extension",
-          extensions::extension_action_test_util::BROWSER_ACTION,
-          extensions::Manifest::UNPACKED);
+      extensions::ExtensionBuilder("action_extension")
+          .SetAction(extensions::ExtensionBuilder::ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::UNPACKED)
+          .Build();
   extension_service()->AddExtension(action_extension.get());
 
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
 
   CheckBubble(second_browser, ANCHOR_BROWSER_ACTION, true);
@@ -115,12 +121,20 @@ void ExtensionMessageBubbleBrowserTest::TestBubbleAnchoredToExtensionAction() {
 
 void ExtensionMessageBubbleBrowserTest::TestBubbleAnchoredToAppMenu() {
   scoped_refptr<const extensions::Extension> no_action_extension =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "no_action_extension",
-          extensions::extension_action_test_util::NO_ACTION,
-          extensions::Manifest::UNPACKED);
+      extensions::ExtensionBuilder("no_action_extension")
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   extension_service()->AddExtension(no_action_extension.get());
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  // The 'suspicious extension' bubble warns the user about extensions that are
+  // disabled for not being from the webstore. This is one of the few bubbles
+  // that lets us test anchoring to the app menu, since we usually anchor to the
+  // extension action now that every extension is given a permanent UI presence.
+  extension_service()->DisableExtension(
+      no_action_extension->id(),
+      extensions::disable_reason::DISABLE_NOT_VERIFIED);
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
   CheckBubble(second_browser, ANCHOR_APP_MENU, false);
   CloseBubble(second_browser);
@@ -129,24 +143,57 @@ void ExtensionMessageBubbleBrowserTest::TestBubbleAnchoredToAppMenu() {
 void ExtensionMessageBubbleBrowserTest::
     TestBubbleAnchoredToAppMenuWithOtherAction() {
   scoped_refptr<const extensions::Extension> no_action_extension =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "no_action_extension",
-          extensions::extension_action_test_util::NO_ACTION,
-          extensions::Manifest::UNPACKED);
+      extensions::ExtensionBuilder("no_action_extension")
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   extension_service()->AddExtension(no_action_extension.get());
 
   scoped_refptr<const extensions::Extension> action_extension =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "action_extension",
-          extensions::extension_action_test_util::BROWSER_ACTION,
-          extensions::Manifest::INTERNAL);
+      extensions::ExtensionBuilder("action_extension")
+          .SetAction(extensions::ExtensionBuilder::ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::INTERNAL)
+          .Build();
   extension_service()->AddExtension(action_extension.get());
 
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  // The 'suspicious extension' bubble warns the user about extensions that are
+  // disabled for not being from the webstore. This is one of the few bubbles
+  // that lets us test anchoring to the app menu, since we usually anchor to the
+  // extension action now that every extension is given a permanent UI presence.
+  extension_service()->DisableExtension(
+      no_action_extension->id(),
+      extensions::disable_reason::DISABLE_NOT_VERIFIED);
+
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
 
   CheckBubble(second_browser, ANCHOR_APP_MENU, false);
   CloseBubble(second_browser);
+}
+
+void ExtensionMessageBubbleBrowserTest::
+    TestBubbleClosedAfterExtensionUninstall() {
+  const extensions::Extension* extension =
+      LoadExtension(test_data_dir_.AppendASCII("api_test")
+                        .AppendASCII("override")
+                        .AppendASCII("newtab"));
+  ASSERT_TRUE(extension);
+
+  CheckBubbleIsNotPresent(browser(), false, false);
+  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  chrome::NewTab(browser());
+  EXPECT_EQ(2, browser()->tab_strip_model()->count());
+  base::RunLoop().RunUntilIdle();
+  CheckBubble(browser(), ANCHOR_BROWSER_ACTION, false);
+
+  extension_service()->UninstallExtension(
+      extension->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
+  base::RunLoop().RunUntilIdle();
+
+  // If the only relevant extension was uninstalled, the bubble should
+  // automatically close. See crbug.com/748952.
+  CheckBubbleIsNotPresent(browser(), false, false);
 }
 
 void ExtensionMessageBubbleBrowserTest::TestUninstallDangerousExtension() {
@@ -157,23 +204,23 @@ void ExtensionMessageBubbleBrowserTest::TestUninstallDangerousExtension() {
                         .AppendASCII("proxy")
                         .AppendASCII("register"));
   // Wait for it to complete.
-  listener.WaitUntilSatisfied();
+  EXPECT_TRUE(listener.WaitUntilSatisfied());
 
   // Create a second browser with the extension installed - the bubble will be
   // set to show.
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
   ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   // Uninstall the extension before the bubble is shown. This should not crash,
   // and the bubble shouldn't be shown.
   extension_service()->UninstallExtension(
-      extension->id(), extensions::UNINSTALL_REASON_FOR_TESTING,
-      base::Bind(&base::DoNothing), nullptr);
+      extension->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
   base::RunLoop().RunUntilIdle();
   CheckBubbleIsNotPresent(second_browser, false, false);
 }
 
 void ExtensionMessageBubbleBrowserTest::PreBubbleShowsOnStartup() {
-  LoadExtension(test_data_dir_.AppendASCII("good_unpacked"));
+  LoadExtension(test_data_dir_.AppendASCII("simple_with_popup"));
 }
 
 void ExtensionMessageBubbleBrowserTest::TestBubbleShowsOnStartup() {
@@ -184,13 +231,15 @@ void ExtensionMessageBubbleBrowserTest::TestBubbleShowsOnStartup() {
 
 void ExtensionMessageBubbleBrowserTest::TestDevModeBubbleIsntShownTwice() {
   scoped_refptr<const extensions::Extension> action_extension =
-      extensions::extension_action_test_util::CreateActionExtension(
-          "action_extension",
-          extensions::extension_action_test_util::BROWSER_ACTION,
-          extensions::Manifest::UNPACKED);
+      extensions::ExtensionBuilder("action_extension")
+          .SetAction(extensions::ExtensionBuilder::ActionType::BROWSER_ACTION)
+          .SetLocation(extensions::Manifest::UNPACKED)
+          .Build();
   extension_service()->AddExtension(action_extension.get());
 
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
 
   CheckBubble(second_browser, ANCHOR_BROWSER_ACTION, true);
@@ -198,20 +247,31 @@ void ExtensionMessageBubbleBrowserTest::TestDevModeBubbleIsntShownTwice() {
   base::RunLoop().RunUntilIdle();
 
   // The bubble was already shown, so it shouldn't be shown again.
-  Browser* third_browser = new Browser(Browser::CreateParams(profile()));
+  Browser* third_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(third_browser);
+  third_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
   CheckBubbleIsNotPresent(third_browser, false, false);
 }
 
-void ExtensionMessageBubbleBrowserTest::TestControlledNewTabPageBubbleShown() {
+void ExtensionMessageBubbleBrowserTest::TestControlledNewTabPageBubbleShown(
+    bool click_learn_more) {
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("api_test")
                                           .AppendASCII("override")
                                           .AppendASCII("newtab")));
   CheckBubbleIsNotPresent(browser(), false, false);
+  EXPECT_EQ(1, browser()->tab_strip_model()->count());
   chrome::NewTab(browser());
+  EXPECT_EQ(2, browser()->tab_strip_model()->count());
   base::RunLoop().RunUntilIdle();
   CheckBubble(browser(), ANCHOR_BROWSER_ACTION, false);
-  CloseBubble(browser());
+  if (click_learn_more) {
+    ClickLearnMoreButton(browser());
+    EXPECT_EQ(3, browser()->tab_strip_model()->count());
+  } else {
+    CloseBubble(browser());
+    EXPECT_EQ(2, browser()->tab_strip_model()->count());
+  }
 }
 
 void ExtensionMessageBubbleBrowserTest::TestControlledHomeBubbleShown() {
@@ -222,8 +282,8 @@ void ExtensionMessageBubbleBrowserTest::TestControlledHomeBubbleShown() {
 
   CheckBubbleIsNotPresent(browser(), false, false);
 
-  chrome::ExecuteCommandWithDisposition(browser(),
-                                        IDC_HOME, NEW_FOREGROUND_TAB);
+  chrome::ExecuteCommandWithDisposition(
+      browser(), IDC_HOME, WindowOpenDisposition::NEW_FOREGROUND_TAB);
   base::RunLoop().RunUntilIdle();
 
   CheckBubble(browser(), ANCHOR_BROWSER_ACTION, false);
@@ -249,19 +309,50 @@ void ExtensionMessageBubbleBrowserTest::TestControlledSearchBubbleShown() {
   omnibox->OnBeforePossibleChange();
   omnibox->SetUserText(base::ASCIIToUTF16("search for this"));
   omnibox->OnAfterPossibleChange(true);
-  omnibox->model()->AcceptInput(CURRENT_TAB, false);
+  omnibox->model()->AcceptInput(WindowOpenDisposition::CURRENT_TAB, false);
   base::RunLoop().RunUntilIdle();
 
   CheckBubble(browser(), ANCHOR_BROWSER_ACTION, false);
   CloseBubble(browser());
 }
 
+void ExtensionMessageBubbleBrowserTest::PreTestControlledStartupBubbleShown() {
+  ASSERT_TRUE(InstallExtensionWithPermissionsGranted(
+      test_data_dir_.AppendASCII("startup_pages"), 1));
+}
+
+void ExtensionMessageBubbleBrowserTest::TestControlledStartupBubbleShown() {
+  base::RunLoop().RunUntilIdle();
+  CheckBubble(browser(), ANCHOR_BROWSER_ACTION, true);
+  CloseBubble(browser());
+}
+
+void ExtensionMessageBubbleBrowserTest::
+    PreTestControlledStartupNotShownOnRestart() {
+  ASSERT_TRUE(InstallExtensionWithPermissionsGranted(
+      test_data_dir_.AppendASCII("startup_pages"), 1));
+  PrefService* pref_service = g_browser_process->local_state();
+  pref_service->SetBoolean(prefs::kWasRestarted, true);
+}
+
+void ExtensionMessageBubbleBrowserTest::
+    TestControlledStartupNotShownOnRestart() {
+  EXPECT_TRUE(StartupBrowserCreator::WasRestarted());
+  CheckBubbleIsNotPresent(browser(), false, false);
+}
+
 void ExtensionMessageBubbleBrowserTest::TestBubbleWithMultipleWindows() {
   CheckBubbleIsNotPresent(browser(), false, false);
-  LoadExtension(test_data_dir_.AppendASCII("good_unpacked"));
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
-  Browser* third_browser = new Browser(Browser::CreateParams(profile()));
-  Browser* fourth_browser = new Browser(Browser::CreateParams(profile()));
+  LoadExtension(test_data_dir_.AppendASCII("simple_with_popup"));
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
+  Browser* third_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(third_browser);
+  third_browser->window()->Show();
+  Browser* fourth_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(fourth_browser);
+  fourth_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
   CheckBubble(second_browser, ANCHOR_BROWSER_ACTION, true);
   // Even though the bubble isn't present on these browser windows, highlighting
@@ -274,8 +365,10 @@ void ExtensionMessageBubbleBrowserTest::TestBubbleWithMultipleWindows() {
 
 void ExtensionMessageBubbleBrowserTest::TestClickingLearnMoreButton() {
   CheckBubbleIsNotPresent(browser(), false, false);
-  LoadExtension(test_data_dir_.AppendASCII("good_unpacked"));
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  LoadExtension(test_data_dir_.AppendASCII("simple_with_popup"));
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
   CheckBubble(second_browser, ANCHOR_BROWSER_ACTION, true);
   ClickLearnMoreButton(second_browser);
@@ -293,12 +386,14 @@ void ExtensionMessageBubbleBrowserTest::TestClickingLearnMoreButton() {
 void ExtensionMessageBubbleBrowserTest::TestClickingActionButton() {
   CheckBubbleIsNotPresent(browser(), false, false);
   const extensions::Extension* extension =
-      LoadExtension(test_data_dir_.AppendASCII("good_unpacked"));
+      LoadExtension(test_data_dir_.AppendASCII("simple_with_popup"));
   extensions::ExtensionRegistry* registry =
       extensions::ExtensionRegistry::Get(profile());
   std::string id = extension->id();
   EXPECT_TRUE(registry->enabled_extensions().GetByID(id));
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
   CheckBubble(second_browser, ANCHOR_BROWSER_ACTION, true);
   ClickActionButton(second_browser);
@@ -311,12 +406,14 @@ void ExtensionMessageBubbleBrowserTest::TestClickingActionButton() {
 void ExtensionMessageBubbleBrowserTest::TestClickingDismissButton() {
   CheckBubbleIsNotPresent(browser(), false, false);
   const extensions::Extension* extension =
-      LoadExtension(test_data_dir_.AppendASCII("good_unpacked"));
+      LoadExtension(test_data_dir_.AppendASCII("simple_with_popup"));
   extensions::ExtensionRegistry* registry =
       extensions::ExtensionRegistry::Get(profile());
   std::string id = extension->id();
   EXPECT_TRUE(registry->enabled_extensions().GetByID(id));
-  Browser* second_browser = new Browser(Browser::CreateParams(profile()));
+  Browser* second_browser = new Browser(Browser::CreateParams(profile(), true));
+  ASSERT_TRUE(second_browser);
+  second_browser->window()->Show();
   base::RunLoop().RunUntilIdle();
   CheckBubble(second_browser, ANCHOR_BROWSER_ACTION, true);
   ClickDismissButton(second_browser);

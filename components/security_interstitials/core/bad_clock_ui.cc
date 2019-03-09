@@ -7,7 +7,7 @@
 #include "base/i18n/time_formatting.h"
 #include "components/security_interstitials/core/common_string_util.h"
 #include "components/security_interstitials/core/metrics_helper.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace security_interstitials {
@@ -82,7 +82,7 @@ void BadClockUI::PopulateClockStrings(base::DictionaryValue* load_time_data) {
       l10n_util::GetStringUTF16(IDS_CLOCK_ERROR_EXPLANATION));
 }
 
-void BadClockUI::HandleCommand(SecurityInterstitialCommands command) {
+void BadClockUI::HandleCommand(SecurityInterstitialCommand command) {
   switch (command) {
     case CMD_DONT_PROCEED:
       controller_->GoBack();
@@ -105,7 +105,10 @@ void BadClockUI::HandleCommand(SecurityInterstitialCommands command) {
       controller_->LaunchDateAndTimeSettings();
       break;
     case CMD_OPEN_REPORTING_PRIVACY:
-      controller_->OpenExtendedReportingPrivacyPolicy();
+      controller_->OpenExtendedReportingPrivacyPolicy(true);
+      break;
+    case CMD_OPEN_WHITEPAPER:
+      controller_->OpenExtendedReportingWhitepaper(true);
       break;
     case CMD_PROCEED:
     case CMD_OPEN_HELP_CENTER:
@@ -115,11 +118,12 @@ void BadClockUI::HandleCommand(SecurityInterstitialCommands command) {
     case CMD_REPORT_PHISHING_ERROR:
       // Not supported by the bad clock error page.
       NOTREACHED() << "Unsupported command: " << command;
+      break;
     case CMD_ERROR:
     case CMD_TEXT_FOUND:
     case CMD_TEXT_NOT_FOUND:
-      // Commands are only for testing.
-      NOTREACHED() << "Unexpected command: " << command;
+      // Commands are for testing.
+      break;
   }
 }
 

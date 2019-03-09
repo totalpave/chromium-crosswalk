@@ -9,11 +9,11 @@
 #include "remoting/base/constants.h"
 #include "remoting/signaling/iq_sender.h"
 #include "remoting/signaling/signal_strategy.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
-#include "third_party/webrtc/libjingle/xmpp/constants.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmpp/constants.h"
 
-using buzz::QName;
-using buzz::XmlElement;
+using jingle_xmpp::QName;
+using jingle_xmpp::XmlElement;
 
 namespace remoting {
 
@@ -27,11 +27,12 @@ LogToServer::LogToServer(ServerLogEntry::Mode mode,
 }
 
 LogToServer::~LogToServer() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   signal_strategy_->RemoveListener(this);
 }
 
 void LogToServer::OnSignalStrategyStateChange(SignalStrategy::State state) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (state == SignalStrategy::CONNECTED) {
     iq_sender_.reset(new IqSender(signal_strategy_));
@@ -42,7 +43,7 @@ void LogToServer::OnSignalStrategyStateChange(SignalStrategy::State state) {
 }
 
 bool LogToServer::OnSignalStrategyIncomingStanza(
-    const buzz::XmlElement* stanza) {
+    const jingle_xmpp::XmlElement* stanza) {
   return false;
 }
 
@@ -66,7 +67,7 @@ void LogToServer::SendPendingEntries() {
     pending_entries_.pop_front();
   }
   // Send the stanza to the server and ignore the response.
-  iq_sender_->SendIq(buzz::STR_SET, directory_bot_jid_, std::move(stanza),
+  iq_sender_->SendIq(jingle_xmpp::STR_SET, directory_bot_jid_, std::move(stanza),
                      IqSender::ReplyCallback());
 }
 

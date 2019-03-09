@@ -6,6 +6,7 @@
 
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/stl_util.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/prefs/pref_service.h"
 #include "ios/chrome/browser/bookmarks/bookmark_model_factory.h"
@@ -34,13 +35,12 @@ bool RemoveAllUserBookmarksIOS(ios::ChromeBrowserState* browser_state) {
     if (!bookmark_model->client()->CanBeEditedByUser(
             bookmark_model->root_node()->GetChild(i)))
       continue;
-    CHECK(bookmark_model->root_node()->GetChild(i)->empty())
-        << "Failed to remove all user bookmarks.";
+    if (!bookmark_model->root_node()->GetChild(i)->empty())
+      return false;
   }
 
   // The default save folder is reset to the generic one.
   browser_state->GetPrefs()->SetInt64(prefs::kIosBookmarkFolderDefault, -1);
-
   return true;
 }
 
@@ -72,11 +72,7 @@ std::vector<const BookmarkNode*> RootLevelFolders(BookmarkModel* model) {
 
 bool IsPrimaryPermanentNode(const BookmarkNode* node, BookmarkModel* model) {
   std::vector<const BookmarkNode*> primary_nodes(PrimaryPermanentNodes(model));
-  if (std::find(primary_nodes.begin(), primary_nodes.end(), node) !=
-      primary_nodes.end()) {
-    return true;
-  }
-  return false;
+  return base::ContainsValue(primary_nodes, node);
 }
 
 const BookmarkNode* RootLevelFolderForNode(const BookmarkNode* node,
@@ -88,9 +84,7 @@ const BookmarkNode* RootLevelFolderForNode(const BookmarkNode* node,
 
   const std::vector<const BookmarkNode*> root_folders(RootLevelFolders(model));
   const BookmarkNode* top = node;
-  while (top &&
-         std::find(root_folders.begin(), root_folders.end(), top) ==
-             root_folders.end()) {
+  while (top && !base::ContainsValue(root_folders, top)) {
     top = top->parent();
   }
   return top;

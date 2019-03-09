@@ -7,8 +7,10 @@
 #include <memory>
 #include <utility>
 
-#include "base/memory/ptr_util.h"
+#include "base/json/json_writer.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/values.h"
+#include "testing/gtest/include/gtest/gtest.h"
 
 TestingPrefStore::TestingPrefStore()
     : read_only_(true),
@@ -22,6 +24,10 @@ TestingPrefStore::TestingPrefStore()
 bool TestingPrefStore::GetValue(const std::string& key,
                                 const base::Value** value) const {
   return prefs_.GetValue(key, value);
+}
+
+std::unique_ptr<base::DictionaryValue> TestingPrefStore::GetValues() const {
+  return prefs_.AsDictionaryValue();
 }
 
 bool TestingPrefStore::GetMutableValue(const std::string& key,
@@ -48,7 +54,8 @@ bool TestingPrefStore::IsInitializationComplete() const {
 void TestingPrefStore::SetValue(const std::string& key,
                                 std::unique_ptr<base::Value> value,
                                 uint32_t flags) {
-  if (prefs_.SetValue(key, std::move(value))) {
+  DCHECK(value);
+  if (prefs_.SetValue(key, base::Value::FromUniquePtrValue(std::move(value)))) {
     committed_ = false;
     NotifyPrefValueChanged(key);
   }
@@ -57,7 +64,9 @@ void TestingPrefStore::SetValue(const std::string& key,
 void TestingPrefStore::SetValueSilently(const std::string& key,
                                         std::unique_ptr<base::Value> value,
                                         uint32_t flags) {
-  if (prefs_.SetValue(key, std::move(value)))
+  DCHECK(value);
+  CheckPrefIsSerializable(key, *value);
+  if (prefs_.SetValue(key, base::Value::FromUniquePtrValue(std::move(value))))
     committed_ = false;
 }
 
@@ -90,7 +99,13 @@ void TestingPrefStore::ReadPrefsAsync(ReadErrorDelegate* error_delegate) {
     NotifyInitializationCompleted();
 }
 
-void TestingPrefStore::CommitPendingWrite() { committed_ = true; }
+void TestingPrefStore::CommitPendingWrite(
+    base::OnceClosure reply_callback,
+    base::OnceClosure synchronous_done_callback) {
+  committed_ = true;
+  PersistentPrefStore::CommitPendingWrite(std::move(reply_callback),
+                                          std::move(synchronous_done_callback));
+}
 
 void TestingPrefStore::SchedulePendingLossyWrites() {}
 
@@ -99,7 +114,8 @@ void TestingPrefStore::SetInitializationCompleted() {
 }
 
 void TestingPrefStore::NotifyPrefValueChanged(const std::string& key) {
-  FOR_EACH_OBSERVER(Observer, observers_, OnPrefValueChanged(key));
+  for (Observer& observer : observers_)
+    observer.OnPrefValueChanged(key);
 }
 
 void TestingPrefStore::NotifyInitializationCompleted() {
@@ -107,29 +123,31 @@ void TestingPrefStore::NotifyInitializationCompleted() {
   init_complete_ = true;
   if (read_success_ && read_error_ != PREF_READ_ERROR_NONE && error_delegate_)
     error_delegate_->OnError(read_error_);
-  FOR_EACH_OBSERVER(
-      Observer, observers_, OnInitializationCompleted(read_success_));
+  for (Observer& observer : observers_)
+    observer.OnInitializationCompleted(read_success_);
 }
 
 void TestingPrefStore::ReportValueChanged(const std::string& key,
                                           uint32_t flags) {
-  FOR_EACH_OBSERVER(Observer, observers_, OnPrefValueChanged(key));
+  const base::Value* value = nullptr;
+  if (prefs_.GetValue(key, &value))
+    CheckPrefIsSerializable(key, *value);
+
+  for (Observer& observer : observers_)
+    observer.OnPrefValueChanged(key);
 }
 
 void TestingPrefStore::SetString(const std::string& key,
                                  const std::string& value) {
-  SetValue(key, base::WrapUnique(new base::StringValue(value)),
-           DEFAULT_PREF_WRITE_FLAGS);
+  SetValue(key, std::make_unique<base::Value>(value), DEFAULT_PREF_WRITE_FLAGS);
 }
 
 void TestingPrefStore::SetInteger(const std::string& key, int value) {
-  SetValue(key, base::WrapUnique(new base::FundamentalValue(value)),
-           DEFAULT_PREF_WRITE_FLAGS);
+  SetValue(key, std::make_unique<base::Value>(value), DEFAULT_PREF_WRITE_FLAGS);
 }
 
 void TestingPrefStore::SetBoolean(const std::string& key, bool value) {
-  SetValue(key, base::WrapUnique(new base::FundamentalValue(value)),
-           DEFAULT_PREF_WRITE_FLAGS);
+  SetValue(key, std::make_unique<base::Value>(value), DEFAULT_PREF_WRITE_FLAGS);
 }
 
 bool TestingPrefStore::GetString(const std::string& key,
@@ -168,6 +186,8 @@ void TestingPrefStore::ClearMutableValues() {
   NOTIMPLEMENTED();
 }
 
+void TestingPrefStore::OnStoreDeletionFromDisk() {}
+
 void TestingPrefStore::set_read_only(bool read_only) {
   read_only_ = read_only;
 }
@@ -183,4 +203,14 @@ void TestingPrefStore::set_read_error(
   read_error_ = read_error;
 }
 
-TestingPrefStore::~TestingPrefStore() {}
+TestingPrefStore::~TestingPrefStore() {
+  for (auto& pref : prefs_)
+    CheckPrefIsSerializable(pref.first, pref.second);
+}
+
+void TestingPrefStore::CheckPrefIsSerializable(const std::string& key,
+                                               const base::Value& value) {
+  std::string json;
+  EXPECT_TRUE(base::JSONWriter::Write(value, &json))
+      << "Pref \"" << key << "\" is not serializable as JSON.";
+}

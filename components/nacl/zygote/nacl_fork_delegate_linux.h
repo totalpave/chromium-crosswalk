@@ -5,33 +5,32 @@
 #ifndef COMPONENTS_NACL_ZYGOTE_NACL_FORK_DELEGATE_LINUX_H_
 #define COMPONENTS_NACL_ZYGOTE_NACL_FORK_DELEGATE_LINUX_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "content/public/common/zygote_fork_delegate_linux.h"
+#include "services/service_manager/zygote/common/zygote_fork_delegate_linux.h"
 
 namespace base {
 struct LaunchOptions;
 }
 
-template <typename>
-class ScopedVector;
-
 namespace nacl {
 
 // Appends any ZygoteForkDelegate instances needed by NaCl to |*delegates|.
 void AddNaClZygoteForkDelegates(
-    ScopedVector<content::ZygoteForkDelegate>* delegates);
+    std::vector<std::unique_ptr<service_manager::ZygoteForkDelegate>>*
+        delegates);
 
-// The NaClForkDelegate is created during Chrome linux zygote
-// initialization, and provides "fork()" functionality with
-// NaCl specific process characteristics (specifically address
-// space layout) as an alternative to forking the zygote.
-// A new delegate is passed in as an argument to ZygoteMain().
-class NaClForkDelegate : public content::ZygoteForkDelegate {
+// The NaClForkDelegate is created during Chrome linux zygote initialization,
+// and provides "fork()" functionality with NaCl specific process
+// characteristics (specifically address space layout) as an alternative to
+// forking the zygote. A new delegate is passed in as an argument to
+// ZygoteMain().
+class NaClForkDelegate : public service_manager::ZygoteForkDelegate {
  public:
   explicit NaClForkDelegate(bool nonsfi_mode);
   ~NaClForkDelegate() override;
@@ -61,7 +60,7 @@ class NaClForkDelegate : public content::ZygoteForkDelegate {
     kNaClHelperUnused = 0,
     kNaClHelperMissing = 1,
     kNaClHelperBootstrapMissing = 2,
-    kNaClHelperValgrind = 3,
+    // kNaClHelperValgrind = 3,  // Running in valgrind no longer supported.
     kNaClHelperLaunchFailed = 4,
     kNaClHelperAckFailed = 5,
     kNaClHelperSuccess = 6,

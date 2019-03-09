@@ -7,8 +7,8 @@
 
 #include <stddef.h>
 
-#include "cc/base/cc_export.h"
-#include "cc/playback/display_item_list.h"
+#include "cc/cc_export.h"
+#include "cc/paint/display_item_list.h"
 
 namespace gfx {
 class Rect;
@@ -25,6 +25,7 @@ class CC_EXPORT ContentLayerClient {
     DISPLAY_LIST_CACHING_DISABLED,
     DISPLAY_LIST_PAINTING_DISABLED,
     SUBSEQUENCE_CACHING_DISABLED,
+    PARTIAL_INVALIDATION,
   };
 
   // The paintable region is the rectangular region, within the bounds of the
@@ -33,8 +34,12 @@ class CC_EXPORT ContentLayerClient {
   // that is guaranteed valid only within this region.
   virtual gfx::Rect PaintableRegion() = 0;
 
+  // Paints the content area for the layer, typically dirty rects submitted
+  // to the layer itself, into a DisplayItemList that it returns. The
+  // PaintingControlSetting enum controls painting to isolate different
+  // components in performance tests.
   virtual scoped_refptr<DisplayItemList> PaintContentsToDisplayList(
-      PaintingControlSetting painting_status) = 0;
+      PaintingControlSetting painting_control) = 0;
 
   // If true the layer may skip clearing the background before rasterizing,
   // because it will cover any uncleared data with content.

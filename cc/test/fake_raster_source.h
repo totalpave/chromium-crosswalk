@@ -6,11 +6,13 @@
 #define CC_TEST_FAKE_RASTER_SOURCE_H_
 
 #include "base/memory/ref_counted.h"
-#include "cc/playback/raster_source.h"
+#include "cc/raster/raster_source.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
-class SkCanvas;
+namespace base {
+class WaitableEvent;
+}
 
 namespace cc {
 
@@ -20,6 +22,8 @@ class FakeRasterSource : public RasterSource {
  public:
   static scoped_refptr<FakeRasterSource> CreateInfiniteFilled();
   static scoped_refptr<FakeRasterSource> CreateFilled(const gfx::Size& size);
+  static scoped_refptr<FakeRasterSource> CreateFilledWithImages(
+      const gfx::Size& size);
   static scoped_refptr<FakeRasterSource> CreateFilledLCD(const gfx::Size& size);
   static scoped_refptr<FakeRasterSource> CreateFilledSolidColor(
       const gfx::Size& size);
@@ -28,20 +32,17 @@ class FakeRasterSource : public RasterSource {
       const gfx::Rect& recorded_viewport);
   static scoped_refptr<FakeRasterSource> CreateEmpty(const gfx::Size& size);
   static scoped_refptr<FakeRasterSource> CreateFromRecordingSource(
-      const RecordingSource* recording_source,
-      bool can_use_lcd);
+      const RecordingSource* recording_source);
   static scoped_refptr<FakeRasterSource> CreateFromRecordingSourceWithWaitable(
       const RecordingSource* recording_source,
-      bool can_use_lcd,
       base::WaitableEvent* playback_allowed_event);
 
   void PlaybackToCanvas(SkCanvas* canvas,
-                        const PlaybackSettings& settings) const override;
+                        ImageProvider* image_provider) const override;
 
  protected:
-  FakeRasterSource(const RecordingSource* recording_source, bool can_use_lcd);
+  explicit FakeRasterSource(const RecordingSource* recording_source);
   FakeRasterSource(const RecordingSource* recording_source,
-                   bool can_use_lcd,
                    base::WaitableEvent* playback_allowed_event);
   ~FakeRasterSource() override;
 

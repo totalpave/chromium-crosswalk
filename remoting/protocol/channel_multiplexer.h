@@ -5,8 +5,11 @@
 #ifndef REMOTING_PROTOCOL_CHANNEL_MULTIPLEXER_H_
 #define REMOTING_PROTOCOL_CHANNEL_MULTIPLEXER_H_
 
+#include <memory>
+
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "remoting/base/buffered_socket_writer.h"
 #include "remoting/proto/mux.pb.h"
 #include "remoting/protocol/message_reader.h"
@@ -56,7 +59,8 @@ class ChannelMultiplexer : public StreamChannelFactory {
 
   // Called by MuxChannel.
   void DoWrite(std::unique_ptr<MultiplexPacket> packet,
-               const base::Closure& done_task);
+               base::OnceClosure done_task,
+               const net::NetworkTrafficAnnotationTag& traffic_annotation);
 
   // Factory used to create |base_channel_|. Set to nullptr once creation is
   // finished or failed.
@@ -72,7 +76,7 @@ class ChannelMultiplexer : public StreamChannelFactory {
   std::list<PendingChannel> pending_channels_;
 
   int next_channel_id_;
-  std::map<std::string, MuxChannel*> channels_;
+  std::map<std::string, std::unique_ptr<MuxChannel>> channels_;
 
   // Channels are added to |channels_by_receive_id_| only after we receive
   // receive_id from the remote peer.

@@ -12,11 +12,13 @@
 
 namespace storage {
 
-class FileSystemOperationContext;
 class FileSystemURL;
 
 // An interface for providing entry observing capability for file system
 // backends.
+//
+// All member functions must be called on the IO thread. Callbacks will be
+// called on the IO thread.
 //
 // It is NOT valid to give null callback to this class, and implementors
 // can assume that they don't get any null callbacks.
@@ -24,8 +26,8 @@ class WatcherManager {
  public:
   enum ChangeType { CHANGED, DELETED };
 
-  typedef base::Callback<void(base::File::Error result)> StatusCallback;
-  typedef base::Callback<void(ChangeType change_type)> NotificationCallback;
+  using StatusCallback = base::Callback<void(base::File::Error result)>;
+  using NotificationCallback = base::Callback<void(ChangeType change_type)>;
 
   virtual ~WatcherManager() {}
 

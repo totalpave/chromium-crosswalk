@@ -4,11 +4,25 @@
 
 package org.chromium.net;
 
-import android.test.suitebuilder.annotation.SmallTest;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+import static org.chromium.net.CronetTestRule.getContext;
+import static org.chromium.net.CronetTestRule.getTestStorage;
+
+import android.support.test.filters.SmallTest;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.FileUtils;
 import org.chromium.base.PathUtils;
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
+import org.chromium.net.CronetTestRule.OnlyRunNativeCronet;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -20,50 +34,53 @@ import java.util.Arrays;
 /**
  * Test CronetEngine disk storage.
  */
-public class DiskStorageTest extends CronetTestBase {
-    private CronetTestFramework mTestFramework;
+@RunWith(BaseJUnit4ClassRunner.class)
+public class DiskStorageTest {
+    @Rule
+    public final CronetTestRule mTestRule = new CronetTestRule();
+
     private String mReadOnlyStoragePath;
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUp() throws Exception {
         System.loadLibrary("cronet_tests");
         assertTrue(NativeTestServer.startNativeTestServer(getContext()));
     }
 
-    @Override
-    protected void tearDown() throws Exception {
+    @After
+    public void tearDown() throws Exception {
         if (mReadOnlyStoragePath != null) {
             FileUtils.recursivelyDeleteFile(new File(mReadOnlyStoragePath));
         }
         NativeTestServer.shutdownNativeTestServer();
-        super.tearDown();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     // Crashing on Android Cronet Builder, see crbug.com/601409.
     public void testReadOnlyStorageDirectory() throws Exception {
-        mReadOnlyStoragePath = PathUtils.getDataDirectory(getContext()) + "/read_only";
+        mReadOnlyStoragePath = PathUtils.getDataDirectory() + "/read_only";
         File readOnlyStorage = new File(mReadOnlyStoragePath);
         assertTrue(readOnlyStorage.mkdir());
         // Setting the storage directory as readonly has no effect.
         assertTrue(readOnlyStorage.setReadOnly());
-        CronetEngine.Builder builder = new CronetEngine.Builder(getContext());
+        ExperimentalCronetEngine.Builder builder =
+                new ExperimentalCronetEngine.Builder(getContext());
         builder.setStoragePath(mReadOnlyStoragePath);
         builder.enableHttpCache(CronetEngine.Builder.HTTP_CACHE_DISK, 1024 * 1024);
 
-        mTestFramework = new CronetTestFramework(null, null, getContext(), builder);
+        CronetEngine cronetEngine = builder.build();
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = NativeTestServer.getFileURL("/cacheable.txt");
-        UrlRequest.Builder requestBuilder = new UrlRequest.Builder(
-                url, callback, callback.getExecutor(), mTestFramework.mCronetEngine);
+        UrlRequest.Builder requestBuilder =
+                cronetEngine.newUrlRequestBuilder(url, callback, callback.getExecutor());
         UrlRequest urlRequest = requestBuilder.build();
         urlRequest.start();
         callback.blockForDone();
         assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
-        mTestFramework.mCronetEngine.shutdown();
+        cronetEngine.shutdown();
         FileInputStream newVersionFile = null;
         // Make sure that version file is in readOnlyStoragePath.
         File versionFile = new File(mReadOnlyStoragePath + "/version");
@@ -84,12 +101,13 @@ public class DiskStorageTest extends CronetTestBase {
         assertTrue(prefsDir.exists());
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     // Crashing on Android Cronet Builder, see crbug.com/601409.
     public void testPurgeOldVersion() throws Exception {
-        String testStorage = CronetTestFramework.getTestStorage(getContext());
+        String testStorage = getTestStorage(getContext());
         File versionFile = new File(testStorage + "/version");
         FileOutputStream versionOut = null;
         try {
@@ -112,20 +130,21 @@ public class DiskStorageTest extends CronetTestBase {
             }
         }
 
-        CronetEngine.Builder builder = new CronetEngine.Builder(getContext());
-        builder.setStoragePath(CronetTestFramework.getTestStorage(getContext()));
+        ExperimentalCronetEngine.Builder builder =
+                new ExperimentalCronetEngine.Builder(getContext());
+        builder.setStoragePath(getTestStorage(getContext()));
         builder.enableHttpCache(CronetEngine.Builder.HTTP_CACHE_DISK, 1024 * 1024);
 
-        mTestFramework = new CronetTestFramework(null, null, getContext(), builder);
+        CronetEngine cronetEngine = builder.build();
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = NativeTestServer.getFileURL("/cacheable.txt");
-        UrlRequest.Builder requestBuilder = new UrlRequest.Builder(
-                url, callback, callback.getExecutor(), mTestFramework.mCronetEngine);
+        UrlRequest.Builder requestBuilder =
+                cronetEngine.newUrlRequestBuilder(url, callback, callback.getExecutor());
         UrlRequest urlRequest = requestBuilder.build();
         urlRequest.start();
         callback.blockForDone();
         assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
-        mTestFramework.mCronetEngine.shutdown();
+        cronetEngine.shutdown();
         FileInputStream newVersionFile = null;
         try {
             newVersionFile = new FileInputStream(versionFile);
@@ -146,29 +165,31 @@ public class DiskStorageTest extends CronetTestBase {
         assertTrue(prefsDir.exists());
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     // Tests that if cache version is current, Cronet does not purge the directory.
     public void testCacheVersionCurrent() throws Exception {
         // Initialize a CronetEngine and shut it down.
-        CronetEngine.Builder builder = new CronetEngine.Builder(getContext());
-        builder.setStoragePath(CronetTestFramework.getTestStorage(getContext()));
+        ExperimentalCronetEngine.Builder builder =
+                new ExperimentalCronetEngine.Builder(getContext());
+        builder.setStoragePath(getTestStorage(getContext()));
         builder.enableHttpCache(CronetEngine.Builder.HTTP_CACHE_DISK, 1024 * 1024);
 
-        mTestFramework = new CronetTestFramework(null, null, getContext(), builder);
+        CronetEngine cronetEngine = builder.build();
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = NativeTestServer.getFileURL("/cacheable.txt");
-        UrlRequest.Builder requestBuilder = new UrlRequest.Builder(
-                url, callback, callback.getExecutor(), mTestFramework.mCronetEngine);
+        UrlRequest.Builder requestBuilder =
+                cronetEngine.newUrlRequestBuilder(url, callback, callback.getExecutor());
         UrlRequest urlRequest = requestBuilder.build();
         urlRequest.start();
         callback.blockForDone();
         assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
-        mTestFramework.mCronetEngine.shutdown();
+        cronetEngine.shutdown();
 
         // Create a dummy file in storage directory.
-        String testStorage = CronetTestFramework.getTestStorage(getContext());
+        String testStorage = getTestStorage(getContext());
         File dummyFile = new File(testStorage + "/dummy.json");
         FileOutputStream dummyFileOut = null;
         String dummyContent = "dummy content";
@@ -186,7 +207,7 @@ public class DiskStorageTest extends CronetTestBase {
         TestUrlRequestCallback callback2 = new TestUrlRequestCallback();
         String url2 = NativeTestServer.getFileURL("/cacheable.txt");
         UrlRequest.Builder requestBuilder2 =
-                new UrlRequest.Builder(url2, callback2, callback2.getExecutor(), engine);
+                engine.newUrlRequestBuilder(url2, callback2, callback2.getExecutor());
         UrlRequest urlRequest2 = requestBuilder2.build();
         urlRequest2.start();
         callback2.blockForDone();

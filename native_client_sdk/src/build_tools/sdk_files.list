@@ -21,6 +21,7 @@ examples/api/var_array_buffer/*
 examples/api/var_dictionary/*
 examples/api/video_decode/*
 examples/api/video_encode/*
+examples/api/vpn_provider/*
 examples/api/websocket/*
 examples/button_close.png
 examples/button_close_hover.png
@@ -462,11 +463,11 @@ tools/irt_core_x86_32.nexe
 tools/irt_core_x86_64.nexe
 [linux]tools/lib/arm_trusted/lib/ld-linux-armhf.so.3
 [linux]tools/lib/arm_trusted/lib/libc.so.6
+[linux]tools/lib/arm_trusted/lib/libdl.so.2
 [linux]tools/lib/arm_trusted/lib/libgcc_s.so.1
 [linux]tools/lib/arm_trusted/lib/libm.so.6
 [linux]tools/lib/arm_trusted/lib/libpthread.so.0
 [linux]tools/lib/arm_trusted/lib/librt.so.1
-[linux]tools/lib/arm_trusted/lib/libstdc++.so.6
 tools/lib/elf.py
 tools/lib/get_shared_deps.py
 tools/lib/quote.py
@@ -489,6 +490,5 @@ tools/oshelpers.py
 tools/run.py
 tools/sel_ldr.py
 [linux]tools/sel_ldr_arm
-[linux]tools/sel_ldr_x86_32${EXE_EXT}
-[win]tools/sel_ldr_x86_32${EXE_EXT}
+tools/sel_ldr_x86_32${EXE_EXT}
 tools/sel_ldr_x86_64${EXE_EXT}

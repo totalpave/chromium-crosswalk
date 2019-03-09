@@ -10,10 +10,10 @@
 #include "base/macros.h"
 #include "content/common/mac/attributed_string_coder.h"
 #include "content/public/browser/browser_message_filter.h"
+#include "content/public/browser/browser_thread.h"
 
 namespace gfx {
 class Point;
-class Range;
 class Rect;
 }
 
@@ -29,6 +29,8 @@ class CONTENT_EXPORT TextInputClientMessageFilter
 
   // BrowserMessageFilter override:
   bool OnMessageReceived(const IPC::Message& message) override;
+  void OverrideThreadForMessage(const IPC::Message& message,
+                                BrowserThread::ID* thread) override;
 
  protected:
   ~TextInputClientMessageFilter() override;

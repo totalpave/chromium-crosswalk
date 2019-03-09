@@ -18,19 +18,8 @@ MediaClient* GetMediaClient() {
   return g_media_client;
 }
 
-KeySystemInfoForUMA::KeySystemInfoForUMA(
-    const std::string& key_system,
-    const std::string& key_system_name_for_uma)
-    : key_system(key_system),
-      key_system_name_for_uma(key_system_name_for_uma) {}
+MediaClient::MediaClient() = default;
 
-KeySystemInfoForUMA::~KeySystemInfoForUMA() {
-}
-
-MediaClient::MediaClient() {
-}
-
-MediaClient::~MediaClient() {
-}
+MediaClient::~MediaClient() = default;
 
 }  // namespace media

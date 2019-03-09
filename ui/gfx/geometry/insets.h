@@ -7,12 +7,21 @@
 
 #include <string>
 
+#include "ui/gfx/geometry/geometry_export.h"
 #include "ui/gfx/geometry/insets_f.h"
-#include "ui/gfx/gfx_export.h"
 
 namespace gfx {
 
-class GFX_EXPORT Insets {
+class Vector2d;
+
+// Represents the widths of the four borders or margins of an unspecified
+// rectangle. An Insets stores the thickness of the top, left, bottom and right
+// edges, without storing the actual size and position of the rectangle itself.
+//
+// This can be used to represent a space within a rectangle, by "shrinking" the
+// rectangle by the inset amount on all four sides. Alternatively, it can
+// represent a border that has a different thickness on each side.
+class GEOMETRY_EXPORT Insets {
  public:
   constexpr Insets() : top_(0), left_(0), bottom_(0), right_(0) {}
   constexpr explicit Insets(int all)
@@ -40,6 +49,11 @@ class GFX_EXPORT Insets {
 
   // Returns true if the insets are empty.
   bool IsEmpty() const { return width() == 0 && height() == 0; }
+
+  void set_top(int top) { top_ = top; }
+  void set_left(int left) { left_ = left; }
+  void set_bottom(int bottom) { bottom_ = bottom; }
+  void set_right(int right) { right_ = right; }
 
   void Set(int top, int left, int bottom, int right) {
     top_ = top;
@@ -85,6 +99,11 @@ class GFX_EXPORT Insets {
                   static_cast<int>(bottom() * y_scale),
                   static_cast<int>(right() * x_scale));
   }
+
+  // Adjusts the vertical and horizontal dimensions by the values described in
+  // |vector|. Offsetting insets before applying to a rectangle would be
+  // equivalent to offseting the rectangle then applying the insets.
+  Insets Offset(const gfx::Vector2d& vector) const;
 
   operator InsetsF() const {
     return InsetsF(static_cast<float>(top()), static_cast<float>(left()),

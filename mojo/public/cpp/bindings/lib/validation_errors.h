@@ -6,11 +6,15 @@
 #define MOJO_PUBLIC_CPP_BINDINGS_LIB_VALIDATION_ERRORS_H_
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "mojo/public/cpp/bindings/lib/validation_context.h"
 
 namespace mojo {
+
+class Message;
+
 namespace internal {
 
 enum ValidationError {
@@ -67,17 +71,43 @@ enum ValidationError {
   // Message deserialization failure, for example due to rejection by custom
   // validation logic.
   VALIDATION_ERROR_DESERIALIZATION_FAILED,
+  // The message contains a too deeply nested value, for example a recursively
+  // defined field which runtime value is too large.
+  VALIDATION_ERROR_MAX_RECURSION_DEPTH,
 };
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 const char* ValidationErrorToString(ValidationError error);
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 void ReportValidationError(ValidationContext* context,
                            ValidationError error,
                            const char* description = nullptr);
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+void ReportValidationErrorForMessage(mojo::Message* message,
+                                     ValidationError error,
+                                     const char* description = nullptr);
+
+// This class may be used by tests to suppress validation error logging. This is
+// not thread-safe and must only be instantiated on the main thread with no
+// other threads using Mojo bindings at the time of construction or destruction.
+class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+    ScopedSuppressValidationErrorLoggingForTests {
+ public:
+  ScopedSuppressValidationErrorLoggingForTests();
+  ~ScopedSuppressValidationErrorLoggingForTests();
+
+ private:
+  const bool was_suppressed_;
+
+  DISALLOW_COPY_AND_ASSIGN(ScopedSuppressValidationErrorLoggingForTests);
+};
+
 // Only used by validation tests and when there is only one thread doing message
 // validation.
-class ValidationErrorObserverForTesting {
+class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+    ValidationErrorObserverForTesting {
  public:
   explicit ValidationErrorObserverForTesting(const base::Closure& callback);
   ~ValidationErrorObserverForTesting();
@@ -99,11 +129,13 @@ class ValidationErrorObserverForTesting {
 //
 // The function returns true if the error is recorded (by a
 // SerializationWarningObserverForTesting object), false otherwise.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ReportSerializationWarning(ValidationError error);
 
 // Only used by serialization tests and when there is only one thread doing
 // message serialization.
-class SerializationWarningObserverForTesting {
+class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+    SerializationWarningObserverForTesting {
  public:
   SerializationWarningObserverForTesting();
   ~SerializationWarningObserverForTesting();
@@ -134,6 +166,6 @@ class SerializationWarningObserverForTesting {
   DLOG_IF(FATAL, (condition) && !ReportSerializationWarning(error))   \
       << "The outgoing message will trigger "                         \
       << ValidationErrorToString(error) << " at the receiving side (" \
-      << description << ").";
+      << description << ")."
 
 #endif  // MOJO_PUBLIC_CPP_BINDINGS_LIB_VALIDATION_ERRORS_H_

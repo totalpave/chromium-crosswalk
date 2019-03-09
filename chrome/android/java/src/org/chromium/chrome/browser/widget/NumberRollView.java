@@ -12,6 +12,7 @@ import android.util.Property;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
 import org.chromium.ui.interpolators.BakedBezierInterpolator;
 
@@ -26,6 +27,8 @@ public class NumberRollView extends FrameLayout {
     private TextView mDownNumber;
     private float mNumber;
     private Animator mLastRollAnimator;
+    private int mStringId;
+    private int mStringIdForZero;
 
     /**
      * A Property wrapper around the <code>number</code> functionality handled by the
@@ -82,6 +85,22 @@ public class NumberRollView extends FrameLayout {
     }
 
     /**
+     * @param stringId The id of the string to use for the description. The string must be a plural
+     *                 that has one placeholder for a quantity.
+     */
+    public void setString(int stringId) {
+        mStringId = stringId;
+    }
+
+    /**
+     * @param stringIdForZero The id of the string to use for the description when the number is
+     * zero.
+     */
+    public void setStringForZero(int stringIdForZero) {
+        mStringIdForZero = stringIdForZero;
+    }
+
+    /**
      * Gets the current number roll position.
      */
     private float getNumberRoll() {
@@ -97,11 +116,28 @@ public class NumberRollView extends FrameLayout {
         int upNumber = downNumber + 1;
 
         NumberFormat numberFormatter = NumberFormat.getIntegerInstance();
-        String newString = numberFormatter.format(upNumber);
-        if (!newString.equals(mUpNumber.getText().toString())) mUpNumber.setText(newString);
+        String newString;
+        if (mStringId != 0) {
+            newString = upNumber == 0 && mStringIdForZero != 0
+                    ? getResources().getString(mStringIdForZero)
+                    : getResources().getQuantityString(mStringId, upNumber, upNumber);
+        } else {
+            newString = numberFormatter.format(upNumber);
+        }
+        if (!newString.equals(mUpNumber.getText().toString())) {
+            mUpNumber.setText(newString);
+        }
 
-        newString = numberFormatter.format(downNumber);
-        if (!newString.equals(mDownNumber.getText().toString())) mDownNumber.setText(newString);
+        if (mStringId != 0) {
+            newString = downNumber == 0 && mStringIdForZero != 0
+                    ? getResources().getString(mStringIdForZero)
+                    : getResources().getQuantityString(mStringId, downNumber, downNumber);
+        } else {
+            newString = numberFormatter.format(downNumber);
+        }
+        if (!newString.equals(mDownNumber.getText().toString())) {
+            mDownNumber.setText(newString);
+        }
 
         float offset = number % 1.0f;
 
@@ -110,5 +146,11 @@ public class NumberRollView extends FrameLayout {
 
         mUpNumber.setAlpha(offset);
         mDownNumber.setAlpha(1.0f - offset);
+    }
+
+    /** Ends any in-progress animations. */
+    @VisibleForTesting
+    public void endAnimationsForTesting() {
+        if (mLastRollAnimator != null) mLastRollAnimator.end();
     }
 }

@@ -10,7 +10,6 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/scoped_observer.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate_evaluator.h"
@@ -20,13 +19,6 @@
 
 namespace base {
 class Value;
-}
-
-namespace content {
-class BrowserContext;
-struct FrameNavigateParams;
-struct LoadCommittedDetails;
-class WebContents;
 }
 
 namespace extensions {
@@ -89,8 +81,7 @@ class DeclarativeContentIsBookmarkedConditionTracker
   void TrackForWebContents(content::WebContents* contents) override;
   void OnWebContentsNavigation(
       content::WebContents* contents,
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
+      content::NavigationHandle* navigation_handle) override;
   bool EvaluatePredicate(const ContentPredicate* predicate,
                          content::WebContents* tab) const override;
 
@@ -158,8 +149,8 @@ class DeclarativeContentIsBookmarkedConditionTracker
   Delegate* const delegate_;
 
   // Maps WebContents to the tracker for that WebContents state.
-  std::map<content::WebContents*,
-           linked_ptr<PerWebContentsTracker>> per_web_contents_tracker_;
+  std::map<content::WebContents*, std::unique_ptr<PerWebContentsTracker>>
+      per_web_contents_tracker_;
 
   // Count of the number of extensive bookmarks changes in progress (e.g. due to
   // sync). The rules need only be evaluated once after the extensive changes

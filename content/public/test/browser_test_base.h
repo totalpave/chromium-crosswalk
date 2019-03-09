@@ -7,8 +7,10 @@
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
+#include "base/metrics/field_trial.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
+#include "content/public/test/test_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/spawned_test_server/spawned_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -18,20 +20,15 @@ class CommandLine;
 class FilePath;
 }
 
-namespace net {
-class RuleBasedHostResolverProc;
-}  // namespace net
-
 namespace content {
+
+class BrowserMainParts;
+class WebContents;
 
 class BrowserTestBase : public testing::Test {
  public:
   BrowserTestBase();
   ~BrowserTestBase() override;
-
-  // We do this so we can be used in a Task.
-  void AddRef() {}
-  void Release() {}
 
   // Configures everything for an in process browser test, then invokes
   // BrowserMain. BrowserMain ends up invoking RunTestOnMainThreadLoop.
@@ -52,10 +49,19 @@ class BrowserTestBase : public testing::Test {
   // Override this to add command line flags specific to your test.
   virtual void SetUpCommandLine(base::CommandLine* command_line) {}
 
+  // Override this to disallow accesses to be production-compatible.
+  virtual bool AllowFileAccessFromFiles() const;
+
+  // Crash the Network Service process. Should only be called when
+  // out-of-process Network Service is enabled. Re-applies any added host
+  // resolver rules, though network tasks started before the call returns may
+  // racily start before the rules have been re-applied.
+  void SimulateNetworkServiceCrash();
+
   // Returns the host resolver being used for the tests. Subclasses might want
   // to configure it inside tests.
   net::RuleBasedHostResolverProc* host_resolver() {
-    return rule_based_resolver_.get();
+    return test_host_resolver_->host_resolver();
   }
 
  protected:
@@ -71,13 +77,24 @@ class BrowserTestBase : public testing::Test {
   // Override this for things you would normally override TearDown for.
   virtual void TearDownInProcessBrowserTestFixture() {}
 
-  // Override this rather than TestBody.
-  virtual void RunTestOnMainThread() = 0;
+  // Called after the BrowserMainParts have been created, and before
+  // PreEarlyInitialization() has been called.
+  virtual void CreatedBrowserMainParts(BrowserMainParts* browser_main_parts) {}
 
   // This is invoked from main after browser_init/browser_main have completed.
-  // This prepares for the test by creating a new browser, runs the test
-  // (RunTestOnMainThread), quits the browsers and returns.
-  virtual void RunTestOnMainThreadLoop() = 0;
+  // This prepares for the test by creating a new browser and doing any other
+  // initialization.
+  // This is meant to be inherited only by the test harness.
+  virtual void PreRunTestOnMainThread() = 0;
+
+  // Override this rather than TestBody.
+  // Note this is internally called by the browser test macros.
+  virtual void RunTestOnMainThread() = 0;
+
+  // This is invoked from main after RunTestOnMainThread has run, to give the
+  // harness a chance for post-test cleanup.
+  // This is meant to be inherited only by the test harness.
+  virtual void PostRunTestOnMainThread() = 0;
 
   // Sets expected browser exit code, in case it's different than 0 (success).
   void set_expected_exit_code(int code) { expected_exit_code_ = code; }
@@ -114,7 +131,7 @@ class BrowserTestBase : public testing::Test {
   void CreateTestServer(const base::FilePath& test_server_base);
 
   // When the test is running in --single-process mode, runs the given task on
-  // the in-process renderer thread. A nested message loop is run until it
+  // the in-process renderer thread. A nested run loop is run until it
   // returns.
   void PostTaskToInProcessRendererAndWait(const base::Closure& task);
 
@@ -125,11 +142,21 @@ class BrowserTestBase : public testing::Test {
   // instead.
   void UseSoftwareCompositing();
 
-  // Returns true if the test will be using GL acceleration via OSMesa.
-  bool UsingOSMesa() const;
+  // Returns true if the test will be using GL acceleration via a software GL.
+  bool UsingSoftwareGL() const;
+
+  // Should be in PreRunTestOnMainThread, with the initial WebContents for the
+  // main window. This allows the test harness to watch it for navigations so
+  // that it can sync the host_resolver() rules to the out-of-process network
+  // code necessary.
+  void SetInitialWebContents(WebContents* web_contents);
 
  private:
   void ProxyRunTestOnMainThreadLoop();
+
+  // When using the network process, update the host resolver rules that were
+  // added in SetUpOnMainThread.
+  void InitializeNetworkProcess();
 
   // Testing server, started on demand.
   std::unique_ptr<net::SpawnedTestServer> spawned_test_server_;
@@ -138,7 +165,11 @@ class BrowserTestBase : public testing::Test {
   std::unique_ptr<net::EmbeddedTestServer> embedded_test_server_;
 
   // Host resolver used during tests.
-  scoped_refptr<net::RuleBasedHostResolverProc> rule_based_resolver_;
+  std::unique_ptr<TestHostResolver> test_host_resolver_;
+
+  // A field trial list that's used to support field trials activated prior to
+  // browser start.
+  std::unique_ptr<base::FieldTrialList> field_trial_list_;
 
   // Expected exit code (default is 0).
   int expected_exit_code_;
@@ -150,10 +181,15 @@ class BrowserTestBase : public testing::Test {
   // When true, do compositing with the software backend instead of using GL.
   bool use_software_compositing_;
 
+  // Initial WebContents to watch for navigations during SetUpOnMainThread.
+  WebContents* initial_web_contents_ = nullptr;
+
   // Whether SetUp was called. This value is checked in the destructor of this
   // class to ensure that SetUp was called. If it's not called, the test will
   // not run and report a false positive result.
   bool set_up_called_;
+
+  bool initialized_network_process_ = false;
 
 #if defined(OS_POSIX)
   bool handle_sigterm_;

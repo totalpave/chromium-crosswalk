@@ -58,6 +58,7 @@ const int kRestrictedPorts[] = {
     143,     // imap2
     179,     // BGP
     389,     // ldap
+    427,     // SLP (Also used by Apple Filing Protocol)
     465,     // smtp+ssl
     512,     // print / exec
     513,     // login
@@ -68,6 +69,7 @@ const int kRestrictedPorts[] = {
     531,     // chat
     532,     // netnews
     540,     // uucp
+    548,     // AFP (Apple Filing Protocol)
     556,     // remotefs
     563,     // nntp+ssl
     587,     // stmp?
@@ -84,15 +86,12 @@ const int kRestrictedPorts[] = {
     6667,    // Standard IRC [Apple addition]
     6668,    // Alternate IRC [Apple addition]
     6669,    // Alternate IRC [Apple addition]
-    0xFFFF,  // Used to block all invalid port numbers (see
-             // third_party/WebKit/Source/platform/weborigin/KURL.cpp,
-             // KURL::port())
+    6697,    // IRC + TLS
 };
 
-// FTP overrides the following restricted ports.
+// FTP overrides the following restricted port.
 const int kAllowedFtpPorts[] = {
     21,  // ftp data
-    22,  // ssh
 };
 
 base::LazyInstance<std::multiset<int>>::Leaky g_explicitly_allowed_ports =
@@ -176,8 +175,7 @@ ScopedPortException::ScopedPortException(int port) : port_(port) {
 }
 
 ScopedPortException::~ScopedPortException() {
-  std::multiset<int>::iterator it =
-      g_explicitly_allowed_ports.Get().find(port_);
+  auto it = g_explicitly_allowed_ports.Get().find(port_);
   if (it != g_explicitly_allowed_ports.Get().end())
     g_explicitly_allowed_ports.Get().erase(it);
   else

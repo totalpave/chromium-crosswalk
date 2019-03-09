@@ -10,7 +10,7 @@
 
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/devices/device_util_linux.h"
@@ -24,22 +24,27 @@ EventConverterEvdev::EventConverterEvdev(int fd,
                                          int id,
                                          InputDeviceType type,
                                          const std::string& name,
+                                         const std::string& phys,
                                          uint16_t vendor_id,
                                          uint16_t product_id)
     : fd_(fd),
       path_(path),
-      input_device_(id, type, name, GetInputPathInSys(path), vendor_id,
-                    product_id) {}
+      input_device_(id,
+                    type,
+                    name,
+                    phys,
+                    GetInputPathInSys(path),
+                    vendor_id,
+                    product_id),
+      controller_(FROM_HERE) {
+  input_device_.enabled = false;
+}
 
 EventConverterEvdev::~EventConverterEvdev() {
-  DCHECK(!enabled_);
-  DCHECK(!watching_);
-  if (fd_ >= 0)
-    close(fd_);
 }
 
 void EventConverterEvdev::Start() {
-  base::MessageLoopForUI::current()->WatchFileDescriptor(
+  base::MessageLoopCurrentForUI::Get()->WatchFileDescriptor(
       fd_, true, base::MessagePumpLibevent::WATCH_READ, &controller_, this);
   watching_ = true;
 }
@@ -50,7 +55,7 @@ void EventConverterEvdev::Stop() {
 }
 
 void EventConverterEvdev::SetEnabled(bool enabled) {
-  if (enabled == enabled_)
+  if (enabled == input_device_.enabled)
     return;
   if (enabled) {
     TRACE_EVENT1("evdev", "EventConverterEvdev::OnEnabled", "path",
@@ -61,7 +66,11 @@ void EventConverterEvdev::SetEnabled(bool enabled) {
                  path_.value());
     OnDisabled();
   }
-  enabled_ = enabled;
+  input_device_.enabled = enabled;
+}
+
+bool EventConverterEvdev::IsEnabled() const {
+  return input_device_.enabled;
 }
 
 void EventConverterEvdev::OnStopped() {
@@ -93,6 +102,14 @@ bool EventConverterEvdev::HasTouchpad() const {
 }
 
 bool EventConverterEvdev::HasTouchscreen() const {
+  return false;
+}
+
+bool EventConverterEvdev::HasPen() const {
+  return false;
+}
+
+bool EventConverterEvdev::HasGamepad() const {
   return false;
 }
 
@@ -145,9 +162,15 @@ void EventConverterEvdev::SetCapsLockLed(bool enabled) {
 void EventConverterEvdev::SetTouchEventLoggingEnabled(bool enabled) {
 }
 
+void EventConverterEvdev::SetPalmSuppressionCallback(
+    const base::RepeatingCallback<void(bool)>& callback) {}
+
 base::TimeTicks EventConverterEvdev::TimeTicksFromInputEvent(
     const input_event& event) {
-  return ui::EventTimeStampFromSeconds(event.time.tv_sec) +
+  base::TimeTicks timestamp =
+      ui::EventTimeStampFromSeconds(event.time.tv_sec) +
       base::TimeDelta::FromMicroseconds(event.time.tv_usec);
+  ValidateEventTimeClock(&timestamp);
+  return timestamp;
 }
 }  // namespace ui

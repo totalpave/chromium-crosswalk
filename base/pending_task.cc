@@ -4,36 +4,25 @@
 
 #include "base/pending_task.h"
 
-#include "base/tracked_objects.h"
 
 namespace base {
 
-PendingTask::PendingTask(const tracked_objects::Location& posted_from,
-                         const base::Closure& task)
-    : base::TrackingInfo(posted_from, TimeTicks()),
-      task(task),
-      posted_from(posted_from),
-      sequence_num(0),
-      nestable(true),
-      is_high_res(false) {
-}
+PendingTask::PendingTask() = default;
 
-PendingTask::PendingTask(const tracked_objects::Location& posted_from,
-                         const base::Closure& task,
+PendingTask::PendingTask(const Location& posted_from,
+                         OnceClosure task,
                          TimeTicks delayed_run_time,
-                         bool nestable)
-    : base::TrackingInfo(posted_from, delayed_run_time),
-      task(task),
+                         Nestable nestable)
+    : task(std::move(task)),
       posted_from(posted_from),
-      sequence_num(0),
-      nestable(nestable),
-      is_high_res(false) {
-}
+      delayed_run_time(delayed_run_time),
+      nestable(nestable) {}
 
-PendingTask::PendingTask(const PendingTask& other) = default;
+PendingTask::PendingTask(PendingTask&& other) = default;
 
-PendingTask::~PendingTask() {
-}
+PendingTask::~PendingTask() = default;
+
+PendingTask& PendingTask::operator=(PendingTask&& other) = default;
 
 bool PendingTask::operator<(const PendingTask& other) const {
   // Since the top of a priority queue is defined as the "greatest" element, we

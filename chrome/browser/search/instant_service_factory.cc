@@ -16,8 +16,7 @@
 
 // static
 InstantService* InstantServiceFactory::GetForProfile(Profile* profile) {
-  if (!search::IsInstantExtendedAPIEnabled())
-    return NULL;
+  DCHECK(search::IsInstantExtendedAPIEnabled());
 
   return static_cast<InstantService*>(
       GetInstance()->GetServiceForBrowserContext(profile, true));
@@ -34,14 +33,11 @@ InstantServiceFactory::InstantServiceFactory()
         BrowserContextDependencyManager::GetInstance()) {
   DependsOn(suggestions::SuggestionsServiceFactory::GetInstance());
   DependsOn(TemplateURLServiceFactory::GetInstance());
-#if defined(ENABLE_THEMES)
   DependsOn(ThemeServiceFactory::GetInstance());
-#endif
   DependsOn(TopSitesFactory::GetInstance());
 }
 
-InstantServiceFactory::~InstantServiceFactory() {
-}
+InstantServiceFactory::~InstantServiceFactory() = default;
 
 content::BrowserContext* InstantServiceFactory::GetBrowserContextToUse(
     content::BrowserContext* context) const {
@@ -49,8 +45,7 @@ content::BrowserContext* InstantServiceFactory::GetBrowserContextToUse(
 }
 
 KeyedService* InstantServiceFactory::BuildServiceInstanceFor(
-    content::BrowserContext* profile) const {
-  return search::IsInstantExtendedAPIEnabled()
-             ? new InstantService(static_cast<Profile*>(profile))
-             : NULL;
+    content::BrowserContext* context) const {
+  DCHECK(search::IsInstantExtendedAPIEnabled());
+  return new InstantService(Profile::FromBrowserContext(context));
 }

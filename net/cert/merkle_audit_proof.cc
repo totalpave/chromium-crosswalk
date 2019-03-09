@@ -28,14 +28,16 @@ uint64_t CalculateAuditPathLength(uint64_t leaf_index, uint64_t tree_size) {
   return length;
 }
 
-MerkleAuditProof::MerkleAuditProof() {}
+MerkleAuditProof::MerkleAuditProof() = default;
 
-MerkleAuditProof::MerkleAuditProof(const std::string& log_id,
-                                   uint64_t leaf_index,
+MerkleAuditProof::MerkleAuditProof(const MerkleAuditProof& other) = default;
+
+MerkleAuditProof::MerkleAuditProof(uint64_t leaf_index,
+                                   uint64_t tree_size,
                                    const std::vector<std::string>& audit_path)
-    : log_id(log_id), leaf_index(leaf_index), nodes(audit_path) {}
+    : leaf_index(leaf_index), tree_size(tree_size), nodes(audit_path) {}
 
-MerkleAuditProof::~MerkleAuditProof() {}
+MerkleAuditProof::~MerkleAuditProof() = default;
 
 }  // namespace ct
 }  // namespace net

@@ -11,7 +11,7 @@
 #include "base/macros.h"
 #include "remoting/test/fake_access_token_fetcher.h"
 #include "remoting/test/fake_host_list_fetcher.h"
-#include "remoting/test/fake_refresh_token_store.h"
+#include "remoting/test/fake_test_token_storage.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -47,7 +47,7 @@ class ChromotingTestDriverEnvironmentTest : public ::testing::Test {
   HostInfo CreateFakeHostInfo();
 
   FakeAccessTokenFetcher fake_access_token_fetcher_;
-  FakeRefreshTokenStore fake_token_store_;
+  FakeTestTokenStorage fake_token_store_;
   FakeHostListFetcher fake_host_list_fetcher_;
 
   std::unique_ptr<ChromotingTestDriverEnvironment> environment_object_;
@@ -56,11 +56,11 @@ class ChromotingTestDriverEnvironmentTest : public ::testing::Test {
   DISALLOW_COPY_AND_ASSIGN(ChromotingTestDriverEnvironmentTest);
 };
 
-ChromotingTestDriverEnvironmentTest::ChromotingTestDriverEnvironmentTest() {
-}
+ChromotingTestDriverEnvironmentTest::ChromotingTestDriverEnvironmentTest() =
+    default;
 
-ChromotingTestDriverEnvironmentTest::~ChromotingTestDriverEnvironmentTest() {
-}
+ChromotingTestDriverEnvironmentTest::~ChromotingTestDriverEnvironmentTest() =
+    default;
 
 void ChromotingTestDriverEnvironmentTest::SetUp() {
   ChromotingTestDriverEnvironment::EnvironmentOptions options;
@@ -76,12 +76,13 @@ void ChromotingTestDriverEnvironmentTest::SetUp() {
 
   environment_object_->SetAccessTokenFetcherForTest(
       &fake_access_token_fetcher_);
-  environment_object_->SetRefreshTokenStoreForTest(&fake_token_store_);
+  environment_object_->SetTestTokenStorageForTest(&fake_token_store_);
   environment_object_->SetHostListFetcherForTest(&fake_host_list_fetcher_);
 }
 
 bool ChromotingTestDriverEnvironmentTest::RefreshHostList() {
-  return environment_object_->RefreshHostList();
+  return environment_object_->RefreshHostList() &&
+         environment_object_->FindHostInHostList();
 }
 
 HostInfo ChromotingTestDriverEnvironmentTest::CreateFakeHostInfo() {
@@ -113,9 +114,8 @@ TEST_F(ChromotingTestDriverEnvironmentTest, InitializeObjectWithAuthCode) {
             kFakeAccessTokenFetcherAccessTokenValue);
   EXPECT_EQ(environment_object_->host_list().size(), 0u);
 
-  // Now Retrieve the host list.
-  EXPECT_TRUE(environment_object_->WaitForHostOnline(kFakeHostJidValue,
-                                                     kFakeHostNameValue));
+  // Now retrieve the host list.
+  EXPECT_TRUE(environment_object_->WaitForHostOnline());
 
   // Should only have one host in the list.
   EXPECT_EQ(environment_object_->host_list().size(), kExpectedHostListSize);
@@ -152,9 +152,8 @@ TEST_F(ChromotingTestDriverEnvironmentTest, InitializeObjectWithRefreshToken) {
             kFakeAccessTokenFetcherAccessTokenValue);
   EXPECT_EQ(environment_object_->host_list().size(), 0u);
 
-  // Now Retrieve the host list.
-  EXPECT_TRUE(environment_object_->WaitForHostOnline(kFakeHostJidValue,
-                                                     kFakeHostNameValue));
+  // Now retrieve the host list.
+  EXPECT_TRUE(environment_object_->WaitForHostOnline());
 
   // Should only have one host in the list.
   EXPECT_EQ(environment_object_->host_list().size(), kExpectedHostListSize);
@@ -262,7 +261,7 @@ TEST_F(ChromotingTestDriverEnvironmentTest, RefreshHostList_HostOffline) {
 
   environment_object_->SetHostNameForTest(kFakeHostNameValue);
   environment_object_->SetHostJidForTest(kFakeHostJidValue);
-  EXPECT_FALSE(RefreshHostList());
+  EXPECT_TRUE(RefreshHostList());
   EXPECT_FALSE(environment_object_->host_info().IsReadyForConnection());
 }
 

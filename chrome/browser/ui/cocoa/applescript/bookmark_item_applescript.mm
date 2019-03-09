@@ -4,8 +4,11 @@
 
 #import "chrome/browser/ui/cocoa/applescript/bookmark_item_applescript.h"
 
+#include "base/mac/foundation_util.h"
 #include "base/strings/sys_string_conversions.h"
+#import "chrome/browser/app_controller_mac.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#import "chrome/browser/ui/cocoa/applescript/apple_event_util.h"
 #import "chrome/browser/ui/cocoa/applescript/error_applescript.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 
@@ -45,6 +48,16 @@ using bookmarks::BookmarkNode;
 }
 
 - (void)setURL:(NSString*)aURL {
+  GURL url(base::SysNSStringToUTF8(aURL));
+
+  AppController* appDelegate =
+      base::mac::ObjCCastStrict<AppController>([NSApp delegate]);
+  if (!chrome::mac::IsJavaScriptEnabledForProfile([appDelegate lastProfile]) &&
+      url.SchemeIs(url::kJavaScriptScheme)) {
+    AppleScript::SetError(AppleScript::errJavaScriptUnsupported);
+    return;
+  }
+
   // If a scripter sets a URL before the node is added, URL is saved at a
   // temporary location.
   if (!bookmarkNode_) {
@@ -56,7 +69,6 @@ using bookmarks::BookmarkNode;
   if (!model)
     return;
 
-  GURL url(base::SysNSStringToUTF8(aURL));
   if (!url.is_valid()) {
     AppleScript::SetError(AppleScript::errInvalidURL);
     return;

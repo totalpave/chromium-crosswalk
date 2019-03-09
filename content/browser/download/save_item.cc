@@ -35,7 +35,6 @@ SaveItem::SaveItem(const GURL& url,
       referrer_(referrer),
       frame_tree_node_id_(frame_tree_node_id),
       container_frame_tree_node_id_(container_frame_tree_node_id),
-      total_bytes_(0),
       received_bytes_(0),
       state_(WAIT_START),
       is_success_(false),
@@ -48,16 +47,12 @@ SaveItem::~SaveItem() {}
 
 // Set start state for save item.
 void SaveItem::Start() {
-  DCHECK(state_ == WAIT_START);
+  DCHECK_EQ(state_, WAIT_START);
   state_ = IN_PROGRESS;
 }
 
-// If we've received more data than we were expecting (bad server info?),
-// revert to 'unknown size mode'.
 void SaveItem::UpdateSize(int64_t bytes_so_far) {
   received_bytes_ = bytes_so_far;
-  if (received_bytes_ >= total_bytes_)
-    total_bytes_ = 0;
 }
 
 // Updates from the file thread may have been posted while this saving job
@@ -95,13 +90,9 @@ void SaveItem::Finish(int64_t size, bool is_success) {
 }
 
 void SaveItem::SetTargetPath(const base::FilePath& full_path) {
-  DCHECK(!full_path.empty() && !has_final_name());
+  DCHECK(!full_path.empty());
+  DCHECK(!has_final_name());
   full_path_ = full_path;
-}
-
-void SaveItem::SetTotalBytes(int64_t total_bytes) {
-  DCHECK_EQ(0, total_bytes_);
-  total_bytes_ = total_bytes;
 }
 
 }  // namespace content

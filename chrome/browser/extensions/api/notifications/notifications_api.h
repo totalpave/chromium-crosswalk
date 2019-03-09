@@ -11,11 +11,15 @@
 #include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/common/extensions/api/notifications.h"
 #include "extensions/browser/extension_function.h"
-#include "ui/message_center/notification_types.h"
+#include "ui/message_center/public/cpp/notification_types.h"
 
+namespace message_center {
 class Notification;
+}
 
 namespace extensions {
+
+class ExtensionNotificationDisplayHelper;
 
 class NotificationsApiFunction : public ChromeAsyncExtensionFunction {
  public:
@@ -31,11 +35,15 @@ class NotificationsApiFunction : public ChromeAsyncExtensionFunction {
                           api::notifications::NotificationOptions* options);
   bool UpdateNotification(const std::string& id,
                           api::notifications::NotificationOptions* options,
-                          Notification* notification);
+                          message_center::Notification* notification);
 
   bool IsNotificationsApiEnabled() const;
 
   bool AreExtensionNotificationsAllowed() const;
+
+  // Returns the display helper that should be used for interacting with the
+  // common notification system.
+  ExtensionNotificationDisplayHelper* GetDisplayHelper() const;
 
   // Returns true if the API function is still allowed to run even when the
   // notifications for a notifier have been disabled.
@@ -127,7 +135,7 @@ class NotificationsGetPermissionLevelFunction
 
  private:
   DECLARE_EXTENSION_FUNCTION("notifications.getPermissionLevel",
-                             NOTIFICATIONS_GET_ALL)
+                             NOTIFICATIONS_GETPERMISSIONLEVEL)
 };
 
 }  // namespace extensions

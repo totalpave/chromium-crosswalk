@@ -5,15 +5,13 @@
 #ifndef REMOTING_HOST_WIN_RDP_DESKTOP_SESSION_H_
 #define REMOTING_HOST_WIN_RDP_DESKTOP_SESSION_H_
 
-#include <atlbase.h>
-#include <atlcom.h>
-#include <atlctl.h>
+#include <wrl/client.h>
 
 #include <memory>
 
-#include "base/win/scoped_comptr.h"
+#include "base/win/atl.h"
 // chromoting_lib.h contains MIDL-generated declarations.
-#include "remoting/host/chromoting_lib.h"
+#include "remoting/host/win/chromoting_lib.h"
 #include "remoting/host/win/rdp_client.h"
 
 namespace remoting {
@@ -42,13 +40,16 @@ class __declspec(uuid(RDP_DESKTOP_SESSION_CLSID)) RdpDesktopSession
 
   // IRdpDesktopSession implementation.
   STDMETHOD(Connect)
-  (long width,
-   long height,
-   BSTR terminal_id,
-   DWORD port_number,
-   IRdpDesktopSessionEventHandler* event_handler) override;
+      (long width,
+       long height,
+       long dpi_x,
+       long dpi_y,
+       BSTR terminal_id,
+       DWORD port_number,
+       IRdpDesktopSessionEventHandler* event_handler) override;
   STDMETHOD(Disconnect)() override;
-  STDMETHOD(ChangeResolution)(long width, long height) override;
+  STDMETHOD(ChangeResolution)(long width, long height,
+                              long dpi_x, long dpi_y) override;
   STDMETHOD(InjectSas)() override;
 
   DECLARE_NO_REGISTRY()
@@ -68,7 +69,7 @@ class __declspec(uuid(RDP_DESKTOP_SESSION_CLSID)) RdpDesktopSession
 
   // Holds a reference to the caller's EventHandler, through which notifications
   // are dispatched. Released in Disconnect(), to prevent further notifications.
-  base::win::ScopedComPtr<IRdpDesktopSessionEventHandler> event_handler_;
+  Microsoft::WRL::ComPtr<IRdpDesktopSessionEventHandler> event_handler_;
 
   DECLARE_PROTECT_FINAL_CONSTRUCT()
 };

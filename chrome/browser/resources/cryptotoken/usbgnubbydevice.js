@@ -27,10 +27,10 @@ function UsbGnubbyDevice(gnubbies, dev, id, inEndpoint, outEndpoint) {
   this.outEndpoint = outEndpoint;
   this.txqueue = [];
   this.clients = [];
-  this.lockCID = 0;     // channel ID of client holding a lock, if != 0.
-  this.lockMillis = 0;  // current lock period.
-  this.lockTID = null;  // timer id of lock timeout.
-  this.closing = false;  // device to be closed by receive loop.
+  this.lockCID = 0;       // channel ID of client holding a lock, if != 0.
+  this.lockMillis = 0;    // current lock period.
+  this.lockTID = null;    // timer id of lock timeout.
+  this.closing = false;   // device to be closed by receive loop.
   this.updating = false;  // device firmware is in final stage of updating.
   this.inTransferPending = false;
   this.outTransferPending = false;
@@ -44,7 +44,30 @@ UsbGnubbyDevice.NAMESPACE = 'usb';
 
 /** Destroys this low-level device instance. */
 UsbGnubbyDevice.prototype.destroy = function() {
-  if (!this.dev) return;  // Already dead.
+  function closeLowLevelDevice(dev) {
+    chrome.usb.releaseInterface(dev, 0, function() {
+      if (chrome.runtime.lastError) {
+        console.warn(
+            UTIL_fmt('Device ' + dev.handle + ' couldn\'t be released:'));
+        console.warn(UTIL_fmt(chrome.runtime.lastError.message));
+        return;
+      }
+      console.log(UTIL_fmt('Device ' + dev.handle + ' released'));
+      chrome.usb.closeDevice(dev, function() {
+        if (chrome.runtime.lastError) {
+          console.warn(
+              UTIL_fmt('Device ' + dev.handle + ' couldn\'t be closed:'));
+          console.warn(UTIL_fmt(chrome.runtime.lastError.message));
+          return;
+        }
+        console.log(UTIL_fmt('Device ' + dev.handle + ' closed'));
+      });
+    });
+  }
+
+  if (!this.dev) {
+    return;
+  }  // Already dead.
 
   this.gnubbies_.removeOpenDevice(
       {namespace: UsbGnubbyDevice.NAMESPACE, device: this.id});
@@ -57,15 +80,17 @@ UsbGnubbyDevice.prototype.destroy = function() {
   //
   // Use magic CID 0 to address all.
   this.publishFrame_(new Uint8Array([
-        0, 0, 0, 0,  // broadcast CID
-        GnubbyDevice.CMD_ERROR,
-        0, 1,  // length
-        GnubbyDevice.GONE]).buffer);
+                       0, 0, 0, 0,                    // broadcast CID
+                       GnubbyDevice.CMD_ERROR, 0, 1,  // length
+                       GnubbyDevice.GONE
+                     ]).buffer);
 
   // Set all clients to closed status and remove them.
   while (this.clients.length != 0) {
     var client = this.clients.shift();
-    if (client) client.closed = true;
+    if (client) {
+      client.closed = true;
+    }
   }
 
   if (this.lockTID) {
@@ -75,25 +100,27 @@ UsbGnubbyDevice.prototype.destroy = function() {
 
   var dev = this.dev;
   this.dev = null;
+  var reallyCloseDevice = closeLowLevelDevice.bind(null, dev);
 
-  chrome.usb.releaseInterface(dev, 0, function() {
-    if (chrome.runtime.lastError) {
-      console.warn(UTIL_fmt('Device ' + dev.handle +
-          ' couldn\'t be released:'));
-      console.warn(UTIL_fmt(chrome.runtime.lastError.message));
+  if (this.destroyHook_) {
+    var p = this.destroyHook_();
+    if (!p) {
+      reallyCloseDevice();
       return;
     }
-    console.log(UTIL_fmt('Device ' + dev.handle + ' released'));
-    chrome.usb.closeDevice(dev, function() {
-      if (chrome.runtime.lastError) {
-        console.warn(UTIL_fmt('Device ' + dev.handle +
-            ' couldn\'t be closed:'));
-        console.warn(UTIL_fmt(chrome.runtime.lastError.message));
-        return;
-      }
-      console.log(UTIL_fmt('Device ' + dev.handle + ' closed'));
-    });
-  });
+    p.then(reallyCloseDevice);
+  } else {
+    reallyCloseDevice();
+  }
+};
+
+/**
+ * Sets a callback that will get called when this device instance is destroyed.
+ * @param {function() : ?Promise} cb Called back when closed. Callback may
+ *     yield a promise that resolves when the close hook completes.
+ */
+UsbGnubbyDevice.prototype.setDestroyHook = function(cb) {
+  this.destroyHook_ = cb;
 };
 
 /**
@@ -113,11 +140,12 @@ UsbGnubbyDevice.prototype.publishFrame_ = function(f) {
       remaining.push(client);
     } else {
       changes = true;
-      console.log(UTIL_fmt(
-          '[' + Gnubby.hexCid(client.cid) + '] left?'));
+      console.log(UTIL_fmt('[' + Gnubby.hexCid(client.cid) + '] left?'));
     }
   }
-  if (changes) this.clients = remaining;
+  if (changes) {
+    this.clients = remaining;
+  }
 };
 
 /**
@@ -125,8 +153,12 @@ UsbGnubbyDevice.prototype.publishFrame_ = function(f) {
  * @private
  */
 UsbGnubbyDevice.prototype.readyToUse_ = function() {
-  if (this.closing) return false;
-  if (!this.dev) return false;
+  if (this.closing) {
+    return false;
+  }
+  if (!this.dev) {
+    return false;
+  }
 
   return true;
 };
@@ -136,20 +168,28 @@ UsbGnubbyDevice.prototype.readyToUse_ = function() {
  * @private
  */
 UsbGnubbyDevice.prototype.readOneReply_ = function() {
-  if (!this.readyToUse_()) return;  // No point in continuing.
-  if (this.updating) return;  // Do not bother waiting for final update reply.
+  if (!this.readyToUse_()) {
+    return;
+  }  // No point in continuing.
+  if (this.updating) {
+    return;
+  }  // Do not bother waiting for final update reply.
 
   var self = this;
 
   function inTransferComplete(x) {
     self.inTransferPending = false;
 
-    if (!self.readyToUse_()) return;  // No point in continuing.
+    if (!self.readyToUse_()) {
+      return;
+    }  // No point in continuing.
 
     if (chrome.runtime.lastError) {
       console.warn(UTIL_fmt('in bulkTransfer got lastError: '));
       console.warn(UTIL_fmt(chrome.runtime.lastError.message));
-      window.setTimeout(function() { self.destroy(); }, 0);
+      window.setTimeout(function() {
+        self.destroy();
+      }, 0);
       return;
     }
 
@@ -160,25 +200,25 @@ UsbGnubbyDevice.prototype.readOneReply_ = function() {
       self.publishFrame_(x.data);
 
       // Write another pending request, if any.
-      window.setTimeout(
-          function() {
-            self.txqueue.shift();  // Drop sent frame from queue.
-            self.writeOneRequest_();
-          },
-          0);
+      window.setTimeout(function() {
+        self.txqueue.shift();  // Drop sent frame from queue.
+        self.writeOneRequest_();
+      }, 0);
     } else {
       console.log(UTIL_fmt('no x.data!'));
-      console.log(x);
-      window.setTimeout(function() { self.destroy(); }, 0);
+      console.log(UTIL_fmt(JSON.stringify(x)));
+      window.setTimeout(function() {
+        self.destroy();
+      }, 0);
     }
   }
 
   if (this.inTransferPending == false) {
     this.inTransferPending = true;
     chrome.usb.bulkTransfer(
-      /** @type {!chrome.usb.ConnectionHandle} */(this.dev),
-      { direction: 'in', endpoint: this.inEndpoint, length: 2048 },
-      inTransferComplete);
+        /** @type {!chrome.usb.ConnectionHandle} */ (this.dev),
+        {direction: 'in', endpoint: this.inEndpoint, length: 2048},
+        inTransferComplete);
   } else {
     throw 'inTransferPending!';
   }
@@ -190,7 +230,9 @@ UsbGnubbyDevice.prototype.readOneReply_ = function() {
  */
 UsbGnubbyDevice.prototype.registerClient = function(who) {
   for (var i = 0; i < this.clients.length; ++i) {
-    if (this.clients[i] === who) return;  // Already registered.
+    if (this.clients[i] === who) {
+      return;
+    }  // Already registered.
   }
   this.clients.push(who);
 };
@@ -204,11 +246,15 @@ UsbGnubbyDevice.prototype.registerClient = function(who) {
  */
 UsbGnubbyDevice.prototype.deregisterClient = function(who) {
   var current = this.clients;
-  if (current.length == 0) return -1;
+  if (current.length == 0) {
+    return -1;
+  }
   this.clients = [];
   for (var i = 0; i < current.length; ++i) {
     var client = current[i];
-    if (client !== who) this.clients.push(client);
+    if (client !== who) {
+      this.clients.push(client);
+    }
   }
   return this.clients.length;
 };
@@ -218,10 +264,13 @@ UsbGnubbyDevice.prototype.deregisterClient = function(who) {
  * @return {boolean} Whether this device has who as a client.
  */
 UsbGnubbyDevice.prototype.hasClient = function(who) {
-  if (this.clients.length == 0) return false;
+  if (this.clients.length == 0) {
+    return false;
+  }
   for (var i = 0; i < this.clients.length; ++i) {
-    if (who === this.clients[i])
+    if (who === this.clients[i]) {
       return true;
+    }
   }
   return false;
 };
@@ -231,33 +280,43 @@ UsbGnubbyDevice.prototype.hasClient = function(who) {
  * @private
  */
 UsbGnubbyDevice.prototype.writeOneRequest_ = function() {
-  if (!this.readyToUse_()) return;  // No point in continuing.
+  if (!this.readyToUse_()) {
+    return;
+  }  // No point in continuing.
 
-  if (this.txqueue.length == 0) return;  // Nothing to send.
+  if (this.txqueue.length == 0) {
+    return;
+  }  // Nothing to send.
 
   var frame = this.txqueue[0];
 
   var self = this;
-  function OutTransferComplete(x) {
+  var OutTransferComplete = function(x) {
     self.outTransferPending = false;
 
-    if (!self.readyToUse_()) return;  // No point in continuing.
+    if (!self.readyToUse_()) {
+      return;
+    }  // No point in continuing.
 
     if (chrome.runtime.lastError) {
       console.warn(UTIL_fmt('out bulkTransfer lastError: '));
       console.warn(UTIL_fmt(chrome.runtime.lastError.message));
-      window.setTimeout(function() { self.destroy(); }, 0);
+      window.setTimeout(function() {
+        self.destroy();
+      }, 0);
       return;
     }
 
-    window.setTimeout(function() { self.readOneReply_(); }, 0);
+    window.setTimeout(function() {
+      self.readOneReply_();
+    }, 0);
   };
 
   var u8 = new Uint8Array(frame);
 
   // See whether this requires scrubbing before logging.
   var alternateLog = Gnubby.hasOwnProperty('redactRequestLog') &&
-                     Gnubby['redactRequestLog'](u8);
+      Gnubby['redactRequestLog'](u8);
   if (alternateLog) {
     console.log(UTIL_fmt('>' + alternateLog));
   } else {
@@ -267,8 +326,8 @@ UsbGnubbyDevice.prototype.writeOneRequest_ = function() {
   if (this.outTransferPending == false) {
     this.outTransferPending = true;
     chrome.usb.bulkTransfer(
-        /** @type {!chrome.usb.ConnectionHandle} */(this.dev),
-        { direction: 'out', endpoint: this.outEndpoint, data: frame },
+        /** @type {!chrome.usb.ConnectionHandle} */ (this.dev),
+        {direction: 'out', endpoint: this.outEndpoint, data: frame},
         OutTransferComplete);
   } else {
     throw 'outTransferPending!';
@@ -288,17 +347,13 @@ UsbGnubbyDevice.prototype.checkLock_ = function(cid, cmd) {
     if (this.lockCID != cid) {
       // Some other channel has active lock.
 
-      if (cmd != GnubbyDevice.CMD_SYNC &&
-          cmd != GnubbyDevice.CMD_INIT) {
+      if (cmd != GnubbyDevice.CMD_SYNC && cmd != GnubbyDevice.CMD_INIT) {
         // Anything but SYNC|INIT gets an immediate busy.
-        var busy = new Uint8Array(
-            [(cid >> 24) & 255,
-             (cid >> 16) & 255,
-             (cid >> 8) & 255,
-             cid & 255,
-             GnubbyDevice.CMD_ERROR,
-             0, 1,  // length
-             GnubbyDevice.BUSY]);
+        var busy = new Uint8Array([
+          (cid >> 24) & 255, (cid >> 16) & 255, (cid >> 8) & 255, cid & 255,
+          GnubbyDevice.CMD_ERROR, 0, 1,  // length
+          GnubbyDevice.BUSY
+        ]);
         // Log the synthetic busy too.
         console.log(UTIL_fmt('<' + UTIL_BytesToHex(busy)));
         this.publishFrame_(busy.buffer);
@@ -343,14 +398,12 @@ UsbGnubbyDevice.prototype.updateLock_ = function(cid, cmd, arg) {
     // (re)set the lock timeout if we still hold it.
     if (this.lockCID) {
       var self = this;
-      this.lockTID = window.setTimeout(
-          function() {
-            console.warn(UTIL_fmt(
-                'lock for CID ' + Gnubby.hexCid(cid) + ' expired!'));
-            self.lockTID = null;
-            self.lockCID = 0;
-          },
-          this.lockMillis);
+      this.lockTID = window.setTimeout(function() {
+        console.warn(
+            UTIL_fmt('lock for CID ' + Gnubby.hexCid(cid) + ' expired!'));
+        self.lockTID = null;
+        self.lockCID = 0;
+      }, this.lockMillis);
     }
   }
 };
@@ -363,8 +416,12 @@ UsbGnubbyDevice.prototype.updateLock_ = function(cid, cmd, arg) {
  * @param {ArrayBuffer|Uint8Array} data Command argument data
  */
 UsbGnubbyDevice.prototype.queueCommand = function(cid, cmd, data) {
-  if (!this.dev) return;
-  if (!this.checkLock_(cid, cmd)) return;
+  if (!this.dev) {
+    return;
+  }
+  if (!this.checkLock_(cid, cmd)) {
+    return;
+  }
 
   var u8 = new Uint8Array(data);
   var frame = new Uint8Array(u8.length + 7);
@@ -384,7 +441,9 @@ UsbGnubbyDevice.prototype.queueCommand = function(cid, cmd, data) {
 
   var wasEmpty = (this.txqueue.length == 0);
   this.txqueue.push(frame.buffer);
-  if (wasEmpty) this.writeOneRequest_();
+  if (wasEmpty) {
+    this.writeOneRequest_();
+  }
 };
 
 /**
@@ -409,15 +468,21 @@ UsbGnubbyDevice.enumerate = function(cb, opt_type) {
   var numEnumerated = 0;
   var allDevs = [];
 
-  function enumerated(devs) {
-    allDevs = allDevs.concat(devs);
+  function enumerated(vidPid, devs) {
+    if (devs) {
+      for (var i = 0; i < devs.length; i++) {
+        devs[i].enumeratedBy = vidPid;
+      }
+      allDevs = allDevs.concat(devs);
+    }
     if (++numEnumerated == UsbGnubbyDevice.WINUSB_VID_PIDS.length) {
       cb(allDevs);
     }
   }
 
   for (var i = 0; i < UsbGnubbyDevice.WINUSB_VID_PIDS.length; i++) {
-    chrome.usb.getDevices(UsbGnubbyDevice.WINUSB_VID_PIDS[i], enumerated);
+    var vidPid = UsbGnubbyDevice.WINUSB_VID_PIDS[i];
+    chrome.usb.getDevices(vidPid, enumerated.bind(null, vidPid));
   }
 };
 
@@ -505,17 +570,26 @@ UsbGnubbyDevice.open = function(gnubbies, which, dev, cb) {
           cb(-GnubbyDevice.BUSY);
           return;
         }
-        var gnubby = new UsbGnubbyDevice(gnubbies, nonNullHandle, which,
-            inEndpoint, outEndpoint);
+        // Restore the enumeratedBy value, if we had it.
+        if (enumeratedBy) {
+          dev.enumeratedBy = enumeratedBy;
+        }
+        var gnubby = new UsbGnubbyDevice(
+            gnubbies, nonNullHandle, which, inEndpoint, outEndpoint);
         cb(-GnubbyDevice.OK, gnubby);
       });
     });
   }
 
+  var enumeratedBy = dev.enumeratedBy;
+
   if (UsbGnubbyDevice.runningOnCrOS === undefined) {
     UsbGnubbyDevice.runningOnCrOS =
         (window.navigator.appVersion.indexOf('; CrOS ') != -1);
   }
+  // dev contains an enumeratedBy value, which we need to strip prior to
+  // calling Chrome APIs with it.
+  delete dev.enumeratedBy;
   if (UsbGnubbyDevice.runningOnCrOS) {
     chrome.usb.requestAccess(dev, 0, function(success) {
       // Even though the argument to requestAccess is a chrome.usb.Device, the
@@ -539,6 +613,7 @@ UsbGnubbyDevice.deviceToDeviceId = function(dev) {
   var usbDev = /** @type {!chrome.usb.Device} */ (dev);
   var deviceId = {
     namespace: UsbGnubbyDevice.NAMESPACE,
+    enumeratedBy: dev.enumeratedBy,
     device: usbDev.device
   };
   return deviceId;

@@ -2,19 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
-#include "chrome/browser/apps/app_browsertest_util.h"
+#include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/extensions/features/feature_channel.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/version_info/version_info.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/app_window/native_app_window.h"
+#include "extensions/common/features/feature_channel.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "ui/base/base_window.h"
 #include "ui/gfx/geometry/rect.h"
@@ -23,123 +24,130 @@
 #include "ui/base/win/shell.h"
 #endif
 
+#if defined(OS_MACOSX)
+#include "base/mac/mac_util.h"
+#endif
+
 namespace extensions {
 
-namespace {
-
-class TestAppWindowRegistryObserver : public AppWindowRegistry::Observer {
- public:
-  explicit TestAppWindowRegistryObserver(Profile* profile)
-      : profile_(profile), icon_updates_(0) {
-    AppWindowRegistry::Get(profile_)->AddObserver(this);
-  }
-  ~TestAppWindowRegistryObserver() override {
-    AppWindowRegistry::Get(profile_)->RemoveObserver(this);
-  }
-
-  // Overridden from AppWindowRegistry::Observer:
-  void OnAppWindowIconChanged(AppWindow* app_window) override {
-    ++icon_updates_;
-  }
-
-  int icon_updates() { return icon_updates_; }
-
- private:
-  Profile* profile_;
-  int icon_updates_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestAppWindowRegistryObserver);
-};
-
-}  // namespace
+using AppWindowApiTest = PlatformAppBrowserTest;
+using ExperimentalAppWindowApiTest = ExperimentalPlatformAppBrowserTest;
 
 // Tests chrome.app.window.setIcon.
-IN_PROC_BROWSER_TEST_F(ExperimentalPlatformAppBrowserTest, WindowsApiSetIcon) {
-  std::unique_ptr<TestAppWindowRegistryObserver> test_observer(
-      new TestAppWindowRegistryObserver(browser()->profile()));
+IN_PROC_BROWSER_TEST_F(ExperimentalAppWindowApiTest, SetIcon) {
   ExtensionTestMessageListener listener("ready", true);
 
   // Launch the app and wait for it to be ready.
   LoadAndLaunchPlatformApp("windows_api_set_icon", &listener);
-  EXPECT_EQ(0, test_observer->icon_updates());
   listener.Reply("");
+
+  AppWindow* app_window = GetFirstAppWindow();
+  ASSERT_TRUE(app_window);
 
   // Now wait until the WebContent has decoded the icon and chrome has
   // processed it. This needs to be in a loop since the renderer runs in a
   // different process.
-  while (test_observer->icon_updates() < 1) {
-    base::RunLoop run_loop;
-    run_loop.RunUntilIdle();
-  }
-  AppWindow* app_window = GetFirstAppWindow();
-  ASSERT_TRUE(app_window);
+  while (app_window->custom_app_icon().IsEmpty())
+    base::RunLoop().RunUntilIdle();
+
   EXPECT_NE(std::string::npos,
             app_window->app_icon_url().spec().find("icon.png"));
-  EXPECT_EQ(1, test_observer->icon_updates());
 }
 
-// TODO(asargent) - Figure out what to do about the fact that minimize events
-// don't work under ubuntu unity.
-// (crbug.com/162794 and https://bugs.launchpad.net/unity/+bug/998073).
-// TODO(linux_aura) http://crbug.com/163931
-// Flaky on Mac, http://crbug.com/232330
-#if defined(TOOLKIT_VIEWS) && !(defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(USE_AURA))
+// TODO(crbug.com/794771): These fail on Linux with HEADLESS env var set.
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+#define MAYBE_OnMinimizedEvent DISABLED_OnMinimizedEvent
+#define MAYBE_OnMaximizedEvent DISABLED_OnMaximizedEvent
+#define MAYBE_OnRestoredEvent DISABLED_OnRestoredEvent
+#else
+#define MAYBE_OnMinimizedEvent OnMinimizedEvent
+#define MAYBE_OnMaximizedEvent OnMaximizedEvent
+#define MAYBE_OnRestoredEvent OnRestoredEvent
+#endif  // defined(OS_LINUX)
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, WindowsApiProperties) {
-  EXPECT_TRUE(
-      RunExtensionTest("platform_apps/windows_api_properties")) << message_;
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, MAYBE_OnMinimizedEvent) {
+#if defined(OS_MACOSX)
+  if (base::mac::IsOS10_10())
+    return;  // Fails when swarmed. http://crbug.com/660582,
+#endif
+  EXPECT_TRUE(RunExtensionTestWithArg("platform_apps/windows_api_properties",
+                                      "minimized"))
+      << message_;
 }
 
-#endif  // defined(TOOLKIT_VIEWS)
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, MAYBE_OnMaximizedEvent) {
+#if defined(OS_MACOSX)
+  if (base::mac::IsOS10_10())
+    return;  // Fails when swarmed. http://crbug.com/660582,
+#endif
+  EXPECT_TRUE(RunExtensionTestWithArg("platform_apps/windows_api_properties",
+                                      "maximized"))
+      << message_;
+}
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiAlwaysOnTopWithPermissions) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, MAYBE_OnRestoredEvent) {
+#if defined(OS_MACOSX)
+  if (base::mac::IsOS10_10())
+    return;  // Fails when swarmed. http://crbug.com/660582,
+#endif
+  EXPECT_TRUE(RunExtensionTestWithArg("platform_apps/windows_api_properties",
+                                      "restored"))
+      << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, OnBoundsChangedEvent) {
+  EXPECT_TRUE(RunExtensionTestWithArg("platform_apps/windows_api_properties",
+                                      "boundsChanged"))
+      << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, AlwaysOnTopWithPermissions) {
   EXPECT_TRUE(RunPlatformAppTest(
       "platform_apps/windows_api_always_on_top/has_permissions")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiAlwaysOnTopWithOldPermissions) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, AlwaysOnTopWithOldPermissions) {
   EXPECT_TRUE(RunPlatformAppTest(
       "platform_apps/windows_api_always_on_top/has_old_permissions"))
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiAlwaysOnTopNoPermissions) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, AlwaysOnTopNoPermissions) {
   EXPECT_TRUE(RunPlatformAppTest(
       "platform_apps/windows_api_always_on_top/no_permissions")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, WindowsApiGet) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, Get) {
   EXPECT_TRUE(RunPlatformAppTest("platform_apps/windows_api_get"))
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, WindowsApiSetShapeHasPerm) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, SetShapeHasPerm) {
   EXPECT_TRUE(
       RunPlatformAppTest("platform_apps/windows_api_shape/has_permission"))
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, WindowsApiSetShapeNoPerm) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, SetShapeNoPerm) {
   EXPECT_TRUE(
       RunPlatformAppTest("platform_apps/windows_api_shape/no_permission"))
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiAlphaEnabledHasPermissions) {
-  const char* no_alpha_dir =
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, AlphaEnabledHasPermissions) {
+  const char kNoAlphaDir[] =
       "platform_apps/windows_api_alpha_enabled/has_permissions_no_alpha";
-  const char* test_dir = no_alpha_dir;
+  const char kHasAlphaDir[] =
+      "platform_apps/windows_api_alpha_enabled/has_permissions_has_alpha";
+  ALLOW_UNUSED_LOCAL(kHasAlphaDir);
+  const char* test_dir = kNoAlphaDir;
 
 #if defined(USE_AURA) && (defined(OS_CHROMEOS) || !defined(OS_LINUX))
-  test_dir =
-      "platform_apps/windows_api_alpha_enabled/has_permissions_has_alpha";
+  test_dir = kHasAlphaDir;
+
 #if defined(OS_WIN)
   if (!ui::win::IsAeroGlassEnabled()) {
-    test_dir = no_alpha_dir;
+    test_dir = kNoAlphaDir;
   }
 #endif  // OS_WIN
 #endif  // USE_AURA && (OS_CHROMEOS || !OS_LINUX)
@@ -147,14 +155,13 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
   EXPECT_TRUE(RunPlatformAppTest(test_dir)) << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiAlphaEnabledNoPermissions) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, AlphaEnabledNoPermissions) {
   EXPECT_TRUE(RunPlatformAppTest(
       "platform_apps/windows_api_alpha_enabled/no_permissions"))
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, WindowsApiAlphaEnabledInStable) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, AlphaEnabledInStable) {
   extensions::ScopedCurrentChannel channel(version_info::Channel::STABLE);
   EXPECT_TRUE(RunPlatformAppTestWithFlags(
       "platform_apps/windows_api_alpha_enabled/in_stable",
@@ -164,15 +171,13 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, WindowsApiAlphaEnabledInStable) {
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiAlphaEnabledWrongFrameType) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, AlphaEnabledWrongFrameType) {
   EXPECT_TRUE(RunPlatformAppTest(
       "platform_apps/windows_api_alpha_enabled/wrong_frame_type"))
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiVisibleOnAllWorkspacesInStable) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, VisibleOnAllWorkspacesInStable) {
   extensions::ScopedCurrentChannel channel(version_info::Channel::STABLE);
   EXPECT_TRUE(RunPlatformAppTest(
       "platform_apps/windows_api_visible_on_all_workspaces/in_stable"))
@@ -180,8 +185,7 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
 }
 
 #if defined(OS_CHROMEOS)
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiImeWindowHasPermissions) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, ImeWindowHasPermissions) {
   EXPECT_TRUE(RunComponentExtensionTest(
       "platform_apps/windows_api_ime/has_permissions_whitelisted"))
       << message_;
@@ -192,8 +196,7 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiImeWindowNoPermissions) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, ImeWindowNoPermissions) {
   EXPECT_TRUE(RunComponentExtensionTest(
       "platform_apps/windows_api_ime/no_permissions_whitelisted"))
       << message_;
@@ -203,8 +206,7 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
       << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest,
-                       WindowsApiImeWindowNotFullscreen) {
+IN_PROC_BROWSER_TEST_F(AppWindowApiTest, ImeWindowNotFullscreen) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   command_line->AppendSwitch(switches::kForceAppMode);
   command_line->AppendSwitchASCII(switches::kAppId,

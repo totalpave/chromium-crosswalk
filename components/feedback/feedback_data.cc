@@ -12,8 +12,10 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
 #include "base/values.h"
 #include "components/feedback/feedback_util.h"
+#include "components/feedback/proto/extension.pb.h"
 #include "components/feedback/tracing_manager.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -25,16 +27,18 @@ namespace {
 const char kTraceFilename[] = "tracing.zip";
 const char kPerformanceCategoryTag[] = "Performance";
 
-const base::FilePath::CharType kHistogramsFilename[] =
-    FILE_PATH_LITERAL("histograms.txt");
-
-const char kHistogramsAttachmentName[] = "histograms.zip";
-
 }  // namespace
 
-FeedbackData::FeedbackData()
-    : send_report_(base::Bind(&feedback_util::SendReport)), context_(NULL),
-      trace_id_(0), pending_op_count_(1), report_sent_(false) {}
+FeedbackData::FeedbackData(feedback::FeedbackUploader* uploader)
+    : uploader_(uploader),
+      context_(nullptr),
+      trace_id_(0),
+      pending_op_count_(1),
+      report_sent_(false),
+      from_assistant_(false),
+      assistant_debug_info_allowed_(false) {
+  CHECK(uploader_);
+}
 
 FeedbackData::~FeedbackData() {
 }
@@ -60,50 +64,30 @@ void FeedbackData::SetAndCompressSystemInfo(
     }
   }
 
-  if (sys_info.get()) {
+  if (sys_info) {
     ++pending_op_count_;
     AddLogs(std::move(sys_info));
-    BrowserThread::PostBlockingPoolTaskAndReply(
-        FROM_HERE,
-        base::Bind(&FeedbackCommon::CompressLogs, this),
-        base::Bind(&FeedbackData::OnCompressComplete, this));
+    base::PostTaskWithTraitsAndReply(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+        base::BindOnce(&FeedbackData::CompressLogs, this),
+        base::BindOnce(&FeedbackData::OnCompressComplete, this));
   }
-}
-
-void FeedbackData::SetAndCompressHistograms(
-    std::unique_ptr<std::string> histograms) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-
-  if (!histograms.get())
-    return;
-  ++pending_op_count_;
-  BrowserThread::PostBlockingPoolTaskAndReply(
-      FROM_HERE,
-      base::Bind(&FeedbackCommon::CompressFile,
-                 this,
-                 base::FilePath(kHistogramsFilename),
-                 kHistogramsAttachmentName,
-                 base::Passed(&histograms)),
-      base::Bind(&FeedbackData::OnCompressComplete, this));
 }
 
 void FeedbackData::AttachAndCompressFileData(
     std::unique_ptr<std::string> attached_filedata) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  if (!attached_filedata.get() || attached_filedata->empty())
+  if (!attached_filedata || attached_filedata->empty())
     return;
   ++pending_op_count_;
   base::FilePath attached_file =
                   base::FilePath::FromUTF8Unsafe(attached_filename_);
-  BrowserThread::PostBlockingPoolTaskAndReply(
-      FROM_HERE,
-      base::Bind(&FeedbackCommon::CompressFile,
-                 this,
-                 attached_file,
-                 std::string(),
-                 base::Passed(&attached_filedata)),
-      base::Bind(&FeedbackData::OnCompressComplete, this));
+  base::PostTaskWithTraitsAndReply(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&FeedbackData::CompressFile, this, attached_file,
+                     std::string(), std::move(attached_filedata)),
+      base::BindOnce(&FeedbackData::OnCompressComplete, this));
 }
 
 void FeedbackData::OnGetTraceData(
@@ -139,7 +123,11 @@ void FeedbackData::SendReport() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (IsDataComplete() && !report_sent_) {
     report_sent_ = true;
-    send_report_.Run(this);
+    userfeedback::ExtensionSubmit feedback_data;
+    PrepareReport(&feedback_data);
+    auto post_body = std::make_unique<std::string>();
+    feedback_data.SerializeToString(post_body.get());
+    uploader_->QueueReport(std::move(post_body));
   }
 }
 

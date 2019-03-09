@@ -7,7 +7,9 @@
 #include <memory>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/bind_helpers.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/bluetooth_uuid.h"
@@ -56,16 +58,15 @@ class BluetoothAdapterProfileBlueZTest : public testing::Test {
 
     // Grab a pointer to the adapter.
     device::BluetoothAdapterFactory::GetAdapter(
-        base::Bind(&BluetoothAdapterProfileBlueZTest::AdapterCallback,
-                   base::Unretained(this)));
-    base::MessageLoop::current()->Run();
+        base::BindOnce(&BluetoothAdapterProfileBlueZTest::AdapterCallback,
+                       base::Unretained(this)));
+    base::RunLoop().Run();
     ASSERT_TRUE(adapter_.get() != nullptr);
     ASSERT_TRUE(adapter_->IsInitialized());
     ASSERT_TRUE(adapter_->IsPresent());
 
     // Turn on the adapter.
-    adapter_->SetPowered(true, base::Bind(&base::DoNothing),
-                         base::Bind(&base::DoNothing));
+    adapter_->SetPowered(true, base::DoNothing(), base::DoNothing());
     ASSERT_TRUE(adapter_->IsPowered());
   }
 
@@ -77,10 +78,8 @@ class BluetoothAdapterProfileBlueZTest : public testing::Test {
 
   void AdapterCallback(scoped_refptr<BluetoothAdapter> adapter) {
     adapter_ = adapter;
-    if (base::MessageLoop::current() &&
-        base::MessageLoop::current()->is_running()) {
-      base::MessageLoop::current()->QuitWhenIdle();
-    }
+    if (base::RunLoop::IsRunningOnCurrentThread())
+      base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
   class FakeDelegate : public bluez::BluetoothProfileServiceProvider::Delegate {
@@ -96,13 +95,12 @@ class BluetoothAdapterProfileBlueZTest : public testing::Test {
 
     void NewConnection(
         const dbus::ObjectPath& device_path,
-        std::unique_ptr<dbus::FileDescriptor> fd,
+        base::ScopedFD fd,
         const bluez::BluetoothProfileServiceProvider::Delegate::Options&
             options,
         const ConfirmationCallback& callback) override {
       ++connections_;
-      fd->CheckValidity();
-      close(fd->TakeValue());
+      fd.reset();
       callback.Run(SUCCESS);
       if (device_path_.value() != "")
         ASSERT_EQ(device_path_, device_path);
@@ -150,7 +148,7 @@ class BluetoothAdapterProfileBlueZTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 
   scoped_refptr<BluetoothAdapter> adapter_;
 
@@ -181,7 +179,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, DelegateCount) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::DBusErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_TRUE(profile_);
   EXPECT_EQ(1U, success_callback_count_);
@@ -195,12 +193,12 @@ TEST_F(BluetoothAdapterProfileBlueZTest, DelegateCount) {
   EXPECT_EQ(1U, profile_->DelegateCount());
 
   profile_->RemoveDelegate(fake_delegate_autopair_.device_path_,
-                           base::Bind(&base::DoNothing));
+                           base::DoNothing());
 
   EXPECT_EQ(1U, profile_->DelegateCount());
 
   profile_->RemoveDelegate(fake_delegate_paired_.device_path_,
-                           base::Bind(&base::DoNothing));
+                           base::DoNothing());
 
   EXPECT_EQ(0U, profile_->DelegateCount());
 }
@@ -218,7 +216,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, BlackHole) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::DBusErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_TRUE(profile_);
   EXPECT_EQ(1U, success_callback_count_);
@@ -232,7 +230,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, BlackHole) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::DBusErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(1U, success_callback_count_);
   EXPECT_EQ(1U, error_callback_count_);
@@ -253,7 +251,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, Routing) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::DBusErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   ASSERT_TRUE(profile_);
   ASSERT_EQ(1U, success_callback_count_);
@@ -274,7 +272,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, Routing) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::DBusErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(2U, success_callback_count_);
   EXPECT_EQ(0U, error_callback_count_);
@@ -289,7 +287,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, Routing) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::DBusErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(3U, success_callback_count_);
   EXPECT_EQ(0U, error_callback_count_);
@@ -305,7 +303,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, Routing) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::DBusErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(4U, success_callback_count_);
   EXPECT_EQ(0U, error_callback_count_);
@@ -339,7 +337,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, SimultaneousRegister) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::BasicErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_TRUE(profile_user_ptr_);
   EXPECT_EQ(2U, success_callback_count_);
@@ -350,7 +348,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, SimultaneousRegister) {
   adapter->ReleaseProfile(fake_delegate_autopair_.device_path_,
                           profile_user_ptr_);
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(BluetoothAdapterProfileBlueZTest, SimultaneousRegisterFail) {
@@ -380,7 +378,7 @@ TEST_F(BluetoothAdapterProfileBlueZTest, SimultaneousRegisterFail) {
       base::Bind(&BluetoothAdapterProfileBlueZTest::BasicErrorCallback,
                  base::Unretained(this)));
 
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 
   EXPECT_FALSE(profile_user_ptr_);
   EXPECT_EQ(0U, success_callback_count_);

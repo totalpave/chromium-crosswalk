@@ -5,7 +5,10 @@
 #ifndef CONTENT_BROWSER_TRACING_BACKGROUND_TRACING_RULE_H_
 #define CONTENT_BROWSER_TRACING_BACKGROUND_TRACING_RULE_H_
 
+#include <memory>
+
 #include "base/macros.h"
+#include "base/values.h"
 #include "content/browser/tracing/background_tracing_config_impl.h"
 #include "content/common/content_export.h"
 
@@ -42,15 +45,26 @@ class CONTENT_EXPORT BackgroundTracingRule {
   // Probability that we should allow a tigger to  happen.
   double trigger_chance() const { return trigger_chance_; }
 
+  bool stop_tracing_on_repeated_reactive() const {
+    return stop_tracing_on_repeated_reactive_;
+  }
+
   static std::unique_ptr<BackgroundTracingRule> CreateRuleFromDict(
       const base::DictionaryValue* dict);
+
+  void SetArgs(const base::DictionaryValue& args) {
+    args_ = args.CreateDeepCopy();
+  }
+  const base::DictionaryValue* args() const { return args_.get(); }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(BackgroundTracingRule);
 
   double trigger_chance_;
   int trigger_delay_;
+  bool stop_tracing_on_repeated_reactive_;
   BackgroundTracingConfigImpl::CategoryPreset category_preset_;
+  std::unique_ptr<base::DictionaryValue> args_;
 };
 
 }  // namespace content

@@ -1,4 +1,4 @@
-// Copyright 2014 The Chromium Authors. All rights reserved.
+// Copyright 2018 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -9,19 +9,11 @@
 #include "base/memory/singleton.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 
+class Profile;
+
 namespace policy {
 class AffiliatedInvalidationServiceProviderImplTest;
 }
-
-namespace user_prefs {
-class PrefRegistrySyncable;
-}
-
-namespace syncer {
-class Invalidator;
-}
-
-class Profile;
 
 namespace invalidation {
 
@@ -44,7 +36,7 @@ class ProfileInvalidationProviderFactory
 
   // Switches service creation to go through |testing_factory| for all browser
   // contexts.
-  void RegisterTestingFactory(TestingFactoryFunction testing_factory);
+  void RegisterTestingFactory(TestingFactory testing_factory);
 
  private:
   friend class ProfileInvalidationProviderFactoryTestBase;
@@ -58,10 +50,8 @@ class ProfileInvalidationProviderFactory
   // BrowserContextKeyedServiceFactory:
   KeyedService* BuildServiceInstanceFor(
       content::BrowserContext* context) const override;
-  void RegisterProfilePrefs(
-      user_prefs::PrefRegistrySyncable* registry) override;
 
-  TestingFactoryFunction testing_factory_;
+  TestingFactory testing_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ProfileInvalidationProviderFactory);
 };

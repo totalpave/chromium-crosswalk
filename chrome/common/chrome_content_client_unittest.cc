@@ -4,102 +4,34 @@
 
 #include "chrome/common/chrome_content_client.h"
 
-#include <string.h>
+#include <string>
 
-#include <memory>
-
-#include "base/command_line.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
+#include "base/test/scoped_command_line.h"
+#include "base/threading/platform_thread.h"
 #include "build/build_config.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/origin_util.h"
 #include "extensions/common/constants.h"
+#include "ppapi/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_util.h"
 
-namespace {
-
-void CheckUserAgentStringOrdering(bool mobile_device) {
-  std::vector<std::string> pieces;
-
-  // Check if the pieces of the user agent string come in the correct order.
-  ChromeContentClient content_client;
-  std::string buffer = content_client.GetUserAgent();
-
-  base::SplitStringUsingSubstr(buffer, "Mozilla/5.0 (", &pieces);
-  ASSERT_EQ(2u, pieces.size());
-  buffer = pieces[1];
-  EXPECT_EQ("", pieces[0]);
-
-  base::SplitStringUsingSubstr(buffer, ") AppleWebKit/", &pieces);
-  ASSERT_EQ(2u, pieces.size());
-  buffer = pieces[1];
-  std::string os_str = pieces[0];
-
-  base::SplitStringUsingSubstr(buffer, " (KHTML, like Gecko) ", &pieces);
-  ASSERT_EQ(2u, pieces.size());
-  buffer = pieces[1];
-  std::string webkit_version_str = pieces[0];
-
-  base::SplitStringUsingSubstr(buffer, " Safari/", &pieces);
-  ASSERT_EQ(2u, pieces.size());
-  std::string product_str = pieces[0];
-  std::string safari_version_str = pieces[1];
-
-  // Not sure what can be done to better check the OS string, since it's highly
-  // platform-dependent.
-  EXPECT_TRUE(os_str.size() > 0);
-
-  // Check that the version numbers match.
-  EXPECT_TRUE(webkit_version_str.size() > 0);
-  EXPECT_TRUE(safari_version_str.size() > 0);
-  EXPECT_EQ(webkit_version_str, safari_version_str);
-
-  EXPECT_EQ(0u, product_str.find("Chrome/"));
-  if (mobile_device) {
-    // "Mobile" gets tacked on to the end for mobile devices, like phones.
-    const std::string kMobileStr = " Mobile";
-    EXPECT_EQ(kMobileStr,
-              product_str.substr(product_str.size() - kMobileStr.size()));
-  }
-}
-
-}  // namespace
-
-
 namespace chrome_common {
 
-TEST(ChromeContentClientTest, Basic) {
-#if !defined(OS_ANDROID)
-  CheckUserAgentStringOrdering(false);
-#else
-  const char* const kArguments[] = {"chrome"};
-  base::CommandLine::Reset();
-  base::CommandLine::Init(1, kArguments);
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-
-  // Do it for regular devices.
-  ASSERT_FALSE(command_line->HasSwitch(switches::kUseMobileUserAgent));
-  CheckUserAgentStringOrdering(false);
-
-  // Do it for mobile devices.
-  command_line->AppendSwitch(switches::kUseMobileUserAgent);
-  ASSERT_TRUE(command_line->HasSwitch(switches::kUseMobileUserAgent));
-  CheckUserAgentStringOrdering(true);
-#endif
-}
-
-#if defined(ENABLE_PLUGINS)
+#if BUILDFLAG(ENABLE_PLUGINS)
 TEST(ChromeContentClientTest, FindMostRecent) {
-  std::vector<content::PepperPluginInfo*> version_vector;
+  std::vector<std::unique_ptr<content::PepperPluginInfo>> version_vector;
   // Test an empty vector.
   EXPECT_EQ(nullptr, ChromeContentClient::FindMostRecentPlugin(version_vector));
 
   // Now test the vector with one element.
-  content::PepperPluginInfo info1;
-  info1.version = "1.0.0.0";
-  version_vector.push_back(&info1);
+  content::PepperPluginInfo info;
+  info.version = "1.0.0.0";
+  version_vector.push_back(std::make_unique<content::PepperPluginInfo>(info));
 
   content::PepperPluginInfo* most_recent =
       ChromeContentClient::FindMostRecentPlugin(version_vector);
@@ -114,111 +46,49 @@ TEST(ChromeContentClientTest, FindMostRecent) {
 
   // Test highest version is picked.
   version_vector.clear();
-  version_vector.push_back(&info5);
-  version_vector.push_back(&info6_12);
-  version_vector.push_back(&info6_13);
+  version_vector.push_back(std::make_unique<content::PepperPluginInfo>(info5));
+  version_vector.push_back(
+      std::make_unique<content::PepperPluginInfo>(info6_12));
+  version_vector.push_back(
+      std::make_unique<content::PepperPluginInfo>(info6_13));
 
   most_recent = ChromeContentClient::FindMostRecentPlugin(version_vector);
   EXPECT_EQ("6.0.0.13", most_recent->version);
 
   // Test that order does not matter, validates tests below.
   version_vector.clear();
-  version_vector.push_back(&info6_13);
-  version_vector.push_back(&info6_12);
-  version_vector.push_back(&info5);
+  version_vector.push_back(
+      std::make_unique<content::PepperPluginInfo>(info6_13));
+  version_vector.push_back(
+      std::make_unique<content::PepperPluginInfo>(info6_12));
+  version_vector.push_back(std::make_unique<content::PepperPluginInfo>(info5));
 
   most_recent = ChromeContentClient::FindMostRecentPlugin(version_vector);
   EXPECT_EQ("6.0.0.13", most_recent->version);
 
   // Test real scenarios.
-  content::PepperPluginInfo bundled_flash;
-  bundled_flash.version = "4.3.2.1";
-  bundled_flash.is_external = false;
-  bundled_flash.is_debug = false;
-  bundled_flash.is_on_local_drive = true;
-  bundled_flash.is_bundled = true;
-  bundled_flash.name = "bundled_flash";
-
-  content::PepperPluginInfo local_component_flash;
-  local_component_flash.version = "4.3.2.1";
-  local_component_flash.is_external = false;
-  local_component_flash.is_debug = false;
-  local_component_flash.is_on_local_drive = true;
-  local_component_flash.is_bundled = false;
-  local_component_flash.name = "local_component_flash";
-
-  content::PepperPluginInfo network_component_flash;
-  network_component_flash.version = "4.3.2.1";
-  network_component_flash.is_external = false;
-  network_component_flash.is_debug = false;
-  network_component_flash.is_on_local_drive = false;
-  network_component_flash.is_bundled = false;
-  network_component_flash.name = "network_component_flash";
+  content::PepperPluginInfo component_flash;
+  component_flash.version = "4.3.2.1";
+  component_flash.is_external = false;
+  component_flash.name = "component_flash";
 
   content::PepperPluginInfo system_flash;
   system_flash.version = "4.3.2.1";
   system_flash.is_external = true;
-  system_flash.is_debug = false;
-  system_flash.is_on_local_drive = true;
-  system_flash.is_bundled = false;
   system_flash.name = "system_flash";
 
-  content::PepperPluginInfo system_debug_flash;
-  system_debug_flash.version = "4.3.2.1";
-  system_debug_flash.is_external = true;
-  system_debug_flash.is_debug = true;
-  system_debug_flash.is_on_local_drive = false;
-  system_debug_flash.is_bundled = false;
-  system_debug_flash.name = "system_debug_flash";
-
   // The order here should be:
-  // 1. Debug System Flash.
-  // 2. Bundled.
-  // 3. Component update on a local drive.
-  // 4. System Flash.
-  // 5. Component update on a network drive.
-
-  // Debug beats bundled.
+  // 1. System Flash.
+  // 2. Component update.
   version_vector.clear();
-  version_vector.push_back(&system_debug_flash);
-  version_vector.push_back(&bundled_flash);
-
-  most_recent = ChromeContentClient::FindMostRecentPlugin(version_vector);
-  EXPECT_STREQ("system_debug_flash", most_recent->name.c_str());
-
-  // Bundled beats component updated.
-  version_vector.clear();
-  version_vector.push_back(&bundled_flash);
-  version_vector.push_back(&local_component_flash);
-
-  most_recent = ChromeContentClient::FindMostRecentPlugin(version_vector);
-  EXPECT_STREQ("bundled_flash", most_recent->name.c_str());
-
-  // Bundled beats System flash
-  version_vector.clear();
-  version_vector.push_back(&bundled_flash);
-  version_vector.push_back(&system_flash);
-
-  most_recent = ChromeContentClient::FindMostRecentPlugin(version_vector);
-  EXPECT_STREQ("bundled_flash", most_recent->name.c_str());
-
-  // Local component updated beats System Flash.
-  version_vector.clear();
-  version_vector.push_back(&system_flash);
-  version_vector.push_back(&local_component_flash);
-
-  most_recent = ChromeContentClient::FindMostRecentPlugin(version_vector);
-  EXPECT_STREQ("local_component_flash", most_recent->name.c_str());
-
-  // System Flash beats component update on network drive.
-  version_vector.clear();
-  version_vector.push_back(&network_component_flash);
-  version_vector.push_back(&system_flash);
-
+  version_vector.push_back(
+      std::make_unique<content::PepperPluginInfo>(system_flash));
+  version_vector.push_back(
+      std::make_unique<content::PepperPluginInfo>(component_flash));
   most_recent = ChromeContentClient::FindMostRecentPlugin(version_vector);
   EXPECT_STREQ("system_flash", most_recent->name.c_str());
 }
-#endif  // defined(ENABLE_PLUGINS)
+#endif  // BUILDFLAG(ENABLE_PLUGINS)
 
 TEST(ChromeContentClientTest, AdditionalSchemes) {
   EXPECT_TRUE(url::IsStandard(
@@ -227,9 +97,83 @@ TEST(ChromeContentClientTest, AdditionalSchemes) {
 
   GURL extension_url(
       "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/foo.html");
-  url::Origin origin(extension_url);
+  url::Origin origin = url::Origin::Create(extension_url);
   EXPECT_EQ("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef",
             origin.Serialize());
+
+  EXPECT_TRUE(content::IsOriginSecure(GURL("chrome-native://newtab/")));
+
+  GURL chrome_url("chrome://dummyurl");
+  EXPECT_TRUE(content::IsOriginSecure(chrome_url));
+  EXPECT_FALSE(content::OriginCanAccessServiceWorkers(chrome_url));
+  EXPECT_TRUE(
+      content::IsPotentiallyTrustworthyOrigin(url::Origin::Create(chrome_url)));
+}
+
+class OriginTrialInitializationTestThread
+    : public base::PlatformThread::Delegate {
+ public:
+  explicit OriginTrialInitializationTestThread(
+      ChromeContentClient* chrome_client)
+      : chrome_client_(chrome_client) {}
+
+  void ThreadMain() override { AccessPolicy(chrome_client_, &policy_objects_); }
+
+  // Static helper which can also be called from the main thread.
+  static void AccessPolicy(
+      ChromeContentClient* content_client,
+      std::vector<blink::OriginTrialPolicy*>* policy_objects) {
+    // Repeatedly access the lazily-created origin trial policy
+    for (int i = 0; i < 20; i++) {
+      blink::OriginTrialPolicy* policy = content_client->GetOriginTrialPolicy();
+      policy_objects->push_back(policy);
+      base::PlatformThread::YieldCurrentThread();
+    }
+  }
+
+  const std::vector<blink::OriginTrialPolicy*>* policy_objects() const {
+    return &policy_objects_;
+  }
+
+ private:
+  ChromeContentClient* chrome_client_;
+  std::vector<blink::OriginTrialPolicy*> policy_objects_;
+
+  DISALLOW_COPY_AND_ASSIGN(OriginTrialInitializationTestThread);
+};
+
+// Test that the lazy initialization of Origin Trial policy is resistant to
+// races with concurrent access. Failures (especially flaky) indicate that the
+// race prevention is no longer sufficient.
+TEST(ChromeContentClientTest, OriginTrialPolicyConcurrentInitialization) {
+  ChromeContentClient content_client;
+  std::vector<blink::OriginTrialPolicy*> policy_objects;
+  OriginTrialInitializationTestThread thread(&content_client);
+  base::PlatformThreadHandle handle;
+
+  ASSERT_TRUE(base::PlatformThread::Create(0, &thread, &handle));
+
+  // Repeatedly access the lazily-created origin trial policy
+  OriginTrialInitializationTestThread::AccessPolicy(&content_client,
+                                                    &policy_objects);
+
+  base::PlatformThread::Join(handle);
+
+  ASSERT_EQ(20UL, policy_objects.size());
+
+  blink::OriginTrialPolicy* first_policy = policy_objects[0];
+
+  const std::vector<blink::OriginTrialPolicy*>* all_policy_objects[] = {
+      &policy_objects, thread.policy_objects(),
+  };
+
+  for (const std::vector<blink::OriginTrialPolicy*>* thread_policy_objects :
+       all_policy_objects) {
+    EXPECT_GE(20UL, thread_policy_objects->size());
+    for (blink::OriginTrialPolicy* policy : *(thread_policy_objects)) {
+      EXPECT_EQ(first_policy, policy);
+    }
+  }
 }
 
 }  // namespace chrome_common

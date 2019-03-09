@@ -2,8 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
+import("//build/config/c++/c++.gni")
+import("//build/config/compiler/compiler.gni")
 import("//build/config/nacl/config.gni")
+import("//components/nacl/features.gni")
 import("//testing/test.gni")
 
 assert(enable_nacl)
@@ -31,14 +33,20 @@ source_set("minimal") {
     ":minimal_content_dummy",
     "//base",
     "//components/nacl/common:minimal",
+    "//components/nacl/common:mojo_bindings",
     "//crypto",
     "//ipc",
-    "//mojo/edk/system",
+    "//mojo/core/embedder",
     "//native_client/src/trusted/service_runtime:sel_main_chrome",
     "//ppapi/c",
     "//ppapi/proxy:ipc",
     "//sandbox",
+    "//services/service_manager/public/cpp",
   ]
+
+  if (is_linux) {
+    deps += [ "//services/service_manager/zygote" ]
+  }
 }
 
 # This exists just to make 'gn check' happy with :minimal and
@@ -48,10 +56,14 @@ source_set("minimal") {
 source_set("minimal_content_dummy") {
   check_includes = false
   sources = [
-    "//content/public/common/child_process_sandbox_support_linux.h",
-    "//content/public/common/content_switches.h",
+    "//content/public/common/common_sandbox_support_linux.h",
     "//content/public/common/main_function_params.h",
     "//content/public/common/sandbox_init.h",
+  ]
+
+  # Deps required by the above headers.
+  deps = [
+    "//media:media_buildflags",
   ]
 }
 
@@ -63,6 +75,7 @@ source_set("loader") {
     "//components/nacl/common",
     "//content/public/common",
     "//ppapi/shared_impl",
+    "//services/service_manager/public/cpp",
   ]
 
   data_deps = [
@@ -111,20 +124,38 @@ if (is_linux) {
     deps = [
       ":loader",
       "//base",
-      "//build/config/sanitizers:deps_no_options",
       "//components/nacl/common:switches",
       "//components/nacl/loader/sandbox_linux",
       "//content/public/common",
       "//crypto",
       "//ipc",
-      "//mojo/edk/system",
+      "//mojo/core/embedder",
       "//sandbox/linux:sandbox_services",
+      "//services/service_manager/sandbox",
+      "//services/service_manager/zygote",
       "//url/ipc:url_ipc",
     ]
 
-    cflags = [ "-fPIE" ]
+    if (is_chromeos) {
+      # NaCl is not working with compiler-rt in ChromeOS.
+      # Force libgcc as a workaround. See https://crbug.com/761103
+      ldflags = [ "-rtlib=libgcc" ]
 
-    ldflags = [ "-pie" ]
+      # nacl_helper needs to link with libgcc_s. We already have -lgcc_s in
+      # the final link command line, but it was placed within "--as-needed"
+      # with the result that the dependency gets dropped. Similarly, we need
+      # to add this via "ldflags" and not "libs" because libraries added via
+      # the latter are also placed within an "--as-needed"'.
+      # See https://crbug.com/884017
+      ldflags += [ "-lgcc_s" ]
+    }
+
+    # The only symbols that nacl_helper needs to export are those specified by
+    # its direct dependencies, so -rdynamic would only serve to unnecessarily
+    # increase the binary size.
+    if (!export_libcxxabi_from_executables) {
+      configs -= [ "//build/config/compiler:export_dynamic" ]
+    }
 
     data_deps = [
       "//native_client/src/trusted/service_runtime/linux:bootstrap",
@@ -141,23 +172,25 @@ if (is_linux) {
     ]
   }
 
-  test("nacl_helper_nonsfi_unittests") {
-    sources = [
-      "nonsfi/nacl_helper_nonsfi_unittests.cc",
-    ]
-    deps = [
-      "//base",
-      "//base/test:test_launcher_nacl_nonsfi",
-    ]
-    data_deps = [
-      ":nacl_helper_nonsfi_unittests_main_copy(//build/toolchain/nacl:newlib_pnacl_nonsfi)",
-    ]
-  }
+  if (enable_nacl_nonsfi) {
+    test("nacl_helper_nonsfi_unittests") {
+      sources = [
+        "nonsfi/nacl_helper_nonsfi_unittests.cc",
+      ]
+      deps = [
+        "//base",
+        "//base/test:test_launcher_nacl_nonsfi",
+      ]
+      data_deps = [
+        ":nacl_helper_nonsfi_unittests_main_copy(//build/toolchain/nacl:newlib_pnacl_nonsfi)",
+      ]
+    }
 
-  group("helper_nonsfi") {
-    data_deps = [
-      ":nacl_helper_nonsfi_copy(//build/toolchain/nacl:newlib_pnacl_nonsfi)",
-    ]
+    group("helper_nonsfi") {
+      data_deps = [
+        ":nacl_helper_nonsfi_copy(//build/toolchain/nacl:newlib_pnacl_nonsfi)",
+      ]
+    }
   }
 }
 
@@ -175,7 +208,9 @@ if (is_win && target_cpu == "x86" && current_cpu == "x64") {
       "//components/nacl/broker",
       "//components/nacl/common:switches",
       "//content/public/common:static_switches",
+      "//mojo/core/embedder",
       "//sandbox",
+      "//services/service_manager/sandbox:sandbox",
     ]
   }
 }
@@ -185,13 +220,6 @@ if (is_nacl_nonsfi) {
     output_name = "nacl_helper_nonsfi"
     set_sources_assignment_filter([])
     sources = [
-      # TODO(brettw) can this just depend on //components/nacl/common?
-      "../common/nacl_messages.cc",
-      "../common/nacl_messages.h",
-      "../common/nacl_types.cc",
-      "../common/nacl_types.h",
-      "../common/nacl_types_param_traits.cc",
-      "../common/nacl_types_param_traits.h",
       "nacl_helper_linux.cc",
       "nacl_helper_linux.h",
       "nacl_trusted_listener.cc",
@@ -204,11 +232,13 @@ if (is_nacl_nonsfi) {
     deps = [
       ":nacl_helper_nonsfi_sandbox",
       "//base",
+      "//components/nacl/common:minimal",
+      "//components/nacl/common:mojo_bindings",
       "//components/nacl/common:switches",
       "//components/tracing",
       "//content",
       "//ipc",
-      "//mojo/edk/system",
+      "//mojo/core/embedder",
       "//native_client/src/nonsfi/irt:nacl_sys_private",
       "//native_client/src/nonsfi/loader:elf_loader",
 
@@ -220,6 +250,9 @@ if (is_nacl_nonsfi) {
       "//native_client/src/untrusted/nacl",
       "//ppapi/proxy",
       "//sandbox/linux:sandbox",
+      "//services/service_manager/public/cpp",
+      "//services/service_manager/sandbox",
+      "//services/service_manager/zygote:zygote_util",
     ]
   }
 
@@ -233,6 +266,7 @@ if (is_nacl_nonsfi) {
     ]
     deps = [
       "//base",
+      "//components/nacl/common:minimal",
       "//components/nacl/common:switches",
       "//content",
       "//sandbox/linux:sandbox",
@@ -284,4 +318,17 @@ if (is_nacl_nonsfi) {
       ":nacl_helper_nonsfi_unittests_main",
     ]
   }
+}
+
+source_set("nacl_loader_manifest") {
+  sources = [
+    "nacl_loader_manifest.cc",
+    "nacl_loader_manifest.h",
+  ]
+
+  deps = [
+    "//base",
+    "//components/nacl/common",
+    "//services/service_manager/public/cpp",
+  ]
 }

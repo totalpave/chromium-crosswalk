@@ -12,7 +12,6 @@
 #include "base/compiler_specific.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/chrome/devtools_event_listener.h"
@@ -44,7 +43,8 @@ class MockSyncWebSocket : public SyncWebSocket {
 
   bool Send(const std::string& message) override {
     EXPECT_TRUE(connected_);
-    std::unique_ptr<base::Value> value = base::JSONReader::Read(message);
+    std::unique_ptr<base::Value> value =
+        base::JSONReader::ReadDeprecated(message);
     base::DictionaryValue* dict = NULL;
     EXPECT_TRUE(value->GetAsDictionary(&dict));
     if (!dict)
@@ -72,7 +72,7 @@ class MockSyncWebSocket : public SyncWebSocket {
     response.SetInteger("id", id_);
     base::DictionaryValue result;
     result.SetInteger("param", 1);
-    response.Set("result", result.DeepCopy());
+    response.SetKey("result", result.Clone());
     base::JSONWriter::Write(response, message);
     --queued_messages_;
     return SyncWebSocket::kOk;
@@ -519,7 +519,7 @@ TEST(ParseInspectorMessage, EventNoParams) {
       "{\"method\":\"method\"}", 0, &type, &event, &response));
   ASSERT_EQ(internal::kEventMessageType, type);
   ASSERT_STREQ("method", event.method.c_str());
-  ASSERT_TRUE(event.params->IsType(base::Value::TYPE_DICTIONARY));
+  ASSERT_TRUE(event.params->is_dict());
 }
 
 TEST(ParseInspectorMessage, EventWithParams) {
@@ -714,7 +714,8 @@ class OnConnectedSyncWebSocket : public SyncWebSocket {
 
   bool Send(const std::string& message) override {
     EXPECT_TRUE(connected_);
-    std::unique_ptr<base::Value> value = base::JSONReader::Read(message);
+    std::unique_ptr<base::Value> value =
+        base::JSONReader::ReadDeprecated(message);
     base::DictionaryValue* dict = NULL;
     EXPECT_TRUE(value->GetAsDictionary(&dict));
     if (!dict)
@@ -726,7 +727,7 @@ class OnConnectedSyncWebSocket : public SyncWebSocket {
 
     base::DictionaryValue response;
     response.SetInteger("id", id);
-    response.Set("result", new base::DictionaryValue());
+    response.Set("result", std::make_unique<base::DictionaryValue>());
     std::string json_response;
     base::JSONWriter::Write(response, &json_response);
     queued_response_.push_back(json_response);
@@ -734,7 +735,7 @@ class OnConnectedSyncWebSocket : public SyncWebSocket {
     // Push one event.
     base::DictionaryValue event;
     event.SetString("method", "updateEvent");
-    event.Set("params", new base::DictionaryValue());
+    event.Set("params", std::make_unique<base::DictionaryValue>());
     std::string json_event;
     base::JSONWriter::Write(event, &json_event);
     queued_response_.push_back(json_event);
@@ -998,7 +999,7 @@ class MockDevToolsEventListener : public DevToolsEventListener {
 
 std::unique_ptr<SyncWebSocket> CreateMockSyncWebSocket6(
     std::list<std::string>* messages) {
-  return base::WrapUnique(new MockSyncWebSocket6(messages));
+  return std::make_unique<MockSyncWebSocket6>(messages);
 }
 
 }  // namespace
@@ -1105,4 +1106,74 @@ TEST_F(DevToolsClientImplTest, ReceivesCommandResponse) {
   ASSERT_EQ(2u, listener2.msgs_.size());
   ASSERT_EQ("cmd", listener2.msgs_.front());
   ASSERT_EQ("event", listener2.msgs_.back());
+}
+
+namespace {
+
+class MockSyncWebSocket7 : public SyncWebSocket {
+ public:
+  MockSyncWebSocket7() : id_(-1), sent_messages_(0), sent_responses_(0) {}
+  ~MockSyncWebSocket7() override {}
+
+  bool IsConnected() override { return true; }
+
+  bool Connect(const GURL& url) override { return true; }
+
+  bool Send(const std::string& message) override {
+    std::unique_ptr<base::Value> value =
+        base::JSONReader::ReadDeprecated(message);
+    base::DictionaryValue* dict = nullptr;
+    EXPECT_TRUE(value->GetAsDictionary(&dict));
+    if (!dict)
+      return false;
+    EXPECT_TRUE(dict->GetInteger("id", &id_));
+    std::string method;
+    EXPECT_TRUE(dict->GetString("method", &method));
+    EXPECT_STREQ("method", method.c_str());
+    base::DictionaryValue* params = nullptr;
+    EXPECT_TRUE(dict->GetDictionary("params", &params));
+    if (!params)
+      return false;
+    sent_messages_++;
+    return true;
+  }
+
+  SyncWebSocket::StatusCode ReceiveNextMessage(
+      std::string* message,
+      const Timeout& timeout) override {
+    EXPECT_LE(sent_responses_, 1);
+    EXPECT_EQ(sent_messages_, 2);
+    base::DictionaryValue response;
+    if (sent_responses_ == 0)
+      response.SetInteger("id", 1);
+    else
+      response.SetInteger("id", 2);
+    base::DictionaryValue result;
+    result.SetInteger("param", 1);
+    response.SetKey("result", result.Clone());
+    base::JSONWriter::Write(response, message);
+    sent_responses_++;
+    return SyncWebSocket::kOk;
+  }
+
+  bool HasNextMessage() override { return sent_messages_ > sent_responses_; }
+
+private:
+  int id_;
+  int sent_messages_;
+  int sent_responses_;
+};
+
+} // namespace
+
+TEST_F(DevToolsClientImplTest, SendCommandAndIgnoreResponse) {
+  SyncWebSocketFactory factory =
+      base::Bind(&CreateMockSyncWebSocket<MockSyncWebSocket7>);
+  DevToolsClientImpl client(factory, "http://url", "id",
+                            base::Bind(&CloserFunc));
+  ASSERT_EQ(kOk, client.ConnectIfNecessary().code());
+  base::DictionaryValue params;
+  params.SetInteger("param", 1);
+  ASSERT_EQ(kOk, client.SendCommandAndIgnoreResponse("method", params).code());
+  ASSERT_EQ(kOk, client.SendCommand("method", params).code());
 }

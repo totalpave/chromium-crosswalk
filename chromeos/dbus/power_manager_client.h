@@ -5,31 +5,59 @@
 #ifndef CHROMEOS_DBUS_POWER_MANAGER_CLIENT_H_
 #define CHROMEOS_DBUS_POWER_MANAGER_CLIENT_H_
 
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "base/callback.h"
+#include "base/component_export.h"
+#include "base/files/scoped_file.h"
+#include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "base/time/time.h"
-#include "chromeos/chromeos_export.h"
-#include "chromeos/dbus/dbus_client.h"
-#include "chromeos/dbus/dbus_client_implementation_type.h"
+#include "chromeos/dbus/dbus_method_call_status.h"
+#include "chromeos/dbus/power_manager/policy.pb.h"
+#include "chromeos/dbus/power_manager/power_supply_properties.pb.h"
+#include "chromeos/dbus/power_manager/suspend.pb.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
-namespace power_manager {
-class PowerManagementPolicy;
-class PowerSupplyProperties;
+namespace dbus {
+class Bus;
 }
+
+namespace power_manager {
+class BacklightBrightnessChange;
+class ScreenIdleState;
+class SetBacklightBrightnessRequest;
+}  // namespace power_manager
 
 namespace chromeos {
 
-// Callback used for getting the current screen brightness.  The param is in the
-// range [0.0, 100.0].
-typedef base::Callback<void(double)> GetScreenBrightnessPercentCallback;
-
 // PowerManagerClient is used to communicate with the power manager.
-class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) PowerManagerClient {
  public:
+  using TimerId = int32_t;
+
+  enum class LidState {
+    OPEN,
+    CLOSED,
+    NOT_PRESENT,
+  };
+
+  enum class TabletMode {
+    ON,
+    OFF,
+    UNSUPPORTED,
+  };
+
+  struct SwitchStates {
+    LidState lid_state;
+    TabletMode tablet_mode;
+  };
+
   // Interface for observing changes from the power manager.
   class Observer {
    public:
@@ -38,10 +66,23 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
     // Called if the power manager process restarts.
     virtual void PowerManagerRestarted() {}
 
-    // Called when the brightness is changed.
-    // |level| is of the range [0, 100].
-    // |user_initiated| is true if the action is initiated by the user.
-    virtual void BrightnessChanged(int level, bool user_initiated) {}
+    // Called when the screen brightness is changed.
+    virtual void ScreenBrightnessChanged(
+        const power_manager::BacklightBrightnessChange& change) {}
+
+    // Called when the keyboard brightness is changed.
+    virtual void KeyboardBrightnessChanged(
+        const power_manager::BacklightBrightnessChange& change) {}
+
+    // Called when screen-related inactivity timeouts are triggered or reset.
+    virtual void ScreenIdleStateChanged(
+        const power_manager::ScreenIdleState& proto) {}
+
+    // Called when powerd announces a change to the current inactivity delays.
+    // Some or all of these delays may be temporarily ignored due to e.g. wake
+    // locks or audio activity.
+    virtual void InactivityDelaysChanged(
+        const power_manager::PowerManagementPolicy::Delays& delays) {}
 
     // Called when peripheral device battery status is received.
     // |path| is the sysfs path for the battery of the peripheral device.
@@ -65,7 +106,8 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
     // PowerManagerClient::GetSuspendReadinessCallback() may be called from
     // within SuspendImminent().  The returned callback must be called once
     // the observer is ready for suspend.
-    virtual void SuspendImminent() {}
+    virtual void SuspendImminent(
+        power_manager::SuspendImminent::Reason reason) {}
 
     // Called when a suspend attempt (previously announced via
     // SuspendImminent()) has completed. The system may not have actually
@@ -84,13 +126,18 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
     virtual void PowerButtonEventReceived(bool down,
                                           const base::TimeTicks& timestamp) {}
 
-    // Called when the device's lid is opened or closed.
-    virtual void LidEventReceived(bool open,
+    // Called when the device's lid is opened or closed. LidState::NOT_PRESENT
+    // is never passed.
+    virtual void LidEventReceived(LidState state,
                                   const base::TimeTicks& timestamp) {}
 
     // Called when the device's tablet mode switch is on or off.
-    virtual void TabletModeEventReceived(bool on,
+    // TabletMode::UNSUPPORTED is never passed.
+    virtual void TabletModeEventReceived(TabletMode mode,
                                          const base::TimeTicks& timestamp) {}
+
+    // Called just before the screen is dimmed in response to user inactivity.
+    virtual void ScreenDimImminent() {}
 
     // Called when the idle action will be performed after
     // |time_until_idle_action|.
@@ -106,6 +153,10 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
   virtual void AddObserver(Observer* observer) = 0;
   virtual void RemoveObserver(Observer* observer) = 0;
   virtual bool HasObserver(const Observer* observer) const = 0;
+
+  // Runs the callback as soon as the service becomes available.
+  virtual void WaitForServiceToBeAvailable(
+      WaitForServiceToBeAvailableCallback callback) = 0;
 
   // Interface for managing the power consumption of renderer processes.
   class RenderProcessManagerDelegate {
@@ -135,20 +186,30 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
   // Increases the screen brightness.
   virtual void IncreaseScreenBrightness() = 0;
 
-  // Set the screen brightness to |percent|, in the range [0.0, 100.0].
-  // If |gradual| is true, the transition will be animated.
-  virtual void SetScreenBrightnessPercent(double percent, bool gradual) = 0;
+  // Sets the screen brightness per |request|.
+  virtual void SetScreenBrightness(
+      const power_manager::SetBacklightBrightnessRequest& request) = 0;
 
   // Asynchronously gets the current screen brightness, in the range
-  // [0.0, 100.0].
+  // [0.0, 100.0]. On error (e.g. powerd not running), |callback| will be run
+  // with nullopt.
   virtual void GetScreenBrightnessPercent(
-      const GetScreenBrightnessPercentCallback& callback) = 0;
+      DBusMethodCallback<double> callback) = 0;
 
   // Decreases the keyboard brightness.
   virtual void DecreaseKeyboardBrightness() = 0;
 
   // Increases the keyboard brightness.
   virtual void IncreaseKeyboardBrightness() = 0;
+
+  // Similar to GetScreenBrightnessPercent, but gets the keyboard brightness
+  // instead.
+  virtual void GetKeyboardBrightnessPercent(
+      DBusMethodCallback<double> callback) = 0;
+
+  // Returns the last power status that was received from D-Bus, if any.
+  virtual const base::Optional<power_manager::PowerSupplyProperties>&
+  GetLastStatus() = 0;
 
   // Requests an updated copy of the power status. Observer::PowerChanged()
   // will be called asynchronously.
@@ -157,11 +218,15 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
   // Requests suspend of the system.
   virtual void RequestSuspend() = 0;
 
-  // Requests restart of the system.
-  virtual void RequestRestart() = 0;
+  // Requests restart of the system. |description| contains a human-readable
+  // string describing the source of the request that will be logged by powerd.
+  virtual void RequestRestart(power_manager::RequestRestartReason reason,
+                              const std::string& description) = 0;
 
-  // Requests shutdown of the system.
-  virtual void RequestShutdown() = 0;
+  // Requests shutdown of the system. |description| contains a human-readable
+  // string describing the source of the request that will be logged by powerd.
+  virtual void RequestShutdown(power_manager::RequestShutdownReason reason,
+                               const std::string& description) = 0;
 
   // Notifies the power manager that the user is active (i.e. generating input
   // events).
@@ -170,6 +235,11 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
   // Notifies the power manager that a video is currently playing. It also
   // includes whether or not the containing window for the video is fullscreen.
   virtual void NotifyVideoActivity(bool is_fullscreen) = 0;
+
+  // Notifies the power manager that a wake notification, i.e. a notification
+  // that is allowed to wake up the device from suspend, was just created or
+  // updated.
+  virtual void NotifyWakeNotification() = 0;
 
   // Tells the power manager to begin using |policy|.
   virtual void SetPolicy(
@@ -184,22 +254,78 @@ class CHROMEOS_EXPORT PowerManagerClient : public DBusClient {
   // causes powerd to switch to using the battery on devices with type-C ports.
   virtual void SetPowerSource(const std::string& id) = 0;
 
-  // Returns a callback that can be called by an observer to report
-  // readiness for suspend.  See Observer::SuspendImminent().
-  virtual base::Closure GetSuspendReadinessCallback() = 0;
+  // Forces the display and (if present) keyboard backlights to |forced_off|.
+  // This method doesn't support multiple callers. Instead of calling it
+  // directly, please use ash::BacklightsForcedOffSetter.
+  virtual void SetBacklightsForcedOff(bool forced_off) = 0;
+
+  // Gets the display and (if present) keyboard backlights' forced-off state. On
+  // error (e.g. powerd not running), |callback| will be called with nullopt.
+  virtual void GetBacklightsForcedOff(DBusMethodCallback<bool> callback) = 0;
+
+  // Asynchronously fetches the current state of various hardware switches (e.g.
+  // the lid switch and the tablet-mode switch). On error (e.g. powerd not
+  // running), |callback| will be called with nullopt.
+  virtual void GetSwitchStates(DBusMethodCallback<SwitchStates> callback) = 0;
+
+  // Gets the inactivity delays currently used by powerd. Some or all of these
+  // delays may be temporarily ignored due to e.g. wake locks or audio activity.
+  virtual void GetInactivityDelays(
+      DBusMethodCallback<power_manager::PowerManagementPolicy::Delays>
+          callback) = 0;
+
+  // Returns a callback that can be called by an observer to report readiness
+  // for suspend. See Observer::SuspendImminent().
+  virtual base::Closure GetSuspendReadinessCallback(
+      const base::Location& from_where) = 0;
 
   // Returns the number of callbacks returned by GetSuspendReadinessCallback()
   // for the current suspend attempt but not yet called. Used by tests.
   virtual int GetNumPendingSuspendReadinessCallbacks() = 0;
 
-  // Creates the instance.
-  static PowerManagerClient* Create(DBusClientImplementationType type);
+  // Creates timers corresponding to clocks present in |arc_timer_requests|.
+  // ScopedFDs are used to indicate timer expiration as described in
+  // |StartArcTimer|. Aysnchronously runs |callback| with the created timers'
+  // ids corresponding to all clocks in the arguments i.e timer id at index 0
+  // corresponds to the clock id at position 0 in |arc_timer_requests|. Only one
+  // timer per clock is allowed per tag, asynchronously runs |callback| with
+  // base::nullopt if the same clock is present more than once in the arguments.
+  // Also, runs |callback| with base::nullopt if timers are already created for
+  // |tag|.
+  virtual void CreateArcTimers(
+      const std::string& tag,
+      std::vector<std::pair<clockid_t, base::ScopedFD>> arc_timer_requests,
+      DBusMethodCallback<std::vector<TimerId>> callback) = 0;
 
-  ~PowerManagerClient() override;
+  // Starts a timer created via |CreateArcTimers|. Starts the timer of type
+  // |clock_id| (from <sys/timerfd.h>) to run at |absolute_expiration_time| in
+  // the future. If the timer is already running, it will be replaced.
+  // Notification will be performed as an 8-byte write to the associated
+  // expiration fd. Asynchronously runs |callback| with true iff the timer can
+  // be started successfully or false otherwise.
+  virtual void StartArcTimer(TimerId timer_id,
+                             base::TimeTicks absolute_expiration_time,
+                             VoidDBusMethodCallback callback) = 0;
 
- protected:
-  // Create() should be used instead.
+  // Deletes all timer state and clears any pending timers started by
+  // |StartArcTimer|. Asynchronously runs |callback| with true on success or
+  // false on failure.
+  virtual void DeleteArcTimers(const std::string& tag,
+                               VoidDBusMethodCallback callback) = 0;
+
+  // Instructs powerd to defer dimming the screen. This only has an effect when
+  // called shortly (i.e. seconds) after observers have received
+  // ScreenDimImminent notifications.
+  virtual void DeferScreenDim() = 0;
+
   PowerManagerClient();
+  virtual ~PowerManagerClient();
+
+  // Creates and inits the instance. If |bus| is null, a FakePowerManagerClient
+  // will be created.
+  static void Initialize(dbus::Bus* bus = nullptr);
+  static PowerManagerClient* Get();
+  static void Shutdown();
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PowerManagerClient);

@@ -5,9 +5,10 @@
 package org.chromium.chrome.browser.signin;
 
 import android.accounts.Account;
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.os.AsyncTask;
+import android.support.annotation.Nullable;
 
 import com.google.android.gms.auth.AccountChangeEvent;
 import com.google.android.gms.auth.GoogleAuthException;
@@ -16,23 +17,20 @@ import com.google.android.gms.auth.GoogleAuthUtil;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.VisibleForTesting;
+import org.chromium.base.task.AsyncTask;
 import org.chromium.chrome.browser.invalidation.InvalidationServiceFactory;
-import org.chromium.chrome.browser.preferences.ChromePreferenceManager;
-import org.chromium.chrome.browser.preferences.PrefServiceBridge;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.SigninManager.SignInCallback;
 import org.chromium.chrome.browser.sync.ProfileSyncService;
-import org.chromium.sync.AndroidSyncSettings;
-import org.chromium.sync.signin.AccountManagerHelper;
-import org.chromium.sync.signin.ChromeSigninController;
+import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.signin.AccountTrackerService;
+import org.chromium.components.signin.ChromeSigninController;
+import org.chromium.components.signin.OAuth2TokenService;
+import org.chromium.components.sync.AndroidSyncSettings;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
-
-import javax.annotation.Nullable;
 
 /**
  * A helper for tasks like re-signin.
@@ -56,21 +54,19 @@ public class SigninHelper {
     private static final String ACCOUNT_RENAME_EVENT_INDEX_PREFS_KEY =
             "prefs_sync_account_rename_event_index";
 
-    private static final String ANDROID_ACCOUNTS_PREFS_KEY = "prefs_sync_android_accounts";
-
+    @SuppressLint("StaticFieldLeak")
     private static SigninHelper sInstance;
 
     /**
      * Retrieve more detailed information from account changed intents.
      */
-    public static interface AccountChangeEventChecker {
-        public List<String> getAccountChangeEvents(
-                Context context, int index, String accountName);
+    public interface AccountChangeEventChecker {
+        List<String> getAccountChangeEvents(Context context, int index, String accountName);
     }
 
     /**
      * Uses GoogleAuthUtil.getAccountChangeEvents to detect if account
-     * renaming has occured.
+     * renaming has occurred.
      */
     public static final class SystemAccountChangeEventChecker
             implements SigninHelper.AccountChangeEventChecker {
@@ -80,7 +76,7 @@ public class SigninHelper {
             try {
                 List<AccountChangeEvent> list = GoogleAuthUtil.getAccountChangeEvents(
                         context, index, accountName);
-                List<String> result = new ArrayList<String>(list.size());
+                List<String> result = new ArrayList<>(list.size());
                 for (AccountChangeEvent e : list) {
                     if (e.getChangeType() == GoogleAuthUtil.CHANGE_TYPE_ACCOUNT_RENAMED_TO) {
                         result.add(e.getChangeData());
@@ -94,13 +90,9 @@ public class SigninHelper {
             } catch (GoogleAuthException e) {
                 Log.w(TAG, "Failed to get change events", e);
             }
-            return new ArrayList<String>(0);
+            return new ArrayList<>(0);
         }
     }
-
-
-    @VisibleForTesting
-    protected final Context mContext;
 
     private final ChromeSigninController mChromeSigninController;
 
@@ -112,102 +104,89 @@ public class SigninHelper {
 
     private final OAuth2TokenService mOAuth2TokenService;
 
-
-    public static SigninHelper get(Context context) {
+    public static SigninHelper get() {
         synchronized (LOCK) {
             if (sInstance == null) {
-                sInstance = new SigninHelper(context.getApplicationContext());
+                sInstance = new SigninHelper();
             }
         }
         return sInstance;
     }
 
-    private SigninHelper(Context context) {
-        mContext = context;
+    private SigninHelper() {
         mProfileSyncService = ProfileSyncService.get();
-        mSigninManager = SigninManager.get(mContext);
-        mAccountTrackerService = AccountTrackerService.get(mContext);
-        mOAuth2TokenService = OAuth2TokenService.getForProfile(Profile.getLastUsedProfile());
-        mChromeSigninController = ChromeSigninController.get(mContext);
+        mSigninManager = SigninManager.get();
+        mAccountTrackerService = IdentityServicesProvider.getAccountTrackerService();
+        mOAuth2TokenService = IdentityServicesProvider.getOAuth2TokenService();
+        mChromeSigninController = ChromeSigninController.get();
     }
 
     public void validateAccountSettings(boolean accountsChanged) {
+        // validateAccountsInternal accesses account list (to check whether account exists), so
+        // postpone the call until account list cache in AccountManagerFacade is ready.
+        AccountManagerFacade.get().runAfterCacheIsPopulated(
+                () -> validateAccountsInternal(accountsChanged));
+    }
+
+    private void validateAccountsInternal(boolean accountsChanged) {
         // Ensure System accounts have been seeded.
         mAccountTrackerService.checkAndSeedSystemAccounts();
-
-        Account syncAccount = mChromeSigninController.getSignedInUser();
-        if (syncAccount == null) {
-            // Never shows a signin promo if user has manually disconnected.
-            String lastSyncAccountName =
-                    PrefServiceBridge.getInstance().getSyncLastAccountName();
-            if (lastSyncAccountName != null && !lastSyncAccountName.isEmpty()) return;
-
-            SharedPreferences sharedPrefs = ContextUtils.getAppSharedPreferences();
-            boolean hasKnownAccountKeys = sharedPrefs.contains(ANDROID_ACCOUNTS_PREFS_KEY);
-            // Nothing to do if Android accounts are not changed and already known to Chrome.
-            if (hasKnownAccountKeys && !accountsChanged) return;
-
-            List<String> currentAccountNames =
-                    AccountManagerHelper.get(mContext).getGoogleAccountNames();
-            if (hasKnownAccountKeys) {
-                ChromePreferenceManager chromePreferenceManager =
-                        ChromePreferenceManager.getInstance(mContext);
-                if (!chromePreferenceManager.getSigninPromoShown()) {
-                    Set<String> lastKnownAccountNames = sharedPrefs.getStringSet(
-                            ANDROID_ACCOUNTS_PREFS_KEY, new HashSet<String>());
-                    Set<String> newAccountNames = new HashSet<String>(currentAccountNames);
-                    newAccountNames.removeAll(lastKnownAccountNames);
-                    if (!newAccountNames.isEmpty()) {
-                        chromePreferenceManager.setShowSigninPromo(true);
-                    }
-                }
-            }
-
-            sharedPrefs.edit().putStringSet(
-                    ANDROID_ACCOUNTS_PREFS_KEY, new HashSet<String>(currentAccountNames)).apply();
+        if (!accountsChanged) {
+            mAccountTrackerService.validateSystemAccounts();
+        }
+        if (mSigninManager.isOperationInProgress()) {
+            // Wait for ongoing sign-in/sign-out operation to finish before validating accounts.
+            mSigninManager.runAfterOperationInProgress(
+                    () -> validateAccountsInternal(accountsChanged));
             return;
         }
 
-        String renamedAccount = getNewSignedInAccountName(mContext);
+        Account syncAccount = mChromeSigninController.getSignedInUser();
+        if (syncAccount == null) {
+            return;
+        }
+
+        String renamedAccount = getNewSignedInAccountName();
         if (accountsChanged && renamedAccount != null) {
-            handleAccountRename(ChromeSigninController.get(mContext).getSignedInAccountName(),
-                    renamedAccount);
+            handleAccountRename(
+                    ChromeSigninController.get().getSignedInAccountName(), renamedAccount);
             return;
         }
 
         // Always check for account deleted.
-        if (!accountExists(mContext, syncAccount)) {
+        if (!accountExists(syncAccount)) {
             // It is possible that Chrome got to this point without account
             // rename notification. Let us signout before doing a rename.
-            // updateAccountRenameData(mContext, new SystemAccountChangeEventChecker());
-            AsyncTask<Void, Void, Void> task = new AsyncTask<Void, Void, Void>() {
+            AsyncTask<Void> task = new AsyncTask<Void>() {
                 @Override
-                protected Void doInBackground(Void... params) {
-                    updateAccountRenameData(mContext, new SystemAccountChangeEventChecker());
+                protected Void doInBackground() {
+                    updateAccountRenameData();
                     return null;
                 }
 
                 @Override
                 protected void onPostExecute(Void result) {
-                    String renamedAccount = getNewSignedInAccountName(mContext);
-                    if (renamedAccount == null) {
-                        mSigninManager.signOut();
-                    } else {
-                        validateAccountSettings(true);
+                    String renamedAccount = getNewSignedInAccountName();
+                    if (renamedAccount != null || mSigninManager.isOperationInProgress()) {
+                        // Found account rename event or there's a sign-in/sign-out operation in
+                        // progress. Restart validation process.
+                        validateAccountsInternal(true);
+                        return;
                     }
+                    mSigninManager.signOut(SignoutReason.ACCOUNT_REMOVED_FROM_DEVICE);
                 }
             };
-            task.execute();
+            task.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
             return;
         }
 
         if (accountsChanged) {
             // Account details have changed so inform the token service that credentials
             // should now be available.
-            mOAuth2TokenService.validateAccounts(mContext, false);
+            mOAuth2TokenService.validateAccounts(false);
         }
 
-        if (mProfileSyncService != null && AndroidSyncSettings.isSyncEnabled(mContext)) {
+        if (mProfileSyncService != null && AndroidSyncSettings.get().isSyncEnabled()) {
             if (mProfileSyncService.isFirstSetupComplete()) {
                 if (accountsChanged) {
                     // Nudge the syncer to ensure it does a full sync.
@@ -235,30 +214,24 @@ public class SigninHelper {
 
         // TODO(acleung): Deal with passphrase or just prompt user to re-enter it?
         // Perform a sign-out with a callback to sign-in again.
-        mSigninManager.signOut(new Runnable() {
-            @Override
-            public void run() {
-                // Clear the shared perf only after signOut is successful.
-                // If Chrome dies, we can try it again on next run.
-                // Otherwise, if re-sign-in fails, we'll just leave chrome
-                // signed-out.
-                clearNewSignedInAccountName(mContext);
-                performResignin(newName);
-            }
+        mSigninManager.signOut(SignoutReason.USER_CLICKED_SIGNOUT_SETTINGS, () -> {
+            // Clear the shared perf only after signOut is successful.
+            // If Chrome dies, we can try it again on next run.
+            // Otherwise, if re-sign-in fails, we'll just leave chrome
+            // signed-out.
+            clearNewSignedInAccountName();
+            performResignin(newName);
         });
     }
 
     private void performResignin(String newName) {
         // This is the correct account now.
-        final Account account = AccountManagerHelper.createAccountFromName(newName);
+        final Account account = AccountManagerFacade.createAccountFromName(newName);
 
         mSigninManager.signIn(account, null, new SignInCallback() {
             @Override
             public void onSignInComplete() {
-                if (mProfileSyncService != null) {
-                    mProfileSyncService.setSetupInProgress(false);
-                }
-                validateAccountSettings(true);
+                validateAccountsInternal(true);
             }
 
             @Override
@@ -266,9 +239,10 @@ public class SigninHelper {
         });
     }
 
-    private static boolean accountExists(Context context, Account account) {
-        Account[] accounts = AccountManagerHelper.get(context).getGoogleAccounts();
-        for (Account a : accounts) {
+    private static boolean accountExists(Account account) {
+        List<Account> accounts = AccountManagerFacade.get().tryGetGoogleAccounts();
+        for (int i = 0; i < accounts.size(); i++) {
+            Account a = accounts.get(i);
             if (a.equals(account)) {
                 return true;
             }
@@ -279,7 +253,7 @@ public class SigninHelper {
     /**
      * Sets the ACCOUNTS_CHANGED_PREFS_KEY to true.
      */
-    public static void markAccountsChangedPref(Context context) {
+    public static void markAccountsChangedPref() {
         // The process may go away as soon as we return from onReceive but Android makes sure
         // that in-flight disk writes from apply() complete before changing component states.
         ContextUtils.getAppSharedPreferences()
@@ -289,19 +263,19 @@ public class SigninHelper {
     /**
      * @return The new account name of the current user. Null if it wasn't renamed.
      */
-    public static String getNewSignedInAccountName(Context context) {
+    public static String getNewSignedInAccountName() {
         return (ContextUtils.getAppSharedPreferences()
                 .getString(ACCOUNT_RENAMED_PREFS_KEY, null));
     }
 
-    private static void clearNewSignedInAccountName(Context context) {
+    private static void clearNewSignedInAccountName() {
         ContextUtils.getAppSharedPreferences()
                 .edit()
                 .putString(ACCOUNT_RENAMED_PREFS_KEY, null)
                 .apply();
     }
 
-    private static String getLastKnownAccountName(Context context) {
+    private static String getLastKnownAccountName() {
         // This is the last known name of the currently signed in user.
         // It can be:
         //  1. The signed in account name known to the ChromeSigninController.
@@ -311,16 +285,16 @@ public class SigninHelper {
                 ACCOUNT_RENAMED_PREFS_KEY, null);
 
         // If there is no pending rename, take the name known to ChromeSigninController.
-        return name == null ? ChromeSigninController.get(context).getSignedInAccountName() : name;
+        return name == null ? ChromeSigninController.get().getSignedInAccountName() : name;
     }
 
-    public static void updateAccountRenameData(Context context) {
-        updateAccountRenameData(context, new SystemAccountChangeEventChecker());
+    public static void updateAccountRenameData() {
+        updateAccountRenameData(new SystemAccountChangeEventChecker());
     }
 
     @VisibleForTesting
-    public static void updateAccountRenameData(Context context, AccountChangeEventChecker checker) {
-        String curName = getLastKnownAccountName(context);
+    public static void updateAccountRenameData(AccountChangeEventChecker checker) {
+        String curName = getLastKnownAccountName();
 
         // Skip the search if there is no signed in account.
         if (curName == null) return;
@@ -336,16 +310,15 @@ public class SigninHelper {
         try {
         outerLoop:
             while (true) {
-                List<String> nameChanges = checker.getAccountChangeEvents(context,
-                        newIndex, newName);
+                List<String> nameChanges = checker.getAccountChangeEvents(
+                        ContextUtils.getApplicationContext(), newIndex, newName);
 
                 for (String name : nameChanges) {
                     if (name != null) {
                         // We have found a rename event of the current account.
                         // We need to check if that account is further renamed.
                         newName = name;
-                        if (!accountExists(
-                                context, AccountManagerHelper.createAccountFromName(newName))) {
+                        if (!accountExists(AccountManagerFacade.createAccountFromName(newName))) {
                             newIndex = 0; // Start from the beginning of the new account.
                             continue outerLoop;
                         }
@@ -373,13 +346,7 @@ public class SigninHelper {
         }
     }
 
-    @VisibleForTesting
-    public static void resetAccountRenameEventIndex(Context context) {
-        ContextUtils.getAppSharedPreferences()
-                .edit().putInt(ACCOUNT_RENAME_EVENT_INDEX_PREFS_KEY, 0).apply();
-    }
-
-    public static boolean checkAndClearAccountsChangedPref(Context context) {
+    public static boolean checkAndClearAccountsChangedPref() {
         if (ContextUtils.getAppSharedPreferences()
                 .getBoolean(ACCOUNTS_CHANGED_PREFS_KEY, false)) {
             // Clear the value in prefs.
@@ -389,5 +356,14 @@ public class SigninHelper {
         } else {
             return false;
         }
+    }
+
+    @VisibleForTesting
+    public static void resetSharedPrefs() {
+        SharedPreferences.Editor editor = ContextUtils.getAppSharedPreferences().edit();
+        editor.remove(ACCOUNT_RENAME_EVENT_INDEX_PREFS_KEY);
+        editor.remove(ACCOUNT_RENAMED_PREFS_KEY);
+        editor.remove(ACCOUNTS_CHANGED_PREFS_KEY);
+        editor.apply();
     }
 }

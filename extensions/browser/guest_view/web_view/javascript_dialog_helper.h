@@ -18,29 +18,27 @@ class JavaScriptDialogHelper : public content::JavaScriptDialogManager {
   ~JavaScriptDialogHelper() override;
 
   // JavaScriptDialogManager implementation.
-  void RunJavaScriptDialog(
-      content::WebContents* web_contents,
-      const GURL& origin_url,
-      content::JavaScriptMessageType javascript_message_type,
-      const base::string16& message_text,
-      const base::string16& default_prompt_text,
-      const DialogClosedCallback& callback,
-      bool* did_suppress_message) override;
+  void RunJavaScriptDialog(content::WebContents* web_contents,
+                           content::RenderFrameHost* render_frame_host,
+                           content::JavaScriptDialogType dialog_type,
+                           const base::string16& message_text,
+                           const base::string16& default_prompt_text,
+                           DialogClosedCallback callback,
+                           bool* did_suppress_message) override;
   void RunBeforeUnloadDialog(content::WebContents* web_contents,
+                             content::RenderFrameHost* render_frame_host,
                              bool is_reload,
-                             const DialogClosedCallback& callback) override;
+                             DialogClosedCallback callback) override;
   bool HandleJavaScriptDialog(content::WebContents* web_contents,
                               bool accept,
                               const base::string16* prompt_override) override;
-  void CancelActiveAndPendingDialogs(
-      content::WebContents* web_contents) override;
-  void ResetDialogState(content::WebContents* web_contents) override;
+  void CancelDialogs(content::WebContents* web_contents,
+                     bool reset_state) override;
 
  private:
-  void OnPermissionResponse(
-      const DialogClosedCallback& callback,
-      bool allow,
-      const std::string& user_input);
+  void OnPermissionResponse(DialogClosedCallback callback,
+                            bool allow,
+                            const std::string& user_input);
 
   // Pointer to the webview that is being helped.
   WebViewGuest* const web_view_guest_;

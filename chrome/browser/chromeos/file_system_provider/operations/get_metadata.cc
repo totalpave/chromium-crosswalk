@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include "base/memory/ptr_util.h"
+#include "base/macros.h"
 #include "chrome/common/extensions/api/file_system_provider.h"
 #include "chrome/common/extensions/api/file_system_provider_internal.h"
 
@@ -53,8 +53,8 @@ bool ConvertRequestValueToFileInfo(std::unique_ptr<RequestValue> value,
     // Allow to pass invalid modification time, since there is no way to verify
     // it easily on any earlier stage.
     base::Time output_modification_time;
-    base::Time::FromString(input_modification_time.c_str(),
-                           &output_modification_time);
+    ignore_result(base::Time::FromString(input_modification_time.c_str(),
+                                         &output_modification_time));
     output->modification_time.reset(new base::Time(output_modification_time));
   }
 
@@ -138,11 +138,12 @@ GetMetadata::GetMetadata(
     const ProvidedFileSystemInfo& file_system_info,
     const base::FilePath& entry_path,
     ProvidedFileSystemInterface::MetadataFieldMask fields,
-    const ProvidedFileSystemInterface::GetMetadataCallback& callback)
+    ProvidedFileSystemInterface::GetMetadataCallback callback)
     : Operation(event_router, file_system_info),
       entry_path_(entry_path),
       fields_(fields),
-      callback_(callback) {
+      callback_(std::move(callback)) {
+  DCHECK_NE(0, fields_);
 }
 
 GetMetadata::~GetMetadata() {
@@ -177,6 +178,7 @@ bool GetMetadata::Execute(int request_id) {
 void GetMetadata::OnSuccess(int /* request_id */,
                             std::unique_ptr<RequestValue> result,
                             bool has_more) {
+  DCHECK(callback_);
   std::unique_ptr<EntryMetadata> metadata(new EntryMetadata);
   const bool convert_result = ConvertRequestValueToFileInfo(
       std::move(result), fields_,
@@ -184,18 +186,18 @@ void GetMetadata::OnSuccess(int /* request_id */,
 
   if (!convert_result) {
     LOG(ERROR) << "Failed to parse a response for the get metadata operation.";
-    callback_.Run(base::WrapUnique<EntryMetadata>(NULL),
-                  base::File::FILE_ERROR_IO);
+    std::move(callback_).Run(nullptr, base::File::FILE_ERROR_IO);
     return;
   }
 
-  callback_.Run(std::move(metadata), base::File::FILE_OK);
+  std::move(callback_).Run(std::move(metadata), base::File::FILE_OK);
 }
 
 void GetMetadata::OnError(int /* request_id */,
                           std::unique_ptr<RequestValue> /* result */,
                           base::File::Error error) {
-  callback_.Run(base::WrapUnique<EntryMetadata>(NULL), error);
+  DCHECK(callback_);
+  std::move(callback_).Run(nullptr, error);
 }
 
 }  // namespace operations

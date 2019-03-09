@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -208,7 +209,8 @@ void Me2MeBrowserTest::ConnectPinlessAndCleanupPairings(bool cleanup_all) {
   ConditionalTimeoutWaiter waiter(
       base::TimeDelta::FromSeconds(5),
       base::TimeDelta::FromMilliseconds(200),
-      base::Bind(&Me2MeBrowserTest::IsPairingSpinnerHidden, this));
+      base::Bind(&Me2MeBrowserTest::IsPairingSpinnerHidden,
+                 base::Unretained(this)));
   EXPECT_TRUE(waiter.Wait());
   EXPECT_TRUE(ExecuteScriptAndExtractBool(
       "document.getElementById('delete-all-paired-clients').disabled"));

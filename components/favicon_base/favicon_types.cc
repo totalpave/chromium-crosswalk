@@ -19,8 +19,7 @@ FaviconImageResult::~FaviconImageResult() {}
 // FaviconRawBitmapResult
 
 FaviconRawBitmapResult::FaviconRawBitmapResult()
-    : expired(false), icon_type(INVALID_ICON) {
-}
+    : expired(false), icon_type(IconType::kInvalid) {}
 
 FaviconRawBitmapResult::FaviconRawBitmapResult(
     const FaviconRawBitmapResult& other) = default;
@@ -37,5 +36,18 @@ LargeIconResult::LargeIconResult(FallbackIconStyle* fallback_icon_style_in)
     : fallback_icon_style(fallback_icon_style_in) {}
 
 LargeIconResult::~LargeIconResult() {}
+
+// --------------------------------------------------------
+// LargeIconImageResult
+
+LargeIconImageResult::LargeIconImageResult(const gfx::Image& image_in,
+                                           const GURL& icon_url_in)
+    : image(image_in), icon_url(icon_url_in) {}
+
+LargeIconImageResult::LargeIconImageResult(
+    FallbackIconStyle* fallback_icon_style_in)
+    : fallback_icon_style(fallback_icon_style_in) {}
+
+LargeIconImageResult::~LargeIconImageResult() {}
 
 }  // namespace favicon_base

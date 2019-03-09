@@ -5,7 +5,7 @@
 #include "content/browser/plugin_content_origin_whitelist.h"
 
 #include "content/common/frame_messages.h"
-#include "content/public/browser/navigation_details.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 
@@ -22,7 +22,7 @@ PluginContentOriginWhitelist::~PluginContentOriginWhitelist() {
 void PluginContentOriginWhitelist::RenderFrameCreated(
     RenderFrameHost* render_frame_host) {
   if (!whitelist_.empty()) {
-    Send(new FrameMsg_UpdatePluginContentOriginWhitelist(
+    render_frame_host->Send(new FrameMsg_UpdatePluginContentOriginWhitelist(
         render_frame_host->GetRoutingID(), whitelist_));
   }
 }
@@ -40,13 +40,16 @@ bool PluginContentOriginWhitelist::OnMessageReceived(
   return handled;
 }
 
-void PluginContentOriginWhitelist::DidNavigateMainFrame(
-    const LoadCommittedDetails& details,
-    const FrameNavigateParams& params) {
-  if (details.is_navigation_to_different_page()) {
-    // We expect RenderFrames to clear their replicated whitelist independently.
-    whitelist_.clear();
+void PluginContentOriginWhitelist::DidFinishNavigation(
+    NavigationHandle* navigation_handle) {
+  if (!navigation_handle->IsInMainFrame() ||
+      !navigation_handle->HasCommitted() ||
+      navigation_handle->IsSameDocument()) {
+    return;
   }
+
+  // We expect RenderFrames to clear their replicated whitelist independently.
+  whitelist_.clear();
 }
 
 void PluginContentOriginWhitelist::OnPluginContentOriginAllowed(

@@ -15,7 +15,7 @@ class HeapObject : public GarbageCollected<HeapObject> {
 public:
     HeapObject() { }
 
-    void trace(Visitor*) { }
+    void Trace(Visitor*) { }
 };
 
 template<typename T>
@@ -26,24 +26,24 @@ public:
     {
     }
 
-    void trace(Visitor*);
+    void Trace(Visitor*);
 
 private:
     class Local final : public GarbageCollected<Local> {
     public:
-        void trace(Visitor* visitor)
+        void Trace(Visitor* visitor)
         {
-            visitor->trace(m_heapObject);
-            visitor->trace(m_object);
+            visitor->Trace(m_heapObject);
+            visitor->Trace(m_object);
         }
     private:
         Member<HeapObject> m_heapObject;
-        OwnPtr<HeapObject> m_object;
+        std::unique_ptr<HeapObject> m_object;
     };
 
     Member<Local> m_local;
     Member<T> m_memberRef;
-    OwnPtr<T> m_ownRef;
+    std::unique_ptr<T> m_uniqueRef;
 };
 
 } // namespace blink

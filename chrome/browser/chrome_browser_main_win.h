@@ -7,12 +7,13 @@
 #ifndef CHROME_BROWSER_CHROME_BROWSER_MAIN_WIN_H_
 #define CHROME_BROWSER_CHROME_BROWSER_MAIN_WIN_H_
 
+#include <memory>
+
 #include "base/files/file_path_watcher.h"
 #include "base/macros.h"
 #include "chrome/browser/chrome_browser_main.h"
-#include "third_party/kasko/kasko_features.h"
 
-class DidRunUpdater;
+class ModuleWatcher;
 
 namespace base {
 class CommandLine;
@@ -25,8 +26,9 @@ int DoUninstallTasks(bool chrome_still_running);
 
 class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
  public:
-  explicit ChromeBrowserMainPartsWin(
-      const content::MainFunctionParams& parameters);
+  ChromeBrowserMainPartsWin(
+      const content::MainFunctionParams& parameters,
+      ChromeFeatureListCreator* chrome_feature_list_creator);
 
   ~ChromeBrowserMainPartsWin() override;
 
@@ -70,13 +72,8 @@ class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
   static void SetupInstallerUtilStrings();
 
  private:
-#if defined(GOOGLE_CHROME_BUILD)
-  std::unique_ptr<DidRunUpdater> did_run_updater_;
-#endif
-#if BUILDFLAG(ENABLE_KASKO)
-  // Cleans up Kasko crash reports that exceeded the maximum upload attempts.
-  base::FilePathWatcher failed_kasko_crash_report_watcher_;
-#endif
+  // Watches module load events and forwards them to the ModuleDatabase.
+  std::unique_ptr<ModuleWatcher> module_watcher_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeBrowserMainPartsWin);
 };

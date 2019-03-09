@@ -8,10 +8,13 @@
 // Enum to record the user's default search engine choice in UMA.  Add new
 // search engines at the bottom and do not delete from this list, so as not
 // to disrupt UMA data already recorded.
+
+// A Java counterpart will be generated for this enum.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.search_engines
 enum SearchEngineType {
   // Prepopulated engines.
   SEARCH_ENGINE_UNKNOWN = -1,
-  SEARCH_ENGINE_OTHER = 0,   // At the top in case of future list changes.
+  SEARCH_ENGINE_OTHER = 0,  // At the top in case of future list changes.
   SEARCH_ENGINE_AOL,
   SEARCH_ENGINE_ASK,
   SEARCH_ENGINE_ATLAS,
@@ -59,7 +62,13 @@ enum SearchEngineType {
   SEARCH_ENGINE_YAHOO,
   SEARCH_ENGINE_YANDEX,
   SEARCH_ENGINE_ZOZNAM,
-  SEARCH_ENGINE_MAX          // Bounding value needed for UMA histogram macro.
+  SEARCH_ENGINE_360,
+  SEARCH_ENGINE_COCCOC,
+  SEARCH_ENGINE_DUCKDUCKGO,
+  SEARCH_ENGINE_PARSIJOO,
+  SEARCH_ENGINE_QWANT,
+
+  SEARCH_ENGINE_MAX  // Bounding value needed for UMA histogram macro.
 };
 
 #endif  // COMPONENTS_SEARCH_ENGINES_SEARCH_ENGINE_TYPE_H_

@@ -20,9 +20,55 @@
 
 #include "base/logging.h"
 #include "base/posix/eintr_wrapper.h"
+#include "util/file/filesystem.h"
 #include "util/numeric/in_range_cast.h"
 
 namespace crashpad {
+
+#if defined(OS_FUCHSIA)
+
+Settings::ScopedLockedFileHandle::ScopedLockedFileHandle()
+    : handle_(kInvalidFileHandle), lockfile_path_() {
+    }
+
+Settings::ScopedLockedFileHandle::ScopedLockedFileHandle(
+    FileHandle handle,
+    const base::FilePath& lockfile_path)
+    : handle_(handle), lockfile_path_(lockfile_path) {
+}
+
+Settings::ScopedLockedFileHandle::ScopedLockedFileHandle(
+    ScopedLockedFileHandle&& other)
+    : handle_(other.handle_), lockfile_path_(other.lockfile_path_) {
+  other.handle_ = kInvalidFileHandle;
+  other.lockfile_path_ = base::FilePath();
+}
+
+Settings::ScopedLockedFileHandle& Settings::ScopedLockedFileHandle::operator=(
+    ScopedLockedFileHandle&& other) {
+  handle_ = other.handle_;
+  lockfile_path_ = other.lockfile_path_;
+
+  other.handle_ = kInvalidFileHandle;
+  other.lockfile_path_ = base::FilePath();
+  return *this;
+}
+
+Settings::ScopedLockedFileHandle::~ScopedLockedFileHandle() {
+  Destroy();
+}
+
+void Settings::ScopedLockedFileHandle::Destroy() {
+  if (handle_ != kInvalidFileHandle) {
+    CheckedCloseFile(handle_);
+  }
+  if (!lockfile_path_.empty()) {
+    const bool success = LoggingRemoveFile(lockfile_path_);
+    DCHECK(success);
+  }
+}
+
+#else // OS_FUCHSIA
 
 namespace internal {
 
@@ -35,6 +81,8 @@ void ScopedLockedFileHandleTraits::Free(FileHandle handle) {
 }
 
 }  // namespace internal
+
+#endif  // OS_FUCHSIA
 
 struct Settings::Data {
   static const uint32_t kSettingsMagic = 'CPds';
@@ -55,20 +103,18 @@ struct Settings::Data {
   uint32_t version;
   uint32_t options;
   uint32_t padding_0;
-  uint64_t last_upload_attempt_time;  // time_t
+  int64_t last_upload_attempt_time;  // time_t
   UUID client_id;
 };
 
-Settings::Settings(const base::FilePath& file_path)
-    : file_path_(file_path),
-      initialized_() {
-}
+Settings::Settings() = default;
 
-Settings::~Settings() {
-}
+Settings::~Settings() = default;
 
-bool Settings::Initialize() {
+bool Settings::Initialize(const base::FilePath& file_path) {
+  DCHECK(initialized_.is_uninitialized());
   initialized_.set_invalid();
+  file_path_ = file_path;
 
   Data settings;
   if (!OpenForWritingAndReadSettings(&settings).is_valid())
@@ -136,7 +182,7 @@ bool Settings::SetLastUploadAttemptTime(time_t time) {
   if (!handle.is_valid())
     return false;
 
-  settings.last_upload_attempt_time = InRangeCast<uint64_t>(time, 0);
+  settings.last_upload_attempt_time = InRangeCast<int64_t>(time, 0);
 
   return WriteSettings(handle.get(), settings);
 }
@@ -144,18 +190,33 @@ bool Settings::SetLastUploadAttemptTime(time_t time) {
 // static
 Settings::ScopedLockedFileHandle Settings::MakeScopedLockedFileHandle(
     FileHandle file,
-    FileLocking locking) {
+    FileLocking locking,
+    const base::FilePath& file_path) {
   ScopedFileHandle scoped(file);
+#if defined(OS_FUCHSIA)
+  base::FilePath lockfile_path(file_path.value() + ".__lock__");
+  if (scoped.is_valid()) {
+    ScopedFileHandle lockfile_scoped(
+        LoggingOpenFileForWrite(lockfile_path,
+                                FileWriteMode::kCreateOrFail,
+                                FilePermissions::kWorldReadable));
+    // This is a lightweight attempt to try to catch racy behavior.
+    DCHECK(lockfile_scoped.is_valid());
+    return ScopedLockedFileHandle(scoped.release(), lockfile_path);
+  }
+  return ScopedLockedFileHandle(scoped.release(), base::FilePath());
+#else
   if (scoped.is_valid()) {
     if (!LoggingLockFile(scoped.get(), locking))
       scoped.reset();
   }
   return ScopedLockedFileHandle(scoped.release());
+#endif
 }
 
 Settings::ScopedLockedFileHandle Settings::OpenForReading() {
-  return MakeScopedLockedFileHandle(LoggingOpenFileForRead(file_path()),
-                                    FileLocking::kShared);
+  return MakeScopedLockedFileHandle(
+      LoggingOpenFileForRead(file_path()), FileLocking::kShared, file_path());
 }
 
 Settings::ScopedLockedFileHandle Settings::OpenForReadingAndWriting(
@@ -171,7 +232,8 @@ Settings::ScopedLockedFileHandle Settings::OpenForReadingAndWriting(
         file_path(), mode, FilePermissions::kWorldReadable);
   }
 
-  return MakeScopedLockedFileHandle(handle, FileLocking::kExclusive);
+  return MakeScopedLockedFileHandle(
+      handle, FileLocking::kExclusive, file_path());
 }
 
 bool Settings::OpenAndReadSettings(Data* out_data) {
@@ -246,13 +308,10 @@ bool Settings::ReadSettings(FileHandle handle,
   if (LoggingSeekFile(handle, 0, SEEK_SET) != 0)
     return false;
 
-  bool read_result;
-  if (log_read_error) {
-    read_result = LoggingReadFile(handle, out_data, sizeof(*out_data));
-  } else {
-    read_result =
-        ReadFile(handle, out_data, sizeof(*out_data)) == sizeof(*out_data);
-  }
+  bool read_result =
+      log_read_error
+          ? LoggingReadFileExactly(handle, out_data, sizeof(*out_data))
+          : ReadFileExactly(handle, out_data, sizeof(*out_data));
 
   if (!read_result)
     return false;

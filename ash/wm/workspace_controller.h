@@ -8,54 +8,43 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/common/wm/workspace/workspace_types.h"
+#include "ash/wm/workspace/workspace_types.h"
 #include "base/macros.h"
-
-namespace aura {
-class Window;
-}
+#include "ui/aura/window_observer.h"
 
 namespace ash {
-class ShelfLayoutManager;
-class WorkspaceControllerTestHelper;
+
+class BackdropDelegate;
 class WorkspaceEventHandler;
 class WorkspaceLayoutManager;
-class WorkspaceLayoutManagerBackdropDelegate;
-
-namespace wm {
-class WorkspaceLayoutManagerDelegate;
-}
 
 // WorkspaceController acts as a central place that ties together all the
 // various workspace pieces.
-class ASH_EXPORT WorkspaceController {
+class ASH_EXPORT WorkspaceController : public aura::WindowObserver {
  public:
-  WorkspaceController(
-      aura::Window* viewport,
-      std::unique_ptr<wm::WorkspaceLayoutManagerDelegate> delegate);
-  virtual ~WorkspaceController();
+  // Installs WorkspaceLayoutManager on |viewport|.
+  explicit WorkspaceController(aura::Window* viewport);
+  ~WorkspaceController() override;
 
   // Returns the current window state.
   wm::WorkspaceWindowState GetWindowState() const;
-
-  void SetShelf(ShelfLayoutManager* shelf);
 
   // Starts the animation that occurs on first login.
   void DoInitialAnimation();
 
   // Add a delegate which adds a backdrop behind the top window of the default
   // workspace.
-  void SetMaximizeBackdropDelegate(
-      std::unique_ptr<WorkspaceLayoutManagerBackdropDelegate> delegate);
+  void SetBackdropDelegate(std::unique_ptr<BackdropDelegate> delegate);
 
   WorkspaceLayoutManager* layout_manager() { return layout_manager_; }
 
  private:
-  friend class WorkspaceControllerTestHelper;
+  friend class WorkspaceControllerTestApi;
+
+  // aura::WindowObserver:
+  void OnWindowDestroying(aura::Window* window) override;
 
   aura::Window* viewport_;
-
-  ShelfLayoutManager* shelf_;
   std::unique_ptr<WorkspaceEventHandler> event_handler_;
 
   // Owned by |viewport_|.

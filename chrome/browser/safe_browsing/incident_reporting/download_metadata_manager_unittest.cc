@@ -14,14 +14,16 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/run_loop.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
+#include "base/sequenced_task_runner.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/download/public/common/mock_download_item.h"
+#include "components/safe_browsing/proto/csd.pb.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
-#include "content/public/test/mock_download_item.h"
 #include "content/public/test/mock_download_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -78,9 +80,7 @@ class MockDownloadDetailsGetter : public DownloadDetailsGetter {
 // a DownloadManager.
 class MockDownloadMetadataManager : public DownloadMetadataManager {
  public:
-  MockDownloadMetadataManager(
-      const scoped_refptr<base::SequencedTaskRunner>& task_runner)
-      : DownloadMetadataManager(task_runner) {}
+  MockDownloadMetadataManager() = default;
 
   MOCK_METHOD1(GetDownloadManagerForBrowserContext,
                content::DownloadManager*(content::BrowserContext*));
@@ -105,11 +105,7 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
  protected:
   // Sets up a DownloadMetadataManager that will run tasks on the main test
   // thread.
-  DownloadMetadataManagerTestBase()
-      : manager_(scoped_refptr<base::SequencedTaskRunner>(
-            base::ThreadTaskRunnerHandle::Get())),
-        download_manager_(),
-        dm_observer_() {}
+  DownloadMetadataManagerTestBase() = default;
 
   // Returns the path to the test profile's DownloadMetadata file.
   base::FilePath GetMetadataPath() const {
@@ -143,7 +139,8 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
   void WriteTestMetadataFileForItem(uint32_t download_id) {
     std::string data;
     ASSERT_TRUE(GetTestMetadata(download_id)->SerializeToString(&data));
-    ASSERT_TRUE(base::WriteFile(GetMetadataPath(), data.data(), data.size()));
+    ASSERT_EQ(static_cast<int>(data.size()),
+              base::WriteFile(GetMetadataPath(), data.data(), data.size()));
   }
 
   // Writes a test DownloadMetadata file for kTestDownloadId to the test profile
@@ -152,18 +149,17 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
     WriteTestMetadataFileForItem(kTestDownloadId);
   }
 
-  // Returns the DownloadMetadata read from the test profile's directory.
-  std::unique_ptr<DownloadMetadata> ReadTestMetadataFile() const {
+  // Reads the DownloadMetadata from the test profile's directory into
+  // |metadata|.
+  void ReadTestMetadataFile(std::unique_ptr<DownloadMetadata>* metadata) const {
     std::string data;
-    if (!base::ReadFileToString(GetMetadataPath(), &data))
-      return std::unique_ptr<DownloadMetadata>();
-    std::unique_ptr<DownloadMetadata> result(new DownloadMetadata);
-    EXPECT_TRUE(result->ParseFromString(data));
-    return result;
+    ASSERT_TRUE(base::ReadFileToString(GetMetadataPath(), &data));
+    *metadata = std::make_unique<DownloadMetadata>();
+    ASSERT_TRUE((*metadata)->ParseFromString(data));
   }
 
   // Runs all tasks posted to the test thread's message loop.
-  void RunAllTasks() { base::RunLoop().RunUntilIdle(); }
+  void RunAllTasks() { content::RunAllTasksUntilIdle(); }
 
   // Adds a DownloadManager for the test profile. The DownloadMetadataManager's
   // observer is stashed for later use. Only call once per call to
@@ -202,37 +198,37 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
   void AddDownloadItems() {
     ASSERT_NE(nullptr, dm_observer_);
     // Add the item under test.
-    test_item_.reset(new NiceMock<content::MockDownloadItem>);
+    test_item_.reset(new NiceMock<download::MockDownloadItem>);
     ON_CALL(*test_item_, GetId())
         .WillByDefault(Return(kTestDownloadId));
-    ON_CALL(*test_item_, GetBrowserContext())
-        .WillByDefault(Return(&profile_));
     ON_CALL(*test_item_, GetEndTime())
         .WillByDefault(Return(base::Time::FromJsTime(kTestDownloadEndTimeMs)));
     ON_CALL(*test_item_, GetState())
-        .WillByDefault(Return(content::DownloadItem::COMPLETE));
+        .WillByDefault(Return(download::DownloadItem::COMPLETE));
+    content::DownloadItemUtils::AttachInfo(test_item_.get(), &profile_,
+                                           nullptr);
     dm_observer_->OnDownloadCreated(&download_manager_, test_item_.get());
 
     // Add another item.
-    other_item_.reset(new NiceMock<content::MockDownloadItem>);
+    other_item_.reset(new NiceMock<download::MockDownloadItem>);
     ON_CALL(*other_item_, GetId())
         .WillByDefault(Return(kOtherDownloadId));
-    ON_CALL(*other_item_, GetBrowserContext())
-        .WillByDefault(Return(&profile_));
-    ON_CALL(*test_item_, GetEndTime())
+    ON_CALL(*other_item_, GetEndTime())
         .WillByDefault(Return(base::Time::FromJsTime(kTestDownloadEndTimeMs)));
+    content::DownloadItemUtils::AttachInfo(other_item_.get(), &profile_,
+                                           nullptr);
     dm_observer_->OnDownloadCreated(&download_manager_, other_item_.get());
 
     // Add an item with an id of zero.
-    zero_item_.reset(new NiceMock<content::MockDownloadItem>);
+    zero_item_.reset(new NiceMock<download::MockDownloadItem>);
     ON_CALL(*zero_item_, GetId())
         .WillByDefault(Return(0));
-    ON_CALL(*zero_item_, GetBrowserContext())
-        .WillByDefault(Return(&profile_));
     ON_CALL(*zero_item_, GetEndTime())
         .WillByDefault(Return(base::Time::FromJsTime(kTestDownloadEndTimeMs)));
     ON_CALL(*zero_item_, GetState())
-        .WillByDefault(Return(content::DownloadItem::COMPLETE));
+        .WillByDefault(Return(download::DownloadItem::COMPLETE));
+    content::DownloadItemUtils::AttachInfo(zero_item_.get(), &profile_,
+                                           nullptr);
     dm_observer_->OnDownloadCreated(&download_manager_, zero_item_.get());
 
     ON_CALL(download_manager_, GetAllDownloads(_))
@@ -256,13 +252,13 @@ class DownloadMetadataManagerTestBase : public ::testing::Test {
   NiceMock<MockDownloadMetadataManager> manager_;
   TestingProfile profile_;
   NiceMock<content::MockDownloadManager> download_manager_;
-  std::unique_ptr<content::MockDownloadItem> test_item_;
-  std::unique_ptr<content::MockDownloadItem> other_item_;
-  std::unique_ptr<content::MockDownloadItem> zero_item_;
+  std::unique_ptr<download::MockDownloadItem> test_item_;
+  std::unique_ptr<download::MockDownloadItem> other_item_;
+  std::unique_ptr<download::MockDownloadItem> zero_item_;
 
   // The DownloadMetadataManager's content::DownloadManager::Observer. Captured
   // by download_manager_'s AddObserver action.
-  content::DownloadManager::Observer* dm_observer_;
+  content::DownloadManager::Observer* dm_observer_ = nullptr;
 };
 
 // A parameterized test that exercises GetDownloadDetails. The parameters
@@ -329,15 +325,15 @@ class GetDetailsTest
 TEST_P(GetDetailsTest, GetDownloadDetails) {
   // Optionally put a metadata file in the profile directory.
   if (metadata_file_present_)
-    WriteTestMetadataFile();
+    ASSERT_NO_FATAL_FAILURE(WriteTestMetadataFile());
 
   // Optionally add a download manager for the profile.
   if (manager_added_)
-    AddDownloadManager();
+    ASSERT_NO_FATAL_FAILURE(AddDownloadManager());
 
   // Optionally create download items and perform actions on the one under test.
   if (item_action_ != NOT_CREATED)
-    AddDownloadItems();
+    ASSERT_NO_FATAL_FAILURE(AddDownloadItems());
   if (item_action_ == OPENED)
     test_item_->NotifyObserversDownloadOpened();
   else if (item_action_ == REMOVED)
@@ -385,7 +381,7 @@ TEST_P(GetDetailsTest, GetDownloadDetails) {
   ShutdownDownloadManager();
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DownloadMetadataManager,
     GetDetailsTest,
     testing::Combine(
@@ -459,18 +455,18 @@ TEST_P(SetRequestTest, SetRequest) {
     case ABSENT:
       break;
     case PRESENT_FOR_THIS_ITEM:
-      WriteTestMetadataFile();
+      ASSERT_NO_FATAL_FAILURE(WriteTestMetadataFile());
       break;
     case PRESENT_FOR_OTHER_ITEM:
-      WriteTestMetadataFileForItem(kOtherDownloadId);
+      ASSERT_NO_FATAL_FAILURE(WriteTestMetadataFileForItem(kOtherDownloadId));
       break;
     case PRESENT_FOR_UNKNOWN_ITEM:
-      WriteTestMetadataFileForItem(kCrazyDowloadId);
+      ASSERT_NO_FATAL_FAILURE(WriteTestMetadataFileForItem(kCrazyDowloadId));
       break;
   }
 
-  AddDownloadManager();
-  AddDownloadItems();
+  ASSERT_NO_FATAL_FAILURE(AddDownloadManager());
+  ASSERT_NO_FATAL_FAILURE(AddDownloadItems());
 
   // Optionally allow the task to read the file to complete.
   if (details_loaded_) {
@@ -504,22 +500,27 @@ TEST_P(SetRequestTest, SetRequest) {
 
   ShutdownDownloadManager();
 
-  std::unique_ptr<DownloadMetadata> metadata(ReadTestMetadataFile());
+  RunAllTasks();
+
   if (set_request_) {
     // Expect that the file contains metadata for the download.
-    ASSERT_TRUE(metadata);
+    std::unique_ptr<DownloadMetadata> metadata;
+    ASSERT_NO_FATAL_FAILURE(ReadTestMetadataFile(&metadata))
+        << GetMetadataPath().value();
     EXPECT_EQ(kTestDownloadId, metadata->download_id());
     EXPECT_STREQ(kNewUrl, metadata->download().download().url().c_str());
-  } else if (metadata_file_present_) {
+  } else if (metadata_file_present_ != ABSENT) {
     // Expect that the metadata file has not been overwritten.
-    ASSERT_TRUE(metadata);
+    std::unique_ptr<DownloadMetadata> metadata;
+    ASSERT_NO_FATAL_FAILURE(ReadTestMetadataFile(&metadata))
+        << GetMetadataPath().value();
   } else {
     // Expect that the file is not present.
-    ASSERT_FALSE(metadata);
+    ASSERT_FALSE(base::PathExists(GetMetadataPath()));
   }
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     DownloadMetadataManager,
     SetRequestTest,
     testing::Combine(testing::Values("absent", "this", "other", "unknown"),
@@ -530,47 +531,47 @@ INSTANTIATE_TEST_CASE_P(
 
 TEST_F(DownloadMetadataManagerTestBase, ActiveDownloadNoRequest) {
   // Put some metadata on disk from a previous download.
-  WriteTestMetadataFileForItem(kOtherDownloadId);
+  ASSERT_NO_FATAL_FAILURE(WriteTestMetadataFileForItem(kOtherDownloadId));
 
-  AddDownloadManager();
-  AddDownloadItems();
+  ASSERT_NO_FATAL_FAILURE(AddDownloadManager());
+  ASSERT_NO_FATAL_FAILURE(AddDownloadItems());
 
   // Allow everything to load into steady-state.
   RunAllTasks();
 
   // The test item is in progress.
   ON_CALL(*test_item_, GetState())
-      .WillByDefault(Return(content::DownloadItem::IN_PROGRESS));
+      .WillByDefault(Return(download::DownloadItem::IN_PROGRESS));
   test_item_->NotifyObserversDownloadUpdated();
   test_item_->NotifyObserversDownloadUpdated();
 
   // The test item completes.
   ON_CALL(*test_item_, GetState())
-      .WillByDefault(Return(content::DownloadItem::COMPLETE));
+      .WillByDefault(Return(download::DownloadItem::COMPLETE));
   test_item_->NotifyObserversDownloadUpdated();
 
   RunAllTasks();
   ShutdownDownloadManager();
 
   // Expect that the metadata file is still present.
-  std::unique_ptr<DownloadMetadata> metadata(ReadTestMetadataFile());
-  ASSERT_TRUE(metadata);
+  std::unique_ptr<DownloadMetadata> metadata;
+  ASSERT_NO_FATAL_FAILURE(ReadTestMetadataFile(&metadata));
   EXPECT_EQ(kOtherDownloadId, metadata->download_id());
 }
 
 TEST_F(DownloadMetadataManagerTestBase, ActiveDownloadWithRequest) {
   // Put some metadata on disk from a previous download.
-  WriteTestMetadataFileForItem(kOtherDownloadId);
+  ASSERT_NO_FATAL_FAILURE(WriteTestMetadataFileForItem(kOtherDownloadId));
 
-  AddDownloadManager();
-  AddDownloadItems();
+  ASSERT_NO_FATAL_FAILURE(AddDownloadManager());
+  ASSERT_NO_FATAL_FAILURE(AddDownloadItems());
 
   // Allow everything to load into steady-state.
   RunAllTasks();
 
   // The test item is in progress.
   ON_CALL(*test_item_, GetState())
-      .WillByDefault(Return(content::DownloadItem::IN_PROGRESS));
+      .WillByDefault(Return(download::DownloadItem::IN_PROGRESS));
   test_item_->NotifyObserversDownloadUpdated();
 
   // A request is set for it.
@@ -581,7 +582,7 @@ TEST_F(DownloadMetadataManagerTestBase, ActiveDownloadWithRequest) {
 
   // The test item completes.
   ON_CALL(*test_item_, GetState())
-      .WillByDefault(Return(content::DownloadItem::COMPLETE));
+      .WillByDefault(Return(download::DownloadItem::COMPLETE));
   test_item_->NotifyObserversDownloadUpdated();
 
   RunAllTasks();
@@ -596,8 +597,8 @@ TEST_F(DownloadMetadataManagerTestBase, ActiveDownloadWithRequest) {
   ShutdownDownloadManager();
 
   // Expect that the file contains metadata for the download.
-  std::unique_ptr<DownloadMetadata> metadata(ReadTestMetadataFile());
-  ASSERT_TRUE(metadata);
+  std::unique_ptr<DownloadMetadata> metadata;
+  ASSERT_NO_FATAL_FAILURE(ReadTestMetadataFile(&metadata));
   EXPECT_EQ(kTestDownloadId, metadata->download_id());
   EXPECT_STREQ(kNewUrl, metadata->download().download().url().c_str());
 }
@@ -605,8 +606,8 @@ TEST_F(DownloadMetadataManagerTestBase, ActiveDownloadWithRequest) {
 // Regression test for http://crbug.com/504092: open an item with id==0 when
 // there is no metadata loaded.
 TEST_F(DownloadMetadataManagerTestBase, OpenItemWithZeroId) {
-  AddDownloadManager();
-  AddDownloadItems();
+  ASSERT_NO_FATAL_FAILURE(AddDownloadManager());
+  ASSERT_NO_FATAL_FAILURE(AddDownloadItems());
 
   // Allow everything to load into steady-state.
   RunAllTasks();

@@ -14,12 +14,8 @@ executable("service_discovery_sniffer") {
   deps = [
     "//base",
     "//base/test:test_support",
-    "//build/config/sanitizers:deps",
     "//chrome/browser",
     "//net",
+    "//third_party/webrtc_overrides:init_webrtc",
   ]
-
-  if (enable_webrtc) {
-    deps += [ "//third_party/libjingle:libjingle_webrtc" ]
-  }
 }

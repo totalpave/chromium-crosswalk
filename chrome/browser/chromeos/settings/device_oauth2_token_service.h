@@ -12,11 +12,6 @@
 #include "base/macros.h"
 #include "chrome/browser/chromeos/settings/device_oauth2_token_service_delegate.h"
 #include "google_apis/gaia/oauth2_token_service.h"
-#include "net/url_request/url_request_context_getter.h"
-
-namespace net {
-class URLRequestContextGetter;
-}
 
 class PrefRegistrySimple;
 
@@ -51,12 +46,14 @@ class DeviceOAuth2TokenService
 
  protected:
   // Implementation of OAuth2TokenService.
-  void FetchOAuth2Token(RequestImpl* request,
-                        const std::string& account_id,
-                        net::URLRequestContextGetter* getter,
-                        const std::string& client_id,
-                        const std::string& client_secret,
-                        const ScopeSet& scopes) override;
+  void FetchOAuth2Token(
+      RequestImpl* request,
+      const std::string& account_id,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const std::string& client_id,
+      const std::string& client_secret,
+      const ScopeSet& scopes) override;
+
  private:
   friend class DeviceOAuth2TokenServiceFactory;
   friend class DeviceOAuth2TokenServiceTest;
@@ -67,8 +64,8 @@ class DeviceOAuth2TokenService
   void OnValidationCompleted(GoogleServiceAuthError::State error) override;
 
   // Use DeviceOAuth2TokenServiceFactory to get an instance of this class.
-  // Ownership of |token_encryptor| will be taken.
-  explicit DeviceOAuth2TokenService(DeviceOAuth2TokenServiceDelegate* delegate);
+  explicit DeviceOAuth2TokenService(
+      std::unique_ptr<DeviceOAuth2TokenServiceDelegate> delegate);
   ~DeviceOAuth2TokenService() override;
 
   // Flushes |pending_requests_|, indicating the specified result.
@@ -78,11 +75,12 @@ class DeviceOAuth2TokenService
   // Signals failure on the specified request, passing |error| as the reason.
   void FailRequest(RequestImpl* request, GoogleServiceAuthError::State error);
 
+  DeviceOAuth2TokenServiceDelegate* GetDeviceDelegate();
+  const DeviceOAuth2TokenServiceDelegate* GetDeviceDelegate() const;
+
   // Currently open requests that are waiting while loading the system salt or
   // validating the token.
   std::vector<PendingRequest*> pending_requests_;
-
-  DeviceOAuth2TokenServiceDelegate* delegate_;
 
   DISALLOW_COPY_AND_ASSIGN(DeviceOAuth2TokenService);
 };

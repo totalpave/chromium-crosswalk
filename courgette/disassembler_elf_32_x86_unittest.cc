@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "base/memory/ptr_util.h"
 #include "courgette/assembly_program.h"
 #include "courgette/base_test_unittest.h"
 #include "courgette/image_utils.h"
@@ -24,9 +25,9 @@ namespace {
 
 class TestDisassemblerElf32X86 : public DisassemblerElf32X86 {
  public:
-  TestDisassemblerElf32X86(const void* start, size_t length)
-    : DisassemblerElf32X86(start, length) { }
-  ~TestDisassemblerElf32X86() override { }
+  TestDisassemblerElf32X86(const uint8_t* start, size_t length)
+      : DisassemblerElf32X86(start, length) {}
+  ~TestDisassemblerElf32X86() override = default;
 
   void TestSectionHeaderFileOffsetOrder() {
     std::vector<FileOffset> file_offsets;
@@ -69,12 +70,14 @@ void DisassemblerElf32X86Test::TestExe(const char* file_name,
                                        size_t expected_rel_count) const {
   std::string file1 = FileContents(file_name);
 
-  std::unique_ptr<TestDisassemblerElf32X86> disassembler(
-      new TestDisassemblerElf32X86(file1.c_str(), file1.length()));
+  auto disassembler = std::make_unique<TestDisassemblerElf32X86>(
+      reinterpret_cast<const uint8_t*>(file1.c_str()), file1.length());
 
   bool can_parse_header = disassembler->ParseHeader();
   EXPECT_TRUE(can_parse_header);
   EXPECT_TRUE(disassembler->ok());
+  EXPECT_EQ(EXE_ELF_32_X86, disassembler->kind());
+  EXPECT_EQ(0U, disassembler->image_base());
 
   // The length of the disassembled value will be slightly smaller than the
   // real file, since trailing debug info is not included
@@ -88,9 +91,8 @@ void DisassemblerElf32X86Test::TestExe(const char* file_name,
   EXPECT_EQ('L', offset_p[2]);
   EXPECT_EQ('F', offset_p[3]);
 
-  std::unique_ptr<AssemblyProgram> program(new AssemblyProgram(EXE_ELF_32_X86));
-
-  EXPECT_TRUE(disassembler->Disassemble(program.get()));
+  std::unique_ptr<AssemblyProgram> program = disassembler->CreateProgram(false);
+  EXPECT_TRUE(nullptr != program.get());
 
   const std::vector<RVA>& abs32_list = disassembler->Abs32Locations();
 

@@ -12,8 +12,11 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/weak_ptr.h"
-#include "base/run_loop.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+
+namespace base {
+class RunLoop;
+}
 
 namespace chromeos {
 
@@ -24,7 +27,7 @@ class ScreenshotTester {
   ScreenshotTester();
   virtual ~ScreenshotTester();
 
-  typedef scoped_refptr<base::RefCountedBytes> PNGFile;
+  typedef scoped_refptr<base::RefCountedMemory> PNGFile;
 
   // Contains the results of comparison
   struct Result {
@@ -106,7 +109,9 @@ class ScreenshotTester {
   void LogComparisonResults(const ScreenshotTester::Result& result);
 
   // Saves |png_data| as a current screenshot.
-  void ReturnScreenshot(const PNGFile& screenshot, PNGFile png_data);
+  void ReturnScreenshot(base::RunLoop* run_loop,
+                        PNGFile* screenshot,
+                        PNGFile png_data);
 
   // Loads golden screenshot from the disk, assuming it lies at |image_path|.
   // Fails if there is no such a file.
@@ -136,11 +141,6 @@ class ScreenshotTester {
   // Path to the directory where screenshots that failed comparing
   // and difference between them and golden ones will be stored.
   base::FilePath artifacts_dir_;
-
-  // |run_loop_| and |run_loop_quitter_| are used to synchronize
-  // with ui::GrabWindowSnapshotAsync.
-  base::RunLoop run_loop_;
-  base::Closure run_loop_quitter_;
 
   // Is true when we're in test mode:
   // comparing golden screenshots and current ones.

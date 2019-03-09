@@ -21,7 +21,6 @@
 
 #include <stdint.h>
 
-#include <deque>
 #include <memory>
 
 #include "base/macros.h"
@@ -29,6 +28,7 @@
 #include "base/power_monitor/power_observer.h"
 #include "base/synchronization/lock.h"
 #include "media/base/audio_decoder.h"
+#include "media/base/audio_decoder_config.h"
 #include "media/base/audio_renderer.h"
 #include "media/base/audio_renderer_sink.h"
 #include "media/base/decryptor.h"
@@ -36,6 +36,7 @@
 #include "media/base/time_source.h"
 #include "media/filters/audio_renderer_algorithm.h"
 #include "media/filters/decoder_stream.h"
+#include "media/renderers/default_renderer_factory.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -47,16 +48,15 @@ namespace media {
 class AudioBufferConverter;
 class AudioBus;
 class AudioClock;
-class AudioHardwareConfig;
-class AudioSplicer;
-class DecryptingDemuxerStream;
 
 class MEDIA_EXPORT AudioRendererImpl
     : public AudioRenderer,
       public TimeSource,
       public base::PowerObserver,
-      NON_EXPORTED_BASE(public AudioRendererSink::RenderCallback) {
+      public AudioRendererSink::RenderCallback {
  public:
+  using PlayDelayCBForTesting = base::RepeatingCallback<void(base::TimeDelta)>;
+
   // |task_runner| is the thread on which AudioRendererImpl will execute.
   //
   // |sink| is used as the destination for the rendered audio.
@@ -65,8 +65,8 @@ class MEDIA_EXPORT AudioRendererImpl
   AudioRendererImpl(
       const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
       AudioRendererSink* sink,
-      ScopedVector<AudioDecoder> decoders,
-      const scoped_refptr<MediaLog>& media_log);
+      const CreateAudioDecodersCB& create_audio_decoders_cb,
+      MediaLog* media_log);
   ~AudioRendererImpl() override;
 
   // TimeSource implementation.
@@ -93,22 +93,26 @@ class MEDIA_EXPORT AudioRendererImpl
   void OnSuspend() override;
   void OnResume() override;
 
+  void SetPlayDelayCBForTesting(PlayDelayCBForTesting cb);
+
  private:
   friend class AudioRendererImplTest;
 
   // Important detail: being in kPlaying doesn't imply that audio is being
   // rendered. Rather, it means that the renderer is ready to go. The actual
   // rendering of audio is controlled via Start/StopRendering().
+  // Audio renderer can be reinitialized completely by calling Initialize again
+  // when it is in a kFlushed state.
   //
   //   kUninitialized
-  //         | Initialize()
-  //         |
-  //         V
-  //    kInitializing
-  //         | Decoders initialized
-  //         |
-  //         V            Decoders reset
-  //      kFlushed <------------------ kFlushing
+  //  +----> | Initialize()
+  //  |      |
+  //  |      V
+  //  | kInitializing
+  //  |      | Decoders initialized
+  //  |      |
+  //  |      V            Decoders reset
+  //  +-  kFlushed <------------------ kFlushing
   //         | StartPlaying()             ^
   //         |                            |
   //         |                            | Flush()
@@ -121,13 +125,19 @@ class MEDIA_EXPORT AudioRendererImpl
     kPlaying
   };
 
+  // Called after hardware device information is available.
+  void OnDeviceInfoReceived(DemuxerStream* stream,
+                            CdmContext* cdm_context,
+                            OutputDeviceInfo output_device_info);
+
   // Callback from the audio decoder delivering decoded audio samples.
-  void DecodedAudioReady(AudioBufferStream::Status status,
+  void DecodedAudioReady(AudioDecoderStream::Status status,
                          const scoped_refptr<AudioBuffer>& buffer);
 
-  // Handles buffers that come out of |splicer_|.
+  // Handles buffers that come out of decoder (MSE: after passing through
+  // |buffer_converter_|).
   // Returns true if more buffers are needed.
-  bool HandleSplicerBuffer_Locked(const scoped_refptr<AudioBuffer>& buffer);
+  bool HandleDecodedBuffer_Locked(const scoped_refptr<AudioBuffer>& buffer);
 
   // Helper functions for DecodeStatus values passed to
   // DecodedAudioReady().
@@ -153,11 +163,12 @@ class MEDIA_EXPORT AudioRendererImpl
   // Render() updates the pipeline's playback timestamp. If Render() is
   // not called at the same rate as audio samples are played, then the reported
   // timestamp in the pipeline will be ahead of the actual audio playback. In
-  // this case |frames_delayed| should be used to indicate when in the future
+  // this case |delay| should be used to indicate when in the future
   // should the filled buffer be played.
-  int Render(AudioBus* audio_bus,
-             uint32_t frames_delayed,
-             uint32_t frames_skipped) override;
+  int Render(base::TimeDelta delay,
+             base::TimeTicks delay_timestamp,
+             int prior_frames_skipped,
+             AudioBus* dest) override;
   void OnRenderError() override;
 
   // Helper methods that schedule an asynchronous read from the decoder as long
@@ -173,16 +184,24 @@ class MEDIA_EXPORT AudioRendererImpl
   // This can only return true while in the kPlaying state.
   bool IsBeforeStartTime(const scoped_refptr<AudioBuffer>& buffer);
 
-  // Called upon AudioBufferStream initialization, or failure thereof (indicated
-  // by the value of |success|).
-  void OnAudioBufferStreamInitialized(bool succes);
+  // Called upon AudioDecoderStream initialization, or failure thereof
+  // (indicated by the value of |success|).
+  void OnAudioDecoderStreamInitialized(bool succes);
+
+  void FinishInitialization(PipelineStatus status);
+  void FinishFlush();
 
   // Callback functions to be called on |client_|.
   void OnPlaybackError(PipelineStatus error);
   void OnPlaybackEnded();
   void OnStatisticsUpdate(const PipelineStatistics& stats);
   void OnBufferingStateChange(BufferingState state);
-  void OnWaitingForDecryptionKey();
+  void OnWaiting(WaitingReason reason);
+
+  // Generally called by the AudioDecoderStream when a config change occurs. May
+  // also be called internally with an empty config to reset config-based state.
+  // Will notify RenderClient when called with a valid config.
+  void OnConfigChange(const AudioDecoderConfig& config);
 
   // Used to initiate the flush operation once all pending reads have
   // completed.
@@ -191,33 +210,35 @@ class MEDIA_EXPORT AudioRendererImpl
   // Called when the |decoder_|.Reset() has completed.
   void ResetDecoderDone();
 
-  // Called by the AudioBufferStream when a splice buffer is demuxed.
-  void OnNewSpliceBuffer(base::TimeDelta);
-
-  // Called by the AudioBufferStream when a config change occurs.
-  void OnConfigChange();
-
   // Updates |buffering_state_| and fires |buffering_state_cb_|.
   void SetBufferingState_Locked(BufferingState buffering_state);
 
+  // Configure's the channel mask for |algorithm_|. Must be called if the layout
+  // changes. Expect the layout in |last_decoded_channel_layout_|.
+  void ConfigureChannelMask();
+
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
-  std::unique_ptr<AudioSplicer> splicer_;
   std::unique_ptr<AudioBufferConverter> buffer_converter_;
 
   // Whether or not we expect to handle config changes.
   bool expecting_config_changes_;
+
+  // Stores the last decoder config that was passed to
+  // RendererClient::OnAudioConfigChange. Used to prevent signaling config
+  // to the upper layers when when the new config is the same.
+  AudioDecoderConfig current_decoder_config_;
 
   // The sink (destination) for rendered audio. |sink_| must only be accessed
   // on |task_runner_|. |sink_| must never be called under |lock_| or else we
   // may deadlock between |task_runner_| and the audio callback thread.
   scoped_refptr<media::AudioRendererSink> sink_;
 
-  std::unique_ptr<AudioBufferStream> audio_buffer_stream_;
+  std::unique_ptr<AudioDecoderStream> audio_decoder_stream_;
 
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
 
-  // Cached copy of hardware params from |sink_|.
+  // Cached copy of audio params that the renderer is initialized with.
   AudioParameters audio_parameters_;
 
   RendererClient* client_;
@@ -229,15 +250,26 @@ class MEDIA_EXPORT AudioRendererImpl
   base::Closure flush_cb_;
 
   // Overridable tick clock for testing.
-  std::unique_ptr<base::TickClock> tick_clock_;
+  const base::TickClock* tick_clock_;
 
   // Memory usage of |algorithm_| recorded during the last
-  // HandleSplicerBuffer_Locked() call.
+  // HandleDecodedBuffer_Locked() call.
   int64_t last_audio_memory_usage_;
 
   // Sample rate of the last decoded audio buffer. Allows for detection of
   // sample rate changes due to implicit AAC configuration change.
   int last_decoded_sample_rate_;
+
+  // Similar to |last_decoded_sample_rate_|, used to configure the channel mask
+  // given to the |algorithm_| for efficient playback rate changes.
+  ChannelLayout last_decoded_channel_layout_;
+
+  // Whether the stream is possibly encrypted.
+  bool is_encrypted_;
+
+  // Similar to |last_decoded_channel_layout_|, used to configure the channel
+  // mask given to the |algorithm_| for efficient playback rate changes.
+  int last_decoded_channels_;
 
   // After Initialize() has completed, all variables below must be accessed
   // under |lock_|. ------------------------------------------------------------
@@ -249,6 +281,10 @@ class MEDIA_EXPORT AudioRendererImpl
 
   // Simple state tracking variable.
   State state_;
+
+  // TODO(servolk): Consider using DecoderFactory here instead of the
+  // CreateAudioDecodersCB.
+  CreateAudioDecodersCB create_audio_decoders_cb_;
 
   BufferingState buffering_state_;
 
@@ -287,13 +323,16 @@ class MEDIA_EXPORT AudioRendererImpl
   // Used to determine how long to delay playback.
   base::TimeDelta first_packet_timestamp_;
 
-  // Set by CurrentMediaTime(), used to prevent the current media time value as
-  // reported to JavaScript from going backwards in time.
-  base::TimeDelta last_media_timestamp_;
-
   // Set by OnSuspend() and OnResume() to indicate when the system is about to
   // suspend/is suspended and when it resumes.
   bool is_suspending_;
+
+  // Whether to pass compressed audio bitstream to audio sink directly.
+  bool is_passthrough_;
+
+  // Set and used only in tests to report positive play_delay values in
+  // Render().
+  PlayDelayCBForTesting play_delay_cb_for_testing_;
 
   // End variables which must be accessed under |lock_|. ----------------------
 

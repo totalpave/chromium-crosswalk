@@ -4,6 +4,7 @@
 
 #include "ui/platform_window/win/win_window.h"
 
+#include <algorithm>
 #include <memory>
 
 #include "base/strings/string16.h"
@@ -11,6 +12,8 @@
 #include "ui/events/event_utils.h"
 #include "ui/gfx/win/msg_util.h"
 #include "ui/platform_window/platform_window_delegate.h"
+
+#include <windows.h>
 
 namespace ui {
 
@@ -38,8 +41,7 @@ gfx::Rect GetWindowBoundsForClientBounds(DWORD style, DWORD ex_style,
 
 }  // namespace
 
-WinWindow::WinWindow(PlatformWindowDelegate* delegate,
-                     const gfx::Rect& bounds)
+WinWindow::WinWindow(PlatformWindowDelegate* delegate, const gfx::Rect& bounds)
     : delegate_(delegate) {
   CHECK(delegate_);
   DWORD window_style = WS_OVERLAPPEDWINDOW;
@@ -73,6 +75,8 @@ void WinWindow::Close() {
   Destroy();
 }
 
+void WinWindow::PrepareForShutdown() {}
+
 void WinWindow::SetBounds(const gfx::Rect& bounds) {
   gfx::Rect window_bounds = GetWindowBoundsForClientBounds(
       GetWindowLong(hwnd(), GWL_STYLE),
@@ -96,13 +100,17 @@ void WinWindow::SetTitle(const base::string16& title) {
 }
 
 void WinWindow::SetCapture() {
-  if (::GetCapture() != hwnd())
+  if (!HasCapture())
     ::SetCapture(hwnd());
 }
 
 void WinWindow::ReleaseCapture() {
-  if (::GetCapture() == hwnd())
+  if (HasCapture())
     ::ReleaseCapture();
+}
+
+bool WinWindow::HasCapture() const {
+  return ::GetCapture() == hwnd();
 }
 
 void WinWindow::ToggleFullscreen() {}
@@ -113,17 +121,29 @@ void WinWindow::Minimize() {}
 
 void WinWindow::Restore() {}
 
+PlatformWindowState WinWindow::GetPlatformWindowState() const {
+  return PlatformWindowState::PLATFORM_WINDOW_STATE_UNKNOWN;
+}
+
 void WinWindow::SetCursor(PlatformCursor cursor) {
   ::SetCursor(cursor);
 }
 
-void WinWindow::MoveCursorTo(const gfx::Point& location) {}
+void WinWindow::MoveCursorTo(const gfx::Point& location) {
+  ::SetCursorPos(location.x(), location.y());
+}
 
 void WinWindow::ConfineCursorToBounds(const gfx::Rect& bounds) {
 }
 
 PlatformImeController* WinWindow::GetPlatformImeController() {
   return nullptr;
+}
+
+void WinWindow::SetRestoredBoundsInPixels(const gfx::Rect& bounds) {}
+
+gfx::Rect WinWindow::GetRestoredBoundsInPixels() const {
+  return gfx::Rect();
 }
 
 LRESULT WinWindow::OnMouseRange(UINT message, WPARAM w_param, LPARAM l_param) {
@@ -164,8 +184,7 @@ void WinWindow::OnClose() {
 }
 
 LRESULT WinWindow::OnCreate(CREATESTRUCT* create_struct) {
-  // TODO(sky): provide real scale factor.
-  delegate_->OnAcceleratedWidgetAvailable(hwnd(), 1.f);
+  delegate_->OnAcceleratedWidgetAvailable(hwnd());
   return 0;
 }
 

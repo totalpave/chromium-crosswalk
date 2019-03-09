@@ -10,19 +10,25 @@
 
 #include "base/files/file_path.h"
 #include "base/json/json_file_value_serializer.h"
+#include "base/strings/string_util.h"
 #include "base/values.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
 
-TestIdentifier::TestIdentifier() {
-}
+TestIdentifier::TestIdentifier() = default;
 
 TestIdentifier::TestIdentifier(const TestIdentifier& other) = default;
 
 std::string FormatFullTestName(const std::string& test_case_name,
                                const std::string& test_name) {
   return test_case_name + "." + test_name;
+}
+
+std::string TestNameWithoutDisabledPrefix(const std::string& full_test_name) {
+  std::string test_name_no_disabled(full_test_name);
+  ReplaceSubstringsAfterOffset(&test_name_no_disabled, 0, "DISABLED_", "");
+  return test_name_no_disabled;
 }
 
 std::vector<TestIdentifier> GetCompiledInTests() {
@@ -48,12 +54,12 @@ bool WriteCompiledInTestsToFile(const FilePath& path) {
   std::vector<TestIdentifier> tests(GetCompiledInTests());
 
   ListValue root;
-  for (size_t i = 0; i < tests.size(); ++i) {
-    std::unique_ptr<class base::DictionaryValue> test_info(new DictionaryValue);
-    test_info->SetString("test_case_name", tests[i].test_case_name);
-    test_info->SetString("test_name", tests[i].test_name);
-    test_info->SetString("file", tests[i].file);
-    test_info->SetInteger("line", tests[i].line);
+  for (const auto& i : tests) {
+    std::unique_ptr<DictionaryValue> test_info(new DictionaryValue);
+    test_info->SetString("test_case_name", i.test_case_name);
+    test_info->SetString("test_name", i.test_name);
+    test_info->SetString("file", i.file);
+    test_info->SetInteger("line", i.line);
     root.Append(std::move(test_info));
   }
 
@@ -76,9 +82,9 @@ bool ReadTestNamesFromFile(const FilePath& path,
     return false;
 
   std::vector<base::TestIdentifier> result;
-  for (base::ListValue::iterator i = tests->begin(); i != tests->end(); ++i) {
-    base::DictionaryValue* test = nullptr;
-    if (!(*i)->GetAsDictionary(&test))
+  for (const auto& i : *tests) {
+    const base::DictionaryValue* test = nullptr;
+    if (!i.GetAsDictionary(&test))
       return false;
 
     TestIdentifier test_data;

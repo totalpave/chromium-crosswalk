@@ -13,22 +13,24 @@
 namespace gpu {
 namespace gles2 {
 
-Logger::Logger(const DebugMarkerManager* debug_marker_manager)
+Logger::Logger(const DebugMarkerManager* debug_marker_manager,
+               const LogMessageCallback& callback,
+               bool disable_gl_error_limit)
     : debug_marker_manager_(debug_marker_manager),
+      log_message_callback_(callback),
       log_message_count_(0),
-      log_synthesized_gl_errors_(true) {
+      log_synthesized_gl_errors_(true),
+      disable_gl_error_limit_(disable_gl_error_limit) {
   Logger* this_temp = this;
   this_in_hex_ = std::string("GroupMarkerNotSet(crbug.com/242999)!:") +
       base::HexEncode(&this_temp, sizeof(this_temp));
 }
 
-Logger::~Logger() {}
+Logger::~Logger() = default;
 
 void Logger::LogMessage(
     const char* filename, int line, const std::string& msg) {
-  if (log_message_count_ < kMaxLogMessages ||
-      base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisableGLErrorLimit)) {
+  if (log_message_count_ < kMaxLogMessages || disable_gl_error_limit_) {
     std::string prefixed_msg(std::string("[") + GetLogPrefix() + "]" + msg);
     ++log_message_count_;
     // LOG this unless logging is turned off as any chromium code that
@@ -37,9 +39,7 @@ void Logger::LogMessage(
       ::logging::LogMessage(
           filename, line, ::logging::LOG_ERROR).stream() << prefixed_msg;
     }
-    if (!msg_callback_.is_null()) {
-      msg_callback_.Run(0, prefixed_msg);
-    }
+    log_message_callback_.Run(prefixed_msg);
   } else {
     if (log_message_count_ == kMaxLogMessages) {
       ++log_message_count_;
@@ -55,10 +55,5 @@ const std::string& Logger::GetLogPrefix() const {
   return prefix.empty() ? this_in_hex_ : prefix;
 }
 
-void Logger::SetMsgCallback(const MsgCallback& callback) {
-  msg_callback_ = callback;
-}
-
 }  // namespace gles2
 }  // namespace gpu
-

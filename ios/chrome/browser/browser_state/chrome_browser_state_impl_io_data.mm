@@ -8,13 +8,12 @@
 #include <set>
 #include <utility>
 
+#include "base/barrier_closure.h"
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/sequenced_task_runner.h"
-#include "base/threading/sequenced_worker_pool.h"
-#include "base/threading/worker_pool.h"
+#include "base/task/post_task.h"
 #include "components/cookie_config/cookie_store_util.h"
 #include "components/net_log/chrome_net_log.h"
 #include "components/prefs/json_pref_store.h"
@@ -29,123 +28,22 @@
 #include "ios/chrome/browser/net/ios_chrome_network_delegate.h"
 #include "ios/chrome/browser/net/ios_chrome_url_request_context_getter.h"
 #include "ios/chrome/browser/pref_names.h"
-#include "ios/net/cookies/cookie_store_ios.h"
+#import "ios/net/cookies/cookie_store_ios.h"
+#import "ios/net/cookies/ns_http_system_cookie_store.h"
+#import "ios/net/cookies/system_cookie_store.h"
+#include "ios/web/public/web_task_traits.h"
 #include "ios/web/public/web_thread.h"
 #include "net/base/cache_type.h"
-#include "net/base/sdch_manager.h"
 #include "net/cookies/cookie_store.h"
-#include "net/extras/sqlite/sqlite_channel_id_store.h"
 #include "net/http/http_cache.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_server_properties_manager.h"
-#include "net/sdch/sdch_owner.h"
-#include "net/ssl/channel_id_service.h"
-#include "net/ssl/default_channel_id_store.h"
 #include "net/url_request/url_request_intercepting_job_factory.h"
 #include "net/url_request/url_request_job_factory_impl.h"
 
-namespace {
-
-// Connects the SdchOwner's storage to the prefs.
-class SdchOwnerPrefStorage : public net::SdchOwner::PrefStorage,
-                             public PrefStore::Observer {
- public:
-  explicit SdchOwnerPrefStorage(PersistentPrefStore* storage)
-      : storage_(storage), storage_key_("SDCH"), init_observer_(nullptr) {}
-  ~SdchOwnerPrefStorage() override {
-    if (init_observer_)
-      storage_->RemoveObserver(this);
-  }
-
-  ReadError GetReadError() const override {
-    PersistentPrefStore::PrefReadError error = storage_->GetReadError();
-
-    DCHECK_NE(
-        error,
-        PersistentPrefStore::PREF_READ_ERROR_ASYNCHRONOUS_TASK_INCOMPLETE);
-    DCHECK_NE(error, PersistentPrefStore::PREF_READ_ERROR_MAX_ENUM);
-
-    switch (error) {
-      case PersistentPrefStore::PREF_READ_ERROR_NONE:
-        return PERSISTENCE_FAILURE_NONE;
-
-      case PersistentPrefStore::PREF_READ_ERROR_NO_FILE:
-        return PERSISTENCE_FAILURE_REASON_NO_FILE;
-
-      case PersistentPrefStore::PREF_READ_ERROR_JSON_PARSE:
-      case PersistentPrefStore::PREF_READ_ERROR_JSON_TYPE:
-      case PersistentPrefStore::PREF_READ_ERROR_FILE_OTHER:
-      case PersistentPrefStore::PREF_READ_ERROR_FILE_LOCKED:
-      case PersistentPrefStore::PREF_READ_ERROR_JSON_REPEAT:
-        return PERSISTENCE_FAILURE_REASON_READ_FAILED;
-
-      case PersistentPrefStore::PREF_READ_ERROR_ACCESS_DENIED:
-      case PersistentPrefStore::PREF_READ_ERROR_FILE_NOT_SPECIFIED:
-      case PersistentPrefStore::PREF_READ_ERROR_ASYNCHRONOUS_TASK_INCOMPLETE:
-      case PersistentPrefStore::PREF_READ_ERROR_MAX_ENUM:
-      default:
-        // We don't expect these other failures given our usage of prefs.
-        NOTREACHED();
-        return PERSISTENCE_FAILURE_REASON_OTHER;
-    }
-  }
-
-  bool GetValue(const base::DictionaryValue** result) const override {
-    const base::Value* result_value = nullptr;
-    if (!storage_->GetValue(storage_key_, &result_value))
-      return false;
-    return result_value->GetAsDictionary(result);
-  }
-
-  bool GetMutableValue(base::DictionaryValue** result) override {
-    base::Value* result_value = nullptr;
-    if (!storage_->GetMutableValue(storage_key_, &result_value))
-      return false;
-    return result_value->GetAsDictionary(result);
-  }
-
-  void SetValue(std::unique_ptr<base::DictionaryValue> value) override {
-    storage_->SetValue(storage_key_, std::move(value),
-                       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
-  }
-
-  void ReportValueChanged() override {
-    storage_->ReportValueChanged(storage_key_,
-                                 WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
-  }
-
-  bool IsInitializationComplete() override {
-    return storage_->IsInitializationComplete();
-  }
-
-  void StartObservingInit(net::SdchOwner* observer) override {
-    DCHECK(!init_observer_);
-    init_observer_ = observer;
-    storage_->AddObserver(this);
-  }
-
-  void StopObservingInit() override {
-    DCHECK(init_observer_);
-    init_observer_ = nullptr;
-    storage_->RemoveObserver(this);
-  }
-
- private:
-  // PrefStore::Observer implementation.
-  void OnPrefValueChanged(const std::string& key) override {}
-  void OnInitializationCompleted(bool succeeded) override {
-    init_observer_->OnPrefStorageInitializationComplete(succeeded);
-  }
-
-  PersistentPrefStore* storage_;  // Non-owning.
-  const std::string storage_key_;
-
-  net::SdchOwner* init_observer_;  // Non-owning.
-
-  DISALLOW_COPY_AND_ASSIGN(SdchOwnerPrefStorage);
-};
-
-}  // namespace
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 ChromeBrowserStateImplIOData::Handle::Handle(
     ios::ChromeBrowserState* browser_state)
@@ -158,15 +56,12 @@ ChromeBrowserStateImplIOData::Handle::Handle(
 
 ChromeBrowserStateImplIOData::Handle::~Handle() {
   DCHECK_CURRENTLY_ON(web::WebThread::UI);
-  if (io_data_->http_server_properties_manager_)
-    io_data_->http_server_properties_manager_->ShutdownOnPrefThread();
 
   io_data_->ShutdownOnUIThread(GetAllContextGetters());
 }
 
 void ChromeBrowserStateImplIOData::Handle::Init(
     const base::FilePath& cookie_path,
-    const base::FilePath& channel_id_path,
     const base::FilePath& cache_path,
     int cache_max_size,
     const base::FilePath& profile_path) {
@@ -176,7 +71,6 @@ void ChromeBrowserStateImplIOData::Handle::Init(
   LazyParams* lazy_params = new LazyParams();
 
   lazy_params->cookie_path = cookie_path;
-  lazy_params->channel_id_path = channel_id_path;
   lazy_params->cache_path = cache_path;
   lazy_params->cache_max_size = cache_max_size;
   io_data_->lazy_params_.reset(lazy_params);
@@ -187,12 +81,6 @@ void ChromeBrowserStateImplIOData::Handle::Init(
   io_data_->app_cache_max_size_ = cache_max_size;
 
   io_data_->InitializeMetricsEnabledStateOnUIThread();
-
-  base::SequencedWorkerPool* pool = web::WebThread::GetBlockingPool();
-  scoped_refptr<base::SequencedTaskRunner> db_task_runner =
-      pool->GetSequencedTaskRunnerWithShutdownBehavior(
-          pool->GetSequenceToken(),
-          base::SequencedWorkerPool::SKIP_ON_SHUTDOWN);
 }
 
 scoped_refptr<IOSChromeURLRequestContextGetter>
@@ -243,9 +131,9 @@ void ChromeBrowserStateImplIOData::Handle::ClearNetworkingHistorySince(
   DCHECK_CURRENTLY_ON(web::WebThread::UI);
   LazyInitialize();
 
-  web::WebThread::PostTask(
-      web::WebThread::IO, FROM_HERE,
-      base::Bind(
+  base::PostTaskWithTraits(
+      FROM_HERE, {web::WebThread::IO},
+      base::BindOnce(
           &ChromeBrowserStateImplIOData::ClearNetworkingHistorySinceOnIOThread,
           base::Unretained(io_data_), time, completion));
 }
@@ -258,11 +146,6 @@ void ChromeBrowserStateImplIOData::Handle::LazyInitialize() const {
   // Set initialized_ to true at the beginning in case any of the objects
   // below try to get the ResourceContext pointer.
   initialized_ = true;
-  PrefService* pref_service = browser_state_->GetPrefs();
-  io_data_->http_server_properties_manager_ =
-      HttpServerPropertiesManagerFactory::CreateManager(pref_service);
-  io_data_->set_http_server_properties(
-      base::WrapUnique(io_data_->http_server_properties_manager_));
   io_data_->InitializeOnUIThread(browser_state_);
 }
 
@@ -290,7 +173,6 @@ ChromeBrowserStateImplIOData::LazyParams::~LazyParams() {}
 ChromeBrowserStateImplIOData::ChromeBrowserStateImplIOData()
     : ChromeBrowserStateIOData(
           ios::ChromeBrowserStateType::REGULAR_BROWSER_STATE),
-      http_server_properties_manager_(nullptr),
       app_cache_max_size_(0) {}
 
 ChromeBrowserStateImplIOData::~ChromeBrowserStateImplIOData() {}
@@ -303,10 +185,10 @@ void ChromeBrowserStateImplIOData::InitializeInternal(
   base::FilePath network_json_store_filepath(
       profile_path_.Append(kIOSChromeNetworkPersistentStateFilename));
   network_json_store_ = new JsonPrefStore(
-      network_json_store_filepath,
-      JsonPrefStore::GetTaskRunnerForFile(network_json_store_filepath,
-                                          web::WebThread::GetBlockingPool()),
-      std::unique_ptr<PrefFilter>());
+      network_json_store_filepath, std::unique_ptr<PrefFilter>(),
+      base::CreateSequencedTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+           base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
   network_json_store_->ReadPrefsAsync(nullptr);
 
   net::URLRequestContext* main_context = main_request_context();
@@ -316,8 +198,8 @@ void ChromeBrowserStateImplIOData::InitializeInternal(
 
   ApplyProfileParamsToContext(main_context);
 
-  if (http_server_properties_manager_)
-    http_server_properties_manager_->InitializeOnNetworkThread();
+  set_http_server_properties(HttpServerPropertiesManagerFactory::CreateManager(
+      network_json_store_, io_thread->net_log()));
 
   main_context->set_transport_security_state(transport_security_state());
 
@@ -334,11 +216,7 @@ void ChromeBrowserStateImplIOData::InitializeInternal(
   main_context->set_http_auth_handler_factory(
       io_thread_globals->http_auth_handler_factory.get());
 
-  main_context->set_proxy_service(proxy_service());
-  main_context->set_backoff_manager(
-      io_thread_globals->url_request_backoff_manager.get());
-
-  net::ChannelIDService* channel_id_service = NULL;
+  main_context->set_proxy_resolution_service(proxy_resolution_service());
 
   DCHECK(!lazy_params_->cookie_path.empty());
   cookie_util::CookieStoreConfig ios_cookie_config(
@@ -346,7 +224,9 @@ void ChromeBrowserStateImplIOData::InitializeInternal(
       cookie_util::CookieStoreConfig::RESTORED_SESSION_COOKIES,
       cookie_util::CookieStoreConfig::COOKIE_STORE_IOS,
       cookie_config::GetCookieCryptoDelegate());
-  main_cookie_store_ = cookie_util::CreateCookieStore(ios_cookie_config);
+  main_cookie_store_ = cookie_util::CreateCookieStore(
+      ios_cookie_config, std::move(profile_params->system_cookie_store),
+      io_thread->net_log());
 
   if (profile_params->path.BaseName().value() ==
       kIOSChromeInitialBrowserState) {
@@ -357,29 +237,10 @@ void ChromeBrowserStateImplIOData::InitializeInternal(
 
   main_context->set_cookie_store(main_cookie_store_.get());
 
-  // Set up server bound cert service.
-  if (!channel_id_service) {
-    DCHECK(!lazy_params_->channel_id_path.empty());
-
-    scoped_refptr<net::SQLiteChannelIDStore> channel_id_db =
-        new net::SQLiteChannelIDStore(
-            lazy_params_->channel_id_path,
-            web::WebThread::GetBlockingPool()->GetSequencedTaskRunner(
-                web::WebThread::GetBlockingPool()->GetSequenceToken()));
-    channel_id_service = new net::ChannelIDService(
-        new net::DefaultChannelIDStore(channel_id_db.get()),
-        base::WorkerPool::GetTaskRunner(true));
-  }
-
-  set_channel_id_service(channel_id_service);
-  main_context->set_channel_id_service(channel_id_service);
-  main_cookie_store_->SetChannelIDServiceID(channel_id_service->GetUniqueID());
-
   std::unique_ptr<net::HttpCache::BackendFactory> main_backend(
       new net::HttpCache::DefaultBackend(
           net::DISK_CACHE, net::CACHE_BACKEND_BLOCKFILE,
-          lazy_params_->cache_path, lazy_params_->cache_max_size,
-          web::WebThread::GetTaskRunnerForThread(web::WebThread::CACHE)));
+          lazy_params_->cache_path, lazy_params_->cache_max_size));
   http_network_session_ = CreateHttpNetworkSession(*profile_params);
   main_http_factory_ = CreateMainHttpFactory(http_network_session_.get(),
                                              std::move(main_backend));
@@ -389,22 +250,9 @@ void ChromeBrowserStateImplIOData::InitializeInternal(
       new net::URLRequestJobFactoryImpl());
   InstallProtocolHandlers(main_job_factory.get(), protocol_handlers);
 
-  // TODO(crbug.com/592012): Delete request_interceptor and its handling if
-  // it's not needed in the future.
-  URLRequestInterceptorScopedVector request_interceptors;
   main_job_factory_ = SetUpJobFactoryDefaults(std::move(main_job_factory),
-                                              std::move(request_interceptors),
                                               main_context->network_delegate());
   main_context->set_job_factory(main_job_factory_.get());
-  main_context->set_network_quality_estimator(
-      io_thread_globals->network_quality_estimator.get());
-
-  // Setup SDCH for this profile.
-  sdch_manager_.reset(new net::SdchManager);
-  sdch_policy_.reset(new net::SdchOwner(sdch_manager_.get(), main_context));
-  main_context->set_sdch_manager(sdch_manager_.get());
-  sdch_policy_->EnablePersistentStorage(
-      base::WrapUnique(new SdchOwnerPrefStorage(network_json_store_.get())));
 
   lazy_params_.reset();
 }
@@ -416,17 +264,12 @@ ChromeBrowserStateImplIOData::InitializeAppRequestContext(
   AppRequestContext* context = new AppRequestContext();
   context->CopyFrom(main_context);
 
-  // Use a separate ChannelIDService.
-  std::unique_ptr<net::ChannelIDService> channel_id_service(
-      new net::ChannelIDService(new net::DefaultChannelIDStore(nullptr),
-                                base::WorkerPool::GetTaskRunner(true)));
-
-  // Build a new HttpNetworkSession that uses the new ChannelIDService.
-  net::HttpNetworkSession::Params network_params =
-      http_network_session_->params();
-  network_params.channel_id_service = channel_id_service.get();
+  // Build a new HttpNetworkSession.
+  net::HttpNetworkSession::Context session_context =
+      http_network_session_->context();
   std::unique_ptr<net::HttpNetworkSession> http_network_session(
-      new net::HttpNetworkSession(network_params));
+      new net::HttpNetworkSession(http_network_session_->params(),
+                                  session_context));
 
   // Use a separate HTTP disk cache for isolated apps.
   std::unique_ptr<net::HttpCache::BackendFactory> app_backend =
@@ -438,24 +281,22 @@ ChromeBrowserStateImplIOData::InitializeAppRequestContext(
       base::FilePath(),
       cookie_util::CookieStoreConfig::EPHEMERAL_SESSION_COOKIES,
       cookie_util::CookieStoreConfig::COOKIE_STORE_IOS, nullptr);
+  // TODO(crbug.com/779106): Check if cookiestore type should be changed.
   std::unique_ptr<net::CookieStore> cookie_store =
-      cookie_util::CreateCookieStore(ios_cookie_config);
+      cookie_util::CreateCookieStore(
+          ios_cookie_config, std::make_unique<net::NSHTTPSystemCookieStore>(),
+          main_context->net_log());
 
-  // Transfer ownership of the ChannelIDStore, HttpNetworkSession, cookies, and
+  // Transfer ownership of the HttpNetworkSession, cookies, and
   // cache to AppRequestContext.
-  context->SetChannelIDService(std::move(channel_id_service));
   context->SetHttpNetworkSession(std::move(http_network_session));
   context->SetCookieStore(std::move(cookie_store));
   context->SetHttpTransactionFactory(std::move(app_http_cache));
 
   std::unique_ptr<net::URLRequestJobFactoryImpl> job_factory(
       new net::URLRequestJobFactoryImpl());
-  // TODO(crbug.com/592012): Delete request_interceptor and its handling if
-  // it's not needed in the future.
-  URLRequestInterceptorScopedVector request_interceptors;
   std::unique_ptr<net::URLRequestJobFactory> top_job_factory(
       SetUpJobFactoryDefaults(std::move(job_factory),
-                              std::move(request_interceptors),
                               main_context->network_delegate()));
   context->SetJobFactory(std::move(top_job_factory));
 
@@ -477,10 +318,12 @@ void ChromeBrowserStateImplIOData::ClearNetworkingHistorySinceOnIOThread(
     const base::Closure& completion) {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
   DCHECK(initialized());
-
   DCHECK(transport_security_state());
-  // Completes synchronously.
-  transport_security_state()->DeleteAllDynamicDataSince(time);
-  DCHECK(http_server_properties_manager_);
-  http_server_properties_manager_->Clear(completion);
+  auto barrier = base::BarrierClosure(
+      2, base::BindOnce(base::IgnoreResult(&base::PostTaskWithTraits),
+                        FROM_HERE, base::TaskTraits(web::WebThread::UI),
+                        std::move(completion)));
+
+  transport_security_state()->DeleteAllDynamicDataSince(time, barrier);
+  http_server_properties()->Clear(barrier);
 }

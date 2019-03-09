@@ -6,12 +6,12 @@ package org.chromium.chrome.browser.widget.findinpage;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
-import android.graphics.Color;
 import android.util.AttributeSet;
 import android.view.View;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.util.ColorUtils;
 
 /**
  * A phone specific version of the {@link FindToolbar}.
@@ -27,47 +27,51 @@ public class FindToolbarPhone extends FindToolbar {
     }
 
     @Override
-    public void activate() {
-        if (!isViewAvailable()) return;
+    protected void handleActivate() {
+        assert isWebContentAvailable();
         setVisibility(View.VISIBLE);
-        super.activate();
+        super.handleActivate();
     }
 
     @Override
-    public void deactivate(boolean clearSelection) {
-        super.deactivate(clearSelection);
+    protected void handleDeactivation(boolean clearSelection) {
         setVisibility(View.GONE);
+        super.handleDeactivation(clearSelection);
     }
 
     @Override
     protected void updateVisualsForTabModel(boolean isIncognito) {
         int queryTextColorId;
+        int queryHintTextColorId;
         if (isIncognito) {
-            setBackgroundResource(R.color.incognito_primary_color);
-            ColorStateList white = ApiCompatibilityUtils.getColorStateList(getResources(),
-                    R.color.light_mode_tint);
-            mFindNextButton.setTint(white);
-            mFindPrevButton.setTint(white);
-            mCloseFindButton.setTint(white);
+            setBackgroundColor(ColorUtils.getDefaultThemeColor(getResources(), true));
+            ColorStateList white = ColorUtils.getIconTint(getContext(), true);
+            ApiCompatibilityUtils.setImageTintList(mFindNextButton, white);
+            ApiCompatibilityUtils.setImageTintList(mFindPrevButton, white);
+            ApiCompatibilityUtils.setImageTintList(mCloseFindButton, white);
             queryTextColorId = R.color.find_in_page_query_white_color;
+            queryHintTextColorId = R.color.find_in_page_query_incognito_hint_color;
+
         } else {
-            setBackgroundColor(Color.WHITE);
-            ColorStateList dark = ApiCompatibilityUtils.getColorStateList(getResources(),
-                    R.color.dark_mode_tint);
-            mFindNextButton.setTint(dark);
-            mFindPrevButton.setTint(dark);
-            mCloseFindButton.setTint(dark);
-            queryTextColorId = R.color.find_in_page_query_color;
+            setBackgroundColor(ColorUtils.getDefaultThemeColor(getResources(), false));
+            ColorStateList dark = ColorUtils.getIconTint(getContext(), false);
+            ApiCompatibilityUtils.setImageTintList(mFindNextButton, dark);
+            ApiCompatibilityUtils.setImageTintList(mFindPrevButton, dark);
+            ApiCompatibilityUtils.setImageTintList(mCloseFindButton, dark);
+            queryTextColorId = R.color.default_text_color;
+            queryHintTextColorId = R.color.find_in_page_query_default_hint_color;
         }
         mFindQuery.setTextColor(
                 ApiCompatibilityUtils.getColor(getContext().getResources(), queryTextColorId));
+        mFindQuery.setHintTextColor(
+                ApiCompatibilityUtils.getColor(getContext().getResources(), queryHintTextColorId));
     }
 
     @Override
     protected int getStatusColor(boolean failed, boolean incognito) {
         if (!failed && incognito) {
-            return ApiCompatibilityUtils.getColor(getContext().getResources(),
-                    R.color.find_in_page_results_status_white_color);
+            return ApiCompatibilityUtils.getColor(
+                    getContext().getResources(), R.color.white_alpha_50);
         }
 
         return super.getStatusColor(failed, incognito);

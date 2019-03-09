@@ -6,10 +6,12 @@ thakis@chromium.org
 avi@chromium.org
 ccameron@chromium.org
 
-per-file *.isolate=maruel@chromium.org
-per-file *.isolate=tandrii@chromium.org
-per-file *.isolate=vadimsh@chromium.org
-
 # If you're doing structural changes get a review from one of the OWNERS.
-per-file *.gyp*=*
 per-file BUILD.gn=*
+
+# Translation artifacts:
+per-file *.xtb=file://tools/translation/TRANSLATION_OWNERS
+
+# For Fuchsia-specific changes:
+per-file *fuchsia*=file://build/fuchsia/OWNERS
+per-file *scenic*=file://build/fuchsia/OWNERS

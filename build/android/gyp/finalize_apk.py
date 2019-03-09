@@ -1,161 +1,32 @@
-#!/usr/bin/env python
-#
 # Copyright 2013 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-"""Signs and zipaligns APK.
+"""Signs and aligns an APK."""
 
-"""
-
-import optparse
+import argparse
 import shutil
-import sys
+import subprocess
 import tempfile
 
-from util import build_utils
 
-def RenameInflateAndAddPageAlignment(
-    rezip_apk_jar_path, in_zip_file, out_zip_file):
-  rezip_apk_cmd = [
-      'java',
-      '-classpath',
-      rezip_apk_jar_path,
-      'RezipApk',
-      'renamealign',
-      in_zip_file,
-      out_zip_file,
-    ]
-  build_utils.CheckOutput(rezip_apk_cmd)
-
-
-def ReorderAndAlignApk(rezip_apk_jar_path, in_zip_file, out_zip_file):
-  rezip_apk_cmd = [
-      'java',
-      '-classpath',
-      rezip_apk_jar_path,
-      'RezipApk',
-      'reorder',
-      in_zip_file,
-      out_zip_file,
-    ]
-  build_utils.CheckOutput(rezip_apk_cmd)
-
-
-def JarSigner(key_path, key_name, key_passwd, unsigned_path, signed_path):
-  shutil.copy(unsigned_path, signed_path)
-  sign_cmd = [
-      'jarsigner',
-      '-sigalg', 'MD5withRSA',
-      '-digestalg', 'SHA1',
-      '-keystore', key_path,
-      '-storepass', key_passwd,
-      signed_path,
-      key_name,
-    ]
-  build_utils.CheckOutput(sign_cmd)
-
-
-def AlignApk(zipalign_path, package_align, unaligned_path, final_path):
-  align_cmd = [
-      zipalign_path,
-      '-f'
-      ]
-
-  if package_align:
-    align_cmd += ['-p']
-
-  align_cmd += [
-      '4',  # 4 bytes
-      unaligned_path,
-      final_path,
-      ]
-  build_utils.CheckOutput(align_cmd)
-
-
-def main(args):
-  args = build_utils.ExpandFileArgs(args)
-
-  parser = optparse.OptionParser()
-  build_utils.AddDepfileOption(parser)
-
-  parser.add_option('--rezip-apk-jar-path',
-                    help='Path to the RezipApk jar file.')
-  parser.add_option('--zipalign-path', help='Path to the zipalign tool.')
-  parser.add_option('--page-align-shared-libraries',
-                    action='store_true',
-                    help='Page align shared libraries.')
-  parser.add_option('--unsigned-apk-path', help='Path to input unsigned APK.')
-  parser.add_option('--final-apk-path',
-      help='Path to output signed and aligned APK.')
-  parser.add_option('--key-path', help='Path to keystore for signing.')
-  parser.add_option('--key-passwd', help='Keystore password')
-  parser.add_option('--key-name', help='Keystore name')
-  parser.add_option('--stamp', help='Path to touch on success.')
-  parser.add_option('--load-library-from-zip', type='int',
-      help='If non-zero, build the APK such that the library can be loaded ' +
-           'directly from the zip file using the crazy linker. The library ' +
-           'will be renamed, uncompressed and page aligned.')
-
-  options, _ = parser.parse_args()
-
-  input_paths = [
-    options.unsigned_apk_path,
-    options.key_path,
-  ]
-
-  if options.load_library_from_zip:
-    input_paths.append(options.rezip_apk_jar_path)
-
-  input_strings = [
-    options.load_library_from_zip,
-    options.key_name,
-    options.key_passwd,
-    options.page_align_shared_libraries,
-  ]
-
-  build_utils.CallAndWriteDepfileIfStale(
-      lambda: FinalizeApk(options),
-      options,
-      record_path=options.unsigned_apk_path + '.finalize.md5.stamp',
-      input_paths=input_paths,
-      input_strings=input_strings,
-      output_paths=[options.final_apk_path])
-
-
-def FinalizeApk(options):
-  with tempfile.NamedTemporaryFile() as signed_apk_path_tmp, \
-      tempfile.NamedTemporaryFile() as apk_to_sign_tmp:
-
-    if options.load_library_from_zip:
-      # We alter the name of the library so that the Android Package Manager
-      # does not extract it into a separate file. This must be done before
-      # signing, as the filename is part of the signed manifest. At the same
-      # time we uncompress the library, which is necessary so that it can be
-      # loaded directly from the APK.
-      # Move the library to a page boundary by adding a page alignment file.
-      apk_to_sign = apk_to_sign_tmp.name
-      RenameInflateAndAddPageAlignment(
-          options.rezip_apk_jar_path, options.unsigned_apk_path, apk_to_sign)
-    else:
-      apk_to_sign = options.unsigned_apk_path
-
-    signed_apk_path = signed_apk_path_tmp.name
-    JarSigner(options.key_path, options.key_name, options.key_passwd,
-              apk_to_sign, signed_apk_path)
-
-    if options.load_library_from_zip:
-      # Reorder the contents of the APK. This re-establishes the canonical
-      # order which means the library will be back at its page aligned location.
-      # This step also aligns uncompressed items to 4 bytes.
-      ReorderAndAlignApk(
-          options.rezip_apk_jar_path, signed_apk_path, options.final_apk_path)
-    else:
-      # Align uncompressed items to 4 bytes
-      AlignApk(options.zipalign_path,
-               options.page_align_shared_libraries,
-               signed_apk_path,
-               options.final_apk_path)
-
-
-if __name__ == '__main__':
-  sys.exit(main(sys.argv[1:]))
+def FinalizeApk(apksigner_path, zipalign_path, unsigned_apk_path,
+                final_apk_path, key_path, key_passwd, key_name):
+  # Use a tempfile so that Ctrl-C does not leave the file with a fresh mtime
+  # and a corrupted state.
+  with tempfile.NamedTemporaryFile() as staging_file:
+    # v2 signing requires that zipalign happen first.
+    subprocess.check_output([
+        zipalign_path, '-p', '-f', '4',
+        unsigned_apk_path, staging_file.name])
+    subprocess.check_output([
+        apksigner_path, 'sign',
+        '--in', staging_file.name,
+        '--out', staging_file.name,
+        '--ks', key_path,
+        '--ks-key-alias', key_name,
+        '--ks-pass', 'pass:' + key_passwd,
+        # Force SHA-1 (makes signing faster; insecure is fine for local builds).
+        '--min-sdk-version', '1',
+    ])
+    shutil.move(staging_file.name, final_apk_path)
+    staging_file.delete = False

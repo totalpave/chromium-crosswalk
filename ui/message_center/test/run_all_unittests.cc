@@ -10,15 +10,11 @@
 #include "base/test/test_discardable_memory_allocator.h"
 #include "base/test/test_suite.h"
 #include "build/build_config.h"
+#include "mojo/core/embedder/embedder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
-
-#if defined(OS_MACOSX)
-#include "base/test/mock_chrome_application_mac.h"
-#else
 #include "ui/gl/test/gl_surface_test_support.h"
-#endif
 
 namespace {
 
@@ -28,16 +24,12 @@ class MessageCenterTestSuite : public base::TestSuite {
 
  protected:
   void Initialize() override {
-#if defined(OS_MACOSX)
-    mock_cr_app::RegisterMockCrApp();
-#else
     gl::GLSurfaceTestSupport::InitializeOneOff();
-#endif
     base::TestSuite::Initialize();
     ui::RegisterPathProvider();
 
     base::FilePath ui_test_pak_path;
-    ASSERT_TRUE(PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
+    ASSERT_TRUE(base::PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
     ui::ResourceBundle::InitSharedInstanceWithPakPath(ui_test_pak_path);
 
     base::DiscardableMemoryAllocator::SetInstance(
@@ -59,9 +51,9 @@ class MessageCenterTestSuite : public base::TestSuite {
 
 int main(int argc, char** argv) {
   MessageCenterTestSuite test_suite(argc, argv);
+  mojo::core::Init();
 
-  return base::LaunchUnitTests(
-      argc,
-      argv,
-      base::Bind(&MessageCenterTestSuite::Run, base::Unretained(&test_suite)));
+  return base::LaunchUnitTests(argc, argv,
+                               base::BindOnce(&MessageCenterTestSuite::Run,
+                                              base::Unretained(&test_suite)));
 }

@@ -12,14 +12,17 @@ Polymer({
   properties: {
     /** @type {!SearchEngine} */
     engine: Object,
-
-    /** @private {!settings.SearchEnginesBrowserProxy} */
-    browserProxy_: Object,
   },
+
+  behaviors: [cr.ui.FocusRowBehavior],
+
+  /** @private {?settings.ExtensionControlBrowserProxy} */
+  browserProxy_: null,
 
   /** @override */
   created: function() {
-    this.browserProxy_ = settings.SearchEnginesBrowserProxyImpl.getInstance();
+    this.browserProxy_ =
+        settings.ExtensionControlBrowserProxyImpl.getInstance();
   },
 
   /** @private */
@@ -36,15 +39,14 @@ Polymer({
 
   /** @private */
   closePopupMenu_: function() {
-    this.$$('iron-dropdown').close();
+    this.$$('cr-action-menu').close();
   },
 
-  /**
-   * @param {string} url
-   * @return {string} A set of icon URLs.
-   * @private
-   */
-  getIconSet_: function(url) {
-    return cr.icon.getFaviconImageSet(url);
+  /** @private */
+  onDotsTap_: function() {
+    /** @type {!CrActionMenuElement} */ (this.$$('cr-action-menu'))
+        .showAt(assert(this.$$('paper-icon-button-light button')), {
+          anchorAlignmentY: AnchorAlignment.AFTER_END,
+        });
   },
 });

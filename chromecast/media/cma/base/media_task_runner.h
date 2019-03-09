@@ -20,15 +20,14 @@ class MediaTaskRunner
   MediaTaskRunner();
 
   // Post a task with the given media |timestamp|. If |timestamp| is equal to
-  // |kNoTimestamp()|, the task is scheduled right away.
+  // |kNoTimestamp|, the task is scheduled right away.
   // How the media timestamp is used to schedule the task is an implementation
   // detail of derived classes.
   // Returns true if the task may be run at some point in the future, and false
   // if the task definitely will not be run.
-  virtual bool PostMediaTask(
-      const tracked_objects::Location& from_here,
-      const base::Closure& task,
-      base::TimeDelta timestamp) = 0;
+  virtual bool PostMediaTask(const base::Location& from_here,
+                             const base::Closure& task,
+                             base::TimeDelta timestamp) = 0;
 
  protected:
   virtual ~MediaTaskRunner();

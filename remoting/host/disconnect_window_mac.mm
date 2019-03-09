@@ -6,11 +6,12 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/i18n/rtl.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -48,7 +49,7 @@ DisconnectWindowMac::DisconnectWindowMac()
 }
 
 DisconnectWindowMac::~DisconnectWindowMac() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // DisconnectWindowController is responsible for releasing itself in its
   // windowWillClose: method.
@@ -58,7 +59,7 @@ DisconnectWindowMac::~DisconnectWindowMac() {
 
 void DisconnectWindowMac::Start(
     const base::WeakPtr<ClientSessionControl>& client_session_control) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(client_session_control);
   DCHECK(window_controller_ == nil);
 
@@ -76,7 +77,7 @@ void DisconnectWindowMac::Start(
 
 // static
 std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
-  return base::WrapUnique(new DisconnectWindowMac());
+  return std::make_unique<DisconnectWindowMac>();
 }
 
 }  // namespace remoting

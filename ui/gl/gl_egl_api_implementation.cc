@@ -9,10 +9,12 @@
 #include "base/strings/string_util.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_implementation.h"
+#include "ui/gl/gl_surface_egl.h"
 
 namespace gl {
 
-RealEGLApi* g_real_egl;
+RealEGLApi* g_real_egl = nullptr;
+DebugEGLApi* g_debug_egl = nullptr;
 
 void InitializeStaticGLBindingsEGL() {
   g_driver_egl.InitializeStaticBindings();
@@ -21,19 +23,25 @@ void InitializeStaticGLBindingsEGL() {
   }
   g_real_egl->Initialize(&g_driver_egl);
   g_current_egl_context = g_real_egl;
-  g_driver_egl.InitializeExtensionBindings();
 }
 
 void InitializeDebugGLBindingsEGL() {
-  g_driver_egl.InitializeDebugBindings();
+  if (!g_debug_egl) {
+    g_debug_egl = new DebugEGLApi(g_real_egl);
+  }
+  g_current_egl_context = g_debug_egl;
 }
 
-void ClearGLBindingsEGL() {
+void ClearBindingsEGL() {
+  if (g_debug_egl) {
+    delete g_debug_egl;
+    g_debug_egl = NULL;
+  }
   if (g_real_egl) {
     delete g_real_egl;
     g_real_egl = NULL;
   }
-  g_current_egl_context = NULL;
+  g_current_egl_context = nullptr;
   g_driver_egl.ClearBindings();
 }
 
@@ -61,22 +69,25 @@ RealEGLApi::~RealEGLApi() {
 }
 
 void RealEGLApi::Initialize(DriverEGL* driver) {
-  InitializeWithCommandLine(driver, base::CommandLine::ForCurrentProcess());
+  InitializeBase(driver);
 }
 
-void RealEGLApi::InitializeWithCommandLine(DriverEGL* driver,
-                                           base::CommandLine* command_line) {
-  DCHECK(command_line);
-  InitializeBase(driver);
-
-  const std::string disabled_extensions = command_line->GetSwitchValueASCII(
-      switches::kDisableGLExtensions);
+void RealEGLApi::SetDisabledExtensions(const std::string& disabled_extensions) {
+  DCHECK(GLContext::TotalGLContexts() == 0);
   disabled_exts_.clear();
   filtered_exts_.clear();
   if (!disabled_extensions.empty()) {
-    disabled_exts_ = base::SplitString(
-        disabled_extensions, ", ;",
-        base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+    std::vector<std::string> candidates =
+        base::SplitString(disabled_extensions, ", ;", base::KEEP_WHITESPACE,
+                          base::SPLIT_WANT_NONEMPTY);
+    for (const auto& ext : candidates) {
+      if (!base::StartsWith(ext, "EGL_", base::CompareCase::SENSITIVE))
+        continue;
+      // For the moment, only the following two extensions can be disabled.
+      // See DriverEGL::UpdateConditionalExtensionBindings().
+      DCHECK(ext == "EGL_KHR_fence_sync" || ext == "EGL_KHR_wait_sync");
+      disabled_exts_.push_back(ext);
+    }
   }
 }
 
@@ -93,7 +104,25 @@ const char* RealEGLApi::eglQueryStringFn(EGLDisplay dpy, EGLint name) {
   return EGLApiBase::eglQueryStringFn(dpy, name);
 }
 
+DebugEGLApi::DebugEGLApi(EGLApi* egl_api) : egl_api_(egl_api) {}
+
+DebugEGLApi::~DebugEGLApi() {}
+
+void DebugEGLApi::SetDisabledExtensions(
+    const std::string& disabled_extensions) {
+  if (egl_api_) {
+    egl_api_->SetDisabledExtensions(disabled_extensions);
+  }
+}
+
 TraceEGLApi::~TraceEGLApi() {
+}
+
+void TraceEGLApi::SetDisabledExtensions(
+    const std::string& disabled_extensions) {
+  if (egl_api_) {
+    egl_api_->SetDisabledExtensions(disabled_extensions);
+  }
 }
 
 bool GetGLWindowSystemBindingInfoEGL(GLWindowSystemBindingInfo* info) {
@@ -109,6 +138,16 @@ bool GetGLWindowSystemBindingInfoEGL(GLWindowSystemBindingInfo* info) {
   if (extensions)
     info->extensions = extensions;
   return true;
+}
+
+void SetDisabledExtensionsEGL(const std::string& disabled_extensions) {
+  DCHECK(g_current_egl_context);
+  DCHECK(GLContext::TotalGLContexts() == 0);
+  g_current_egl_context->SetDisabledExtensions(disabled_extensions);
+}
+
+bool InitializeExtensionSettingsOneOffEGL() {
+  return GLSurfaceEGL::InitializeExtensionSettingsOneOff();
 }
 
 }  // namespace gl

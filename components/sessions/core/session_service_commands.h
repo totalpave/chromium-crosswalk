@@ -6,10 +6,10 @@
 #define COMPONENTS_SESSIONS_CORE_SESSION_SERVICE_COMMANDS_H_
 
 #include <map>
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "components/sessions/core/base_session_service.h"
@@ -36,9 +36,9 @@ SESSIONS_EXPORT std::unique_ptr<SessionCommand> CreateSetWindowBoundsCommand(
 SESSIONS_EXPORT std::unique_ptr<SessionCommand>
 CreateSetTabIndexInWindowCommand(const SessionID& tab_id, int new_index);
 SESSIONS_EXPORT std::unique_ptr<SessionCommand> CreateTabClosedCommand(
-    SessionID::id_type tab_id);
+    SessionID tab_id);
 SESSIONS_EXPORT std::unique_ptr<SessionCommand> CreateWindowClosedCommand(
-    SessionID::id_type tab_id);
+    SessionID tab_id);
 SESSIONS_EXPORT std::unique_ptr<SessionCommand>
 CreateSetSelectedNavigationIndexCommand(const SessionID& tab_id, int index);
 SESSIONS_EXPORT std::unique_ptr<SessionCommand> CreateSetWindowTypeCommand(
@@ -54,11 +54,9 @@ CreateSessionStorageAssociatedCommand(
 SESSIONS_EXPORT std::unique_ptr<SessionCommand> CreateSetActiveWindowCommand(
     const SessionID& window_id);
 SESSIONS_EXPORT std::unique_ptr<SessionCommand>
-CreateTabNavigationPathPrunedFromBackCommand(const SessionID& tab_id,
-                                             int count);
-SESSIONS_EXPORT std::unique_ptr<SessionCommand>
-CreateTabNavigationPathPrunedFromFrontCommand(const SessionID& tab_id,
-                                              int count);
+CreateTabNavigationPathPrunedCommand(const SessionID& tab_id,
+                                     int index,
+                                     int count);
 SESSIONS_EXPORT std::unique_ptr<SessionCommand>
 CreateUpdateTabNavigationCommand(
     const SessionID& tab_id,
@@ -92,14 +90,13 @@ SESSIONS_EXPORT bool ReplacePendingCommand(
 SESSIONS_EXPORT bool IsClosingCommand(SessionCommand* command);
 
 // Converts a list of commands into SessionWindows. On return any valid
-// windows are added to valid_windows. It is up to the caller to delete
-// the windows added to valid_windows. |active_window_id| will be set with the
+// windows are added to |valid_windows|. |active_window_id| will be set with the
 // id of the last active window, but it's only valid when this id corresponds
-// to the id of one of the windows in valid_windows.
+// to the id of one of the windows in |valid_windows|.
 SESSIONS_EXPORT void RestoreSessionFromCommands(
-    const ScopedVector<SessionCommand>& commands,
-    std::vector<SessionWindow*>* valid_windows,
-    SessionID::id_type* active_window_id);
+    const std::vector<std::unique_ptr<SessionCommand>>& commands,
+    std::vector<std::unique_ptr<SessionWindow>>* valid_windows,
+    SessionID* active_window_id);
 
 }  // namespace sessions
 

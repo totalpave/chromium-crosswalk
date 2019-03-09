@@ -10,9 +10,10 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "content/browser/site_instance_impl.h"
-#include "content/common/resource_request_body_impl.h"
 #include "content/public/common/page_state.h"
 #include "content/public/common/referrer.h"
+#include "services/network/public/cpp/resource_request_body.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace content {
 
@@ -31,31 +32,40 @@ class CONTENT_EXPORT FrameNavigationEntry
     : public base::RefCounted<FrameNavigationEntry> {
  public:
   FrameNavigationEntry();
-  FrameNavigationEntry(const std::string& frame_unique_name,
-                       int64_t item_sequence_number,
-                       int64_t document_sequence_number,
-                       scoped_refptr<SiteInstanceImpl> site_instance,
-                       scoped_refptr<SiteInstanceImpl> source_site_instance,
-                       const GURL& url,
-                       const Referrer& referrer,
-                       const std::string& method,
-                       int64_t post_id);
+  FrameNavigationEntry(
+      const std::string& frame_unique_name,
+      int64_t item_sequence_number,
+      int64_t document_sequence_number,
+      scoped_refptr<SiteInstanceImpl> site_instance,
+      scoped_refptr<SiteInstanceImpl> source_site_instance,
+      const GURL& url,
+      const url::Origin* origin,
+      const Referrer& referrer,
+      const std::vector<GURL>& redirect_chain,
+      const PageState& page_state,
+      const std::string& method,
+      int64_t post_id,
+      scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory);
 
   // Creates a copy of this FrameNavigationEntry that can be modified
   // independently from the original.
   FrameNavigationEntry* Clone() const;
 
   // Updates all the members of this entry.
-  void UpdateEntry(const std::string& frame_unique_name,
-                   int64_t item_sequence_number,
-                   int64_t document_sequence_number,
-                   SiteInstanceImpl* site_instance,
-                   scoped_refptr<SiteInstanceImpl> source_site_instance,
-                   const GURL& url,
-                   const Referrer& referrer,
-                   const PageState& page_state,
-                   const std::string& method,
-                   int64_t post_id);
+  void UpdateEntry(
+      const std::string& frame_unique_name,
+      int64_t item_sequence_number,
+      int64_t document_sequence_number,
+      SiteInstanceImpl* site_instance,
+      scoped_refptr<SiteInstanceImpl> source_site_instance,
+      const GURL& url,
+      const base::Optional<url::Origin>& origin,
+      const Referrer& referrer,
+      const std::vector<GURL>& redirect_chain,
+      const PageState& page_state,
+      const std::string& method,
+      int64_t post_id,
+      scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory);
 
   // The unique name of the frame this entry is for.  This is a stable name for
   // the frame based on its position in the tree and relation to other named
@@ -80,11 +90,15 @@ class CONTENT_EXPORT FrameNavigationEntry
   void set_document_sequence_number(int64_t document_sequence_number);
   int64_t document_sequence_number() const { return document_sequence_number_; }
 
-  // The SiteInstance responsible for rendering this frame.  All frames sharing
-  // a SiteInstance must live in the same process.  This is a refcounted pointer
-  // that keeps the SiteInstance (not necessarily the process) alive as long as
-  // this object remains in the session history.
+  // The SiteInstance, as assigned at commit time, responsible for rendering
+  // this frame.  All frames sharing a SiteInstance must live in the same
+  // process.  This is a refcounted pointer that keeps the SiteInstance (not
+  // necessarily the process) alive as long as this object remains in the
+  // session history.
+  // TODO(nasko, creis): The SiteInstance of a FrameNavigationEntry should
+  // not change once it has been assigned.  See https://crbug.com/849430.
   void set_site_instance(scoped_refptr<SiteInstanceImpl> site_instance) {
+    CHECK(!site_instance_ || site_instance_ == site_instance);
     site_instance_ = std::move(site_instance);
   }
   SiteInstanceImpl* site_instance() const { return site_instance_.get(); }
@@ -110,7 +124,24 @@ class CONTENT_EXPORT FrameNavigationEntry
   void set_referrer(const Referrer& referrer) { referrer_ = referrer; }
   const Referrer& referrer() const { return referrer_; }
 
-  void set_page_state(const PageState& page_state) { page_state_ = page_state; }
+  // The origin of the document the frame has committed. It is optional, since
+  // pending entries do not have an origin associated with them and the real
+  // origin is set at commit time.
+  void set_committed_origin(const url::Origin& origin) {
+    committed_origin_ = origin;
+  }
+  const base::Optional<url::Origin>& committed_origin() const {
+    return committed_origin_;
+  }
+
+  // The redirect chain traversed during this frame navigation, from the initial
+  // redirecting URL to the final non-redirecting current URL.
+  void set_redirect_chain(const std::vector<GURL>& redirect_chain) {
+    redirect_chain_ = redirect_chain;
+  }
+  const std::vector<GURL>& redirect_chain() const { return redirect_chain_; }
+
+  void SetPageState(const PageState& page_state);
   const PageState& page_state() const { return page_state_; }
 
   // The HTTP method used to navigate.
@@ -124,7 +155,18 @@ class CONTENT_EXPORT FrameNavigationEntry
 
   // The data sent during a POST navigation. Returns nullptr if the navigation
   // is not a POST.
-  scoped_refptr<ResourceRequestBodyImpl> GetPostData() const;
+  scoped_refptr<network::ResourceRequestBody> GetPostData(
+      std::string* content_type) const;
+
+  // Optional URLLoaderFactory to facilitate blob URL loading.
+  scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory()
+      const {
+    return blob_url_loader_factory_;
+  }
+  void set_blob_url_loader_factory(
+      scoped_refptr<network::SharedURLLoaderFactory> factory) {
+    blob_url_loader_factory_ = std::move(factory);
+  }
 
  private:
   friend class base::RefCounted<FrameNavigationEntry>;
@@ -144,11 +186,21 @@ class CONTENT_EXPORT FrameNavigationEntry
   // This member is cleared at commit time and is not persisted.
   scoped_refptr<SiteInstanceImpl> source_site_instance_;
   GURL url_;
+  // For a committed navigation, holds the origin of the resulting document.
+  // TODO(nasko): This should be possible to calculate at ReadyToCommit time
+  // and verified when receiving the DidCommit IPC.
+  base::Optional<url::Origin> committed_origin_;
   Referrer referrer_;
+  // This is used when transferring a pending entry from one process to another.
+  // We also send the main frame's redirect chain through session sync for
+  // offline analysis.
+  // It is preserved after commit but should not be persisted.
+  std::vector<GURL> redirect_chain_;
   // TODO(creis): Change this to FrameState.
   PageState page_state_;
   std::string method_;
   int64_t post_id_;
+  scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(FrameNavigationEntry);
 };

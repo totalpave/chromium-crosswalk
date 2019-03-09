@@ -14,15 +14,21 @@ namespace net {
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.net
 // GENERATED_JAVA_CLASS_NAME_OVERRIDE: RequestPriority
-// GENERATED_JAVA_PREFIX_TO_STRIP:
+//
+// This enum should be synchronized with the enum NetRequestPriority in
+// tools/metrics/histograms/enums.xml.
 enum RequestPriority {
-  IDLE = 0,
-  MINIMUM_PRIORITY = IDLE,
-  LOWEST,
+  THROTTLED = 0,  // Used to signal that resources
+                  // should be reserved for following
+                  // requests (i.e. that higher priority
+                  // following requests are expected).
+  MINIMUM_PRIORITY = THROTTLED,
+  IDLE = 1,  // Default "as resources available" level.
+  LOWEST = 2,
   DEFAULT_PRIORITY = LOWEST,
-  LOW,
-  MEDIUM,
-  HIGHEST,
+  LOW = 3,
+  MEDIUM = 4,
+  HIGHEST = 5,
   MAXIMUM_PRIORITY = HIGHEST,
 };
 

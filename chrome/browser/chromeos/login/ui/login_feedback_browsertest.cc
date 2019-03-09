@@ -6,23 +6,23 @@
 
 #include <memory>
 
-#include "ash/wm/window_util.h"
+#include "apps/test/app_window_waiter.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "chrome/browser/chromeos/login/login_manager_test.h"
-#include "chrome/browser/chromeos/login/test/app_window_waiter.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "ui/aura/client/focus_client.h"
+#include "ui/base/base_window.h"
 
 namespace chromeos {
 
 class LoginFeedbackTest : public LoginManagerTest {
  public:
-  LoginFeedbackTest() : LoginManagerTest(true) {}
+  LoginFeedbackTest() : LoginManagerTest(true, true) {}
   ~LoginFeedbackTest() override {}
 
  private:
@@ -38,13 +38,13 @@ IN_PROC_BROWSER_TEST_F(LoginFeedbackTest, Basic) {
   login_feedback->Request("Test feedback", run_loop.QuitClosure());
 
   extensions::AppWindow* feedback_window =
-      AppWindowWaiter(extensions::AppWindowRegistry::Get(profile),
-                      extension_misc::kFeedbackExtensionId)
+      apps::AppWindowWaiter(extensions::AppWindowRegistry::Get(profile),
+                            extension_misc::kFeedbackExtensionId)
           .WaitForShown();
   ASSERT_NE(nullptr, feedback_window);
   EXPECT_FALSE(feedback_window->is_hidden());
 
-  EXPECT_EQ(feedback_window->GetNativeWindow(), ash::wm::GetActiveWindow());
+  EXPECT_TRUE(feedback_window->GetBaseWindow()->IsActive());
 
   feedback_window->GetBaseWindow()->Close();
   run_loop.Run();

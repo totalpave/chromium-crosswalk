@@ -10,7 +10,7 @@
 
 #include "base/macros.h"
 #include "content/common/content_export.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "third_party/blink/public/platform/web_touch_event.h"
 #include "ui/events/gesture_detection/motion_event.h"
 
 namespace content {
@@ -35,7 +35,10 @@ class CONTENT_EXPORT MotionEventWeb : public ui::MotionEvent {
   float GetTouchMinor(size_t pointer_index) const override;
   float GetOrientation(size_t pointer_index) const override;
   float GetPressure(size_t pointer_index) const override;
-  float GetTilt(size_t pointer_index) const override;
+  float GetTiltX(size_t pointer_index) const override;
+  float GetTiltY(size_t pointer_index) const override;
+  float GetTwist(size_t pointer_index) const override;
+  float GetTangentialPressure(size_t pointer_index) const override;
   base::TimeTicks GetEventTime() const override;
   ToolType GetToolType(size_t pointer_index) const override;
   int GetButtonState() const override;

@@ -4,13 +4,28 @@
 
 package org.chromium.net.urlconnection;
 
-import android.test.suitebuilder.annotation.SmallTest;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+import static org.chromium.net.CronetTestRule.getContext;
+
+import android.support.test.filters.SmallTest;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
-import org.chromium.net.CronetTestBase;
-import org.chromium.net.CronetTestFramework;
+import org.chromium.net.CronetEngine;
+import org.chromium.net.CronetTestRule;
+import org.chromium.net.CronetTestRule.CompareDefaultWithCronet;
+import org.chromium.net.CronetTestRule.OnlyRunCronetHttpURLConnection;
 import org.chromium.net.NativeTestServer;
-import org.chromium.net.UrlRequestException;
+import org.chromium.net.NetworkException;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -26,28 +41,27 @@ import java.net.URL;
  * {@code OnlyRunCronetHttpURLConnection} only run Cronet's implementation.
  * See {@link CronetTestBase#runTest()} for details.
  */
-public class CronetChunkedOutputStreamTest extends CronetTestBase {
+@RunWith(BaseJUnit4ClassRunner.class)
+public class CronetChunkedOutputStreamTest {
+    @Rule
+    public final CronetTestRule mTestRule = new CronetTestRule();
+
     private static final String UPLOAD_DATA_STRING = "Nifty upload data!";
     private static final byte[] UPLOAD_DATA = UPLOAD_DATA_STRING.getBytes();
     private static final int REPEAT_COUNT = 100000;
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        String[] commandLineArgs = {
-                CronetTestFramework.LIBRARY_INIT_KEY,
-                CronetTestFramework.LibraryInitType.HTTP_URL_CONNECTION,
-        };
-        startCronetTestFrameworkWithUrlAndCommandLineArgs(null, commandLineArgs);
+    @Before
+    public void setUp() throws Exception {
+        mTestRule.setStreamHandlerFactory(new CronetEngine.Builder(getContext()).build());
         assertTrue(NativeTestServer.startNativeTestServer(getContext()));
     }
 
-    @Override
-    protected void tearDown() throws Exception {
+    @After
+    public void tearDown() throws Exception {
         NativeTestServer.shutdownNativeTestServer();
-        super.tearDown();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -66,6 +80,7 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         }
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -85,6 +100,83 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         }
     }
 
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    @CompareDefaultWithCronet
+    public void testWriteAfterRequestFailed() throws Exception {
+        URL url = new URL(NativeTestServer.getEchoBodyURL());
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setDoOutput(true);
+        connection.setRequestMethod("POST");
+        connection.setChunkedStreamingMode(0);
+        OutputStream out = connection.getOutputStream();
+        out.write(UPLOAD_DATA);
+        NativeTestServer.shutdownNativeTestServer();
+        try {
+            out.write(TestUtil.getLargeData());
+            connection.getResponseCode();
+            fail();
+        } catch (IOException e) {
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                NetworkException requestException = (NetworkException) e;
+                assertEquals(
+                        NetworkException.ERROR_CONNECTION_REFUSED, requestException.getErrorCode());
+            }
+        }
+        connection.disconnect();
+        // Restarting server to run the test for a second time.
+        assertTrue(NativeTestServer.startNativeTestServer(getContext()));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    @CompareDefaultWithCronet
+    public void testGetResponseAfterWriteFailed() throws Exception {
+        URL url = new URL(NativeTestServer.getEchoBodyURL());
+        NativeTestServer.shutdownNativeTestServer();
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setDoOutput(true);
+        connection.setRequestMethod("POST");
+        // Set 1 byte as chunk size so internally Cronet will try upload when
+        // 1 byte is filled.
+        connection.setChunkedStreamingMode(1);
+        try {
+            OutputStream out = connection.getOutputStream();
+            out.write(1);
+            out.write(1);
+            // Forces OutputStream implementation to flush. crbug.com/653072
+            out.flush();
+            // System's implementation is flaky see crbug.com/653072.
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                fail();
+            }
+        } catch (IOException e) {
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                NetworkException requestException = (NetworkException) e;
+                assertEquals(
+                        NetworkException.ERROR_CONNECTION_REFUSED, requestException.getErrorCode());
+            }
+        }
+        // Make sure IOException is reported again when trying to read response
+        // from the connection.
+        try {
+            connection.getResponseCode();
+            fail();
+        } catch (IOException e) {
+            // Expected.
+            if (!mTestRule.testingSystemHttpURLConnection()) {
+                NetworkException requestException = (NetworkException) e;
+                assertEquals(
+                        NetworkException.ERROR_CONNECTION_REFUSED, requestException.getErrorCode());
+            }
+        }
+        // Restarting server to run the test for a second time.
+        assertTrue(NativeTestServer.startNativeTestServer(getContext()));
+    }
+
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -170,6 +262,7 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -187,6 +280,7 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -205,6 +299,7 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -224,6 +319,7 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -244,6 +340,7 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @CompareDefaultWithCronet
@@ -267,6 +364,7 @@ public class CronetChunkedOutputStreamTest extends CronetTestBase {
         connection.disconnect();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunCronetHttpURLConnection

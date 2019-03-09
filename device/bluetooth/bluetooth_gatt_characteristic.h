@@ -17,9 +17,6 @@
 
 namespace device {
 
-class BluetoothRemoteGattDescriptor;
-class BluetoothGattNotifySession;
-
 // BluetoothGattCharacteristic represents a local or remote GATT characteristic.
 // A GATT characteristic is a basic data element used to construct a GATT
 // service. Hence, instances of a BluetoothGattCharacteristic are associated
@@ -81,6 +78,9 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothGattCharacteristic {
     NUM_PERMISSION = 1 << 6,
   };
   typedef uint32_t Permissions;
+
+  // Bluetooth Spec Vol 3, Part G, 3.3.3.3 Client Characteristic Configuration.
+  enum class NotificationType { kNotification = 1, kIndication };
 
   // The ErrorCallback is used by methods to asynchronously report errors.
   typedef base::Callback<void(BluetoothGattService::GattErrorCode)>

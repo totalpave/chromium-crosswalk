@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "remoting/host/continue_window.h"
 
 #import <Cocoa/Cocoa.h>
@@ -11,7 +13,6 @@
 #include "base/mac/scoped_nsautorelease_pool.h"
 #include "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "remoting/base/string_resources.h"
 #include "ui/base/l10n/l10n_util_mac.h"
@@ -55,11 +56,11 @@ ContinueWindowMac::ContinueWindowMac() {
 }
 
 ContinueWindowMac::~ContinueWindowMac() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 void ContinueWindowMac::ShowUi() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   base::mac::ScopedNSAutoreleasePool pool;
   controller_.reset(
@@ -68,7 +69,7 @@ void ContinueWindowMac::ShowUi() {
 }
 
 void ContinueWindowMac::HideUi() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   base::mac::ScopedNSAutoreleasePool pool;
   [controller_ hide];
@@ -76,7 +77,7 @@ void ContinueWindowMac::HideUi() {
 
 // static
 std::unique_ptr<HostWindow> HostWindow::CreateContinueWindow() {
-  return base::WrapUnique(new ContinueWindowMac());
+  return std::make_unique<ContinueWindowMac>();
 }
 
 }  // namespace remoting

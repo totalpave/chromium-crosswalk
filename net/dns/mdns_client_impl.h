@@ -9,39 +9,45 @@
 
 #include <map>
 #include <memory>
-#include <queue>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/cancelable_callback.h"
+#include "base/containers/queue.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
+#include "net/base/net_export.h"
 #include "net/dns/mdns_cache.h"
 #include "net/dns/mdns_client.h"
-#include "net/udp/datagram_server_socket.h"
-#include "net/udp/udp_server_socket.h"
-#include "net/udp/udp_socket.h"
+#include "net/socket/datagram_server_socket.h"
+#include "net/socket/udp_server_socket.h"
+#include "net/socket/udp_socket.h"
 
 namespace base {
 class Clock;
-class Timer;
+class OneShotTimer;
 }  // namespace base
 
 namespace net {
 
+class NetLog;
+
 class MDnsSocketFactoryImpl : public MDnsSocketFactory {
  public:
-  MDnsSocketFactoryImpl() {}
-  ~MDnsSocketFactoryImpl() override{};
+  MDnsSocketFactoryImpl() : net_log_(nullptr) {}
+  explicit MDnsSocketFactoryImpl(NetLog* net_log) : net_log_(net_log) {}
+  ~MDnsSocketFactoryImpl() override {}
 
   void CreateSockets(
       std::vector<std::unique_ptr<DatagramServerSocket>>* sockets) override;
 
  private:
+  NetLog* const net_log_;
+
   DISALLOW_COPY_AND_ASSIGN(MDnsSocketFactoryImpl);
 };
 
@@ -87,7 +93,7 @@ class NET_EXPORT_PRIVATE MDnsConnection {
     DnsResponse response_;
     IPEndPoint multicast_addr_;
     bool send_in_progress_;
-    std::queue<std::pair<scoped_refptr<IOBuffer>, unsigned> > send_queue_;
+    base::queue<std::pair<scoped_refptr<IOBuffer>, unsigned>> send_queue_;
 
     DISALLOW_COPY_AND_ASSIGN(SocketHandler);
   };
@@ -120,7 +126,7 @@ class NET_EXPORT_PRIVATE MDnsClientImpl : public MDnsClient {
   // invalidate the core.
   class Core : public base::SupportsWeakPtr<Core>, MDnsConnection::Delegate {
    public:
-    Core(base::Clock* clock, base::Timer* timer);
+    Core(base::Clock* clock, base::OneShotTimer* timer);
     ~Core() override;
 
     // Initialize the core. Returns true on success.
@@ -147,7 +153,8 @@ class NET_EXPORT_PRIVATE MDnsClientImpl : public MDnsClient {
     FRIEND_TEST_ALL_PREFIXES(MDnsTest, CacheCleanupWithShortTTL);
 
     typedef std::pair<std::string, uint16_t> ListenerKey;
-    typedef std::map<ListenerKey, base::ObserverList<MDnsListenerImpl>*>
+    typedef base::ObserverList<MDnsListenerImpl>::Unchecked ObserverListType;
+    typedef std::map<ListenerKey, std::unique_ptr<ObserverListType>>
         ListenerMap;
 
     // Alert listeners of an update to the cache.
@@ -174,7 +181,7 @@ class NET_EXPORT_PRIVATE MDnsClientImpl : public MDnsClient {
     MDnsCache cache_;
 
     base::Clock* clock_;
-    base::Timer* cleanup_timer_;
+    base::OneShotTimer* cleanup_timer_;
     base::Time scheduled_cleanup_;
 
     std::unique_ptr<MDnsConnection> connection_;
@@ -183,6 +190,11 @@ class NET_EXPORT_PRIVATE MDnsClientImpl : public MDnsClient {
   };
 
   MDnsClientImpl();
+
+  // Test constructor, takes a mock clock and mock timer.
+  MDnsClientImpl(base::Clock* clock,
+                 std::unique_ptr<base::OneShotTimer> cleanup_timer);
+
   ~MDnsClientImpl() override;
 
   // MDnsClient implementation:
@@ -204,15 +216,9 @@ class NET_EXPORT_PRIVATE MDnsClientImpl : public MDnsClient {
   Core* core() { return core_.get(); }
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(MDnsTest, CacheCleanupWithShortTTL);
-
-  // Test constructor, takes a mock clock and mock timer.
-  MDnsClientImpl(std::unique_ptr<base::Clock> clock,
-                 std::unique_ptr<base::Timer> cleanup_timer);
-
   std::unique_ptr<Core> core_;
-  std::unique_ptr<base::Clock> clock_;
-  std::unique_ptr<base::Timer> cleanup_timer_;
+  base::Clock* clock_;
+  std::unique_ptr<base::OneShotTimer> cleanup_timer_;
 
   DISALLOW_COPY_AND_ASSIGN(MDnsClientImpl);
 };

@@ -4,29 +4,87 @@
 
 #include "ash/shell/content/client/shell_main_delegate.h"
 
+#include "ash/components/shortcut_viewer/public/mojom/shortcut_viewer.mojom.h"
+#include "ash/components/shortcut_viewer/shortcut_viewer_application.h"
+#include "ash/components/tap_visualizer/public/mojom/tap_visualizer.mojom.h"
+#include "ash/components/tap_visualizer/tap_visualizer_app.h"
 #include "ash/shell/content/client/shell_content_browser_client.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/logging.h"
 #include "base/path_service.h"
-#include "content/public/common/content_switches.h"
+#include "content/public/utility/content_utility_client.h"
+#include "content/public/utility/utility_thread.h"
+#include "services/service_manager/public/cpp/service.h"
+#include "services/ws/ime/test_ime_driver/public/mojom/constants.mojom.h"
+#include "services/ws/ime/test_ime_driver/test_ime_application.h"
 #include "ui/base/ime/input_method_initializer.h"
 #include "ui/base/resource/resource_bundle.h"
 
 namespace ash {
 namespace shell {
+namespace {
 
-ShellMainDelegate::ShellMainDelegate() {}
+void TerminateThisProcess() {
+  content::UtilityThread::Get()->ReleaseProcess();
+}
 
-ShellMainDelegate::~ShellMainDelegate() {}
+std::unique_ptr<service_manager::Service> CreateShortcutViewer(
+    service_manager::mojom::ServiceRequest request) {
+  logging::SetLogPrefix("shortcut");
+  return std::make_unique<keyboard_shortcut_viewer::ShortcutViewerApplication>(
+      std::move(request));
+}
+
+std::unique_ptr<service_manager::Service> CreateTapVisualizer(
+    service_manager::mojom::ServiceRequest request) {
+  logging::SetLogPrefix("tap");
+  return std::make_unique<tap_visualizer::TapVisualizerApp>(std::move(request));
+}
+
+std::unique_ptr<service_manager::Service> CreateTestImeDriver(
+    service_manager::mojom::ServiceRequest request) {
+  return std::make_unique<ws::test::TestIMEApplication>(std::move(request));
+}
+
+class ShellContentUtilityClient : public content::ContentUtilityClient {
+ public:
+  ShellContentUtilityClient() = default;
+  ~ShellContentUtilityClient() override = default;
+
+  // content::ContentUtilityClient:
+  bool HandleServiceRequest(
+      const std::string& service_name,
+      service_manager::mojom::ServiceRequest request) override {
+    std::unique_ptr<service_manager::Service> service;
+    if (service_name == test_ime_driver::mojom::kServiceName)
+      service = CreateTestImeDriver(std::move(request));
+    else if (service_name == shortcut_viewer::mojom::kServiceName)
+      service = CreateShortcutViewer(std::move(request));
+    else if (service_name == tap_visualizer::mojom::kServiceName)
+      service = CreateTapVisualizer(std::move(request));
+
+    if (service) {
+      service_manager::Service::RunAsyncUntilTermination(
+          std::move(service), base::BindOnce(&TerminateThisProcess));
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(ShellContentUtilityClient);
+};
+
+}  // namespace
+
+ShellMainDelegate::ShellMainDelegate() = default;
+
+ShellMainDelegate::~ShellMainDelegate() = default;
 
 bool ShellMainDelegate::BasicStartupComplete(int* exit_code) {
-  const base::CommandLine& command_line =
-      *base::CommandLine::ForCurrentProcess();
-  std::string process_type =
-      command_line.GetSwitchValueASCII(switches::kProcessType);
-
   content::SetContentClient(&content_client_);
-
   return false;
 }
 
@@ -41,21 +99,29 @@ content::ContentBrowserClient* ShellMainDelegate::CreateContentBrowserClient() {
 }
 
 void ShellMainDelegate::InitializeResourceBundle() {
-  // Load ash resources and en-US strings; not 'common' (Chrome) resources.
-  // TODO(msw): Check ResourceBundle::IsScaleFactorSupported; load 300% etc.
+  // Load ash resources and strings; not 'common' (Chrome) resources.
   base::FilePath path;
-  PathService::Get(base::DIR_MODULE, &path);
+  base::PathService::Get(base::DIR_MODULE, &path);
   base::FilePath ash_test_strings =
       path.Append(FILE_PATH_LITERAL("ash_test_strings.pak"));
-  base::FilePath ash_test_resources_100 =
-      path.Append(FILE_PATH_LITERAL("ash_test_resources_100_percent.pak"));
-  base::FilePath ash_test_resources_200 =
-      path.Append(FILE_PATH_LITERAL("ash_test_resources_200_percent.pak"));
 
   ui::ResourceBundle::InitSharedInstanceWithPakPath(ash_test_strings);
   ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-  rb.AddDataPackFromPath(ash_test_resources_100, ui::SCALE_FACTOR_100P);
-  rb.AddDataPackFromPath(ash_test_resources_200, ui::SCALE_FACTOR_200P);
+  if (ui::ResourceBundle::IsScaleFactorSupported(ui::SCALE_FACTOR_100P)) {
+    base::FilePath ash_test_resources_100 = path.Append(
+        FILE_PATH_LITERAL("ash_test_resources_with_content_100_percent.pak"));
+    rb.AddDataPackFromPath(ash_test_resources_100, ui::SCALE_FACTOR_100P);
+  }
+  if (ui::ResourceBundle::IsScaleFactorSupported(ui::SCALE_FACTOR_200P)) {
+    base::FilePath ash_test_resources_200 =
+        path.Append(FILE_PATH_LITERAL("ash_test_resources_200_percent.pak"));
+    rb.AddDataPackFromPath(ash_test_resources_200, ui::SCALE_FACTOR_200P);
+  }
+}
+
+content::ContentUtilityClient* ShellMainDelegate::CreateContentUtilityClient() {
+  utility_client_ = std::make_unique<ShellContentUtilityClient>();
+  return utility_client_.get();
 }
 
 }  // namespace shell

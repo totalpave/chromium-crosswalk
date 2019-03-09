@@ -36,10 +36,12 @@ struct SessionStartupPref {
   // line up. These are the values registered in prefs.
   // The values are also recorded in Settings.StartupPageLoadSettings histogram,
   // so make sure to update histograms.xml if you change these.
-  static const int kPrefValueLast = 1;
-  static const int kPrefValueURLs = 4;
-  static const int kPrefValueNewTab = 5;
-  static const int kPrefValueMax = 6;
+  enum PrefValue {
+    kPrefValueLast = 1,
+    kPrefValueURLs = 4,
+    kPrefValueNewTab = 5,
+    kPrefValueMax = 6,
+  };
 
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
@@ -53,9 +55,13 @@ struct SessionStartupPref {
   static SessionStartupPref GetStartupPref(Profile* profile);
   static SessionStartupPref GetStartupPref(PrefService* prefs);
 
-  // Whether the startup type and URLs are managed via policy.
+  // Whether the startup type and URLs are managed via mandatory policy.
   static bool TypeIsManaged(PrefService* prefs);
   static bool URLsAreManaged(PrefService* prefs);
+
+  // Whether the startup type has a recommended value (regardless of whether or
+  // not that value is in use).
+  static bool TypeHasRecommendedValue(PrefService* prefs);
 
   // Whether the startup type has not been overridden from its default.
   static bool TypeIsDefault(PrefService* prefs);

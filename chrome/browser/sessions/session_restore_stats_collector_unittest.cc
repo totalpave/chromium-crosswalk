@@ -6,18 +6,21 @@
 
 #include <stddef.h>
 #include <utility>
+#include <vector>
 
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "chrome/test/base/testing_profile.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_web_contents_factory.h"
+#include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -35,7 +38,9 @@ class MockStatsReportingDelegate : public StatsReportingDelegate {
       : report_tab_loader_stats_call_count_(0u),
         report_tab_deferred_call_count_(0u),
         report_deferred_tab_loaded_call_count_(0u),
-        report_stats_collector_death_call_count_(0u) {}
+        report_stats_collector_death_call_count_(0u),
+        report_tab_time_since_active_call_count_(0u),
+        report_tab_site_engagement_score_call_count_(0u) {}
 
   ~MockStatsReportingDelegate() override { EnsureNoUnexpectedCalls(); }
 
@@ -48,6 +53,14 @@ class MockStatsReportingDelegate : public StatsReportingDelegate {
 
   void ReportDeferredTabLoaded() override {
     report_deferred_tab_loaded_call_count_++;
+  }
+
+  void ReportTabTimeSinceActive(base::TimeDelta elapsed) override {
+    report_tab_time_since_active_call_count_++;
+  }
+
+  void ReportTabSiteEngagementScore(double engagement) override {
+    report_tab_site_engagement_score_call_count_++;
   }
 
   // This is not part of the StatsReportingDelegate, but an added function that
@@ -64,8 +77,7 @@ class MockStatsReportingDelegate : public StatsReportingDelegate {
                                         size_t tabs_loaded,
                                         int foreground_tab_first_loaded_ms,
                                         int foreground_tab_first_paint_ms,
-                                        int non_deferred_tabs_loaded_ms,
-                                        size_t parallel_tab_loads) {
+                                        int non_deferred_tabs_loaded_ms) {
     EXPECT_LT(0u, report_tab_loader_stats_call_count_);
     report_tab_loader_stats_call_count_--;
 
@@ -79,7 +91,6 @@ class MockStatsReportingDelegate : public StatsReportingDelegate {
               tab_loader_stats_.foreground_tab_first_paint);
     EXPECT_EQ(base::TimeDelta::FromMilliseconds(non_deferred_tabs_loaded_ms),
               tab_loader_stats_.non_deferred_tabs_loaded);
-    EXPECT_EQ(parallel_tab_loads, tab_loader_stats_.parallel_tab_loads);
   }
 
   void ExpectReportTabDeferredCalled() {
@@ -97,16 +108,29 @@ class MockStatsReportingDelegate : public StatsReportingDelegate {
     report_stats_collector_death_call_count_--;
   }
 
+  void ExpectReportTabTimeSinceActiveCalled(size_t count) {
+    EXPECT_LE(count, report_tab_time_since_active_call_count_);
+    report_tab_time_since_active_call_count_ -= count;
+  }
+
+  void ExpectReportTabSiteEngagementScoreCalled(size_t count) {
+    EXPECT_LE(count, report_tab_site_engagement_score_call_count_);
+    report_tab_site_engagement_score_call_count_ -= count;
+  }
+
   void EnsureNoUnexpectedCalls() {
     EXPECT_EQ(0u, report_tab_loader_stats_call_count_);
     EXPECT_EQ(0u, report_tab_deferred_call_count_);
     EXPECT_EQ(0u, report_deferred_tab_loaded_call_count_);
     EXPECT_EQ(0u, report_stats_collector_death_call_count_);
+    EXPECT_EQ(0u, report_tab_time_since_active_call_count_);
+    EXPECT_EQ(0u, report_tab_site_engagement_score_call_count_);
 
     report_tab_loader_stats_call_count_ = 0u;
     report_tab_deferred_call_count_ = 0u;
     report_deferred_tab_loaded_call_count_ = 0u;
     report_stats_collector_death_call_count_ = 0u;
+    report_tab_time_since_active_call_count_ = 0u;
     tab_loader_stats_ = TabLoaderStats();
   }
 
@@ -115,6 +139,8 @@ class MockStatsReportingDelegate : public StatsReportingDelegate {
   size_t report_tab_deferred_call_count_;
   size_t report_deferred_tab_loaded_call_count_;
   size_t report_stats_collector_death_call_count_;
+  size_t report_tab_time_since_active_call_count_;
+  size_t report_tab_site_engagement_score_call_count_;
   TabLoaderStats tab_loader_stats_;
 
   DISALLOW_COPY_AND_ASSIGN(MockStatsReportingDelegate);
@@ -147,6 +173,14 @@ class PassthroughStatsReportingDelegate : public StatsReportingDelegate {
     reporting_delegate_->ReportDeferredTabLoaded();
   }
 
+  void ReportTabTimeSinceActive(base::TimeDelta elapsed) override {
+    reporting_delegate_->ReportTabTimeSinceActive(elapsed);
+  }
+
+  void ReportTabSiteEngagementScore(double engagement) override {
+    reporting_delegate_->ReportTabSiteEngagementScore(engagement);
+  }
+
  private:
   MockStatsReportingDelegate* reporting_delegate_;
 
@@ -160,7 +194,7 @@ class TestSessionRestoreStatsCollector : public SessionRestoreStatsCollector {
   using SessionRestoreStatsCollector::Observe;
 
   TestSessionRestoreStatsCollector(
-      std::unique_ptr<base::TickClock> tick_clock,
+      std::unique_ptr<const base::TickClock> tick_clock,
       std::unique_ptr<StatsReportingDelegate> reporting_delegate)
       : SessionRestoreStatsCollector(tick_clock->NowTicks(),
                                      std::move(reporting_delegate)) {
@@ -181,8 +215,7 @@ class SessionRestoreStatsCollectorTest : public testing::Test {
  public:
   using RestoredTab = SessionRestoreDelegate::RestoredTab;
 
-  SessionRestoreStatsCollectorTest()
-      : ui_thread_(content::BrowserThread::UI, &message_loop_) {}
+  SessionRestoreStatsCollectorTest() = default;
 
   void SetUp() override {
     test_web_contents_factory_.reset(new content::TestWebContentsFactory);
@@ -203,7 +236,7 @@ class SessionRestoreStatsCollectorTest : public testing::Test {
     // its job, and will clean itself up when done.
     scoped_refptr<TestSessionRestoreStatsCollector> stats_collector =
         new TestSessionRestoreStatsCollector(
-            std::unique_ptr<base::TickClock>(test_tick_clock_),
+            std::unique_ptr<const base::TickClock>(test_tick_clock_),
             std::unique_ptr<StatsReportingDelegate>(
                 passthrough_reporting_delegate_));
     stats_collector_ = stats_collector.get();
@@ -226,19 +259,25 @@ class SessionRestoreStatsCollectorTest : public testing::Test {
   }
 
   void Show(size_t tab_index) {
-    restored_tabs_[tab_index].contents()->GetRenderWidgetHostView()->Show();
+    restored_tabs_[tab_index].contents()->WasShown();
   }
 
   void Hide(size_t tab_index) {
-    restored_tabs_[tab_index].contents()->GetRenderWidgetHostView()->Hide();
+    restored_tabs_[tab_index].contents()->WasHidden();
   }
 
   // Creates a restored tab backed by dummy WebContents/NavigationController/
-  // RenderWidgetHost/RenderWidgetHostView. Returns the index of the restored
-  // tab for future simulation of events.
+  // RenderWidgetHost/RenderWidgetHostView.
   void CreateRestoredTab(bool is_active) {
     content::WebContents* contents =
         test_web_contents_factory_->CreateWebContents(&testing_profile_);
+    std::vector<std::unique_ptr<content::NavigationEntry>> entries;
+    entries.push_back(content::NavigationEntry::Create());
+    contents->GetController().Restore(
+        0, content::RestoreType::LAST_SESSION_EXITED_CLEANLY, &entries);
+    // Create a last active time in the past.
+    content::WebContentsTester::For(contents)->SetLastActiveTime(
+        base::TimeTicks::Now() - base::TimeDelta::FromMinutes(1));
     restored_tabs_.push_back(RestoredTab(contents, is_active, false, false));
     if (is_active)
       Show(restored_tabs_.size() - 1);
@@ -277,7 +316,7 @@ class SessionRestoreStatsCollectorTest : public testing::Test {
     content::RenderWidgetHost* host =
         contents->GetRenderWidgetHostView()->GetRenderWidgetHost();
     stats_collector_->Observe(
-        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE,
+        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES,
         content::Source<content::RenderWidgetHost>(host),
         content::NotificationService::NoDetails());
   }
@@ -289,15 +328,14 @@ class SessionRestoreStatsCollectorTest : public testing::Test {
     stats_collector_->DeferTab(controller);
   }
 
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  // |test_browser_thread_bundle_| needs to still be alive when
+  // |testing_profile_| is destroyed.
+  TestingProfile testing_profile_;
+
   // Inputs to the stats collector. Reset prior to each test.
   base::SimpleTestTickClock* test_tick_clock_;
   std::vector<RestoredTab> restored_tabs_;
-
-  // Infrastructure needed for using the TestWebContentsFactory. These are
-  // initialized once by the fixture and reused across unittests.
-  base::MessageLoop message_loop_;
-  TestingProfile testing_profile_;
-  content::TestBrowserThread ui_thread_;
 
   // A new web contents factory is generated per test. This automatically cleans
   // up any tabs created by previous tests.
@@ -319,6 +357,8 @@ TEST_F(SessionRestoreStatsCollectorTest, SingleTabPaintBeforeLoad) {
 
   CreateRestoredTab(true);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(1);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(1);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   Tick();  // 1ms.
@@ -327,9 +367,9 @@ TEST_F(SessionRestoreStatsCollectorTest, SingleTabPaintBeforeLoad) {
 
   Tick();  // 2ms.
   GenerateLoadStop(0);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 2, 1, 2,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 2, 1, 2);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
+  mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
 
 TEST_F(SessionRestoreStatsCollectorTest, SingleTabPaintAfterLoad) {
@@ -339,6 +379,9 @@ TEST_F(SessionRestoreStatsCollectorTest, SingleTabPaintAfterLoad) {
 
   CreateRestoredTab(true);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(1);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(1);
+  mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   Tick();  // 1ms.
   GenerateLoadStop(0);
@@ -346,9 +389,9 @@ TEST_F(SessionRestoreStatsCollectorTest, SingleTabPaintAfterLoad) {
 
   Tick();  // 2ms.
   GenerateRenderWidgetHostDidUpdateBackingStore(0);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 1, 2, 1,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 1, 2, 1);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
+  mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
 
 TEST_F(SessionRestoreStatsCollectorTest, MultipleTabsLoadSerially) {
@@ -360,6 +403,8 @@ TEST_F(SessionRestoreStatsCollectorTest, MultipleTabsLoadSerially) {
   CreateRestoredTab(false);
   CreateRestoredTab(false);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(3);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(3);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Foreground tab paints then finishes loading.
@@ -388,8 +433,7 @@ TEST_F(SessionRestoreStatsCollectorTest, MultipleTabsLoadSerially) {
 
   Tick();  // 7ms.
   GenerateLoadStop(2);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(3, 0, 3, 3, 2, 1, 7,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(3, 0, 3, 3, 2, 1, 7);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
@@ -403,6 +447,8 @@ TEST_F(SessionRestoreStatsCollectorTest, MultipleTabsLoadSimultaneously) {
   CreateRestoredTab(false);
   CreateRestoredTab(false);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(3);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(3);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Foreground tab paints then finishes loading.
@@ -429,8 +475,7 @@ TEST_F(SessionRestoreStatsCollectorTest, MultipleTabsLoadSimultaneously) {
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
   Tick();  // 6ms.
   GenerateLoadStop(2);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(3, 0, 3, 3, 2, 1, 6,
-                                                           2);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(3, 0, 3, 3, 2, 1, 6);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
@@ -443,6 +488,8 @@ TEST_F(SessionRestoreStatsCollectorTest, DeferredTabs) {
   CreateRestoredTab(true);
   CreateRestoredTab(false);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(2);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(2);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Foreground tab paints, then the background tab is deferred.
@@ -456,8 +503,7 @@ TEST_F(SessionRestoreStatsCollectorTest, DeferredTabs) {
   // Foreground tab finishes loading and stats get reported.
   Tick();  // 2ms.
   GenerateLoadStop(0);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(2, 1, 1, 1, 2, 1, 2,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(2, 1, 1, 1, 2, 1, 2);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Background tab starts loading, paints and stops loading. This fires off a
@@ -482,6 +528,8 @@ TEST_F(SessionRestoreStatsCollectorTest, FocusSwitchNoForegroundPaintOrLoad) {
 
   CreateRestoredTab(true);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(1);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(1);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Create another tab and make it the foreground tab. This tab is not actually
@@ -504,8 +552,7 @@ TEST_F(SessionRestoreStatsCollectorTest, FocusSwitchNoForegroundPaintOrLoad) {
   // stats to be emitted, but with empty foreground paint and load values.
   Tick();  // 3ms.
   GenerateRenderWidgetHostDidUpdateBackingStore(1);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 0, 0, 2,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 0, 0, 2);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
@@ -517,6 +564,8 @@ TEST_F(SessionRestoreStatsCollectorTest, FocusSwitchNoForegroundPaint) {
 
   CreateRestoredTab(true);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(1);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(1);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Load the foreground tab.
@@ -541,8 +590,7 @@ TEST_F(SessionRestoreStatsCollectorTest, FocusSwitchNoForegroundPaint) {
   // stats to be emitted, but with an empty foreground paint value.
   Tick();  // 3ms.
   GenerateRenderWidgetHostDidUpdateBackingStore(1);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 1, 0, 1,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 1, 0, 1);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
@@ -554,12 +602,13 @@ TEST_F(SessionRestoreStatsCollectorTest, LoadingTabDestroyedBeforePaint) {
 
   CreateRestoredTab(true);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(1);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(1);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Destroy the tab. Expect all timings to be zero.
   GenerateWebContentsDestroyed(0);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 0, 0, 0, 0,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 0, 0, 0, 0);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
@@ -571,6 +620,8 @@ TEST_F(SessionRestoreStatsCollectorTest, LoadingTabDestroyedAfterPaint) {
 
   CreateRestoredTab(true);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(1);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(1);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   Tick();  // 1 ms.
@@ -579,8 +630,7 @@ TEST_F(SessionRestoreStatsCollectorTest, LoadingTabDestroyedAfterPaint) {
 
   // Destroy the tab. Expect both load timings to be zero.
   GenerateWebContentsDestroyed(0);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 0, 0, 1, 0,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 0, 0, 1, 0);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
@@ -592,6 +642,8 @@ TEST_F(SessionRestoreStatsCollectorTest, BrowseAwayBeforePaint) {
 
   CreateRestoredTab(true);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(1);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(1);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Load the tab.
@@ -602,8 +654,7 @@ TEST_F(SessionRestoreStatsCollectorTest, BrowseAwayBeforePaint) {
   // Reload the tab. Expect the paint timing to be zero.
   Tick();  // 2 ms.
   GenerateLoadStart(0);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 1, 0, 1,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(1, 0, 1, 1, 1, 0, 1);
   mock_reporting_delegate.ExpectReportStatsCollectorDeathCalled();
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 }
@@ -616,6 +667,8 @@ TEST_F(SessionRestoreStatsCollectorTest, DiscardDeferredTabs) {
   CreateRestoredTab(true);
   CreateRestoredTab(false);
   stats_collector_->TrackTabs(restored_tabs_);
+  mock_reporting_delegate.ExpectReportTabTimeSinceActiveCalled(2);
+  mock_reporting_delegate.ExpectReportTabSiteEngagementScoreCalled(2);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Defer the background tab.
@@ -628,8 +681,7 @@ TEST_F(SessionRestoreStatsCollectorTest, DiscardDeferredTabs) {
   // with all zero timings.
   Tick();  // 2 ms.
   GenerateWebContentsDestroyed(0);
-  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(2, 1, 1, 0, 0, 0, 0,
-                                                           1);
+  mock_reporting_delegate.ExpectReportTabLoaderStatsCalled(2, 1, 1, 0, 0, 0, 0);
   mock_reporting_delegate.EnsureNoUnexpectedCalls();
 
   // Destroy the background tab. The collector should release itself.

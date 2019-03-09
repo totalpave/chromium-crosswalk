@@ -12,11 +12,11 @@ import random
 
 from core import perf_benchmark
 
+from telemetry import benchmark
 from telemetry.value import scalar
 from telemetry.page import legacy_page_test
 
 from page_sets import dummy_story_set
-
 
 class _DummyTest(legacy_page_test.LegacyPageTest):
 
@@ -39,17 +39,19 @@ class _DummyBenchmark(perf_benchmark.PerfBenchmark):
   page_set = dummy_story_set.DummyStorySet
 
 
+@benchmark.Info(emails=['crouleau@chromium.org'], component='Speed>Telemetry')
 class DummyBenchmarkOne(_DummyBenchmark):
   """A low noise benchmark with mean=100 & std=1."""
 
   def CreatePageTest(self, options):
-    return _DummyTest(140, 1)
+    return _DummyTest(168, 1)
 
   @classmethod
   def Name(cls):
     return 'dummy_benchmark.stable_benchmark_1'
 
 
+@benchmark.Info(emails=['crouleau@chromium.org'], component='Speed>Telemetry')
 class DummyBenchmarkTwo(_DummyBenchmark):
   """A noisy benchmark with mean=50 & std=20."""
 

@@ -10,18 +10,11 @@
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/metrics/field_trial.h"
+#include "ios/chrome/browser/ios_chrome_field_trials.h"
 #include "ios/web/public/app/web_main_parts.h"
 
 class ApplicationContextImpl;
 class PrefService;
-
-namespace metrics {
-class TrackingSynchronizer;
-}
-
-namespace ios {
-class FieldTrialSynchronizer;
-}
 
 class IOSChromeMainParts : public web::WebMainParts {
  public:
@@ -36,10 +29,12 @@ class IOSChromeMainParts : public web::WebMainParts {
   void PostMainMessageLoopRun() override;
   void PostDestroyThreads() override;
 
-  // Constructs metrics service and does related initialization, including
-  // creation of field trials. Call only after labs have been converted to
-  // switches.
-  void SetUpMetricsAndFieldTrials();
+  // Sets up the field trials and related initialization. Call only after
+  // about:flags have been converted to switches.
+  void SetupFieldTrials();
+
+  // Constructs the metrics service and initializes metrics recording.
+  void SetupMetrics();
 
   // Starts recording of metrics. This can only be called after we have a file
   // thread.
@@ -48,7 +43,6 @@ class IOSChromeMainParts : public web::WebMainParts {
   const base::CommandLine& parsed_command_line_;
 
   std::unique_ptr<ApplicationContextImpl> application_context_;
-  scoped_refptr<metrics::TrackingSynchronizer> tracking_synchronizer_;
 
   // Statistical testing infrastructure for the entire browser. NULL until
   // SetUpMetricsAndFieldTrials is called.
@@ -56,8 +50,7 @@ class IOSChromeMainParts : public web::WebMainParts {
 
   PrefService* local_state_;
 
-  // Initialized in SetupMetricsAndFieldTrials.
-  std::unique_ptr<ios::FieldTrialSynchronizer> field_trial_synchronizer_;
+  IOSChromeFieldTrials ios_field_trials_;
 
   DISALLOW_COPY_AND_ASSIGN(IOSChromeMainParts);
 };

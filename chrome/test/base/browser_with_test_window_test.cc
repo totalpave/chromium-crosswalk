@@ -14,22 +14,35 @@
 #include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chrome/test/base/testing_profile_manager.h"
+#include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_side_navigation_test_utils.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "ui/base/page_transition_types.h"
-
-#if defined(OS_CHROMEOS)
-#include "ash/test/ash_test_helper.h"
-#elif defined(TOOLKIT_VIEWS)
-#include "ui/views/test/scoped_views_test_helper.h"
-#endif
+#include "ui/views/test/test_views_delegate.h"
 
 #if defined(TOOLKIT_VIEWS)
 #include "chrome/browser/ui/views/chrome_constrained_window_views_client.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/constrained_window/constrained_window_views.h"
+
+#if defined(OS_CHROMEOS)
+#include "ash/public/cpp/mus_property_mirror_ash.h"
+#include "ash/test/ash_test_views_delegate.h"
+#include "chrome/browser/chromeos/app_mode/kiosk_app_manager.h"
+#include "content/public/browser/context_factory.h"
+#include "ui/aura/mus/window_tree_client.h"
+#include "ui/aura/test/env_test_helper.h"
+#include "ui/views/mus/mus_client.h"
+#else
+#include "ui/views/test/test_views_delegate.h"
+#endif
 #endif
 
 using content::NavigationController;
@@ -37,31 +50,35 @@ using content::RenderFrameHost;
 using content::RenderFrameHostTester;
 using content::WebContents;
 
-BrowserWithTestWindowTest::BrowserWithTestWindowTest()
-    : BrowserWithTestWindowTest(Browser::TYPE_TABBED, false) {}
-
-BrowserWithTestWindowTest::BrowserWithTestWindowTest(Browser::Type browser_type,
-                                                     bool hosted_app)
-    : browser_type_(browser_type), hosted_app_(hosted_app) {}
-
-BrowserWithTestWindowTest::~BrowserWithTestWindowTest() {
-}
+BrowserWithTestWindowTest::~BrowserWithTestWindowTest() {}
 
 void BrowserWithTestWindowTest::SetUp() {
   testing::Test::SetUp();
 #if defined(OS_CHROMEOS)
-  // TODO(jamescook): Windows Ash support. This will require refactoring
-  // AshTestHelper and AuraTestHelper so they can be used at the same time,
-  // perhaps by AshTestHelper owning an AuraTestHelper.
-  ash_test_helper_.reset(new ash::test::AshTestHelper(
-      base::MessageLoopForUI::current()));
-  ash_test_helper_->SetUp(true);
+  ash_test_helper_.SetUp(true);
+  ash_test_helper_.SetRunningOutsideAsh();
+  if (aura::Env::GetInstance()->mode() == aura::Env::Mode::MUS)
+    ash_test_helper_.CreateMusClient();
 #elif defined(TOOLKIT_VIEWS)
   views_test_helper_.reset(new views::ScopedViewsTestHelper());
 #endif
+
+  // This must be created after ash_test_helper_ is set up so that it doesn't
+  // create an InputDeviceManager.
+  rvh_test_enabler_ = std::make_unique<content::RenderViewHostTestEnabler>();
+
 #if defined(TOOLKIT_VIEWS)
   SetConstrainedWindowViewsClient(CreateChromeConstrainedWindowViewsClient());
+
+  test_views_delegate()->set_layout_provider(
+      ChromeLayoutProvider::CreateLayoutProvider());
 #endif
+
+  content::BrowserSideNavigationSetUp();
+
+  profile_manager_ = std::make_unique<TestingProfileManager>(
+      TestingBrowserProcess::GetGlobal());
+  ASSERT_TRUE(profile_manager_->SetUp());
 
   // Subclasses can provide their own Profile.
   profile_ = CreateProfile();
@@ -79,32 +96,45 @@ void BrowserWithTestWindowTest::TearDown() {
   // before the profile can be destroyed and the test safely shut down.
   base::RunLoop().RunUntilIdle();
 
-  // Reset the profile here because some profile keyed services (like the
-  // audio service) depend on test stubs that the helpers below will remove.
-  DestroyBrowserAndProfile();
+  // Close the browser tabs and destroy the browser and window instances.
+  if (browser_)
+    browser_->tab_strip_model()->CloseAllTabs();
+  browser_.reset();
+  window_.reset();
+
+  content::BrowserSideNavigationTearDown();
 
 #if defined(TOOLKIT_VIEWS)
   constrained_window::SetConstrainedWindowViewsClient(nullptr);
 #endif
 
+  profile_manager_->DeleteAllTestingProfiles();
+  profile_ = nullptr;
+  profile_manager_.reset();
+
 #if defined(OS_CHROMEOS)
-  ash_test_helper_->TearDown();
+  // If initialized, the KioskAppManager will register an observer to
+  // CrosSettings and will need to be destroyed before it. Having it destroyed
+  // as part of the teardown will avoid unexpected test failures.
+  chromeos::KioskAppManager::Shutdown();
+
+  ash_test_helper_.TearDown();
 #elif defined(TOOLKIT_VIEWS)
   views_test_helper_.reset();
 #endif
 
   testing::Test::TearDown();
 
-  // A Task is leaked if we don't destroy everything, then run the message
-  // loop.
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
-  base::RunLoop().Run();
+  // A Task is leaked if we don't destroy everything, then run the message loop.
+  base::RunLoop loop;
+  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                loop.QuitWhenIdleClosure());
+  loop.Run();
 }
 
 gfx::NativeWindow BrowserWithTestWindowTest::GetContext() {
 #if defined(OS_CHROMEOS)
-  return ash_test_helper_->CurrentContext();
+  return ash_test_helper_.CurrentContext();
 #elif defined(TOOLKIT_VIEWS)
   return views_test_helper_->GetContext();
 #else
@@ -113,11 +143,11 @@ gfx::NativeWindow BrowserWithTestWindowTest::GetContext() {
 }
 
 void BrowserWithTestWindowTest::AddTab(Browser* browser, const GURL& url) {
-  chrome::NavigateParams params(browser, url, ui::PAGE_TRANSITION_TYPED);
+  NavigateParams params(browser, url, ui::PAGE_TRANSITION_TYPED);
   params.tabstrip_index = 0;
-  params.disposition = NEW_FOREGROUND_TAB;
-  chrome::Navigate(&params);
-  CommitPendingLoad(&params.target_contents->GetController());
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  Navigate(&params);
+  CommitPendingLoad(&params.navigated_or_inserted_contents->GetController());
 }
 
 void BrowserWithTestWindowTest::CommitPendingLoad(
@@ -125,52 +155,14 @@ void BrowserWithTestWindowTest::CommitPendingLoad(
   if (!controller->GetPendingEntry())
     return;  // Nothing to commit.
 
-  RenderFrameHost* old_rfh = controller->GetWebContents()->GetMainFrame();
-
-  RenderFrameHost* pending_rfh = RenderFrameHostTester::GetPendingForController(
-      controller);
-  if (pending_rfh) {
-    // Simulate the BeforeUnload_ACK that is received from the current renderer
-    // for a cross-site navigation.
-    DCHECK_NE(old_rfh, pending_rfh);
-    RenderFrameHostTester::For(old_rfh)->SendBeforeUnloadACK(true);
-  }
-  // Commit on the pending_rfh, if one exists.
-  RenderFrameHost* test_rfh = pending_rfh ? pending_rfh : old_rfh;
-  RenderFrameHostTester* test_rfh_tester = RenderFrameHostTester::For(test_rfh);
-
-  // Simulate a SwapOut_ACK before the navigation commits.
-  if (pending_rfh)
-    RenderFrameHostTester::For(old_rfh)->SimulateSwapOutACK();
-
-  // For new navigations, we need to send a larger page ID. For renavigations,
-  // we need to send the preexisting page ID. We can tell these apart because
-  // renavigations will have a pending_entry_index while new ones won't (they'll
-  // just have a standalong pending_entry that isn't in the list already).
-  if (controller->GetPendingEntryIndex() >= 0) {
-    test_rfh_tester->SendNavigateWithTransition(
-        controller->GetPendingEntry()->GetPageID(),
-        controller->GetPendingEntry()->GetUniqueID(),
-        false,
-        controller->GetPendingEntry()->GetURL(),
-        controller->GetPendingEntry()->GetTransitionType());
-  } else {
-    test_rfh_tester->SendNavigateWithTransition(
-        controller->GetWebContents()->GetMaxPageIDForSiteInstance(
-            test_rfh->GetSiteInstance()) + 1,
-        controller->GetPendingEntry()->GetUniqueID(),
-        true,
-        controller->GetPendingEntry()->GetURL(),
-        controller->GetPendingEntry()->GetTransitionType());
-  }
+  RenderFrameHostTester::CommitPendingLoad(controller);
 }
 
 void BrowserWithTestWindowTest::NavigateAndCommit(
     NavigationController* controller,
     const GURL& url) {
-  controller->LoadURL(
-      url, content::Referrer(), ui::PAGE_TRANSITION_LINK, std::string());
-  CommitPendingLoad(controller);
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      controller->GetWebContents(), url);
 }
 
 void BrowserWithTestWindowTest::NavigateAndCommitActiveTab(const GURL& url) {
@@ -183,35 +175,22 @@ void BrowserWithTestWindowTest::NavigateAndCommitActiveTabWithTitle(
     Browser* navigating_browser,
     const GURL& url,
     const base::string16& title) {
-  NavigationController* controller = &navigating_browser->tab_strip_model()->
-      GetActiveWebContents()->GetController();
+  WebContents* contents =
+      navigating_browser->tab_strip_model()->GetActiveWebContents();
+  NavigationController* controller = &contents->GetController();
   NavigateAndCommit(controller, url);
-  controller->GetActiveEntry()->SetTitle(title);
-}
-
-void BrowserWithTestWindowTest::DestroyBrowserAndProfile() {
-  if (browser_.get()) {
-    // Make sure we close all tabs, otherwise Browser isn't happy in its
-    // destructor.
-    browser()->tab_strip_model()->CloseAllTabs();
-    browser_.reset(NULL);
-  }
-  window_.reset(NULL);
-  // Destroy the profile here - otherwise, if the profile is freed in the
-  // destructor, and a test subclass owns a resource that the profile depends
-  // on (such as g_browser_process()->local_state()) there's no way for the
-  // subclass to free it after the profile.
-  if (profile_)
-    DestroyProfile(profile_);
-  profile_ = NULL;
+  contents->UpdateTitleForEntry(controller->GetActiveEntry(), title);
 }
 
 TestingProfile* BrowserWithTestWindowTest::CreateProfile() {
-  return new TestingProfile();
+  return profile_manager_->CreateTestingProfile(
+      "testing_profile", nullptr, base::string16(), 0, std::string(),
+      GetTestingFactories());
 }
 
-void BrowserWithTestWindowTest::DestroyProfile(TestingProfile* profile) {
-  delete profile;
+TestingProfile::TestingFactories
+BrowserWithTestWindowTest::GetTestingFactories() {
+  return {};
 }
 
 BrowserWindow* BrowserWithTestWindowTest::CreateBrowserWindow() {
@@ -223,13 +202,21 @@ Browser* BrowserWithTestWindowTest::CreateBrowser(
     Browser::Type browser_type,
     bool hosted_app,
     BrowserWindow* browser_window) {
-  Browser::CreateParams params(profile);
+  Browser::CreateParams params(profile, true);
   if (hosted_app) {
     params = Browser::CreateParams::CreateForApp(
-        "Test", true /* trusted_source */, gfx::Rect(), profile);
+        "Test", true /* trusted_source */, gfx::Rect(), profile, true);
   } else {
     params.type = browser_type;
   }
   params.window = browser_window;
   return new Browser(params);
 }
+
+BrowserWithTestWindowTest::BrowserWithTestWindowTest(
+    std::unique_ptr<content::TestBrowserThreadBundle> thread_bundle,
+    Browser::Type browser_type,
+    bool hosted_app)
+    : thread_bundle_(std::move(thread_bundle)),
+      browser_type_(browser_type),
+      hosted_app_(hosted_app) {}

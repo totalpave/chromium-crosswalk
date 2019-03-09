@@ -6,16 +6,16 @@
 #define CHROMEOS_DBUS_SHILL_PROFILE_CLIENT_H_
 
 #include <string>
+#include <vector>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/dbus_client.h"
 #include "chromeos/dbus/shill_client_helper.h"
 
 namespace base {
 
-class Value;
 class DictionaryValue;
 
 }  // namespace base
@@ -33,7 +33,7 @@ class ShillPropertyChangedObserver;
 // ShillProfileClient is used to communicate with the Shill Profile
 // service.  All methods should be called from the origin thread which
 // initializes the DBusThreadManager instance.
-class CHROMEOS_EXPORT ShillProfileClient : public DBusClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) ShillProfileClient : public DBusClient {
  public:
   typedef ShillClientHelper::PropertyChangedHandler PropertyChangedHandler;
   typedef ShillClientHelper::DictionaryValueCallbackWithoutStatus
@@ -73,12 +73,22 @@ class CHROMEOS_EXPORT ShillProfileClient : public DBusClient {
     // Sets |profiles| to the current list of profile paths.
     virtual void GetProfilePaths(std::vector<std::string>* profiles) = 0;
 
+    // Sets |profiles| to the current list of profile paths that contain an
+    // entry for |service_path|.
+    virtual void GetProfilePathsContainingService(
+        const std::string& service_path,
+        std::vector<std::string>* profiles) = 0;
+
     // Sets |properties| to the entry for |service_path|, sets |profile_path|
     // to the path of the profile with the entry, and returns true if the
     // service exists in any profile.
     virtual bool GetService(const std::string& service_path,
                             std::string* profile_path,
                             base::DictionaryValue* properties) = 0;
+
+    // Returns true iff an entry sepcified via |service_path| exists in
+    // any profile.
+    virtual bool HasService(const std::string& service_path) = 0;
 
     // Remove all profile entries.
     virtual void ClearProfiles() = 0;

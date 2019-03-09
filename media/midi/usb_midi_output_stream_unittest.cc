@@ -16,7 +16,6 @@
 #include "media/midi/usb_midi_device.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace media {
 namespace midi {
 
 namespace {
@@ -28,8 +27,8 @@ std::vector<T> ToVector(const T((&array)[N])) {
 
 class MockUsbMidiDevice : public UsbMidiDevice {
  public:
-  MockUsbMidiDevice() {}
-  ~MockUsbMidiDevice() override {}
+  MockUsbMidiDevice() = default;
+  ~MockUsbMidiDevice() override = default;
 
   std::vector<uint8_t> GetDescriptors() override {
     return std::vector<uint8_t>();
@@ -327,4 +326,3 @@ TEST_F(UsbMidiOutputStreamTest, SendRealTimeInSysExMessage) {
 }  // namespace
 
 }  // namespace midi
-}  // namespace media

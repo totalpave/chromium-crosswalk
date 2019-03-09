@@ -8,36 +8,40 @@
 #include "base/command_line.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/timer/timer.h"
+#include "base/win/windows_version.h"
 #include "build/build_config.h"
+#include "ui/aura/window.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/ui_base_paths.h"
+#include "ui/base/test/ui_controls.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/events/event_processor.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/native_widget_types.h"
-#include "ui/gl/test/gl_surface_test_support.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_test_api.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/test/focus_manager_test.h"
 #include "ui/views/test/native_widget_factory.h"
+#include "ui/views/test/views_interactive_ui_test_base.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/touchui/touch_selection_controller_impl.h"
+#include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_utils.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "ui/wm/public/activation_client.h"
 
 #if defined(OS_WIN)
-#include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 #include "ui/views/win/hwnd_util.h"
@@ -59,7 +63,7 @@ class ExitLoopOnRelease : public View {
   // View:
   void OnMouseReleased(const ui::MouseEvent& event) override {
     GetWidget()->Close();
-    base::MessageLoop::current()->QuitNow();
+    base::RunLoop::QuitCurrentDeprecated();
   }
 
   DISALLOW_COPY_AND_ASSIGN(ExitLoopOnRelease);
@@ -143,60 +147,13 @@ class NestedLoopCaptureView : public View {
     widget_->SetCapture(widget_->GetContentsView());
     EXPECT_TRUE(widget_->HasCapture());
 
-    base::MessageLoopForUI* loop = base::MessageLoopForUI::current();
-    base::MessageLoop::ScopedNestableTaskAllower allow(loop);
-
-    base::RunLoop run_loop;
-    run_loop.Run();
+    base::RunLoop(base::RunLoop::Type::kNestableTasksAllowed).Run();
     return true;
   }
 
   Widget* widget_;
 
   DISALLOW_COPY_AND_ASSIGN(NestedLoopCaptureView);
-};
-
-// Spins a run loop until a Widget's active state matches a desired state.
-class WidgetActivationWaiter : public WidgetObserver {
- public:
-  WidgetActivationWaiter(Widget* widget, bool active) : observed_(false) {
-#if defined(OS_WIN)
-    // On Windows, a HWND can receive a WM_ACTIVATE message without the value
-    // of ::GetActiveWindow() updating to reflect that change. This can cause
-    // the active window reported by IsActive() to get out of sync. Usually this
-    // happens after a call to HWNDMessageHandler::Deactivate() which works by
-    // activating some other window, which might be in another application.
-    // Doing this can trigger the native OS activation-blocker, causing the
-    // taskbar icon to flash instead. But since activation of native widgets on
-    // Windows is synchronous, we never have to wait anyway, so it's safe to
-    // return here.
-    if (active == widget->IsActive()) {
-      observed_ = true;
-      return;
-    }
-#endif
-    // Always expect a change for tests using this.
-    EXPECT_NE(active, widget->IsActive());
-    widget->AddObserver(this);
-  }
-
-  void Wait() {
-    if (!observed_)
-      run_loop_.Run();
-  }
-
-  void OnWidgetActivationChanged(Widget* widget, bool active) override {
-    observed_ = true;
-    widget->RemoveObserver(this);
-    if (run_loop_.running())
-      run_loop_.Quit();
-  }
-
- private:
-  base::RunLoop run_loop_;
-  bool observed_;
-
-  DISALLOW_COPY_AND_ASSIGN(WidgetActivationWaiter);
 };
 
 ui::WindowShowState GetWidgetShowState(const Widget* widget) {
@@ -225,7 +182,7 @@ void RunPendingMessagesForActiveStatusChange() {
 // this is just an activation. For other widgets, it means activating and then
 // spinning the run loop until the OS has activated the window.
 void ActivateSync(Widget* widget) {
-  WidgetActivationWaiter waiter(widget, true);
+  views::test::WidgetActivationWaiter waiter(widget, true);
   widget->Activate();
   waiter.Wait();
 }
@@ -233,7 +190,7 @@ void ActivateSync(Widget* widget) {
 // Like for ActivateSync(), wait for a widget to become active, but Show() the
 // widget rather than calling Activate().
 void ShowSync(Widget* widget) {
-  WidgetActivationWaiter waiter(widget, true);
+  views::test::WidgetActivationWaiter waiter(widget, true);
   widget->Show();
   waiter.Wait();
 }
@@ -245,14 +202,14 @@ void DeactivateSync(Widget* widget) {
   // active. But we can simulate deactivation (e.g. as if another application
   // became active) by temporarily making |widget| non-activatable, then
   // activating (and closing) a temporary widget.
-  widget->widget_delegate()->set_can_activate(false);
+  widget->widget_delegate()->SetCanActivate(false);
   Widget* stealer = new Widget;
   stealer->Init(Widget::InitParams(Widget::InitParams::TYPE_WINDOW));
   ShowSync(stealer);
   stealer->CloseNow();
-  widget->widget_delegate()->set_can_activate(true);
+  widget->widget_delegate()->SetCanActivate(true);
 #else
-  WidgetActivationWaiter waiter(widget, false);
+  views::test::WidgetActivationWaiter waiter(widget, false);
   widget->Deactivate();
   waiter.Wait();
 #endif
@@ -273,23 +230,52 @@ void ShowInactiveSync(Widget* widget) {
   RunPendingMessagesForActiveStatusChange();
 }
 
+// Wait until |callback| returns |expected_value|, but no longer than 1 second.
+class PropertyWaiter {
+ public:
+  PropertyWaiter(const base::Callback<bool(void)>& callback,
+                 bool expected_value)
+      : callback_(callback), expected_value_(expected_value) {}
+
+  bool Wait() {
+    if (callback_.Run() == expected_value_) {
+      success_ = true;
+      return success_;
+    }
+    start_time_ = base::TimeTicks::Now();
+    timer_.Start(FROM_HERE, base::TimeDelta(), this, &PropertyWaiter::Check);
+    run_loop_.Run();
+    return success_;
+  }
+
+ private:
+  void Check() {
+    DCHECK(!success_);
+    success_ = callback_.Run() == expected_value_;
+    if (success_ || base::TimeTicks::Now() - start_time_ > kTimeout) {
+      timer_.Stop();
+      run_loop_.Quit();
+    }
+  }
+
+  const base::TimeDelta kTimeout = base::TimeDelta::FromSeconds(1);
+  base::Callback<bool(void)> callback_;
+  const bool expected_value_;
+  bool success_ = false;
+  base::TimeTicks start_time_;
+  base::RunLoop run_loop_;
+  base::RepeatingTimer timer_;
+};
+
 }  // namespace
 
 class WidgetTestInteractive : public WidgetTest {
  public:
-  WidgetTestInteractive() {}
-  ~WidgetTestInteractive() override {}
+  WidgetTestInteractive() = default;
+  ~WidgetTestInteractive() override = default;
 
   void SetUp() override {
-    // On mus these tests run as part of views::ViewsTestSuite which already
-    // does this initialization.
-    if (!IsMus()) {
-      gl::GLSurfaceTestSupport::InitializeOneOff();
-      ui::RegisterPathProvider();
-      base::FilePath ui_test_pak_path;
-      ASSERT_TRUE(PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
-      ui::ResourceBundle::InitSharedInstanceWithPakPath(ui_test_pak_path);
-    }
+    SetUpForInteractiveTests();
     WidgetTest::SetUp();
   }
 
@@ -304,12 +290,27 @@ class WidgetTestInteractive : public WidgetTest {
     }
   }
 #endif  // defined (USE_AURA)
+};
 
+class DesktopWidgetTestInteractive : public WidgetTestInteractive {
+ public:
+  DesktopWidgetTestInteractive() = default;
+  ~DesktopWidgetTestInteractive() override = default;
+
+  // WidgetTestInteractive:
+  void SetUp() override {
+    set_native_widget_type(NativeWidgetType::kDesktop);
+    WidgetTestInteractive::SetUp();
+  }
+
+ protected:
   Widget* CreateWidget() {
-    Widget* widget = CreateNativeDesktopWidget();
+    Widget* widget = CreateTopLevelNativeWidget();
     widget->SetBounds(gfx::Rect(0, 0, 200, 200));
     return widget;
   }
+
+  DISALLOW_COPY_AND_ASSIGN(DesktopWidgetTestInteractive);
 };
 
 #if defined(OS_WIN)
@@ -322,19 +323,20 @@ class WidgetTestInteractive : public WidgetTest {
 // 3. On focusing the native platform window for widget 1, the active aura
 //    window for widget 1 should be set and that for widget 2 should reset.
 // TODO(ananta): Discuss with erg on how to write this test for linux x11 aura.
-TEST_F(WidgetTestInteractive, DesktopNativeWidgetAuraActivationAndFocusTest) {
+TEST_F(DesktopWidgetTestInteractive,
+       DesktopNativeWidgetAuraActivationAndFocusTest) {
   // Create widget 1 and expect the active window to be its window.
   View* focusable_view1 = new View;
   focusable_view1->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   Widget* widget1 = CreateWidget();
   widget1->GetContentsView()->AddChildView(focusable_view1);
   widget1->Show();
-  aura::Window* root_window1 = widget1->GetNativeView()->GetRootWindow();
+  aura::Window* root_window1 = GetRootWindow(widget1);
   focusable_view1->RequestFocus();
 
   EXPECT_TRUE(root_window1 != NULL);
-  aura::client::ActivationClient* activation_client1 =
-      aura::client::GetActivationClient(root_window1);
+  wm::ActivationClient* activation_client1 =
+      wm::GetActivationClient(root_window1);
   EXPECT_TRUE(activation_client1 != NULL);
   EXPECT_EQ(activation_client1->GetActiveWindow(), widget1->GetNativeView());
 
@@ -343,12 +345,12 @@ TEST_F(WidgetTestInteractive, DesktopNativeWidgetAuraActivationAndFocusTest) {
   Widget* widget2 = CreateWidget();
   widget1->GetContentsView()->AddChildView(focusable_view2);
   widget2->Show();
-  aura::Window* root_window2 = widget2->GetNativeView()->GetRootWindow();
+  aura::Window* root_window2 = GetRootWindow(widget2);
   focusable_view2->RequestFocus();
   ActivatePlatformWindow(widget2);
 
-  aura::client::ActivationClient* activation_client2 =
-      aura::client::GetActivationClient(root_window2);
+  wm::ActivationClient* activation_client2 =
+      wm::GetActivationClient(root_window2);
   EXPECT_TRUE(activation_client2 != NULL);
   EXPECT_EQ(activation_client2->GetActiveWindow(), widget2->GetNativeView());
   EXPECT_EQ(activation_client1->GetActiveWindow(),
@@ -365,6 +367,73 @@ TEST_F(WidgetTestInteractive, DesktopNativeWidgetAuraActivationAndFocusTest) {
   widget2->CloseNow();
   widget1->CloseNow();
 }
+
+class TouchEventHandler : public ui::EventHandler {
+ public:
+  TouchEventHandler(Widget* widget) : widget_(widget) {
+    widget_->GetNativeWindow()->GetHost()->window()->AddPreTargetHandler(this);
+  }
+
+  ~TouchEventHandler() override {
+    widget_->GetNativeWindow()->GetHost()->window()->RemovePreTargetHandler(
+        this);
+  }
+
+  void WaitForEvents() {
+    base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
+    quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+  }
+
+  static void __stdcall AsyncActivateMouse(HWND hwnd,
+                                           UINT msg,
+                                           ULONG_PTR data,
+                                           LRESULT result) {
+    EXPECT_EQ(MA_NOACTIVATE, result);
+    std::move(reinterpret_cast<TouchEventHandler*>(data)->quit_closure_).Run();
+  }
+
+  void ActivateViaMouse() {
+    SendMessageCallback(
+        widget_->GetNativeWindow()->GetHost()->GetAcceleratedWidget(),
+        WM_MOUSEACTIVATE, 0, 0, AsyncActivateMouse,
+        reinterpret_cast<ULONG_PTR>(this));
+  }
+
+ private:
+  // ui::EventHandler:
+  void OnTouchEvent(ui::TouchEvent* event) override {
+    if (event->type() == ui::ET_TOUCH_PRESSED)
+      ActivateViaMouse();
+  }
+
+  Widget* widget_;
+  base::OnceClosure quit_closure_;
+  DISALLOW_COPY_AND_ASSIGN(TouchEventHandler);
+};
+
+// TODO(dtapuska): Disabled due to it being flaky crbug.com/817531
+TEST_F(DesktopWidgetTestInteractive, DISABLED_TouchNoActivateWindow) {
+  // ui_controls::SendTouchEvents which uses InjectTouchInput API only works
+  // on Windows 8 and up.
+  if (base::win::GetVersion() <= base::win::VERSION_WIN7)
+    return;
+
+  View* focusable_view = new View;
+  focusable_view->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+  Widget* widget = CreateWidget();
+  widget->GetContentsView()->AddChildView(focusable_view);
+  widget->Show();
+
+  {
+    TouchEventHandler touch_event_handler(widget);
+    ASSERT_TRUE(ui_controls::SendTouchEvents(ui_controls::PRESS, 1, 100, 100));
+    touch_event_handler.WaitForEvents();
+  }
+
+  widget->CloseNow();
+}
+
 #endif  // defined(OS_WIN)
 
 TEST_F(WidgetTestInteractive, CaptureAutoReset) {
@@ -475,11 +544,12 @@ TEST_F(WidgetTestInteractive, DisableCaptureWidgetFromMousePress) {
 
   gfx::Point location(20, 20);
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&Widget::OnMouseEvent, base::Unretained(second),
-                            base::Owned(new ui::MouseEvent(
-                                ui::ET_MOUSE_RELEASED, location, location,
-                                ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
-                                ui::EF_LEFT_MOUSE_BUTTON))));
+      FROM_HERE,
+      base::BindOnce(
+          &Widget::OnMouseEvent, base::Unretained(second),
+          base::Owned(new ui::MouseEvent(
+              ui::ET_MOUSE_RELEASED, location, location, ui::EventTimeForNow(),
+              ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON))));
   ui::MouseEvent press(ui::ET_MOUSE_PRESSED, location, location,
                        ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
                        ui::EF_LEFT_MOUSE_BUTTON);
@@ -644,6 +714,74 @@ TEST_F(WidgetTestInteractive, ViewFocusOnWidgetActivationChanges) {
   widget2->CloseNow();
 }
 
+// Test z-order of child widgets relative to their parent.
+TEST_F(WidgetTestInteractive, ChildStackedRelativeToParent) {
+  WidgetAutoclosePtr parent(CreateTopLevelPlatformWidget());
+  Widget* child = CreateChildPlatformWidget(parent->GetNativeView());
+
+  parent->SetBounds(gfx::Rect(160, 100, 320, 200));
+  child->SetBounds(gfx::Rect(50, 50, 30, 20));
+
+  // Child shown first. Initially not visible, but on top of parent when shown.
+  // Use ShowInactive whenever showing the child, otherwise the usual activation
+  // logic will just put it on top anyway. Here, we want to ensure it is on top
+  // of its parent regardless.
+  child->ShowInactive();
+  EXPECT_FALSE(child->IsVisible());
+
+  ShowSync(parent.get());
+  EXPECT_TRUE(child->IsVisible());
+  EXPECT_TRUE(IsWindowStackedAbove(child, parent.get()));
+  EXPECT_FALSE(IsWindowStackedAbove(parent.get(), child));  // Sanity check.
+
+  WidgetAutoclosePtr popover(CreateTopLevelPlatformWidget());
+  popover->SetBounds(gfx::Rect(150, 90, 340, 240));
+  ShowSync(popover.get());
+
+  // NOTE: for aura-mus-client stacking of top-levels is not maintained in the
+  // client, so z-order of top-levels can't be determined.
+  EXPECT_TRUE(IsWindowStackedAbove(popover.get(), child));
+  EXPECT_TRUE(IsWindowStackedAbove(child, parent.get()));
+
+  // Showing the parent again should raise it and its child above the popover.
+  ShowSync(parent.get());
+  EXPECT_TRUE(IsWindowStackedAbove(child, parent.get()));
+    EXPECT_TRUE(IsWindowStackedAbove(parent.get(), popover.get()));
+
+  // Test grandchildren.
+  Widget* grandchild = CreateChildPlatformWidget(child->GetNativeView());
+  grandchild->SetBounds(gfx::Rect(5, 5, 15, 10));
+  grandchild->ShowInactive();
+  EXPECT_TRUE(IsWindowStackedAbove(grandchild, child));
+  EXPECT_TRUE(IsWindowStackedAbove(child, parent.get()));
+    EXPECT_TRUE(IsWindowStackedAbove(parent.get(), popover.get()));
+
+  ShowSync(popover.get());
+    EXPECT_TRUE(IsWindowStackedAbove(popover.get(), grandchild));
+  EXPECT_TRUE(IsWindowStackedAbove(grandchild, child));
+
+  ShowSync(parent.get());
+  EXPECT_TRUE(IsWindowStackedAbove(grandchild, child));
+    EXPECT_TRUE(IsWindowStackedAbove(child, popover.get()));
+
+  // Test hiding and reshowing.
+  parent->Hide();
+  EXPECT_FALSE(grandchild->IsVisible());
+  ShowSync(parent.get());
+
+  EXPECT_TRUE(IsWindowStackedAbove(grandchild, child));
+  EXPECT_TRUE(IsWindowStackedAbove(child, parent.get()));
+    EXPECT_TRUE(IsWindowStackedAbove(parent.get(), popover.get()));
+
+  grandchild->Hide();
+  EXPECT_FALSE(grandchild->IsVisible());
+  grandchild->ShowInactive();
+
+  EXPECT_TRUE(IsWindowStackedAbove(grandchild, child));
+  EXPECT_TRUE(IsWindowStackedAbove(child, parent.get()));
+    EXPECT_TRUE(IsWindowStackedAbove(parent.get(), popover.get()));
+}
+
 #if defined(OS_WIN)
 
 // Test view focus retention when a widget's HWND is disabled and re-enabled.
@@ -701,8 +839,9 @@ class WidgetActivationTest : public Widget {
 
   ~WidgetActivationTest() override {}
 
-  void OnNativeWidgetActivationChanged(bool active) override {
+  bool OnNativeWidgetActivationChanged(bool active) override {
     active_ = active;
+    return true;
   }
 
   bool active() const { return active_; }
@@ -841,7 +980,7 @@ TEST_F(WidgetTestInteractive, FullscreenMaximizedWindowBounds) {
 
   gfx::Rect monitor_bounds(monitor_info.rcMonitor);
   gfx::Rect window_bounds = widget.GetWindowBoundsInScreen();
-  gfx::Rect client_area_bounds = host->GetBounds();
+  gfx::Rect client_area_bounds = host->GetBoundsInPixels();
 
   EXPECT_EQ(window_bounds, monitor_bounds);
   EXPECT_EQ(monitor_bounds, client_area_bounds);
@@ -851,7 +990,7 @@ TEST_F(WidgetTestInteractive, FullscreenMaximizedWindowBounds) {
   EXPECT_FALSE(widget.IsFullscreen());
   EXPECT_TRUE(widget.IsMaximized());
 
-  client_area_bounds = host->GetBounds();
+  client_area_bounds = host->GetBoundsInPixels();
   EXPECT_TRUE(monitor_bounds.Contains(client_area_bounds));
   EXPECT_NE(monitor_bounds, client_area_bounds);
 
@@ -859,7 +998,6 @@ TEST_F(WidgetTestInteractive, FullscreenMaximizedWindowBounds) {
 }
 #endif  // defined(OS_WIN)
 
-#if !defined(OS_CHROMEOS)
 // Provides functionality to create a window modal dialog.
 class ModalDialogDelegate : public DialogDelegateView {
  public:
@@ -877,11 +1015,7 @@ class ModalDialogDelegate : public DialogDelegateView {
 
 // Tests whether the focused window is set correctly when a modal window is
 // created and destroyed. When it is destroyed it should focus the owner window.
-TEST_F(WidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
-  // Fails on mus due to focus issues. http://crbug.com/611601
-  if (IsMus())
-    return;
-
+TEST_F(DesktopWidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   TestWidgetFocusChangeListener focus_listener;
   WidgetFocusManager::GetInstance()->AddFocusChangeListener(&focus_listener);
   const std::vector<gfx::NativeView>& focus_changes =
@@ -895,8 +1029,6 @@ TEST_F(WidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   gfx::Rect initial_bounds(0, 0, 500, 500);
   init_params.bounds = initial_bounds;
   init_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-  init_params.native_widget = CreatePlatformDesktopNativeWidgetImpl(
-      init_params, &top_level_widget, nullptr);
   top_level_widget.Init(init_params);
   ShowSync(&top_level_widget);
 
@@ -906,9 +1038,15 @@ TEST_F(WidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   EXPECT_EQ(top_level_native_view, focus_changes[0]);
 
   // Create a modal dialog.
+  ui::ModalType modal_type = ui::MODAL_TYPE_WINDOW;
+#if defined(OS_CHROMEOS)
+  // On Chrome OS this only works for MODAL_TYPE_CHILD, which makes a widget
+  // backed by NativeWidgetAura. Restoring focus to the parent window from a
+  // closed MODAL_TYPE_WINDOW requires help from the window service.
+  modal_type = ui::MODAL_TYPE_CHILD;
+#endif
   // This instance will be destroyed when the dialog is destroyed.
-  ModalDialogDelegate* dialog_delegate =
-      new ModalDialogDelegate(ui::MODAL_TYPE_WINDOW);
+  ModalDialogDelegate* dialog_delegate = new ModalDialogDelegate(modal_type);
 
   Widget* modal_dialog_widget = views::DialogDelegate::CreateDialogWidget(
       dialog_delegate, NULL, top_level_widget.GetNativeView());
@@ -920,13 +1058,13 @@ TEST_F(WidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
 
   gfx::NativeView modal_native_view = modal_dialog_widget->GetNativeView();
   ASSERT_EQ(3u, focus_changes.size());
-  EXPECT_EQ(nullptr, focus_changes[1]);
+  EXPECT_EQ(gfx::kNullNativeView, focus_changes[1]);
   EXPECT_EQ(modal_native_view, focus_changes[2]);
 
 #if defined(OS_MACOSX)
   // Window modal dialogs on Mac are "sheets", which animate to close before
   // activating their parent widget.
-  WidgetActivationWaiter waiter(&top_level_widget, true);
+  views::test::WidgetActivationWaiter waiter(&top_level_widget, true);
   modal_dialog_widget->Close();
   waiter.Wait();
 #else
@@ -934,7 +1072,7 @@ TEST_F(WidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
 #endif
 
   ASSERT_EQ(5u, focus_changes.size());
-  EXPECT_EQ(nullptr, focus_changes[3]);
+  EXPECT_EQ(gfx::kNullNativeView, focus_changes[3]);
   EXPECT_EQ(top_level_native_view, focus_changes[4]);
 
   top_level_widget.CloseNow();
@@ -946,17 +1084,18 @@ TEST_F(WidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
 // those.
 #if defined(OS_MACOSX) && !defined(USE_AURA)
 #define MAYBE_SystemModalWindowReleasesCapture \
+  DISABLED_SystemModalWindowReleasesCapture
+#elif defined(OS_CHROMEOS)
+// Investigate enabling for Chrome OS. It probably requires help from the window
+// service.
+#define MAYBE_SystemModalWindowReleasesCapture \
     DISABLED_SystemModalWindowReleasesCapture
 #else
 #define MAYBE_SystemModalWindowReleasesCapture SystemModalWindowReleasesCapture
 #endif
 
 // Test that when opening a system-modal window, capture is released.
-TEST_F(WidgetTestInteractive, MAYBE_SystemModalWindowReleasesCapture) {
-  // Crashes on mus due to capture issue. http://crbug.com/611764
-  if (IsMus())
-    return;
-
+TEST_F(DesktopWidgetTestInteractive, MAYBE_SystemModalWindowReleasesCapture) {
   TestWidgetFocusChangeListener focus_listener;
   WidgetFocusManager::GetInstance()->AddFocusChangeListener(&focus_listener);
 
@@ -968,8 +1107,6 @@ TEST_F(WidgetTestInteractive, MAYBE_SystemModalWindowReleasesCapture) {
   gfx::Rect initial_bounds(0, 0, 500, 500);
   init_params.bounds = initial_bounds;
   init_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
-  init_params.native_widget = CreatePlatformDesktopNativeWidgetImpl(
-      init_params, &top_level_widget, nullptr);
   top_level_widget.Init(init_params);
   ShowSync(&top_level_widget);
 
@@ -997,17 +1134,13 @@ TEST_F(WidgetTestInteractive, MAYBE_SystemModalWindowReleasesCapture) {
   WidgetFocusManager::GetInstance()->RemoveFocusChangeListener(&focus_listener);
 }
 
-#endif  // !defined(OS_CHROMEOS)
-
-TEST_F(WidgetTestInteractive, CanActivateFlagIsHonored) {
+TEST_F(DesktopWidgetTestInteractive, CanActivateFlagIsHonored) {
   Widget widget;
   Widget::InitParams init_params =
       CreateParams(Widget::InitParams::TYPE_WINDOW);
   init_params.bounds = gfx::Rect(0, 0, 200, 200);
   init_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   init_params.activatable = Widget::InitParams::ACTIVATABLE_NO;
-  init_params.native_widget =
-      CreatePlatformDesktopNativeWidgetImpl(init_params, &widget, nullptr);
   widget.Init(init_params);
 
   widget.Show();
@@ -1015,12 +1148,19 @@ TEST_F(WidgetTestInteractive, CanActivateFlagIsHonored) {
 }
 
 #if defined(USE_AURA)
-// Test that touch selection quick menu is not activated when opened.
-TEST_F(WidgetTestInteractive, TouchSelectionQuickMenuIsNotActivated) {
-#if defined(OS_WIN)
-  views_delegate()->set_use_desktop_native_widgets(true);
-#endif  // !defined(OS_WIN)
 
+#if defined(OS_CHROMEOS)
+// TODO(crbug.com/916272): investigate fixing and enabling on Chrome OS.
+#define MAYBE_TouchSelectionQuickMenuIsNotActivated \
+  DISABLED_TouchSelectionQuickMenuIsNotActivated
+#else
+#define MAYBE_TouchSelectionQuickMenuIsNotActivated \
+  TouchSelectionQuickMenuIsNotActivated
+#endif
+
+// Test that touch selection quick menu is not activated when opened.
+TEST_F(DesktopWidgetTestInteractive,
+       MAYBE_TouchSelectionQuickMenuIsNotActivated) {
   Widget* widget = CreateWidget();
 
   Textfield* textfield = new Textfield;
@@ -1035,8 +1175,9 @@ TEST_F(WidgetTestInteractive, TouchSelectionQuickMenuIsNotActivated) {
 
   RunPendingMessages();
 
-  ui::test::EventGenerator generator(widget->GetNativeWindow());
-  generator.GestureTapAt(gfx::Point(10, 10));
+  ui::test::EventGenerator generator(GetRootWindow(widget));
+  generator.GestureTapAt(textfield->GetBoundsInScreen().origin() +
+                         gfx::Vector2d(10, 10));
   ShowQuickMenuImmediately(static_cast<TouchSelectionControllerImpl*>(
       textfield_test_api.touch_selection_controller()));
 
@@ -1047,13 +1188,10 @@ TEST_F(WidgetTestInteractive, TouchSelectionQuickMenuIsNotActivated) {
 }
 #endif  // defined(USE_AURA)
 
-TEST_F(WidgetTestInteractive, DisableViewDoesNotActivateWidget) {
-  // Times out on mus. See http://crbug.com/612193
-  if (IsMus())
-    return;
-
 #if defined(OS_WIN)
-  views_delegate()->set_use_desktop_native_widgets(true);
+TEST_F(DesktopWidgetTestInteractive, DisableViewDoesNotActivateWidget) {
+#else
+TEST_F(WidgetTestInteractive, DisableViewDoesNotActivateWidget) {
 #endif  // !defined(OS_WIN)
 
   // Create first widget and view, activate the widget, and focus the view.
@@ -1067,6 +1205,7 @@ TEST_F(WidgetTestInteractive, DisableViewDoesNotActivateWidget) {
   view1->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   widget1.GetRootView()->AddChildView(view1);
 
+  widget1.Show();
   ActivateSync(&widget1);
 
   FocusManager* focus_manager1 = widget1.GetFocusManager();
@@ -1085,6 +1224,7 @@ TEST_F(WidgetTestInteractive, DisableViewDoesNotActivateWidget) {
   view2->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   widget2.GetRootView()->AddChildView(view2);
 
+  widget2.Show();
   ActivateSync(&widget2);
   EXPECT_TRUE(widget2.IsActive());
   EXPECT_FALSE(widget1.IsActive());
@@ -1176,8 +1316,6 @@ TEST_F(WidgetTestInteractive, InactiveWidgetDoesNotGrabActivation) {
 
   Widget widget2;
   Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_POPUP);
-  params.native_widget =
-      CreatePlatformDesktopNativeWidgetImpl(params, &widget2, nullptr);
   params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   widget2.Init(params);
   widget2.Show();
@@ -1262,6 +1400,127 @@ TEST_F(WidgetTestInteractive, InitialFocus) {
   EXPECT_EQ(delegate.view(), widget->GetFocusManager()->GetStoredFocusView());
 }
 
+TEST_F(DesktopWidgetTestInteractive, RestoreAfterMinimize) {
+  Widget* widget = CreateWidget();
+  ShowSync(widget);
+  ASSERT_FALSE(widget->IsMinimized());
+
+  PropertyWaiter minimize_waiter(
+      base::Bind(&Widget::IsMinimized, base::Unretained(widget)), true);
+  widget->Minimize();
+  EXPECT_TRUE(minimize_waiter.Wait());
+
+  PropertyWaiter restore_waiter(
+      base::Bind(&Widget::IsMinimized, base::Unretained(widget)), false);
+  widget->Restore();
+  EXPECT_TRUE(restore_waiter.Wait());
+
+  widget->CloseNow();
+}
+
+#if defined(OS_WIN)
+// TODO(davidbienvenu): Get this test to pass on Linux and ChromeOS by hiding
+// the root window when desktop widget is minimized.
+// Tests that root window visibility toggles correctly when the desktop widget
+// is minimized and maximized on Windows, and the Widget remains visible.
+TEST_F(DesktopWidgetTestInteractive, RestoreAndMinimizeVisibility) {
+  Widget* widget = CreateWidget();
+  aura::Window* root_window = GetRootWindow(widget);
+  ShowSync(widget);
+  ASSERT_FALSE(widget->IsMinimized());
+  EXPECT_TRUE(root_window->IsVisible());
+
+  PropertyWaiter minimize_widget_waiter(
+      base::BindRepeating(&Widget::IsMinimized, base::Unretained(widget)),
+      true);
+  widget->Minimize();
+  EXPECT_TRUE(minimize_widget_waiter.Wait());
+  EXPECT_TRUE(widget->IsVisible());
+  EXPECT_FALSE(root_window->IsVisible());
+
+  PropertyWaiter restore_widget_waiter(
+      base::BindRepeating(&Widget::IsMinimized, base::Unretained(widget)),
+      false);
+  widget->Restore();
+  EXPECT_TRUE(restore_widget_waiter.Wait());
+  EXPECT_TRUE(widget->IsVisible());
+  EXPECT_TRUE(root_window->IsVisible());
+  widget->CloseNow();
+}
+#endif  // defined(OS_WIN)
+
+// Tests that minimizing a widget causes the gesture_handler
+// to be cleared when the widget is minimized.
+TEST_F(DesktopWidgetTestInteractive, EventHandlersClearedOnWidgetMinimize) {
+  Widget* widget = CreateWidget();
+  ShowSync(widget);
+  ASSERT_FALSE(widget->IsMinimized());
+  View mouse_handler_view;
+  internal::RootView* root_view =
+      static_cast<internal::RootView*>(widget->GetRootView());
+  // This also sets the gesture_handler, and we'll verify that it
+  // gets cleared when the widget is minimized.
+  root_view->SetMouseHandler(&mouse_handler_view);
+  EXPECT_TRUE(GetGestureHandler(root_view));
+
+  widget->Minimize();
+  EXPECT_FALSE(GetGestureHandler(root_view));
+
+  widget->CloseNow();
+}
+
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+// Tests that when a desktop native widget has modal transient child, it should
+// avoid restore focused view itself as the modal transient child window will do
+// that, thus avoids having multiple focused view visually (crbug.com/727641).
+TEST_F(DesktopWidgetTestInteractive,
+       DesktopNativeWidgetWithModalTransientChild) {
+  // Create a desktop native Widget for Widget::Deactivate().
+  Widget* deactivate_widget = CreateWidget();
+  ShowSync(deactivate_widget);
+
+  // Create a top level desktop native widget.
+  Widget* top_level = CreateWidget();
+
+  Textfield* textfield = new Textfield;
+  textfield->SetBounds(0, 0, 200, 20);
+  top_level->GetRootView()->AddChildView(textfield);
+  ShowSync(top_level);
+  textfield->RequestFocus();
+  EXPECT_TRUE(textfield->HasFocus());
+
+  // Create a modal dialog.
+  // This instance will be destroyed when the dialog is destroyed.
+  ModalDialogDelegate* dialog_delegate =
+      new ModalDialogDelegate(ui::MODAL_TYPE_WINDOW);
+  Widget* modal_dialog_widget = DialogDelegate::CreateDialogWidget(
+      dialog_delegate, nullptr, top_level->GetNativeView());
+  modal_dialog_widget->SetBounds(gfx::Rect(0, 0, 100, 10));
+  Textfield* dialog_textfield = new Textfield;
+  dialog_textfield->SetBounds(0, 0, 50, 5);
+  modal_dialog_widget->GetRootView()->AddChildView(dialog_textfield);
+  // Dialog widget doesn't need a ShowSync as it gains active status
+  // synchronously.
+  modal_dialog_widget->Show();
+  dialog_textfield->RequestFocus();
+  EXPECT_TRUE(dialog_textfield->HasFocus());
+  EXPECT_FALSE(textfield->HasFocus());
+
+  DeactivateSync(top_level);
+  EXPECT_FALSE(dialog_textfield->HasFocus());
+  EXPECT_FALSE(textfield->HasFocus());
+
+  // After deactivation and activation of top level widget, only modal dialog
+  // should restore focused view.
+  ActivateSync(top_level);
+  EXPECT_TRUE(dialog_textfield->HasFocus());
+  EXPECT_FALSE(textfield->HasFocus());
+
+  top_level->CloseNow();
+  deactivate_widget->CloseNow();
+}
+#endif  // defined(USE_AURA) && !defined(OS_CHROMEOS)
+
 namespace {
 
 // Helper class for CaptureLostTrackingWidget to store whether
@@ -1305,25 +1564,10 @@ class CaptureLostTrackingWidget : public Widget {
 
 }  // namespace
 
-class WidgetCaptureTest : public ViewsTestBase {
+class WidgetCaptureTest : public ViewsInteractiveUITestBase {
  public:
-  WidgetCaptureTest() {
-  }
-
-  ~WidgetCaptureTest() override {}
-
-  void SetUp() override {
-    // On mus these tests run as part of views::ViewsTestSuite which already
-    // does this initialization.
-    if (!IsMus()) {
-      gl::GLSurfaceTestSupport::InitializeOneOff();
-      ui::RegisterPathProvider();
-      base::FilePath ui_test_pak_path;
-      ASSERT_TRUE(PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
-      ui::ResourceBundle::InitSharedInstanceWithPakPath(ui_test_pak_path);
-    }
-    ViewsTestBase::SetUp();
-  }
+  WidgetCaptureTest() = default;
+  ~WidgetCaptureTest() override = default;
 
   // Verifies Widget::SetCapture() results in updating native capture along with
   // invoking the right Widget function.
@@ -1373,8 +1617,9 @@ class WidgetCaptureTest : public ViewsTestBase {
   NativeWidget* CreateNativeWidget(const Widget::InitParams& params,
                                    bool create_desktop_native_widget,
                                    Widget* widget) {
+    // The test base class by default returns DesktopNativeWidgetAura.
     if (create_desktop_native_widget)
-      return CreatePlatformDesktopNativeWidgetImpl(params, widget, nullptr);
+      return nullptr;
     return CreatePlatformNativeWidgetImpl(params, widget, kDefault, nullptr);
   }
 
@@ -1387,6 +1632,13 @@ TEST_F(WidgetCaptureTest, Capture) {
   TestCapture(false);
 }
 
+#if !defined(OS_CHROMEOS)
+// See description in TestCapture(). Creates DesktopNativeWidget.
+TEST_F(WidgetCaptureTest, CaptureDesktopNativeWidget) {
+  TestCapture(true);
+}
+#endif
+
 // Tests to ensure capture is correctly released from a Widget with capture when
 // it is destroyed. Test for crbug.com/622201.
 TEST_F(WidgetCaptureTest, DestroyWithCapture_CloseNow) {
@@ -1394,7 +1646,6 @@ TEST_F(WidgetCaptureTest, DestroyWithCapture_CloseNow) {
   CaptureLostTrackingWidget* widget =
       new CaptureLostTrackingWidget(&capture_state);
   Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
-  params.native_widget = CreateNativeWidget(params, true, widget);
   widget->Init(params);
   widget->Show();
 
@@ -1403,11 +1654,7 @@ TEST_F(WidgetCaptureTest, DestroyWithCapture_CloseNow) {
   EXPECT_FALSE(capture_state.GetAndClearGotCaptureLost());
   widget->CloseNow();
 
-  // Fails on mus. http://crbug.com/611764
-  if (IsMus())
-    EXPECT_FALSE(capture_state.GetAndClearGotCaptureLost());
-  else
-    EXPECT_TRUE(capture_state.GetAndClearGotCaptureLost());
+  EXPECT_TRUE(capture_state.GetAndClearGotCaptureLost());
 }
 
 TEST_F(WidgetCaptureTest, DestroyWithCapture_Close) {
@@ -1415,7 +1662,6 @@ TEST_F(WidgetCaptureTest, DestroyWithCapture_Close) {
   CaptureLostTrackingWidget* widget =
       new CaptureLostTrackingWidget(&capture_state);
   Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
-  params.native_widget = CreateNativeWidget(params, true, widget);
   widget->Init(params);
   widget->Show();
 
@@ -1429,7 +1675,6 @@ TEST_F(WidgetCaptureTest, DestroyWithCapture_Close) {
 TEST_F(WidgetCaptureTest, DestroyWithCapture_WidgetOwnsNativeWidget) {
   Widget widget;
   Widget::InitParams params = CreateParams(Widget::InitParams::TYPE_WINDOW);
-  params.native_widget = CreateNativeWidget(params, true, &widget);
   params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   widget.Init(params);
   widget.Show();
@@ -1438,23 +1683,8 @@ TEST_F(WidgetCaptureTest, DestroyWithCapture_WidgetOwnsNativeWidget) {
   EXPECT_TRUE(widget.HasCapture());
 }
 
-#if !defined(OS_CHROMEOS)
-// See description in TestCapture(). Creates DesktopNativeWidget.
-TEST_F(WidgetCaptureTest, CaptureDesktopNativeWidget) {
-  // Fails on mus. http://crbug.com/611764
-  if (IsMus())
-    return;
-
-  TestCapture(true);
-}
-#endif
-
 // Test that no state is set if capture fails.
 TEST_F(WidgetCaptureTest, FailedCaptureRequestIsNoop) {
-  // Fails on mus. http://crbug.com/611764
-  if (IsMus())
-    return;
-
   Widget widget;
   Widget::InitParams params =
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
@@ -1477,8 +1707,9 @@ TEST_F(WidgetCaptureTest, FailedCaptureRequestIsNoop) {
   EXPECT_FALSE(widget.HasCapture());
 
   widget.Show();
-  ui::test::EventGenerator generator(GetContext(), widget.GetNativeWindow());
-  generator.set_current_location(gfx::Point(300, 10));
+  ui::test::EventGenerator generator(GetRootWindow(&widget),
+                                     widget.GetNativeWindow());
+  generator.set_current_screen_location(gfx::Point(300, 10));
   generator.PressLeftButton();
 
   EXPECT_FALSE(mouse_view1->pressed());
@@ -1497,14 +1728,9 @@ TEST_F(WidgetCaptureTest, FailedCaptureRequestIsNoop) {
 // Test that a synthetic mouse exit is sent to the widget which was handling
 // mouse events when a different widget grabs capture.
 TEST_F(WidgetCaptureTest, MAYBE_MouseExitOnCaptureGrab) {
-  // Fails on mus. http://crbug.com/611764
-  if (IsMus())
-    return;
-
   Widget widget1;
   Widget::InitParams params1 =
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-  params1.native_widget = CreateNativeWidget(params1, true, &widget1);
   params1.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   widget1.Init(params1);
   MouseView* mouse_view1 = new MouseView;
@@ -1515,14 +1741,13 @@ TEST_F(WidgetCaptureTest, MAYBE_MouseExitOnCaptureGrab) {
   Widget widget2;
   Widget::InitParams params2 =
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-  params2.native_widget = CreateNativeWidget(params2, true, &widget2);
   params2.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   widget2.Init(params2);
   widget2.Show();
   widget2.SetBounds(gfx::Rect(400, 0, 300, 300));
 
-  ui::test::EventGenerator generator(widget1.GetNativeWindow());
-  generator.set_current_location(gfx::Point(100, 100));
+  ui::test::EventGenerator generator(GetRootWindow(&widget1));
+  generator.set_current_screen_location(gfx::Point(100, 100));
   generator.MoveMouseBy(0, 0);
 
   EXPECT_EQ(1, mouse_view1->EnteredCalls());
@@ -1567,8 +1792,6 @@ TEST_F(WidgetCaptureTest, SetCaptureToNonToplevel) {
   Widget toplevel;
   Widget::InitParams toplevel_params =
       CreateParams(Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-  toplevel_params.native_widget = CreateNativeWidget(toplevel_params, true,
-                                                     &toplevel);
   toplevel_params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   toplevel.Init(toplevel_params);
   toplevel.Show();
@@ -1594,6 +1817,8 @@ TEST_F(WidgetCaptureTest, SetCaptureToNonToplevel) {
 
   EXPECT_TRUE(observer.activation_observed());
   EXPECT_TRUE(child->HasCapture());
+
+  child->RemoveObserver(&observer);
 }
 
 
@@ -1657,21 +1882,22 @@ TEST_F(WidgetCaptureTest, MouseEventDispatchedToRightWindow) {
   // |widget2| has capture, |widget1| should still get the event.
   ui::MouseEvent mouse_event(ui::ET_MOUSE_EXITED, gfx::Point(), gfx::Point(),
                              ui::EventTimeForNow(), ui::EF_NONE, ui::EF_NONE);
-  ui::EventDispatchDetails details = widget1.GetNativeWindow()->
-      GetHost()->event_processor()->OnEventFromSource(&mouse_event);
+  ui::EventDispatchDetails details =
+      widget1.GetNativeWindow()->GetHost()->event_sink()->OnEventFromSource(
+          &mouse_event);
   ASSERT_FALSE(details.dispatcher_destroyed);
   EXPECT_TRUE(widget1.GetAndClearGotMouseEvent());
   EXPECT_FALSE(widget2.GetAndClearGotMouseEvent());
 }
 #endif  // defined(OS_WIN)
 
-class WidgetInputMethodInteractiveTest : public WidgetTestInteractive {
+class WidgetInputMethodInteractiveTest : public DesktopWidgetTestInteractive {
  public:
   WidgetInputMethodInteractiveTest() {}
 
   // testing::Test:
   void SetUp() override {
-    WidgetTestInteractive::SetUp();
+    DesktopWidgetTestInteractive::SetUp();
 #if defined(OS_WIN)
     // On Windows, Widget::Deactivate() works by activating the next topmost
     // window on the z-order stack. This only works if there is at least one
@@ -1684,7 +1910,7 @@ class WidgetInputMethodInteractiveTest : public WidgetTestInteractive {
   void TearDown() override {
     if (deactivate_widget_)
       deactivate_widget_->CloseNow();
-    WidgetTestInteractive::TearDown();
+    DesktopWidgetTestInteractive::TearDown();
   }
 
  private:
@@ -1693,8 +1919,13 @@ class WidgetInputMethodInteractiveTest : public WidgetTestInteractive {
   DISALLOW_COPY_AND_ASSIGN(WidgetInputMethodInteractiveTest);
 };
 
+#if defined(OS_MACOSX)
+#define MAYBE_Activation DISABLED_Activation
+#else
+#define MAYBE_Activation Activation
+#endif
 // Test input method focus changes affected by top window activaction.
-TEST_F(WidgetInputMethodInteractiveTest, Activation) {
+TEST_F(WidgetInputMethodInteractiveTest, MAYBE_Activation) {
   Widget* widget = CreateWidget();
   Textfield* textfield = new Textfield;
   widget->GetRootView()->AddChildView(textfield);
@@ -1756,10 +1987,6 @@ TEST_F(WidgetInputMethodInteractiveTest, OneWindow) {
 // Test input method focus changes affected by focus changes cross 2 windows
 // which shares the same top window.
 TEST_F(WidgetInputMethodInteractiveTest, TwoWindows) {
-  // Fails on mus. http://crbug.com/611766
-  if (IsMus())
-    return;
-
   Widget* parent = CreateWidget();
   parent->SetBounds(gfx::Rect(100, 100, 100, 100));
 

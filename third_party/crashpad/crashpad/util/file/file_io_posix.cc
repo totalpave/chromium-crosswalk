@@ -16,73 +16,67 @@
 
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#include <algorithm>
+#include <limits>
 
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/numerics/safe_conversions.h"
 #include "base/posix/eintr_wrapper.h"
-
-namespace {
-
-struct ReadTraits {
-  using VoidBufferType = void*;
-  using CharBufferType = char*;
-  static crashpad::FileOperationResult Operate(int fd,
-                                               CharBufferType buffer,
-                                               size_t size) {
-    return read(fd, buffer, size);
-  }
-};
-
-struct WriteTraits {
-  using VoidBufferType = const void*;
-  using CharBufferType = const char*;
-  static crashpad::FileOperationResult Operate(int fd,
-                                               CharBufferType buffer,
-                                               size_t size) {
-    return write(fd, buffer, size);
-  }
-};
-
-template <typename Traits>
-crashpad::FileOperationResult
-ReadOrWrite(int fd, typename Traits::VoidBufferType buffer, size_t size) {
-  typename Traits::CharBufferType buffer_c =
-      reinterpret_cast<typename Traits::CharBufferType>(buffer);
-
-  crashpad::FileOperationResult total_bytes = 0;
-  while (size > 0) {
-    crashpad::FileOperationResult bytes =
-        HANDLE_EINTR(Traits::Operate(fd, buffer_c, size));
-    if (bytes < 0) {
-      return bytes;
-    } else if (bytes == 0) {
-      break;
-    }
-
-    buffer_c += bytes;
-    size -= bytes;
-    total_bytes += bytes;
-  }
-
-  return total_bytes;
-}
-
-}  // namespace
+#include "build/build_config.h"
 
 namespace crashpad {
 
 namespace {
 
+struct ReadTraits {
+  using BufferType = void*;
+  static FileOperationResult Operate(int fd, BufferType buffer, size_t size) {
+    return read(fd, buffer, size);
+  }
+};
+
+struct WriteTraits {
+  using BufferType = const void*;
+  static FileOperationResult Operate(int fd, BufferType buffer, size_t size) {
+    return write(fd, buffer, size);
+  }
+};
+
+template <typename Traits>
+FileOperationResult ReadOrWrite(int fd,
+                                typename Traits::BufferType buffer,
+                                size_t size) {
+  constexpr size_t kMaxReadWriteSize =
+      static_cast<size_t>(std::numeric_limits<ssize_t>::max());
+  const size_t requested_bytes = std::min(size, kMaxReadWriteSize);
+
+  FileOperationResult transacted_bytes =
+      HANDLE_EINTR(Traits::Operate(fd, buffer, requested_bytes));
+  if (transacted_bytes < 0) {
+    return -1;
+  }
+
+  DCHECK_LE(static_cast<size_t>(transacted_bytes), requested_bytes);
+  return transacted_bytes;
+}
+
 FileHandle OpenFileForOutput(int rdwr_or_wronly,
                              const base::FilePath& path,
                              FileWriteMode mode,
                              FilePermissions permissions) {
+#if defined(OS_FUCHSIA)
+  // O_NOCTTY is invalid on Fuchsia, and O_CLOEXEC isn't necessary.
+  int flags = 0;
+#else
+  int flags = O_NOCTTY | O_CLOEXEC;
+#endif
+
   DCHECK(rdwr_or_wronly & (O_RDWR | O_WRONLY));
   DCHECK_EQ(rdwr_or_wronly & ~(O_RDWR | O_WRONLY), 0);
-
-  int flags = rdwr_or_wronly;
+  flags |= rdwr_or_wronly;
 
   switch (mode) {
     case FileWriteMode::kReuseOrFail:
@@ -106,18 +100,27 @@ FileHandle OpenFileForOutput(int rdwr_or_wronly,
 
 }  // namespace
 
+namespace internal {
+
+FileOperationResult NativeWriteFile(FileHandle file,
+                                    const void* buffer,
+                                    size_t size) {
+  return ReadOrWrite<WriteTraits>(file, buffer, size);
+}
+
+}  // namespace internal
+
 FileOperationResult ReadFile(FileHandle file, void* buffer, size_t size) {
   return ReadOrWrite<ReadTraits>(file, buffer, size);
 }
 
-FileOperationResult WriteFile(FileHandle file,
-                              const void* buffer,
-                              size_t size) {
-  return ReadOrWrite<WriteTraits>(file, buffer, size);
-}
-
 FileHandle OpenFileForRead(const base::FilePath& path) {
-  return HANDLE_EINTR(open(path.value().c_str(), O_RDONLY));
+  int flags = O_RDONLY;
+#if !defined(OS_FUCHSIA)
+  // O_NOCTTY is invalid on Fuchsia, and O_CLOEXEC isn't necessary.
+  flags |= O_NOCTTY | O_CLOEXEC;
+#endif
+  return HANDLE_EINTR(open(path.value().c_str(), flags));
 }
 
 FileHandle OpenFileForWrite(const base::FilePath& path,
@@ -154,6 +157,8 @@ FileHandle LoggingOpenFileForReadAndWrite(const base::FilePath& path,
   return fd;
 }
 
+#if !defined(OS_FUCHSIA)
+
 bool LoggingLockFile(FileHandle file, FileLocking locking) {
   int operation = (locking == FileLocking::kShared) ? LOCK_SH : LOCK_EX;
   int rv = HANDLE_EINTR(flock(file, operation));
@@ -166,6 +171,8 @@ bool LoggingUnlockFile(FileHandle file) {
   PLOG_IF(ERROR, rv != 0) << "flock";
   return rv == 0;
 }
+
+#endif  // !OS_FUCHSIA
 
 FileOffset LoggingSeekFile(FileHandle file, FileOffset offset, int whence) {
   off_t rv = lseek(file, offset, whence);
@@ -185,6 +192,29 @@ bool LoggingCloseFile(FileHandle file) {
   int rv = IGNORE_EINTR(close(file));
   PLOG_IF(ERROR, rv != 0) << "close";
   return rv == 0;
+}
+
+FileOffset LoggingFileSizeByHandle(FileHandle file) {
+  struct stat st;
+  if (fstat(file, &st) != 0) {
+    PLOG(ERROR) << "fstat";
+    return -1;
+  }
+  return st.st_size;
+}
+
+FileHandle StdioFileHandle(StdioStream stdio_stream) {
+  switch (stdio_stream) {
+    case StdioStream::kStandardInput:
+      return STDIN_FILENO;
+    case StdioStream::kStandardOutput:
+      return STDOUT_FILENO;
+    case StdioStream::kStandardError:
+      return STDERR_FILENO;
+  }
+
+  NOTREACHED();
+  return kInvalidFileHandle;
 }
 
 }  // namespace crashpad

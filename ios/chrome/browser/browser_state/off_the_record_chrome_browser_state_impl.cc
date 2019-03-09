@@ -5,22 +5,28 @@
 #include "ios/chrome/browser/browser_state/off_the_record_chrome_browser_state_impl.h"
 
 #include "base/logging.h"
+#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
 #include "components/keyed_service/ios/browser_state_dependency_manager.h"
+#include "components/proxy_config/ios/proxy_service_factory.h"
 #include "components/proxy_config/pref_proxy_config_tracker.h"
-#include "components/syncable_prefs/pref_service_syncable.h"
+#include "components/sync_preferences/pref_service_syncable.h"
 #include "components/user_prefs/user_prefs.h"
 #include "ios/chrome/browser/application_context.h"
 #include "ios/chrome/browser/net/ios_chrome_url_request_context_getter.h"
-#include "ios/chrome/browser/net/proxy_service_factory.h"
+#include "ios/web/public/web_task_traits.h"
 #include "ios/web/public/web_thread.h"
 
 OffTheRecordChromeBrowserStateImpl::OffTheRecordChromeBrowserStateImpl(
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
     ios::ChromeBrowserState* original_chrome_browser_state,
     const base::FilePath& otr_path)
-    : otr_state_path_(otr_path),
+    : ChromeBrowserState(std::move(io_task_runner)),
+      otr_state_path_(otr_path),
       original_chrome_browser_state_(original_chrome_browser_state),
-      prefs_(static_cast<syncable_prefs::PrefServiceSyncable*>(
+      prefs_(static_cast<sync_preferences::PrefServiceSyncable*>(
           original_chrome_browser_state->GetOffTheRecordPrefs())) {
+  BrowserState::Initialize(this, otr_state_path_);
   user_prefs::UserPrefs::Set(this, GetPrefs());
   io_data_.reset(new OffTheRecordChromeBrowserStateIOData::Handle(this));
   BrowserStateDependencyManager::GetInstance()->CreateBrowserStateServices(
@@ -78,15 +84,10 @@ PrefProxyConfigTracker*
 OffTheRecordChromeBrowserStateImpl::GetProxyConfigTracker() {
   if (!pref_proxy_config_tracker_) {
     pref_proxy_config_tracker_ =
-        ios::ProxyServiceFactory::CreatePrefProxyConfigTrackerOfProfile(
+        ProxyServiceFactory::CreatePrefProxyConfigTrackerOfProfile(
             GetPrefs(), GetApplicationContext()->GetLocalState());
   }
   return pref_proxy_config_tracker_.get();
-}
-
-net::SSLConfigService*
-OffTheRecordChromeBrowserStateImpl::GetSSLConfigService() {
-  return original_chrome_browser_state_->GetSSLConfigService();
 }
 
 ChromeBrowserStateIOData* OffTheRecordChromeBrowserStateImpl::GetIOData() {
@@ -95,8 +96,7 @@ ChromeBrowserStateIOData* OffTheRecordChromeBrowserStateImpl::GetIOData() {
 
 net::URLRequestContextGetter*
 OffTheRecordChromeBrowserStateImpl::CreateRequestContext(
-    ProtocolHandlerMap* protocol_handlers,
-    URLRequestInterceptorScopedVector request_interceptors) {
+    ProtocolHandlerMap* protocol_handlers) {
   return io_data_->CreateMainRequestContextGetter(protocol_handlers).get();
 }
 
@@ -108,7 +108,7 @@ void OffTheRecordChromeBrowserStateImpl::ClearNetworkingHistorySince(
   // BrowsingDataRemover will never be destroyed and the dialog will never be
   // closed. We must do this asynchronously in order to avoid reentrancy issues.
   if (!completion.is_null()) {
-    web::WebThread::PostTask(web::WebThread::UI, FROM_HERE, completion);
+    base::PostTaskWithTraits(FROM_HERE, {web::WebThread::UI}, completion);
   }
 }
 

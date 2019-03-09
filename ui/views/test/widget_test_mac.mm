@@ -9,9 +9,10 @@
 #import "base/mac/scoped_nsobject.h"
 #import "base/mac/scoped_objc_class_swizzler.h"
 #include "base/macros.h"
-#import "ui/views/cocoa/bridged_native_widget.h"
+#include "ui/views/cocoa/bridged_native_widget_host_impl.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/root_view.h"
+#import "ui/views_bridge_mac/bridged_native_widget_impl.h"
 
 namespace views {
 namespace test {
@@ -25,15 +26,6 @@ NSWindow* g_simulated_active_window_ = nil;
 }  // namespace
 
 // static
-void WidgetTest::SimulateNativeDestroy(Widget* widget) {
-  // Retain the window while closing it, otherwise the window may lose its last
-  // owner before -[NSWindow close] completes (this offends AppKit). Usually
-  // this reference will exist on an event delivered to the runloop.
-  base::scoped_nsobject<NSWindow> window([widget->GetNativeWindow() retain]);
-  [window close];
-}
-
-// static
 void WidgetTest::SimulateNativeActivate(Widget* widget) {
   NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
   if (g_simulated_active_window_) {
@@ -41,7 +33,7 @@ void WidgetTest::SimulateNativeActivate(Widget* widget) {
                           object:g_simulated_active_window_];
   }
 
-  g_simulated_active_window_ = widget->GetNativeWindow();
+  g_simulated_active_window_ = widget->GetNativeWindow().GetNativeNSWindow();
   DCHECK(g_simulated_active_window_);
 
   // For now, don't simulate main status or windows that can't activate.
@@ -52,17 +44,21 @@ void WidgetTest::SimulateNativeActivate(Widget* widget) {
 
 // static
 bool WidgetTest::IsNativeWindowVisible(gfx::NativeWindow window) {
-  return [window isVisible];
+  return [window.GetNativeNSWindow() isVisible];
 }
 
 // static
 bool WidgetTest::IsWindowStackedAbove(Widget* above, Widget* below) {
+  // Since 10.13, a trip to the runloop has been necessary to ensure [NSApp
+  // orderedWindows] has been updated.
+  base::RunLoop().RunUntilIdle();
+
   EXPECT_TRUE(above->IsVisible());
   EXPECT_TRUE(below->IsVisible());
 
   // -[NSApplication orderedWindows] are ordered front-to-back.
-  NSWindow* first = above->GetNativeWindow();
-  NSWindow* second = below->GetNativeWindow();
+  NSWindow* first = above->GetNativeWindow().GetNativeNSWindow();
+  NSWindow* second = below->GetNativeWindow().GetNativeNSWindow();
 
   for (NSWindow* window in [NSApp orderedWindows]) {
     if (window == second)
@@ -75,23 +71,40 @@ bool WidgetTest::IsWindowStackedAbove(Widget* above, Widget* below) {
 }
 
 gfx::Size WidgetTest::GetNativeWidgetMinimumContentSize(Widget* widget) {
-  return gfx::Size([widget->GetNativeWindow() contentMinSize]);
+  return gfx::Size(
+      [widget->GetNativeWindow().GetNativeNSWindow() contentMinSize]);
 }
 
 // static
-ui::EventProcessor* WidgetTest::GetEventProcessor(Widget* widget) {
+ui::EventSink* WidgetTest::GetEventSink(Widget* widget) {
   return static_cast<internal::RootView*>(widget->GetRootView());
 }
 
 // static
 ui::internal::InputMethodDelegate* WidgetTest::GetInputMethodDelegateForWidget(
     Widget* widget) {
-  return NativeWidgetMac::GetBridgeForNativeWindow(widget->GetNativeWindow());
+  return BridgedNativeWidgetHostImpl::GetFromNativeWindow(
+      widget->GetNativeWindow());
 }
 
 // static
 bool WidgetTest::IsNativeWindowTransparent(gfx::NativeWindow window) {
-  return ![window isOpaque];
+  return ![window.GetNativeNSWindow() isOpaque];
+}
+
+// static
+bool WidgetTest::WidgetHasInProcessShadow(Widget* widget) {
+  return false;
+}
+
+// static
+Widget::Widgets WidgetTest::GetAllWidgets() {
+  Widget::Widgets all_widgets;
+  for (NSWindow* window : [NSApp windows]) {
+    if (Widget* widget = Widget::GetWidgetForNativeWindow(window))
+      all_widgets.insert(widget);
+  }
+  return all_widgets;
 }
 
 }  // namespace test

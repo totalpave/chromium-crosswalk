@@ -11,8 +11,7 @@
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 
@@ -55,17 +54,15 @@ class SessionFileReader {
         path, base::File::FLAG_OPEN | base::File::FLAG_READ));
   }
   // Reads the contents of the file specified in the constructor, returning
-  // true on success. It is up to the caller to free all SessionCommands
-  // added to commands.
-  bool Read(sessions::BaseSessionService::SessionType type,
-            ScopedVector<sessions::SessionCommand>* commands);
+  // true on success, and filling up |commands| with commands.
+  bool Read(std::vector<std::unique_ptr<sessions::SessionCommand>>* commands);
 
  private:
   // Reads a single command, returning it. A return value of NULL indicates
   // either there are no commands, or there was an error. Use errored_ to
   // distinguish the two. If NULL is returned, and there is no error, it means
   // the end of file was successfully reached.
-  sessions::SessionCommand* ReadCommand();
+  std::unique_ptr<sessions::SessionCommand> ReadCommand();
 
   // Shifts the unused portion of buffer_ to the beginning and fills the
   // remaining portion with data from the file. Returns false if the buffer
@@ -91,45 +88,37 @@ class SessionFileReader {
   DISALLOW_COPY_AND_ASSIGN(SessionFileReader);
 };
 
-bool SessionFileReader::Read(sessions::BaseSessionService::SessionType type,
-                             ScopedVector<sessions::SessionCommand>* commands) {
+bool SessionFileReader::Read(
+    std::vector<std::unique_ptr<sessions::SessionCommand>>* commands) {
   if (!file_->IsValid())
     return false;
   FileHeader header;
   int read_count;
-  TimeTicks start_time = TimeTicks::Now();
   read_count = file_->ReadAtCurrentPos(reinterpret_cast<char*>(&header),
                                        sizeof(header));
   if (read_count != sizeof(header) || header.signature != kFileSignature ||
       header.version != kFileCurrentVersion)
     return false;
 
-  ScopedVector<sessions::SessionCommand> read_commands;
-  for (sessions::SessionCommand* command = ReadCommand(); command && !errored_;
-       command = ReadCommand())
-    read_commands.push_back(command);
+  std::vector<std::unique_ptr<sessions::SessionCommand>> read_commands;
+  for (std::unique_ptr<sessions::SessionCommand> command = ReadCommand();
+       command && !errored_; command = ReadCommand())
+    read_commands.push_back(std::move(command));
   if (!errored_)
     read_commands.swap(*commands);
-  if (type == sessions::BaseSessionService::TAB_RESTORE) {
-    UMA_HISTOGRAM_TIMES("TabRestore.read_session_file_time",
-                        TimeTicks::Now() - start_time);
-  } else {
-    UMA_HISTOGRAM_TIMES("SessionRestore.read_session_file_time",
-                        TimeTicks::Now() - start_time);
-  }
   return !errored_;
 }
 
-sessions::SessionCommand* SessionFileReader::ReadCommand() {
+std::unique_ptr<sessions::SessionCommand> SessionFileReader::ReadCommand() {
   // Make sure there is enough in the buffer for the size of the next command.
   if (available_count_ < sizeof(size_type)) {
     if (!FillBuffer())
-      return NULL;
+      return nullptr;
     if (available_count_ < sizeof(size_type)) {
       VLOG(1) << "SessionFileReader::ReadCommand, file incomplete";
       // Still couldn't read a valid size for the command, assume write was
       // incomplete and return NULL.
-      return NULL;
+      return nullptr;
     }
   }
   // Get the size of the command.
@@ -141,7 +130,7 @@ sessions::SessionCommand* SessionFileReader::ReadCommand() {
   if (command_size == 0) {
     VLOG(1) << "SessionFileReader::ReadCommand, empty command";
     // Empty command. Shouldn't happen if write was successful, fail.
-    return NULL;
+    return nullptr;
   }
 
   // Make sure buffer has the complete contents of the command.
@@ -151,14 +140,15 @@ sessions::SessionCommand* SessionFileReader::ReadCommand() {
     if (!FillBuffer() || command_size > available_count_) {
       // Again, assume the file was ok, and just the last chunk was lost.
       VLOG(1) << "SessionFileReader::ReadCommand, last chunk lost";
-      return NULL;
+      return nullptr;
     }
   }
   const id_type command_id = buffer_[buffer_position_];
   // NOTE: command_size includes the size of the id, which is not part of
   // the contents of the SessionCommand.
-  sessions::SessionCommand* command =
-      new sessions::SessionCommand(command_id, command_size - sizeof(id_type));
+  std::unique_ptr<sessions::SessionCommand> command =
+      std::make_unique<sessions::SessionCommand>(
+          command_id, command_size - sizeof(id_type));
   if (command_size > sizeof(id_type)) {
     memcpy(command->contents(),
            &(buffer_[buffer_position_ + sizeof(id_type)]),
@@ -227,19 +217,19 @@ void SessionBackend::Init() {
 }
 
 void SessionBackend::AppendCommands(
-    ScopedVector<sessions::SessionCommand> commands,
+    std::vector<std::unique_ptr<sessions::SessionCommand>> commands,
     bool reset_first) {
   Init();
   // Make sure and check current_session_file_, if opening the file failed
   // current_session_file_ will be NULL.
-  if ((reset_first && !empty_file_) || !current_session_file_.get() ||
+  if ((reset_first && !empty_file_) || !current_session_file_ ||
       !current_session_file_->IsValid()) {
     ResetFile();
   }
   // Need to check current_session_file_ again, ResetFile may fail.
   if (current_session_file_.get() && current_session_file_->IsValid() &&
       !AppendCommandsToFile(current_session_file_.get(), commands)) {
-    current_session_file_.reset(NULL);
+    current_session_file_.reset(nullptr);
   }
   empty_file_ = false;
 }
@@ -252,16 +242,16 @@ void SessionBackend::ReadLastSessionCommands(
 
   Init();
 
-  ScopedVector<sessions::SessionCommand> commands;
+  std::vector<std::unique_ptr<sessions::SessionCommand>> commands;
   ReadLastSessionCommandsImpl(&commands);
   callback.Run(std::move(commands));
 }
 
 bool SessionBackend::ReadLastSessionCommandsImpl(
-    ScopedVector<sessions::SessionCommand>* commands) {
+    std::vector<std::unique_ptr<sessions::SessionCommand>>* commands) {
   Init();
   SessionFileReader file_reader(GetLastSessionPath());
-  return file_reader.Read(type_, commands);
+  return file_reader.Read(commands);
 }
 
 void SessionBackend::DeleteLastSession() {
@@ -271,25 +261,14 @@ void SessionBackend::DeleteLastSession() {
 
 void SessionBackend::MoveCurrentSessionToLastSession() {
   Init();
-  current_session_file_.reset(NULL);
+  current_session_file_.reset(nullptr);
 
   const base::FilePath current_session_path = GetCurrentSessionPath();
   const base::FilePath last_session_path = GetLastSessionPath();
   if (base::PathExists(last_session_path))
     base::DeleteFile(last_session_path, false);
-  if (base::PathExists(current_session_path)) {
-    int64_t file_size;
-    if (base::GetFileSize(current_session_path, &file_size)) {
-      if (type_ == sessions::BaseSessionService::TAB_RESTORE) {
-        UMA_HISTOGRAM_COUNTS("TabRestore.last_session_file_size",
-                             static_cast<int>(file_size / 1024));
-      } else {
-        UMA_HISTOGRAM_COUNTS("SessionRestore.last_session_file_size",
-                             static_cast<int>(file_size / 1024));
-      }
-    }
+  if (base::PathExists(current_session_path))
     last_session_valid_ = base::Move(current_session_path, last_session_path);
-  }
 
   if (base::PathExists(current_session_path))
     base::DeleteFile(current_session_path, false);
@@ -299,24 +278,19 @@ void SessionBackend::MoveCurrentSessionToLastSession() {
 }
 
 bool SessionBackend::ReadCurrentSessionCommandsImpl(
-    ScopedVector<sessions::SessionCommand>* commands) {
+    std::vector<std::unique_ptr<sessions::SessionCommand>>* commands) {
   Init();
   SessionFileReader file_reader(GetCurrentSessionPath());
-  return file_reader.Read(type_, commands);
+  return file_reader.Read(commands);
 }
 
-bool SessionBackend::AppendCommandsToFile(base::File* file,
-    const ScopedVector<sessions::SessionCommand>& commands) {
-  for (ScopedVector<sessions::SessionCommand>::const_iterator i =
-           commands.begin();
-       i != commands.end(); ++i) {
+bool SessionBackend::AppendCommandsToFile(
+    base::File* file,
+    const std::vector<std::unique_ptr<sessions::SessionCommand>>& commands) {
+  for (auto i = commands.begin(); i != commands.end(); ++i) {
     int wrote;
     const size_type content_size = static_cast<size_type>((*i)->size());
     const size_type total_size =  content_size + sizeof(id_type);
-    if (type_ == sessions::BaseSessionService::TAB_RESTORE)
-      UMA_HISTOGRAM_COUNTS("TabRestore.command_size", total_size);
-    else
-      UMA_HISTOGRAM_COUNTS("SessionRestore.command_size", total_size);
     wrote = file->WriteAtCurrentPos(reinterpret_cast<const char*>(&total_size),
                                     sizeof(total_size));
     if (wrote != sizeof(total_size)) {
@@ -346,7 +320,7 @@ bool SessionBackend::AppendCommandsToFile(base::File* file,
 }
 
 SessionBackend::~SessionBackend() {
-  if (current_session_file_.get()) {
+  if (current_session_file_) {
     // Destructor performs file IO because file is open in sync mode.
     // crbug.com/112512.
     base::ThreadRestrictions::ScopedAllowIO allow_io;
@@ -356,7 +330,7 @@ SessionBackend::~SessionBackend() {
 
 void SessionBackend::ResetFile() {
   DCHECK(inited_);
-  if (current_session_file_.get()) {
+  if (current_session_file_) {
     // File is already open, truncate it. We truncate instead of closing and
     // reopening to avoid the possibility of scanners locking the file out
     // from under us once we close it. If truncation fails, we'll try to
@@ -365,9 +339,9 @@ void SessionBackend::ResetFile() {
     if (current_session_file_->Seek(
             base::File::FROM_BEGIN, header_size) != header_size ||
         !current_session_file_->SetLength(header_size))
-      current_session_file_.reset(NULL);
+      current_session_file_.reset(nullptr);
   }
-  if (!current_session_file_.get())
+  if (!current_session_file_)
     current_session_file_.reset(OpenAndWriteHeader(GetCurrentSessionPath()));
   empty_file_ = true;
 }
@@ -379,14 +353,14 @@ base::File* SessionBackend::OpenAndWriteHeader(const base::FilePath& path) {
                 base::File::FLAG_EXCLUSIVE_WRITE |
                 base::File::FLAG_EXCLUSIVE_READ));
   if (!file->IsValid())
-    return NULL;
+    return nullptr;
   FileHeader header;
   header.signature = kFileSignature;
   header.version = kFileCurrentVersion;
   int wrote = file->WriteAtCurrentPos(reinterpret_cast<char*>(&header),
                                       sizeof(header));
   if (wrote != sizeof(header))
-    return NULL;
+    return nullptr;
   return file.release();
 }
 

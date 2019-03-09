@@ -15,15 +15,18 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
-#include "build/build_config.h"
+#include "base/sequence_checker.h"
+#include "base/task/cancelable_task_tracker.h"
+#include "chrome/common/buildflags.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension_id.h"
 #include "ui/base/theme_provider.h"
 
-class CustomThemeSupplier;
 class BrowserThemePack;
+class CustomThemeSupplier;
 class ThemeSyncableService;
 class Profile;
 
@@ -51,16 +54,7 @@ namespace ui {
 class ResourceBundle;
 }
 
-#ifdef __OBJC__
-@class NSString;
-// Sent whenever the browser theme changes.  Object => NSValue wrapping the
-// ThemeService that changed.
-extern "C" NSString* const kBrowserThemeDidChangeNotification;
-#endif  // __OBJC__
-
-class ThemeService : public base::NonThreadSafe,
-                     public content::NotificationObserver,
-                     public KeyedService {
+class ThemeService : public content::NotificationObserver, public KeyedService {
  public:
   // Public constants used in ThemeService and its subclasses:
   static const char kDefaultThemeID[];
@@ -81,7 +75,10 @@ class ThemeService : public base::NonThreadSafe,
   // Set the current theme to the theme defined in |extension|.
   // |extension| must already be added to this profile's
   // ExtensionService.
-  virtual void SetTheme(const extensions::Extension* extension);
+  void SetTheme(const extensions::Extension* extension);
+
+  // Similar to SetTheme, but doesn't show an undo infobar.
+  void RevertToTheme(const extensions::Extension* extension);
 
   // Reset the theme to default.
   virtual void UseDefaultTheme();
@@ -128,6 +125,11 @@ class ThemeService : public base::NonThreadSafe,
   // the same ThemeService.
   static const ui::ThemeProvider& GetThemeProviderForProfile(Profile* profile);
 
+  // Gets the ThemeProvider for |profile| that represents the default colour
+  // scheme for the OS.
+  static const ui::ThemeProvider& GetDefaultThemeProviderForProfile(
+      Profile* profile);
+
  protected:
   // Set a custom default theme instead of the normal default theme.
   virtual void SetCustomDefaultTheme(
@@ -152,19 +154,14 @@ class ThemeService : public base::NonThreadSafe,
   // Let all the browser views know that themes have changed.
   virtual void NotifyThemeChanged();
 
-#if defined(OS_MACOSX)
-  // Let all the browser views know that themes have changed in a platform way.
-  virtual void NotifyPlatformThemeChanged();
-#endif  // OS_MACOSX
-
-  // Clears the platform-specific caches. Do not call directly; it's called
-  // from ClearAllThemeData().
-  virtual void FreePlatformCaches();
-
   // Implementation for ui::ThemeProvider (see block of functions in private
   // section).
   virtual bool ShouldUseNativeFrame() const;
   bool HasCustomImage(int id) const;
+
+  // If there is an inconsistency in preferences, change preferences to a
+  // consistent state.
+  virtual void FixInconsistentPreferencesIfNeeded();
 
   Profile* profile() const { return profile_; }
 
@@ -184,7 +181,9 @@ class ThemeService : public base::NonThreadSafe,
   // track of the incognito state of the calling code.
   class BrowserThemeProvider : public ui::ThemeProvider {
    public:
-    BrowserThemeProvider(const ThemeService& theme_service, bool incognito);
+    BrowserThemeProvider(const ThemeService& theme_service,
+                         bool incognito,
+                         bool use_default);
     ~BrowserThemeProvider() override;
 
     // Overridden from ui::ThemeProvider:
@@ -194,23 +193,17 @@ class ThemeService : public base::NonThreadSafe,
     int GetDisplayProperty(int id) const override;
     bool ShouldUseNativeFrame() const override;
     bool HasCustomImage(int id) const override;
+    bool HasCustomColor(int id) const override;
     base::RefCountedMemory* GetRawData(int id, ui::ScaleFactor scale_factor)
         const override;
-#if defined(OS_MACOSX)
-    bool UsingSystemTheme() const override;
-    bool InIncognitoMode() const override;
-    bool HasCustomColor(int id) const override;
-    NSImage* GetNSImageNamed(int id) const override;
-    NSColor* GetNSImageColorNamed(int id) const override;
-    NSColor* GetNSColor(int id) const override;
-    NSColor* GetNSColorTint(int id) const override;
-    NSGradient* GetNSGradient(int id) const override;
-    bool ShouldIncreaseContrast() const override;
-#endif
 
    private:
+    class DefaultScope;
+    friend class DefaultScope;
+
     const ThemeService& theme_service_;
     bool incognito_;
+    bool use_default_;
 
     DISALLOW_COPY_AND_ASSIGN(BrowserThemeProvider);
   };
@@ -231,21 +224,19 @@ class ThemeService : public base::NonThreadSafe,
   // and contrasting with the foreground tab is the most important).
   static SkColor GetSeparatorColor(SkColor tab_color, SkColor frame_color);
 
+  // virtual for testing.
+  virtual void DoSetTheme(const extensions::Extension* extension,
+                          bool suppress_infobar);
+
   // These methods provide the implementation for ui::ThemeProvider (exposed
   // via BrowserThemeProvider).
   gfx::ImageSkia* GetImageSkiaNamed(int id, bool incognito) const;
-  SkColor GetColor(int id, bool incognito) const;
+  SkColor GetColor(int id,
+                   bool incognito,
+                   bool* has_custom_color = nullptr) const;
   int GetDisplayProperty(int id) const;
   base::RefCountedMemory* GetRawData(int id,
                                      ui::ScaleFactor scale_factor) const;
-#if defined(OS_MACOSX)
-  NSImage* GetNSImageNamed(int id, bool incognito) const;
-  NSColor* GetNSImageColorNamed(int id, bool incognito) const;
-  bool HasCustomColor(int id) const;
-  NSColor* GetNSColor(int id, bool incognito) const;
-  NSColor* GetNSColorTint(int id) const;
-  NSGradient* GetNSGradient(int id) const;
-#endif
 
   // Returns a cross platform image for an id.
   //
@@ -271,29 +262,26 @@ class ThemeService : public base::NonThreadSafe,
   void SaveThemeID(const std::string& id);
 
   // Implementation of SetTheme() (and the fallback from LoadThemePrefs() in
-  // case we don't have a theme pack).
-  void BuildFromExtension(const extensions::Extension* extension);
+  // case we don't have a theme pack). |new_theme| indicates whether this is a
+  // newly installed theme or a migration.
+  void BuildFromExtension(const extensions::Extension* extension,
+                          bool new_theme);
 
-#if defined(ENABLE_SUPERVISED_USERS)
+  // Builds a theme from a given |color|.
+  void BuildFromColor(SkColor color);
+
+  // Callback when |pack| has finished or failed building.
+  void OnThemeBuiltFromExtension(const extensions::ExtensionId& extension_id,
+                                 scoped_refptr<BrowserThemePack> pack,
+                                 bool new_theme);
+
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
   // Returns true if the profile belongs to a supervised user.
   bool IsSupervisedUser() const;
 
   // Sets the current theme to the supervised user theme. Should only be used
   // for supervised user profiles.
   void SetSupervisedUserTheme();
-#endif
-
-#if defined(OS_MACOSX)
-  // |nsimage_cache_| retains the images it has cached.
-  typedef std::map<int, NSImage*> NSImageMap;
-  mutable NSImageMap nsimage_cache_;
-
-  // |nscolor_cache_| retains the colors it has cached.
-  typedef std::map<int, NSColor*> NSColorMap;
-  mutable NSColorMap nscolor_cache_;
-
-  typedef std::map<int, NSGradient*> NSGradientMap;
-  mutable NSGradientMap nsgradient_cache_;
 #endif
 
   ui::ResourceBundle& rb_;
@@ -319,13 +307,24 @@ class ThemeService : public base::NonThreadSafe,
 
   std::unique_ptr<ThemeSyncableService> theme_syncable_service_;
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   class ThemeObserver;
   std::unique_ptr<ThemeObserver> theme_observer_;
 #endif
 
   BrowserThemeProvider original_theme_provider_;
   BrowserThemeProvider incognito_theme_provider_;
+  BrowserThemeProvider default_theme_provider_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  // Allows us to cancel building a theme pack from an extension.
+  base::CancelableTaskTracker build_extension_task_tracker_;
+
+  // The ID of the theme that's currently being built on a different thread.
+  // We hold onto this just to be sure not to uninstall the extension view
+  // RemoveUnusedThemes while it's still being built.
+  std::string building_extension_id_;
 
   base::WeakPtrFactory<ThemeService> weak_ptr_factory_;
 

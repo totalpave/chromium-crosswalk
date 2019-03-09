@@ -2,18 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "net/tools/quic/quic_simple_server_session_helper.h"
+#include "net/third_party/quic/core/quic_connection_id.h"
+#include "net/third_party/quic/core/quic_utils.h"
+#include "net/third_party/quic/test_tools/mock_random.h"
+#include "net/third_party/quic/test_tools/quic_test_utils.h"
+#include "net/third_party/quic/tools/quic_simple_crypto_server_stream_helper.h"
 
-#include "net/quic/test_tools/mock_random.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
 
-TEST(QuicSimpleServerSessionHelperTest, GenerateConnectionIdForReject) {
-  test::MockRandom random;
-  QuicSimpleServerSessionHelper helper(&random);
+TEST(QuicSimpleCryptoServerStreamHelperTest, GenerateConnectionIdForReject) {
+  quic::test::MockRandom random;
+  quic::QuicSimpleCryptoServerStreamHelper helper(&random);
 
-  EXPECT_EQ(random.RandUint64(), helper.GenerateConnectionIdForReject(42));
+  EXPECT_EQ(quic::QuicUtils::CreateRandomConnectionId(&random),
+            // N.B., version number and ID are ignored in the helper.
+            helper.GenerateConnectionIdForReject(
+                quic::QUIC_VERSION_46, quic::test::TestConnectionId(42)));
 }
 
 }  // namespace net

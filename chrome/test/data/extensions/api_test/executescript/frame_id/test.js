@@ -147,12 +147,10 @@ function runTests(config) {
     },
 
     function executeScriptInSrcdocFrameWithoutMatchAboutBlank() {
-      // TODO(robwu): Why is the origin serialized as "about:blank" instead of
-      // "about:srcdoc"?
       chrome.tabs.executeScript(
           tabId, {frameId: ID_FRAME_SRCDOC, code: 'document.URL'},
           fail(
-              'Cannot access "about:blank" at origin "' + testOrigin + '". ' +
+              'Cannot access "about:srcdoc" at origin "' + testOrigin + '". ' +
               'Extension must have permission to access the frame\'s origin, ' +
               'and matchAboutBlank must be true.'));
     },
@@ -246,9 +244,17 @@ function runTests(config) {
                   'executeScript should never have been executed!');
             });
       } catch (e) {
-        assertEq(
-            'Invalid value for argument 2. Property \'frameId\': ' +
-                'Value must not be less than 0.',
+        assertTrue(
+            // JS-based bindings.
+            e.message == 'Invalid value for argument 2. Property \'frameId\':' +
+                         ' Value must not be less than 0.' ||
+            // Native bindings.
+            e.message == 'Error in invocation of tabs.executeScript(' +
+                         'optional integer tabId, ' +
+                         'extensionTypes.InjectDetails details, ' +
+                         'optional function callback): Error at parameter ' +
+                         '\'details\': Error at property \'frameId\': ' +
+                         'Value must be at least 0.',
             e.message);
         chrome.test.succeed();
       }
@@ -283,12 +289,10 @@ function runTests(config) {
     },
 
     function insertCSSInSrcdocFrameWithoutMatchAboutBlank() {
-      // TODO(robwu): Why is the origin serialized as "about:blank" instead of
-      // "about:srcdoc"?
       chrome.tabs.insertCSS(
           tabId, {frameId: ID_FRAME_SRCDOC, code: 'body{color:red;}'},
           fail(
-              'Cannot access "about:blank" at origin "' + testOrigin + '". ' +
+              'Cannot access "about:srcdoc" at origin "' + testOrigin + '". ' +
               'Extension must have permission to access the frame\'s origin, ' +
               'and matchAboutBlank must be true.'));
     },
@@ -371,9 +375,17 @@ function runTests(config) {
               chrome.test.fail('insertCSS should never have been executed!');
             });
       } catch (e) {
-        assertEq(
-            'Invalid value for argument 2. Property \'frameId\': ' +
-                'Value must not be less than 0.',
+        assertTrue(
+            // JS-based bindings.
+            e.message == 'Invalid value for argument 2. Property \'frameId\':' +
+                         ' Value must not be less than 0.' ||
+            // Native bindings.
+            e.message == 'Error in invocation of tabs.insertCSS(' +
+                         'optional integer tabId, ' +
+                         'extensionTypes.InjectDetails details, ' +
+                         'optional function callback): Error at parameter ' +
+                         '\'details\': Error at property \'frameId\': ' +
+                         'Value must be at least 0.',
             e.message);
         chrome.test.succeed();
       }

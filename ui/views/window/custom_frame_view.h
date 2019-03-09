@@ -41,16 +41,17 @@ class VIEWS_EXPORT CustomFrameView : public NonClientFrameView,
   gfx::Rect GetWindowBoundsForClientBounds(
       const gfx::Rect& client_bounds) const override;
   int NonClientHitTest(const gfx::Point& point) override;
-  void GetWindowMask(const gfx::Size& size, gfx::Path* window_mask) override;
+  void GetWindowMask(const gfx::Size& size, SkPath* window_mask) override;
   void ResetWindowControls() override;
   void UpdateWindowIcon() override;
   void UpdateWindowTitle() override;
   void SizeConstraintsChanged() override;
+  void ActivationChanged(bool active) override;
 
   // Overridden from View:
   void OnPaint(gfx::Canvas* canvas) override;
   void Layout() override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   gfx::Size GetMinimumSize() const override;
   gfx::Size GetMaximumSize() const override;
 
@@ -151,6 +152,10 @@ class VIEWS_EXPORT CustomFrameView : public NonClientFrameView,
   // by the space used by the leading and trailing buttons.
   int minimum_title_bar_x_;
   int maximum_title_bar_x_;
+
+  // True if the frame containing this frameview is currently active. Updated in
+  // ActivationChanged().
+  bool active_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(CustomFrameView);
 };

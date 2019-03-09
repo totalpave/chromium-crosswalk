@@ -9,77 +9,93 @@
 
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/threading/sequenced_worker_pool.h"
-#include "base/threading/worker_pool.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
-#include "components/network_session_configurator/switches.h"
+#include "components/network_session_configurator/browser/network_session_configurator.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/cookie_store_factory.h"
 #include "content/public/common/content_switches.h"
+#include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/browser/shell_network_delegate.h"
 #include "content/shell/common/shell_content_client.h"
 #include "content/shell/common/shell_switches.h"
-#include "net/base/cache_type.h"
+#include "content/shell/common/web_test/web_test_switches.h"
 #include "net/cert/cert_verifier.h"
 #include "net/cert/ct_policy_enforcer.h"
-#include "net/cert/multi_log_ct_verifier.h"
-#include "net/cookies/cookie_monster.h"
+#include "net/cert/ct_policy_status.h"
+#include "net/cookies/cookie_store.h"
 #include "net/dns/host_resolver.h"
 #include "net/dns/mapped_host_resolver.h"
-#include "net/http/http_auth_handler_factory.h"
-#include "net/http/http_cache.h"
 #include "net/http/http_network_session.h"
-#include "net/http/http_server_properties_impl.h"
-#include "net/http/transport_security_state.h"
-#include "net/proxy/proxy_service.h"
-#include "net/ssl/channel_id_service.h"
-#include "net/ssl/default_channel_id_store.h"
-#include "net/ssl/ssl_config_service_defaults.h"
-#include "net/url_request/data_protocol_handler.h"
-#include "net/url_request/file_protocol_handler.h"
-#include "net/url_request/static_http_user_agent_settings.h"
+#include "net/net_buildflags.h"
+#include "net/proxy_resolution/proxy_config_service.h"
+#include "net/proxy_resolution/proxy_resolution_service.h"
 #include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_context_storage.h"
-#include "net/url_request/url_request_intercepting_job_factory.h"
-#include "net/url_request/url_request_job_factory_impl.h"
+#include "net/url_request/url_request_context_builder.h"
+#include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "url/url_constants.h"
 
-namespace content {
+#if BUILDFLAG(ENABLE_REPORTING)
+#include "net/reporting/reporting_policy.h"
+#include "net/reporting/reporting_service.h"
+#endif  // BUILDFLAG(ENABLE_REPORTING)
 
+namespace content {
 namespace {
 
-void InstallProtocolHandlers(net::URLRequestJobFactoryImpl* job_factory,
-                             ProtocolHandlerMap* protocol_handlers) {
-  for (ProtocolHandlerMap::iterator it =
-           protocol_handlers->begin();
-       it != protocol_handlers->end();
-       ++it) {
-    bool set_protocol = job_factory->SetProtocolHandler(
-        it->first, base::WrapUnique(it->second.release()));
-    DCHECK(set_protocol);
-  }
-  protocol_handlers->clear();
-}
+net::CertVerifier* g_cert_verifier_for_testing = nullptr;
 
+// A CertVerifier that forwards all requests to
+// |g_cert_verifier_for_profile_io_data_testing|. This is used to allow
+// BrowserContexts to have their own std::unique_ptr<net::CertVerifier> while
+// forwarding calls to the shared verifier.
+class WrappedCertVerifierForTesting : public net::CertVerifier {
+ public:
+  WrappedCertVerifierForTesting() = default;
+  ~WrappedCertVerifierForTesting() override = default;
+
+  // CertVerifier implementation
+  int Verify(const RequestParams& params,
+             net::CertVerifyResult* verify_result,
+             net::CompletionOnceCallback callback,
+             std::unique_ptr<Request>* out_req,
+             const net::NetLogWithSource& net_log) override {
+    verify_result->Reset();
+    if (!g_cert_verifier_for_testing)
+      return net::ERR_FAILED;
+    return g_cert_verifier_for_testing->Verify(
+        params, verify_result, std::move(callback), out_req, net_log);
+  }
+  void SetConfig(const Config& config) override {
+    if (!g_cert_verifier_for_testing)
+      return;
+    return g_cert_verifier_for_testing->SetConfig(config);
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(WrappedCertVerifierForTesting);
+};
 }  // namespace
 
 ShellURLRequestContextGetter::ShellURLRequestContextGetter(
     bool ignore_certificate_errors,
+    bool off_the_record,
     const base::FilePath& base_path,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
     ProtocolHandlerMap* protocol_handlers,
     URLRequestInterceptorScopedVector request_interceptors,
     net::NetLog* net_log)
     : ignore_certificate_errors_(ignore_certificate_errors),
+      off_the_record_(off_the_record),
+      shut_down_(false),
       base_path_(base_path),
       io_task_runner_(std::move(io_task_runner)),
-      file_task_runner_(std::move(file_task_runner)),
       net_log_(net_log),
       request_interceptors_(std::move(request_interceptors)) {
   // Must first be created on the UI thread.
@@ -93,172 +109,139 @@ ShellURLRequestContextGetter::ShellURLRequestContextGetter(
   proxy_config_service_ = GetProxyConfigService();
 }
 
-ShellURLRequestContextGetter::~ShellURLRequestContextGetter() {
+ShellURLRequestContextGetter::~ShellURLRequestContextGetter() {}
+
+void ShellURLRequestContextGetter::NotifyContextShuttingDown() {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  shut_down_ = true;
+  URLRequestContextGetter::NotifyContextShuttingDown();
+  url_request_context_ = nullptr;  // deletes it
+}
+
+std::string ShellURLRequestContextGetter::GetAcceptLanguages() {
+  return "en-us,en";
+}
+
+void ShellURLRequestContextGetter::SetCertVerifierForTesting(
+    net::CertVerifier* cert_verifier) {
+  g_cert_verifier_for_testing = cert_verifier;
 }
 
 std::unique_ptr<net::NetworkDelegate>
 ShellURLRequestContextGetter::CreateNetworkDelegate() {
-  return base::WrapUnique(new ShellNetworkDelegate);
+  return std::make_unique<ShellNetworkDelegate>();
+}
+
+std::unique_ptr<net::CertVerifier>
+ShellURLRequestContextGetter::GetCertVerifier() {
+  if (g_cert_verifier_for_testing)
+    return std::make_unique<WrappedCertVerifierForTesting>();
+  return net::CertVerifier::CreateDefault();
 }
 
 std::unique_ptr<net::ProxyConfigService>
 ShellURLRequestContextGetter::GetProxyConfigService() {
-  return net::ProxyService::CreateSystemProxyConfigService(io_task_runner_,
-                                                           file_task_runner_);
+  return net::ProxyResolutionService::CreateSystemProxyConfigService(
+      io_task_runner_);
 }
 
-std::unique_ptr<net::ProxyService>
+std::unique_ptr<net::ProxyResolutionService>
 ShellURLRequestContextGetter::GetProxyService() {
   // TODO(jam): use v8 if possible, look at chrome code.
-  return net::ProxyService::CreateUsingSystemProxyResolver(
-      std::move(proxy_config_service_), 0, url_request_context_->net_log());
-}
-
-bool ShellURLRequestContextGetter::ShouldEnableReferrerPolicyHeader() {
-  return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      switches::kEnableExperimentalWebPlatformFeatures);
+  return nullptr;
 }
 
 net::URLRequestContext* ShellURLRequestContextGetter::GetURLRequestContext() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
+  if (shut_down_)
+    return nullptr;
+
   if (!url_request_context_) {
     const base::CommandLine& command_line =
         *base::CommandLine::ForCurrentProcess();
 
-    url_request_context_.reset(new net::URLRequestContext());
-    url_request_context_->set_net_log(net_log_);
-    network_delegate_ = CreateNetworkDelegate();
-    url_request_context_->set_network_delegate(network_delegate_.get());
-    // TODO(estark): Remove this once the Referrer-Policy header is no
-    // longer an experimental feature. https://crbug.com/619228
-    url_request_context_->set_enable_referrer_policy_header(
-        ShouldEnableReferrerPolicyHeader());
-    storage_.reset(
-        new net::URLRequestContextStorage(url_request_context_.get()));
-    storage_->set_cookie_store(CreateCookieStore(CookieStoreConfig()));
-    storage_->set_channel_id_service(base::WrapUnique(
-        new net::ChannelIDService(new net::DefaultChannelIDStore(NULL),
-                                  base::WorkerPool::GetTaskRunner(true))));
-    storage_->set_http_user_agent_settings(base::WrapUnique(
-        new net::StaticHttpUserAgentSettings("en-us,en", GetShellUserAgent())));
+    net::URLRequestContextBuilder builder;
+    builder.set_net_log(net_log_);
+    builder.set_network_delegate(CreateNetworkDelegate());
+    std::unique_ptr<net::CookieStore> cookie_store =
+        CreateCookieStore(CookieStoreConfig(), net_log_);
+    builder.SetCookieStore(std::move(cookie_store));
+    builder.set_accept_language(GetAcceptLanguages());
+    builder.set_user_agent(GetShellUserAgent());
 
-    std::unique_ptr<net::HostResolver> host_resolver(
-        net::HostResolver::CreateDefaultResolver(
-            url_request_context_->net_log()));
+    builder.SetCertVerifier(GetCertVerifier());
 
-    storage_->set_cert_verifier(net::CertVerifier::CreateDefault());
-    storage_->set_transport_security_state(
-        base::WrapUnique(new net::TransportSecurityState));
-    storage_->set_cert_transparency_verifier(
-        base::WrapUnique(new net::MultiLogCTVerifier));
-    storage_->set_ct_policy_enforcer(
-        base::WrapUnique(new net::CTPolicyEnforcer));
-    storage_->set_proxy_service(GetProxyService());
-    storage_->set_ssl_config_service(new net::SSLConfigServiceDefaults);
-    storage_->set_http_auth_handler_factory(
-        net::HttpAuthHandlerFactory::CreateDefault(host_resolver.get()));
-    storage_->set_http_server_properties(
-        base::WrapUnique(new net::HttpServerPropertiesImpl()));
+    std::unique_ptr<net::ProxyResolutionService> proxy_resolution_service =
+        GetProxyService();
+    if (proxy_resolution_service) {
+      builder.set_proxy_resolution_service(std::move(proxy_resolution_service));
+    } else {
+      builder.set_proxy_config_service(std::move(proxy_config_service_));
+    }
 
-    base::FilePath cache_path = base_path_.Append(FILE_PATH_LITERAL("Cache"));
-    std::unique_ptr<net::HttpCache::DefaultBackend> main_backend(
-        new net::HttpCache::DefaultBackend(
-            net::DISK_CACHE,
-#if defined(OS_ANDROID)
-            // TODO(rdsmith): Remove when default backend for Android is
-            // changed to simple cache.
-            net::CACHE_BACKEND_SIMPLE,
-#else
-            net::CACHE_BACKEND_DEFAULT,
-#endif
-            cache_path, 0,
-            BrowserThread::GetMessageLoopProxyForThread(BrowserThread::CACHE)));
+    net::URLRequestContextBuilder::HttpCacheParams cache_params;
+    if (!off_the_record_) {
+      cache_params.path = base_path_.Append(FILE_PATH_LITERAL("Cache"));
+      cache_params.type = net::URLRequestContextBuilder::HttpCacheParams::DISK;
+    } else {
+      cache_params.type =
+          net::URLRequestContextBuilder::HttpCacheParams::IN_MEMORY;
+    }
+    builder.EnableHttpCache(cache_params);
 
     net::HttpNetworkSession::Params network_session_params;
-    network_session_params.cert_verifier =
-        url_request_context_->cert_verifier();
-    network_session_params.transport_security_state =
-        url_request_context_->transport_security_state();
-    network_session_params.cert_transparency_verifier =
-        url_request_context_->cert_transparency_verifier();
-    network_session_params.ct_policy_enforcer =
-        url_request_context_->ct_policy_enforcer();
-    network_session_params.channel_id_service =
-        url_request_context_->channel_id_service();
-    network_session_params.proxy_service =
-        url_request_context_->proxy_service();
-    network_session_params.ssl_config_service =
-        url_request_context_->ssl_config_service();
-    network_session_params.http_auth_handler_factory =
-        url_request_context_->http_auth_handler_factory();
-    network_session_params.http_server_properties =
-        url_request_context_->http_server_properties();
-    network_session_params.net_log =
-        url_request_context_->net_log();
+    network_session_configurator::ParseCommandLineAndFieldTrials(
+        command_line, false /* is_quic_force_disabled */,
+        GetShellUserAgent() /* quic_user_agent_id */, &network_session_params);
     network_session_params.ignore_certificate_errors =
         ignore_certificate_errors_;
-    if (command_line.HasSwitch(switches::kTestingFixedHttpPort)) {
-      int value;
-      base::StringToInt(command_line.GetSwitchValueASCII(
-          switches::kTestingFixedHttpPort), &value);
-      network_session_params.testing_fixed_http_port = value;
-    }
-    if (command_line.HasSwitch(switches::kTestingFixedHttpsPort)) {
-      int value;
-      base::StringToInt(command_line.GetSwitchValueASCII(
-          switches::kTestingFixedHttpsPort), &value);
-      network_session_params.testing_fixed_https_port = value;
-    }
-    if (command_line.HasSwitch(switches::kHostResolverRules)) {
+    builder.set_http_network_session_params(network_session_params);
+
+    if (command_line.HasSwitch(network::switches::kHostResolverRules)) {
       std::unique_ptr<net::MappedHostResolver> mapped_host_resolver(
-          new net::MappedHostResolver(std::move(host_resolver)));
-      mapped_host_resolver->SetRulesFromString(
-          command_line.GetSwitchValueASCII(switches::kHostResolverRules));
-      host_resolver = std::move(mapped_host_resolver);
+          new net::MappedHostResolver(
+              net::HostResolver::CreateDefaultResolver(net_log_)));
+      mapped_host_resolver->SetRulesFromString(command_line.GetSwitchValueASCII(
+          network::switches::kHostResolverRules));
+      builder.set_host_resolver(std::move(mapped_host_resolver));
     }
 
-    // Give |storage_| ownership at the end in case it's |mapped_host_resolver|.
-    storage_->set_host_resolver(std::move(host_resolver));
-    network_session_params.host_resolver =
-        url_request_context_->host_resolver();
-
-    storage_->set_http_network_session(
-        base::WrapUnique(new net::HttpNetworkSession(network_session_params)));
-    storage_->set_http_transaction_factory(base::WrapUnique(new net::HttpCache(
-        storage_->http_network_session(), std::move(main_backend),
-        true /* set_up_quic_server_info */)));
-
-    std::unique_ptr<net::URLRequestJobFactoryImpl> job_factory(
-        new net::URLRequestJobFactoryImpl());
     // Keep ProtocolHandlers added in sync with
     // ShellContentBrowserClient::IsHandledURL().
-    InstallProtocolHandlers(job_factory.get(), &protocol_handlers_);
-    bool set_protocol = job_factory->SetProtocolHandler(
-        url::kDataScheme, base::WrapUnique(new net::DataProtocolHandler));
-    DCHECK(set_protocol);
-#if !defined(DISABLE_FILE_SUPPORT)
-    set_protocol = job_factory->SetProtocolHandler(
-        url::kFileScheme,
-        base::WrapUnique(new net::FileProtocolHandler(
-            BrowserThread::GetBlockingPool()->GetTaskRunnerWithShutdownBehavior(
-                base::SequencedWorkerPool::SKIP_ON_SHUTDOWN))));
-    DCHECK(set_protocol);
+
+    for (auto& protocol_handler : protocol_handlers_) {
+      builder.SetProtocolHandler(protocol_handler.first,
+                                 std::move(protocol_handler.second));
+    }
+    protocol_handlers_.clear();
+
+    builder.set_data_enabled(true);
+
+#if !BUILDFLAG(DISABLE_FILE_SUPPORT)
+    builder.set_file_enabled(true);
 #endif
 
     // Set up interceptors in the reverse order.
-    std::unique_ptr<net::URLRequestJobFactory> top_job_factory =
-        std::move(job_factory);
-    for (URLRequestInterceptorScopedVector::reverse_iterator i =
-             request_interceptors_.rbegin();
-         i != request_interceptors_.rend();
-         ++i) {
-      top_job_factory.reset(new net::URLRequestInterceptingJobFactory(
-          std::move(top_job_factory), base::WrapUnique(*i)));
-    }
-    request_interceptors_.weak_clear();
+    builder.SetInterceptors(std::move(request_interceptors_));
 
-    storage_->set_job_factory(std::move(top_job_factory));
+#if BUILDFLAG(ENABLE_REPORTING)
+    if (base::FeatureList::IsEnabled(network::features::kReporting)) {
+      std::unique_ptr<net::ReportingPolicy> reporting_policy =
+          net::ReportingPolicy::Create();
+      if (command_line.HasSwitch(switches::kRunWebTests))
+        reporting_policy->delivery_interval =
+            kReportingDeliveryIntervalTimeForWebTests;
+      builder.set_reporting_policy(std::move(reporting_policy));
+    }
+
+    builder.set_network_error_logging_enabled(
+        base::FeatureList::IsEnabled(network::features::kNetworkErrorLogging));
+#endif  // BUILDFLAG(ENABLE_REPORTING)
+
+    builder.set_enable_brotli(true);
+
+    url_request_context_ = builder.Build();
   }
 
   return url_request_context_.get();
@@ -266,11 +249,7 @@ net::URLRequestContext* ShellURLRequestContextGetter::GetURLRequestContext() {
 
 scoped_refptr<base::SingleThreadTaskRunner>
     ShellURLRequestContextGetter::GetNetworkTaskRunner() const {
-  return BrowserThread::GetMessageLoopProxyForThread(BrowserThread::IO);
-}
-
-net::HostResolver* ShellURLRequestContextGetter::host_resolver() {
-  return url_request_context_->host_resolver();
+  return base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO});
 }
 
 }  // namespace content

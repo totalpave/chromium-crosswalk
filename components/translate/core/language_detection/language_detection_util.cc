@@ -7,17 +7,19 @@
 #include <stddef.h>
 
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/metrics/histogram_base.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/metrics/metrics_hashes.h"
+#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/time/time.h"
+#include "components/language/core/common/language_util.h"
 #include "components/translate/core/common/translate_constants.h"
 #include "components/translate/core/common/translate_metrics.h"
-#include "components/translate/core/common/translate_util.h"
-#include "third_party/cld_2/src/public/compact_lang_det.h"
-#include "third_party/cld_2/src/public/encodings.h"
+#include "components/translate/core/language_detection/chinese_script_classifier.h"
+#include "third_party/cld_3/src/src/nnet_language_identifier.h"
 
 namespace {
 
@@ -37,7 +39,7 @@ const SimilarLanguageCode kSimilarLanguageCodes[] = {
 
 // Checks |kSimilarLanguageCodes| and returns group code.
 int GetSimilarLanguageGroupCode(const std::string& language) {
-  for (size_t i = 0; i < arraysize(kSimilarLanguageCodes); ++i) {
+  for (size_t i = 0; i < base::size(kSimilarLanguageCodes); ++i) {
     if (language.find(kSimilarLanguageCodes[i].code) != 0)
       continue;
     return kSimilarLanguageCodes[i].group;
@@ -47,11 +49,9 @@ int GetSimilarLanguageGroupCode(const std::string& language) {
 
 // Well-known languages which often have wrong server configuration of
 // Content-Language: en.
-// TODO(toyoshim): Remove these static tables and caller functions to
-// translate/common, and implement them as std::set<>.
-const char* kWellKnownCodesOnWrongConfiguration[] = {
-  "es", "pt", "ja", "ru", "de", "zh-CN", "zh-TW", "ar", "id", "fr", "it", "th"
-};
+const char* const kWellKnownCodesOnWrongConfiguration[] = {
+    "es",    "pt", "ja", "ru", "de", "zh-CN",
+    "zh-TW", "ar", "id", "fr", "it", "th"};
 
 // Applies a series of language code modification in proper order.
 void ApplyLanguageCodeCorrection(std::string* code) {
@@ -63,105 +63,69 @@ void ApplyLanguageCodeCorrection(std::string* code) {
     return;
   }
 
-  translate::ToTranslateLanguageSynonym(code);
+  language::ToTranslateLanguageSynonym(code);
 }
 
 // Returns the ISO 639 language code of the specified |text|, or 'unknown' if it
 // failed.
 // |is_cld_reliable| will be set as true if CLD says the detection is reliable.
 std::string DetermineTextLanguage(const base::string16& text,
-                                  bool* is_cld_reliable,
-                                  std::string& code,
-                                  std::string& html_lang) {
+                                  bool* is_cld_reliable) {
   std::string language = translate::kUnknownLanguageCode;
-  int num_bytes_evaluated = 0;
-  bool is_reliable = false;
-  const bool is_plain_text = true;
-
-  // Language or CLD2::Language
-  int cld_language = 0;
-  bool is_valid_language = false;
-
   const std::string utf8_text(base::UTF16ToUTF8(text));
-  const int num_utf8_bytes = static_cast<int>(utf8_text.size());
-  const char* raw_utf8_bytes = utf8_text.c_str();
 
-  CLD2::Language language3[3] = {
-    CLD2::UNKNOWN_LANGUAGE, CLD2::UNKNOWN_LANGUAGE, CLD2::UNKNOWN_LANGUAGE};
-  int percent3[3] = {0, 0, 0};
-  int flags = 0;   // No flags, see compact_lang_det.h for details.
-  int text_bytes;  // Amount of non-tag/letters-only text (assumed 0).
-  double normalized_score3[3] = {0.0, 0.0, 0.0};
+  // Make a prediction.
+  chrome_lang_id::NNetLanguageIdentifier lang_id;
+  const chrome_lang_id::NNetLanguageIdentifier::Result lang_id_result =
+      lang_id.FindTopNMostFreqLangs(utf8_text, /*num_langs=*/1).at(0);
+  const bool prediction_reliable = lang_id_result.is_reliable;
+  const std::string& predicted_language = lang_id_result.language;
 
-  const char* tld_hint = "";
-  int encoding_hint = CLD2::UNKNOWN_ENCODING;
-  CLD2::Language language_hint = CLD2::GetLanguageFromName(html_lang.c_str());
-  CLD2::CLDHints cldhints = {code.c_str(), tld_hint, encoding_hint,
-                             language_hint};
-
-  CLD2::ExtDetectLanguageSummaryCheckUTF8(
-      raw_utf8_bytes, num_utf8_bytes, is_plain_text, &cldhints, flags,
-      language3, percent3, normalized_score3,
-      nullptr /* No ResultChunkVector used */, &text_bytes, &is_reliable,
-      &num_bytes_evaluated);
-
-  if (num_bytes_evaluated < num_utf8_bytes &&
-      language3[0] == CLD2::UNKNOWN_LANGUAGE) {
-    // Invalid UTF8 encountered, see bug http://crbug.com/444258.
-    // Retry using only the valid characters. This time the check for valid
-    // UTF8 can be skipped since the precise number of valid bytes is known.
-    CLD2::ExtDetectLanguageSummary(
-        raw_utf8_bytes, num_bytes_evaluated, is_plain_text, &cldhints, flags,
-        language3, percent3, normalized_score3,
-        nullptr /* No ResultChunkVector used */, &text_bytes, &is_reliable);
+  // Update histograms.
+  const base::HistogramBase::Sample pred_lang_hash =
+      static_cast<base::HistogramBase::Sample>(
+          base::HashMetricName(predicted_language));
+  base::UmaHistogramSparse("Translate.CLD3.LanguageDetected", pred_lang_hash);
+  if (predicted_language != chrome_lang_id::NNetLanguageIdentifier::kUnknown) {
+    UMA_HISTOGRAM_PERCENTAGE("Translate.CLD3.LanguagePercentage",
+                             static_cast<int>(100 * lang_id_result.proportion));
   }
-  // Choose top language.
-  cld_language = language3[0];
 
-  is_valid_language = cld_language != CLD2::NUM_LANGUAGES &&
-                      cld_language != CLD2::UNKNOWN_LANGUAGE &&
-                      cld_language != CLD2::TG_UNKNOWN_LANGUAGE;
-
-  UMA_HISTOGRAM_ENUMERATION("Translate.CLD2.LanguageDetected",
-                            cld_language, CLD2::NUM_LANGUAGES);
-  if (is_valid_language)
-    UMA_HISTOGRAM_PERCENTAGE("Translate.CLD2.LanguageAccuracy", percent3[0]);
-
-  if (is_cld_reliable != NULL)
-    *is_cld_reliable = is_reliable;
-
-  // We don't trust the result if the CLD reports that the detection is not
-  // reliable, or if the actual text used to detect the language was less than
-  // 100 bytes (short texts can often lead to wrong results).
-  // TODO(toyoshim): CLD provides |is_reliable| flag. But, it just says that
-  // the determined language code is correct with 50% confidence. Chrome should
-  // handle the real confidence value to judge.
-  if (is_reliable && num_bytes_evaluated >= 100 && is_valid_language) {
-    // We should not use LanguageCode_ISO_639_1 because it does not cover all
-    // the languages CLD can detect. As a result, it'll return the invalid
-    // language code for traditional Chinese among others.
-    // |LanguageCodeWithDialect| will go through ISO 639-1, ISO-639-2 and
-    // 'other' tables to do the 'right' thing. In addition, it'll return zh-CN
-    // for Simplified Chinese.
-    //
-    // (1) CLD2's LanguageCode returns general Chinese 'zh' for
-    // CLD2::CHINESE, but Translate server doesn't accept it. This is
-    // converted to 'zh-CN' in the same way as CLD1's
-    // LanguageCodeWithDialects.
-    //
-    // (2) CLD2's LanguageCode returns zh-Hant instead of zh-TW for
-    // CLD2::CHINESE_T. This is technically more precise for the language
-    // code of traditional Chinese, while Translate server hasn't accepted
-    // zh-Hant yet.
-    if (cld_language == CLD2::CHINESE)
-      language = "zh-CN";
-    else if (cld_language == CLD2::CHINESE_T)
-      language = "zh-TW";
-    else
-      language = CLD2::LanguageCode(static_cast<CLD2::Language>(cld_language));
+  if (is_cld_reliable != nullptr) {
+    *is_cld_reliable = prediction_reliable;
   }
-  VLOG(9) << "Detected lang_id: " << language << ", from Text:\n" << text
-          << "\n*************************************\n";
+
+  // Ignore unreliable, "unknown", and xx-Latn predictions that are currently
+  // not supported.
+  if (prediction_reliable &&
+      predicted_language != "bg-Latn" &&
+      predicted_language != "el-Latn" &&
+      predicted_language != "ja-Latn" &&
+      predicted_language != "ru-Latn" &&
+      predicted_language != "zh-Latn" &&
+      predicted_language !=
+          chrome_lang_id::NNetLanguageIdentifier::kUnknown) {
+    if (predicted_language != "zh") {
+      language = predicted_language;
+    } else {
+      // If prediction is "zh" (Chinese), then we need to determine whether the
+      // text is zh-Hant (Chinese Traditional) or zh-Hans (Chinese Simplified).
+      translate::ChineseScriptClassifier zh_classifier;
+
+      // The Classify function returns either "zh-Hant" or "zh-Hans".
+      // Convert to the old-style language codes used by the Translate API.
+      const std::string zh_classification = zh_classifier.Classify(utf8_text);
+      if (zh_classification == "zh-Hant") {
+        language = "zh-TW";
+      } else if (zh_classification == "zh-Hans") {
+        language = "zh-CN";
+      } else {
+        language = translate::kUnknownLanguageCode;
+      }
+    }
+  }
+
+  VLOG(1) << "Detected language: " << language;
   return language;
 }
 
@@ -187,7 +151,6 @@ std::string DeterminePageLanguage(const std::string& code,
                                   const base::string16& contents,
                                   std::string* cld_language_p,
                                   bool* is_cld_reliable_p) {
-  base::TimeTicks begin_time = base::TimeTicks::Now();
   bool is_cld_reliable;
   // Check if html lang attribute is valid.
   std::string modified_html_lang;
@@ -206,20 +169,25 @@ std::string DeterminePageLanguage(const std::string& code,
     translate::ReportContentLanguage(code, modified_code);
   }
 
-  std::string cld_language = DetermineTextLanguage(
-      contents, &is_cld_reliable, modified_code, modified_html_lang);
-  translate::ReportLanguageDetectionTime(begin_time, base::TimeTicks::Now());
+  std::string cld_language = DetermineTextLanguage(contents, &is_cld_reliable);
 
-  if (cld_language_p != NULL)
+  if (cld_language_p != nullptr)
     *cld_language_p = cld_language;
-  if (is_cld_reliable_p != NULL)
+  if (is_cld_reliable_p != nullptr)
     *is_cld_reliable_p = is_cld_reliable;
-  translate::ToTranslateLanguageSynonym(&cld_language);
+  language::ToTranslateLanguageSynonym(&cld_language);
 
   // Adopt |modified_html_lang| if it is valid. Otherwise, adopt
   // |modified_code|.
   std::string language = modified_html_lang.empty() ? modified_code :
                                                       modified_html_lang;
+
+  // When the page language is English, log conflicting CLD results. We will use
+  // these metrics to decide when to favor CLD.
+  if (language.substr(0, 2) == "en" && cld_language.substr(0, 2) != "en" &&
+      cld_language != kUnknownLanguageCode) {
+    translate::ReportLanguageDetectionConflict(language, cld_language);
+  }
 
   // If |language| is empty, just use CLD result even though it might be
   // translate::kUnknownLanguageCode.
@@ -254,7 +222,7 @@ std::string DeterminePageLanguage(const std::string& code,
   }
 
   // Content-Language value might be wrong because CLD says that this page is
-  // written in another language with confidence.  In this case, Chrome doesn't
+  // written in another language with confidence. In this case, Chrome doesn't
   // rely on any of the language codes, and gives up suggesting a translation.
   translate::ReportLanguageVerification(
       translate::LANGUAGE_VERIFICATION_CLD_DISAGREE);
@@ -354,6 +322,14 @@ bool IsSameOrSimilarLanguages(const std::string& page_language,
   return match;
 }
 
+bool IsServerWrongConfigurationLanguage(const std::string& language_code) {
+  for (size_t i = 0; i < base::size(kWellKnownCodesOnWrongConfiguration); ++i) {
+    if (language_code == kWellKnownCodesOnWrongConfiguration[i])
+      return true;
+  }
+  return false;
+}
+
 bool MaybeServerWrongConfiguration(const std::string& page_language,
                                    const std::string& cld_language) {
   // If |page_language| is not "en-*", respect it and just return false here.
@@ -366,11 +342,7 @@ bool MaybeServerWrongConfiguration(const std::string& page_language,
   // Let's trust |cld_language| if the determined language is not difficult to
   // distinguish from English, and the language is one of well-known languages
   // which often provide "en-*" meta information mistakenly.
-  for (size_t i = 0; i < arraysize(kWellKnownCodesOnWrongConfiguration); ++i) {
-    if (cld_language == kWellKnownCodesOnWrongConfiguration[i])
-      return true;
-  }
-  return false;
+  return IsServerWrongConfigurationLanguage(cld_language);
 }
 
 }  // namespace translate

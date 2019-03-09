@@ -4,18 +4,20 @@
 
 package org.chromium.chrome.browser.customtabs;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.os.AsyncTask;
 import android.os.SystemClock;
 import android.text.TextUtils;
+import android.text.format.DateUtils;
 import android.util.SparseArray;
 
 import org.chromium.base.VisibleForTesting;
-import org.chromium.base.annotations.SuppressFBWarnings;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Applications are throttled in two ways:
@@ -37,22 +39,23 @@ class RequestThrottler {
     // These are for (b)
     private static final float MAX_SCORE = 10;
     // TODO(lizeb): Control this value using Finch.
-    private static final long BAN_DURATION_MS = TimeUnit.DAYS.toMillis(7);
-    private static final long FORGET_AFTER_MS = TimeUnit.DAYS.toMillis(14);
+    private static final long BAN_DURATION_MS = DateUtils.DAY_IN_MILLIS * 7;
+    private static final long FORGET_AFTER_MS = DateUtils.DAY_IN_MILLIS * 14;
     private static final float ALPHA = MAX_SCORE / BAN_DURATION_MS;
     private static final String PREFERENCES_NAME = "customtabs_client_bans";
     private static final String SCORE = "score_";
     private static final String LAST_REQUEST = "last_request_";
     private static final String BANNED_UNTIL = "banned_until_";
 
-    private static SparseArray<RequestThrottler> sUidToThrottler = null;
+    private static final AtomicBoolean sAccessedSharedPreferences = new AtomicBoolean();
+    private static SparseArray<RequestThrottler> sUidToThrottler;
 
     private final SharedPreferences mSharedPreferences;
     private final int mUid;
     private float mScore;
     private long mLastPrerenderRequestMs;
     private long mBannedUntilMs;
-    private String mUrl = null;
+    private String mUrl;
 
     /**
      * Updates the prediction stats and returns whether prediction is allowed.
@@ -123,7 +126,6 @@ class RequestThrottler {
     }
 
     /** @return the {@link Throttler} for a given UID. */
-    @SuppressFBWarnings("LI_LAZY_INIT_STATIC")
     public static RequestThrottler getForUid(Context context, int uid) {
         if (sUidToThrottler == null) {
             sUidToThrottler = new SparseArray<>();
@@ -196,14 +198,13 @@ class RequestThrottler {
      *
      * @param context The application context.
      */
+    // TODO(crbug.com/635567): Fix this properly.
+    @SuppressLint("CommitPrefEdits")
     static void loadInBackground(final Context context) {
-        new AsyncTask<Void, Void, Void>() {
-            @Override
-            protected Void doInBackground(Void... params) {
-                context.getSharedPreferences(PREFERENCES_NAME, 0).edit();
-                return null;
-            }
-        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        boolean alreadyDone = !sAccessedSharedPreferences.compareAndSet(false, true);
+        if (alreadyDone) return;
+        PostTask.postTask(TaskTraits.BEST_EFFORT_MAY_BLOCK,
+                () -> { context.getSharedPreferences(PREFERENCES_NAME, 0).edit(); });
     }
 
     /** Removes all the UIDs that haven't been seen since at least {@link FORGET_AFTER_MS}. */

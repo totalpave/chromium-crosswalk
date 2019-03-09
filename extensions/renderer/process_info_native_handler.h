@@ -21,6 +21,9 @@ class ProcessInfoNativeHandler : public ObjectBackedNativeHandler {
                            int manifest_version,
                            bool send_request_disabled);
 
+  // ObjectBackedNativeHandler:
+  void AddRoutes() override;
+
  private:
   void GetExtensionId(const v8::FunctionCallbackInfo<v8::Value>& args);
   void GetContextType(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -29,6 +32,7 @@ class ProcessInfoNativeHandler : public ObjectBackedNativeHandler {
   void GetManifestVersion(const v8::FunctionCallbackInfo<v8::Value>& args);
   void IsSendRequestDisabled(const v8::FunctionCallbackInfo<v8::Value>& args);
   void HasSwitch(const v8::FunctionCallbackInfo<v8::Value>& args);
+  void GetPlatform(const v8::FunctionCallbackInfo<v8::Value>& args);
 
   std::string extension_id_;
   std::string context_type_;

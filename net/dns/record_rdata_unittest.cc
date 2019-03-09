@@ -7,9 +7,16 @@
 #include <memory>
 
 #include "net/dns/dns_response.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
+namespace {
+
+using ::testing::ElementsAreArray;
+using ::testing::IsNull;
+using ::testing::NotNull;
+using ::testing::SizeIs;
 
 base::StringPiece MakeStringPiece(const uint8_t* data, unsigned size) {
   const char* data_cc = reinterpret_cast<const char*>(data);
@@ -17,9 +24,6 @@ base::StringPiece MakeStringPiece(const uint8_t* data, unsigned size) {
 }
 
 TEST(RecordRdataTest, ParseSrvRecord) {
-  std::unique_ptr<SrvRecordRdata> record1_obj;
-  std::unique_ptr<SrvRecordRdata> record2_obj;
-
   // These are just the rdata portions of the DNS records, rather than complete
   // records, but it works well enough for this test.
 
@@ -40,7 +44,8 @@ TEST(RecordRdataTest, ParseSrvRecord) {
   base::StringPiece record2_strpiece = MakeStringPiece(
       record + first_record_len, sizeof(record) - first_record_len);
 
-  record1_obj = SrvRecordRdata::Create(record1_strpiece, parser);
+  std::unique_ptr<SrvRecordRdata> record1_obj =
+      SrvRecordRdata::Create(record1_strpiece, parser);
   ASSERT_TRUE(record1_obj != NULL);
   ASSERT_EQ(1, record1_obj->priority());
   ASSERT_EQ(2, record1_obj->weight());
@@ -48,7 +53,8 @@ TEST(RecordRdataTest, ParseSrvRecord) {
 
   ASSERT_EQ("www.google.com", record1_obj->target());
 
-  record2_obj = SrvRecordRdata::Create(record2_strpiece, parser);
+  std::unique_ptr<SrvRecordRdata> record2_obj =
+      SrvRecordRdata::Create(record2_strpiece, parser);
   ASSERT_TRUE(record2_obj != NULL);
   ASSERT_EQ(257, record2_obj->priority());
   ASSERT_EQ(258, record2_obj->weight());
@@ -61,8 +67,6 @@ TEST(RecordRdataTest, ParseSrvRecord) {
 }
 
 TEST(RecordRdataTest, ParseARecord) {
-  std::unique_ptr<ARecordRdata> record_obj;
-
   // These are just the rdata portions of the DNS records, rather than complete
   // records, but it works well enough for this test.
 
@@ -73,7 +77,8 @@ TEST(RecordRdataTest, ParseARecord) {
   DnsRecordParser parser(record, sizeof(record), 0);
   base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
 
-  record_obj = ARecordRdata::Create(record_strpiece, parser);
+  std::unique_ptr<ARecordRdata> record_obj =
+      ARecordRdata::Create(record_strpiece, parser);
   ASSERT_TRUE(record_obj != NULL);
 
   ASSERT_EQ("127.0.0.1", record_obj->address().ToString());
@@ -82,8 +87,6 @@ TEST(RecordRdataTest, ParseARecord) {
 }
 
 TEST(RecordRdataTest, ParseAAAARecord) {
-  std::unique_ptr<AAAARecordRdata> record_obj;
-
   // These are just the rdata portions of the DNS records, rather than complete
   // records, but it works well enough for this test.
 
@@ -95,7 +98,8 @@ TEST(RecordRdataTest, ParseAAAARecord) {
   DnsRecordParser parser(record, sizeof(record), 0);
   base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
 
-  record_obj = AAAARecordRdata::Create(record_strpiece, parser);
+  std::unique_ptr<AAAARecordRdata> record_obj =
+      AAAARecordRdata::Create(record_strpiece, parser);
   ASSERT_TRUE(record_obj != NULL);
 
   ASSERT_EQ("1234:5678::9", record_obj->address().ToString());
@@ -104,8 +108,6 @@ TEST(RecordRdataTest, ParseAAAARecord) {
 }
 
 TEST(RecordRdataTest, ParseCnameRecord) {
-  std::unique_ptr<CnameRecordRdata> record_obj;
-
   // These are just the rdata portions of the DNS records, rather than complete
   // records, but it works well enough for this test.
 
@@ -115,7 +117,8 @@ TEST(RecordRdataTest, ParseCnameRecord) {
   DnsRecordParser parser(record, sizeof(record), 0);
   base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
 
-  record_obj = CnameRecordRdata::Create(record_strpiece, parser);
+  std::unique_ptr<CnameRecordRdata> record_obj =
+      CnameRecordRdata::Create(record_strpiece, parser);
   ASSERT_TRUE(record_obj != NULL);
 
   ASSERT_EQ("www.google.com", record_obj->cname());
@@ -124,8 +127,6 @@ TEST(RecordRdataTest, ParseCnameRecord) {
 }
 
 TEST(RecordRdataTest, ParsePtrRecord) {
-  std::unique_ptr<PtrRecordRdata> record_obj;
-
   // These are just the rdata portions of the DNS records, rather than complete
   // records, but it works well enough for this test.
 
@@ -135,7 +136,8 @@ TEST(RecordRdataTest, ParsePtrRecord) {
   DnsRecordParser parser(record, sizeof(record), 0);
   base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
 
-  record_obj = PtrRecordRdata::Create(record_strpiece, parser);
+  std::unique_ptr<PtrRecordRdata> record_obj =
+      PtrRecordRdata::Create(record_strpiece, parser);
   ASSERT_TRUE(record_obj != NULL);
 
   ASSERT_EQ("www.google.com", record_obj->ptrdomain());
@@ -144,8 +146,6 @@ TEST(RecordRdataTest, ParsePtrRecord) {
 }
 
 TEST(RecordRdataTest, ParseTxtRecord) {
-  std::unique_ptr<TxtRecordRdata> record_obj;
-
   // These are just the rdata portions of the DNS records, rather than complete
   // records, but it works well enough for this test.
 
@@ -155,7 +155,8 @@ TEST(RecordRdataTest, ParseTxtRecord) {
   DnsRecordParser parser(record, sizeof(record), 0);
   base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
 
-  record_obj = TxtRecordRdata::Create(record_strpiece, parser);
+  std::unique_ptr<TxtRecordRdata> record_obj =
+      TxtRecordRdata::Create(record_strpiece, parser);
   ASSERT_TRUE(record_obj != NULL);
 
   std::vector<std::string> expected;
@@ -169,8 +170,6 @@ TEST(RecordRdataTest, ParseTxtRecord) {
 }
 
 TEST(RecordRdataTest, ParseNsecRecord) {
-  std::unique_ptr<NsecRecordRdata> record_obj;
-
   // These are just the rdata portions of the DNS records, rather than complete
   // records, but it works well enough for this test.
 
@@ -181,7 +180,8 @@ TEST(RecordRdataTest, ParseNsecRecord) {
   DnsRecordParser parser(record, sizeof(record), 0);
   base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
 
-  record_obj = NsecRecordRdata::Create(record_strpiece, parser);
+  std::unique_ptr<NsecRecordRdata> record_obj =
+      NsecRecordRdata::Create(record_strpiece, parser);
   ASSERT_TRUE(record_obj != NULL);
 
   ASSERT_EQ(16u, record_obj->bitmap_length());
@@ -196,5 +196,116 @@ TEST(RecordRdataTest, ParseNsecRecord) {
   ASSERT_TRUE(record_obj->IsEqual(record_obj.get()));
 }
 
+TEST(RecordRdataTest, CreateNsecRecordWithEmptyBitmapReturnsNull) {
+  // These are just the rdata portions of the DNS records, rather than complete
+  // records, but it works well enough for this test.
+  // This record has a bitmap that is 0 bytes long.
+  const uint8_t record[] = {0x03, 'w', 'w',  'w', 0x06, 'g', 'o',  'o',  'g',
+                            'l',  'e', 0x03, 'c', 'o',  'm', 0x00, 0x00, 0x00};
 
+  DnsRecordParser parser(record, sizeof(record), 0);
+  base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
+
+  std::unique_ptr<NsecRecordRdata> record_obj =
+      NsecRecordRdata::Create(record_strpiece, parser);
+  ASSERT_FALSE(record_obj);
+}
+
+TEST(RecordRdataTest, CreateNsecRecordWithOversizedBitmapReturnsNull) {
+  // These are just the rdata portions of the DNS records, rather than complete
+  // records, but it works well enough for this test.
+  // This record has a bitmap that is 33 bytes long. The maximum size allowed by
+  // RFC 3845, Section 2.1.2, is 32 bytes.
+  const uint8_t record[] = {
+      0x03, 'w',  'w',  'w',  0x06, 'g',  'o',  'o',  'g',  'l',  'e',
+      0x03, 'c',  'o',  'm',  0x00, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+  DnsRecordParser parser(record, sizeof(record), 0);
+  base::StringPiece record_strpiece = MakeStringPiece(record, sizeof(record));
+
+  std::unique_ptr<NsecRecordRdata> record_obj =
+      NsecRecordRdata::Create(record_strpiece, parser);
+  ASSERT_FALSE(record_obj);
+}
+
+TEST(RecordRdataTest, ParseOptRecord) {
+  // This is just the rdata portion of an OPT record, rather than a complete
+  // record.
+  const uint8_t rdata[] = {
+      // First OPT
+      0x00, 0x01,  // OPT code
+      0x00, 0x02,  // OPT data size
+      0xDE, 0xAD,  // OPT data
+      // Second OPT
+      0x00, 0xFF,             // OPT code
+      0x00, 0x04,             // OPT data size
+      0xDE, 0xAD, 0xBE, 0xEF  // OPT data
+  };
+
+  DnsRecordParser parser(rdata, sizeof(rdata), 0);
+  base::StringPiece rdata_strpiece = MakeStringPiece(rdata, sizeof(rdata));
+
+  std::unique_ptr<OptRecordRdata> rdata_obj =
+      OptRecordRdata::Create(rdata_strpiece, parser);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->opts(), SizeIs(2));
+  ASSERT_EQ(1, rdata_obj->opts()[0].code());
+  ASSERT_EQ("\xde\xad", rdata_obj->opts()[0].data());
+  ASSERT_EQ(255, rdata_obj->opts()[1].code());
+  ASSERT_EQ("\xde\xad\xbe\xef", rdata_obj->opts()[1].data());
+  ASSERT_TRUE(rdata_obj->IsEqual(rdata_obj.get()));
+}
+
+TEST(RecordRdataTest, ParseOptRecordWithShorterSizeThanData) {
+  // This is just the rdata portion of an OPT record, rather than a complete
+  // record.
+  const uint8_t rdata[] = {
+      0x00, 0xFF,             // OPT code
+      0x00, 0x02,             // OPT data size (incorrect, should be 4)
+      0xDE, 0xAD, 0xBE, 0xEF  // OPT data
+  };
+
+  DnsRecordParser parser(rdata, sizeof(rdata), 0);
+  base::StringPiece rdata_strpiece = MakeStringPiece(rdata, sizeof(rdata));
+
+  std::unique_ptr<OptRecordRdata> rdata_obj =
+      OptRecordRdata::Create(rdata_strpiece, parser);
+  ASSERT_THAT(rdata_obj, IsNull());
+}
+
+TEST(RecordRdataTest, ParseOptRecordWithLongerSizeThanData) {
+  // This is just the rdata portion of an OPT record, rather than a complete
+  // record.
+  const uint8_t rdata[] = {
+      0x00, 0xFF,  // OPT code
+      0x00, 0x04,  // OPT data size (incorrect, should be 4)
+      0xDE, 0xAD   // OPT data
+  };
+
+  DnsRecordParser parser(rdata, sizeof(rdata), 0);
+  base::StringPiece rdata_strpiece = MakeStringPiece(rdata, sizeof(rdata));
+
+  std::unique_ptr<OptRecordRdata> rdata_obj =
+      OptRecordRdata::Create(rdata_strpiece, parser);
+  ASSERT_THAT(rdata_obj, IsNull());
+}
+
+TEST(RecordRdataTest, AddOptToOptRecord) {
+  // This is just the rdata portion of an OPT record, rather than a complete
+  // record.
+  const uint8_t expected_rdata[] = {
+      0x00, 0xFF,             // OPT code
+      0x00, 0x04,             // OPT data size
+      0xDE, 0xAD, 0xBE, 0xEF  // OPT data
+  };
+
+  OptRecordRdata rdata;
+  rdata.AddOpt(OptRecordRdata::Opt(255, "\xde\xad\xbe\xef"));
+  EXPECT_THAT(rdata.buf(), ElementsAreArray(expected_rdata));
+}
+
+}  // namespace
 }  // namespace net

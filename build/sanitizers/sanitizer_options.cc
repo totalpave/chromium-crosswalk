@@ -7,11 +7,6 @@
 
 #include "build/build_config.h"
 
-#if defined(ADDRESS_SANITIZER) && defined(OS_MACOSX)
-#include <crt_externs.h>  // for _NSGetArgc, _NSGetArgv
-#include <string.h>
-#endif  // ADDRESS_SANITIZER && OS_MACOSX
-
 #if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) ||  \
     defined(MEMORY_SANITIZER) || defined(THREAD_SANITIZER) || \
     defined(UNDEFINED_SANITIZER)
@@ -66,13 +61,15 @@ void _sanitizer_options_link_helper() { }
 const char kAsanDefaultOptions[] =
     "legacy_pthread_cond=1 malloc_context_size=5 "
     "symbolize=1 check_printf=1 use_sigaltstack=1 detect_leaks=0 "
-    "strip_path_prefix=/../../ fast_unwind_on_fatal=1";
+    "strip_path_prefix=/../../ fast_unwind_on_fatal=1 "
+    "allow_user_segv_handler=1 ";
 #else
 // Default AddressSanitizer options for buildbots and non-official builds.
-const char *kAsanDefaultOptions =
+const char* kAsanDefaultOptions =
     "symbolize=1 check_printf=1 use_sigaltstack=1 "
     "detect_leaks=0 strip_path_prefix=/../../ fast_unwind_on_fatal=1 "
-    "detect_stack_use_after_return=1 ";
+    "detect_stack_use_after_return=1 "
+    "allow_user_segv_handler=1 ";
 #endif  // GOOGLE_CHROME_BUILD
 
 #elif defined(OS_MACOSX)
@@ -80,33 +77,30 @@ const char *kAsanDefaultOptions =
     "check_printf=1 use_sigaltstack=1 "
     "strip_path_prefix=/../../ fast_unwind_on_fatal=1 "
     "detect_stack_use_after_return=1 detect_odr_violation=0 ";
-static const char kNaClDefaultOptions[] = "handle_segv=0";
-static const char kNaClFlag[] = "--type=nacl-loader";
+
+#elif defined(OS_WIN)
+const char* kAsanDefaultOptions =
+    "check_printf=1 use_sigaltstack=1 "
+    "strip_path_prefix=\\..\\..\\ fast_unwind_on_fatal=1 ";
 #endif  // OS_LINUX
 
-#if defined(OS_LINUX) || defined(OS_MACOSX)
+#if defined(OS_LINUX) || defined(OS_MACOSX) || defined(OS_WIN)
+// Allow NaCl to override the default asan options.
+extern const char* kAsanDefaultOptionsNaCl;
+__attribute__((weak)) const char* kAsanDefaultOptionsNaCl = nullptr;
+
 SANITIZER_HOOK_ATTRIBUTE const char *__asan_default_options() {
-#if defined(OS_MACOSX)
-  char*** argvp = _NSGetArgv();
-  int* argcp = _NSGetArgc();
-  if (!argvp || !argcp) return kAsanDefaultOptions;
-  char** argv = *argvp;
-  int argc = *argcp;
-  for (int i = 0; i < argc; ++i) {
-    if (strcmp(argv[i], kNaClFlag) == 0) {
-      return kNaClDefaultOptions;
-    }
-  }
-#endif
+  if (kAsanDefaultOptionsNaCl)
+    return kAsanDefaultOptionsNaCl;
   return kAsanDefaultOptions;
 }
 
-extern "C" char kASanDefaultSuppressions[];
+extern char kASanDefaultSuppressions[];
 
 SANITIZER_HOOK_ATTRIBUTE const char *__asan_default_suppressions() {
   return kASanDefaultSuppressions;
 }
-#endif  // OS_LINUX || OS_MACOSX
+#endif  // OS_LINUX || OS_MACOSX || OS_WIN
 #endif  // ADDRESS_SANITIZER
 
 #if defined(THREAD_SANITIZER) && defined(OS_LINUX)
@@ -131,7 +125,7 @@ SANITIZER_HOOK_ATTRIBUTE const char *__tsan_default_options() {
   return kTsanDefaultOptions;
 }
 
-extern "C" char kTSanDefaultSuppressions[];
+extern char kTSanDefaultSuppressions[];
 
 SANITIZER_HOOK_ATTRIBUTE const char *__tsan_default_suppressions() {
   return kTSanDefaultSuppressions;
@@ -166,7 +160,7 @@ SANITIZER_HOOK_ATTRIBUTE const char *__lsan_default_options() {
   return kLsanDefaultOptions;
 }
 
-extern "C" char kLSanDefaultSuppressions[];
+extern char kLSanDefaultSuppressions[];
 
 SANITIZER_HOOK_ATTRIBUTE const char *__lsan_default_suppressions() {
   return kLSanDefaultSuppressions;
@@ -177,7 +171,8 @@ SANITIZER_HOOK_ATTRIBUTE const char *__lsan_default_suppressions() {
 #if defined(UNDEFINED_SANITIZER)
 // Default options for UndefinedBehaviorSanitizer:
 //   print_stacktrace=1 - print the stacktrace when UBSan reports an error.
-const char kUbsanDefaultOptions[] = "print_stacktrace=1";
+const char kUbsanDefaultOptions[] =
+    "print_stacktrace=1 strip_path_prefix=/../../ ";
 
 SANITIZER_HOOK_ATTRIBUTE const char* __ubsan_default_options() {
   return kUbsanDefaultOptions;

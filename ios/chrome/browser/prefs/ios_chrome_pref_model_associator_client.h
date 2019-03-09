@@ -8,30 +8,29 @@
 #include <string>
 
 #include "base/macros.h"
-#include "components/syncable_prefs/pref_model_associator_client.h"
-
-namespace base {
-template <typename T>
-struct DefaultSingletonTraits;
-}
+#include "base/no_destructor.h"
+#include "components/sync_preferences/pref_model_associator_client.h"
 
 class IOSChromePrefModelAssociatorClient
-    : public syncable_prefs::PrefModelAssociatorClient {
+    : public sync_preferences::PrefModelAssociatorClient {
  public:
   // Returns the global instance.
   static IOSChromePrefModelAssociatorClient* GetInstance();
 
  private:
-  friend struct base::DefaultSingletonTraits<
-      IOSChromePrefModelAssociatorClient>;
+  friend class base::NoDestructor<IOSChromePrefModelAssociatorClient>;
 
   IOSChromePrefModelAssociatorClient();
   ~IOSChromePrefModelAssociatorClient() override;
 
-  // syncable_prefs::PrefModelAssociatorClient implementation.
+  // sync_preferences::PrefModelAssociatorClient implementation.
   bool IsMergeableListPreference(const std::string& pref_name) const override;
   bool IsMergeableDictionaryPreference(
       const std::string& pref_name) const override;
+  std::unique_ptr<base::Value> MaybeMergePreferenceValues(
+      const std::string& pref_name,
+      const base::Value& local_value,
+      const base::Value& server_value) const override;
 
   DISALLOW_COPY_AND_ASSIGN(IOSChromePrefModelAssociatorClient);
 };

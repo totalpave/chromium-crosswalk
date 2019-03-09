@@ -12,6 +12,8 @@
 #include "ui/views/test/views_test_helper.h"
 
 namespace aura {
+class WindowTreeClient;
+
 namespace client {
 class ScreenPositionClient;
 }
@@ -20,21 +22,16 @@ class AuraTestHelper;
 }
 }
 
-namespace base {
-class MessageLoopForUI;
-}
-
-namespace wm {
-class WMState;
-}
-
 namespace views {
 
 class ViewsTestHelperAura : public ViewsTestHelper {
  public:
-  ViewsTestHelperAura(base::MessageLoopForUI* message_loop,
-                      ui::ContextFactory* context_factory);
+  ViewsTestHelperAura(ui::ContextFactory* context_factory,
+                      ui::ContextFactoryPrivate* context_factory_private);
   ~ViewsTestHelperAura() override;
+
+  void EnableMusWithWindowTreeClient(
+      aura::WindowTreeClient* window_tree_client);
 
   // Overridden from ViewsTestHelper:
   void SetUp() override;
@@ -43,8 +40,8 @@ class ViewsTestHelperAura : public ViewsTestHelper {
 
  private:
   ui::ContextFactory* context_factory_;
+  ui::ContextFactoryPrivate* context_factory_private_;
   std::unique_ptr<aura::test::AuraTestHelper> aura_test_helper_;
-  std::unique_ptr<wm::WMState> wm_state_;
   std::unique_ptr<aura::client::ScreenPositionClient> screen_position_client_;
 
   DISALLOW_COPY_AND_ASSIGN(ViewsTestHelperAura);

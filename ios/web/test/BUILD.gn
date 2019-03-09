@@ -12,7 +12,7 @@ mojom("mojo_bindings") {
   ]
 }
 
-repack_and_bundle("packed_resources") {
+repack("packed_resources") {
   testonly = true
   sources = [
     "$root_gen_dir/ios/web/ios_web_resources.pak",
@@ -23,17 +23,20 @@ repack_and_bundle("packed_resources") {
     "//ios/web:resources",
   ]
   output = "$target_gen_dir/resources.pak"
-  bundle_output = "{{bundle_resources_dir}}/{{source_file_part}}"
+  copy_data_to_bundle = true
 }
 
 grit("resources") {
   source = "test_resources.grd"
-  use_qualified_include = true
+
+  # The .grd contains references to generated files.
+  source_is_generated = true
+
   inputs = [
     "${root_gen_dir}/ios/web/test/mojo_test.mojom.js",
   ]
   deps = [
-    ":mojo_bindings",
+    ":mojo_bindings_js",
   ]
   outputs = [
     "grit/test_resources.h",
@@ -42,5 +45,47 @@ grit("resources") {
   grit_flags = [
     "-E",
     "root_gen_dir=" + rebase_path(root_gen_dir, root_build_dir),
+  ]
+}
+
+source_set("test_support") {
+  configs += [ "//build/config/compiler:enable_arc" ]
+  testonly = true
+
+  deps = [
+    ":test_constants",
+    "//base",
+    "//base/test:test_support",
+    "//ios/web",
+    "//ios/web/navigation:core",
+    "//ios/web/public/test:util",
+    "//ios/web/public/test/fakes",
+    "//ios/web/public/test/http_server",
+    "//ios/web/test/fakes",
+    "//net",
+    "//testing/gtest",
+    "//third_party/ocmock",
+    "//ui/base",
+  ]
+
+  sources = [
+    "test_web_thread.cc",
+    "test_web_thread_bundle.cc",
+    "url_test_util.mm",
+    "web_int_test.h",
+    "web_int_test.mm",
+    "web_test_suite.mm",
+    "web_test_with_web_controller.h",
+    "web_test_with_web_controller.mm",
+    "wk_web_view_crash_utils.h",
+    "wk_web_view_crash_utils.mm",
+  ]
+}
+
+source_set("test_constants") {
+  testonly = true
+  sources = [
+    "test_url_constants.cc",
+    "test_url_constants.h",
   ]
 }

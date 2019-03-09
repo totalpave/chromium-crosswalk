@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "base/values.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -18,9 +19,7 @@ struct ProxyConfigHolder {
 };
 
 TEST(ProxyConfigDictionaryTest, CreateDirect) {
-  std::unique_ptr<base::DictionaryValue> dict_value(
-      ProxyConfigDictionary::CreateDirect());
-  ProxyConfigDictionary dict(dict_value.get());
+  ProxyConfigDictionary dict(ProxyConfigDictionary::CreateDirect());
   ProxyConfigHolder h;
 
   ASSERT_TRUE(dict.GetMode(&h.mode));
@@ -31,9 +30,7 @@ TEST(ProxyConfigDictionaryTest, CreateDirect) {
 }
 
 TEST(ProxyConfigDictionaryTest, CreateAutoDetect) {
-  std::unique_ptr<base::DictionaryValue> dict_value(
-      ProxyConfigDictionary::CreateAutoDetect());
-  ProxyConfigDictionary dict(dict_value.get());
+  ProxyConfigDictionary dict(ProxyConfigDictionary::CreateAutoDetect());
   ProxyConfigHolder h;
 
   ASSERT_TRUE(dict.GetMode(&h.mode));
@@ -44,9 +41,8 @@ TEST(ProxyConfigDictionaryTest, CreateAutoDetect) {
 }
 
 TEST(ProxyConfigDictionaryTest, CreatePacScript) {
-  std::unique_ptr<base::DictionaryValue> dict_value(
+  ProxyConfigDictionary dict(
       ProxyConfigDictionary::CreatePacScript("pac", false));
-  ProxyConfigDictionary dict(dict_value.get());
   ProxyConfigHolder h;
 
   ASSERT_TRUE(dict.GetMode(&h.mode));
@@ -58,10 +54,8 @@ TEST(ProxyConfigDictionaryTest, CreatePacScript) {
 }
 
 TEST(ProxyConfigDictionaryTest, CreateFixedServers) {
-  std::unique_ptr<base::DictionaryValue> dict_value(
-      ProxyConfigDictionary::CreateFixedServers("http://1.2.3.4",
-                                                "http://foo"));
-  ProxyConfigDictionary dict(dict_value.get());
+  ProxyConfigDictionary dict(ProxyConfigDictionary::CreateFixedServers(
+      "http://1.2.3.4", "http://foo"));
   ProxyConfigHolder h;
 
   ASSERT_TRUE(dict.GetMode(&h.mode));
@@ -74,9 +68,7 @@ TEST(ProxyConfigDictionaryTest, CreateFixedServers) {
 }
 
 TEST(ProxyConfigDictionaryTest, CreateSystem) {
-  std::unique_ptr<base::DictionaryValue> dict_value(
-      ProxyConfigDictionary::CreateSystem());
-  ProxyConfigDictionary dict(dict_value.get());
+  ProxyConfigDictionary dict(ProxyConfigDictionary::CreateSystem());
   ProxyConfigHolder h;
 
   ASSERT_TRUE(dict.GetMode(&h.mode));

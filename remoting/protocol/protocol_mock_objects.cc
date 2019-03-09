@@ -4,56 +4,52 @@
 
 #include "remoting/protocol/protocol_mock_objects.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/logging.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "remoting/protocol/session_plugin.h"
 #include "remoting/protocol/video_stream.h"
+#include "remoting/signaling/signaling_address.h"
 
 namespace remoting {
 namespace protocol {
 
-MockConnectionToClientEventHandler::MockConnectionToClientEventHandler() {}
+MockAuthenticator::MockAuthenticator() = default;
+MockAuthenticator::~MockAuthenticator() = default;
 
-MockConnectionToClientEventHandler::~MockConnectionToClientEventHandler() {}
+MockConnectionToClientEventHandler::MockConnectionToClientEventHandler() =
+    default;
+MockConnectionToClientEventHandler::~MockConnectionToClientEventHandler() =
+    default;
 
-MockClipboardStub::MockClipboardStub() {}
+MockClipboardStub::MockClipboardStub() = default;
+MockClipboardStub::~MockClipboardStub() = default;
 
-MockClipboardStub::~MockClipboardStub() {}
+MockInputStub::MockInputStub() = default;
+MockInputStub::~MockInputStub() = default;
 
-MockInputStub::MockInputStub() {}
+MockHostStub::MockHostStub() = default;
+MockHostStub::~MockHostStub() = default;
 
-MockInputStub::~MockInputStub() {}
+MockClientStub::MockClientStub() = default;
+MockClientStub::~MockClientStub() = default;
 
-MockHostStub::MockHostStub() {}
+MockCursorShapeStub::MockCursorShapeStub() = default;
+MockCursorShapeStub::~MockCursorShapeStub() = default;
 
-MockHostStub::~MockHostStub() {}
+MockVideoStub::MockVideoStub() = default;
+MockVideoStub::~MockVideoStub() = default;
 
-MockClientStub::MockClientStub() {}
+MockSession::MockSession() = default;
+MockSession::~MockSession() = default;
 
-MockClientStub::~MockClientStub() {}
+MockSessionManager::MockSessionManager() = default;
+MockSessionManager::~MockSessionManager() = default;
 
-MockCursorShapeStub::MockCursorShapeStub() {}
-
-MockCursorShapeStub::~MockCursorShapeStub() {}
-
-MockVideoStub::MockVideoStub() {}
-
-MockVideoStub::~MockVideoStub() {}
-
-MockSession::MockSession() {}
-
-MockSession::~MockSession() {}
-
-MockSessionManager::MockSessionManager() {}
-
-MockSessionManager::~MockSessionManager() {}
-
-MockPairingRegistryDelegate::MockPairingRegistryDelegate() {
-}
-
-MockPairingRegistryDelegate::~MockPairingRegistryDelegate() {
-}
+MockPairingRegistryDelegate::MockPairingRegistryDelegate() = default;
+MockPairingRegistryDelegate::~MockPairingRegistryDelegate() = default;
 
 std::unique_ptr<base::ListValue> MockPairingRegistryDelegate::LoadAll() {
   std::unique_ptr<base::ListValue> result(new base::ListValue());
@@ -94,11 +90,11 @@ SynchronousPairingRegistry::SynchronousPairingRegistry(
     std::unique_ptr<Delegate> delegate)
     : PairingRegistry(base::ThreadTaskRunnerHandle::Get(),
                       std::move(delegate)) {}
-SynchronousPairingRegistry::~SynchronousPairingRegistry() {}
+SynchronousPairingRegistry::~SynchronousPairingRegistry() = default;
 
 void SynchronousPairingRegistry::PostTask(
     const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const base::Closure& task) {
   DCHECK(task_runner->BelongsToCurrentThread());
   task.Run();

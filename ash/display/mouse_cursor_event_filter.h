@@ -16,12 +16,12 @@
 #include "ui/gfx/geometry/rect.h"
 
 namespace aura {
-class RootWindow;
 class Window;
 }
 
 namespace ash {
-class DisplayEdgeController;
+
+class MouseWarpController;
 
 // An event filter that controls mouse location in extended desktop
 // environment.
@@ -47,7 +47,7 @@ class ASH_EXPORT MouseCursorEventFilter
   void OnMouseEvent(ui::MouseEvent* event) override;
 
  private:
-  friend class test::DisplayManagerTestApi;
+  friend class AshTestBase;
   friend class ExtendedMouseWarpControllerTest;
   friend class MouseCursorEventFilterTest;
   friend class UnifiedMouseWarpControllerTest;

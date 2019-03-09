@@ -2,6 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//ppapi/buildflags/buildflags.gni")
+
+assert(enable_plugins, "PPAPI plugins must be enabled.")
+
 group("ppapi_plugin") {
   visibility = [ "//content/*" ]  # This is an internal content API.
 
@@ -21,10 +25,9 @@ source_set("ppapi_plugin_sources") {
   visibility = [
     ":ppapi_plugin",
     "//content",  # For the component build.
-    "//content/app:both",
-    "//content/app:browser",
-    "//content/app:child",
+    "//content/app:*",
     "//gin",
+    "//services/service_manager/public/cpp",
   ]
 
   sources = [
@@ -47,19 +50,22 @@ source_set("ppapi_plugin_sources") {
 
   deps = [
     "//base",
+    "//components/discardable_memory/client",
+    "//components/services/font/public/cpp:cpp",
     "//content:export",
     "//content/child",
     "//content/public/child:child_sources",
     "//content/public/common:common_sources",
     "//gin",
+    "//media:media_buildflags",
     "//ppapi/c",
     "//ppapi/proxy",
     "//ppapi/proxy:ipc",
     "//ppapi/shared_impl",
     "//sandbox",
-    "//services/shell/public/interfaces",
+    "//services/service_manager/public/mojom",
     "//skia",
-    "//third_party/WebKit/public:blink",
+    "//third_party/blink/public:blink",
     "//third_party/icu",
     "//ui/base",
     "//ui/gfx",

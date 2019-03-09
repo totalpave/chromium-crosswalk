@@ -2,11 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-source_set("browser") {
+static_library("browser") {
   sources = [
-    "ruleset_distributor.h",
-    "ruleset_service.cc",
-    "ruleset_service.h",
+    "copying_file_stream.cc",
+    "copying_file_stream.h",
     "subresource_filter_constants.cc",
     "subresource_filter_constants.h",
     "subresource_filter_features.cc",
@@ -14,13 +13,13 @@ source_set("browser") {
   ]
   deps = [
     "//base",
-    "//components/prefs:prefs",
+    "//components/prefs",
     "//components/subresource_filter/core/common",
-    "//components/variations",
+    "//third_party/protobuf:protobuf_lite",
   ]
 }
 
-source_set("test_support") {
+static_library("test_support") {
   testonly = true
   sources = [
     "subresource_filter_features_test_support.cc",
@@ -29,15 +28,16 @@ source_set("test_support") {
   deps = [
     ":browser",
     "//base",
+    "//base/test:test_support",
     "//components/variations",
     "//testing/gtest",
+    "//third_party/protobuf:protobuf_lite",
   ]
 }
 
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "ruleset_service_unittest.cc",
     "subresource_filter_features_unittest.cc",
   ]
   deps = [
@@ -46,7 +46,12 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//components/prefs:test_support",
+    "//components/subresource_filter/core/common:common",
+    "//components/subresource_filter/core/common:test_support",
+    "//components/url_pattern_index/proto:url_pattern_index",
+    "//components/variations",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/protobuf:protobuf_lite",
   ]
 }

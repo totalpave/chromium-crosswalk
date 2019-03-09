@@ -5,34 +5,20 @@
 /**
  * @fileoverview
  * 'settings-on-startup-page' is a settings page.
- *
- * Example:
- *
- *    <neon-animated-pages>
- *      <settings-on-startup-page prefs="{{prefs}}">
- *      </settings-on-startup-page>
- *      ... other pages ...
- *    </neon-animated-pages>
  */
 Polymer({
   is: 'settings-on-startup-page',
 
+  behaviors: [WebUIListenerBehavior],
+
   properties: {
-    /**
-     * Preferences state.
-     */
     prefs: {
       type: Object,
       notify: true,
     },
 
-    /**
-     * The current active route.
-     */
-    currentRoute: {
-      type: Object,
-      notify: true,
-    },
+    /** @private {?NtpExtension} */
+    ntpExtension_: Object,
 
     /**
      * Enum values for the 'session.restore_on_startup' preference.
@@ -42,19 +28,30 @@ Polymer({
       readOnly: true,
       type: Object,
       value: {
-        OPEN_NEW_TAB: 5,
         CONTINUE: 1,
+        OPEN_NEW_TAB: 5,
         OPEN_SPECIFIC: 4,
       },
     },
   },
 
+  /** @override */
+  attached: function() {
+    const updateNtpExtension = ntpExtension => {
+      // Note that |ntpExtension| is empty if there is no NTP extension.
+      this.ntpExtension_ = ntpExtension;
+    };
+    settings.OnStartupBrowserProxyImpl.getInstance().getNtpExtension().then(
+        updateNtpExtension);
+    this.addWebUIListener('update-ntp-extension', updateNtpExtension);
+  },
+
   /**
-    * Determine whether to show the user defined startup pages.
-    * @param {number} restoreOnStartup Enum value from prefValues_.
-    * @return {boolean} Whether the open specific pages is selected.
-    * @private
-    */
+   * Determine whether to show the user defined startup pages.
+   * @param {number} restoreOnStartup Enum value from prefValues_.
+   * @return {boolean} Whether the open specific pages is selected.
+   * @private
+   */
   showStartupUrls_: function(restoreOnStartup) {
     return restoreOnStartup == this.prefValues_.OPEN_SPECIFIC;
   },

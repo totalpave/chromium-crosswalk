@@ -27,8 +27,6 @@
 #include "extensions/browser/event_router.h"
 #include "url/gurl.h"
 
-struct RetargetingDetails;
-
 namespace extensions {
 
 // Tab contents observer that forwards navigation events to the event router.
@@ -61,15 +59,19 @@ class WebNavigationTabObserver
   void DidFailLoad(content::RenderFrameHost* render_frame_host,
                    const GURL& validated_url,
                    int error_code,
-                   const base::string16& error_description,
-                   bool was_ignored_by_handler) override;
+                   const base::string16& error_description) override;
   void DidOpenRequestedURL(content::WebContents* new_contents,
                            content::RenderFrameHost* source_render_frame_host,
                            const GURL& url,
                            const content::Referrer& referrer,
                            WindowOpenDisposition disposition,
-                           ui::PageTransition transition) override;
+                           ui::PageTransition transition,
+                           bool started_from_context_menu,
+                           bool renderer_initiated) override;
   void WebContentsDestroyed() override;
+
+  // This method dispatches the already created onBeforeNavigate event.
+  void DispatchCachedOnBeforeNavigate();
 
  private:
   explicit WebNavigationTabObserver(content::WebContents* web_contents);
@@ -83,20 +85,22 @@ class WebNavigationTabObserver
   bool IsReferenceFragmentNavigation(content::RenderFrameHost* frame_host,
                                      const GURL& url);
 
-  // Creates and sends onErrorOccurred events for all on-going navigations. If
-  // |render_view_host| is non-NULL, only generates events for frames in this
-  // render view host. If |frame_host_to_skip| is given, no events are sent for
-  // that
-  // frame.
-  void SendErrorEvents(content::WebContents* web_contents,
-                       content::RenderViewHost* render_view_host,
-                       content::RenderFrameHost* frame_host_to_skip);
+  // Called when a RenderFrameHost goes into pending deletion. Stop tracking it
+  // and its children.
+  void RenderFrameHostPendingDeletion(content::RenderFrameHost*);
 
   // Tracks the state of the frames we are sending events for.
   FrameNavigationState navigation_state_;
 
+  // The latest onBeforeNavigate event this frame has generated. It is stored
+  // as it might not be sent immediately, but delayed until the tab is added to
+  // the tab strip and is ready to dispatch events.
+  std::unique_ptr<Event> pending_on_before_navigate_event_;
+
   // Used for tracking registrations to redirect notifications.
   content::NotificationRegistrar registrar_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(WebNavigationTabObserver);
 };
@@ -109,6 +113,17 @@ class WebNavigationEventRouter : public TabStripModelObserver,
  public:
   explicit WebNavigationEventRouter(Profile* profile);
   ~WebNavigationEventRouter() override;
+
+  // Router level handler for the creation of WebContents. Stores information
+  // about the newly created WebContents. This information is later used when
+  // the WebContents for the tab is added to the tabstrip and we receive the
+  // TAB_ADDED notification.
+  void RecordNewWebContents(content::WebContents* source_web_contents,
+                            int source_render_process_id,
+                            int source_render_frame_id,
+                            GURL target_url,
+                            content::WebContents* target_web_contents,
+                            bool not_yet_in_tabstrip);
 
  private:
   // Used to cache the information about newly created WebContents objects.
@@ -130,20 +145,15 @@ class WebNavigationEventRouter : public TabStripModelObserver,
   bool ShouldTrackBrowser(Browser* browser) override;
 
   // TabStripModelObserver implementation.
-  void TabReplacedAt(TabStripModel* tab_strip_model,
-                     content::WebContents* old_contents,
-                     content::WebContents* new_contents,
-                     int index) override;
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override;
 
   // content::NotificationObserver implementation.
   void Observe(int type,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
-
-  // Handler for the NOTIFICATION_RETARGETING event. The method takes the
-  // details of such an event and stores them for the later
-  // NOTIFICATION_TAB_ADDED event.
-  void Retargeting(const RetargetingDetails* details);
 
   // Handler for the NOTIFICATION_TAB_ADDED event. The method takes the details
   // of such an event and creates a JSON formated extension event from it.
@@ -169,16 +179,16 @@ class WebNavigationEventRouter : public TabStripModelObserver,
 };
 
 // API function that returns the state of a given frame.
-class WebNavigationGetFrameFunction : public ChromeSyncExtensionFunction {
+class WebNavigationGetFrameFunction : public UIThreadExtensionFunction {
   ~WebNavigationGetFrameFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("webNavigation.getFrame", WEBNAVIGATION_GETFRAME)
 };
 
 // API function that returns the states of all frames in a given tab.
-class WebNavigationGetAllFramesFunction : public ChromeSyncExtensionFunction {
+class WebNavigationGetAllFramesFunction : public UIThreadExtensionFunction {
   ~WebNavigationGetAllFramesFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("webNavigation.getAllFrames",
                              WEBNAVIGATION_GETALLFRAMES)
 };
@@ -200,6 +210,7 @@ class WebNavigationAPI : public BrowserContextKeyedAPI,
 
  private:
   friend class BrowserContextKeyedAPIFactory<WebNavigationAPI>;
+  friend class WebNavigationTabObserver;
 
   content::BrowserContext* browser_context_;
 
@@ -207,6 +218,7 @@ class WebNavigationAPI : public BrowserContextKeyedAPI,
   static const char* service_name() {
     return "WebNavigationAPI";
   }
+  static const bool kServiceRedirectedInIncognito = true;
   static const bool kServiceIsNULLWhileTesting = true;
 
   // Created lazily upon OnListenerAdded.

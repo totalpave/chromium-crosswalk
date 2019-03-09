@@ -28,13 +28,18 @@ def SetupTelemetryPaths():
   absolute_perf_path = os.path.abspath(perf_path)
 
   sys.path.append(absolute_perf_path)
-  from chrome_telemetry_build import chromium_config
+  from core import path_util
 
-  telemetry_path = chromium_config.GetTelemetryDir()
+  telemetry_path = path_util.GetTelemetryDir()
   if telemetry_path not in sys.path:
     sys.path.append(telemetry_path)
 
-  catapult_base_path = os.path.join(
-      chromium_src_dir, 'third_party', 'catapult', 'catapult_base')
-  if catapult_base_path not in sys.path:
-    sys.path.append(catapult_base_path)
+  py_utils_path = os.path.join(
+      chromium_src_dir, 'third_party', 'catapult', 'common', 'py_utils')
+  if py_utils_path not in sys.path:
+    sys.path.append(py_utils_path)
+
+  pylint_path = os.path.join(
+      chromium_src_dir, 'third_party', 'pylint')
+  if pylint_path not in sys.path:
+    sys.path.append(pylint_path)

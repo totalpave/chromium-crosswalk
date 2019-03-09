@@ -5,9 +5,10 @@
 #include "components/wifi/fake_wifi_service.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/values.h"
 #include "components/onc/onc_constants.h"
 
 namespace wifi {
@@ -118,7 +119,7 @@ void FakeWiFiService::GetVisibleNetworks(const std::string& network_type,
         it->type == network_type) {
       std::unique_ptr<base::DictionaryValue> network(
           it->ToValue(!include_details));
-      network_list->Append(network.release());
+      network_list->Append(std::move(network));
     }
   }
 }
@@ -210,13 +211,14 @@ void FakeWiFiService::NotifyNetworkListChanged(const NetworkList& networks) {
   }
 
   task_runner_->PostTask(
-      FROM_HERE, base::Bind(network_list_changed_observer_, current_networks));
+      FROM_HERE,
+      base::BindOnce(network_list_changed_observer_, current_networks));
 }
 
 void FakeWiFiService::NotifyNetworkChanged(const std::string& network_guid) {
   WiFiService::NetworkGuidList changed_networks(1, network_guid);
   task_runner_->PostTask(
-      FROM_HERE, base::Bind(networks_changed_observer_, changed_networks));
+      FROM_HERE, base::BindOnce(networks_changed_observer_, changed_networks));
 }
 
 }  // namespace wifi

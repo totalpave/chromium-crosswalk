@@ -5,7 +5,11 @@
 #ifndef CONTENT_COMMON_URL_SCHEMES_H_
 #define CONTENT_COMMON_URL_SCHEMES_H_
 
+#include <string>
+#include <vector>
+
 #include "content/common/content_export.h"
+#include "url/origin.h"
 
 namespace content {
 
@@ -20,6 +24,16 @@ namespace content {
 // sets of schemes are locked down. The embedder can add additional schemes by
 // overriding the ContentClient::AddAdditionalSchemes method.
 CONTENT_EXPORT void RegisterContentSchemes(bool lock_schemes);
+
+// See comment in ContentClient::AddAdditionalSchemes for explanations. These
+// getters can be invoked on any thread.
+const std::vector<std::string>& GetSavableSchemes();
+// Contains serialized canonicalized origins as well as hostname patterns such
+// as "*.foo.com". An origin should be considered secure if it matches an origin
+// in this list or if its hostname matches one of the hostname patterns. The
+// hostname patterns are canonicalized by component.
+const std::vector<std::string>& GetSecureOriginsAndPatterns();
+const std::vector<std::string>& GetServiceWorkerSchemes();
 
 }  // namespace content
 

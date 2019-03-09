@@ -4,16 +4,13 @@
 
 #include "chrome/browser/chromeos/login/ui/user_adding_screen.h"
 
-#include "ash/shell.h"
-#include "ash/system/tray/system_tray.h"
 #include "base/bind.h"
 #include "base/memory/singleton.h"
 #include "base/observer_list.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/login/helper.h"
-#include "chrome/browser/chromeos/login/ui/login_display_host_impl.h"
+#include "chrome/browser/chromeos/login/ui/login_display_host_webui.h"
 #include "chrome/browser/chromeos/login/ui/user_adding_screen_input_methods_controller.h"
-#include "chrome/browser/chromeos/login/users/wallpaper/wallpaper_manager.h"
+#include "chrome/browser/ui/ash/wallpaper_controller_client.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/gfx/geometry/rect.h"
@@ -33,6 +30,7 @@ class UserAddingScreenImpl : public UserAddingScreen {
   void RemoveObserver(Observer* observer) override;
 
   static UserAddingScreenImpl* GetInstance();
+
  private:
   friend struct base::DefaultSingletonTraits<UserAddingScreenImpl>;
 
@@ -41,7 +39,7 @@ class UserAddingScreenImpl : public UserAddingScreen {
   UserAddingScreenImpl();
   ~UserAddingScreenImpl() override;
 
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
   LoginDisplayHost* display_host_;
 
   UserAddingScreenInputMethodsController im_controller_;
@@ -49,27 +47,24 @@ class UserAddingScreenImpl : public UserAddingScreen {
 
 void UserAddingScreenImpl::Start() {
   CHECK(!IsRunning());
-  gfx::Rect screen_bounds(chromeos::CalculateScreenBounds(gfx::Size()));
-  display_host_ = new chromeos::LoginDisplayHostImpl(screen_bounds);
-  display_host_->StartUserAdding(
-      base::Bind(&UserAddingScreenImpl::OnDisplayHostCompletion,
-                 base::Unretained(this)));
+  display_host_ = new chromeos::LoginDisplayHostWebUI();
+  display_host_->StartUserAdding(base::BindOnce(
+      &UserAddingScreenImpl::OnDisplayHostCompletion, base::Unretained(this)));
 
-  g_browser_process->platform_part()->SessionManager()->SetSessionState(
-      session_manager::SESSION_STATE_LOGIN_SECONDARY);
-  FOR_EACH_OBSERVER(Observer, observers_, OnUserAddingStarted());
+  session_manager::SessionManager::Get()->SetSessionState(
+      session_manager::SessionState::LOGIN_SECONDARY);
+  for (auto& observer : observers_)
+    observer.OnUserAddingStarted();
 }
 
 void UserAddingScreenImpl::Cancel() {
   CHECK(IsRunning());
 
-  // Make sure that system tray is enabled after this flow.
-  ash::Shell::GetInstance()->GetPrimarySystemTray()->SetEnabled(true);
   display_host_->CancelUserAdding();
 
   // Reset wallpaper if cancel adding user from multiple user sign in page.
   if (user_manager::UserManager::Get()->IsUserLoggedIn()) {
-    WallpaperManager::Get()->SetUserWallpaperDelayed(
+    WallpaperControllerClient::Get()->ShowUserWallpaper(
         user_manager::UserManager::Get()->GetActiveUser()->GetAccountId());
   }
 }
@@ -90,9 +85,10 @@ void UserAddingScreenImpl::OnDisplayHostCompletion() {
   CHECK(IsRunning());
   display_host_ = NULL;
 
-  g_browser_process->platform_part()->SessionManager()->SetSessionState(
-      session_manager::SESSION_STATE_ACTIVE);
-  FOR_EACH_OBSERVER(Observer, observers_, OnUserAddingFinished());
+  session_manager::SessionManager::Get()->SetSessionState(
+      session_manager::SessionState::ACTIVE);
+  for (auto& observer : observers_)
+    observer.OnUserAddingFinished();
 }
 
 // static
@@ -101,11 +97,9 @@ UserAddingScreenImpl* UserAddingScreenImpl::GetInstance() {
 }
 
 UserAddingScreenImpl::UserAddingScreenImpl()
-    : display_host_(NULL), im_controller_(this) {
-}
+    : display_host_(NULL), im_controller_(this) {}
 
-UserAddingScreenImpl::~UserAddingScreenImpl() {
-}
+UserAddingScreenImpl::~UserAddingScreenImpl() {}
 
 }  // anonymous namespace
 
@@ -117,4 +111,3 @@ UserAddingScreen* UserAddingScreen::Get() {
 }
 
 }  // namespace chromeos
-

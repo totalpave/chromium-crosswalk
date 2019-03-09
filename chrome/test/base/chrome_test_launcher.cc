@@ -4,13 +4,18 @@
 
 #include "chrome/test/base/chrome_test_launcher.h"
 
+#include <memory>
+#include <utility>
+
+#include "base/base_paths.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/debug/leak_annotations.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
+#include "base/path_service.h"
 #include "base/process/process_metrics.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
@@ -19,27 +24,32 @@
 #include "chrome/app/chrome_main_delegate.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/install_static/test/scoped_install_details.h"
 #include "chrome/test/base/chrome_test_suite.h"
+#include "chrome/utility/chrome_content_utility_client.h"
 #include "components/crash/content/app/crashpad.h"
 #include "content/public/app/content_main.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/network_service_test_helper.h"
 #include "content/public/test/test_launcher.h"
 #include "content/public/test/test_utils.h"
 #include "ui/base/test/ui_controls.h"
 
 #if defined(OS_MACOSX)
+#include "base/mac/bundle_locations.h"
 #include "chrome/browser/chrome_browser_application_mac.h"
 #endif  // defined(OS_MACOSX)
 
 #if defined(USE_AURA)
 #include "ui/aura/test/ui_controls_factory_aura.h"
 #include "ui/base/test/ui_controls_aura.h"
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-#include "ui/views/test/ui_controls_factory_desktop_aurax11.h"
-#endif
 #endif
 
 #if defined(OS_CHROMEOS)
+#include "ash/mojo_interface_factory.h"
+#include "ash/mojo_test_interface_factory.h"
+#include "ash/public/cpp/manifest.h"
+#include "ash/public/cpp/test_manifest.h"
 #include "ash/test/ui_controls_factory_ash.h"
 #endif
 
@@ -48,14 +58,19 @@
 #endif
 
 #if defined(OS_WIN)
+#include "base/win/registry.h"
 #include "chrome/app/chrome_crash_reporter_client_win.h"
+#include "chrome/install_static/install_util.h"
 #endif
 
 ChromeTestSuiteRunner::ChromeTestSuiteRunner() {}
 ChromeTestSuiteRunner::~ChromeTestSuiteRunner() {}
 
 int ChromeTestSuiteRunner::RunTestSuite(int argc, char** argv) {
-  return ChromeTestSuite(argc, argv).Run();
+  ChromeTestSuite test_suite(argc, argv);
+  // Browser tests are expected not to tear-down various globals.
+  test_suite.DisableCheckForLeakedGlobals();
+  return test_suite.Run();
 }
 
 ChromeTestLauncherDelegate::ChromeTestLauncherDelegate(
@@ -83,9 +98,6 @@ bool ChromeTestLauncherDelegate::AdjustChildProcessCommandLine(
 
   new_command_line.AppendSwitchPath(switches::kUserDataDir, temp_data_dir);
 
-  // file:// access for ChromeOS.
-  new_command_line.AppendSwitch(switches::kAllowFileAccess);
-
   *command_line = new_command_line;
   return true;
 }
@@ -95,15 +107,51 @@ ChromeTestLauncherDelegate::CreateContentMainDelegate() {
   return new ChromeMainDelegate();
 }
 
-int LaunchChromeTests(int default_jobs,
+void ChromeTestLauncherDelegate::PreSharding() {
+#if defined(OS_WIN)
+  // Pre-test cleanup for registry state keyed off the profile dir (which can
+  // proliferate with the use of uniquely named scoped_dirs):
+  // https://crbug.com/721245. This needs to be here in order not to be racy
+  // with any tests that will access that state.
+  base::win::RegKey distrubution_key;
+  LONG result = distrubution_key.Open(HKEY_CURRENT_USER,
+                                      install_static::GetRegistryPath().c_str(),
+                                      KEY_SET_VALUE);
+
+  if (result != ERROR_SUCCESS) {
+    LOG_IF(ERROR, result != ERROR_FILE_NOT_FOUND)
+        << "Failed to open distribution key for cleanup: " << result;
+    return;
+  }
+
+  result = distrubution_key.DeleteKey(L"PreferenceMACs");
+  LOG_IF(ERROR, result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND)
+      << "Failed to cleanup PreferenceMACs: " << result;
+#endif
+}
+
+int LaunchChromeTests(size_t parallel_jobs,
                       content::TestLauncherDelegate* delegate,
                       int argc,
                       char** argv) {
 #if defined(OS_MACOSX)
-  chrome_browser_application_mac::RegisterBrowserCrApp();
+  // Set up the path to the framework so resources can be loaded. This is also
+  // performed in ChromeTestSuite, but in browser tests that only affects the
+  // browser process. Child processes need access to the Framework bundle too.
+  base::FilePath path;
+  CHECK(base::PathService::Get(base::DIR_EXE, &path));
+  path = path.Append(chrome::kFrameworkName);
+  base::mac::SetOverrideFrameworkBundlePath(path);
 #endif
 
-#if defined(OS_LINUX) || defined(OS_ANDROID) || defined(OS_WIN)
+#if defined(OS_WIN)
+  // Create a primordial InstallDetails instance for the test.
+  install_static::ScopedInstallDetails install_details;
+#endif
+
+#if defined(OS_LINUX) || defined(OS_ANDROID)
+  ChromeCrashReporterClient::Create();
+#elif defined(OS_WIN)
   // We leak this pointer intentionally. The crash client needs to outlive
   // all other code.
   ChromeCrashReporterClient* crash_client = new ChromeCrashReporterClient();
@@ -111,5 +159,30 @@ int LaunchChromeTests(int default_jobs,
   crash_reporter::SetCrashReporterClient(crash_client);
 #endif
 
-  return content::LaunchTests(delegate, default_jobs, argc, argv);
+  // Setup a working test environment for the network service in case it's used.
+  // Only create this object in the utility process, so that its members don't
+  // interfere with other test objects in the browser process.
+  std::unique_ptr<content::NetworkServiceTestHelper>
+      network_service_test_helper;
+  if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kProcessType) == switches::kUtilityProcess) {
+    network_service_test_helper =
+        std::make_unique<content::NetworkServiceTestHelper>();
+    ChromeContentUtilityClient::SetNetworkBinderCreationCallback(base::Bind(
+        [](content::NetworkServiceTestHelper* helper,
+           service_manager::BinderRegistry* registry) {
+          helper->RegisterNetworkBinders(registry);
+        },
+        network_service_test_helper.get()));
+  }
+
+#if defined(OS_CHROMEOS)
+  // Inject the test interfaces for ash. Use a callback to avoid linking test
+  // interface support into production code.
+  ash::AmendManifestForTesting(ash::GetManifestOverlayForTesting());
+  ash::mojo_interface_factory::SetRegisterInterfacesCallback(
+      base::Bind(&ash::mojo_test_interface_factory::RegisterInterfaces));
+#endif
+
+  return content::LaunchTests(delegate, parallel_jobs, argc, argv);
 }

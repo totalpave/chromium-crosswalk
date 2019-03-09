@@ -9,6 +9,8 @@
 #include "net/base/data_url.h"
 
 #include "base/base64.h"
+#include "base/stl_util.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "net/base/escape.h"
@@ -19,47 +21,48 @@
 namespace net {
 
 // static
-bool DataURL::Parse(const GURL& url, std::string* mime_type,
-                    std::string* charset, std::string* data) {
-  if (!url.is_valid())
+bool DataURL::Parse(const GURL& url,
+                    std::string* mime_type,
+                    std::string* charset,
+                    std::string* data) {
+  if (!url.is_valid() || !url.has_scheme())
     return false;
 
   DCHECK(mime_type->empty());
   DCHECK(charset->empty());
-  std::string::const_iterator begin = url.spec().begin();
-  std::string::const_iterator end = url.spec().end();
 
-  std::string::const_iterator after_colon = std::find(begin, end, ':');
-  if (after_colon == end)
-    return false;
-  ++after_colon;
+  std::string content = url.GetContent();
 
-  std::string::const_iterator comma = std::find(after_colon, end, ',');
+  std::string::const_iterator begin = content.begin();
+  std::string::const_iterator end = content.end();
+
+  std::string::const_iterator comma = std::find(begin, end, ',');
+
   if (comma == end)
     return false;
 
-  std::vector<std::string> meta_data =
-      base::SplitString(base::StringPiece(after_colon, comma), ";",
-                        base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  std::vector<base::StringPiece> meta_data =
+      base::SplitStringPiece(base::StringPiece(begin, comma), ";",
+                             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
 
-  std::vector<std::string>::iterator iter = meta_data.begin();
-  if (iter != meta_data.end()) {
-    mime_type->swap(*iter);
-    *mime_type = base::ToLowerASCII(*mime_type);
+  auto iter = meta_data.cbegin();
+  if (iter != meta_data.cend()) {
+    *mime_type = base::ToLowerASCII(*iter);
     ++iter;
   }
 
-  static const char kBase64Tag[] = "base64";
-  static const char kCharsetTag[] = "charset=";
-  const size_t kCharsetTagLength = arraysize(kCharsetTag) - 1;
+  static constexpr base::StringPiece kBase64Tag("base64");
+  static constexpr base::StringPiece kCharsetTag("charset=");
 
   bool base64_encoded = false;
-  for (; iter != meta_data.end(); ++iter) {
-    if (!base64_encoded && *iter == kBase64Tag) {
+  for (; iter != meta_data.cend(); ++iter) {
+    if (!base64_encoded &&
+        base::EqualsCaseInsensitiveASCII(*iter, kBase64Tag)) {
       base64_encoded = true;
     } else if (charset->empty() &&
-               iter->compare(0, kCharsetTagLength, kCharsetTag) == 0) {
-      charset->assign(iter->substr(kCharsetTagLength));
+               base::StartsWith(*iter, kCharsetTag,
+                                base::CompareCase::INSENSITIVE_ASCII)) {
+      *charset = std::string(iter->substr(kCharsetTag.size()));
       // The grammar for charset is not specially defined in RFC2045 and
       // RFC2397. It just needs to be a token.
       if (!HttpUtil::IsToken(*charset))
@@ -72,6 +75,8 @@ bool DataURL::Parse(const GURL& url, std::string* mime_type,
     // specified in RFC2045. As specified in RFC2397, we use |charset| even if
     // |mime_type| is empty.
     mime_type->assign("text/plain");
+    if (charset->empty())
+      charset->assign("US-ASCII");
   } else if (!ParseMimeTypeWithoutParameter(*mime_type, NULL, NULL)) {
     // Fallback to the default as recommended in RFC2045 when the mediatype
     // value is invalid. For this case, we don't respect |charset| but force it
@@ -79,8 +84,6 @@ bool DataURL::Parse(const GURL& url, std::string* mime_type,
     mime_type->assign("text/plain");
     charset->assign("US-ASCII");
   }
-  if (charset->empty())
-    charset->assign("US-ASCII");
 
   // The caller may not be interested in receiving the data.
   if (!data)
@@ -98,27 +101,17 @@ bool DataURL::Parse(const GURL& url, std::string* mime_type,
   // For base64, we may have url-escaped whitespace which is not part
   // of the data, and should be stripped. Otherwise, the escaped whitespace
   // could be part of the payload, so don't strip it.
-  if (base64_encoded) {
-    temp_data = UnescapeURLComponent(
-        temp_data, UnescapeRule::SPACES | UnescapeRule::PATH_SEPARATORS |
-                       UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-                       UnescapeRule::SPOOFING_AND_CONTROL_CHARS);
-  }
+  if (base64_encoded)
+    UnescapeBinaryURLComponent(temp_data, &temp_data);
 
   // Strip whitespace.
   if (base64_encoded || !(mime_type->compare(0, 5, "text/") == 0 ||
                           mime_type->find("xml") != std::string::npos)) {
-    temp_data.erase(std::remove_if(temp_data.begin(), temp_data.end(),
-                                   base::IsAsciiWhitespace<wchar_t>),
-                    temp_data.end());
+    base::EraseIf(temp_data, base::IsAsciiWhitespace<wchar_t>);
   }
 
-  if (!base64_encoded) {
-    temp_data = UnescapeURLComponent(
-        temp_data, UnescapeRule::SPACES | UnescapeRule::PATH_SEPARATORS |
-                       UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-                       UnescapeRule::SPOOFING_AND_CONTROL_CHARS);
-  }
+  if (!base64_encoded)
+    UnescapeBinaryURLComponent(temp_data, &temp_data);
 
   if (base64_encoded) {
     size_t length = temp_data.length();

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <fcntl.h>
 #include <getopt.h>
 #include <libgen.h>
 #include <stdio.h>
@@ -213,7 +214,7 @@ int CatchExceptionToolMain(int argc, char* argv[]) {
 
   Options options = {};
 
-  const option long_options[] = {
+  static constexpr option long_options[] = {
       {"file", required_argument, nullptr, kOptionFile},
       {"mach-service", required_argument, nullptr, kOptionMachService},
       {"persistent", no_argument, nullptr, kOptionPersistent},
@@ -279,6 +280,10 @@ int CatchExceptionToolMain(int argc, char* argv[]) {
       return EXIT_FAILURE;
     }
     options.file = file_owner.get();
+    if (fcntl(fileno(options.file), F_SETFD, FD_CLOEXEC) == -1) {
+      PLOG(ERROR) << "fcntl " << options.file_path;
+      return EXIT_FAILURE;
+    }
   }
 
   int exceptions_handled = 0;

@@ -4,13 +4,11 @@
 
 #include "chrome/browser/extensions/api/storage/settings_sync_processor.h"
 #include "chrome/browser/extensions/api/storage/settings_sync_util.h"
-#include "content/public/browser/browser_thread.h"
+#include "components/sync/model/sync_change_processor.h"
+#include "components/sync/model/sync_data.h"
+#include "components/sync/protocol/extension_setting_specifics.pb.h"
+#include "extensions/browser/api/storage/backend_task_runner.h"
 #include "extensions/browser/api/storage/settings_namespace.h"
-#include "sync/api/sync_change_processor.h"
-#include "sync/api/sync_data.h"
-#include "sync/protocol/extension_setting_specifics.pb.h"
-
-using content::BrowserThread;
 
 namespace extensions {
 
@@ -22,17 +20,17 @@ SettingsSyncProcessor::SettingsSyncProcessor(
       type_(type),
       sync_processor_(sync_processor),
       initialized_(false) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   CHECK(type == syncer::EXTENSION_SETTINGS || type == syncer::APP_SETTINGS);
   CHECK(sync_processor);
 }
 
 SettingsSyncProcessor::~SettingsSyncProcessor() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
 }
 
 void SettingsSyncProcessor::Init(const base::DictionaryValue& initial_state) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   CHECK(!initialized_) << "Init called multiple times";
 
   for (base::DictionaryValue::Iterator i(initial_state); !i.IsAtEnd();
@@ -44,15 +42,14 @@ void SettingsSyncProcessor::Init(const base::DictionaryValue& initial_state) {
 
 syncer::SyncError SettingsSyncProcessor::SendChanges(
     const ValueStoreChangeList& changes) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   CHECK(initialized_) << "Init not called";
 
   syncer::SyncChangeList sync_changes;
   std::set<std::string> added_keys;
   std::set<std::string> deleted_keys;
 
-  for (ValueStoreChangeList::const_iterator i = changes.begin();
-      i != changes.end(); ++i) {
+  for (auto i = changes.cbegin(); i != changes.cend(); ++i) {
     const std::string& key = i->key();
     const base::Value* value = i->new_value();
     if (value) {
@@ -87,8 +84,7 @@ syncer::SyncError SettingsSyncProcessor::SendChanges(
     return error;
 
   synced_keys_.insert(added_keys.begin(), added_keys.end());
-  for (std::set<std::string>::iterator i = deleted_keys.begin();
-      i != deleted_keys.end(); ++i) {
+  for (auto i = deleted_keys.begin(); i != deleted_keys.end(); ++i) {
     synced_keys_.erase(*i);
   }
 
@@ -96,11 +92,10 @@ syncer::SyncError SettingsSyncProcessor::SendChanges(
 }
 
 void SettingsSyncProcessor::NotifyChanges(const ValueStoreChangeList& changes) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   CHECK(initialized_) << "Init not called";
 
-  for (ValueStoreChangeList::const_iterator i = changes.begin();
-      i != changes.end(); ++i) {
+  for (auto i = changes.cbegin(); i != changes.cend(); ++i) {
     if (i->new_value())
       synced_keys_.insert(i->key());
     else

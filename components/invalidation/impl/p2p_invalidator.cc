@@ -17,6 +17,7 @@
 #include "components/invalidation/public/invalidation_util.h"
 #include "components/invalidation/public/object_id_invalidation_map.h"
 #include "jingle/notifier/listener/push_client.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace syncer {
 
@@ -106,16 +107,17 @@ std::string P2PNotificationData::ToString() const {
   base::DictionaryValue dict;
   dict.SetString(kSenderIdKey, sender_id_);
   dict.SetString(kNotificationTypeKey, P2PNotificationTargetToString(target_));
-  dict.Set(kInvalidationsKey, invalidation_map_.ToValue().release());
+  dict.Set(kInvalidationsKey, invalidation_map_.ToValue());
   std::string json;
   base::JSONWriter::Write(dict, &json);
   return json;
 }
 
 bool P2PNotificationData::ResetFromString(const std::string& str) {
-  std::unique_ptr<base::Value> data_value = base::JSONReader::Read(str);
-  const base::DictionaryValue* data_dict = NULL;
-  if (!data_value.get() || !data_value->GetAsDictionary(&data_dict)) {
+  std::unique_ptr<base::Value> data_value =
+      base::JSONReader::ReadDeprecated(str);
+  const base::DictionaryValue* data_dict = nullptr;
+  if (!data_value || !data_value->GetAsDictionary(&data_dict)) {
     LOG(WARNING) << "Could not parse " << str << " as a dictionary";
     return false;
   }
@@ -128,7 +130,7 @@ bool P2PNotificationData::ResetFromString(const std::string& str) {
                  << kNotificationTypeKey;
   }
   target_ = P2PNotificationTargetFromString(target_str);
-  const base::ListValue* invalidation_map_list = NULL;
+  const base::ListValue* invalidation_map_list = nullptr;
   if (!data_dict->GetList(kInvalidationsKey, &invalidation_map_list) ||
       !invalidation_map_.ResetFromValue(*invalidation_map_list)) {
     LOG(WARNING) << "Could not parse " << kInvalidationsKey;
@@ -179,6 +181,12 @@ bool P2PInvalidator::UpdateRegisteredIds(InvalidationHandler* handler,
   return true;
 }
 
+bool P2PInvalidator::UpdateRegisteredIds(InvalidationHandler* handler,
+                                         const TopicSet& ids) {
+  NOTREACHED();
+  return false;
+}
+
 void P2PInvalidator::UnregisterHandler(InvalidationHandler* handler) {
   DCHECK(thread_checker_.CalledOnValidThread());
   registrar_.UnregisterHandler(handler);
@@ -202,7 +210,41 @@ void P2PInvalidator::UpdateCredentials(
       notifier::SubscriptionList(1, subscription));
   // If already logged in, the new credentials will take effect on the
   // next reconnection.
-  push_client_->UpdateCredentials(email, token);
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("p2p_invalidator", R"(
+        semantics {
+          sender: "P2P Invalidator"
+          description:
+            "Chromium uses cacheinvalidation library to receive push "
+            "notifications from the server about sync items (bookmarks, "
+            "passwords, preferences, etc.) modified on other clients. It uses "
+            "XMPP PushClient to communicate with server."
+          trigger:
+            "Initial communication happens after browser startup to register "
+            "client device with server and update online status. Consecutive "
+            "communications are triggered by heartbeat timer and push "
+            "notifications from server."
+          data:
+            "Protocol buffers including server generated client_token, "
+            "ObjectIds identifying subscriptions, and versions for these "
+            "subscriptions. ObjectId is not unique to user. Version is not "
+            "related to sync data, it is an internal concept of invalidations "
+            "protocol."
+          destination: OTHER
+          destination_other:
+            "The P2P client that user is connected to."
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This feature is only used for integration testing, never used in "
+            "released Chrome."
+          policy_exception_justification:
+            "This feature is only used for integration testing, never used in "
+            "released Chrome."
+        }
+    )");
+  push_client_->UpdateCredentials(email, token, traffic_annotation);
   logged_in_ = true;
 }
 

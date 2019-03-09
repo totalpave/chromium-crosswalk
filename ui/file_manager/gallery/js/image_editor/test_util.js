@@ -5,10 +5,11 @@
 
 /**
  * Creates a sample canvas.
- * @return {HTMLCanvasElement}
+ * @return {!HTMLCanvasElement}
  */
 function getSampleCanvas() {
-  var canvas = document.createElement('canvas');
+  var canvas =
+      assertInstanceof(document.createElement('canvas'), HTMLCanvasElement);
   canvas.width = 1920;
   canvas.height = 1080;
 

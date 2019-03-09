@@ -2,14 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <utility>
+
+#include "base/run_loop.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkSurface.h"
-#include "ui/ozone/platform/wayland/fake_server.h"
-#include "ui/ozone/platform/wayland/mock_platform_window_delegate.h"
+#include "ui/ozone/platform/wayland/test/mock_surface.h"
+#include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
 #include "ui/ozone/platform/wayland/wayland_surface_factory.h"
 #include "ui/ozone/platform/wayland/wayland_test.h"
 #include "ui/ozone/platform/wayland/wayland_window.h"
 #include "ui/ozone/public/surface_ozone_canvas.h"
+#include "ui/ozone/test/mock_platform_window_delegate.h"
 
 using ::testing::Expectation;
 using ::testing::SaveArg;
@@ -19,14 +23,29 @@ namespace ui {
 
 class WaylandSurfaceFactoryTest : public WaylandTest {
  public:
-  WaylandSurfaceFactoryTest() : surface_factory(&display) {}
+  WaylandSurfaceFactoryTest() : surface_factory(connection_proxy_.get()) {}
 
   ~WaylandSurfaceFactoryTest() override {}
 
   void SetUp() override {
     WaylandTest::SetUp();
-    canvas = surface_factory.CreateCanvasForWidget(widget);
+
+    auto connection_ptr = connection_->BindInterface();
+    connection_proxy_->SetWaylandConnection(std::move(connection_ptr));
+
+    canvas = surface_factory.CreateCanvasForWidget(widget_);
     ASSERT_TRUE(canvas);
+
+    // Wait until initialization and mojo calls go through.
+    base::RunLoop().RunUntilIdle();
+  }
+
+  void TearDown() override {
+    canvas.reset();
+
+    // The mojo call to destroy shared buffer goes after canvas is destroyed.
+    // Wait until it's done.
+    base::RunLoop().RunUntilIdle();
   }
 
  protected:
@@ -37,15 +56,19 @@ class WaylandSurfaceFactoryTest : public WaylandTest {
   DISALLOW_COPY_AND_ASSIGN(WaylandSurfaceFactoryTest);
 };
 
-TEST_F(WaylandSurfaceFactoryTest, Canvas) {
+TEST_P(WaylandSurfaceFactoryTest, Canvas) {
+  canvas->ResizeCanvas(window_->GetBounds().size());
   canvas->GetSurface();
   canvas->PresentCanvas(gfx::Rect(5, 10, 20, 15));
 
-  Expectation damage = EXPECT_CALL(*surface, Damage(5, 10, 20, 15));
+  // Wait until the mojo calls are done.
+  base::RunLoop().RunUntilIdle();
+
+  Expectation damage = EXPECT_CALL(*surface_, Damage(5, 10, 20, 15));
   wl_resource* buffer_resource = nullptr;
-  Expectation attach = EXPECT_CALL(*surface, Attach(_, 0, 0))
+  Expectation attach = EXPECT_CALL(*surface_, Attach(_, 0, 0))
                            .WillOnce(SaveArg<0>(&buffer_resource));
-  EXPECT_CALL(*surface, Commit()).After(damage, attach);
+  EXPECT_CALL(*surface_, Commit()).After(damage, attach);
 
   Sync();
 
@@ -59,17 +82,20 @@ TEST_F(WaylandSurfaceFactoryTest, Canvas) {
   // SkSurface above.
 }
 
-TEST_F(WaylandSurfaceFactoryTest, CanvasResize) {
+TEST_P(WaylandSurfaceFactoryTest, CanvasResize) {
+  canvas->ResizeCanvas(window_->GetBounds().size());
   canvas->GetSurface();
   canvas->ResizeCanvas(gfx::Size(100, 50));
   canvas->GetSurface();
   canvas->PresentCanvas(gfx::Rect(0, 0, 100, 50));
 
-  Expectation damage = EXPECT_CALL(*surface, Damage(0, 0, 100, 50));
+  base::RunLoop().RunUntilIdle();
+
+  Expectation damage = EXPECT_CALL(*surface_, Damage(0, 0, 100, 50));
   wl_resource* buffer_resource = nullptr;
-  Expectation attach = EXPECT_CALL(*surface, Attach(_, 0, 0))
+  Expectation attach = EXPECT_CALL(*surface_, Attach(_, 0, 0))
                            .WillOnce(SaveArg<0>(&buffer_resource));
-  EXPECT_CALL(*surface, Commit()).After(damage, attach);
+  EXPECT_CALL(*surface_, Commit()).After(damage, attach);
 
   Sync();
 
@@ -79,5 +105,12 @@ TEST_F(WaylandSurfaceFactoryTest, CanvasResize) {
   EXPECT_EQ(wl_shm_buffer_get_width(buffer), 100);
   EXPECT_EQ(wl_shm_buffer_get_height(buffer), 50);
 }
+
+INSTANTIATE_TEST_SUITE_P(XdgVersionV5Test,
+                         WaylandSurfaceFactoryTest,
+                         ::testing::Values(kXdgShellV5));
+INSTANTIATE_TEST_SUITE_P(XdgVersionV6Test,
+                         WaylandSurfaceFactoryTest,
+                         ::testing::Values(kXdgShellV6));
 
 }  // namespace ui

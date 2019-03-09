@@ -7,13 +7,14 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/android/jni_android.h"
-#include "base/callback.h"
+#include "base/android/scoped_java_ref.h"
 #include "base/macros.h"
+#include "chrome/common/chrome_render_frame.mojom.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/common/context_menu_params.h"
-#include "ui/gfx/geometry/size.h"
 
 namespace content {
 struct ContextMenuParams;
@@ -23,22 +24,52 @@ class WebContents;
 
 class ContextMenuHelper
     : public content::WebContentsUserData<ContextMenuHelper> {
+ protected:
+  using ImageRetrieveCallback = base::Callback<void(
+      chrome::mojom::ChromeRenderFrameAssociatedPtr chrome_render_frame_ptr,
+      const base::android::JavaRef<jobject>& jcallback,
+      const std::vector<uint8_t>& thumbnail_data,
+      const gfx::Size& max_dimen_px)>;
+
  public:
   ~ContextMenuHelper() override;
 
-  bool ShowContextMenu(content::RenderFrameHost* render_frame_host,
+  void ShowContextMenu(content::RenderFrameHost* render_frame_host,
                        const content::ContextMenuParams& params);
 
-  void SetPopulator(jobject jpopulator);
+  void OnContextMenuClosed(JNIEnv* env,
+                           const base::android::JavaParamRef<jobject>& obj);
+
+  void SetPopulator(const base::android::JavaRef<jobject>& jpopulator);
 
   // Methods called from Java via JNI ------------------------------------------
+  base::android::ScopedJavaLocalRef<jobject> GetJavaWebContents(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
   void OnStartDownload(JNIEnv* env,
                        const base::android::JavaParamRef<jobject>& obj,
                        jboolean jis_link,
                        jboolean jis_data_reduction_proxy_enabled);
+  void RetrieveImageForShare(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& jcallback,
+      jint max_width_px,
+      jint max_height_px);
+  void RetrieveImageForContextMenu(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& jcallback,
+      jint max_width_px,
+      jint max_height_px);
+  void RetrieveImageInternal(
+      JNIEnv* env,
+      const ImageRetrieveCallback& retrieve_callback,
+      const base::android::JavaParamRef<jobject>& jcallback,
+      jint max_width_px,
+      jint max_height_px);
   void SearchForImage(JNIEnv* env,
                       const base::android::JavaParamRef<jobject>& obj);
-  void ShareImage(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
 
  private:
   explicit ContextMenuHelper(content::WebContents* web_contents);
@@ -47,9 +78,6 @@ class ContextMenuHelper
   static base::android::ScopedJavaLocalRef<jobject> CreateJavaContextMenuParams(
       const content::ContextMenuParams& params);
 
-  void OnShareImage(const std::string& thumbnail_data,
-                    const gfx::Size& original_size);
-
   base::android::ScopedJavaGlobalRef<jobject> java_obj_;
   content::WebContents* web_contents_;
 
@@ -57,9 +85,9 @@ class ContextMenuHelper
   int render_frame_id_;
   int render_process_id_;
 
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
+
   DISALLOW_COPY_AND_ASSIGN(ContextMenuHelper);
 };
-
-bool RegisterContextMenuHelper(JNIEnv* env);
 
 #endif  // CHROME_BROWSER_UI_ANDROID_CONTEXT_MENU_HELPER_H_

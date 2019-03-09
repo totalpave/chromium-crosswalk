@@ -42,14 +42,6 @@
 //     // Generate constructors.
 //     #include "ipc/struct_constructor_macros.h"
 //     #include "path/to/YYY_message_generator.h"
-//     // Generate destructors.
-//     #include "ipc/struct_destructor_macros.h"
-//     #include "path/to/YYY_message_generator.h"
-//     // Generate param traits size methods.
-//     #include "ipc/param_traits_size_macros.h"
-//     namespace IPC {
-//     #include "path/to/YYY_message_generator.h"
-//     }  // namespace IPC
 //     // Generate param traits write methods.
 //     #include "ipc/param_traits_write_macros.h"
 //     namespace IPC {
@@ -180,6 +172,9 @@
 // Use the IPC_MESSAGE_HANDLER_DELAY_REPLY macro instead of IPC_MESSAGE_HANDLER
 //     IPC_MESSAGE_HANDLER_DELAY_REPLY(ViewHostMsg_SyncMessageName,
 //                                     OnSyncMessageName)
+// Unlike IPC_MESSAGE_HANDLER which works with IPC_BEGIN_MESSAGE_MAP as well as
+// IPC_BEGIN_MESSAGE_MAP_WITH_PARAM, one needs to use
+// IPC_MESSAGE_HANDLER_WITH_PARAM_DELAY_REPLY to properly handle the param.
 //
 // The handler function will look like:
 //     void OnSyncMessageName(const type1& in1, IPC::Message* reply_msg);
@@ -203,8 +198,7 @@
 
 #include <tuple>
 
-#include "base/profiler/scoped_profile.h"
-#include "ipc/export_template.h"
+#include "base/export_template.h"
 #include "ipc/ipc_message_templates.h"
 #include "ipc/ipc_message_utils.h"
 #include "ipc/param_traits_macros.h"
@@ -220,8 +214,7 @@
   IPC_STRUCT_TRAITS_BEGIN(struct_name) \
   IPC_STRUCT_TRAITS_END() \
   struct IPC_MESSAGE_EXPORT struct_name : parent { \
-    struct_name(); \
-    ~struct_name();
+    struct_name();
 // Optional variadic parameters specify the default value for this struct
 // member. They are passed through to the constructor for |type|.
 #define IPC_STRUCT_MEMBER(type, name, ...) type name;
@@ -348,7 +341,6 @@
 
 #define IPC_MESSAGE_FORWARD(msg_class, obj, member_func)                       \
     case msg_class::ID: {                                                      \
-        TRACK_RUN_IN_THIS_SCOPED_REGION(member_func);                          \
         if (!msg_class::Dispatch(&ipc_message__, obj, this, param__,           \
                                  &member_func))                                \
           ipc_message__.set_dispatch_error();                                  \
@@ -360,7 +352,6 @@
 
 #define IPC_MESSAGE_FORWARD_DELAY_REPLY(msg_class, obj, member_func)           \
     case msg_class::ID: {                                                      \
-        TRACK_RUN_IN_THIS_SCOPED_REGION(member_func);                          \
         if (!msg_class::DispatchDelayReply(&ipc_message__, obj, param__,       \
                                            &member_func))                      \
           ipc_message__.set_dispatch_error();                                  \
@@ -371,17 +362,27 @@
     IPC_MESSAGE_FORWARD_DELAY_REPLY(msg_class, this,                           \
                                     _IpcMessageHandlerClass::member_func)
 
-// TODO(jar): fix chrome frame to always supply |code| argument.
+#define IPC_MESSAGE_FORWARD_WITH_PARAM_DELAY_REPLY(msg_class, obj,             \
+                                                   member_func)                \
+  case msg_class::ID: {                                                        \
+    if (!msg_class::DispatchWithParamDelayReply(&ipc_message__, obj, param__,  \
+                                                &member_func))                 \
+      ipc_message__.set_dispatch_error();                                      \
+  }                                                                            \
+  break;
+
+#define IPC_MESSAGE_HANDLER_WITH_PARAM_DELAY_REPLY(msg_class, member_func)     \
+    IPC_MESSAGE_FORWARD_WITH_PARAM_DELAY_REPLY(                                \
+        msg_class, this, _IpcMessageHandlerClass::member_func)
+
 #define IPC_MESSAGE_HANDLER_GENERIC(msg_class, code)                           \
     case msg_class::ID: {                                                      \
-        /* TRACK_RUN_IN_THIS_SCOPED_REGION(code);  TODO(jar) */                \
         code;                                                                  \
       }                                                                        \
       break;
 
 #define IPC_REPLY_HANDLER(func)                                                \
     case IPC_REPLY_ID: {                                                       \
-        TRACK_RUN_IN_THIS_SCOPED_REGION(func);                                 \
         func(ipc_message__);                                                   \
       }                                                                        \
       break;

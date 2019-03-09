@@ -5,7 +5,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model_stats_recorder.h"
 
 #include "base/macros.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
@@ -44,19 +44,24 @@ TEST_F(TabStripModelStatsRecorderTest, BasicTabLifecycle) {
   HistogramTester tester;
 
   // Insert the first tab.
-  WebContents* contents1 = CreateTestWebContents();
-  tabstrip.InsertWebContentsAt(0, contents1, TabStripModel::ADD_ACTIVE);
+  std::unique_ptr<WebContents> contents1 = CreateTestWebContents();
+  WebContents* raw_contents1 = contents1.get();
+  tabstrip.InsertWebContentsAt(0, std::move(contents1),
+                               TabStripModel::ADD_ACTIVE);
 
   // Deactivate the first tab by inserting new tab.
-  WebContents* contents2 = CreateTestWebContents();
-  tabstrip.InsertWebContentsAt(1, contents2, TabStripModel::ADD_ACTIVE);
+  std::unique_ptr<WebContents> contents2 = CreateTestWebContents();
+  WebContents* raw_contents2 = contents2.get();
+  tabstrip.InsertWebContentsAt(1, std::move(contents2),
+                               TabStripModel::ADD_ACTIVE);
 
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.Target_Active",
       static_cast<int>(TabStripModelStatsRecorder::TabState::INACTIVE), 1);
 
   // Reactivate the first tab.
-  tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(contents1), true);
+  tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(raw_contents1),
+                         {TabStripModel::GestureType::kOther});
 
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.Target_Active",
@@ -64,24 +69,22 @@ TEST_F(TabStripModelStatsRecorderTest, BasicTabLifecycle) {
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.Target_Inactive",
       static_cast<int>(TabStripModelStatsRecorder::TabState::ACTIVE), 1);
-  tester.ExpectTotalCount("Tabs.StateTransfer.Time_Inactive_Active", 1);
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.NumberOfOtherTabsActivatedBeforeMadeActive", 1, 1);
 
   // Replace the contents of the first tab.
   // TabStripModeStatsRecorder should follow WebContents change.
-  WebContents* contents3 = CreateTestWebContents();
-  delete tabstrip.ReplaceWebContentsAt(0, contents3);
+  std::unique_ptr<WebContents> contents3 = CreateTestWebContents();
+  tabstrip.ReplaceWebContentsAt(0, std::move(contents3));
 
   // Close the inactive second tab.
-  tabstrip.CloseWebContentsAt(tabstrip.GetIndexOfWebContents(contents2),
+  tabstrip.CloseWebContentsAt(tabstrip.GetIndexOfWebContents(raw_contents2),
                               TabStripModel::CLOSE_USER_GESTURE |
                                   TabStripModel::CLOSE_CREATE_HISTORICAL_TAB);
 
   tester.ExpectBucketCount(
       "Tabs.StateTransfer.Target_Inactive",
       static_cast<int>(TabStripModelStatsRecorder::TabState::CLOSED), 1);
-  tester.ExpectTotalCount("Tabs.StateTransfer.Time_Inactive_Closed", 1);
 
   // Close the active first tab.
   tabstrip.CloseSelectedTabs();
@@ -106,32 +109,32 @@ TEST_F(TabStripModelStatsRecorderTest, ObserveMultipleTabStrips) {
   HistogramTester tester;
 
   // Create a tab in strip 1.
-  WebContents* contents1 = CreateTestWebContents();
-  tabstrip1.InsertWebContentsAt(0, contents1, TabStripModel::ADD_ACTIVE);
+  tabstrip1.InsertWebContentsAt(0, CreateTestWebContents(),
+                                TabStripModel::ADD_ACTIVE);
 
   // Create a tab in strip 2.
-  WebContents* contents2 = CreateTestWebContents();
-  tabstrip2.InsertWebContentsAt(0, contents2, TabStripModel::ADD_ACTIVE);
+  tabstrip2.InsertWebContentsAt(0, CreateTestWebContents(),
+                                TabStripModel::ADD_ACTIVE);
 
   // Create another tab in strip 1.
-  WebContents* contents3 = CreateTestWebContents();
-  tabstrip1.InsertWebContentsAt(1, contents3, TabStripModel::ADD_ACTIVE);
+  tabstrip1.InsertWebContentsAt(1, CreateTestWebContents(),
+                                TabStripModel::ADD_ACTIVE);
 
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.Target_Active",
       static_cast<int>(TabStripModelStatsRecorder::TabState::INACTIVE), 1);
 
   // Create another tab in strip 2.
-  WebContents* contents4 = CreateTestWebContents();
-  tabstrip2.InsertWebContentsAt(1, contents4, TabStripModel::ADD_ACTIVE);
+  tabstrip2.InsertWebContentsAt(1, CreateTestWebContents(),
+                                TabStripModel::ADD_ACTIVE);
 
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.Target_Active",
       static_cast<int>(TabStripModelStatsRecorder::TabState::INACTIVE), 2);
 
   // Move the first tab in strip 1 to strip 2
-  tabstrip1.DetachWebContentsAt(0);
-  tabstrip2.InsertWebContentsAt(2, contents1, TabStripModel::ADD_ACTIVE);
+  tabstrip2.InsertWebContentsAt(2, tabstrip1.DetachWebContentsAt(0),
+                                TabStripModel::ADD_ACTIVE);
 
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.Target_Active",
@@ -141,7 +144,7 @@ TEST_F(TabStripModelStatsRecorderTest, ObserveMultipleTabStrips) {
       static_cast<int>(TabStripModelStatsRecorder::TabState::ACTIVE), 1);
 
   // Switch to the first tab in strip 2.
-  tabstrip2.ActivateTabAt(0, true);
+  tabstrip2.ActivateTabAt(0, {TabStripModel::GestureType::kOther});
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.Target_Active",
       static_cast<int>(TabStripModelStatsRecorder::TabState::INACTIVE), 4);
@@ -173,17 +176,20 @@ TEST_F(TabStripModelStatsRecorderTest,
   HistogramTester tester;
 
   // Create first tab
-  WebContents* contents0 = CreateTestWebContents();
-  tabstrip.InsertWebContentsAt(0, contents0, TabStripModel::ADD_ACTIVE);
+  std::unique_ptr<WebContents> contents0 = CreateTestWebContents();
+  WebContents* raw_contents0 = contents0.get();
+  tabstrip.InsertWebContentsAt(0, std::move(contents0),
+                               TabStripModel::ADD_ACTIVE);
 
   // Add 9 more tabs and activate them
   for (int i = 1; i < 10; ++i) {
-    WebContents* contents = CreateTestWebContents();
-    tabstrip.InsertWebContentsAt(1, contents, TabStripModel::ADD_ACTIVE);
+    tabstrip.InsertWebContentsAt(1, CreateTestWebContents(),
+                                 TabStripModel::ADD_ACTIVE);
   }
 
   // Reactivate the first tab
-  tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(contents0), true);
+  tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(raw_contents0),
+                         {TabStripModel::GestureType::kOther});
 
   tester.ExpectUniqueSample(
       "Tabs.StateTransfer.NumberOfOtherTabsActivatedBeforeMadeActive", 9, 1);
@@ -203,19 +209,28 @@ TEST_F(TabStripModelStatsRecorderTest,
   HistogramTester tester;
 
   // Create tab 0, 1, 2
-  WebContents* contents0 = CreateTestWebContents();
-  WebContents* contents1 = CreateTestWebContents();
-  WebContents* contents2 = CreateTestWebContents();
-  tabstrip.InsertWebContentsAt(0, contents0, TabStripModel::ADD_ACTIVE);
-  tabstrip.InsertWebContentsAt(1, contents1, TabStripModel::ADD_ACTIVE);
-  tabstrip.InsertWebContentsAt(2, contents2, TabStripModel::ADD_ACTIVE);
+  std::unique_ptr<WebContents> contents0 = CreateTestWebContents();
+  WebContents* raw_contents0 = contents0.get();
+  std::unique_ptr<WebContents> contents1 = CreateTestWebContents();
+  WebContents* raw_contents1 = contents1.get();
+  std::unique_ptr<WebContents> contents2 = CreateTestWebContents();
+  WebContents* raw_contents2 = contents2.get();
+  tabstrip.InsertWebContentsAt(0, std::move(contents0),
+                               TabStripModel::ADD_ACTIVE);
+  tabstrip.InsertWebContentsAt(1, std::move(contents1),
+                               TabStripModel::ADD_ACTIVE);
+  tabstrip.InsertWebContentsAt(2, std::move(contents2),
+                               TabStripModel::ADD_ACTIVE);
 
   // Switch between tabs {0,1} for 5 times, then switch to tab 2
   for (int i = 0; i < 5; ++i) {
-    tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(contents0), true);
-    tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(contents1), true);
+    tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(raw_contents0),
+                           {TabStripModel::GestureType::kOther});
+    tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(raw_contents1),
+                           {TabStripModel::GestureType::kOther});
   }
-  tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(contents2), true);
+  tabstrip.ActivateTabAt(tabstrip.GetIndexOfWebContents(raw_contents2),
+                         {TabStripModel::GestureType::kOther});
 
   EXPECT_THAT(
       tester.GetAllSamples(

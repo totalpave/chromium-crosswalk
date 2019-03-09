@@ -3,14 +3,16 @@ include_rules = [
   # rely on components.
   "+ash",
   "+chrome",
-  "+chrome/grit",  # For generated headers
+  "+chrome/grit",
   "+chromeos",
   "+components",
   "+device/bluetooth/dbus",
   "+extensions",
   "+mojo",
+  "+rlz/buildflags",
   "+services",
-  "+sync",
+  "+storage/browser",
+  "+storage/common",
 
   # Tests under chrome/ shouldn't need to access the internals of content/ and
   # as such are allowed only content/public. If you find yourself wanting to
@@ -20,10 +22,9 @@ include_rules = [
   "+content/public",
 
   "+gin/public",
-  "+grit",  # For generated headers. TODO(thestig): Remove.
   "+media/base",
-  "+mojo/edk/embedder",
+  "+mojo/core/embedder",
   "+sandbox/win/tests",
   "+third_party/ocmock",
-  "+win8/test",
+  "+third_party/webrtc",
 ]

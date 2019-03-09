@@ -10,6 +10,9 @@
 
 // This file contains implementations of commands that are used only when
 // debugging.
+//
+// NOTE: these commands may be enabled in about:flags, so that they may be
+// available at run time.
 namespace ash {
 namespace debug {
 
@@ -19,6 +22,9 @@ ASH_EXPORT void PrintUIHierarchies();
 
 // Returns true if debug accelerators are enabled.
 ASH_EXPORT bool DebugAcceleratorsEnabled();
+
+// Returns true if developer accelerators are enabled.
+ASH_EXPORT bool DeveloperAcceleratorsEnabled();
 
 // Performs |action| if |action| belongs to a debug-only accelerator and debug
 // accelerators are enabled.

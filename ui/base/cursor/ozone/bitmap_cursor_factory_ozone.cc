@@ -20,10 +20,15 @@ PlatformCursor ToPlatformCursor(BitmapCursorOzone* cursor) {
   return static_cast<PlatformCursor>(cursor);
 }
 
-scoped_refptr<BitmapCursorOzone> CreateDefaultBitmapCursor(int type) {
-  SkBitmap bitmap;
-  gfx::Point hotspot;
-  if (GetCursorBitmap(type, &bitmap, &hotspot))
+scoped_refptr<BitmapCursorOzone> CreateDefaultBitmapCursor(CursorType type) {
+  Cursor cursor(type);
+  // Ozone must honor the lowest possible scale value, which is 1.0f. Otherwise,
+  // it can happen that cursor chooses wrong hotspots if max scaling value is
+  // set to 200p, for example.
+  cursor.set_device_scale_factor(1.0f);
+  SkBitmap bitmap = cursor.GetBitmap();
+  gfx::Point hotspot = cursor.GetHotspot();
+  if (!bitmap.isNull())
     return new BitmapCursorOzone(bitmap, hotspot);
   return NULL;
 }
@@ -70,16 +75,17 @@ BitmapCursorFactoryOzone::~BitmapCursorFactoryOzone() {}
 // static
 scoped_refptr<BitmapCursorOzone> BitmapCursorFactoryOzone::GetBitmapCursor(
     PlatformCursor platform_cursor) {
-  return make_scoped_refptr(ToBitmapCursorOzone(platform_cursor));
+  return base::WrapRefCounted(ToBitmapCursorOzone(platform_cursor));
 }
 
-PlatformCursor BitmapCursorFactoryOzone::GetDefaultCursor(int type) {
+PlatformCursor BitmapCursorFactoryOzone::GetDefaultCursor(CursorType type) {
   return GetDefaultCursorInternal(type).get();
 }
 
 PlatformCursor BitmapCursorFactoryOzone::CreateImageCursor(
     const SkBitmap& bitmap,
-    const gfx::Point& hotspot) {
+    const gfx::Point& hotspot,
+    float bitmap_dpi) {
   BitmapCursorOzone* cursor = new BitmapCursorOzone(bitmap, hotspot);
   cursor->AddRef();  // Balanced by UnrefImageCursor.
   return ToPlatformCursor(cursor);
@@ -88,7 +94,8 @@ PlatformCursor BitmapCursorFactoryOzone::CreateImageCursor(
 PlatformCursor BitmapCursorFactoryOzone::CreateAnimatedCursor(
     const std::vector<SkBitmap>& bitmaps,
     const gfx::Point& hotspot,
-    int frame_delay_ms) {
+    int frame_delay_ms,
+    float bitmap_dpi) {
   DCHECK_LT(0U, bitmaps.size());
   BitmapCursorOzone* cursor =
       new BitmapCursorOzone(bitmaps, hotspot, frame_delay_ms);
@@ -105,16 +112,16 @@ void BitmapCursorFactoryOzone::UnrefImageCursor(PlatformCursor cursor) {
 }
 
 scoped_refptr<BitmapCursorOzone>
-BitmapCursorFactoryOzone::GetDefaultCursorInternal(int type) {
-  if (type == kCursorNone)
+BitmapCursorFactoryOzone::GetDefaultCursorInternal(CursorType type) {
+  if (type == CursorType::kNone)
     return NULL;  // NULL is used for hidden cursor.
 
   if (!default_cursors_.count(type)) {
     // Create new image cursor from default aura bitmap for this type. We hold a
     // ref forever because clients do not do refcounting for default cursors.
     scoped_refptr<BitmapCursorOzone> cursor = CreateDefaultBitmapCursor(type);
-    if (!cursor.get() && type != kCursorPointer)
-      cursor = GetDefaultCursorInternal(kCursorPointer);
+    if (!cursor.get() && type != CursorType::kPointer)
+      cursor = GetDefaultCursorInternal(CursorType::kPointer);
     DCHECK(cursor.get()) << "Failed to load default cursor bitmap";
     default_cursors_[type] = cursor;
   }

@@ -21,13 +21,13 @@ WriteFile::WriteFile(extensions::EventRouter* event_router,
                      scoped_refptr<net::IOBuffer> buffer,
                      int64_t offset,
                      int length,
-                     const storage::AsyncFileUtil::StatusCallback& callback)
+                     storage::AsyncFileUtil::StatusCallback callback)
     : Operation(event_router, file_system_info),
       file_handle_(file_handle),
       buffer_(buffer),
       offset_(offset),
       length_(length),
-      callback_(callback) {}
+      callback_(std::move(callback)) {}
 
 WriteFile::~WriteFile() {
 }
@@ -50,11 +50,10 @@ bool WriteFile::Execute(int request_id) {
   DCHECK(buffer_.get());
   std::unique_ptr<base::DictionaryValue> options_as_value = options.ToValue();
   options_as_value->Set(
-      "data",
-      base::BinaryValue::CreateWithCopiedBuffer(buffer_->data(), length_));
+      "data", base::Value::CreateWithCopiedBuffer(buffer_->data(), length_));
 
   std::unique_ptr<base::ListValue> event_args(new base::ListValue);
-  event_args->Append(options_as_value.release());
+  event_args->Append(std::move(options_as_value));
 
   return SendEvent(
       request_id,
@@ -67,14 +66,16 @@ void WriteFile::OnSuccess(int /* request_id */,
                           std::unique_ptr<RequestValue> /* result */,
                           bool /* has_more */) {
   TRACE_EVENT0("file_system_provider", "WriteFile::OnSuccess");
-  callback_.Run(base::File::FILE_OK);
+  DCHECK(callback_);
+  std::move(callback_).Run(base::File::FILE_OK);
 }
 
 void WriteFile::OnError(int /* request_id */,
                         std::unique_ptr<RequestValue> /* result */,
                         base::File::Error error) {
   TRACE_EVENT0("file_system_provider", "WriteFile::OnError");
-  callback_.Run(error);
+  DCHECK(callback_);
+  std::move(callback_).Run(error);
 }
 
 }  // namespace operations

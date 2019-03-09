@@ -4,6 +4,10 @@
 
 #include "chrome/test/chromedriver/capabilities.h"
 
+#include <utility>
+
+#include "base/stl_util.h"
+#include "base/strings/pattern.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/chrome/log.h"
 #include "chrome/test/chromedriver/chrome/status.h"
@@ -98,10 +102,28 @@ TEST(Switches, Unparsed) {
   ASSERT_EQ("---e=--1=1 --a --b --c=1 --d=1", switches.ToString());
 }
 
+TEST(ParseCapabilities, UnknownCapabilityLegacy) {
+  // In legacy mode, unknown capabilities are ignored.
+  Capabilities capabilities;
+  base::DictionaryValue caps;
+  caps.SetString("foo", "bar");
+  Status status = capabilities.Parse(caps, false);
+  ASSERT_TRUE(status.IsOk());
+}
+
+TEST(ParseCapabilities, UnknownCapabilityW3c) {
+  // In W3C mode, unknown capabilities results in error.
+  Capabilities capabilities;
+  base::DictionaryValue caps;
+  caps.SetString("foo", "bar");
+  Status status = capabilities.Parse(caps);
+  ASSERT_EQ(status.code(), kInvalidArgument);
+}
+
 TEST(ParseCapabilities, WithAndroidPackage) {
   Capabilities capabilities;
   base::DictionaryValue caps;
-  caps.SetString("chromeOptions.androidPackage", "abc");
+  caps.SetString("goog:chromeOptions.androidPackage", "abc");
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_TRUE(capabilities.IsAndroid());
@@ -111,7 +133,7 @@ TEST(ParseCapabilities, WithAndroidPackage) {
 TEST(ParseCapabilities, EmptyAndroidPackage) {
   Capabilities capabilities;
   base::DictionaryValue caps;
-  caps.SetString("chromeOptions.androidPackage", std::string());
+  caps.SetString("goog:chromeOptions.androidPackage", std::string());
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -119,7 +141,7 @@ TEST(ParseCapabilities, EmptyAndroidPackage) {
 TEST(ParseCapabilities, IllegalAndroidPackage) {
   Capabilities capabilities;
   base::DictionaryValue caps;
-  caps.SetInteger("chromeOptions.androidPackage", 123);
+  caps.SetInteger("goog:chromeOptions.androidPackage", 123);
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -127,7 +149,7 @@ TEST(ParseCapabilities, IllegalAndroidPackage) {
 TEST(ParseCapabilities, LogPath) {
   Capabilities capabilities;
   base::DictionaryValue caps;
-  caps.SetString("chromeOptions.logPath", "path/to/logfile");
+  caps.SetString("goog:chromeOptions.logPath", "path/to/logfile");
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_STREQ("path/to/logfile", capabilities.log_path.c_str());
@@ -135,11 +157,11 @@ TEST(ParseCapabilities, LogPath) {
 
 TEST(ParseCapabilities, Args) {
   Capabilities capabilities;
-  base::ListValue args;
-  args.AppendString("arg1");
-  args.AppendString("arg2=val");
+  base::Value::ListStorage args;
+  args.emplace_back("arg1");
+  args.emplace_back("arg2=val");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.args", args.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "args"}, base::Value(args));
 
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
@@ -157,7 +179,7 @@ TEST(ParseCapabilities, Prefs) {
   prefs.SetString("key1", "value1");
   prefs.SetString("key2.k", "value2");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.prefs", prefs.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "prefs"}, prefs.Clone());
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_TRUE(capabilities.prefs->Equals(&prefs));
@@ -169,7 +191,7 @@ TEST(ParseCapabilities, LocalState) {
   local_state.SetString("s1", "v1");
   local_state.SetString("s2.s", "v2");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.localState", local_state.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "localState"}, local_state.Clone());
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_TRUE(capabilities.local_state->Equals(&local_state));
@@ -177,11 +199,11 @@ TEST(ParseCapabilities, LocalState) {
 
 TEST(ParseCapabilities, Extensions) {
   Capabilities capabilities;
-  base::ListValue extensions;
-  extensions.AppendString("ext1");
-  extensions.AppendString("ext2");
+  base::Value::ListStorage extensions;
+  extensions.emplace_back("ext1");
+  extensions.emplace_back("ext2");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.extensions", extensions.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "extensions"}, base::Value(extensions));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(2u, capabilities.extensions.size());
@@ -194,7 +216,7 @@ TEST(ParseCapabilities, UnrecognizedProxyType) {
   base::DictionaryValue proxy;
   proxy.SetString("proxyType", "unknown proxy type");
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -204,7 +226,7 @@ TEST(ParseCapabilities, IllegalProxyType) {
   base::DictionaryValue proxy;
   proxy.SetInteger("proxyType", 123);
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -212,9 +234,9 @@ TEST(ParseCapabilities, IllegalProxyType) {
 TEST(ParseCapabilities, DirectProxy) {
   Capabilities capabilities;
   base::DictionaryValue proxy;
-  proxy.SetString("proxyType", "DIRECT");
+  proxy.SetString("proxyType", "direct");
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(1u, capabilities.switches.GetSize());
@@ -226,7 +248,7 @@ TEST(ParseCapabilities, SystemProxy) {
   base::DictionaryValue proxy;
   proxy.SetString("proxyType", "system");
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(0u, capabilities.switches.GetSize());
@@ -235,10 +257,10 @@ TEST(ParseCapabilities, SystemProxy) {
 TEST(ParseCapabilities, PacProxy) {
   Capabilities capabilities;
   base::DictionaryValue proxy;
-  proxy.SetString("proxyType", "PAC");
+  proxy.SetString("proxyType", "pac");
   proxy.SetString("proxyAutoconfigUrl", "test.wpad");
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(1u, capabilities.switches.GetSize());
@@ -248,10 +270,10 @@ TEST(ParseCapabilities, PacProxy) {
 TEST(ParseCapabilities, MissingProxyAutoconfigUrl) {
   Capabilities capabilities;
   base::DictionaryValue proxy;
-  proxy.SetString("proxyType", "PAC");
+  proxy.SetString("proxyType", "pac");
   proxy.SetString("httpProxy", "http://localhost:8001");
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -261,7 +283,7 @@ TEST(ParseCapabilities, AutodetectProxy) {
   base::DictionaryValue proxy;
   proxy.SetString("proxyType", "autodetect");
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(1u, capabilities.switches.GetSize());
@@ -275,28 +297,24 @@ TEST(ParseCapabilities, ManualProxy) {
   proxy.SetString("ftpProxy", "localhost:9001");
   proxy.SetString("httpProxy", "localhost:8001");
   proxy.SetString("sslProxy", "localhost:10001");
-  proxy.SetString("noProxy", "google.com, youtube.com");
+  proxy.SetString("socksProxy", "localhost:12345");
+  proxy.SetInteger("socksVersion", 5);
+  std::unique_ptr<base::ListValue> bypass = std::make_unique<base::ListValue>();
+  bypass->AppendString("google.com");
+  bypass->AppendString("youtube.com");
+  proxy.SetList("noProxy", std::move(bypass));
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(2u, capabilities.switches.GetSize());
   ASSERT_EQ(
-      "ftp=localhost:9001;http=localhost:8001;https=localhost:10001",
+      "ftp=localhost:9001;http=localhost:8001;https=localhost:10001;"
+      "socks=socks5://localhost:12345",
       capabilities.switches.GetSwitchValue("proxy-server"));
   ASSERT_EQ(
-      "google.com, youtube.com",
+      "google.com,youtube.com",
       capabilities.switches.GetSwitchValue("proxy-bypass-list"));
-}
-
-TEST(ParseCapabilities, MissingSettingForManualProxy) {
-  Capabilities capabilities;
-  base::DictionaryValue proxy;
-  proxy.SetString("proxyType", "manual");
-  base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
-  Status status = capabilities.Parse(caps);
-  ASSERT_FALSE(status.IsOk());
 }
 
 TEST(ParseCapabilities, IgnoreNullValueForManualProxy) {
@@ -304,10 +322,10 @@ TEST(ParseCapabilities, IgnoreNullValueForManualProxy) {
   base::DictionaryValue proxy;
   proxy.SetString("proxyType", "manual");
   proxy.SetString("ftpProxy", "localhost:9001");
-  proxy.Set("sslProxy", base::Value::CreateNullValue());
-  proxy.Set("noProxy", base::Value::CreateNullValue());
+  proxy.SetKey("sslProxy", base::Value());
+  proxy.SetKey("noProxy", base::Value());
   base::DictionaryValue caps;
-  caps.Set("proxy", proxy.DeepCopy());
+  caps.SetKey("proxy", std::move(proxy));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(1u, capabilities.switches.GetSize());
@@ -317,12 +335,52 @@ TEST(ParseCapabilities, IgnoreNullValueForManualProxy) {
       capabilities.switches.GetSwitchValue("proxy-server"));
 }
 
+TEST(ParseCapabilities, MissingSocksVersion) {
+  Capabilities capabilities;
+  base::DictionaryValue proxy;
+  proxy.SetString("proxyType", "manual");
+  proxy.SetString("socksProxy", "localhost:6000");
+  base::DictionaryValue caps;
+  caps.SetKey("proxy", std::move(proxy));
+  Status status = capabilities.Parse(caps);
+  ASSERT_FALSE(status.IsOk());
+}
+
+TEST(ParseCapabilities, BadSocksVersion) {
+  Capabilities capabilities;
+  base::DictionaryValue proxy;
+  proxy.SetString("proxyType", "manual");
+  proxy.SetString("socksProxy", "localhost:6000");
+  proxy.SetInteger("socksVersion", 256);
+  base::DictionaryValue caps;
+  caps.SetKey("proxy", std::move(proxy));
+  Status status = capabilities.Parse(caps);
+  ASSERT_FALSE(status.IsOk());
+}
+
+TEST(ParseCapabilities, AcceptInsecureCertsDisabledByDefault) {
+  Capabilities capabilities;
+  base::DictionaryValue caps;
+  Status status = capabilities.Parse(caps);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_FALSE(capabilities.accept_insecure_certs);
+}
+
+TEST(ParseCapabilities, EnableAcceptInsecureCerts) {
+  Capabilities capabilities;
+  base::DictionaryValue caps;
+  caps.SetBoolean("acceptInsecureCerts", true);
+  Status status = capabilities.Parse(caps);
+  ASSERT_TRUE(status.IsOk());
+  ASSERT_TRUE(capabilities.accept_insecure_certs);
+}
+
 TEST(ParseCapabilities, LoggingPrefsOk) {
   Capabilities capabilities;
   base::DictionaryValue logging_prefs;
   logging_prefs.SetString("Network", "INFO");
   base::DictionaryValue caps;
-  caps.Set("loggingPrefs", logging_prefs.DeepCopy());
+  caps.SetKey("loggingPrefs", std::move(logging_prefs));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(1u, capabilities.logging_prefs.size());
@@ -343,26 +401,22 @@ TEST(ParseCapabilities, PerfLoggingPrefsInspectorDomainStatus) {
   base::DictionaryValue logging_prefs;
   logging_prefs.SetString(WebDriverLog::kPerformanceType, "INFO");
   base::DictionaryValue desired_caps;
-  desired_caps.Set("loggingPrefs", logging_prefs.DeepCopy());
+  desired_caps.SetKey("loggingPrefs", std::move(logging_prefs));
   ASSERT_EQ(PerfLoggingPrefs::InspectorDomainStatus::kDefaultEnabled,
             capabilities.perf_logging_prefs.network);
   ASSERT_EQ(PerfLoggingPrefs::InspectorDomainStatus::kDefaultEnabled,
             capabilities.perf_logging_prefs.page);
-  ASSERT_EQ(PerfLoggingPrefs::InspectorDomainStatus::kDefaultDisabled,
-            capabilities.perf_logging_prefs.timeline);
   base::DictionaryValue perf_logging_prefs;
   perf_logging_prefs.SetBoolean("enableNetwork", true);
   perf_logging_prefs.SetBoolean("enablePage", false);
-  desired_caps.Set("chromeOptions.perfLoggingPrefs",
-                   perf_logging_prefs.DeepCopy());
+  desired_caps.SetPath({"goog:chromeOptions", "perfLoggingPrefs"},
+                       std::move(perf_logging_prefs));
   Status status = capabilities.Parse(desired_caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(PerfLoggingPrefs::InspectorDomainStatus::kExplicitlyEnabled,
             capabilities.perf_logging_prefs.network);
   ASSERT_EQ(PerfLoggingPrefs::InspectorDomainStatus::kExplicitlyDisabled,
             capabilities.perf_logging_prefs.page);
-  ASSERT_EQ(PerfLoggingPrefs::InspectorDomainStatus::kDefaultDisabled,
-            capabilities.perf_logging_prefs.timeline);
 }
 
 TEST(ParseCapabilities, PerfLoggingPrefsTracing) {
@@ -371,13 +425,13 @@ TEST(ParseCapabilities, PerfLoggingPrefsTracing) {
   base::DictionaryValue logging_prefs;
   logging_prefs.SetString(WebDriverLog::kPerformanceType, "INFO");
   base::DictionaryValue desired_caps;
-  desired_caps.Set("loggingPrefs", logging_prefs.DeepCopy());
+  desired_caps.SetKey("loggingPrefs", std::move(logging_prefs));
   ASSERT_EQ("", capabilities.perf_logging_prefs.trace_categories);
   base::DictionaryValue perf_logging_prefs;
   perf_logging_prefs.SetString("traceCategories", "benchmark,blink.console");
   perf_logging_prefs.SetInteger("bufferUsageReportingInterval", 1234);
-  desired_caps.Set("chromeOptions.perfLoggingPrefs",
-                   perf_logging_prefs.DeepCopy());
+  desired_caps.SetPath({"goog:chromeOptions", "perfLoggingPrefs"},
+                       std::move(perf_logging_prefs));
   Status status = capabilities.Parse(desired_caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ("benchmark,blink.console",
@@ -392,12 +446,12 @@ TEST(ParseCapabilities, PerfLoggingPrefsInvalidInterval) {
   base::DictionaryValue logging_prefs;
   logging_prefs.SetString(WebDriverLog::kPerformanceType, "INFO");
   base::DictionaryValue desired_caps;
-  desired_caps.Set("loggingPrefs", logging_prefs.DeepCopy());
+  desired_caps.SetKey("loggingPrefs", std::move(logging_prefs));
   base::DictionaryValue perf_logging_prefs;
   // A bufferUsageReportingInterval interval <= 0 will cause DevTools errors.
   perf_logging_prefs.SetInteger("bufferUsageReportingInterval", 0);
-  desired_caps.Set("chromeOptions.perfLoggingPrefs",
-                   perf_logging_prefs.DeepCopy());
+  desired_caps.SetPath({"goog:chromeOptions", "perfLoggingPrefs"},
+                       std::move(perf_logging_prefs));
   Status status = capabilities.Parse(desired_caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -408,8 +462,9 @@ TEST(ParseCapabilities, PerfLoggingPrefsNotDict) {
   base::DictionaryValue logging_prefs;
   logging_prefs.SetString(WebDriverLog::kPerformanceType, "INFO");
   base::DictionaryValue desired_caps;
-  desired_caps.Set("loggingPrefs", logging_prefs.DeepCopy());
-  desired_caps.SetString("chromeOptions.perfLoggingPrefs", "traceCategories");
+  desired_caps.SetKey("loggingPrefs", std::move(logging_prefs));
+  desired_caps.SetString("goog:chromeOptions.perfLoggingPrefs",
+                         "traceCategories");
   Status status = capabilities.Parse(desired_caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -419,8 +474,8 @@ TEST(ParseCapabilities, PerfLoggingPrefsNoPerfLogLevel) {
   base::DictionaryValue desired_caps;
   base::DictionaryValue perf_logging_prefs;
   perf_logging_prefs.SetBoolean("enableNetwork", true);
-  desired_caps.Set("chromeOptions.perfLoggingPrefs",
-                   perf_logging_prefs.DeepCopy());
+  desired_caps.SetPath({"goog:chromeOptions", "perfLoggingPrefs"},
+                       std::move(perf_logging_prefs));
   // Should fail because perf log must be enabled if perf log prefs specified.
   Status status = capabilities.Parse(desired_caps);
   ASSERT_FALSE(status.IsOk());
@@ -432,11 +487,11 @@ TEST(ParseCapabilities, PerfLoggingPrefsPerfLogOff) {
   // Disable performance log by setting logging level to OFF.
   logging_prefs.SetString(WebDriverLog::kPerformanceType, "OFF");
   base::DictionaryValue desired_caps;
-  desired_caps.Set("loggingPrefs", logging_prefs.DeepCopy());
+  desired_caps.SetKey("loggingPrefs", std::move(logging_prefs));
   base::DictionaryValue perf_logging_prefs;
   perf_logging_prefs.SetBoolean("enableNetwork", true);
-  desired_caps.Set("chromeOptions.perfLoggingPrefs",
-                   perf_logging_prefs.DeepCopy());
+  desired_caps.SetPath({"goog:chromeOptions", "perfLoggingPrefs"},
+                       std::move(perf_logging_prefs));
   // Should fail because perf log must be enabled if perf log prefs specified.
   Status status = capabilities.Parse(desired_caps);
   ASSERT_FALSE(status.IsOk());
@@ -444,23 +499,24 @@ TEST(ParseCapabilities, PerfLoggingPrefsPerfLogOff) {
 
 TEST(ParseCapabilities, ExcludeSwitches) {
   Capabilities capabilities;
-  base::ListValue exclude_switches;
-  exclude_switches.AppendString("switch1");
-  exclude_switches.AppendString("switch2");
+  base::Value::ListStorage exclude_switches;
+  exclude_switches.emplace_back("switch1");
+  exclude_switches.emplace_back("switch2");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.excludeSwitches", exclude_switches.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "excludeSwitches"},
+               base::Value(exclude_switches));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_EQ(2u, capabilities.exclude_switches.size());
   const std::set<std::string>& switches = capabilities.exclude_switches;
-  ASSERT_TRUE(switches.find("switch1") != switches.end());
-  ASSERT_TRUE(switches.find("switch2") != switches.end());
+  ASSERT_TRUE(base::ContainsKey(switches, "switch1"));
+  ASSERT_TRUE(base::ContainsKey(switches, "switch2"));
 }
 
 TEST(ParseCapabilities, UseRemoteBrowser) {
   Capabilities capabilities;
   base::DictionaryValue caps;
-  caps.SetString("chromeOptions.debuggerAddress", "abc:123");
+  caps.SetString("goog:chromeOptions.debuggerAddress", "abc:123");
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
   ASSERT_TRUE(capabilities.IsRemoteBrowser());
@@ -473,7 +529,8 @@ TEST(ParseCapabilities, MobileEmulationUserAgent) {
   base::DictionaryValue mobile_emulation;
   mobile_emulation.SetString("userAgent", "Agent Smith");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.mobileEmulation", mobile_emulation.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "mobileEmulation"},
+               std::move(mobile_emulation));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
 
@@ -489,7 +546,8 @@ TEST(ParseCapabilities, MobileEmulationDeviceMetrics) {
   mobile_emulation.SetInteger("deviceMetrics.height", 640);
   mobile_emulation.SetDouble("deviceMetrics.pixelRatio", 3.0);
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.mobileEmulation", mobile_emulation.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "mobileEmulation"},
+               std::move(mobile_emulation));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
 
@@ -501,19 +559,20 @@ TEST(ParseCapabilities, MobileEmulationDeviceMetrics) {
 TEST(ParseCapabilities, MobileEmulationDeviceName) {
   Capabilities capabilities;
   base::DictionaryValue mobile_emulation;
-  mobile_emulation.SetString("deviceName", "Google Nexus 5");
+  mobile_emulation.SetString("deviceName", "Nexus 5");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.mobileEmulation", mobile_emulation.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "mobileEmulation"},
+               std::move(mobile_emulation));
   Status status = capabilities.Parse(caps);
   ASSERT_TRUE(status.IsOk());
 
   ASSERT_EQ(1u, capabilities.switches.GetSize());
   ASSERT_TRUE(capabilities.switches.HasSwitch("user-agent"));
-  ASSERT_EQ(
-      "Mozilla/5.0 (Linux; Android 4.4.4; Nexus 5 Build/KTU84P) "
-      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/38.0.2125.114 Mobile "
-      "Safari/537.36",
-      capabilities.switches.GetSwitchValue("user-agent"));
+  ASSERT_TRUE(base::MatchPattern(
+      capabilities.switches.GetSwitchValue("user-agent"),
+      "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/*.*.*.* Mobile "
+      "Safari/537.36"));
 
   ASSERT_EQ(360, capabilities.device_metrics->width);
   ASSERT_EQ(640, capabilities.device_metrics->height);
@@ -523,7 +582,7 @@ TEST(ParseCapabilities, MobileEmulationDeviceName) {
 TEST(ParseCapabilities, MobileEmulationNotDict) {
   Capabilities capabilities;
   base::DictionaryValue caps;
-  caps.SetString("chromeOptions.mobileEmulation", "Google Nexus 5");
+  caps.SetString("goog:chromeOptions.mobileEmulation", "Google Nexus 5");
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -533,7 +592,8 @@ TEST(ParseCapabilities, MobileEmulationDeviceMetricsNotDict) {
   base::DictionaryValue mobile_emulation;
   mobile_emulation.SetInteger("deviceMetrics", 360);
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.mobileEmulation", mobile_emulation.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "mobileEmulation"},
+               std::move(mobile_emulation));
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -545,7 +605,8 @@ TEST(ParseCapabilities, MobileEmulationDeviceMetricsNotNumbers) {
   mobile_emulation.SetString("deviceMetrics.height", "640");
   mobile_emulation.SetString("deviceMetrics.pixelRatio", "3.0");
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.mobileEmulation", mobile_emulation.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "mobileEmulation"},
+               std::move(mobile_emulation));
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }
@@ -558,7 +619,8 @@ TEST(ParseCapabilities, MobileEmulationBadDict) {
   mobile_emulation.SetInteger("deviceMetrics.height", 640);
   mobile_emulation.SetDouble("deviceMetrics.pixelRatio", 3.0);
   base::DictionaryValue caps;
-  caps.Set("chromeOptions.mobileEmulation", mobile_emulation.DeepCopy());
+  caps.SetPath({"goog:chromeOptions", "mobileEmulation"},
+               std::move(mobile_emulation));
   Status status = capabilities.Parse(caps);
   ASSERT_FALSE(status.IsOk());
 }

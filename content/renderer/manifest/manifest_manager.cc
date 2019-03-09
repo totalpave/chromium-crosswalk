@@ -4,25 +4,36 @@
 
 #include "content/renderer/manifest/manifest_manager.h"
 
+#include <utility>
+
 #include "base/bind.h"
+#include "base/no_destructor.h"
 #include "base/strings/nullable_string16.h"
-#include "content/common/manifest_manager_messages.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/renderer/fetchers/manifest_fetcher.h"
 #include "content/renderer/manifest/manifest_parser.h"
 #include "content/renderer/manifest/manifest_uma_util.h"
-#include "third_party/WebKit/public/platform/WebURLResponse.h"
-#include "third_party/WebKit/public/web/WebConsoleMessage.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/platform/web_url_response.h"
+#include "third_party/blink/public/web/web_console_message.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 
 namespace content {
+
+// static
+bool ManifestManager::CanFetchManifest(RenderFrame* render_frame) {
+  // Do not fetch the manifest if we are on a unique origin.
+  return !render_frame->GetWebFrame()
+              ->GetDocument()
+              .GetSecurityOrigin()
+              .IsUnique();
+}
 
 ManifestManager::ManifestManager(RenderFrame* render_frame)
     : RenderFrameObserver(render_frame),
       may_have_manifest_(false),
-      manifest_dirty_(true) {
-}
+      manifest_dirty_(true) {}
 
 ManifestManager::~ManifestManager() {
   if (fetcher_)
@@ -34,75 +45,42 @@ ManifestManager::~ManifestManager() {
   ResolveCallbacks(ResolveStateFailure);
 }
 
-bool ManifestManager::OnMessageReceived(const IPC::Message& message) {
-  bool handled = true;
-
-  IPC_BEGIN_MESSAGE_MAP(ManifestManager, message)
-    IPC_MESSAGE_HANDLER(ManifestManagerMsg_HasManifest, OnHasManifest)
-    IPC_MESSAGE_HANDLER(ManifestManagerMsg_RequestManifest, OnRequestManifest)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-
-  return handled;
+void ManifestManager::RequestManifest(RequestManifestCallback callback) {
+  RequestManifestImpl(base::BindOnce(
+      [](RequestManifestCallback callback, const GURL& manifest_url,
+         const blink::Manifest& manifest,
+         const blink::mojom::ManifestDebugInfo* debug_info) {
+        std::move(callback).Run(manifest_url, manifest);
+      },
+      std::move(callback)));
 }
 
-void ManifestManager::OnHasManifest(int request_id) {
-  GURL url(render_frame()->GetWebFrame()->document().manifestURL());
-
-  bool has_manifest = may_have_manifest_ && !url.is_empty();
-  Send(new ManifestManagerHostMsg_HasManifestResponse(
-      routing_id(), request_id, has_manifest));
+void ManifestManager::RequestManifestDebugInfo(
+    RequestManifestDebugInfoCallback callback) {
+  RequestManifestImpl(base::BindOnce(
+      [](RequestManifestDebugInfoCallback callback, const GURL& manifest_url,
+         const blink::Manifest& manifest,
+         const blink::mojom::ManifestDebugInfo* debug_info) {
+        std::move(callback).Run(manifest_url,
+                                debug_info ? debug_info->Clone() : nullptr);
+      },
+      std::move(callback)));
 }
 
-void ManifestManager::OnRequestManifest(int request_id) {
-  GetManifest(base::Bind(&ManifestManager::OnRequestManifestComplete,
-                         base::Unretained(this), request_id));
-}
-
-void ManifestManager::OnRequestManifestComplete(
-    int request_id, const Manifest& manifest,
-    const ManifestDebugInfo&) {
-  // When sent via IPC, the Manifest must follow certain security rules.
-  Manifest ipc_manifest = manifest;
-  ipc_manifest.name = base::NullableString16(
-      ipc_manifest.name.string().substr(0, Manifest::kMaxIPCStringLength),
-      ipc_manifest.name.is_null());
-  ipc_manifest.short_name = base::NullableString16(
-        ipc_manifest.short_name.string().substr(0,
-                                                Manifest::kMaxIPCStringLength),
-        ipc_manifest.short_name.is_null());
-  for (auto& icon : ipc_manifest.icons) {
-    icon.type = base::NullableString16(
-        icon.type.string().substr(0, Manifest::kMaxIPCStringLength),
-        icon.type.is_null());
-  }
-  ipc_manifest.gcm_sender_id = base::NullableString16(
-        ipc_manifest.gcm_sender_id.string().substr(
-            0, Manifest::kMaxIPCStringLength),
-        ipc_manifest.gcm_sender_id.is_null());
-  for (auto& related_application : ipc_manifest.related_applications) {
-    related_application.id =
-        base::NullableString16(related_application.id.string().substr(
-                                   0, Manifest::kMaxIPCStringLength),
-                               related_application.id.is_null());
-  }
-
-  Send(new ManifestManagerHostMsg_RequestManifestResponse(
-      routing_id(), request_id, ipc_manifest));
-}
-
-void ManifestManager::GetManifest(const GetManifestCallback& callback) {
+void ManifestManager::RequestManifestImpl(
+    InternalRequestManifestCallback callback) {
   if (!may_have_manifest_) {
-    callback.Run(Manifest(), ManifestDebugInfo());
+    std::move(callback).Run(GURL(), blink::Manifest(), nullptr);
     return;
   }
 
   if (!manifest_dirty_) {
-    callback.Run(manifest_, manifest_debug_info_);
+    std::move(callback).Run(manifest_url_, manifest_,
+                            manifest_debug_info_.get());
     return;
   }
 
-  pending_callbacks_.push_back(callback);
+  pending_callbacks_.push_back(std::move(callback));
 
   // Just wait for the running call to be done if there are other callbacks.
   if (pending_callbacks_.size() > 1)
@@ -114,70 +92,83 @@ void ManifestManager::GetManifest(const GetManifestCallback& callback) {
 void ManifestManager::DidChangeManifest() {
   may_have_manifest_ = true;
   manifest_dirty_ = true;
+  manifest_url_ = GURL();
+  manifest_debug_info_ = nullptr;
 }
 
-void ManifestManager::DidCommitProvisionalLoad(
-    bool is_new_navigation,
-    bool is_same_page_navigation) {
-  if (is_same_page_navigation)
+void ManifestManager::DidCommitProvisionalLoad(bool is_same_document_navigation,
+                                               ui::PageTransition transition) {
+  if (is_same_document_navigation)
     return;
 
   may_have_manifest_ = false;
   manifest_dirty_ = true;
+  manifest_url_ = GURL();
 }
 
 void ManifestManager::FetchManifest() {
-  GURL url(render_frame()->GetWebFrame()->document().manifestURL());
+  if (!CanFetchManifest(render_frame())) {
+    ManifestUmaUtil::FetchFailed(ManifestUmaUtil::FETCH_FROM_UNIQUE_ORIGIN);
+    ResolveCallbacks(ResolveStateFailure);
+    return;
+  }
 
-  if (url.is_empty()) {
+  manifest_url_ = render_frame()->GetWebFrame()->GetDocument().ManifestURL();
+
+  if (manifest_url_.is_empty()) {
     ManifestUmaUtil::FetchFailed(ManifestUmaUtil::FETCH_EMPTY_URL);
     ResolveCallbacks(ResolveStateFailure);
     return;
   }
 
-  fetcher_.reset(new ManifestFetcher(url));
+  fetcher_.reset(new ManifestFetcher(manifest_url_));
   fetcher_->Start(
       render_frame()->GetWebFrame(),
-      render_frame()->GetWebFrame()->document().manifestUseCredentials(),
+      render_frame()->GetWebFrame()->GetDocument().ManifestUseCredentials(),
       base::Bind(&ManifestManager::OnManifestFetchComplete,
                  base::Unretained(this),
-                 render_frame()->GetWebFrame()->document().url()));
+                 render_frame()->GetWebFrame()->GetDocument().Url()));
 }
 
 static const std::string& GetMessagePrefix() {
-  CR_DEFINE_STATIC_LOCAL(std::string, message_prefix, ("Manifest: "));
-  return message_prefix;
+  static base::NoDestructor<std::string> message_prefix("Manifest: ");
+  return *message_prefix;
 }
 
 void ManifestManager::OnManifestFetchComplete(
     const GURL& document_url,
     const blink::WebURLResponse& response,
     const std::string& data) {
-  if (response.isNull() && data.empty()) {
+  fetcher_.reset();
+  if (response.IsNull() && data.empty()) {
+    manifest_debug_info_ = nullptr;
     ManifestUmaUtil::FetchFailed(ManifestUmaUtil::FETCH_UNSPECIFIED_REASON);
     ResolveCallbacks(ResolveStateFailure);
     return;
   }
 
   ManifestUmaUtil::FetchSucceeded();
-  ManifestParser parser(data, response.url(), document_url);
+  GURL response_url = response.CurrentRequestUrl();
+  base::StringPiece data_piece(data);
+  ManifestParser parser(data_piece, response_url, document_url);
   parser.Parse();
 
-  fetcher_.reset();
-  manifest_debug_info_.raw_data = data;
-  parser.TakeErrors(&manifest_debug_info_.errors);
+  manifest_debug_info_ = blink::mojom::ManifestDebugInfo::New();
+  manifest_debug_info_->raw_manifest = data;
+  parser.TakeErrors(&manifest_debug_info_->errors);
 
-  for (const auto& error : manifest_debug_info_.errors) {
+  for (const auto& error : manifest_debug_info_->errors) {
     blink::WebConsoleMessage message;
-    message.level = error.critical ? blink::WebConsoleMessage::LevelError :
-        blink::WebConsoleMessage::LevelWarning;
+    message.level = error->critical
+                        ? blink::mojom::ConsoleMessageLevel::kError
+                        : blink::mojom::ConsoleMessageLevel::kWarning;
     message.text =
-        blink::WebString::fromUTF8(GetMessagePrefix() + error.message);
+        blink::WebString::FromUTF8(GetMessagePrefix() + error->message);
     message.url =
-        render_frame()->GetWebFrame()->document().manifestURL().string();
-    message.lineNumber = error.line;
-    message.columnNumber = error.column;
-    render_frame()->GetWebFrame()->addMessageToConsole(message);
+        render_frame()->GetWebFrame()->GetDocument().ManifestURL().GetString();
+    message.line_number = error->line;
+    message.column_number = error->column;
+    render_frame()->GetWebFrame()->AddMessageToConsole(message);
   }
 
   // Having errors while parsing the manifest doesn't mean the manifest parsing
@@ -187,27 +178,37 @@ void ManifestManager::OnManifestFetchComplete(
     return;
   }
 
+  manifest_url_ = response.CurrentRequestUrl();
   manifest_ = parser.manifest();
   ResolveCallbacks(ResolveStateSuccess);
 }
 
 void ManifestManager::ResolveCallbacks(ResolveState state) {
+  // Do not reset |manifest_url_| on failure here. If manifest_url_ is
+  // non-empty, that means the link 404s, we failed to fetch it, or it was
+  // unparseable. However, the site still tried to specify a manifest, so
+  // preserve that information in the URL for the callbacks.
+  // |manifest_url| will be reset on navigation or if we receive a didchange
+  // event.
   if (state == ResolveStateFailure)
-    manifest_ = Manifest();
+    manifest_ = blink::Manifest();
 
   manifest_dirty_ = state != ResolveStateSuccess;
 
-  std::list<GetManifestCallback> callbacks;
-  callbacks.swap(pending_callbacks_);
+  std::vector<InternalRequestManifestCallback> callbacks;
+  swap(callbacks, pending_callbacks_);
 
-  for (std::list<GetManifestCallback>::const_iterator it = callbacks.begin();
-       it != callbacks.end(); ++it) {
-    it->Run(manifest_, manifest_debug_info_);
+  for (auto& callback : callbacks) {
+    std::move(callback).Run(manifest_url_, manifest_,
+                            manifest_debug_info_.get());
   }
 }
 
-void ManifestManager::OnDestruct() {
-  delete this;
+void ManifestManager::BindToRequest(
+    blink::mojom::ManifestManagerRequest request) {
+  bindings_.AddBinding(this, std::move(request));
 }
 
-} // namespace content
+void ManifestManager::OnDestruct() {}
+
+}  // namespace content

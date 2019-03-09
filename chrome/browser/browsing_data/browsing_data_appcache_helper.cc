@@ -7,19 +7,22 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/location.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/browsing_data/browsing_data_helper.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
 #include "net/base/completion_callback.h"
+#include "third_party/blink/public/mojom/appcache/appcache_info.mojom.h"
 
 using content::BrowserContext;
 using content::BrowserThread;
 
 namespace {
 
-void OnFetchComplete(
-    const BrowsingDataAppCacheHelper::FetchCallback& callback,
+void OnAppCacheInfoFetchComplete(
+    BrowsingDataAppCacheHelper::FetchCallback callback,
     scoped_refptr<content::AppCacheInfoCollection> info_collection,
     int /*rv*/) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
@@ -27,18 +30,17 @@ void OnFetchComplete(
 
   // Filter out appcache info entries for non-websafe schemes. Extension state
   // and DevTools, for example, are not considered browsing data.
-  typedef std::map<GURL, content::AppCacheInfoVector> InfoByOrigin;
-  InfoByOrigin& origin_map = info_collection->infos_by_origin;
-  for (InfoByOrigin::iterator it = origin_map.begin();
-       it != origin_map.end();) {
-    if (!BrowsingDataHelper::HasWebScheme(it->first))
+  auto& origin_map = info_collection->infos_by_origin;
+  for (auto it = origin_map.begin(); it != origin_map.end();) {
+    if (!BrowsingDataHelper::IsWebScheme(it->first.scheme()))
       origin_map.erase(it++);
     else
       ++it;
   }
 
-  BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                          base::Bind(callback, info_collection));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(std::move(callback), info_collection));
 }
 
 }  // namespace
@@ -49,28 +51,28 @@ BrowsingDataAppCacheHelper::BrowsingDataAppCacheHelper(
           BrowserContext::GetDefaultStoragePartition(browser_context)
               ->GetAppCacheService()) {}
 
-void BrowsingDataAppCacheHelper::StartFetching(const FetchCallback& callback) {
+void BrowsingDataAppCacheHelper::StartFetching(FetchCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(!callback.is_null());
 
-  BrowserThread::PostTask(
-      BrowserThread::IO, FROM_HERE,
-      base::Bind(&BrowsingDataAppCacheHelper::StartFetchingOnIOThread, this,
-                 callback));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::IO},
+      base::BindOnce(&BrowsingDataAppCacheHelper::StartFetchingOnIOThread, this,
+                     std::move(callback)));
 }
 
 void BrowsingDataAppCacheHelper::DeleteAppCacheGroup(const GURL& manifest_url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  BrowserThread::PostTask(
-      BrowserThread::IO, FROM_HERE,
-      base::Bind(&BrowsingDataAppCacheHelper::DeleteAppCacheGroupOnIOThread,
-                 this, manifest_url));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::IO},
+      base::BindOnce(&BrowsingDataAppCacheHelper::DeleteAppCacheGroupOnIOThread,
+                     this, manifest_url));
 }
 
 BrowsingDataAppCacheHelper::~BrowsingDataAppCacheHelper() {}
 
 void BrowsingDataAppCacheHelper::StartFetchingOnIOThread(
-    const FetchCallback& callback) {
+    FetchCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   DCHECK(!callback.is_null());
 
@@ -79,7 +81,8 @@ void BrowsingDataAppCacheHelper::StartFetchingOnIOThread(
 
   appcache_service_->GetAllAppCacheInfo(
       info_collection.get(),
-      base::Bind(&OnFetchComplete, callback, info_collection));
+      base::BindOnce(&OnAppCacheInfoFetchComplete, std::move(callback),
+                     info_collection));
 }
 
 void BrowsingDataAppCacheHelper::DeleteAppCacheGroupOnIOThread(
@@ -100,15 +103,15 @@ void CannedBrowsingDataAppCacheHelper::AddAppCache(const GURL& manifest_url) {
     return;  // Ignore non-websafe schemes.
 
   OriginAppCacheInfoMap& origin_map = info_collection_->infos_by_origin;
-  content::AppCacheInfoVector& appcache_infos =
-      origin_map[manifest_url.GetOrigin()];
+  std::vector<blink::mojom::AppCacheInfo>& appcache_infos =
+      origin_map[url::Origin::Create(manifest_url)];
 
   for (const auto& appcache : appcache_infos) {
     if (appcache.manifest_url == manifest_url)
       return;
   }
 
-  content::AppCacheInfo info;
+  blink::mojom::AppCacheInfo info;
   info.manifest_url = manifest_url;
   appcache_infos.push_back(info);
 }
@@ -135,13 +138,13 @@ CannedBrowsingDataAppCacheHelper::GetOriginAppCacheInfoMap() const {
 }
 
 void CannedBrowsingDataAppCacheHelper::StartFetching(
-    const FetchCallback& completion_callback) {
-  completion_callback.Run(info_collection_);
+    FetchCallback completion_callback) {
+  std::move(completion_callback).Run(info_collection_);
 }
 
 void CannedBrowsingDataAppCacheHelper::DeleteAppCacheGroup(
     const GURL& manifest_url) {
-  info_collection_->infos_by_origin.erase(manifest_url.GetOrigin());
+  info_collection_->infos_by_origin.erase(url::Origin::Create(manifest_url));
   BrowsingDataAppCacheHelper::DeleteAppCacheGroup(manifest_url);
 }
 

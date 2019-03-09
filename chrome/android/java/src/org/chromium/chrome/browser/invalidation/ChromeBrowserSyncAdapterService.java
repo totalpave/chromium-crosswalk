@@ -4,13 +4,22 @@
 
 package org.chromium.chrome.browser.invalidation;
 
+import android.annotation.SuppressLint;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.IBinder;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.chrome.browser.init.ProcessInitializationHandler;
+
+/**
+ * A Service that provides access to {@link ChromeBrowserSyncAdapter}.
+ */
 public class ChromeBrowserSyncAdapterService extends Service {
-    private static ChromeBrowserSyncAdapter sSyncAdapter = null;
+
+    @SuppressLint("StaticFieldLeak")
+    private static ChromeBrowserSyncAdapter sSyncAdapter;
     private static final Object LOCK = new Object();
 
     /**
@@ -19,7 +28,8 @@ public class ChromeBrowserSyncAdapterService extends Service {
     private ChromeBrowserSyncAdapter getOrCreateSyncAdapter(Context applicationContext) {
         synchronized (LOCK) {
             if (sSyncAdapter == null) {
-                sSyncAdapter = new ChromeBrowserSyncAdapter(applicationContext, getApplication());
+                ProcessInitializationHandler.getInstance().initializePreNative();
+                sSyncAdapter = new ChromeBrowserSyncAdapter(applicationContext);
             }
         }
         return sSyncAdapter;
@@ -27,6 +37,6 @@ public class ChromeBrowserSyncAdapterService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) {
-        return getOrCreateSyncAdapter(getApplicationContext()).getSyncAdapterBinder();
+        return getOrCreateSyncAdapter(ContextUtils.getApplicationContext()).getSyncAdapterBinder();
     }
 }

@@ -4,11 +4,14 @@
 
 #include "chrome/browser/extensions/launch_util.h"
 
+#include <memory>
+
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_sync_service.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/web_applications/extensions/bookmark_app_util.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -16,10 +19,6 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/pref_names.h"
 #include "extensions/common/extension.h"
-
-#if defined(USE_ASH)
-#include "ash/shell.h"
-#endif
 
 namespace extensions {
 namespace {
@@ -35,7 +34,7 @@ namespace launch_util {
 // static
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterIntegerPref(pref_names::kBookmarkAppCreationLaunchType,
-                                LAUNCH_TYPE_REGULAR);
+                                LAUNCH_TYPE_WINDOW);
 }
 
 }  // namespace launch_util
@@ -47,6 +46,12 @@ LaunchType GetLaunchType(const ExtensionPrefs* prefs,
   int value = GetLaunchTypePrefValue(prefs, extension->id());
   if (value >= LAUNCH_TYPE_FIRST && value < NUM_LAUNCH_TYPES)
     result = static_cast<LaunchType>(value);
+
+  // Force hosted apps that are not locally installed to open in tabs.
+  if (extension->is_hosted_app() &&
+      !BookmarkAppIsLocallyInstalled(prefs, extension)) {
+    result = LAUNCH_TYPE_REGULAR;
+  }
 
 #if defined(OS_MACOSX)
   // Disable opening as window on Mac if:
@@ -83,7 +88,7 @@ void SetLaunchType(content::BrowserContext* context,
 
   ExtensionPrefs::Get(context)->UpdateExtensionPref(
       extension_id, kPrefLaunchType,
-      new base::FundamentalValue(static_cast<int>(launch_type)));
+      std::make_unique<base::Value>(static_cast<int>(launch_type)));
 
   // Sync the launch type.
   const Extension* extension =
@@ -98,14 +103,9 @@ LaunchContainer GetLaunchContainer(const ExtensionPrefs* prefs,
   LaunchContainer manifest_launch_container =
       AppLaunchInfo::GetLaunchContainer(extension);
 
-  const LaunchContainer kInvalidLaunchContainer =
-      static_cast<LaunchContainer>(-1);
+  base::Optional<LaunchContainer> result;
 
-  LaunchContainer result = kInvalidLaunchContainer;
-
-  if (manifest_launch_container == LAUNCH_CONTAINER_PANEL) {
-    // Apps with app.launch.container = 'panel' should always respect the
-    // manifest setting.
+  if (manifest_launch_container == LAUNCH_CONTAINER_PANEL_DEPRECATED) {
     result = manifest_launch_container;
   } else if (manifest_launch_container == LAUNCH_CONTAINER_TAB) {
     // Look for prefs that indicate the user's choice of launch container. The
@@ -116,7 +116,7 @@ LaunchContainer GetLaunchContainer(const ExtensionPrefs* prefs,
       // If the pref is set to launch a window (or no pref is set, and
       // window opening is the default), make the container a window.
       result = LAUNCH_CONTAINER_WINDOW;
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
     } else if (prefs_launch_type == LAUNCH_TYPE_FULLSCREEN) {
       // LAUNCH_TYPE_FULLSCREEN launches in a maximized app window in ash.
       // For desktop chrome AURA on all platforms we should open the
@@ -137,12 +137,12 @@ LaunchContainer GetLaunchContainer(const ExtensionPrefs* prefs,
   }
 
   // All paths should set |result|.
-  if (result == kInvalidLaunchContainer) {
+  if (!result) {
     DLOG(FATAL) << "Failed to set a launch container.";
     result = LAUNCH_CONTAINER_TAB;
   }
 
-  return result;
+  return *result;
 }
 
 bool HasPreferredLaunchContainer(const ExtensionPrefs* prefs,

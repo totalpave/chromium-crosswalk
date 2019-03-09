@@ -19,10 +19,10 @@
 #include "ui/shell_dialogs/shell_dialogs_export.h"
 
 namespace ui {
+
 class SelectFileDialogFactory;
 class SelectFilePolicy;
 struct SelectedFileInfo;
-class ShellDialogsDelegate;
 
 // Shows a dialog box for selecting a file or a folder.
 class SHELL_DIALOGS_EXPORT SelectFileDialog
@@ -38,6 +38,9 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
     // Like SELECT_FOLDER, but the dialog UI should explicitly show it's
     // specifically for "upload".
     SELECT_UPLOAD_FOLDER,
+
+    // Like SELECT_FOLDER, but folder creation is disabled, if possible.
+    SELECT_EXISTING_FOLDER,
 
     // For saving into a file, allowing a nonexistent file to be selected.
     SELECT_SAVEAS_FILE,
@@ -103,8 +106,14 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
   // Creates a dialog box helper. This is an inexpensive wrapper around the
   // platform-native file selection dialog. |policy| is an optional class that
   // can prevent showing a dialog.
-  static scoped_refptr<SelectFileDialog> Create(Listener* listener,
-                                                SelectFilePolicy* policy);
+  //
+  // The lifetime of the Listener is not managed by this class. The calling
+  // code should call always ListenerDestroyed() (on the base class
+  // BaseShellDialog) when the listener is destroyed since the SelectFileDialog
+  // is refcounted and uses a background thread.
+  static scoped_refptr<SelectFileDialog> Create(
+      Listener* listener,
+      std::unique_ptr<SelectFilePolicy> policy);
 
   // Holds information about allowed extensions on a file save dialog.
   struct SHELL_DIALOGS_EXPORT FileTypeInfo {
@@ -118,7 +127,7 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
     //
     // Only pass more than one extension in the inner vector if the extensions
     // are equivalent. Do NOT include leading periods.
-    std::vector<std::vector<base::FilePath::StringType> > extensions;
+    std::vector<std::vector<base::FilePath::StringType>> extensions;
 
     // Overrides the system descriptions of the specified extensions. Entries
     // correspond to |extensions|; if left blank the system descriptions will
@@ -132,9 +141,19 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
     // NATIVE_PATH, the dialog creates a native replica of the non-native file
     // and returns its path, so that the caller can use it without any
     // difference than when it were local.
-    enum AllowedPaths { ANY_PATH, NATIVE_PATH, NATIVE_OR_DRIVE_PATH };
+    enum AllowedPaths {
+      ANY_PATH,
+      NATIVE_PATH,
+      NATIVE_OR_DRIVE_PATH,
+      ANY_PATH_OR_URL
+    };
     AllowedPaths allowed_paths;
   };
+
+  // Returns a file path with a base name at most 255 characters long. This
+  // is the limit on Windows and Linux, and on Windows the system file
+  // selection dialog will fail to open if the file name exceeds 255 characters.
+  static base::FilePath GetShortenedFilePath(const base::FilePath& path);
 
   // Selects a File.
   // Before doing anything this function checks if FileBrowsing is forbidden
@@ -175,7 +194,9 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
 
  protected:
   friend class base::RefCountedThreadSafe<SelectFileDialog>;
-  explicit SelectFileDialog(Listener* listener, SelectFilePolicy* policy);
+
+  explicit SelectFileDialog(Listener* listener,
+                            std::unique_ptr<SelectFilePolicy> policy);
   ~SelectFileDialog() override;
 
   // Displays the actual file-selection dialog.
@@ -213,8 +234,10 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
   DISALLOW_COPY_AND_ASSIGN(SelectFileDialog);
 };
 
-SelectFileDialog* CreateSelectFileDialog(SelectFileDialog::Listener* listener,
-                                         SelectFilePolicy* policy);
+SelectFileDialog* CreateSelectFileDialog(
+    SelectFileDialog::Listener* listener,
+    std::unique_ptr<SelectFilePolicy> policy);
+
 }  // namespace ui
 
 #endif  // UI_SHELL_DIALOGS_SELECT_FILE_DIALOG_H_

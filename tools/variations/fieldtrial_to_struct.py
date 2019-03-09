@@ -21,6 +21,23 @@ try:
 finally:
   sys.path.pop(0)
 
+_platforms = [
+  'android',
+  'android_webview',
+  'chromeos',
+  'fuchsia',
+  'ios',
+  'linux',
+  'mac',
+  'windows',
+]
+
+# Convert a platform argument to the matching Platform enum value in
+# components/variations/proto/study.proto.
+def _PlatformEnumValue(platform):
+  assert platform in _platforms
+  return 'Study::PLATFORM_' + platform.upper()
+
 def _Load(filename):
   """Loads a JSON file into a Python object and return this object.
   """
@@ -28,45 +45,82 @@ def _Load(filename):
     result = json.loads(json_comment_eater.Nom(handle.read()))
   return result
 
-def _LoadFieldTrialConfig(filename):
+def _LoadFieldTrialConfig(filename, platforms):
   """Loads a field trial config JSON and converts it into a format that can be
   used by json_to_struct.
   """
-  return _FieldTrialConfigToDescription(_Load(filename))
+  return _FieldTrialConfigToDescription(_Load(filename), platforms)
 
-def _FieldTrialConfigToDescription(config):
-  element = {'groups': []}
-  for study in sorted(config.keys()):
-    group_data = config[study][0]
-    group = {
-      'study': study,
-      'group_name': group_data['group_name']
+def _CreateExperiment(experiment_data, platforms):
+  experiment = {
+    'name': experiment_data['name'],
+    'platforms': [_PlatformEnumValue(p) for p in platforms],
+  }
+  forcing_flags_data = experiment_data.get('forcing_flag')
+  if forcing_flags_data:
+    experiment['forcing_flag'] = forcing_flags_data
+  params_data = experiment_data.get('params')
+  if (params_data):
+    experiment['params'] = [{'key': param, 'value': params_data[param]}
+                          for param in sorted(params_data.keys())];
+  enable_features_data = experiment_data.get('enable_features')
+  if enable_features_data:
+    experiment['enable_features'] = enable_features_data
+  disable_features_data = experiment_data.get('disable_features')
+  if disable_features_data:
+    experiment['disable_features'] = disable_features_data
+  return experiment
+
+def _CreateTrial(study_name, experiment_configs, platforms):
+  """Returns the applicable experiments for |study_name| and |platforms|. This
+  iterates through all of the experiment_configs for |study_name| and picks out
+  the applicable experiments based off of the valid platforms.
+  """
+  experiments = []
+  for config in experiment_configs:
+    platform_intersection = [p for p in platforms if p in config['platforms']]
+    if platform_intersection:
+      experiments += [_CreateExperiment(e, platform_intersection)
+                      for e in config['experiments']]
+  return {
+    'name': study_name,
+    'experiments': experiments,
+  }
+
+def _GenerateTrials(config, platforms):
+  for study_name in sorted(config.keys()):
+    study = _CreateTrial(study_name, config[study_name], platforms)
+    # To avoid converting studies with empty experiments (e.g. the study doesn't
+    # apply to the target platforms), this generator only yields studies that
+    # have non-empty experiments.
+    if study['experiments']:
+      yield study
+
+def ConfigToStudies(config, platforms):
+  """Returns the applicable studies from config for the platforms."""
+  return [study for study in _GenerateTrials(config, platforms)]
+
+def _FieldTrialConfigToDescription(config, platforms):
+  return {
+    'elements': {
+      'kFieldTrialConfig': {
+        'studies': ConfigToStudies(config, platforms)
+      }
     }
-    params_data = group_data.get('params')
-    if (params_data):
-      params = []
-      for param in sorted(params_data.keys()):
-        params.append({'key': param, 'value': params_data[param]})
-      group['params'] = params
-    enable_features_data = group_data.get('enable_features')
-    if enable_features_data:
-      group['enable_features'] = enable_features_data
-    disable_features_data = group_data.get('disable_features')
-    if disable_features_data:
-      group['disable_features'] = disable_features_data
-    element['groups'].append(group)
-  return {'elements': {'kFieldTrialConfig': element}}
+  }
 
 def main(arguments):
   parser = optparse.OptionParser(
-      description='Generates an C++ array of struct from a JSON description.',
-      usage='usage: %prog [option] -s schema description')
+      description='Generates a struct from a JSON description.',
+      usage='usage: %prog [option] -s schema -p platform description')
   parser.add_option('-b', '--destbase',
       help='base directory of generated files.')
   parser.add_option('-d', '--destdir',
       help='directory to output generated files, relative to destbase.')
   parser.add_option('-n', '--namespace',
       help='C++ namespace for generated files. e.g search_providers.')
+  parser.add_option('-p', '--platform', action='append', choices=_platforms,
+      help='target platform for the field trial, mandatory.')
   parser.add_option('-s', '--schema', help='path to the schema file, '
       'mandatory.')
   parser.add_option('-o', '--output', help='output filename, '
@@ -77,6 +131,9 @@ def main(arguments):
 
   if not opts.schema:
     parser.error('You must specify a --schema.')
+
+  if not opts.platform:
+    parser.error('You must specify at least 1 --platform.')
 
   description_filename = os.path.normpath(args[0])
   shortroot = opts.output
@@ -91,7 +148,7 @@ def main(arguments):
     basepath = ''
 
   schema = _Load(opts.schema)
-  description = _LoadFieldTrialConfig(description_filename)
+  description = _LoadFieldTrialConfig(description_filename, opts.platform)
   json_to_struct.GenerateStruct(
       basepath, output_root, opts.namespace, schema, description,
       os.path.split(description_filename)[1], os.path.split(opts.schema)[1],

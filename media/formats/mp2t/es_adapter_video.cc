@@ -74,8 +74,8 @@ void EsAdapterVideo::OnConfigChanged(
 }
 
 bool EsAdapterVideo::OnNewBuffer(
-    const scoped_refptr<StreamParserBuffer>& stream_parser_buffer) {
-  if (stream_parser_buffer->timestamp() == kNoTimestamp()) {
+    scoped_refptr<StreamParserBuffer> stream_parser_buffer) {
+  if (stream_parser_buffer->timestamp() == kNoTimestamp) {
     if (has_valid_frame_) {
       // There is currently no error concealment for a missing timestamp
       // in the middle of the stream.
@@ -121,9 +121,9 @@ bool EsAdapterVideo::OnNewBuffer(
   has_valid_frame_ = true;
 
   if (discarded_frame_count_ > 0)
-    ReplaceDiscardedFrames(stream_parser_buffer);
+    ReplaceDiscardedFrames(*stream_parser_buffer);
 
-  buffer_list_.push_back(stream_parser_buffer);
+  buffer_list_.emplace_back(std::move(stream_parser_buffer));
   ProcessPendingBuffers(false);
   return true;
 }
@@ -139,13 +139,13 @@ void EsAdapterVideo::ProcessPendingBuffers(bool flush) {
       config_list_.pop_front();
     }
 
-    scoped_refptr<StreamParserBuffer> buffer = buffer_list_.front();
+    scoped_refptr<StreamParserBuffer> buffer = std::move(buffer_list_.front());
     buffer_list_.pop_front();
     buffer_index_++;
 
-    if (buffer->duration() == kNoTimestamp()) {
+    if (buffer->duration() == kNoTimestamp) {
       base::TimeDelta next_frame_pts = GetNextFramePts(buffer->timestamp());
-      if (next_frame_pts == kNoTimestamp()) {
+      if (next_frame_pts == kNoTimestamp) {
         // This can happen when emitting the very last buffer
         // or if the stream do not meet the assumption behind |kHistorySize|.
         DVLOG(LOG_LEVEL_ES) << "Using last frame duration: "
@@ -163,12 +163,12 @@ void EsAdapterVideo::ProcessPendingBuffers(bool flush) {
       emitted_pts_.pop_front();
 
     last_frame_duration_ = buffer->duration();
-    emit_buffer_cb_.Run(buffer);
+    emit_buffer_cb_.Run(std::move(buffer));
   }
 }
 
 base::TimeDelta EsAdapterVideo::GetNextFramePts(base::TimeDelta current_pts) {
-  base::TimeDelta next_pts = kNoTimestamp();
+  base::TimeDelta next_pts = kNoTimestamp;
 
   // Consider the timestamps of future frames (in decode order).
   // Note: the next frame is not enough when the GOP includes some B frames.
@@ -176,7 +176,7 @@ base::TimeDelta EsAdapterVideo::GetNextFramePts(base::TimeDelta current_pts) {
        it != buffer_list_.end(); ++it) {
     if ((*it)->timestamp() < current_pts)
       continue;
-    if (next_pts == kNoTimestamp() || next_pts > (*it)->timestamp())
+    if (next_pts == kNoTimestamp || next_pts > (*it)->timestamp())
       next_pts = (*it)->timestamp();
   }
 
@@ -187,7 +187,7 @@ base::TimeDelta EsAdapterVideo::GetNextFramePts(base::TimeDelta current_pts) {
        it != emitted_pts_.end(); ++it) {
     if (*it < current_pts)
       continue;
-    if (next_pts == kNoTimestamp() || next_pts > *it)
+    if (next_pts == kNoTimestamp || next_pts > *it)
       next_pts = *it;
   }
 
@@ -195,9 +195,9 @@ base::TimeDelta EsAdapterVideo::GetNextFramePts(base::TimeDelta current_pts) {
 }
 
 void EsAdapterVideo::ReplaceDiscardedFrames(
-    const scoped_refptr<StreamParserBuffer>& stream_parser_buffer) {
+    const StreamParserBuffer& stream_parser_buffer) {
   DCHECK_GT(discarded_frame_count_, 0);
-  DCHECK(stream_parser_buffer->is_key_frame());
+  DCHECK(stream_parser_buffer.is_key_frame());
 
   // PTS/DTS are interpolated between the min PTS/DTS of discarded frames
   // and the PTS/DTS of the first valid buffer.
@@ -209,24 +209,21 @@ void EsAdapterVideo::ReplaceDiscardedFrames(
   // |stream_parser_buffer|.
   base::TimeDelta pts = min_pts_;
   base::TimeDelta pts_delta =
-      (stream_parser_buffer->timestamp() - pts) / discarded_frame_count_;
+      (stream_parser_buffer.timestamp() - pts) / discarded_frame_count_;
   DecodeTimestamp dts = min_dts_;
   base::TimeDelta dts_delta =
-      (stream_parser_buffer->GetDecodeTimestamp() - dts) /
+      (stream_parser_buffer.GetDecodeTimestamp() - dts) /
       discarded_frame_count_;
 
   for (int i = 0; i < discarded_frame_count_; i++) {
-    scoped_refptr<StreamParserBuffer> frame =
-        StreamParserBuffer::CopyFrom(
-            stream_parser_buffer->data(),
-            stream_parser_buffer->data_size(),
-            stream_parser_buffer->is_key_frame(),
-            stream_parser_buffer->type(),
-            stream_parser_buffer->track_id());
+    scoped_refptr<StreamParserBuffer> frame = StreamParserBuffer::CopyFrom(
+        stream_parser_buffer.data(), stream_parser_buffer.data_size(),
+        stream_parser_buffer.is_key_frame(), stream_parser_buffer.type(),
+        stream_parser_buffer.track_id());
     frame->SetDecodeTimestamp(dts);
     frame->set_timestamp(pts);
     frame->set_duration(pts_delta);
-    buffer_list_.push_back(frame);
+    buffer_list_.emplace_back(std::move(frame));
     pts += pts_delta;
     dts += dts_delta;
   }

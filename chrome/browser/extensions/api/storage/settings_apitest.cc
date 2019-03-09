@@ -25,19 +25,20 @@
 #include "components/policy/core/common/schema.h"
 #include "components/policy/core/common/schema_map.h"
 #include "components/policy/core/common/schema_registry.h"
+#include "components/sync/model/fake_sync_change_processor.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_change_processor.h"
+#include "components/sync/model/sync_change_processor_wrapper_for_test.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "components/sync/model/sync_error_factory_mock.h"
+#include "components/sync/model/syncable_service.h"
 #include "extensions/browser/api/storage/settings_namespace.h"
 #include "extensions/browser/api/storage/storage_frontend.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/value_builder.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
-#include "sync/api/fake_sync_change_processor.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_change_processor.h"
-#include "sync/api/sync_change_processor_wrapper_for_test.h"
-#include "sync/api/sync_error_factory.h"
-#include "sync/api/sync_error_factory_mock.h"
-#include "sync/api/syncable_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace extensions {
@@ -64,7 +65,7 @@ const char kManagedStorageExtensionId[] = "kjmkgkdkpedkejedfhmfcenooemhbpbo";
 class MockSchemaRegistryObserver : public policy::SchemaRegistry::Observer {
  public:
   MockSchemaRegistryObserver() {}
-  virtual ~MockSchemaRegistryObserver() {}
+  ~MockSchemaRegistryObserver() override {}
 
   MOCK_METHOD1(OnSchemaRegistryUpdated, void(bool));
 };
@@ -329,7 +330,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSettingsApiTest,
 
   // Set "foo" to "bar" via sync.
   syncer::SyncChangeList sync_changes;
-  base::StringValue bar("bar");
+  base::Value bar("bar");
   sync_changes.push_back(settings_sync_util::CreateAdd(
       extension_id, "foo", bar, kModelType));
   SendChanges(sync_changes);
@@ -374,7 +375,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSettingsApiTest,
 
   // Set "foo" to "bar" via sync.
   syncer::SyncChangeList sync_changes;
-  base::StringValue bar("bar");
+  base::Value bar("bar");
   sync_changes.push_back(settings_sync_util::CreateAdd(
       extension_id, "foo", bar, kModelType));
   SendChanges(sync_changes);
@@ -442,37 +443,37 @@ IN_PROC_BROWSER_TEST_F(ExtensionSettingsApiTest, ExtensionsSchemas) {
   ASSERT_TRUE(schema);
 
   ASSERT_TRUE(schema->valid());
-  ASSERT_EQ(base::Value::TYPE_DICTIONARY, schema->type());
+  ASSERT_EQ(base::Value::Type::DICTIONARY, schema->type());
   ASSERT_TRUE(schema->GetKnownProperty("string-policy").valid());
-  EXPECT_EQ(base::Value::TYPE_STRING,
+  EXPECT_EQ(base::Value::Type::STRING,
             schema->GetKnownProperty("string-policy").type());
   ASSERT_TRUE(schema->GetKnownProperty("int-policy").valid());
-  EXPECT_EQ(base::Value::TYPE_INTEGER,
+  EXPECT_EQ(base::Value::Type::INTEGER,
             schema->GetKnownProperty("int-policy").type());
   ASSERT_TRUE(schema->GetKnownProperty("double-policy").valid());
-  EXPECT_EQ(base::Value::TYPE_DOUBLE,
+  EXPECT_EQ(base::Value::Type::DOUBLE,
             schema->GetKnownProperty("double-policy").type());
   ASSERT_TRUE(schema->GetKnownProperty("boolean-policy").valid());
-  EXPECT_EQ(base::Value::TYPE_BOOLEAN,
+  EXPECT_EQ(base::Value::Type::BOOLEAN,
             schema->GetKnownProperty("boolean-policy").type());
 
   policy::Schema list = schema->GetKnownProperty("list-policy");
   ASSERT_TRUE(list.valid());
-  ASSERT_EQ(base::Value::TYPE_LIST, list.type());
+  ASSERT_EQ(base::Value::Type::LIST, list.type());
   ASSERT_TRUE(list.GetItems().valid());
-  EXPECT_EQ(base::Value::TYPE_STRING, list.GetItems().type());
+  EXPECT_EQ(base::Value::Type::STRING, list.GetItems().type());
 
   policy::Schema dict = schema->GetKnownProperty("dict-policy");
   ASSERT_TRUE(dict.valid());
-  ASSERT_EQ(base::Value::TYPE_DICTIONARY, dict.type());
+  ASSERT_EQ(base::Value::Type::DICTIONARY, dict.type());
   list = dict.GetKnownProperty("list");
   ASSERT_TRUE(list.valid());
-  ASSERT_EQ(base::Value::TYPE_LIST, list.type());
+  ASSERT_EQ(base::Value::Type::LIST, list.type());
   dict = list.GetItems();
   ASSERT_TRUE(dict.valid());
-  ASSERT_EQ(base::Value::TYPE_DICTIONARY, dict.type());
+  ASSERT_EQ(base::Value::Type::DICTIONARY, dict.type());
   ASSERT_TRUE(dict.GetProperty("anything").valid());
-  EXPECT_EQ(base::Value::TYPE_INTEGER, dict.GetProperty("anything").type());
+  EXPECT_EQ(base::Value::Type::INTEGER, dict.GetProperty("anything").type());
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionSettingsApiTest, ManagedStorage) {
@@ -482,7 +483,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSettingsApiTest, ManagedStorage) {
           .Set("string-policy", "value")
           .Set("int-policy", -123)
           .Set("double-policy", 456e7)
-          .SetBoolean("boolean-policy", true)
+          .Set("boolean-policy", true)
           .Set("list-policy", extensions::ListBuilder()
                                   .Append("one")
                                   .Append("two")
@@ -569,5 +570,40 @@ IN_PROC_BROWSER_TEST_F(ExtensionSettingsApiTest, ManagedStorageDisabled) {
   ASSERT_TRUE(RunExtensionTest("settings/managed_storage_disabled"))
       << message_;
 }
+
+class StorageAreaApiTest : public ExtensionSettingsApiTest,
+                           public ::testing::WithParamInterface<bool> {
+ public:
+  StorageAreaApiTest() = default;
+  ~StorageAreaApiTest() override = default;
+
+  void SetUp() override {
+    if (GetParam()) {
+      scoped_feature_list_.InitAndEnableFeature(
+          extensions_features::kNativeCrxBindings);
+    } else {
+      scoped_feature_list_.InitAndDisableFeature(
+          extensions_features::kNativeCrxBindings);
+    }
+    ExtensionSettingsApiTest::SetUp();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+
+  DISALLOW_COPY_AND_ASSIGN(StorageAreaApiTest);
+};
+
+IN_PROC_BROWSER_TEST_P(StorageAreaApiTest, StorageAreaOnChanged) {
+  ASSERT_TRUE(RunExtensionTest("settings/storage_area")) << message_;
+}
+
+INSTANTIATE_TEST_SUITE_P(StorageAreaNativeBindings,
+                         StorageAreaApiTest,
+                         ::testing::Values(true));
+
+INSTANTIATE_TEST_SUITE_P(StorageAreaJSBindings,
+                         StorageAreaApiTest,
+                         ::testing::Values(false));
 
 }  // namespace extensions

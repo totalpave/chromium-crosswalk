@@ -25,7 +25,7 @@ class StopParsingException(Exception):
 
 class GrdContentHandler(xml.sax.handler.ContentHandler):
   def __init__(self, stop_after, debug, dir, defines, tags_to_ignore,
-               target_platform):
+               target_platform, source):
     # Invariant of data:
     # 'root' is the root of the parse tree being created, or None if we haven't
     # parsed out any elements.
@@ -41,6 +41,7 @@ class GrdContentHandler(xml.sax.handler.ContentHandler):
     self.tags_to_ignore = tags_to_ignore or set()
     self.ignore_depth = 0
     self.target_platform = target_platform
+    self.source = source
 
   def startElement(self, name, attrs):
     if self.ignore_depth or name in self.tags_to_ignore:
@@ -56,6 +57,7 @@ class GrdContentHandler(xml.sax.handler.ContentHandler):
 
     typeattr = attrs.get('type')
     node = mapping.ElementToClass(name, typeattr)()
+    node.source = self.source
 
     if self.stack:
       self.stack[-1].AddChild(node)
@@ -83,15 +85,17 @@ class GrdContentHandler(xml.sax.handler.ContentHandler):
       partnode = self.stack[-1]
       partnode.started_inclusion = True
       # Add the contents of the sub-grd file as children of the <part> node.
-      partname = partnode.GetInputPath()
-      if os.path.dirname(partname):
-        # TODO(benrg): Remove this limitation. (The problem is that GRIT
-        # assumes that files referenced from the GRD file are relative to
-        # a path stored in the root <grit> node.)
-        raise exception.GotPathExpectedFilenameOnly()
-      partname = os.path.join(self.dir, partname)
+      partname = os.path.join(self.dir, partnode.GetInputPath())
+      # Check the GRDP file exists.
+      if not os.path.exists(partname):
+        raise exception.FileNotFound(partname)
       # Exceptions propagate to the handler in grd_reader.Parse().
-      xml.sax.parse(partname, GrdPartContentHandler(self))
+      oldsource = self.source
+      try:
+        self.source = partname
+        xml.sax.parse(partname, GrdPartContentHandler(self))
+      finally:
+        self.source = oldsource
 
     if self.debug:
       print "End parsing of element %s" % name
@@ -106,7 +110,8 @@ class GrdContentHandler(xml.sax.handler.ContentHandler):
         self.stack[-1].AppendContent(content)
 
   def ignorableWhitespace(self, whitespace):
-    # TODO(joi)  This is not supported by expat.  Should use a different XML parser?
+    # TODO(joi): This is not supported by expat. Should use a different XML
+    # parser?
     pass
 
 
@@ -139,7 +144,8 @@ class GrdPartContentHandler(xml.sax.handler.ContentHandler):
 
 
 def Parse(filename_or_stream, dir=None, stop_after=None, first_ids_file=None,
-          debug=False, defines=None, tags_to_ignore=None, target_platform=None):
+          debug=False, defines=None, tags_to_ignore=None, target_platform=None,
+          predetermined_ids_file=None):
   '''Parses a GRD file into a tree of nodes (from grit.node).
 
   If filename_or_stream is a stream, 'dir' should point to the directory
@@ -168,6 +174,9 @@ def Parse(filename_or_stream, dir=None, stop_after=None, first_ids_file=None,
     defines: dictionary of defines, like {'chromeos': '1'}
     target_platform: None or the value that would be returned by sys.platform
         on your target platform.
+    predetermined_ids_file: File path to a file containing a pre-determined
+        mapping from resource names to resource ids which will be used to assign
+        resource ids to those resources.
 
   Return:
     Subclass of grit.node.base.Node
@@ -176,12 +185,16 @@ def Parse(filename_or_stream, dir=None, stop_after=None, first_ids_file=None,
     grit.exception.Parsing
   '''
 
-  if dir is None and isinstance(filename_or_stream, types.StringType):
-    dir = util.dirname(filename_or_stream)
+  if isinstance(filename_or_stream, types.StringType):
+    source = filename_or_stream
+    if dir is None:
+      dir = util.dirname(filename_or_stream)
+  else:
+    source = None
 
   handler = GrdContentHandler(stop_after=stop_after, debug=debug, dir=dir,
                               defines=defines, tags_to_ignore=tags_to_ignore,
-                              target_platform=target_platform)
+                              target_platform=target_platform, source=source)
   try:
     xml.sax.parse(filename_or_stream, handler)
   except StopParsingException:
@@ -201,6 +214,7 @@ def Parse(filename_or_stream, dir=None, stop_after=None, first_ids_file=None,
     handler.root.SetOwnDir(dir)
 
   if isinstance(handler.root, misc.GritNode):
+    handler.root.SetPredeterminedIdsFile(predetermined_ids_file)
     if first_ids_file:
       # Make the path to the first_ids_file relative to the grd file,
       # unless it begins with GRIT_DIR.

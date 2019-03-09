@@ -7,10 +7,15 @@
 
 #include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/memory/ref_counted.h"
+#include "extensions/browser/api/clipboard/clipboard_api.h"
 #include "extensions/browser/api/declarative_content/content_rules_registry.h"
 #include "extensions/browser/api/storage/settings_namespace.h"
+#include "extensions/common/api/clipboard.h"
+#include "extensions/common/extension_id.h"
 
 class GURL;
 
@@ -35,15 +40,22 @@ class ContentRulesRegistry;
 class DevicePermissionsPrompt;
 class ExtensionOptionsGuest;
 class ExtensionOptionsGuestDelegate;
+class FeedbackPrivateDelegate;
+class FileSystemDelegate;
 class ManagementAPIDelegate;
+class MediaPerceptionAPIDelegate;
+class MessagingDelegate;
+class MetricsPrivateDelegate;
 class MimeHandlerViewGuest;
 class MimeHandlerViewGuestDelegate;
+class NetworkingCastPrivateDelegate;
+class NonNativeFileSystemDelegate;
 class RulesCacheDelegate;
 class SettingsObserver;
 class ValueStoreCache;
 class ValueStoreFactory;
 class VirtualKeyboardDelegate;
-class WebRequestEventRouterDelegate;
+struct WebRequestInfo;
 class WebViewGuest;
 class WebViewGuestDelegate;
 class WebViewPermissionHelper;
@@ -79,6 +91,21 @@ class ExtensionsAPIClient {
   virtual void AttachWebContentsHelpers(content::WebContents* web_contents)
       const;
 
+  // Returns true if the header should be hidden to extensions.
+  virtual bool ShouldHideResponseHeader(const GURL& url,
+                                        const std::string& header_name) const;
+
+  // Returns true if the given |request| should be hidden from extensions. This
+  // should be invoked on the IO thread.
+  virtual bool ShouldHideBrowserNetworkRequest(
+      const WebRequestInfo& request) const;
+
+  // Notifies that an extension failed to act on a network request because the
+  // access to request was withheld.
+  virtual void NotifyWebRequestWithheld(int render_process_id,
+                                        int render_frame_id,
+                                        const ExtensionId& extension_id);
+
   // Creates the AppViewGuestDelegate.
   virtual AppViewGuestDelegate* CreateAppViewGuestDelegate() const;
 
@@ -106,10 +133,6 @@ class ExtensionsAPIClient {
   CreateWebViewPermissionHelperDelegate(
       WebViewPermissionHelper* web_view_permission_helper) const;
 
-  // Creates a delegate for WebRequestEventRouter.
-  virtual std::unique_ptr<WebRequestEventRouterDelegate>
-  CreateWebRequestEventRouterDelegate() const;
-
   // TODO(wjmaclean): Remove this when (if) ContentRulesRegistry code moves
   // to extensions/browser/api.
   virtual scoped_refptr<ContentRulesRegistry> CreateContentRulesRegistry(
@@ -122,10 +145,44 @@ class ExtensionsAPIClient {
 
   // Returns a delegate for some of VirtualKeyboardAPI's behavior.
   virtual std::unique_ptr<VirtualKeyboardDelegate>
-  CreateVirtualKeyboardDelegate() const;
+  CreateVirtualKeyboardDelegate(content::BrowserContext* browser_context) const;
 
   // Creates a delegate for handling the management extension api.
   virtual ManagementAPIDelegate* CreateManagementAPIDelegate() const;
+
+  // If supported by the embedder, returns a delegate for embedder-dependent
+  // MetricsPrivateAPI behavior.
+  virtual MetricsPrivateDelegate* GetMetricsPrivateDelegate();
+
+  // Creates a delegate for networking.castPrivate's API behavior.
+  virtual NetworkingCastPrivateDelegate* GetNetworkingCastPrivateDelegate();
+
+  // Returns a delegate for embedder-specific chrome.fileSystem behavior.
+  virtual FileSystemDelegate* GetFileSystemDelegate();
+
+  // Returns a delegate for embedder-specific extension messaging.
+  virtual MessagingDelegate* GetMessagingDelegate();
+
+  // Returns a delegate for the chrome.feedbackPrivate API.
+  virtual FeedbackPrivateDelegate* GetFeedbackPrivateDelegate();
+
+#if defined(OS_CHROMEOS)
+  // If supported by the embedder, returns a delegate for querying non-native
+  // file systems.
+  virtual NonNativeFileSystemDelegate* GetNonNativeFileSystemDelegate();
+
+  // Returns a delegate for embedder-specific chrome.mediaPerceptionPrivate API
+  // behavior.
+  virtual MediaPerceptionAPIDelegate* GetMediaPerceptionAPIDelegate();
+
+  // Saves image data on clipboard.
+  virtual void SaveImageDataToClipboard(
+      const std::vector<char>& image_data,
+      api::clipboard::ImageType type,
+      AdditionalDataItemList additional_items,
+      const base::Closure& success_callback,
+      const base::Callback<void(const std::string&)>& error_callback);
+#endif
 
   // NOTE: If this interface gains too many methods (perhaps more than 20) it
   // should be split into one interface per API.

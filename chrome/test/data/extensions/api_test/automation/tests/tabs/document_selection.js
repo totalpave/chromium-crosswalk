@@ -17,13 +17,13 @@ var allTests = [
   },
 
   function selectOutsideTextField() {
-    var textNode = rootNode.find({role: RoleType.paragraph}).firstChild;
+    var textNode = rootNode.find({role: RoleType.PARAGRAPH}).firstChild;
     assertTrue(!!textNode);
     chrome.automation.setDocumentSelection({anchorObject: textNode,
                                             anchorOffset: 0,
                                             focusObject: textNode,
                                             focusOffset: 3});
-    listenOnce(rootNode, EventType.documentSelectionChanged, function(evt) {
+    listenOnce(rootNode, EventType.DOCUMENT_SELECTION_CHANGED, function(evt) {
       assertEq(textNode, rootNode.anchorObject);
       assertEq(0, rootNode.anchorOffset);
       assertEq(textNode, rootNode.focusObject);
@@ -33,12 +33,10 @@ var allTests = [
   },
 
   function selectInTextField() {
-    var textField = rootNode.find({role: RoleType.textField});
-    assertTrue(!!textField);
-    textField.focus();
-    listenOnce(textField, EventType.textSelectionChanged, function(evt) {
-      listenOnce(rootNode, EventType.documentSelectionChanged, function(evt) {
-        assertTrue(evt.target === rootNode);
+    listenOnce(rootNode, EventType.DOCUMENT_SELECTION_CHANGED, function(evt1) {
+      listenOnce(textField, EventType.TEXT_SELECTION_CHANGED, function(evt2) {
+        assertTrue(evt1.target === rootNode);
+        assertTrue(evt2.target == textField);
         assertEq(textField, rootNode.anchorObject);
         assertEq(0, rootNode.anchorOffset);
         assertEq(textField, rootNode.focusObject);
@@ -47,7 +45,7 @@ var allTests = [
                                                 anchorOffset: 1,
                                                 focusObject: textField,
                                                 focusOffset: 3});
-        listenOnce(rootNode, EventType.documentSelectionChanged,
+        listenOnce(rootNode, EventType.DOCUMENT_SELECTION_CHANGED,
                    function(evt) {
           assertEq(textField, rootNode.anchorObject);
           assertEq(1, rootNode.anchorOffset);
@@ -57,6 +55,10 @@ var allTests = [
         });
       });
     });
+
+    var textField = rootNode.find({role: RoleType.TEXT_FIELD});
+    assertTrue(!!textField);
+    textField.focus();
   },
 ];
 

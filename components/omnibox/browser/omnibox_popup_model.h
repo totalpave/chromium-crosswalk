@@ -6,16 +6,21 @@
 #define COMPONENTS_OMNIBOX_BROWSER_OMNIBOX_POPUP_MODEL_H_
 
 #include <stddef.h>
+#include <map>
 
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "build/build_config.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/omnibox_edit_model.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/gfx/image/image.h"
 
 class OmniboxPopupModelObserver;
 class OmniboxPopupView;
+class GURL;
 
 namespace gfx {
 class Image;
@@ -26,7 +31,8 @@ class OmniboxPopupModel {
   // See selected_line_state_ for details.
   enum LineState {
     NORMAL = 0,
-    KEYWORD
+    KEYWORD,
+    BUTTON_FOCUSED
   };
 
   OmniboxPopupModel(OmniboxPopupView* popup_view, OmniboxEditModel* edit_model);
@@ -68,12 +74,6 @@ class OmniboxPopupModel {
     return autocomplete_controller()->result();
   }
 
-  size_t hovered_line() const { return hovered_line_; }
-
-  // Call to change the hovered line.  |line| should be within the range of
-  // valid lines (to enable hover) or kNoMatch (to disable hover).
-  void SetHoveredLine(size_t line);
-
   size_t selected_line() const { return selected_line_; }
 
   LineState selected_line_state() const { return selected_line_state_; }
@@ -82,8 +82,8 @@ class OmniboxPopupModel {
   // the necessary parts of the window, as well as updating the edit with the
   // new temporary text.  |line| will be clamped to the range of valid lines.
   // |reset_to_default| is true when the selection is being reset back to the
-  // default match, and thus there is no temporary text (and no
-  // |manually_selected_match_|). If |force| is true then the selected line will
+  // default match, and thus there is no temporary text (and not
+  // |has_selected_match_|). If |force| is true then the selected line will
   // be updated forcibly even if the |line| is same as the current selected
   // line.
   // NOTE: This assumes the popup is open, and thus both old and new values for
@@ -116,17 +116,11 @@ class OmniboxPopupModel {
   // can be removed from history, and if so, remove it and update the popup.
   void TryDeletingCurrentItem();
 
-  // If |match| is from an extension, returns the extension icon; otherwise
-  // returns an empty Image.
-  gfx::Image GetIconIfExtensionMatch(const AutocompleteMatch& match) const;
-
   // Returns true if the destination URL of the match is bookmarked.
   bool IsStarredMatch(const AutocompleteMatch& match) const;
 
-  // The match the user has manually chosen, if any.
-  const AutocompleteResult::Selection& manually_selected_match() const {
-    return manually_selected_match_;
-  }
+  // The user has manually selected a match.
+  bool has_selected_match() { return has_selected_match_; }
 
   // Invoked from the edit model any time the result set of the controller
   // changes.
@@ -136,24 +130,41 @@ class OmniboxPopupModel {
   void AddObserver(OmniboxPopupModelObserver* observer);
   void RemoveObserver(OmniboxPopupModelObserver* observer);
 
+  // Lookup the bitmap for |result_index|. Returns nullptr if not found.
+  const SkBitmap* RichSuggestionBitmapAt(int result_index) const;
   // Stores the image in a local data member and schedules a repaint.
-  void SetAnswerBitmap(const SkBitmap& bitmap);
-  const SkBitmap& answer_bitmap() const { return answer_bitmap_; }
+  void SetRichSuggestionBitmap(int result_index, const SkBitmap& bitmap);
 
-  // The token value for selected_line_, hover_line_ and functions dealing with
-  // a "line number" that indicates "no line".
+#if !defined(OS_ANDROID) && !defined(OS_IOS)
+  // Gets the icon for the match index.
+  gfx::Image GetMatchIcon(const AutocompleteMatch& match,
+                          SkColor vector_icon_color);
+#endif
+
+  // Helper function to see if the current selection specifically has a
+  // tab switch button.
+  bool SelectedLineHasTabMatch();
+
+  // Helper function to see if current selection has button and can accept
+  // the tab key.
+  bool SelectedLineHasButton();
+
+  // If |closes| is set true, the popup will close when the omnibox is blurred.
+  bool popup_closes_on_blur() const { return popup_closes_on_blur_; }
+  void set_popup_closes_on_blur(bool closes) { popup_closes_on_blur_ = closes; }
+
+  // The token value for selected_line_ and functions dealing with a "line
+  // number" that indicates "no line".
   static const size_t kNoMatch;
 
  private:
-  SkBitmap answer_bitmap_;
+  void OnFaviconFetched(const GURL& page_url, const gfx::Image& icon);
+
+  std::map<int, SkBitmap> rich_suggestion_bitmaps_;
 
   OmniboxPopupView* view_;
 
   OmniboxEditModel* edit_model_;
-
-  // The line that's currently hovered.  If we're not drawing a hover rect,
-  // this will be kNoMatch, even if the cursor is over the popup contents.
-  size_t hovered_line_;
 
   // The currently selected line.  This is kNoMatch when nothing is selected,
   // which should only be true when the popup is closed.
@@ -161,14 +172,27 @@ class OmniboxPopupModel {
 
   // If the selected line has both a normal match and a keyword match, this
   // determines whether the normal match (if NORMAL) or the keyword match
-  // (if KEYWORD) is selected.
+  // (if KEYWORD) is selected. Likewise, if the selected line has a normal
+  // match and a tab switch match, this determines whether the tab switch match
+  // (if TAB_SWITCH) is selected.
   LineState selected_line_state_;
 
-  // The match the user has manually chosen, if any.
-  AutocompleteResult::Selection manually_selected_match_;
+  // When a result changes, this informs of the URL in the previously selected
+  // suggestion whose tab switch button was focused, so that we may compare
+  // if equal.
+  GURL old_focused_url_;
+
+  // The user has manually selected a match.
+  bool has_selected_match_;
+
+  // True if the popup should close on omnibox blur. This defaults to true, and
+  // is only false while a bubble related to the popup contents is shown.
+  bool popup_closes_on_blur_ = true;
 
   // Observers.
-  base::ObserverList<OmniboxPopupModelObserver> observers_;
+  base::ObserverList<OmniboxPopupModelObserver>::Unchecked observers_;
+
+  base::WeakPtrFactory<OmniboxPopupModel> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(OmniboxPopupModel);
 };

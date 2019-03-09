@@ -8,12 +8,14 @@
 #include <stdint.h>
 
 #include <memory>
-#include <queue>
+#include <string>
 #include <vector>
 
+#include "base/containers/queue.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/optional.h"
 #include "base/process/process.h"
 #include "base/strings/string16.h"
 #include "content/browser/renderer_host/pepper/browser_ppapi_host_impl.h"
@@ -22,10 +24,10 @@
 #include "content/public/browser/browser_child_process_host_iterator.h"
 #include "ipc/ipc_sender.h"
 #include "ppapi/shared_impl/ppapi_permissions.h"
+#include "url/origin.h"
 
 namespace content {
 class BrowserChildProcessHostImpl;
-class ResourceContext;
 struct PepperPluginInfo;
 
 // Process host for PPAPI plugin and broker processes.
@@ -51,18 +53,14 @@ class PpapiPluginProcessHost : public BrowserChildProcessHostDelegate,
         base::ProcessId plugin_pid,
         int plugin_child_id) = 0;
 
-    // Returns true if the current connection is off-the-record.
-    virtual bool OffTheRecord() = 0;
+    // Returns true if the current connection is incognito.
+    virtual bool Incognito() = 0;
 
    protected:
     virtual ~Client() {}
   };
 
   class PluginClient : public Client {
-   public:
-    // Returns the resource context for the renderer requesting the channel.
-    virtual ResourceContext* GetResourceContext() = 0;
-
    protected:
     ~PluginClient() override {}
   };
@@ -76,7 +74,9 @@ class PpapiPluginProcessHost : public BrowserChildProcessHostDelegate,
 
   static PpapiPluginProcessHost* CreatePluginHost(
       const PepperPluginInfo& info,
-      const base::FilePath& profile_data_directory);
+      const base::FilePath& profile_data_directory,
+      const base::Optional<url::Origin>& origin_lock);
+
   static PpapiPluginProcessHost* CreateBrokerHost(
       const PepperPluginInfo& info);
 
@@ -113,15 +113,13 @@ class PpapiPluginProcessHost : public BrowserChildProcessHostDelegate,
 
   BrowserPpapiHostImpl* host_impl() { return host_impl_.get(); }
   const BrowserChildProcessHostImpl* process() { return process_.get(); }
+  const base::Optional<url::Origin>& origin_lock() const {
+    return origin_lock_;
+  }
   const base::FilePath& plugin_path() const { return plugin_path_; }
   const base::FilePath& profile_data_directory() const {
     return profile_data_directory_;
   }
-
-#if defined(OS_POSIX) && !defined(OS_ANDROID) && !defined(OS_MACOSX)
-  // Launch the zygote early in the browser startup.
-  static void EarlyZygoteLaunch();
-#endif  // defined(OS_POSIX) && !defined(OS_ANDROID) && !defined(OS_MACOSX)
 
   // The client pointer must remain valid until its callback is issued.
 
@@ -131,7 +129,8 @@ class PpapiPluginProcessHost : public BrowserChildProcessHostDelegate,
   // Constructors for plugin and broker process hosts, respectively.
   // You must call Init before doing anything else.
   PpapiPluginProcessHost(const PepperPluginInfo& info,
-                         const base::FilePath& profile_data_directory);
+                         const base::FilePath& profile_data_directory,
+                         const base::Optional<url::Origin>& origin_lock);
   PpapiPluginProcessHost();
 
   // Actually launches the process with the given plugin info. Returns true
@@ -141,7 +140,6 @@ class PpapiPluginProcessHost : public BrowserChildProcessHostDelegate,
   void RequestPluginChannel(Client* client);
 
   void OnProcessLaunched() override;
-
   void OnProcessCrashed(int exit_code) override;
   bool OnMessageReceived(const IPC::Message& msg) override;
   void OnChannelConnected(int32_t peer_pid) override;
@@ -167,18 +165,19 @@ class PpapiPluginProcessHost : public BrowserChildProcessHostDelegate,
 
   // Channel requests that we have already sent to the plugin process, but
   // haven't heard back about yet.
-  std::queue<Client*> sent_requests_;
+  base::queue<Client*> sent_requests_;
 
   // Path to the plugin library.
   base::FilePath plugin_path_;
 
   // Path to the top-level plugin data directory (differs based upon profile).
-  base::FilePath profile_data_directory_;
+  const base::FilePath profile_data_directory_;
+
+  // Specific origin to which this is bound, omitted to allow any origin to
+  // re-use the plugin host.
+  const base::Optional<url::Origin> origin_lock_;
 
   const bool is_broker_;
-
-  // A random token used to identify the child process to Mojo.
-  const std::string mojo_child_token_;
 
   std::unique_ptr<BrowserChildProcessHostImpl> process_;
 

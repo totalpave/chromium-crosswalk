@@ -7,12 +7,13 @@
 #include "base/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/common/channel_info.h"
 #include "components/version_info/version_info.h"
-#include "content/public/browser/browser_thread.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
-#include "chrome/browser/upgrade_detector_impl.h"
+#include "chrome/browser/upgrade_detector/upgrade_detector_impl.h"
 #endif
 
 #if defined(OS_CHROMEOS)
@@ -33,7 +34,7 @@ base::Version GetVersionForSimulation() {
 
   // TODO(asvitkine): Get the version that will be used on restart instead of
   // the current version on Android, iOS and ChromeOS.
-  return base::Version(version_info::GetVersionNumber());
+  return version_info::GetVersion();
 }
 
 }  // namespace
@@ -42,22 +43,15 @@ ChromeVariationsServiceClient::ChromeVariationsServiceClient() {}
 
 ChromeVariationsServiceClient::~ChromeVariationsServiceClient() {}
 
-std::string ChromeVariationsServiceClient::GetApplicationLocale() {
-  return g_browser_process->GetApplicationLocale();
-}
-
-base::SequencedWorkerPool* ChromeVariationsServiceClient::GetBlockingPool() {
-  return content::BrowserThread::GetBlockingPool();
-}
-
 base::Callback<base::Version(void)>
 ChromeVariationsServiceClient::GetVersionForSimulationCallback() {
   return base::Bind(&GetVersionForSimulation);
 }
 
-net::URLRequestContextGetter*
-ChromeVariationsServiceClient::GetURLRequestContext() {
-  return g_browser_process->system_request_context();
+scoped_refptr<network::SharedURLLoaderFactory>
+ChromeVariationsServiceClient::GetURLLoaderFactory() {
+  return g_browser_process->system_network_context_manager()
+      ->GetSharedURLLoaderFactory();
 }
 
 network_time::NetworkTimeTracker*
@@ -79,15 +73,3 @@ bool ChromeVariationsServiceClient::OverridesRestrictParameter(
   return false;
 #endif
 }
-
-void ChromeVariationsServiceClient::OnInitialStartup() {
-#if defined(OS_WIN)
-  StartGoogleUpdateRegistrySync();
-#endif
-}
-
-#if defined(OS_WIN)
-void ChromeVariationsServiceClient::StartGoogleUpdateRegistrySync() {
-  registry_syncer_.RequestRegistrySync();
-}
-#endif

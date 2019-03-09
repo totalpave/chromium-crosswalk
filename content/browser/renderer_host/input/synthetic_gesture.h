@@ -17,7 +17,7 @@ namespace content {
 class SyntheticGestureTarget;
 
 // Base class for synthetic gesture implementations. A synthetic gesture class
-// is responsible for forwaring InputEvents, simulating the gesture, to a
+// is responsible for forwarding InputEvents, simulating the gesture, to a
 // SyntheticGestureTarget.
 //
 // Adding new gesture types involved the following steps:
@@ -38,6 +38,9 @@ class CONTENT_EXPORT SyntheticGesture {
   enum Result {
     GESTURE_RUNNING,
     GESTURE_FINISHED,
+    // Received when the user input parameters for SyntheticPointerAction are
+    // invalid.
+    POINTER_ACTION_INPUT_INVALID,
     GESTURE_SOURCE_TYPE_NOT_IMPLEMENTED,
     GESTURE_RESULT_MAX = GESTURE_SOURCE_TYPE_NOT_IMPLEMENTED
   };
@@ -47,6 +50,15 @@ class CONTENT_EXPORT SyntheticGesture {
   // controller until it stops returning GESTURE_RUNNING.
   virtual Result ForwardInputEvents(
       const base::TimeTicks& timestamp, SyntheticGestureTarget* target) = 0;
+
+  virtual void WaitForTargetAck(base::OnceClosure callback,
+                                SyntheticGestureTarget* target) const;
+
+  // Returns whether the gesture events can be dispatched at high frequency
+  // (e.g. at 120Hz), instead of the regular frequence (at 60Hz). Some gesture
+  // interact differently depending on how long they take (e.g. the TAP gesture
+  // generates a click only if its duration is longer than a threshold).
+  virtual bool AllowHighFrequencyDispatch() const;
 
  protected:
   DISALLOW_COPY_AND_ASSIGN(SyntheticGesture);

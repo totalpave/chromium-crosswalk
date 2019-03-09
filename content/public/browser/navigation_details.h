@@ -8,7 +8,6 @@
 #include <string>
 #include "content/common/content_export.h"
 #include "content/public/browser/navigation_type.h"
-#include "content/public/common/ssl_status.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -44,26 +43,22 @@ struct CONTENT_EXPORT LoadCommittedDetails {
   // A non-user initiated redirect causes such replacement.
   bool did_replace_entry;
 
-  // True if the navigation was in-page. This means that the active entry's
-  // URL and the |previous_url| are the same except for reference fragments.
-  bool is_in_page;
+  // Whether the navigation happened without changing document. Examples of
+  // same document navigations are:
+  // * reference fragment navigations
+  // * pushState/replaceState
+  // * same page history navigation
+  bool is_same_document;
 
   // True when the main frame was navigated. False means the navigation was a
   // sub-frame.
   bool is_main_frame;
 
-  // When the committed load is a web page from the renderer, this contains
-  // the security state if the page is secure.
-  // See FrameHostMsg_DidCommitProvisionalLoad_Params.security_info, where it
-  // comes from, after being deserialized with
-  // SSLManager::DeserializeSecurityInfo.
-  SSLStatus ssl_status;
-
   // Returns whether the main frame navigated to a different page (e.g., not
   // scrolling to a fragment inside the current page). We often need this logic
   // for showing or hiding something.
   bool is_navigation_to_different_page() const {
-    return is_main_frame && !is_in_page;
+    return is_main_frame && !is_same_document;
   }
 
   // The HTTP status code for this entry..
@@ -73,7 +68,7 @@ struct CONTENT_EXPORT LoadCommittedDetails {
 // Provides the details for a NOTIFICATION_NAV_ENTRY_CHANGED notification.
 struct EntryChangedDetails {
   // The changed navigation entry after it has been updated.
-  const NavigationEntry* changed_entry;
+  NavigationEntry* changed_entry;
 
   // Indicates the current index in the back/forward list of the entry.
   int index;
@@ -81,9 +76,8 @@ struct EntryChangedDetails {
 
 // Details sent for NOTIFY_NAV_LIST_PRUNED.
 struct PrunedDetails {
-  // If true, count items were removed from the front of the list, otherwise
-  // count items were removed from the back of the list.
-  bool from_front;
+  // Index starting which |count| entries were removed.
+  int index;
 
   // Number of items removed.
   int count;

@@ -6,29 +6,36 @@
 
 #include <stddef.h>
 
+#include <string>
+#include <vector>
+
 #include "base/auto_reset.h"
 #include "base/command_line.h"
 #include "base/guid.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/prerender/prerender_field_trial.h"
+#include "chrome/browser/prerender/prerender_manager.h"
+#include "chrome/browser/prerender/prerender_test_utils.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/in_memory_database.h"
 #include "components/history/core/browser/url_database.h"
 #include "components/omnibox/browser/autocomplete_match.h"
-#include "content/public/test/test_browser_thread.h"
+#include "components/omnibox/browser/autocomplete_result.h"
+#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/test_utils.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using base::ASCIIToUTF16;
-using content::BrowserThread;
 using predictors::AutocompleteActionPredictor;
 
 namespace {
@@ -80,6 +87,35 @@ struct TestUrlInfo {
     AutocompleteActionPredictor::ACTION_NONE }
 };
 
+// List of urls sorted by the confidence score in ascending order.
+TestUrlInfo test_url_confidence_db[] = {
+    {GURL("http://www.testsite.com/g.html"), ASCIIToUTF16("Test"), 1,
+     ASCIIToUTF16("test"), 0, 2, AutocompleteActionPredictor::ACTION_NONE},
+    {GURL("http://www.testsite.com/f.html"), ASCIIToUTF16("Test"), 1,
+     ASCIIToUTF16("test"), 1, 2, AutocompleteActionPredictor::ACTION_NONE},
+    {GURL("http://www.testsite.com/e.html"), ASCIIToUTF16("Test"), 1,
+     ASCIIToUTF16("test"), 2, 2, AutocompleteActionPredictor::ACTION_NONE},
+    {GURL("http://www.testsite.com/d.html"), ASCIIToUTF16("Test"), 1,
+     ASCIIToUTF16("test"), 3, 3, AutocompleteActionPredictor::ACTION_NONE},
+    {GURL("http://www.testsite.com/c.html"), ASCIIToUTF16("Test"), 1,
+     ASCIIToUTF16("test"), 3, 2, AutocompleteActionPredictor::ACTION_NONE},
+    {GURL("http://www.testsite.com/b.html"), ASCIIToUTF16("Test"), 1,
+     ASCIIToUTF16("test"), 3, 0, AutocompleteActionPredictor::ACTION_NONE},
+    {GURL("http://www.testsite.com/a.html"), ASCIIToUTF16("Test"), 1,
+     ASCIIToUTF16("test"), 5, 0, AutocompleteActionPredictor::ACTION_NONE},
+};
+
+GURL GenerateTestURL(size_t size) {
+  std::string prefix = "http://b/";
+  // Cannot generate an URL shorter than |prefix|.
+  DCHECK_GE(size, prefix.size());
+  size_t suffix_len = size - prefix.size();
+  std::string suffix(suffix_len, 'c');
+  GURL url(prefix + suffix);
+  DCHECK_EQ(url.spec().size(), size);
+  return url;
+}
+
 }  // end namespace
 
 namespace predictors {
@@ -87,35 +123,25 @@ namespace predictors {
 class AutocompleteActionPredictorTest : public testing::Test {
  public:
   AutocompleteActionPredictorTest()
-      : ui_thread_(BrowserThread::UI, &loop_),
-        db_thread_(BrowserThread::DB, &loop_),
-        file_thread_(BrowserThread::FILE, &loop_),
-        profile_(new TestingProfile()),
-        predictor_(new AutocompleteActionPredictor(profile_.get())) {
+      : profile_(std::make_unique<TestingProfile>()), predictor_(nullptr) {
+    CHECK(profile_->CreateHistoryService(true, false));
+    predictor_ = std::make_unique<AutocompleteActionPredictor>(profile_.get());
+    predictor_->CreateLocalCachesFromDatabase();
+    profile_->BlockUntilHistoryProcessesPendingRequests();
+    content::RunAllTasksUntilIdle();
+
+    CHECK(predictor_->initialized_);
+    CHECK(db_cache()->empty());
+    CHECK(db_id_cache()->empty());
   }
 
   ~AutocompleteActionPredictorTest() override {
-    predictor_.reset(NULL);
-    profile_.reset(NULL);
-    base::RunLoop().RunUntilIdle();
-  }
-
-  void SetUp() override {
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kPrerenderFromOmnibox,
-        switches::kPrerenderFromOmniboxSwitchValueEnabled);
-
-    predictor_->CreateLocalCachesFromDatabase();
-    ASSERT_TRUE(profile_->CreateHistoryService(true, false));
-    profile_->BlockUntilHistoryProcessesPendingRequests();
-
-    ASSERT_TRUE(predictor_->initialized_);
-    ASSERT_TRUE(db_cache()->empty());
-    ASSERT_TRUE(db_id_cache()->empty());
-  }
-
-  void TearDown() override {
-    profile_->DestroyHistoryService();
+    // Wait for all pending tasks on the DB sequence.
+    content::RunAllTasksUntilIdle();
+    // Since we instantiated the predictor instead of going through a factory
+    // and dependencies, no one else is going to call Shutdown(), which is
+    // supposed to be called as part of being a KeyedService. The behavior of
+    // this method is not explicitly verified.
     predictor_->Shutdown();
   }
 
@@ -124,11 +150,6 @@ class AutocompleteActionPredictorTest : public testing::Test {
   typedef AutocompleteActionPredictor::DBCacheValue DBCacheValue;
   typedef AutocompleteActionPredictor::DBCacheMap DBCacheMap;
   typedef AutocompleteActionPredictor::DBIdCacheMap DBIdCacheMap;
-
-  void AddAllRowsToHistory() {
-    for (size_t i = 0; i < arraysize(test_url_db); ++i)
-      ASSERT_TRUE(AddRowToHistory(test_url_db[i]));
-  }
 
   history::URLID AddRowToHistory(const TestUrlInfo& test_row) {
     history::HistoryService* history = HistoryServiceFactory::GetForProfile(
@@ -160,7 +181,7 @@ class AutocompleteActionPredictorTest : public testing::Test {
   }
 
   void AddAllRows() {
-    for (size_t i = 0; i < arraysize(test_url_db); ++i)
+    for (size_t i = 0; i < base::size(test_url_db); ++i)
       AddRow(test_url_db[i]);
   }
 
@@ -182,12 +203,66 @@ class AutocompleteActionPredictorTest : public testing::Test {
         AutocompleteActionPredictorTable::Rows(1, row));
   }
 
+  void OnURLsDeletedTest(bool expired) {
+    ASSERT_NO_FATAL_FAILURE(AddAllRows());
+
+    EXPECT_EQ(base::size(test_url_db), db_cache()->size());
+    EXPECT_EQ(base::size(test_url_db), db_id_cache()->size());
+
+    std::vector<size_t> expected;
+    history::URLRows rows;
+    for (size_t i = 0; i < base::size(test_url_db); ++i) {
+      bool expect_deleted = false;
+
+      if (i < 2) {
+        rows.push_back(history::URLRow(test_url_db[i].url));
+        expect_deleted = true;
+      }
+
+      if (!expired &&
+          test_url_db[i].days_from_now > maximum_days_to_keep_entry()) {
+        expect_deleted = true;
+      }
+
+      if (i != 3 && i != 4)
+        ASSERT_TRUE(AddRowToHistory(test_url_db[i]));
+      else if (!expired)
+        expect_deleted = true;
+
+      if (!expect_deleted)
+        expected.push_back(i);
+    }
+
+    history::HistoryService* history_service =
+        HistoryServiceFactory::GetForProfile(
+            profile_.get(), ServiceAccessType::EXPLICIT_ACCESS);
+    ASSERT_TRUE(history_service);
+
+    predictor_->OnURLsDeleted(
+        history_service,
+        history::DeletionInfo(history::DeletionTimeRange::Invalid(), expired,
+                              rows, std::set<GURL>(), base::nullopt));
+
+    EXPECT_EQ(expected.size(), db_cache()->size());
+    EXPECT_EQ(expected.size(), db_id_cache()->size());
+
+    for (size_t i = 0; i < base::size(test_url_db); ++i) {
+      DBCacheKey key = {test_url_db[i].user_text, test_url_db[i].url};
+
+      bool deleted = !base::ContainsValue(expected, i);
+      EXPECT_EQ(deleted, db_cache()->find(key) == db_cache()->end());
+      EXPECT_EQ(deleted, db_id_cache()->find(key) == db_id_cache()->end());
+    }
+  }
+
   void DeleteAllRows() {
     predictor_->DeleteAllRows();
   }
 
-  void DeleteRowsWithURLs(const history::URLRows& rows) {
-    predictor_->DeleteRowsWithURLs(rows);
+  void DeleteRowsFromCaches(
+      const history::URLRows& rows,
+      std::vector<AutocompleteActionPredictorTable::Row::Id>* id_list) {
+    predictor_->DeleteRowsFromCaches(rows, id_list);
   }
 
   void DeleteOldIdsFromCaches(
@@ -200,27 +275,38 @@ class AutocompleteActionPredictorTest : public testing::Test {
     history::URLDatabase* url_db = history_service->InMemoryDatabase();
     ASSERT_TRUE(url_db);
 
-    // Reset the predictor's |initialized_| flag for the life of this call,
-    // since outside of testing this function is only supposed to be reached
-    // before initialization is completed.
-    base::AutoReset<bool> initialized_reset(&predictor_->initialized_, false);
     predictor_->DeleteOldIdsFromCaches(url_db, id_list);
+  }
+
+  void DeleteLowestConfidenceRowsFromCaches(
+      size_t count,
+      std::vector<AutocompleteActionPredictorTable::Row::Id>* id_list) {
+    predictor_->DeleteLowestConfidenceRowsFromCaches(count, id_list);
   }
 
   AutocompleteActionPredictor* predictor() { return predictor_.get(); }
 
   DBCacheMap* db_cache() { return &predictor_->db_cache_; }
   DBIdCacheMap* db_id_cache() { return &predictor_->db_id_cache_; }
+  std::vector<AutocompleteActionPredictor::TransitionalMatch>*
+  transitional_matches() {
+    return &predictor_->transitional_matches_;
+  }
 
   static int maximum_days_to_keep_entry() {
     return AutocompleteActionPredictor::kMaximumDaysToKeepEntry;
   }
 
+  static size_t minimum_user_text_length() {
+    return AutocompleteActionPredictor::kMinimumUserTextLength;
+  }
+
+  static size_t maximum_string_length() {
+    return AutocompleteActionPredictor::kMaximumStringLength;
+  }
+
  private:
-  base::MessageLoop loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread db_thread_;
-  content::TestBrowserThread file_thread_;
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<AutocompleteActionPredictor> predictor_;
 };
@@ -248,8 +334,8 @@ TEST_F(AutocompleteActionPredictorTest, AddRow) {
 TEST_F(AutocompleteActionPredictorTest, UpdateRow) {
   ASSERT_NO_FATAL_FAILURE(AddAllRows());
 
-  EXPECT_EQ(arraysize(test_url_db), db_cache()->size());
-  EXPECT_EQ(arraysize(test_url_db), db_id_cache()->size());
+  EXPECT_EQ(base::size(test_url_db), db_cache()->size());
+  EXPECT_EQ(base::size(test_url_db), db_id_cache()->size());
 
   // Get the data back out of the cache.
   const DBCacheKey key = { test_url_db[0].user_text, test_url_db[0].url };
@@ -284,8 +370,8 @@ TEST_F(AutocompleteActionPredictorTest, UpdateRow) {
 TEST_F(AutocompleteActionPredictorTest, DeleteAllRows) {
   ASSERT_NO_FATAL_FAILURE(AddAllRows());
 
-  EXPECT_EQ(arraysize(test_url_db), db_cache()->size());
-  EXPECT_EQ(arraysize(test_url_db), db_id_cache()->size());
+  EXPECT_EQ(base::size(test_url_db), db_cache()->size());
+  EXPECT_EQ(base::size(test_url_db), db_id_cache()->size());
 
   DeleteAllRows();
 
@@ -293,27 +379,34 @@ TEST_F(AutocompleteActionPredictorTest, DeleteAllRows) {
   EXPECT_TRUE(db_id_cache()->empty());
 }
 
-TEST_F(AutocompleteActionPredictorTest, DeleteRowsWithURLs) {
-  ASSERT_NO_FATAL_FAILURE(AddAllRows());
-
-  EXPECT_EQ(arraysize(test_url_db), db_cache()->size());
-  EXPECT_EQ(arraysize(test_url_db), db_id_cache()->size());
-
+TEST_F(AutocompleteActionPredictorTest, DeleteRowsFromCaches) {
+  std::vector<AutocompleteActionPredictorTable::Row::Id> all_ids;
   history::URLRows rows;
-  for (size_t i = 0; i < 2; ++i)
-    rows.push_back(history::URLRow(test_url_db[i].url));
+  for (size_t i = 0; i < base::size(test_url_db); ++i) {
+    std::string row_id = AddRow(test_url_db[i]);
+    all_ids.push_back(row_id);
 
-  DeleteRowsWithURLs(rows);
+    if (i < 2)
+      rows.push_back(history::URLRow(test_url_db[i].url));
+  }
 
-  EXPECT_EQ(arraysize(test_url_db) - 2, db_cache()->size());
-  EXPECT_EQ(arraysize(test_url_db) - 2, db_id_cache()->size());
+  EXPECT_EQ(base::size(test_url_db), all_ids.size());
+  EXPECT_EQ(base::size(test_url_db), db_cache()->size());
+  EXPECT_EQ(base::size(test_url_db), db_id_cache()->size());
 
-  for (size_t i = 0; i < arraysize(test_url_db); ++i) {
+  std::vector<AutocompleteActionPredictorTable::Row::Id> id_list;
+  DeleteRowsFromCaches(rows, &id_list);
+
+  EXPECT_EQ(base::size(test_url_db) - 2, db_cache()->size());
+  EXPECT_EQ(base::size(test_url_db) - 2, db_id_cache()->size());
+
+  for (size_t i = 0; i < base::size(test_url_db); ++i) {
     DBCacheKey key = { test_url_db[i].user_text, test_url_db[i].url };
 
     bool deleted = (i < 2);
     EXPECT_EQ(deleted, db_cache()->find(key) == db_cache()->end());
     EXPECT_EQ(deleted, db_id_cache()->find(key) == db_id_cache()->end());
+    EXPECT_EQ(deleted, base::ContainsValue(id_list, all_ids[i]));
   }
 }
 
@@ -321,7 +414,7 @@ TEST_F(AutocompleteActionPredictorTest, DeleteOldIdsFromCaches) {
   std::vector<AutocompleteActionPredictorTable::Row::Id> expected;
   std::vector<AutocompleteActionPredictorTable::Row::Id> all_ids;
 
-  for (size_t i = 0; i < arraysize(test_url_db); ++i) {
+  for (size_t i = 0; i < base::size(test_url_db); ++i) {
     std::string row_id = AddRow(test_url_db[i]);
     all_ids.push_back(row_id);
 
@@ -342,15 +435,66 @@ TEST_F(AutocompleteActionPredictorTest, DeleteOldIdsFromCaches) {
   EXPECT_EQ(all_ids.size() - expected.size(), db_cache()->size());
   EXPECT_EQ(all_ids.size() - expected.size(), db_id_cache()->size());
 
-  for (std::vector<AutocompleteActionPredictorTable::Row::Id>::iterator it =
-       all_ids.begin();
-       it != all_ids.end(); ++it) {
-    bool in_expected =
-        (std::find(expected.begin(), expected.end(), *it) != expected.end());
-    bool in_list =
-        (std::find(id_list.begin(), id_list.end(), *it) != id_list.end());
+  for (auto it = all_ids.begin(); it != all_ids.end(); ++it) {
+    bool in_expected = base::ContainsValue(expected, *it);
+    bool in_list = base::ContainsValue(id_list, *it);
     EXPECT_EQ(in_expected, in_list);
   }
+}
+
+TEST_F(AutocompleteActionPredictorTest,
+       DeleteLowestConfidenceRowsFromCaches_OneByOne) {
+  std::vector<AutocompleteActionPredictorTable::Row::Id> test_url_ids;
+  for (const auto& info : test_url_confidence_db)
+    test_url_ids.push_back(AddRow(info));
+
+  std::vector<AutocompleteActionPredictorTable::Row::Id> id_list;
+  std::vector<AutocompleteActionPredictorTable::Row::Id> expected;
+
+  for (size_t i = 0; i < base::size(test_url_confidence_db); ++i) {
+    DeleteLowestConfidenceRowsFromCaches(1, &id_list);
+    expected.push_back(test_url_ids[i]);
+    EXPECT_THAT(id_list, ::testing::UnorderedElementsAreArray(expected));
+
+    DBCacheKey deleted_key = {test_url_confidence_db[i].user_text,
+                              test_url_confidence_db[i].url};
+    EXPECT_FALSE(base::ContainsKey(*db_cache(), deleted_key));
+    EXPECT_FALSE(base::ContainsKey(*db_id_cache(), deleted_key));
+  }
+}
+
+TEST_F(AutocompleteActionPredictorTest,
+       DeleteLowestConfidenceRowsFromCaches_Bulk) {
+  std::vector<AutocompleteActionPredictorTable::Row::Id> test_url_ids;
+  for (const auto& info : test_url_confidence_db)
+    test_url_ids.push_back(AddRow(info));
+
+  std::vector<AutocompleteActionPredictorTable::Row::Id> id_list;
+  std::vector<AutocompleteActionPredictorTable::Row::Id> expected;
+
+  const size_t count_to_remove = 4;
+  CHECK_LT(count_to_remove, base::size(test_url_confidence_db));
+
+  for (size_t i = 0; i < count_to_remove; ++i)
+    expected.push_back(test_url_ids[i]);
+
+  DeleteLowestConfidenceRowsFromCaches(count_to_remove, &id_list);
+  ASSERT_THAT(id_list, ::testing::UnorderedElementsAreArray(expected));
+
+  for (size_t i = 0; i < count_to_remove; ++i) {
+    DBCacheKey deleted_key = {test_url_confidence_db[i].user_text,
+                              test_url_confidence_db[i].url};
+    EXPECT_FALSE(base::ContainsKey(*db_cache(), deleted_key));
+    EXPECT_FALSE(base::ContainsKey(*db_id_cache(), deleted_key));
+  }
+}
+
+TEST_F(AutocompleteActionPredictorTest, OnURLsDeletedExpired) {
+  OnURLsDeletedTest(true);
+}
+
+TEST_F(AutocompleteActionPredictorTest, OnURLsDeletedNonExpired) {
+  OnURLsDeletedTest(false);
 }
 
 TEST_F(AutocompleteActionPredictorTest, RecommendActionURL) {
@@ -358,8 +502,11 @@ TEST_F(AutocompleteActionPredictorTest, RecommendActionURL) {
 
   AutocompleteMatch match;
   match.type = AutocompleteMatchType::HISTORY_URL;
+  prerender::test_utils::RestorePrerenderMode restore_prerender_mode;
+  prerender::PrerenderManager::SetMode(
+      prerender::PrerenderManager::PRERENDER_MODE_NOSTATE_PREFETCH);
 
-  for (size_t i = 0; i < arraysize(test_url_db); ++i) {
+  for (size_t i = 0; i < base::size(test_url_db); ++i) {
     match.destination_url = GURL(test_url_db[i].url);
     EXPECT_EQ(test_url_db[i].expected_action,
               predictor()->RecommendAction(test_url_db[i].user_text, match))
@@ -372,8 +519,11 @@ TEST_F(AutocompleteActionPredictorTest, RecommendActionSearch) {
 
   AutocompleteMatch match;
   match.type = AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED;
+  prerender::test_utils::RestorePrerenderMode restore_prerender_mode;
+  prerender::PrerenderManager::SetMode(
+      prerender::PrerenderManager::PRERENDER_MODE_NOSTATE_PREFETCH);
 
-  for (size_t i = 0; i < arraysize(test_url_db); ++i) {
+  for (size_t i = 0; i < base::size(test_url_db); ++i) {
     match.destination_url = GURL(test_url_db[i].url);
     AutocompleteActionPredictor::Action expected_action =
         (test_url_db[i].expected_action ==
@@ -384,6 +534,53 @@ TEST_F(AutocompleteActionPredictorTest, RecommendActionSearch) {
               predictor()->RecommendAction(test_url_db[i].user_text, match))
         << "Unexpected action for " << match.destination_url;
   }
+}
+
+TEST_F(AutocompleteActionPredictorTest,
+       RegisterTransitionalMatchesUserTextSizeLimits) {
+  auto test = [this](const base::string16& user_text,
+                     bool should_be_registered) {
+    predictor()->RegisterTransitionalMatches(user_text, AutocompleteResult());
+    bool registered = base::ContainsValue(*transitional_matches(), user_text);
+    EXPECT_EQ(registered, should_be_registered);
+  };
+
+  base::string16 short_text =
+      ASCIIToUTF16(std::string(minimum_user_text_length(), 'g'));
+  test(short_text, true);
+
+  base::string16 too_short_text =
+      ASCIIToUTF16(std::string(minimum_user_text_length() - 1, 'g'));
+  test(too_short_text, false);
+
+  base::string16 long_text =
+      ASCIIToUTF16(std::string(maximum_string_length(), 'g'));
+  test(long_text, true);
+
+  base::string16 too_long_text =
+      ASCIIToUTF16(std::string(maximum_string_length() + 1, 'g'));
+  test(too_long_text, false);
+}
+
+TEST_F(AutocompleteActionPredictorTest,
+       RegisterTransitionalMatchesURLSizeLimits) {
+  GURL urls[] = {GenerateTestURL(10), GenerateTestURL(maximum_string_length()),
+                 GenerateTestURL(maximum_string_length() + 1),
+                 GenerateTestURL(maximum_string_length() * 10)};
+  ACMatches matches;
+  for (const auto& url : urls) {
+    AutocompleteMatch match;
+    match.destination_url = url;
+    matches.push_back(match);
+  }
+  AutocompleteResult result;
+  result.AppendMatches(AutocompleteInput(), matches);
+  base::string16 user_text = ASCIIToUTF16("google");
+  predictor()->RegisterTransitionalMatches(user_text, result);
+  auto it = std::find(transitional_matches()->begin(),
+                      transitional_matches()->end(), user_text);
+  ASSERT_NE(it, transitional_matches()->end());
+  EXPECT_THAT(it->urls, ::testing::ElementsAre(urls[0], urls[1]));
 }
 
 }  // namespace predictors

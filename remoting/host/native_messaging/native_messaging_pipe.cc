@@ -13,8 +13,8 @@
 
 namespace remoting {
 
-NativeMessagingPipe::NativeMessagingPipe() {}
-NativeMessagingPipe::~NativeMessagingPipe() {}
+NativeMessagingPipe::NativeMessagingPipe() = default;
+NativeMessagingPipe::~NativeMessagingPipe() = default;
 
 void NativeMessagingPipe::Start(
     std::unique_ptr<extensions::NativeMessageHost> host,
@@ -37,7 +37,7 @@ void NativeMessagingPipe::OnDisconnect() {
 
 void NativeMessagingPipe::PostMessageFromNativeHost(
     const std::string& message) {
-  std::unique_ptr<base::Value> json = base::JSONReader::Read(message);
+  std::unique_ptr<base::Value> json = base::JSONReader::ReadDeprecated(message);
   channel_->SendMessage(std::move(json));
 }
 

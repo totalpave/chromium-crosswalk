@@ -5,32 +5,32 @@
 #include "components/autofill/content/renderer/renderer_save_password_progress_logger.h"
 
 #include "base/strings/string16.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/values.h"
-#include "components/autofill/content/common/autofill_messages.h"
-#include "ipc/ipc_sender.h"
-#include "third_party/WebKit/public/web/WebFormControlElement.h"
+#include "third_party/blink/public/web/web_form_control_element.h"
 
 namespace autofill {
 
 RendererSavePasswordProgressLogger::RendererSavePasswordProgressLogger(
-    IPC::Sender* sender,
-    int routing_id)
-    : sender_(sender), routing_id_(routing_id) {
-  DCHECK(sender_);
+    mojom::PasswordManagerDriver* password_manager_driver)
+    : password_manager_driver_(password_manager_driver) {
+  DCHECK(password_manager_driver);
 }
 
 RendererSavePasswordProgressLogger::~RendererSavePasswordProgressLogger() {}
 
 void RendererSavePasswordProgressLogger::SendLog(const std::string& log) {
-  sender_->Send(
-      new AutofillHostMsg_RecordSavePasswordProgress(routing_id_, log));
+  password_manager_driver_->RecordSavePasswordProgress(log);
 }
 
 void RendererSavePasswordProgressLogger::LogElementName(
     StringID label,
     const blink::WebFormControlElement& element) {
-  LogValue(label, base::StringValue(ScrubElementID(
-                      base::string16(element.nameForAutofill()))));
+  std::string text =
+      "name = " + ScrubElementID(element.NameForAutofill().Utf8()) +
+      ", renderer_id = " +
+      base::NumberToString(element.UniqueRendererFormControlId());
+  LogValue(label, base::Value(text));
 }
 
 }  // namespace autofill

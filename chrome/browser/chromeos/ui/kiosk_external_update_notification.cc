@@ -4,13 +4,15 @@
 
 #include "chrome/browser/chromeos/ui/kiosk_external_update_notification.h"
 
-#include "ash/common/shell_window_ids.h"
-#include "ash/shell.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "base/macros.h"
+#include "chrome/browser/ui/ash/ash_util.h"
 #include "ui/aura/window.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/canvas.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/fill_layout.h"
@@ -36,7 +38,7 @@ class KioskExternalUpdateNotificationView : public views::WidgetDelegateView {
       KioskExternalUpdateNotification* owner)
       : owner_(owner), widget_closed_(false) {
     AddLabel();
-    SetLayoutManager(new views::FillLayout);
+    SetLayoutManager(std::make_unique<views::FillLayout>());
   }
 
   ~KioskExternalUpdateNotificationView() override {
@@ -57,14 +59,14 @@ class KioskExternalUpdateNotificationView : public views::WidgetDelegateView {
 
   // views::WidgetDelegateView overrides:
   void OnPaint(gfx::Canvas* canvas) override {
-    SkPaint paint;
-    paint.setStyle(SkPaint::kFill_Style);
-    paint.setColor(kWindowBackgroundColor);
-    canvas->DrawRoundRect(GetLocalBounds(), kWindowCornerRadius, paint);
+    cc::PaintFlags flags;
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(kWindowBackgroundColor);
+    canvas->DrawRoundRect(GetLocalBounds(), kWindowCornerRadius, flags);
     views::WidgetDelegateView::OnPaint(canvas);
   }
 
-  gfx::Size GetPreferredSize() const override {
+  gfx::Size CalculatePreferredSize() const override {
     return gfx::Size(kPreferredWidth, kPreferredHeight);
   }
 
@@ -75,7 +77,6 @@ class KioskExternalUpdateNotificationView : public views::WidgetDelegateView {
     ui::ResourceBundle* rb = &ui::ResourceBundle::GetSharedInstance();
     label_->SetFontList(rb->GetFontList(ui::ResourceBundle::BoldFont));
     label_->SetEnabledColor(kTextColor);
-    label_->SetDisabledColor(kTextColor);
     label_->SetAutoColorReadabilityEnabled(false);
     label_->SetMultiLine(true);
     AddChildView(label_);
@@ -121,27 +122,25 @@ void KioskExternalUpdateNotification::CreateAndShowNotificationView(
   view_ = new KioskExternalUpdateNotificationView(this);
   view_->SetMessage(message);
 
-  aura::Window* root_window = ash::Shell::GetTargetRootWindow();
-  gfx::Size rs = root_window->bounds().size();
-  gfx::Size ps = view_->GetPreferredSize();
-  gfx::Rect bounds((rs.width() - ps.width()) / 2,
-                   (rs.height() - ps.height()) / 10,
-                   ps.width(),
-                   ps.height());
+  gfx::Size display_size =
+      display::Screen::GetScreen()->GetPrimaryDisplay().size();
+  gfx::Size view_size = view_->GetPreferredSize();
+  gfx::Rect bounds((display_size.width() - view_size.width()) / 2,
+                   (display_size.height() - view_size.height()) / 10,
+                   view_size.width(), view_size.height());
   views::Widget::InitParams params;
   params.type = views::Widget::InitParams::TYPE_POPUP;
   params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
   params.ownership = views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET;
   params.accept_events = false;
   params.keep_on_top = true;
-  params.remove_standard_frame = true;
   params.delegate = view_;
   params.bounds = bounds;
-  params.parent = ash::Shell::GetContainer(
-      root_window, ash::kShellWindowId_SettingBubbleContainer);
+  // The notification is shown on the primary display.
+  ash_util::SetupWidgetInitParamsForContainer(
+      &params, ash::kShellWindowId_SettingBubbleContainer);
   views::Widget* widget = new views::Widget;
   widget->Init(params);
-  widget->SetContentsView(view_);
   gfx::NativeView native_view = widget->GetNativeView();
   native_view->SetName("KioskExternalUpdateNotification");
   widget->Show();

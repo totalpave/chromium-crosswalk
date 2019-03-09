@@ -15,12 +15,15 @@
 #include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+#include <windows.h>
+
 namespace registry_util {
 
 namespace {
 
-const wchar_t kTimestampDelimiter[] = L"$";
-const wchar_t kTempTestKeyPath[] = L"Software\\Chromium\\TempTestKeys";
+const base::char16 kTimestampDelimiter[] = STRING16_LITERAL("$");
+const base::char16 kTempTestKeyPath[] =
+    STRING16_LITERAL("Software\\Chromium\\TempTestKeys");
 
 void DeleteStaleTestKeys(const base::Time& now,
                          const base::string16& test_key_root) {
@@ -59,7 +62,8 @@ void DeleteStaleTestKeys(const base::Time& now,
 base::string16 GenerateTempKeyPath(const base::string16& test_key_root,
                                    const base::Time& timestamp) {
   base::string16 key_path = test_key_root;
-  key_path += L"\\" + base::Int64ToString16(timestamp.ToInternalValue());
+  key_path += STRING16_LITERAL("\\") +
+              base::Int64ToString16(timestamp.ToInternalValue());
   key_path += kTimestampDelimiter + base::ASCIIToUTF16(base::GenerateGUID());
 
   return key_path;
@@ -70,18 +74,13 @@ base::string16 GenerateTempKeyPath(const base::string16& test_key_root,
 RegistryOverrideManager::ScopedRegistryKeyOverride::ScopedRegistryKeyOverride(
     HKEY override,
     const base::string16& key_path)
-    : override_(override) {
-  EXPECT_EQ(
-      ERROR_SUCCESS,
-      temp_key_.Create(HKEY_CURRENT_USER, key_path.c_str(), KEY_ALL_ACCESS));
-  EXPECT_EQ(ERROR_SUCCESS,
-            ::RegOverridePredefKey(override_, temp_key_.Handle()));
-}
+    : override_(override), key_path_(key_path) {}
 
 RegistryOverrideManager::
     ScopedRegistryKeyOverride::~ScopedRegistryKeyOverride() {
   ::RegOverridePredefKey(override_, NULL);
-  temp_key_.DeleteKey(L"");
+  base::win::RegKey(HKEY_CURRENT_USER, STRING16_LITERAL(""), KEY_QUERY_VALUE)
+      .DeleteKey(key_path_.c_str());
 }
 
 RegistryOverrideManager::RegistryOverrideManager()
@@ -99,9 +98,22 @@ RegistryOverrideManager::RegistryOverrideManager(
 RegistryOverrideManager::~RegistryOverrideManager() {}
 
 void RegistryOverrideManager::OverrideRegistry(HKEY override) {
+  OverrideRegistry(override, nullptr);
+}
+
+void RegistryOverrideManager::OverrideRegistry(HKEY override,
+                                               base::string16* override_path) {
   base::string16 key_path = GenerateTempKeyPath(test_key_root_, timestamp_);
+
+  base::win::RegKey temp_key;
+  ASSERT_EQ(ERROR_SUCCESS, temp_key.Create(HKEY_CURRENT_USER, key_path.c_str(),
+                                           KEY_ALL_ACCESS));
+  ASSERT_EQ(ERROR_SUCCESS, ::RegOverridePredefKey(override, temp_key.Handle()));
+
   overrides_.push_back(
-      base::WrapUnique(new ScopedRegistryKeyOverride(override, key_path)));
+      std::make_unique<ScopedRegistryKeyOverride>(override, key_path));
+  if (override_path)
+    override_path->assign(key_path);
 }
 
 base::string16 GenerateTempKeyPath() {

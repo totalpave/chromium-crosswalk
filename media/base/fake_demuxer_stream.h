@@ -9,7 +9,7 @@
 #include "base/memory/ref_counted.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/demuxer_stream.h"
-#include "media/base/demuxer_stream_provider.h"
+#include "media/base/media_resource.h"
 #include "media/base/video_decoder_config.h"
 
 namespace base {
@@ -34,7 +34,6 @@ class FakeDemuxerStream : public DemuxerStream {
   VideoDecoderConfig video_decoder_config() override;
   Type type() const override;
   bool SupportsConfigChanges() override;
-  VideoRotation video_rotation() override;
 
   void Initialize();
 
@@ -59,6 +58,10 @@ class FakeDemuxerStream : public DemuxerStream {
   // always clears |hold_next_read_|.
   void Reset();
 
+  // Satisfies the pending read (if any) with kError and NULL. This call
+  // always clears |hold_next_read_|.
+  void Error();
+
   // Reset() this demuxer stream and set the reading position to the start of
   // the stream.
   void SeekToStart();
@@ -66,10 +69,7 @@ class FakeDemuxerStream : public DemuxerStream {
   // Sets further read requests to return EOS buffers.
   void SeekToEndOfStream();
 
-  // Sets the splice timestamp for all furture buffers returned via Read().
-  void set_splice_timestamp(base::TimeDelta splice_timestamp) {
-    splice_timestamp_ = splice_timestamp;
-  }
+  base::TimeDelta duration() const { return duration_; }
 
  private:
   void UpdateVideoDecoderConfig();
@@ -91,7 +91,6 @@ class FakeDemuxerStream : public DemuxerStream {
 
   base::TimeDelta current_timestamp_;
   base::TimeDelta duration_;
-  base::TimeDelta splice_timestamp_;
 
   gfx::Size next_coded_size_;
   VideoDecoderConfig video_decoder_config_;
@@ -106,21 +105,21 @@ class FakeDemuxerStream : public DemuxerStream {
   DISALLOW_COPY_AND_ASSIGN(FakeDemuxerStream);
 };
 
-class FakeDemuxerStreamProvider : public DemuxerStreamProvider {
+class FakeMediaResource : public MediaResource {
  public:
   // Note: FakeDemuxerStream currently only supports a fake video DemuxerStream.
-  FakeDemuxerStreamProvider(int num_video_configs,
-                            int num_video_buffers_in_one_config,
-                            bool is_video_encrypted);
-  ~FakeDemuxerStreamProvider() override;
+  FakeMediaResource(int num_video_configs,
+                    int num_video_buffers_in_one_config,
+                    bool is_video_encrypted);
+  ~FakeMediaResource() override;
 
-  // DemuxerStreamProvider implementation.
-  DemuxerStream* GetStream(DemuxerStream::Type type) override;
+  // MediaResource implementation.
+  std::vector<DemuxerStream*> GetAllStreams() override;
 
  private:
   FakeDemuxerStream fake_video_stream_;
 
-  DISALLOW_COPY_AND_ASSIGN(FakeDemuxerStreamProvider);
+  DISALLOW_COPY_AND_ASSIGN(FakeMediaResource);
 };
 
 }  // namespace media

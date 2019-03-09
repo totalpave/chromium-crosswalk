@@ -11,26 +11,28 @@
 #include "base/compiler_specific.h"
 #include "third_party/skia/include/core/SkMatrix44.h"
 #include "ui/gfx/geometry/vector2d_f.h"
-#include "ui/gfx/gfx_export.h"
+#include "ui/gfx/geometry_skia_export.h"
 
 namespace gfx {
 
 class BoxF;
 class RectF;
 class Point;
+class PointF;
 class Point3F;
+class Quaternion;
 class Vector3dF;
 
 // 4x4 transformation matrix. Transform is cheap and explicitly allows
 // copy/assign.
-class GFX_EXPORT Transform {
+class GEOMETRY_SKIA_EXPORT Transform {
  public:
 
   enum SkipInitialization {
     kSkipInitialization
   };
 
-  Transform() : matrix_(SkMatrix44::kIdentity_Constructor) {}
+  constexpr Transform() : matrix_(SkMatrix44::kIdentity_Constructor) {}
 
   // Skips initializing this matrix to avoid overhead, when we know it will be
   // initialized before use.
@@ -68,7 +70,9 @@ class GFX_EXPORT Transform {
             SkMScalar col2row2,
             SkMScalar x_translation,
             SkMScalar y_translation);
-  ~Transform() {}
+
+  // Constructs a transform corresponding to the given quaternion.
+  explicit Transform(const Quaternion& q);
 
   bool operator==(const Transform& rhs) const { return matrix_ == rhs.matrix_; }
   bool operator!=(const Transform& rhs) const { return matrix_ != rhs.matrix_; }
@@ -97,7 +101,9 @@ class GFX_EXPORT Transform {
 
   // Applies the current transformation on a translation and assigns the result
   // to |this|.
+  void Translate(const Vector2dF& offset);
   void Translate(SkMScalar x, SkMScalar y);
+  void Translate3d(const Vector3dF& offset);
   void Translate3d(SkMScalar x, SkMScalar y, SkMScalar z);
 
   // Applies the current transformation on a skew and assigns the result
@@ -117,6 +123,7 @@ class GFX_EXPORT Transform {
   void ConcatTransform(const Transform& transform);
 
   // Returns true if this is the identity matrix.
+  // This function modifies a mutable variable in |matrix_|.
   bool IsIdentity() const { return matrix_.isIdentity(); }
 
   // Returns true if the matrix is either identity or pure translation.
@@ -139,8 +146,10 @@ class GFX_EXPORT Transform {
            matrix_.get(2, 2) > 0.0;
   }
 
-  // Returns true if the matrix is either identity or pure, non-fractional
-  // translation.
+  // Returns true if the matrix is identity or, if the matrix consists only
+  // of a translation whose components can be represented as integers. Returns
+  // false if the translation contains a fractional component or is too large to
+  // fit in an integer.
   bool IsIdentityOrIntegerTranslation() const;
 
   // Returns true if the matrix had only scaling components.
@@ -164,7 +173,8 @@ class GFX_EXPORT Transform {
   // have its back side facing frontwards after applying the transform.
   bool IsBackFaceVisible() const;
 
-  // Inverts the transform which is passed in. Returns true if successful.
+  // Inverts the transform which is passed in. Returns true if successful, or
+  // sets |transform| to the identify matrix on failure.
   bool GetInverse(Transform* transform) const WARN_UNUSED_RESULT;
 
   // Transposes this transform in place.
@@ -194,6 +204,9 @@ class GFX_EXPORT Transform {
 
   // Applies the transformation to the point.
   void TransformPoint(Point3F* point) const;
+
+  // Applies the transformation to the point.
+  void TransformPoint(PointF* point) const;
 
   // Applies the transformation to the point.
   void TransformPoint(Point* point) const;
@@ -266,6 +279,8 @@ class GFX_EXPORT Transform {
   void TransformPointInternal(const SkMatrix44& xform,
                               Point* point) const;
 
+  void TransformPointInternal(const SkMatrix44& xform, PointF* point) const;
+
   void TransformPointInternal(const SkMatrix44& xform,
                               Point3F* point) const;
 
@@ -278,8 +293,8 @@ class GFX_EXPORT Transform {
 };
 
 // This is declared here for use in gtest-based unit tests but is defined in
-// the gfx_test_support target. Depend on that to use this in your unit test.
-// This should not be used in production code - call ToString() instead.
+// the //ui/gfx:test_support target. Depend on that to use this in your unit
+// test. This should not be used in production code - call ToString() instead.
 void PrintTo(const Transform& transform, ::std::ostream* os);
 
 }  // namespace gfx

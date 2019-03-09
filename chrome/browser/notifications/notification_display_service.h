@@ -5,41 +5,61 @@
 #ifndef CHROME_BROWSER_NOTIFICATIONS_NOTIFICATION_DISPLAY_SERVICE_H_
 #define CHROME_BROWSER_NOTIFICATIONS_NOTIFICATION_DISPLAY_SERVICE_H_
 
+#include <map>
+#include <memory>
 #include <set>
 #include <string>
+
+#include "base/callback_forward.h"
 #include "base/macros.h"
+#include "chrome/browser/notifications/notification_common.h"
+#include "chrome/browser/notifications/notification_handler.h"
 #include "components/keyed_service/core/keyed_service.h"
 
-class Notification;
-class NotificationPlatformBridge;
 class Profile;
 
-// Profile-bound service that enables notifications to be displayed and
-// interacted with on the user's screen, orthogonal of whether this
-// functionality is provided by the browser or by the operating system. An
-// instance can be retrieved through the NotificationDisplayServiceFactory.
-//
-// TODO(peter): Add a NotificationHandler mechanism for registering listeners.
-// TODO(miguelg): Remove the SupportsNotificationCenter method.
+namespace message_center {
+class Notification;
+}
+
+// Profile-bound service that enables user-visible notifications to be displayed
+// and managed. Notifications may either be presented using a notification
+// center provided by the platform, or by Chrome's Message Center.
 class NotificationDisplayService : public KeyedService {
  public:
-  NotificationDisplayService() {}
-  ~NotificationDisplayService() override {}
+  ~NotificationDisplayService() override;
 
-  // Displays the |notification| identified by |notification_id|.
-  virtual void Display(const std::string& notification_id,
-                       const Notification& notification) = 0;
+  // Callback to be used with the GetDisplayed() method. Includes the set of
+  // notification ids that is being displayed to the user. The
+  // |supports_synchronization| callback indicates whether the platform has the
+  // ability to query which notifications are still being displayed.
+  //
+  // TODO(peter): Rename |supports_synchronization| to |supported|.
+  using DisplayedNotificationsCallback =
+      base::OnceCallback<void(std::set<std::string>,
+                              bool /* supports_synchronization */)>;
 
-  // Closes the notification identified by |notification_id|.
-  virtual void Close(const std::string& notification_id) = 0;
+  // Returns an instance of the display service for the given |profile|.
+  static NotificationDisplayService* GetForProfile(Profile* profile);
 
-  // Returns whether the implementation can retrieve a list of currently visible
-  // notifications and stores them in |*notification_ids| when possible.
-  virtual bool GetDisplayed(std::set<std::string>* notifications) const = 0;
+  // Displays the |notification| of type |notification_type|. The |metadata|
+  // may be provided for certain notification types that require additional
+  // information for the notification to be displayed.
+  virtual void Display(
+      NotificationHandler::Type notification_type,
+      const message_center::Notification& notification,
+      std::unique_ptr<NotificationCommon::Metadata> metadata = nullptr) = 0;
 
-  // Temporary method while we finish the refactor. Returns whether there is
-  // a native notification center backing up notifications.
-  virtual bool SupportsNotificationCenter() const = 0;
+  // Closes the notification having |notification_id| of |notification_type|.
+  virtual void Close(NotificationHandler::Type notification_type,
+                     const std::string& notification_id) = 0;
+
+  // Gets the IDs of currently displaying notifications and invokes |callback|
+  // once available. Not all backends support retrieving this information.
+  virtual void GetDisplayed(DisplayedNotificationsCallback callback) = 0;
+
+ protected:
+  NotificationDisplayService() = default;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(NotificationDisplayService);

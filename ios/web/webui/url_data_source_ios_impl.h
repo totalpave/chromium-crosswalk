@@ -2,14 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef IOS_INTERNAL_WEB_WEBUI_URL_DATA_SOURCE_IMPL_IOS_H_
-#define IOS_INTERNAL_WEB_WEBUI_URL_DATA_SOURCE_IMPL_IOS_H_
+#ifndef IOS_WEB_WEBUI_URL_DATA_SOURCE_IOS_IMPL_H_
+#define IOS_WEB_WEBUI_URL_DATA_SOURCE_IOS_IMPL_H_
 
 #include <memory>
 
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner_helpers.h"
 #include "ios/web/webui/url_data_manager_ios.h"
+#include "ui/base/template_expressions.h"
 
 namespace base {
 class RefCountedMemory;
@@ -64,6 +65,9 @@ class URLDataSourceIOSImpl
   const std::string& source_name() const { return source_name_; }
   URLDataSourceIOS* source() const { return source_.get(); }
 
+  // Replacements for i18n or null if no replacements are desired.
+  virtual const ui::TemplateReplacements* GetReplacements() const;
+
  protected:
   virtual ~URLDataSourceIOSImpl();
 
@@ -97,4 +101,4 @@ class URLDataSourceIOSImpl
 
 }  // namespace web
 
-#endif  // IOS_INTERNAL_WEB_WEBUI_URL_DATA_SOURCE_IMPL_IOS_H_
+#endif  // IOS_WEB_WEBUI_URL_DATA_SOURCE_IOS_IMPL_H_

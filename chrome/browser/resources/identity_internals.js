@@ -11,7 +11,7 @@ cr.define('identity_internals', function() {
    * @constructor
    */
   function TokenListItem(tokenInfo) {
-    var el = cr.doc.createElement('div');
+    const el = cr.doc.createElement('div');
     el.data_ = tokenInfo;
     el.__proto__ = TokenListItem.prototype;
     el.decorate();
@@ -26,21 +26,21 @@ cr.define('identity_internals', function() {
       this.textContent = '';
       this.id = this.data_.accessToken;
 
-      var table = this.ownerDocument.createElement('table');
-      var tbody = this.ownerDocument.createElement('tbody');
+      const table = this.ownerDocument.createElement('table');
+      const tbody = this.ownerDocument.createElement('tbody');
       tbody.appendChild(this.createEntry_(
           'accessToken', this.data_.accessToken, 'access-token'));
       tbody.appendChild(this.createEntry_(
           'extensionName', this.data_.extensionName, 'extension-name'));
       tbody.appendChild(this.createEntry_(
           'extensionId', this.data_.extensionId, 'extension-id'));
-      tbody.appendChild(this.createEntry_(
-          'tokenStatus', this.data_.status, 'token-status'));
+      tbody.appendChild(
+          this.createEntry_('tokenStatus', this.data_.status, 'token-status'));
       tbody.appendChild(this.createEntry_(
           'expirationTime', this.data_.expirationTime, 'expiration-time'));
       tbody.appendChild(this.createEntryForScopes_());
       table.appendChild(tbody);
-      var tfoot = this.ownerDocument.createElement('tfoot');
+      const tfoot = this.ownerDocument.createElement('tfoot');
       tfoot.appendChild(this.createButtons_());
       table.appendChild(tfoot);
       this.appendChild(table);
@@ -54,12 +54,12 @@ cr.define('identity_internals', function() {
      * @return {HTMLElement} An HTML element with the property name and value.
      */
     createEntry_: function(label, value, accessor) {
-      var row = this.ownerDocument.createElement('tr');
-      var labelField = this.ownerDocument.createElement('td');
+      const row = this.ownerDocument.createElement('tr');
+      const labelField = this.ownerDocument.createElement('td');
       labelField.classList.add('label');
       labelField.textContent = loadTimeData.getString(label);
       row.appendChild(labelField);
-      var valueField = this.ownerDocument.createElement('td');
+      const valueField = this.ownerDocument.createElement('td');
       valueField.classList.add('value');
       valueField.classList.add(accessor);
       valueField.textContent = value;
@@ -72,12 +72,12 @@ cr.define('identity_internals', function() {
      * @return {!HTMLElement} An HTML element with scopes.
      */
     createEntryForScopes_: function() {
-      var row = this.ownerDocument.createElement('tr');
-      var labelField = this.ownerDocument.createElement('td');
+      const row = this.ownerDocument.createElement('tr');
+      const labelField = this.ownerDocument.createElement('td');
       labelField.classList.add('label');
       labelField.textContent = loadTimeData.getString('scopes');
       row.appendChild(labelField);
-      var valueField = this.ownerDocument.createElement('td');
+      const valueField = this.ownerDocument.createElement('td');
       valueField.classList.add('value');
       valueField.classList.add('scope-list');
       this.data_.scopes.forEach(function(scope) {
@@ -94,8 +94,8 @@ cr.define('identity_internals', function() {
      *     token.
      */
     createButtons_: function() {
-      var row = this.ownerDocument.createElement('tr');
-      var buttonHolder = this.ownerDocument.createElement('td');
+      const row = this.ownerDocument.createElement('tr');
+      const buttonHolder = this.ownerDocument.createElement('td');
       buttonHolder.colSpan = 2;
       buttonHolder.classList.add('token-actions');
       buttonHolder.appendChild(this.createRevokeButton_());
@@ -110,11 +110,12 @@ cr.define('identity_internals', function() {
      * @private
      */
     createRevokeButton_: function() {
-      var revokeButton = this.ownerDocument.createElement('button');
+      const revokeButton = this.ownerDocument.createElement('button');
       revokeButton.classList.add('revoke-button');
       revokeButton.addEventListener('click', function() {
-        chrome.send('identityInternalsRevokeToken',
-                    [this.data_.extensionId, this.data_.accessToken]);
+        chrome.send(
+            'identityInternalsRevokeToken',
+            [this.data_.extensionId, this.data_.accessToken]);
       }.bind(this));
       revokeButton.textContent = loadTimeData.getString('revoke');
       return revokeButton;
@@ -127,7 +128,7 @@ cr.define('identity_internals', function() {
    * @constructor
    * @extends {cr.ui.div}
    */
-  var TokenList = cr.ui.define('div');
+  const TokenList = cr.ui.define('div');
 
   TokenList.prototype = {
     __proto__: HTMLDivElement.prototype,
@@ -154,8 +155,8 @@ cr.define('identity_internals', function() {
      * @private
      */
     removeTokenNode_: function(accessToken) {
-      var tokenIndex;
-      for (var index = 0; index < this.data_.length; index++) {
+      let tokenIndex;
+      for (let index = 0; index < this.data_.length; index++) {
         if (this.data_[index].accessToken == accessToken) {
           tokenIndex = index;
           break;
@@ -163,27 +164,29 @@ cr.define('identity_internals', function() {
       }
 
       // Remove from the data_ source if token found.
-      if (tokenIndex)
+      if (tokenIndex) {
         this.data_.splice(tokenIndex, 1);
+      }
 
       // Remove from the user interface.
-      var tokenNode = $(accessToken);
-      if (tokenNode)
+      const tokenNode = $(accessToken);
+      if (tokenNode) {
         this.removeChild(tokenNode);
+      }
     },
   };
 
-  var tokenList_;
+  let tokenList;
 
   /**
    * Initializes the UI by asking the contoller for list of identity tokens.
    */
   function initialize() {
     chrome.send('identityInternalsGetTokens');
-    tokenList_ = $('token-list');
-    tokenList_.data_ = [];
-    tokenList_.__proto__ = TokenList.prototype;
-    tokenList_.decorate();
+    tokenList = $('token-list');
+    tokenList.data_ = [];
+    tokenList.__proto__ = TokenList.prototype;
+    tokenList.decorate();
   }
 
   /**
@@ -191,8 +194,8 @@ cr.define('identity_internals', function() {
    * @param {!Token[]} tokens A list of tokens to be displayed
    */
   function returnTokens(tokens) {
-    tokenList_.data_ = tokens;
-    tokenList_.showTokenNodes_();
+    tokenList.data_ = tokens;
+    tokenList.showTokenNodes_();
   }
 
   /**
@@ -202,7 +205,7 @@ cr.define('identity_internals', function() {
    */
   function tokenRevokeDone(accessTokens) {
     assert(accessTokens.length > 0);
-    tokenList_.removeTokenNode_(accessTokens[0]);
+    tokenList.removeTokenNode_(accessTokens[0]);
   }
 
   // Return an object with all of the exports.

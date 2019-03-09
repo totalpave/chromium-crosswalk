@@ -11,17 +11,21 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/callback_list.h"
+#include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
+#include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/sequenced_task_runner.h"
 #include "base/strings/string16.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/threading/thread_checker.h"
@@ -29,19 +33,17 @@
 #include "build/build_config.h"
 #include "components/favicon_base/favicon_callback.h"
 #include "components/favicon_base/favicon_usage_data.h"
-#include "components/history/core/browser/delete_directive_handler.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/keyword_id.h"
-#include "components/history/core/browser/typed_url_syncable_service.h"
+#include "components/history/core/browser/sync/delete_directive_handler.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/sync/model/syncable_service.h"
 #include "sql/init_status.h"
-#include "sync/api/syncable_service.h"
 #include "ui/base/page_transition_types.h"
 
 class GURL;
 class HistoryQuickProviderTest;
 class HistoryURLProvider;
-class HistoryURLProviderTest;
 class InMemoryURLIndexTest;
 class SkBitmap;
 class SyncBookmarkDataTypeControllerTest;
@@ -53,7 +55,11 @@ class Thread;
 }
 
 namespace favicon {
-class FaviconService;
+class FaviconServiceImpl;
+}
+
+namespace syncer {
+class ModelTypeControllerDelegate;
 }
 
 namespace history {
@@ -63,13 +69,11 @@ struct HistoryAddPageArgs;
 class HistoryBackend;
 class HistoryClient;
 class HistoryDBTask;
-class HistoryDatabase;
 struct HistoryDatabaseParams;
 class HistoryQueryTest;
 class HistoryServiceObserver;
 class HistoryServiceTest;
 class InMemoryHistoryBackend;
-struct KeywordSearchTermVisit;
 class URLDatabase;
 class VisitDelegate;
 class WebHistoryService;
@@ -81,9 +85,6 @@ class WebHistoryService;
 // thread that made the request.
 class HistoryService : public syncer::SyncableService, public KeyedService {
  public:
-  // Callback for value asynchronously returned by TopHosts().
-  typedef base::Callback<void(const TopHostsList&)> TopHostsCallback;
-
   // Must call Init after construction. The empty constructor provided only for
   // unit tests. When using the full constructor, |history_client| may only be
   // null during testing, while |visit_delegate| may be null if the embedder use
@@ -131,11 +132,6 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // They return false if database is not available (e.g. not loaded yet) or the
   // URL does not exist.
 
-  // Returns a pointer to the TypedUrlSyncableService owned by HistoryBackend.
-  // This method should only be called from the history thread, because the
-  // returned service is intended to be accessed only via the history thread.
-  TypedUrlSyncableService* GetTypedUrlSyncableService() const;
-
   // KeyedService:
   void Shutdown() override;
 
@@ -144,36 +140,11 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   typedef base::Callback<void(const OriginCountAndLastVisitMap&)>
       GetCountsAndLastVisitForOriginsCallback;
 
-  // Computes the |num_hosts| most-visited hostnames in the past 30 days and
-  // returns a list of those hosts paired with their visit counts. The following
-  // caveats apply:
-  // 1. Hostnames are stripped of their 'www.' prefix. Visits to foo.com and
-  //    www.foo.com are summed into the resultant foo.com entry.
-  // 2. Ports and schemes are ignored. Visits to http://foo.com/ and
-  //    https://foo.com:567/ are summed into the resultant foo.com entry.
-  // 3. If the history is abnormally large and diverse, the function will give
-  //    up early and return an approximate list.
-  // 4. Only http://, https://, and ftp:// URLs are counted.
-  //
-  // Note: Virtual needed for mocking.
-  virtual void TopHosts(size_t num_hosts,
-                        const TopHostsCallback& callback) const;
-
   // Gets the counts and most recent visit date of URLs that belong to |origins|
   // in the history database.
-  void GetCountsAndLastVisitForOrigins(
+  void GetCountsAndLastVisitForOriginsForTesting(
       const std::set<GURL>& origins,
       const GetCountsAndLastVisitForOriginsCallback& callback) const;
-
-  // Returns, for the given URL, a 0-based index into the list produced by
-  // TopHosts(), corresponding to that URL's host. If TopHosts() has not
-  // previously been run, or the host is not in the top kMaxTopHosts, returns
-  // kMaxTopHosts.
-  //
-  // Note: Virtual needed for mocking.
-  virtual void HostRankIfAvailable(
-      const GURL& url,
-      const base::Callback<void(int)>& callback) const;
 
   // Navigation ----------------------------------------------------------------
 
@@ -188,6 +159,10 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // information that can be performed on the given URL. The 'nav_entry_id'
   // should be the unique ID of the current navigation entry in the given
   // process.
+  //
+  // TODO(avi): This is no longer true. 'page id' was removed years ago, and
+  // their uses replaced by globally-unique nav_entry_ids. Is ContextID still
+  // needed? https://crbug.com/859902
   //
   // 'redirects' is an array of redirect URLs leading to this page, with the
   // page itself as the last item (so when there is no redirect, it will have
@@ -241,10 +216,11 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // empty.
   //
   // If success is false, neither the row nor the vector will be valid.
-  typedef base::Callback<void(
+  typedef base::OnceCallback<void(
       bool,  // Success flag, when false, nothing else is valid.
       const URLRow&,
-      const VisitVector&)> QueryURLCallback;
+      const VisitVector&)>
+      QueryURLCallback;
 
   // Queries the basic information about the URL in the history database. If
   // the caller is interested in the visits (each time the URL is visited),
@@ -253,7 +229,7 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   base::CancelableTaskTracker::TaskId QueryURL(
       const GURL& url,
       bool want_visits,
-      const QueryURLCallback& callback,
+      QueryURLCallback callback,
       base::CancelableTaskTracker* tracker);
 
   // Provides the result of a query. See QueryResults in history_types.h.
@@ -339,6 +315,10 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
       const GetHistoryCountCallback& callback,
       base::CancelableTaskTracker* tracker);
 
+  // Returns, via a callback, the number of Hosts visited in the last month.
+  void CountUniqueHostsVisitedLastMonth(const GetHistoryCountCallback& callback,
+                                        base::CancelableTaskTracker* tracker);
+
   // Database management operations --------------------------------------------
 
   // Delete all the information related to a single url.
@@ -359,7 +339,8 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   void ExpireHistoryBetween(const std::set<GURL>& restrict_urls,
                             base::Time begin_time,
                             base::Time end_time,
-                            const base::Closure& callback,
+                            bool user_initiated,
+                            base::OnceClosure callback,
                             base::CancelableTaskTracker* tracker);
 
   // Removes all visits to specified URLs in specific time ranges.
@@ -367,18 +348,27 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // vector. The fields of |ExpireHistoryArgs| map directly to the arguments of
   // of ExpireHistoryBetween().
   void ExpireHistory(const std::vector<ExpireHistoryArgs>& expire_list,
-                     const base::Closure& callback,
+                     base::OnceClosure callback,
                      base::CancelableTaskTracker* tracker);
+
+  // Expires all visits before and including the given time, updating the URLs
+  // accordingly.
+  void ExpireHistoryBeforeForTesting(base::Time end_time,
+                                     base::OnceClosure callback,
+                                     base::CancelableTaskTracker* tracker);
 
   // Removes all visits to the given URLs in the specified time range. Calls
   // ExpireHistoryBetween() to delete local visits, and handles deletion of
   // synced visits if appropriate.
-  void ExpireLocalAndRemoteHistoryBetween(WebHistoryService* web_history,
-                                          const std::set<GURL>& restrict_urls,
+  void DeleteLocalAndRemoteHistoryBetween(WebHistoryService* web_history,
                                           base::Time begin_time,
                                           base::Time end_time,
-                                          const base::Closure& callback,
+                                          base::OnceClosure callback,
                                           base::CancelableTaskTracker* tracker);
+
+  // Removes all visits to the given url. Calls DeleteUrl() to delete local
+  // visits and handles deletion of synced visits if appropriate.
+  void DeleteLocalAndRemoteUrl(WebHistoryService* web_history, const GURL& url);
 
   // Processes the given |delete_directive| and sends it to the
   // SyncChangeProcessor (if it exists).  Returns any error resulting
@@ -421,7 +411,7 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // Called to update the history service about the current state of a download.
   // This is a 'fire and forget' query, so just pass the relevant state info to
   // the database with no need for a callback.
-  void UpdateDownload(const DownloadRow& data);
+  void UpdateDownload(const DownloadRow& data, bool should_commit_immediately);
 
   // Permanently remove some downloads from the history system. This is a 'fire
   // and forget' operation.
@@ -462,6 +452,7 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // Schedules a HistoryDBTask for running on the history backend thread. See
   // HistoryDBTask for details on what this does. Takes ownership of |task|.
   virtual base::CancelableTaskTracker::TaskId ScheduleDBTask(
+      const base::Location& from_here,
       std::unique_ptr<HistoryDBTask> task,
       base::CancelableTaskTracker* tracker);
 
@@ -530,8 +521,21 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   void StopSyncing(syncer::ModelType type) override;
   syncer::SyncDataList GetAllSyncData(syncer::ModelType type) const override;
   syncer::SyncError ProcessSyncChanges(
-      const tracked_objects::Location& from_here,
+      const base::Location& from_here,
       const syncer::SyncChangeList& change_list) override;
+
+  // For sync codebase only: instantiates a controller delegate to interact with
+  // TypedURLSyncBridge. Must be called from the UI thread.
+  std::unique_ptr<syncer::ModelTypeControllerDelegate>
+  GetTypedURLSyncControllerDelegate();
+
+  // Override |backend_task_runner_| for testing; needs to be called before
+  // Init.
+  void set_backend_task_runner_for_testing(
+      scoped_refptr<base::SequencedTaskRunner> task_runner) {
+    DCHECK(!backend_task_runner_);
+    backend_task_runner_ = std::move(task_runner);
+  }
 
  protected:
   // These are not currently used, hopefully we can do something in the future
@@ -546,12 +550,13 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   class BackendDelegate;
   friend class base::RefCountedThreadSafe<HistoryService>;
   friend class BackendDelegate;
-  friend class favicon::FaviconService;
+  friend class favicon::FaviconServiceImpl;
   friend class HistoryBackend;
   friend class HistoryQueryTest;
   friend class ::HistoryQuickProviderTest;
   friend class HistoryServiceTest;
   friend class ::HistoryURLProvider;
+  friend class HQPPerfTestOnePopularURL;
   friend class ::InMemoryURLIndexTest;
   friend class ::SyncBookmarkDataTypeControllerTest;
   friend class ::TestingProfile;
@@ -602,16 +607,8 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   void NotifyURLsModified(const URLRows& changed_urls);
 
   // Notify all HistoryServiceObservers registered that URLs have been deleted.
-  // |all_history| is set to true, if all the URLs are deleted.
-  //               When set to true, |deleted_rows| and |favicon_urls| are
-  //               undefined.
-  // |expired| is set to true, if the URL deletion is due to expiration.
-  // |deleted_rows| list of the deleted URLs.
-  // |favicon_urls| list of favicon URLs that correspond to the deleted URLs.
-  void NotifyURLsDeleted(bool all_history,
-                         bool expired,
-                         const URLRows& deleted_rows,
-                         const std::set<GURL>& favicon_urls);
+  // |deletion_info| describes the urls that have been removed from history.
+  void NotifyURLsDeleted(const DeletionInfo& deletion_info);
 
   // Notify all HistoryServiceObservers registered that the
   // HistoryService has finished loading.
@@ -639,18 +636,15 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // FaviconService.
 
   // Used by FaviconService to get the favicon bitmaps from the history backend
-  // whose edge sizes most closely match |desired_sizes| for |icon_types|. If
+  // whose edge sizes most closely match |desired_sizes| for |icon_type|. If
   // |desired_sizes| has a '0' entry, the largest favicon bitmap for
-  // |icon_types| is returned. The returned FaviconBitmapResults will have at
+  // |icon_type| is returned. The returned FaviconBitmapResults will have at
   // most one result for each entry in |desired_sizes|. If a favicon bitmap is
   // determined to be the best candidate for multiple |desired_sizes| there will
   // be fewer results.
-  // If |icon_types| has several types, results for only a single type will be
-  // returned in the priority of TOUCH_PRECOMPOSED_ICON, TOUCH_ICON, and
-  // FAVICON.
-  base::CancelableTaskTracker::TaskId GetFavicons(
-      const std::vector<GURL>& icon_urls,
-      int icon_types,
+  base::CancelableTaskTracker::TaskId GetFavicon(
+      const GURL& icon_url,
+      favicon_base::IconType icon_type,
       const std::vector<int>& desired_sizes,
       const favicon_base::FaviconResultsCallback& callback,
       base::CancelableTaskTracker* tracker);
@@ -661,13 +655,17 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // |icon_types| is returned. The returned FaviconBitmapResults will have at
   // most one result for each entry in |desired_sizes|. If a favicon bitmap is
   // determined to be the best candidate for multiple |desired_sizes| there
-  // will be fewer results. If |icon_types| has several types, results for only
-  // a single type will be returned in the priority of TOUCH_PRECOMPOSED_ICON,
-  // TOUCH_ICON, and FAVICON.
+  // will be fewer results. If |fallback_to_host| is true, the host of
+  // |page_url| will be used to search the favicon database if an exact match
+  // cannot be found. Generally, code showing an icon for a full/previously
+  // visited URL should set |fallback_to_host|=false. Otherwise, if only a host
+  // is available, and any icon matching the host is permissible, use
+  // |fallback_to_host|=true.
   base::CancelableTaskTracker::TaskId GetFaviconsForURL(
       const GURL& page_url,
-      int icon_types,
+      const favicon_base::IconTypeSet& icon_types,
       const std::vector<int>& desired_sizes,
+      bool fallback_to_host,
       const favicon_base::FaviconResultsCallback& callback,
       base::CancelableTaskTracker* tracker);
 
@@ -684,7 +682,7 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // long as its size is larger than a specific value.
   base::CancelableTaskTracker::TaskId GetLargestFaviconForURL(
       const GURL& page_url,
-      const std::vector<int>& icon_types,
+      const std::vector<favicon_base::IconTypeSet>& icon_types,
       int minimum_size_in_pixels,
       const favicon_base::FaviconRawBitmapCallback& callback,
       base::CancelableTaskTracker* tracker);
@@ -699,31 +697,23 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
       const favicon_base::FaviconResultsCallback& callback,
       base::CancelableTaskTracker* tracker);
 
-  // Used by the FaviconService to replace the favicon mappings to |page_url|
-  // for |icon_types| on the history backend.
-  // Sample |icon_urls|:
-  //  { ICON_URL1 -> TOUCH_ICON, known to the database,
-  //    ICON_URL2 -> TOUCH_ICON, not known to the database,
-  //    ICON_URL3 -> TOUCH_PRECOMPOSED_ICON, known to the database }
-  // The new mappings are computed from |icon_urls| with these rules:
-  // 1) Any urls in |icon_urls| which are not already known to the database are
-  //    rejected.
-  //    Sample new mappings to |page_url|: { ICON_URL1, ICON_URL3 }
-  // 2) If |icon_types| has multiple types, the mappings are only set for the
-  //    largest icon type.
-  //    Sample new mappings to |page_url|: { ICON_URL3 }
-  // |icon_types| can only have multiple IconTypes if
-  // |icon_types| == TOUCH_ICON | TOUCH_PRECOMPOSED_ICON.
-  // The favicon bitmaps whose edge sizes most closely match |desired_sizes|
-  // from the favicons which were just mapped to |page_url| are returned. If
-  // |desired_sizes| has a '0' entry, the largest favicon bitmap is returned.
+  // Maps |page_urls| to the favicon at |icon_url| if there is an entry in the
+  // database for |icon_url| and |icon_type|. This occurs when there is a
+  // mapping from a different page URL to |icon_url|. The favicon bitmaps whose
+  // edge sizes most closely match |desired_sizes| from the favicons which were
+  // just mapped to |page_urls| are returned. If |desired_sizes| has a '0'
+  // entry, the largest favicon bitmap is returned.
   base::CancelableTaskTracker::TaskId UpdateFaviconMappingsAndFetch(
-      const GURL& page_url,
-      const std::vector<GURL>& icon_urls,
-      int icon_types,
+      const base::flat_set<GURL>& page_urls,
+      const GURL& icon_url,
+      favicon_base::IconType icon_type,
       const std::vector<int>& desired_sizes,
       const favicon_base::FaviconResultsCallback& callback,
       base::CancelableTaskTracker* tracker);
+
+  // Deletes favicon mappings for each URL in |page_urls| and their redirects.
+  void DeleteFaviconMappings(const base::flat_set<GURL>& page_urls,
+                             favicon_base::IconType icon_type);
 
   // Used by FaviconService to set a favicon for |page_url| and |icon_url| with
   // |pixel_size|.
@@ -751,20 +741,69 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
                     scoped_refptr<base::RefCountedMemory> bitmap_data,
                     const gfx::Size& pixel_size);
 
-  // Used by the FaviconService to replace all of the favicon bitmaps mapped to
-  // |page_url| for |icon_type|.
+  // Used by the FaviconService to replace the favicon bitmaps mapped to all
+  // URLs in |page_urls| for |icon_type|.
   // Use MergeFavicon() if |bitmaps| is incomplete, and favicon bitmaps in the
   // database should be preserved if possible. For instance, favicon bitmaps
   // from sync are 1x only. MergeFavicon() is used to avoid deleting the 2x
-  // favicon bitmap if it is present in the history backend.
-  void SetFavicons(const GURL& page_url,
+  // favicon bitmap if it is present in the history backend. |page_urls| must
+  // not be empty.
+  void SetFavicons(const base::flat_set<GURL>& page_urls,
                    favicon_base::IconType icon_type,
                    const GURL& icon_url,
                    const std::vector<SkBitmap>& bitmaps);
 
+  // Causes each page in |page_urls_to_write| to be associated to the same
+  // icon as the page |page_url_to_read| for icon types matching |icon_types|.
+  // No-op if |page_url_to_read| has no mappings for |icon_types|.
+  void CloneFaviconMappingsForPages(
+      const GURL& page_url_to_read,
+      const favicon_base::IconTypeSet& icon_types,
+      const base::flat_set<GURL>& page_urls_to_write);
+
+  // Figures out whether an on-demand favicon can be written for provided
+  // |page_url| and returns the result via |callback|. The result is false if
+  // there is an existing cached favicon for |icon_type| or if there is a
+  // non-expired icon of *any* type for |page_url|.
+  void CanSetOnDemandFavicons(const GURL& page_url,
+                              favicon_base::IconType icon_type,
+                              base::OnceCallback<void(bool)> callback);
+
+  // Same as SetFavicons with three differences:
+  // 1) It will be a no-op if CanSetOnDemandFavicons() returns false.
+  // 2) If |icon_url| is known to the database, |bitmaps| will be ignored (i.e.
+  //    the icon won't be overwritten) but the mappings from |page_url| to
+  //    |icon_url| will be stored (conditioned to point 1 above).
+  // 3) If |icon_url| is stored, it will be marked as "on-demand".
+  //
+  // On-demand favicons are those that are fetched without visiting their page.
+  // For this reason, their life-time cannot be bound to the life-time of the
+  // corresponding visit in history.
+  // - These bitmaps are evicted from the database based on the last time they
+  //   get requested. The last requested time is initially set to Now() and is
+  //   further updated by calling TouchOnDemandFavicon().
+  // - Furthermore, on-demand bitmaps are immediately marked as expired. Hence,
+  //   they are always replaced by standard favicons whenever their page gets
+  //   visited.
+  // The callback will receive whether the write actually happened.
+  void SetOnDemandFavicons(const GURL& page_url,
+                           favicon_base::IconType icon_type,
+                           const GURL& icon_url,
+                           const std::vector<SkBitmap>& bitmaps,
+                           base::OnceCallback<void(bool)> callback);
+
   // Used by the FaviconService to mark the favicon for the page as being out
   // of date.
   void SetFaviconsOutOfDateForPage(const GURL& page_url);
+
+  // Mark that the on-demand favicon at |icon_url| was requested now. This
+  // postpones the automatic eviction of the favicon from the database. Not all
+  // calls end up in a write into the DB:
+  // - it is no-op if the bitmaps are not stored using SetOnDemandFavicons();
+  // - the updates of the "last requested time" have limited frequency for each
+  //   particular favicon (e.g. once per week). This limits the overhead of
+  //   cache management for on-demand favicons.
+  void TouchOnDemandFavicon(const GURL& icon_url);
 
   // Used by the FaviconService for importing many favicons for many pages at
   // once. The pages must exist, any favicon sets for unknown pages will be
@@ -777,11 +816,12 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   void SetInMemoryBackend(std::unique_ptr<InMemoryHistoryBackend> mem_backend);
 
   // Called by our BackendDelegate when there is a problem reading the database.
-  void NotifyProfileError(sql::InitStatus init_status);
+  void NotifyProfileError(sql::InitStatus init_status,
+                          const std::string& diagnostics);
 
   // Call to schedule a given task for running on the history thread with the
   // specified priority. The task will have ownership taken.
-  void ScheduleTask(SchedulePriority priority, const base::Closure& task);
+  void ScheduleTask(SchedulePriority priority, base::OnceClosure task);
 
   // Called when the favicons for the given page URLs (e.g.
   // http://www.google.com) and the given icon URL (e.g.
@@ -793,13 +833,19 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
 
   base::ThreadChecker thread_checker_;
 
-  // The thread used by the history service to run complicated operations.
-  // |thread_| is null once Cleanup() is called.
-  base::Thread* thread_;
+  // The thread used by the history service to run HistoryBackend operations.
+  // Intentionally not a BrowserThread because the sync integration unit tests
+  // need to create multiple HistoryServices which each have their own thread.
+  // Nullptr if TaskScheduler is used for HistoryBackend operations.
+  std::unique_ptr<base::Thread> thread_;
+
+  // The TaskRunner to which HistoryBackend tasks are posted. Nullptr once
+  // Cleanup() is called.
+  scoped_refptr<base::SequencedTaskRunner> backend_task_runner_;
 
   // This class has most of the implementation and runs on the 'thread_'.
   // You MUST communicate with this class ONLY through the thread_'s
-  // message_loop().
+  // task_runner().
   //
   // This pointer will be null once Cleanup() has been called, meaning no
   // more calls should be made to the history thread.
@@ -822,7 +868,7 @@ class HistoryService : public syncer::SyncableService, public KeyedService {
   // completed.
   bool backend_loaded_;
 
-  base::ObserverList<HistoryServiceObserver> observers_;
+  base::ObserverList<HistoryServiceObserver>::Unchecked observers_;
   base::CallbackList<void(const std::set<GURL>&, const GURL&)>
       favicon_changed_callback_list_;
 

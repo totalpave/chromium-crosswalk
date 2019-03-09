@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -16,6 +17,7 @@
 #include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/infobars/infobar_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -29,15 +31,13 @@
 #include "components/variations/variations_associated_data.h"
 #include "components/version_info/version_info.h"
 
-namespace chrome {
-
 namespace {
 
 void ResetCheckDefaultBrowserPref(const base::FilePath& profile_path) {
   Profile* profile =
       g_browser_process->profile_manager()->GetProfileByPath(profile_path);
   if (profile)
-    chrome::ResetDefaultBrowserPrompt(profile);
+    ResetDefaultBrowserPrompt(profile);
 }
 
 void ShowPrompt() {
@@ -52,7 +52,15 @@ void ShowPrompt() {
   if (!web_contents)
     return;
 
-  DefaultBrowserInfoBarDelegate::Create(
+  // Never show the default browser prompt over the first run promos.
+  // TODO(pmonette): The whole logic that determines when to show the default
+  // browser prompt is due for a refactor. ShouldShowDefaultBrowserPrompt()
+  // should be aware of the first run promos and return false instead of
+  // counting on the early return here. See bug crbug.com/693292.
+  if (first_run::IsOnWelcomePage(web_contents))
+    return;
+
+  chrome::DefaultBrowserInfoBarDelegate::Create(
       InfoBarService::FromWebContents(web_contents), browser->profile());
 }
 
@@ -64,10 +72,10 @@ bool ShouldShowDefaultBrowserPrompt(Profile* profile) {
   const std::string disable_version_string =
       g_browser_process->local_state()->GetString(
           prefs::kBrowserSuppressDefaultBrowserPrompt);
-  const Version disable_version(disable_version_string);
+  const base::Version disable_version(disable_version_string);
   DCHECK(disable_version_string.empty() || disable_version.IsValid());
   if (disable_version.IsValid() &&
-      disable_version == Version(version_info::GetVersionNumber())) {
+      disable_version == version_info::GetVersion()) {
     return false;
   }
 
@@ -102,6 +110,9 @@ void OnCheckIsDefaultBrowserFinished(
     ResetCheckDefaultBrowserPref(profile_path);
   } else if (show_prompt && state == shell_integration::NOT_DEFAULT &&
              shell_integration::CanSetAsDefaultBrowser()) {
+    // Only show the prompt if some other program is the user's default browser.
+    // In particular, don't show it if another install mode is default (e.g.,
+    // don't prompt for Chrome Beta if stable Chrome is the default).
     ShowPrompt();
   }
 }
@@ -151,5 +162,3 @@ bool ShowFirstRunDefaultBrowserPrompt(Profile* profile) {
   return false;
 }
 #endif
-
-}  // namespace chrome

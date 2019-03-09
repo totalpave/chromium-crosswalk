@@ -7,11 +7,10 @@
 
 #include <memory>
 
-#include "content/common/resize_params.h"
-#include "third_party/WebKit/public/web/WebDeviceEmulationParams.h"
+#include "content/common/visual_properties.h"
+#include "third_party/blink/public/web/web_device_emulation_params.h"
 
 namespace gfx {
-class PointF;
 class Rect;
 }
 
@@ -24,12 +23,12 @@ struct ContextMenuParams;
 // RenderWidget. This includes resizing, placing view on the screen at desired
 // position, changing device scale factor, and scaling down the whole
 // widget if required to fit into the browser window.
-class RenderWidgetScreenMetricsEmulator {
+class CONTENT_EXPORT RenderWidgetScreenMetricsEmulator {
  public:
   RenderWidgetScreenMetricsEmulator(
       RenderWidgetScreenMetricsEmulatorDelegate* delegate,
       const blink::WebDeviceEmulationParams& params,
-      const ResizeParams& resize_params,
+      const VisualProperties& visual_properties,
       const gfx::Rect& view_screen_rect,
       const gfx::Rect& window_screen_rect);
   virtual ~RenderWidgetScreenMetricsEmulator();
@@ -37,14 +36,13 @@ class RenderWidgetScreenMetricsEmulator {
   // Scale and offset used to convert between host coordinates
   // and webwidget coordinates.
   const gfx::Size& original_size() const {
-    return original_resize_params_.new_size;
+    return original_visual_properties_.new_size;
   }
 
   float scale() const { return scale_; }
-  const gfx::PointF& offset() const { return offset_; }
   const gfx::Rect& applied_widget_rect() const { return applied_widget_rect_; }
-  const blink::WebScreenInfo& original_screen_info() const {
-    return original_resize_params_.screen_info;
+  const ScreenInfo& original_screen_info() const {
+    return original_visual_properties_.screen_info;
   }
   const gfx::Rect& original_screen_rect() const {
     return original_view_screen_rect_;
@@ -54,8 +52,7 @@ class RenderWidgetScreenMetricsEmulator {
 
   // The following methods alter handlers' behavior for messages related to
   // widget size and position.
-  void OnResize(const ResizeParams& params);
-  void OnUpdateWindowScreenRect(const gfx::Rect& window_screen_rect);
+  void OnSynchronizeVisualProperties(const VisualProperties& params);
   void OnUpdateScreenRects(const gfx::Rect& view_screen_rect,
                            const gfx::Rect& window_screen_rect);
   void OnShowContextMenu(ContextMenuParams* params);
@@ -72,13 +69,12 @@ class RenderWidgetScreenMetricsEmulator {
 
   // The computed scale and offset used to fit widget into browser window.
   float scale_;
-  gfx::PointF offset_;
 
   // Widget rect as passed to webwidget.
   gfx::Rect applied_widget_rect_;
 
   // Original values to restore back after emulation ends.
-  ResizeParams original_resize_params_;
+  VisualProperties original_visual_properties_;
   gfx::Rect original_view_screen_rect_;
   gfx::Rect original_window_screen_rect_;
 

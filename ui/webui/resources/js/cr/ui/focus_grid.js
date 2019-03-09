@@ -25,7 +25,7 @@ cr.define('cr.ui', function() {
    *   focusable  focusable  focusable
    *
    * @constructor
-   * @implements {cr.ui.FocusRow.Delegate}
+   * @implements {cr.ui.FocusRowDelegate}
    */
   function FocusGrid() {
     /** @type {!Array<!cr.ui.FocusRow>} */
@@ -38,31 +38,35 @@ cr.define('cr.ui', function() {
 
     /** @override */
     onFocus: function(row, e) {
-      if (this.ignoreFocusChange_)
+      if (this.ignoreFocusChange_) {
         this.ignoreFocusChange_ = false;
-      else
+      } else {
         this.lastFocused_ = e.currentTarget;
+      }
 
-      this.rows.forEach(function(r) { r.makeActive(r == row); });
+      this.rows.forEach(function(r) {
+        r.makeActive(r == row);
+      });
     },
 
     /** @override */
     onKeydown: function(row, e) {
-      var rowIndex = this.rows.indexOf(row);
+      const rowIndex = this.rows.indexOf(row);
       assert(rowIndex >= 0);
 
-      var newRow = -1;
+      let newRow = -1;
 
-      if (e.keyIdentifier == 'Up')
+      if (e.key == 'ArrowUp') {
         newRow = rowIndex - 1;
-      else if (e.keyIdentifier == 'Down')
+      } else if (e.key == 'ArrowDown') {
         newRow = rowIndex + 1;
-      else if (e.keyIdentifier == 'PageUp')
+      } else if (e.key == 'PageUp') {
         newRow = 0;
-      else if (e.keyIdentifier == 'PageDown')
+      } else if (e.key == 'PageDown') {
         newRow = this.rows.length - 1;
+      }
 
-      var rowToFocus = this.rows[newRow];
+      const rowToFocus = this.rows[newRow];
       if (rowToFocus) {
         this.ignoreFocusChange_ = true;
         rowToFocus.getEquivalentElement(this.lastFocused_).focus();
@@ -73,11 +77,18 @@ cr.define('cr.ui', function() {
       return false;
     },
 
+    /** @override */
+    getCustomEquivalent: function(sampleElement) {
+      return null;
+    },
+
     /**
      * Unregisters event handlers and removes all |this.rows|.
      */
     destroy: function() {
-      this.rows.forEach(function(row) { row.destroy(); });
+      this.rows.forEach(function(row) {
+        row.destroy();
+      });
       this.rows.length = 0;
     },
 
@@ -86,9 +97,10 @@ cr.define('cr.ui', function() {
      * @return {number} The row index. -1 if not found.
      */
     getRowIndexForTarget: function(target) {
-      for (var i = 0; i < this.rows.length; ++i) {
-        if (this.rows[i].getElements().indexOf(target) >= 0)
+      for (let i = 0; i < this.rows.length; ++i) {
+        if (this.rows[i].getElements().indexOf(target) >= 0) {
           return i;
+        }
       }
       return -1;
     },
@@ -98,9 +110,10 @@ cr.define('cr.ui', function() {
      * @return {?cr.ui.FocusRow} The row with root of |root| or null.
      */
     getRowForRoot: function(root) {
-      for (var i = 0; i < this.rows.length; ++i) {
-        if (this.rows[i].root == root)
+      for (let i = 0; i < this.rows.length; ++i) {
+        if (this.rows[i].root == root) {
           return this.rows[i];
+        }
       }
       return null;
     },
@@ -122,11 +135,12 @@ cr.define('cr.ui', function() {
     addRowBefore: function(row, nextRow) {
       row.delegate = row.delegate || this;
 
-      var nextRowIndex = nextRow ? this.rows.indexOf(nextRow) : -1;
-      if (nextRowIndex == -1)
+      const nextRowIndex = nextRow ? this.rows.indexOf(nextRow) : -1;
+      if (nextRowIndex == -1) {
         this.rows.push(row);
-      else
+      } else {
         this.rows.splice(nextRowIndex, 0, row);
+      }
     },
 
     /**
@@ -134,25 +148,31 @@ cr.define('cr.ui', function() {
      * @param {cr.ui.FocusRow} row The row that needs to be removed.
      */
     removeRow: function(row) {
-      var nextRowIndex = row ? this.rows.indexOf(row) : -1;
-      if (nextRowIndex > -1)
+      const nextRowIndex = row ? this.rows.indexOf(row) : -1;
+      if (nextRowIndex > -1) {
         this.rows.splice(nextRowIndex, 1);
+      }
     },
 
     /**
      * Makes sure that at least one row is active. Should be called once, after
      * adding all rows to FocusGrid.
+     * @param {number=} preferredRow The row to select if no other row is
+     *     active. Selects the first item if this is beyond the range of the
+     *     grid.
      */
-    ensureRowActive: function() {
-      if (this.rows.length == 0)
+    ensureRowActive: function(preferredRow) {
+      if (this.rows.length == 0) {
         return;
-
-      for (var i = 0; i < this.rows.length; ++i) {
-        if (this.rows[i].isActive())
-          return;
       }
 
-      this.rows[0].makeActive(true);
+      for (let i = 0; i < this.rows.length; ++i) {
+        if (this.rows[i].isActive()) {
+          return;
+        }
+      }
+
+      (this.rows[preferredRow || 0] || this.rows[0]).makeActive(true);
     },
   };
 

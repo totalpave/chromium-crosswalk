@@ -11,22 +11,24 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/path_service.h"
-#include "base/single_thread_task_runner.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/run_loop.h"
+#include "base/stl_util.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
 #include "chrome/browser/media_galleries/fileapi/media_file_system_backend.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/test/browser_test.h"
-#include "content/public/test/test_file_system_backend.h"
-#include "content/public/test/test_file_system_context.h"
-#include "content/public/test/test_utils.h"
 #include "storage/browser/fileapi/copy_or_move_file_validator.h"
 #include "storage/browser/fileapi/file_system_backend.h"
 #include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/file_system_operation_runner.h"
 #include "storage/browser/fileapi/file_system_url.h"
 #include "storage/browser/fileapi/isolated_context.h"
+#include "storage/browser/test/test_file_system_backend.h"
+#include "storage/browser/test/test_file_system_context.h"
 #include "storage/common/fileapi/file_system_types.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -63,7 +65,7 @@ void HandleCheckFileResult(int64_t expected_size,
 
 base::FilePath GetMediaTestDir() {
   base::FilePath test_file;
-  if (!PathService::Get(base::DIR_SOURCE_ROOT, &test_file))
+  if (!base::PathService::Get(base::DIR_SOURCE_ROOT, &test_file))
     return base::FilePath();
   return test_file.AppendASCII("media").AppendASCII("test").AppendASCII("data");
 }
@@ -80,46 +82,64 @@ class MediaFileValidatorTest : public InProcessBrowserTest {
   // it into a media file system.  The result is compared to |expected_result|.
   void MoveTest(const std::string& filename, const std::string& content,
                 bool expected_result) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::FILE,
-        FROM_HERE,
-        base::Bind(&MediaFileValidatorTest::SetupOnFileThread,
-                   base::Unretained(this), filename, content, expected_result));
-    loop_runner_ = new content::MessageLoopRunner;
-    loop_runner_->Run();
+    base::RunLoop run_loop;
+    quit_closure_ = run_loop.QuitClosure();
+    base::PostTaskWithTraits(
+        FROM_HERE, {base::MayBlock()},
+        base::BindOnce(&MediaFileValidatorTest::SetupBlocking,
+                       base::Unretained(this), filename, content,
+                       expected_result));
+    run_loop.Run();
   }
 
   // Write |source| into |filename| in a test file system and try to move it
   // into a media file system.  The result is compared to |expected_result|.
   void MoveTestFromFile(const std::string& filename,
                         const base::FilePath& source, bool expected_result) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::FILE,
-        FROM_HERE,
-        base::Bind(&MediaFileValidatorTest::SetupFromFileOnFileThread,
-                   base::Unretained(this), filename, source, expected_result));
-    loop_runner_ = new content::MessageLoopRunner;
-    loop_runner_->Run();
+    base::RunLoop run_loop;
+    quit_closure_ = run_loop.QuitClosure();
+    base::PostTaskWithTraits(
+        FROM_HERE, {base::MayBlock()},
+        base::BindOnce(&MediaFileValidatorTest::SetupFromFileBlocking,
+                       base::Unretained(this), filename, source,
+                       expected_result));
+    run_loop.Run();
   }
 
  private:
+  // BrowserTestBase interface.
+  void PostRunTestOnMainThread() override {
+    // Trigger release of the FileSystemContext before the IO thread is gone,
+    // so it can teardown there correctly.
+    file_system_context_ = nullptr;
+    InProcessBrowserTest::PostRunTestOnMainThread();
+  }
+
   // Create the test files, filesystem objects, etc.
-  void SetupOnFileThread(const std::string& filename,
-                         const std::string& content,
-                         bool expected_result) {
+  void SetupBlocking(const std::string& filename,
+                     const std::string& content,
+                     bool expected_result) {
     ASSERT_TRUE(base_dir_.CreateUniqueTempDir());
-    base::FilePath base = base_dir_.path();
+    base::FilePath base = base_dir_.GetPath();
     base::FilePath src_path = base.AppendASCII("src_fs");
     ASSERT_TRUE(base::CreateDirectory(src_path));
 
-    ScopedVector<storage::FileSystemBackend> additional_providers;
-    additional_providers.push_back(new content::TestFileSystemBackend(
-        base::ThreadTaskRunnerHandle::Get().get(), src_path));
-    additional_providers.push_back(new MediaFileSystemBackend(
-        base, base::ThreadTaskRunnerHandle::Get().get()));
+    std::vector<std::unique_ptr<storage::FileSystemBackend>>
+        additional_providers;
+    file_system_runner_ =
+        base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()});
+    additional_providers.push_back(
+        std::make_unique<content::TestFileSystemBackend>(
+            file_system_runner_.get(), src_path));
+    additional_providers.push_back(
+        std::make_unique<MediaFileSystemBackend>(base));
     file_system_context_ =
         content::CreateFileSystemContextWithAdditionalProvidersForTesting(
-            NULL, std::move(additional_providers), base);
+            base::CreateSingleThreadTaskRunnerWithTraits(
+                {content::BrowserThread::IO})
+                .get(),
+            file_system_runner_.get(), NULL, std::move(additional_providers),
+            base);
 
     move_src_ = file_system_context_->CreateCrackedFileSystemURL(
         GURL(kOrigin),
@@ -148,21 +168,20 @@ class MediaFileValidatorTest : public InProcessBrowserTest {
     move_dest_ = file_system_context_->CrackURL(GURL(
           dest_root_fs_url + "move_dest" + extension));
 
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO,
-        FROM_HERE,
-        base::Bind(&MediaFileValidatorTest::CheckFiles,
-                   base::Unretained(this), true,
-                   base::Bind(&MediaFileValidatorTest::OnTestFilesReady,
-                              base::Unretained(this), expected_result)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::IO},
+        base::BindOnce(&MediaFileValidatorTest::CheckFiles,
+                       base::Unretained(this), true,
+                       base::Bind(&MediaFileValidatorTest::OnTestFilesReady,
+                                  base::Unretained(this), expected_result)));
   }
 
-  void SetupFromFileOnFileThread(const std::string& filename,
-                                 const base::FilePath& source,
-                                 bool expected_result) {
+  void SetupFromFileBlocking(const std::string& filename,
+                             const base::FilePath& source,
+                             bool expected_result) {
     std::string content;
     ASSERT_TRUE(base::ReadFileToString(source, &content));
-    SetupOnFileThread(filename, content, expected_result);
+    SetupBlocking(filename, content, expected_result);
   }
 
   // Check that exactly one of |move_src_| and |move_dest_| exists.
@@ -224,12 +243,11 @@ class MediaFileValidatorTest : public InProcessBrowserTest {
                           base::Unretained(this)));
   }
 
-  // Check that the correct test file exists and then post the result back
-  // to the UI thread.
+  // Check that the correct test file exists and then allow the main-thread
+  // RunLoop to quit.
   void OnTestFilesCheckResult(bool result) {
     EXPECT_TRUE(result);
-    content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-                                     loop_runner_->QuitClosure());
+    std::move(quit_closure_).Run();
   }
 
   storage::FileSystemOperationRunner* operation_runner() {
@@ -245,27 +263,30 @@ class MediaFileValidatorTest : public InProcessBrowserTest {
   storage::FileSystemURL move_src_;
   storage::FileSystemURL move_dest_;
 
-  scoped_refptr<content::MessageLoopRunner> loop_runner_;
+  base::OnceClosure quit_closure_;
+  scoped_refptr<base::SequencedTaskRunner> file_system_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(MediaFileValidatorTest);
 };
 
 IN_PROC_BROWSER_TEST_F(MediaFileValidatorTest, UnsupportedExtension) {
-  MoveTest("a.txt", std::string(kValidImage, arraysize(kValidImage)), false);
+  MoveTest("a.txt", std::string(kValidImage, base::size(kValidImage)), false);
 }
 
 IN_PROC_BROWSER_TEST_F(MediaFileValidatorTest, ValidImage) {
-  MoveTest("a.webp", std::string(kValidImage, arraysize(kValidImage)), true);
+  MoveTest("a.webp", std::string(kValidImage, base::size(kValidImage)), true);
 }
 
 IN_PROC_BROWSER_TEST_F(MediaFileValidatorTest, InvalidImage) {
-  MoveTest("a.webp", std::string(kInvalidMediaFile,
-           arraysize(kInvalidMediaFile)), false);
+  MoveTest("a.webp",
+           std::string(kInvalidMediaFile, base::size(kInvalidMediaFile)),
+           false);
 }
 
 IN_PROC_BROWSER_TEST_F(MediaFileValidatorTest, InvalidAudio) {
-  MoveTest("a.ogg", std::string(kInvalidMediaFile,
-           arraysize(kInvalidMediaFile)), false);
+  MoveTest("a.ogg",
+           std::string(kInvalidMediaFile, base::size(kInvalidMediaFile)),
+           false);
 }
 
 IN_PROC_BROWSER_TEST_F(MediaFileValidatorTest, ValidAudio) {

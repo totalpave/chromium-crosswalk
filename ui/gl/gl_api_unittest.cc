@@ -7,34 +7,16 @@
 #include <memory>
 
 #include "base/command_line.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_gl_api_implementation.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_switches.h"
+#include "ui/gl/gl_version_info.h"
 #include "ui/gl/gpu_timing.h"
 
 namespace gl {
-
-class GLContextFake : public GLContext {
- public:
-  bool Initialize(GLSurface* compatible_surface,
-                  GpuPreference gpu_preference) override {
-    return true;
-  }
-  bool MakeCurrent(GLSurface* surface) override { return true; }
-  void ReleaseCurrent(GLSurface* surface) override {}
-  bool IsCurrent(GLSurface* surface) override { return true; }
-  void* GetHandle() override { return NULL; }
-  scoped_refptr<GPUTimingClient> CreateGPUTimingClient() override {
-    return NULL;
-  }
-  void OnSetSwapInterval(int interval) override {}
-  GLContextFake() : GLContext(NULL) {}
- protected:
-  ~GLContextFake() override {}
-};
 
 class GLApiTest : public testing::Test {
  public:
@@ -44,21 +26,18 @@ class GLApiTest : public testing::Test {
     num_fake_extension_strings_ = 0;
     fake_extension_strings_ = nullptr;
 
-    DCHECK(!g_current_gl_context_tls);
-    g_current_gl_context_tls = new base::ThreadLocalPointer<GLApi>;
-
     SetGLGetProcAddressProc(
         static_cast<GLGetProcAddressProc>(&FakeGLGetProcAddress));
   }
 
-  static void* GL_BINDING_CALL FakeGLGetProcAddress(const char *proc) {
-    return reinterpret_cast<void*>(0x1);
+  static GLFunctionPointerType GL_BINDING_CALL
+  FakeGLGetProcAddress(const char* proc) {
+    return reinterpret_cast<GLFunctionPointerType>(0x1);
   }
 
   void TearDown() override {
     api_.reset(nullptr);
-    delete g_current_gl_context_tls;
-    g_current_gl_context_tls = nullptr;
+    driver_.reset(nullptr);
 
     SetGLImplementation(kGLImplementationNone);
     fake_extension_string_ = "";
@@ -67,22 +46,29 @@ class GLApiTest : public testing::Test {
     fake_extension_strings_ = nullptr;
   }
 
-  void InitializeAPI(base::CommandLine* command_line) {
+  void InitializeAPI(const char* disabled_extensions) {
+    driver_.reset(new DriverGL());
+    driver_->fn.glGetStringFn = &FakeGetString;
+    driver_->fn.glGetStringiFn = &FakeGetStringi;
+    driver_->fn.glGetIntegervFn = &FakeGetIntegervFn;
+
     api_.reset(new RealGLApi());
-    g_current_gl_context_tls->Set(api_.get());
+    if (disabled_extensions) {
+      api_->SetDisabledExtensions(disabled_extensions);
+    }
+    api_->Initialize(driver_.get());
 
-    g_driver_gl.ClearBindings();
-    g_driver_gl.fn.glGetStringFn = &FakeGetString;
-    g_driver_gl.fn.glGetStringiFn = &FakeGetStringi;
-    g_driver_gl.fn.glGetIntegervFn = &FakeGetIntegervFn;
+    std::string extensions_string =
+        GetGLExtensionsFromCurrentContext(api_.get());
+    gfx::ExtensionSet extension_set = gfx::MakeExtensionSet(extensions_string);
 
-    fake_context_ = new GLContextFake();
-    if (command_line)
-      api_->InitializeWithCommandLine(&g_driver_gl, command_line);
-    else
-      api_->Initialize(&g_driver_gl);
-    api_->InitializeFilteredExtensions();
-    g_driver_gl.InitializeCustomDynamicBindings(fake_context_.get());
+    auto version = std::make_unique<GLVersionInfo>(
+        reinterpret_cast<const char*>(api_->glGetStringFn(GL_VERSION)),
+        reinterpret_cast<const char*>(api_->glGetStringFn(GL_RENDERER)),
+        extension_set);
+
+    driver_->InitializeDynamicBindings(version.get(), extension_set);
+    api_->set_version(std::move(version));
   }
 
   void SetFakeExtensionString(const char* fake_string) {
@@ -137,7 +123,6 @@ class GLApiTest : public testing::Test {
   static uint32_t num_fake_extension_strings_;
   static const char** fake_extension_strings_;
 
-  scoped_refptr<GLContext> fake_context_;
   std::unique_ptr<DriverGL> driver_;
   std::unique_ptr<RealGLApi> api_;
 };
@@ -155,14 +140,9 @@ TEST_F(GLApiTest, DisabledExtensionStringTest) {
 
   SetFakeExtensionString(kFakeExtensions);
   InitializeAPI(nullptr);
-
   EXPECT_STREQ(kFakeExtensions, GetExtensions());
 
-  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-  command_line.AppendSwitchASCII(switches::kDisableGLExtensions,
-                                 kFakeDisabledExtensions);
-  InitializeAPI(&command_line);
-
+  InitializeAPI(kFakeDisabledExtensions);
   EXPECT_STREQ(kFilteredExtensions, GetExtensions());
 }
 
@@ -172,17 +152,12 @@ TEST_F(GLApiTest, DisabledExtensionBitTest) {
   };
   static const char* kFakeDisabledExtensions = "GL_ARB_timer_query";
 
-  SetFakeExtensionStrings(kFakeExtensions, arraysize(kFakeExtensions));
+  SetFakeExtensionStrings(kFakeExtensions, base::size(kFakeExtensions));
   InitializeAPI(nullptr);
+  EXPECT_TRUE(driver_->ext.b_GL_ARB_timer_query);
 
-  EXPECT_TRUE(g_driver_gl.ext.b_GL_ARB_timer_query);
-
-  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-  command_line.AppendSwitchASCII(switches::kDisableGLExtensions,
-                                 kFakeDisabledExtensions);
-  InitializeAPI(&command_line);
-
-  EXPECT_FALSE(g_driver_gl.ext.b_GL_ARB_timer_query);
+  InitializeAPI(kFakeDisabledExtensions);
+  EXPECT_FALSE(driver_->ext.b_GL_ARB_timer_query);
 }
 
 TEST_F(GLApiTest, DisabledExtensionStringIndexTest) {
@@ -198,21 +173,17 @@ TEST_F(GLApiTest, DisabledExtensionStringIndexTest) {
     "GL_EXT_4"
   };
 
-  SetFakeExtensionStrings(kFakeExtensions, arraysize(kFakeExtensions));
+  SetFakeExtensionStrings(kFakeExtensions, base::size(kFakeExtensions));
   InitializeAPI(nullptr);
 
-  EXPECT_EQ(arraysize(kFakeExtensions), GetNumExtensions());
-  for (uint32_t i = 0; i < arraysize(kFakeExtensions); ++i) {
+  EXPECT_EQ(base::size(kFakeExtensions), GetNumExtensions());
+  for (uint32_t i = 0; i < base::size(kFakeExtensions); ++i) {
     EXPECT_STREQ(kFakeExtensions[i], GetExtensioni(i));
   }
 
-  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-  command_line.AppendSwitchASCII(switches::kDisableGLExtensions,
-                                 kFakeDisabledExtensions);
-  InitializeAPI(&command_line);
-
-  EXPECT_EQ(arraysize(kFilteredExtensions), GetNumExtensions());
-  for (uint32_t i = 0; i < arraysize(kFilteredExtensions); ++i) {
+  InitializeAPI(kFakeDisabledExtensions);
+  EXPECT_EQ(base::size(kFilteredExtensions), GetNumExtensions());
+  for (uint32_t i = 0; i < base::size(kFilteredExtensions); ++i) {
     EXPECT_STREQ(kFilteredExtensions[i], GetExtensioni(i));
   }
 }

@@ -7,11 +7,11 @@
 
 #include <map>
 #include <string>
+#include <utility>
 
 #include "base/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
@@ -25,14 +25,11 @@
 #include "components/sessions/core/base_session_service_delegate.h"
 #include "components/sessions/core/session_service_commands.h"
 #include "components/sessions/core/tab_restore_service_client.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
 #include "ui/base/ui_base_types.h"
 
 class Profile;
 
 namespace content {
-class NavigationEntry;
 class WebContents;
 }  // namespace content
 
@@ -64,8 +61,7 @@ struct SessionWindow;
 // browser.
 class SessionService : public sessions::BaseSessionServiceDelegate,
                        public KeyedService,
-                       public content::NotificationObserver,
-                       public chrome::BrowserListObserver {
+                       public BrowserListObserver {
   friend class SessionServiceTestHelper;
  public:
   // Used to distinguish an application from a ordinary content window.
@@ -167,17 +163,18 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
   void SetWindowAppName(const SessionID& window_id,
                         const std::string& app_name);
 
-  // Invoked when the NavigationController has removed entries from the back of
-  // the list. |count| gives the number of entries in the navigation controller.
-  void TabNavigationPathPrunedFromBack(const SessionID& window_id,
-                                       const SessionID& tab_id,
-                                       int count);
+  // Invoked when the NavigationController has removed entries from the list.
+  // |index| gives the the starting index from which entries were deleted.
+  // |count| gives the number of entries that were removed.
+  void TabNavigationPathPruned(const SessionID& window_id,
+                               const SessionID& tab_id,
+                               int index,
+                               int count);
 
-  // Invoked when the NavigationController has removed entries from the front of
-  // the list. |count| gives the number of entries that were removed.
-  void TabNavigationPathPrunedFromFront(const SessionID& window_id,
-                                        const SessionID& tab_id,
-                                        int count);
+  // Invoked when the NavigationController has deleted entries because of a
+  // history deletion.
+  void TabNavigationPathEntriesDeleted(const SessionID& window_id,
+                                       const SessionID& tab_id);
 
   // Updates the navigation entry for the specified tab.
   void UpdateTabNavigation(
@@ -221,9 +218,8 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
       base::CancelableTaskTracker* tracker);
 
   // BaseSessionServiceDelegate:
-  base::SequencedWorkerPool* GetBlockingPool() override;
   bool ShouldUseDelayedSave() override;
-  void OnSavedCommands() override;
+  void OnWillSaveCommands() override;
 
  private:
   // Allow tests to access our innards for testing purposes.
@@ -233,7 +229,7 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
   FRIEND_TEST_ALL_PREFIXES(SessionServiceTest, RemoveUnusedRestoreWindowsTest);
   FRIEND_TEST_ALL_PREFIXES(NoStartupWindowTest, DontInitSessionServiceForApps);
 
-  typedef std::map<SessionID::id_type, std::pair<int, int> > IdToRange;
+  typedef std::map<SessionID, std::pair<int, int>> IdToRange;
 
   void Init();
 
@@ -244,25 +240,22 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
 
   // Removes unrestorable windows from the previous windows list.
   void RemoveUnusedRestoreWindows(
-      std::vector<sessions::SessionWindow*>* window_list);
+      std::vector<std::unique_ptr<sessions::SessionWindow>>* window_list);
 
   // Implementation of RestoreIfNecessary. If |browser| is non-null and we need
   // to restore, the tabs are added to it, otherwise a new browser is created.
   bool RestoreIfNecessary(const std::vector<GURL>& urls_to_open,
                           Browser* browser);
 
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
-
-  // chrome::BrowserListObserver
+  // BrowserListObserver
   void OnBrowserAdded(Browser* browser) override {}
   void OnBrowserRemoved(Browser* browser) override {}
   void OnBrowserSetLastActive(Browser* browser) override;
 
   // Converts |commands| to SessionWindows and notifies the callback.
-  void OnGotSessionCommands(const sessions::GetLastSessionCallback& callback,
-                            ScopedVector<sessions::SessionCommand> commands);
+  void OnGotSessionCommands(
+      const sessions::GetLastSessionCallback& callback,
+      std::vector<std::unique_ptr<sessions::SessionCommand>> commands);
 
   // Adds commands to commands that will recreate the state of the specified
   // tab. This adds at most kMaxNavigationCountToPersist navigations (in each
@@ -279,18 +272,16 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
   // Adds commands to create the specified browser, and invokes
   // BuildCommandsForTab for each of the tabs in the browser. This ignores
   // any tabs not in the profile we were created with.
-  void BuildCommandsForBrowser(
-      Browser* browser,
-      IdToRange* tab_to_available_range,
-      std::set<SessionID::id_type>* windows_to_track);
+  void BuildCommandsForBrowser(Browser* browser,
+                               IdToRange* tab_to_available_range,
+                               std::set<SessionID>* windows_to_track);
 
   // Iterates over all the known browsers invoking BuildCommandsForBrowser.
   // This only adds browsers that should be tracked (|ShouldRestoreWindowOfType|
   // returns true). All browsers that are tracked are added to windows_to_track
   // (as long as it is non-null).
-  void BuildCommandsFromBrowsers(
-      IdToRange* tab_to_available_range,
-      std::set<SessionID::id_type>* windows_to_track);
+  void BuildCommandsFromBrowsers(IdToRange* tab_to_available_range,
+                                 std::set<SessionID>* windows_to_track);
 
   // Schedules a reset of the existing commands. A reset means the contents
   // of the file are recreated from the state of the browser.
@@ -318,6 +309,9 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
   // Returns true if we track changes to the specified browser.
   bool ShouldTrackBrowser(Browser* browser) const;
 
+  // Will rebuild session commands if rebuild_on_next_save_ is true.
+  void RebuildCommandsIfRequired();
+
   // Call when certain session relevant notifications
   // (tab_closed, nav_list_pruned) occur.  In addition, this is
   // currently called when Save() is called to compare how often the
@@ -326,17 +320,16 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
   void RecordSessionUpdateHistogramData(int type,
     base::TimeTicks* last_updated_time);
 
-  // Helper methods to record the histogram data
-  void RecordUpdatedTabClosed(base::TimeDelta delta, bool use_long_period);
-  void RecordUpdatedNavListPruned(base::TimeDelta delta, bool use_long_period);
-  void RecordUpdatedNavEntryCommit(base::TimeDelta delta, bool use_long_period);
-  void RecordUpdatedSaveTime(base::TimeDelta delta, bool use_long_period);
-
   // Deletes session data if no windows are open for the current profile.
   void MaybeDeleteSessionOnlyData();
 
   // Unit test accessors.
   sessions::BaseSessionService* GetBaseSessionServiceForTest();
+
+  void SetAvailableRangeForTest(const SessionID& tab_id,
+                                const std::pair<int, int>& range);
+  bool GetAvailableRangeForTest(const SessionID& tab_id,
+                                std::pair<int, int>* range);
 
   // The profile. This may be null during testing.
   Profile* profile_;
@@ -347,8 +340,6 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
 
   // The owned BaseSessionService.
   std::unique_ptr<sessions::BaseSessionService> base_session_service_;
-
-  content::NotificationRegistrar registrar_;
 
   // Maps from session tab id to the range of navigation entries that has
   // been written to disk.
@@ -361,22 +352,22 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
   // last tabbed browser and no more tabbed browsers are open with the same
   // profile, the window ID is added here. These IDs are only committed (which
   // marks them as closed) if the user creates a new tabbed browser.
-  typedef std::set<SessionID::id_type> PendingWindowCloseIDs;
+  typedef std::set<SessionID> PendingWindowCloseIDs;
   PendingWindowCloseIDs pending_window_close_ids_;
 
   // Set of tabs that have been closed by way of the last window or last tab
   // closing, but not yet committed.
-  typedef std::set<SessionID::id_type> PendingTabCloseIDs;
+  typedef std::set<SessionID> PendingTabCloseIDs;
   PendingTabCloseIDs pending_tab_close_ids_;
 
   // When a window other than the last window (see description of
   // pending_window_close_ids) is closed, the id is added to this set.
-  typedef std::set<SessionID::id_type> WindowClosingIDs;
+  typedef std::set<SessionID> WindowClosingIDs;
   WindowClosingIDs window_closing_ids_;
 
   // Set of windows we're tracking changes to. This is only browsers that
   // return true from |ShouldRestoreWindowOfType|.
-  typedef std::set<SessionID::id_type> WindowsTracking;
+  typedef std::set<SessionID> WindowsTracking;
   WindowsTracking windows_tracking_;
 
   // Are there any open trackable browsers?
@@ -388,20 +379,16 @@ class SessionService : public sessions::BaseSessionServiceDelegate,
   // current/last session.
   bool move_on_new_browser_;
 
-  // Used for reporting frequency of session altering operations.
-  base::TimeTicks last_updated_tab_closed_time_;
-  base::TimeTicks last_updated_nav_list_pruned_time_;
-  base::TimeTicks last_updated_nav_entry_commit_time_;
-  base::TimeTicks last_updated_save_time_;
-
-  // Constants used in calculating histogram data.
-  const base::TimeDelta save_delay_in_millis_;
-  const base::TimeDelta save_delay_in_mins_;
-  const base::TimeDelta save_delay_in_hrs_;
-
   // For browser_tests, since we want to simulate the browser shutting down
   // without quitting.
   bool force_browser_not_alive_with_no_windows_;
+
+  // Force session commands to be rebuild before next save event.
+  bool rebuild_on_next_save_;
+
+  // Don't send duplicate SetSelectedTabInWindow commands when the selected
+  // tab's index hasn't changed.
+  std::map<SessionID, int> last_selected_tab_in_window_;
 
   base::WeakPtrFactory<SessionService> weak_factory_;
 

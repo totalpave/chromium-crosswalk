@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <utility>
+#include <vector>
 
 #include "base/bind.h"
 #include "base/files/scoped_temp_dir.h"
@@ -26,8 +27,7 @@
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "google_apis/drive/drive_api_parser.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 
 namespace sync_file_system {
 namespace drive_backend {
@@ -51,7 +51,7 @@ class SyncEngineInitializerTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(database_dir_.CreateUniqueTempDir());
-    in_memory_env_.reset(leveldb::NewMemEnv(leveldb::Env::Default()));
+    in_memory_env_ = leveldb_chrome::NewMemEnv("SyncEngineInitializerTest");
 
     std::unique_ptr<drive::FakeDriveService> fake_drive_service(
         new drive::FakeDriveService);
@@ -61,13 +61,11 @@ class SyncEngineInitializerTest : public testing::Test {
         std::move(fake_drive_service),
         std::unique_ptr<drive::DriveUploaderInterface>(),
         nullptr /* task_logger */, base::ThreadTaskRunnerHandle::Get(),
-        base::ThreadTaskRunnerHandle::Get(), nullptr /* worker_pool */));
+        base::ThreadTaskRunnerHandle::Get()));
 
     sync_task_manager_.reset(new SyncTaskManager(
-        base::WeakPtr<SyncTaskManager::Client>(),
-        1 /* maximum_parallel_task */,
-        base::ThreadTaskRunnerHandle::Get(),
-        nullptr /* worker_pool */));
+        base::WeakPtr<SyncTaskManager::Client>(), 1 /* maximum_parallel_task */,
+        base::ThreadTaskRunnerHandle::Get()));
     sync_task_manager_->Initialize(SYNC_STATUS_OK);
   }
 
@@ -78,9 +76,7 @@ class SyncEngineInitializerTest : public testing::Test {
     base::RunLoop().RunUntilIdle();
   }
 
-  base::FilePath database_path() {
-    return database_dir_.path();
-  }
+  base::FilePath database_path() { return database_dir_.GetPath(); }
 
   SyncStatusCode RunInitializer() {
     SyncEngineInitializer* initializer =
@@ -108,26 +104,16 @@ class SyncEngineInitializerTest : public testing::Test {
 
   SyncStatusCode PopulateDatabase(
       const google_apis::FileResource& sync_root,
-      const google_apis::FileResource** app_roots,
-      size_t app_roots_count) {
+      const std::vector<std::unique_ptr<google_apis::FileResource>>&
+          app_root_list) {
     SyncStatusCode status = SYNC_STATUS_UNKNOWN;
     std::unique_ptr<MetadataDatabase> database = MetadataDatabase::Create(
         database_path(), in_memory_env_.get(), &status);
     if (status != SYNC_STATUS_OK)
       return status;
 
-    // |app_root_list| must not own the resources here. Be sure to call
-    // weak_clear later.
-    ScopedVector<google_apis::FileResource> app_root_list;
-    for (size_t i = 0; i < app_roots_count; ++i) {
-      app_root_list.push_back(
-          const_cast<google_apis::FileResource*>(app_roots[i]));
-    }
-
     status = database->PopulateInitialData(
         kInitialLargestChangeID, sync_root, app_root_list);
-
-    app_root_list.weak_clear();
     return status;
   }
 
@@ -274,26 +260,23 @@ TEST_F(SyncEngineInitializerTest, EmptyDatabase_RemoteSyncRootExists) {
 
 TEST_F(SyncEngineInitializerTest, DatabaseAlreadyInitialized) {
   std::unique_ptr<google_apis::FileResource> sync_root(CreateRemoteSyncRoot());
-  std::unique_ptr<google_apis::FileResource> app_root_1(
+  std::vector<std::unique_ptr<google_apis::FileResource>> app_root_list;
+  app_root_list.push_back(
       CreateRemoteFolder(sync_root->file_id(), "app-root 1"));
-  std::unique_ptr<google_apis::FileResource> app_root_2(
+  app_root_list.push_back(
       CreateRemoteFolder(sync_root->file_id(), "app-root 2"));
 
-  const google_apis::FileResource* app_roots[] = {
-    app_root_1.get(), app_root_2.get()
-  };
-  EXPECT_EQ(SYNC_STATUS_OK,
-            PopulateDatabase(*sync_root, app_roots, arraysize(app_roots)));
+  EXPECT_EQ(SYNC_STATUS_OK, PopulateDatabase(*sync_root, app_root_list));
 
   EXPECT_EQ(SYNC_STATUS_OK, RunInitializer());
 
   EXPECT_EQ(1u, CountTrackersForFile(sync_root->file_id()));
-  EXPECT_EQ(1u, CountTrackersForFile(app_root_1->file_id()));
-  EXPECT_EQ(1u, CountTrackersForFile(app_root_2->file_id()));
+  EXPECT_EQ(1u, CountTrackersForFile(app_root_list[0]->file_id()));
+  EXPECT_EQ(1u, CountTrackersForFile(app_root_list[1]->file_id()));
 
   EXPECT_TRUE(HasActiveTracker(sync_root->file_id()));
-  EXPECT_FALSE(HasActiveTracker(app_root_1->file_id()));
-  EXPECT_FALSE(HasActiveTracker(app_root_2->file_id()));
+  EXPECT_FALSE(HasActiveTracker(app_root_list[0]->file_id()));
+  EXPECT_FALSE(HasActiveTracker(app_root_list[1]->file_id()));
 
   EXPECT_EQ(3u, CountFileMetadata());
   EXPECT_EQ(3u, CountFileTracker());

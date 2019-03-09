@@ -17,6 +17,7 @@ extern const char kBlockThirdPartyCookies[];
 extern const char kContentSettingsVersion[];
 extern const char kContentSettingsWindowLastTabIndex[];
 
+extern const char kManagedDefaultAdsSetting[];
 extern const char kManagedDefaultCookiesSetting[];
 extern const char kManagedDefaultImagesSetting[];
 extern const char kManagedDefaultJavaScriptSetting[];
@@ -25,8 +26,8 @@ extern const char kManagedDefaultPopupsSetting[];
 extern const char kManagedDefaultGeolocationSetting[];
 extern const char kManagedDefaultNotificationsSetting[];
 extern const char kManagedDefaultMediaStreamSetting[];
-extern const char kManagedDefaultKeygenSetting[];
 extern const char kManagedDefaultWebBluetoothGuardSetting[];
+extern const char kManagedDefaultWebUsbGuardSetting[];
 
 extern const char kManagedCookiesAllowedForUrls[];
 extern const char kManagedCookiesBlockedForUrls[];
@@ -42,8 +43,9 @@ extern const char kManagedPopupsBlockedForUrls[];
 extern const char kManagedNotificationsAllowedForUrls[];
 extern const char kManagedNotificationsBlockedForUrls[];
 extern const char kManagedAutoSelectCertificateForUrls[];
-extern const char kManagedKeygenAllowedForUrls[];
-extern const char kManagedKeygenBlockedForUrls[];
+extern const char kManagedWebUsbAllowDevicesForUrls[];
+extern const char kManagedWebUsbAskForUrls[];
+extern const char kManagedWebUsbBlockedForUrls[];
 
 }  // namespace prefs
 

@@ -15,13 +15,33 @@
 
 namespace autofill {
 
-class AutofillType;
+struct AutofillMetadata;
 
 // This class is an interface for the primary data models that back Autofill.
 // The information in objects of this class is managed by the
 // PersonalDataManager.
 class AutofillDataModel : public FormGroup {
  public:
+  enum ValidityState {
+    // The field has not been validated.
+    UNVALIDATED = 0,
+    // The field is empty.
+    EMPTY = 1,
+    // The field is valid.
+    VALID = 2,
+    // The field is invalid.
+    INVALID = 3,
+    // The validation for the field is unsupported.
+    UNSUPPORTED = 4,
+  };
+
+  enum ValidationSource {
+    // The validity state is according to the client validation.
+    CLIENT = 0,
+    // The validity state is according to the server validation.
+    SERVER = 1,
+  };
+
   AutofillDataModel(const std::string& guid, const std::string& origin);
   ~AutofillDataModel() override;
 
@@ -38,8 +58,13 @@ class AutofillDataModel : public FormGroup {
   size_t use_count() const { return use_count_; }
   void set_use_count(size_t count) { use_count_ = count; }
 
+  // Writing in and reading from database converts dates between time_t and
+  // Time, therefore the microseconds get lost. Therefore, we need to round the
+  // dates to seconds for both |use_date_| and |modification_date_|.
   const base::Time& use_date() const { return use_date_; }
   void set_use_date(const base::Time& time) { use_date_ = time; }
+
+  bool UseDateEqualsInSeconds(const AutofillDataModel* other) const;
 
   const base::Time& modification_date() const { return modification_date_; }
   // This should only be called from database code.
@@ -51,8 +76,23 @@ class AutofillDataModel : public FormGroup {
   // a combination of frequency and recency to determine the relevance of the
   // profile. |comparison_time_| allows consistent sorting throughout the
   // comparisons.
-  bool CompareFrecency(const AutofillDataModel* other,
-                       base::Time comparison_time) const;
+  bool HasGreaterFrecencyThan(const AutofillDataModel* other,
+                              base::Time comparison_time) const;
+
+  // Gets the metadata associated with this autofill data model.
+  virtual AutofillMetadata GetMetadata() const;
+
+  // Sets the |use_count_| and |use_date_| of this autofill data model. Returns
+  // whether the metadata was set.
+  virtual bool SetMetadata(const AutofillMetadata metadata);
+
+  // Returns whether the data model is deletable: if it has not been used for
+  // longer than |kDisusedCreditCardDeletionTimeDelta|.
+  virtual bool IsDeletable() const;
+
+  // Returns the validity state of the specified autofill type.
+  virtual ValidityState GetValidityState(ServerFieldType type,
+                                         ValidationSource source) const;
 
  protected:
   // Called to update |use_count_| and |use_date_| when this data model is
@@ -74,10 +114,12 @@ class AutofillDataModel : public FormGroup {
   // The number of times this model has been used.
   size_t use_count_;
 
-  // The last time the model was used.
+  // The last time the model was used, rounded in seconds. Any change should
+  // use set_previous_use_date()
   base::Time use_date_;
 
-  // The last time data in the model was modified.
+  // The last time data in the model was modified, rounded in seconds. Any
+  // change should use set_previous_modification_date()
   base::Time modification_date_;
 
   // Returns a score based on both the recency (relative to |time|) and

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/chromeos/slow_ui.h"
 
+#include <memory>
 #include <string>
 
 #include "base/bind.h"
@@ -12,6 +13,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -19,7 +21,6 @@
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/web_ui_message_handler.h"
-#include "grit/browser_resources.h"
 #include "ui/base/webui/jstemplate_builder.h"
 #include "ui/base/webui/web_ui_util.h"
 
@@ -86,12 +87,15 @@ SlowHandler::~SlowHandler() {
 }
 
 void SlowHandler::RegisterMessages() {
-  web_ui()->RegisterMessageCallback(kJsApiDisableTracing,
-      base::Bind(&SlowHandler::HandleDisable, base::Unretained(this)));
-  web_ui()->RegisterMessageCallback(kJsApiEnableTracing,
-      base::Bind(&SlowHandler::HandleEnable, base::Unretained(this)));
-  web_ui()->RegisterMessageCallback(kJsApiLoadComplete,
-      base::Bind(&SlowHandler::LoadComplete, base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      kJsApiDisableTracing,
+      base::BindRepeating(&SlowHandler::HandleDisable, base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      kJsApiEnableTracing,
+      base::BindRepeating(&SlowHandler::HandleEnable, base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      kJsApiLoadComplete,
+      base::BindRepeating(&SlowHandler::LoadComplete, base::Unretained(this)));
 
   user_pref_registrar_.reset(new PrefChangeRegistrar);
   user_pref_registrar_->Init(profile_->GetPrefs());
@@ -117,7 +121,7 @@ void SlowHandler::LoadComplete(const base::ListValue* args) {
 void SlowHandler::UpdatePage() {
   PrefService* pref_service = profile_->GetPrefs();
   bool enabled = pref_service->GetBoolean(prefs::kPerformanceTracingEnabled);
-  base::FundamentalValue pref_value(enabled);
+  base::Value pref_value(enabled);
   web_ui()->CallJavascriptFunctionUnsafe(kJsApiTracingPrefChanged, pref_value);
 }
 
@@ -126,8 +130,7 @@ void SlowHandler::UpdatePage() {
 SlowUI::SlowUI(content::WebUI* web_ui) : WebUIController(web_ui) {
   Profile* profile = Profile::FromWebUI(web_ui);
 
-  SlowHandler* handler = new SlowHandler(profile);
-  web_ui->AddMessageHandler(handler);
+  web_ui->AddMessageHandler(std::make_unique<SlowHandler>(profile));
 
   // Set up the chrome://slow/ source.
   content::WebUIDataSource::Add(profile, CreateSlowUIHTMLSource());

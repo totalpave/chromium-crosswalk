@@ -11,10 +11,6 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handler.h"
 
-namespace base {
-class DictionaryValue;
-}
-
 namespace extensions {
 
 // A structure to hold the parsed linked app icon data.
@@ -45,7 +41,7 @@ class LinkedAppIconsHandler : public ManifestHandler {
   bool Parse(Extension* extension, base::string16* error) override;
 
  private:
-  const std::vector<std::string> Keys() const override;
+  base::span<const char* const> Keys() const override;
 
   DISALLOW_COPY_AND_ASSIGN(LinkedAppIconsHandler);
 };

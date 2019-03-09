@@ -5,24 +5,27 @@
 #include "components/omnibox/browser/history_url_provider.h"
 
 #include <algorithm>
+#include <memory>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/time/time.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "base/trace_event/trace_event.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/history/core/browser/history_backend.h"
 #include "components/history/core/browser/history_database.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
-#include "components/metrics/proto/omnibox_input_type.pb.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_provider_listener.h"
 #include "components/omnibox/browser/autocomplete_result.h"
@@ -36,6 +39,7 @@
 #include "components/url_formatter/url_fixer.h"
 #include "components/url_formatter/url_formatter.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "third_party/metrics_proto/omnibox_input_type.pb.h"
 #include "url/gurl.h"
 #include "url/third_party/mozilla/url_parse.h"
 #include "url/url_util.h"
@@ -69,7 +73,11 @@ bool CompareHistoryMatch(const history::HistoryMatch& a,
     return a.url_info.visit_count() > b.url_info.visit_count();
 
   // URLs that have been visited more recently are better.
-  return a.url_info.last_visit() > b.url_info.last_visit();
+  if (a.url_info.last_visit() != b.url_info.last_visit())
+    return a.url_info.last_visit() > b.url_info.last_visit();
+
+  // Use alphabetical order on the url spec as a tie-breaker.
+  return a.url_info.url().spec() > b.url_info.url().spec();
 }
 
 // Sorts and dedups the given list of matches.
@@ -180,8 +188,8 @@ void RecordAdditionalInfoFromUrlRow(const history::URLRow& info,
 }
 
 // If |create_if_necessary| is true, ensures that |matches| contains an entry
-// for |info|, creating a new such entry if necessary (using |input_location|
-// and |match_in_scheme|).
+// for |info|, creating a new such entry if necessary (using |match_template|
+// to get all the other match data).
 //
 // If |promote| is true, this also ensures the entry is the first element in
 // |matches|, moving or adding it to the front as appropriate.  When |promote|
@@ -193,8 +201,7 @@ void RecordAdditionalInfoFromUrlRow(const history::URLRow& info,
 //
 // Returns whether the match exists regardless if it was promoted/created.
 bool CreateOrPromoteMatch(const history::URLRow& info,
-                          size_t input_location,
-                          bool match_in_scheme,
+                          const history::HistoryMatch& match_template,
                           history::HistoryMatches* matches,
                           bool create_if_necessary,
                           bool promote) {
@@ -212,8 +219,9 @@ bool CreateOrPromoteMatch(const history::URLRow& info,
   if (!create_if_necessary)
     return false;
 
-  // No entry, so create one.
-  history::HistoryMatch match(info, input_location, match_in_scheme, true);
+  // No entry, so create one using |match_template| as a basis.
+  history::HistoryMatch match = match_template;
+  match.url_info = info;
   if (promote)
     matches->push_front(match);
   else
@@ -272,46 +280,38 @@ GURL ConvertToHostOnly(const history::HistoryMatch& match,
 // UIThreadSearchTermsData but is subsequently safe to use on any thread.
 class SearchTermsDataSnapshot : public SearchTermsData {
  public:
-  explicit SearchTermsDataSnapshot(const SearchTermsData& search_terms_data);
+  explicit SearchTermsDataSnapshot(const SearchTermsData* search_terms_data);
   ~SearchTermsDataSnapshot() override;
 
   std::string GoogleBaseURLValue() const override;
   std::string GetApplicationLocale() const override;
   base::string16 GetRlzParameterValue(bool from_app_list) const override;
   std::string GetSearchClient() const override;
-  std::string InstantExtendedEnabledParam(bool for_search) const override;
-  std::string ForceInstantResultsParam(bool for_prerender) const override;
   std::string GoogleImageSearchSource() const override;
+
+  // Estimates dynamic memory usage.
+  // See base/trace_event/memory_usage_estimator.h for more info.
+  size_t EstimateMemoryUsage() const override;
 
  private:
   std::string google_base_url_value_;
   std::string application_locale_;
   base::string16 rlz_parameter_value_;
   std::string search_client_;
-  std::string instant_extended_enabled_param_;
-  std::string instant_extended_enabled_param_for_search_;
-  std::string force_instant_results_param_;
-  std::string force_instant_results_param_for_prerender_;
   std::string google_image_search_source_;
 
   DISALLOW_COPY_AND_ASSIGN(SearchTermsDataSnapshot);
 };
 
 SearchTermsDataSnapshot::SearchTermsDataSnapshot(
-    const SearchTermsData& search_terms_data)
-    : google_base_url_value_(search_terms_data.GoogleBaseURLValue()),
-      application_locale_(search_terms_data.GetApplicationLocale()),
-      rlz_parameter_value_(search_terms_data.GetRlzParameterValue(false)),
-      search_client_(search_terms_data.GetSearchClient()),
-      instant_extended_enabled_param_(
-          search_terms_data.InstantExtendedEnabledParam(false)),
-      instant_extended_enabled_param_for_search_(
-          search_terms_data.InstantExtendedEnabledParam(true)),
-      force_instant_results_param_(
-          search_terms_data.ForceInstantResultsParam(false)),
-      force_instant_results_param_for_prerender_(
-          search_terms_data.ForceInstantResultsParam(true)),
-      google_image_search_source_(search_terms_data.GoogleImageSearchSource()) {
+    const SearchTermsData* search_terms_data) {
+  if (search_terms_data) {
+    google_base_url_value_ = search_terms_data->GoogleBaseURLValue();
+    application_locale_ = search_terms_data->GetApplicationLocale();
+    rlz_parameter_value_ = search_terms_data->GetRlzParameterValue(false);
+    search_client_ = search_terms_data->GetSearchClient();
+    google_image_search_source_ = search_terms_data->GoogleImageSearchSource();
+  }
 }
 
 SearchTermsDataSnapshot::~SearchTermsDataSnapshot() {
@@ -334,20 +334,20 @@ std::string SearchTermsDataSnapshot::GetSearchClient() const {
   return search_client_;
 }
 
-std::string SearchTermsDataSnapshot::InstantExtendedEnabledParam(
-    bool for_search) const {
-  return for_search ? instant_extended_enabled_param_ :
-      instant_extended_enabled_param_for_search_;
-}
-
-std::string SearchTermsDataSnapshot::ForceInstantResultsParam(
-    bool for_prerender) const {
-  return for_prerender ? force_instant_results_param_ :
-      force_instant_results_param_for_prerender_;
-}
-
 std::string SearchTermsDataSnapshot::GoogleImageSearchSource() const {
   return google_image_search_source_;
+}
+
+size_t SearchTermsDataSnapshot::EstimateMemoryUsage() const {
+  size_t res = 0;
+
+  res += base::trace_event::EstimateMemoryUsage(google_base_url_value_);
+  res += base::trace_event::EstimateMemoryUsage(application_locale_);
+  res += base::trace_event::EstimateMemoryUsage(rlz_parameter_value_);
+  res += base::trace_event::EstimateMemoryUsage(search_client_);
+  res += base::trace_event::EstimateMemoryUsage(google_image_search_source_);
+
+  return res;
 }
 
 // -----------------------------------------------------------------
@@ -378,6 +378,8 @@ class HistoryURLProvider::VisitClassifier {
   Type type() const { return type_; }
 
   // Returns the URLRow for the visit.
+  // If the type of the visit is UNVISITED_INTRANET, the return value of this
+  // function does not have any visit data; only the URL field is set.
   const history::URLRow& url_row() const { return url_row_; }
 
  private:
@@ -396,26 +398,44 @@ HistoryURLProvider::VisitClassifier::VisitClassifier(
     : provider_(provider),
       db_(db),
       type_(INVALID) {
-  const GURL& url = input.canonicalized_url();
   // Detect email addresses.  These cases will look like "http://user@site/",
   // and because the history backend strips auth creds, we'll get a bogus exact
   // match below if the user has visited "site".
-  if (!url.is_valid() ||
-      ((input.type() == metrics::OmniboxInputType::UNKNOWN) &&
-       input.parts().username.is_nonempty() &&
-       !input.parts().password.is_nonempty() &&
-       !input.parts().path.is_nonempty()))
+  if ((input.type() == metrics::OmniboxInputType::UNKNOWN) &&
+      input.parts().username.is_nonempty() &&
+      !input.parts().password.is_nonempty() &&
+      !input.parts().path.is_nonempty())
     return;
 
-  if (db_->GetRowForURL(url, &url_row_)) {
-    type_ = VISITED;
+  // If the input can be canonicalized to a valid URL, look up all
+  // prefix+input combinations in the URL database to determine if the input
+  // corresponds to any visited URL.
+  if (!input.canonicalized_url().is_valid())
     return;
+
+  // Iterate over all prefixes in ascending number of components (i.e. from the
+  // empty prefix to those that have most components).
+  const std::string& desired_tld = input.desired_tld();
+  const URLPrefixes& url_prefixes = URLPrefix::GetURLPrefixes();
+  for (auto prefix_it = url_prefixes.rbegin(); prefix_it != url_prefixes.rend();
+       ++prefix_it) {
+    const GURL url_with_prefix = url_formatter::FixupURL(
+        base::UTF16ToUTF8(prefix_it->prefix + input.text()), desired_tld);
+    if (url_with_prefix.is_valid() &&
+        db_->GetRowForURL(url_with_prefix, &url_row_) && !url_row_.hidden()) {
+      type_ = VISITED;
+      return;
+    }
   }
 
-  if (provider_->CanFindIntranetURL(db_, input)) {
-    // The user typed an intranet hostname that they've visited (albeit with a
-    // different port and/or path) before.
-    url_row_ = history::URLRow(url);
+  // If the input does not correspond to a visited URL, we check if the
+  // canonical URL has an intranet hostname that the user visited (albeit with a
+  // different port and/or path) before. If this is true, |url_row_| will be
+  // mostly empty: the URL field will be set to an unvisited URL with the same
+  // scheme and host as some visited URL in the db.
+  const GURL as_known_intranet_url = provider_->AsKnownIntranetURL(db_, input);
+  if (as_known_intranet_url.is_valid()) {
+    url_row_ = history::URLRow(as_known_intranet_url);
     type_ = UNVISITED_INTRANET;
   }
 }
@@ -424,9 +444,9 @@ HistoryURLProviderParams::HistoryURLProviderParams(
     const AutocompleteInput& input,
     bool trim_http,
     const AutocompleteMatch& what_you_typed_match,
-    TemplateURL* default_search_provider,
-    const SearchTermsData& search_terms_data)
-    : message_loop(base::MessageLoop::current()),
+    const TemplateURL* default_search_provider,
+    const SearchTermsData* search_terms_data)
+    : origin_task_runner(base::SequencedTaskRunnerHandle::Get()),
       input(input),
       prevent_inline_autocomplete(input.prevent_inline_autocomplete()),
       trim_http(trim_http),
@@ -434,12 +454,25 @@ HistoryURLProviderParams::HistoryURLProviderParams(
       failed(false),
       exact_suggestion_is_in_history(false),
       promote_type(NEITHER),
-      default_search_provider(default_search_provider ?
-          new TemplateURL(default_search_provider->data()) : nullptr),
-      search_terms_data(new SearchTermsDataSnapshot(search_terms_data)) {
-}
+      default_search_provider(
+          default_search_provider
+              ? new TemplateURL(default_search_provider->data())
+              : nullptr),
+      search_terms_data(new SearchTermsDataSnapshot(search_terms_data)) {}
 
 HistoryURLProviderParams::~HistoryURLProviderParams() {
+}
+
+size_t HistoryURLProviderParams::EstimateMemoryUsage() const {
+  size_t res = 0;
+
+  res += base::trace_event::EstimateMemoryUsage(input);
+  res += base::trace_event::EstimateMemoryUsage(what_you_typed_match);
+  res += base::trace_event::EstimateMemoryUsage(matches);
+  res += base::trace_event::EstimateMemoryUsage(default_search_provider);
+  res += base::trace_event::EstimateMemoryUsage(search_terms_data);
+
+  return res;
 }
 
 HistoryURLProvider::HistoryURLProvider(AutocompleteProviderClient* client,
@@ -491,10 +524,10 @@ void HistoryURLProvider::Start(const AutocompleteInput& input,
       fixed_up_input, fixed_up_input.canonicalized_url(), trim_http));
   what_you_typed_match.relevance = CalculateRelevance(WHAT_YOU_TYPED, 0);
 
-  // Add the WYT match as a fallback in case we can't get the history service or
-  // URL DB; otherwise, we'll replace this match lower down.  Don't do this for
-  // queries, though -- while we can sometimes mark up a match for them, it's
-  // not what the user wants, and just adds noise.
+  // Add the what-you-typed match as a fallback in case we can't get the history
+  // service or URL DB; otherwise, we'll replace this match lower down.  Don't
+  // do this for queries, though -- while we can sometimes mark up a match for
+  // them, it's not what the user wants, and just adds noise.
   if (fixed_up_input.type() != metrics::OmniboxInputType::QUERY)
     matches_.push_back(what_you_typed_match);
 
@@ -508,15 +541,18 @@ void HistoryURLProvider::Start(const AutocompleteInput& input,
   // retrieve these on the UI thread, and the second pass runs on the history
   // thread. |template_url_service| can be null when testing.
   TemplateURLService* template_url_service = client()->GetTemplateURLService();
-  TemplateURL* default_search_provider = template_url_service ?
+  const TemplateURL* default_search_provider = template_url_service ?
       template_url_service->GetDefaultSearchProvider() : nullptr;
+  const SearchTermsData* search_terms_data =
+      template_url_service ? &template_url_service->search_terms_data()
+                           : nullptr;
 
   // Create the data structure for the autocomplete passes.  We'll save this off
   // onto the |params_| member for later deletion below if we need to run pass
   // 2.
   std::unique_ptr<HistoryURLProviderParams> params(new HistoryURLProviderParams(
       fixed_up_input, trim_http, what_you_typed_match, default_search_provider,
-      client()->GetSearchTermsData()));
+      search_terms_data));
   // Note that we use the non-fixed-up input here, since fixup may strip
   // trailing whitespace.
   params->prevent_inline_autocomplete = PreventInlineAutocomplete(input);
@@ -558,6 +594,16 @@ void HistoryURLProvider::Stop(bool clear_cached_results,
     params_->cancel_flag.Set();
 }
 
+size_t HistoryURLProvider::EstimateMemoryUsage() const {
+  size_t res = HistoryProvider::EstimateMemoryUsage();
+
+  if (params_)
+    res += base::trace_event::EstimateMemoryUsage(*params_);
+  res += base::trace_event::EstimateMemoryUsage(scoring_params_);
+
+  return res;
+}
+
 AutocompleteMatch HistoryURLProvider::SuggestExactInput(
     const AutocompleteInput& input,
     const GURL& destination_url,
@@ -572,17 +618,19 @@ AutocompleteMatch HistoryURLProvider::SuggestExactInput(
   if (destination_url.is_valid()) {
     match.destination_url = destination_url;
 
-    // Trim off "http://" if the user didn't type it.
-    DCHECK(!trim_http ||
-           !AutocompleteInput::HasHTTPScheme(input.text()));
+    // If the input explicitly contains "http://", callers must set |trim_http|
+    // to false. Otherwise, |trim_http| may be either true or false.
+    DCHECK(!(trim_http && AutocompleteInput::HasHTTPScheme(input.text())));
     base::string16 display_string(url_formatter::FormatUrl(
         destination_url,
-        url_formatter::kFormatUrlOmitAll & ~url_formatter::kFormatUrlOmitHTTP,
+        url_formatter::kFormatUrlOmitDefaults &
+            ~url_formatter::kFormatUrlOmitHTTP,
         net::UnescapeRule::SPACES, nullptr, nullptr, nullptr));
     const size_t offset = trim_http ? TrimHttpPrefix(&display_string) : 0;
     match.fill_into_edit =
         AutocompleteInput::FormattedStringWithEquivalentMeaning(
-            destination_url, display_string, client()->GetSchemeClassifier());
+            destination_url, display_string, client()->GetSchemeClassifier(),
+            nullptr);
     // The what-you-typed match is generally only allowed to be default for
     // URL inputs or when there is no default search provider.  (It's also
     // allowed to be default for UNKNOWN inputs where the destination is a known
@@ -640,9 +688,10 @@ void HistoryURLProvider::ExecuteWithDB(HistoryURLProviderParams* params,
                         base::TimeTicks::Now() - beginning_time);
   }
 
-  // Return the results (if any) to the main thread.
-  params->message_loop->task_runner()->PostTask(
-      FROM_HERE, base::Bind(&HistoryURLProvider::QueryComplete, this, params));
+  // Return the results (if any) to the originating sequence.
+  params->origin_task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(&HistoryURLProvider::QueryComplete, this, params));
 }
 
 HistoryURLProvider::~HistoryURLProvider() {
@@ -679,8 +728,8 @@ ACMatchClassifications HistoryURLProvider::ClassifyDescription(
     const base::string16& description) {
   base::string16 clean_description =
       bookmarks::CleanUpTitleForMatching(description);
-  TermMatches description_matches(SortAndDeoverlapMatches(
-      MatchTermInString(input_text, clean_description, 0)));
+  TermMatches description_matches(DeoverlapMatches(SortMatches(
+      MatchTermInString(input_text, clean_description, 0))));
   WordStarts description_word_starts;
   String16VectorFromString16(clean_description, false,
                              &description_word_starts);
@@ -703,8 +752,7 @@ void HistoryURLProvider::DoAutocomplete(history::HistoryBackend* backend,
 
   if (search_url_database_) {
     const URLPrefixes& prefixes = URLPrefix::GetURLPrefixes();
-    for (URLPrefixes::const_iterator i(prefixes.begin()); i != prefixes.end();
-         ++i) {
+    for (auto i(prefixes.begin()); i != prefixes.end(); ++i) {
       if (params->cancel_flag.IsSet())
         return;  // Canceled in the middle of a query, give up.
 
@@ -714,17 +762,27 @@ void HistoryURLProvider::DoAutocomplete(history::HistoryBackend* backend,
       // more results than we need, of every prefix type, in hopes this will
       // give us far more than enough to work with.  CullRedirects() will then
       // reduce the list to the best kMaxMatches results.
-      db->AutocompleteForPrefix(
-          base::UTF16ToUTF8(i->prefix + params->input.text()), kMaxMatches * 2,
-          !backend, &url_matches);
+      std::string prefixed_input =
+          base::UTF16ToUTF8(i->prefix + params->input.text());
+      db->AutocompleteForPrefix(prefixed_input, kMaxMatches * 2, !backend,
+                                &url_matches);
       for (history::URLRows::const_iterator j(url_matches.begin());
            j != url_matches.end(); ++j) {
+        const GURL& row_url = j->url();
         const URLPrefix* best_prefix = URLPrefix::BestURLPrefix(
-            base::UTF8ToUTF16(j->url().spec()), base::string16());
+            base::UTF8ToUTF16(row_url.spec()), base::string16());
         DCHECK(best_prefix);
-        params->matches.push_back(history::HistoryMatch(
-            *j, i->prefix.length(), !i->num_components,
-            i->num_components >= best_prefix->num_components));
+        history::HistoryMatch match;
+        match.url_info = *j;
+        match.input_location = i->prefix.length();
+        match.innermost_match =
+            i->num_components >= best_prefix->num_components;
+
+        AutocompleteMatch::GetMatchComponents(
+            row_url, {{match.input_location, prefixed_input.length()}},
+            &match.match_in_scheme, &match.match_in_subdomain);
+
+        params->matches.push_back(std::move(match));
       }
     }
 
@@ -790,7 +848,8 @@ void HistoryURLProvider::DoAutocomplete(history::HistoryBackend* backend,
     //     what-you-typed match to be added in this case.  See comments in
     //     PromoteMatchesIfNecessary().
     //   * Otherwise, we should have some sort of QUERY or UNKNOWN input that
-    //     the SearchProvider will provide a defaultable WYT match for.
+    //     the SearchProvider will provide a defaultable what-you-typed match
+    //     for.
     params->promote_type = HistoryURLProviderParams::FRONT_HISTORY_MATCH;
   } else {
     // Failed to promote any URLs.  Use the What You Typed match, if we have it.
@@ -895,10 +954,12 @@ bool HistoryURLProvider::FixupExactSuggestion(
     const VisitClassifier& classifier,
     HistoryURLProviderParams* params) const {
   MatchType type = INLINE_AUTOCOMPLETE;
+
   switch (classifier.type()) {
     case VisitClassifier::INVALID:
       return false;
     case VisitClassifier::UNVISITED_INTRANET:
+      params->what_you_typed_match.destination_url = classifier.url_row().url();
       type = UNVISITED_INTRANET;
       break;
     default:
@@ -906,6 +967,7 @@ bool HistoryURLProvider::FixupExactSuggestion(
       // We have data for this match, use it.
       params->what_you_typed_match.deletable = true;
       params->what_you_typed_match.description = classifier.url_row().title();
+      params->what_you_typed_match.destination_url = classifier.url_row().url();
       RecordAdditionalInfoFromUrlRow(classifier.url_row(),
                                      &params->what_you_typed_match);
       params->what_you_typed_match.description_class = ClassifyDescription(
@@ -916,8 +978,10 @@ bool HistoryURLProvider::FixupExactSuggestion(
         // either scored it as WHAT_YOU_TYPED or UNVISITED_INTRANET, and to
         // maintain the ordering between passes consistent, we need to score it
         // the same way here.
-        type = CanFindIntranetURL(db, params->input) ?
-            UNVISITED_INTRANET : WHAT_YOU_TYPED;
+        const GURL as_known_intranet_url =
+            AsKnownIntranetURL(db, params->input);
+        type = as_known_intranet_url.is_valid() ? UNVISITED_INTRANET
+                                                : WHAT_YOU_TYPED;
       }
       break;
   }
@@ -944,8 +1008,8 @@ bool HistoryURLProvider::FixupExactSuggestion(
   // which will have empty reference fragments.)
   if ((type == UNVISITED_INTRANET) &&
       (params->input.type() != metrics::OmniboxInputType::URL) &&
-      url.username().empty() && url.password().empty() &&
-      url.port().empty() && (url.path() == "/") && url.query().empty() &&
+      url.username().empty() && url.password().empty() && url.port().empty() &&
+      (url.path_piece() == "/") && url.query().empty() &&
       (parsed.CountCharactersBefore(url::Parsed::REF, true) !=
        parsed.CountCharactersBefore(url::Parsed::REF, false))) {
     return false;
@@ -963,12 +1027,12 @@ bool HistoryURLProvider::FixupExactSuggestion(
     return false;
 
   // Put it on the front of the HistoryMatches for redirect culling.
-  CreateOrPromoteMatch(classifier.url_row(), base::string16::npos, false,
+  CreateOrPromoteMatch(classifier.url_row(), history::HistoryMatch(),
                        &params->matches, true, true);
   return true;
 }
 
-bool HistoryURLProvider::CanFindIntranetURL(
+GURL HistoryURLProvider::AsKnownIntranetURL(
     history::URLDatabase* db,
     const AutocompleteInput& input) const {
   // Normally passing the first two conditions below ought to guarantee the
@@ -978,15 +1042,38 @@ bool HistoryURLProvider::CanFindIntranetURL(
   if ((input.type() != metrics::OmniboxInputType::UNKNOWN) ||
       !base::LowerCaseEqualsASCII(input.scheme(), url::kHttpScheme) ||
       !input.parts().host.is_nonempty())
-    return false;
+    return GURL();
+
   const std::string host(base::UTF16ToUTF8(
       input.text().substr(input.parts().host.begin, input.parts().host.len)));
-  const size_t registry_length =
-      net::registry_controlled_domains::GetRegistryLength(
-          host,
-          net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
-          net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
-  return registry_length == 0 && db->IsTypedHost(host);
+
+  // Check if the host has registry domain.
+  if (net::registry_controlled_domains::HostHasRegistryControlledDomain(
+          host, net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
+          net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES))
+    return GURL();
+
+  const GURL& url = input.canonicalized_url();
+  // Check if the host of the canonical URL can be found in the database.
+  std::string scheme_in_db;
+  if (db->IsTypedHost(host, &scheme_in_db)) {
+    GURL::Replacements replace_scheme;
+    replace_scheme.SetSchemeStr(scheme_in_db);
+    return url.ReplaceComponents(replace_scheme);
+  }
+
+  // Check if appending "www." to the canonicalized URL generates a URL found in
+  // the database.
+  const std::string alternative_host = "www." + host;
+  if (!base::StartsWith(host, "www.", base::CompareCase::INSENSITIVE_ASCII) &&
+      db->IsTypedHost(alternative_host, &scheme_in_db)) {
+    GURL::Replacements replace_scheme_and_host;
+    replace_scheme_and_host.SetHostStr(alternative_host);
+    replace_scheme_and_host.SetSchemeStr(scheme_in_db);
+    return url.ReplaceComponents(replace_scheme_and_host);
+  }
+
+  return GURL();
 }
 
 bool HistoryURLProvider::PromoteOrCreateShorterSuggestion(
@@ -1049,9 +1136,8 @@ bool HistoryURLProvider::PromoteOrCreateShorterSuggestion(
   // Promote or add the desired URL to the list of matches.
   const bool ensure_can_inline =
       promote && CanPromoteMatchForInlineAutocomplete(match);
-  return CreateOrPromoteMatch(info, match.input_location, match.match_in_scheme,
-                              &params->matches, true, promote) &&
-      ensure_can_inline;
+  return CreateOrPromoteMatch(info, match, &params->matches, true, promote) &&
+         ensure_can_inline;
 }
 
 void HistoryURLProvider::CullPoorMatches(
@@ -1147,18 +1233,17 @@ AutocompleteMatch HistoryURLProvider::HistoryMatchToACMatch(
   DCHECK(match.destination_url.is_valid());
   size_t inline_autocomplete_offset =
       history_match.input_location + params.input.text().length();
-  const url_formatter::FormatUrlTypes format_types =
-      url_formatter::kFormatUrlOmitAll &
-      ~((params.trim_http && !history_match.match_in_scheme)
-            ? 0
-            : url_formatter::kFormatUrlOmitHTTP);
+
+  auto fill_into_edit_format_types = url_formatter::kFormatUrlOmitDefaults;
+  if (!params.trim_http || history_match.match_in_scheme)
+    fill_into_edit_format_types &= ~url_formatter::kFormatUrlOmitHTTP;
   match.fill_into_edit =
       AutocompleteInput::FormattedStringWithEquivalentMeaning(
           info.url(),
-          url_formatter::FormatUrl(info.url(), format_types,
+          url_formatter::FormatUrl(info.url(), fill_into_edit_format_types,
                                    net::UnescapeRule::SPACES, nullptr, nullptr,
                                    &inline_autocomplete_offset),
-          client()->GetSchemeClassifier());
+          client()->GetSchemeClassifier(), &inline_autocomplete_offset);
   // |inline_autocomplete_offset| was guaranteed not to be npos before the call
   // to FormatUrl().  If it is npos now, that means the represented location no
   // longer exists as such in the formatted string, e.g. if the offset pointed
@@ -1178,15 +1263,27 @@ AutocompleteMatch HistoryURLProvider::HistoryMatchToACMatch(
       (!params.prevent_inline_autocomplete ||
        (inline_autocomplete_offset >= match.fill_into_edit.length()));
 
-  size_t match_start = history_match.input_location;
-  match.contents = url_formatter::FormatUrl(info.url(), format_types,
-                                            net::UnescapeRule::SPACES, nullptr,
-                                            nullptr, &match_start);
-  if ((match_start != base::string16::npos) && autocomplete_offset_valid &&
-      (inline_autocomplete_offset != match_start)) {
-    DCHECK(inline_autocomplete_offset > match_start);
-    AutocompleteMatch::ClassifyLocationInString(match_start,
-        inline_autocomplete_offset - match_start, match.contents.length(),
+  // Get the adjusted (for match contents) match start and end offsets.
+  std::vector<size_t> offsets = {
+      history_match.input_location,
+      history_match.input_location + params.input.text().length()};
+
+  const auto format_types = AutocompleteMatch::GetFormatTypes(
+      params.input.parts().scheme.len > 0 || !params.trim_http ||
+          history_match.match_in_scheme,
+      history_match.match_in_subdomain);
+  match.contents = url_formatter::FormatUrlWithOffsets(
+      info.url(), format_types, net::UnescapeRule::SPACES, nullptr, nullptr,
+      &offsets);
+
+  size_t match_start = offsets[0];
+  size_t match_end = offsets[1];
+
+  if (match_start != base::string16::npos &&
+      match_end != base::string16::npos && match_end != match_start) {
+    DCHECK_GT(match_end, match_start);
+    AutocompleteMatch::ClassifyLocationInString(
+        match_start, match_end - match_start, match.contents.length(),
         ACMatchClassification::URL, &match.contents_class);
   } else {
     AutocompleteMatch::ClassifyLocationInString(base::string16::npos, 0,

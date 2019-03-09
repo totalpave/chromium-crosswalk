@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/extension_web_ui_override_registrar.h"
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
 #include "chrome/browser/extensions/extension_web_ui.h"
 #include "chrome/browser/profiles/profile.h"
@@ -41,7 +42,7 @@ void ExtensionWebUIOverrideRegistrar::OnExtensionLoaded(
 void ExtensionWebUIOverrideRegistrar::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
-    UnloadedExtensionInfo::Reason reason) {
+    UnloadedExtensionReason reason) {
   ExtensionWebUI::DeactivateChromeURLOverrides(
       Profile::FromBrowserContext(browser_context),
       URLOverrides::GetChromeURLOverrides(extension));
@@ -62,14 +63,14 @@ void ExtensionWebUIOverrideRegistrar::OnExtensionSystemReady(
       Profile::FromBrowserContext(context));
 }
 
-static base::LazyInstance<
-    BrowserContextKeyedAPIFactory<ExtensionWebUIOverrideRegistrar> > g_factory =
-    LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BrowserContextKeyedAPIFactory<
+    ExtensionWebUIOverrideRegistrar>>::DestructorAtExit
+    g_extension_web_ui_override_registrar_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<ExtensionWebUIOverrideRegistrar>*
 ExtensionWebUIOverrideRegistrar::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_extension_web_ui_override_registrar_factory.Pointer();
 }
 
 }  // namespace extensions

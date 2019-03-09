@@ -4,25 +4,22 @@
 
 #include "ash/wm/window_properties.h"
 
-#include "ash/common/wm/window_state.h"
-#include "ui/aura/window_property.h"
+#include "ash/wm/window_state.h"
+#include "ui/gfx/geometry/rect.h"
 
-DECLARE_WINDOW_PROPERTY_TYPE(ash::wm::WindowState*);
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(ASH_EXPORT, ash::wm::WindowState*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(ASH_EXPORT, ash::WidgetCreationType)
 
 namespace ash {
 
-DEFINE_OWNED_WINDOW_PROPERTY_KEY(gfx::Rect, kRestoreBoundsOverrideKey, NULL);
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kLockedToRootKey, false)
 
-DEFINE_WINDOW_PROPERTY_KEY(ui::WindowShowState,
-                           kRestoreShowStateOverrideKey,
-                           ui::SHOW_STATE_DEFAULT);
+DEFINE_UI_CLASS_PROPERTY_KEY(WidgetCreationType,
+                             kWidgetCreationTypeKey,
+                             WidgetCreationType::INTERNAL)
 
-DEFINE_WINDOW_PROPERTY_KEY(bool, kSnapChildrenToPixelBoundary, false);
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kWindowIsJanky, false)
 
-DEFINE_WINDOW_PROPERTY_KEY(bool, kStayInSameRootWindowKey, false);
-
-DEFINE_WINDOW_PROPERTY_KEY(bool, kUsesScreenCoordinatesKey, false);
-
-DEFINE_OWNED_WINDOW_PROPERTY_KEY(wm::WindowState, kWindowStateKey, NULL);
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(ash::wm::WindowState, kWindowStateKey, NULL)
 
 }  // namespace ash

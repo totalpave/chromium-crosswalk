@@ -8,14 +8,14 @@
 #include <iosfwd>
 #include <string>
 
+#include "ui/gfx/geometry/geometry_export.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/vector3d_f.h"
-#include "ui/gfx/gfx_export.h"
 
 namespace gfx {
 
 // A point has an x, y and z coordinate.
-class GFX_EXPORT Point3F {
+class GEOMETRY_EXPORT Point3F {
  public:
   constexpr Point3F() : x_(0), y_(0), z_(0) {}
   constexpr Point3F(float x, float y, float z) : x_(x), y_(y), z_(z) {}
@@ -89,15 +89,15 @@ inline bool operator!=(const Point3F& lhs, const Point3F& rhs) {
 }
 
 // Add a vector to a point, producing a new point offset by the vector.
-GFX_EXPORT Point3F operator+(const Point3F& lhs, const Vector3dF& rhs);
+GEOMETRY_EXPORT Point3F operator+(const Point3F& lhs, const Vector3dF& rhs);
 
 // Subtract a vector from a point, producing a new point offset by the vector's
 // inverse.
-GFX_EXPORT Point3F operator-(const Point3F& lhs, const Vector3dF& rhs);
+GEOMETRY_EXPORT Point3F operator-(const Point3F& lhs, const Vector3dF& rhs);
 
 // Subtract one point from another, producing a vector that represents the
 // distances between the two points along each axis.
-GFX_EXPORT Vector3dF operator-(const Point3F& lhs, const Point3F& rhs);
+GEOMETRY_EXPORT Vector3dF operator-(const Point3F& lhs, const Point3F& rhs);
 
 inline Point3F PointAtOffsetFromOrigin(const Vector3dF& offset) {
   return Point3F(offset.x(), offset.y(), offset.z());
@@ -110,13 +110,17 @@ inline Point3F ScalePoint(const Point3F& p,
   return Point3F(p.x() * x_scale, p.y() * y_scale, p.z() * z_scale);
 }
 
+inline Point3F ScalePoint(const Point3F& p, const Vector3dF& v) {
+  return Point3F(p.x() * v.x(), p.y() * v.y(), p.z() * v.z());
+}
+
 inline Point3F ScalePoint(const Point3F& p, float scale) {
   return ScalePoint(p, scale, scale, scale);
 }
 
 // This is declared here for use in gtest-based unit tests but is defined in
-// the gfx_test_support target. Depend on that to use this in your unit test.
-// This should not be used in production code - call ToString() instead.
+// the //ui/gfx:test_support target. Depend on that to use this in your unit
+// test. This should not be used in production code - call ToString() instead.
 void PrintTo(const Point3F& point, ::std::ostream* os);
 
 }  // namespace gfx

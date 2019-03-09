@@ -6,11 +6,12 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/timer/timer.h"
-#include "content/public/common/service_registry.h"
 #include "content/public/renderer/render_frame.h"
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_media_manager.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/wds/src/libwds/public/logging.h"
 #include "third_party/wds/src/libwds/public/media_manager.h"
 
@@ -42,13 +43,14 @@ WiFiDisplaySession::WiFiDisplaySession(
     weak_factory_(this) {
   DCHECK(params_.render_frame);
   wds::LogSystem::set_error_func(&LogWDSError);
-  params.render_frame->GetServiceRegistry()->ConnectToRemoteService(
-      mojo::GetProxy(&service_));
+  params.render_frame->GetRemoteInterfaces()->GetInterface(&service_);
   service_.set_connection_error_handler(base::Bind(
           &WiFiDisplaySession::OnIPCConnectionError,
           weak_factory_.GetWeakPtr()));
 
-  service_->SetClient(binding_.CreateInterfacePtrAndBind());
+  WiFiDisplaySessionServiceClientPtr client;
+  binding_.Bind(mojo::MakeRequest(&client));
+  service_->SetClient(std::move(client));
   binding_.set_connection_error_handler(base::Bind(
           &WiFiDisplaySession::OnIPCConnectionError,
           weak_factory_.GetWeakPtr()));
@@ -75,8 +77,8 @@ void WiFiDisplaySession::Terminate(const CompletionCallback& callback) {
   teminate_completion_callback_ = callback;
 }
 
-void WiFiDisplaySession::OnConnected(const mojo::String& local_ip_address,
-                                     const mojo::String& sink_ip_address) {
+void WiFiDisplaySession::OnConnected(const std::string& local_ip_address,
+                                     const std::string& sink_ip_address) {
   DCHECK_EQ(DisplaySourceSession::Established, state_);
   local_ip_address_ = local_ip_address;
   media_manager_.reset(
@@ -84,7 +86,7 @@ void WiFiDisplaySession::OnConnected(const mojo::String& local_ip_address,
           params_.video_track,
           params_.audio_track,
           sink_ip_address,
-          params_.render_frame->GetServiceRegistry(),
+          params_.render_frame->GetRemoteInterfaces(),
           base::Bind(
               &WiFiDisplaySession::OnMediaError,
               weak_factory_.GetWeakPtr())));
@@ -93,7 +95,7 @@ void WiFiDisplaySession::OnConnected(const mojo::String& local_ip_address,
 }
 
 void WiFiDisplaySession::OnConnectRequestHandled(bool success,
-                                                 const mojo::String& error) {
+                                                 const std::string& error) {
   DCHECK_EQ(DisplaySourceSession::Establishing, state_);
   state_ =
       success ? DisplaySourceSession::Established : DisplaySourceSession::Idle;
@@ -109,19 +111,18 @@ void WiFiDisplaySession::OnTerminated() {
 }
 
 void WiFiDisplaySession::OnDisconnectRequestHandled(bool success,
-                                                    const mojo::String& error) {
+                                                    const std::string& error) {
   RunTerminateCallback(success, error);
 }
 
-void WiFiDisplaySession::OnError(int32_t type,
-                                 const mojo::String& description) {
+void WiFiDisplaySession::OnError(int32_t type, const std::string& description) {
   DCHECK(type > api::display_source::ERROR_TYPE_NONE
          && type <= api::display_source::ERROR_TYPE_LAST);
   DCHECK_EQ(DisplaySourceSession::Established, state_);
   error_callback_.Run(static_cast<ErrorType>(type), description);
 }
 
-void WiFiDisplaySession::OnMessage(const mojo::String& data) {
+void WiFiDisplaySession::OnMessage(const std::string& data) {
   DCHECK_EQ(DisplaySourceSession::Established, state_);
   DCHECK(wfd_source_);
   wfd_source_->RTSPDataReceived(data);
@@ -140,9 +141,10 @@ void WiFiDisplaySession::SendRTSPData(const std::string& message) {
 }
 
 unsigned WiFiDisplaySession::CreateTimer(int seconds) {
-  std::unique_ptr<base::Timer> timer(new base::Timer(true, true));
-  auto insert_ret = timers_.insert(std::pair<int, std::unique_ptr<base::Timer>>(
-      ++timer_id_, std::move(timer)));
+  std::unique_ptr<base::RepeatingTimer> timer(new base::RepeatingTimer());
+  auto insert_ret =
+      timers_.insert(std::pair<int, std::unique_ptr<base::RepeatingTimer>>(
+          ++timer_id_, std::move(timer)));
   DCHECK(insert_ret.second);
   insert_ret.first->second->Start(FROM_HERE,
                base::TimeDelta::FromSeconds(seconds),

@@ -17,12 +17,14 @@
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/user_info_fetcher.h"
 #include "components/policy/policy_export.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
-class OAuth2TokenService;
+namespace identity {
+class IdentityManager;
+}
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace policy {
@@ -41,13 +43,18 @@ class POLICY_EXPORT CloudPolicyClientRegistrationHelper
   ~CloudPolicyClientRegistrationHelper() override;
 
   // Starts the client registration process. This version uses the
-  // supplied OAuth2TokenService to mint the new token for the userinfo
+  // supplied IdentityManager to mint the new token for the userinfo
   // and DM services, using the |account_id|.
   // |callback| is invoked when the registration is complete.
-  void StartRegistration(
-      OAuth2TokenService* token_service,
-      const std::string& account_id,
-      const base::Closure& callback);
+  void StartRegistration(identity::IdentityManager* identity_manager,
+                         const std::string& account_id,
+                         const base::Closure& callback);
+
+  // Starts the device registration with an token enrollment process.
+  // |callback| is invoked when the registration is complete.
+  void StartRegistrationWithEnrollmentToken(const std::string& token,
+                                            const std::string& client_id,
+                                            const base::Closure& callback);
 
 #if !defined(OS_ANDROID)
   // Starts the client registration process. The |login_refresh_token| is used
@@ -56,18 +63,12 @@ class POLICY_EXPORT CloudPolicyClientRegistrationHelper
   void StartRegistrationWithLoginToken(const std::string& login_refresh_token,
                                        const base::Closure& callback);
 
-  // Starts the client registration process. |access_token| must be a valid
-  // OAuth access token for the scopes returned by the |GetScopes| static
-  // function.
-  void StartRegistrationWithAccessToken(const std::string& access_token,
-                                        const base::Closure& callback);
-
   // Returns the scopes required for policy client registration.
   static std::vector<std::string> GetScopes();
 #endif
 
  private:
-  class TokenServiceHelper;
+  class IdentityManagerHelper;
 #if !defined(OS_ANDROID)
   class LoginTokenHelper;
 #endif
@@ -86,11 +87,11 @@ class POLICY_EXPORT CloudPolicyClientRegistrationHelper
   // Invoked when the registration request has been completed.
   void RequestCompleted();
 
-  // Internal helper class that uses OAuth2TokenService to fetch an OAuth
+  // Internal helper class that uses IdentityManager to fetch an OAuth
   // access token. On desktop, this is only used after the user has signed in -
   // desktop platforms use LoginTokenHelper for policy fetches performed before
   // signin is complete.
-  std::unique_ptr<TokenServiceHelper> token_service_helper_;
+  std::unique_ptr<IdentityManagerHelper> identity_manager_helper_;
 
 #if !defined(OS_ANDROID)
   // Special desktop-only helper to fetch an OAuth access token prior to
@@ -107,7 +108,7 @@ class POLICY_EXPORT CloudPolicyClientRegistrationHelper
   // GAIA to get information about the signed in user.
   std::string oauth_access_token_;
 
-  scoped_refptr<net::URLRequestContextGetter> context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   CloudPolicyClient* client_;
   enterprise_management::DeviceRegisterRequest::Type registration_type_;
   base::Closure callback_;

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/safe_browsing/safe_browsing_tab_observer.h"
 
+#include "base/bind.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
@@ -17,9 +18,9 @@
 
 #if defined(SAFE_BROWSING_CSD)
 #include "chrome/browser/safe_browsing/client_side_detection_host.h"
+#include "chrome/common/chrome_render_frame.mojom.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #endif
-
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(safe_browsing::SafeBrowsingTabObserver);
 
 namespace safe_browsing {
 
@@ -47,8 +48,8 @@ SafeBrowsingTabObserver::SafeBrowsingTabObserver(
 
     if (prefs->GetBoolean(prefs::kSafeBrowsingEnabled) &&
         g_browser_process->safe_browsing_detection_service()) {
-      safebrowsing_detection_host_.reset(
-          ClientSideDetectionHost::Create(web_contents));
+      safebrowsing_detection_host_ =
+          ClientSideDetectionHost::Create(web_contents);
     }
   }
 #endif
@@ -69,17 +70,20 @@ void SafeBrowsingTabObserver::UpdateSafebrowsingDetectionHost() {
   if (safe_browsing &&
       g_browser_process->safe_browsing_detection_service()) {
     if (!safebrowsing_detection_host_.get()) {
-      safebrowsing_detection_host_.reset(
-          ClientSideDetectionHost::Create(web_contents_));
+      safebrowsing_detection_host_ =
+          ClientSideDetectionHost::Create(web_contents_);
     }
   } else {
     safebrowsing_detection_host_.reset();
   }
 
   content::RenderFrameHost* rfh = web_contents_->GetMainFrame();
-  rfh->Send(new ChromeViewMsg_SetClientSidePhishingDetection(
-      rfh->GetRoutingID(), safe_browsing));
+  chrome::mojom::ChromeRenderFrameAssociatedPtr client;
+  rfh->GetRemoteAssociatedInterfaces()->GetInterface(&client);
+  client->SetClientSidePhishingDetection(safe_browsing);
 #endif
 }
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(SafeBrowsingTabObserver)
 
 }  // namespace safe_browsing

@@ -5,28 +5,9 @@
 #include "remoting/host/linux/unicode_to_keysym.h"
 
 #include <algorithm>
-#define XK_MISCELLANY
-#define XK_XKB_KEYS
-#define XK_LATIN1
-#define XK_LATIN2
-#define XK_LATIN3
-#define XK_LATIN4
-#define XK_LATIN9
-#define XK_GREEK
-#define XK_KATAKANA
-#define XK_ARABIC
-#define XK_CYRILLIC
-#define XK_HEBREW
-#define XK_THAI
-#define XK_KOREAN
-#define XK_CURRENCY
-#define XK_TECHNICAL
-#define XK_PUBLISHING
-#define XK_APL
-#define XK_SPECIAL
-#include <X11/keysymdef.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
+#include "ui/gfx/x/x11.h"
 
 namespace remoting {
 
@@ -821,24 +802,25 @@ bool CompareCodePair(const CodePair& pair, uint32_t unicode) {
 
 }  // namespace
 
-void GetKeySymsForUnicode(uint32_t unicode, std::vector<uint32_t>* keysyms) {
-  keysyms->clear();
+std::vector<uint32_t> GetKeySymsForUnicode(uint32_t unicode) {
+  std::vector<uint32_t> keysyms;
 
   // Latin-1 characters have the same values in Unicode and KeySym.
   if ((unicode >= 0x0020 && unicode <= 0x007e) ||
       (unicode >= 0x00a0 && unicode <= 0x00ff)) {
-    keysyms->push_back(unicode);
+    keysyms.push_back(unicode);
   }
 
-  const CodePair* map_end = kKeySymUnicodeMap + arraysize(kKeySymUnicodeMap);
+  const CodePair* map_end = kKeySymUnicodeMap + base::size(kKeySymUnicodeMap);
   const CodePair* pair =
       std::lower_bound(kKeySymUnicodeMap, map_end, unicode, &CompareCodePair);
   while (pair != map_end && pair->unicode == unicode) {
-    keysyms->push_back(pair->keysym);
+    keysyms.push_back(pair->keysym);
     ++pair;
   }
 
-  keysyms->push_back(0x01000000 | unicode);
+  keysyms.push_back(0x01000000 | unicode);
+  return keysyms;
 }
 
 }  // namespace remoting

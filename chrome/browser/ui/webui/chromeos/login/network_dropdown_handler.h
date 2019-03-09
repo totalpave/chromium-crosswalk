@@ -9,26 +9,15 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/observer_list.h"
-#include "chrome/browser/ui/webui/chromeos/login/base_screen_handler.h"
-#include "chrome/browser/ui/webui/chromeos/login/network_dropdown.h"
+#include "chrome/browser/ui/webui/chromeos/login/base_webui_handler.h"
 
 namespace chromeos {
 
-class NetworkDropdownHandler : public BaseScreenHandler,
-                               public NetworkDropdown::Actor {
+// Class for handling network configuration UI events in loggin/oobe WebUI.
+class NetworkDropdownHandler : public BaseWebUIHandler {
  public:
-  class Observer {
-   public:
-    virtual ~Observer() {}
-    virtual void OnConnectToNetworkRequested() = 0;
-  };
-
-  NetworkDropdownHandler();
+  explicit NetworkDropdownHandler(JSCallsContainer* js_calls_container);
   ~NetworkDropdownHandler() override;
-
-  void AddObserver(Observer* observer);
-  void RemoveObserver(Observer* observer);
 
   // BaseScreenHandler implementation:
   void DeclareLocalizedValues(
@@ -39,22 +28,10 @@ class NetworkDropdownHandler : public BaseScreenHandler,
   void RegisterMessages() override;
 
  private:
-  // NetworkDropdown::Actor implementation:
-  void OnConnectToNetworkRequested() override;
-
-  // Handles choosing of the network menu item.
-  void HandleNetworkItemChosen(double id);
-  // Handles network drop-down showing.
-  void HandleNetworkDropdownShow(const std::string& element_id,
-                                 bool oobe);
-  // Handles network drop-down hiding.
-  void HandleNetworkDropdownHide();
-  // Handles network drop-down refresh.
-  void HandleNetworkDropdownRefresh();
-
-  std::unique_ptr<NetworkDropdown> dropdown_;
-
-  base::ObserverList<Observer> observers_;
+  void HandleLaunchInternetDetailDialog();
+  void HandleLaunchAddWiFiNetworkDialog();
+  void HandleShowNetworkDetails(const base::ListValue* args);
+  void HandleShowNetworkConfig(const base::ListValue* args);
 
   DISALLOW_COPY_AND_ASSIGN(NetworkDropdownHandler);
 };

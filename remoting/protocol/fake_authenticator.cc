@@ -4,20 +4,21 @@
 
 #include "remoting/protocol/fake_authenticator.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/base64.h"
+#include "base/bind.h"
 #include "base/callback_helpers.h"
-#include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "remoting/base/constants.h"
 #include "remoting/protocol/p2p_stream_socket.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting {
 namespace protocol {
@@ -27,7 +28,7 @@ FakeChannelAuthenticator::FakeChannelAuthenticator(bool accept, bool async)
       async_(async),
       weak_factory_(this) {}
 
-FakeChannelAuthenticator::~FakeChannelAuthenticator() {}
+FakeChannelAuthenticator::~FakeChannelAuthenticator() = default;
 
 void FakeChannelAuthenticator::SecureAndAuthenticate(
     std::unique_ptr<P2PStreamSocket> socket,
@@ -42,12 +43,14 @@ void FakeChannelAuthenticator::SecureAndAuthenticate(
       // ordering deterministic.
       did_write_bytes_ = true;
     } else {
-      scoped_refptr<net::IOBuffer> write_buf = new net::IOBuffer(1);
+      scoped_refptr<net::IOBuffer> write_buf =
+          base::MakeRefCounted<net::IOBuffer>(1);
       write_buf->data()[0] = 0;
       int result = socket_->Write(
           write_buf.get(), 1,
           base::Bind(&FakeChannelAuthenticator::OnAuthBytesWritten,
-                     weak_factory_.GetWeakPtr()));
+                     weak_factory_.GetWeakPtr()),
+          TRAFFIC_ANNOTATION_FOR_TESTS);
       if (result != net::ERR_IO_PENDING) {
         // This will not call the callback because |did_read_bytes_| is
         // still set to false.
@@ -55,7 +58,8 @@ void FakeChannelAuthenticator::SecureAndAuthenticate(
       }
     }
 
-    scoped_refptr<net::IOBuffer> read_buf = new net::IOBuffer(1);
+    scoped_refptr<net::IOBuffer> read_buf =
+        base::MakeRefCounted<net::IOBuffer>(1);
     int result =
         socket_->Read(read_buf.get(), 1,
                       base::Bind(&FakeChannelAuthenticator::OnAuthBytesRead,
@@ -89,22 +93,44 @@ void FakeChannelAuthenticator::CallDoneCallback() {
   base::ResetAndReturn(&done_callback_).Run(result_, std::move(socket_));
 }
 
-FakeAuthenticator::FakeAuthenticator(Type type,
-                                     int round_trips,
-                                     Action action,
-                                     bool async)
-    : type_(type), round_trips_(round_trips), action_(action), async_(async) {}
+FakeAuthenticator::Config::Config() = default;
+FakeAuthenticator::Config::Config(Action action) : action(action) {}
+FakeAuthenticator::Config::Config(int round_trips, Action action, bool async)
+    : round_trips(round_trips), action(action), async(async) {}
 
-FakeAuthenticator::~FakeAuthenticator() {}
+FakeAuthenticator::FakeAuthenticator(Type type,
+                                     FakeAuthenticator::Config config,
+                                     const std::string& local_id,
+                                     const std::string& remote_id)
+    : type_(type), config_(config), local_id_(local_id), remote_id_(remote_id) {
+  EXPECT_TRUE((!local_id_.empty() && !remote_id_.empty()) ||
+              config.round_trips == 0);
+}
+
+FakeAuthenticator::FakeAuthenticator(Action action)
+    : FakeAuthenticator(CLIENT,
+                        FakeAuthenticator::Config(0, action, true),
+                        std::string(),
+                        std::string()) {}
+
+FakeAuthenticator::~FakeAuthenticator() = default;
 
 void FakeAuthenticator::set_messages_till_started(int messages) {
   messages_till_started_ = messages;
 }
 
+void FakeAuthenticator::Resume() {
+  base::ResetAndReturn(&resume_closure_).Run();
+}
+
 Authenticator::State FakeAuthenticator::state() const {
-  EXPECT_LE(messages_, round_trips_ * 2);
-  if (messages_ >= round_trips_ * 2) {
-    if (action_ == REJECT) {
+  EXPECT_LE(messages_, config_.round_trips * 2);
+
+  if (messages_ == pause_message_index_ && !resume_closure_.is_null())
+    return PROCESSING_MESSAGE;
+
+  if (messages_ >= config_.round_trips * 2) {
+    if (config_.action == REJECT) {
       return REJECTED;
     } else {
       return ACCEPTED;
@@ -113,8 +139,8 @@ Authenticator::State FakeAuthenticator::state() const {
 
   // Don't send the last message if this is a host that wants to
   // reject a connection.
-  if (messages_ == round_trips_ * 2 - 1 &&
-      type_ == HOST && action_ == REJECT) {
+  if (messages_ == config_.round_trips * 2 - 1 && type_ == HOST &&
+      config_.action == REJECT) {
     return REJECTED;
   }
 
@@ -136,40 +162,54 @@ Authenticator::RejectionReason FakeAuthenticator::rejection_reason() const {
   return INVALID_CREDENTIALS;
 }
 
-void FakeAuthenticator::ProcessMessage(const buzz::XmlElement* message,
+void FakeAuthenticator::ProcessMessage(const jingle_xmpp::XmlElement* message,
                                        const base::Closure& resume_callback) {
   EXPECT_EQ(WAITING_MESSAGE, state());
   std::string id =
-      message->TextNamed(buzz::QName(kChromotingXmlNamespace, "id"));
-  EXPECT_EQ(id, base::IntToString(messages_));
+      message->TextNamed(jingle_xmpp::QName(kChromotingXmlNamespace, "id"));
+  EXPECT_EQ(id, base::NumberToString(messages_));
 
   // On the client receive the key in the last message.
-  if (type_ == CLIENT && messages_ == round_trips_ * 2 - 1) {
+  if (type_ == CLIENT && messages_ == config_.round_trips * 2 - 1) {
     std::string key_base64 =
-        message->TextNamed(buzz::QName(kChromotingXmlNamespace, "key"));
+        message->TextNamed(jingle_xmpp::QName(kChromotingXmlNamespace, "key"));
     EXPECT_TRUE(!key_base64.empty());
     EXPECT_TRUE(base::Base64Decode(key_base64, &auth_key_));
   }
 
+  // Receive peer's id.
+  if (messages_ < 2) {
+    EXPECT_EQ(remote_id_, message->Attr(jingle_xmpp::QName("", "id")));
+  }
+
   ++messages_;
+  if (messages_ == pause_message_index_) {
+    resume_closure_ = resume_callback;
+    return;
+  }
   resume_callback.Run();
 }
 
-std::unique_ptr<buzz::XmlElement> FakeAuthenticator::GetNextMessage() {
+std::unique_ptr<jingle_xmpp::XmlElement> FakeAuthenticator::GetNextMessage() {
   EXPECT_EQ(MESSAGE_READY, state());
 
-  std::unique_ptr<buzz::XmlElement> result(new buzz::XmlElement(
-      buzz::QName(kChromotingXmlNamespace, "authentication")));
-  buzz::XmlElement* id = new buzz::XmlElement(
-      buzz::QName(kChromotingXmlNamespace, "id"));
-  id->AddText(base::IntToString(messages_));
+  std::unique_ptr<jingle_xmpp::XmlElement> result(new jingle_xmpp::XmlElement(
+      jingle_xmpp::QName(kChromotingXmlNamespace, "authentication")));
+  jingle_xmpp::XmlElement* id = new jingle_xmpp::XmlElement(
+      jingle_xmpp::QName(kChromotingXmlNamespace, "id"));
+  id->AddText(base::NumberToString(messages_));
   result->AddElement(id);
 
+  // Send local id in the first outgoing message.
+  if (messages_ < 2) {
+    result->AddAttr(jingle_xmpp::QName("", "id"), local_id_);
+  }
+
   // Add authentication key in the last message sent from host to client.
-  if (type_ == HOST && messages_ == round_trips_ * 2 - 1) {
+  if (type_ == HOST && messages_ == config_.round_trips * 2 - 1) {
     auth_key_ =  base::RandBytesAsString(16);
-    buzz::XmlElement* key = new buzz::XmlElement(
-        buzz::QName(kChromotingXmlNamespace, "key"));
+    jingle_xmpp::XmlElement* key = new jingle_xmpp::XmlElement(
+        jingle_xmpp::QName(kChromotingXmlNamespace, "key"));
     std::string key_base64;
     base::Base64Encode(auth_key_, &key_base64);
     key->AddText(key_base64);
@@ -189,27 +229,22 @@ const std::string& FakeAuthenticator::GetAuthKey() const {
 std::unique_ptr<ChannelAuthenticator>
 FakeAuthenticator::CreateChannelAuthenticator() const {
   EXPECT_EQ(ACCEPTED, state());
-  return base::WrapUnique(
-      new FakeChannelAuthenticator(action_ != REJECT_CHANNEL, async_));
+  return std::make_unique<FakeChannelAuthenticator>(
+      config_.action != REJECT_CHANNEL, config_.async);
 }
 
 FakeHostAuthenticatorFactory::FakeHostAuthenticatorFactory(
-    int round_trips,
     int messages_till_started,
-    FakeAuthenticator::Action action,
-    bool async)
-    : round_trips_(round_trips),
-      messages_till_started_(messages_till_started),
-      action_(action),
-      async_(async) {}
-FakeHostAuthenticatorFactory::~FakeHostAuthenticatorFactory() {}
+    FakeAuthenticator::Config config)
+    : messages_till_started_(messages_till_started), config_(config) {}
+FakeHostAuthenticatorFactory::~FakeHostAuthenticatorFactory() = default;
 
 std::unique_ptr<Authenticator>
 FakeHostAuthenticatorFactory::CreateAuthenticator(
     const std::string& local_jid,
     const std::string& remote_jid) {
   std::unique_ptr<FakeAuthenticator> authenticator(new FakeAuthenticator(
-      FakeAuthenticator::HOST, round_trips_, action_, async_));
+      FakeAuthenticator::HOST, config_, local_jid, remote_jid));
   authenticator->set_messages_till_started(messages_till_started_);
   return std::move(authenticator);
 }

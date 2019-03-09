@@ -10,7 +10,7 @@
 #include <cstdlib>
 
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/time/time.h"
 #include "media/base/data_buffer.h"
 #include "media/base/timestamp_constants.h"
@@ -296,7 +296,7 @@ TEST_F(SeekableBufferTest, AllMethods) {
 }
 
 TEST_F(SeekableBufferTest, GetTime) {
-  const int64_t kNoTS = kNoTimestamp().ToInternalValue();
+  const int64_t kNoTS = kNoTimestamp.ToInternalValue();
   const struct {
     int64_t first_time_useconds;
     int64_t duration_useconds;
@@ -332,13 +332,13 @@ TEST_F(SeekableBufferTest, GetTime) {
     { 5, 8000000, kWriteSize, 8000005 },
   };
 
-  // current_time() must initially return kNoTimestamp().
-  EXPECT_EQ(kNoTimestamp().ToInternalValue(),
+  // current_time() must initially return kNoTimestamp.
+  EXPECT_EQ(kNoTimestamp.ToInternalValue(),
             buffer_.current_time().ToInternalValue());
 
   scoped_refptr<DataBuffer> buffer = DataBuffer::CopyFrom(data_, kWriteSize);
 
-  for (size_t i = 0; i < arraysize(tests); ++i) {
+  for (size_t i = 0; i < base::size(tests); ++i) {
     buffer->set_timestamp(base::TimeDelta::FromMicroseconds(
         tests[i].first_time_useconds));
     buffer->set_duration(base::TimeDelta::FromMicroseconds(

@@ -7,7 +7,7 @@ package org.chromium.chrome.browser.widget;
 import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
-import android.graphics.Color;
+import android.support.annotation.IntDef;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.View;
@@ -17,6 +17,9 @@ import android.widget.Button;
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.chrome.R;
 import org.chromium.ui.widget.ButtonCompat;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
  * Automatically lays out one or two Views, placing them on the same row if possible and stacking
@@ -41,9 +44,15 @@ import org.chromium.ui.widget.ButtonCompat;
  * -----------------------------
  */
 public final class DualControlLayout extends ViewGroup {
-    public static final int ALIGN_START = 0;
-    public static final int ALIGN_END = 1;
-    public static final int ALIGN_APART = 2;
+    // When changing these values, you need to update ui/android/java/res/values/attrs.xml
+    @IntDef({DualControlLayoutAlignment.START, DualControlLayoutAlignment.END,
+            DualControlLayoutAlignment.APART})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DualControlLayoutAlignment {
+        int START = 0;
+        int END = 1;
+        int APART = 2;
+    }
 
     /**
      * Creates a standardized Button that can be used for DualControlLayouts showing buttons.
@@ -55,29 +64,31 @@ public final class DualControlLayout extends ViewGroup {
      */
     public static Button createButtonForLayout(
             Context context, boolean isPrimary, String text, OnClickListener listener) {
-        int lightActiveColor =
-                ApiCompatibilityUtils.getColor(context.getResources(), R.color.light_active_color);
-
         if (isPrimary) {
-            ButtonCompat primaryButton = new ButtonCompat(context, lightActiveColor, false);
+            ButtonCompat primaryButton =
+                    new ButtonCompat(context, R.style.FilledButtonThemeOverlay_Flat);
             primaryButton.setId(R.id.button_primary);
             primaryButton.setOnClickListener(listener);
             primaryButton.setText(text);
-            primaryButton.setTextColor(Color.WHITE);
             return primaryButton;
         } else {
-            Button secondaryButton = ButtonCompat.createBorderlessButton(context);
+            Button secondaryButton = new ButtonCompat(context, R.style.TextButtonThemeOverlay);
             secondaryButton.setId(R.id.button_secondary);
             secondaryButton.setOnClickListener(listener);
             secondaryButton.setText(text);
-            secondaryButton.setTextColor(lightActiveColor);
+            ApiCompatibilityUtils.setTextAppearance(
+                    secondaryButton, R.style.TextAppearance_BlueButtonText2);
             return secondaryButton;
         }
     }
 
     private final int mHorizontalMarginBetweenViews;
 
-    private int mAlignment = ALIGN_START;
+    /** Define how the controls will be laid out. */
+    @DualControlLayoutAlignment
+    private int mAlignment = DualControlLayoutAlignment.START;
+
+    /** Margin between the controls when they're stacked.  By default, there is no margin. */
     private int mStackedMargin;
 
     private boolean mIsStacked;
@@ -105,15 +116,24 @@ public final class DualControlLayout extends ViewGroup {
      *
      * @param alignment One of ALIGN_START, ALIGN_APART, ALIGN_END.
      */
-    public void setAlignment(int alignment) {
+    public void setAlignment(@DualControlLayoutAlignment int alignment) {
         mAlignment = alignment;
     }
 
-    /**
-     * Sets the margin between the controls when they're stacked.  By default, there is no margin.
-     */
+    /** See {@link #mAlignment}. */
+    @DualControlLayoutAlignment
+    public int getAlignment() {
+        return mAlignment;
+    }
+
+    /** See {@link #mStackedMargin}. */
     public void setStackedMargin(int stackedMargin) {
         mStackedMargin = stackedMargin;
+    }
+
+    /** See {@link #mStackedMargin}. */
+    public int getStackedMargin() {
+        return mStackedMargin;
     }
 
     @Override
@@ -147,8 +167,10 @@ public final class DualControlLayout extends ViewGroup {
         if (mSecondaryView != null) {
             // Measure the secondary View, allowing it to be as wide as the layout.
             measureChild(mSecondaryView, unspecifiedSpec, unspecifiedSpec);
-            int combinedWidth = mPrimaryView.getMeasuredWidth()
-                    + mHorizontalMarginBetweenViews + mSecondaryView.getMeasuredWidth();
+            int combinedWidth = mPrimaryView.getMeasuredWidth() + mSecondaryView.getMeasuredWidth();
+            if (mPrimaryView.getMeasuredWidth() > 0 && mSecondaryView.getMeasuredWidth() > 0) {
+                combinedWidth += mHorizontalMarginBetweenViews;
+            }
 
             if (combinedWidth > maxWidth) {
                 // Stack the Views on top of each other.
@@ -180,9 +202,11 @@ public final class DualControlLayout extends ViewGroup {
         int rightPadding = getPaddingRight();
 
         int width = right - left;
-        boolean isRtl = ApiCompatibilityUtils.isLayoutRtl(this);
-        boolean isPrimaryOnRight = (isRtl && mAlignment == ALIGN_START)
-                || (!isRtl && (mAlignment == ALIGN_APART || mAlignment == ALIGN_END));
+        boolean isRtl = getLayoutDirection() == LAYOUT_DIRECTION_RTL;
+        boolean isPrimaryOnRight = (isRtl && mAlignment == DualControlLayoutAlignment.START)
+                || (!isRtl
+                           && (mAlignment == DualControlLayoutAlignment.APART
+                                      || mAlignment == DualControlLayoutAlignment.END));
 
         int primaryRight = isPrimaryOnRight
                 ? (width - rightPadding) : (mPrimaryView.getMeasuredWidth() + leftPadding);
@@ -207,18 +231,24 @@ public final class DualControlLayout extends ViewGroup {
             // Determine where to place the secondary View.
             int secondaryLeft;
             int secondaryRight;
-            if (mAlignment == ALIGN_APART) {
+            if (mAlignment == DualControlLayoutAlignment.APART) {
                 // Put the second View on the other side of the Layout from the primary View.
                 secondaryLeft = isPrimaryOnRight
                         ? leftPadding : width - rightPadding - mSecondaryView.getMeasuredWidth();
                 secondaryRight = secondaryLeft + mSecondaryView.getMeasuredWidth();
             } else if (isPrimaryOnRight) {
                 // Sit to the left of the primary View.
-                secondaryRight = primaryLeft - mHorizontalMarginBetweenViews;
+                secondaryRight = primaryLeft;
+                if (mPrimaryView.getMeasuredWidth() > 0) {
+                    secondaryRight -= mHorizontalMarginBetweenViews;
+                }
                 secondaryLeft = secondaryRight - mSecondaryView.getMeasuredWidth();
             } else {
                 // Sit to the right of the primary View.
-                secondaryLeft = primaryRight + mHorizontalMarginBetweenViews;
+                secondaryLeft = primaryRight;
+                if (mPrimaryView.getMeasuredWidth() > 0) {
+                    secondaryLeft += mHorizontalMarginBetweenViews;
+                }
                 secondaryRight = secondaryLeft + mSecondaryView.getMeasuredWidth();
             }
 
@@ -254,5 +284,13 @@ public final class DualControlLayout extends ViewGroup {
         if (!TextUtils.isEmpty(primaryButtonText) && !TextUtils.isEmpty(secondaryButtonText)) {
             addView(createButtonForLayout(getContext(), false, secondaryButtonText, null));
         }
+
+        // Set the alignment.
+        if (a.hasValue(R.styleable.DualControlLayout_buttonAlignment)) {
+            setAlignment(a.getInt(R.styleable.DualControlLayout_buttonAlignment,
+                    DualControlLayoutAlignment.START));
+        }
+
+        a.recycle();
     }
 }

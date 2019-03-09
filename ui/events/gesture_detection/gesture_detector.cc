@@ -2,33 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// MSVC++ requires this to be set before any other includes to get M_PI.
-#define _USE_MATH_DEFINES
-
 #include "ui/events/gesture_detection/gesture_detector.h"
 
 #include <stddef.h>
 
 #include <algorithm>
-#include <cmath>
 
 #include "base/timer/timer.h"
+#include "build/build_config.h"
 #include "ui/events/gesture_detection/gesture_listeners.h"
 #include "ui/events/gesture_detection/motion_event.h"
+#include "ui/gfx/geometry/angle_conversions.h"
 
 namespace ui {
 namespace {
 
-// Using a small epsilon when comparing slop distances allows pixel perfect
-// slop determination when using fractional DIP coordinates (assuming the slop
-// region and DPI scale are reasonably proportioned).
-const float kSlopEpsilon = .05f;
-
 // Minimum distance a scroll must have traveled from the last scroll/focal point
 // to trigger an |OnScroll| callback.
 const float kScrollEpsilon = .1f;
-
-const float kDegreesToRadians = static_cast<float>(M_PI) / 180.0f;
 
 // Constants used by TimeoutGestureHandler.
 enum TimeoutEvent {
@@ -59,7 +50,8 @@ GestureDetector::Config::Config()
       two_finger_tap_max_separation(300),
       two_finger_tap_timeout(base::TimeDelta::FromMilliseconds(700)),
       single_tap_repeat_interval(1),
-      velocity_tracker_strategy(VelocityTracker::Strategy::STRATEGY_DEFAULT) {}
+      velocity_tracker_strategy(VelocityTracker::Strategy::STRATEGY_DEFAULT) {
+}
 
 GestureDetector::Config::Config(const Config& other) = default;
 
@@ -130,11 +122,12 @@ GestureDetector::GestureDetector(
       min_swipe_direction_component_ratio_(0),
       still_down_(false),
       defer_confirm_single_tap_(false),
-      always_in_tap_region_(false),
+      all_pointers_within_slop_regions_(false),
       always_in_bigger_tap_region_(false),
       two_finger_tap_allowed_for_gesture_(false),
       is_double_tapping_(false),
       is_down_candidate_for_repeated_single_tap_(false),
+      maximum_pointer_count_(0),
       current_single_tap_repeat_count_(0),
       single_tap_repeat_interval_(1),
       last_focus_x_(0),
@@ -152,12 +145,13 @@ GestureDetector::GestureDetector(
 
 GestureDetector::~GestureDetector() {}
 
-bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
+bool GestureDetector::OnTouchEvent(const MotionEvent& ev,
+                                   bool should_process_double_tap) {
   const MotionEvent::Action action = ev.GetAction();
 
   velocity_tracker_.AddMovement(ev);
 
-  const bool pointer_up = action == MotionEvent::ACTION_POINTER_UP;
+  const bool pointer_up = action == MotionEvent::Action::POINTER_UP;
   const int skip_index = pointer_up ? ev.GetActionIndex() : -1;
 
   // Determine focal point.
@@ -176,15 +170,28 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
   bool handled = false;
 
   switch (action) {
-    case MotionEvent::ACTION_NONE:
+    case MotionEvent::Action::NONE:
+    case MotionEvent::Action::HOVER_ENTER:
+    case MotionEvent::Action::HOVER_EXIT:
+    case MotionEvent::Action::HOVER_MOVE:
+    case MotionEvent::Action::BUTTON_PRESS:
+    case MotionEvent::Action::BUTTON_RELEASE:
       NOTREACHED();
       return handled;
 
-    case MotionEvent::ACTION_POINTER_DOWN: {
+    case MotionEvent::Action::POINTER_DOWN: {
       down_focus_x_ = last_focus_x_ = focus_x;
       down_focus_y_ = last_focus_y_ = focus_y;
       // Cancel long press and taps.
       CancelTaps();
+      maximum_pointer_count_ = std::max(maximum_pointer_count_,
+                                        static_cast<int>(ev.GetPointerCount()));
+
+      // Even when two_finger_tap_allowed_for_gesture_ is false,
+      // second pointer down information must be stored to check
+      // the slop region in multi-finger scrolls.
+      if (ev.GetPointerCount() == 2)
+        secondary_pointer_down_event_ = ev.Clone();
 
       if (!two_finger_tap_allowed_for_gesture_)
         break;
@@ -193,15 +200,12 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
       const float dx = ev.GetX(action_index) - current_down_event_->GetX();
       const float dy = ev.GetY(action_index) - current_down_event_->GetY();
 
-      if (ev.GetPointerCount() == 2 &&
-          dx * dx + dy * dy < two_finger_tap_distance_square_) {
-        secondary_pointer_down_event_ = ev.Clone();
-      } else {
+      if (maximum_pointer_count_ > 2 ||
+          dx * dx + dy * dy >= two_finger_tap_distance_square_)
         two_finger_tap_allowed_for_gesture_ = false;
-      }
     } break;
 
-    case MotionEvent::ACTION_POINTER_UP: {
+    case MotionEvent::Action::POINTER_UP: {
       down_focus_x_ = last_focus_x_ = focus_x;
       down_focus_y_ = last_focus_y_ = focus_y;
 
@@ -235,6 +239,7 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
       handled = HandleSwipeIfNeeded(ev, vx_total / count, vy_total / count);
 
       if (two_finger_tap_allowed_for_gesture_ && ev.GetPointerCount() == 2 &&
+          secondary_pointer_down_event_ &&
           (ev.GetEventTime() - secondary_pointer_down_event_->GetEventTime() <=
            two_finger_tap_timeout_)) {
         handled = listener_->OnTwoFingerTap(*current_down_event_, ev);
@@ -242,11 +247,12 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
       two_finger_tap_allowed_for_gesture_ = false;
     } break;
 
-    case MotionEvent::ACTION_DOWN: {
+    case MotionEvent::Action::DOWN: {
       bool is_repeated_tap =
           current_down_event_ && previous_up_event_ &&
-          IsRepeatedTap(*current_down_event_, *previous_up_event_, ev);
-      if (double_tap_listener_) {
+          IsRepeatedTap(*current_down_event_, *previous_up_event_, ev,
+                        should_process_double_tap);
+      if (double_tap_listener_ && should_process_double_tap) {
         is_down_candidate_for_repeated_single_tap_ = false;
         bool had_tap_message = timeout_handler_->HasTimeout(TAP);
         if (had_tap_message)
@@ -272,14 +278,15 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
       current_down_event_ = ev.Clone();
 
       secondary_pointer_down_event_.reset();
-      always_in_tap_region_ = true;
+      all_pointers_within_slop_regions_ = true;
       always_in_bigger_tap_region_ = true;
       still_down_ = true;
       defer_confirm_single_tap_ = false;
       two_finger_tap_allowed_for_gesture_ = two_finger_tap_enabled_;
+      maximum_pointer_count_ = 1;
 
-      // Always start the SHOW_PRESS timer before the LONG_PRESS timer to ensure
-      // proper timeout ordering.
+      // Always start the SHOW_PRESS timer before the LONG_PRESS timer to
+      // ensure proper timeout ordering.
       if (showpress_enabled_)
         timeout_handler_->StartTimeout(SHOW_PRESS);
       if (longpress_enabled_)
@@ -287,74 +294,65 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
       handled |= listener_->OnDown(ev);
     } break;
 
-    case MotionEvent::ACTION_MOVE:
-      {
-        const float scroll_x = last_focus_x_ - focus_x;
-        const float scroll_y = last_focus_y_ - focus_y;
-        if (is_double_tapping_) {
-          // Give the move events of the double-tap.
-          DCHECK(double_tap_listener_);
-          handled |= double_tap_listener_->OnDoubleTapEvent(ev);
-        } else if (always_in_tap_region_) {
-          const float delta_x = focus_x - down_focus_x_;
-          const float delta_y = focus_y - down_focus_y_;
-          const float distance_square = delta_x * delta_x + delta_y * delta_y;
-          if (distance_square > touch_slop_square_) {
-            handled = listener_->OnScroll(
-                *current_down_event_, ev, scroll_x, scroll_y);
-            last_focus_x_ = focus_x;
-            last_focus_y_ = focus_y;
-            always_in_tap_region_ = false;
-            timeout_handler_->Stop();
-          }
-          if (distance_square > double_tap_touch_slop_square_)
-            always_in_bigger_tap_region_ = false;
-        } else if (std::abs(scroll_x) > kScrollEpsilon ||
-                   std::abs(scroll_y) > kScrollEpsilon) {
-          // We should eventually apply touch slop for multi-finger
-          // scrolls as well as single finger scrolls. See
-          // crbug.com/492185 for details.
-          handled =
-              listener_->OnScroll(*current_down_event_, ev, scroll_x, scroll_y);
+    case MotionEvent::Action::MOVE: {
+      const float scroll_x = last_focus_x_ - focus_x;
+      const float scroll_y = last_focus_y_ - focus_y;
+      if (is_double_tapping_) {
+        // Give the move events of the double-tap.
+        DCHECK(double_tap_listener_);
+        handled |= double_tap_listener_->OnDoubleTapEvent(ev);
+      } else if (all_pointers_within_slop_regions_) {
+        if (!IsWithinTouchSlop(ev)) {
+          handled = listener_->OnScroll(
+              *current_down_event_, ev,
+              (maximum_pointer_count_ > 1 && secondary_pointer_down_event_)
+                  ? *secondary_pointer_down_event_
+                  : ev,
+              scroll_x, scroll_y);
           last_focus_x_ = focus_x;
           last_focus_y_ = focus_y;
+          all_pointers_within_slop_regions_ = false;
+          timeout_handler_->Stop();
         }
 
-        if (!two_finger_tap_allowed_for_gesture_)
-          break;
-
-        // Two-finger tap should be prevented if either pointer exceeds its
-        // (independent) slop region.
-        const int id0 = current_down_event_->GetPointerId(0);
-        const int ev_idx0 = ev.GetPointerId(0) == id0 ? 0 : 1;
-
-        // Check if the primary pointer exceeded the slop region.
-        float dx = current_down_event_->GetX() - ev.GetX(ev_idx0);
-        float dy = current_down_event_->GetY() - ev.GetY(ev_idx0);
-        if (dx * dx + dy * dy > touch_slop_square_) {
-          two_finger_tap_allowed_for_gesture_ = false;
-          break;
-        }
-        if (ev.GetPointerCount() == 2) {
-          // Check if the secondary pointer exceeded the slop region.
-          const int ev_idx1 = ev_idx0 == 0 ? 1 : 0;
-          const int idx1 = secondary_pointer_down_event_->GetActionIndex();
-          dx = secondary_pointer_down_event_->GetX(idx1) - ev.GetX(ev_idx1);
-          dy = secondary_pointer_down_event_->GetY(idx1) - ev.GetY(ev_idx1);
-          if (dx * dx + dy * dy > touch_slop_square_)
-            two_finger_tap_allowed_for_gesture_ = false;
-        }
+        const float delta_x = focus_x - down_focus_x_;
+        const float delta_y = focus_y - down_focus_y_;
+        const float distance_square = delta_x * delta_x + delta_y * delta_y;
+        if (distance_square > double_tap_touch_slop_square_)
+          always_in_bigger_tap_region_ = false;
+      } else if (std::abs(scroll_x) > kScrollEpsilon ||
+                 std::abs(scroll_y) > kScrollEpsilon) {
+        handled = listener_->OnScroll(
+            *current_down_event_, ev,
+            (maximum_pointer_count_ > 1 && secondary_pointer_down_event_)
+                ? *secondary_pointer_down_event_
+                : ev,
+            scroll_x, scroll_y);
+        last_focus_x_ = focus_x;
+        last_focus_y_ = focus_y;
       }
-      break;
 
-    case MotionEvent::ACTION_UP:
+      if (!two_finger_tap_allowed_for_gesture_)
+        break;
+
+      // Two-finger tap should be prevented if either pointer exceeds its
+      // (independent) slop region.
+      // If the event has had more than two pointers down at any time,
+      // two finger tap should be prevented.
+      if (maximum_pointer_count_ > 2 || !IsWithinTouchSlop(ev)) {
+        two_finger_tap_allowed_for_gesture_ = false;
+      }
+    } break;
+
+    case MotionEvent::Action::UP:
       still_down_ = false;
       {
-        if (is_double_tapping_) {
+        if (is_double_tapping_ && should_process_double_tap) {
           // Finally, give the up event of the double-tap.
           DCHECK(double_tap_listener_);
           handled |= double_tap_listener_->OnDoubleTapEvent(ev);
-        } else if (always_in_tap_region_) {
+        } else if (all_pointers_within_slop_regions_ &&
+                   maximum_pointer_count_ == 1) {
           if (is_down_candidate_for_repeated_single_tap_) {
             current_single_tap_repeat_count_ =
                 (1 + current_single_tap_repeat_count_) %
@@ -364,12 +362,13 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
           }
           handled = listener_->OnSingleTapUp(
               ev, 1 + current_single_tap_repeat_count_);
-          if (defer_confirm_single_tap_ && double_tap_listener_ != NULL) {
+          if (defer_confirm_single_tap_ && should_process_double_tap &&
+              double_tap_listener_ != NULL) {
             double_tap_listener_->OnSingleTapConfirmed(ev);
           }
-        } else {
-          current_single_tap_repeat_count_ = 0;
+        } else if (!all_pointers_within_slop_regions_) {
           // A fling must travel the minimum tap distance.
+          current_single_tap_repeat_count_ = 0;
           const int pointer_id = ev.GetPointerId(0);
           velocity_tracker_.ComputeCurrentVelocity(1000, max_fling_velocity_);
           const float velocity_y = velocity_tracker_.GetYVelocity(pointer_id);
@@ -377,8 +376,8 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
 
           if ((std::abs(velocity_y) > min_fling_velocity_) ||
               (std::abs(velocity_x) > min_fling_velocity_)) {
-            handled = listener_->OnFling(
-                *current_down_event_, ev, velocity_x, velocity_y);
+            handled = listener_->OnFling(*current_down_event_, ev, velocity_x,
+                                         velocity_y);
           }
 
           handled |= HandleSwipeIfNeeded(ev, velocity_x, velocity_y);
@@ -392,9 +391,10 @@ bool GestureDetector::OnTouchEvent(const MotionEvent& ev) {
         timeout_handler_->StopTimeout(SHOW_PRESS);
         timeout_handler_->StopTimeout(LONG_PRESS);
       }
+      maximum_pointer_count_ = 0;
       break;
 
-    case MotionEvent::ACTION_CANCEL:
+    case MotionEvent::Action::CANCEL:
       Cancel();
       break;
   }
@@ -423,6 +423,12 @@ void GestureDetector::SetDoubleTapListener(
 void GestureDetector::Init(const Config& config) {
   DCHECK(listener_);
 
+  // Using a small epsilon when comparing slop distances allows pixel
+  // perfect slop determination when using fractional DIP coordinates
+  // (assuming the slop region and DPI scale are reasonably
+  // proportioned).
+  const float kSlopEpsilon = .05f;
+
   const float touch_slop = config.touch_slop + kSlopEpsilon;
   const float double_tap_touch_slop = touch_slop;
   const float double_tap_slop = config.double_tap_slop + kSlopEpsilon;
@@ -442,7 +448,7 @@ void GestureDetector::Init(const Config& config) {
   const float maximum_swipe_deviation_angle =
       std::min(45.f, std::max(0.001f, config.maximum_swipe_deviation_angle));
   min_swipe_direction_component_ratio_ =
-      1.f / tan(maximum_swipe_deviation_angle * kDegreesToRadians);
+      1.f / tan(gfx::DegToRad(maximum_swipe_deviation_angle));
 
   two_finger_tap_enabled_ = config.two_finger_tap_enabled;
   two_finger_tap_distance_square_ = config.two_finger_tap_max_separation *
@@ -477,13 +483,13 @@ void GestureDetector::OnTapTimeout() {
 void GestureDetector::Cancel() {
   CancelTaps();
   velocity_tracker_.Clear();
+  all_pointers_within_slop_regions_ = false;
   still_down_ = false;
 }
 
 void GestureDetector::CancelTaps() {
   timeout_handler_->Stop();
   is_double_tapping_ = false;
-  always_in_tap_region_ = false;
   always_in_bigger_tap_region_ = false;
   defer_confirm_single_tap_ = false;
   is_down_candidate_for_repeated_single_tap_ = false;
@@ -492,7 +498,8 @@ void GestureDetector::CancelTaps() {
 
 bool GestureDetector::IsRepeatedTap(const MotionEvent& first_down,
                                     const MotionEvent& first_up,
-                                    const MotionEvent& second_down) const {
+                                    const MotionEvent& second_down,
+                                    bool should_process_double_tap) const {
   if (!always_in_bigger_tap_region_)
     return false;
 
@@ -504,8 +511,10 @@ bool GestureDetector::IsRepeatedTap(const MotionEvent& first_down,
   // Only use the min time when in double-tap detection mode. For repeated
   // single taps the risk of accidental repeat detection (e.g., from fingernail
   // interference) is minimal.
-  if (double_tap_listener_ && delta_time < double_tap_min_time_)
+  if (should_process_double_tap && double_tap_listener_ &&
+      delta_time < double_tap_min_time_) {
     return false;
+  }
 
   const float delta_x = first_down.GetX() - second_down.GetX();
   const float delta_y = first_down.GetY() - second_down.GetY();
@@ -537,6 +546,58 @@ bool GestureDetector::HandleSwipeIfNeeded(const MotionEvent& up,
   else
     vx = 0;
   return listener_->OnSwipe(*current_down_event_, up, vx, vy);
+}
+
+bool GestureDetector::IsWithinTouchSlop(const MotionEvent& ev) {
+  // If there have been more than two down pointers in the touch sequence,
+  // tapping is not possible. Slop region check is not needed.
+  if (maximum_pointer_count_ > 2)
+    return false;
+
+  for (size_t i = 0; i < ev.GetPointerCount(); i++) {
+    const int pointer_id = ev.GetPointerId(i);
+    const MotionEvent* source_pointer_down_event = GetSourcePointerDownEvent(
+        *current_down_event_.get(), secondary_pointer_down_event_.get(),
+        pointer_id);
+
+    if (!source_pointer_down_event)
+      return false;
+
+    int source_index =
+        source_pointer_down_event->FindPointerIndexOfId(pointer_id);
+    DCHECK_GE(source_index, 0);
+    if (source_index < 0)
+      return false;
+
+    float dx = source_pointer_down_event->GetX(source_index) - ev.GetX(i);
+    float dy = source_pointer_down_event->GetY(source_index) - ev.GetY(i);
+    if (dx * dx + dy * dy > touch_slop_square_)
+      return false;
+  }
+
+  return true;
+}
+
+const MotionEvent* GestureDetector::GetSourcePointerDownEvent(
+    const MotionEvent& current_down_event,
+    const MotionEvent* secondary_pointer_down_event,
+    const int pointer_id) {
+  if (current_down_event.GetPointerId(0) == pointer_id)
+    return &current_down_event;
+
+  // Secondary pointer down event is sometimes missing (crbug.com/704426), the
+  // source pointer down event is not found in these cases.
+  // crbug.com/704426 is the only related bug report and we don't have any
+  // reliable repro of the bug.
+  if (!secondary_pointer_down_event)
+    return nullptr;
+
+  for (size_t i = 0; i < secondary_pointer_down_event->GetPointerCount(); i++) {
+    if (secondary_pointer_down_event->GetPointerId(i) == pointer_id)
+      return secondary_pointer_down_event;
+  }
+
+  return nullptr;
 }
 
 }  // namespace ui

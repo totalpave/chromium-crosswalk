@@ -28,8 +28,8 @@
 
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "client/crash_report_database.h"
@@ -38,6 +38,7 @@
 #include "util/file/file_io.h"
 #include "util/file/file_reader.h"
 #include "util/misc/uuid.h"
+#include "util/stdlib/string_number_conversion.h"
 
 namespace crashpad {
 namespace {
@@ -91,7 +92,7 @@ struct Options {
 // performed. Various string representations of a boolean are recognized
 // case-insensitively.
 bool StringToBool(const char* string, bool* boolean) {
-  const char* const kFalseWords[] = {
+  static constexpr const char* kFalseWords[] = {
       "0",
       "false",
       "no",
@@ -99,7 +100,7 @@ bool StringToBool(const char* string, bool* boolean) {
       "disabled",
       "clear",
   };
-  const char* const kTrueWords[] = {
+  static constexpr const char* kTrueWords[] = {
       "1",
       "true",
       "yes",
@@ -108,14 +109,14 @@ bool StringToBool(const char* string, bool* boolean) {
       "set",
   };
 
-  for (size_t index = 0; index < arraysize(kFalseWords); ++index) {
+  for (size_t index = 0; index < base::size(kFalseWords); ++index) {
     if (strcasecmp(string, kFalseWords[index]) == 0) {
       *boolean = false;
       return true;
     }
   }
 
-  for (size_t index = 0; index < arraysize(kTrueWords); ++index) {
+  for (size_t index = 0; index < base::size(kTrueWords); ++index) {
     if (strcasecmp(string, kTrueWords[index]) == 0) {
       *boolean = true;
       return true;
@@ -130,71 +131,90 @@ std::string BoolToString(bool boolean) {
   return std::string(boolean ? "true" : "false");
 }
 
-// Converts |string| to |time|, returning true if a conversion could be
+// Converts |string| to |out_time|, returning true if a conversion could be
 // performed, and false without setting |boolean| if no conversion could be
 // performed. Various time formats are recognized, including several string
-// representations and a numeric time_t representation. The special string
-// "never" is recognized as |string| and converts to a |time| value of 0. |utc|,
-// when true, causes |string| to be interpreted as a UTC time rather than a
-// local time when the time zone is ambiguous.
-bool StringToTime(const char* string, time_t* time, bool utc) {
+// representations and a numeric time_t representation. The special |string|
+// "never" is recognized as converted to a |out_time| value of 0; "now" is
+// converted to the current time. |utc|, when true, causes |string| to be
+// interpreted as a UTC time rather than a local time when the time zone is
+// ambiguous.
+bool StringToTime(const char* string, time_t* out_time, bool utc) {
   if (strcasecmp(string, "never") == 0) {
-    *time = 0;
+    *out_time = 0;
+    return true;
+  }
+
+  if (strcasecmp(string, "now") == 0) {
+    errno = 0;
+    PCHECK(time(out_time) != -1 || errno == 0);
     return true;
   }
 
   const char* end = string + strlen(string);
 
-  const char* const kFormats[] = {
+  static constexpr const char* kFormats[] = {
       "%Y-%m-%d %H:%M:%S %Z",
       "%Y-%m-%d %H:%M:%S",
       "%+",
   };
 
-  for (size_t index = 0; index < arraysize(kFormats); ++index) {
+  for (size_t index = 0; index < base::size(kFormats); ++index) {
     tm time_tm;
     const char* strptime_result = strptime(string, kFormats[index], &time_tm);
     if (strptime_result == end) {
+      time_t test_out_time;
       if (utc) {
-        *time = timegm(&time_tm);
+        test_out_time = timegm(&time_tm);
       } else {
-        *time = mktime(&time_tm);
+        test_out_time = mktime(&time_tm);
       }
 
-      return true;
+      // mktime() is supposed to set errno in the event of an error, but support
+      // for this is spotty, so there’s no way to distinguish between a true
+      // time_t of -1 (1969-12-31 23:59:59 UTC) and an error. Assume error.
+      //
+      // See 10.11.5 Libc-1082.50.1/stdtime/FreeBSD/localtime.c and
+      // glibc-2.24/time/mktime.c, which don’t set errno or save and restore
+      // errno. Post-Android 7.1.0 Bionic is even more hopeless, setting errno
+      // whenever the time conversion returns -1, even for valid input. See
+      // libc/tzcode/localtime.c mktime(). Windows seems to get it right: see
+      // 10.0.14393 SDK Source/ucrt/time/mktime.cpp.
+      if (test_out_time != -1) {
+        *out_time = test_out_time;
+        return true;
+      }
     }
   }
 
-  char* end_result;
-  errno = 0;
-  long long strtoll_result = strtoll(string, &end_result, 0);
-  if (end_result == end && errno == 0 &&
-      base::IsValueInRangeForNumericType<time_t>(strtoll_result)) {
-    *time = strtoll_result;
+  int64_t int64_result;
+  if (StringToNumber(string, &int64_result) &&
+      base::IsValueInRangeForNumericType<time_t>(int64_result)) {
+    *out_time = int64_result;
     return true;
   }
 
   return false;
 }
 
-// Converts |time_tt| to a string, and returns it. |utc| determines whether the
-// converted time will reference local time or UTC. If |time_tt| is 0, the
+// Converts |out_time| to a string, and returns it. |utc| determines whether the
+// converted time will reference local time or UTC. If |out_time| is 0, the
 // string "never" will be returned as a special case.
-std::string TimeToString(time_t time_tt, bool utc) {
-  if (time_tt == 0) {
+std::string TimeToString(time_t out_time, bool utc) {
+  if (out_time == 0) {
     return std::string("never");
   }
 
   tm time_tm;
   if (utc) {
-    gmtime_r(&time_tt, &time_tm);
+    PCHECK(gmtime_r(&out_time, &time_tm));
   } else {
-    localtime_r(&time_tt, &time_tm);
+    PCHECK(localtime_r(&out_time, &time_tm));
   }
 
   char string[64];
   CHECK_NE(
-      strftime(string, arraysize(string), "%Y-%m-%d %H:%M:%S %Z", &time_tm),
+      strftime(string, base::size(string), "%Y-%m-%d %H:%M:%S %Z", &time_tm),
       0u);
 
   return std::string(string);
@@ -274,7 +294,7 @@ int DatabaseUtilMain(int argc, char* argv[]) {
     kOptionVersion = -3,
   };
 
-  const option long_options[] = {
+  static constexpr option long_options[] = {
       {"create", no_argument, nullptr, kOptionCreate},
       {"database", required_argument, nullptr, kOptionDatabase},
       {"show-client-id", no_argument, nullptr, kOptionShowClientID},
@@ -540,13 +560,21 @@ int DatabaseUtilMain(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
+  bool used_stdin = false;
   for (const base::FilePath new_report_path : options.new_report_paths) {
     std::unique_ptr<FileReaderInterface> file_reader;
 
-    bool is_stdin = false;
     if (new_report_path.value() == FILE_PATH_LITERAL("-")) {
-      is_stdin = true;
-      file_reader.reset(new WeakStdioFileReader(stdin));
+      if (used_stdin) {
+        fprintf(stderr,
+                "%" PRFilePath
+                ": Only one --new-report may be read from standard input\n",
+                me.value().c_str());
+        return EXIT_FAILURE;
+      }
+      used_stdin = true;
+      file_reader.reset(new WeakFileHandleFileReader(
+          StdioFileHandle(StdioStream::kStandardInput)));
     } else {
       std::unique_ptr<FileReader> file_path_reader(new FileReader());
       if (!file_path_reader->Open(new_report_path)) {
@@ -556,15 +584,12 @@ int DatabaseUtilMain(int argc, char* argv[]) {
       file_reader = std::move(file_path_reader);
     }
 
-    CrashReportDatabase::NewReport* new_report;
+    std::unique_ptr<CrashReportDatabase::NewReport> new_report;
     CrashReportDatabase::OperationStatus status =
         database->PrepareNewCrashReport(&new_report);
     if (status != CrashReportDatabase::kNoError) {
       return EXIT_FAILURE;
     }
-
-    CrashReportDatabase::CallErrorWritingCrashReport
-        call_error_writing_crash_report(database.get(), new_report);
 
     char buf[4096];
     FileOperationResult read_result;
@@ -573,25 +598,15 @@ int DatabaseUtilMain(int argc, char* argv[]) {
       if (read_result < 0) {
         return EXIT_FAILURE;
       }
-      if (read_result > 0 &&
-          !LoggingWriteFile(new_report->handle, buf, read_result)) {
+      if (read_result > 0 && !new_report->Writer()->Write(buf, read_result)) {
         return EXIT_FAILURE;
       }
-    } while (read_result == sizeof(buf));
-
-    call_error_writing_crash_report.Disarm();
+    } while (read_result > 0);
 
     UUID uuid;
-    status = database->FinishedWritingCrashReport(new_report, &uuid);
+    status = database->FinishedWritingCrashReport(std::move(new_report), &uuid);
     if (status != CrashReportDatabase::kNoError) {
       return EXIT_FAILURE;
-    }
-
-    file_reader.reset();
-    if (is_stdin) {
-      if (fclose(stdin) == EOF) {
-        STDIO_PLOG(ERROR) << "fclose";
-      }
     }
 
     const char* prefix = (show_operations > 1) ? "New report ID: " : "";

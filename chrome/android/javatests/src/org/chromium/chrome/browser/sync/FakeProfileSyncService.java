@@ -4,30 +4,53 @@
 
 package org.chromium.chrome.browser.sync;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /**
  * Fake some ProfileSyncService methods for testing.
  *
  * Only what has been needed for tests so far has been faked.
  */
 public class FakeProfileSyncService extends ProfileSyncService {
-
-    private boolean mBackendInitialized;
+    private boolean mEngineInitialized;
+    private int mNumberOfSyncedDevices;
+    private Set<Integer> mChosenTypes = new HashSet<>();
 
     public FakeProfileSyncService() {
         super();
     }
 
     @Override
-    public boolean isBackendInitialized() {
-        return mBackendInitialized;
+    public boolean isEngineInitialized() {
+        return mEngineInitialized;
     }
 
-    public void setSyncInitialized(boolean syncInitialized) {
-        mBackendInitialized = syncInitialized;
+    public void setEngineInitialized(boolean engineInitialized) {
+        mEngineInitialized = engineInitialized;
     }
 
     @Override
     public boolean isUsingSecondaryPassphrase() {
         return true;
+    }
+
+    @Override
+    public int getNumberOfSyncedDevices() {
+        return mNumberOfSyncedDevices;
+    }
+
+    public void setNumberOfSyncedDevices(int numDevices) {
+        mNumberOfSyncedDevices = numDevices;
+    }
+
+    @Override
+    public void setChosenDataTypes(boolean syncEverything, Set<Integer> enabledTypes) {
+        mChosenTypes = enabledTypes;
+    }
+
+    @Override
+    public Set<Integer> getPreferredDataTypes() {
+        return mChosenTypes;
     }
 }

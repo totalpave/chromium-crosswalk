@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.tabmodel;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.os.AsyncTask;
 import android.os.Build;
 import android.os.StrictMode;
 import android.util.Pair;
@@ -19,20 +18,21 @@ import org.chromium.base.ObserverList;
 import org.chromium.base.StreamUtil;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.VisibleForTesting;
-import org.chromium.chrome.browser.ChromeApplication;
-import org.chromium.chrome.browser.TabState;
+import org.chromium.base.task.AsyncTask;
 import org.chromium.chrome.browser.document.DocumentActivity;
 import org.chromium.chrome.browser.document.DocumentUtils;
 import org.chromium.chrome.browser.document.IncognitoDocumentActivity;
 import org.chromium.chrome.browser.incognito.IncognitoNotificationManager;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore.TabModelMetadata;
 import org.chromium.chrome.browser.tabmodel.document.ActivityDelegate;
 import org.chromium.chrome.browser.tabmodel.document.ActivityDelegateImpl;
 import org.chromium.chrome.browser.tabmodel.document.DocumentTabModel;
 import org.chromium.chrome.browser.tabmodel.document.DocumentTabModelImpl;
+import org.chromium.chrome.browser.tabmodel.document.DocumentTabModelSelector;
 import org.chromium.chrome.browser.tabmodel.document.StorageDelegate;
-import org.chromium.chrome.browser.toolbar.TabSwitcherCallout;
+import org.chromium.chrome.browser.tabmodel.document.TabDelegate;
 import org.chromium.chrome.browser.util.FeatureUtilities;
 
 import java.io.File;
@@ -64,6 +64,23 @@ import java.util.Set;
  */
 @TargetApi(Build.VERSION_CODES.LOLLIPOP)
 public class DocumentModeAssassin {
+    private static DocumentTabModelSelector sDocumentTabModelSelector;
+
+    /**
+     * Returns the singleton instance of the DocumentTabModelSelector.
+     * @return The DocumentTabModelSelector for the application.
+     */
+    private static DocumentTabModelSelector getDocumentTabModelSelector() {
+        ThreadUtils.assertOnUiThread();
+        if (sDocumentTabModelSelector == null) {
+            ActivityDelegateImpl activityDelegate = new ActivityDelegateImpl(
+                    DocumentActivity.class, IncognitoDocumentActivity.class);
+            sDocumentTabModelSelector = new DocumentTabModelSelector(activityDelegate,
+                    new StorageDelegate(), new TabDelegate(false), new TabDelegate(true));
+        }
+        return sDocumentTabModelSelector;
+    }
+
     /** Alerted about progress along the migration pipeline. */
     public static class DocumentModeAssassinObserver {
         /**
@@ -106,10 +123,16 @@ public class DocumentModeAssassin {
     private static final int TAB_MODEL_INDEX = 0;
 
     /** SharedPreference values to determine whether user had document mode turned on. */
-    private static final String OPT_OUT_STATE = "opt_out_state";
+    static final String OPT_OUT_STATE = "opt_out_state";
     private static final int OPT_IN_TO_DOCUMENT_MODE = 0;
     private static final int OPT_OUT_STATE_UNSET = -1;
-    private static final int OPTED_OUT_OF_DOCUMENT_MODE = 2;
+    static final int OPTED_OUT_OF_DOCUMENT_MODE = 2;
+
+    /**
+     * Preference that denotes that Chrome has attempted to migrate from tabbed mode to document
+     * mode. Indicates that the user may be in document mode.
+     */
+    static final String MIGRATION_ON_UPGRADE_ATTEMPTED = "migration_on_upgrade_attempted";
 
     /**
      * Preference that denotes that Chrome has attempted to migrate from tabbed mode to document
@@ -192,9 +215,9 @@ public class DocumentModeAssassin {
         ThreadUtils.assertOnUiThread();
         if (!setStage(STAGE_INITIALIZED, STAGE_COPY_TAB_STATES_STARTED)) return;
 
-        new AsyncTask<Void, Void, Void>() {
+        new AsyncTask<Void>() {
             @Override
-            protected Void doInBackground(Void... params) {
+            protected Void doInBackground() {
                 File documentDirectory = getDocumentDataDirectory();
                 File tabbedDirectory = getTabbedDataDirectory();
 
@@ -275,7 +298,8 @@ public class DocumentModeAssassin {
                     }
                 }
             }
-        }.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
+        }
+                .executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
     }
 
 
@@ -310,7 +334,7 @@ public class DocumentModeAssassin {
         ThreadUtils.assertOnUiThread();
         if (!setStage(STAGE_COPY_TAB_STATES_DONE, STAGE_WRITE_TABMODEL_METADATA_STARTED)) return;
 
-        new AsyncTask<Void, Void, Boolean>() {
+        new AsyncTask<Boolean>() {
             private byte[] mSerializedMetadata;
 
             @Override
@@ -348,18 +372,21 @@ public class DocumentModeAssassin {
             }
 
             @Override
-            protected Boolean doInBackground(Void... params) {
+            protected Boolean doInBackground() {
                 if (mSerializedMetadata != null) {
                     // If an old tab state file still exists when we run migration in TPS, then it
                     // will overwrite the new tab state file that our document tabs migrated to.
                     File oldMetadataFile = new File(
-                            getTabbedDataDirectory(), TabPersistentStore.SAVED_STATE_FILE);
+                            getTabbedDataDirectory(),
+                            TabbedModeTabPersistencePolicy.LEGACY_SAVED_STATE_FILE);
                     if (oldMetadataFile.exists() && !oldMetadataFile.delete()) {
                         Log.e(TAG, "Failed to delete old tab state file: " + oldMetadataFile);
                     }
 
                     TabPersistentStore.saveListToFile(
-                            getTabbedDataDirectory(), TAB_MODEL_INDEX, mSerializedMetadata);
+                            getTabbedDataDirectory(),
+                            TabbedModeTabPersistencePolicy.getStateFileName(TAB_MODEL_INDEX),
+                            mSerializedMetadata);
                     return true;
                 } else {
                     return false;
@@ -372,7 +399,8 @@ public class DocumentModeAssassin {
                 Log.d(TAG, "Finished writing tabbed mode metadata file.");
                 setStage(STAGE_WRITE_TABMODEL_METADATA_STARTED, STAGE_WRITE_TABMODEL_METADATA_DONE);
             }
-        }.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
+        }
+                .executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
     }
 
     /** Moves the user to tabbed mode by opting them out and removing all the tasks. */
@@ -384,7 +412,6 @@ public class DocumentModeAssassin {
         // safely copied to the other directory.
         Log.d(TAG, "Setting tabbed mode preference.");
         setOptedOutState(OPTED_OUT_OF_DOCUMENT_MODE);
-        TabSwitcherCallout.setIsTabSwitcherCalloutNecessary(getContext(), true);
 
         // Remove all the {@link DocumentActivity} tasks from Android's Recents list.  Users
         // viewing Recents during migration will continue to see their tabs until they exit.
@@ -403,9 +430,9 @@ public class DocumentModeAssassin {
         ThreadUtils.assertOnUiThread();
         if (!setStage(STAGE_CHANGE_SETTINGS_DONE, STAGE_DELETION_STARTED)) return;
 
-        new AsyncTask<Void, Void, Void>() {
+        new AsyncTask<Void>() {
             @Override
-            protected Void doInBackground(Void... params) {
+            protected Void doInBackground() {
                 Log.d(TAG, "Starting to delete document mode data.");
 
                 // Delete the old tab state directory.
@@ -425,7 +452,8 @@ public class DocumentModeAssassin {
                 Log.d(TAG, "Finished deleting document mode data.");
                 setStage(STAGE_DELETION_STARTED, STAGE_DONE);
             }
-        }.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
+        }
+                .executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
     }
 
     /**
@@ -551,7 +579,7 @@ public class DocumentModeAssassin {
 
     /** @return The {@link DocumentTabModelImpl} for regular tabs. */
     protected DocumentTabModel getNormalDocumentTabModel() {
-        return ChromeApplication.getDocumentTabModelSelector().getModel(false);
+        return getDocumentTabModelSelector().getModel(false);
     }
 
     /** @return Where document mode data is stored for the normal {@link DocumentTabModel}. */
@@ -561,7 +589,7 @@ public class DocumentModeAssassin {
 
     /** @return Where tabbed mode data is stored. */
     protected File getTabbedDataDirectory() {
-        return TabPersistentStore.getOrCreateStateDirectory();
+        return TabbedModeTabPersistencePolicy.getOrCreateTabbedModeStateDirectory();
     }
 
     /** @return True if the user is not in document mode. */
@@ -584,8 +612,8 @@ public class DocumentModeAssassin {
                 StrictMode.ThreadPolicy oldPolicy = StrictMode.allowThreadDiskReads();
                 try {
                     File newMetadataFile = new File(
-                            TabPersistentStore.getOrCreateStateDirectory(),
-                            TabPersistentStore.getStateFileName(TAB_MODEL_INDEX));
+                            TabbedModeTabPersistencePolicy.getOrCreateTabbedModeStateDirectory(),
+                            TabbedModeTabPersistencePolicy.getStateFileName(TAB_MODEL_INDEX));
                     newMetadataFileExists = newMetadataFile.exists();
                 } finally {
                     StrictMode.setThreadPolicy(oldPolicy);
@@ -613,4 +641,3 @@ public class DocumentModeAssassin {
         sharedPreferencesEditor.apply();
     }
 }
-

@@ -19,12 +19,9 @@
 #include "extensions/browser/extension_function.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
-class GPUFeatureChecker;
-class GURL;
-
-namespace chrome {
-class BitmapFetcher;
-}  // namespace chrome
+namespace content {
+class GpuFeatureChecker;
+}
 
 namespace extensions {
 
@@ -62,9 +59,10 @@ class WebstorePrivateBeginInstallWithManifest3Function
   ExtensionFunction::ResponseAction Run() override;
 
   // WebstoreInstallHelper::Delegate:
-  void OnWebstoreParseSuccess(const std::string& id,
-                              const SkBitmap& icon,
-                              base::DictionaryValue* parsed_manifest) override;
+  void OnWebstoreParseSuccess(
+      const std::string& id,
+      const SkBitmap& icon,
+      std::unique_ptr<base::DictionaryValue> parsed_manifest) override;
   void OnWebstoreParseFailure(const std::string& id,
                               InstallHelperResultCode result,
                               const std::string& error_message) override;
@@ -212,7 +210,7 @@ class WebstorePrivateGetWebGLStatusFunction
 
   void OnFeatureCheck(bool feature_allowed);
 
-  scoped_refptr<GPUFeatureChecker> feature_checker_;
+  scoped_refptr<content::GpuFeatureChecker> feature_checker_;
 };
 
 class WebstorePrivateGetIsLauncherEnabledFunction
@@ -286,6 +284,44 @@ class WebstorePrivateGetEphemeralAppsEnabledFunction
 
   // ExtensionFunction:
   ExtensionFunction::ResponseAction Run() override;
+};
+
+class WebstorePrivateIsPendingCustodianApprovalFunction
+    : public UIThreadExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("webstorePrivate.isPendingCustodianApproval",
+                             WEBSTOREPRIVATE_ISPENDINGCUSTODIANAPPROVAL)
+
+  WebstorePrivateIsPendingCustodianApprovalFunction();
+
+ private:
+  ~WebstorePrivateIsPendingCustodianApprovalFunction() override;
+
+  // ExtensionFunction:
+  ExtensionFunction::ResponseAction Run() override;
+
+  ExtensionFunction::ResponseValue BuildResponse(bool result);
+
+  ChromeExtensionFunctionDetails chrome_details_;
+};
+
+class WebstorePrivateGetReferrerChainFunction
+    : public UIThreadExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("webstorePrivate.getReferrerChain",
+                             WEBSTOREPRIVATE_GETREFERRERCHAIN)
+
+  WebstorePrivateGetReferrerChainFunction();
+
+ private:
+  ~WebstorePrivateGetReferrerChainFunction() override;
+
+  // ExtensionFunction:
+  ExtensionFunction::ResponseAction Run() override;
+
+  ChromeExtensionFunctionDetails chrome_details_;
+
+  DISALLOW_COPY_AND_ASSIGN(WebstorePrivateGetReferrerChainFunction);
 };
 
 }  // namespace extensions

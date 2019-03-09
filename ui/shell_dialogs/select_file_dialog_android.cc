@@ -14,16 +14,20 @@
 #include "base/strings/utf_string_conversions.h"
 #include "jni/SelectFileDialog_jni.h"
 #include "ui/android/window_android.h"
+#include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 
 using base::android::ConvertJavaStringToUTF8;
+using base::android::JavaParamRef;
+using base::android::ScopedJavaLocalRef;
 
 namespace ui {
 
 // static
-SelectFileDialogImpl* SelectFileDialogImpl::Create(Listener* listener,
-                                                   SelectFilePolicy* policy) {
-  return new SelectFileDialogImpl(listener, policy);
+SelectFileDialogImpl* SelectFileDialogImpl::Create(
+    Listener* listener,
+    std::unique_ptr<SelectFilePolicy> policy) {
+  return new SelectFileDialogImpl(listener, std::move(policy));
 }
 
 void SelectFileDialogImpl::OnFileSelected(
@@ -59,13 +63,16 @@ void SelectFileDialogImpl::OnMultipleFilesSelected(
   jsize length = env->GetArrayLength(filepaths);
   DCHECK(length == env->GetArrayLength(display_names));
   for (int i = 0; i < length; ++i) {
-    std::string path = ConvertJavaStringToUTF8(
+    ScopedJavaLocalRef<jstring> path_ref(
         env, static_cast<jstring>(env->GetObjectArrayElement(filepaths, i)));
-    std::string display_name = ConvertJavaStringToUTF8(
+    base::FilePath file_path =
+        base::FilePath(ConvertJavaStringToUTF8(env, path_ref));
+
+    ScopedJavaLocalRef<jstring> display_name_ref(
         env,
         static_cast<jstring>(env->GetObjectArrayElement(display_names, i)));
-
-    base::FilePath file_path = base::FilePath(path);
+    std::string display_name =
+        ConvertJavaStringToUTF8(env, display_name_ref.obj());
 
     ui::SelectedFileInfo file_info;
     file_info.file_path = file_path;
@@ -83,6 +90,15 @@ void SelectFileDialogImpl::OnFileNotSelected(
     const JavaParamRef<jobject>& java_object) {
   if (listener_)
     listener_->FileSelectionCanceled(NULL);
+}
+
+void SelectFileDialogImpl::OnContactsSelected(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& java_object,
+    const JavaParamRef<jstring>& java_contacts) {
+  std::string data = ConvertJavaStringToUTF8(env, java_contacts.obj());
+  listener_->FileSelectedWithExtraInfo(ui::SelectedFileInfo(), 0,
+                                       (void*)data.c_str());
 }
 
 bool SelectFileDialogImpl::IsRunning(gfx::NativeWindow) const {
@@ -118,23 +134,18 @@ void SelectFileDialogImpl::SelectFileImpl(
 
   bool accept_multiple_files = SelectFileDialog::SELECT_OPEN_MULTI_FILE == type;
 
-  Java_SelectFileDialog_selectFile(env, java_object_.obj(),
-                                   accept_types_java.obj(),
-                                   accept_types.second,
-                                   accept_multiple_files,
-                                   owning_window->GetJavaObject().obj());
-}
-
-bool SelectFileDialogImpl::RegisterSelectFileDialog(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+  Java_SelectFileDialog_selectFile(env, java_object_, accept_types_java,
+                                   accept_types.second, accept_multiple_files,
+                                   owning_window->GetJavaObject());
 }
 
 SelectFileDialogImpl::~SelectFileDialogImpl() {
 }
 
-SelectFileDialogImpl::SelectFileDialogImpl(Listener* listener,
-                                           SelectFilePolicy* policy)
-    : SelectFileDialog(listener, policy) {
+SelectFileDialogImpl::SelectFileDialogImpl(
+    Listener* listener,
+    std::unique_ptr<SelectFilePolicy> policy)
+    : SelectFileDialog(listener, std::move(policy)) {
   JNIEnv* env = base::android::AttachCurrentThread();
   java_object_.Reset(
       Java_SelectFileDialog_create(env, reinterpret_cast<intptr_t>(this)));
@@ -145,9 +156,10 @@ bool SelectFileDialogImpl::HasMultipleFileTypeChoicesImpl() {
   return false;
 }
 
-SelectFileDialog* CreateSelectFileDialog(SelectFileDialog::Listener* listener,
-                                         SelectFilePolicy* policy) {
-  return SelectFileDialogImpl::Create(listener, policy);
+SelectFileDialog* CreateSelectFileDialog(
+    SelectFileDialog::Listener* listener,
+    std::unique_ptr<SelectFilePolicy> policy) {
+  return SelectFileDialogImpl::Create(listener, std::move(policy));
 }
 
 }  // namespace ui

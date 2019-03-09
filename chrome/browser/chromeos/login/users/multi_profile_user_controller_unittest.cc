@@ -8,15 +8,16 @@
 
 #include <memory>
 
-#include "base/macros.h"
+#include "base/bind.h"
+#include "base/memory/ptr_util.h"
+#include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/chromeos/login/users/multi_profile_user_controller_delegate.h"
-#include "chrome/browser/chromeos/login/users/scoped_user_manager_enabler.h"
 #include "chrome/browser/chromeos/policy/policy_cert_service.h"
 #include "chrome/browser/chromeos/policy/policy_cert_service_factory.h"
-#include "chrome/browser/chromeos/policy/policy_cert_verifier.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/common/pref_names.h"
@@ -24,19 +25,22 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
+#include "net/cert/cert_verify_proc.h"
 #include "net/cert/x509_certificate.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/test_data_directory.h"
+#include "services/network/cert_verifier_with_trust_anchors.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
 
 namespace {
 
-const char* const kUsers[] = {"a@gmail.com", "b@gmail.com" };
+const char* const kUsers[] = {"a@gmail.com", "b@gmail.com"};
 
 struct BehaviorTestCase {
   const char* primary;
@@ -49,62 +53,65 @@ struct BehaviorTestCase {
 
 const BehaviorTestCase kBehaviorTestCases[] = {
     {
-     MultiProfileUserController::kBehaviorUnrestricted,
-     MultiProfileUserController::kBehaviorUnrestricted,
-     MultiProfileUserController::ALLOWED, MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::kBehaviorUnrestricted,
+        MultiProfileUserController::kBehaviorUnrestricted,
+        MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::ALLOWED,
     },
     {
-     MultiProfileUserController::kBehaviorUnrestricted,
-     MultiProfileUserController::kBehaviorPrimaryOnly,
-     MultiProfileUserController::ALLOWED,
-     MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
+        MultiProfileUserController::kBehaviorUnrestricted,
+        MultiProfileUserController::kBehaviorPrimaryOnly,
+        MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
     },
     {
-     MultiProfileUserController::kBehaviorUnrestricted,
-     MultiProfileUserController::kBehaviorNotAllowed,
-     MultiProfileUserController::ALLOWED,
-     MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
+        MultiProfileUserController::kBehaviorUnrestricted,
+        MultiProfileUserController::kBehaviorNotAllowed,
+        MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
     },
     {
-     MultiProfileUserController::kBehaviorPrimaryOnly,
-     MultiProfileUserController::kBehaviorUnrestricted,
-     MultiProfileUserController::ALLOWED, MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::kBehaviorPrimaryOnly,
+        MultiProfileUserController::kBehaviorUnrestricted,
+        MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::ALLOWED,
     },
     {
-     MultiProfileUserController::kBehaviorPrimaryOnly,
-     MultiProfileUserController::kBehaviorPrimaryOnly,
-     MultiProfileUserController::ALLOWED,
-     MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
+        MultiProfileUserController::kBehaviorPrimaryOnly,
+        MultiProfileUserController::kBehaviorPrimaryOnly,
+        MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
     },
     {
-     MultiProfileUserController::kBehaviorPrimaryOnly,
-     MultiProfileUserController::kBehaviorNotAllowed,
-     MultiProfileUserController::ALLOWED,
-     MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
+        MultiProfileUserController::kBehaviorPrimaryOnly,
+        MultiProfileUserController::kBehaviorNotAllowed,
+        MultiProfileUserController::ALLOWED,
+        MultiProfileUserController::NOT_ALLOWED_POLICY_FORBIDS,
     },
     {
-     MultiProfileUserController::kBehaviorNotAllowed,
-     MultiProfileUserController::kBehaviorUnrestricted,
-     MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
-     MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
+        MultiProfileUserController::kBehaviorNotAllowed,
+        MultiProfileUserController::kBehaviorUnrestricted,
+        MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
+        MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
     },
     {
-     MultiProfileUserController::kBehaviorNotAllowed,
-     MultiProfileUserController::kBehaviorPrimaryOnly,
-     MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
-     MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
+        MultiProfileUserController::kBehaviorNotAllowed,
+        MultiProfileUserController::kBehaviorPrimaryOnly,
+        MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
+        MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
     },
     {
-     MultiProfileUserController::kBehaviorNotAllowed,
-     MultiProfileUserController::kBehaviorNotAllowed,
-     MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
-     MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
+        MultiProfileUserController::kBehaviorNotAllowed,
+        MultiProfileUserController::kBehaviorNotAllowed,
+        MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
+        MultiProfileUserController::NOT_ALLOWED_PRIMARY_USER_POLICY_FORBIDS,
     },
 };
 
-// Weak ptr to PolicyCertVerifier - object is freed in test destructor once
-// we've ensured the profile has been shut down.
-policy::PolicyCertVerifier* g_policy_cert_verifier_for_factory = NULL;
+// Weak ptr to network::CertVerifierWithTrustAnchors - object is freed in test
+// destructor once we've ensured the profile has been shut down.
+network::CertVerifierWithTrustAnchors* g_policy_cert_verifier_for_factory =
+    NULL;
 
 std::unique_ptr<KeyedService> TestPolicyCertServiceFactory(
     content::BrowserContext* context) {
@@ -112,6 +119,28 @@ std::unique_ptr<KeyedService> TestPolicyCertServiceFactory(
       kUsers[0], g_policy_cert_verifier_for_factory,
       user_manager::UserManager::Get());
 }
+
+class MockCertVerifyProc : public net::CertVerifyProc {
+ public:
+  MockCertVerifyProc() = default;
+
+  // net::CertVerifyProc implementation
+  bool SupportsAdditionalTrustAnchors() const override { return true; }
+
+ protected:
+  ~MockCertVerifyProc() override = default;
+
+ private:
+  int VerifyInternal(net::X509Certificate* cert,
+                     const std::string& hostname,
+                     const std::string& ocsp_response,
+                     int flags,
+                     net::CRLSet* crl_set,
+                     const net::CertificateList& additional_trust_anchors,
+                     net::CertVerifyResult* result) override {
+    return net::ERR_FAILED;
+  }
+};
 
 }  // namespace
 
@@ -121,9 +150,9 @@ class MultiProfileUserControllerTest
  public:
   MultiProfileUserControllerTest()
       : fake_user_manager_(new FakeChromeUserManager),
-        user_manager_enabler_(fake_user_manager_),
+        user_manager_enabler_(base::WrapUnique(fake_user_manager_)),
         user_not_allowed_count_(0) {
-    for (size_t i = 0; i < arraysize(kUsers); ++i) {
+    for (size_t i = 0; i < base::size(kUsers); ++i) {
       test_users_.push_back(AccountId::FromUserEmail(kUsers[i]));
     }
   }
@@ -154,13 +183,13 @@ class MultiProfileUserControllerTest
   }
 
   void TearDown() override {
-    // Clear our cached pointer to the PolicyCertVerifier.
+    // Clear our cached pointer to the network::CertVerifierWithTrustAnchors.
     g_policy_cert_verifier_for_factory = NULL;
 
-    // We must ensure that the PolicyCertVerifier outlives the
-    // PolicyCertService so shutdown the profile here. Additionally, we need
+    // We must ensure that the network::CertVerifierWithTrustAnchors outlives
+    // the PolicyCertService so shutdown the profile here. Additionally, we need
     // to run the message loop between freeing the PolicyCertService and
-    // freeing the PolicyCertVerifier (see
+    // freeing the network::CertVerifierWithTrustAnchors (see
     // PolicyCertService::OnTrustAnchorsChanged() which is called from
     // PolicyCertService::Shutdown()).
     controller_.reset();
@@ -183,23 +212,20 @@ class MultiProfileUserControllerTest
   }
 
   void SetPrefBehavior(size_t user_index, const std::string& behavior) {
-    GetUserPrefs(user_index)->SetString(prefs::kMultiProfileUserBehavior,
-                                        behavior);
+    GetUserPrefs(user_index)
+        ->SetString(prefs::kMultiProfileUserBehavior, behavior);
   }
 
   std::string GetCachedBehavior(size_t user_index) {
     return controller_->GetCachedValue(test_users_[user_index].GetUserEmail());
   }
 
-  void SetCachedBehavior(size_t user_index,
-                         const std::string& behavior) {
+  void SetCachedBehavior(size_t user_index, const std::string& behavior) {
     controller_->SetCachedValue(test_users_[user_index].GetUserEmail(),
                                 behavior);
   }
 
-  void ResetCounts() {
-    user_not_allowed_count_ = 0;
-  }
+  void ResetCounts() { user_not_allowed_count_ = 0; }
 
   // MultiProfileUserControllerDeleagte overrides:
   void OnUserNotAllowed(const std::string& user_email) override {
@@ -209,15 +235,13 @@ class MultiProfileUserControllerTest
   MultiProfileUserController* controller() { return controller_.get(); }
   int user_not_allowed_count() const { return user_not_allowed_count_; }
 
-  TestingProfile* profile(int index) {
-    return user_profiles_[index];
-  }
+  TestingProfile* profile(int index) { return user_profiles_[index]; }
 
   content::TestBrowserThreadBundle threads_;
-  std::unique_ptr<policy::PolicyCertVerifier> cert_verifier_;
+  std::unique_ptr<network::CertVerifierWithTrustAnchors> cert_verifier_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   FakeChromeUserManager* fake_user_manager_;  // Not owned
-  ScopedUserManagerEnabler user_manager_enabler_;
+  user_manager::ScopedUserManager user_manager_enabler_;
 
   std::unique_ptr<MultiProfileUserController> controller_;
 
@@ -234,11 +258,11 @@ class MultiProfileUserControllerTest
 // Tests that everyone is allowed before a session starts.
 TEST_F(MultiProfileUserControllerTest, AllAllowedBeforeLogin) {
   const char* const kTestCases[] = {
-    MultiProfileUserController::kBehaviorUnrestricted,
-    MultiProfileUserController::kBehaviorPrimaryOnly,
-    MultiProfileUserController::kBehaviorNotAllowed,
+      MultiProfileUserController::kBehaviorUnrestricted,
+      MultiProfileUserController::kBehaviorPrimaryOnly,
+      MultiProfileUserController::kBehaviorNotAllowed,
   };
-  for (size_t i = 0; i < arraysize(kTestCases); ++i) {
+  for (size_t i = 0; i < base::size(kTestCases); ++i) {
     SetCachedBehavior(0, kTestCases[i]);
     MultiProfileUserController::UserAllowedInSessionReason reason;
     EXPECT_TRUE(controller()->IsUserAllowedInSession(
@@ -264,12 +288,12 @@ TEST_F(MultiProfileUserControllerTest, CachedBehaviorUpdate) {
   LoginUser(0);
 
   const char* const kTestCases[] = {
-    MultiProfileUserController::kBehaviorUnrestricted,
-    MultiProfileUserController::kBehaviorPrimaryOnly,
-    MultiProfileUserController::kBehaviorNotAllowed,
-    MultiProfileUserController::kBehaviorUnrestricted,
+      MultiProfileUserController::kBehaviorUnrestricted,
+      MultiProfileUserController::kBehaviorPrimaryOnly,
+      MultiProfileUserController::kBehaviorNotAllowed,
+      MultiProfileUserController::kBehaviorUnrestricted,
   };
-  for (size_t i = 0; i < arraysize(kTestCases); ++i) {
+  for (size_t i = 0; i < base::size(kTestCases); ++i) {
     SetPrefBehavior(0, kTestCases[i]);
     EXPECT_EQ(kTestCases[i], GetCachedBehavior(0));
   }
@@ -301,7 +325,7 @@ TEST_F(MultiProfileUserControllerTest, CompromisedCacheFixedOnLogin) {
 TEST_F(MultiProfileUserControllerTest, IsSecondaryAllowed) {
   LoginUser(0);
 
-  for (size_t i = 0; i < arraysize(kBehaviorTestCases); ++i) {
+  for (size_t i = 0; i < base::size(kBehaviorTestCases); ++i) {
     SetPrefBehavior(0, kBehaviorTestCases[i].primary);
     SetCachedBehavior(1, kBehaviorTestCases[i].secondary);
     EXPECT_EQ(kBehaviorTestCases[i].expected_primary_policy,
@@ -320,7 +344,7 @@ TEST_F(MultiProfileUserControllerTest, PrimaryBehaviorChange) {
   LoginUser(0);
   LoginUser(1);
 
-  for (size_t i = 0; i < arraysize(kBehaviorTestCases); ++i) {
+  for (size_t i = 0; i < base::size(kBehaviorTestCases); ++i) {
     SetPrefBehavior(0, MultiProfileUserController::kBehaviorUnrestricted);
     SetPrefBehavior(1, MultiProfileUserController::kBehaviorUnrestricted);
     ResetCounts();
@@ -387,11 +411,14 @@ TEST_F(MultiProfileUserControllerTest,
       test_users_[0].GetUserEmail());
   LoginUser(0);
 
-  cert_verifier_.reset(new policy::PolicyCertVerifier(base::Closure()));
+  cert_verifier_.reset(
+      new network::CertVerifierWithTrustAnchors(base::Closure()));
+  cert_verifier_->InitializeOnIOThread(
+      base::MakeRefCounted<MockCertVerifyProc>());
   g_policy_cert_verifier_for_factory = cert_verifier_.get();
   ASSERT_TRUE(
       policy::PolicyCertServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-          profile(0), TestPolicyCertServiceFactory));
+          profile(0), base::BindRepeating(&TestPolicyCertServiceFactory)));
 
   MultiProfileUserController::UserAllowedInSessionReason reason;
   EXPECT_FALSE(controller()->IsUserAllowedInSession(
@@ -423,11 +450,14 @@ TEST_F(MultiProfileUserControllerTest,
   // changed back to enabled.
   SetPrefBehavior(0, MultiProfileUserController::kBehaviorUnrestricted);
 
-  cert_verifier_.reset(new policy::PolicyCertVerifier(base::Closure()));
+  cert_verifier_.reset(
+      new network::CertVerifierWithTrustAnchors(base::Closure()));
+  cert_verifier_->InitializeOnIOThread(
+      base::MakeRefCounted<MockCertVerifyProc>());
   g_policy_cert_verifier_for_factory = cert_verifier_.get();
   ASSERT_TRUE(
       policy::PolicyCertServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-          profile(0), TestPolicyCertServiceFactory));
+          profile(0), base::BindRepeating(&TestPolicyCertServiceFactory)));
   policy::PolicyCertService* service =
       policy::PolicyCertServiceFactory::GetForProfile(profile(0));
   ASSERT_TRUE(service);
@@ -443,7 +473,9 @@ TEST_F(MultiProfileUserControllerTest,
   net::CertificateList certificates;
   certificates.push_back(
       net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem"));
-  service->OnTrustAnchorsChanged(certificates);
+  service->OnPolicyProvidedCertsChanged(
+      certificates /* all_server_and_authority_certs */,
+      certificates /* trust_anchors */);
   EXPECT_TRUE(service->has_policy_certificates());
   EXPECT_FALSE(controller()->IsUserAllowedInSession(
       test_users_[1].GetUserEmail(), &reason));

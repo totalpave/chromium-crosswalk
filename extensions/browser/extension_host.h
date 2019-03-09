@@ -8,13 +8,14 @@
 #include <stdint.h>
 
 #include <memory>
-#include <set>
 #include <string>
+#include <unordered_map>
 
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "base/timer/elapsed_timer.h"
+#include "content/public/browser/media_stream_request.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "extensions/browser/deferred_start_render_host.h"
@@ -23,12 +24,9 @@
 #include "extensions/common/stack_frame.h"
 #include "extensions/common/view_type.h"
 
-class PrefsTabHelper;
-
 namespace content {
 class BrowserContext;
 class RenderProcessHost;
-class RenderWidgetHostView;
 class SiteInstance;
 }
 
@@ -37,7 +35,6 @@ class Extension;
 class ExtensionHostDelegate;
 class ExtensionHostObserver;
 class ExtensionHostQueue;
-class WindowController;
 
 // This class is the browser component of an extension component's RenderView.
 // It handles setting up the renderer process, if needed, with special
@@ -57,7 +54,9 @@ class ExtensionHost : public DeferredStartRenderHost,
                 const GURL& url, ViewType host_type);
   ~ExtensionHost() override;
 
+  // This may be null if the extension has been or is being unloaded.
   const Extension* extension() const { return extension_; }
+
   const std::string& extension_id() const { return extension_id_; }
   content::WebContents* host_contents() const { return host_contents_.get(); }
   content::RenderViewHost* render_view_host() const;
@@ -115,7 +114,7 @@ class ExtensionHost : public DeferredStartRenderHost,
   content::JavaScriptDialogManager* GetJavaScriptDialogManager(
       content::WebContents* source) override;
   void AddNewContents(content::WebContents* source,
-                      content::WebContents* new_contents,
+                      std::unique_ptr<content::WebContents> new_contents,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
                       bool user_gesture,
@@ -124,18 +123,22 @@ class ExtensionHost : public DeferredStartRenderHost,
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
-      const content::MediaResponseCallback& callback) override;
-  bool CheckMediaAccessPermission(content::WebContents* web_contents,
+      content::MediaResponseCallback callback) override;
+  bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  content::MediaStreamType type) override;
+                                  blink::MediaStreamType type) override;
   bool IsNeverVisible(content::WebContents* web_contents) override;
+  gfx::Size EnterPictureInPicture(content::WebContents* web_contents,
+                                  const viz::SurfaceId& surface_id,
+                                  const gfx::Size& natural_size) override;
+  void ExitPictureInPicture() override;
 
   // ExtensionRegistryObserver:
   void OnExtensionReady(content::BrowserContext* browser_context,
                         const Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
  protected:
   // Called each time this ExtensionHost completes a load finishes loading,
@@ -199,7 +202,8 @@ class ExtensionHost : public DeferredStartRenderHost,
   GURL initial_url_;
 
   // Messages sent out to the renderer that have not been acknowledged yet.
-  std::set<int> unacked_messages_;
+  // Maps event ID to event name.
+  std::unordered_map<int, std::string> unacked_messages_;
 
   // The type of view being hosted.
   ViewType extension_host_type_;
@@ -215,8 +219,8 @@ class ExtensionHost : public DeferredStartRenderHost,
   // started only once the ExtensionHost has exited the ExtensionHostQueue.
   std::unique_ptr<base::ElapsedTimer> load_start_;
 
-  base::ObserverList<ExtensionHostObserver> observer_list_;
-  base::ObserverList<DeferredStartRenderHostObserver>
+  base::ObserverList<ExtensionHostObserver>::Unchecked observer_list_;
+  base::ObserverList<DeferredStartRenderHostObserver>::Unchecked
       deferred_start_render_host_observer_list_;
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionHost);

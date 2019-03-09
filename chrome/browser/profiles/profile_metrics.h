@@ -45,6 +45,14 @@ class ProfileMetrics {
     DELETE_PROFILE_USER_MANAGER_SHOW_WARNING,
     // Show the delete profile warning in the Settings page.
     DELETE_PROFILE_SETTINGS_SHOW_WARNING,
+    // Aborts profile deletion in an OnBeforeUnload event in any browser tab.
+    DELETE_PROFILE_ABORTED,
+    // Commented out as it is not used anymore (kept in the enum as it was used
+    // as a bucket in a histogram).
+    // DELETE_PROFILE_DICE_WEB_SIGNOUT
+    // Delete profile internally when Chrome signout is prohibited and the
+    // username is no longer allowed.
+    DELETE_PROFILE_PRIMARY_ACCOUNT_NOT_ALLOWED = DELETE_PROFILE_ABORTED + 2,
     NUM_DELETE_PROFILE_METRICS
   };
 
@@ -60,6 +68,7 @@ class ProfileMetrics {
     SWITCH_PROFILE_UNLOCK,   // User switches to locked profile via User Manager
     SWITCH_PROFILE_GUEST,    // User switches to guest profile
     SWITCH_PROFILE_CONTEXT_MENU,  // User switches profiles from context menu
+    SWITCH_PROFILE_DUPLICATE,     // User switches to existing duplicate profile
     NUM_PROFILE_OPEN_METRICS
   };
 
@@ -157,46 +166,6 @@ class ProfileMetrics {
   };
 #endif  // defined(OS_ANDROID)
 
-  // Enum for tracking user interactions with the 'Not You?' bubble that users
-  // can navigate to from the Upgrade bubble after upgrade.
-  enum ProfileNewAvatarMenuNotYou {
-    // User views the 'Not You?' bubble.
-    PROFILE_AVATAR_MENU_NOT_YOU_VIEW = 0,
-    // User selects back from within the 'Not You?' bubble.
-    PROFILE_AVATAR_MENU_NOT_YOU_BACK,
-    // User adds a person from within the 'Not You?' bubble.
-    PROFILE_AVATAR_MENU_NOT_YOU_ADD_PERSON,
-    // User chooses to disconnect (sign out) from within the 'Not You?' bubble.
-    PROFILE_AVATAR_MENU_NOT_YOU_DISCONNECT,
-    NUM_PROFILE_AVATAR_MENU_NOT_YOU_METRICS,
-  };
-
-  // Enum for tracking user interactions with the signin bubble that appears
-  // in the New Avatar Menu after using the Inline Signin flow.
-  enum ProfileNewAvatarMenuSignin {
-    // User viewed the signin bubble after successfully using the inline signin.
-    PROFILE_AVATAR_MENU_SIGNIN_VIEW = 0,
-    // User selected ok to dismiss the signin bubble.
-    PROFILE_AVATAR_MENU_SIGNIN_OK,
-    // User opened the settings from the signin bubble.
-    PROFILE_AVATAR_MENU_SIGNIN_SETTINGS,
-    NUM_PROFILE_AVATAR_MENU_SIGNIN_METRICS,
-  };
-
-  // Enum for tracking user interactions with the bubble that appears for all
-  // users in the new avatar menu after upgrading.
-  enum ProfileNewAvatarMenuUpgrade {
-    // User views the upgrade bubble.
-    PROFILE_AVATAR_MENU_UPGRADE_VIEW = 0,
-    // User dismissed the upgrade bubble.
-    PROFILE_AVATAR_MENU_UPGRADE_DISMISS,
-    // User selects 'What's New' in the upgrade bubble.
-    PROFILE_AVATAR_MENU_UPGRADE_WHATS_NEW,
-    // User selects 'Not You?' in the upgrade bubble.
-    PROFILE_AVATAR_MENU_UPGRADE_NOT_YOU,
-    NUM_PROFILE_AVATAR_MENU_UPGRADE_METRICS,
-  };
-
   static void UpdateReportedProfilesStatistics(ProfileManager* manager);
   // Count and return summary information about the profiles currently in the
   // |manager|. This information is returned in the output variable |counts|.
@@ -228,10 +197,6 @@ class ProfileMetrics {
   static void LogProfileDesktopMenu(ProfileDesktopMenu metric,
                                     signin::GAIAServiceType gaia_service);
   static void LogProfileDelete(bool profile_was_signed_in);
-  static void LogProfileNewAvatarMenuNotYou(ProfileNewAvatarMenuNotYou metric);
-  static void LogProfileNewAvatarMenuSignin(ProfileNewAvatarMenuSignin metric);
-  static void LogProfileNewAvatarMenuUpgrade(
-      ProfileNewAvatarMenuUpgrade metric);
   static void LogTimeToOpenUserManager(const base::TimeDelta& time_to_open);
 
 #if defined(OS_ANDROID)
@@ -243,7 +208,6 @@ class ProfileMetrics {
   // These functions should only be called on the UI thread because they hook
   // into g_browser_process through a helper function.
   static void LogProfileLaunch(Profile* profile);
-  static void LogProfileSyncSignIn(const base::FilePath& profile_path);
   static void LogProfileUpdate(const base::FilePath& profile_path);
 };
 

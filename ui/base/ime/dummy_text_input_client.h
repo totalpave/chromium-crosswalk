@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "base/macros.h"
+#include "build/build_config.h"
 #include "ui/base/ime/text_input_client.h"
 
 namespace ui {
@@ -18,6 +19,8 @@ class DummyTextInputClient : public TextInputClient {
  public:
   DummyTextInputClient();
   explicit DummyTextInputClient(TextInputType text_input_type);
+  DummyTextInputClient(TextInputType text_input_type,
+                       TextInputMode text_input_mode);
   ~DummyTextInputClient() override;
 
   // Overriden from TextInputClient.
@@ -35,10 +38,11 @@ class DummyTextInputClient : public TextInputClient {
   bool GetCompositionCharacterBounds(uint32_t index,
                                      gfx::Rect* rect) const override;
   bool HasCompositionText() const override;
+  ui::TextInputClient::FocusReason GetFocusReason() const override;
   bool GetTextRange(gfx::Range* range) const override;
   bool GetCompositionTextRange(gfx::Range* range) const override;
-  bool GetSelectionRange(gfx::Range* range) const override;
-  bool SetSelectionRange(const gfx::Range& range) override;
+  bool GetEditableSelectionRange(gfx::Range* range) const override;
+  bool SetEditableSelectionRange(const gfx::Range& range) override;
   bool DeleteRange(const gfx::Range& range) override;
   bool GetTextFromRange(const gfx::Range& range,
                         base::string16* text) const override;
@@ -46,28 +50,42 @@ class DummyTextInputClient : public TextInputClient {
   bool ChangeTextDirectionAndLayoutAlignment(
       base::i18n::TextDirection direction) override;
   void ExtendSelectionAndDelete(size_t before, size_t after) override;
-  void EnsureCaretInRect(const gfx::Rect& rect) override;
+  void EnsureCaretNotInRect(const gfx::Rect& rect) override;
   bool IsTextEditCommandEnabled(TextEditCommand command) const override;
   void SetTextEditCommandForNextKeyEvent(TextEditCommand command) override;
+  ukm::SourceId GetClientSourceForMetrics() const override;
+  bool ShouldDoLearning() override;
+
+#if defined(OS_WIN)
+  // Overridden from ui::TextInputClient(Windows only):
+  void SetCompositionFromExistingText(
+      const gfx::Range& range,
+      const std::vector<ui::ImeTextSpan>& ui_ime_text_spans) override;
+#endif
 
   int insert_char_count() const { return insert_char_count_; }
   base::char16 last_insert_char() const { return last_insert_char_; }
-  int insert_text_count() const { return insert_text_count_; }
-  base::string16 last_insert_text() const { return last_insert_text_; }
-  int set_composition_count() const { return set_composition_count_; }
-  const CompositionText& last_composition() const { return last_composition_; }
+  const std::vector<base::string16>& insert_text_history() const {
+    return insert_text_history_;
+  }
+  const std::vector<CompositionText>& composition_history() const {
+    return composition_history_;
+  }
+  const std::vector<gfx::Range>& selection_history() const {
+    return selection_history_;
+  }
 
   TextInputType text_input_type_;
+  TextInputMode text_input_mode_;
 
   DISALLOW_COPY_AND_ASSIGN(DummyTextInputClient);
 
  private:
   int insert_char_count_;
-  int insert_text_count_;
-  int set_composition_count_;
   base::char16 last_insert_char_;
-  base::string16 last_insert_text_;
-  CompositionText last_composition_;
+  std::vector<base::string16> insert_text_history_;
+  std::vector<CompositionText> composition_history_;
+  std::vector<gfx::Range> selection_history_;
 };
 
 }  // namespace ui

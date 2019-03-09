@@ -4,21 +4,33 @@
 
 #include "components/autofill/content/browser/content_autofill_driver_factory.h"
 
+#include <memory>
+#include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/memory/ptr_util.h"
-#include "base/stl_util.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
-#include "components/autofill/core/browser/autofill_client.h"
 #include "components/autofill/core/browser/autofill_manager.h"
-#include "components/autofill/core/browser/form_structure.h"
-#include "components/autofill/core/common/autofill_switches.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "ipc/ipc_message_macros.h"
 
 namespace autofill {
+
+namespace {
+
+std::unique_ptr<AutofillDriver> CreateDriver(
+    content::RenderFrameHost* render_frame_host,
+    AutofillClient* client,
+    const std::string& app_locale,
+    AutofillManager::AutofillDownloadManagerState enable_download_manager,
+    AutofillProvider* provider) {
+  return std::make_unique<ContentAutofillDriver>(
+      render_frame_host, client, app_locale, enable_download_manager, provider);
+}
+
+}  // namespace
 
 const char ContentAutofillDriverFactory::
     kContentAutofillDriverFactoryWebContentsUserDataKey[] =
@@ -32,11 +44,21 @@ void ContentAutofillDriverFactory::CreateForWebContentsAndDelegate(
     AutofillClient* client,
     const std::string& app_locale,
     AutofillManager::AutofillDownloadManagerState enable_download_manager) {
+  CreateForWebContentsAndDelegate(contents, client, app_locale,
+                                  enable_download_manager, nullptr);
+}
+
+void ContentAutofillDriverFactory::CreateForWebContentsAndDelegate(
+    content::WebContents* contents,
+    AutofillClient* client,
+    const std::string& app_locale,
+    AutofillManager::AutofillDownloadManagerState enable_download_manager,
+    AutofillProvider* provider) {
   if (FromWebContents(contents))
     return;
 
-  auto new_factory = base::WrapUnique(new ContentAutofillDriverFactory(
-      contents, client, app_locale, enable_download_manager));
+  auto new_factory = std::make_unique<ContentAutofillDriverFactory>(
+      contents, client, app_locale, enable_download_manager, provider);
   const std::vector<content::RenderFrameHost*> frames =
       contents->GetAllFrames();
   for (content::RenderFrameHost* frame : frames) {
@@ -45,7 +67,7 @@ void ContentAutofillDriverFactory::CreateForWebContentsAndDelegate(
   }
 
   contents->SetUserData(kContentAutofillDriverFactoryWebContentsUserDataKey,
-                        new_factory.release());
+                        std::move(new_factory));
 }
 
 // static
@@ -57,8 +79,8 @@ ContentAutofillDriverFactory* ContentAutofillDriverFactory::FromWebContents(
 
 // static
 void ContentAutofillDriverFactory::BindAutofillDriver(
-    content::RenderFrameHost* render_frame_host,
-    mojom::AutofillDriverRequest request) {
+    mojom::AutofillDriverAssociatedRequest request,
+    content::RenderFrameHost* render_frame_host) {
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
   // We try to bind to the driver of this render frame host,
@@ -83,55 +105,54 @@ ContentAutofillDriverFactory::ContentAutofillDriverFactory(
     content::WebContents* web_contents,
     AutofillClient* client,
     const std::string& app_locale,
-    AutofillManager::AutofillDownloadManagerState enable_download_manager)
-    : content::WebContentsObserver(web_contents),
-      client_(client),
+    AutofillManager::AutofillDownloadManagerState enable_download_manager,
+    AutofillProvider* provider)
+    : AutofillDriverFactory(client),
+      content::WebContentsObserver(web_contents),
       app_locale_(app_locale),
-      enable_download_manager_(enable_download_manager) {}
+      enable_download_manager_(enable_download_manager),
+      provider_(provider) {}
 
 ContentAutofillDriver* ContentAutofillDriverFactory::DriverForFrame(
     content::RenderFrameHost* render_frame_host) {
-  auto mapping = frame_driver_map_.find(render_frame_host);
-  return mapping == frame_driver_map_.end() ? nullptr : mapping->second.get();
-}
-
-bool ContentAutofillDriverFactory::OnMessageReceived(
-    const IPC::Message& message,
-    content::RenderFrameHost* render_frame_host) {
-  return frame_driver_map_[render_frame_host]->HandleMessage(message);
+  // This cast is safe because AutofillDriverFactory::AddForKey is protected
+  // and always called with ContentAutofillDriver instances within
+  // ContentAutofillDriverFactory.
+  return static_cast<ContentAutofillDriver*>(DriverForKey(render_frame_host));
 }
 
 void ContentAutofillDriverFactory::RenderFrameCreated(
     content::RenderFrameHost* render_frame_host) {
-  auto insertion_result =
-      frame_driver_map_.insert(std::make_pair(render_frame_host, nullptr));
-  // This is called twice for the main frame.
-  if (insertion_result.second) {  // This was the first time.
-    insertion_result.first->second = base::WrapUnique(new ContentAutofillDriver(
-        render_frame_host, client_, app_locale_, enable_download_manager_));
-  }
+  AddForKey(render_frame_host,
+            base::Bind(CreateDriver, render_frame_host, client(), app_locale_,
+                       enable_download_manager_, provider_));
 }
 
 void ContentAutofillDriverFactory::RenderFrameDeleted(
     content::RenderFrameHost* render_frame_host) {
-  frame_driver_map_.erase(render_frame_host);
-}
-
-void ContentAutofillDriverFactory::DidNavigateAnyFrame(
-    content::RenderFrameHost* render_frame_host,
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
-  frame_driver_map_[render_frame_host]->DidNavigateFrame(details, params);
+  DeleteForKey(render_frame_host);
 }
 
 void ContentAutofillDriverFactory::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  if (navigation_handle->HasCommitted())
-    client_->HideAutofillPopup();
+  // For the purposes of this code, a navigation is not important if it has not
+  // committed yet or if it's in a subframe.
+  if (!navigation_handle->HasCommitted() ||
+      !navigation_handle->IsInMainFrame()) {
+    return;
+  }
+
+  // A main frame navigation has occured. We suppress the autofill popup and
+  // tell the autofill driver.
+  NavigationFinished();
+  DriverForFrame(navigation_handle->GetRenderFrameHost())
+      ->DidNavigateMainFrame(navigation_handle);
 }
 
-void ContentAutofillDriverFactory::WasHidden() {
-  client_->HideAutofillPopup();
+void ContentAutofillDriverFactory::OnVisibilityChanged(
+    content::Visibility visibility) {
+  if (visibility == content::Visibility::HIDDEN)
+    TabHidden();
 }
 
 }  // namespace autofill

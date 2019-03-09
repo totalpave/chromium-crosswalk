@@ -7,20 +7,21 @@
  */
 
 goog.provide('cvox.LibLouis');
-
+goog.provide('cvox.LibLouis.FormType');
 
 /**
  * Encapsulates a liblouis Native Client instance in the page.
  * @constructor
- * @param {string} nmfPath Path to .nmf file for the module.
+ * @param {string} wasmPath Path to .wasm file for the module.
  * @param {string=} opt_tablesDir Path to tables directory.
+ * @param {function(cvox.LibLouis)=} opt_loadCallback
  */
-cvox.LibLouis = function(nmfPath, opt_tablesDir) {
+cvox.LibLouis = function(wasmPath, opt_tablesDir, opt_loadCallback) {
   /**
-   * Path to .nmf file for the module.
+   * Path to .wasm file for the module.
    * @private {string}
    */
-  this.nmfPath_ = nmfPath;
+  this.wasmPath_ = wasmPath;
 
   /**
    * Path to translation tables.
@@ -28,12 +29,12 @@ cvox.LibLouis = function(nmfPath, opt_tablesDir) {
    */
   this.tablesDir_ = goog.isDef(opt_tablesDir) ? opt_tablesDir : null;
 
+
   /**
-   * Native Client <embed> element.
-   * {@code null} when no <embed> is attached to the DOM.
-   * @private {HTMLEmbedElement}
+   * Whether liblouis is loaded.
+   * @private {boolean}
    */
-  this.embedElement_ = null;
+  this.isLoaded_ = false;
 
   /**
    * Pending RPC callbacks. Maps from message IDs to callbacks.
@@ -46,6 +47,29 @@ cvox.LibLouis = function(nmfPath, opt_tablesDir) {
    * @private {number}
    */
   this.nextMessageId_ = 1;
+
+  this.worker_ = new Worker(this.wasmPath_);
+  this.worker_.addEventListener(
+      'message', goog.bind(this.onInstanceMessage_, this),
+      false /* useCapture */);
+  this.rpc_('load', {}, () => {
+    this.isLoaded_ = true;
+    opt_loadCallback && opt_loadCallback(this);
+  });
+};
+
+
+/**
+ * Constants taken from liblouis.h.
+ * Controls braille indicator insertion during translation.
+ * @enum {number}
+ */
+cvox.LibLouis.FormType = {
+  PLAIN_TEXT: 0,
+  ITALIC: 1,
+  UNDERLINE: 2,
+  BOLD: 4,
+  COMPUTER_BRAILLE: 8
 };
 
 
@@ -55,59 +79,8 @@ cvox.LibLouis = function(nmfPath, opt_tablesDir) {
  */
 cvox.LibLouis.DEBUG = false;
 
-
-/**
- * Attaches the Native Client wrapper to the DOM as a child of the provided
- * element, assumed to already be in the document.
- * @param {!Element} elem Desired parent element of the instance.
- */
-cvox.LibLouis.prototype.attachToElement = function(elem) {
-  if (this.isAttached()) {
-    throw Error('Instance already attached');
-  }
-
-  var embed = document.createElement('embed');
-  embed.src = this.nmfPath_;
-  embed.type = 'application/x-nacl';
-  embed.width = 0;
-  embed.height = 0;
-  if (!goog.isNull(this.tablesDir_)) {
-    embed.setAttribute('tablesdir', this.tablesDir_);
-  }
-  embed.addEventListener('load', goog.bind(this.onInstanceLoad_, this),
-      false /* useCapture */);
-  embed.addEventListener('error', goog.bind(this.onInstanceError_, this),
-      false /* useCapture */);
-  embed.addEventListener('message', goog.bind(this.onInstanceMessage_, this),
-      false /* useCapture */);
-  elem.appendChild(embed);
-  this.embedElement_ = /** @type {!HTMLEmbedElement} */ (embed);
-};
-
-
-/**
- * Detaches the Native Client instance from the DOM.
- */
-cvox.LibLouis.prototype.detach = function() {
-  if (!this.isAttached()) {
-    throw Error('cannot detach unattached instance');
-  }
-
-  this.embedElement_.parentNode.removeChild(this.embedElement_);
-  this.embedElement_ = null;
-  for (var id in this.pendingRpcCallbacks_) {
-    this.pendingRpcCallbacks_[id]({});
-  }
-  this.pendingRpcCallbacks_ = {};
-};
-
-
-/**
- * Determines whether the Native Client instance is attached.
- * @return {boolean} {@code true} if the <embed> element is attached to the DOM.
- */
-cvox.LibLouis.prototype.isAttached = function() {
-  return this.embedElement_ !== null;
+cvox.LibLouis.prototype.isLoaded = function() {
+  return this.isLoaded_;
 };
 
 
@@ -120,11 +93,11 @@ cvox.LibLouis.prototype.isAttached = function() {
  *     Callback which will receive the translator, or {@code null} on failure.
  */
 cvox.LibLouis.prototype.getTranslator = function(tableNames, callback) {
-  if (!this.isAttached()) {
-    callback(null /* translator */);
+  if (!this.isLoaded_) {
+    // TODO: save last callback.
     return;
   }
-  this.rpc_('CheckTable', { 'table_names': tableNames }, function(reply) {
+  this.rpc_('CheckTable', {'table_names': tableNames}, function(reply) {
     if (reply['success']) {
       var translator = new cvox.LibLouis.Translator(this, tableNames);
       callback(translator);
@@ -143,9 +116,8 @@ cvox.LibLouis.prototype.getTranslator = function(tableNames, callback) {
  * @param {function(!Object)} callback Callback to receive the reply.
  * @private
  */
-cvox.LibLouis.prototype.rpc_ =
-    function(command, message, callback) {
-  if (!this.isAttached()) {
+cvox.LibLouis.prototype.rpc_ = function(command, message, callback) {
+  if (!this.worker_) {
     throw Error('Cannot send RPC: liblouis instance not loaded');
   }
   var messageId = '' + this.nextMessageId_++;
@@ -155,7 +127,7 @@ cvox.LibLouis.prototype.rpc_ =
   if (cvox.LibLouis.DEBUG) {
     window.console.debug('RPC -> ' + json);
   }
-  this.embedElement_.postMessage(json);
+  this.worker_.postMessage(json);
   this.pendingRpcCallbacks_[messageId] = callback;
 };
 
@@ -177,7 +149,6 @@ cvox.LibLouis.prototype.onInstanceLoad_ = function(e) {
  */
 cvox.LibLouis.prototype.onInstanceError_ = function(e) {
   window.console.error('failed to load liblouis Native Client instance');
-  this.detach();
 };
 
 
@@ -193,8 +164,8 @@ cvox.LibLouis.prototype.onInstanceMessage_ = function(e) {
   var message = /** @type {!Object} */ (JSON.parse(e.data));
   var messageId = message['in_reply_to'];
   if (!goog.isDef(messageId)) {
-    window.console.warn('liblouis Native Client module sent message with no ID',
-        message);
+    window.console.warn(
+        'liblouis Native Client module sent message with no ID', message);
     return;
   }
   if (goog.isDef(message['error'])) {
@@ -239,12 +210,17 @@ cvox.LibLouis.Translator = function(instance, tableNames) {
  *     text positions.  If translation fails for any reason, all parameters are
  *     {@code null}.
  */
-cvox.LibLouis.Translator.prototype.translate = function(text, callback) {
-  if (!this.instance_.isAttached()) {
+cvox.LibLouis.Translator.prototype.translate = function(
+    text, formTypeMap, callback) {
+  if (!this.instance_.worker_) {
     callback(null /*cells*/, null /*textToBraille*/, null /*brailleToText*/);
     return;
   }
-  var message = { 'table_names': this.tableNames_, 'text': text };
+  var message = {
+    'table_names': this.tableNames_,
+    'text': text,
+    form_type_map: formTypeMap
+  };
   this.instance_.rpc_('Translate', message, function(reply) {
     var cells = null;
     var textToBraille = null;
@@ -272,9 +248,8 @@ cvox.LibLouis.Translator.prototype.translate = function(text, callback) {
  * @param {!ArrayBuffer} cells Cells to be translated.
  * @param {function(?string)} callback Callback for result.
  */
-cvox.LibLouis.Translator.prototype.backTranslate =
-    function(cells, callback) {
-  if (!this.instance_.isAttached()) {
+cvox.LibLouis.Translator.prototype.backTranslate = function(cells, callback) {
+  if (!this.instance_.worker_) {
     callback(null /*text*/);
     return;
   }

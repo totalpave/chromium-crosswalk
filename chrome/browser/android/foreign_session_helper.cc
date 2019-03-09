@@ -8,42 +8,46 @@
 #include <stddef.h>
 
 #include "base/android/jni_string.h"
+#include "base/bind.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile_android.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/sync/profile_sync_service_factory.h"
+#include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
-#include "components/browser_sync/browser/profile_sync_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/sync/driver/sync_service.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
+#include "components/sync_sessions/session_sync_service.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/web_contents.h"
 #include "jni/ForeignSessionHelper_jni.h"
 
+using base::android::JavaParamRef;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF16ToJavaString;
 using base::android::ConvertUTF8ToJavaString;
 using base::android::ConvertJavaStringToUTF8;
-using sync_driver::OpenTabsUIDelegate;
-using sync_driver::SyncedSession;
+using sync_sessions::OpenTabsUIDelegate;
+using sync_sessions::SyncedSession;
 
 namespace {
 
 OpenTabsUIDelegate* GetOpenTabsUIDelegate(Profile* profile) {
-  ProfileSyncService* service = ProfileSyncServiceFactory::GetInstance()->
-      GetForProfile(profile);
+  sync_sessions::SessionSyncService* service =
+      SessionSyncServiceFactory::GetInstance()->GetForProfile(profile);
 
-  // Only return the delegate if it exists and it is done syncing sessions.
-  if (!service || !service->IsSyncActive())
+  // Only return the delegate if it exists.
+  if (!service)
     return NULL;
 
   return service->GetOpenTabsUIDelegate();
@@ -64,26 +68,24 @@ bool ShouldSkipTab(const sessions::SessionTab& session_tab) {
 }
 
 bool ShouldSkipWindow(const sessions::SessionWindow& window) {
-  for (std::vector<sessions::SessionTab*>::const_iterator tab_it =
-           window.tabs.begin(); tab_it != window.tabs.end(); ++tab_it) {
-    const sessions::SessionTab &session_tab = **tab_it;
+  for (const auto& tab_ptr : window.tabs) {
+    const sessions::SessionTab& session_tab = *(tab_ptr.get());
     if (!ShouldSkipTab(session_tab))
       return false;
   }
   return true;
 }
 
-bool ShouldSkipSession(const sync_driver::SyncedSession& session) {
-  for (SyncedSession::SyncedWindowMap::const_iterator it =
-      session.windows.begin(); it != session.windows.end(); ++it) {
-    const sessions::SessionWindow  &window = *(it->second);
+bool ShouldSkipSession(const SyncedSession& session) {
+  for (const auto& window_pair : session.windows) {
+    const sessions::SessionWindow& window = window_pair.second->wrapped_window;
     if (!ShouldSkipWindow(window))
       return false;
   }
   return true;
 }
 
-void CopyTabToJava(
+void JNI_ForeignSessionHelper_CopyTabToJava(
     JNIEnv* env,
     const sessions::SessionTab& tab,
     ScopedJavaLocalRef<jobject>& j_window) {
@@ -97,68 +99,67 @@ void CopyTabToJava(
   GURL tab_url = current_navigation.virtual_url();
 
   Java_ForeignSessionHelper_pushTab(
-      env, j_window.obj(),
-      ConvertUTF8ToJavaString(env, tab_url.spec()).obj(),
-      ConvertUTF16ToJavaString(env, current_navigation.title()).obj(),
-      tab.timestamp.ToJavaTime(),
-      tab.tab_id.id());
+      env, j_window, ConvertUTF8ToJavaString(env, tab_url.spec()),
+      ConvertUTF16ToJavaString(env, current_navigation.title()),
+      tab.timestamp.ToJavaTime(), tab.tab_id.id());
 }
 
-void CopyWindowToJava(
+void JNI_ForeignSessionHelper_CopyWindowToJava(
     JNIEnv* env,
     const sessions::SessionWindow& window,
     ScopedJavaLocalRef<jobject>& j_window) {
-  for (std::vector<sessions::SessionTab*>::const_iterator tab_it =
-           window.tabs.begin(); tab_it != window.tabs.end(); ++tab_it) {
-    const sessions::SessionTab &session_tab = **tab_it;
+  for (const auto& tab_ptr : window.tabs) {
+    const sessions::SessionTab& session_tab = *(tab_ptr.get());
 
     if (ShouldSkipTab(session_tab))
       return;
 
-    CopyTabToJava(env, session_tab, j_window);
+    JNI_ForeignSessionHelper_CopyTabToJava(env, session_tab, j_window);
   }
 }
 
-void CopySessionToJava(
+void JNI_ForeignSessionHelper_CopySessionToJava(
     JNIEnv* env,
     const SyncedSession& session,
     ScopedJavaLocalRef<jobject>& j_session) {
-  for (SyncedSession::SyncedWindowMap::const_iterator it =
-      session.windows.begin(); it != session.windows.end(); ++it) {
-    const sessions::SessionWindow &window = *(it->second);
+  for (const auto& window_pair : session.windows) {
+    const sessions::SessionWindow& window = window_pair.second->wrapped_window;
 
     if (ShouldSkipWindow(window))
       continue;
 
     ScopedJavaLocalRef<jobject> last_pushed_window;
-    last_pushed_window.Reset(
-        Java_ForeignSessionHelper_pushWindow(
-            env, j_session.obj(),
-            window.timestamp.ToJavaTime(),
-            window.window_id.id()));
+    last_pushed_window.Reset(Java_ForeignSessionHelper_pushWindow(
+        env, j_session, window.timestamp.ToJavaTime(), window.window_id.id()));
 
-    CopyWindowToJava(env, window, last_pushed_window);
+    JNI_ForeignSessionHelper_CopyWindowToJava(env, window, last_pushed_window);
   }
 }
 
 }  // namespace
 
-static jlong Init(JNIEnv* env,
-                  const JavaParamRef<jclass>& clazz,
-                  const JavaParamRef<jobject>& profile) {
+static jlong JNI_ForeignSessionHelper_Init(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& profile) {
   ForeignSessionHelper* foreign_session_helper = new ForeignSessionHelper(
       ProfileAndroid::FromProfileAndroid(profile));
   return reinterpret_cast<intptr_t>(foreign_session_helper);
 }
 
 ForeignSessionHelper::ForeignSessionHelper(Profile* profile)
-    : profile_(profile), scoped_observer_(this) {
-  ProfileSyncService* service = ProfileSyncServiceFactory::GetInstance()->
-      GetForProfile(profile);
+    : profile_(profile) {
+  sync_sessions::SessionSyncService* service =
+      SessionSyncServiceFactory::GetInstance()->GetForProfile(profile);
 
-  // NOTE: The ProfileSyncService can be null in tests.
-  if (service)
-    scoped_observer_.Add(service);
+  // NOTE: The SessionSyncService can be null in tests.
+  if (service) {
+    // base::Unretained() is safe below because the subscription itself is a
+    // class member field and handles destruction well.
+    foreign_session_updated_subscription_ =
+        service->SubscribeToForeignSessionsChanged(base::BindRepeating(
+            &ForeignSessionHelper::FireForeignSessionCallback,
+            base::Unretained(this)));
+  }
 }
 
 ForeignSessionHelper::~ForeignSessionHelper() {
@@ -172,21 +173,20 @@ void ForeignSessionHelper::Destroy(JNIEnv* env,
 jboolean ForeignSessionHelper::IsTabSyncEnabled(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj) {
-  ProfileSyncService* service = ProfileSyncServiceFactory::GetInstance()->
-      GetForProfile(profile_);
-  return service && service->GetActiveDataTypes().Has(syncer::PROXY_TABS);
+  sync_sessions::SessionSyncService* service =
+      SessionSyncServiceFactory::GetInstance()->GetForProfile(profile_);
+  return service && service->GetOpenTabsUIDelegate();
 }
 
 void ForeignSessionHelper::TriggerSessionSync(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj) {
-  ProfileSyncService* service = ProfileSyncServiceFactory::GetInstance()->
-      GetForProfile(profile_);
+  syncer::SyncService* service =
+      ProfileSyncServiceFactory::GetForProfile(profile_);
   if (!service)
     return;
 
-  const syncer::ModelTypeSet types(syncer::SESSIONS);
-  service->TriggerRefresh(types);
+  service->TriggerRefresh({syncer::SESSIONS});
 }
 
 void ForeignSessionHelper::SetOnForeignSessionCallback(
@@ -201,15 +201,7 @@ void ForeignSessionHelper::FireForeignSessionCallback() {
     return;
 
   JNIEnv* env = AttachCurrentThread();
-  Java_ForeignSessionCallback_onUpdated(env, callback_.obj());
-}
-
-void ForeignSessionHelper::OnSyncConfigurationCompleted() {
-  FireForeignSessionCallback();
-}
-
-void ForeignSessionHelper::OnForeignSessionUpdated() {
-  FireForeignSessionCallback();
+  Java_ForeignSessionCallback_onUpdated(env, callback_);
 }
 
 jboolean ForeignSessionHelper::GetForeignSessions(
@@ -220,7 +212,7 @@ jboolean ForeignSessionHelper::GetForeignSessions(
   if (!open_tabs)
     return false;
 
-  std::vector<const sync_driver::SyncedSession*> sessions;
+  std::vector<const SyncedSession*> sessions;
   if (!open_tabs->GetAllForeignSessions(&sessions))
     return false;
 
@@ -238,7 +230,7 @@ jboolean ForeignSessionHelper::GetForeignSessions(
 
   // Note: we don't own the SyncedSessions themselves.
   for (size_t i = 0; i < sessions.size(); ++i) {
-    const sync_driver::SyncedSession& session = *(sessions[i]);
+    const SyncedSession& session = *(sessions[i]);
     if (ShouldSkipSession(session))
       continue;
 
@@ -247,35 +239,14 @@ jboolean ForeignSessionHelper::GetForeignSessions(
     if (is_collapsed)
       pref_collapsed_sessions->SetBoolean(session.session_tag, true);
 
-    last_pushed_session.Reset(
-        Java_ForeignSessionHelper_pushSession(
-            env,
-            result,
-            ConvertUTF8ToJavaString(env, session.session_tag).obj(),
-            ConvertUTF8ToJavaString(env, session.session_name).obj(),
-            session.device_type,
-            session.modified_time.ToJavaTime()));
+    last_pushed_session.Reset(Java_ForeignSessionHelper_pushSession(
+        env, result, ConvertUTF8ToJavaString(env, session.session_tag),
+        ConvertUTF8ToJavaString(env, session.session_name), session.device_type,
+        session.modified_time.ToJavaTime()));
 
-    const std::string group_name =
-        base::FieldTrialList::FindFullName("TabSyncByRecency");
-    if (group_name == "Enabled") {
-      // Create a custom window with tabs from all windows included and ordered
-      // by recency (GetForeignSessionTabs will do ordering automatically).
-      std::vector<const sessions::SessionTab*> tabs;
-      open_tabs->GetForeignSessionTabs(session.session_tag, &tabs);
-      ScopedJavaLocalRef<jobject> last_pushed_window(
-          Java_ForeignSessionHelper_pushWindow(
-              env, last_pushed_session.obj(),
-              session.modified_time.ToJavaTime(), 0));
-      for (const sessions::SessionTab* tab : tabs) {
-         if (ShouldSkipTab(*tab))
-           continue;
-         CopyTabToJava(env, *tab, last_pushed_window);
-      }
-    } else {
-      // Push the full session, with tabs ordered by visual position.
-      CopySessionToJava(env, session, last_pushed_session);
-    }
+    // Push the full session, with tabs ordered by visual position.
+    JNI_ForeignSessionHelper_CopySessionToJava(env, session,
+                                               last_pushed_session);
   }
 
   return true;
@@ -297,7 +268,7 @@ jboolean ForeignSessionHelper::OpenForeignSessionTab(
   const sessions::SessionTab* session_tab;
 
   if (!open_tabs->GetForeignTab(ConvertJavaStringToUTF8(env, session_tag),
-                                session_tab_id,
+                                SessionID::FromSerializedValue(session_tab_id),
                                 &session_tab)) {
     LOG(ERROR) << "Failed to load foreign tab.";
     return false;
@@ -333,7 +304,14 @@ void ForeignSessionHelper::DeleteForeignSession(
     open_tabs->DeleteForeignSession(ConvertJavaStringToUTF8(env, session_tag));
 }
 
-// static
-bool ForeignSessionHelper::RegisterForeignSessionHelper(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+void ForeignSessionHelper::SetInvalidationsForSessionsEnabled(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    jboolean enabled) {
+  syncer::SyncService* service =
+      ProfileSyncServiceFactory::GetForProfile(profile_);
+  if (!service)
+    return;
+
+  service->SetInvalidationsForSessionsEnabled(enabled);
 }

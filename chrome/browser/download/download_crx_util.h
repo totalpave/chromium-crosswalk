@@ -9,12 +9,13 @@
 
 #include <memory>
 
+#include "base/auto_reset.h"
 #include "base/memory/ref_counted.h"
 
 class ExtensionInstallPrompt;
 class Profile;
 
-namespace content {
+namespace download {
 class DownloadItem;
 }
 
@@ -32,7 +33,7 @@ void SetMockInstallPromptForTesting(
 // Create and pre-configure a CrxInstaller for a given |download_item|.
 scoped_refptr<extensions::CrxInstaller> CreateCrxInstaller(
     Profile* profile,
-    const content::DownloadItem& download_item);
+    const download::DownloadItem& download_item);
 
 // Start installing a downloaded item item as a CRX (extension, theme, app,
 // ...).  The installer does work on the file thread, so the installation
@@ -40,16 +41,21 @@ scoped_refptr<extensions::CrxInstaller> CreateCrxInstaller(
 // the installation.
 scoped_refptr<extensions::CrxInstaller> OpenChromeExtension(
     Profile* profile,
-    const content::DownloadItem& download_item);
+    const download::DownloadItem& download_item);
 
 // Returns true if this is an extension download. This also considers user
 // scripts to be extension downloads, since we convert those automatically.
-bool IsExtensionDownload(const content::DownloadItem& download_item);
+bool IsExtensionDownload(const download::DownloadItem& download_item);
 
 // Checks whether an extension download should be allowed to proceed because the
 // installation site is whitelisted in prefs.
 bool OffStoreInstallAllowedByPrefs(Profile* profile,
-                                   const content::DownloadItem& item);
+                                   const download::DownloadItem& item);
+
+// Allows tests to override whether offstore extension installs are allowed
+// for testing purposes.
+std::unique_ptr<base::AutoReset<bool>> OverrideOffstoreInstallAllowedForTesting(
+    bool allowed);
 
 }  // namespace download_crx_util
 

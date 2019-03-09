@@ -22,66 +22,65 @@ struct StateData {
   const char abbreviation[3];
 };
 
-StateData kStateData[] = {
-  { "alabama", "al" },
-  { "alaska", "ak" },
-  { "arizona", "az" },
-  { "arkansas", "ar" },
-  { "california", "ca" },
-  { "colorado", "co" },
-  { "connecticut", "ct" },
-  { "delaware", "de" },
-  { "district of columbia", "dc" },
-  { "florida", "fl" },
-  { "georgia", "ga" },
-  { "hawaii", "hi" },
-  { "idaho", "id" },
-  { "illinois", "il" },
-  { "indiana", "in" },
-  { "iowa", "ia" },
-  { "kansas", "ks" },
-  { "kentucky", "ky" },
-  { "louisiana", "la" },
-  { "maine", "me" },
-  { "maryland", "md" },
-  { "massachusetts", "ma" },
-  { "michigan", "mi" },
-  { "minnesota", "mn" },
-  { "mississippi", "ms" },
-  { "missouri", "mo" },
-  { "montana", "mt" },
-  { "nebraska", "ne" },
-  { "nevada", "nv" },
-  { "new hampshire", "nh" },
-  { "new jersey", "nj" },
-  { "new mexico", "nm" },
-  { "new york", "ny" },
-  { "north carolina", "nc" },
-  { "north dakota", "nd" },
-  { "ohio", "oh" },
-  { "oklahoma", "ok" },
-  { "oregon", "or" },
-  { "pennsylvania", "pa" },
-  { "puerto rico", "pr" },
-  { "rhode island", "ri" },
-  { "south carolina", "sc" },
-  { "south dakota", "sd" },
-  { "tennessee", "tn" },
-  { "texas", "tx" },
-  { "utah", "ut" },
-  { "vermont", "vt" },
-  { "virginia", "va" },
-  { "washington", "wa" },
-  { "west virginia", "wv" },
-  { "wisconsin", "wi" },
-  { "wyoming", "wy" },
+const StateData kStateData[] = {
+    {"alabama", "al"},
+    {"alaska", "ak"},
+    {"arizona", "az"},
+    {"arkansas", "ar"},
+    {"california", "ca"},
+    {"colorado", "co"},
+    {"connecticut", "ct"},
+    {"delaware", "de"},
+    {"district of columbia", "dc"},
+    {"florida", "fl"},
+    {"georgia", "ga"},
+    {"hawaii", "hi"},
+    {"idaho", "id"},
+    {"illinois", "il"},
+    {"indiana", "in"},
+    {"iowa", "ia"},
+    {"kansas", "ks"},
+    {"kentucky", "ky"},
+    {"louisiana", "la"},
+    {"maine", "me"},
+    {"maryland", "md"},
+    {"massachusetts", "ma"},
+    {"michigan", "mi"},
+    {"minnesota", "mn"},
+    {"mississippi", "ms"},
+    {"missouri", "mo"},
+    {"montana", "mt"},
+    {"nebraska", "ne"},
+    {"nevada", "nv"},
+    {"new hampshire", "nh"},
+    {"new jersey", "nj"},
+    {"new mexico", "nm"},
+    {"new york", "ny"},
+    {"north carolina", "nc"},
+    {"north dakota", "nd"},
+    {"ohio", "oh"},
+    {"oklahoma", "ok"},
+    {"oregon", "or"},
+    {"pennsylvania", "pa"},
+    {"puerto rico", "pr"},
+    {"rhode island", "ri"},
+    {"south carolina", "sc"},
+    {"south dakota", "sd"},
+    {"tennessee", "tn"},
+    {"texas", "tx"},
+    {"utah", "ut"},
+    {"vermont", "vt"},
+    {"virginia", "va"},
+    {"washington", "wa"},
+    {"west virginia", "wv"},
+    {"wisconsin", "wi"},
+    {"wyoming", "wy"},
 };
 
 }  // namespace
 
 base::string16 GetAbbreviationForName(const base::string16& name) {
-  for (size_t i = 0; i < arraysize(kStateData); ++i) {
-    const StateData& state = kStateData[i];
+  for (const StateData& state : kStateData) {
     if (base::LowerCaseEqualsASCII(name, state.name))
       return base::ASCIIToUTF16(state.abbreviation);
   }
@@ -89,8 +88,7 @@ base::string16 GetAbbreviationForName(const base::string16& name) {
 }
 
 base::string16 GetNameForAbbreviation(const base::string16& abbreviation) {
-  for (size_t i = 0; i < arraysize(kStateData); ++i) {
-    const StateData& state = kStateData[i];
+  for (const StateData& state : kStateData) {
     if (base::LowerCaseEqualsASCII(abbreviation, state.abbreviation))
       return base::ASCIIToUTF16(state.name);
   }

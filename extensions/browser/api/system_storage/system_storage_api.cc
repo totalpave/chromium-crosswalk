@@ -4,7 +4,10 @@
 
 #include "extensions/browser/api/system_storage/system_storage_api.h"
 
-#include "base/memory/ptr_util.h"
+#include "base/bind.h"
+#include "base/task/post_task.h"
+#include "base/task_runner_util.h"
+#include "content/public/browser/browser_thread.h"
 
 using storage_monitor::StorageMonitor;
 
@@ -20,27 +23,25 @@ SystemStorageGetInfoFunction::SystemStorageGetInfoFunction() {
 SystemStorageGetInfoFunction::~SystemStorageGetInfoFunction() {
 }
 
-bool SystemStorageGetInfoFunction::RunAsync() {
+ExtensionFunction::ResponseAction SystemStorageGetInfoFunction::Run() {
   StorageInfoProvider::Get()->StartQueryInfo(base::Bind(
       &SystemStorageGetInfoFunction::OnGetStorageInfoCompleted, this));
-  return true;
+  return RespondLater();
 }
 
 void SystemStorageGetInfoFunction::OnGetStorageInfoCompleted(bool success) {
   if (success) {
-    results_ = api::system_storage::GetInfo::Results::Create(
-        StorageInfoProvider::Get()->storage_unit_info_list());
+    Respond(ArgumentList(api::system_storage::GetInfo::Results::Create(
+        StorageInfoProvider::Get()->storage_unit_info_list())));
   } else {
-    SetError("Error occurred when querying storage information.");
+    Respond(Error("Error occurred when querying storage information."));
   }
-
-  SendResponse(success);
 }
 
 SystemStorageEjectDeviceFunction::~SystemStorageEjectDeviceFunction() {
 }
 
-bool SystemStorageEjectDeviceFunction::RunAsync() {
+ExtensionFunction::ResponseAction SystemStorageEjectDeviceFunction::Run() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   std::unique_ptr<EjectDevice::Params> params(
@@ -51,7 +52,8 @@ bool SystemStorageEjectDeviceFunction::RunAsync() {
       base::Bind(&SystemStorageEjectDeviceFunction::OnStorageMonitorInit,
                  this,
                  params->id));
-  return true;
+  // EnsureInitialized() above can result in synchronous Respond().
+  return did_respond() ? AlreadyResponded() : RespondLater();
 }
 
 void SystemStorageEjectDeviceFunction::OnStorageMonitorInit(
@@ -90,20 +92,23 @@ void SystemStorageEjectDeviceFunction::HandleResponse(
       result = api::system_storage::EJECT_DEVICE_RESULT_CODE_FAILURE;
   }
 
-  SetResult(base::MakeUnique<base::StringValue>(
-      api::system_storage::ToString(result)));
-  SendResponse(true);
+  Respond(OneArgument(
+      std::make_unique<base::Value>(api::system_storage::ToString(result))));
 }
 
 SystemStorageGetAvailableCapacityFunction::
-    SystemStorageGetAvailableCapacityFunction() {
-}
+    SystemStorageGetAvailableCapacityFunction()
+    : query_runner_(base::CreateSequencedTaskRunnerWithTraits(
+          base::TaskTraits(base::TaskPriority::BEST_EFFORT,
+                           base::MayBlock(),
+                           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN))) {}
 
 SystemStorageGetAvailableCapacityFunction::
     ~SystemStorageGetAvailableCapacityFunction() {
 }
 
-bool SystemStorageGetAvailableCapacityFunction::RunAsync() {
+ExtensionFunction::ResponseAction
+SystemStorageGetAvailableCapacityFunction::Run() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   std::unique_ptr<GetAvailableCapacity::Params> params(
@@ -114,21 +119,19 @@ bool SystemStorageGetAvailableCapacityFunction::RunAsync() {
       &SystemStorageGetAvailableCapacityFunction::OnStorageMonitorInit,
       this,
       params->id));
-  return true;
+  return RespondLater();
 }
 
 void SystemStorageGetAvailableCapacityFunction::OnStorageMonitorInit(
     const std::string& transient_id) {
-  content::BrowserThread::PostTaskAndReplyWithResult(
-      content::BrowserThread::FILE,
-      FROM_HERE,
-      base::Bind(
-          &StorageInfoProvider::GetStorageFreeSpaceFromTransientIdOnFileThread,
-          StorageInfoProvider::Get(),
-          transient_id),
-      base::Bind(&SystemStorageGetAvailableCapacityFunction::OnQueryCompleted,
-                 this,
-                 transient_id));
+  base::PostTaskAndReplyWithResult(
+      query_runner_.get(), FROM_HERE,
+      base::BindOnce(
+          &StorageInfoProvider::GetStorageFreeSpaceFromTransientIdAsync,
+          StorageInfoProvider::Get(), transient_id),
+      base::BindOnce(
+          &SystemStorageGetAvailableCapacityFunction::OnQueryCompleted, this,
+          transient_id));
 }
 
 void SystemStorageGetAvailableCapacityFunction::OnQueryCompleted(
@@ -139,11 +142,10 @@ void SystemStorageGetAvailableCapacityFunction::OnQueryCompleted(
     api::system_storage::StorageAvailableCapacityInfo result;
     result.id = transient_id;
     result.available_capacity = available_capacity;
-    SetResult(result.ToValue());
+    Respond(OneArgument(result.ToValue()));
   } else {
-    SetError("Error occurred when querying available capacity.");
+    Respond(Error("Error occurred when querying available capacity."));
   }
-  SendResponse(success);
 }
 
 }  // namespace extensions

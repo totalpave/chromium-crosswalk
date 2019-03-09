@@ -1,5 +1,8 @@
 specific_include_rules = {
-  "debug_commands\.cc": [
+  "accelerator_controller_delegate_classic\.cc": [
     "+ash/host"
+  ],
+  "accelerator_interactive_uitest_chromeos\.cc": [
+    "+mojo/core/embedder/embedder.h"
   ],
 }

@@ -12,12 +12,6 @@ const char kIsFirstRequest[] = "isFirstRequest";
 // Unique ID sent along every preview request.
 const char kPreviewRequestID[] = "requestID";
 
-// Unique ID of Print Preview initiator host.
-const char kPreviewInitiatorHostId[] = "previewInitiatorHostId";
-
-// Routing ID of Print Preview initiator.
-const char kPreviewInitiatorRoutingId[] = "previewInitiatorRoutingId";
-
 // Unique ID to identify a print preview UI.
 const char kPreviewUIID[] = "previewUIID";
 
@@ -33,7 +27,7 @@ const char kSettingCloudPrintDialog[] = "printWithCloudPrint";
 // Print job setting 'collate'.
 const char kSettingCollate[] = "collate";
 
-// Print out color: true for color, false for grayscale.
+// Print out color. Value is an int from ColorModel enum.
 const char kSettingColor[] = "color";
 
 // Default to color on or not.
@@ -54,15 +48,24 @@ const char kSettingDeviceName[] = "deviceName";
 // Option to disable scaling. True if scaling is disabled else false.
 const char kSettingDisableScaling[] = "disableScaling";
 
-// Print job duplex mode.
+// Default DPI
+const char kSettingDpiDefault[] = "dpiDefault";
+
+// Horizontal DPI
+const char kSettingDpiHorizontal[] = "dpiHorizontal";
+
+// Vertical DPI
+const char kSettingDpiVertical[] = "dpiVertical";
+
+// Scaling value required to fit the document to page.
+const char kSettingFitToPageScaling[] = "fitToPageScaling";
+
+// Print job duplex mode. Value is an int from DuplexMode enum.
 const char kSettingDuplexMode[] = "duplex";
 
 // Option to fit source page contents to printer paper size: true if
 // selected else false.
 const char kSettingFitToPageEnabled[] = "fitToPageEnabled";
-
-// True, when a new set of draft preview data is required.
-const char kSettingGenerateDraftData[] = "generateDraftData";
 
 // Option to print headers and Footers: true if selected, false if not.
 const char kSettingHeaderFooterEnabled[] = "headerFooterEnabled";
@@ -136,6 +139,9 @@ const char kSettingPageRangeTo[] = "to";
 const char kSettingPageWidth[] = "pageWidth";
 const char kSettingPageHeight[] = "pageHeight";
 
+// Policies affecting printing destination.
+const char kSettingPolicies[] = "policies";
+
 const char kSettingPreviewModifiable[] = "previewModifiable";
 
 // Keys that specifies the printable area details.
@@ -153,6 +159,9 @@ const char kSettingPrinterDescription[] = "printerDescription";
 // Additional printer options.
 const char kSettingPrinterOptions[] = "printerOptions";
 
+// Print to Google Drive option: true if selected, false if not.
+const char kSettingPrintToGoogleDrive[] = "printToGoogleDrive";
+
 // Print to PDF option: true if selected, false if not.
 const char kSettingPrintToPDF[] = "printToPDF";
 
@@ -164,8 +173,20 @@ const char kSettingPrintWithPrivet[] = "printWithPrivet";
 // false if not.
 const char kSettingPrintWithExtension[] = "printWithExtension";
 
+// Scaling factor
+const char kSettingScaleFactor[] = "scaleFactor";
+
+// Number of pages per sheet.
+const char kSettingPagesPerSheet[] = "pagesPerSheet";
+
+// Whether to rasterize the PDF for printing.
+const char kSettingRasterizePdf[] = "rasterizePDF";
+
 // Ticket option. Contains the ticket in CJT format.
 const char kSettingTicket[] = "ticket";
+
+// Whether to sent user info to the printer.
+const char kSettingSendUserInfo[] = "sendUserInfo";
 
 // Whether to print CSS backgrounds.
 const char kSettingShouldPrintBackgrounds[] = "shouldPrintBackgrounds";
@@ -173,10 +194,11 @@ const char kSettingShouldPrintBackgrounds[] = "shouldPrintBackgrounds";
 // Whether to print selection only.
 const char kSettingShouldPrintSelectionOnly[] = "shouldPrintSelectionOnly";
 
-#if defined(ENABLE_BASIC_PRINTING)
 // Whether to print using the system dialog.
 const char kSettingShowSystemDialog[] = "showSystemDialog";
-#endif
+
+// Username to be sent to printer.
+const char kSettingUsername[] = "username";
 
 // Indices used to represent first preview page and complete preview document.
 const int FIRST_PAGE_INDEX = 0;
@@ -192,9 +214,11 @@ const char kKCMY[] = "KCMY";
 const char kCMY_K[] = "CMY+K";
 const char kCMY[] = "CMY";
 const char kColor[] = "Color";
+const char kFullColor[] = "FullColor";
 const char kGray[] = "Gray";
 const char kGrayscale[] = "Grayscale";
 const char kGreyscale[] = "Greyscale";
+const char kMono[] = "Mono";
 const char kMonochrome[] = "Monochrome";
 const char kNormal[] = "Normal";
 const char kNormalGray[] = "Normal.Gray";

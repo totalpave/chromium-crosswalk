@@ -10,16 +10,19 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
 #include "base/path_service.h"
+#include "base/stl_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/diagnostics/diagnostics_model.h"
 #include "chrome/browser/diagnostics/diagnostics_writer.h"
 #include "chrome/browser/diagnostics/sqlite_diagnostics.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
-#include "chromeos/chromeos_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if defined(OS_CHROMEOS)
+#include "chromeos/constants/chromeos_constants.h"
+#endif  // defined(OS_CHROMEOS)
 
 namespace diagnostics {
 
@@ -34,18 +37,18 @@ class DiagnosticsControllerTest : public testing::Test {
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     base::FilePath test_data;
-    PathService::Get(chrome::DIR_TEST_DATA, &test_data);
+    base::PathService::Get(chrome::DIR_TEST_DATA, &test_data);
     test_data = test_data.Append(FILE_PATH_LITERAL("diagnostics"));
     test_data = test_data.Append(FILE_PATH_LITERAL("user"));
-    base::CopyDirectory(test_data, temp_dir_.path(), true);
-    profile_dir_ = temp_dir_.path().Append(FILE_PATH_LITERAL("user"));
+    base::CopyDirectory(test_data, temp_dir_.GetPath(), true);
+    profile_dir_ = temp_dir_.GetPath().Append(FILE_PATH_LITERAL("user"));
 
 #if defined(OS_CHROMEOS)
     // Redirect the home dir to the profile directory. We have to do this
     // because NSS uses the HOME directory to find where to store it's database,
     // so that's where the diagnostics and recovery code looks for it.
-    PathService::Get(base::DIR_HOME, &old_home_dir_);
-    PathService::Override(base::DIR_HOME, profile_dir_);
+    base::PathService::Get(base::DIR_HOME, &old_home_dir_);
+    base::PathService::Override(base::DIR_HOME, profile_dir_);
 #endif
 
     cmdline_ = base::CommandLine(base::CommandLine::NO_PROGRAM);
@@ -60,7 +63,7 @@ class DiagnosticsControllerTest : public testing::Test {
   void TearDown() override {
     DiagnosticsController::GetInstance()->ClearResults();
 #if defined(OS_CHROMEOS)
-    PathService::Override(base::DIR_HOME, old_home_dir_);
+    base::PathService::Override(base::DIR_HOME, old_home_dir_);
     old_home_dir_.clear();
 #endif
   }
@@ -69,7 +72,7 @@ class DiagnosticsControllerTest : public testing::Test {
     // Just write some random characters into the file tInvaludUsero "corrupt"
     // it.
     const char bogus_data[] = "wwZ2uNYNuyUVzFbDm3DL";
-    base::WriteFile(path, bogus_data, arraysize(bogus_data));
+    base::WriteFile(path, bogus_data, base::size(bogus_data));
   }
 
   std::unique_ptr<DiagnosticsModel> model_;

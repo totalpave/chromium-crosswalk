@@ -2,27 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <string>
-
 #include "base/test/test_pending_task.h"
+
+#include <string>
+#include <utility>
 
 namespace base {
 
 TestPendingTask::TestPendingTask() : nestability(NESTABLE) {}
 
-TestPendingTask::TestPendingTask(
-    const tracked_objects::Location& location,
-    const Closure& task,
-    TimeTicks post_time,
-    TimeDelta delay,
-    TestNestability nestability)
+TestPendingTask::TestPendingTask(const Location& location,
+                                 OnceClosure task,
+                                 TimeTicks post_time,
+                                 TimeDelta delay,
+                                 TestNestability nestability)
     : location(location),
-      task(task),
+      task(std::move(task)),
       post_time(post_time),
       delay(delay),
       nestability(nestability) {}
 
-TestPendingTask::TestPendingTask(const TestPendingTask& other) = default;
+TestPendingTask::TestPendingTask(TestPendingTask&& other) = default;
+
+TestPendingTask& TestPendingTask::operator=(TestPendingTask&& other) = default;
 
 TimeTicks TestPendingTask::GetTimeToRun() const {
   return post_time + delay;
@@ -34,7 +36,7 @@ bool TestPendingTask::ShouldRunBefore(const TestPendingTask& other) const {
   return GetTimeToRun() < other.GetTimeToRun();
 }
 
-TestPendingTask::~TestPendingTask() {}
+TestPendingTask::~TestPendingTask() = default;
 
 void TestPendingTask::AsValueInto(base::trace_event::TracedValue* state) const {
   state->SetInteger("run_at", GetTimeToRun().ToInternalValue());

@@ -24,20 +24,13 @@ enum class IncidentType : int32_t {
   // the histogram.
   TRACKED_PREFERENCE = 1,
   BINARY_INTEGRITY = 2,
-  BLACKLIST_LOAD = 3,
-  OMNIBOX_INTERACTION = 4,
-  VARIATIONS_SEED_SIGNATURE = 5,
+  OBSOLETE_BLACKLIST_LOAD = 3,
+  OBSOLETE_OMNIBOX_INTERACTION = 4,
+  OBSOLETE_VARIATIONS_SEED_SIGNATURE = 5,
   RESOURCE_REQUEST = 6,
-  SUSPICIOUS_MODULE = 7,
+  OBSOLETE_SUSPICIOUS_MODULE = 7,
   // Values for new incident types go here.
   NUM_TYPES = 8
-};
-
-// The level of consent required by the incident to be associated with a
-// profile.
-enum class MinimumProfileConsent {
-  SAFE_BROWSING_ENABLED = 0,
-  SAFE_BROWSING_EXTENDED_REPORTING_ENABLED = 1,
 };
 
 // An abstract incident. Subclasses provide type-specific functionality to
@@ -59,10 +52,6 @@ class Incident {
 
   // Returns the incident's payload.
   virtual std::unique_ptr<ClientIncidentReport_IncidentData> TakePayload();
-
-  // Returns the minimum level of consent required for reporting of the
-  // incident.
-  virtual MinimumProfileConsent GetMinimumProfileConsent() const;
 
  protected:
   // Constructs the payload with an empty protobuf, setting its incident time to

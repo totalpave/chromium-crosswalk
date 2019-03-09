@@ -15,19 +15,29 @@
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
+#include "cc/animation/animation_events.h"
+#include "cc/animation/animation_host.h"
+#include "cc/animation/keyframe_effect.h"
+#include "cc/animation/single_keyframe_effect_animation.h"
 #include "cc/layers/layer.h"
-#include "cc/output/copy_output_request.h"
-#include "cc/output/copy_output_result.h"
-#include "cc/surfaces/surface_id.h"
-#include "cc/surfaces/surface_sequence.h"
 #include "cc/test/pixel_test_utils.h"
+#include "components/viz/common/frame_sinks/copy_output_request.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "components/viz/common/resources/transferable_resource.h"
+#include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
+#include "components/viz/common/surfaces/surface_id.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/khronos/GLES2/gl2.h"
 #include "ui/compositor/compositor_observer.h"
 #include "ui/compositor/dip_util.h"
 #include "ui/compositor/layer_animation_element.h"
@@ -40,14 +50,18 @@
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/compositor/test/context_factories_for_test.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
+#include "ui/compositor/test/layer_animator_test_controller.h"
 #include "ui/compositor/test/test_compositor_host.h"
 #include "ui/compositor/test/test_layers.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/codec/png_codec.h"
-#include "ui/gfx/gfx_paths.h"
+#include "ui/gfx/font_list.h"
+#include "ui/gfx/interpolated_transform.h"
 #include "ui/gfx/skia_util.h"
 
 using cc::MatchesPNGFile;
+using cc::WritePNGFile;
 
 namespace ui {
 
@@ -78,38 +92,70 @@ class ColoredLayer : public Layer, public LayerDelegate {
     recorder.canvas()->DrawColor(color_);
   }
 
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip) override {}
-
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override {}
-
-  base::Closure PrepareForLayerBoundsChange() override {
-    return base::Closure();
-  }
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
 
  private:
   SkColor color_;
 };
 
+// Layer delegate for painting text with fade effect on canvas.
+class DrawFadedStringLayerDelegate : public LayerDelegate {
+ public:
+  DrawFadedStringLayerDelegate(SkColor back_color, const gfx::Size& layer_size)
+      : background_color_(back_color), layer_size_(layer_size) {}
+
+  ~DrawFadedStringLayerDelegate() override {}
+
+  // Overridden from LayerDelegate:
+  void OnPaintLayer(const ui::PaintContext& context) override {
+    ui::PaintRecorder recorder(context, layer_size_);
+    gfx::Rect bounds(layer_size_);
+    recorder.canvas()->DrawColor(background_color_);
+    const base::string16 text = base::ASCIIToUTF16("Tests!");
+    recorder.canvas()->DrawFadedString(text, font_list_, SK_ColorRED, bounds,
+                                       0);
+  }
+
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
+
+ private:
+  const SkColor background_color_;
+  const gfx::FontList font_list_;
+  const gfx::Size layer_size_;
+
+  DISALLOW_COPY_AND_ASSIGN(DrawFadedStringLayerDelegate);
+};
+
 class LayerWithRealCompositorTest : public testing::Test {
  public:
-  LayerWithRealCompositorTest() {
-    if (PathService::Get(gfx::DIR_TEST_DATA, &test_data_directory_)) {
-      test_data_directory_ = test_data_directory_.AppendASCII("compositor");
-    } else {
-      LOG(ERROR) << "Could not open test data directory.";
-    }
+  LayerWithRealCompositorTest()
+      : scoped_task_environment_(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI) {
+    gfx::FontList::SetDefaultFontDescription("Arial, Times New Roman, 15px");
   }
   ~LayerWithRealCompositorTest() override {}
 
   // Overridden from testing::Test:
   void SetUp() override {
+    ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &test_data_dir_));
+    test_data_dir_ = test_data_dir_.Append(FILE_PATH_LITERAL("ui"))
+                         .Append(FILE_PATH_LITERAL("gfx"))
+                         .Append(FILE_PATH_LITERAL("test"))
+                         .Append(FILE_PATH_LITERAL("data"))
+                         .Append(FILE_PATH_LITERAL("compositor"));
+    ASSERT_TRUE(base::PathExists(test_data_dir_));
+
     bool enable_pixel_output = true;
-    ui::ContextFactory* context_factory =
-        InitializeContextFactoryForTests(enable_pixel_output);
+    ui::ContextFactory* context_factory = nullptr;
+    ui::ContextFactoryPrivate* context_factory_private = nullptr;
+    InitializeContextFactoryForTests(enable_pixel_output, &context_factory,
+                                     &context_factory_private);
 
     const gfx::Rect host_bounds(10, 10, 500, 500);
-    compositor_host_.reset(
-        TestCompositorHost::Create(host_bounds, context_factory));
+    compositor_host_.reset(TestCompositorHost::Create(
+        host_bounds, context_factory, context_factory_private));
     compositor_host_->Show();
   }
 
@@ -140,6 +186,15 @@ class LayerWithRealCompositorTest : public testing::Test {
     return layer;
   }
 
+  std::unique_ptr<Layer> CreateDrawFadedStringLayerDelegate(
+      const gfx::Rect& bounds,
+      DrawFadedStringLayerDelegate* delegate) {
+    std::unique_ptr<Layer> layer(new Layer(LAYER_TEXTURED));
+    layer->SetBounds(bounds);
+    layer->set_delegate(delegate);
+    return layer;
+  }
+
   void DrawTree(Layer* root) {
     GetCompositor()->SetRootLayer(root);
     GetCompositor()->ScheduleDraw();
@@ -152,9 +207,10 @@ class LayerWithRealCompositorTest : public testing::Test {
 
   void ReadPixels(SkBitmap* bitmap, gfx::Rect source_rect) {
     scoped_refptr<ReadbackHolder> holder(new ReadbackHolder);
-    std::unique_ptr<cc::CopyOutputRequest> request =
-        cc::CopyOutputRequest::CreateBitmapRequest(
-            base::Bind(&ReadbackHolder::OutputRequestCallback, holder));
+    std::unique_ptr<viz::CopyOutputRequest> request =
+        std::make_unique<viz::CopyOutputRequest>(
+            viz::CopyOutputRequest::ResultFormat::RGBA_BITMAP,
+            base::BindOnce(&ReadbackHolder::OutputRequestCallback, holder));
     request->set_area(source_rect);
 
     GetCompositor()->root_layer()->RequestCopyOfOutput(std::move(request));
@@ -178,7 +234,7 @@ class LayerWithRealCompositorTest : public testing::Test {
   }
 
   void WaitForSwap() {
-    DrawWaiterForTest::WaitForCompositingEnded(GetCompositor());
+    ui::DrawWaiterForTest::WaitForCompositingEnded(GetCompositor());
   }
 
   void WaitForCommit() {
@@ -191,17 +247,18 @@ class LayerWithRealCompositorTest : public testing::Test {
         gfx::Rect(0, 0, layer->bounds().width(), layer->bounds().height()));
   }
 
-  const base::FilePath& test_data_directory() const {
-    return test_data_directory_;
-  }
+  const base::FilePath& test_data_dir() const { return test_data_dir_; }
 
  private:
   class ReadbackHolder : public base::RefCountedThreadSafe<ReadbackHolder> {
    public:
     ReadbackHolder() : run_loop_(new base::RunLoop) {}
 
-    void OutputRequestCallback(std::unique_ptr<cc::CopyOutputResult> result) {
-      result_ = result->TakeBitmap();
+    void OutputRequestCallback(std::unique_ptr<viz::CopyOutputResult> result) {
+      if (result->IsEmpty())
+        result_.reset();
+      else
+        result_ = std::make_unique<SkBitmap>(result->AsSkBitmap());
       run_loop_->Quit();
     }
 
@@ -218,10 +275,11 @@ class LayerWithRealCompositorTest : public testing::Test {
     std::unique_ptr<base::RunLoop> run_loop_;
   };
 
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   std::unique_ptr<TestCompositorHost> compositor_host_;
 
   // The root directory for test files.
-  base::FilePath test_data_directory_;
+  base::FilePath test_data_dir_;
 
   DISALLOW_COPY_AND_ASSIGN(LayerWithRealCompositorTest);
 };
@@ -253,15 +311,17 @@ class TestLayerDelegate : public LayerDelegate {
     color_index_ = (color_index_ + 1) % static_cast<int>(colors_.size());
   }
 
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip) override {}
-
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override {
-    device_scale_factor_ = device_scale_factor;
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {
+    device_scale_factor_ = new_device_scale_factor;
   }
 
-  base::Closure PrepareForLayerBoundsChange() override {
-    return base::Closure();
-  }
+  MOCK_METHOD2(OnLayerBoundsChanged,
+               void(const gfx::Rect&, PropertyChangeReason));
+  MOCK_METHOD2(OnLayerTransformed,
+               void(const gfx::Transform&, PropertyChangeReason));
+  MOCK_METHOD1(OnLayerOpacityChanged, void(PropertyChangeReason));
+  MOCK_METHOD0(OnLayerAlphaShapeChanged, void());
 
   void reset() {
     color_index_ = 0;
@@ -297,11 +357,8 @@ class DrawTreeLayerDelegate : public LayerDelegate {
     ui::PaintRecorder recorder(context, layer_bounds_.size());
     recorder.canvas()->DrawColor(SK_ColorWHITE);
   }
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip) override {}
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override {}
-  base::Closure PrepareForLayerBoundsChange() override {
-    return base::Closure();
-  }
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
 
   bool painted_;
   const gfx::Rect layer_bounds_;
@@ -315,14 +372,17 @@ class NullLayerDelegate : public LayerDelegate {
   NullLayerDelegate() {}
   ~NullLayerDelegate() override {}
 
+  gfx::Rect invalidation() const { return invalidation_; }
+
  private:
+  gfx::Rect invalidation_;
+
   // Overridden from LayerDelegate:
-  void OnPaintLayer(const ui::PaintContext& context) override {}
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip) override {}
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override {}
-  base::Closure PrepareForLayerBoundsChange() override {
-    return base::Closure();
+  void OnPaintLayer(const ui::PaintContext& context) override {
+    invalidation_ = context.InvalidationForTesting();
   }
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
 
   DISALLOW_COPY_AND_ASSIGN(NullLayerDelegate);
 };
@@ -330,18 +390,15 @@ class NullLayerDelegate : public LayerDelegate {
 // Remembers if it has been notified.
 class TestCompositorObserver : public CompositorObserver {
  public:
-  TestCompositorObserver()
-      : committed_(false), started_(false), ended_(false), aborted_(false) {}
+  TestCompositorObserver() = default;
 
   bool committed() const { return committed_; }
   bool notified() const { return started_ && ended_; }
-  bool aborted() const { return aborted_; }
 
   void Reset() {
     committed_ = false;
     started_ = false;
     ended_ = false;
-    aborted_ = false;
   }
 
  private:
@@ -356,18 +413,9 @@ class TestCompositorObserver : public CompositorObserver {
 
   void OnCompositingEnded(Compositor* compositor) override { ended_ = true; }
 
-  void OnCompositingAborted(Compositor* compositor) override {
-    aborted_ = true;
-  }
-
-  void OnCompositingLockStateChanged(Compositor* compositor) override {}
-
-  void OnCompositingShuttingDown(Compositor* compositor) override {}
-
-  bool committed_;
-  bool started_;
-  bool ended_;
-  bool aborted_;
+  bool committed_ = false;
+  bool started_ = false;
+  bool ended_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(TestCompositorObserver);
 };
@@ -442,18 +490,23 @@ TEST_F(LayerWithRealCompositorTest, Hierarchy) {
 
 class LayerWithDelegateTest : public testing::Test {
  public:
-  LayerWithDelegateTest() {}
+  LayerWithDelegateTest()
+      : scoped_task_environment_(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI) {}
   ~LayerWithDelegateTest() override {}
 
   // Overridden from testing::Test:
   void SetUp() override {
     bool enable_pixel_output = false;
-    ui::ContextFactory* context_factory =
-        InitializeContextFactoryForTests(enable_pixel_output);
+    ui::ContextFactory* context_factory = nullptr;
+    ui::ContextFactoryPrivate* context_factory_private = nullptr;
+
+    InitializeContextFactoryForTests(enable_pixel_output, &context_factory,
+                                     &context_factory_private);
 
     const gfx::Rect host_bounds(1000, 1000);
-    compositor_host_.reset(TestCompositorHost::Create(host_bounds,
-                                                      context_factory));
+    compositor_host_.reset(TestCompositorHost::Create(
+        host_bounds, context_factory, context_factory_private));
     compositor_host_->Show();
   }
 
@@ -506,6 +559,7 @@ class LayerWithDelegateTest : public testing::Test {
   }
 
  private:
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   std::unique_ptr<TestCompositorHost> compositor_host_;
 
   DISALLOW_COPY_AND_ASSIGN(LayerWithDelegateTest);
@@ -518,11 +572,13 @@ void ReturnMailbox(bool* run, const gpu::SyncToken& sync_token, bool is_lost) {
 TEST(LayerStandaloneTest, ReleaseMailboxOnDestruction) {
   std::unique_ptr<Layer> layer(new Layer(LAYER_TEXTURED));
   bool callback_run = false;
-  cc::TextureMailbox mailbox(gpu::Mailbox::Generate(), gpu::SyncToken(), 0);
-  layer->SetTextureMailbox(mailbox,
-                           cc::SingleReleaseCallback::Create(
-                               base::Bind(ReturnMailbox, &callback_run)),
-                           gfx::Size(10, 10));
+  auto resource = viz::TransferableResource::MakeGL(
+      gpu::Mailbox::Generate(), GL_LINEAR, GL_TEXTURE_2D, gpu::SyncToken());
+  layer->SetTransferableResource(
+      resource,
+      viz::SingleReleaseCallback::Create(
+          base::BindOnce(ReturnMailbox, &callback_run)),
+      gfx::Size(10, 10));
   EXPECT_FALSE(callback_run);
   layer.reset();
   EXPECT_TRUE(callback_run);
@@ -538,14 +594,14 @@ TEST_F(LayerWithDelegateTest, ConvertPointToLayer_Simple) {
   l1->Add(l2.get());
   DrawTree(l1.get());
 
-  gfx::Point point1_in_l2_coords(5, 5);
+  gfx::PointF point1_in_l2_coords(5, 5);
   Layer::ConvertPointToLayer(l2.get(), l1.get(), &point1_in_l2_coords);
-  gfx::Point point1_in_l1_coords(15, 15);
+  gfx::PointF point1_in_l1_coords(15, 15);
   EXPECT_EQ(point1_in_l1_coords, point1_in_l2_coords);
 
-  gfx::Point point2_in_l1_coords(5, 5);
+  gfx::PointF point2_in_l1_coords(5, 5);
   Layer::ConvertPointToLayer(l1.get(), l2.get(), &point2_in_l1_coords);
-  gfx::Point point2_in_l2_coords(-5, -5);
+  gfx::PointF point2_in_l2_coords(-5, -5);
   EXPECT_EQ(point2_in_l2_coords, point2_in_l1_coords);
 }
 
@@ -563,14 +619,14 @@ TEST_F(LayerWithDelegateTest, ConvertPointToLayer_Medium) {
   l2->Add(l3.get());
   DrawTree(l1.get());
 
-  gfx::Point point1_in_l3_coords(5, 5);
+  gfx::PointF point1_in_l3_coords(5, 5);
   Layer::ConvertPointToLayer(l3.get(), l1.get(), &point1_in_l3_coords);
-  gfx::Point point1_in_l1_coords(25, 25);
+  gfx::PointF point1_in_l1_coords(25, 25);
   EXPECT_EQ(point1_in_l1_coords, point1_in_l3_coords);
 
-  gfx::Point point2_in_l1_coords(5, 5);
+  gfx::PointF point2_in_l1_coords(5, 5);
   Layer::ConvertPointToLayer(l1.get(), l3.get(), &point2_in_l1_coords);
-  gfx::Point point2_in_l3_coords(-15, -15);
+  gfx::PointF point2_in_l3_coords(-15, -15);
   EXPECT_EQ(point2_in_l3_coords, point2_in_l1_coords);
 }
 
@@ -693,6 +749,186 @@ TEST_F(LayerWithRealCompositorTest, HierarchyNoTexture) {
   EXPECT_TRUE(d3.painted());
 }
 
+TEST_F(LayerWithDelegateTest, Cloning) {
+  std::unique_ptr<Layer> layer(CreateLayer(LAYER_SOLID_COLOR));
+
+  gfx::Transform transform;
+  transform.Scale(2, 1);
+  transform.Translate(10, 5);
+
+  layer->SetTransform(transform);
+  layer->SetColor(SK_ColorRED);
+  layer->SetLayerInverted(true);
+  layer->AddCacheRenderSurfaceRequest();
+  layer->AddTrilinearFilteringRequest();
+
+  auto clone = layer->Clone();
+
+  // Cloning preserves layer state.
+  EXPECT_EQ(transform, clone->GetTargetTransform());
+  EXPECT_EQ(SK_ColorRED, clone->background_color());
+  EXPECT_EQ(SK_ColorRED, clone->GetTargetColor());
+  EXPECT_TRUE(clone->layer_inverted());
+  // Cloning should not preserve cache_render_surface flag.
+  EXPECT_NE(layer->cc_layer_for_testing()->cache_render_surface(),
+            clone->cc_layer_for_testing()->cache_render_surface());
+  // Cloning should not preserve trilinear_filtering flag.
+  EXPECT_NE(layer->cc_layer_for_testing()->trilinear_filtering(),
+            clone->cc_layer_for_testing()->trilinear_filtering());
+
+  layer->SetTransform(gfx::Transform());
+  layer->SetColor(SK_ColorGREEN);
+  layer->SetLayerInverted(false);
+
+  // The clone is an independent copy, so state changes do not propagate.
+  EXPECT_EQ(transform, clone->GetTargetTransform());
+  EXPECT_EQ(SK_ColorRED, clone->background_color());
+  EXPECT_EQ(SK_ColorRED, clone->GetTargetColor());
+  EXPECT_TRUE(clone->layer_inverted());
+
+  constexpr SkColor kTransparent = SK_ColorTRANSPARENT;
+  layer->SetColor(kTransparent);
+  layer->SetFillsBoundsOpaquely(false);
+  // Color and opaqueness targets should be preserved during cloning, even after
+  // switching away from solid color content.
+  layer->SwitchCCLayerForTest();
+
+  clone = layer->Clone();
+
+  // The clone is a copy of the latest state.
+  EXPECT_TRUE(clone->GetTargetTransform().IsIdentity());
+  EXPECT_EQ(kTransparent, clone->background_color());
+  EXPECT_EQ(kTransparent, clone->GetTargetColor());
+  EXPECT_FALSE(clone->layer_inverted());
+  EXPECT_FALSE(clone->fills_bounds_opaquely());
+
+  // A solid color layer with transparent color can be marked as opaque. The
+  // clone should retain this state.
+  layer.reset(CreateLayer(LAYER_SOLID_COLOR));
+  layer->SetColor(kTransparent);
+  layer->SetFillsBoundsOpaquely(true);
+
+  clone = layer->Clone();
+  EXPECT_TRUE(clone->GetTargetTransform().IsIdentity());
+  EXPECT_EQ(kTransparent, clone->background_color());
+  EXPECT_EQ(kTransparent, clone->GetTargetColor());
+  EXPECT_FALSE(clone->layer_inverted());
+  EXPECT_TRUE(clone->fills_bounds_opaquely());
+
+  layer.reset(CreateLayer(LAYER_SOLID_COLOR));
+  layer->SetVisible(true);
+  layer->SetOpacity(1.0f);
+  layer->SetColor(SK_ColorRED);
+
+  ScopedLayerAnimationSettings settings(layer->GetAnimator());
+  layer->SetVisible(false);
+  layer->SetOpacity(0.0f);
+  layer->SetColor(SK_ColorGREEN);
+
+  EXPECT_TRUE(layer->visible());
+  EXPECT_EQ(1.0f, layer->opacity());
+  EXPECT_EQ(SK_ColorRED, layer->background_color());
+
+  clone = layer->Clone();
+
+  // Cloning copies animation targets.
+  EXPECT_FALSE(clone->visible());
+  EXPECT_EQ(0.0f, clone->opacity());
+  EXPECT_EQ(SK_ColorGREEN, clone->background_color());
+}
+
+TEST_F(LayerWithDelegateTest, Mirroring) {
+  std::unique_ptr<Layer> root(CreateNoTextureLayer(gfx::Rect(0, 0, 100, 100)));
+  std::unique_ptr<Layer> child(CreateLayer(LAYER_TEXTURED));
+
+  const gfx::Rect bounds(0, 0, 50, 50);
+  child->SetBounds(bounds);
+  child->SetVisible(true);
+
+  DrawTreeLayerDelegate delegate(child->bounds());
+  child->set_delegate(&delegate);
+
+  const auto mirror = child->Mirror();
+
+  // Bounds and visibility are preserved.
+  EXPECT_EQ(bounds, mirror->bounds());
+  EXPECT_TRUE(mirror->visible());
+
+  root->Add(child.get());
+  root->Add(mirror.get());
+
+  DrawTree(root.get());
+  EXPECT_TRUE(delegate.painted());
+  delegate.Reset();
+
+  // Both layers should be clean.
+  EXPECT_TRUE(child->damaged_region_for_testing().IsEmpty());
+  EXPECT_TRUE(mirror->damaged_region_for_testing().IsEmpty());
+
+  const gfx::Rect damaged_rect(10, 10, 20, 20);
+  EXPECT_TRUE(child->SchedulePaint(damaged_rect));
+  EXPECT_EQ(damaged_rect, child->damaged_region_for_testing().bounds());
+
+  DrawTree(root.get());
+  EXPECT_TRUE(delegate.painted());
+  delegate.Reset();
+
+  // Damage should be propagated to the mirror.
+  EXPECT_EQ(damaged_rect, mirror->damaged_region_for_testing().bounds());
+  EXPECT_TRUE(child->damaged_region_for_testing().IsEmpty());
+
+  DrawTree(root.get());
+  EXPECT_TRUE(delegate.painted());
+
+  // Mirror should be clean.
+  EXPECT_TRUE(mirror->damaged_region_for_testing().IsEmpty());
+
+  // Bounds are not synchronized by default.
+  const gfx::Rect new_bounds(10, 10, 10, 10);
+  child->SetBounds(new_bounds);
+  EXPECT_EQ(bounds, mirror->bounds());
+  child->SetBounds(bounds);
+
+  // Bounds should be synchronized if requested.
+  child->set_sync_bounds(true);
+  child->SetBounds(new_bounds);
+  EXPECT_EQ(new_bounds, mirror->bounds());
+}
+
+// Tests for SurfaceLayer cloning and mirroring. This tests certain properties
+// are preserved.
+TEST_F(LayerWithDelegateTest, SurfaceLayerCloneAndMirror) {
+  const viz::FrameSinkId arbitrary_frame_sink(1, 1);
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  std::unique_ptr<Layer> layer(CreateLayer(LAYER_SOLID_COLOR));
+
+  allocator.GenerateId();
+  viz::LocalSurfaceId local_surface_id =
+      allocator.GetCurrentLocalSurfaceIdAllocation().local_surface_id();
+  viz::SurfaceId surface_id_one(arbitrary_frame_sink, local_surface_id);
+  layer->SetShowSurface(surface_id_one, gfx::Size(10, 10), SK_ColorWHITE,
+                        cc::DeadlinePolicy::UseDefaultDeadline(), false);
+  EXPECT_FALSE(layer->StretchContentToFillBounds());
+
+  auto clone = layer->Clone();
+  EXPECT_FALSE(clone->StretchContentToFillBounds());
+  auto mirror = layer->Mirror();
+  EXPECT_FALSE(mirror->StretchContentToFillBounds());
+
+  allocator.GenerateId();
+  local_surface_id =
+      allocator.GetCurrentLocalSurfaceIdAllocation().local_surface_id();
+  viz::SurfaceId surface_id_two(arbitrary_frame_sink, local_surface_id);
+  layer->SetShowSurface(surface_id_two, gfx::Size(10, 10), SK_ColorWHITE,
+                        cc::DeadlinePolicy::UseDefaultDeadline(), true);
+  EXPECT_TRUE(layer->StretchContentToFillBounds());
+
+  clone = layer->Clone();
+  EXPECT_TRUE(clone->StretchContentToFillBounds());
+  mirror = layer->Mirror();
+  EXPECT_TRUE(mirror->StretchContentToFillBounds());
+}
+
 class LayerWithNullDelegateTest : public LayerWithDelegateTest {
  public:
   LayerWithNullDelegateTest() {}
@@ -727,6 +963,10 @@ class LayerWithNullDelegateTest : public LayerWithDelegateTest {
     return layer;
   }
 
+  gfx::Rect LastInvalidation() const {
+    return default_layer_delegate_->invalidation();
+  }
+
  private:
   std::unique_ptr<NullLayerDelegate> default_layer_delegate_;
 
@@ -743,9 +983,10 @@ TEST_F(LayerWithNullDelegateTest, EscapedDebugNames) {
   std::string json;
   debug_info->AppendAsTraceFormat(&json);
   base::JSONReader json_reader;
-  std::unique_ptr<base::Value> debug_info_value(json_reader.ReadToValue(json));
+  std::unique_ptr<base::Value> debug_info_value(
+      json_reader.ReadToValueDeprecated(json));
   EXPECT_TRUE(debug_info_value);
-  EXPECT_TRUE(debug_info_value->IsType(base::Value::TYPE_DICTIONARY));
+  EXPECT_TRUE(debug_info_value->is_dict());
   base::DictionaryValue* dictionary = 0;
   EXPECT_TRUE(debug_info_value->GetAsDictionary(&dictionary));
   std::string roundtrip;
@@ -768,10 +1009,12 @@ TEST_F(LayerWithNullDelegateTest, SwitchLayerPreservesCCLayerState) {
   cc::Layer* before_layer = l1->cc_layer_for_testing();
 
   bool callback1_run = false;
-  cc::TextureMailbox mailbox(gpu::Mailbox::Generate(), gpu::SyncToken(), 0);
-  l1->SetTextureMailbox(mailbox, cc::SingleReleaseCallback::Create(
-                                     base::Bind(ReturnMailbox, &callback1_run)),
-                        gfx::Size(10, 10));
+  auto resource = viz::TransferableResource::MakeGL(
+      gpu::Mailbox::Generate(), GL_LINEAR, GL_TEXTURE_2D, gpu::SyncToken());
+  l1->SetTransferableResource(resource,
+                              viz::SingleReleaseCallback::Create(base::BindOnce(
+                                  ReturnMailbox, &callback1_run)),
+                              gfx::Size(10, 10));
 
   EXPECT_NE(before_layer, l1->cc_layer_for_testing());
 
@@ -783,10 +1026,12 @@ TEST_F(LayerWithNullDelegateTest, SwitchLayerPreservesCCLayerState) {
   EXPECT_FALSE(callback1_run);
 
   bool callback2_run = false;
-  mailbox = cc::TextureMailbox(gpu::Mailbox::Generate(), gpu::SyncToken(), 0);
-  l1->SetTextureMailbox(mailbox, cc::SingleReleaseCallback::Create(
-                                     base::Bind(ReturnMailbox, &callback2_run)),
-                        gfx::Size(10, 10));
+  resource = viz::TransferableResource::MakeGL(
+      gpu::Mailbox::Generate(), GL_LINEAR, GL_TEXTURE_2D, gpu::SyncToken());
+  l1->SetTransferableResource(resource,
+                              viz::SingleReleaseCallback::Create(base::BindOnce(
+                                  ReturnMailbox, &callback2_run)),
+                              gfx::Size(10, 10));
   EXPECT_TRUE(callback1_run);
   EXPECT_FALSE(callback2_run);
 
@@ -803,10 +1048,12 @@ TEST_F(LayerWithNullDelegateTest, SwitchLayerPreservesCCLayerState) {
 
   // Back to a texture, without changing the bounds of the layer or the texture.
   bool callback3_run = false;
-  mailbox = cc::TextureMailbox(gpu::Mailbox::Generate(), gpu::SyncToken(), 0);
-  l1->SetTextureMailbox(mailbox, cc::SingleReleaseCallback::Create(
-                                     base::Bind(ReturnMailbox, &callback3_run)),
-                        gfx::Size(10, 10));
+  resource = viz::TransferableResource::MakeGL(
+      gpu::Mailbox::Generate(), GL_LINEAR, GL_TEXTURE_2D, gpu::SyncToken());
+  l1->SetTransferableResource(resource,
+                              viz::SingleReleaseCallback::Create(base::BindOnce(
+                                  ReturnMailbox, &callback3_run)),
+                              gfx::Size(10, 10));
 
   EXPECT_NE(before_layer, l1->cc_layer_for_testing());
 
@@ -821,7 +1068,7 @@ TEST_F(LayerWithNullDelegateTest, SwitchLayerPreservesCCLayerState) {
   l1->SetShowSolidColorContent();
 }
 
-// Various visibile/drawn assertions.
+// Various visible/drawn assertions.
 TEST_F(LayerWithNullDelegateTest, Visibility) {
   std::unique_ptr<Layer> l1(new Layer(LAYER_TEXTURED));
   std::unique_ptr<Layer> l2(new Layer(LAYER_TEXTURED));
@@ -869,6 +1116,133 @@ TEST_F(LayerWithNullDelegateTest, Visibility) {
   EXPECT_FALSE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
   EXPECT_FALSE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
   EXPECT_TRUE(l3->cc_layer_for_testing()->hide_layer_and_subtree());
+}
+
+// Various visible/drawn assertions.
+TEST_F(LayerWithNullDelegateTest, MirroringVisibility) {
+  std::unique_ptr<Layer> l1(new Layer(LAYER_TEXTURED));
+  std::unique_ptr<Layer> l2(new Layer(LAYER_TEXTURED));
+  std::unique_ptr<Layer> l2_mirror = l2->Mirror();
+  l1->Add(l2.get());
+  l1->Add(l2_mirror.get());
+
+  NullLayerDelegate delegate;
+  l1->set_delegate(&delegate);
+  l2->set_delegate(&delegate);
+  l2_mirror->set_delegate(&delegate);
+
+  // Layers should initially be drawn.
+  EXPECT_TRUE(l1->IsDrawn());
+  EXPECT_TRUE(l2->IsDrawn());
+  EXPECT_TRUE(l2_mirror->IsDrawn());
+  EXPECT_FALSE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+
+  compositor()->SetRootLayer(l1.get());
+
+  Draw();
+
+  // Hiding the root layer should hide that specific layer and its subtree.
+  l1->SetVisible(false);
+
+  // Since the entire subtree is hidden, no layer should be drawn.
+  EXPECT_FALSE(l1->IsDrawn());
+  EXPECT_FALSE(l2->IsDrawn());
+  EXPECT_FALSE(l2_mirror->IsDrawn());
+
+  // The visibitily property for the subtree is rooted at |l1|.
+  EXPECT_TRUE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+
+  // Hiding |l2| should also set the visibility on its mirror layer. In this
+  // case the visibility of |l2| will be mirrored by |l2_mirror|.
+  l2->SetVisible(false);
+
+  // None of the layers are drawn since the visibility is false at every node.
+  EXPECT_FALSE(l1->IsDrawn());
+  EXPECT_FALSE(l2->IsDrawn());
+  EXPECT_FALSE(l2_mirror->IsDrawn());
+
+  // Visibility property is set on every node and hence their subtree is also
+  // hidden.
+  EXPECT_TRUE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_TRUE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_TRUE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+
+  // Setting visibility on the root layer should make that layer visible and its
+  // subtree ready for visibility.
+  l1->SetVisible(true);
+  EXPECT_TRUE(l1->IsDrawn());
+  EXPECT_FALSE(l2->IsDrawn());
+  EXPECT_FALSE(l2_mirror->IsDrawn());
+  EXPECT_FALSE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_TRUE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_TRUE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+
+  // Setting visibility on the mirrored layer should not effect its source
+  // layer.
+  l2_mirror->SetVisible(true);
+  EXPECT_TRUE(l1->IsDrawn());
+  EXPECT_FALSE(l2->IsDrawn());
+  EXPECT_TRUE(l2_mirror->IsDrawn());
+  EXPECT_FALSE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_TRUE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+
+  // Setting visibility on the source layer should keep the mirror layer in
+  // sync and not cause any invalid state.
+  l2->SetVisible(true);
+  EXPECT_TRUE(l1->IsDrawn());
+  EXPECT_TRUE(l2->IsDrawn());
+  EXPECT_TRUE(l2_mirror->IsDrawn());
+  EXPECT_FALSE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+
+  // Setting visibility on the mirrored layer should not effect its source
+  // layer.
+  l2_mirror->SetVisible(false);
+  EXPECT_TRUE(l1->IsDrawn());
+  EXPECT_TRUE(l2->IsDrawn());
+  EXPECT_FALSE(l2_mirror->IsDrawn());
+  EXPECT_FALSE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_TRUE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+
+  // Setting source layer's visibility to true should update the mirror layer
+  // even if the source layer did not change in the process.
+  l2->SetVisible(true);
+  EXPECT_TRUE(l1->IsDrawn());
+  EXPECT_TRUE(l2->IsDrawn());
+  EXPECT_TRUE(l2_mirror->IsDrawn());
+  EXPECT_FALSE(l1->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2->cc_layer_for_testing()->hide_layer_and_subtree());
+  EXPECT_FALSE(l2_mirror->cc_layer_for_testing()->hide_layer_and_subtree());
+}
+
+TEST_F(LayerWithDelegateTest, RoundedCorner) {
+  gfx::Rect layer_bounds(10, 20, 100, 100);
+  const std::array<uint32_t, 4> radii = {5, 10, 15, 20};
+  const std::array<uint32_t, 4> kEmpty = {0, 0, 0, 0};
+  std::unique_ptr<Layer> layer(new Layer(LAYER_TEXTURED));
+
+  NullLayerDelegate delegate;
+  layer->set_delegate(&delegate);
+  layer->SetVisible(true);
+  layer->SetBounds(layer_bounds);
+  layer->SetMasksToBounds(true);
+
+  compositor()->SetRootLayer(layer.get());
+  Draw();
+
+  EXPECT_EQ(layer->rounded_corner_radii(), kEmpty);
+
+  // Setting a rounded corner radius should set an rrect with bounds same as the
+  // layer.
+  layer->SetRoundedCornerRadius(radii);
+  EXPECT_EQ(layer->rounded_corner_radii(), radii);
 }
 
 // Checks that stacking-related methods behave as advertised.
@@ -948,16 +1322,20 @@ TEST_F(LayerWithNullDelegateTest, SetBoundsSchedulesPaint) {
   WaitForDraw();
 }
 
-static void EmptyReleaseCallback(const gpu::SyncToken& sync_token,
-                                 bool is_lost) {}
-
 // Checks that the damage rect for a TextureLayer is empty after a commit.
 TEST_F(LayerWithNullDelegateTest, EmptyDamagedRect) {
+  base::RunLoop run_loop;
+  viz::ReleaseCallback callback = base::BindOnce(
+      [](base::RunLoop* run_loop, const gpu::SyncToken& sync_token,
+         bool is_lost) { run_loop->Quit(); },
+      base::Unretained(&run_loop));
+
   std::unique_ptr<Layer> root(CreateLayer(LAYER_SOLID_COLOR));
-  cc::TextureMailbox mailbox(gpu::Mailbox::Generate(), gpu::SyncToken(), 0);
-  root->SetTextureMailbox(mailbox, cc::SingleReleaseCallback::Create(
-                                       base::Bind(EmptyReleaseCallback)),
-                          gfx::Size(10, 10));
+  auto resource = viz::TransferableResource::MakeGL(
+      gpu::Mailbox::Generate(), GL_LINEAR, GL_TEXTURE_2D, gpu::SyncToken());
+  root->SetTransferableResource(
+      resource, viz::SingleReleaseCallback::Create(std::move(callback)),
+      gfx::Size(10, 10));
   compositor()->SetRootLayer(root.get());
 
   root->SetBounds(gfx::Rect(0, 0, 10, 10));
@@ -970,9 +1348,80 @@ TEST_F(LayerWithNullDelegateTest, EmptyDamagedRect) {
   WaitForCommit();
   EXPECT_TRUE(root->damaged_region_for_testing().IsEmpty());
 
-  compositor()->SetRootLayer(nullptr);
-  root.reset();
+  // The texture mailbox has a reference from an in-flight texture layer.
+  // We clear the texture mailbox from the root layer and draw a new frame
+  // to ensure that the texture mailbox is released.
+  root->SetShowSolidColorContent();
+  Draw();
+
+  // Wait for texture mailbox release to avoid DCHECKs.
+  run_loop.Run();
+}
+
+// Tests that in deferred paint request, the layer damage will be accumulated.
+TEST_F(LayerWithNullDelegateTest, UpdateDamageInDeferredPaint) {
+  gfx::Rect bound(gfx::Rect(500, 500));
+  std::unique_ptr<Layer> root(CreateTextureRootLayer(bound));
+  EXPECT_EQ(bound, root->damaged_region_for_testing());
   WaitForCommit();
+  EXPECT_EQ(gfx::Rect(), root->damaged_region_for_testing());
+  EXPECT_EQ(bound, LastInvalidation());
+
+  // Deferring paint.
+  root->AddDeferredPaintRequest();
+
+  // During deferring paint request, invalid_rect will not be set to
+  // cc_layer_->inputs_->update_rect, and the paint_region is empty.
+  gfx::Rect bound1(gfx::Rect(100, 100));
+  root->SchedulePaint(bound1);
+  EXPECT_EQ(bound1, root->damaged_region_for_testing());
+  root->SendDamagedRects();
+  EXPECT_EQ(gfx::Rect(), root->cc_layer_for_testing()->update_rect());
+  root->PaintContentsToDisplayList(
+      cc::ContentLayerClient::PAINTING_BEHAVIOR_NORMAL);
+  EXPECT_EQ(gfx::Rect(), LastInvalidation());
+
+  // During deferring paint request, a new invalid_rect will be accumulated.
+  gfx::Rect bound2(gfx::Rect(100, 200, 100, 100));
+  gfx::Rect bound_union(bound1);
+  bound_union.Union(bound2);
+  root->SchedulePaint(bound2);
+  EXPECT_EQ(bound_union, root->damaged_region_for_testing().bounds());
+  root->SendDamagedRects();
+  EXPECT_EQ(gfx::Rect(), root->cc_layer_for_testing()->update_rect());
+  root->PaintContentsToDisplayList(
+      cc::ContentLayerClient::PAINTING_BEHAVIOR_NORMAL);
+  EXPECT_EQ(gfx::Rect(), LastInvalidation());
+
+  // Remove deferring paint request.
+  root->RemoveDeferredPaintRequest();
+
+  // The invalidation region should be accumulated invalid_rect during deferred
+  // paint, i.e. union of bound1 and bound2.
+  root->SendDamagedRects();
+  EXPECT_EQ(bound_union, root->cc_layer_for_testing()->update_rect());
+  root->PaintContentsToDisplayList(
+      cc::ContentLayerClient::PAINTING_BEHAVIOR_NORMAL);
+  EXPECT_EQ(bound_union, LastInvalidation());
+}
+
+// Tests that Layer::SendDamagedRects() always recurses into its mask layer, if
+// present, even if it shouldn't send its damaged regions itself.
+TEST_F(LayerWithNullDelegateTest, AlwaysSendsMaskDamagedRects) {
+  gfx::Rect bound(gfx::Rect(2, 2));
+  std::unique_ptr<Layer> mask(CreateTextureLayer(bound));
+  std::unique_ptr<Layer> root(CreateTextureRootLayer(bound));
+  root->SetMaskLayer(mask.get());
+
+  WaitForCommit();
+  EXPECT_EQ(root->damaged_region_for_testing().bounds(), gfx::Rect());
+  EXPECT_EQ(mask->damaged_region_for_testing().bounds(), gfx::Rect());
+
+  const gfx::Rect invalid_rect(gfx::Size(1, 1));
+  mask->SchedulePaint(invalid_rect);
+  EXPECT_EQ(mask->damaged_region_for_testing().bounds(), invalid_rect);
+  root->SendDamagedRects();
+  EXPECT_EQ(mask->damaged_region_for_testing().bounds(), gfx::Rect());
 }
 
 void ExpectRgba(int x, int y, SkColor expected_color, SkColor actual_color) {
@@ -1014,7 +1463,6 @@ TEST_F(LayerWithRealCompositorTest, DrawPixels) {
   ReadPixels(&bitmap, gfx::Rect(viewport_size));
   ASSERT_FALSE(bitmap.empty());
 
-  SkAutoLockPixels lock(bitmap);
   for (int x = 0; x < viewport_size.width(); x++) {
     for (int y = 0; y < viewport_size.height(); y++) {
       SkColor actual_color = bitmap.getColor(x, y);
@@ -1034,8 +1482,8 @@ TEST_F(LayerWithRealCompositorTest, DrawAlphaBlendedPixels) {
   EXPECT_GE(viewport_size.height(), test_size);
 
   // Blue with a wee bit of transparency.
-  SkColor blue_with_alpha = SkColorSetARGBInline(40, 10, 20, 200);
-  SkColor blend_color = SkColorSetARGBInline(255, 216, 3, 32);
+  SkColor blue_with_alpha = SkColorSetARGB(40, 10, 20, 200);
+  SkColor blend_color = SkColorSetARGB(255, 216, 3, 32);
 
   std::unique_ptr<Layer> background_layer(
       CreateColorLayer(SK_ColorRED, gfx::Rect(viewport_size)));
@@ -1052,7 +1500,6 @@ TEST_F(LayerWithRealCompositorTest, DrawAlphaBlendedPixels) {
   ReadPixels(&bitmap, gfx::Rect(viewport_size));
   ASSERT_FALSE(bitmap.empty());
 
-  SkAutoLockPixels lock(bitmap);
   for (int x = 0; x < test_size; x++) {
     for (int y = 0; y < test_size; y++) {
       SkColor actual_color = bitmap.getColor(x, y);
@@ -1071,8 +1518,8 @@ TEST_F(LayerWithRealCompositorTest, DrawAlphaThresholdFilterPixels) {
   EXPECT_GE(viewport_size.height(), test_size);
 
   int blue_height = 10;
-  SkColor blue_with_alpha = SkColorSetARGBInline(40, 0, 0, 255);
-  SkColor blend_color = SkColorSetARGBInline(255, 215, 0, 40);
+  SkColor blue_with_alpha = SkColorSetARGB(40, 0, 0, 255);
+  SkColor blend_color = SkColorSetARGB(255, 215, 0, 40);
 
   std::unique_ptr<Layer> background_layer(
       CreateColorLayer(SK_ColorRED, gfx::Rect(viewport_size)));
@@ -1080,9 +1527,9 @@ TEST_F(LayerWithRealCompositorTest, DrawAlphaThresholdFilterPixels) {
       CreateColorLayer(blue_with_alpha, gfx::Rect(viewport_size)));
 
   // Add a shape to restrict the visible part of the layer.
-  SkRegion shape;
-  shape.setRect(0, 0, viewport_size.width(), blue_height);
-  foreground_layer->SetAlphaShape(base::WrapUnique(new SkRegion(shape)));
+  auto shape = std::make_unique<Layer::ShapeRects>();
+  shape->emplace_back(0, 0, viewport_size.width(), blue_height);
+  foreground_layer->SetAlphaShape(std::move(shape));
 
   foreground_layer->SetFillsBoundsOpaquely(false);
 
@@ -1093,7 +1540,6 @@ TEST_F(LayerWithRealCompositorTest, DrawAlphaThresholdFilterPixels) {
   ReadPixels(&bitmap, gfx::Rect(viewport_size));
   ASSERT_FALSE(bitmap.empty());
 
-  SkAutoLockPixels lock(bitmap);
   for (int x = 0; x < test_size; x++) {
     for (int y = 0; y < test_size; y++) {
       SkColor actual_color = bitmap.getColor(x, y);
@@ -1136,7 +1582,14 @@ TEST_F(LayerWithRealCompositorTest, SetRootLayer) {
 // - After ScheduleDraw is called, or
 // - Whenever SetBounds, SetOpacity or SetTransform are called.
 // TODO(vollick): could be reorganized into compositor_unittest.cc
-TEST_F(LayerWithRealCompositorTest, CompositorObservers) {
+// Flaky on Windows. See https://crbug.com/784563.
+// Flaky on Linux tsan. See https://crbug.com/834026.
+#if defined(OS_WIN) || defined(OS_LINUX)
+#define MAYBE_CompositorObservers DISABLED_CompositorObservers
+#else
+#define MAYBE_CompositorObservers CompositorObservers
+#endif
+TEST_F(LayerWithRealCompositorTest, MAYBE_CompositorObservers) {
   std::unique_ptr<Layer> l1(
       CreateColorLayer(SK_ColorRED, gfx::Rect(20, 20, 400, 400)));
   std::unique_ptr<Layer> l2(
@@ -1190,15 +1643,6 @@ TEST_F(LayerWithRealCompositorTest, CompositorObservers) {
   WaitForSwap();
   EXPECT_TRUE(observer.notified());
 
-  // A change resulting in an aborted swap buffer should alert the observer
-  // and also signal an abort.
-  observer.Reset();
-  l2->SetOpacity(0.1f);
-  GetCompositor()->DidAbortSwapBuffers();
-  WaitForSwap();
-  EXPECT_TRUE(observer.notified());
-  EXPECT_TRUE(observer.aborted());
-
   GetCompositor()->RemoveObserver(&observer);
 
   // Opacity changes should no longer alert the removed observer.
@@ -1211,7 +1655,10 @@ TEST_F(LayerWithRealCompositorTest, CompositorObservers) {
 
 // Checks that modifying the hierarchy correctly affects final composite.
 TEST_F(LayerWithRealCompositorTest, ModifyHierarchy) {
-  GetCompositor()->SetScaleAndSize(1.0f, gfx::Size(50, 50));
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(50, 50), allocator.GetCurrentLocalSurfaceIdAllocation());
 
   // l0
   //  +-l11
@@ -1226,10 +1673,8 @@ TEST_F(LayerWithRealCompositorTest, ModifyHierarchy) {
   std::unique_ptr<Layer> l12(
       CreateColorLayer(SK_ColorBLUE, gfx::Rect(10, 10, 25, 25)));
 
-  base::FilePath ref_img1 =
-      test_data_directory().AppendASCII("ModifyHierarchy1.png");
-  base::FilePath ref_img2 =
-      test_data_directory().AppendASCII("ModifyHierarchy2.png");
+  base::FilePath ref_img1 = test_data_dir().AppendASCII("ModifyHierarchy1.png");
+  base::FilePath ref_img2 = test_data_dir().AppendASCII("ModifyHierarchy2.png");
   SkBitmap bitmap;
 
   l0->Add(l11.get());
@@ -1277,10 +1722,140 @@ TEST_F(LayerWithRealCompositorTest, ModifyHierarchy) {
   EXPECT_TRUE(MatchesPNGFile(bitmap, ref_img2, cc::ExactPixelComparator(true)));
 }
 
+// Checks that basic background blur is working.
+TEST_F(LayerWithRealCompositorTest, BackgroundBlur) {
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(200, 200),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
+  // l0
+  //  +-l1
+  //  +-l2
+  std::unique_ptr<Layer> l0(
+      CreateColorLayer(SK_ColorRED, gfx::Rect(0, 0, 200, 200)));
+  std::unique_ptr<Layer> l1(
+      CreateColorLayer(SK_ColorGREEN, gfx::Rect(100, 100, 100, 100)));
+  SkColor blue_with_alpha = SkColorSetARGB(40, 10, 20, 200);
+  std::unique_ptr<Layer> l2(
+      CreateColorLayer(blue_with_alpha, gfx::Rect(50, 50, 100, 100)));
+  l2->SetFillsBoundsOpaquely(false);
+  l2->SetBackgroundBlur(15);
+
+  base::FilePath ref_img1 = test_data_dir().AppendASCII("BackgroundBlur1.png");
+  base::FilePath ref_img2 = test_data_dir().AppendASCII("BackgroundBlur2.png");
+  SkBitmap bitmap;
+
+  l0->Add(l1.get());
+  l0->Add(l2.get());
+  DrawTree(l0.get());
+  ReadPixels(&bitmap);
+  ASSERT_FALSE(bitmap.empty());
+  // WritePNGFile(bitmap, ref_img1, false);
+  EXPECT_TRUE(MatchesPNGFile(bitmap, ref_img1, cc::ExactPixelComparator(true)));
+
+  l0->StackAtTop(l1.get());
+  DrawTree(l0.get());
+  ReadPixels(&bitmap);
+  ASSERT_FALSE(bitmap.empty());
+  // WritePNGFile(bitmap, ref_img2, false);
+  EXPECT_TRUE(MatchesPNGFile(bitmap, ref_img2, cc::ExactPixelComparator(true)));
+}
+
+// Checks that background blur bounds rect gets properly updated when device
+// scale changes.
+TEST_F(LayerWithRealCompositorTest, BackgroundBlurChangeDeviceScale) {
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(200, 200),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
+  // l0
+  //  +-l1
+  //  +-l2
+  std::unique_ptr<Layer> l0(
+      CreateColorLayer(SK_ColorRED, gfx::Rect(0, 0, 200, 200)));
+  std::unique_ptr<Layer> l1(
+      CreateColorLayer(SK_ColorGREEN, gfx::Rect(100, 100, 100, 100)));
+  SkColor blue_with_alpha = SkColorSetARGB(40, 10, 20, 200);
+  std::unique_ptr<Layer> l2(
+      CreateColorLayer(blue_with_alpha, gfx::Rect(50, 50, 100, 100)));
+  l2->SetFillsBoundsOpaquely(false);
+  l2->SetBackgroundBlur(15);
+
+  base::FilePath ref_img1 = test_data_dir().AppendASCII("BackgroundBlur1.png");
+  base::FilePath ref_img2 =
+      test_data_dir().AppendASCII("BackgroundBlur1_zoom.png");
+  SkBitmap bitmap;
+
+  l0->Add(l1.get());
+  l0->Add(l2.get());
+  DrawTree(l0.get());
+  ReadPixels(&bitmap);
+  ASSERT_FALSE(bitmap.empty());
+  // See LayerWithRealCompositorTest.BackgroundBlur test to rewrite this
+  // baseline.
+  EXPECT_TRUE(MatchesPNGFile(bitmap, ref_img1, cc::ExactPixelComparator(true)));
+
+  allocator.GenerateId();
+  // Now change the scale, and make sure the bounds are still correct.
+  GetCompositor()->SetScaleAndSize(
+      2.0f, gfx::Size(200, 200),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
+  DrawTree(l0.get());
+  ReadPixels(&bitmap);
+  ASSERT_FALSE(bitmap.empty());
+  // WritePNGFile(bitmap, ref_img2, false);
+  EXPECT_TRUE(MatchesPNGFile(bitmap, ref_img2, cc::ExactPixelComparator(true)));
+}
+
+// It is really hard to write pixel test on text rendering,
+// due to different font appearance.
+// So we choose to check result only on Windows.
+// See https://codereview.chromium.org/1634103003/#msg41
+#if defined(OS_WIN)
+TEST_F(LayerWithRealCompositorTest, CanvasDrawFadedString) {
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  gfx::Size size(50, 50);
+  GetCompositor()->SetScaleAndSize(
+      1.0f, size, allocator.GetCurrentLocalSurfaceIdAllocation());
+  DrawFadedStringLayerDelegate delegate(SK_ColorBLUE, size);
+  std::unique_ptr<Layer> layer(
+      CreateDrawFadedStringLayerDelegate(gfx::Rect(size), &delegate));
+  DrawTree(layer.get());
+
+  SkBitmap bitmap;
+  ReadPixels(&bitmap);
+  ASSERT_FALSE(bitmap.empty());
+
+  base::FilePath ref_img = test_data_dir().AppendASCII("string_faded.png");
+  // WritePNGFile(bitmap, ref_img, true);
+
+  float percentage_pixels_large_error = 8.0f;  // 200px / (50*50)
+  float percentage_pixels_small_error = 0.0f;
+  float average_error_allowed_in_bad_pixels = 80.f;
+  int large_error_allowed = 255;
+  int small_error_allowed = 0;
+
+  EXPECT_TRUE(MatchesPNGFile(bitmap, ref_img,
+                             cc::FuzzyPixelComparator(
+                                 true,
+                                 percentage_pixels_large_error,
+                                 percentage_pixels_small_error,
+                                 average_error_allowed_in_bad_pixels,
+                                 large_error_allowed,
+                                 small_error_allowed)));
+}
+#endif  // defined(OS_WIN)
+
 // Opacity is rendered correctly.
 // Checks that modifying the hierarchy correctly affects final composite.
 TEST_F(LayerWithRealCompositorTest, Opacity) {
-  GetCompositor()->SetScaleAndSize(1.0f, gfx::Size(50, 50));
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(50, 50), allocator.GetCurrentLocalSurfaceIdAllocation());
 
   // l0
   //  +-l11
@@ -1289,7 +1864,7 @@ TEST_F(LayerWithRealCompositorTest, Opacity) {
   std::unique_ptr<Layer> l11(
       CreateColorLayer(SK_ColorGREEN, gfx::Rect(0, 0, 25, 25)));
 
-  base::FilePath ref_img = test_data_directory().AppendASCII("Opacity.png");
+  base::FilePath ref_img = test_data_dir().AppendASCII("Opacity.png");
 
   l11->SetOpacity(0.75);
   l0->Add(l11.get());
@@ -1337,13 +1912,8 @@ class SchedulePaintLayerDelegate : public LayerDelegate {
     last_clip_rect_ = context.InvalidationForTesting();
   }
 
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip) override {}
-
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override {}
-
-  base::Closure PrepareForLayerBoundsChange() override {
-    return base::Closure();
-  }
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
 
   int paint_count_;
   Layer* layer_;
@@ -1401,7 +1971,11 @@ TEST_F(LayerWithRealCompositorTest, ScaleUpDown) {
   l1->set_delegate(&l1_delegate);
   l1_delegate.set_layer_bounds(l1->bounds());
 
-  GetCompositor()->SetScaleAndSize(1.0f, gfx::Size(500, 500));
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(500, 500),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   GetCompositor()->SetRootLayer(root.get());
   root->Add(l1.get());
   WaitForDraw();
@@ -1417,7 +1991,10 @@ TEST_F(LayerWithRealCompositorTest, ScaleUpDown) {
   EXPECT_EQ(0.0f, l1_delegate.device_scale_factor());
 
   // Scale up to 2.0. Changing scale doesn't change the bounds in DIP.
-  GetCompositor()->SetScaleAndSize(2.0f, gfx::Size(500, 500));
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      2.0f, gfx::Size(500, 500),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   EXPECT_EQ("10,20 200x220", root->bounds().ToString());
   EXPECT_EQ("10,20 140x180", l1->bounds().ToString());
   // CC layer should still match the UI layer bounds.
@@ -1431,7 +2008,10 @@ TEST_F(LayerWithRealCompositorTest, ScaleUpDown) {
   EXPECT_EQ(2.0f, l1_delegate.device_scale_factor());
 
   // Scale down back to 1.0f.
-  GetCompositor()->SetScaleAndSize(1.0f, gfx::Size(500, 500));
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(500, 500),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   EXPECT_EQ("10,20 200x220", root->bounds().ToString());
   EXPECT_EQ("10,20 140x180", l1->bounds().ToString());
   // CC layer should still match the UI layer bounds.
@@ -1448,13 +2028,18 @@ TEST_F(LayerWithRealCompositorTest, ScaleUpDown) {
   l1_delegate.reset();
   // Just changing the size shouldn't notify the scale change nor
   // trigger repaint.
-  GetCompositor()->SetScaleAndSize(1.0f, gfx::Size(1000, 1000));
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(1000, 1000),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   // No scale change, so no scale notification.
   EXPECT_EQ(0.0f, root_delegate.device_scale_factor());
   EXPECT_EQ(0.0f, l1_delegate.device_scale_factor());
 }
 
 TEST_F(LayerWithRealCompositorTest, ScaleReparent) {
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
   std::unique_ptr<Layer> root(
       CreateColorLayer(SK_ColorWHITE, gfx::Rect(10, 20, 200, 220)));
   std::unique_ptr<Layer> l1(
@@ -1464,7 +2049,9 @@ TEST_F(LayerWithRealCompositorTest, ScaleReparent) {
   l1->set_delegate(&l1_delegate);
   l1_delegate.set_layer_bounds(l1->bounds());
 
-  GetCompositor()->SetScaleAndSize(1.0f, gfx::Size(500, 500));
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(500, 500),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   GetCompositor()->SetRootLayer(root.get());
 
   root->Add(l1.get());
@@ -1477,7 +2064,10 @@ TEST_F(LayerWithRealCompositorTest, ScaleReparent) {
   root->Remove(l1.get());
   EXPECT_EQ(NULL, l1->parent());
   EXPECT_EQ(NULL, l1->GetCompositor());
-  GetCompositor()->SetScaleAndSize(2.0f, gfx::Size(500, 500));
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      2.0f, gfx::Size(500, 500),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   // Sanity check on root and l1.
   EXPECT_EQ("10,20 200x220", root->bounds().ToString());
   cc_bounds_size = l1->cc_layer_for_testing()->bounds();
@@ -1531,14 +2121,6 @@ TEST_F(LayerWithDelegateTest, SetBoundsWhenInvisible) {
   EXPECT_TRUE(delegate.painted());
 }
 
-namespace {
-
-void FakeSatisfyCallback(const cc::SurfaceSequence&) {}
-
-void FakeRequireCallback(const cc::SurfaceId&, const cc::SurfaceSequence&) {}
-
-}  // namespace
-
 TEST_F(LayerWithDelegateTest, ExternalContent) {
   std::unique_ptr<Layer> root(
       CreateNoTextureLayer(gfx::Rect(0, 0, 1000, 1000)));
@@ -1551,23 +2133,118 @@ TEST_F(LayerWithDelegateTest, ExternalContent) {
   // The layer is already showing solid color content, so the cc layer won't
   // change.
   scoped_refptr<cc::Layer> before = child->cc_layer_for_testing();
+
   child->SetShowSolidColorContent();
   EXPECT_TRUE(child->cc_layer_for_testing());
   EXPECT_EQ(before.get(), child->cc_layer_for_testing());
 
   // Showing surface content changes the underlying cc layer.
+  viz::FrameSinkId frame_sink_id(1u, 1u);
+  viz::ParentLocalSurfaceIdAllocator allocator;
   before = child->cc_layer_for_testing();
-  child->SetShowSurface(cc::SurfaceId(), base::Bind(&FakeSatisfyCallback),
-                        base::Bind(&FakeRequireCallback), gfx::Size(10, 10),
-                        1.0, gfx::Size(10, 10));
-  EXPECT_TRUE(child->cc_layer_for_testing());
-  EXPECT_NE(before.get(), child->cc_layer_for_testing());
+  allocator.GenerateId();
+  child->SetShowSurface(
+      viz::SurfaceId(
+          frame_sink_id,
+          allocator.GetCurrentLocalSurfaceIdAllocation().local_surface_id()),
+      gfx::Size(10, 10), SK_ColorWHITE,
+      cc::DeadlinePolicy::UseDefaultDeadline(), false);
+  scoped_refptr<cc::Layer> after = child->cc_layer_for_testing();
+  const auto* surface = static_cast<cc::SurfaceLayer*>(after.get());
+  EXPECT_TRUE(after.get());
+  EXPECT_NE(before.get(), after.get());
+  EXPECT_EQ(base::nullopt, surface->deadline_in_frames());
 
-  // Changing to painted content should change the underlying cc layer.
-  before = child->cc_layer_for_testing();
-  child->SetShowSolidColorContent();
-  EXPECT_TRUE(child->cc_layer_for_testing());
-  EXPECT_NE(before.get(), child->cc_layer_for_testing());
+  allocator.GenerateId();
+  child->SetShowSurface(
+      viz::SurfaceId(
+          frame_sink_id,
+          allocator.GetCurrentLocalSurfaceIdAllocation().local_surface_id()),
+      gfx::Size(10, 10), SK_ColorWHITE,
+      cc::DeadlinePolicy::UseSpecifiedDeadline(4u), false);
+  EXPECT_EQ(4u, surface->deadline_in_frames());
+}
+
+TEST_F(LayerWithDelegateTest, ExternalContentMirroring) {
+  std::unique_ptr<Layer> layer(CreateLayer(LAYER_SOLID_COLOR));
+
+  viz::SurfaceId surface_id(
+      viz::FrameSinkId(0, 1),
+      viz::LocalSurfaceId(2, base::UnguessableToken::Create()));
+  layer->SetShowSurface(surface_id, gfx::Size(10, 10), SK_ColorWHITE,
+                        cc::DeadlinePolicy::UseDefaultDeadline(), false);
+
+  const auto mirror = layer->Mirror();
+  auto* const cc_layer = mirror->cc_layer_for_testing();
+  const auto* surface = static_cast<cc::SurfaceLayer*>(cc_layer);
+
+  // Mirroring preserves surface state.
+  EXPECT_EQ(surface_id, surface->surface_id());
+
+  surface_id =
+      viz::SurfaceId(viz::FrameSinkId(1, 2),
+                     viz::LocalSurfaceId(3, base::UnguessableToken::Create()));
+  layer->SetShowSurface(surface_id, gfx::Size(20, 20), SK_ColorWHITE,
+                        cc::DeadlinePolicy::UseDefaultDeadline(), false);
+
+  // The mirror should continue to use the same cc_layer.
+  EXPECT_EQ(cc_layer, mirror->cc_layer_for_testing());
+  layer->SetShowSurface(surface_id, gfx::Size(20, 20), SK_ColorWHITE,
+                        cc::DeadlinePolicy::UseDefaultDeadline(), false);
+
+  // Surface updates propagate to the mirror.
+  EXPECT_EQ(surface_id, surface->surface_id());
+}
+
+TEST_F(LayerWithDelegateTest, TransferableResourceMirroring) {
+  std::unique_ptr<Layer> layer(CreateLayer(LAYER_SOLID_COLOR));
+
+  auto resource = viz::TransferableResource::MakeGL(
+      gpu::Mailbox::Generate(), GL_LINEAR, GL_TEXTURE_2D, gpu::SyncToken());
+  bool release_callback_run = false;
+
+  layer->SetTransferableResource(
+      resource,
+      viz::SingleReleaseCallback::Create(
+          base::BindOnce(ReturnMailbox, &release_callback_run)),
+      gfx::Size(10, 10));
+  EXPECT_FALSE(release_callback_run);
+  EXPECT_TRUE(layer->has_external_content());
+
+  auto mirror = layer->Mirror();
+  EXPECT_TRUE(mirror->has_external_content());
+
+  // Clearing the resource on a mirror layer should not release the source layer
+  // resource.
+  mirror.reset();
+  EXPECT_FALSE(release_callback_run);
+
+  mirror = layer->Mirror();
+  EXPECT_TRUE(mirror->has_external_content());
+
+  // Clearing the transferable resource on the source layer should clear it from
+  // the mirror layer as well.
+  layer->SetShowSolidColorContent();
+  EXPECT_TRUE(release_callback_run);
+  EXPECT_FALSE(layer->has_external_content());
+  EXPECT_FALSE(mirror->has_external_content());
+
+  resource = viz::TransferableResource::MakeGL(
+      gpu::Mailbox::Generate(), GL_LINEAR, GL_TEXTURE_2D, gpu::SyncToken());
+  release_callback_run = false;
+
+  // Setting a transferable resource on the source layer should set it on the
+  // mirror layers as well.
+  layer->SetTransferableResource(
+      resource,
+      viz::SingleReleaseCallback::Create(
+          base::BindOnce(ReturnMailbox, &release_callback_run)),
+      gfx::Size(10, 10));
+  EXPECT_FALSE(release_callback_run);
+  EXPECT_TRUE(layer->has_external_content());
+  EXPECT_TRUE(mirror->has_external_content());
+
+  layer.reset();
 }
 
 // Verifies that layer filters still attached after changing implementation
@@ -1584,9 +2261,8 @@ TEST_F(LayerWithDelegateTest, LayerFiltersSurvival) {
 
   // Showing surface content changes the underlying cc layer.
   scoped_refptr<cc::Layer> before = layer->cc_layer_for_testing();
-  layer->SetShowSurface(cc::SurfaceId(), base::Bind(&FakeSatisfyCallback),
-                        base::Bind(&FakeRequireCallback), gfx::Size(10, 10),
-                        1.0, gfx::Size(10, 10));
+  layer->SetShowSurface(viz::SurfaceId(), gfx::Size(10, 10), SK_ColorWHITE,
+                        cc::DeadlinePolicy::UseDefaultDeadline(), false);
   EXPECT_EQ(layer->layer_grayscale(), 0.5f);
   EXPECT_TRUE(layer->cc_layer_for_testing());
   EXPECT_NE(before.get(), layer->cc_layer_for_testing());
@@ -1602,41 +2278,43 @@ TEST_F(LayerWithRealCompositorTest, AddRemoveThreadedAnimations) {
   l1->SetAnimator(LayerAnimator::CreateImplicitAnimator());
   l2->SetAnimator(LayerAnimator::CreateImplicitAnimator());
 
-  EXPECT_FALSE(l1->HasPendingThreadedAnimationsForTesting());
+  auto* animation1 = l1->GetAnimator()->GetAnimationForTesting();
+  auto* animation2 = l2->GetAnimator()->GetAnimationForTesting();
+
+  EXPECT_FALSE(animation1->keyframe_effect()->has_any_keyframe_model());
 
   // Trigger a threaded animation.
   l1->SetOpacity(0.5f);
 
-  EXPECT_TRUE(l1->HasPendingThreadedAnimationsForTesting());
+  EXPECT_TRUE(animation1->keyframe_effect()->has_any_keyframe_model());
 
   // Ensure we can remove a pending threaded animation.
   l1->GetAnimator()->StopAnimating();
 
-  EXPECT_FALSE(l1->HasPendingThreadedAnimationsForTesting());
+  EXPECT_FALSE(animation1->keyframe_effect()->has_any_keyframe_model());
 
   // Trigger another threaded animation.
   l1->SetOpacity(0.2f);
 
-  EXPECT_TRUE(l1->HasPendingThreadedAnimationsForTesting());
+  EXPECT_TRUE(animation1->keyframe_effect()->has_any_keyframe_model());
 
   root->Add(l1.get());
   GetCompositor()->SetRootLayer(root.get());
 
-  // Now that l1 is part of a tree, it should have dispatched the pending
-  // animation.
-  EXPECT_FALSE(l1->HasPendingThreadedAnimationsForTesting());
+  // Now l1 is part of a tree.
+  EXPECT_TRUE(animation1->keyframe_effect()->has_any_keyframe_model());
 
-  // Ensure that l1 no longer holds on to animations.
   l1->SetOpacity(0.1f);
-  EXPECT_FALSE(l1->HasPendingThreadedAnimationsForTesting());
+  // IMMEDIATELY_SET_NEW_TARGET is a default preemption strategy for conflicting
+  // animations.
+  EXPECT_FALSE(animation1->keyframe_effect()->has_any_keyframe_model());
 
-  // Ensure that adding a layer to an existing tree causes its pending
-  // animations to get dispatched.
+  // Adding a layer to an existing tree.
   l2->SetOpacity(0.5f);
-  EXPECT_TRUE(l2->HasPendingThreadedAnimationsForTesting());
+  EXPECT_TRUE(animation2->keyframe_effect()->has_any_keyframe_model());
 
   l1->Add(l2.get());
-  EXPECT_FALSE(l2->HasPendingThreadedAnimationsForTesting());
+  EXPECT_TRUE(animation2->keyframe_effect()->has_any_keyframe_model());
 }
 
 // Tests that in-progress threaded animations complete when a Layer's
@@ -1732,6 +2410,40 @@ TEST_F(LayerWithRealCompositorTest, SwitchCCLayerSolidColorWhileAnimating) {
   EXPECT_EQ(transparent, root->GetTargetColor());
 }
 
+// Tests that when a layer with cache_render_surface flag has its CC layer
+// switched, that the cache_render_surface flag is maintained.
+TEST_F(LayerWithRealCompositorTest, SwitchCCLayerCacheRenderSurface) {
+  std::unique_ptr<Layer> root(CreateLayer(LAYER_TEXTURED));
+  std::unique_ptr<Layer> l1(CreateLayer(LAYER_TEXTURED));
+  GetCompositor()->SetRootLayer(root.get());
+  root->Add(l1.get());
+
+  l1->AddCacheRenderSurfaceRequest();
+
+  // Change l1's cc::Layer.
+  l1->SwitchCCLayerForTest();
+
+  // Ensure that the cache_render_surface flag is maintained.
+  EXPECT_TRUE(l1->cc_layer_for_testing()->cache_render_surface());
+}
+
+// Tests that when a layer with trilinear_filtering flag has its CC layer
+// switched, that the trilinear_filtering flag is maintained.
+TEST_F(LayerWithRealCompositorTest, SwitchCCLayerTrilinearFiltering) {
+  std::unique_ptr<Layer> root(CreateLayer(LAYER_TEXTURED));
+  std::unique_ptr<Layer> l1(CreateLayer(LAYER_TEXTURED));
+  GetCompositor()->SetRootLayer(root.get());
+  root->Add(l1.get());
+
+  l1->AddTrilinearFilteringRequest();
+
+  // Change l1's cc::Layer.
+  l1->SwitchCCLayerForTest();
+
+  // Ensure that the trilinear_filtering flag is maintained.
+  EXPECT_TRUE(l1->cc_layer_for_testing()->trilinear_filtering());
+}
+
 // Tests that the animators in the layer tree is added to the
 // animator-collection when the root-layer is set to the compositor.
 TEST_F(LayerWithDelegateTest, RootLayerAnimatorsInCompositor) {
@@ -1823,10 +2535,11 @@ TEST_F(LayerWithDelegateTest, NonAnimatingAnimatorsAreRemovedFromCollection) {
   LayerRemovingLayerAnimationObserver observer(root.get(), parent.get());
   child->GetAnimator()->AddObserver(&observer);
 
-  LayerAnimationElement* element =
+  std::unique_ptr<LayerAnimationElement> element =
       ui::LayerAnimationElement::CreateOpacityElement(
           0.5f, base::TimeDelta::FromSeconds(1));
-  LayerAnimationSequence* sequence = new LayerAnimationSequence(element);
+  LayerAnimationSequence* sequence =
+      new LayerAnimationSequence(std::move(element));
 
   child->GetAnimator()->StartAnimation(sequence);
   EXPECT_TRUE(compositor()->layer_animator_collection()->HasActiveAnimators());
@@ -1838,7 +2551,7 @@ TEST_F(LayerWithDelegateTest, NonAnimatingAnimatorsAreRemovedFromCollection) {
 
 namespace {
 
-std::string Vector2dFTo100thPercisionString(const gfx::Vector2dF& vector) {
+std::string Vector2dFTo100thPrecisionString(const gfx::Vector2dF& vector) {
   return base::StringPrintf("%.2f %0.2f", vector.x(), vector.y());
 }
 
@@ -1849,7 +2562,11 @@ TEST_F(LayerWithRealCompositorTest, SnapLayerToPixels) {
   std::unique_ptr<Layer> c1(CreateLayer(LAYER_TEXTURED));
   std::unique_ptr<Layer> c11(CreateLayer(LAYER_TEXTURED));
 
-  GetCompositor()->SetScaleAndSize(1.25f, gfx::Size(100, 100));
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.25f, gfx::Size(100, 100),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   GetCompositor()->SetRootLayer(root.get());
   root->Add(c1.get());
   c1->Add(c11.get());
@@ -1860,59 +2577,399 @@ TEST_F(LayerWithRealCompositorTest, SnapLayerToPixels) {
   SnapLayerToPhysicalPixelBoundary(root.get(), c11.get());
   // 0.5 at 1.25 scale : (1 - 0.25 + 0.25) / 1.25 = 0.4
   EXPECT_EQ("0.40 0.40",
-            Vector2dFTo100thPercisionString(c11->subpixel_position_offset()));
+            Vector2dFTo100thPrecisionString(c11->subpixel_position_offset()));
 
-  GetCompositor()->SetScaleAndSize(1.5f, gfx::Size(100, 100));
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.5f, gfx::Size(100, 100),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
   SnapLayerToPhysicalPixelBoundary(root.get(), c11.get());
   // c11 must already be aligned at 1.5 scale.
   EXPECT_EQ("0.00 0.00",
-            Vector2dFTo100thPercisionString(c11->subpixel_position_offset()));
+            Vector2dFTo100thPrecisionString(c11->subpixel_position_offset()));
 
   c11->SetBounds(gfx::Rect(2, 2, 10, 10));
   SnapLayerToPhysicalPixelBoundary(root.get(), c11.get());
   // c11 is now off the pixel.
   // 0.5 / 1.5 = 0.333...
   EXPECT_EQ("0.33 0.33",
-            Vector2dFTo100thPercisionString(c11->subpixel_position_offset()));
+            Vector2dFTo100thPrecisionString(c11->subpixel_position_offset()));
 }
 
-class FrameDamageCheckingDelegate : public TestLayerDelegate {
- public:
-  FrameDamageCheckingDelegate() : delegated_frame_damage_called_(false) {}
+TEST_F(LayerWithRealCompositorTest, SnapLayerToPixelsWithScaleTransform) {
+  std::unique_ptr<Layer> root(CreateLayer(LAYER_TEXTURED));
+  std::unique_ptr<Layer> c1(CreateLayer(LAYER_TEXTURED));
+  std::unique_ptr<Layer> c11(CreateLayer(LAYER_TEXTURED));
+  std::unique_ptr<Layer> c111(CreateLayer(LAYER_TEXTURED));
 
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip) override {
-    delegated_frame_damage_called_ = true;
-    delegated_frame_damage_rect_ = damage_rect_in_dip;
-  }
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(
+      1.0f, gfx::Size(100, 100),
+      allocator.GetCurrentLocalSurfaceIdAllocation());
+  GetCompositor()->SetRootLayer(root.get());
+  root->Add(c1.get());
+  c1->Add(c11.get());
+  c11->Add(c111.get());
 
-  const gfx::Rect& delegated_frame_damage_rect() const {
-    return delegated_frame_damage_rect_;
-  }
-  bool delegated_frame_damage_called() const {
-    return delegated_frame_damage_called_;
-  }
+  root->SetBounds(gfx::Rect(0, 0, 100, 100));
+  c1->SetBounds(gfx::Rect(0, 0, 10, 10));
+  c11->SetBounds(gfx::Rect(0, 0, 10, 10));
+  c111->SetBounds(gfx::Rect(2, 2, 5, 5));
 
- private:
-  gfx::Rect delegated_frame_damage_rect_;
-  bool delegated_frame_damage_called_;
+  gfx::Transform transform;
+  transform.Scale(1.25f, 1.25f);
 
-  DISALLOW_COPY_AND_ASSIGN(FrameDamageCheckingDelegate);
-};
+  c1->SetTransform(transform);
+  SnapLayerToPhysicalPixelBoundary(root.get(), c111.get());
 
-TEST(LayerDelegateTest, DelegatedFrameDamage) {
-  std::unique_ptr<Layer> layer(new Layer(LAYER_TEXTURED));
-  gfx::Rect damage_rect(2, 1, 5, 3);
+  // c111 ends up at 2.5, and is supposed to be snapped to 3.0. So subpixel
+  // offset is expected to be:
+  // 0.5 / 1.25 = 0.40
+  EXPECT_EQ("0.40 0.40",
+            Vector2dFTo100thPrecisionString(c111->subpixel_position_offset()));
 
-  FrameDamageCheckingDelegate delegate;
+  c11->SetTransform(transform);
+  SnapLayerToPhysicalPixelBoundary(root.get(), c111.get());
+
+  // c111 ends up at 3.125, and is supposed to be snapped to 3.0. So subpixel
+  // offset is expected to be:
+  // -0.125 / (1.25 * 1.25) = -0.08
+  EXPECT_EQ("-0.08 -0.08",
+            Vector2dFTo100thPrecisionString(c111->subpixel_position_offset()));
+
+  // A transform on c111 should not affect the subpixel offset so expect it to
+  // be the same as before.
+  c111->SetTransform(transform);
+  SnapLayerToPhysicalPixelBoundary(root.get(), c111.get());
+  EXPECT_EQ("-0.08 -0.08",
+            Vector2dFTo100thPrecisionString(c111->subpixel_position_offset()));
+}
+
+// Verify that LayerDelegate::OnLayerBoundsChanged() is called when the bounds
+// are set without an animation.
+TEST(LayerDelegateTest, OnLayerBoundsChanged) {
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
   layer->set_delegate(&delegate);
-  layer->SetShowSurface(cc::SurfaceId(), base::Bind(&FakeSatisfyCallback),
-                        base::Bind(&FakeRequireCallback), gfx::Size(10, 10),
-                        1.0, gfx::Size(10, 10));
+  const gfx::Rect initial_bounds = layer->bounds();
+  constexpr gfx::Rect kTargetBounds(1, 2, 3, 4);
+  EXPECT_CALL(delegate,
+              OnLayerBoundsChanged(initial_bounds,
+                                   PropertyChangeReason::NOT_FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](const gfx::Rect&, PropertyChangeReason) {
+        // Verify that |layer->bounds()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->bounds(), kTargetBounds);
+      }));
+  layer->SetBounds(kTargetBounds);
+}
 
-  EXPECT_FALSE(delegate.delegated_frame_damage_called());
-  layer->OnDelegatedFrameDamage(damage_rect);
-  EXPECT_TRUE(delegate.delegated_frame_damage_called());
-  EXPECT_EQ(damage_rect, delegate.delegated_frame_damage_rect());
+// Verify that LayerDelegate::OnLayerBoundsChanged() is called at every step of
+// a bounds animation.
+TEST(LayerDelegateTest, OnLayerBoundsChangedAnimation) {
+  ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  LayerAnimatorTestController test_controller(
+      LayerAnimator::CreateImplicitAnimator());
+  LayerAnimator* const animator = test_controller.animator();
+
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
+  layer->set_delegate(&delegate);
+  layer->SetAnimator(animator);
+
+  const gfx::Rect initial_bounds = layer->bounds();
+  constexpr gfx::Rect kTargetBounds(10, 20, 30, 40);
+  const gfx::Rect step_bounds =
+      gfx::Tween::RectValueBetween(0.5, initial_bounds, kTargetBounds);
+
+  // Start the animation.
+  std::unique_ptr<LayerAnimationElement> element =
+      LayerAnimationElement::CreateBoundsElement(
+          kTargetBounds, base::TimeDelta::FromSeconds(1));
+  ASSERT_FALSE(element->IsThreaded(layer.get()));
+  LayerAnimationElement* element_raw = element.get();
+  animator->StartAnimation(new LayerAnimationSequence(std::move(element)));
+  testing::Mock::VerifyAndClear(&delegate);
+
+  // Progress the animation.
+  EXPECT_CALL(delegate,
+              OnLayerBoundsChanged(initial_bounds,
+                                   PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](const gfx::Rect&, PropertyChangeReason) {
+        // Verify that |layer->bounds()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->bounds(), step_bounds);
+        EXPECT_TRUE(
+            animator->IsAnimatingProperty(LayerAnimationElement::BOUNDS));
+      }));
+  test_controller.Step(element_raw->duration() / 2);
+  testing::Mock::VerifyAndClear(&delegate);
+
+  // End the animation.
+  EXPECT_CALL(delegate, OnLayerBoundsChanged(
+                            step_bounds, PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](const gfx::Rect&, PropertyChangeReason) {
+        // Verify that |layer->bounds()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->bounds(), kTargetBounds);
+        EXPECT_FALSE(
+            animator->IsAnimatingProperty(LayerAnimationElement::BOUNDS));
+      }));
+  test_controller.Step(element_raw->duration() / 2);
+  testing::Mock::VerifyAndClear(&delegate);
+}
+
+// Verify that LayerDelegate::OnLayerTransformed() is called when the transform
+// is set without an animation.
+TEST(LayerDelegateTest, OnLayerTransformed) {
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
+  layer->set_delegate(&delegate);
+  gfx::Transform target_transform1;
+  target_transform1.Skew(10.0f, 5.0f);
+  {
+    EXPECT_CALL(delegate,
+                OnLayerTransformed(gfx::Transform(),
+                                   PropertyChangeReason::NOT_FROM_ANIMATION))
+        .WillOnce(testing::Invoke(
+            [&](const gfx::Transform& old_transform, PropertyChangeReason) {
+              // Verify that |layer->transform()| returns the correct value when
+              // the delegate is notified.
+              EXPECT_EQ(target_transform1, layer->transform());
+            }));
+    layer->SetTransform(target_transform1);
+  }
+  gfx::Transform target_transform2;
+  target_transform2.Skew(10.0f, 5.0f);
+  EXPECT_CALL(delegate,
+              OnLayerTransformed(target_transform1,
+                                 PropertyChangeReason::NOT_FROM_ANIMATION))
+      .WillOnce(testing::Invoke(
+          [&](const gfx::Transform& old_transform, PropertyChangeReason) {
+            // Verify that |layer->transform()| returns the correct value when
+            // the delegate is notified.
+            EXPECT_EQ(target_transform2, layer->transform());
+          }));
+  layer->SetTransform(target_transform2);
+}
+
+// Verify that LayerDelegate::OnLayerTransformed() is called at every step of a
+// non-threaded transform transition.
+TEST(LayerDelegateTest, OnLayerTransformedNonThreadedAnimation) {
+  ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  LayerAnimatorTestController test_controller(
+      LayerAnimator::CreateImplicitAnimator());
+  LayerAnimator* const animator = test_controller.animator();
+
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
+  layer->set_delegate(&delegate);
+  layer->SetAnimator(animator);
+
+  auto interpolated_transform = std::make_unique<InterpolatedRotation>(10, 45);
+  const gfx::Transform initial_transform =
+      interpolated_transform->Interpolate(0.0);
+  const gfx::Transform step_transform =
+      interpolated_transform->Interpolate(0.5);
+  const gfx::Transform target_transform =
+      interpolated_transform->Interpolate(1.0);
+
+  // Start the animation.
+  std::unique_ptr<LayerAnimationElement> element =
+      LayerAnimationElement::CreateInterpolatedTransformElement(
+          std::move(interpolated_transform), base::TimeDelta::FromSeconds(1));
+  // The LayerAnimationElement returned by CreateInterpolatedTransformElement()
+  // is non-threaded.
+  ASSERT_FALSE(element->IsThreaded(layer.get()));
+  LayerAnimationElement* element_raw = element.get();
+  EXPECT_CALL(delegate,
+              OnLayerTransformed(gfx::Transform(),
+                                 PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](const gfx::Transform& old_transform,
+                                    PropertyChangeReason) {
+        // Verify that |layer->transform()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->transform(), initial_transform);
+        EXPECT_TRUE(
+            animator->IsAnimatingProperty(LayerAnimationElement::TRANSFORM));
+      }));
+  animator->StartAnimation(new LayerAnimationSequence(std::move(element)));
+  testing::Mock::VerifyAndClear(&delegate);
+
+  // Progress the animation.
+  EXPECT_CALL(delegate,
+              OnLayerTransformed(initial_transform,
+                                 PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke(
+          [&](const gfx::Transform& old_transform, PropertyChangeReason) {
+            // Verify that |layer->transform()| returns the correct value when
+            // the delegate is notified.
+            EXPECT_EQ(layer->transform(), step_transform);
+          }));
+  test_controller.Step(element_raw->duration() / 2);
+  testing::Mock::VerifyAndClear(&delegate);
+
+  // End the animation.
+  EXPECT_CALL(
+      delegate,
+      OnLayerTransformed(step_transform, PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](const gfx::Transform& old_transform,
+                                    PropertyChangeReason) {
+        // Verify that |layer->transform()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->transform(), target_transform);
+        EXPECT_FALSE(
+            animator->IsAnimatingProperty(LayerAnimationElement::TRANSFORM));
+      }));
+  test_controller.Step(element_raw->duration() / 2);
+  testing::Mock::VerifyAndClear(&delegate);
+}
+
+// Verify that LayerDelegate::OnLayerTransformed() is called at the beginning
+// and at the end of a threaded transform transition.
+TEST(LayerDelegateTest, OnLayerTransformedThreadedAnimation) {
+  ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  LayerAnimatorTestController test_controller(
+      LayerAnimator::CreateImplicitAnimator());
+  LayerAnimator* const animator = test_controller.animator();
+
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
+  layer->set_delegate(&delegate);
+  layer->SetAnimator(animator);
+
+  // Start the animation.
+  gfx::Transform initial_transform = layer->transform();
+  gfx::Transform target_transform;
+  target_transform.Skew(10.0f, 5.0f);
+  std::unique_ptr<LayerAnimationElement> element =
+      LayerAnimationElement::CreateTransformElement(
+          target_transform, base::TimeDelta::FromSeconds(1));
+  ASSERT_TRUE(element->IsThreaded(layer.get()));
+  LayerAnimationElement* element_raw = element.get();
+  EXPECT_CALL(delegate,
+              OnLayerTransformed(gfx::Transform(),
+                                 PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](const gfx::Transform& old_transform,
+                                    PropertyChangeReason) {
+        // Verify that |layer->transform()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->transform(), initial_transform);
+        EXPECT_TRUE(
+            animator->IsAnimatingProperty(LayerAnimationElement::TRANSFORM));
+      }));
+  animator->StartAnimation(new LayerAnimationSequence(std::move(element)));
+  testing::Mock::VerifyAndClear(&delegate);
+  test_controller.StartThreadedAnimationsIfNeeded();
+
+  // End the animation.
+  EXPECT_CALL(delegate,
+              OnLayerTransformed(initial_transform,
+                                 PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](const gfx::Transform& old_transform,
+                                    PropertyChangeReason) {
+        // Verify that |layer->transform()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->transform(), target_transform);
+        EXPECT_FALSE(
+            animator->IsAnimatingProperty(LayerAnimationElement::TRANSFORM));
+      }));
+  test_controller.Step(
+      element_raw->duration() +
+      (element_raw->effective_start_time() - animator->last_step_time()));
+  testing::Mock::VerifyAndClear(&delegate);
+}
+
+// Verify that LayerDelegate::OnLayerOpacityChanged() is called when the opacity
+// is set without an animation.
+TEST(LayerDelegateTest, OnLayerOpacityChanged) {
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
+  layer->set_delegate(&delegate);
+  constexpr float kTargetOpacity = 0.5f;
+  EXPECT_CALL(delegate,
+              OnLayerOpacityChanged(PropertyChangeReason::NOT_FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](PropertyChangeReason) {
+        // Verify that |layer->opacity()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->opacity(), kTargetOpacity);
+      }));
+  layer->SetOpacity(kTargetOpacity);
+}
+
+// Verify that LayerDelegate::OnLayerOpacityChanged() is called at the beginning
+// and at the end of a threaded opacity animation.
+TEST(LayerDelegateTest, OnLayerOpacityChangedAnimation) {
+  ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  LayerAnimatorTestController test_controller(
+      LayerAnimator::CreateImplicitAnimator());
+  LayerAnimator* const animator = test_controller.animator();
+
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
+  layer->set_delegate(&delegate);
+  layer->SetAnimator(animator);
+
+  // Start the animation.
+  const float initial_opacity = layer->opacity();
+  const float kTargetOpacity = 0.5f;
+  std::unique_ptr<LayerAnimationElement> element =
+      LayerAnimationElement::CreateOpacityElement(
+          kTargetOpacity, base::TimeDelta::FromSeconds(1));
+  ASSERT_TRUE(element->IsThreaded(layer.get()));
+  LayerAnimationElement* element_raw = element.get();
+  EXPECT_CALL(delegate,
+              OnLayerOpacityChanged(PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](PropertyChangeReason) {
+        // Verify that |layer->opacity()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->opacity(), initial_opacity);
+        EXPECT_TRUE(
+            animator->IsAnimatingProperty(LayerAnimationElement::OPACITY));
+      }));
+  animator->StartAnimation(new LayerAnimationSequence(std::move(element)));
+  testing::Mock::VerifyAndClear(&delegate);
+  test_controller.StartThreadedAnimationsIfNeeded();
+
+  // End the animation.
+  EXPECT_CALL(delegate,
+              OnLayerOpacityChanged(PropertyChangeReason::FROM_ANIMATION))
+      .WillOnce(testing::Invoke([&](PropertyChangeReason) {
+        // Verify that |layer->opacity()| returns the correct value when the
+        // delegate is notified.
+        EXPECT_EQ(layer->opacity(), kTargetOpacity);
+        EXPECT_FALSE(
+            animator->IsAnimatingProperty(LayerAnimationElement::OPACITY));
+      }));
+  test_controller.Step(
+      element_raw->duration() +
+      (element_raw->effective_start_time() - animator->last_step_time()));
+  testing::Mock::VerifyAndClear(&delegate);
+}
+
+// Verify that LayerDelegate::OnLayerAlphaShapeChanged() is called when the
+// alpha shape of a layer is set.
+TEST(LayerDelegateTest, OnLayerAlphaShapeChanged) {
+  auto layer = std::make_unique<Layer>(LAYER_TEXTURED);
+  testing::StrictMock<TestLayerDelegate> delegate;
+  layer->set_delegate(&delegate);
+
+  // Set an alpha shape for the layer. Expect the delegate to be notified.
+  auto shape = std::make_unique<Layer::ShapeRects>();
+  shape->emplace_back(0, 0, 10, 20);
+  EXPECT_CALL(delegate, OnLayerAlphaShapeChanged());
+  layer->SetAlphaShape(std::move(shape));
+  testing::Mock::VerifyAndClear(&delegate);
+
+  // Clear the alpha shape for the layer. Expect the delegate to be notified.
+  EXPECT_CALL(delegate, OnLayerAlphaShapeChanged());
+  layer->SetAlphaShape(nullptr);
+  testing::Mock::VerifyAndClear(&delegate);
 }
 
 TEST_F(LayerWithRealCompositorTest, CompositorAnimationObserverTest) {
@@ -1924,12 +2981,23 @@ TEST_F(LayerWithRealCompositorTest, CompositorAnimationObserverTest) {
   EXPECT_EQ(0u, animation_observer.animation_step_count());
 
   root->SetOpacity(0.5f);
-  WaitForSwap();
+  WaitForDraw();
   EXPECT_EQ(1u, animation_observer.animation_step_count());
 
   EXPECT_FALSE(animation_observer.shutdown());
   ResetCompositor();
   EXPECT_TRUE(animation_observer.shutdown());
+}
+
+TEST(LayerDebugInfoTest, LayerNameDoesNotClobber) {
+  Layer layer(LAYER_NOT_DRAWN);
+  layer.set_name("foo");
+  std::unique_ptr<base::trace_event::ConvertableToTraceFormat> debug_info =
+      layer.TakeDebugInfo(nullptr);
+  std::string trace_format("bar,");
+  debug_info->AppendAsTraceFormat(&trace_format);
+  std::string expected("bar,{\"layer_name\":\"foo\"}");
+  EXPECT_EQ(expected, trace_format);
 }
 
 }  // namespace ui

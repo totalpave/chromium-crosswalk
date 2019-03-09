@@ -16,7 +16,7 @@ namespace views {
 // A view that requests a set amount of space.
 class StaticSizedView : public View {
  public:
-  explicit StaticSizedView(const gfx::Size& size);
+  explicit StaticSizedView(const gfx::Size& preferred_size = gfx::Size());
   ~StaticSizedView() override;
 
   void set_minimum_size(const gfx::Size& minimum_size) {
@@ -28,12 +28,12 @@ class StaticSizedView : public View {
   }
 
   // View overrides:
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   gfx::Size GetMinimumSize() const override;
   gfx::Size GetMaximumSize() const override;
 
  private:
-  gfx::Size size_;
+  gfx::Size preferred_size_;
   gfx::Size minimum_size_;
   gfx::Size maximum_size_;
 
@@ -46,10 +46,10 @@ class ProportionallySizedView : public View {
   explicit ProportionallySizedView(int factor);
   ~ProportionallySizedView() override;
 
-  void set_preferred_width(int width) { preferred_width_ = width; }
+  void SetPreferredWidth(int width);
 
   int GetHeightForWidth(int w) const override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
 
  private:
   // The multiplicative factor between width and height, i.e.
@@ -113,6 +113,19 @@ class EventCountView : public View {
   HandleMode handle_mode_;
 
   DISALLOW_COPY_AND_ASSIGN(EventCountView);
+};
+
+// A view which reacts to PreferredSizeChanged() from its children and calls
+// Layout().
+class ResizeAwareParentView : public View {
+ public:
+  ResizeAwareParentView();
+
+  // Overridden from View:
+  void ChildPreferredSizeChanged(View* child) override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(ResizeAwareParentView);
 };
 
 }  // namespace views

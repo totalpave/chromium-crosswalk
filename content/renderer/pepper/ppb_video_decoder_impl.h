@@ -22,7 +22,6 @@ struct PP_PictureBuffer_Dev;
 struct PP_VideoBitstreamBuffer_Dev;
 
 namespace content {
-class PPB_Graphics3D_Impl;
 
 class PPB_VideoDecoder_Impl : public ppapi::PPB_VideoDecoder_Shared,
                               public media::VideoDecodeAccelerator::Client {
@@ -72,6 +71,9 @@ class PPB_VideoDecoder_Impl : public ppapi::PPB_VideoDecoder_Shared,
   // This is NULL before initialization, and after destruction.
   // Holds a GpuVideoDecodeAcceleratorHost.
   std::unique_ptr<media::VideoDecodeAccelerator> decoder_;
+
+  // Used for UMA stats; not frame-accurate.
+  gfx::Size coded_size_;
 
   // The interface to use when making calls on the plugin. For the most part,
   // methods should not use this directly but should call GetPPP() instead.

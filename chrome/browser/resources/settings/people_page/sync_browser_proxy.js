@@ -10,22 +10,50 @@
 cr.exportPath('settings');
 
 /**
- * @typedef {{actionLinkText: (string|undefined),
- *            childUser: (boolean|undefined),
+ * @typedef {{fullName: (string|undefined),
+ *            givenName: (string|undefined),
+ *            email: string,
+ *            avatarImage: (string|undefined)}}
+ * @see chrome/browser/ui/webui/settings/people_handler.cc
+ */
+settings.StoredAccount;
+
+/**
+ * @typedef {{childUser: (boolean|undefined),
+ *            disabled: (boolean|undefined),
  *            domain: (string|undefined),
  *            hasError: (boolean|undefined),
  *            hasUnrecoverableError: (boolean|undefined),
  *            managed: (boolean|undefined),
- *            setupCompleted: (boolean|undefined),
  *            setupInProgress: (boolean|undefined),
  *            signedIn: (boolean|undefined),
+ *            signedInUsername: (string|undefined),
  *            signinAllowed: (boolean|undefined),
+ *            statusAction: (!settings.StatusAction),
+ *            statusActionText: (string|undefined),
  *            statusText: (string|undefined),
  *            supervisedUser: (boolean|undefined),
  *            syncSystemEnabled: (boolean|undefined)}}
  * @see chrome/browser/ui/webui/settings/people_handler.cc
  */
 settings.SyncStatus;
+
+
+/**
+ * Must be kept in sync with the return values of getSyncErrorAction in
+ * chrome/browser/ui/webui/settings/people_handler.cc
+ * @enum {string}
+ */
+settings.StatusAction = {
+  NO_ACTION: 'noAction',             // No action to take.
+  REAUTHENTICATE: 'reauthenticate',  // User needs to reauthenticate.
+  SIGNOUT_AND_SIGNIN:
+      'signOutAndSignIn',               // User needs to sign out and sign in.
+  UPGRADE_CLIENT: 'upgradeClient',      // User needs to upgrade the client.
+  ENTER_PASSPHRASE: 'enterPassphrase',  // User needs to enter passphrase.
+  CONFIRM_SYNC_SETTINGS:
+      'confirmSyncSettings',  // User needs to confirm sync settings.
+};
 
 /**
  * The state of sync. This is the data structure sent back and forth between
@@ -86,130 +114,195 @@ settings.PageStatus = {
 };
 
 cr.define('settings', function() {
-  /** @interface */
-  function SyncBrowserProxy() {}
+  /**
+   * Key to be used with localStorage.
+   * @type {string}
+   */
+  const PROMO_IMPRESSION_COUNT_KEY = 'signin-promo-count';
 
-  SyncBrowserProxy.prototype = {
-<if expr="not chromeos">
+  /** @interface */
+  class SyncBrowserProxy {
+    // <if expr="not chromeos">
     /**
      * Starts the signin process for the user. Does nothing if the user is
      * already signed in.
      */
-    startSignIn: function() {},
+    startSignIn() {}
 
     /**
      * Signs out the signed-in user.
      * @param {boolean} deleteProfile
      */
-    signOut: function(deleteProfile) {},
+    signOut(deleteProfile) {}
 
     /**
-     * Opens the multi-profile user manager.
+     * Invalidates the Sync token without signing the user out.
      */
-    manageOtherPeople: function() {},
-</if>
+    pauseSync() {}
+
+    /**
+     * @return {number} the number of times the sync account promo was shown.
+     */
+    getPromoImpressionCount() {}
+
+    /**
+     * Increment the number of times the sync account promo was shown.
+     */
+    incrementPromoImpressionCount() {}
+
+    // </if>
+
+    // <if expr="chromeos">
+    /**
+     * Signs the user out.
+     */
+    attemptUserExit() {}
+
+    // </if>
 
     /**
      * Gets the current sync status.
      * @return {!Promise<!settings.SyncStatus>}
      */
-    getSyncStatus: function() {},
+    getSyncStatus() {}
+
+    /**
+     * Gets a list of stored accounts.
+     * @return {!Promise<!Array<!settings.StoredAccount>>}
+     */
+    getStoredAccounts() {}
 
     /**
      * Function to invoke when the sync page has been navigated to. This
      * registers the UI as the "active" sync UI so that if the user tries to
      * open another sync UI, this one will be shown instead.
      */
-    didNavigateToSyncPage: function() {},
+    didNavigateToSyncPage() {}
 
     /**
      * Function to invoke when leaving the sync page so that the C++ layer can
      * be notified that the sync UI is no longer open.
+     * @param {boolean} didAbort
      */
-    didNavigateAwayFromSyncPage: function() {},
+    didNavigateAwayFromSyncPage(didAbort) {}
 
     /**
      * Sets which types of data to sync.
      * @param {!settings.SyncPrefs} syncPrefs
      * @return {!Promise<!settings.PageStatus>}
      */
-    setSyncDatatypes: function(syncPrefs) {},
+    setSyncDatatypes(syncPrefs) {}
 
     /**
      * Sets the sync encryption options.
      * @param {!settings.SyncPrefs} syncPrefs
      * @return {!Promise<!settings.PageStatus>}
      */
-    setSyncEncryption: function(syncPrefs) {},
+    setSyncEncryption(syncPrefs) {}
+
+    /**
+     * Start syncing with an account, specified by its email.
+     * |isDefaultPromoAccount| is true if |email| is the email of the default
+     * account displayed in the promo.
+     * @param {string} email
+     * @param {boolean} isDefaultPromoAccount
+     */
+    startSyncingWithEmail(email, isDefaultPromoAccount) {}
 
     /**
      * Opens the Google Activity Controls url in a new tab.
      */
-    openActivityControlsUrl: function() {},
-  };
+    openActivityControlsUrl() {}
+  }
 
   /**
-   * @constructor
    * @implements {settings.SyncBrowserProxy}
    */
-  function SyncBrowserProxyImpl() {}
-  cr.addSingletonGetter(SyncBrowserProxyImpl);
-
-  SyncBrowserProxyImpl.prototype = {
-<if expr="not chromeos">
+  class SyncBrowserProxyImpl {
+    // <if expr="not chromeos">
     /** @override */
-    startSignIn: function() {
-      // TODO(tommycli): Currently this is always false, but this will become
-      // a parameter once supervised users are implemented in MD Settings.
-      var creatingSupervisedUser = false;
-      chrome.send('SyncSetupStartSignIn', [creatingSupervisedUser]);
-    },
+    startSignIn() {
+      chrome.send('SyncSetupStartSignIn');
+    }
 
     /** @override */
-    signOut: function(deleteProfile) {
-      chrome.send('SyncSetupStopSyncing', [deleteProfile]);
-    },
+    signOut(deleteProfile) {
+      chrome.send('SyncSetupSignout', [deleteProfile]);
+    }
 
     /** @override */
-    manageOtherPeople: function() {
-      chrome.send('SyncSetupManageOtherPeople');
-    },
-</if>
+    pauseSync() {
+      chrome.send('SyncSetupPauseSync');
+    }
 
     /** @override */
-    getSyncStatus: function() {
+    getPromoImpressionCount() {
+      return parseInt(
+                 window.localStorage.getItem(PROMO_IMPRESSION_COUNT_KEY), 10) ||
+          0;
+    }
+
+    /** @override */
+    incrementPromoImpressionCount() {
+      window.localStorage.setItem(
+          PROMO_IMPRESSION_COUNT_KEY,
+          (this.getPromoImpressionCount() + 1).toString());
+    }
+
+    // </if>
+    // <if expr="chromeos">
+    /** @override */
+    attemptUserExit() {
+      return chrome.send('AttemptUserExit');
+    }
+    // </if>
+
+    /** @override */
+    getSyncStatus() {
       return cr.sendWithPromise('SyncSetupGetSyncStatus');
-    },
+    }
 
     /** @override */
-    didNavigateToSyncPage: function() {
+    getStoredAccounts() {
+      return cr.sendWithPromise('SyncSetupGetStoredAccounts');
+    }
+
+    /** @override */
+    didNavigateToSyncPage() {
       chrome.send('SyncSetupShowSetupUI');
-    },
+    }
 
     /** @override */
-    didNavigateAwayFromSyncPage: function() {
-      chrome.send('SyncSetupDidClosePage');
-    },
+    didNavigateAwayFromSyncPage(didAbort) {
+      chrome.send('SyncSetupDidClosePage', [didAbort]);
+    }
 
     /** @override */
-    setSyncDatatypes: function(syncPrefs) {
-      return cr.sendWithPromise('SyncSetupSetDatatypes',
-                                JSON.stringify(syncPrefs));
-    },
+    setSyncDatatypes(syncPrefs) {
+      return cr.sendWithPromise(
+          'SyncSetupSetDatatypes', JSON.stringify(syncPrefs));
+    }
 
     /** @override */
-    setSyncEncryption: function(syncPrefs) {
-      return cr.sendWithPromise('SyncSetupSetEncryption',
-                                JSON.stringify(syncPrefs));
-    },
+    setSyncEncryption(syncPrefs) {
+      return cr.sendWithPromise(
+          'SyncSetupSetEncryption', JSON.stringify(syncPrefs));
+    }
 
     /** @override */
-    openActivityControlsUrl: function() {
+    startSyncingWithEmail(email, isDefaultPromoAccount) {
+      chrome.send(
+          'SyncSetupStartSyncingWithEmail', [email, isDefaultPromoAccount]);
+    }
+
+    /** @override */
+    openActivityControlsUrl() {
       chrome.metricsPrivate.recordUserAction(
           'Signin_AccountSettings_GoogleActivityControlsClicked');
-      window.open(loadTimeData.getString('activityControlsUrl'));
     }
-  };
+  }
+
+  cr.addSingletonGetter(SyncBrowserProxyImpl);
 
   return {
     SyncBrowserProxy: SyncBrowserProxy,

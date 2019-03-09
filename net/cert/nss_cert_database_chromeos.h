@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef NET_CERT_NSS_CERT_DATABASE_CHROMEOS_
-#define NET_CERT_NSS_CERT_DATABASE_CHROMEOS_
+#ifndef NET_CERT_NSS_CERT_DATABASE_CHROMEOS_H_
+#define NET_CERT_NSS_CERT_DATABASE_CHROMEOS_H_
 
 #include "base/callback.h"
 #include "base/macros.h"
@@ -26,9 +26,10 @@ class NET_EXPORT NSSCertDatabaseChromeOS : public NSSCertDatabase {
   void SetSystemSlot(crypto::ScopedPK11Slot system_slot);
 
   // NSSCertDatabase implementation.
-  void ListCertsSync(CertificateList* certs) override;
-  void ListCerts(const NSSCertDatabase::ListCertsCallback& callback) override;
-  void ListModules(CryptoModuleList* modules, bool need_rw) const override;
+  ScopedCERTCertificateList ListCertsSync() override;
+  void ListCerts(NSSCertDatabase::ListCertsCallback callback) override;
+  void ListModules(std::vector<crypto::ScopedPK11Slot>* modules,
+                   bool need_rw) const override;
   crypto::ScopedPK11Slot GetSystemSlot() const override;
 
   // TODO(mattm): handle trust setting, deletion, etc correctly when certs exist
@@ -40,8 +41,8 @@ class NET_EXPORT NSSCertDatabaseChromeOS : public NSSCertDatabase {
   // The certificate list normally returned by NSSCertDatabase::ListCertsImpl
   // is additionally filtered by |profile_filter|.
   // Static so it may safely be used on the worker thread.
-  static void ListCertsImpl(const NSSProfileFilterChromeOS& profile_filter,
-                            CertificateList* certs);
+  static ScopedCERTCertificateList ListCertsImpl(
+      const NSSProfileFilterChromeOS& profile_filter);
 
   NSSProfileFilterChromeOS profile_filter_;
   crypto::ScopedPK11Slot system_slot_;
@@ -51,4 +52,4 @@ class NET_EXPORT NSSCertDatabaseChromeOS : public NSSCertDatabase {
 
 }  // namespace net
 
-#endif  // NET_CERT_NSS_CERT_DATABASE_CHROMEOS_
+#endif  // NET_CERT_NSS_CERT_DATABASE_CHROMEOS_H_

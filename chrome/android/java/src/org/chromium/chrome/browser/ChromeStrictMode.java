@@ -7,15 +7,14 @@ package org.chromium.chrome.browser;
 import android.app.ApplicationErrorReport;
 import android.os.Build;
 import android.os.Looper;
-import android.os.MessageQueue;
 import android.os.StrictMode;
 import android.support.annotation.UiThread;
 
 import org.chromium.base.BuildConfig;
 import org.chromium.base.CommandLine;
+import org.chromium.base.JavaExceptionReporter;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.base.library_loader.LibraryLoader;
 
 import java.lang.reflect.Field;
@@ -32,7 +31,7 @@ public class ChromeStrictMode {
     private static final double UPLOAD_PROBABILITY = 0.01;
     private static final double MAX_UPLOADS_PER_SESSION = 3;
 
-    private static boolean sIsStrictModeAlreadyConfigured = false;
+    private static boolean sIsStrictModeAlreadyConfigured;
     private static List<Object> sCachedStackTraces =
             Collections.synchronizedList(new ArrayList<Object>());
     private static AtomicInteger sNumUploads = new AtomicInteger();
@@ -105,30 +104,27 @@ public class ChromeStrictMode {
         }
         sNumUploads.set(0);
         // Delay handling StrictMode violations during initialization until the main loop is idle.
-        Looper.myQueue().addIdleHandler(new MessageQueue.IdleHandler() {
-            @Override
-            public boolean queueIdle() {
-                // Will retry if the native library has not been initialized.
-                if (!LibraryLoader.isInitialized()) return true;
-                // Check again next time if no more cached stack traces to upload, and we have not
-                // reached the max number of uploads for this session.
-                if (sCachedStackTraces.isEmpty()) {
-                    // TODO(wnwen): Add UMA count when this happens.
-                    // In case of races, continue checking an extra time (equal condition).
-                    return sNumUploads.get() <= MAX_UPLOADS_PER_SESSION;
-                }
-                // Since this is the only place we are removing elements, no need for additional
-                // synchronization to ensure it is still non-empty.
-                reportStrictModeViolation(sCachedStackTraces.remove(0));
-                return true;
+        Looper.myQueue().addIdleHandler(() -> {
+            // Will retry if the native library has not been initialized.
+            if (!LibraryLoader.getInstance().isInitialized()) return true;
+            // Check again next time if no more cached stack traces to upload, and we have not
+            // reached the max number of uploads for this session.
+            if (sCachedStackTraces.isEmpty()) {
+                // TODO(wnwen): Add UMA count when this happens.
+                // In case of races, continue checking an extra time (equal condition).
+                return sNumUploads.get() <= MAX_UPLOADS_PER_SESSION;
             }
+            // Since this is the only place we are removing elements, no need for additional
+            // synchronization to ensure it is still non-empty.
+            reportStrictModeViolation(sCachedStackTraces.remove(0));
+            return true;
         });
     }
 
     private static void turnOnDetection(StrictMode.ThreadPolicy.Builder threadPolicy,
             StrictMode.VmPolicy.Builder vmPolicy) {
         threadPolicy.detectAll();
-        if (Build.VERSION.CODENAME.equals("N") || Build.VERSION.SDK_INT > Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             vmPolicy.detectAll();
         } else {
             // Explicitly enable detection of all violations except file URI leaks, as that
@@ -160,7 +156,6 @@ public class ChromeStrictMode {
      */
     @UiThread
     // FindBugs doesn't like conditionals with compile time results
-    @SuppressFBWarnings("UCF_USELESS_CONTROL_FLOW_NEXT_LINE")
     public static void configureStrictMode() {
         assert ThreadUtils.runningOnUiThread();
         if (sIsStrictModeAlreadyConfigured) {
@@ -175,7 +170,7 @@ public class ChromeStrictMode {
 
         CommandLine commandLine = CommandLine.getInstance();
         if ("eng".equals(Build.TYPE)
-                || BuildConfig.IS_DEBUG
+                || BuildConfig.DCHECK_IS_ON
                 || ChromeVersionInfo.isLocalBuild()
                 || commandLine.hasSwitch(ChromeSwitches.STRICT_MODE)) {
             turnOnDetection(threadPolicy, vmPolicy);
@@ -195,7 +190,8 @@ public class ChromeStrictMode {
         // closely monitor this on dev channel.
         boolean enableStrictModeWatch =
                 (ChromeVersionInfo.isDevBuild() && Math.random() < UPLOAD_PROBABILITY);
-        if ((ChromeVersionInfo.isLocalBuild() && !BuildConfig.IS_DEBUG) || enableStrictModeWatch) {
+        if ((ChromeVersionInfo.isLocalBuild() && !BuildConfig.DCHECK_IS_ON)
+                || enableStrictModeWatch) {
             turnOnDetection(threadPolicy, vmPolicy);
             initializeStrictModeWatch();
         }

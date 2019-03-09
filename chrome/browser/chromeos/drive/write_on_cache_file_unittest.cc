@@ -33,23 +33,22 @@ class TestFileSystem : public DummyFileSystem {
   void OpenFile(const base::FilePath& file_path,
                 OpenMode open_mode,
                 const std::string& mime_type,
-                const OpenFileCallback& callback) override {
+                OpenFileCallback callback) override {
     EXPECT_EQ(OPEN_OR_CREATE_FILE, open_mode);
 
     // Emulate a case of opening a hosted document.
     if (file_path == base::FilePath(kInvalidPath)) {
-      callback.Run(FILE_ERROR_INVALID_OPERATION, base::FilePath(),
-                   base::Closure());
+      std::move(callback).Run(FILE_ERROR_INVALID_OPERATION, base::FilePath(),
+                              base::Closure());
       return;
     }
 
-    callback.Run(FILE_ERROR_OK, base::FilePath(kLocalPath),
-                 base::Bind(&TestFileSystem::CloseFile,
-                            base::Unretained(this)));
+    std::move(callback).Run(FILE_ERROR_OK, base::FilePath(kLocalPath),
+                            base::BindRepeating(&TestFileSystem::CloseFile,
+                                                base::Unretained(this)));
   }
 
  private:
-
   void CloseFile() {
     ++num_closed_;
   }
@@ -71,7 +70,7 @@ TEST(WriteOnCacheFileTest, PrepareFileForWritingSuccess) {
       base::FilePath(kDrivePath),
       std::string(),  // mime_type
       google_apis::test_util::CreateCopyResultCallback(&error, &path));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   EXPECT_EQ(FILE_ERROR_OK, error);
   EXPECT_EQ(kLocalPath, path.value());
@@ -93,7 +92,7 @@ TEST(WriteOnCacheFileTest, PrepareFileForWritingCreateFail) {
       base::FilePath(kInvalidPath),
       std::string(),  // mime_type
       google_apis::test_util::CreateCopyResultCallback(&error, &path));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   EXPECT_EQ(FILE_ERROR_INVALID_OPERATION, error);
   EXPECT_TRUE(path.empty());

@@ -23,6 +23,7 @@
 
 namespace gpu {
 struct Capabilities;
+struct ContextCreationAttribs;
 }
 
 namespace ppapi {
@@ -36,12 +37,14 @@ class PpapiCommandBufferProxy;
 
 class PPAPI_PROXY_EXPORT Graphics3D : public PPB_Graphics3D_Shared {
  public:
-  explicit Graphics3D(const HostResource& resource);
+  Graphics3D(const HostResource& resource,
+             const gfx::Size& size,
+             const bool single_buffer);
   ~Graphics3D() override;
 
   bool Init(gpu::gles2::GLES2Implementation* share_gles2,
             const gpu::Capabilities& capabilities,
-            const SerializedHandle& shared_state,
+            SerializedHandle shared_state,
             gpu::CommandBufferId command_buffer_id);
 
   // Graphics3DTrusted API. These are not implemented in the proxy.
@@ -52,8 +55,10 @@ class PPAPI_PROXY_EXPORT Graphics3D : public PPB_Graphics3D_Shared {
   PP_Bool DestroyTransferBuffer(int32_t id) override;
   gpu::CommandBuffer::State WaitForTokenInRange(int32_t start,
                                                 int32_t end) override;
-  gpu::CommandBuffer::State WaitForGetOffsetInRange(int32_t start,
-                                                    int32_t end) override;
+  gpu::CommandBuffer::State WaitForGetOffsetInRange(
+      uint32_t set_get_buffer_count,
+      int32_t start,
+      int32_t end) override;
   void EnsureWorkVisible() override;
   void TakeFrontBuffer() override;
 
@@ -61,9 +66,13 @@ class PPAPI_PROXY_EXPORT Graphics3D : public PPB_Graphics3D_Shared {
   // PPB_Graphics3D_Shared overrides.
   gpu::CommandBuffer* GetCommandBuffer() override;
   gpu::GpuControl* GetGpuControl() override;
-  int32_t DoSwapBuffers(const gpu::SyncToken& sync_token) override;
+  int32_t DoSwapBuffers(const gpu::SyncToken& sync_token,
+                        const gfx::Size& size) override;
 
   std::unique_ptr<PpapiCommandBufferProxy> command_buffer_;
+
+  uint64_t swap_id_ = 0;
+  bool single_buffer = false;
 
   DISALLOW_COPY_AND_ASSIGN(Graphics3D);
 };
@@ -86,7 +95,7 @@ class PPB_Graphics3D_Proxy : public InterfaceProxy {
  private:
   void OnMsgCreate(PP_Instance instance,
                    HostResource share_context,
-                   const std::vector<int32_t>& attribs,
+                   const gpu::ContextCreationAttribs& attrib_helper,
                    HostResource* result,
                    gpu::Capabilities* capabilities,
                    SerializedHandle* handle,
@@ -98,6 +107,7 @@ class PPB_Graphics3D_Proxy : public InterfaceProxy {
                                 gpu::CommandBuffer::State* state,
                                 bool* success);
   void OnMsgWaitForGetOffsetInRange(const HostResource& context,
+                                    uint32_t set_get_buffer_count,
                                     int32_t start,
                                     int32_t end,
                                     gpu::CommandBuffer::State* state,
@@ -110,7 +120,8 @@ class PPB_Graphics3D_Proxy : public InterfaceProxy {
       ppapi::proxy::SerializedHandle* transfer_buffer);
   void OnMsgDestroyTransferBuffer(const HostResource& context, int32_t id);
   void OnMsgSwapBuffers(const HostResource& context,
-                        const gpu::SyncToken& sync_token);
+                        const gpu::SyncToken& sync_token,
+                        const gfx::Size& size);
   void OnMsgTakeFrontBuffer(const HostResource& context);
   void OnMsgEnsureWorkVisible(const HostResource& context);
   // Renderer->plugin message handlers.
@@ -129,4 +140,3 @@ class PPB_Graphics3D_Proxy : public InterfaceProxy {
 }  // namespace ppapi
 
 #endif  // PPAPI_PROXY_PPB_GRAPHICS_3D_PROXY_H_
-

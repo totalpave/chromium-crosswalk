@@ -8,24 +8,28 @@
 #include <iosfwd>
 #include <string>
 
+#include "ui/gfx/geometry/geometry_export.h"
 #include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/geometry/vector2d.h"
-#include "ui/gfx/gfx_export.h"
 
 namespace gfx {
 
-class GFX_EXPORT ScrollOffset {
+// TODO(szager): Reconcile terminology with blink.  An 'offset' here corresponds
+// to a 'position' in blink.  In blink, 'offset' means something else.  See
+// third_party/WebKit/Source/core/layout/README.md for more information.
+
+class GEOMETRY_EXPORT ScrollOffset {
  public:
   ScrollOffset() : x_(0), y_(0) {}
-  ScrollOffset(double x, double y) : x_(x), y_(y) {}
+  ScrollOffset(float x, float y) : x_(x), y_(y) {}
   explicit ScrollOffset(const Vector2dF& v) : x_(v.x()), y_(v.y()) {}
   explicit ScrollOffset(const Vector2d& v) : x_(v.x()), y_(v.y()) {}
 
-  double x() const { return x_; }
-  void set_x(double x) { x_ = x; }
+  float x() const { return x_; }
+  void set_x(float x) { x_ = x; }
 
-  double y() const { return y_; }
-  void set_y(double y) { y_ = y; }
+  float y() const { return y_; }
+  void set_y(float y) { y_ = y; }
 
   // True if both components are 0.
   bool IsZero() const {
@@ -62,8 +66,8 @@ class GFX_EXPORT ScrollOffset {
     y_ = y_ >= other.y_ ? y_ : other.y_;
   }
 
-  void Scale(double scale) { Scale(scale, scale); }
-  void Scale(double x_scale, double y_scale) {
+  void Scale(float scale) { Scale(scale, scale); }
+  void Scale(float x_scale, float y_scale) {
     x_ *= x_scale;
     y_ *= y_scale;
   }
@@ -71,8 +75,8 @@ class GFX_EXPORT ScrollOffset {
   std::string ToString() const;
 
  private:
-  double x_;
-  double y_;
+  float x_;
+  float y_;
 };
 
 inline bool operator==(const ScrollOffset& lhs, const ScrollOffset& rhs) {
@@ -116,8 +120,8 @@ inline ScrollOffset ScrollOffsetWithDelta(const ScrollOffset& offset,
 }
 
 // This is declared here for use in gtest-based unit tests but is defined in
-// the gfx_test_support target. Depend on that to use this in your unit test.
-// This should not be used in production code - call ToString() instead.
+// the //ui/gfx:test_support target. Depend on that to use this in your unit
+// test. This should not be used in production code - call ToString() instead.
 void PrintTo(const ScrollOffset& scroll_offset, ::std::ostream* os);
 
 }  // namespace gfx

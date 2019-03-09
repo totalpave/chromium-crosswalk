@@ -5,14 +5,18 @@
 #ifndef CHROMEOS_DBUS_FAKE_MODEM_MESSAGING_CLIENT_H_
 #define CHROMEOS_DBUS_FAKE_MODEM_MESSAGING_CLIENT_H_
 
+#include <string>
+#include <vector>
+
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/modem_messaging_client.h"
 
 namespace chromeos {
 
-class CHROMEOS_EXPORT FakeModemMessagingClient : public ModemMessagingClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) FakeModemMessagingClient
+    : public ModemMessagingClient {
  public:
   FakeModemMessagingClient();
   ~FakeModemMessagingClient() override;
@@ -26,10 +30,10 @@ class CHROMEOS_EXPORT FakeModemMessagingClient : public ModemMessagingClient {
   void Delete(const std::string& service_name,
               const dbus::ObjectPath& object_path,
               const dbus::ObjectPath& sms_path,
-              const DeleteCallback& callback) override;
+              VoidDBusMethodCallback callback) override;
   void List(const std::string& service_name,
             const dbus::ObjectPath& object_path,
-            const ListCallback& callback) override;
+            ListCallback callback) override;
 
  private:
   SmsReceivedHandler sms_received_handler_;

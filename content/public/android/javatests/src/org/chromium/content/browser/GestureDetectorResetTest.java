@@ -6,19 +6,26 @@ package org.chromium.content.browser;
 
 import static org.chromium.base.test.util.ScalableTimeout.scaleTimeout;
 
-import android.test.suitebuilder.annotation.LargeTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.LargeTest;
 
-import junit.framework.Assert;
+import org.junit.Assert;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.DOMUtils;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer;
-import org.chromium.content.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
 import org.chromium.content_public.browser.LoadUrlParams;
-import org.chromium.content_shell_apk.ContentShellTestBase;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
+import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
+import org.chromium.content_shell_apk.ContentShellActivityTestRule;
 
 import java.util.concurrent.TimeUnit;
 
@@ -26,7 +33,11 @@ import java.util.concurrent.TimeUnit;
  * Provides test environment for Gesture Detector Reset for Content Shell.
  * This is a helper class for Content Shell tests.
 */
-public class GestureDetectorResetTest extends ContentShellTestBase {
+@RunWith(BaseJUnit4ClassRunner.class)
+public class GestureDetectorResetTest {
+    @Rule
+    public ContentShellActivityTestRule mActivityTestRule = new ContentShellActivityTestRule();
+
     private static final long WAIT_TIMEOUT_SECONDS = scaleTimeout(2);
     private static final String CLICK_TEST_URL = UrlUtils.encodeHtmlDataUri("<html><body>"
             + "<button id=\"button\" "
@@ -37,16 +48,14 @@ public class GestureDetectorResetTest extends ContentShellTestBase {
             + "</body></html>");
 
     private static class NodeContentsIsEqualToCriteria extends Criteria {
-        private final ContentViewCore mViewCore;
+        private final WebContents mWebContents;
         private final String mNodeId;
         private final String mExpectedContents;
 
-        public NodeContentsIsEqualToCriteria(
-                String failureReason,
-                ContentViewCore viewCore,
+        public NodeContentsIsEqualToCriteria(String failureReason, WebContents webContents,
                 String nodeId, String expectedContents) {
             super(failureReason);
-            mViewCore = viewCore;
+            mWebContents = webContents;
             mNodeId = nodeId;
             mExpectedContents = expectedContents;
             assert mExpectedContents != null;
@@ -55,7 +64,7 @@ public class GestureDetectorResetTest extends ContentShellTestBase {
         @Override
         public boolean isSatisfied() {
             try {
-                String contents = DOMUtils.getNodeContents(mViewCore.getWebContents(), mNodeId);
+                String contents = DOMUtils.getNodeContents(mWebContents, mNodeId);
                 return mExpectedContents.equals(contents);
             } catch (Throwable e) {
                 Assert.fail("Failed to retrieve node contents: " + e);
@@ -67,73 +76,74 @@ public class GestureDetectorResetTest extends ContentShellTestBase {
     public GestureDetectorResetTest() {
     }
 
-    private void verifyClicksAreRegistered(
-            String disambiguation,
-            ContentViewCore contentViewCore)
-                    throws InterruptedException, Exception, Throwable {
+    private void verifyClicksAreRegistered(String disambiguation, WebContents webContents)
+            throws InterruptedException, Exception, Throwable {
         // Initially the text on the page should say "not clicked".
-        CriteriaHelper.pollInstrumentationThread(new NodeContentsIsEqualToCriteria(
-                "The page contents is invalid " + disambiguation, contentViewCore,
-                "test", "not clicked"));
+        CriteriaHelper.pollInstrumentationThread(
+                new NodeContentsIsEqualToCriteria("The page contents is invalid " + disambiguation,
+                        webContents, "test", "not clicked"));
 
         // Click the button.
-        DOMUtils.clickNode(this, contentViewCore, "button");
+        DOMUtils.clickNode(webContents, "button");
 
         // After the click, the text on the page should say "clicked".
         CriteriaHelper.pollInstrumentationThread(new NodeContentsIsEqualToCriteria(
-                "The page contents didn't change after a click " + disambiguation,
-                contentViewCore, "test", "clicked"));
+                "The page contents didn't change after a click " + disambiguation, webContents,
+                "test", "clicked"));
     }
 
     /**
      * Tests that showing a select popup and having the page reload while the popup is showing does
      * not assert.
      */
+    @Test
     @LargeTest
     @Feature({"Browser"})
+    @RetryOnFailure
     public void testSeparateClicksAreRegisteredOnReload()
             throws InterruptedException, Exception, Throwable {
         // Load the test page.
-        launchContentShellWithUrl(CLICK_TEST_URL);
-        waitForActiveShellToBeDoneLoading();
+        mActivityTestRule.launchContentShellWithUrl(CLICK_TEST_URL);
+        mActivityTestRule.waitForActiveShellToBeDoneLoading();
 
-        final ContentViewCore viewCore = getContentViewCore();
-        final TestCallbackHelperContainer viewClient =
-                new TestCallbackHelperContainer(viewCore);
+        final WebContents webContents = mActivityTestRule.getWebContents();
+        final TestCallbackHelperContainer viewClient = new TestCallbackHelperContainer(webContents);
         final OnPageFinishedHelper onPageFinishedHelper =
                 viewClient.getOnPageFinishedHelper();
 
         // Test that the button click works.
-        verifyClicksAreRegistered("on initial load", viewCore);
+        verifyClicksAreRegistered("on initial load", webContents);
 
         // Reload the test page.
         int currentCallCount = onPageFinishedHelper.getCallCount();
-        getInstrumentation().runOnMainSync(new Runnable() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(new Runnable() {
             @Override
             public void run() {
-                getActivity().getActiveShell().loadUrl(CLICK_TEST_URL);
+                mActivityTestRule.getActivity().getActiveShell().loadUrl(CLICK_TEST_URL);
             }
         });
         onPageFinishedHelper.waitForCallback(currentCallCount, 1,
                 WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
         // Test that the button click still works.
-        verifyClicksAreRegistered("after reload", viewCore);
+        verifyClicksAreRegistered("after reload", webContents);
 
         // Directly navigate to the test page.
         currentCallCount = onPageFinishedHelper.getCallCount();
-        getInstrumentation().runOnMainSync(new Runnable() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(new Runnable() {
             @Override
             public void run() {
-                getActivity().getActiveShell().getContentViewCore().getWebContents()
-                        .getNavigationController().loadUrl(
-                                new LoadUrlParams(CLICK_TEST_URL));
+                mActivityTestRule.getActivity()
+                        .getActiveShell()
+                        .getWebContents()
+                        .getNavigationController()
+                        .loadUrl(new LoadUrlParams(CLICK_TEST_URL));
             }
         });
         onPageFinishedHelper.waitForCallback(currentCallCount, 1,
                 WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
         // Test that the button click still works.
-        verifyClicksAreRegistered("after direct navigation", viewCore);
+        verifyClicksAreRegistered("after direct navigation", webContents);
     }
 }

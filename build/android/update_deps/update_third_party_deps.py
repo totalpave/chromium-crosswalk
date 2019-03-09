@@ -5,12 +5,15 @@
 
 """
 Uploads or downloads third party libraries to or from google cloud storage.
+
+This script will only work for Android checkouts.
 """
 
 import argparse
 import logging
 import os
 import sys
+
 
 sys.path.append(os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir)))
@@ -56,9 +59,17 @@ def _CheckFileList(local_path, file_list):
   for f in abs_path_list:
     if os.path.commonprefix([f, local_path]) != local_path:
       raise IOError(
-          '%s in the arguments are not decendants of the specified directory %s'
+          '%s in the arguments is not descendant of the specified directory %s'
           % (f, local_path))
   return abs_path_list
+
+
+def _PurgeSymlinks(local_path):
+  for dirpath, _, filenames in os.walk(local_path):
+    for f in filenames:
+      path = os.path.join(dirpath, f)
+      if os.path.islink(path):
+        os.remove(path)
 
 
 def Upload(arguments):
@@ -66,7 +77,7 @@ def Upload(arguments):
   bucket_url, local_path = _CheckPaths(arguments.bucket_path,
                                        arguments.local_path)
   file_list = _CheckFileList(local_path, arguments.file_list)
-  upload_to_google_storage.upload_to_google_storage(
+  return upload_to_google_storage.upload_to_google_storage(
       input_filenames=file_list,
       base_url=bucket_url,
       gsutil=arguments.gsutil,
@@ -81,7 +92,8 @@ def Download(arguments):
   """Download files based on sha1 files in a third_party dir from gcs"""
   bucket_url, local_path = _CheckPaths(arguments.bucket_path,
                                        arguments.local_path)
-  download_from_google_storage.download_from_google_storage(
+  _PurgeSymlinks(local_path)
+  return download_from_google_storage.download_from_google_storage(
       local_path,
       bucket_url,
       gsutil=arguments.gsutil,
@@ -111,9 +123,8 @@ def main(argv):
   _AddBasicArguments(upload_parser)
   upload_parser.set_defaults(func=Upload)
   upload_parser.add_argument(
-      '-f', '--file-list', nargs='+',
-      help='A list of base paths for files in third_party to upload. by '
-           'default, it looks for all the jar files in the given local path')
+      '-f', '--file-list', nargs='+', required=True,
+      help='A list of base paths for files in third_party to upload.')
 
   arguments = parser.parse_args(argv)
   if not os.path.isdir(arguments.sdk_root):

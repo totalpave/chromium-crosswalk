@@ -1,106 +1,221 @@
-<link rel="import" href="chrome://resources/cr_elements/icons.html">
-<link rel="import" href="chrome://resources/html/assert.html">
-<link rel="import" href="chrome://resources/html/polymer.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-dialog-behavior/paper-dialog-behavior.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-dialog-behavior/paper-dialog-shared-styles.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-icon-button/paper-icon-button.html">
+<link rel="import" href="../../html/polymer.html">
+
+<link rel="import" href="../hidden_style_css.html">
+<link rel="import" href="../cr_icons_css.html">
+<link rel="import" href="../shared_vars_css.html">
+<link rel="import" href="../../html/assert.html">
+<link rel="import" href="chrome://resources/polymer/v1_0/paper-icon-button/paper-icon-button-light.html">
 
 <dom-module id="cr-dialog">
   <template>
-    <style include="paper-dialog-shared-styles">
-      :host {
-        border-radius: 2px;
+    <style include="cr-hidden-style cr-icons">
+      dialog {
+        --scroll-border-color: var(--paper-grey-300);
+        --scroll-border: 1px solid var(--scroll-border-color);
+        border: 0;
+        border-radius: 8px;
+        bottom: 50%;
+        box-shadow: 0 0 16px rgba(0, 0, 0, 0.12),
+                    0 16px 16px rgba(0, 0, 0, 0.24);
+        color: inherit;
+        overflow-y: hidden;
+        padding: 0;
+        top: 50%;
+        width: 512px;
+        @apply --cr-dialog-native;
       }
 
-      :host ::content > * {
-        /* Overrides paper-dialog-shared-styles. */
-        -webkit-padding-end: 0;
-        -webkit-padding-start: 0;
-        margin-bottom: 0;
-        margin-top: 0;
+      :host-context([dark]) dialog {
+        --scroll-border-color: var(--google-grey-refresh-700);
+        background-color: var(--google-grey-900);
+        /* Note: the colors in linear-gradient() are intentionally the same to
+         * add a 4% white layer on top of the fully opaque background-color. */
+        background-image: linear-gradient(rgba(255, 255, 255, .04),
+                                          rgba(255, 255, 255, .04));
       }
 
-      .title-container {
-        align-items: center;
-        /* TODO(dbeam): should this be a --settings-separator-line? */
-        border-bottom: 1px solid rgba(0, 0, 0, 0.14);
+      dialog[open] #content-wrapper {
+        /* Keep max-height within viewport, and flex content accordingly. */
         display: flex;
-        min-height: 52px;
+        flex-direction: column;
+        max-height: 100vh;
+        overflow: auto;
+        @apply --cr-dialog-wrapper;
       }
 
-      :host ::content .title {
-        font-size: 114.28%; /* (16px / 14px) * 100 */
+      /* When needing to flex, force .body-container alone to shrink. */
+      .top-container,
+      :host ::slotted([slot=button-container]),
+      :host ::slotted([slot=footer]) {
+        flex-shrink: 0;
       }
 
-      #close {
-        --paper-icon-button: {
-          height: 40px;
-          width: 40px;
-        };
-        -webkit-margin-end: 6px;
-        /* <paper-icon-button> overrides --iron-icon-{height,width}, so this
-         * padding essentially reduces 40x40 to 20x20. */
-        padding: 10px;
+      dialog::backdrop {
+        background-color: rgba(0, 0, 0, 0.6);
+        bottom: 0;
+        left: 0;
+        position: fixed;
+        right: 0;
+        top: 0;
+      }
+
+      /**
+       * When using mixins, avoid using padding shorthand. Using both the
+       * shorthand and top/bottom/start/end can lead to style override issues.
+       * This is only noticable when the |optimize_webui=true| build argument
+       * is used.
+       *
+       * See https://crbug.com/846254 and associated CL for more information.
+       */
+      :host ::slotted([slot=body]) {
+        color: var(--cr-secondary-text-color);
+        padding-bottom: 0;
+        padding-inline-end: 20px;
+        padding-inline-start: 20px;
+        padding-top: 0;
+        @apply --cr-dialog-body;
+      }
+
+      /**
+       * When using mixins, avoid using padding shorthand. Using both the
+       * shorthand and top/bottom/start/end can lead to style override issues.
+       * This is only noticable when the |optimize_webui=true| build argument
+       * is used.
+       *
+       * See https://crbug.com/846254 and associated CL for more information.
+       */
+      :host ::slotted([slot=title]) {
+        color: var(--cr-primary-text-color);
+        flex: 1;
+        font-size: calc(15 / 13 * 100%);
+        line-height: 1;
+        padding-bottom: 16px;
+        padding-inline-end: 20px;
+        padding-inline-start: 20px;
+        padding-top: 20px;
+        @apply --cr-dialog-title;
+      }
+
+      /**
+       * When using mixins, avoid using padding shorthand. Using both the
+       * shorthand and top/bottom/start/end can lead to style override issues.
+       * This is only noticable when the |optimize_webui=true| build argument
+       * is used.
+       *
+       * See https://crbug.com/846254 and associated CL for more information.
+       */
+      :host ::slotted([slot=button-container]) {
+        display: flex;
+        justify-content: flex-end;
+        padding-bottom: 16px;
+        padding-inline-end: 16px;
+        padding-inline-start: 16px;
+        padding-top: 24px;
+        @apply --cr-dialog-button-container;
+      }
+
+      :host ::slotted([slot=footer]) {
+        border-bottom-left-radius: inherit;
+        border-bottom-right-radius: inherit;
+        border-top: 1px solid #dbdbdb;
+        margin: 0;
+        padding: 16px 20px;
+      }
+
+      :host-context([dark]) ::slotted([slot=footer]) {
+        border-top-color: var(--cr-separator-color);
       }
 
       .body-container {
+        /* Prevent layout moving when border does appear. */
+        border-bottom: 1px solid transparent;
+        border-top: 1px solid transparent;
+
+        box-sizing: border-box;
         display: flex;
         flex-direction: column;
-        max-width: 800px;
-        min-width: 512px;
-        /* TODO(dbeam): use <paper-dialog-scrollable> to get dividers? */
+        min-height: 1.375rem; /* Minimum reasonably usable height. */
         overflow: auto;
+
+        @apply --cr-dialog-body-container;
       }
 
-      :host ::content .body {
-        margin: 12px 0;
+      .body-container.bottom-scrollable {
+        border-bottom: var(--scroll-border);
       }
 
-      :host ::content .body,
-      :host ::content .title {
-        -webkit-padding-end: 24px;
-        -webkit-padding-start: 24px;
-        flex: 1;
+      .body-container.top-scrollable {
+        border-top: var(--scroll-border);
       }
 
-      :host ::content .body,
-      :host ::content .footer,
-      :host ::content paper-button {
-        font-size: 92.86%; /* (13px / 14px) * 100 */
-      }
-
-      :host ::content .button-container {
-        -webkit-padding-end: 16px;
-        -webkit-padding-start: 16px;
+      .top-container {
+        align-items: flex-start;
         display: flex;
-        justify-content: flex-end;
-        margin-bottom: 12px;
-        margin-top: 12px;
+        min-height: var(--cr-dialog-top-container-min-height, 31px);
       }
 
-      :host ::content .button-container .cancel-button {
-        -webkit-margin-end: 8px;
-        color: var(--paper-grey-600);
+      .title-container {
+        display: flex;
+        flex: 1;
+        outline: none;
       }
 
-      :host ::content .footer {
-        background-color: var(--paper-grey-200);
-        border-bottom-left-radius: inherit;
-        border-bottom-right-radius: inherit;
-        margin: 0;
-        padding: 12px 20px;
+      /* TODO (rbpotter): Remove all the --cr-dialog-close-* mixins below, */
+      /* when Print Preview is updated to Material Design. */
+      #closeContainer {
+        --layout-inline: {
+          display: flex;
+        };
+
+        align-self: flex-start;
+        margin-inline-end: 4px;
+        margin-top: 4px;
+
+        @apply --cr-dialog-close-image;
+      }
+
+      #closeContainer:hover {
+        @apply --cr-dialog-close-image-hover;
+      }
+
+      #closeContainer:focus-within {
+        @apply --cr-dialog-close-image-focus;
+      }
+
+      #closeContainer:active {
+        @apply --cr-dialog-close-image-active;
+      }
+
+      #closeContainer paper-ripple {
+        @apply --cr-dialog-close-ripple;
       }
     </style>
-    <div class="title-container">
-      <content select=".title"></content>
-      <paper-icon-button icon="cr:clear" on-tap="cancel" id="close">
-      </paper-icon-button>
-    </div>
-    <div class="body-container">
-      <content select=".body"></content>
-    </div>
-    <content select=".button-container"></content>
-    <content select=".footer"></content>
+    <dialog id="dialog" on-close="onNativeDialogClose_"
+        on-cancel="onNativeDialogCancel_">
+      <!-- This wrapper is necessary, such that the "pulse" animation is not
+        erroneously played when the user clicks on the outer-most scrollbar. -->
+      <div id="content-wrapper">
+        <div class="top-container">
+          <div class="title-container" tabindex="-1">
+            <slot name="title"></slot>
+          </div>
+          <paper-icon-button-light id="closeContainer" class="icon-clear"
+              hidden$="[[!showCloseButton]]">
+            <button id="close" aria-label$="[[closeText]]"
+                on-tap="cancel" on-keypress="onCloseKeypress_">
+            </button>
+          </paper-icon-button-light>
+        </div>
+        <slot name="header"></slot>
+        <div class="body-container">
+          <span id="bodyTopMarker"></span>
+          <slot name="body"></slot>
+          <span id="bodyBottomMarker"></span>
+        </div>
+        <slot name="button-container"></slot>
+        <slot name="footer"></slot>
+      </div>
+    </dialog>
   </template>
   <script src="cr_dialog.js"></script>
 </dom-module>

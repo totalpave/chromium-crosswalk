@@ -1,5 +1,0 @@
-Tests that console dumps native function without exception.
-
-Math.random
-random() { [native code] }
-

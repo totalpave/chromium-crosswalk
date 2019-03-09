@@ -88,7 +88,7 @@ class MEDIA_EXPORT TextRenderer {
   // a read from the stream completes.
   void BufferReady(DemuxerStream* text_stream,
                    DemuxerStream::Status status,
-                   const scoped_refptr<DecoderBuffer>& input);
+                   scoped_refptr<DecoderBuffer> input);
 
   // Dispatches the decoded cue delivered on the demuxer's |text_stream|.
   void CueReady(DemuxerStream* text_stream,
@@ -121,8 +121,8 @@ class MEDIA_EXPORT TextRenderer {
   };
   State state_;
 
-  typedef std::map<DemuxerStream*, TextTrackState*> TextTrackStateMap;
-  TextTrackStateMap text_track_state_map_;
+  std::map<DemuxerStream*, std::unique_ptr<TextTrackState>>
+      text_track_state_map_;
 
   // Indicates how many read requests are in flight.
   int pending_read_count_;

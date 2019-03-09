@@ -4,7 +4,6 @@
 # found in the LICENSE file.
 
 import argparse
-import collections
 import os
 import re
 import shutil
@@ -33,8 +32,8 @@ import perf_tests_results_helper # pylint: disable=import-error
 # string_ids_off      : 112 (0x000070)
 # type_ids_size       : 5730
 # type_ids_off        : 184704 (0x02d180)
-# proto_ids_size       : 8289
-# proto_ids_off        : 207624 (0x032b08)
+# proto_ids_size      : 8289
+# proto_ids_off       : 207624 (0x032b08)
 # field_ids_size      : 17854
 # field_ids_off       : 307092 (0x04af94)
 # method_ids_size     : 33699
@@ -48,71 +47,70 @@ import perf_tests_results_helper # pylint: disable=import-error
 # https://source.android.com/devices/tech/dalvik/dex-format.html
 
 
+CONTRIBUTORS_TO_DEX_CACHE = {'type_ids_size': 'types',
+                             'string_ids_size': 'strings',
+                             'method_ids_size': 'methods',
+                             'field_ids_size': 'fields'}
+
+
 def _ExtractSizesFromDexFile(dex_path):
   counts = {}
   for line in dexdump.DexDump(dex_path, file_summary=True):
     if not line.strip():
-      return counts
+      # Each method, type, field, and string contributes 4 bytes (1 reference)
+      # to our DexCache size.
+      return counts, sum(counts[x] for x in CONTRIBUTORS_TO_DEX_CACHE) * 4
     m = re.match(r'([a-z_]+_size) *: (\d+)', line)
-    if m:
+    if m and m.group(1) in CONTRIBUTORS_TO_DEX_CACHE:
       counts[m.group(1)] = int(m.group(2))
   raise Exception('Unexpected end of output.')
 
 
-def _ExtractSizesFromZip(path):
+def ExtractSizesFromZip(path):
   tmpdir = tempfile.mkdtemp(suffix='_dex_extract')
   try:
-    counts = collections.defaultdict(int)
+    counts = {}
+    total = 0
     with zipfile.ZipFile(path, 'r') as z:
       for subpath in z.namelist():
         if not subpath.endswith('.dex'):
           continue
         extracted_path = z.extract(subpath, tmpdir)
-        cur_counts = _ExtractSizesFromDexFile(extracted_path)
-        for k in cur_counts:
-          counts[k] += cur_counts[k]
-    return dict(counts)
+        cur_counts, cur_total = _ExtractSizesFromDexFile(extracted_path)
+        dex_basename = os.path.basename(extracted_path)
+        counts[dex_basename] = cur_counts
+        total += cur_total
+    return counts, total
   finally:
     shutil.rmtree(tmpdir)
 
 
 def main():
   parser = argparse.ArgumentParser()
-  parser.add_argument(
-      '--apk-name', help='Name of the APK to which the dexfile corresponds.')
-  parser.add_argument('dexfile')
+  parser.add_argument('filename')
 
   args = parser.parse_args()
 
   devil_chromium.Initialize()
 
-  if not args.apk_name:
-    dirname, basename = os.path.split(args.dexfile)
-    while basename:
-      if 'apk' in basename:
-        args.apk_name = basename
-        break
-      dirname, basename = os.path.split(dirname)
-    else:
-      parser.error(
-          'Unable to determine apk name from %s, '
-          'and --apk-name was not provided.' % args.dexfile)
-
-  if os.path.splitext(args.dexfile)[1] in ('.zip', '.apk', '.jar'):
-    sizes = _ExtractSizesFromZip(args.dexfile)
+  if os.path.splitext(args.filename)[1] in ('.zip', '.apk', '.jar'):
+    sizes, total_size = ExtractSizesFromZip(args.filename)
   else:
-    sizes = _ExtractSizesFromDexFile(args.dexfile)
+    single_set_of_sizes, total_size = _ExtractSizesFromDexFile(args.filename)
+    sizes = {"": single_set_of_sizes}
 
-  def print_result(name, value_key):
-    perf_tests_results_helper.PrintPerfResult(
-        '%s_%s' % (args.apk_name, name), 'total', [sizes[value_key]], name)
+  file_basename = os.path.basename(args.filename)
+  for classes_dex_file, classes_dex_sizes in sizes.iteritems():
+    for dex_header_name, readable_name in CONTRIBUTORS_TO_DEX_CACHE.iteritems():
+      if dex_header_name in classes_dex_sizes:
+        perf_tests_results_helper.PrintPerfResult(
+            '%s_%s_%s' % (file_basename, classes_dex_file, readable_name),
+            'total', [classes_dex_sizes[dex_header_name]], readable_name)
 
-  print_result('classes', 'class_defs_size')
-  print_result('fields', 'field_ids_size')
-  print_result('methods', 'method_ids_size')
-  print_result('strings', 'string_ids_size')
+  perf_tests_results_helper.PrintPerfResult(
+      '%s_DexCache_size' % (file_basename), 'total', [total_size],
+      'bytes of permanent dirty memory')
   return 0
 
 if __name__ == '__main__':
   sys.exit(main())
-

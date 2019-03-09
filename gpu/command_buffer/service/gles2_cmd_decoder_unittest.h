@@ -8,7 +8,6 @@
 #include "gpu/command_buffer/common/gles2_cmd_format.h"
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/command_buffer/service/buffer_manager.h"
-#include "gpu/command_buffer/service/cmd_buffer_engine.h"
 #include "gpu/command_buffer/service/context_group.h"
 #include "gpu/command_buffer/service/framebuffer_manager.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
@@ -22,20 +21,15 @@
 #include "gpu/command_buffer/service/texture_manager.h"
 #include "gpu/command_buffer/service/vertex_array_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gl/gl_context_stub_with_extensions.h"
 #include "ui/gl/gl_mock.h"
 #include "ui/gl/gl_surface_stub.h"
-
-namespace base {
-class CommandLine;
-}
 
 namespace gpu {
 namespace gles2 {
 
 class GLES2DecoderTest : public GLES2DecoderTestBase {
  public:
-  GLES2DecoderTest() {}
+  GLES2DecoderTest() = default;
 
  protected:
   void CheckReadPixelsOutOfRange(GLint in_read_x,
@@ -55,17 +49,17 @@ class GLES2DecoderWithShaderTest : public GLES2DecoderWithShaderTestBase {
 
 class GLES2DecoderRGBBackbufferTest : public GLES2DecoderWithShaderTest {
  public:
-  GLES2DecoderRGBBackbufferTest() {}
+  GLES2DecoderRGBBackbufferTest() = default;
 
   void SetUp() override;
 };
 
 class GLES2DecoderManualInitTest : public GLES2DecoderWithShaderTest {
  public:
-  GLES2DecoderManualInitTest() {}
+  GLES2DecoderManualInitTest() = default;
 
   // Override default setup so nothing gets setup.
-  void SetUp() override;
+  void SetUp() override {}
 
   void DirtyStateMaskTest(GLuint color_bits,
                           bool depth_mask,
@@ -76,16 +70,59 @@ class GLES2DecoderManualInitTest : public GLES2DecoderWithShaderTest {
 
 class GLES3DecoderTest : public GLES2DecoderTest {
  public:
-  GLES3DecoderTest() {}
+  GLES3DecoderTest() { shader_language_version_ = 300; }
 
   // Override default setup so ES3 capabilities are enabled by default.
   void SetUp() override;
 };
 
-class GLES3DecoderWithESSL3ShaderTest : public GLES2DecoderWithShaderTestBase {
+class WebGL2DecoderTest : public GLES2DecoderTest {
  public:
-  GLES3DecoderWithESSL3ShaderTest() { shader_language_version_ = 300; }
+  WebGL2DecoderTest() { shader_language_version_ = 300; }
+
+  // Override default setup so ES3 capabilities are enabled by default
+  // and WebGL2 specific rules are enforced.
   void SetUp() override;
+};
+
+class GLES3DecoderWithShaderTest : public GLES2DecoderWithShaderTest {
+ public:
+  GLES3DecoderWithShaderTest() { shader_language_version_ = 300; }
+
+  // Override default setup so ES3 capabilities are enabled by default.
+  void SetUp() override;
+};
+
+class GLES3DecoderRGBBackbufferTest : public GLES2DecoderRGBBackbufferTest {
+ public:
+  GLES3DecoderRGBBackbufferTest() { shader_language_version_ = 300; }
+
+  // Override default setup so ES3 capabilities are enabled by default.
+  void SetUp() override;
+};
+
+class GLES3DecoderManualInitTest : public GLES2DecoderManualInitTest {
+ public:
+  GLES3DecoderManualInitTest() { shader_language_version_ = 300; }
+};
+
+class GLES2DecoderPassthroughTest : public GLES2DecoderPassthroughTestBase {
+ public:
+  GLES2DecoderPassthroughTest()
+      : GLES2DecoderPassthroughTestBase(CONTEXT_TYPE_OPENGLES2) {}
+};
+
+class GLES2WebGLDecoderPassthroughTest
+    : public GLES2DecoderPassthroughTestBase {
+ public:
+  GLES2WebGLDecoderPassthroughTest()
+      : GLES2DecoderPassthroughTestBase(CONTEXT_TYPE_WEBGL1) {}
+};
+
+class GLES3DecoderPassthroughTest : public GLES2DecoderPassthroughTestBase {
+ public:
+  GLES3DecoderPassthroughTest()
+      : GLES2DecoderPassthroughTestBase(CONTEXT_TYPE_OPENGLES3) {}
 };
 
 }  // namespace gles2

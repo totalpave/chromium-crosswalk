@@ -14,16 +14,18 @@ MotionEvent::ToolType EventPointerTypeToMotionEventToolType(
     EventPointerType type) {
   switch (type) {
     case EventPointerType::POINTER_TYPE_UNKNOWN:
-      return MotionEvent::TOOL_TYPE_UNKNOWN;
+      return MotionEvent::ToolType::UNKNOWN;
     case EventPointerType::POINTER_TYPE_MOUSE:
-      return MotionEvent::TOOL_TYPE_MOUSE;
+      return MotionEvent::ToolType::MOUSE;
     case EventPointerType::POINTER_TYPE_PEN:
-      return MotionEvent::TOOL_TYPE_STYLUS;
+      return MotionEvent::ToolType::STYLUS;
     case EventPointerType::POINTER_TYPE_TOUCH:
-      return MotionEvent::TOOL_TYPE_FINGER;
+      return MotionEvent::ToolType::FINGER;
+    case EventPointerType::POINTER_TYPE_ERASER:
+      return MotionEvent::ToolType::ERASER;
   }
 
-  return MotionEvent::TOOL_TYPE_UNKNOWN;
+  return MotionEvent::ToolType::UNKNOWN;
 }
 
 PointerProperties GetPointerPropertiesFromTouchEvent(const TouchEvent& touch) {
@@ -32,18 +34,33 @@ PointerProperties GetPointerPropertiesFromTouchEvent(const TouchEvent& touch) {
   pointer_properties.y = touch.y();
   pointer_properties.raw_x = touch.root_location_f().x();
   pointer_properties.raw_y = touch.root_location_f().y();
-  pointer_properties.id = touch.touch_id();
+  pointer_properties.id = touch.pointer_details().id;
   pointer_properties.pressure = touch.pointer_details().force;
   pointer_properties.source_device_id = touch.source_device_id();
+  pointer_properties.tilt_x = touch.pointer_details().tilt_x;
+  pointer_properties.tilt_y = touch.pointer_details().tilt_y;
+  pointer_properties.twist = touch.pointer_details().twist;
+  pointer_properties.tangential_pressure =
+      touch.pointer_details().tangential_pressure;
 
   pointer_properties.SetAxesAndOrientation(touch.pointer_details().radius_x,
                                            touch.pointer_details().radius_y,
-                                           touch.rotation_angle());
+                                           touch.ComputeRotationAngle());
   if (!pointer_properties.touch_major) {
-    pointer_properties.touch_major =
-        2.f * GestureConfiguration::GetInstance()->default_radius();
-    pointer_properties.touch_minor =
-        2.f * GestureConfiguration::GetInstance()->default_radius();
+    float default_size;
+    switch (touch.pointer_details().pointer_type) {
+      case EventPointerType::POINTER_TYPE_PEN:
+      case EventPointerType::POINTER_TYPE_ERASER:
+        // Default size for stylus events is 1x1.
+        default_size = 1;
+        break;
+      default:
+        default_size =
+            2.f * GestureConfiguration::GetInstance()->default_radius();
+        break;
+    }
+    pointer_properties.touch_major = pointer_properties.touch_minor =
+        default_size;
     pointer_properties.orientation = 0;
   }
 
@@ -60,7 +77,7 @@ MotionEventAura::MotionEventAura() {}
 MotionEventAura::~MotionEventAura() {}
 
 bool MotionEventAura::OnTouch(const TouchEvent& touch) {
-  int index = FindPointerIndexOfId(touch.touch_id());
+  int index = FindPointerIndexOfId(touch.pointer_details().id);
   bool pointer_id_is_active = index != -1;
 
   if (touch.type() == ET_TOUCH_PRESSED && pointer_id_is_active) {
@@ -82,6 +99,7 @@ bool MotionEventAura::OnTouch(const TouchEvent& touch) {
     case ET_TOUCH_PRESSED:
       if (!AddTouch(touch))
         return false;
+      FALLTHROUGH;
     case ET_TOUCH_RELEASED:
     case ET_TOUCH_CANCELLED:
       // Removing these touch points needs to be postponed until after the
@@ -111,9 +129,9 @@ void MotionEventAura::CleanupRemovedTouchPoints(const TouchEvent& event) {
   }
 
   DCHECK(GetPointerCount());
-  int index_to_delete = GetIndexFromId(event.touch_id());
+  int index_to_delete = GetIndexFromId(event.pointer_details().id);
   set_action_index(-1);
-  set_action(MotionEvent::ACTION_NONE);
+  set_action(MotionEvent::Action::NONE);
   pointer(index_to_delete) = pointer(GetPointerCount() - 1);
   PopPointer();
 }
@@ -132,7 +150,7 @@ bool MotionEventAura::AddTouch(const TouchEvent& touch) {
 }
 
 void MotionEventAura::UpdateTouch(const TouchEvent& touch) {
-  pointer(GetIndexFromId(touch.touch_id())) =
+  pointer(GetIndexFromId(touch.pointer_details().id)) =
       GetPointerPropertiesFromTouchEvent(touch);
 }
 
@@ -141,25 +159,25 @@ void MotionEventAura::UpdateCachedAction(const TouchEvent& touch) {
   switch (touch.type()) {
     case ET_TOUCH_PRESSED:
       if (GetPointerCount() == 1) {
-        set_action(ACTION_DOWN);
+        set_action(Action::DOWN);
       } else {
-        set_action(ACTION_POINTER_DOWN);
-        set_action_index(GetIndexFromId(touch.touch_id()));
+        set_action(Action::POINTER_DOWN);
+        set_action_index(GetIndexFromId(touch.pointer_details().id));
       }
       break;
     case ET_TOUCH_RELEASED:
       if (GetPointerCount() == 1) {
-        set_action(ACTION_UP);
+        set_action(Action::UP);
       } else {
-        set_action(ACTION_POINTER_UP);
-        set_action_index(GetIndexFromId(touch.touch_id()));
+        set_action(Action::POINTER_UP);
+        set_action_index(GetIndexFromId(touch.pointer_details().id));
       }
       break;
     case ET_TOUCH_CANCELLED:
-      set_action(ACTION_CANCEL);
+      set_action(Action::CANCEL);
       break;
     case ET_TOUCH_MOVED:
-      set_action(ACTION_MOVE);
+      set_action(Action::MOVE);
       break;
     default:
       NOTREACHED();

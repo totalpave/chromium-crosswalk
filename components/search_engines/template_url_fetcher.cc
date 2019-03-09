@@ -4,8 +4,8 @@
 
 #include "components/search_engines/template_url_fetcher.h"
 
+#include "base/bind.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -13,25 +13,53 @@
 #include "components/search_engines/template_url_parser.h"
 #include "components/search_engines/template_url_service.h"
 #include "net/base/load_flags.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_fetcher_delegate.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "net/url_request/url_request_status.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/simple_url_loader.h"
+
+namespace {
+
+// Traffic annotation for RequestDelegate.
+const net::NetworkTrafficAnnotationTag kTrafficAnnotation =
+    net::DefineNetworkTrafficAnnotation("open_search", R"(
+      semantics {
+        sender: "Omnibox"
+        description:
+          "Web pages can include an OpenSearch description doc in their HTML. "
+          "In this case Chromium downloads and parses the file. The "
+          "corresponding search engine is added to the list in the browser "
+          "settings (chrome://settings/searchEngines)."
+        trigger:
+          "User visits a web page containing a <link rel=\"search\"> tag."
+        data: "None"
+        destination: WEBSITE
+      }
+      policy {
+        cookies_allowed: YES
+        cookies_store: "user"
+        setting: "This feature cannot be disabled in settings."
+        policy_exception_justification:
+          "Not implemented, considered not useful as this feature does not "
+          "upload any data."
+      })");
+
+}  // namespace
 
 // RequestDelegate ------------------------------------------------------------
-class TemplateURLFetcher::RequestDelegate : public net::URLFetcherDelegate {
+class TemplateURLFetcher::RequestDelegate {
  public:
-  RequestDelegate(
-      TemplateURLFetcher* fetcher,
-      const base::string16& keyword,
-      const GURL& osdd_url,
-      const GURL& favicon_url,
-      const URLFetcherCustomizeCallback& url_fetcher_customize_callback);
+  RequestDelegate(TemplateURLFetcher* fetcher,
+                  const base::string16& keyword,
+                  const GURL& osdd_url,
+                  const GURL& favicon_url,
+                  const url::Origin& initiator,
+                  network::mojom::URLLoaderFactory* url_loader_factory,
+                  int render_frame_id,
+                  int resource_type);
 
-  // net::URLFetcherDelegate:
   // If data contains a valid OSDD, a TemplateURL is created and added to
   // the TemplateURLService.
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
+  void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);
 
   // URL of the OSDD.
   GURL url() const { return osdd_url_; }
@@ -43,7 +71,7 @@ class TemplateURLFetcher::RequestDelegate : public net::URLFetcherDelegate {
   void OnLoaded();
   void AddSearchProvider();
 
-  std::unique_ptr<net::URLFetcher> url_fetcher_;
+  std::unique_ptr<network::SimpleURLLoader> simple_url_loader_;
   TemplateURLFetcher* fetcher_;
   std::unique_ptr<TemplateURL> template_url_;
   base::string16 keyword_;
@@ -60,10 +88,11 @@ TemplateURLFetcher::RequestDelegate::RequestDelegate(
     const base::string16& keyword,
     const GURL& osdd_url,
     const GURL& favicon_url,
-    const URLFetcherCustomizeCallback& url_fetcher_customize_callback)
-    : url_fetcher_(
-          net::URLFetcher::Create(osdd_url, net::URLFetcher::GET, this)),
-      fetcher_(fetcher),
+    const url::Origin& initiator,
+    network::mojom::URLLoaderFactory* url_loader_factory,
+    int render_frame_id,
+    int resource_type)
+    : fetcher_(fetcher),
       keyword_(keyword),
       osdd_url_(osdd_url),
       favicon_url_(favicon_url) {
@@ -78,58 +107,50 @@ TemplateURLFetcher::RequestDelegate::RequestDelegate(
     model->Load();
   }
 
-  if (!url_fetcher_customize_callback.is_null())
-    url_fetcher_customize_callback.Run(url_fetcher_.get());
-
-  url_fetcher_->SetRequestContext(fetcher->request_context_.get());
-  url_fetcher_->Start();
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = osdd_url;
+  resource_request->request_initiator = initiator;
+  resource_request->render_frame_id = render_frame_id;
+  resource_request->resource_type = resource_type;
+  resource_request->load_flags = net::LOAD_DO_NOT_SAVE_COOKIES;
+  simple_url_loader_ = network::SimpleURLLoader::Create(
+      std::move(resource_request), kTrafficAnnotation);
+  simple_url_loader_->SetAllowHttpErrorResults(true);
+  simple_url_loader_->DownloadToString(
+      url_loader_factory,
+      base::BindOnce(
+          &TemplateURLFetcher::RequestDelegate::OnSimpleLoaderComplete,
+          base::Unretained(this)),
+      50000 /* max_body_size */);
 }
 
 void TemplateURLFetcher::RequestDelegate::OnLoaded() {
   template_url_subscription_.reset();
-  if (!template_url_.get())
+  if (!template_url_)
     return;
   AddSearchProvider();
   // WARNING: AddSearchProvider deletes us.
 }
 
-void TemplateURLFetcher::RequestDelegate::OnURLFetchComplete(
-    const net::URLFetcher* source) {
+void TemplateURLFetcher::RequestDelegate::OnSimpleLoaderComplete(
+    std::unique_ptr<std::string> response_body) {
   // Validation checks.
   // Make sure we can still replace the keyword, i.e. the fetch was successful.
-  // If the OSDD file was loaded HTTP, we also have to check the response_code.
-  // For other schemes, e.g. when the OSDD file is bundled with an extension,
-  // the response_code is not applicable and should be -1. Also, ensure that
-  // the returned information results in a valid search URL.
-  std::string data;
-  if (!source->GetStatus().is_success() ||
-      ((source->GetResponseCode() != -1) &&
-        (source->GetResponseCode() != 200)) ||
-      !source->GetResponseAsString(&data)) {
+  if (!response_body) {
     fetcher_->RequestCompleted(this);
     // WARNING: RequestCompleted deletes us.
     return;
   }
 
-  template_url_.reset(TemplateURLParser::Parse(
-      fetcher_->template_url_service_->search_terms_data(), false,
-      data.data(), data.length(), NULL));
-  if (!template_url_.get() ||
+  template_url_ = TemplateURLParser::Parse(
+      fetcher_->template_url_service_->search_terms_data(),
+      response_body->data(), response_body->length(), nullptr);
+  if (!template_url_ ||
       !template_url_->url_ref().SupportsReplacement(
           fetcher_->template_url_service_->search_terms_data())) {
     fetcher_->RequestCompleted(this);
     // WARNING: RequestCompleted deletes us.
     return;
-  }
-
-  if (keyword_.empty()) {
-    // Use the parser-generated new keyword from the URL in the OSDD for the
-    // non-autodetected case.  The existing |keyword_| was generated from the
-    // URL that hosted the OSDD, which results in the wrong keyword when the
-    // OSDD was located on a third-party site that has nothing in common with
-    // search engine described by OSDD.
-    keyword_ = template_url_->keyword();
-    DCHECK(!keyword_.empty());
   }
 
   // Wait for the model to be loaded before adding the provider.
@@ -140,13 +161,13 @@ void TemplateURLFetcher::RequestDelegate::OnURLFetchComplete(
 }
 
 void TemplateURLFetcher::RequestDelegate::AddSearchProvider() {
-  DCHECK(template_url_.get());
+  DCHECK(template_url_);
   DCHECK(!keyword_.empty());
   TemplateURLService* model = fetcher_->template_url_service_;
   DCHECK(model);
   DCHECK(model->loaded());
 
-  TemplateURL* existing_url = NULL;
+  const TemplateURL* existing_url = nullptr;
   if (!model->CanAddAutogeneratedKeyword(keyword_, GURL(template_url_->url()),
                                          &existing_url)) {
     fetcher_->RequestCompleted(this);  // WARNING: Deletes us!
@@ -168,7 +189,7 @@ void TemplateURLFetcher::RequestDelegate::AddSearchProvider() {
 
   // Mark the keyword as replaceable so it can be removed if necessary.
   data.safe_for_autoreplace = true;
-  model->Add(new TemplateURL(data));
+  model->Add(std::make_unique<TemplateURL>(data));
 
   fetcher_->RequestCompleted(this);
   // WARNING: RequestCompleted deletes us.
@@ -176,12 +197,8 @@ void TemplateURLFetcher::RequestDelegate::AddSearchProvider() {
 
 // TemplateURLFetcher ---------------------------------------------------------
 
-TemplateURLFetcher::TemplateURLFetcher(
-    TemplateURLService* template_url_service,
-    net::URLRequestContextGetter* request_context)
-    : template_url_service_(template_url_service),
-      request_context_(request_context) {
-}
+TemplateURLFetcher::TemplateURLFetcher(TemplateURLService* template_url_service)
+    : template_url_service_(template_url_service) {}
 
 TemplateURLFetcher::~TemplateURLFetcher() {
 }
@@ -190,7 +207,10 @@ void TemplateURLFetcher::ScheduleDownload(
     const base::string16& keyword,
     const GURL& osdd_url,
     const GURL& favicon_url,
-    const URLFetcherCustomizeCallback& url_fetcher_customize_callback) {
+    const url::Origin& initiator,
+    network::mojom::URLLoaderFactory* url_loader_factory,
+    int render_frame_id,
+    int resource_type) {
   DCHECK(osdd_url.is_valid());
   DCHECK(!keyword.empty());
 
@@ -208,19 +228,21 @@ void TemplateURLFetcher::ScheduleDownload(
     return;
 
   // Make sure we aren't already downloading this request.
-  for (Requests::iterator i = requests_.begin(); i != requests_.end(); ++i) {
-    if (((*i)->url() == osdd_url) || ((*i)->keyword() == keyword))
+  for (const auto& request : requests_) {
+    if ((request->url() == osdd_url) || (request->keyword() == keyword))
       return;
   }
 
-  requests_.push_back(new RequestDelegate(
-      this, keyword, osdd_url, favicon_url, url_fetcher_customize_callback));
+  requests_.push_back(std::make_unique<RequestDelegate>(
+      this, keyword, osdd_url, favicon_url, initiator, url_loader_factory,
+      render_frame_id, resource_type));
 }
 
 void TemplateURLFetcher::RequestCompleted(RequestDelegate* request) {
-  Requests::iterator i =
-      std::find(requests_.begin(), requests_.end(), request);
+  auto i = std::find_if(requests_.begin(), requests_.end(),
+                        [request](const std::unique_ptr<RequestDelegate>& ptr) {
+                          return ptr.get() == request;
+                        });
   DCHECK(i != requests_.end());
-  requests_.weak_erase(i);
-  delete request;
+  requests_.erase(i);
 }

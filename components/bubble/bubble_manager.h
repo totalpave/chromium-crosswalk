@@ -6,9 +6,9 @@
 #define COMPONENTS_BUBBLE_BUBBLE_MANAGER_H_
 
 #include <memory>
+#include <vector>
 
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/observer_list.h"
 #include "base/threading/thread_checker.h"
 #include "components/bubble/bubble_close_reason.h"
@@ -70,6 +70,9 @@ class BubbleManager {
   // Remove an observer from this BubbleManager.
   void RemoveBubbleManagerObserver(BubbleManagerObserver* observer);
 
+  // Returns the number of bubbles currently being managed.
+  size_t GetBubbleCountForTesting() const;
+
  protected:
   // Will close any open bubbles and prevent new ones from being shown.
   void FinalizePendingRequests();
@@ -79,6 +82,8 @@ class BubbleManager {
   void CloseBubblesOwnedBy(const content::RenderFrameHost* frame);
 
  private:
+  friend class ExtensionInstalledBubbleBrowserTest;
+
   enum ManagerState {
     SHOW_BUBBLES,
     NO_MORE_BUBBLES,
@@ -93,7 +98,7 @@ class BubbleManager {
                                const content::RenderFrameHost* owner,
                                BubbleCloseReason reason);
 
-  base::ObserverList<BubbleManagerObserver> observers_;
+  base::ObserverList<BubbleManagerObserver>::Unchecked observers_;
 
   // Verify that functions that affect the UI are done on the same thread.
   base::ThreadChecker thread_checker_;
@@ -102,7 +107,7 @@ class BubbleManager {
   ManagerState manager_state_;
 
   // The bubbles that are being managed.
-  ScopedVector<BubbleController> controllers_;
+  std::vector<std::unique_ptr<BubbleController>> controllers_;
 
   DISALLOW_COPY_AND_ASSIGN(BubbleManager);
 };

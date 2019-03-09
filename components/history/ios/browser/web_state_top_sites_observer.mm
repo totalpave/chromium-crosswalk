@@ -5,11 +5,15 @@
 #include "components/history/ios/browser/web_state_top_sites_observer.h"
 
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "components/history/core/browser/top_sites.h"
-#include "ios/web/public/load_committed_details.h"
 #include "ios/web/public/navigation_item.h"
+#import "ios/web/public/navigation_manager.h"
+#import "ios/web/public/web_state/navigation_context.h"
 
-DEFINE_WEB_STATE_USER_DATA_KEY(history::WebStateTopSitesObserver);
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace history {
 
@@ -18,24 +22,37 @@ void WebStateTopSitesObserver::CreateForWebState(web::WebState* web_state,
                                                  TopSites* top_sites) {
   DCHECK(web_state);
   if (!FromWebState(web_state)) {
-    web_state->SetUserData(UserDataKey(),
-                           new WebStateTopSitesObserver(web_state, top_sites));
+    web_state->SetUserData(
+        UserDataKey(),
+        base::WrapUnique(new WebStateTopSitesObserver(web_state, top_sites)));
   }
 }
 
 WebStateTopSitesObserver::WebStateTopSitesObserver(web::WebState* web_state,
                                                    TopSites* top_sites)
-    : web::WebStateObserver(web_state), top_sites_(top_sites) {
+    : top_sites_(top_sites) {
+  web_state->AddObserver(this);
 }
 
 WebStateTopSitesObserver::~WebStateTopSitesObserver() {
 }
 
-void WebStateTopSitesObserver::NavigationItemCommitted(
-    const web::LoadCommittedDetails& load_details) {
-  DCHECK(load_details.item);
-  if (top_sites_)
-    top_sites_->OnNavigationCommitted(load_details.item->GetURL());
+void WebStateTopSitesObserver::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  // TODO(crbug.com/931841): Remove GetLastCommittedItem nil check once
+  // HasComitted has been fixed.
+  if (top_sites_ && navigation_context->HasCommitted() &&
+      web_state->GetNavigationManager()->GetLastCommittedItem()) {
+    top_sites_->OnNavigationCommitted(
+        web_state->GetNavigationManager()->GetLastCommittedItem()->GetURL());
+  }
 }
+
+void WebStateTopSitesObserver::WebStateDestroyed(web::WebState* web_state) {
+  web_state->RemoveObserver(this);
+}
+
+WEB_STATE_USER_DATA_KEY_IMPL(WebStateTopSitesObserver)
 
 }  // namespace history

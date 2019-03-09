@@ -15,14 +15,10 @@ namespace extensions {
 class RuntimeCustomBindings : public ObjectBackedNativeHandler {
  public:
   explicit RuntimeCustomBindings(ScriptContext* context);
-
   ~RuntimeCustomBindings() override;
 
-  // Creates a new messaging channel to the given extension.
-  void OpenChannelToExtension(const v8::FunctionCallbackInfo<v8::Value>& args);
-
-  // Creates a new messaging channels for the specified native application.
-  void OpenChannelToNativeApp(const v8::FunctionCallbackInfo<v8::Value>& args);
+  // ObjectBackedNativeHandler:
+  void AddRoutes() override;
 
  private:
   void GetManifest(const v8::FunctionCallbackInfo<v8::Value>& args);

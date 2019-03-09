@@ -46,12 +46,11 @@ class TestFileSystemForOpenFile : public DummyFileSystem {
   void OpenFile(const base::FilePath& file_path,
                 OpenMode open_mode,
                 const std::string& mime_type,
-                const drive::OpenFileCallback& callback) override {
+                drive::OpenFileCallback callback) override {
     EXPECT_EQ(expected_open_mode_, open_mode);
 
-    callback.Run(
-        FILE_ERROR_OK,
-        local_file_path_,
+    std::move(callback).Run(
+        FILE_ERROR_OK, local_file_path_,
         base::Bind(&TestFileSystemForOpenFile::Close, base::Unretained(this)));
   }
 
@@ -133,7 +132,7 @@ class FileApiWorkerTest : public testing::Test {
 TEST_F(FileApiWorkerTest, RunFileSystemCallbackSuccess) {
   DummyFileSystem dummy_file_system;
 
-  FileSystemInterface* file_system = NULL;
+  FileSystemInterface* file_system = nullptr;
   RunFileSystemCallback(
       base::Bind(&GetFileSystem, &dummy_file_system),
       google_apis::test_util::CreateCopyResultCallback(&file_system),
@@ -143,19 +142,19 @@ TEST_F(FileApiWorkerTest, RunFileSystemCallbackSuccess) {
 }
 
 TEST_F(FileApiWorkerTest, RunFileSystemCallbackFail) {
-  FileSystemInterface* file_system = NULL;
+  FileSystemInterface* file_system = nullptr;
 
   // Make sure on_error_callback is called if file_system_getter returns NULL.
   int num_called = 0;
   RunFileSystemCallback(
-      base::Bind(&GetFileSystem, static_cast<FileSystemInterface*>(NULL)),
+      base::Bind(&GetFileSystem, static_cast<FileSystemInterface*>(nullptr)),
       google_apis::test_util::CreateCopyResultCallback(&file_system),
       base::Bind(&Increment, &num_called));
   EXPECT_EQ(1, num_called);
 
   // Just make sure this null |on_error_callback| doesn't cause a crash.
   RunFileSystemCallback(
-      base::Bind(&GetFileSystem, static_cast<FileSystemInterface*>(NULL)),
+      base::Bind(&GetFileSystem, static_cast<FileSystemInterface*>(nullptr)),
       google_apis::test_util::CreateCopyResultCallback(&file_system),
       base::Closure());
 }
@@ -175,7 +174,7 @@ TEST_F(FileApiWorkerTest, OpenFileForCreateWrite) {
            base::File::FLAG_CREATE | base::File::FLAG_WRITE,
            base::Bind(&VerifyWrite, kExpectedSize, temp_path, kWriteData),
            &file_system);
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_TRUE(file_system.closed());
 }
 
@@ -197,7 +196,7 @@ TEST_F(FileApiWorkerTest, OpenFileForOpenAlwaysWrite) {
            base::File::FLAG_OPEN_ALWAYS | base::File::FLAG_WRITE,
            base::Bind(&VerifyWrite, kExpectedSize, temp_path, kWriteData),
            &file_system);
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_TRUE(file_system.closed());
 }
 
@@ -219,7 +218,7 @@ TEST_F(FileApiWorkerTest, OpenFileForOpenTruncatedWrite) {
            base::File::FLAG_OPEN_TRUNCATED | base::File::FLAG_WRITE,
            base::Bind(&VerifyWrite, kExpectedSize, temp_path, kWriteData),
            &file_system);
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_TRUE(file_system.closed());
 }
 
@@ -241,7 +240,7 @@ TEST_F(FileApiWorkerTest, OpenFileForOpenCreateAlwaysWrite) {
            base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE,
            base::Bind(&VerifyWrite, kExpectedSize, temp_path, kWriteData),
            &file_system);
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_TRUE(file_system.closed());
 }
 
@@ -260,7 +259,7 @@ TEST_F(FileApiWorkerTest, OpenFileForOpenRead) {
            base::File::FLAG_OPEN | base::File::FLAG_READ,
            base::Bind(&VerifyRead, kInitialData),
            &file_system);
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_TRUE(file_system.closed());
 }
 

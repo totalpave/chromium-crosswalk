@@ -2,131 +2,108 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <stddef.h>
-
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/macros.h"
 #include "base/test/launcher/unit_test_launcher.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/test/test_suite.h"
 #include "build/build_config.h"
-#include "components/scheduler/child/scheduler_tqm_delegate_impl.h"
-#include "components/scheduler/child/web_task_runner_impl.h"
-#include "components/scheduler/renderer/renderer_scheduler_impl.h"
-#include "components/scheduler/renderer/renderer_web_scheduler_impl.h"
-#include "components/scheduler/test/lazy_scheduler_message_loop_delegate_for_tests.h"
 #include "media/base/media.h"
-#include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/WebKit/public/platform/WebScheduler.h"
-#include "third_party/WebKit/public/platform/WebTaskRunner.h"
-#include "third_party/WebKit/public/platform/WebThread.h"
-#include "third_party/WebKit/public/web/WebKit.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
+#include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
+#include "third_party/blink/public/platform/scheduler/web_thread_scheduler.h"
+#include "third_party/blink/public/web/blink.h"
 
 #if defined(OS_ANDROID)
-#include "base/android/jni_android.h"
-#include "media/base/android/media_jni_registrar.h"
+#include "media/base/android/media_codec_util.h"
 #endif
 
-#ifdef V8_USE_EXTERNAL_STARTUP_DATA
+#if !defined(OS_IOS)
+#include "mojo/core/embedder/embedder.h"
+#endif
+
+#if defined(V8_USE_EXTERNAL_STARTUP_DATA)
 #include "gin/v8_initializer.h"
-#endif
 
-class CurrentThreadMock : public blink::WebThread {
+constexpr gin::V8Initializer::V8SnapshotFileType kSnapshotType =
+#if defined(USE_V8_CONTEXT_SNAPSHOT)
+    gin::V8Initializer::V8SnapshotFileType::kWithAdditionalContext;
+#else
+    gin::V8Initializer::V8SnapshotFileType::kDefault;
+#endif  // defined(USE_V8_CONTEXT_SNAPSHOT)
+#endif  // defined(V8_USE_EXTERNAL_STARTUP_DATA)
+
+// We must use a custom blink::Platform that ensures the main thread scheduler
+// knows about the ScopedTaskEnvironment.
+class BlinkPlatformWithTaskEnvironment : public blink::Platform {
  public:
-  CurrentThreadMock()
-      : task_runner_delegate_(
-            scheduler::LazySchedulerMessageLoopDelegateForTests::Create()),
-        scheduler_(
-            new scheduler::RendererSchedulerImpl(task_runner_delegate_.get())),
-        web_scheduler_(
-            new scheduler::RendererWebSchedulerImpl(scheduler_.get())),
-        web_task_runner_(
-            new scheduler::WebTaskRunnerImpl(scheduler_->DefaultTaskRunner())) {
+  BlinkPlatformWithTaskEnvironment()
+      : main_thread_scheduler_(
+            blink::scheduler::WebThreadScheduler::CreateMainThreadScheduler()) {
   }
 
-  ~CurrentThreadMock() override {
-    scheduler_->Shutdown();
+  ~BlinkPlatformWithTaskEnvironment() override {
+    main_thread_scheduler_->Shutdown();
   }
 
-  blink::WebTaskRunner* getWebTaskRunner() override {
-    return web_task_runner_.get();
-  }
-
-  bool isCurrentThread() const override { return true; }
-
-  blink::PlatformThreadId threadId() const override { return 17; }
-
-  blink::WebScheduler* scheduler() const override {
-    return web_scheduler_.get();
+  blink::scheduler::WebThreadScheduler* GetMainThreadScheduler() {
+    return main_thread_scheduler_.get();
   }
 
  private:
-  scoped_refptr<scheduler::SchedulerTqmDelegate> task_runner_delegate_;
-  std::unique_ptr<scheduler::RendererSchedulerImpl> scheduler_;
-  std::unique_ptr<blink::WebScheduler> web_scheduler_;
-  std::unique_ptr<blink::WebTaskRunner> web_task_runner_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  std::unique_ptr<blink::scheduler::WebThreadScheduler> main_thread_scheduler_;
+
+  DISALLOW_COPY_AND_ASSIGN(BlinkPlatformWithTaskEnvironment);
 };
 
-class TestBlinkPlatformSupport : NON_EXPORTED_BASE(public blink::Platform) {
+class MediaBlinkTestSuite : public base::TestSuite {
  public:
-  ~TestBlinkPlatformSupport() override;
-
-  blink::WebThread* currentThread() override { return &m_currentThread; }
+  MediaBlinkTestSuite(int argc, char** argv) : base::TestSuite(argc, argv) {}
 
  private:
-  CurrentThreadMock m_currentThread;
-};
-
-TestBlinkPlatformSupport::~TestBlinkPlatformSupport() {}
-
-class BlinkMediaTestSuite : public base::TestSuite {
- public:
-  BlinkMediaTestSuite(int argc, char** argv);
-  ~BlinkMediaTestSuite() override;
-
- protected:
-  void Initialize() override;
-
- private:
-  std::unique_ptr<TestBlinkPlatformSupport> blink_platform_support_;
-};
-
-BlinkMediaTestSuite::BlinkMediaTestSuite(int argc, char** argv)
-    : TestSuite(argc, argv),
-      blink_platform_support_(new TestBlinkPlatformSupport()) {
-}
-
-BlinkMediaTestSuite::~BlinkMediaTestSuite() {}
-
-void BlinkMediaTestSuite::Initialize() {
-  // Run TestSuite::Initialize first so that logging is initialized.
-  base::TestSuite::Initialize();
+  void Initialize() override {
+    base::TestSuite::Initialize();
 
 #if defined(OS_ANDROID)
-  media::RegisterJni(base::android::AttachCurrentThread());
+    if (media::MediaCodecUtil::IsMediaCodecAvailable())
+      media::EnablePlatformDecoderSupport();
 #endif
 
-  // Run this here instead of main() to ensure an AtExitManager is already
-  // present.
-  media::InitializeMediaLibrary();
+    // Run this here instead of main() to ensure an AtExitManager is already
+    // present.
+    media::InitializeMediaLibrary();
 
-#ifdef V8_USE_EXTERNAL_STARTUP_DATA
-  gin::V8Initializer::LoadV8Snapshot();
-  gin::V8Initializer::LoadV8Natives();
+#if defined(V8_USE_EXTERNAL_STARTUP_DATA)
+    gin::V8Initializer::LoadV8Snapshot(kSnapshotType);
+    gin::V8Initializer::LoadV8Natives();
 #endif
 
-  // Dummy task runner is initialized here because the blink::initialize creates
-  // IsolateHolder which needs the current task runner handle. There should be
-  // no task posted to this task runner.
-  std::unique_ptr<base::MessageLoop> message_loop;
-  if (!base::MessageLoop::current())
-    message_loop.reset(new base::MessageLoop());
-  blink::initialize(blink_platform_support_.get());
-}
+#if !defined(OS_IOS)
+    // Initialize mojo firstly to enable Blink initialization to use it.
+    mojo::core::Init();
+#endif
+
+    platform_ = std::make_unique<BlinkPlatformWithTaskEnvironment>();
+    blink::Initialize(platform_.get(), &empty_registry_,
+                      platform_->GetMainThreadScheduler());
+  }
+
+  void Shutdown() override {
+    platform_.reset();
+    base::TestSuite::Shutdown();
+  }
+
+  std::unique_ptr<BlinkPlatformWithTaskEnvironment> platform_;
+  service_manager::BinderRegistry empty_registry_;
+
+  DISALLOW_COPY_AND_ASSIGN(MediaBlinkTestSuite);
+};
 
 int main(int argc, char** argv) {
-  BlinkMediaTestSuite test_suite(argc, argv);
-
+  MediaBlinkTestSuite test_suite(argc, argv);
   return base::LaunchUnitTests(
-      argc, argv, base::Bind(&BlinkMediaTestSuite::Run,
-                             base::Unretained(&test_suite)));
+      argc, argv,
+      base::BindRepeating(&MediaBlinkTestSuite::Run,
+                          base::Unretained(&test_suite)));
 }

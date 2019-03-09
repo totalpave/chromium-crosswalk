@@ -31,6 +31,25 @@ public class FieldTrialList {
         return nativeTrialExists(trialName);
     }
 
+    /**
+     * @param trialName    The name of the trial with the parameter.
+     * @param parameterKey The key of the parameter.
+     * @return The value of the parameter or an empty string if not found.
+     */
+    public static String getVariationParameter(String trialName, String parameterKey) {
+        return nativeGetVariationParameter(trialName, parameterKey);
+    }
+
+    /**
+     * Print active trials and their group assignments to logcat, for debugging purposes. Continue
+     * prtinting new trials as they become active. This should be called at most once.
+     */
+    public static void logActiveTrials() {
+        nativeLogActiveTrials();
+    }
+
     private static native String nativeFindFullName(String trialName);
     private static native boolean nativeTrialExists(String trialName);
+    private static native String nativeGetVariationParameter(String trialName, String parameterKey);
+    private static native void nativeLogActiveTrials();
 }

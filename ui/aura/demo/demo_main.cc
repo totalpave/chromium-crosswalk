@@ -12,10 +12,15 @@
 #include "base/message_loop/message_loop.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_monitor_device_source.h"
+#include "base/run_loop.h"
+#include "base/task/task_scheduler/task_scheduler.h"
 #include "build/build_config.h"
-#include "third_party/skia/include/core/SkXfermode.h"
+#include "components/viz/host/host_frame_sink_manager.h"
+#include "components/viz/service/display_embedder/server_shared_bitmap_manager.h"
+#include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+#include "third_party/skia/include/core/SkBlendMode.h"
 #include "ui/aura/client/default_capture_client.h"
-#include "ui/aura/client/window_tree_client.h"
+#include "ui/aura/client/window_parenting_client.h"
 #include "ui/aura/env.h"
 #include "ui/aura/test/test_focus_client.h"
 #include "ui/aura/test/test_screen.h"
@@ -23,12 +28,14 @@
 #include "ui/aura/window_delegate.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/hit_test.h"
+#include "ui/base/ime/input_method_initializer.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/compositor/test/in_process_context_factory.h"
 #include "ui/events/event.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/skia_util.h"
+#include "ui/gl/gl_switches.h"
 #include "ui/gl/init/gl_factory.h"
 
 #if defined(USE_X11)
@@ -70,22 +77,23 @@ class DemoWindowDelegate : public aura::WindowDelegate {
   void OnCaptureLost() override {}
   void OnPaint(const ui::PaintContext& context) override {
     ui::PaintRecorder recorder(context, window_bounds_.size());
-    recorder.canvas()->DrawColor(color_, SkXfermode::kSrc_Mode);
+    recorder.canvas()->DrawColor(color_, SkBlendMode::kSrc);
     gfx::Rect r;
     recorder.canvas()->GetClipBounds(&r);
     // Fill with a non-solid color so that the compositor will exercise its
     // texture upload path.
     while (!r.IsEmpty()) {
       r.Inset(2, 2);
-      recorder.canvas()->FillRect(r, color_, SkXfermode::kXor_Mode);
+      recorder.canvas()->FillRect(r, color_, SkBlendMode::kXor);
     }
   }
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override {}
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override {}
   void OnWindowDestroying(aura::Window* window) override {}
   void OnWindowDestroyed(aura::Window* window) override {}
   void OnWindowTargetVisibilityChanged(bool visible) override {}
   bool HasHitTestMask() const override { return false; }
-  void GetHitTestMask(gfx::Path* mask) const override {}
+  void GetHitTestMask(SkPath* mask) const override {}
 
  private:
   SkColor color_;
@@ -94,19 +102,18 @@ class DemoWindowDelegate : public aura::WindowDelegate {
   DISALLOW_COPY_AND_ASSIGN(DemoWindowDelegate);
 };
 
-class DemoWindowTreeClient : public aura::client::WindowTreeClient {
+class DemoWindowParentingClient : public aura::client::WindowParentingClient {
  public:
-  explicit DemoWindowTreeClient(aura::Window* window) : window_(window) {
-    aura::client::SetWindowTreeClient(window_, this);
+  explicit DemoWindowParentingClient(aura::Window* window) : window_(window) {
+    aura::client::SetWindowParentingClient(window_, this);
   }
 
-  ~DemoWindowTreeClient() override {
-    aura::client::SetWindowTreeClient(window_, nullptr);
+  ~DemoWindowParentingClient() override {
+    aura::client::SetWindowParentingClient(window_, nullptr);
   }
 
-  // Overridden from aura::client::WindowTreeClient:
-  aura::Window* GetDefaultParent(aura::Window* context,
-                                 aura::Window* window,
+  // Overridden from aura::client::WindowParentingClient:
+  aura::Window* GetDefaultParent(aura::Window* window,
                                  const gfx::Rect& bounds) override {
     if (!capture_client_) {
       capture_client_.reset(
@@ -120,7 +127,7 @@ class DemoWindowTreeClient : public aura::client::WindowTreeClient {
 
   std::unique_ptr<aura::client::DefaultCaptureClient> capture_client_;
 
-  DISALLOW_COPY_AND_ASSIGN(DemoWindowTreeClient);
+  DISALLOW_COPY_AND_ASSIGN(DemoWindowParentingClient);
 };
 
 int DemoMain() {
@@ -136,27 +143,34 @@ int DemoMain() {
   display::win::SetDefaultDeviceScaleFactor(1.0f);
 #endif
 
-  // The ContextFactory must exist before any Compositors are created.
-  bool context_factory_for_test = false;
-  std::unique_ptr<ui::InProcessContextFactory> context_factory(
-      new ui::InProcessContextFactory(context_factory_for_test, nullptr));
-  context_factory->set_use_test_surface(false);
-
   // Create the message-loop here before creating the root window.
   base::MessageLoopForUI message_loop;
+  base::TaskScheduler::CreateAndStartWithDefaultParams("demo");
+  ui::InitializeInputMethodForTesting();
+
+  // The ContextFactory must exist before any Compositors are created.
+  viz::HostFrameSinkManager host_frame_sink_manager;
+  viz::ServerSharedBitmapManager server_shared_bitmap_manager;
+  viz::FrameSinkManagerImpl frame_sink_manager(&server_shared_bitmap_manager);
+  host_frame_sink_manager.SetLocalManager(&frame_sink_manager);
+  frame_sink_manager.SetLocalClient(&host_frame_sink_manager);
+  auto context_factory = std::make_unique<ui::InProcessContextFactory>(
+      &host_frame_sink_manager, &frame_sink_manager);
+  context_factory->set_use_test_surface(false);
 
   base::PowerMonitor power_monitor(
       base::WrapUnique(new base::PowerMonitorDeviceSource));
 
   std::unique_ptr<aura::Env> env = aura::Env::CreateInstance();
   env->set_context_factory(context_factory.get());
+  env->set_context_factory_private(context_factory.get());
   std::unique_ptr<aura::TestScreen> test_screen(
       aura::TestScreen::Create(gfx::Size()));
   display::Screen::SetScreenInstance(test_screen.get());
   std::unique_ptr<aura::WindowTreeHost> host(
       test_screen->CreateHostForPrimaryDisplay());
-  std::unique_ptr<DemoWindowTreeClient> window_tree_client(
-      new DemoWindowTreeClient(host->window()));
+  std::unique_ptr<DemoWindowParentingClient> window_parenting_client(
+      new DemoWindowParentingClient(host->window()));
   aura::test::TestFocusClient focus_client;
   aura::client::SetFocusClient(host->window(), &focus_client);
 
@@ -189,7 +203,7 @@ int DemoMain() {
   window2.AddChild(&window3);
 
   host->Show();
-  base::MessageLoopForUI::current()->Run();
+  base::RunLoop().Run();
 
   return 0;
 }
@@ -198,6 +212,12 @@ int DemoMain() {
 
 int main(int argc, char** argv) {
   base::CommandLine::Init(argc, argv);
+
+  // Disabling Direct Composition works around the limitation that
+  // InProcessContextFactory doesn't work with Direct Composition, causing the
+  // window to not render. See http://crbug.com/936249.
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      switches::kDisableDirectComposition);
 
   // The exit manager is in charge of calling the dtors of singleton objects.
   base::AtExitManager exit_manager;

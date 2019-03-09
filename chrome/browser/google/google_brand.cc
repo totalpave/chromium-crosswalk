@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <string>
 
-#include "base/macros.h"
+#include "base/no_destructor.h"
+#include "base/optional.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -41,11 +43,20 @@ bool GetBrand(std::string* brand) {
     return true;
   }
 
-  base::string16 brand16;
-  bool ret = GoogleUpdateSettings::GetBrand(&brand16);
-  if (ret)
-    brand->assign(base::UTF16ToASCII(brand16));
-  return ret;
+  // Cache brand code value, since it is queried a lot and registry queries are
+  // slow enough to actually affect top-level metrics like
+  // Omnibox.CharTypedToRepaintLatency.
+  static const base::NoDestructor<base::Optional<std::string>> brand_code(
+      []() -> base::Optional<std::string> {
+        base::string16 brand16;
+        if (!GoogleUpdateSettings::GetBrand(&brand16))
+          return base::nullopt;
+        return base::UTF16ToASCII(brand16);
+      }());
+  if (!brand_code->has_value())
+    return false;
+  brand->assign(**brand_code);
+  return true;
 }
 
 bool GetReactivationBrand(std::string* brand) {
@@ -81,6 +92,15 @@ bool GetReactivationBrand(std::string* brand) {
 
 #endif
 
+bool GetRlzBrand(std::string* brand) {
+#if defined(OS_CHROMEOS)
+  brand->assign(google_brand::chromeos::GetRlzBrand());
+  return true;
+#else
+  return GetBrand(brand);
+#endif
+}
+
 bool IsOrganic(const std::string& brand) {
 #if defined(OS_MACOSX)
   if (brand.empty()) {
@@ -90,20 +110,21 @@ bool IsOrganic(const std::string& brand) {
   }
 #endif
 
-  const char* const kBrands[] = {
-      "CHCA", "CHCB", "CHCG", "CHCH", "CHCI", "CHCJ", "CHCK", "CHCL",
-      "CHFO", "CHFT", "CHHS", "CHHM", "CHMA", "CHMB", "CHME", "CHMF",
-      "CHMG", "CHMH", "CHMI", "CHMQ", "CHMV", "CHNB", "CHNC", "CHNG",
-      "CHNH", "CHNI", "CHOA", "CHOB", "CHOC", "CHON", "CHOO", "CHOP",
-      "CHOQ", "CHOR", "CHOS", "CHOT", "CHOU", "CHOX", "CHOY", "CHOZ",
-      "CHPD", "CHPE", "CHPF", "CHPG", "ECBA", "ECBB", "ECDA", "ECDB",
-      "ECSA", "ECSB", "ECVA", "ECVB", "ECWA", "ECWB", "ECWC", "ECWD",
-      "ECWE", "ECWF", "EUBB", "EUBC", "GGLA", "GGLS"
-  };
-  const char* const* end = &kBrands[arraysize(kBrands)];
-  const char* const* found = std::find(&kBrands[0], end, brand);
-  if (found != end)
+  const char* const kOrganicBrands[] = {
+      "CHCA", "CHCB", "CHCG", "CHCH", "CHCI", "CHCJ", "CHCK", "CHCL", "CHFO",
+      "CHFT", "CHHS", "CHHM", "CHMA", "CHMB", "CHME", "CHMF", "CHMG", "CHMH",
+      "CHMI", "CHMQ", "CHMV", "CHNB", "CHNC", "CHNG", "CHNH", "CHNI", "CHOA",
+      "CHOB", "CHOC", "CHON", "CHOO", "CHOP", "CHOQ", "CHOR", "CHOS", "CHOT",
+      "CHOU", "CHOX", "CHOY", "CHOZ", "CHPD", "CHPE", "CHPF", "CHPG", "ECBA",
+      "ECBB", "ECDA", "ECDB", "ECSA", "ECSB", "ECVA", "ECVB", "ECWA", "ECWB",
+      "ECWC", "ECWD", "ECWE", "ECWF", "EUBB", "EUBC", "GGLA", "GGLS"};
+  const char* const* end = &kOrganicBrands[base::size(kOrganicBrands)];
+  if (std::binary_search(&kOrganicBrands[0], end, brand))
     return true;
+
+  // The Chrome enterprise brand code is the only GGR* brand to be non-organic.
+  if (brand == "GGRV")
+    return false;
 
   return base::StartsWith(brand, "EUB", base::CompareCase::SENSITIVE) ||
          base::StartsWith(brand, "EUC", base::CompareCase::SENSITIVE) ||
@@ -128,9 +149,7 @@ bool IsInternetCafeBrandCode(const std::string& brand) {
     "CHIQ", "CHSG", "HLJY", "NTMO", "OOBA", "OOBB", "OOBC", "OOBD", "OOBE",
     "OOBF", "OOBG", "OOBH", "OOBI", "OOBJ", "IDCM",
   };
-  const char* const* end = &kBrands[arraysize(kBrands)];
-  const char* const* found = std::find(&kBrands[0], end, brand);
-  return found != end;
+  return base::ContainsValue(kBrands, brand);
 }
 
 // BrandForTesting ------------------------------------------------------------

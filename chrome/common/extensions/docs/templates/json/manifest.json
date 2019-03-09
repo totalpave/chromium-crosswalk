@@ -1,4 +1,8 @@
 {
+  "action_handlers": {
+    "documentation": "manifest/action_handlers",
+    "example": ["new_note"]
+  },
   "app": {
     "documentation": "manifest/app",
     "example": {},
@@ -180,10 +184,6 @@
   "permissions": {
     "documentation": "declare_permissions",
     "example": ["tabs"]
-  },
-  "plugins": {
-    "documentation": "npapi",
-    "example": []
   },
   "requirements": {
     "documentation": "manifest/requirements",

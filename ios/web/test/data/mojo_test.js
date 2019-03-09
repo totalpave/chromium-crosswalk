@@ -8,42 +8,23 @@
 // "fin" is received by the native page. Refer to
 // ios/web/webui/web_ui_mojo_inttest.mm for testing code.
 
-/** @return {!Promise} */
-function getBrowserProxy() {
-  return new Promise(function(resolve, reject) {
-    define([
-      'mojo/public/js/connection',
-      'ios/web/test/mojo_test.mojom',
-      'content/public/renderer/frame_service_registry',
-    ], function(connection, mojom, serviceRegistry) {
-      var pageImpl, browserProxy;
+var pageImpl, browserProxy;
 
-      /** @constructor */
-      function TestPageImpl() {};
-
-      TestPageImpl.prototype = {
-        __proto__: mojom.TestPage.stubClass.prototype,
-
-        /** @override */
-        handleNativeMessage: function(result) {
-          if (result.message == 'ack') {
-            // Native code has replied with "ack", send "fin" to complete the
-            // test.
-            browserProxy.handleJsMessage('fin');
-          }
-        },
-      };
-
-      browserProxy = connection.bindHandleToProxy(
-          serviceRegistry.connectToService(mojom.TestUIHandlerMojo.name),
-          mojom.TestUIHandlerMojo);
-      pageImpl = new TestPageImpl();
-
-      browserProxy.setClientPage(connection.bindStubDerivedImpl(pageImpl));
-      resolve(browserProxy);
-    });
-  });
+/** @constructor */
+function TestPageImpl() {
+  this.binding = new mojo.Binding(TestPage, this);
 }
+
+TestPageImpl.prototype = {
+  /** @override */
+  handleNativeMessage: function(result) {
+    if (result.message == 'ack') {
+      // Native code has replied with "ack", send "fin" to complete the
+      // test.
+      browserProxy.handleJsMessage('fin');
+    }
+  },
+};
 
 /**
  * @return {!Promise} Fires when DOMContentLoaded event is received.
@@ -55,12 +36,19 @@ function whenDomContentLoaded() {
 }
 
 function main() {
-  Promise.all([
-    whenDomContentLoaded(), getBrowserProxy()
-  ]).then(function(results) {
-    var browserProxy = results[1];
+  whenDomContentLoaded().then(function() {
+    browserProxy = new TestUIHandlerMojoPtr();
+    Mojo.bindInterface(TestUIHandlerMojo.name,
+                       mojo.makeRequest(browserProxy).handle);
+
+    pageImpl = new TestPageImpl();
+    var pagePtr = new TestPagePtr();
+    pageImpl.binding.bind(mojo.makeRequest(pagePtr));
+    browserProxy.setClientPage(pagePtr);
+
     // Send "syn" so native code should reply with "ack".
     browserProxy.handleJsMessage('syn');
   });
 }
+
 main();

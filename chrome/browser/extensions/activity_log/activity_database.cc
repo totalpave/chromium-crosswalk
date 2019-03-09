@@ -6,15 +6,15 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/threading/thread.h"
-#include "base/threading/thread_checker.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/browser/extensions/activity_log/fullstream_ui_policy.h"
 #include "chrome/common/chrome_switches.h"
 #include "sql/error_delegate_util.h"
@@ -25,8 +25,6 @@
 #if defined(OS_MACOSX)
 #include "base/mac/mac_util.h"
 #endif
-
-using content::BrowserThread;
 
 namespace extensions {
 
@@ -56,10 +54,10 @@ ActivityDatabase::ActivityDatabase(ActivityDatabase::Delegate* delegate)
 ActivityDatabase::~ActivityDatabase() {}
 
 void ActivityDatabase::Init(const base::FilePath& db_name) {
-  if (did_init_) return;
+  if (did_init_)
+    return;
   did_init_ = true;
-  if (BrowserThread::IsMessageLoopValid(BrowserThread::DB))
-    DCHECK_CURRENTLY_ON(BrowserThread::DB);
+  DCHECK(GetActivityLogTaskRunner()->RunsTasksInCurrentSequence());
   db_.set_histogram_tag("Activity");
   db_.set_error_callback(
       base::Bind(&ActivityDatabase::DatabaseErrorCallback,
@@ -67,9 +65,8 @@ void ActivityDatabase::Init(const base::FilePath& db_name) {
   db_.set_page_size(4096);
   db_.set_cache_size(32);
 
-  // TODO(shess): The current mitigation for http://crbug.com/537742 stores
-  // state in the meta table, which this database does not use.
-  db_.set_mmap_disabled();
+  // This db does not use [meta] table, store mmap status data elsewhere.
+  db_.set_mmap_alt_status();
 
   if (!db_.Open(db_name)) {
     LOG(ERROR) << db_.GetErrorMessage();
@@ -140,13 +137,11 @@ void ActivityDatabase::SetBatchModeForTesting(bool batch_mode) {
   batch_mode_ = batch_mode;
 }
 
-sql::Connection* ActivityDatabase::GetSqlConnection() {
-  if (BrowserThread::IsMessageLoopValid(BrowserThread::DB))
-    DCHECK_CURRENTLY_ON(BrowserThread::DB);
+sql::Database* ActivityDatabase::GetSqlConnection() {
+  DCHECK(GetActivityLogTaskRunner()->RunsTasksInCurrentSequence());
   if (valid_db_) {
     return &db_;
   } else {
-    LOG(WARNING) << "Activity log database is not valid";
     return NULL;
   }
 }
@@ -206,7 +201,7 @@ void ActivityDatabase::SetTimerForTesting(int ms) {
 }
 
 // static
-bool ActivityDatabase::InitializeTable(sql::Connection* db,
+bool ActivityDatabase::InitializeTable(sql::Database* db,
                                        const char* table_name,
                                        const char* const content_fields[],
                                        const char* const field_types[],

@@ -17,33 +17,13 @@
                                                 CrAppControlProtocol> {
  @private
   BOOL handlingSendEvent_;
-  BOOL cyclingWindows_;
 }
 
 // Our implementation of |-terminate:| only attempts to terminate the
 // application, i.e., begins a process which may lead to termination. This
 // method cancels that process.
 - (void)cancelTerminate:(id)sender;
-
-// Keep track of whether windows are being cycled for use in determining whether
-// a Panel window can become the key window.
-- (BOOL)isCyclingWindows;
 @end
-
-namespace chrome_browser_application_mac {
-
-// Bin for unknown exceptions. Exposed for testing purposes.
-extern const size_t kUnknownNSException;
-
-// Returns the histogram bin for |exception| if it is one we track
-// specifically, or |kUnknownNSException| if unknown.  Exposed for testing
-// purposes.
-size_t BinForException(NSException* exception);
-
-// Use UMA to track exception occurance. Exposed for testing purposes.
-void RecordExceptionWithUma(NSException* exception);
-
-}  // namespace chrome_browser_application_mac
 
 #endif  // __OBJC__
 

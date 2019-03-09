@@ -17,6 +17,7 @@
 #include "base/nix/xdg_util.h"
 #endif
 
+class PrefService;
 class Profile;
 
 namespace password_manager {
@@ -45,10 +46,6 @@ class PasswordStoreFactory
   // Called by the PasswordDataTypeController whenever there is a possibility
   // that syncing passwords has just started or ended for |profile|.
   static void OnPasswordsSyncedStatePotentiallyChanged(Profile* profile);
-
-  // Trims the affiliation cache for |profile| if affiliation-based matching is
-  // enabled, and completely deletes it otherwise.
-  static void TrimOrDeleteAffiliationCache(Profile* profile);
 
  private:
   friend struct base::DefaultSingletonTraits<PasswordStoreFactory>;

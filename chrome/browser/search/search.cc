@@ -5,38 +5,28 @@
 #include "chrome/browser/search/search.h"
 
 #include <stddef.h>
+#include <string>
 
 #include "base/command_line.h"
-#include "base/metrics/field_trial.h"
-#include "base/metrics/histogram.h"
-#include "base/strings/string_number_conversions.h"
-#include "base/strings/string_split.h"
-#include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/browser_process.h"
+#include "base/feature_list.h"
+#include "base/metrics/histogram_macros.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/search/instant_service.h"
-#include "chrome/browser/search/instant_service_factory.h"
+#include "chrome/browser/search/ntp_features.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_instant_controller.h"
-#include "chrome/browser/ui/search/instant_search_prerenderer.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/common/search_urls.h"
 #include "chrome/common/url_constants.h"
-#include "components/google/core/browser/google_util.h"
-#include "components/pref_registry/pref_registry_syncable.h"
-#include "components/prefs/pref_service.h"
+#include "components/google/core/common/google_util.h"
 #include "components/search/search.h"
+#include "components/search_engines/search_engine_type.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/sessions/core/serialized_navigation_entry.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
+#include "url/gurl.h"
 
-#if defined(ENABLE_SUPERVISED_USERS)
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
 #include "chrome/browser/supervised_user/supervised_user_service.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_url_filter.h"
@@ -46,22 +36,35 @@
 #include "chrome/browser/chromeos/login/signin/merge_session_throttling_utils.h"
 #endif  // defined(OS_CHROMEOS)
 
+#if !defined(OS_ANDROID)
+#include "chrome/browser/search/instant_service.h"
+#include "chrome/browser/search/instant_service_factory.h"
+#endif
+
 namespace search {
 
 namespace {
 
-const char kPrefetchSearchResultsOnSRP[] = "prefetch_results_srp";
-const char kPrerenderInstantUrlOnOmniboxFocus[] =
-    "prerender_instant_url_on_omnibox_focus";
+const char kServiceWorkerFileName[] = "newtab-serviceworker.js";
 
-// Controls whether to use the alternate Instant search base URL. This allows
-// experimentation of Instant search.
-const char kUseAltInstantURL[] = "use_alternate_instant_url";
-const char kUseSearchPathForInstant[] = "use_search_path_for_instant";
-const char kAltInstantURLPath[] = "search";
-const char kAltInstantURLQueryParams[] = "&qbp=1";
+bool MatchesOrigin(const GURL& my_url, const GURL& other_url) {
+  return my_url.scheme_piece() == other_url.scheme_piece() &&
+         my_url.host_piece() == other_url.host_piece() &&
+         my_url.port() == other_url.port();
+}
 
-const char kShouldShowGoogleLocalNTPFlagName[] = "google_local_ntp";
+}  // namespace
+
+// Returns true if |my_url| matches |other_url| in terms of origin (i.e. host,
+// port, and scheme) and path.
+// Defined outside of the anonymous namespace so that it's accessible to unit
+// tests.
+bool MatchesOriginAndPath(const GURL& my_url, const GURL& other_url) {
+  return MatchesOrigin(my_url, other_url) &&
+         my_url.path_piece() == other_url.path_piece();
+}
+
+namespace {
 
 // Status of the New Tab URL for the default Search provider. NOTE: Used in a
 // UMA histogram so values should only be added at the end and not reordered.
@@ -91,136 +94,58 @@ enum NewTabURLState {
   NEW_TAB_URL_MAX
 };
 
-// Used to set the Instant support state of the Navigation entry.
-const char kInstantSupportStateKey[] = "instant_support_state";
-
-const char kInstantSupportEnabled[] = "Instant support enabled";
-const char kInstantSupportDisabled[] = "Instant support disabled";
-const char kInstantSupportUnknown[] = "Instant support unknown";
-
-InstantSupportState StringToInstantSupportState(const base::string16& value) {
-  if (value == base::ASCIIToUTF16(kInstantSupportEnabled))
-    return INSTANT_SUPPORT_YES;
-  else if (value == base::ASCIIToUTF16(kInstantSupportDisabled))
-    return INSTANT_SUPPORT_NO;
-  else
-    return INSTANT_SUPPORT_UNKNOWN;
-}
-
-base::string16 InstantSupportStateToString(InstantSupportState state) {
-  switch (state) {
-    case INSTANT_SUPPORT_NO:
-      return base::ASCIIToUTF16(kInstantSupportDisabled);
-    case INSTANT_SUPPORT_YES:
-      return base::ASCIIToUTF16(kInstantSupportEnabled);
-    case INSTANT_SUPPORT_UNKNOWN:
-      return base::ASCIIToUTF16(kInstantSupportUnknown);
-  }
-  return base::ASCIIToUTF16(kInstantSupportUnknown);
-}
-
-TemplateURL* GetDefaultSearchProviderTemplateURL(Profile* profile) {
+const TemplateURL* GetDefaultSearchProviderTemplateURL(Profile* profile) {
   if (profile) {
     TemplateURLService* template_url_service =
         TemplateURLServiceFactory::GetForProfile(profile);
     if (template_url_service)
       return template_url_service->GetDefaultSearchProvider();
   }
-  return NULL;
+  return nullptr;
 }
 
-GURL TemplateURLRefToGURL(const TemplateURLRef& ref,
-                          const SearchTermsData& search_terms_data,
-                          bool append_extra_query_params,
-                          bool force_instant_results) {
-  TemplateURLRef::SearchTermsArgs search_terms_args =
-      TemplateURLRef::SearchTermsArgs(base::string16());
-  search_terms_args.append_extra_query_params = append_extra_query_params;
-  search_terms_args.force_instant_results = force_instant_results;
-  return GURL(ref.ReplaceSearchTerms(search_terms_args, search_terms_data));
-}
-
-bool MatchesAnySearchURL(const GURL& url,
-                         TemplateURL* template_url,
-                         const SearchTermsData& search_terms_data) {
-  for (const TemplateURLRef& ref : template_url->url_refs()) {
-    GURL search_url =
-        TemplateURLRefToGURL(ref, search_terms_data, false, false);
-    if (search_url.is_valid() && MatchesOriginAndPath(url, search_url))
-      return true;
-  }
-  return false;
-}
-
-// Returns true if |url| can be used as an Instant URL for |profile|.
-bool IsInstantURL(const GURL& url, Profile* profile) {
-  if (!IsInstantExtendedAPIEnabled())
+bool IsMatchingServiceWorker(const GURL& my_url, const GURL& document_url) {
+  // The origin should match.
+  if (!MatchesOrigin(my_url, document_url))
     return false;
 
+  // The url filename should be the new tab page ServiceWorker.
+  std::string my_filename = my_url.ExtractFileName();
+  if (my_filename != kServiceWorkerFileName)
+    return false;
+
+  // The paths up to the filenames should be the same.
+  std::string my_path_without_filename = my_url.path();
+  my_path_without_filename = my_path_without_filename.substr(
+      0, my_path_without_filename.length() - my_filename.length());
+  std::string document_filename = document_url.ExtractFileName();
+  std::string document_path_without_filename = document_url.path();
+  document_path_without_filename = document_path_without_filename.substr(
+      0, document_path_without_filename.length() - document_filename.length());
+
+  return my_path_without_filename == document_path_without_filename;
+}
+
+// Returns true if |url| matches the NTP URL or the URL of the NTP's associated
+// service worker.
+bool IsNTPOrServiceWorkerURL(const GURL& url, Profile* profile) {
   if (!url.is_valid())
     return false;
 
   const GURL new_tab_url(GetNewTabPageURL(profile));
-  if (new_tab_url.is_valid() && MatchesOriginAndPath(url, new_tab_url))
-    return true;
-
-  TemplateURL* template_url = GetDefaultSearchProviderTemplateURL(profile);
-  if (!template_url)
-    return false;
-
-  if (!IsSuitableURLForInstant(url, template_url))
-    return false;
-
-  const TemplateURLRef& instant_url_ref = template_url->instant_url_ref();
-  UIThreadSearchTermsData search_terms_data(profile);
-  const GURL instant_url = TemplateURLRefToGURL(
-      instant_url_ref, search_terms_data, false, false);
-  if (!instant_url.is_valid())
-    return false;
-
-  if (MatchesOriginAndPath(url, instant_url))
-    return true;
-
-  return IsQueryExtractionEnabled() &&
-      MatchesAnySearchURL(url, template_url, search_terms_data);
-}
-
-base::string16 GetSearchTermsImpl(const content::WebContents* contents,
-                                  const content::NavigationEntry* entry) {
-  if (!contents || !IsQueryExtractionEnabled())
-    return base::string16();
-
-  // For security reasons, don't extract search terms if the page is not being
-  // rendered in the privileged Instant renderer process. This is to protect
-  // against a malicious page somehow scripting the search results page and
-  // faking search terms in the URL. Random pages can't get into the Instant
-  // renderer and scripting doesn't work cross-process, so if the page is in
-  // the Instant process, we know it isn't being exploited.
-  Profile* profile = Profile::FromBrowserContext(contents->GetBrowserContext());
-  if (IsInstantExtendedAPIEnabled() &&
-      !IsRenderedInInstantProcess(contents, profile) &&
-      ((entry == contents->GetController().GetLastCommittedEntry()) ||
-       !ShouldAssignURLToInstantRenderer(entry->GetURL(), profile)))
-    return base::string16();
-
-  // Check to see if search terms have already been extracted.
-  base::string16 search_terms = GetSearchTermsFromNavigationEntry(entry);
-  if (!search_terms.empty())
-    return search_terms;
-
-  if (!IsQueryExtractionAllowedForURL(profile, entry->GetVirtualURL()))
-    return base::string16();
-
-  // Otherwise, extract from the URL.
-  return ExtractSearchTermsFromURL(profile, entry->GetVirtualURL());
+  return new_tab_url.is_valid() && (MatchesOriginAndPath(url, new_tab_url) ||
+                                    IsMatchingServiceWorker(url, new_tab_url));
 }
 
 bool IsURLAllowedForSupervisedUser(const GURL& url, Profile* profile) {
-#if defined(ENABLE_SUPERVISED_USERS)
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
+  // If this isn't a supervised user, skip the URL filter check, since it can be
+  // fairly expensive.
+  if (!profile->IsSupervised())
+    return true;
   SupervisedUserService* supervised_user_service =
       SupervisedUserServiceFactory::GetForProfile(profile);
-  SupervisedUserURLFilter* url_filter =
-      supervised_user_service->GetURLFilterForUIThread();
+  SupervisedUserURLFilter* url_filter = supervised_user_service->GetURLFilter();
   if (url_filter->GetFilteringBehaviorForURL(url) ==
           SupervisedUserURLFilter::BLOCK) {
     return false;
@@ -229,27 +154,23 @@ bool IsURLAllowedForSupervisedUser(const GURL& url, Profile* profile) {
   return true;
 }
 
-// Returns whether |new_tab_url| can be used as a URL for the New Tab page.
-// NEW_TAB_URL_VALID means a valid URL; other enum values imply an invalid URL.
-NewTabURLState IsValidNewTabURL(Profile* profile, const GURL& new_tab_url) {
-  if (profile->IsOffTheRecord())
-    return NEW_TAB_URL_INCOGNITO;
-  if (!new_tab_url.is_valid())
-    return NEW_TAB_URL_NOT_SET;
-  if (!new_tab_url.SchemeIsCryptographic())
-    return NEW_TAB_URL_INSECURE;
-  if (!IsURLAllowedForSupervisedUser(new_tab_url, profile))
-    return NEW_TAB_URL_BLOCKED;
-  return NEW_TAB_URL_VALID;
+bool ShouldShowLocalNewTab(Profile* profile) {
+#if !defined(OS_ANDROID)
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  return command_line->HasSwitch(switches::kForceLocalNtp) ||
+         (base::FeatureList::IsEnabled(features::kUseGoogleLocalNtp) &&
+          profile && DefaultSearchProviderIsGoogle(profile));
+#endif
+  return false;
 }
 
-// On Chrome OS, if the session hasn't merged yet, we need to avoid loading the
-// remote NTP because that will trigger showing the merge session throttle
-// interstitial page, which can show for 5+ seconds. crbug.com/591530.
-bool ShouldShowLocalNewTab(const GURL& url, Profile* profile) {
+bool ShouldDelayRemoteNTP(const GURL& search_provider_url, Profile* profile) {
 #if defined(OS_CHROMEOS)
-  if (merge_session_throttling_utils::ShouldDelayRequestForProfile(profile) &&
-      merge_session_throttling_utils::ShouldDelayUrl(url)) {
+  // On Chrome OS, if the session hasn't merged yet, we need to avoid loading
+  // the remote NTP because that will trigger showing the merge session throttle
+  // interstitial page, which can show for 5+ seconds. crbug.com/591530.
+  if (merge_session_throttling_utils::ShouldDelayUrl(search_provider_url) &&
+      merge_session_throttling_utils::IsSessionRestorePending(profile)) {
     return true;
   }
 #endif  // defined(OS_CHROMEOS)
@@ -263,107 +184,48 @@ struct NewTabURLDetails {
       : url(url), state(state) {}
 
   static NewTabURLDetails ForProfile(Profile* profile) {
+    // Incognito has its own New Tab.
+    if (profile->IsOffTheRecord())
+      return NewTabURLDetails(GURL(), NEW_TAB_URL_INCOGNITO);
+
     const GURL local_url(chrome::kChromeSearchLocalNtpUrl);
 
-    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-    if (command_line->HasSwitch(switches::kForceLocalNtp))
+    if (ShouldShowLocalNewTab(profile))
       return NewTabURLDetails(local_url, NEW_TAB_URL_VALID);
 
-    TemplateURL* template_url = GetDefaultSearchProviderTemplateURL(profile);
+    const TemplateURL* template_url =
+        GetDefaultSearchProviderTemplateURL(profile);
     if (!profile || !template_url)
       return NewTabURLDetails(local_url, NEW_TAB_URL_BAD);
 
-    GURL search_provider_url = TemplateURLRefToGURL(
-        template_url->new_tab_url_ref(), UIThreadSearchTermsData(profile),
-        false, false);
+    GURL search_provider_url(template_url->new_tab_url_ref().ReplaceSearchTerms(
+        TemplateURLRef::SearchTermsArgs(base::string16()),
+        UIThreadSearchTermsData(profile)));
 
-    if (ShouldShowLocalNewTab(search_provider_url, profile))
+    if (ShouldDelayRemoteNTP(search_provider_url, profile))
       return NewTabURLDetails(local_url, NEW_TAB_URL_VALID);
 
-    NewTabURLState state = IsValidNewTabURL(profile, search_provider_url);
-    switch (state) {
-      case NEW_TAB_URL_VALID:
-        // We can use the search provider's page.
-        return NewTabURLDetails(search_provider_url, state);
-      case NEW_TAB_URL_INCOGNITO:
-        // Incognito has its own New Tab.
-        return NewTabURLDetails(GURL(), state);
-      default:
-        // Use the local New Tab otherwise.
-        return NewTabURLDetails(local_url, state);
-    }
+    if (!search_provider_url.is_valid())
+      return NewTabURLDetails(local_url, NEW_TAB_URL_NOT_SET);
+    if (!search_provider_url.SchemeIsCryptographic())
+      return NewTabURLDetails(local_url, NEW_TAB_URL_INSECURE);
+    if (!IsURLAllowedForSupervisedUser(search_provider_url, profile))
+      return NewTabURLDetails(local_url, NEW_TAB_URL_BLOCKED);
+
+    return NewTabURLDetails(search_provider_url, NEW_TAB_URL_VALID);
   }
 
-  GURL url;
-  NewTabURLState state;
+  const GURL url;
+  const NewTabURLState state;
 };
 
-}  // namespace
-
-base::string16 ExtractSearchTermsFromURL(Profile* profile, const GURL& url) {
-  if (url.is_valid() && url == GetSearchResultPrefetchBaseURL(profile)) {
-    // InstantSearchPrerenderer has the search query for the Instant search base
-    // page.
-    InstantSearchPrerenderer* prerenderer =
-        InstantSearchPrerenderer::GetForProfile(profile);
-    // TODO(kmadhusu): Remove this CHECK after the investigation of
-    // crbug.com/367204.
-    CHECK(prerenderer);
-    return prerenderer->get_last_query();
-  }
-
-  TemplateURL* template_url = GetDefaultSearchProviderTemplateURL(profile);
-  base::string16 search_terms;
-  if (template_url)
-    template_url->ExtractSearchTermsFromURL(
-        url, UIThreadSearchTermsData(profile), &search_terms);
-  return search_terms;
-}
-
-bool IsQueryExtractionAllowedForURL(Profile* profile, const GURL& url) {
-  TemplateURL* template_url = GetDefaultSearchProviderTemplateURL(profile);
-  return template_url && IsSuitableURLForInstant(url, template_url);
-}
-
-base::string16 GetSearchTermsFromNavigationEntry(
-    const content::NavigationEntry* entry) {
-  base::string16 search_terms;
-  if (entry)
-    entry->GetExtraData(sessions::kSearchTermsKey, &search_terms);
-  return search_terms;
-}
-
-base::string16 GetSearchTerms(const content::WebContents* contents) {
-  if (!contents)
-    return base::string16();
-
-  const content::NavigationEntry* entry =
-      contents->GetController().GetVisibleEntry();
-  if (!entry)
-    return base::string16();
-
-  if (IsInstantExtendedAPIEnabled()) {
-    InstantSupportState state =
-        GetInstantSupportStateFromNavigationEntry(*entry);
-    if (state == INSTANT_SUPPORT_NO)
-      return base::string16();
-  }
-
-  return GetSearchTermsImpl(contents, entry);
-}
-
-bool ShouldAssignURLToInstantRenderer(const GURL& url, Profile* profile) {
-  return url.is_valid() &&
-         profile &&
-         IsInstantExtendedAPIEnabled() &&
-         (url.SchemeIs(chrome::kChromeSearchScheme) ||
-          IsInstantURL(url, profile));
-}
-
-bool IsRenderedInInstantProcess(const content::WebContents* contents,
+bool IsRenderedInInstantProcess(content::WebContents* contents,
                                 Profile* profile) {
-  const content::RenderProcessHost* process_host =
-      contents->GetRenderProcessHost();
+#if defined(OS_ANDROID)
+  return false;
+#else
+  content::RenderProcessHost* process_host =
+      contents->GetMainFrame()->GetProcess();
   if (!process_host)
     return false;
 
@@ -373,12 +235,27 @@ bool IsRenderedInInstantProcess(const content::WebContents* contents,
     return false;
 
   return instant_service->IsInstantProcess(process_host->GetID());
+#endif
 }
 
-bool ShouldUseProcessPerSiteForInstantURL(const GURL& url, Profile* profile) {
-  return ShouldAssignURLToInstantRenderer(url, profile) &&
-      (url.host() == chrome::kChromeSearchLocalNtpHost ||
-       url.host() == chrome::kChromeSearchRemoteNtpHost);
+}  // namespace
+
+bool DefaultSearchProviderIsGoogle(Profile* profile) {
+  return DefaultSearchProviderIsGoogle(
+      TemplateURLServiceFactory::GetForProfile(profile));
+}
+
+bool DefaultSearchProviderIsGoogle(
+    const TemplateURLService* template_url_service) {
+  if (!template_url_service)
+    return false;
+  const TemplateURL* default_provider =
+      template_url_service->GetDefaultSearchProvider();
+  if (!default_provider)
+    return false;
+  return default_provider->GetEngineType(
+             template_url_service->search_terms_data()) ==
+         SearchEngineType::SEARCH_ENGINE_GOOGLE;
 }
 
 bool IsNTPURL(const GURL& url, Profile* profile) {
@@ -386,24 +263,29 @@ bool IsNTPURL(const GURL& url, Profile* profile) {
     return false;
 
   if (!IsInstantExtendedAPIEnabled())
-    return url == GURL(chrome::kChromeUINewTabURL);
+    return url == chrome::kChromeUINewTabURL;
 
-  const base::string16 search_terms = ExtractSearchTermsFromURL(profile, url);
-  return profile &&
-      ((IsInstantURL(url, profile) && search_terms.empty()) ||
-       url == GURL(chrome::kChromeSearchLocalNtpUrl));
+  // TODO(treib,sfiera): Tolerate query params when detecting local NTPs.
+  return profile && (IsNTPOrServiceWorkerURL(url, profile) ||
+                     url == chrome::kChromeSearchLocalNtpUrl);
 }
 
-bool IsInstantNTP(const content::WebContents* contents) {
+bool IsInstantNTP(content::WebContents* contents) {
   if (!contents)
     return false;
 
-  return NavEntryIsInstantNTP(contents,
-                              contents->GetController().GetVisibleEntry());
+  if (contents->ShowingInterstitialPage())
+    return false;
+
+  content::NavigationEntry* entry =
+      contents->GetController().GetLastCommittedEntry();
+  if (!entry)
+    entry = contents->GetController().GetVisibleEntry();
+  return NavEntryIsInstantNTP(contents, entry);
 }
 
-bool NavEntryIsInstantNTP(const content::WebContents* contents,
-                          const content::NavigationEntry* entry) {
+bool NavEntryIsInstantNTP(content::WebContents* contents,
+                          content::NavigationEntry* entry) {
   if (!contents || !entry || !IsInstantExtendedAPIEnabled())
     return false;
 
@@ -411,95 +293,37 @@ bool NavEntryIsInstantNTP(const content::WebContents* contents,
   if (!IsRenderedInInstantProcess(contents, profile))
     return false;
 
-  if (entry->GetURL() == GURL(chrome::kChromeSearchLocalNtpUrl))
+  return IsInstantNTPURL(entry->GetURL(), profile);
+}
+
+bool IsInstantNTPURL(const GURL& url, Profile* profile) {
+  if (!IsInstantExtendedAPIEnabled())
+    return false;
+
+  // TODO(treib,sfiera): Tolerate query params when detecting local NTPs.
+  if (url == chrome::kChromeSearchLocalNtpUrl)
     return true;
 
   GURL new_tab_url(GetNewTabPageURL(profile));
-  return new_tab_url.is_valid() &&
-         MatchesOriginAndPath(entry->GetURL(), new_tab_url);
-}
-
-bool IsSuggestPrefEnabled(Profile* profile) {
-  return profile && !profile->IsOffTheRecord() && profile->GetPrefs() &&
-         profile->GetPrefs()->GetBoolean(prefs::kSearchSuggestEnabled);
-}
-
-GURL GetInstantURL(Profile* profile, bool force_instant_results) {
-  if (!IsInstantExtendedAPIEnabled() || !IsSuggestPrefEnabled(profile))
-    return GURL();
-
-  TemplateURL* template_url = GetDefaultSearchProviderTemplateURL(profile);
-  if (!template_url)
-    return GURL();
-
-  GURL instant_url = TemplateURLRefToGURL(
-      template_url->instant_url_ref(), UIThreadSearchTermsData(profile),
-      true, force_instant_results);
-  if (!instant_url.is_valid() ||
-      !template_url->HasSearchTermsReplacementKey(instant_url))
-    return GURL();
-
-  // Extended mode requires HTTPS.  Force it unless the base URL was overridden
-  // on the command line, in which case we allow HTTP (see comments on
-  // IsSuitableURLForInstant()).
-  if (!instant_url.SchemeIsCryptographic() &&
-      !google_util::StartsWithCommandLineGoogleBaseURL(instant_url)) {
-    GURL::Replacements replacements;
-    replacements.SetSchemeStr(url::kHttpsScheme);
-    instant_url = instant_url.ReplaceComponents(replacements);
-  }
-
-  if (!IsURLAllowedForSupervisedUser(instant_url, profile))
-    return GURL();
-
-  if (ShouldUseAltInstantURL()) {
-    GURL::Replacements replacements;
-      const std::string path(
-          ShouldUseSearchPathForInstant() ? kAltInstantURLPath : std::string());
-    if (!path.empty())
-      replacements.SetPathStr(path);
-    const std::string query(
-        instant_url.query() + std::string(kAltInstantURLQueryParams));
-    replacements.SetQueryStr(query);
-    instant_url = instant_url.ReplaceComponents(replacements);
-  }
-  return instant_url;
-}
-
-// Returns URLs associated with the default search engine for |profile|.
-std::vector<GURL> GetSearchURLs(Profile* profile) {
-  std::vector<GURL> result;
-  TemplateURL* template_url = GetDefaultSearchProviderTemplateURL(profile);
-  if (!template_url)
-    return result;
-  for (const TemplateURLRef& ref : template_url->url_refs()) {
-    result.push_back(TemplateURLRefToGURL(ref, UIThreadSearchTermsData(profile),
-                                          false, false));
-  }
-  return result;
+  return new_tab_url.is_valid() && MatchesOriginAndPath(url, new_tab_url);
 }
 
 GURL GetNewTabPageURL(Profile* profile) {
   return NewTabURLDetails::ForProfile(profile).url;
 }
 
-GURL GetSearchResultPrefetchBaseURL(Profile* profile) {
-  return ShouldPrefetchSearchResults() ? GetInstantURL(profile, true) : GURL();
+#if !defined(OS_ANDROID)
+
+bool ShouldAssignURLToInstantRenderer(const GURL& url, Profile* profile) {
+  return url.is_valid() && profile && IsInstantExtendedAPIEnabled() &&
+         (url.SchemeIs(chrome::kChromeSearchScheme) ||
+          IsNTPOrServiceWorkerURL(url, profile));
 }
 
-bool ShouldPrerenderInstantUrlOnOmniboxFocus() {
-  if (!ShouldPrefetchSearchResults())
-    return false;
-
-  FieldTrialFlags flags;
-  return GetFieldTrialInfo(&flags) && GetBoolValueForFlagWithDefault(
-      kPrerenderInstantUrlOnOmniboxFocus, false, flags);
-}
-
-bool ShouldShowGoogleLocalNTP() {
-  FieldTrialFlags flags;
-  return !GetFieldTrialInfo(&flags) || GetBoolValueForFlagWithDefault(
-      kShouldShowGoogleLocalNTPFlagName, true, flags);
+bool ShouldUseProcessPerSiteForInstantURL(const GURL& url, Profile* profile) {
+  return ShouldAssignURLToInstantRenderer(url, profile) &&
+         (url.host_piece() == chrome::kChromeSearchLocalNtpHost ||
+          url.host_piece() == chrome::kChromeSearchRemoteNtpHost);
 }
 
 GURL GetEffectiveURLForInstant(const GURL& url, Profile* profile) {
@@ -508,8 +332,6 @@ GURL GetEffectiveURLForInstant(const GURL& url, Profile* profile) {
 
   if (url.SchemeIs(chrome::kChromeSearchScheme))
     return url;
-
-  GURL effective_url(url);
 
   // Replace the scheme with "chrome-search:", and clear the port, since
   // chrome-search is a scheme without port.
@@ -524,13 +346,13 @@ GURL GetEffectiveURLForInstant(const GURL& url, Profile* profile) {
   std::string remote_ntp_host(chrome::kChromeSearchRemoteNtpHost);
   NewTabURLDetails details = NewTabURLDetails::ForProfile(profile);
   if (details.state == NEW_TAB_URL_VALID &&
-      MatchesOriginAndPath(url, details.url)) {
+      (MatchesOriginAndPath(url, details.url) ||
+       IsMatchingServiceWorker(url, details.url))) {
     replacements.SetHost(remote_ntp_host.c_str(),
                          url::Component(0, remote_ntp_host.length()));
   }
 
-  effective_url = effective_url.ReplaceComponents(replacements);
-  return effective_url;
+  return url.ReplaceComponents(replacements);
 }
 
 bool HandleNewTabURLRewrite(GURL* url,
@@ -560,16 +382,11 @@ bool HandleNewTabURLReverseRewrite(GURL* url,
 
   // Do nothing in incognito.
   Profile* profile = Profile::FromBrowserContext(browser_context);
-  if (profile && profile->IsOffTheRecord())
+  DCHECK(profile);
+  if (profile->IsOffTheRecord())
     return false;
 
-  if (MatchesOriginAndPath(GURL(chrome::kChromeSearchLocalNtpUrl), *url)) {
-    *url = GURL(chrome::kChromeUINewTabURL);
-    return true;
-  }
-
-  GURL new_tab_url(GetNewTabPageURL(profile));
-  if (new_tab_url.is_valid() && MatchesOriginAndPath(new_tab_url, *url)) {
+  if (IsInstantNTPURL(*url, profile)) {
     *url = GURL(chrome::kChromeUINewTabURL);
     return true;
   }
@@ -577,40 +394,6 @@ bool HandleNewTabURLReverseRewrite(GURL* url,
   return false;
 }
 
-void SetInstantSupportStateInNavigationEntry(InstantSupportState state,
-                                             content::NavigationEntry* entry) {
-  if (!entry)
-    return;
-
-  entry->SetExtraData(kInstantSupportStateKey,
-                      InstantSupportStateToString(state));
-}
-
-InstantSupportState GetInstantSupportStateFromNavigationEntry(
-    const content::NavigationEntry& entry) {
-  base::string16 value;
-  if (!entry.GetExtraData(kInstantSupportStateKey, &value))
-    return INSTANT_SUPPORT_UNKNOWN;
-
-  return StringToInstantSupportState(value);
-}
-
-bool ShouldPrefetchSearchResultsOnSRP() {
-  FieldTrialFlags flags;
-  return GetFieldTrialInfo(&flags) && GetBoolValueForFlagWithDefault(
-      kPrefetchSearchResultsOnSRP, false, flags);
-}
-
-bool ShouldUseAltInstantURL() {
-  FieldTrialFlags flags;
-  return GetFieldTrialInfo(&flags) && GetBoolValueForFlagWithDefault(
-      kUseAltInstantURL, false, flags);
-}
-
-bool ShouldUseSearchPathForInstant() {
-  FieldTrialFlags flags;
-  return GetFieldTrialInfo(&flags) && GetBoolValueForFlagWithDefault(
-      kUseSearchPathForInstant, false, flags);
-}
+#endif  // !defined(OS_ANDROID)
 
 }  // namespace search

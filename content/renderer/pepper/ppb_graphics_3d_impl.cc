@@ -6,11 +6,15 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/location.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/gpu_stream_constants.h"
 #include "content/public/common/web_preferences.h"
 #include "content/renderer/pepper/host_globals.h"
 #include "content/renderer/pepper/pepper_plugin_instance_impl.h"
@@ -18,16 +22,17 @@
 #include "content/renderer/pepper/plugin_module.h"
 #include "content/renderer/render_thread_impl.h"
 #include "content/renderer/render_view_impl.h"
-#include "gpu/command_buffer/common/gles2_cmd_utils.h"
+#include "gpu/GLES2/gl2extchromium.h"
+#include "gpu/command_buffer/common/context_creation_attribs.h"
 #include "gpu/ipc/client/command_buffer_proxy_impl.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
 #include "ppapi/c/ppp_graphics_3d.h"
 #include "ppapi/thunk/enter.h"
-#include "third_party/WebKit/public/platform/WebString.h"
-#include "third_party/WebKit/public/web/WebConsoleMessage.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebPluginContainer.h"
+#include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/public/web/web_console_message.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_plugin_container.h"
 #include "third_party/khronos/GLES2/gl2.h"
 
 using ppapi::thunk::EnterResourceNoLock;
@@ -44,6 +49,10 @@ PPB_Graphics3D_Impl::PPB_Graphics3D_Impl(PP_Instance instance)
       bound_to_instance_(false),
       commit_pending_(false),
       has_alpha_(false),
+      use_image_chromium_(
+          !base::CommandLine::ForCurrentProcess()->HasSwitch(
+              switches::kDisablePepper3DImageChromium) &&
+          base::FeatureList::IsEnabled(features::kPepper3DImageChromium)),
       weak_ptr_factory_(this) {}
 
 PPB_Graphics3D_Impl::~PPB_Graphics3D_Impl() {
@@ -57,11 +66,11 @@ PPB_Graphics3D_Impl::~PPB_Graphics3D_Impl() {
 PP_Resource PPB_Graphics3D_Impl::CreateRaw(
     PP_Instance instance,
     PP_Resource share_context,
-    const int32_t* attrib_list,
+    const gpu::ContextCreationAttribs& attrib_helper,
     gpu::Capabilities* capabilities,
-    base::SharedMemoryHandle* shared_state_handle,
+    const base::UnsafeSharedMemoryRegion** shared_state_region,
     gpu::CommandBufferId* command_buffer_id) {
-  PPB_Graphics3D_API* share_api = NULL;
+  PPB_Graphics3D_API* share_api = nullptr;
   if (share_context) {
     EnterResourceNoLock<PPB_Graphics3D_API> enter(share_context, true);
     if (enter.failed())
@@ -70,8 +79,8 @@ PP_Resource PPB_Graphics3D_Impl::CreateRaw(
   }
   scoped_refptr<PPB_Graphics3D_Impl> graphics_3d(
       new PPB_Graphics3D_Impl(instance));
-  if (!graphics_3d->InitRaw(share_api, attrib_list, capabilities,
-                            shared_state_handle, command_buffer_id))
+  if (!graphics_3d->InitRaw(share_api, attrib_helper, capabilities,
+                            shared_state_region, command_buffer_id))
     return 0;
   return graphics_3d->GetReference();
 }
@@ -100,15 +109,15 @@ PP_Bool PPB_Graphics3D_Impl::Flush(int32_t put_offset) {
 gpu::CommandBuffer::State PPB_Graphics3D_Impl::WaitForTokenInRange(
     int32_t start,
     int32_t end) {
-  GetCommandBuffer()->WaitForTokenInRange(start, end);
-  return GetCommandBuffer()->GetLastState();
+  return GetCommandBuffer()->WaitForTokenInRange(start, end);
 }
 
 gpu::CommandBuffer::State PPB_Graphics3D_Impl::WaitForGetOffsetInRange(
+    uint32_t set_get_buffer_count,
     int32_t start,
     int32_t end) {
-  GetCommandBuffer()->WaitForGetOffsetInRange(start, end);
-  return GetCommandBuffer()->GetLastState();
+  return GetCommandBuffer()->WaitForGetOffsetInRange(set_get_buffer_count,
+                                                     start, end);
 }
 
 void PPB_Graphics3D_Impl::EnsureWorkVisible() {
@@ -116,11 +125,6 @@ void PPB_Graphics3D_Impl::EnsureWorkVisible() {
 }
 
 void PPB_Graphics3D_Impl::TakeFrontBuffer() {
-  if (!taken_front_buffer_.IsZero()) {
-    DLOG(ERROR)
-        << "TakeFrontBuffer should only be called once before DoSwapBuffers";
-    return;
-  }
   taken_front_buffer_ = GenerateMailbox();
   command_buffer_->TakeFrontBuffer(taken_front_buffer_);
 }
@@ -129,6 +133,7 @@ void PPB_Graphics3D_Impl::ReturnFrontBuffer(const gpu::Mailbox& mailbox,
                                             const gpu::SyncToken& sync_token,
                                             bool is_lost) {
   command_buffer_->ReturnFrontBuffer(mailbox, sync_token, is_lost);
+  mailboxes_to_reuse_.push_back(mailbox);
 }
 
 bool PPB_Graphics3D_Impl::BindToInstance(bool bind) {
@@ -158,7 +163,8 @@ gpu::GpuControl* PPB_Graphics3D_Impl::GetGpuControl() {
   return command_buffer_.get();
 }
 
-int32_t PPB_Graphics3D_Impl::DoSwapBuffers(const gpu::SyncToken& sync_token) {
+int32_t PPB_Graphics3D_Impl::DoSwapBuffers(const gpu::SyncToken& sync_token,
+                                           const gfx::Size& size) {
   DCHECK(command_buffer_);
   if (taken_front_buffer_.IsZero()) {
     DLOG(ERROR) << "TakeFrontBuffer should be called before DoSwapBuffers";
@@ -173,40 +179,49 @@ int32_t PPB_Graphics3D_Impl::DoSwapBuffers(const gpu::SyncToken& sync_token) {
     //
     // Don't need to check for NULL from GetPluginInstance since when we're
     // bound, we know our instance is valid.
-    cc::TextureMailbox texture_mailbox(taken_front_buffer_, sync_token,
-                                       GL_TEXTURE_2D);
-    taken_front_buffer_.SetZero();
+    bool is_overlay_candidate = use_image_chromium_;
+    // TODO(reveman): Get texture target from browser process.
+    uint32_t target = GL_TEXTURE_2D;
+#if defined(OS_MACOSX)
+    if (use_image_chromium_)
+      target = GL_TEXTURE_RECTANGLE_ARB;
+#endif
+    viz::TransferableResource resource =
+        viz::TransferableResource::MakeGLOverlay(taken_front_buffer_, GL_LINEAR,
+                                                 target, sync_token, size,
+                                                 is_overlay_candidate);
     HostGlobals::Get()
         ->GetInstance(pp_instance())
-        ->CommitTextureMailbox(texture_mailbox);
+        ->CommitTransferableResource(resource);
     commit_pending_ = true;
   } else {
     // Wait for the command to complete on the GPU to allow for throttling.
     command_buffer_->SignalSyncToken(
-        sync_token, base::Bind(&PPB_Graphics3D_Impl::OnSwapBuffers,
-                               weak_ptr_factory_.GetWeakPtr()));
+        sync_token, base::BindOnce(&PPB_Graphics3D_Impl::OnSwapBuffers,
+                                   weak_ptr_factory_.GetWeakPtr()));
   }
 
   return PP_OK_COMPLETIONPENDING;
 }
 
-bool PPB_Graphics3D_Impl::InitRaw(PPB_Graphics3D_API* share_context,
-                                  const int32_t* attrib_list,
-                                  gpu::Capabilities* capabilities,
-                                  base::SharedMemoryHandle* shared_state_handle,
-                                  gpu::CommandBufferId* command_buffer_id) {
+bool PPB_Graphics3D_Impl::InitRaw(
+    PPB_Graphics3D_API* share_context,
+    const gpu::ContextCreationAttribs& requested_attribs,
+    gpu::Capabilities* capabilities,
+    const base::UnsafeSharedMemoryRegion** shared_state_region,
+    gpu::CommandBufferId* command_buffer_id) {
   PepperPluginInstanceImpl* plugin_instance =
       HostGlobals::Get()->GetInstance(pp_instance());
   if (!plugin_instance)
     return false;
 
-  RenderView* render_view = plugin_instance->GetRenderView();
-  if (!render_view)
+  RenderFrame* render_frame = plugin_instance->GetRenderFrame();
+  if (!render_frame)
     return false;
 
-  const WebPreferences& prefs = render_view->GetWebkitPreferences();
+  const WebPreferences& prefs = render_frame->GetWebkitPreferences();
 
-  // 3D access might be disabled or blacklisted.
+  // 3D access might be disabled.
   if (!prefs.pepper_3d_enabled)
     return false;
 
@@ -218,67 +233,48 @@ bool PPB_Graphics3D_Impl::InitRaw(PPB_Graphics3D_API* share_context,
   RenderThreadImpl* render_thread = RenderThreadImpl::current();
   if (!render_thread)
     return false;
+  if (render_thread->IsGpuCompositingDisabled())
+    return false;
 
   scoped_refptr<gpu::GpuChannelHost> channel =
-      render_thread->EstablishGpuChannelSync(
-          CAUSE_FOR_GPU_LAUNCH_PEPPERPLATFORMCONTEXT3DIMPL_INITIALIZE);
+      render_thread->EstablishGpuChannelSync();
   if (!channel)
     return false;
-
-  gpu::gles2::ContextCreationAttribHelper attrib_helper;
-  std::vector<int32_t> attribs;
-  attrib_helper.gpu_preference = gl::PreferDiscreteGpu;
-  // TODO(alokp): Change CommandBufferProxyImpl::Create()
-  // interface to accept width and height in the attrib_list so that
-  // we do not need to filter for width and height here.
-  if (attrib_list) {
-    for (const int32_t* attr = attrib_list; attr[0] != PP_GRAPHICS3DATTRIB_NONE;
-         attr += 2) {
-      switch (attr[0]) {
-        case PP_GRAPHICS3DATTRIB_WIDTH:
-          attrib_helper.offscreen_framebuffer_size.set_width(attr[1]);
-          break;
-        case PP_GRAPHICS3DATTRIB_HEIGHT:
-          attrib_helper.offscreen_framebuffer_size.set_height(attr[1]);
-          break;
-        case PP_GRAPHICS3DATTRIB_GPU_PREFERENCE:
-          attrib_helper.gpu_preference =
-              (attr[1] == PP_GRAPHICS3DATTRIB_GPU_PREFERENCE_LOW_POWER)
-                  ? gl::PreferIntegratedGpu
-                  : gl::PreferDiscreteGpu;
-          break;
-        case PP_GRAPHICS3DATTRIB_ALPHA_SIZE:
-          has_alpha_ = attr[1] > 0;
-        // fall-through
-        default:
-          attribs.push_back(attr[0]);
-          attribs.push_back(attr[1]);
-          break;
-      }
-    }
-    attribs.push_back(PP_GRAPHICS3DATTRIB_NONE);
-  }
-  if (!attrib_helper.Parse(attribs))
+  // 3D access might be blacklisted.
+  if (channel->gpu_feature_info()
+          .status_values[gpu::GPU_FEATURE_TYPE_ACCELERATED_WEBGL] ==
+      gpu::kGpuFeatureStatusBlacklisted) {
     return false;
+  }
 
-  gpu::CommandBufferProxyImpl* share_buffer = NULL;
+  has_alpha_ = requested_attribs.alpha_size > 0;
+
+  gpu::ContextCreationAttribs attrib_helper = requested_attribs;
+  attrib_helper.should_use_native_gmb_for_backbuffer = use_image_chromium_;
+  attrib_helper.context_type = gpu::CONTEXT_TYPE_OPENGLES2;
+
+  gpu::CommandBufferProxyImpl* share_buffer = nullptr;
+  if (!plugin_instance->is_flash_plugin())
+    UMA_HISTOGRAM_BOOLEAN("Pepper.Graphics3DHasShareGroup", !!share_context);
   if (share_context) {
     PPB_Graphics3D_Impl* share_graphics =
         static_cast<PPB_Graphics3D_Impl*>(share_context);
     share_buffer = share_graphics->GetCommandBufferProxy();
   }
 
-  command_buffer_ = gpu::CommandBufferProxyImpl::Create(
-      std::move(channel), gpu::kNullSurfaceHandle, share_buffer,
-      gpu::GPU_STREAM_DEFAULT, gpu::GpuStreamPriority::NORMAL, attrib_helper,
-      GURL::EmptyGURL(), base::ThreadTaskRunnerHandle::Get());
-  if (!command_buffer_)
+  command_buffer_ = std::make_unique<gpu::CommandBufferProxyImpl>(
+      std::move(channel), render_thread->GetGpuMemoryBufferManager(),
+      kGpuStreamIdDefault, base::ThreadTaskRunnerHandle::Get());
+  auto result = command_buffer_->Initialize(
+      gpu::kNullSurfaceHandle, share_buffer, kGpuStreamPriorityDefault,
+      attrib_helper, GURL::EmptyGURL());
+  if (result != gpu::ContextResult::kSuccess)
     return false;
 
   command_buffer_->SetGpuControlClient(this);
 
-  if (shared_state_handle)
-    *shared_state_handle = command_buffer_->GetSharedStateHandle();
+  if (shared_state_region)
+    *shared_state_region = &command_buffer_->GetSharedStateRegion();
   if (capabilities)
     *capabilities = command_buffer_->GetCapabilities();
   if (command_buffer_id)
@@ -295,12 +291,12 @@ void PPB_Graphics3D_Impl::OnGpuControlErrorMessage(const char* message,
       HostGlobals::Get()->GetInstance(pp_instance())->container();
   if (!container)
     return;
-  WebLocalFrame* frame = container->document().frame();
+  WebLocalFrame* frame = container->GetDocument().GetFrame();
   if (!frame)
     return;
   WebConsoleMessage console_message = WebConsoleMessage(
-      WebConsoleMessage::LevelError, WebString(base::UTF8ToUTF16(message)));
-  frame->addMessageToConsole(console_message);
+      blink::mojom::ConsoleMessageLevel::kError, WebString::FromUTF8(message));
+  frame->AddMessageToConsole(console_message);
 }
 
 void PPB_Graphics3D_Impl::OnGpuControlLostContext() {
@@ -320,12 +316,20 @@ void PPB_Graphics3D_Impl::OnGpuControlLostContext() {
   // Send context lost to plugin. This may have been caused by a PPAPI call, so
   // avoid re-entering.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&PPB_Graphics3D_Impl::SendContextLost,
-                            weak_ptr_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&PPB_Graphics3D_Impl::SendContextLost,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
 void PPB_Graphics3D_Impl::OnGpuControlLostContextMaybeReentrant() {
   // No internal state to update on lost context.
+}
+
+void PPB_Graphics3D_Impl::OnGpuControlSwapBuffersCompleted(
+    const gpu::SwapBuffersCompleteParams& params) {}
+
+void PPB_Graphics3D_Impl::OnGpuControlReturnData(
+    base::span<const uint8_t> data) {
+  NOTIMPLEMENTED();
 }
 
 void PPB_Graphics3D_Impl::OnSwapBuffers() {

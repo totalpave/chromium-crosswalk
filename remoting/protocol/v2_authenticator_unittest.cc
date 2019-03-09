@@ -5,6 +5,7 @@
 #include "remoting/protocol/v2_authenticator.h"
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "net/base/net_errors.h"
@@ -14,7 +15,7 @@
 #include "remoting/protocol/connection_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using testing::_;
 using testing::DeleteArg;
@@ -35,9 +36,8 @@ const char kTestSharedSecretBad[] = "0000-0000-0001";
 
 class V2AuthenticatorTest : public AuthenticatorTestBase {
  public:
-  V2AuthenticatorTest() {
-  }
-  ~V2AuthenticatorTest() override {}
+  V2AuthenticatorTest() = default;
+  ~V2AuthenticatorTest() override = default;
 
  protected:
   void InitAuthenticators(const std::string& client_secret,
@@ -84,11 +84,11 @@ TEST_F(V2AuthenticatorTest, InvalidSecret) {
   reinterpret_cast<V2Authenticator*>(client_.get())->state_ =
       Authenticator::MESSAGE_READY;
 
-  std::unique_ptr<buzz::XmlElement> message(client_->GetNextMessage());
+  std::unique_ptr<jingle_xmpp::XmlElement> message(client_->GetNextMessage());
   ASSERT_TRUE(message.get());
 
   ASSERT_EQ(Authenticator::WAITING_MESSAGE, client_->state());
-  host_->ProcessMessage(message.get(), base::Bind(&base::DoNothing));
+  host_->ProcessMessage(message.get(), base::DoNothing());
   // This assumes that V2Authenticator::ProcessMessage runs synchronously.
   ASSERT_EQ(Authenticator::REJECTED, host_->state());
 }

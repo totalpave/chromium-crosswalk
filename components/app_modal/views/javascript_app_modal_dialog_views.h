@@ -11,13 +11,13 @@
 #include "components/app_modal/native_app_modal_dialog.h"
 #include "ui/views/window/dialog_delegate.h"
 
-class JavaScriptAppModalDialog;
-
 namespace views {
 class MessageBoxView;
 }
 
 namespace app_modal {
+
+class JavaScriptAppModalDialog;
 
 class JavaScriptAppModalDialogViews : public NativeAppModalDialog,
                                       public views::DialogDelegate {
@@ -47,6 +47,7 @@ class JavaScriptAppModalDialogViews : public NativeAppModalDialog,
   ui::ModalType GetModalType() const override;
   views::View* GetContentsView() override;
   views::View* GetInitiallyFocusedView() override;
+  bool ShouldShowCloseButton() const override;
   void WindowClosing() override;
   views::Widget* GetWidget() override;
   const views::Widget* GetWidget() const override;

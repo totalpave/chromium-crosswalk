@@ -15,8 +15,8 @@
 
 namespace {
 
-base::LazyInstance<base::android::ScopedJavaGlobalRef<jobject> >
-    g_message_handler_obj = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::android::ScopedJavaGlobalRef<jobject>>::
+    DestructorAtExit g_message_handler_obj = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -29,7 +29,9 @@ struct NestedMessagePumpAndroid::RunState {
         run_depth(run_depth),
         should_quit(false),
         waitable_event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
-                       base::WaitableEvent::InitialState::NOT_SIGNALED) {}
+                       base::WaitableEvent::InitialState::NOT_SIGNALED) {
+    waitable_event.declare_only_used_while_idle();
+  }
 
   base::MessagePump::Delegate* delegate;
 
@@ -92,11 +94,10 @@ void NestedMessagePumpAndroid::Run(Delegate* delegate) {
     // No native tasks to process right now. Process tasks from the Java
     // System message handler. This will return when the java message queue
     // is idle.
-    bool ret = Java_NestedSystemMessageHandler_runNestedLoopTillIdle(env,
-        g_message_handler_obj.Get().obj());
+    bool ret = Java_NestedSystemMessageHandler_runNestedLoopTillIdle(
+        env, g_message_handler_obj.Get());
     CHECK(ret) << "Error running java message loop, tests will likely fail.";
 
-    base::ThreadRestrictions::ScopedAllowWait allow_wait;
     if (state_->delayed_work_time.is_null()) {
       state_->waitable_event.TimedWait(max_delay);
     } else {
@@ -117,7 +118,7 @@ void NestedMessagePumpAndroid::Run(Delegate* delegate) {
   state_ = previous_state;
 }
 
-void NestedMessagePumpAndroid::Start(
+void NestedMessagePumpAndroid::Attach(
     base::MessagePump::Delegate* delegate) {
   JNIEnv* env = base::android::AttachCurrentThread();
   DCHECK(env);
@@ -149,11 +150,6 @@ void NestedMessagePumpAndroid::ScheduleDelayedWork(
     state_->delayed_work_time = delayed_work_time;
     return;
   }
-}
-
-// static
-bool NestedMessagePumpAndroid::RegisterJni(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace content

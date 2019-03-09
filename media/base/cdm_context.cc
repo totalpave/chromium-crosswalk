@@ -4,13 +4,38 @@
 
 #include "media/base/cdm_context.h"
 
+#include "media/base/callback_registry.h"
+
 namespace media {
 
-const int CdmContext::kInvalidCdmId = 0;
+CdmContext::CdmContext() = default;
 
-CdmContext::CdmContext() {}
+CdmContext::~CdmContext() = default;
 
-CdmContext::~CdmContext() {}
+std::unique_ptr<CallbackRegistration> CdmContext::RegisterEventCB(
+    EventCB /* event_cb */) {
+  return nullptr;
+}
+
+Decryptor* CdmContext::GetDecryptor() {
+  return nullptr;
+}
+
+int CdmContext::GetCdmId() const {
+  return kInvalidCdmId;
+}
+
+#if BUILDFLAG(ENABLE_LIBRARY_CDMS)
+CdmProxyContext* CdmContext::GetCdmProxyContext() {
+  return nullptr;
+}
+#endif  // BUILDFLAG(ENABLE_LIBRARY_CDMS)
+
+#if defined(OS_ANDROID)
+MediaCryptoContext* CdmContext::GetMediaCryptoContext() {
+  return nullptr;
+}
+#endif
 
 void IgnoreCdmAttached(bool /* success */) {}
 

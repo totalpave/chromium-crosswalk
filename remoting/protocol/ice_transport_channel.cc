@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
 #include "base/single_thread_task_runner.h"
@@ -16,11 +17,11 @@
 #include "remoting/protocol/channel_socket_adapter.h"
 #include "remoting/protocol/port_allocator_factory.h"
 #include "remoting/protocol/transport_context.h"
-#include "third_party/webrtc/base/network.h"
-#include "third_party/webrtc/p2p/base/p2pconstants.h"
-#include "third_party/webrtc/p2p/base/p2ptransportchannel.h"
+#include "third_party/webrtc/p2p/base/p2p_constants.h"
+#include "third_party/webrtc/p2p/base/p2p_transport_channel.h"
+#include "third_party/webrtc/p2p/base/packet_transport_interface.h"
 #include "third_party/webrtc/p2p/base/port.h"
-#include "third_party/webrtc/p2p/client/httpportallocator.h"
+#include "third_party/webrtc/rtc_base/network.h"
 
 namespace remoting {
 namespace protocol {
@@ -60,6 +61,7 @@ IceTransportChannel::IceTransportChannel(
 
 IceTransportChannel::~IceTransportChannel() {
   DCHECK(delegate_);
+  DCHECK(thread_checker_.CalledOnValidThread());
 
   delegate_->OnChannelDeleted(this);
 
@@ -130,8 +132,8 @@ void IceTransportChannel::Connect(const std::string& name,
                          this, &IceTransportChannel::TryReconnect);
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&IceTransportChannel::NotifyConnected,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&IceTransportChannel::NotifyConnected,
+                                weak_factory_.GetWeakPtr()));
 }
 
 void IceTransportChannel::NotifyConnected() {
@@ -183,24 +185,26 @@ bool IceTransportChannel::is_connected() const {
 }
 
 void IceTransportChannel::OnCandidateGathered(
-    cricket::TransportChannelImpl* channel,
+    cricket::IceTransportInternal* ice_transport,
     const cricket::Candidate& candidate) {
   DCHECK(thread_checker_.CalledOnValidThread());
   delegate_->OnChannelCandidate(this, candidate);
 }
 
 void IceTransportChannel::OnRouteChange(
-    cricket::TransportChannel* channel,
+    cricket::IceTransportInternal* ice_transport,
     const cricket::Candidate& candidate) {
   // Ignore notifications if the channel is not writable.
   if (channel_->writable())
     NotifyRouteChanged();
 }
 
-void IceTransportChannel::OnWritableState(cricket::TransportChannel* channel) {
-  DCHECK_EQ(channel, static_cast<cricket::TransportChannel*>(channel_.get()));
+void IceTransportChannel::OnWritableState(
+    rtc::PacketTransportInterface* transport) {
+  DCHECK_EQ(transport,
+            static_cast<rtc::PacketTransportInterface*>(channel_.get()));
 
-  if (channel->writable()) {
+  if (transport->writable()) {
     connect_attempts_left_ =
         transport_context_->network_settings().ice_reconnect_attempts;
     reconnect_timer_.Stop();

@@ -5,9 +5,11 @@
 #ifndef CONTENT_RENDERER_SAD_PLUGIN_H_
 #define CONTENT_RENDERER_SAD_PLUGIN_H_
 
-#include "third_party/WebKit/public/platform/WebCanvas.h"
+#include "cc/paint/paint_canvas.h"
 
-class SkBitmap;
+namespace cc {
+class PaintImage;
+}
 
 namespace gfx {
 class Rect;
@@ -16,10 +18,10 @@ class Rect;
 namespace content {
 
 // Paints the sad plugin to the given canvas for the given plugin bounds. This
-// is used by both the NPAPI and the PPAPI out-of-process plugin impls.
-void PaintSadPlugin(blink::WebCanvas* canvas,
+// is used by PPAPI out-of-process plugin impls.
+void PaintSadPlugin(cc::PaintCanvas* canvas,
                     const gfx::Rect& plugin_rect,
-                    const SkBitmap& sad_plugin_bitmap);
+                    const cc::PaintImage& sad_plugin_image);
 
 }  // namespace content
 

@@ -18,12 +18,29 @@
 #include <stdint.h>
 
 #include "snapshot/cpu_architecture.h"
+#include "util/numeric/int128.h"
 
 namespace crashpad {
 
 //! \brief A context structure carrying 32-bit x86 CPU state.
 struct CPUContextX86 {
   using X87Register = uint8_t[10];
+
+  struct Fsave {
+    uint16_t fcw;  // FPU control word
+    uint16_t reserved_1;
+    uint16_t fsw;  // FPU status word
+    uint16_t reserved_2;
+    uint16_t ftw;  // full FPU tag word
+    uint16_t reserved_3;
+    uint32_t fpu_ip;  // FPU instruction pointer offset
+    uint16_t fpu_cs;  // FPU instruction pointer segment selector
+    uint16_t fop;  // FPU opcode
+    uint32_t fpu_dp;  // FPU data pointer offset
+    uint16_t fpu_ds;  // FPU data pointer segment selector
+    uint16_t reserved_4;
+    X87Register st[8];
+  };
 
   union X87OrMMXRegister {
     struct {
@@ -58,14 +75,49 @@ struct CPUContextX86 {
     uint8_t available[48];
   };
 
+  //! \brief Converts an `fxsave` area to an `fsave` area.
+  //!
+  //! `fsave` state is restricted to the x87 FPU, while `fxsave` state includes
+  //! state related to the x87 FPU as well as state specific to SSE.
+  //!
+  //! As the `fxsave` format is a superset of the `fsave` format, this operation
+  //! fully populates the `fsave` area. `fsave` uses the full 16-bit form for
+  //! the x87 floating-point tag word, so FxsaveToFsaveTagWord() is used to
+  //! derive Fsave::ftw from the abridged 8-bit form used by `fxsave`. Reserved
+  //! fields in \a fsave are set to `0`.
+  //!
+  //! \param[in] fxsave The `fxsave` area to convert.
+  //! \param[out] fsave The `fsave` area to populate.
+  //!
+  //! \sa FsaveToFxsave()
+  static void FxsaveToFsave(const Fxsave& fxsave, Fsave* fsave);
+
+  //! \brief Converts an `fsave` area to an `fxsave` area.
+  //!
+  //! `fsave` state is restricted to the x87 FPU, while `fxsave` state includes
+  //! state related to the x87 FPU as well as state specific to SSE.
+  //!
+  //! As the `fsave` format is a subset of the `fxsave` format, this operation
+  //! cannot fully populate the `fxsave` area. Fields in \a fxsave that have no
+  //! equivalent in \a fsave are set to `0`, including Fxsave::mxcsr,
+  //! Fxsave::mxcsr_mask, Fxsave::xmm, and Fxsave::available.
+  //! FsaveToFxsaveTagWord() is used to derive Fxsave::ftw from the full 16-bit
+  //! form used by `fsave`. Reserved fields in \a fxsave are set to `0`.
+  //!
+  //! \param[in] fsave The `fsave` area to convert.
+  //! \param[out] fxsave The `fxsave` area to populate.
+  //!
+  //! \sa FxsaveToFsave()
+  static void FsaveToFxsave(const Fsave& fsave, Fxsave* fxsave);
+
   //! \brief Converts x87 floating-point tag words from `fxsave` (abridged,
   //!     8-bit) to `fsave` (full, 16-bit) form.
   //!
   //! `fxsave` stores the x87 floating-point tag word in abridged 8-bit form,
   //! and `fsave` stores it in full 16-bit form. Some users, notably
-  //! MinidumpContextX86::float_save::tag_word, require the full 16-bit form,
-  //! where most other contemporary code uses `fxsave` and thus the abridged
-  //! 8-bit form found in CPUContextX86::Fxsave::ftw.
+  //! CPUContextX86::Fsave::ftw, require the full 16-bit form, where most other
+  //! contemporary code uses `fxsave` and thus the abridged 8-bit form found in
+  //! CPUContextX86::Fxsave::ftw.
   //!
   //! This function converts an abridged tag word to the full version by using
   //! the abridged tag word and the contents of the registers it describes. See
@@ -74,6 +126,8 @@ struct CPUContextX86 {
   //! FTW and recreating the FSAVE format, and AMD Architecture Programmer’s
   //! Manual, Volume 2: System Programming (24593-3.24), “FXSAVE Format for x87
   //! Tag Word”.
+  //!
+  //! \sa FsaveToFxsaveTagWord()
   //!
   //! \param[in] fsw The FPU status word, used to map logical \a st_mm registers
   //!     to their physical counterparts. This can be taken from
@@ -86,6 +140,16 @@ struct CPUContextX86 {
   //! \return The full FPU tag word.
   static uint16_t FxsaveToFsaveTagWord(
       uint16_t fsw, uint8_t fxsave_tag, const X87OrMMXRegister st_mm[8]);
+
+  //! \brief Converts x87 floating-point tag words from `fsave` (full, 16-bit)
+  //!     to `fxsave` (abridged, 8-bit) form.
+  //!
+  //! This function performs the inverse operation of FxsaveToFsaveTagWord().
+  //!
+  //! \param[in] fsave_tag The full FPU tag word.
+  //!
+  //! \return The abridged FPU tag word.
+  static uint8_t FsaveToFxsaveTagWord(uint16_t fsave_tag);
 
   // Integer registers.
   uint32_t eax;
@@ -133,7 +197,7 @@ struct CPUContextX86_64 {
     uint16_t fop;  // FPU opcode
     union {
       // The expression of these union members is determined by the use of
-      // fxsave/fxrstor or fxsave64/fxrstor64 (fxsaveq/fxrstorq). Mac OS X and
+      // fxsave/fxrstor or fxsave64/fxrstor64 (fxsaveq/fxrstorq). macOS and
       // Windows systems use the traditional fxsave/fxrstor structure.
       struct {
         // fxsave/fxrstor
@@ -195,6 +259,99 @@ struct CPUContextX86_64 {
   uint64_t dr7;
 };
 
+//! \brief A context structure carrying ARM CPU state.
+struct CPUContextARM {
+  uint32_t regs[11];
+  uint32_t fp;  // r11
+  uint32_t ip;  // r12
+  uint32_t sp;  // r13
+  uint32_t lr;  // r14
+  uint32_t pc;  // r15
+  uint32_t cpsr;
+
+  struct {
+    struct fp_reg {
+      uint32_t sign1 : 1;
+      uint32_t unused : 15;
+      uint32_t sign2 : 1;
+      uint32_t exponent : 14;
+      uint32_t j : 1;
+      uint32_t mantissa1 : 31;
+      uint32_t mantisss0 : 32;
+    } fpregs[8];
+    uint32_t fpsr : 32;
+    uint32_t fpcr : 32;
+    uint8_t type[8];
+    uint32_t init_flag;
+  } fpa_regs;
+
+  struct {
+    uint64_t vfp[32];
+    uint32_t fpscr;
+  } vfp_regs;
+
+  bool have_fpa_regs;
+  bool have_vfp_regs;
+};
+
+//! \brief A context structure carrying ARM64 CPU state.
+struct CPUContextARM64 {
+  uint64_t regs[31];
+  uint64_t sp;
+  uint64_t pc;
+  uint32_t spsr;
+
+  uint128_struct fpsimd[32];
+  uint32_t fpsr;
+  uint32_t fpcr;
+};
+
+//! \brief A context structure carrying MIPS CPU state.
+struct CPUContextMIPS {
+  uint64_t regs[32];
+  uint32_t mdlo;
+  uint32_t mdhi;
+  uint32_t cp0_epc;
+  uint32_t cp0_badvaddr;
+  uint32_t cp0_status;
+  uint32_t cp0_cause;
+  uint32_t hi[3];
+  uint32_t lo[3];
+  uint32_t dsp_control;
+  union {
+    double dregs[32];
+    struct {
+      float _fp_fregs;
+      uint32_t _fp_pad;
+    } fregs[32];
+  } fpregs;
+  uint32_t fpcsr;
+  uint32_t fir;
+};
+
+//! \brief A context structure carrying MIPS64 CPU state.
+struct CPUContextMIPS64 {
+  uint64_t regs[32];
+  uint64_t mdlo;
+  uint64_t mdhi;
+  uint64_t cp0_epc;
+  uint64_t cp0_badvaddr;
+  uint64_t cp0_status;
+  uint64_t cp0_cause;
+  uint64_t hi[3];
+  uint64_t lo[3];
+  uint64_t dsp_control;
+  union {
+    double dregs[32];
+    struct {
+      float _fp_fregs;
+      uint32_t _fp_pad;
+    } fregs[32];
+  } fpregs;
+  uint64_t fpcsr;
+  uint64_t fir;
+};
+
 //! \brief A context structure capable of carrying the context of any supported
 //!     CPU architecture.
 struct CPUContext {
@@ -205,12 +362,26 @@ struct CPUContext {
   //! context structure.
   uint64_t InstructionPointer() const;
 
+  //! \brief Returns the stack pointer value from the context structure.
+  //!
+  //! This is a CPU architecture-independent method that is capable of
+  //! recovering the stack pointer from any supported CPU architecture’s
+  //! context structure.
+  uint64_t StackPointer() const;
+
+  //! \brief Returns `true` if this context is for a 64-bit architecture.
+  bool Is64Bit() const;
+
   //! \brief The CPU architecture of a context structure. This field controls
   //!     the expression of the union.
   CPUArchitecture architecture;
   union {
     CPUContextX86* x86;
     CPUContextX86_64* x86_64;
+    CPUContextARM* arm;
+    CPUContextARM64* arm64;
+    CPUContextMIPS* mipsel;
+    CPUContextMIPS64* mips64;
   };
 };
 

@@ -20,6 +20,8 @@ const char kContentSettingsWindowLastTabIndex[] =
 
 // Preferences that are exclusively used to store managed values for default
 // content settings.
+const char kManagedDefaultAdsSetting[] =
+    "profile.managed_default_content_settings.ads";
 const char kManagedDefaultCookiesSetting[] =
     "profile.managed_default_content_settings.cookies";
 const char kManagedDefaultGeolocationSetting[] =
@@ -36,10 +38,10 @@ const char kManagedDefaultPluginsSetting[] =
     "profile.managed_default_content_settings.plugins";
 const char kManagedDefaultPopupsSetting[] =
     "profile.managed_default_content_settings.popups";
-const char kManagedDefaultKeygenSetting[] =
-    "profile.managed_default_content_settings.keygen";
 const char kManagedDefaultWebBluetoothGuardSetting[] =
     "profile.managed_default_content_settings.web_bluetooth_guard";
+const char kManagedDefaultWebUsbGuardSetting[] =
+    "profile.managed_default_content_settings.web_usb_guard";
 
 // Preferences that are exclusively used to store managed
 // content settings patterns.
@@ -71,9 +73,10 @@ const char kManagedPopupsAllowedForUrls[] =
     "profile.managed_popups_allowed_for_urls";
 const char kManagedPopupsBlockedForUrls[] =
     "profile.managed_popups_blocked_for_urls";
-const char kManagedKeygenAllowedForUrls[] =
-    "profile.managed_keygen_allowed_for_urls";
-const char kManagedKeygenBlockedForUrls[] =
-    "profile.managed_keygen_blocked_for_urls";
+const char kManagedWebUsbAllowDevicesForUrls[] =
+    "profile.managed_web_usb_allow_devices_for_urls";
+const char kManagedWebUsbAskForUrls[] = "profile.managed_web_usb_ask_for_urls";
+const char kManagedWebUsbBlockedForUrls[] =
+    "profile.managed_web_usb_blocked_for_urls";
 
 }  // namespace prefs

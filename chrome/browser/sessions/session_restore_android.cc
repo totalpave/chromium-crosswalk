@@ -14,8 +14,8 @@
 #include "chrome/browser/ui/browser_finder.h"
 #include "components/sessions/content/content_serialized_navigation_builder.h"
 #include "components/sessions/core/session_types.h"
-#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/restore_type.h"
 #include "content/public/browser/web_contents.h"
 
 // The android implementation does not do anything "foreign session" specific.
@@ -33,26 +33,26 @@ content::WebContents* SessionRestore::RestoreForeignSessionTab(
   std::vector<std::unique_ptr<content::NavigationEntry>> entries =
       sessions::ContentSerializedNavigationBuilder::ToNavigationEntries(
           session_tab.navigations, profile);
-  content::WebContents* new_web_contents = content::WebContents::Create(
-      content::WebContents::CreateParams(context));
+  std::unique_ptr<content::WebContents> new_web_contents =
+      content::WebContents::Create(content::WebContents::CreateParams(context));
+  content::WebContents* raw_new_web_contents = new_web_contents.get();
   int selected_index = session_tab.normalized_navigation_index();
   new_web_contents->GetController().Restore(
-      selected_index,
-      content::NavigationController::RESTORE_LAST_SESSION_EXITED_CLEANLY,
+      selected_index, content::RestoreType::LAST_SESSION_EXITED_CLEANLY,
       &entries);
 
   TabAndroid* current_tab = TabAndroid::FromWebContents(web_contents);
   DCHECK(current_tab);
-  if (disposition == CURRENT_TAB) {
-    current_tab->SwapTabContents(web_contents, new_web_contents, false, false);
-    delete web_contents;
+  if (disposition == WindowOpenDisposition::CURRENT_TAB) {
+    web_contents->GetDelegate()->SwapWebContents(
+        web_contents, std::move(new_web_contents), false, false);
   } else {
-    DCHECK(disposition == NEW_FOREGROUND_TAB ||
-        disposition == NEW_BACKGROUND_TAB);
-    tab_model->CreateTab(current_tab, new_web_contents,
+    DCHECK(disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
+           disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB);
+    tab_model->CreateTab(current_tab, new_web_contents.release(),
                          current_tab->GetAndroidId());
   }
-  return new_web_contents;
+  return raw_new_web_contents;
 }
 
 // static

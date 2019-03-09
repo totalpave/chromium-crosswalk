@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.preferences.website;
 
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.BitmapDrawable;
@@ -15,7 +16,6 @@ import android.text.format.Formatter;
 import android.view.View;
 import android.widget.TextView;
 
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.favicon.FaviconHelper;
 import org.chromium.chrome.browser.favicon.FaviconHelper.FaviconImageCallback;
@@ -26,7 +26,6 @@ import org.chromium.chrome.browser.widget.RoundedIconGenerator;
  * A preference that displays a website's favicon and URL and, optionally, the amount of local
  * storage used by the site.
  */
-@SuppressFBWarnings("EQ_COMPARETO_USE_OBJECT_EQUALS")
 class WebsitePreference extends Preference implements FaviconImageCallback {
     private final Website mSite;
     private final SiteSettingsCategory mCategory;
@@ -37,12 +36,14 @@ class WebsitePreference extends Preference implements FaviconImageCallback {
     private FaviconHelper mFaviconHelper;
 
     // Whether the favicon has been fetched already.
-    private boolean mFaviconFetched = false;
+    private boolean mFaviconFetched;
 
     // Metrics for favicon processing.
-    private static final int FAVICON_CORNER_RADIUS_DP = 2;
+    // Sets the favicon corner radius to 12.5% of favicon size (2dp for a 16dp favicon)
+    private static final float FAVICON_CORNER_RADIUS_FRACTION = 0.125f;
     private static final int FAVICON_PADDING_DP = 4;
-    private static final int FAVICON_TEXT_SIZE_DP = 10;
+    // Sets the favicon text size to 62.5% of favicon size (10dp for a 16dp favicon)
+    private static final float FAVICON_TEXT_SIZE_FRACTION = 0.625f;
     private static final int FAVICON_BACKGROUND_COLOR = 0xff969696;
 
     private int mFaviconSizePx;
@@ -68,6 +69,10 @@ class WebsitePreference extends Preference implements FaviconImageCallback {
         getExtras().putSerializable(key, mSite);
     }
 
+    public void putSiteAddressIntoExtras(String key) {
+        getExtras().putSerializable(key, mSite.getAddress());
+    }
+
     /**
      * Return the Website this object is representing.
      */
@@ -79,18 +84,20 @@ class WebsitePreference extends Preference implements FaviconImageCallback {
     public void onFaviconAvailable(Bitmap image, String iconUrl) {
         mFaviconHelper.destroy();
         mFaviconHelper = null;
+        Resources resources = getContext().getResources();
         if (image == null) {
             // Invalid favicon, produce a generic one.
-            float density = getContext().getResources().getDisplayMetrics().density;
+            float density = resources.getDisplayMetrics().density;
             int faviconSizeDp = Math.round(mFaviconSizePx / density);
-            RoundedIconGenerator faviconGenerator = new RoundedIconGenerator(
-                    getContext(), faviconSizeDp, faviconSizeDp,
-                    FAVICON_CORNER_RADIUS_DP, FAVICON_BACKGROUND_COLOR,
-                    FAVICON_TEXT_SIZE_DP);
+            RoundedIconGenerator faviconGenerator =
+                    new RoundedIconGenerator(resources, faviconSizeDp, faviconSizeDp,
+                            Math.round(FAVICON_CORNER_RADIUS_FRACTION * faviconSizeDp),
+                            FAVICON_BACKGROUND_COLOR,
+                            Math.round(FAVICON_TEXT_SIZE_FRACTION * faviconSizeDp));
             image = faviconGenerator.generateIconForUrl(faviconUrl());
         }
 
-        setIcon(new BitmapDrawable(getContext().getResources(), image));
+        setIcon(new BitmapDrawable(resources, image));
     }
 
     /**
@@ -98,10 +105,6 @@ class WebsitePreference extends Preference implements FaviconImageCallback {
      */
     private String faviconUrl() {
         String origin = mSite.getAddress().getOrigin();
-        if (origin == null) {
-            return "http://" + mSite.getAddress().getHost();
-        }
-
         Uri uri = Uri.parse(origin);
         if (uri.getPort() != -1) {
             // Remove the port.
@@ -125,7 +128,7 @@ class WebsitePreference extends Preference implements FaviconImageCallback {
             return super.compareTo(preference);
         }
         WebsitePreference other = (WebsitePreference) preference;
-        if (mCategory.showStorageSites()) {
+        if (mCategory.showSites(SiteSettingsCategory.Type.USE_STORAGE)) {
             return mSite.compareByStorageTo(other.mSite);
         }
 
@@ -138,7 +141,7 @@ class WebsitePreference extends Preference implements FaviconImageCallback {
 
         TextView usageText = (TextView) view.findViewById(R.id.usage_text);
         usageText.setVisibility(View.GONE);
-        if (mCategory.showStorageSites()) {
+        if (mCategory.showSites(SiteSettingsCategory.Type.USE_STORAGE)) {
             long totalUsage = mSite.getTotalUsage();
             if (totalUsage > 0) {
                 usageText.setText(Formatter.formatShortFileSize(getContext(), totalUsage));

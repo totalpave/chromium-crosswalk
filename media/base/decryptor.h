@@ -28,26 +28,24 @@ class VideoFrame;
 // asynchronously.
 class MEDIA_EXPORT Decryptor {
  public:
-  // TODO(xhwang): Replace kError with kDecryptError and kDecodeError.
-  // TODO(xhwang): Replace kNeedMoreData with kNotEnoughData.
   enum Status {
     kSuccess,  // Decryption successfully completed. Decrypted buffer ready.
-    kNoKey,  // No key is available to decrypt.
+    kNoKey,    // No key is available to decrypt.
     kNeedMoreData,  // Decoder needs more data to produce a frame.
-    kError  // Key is available but an error occurred during decryption.
+    kError,         // Key is available but an error occurred during decryption.
+    kStatusMax = kError
   };
 
+  static const char* GetStatusName(Status status);
+
   // TODO(xhwang): Unify this with DemuxerStream::Type.
-  enum StreamType {
-    kAudio,
-    kVideo
-  };
+  enum StreamType { kAudio, kVideo, kStreamTypeMax = kVideo };
 
   Decryptor();
   virtual ~Decryptor();
 
-  // Indicates that a new key has been added to the MediaKeys object associated
-  // with the Decryptor.
+  // Indicates that a new key has been added to the ContentDecryptionModule
+  // object associated with the Decryptor.
   typedef base::Callback<void()> NewKeyCB;
 
   // Registers a NewKeyCB which should be called when a new key is added to the
@@ -55,6 +53,7 @@ class MEDIA_EXPORT Decryptor {
   // If this function is called multiple times for the same |stream_type|, the
   // previously registered callback will be replaced. In other words,
   // registering a null callback cancels the originally registered callback.
+  // TODO(crbug.com/821288): Replace this with CdmContext::RegisterEventCB().
   virtual void RegisterNewKeyCB(StreamType stream_type,
                                 const NewKeyCB& key_added_cb) = 0;
 
@@ -72,8 +71,7 @@ class MEDIA_EXPORT Decryptor {
   // - Only |data|, |data_size| and |timestamp| are set in the returned
   //   DecoderBuffer. The callback handler is responsible for setting other
   //   fields as appropriate.
-  typedef base::Callback<void(Status,
-                              const scoped_refptr<DecoderBuffer>&)> DecryptCB;
+  typedef base::Callback<void(Status, scoped_refptr<DecoderBuffer>)> DecryptCB;
 
   // Decrypts the |encrypted| buffer. The decrypt status and decrypted buffer
   // are returned via the provided callback |decrypt_cb|. The |encrypted| buffer
@@ -82,7 +80,7 @@ class MEDIA_EXPORT Decryptor {
   // |stream_type| has completed. Thus, only one DecryptCB may be pending at
   // a time for a given |stream_type|.
   virtual void Decrypt(StreamType stream_type,
-                       const scoped_refptr<DecoderBuffer>& encrypted,
+                       scoped_refptr<DecoderBuffer> encrypted,
                        const DecryptCB& decrypt_cb) = 0;
 
   // Cancels the scheduled decryption operation for |stream_type| and fires the
@@ -134,12 +132,13 @@ class MEDIA_EXPORT Decryptor {
   // end-of-stream DecoderBuffer until no frame/buffer can be produced.
   // These methods can only be called after the corresponding decoder has
   // been successfully initialized.
-  virtual void DecryptAndDecodeAudio(
-      const scoped_refptr<DecoderBuffer>& encrypted,
-      const AudioDecodeCB& audio_decode_cb) = 0;
-  virtual void DecryptAndDecodeVideo(
-      const scoped_refptr<DecoderBuffer>& encrypted,
-      const VideoDecodeCB& video_decode_cb) = 0;
+  // DecryptAndDecodeAudio() should not be called until any previous
+  // AudioDecodeCB has completed. Thus, only one AudioDecodeCB may be pending at
+  // any time. Same for DecryptAndDecodeVideo();
+  virtual void DecryptAndDecodeAudio(scoped_refptr<DecoderBuffer> encrypted,
+                                     const AudioDecodeCB& audio_decode_cb) = 0;
+  virtual void DecryptAndDecodeVideo(scoped_refptr<DecoderBuffer> encrypted,
+                                     const VideoDecodeCB& video_decode_cb) = 0;
 
   // Resets the decoder to an initialized clean state, cancels any scheduled
   // decrypt-and-decode operations, and fires any pending
@@ -158,6 +157,9 @@ class MEDIA_EXPORT Decryptor {
   // After this operation, the decoder is set to an uninitialized state.
   // The decoder can be reinitialized after it is uninitialized.
   virtual void DeinitializeDecoder(StreamType stream_type) = 0;
+
+  // Returns whether or not the decryptor implementation supports decrypt-only.
+  virtual bool CanAlwaysDecrypt();
 
  private:
   DISALLOW_COPY_AND_ASSIGN(Decryptor);

@@ -5,39 +5,45 @@
 #ifndef UI_VIEWS_CONTROLS_MENU_MENU_RUNNER_IMPL_COCOA_H_
 #define UI_VIEWS_CONTROLS_MENU_MENU_RUNNER_IMPL_COCOA_H_
 
-#include "ui/views/controls/menu/menu_runner_impl_interface.h"
-
 #include <stdint.h>
 
+#include "base/callback.h"
 #import "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
 #include "base/time/time.h"
+#include "ui/views/controls/menu/menu_runner_impl_interface.h"
 
-@class MenuController;
+@class MenuControllerCocoa;
 
 namespace views {
+namespace test {
+class MenuRunnerCocoaTest;
+}
 namespace internal {
 
 // A menu runner implementation that uses NSMenu to show a context menu.
 class VIEWS_EXPORT MenuRunnerImplCocoa : public MenuRunnerImplInterface {
  public:
-  explicit MenuRunnerImplCocoa(ui::MenuModel* menu);
+  MenuRunnerImplCocoa(ui::MenuModel* menu,
+                      const base::Closure& on_menu_closed_callback);
 
   bool IsRunning() const override;
   void Release() override;
-  MenuRunner::RunResult RunMenuAt(Widget* parent,
-                                  MenuButton* button,
-                                  const gfx::Rect& bounds,
-                                  MenuAnchorPosition anchor,
-                                  int32_t run_types) override;
+  void RunMenuAt(Widget* parent,
+                 MenuButton* button,
+                 const gfx::Rect& bounds,
+                 MenuAnchorPosition anchor,
+                 int32_t run_types) override;
   void Cancel() override;
   base::TimeTicks GetClosingEventTime() const override;
 
  private:
+  friend class views::test::MenuRunnerCocoaTest;
+
   ~MenuRunnerImplCocoa() override;
 
   // The Cocoa menu controller that this instance is bridging.
-  base::scoped_nsobject<MenuController> menu_controller_;
+  base::scoped_nsobject<MenuControllerCocoa> menu_controller_;
 
   // Are we in run waiting for it to return?
   bool running_;
@@ -47,6 +53,9 @@ class VIEWS_EXPORT MenuRunnerImplCocoa : public MenuRunnerImplInterface {
 
   // The timestamp of the event which closed the menu - or 0.
   base::TimeTicks closing_event_time_;
+
+  // Invoked before RunMenuAt() returns, except upon a Release().
+  base::Closure on_menu_closed_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(MenuRunnerImplCocoa);
 };

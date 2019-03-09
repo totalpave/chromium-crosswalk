@@ -17,10 +17,29 @@ import java.io.OutputStream;
 
 /**
  * Creates ClassLoader for .dex file in a remote Context's APK.
+ * Non static for the sake of tests.
  */
 public class DexLoader {
     private static final int BUFFER_SIZE = 16 * 1024;
     private static final String TAG = "cr.DexLoader";
+
+    /** Delete the given File and (if it's a directory) everything within it. */
+    public static void deletePath(File file) {
+        if (file == null) return;
+
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deletePath(child);
+                }
+            }
+        }
+
+        if (!file.delete()) {
+            Log.e(TAG, "Failed to delete : " + file.getAbsolutePath());
+        }
+    }
 
     /**
      * Creates ClassLoader for .dex file in {@link remoteContext}'s APK.
@@ -33,7 +52,7 @@ public class DexLoader {
      *                    {@link #load()}.
      * @return The ClassLoader. Returns null on an error.
      */
-    public static ClassLoader load(Context remoteContext, String dexName, String canaryClassName,
+    public ClassLoader load(Context remoteContext, String dexName, String canaryClassName,
             File remoteDexFile, File localDexDir) {
         File localDexFile = new File(localDexDir, dexName);
 
@@ -74,28 +93,8 @@ public class DexLoader {
      * Deletes any files cached by {@link #load()}.
      * @param localDexDir Cache directory passed to {@link #load()}.
      */
-    public static void deleteCachedDexes(File localDexDir) {
-        deleteChildren(localDexDir);
-    }
-
-    /**
-     * Deletes all of a directory's children including subdirectories.
-     * @param parentDir Directory whose children should be deleted.
-     */
-    private static void deleteChildren(File parentDir) {
-        if (!parentDir.isDirectory()) {
-            return;
-        }
-
-        File[] files = parentDir.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                deleteChildren(file);
-                if (!file.delete()) {
-                    Log.e(TAG, "Could not delete " + file.getPath());
-                }
-            }
-        }
+    public void deleteCachedDexes(File localDexDir) {
+        deletePath(localDexDir);
     }
 
     /**

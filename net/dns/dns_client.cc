@@ -7,14 +7,12 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
 #include "base/rand_util.h"
 #include "net/dns/address_sorter.h"
-#include "net/dns/dns_config_service.h"
+#include "net/dns/dns_config.h"
 #include "net/dns/dns_session.h"
 #include "net/dns/dns_socket_pool.h"
 #include "net/dns/dns_transaction.h"
-#include "net/log/net_log.h"
 #include "net/socket/client_socket_factory.h"
 
 namespace net {
@@ -73,9 +71,9 @@ class DnsClientImpl : public DnsClient {
 
 // static
 std::unique_ptr<DnsClient> DnsClient::CreateClient(NetLog* net_log) {
-  return base::WrapUnique(
-      new DnsClientImpl(net_log, ClientSocketFactory::GetDefaultFactory(),
-                        base::Bind(&base::RandInt)));
+  return std::make_unique<DnsClientImpl>(
+      net_log, ClientSocketFactory::GetDefaultFactory(),
+      base::Bind(&base::RandInt));
 }
 
 // static
@@ -83,9 +81,8 @@ std::unique_ptr<DnsClient> DnsClient::CreateClientForTesting(
     NetLog* net_log,
     ClientSocketFactory* socket_factory,
     const RandIntCallback& rand_int_callback) {
-  return base::WrapUnique(
-      new DnsClientImpl(net_log, socket_factory, rand_int_callback));
+  return std::make_unique<DnsClientImpl>(net_log, socket_factory,
+                                         rand_int_callback);
 }
 
 }  // namespace net
-

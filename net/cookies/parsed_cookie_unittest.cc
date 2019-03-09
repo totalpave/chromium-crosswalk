@@ -18,19 +18,29 @@ TEST(ParsedCookieTest, TestBasic) {
   EXPECT_EQ("b", pc.Value());
 }
 
+// De facto standard behavior, per https://crbug.com/601786.
 TEST(ParsedCookieTest, TestEmpty) {
-  ParsedCookie pc1("=; path=/; secure;");
-  EXPECT_FALSE(pc1.IsValid());
-  ParsedCookie pc2("= ; path=/; secure;");
-  EXPECT_FALSE(pc2.IsValid());
-  ParsedCookie pc3(" =; path=/; secure;");
-  EXPECT_FALSE(pc3.IsValid());
-  ParsedCookie pc4(" = ; path=/; secure;");
-  EXPECT_FALSE(pc4.IsValid());
-  ParsedCookie pc5(" ; path=/; secure;");
-  EXPECT_FALSE(pc5.IsValid());
-  ParsedCookie pc6("; path=/; secure;");
-  EXPECT_FALSE(pc6.IsValid());
+  const struct {
+    const char* cookie;
+    const char* expected_path;
+    bool expect_secure;
+  } kTestCookieLines[]{{"", "", false},     {"     ", "", false},
+                       {"=;", "", false},   {"=; path=/; secure;", "/", true},
+                       {"= ;", "", false},  {"= ; path=/; secure;", "/", true},
+                       {" =;", "", false},  {" =; path=/; secure;", "/", true},
+                       {" = ;", "", false}, {" = ; path=/; secure;", "/", true},
+                       {" ;", "", false},   {" ; path=/; secure;", "/", true},
+                       {";", "", false},    {"; path=/; secure;", "/", true},
+                       {"\t;", "", false},  {"\t; path=/; secure;", "/", true}};
+
+  for (const auto& test : kTestCookieLines) {
+    ParsedCookie pc(test.cookie);
+    EXPECT_TRUE(pc.IsValid());
+    EXPECT_EQ("", pc.Name());
+    EXPECT_EQ("", pc.Value());
+    EXPECT_EQ(test.expected_path, pc.Path());
+    EXPECT_EQ(test.expect_secure, pc.IsSecure());
+  }
 }
 
 TEST(ParsedCookieTest, TestQuoted) {
@@ -38,40 +48,40 @@ TEST(ParsedCookieTest, TestQuoted) {
   // handle differently.  I've tested Internet Explorer 6, Opera 9.6,
   // Firefox 3, and Safari Windows 3.2.1.  We originally tried to match
   // Firefox closely, however we now match Internet Explorer and Safari.
-  const char* const values[] = {
+  const struct {
+    const char* input;
+    const char* expected;
+  } kTests[] = {
       // Trailing whitespace after a quoted value.  The whitespace after
       // the quote is stripped in all browsers.
-      "\"zzz \"  ",
-      "\"zzz \"",
+      {"\"zzz \"  ", "\"zzz \""},
       // Handling a quoted value with a ';', like FOO="zz;pp"  ;
       // IE and Safari: "zz;
       // Firefox and Opera: "zz;pp"
-      "\"zz;pp\" ;",
-      "\"zz",
+      {"\"zz;pp\" ;", "\"zz"},
       // Handling a value with multiple quoted parts, like FOO="zzz "   "ppp" ;
       // IE and Safari: "zzz "   "ppp";
       // Firefox: "zzz ";
       // Opera: <rejects cookie>
-      "\"zzz \"   \"ppp\" ",
-      "\"zzz \"   \"ppp\"",
+      {
+          "\"zzz \"   \"ppp\" ", "\"zzz \"   \"ppp\"",
+      },
       // A quote in a value that didn't start quoted.  like FOO=A"B ;
       // IE, Safari, and Firefox: A"B;
       // Opera: <rejects cookie>
-      "A\"B",
-      "A\"B",
-  };
+      {
+          "A\"B", "A\"B",
+      }};
 
-  for (size_t i = 0; i < arraysize(values); i += 2) {
-    std::string input(values[i]);
-    std::string expected(values[i + 1]);
-
-    ParsedCookie pc("aBc=" + input + " ; path=\"/\"  ; httponly ");
+  for (const auto& test : kTests) {
+    ParsedCookie pc(std::string("aBc=") + test.input +
+                    " ; path=\"/\"  ; httponly ");
     EXPECT_TRUE(pc.IsValid());
     EXPECT_FALSE(pc.IsSecure());
     EXPECT_TRUE(pc.IsHttpOnly());
     EXPECT_TRUE(pc.HasPath());
     EXPECT_EQ("aBc", pc.Name());
-    EXPECT_EQ(expected, pc.Value());
+    EXPECT_EQ(test.expected, pc.Value());
 
     // If a path was quoted, the path attribute keeps the quotes.  This will
     // make the cookie effectively useless, but path parameters aren't supposed
@@ -207,25 +217,20 @@ TEST(ParsedCookieTest, TrailingWhitespace) {
   EXPECT_EQ(2U, pc.NumberOfAttributes());
 }
 
-TEST(ParsedCookieTest, TooManyPairs) {
-  std::string blankpairs;
-  blankpairs.resize(ParsedCookie::kMaxPairs - 2, ';');
+TEST(ParsedCookieTest, LotsOfPairs) {
+  for (int i = 1; i < 100; i++) {
+    std::string blankpairs;
+    blankpairs.resize(i, ';');
 
-  ParsedCookie pc1("a=b;" + blankpairs + "secure");
-  EXPECT_TRUE(pc1.IsValid());
-  EXPECT_TRUE(pc1.IsSecure());
-
-  ParsedCookie pc2("a=b;" + blankpairs + ";secure");
-  EXPECT_TRUE(pc2.IsValid());
-  EXPECT_FALSE(pc2.IsSecure());
+    ParsedCookie c("a=b;" + blankpairs + "secure");
+    EXPECT_EQ("a", c.Name());
+    EXPECT_EQ("b", c.Value());
+    EXPECT_TRUE(c.IsValid());
+    EXPECT_TRUE(c.IsSecure());
+  }
 }
 
 // TODO(erikwright): some better test cases for invalid cookies.
-TEST(ParsedCookieTest, InvalidWhitespace) {
-  ParsedCookie pc("    ");
-  EXPECT_FALSE(pc.IsValid());
-}
-
 TEST(ParsedCookieTest, InvalidTooLong) {
   std::string maxstr;
   maxstr.resize(ParsedCookie::kMaxCookieSize, 'a');
@@ -235,11 +240,6 @@ TEST(ParsedCookieTest, InvalidTooLong) {
 
   ParsedCookie pc2(maxstr + "A");
   EXPECT_FALSE(pc2.IsValid());
-}
-
-TEST(ParsedCookieTest, InvalidEmpty) {
-  ParsedCookie pc((std::string()));
-  EXPECT_FALSE(pc.IsValid());
 }
 
 TEST(ParsedCookieTest, EmbeddedTerminator) {
@@ -285,11 +285,11 @@ TEST(ParsedCookieTest, SerializeCookieLine) {
 
 TEST(ParsedCookieTest, SetNameAndValue) {
   ParsedCookie empty((std::string()));
-  EXPECT_FALSE(empty.IsValid());
-  EXPECT_FALSE(empty.SetDomain("foobar.com"));
+  EXPECT_TRUE(empty.IsValid());
+  EXPECT_TRUE(empty.SetDomain("foobar.com"));
   EXPECT_TRUE(empty.SetName("name"));
   EXPECT_TRUE(empty.SetValue("value"));
-  EXPECT_EQ("name=value", empty.ToCookieLine());
+  EXPECT_EQ("name=value; domain=foobar.com", empty.ToCookieLine());
   EXPECT_TRUE(empty.IsValid());
 
   // We don't test
@@ -307,10 +307,6 @@ TEST(ParsedCookieTest, SetNameAndValue) {
   EXPECT_EQ("name=value", pc.ToCookieLine());
   EXPECT_TRUE(pc.IsValid());
 
-  EXPECT_FALSE(pc.SetName(std::string()));
-  EXPECT_EQ("name=value", pc.ToCookieLine());
-  EXPECT_TRUE(pc.IsValid());
-
   EXPECT_FALSE(pc.SetValue("foo bar"));
   EXPECT_EQ("name=value", pc.ToCookieLine());
   EXPECT_TRUE(pc.IsValid());
@@ -320,6 +316,10 @@ TEST(ParsedCookieTest, SetNameAndValue) {
   EXPECT_TRUE(pc.IsValid());
 
   // Set valid name / value
+  EXPECT_TRUE(pc.SetName(std::string()));
+  EXPECT_EQ("=value", pc.ToCookieLine());
+  EXPECT_TRUE(pc.IsValid());
+
   EXPECT_TRUE(pc.SetName("test"));
   EXPECT_EQ("test=value", pc.ToCookieLine());
   EXPECT_TRUE(pc.IsValid());
@@ -415,6 +415,17 @@ TEST(ParsedCookieTest, SetAttributes) {
   EXPECT_EQ("name2=value2", pc.ToCookieLine());
 }
 
+// Set the domain attribute twice in a cookie line. If the second attribute's
+// value is empty, it shoud be ignored.
+//
+// This is de facto standard behavior, per https://crbug.com/601786.
+TEST(ParsedCookieTest, MultipleDomainAttributes) {
+  ParsedCookie pc1("name=value; domain=foo.com; domain=bar.com");
+  EXPECT_EQ("bar.com", pc1.Domain());
+  ParsedCookie pc2("name=value; domain=foo.com; domain=");
+  EXPECT_EQ("foo.com", pc2.Domain());
+}
+
 TEST(ParsedCookieTest, SetPriority) {
   ParsedCookie pc("name=value");
   EXPECT_TRUE(pc.IsValid());
@@ -456,7 +467,7 @@ TEST(ParsedCookieTest, SetSameSite) {
   EXPECT_EQ("name=value", pc.ToCookieLine());
   EXPECT_EQ(CookieSameSite::DEFAULT_MODE, pc.SameSite());
 
-  // Test each priority, expect case-insensitive compare.
+  // Test each samesite directive, expect case-insensitive compare.
   EXPECT_TRUE(pc.SetSameSite("strict"));
   EXPECT_EQ("name=value; samesite=strict", pc.ToCookieLine());
   EXPECT_EQ(CookieSameSite::STRICT_MODE, pc.SameSite());
@@ -472,24 +483,28 @@ TEST(ParsedCookieTest, SetSameSite) {
   EXPECT_EQ(CookieSameSite::LAX_MODE, pc.SameSite());
   EXPECT_TRUE(pc.IsValid());
 
+  // Remove the SameSite attribute.
   EXPECT_TRUE(pc.SetSameSite(""));
   EXPECT_EQ("name=value", pc.ToCookieLine());
   EXPECT_EQ(CookieSameSite::DEFAULT_MODE, pc.SameSite());
   EXPECT_TRUE(pc.IsValid());
 
   EXPECT_TRUE(pc.SetSameSite("Blah"));
-  EXPECT_FALSE(pc.IsValid());
+  EXPECT_EQ("name=value; samesite=Blah", pc.ToCookieLine());
+  EXPECT_EQ(CookieSameSite::NO_RESTRICTION, pc.SameSite());
+  EXPECT_TRUE(pc.IsValid());
 }
 
-TEST(ParsedCookieTest, InvalidSameSiteValue) {
+TEST(ParsedCookieTest, SameSiteValues) {
   struct TestCase {
     const char* cookie;
     bool valid;
     CookieSameSite mode;
   } cases[]{{"n=v; samesite=strict", true, CookieSameSite::STRICT_MODE},
             {"n=v; samesite=lax", true, CookieSameSite::LAX_MODE},
-            {"n=v; samesite=boo", false, CookieSameSite::DEFAULT_MODE},
-            {"n=v; samesite", false, CookieSameSite::DEFAULT_MODE}};
+            {"n=v; samesite=boo", true, CookieSameSite::NO_RESTRICTION},
+            {"n=v; samesite", true, CookieSameSite::NO_RESTRICTION},
+            {"n=v", true, CookieSameSite::DEFAULT_MODE}};
 
   for (const auto& test : cases) {
     SCOPED_TRACE(test.cookie);
@@ -600,4 +615,5 @@ TEST(ParsedCookieTest, ValidNonAlphanumericChars) {
   EXPECT_TRUE(pc8.IsValid());
   EXPECT_EQ(pc8_literal, pc8.ToCookieLine());
 }
-}
+
+}  // namespace net

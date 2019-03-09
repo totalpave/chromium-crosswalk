@@ -50,12 +50,15 @@ var outputFile = arguments[4];
 
 /**
  * Type of this test.
- * @type {string} ('extension' | 'unit' | 'webui')
+ * @type {string} ('extension' | 'unit' | 'webui' | 'mojo_webui' |
+ *                 'mojo_lite_webui')
  */
 var testType = arguments[5];
 if (testType != 'extension' &&
     testType != 'unit' &&
-    testType != 'webui') {
+    testType != 'webui' &&
+    testType != 'mojo_webui' &&
+    testType != 'mojo_lite_webui') {
   print('Invalid test type: ' + testType);
   quit(-1);
 }
@@ -82,8 +85,8 @@ var genIncludes = [];
 
 /**
  * When true, add calls to set_preload_test_(fixture|name). This is needed when
- * |testType| === 'webui' to send an injection message before the page loads,
- * but is not required or supported by any other test type.
+ * |testType| === 'webui' || 'mojo_webui' to send an injection message before
+ * the page loads, but is not required or supported by any other test type.
  * @type {boolean}
  */
 var addSetPreloadInfo;
@@ -119,6 +122,14 @@ function output(opt_string) {
 }
 
 /**
+ * Returns number of lines in pending output.
+ * @returns {number}
+ */
+function countOutputLines() {
+  return pendingOutput.split('\n').length;
+}
+
+/**
  * Generates the header of the cc file to stdout.
  * @param {string?} testFixture Name of test fixture.
  */
@@ -138,8 +149,13 @@ ${argHint}
   // 'extension' - browser_tests harness, js2extension rule,
   //               ExtensionJSBrowserTest superclass.
   // 'unit' - unit_tests harness, js2unit rule, V8UnitTest superclass.
+  // 'mojo_webui' - browser_tests harness, js2webui rule, MojoWebUIBrowserTest
+  //                with mojo bindings.
+  // 'mojo_lite_webui' - browser_tests harness, js2webui rule,
+  //                     MojoWebUIBrowserTest with mojo_lite bindings.
+  // superclass. Uses Mojo to communicate test results.
   // 'webui' - browser_tests harness, js2webui rule, WebUIBrowserTest
-  // superclass.
+  // superclass. Uses chrome.send to communicate test results.
   if (testType === 'extension') {
     output('#include "chrome/test/base/extension_js_browser_test.h"');
     testing.Test.prototype.typedefCppFixture = 'ExtensionJSBrowserTest';
@@ -150,7 +166,12 @@ ${argHint}
     testing.Test.prototype.typedefCppFixture = 'V8UnitTest';
     testF = 'TEST_F';
     addSetPreloadInfo = false;
-  } else {
+  } else if (testType === 'mojo_webui' || testType === 'mojo_lite_webui') {
+    output('#include "chrome/test/base/mojo_web_ui_browser_test.h"');
+    testing.Test.prototype.typedefCppFixture = 'MojoWebUIBrowserTest';
+    testF = 'IN_PROC_BROWSER_TEST_F';
+    addSetPreloadInfo = true;
+  } else if (testType === 'webui') {
     output('#include "chrome/test/base/web_ui_browser_test.h"');
     testing.Test.prototype.typedefCppFixture = 'WebUIBrowserTest';
     testF = 'IN_PROC_BROWSER_TEST_F';
@@ -165,6 +186,9 @@ ${argHint}
       this[testFixture].prototype.testGenCppIncludes();
     if (this[testFixture].prototype.commandLineSwitches)
       output('#include "base/command_line.h"');
+    if (this[testFixture].prototype.featureList ||
+        this[testFixture].prototype.featuresWithParameters)
+      output('#include "base/test/scoped_feature_list.h"');
   }
   output();
 }
@@ -306,22 +330,6 @@ function GEN(code) {
 }
 
 /**
- * Outputs |commentEncodedCode|, converting comment to enclosed C++ code.
- * @param {function} commentEncodedCode A function in the following format (note
- * the space in '/ *' and '* /' should be removed to form a comment delimiter):
- *    function() {/ *! my_cpp_code.DoSomething(); * /
- *    Code between / *! and * / will be extracted and written to stdout.
- */
-function GEN_BLOCK(commentEncodedCode) {
-  var code = commentEncodedCode.toString().
-      replace(/^[^\/]+\/\*!?/, '').
-      replace(/\*\/[^\/]+$/, '').
-      replace(/^\n|\n$/, '').
-      replace(/\s+$/, '');
-  GEN(code);
-}
-
-/**
  * Generate includes for the current |jsFile| by including them
  * immediately and at runtime.
  * The paths must be relative to the directory of the current file.
@@ -340,13 +348,31 @@ function GEN_INCLUDE(includes) {
 }
 
 /**
+ * Capture stack-trace and find line number of TEST_F function call.
+ * @return {Number} line number of TEST_F function call.
+ */
+function getTestDeclarationLineNumber() {
+  var oldPrepareStackTrace = Error.prepareStackTrace;
+  Error.prepareStackTrace = function(error, structuredStackTrace) {
+    return structuredStackTrace;
+  };
+  var error = Error('');
+  Error.captureStackTrace(error, TEST_F);
+  var lineNumber = error.stack[0].getLineNumber();
+  Error.prepareStackTrace = oldPrepareStackTrace;
+  return lineNumber;
+}
+
+/**
  * Generate gtest-style TEST_F definitions for C++ with a body that
  * will invoke the |testBody| for |testFixture|.|testFunction|.
  * @param {string} testFixture The name of this test's fixture.
  * @param {string} testFunction The name of this test's function.
  * @param {Function} testBody The function body to execute for this test.
+ * @param {string=} opt_preamble C++ to be generated before the TEST_F block.
+ * Useful for including #ifdef blocks. See TEST_F_WITH_PREAMBLE.
  */
-function TEST_F(testFixture, testFunction, testBody) {
+function TEST_F(testFixture, testFunction, testBody, opt_preamble) {
   maybeGenHeader(testFixture);
   var browsePreload = this[testFixture].prototype.browsePreload;
   var browsePrintPreload = this[testFixture].prototype.browsePrintPreload;
@@ -363,10 +389,16 @@ function TEST_F(testFixture, testFunction, testBody) {
             return includeFileToPaths(includeFile).base;
           }),
       resolveClosureModuleDeps(this[testFixture].prototype.closureModuleDeps));
+  var testFLine = getTestDeclarationLineNumber();
 
   if (typedefCppFixture && !(testFixture in typedeffedCppFixtures)) {
     var switches = this[testFixture].prototype.commandLineSwitches;
-    if (!switches || !switches.length || typedefCppFixture == 'V8UnitTest') {
+    var hasSwitches = switches && switches.length;
+    var featureList = this[testFixture].prototype.featureList;
+    var featuresWithParameters =
+        this[testFixture].prototype.featuresWithParameters;
+    if ((!hasSwitches && !featureList && !featuresWithParameters) ||
+        typedefCppFixture == 'V8UnitTest') {
       output(`
 typedef ${typedefCppFixture} ${testFixture};
 `);
@@ -374,10 +406,47 @@ typedef ${typedefCppFixture} ${testFixture};
       // Make the testFixture a class inheriting from the base fixture.
       output(`
 class ${testFixture} : public ${typedefCppFixture} {
+ protected:`);
+      if (featureList || featuresWithParameters) {
+        output(`
+  ${testFixture}() {`);
+        if (featureList) {
+          output(`
+    scoped_feature_list_.InitWithFeatures({${featureList[0]}},
+                                          {${featureList[1]}});`);
+        }
+        if (featuresWithParameters) {
+          for (var i = 0; i < featuresWithParameters.length; ++i) {
+            var feature = featuresWithParameters[i];
+            var featureName = feature[0];
+            var parameters = feature[1];
+          output(`
+    scoped_feature_list${i}_.InitAndEnableFeatureWithParameters(
+        ${featureName}, {`);
+            for (var parameter of parameters) {
+              var parameterName = parameter[0];
+              var parameterValue = parameter[1];
+              output(`
+            {"${parameterName}", "${parameterValue}"},`);
+            }
+            output(`
+    });`);
+          }
+        }
+        output(`
+  }`);
+      } else {
+        output(`
+  ${testFixture}() {}`);
+      }
+      output(`
+  ~${testFixture}() override {}
  private:`);
+      if (hasSwitches) {
       // Override SetUpCommandLine and add each switch.
       output(`
-  void SetUpCommandLine(base::CommandLine* command_line) override {`);
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    ${typedefCppFixture}::SetUpCommandLine(command_line);`);
       for (var i = 0; i < switches.length; i++) {
         output(`
     command_line->AppendSwitchASCII(
@@ -385,14 +454,37 @@ class ${testFixture} : public ${typedefCppFixture} {
         "${(switches[i].switchValue || '')}");`);
       }
       output(`
-  }
+  }`);
+      }
+      if (featureList || featuresWithParameters) {
+        if (featureList) {
+        output(`
+  base::test::ScopedFeatureList scoped_feature_list_;`);
+        }
+        if (featuresWithParameters) {
+          for (var i = 0; i < featuresWithParameters.length; ++i) {
+            output(`
+  base::test::ScopedFeatureList scoped_feature_list${i}_;`);
+          }
+        }
+      }
+      output(`
 };
 `);
     }
     typedeffedCppFixtures[testFixture] = typedefCppFixture;
   }
 
-  output(`${testF}(${testFixture}, ${testFunction}) {`);
+  if (opt_preamble) {
+    GEN(opt_preamble);
+  }
+
+  var outputLine = countOutputLines() + 3;
+  output(`
+#line ${testFLine} "${jsFile}"
+${testF}(${testFixture}, ${testFunction}) {
+#line ${outputLine} "${outputFile}"`);
+
   for (var i = 0; i < extraLibraries.length; i++) {
     var libraryName = extraLibraries[i].replace(/\\/g, '/');
     output(`
@@ -406,6 +498,10 @@ class ${testFixture} : public ${typedefCppFixture} {
     output(`
   set_preload_test_fixture("${testFixture}");
   set_preload_test_name("${testFunction}");`);
+  }
+  if(testType == 'mojo_lite_webui') {
+    output(`
+  set_use_mojo_lite_bindings();`);
   }
   if (testGenPreamble)
     testGenPreamble(testFixture, testFunction);
@@ -424,6 +520,18 @@ class ${testFixture} : public ${typedefCppFixture} {
   if (testGenPostamble)
     testGenPostamble(testFixture, testFunction);
   output('}\n');
+}
+
+/**
+ * Same as TEST_F above, with a mandatory preamble.
+ * @param {string} preamble C++ to be generated before the TEST_F block.
+ *                 Useful for including #ifdef blocks.
+ * @param {string} testFixture The name of this test's fixture.
+ * @param {string} testFunction The name of this test's function.
+ * @param {Function} testBody The function body to execute for this test.
+ */
+function TEST_F_WITH_PREAMBLE(preamble, testFixture, testFunction, testBody) {
+  TEST_F(testFixture, testFunction, testBody, preamble);
 }
 
 // Now that generation functions are defined, load in |jsFile|.

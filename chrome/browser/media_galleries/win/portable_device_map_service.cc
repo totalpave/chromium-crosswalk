@@ -6,13 +6,12 @@
 
 #include "base/logging.h"
 #include "base/stl_util.h"
-#include "base/threading/thread_restrictions.h"
 #include "content/public/browser/browser_thread.h"
 
 namespace {
 
-base::LazyInstance<PortableDeviceMapService> g_portable_device_map_service =
-    LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<PortableDeviceMapService>::DestructorAtExit
+    g_portable_device_map_service = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -24,7 +23,6 @@ PortableDeviceMapService* PortableDeviceMapService::GetInstance() {
 void PortableDeviceMapService::AddPortableDevice(
     const base::string16& device_location,
     IPortableDevice* device) {
-  base::ThreadRestrictions::AssertIOAllowed();
   DCHECK(!device_location.empty());
   DCHECK(device);
   base::AutoLock lock(lock_);
@@ -43,7 +41,6 @@ void PortableDeviceMapService::MarkPortableDeviceForDeletion(
 
 void PortableDeviceMapService::RemovePortableDevice(
     const base::string16& device_location) {
-  base::ThreadRestrictions::AssertIOAllowed();
   DCHECK(!device_location.empty());
   base::AutoLock lock(lock_);
   PortableDeviceMap::const_iterator it = device_map_.find(device_location);
@@ -53,12 +50,11 @@ void PortableDeviceMapService::RemovePortableDevice(
 
 IPortableDevice* PortableDeviceMapService::GetPortableDevice(
     const base::string16& device_location) {
-  base::ThreadRestrictions::AssertIOAllowed();
   DCHECK(!device_location.empty());
   base::AutoLock lock(lock_);
   PortableDeviceMap::const_iterator it = device_map_.find(device_location);
   return (it == device_map_.end() || it->second.scheduled_to_delete) ?
-      NULL : it->second.portable_device.get();
+      NULL : it->second.portable_device.Get();
 }
 
 PortableDeviceMapService::PortableDeviceInfo::PortableDeviceInfo()

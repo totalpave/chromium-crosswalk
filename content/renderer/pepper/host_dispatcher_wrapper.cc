@@ -14,8 +14,8 @@
 #include "content/renderer/pepper/renderer_ppapi_host_impl.h"
 #include "content/renderer/pepper/renderer_restrict_dispatch_group.h"
 #include "content/renderer/render_frame_impl.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebPluginContainer.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_plugin_container.h"
 
 namespace content {
 
@@ -33,18 +33,14 @@ HostDispatcherWrapper::HostDispatcherWrapper(
 
 HostDispatcherWrapper::~HostDispatcherWrapper() {}
 
-bool HostDispatcherWrapper::Init(const IPC::ChannelHandle& channel_handle,
-                                 PP_GetInterface_Func local_get_interface,
-                                 const ppapi::Preferences& preferences,
-                                 scoped_refptr<PepperHungPluginFilter> filter) {
-  if (channel_handle.name.empty())
+bool HostDispatcherWrapper::Init(
+    const IPC::ChannelHandle& channel_handle,
+    PP_GetInterface_Func local_get_interface,
+    const ppapi::Preferences& preferences,
+    scoped_refptr<PepperHungPluginFilter> filter,
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
+  if (!channel_handle.is_mojo_channel_handle())
     return false;
-
-#if defined(OS_POSIX)
-  DCHECK_NE(-1, channel_handle.socket.fd);
-  if (channel_handle.socket.fd == -1)
-    return false;
-#endif
 
   dispatcher_delegate_.reset(new PepperProxyChannelDelegateImpl);
   dispatcher_.reset(new ppapi::proxy::HostDispatcher(
@@ -56,11 +52,10 @@ bool HostDispatcherWrapper::Init(const IPC::ChannelHandle& channel_handle,
   // Guarantee the hung_plugin_filter_ outlives |dispatcher_|.
   hung_plugin_filter_ = filter;
 
-  if (!dispatcher_->InitHostWithChannel(dispatcher_delegate_.get(),
-                                        peer_pid_,
+  if (!dispatcher_->InitHostWithChannel(dispatcher_delegate_.get(), peer_pid_,
                                         channel_handle,
                                         true,  // Client.
-                                        preferences)) {
+                                        preferences, task_runner)) {
     dispatcher_.reset();
     dispatcher_delegate_.reset();
     return false;
@@ -89,11 +84,8 @@ void HostDispatcherWrapper::AddInstance(PP_Instance instance) {
   if (host) {
     RenderFrame* render_frame = host->GetRenderFrameForInstance(instance);
     PepperPluginInstance* plugin_instance = host->GetPluginInstance(instance);
-    blink::WebString unused;
     bool is_privileged_context =
-        plugin_instance->GetContainer()
-            ->document()
-            .isSecureContext(unused) &&
+        plugin_instance->GetContainer()->GetDocument().IsSecureContext() &&
         content::IsOriginSecure(plugin_instance->GetPluginURL());
     render_frame->Send(new FrameHostMsg_DidCreateOutOfProcessPepperInstance(
         plugin_child_id_, instance,

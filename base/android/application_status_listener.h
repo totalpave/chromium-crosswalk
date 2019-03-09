@@ -12,7 +12,6 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
-#include "base/observer_list_threadsafe.h"
 
 namespace base {
 namespace android {
@@ -51,25 +50,30 @@ enum ApplicationState {
 //    }
 //
 //    // Start listening.
-//    ApplicationStatusListener* my_listener =
-//        new ApplicationStatusListener(
-//            base::Bind(&OnApplicationStateChange));
+//    auto my_listener = ApplicationStatusListener::New(
+//        base::BindRepeating(&OnApplicationStateChange));
 //
 //    ...
 //
 //    // Stop listening.
-//    delete my_listener
+//    my_listener.reset();
 //
 class BASE_EXPORT ApplicationStatusListener {
  public:
-  typedef base::Callback<void(ApplicationState)> ApplicationStateChangeCallback;
+  using ApplicationStateChangeCallback =
+      base::RepeatingCallback<void(ApplicationState)>;
 
-  explicit ApplicationStatusListener(
+  virtual ~ApplicationStatusListener();
+
+  // Sets the callback to call when application state changes.
+  virtual void SetCallback(const ApplicationStateChangeCallback& callback) = 0;
+
+  // Notify observers that application state has changed.
+  virtual void Notify(ApplicationState state) = 0;
+
+  // Create a new listener. This object should only be used on a single thread.
+  static std::unique_ptr<ApplicationStatusListener> New(
       const ApplicationStateChangeCallback& callback);
-  ~ApplicationStatusListener();
-
-  // Internal use: must be public to be called from base_jni_registrar.cc
-  static bool RegisterBindings(JNIEnv* env);
 
   // Internal use only: must be public to be called from JNI and unit tests.
   static void NotifyApplicationStateChange(ApplicationState state);
@@ -77,11 +81,10 @@ class BASE_EXPORT ApplicationStatusListener {
   // Expose jni call for ApplicationStatus.getStateForApplication.
   static ApplicationState GetState();
 
+ protected:
+  ApplicationStatusListener();
+
  private:
-  void Notify(ApplicationState state);
-
-  ApplicationStateChangeCallback callback_;
-
   DISALLOW_COPY_AND_ASSIGN(ApplicationStatusListener);
 };
 

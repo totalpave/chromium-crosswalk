@@ -13,6 +13,7 @@
 // How much horizontal and vertical offset there is between newly
 // opened windows.
 const int WindowSizer::kWindowTilePixels = 22;
+const int WindowSizer::kWindowMaxDefaultWidth = 1200;
 
 // static
 gfx::Point WindowSizer::GetDefaultPopupOrigin(const gfx::Size& size) {
@@ -21,7 +22,7 @@ gfx::Point WindowSizer::GetDefaultPopupOrigin(const gfx::Size& size) {
   NSPoint corner = NSMakePoint(NSMinX(work_area), NSMaxY(work_area));
 
   if (Browser* browser = chrome::FindLastActive()) {
-    NSWindow* window = browser->window()->GetNativeWindow();
+    NSWindow* window = browser->window()->GetNativeWindow().GetNativeNSWindow();
     NSRect window_frame = [window frame];
 
     // Limit to not overflow the work area right and bottom edges.

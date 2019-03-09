@@ -10,15 +10,15 @@
 #include "chrome/common/pref_names.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/policy_map.h"
+#include "components/policy/policy_constants.h"
 #include "components/prefs/pref_value_map.h"
-#include "grit/components_strings.h"
-#include "policy/policy_constants.h"
+#include "components/strings/grit/components_strings.h"
 
 namespace policy {
 
 RestoreOnStartupPolicyHandler::RestoreOnStartupPolicyHandler()
     : TypeCheckingPolicyHandler(key::kRestoreOnStartup,
-                                base::Value::TYPE_INTEGER) {}
+                                base::Value::Type::INTEGER) {}
 
 RestoreOnStartupPolicyHandler::~RestoreOnStartupPolicyHandler() {
 }
@@ -64,16 +64,6 @@ bool RestoreOnStartupPolicyHandler::CheckPolicySettings(
                            IDS_POLICY_OVERRIDDEN,
                            key::kRestoreOnStartup);
         }
-
-        const base::Value* exit_policy =
-            policies.GetValue(key::kClearSiteDataOnExit);
-        bool exit_value;
-        if (exit_policy && exit_policy->GetAsBoolean(&exit_value) &&
-            exit_value) {
-          errors->AddError(key::kClearSiteDataOnExit,
-                           IDS_POLICY_OVERRIDDEN,
-                           key::kRestoreOnStartup);
-        }
         break;
       }
       case SessionStartupPref::kPrefValueURLs:
@@ -81,9 +71,8 @@ bool RestoreOnStartupPolicyHandler::CheckPolicySettings(
         // No error
         break;
       default:
-        errors->AddError(policy_name(),
-                         IDS_POLICY_OUT_OF_RANGE_ERROR,
-                         base::IntToString(restore_value));
+        errors->AddError(policy_name(), IDS_POLICY_OUT_OF_RANGE_ERROR,
+                         base::NumberToString(restore_value));
     }
   }
   return true;

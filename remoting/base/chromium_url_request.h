@@ -9,21 +9,25 @@
 
 #include "base/callback.h"
 #include "base/memory/ref_counted.h"
-#include "net/url_request/url_fetcher_delegate.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "remoting/base/url_request.h"
 
-namespace net {
-class URLRequestContextGetter;
-}  // namespace net
+namespace network {
+class SharedURLLoaderFactory;
+class SimpleURLLoader;
+struct ResourceRequest;
+}  // namespace network
 
 namespace remoting {
 
-// UrlRequest implementation based on net::URLFetcher.
-class ChromiumUrlRequest : public UrlRequest, public net::URLFetcherDelegate {
+// UrlRequest implementation based on network::SimpleURLLoader.
+class ChromiumUrlRequest : public UrlRequest {
  public:
-  ChromiumUrlRequest(scoped_refptr<net::URLRequestContextGetter> url_context,
-                     UrlRequest::Type type,
-                     const std::string& url);
+  ChromiumUrlRequest(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      UrlRequest::Type type,
+      const std::string& url,
+      const net::NetworkTrafficAnnotationTag& traffic_annotation);
   ~ChromiumUrlRequest() override;
 
   // UrlRequest interface.
@@ -33,25 +37,33 @@ class ChromiumUrlRequest : public UrlRequest, public net::URLFetcherDelegate {
   void Start(const OnResultCallback& on_result_callback) override;
 
  private:
-  // net::URLFetcherDelegate interface.
-  void OnURLFetchComplete(const net::URLFetcher* url_fetcher) override;
+  void OnURLLoadComplete(std::unique_ptr<std::string> response_body);
 
-  std::unique_ptr<net::URLFetcher> url_fetcher_;
+  std::unique_ptr<network::SimpleURLLoader> url_loader_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+  std::unique_ptr<network::ResourceRequest> resource_request_;
+
+  const net::NetworkTrafficAnnotationTag traffic_annotation_;
+  std::string post_data_content_type_;
+  std::string post_data_;
+
   OnResultCallback on_result_callback_;
 };
 
 class ChromiumUrlRequestFactory : public UrlRequestFactory {
  public:
   ChromiumUrlRequestFactory(
-      scoped_refptr<net::URLRequestContextGetter> url_context);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   ~ChromiumUrlRequestFactory() override;
 
   // UrlRequestFactory interface.
-  std::unique_ptr<UrlRequest> CreateUrlRequest(UrlRequest::Type type,
-                                               const std::string& url) override;
+  std::unique_ptr<UrlRequest> CreateUrlRequest(
+      UrlRequest::Type type,
+      const std::string& url,
+      const net::NetworkTrafficAnnotationTag& traffic_annotation) override;
 
  private:
-  scoped_refptr<net::URLRequestContextGetter> url_context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 };
 
 }  // namespace remoting

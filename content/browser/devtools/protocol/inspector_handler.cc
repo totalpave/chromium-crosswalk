@@ -4,40 +4,52 @@
 
 #include "content/browser/devtools/protocol/inspector_handler.h"
 
+#include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/frame_host/render_frame_host_impl.h"
 
 namespace content {
-namespace devtools {
-namespace inspector {
-
-using Response = DevToolsProtocolClient::Response;
+namespace protocol {
 
 InspectorHandler::InspectorHandler()
-    : host_(nullptr) {
+    : DevToolsDomainHandler(Inspector::Metainfo::domainName),
+      host_(nullptr) {
 }
 
 InspectorHandler::~InspectorHandler() {
 }
 
-void InspectorHandler::SetClient(std::unique_ptr<Client> client) {
-  client_.swap(client);
+// static
+std::vector<InspectorHandler*> InspectorHandler::ForAgentHost(
+    DevToolsAgentHostImpl* host) {
+  return host->HandlersByName<InspectorHandler>(
+      Inspector::Metainfo::domainName);
 }
 
-void InspectorHandler::SetRenderFrameHost(RenderFrameHostImpl* host) {
-  host_ = host;
+void InspectorHandler::Wire(UberDispatcher* dispatcher) {
+  frontend_.reset(new Inspector::Frontend(dispatcher->channel()));
+  Inspector::Dispatcher::wire(dispatcher, this);
+}
+
+void InspectorHandler::SetRenderer(int process_host_id,
+                                   RenderFrameHostImpl* frame_host) {
+  host_ = frame_host;
 }
 
 void InspectorHandler::TargetCrashed() {
-  client_->TargetCrashed(TargetCrashedParams::Create());
+  frontend_->TargetCrashed();
+}
+
+void InspectorHandler::TargetReloadedAfterCrash() {
+  frontend_->TargetReloadedAfterCrash();
 }
 
 void InspectorHandler::TargetDetached(const std::string& reason) {
-  client_->Detached(DetachedParams::Create()->set_reason(reason));
+  frontend_->Detached(reason);
 }
 
 Response InspectorHandler::Enable() {
   if (host_ && !host_->IsRenderFrameLive())
-    client_->TargetCrashed(TargetCrashedParams::Create());
+    frontend_->TargetCrashed();
   return Response::OK();
 }
 
@@ -45,6 +57,5 @@ Response InspectorHandler::Disable() {
   return Response::OK();
 }
 
-}  // namespace inspector
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content

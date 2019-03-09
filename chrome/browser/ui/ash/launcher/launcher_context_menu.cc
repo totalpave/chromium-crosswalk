@@ -4,163 +4,130 @@
 
 #include "chrome/browser/ui/ash/launcher/launcher_context_menu.h"
 
+#include <memory>
 #include <string>
 
-#include "ash/common/session/session_state_delegate.h"
-#include "ash/common/shelf/wm_shelf.h"
-#include "ash/common/wm_shell.h"
-#include "ash/desktop_background/user_wallpaper_delegate.h"
-#include "ash/shelf/shelf_widget.h"
-#include "ash/shell.h"
-#include "build/build_config.h"
-#include "chrome/browser/fullscreen.h"
+#include "ash/public/cpp/shelf_model.h"
+#include "base/metrics/user_metrics.h"
+#include "chrome/browser/chromeos/crostini/crostini_registry_service.h"
+#include "chrome/browser/chromeos/crostini/crostini_registry_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
+#include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
+#include "chrome/browser/ui/app_list/internal_app/internal_app_metadata.h"
 #include "chrome/browser/ui/ash/launcher/arc_launcher_context_menu.h"
-#include "chrome/browser/ui/ash/launcher/chrome_launcher_controller_impl.h"
+#include "chrome/browser/ui/ash/launcher/chrome_launcher_controller.h"
 #include "chrome/browser/ui/ash/launcher/chrome_launcher_controller_util.h"
-#include "chrome/browser/ui/ash/launcher/desktop_shell_launcher_context_menu.h"
+#include "chrome/browser/ui/ash/launcher/crostini_shelf_context_menu.h"
 #include "chrome/browser/ui/ash/launcher/extension_launcher_context_menu.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/ui/ash/launcher/internal_app_shelf_context_menu.h"
+#include "chrome/browser/ui/ash/tablet_mode_client.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/prefs/pref_service.h"
-#include "content/public/common/context_menu_params.h"
-#include "grit/ash_strings.h"
-#include "ui/base/l10n/l10n_util.h"
-
-namespace {
-
-// Returns true if the user can modify the |shelf|'s auto-hide behavior.
-bool CanUserModifyShelfAutoHideBehavior(const Profile* profile) {
-  const std::string& pref = prefs::kShelfAutoHideBehaviorLocal;
-  return profile->GetPrefs()->FindPreference(pref)->IsUserModifiable();
-}
-
-}  // namespace
+#include "ui/display/types/display_constants.h"
+#include "ui/gfx/paint_vector_icon.h"
+#include "ui/views/controls/menu/menu_config.h"
+#include "ui/views/vector_icons.h"
 
 // static
-LauncherContextMenu* LauncherContextMenu::Create(
-    ChromeLauncherControllerImpl* controller,
+std::unique_ptr<LauncherContextMenu> LauncherContextMenu::Create(
+    ChromeLauncherController* controller,
     const ash::ShelfItem* item,
-    ash::WmShelf* wm_shelf) {
+    int64_t display_id) {
   DCHECK(controller);
-  DCHECK(wm_shelf);
-  // Create DesktopShellLauncherContextMenu if no item is selected.
-  if (!item || item->id == 0)
-    return new DesktopShellLauncherContextMenu(controller, item, wm_shelf);
+  DCHECK(item);
+  DCHECK(!item->id.IsNull());
+  // Create an ArcLauncherContextMenu if the item is an ARC app.
+  if (arc::IsArcItem(controller->profile(), item->id.app_id)) {
+    return std::make_unique<ArcLauncherContextMenu>(controller, item,
+                                                    display_id);
+  }
 
-  // Create ArcLauncherContextMenu if the item is an Arc app.
-  const std::string& app_id = controller->GetAppIDForShelfID(item->id);
-  ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(controller->GetProfile());
-  if (arc_prefs && arc_prefs->IsRegistered(app_id))
-    return new ArcLauncherContextMenu(controller, item, wm_shelf);
+  // Create an CrostiniShelfContextMenu if the item is Crostini app.
+  crostini::CrostiniRegistryService* crostini_registry_service =
+      crostini::CrostiniRegistryServiceFactory::GetForProfile(
+          controller->profile());
+  if (crostini_registry_service &&
+      crostini_registry_service->IsCrostiniShelfAppId(item->id.app_id)) {
+    return std::make_unique<CrostiniShelfContextMenu>(controller, item,
+                                                      display_id);
+  }
 
-  // Create ExtensionLauncherContextMenu for the item.
-  return new ExtensionLauncherContextMenu(controller, item, wm_shelf);
+  if (app_list::IsInternalApp(item->id.app_id)) {
+    return std::make_unique<InternalAppShelfContextMenu>(controller, item,
+                                                         display_id);
+  }
+
+  // Create an ExtensionLauncherContextMenu for other items.
+  return std::make_unique<ExtensionLauncherContextMenu>(controller, item,
+                                                        display_id);
 }
 
-LauncherContextMenu::LauncherContextMenu(
-    ChromeLauncherControllerImpl* controller,
-    const ash::ShelfItem* item,
-    ash::WmShelf* wm_shelf)
-    : ui::SimpleMenuModel(nullptr),
-      controller_(controller),
+LauncherContextMenu::LauncherContextMenu(ChromeLauncherController* controller,
+                                         const ash::ShelfItem* item,
+                                         int64_t display_id)
+    : controller_(controller),
       item_(item ? *item : ash::ShelfItem()),
-      shelf_alignment_menu_(wm_shelf),
-      wm_shelf_(wm_shelf) {
-  set_delegate(this);
+      display_id_(display_id) {
+  DCHECK_NE(display_id, display::kInvalidDisplayId);
 }
 
-LauncherContextMenu::~LauncherContextMenu() {
-}
-
-bool LauncherContextMenu::IsItemForCommandIdDynamic(int command_id) const {
-  return false;
-}
-
-base::string16 LauncherContextMenu::GetLabelForCommandId(int command_id) const {
-  NOTREACHED();
-  return base::string16();
-}
+LauncherContextMenu::~LauncherContextMenu() = default;
 
 bool LauncherContextMenu::IsCommandIdChecked(int command_id) const {
-  if (command_id == MENU_AUTO_HIDE) {
-    return wm_shelf_->GetAutoHideBehavior() ==
-           ash::SHELF_AUTO_HIDE_BEHAVIOR_ALWAYS;
-  }
-  DCHECK(command_id < MENU_ITEM_COUNT);
+  DCHECK(command_id < ash::COMMAND_ID_COUNT);
   return false;
 }
 
 bool LauncherContextMenu::IsCommandIdEnabled(int command_id) const {
-  switch (command_id) {
-    case MENU_PIN:
-      return controller_->IsPinnable(item_.id);
-    case MENU_CHANGE_WALLPAPER:
-      return ash::Shell::GetInstance()
-          ->user_wallpaper_delegate()
-          ->CanOpenSetWallpaperPage();
-    case MENU_AUTO_HIDE:
-      return CanUserModifyShelfAutoHideBehavior(controller_->GetProfile());
-    default:
-      DCHECK(command_id < MENU_ITEM_COUNT);
-      return true;
+  if (command_id == ash::MENU_PIN) {
+    // Users cannot modify the pinned state of apps pinned by policy.
+    return !item_.pinned_by_policy &&
+           (item_.type == ash::TYPE_PINNED_APP || item_.type == ash::TYPE_APP);
   }
-}
 
-bool LauncherContextMenu::GetAcceleratorForCommandId(
-      int command_id,
-      ui::Accelerator* accelerator) {
-  return false;
+  DCHECK(command_id < ash::COMMAND_ID_COUNT);
+  return true;
 }
 
 void LauncherContextMenu::ExecuteCommand(int command_id, int event_flags) {
-  switch (static_cast<MenuItem>(command_id)) {
-    case MENU_OPEN_NEW:
-      controller_->Launch(item_.id, ui::EF_NONE);
+  switch (static_cast<ash::CommandId>(command_id)) {
+    case ash::MENU_OPEN_NEW:
+      // Use a copy of the id to avoid crashes, as this menu's owner will be
+      // destroyed if LaunchApp replaces the ShelfItemDelegate instance.
+      controller_->LaunchApp(ash::ShelfID(item_.id), ash::LAUNCH_FROM_SHELF,
+                             ui::EF_NONE, display_id_);
       break;
-    case MENU_CLOSE:
+    case ash::MENU_CLOSE:
       if (item_.type == ash::TYPE_DIALOG) {
         ash::ShelfItemDelegate* item_delegate =
-            ash::Shell::GetInstance()
-                ->shelf_item_delegate_manager()
-                ->GetShelfItemDelegate(item_.id);
+            controller_->shelf_model()->GetShelfItemDelegate(item_.id);
         DCHECK(item_delegate);
         item_delegate->Close();
       } else {
         // TODO(simonhong): Use ShelfItemDelegate::Close().
         controller_->Close(item_.id);
       }
-      ash::WmShell::Get()->RecordUserMetricsAction(
-          ash::UMA_CLOSE_THROUGH_CONTEXT_MENU);
+      base::RecordAction(base::UserMetricsAction("CloseFromContextMenu"));
+      if (TabletModeClient::Get()->tablet_mode_enabled()) {
+        base::RecordAction(
+            base::UserMetricsAction("Tablet_WindowCloseFromContextMenu"));
+      }
       break;
-    case MENU_PIN:
-      controller_->TogglePinned(item_.id);
-      break;
-    case MENU_AUTO_HIDE:
-      wm_shelf_->SetAutoHideBehavior(
-          wm_shelf_->GetAutoHideBehavior() ==
-                  ash::SHELF_AUTO_HIDE_BEHAVIOR_ALWAYS
-              ? ash::SHELF_AUTO_HIDE_BEHAVIOR_NEVER
-              : ash::SHELF_AUTO_HIDE_BEHAVIOR_ALWAYS);
-      break;
-    case MENU_ALIGNMENT_MENU:
-      break;
-    case MENU_CHANGE_WALLPAPER:
-      ash::Shell::GetInstance()->user_wallpaper_delegate()->
-          OpenSetWallpaperPage();
+    case ash::MENU_PIN:
+      if (controller_->IsAppPinned(item_.id.app_id))
+        controller_->UnpinAppWithID(item_.id.app_id);
+      else
+        controller_->PinAppWithID(item_.id.app_id);
       break;
     default:
       NOTREACHED();
   }
 }
 
-void LauncherContextMenu::AddPinMenu() {
-  // Expect an item with a none zero id to add pin/unpin menu item.
-  DCHECK(item_.id);
+void LauncherContextMenu::AddPinMenu(ui::SimpleMenuModel* menu_model) {
+  // Expect a valid ShelfID to add pin/unpin menu item.
+  DCHECK(!item_.id.IsNull());
   int menu_pin_string_id;
-  const std::string app_id = controller_->GetAppIDForShelfID(item_.id);
-  switch (GetPinnableForAppID(app_id, controller_->GetProfile())) {
+  switch (GetPinnableForAppID(item_.id.app_id, controller_->profile())) {
     case AppListControllerDelegate::PIN_EDITABLE:
       menu_pin_string_id = controller_->IsPinned(item_.id)
                                ? IDS_LAUNCHER_CONTEXT_MENU_UNPIN
@@ -175,41 +142,94 @@ void LauncherContextMenu::AddPinMenu() {
       NOTREACHED();
       return;
   }
-  AddItemWithStringId(MENU_PIN, menu_pin_string_id);
-}
-
-void LauncherContextMenu::AddShelfOptionsMenu() {
-  // In fullscreen, the launcher is either hidden or autohidden depending
-  // on thethe type of fullscreen. Do not show the auto-hide menu item while in
-  // while in fullscreen because it is confusing when the preference appears
-  // not to apply.
-  if (!IsFullScreenMode() &&
-      CanUserModifyShelfAutoHideBehavior(controller_->GetProfile())) {
-    AddCheckItemWithStringId(MENU_AUTO_HIDE,
-                             IDS_ASH_SHELF_CONTEXT_MENU_AUTO_HIDE);
-  }
-  if (ash::ShelfWidget::ShelfAlignmentAllowed() &&
-      !ash::WmShell::Get()->GetSessionStateDelegate()->IsScreenLocked()) {
-    AddSubMenuWithStringId(MENU_ALIGNMENT_MENU,
-                           IDS_ASH_SHELF_CONTEXT_MENU_POSITION,
-                           &shelf_alignment_menu_);
-  }
-  if (!controller_->GetProfile()->IsGuestSession())
-    AddItemWithStringId(MENU_CHANGE_WALLPAPER, IDS_AURA_SET_DESKTOP_WALLPAPER);
+  AddContextMenuOption(menu_model, ash::MENU_PIN, menu_pin_string_id);
 }
 
 bool LauncherContextMenu::ExecuteCommonCommand(int command_id,
                                                int event_flags) {
   switch (command_id) {
-    case MENU_OPEN_NEW:
-    case MENU_CLOSE:
-    case MENU_PIN:
-    case MENU_AUTO_HIDE:
-    case MENU_ALIGNMENT_MENU:
-    case MENU_CHANGE_WALLPAPER:
+    case ash::MENU_OPEN_NEW:
+    case ash::MENU_CLOSE:
+    case ash::MENU_PIN:
       LauncherContextMenu::ExecuteCommand(command_id, event_flags);
       return true;
     default:
       return false;
+  }
+}
+
+void LauncherContextMenu::AddContextMenuOption(ui::SimpleMenuModel* menu_model,
+                                               ash::CommandId type,
+                                               int string_id) {
+  const gfx::VectorIcon& icon = GetCommandIdVectorIcon(type, string_id);
+  if (!icon.is_empty()) {
+    const views::MenuConfig& menu_config = views::MenuConfig::instance();
+    menu_model->AddItemWithStringIdAndIcon(
+        type, string_id,
+        gfx::CreateVectorIcon(icon, menu_config.touchable_icon_size,
+                              menu_config.touchable_icon_color));
+    return;
+  }
+  // If the MenuType is a check item.
+  if (type == ash::LAUNCH_TYPE_REGULAR_TAB ||
+      type == ash::LAUNCH_TYPE_PINNED_TAB || type == ash::LAUNCH_TYPE_WINDOW ||
+      type == ash::LAUNCH_TYPE_FULLSCREEN) {
+    menu_model->AddCheckItemWithStringId(type, string_id);
+    return;
+  }
+  // NOTIFICATION_CONTAINER is added by NotificationMenuController.
+  if (type == ash::NOTIFICATION_CONTAINER) {
+    NOTREACHED()
+        << "NOTIFICATION_CONTAINER is added by NotificationMenuController.";
+    return;
+  }
+  menu_model->AddItemWithStringId(type, string_id);
+}
+
+const gfx::VectorIcon& LauncherContextMenu::GetCommandIdVectorIcon(
+    ash::CommandId type,
+    int string_id) const {
+  switch (type) {
+    case ash::MENU_OPEN_NEW:
+      if (string_id == IDS_APP_LIST_CONTEXT_MENU_NEW_TAB)
+        return views::kNewTabIcon;
+      if (string_id == IDS_APP_LIST_CONTEXT_MENU_NEW_WINDOW)
+        return views::kNewWindowIcon;
+      return views::kOpenIcon;
+    case ash::MENU_CLOSE:
+      return views::kCloseIcon;
+    case ash::MENU_PIN:
+      return controller_->IsPinned(item_.id) ? views::kUnpinIcon
+                                             : views::kPinIcon;
+    case ash::MENU_NEW_WINDOW:
+      return views::kNewWindowIcon;
+    case ash::MENU_NEW_INCOGNITO_WINDOW:
+      return views::kNewIncognitoWindowIcon;
+    case ash::LAUNCH_TYPE_PINNED_TAB:
+    case ash::LAUNCH_TYPE_REGULAR_TAB:
+    case ash::LAUNCH_TYPE_FULLSCREEN:
+    case ash::LAUNCH_TYPE_WINDOW:
+      // Check items use a default icon in touchable and default context menus.
+      return gfx::kNoneIcon;
+    case ash::NOTIFICATION_CONTAINER:
+      NOTREACHED() << "NOTIFICATION_CONTAINER does not have an icon, and it is "
+                      "added to the model by NotificationMenuController.";
+      return gfx::kNoneIcon;
+    case ash::STOP_APP:
+      if (string_id == IDS_CROSTINI_SHUT_DOWN_LINUX_MENU_ITEM)
+        return views::kLinuxShutdownIcon;
+      return gfx::kNoneIcon;
+    case ash::CROSTINI_USE_HIGH_DENSITY:
+      return views::kLinuxHighDensityIcon;
+    case ash::CROSTINI_USE_LOW_DENSITY:
+      return views::kLinuxLowDensityIcon;
+    case ash::LAUNCH_APP_SHORTCUT_FIRST:
+    case ash::LAUNCH_APP_SHORTCUT_LAST:
+    case ash::COMMAND_ID_COUNT:
+      NOTREACHED();
+      return gfx::kNoneIcon;
+    default:
+      NOTREACHED();
+      return gfx::kNoneIcon;
   }
 }

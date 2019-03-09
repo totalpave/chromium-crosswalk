@@ -9,8 +9,10 @@
 #include <set>
 
 #include "base/files/file_path.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
+#include "chrome/browser/chromeos/fileapi/file_system_backend_delegate.h"
 #include "chromeos/dbus/cros_disks_client.h"
+#include "extensions/common/constants.h"
 #include "storage/browser/fileapi/external_mount_points.h"
 #include "storage/browser/fileapi/file_system_url.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -27,9 +29,8 @@ FileSystemURL CreateFileSystemURL(const std::string& extension,
                                   const char* path,
                                   ExternalMountPoints* mount_points) {
   return mount_points->CreateCrackedFileSystemURL(
-      GURL("chrome-extension://" + extension + "/"),
-      storage::kFileSystemTypeExternal,
-      base::FilePath::FromUTF8Unsafe(path));
+      url::Origin::Create(GURL("chrome-extension://" + extension + "/")),
+      storage::kFileSystemTypeExternal, base::FilePath::FromUTF8Unsafe(path));
 }
 
 TEST(ChromeOSFileSystemBackendTest, DefaultMountPoints) {
@@ -40,11 +41,13 @@ TEST(ChromeOSFileSystemBackendTest, DefaultMountPoints) {
   scoped_refptr<storage::ExternalMountPoints> mount_points(
       storage::ExternalMountPoints::CreateRefCounted());
   chromeos::FileSystemBackend backend(
-      NULL,  // drive_delegate
-      NULL,  // file_system_provider_delegate
-      NULL,  // mtp_delegate
-      mount_points.get(),
-      storage::ExternalMountPoints::GetSystemInstance());
+      nullptr,  // drive_delegate
+      nullptr,  // file_system_provider_delegate
+      nullptr,  // mtp_delegate
+      nullptr,  // arc_content_delegate
+      nullptr,  // arc_documents_provider_delegate
+      nullptr,  // drivefs_delegate
+      mount_points.get(), storage::ExternalMountPoints::GetSystemInstance());
   backend.AddSystemMountPoints();
   std::vector<base::FilePath> root_dirs = backend.GetRootDirectories();
   std::set<base::FilePath> root_dirs_set(root_dirs.begin(), root_dirs.end());
@@ -66,11 +69,14 @@ TEST(ChromeOSFileSystemBackendTest, GetRootDirectories) {
   scoped_refptr<storage::ExternalMountPoints> system_mount_points(
       storage::ExternalMountPoints::CreateRefCounted());
 
-  chromeos::FileSystemBackend backend(NULL,  // drive_delegate
-                                      NULL,  // file_system_provider_delegate
-                                      NULL,  // mtp_delegate
-                                      mount_points.get(),
-                                      system_mount_points.get());
+  chromeos::FileSystemBackend backend(
+      nullptr,  // drive_delegate
+      nullptr,  // file_system_provider_delegate
+      nullptr,  // mtp_delegate
+      nullptr,  // arc_content_delegate
+      nullptr,  // arc_documents_provider_delegate
+      nullptr,  // drivefs_delegate
+      mount_points.get(), system_mount_points.get());
 
   const size_t initial_root_dirs_size = backend.GetRootDirectories().size();
 
@@ -104,17 +110,20 @@ TEST(ChromeOSFileSystemBackendTest, GetRootDirectories) {
 }
 
 TEST(ChromeOSFileSystemBackendTest, AccessPermissions) {
-  url::AddStandardScheme("chrome-extension", url::SCHEME_WITHOUT_PORT);
+  url::AddStandardScheme(extensions::kExtensionScheme, url::SCHEME_WITH_HOST);
 
   scoped_refptr<storage::ExternalMountPoints> mount_points(
       storage::ExternalMountPoints::CreateRefCounted());
   scoped_refptr<storage::ExternalMountPoints> system_mount_points(
       storage::ExternalMountPoints::CreateRefCounted());
-  chromeos::FileSystemBackend backend(NULL,  // drive_delegate
-                                      NULL,  // file_system_provider_delegate
-                                      NULL,  // mtp_delegate
-                                      mount_points.get(),
-                                      system_mount_points.get());
+  chromeos::FileSystemBackend backend(
+      nullptr,  // drive_delegate
+      nullptr,  // file_system_provider_delegate
+      nullptr,  // mtp_delegate
+      nullptr,  // arc_content_delegate
+      nullptr,  // arc_documents_provider_delegate
+      nullptr,  // drivefs_delegate
+      mount_points.get(), system_mount_points.get());
 
   std::string extension("ddammdhioacbehjngdmkjcjbnfginlla");
 
@@ -178,11 +187,14 @@ TEST(ChromeOSFileSystemBackendTest, GetVirtualPathConflictWithSystemPoints) {
       storage::ExternalMountPoints::CreateRefCounted());
   scoped_refptr<storage::ExternalMountPoints> system_mount_points(
       storage::ExternalMountPoints::CreateRefCounted());
-  chromeos::FileSystemBackend backend(NULL,  // drive_delegate
-                                      NULL,  // file_system_provider_delegate
-                                      NULL,  // mtp_delegate
-                                      mount_points.get(),
-                                      system_mount_points.get());
+  chromeos::FileSystemBackend backend(
+      nullptr,  // drive_delegate
+      nullptr,  // file_system_provider_delegate
+      nullptr,  // mtp_delegate
+      nullptr,  // arc_content_delegate
+      nullptr,  // arc_documents_provider_delegate
+      nullptr,  // drivefs_delegate
+      mount_points.get(), system_mount_points.get());
 
   const storage::FileSystemType type = storage::kFileSystemTypeNativeLocal;
   const storage::FileSystemMountOption option =
@@ -224,7 +236,7 @@ TEST(ChromeOSFileSystemBackendTest, GetVirtualPathConflictWithSystemPoints) {
     { FPL("/foo/xxx"), false, FPL("") },
   };
 
-  for (size_t i = 0; i < arraysize(kTestCases); ++i) {
+  for (size_t i = 0; i < base::size(kTestCases); ++i) {
     // Initialize virtual path with a value.
     base::FilePath virtual_path(FPL("/mount"));
     base::FilePath local_path(kTestCases[i].local_path);

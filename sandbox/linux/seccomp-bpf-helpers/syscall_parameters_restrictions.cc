@@ -6,7 +6,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <fcntl.h>
 #include <linux/net.h>
 #include <sched.h>
 #include <signal.h>
@@ -31,15 +30,28 @@
 #include "sandbox/linux/system_headers/linux_syscalls.h"
 #include "sandbox/linux/system_headers/linux_time.h"
 
-// PNaCl toolchain does not provide sys/ioctl.h header.
+// PNaCl toolchain does not provide sys/ioctl.h and sys/ptrace.h headers.
 #if !defined(OS_NACL_NONSFI)
 #include <sys/ioctl.h>
+#include <sys/ptrace.h>
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS) && !defined(__arm__) && \
+    !defined(__aarch64__) && !defined(PTRACE_GET_THREAD_AREA)
+// Also include asm/ptrace-abi.h since ptrace.h in older libc (for instance
+// the one in Ubuntu 16.04 LTS) is missing PTRACE_GET_THREAD_AREA.
+// asm/ptrace-abi.h doesn't exist on arm32 and PTRACE_GET_THREAD_AREA isn't
+// defined on aarch64, so don't try to include this on those platforms.
+#include <asm/ptrace-abi.h>
 #endif
+#endif  // !OS_NACL_NONSFI
 
 #if defined(OS_ANDROID)
 
 #if !defined(F_DUPFD_CLOEXEC)
 #define F_DUPFD_CLOEXEC (F_LINUX_SPECIFIC_BASE + 6)
+#endif
+
+#if !defined(PR_SET_TIMERSLACK)
+#define PR_SET_TIMERSLACK 29
 #endif
 
 // https://android.googlesource.com/platform/bionic/+/lollipop-release/libc/private/bionic_prctl.h
@@ -153,7 +165,8 @@ ResultExpr RestrictPrctl() {
   return Switch(option)
       .CASES((PR_GET_NAME, PR_SET_NAME, PR_GET_DUMPABLE, PR_SET_DUMPABLE
 #if defined(OS_ANDROID)
-              , PR_SET_VMA, PR_SET_PTRACER
+              , PR_SET_VMA, PR_SET_PTRACER, PR_SET_TIMERSLACK
+              , PR_GET_NO_NEW_PRIVS
 
 // Enable PR_SET_TIMERSLACK_PID, an Android custom prctl which is used in:
 // https://android.googlesource.com/platform/system/core/+/lollipop-release/libcutils/sched_policy.c.
@@ -329,15 +342,21 @@ ResultExpr RestrictPrlimit64(pid_t target_pid) {
 
 ResultExpr RestrictGetrusage() {
   const Arg<int> who(0);
-  return If(who == RUSAGE_SELF, Allow()).Else(CrashSIGSYS());
+  return If(AnyOf(who == RUSAGE_SELF, who == RUSAGE_THREAD), Allow())
+         .Else(CrashSIGSYS());
 }
 #endif  // !defined(OS_NACL_NONSFI)
 
 ResultExpr RestrictClockID() {
   static_assert(4 == sizeof(clockid_t), "clockid_t is not 32bit");
   const Arg<clockid_t> clockid(0);
-  return Switch(clockid)
-      .CASES((
+
+  // Clock IDs < 0 are per pid/tid or are clockfds.
+  const unsigned int kIsPidBit = 1u<<31;
+
+  return
+    If((clockid & kIsPidBit) == 0,
+      Switch(clockid).CASES((
 #if defined(OS_ANDROID)
               CLOCK_BOOTTIME,
 #endif
@@ -348,7 +367,49 @@ ResultExpr RestrictClockID() {
               CLOCK_REALTIME_COARSE,
               CLOCK_THREAD_CPUTIME_ID),
              Allow())
-      .Default(CrashSIGSYS());
+      .Default(CrashSIGSYS()))
+#if defined(OS_ANDROID)
+    // Allow per-pid and per-tid clocks.
+    .ElseIf((clockid & CPUCLOCK_CLOCK_MASK) != CLOCKFD, Allow())
+#endif
+    .Else(CrashSIGSYS());
 }
+
+#if !defined(GRND_NONBLOCK)
+#define GRND_NONBLOCK 1
+#endif
+
+ResultExpr RestrictGetRandom() {
+  const Arg<unsigned int> flags(2);
+  const unsigned int kGoodFlags = GRND_NONBLOCK;
+  return If((flags & ~kGoodFlags) == 0, Allow()).Else(CrashSIGSYS());
+}
+
+ResultExpr RestrictPrlimit(pid_t target_pid) {
+  const Arg<pid_t> pid(0);
+  // Only allow operations for the current process.
+  return If(AnyOf(pid == 0, pid == target_pid), Allow()).Else(Error(EPERM));
+}
+
+#if !defined(OS_NACL_NONSFI)
+ResultExpr RestrictPtrace() {
+  const Arg<int> request(0);
+  return Switch(request).CASES((
+#if !defined(__aarch64__)
+        PTRACE_GETREGS,
+        PTRACE_GETFPREGS,
+        PTRACE_GET_THREAD_AREA,
+#endif
+#if defined(__arm__)
+        PTRACE_GETVFPREGS,
+#endif
+        PTRACE_GETREGSET,
+        PTRACE_PEEKDATA,
+        PTRACE_ATTACH,
+        PTRACE_DETACH),
+      Allow())
+      .Default(CrashSIGSYSPtrace());
+}
+#endif  // defined(OS_NACL_NONSFI)
 
 }  // namespace sandbox.

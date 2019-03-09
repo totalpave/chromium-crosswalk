@@ -10,7 +10,6 @@
 namespace views {
 
 class MenuButton;
-class MenuItemView;
 class Widget;
 
 // Used internally by MenuRunner to show the menu. Can be set in tests (see
@@ -18,12 +17,12 @@ class Widget;
 class VIEWS_EXPORT MenuRunnerHandler {
  public:
   virtual ~MenuRunnerHandler() {}
-  virtual MenuRunner::RunResult RunMenuAt(Widget* parent,
-                                          MenuButton* button,
-                                          const gfx::Rect& bounds,
-                                          MenuAnchorPosition anchor,
-                                          ui::MenuSourceType source_type,
-                                          int32_t types) = 0;
+  virtual void RunMenuAt(Widget* parent,
+                         MenuButton* button,
+                         const gfx::Rect& bounds,
+                         MenuAnchorPosition anchor,
+                         ui::MenuSourceType source_type,
+                         int32_t types) = 0;
 };
 
 }  // namespace views

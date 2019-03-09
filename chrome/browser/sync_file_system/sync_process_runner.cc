@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/format_macros.h"
 #include "base/macros.h"
 #include "chrome/browser/sync_file_system/logger.h"
@@ -31,7 +32,7 @@ class BaseTimerHelper : public SyncProcessRunner::TimerHelper {
 
   bool IsRunning() override { return timer_.IsRunning(); }
 
-  void Start(const tracked_objects::Location& from_here,
+  void Start(const base::Location& from_here,
              const base::TimeDelta& delay,
              const base::Closure& closure) override {
     timer_.Start(from_here, delay, closure);

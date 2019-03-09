@@ -10,14 +10,12 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "extensions/browser/process_manager_observer.h"
-#include "extensions/common/feature_switch.h"
 
 namespace media_router {
-
-class MediaRouter;
 
 /**
  * Base class for media router browser test.
@@ -31,7 +29,7 @@ class MediaRouter;
  * 2. "--extension-unpacked" flag to specify the unpacked extension location
  * Only one of them should be passed when run browser tests.
  */
-class MediaRouterBaseBrowserTest : public ExtensionBrowserTest,
+class MediaRouterBaseBrowserTest : public extensions::ExtensionBrowserTest,
                                    public extensions::ProcessManagerObserver {
  public:
   MediaRouterBaseBrowserTest();
@@ -46,8 +44,8 @@ class MediaRouterBaseBrowserTest : public ExtensionBrowserTest,
   void SetUpOnMainThread() override;
   void TearDownOnMainThread() override;
 
-  void InstallAndEnableMRExtension();
-  void UninstallMRExtension();
+  virtual void InstallAndEnableMRExtension();
+  virtual void UninstallMRExtension();
 
   virtual void ParseCommandLine();
 
@@ -64,22 +62,24 @@ class MediaRouterBaseBrowserTest : public ExtensionBrowserTest,
   // Wait for a specific time.
   void Wait(base::TimeDelta timeout);
 
-  bool is_unpacked() const { return !extension_unpacked_.empty(); }
-
   bool is_extension_host_created() const { return extension_host_created_; }
 
-  bool is_off_the_record() { return profile()->IsOffTheRecord(); }
+  bool is_incognito() { return profile()->IsOffTheRecord(); }
 
-  // These values are initialized via flags.
-  base::FilePath extension_crx_;
+  // Returns the superclass' browser(). Marked virtual so that it can be
+  // overridden by MediaRouterIntegrationIncognitoBrowserTest.
+  virtual Browser* browser();
+
+  // |extension_unpacked_| is initialized via a flag.
   base::FilePath extension_unpacked_;
 
   base::WaitableEvent extension_load_event_;
   std::string extension_id_;
   bool extension_host_created_;
 
+  base::test::ScopedFeatureList feature_list_;
+
  private:
-  extensions::FeatureSwitch::ScopedOverride feature_override_;
   DISALLOW_COPY_AND_ASSIGN(MediaRouterBaseBrowserTest);
 };
 

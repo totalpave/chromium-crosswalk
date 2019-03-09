@@ -155,5 +155,50 @@ TEST(TweenTest, ClampedFloatValueBetweenTimeTicks) {
   EXPECT_EQ(v2, Tween::ClampedFloatValueBetween(t_after, from, v1, to, v2));
 }
 
+// Verifies the corners of the rect are animated, rather than the origin/size
+// (which would result in different rounding).
+TEST(TweenTest, RectValueBetween) {
+  constexpr gfx::Rect r1(0, 0, 10, 10);
+  constexpr gfx::Rect r2(10, 10, 30, 30);
+
+  // TODO(pkasting): Move the geometry test helpers from
+  // cc/test/geometry_test_utils.h to ui/gfx/test/gfx_util.h or similar and use
+  // a rect-comparison function here.
+  const gfx::Rect tweened = Tween::RectValueBetween(0.08, r1, r2);
+  EXPECT_EQ(11, tweened.width());
+  EXPECT_EQ(11, tweened.height());
+}
+
+TEST(TweenTest, SizeValueBetween) {
+  const gfx::SizeF s1(12.0f, 24.0f);
+  const gfx::SizeF s2(36.0f, 48.0f);
+
+  double before = -0.125;
+  double from = 0.0;
+  double between = 0.5;
+  double to = 1.0;
+  double after = 1.125;
+
+  EXPECT_SIZEF_EQ(gfx::SizeF(9.0f, 21.0f),
+                  Tween::SizeValueBetween(before, s1, s2));
+  EXPECT_SIZEF_EQ(s1, Tween::SizeValueBetween(from, s1, s2));
+  EXPECT_SIZEF_EQ(gfx::SizeF(24.0f, 36.0f),
+                  Tween::SizeValueBetween(between, s1, s2));
+  EXPECT_SIZEF_EQ(s2, Tween::SizeValueBetween(to, s1, s2));
+  EXPECT_SIZEF_EQ(gfx::SizeF(39.0f, 51.0f),
+                  Tween::SizeValueBetween(after, s1, s2));
+}
+
+TEST(TweenTest, SizeValueBetweenClampedExtrapolation) {
+  const gfx::SizeF s1(0.0f, 0.0f);
+  const gfx::SizeF s2(36.0f, 48.0f);
+
+  double before = -1.0f;
+
+  // We should not extrapolate in this case as it would result in a negative and
+  // invalid size.
+  EXPECT_SIZEF_EQ(s1, Tween::SizeValueBetween(before, s1, s2));
+}
+
 }  // namespace
 }  // namespace gfx

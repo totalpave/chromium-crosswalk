@@ -6,9 +6,14 @@
 
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
-#include "base/win/windows_version.h"
+#include "base/system/sys_info.h"
 #include "build/build_config.h"
 #include "components/update_client/update_query_params_delegate.h"
+#include "components/version_info/version_info.h"
+
+#if defined(OS_WIN)
+#include "base/win/windows_version.h"
+#endif
 
 namespace update_client {
 
@@ -29,6 +34,8 @@ const char kOs[] =
     "cros";
 #elif defined(OS_LINUX)
     "linux";
+#elif defined(OS_FUCHSIA)
+    "fuchsia";
 #elif defined(OS_OPENBSD)
     "openbsd";
 #else
@@ -60,15 +67,16 @@ const char kChromeCrx[] = "chromecrx";
 const char kChromiumCrx[] = "chromiumcrx";
 #endif  // defined(GOOGLE_CHROME_BUILD)
 
-UpdateQueryParamsDelegate* g_delegate = NULL;
+UpdateQueryParamsDelegate* g_delegate = nullptr;
 
 }  // namespace
 
 // static
 std::string UpdateQueryParams::Get(ProdId prod) {
   return base::StringPrintf(
-      "os=%s&arch=%s&nacl_arch=%s&prod=%s%s", kOs, kArch, GetNaclArch(),
-      GetProdIdString(prod),
+      "os=%s&arch=%s&os_arch=%s&nacl_arch=%s&prod=%s%s&acceptformat=crx2,crx3",
+      kOs, kArch, base::SysInfo().OperatingSystemArchitecture().c_str(),
+      GetNaclArch(), GetProdIdString(prod),
       g_delegate ? g_delegate->GetExtraParams().c_str() : "");
 }
 
@@ -124,6 +132,11 @@ const char* UpdateQueryParams::GetNaclArch() {
 // comment in the .h file about possible return values from this function.
 #error "You need to add support for your architecture here"
 #endif
+}
+
+// static
+std::string UpdateQueryParams::GetProdVersion() {
+  return version_info::GetVersionNumber();
 }
 
 // static

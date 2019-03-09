@@ -16,18 +16,18 @@
 #include <string>
 #include <vector>
 
-#include "base/event_types.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted_memory.h"
 #include "ui/base/x/ui_base_x_export.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/events/platform_event.h"
+#include "ui/gfx/icc_profile.h"
 #include "ui/gfx/x/x11_types.h"
 
 typedef unsigned long XSharedMemoryId;  // ShmSeg in the X headers.
 typedef unsigned long Cursor;
-typedef struct _XcursorImage XcursorImage;
-typedef union _XEvent XEvent;
 
 namespace gfx {
 class Canvas;
@@ -49,10 +49,6 @@ UI_BASE_X_EXPORT bool IsXInput2Available();
 
 // Return true iff the display supports Xrender
 UI_BASE_X_EXPORT bool QueryRenderSupport(XDisplay* dpy);
-
-// Returns an X11 Cursor, sharable across the process.
-// |cursor_shape| is an X font cursor shape, see XCreateFontCursor().
-UI_BASE_X_EXPORT::Cursor GetXCursor(int cursor_shape);
 
 // Creates a custom X cursor from the image. This takes ownership of image. The
 // caller must not free/modify the image. The refcount of the newly created
@@ -183,9 +179,6 @@ UI_BASE_X_EXPORT bool SetStringProperty(XID window,
                                         XAtom type,
                                         const std::string& value);
 
-// Gets the X atom for default display corresponding to atom_name.
-UI_BASE_X_EXPORT XAtom GetAtom(const char* atom_name);
-
 // Sets the WM_CLASS attribute for a given X11 window.
 UI_BASE_X_EXPORT void SetWindowClassHint(XDisplay* display,
                                          XID window,
@@ -197,6 +190,17 @@ UI_BASE_X_EXPORT void SetWindowRole(XDisplay* display,
                                     XID window,
                                     const std::string& role);
 
+// Sends a message to the x11 window manager, enabling or disabling the
+// states |state1| and |state2|.
+UI_BASE_X_EXPORT void SetWMSpecState(XID window,
+                                     bool enabled,
+                                     XAtom state1,
+                                     XAtom state2);
+
+// Checks if the window manager has set a specific state.
+UI_BASE_X_EXPORT bool HasWMSpecProperty(const base::flat_set<XAtom>& properties,
+                                        XAtom atom);
+
 // Determine whether we should default to native decorations or the custom
 // frame based on the currently-running window manager.
 UI_BASE_X_EXPORT bool GetCustomFramePrefDefault();
@@ -204,7 +208,7 @@ UI_BASE_X_EXPORT bool GetCustomFramePrefDefault();
 static const int kAllDesktops = -1;
 // Queries the desktop |window| is on, kAllDesktops if sticky. Returns false if
 // property not found.
-bool GetWindowDesktop(XID window, int* desktop);
+UI_BASE_X_EXPORT bool GetWindowDesktop(XID window, int* desktop);
 
 // Translates an X11 error code into a printable string.
 UI_BASE_X_EXPORT std::string GetX11ErrorString(XDisplay* display, int err);
@@ -245,7 +249,10 @@ UI_BASE_X_EXPORT bool CopyAreaToCanvas(XID drawable,
                                        gfx::Canvas* canvas);
 
 enum WindowManagerName {
-  WM_UNKNOWN,
+  WM_OTHER,    // We were able to obtain the WM's name, but there is
+               // no corresponding entry in this enum.
+  WM_UNNAMED,  // Either there is no WM or there is no way to obtain
+               // the WM name.
 
   WM_AWESOME,
   WM_BLACKBOX,
@@ -267,14 +274,18 @@ enum WindowManagerName {
   WM_STUMPWM,
   WM_WMII,
   WM_XFWM4,
+  WM_XMONAD,
 };
-// Attempts to guess the window maager. Returns WM_UNKNOWN if we can't
-// determine it for one reason or another.
+// Attempts to guess the window maager. Returns WM_OTHER or WM_UNNAMED
+// if we can't determine it for one reason or another.
 UI_BASE_X_EXPORT WindowManagerName GuessWindowManager();
 
 // The same as GuessWindowManager(), but returns the raw string.  If we
 // can't determine it, return "Unknown".
 UI_BASE_X_EXPORT std::string GuessWindowManagerName();
+
+// Returns true if a compositing manager is present.
+UI_BASE_X_EXPORT bool IsCompositingManagerPresent();
 
 // Enable the default X error handlers. These will log the error and abort
 // the process if called. Use SetX11ErrorHandlers() from x11_util_internal.h
@@ -286,6 +297,9 @@ UI_BASE_X_EXPORT bool IsX11WindowFullScreen(XID window);
 
 // Returns true if the window manager supports the given hint.
 UI_BASE_X_EXPORT bool WmSupportsHint(XAtom atom);
+
+// Returns the ICCProfile corresponding to |monitor| using XGetWindowProperty.
+UI_BASE_X_EXPORT gfx::ICCProfile GetICCProfileForMonitor(int monitor);
 
 // Manages a piece of X11 allocated memory as a RefCountedMemory segment. This
 // object takes ownership over the passed in memory and will free it with the
@@ -326,9 +340,6 @@ class UI_BASE_X_EXPORT XScopedCursor {
 };
 
 namespace test {
-// Resets the cache used by GetXCursor(). Only useful for tests that may delete
-// the display.
-UI_BASE_X_EXPORT void ResetXCursorCache();
 
 // Returns the cached XcursorImage for |cursor|.
 UI_BASE_X_EXPORT const XcursorImage* GetCachedXcursorImage(::Cursor cursor);

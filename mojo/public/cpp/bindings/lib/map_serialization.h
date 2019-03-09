@@ -8,11 +8,11 @@
 #include <type_traits>
 #include <vector>
 
-#include "mojo/public/cpp/bindings/array.h"
+#include "mojo/public/cpp/bindings/array_data_view.h"
 #include "mojo/public/cpp/bindings/lib/array_serialization.h"
 #include "mojo/public/cpp/bindings/lib/map_data_internal.h"
 #include "mojo/public/cpp/bindings/lib/serialization_forward.h"
-#include "mojo/public/cpp/bindings/map.h"
+#include "mojo/public/cpp/bindings/map_data_view.h"
 
 namespace mojo {
 namespace internal {
@@ -46,12 +46,15 @@ class MapKeyReader : public MapReaderBase<MaybeConstUserType> {
  public:
   using Base = MapReaderBase<MaybeConstUserType>;
   using Traits = typename Base::Traits;
+  using MaybeConstIterator = typename Base::MaybeConstIterator;
 
   explicit MapKeyReader(MaybeConstUserType& input) : Base(input) {}
   ~MapKeyReader() {}
 
-  const typename Traits::Key& GetNext() {
-    const typename Traits::Key& key = Traits::GetKey(this->iter_);
+  using GetNextResult =
+      decltype(Traits::GetKey(std::declval<MaybeConstIterator&>()));
+  GetNextResult GetNext() {
+    GetNextResult key = Traits::GetKey(this->iter_);
     Traits::AdvanceIterator(this->iter_);
     return key;
   }
@@ -78,69 +81,48 @@ class MapValueReader : public MapReaderBase<MaybeConstUserType> {
 };
 
 template <typename Key, typename Value, typename MaybeConstUserType>
-struct Serializer<Map<Key, Value>, MaybeConstUserType> {
+struct Serializer<MapDataView<Key, Value>, MaybeConstUserType> {
   using UserType = typename std::remove_const<MaybeConstUserType>::type;
   using Traits = MapTraits<UserType>;
   using UserKey = typename Traits::Key;
   using UserValue = typename Traits::Value;
-  using Data = typename MojomTypeTraits<Map<Key, Value>>::Data;
-  using KeyArraySerializer = ArraySerializer<Array<Key>,
+  using Data = typename MojomTypeTraits<MapDataView<Key, Value>>::Data;
+  using KeyArraySerializer = ArraySerializer<ArrayDataView<Key>,
                                              std::vector<UserKey>,
                                              MapKeyReader<MaybeConstUserType>>;
   using ValueArraySerializer =
-      ArraySerializer<Array<Value>,
+      ArraySerializer<ArrayDataView<Value>,
                       std::vector<UserValue>,
                       MapValueReader<MaybeConstUserType>>;
 
-  static size_t PrepareToSerialize(MaybeConstUserType& input,
-                                   SerializationContext* context) {
-    if (CallIsNullIfExists<Traits>(input))
-      return 0;
-
-    size_t struct_overhead = sizeof(Data);
-    MapKeyReader<MaybeConstUserType> key_reader(input);
-    size_t keys_size =
-        KeyArraySerializer::GetSerializedSize(&key_reader, context);
-    MapValueReader<MaybeConstUserType> value_reader(input);
-    size_t values_size =
-        ValueArraySerializer::GetSerializedSize(&value_reader, context);
-
-    return struct_overhead + keys_size + values_size;
-  }
-
   static void Serialize(MaybeConstUserType& input,
                         Buffer* buf,
-                        Data** output,
+                        typename Data::BufferWriter* writer,
                         const ContainerValidateParams* validate_params,
                         SerializationContext* context) {
     DCHECK(validate_params->key_validate_params);
     DCHECK(validate_params->element_validate_params);
-    if (CallIsNullIfExists<Traits>(input)) {
-      *output = nullptr;
+    if (CallIsNullIfExists<Traits>(input))
       return;
-    }
 
-    auto result = Data::New(buf);
-    if (result) {
-      result->keys.ptr =
-          MojomTypeTraits<Array<Key>>::Data::New(Traits::GetSize(input), buf);
-      if (result->keys.ptr) {
-        MapKeyReader<MaybeConstUserType> key_reader(input);
-        KeyArraySerializer::SerializeElements(
-            &key_reader, buf, result->keys.ptr,
-            validate_params->key_validate_params, context);
-      }
+    writer->Allocate(buf);
+    typename MojomTypeTraits<ArrayDataView<Key>>::Data::BufferWriter
+        keys_writer;
+    keys_writer.Allocate(Traits::GetSize(input), buf);
+    MapKeyReader<MaybeConstUserType> key_reader(input);
+    KeyArraySerializer::SerializeElements(&key_reader, buf, &keys_writer,
+                                          validate_params->key_validate_params,
+                                          context);
+    (*writer)->keys.Set(keys_writer.data());
 
-      result->values.ptr =
-          MojomTypeTraits<Array<Value>>::Data::New(Traits::GetSize(input), buf);
-      if (result->values.ptr) {
-        MapValueReader<MaybeConstUserType> value_reader(input);
-        ValueArraySerializer::SerializeElements(
-            &value_reader, buf, result->values.ptr,
-            validate_params->element_validate_params, context);
-      }
-    }
-    *output = result;
+    typename MojomTypeTraits<ArrayDataView<Value>>::Data::BufferWriter
+        values_writer;
+    values_writer.Allocate(Traits::GetSize(input), buf);
+    MapValueReader<MaybeConstUserType> value_reader(input);
+    ValueArraySerializer::SerializeElements(
+        &value_reader, buf, &values_writer,
+        validate_params->element_validate_params, context);
+    (*writer)->values.Set(values_writer.data());
   }
 
   static bool Deserialize(Data* input,
@@ -152,9 +134,9 @@ struct Serializer<Map<Key, Value>, MaybeConstUserType> {
     std::vector<UserKey> keys;
     std::vector<UserValue> values;
 
-    if (!KeyArraySerializer::DeserializeElements(input->keys.ptr, &keys,
+    if (!KeyArraySerializer::DeserializeElements(input->keys.Get(), &keys,
                                                  context) ||
-        !ValueArraySerializer::DeserializeElements(input->values.ptr, &values,
+        !ValueArraySerializer::DeserializeElements(input->values.Get(), &values,
                                                    context)) {
       return false;
     }

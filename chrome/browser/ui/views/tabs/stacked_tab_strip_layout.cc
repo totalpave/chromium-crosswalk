@@ -7,8 +7,8 @@
 #include <stdio.h>
 
 #include "base/logging.h"
+#include "base/metrics/user_metrics.h"
 #include "base/strings/string_number_conversions.h"
-#include "content/public/browser/user_metrics.h"
 
 using base::UserMetricsAction;
 
@@ -21,14 +21,7 @@ StackedTabStripLayout::StackedTabStripLayout(const gfx::Size& size,
       overlap_(overlap),
       stacked_padding_(stacked_padding),
       max_stacked_count_(max_stacked_count),
-      view_model_(view_model),
-      x_(0),
-      width_(0),
-      pinned_tab_count_(0),
-      pinned_tab_to_non_pinned_tab_(0),
-      active_index_(-1),
-      first_tab_x_(0) {
-}
+      view_model_(view_model) {}
 
 StackedTabStripLayout::~StackedTabStripLayout() {
 }
@@ -60,7 +53,14 @@ void StackedTabStripLayout::SetWidth(int width) {
     ResetToIdealState();
     return;
   }
-  SetActiveBoundsAndLayoutFromActiveTab();
+
+  // TODO(tdanderson): Audit other places in this class which make a similar
+  // pattern of calls to this in order to re-layout the tabs, and refactor
+  // into a helper function as appropriate.
+  SetIdealBoundsAt(active_index(), ConstrainActiveX(ideal_x(active_index())));
+  LayoutByTabOffsetBefore(active_index());
+  LayoutByTabOffsetAfter(active_index());
+  AdjustStackedTabs();
 }
 
 void StackedTabStripLayout::SetActiveIndex(int index) {
@@ -78,7 +78,7 @@ void StackedTabStripLayout::DragActiveTab(int delta) {
   if (delta == 0 || !requires_stacking())
     return;
 
-  content::RecordAction(UserMetricsAction("StackedTab_DragActiveTab"));
+  base::RecordAction(UserMetricsAction("StackedTab_DragActiveTab"));
   int initial_x = ideal_x(active_index());
   // If we're at a particular edge and start dragging, expose all the tabs after
   // the tab (or before when dragging to the left).
@@ -87,7 +87,7 @@ void StackedTabStripLayout::DragActiveTab(int delta) {
     AdjustStackedTabs();
   } else if (delta < 0 && initial_x == GetMaxX(active_index())) {
     LayoutByTabOffsetBefore(active_index());
-    ResetToIdealState();
+    AdjustStackedTabs();
   }
   int x = delta > 0 ?
       std::min(initial_x + delta, GetMaxDragX(active_index())) :
@@ -164,8 +164,13 @@ void StackedTabStripLayout::AddTab(int index, int add_types, int start_x) {
     ResetToIdealState();
     return;
   }
-  int active_x = (index + 1 == tab_count()) ?
+
+  int active_x = ideal_x(active_index());
+  if (add_types & kAddTypeActive) {
+    active_x = (index + 1 == tab_count()) ?
       width_ - size_.width() : ideal_x(index + 1);
+  }
+
   SetIdealBoundsAt(active_index(), ConstrainActiveX(active_x));
   LayoutByTabOffsetAfter(active_index());
   LayoutByTabOffsetBefore(active_index());
@@ -195,6 +200,11 @@ void StackedTabStripLayout::RemoveTab(int index, int start_x, int old_x) {
     for (int i = pinned_tab_count_; i < tab_count(); ++i)
       SetIdealBoundsAt(i, ideal_x(i) + delta);
   }
+
+  // TODO(tdanderson): Investigate whether the call to
+  // SetActiveBoundsAndLayoutFromActiveTab() should be replaced by
+  // LayoutByTabOffsetBefore() / LayoutByTabOffsetAfter() similar to the
+  // behavior in other stacked tab operations.
   SetActiveBoundsAndLayoutFromActiveTab();
   AdjustStackedTabs();
 }
@@ -255,7 +265,7 @@ std::string StackedTabStripLayout::BoundsString() const {
       result += " ";
     if (i == active_index())
       result += "[";
-    result += base::IntToString(view_model_->ideal_bounds(i).x());
+    result += base::NumberToString(view_model_->ideal_bounds(i).x());
     if (i == active_index())
       result += "]";
   }
@@ -320,28 +330,31 @@ void StackedTabStripLayout::ResetToIdealState() {
 }
 
 void StackedTabStripLayout::MakeVisible(int index) {
-  // Currently no need to support tabs openning before |index| visible.
+  // Currently no need to support tabs opening before |index| visible.
   if (index <= active_index() || !requires_stacking() || !IsStacked(index))
     return;
 
-  int ideal_delta = width_for_count(index - active_index()) - overlap_;
+  const int ideal_delta = width_for_count(index - active_index()) - overlap_;
   if (ideal_x(index) - ideal_x(active_index()) == ideal_delta)
     return;
 
-  // First push active index as far to the left as it'll go.
-  int active_x = std::max(GetMinX(active_index()),
-                          std::min(ideal_x(index) - ideal_delta,
-                                   ideal_x(active_index())));
+  // Move the active tab to the left so that all tabs between the active tab
+  // and |index| (inclusive) can be made visible.
+  const int active_x = std::max(GetMinX(active_index()),
+                                std::min(ideal_x(index) - ideal_delta,
+                                         ideal_x(active_index())));
   SetIdealBoundsAt(active_index(), active_x);
-  LayoutUsingCurrentBefore(active_index());
-  LayoutUsingCurrentAfter(active_index());
+  LayoutByTabOffsetBefore(active_index());
+  LayoutByTabOffsetAfter(active_index());
   AdjustStackedTabs();
+
   if (ideal_x(index) - ideal_x(active_index()) == ideal_delta)
     return;
 
   // If we get here active_index() is left aligned. Push |index| as far to
-  // the right as possible.
-  int x = std::min(GetMaxX(index), active_x + ideal_delta);
+  // the right as possible, forming a stack immediately to the right of the
+  // active tab if necessary.
+  const int x = std::min(GetMaxX(index), active_x + ideal_delta);
   SetIdealBoundsAt(index, x);
   LayoutByTabOffsetAfter(index);
   for (int next_x = x, i = index - 1; i > active_index(); --i) {
@@ -546,11 +559,9 @@ int StackedTabStripLayout::GetMinX(int index) const {
 }
 
 int StackedTabStripLayout::GetMaxX(int index) const {
-  int leading_count = index - pinned_tab_count_;
-  int trailing_count = tab_count() - index - 1;
-  int trailing_offset = stacked_padding_for_count(trailing_count);
-  int leading_size = width_for_count(leading_count) + x_;
-  if (leading_count > 0)
+  int trailing_offset = stacked_padding_for_count(tab_count() - index - 1);
+  int leading_size = width_for_count(index - pinned_tab_count_) + x_;
+  if (index > pinned_tab_count_)
     leading_size -= overlap_;
   return std::min(width_ - trailing_offset - size_.width(), leading_size);
 }

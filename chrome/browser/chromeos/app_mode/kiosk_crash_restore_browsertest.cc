@@ -11,26 +11,22 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "chrome/browser/chromeos/app_mode/fake_cws.h"
+#include "chrome/browser/chromeos/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_app_manager.h"
-#include "chrome/browser/chromeos/login/test/app_window_waiter.h"
-#include "chrome/browser/chromeos/net/network_portal_detector_test_impl.h"
 #include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos_factory.h"
 #include "chrome/browser/chromeos/policy/device_local_account.h"
 #include "chrome/browser/chromeos/policy/device_policy_builder.h"
+#include "chrome/browser/extensions/browsertest_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chromeos/chromeos_paths.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "chromeos/cryptohome/cryptohome_parameters.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/fake_session_manager_client.h"
-#include "chromeos/dbus/fake_shill_manager_client.h"
 #include "components/ownership/mock_owner_key_util.h"
-#include "extensions/browser/app_window/app_window.h"
-#include "extensions/browser/app_window/app_window_registry.h"
-#include "extensions/browser/app_window/native_app_window.h"
 #include "extensions/common/value_builder.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "net/dns/mock_host_resolver.h"
@@ -41,16 +37,7 @@ namespace chromeos {
 
 namespace {
 
-const char kTestKioskApp[] = "ggbflgnkafappblpkiflbgpmkfdpnhhe";
-
-void CreateAndInitializeLocalCache() {
-  base::FilePath extension_cache_dir;
-  CHECK(PathService::Get(chromeos::DIR_DEVICE_EXTENSION_LOCAL_CACHE,
-                         &extension_cache_dir));
-  base::FilePath cache_init_file = extension_cache_dir.Append(
-      extensions::LocalExtensionCache::kCacheReadyFlagFileName);
-  EXPECT_EQ(base::WriteFile(cache_init_file, "", 0), 0);
-}
+const char kTestKioskApp[] = "ggaeimfdpnmlhdhpcikgoblffmkckdmn";
 
 }  // namespace
 
@@ -72,17 +59,16 @@ class KioskCrashRestoreTest : public InProcessBrowserTest {
   }
 
   void SetUpInProcessBrowserTestFixture() override {
-    host_resolver()->AddRule("*", "127.0.0.1");
-    SimulateNetworkOnline();
-
     OverrideDevicePolicy();
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     const AccountId account_id = AccountId::FromUserEmail(GetTestAppUserId());
-    const cryptohome::Identification cryptohome_id(account_id);
+    const cryptohome::AccountIdentifier cryptohome_id =
+        cryptohome::CreateAccountIdentifierFromAccountId(account_id);
 
-    command_line->AppendSwitchASCII(switches::kLoginUser, cryptohome_id.id());
+    command_line->AppendSwitchASCII(switches::kLoginUser,
+                                    cryptohome_id.account_id());
     command_line->AppendSwitchASCII(
         switches::kLoginProfile,
         CryptohomeClient::GetStubSanitizedUsername(cryptohome_id));
@@ -92,8 +78,9 @@ class KioskCrashRestoreTest : public InProcessBrowserTest {
   }
 
   void SetUpOnMainThread() override {
-    CreateAndInitializeLocalCache();
+    extensions::browsertest_util::CreateAndInitializeLocalCache();
 
+    host_resolver()->AddRule("*", "127.0.0.1");
     embedded_test_server()->StartAcceptingConnections();
   }
 
@@ -135,25 +122,10 @@ class KioskCrashRestoreTest : public InProcessBrowserTest {
             .ToJSON();
 
     base::FilePath local_state_file;
-    CHECK(PathService::Get(chrome::DIR_USER_DATA, &local_state_file));
+    CHECK(base::PathService::Get(chrome::DIR_USER_DATA, &local_state_file));
     local_state_file = local_state_file.Append(chrome::kLocalStateFilename);
     base::WriteFile(local_state_file, local_state_json.data(),
                     local_state_json.size());
-  }
-
-  void SimulateNetworkOnline() {
-    NetworkPortalDetectorTestImpl* const network_portal_detector =
-        new NetworkPortalDetectorTestImpl();
-    // Takes ownership of |network_portal_detector|.
-    network_portal_detector::InitializeForTesting(network_portal_detector);
-    network_portal_detector->SetDefaultNetworkForTesting(
-        FakeShillManagerClient::kFakeEthernetNetworkGuid);
-
-    NetworkPortalDetector::CaptivePortalState online_state;
-    online_state.status = NetworkPortalDetector::CAPTIVE_PORTAL_STATUS_ONLINE;
-    online_state.response_code = 204;
-    network_portal_detector->SetDetectionResultsForTesting(
-        FakeShillManagerClient::kFakeEthernetNetworkGuid, online_state);
   }
 
   void OverrideDevicePolicy() {
@@ -179,25 +151,11 @@ class KioskCrashRestoreTest : public InProcessBrowserTest {
   DISALLOW_COPY_AND_ASSIGN(KioskCrashRestoreTest);
 };
 
-IN_PROC_BROWSER_TEST_F(KioskCrashRestoreTest, Basic) {
-  ExtensionTestMessageListener launch_data_check_listener(
-      "launchData.isKioskSession = true", false);
-
-  Profile* const app_profile = ProfileManager::GetPrimaryUserProfile();
-  ASSERT_TRUE(app_profile);
-  extensions::AppWindowRegistry* const app_window_registry =
-      extensions::AppWindowRegistry::Get(app_profile);
-  extensions::AppWindow* const window =
-      AppWindowWaiter(app_window_registry, test_app_id()).Wait();
-  ASSERT_TRUE(window);
-
-  window->GetBaseWindow()->Close();
-
-  // Wait until the app terminates if it is still running.
-  if (!app_window_registry->GetAppWindowsForApp(test_app_id()).empty())
-    base::RunLoop().Run();
-
-  EXPECT_TRUE(launch_data_check_listener.was_satisfied());
+IN_PROC_BROWSER_TEST_F(KioskCrashRestoreTest, AppNotInstalled) {
+  // If app is not installed when restoring from crash, the kiosk launch is
+  // expected to fail, as in that case the crash occured during the app
+  // initialization - before the app was actually launched.
+  EXPECT_EQ(KioskAppLaunchError::UNABLE_TO_LAUNCH, KioskAppLaunchError::Get());
 }
 
 }  // namespace chromeos

@@ -19,7 +19,6 @@
 #include "components/domain_reliability/config.h"
 #include "components/domain_reliability/google_configs.h"
 #include "components/domain_reliability/test_util.h"
-#include "net/base/host_port_pair.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
@@ -54,25 +53,26 @@ class DomainReliabilityMonitorTest : public testing::Test {
   typedef DomainReliabilityMonitor::RequestInfo RequestInfo;
 
   DomainReliabilityMonitorTest()
-      : pref_task_runner_(new base::TestSimpleTaskRunner()),
-        network_task_runner_(new base::TestSimpleTaskRunner()),
+      : network_task_runner_(new base::TestSimpleTaskRunner()),
         url_request_context_getter_(
             new net::TestURLRequestContextGetter(network_task_runner_)),
         time_(new MockTime()),
         monitor_("test-reporter",
-                 pref_task_runner_,
-                 network_task_runner_,
+                 DomainReliabilityContext::UploadAllowedCallback(),
                  std::unique_ptr<MockableTime>(time_)) {
-    monitor_.MoveToNetworkThread();
     monitor_.InitURLRequestContext(url_request_context_getter_);
     monitor_.SetDiscardUploads(false);
+  }
+
+  ~DomainReliabilityMonitorTest() override {
+    monitor_.Shutdown();
   }
 
   static RequestInfo MakeRequestInfo() {
     RequestInfo request;
     request.status = net::URLRequestStatus();
-    request.response_info.socket_address =
-        net::HostPortPair::FromString("12.34.56.78:80");
+    request.response_info.remote_endpoint =
+        net::IPEndPoint(net::IPAddress(12, 34, 56, 78), 80);
     request.response_info.headers = MakeHttpResponseHeaders(
         "HTTP/1.1 200 OK\n\n");
     request.response_info.was_cached = false;
@@ -99,7 +99,6 @@ class DomainReliabilityMonitorTest : public testing::Test {
     return monitor_.AddContextForTesting(std::move(config));
   }
 
-  scoped_refptr<base::TestSimpleTaskRunner> pref_task_runner_;
   scoped_refptr<base::TestSimpleTaskRunner> network_task_runner_;
   scoped_refptr<net::URLRequestContextGetter> url_request_context_getter_;
   MockTime* time_;
@@ -202,8 +201,8 @@ TEST_F(DomainReliabilityMonitorTest, WasFetchedViaProxy) {
   RequestInfo request = MakeRequestInfo();
   request.url = GURL("http://example/");
   request.status = net::URLRequestStatus::FromError(net::ERR_CONNECTION_RESET);
-  request.response_info.socket_address =
-      net::HostPortPair::FromString("127.0.0.1:3128");
+  request.response_info.remote_endpoint =
+      net::IPEndPoint(net::IPAddress(127, 0, 0, 1), 3128);
   request.response_info.was_fetched_via_proxy = true;
   OnRequestLegComplete(request);
 
@@ -255,6 +254,22 @@ TEST_F(DomainReliabilityMonitorTest, AtLeastOneBakedInConfig) {
   DCHECK(kBakedInJsonConfigs[0] != nullptr);
 }
 
+// Make sure the monitor does log uploads, even though they have
+// LOAD_DO_NOT_SEND_COOKIES.
+TEST_F(DomainReliabilityMonitorTest, Upload) {
+  DomainReliabilityContext* context = CreateAndAddContext();
+
+  RequestInfo request = MakeRequestInfo();
+  request.url = GURL("http://example/");
+  request.load_flags =
+      net::LOAD_DO_NOT_SAVE_COOKIES | net::LOAD_DO_NOT_SEND_COOKIES;
+  request.status = net::URLRequestStatus::FromError(net::ERR_CONNECTION_RESET);
+  request.upload_depth = 1;
+  OnRequestLegComplete(request);
+
+  EXPECT_EQ(1u, CountQueuedBeacons(context));
+}
+
 // Will fail when baked-in configs expire, as a reminder to update them.
 // (Contact juliatuttle@chromium.org if this starts failing.)
 TEST_F(DomainReliabilityMonitorTest, AddBakedInConfigs) {
@@ -269,10 +284,9 @@ TEST_F(DomainReliabilityMonitorTest, AddBakedInConfigs) {
     ++num_baked_in_configs;
 
   // Also count the Google configs stored in abbreviated form.
-  std::vector<DomainReliabilityConfig*> google_configs;
+  std::vector<std::unique_ptr<DomainReliabilityConfig>> google_configs;
   GetAllGoogleConfigs(&google_configs);
   size_t num_google_configs = google_configs.size();
-  STLDeleteElements(&google_configs);
 
   // The monitor should have contexts for all of the baked-in configs.
   EXPECT_EQ(num_baked_in_configs + num_google_configs,
@@ -295,11 +309,46 @@ TEST_F(DomainReliabilityMonitorTest, ClearBeacons) {
   // Make sure it was added.
   EXPECT_EQ(1u, CountQueuedBeacons(context));
 
-  monitor_.ClearBrowsingData(CLEAR_BEACONS);
+  monitor_.ClearBrowsingData(
+      CLEAR_BEACONS, base::Callback<bool(const GURL&)>());
 
   // Make sure the beacon was cleared, but not the contexts.
   EXPECT_EQ(1u, monitor_.contexts_size_for_testing());
   EXPECT_EQ(0u, CountQueuedBeacons(context));
+}
+
+TEST_F(DomainReliabilityMonitorTest, ClearBeaconsWithFilter) {
+  // Create two contexts, each with one beacon.
+  GURL origin1("http://example.com/");
+  GURL origin2("http://example.org/");
+
+  DomainReliabilityContext* context1 =
+      CreateAndAddContextForOrigin(origin1, false);
+  RequestInfo request = MakeRequestInfo();
+  request.url = origin1;
+  request.status =
+      net::URLRequestStatus::FromError(net::ERR_CONNECTION_RESET);
+  OnRequestLegComplete(request);
+
+  DomainReliabilityContext* context2 =
+      CreateAndAddContextForOrigin(origin2, false);
+  request = MakeRequestInfo();
+  request.url = origin2;
+  request.status =
+      net::URLRequestStatus::FromError(net::ERR_CONNECTION_RESET);
+  OnRequestLegComplete(request);
+
+  // Delete the beacons for |origin1|.
+  monitor_.ClearBrowsingData(
+      CLEAR_BEACONS,
+      base::Bind(static_cast<bool (*)(const GURL&, const GURL&)>(operator==),
+                 origin1));
+
+  // Beacons for |context1| were cleared. Beacons for |context2| and
+  // the contexts themselves were not.
+  EXPECT_EQ(2u, monitor_.contexts_size_for_testing());
+  EXPECT_EQ(0u, CountQueuedBeacons(context1));
+  EXPECT_EQ(1u, CountQueuedBeacons(context2));
 }
 
 TEST_F(DomainReliabilityMonitorTest, ClearContexts) {
@@ -308,10 +357,30 @@ TEST_F(DomainReliabilityMonitorTest, ClearContexts) {
   // Initially the monitor should have just the test context.
   EXPECT_EQ(1u, monitor_.contexts_size_for_testing());
 
-  monitor_.ClearBrowsingData(CLEAR_CONTEXTS);
+  monitor_.ClearBrowsingData(
+      CLEAR_CONTEXTS, base::Callback<bool(const GURL&)>());
 
   // Clearing contexts should leave the monitor with none.
   EXPECT_EQ(0u, monitor_.contexts_size_for_testing());
+}
+
+TEST_F(DomainReliabilityMonitorTest, ClearContextsWithFilter) {
+  GURL origin1("http://example.com/");
+  GURL origin2("http://example.org/");
+
+  CreateAndAddContextForOrigin(origin1, false);
+  CreateAndAddContextForOrigin(origin2, false);
+
+  EXPECT_EQ(2u, monitor_.contexts_size_for_testing());
+
+  // Delete the contexts for |origin1|.
+  monitor_.ClearBrowsingData(
+      CLEAR_CONTEXTS,
+      base::Bind(static_cast<bool (*)(const GURL&, const GURL&)>(operator==),
+                 origin1));
+
+  // Only one of the contexts should have been deleted.
+  EXPECT_EQ(1u, monitor_.contexts_size_for_testing());
 }
 
 TEST_F(DomainReliabilityMonitorTest, WildcardMatchesSelf) {

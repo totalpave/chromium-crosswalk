@@ -15,8 +15,10 @@
 #include "base/time/time.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/log/net_log_source.h"
 #include "net/server/http_server_request_info.h"
 #include "net/socket/tcp_server_socket.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 const int kBufferSize = 100 * 1024 * 1024;  // 100 MB
@@ -41,8 +43,8 @@ bool TestHttpServer::Start() {
   base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                             base::WaitableEvent::InitialState::NOT_SIGNALED);
   thread_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(&TestHttpServer::StartOnServerThread,
-                            base::Unretained(this), &success, &event));
+      FROM_HERE, base::BindOnce(&TestHttpServer::StartOnServerThread,
+                                base::Unretained(this), &success, &event));
   event.Wait();
   return success;
 }
@@ -53,8 +55,8 @@ void TestHttpServer::Stop() {
   base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                             base::WaitableEvent::InitialState::NOT_SIGNALED);
   thread_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(&TestHttpServer::StopOnServerThread,
-                            base::Unretained(this), &event));
+      FROM_HERE, base::BindOnce(&TestHttpServer::StopOnServerThread,
+                                base::Unretained(this), &event));
   event.Wait();
   thread_.Stop();
 }
@@ -101,10 +103,11 @@ void TestHttpServer::OnWebSocketRequest(
 
   switch (action) {
     case kAccept:
-      server_->AcceptWebSocket(connection_id, info);
+      server_->AcceptWebSocket(connection_id, info,
+                               TRAFFIC_ANNOTATION_FOR_TESTS);
       break;
     case kNotFound:
-      server_->Send404(connection_id);
+      server_->Send404(connection_id, TRAFFIC_ANNOTATION_FOR_TESTS);
       break;
     case kClose:
       server_->Close(connection_id);
@@ -125,7 +128,8 @@ void TestHttpServer::OnWebSocketMessage(int connection_id,
     callback.Run();
   switch (action) {
     case kEchoMessage:
-      server_->SendOverWebSocket(connection_id, data);
+      server_->SendOverWebSocket(connection_id, data,
+                                 TRAFFIC_ANNOTATION_FOR_TESTS);
       break;
     case kCloseOnMessage:
       server_->Close(connection_id);
@@ -142,7 +146,7 @@ void TestHttpServer::OnClose(int connection_id) {
 void TestHttpServer::StartOnServerThread(bool* success,
                                          base::WaitableEvent* event) {
   std::unique_ptr<net::ServerSocket> server_socket(
-      new net::TCPServerSocket(NULL, net::NetLog::Source()));
+      new net::TCPServerSocket(NULL, net::NetLogSource()));
   server_socket->ListenWithAddressAndPort("127.0.0.1", 0, 1);
   server_.reset(new net::HttpServer(std::move(server_socket), this));
 

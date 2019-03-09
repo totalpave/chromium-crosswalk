@@ -27,8 +27,7 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
   /** @const */ var FIX_PROXY_SETTINGS_ID = 'proxy-settings-fix-link';
 
   // Class of the elements which hold current network name.
-  /** @const */ var CURRENT_NETWORK_NAME_CLASS =
-      'portal-network-name';
+  /** @const */ var CURRENT_NETWORK_NAME_CLASS = 'portal-network-name';
 
   // Link which triggers frame reload.
   /** @const */ var RELOAD_PAGE_ID = 'proxy-error-signin-retry-link';
@@ -73,13 +72,8 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
 
   return {
     EXTERNAL_API: [
-      'updateLocalizedContent',
-      'onBeforeShow',
-      'onBeforeHide',
-      'allowGuestSignin',
-      'allowOfflineLogin',
-      'setUIState',
-      'setErrorState',
+      'updateLocalizedContent', 'onBeforeShow', 'onBeforeHide',
+      'allowGuestSignin', 'allowOfflineLogin', 'setUIState', 'setErrorState',
       'showConnectingIndicator'
     ],
 
@@ -89,46 +83,84 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
     // Error screen initial error state.
     error_state_: ERROR_STATE.UNKNOWN,
 
-    // Whether the screen can be cancelled.
-    cancelable_: false,
-    get cancelable() {
-      return this.cancelable_;
+    /**
+     * Whether the screen can be closed.
+     * @type {boolean}
+     */
+    get closable() {
+      return Oobe.getInstance().hasUserPods;
     },
-    set cancelable(value) {
-      this.cancelable_ = value;
-      $('error-navigation').closeVisible = value;
+
+    /**
+     * Returns default event target element.
+     * @type {Object}
+     */
+    get defaultControl() {
+      return $('error-message-md');
     },
 
     /** @override */
     decorate: function() {
-      cr.ui.DropDown.decorate($('offline-networks-list'));
       this.updateLocalizedContent();
 
       var self = this;
-      this.context.addObserver(CONTEXT_KEY_ERROR_STATE_CODE,
-                               function(error_state) {
-        self.setErrorState(error_state);
-      });
-      this.context.addObserver(CONTEXT_KEY_ERROR_STATE_NETWORK,
-                               function(network) {
-        self.setNetwork_(network);
-      });
-      this.context.addObserver(CONTEXT_KEY_GUEST_SIGNIN_ALLOWED,
-                               function(allowed) {
-        self.allowGuestSignin(allowed);
-      });
-      this.context.addObserver(CONTEXT_KEY_OFFLINE_SIGNIN_ALLOWED,
-                               function(allowed) {
-        self.allowOfflineLogin(allowed);
-      });
-      this.context.addObserver(CONTEXT_KEY_SHOW_CONNECTING_INDICATOR,
-                               function(show) {
-        self.showConnectingIndicator(show);
-      });
+      this.context.addObserver(
+          CONTEXT_KEY_ERROR_STATE_CODE, function(error_state) {
+            self.setErrorState(error_state);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_ERROR_STATE_NETWORK, function(network) {
+            self.setNetwork_(network);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_GUEST_SIGNIN_ALLOWED, function(allowed) {
+            self.allowGuestSignin(allowed);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_OFFLINE_SIGNIN_ALLOWED, function(allowed) {
+            self.allowOfflineLogin(allowed);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_SHOW_CONNECTING_INDICATOR, function(show) {
+            self.showConnectingIndicator(show);
+          });
       this.context.addObserver(CONTEXT_KEY_UI_STATE, function(ui_state) {
         self.setUIState(ui_state);
       });
-      $('error-navigation').addEventListener('close', this.cancel.bind(this));
+      $('error-message-back-button')
+          .addEventListener('tap', this.cancel.bind(this));
+
+      $('error-message-md-reboot-button').addEventListener('tap', function(e) {
+        self.send(login.Screen.CALLBACK_USER_ACTED, USER_ACTION_REBOOT);
+        e.stopPropagation();
+      });
+      $('error-message-md-diagnose-button')
+          .addEventListener('tap', function(e) {
+            self.send(login.Screen.CALLBACK_USER_ACTED, USER_ACTION_DIAGNOSE);
+            e.stopPropagation();
+          });
+      $('error-message-md-configure-certs-button')
+          .addEventListener('tap', function(e) {
+            self.send(
+                login.Screen.CALLBACK_USER_ACTED, USER_ACTION_CONFIGURE_CERTS);
+            e.stopPropagation();
+          });
+      $('error-message-md-continue-button')
+          .addEventListener('tap', function(e) {
+            chrome.send('continueAppLaunch');
+            e.stopPropagation();
+          });
+      $('error-message-md-ok-button').addEventListener('tap', function(e) {
+        chrome.send('cancelOnReset');
+        e.stopPropagation();
+      });
+      $('error-message-md-powerwash-button')
+          .addEventListener('tap', function(e) {
+            self.send(
+                login.Screen.CALLBACK_USER_ACTED,
+                USER_ACTION_LOCAL_STATE_POWERWASH);
+            e.stopPropagation();
+          });
     },
 
     /**
@@ -149,29 +181,30 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
       };
 
       $('captive-portal-message-text').innerHTML = loadTimeData.getStringF(
-        'captivePortalMessage',
-        '<b class="' + CURRENT_NETWORK_NAME_CLASS + '"></b>',
-        '<a id="' + FIX_CAPTIVE_PORTAL_ID + '" class="signin-link" href="#">',
-        '</a>');
+          'captivePortalMessage',
+          '<b class="' + CURRENT_NETWORK_NAME_CLASS + '"></b>',
+          '<a id="' + FIX_CAPTIVE_PORTAL_ID + '" class="signin-link" href="#">',
+          '</a>');
       $(FIX_CAPTIVE_PORTAL_ID).onclick = function() {
-        self.send(login.Screen.CALLBACK_USER_ACTED,
-                  USER_ACTION_SHOW_CAPTIVE_PORTAL);
+        self.send(
+            login.Screen.CALLBACK_USER_ACTED, USER_ACTION_SHOW_CAPTIVE_PORTAL);
       };
 
       $('captive-portal-proxy-message-text').innerHTML =
-        loadTimeData.getStringF(
-          'captivePortalProxyMessage',
-          '<a id="' + FIX_PROXY_SETTINGS_ID + '" class="signin-link" href="#">',
-          '</a>');
+          loadTimeData.getStringF(
+              'captivePortalProxyMessage',
+              '<a id="' + FIX_PROXY_SETTINGS_ID +
+                  '" class="signin-link" href="#">',
+              '</a>');
       $(FIX_PROXY_SETTINGS_ID).onclick = function() {
-        chrome.send('openProxySettings');
+        chrome.send('openInternetDetailDialog');
       };
       $('update-proxy-message-text').innerHTML = loadTimeData.getStringF(
           'updateProxyMessageText',
           '<a id="update-proxy-error-fix-proxy" class="signin-link" href="#">',
           '</a>');
       $('update-proxy-error-fix-proxy').onclick = function() {
-        chrome.send('openProxySettings');
+        chrome.send('openInternetDetailDialog');
       };
       $('signin-proxy-message-text').innerHTML = loadTimeData.getStringF(
           'signinProxyMessageText',
@@ -185,25 +218,23 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
         gaiaScreen.doReload();
       };
       $('signin-proxy-error-fix-proxy').onclick = function() {
-        chrome.send('openProxySettings');
+        chrome.send('openInternetDetailDialog');
       };
 
       $('error-guest-signin').innerHTML = loadTimeData.getStringF(
           'guestSignin',
           '<a id="error-guest-signin-link" class="signin-link" href="#">',
           '</a>');
-      $('error-guest-signin-link').addEventListener(
-          'click',
-          this.launchGuestSession_.bind(this));
+      $('error-guest-signin-link')
+          .addEventListener('click', this.launchGuestSession_.bind(this));
 
       $('error-guest-signin-fix-network').innerHTML = loadTimeData.getStringF(
           'guestSigninFixNetwork',
           '<a id="error-guest-fix-network-signin-link" class="signin-link" ' +
               'href="#">',
           '</a>');
-      $('error-guest-fix-network-signin-link').addEventListener(
-          'click',
-          this.launchGuestSession_.bind(this));
+      $('error-guest-fix-network-signin-link')
+          .addEventListener('click', this.launchGuestSession_.bind(this));
 
       $('error-offline-login').innerHTML = loadTimeData.getStringF(
           'offlineLogin',
@@ -221,109 +252,33 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
       $('connecting-indicator').innerHTML =
           loadTimeData.getStringF('connectingIndicatorText', ellipsis);
 
+      $('offline-network-control').setCrOncStrings();
+
       this.onContentChange_();
     },
 
     /**
-     * Event handler that is invoked just before the screen in shown.
+     * Event handler that is invoked just before the screen is shown.
      * @param {Object} data Screen init payload.
      */
     onBeforeShow: function(data) {
       cr.ui.Oobe.clearErrors();
-      cr.ui.DropDown.show('offline-networks-list', false);
-      $('login-header-bar').signinUIState = SIGNIN_UI_STATE.ERROR;
-      this.cancelable = $('pod-row').pods.length;
+      Oobe.getInstance().setSigninUIState(SIGNIN_UI_STATE.ERROR);
+      $('error-message-back-button').disabled = !this.closable;
     },
 
     /**
      * Event handler that is invoked just before the screen is hidden.
      */
     onBeforeHide: function() {
-      cr.ui.DropDown.hide('offline-networks-list');
-      $('login-header-bar').signinUIState = SIGNIN_UI_STATE.HIDDEN;
+      Oobe.getInstance().setSigninUIState(SIGNIN_UI_STATE.HIDDEN);
     },
 
     /**
-     * Buttons in oobe wizard's button strip.
-     * @type {array} Array of Buttons.
+     * Sets current UI state of the screen.
+     * @param {string} ui_state New UI state of the screen.
+     * @private
      */
-    get buttons() {
-      var buttons = [];
-      var self = this;
-
-      var rebootButton = this.ownerDocument.createElement('button');
-      rebootButton.textContent = loadTimeData.getString('rebootButton');
-      rebootButton.classList.add('show-with-ui-state-kiosk-mode');
-      rebootButton.addEventListener('click', function(e) {
-        self.send(login.Screen.CALLBACK_USER_ACTED, USER_ACTION_REBOOT);
-        e.stopPropagation();
-      });
-      buttons.push(rebootButton);
-
-      var diagnoseButton = this.ownerDocument.createElement('button');
-      diagnoseButton.textContent = loadTimeData.getString('diagnoseButton');
-      diagnoseButton.classList.add('show-with-ui-state-kiosk-mode');
-      diagnoseButton.addEventListener('click', function(e) {
-        self.send(login.Screen.CALLBACK_USER_ACTED, USER_ACTION_DIAGNOSE);
-        e.stopPropagation();
-      });
-      buttons.push(diagnoseButton);
-
-      var certsButton = this.ownerDocument.createElement('button');
-      certsButton.textContent = loadTimeData.getString('configureCertsButton');
-      certsButton.classList.add('show-with-ui-state-kiosk-mode');
-      certsButton.addEventListener('click', function(e) {
-        self.send(login.Screen.CALLBACK_USER_ACTED,
-                  USER_ACTION_CONFIGURE_CERTS);
-        e.stopPropagation();
-      });
-      buttons.push(certsButton);
-
-      var continueButton = this.ownerDocument.createElement('button');
-      continueButton.id = 'continue-network-config-btn';
-      continueButton.textContent = loadTimeData.getString('continueButton');
-      continueButton.classList.add('show-with-error-state-kiosk-online');
-      continueButton.addEventListener('click', function(e) {
-        chrome.send('continueAppLaunch');
-        e.stopPropagation();
-      });
-      buttons.push(continueButton);
-
-      var okButton = this.ownerDocument.createElement('button');
-      okButton.id = 'ok-error-screen-btn';
-      okButton.textContent = loadTimeData.getString('okButton');
-      okButton.classList.add('show-with-ui-state-rollback-error');
-      okButton.addEventListener('click', function(e) {
-        chrome.send('cancelOnReset');
-        e.stopPropagation();
-      });
-      buttons.push(okButton);
-
-      var spacer = this.ownerDocument.createElement('div');
-      spacer.classList.add('button-spacer');
-      spacer.classList.add('show-with-ui-state-kiosk-mode');
-      buttons.push(spacer);
-
-      var powerwashButton = this.ownerDocument.createElement('button');
-      powerwashButton.id = 'error-message-restart-and-powerwash-button';
-      powerwashButton.textContent =
-        loadTimeData.getString('localStateErrorPowerwashButton');
-      powerwashButton.classList.add('show-with-ui-state-local-state-error');
-      powerwashButton.addEventListener('click', function(e) {
-        self.send(login.Screen.CALLBACK_USER_ACTED,
-                  USER_ACTION_LOCAL_STATE_POWERWASH);
-        e.stopPropagation();
-      });
-      buttons.push(powerwashButton);
-
-      return buttons;
-    },
-
-    /**
-      * Sets current UI state of the screen.
-      * @param {string} ui_state New UI state of the screen.
-      * @private
-      */
     setUIState_: function(ui_state) {
       this.classList.remove(this.ui_state);
       this.ui_state = ui_state;
@@ -333,16 +288,15 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
         // Hide header bar and progress dots, because there are no way
         // from the error screen about broken local state.
         Oobe.getInstance().headerHidden = true;
-        $('progress-dots').hidden = true;
       }
       this.onContentChange_();
     },
 
     /**
-      * Sets current error state of the screen.
-      * @param {string} error_state New error state of the screen.
-      * @private
-      */
+     * Sets current error state of the screen.
+     * @param {string} error_state New error state of the screen.
+     * @private
+     */
     setErrorState_: function(error_state) {
       this.classList.remove(this.error_state);
       this.error_state = error_state;
@@ -367,8 +321,9 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
      * @private
      */
     onContentChange_: function() {
-      if (Oobe.getInstance().currentScreen === this)
+      if (Oobe.getInstance().currentScreen === this) {
         Oobe.getInstance().updateScreenSize(this);
+      }
     },
 
     /**
@@ -377,8 +332,8 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
      */
     launchGuestSession_: function() {
       if (Oobe.getInstance().isOobeUI()) {
-        this.send(login.Screen.CALLBACK_USER_ACTED,
-                  USER_ACTION_LAUNCH_OOBE_GUEST);
+        this.send(
+            login.Screen.CALLBACK_USER_ACTED, USER_ACTION_LAUNCH_OOBE_GUEST);
       } else {
         chrome.send('launchIncognito');
       }
@@ -403,19 +358,19 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
     },
 
     /**
-      * Sets current UI state of the screen.
-      * @param {number} ui_state New UI state of the screen.
-      * @private
-      */
+     * Sets current UI state of the screen.
+     * @param {number} ui_state New UI state of the screen.
+     * @private
+     */
     setUIState: function(ui_state) {
       this.setUIState_(UI_STATES[ui_state]);
     },
 
     /**
-      * Sets current error state of the screen.
-      * @param {number} error_state New error state of the screen.
-      * @private
-      */
+     * Sets current error state of the screen.
+     * @param {number} error_state New error state of the screen.
+     * @private
+     */
     setErrorState: function(error_state) {
       this.setErrorState_(ERROR_STATES[error_state]);
     },
@@ -433,8 +388,8 @@ login.createScreen('ErrorMessageScreen', 'error-message', function() {
      * Cancels error screen and drops to user pods.
      */
     cancel: function() {
-      if (this.cancelable)
+      if (this.closable)
         Oobe.showUserPods();
-    }
+    },
   };
 });

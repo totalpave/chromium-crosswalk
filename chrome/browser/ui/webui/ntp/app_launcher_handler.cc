@@ -6,16 +6,17 @@
 
 #include <stddef.h>
 
+#include <string>
+#include <utility>
 #include <vector>
 
-#include "apps/metrics_names.h"
 #include "base/auto_reset.h"
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/command_line.h"
 #include "base/i18n/rtl.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -24,15 +25,16 @@
 #include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_ui_util.h"
+#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/app_list/app_list_util.h"
 #include "chrome/browser/ui/apps/app_info_dialog.h"
 #include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/extensions/extension_enable_flow.h"
@@ -40,6 +42,8 @@
 #include "chrome/browser/ui/webui/extensions/extension_basic_info.h"
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "chrome/browser/ui/webui/ntp/new_tab_ui.h"
+#include "chrome/browser/web_applications/extensions/bookmark_app_util.h"
+#include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/extension_metrics.h"
@@ -66,6 +70,8 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_icon_set.h"
 #include "extensions/common/extension_set.h"
+#include "extensions/common/manifest_handlers/icons_handler.h"
+#include "net/base/url_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "url/gurl.h"
@@ -91,38 +97,26 @@ enum {
   APPS_PAGE_ID = 2 << kPageIdOffset,
 };
 
-void RecordAppLauncherPromoHistogram(
-      apps::AppLauncherPromoHistogramValues value) {
-  DCHECK_LT(value, apps::APP_LAUNCHER_PROMO_MAX);
-  UMA_HISTOGRAM_ENUMERATION(
-      "Apps.AppLauncherPromo", value, apps::APP_LAUNCHER_PROMO_MAX);
-}
-
 }  // namespace
 
 AppLauncherHandler::AppInstallInfo::AppInstallInfo() {}
 
 AppLauncherHandler::AppInstallInfo::~AppInstallInfo() {}
 
-AppLauncherHandler::AppLauncherHandler(ExtensionService* extension_service)
+AppLauncherHandler::AppLauncherHandler(
+    extensions::ExtensionService* extension_service)
     : extension_service_(extension_service),
       ignore_changes_(false),
       attempted_bookmark_app_install_(false),
-      has_loaded_apps_(false) {
-  if (IsAppLauncherEnabled())
-    RecordAppLauncherPromoHistogram(apps::APP_LAUNCHER_PROMO_ALREADY_INSTALLED);
-  else if (ShouldShowAppLauncherPromo())
-    RecordAppLauncherPromoHistogram(apps::APP_LAUNCHER_PROMO_SHOWN);
-}
+      has_loaded_apps_(false) {}
 
 AppLauncherHandler::~AppLauncherHandler() {
   ExtensionRegistry::Get(Profile::FromWebUI(web_ui()))->RemoveObserver(this);
 }
 
-void AppLauncherHandler::CreateAppInfo(
-    const Extension* extension,
-    ExtensionService* service,
-    base::DictionaryValue* value) {
+void AppLauncherHandler::CreateAppInfo(const Extension* extension,
+                                       extensions::ExtensionService* service,
+                                       base::DictionaryValue* value) {
   // The items which are to be written into |value| are also described in
   // chrome/browser/resources/ntp4/page_list_view.js in @typedef for AppInfo.
   // Please update it whenever you add or remove any keys here.
@@ -158,25 +152,35 @@ void AppLauncherHandler::CreateAppInfo(
       service->profile())->management_policy()->UserMayModifySettings(
       extension, NULL));
 
-  bool icon_big_exists = true;
-  // Instead of setting grayscale here, we do it in apps_page.js.
-  GURL icon_big = extensions::ExtensionIconSource::GetIconURL(
-      extension,
-      extension_misc::EXTENSION_ICON_LARGE,
-      ExtensionIconSet::MATCH_BIGGER,
-      false,
-      &icon_big_exists);
-  value->SetString("icon_big", icon_big.spec());
-  value->SetBoolean("icon_big_exists", icon_big_exists);
-  bool icon_small_exists = true;
-  GURL icon_small = extensions::ExtensionIconSource::GetIconURL(
-      extension,
-      extension_misc::EXTENSION_ICON_BITTY,
-      ExtensionIconSet::MATCH_BIGGER,
-      false,
-      &icon_small_exists);
-  value->SetString("icon_small", icon_small.spec());
-  value->SetBoolean("icon_small_exists", icon_small_exists);
+  bool is_locally_installed =
+      !extension->is_hosted_app() ||
+      BookmarkAppIsLocallyInstalled(service->profile(), extension);
+  value->SetBoolean("mayChangeLaunchType",
+                    !extension->is_platform_app() && is_locally_installed);
+
+  // Any locally installed app can have shortcuts created.
+  value->SetBoolean("mayCreateShortcuts", is_locally_installed);
+  value->SetBoolean("isLocallyInstalled", is_locally_installed);
+
+  auto icon_size = extension_misc::EXTENSION_ICON_LARGE;
+  auto match_type = ExtensionIconSet::MATCH_BIGGER;
+  bool has_non_default_large_icon =
+      !extensions::IconsInfo::GetIconURL(extension, icon_size, match_type)
+           .is_empty();
+  GURL large_icon = extensions::ExtensionIconSource::GetIconURL(
+      extension, icon_size, match_type, false);
+  value->SetString("icon_big", large_icon.spec());
+  value->SetBoolean("icon_big_exists", has_non_default_large_icon);
+
+  icon_size = extension_misc::EXTENSION_ICON_BITTY;
+  bool has_non_default_small_icon =
+      !extensions::IconsInfo::GetIconURL(extension, icon_size, match_type)
+           .is_empty();
+  GURL small_icon = extensions::ExtensionIconSource::GetIconURL(
+      extension, icon_size, match_type, false);
+  value->SetString("icon_small", small_icon.spec());
+  value->SetBoolean("icon_small_exists", has_non_default_small_icon);
+
   value->SetInteger("launch_container",
                     extensions::AppLaunchInfo::GetLaunchContainer(extension));
   ExtensionPrefs* prefs = ExtensionPrefs::Get(service->profile());
@@ -231,55 +235,46 @@ void AppLauncherHandler::RegisterMessages() {
   registrar_.Add(this, chrome::NOTIFICATION_APP_INSTALLED_TO_NTP,
       content::Source<WebContents>(web_ui()->GetWebContents()));
 
-  // Some tests don't have a local state.
-#if defined(ENABLE_APP_LIST)
-  if (g_browser_process->local_state()) {
-    local_state_pref_change_registrar_.Init(g_browser_process->local_state());
-    local_state_pref_change_registrar_.Add(
-        prefs::kShowAppLauncherPromo,
-        base::Bind(&AppLauncherHandler::OnLocalStatePreferenceChanged,
-                   base::Unretained(this)));
-  }
-#endif
-  web_ui()->RegisterMessageCallback("getApps",
-      base::Bind(&AppLauncherHandler::HandleGetApps,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("launchApp",
-      base::Bind(&AppLauncherHandler::HandleLaunchApp,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("setLaunchType",
-      base::Bind(&AppLauncherHandler::HandleSetLaunchType,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("uninstallApp",
-      base::Bind(&AppLauncherHandler::HandleUninstallApp,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("createAppShortcut",
-      base::Bind(&AppLauncherHandler::HandleCreateAppShortcut,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("showAppInfo",
-      base::Bind(&AppLauncherHandler::HandleShowAppInfo,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("reorderApps",
-      base::Bind(&AppLauncherHandler::HandleReorderApps,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("setPageIndex",
-      base::Bind(&AppLauncherHandler::HandleSetPageIndex,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("saveAppPageName",
-      base::Bind(&AppLauncherHandler::HandleSaveAppPageName,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("generateAppForLink",
-      base::Bind(&AppLauncherHandler::HandleGenerateAppForLink,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("stopShowingAppLauncherPromo",
-      base::Bind(&AppLauncherHandler::HandleStopShowingAppLauncherPromo,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("onLearnMore",
-      base::Bind(&AppLauncherHandler::HandleOnLearnMore,
-                 base::Unretained(this)));
-  web_ui()->RegisterMessageCallback("pageSelected",
-      base::Bind(&AppLauncherHandler::HandlePageSelected,
-                 base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "getApps", base::BindRepeating(&AppLauncherHandler::HandleGetApps,
+                                     base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "launchApp", base::BindRepeating(&AppLauncherHandler::HandleLaunchApp,
+                                       base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "setLaunchType",
+      base::BindRepeating(&AppLauncherHandler::HandleSetLaunchType,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "uninstallApp",
+      base::BindRepeating(&AppLauncherHandler::HandleUninstallApp,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "createAppShortcut",
+      base::BindRepeating(&AppLauncherHandler::HandleCreateAppShortcut,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "showAppInfo", base::BindRepeating(&AppLauncherHandler::HandleShowAppInfo,
+                                         base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "reorderApps", base::BindRepeating(&AppLauncherHandler::HandleReorderApps,
+                                         base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "setPageIndex",
+      base::BindRepeating(&AppLauncherHandler::HandleSetPageIndex,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "saveAppPageName",
+      base::BindRepeating(&AppLauncherHandler::HandleSaveAppPageName,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "generateAppForLink",
+      base::BindRepeating(&AppLauncherHandler::HandleGenerateAppForLink,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "pageSelected",
+      base::BindRepeating(&AppLauncherHandler::HandlePageSelected,
+                          base::Unretained(this)));
 }
 
 void AppLauncherHandler::Observe(int type,
@@ -323,7 +318,7 @@ void AppLauncherHandler::Observe(int type,
               crx_installer->profile())) {
         return;
       }
-      // Fall through.
+      FALLTHROUGH;
     }
     case extensions::NOTIFICATION_EXTENSION_LOAD_ERROR: {
       attempted_bookmark_app_install_ = false;
@@ -346,8 +341,8 @@ void AppLauncherHandler::OnExtensionLoaded(
 
   visible_apps_.insert(extension->id());
   ExtensionPrefs* prefs = ExtensionPrefs::Get(extension_service_->profile());
-  base::FundamentalValue highlight(prefs->IsFromBookmark(extension->id()) &&
-                                   attempted_bookmark_app_install_);
+  base::Value highlight(prefs->IsFromBookmark(extension->id()) &&
+                        attempted_bookmark_app_install_);
   attempted_bookmark_app_install_ = false;
   web_ui()->CallJavascriptFunctionUnsafe("ntp.appAdded", *app_info, highlight);
 }
@@ -355,7 +350,7 @@ void AppLauncherHandler::OnExtensionLoaded(
 void AppLauncherHandler::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
-    extensions::UnloadedExtensionInfo::Reason reason) {
+    extensions::UnloadedExtensionReason reason) {
   AppRemoved(extension, false);
 }
 
@@ -370,33 +365,30 @@ void AppLauncherHandler::FillAppDictionary(base::DictionaryValue* dictionary) {
   // CreateAppInfo and ClearOrdinals can change the extension prefs.
   base::AutoReset<bool> auto_reset(&ignore_changes_, true);
 
-  base::ListValue* list = new base::ListValue();
+  auto installed_extensions = std::make_unique<base::ListValue>();
   Profile* profile = Profile::FromWebUI(web_ui());
   PrefService* prefs = profile->GetPrefs();
 
-  for (std::set<std::string>::iterator it = visible_apps_.begin();
-       it != visible_apps_.end(); ++it) {
+  for (auto it = visible_apps_.begin(); it != visible_apps_.end(); ++it) {
     const Extension* extension = extension_service_->GetInstalledExtension(*it);
     if (extension && extensions::ui_util::ShouldDisplayInNewTabPage(
             extension, profile)) {
-      list->Append(GetAppInfo(extension));
+      installed_extensions->Append(GetAppInfo(extension));
     }
   }
 
-  dictionary->Set("apps", list);
+  dictionary->Set("apps", std::move(installed_extensions));
 
   const base::ListValue* app_page_names =
       prefs->GetList(prefs::kNtpAppPageNames);
   if (!app_page_names || !app_page_names->GetSize()) {
     ListPrefUpdate update(prefs, prefs::kNtpAppPageNames);
     base::ListValue* list = update.Get();
-    list->Set(0, new base::StringValue(
-        l10n_util::GetStringUTF16(IDS_APP_DEFAULT_PAGE_NAME)));
-    dictionary->Set("appPageNames",
-                    static_cast<base::ListValue*>(list->DeepCopy()));
+    list->Set(0, std::make_unique<base::Value>(
+                     l10n_util::GetStringUTF16(IDS_APP_DEFAULT_PAGE_NAME)));
+    dictionary->SetKey("appPageNames", list->Clone());
   } else {
-    dictionary->Set("appPageNames",
-                    static_cast<base::ListValue*>(app_page_names->DeepCopy()));
+    dictionary->SetKey("appPageNames", app_page_names->Clone());
   }
 }
 
@@ -481,9 +473,7 @@ void AppLauncherHandler::HandleLaunchApp(const base::ListValue* args) {
   CHECK(args->GetString(0, &extension_id));
   double source = -1.0;
   CHECK(args->GetDouble(1, &source));
-  std::string url;
-  if (args->GetSize() > 2)
-    CHECK(args->GetString(2, &url));
+  GURL override_url;
 
   extension_misc::AppLaunchBucket launch_bucket =
       static_cast<extension_misc::AppLaunchBucket>(
@@ -502,24 +492,36 @@ void AppLauncherHandler::HandleLaunchApp(const base::ListValue* args) {
 
   Profile* profile = extension_service_->profile();
 
-  WindowOpenDisposition disposition = args->GetSize() > 3 ?
-        webui::GetDispositionFromClick(args, 3) : CURRENT_TAB;
+  WindowOpenDisposition disposition =
+      args->GetSize() > 3 ? webui::GetDispositionFromClick(args, 3)
+                          : WindowOpenDisposition::CURRENT_TAB;
   if (extension_id != extensions::kWebStoreAppId) {
     CHECK_NE(launch_bucket, extension_misc::APP_LAUNCH_BUCKET_INVALID);
     extensions::RecordAppLaunchType(launch_bucket, extension->GetType());
   } else {
     extensions::RecordWebStoreLaunch();
+
+    if (args->GetSize() > 2) {
+      std::string source_value;
+      CHECK(args->GetString(2, &source_value));
+      if (!source_value.empty()) {
+        override_url = net::AppendQueryParameter(
+            extensions::AppLaunchInfo::GetFullLaunchURL(extension),
+            extension_urls::kWebstoreSourceField, source_value);
+      }
+    }
   }
 
-  if (disposition == NEW_FOREGROUND_TAB || disposition == NEW_BACKGROUND_TAB ||
-      disposition == NEW_WINDOW) {
+  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
+      disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB ||
+      disposition == WindowOpenDisposition::NEW_WINDOW) {
     // TODO(jamescook): Proper support for background tabs.
     AppLaunchParams params(profile, extension,
-                           disposition == NEW_WINDOW
+                           disposition == WindowOpenDisposition::NEW_WINDOW
                                ? extensions::LAUNCH_CONTAINER_WINDOW
                                : extensions::LAUNCH_CONTAINER_TAB,
                            disposition, extensions::SOURCE_NEW_TAB_PAGE);
-    params.override_url = GURL(url);
+    params.override_url = override_url;
     OpenApplication(params);
   } else {
     // To give a more "launchy" experience when using the NTP launcher, we close
@@ -531,9 +533,11 @@ void AppLauncherHandler::HandleLaunchApp(const base::ListValue* args) {
       old_contents = browser->tab_strip_model()->GetActiveWebContents();
 
     AppLaunchParams params = CreateAppLaunchParamsUserContainer(
-        profile, extension, old_contents ? CURRENT_TAB : NEW_FOREGROUND_TAB,
+        profile, extension,
+        old_contents ? WindowOpenDisposition::CURRENT_TAB
+                     : WindowOpenDisposition::NEW_FOREGROUND_TAB,
         extensions::SOURCE_NEW_TAB_PAGE);
-    params.override_url = GURL(url);
+    params.override_url = override_url;
     WebContents* new_contents = OpenApplication(params);
 
     // This will also destroy the handler, so do not perform any actions after.
@@ -589,10 +593,10 @@ void AppLauncherHandler::HandleUninstallApp(const base::ListValue* args) {
     // Do the uninstall work here.
     extension_service_->UninstallExtension(
         extension_id_prompting_, extensions::UNINSTALL_REASON_USER_INITIATED,
-        base::Bind(&base::DoNothing), nullptr);
+        nullptr);
     CleanupAfterUninstall();
   } else {
-    GetExtensionUninstallDialog()->ConfirmUninstall(
+    CreateExtensionUninstallDialog()->ConfirmUninstall(
         extension, extensions::UNINSTALL_REASON_USER_INITIATED,
         extensions::UNINSTALL_SOURCE_CHROME_APPS_PAGE);
   }
@@ -623,13 +627,20 @@ void AppLauncherHandler::HandleShowAppInfo(const base::ListValue* args) {
   if (!extension)
     return;
 
+  if (extension->is_hosted_app() && extension->from_bookmark()) {
+    chrome::ShowSiteSettings(
+        chrome::FindBrowserWithWebContents(web_ui()->GetWebContents()),
+        extensions::AppLaunchInfo::GetFullLaunchURL(extension));
+    return;
+  }
+
   UMA_HISTOGRAM_ENUMERATION("Apps.AppInfoDialog.Launches",
                             AppInfoLaunchSource::FROM_APPS_PAGE,
                             AppInfoLaunchSource::NUM_LAUNCH_SOURCES);
 
-  ShowAppInfoInNativeDialog(
-      web_ui()->GetWebContents(), GetAppInfoNativeDialogSize(),
-      Profile::FromWebUI(web_ui()), extension, base::Closure());
+  ShowAppInfoInNativeDialog(web_ui()->GetWebContents(),
+                            Profile::FromWebUI(web_ui()), extension,
+                            base::Closure());
 }
 
 void AppLauncherHandler::HandleReorderApps(const base::ListValue* args) {
@@ -680,7 +691,7 @@ void AppLauncherHandler::HandleSetPageIndex(const base::ListValue* args) {
 }
 
 void AppLauncherHandler::HandleSaveAppPageName(const base::ListValue* args) {
-  base::string16 name;
+  std::string name;
   CHECK(args->GetString(0, &name));
 
   double page_index;
@@ -690,7 +701,8 @@ void AppLauncherHandler::HandleSaveAppPageName(const base::ListValue* args) {
   PrefService* prefs = Profile::FromWebUI(web_ui())->GetPrefs();
   ListPrefUpdate update(prefs, prefs::kNtpAppPageNames);
   base::ListValue* list = update.Get();
-  list->Set(static_cast<size_t>(page_index), new base::StringValue(name));
+  list->Set(static_cast<size_t>(page_index),
+            std::make_unique<base::Value>(name));
 }
 
 void AppLauncherHandler::HandleGenerateAppForLink(const base::ListValue* args) {
@@ -731,19 +743,6 @@ void AppLauncherHandler::HandleGenerateAppForLink(const base::ListValue* args) {
       &cancelable_task_tracker_);
 }
 
-void AppLauncherHandler::HandleStopShowingAppLauncherPromo(
-    const base::ListValue* args) {
-#if defined(ENABLE_APP_LIST)
-  g_browser_process->local_state()->SetBoolean(
-      prefs::kShowAppLauncherPromo, false);
-  RecordAppLauncherPromoHistogram(apps::APP_LAUNCHER_PROMO_DISMISSED);
-#endif
-}
-
-void AppLauncherHandler::HandleOnLearnMore(const base::ListValue* args) {
-  RecordAppLauncherPromoHistogram(apps::APP_LAUNCHER_PROMO_LEARN_MORE);
-}
-
 void AppLauncherHandler::HandlePageSelected(const base::ListValue* args) {
   double index_double;
   CHECK(args->GetDouble(0, &index_double));
@@ -780,7 +779,7 @@ void AppLauncherHandler::SetAppToBeHighlighted() {
   if (highlight_app_id_.empty())
     return;
 
-  base::StringValue app_id(highlight_app_id_);
+  base::Value app_id(highlight_app_id_);
   web_ui()->CallJavascriptFunctionUnsafe("ntp.setAppToBeHighlighted", app_id);
   highlight_app_id_.clear();
 }
@@ -790,15 +789,6 @@ void AppLauncherHandler::OnExtensionPreferenceChanged() {
   FillAppDictionary(&dictionary);
   web_ui()->CallJavascriptFunctionUnsafe("ntp.appsPrefChangeCallback",
                                          dictionary);
-}
-
-void AppLauncherHandler::OnLocalStatePreferenceChanged() {
-#if defined(ENABLE_APP_LIST)
-  web_ui()->CallJavascriptFunctionUnsafe(
-      "ntp.appLauncherPromoPrefChangeCallback",
-      base::FundamentalValue(g_browser_process->local_state()->GetBoolean(
-          prefs::kShowAppLauncherPromo)));
-#endif
 }
 
 void AppLauncherHandler::CleanupAfterUninstall() {
@@ -828,7 +818,7 @@ void AppLauncherHandler::ExtensionEnableFlowFinished() {
   // If we don't launch the app asynchronously, then the app's disabled
   // icon disappears but isn't replaced by the enabled icon, making a poor
   // visual experience.
-  base::StringValue app_id(extension_id_prompting_);
+  base::Value app_id(extension_id_prompting_);
   web_ui()->CallJavascriptFunctionUnsafe("ntp.launchAppAfterEnable", app_id);
 
   extension_enable_flow_.reset();
@@ -844,7 +834,7 @@ void AppLauncherHandler::ExtensionEnableFlowAborted(bool user_initiated) {
       extension_service_->GetExtensionById(extension_id_prompting_, true);
   std::string histogram_name = user_initiated ? "ReEnableCancel"
                                               : "ReEnableAbort";
-  ExtensionService::RecordPermissionMessagesHistogram(
+  extensions::ExtensionService::RecordPermissionMessagesHistogram(
       extension, histogram_name.c_str());
 
   extension_enable_flow_.reset();
@@ -852,16 +842,12 @@ void AppLauncherHandler::ExtensionEnableFlowAborted(bool user_initiated) {
 }
 
 extensions::ExtensionUninstallDialog*
-AppLauncherHandler::GetExtensionUninstallDialog() {
-  if (!extension_uninstall_dialog_.get()) {
-    Browser* browser = chrome::FindBrowserWithWebContents(
-        web_ui()->GetWebContents());
-    extension_uninstall_dialog_.reset(
-        extensions::ExtensionUninstallDialog::Create(
-            extension_service_->profile(),
-            browser->window()->GetNativeWindow(),
-            this));
-  }
+AppLauncherHandler::CreateExtensionUninstallDialog() {
+  Browser* browser =
+      chrome::FindBrowserWithWebContents(web_ui()->GetWebContents());
+  extension_uninstall_dialog_ = extensions::ExtensionUninstallDialog::Create(
+      extension_service_->profile(), browser->window()->GetNativeWindow(),
+      this);
   return extension_uninstall_dialog_.get();
 }
 
@@ -875,8 +861,8 @@ void AppLauncherHandler::AppRemoved(const Extension* extension,
     return;
 
   web_ui()->CallJavascriptFunctionUnsafe(
-      "ntp.appRemoved", *app_info, base::FundamentalValue(is_uninstall),
-      base::FundamentalValue(!extension_id_prompting_.empty()));
+      "ntp.appRemoved", *app_info, base::Value(is_uninstall),
+      base::Value(!extension_id_prompting_.empty()));
 }
 
 bool AppLauncherHandler::ShouldShow(const Extension* extension) const {

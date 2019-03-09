@@ -27,11 +27,9 @@ class CastEglPlatform {
   // caller. desired_list contains list of desired EGL properties and values.
   virtual const int* GetEGLSurfaceProperties(const int* desired_list) = 0;
 
-  // Initialize/ShutdownHardware are called at most once each over the object's
-  // lifetime.  Initialize will be called before creating display type or
-  // window.  If Initialize fails, return false (Shutdown will still be called).
+  // InitializeHardware is called once (before creating display type or window)
+  // and must return false on failure.
   virtual bool InitializeHardware() = 0;
-  virtual void ShutdownHardware() = 0;
 
   // These three are called once after hardware is successfully initialized.
   // The implementation must load the libraries containing EGL and GLES2
@@ -41,23 +39,13 @@ class CastEglPlatform {
   virtual void* GetGles2Library() = 0;
   virtual GLGetProcAddressProc GetGLProcAddressProc() = 0;
 
-  // Creates/destroys an EGLNativeDisplayType.  These may be called multiple
-  // times over the object's lifetime, for example to release the display when
-  // switching to an external application.  There will be at most one display
-  // type at a time.
+  // Creates an EGLNativeDisplayType.  Called once when initializing display.
   virtual NativeDisplayType CreateDisplayType(const Size& size) = 0;
-  virtual void DestroyDisplayType(NativeDisplayType display_type) = 0;
 
-  // Creates/destroys an EGLNativeWindow.  There will be at most one window at a
-  // time, created within a valid display type.
+  // Creates an EGLNativeWindow using previously-created DisplayType.  Called
+  // once when initializing display.
   virtual NativeWindowType CreateWindow(NativeDisplayType display_type,
                                         const Size& size) = 0;
-  virtual void DestroyWindow(NativeWindowType window) = 0;
-
-  // Specifies if creating multiple surfaces on a window is broken on this
-  // platform and a new window is required. This should return false on most
-  // implementations.
-  virtual bool MultipleSurfaceUnsupported() = 0;
 };
 
 }  // namespace chromecast

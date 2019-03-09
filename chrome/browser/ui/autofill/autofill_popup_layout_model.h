@@ -7,19 +7,17 @@
 
 #include <stddef.h>
 
-#include "base/strings/string16.h"
+#include <string>
+
 #include "chrome/browser/ui/autofill/autofill_popup_view_delegate.h"
 #include "chrome/browser/ui/autofill/popup_view_common.h"
+#include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_widget_types.h"
+#include "ui/native_theme/native_theme.h"
 
 namespace gfx {
-class Display;
-class Point;
-}
-
-namespace ui {
-class KeyEvent;
+class ImageSkia;
 }
 
 namespace autofill {
@@ -28,16 +26,23 @@ namespace autofill {
 // TODO(mathp): investigate moving ownership of this class to the view.
 class AutofillPopupLayoutModel {
  public:
-  explicit AutofillPopupLayoutModel(AutofillPopupViewDelegate* delegate);
+  AutofillPopupLayoutModel(AutofillPopupViewDelegate* delegate,
+                           bool is_credit_card_popup);
+
+  ~AutofillPopupLayoutModel();
 
   // The minimum amount of padding between the Autofill name and subtext,
-  // in pixels.
+  // in dip.
   static const int kNamePadding = 15;
 
-  // The amount of padding between icons in pixels.
+  // The amount of padding around icons in dip.
   static const int kIconPadding = 5;
 
-  // The amount of padding at the end of the popup in pixels.
+  // The amount of horizontal padding around icons in dip for the case, when
+  // icon is located on the left side.
+  static const int kPaddingAfterLeadingIcon = 8;
+
+  // The amount of padding at the end of the popup in dip.
   static const int kEndPadding = 8;
 
 #if !defined(OS_ANDROID)
@@ -60,6 +65,17 @@ class AutofillPopupLayoutModel {
   // Calculates and sets the bounds of the popup, including placing it properly
   // to prevent it from going off the screen.
   void UpdatePopupBounds();
+
+  // The same font can vary based on the type of data it is showing at the row
+  // |index|.
+  const gfx::FontList& GetValueFontListForRow(size_t index) const;
+  const gfx::FontList& GetLabelFontListForRow(size_t index) const;
+
+  // Returns the value font color ID of the row item according to its |index|.
+  ui::NativeTheme::ColorId GetValueFontColorIDForRow(size_t index) const;
+
+  // Returns the icon image of the item at |index| in the popup.
+  gfx::ImageSkia GetIconImage(size_t index) const;
 #endif
 
   // Convert a y-coordinate to the closest line.
@@ -71,20 +87,44 @@ class AutofillPopupLayoutModel {
   // the top left of the popup.
   gfx::Rect GetRowBounds(size_t index) const;
 
-  // Gets the resource value for the given resource, returning -1 if the
+  // Gets the resource value for the given resource, returning 0 if the
   // resource isn't recognized.
-  int GetIconResourceID(const base::string16& resource_name) const;
+  int GetIconResourceID(const std::string& resource_name) const;
+
+  // Returns the string id for an accessible name which should be used to
+  // describe the given resource. Returns 0 if the resource isn't recognized;
+  // note that this doesn't necessarily mean anything went wrong, as some valid
+  // resources are intentionally omitted for screen readers.
+  int GetIconAccessibleNameResourceId(const std::string& resource_name) const;
+
+  bool is_credit_card_popup() const { return is_credit_card_popup_; }
+
+  // Allows the provision of another implementation of view_common, for use in
+  // unit tests where using the real thing could cause crashes.
+  void SetUpForTesting(std::unique_ptr<PopupViewCommon> view_common);
 
  private:
   // Returns the enclosing rectangle for the element_bounds.
   const gfx::Rect RoundedElementBounds() const;
 
+#if !defined(OS_ANDROID)
+  // The fonts for the popup text.
+  // Normal font (readable size, non bold).
+  gfx::FontList normal_font_list_;
+  // Slightly smaller than the normal font.
+  gfx::FontList smaller_font_list_;
+  // Bold version of the normal font.
+  gfx::FontList bold_font_list_;
+#endif
+
   // The bounds of the Autofill popup.
   gfx::Rect popup_bounds_;
 
-  PopupViewCommon view_common_;
+  std::unique_ptr<PopupViewCommon> view_common_;
 
   AutofillPopupViewDelegate* delegate_;  // Weak reference.
+
+  const bool is_credit_card_popup_;
 
   DISALLOW_COPY_AND_ASSIGN(AutofillPopupLayoutModel);
 };

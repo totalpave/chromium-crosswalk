@@ -12,6 +12,7 @@
 #include "base/bind_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/browser/bookmark_storage.h"
@@ -30,35 +31,35 @@ std::unique_ptr<BookmarkModel> TestBookmarkClient::CreateModel() {
 // static
 std::unique_ptr<BookmarkModel> TestBookmarkClient::CreateModelWithClient(
     std::unique_ptr<BookmarkClient> client) {
+  BookmarkClient* client_ptr = client.get();
   std::unique_ptr<BookmarkModel> bookmark_model(
       new BookmarkModel(std::move(client)));
   std::unique_ptr<BookmarkLoadDetails> details =
-      bookmark_model->CreateLoadDetails();
+      std::make_unique<BookmarkLoadDetails>(client_ptr);
   details->LoadExtraNodes();
+  details->CreateUrlIndex();
   bookmark_model->DoneLoading(std::move(details));
   return bookmark_model;
 }
 
 void TestBookmarkClient::SetExtraNodesToLoad(
     BookmarkPermanentNodeList extra_nodes) {
-  extra_nodes_to_load_ = std::move(extra_nodes);
-  // Keep a copy in |extra_nodes_| for the acessor.
-  extra_nodes_ = extra_nodes_to_load_.get();
+  extra_nodes_ = std::move(extra_nodes);
+  // Keep a copy of the nodes in |unowned_extra_nodes_| for the accessor
+  // functions.
+  for (const auto& node : extra_nodes_)
+    unowned_extra_nodes_.push_back(node.get());
 }
 
 bool TestBookmarkClient::IsExtraNodeRoot(const BookmarkNode* node) {
-  for (size_t i = 0; i < extra_nodes_.size(); ++i) {
-    if (node == extra_nodes_[i])
-      return true;
-  }
-  return false;
+  return base::ContainsValue(unowned_extra_nodes_, node);
 }
 
 bool TestBookmarkClient::IsAnExtraNode(const BookmarkNode* node) {
   if (!node)
     return false;
-  for (size_t i = 0; i < extra_nodes_.size(); ++i) {
-    if (node->HasAncestor(extra_nodes_[i]))
+  for (const auto* extra_node : unowned_extra_nodes_) {
+    if (node->HasAncestor(extra_node))
       return true;
   }
   return false;
@@ -77,8 +78,8 @@ void TestBookmarkClient::RecordAction(const base::UserMetricsAction& action) {
 }
 
 LoadExtraCallback TestBookmarkClient::GetLoadExtraNodesCallback() {
-  return base::Bind(&TestBookmarkClient::LoadExtraNodes,
-                    base::Passed(&extra_nodes_to_load_));
+  return base::BindOnce(&TestBookmarkClient::LoadExtraNodes,
+                        std::move(extra_nodes_));
 }
 
 bool TestBookmarkClient::CanSetPermanentNodeTitle(
@@ -93,6 +94,14 @@ bool TestBookmarkClient::CanSyncNode(const BookmarkNode* node) {
 bool TestBookmarkClient::CanBeEditedByUser(const BookmarkNode* node) {
   return !IsAnExtraNode(node);
 }
+
+std::string TestBookmarkClient::EncodeBookmarkSyncMetadata() {
+  return std::string();
+}
+
+void TestBookmarkClient::DecodeBookmarkSyncMetadata(
+    const std::string& metadata_str,
+    const base::RepeatingClosure& schedule_save_closure) {}
 
 // static
 BookmarkPermanentNodeList TestBookmarkClient::LoadExtraNodes(

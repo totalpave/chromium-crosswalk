@@ -16,12 +16,7 @@
 #include "chrome/common/extensions/api/dashboard_private.h"
 #include "extensions/browser/extension_function.h"
 
-class GURL;
 class SkBitmap;
-
-namespace chrome {
-class BitmapFetcher;
-}  // namespace chrome
 
 namespace extensions {
 
@@ -47,9 +42,10 @@ class DashboardPrivateShowPermissionPromptForDelegatedInstallFunction
   ExtensionFunction::ResponseAction Run() override;
 
   // WebstoreInstallHelper::Delegate:
-  void OnWebstoreParseSuccess(const std::string& id,
-                              const SkBitmap& icon,
-                              base::DictionaryValue* parsed_manifest) override;
+  void OnWebstoreParseSuccess(
+      const std::string& id,
+      const SkBitmap& icon,
+      std::unique_ptr<base::DictionaryValue> parsed_manifest) override;
   void OnWebstoreParseFailure(const std::string& id,
                               InstallHelperResultCode result,
                               const std::string& error_message) override;

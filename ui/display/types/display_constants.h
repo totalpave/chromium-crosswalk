@@ -5,17 +5,31 @@
 #ifndef UI_DISPLAY_TYPES_DISPLAY_CONSTANTS_H_
 #define UI_DISPLAY_TYPES_DISPLAY_CONSTANTS_H_
 
-namespace ui {
+#include <stdint.h>
+
+namespace display {
+
+// Display ID that represents an invalid display. Often used as a default value
+// before display IDs are known.
+constexpr int64_t kInvalidDisplayId = -1;
+
+// Display ID that represents a valid display to be used when there's no actual
+// display connected.
+constexpr int64_t kDefaultDisplayId = 0xFF;
+
+// Display ID for a virtual display assigned to a unified desktop.
+constexpr int64_t kUnifiedDisplayId = -10;
+
+// Invalid year of manufacture of the display.
+constexpr int32_t kInvalidYearOfManufacture = -1;
 
 // Used to describe the state of a multi-display configuration.
 enum MultipleDisplayState {
   MULTIPLE_DISPLAY_STATE_INVALID,
   MULTIPLE_DISPLAY_STATE_HEADLESS,
   MULTIPLE_DISPLAY_STATE_SINGLE,
-  MULTIPLE_DISPLAY_STATE_DUAL_MIRROR,
-  MULTIPLE_DISPLAY_STATE_DUAL_EXTENDED,
-  // TODO(oshima): consolidate DUAL_EXTENDED and MULTI_EXTENDED.
-  MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED,
+  MULTIPLE_DISPLAY_STATE_MULTI_MIRROR,    // 2+ displays in mirror mode.
+  MULTIPLE_DISPLAY_STATE_MULTI_EXTENDED,  // 2+ displays in extended mode.
 };
 
 // Video output types.
@@ -28,10 +42,9 @@ enum DisplayConnectionType {
   DISPLAY_CONNECTION_TYPE_DVI = 1 << 4,
   DISPLAY_CONNECTION_TYPE_DISPLAYPORT = 1 << 5,
   DISPLAY_CONNECTION_TYPE_NETWORK = 1 << 6,
-  DISPLAY_CONNECTION_TYPE_VIRTUAL = 1 << 7,
 
   // Update this when adding a new type.
-  DISPLAY_CONNECTION_TYPE_LAST = DISPLAY_CONNECTION_TYPE_VIRTUAL
+  DISPLAY_CONNECTION_TYPE_LAST = DISPLAY_CONNECTION_TYPE_NETWORK
 };
 
 // Content protection methods applied on video output.
@@ -50,16 +63,6 @@ enum HDCPState {
   HDCP_STATE_LAST = HDCP_STATE_ENABLED
 };
 
-// Color calibration profiles. Don't change the order, and edit
-// tools/metrics/histograms/histograms.xml when a new item is added.
-enum ColorCalibrationProfile {
-  COLOR_PROFILE_STANDARD,
-  COLOR_PROFILE_DYNAMIC,
-  COLOR_PROFILE_MOVIE,
-  COLOR_PROFILE_READING,
-  NUM_COLOR_PROFILES,
-};
-
-}  // namespace ui
+}  // namespace display
 
 #endif  // UI_DISPLAY_TYPES_DISPLAY_CONSTANTS_H_

@@ -10,12 +10,9 @@
 #include <GLES2/gl2ext.h>
 #include <GLES2/gl2extchromium.h>
 
-#include "base/command_line.h"
-#include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/tests/gl_manager.h"
 #include "gpu/command_buffer/tests/gl_test_utils.h"
-#include "gpu/config/gpu_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace gpu {
@@ -29,8 +26,7 @@ class GLIOSurfaceReadbackWorkaroundTest : public testing::Test {
 
  protected:
   void SetUp() override {
-    base::CommandLine command_line(0, NULL);
-    gl_.InitializeWithCommandLine(GLManager::Options(), command_line);
+    gl_.Initialize(GLManager::Options());
     gl_.set_use_iosurface_memory_buffers(true);
   }
 
@@ -51,8 +47,10 @@ TEST_F(GLIOSurfaceReadbackWorkaroundTest, ReadPixels) {
   glBindTexture(source_target, source_texture);
   glTexParameteri(source_target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(source_target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  GLuint image_id = glCreateGpuMemoryBufferImageCHROMIUM(
-      width, height, GL_RGBA, GL_READ_WRITE_CHROMIUM);
+  std::unique_ptr<gfx::GpuMemoryBuffer> buffer(gl_.CreateGpuMemoryBuffer(
+      gfx::Size(width, height), gfx::BufferFormat::RGBA_8888));
+  GLuint image_id =
+      glCreateImageCHROMIUM(buffer->AsClientBuffer(), width, height, GL_RGBA);
   ASSERT_NE(0u, image_id);
   glBindTexImage2DCHROMIUM(source_target, image_id);
 
@@ -67,14 +65,14 @@ TEST_F(GLIOSurfaceReadbackWorkaroundTest, ReadPixels) {
   glClearColor(33.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0, 66.0 / 255.0);
   glClear(GL_COLOR_BUFFER_BIT);
   const uint8_t expected[4] = {33, 44, 55, 66};
-  EXPECT_TRUE(
-      GLTestHelper::CheckPixels(0, 0, 1, 1, 1 /* tolerance */, expected));
+  EXPECT_TRUE(GLTestHelper::CheckPixels(0, 0, 1, 1, 1 /* tolerance */, expected,
+                                        nullptr));
 
   glClearColor(14.0 / 255.0, 15.0 / 255.0, 16.0 / 255.0, 17.0 / 255.0);
   glClear(GL_COLOR_BUFFER_BIT);
   const uint8_t expected2[4] = {14, 15, 16, 17};
-  EXPECT_TRUE(
-      GLTestHelper::CheckPixels(0, 0, 1, 1, 1 /* tolerance */, expected2));
+  EXPECT_TRUE(GLTestHelper::CheckPixels(0, 0, 1, 1, 1 /* tolerance */,
+                                        expected2, nullptr));
 
   glReleaseTexImage2DCHROMIUM(source_target, image_id);
   glDestroyImageCHROMIUM(image_id);

@@ -9,11 +9,12 @@
 
 #include "base/macros.h"
 #include "components/policy/policy_export.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace policy {
 
 class RemoteCommandJob;
+class RemoteCommandsService;
 
 // An interface class for creating remote commands based on command type.
 class POLICY_EXPORT RemoteCommandsFactory {
@@ -21,7 +22,8 @@ class POLICY_EXPORT RemoteCommandsFactory {
   virtual ~RemoteCommandsFactory();
 
   virtual std::unique_ptr<RemoteCommandJob> BuildJobForType(
-      enterprise_management::RemoteCommand_Type type) = 0;
+      enterprise_management::RemoteCommand_Type type,
+      RemoteCommandsService* service) = 0;
 
  private:
   DISALLOW_ASSIGN(RemoteCommandsFactory);

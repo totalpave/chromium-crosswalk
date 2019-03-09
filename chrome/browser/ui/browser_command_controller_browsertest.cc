@@ -7,6 +7,7 @@
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
@@ -14,6 +15,8 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/sessions/tab_restore_service_factory.h"
+#include "chrome/browser/sessions/tab_restore_service_load_waiter.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_finder.h"
@@ -23,14 +26,23 @@
 #include "chrome/browser/ui/tab_modal_confirm_dialog_browsertest.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/signin/core/common/profile_management_switches.h"
+#include "components/sessions/core/tab_restore_service.h"
+#include "components/sessions/core/tab_restore_service_observer.h"
+#include "components/signin/core/browser/account_consistency_method.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/test_utils.h"
 
 #if defined(OS_CHROMEOS)
-#include "chromeos/chromeos_switches.h"
+#include "ash/public/cpp/window_pin_type.h"
+#include "ash/public/cpp/window_properties.h"
+#include "ash/public/interfaces/window_pin_type.mojom.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "ui/aura/window.h"
 #endif
+
+namespace chrome {
 
 class BrowserCommandControllerBrowserTest: public InProcessBrowserTest {
  public:
@@ -38,8 +50,6 @@ class BrowserCommandControllerBrowserTest: public InProcessBrowserTest {
   ~BrowserCommandControllerBrowserTest() override {}
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    InProcessBrowserTest::SetUpCommandLine(command_line);
-
 #if defined(OS_CHROMEOS)
     command_line->AppendSwitch(
         chromeos::switches::kIgnoreUserProfileMappingForTests);
@@ -67,7 +77,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest, DisableFind) {
   EXPECT_TRUE(chrome::IsCommandEnabled(browser(), IDC_FIND));
 
   // Switching back to the blocked tab should disable it again.
-  browser()->tab_strip_model()->ActivateTabAt(0, false);
+  browser()->tab_strip_model()->ActivateTabAt(0);
   EXPECT_FALSE(chrome::IsCommandEnabled(browser(), IDC_FIND));
 
   // Closing the constrained window should reenable it.
@@ -87,7 +97,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
   // does incomplete initialization that would lead to
   // SystemUrlRequestContextGetter being leaked.
   content::WindowedNotificationObserver browser_creation_observer(
-      chrome::NOTIFICATION_BROWSER_WINDOW_READY,
+      chrome::NOTIFICATION_BROWSER_OPENED,
       content::NotificationService::AllSources());
   profiles::SwitchToGuestProfile(ProfileManager::CreateCallback());
 
@@ -107,8 +117,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
   // on to a CallbackList::Subscription forever.
   TemplateURLServiceFactory::GetForProfile(guest)->set_loaded(true);
 
-  const CommandUpdater* command_updater =
-      browser->command_controller()->command_updater();
+  const CommandUpdater* command_updater = browser->command_controller();
   #if defined(OS_CHROMEOS)
     // Chrome OS uses system tray menu to handle multi-profiles.
     EXPECT_FALSE(command_updater->IsCommandEnabled(IDC_SHOW_AVATAR_MENU));
@@ -116,3 +125,102 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
     EXPECT_TRUE(command_updater->IsCommandEnabled(IDC_SHOW_AVATAR_MENU));
   #endif
 }
+
+#if defined(OS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest, LockedFullscreen) {
+  CommandUpdaterImpl* command_updater =
+      &browser()->command_controller()->command_updater_;
+  // IDC_EXIT is always enabled in regular mode so it's a perfect candidate for
+  // testing.
+  EXPECT_TRUE(command_updater->IsCommandEnabled(IDC_EXIT));
+  // Set locked fullscreen mode.
+  browser()->window()->GetNativeWindow()->SetProperty(
+      ash::kWindowPinTypeKey, ash::mojom::WindowPinType::TRUSTED_PINNED);
+  // Update the corresponding command_controller state.
+  browser()->command_controller()->LockedFullscreenStateChanged();
+  // Update some more states just to make sure the wrong commands don't get
+  // enabled.
+  browser()->command_controller()->TabStateChanged();
+  browser()->command_controller()->FullscreenStateChanged();
+  browser()->command_controller()->PrintingStateChanged();
+  browser()->command_controller()->ExtensionStateChanged();
+  // IDC_EXIT is not enabled in locked fullscreen.
+  EXPECT_FALSE(command_updater->IsCommandEnabled(IDC_EXIT));
+
+  constexpr int kWhitelistedIds[] = {IDC_CUT, IDC_COPY, IDC_PASTE};
+
+  // Go through all the command ids and make sure all non-whitelisted commands
+  // are disabled.
+  for (int id : command_updater->GetAllIds()) {
+    if (base::ContainsValue(kWhitelistedIds, id)) {
+      continue;
+    }
+    EXPECT_FALSE(command_updater->IsCommandEnabled(id));
+  }
+
+  // Verify the set of whitelisted commands.
+  for (int id : kWhitelistedIds) {
+    EXPECT_TRUE(command_updater->IsCommandEnabled(id));
+  }
+
+  // Exit locked fullscreen mode.
+  browser()->window()->GetNativeWindow()->SetProperty(
+      ash::kWindowPinTypeKey, ash::mojom::WindowPinType::NONE);
+  // Update the corresponding command_controller state.
+  browser()->command_controller()->LockedFullscreenStateChanged();
+  // IDC_EXIT is enabled again.
+  EXPECT_TRUE(command_updater->IsCommandEnabled(IDC_EXIT));
+}
+#endif
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
+                       TestTabRestoreServiceInitialized) {
+  // Note: The command should start out as enabled as the default.
+  // All the initialization happens before any test code executes,
+  // so we can't validate it.
+
+  // The TabRestoreService should get initialized (Loaded)
+  // automatically upon launch.
+  // Wait for robustness because InProcessBrowserTest::PreRunTestOnMainThread
+  // does not flush the task scheduler.
+  TabRestoreServiceLoadWaiter waiter(browser());
+  waiter.Wait();
+
+  // After initialization, the command should become disabled because there's
+  // nothing to restore.
+  chrome::BrowserCommandController* commandController =
+      browser()->command_controller();
+  ASSERT_EQ(false, commandController->IsCommandEnabled(IDC_RESTORE_TAB));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
+                       PRE_TestTabRestoreCommandEnabled) {
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), GURL("about:"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_NAVIGATION);
+  ASSERT_EQ(2, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
+  content::WebContents* tab_to_close =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::WebContentsDestroyedWatcher destroyed_watcher(tab_to_close);
+  browser()->tab_strip_model()->CloseSelectedTabs();
+  destroyed_watcher.Wait();
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
+                       TestTabRestoreCommandEnabled) {
+  // The TabRestoreService should get initialized (Loaded)
+  // automatically upon launch.
+  // Wait for robustness because InProcessBrowserTest::PreRunTestOnMainThread
+  // does not flush the task scheduler.
+  TabRestoreServiceLoadWaiter waiter(browser());
+  waiter.Wait();
+
+  // After initialization, the command should remain enabled because there's
+  // one tab to restore.
+  chrome::BrowserCommandController* commandController =
+      browser()->command_controller();
+  ASSERT_EQ(true, commandController->IsCommandEnabled(IDC_RESTORE_TAB));
+}
+
+}  // namespace chrome

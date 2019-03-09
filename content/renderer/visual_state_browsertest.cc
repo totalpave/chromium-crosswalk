@@ -2,9 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/command_line.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/run_loop.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/renderer/render_view.h"
@@ -71,7 +74,7 @@ class VisualStateTest : public ContentBrowserTest {
   }
 
   void AssertIsIdle() {
-    ASSERT_TRUE(base::MessageLoop::current()->IsIdleForTesting());
+    ASSERT_TRUE(base::MessageLoopCurrent::Get()->IsIdleForTesting());
   }
 
   void InvokeVisualStateCallback(bool result) {
@@ -101,8 +104,8 @@ IN_PROC_BROWSER_TEST_F(VisualStateTest, DISABLED_CallbackDoesNotDeadlock) {
   // with a high level of confidence if we used a timeout, but that's
   // discouraged (see https://codereview.chromium.org/939673002).
   NavigateToURL(shell(), GURL("about:blank"));
-  CommitObserver observer(
-      RenderView::FromRoutingID(shell()->web_contents()->GetRoutingID()));
+  CommitObserver observer(RenderView::FromRoutingID(
+      shell()->web_contents()->GetRenderViewHost()->GetRoutingID()));
 
   // Wait for the commit corresponding to the load.
 
@@ -114,8 +117,9 @@ IN_PROC_BROWSER_TEST_F(VisualStateTest, DISABLED_CallbackDoesNotDeadlock) {
       base::Bind(&VisualStateTest::AssertIsIdle, base::Unretained(this)));
 
   // Insert a visual state callback.
-  shell()->web_contents()->GetMainFrame()->InsertVisualStateCallback(base::Bind(
-      &VisualStateTest::InvokeVisualStateCallback, base::Unretained(this)));
+  shell()->web_contents()->GetMainFrame()->InsertVisualStateCallback(
+      base::BindOnce(&VisualStateTest::InvokeVisualStateCallback,
+                     base::Unretained(this)));
 
   // Verify that the callback is invoked and a new commit completed.
   PostTaskToInProcessRendererAndWait(base::Bind(

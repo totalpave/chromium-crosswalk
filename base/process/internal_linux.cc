@@ -19,6 +19,11 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 
+// Not defined on AIX by default.
+#if defined(OS_AIX)
+#define NAME_MAX 255
+#endif
+
 namespace base {
 namespace internal {
 
@@ -101,8 +106,8 @@ bool ParseProcStats(const std::string& stats_data,
   std::vector<std::string> other_stats = SplitString(
       stats_data.substr(close_parens_idx + 2), " ",
       base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-  for (size_t i = 0; i < other_stats.size(); ++i)
-    proc_stats->push_back(other_stats[i]);
+  for (const auto& i : other_stats)
+    proc_stats->push_back(i);
   return true;
 }
 
@@ -110,8 +115,8 @@ typedef std::map<std::string, std::string> ProcStatMap;
 void ParseProcStat(const std::string& contents, ProcStatMap* output) {
   StringPairs key_value_pairs;
   SplitStringIntoKeyValuePairs(contents, ' ', '\n', &key_value_pairs);
-  for (size_t i = 0; i < key_value_pairs.size(); ++i) {
-    output->insert(key_value_pairs[i]);
+  for (auto& i : key_value_pairs) {
+    output->insert(std::move(i));
   }
 }
 
@@ -133,14 +138,25 @@ size_t GetProcStatsFieldAsSizeT(const std::vector<std::string>& proc_stats,
   return StringToSizeT(proc_stats[field_num], &value) ? value : 0;
 }
 
-int64_t ReadProcStatsAndGetFieldAsInt64(pid_t pid, ProcStatsFields field_num) {
+int64_t ReadStatFileAndGetFieldAsInt64(const FilePath& stat_file,
+                                       ProcStatsFields field_num) {
   std::string stats_data;
-  if (!ReadProcStats(pid, &stats_data))
+  if (!ReadProcFile(stat_file, &stats_data))
     return 0;
   std::vector<std::string> proc_stats;
   if (!ParseProcStats(stats_data, &proc_stats))
     return 0;
   return GetProcStatsFieldAsInt64(proc_stats, field_num);
+}
+
+int64_t ReadProcStatsAndGetFieldAsInt64(pid_t pid, ProcStatsFields field_num) {
+  FilePath stat_file = internal::GetProcPidDir(pid).Append(kStatFile);
+  return ReadStatFileAndGetFieldAsInt64(stat_file, field_num);
+}
+
+int64_t ReadProcSelfStatsAndGetFieldAsInt64(ProcStatsFields field_num) {
+  FilePath stat_file = FilePath(kProcDir).Append("self").Append(kStatFile);
+  return ReadStatFileAndGetFieldAsInt64(stat_file, field_num);
 }
 
 size_t ReadProcStatsAndGetFieldAsSizeT(pid_t pid,
@@ -168,6 +184,32 @@ Time GetBootTime() {
   if (!StringToInt(btime_it->second, &btime))
     return Time();
   return Time::FromTimeT(btime);
+}
+
+TimeDelta GetUserCpuTimeSinceBoot() {
+  FilePath path("/proc/stat");
+  std::string contents;
+  if (!ReadProcFile(path, &contents))
+    return TimeDelta();
+
+  ProcStatMap proc_stat;
+  ParseProcStat(contents, &proc_stat);
+  ProcStatMap::const_iterator cpu_it = proc_stat.find("cpu");
+  if (cpu_it == proc_stat.end())
+    return TimeDelta();
+
+  std::vector<std::string> cpu = SplitString(
+      cpu_it->second, kWhitespaceASCII, TRIM_WHITESPACE, SPLIT_WANT_NONEMPTY);
+
+  if (cpu.size() < 2 || cpu[0] != "cpu")
+    return TimeDelta();
+
+  uint64_t user;
+  uint64_t nice;
+  if (!StringToUint64(cpu[0], &user) || !StringToUint64(cpu[1], &nice))
+    return TimeDelta();
+
+  return ClockTicksToTimeDelta(user + nice);
 }
 
 TimeDelta ClockTicksToTimeDelta(int clock_ticks) {

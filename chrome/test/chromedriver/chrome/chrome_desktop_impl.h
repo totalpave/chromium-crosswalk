@@ -7,12 +7,13 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
-#include "base/files/scoped_temp_dir.h"
 #include "base/process/process.h"
 #include "chrome/test/chromedriver/chrome/chrome_impl.h"
+#include "chrome/test/chromedriver/chrome/scoped_temp_dir_with_retry.h"
 
 namespace base {
 class TimeDelta;
@@ -26,25 +27,28 @@ class WebView;
 
 class ChromeDesktopImpl : public ChromeImpl {
  public:
-  ChromeDesktopImpl(
-      std::unique_ptr<DevToolsHttpClient> http_client,
-      std::unique_ptr<DevToolsClient> websocket_client,
-      ScopedVector<DevToolsEventListener>& devtools_event_listeners,
-      std::unique_ptr<PortReservation> port_reservation,
-      base::Process process,
-      const base::CommandLine& command,
-      base::ScopedTempDir* user_data_dir,
-      base::ScopedTempDir* extension_dir);
+  ChromeDesktopImpl(std::unique_ptr<DevToolsHttpClient> http_client,
+                    std::unique_ptr<DevToolsClient> websocket_client,
+                    std::vector<std::unique_ptr<DevToolsEventListener>>
+                        devtools_event_listeners,
+                    std::string page_load_strategy,
+                    base::Process process,
+                    const base::CommandLine& command,
+                    base::ScopedTempDir* user_data_dir,
+                    base::ScopedTempDir* extension_dir,
+                    bool network_emulation_enabled);
   ~ChromeDesktopImpl() override;
 
   // Waits for a page with the given URL to appear and finish loading.
   // Returns an error if the timeout is exceeded.
   Status WaitForPageToLoad(const std::string& url,
                            const base::TimeDelta& timeout,
-                           std::unique_ptr<WebView>* web_view);
+                           std::unique_ptr<WebView>* web_view,
+                           bool w3c_compliant);
 
   // Gets the installed automation extension.
-  Status GetAutomationExtension(AutomationExtension** extension);
+  Status GetAutomationExtension(AutomationExtension** extension,
+                                bool w3c_compliant);
 
   // Overridden from Chrome:
   Status GetAsDesktop(ChromeDesktopImpl** desktop) override;
@@ -56,15 +60,18 @@ class ChromeDesktopImpl : public ChromeImpl {
   Status QuitImpl() override;
 
   const base::CommandLine& command() const;
+  bool IsNetworkConnectionEnabled() const;
 
   int GetNetworkConnection() const;
   void SetNetworkConnection(int network_connection);
 
  private:
+
   base::Process process_;
   base::CommandLine command_;
-  base::ScopedTempDir user_data_dir_;
-  base::ScopedTempDir extension_dir_;
+  ScopedTempDirWithRetry user_data_dir_;
+  ScopedTempDirWithRetry extension_dir_;
+  bool network_connection_enabled_;
   int network_connection_;
 
   // Lazily initialized, may be null.

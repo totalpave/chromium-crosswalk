@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/format_macros.h"
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -14,8 +15,11 @@
 #include "base/trace_event/trace_event.h"
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/command_buffer/service/feature_info.h"
+#include "gpu/command_buffer/service/framebuffer_manager.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
 #include "gpu/command_buffer/service/memory_tracking.h"
+#include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_version_info.h"
 #include "ui/gl/trace_util.h"
@@ -92,6 +96,21 @@ size_t Renderbuffer::GetSignatureSize() const {
   return sizeof(RenderbufferTag) + sizeof(RenderbufferSignature);
 }
 
+void Renderbuffer::SetInfoAndInvalidate(GLsizei samples,
+                                        GLenum internalformat,
+                                        GLsizei width,
+                                        GLsizei height) {
+  samples_ = samples;
+  internal_format_ = internalformat;
+  width_ = width;
+  height_ = height;
+  cleared_ = false;
+  allocated_ = true;
+  for (auto& point : framebuffer_attachment_points_) {
+    point.first->UnmarkAsComplete();
+  }
+}
+
 void Renderbuffer::AddToSignature(std::string* signature) const {
   DCHECK(signature);
   RenderbufferSignature signature_data(internal_format_,
@@ -111,12 +130,73 @@ Renderbuffer::Renderbuffer(RenderbufferManager* manager,
       client_id_(client_id),
       service_id_(service_id),
       cleared_(true),
+      allocated_(false),
       has_been_bound_(false),
       samples_(0),
       internal_format_(GL_RGBA4),
       width_(0),
       height_(0) {
   manager_->StartTracking(this);
+}
+
+bool Renderbuffer::RegenerateAndBindBackingObjectIfNeeded(
+    const GpuDriverBugWorkarounds& workarounds) {
+  // There are two workarounds which need this code path:
+  //   depth_stencil_renderbuffer_resize_emulation
+  //   multisample_renderbuffer_resize_emulation
+  bool multisample_workaround =
+      workarounds.multisample_renderbuffer_resize_emulation;
+  bool depth_stencil_workaround =
+      workarounds.depth_stencil_renderbuffer_resize_emulation;
+  if (!multisample_workaround && !depth_stencil_workaround) {
+    return false;
+  }
+
+  if (!allocated_ || !has_been_bound_) {
+    return false;
+  }
+
+  bool workaround_needed = (multisample_workaround && samples_ > 0) ||
+                           (depth_stencil_workaround &&
+                            TextureManager::ExtractFormatFromStorageFormat(
+                                internal_format_) == GL_DEPTH_STENCIL);
+
+  if (!workaround_needed) {
+    return false;
+  }
+
+  GLint original_fbo = 0;
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &original_fbo);
+
+  glDeleteRenderbuffersEXT(1, &service_id_);
+  service_id_ = 0;
+  glGenRenderbuffersEXT(1, &service_id_);
+  glBindRenderbufferEXT(GL_RENDERBUFFER, service_id_);
+
+  // Attach new renderbuffer to all framebuffers
+  for (auto& point : framebuffer_attachment_points_) {
+    glBindFramebufferEXT(GL_DRAW_FRAMEBUFFER, point.first->service_id());
+    glFramebufferRenderbufferEXT(GL_DRAW_FRAMEBUFFER, point.second,
+                                 GL_RENDERBUFFER, service_id_);
+  }
+
+  glBindFramebufferEXT(GL_DRAW_FRAMEBUFFER, original_fbo);
+
+  allocated_ = false;
+  return true;
+}
+
+void Renderbuffer::AddFramebufferAttachmentPoint(Framebuffer* framebuffer,
+                                                 GLenum attachment) {
+  DCHECK_NE(static_cast<GLenum>(GL_DEPTH_STENCIL_ATTACHMENT), attachment);
+  framebuffer_attachment_points_.insert(
+      std::make_pair(framebuffer, attachment));
+}
+
+void Renderbuffer::RemoveFramebufferAttachmentPoint(Framebuffer* framebuffer,
+                                                    GLenum attachment) {
+  DCHECK_NE(static_cast<GLenum>(GL_DEPTH_STENCIL_ATTACHMENT), attachment);
+  framebuffer_attachment_points_.erase(std::make_pair(framebuffer, attachment));
 }
 
 Renderbuffer::~Renderbuffer() {
@@ -126,7 +206,7 @@ Renderbuffer::~Renderbuffer() {
       glDeleteRenderbuffersEXT(1, &id);
     }
     manager_->StopTracking(this);
-    manager_ = NULL;
+    manager_ = nullptr;
   }
 }
 
@@ -148,15 +228,17 @@ void RenderbufferManager::StopTracking(Renderbuffer* renderbuffer) {
   memory_type_tracker_->TrackMemFree(renderbuffer->EstimatedSize());
 }
 
-void RenderbufferManager::SetInfo(
-    Renderbuffer* renderbuffer,
-    GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height) {
+void RenderbufferManager::SetInfoAndInvalidate(Renderbuffer* renderbuffer,
+                                               GLsizei samples,
+                                               GLenum internalformat,
+                                               GLsizei width,
+                                               GLsizei height) {
   DCHECK(renderbuffer);
   if (!renderbuffer->cleared()) {
     --num_uncleared_renderbuffers_;
   }
   memory_type_tracker_->TrackMemFree(renderbuffer->EstimatedSize());
-  renderbuffer->SetInfo(samples, internalformat, width, height);
+  renderbuffer->SetInfoAndInvalidate(samples, internalformat, width, height);
   memory_type_tracker_->TrackMemAlloc(renderbuffer->EstimatedSize());
   if (!renderbuffer->cleared()) {
     ++num_uncleared_renderbuffers_;
@@ -190,7 +272,7 @@ void RenderbufferManager::CreateRenderbuffer(
 Renderbuffer* RenderbufferManager::GetRenderbuffer(
     GLuint client_id) {
   RenderbufferMap::iterator it = renderbuffers_.find(client_id);
-  return it != renderbuffers_.end() ? it->second.get() : NULL;
+  return it != renderbuffers_.end() ? it->second.get() : nullptr;
 }
 
 void RenderbufferManager::RemoveRenderbuffer(GLuint client_id) {
@@ -209,21 +291,13 @@ bool RenderbufferManager::ComputeEstimatedRenderbufferSize(
     int internal_format,
     uint32_t* size) const {
   DCHECK(size);
-
-  uint32_t temp = 0;
-  if (!SafeMultiplyUint32(width, height, &temp)) {
-    return false;
-  }
-  if (!SafeMultiplyUint32(temp, (samples == 0 ? 1 : samples), &temp)) {
-    return false;
-  }
   GLenum impl_format = InternalRenderbufferFormatToImplFormat(internal_format);
-  if (!SafeMultiplyUint32(
-      temp, GLES2Util::RenderbufferBytesPerPixel(impl_format), &temp)) {
-    return false;
-  }
-  *size = temp;
-  return true;
+  uint32_t bytes_per_pixel = GLES2Util::RenderbufferBytesPerPixel(impl_format);
+  base::CheckedNumeric<uint32_t> checked_size = width;
+  checked_size *= height;
+  checked_size *= (samples == 0 ? 1 : samples);
+  checked_size *= bytes_per_pixel;
+  return checked_size.AssignIfValid(size);
 }
 
 GLenum RenderbufferManager::InternalRenderbufferFormatToImplFormat(
@@ -250,25 +324,42 @@ GLenum RenderbufferManager::InternalRenderbufferFormatToImplFormat(
 bool RenderbufferManager::OnMemoryDump(
     const base::trace_event::MemoryDumpArgs& args,
     base::trace_event::ProcessMemoryDump* pmd) {
-  int client_id = memory_tracker_->ClientId();
+  using base::trace_event::MemoryAllocatorDump;
+  using base::trace_event::MemoryDumpLevelOfDetail;
+  const uint64_t context_group_tracing_id =
+      memory_tracker_->ContextGroupTracingId();
+
+  if (args.level_of_detail == MemoryDumpLevelOfDetail::BACKGROUND) {
+    std::string dump_name =
+        base::StringPrintf("gpu/gl/renderbuffers/context_group_0x%" PRIX64,
+                           context_group_tracing_id);
+    MemoryAllocatorDump* dump = pmd->CreateAllocatorDump(dump_name);
+    dump->AddScalar(MemoryAllocatorDump::kNameSize,
+                    MemoryAllocatorDump::kUnitsBytes, mem_represented());
+
+    // Early out, no need for more detail in a BACKGROUND dump.
+    return true;
+  }
+
   for (const auto& renderbuffer_entry : renderbuffers_) {
     const auto& client_renderbuffer_id = renderbuffer_entry.first;
     const auto& renderbuffer = renderbuffer_entry.second;
 
     std::string dump_name =
-        base::StringPrintf("gpu/gl/renderbuffers/client_%d/renderbuffer_%d",
-                           client_id, client_renderbuffer_id);
-    base::trace_event::MemoryAllocatorDump* dump =
-        pmd->CreateAllocatorDump(dump_name);
-    dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
-                    base::trace_event::MemoryAllocatorDump::kUnitsBytes,
+        base::StringPrintf("gpu/gl/renderbuffers/context_group_0x%" PRIX64
+                           "/renderbuffer_0x%" PRIX32,
+                           context_group_tracing_id, client_renderbuffer_id);
+    MemoryAllocatorDump* dump = pmd->CreateAllocatorDump(dump_name);
+    dump->AddScalar(MemoryAllocatorDump::kNameSize,
+                    MemoryAllocatorDump::kUnitsBytes,
                     static_cast<uint64_t>(renderbuffer->EstimatedSize()));
 
-    auto guid = gl::GetGLRenderbufferGUIDForTracing(
-        memory_tracker_->ShareGroupTracingGUID(), client_renderbuffer_id);
+    auto guid = gl::GetGLRenderbufferGUIDForTracing(context_group_tracing_id,
+                                                    client_renderbuffer_id);
     pmd->CreateSharedGlobalAllocatorDump(guid);
     pmd->AddOwnershipEdge(dump->guid(), guid);
   }
+
   return true;
 }
 

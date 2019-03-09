@@ -98,7 +98,9 @@ CertDbContentWatcher::CertDbContentWatcher(
   thread_checker_.DetachFromThread();
 }
 
-CertDbContentWatcher::~CertDbContentWatcher() {}
+CertDbContentWatcher::~CertDbContentWatcher() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+}
 
 void CertDbContentWatcher::StartWatching() {
   DCHECK(!cert_watch_path_.empty());
@@ -138,7 +140,8 @@ void CertDbContentWatcher::OnTimer() {
   if (new_hash != current_hash_) {
     current_hash_ = new_hash;
     caller_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&CertificateWatcher::DatabaseChanged, watcher_));
+        FROM_HERE,
+        base::BindOnce(&CertificateWatcher::DatabaseChanged, watcher_));
   } else {
     VLOG(1) << "Directory changed but contents are the same.";
   }
@@ -202,13 +205,13 @@ void CertificateWatcher::Start() {
                                                   cert_watch_path_, delay_));
 
   io_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&CertDbContentWatcher::StartWatching,
-                            base::Unretained(content_watcher_.get())));
+      FROM_HERE, base::BindOnce(&CertDbContentWatcher::StartWatching,
+                                base::Unretained(content_watcher_.get())));
 
   VLOG(1) << "Started watching certificate changes.";
 }
 
-void CertificateWatcher::SetMonitor(base::WeakPtr<HostStatusMonitor> monitor) {
+void CertificateWatcher::SetMonitor(scoped_refptr<HostStatusMonitor> monitor) {
   DCHECK(is_started());
   if (monitor_) {
     monitor_->RemoveStatusObserver(this);

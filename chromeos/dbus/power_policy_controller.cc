@@ -12,6 +12,10 @@
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "chromeos/dbus/power_manager/backlight.pb.h"
+
+// Avoid some ugly line-wrapping later.
+using base::StringAppendF;
 
 namespace chromeos {
 
@@ -23,24 +27,24 @@ PowerPolicyController* g_power_policy_controller = nullptr;
 // power_manager::PowerManagementPolicy::Delays object, to |str|, an
 // std::string, if the field is set.  |name| is a char* describing the
 // field.
-#define APPEND_DELAY(str, delays, field, name)                                 \
-    {                                                                          \
-      if (delays.has_##field())                                                \
-        str += base::StringPrintf(name "=%" PRId64 " ", delays.field());       \
-    }
+#define APPEND_DELAY(str, delays, field, name)                   \
+  {                                                              \
+    if (delays.has_##field())                                    \
+      StringAppendF(&str, name "=%" PRId64 " ", delays.field()); \
+  }
 
 // Appends descriptions of all of the set delays in |delays|, a
 // power_manager::PowerManagementPolicy::Delays object, to |str|, an
 // std::string.  |prefix| should be a char* containing either "ac" or
 // "battery".
-#define APPEND_DELAYS(str, delays, prefix)                                     \
-    {                                                                          \
-      APPEND_DELAY(str, delays, screen_dim_ms, prefix "_screen_dim_ms");       \
-      APPEND_DELAY(str, delays, screen_off_ms, prefix "_screen_off_ms");       \
-      APPEND_DELAY(str, delays, screen_lock_ms, prefix "_screen_lock_ms");     \
-      APPEND_DELAY(str, delays, idle_warning_ms, prefix "_idle_warning_ms");   \
-      APPEND_DELAY(str, delays, idle_ms, prefix "_idle_ms");                   \
-    }
+#define APPEND_DELAYS(str, delays, prefix)                                 \
+  {                                                                        \
+    APPEND_DELAY(str, delays, screen_dim_ms, prefix "_screen_dim_ms");     \
+    APPEND_DELAY(str, delays, screen_off_ms, prefix "_screen_off_ms");     \
+    APPEND_DELAY(str, delays, screen_lock_ms, prefix "_screen_lock_ms");   \
+    APPEND_DELAY(str, delays, idle_warning_ms, prefix "_idle_warning_ms"); \
+    APPEND_DELAY(str, delays, idle_ms, prefix "_idle_ms");                 \
+  }
 
 // Returns the power_manager::PowerManagementPolicy_Action value
 // corresponding to |action|.
@@ -103,6 +107,7 @@ PowerPolicyController::PrefValues::PrefValues()
       use_video_activity(true),
       ac_brightness_percent(-1.0),
       battery_brightness_percent(-1.0),
+      allow_wake_locks(true),
       allow_screen_wake_locks(true),
       enable_auto_screen_lock(false),
       presentation_screen_dim_delay_factor(1.0),
@@ -119,41 +124,46 @@ std::string PowerPolicyController::GetPolicyDebugString(
   if (policy.has_battery_delays())
     APPEND_DELAYS(str, policy.battery_delays(), "battery");
   if (policy.has_ac_idle_action())
-    str += base::StringPrintf("ac_idle=%d ", policy.ac_idle_action());
+    StringAppendF(&str, "ac_idle=%d ", policy.ac_idle_action());
   if (policy.has_battery_idle_action())
-    str += base::StringPrintf("battery_idle=%d ", policy.battery_idle_action());
+    StringAppendF(&str, "battery_idle=%d ", policy.battery_idle_action());
   if (policy.has_lid_closed_action())
-    str += base::StringPrintf("lid_closed=%d ", policy.lid_closed_action());
+    StringAppendF(&str, "lid_closed=%d ", policy.lid_closed_action());
+  if (policy.has_screen_wake_lock())
+    StringAppendF(&str, "screen_wake_lock=%d ", policy.screen_wake_lock());
+  if (policy.has_dim_wake_lock())
+    StringAppendF(&str, "dim_wake_lock=%d ", policy.dim_wake_lock());
+  if (policy.has_system_wake_lock())
+    StringAppendF(&str, "system_wake_lock=%d ", policy.system_wake_lock());
   if (policy.has_use_audio_activity())
-    str += base::StringPrintf("use_audio=%d ", policy.use_audio_activity());
+    StringAppendF(&str, "use_audio=%d ", policy.use_audio_activity());
   if (policy.has_use_video_activity())
-    str += base::StringPrintf("use_video=%d ", policy.use_audio_activity());
-  if (policy.has_ac_brightness_percent()) {
-    str += base::StringPrintf("ac_brightness_percent=%f ",
-        policy.ac_brightness_percent());
-  }
+    StringAppendF(&str, "use_video=%d ", policy.use_audio_activity());
+  if (policy.has_ac_brightness_percent())
+    StringAppendF(&str, "ac_brightness_percent=%f ",
+                  policy.ac_brightness_percent());
   if (policy.has_battery_brightness_percent()) {
-    str += base::StringPrintf("battery_brightness_percent=%f ",
-        policy.battery_brightness_percent());
+    StringAppendF(&str, "battery_brightness_percent=%f ",
+                  policy.battery_brightness_percent());
   }
   if (policy.has_presentation_screen_dim_delay_factor()) {
-    str += base::StringPrintf("presentation_screen_dim_delay_factor=%f ",
-        policy.presentation_screen_dim_delay_factor());
+    StringAppendF(&str, "presentation_screen_dim_delay_factor=%f ",
+                  policy.presentation_screen_dim_delay_factor());
   }
   if (policy.has_user_activity_screen_dim_delay_factor()) {
-    str += base::StringPrintf("user_activity_screen_dim_delay_factor=%f ",
-        policy.user_activity_screen_dim_delay_factor());
+    StringAppendF(&str, "user_activity_screen_dim_delay_factor=%f ",
+                  policy.user_activity_screen_dim_delay_factor());
   }
   if (policy.has_wait_for_initial_user_activity()) {
-    str += base::StringPrintf("wait_for_initial_user_activity=%d ",
-        policy.wait_for_initial_user_activity());
+    StringAppendF(&str, "wait_for_initial_user_activity=%d ",
+                  policy.wait_for_initial_user_activity());
   }
   if (policy.has_force_nonzero_brightness_for_user_activity()) {
-    str += base::StringPrintf("force_nonzero_brightness_for_user_activity=%d ",
-        policy.force_nonzero_brightness_for_user_activity());
+    StringAppendF(&str, "force_nonzero_brightness_for_user_activity=%d ",
+                  policy.force_nonzero_brightness_for_user_activity());
   }
   if (policy.has_reason())
-    str += base::StringPrintf("reason=\"%s\" ", policy.reason().c_str());
+    StringAppendF(&str, "reason=\"%s\" ", policy.reason().c_str());
   base::TrimWhitespaceASCII(str, base::TRIM_TRAILING, &str);
   return str;
 }
@@ -215,6 +225,7 @@ void PowerPolicyController::ApplyPrefs(const PrefValues& values) {
       lock_ms < delays->idle_ms()) {
     delays->set_screen_lock_ms(lock_ms);
   }
+  auto_screen_lock_enabled_ = values.enable_auto_screen_lock;
 
   prefs_policy_.set_ac_idle_action(GetProtoAction(values.ac_idle_action));
   prefs_policy_.set_battery_idle_action(
@@ -222,25 +233,41 @@ void PowerPolicyController::ApplyPrefs(const PrefValues& values) {
   prefs_policy_.set_lid_closed_action(GetProtoAction(values.lid_closed_action));
   prefs_policy_.set_use_audio_activity(values.use_audio_activity);
   prefs_policy_.set_use_video_activity(values.use_video_activity);
-  if (values.ac_brightness_percent >= 0.0)
-    prefs_policy_.set_ac_brightness_percent(values.ac_brightness_percent);
-  if (values.battery_brightness_percent >= 0.0) {
-    prefs_policy_.set_battery_brightness_percent(
-        values.battery_brightness_percent);
+
+  if (!per_session_brightness_override_) {
+    if (values.ac_brightness_percent >= 0.0)
+      prefs_policy_.set_ac_brightness_percent(values.ac_brightness_percent);
+    if (values.battery_brightness_percent >= 0.0) {
+      prefs_policy_.set_battery_brightness_percent(
+          values.battery_brightness_percent);
+    }
   }
+
   prefs_policy_.set_presentation_screen_dim_delay_factor(
       values.presentation_screen_dim_delay_factor);
   prefs_policy_.set_user_activity_screen_dim_delay_factor(
       values.user_activity_screen_dim_delay_factor);
+
   prefs_policy_.set_wait_for_initial_user_activity(
       values.wait_for_initial_user_activity);
   prefs_policy_.set_force_nonzero_brightness_for_user_activity(
       values.force_nonzero_brightness_for_user_activity);
 
-  honor_screen_wake_locks_ = values.allow_screen_wake_locks;
+  honor_wake_locks_ = values.allow_wake_locks;
+  honor_screen_wake_locks_ =
+      honor_wake_locks_ && values.allow_screen_wake_locks;
 
   prefs_were_set_ = true;
   SendCurrentPolicy();
+}
+
+base::TimeDelta PowerPolicyController::GetMaxPolicyAutoScreenLockDelay() {
+  if (!prefs_were_set_ || !auto_screen_lock_enabled_) {
+    return base::TimeDelta();
+  }
+  int ac_delay = prefs_policy_.ac_delays().screen_lock_ms();
+  int battery_delay = prefs_policy_.battery_delays().screen_lock_ms();
+  return base::TimeDelta::FromMilliseconds(std::max(ac_delay, battery_delay));
 }
 
 int PowerPolicyController::AddScreenWakeLock(WakeLockReason reason,
@@ -269,6 +296,17 @@ void PowerPolicyController::PowerManagerRestarted() {
   SendCurrentPolicy();
 }
 
+void PowerPolicyController::ScreenBrightnessChanged(
+    const power_manager::BacklightBrightnessChange& change) {
+  if (prefs_were_set_ &&
+      (prefs_policy_.has_ac_brightness_percent() ||
+       prefs_policy_.has_battery_brightness_percent()) &&
+      change.cause() ==
+          power_manager::BacklightBrightnessChange_Cause_USER_REQUEST) {
+    per_session_brightness_override_ = true;
+  }
+}
+
 void PowerPolicyController::NotifyChromeIsExiting() {
   if (chrome_is_exiting_)
     return;
@@ -276,12 +314,16 @@ void PowerPolicyController::NotifyChromeIsExiting() {
   SendCurrentPolicy();
 }
 
+void PowerPolicyController::SetEncryptionMigrationActive(bool active) {
+  if (encryption_migration_active_ == active)
+    return;
+
+  encryption_migration_active_ = active;
+  SendCurrentPolicy();
+}
+
 PowerPolicyController::PowerPolicyController(PowerManagerClient* client)
-    : client_(client),
-      prefs_were_set_(false),
-      honor_screen_wake_locks_(true),
-      next_wake_lock_id_(1),
-      chrome_is_exiting_(false) {
+    : client_(client) {
   DCHECK(client_);
   client_->AddObserver(this);
 }
@@ -296,8 +338,7 @@ PowerPolicyController::WakeLock::WakeLock(Type type,
     : type(type), reason(reason), description(description) {
 }
 
-PowerPolicyController::WakeLock::~WakeLock() {
-}
+PowerPolicyController::WakeLock::~WakeLock() = default;
 
 int PowerPolicyController::AddWakeLockInternal(WakeLock::Type type,
                                                WakeLockReason reason,
@@ -315,56 +356,55 @@ void PowerPolicyController::SendCurrentPolicy() {
   if (prefs_were_set_)
     causes = kPrefsReason;
 
-  bool have_screen_wake_locks = false;
-  bool have_dim_wake_locks = false;
-  bool have_system_wake_locks = false;
-  for (const auto& it : wake_locks_) {
-    // Skip audio and video locks that should be ignored due to policy.
-    if (!IsWakeLockReasonHonored(it.second.reason, policy.use_audio_activity(),
-                                 policy.use_video_activity()))
-      continue;
+  if (honor_wake_locks_) {
+    bool have_screen_wake_locks = false;
+    bool have_dim_wake_locks = false;
+    bool have_system_wake_locks = false;
+    for (const auto& it : wake_locks_) {
+      // Skip audio and video locks that should be ignored due to policy.
+      if (!IsWakeLockReasonHonored(it.second.reason,
+                                   policy.use_audio_activity(),
+                                   policy.use_video_activity()))
+        continue;
 
-    switch (it.second.type) {
-      case WakeLock::TYPE_SCREEN:
-        have_screen_wake_locks = true;
-        break;
-      case WakeLock::TYPE_DIM:
-        have_dim_wake_locks = true;
-        break;
-      case WakeLock::TYPE_SYSTEM:
-        have_system_wake_locks = true;
-        break;
+      switch (it.second.type) {
+        case WakeLock::TYPE_SCREEN:
+          have_screen_wake_locks = true;
+          break;
+        case WakeLock::TYPE_DIM:
+          have_dim_wake_locks = true;
+          break;
+        case WakeLock::TYPE_SYSTEM:
+          have_system_wake_locks = true;
+          break;
+      }
+      causes += (causes.empty() ? "" : ", ") + it.second.description;
     }
-    causes += (causes.empty() ? "" : ", ") + it.second.description;
+
+    // Downgrade full-brightness and dimmed-brightness locks to system locks if
+    // wake locks aren't allowed to keep the screen on.
+    if (!honor_screen_wake_locks_ &&
+        (have_screen_wake_locks || have_dim_wake_locks)) {
+      have_system_wake_locks = true;
+      have_screen_wake_locks = false;
+      have_dim_wake_locks = false;
+    }
+
+    if (have_screen_wake_locks)
+      policy.set_screen_wake_lock(true);
+    if (have_dim_wake_locks)
+      policy.set_dim_wake_lock(true);
+    if (have_system_wake_locks)
+      policy.set_system_wake_lock(true);
   }
 
-  if (honor_screen_wake_locks_ && have_screen_wake_locks) {
-    policy.mutable_ac_delays()->set_screen_dim_ms(0);
-    policy.mutable_ac_delays()->set_screen_off_ms(0);
-    policy.mutable_ac_delays()->set_screen_lock_ms(0);
-    policy.mutable_battery_delays()->set_screen_dim_ms(0);
-    policy.mutable_battery_delays()->set_screen_off_ms(0);
-    policy.mutable_battery_delays()->set_screen_lock_ms(0);
-  }
-
-  if (honor_screen_wake_locks_ && have_dim_wake_locks) {
-    policy.mutable_ac_delays()->set_screen_off_ms(0);
-    policy.mutable_ac_delays()->set_screen_lock_ms(0);
-    policy.mutable_battery_delays()->set_screen_off_ms(0);
-    policy.mutable_battery_delays()->set_screen_lock_ms(0);
-  }
-
-  if (have_screen_wake_locks || have_dim_wake_locks || have_system_wake_locks) {
-    if (!policy.has_ac_idle_action() || policy.ac_idle_action() ==
-        power_manager::PowerManagementPolicy_Action_SUSPEND) {
-      policy.set_ac_idle_action(
-          power_manager::PowerManagementPolicy_Action_DO_NOTHING);
-    }
-    if (!policy.has_battery_idle_action() || policy.battery_idle_action() ==
-        power_manager::PowerManagementPolicy_Action_SUSPEND) {
-      policy.set_battery_idle_action(
-          power_manager::PowerManagementPolicy_Action_DO_NOTHING);
-    }
+  if (encryption_migration_active_ &&
+      policy.lid_closed_action() !=
+          power_manager::PowerManagementPolicy_Action_DO_NOTHING) {
+    policy.set_lid_closed_action(
+        power_manager::PowerManagementPolicy_Action_SUSPEND);
+    causes +=
+        std::string((causes.empty() ? "" : ", ")) + "encryption migration";
   }
 
   // To avoid a race in the case where the user asks Chrome to sign out

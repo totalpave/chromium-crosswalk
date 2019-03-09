@@ -10,7 +10,14 @@ namespace chrome {
 
 content::BrowserContext* GetBrowserContextRedirectedInIncognito(
     content::BrowserContext* context) {
-  return static_cast<Profile*>(context)->GetOriginalProfile();
+  return Profile::FromBrowserContext(context)->GetOriginalProfile();
+}
+
+const content::BrowserContext* GetBrowserContextRedirectedInIncognito(
+    const content::BrowserContext* context) {
+  const Profile* profile = Profile::FromBrowserContext(
+      const_cast<content::BrowserContext*>(context));
+  return profile->GetOriginalProfile();
 }
 
 content::BrowserContext* GetBrowserContextOwnInstanceInIncognito(

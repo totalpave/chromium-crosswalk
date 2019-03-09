@@ -5,18 +5,16 @@
 #include "chrome/browser/ui/toolbar/test_toolbar_action_view_controller.h"
 
 #include "base/strings/string16.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_delegate.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
 
 TestToolbarActionViewController::TestToolbarActionViewController(
     const std::string& id)
-    : id_(id),
-      delegate_(nullptr),
-      is_enabled_(true),
-      wants_to_run_(false),
-      disabled_click_opens_menu_(false),
-      execute_action_count_(0) {
+    : id_(id) {
+  // Needs a non-empty accessible name to pass accessibility checks.
+  SetAccessibleName(base::ASCIIToUTF16("Default name"));
 }
 
 TestToolbarActionViewController::~TestToolbarActionViewController() {
@@ -66,7 +64,12 @@ bool TestToolbarActionViewController::HasPopup(
   return true;
 }
 
+bool TestToolbarActionViewController::IsShowingPopup() const {
+  return popup_showing_;
+}
+
 void TestToolbarActionViewController::HidePopup() {
+  popup_showing_ = false;
   delegate_->OnPopupClosed();
 }
 
@@ -92,6 +95,7 @@ bool TestToolbarActionViewController::DisabledClickOpensMenu() const {
 }
 
 void TestToolbarActionViewController::ShowPopup(bool by_user) {
+  popup_showing_ = true;
   delegate_->OnPopupShown(by_user);
 }
 

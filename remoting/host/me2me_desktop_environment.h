@@ -6,6 +6,7 @@
 #define REMOTING_HOST_ME2ME_DESKTOP_ENVIRONMENT_H_
 
 #include "base/macros.h"
+#include "base/single_thread_task_runner.h"
 #include "remoting/host/basic_desktop_environment.h"
 
 namespace remoting {
@@ -21,6 +22,7 @@ class Me2MeDesktopEnvironment : public BasicDesktopEnvironment {
   ~Me2MeDesktopEnvironment() override;
 
   // DesktopEnvironment interface.
+  std::unique_ptr<ActionExecutor> CreateActionExecutor() override;
   std::unique_ptr<ScreenControls> CreateScreenControls() override;
   std::string GetCapabilities() const override;
 
@@ -31,13 +33,14 @@ class Me2MeDesktopEnvironment : public BasicDesktopEnvironment {
       scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-      bool supports_touch_events);
+      ui::SystemInputInjectorFactory* system_input_injector_factory,
+      base::WeakPtr<ClientSessionControl> client_session_control,
+      const DesktopEnvironmentOptions& options);
 
   // Initializes security features of the desktop environment (the curtain mode
   // and in-session UI).
   bool InitializeSecurity(
-      base::WeakPtr<ClientSessionControl> client_session_control,
-      bool curtain_enabled);
+      base::WeakPtr<ClientSessionControl> client_session_control);
 
  private:
   // "Curtains" the session making sure it is disconnected from the local
@@ -60,21 +63,16 @@ class Me2MeDesktopEnvironmentFactory : public BasicDesktopEnvironmentFactory {
       scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> input_task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner);
+      scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+      ui::SystemInputInjectorFactory* system_input_injector_factory);
   ~Me2MeDesktopEnvironmentFactory() override;
 
   // DesktopEnvironmentFactory interface.
   std::unique_ptr<DesktopEnvironment> Create(
-      base::WeakPtr<ClientSessionControl> client_session_control) override;
-  void SetEnableCurtaining(bool enable) override;
-
- protected:
-  bool curtain_enabled() const { return curtain_enabled_; }
+      base::WeakPtr<ClientSessionControl> client_session_control,
+      const DesktopEnvironmentOptions& options) override;
 
  private:
-  // True if curtain mode is enabled.
-  bool curtain_enabled_ = false;
-
   DISALLOW_COPY_AND_ASSIGN(Me2MeDesktopEnvironmentFactory);
 };
 

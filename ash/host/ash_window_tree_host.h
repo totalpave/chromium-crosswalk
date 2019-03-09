@@ -8,10 +8,10 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "base/callback_forward.h"
+#include "services/ws/public/mojom/ime/ime.mojom.h"
+#include "ui/display/display.h"
 
 namespace aura {
-class Window;
 class WindowTreeHost;
 }
 
@@ -21,46 +21,31 @@ class Rect;
 }
 
 namespace ui {
-class EventSource;
-class KeyEvent;
 class LocatedEvent;
 }
 
 namespace ash {
 struct AshWindowTreeHostInitParams;
-class InputMethodEventHandler;
 class RootWindowTransformer;
 
 class ASH_EXPORT AshWindowTreeHost {
  public:
-  using Factory =
-      base::Callback<AshWindowTreeHost*(const AshWindowTreeHostInitParams&)>;
   AshWindowTreeHost();
-  virtual ~AshWindowTreeHost() {}
+  virtual ~AshWindowTreeHost();
 
-  // Creates a new AshWindowTreeHost. The caller owns the returned value.
-  static AshWindowTreeHost* Create(
+  static std::unique_ptr<AshWindowTreeHost> Create(
       const AshWindowTreeHostInitParams& init_params);
-  static void SetFactory(const Factory& factory);
 
-  void set_input_method_handler(InputMethodEventHandler* input_method_handler) {
-    input_method_handler_ = input_method_handler;
-  }
+  // Confines the cursor to the bounds of the root window. This should do
+  // nothing if allow_confine_cursor() returns false.
+  virtual void ConfineCursorToRootWindow() = 0;
 
-  InputMethodEventHandler* input_method_handler() {
-    return input_method_handler_;
-  }
+  // Clips the cursor to the given |bounds_in_root|.
+  virtual void ConfineCursorToBoundsInRoot(const gfx::Rect& bounds_in_root) = 0;
 
-  // Toggles the host's full screen state.
-  virtual void ToggleFullScreen() = 0;
-
-  // Clips the cursor to the bounds of the root window until UnConfineCursor().
-  // We would like to be able to confine the cursor to that window. However,
-  // currently, we do not have such functionality in X. So we just confine
-  // to the root window. This is ok because this option is currently only
-  // being used in fullscreen mode, so root_window bounds = window bounds.
-  virtual bool ConfineCursorToRootWindow() = 0;
-  virtual void UnConfineCursor() = 0;
+  // Returns the last used bounds to confine the mouse cursor in the host's
+  // window's pixels.
+  virtual gfx::Rect GetLastCursorConfineBoundsInPixels() const = 0;
 
   virtual void SetRootWindowTransformer(
       std::unique_ptr<RootWindowTransformer> transformer) = 0;
@@ -74,12 +59,27 @@ class ASH_EXPORT AshWindowTreeHost {
 
   virtual void RegisterMirroringHost(AshWindowTreeHost* mirroring_ash_host) {}
 
+  virtual void SetCursorConfig(const display::Display& display,
+                               display::Display::Rotation rotation) = 0;
+  virtual void ClearCursorConfig() = 0;
+
+  // Updates IME of underlying PlatformWindow.
+  virtual void UpdateTextInputState(ui::mojom::TextInputStatePtr state) {}
+  virtual void UpdateImeVisibility(bool visible,
+                                   ui::mojom::TextInputStatePtr state) {}
+
  protected:
+  // Returns true if cursor confinement should be allowed. For development
+  // builds this will return false, for ease of switching between windows,
+  // unless --ash-constrain-pointer-to-root is provided. This is always true on
+  // a Chrome OS device.
+  bool allow_confine_cursor() const { return allow_confine_cursor_; }
+
   // Translates the native mouse location into screen coordinates.
   void TranslateLocatedEvent(ui::LocatedEvent* event);
 
  private:
-  InputMethodEventHandler* input_method_handler_;
+  const bool allow_confine_cursor_;
 };
 
 }  // namespace ash

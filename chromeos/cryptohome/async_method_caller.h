@@ -8,8 +8,8 @@
 #include <string>
 
 #include "base/callback_forward.h"
-#include "chromeos/attestation/attestation_constants.h"
-#include "chromeos/chromeos_export.h"
+#include "base/component_export.h"
+#include "chromeos/dbus/attestation_constants.h"
 #include "chromeos/dbus/cryptohome_client.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
@@ -22,16 +22,8 @@ class Identification;
 // enum (MountError) and referencing ::chromeos::cryptohome and ::cryptohome
 // within the same code is confusing.
 
-// Flags for the AsyncMount method.
-enum MountFlags {
-    MOUNT_FLAGS_NONE = 0,       // Used to explicitly denote that no flags are
-                                // set.
-    CREATE_IF_MISSING = 1,      // Create a cryptohome if it does not exist yet.
-    ENSURE_EPHEMERAL = 1 << 1,  // Ensure that the mount is ephemeral.
-};
-
 // This class manages calls to Cryptohome service's 'async' methods.
-class CHROMEOS_EXPORT AsyncMethodCaller {
+class COMPONENT_EXPORT(CHROMEOS_CRYPTOHOME) AsyncMethodCaller {
  public:
   // A callback type which is called back on the UI thread when the results of
   // method calls are ready.
@@ -40,67 +32,6 @@ class CHROMEOS_EXPORT AsyncMethodCaller {
       DataCallback;
 
   virtual ~AsyncMethodCaller() {}
-
-  // Asks cryptohomed to asynchronously try to find the cryptohome for
-  // |user_id| and then use |passhash| to unlock the key.
-  // |callback| will be called with status info on completion.
-  virtual void AsyncCheckKey(const Identification& user_id,
-                             const std::string& passhash,
-                             Callback callback) = 0;
-
-  // Asks cryptohomed to asynchronously try to find the cryptohome for
-  // |user_id| and then change from using |old_hash| to lock the
-  // key to using |new_hash|.
-  // |callback| will be called with status info on completion.
-  virtual void AsyncMigrateKey(const Identification& user_id,
-                               const std::string& old_hash,
-                               const std::string& new_hash,
-                               Callback callback) = 0;
-
-  // Asks cryptohomed to asynchronously try to find the cryptohome for
-  // |user_id| and then mount it using |passhash| to unlock the key.
-  // The |flags| are a combination of |MountFlags|:
-  // * CREATE_IF_MISSING Controls whether or not cryptohomed is asked to create
-  //                     a new cryptohome if one does not exist yet for
-  //                     |user_id|.
-  // * ENSURE_EPHEMERAL  If |true|, the mounted cryptohome will be backed by
-  //                     tmpfs. If |false|, the ephemeral users policy decides
-  //                     whether tmpfs or an encrypted directory is used as the
-  //                     backend.
-  // |callback| will be called with status info on completion.
-  // If the |CREATE_IF_MISSING| flag is not given and no cryptohome exists
-  // for |user_id|, the expected result is
-  // callback.Run(false, kCryptohomeMountErrorUserDoesNotExist). Otherwise,
-  // the normal range of return codes is expected.
-  virtual void AsyncMount(const Identification& user_id,
-                          const std::string& passhash,
-                          int flags,
-                          Callback callback) = 0;
-
-  // Asks cryptohomed to asynchronously try to add another |new_passhash| for
-  // |user_id| using |passhash| to unlock the key.
-  // |callback| will be called with status info on completion.
-  virtual void AsyncAddKey(const Identification& user_id,
-                           const std::string& passhash,
-                           const std::string& new_passhash,
-                           Callback callback) = 0;
-
-  // Asks cryptohomed to asynchronously to mount a tmpfs for guest mode.
-  // |callback| will be called with status info on completion.
-  virtual void AsyncMountGuest(Callback callback) = 0;
-
-  // Asks cryptohomed to asynchrounously try to find the cryptohome for
-  // |public_mount_id| and then mount it using a passhash derived from
-  // |public_mount_id| and a secret. See AsyncMount for possible values for
-  // |flags|.
-  virtual void AsyncMountPublic(const Identification& public_mount_id,
-                                int flags,
-                                Callback callback) = 0;
-
-  // Asks cryptohomed to asynchronously try to find the cryptohome for
-  // |user_id| and then nuke it.
-  virtual void AsyncRemove(const Identification& user_id,
-                           Callback callback) = 0;
 
   // Asks cryptohomed to asynchronously create an attestation enrollment
   // request.  On success the data sent to |callback| is a request to be sent
@@ -138,7 +69,7 @@ class CHROMEOS_EXPORT AsyncMethodCaller {
   // is to be associated with the current user.  |key_name| is a name for the
   // key.  If |key_type| is KEY_USER, a |user_id| must be provided.  Otherwise
   // |user_id| is ignored.  For normal GAIA users the |user_id| is
-  // a GaiaId-derived string (see AccountId::GetGaiaIdKey).
+  // an AccountId-derived string (see AccountId::GetAccountIdKey).
   virtual void AsyncTpmAttestationFinishCertRequest(
       const std::string& pca_response,
       chromeos::attestation::AttestationKeyType key_type,
@@ -149,7 +80,7 @@ class CHROMEOS_EXPORT AsyncMethodCaller {
   // Asks cryptohomed to asynchronously register the attestation key specified
   // by |key_type| and |key_name|.  If |key_type| is KEY_USER, a |user_id| must
   // be provided.  Otherwise |user_id| is ignored.  For normal GAIA users the
-  // |user_id| is a GaiaId-derived string (see AccountId::GetGaiaIdKey).
+  // |user_id| is an AccountId-derived string (see AccountId::GetAccountIdKey).
   virtual void TpmAttestationRegisterKey(
       chromeos::attestation::AttestationKeyType key_type,
       const Identification& user_id,
@@ -162,7 +93,7 @@ class CHROMEOS_EXPORT AsyncMethodCaller {
   // a valid enterprise challenge.  On success, the data sent to |callback| is
   // the challenge response.  If |key_type| is KEY_USER, a |user_id| must be
   // provided.  Otherwise |user_id| is ignored.  For normal GAIA users the
-  // |user_id| is a GaiaId-derived string (see AccountId::GetGaiaIdKey).
+  // |user_id| is an AccountaId-derived string (see AccountId::GetAccountIdKey).
   virtual void TpmAttestationSignEnterpriseChallenge(
       chromeos::attestation::AttestationKeyType key_type,
       const Identification& user_id,
@@ -177,20 +108,14 @@ class CHROMEOS_EXPORT AsyncMethodCaller {
   // specified by |key_type| and |key_name|.  |challenge| can be any arbitrary
   // set of bytes.  On success, the data sent to |callback| is the challenge
   // response.  If |key_type| is KEY_USER, a |user_id| must be provided.
-  // Otherwise |user_id| is ignored.  For normal GAIA users the |user_id| is a
-  // GaiaId-derived string (see AccountId::GetGaiaIdKey).
+  // Otherwise |user_id| is ignored.  For normal GAIA users the |user_id| is an
+  // AccountId-derived string (see AccountId::GetAccountIdKey).
   virtual void TpmAttestationSignSimpleChallenge(
       chromeos::attestation::AttestationKeyType key_type,
       const Identification& user_id,
       const std::string& key_name,
       const std::string& challenge,
       const DataCallback& callback) = 0;
-
-  // Asks cryptohome to asynchronously retrieve a string associated with given
-  // |user_id| that would be used in mount path instead of |user_id|.
-  // On success the data is sent to |callback|.
-  virtual void AsyncGetSanitizedUsername(const Identification& user_id,
-                                         const DataCallback& callback) = 0;
 
   // Creates the global AsyncMethodCaller instance.
   static void Initialize();

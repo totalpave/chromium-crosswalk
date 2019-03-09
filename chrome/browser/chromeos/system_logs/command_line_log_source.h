@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_CHROMEOS_SYSTEM_LOGS_COMMAND_LINE_LOG_SOURCE_H_
 
 #include "base/macros.h"
-#include "chrome/browser/feedback/system_logs/system_logs_fetcher_base.h"
+#include "components/feedback/system_logs/system_logs_source.h"
 
 namespace system_logs {
 
@@ -18,7 +18,7 @@ class CommandLineLogSource : public SystemLogsSource {
   ~CommandLineLogSource() override;
 
   // SystemLogsSource override.
-  void Fetch(const SysLogsSourceCallback& callback) override;
+  void Fetch(SysLogsSourceCallback callback) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(CommandLineLogSource);

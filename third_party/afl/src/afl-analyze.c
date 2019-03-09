@@ -4,7 +4,7 @@
 
    Written and maintained by Michal Zalewski <lcamtuf@google.com>
 
-   Copyright 2016 Google Inc. All rights reserved.
+   Copyright 2016, 2017 Google Inc. All rights reserved.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -68,6 +68,7 @@ static s32 shm_id,                    /* ID of the SHM region              */
            dev_null_fd = -1;          /* FD to /dev/null                   */
 
 static u8  edges_only,                /* Ignore hit counts?                */
+           use_hex_offsets,           /* Show hex offsets?                 */
            use_stdin = 1;             /* Use stdin for program input?      */
 
 static volatile u8
@@ -89,21 +90,17 @@ static volatile u8
 
 /* Classify tuple counts. This is a slow & naive version, but good enough here. */
 
-#define AREP4(_sym)   (_sym), (_sym), (_sym), (_sym)
-#define AREP8(_sym)   AREP4(_sym),  AREP4(_sym)
-#define AREP16(_sym)  AREP8(_sym),  AREP8(_sym)
-#define AREP32(_sym)  AREP16(_sym), AREP16(_sym)
-#define AREP64(_sym)  AREP32(_sym), AREP32(_sym)
-#define AREP128(_sym) AREP64(_sym), AREP64(_sym)
-
 static u8 count_class_lookup[256] = {
 
-  /* 0 - 3:       4 */ 0, 1, 2, 4,
-  /* 4 - 7:      +4 */ AREP4(8),
-  /* 8 - 15:     +8 */ AREP8(16),
-  /* 16 - 31:   +16 */ AREP16(32),
-  /* 32 - 127:  +96 */ AREP64(64), AREP32(64),
-  /* 128+:     +128 */ AREP128(128)
+  [0]           = 0,
+  [1]           = 1,
+  [2]           = 2,
+  [3]           = 4,
+  [4 ... 7]     = 8,
+  [8 ... 15]    = 16,
+  [16 ... 31]   = 32,
+  [32 ... 127]  = 64,
+  [128 ... 255] = 128
 
 };
 
@@ -490,9 +487,13 @@ static void dump_hex(u8* buf, u32 len, u8* b_data) {
       /* Every 16 digits, display offset. */
 
       if (!((i + off) % 16)) {
-    
+
         if (off) SAYF(cRST cLCY ">");
-        SAYF(cRST cGRA "%s[%06u] " cRST, (i + off) ? "\n" : "", i + off);
+
+        if (use_hex_offsets)
+          SAYF(cRST cGRA "%s[%06x] " cRST, (i + off) ? "\n" : "", i + off);
+        else
+          SAYF(cRST cGRA "%s[%06u] " cRST, (i + off) ? "\n" : "", i + off);
 
       }
 
@@ -516,7 +517,10 @@ static void dump_hex(u8* buf, u32 len, u8* b_data) {
 
 #else
 
-    SAYF("    Offset %u, length %u: ", i, rlen);
+    if (use_hex_offsets)
+      SAYF("    Offset %x, length %u: ", i, rlen);
+    else
+      SAYF("    Offset %u, length %u: ", i, rlen);
 
     switch (rtype) {
 
@@ -662,14 +666,14 @@ static void set_up_environment(void) {
 
     u8* use_dir = ".";
 
-    if (!access(use_dir, R_OK | W_OK | X_OK)) {
+    if (access(use_dir, R_OK | W_OK | X_OK)) {
 
       use_dir = getenv("TMPDIR");
       if (!use_dir) use_dir = "/tmp";
 
-      prog_in = alloc_printf("%s/.afl-tmin-temp-%u", use_dir, getpid());
-
     }
+
+    prog_in = alloc_printf("%s/.afl-analyze-temp-%u", use_dir, getpid());
 
   }
 
@@ -711,8 +715,10 @@ static void set_up_environment(void) {
                          "allocator_may_return_null=1:"
                          "msan_track_origins=0", 0);
 
-  if (getenv("AFL_LD_PRELOAD"))
-    setenv("LD_PRELOAD", getenv("AFL_LD_PRELOAD"), 1);
+  if (getenv("AFL_PRELOAD")) {
+    setenv("LD_PRELOAD", getenv("AFL_PRELOAD"), 1);
+    setenv("DYLD_INSERT_LIBRARIES", getenv("AFL_PRELOAD"), 1);
+  }
 
 }
 
@@ -876,6 +882,10 @@ static char** get_qemu_argv(u8* own_loc, char** argv, int argc) {
   char** new_argv = ck_alloc(sizeof(char*) * (argc + 4));
   u8 *tmp, *cp, *rsl, *own_copy;
 
+  /* Workaround for a QEMU stability glitch. */
+
+  setenv("QEMU_LOG", "nochain", 1);
+
   memcpy(new_argv + 3, argv + 1, sizeof(char*) * argc);
 
   /* Now we need to actually find qemu for argv[0]. */
@@ -1027,6 +1037,8 @@ int main(int argc, char** argv) {
     }
 
   if (optind == argc || !in_file) usage(argv[0]);
+
+  use_hex_offsets = !!getenv("AFL_ANALYZE_HEX");
 
   setup_shm();
   setup_signal_handlers();

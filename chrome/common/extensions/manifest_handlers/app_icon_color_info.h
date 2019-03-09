@@ -10,10 +10,6 @@
 #include "extensions/common/manifest_handler.h"
 #include "third_party/skia/include/core/SkColor.h"
 
-namespace base {
-class DictionaryValue;
-}
-
 namespace extensions {
 
 // A structure to hold the parsed app icon color data.
@@ -40,7 +36,7 @@ class AppIconColorHandler : public ManifestHandler {
   bool Parse(Extension* extension, base::string16* error) override;
 
  private:
-  const std::vector<std::string> Keys() const override;
+  base::span<const char* const> Keys() const override;
 
   DISALLOW_COPY_AND_ASSIGN(AppIconColorHandler);
 };

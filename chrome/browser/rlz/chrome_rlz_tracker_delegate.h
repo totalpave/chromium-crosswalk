@@ -14,6 +14,10 @@
 
 class Profile;
 
+namespace user_prefs {
+class PrefRegistrySyncable;
+}
+
 // ChromeRLZTrackerDelegate implements RLZTrackerDelegate abstract interface
 // and provides access to Chrome features.
 class ChromeRLZTrackerDelegate : public rlz::RLZTrackerDelegate,
@@ -21,6 +25,8 @@ class ChromeRLZTrackerDelegate : public rlz::RLZTrackerDelegate,
  public:
   ChromeRLZTrackerDelegate();
   ~ChromeRLZTrackerDelegate() override;
+
+  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
   static bool IsGoogleDefaultSearch(Profile* profile);
   static bool IsGoogleHomepage(Profile* profile);
@@ -30,8 +36,7 @@ class ChromeRLZTrackerDelegate : public rlz::RLZTrackerDelegate,
   // RLZTrackerDelegate implementation.
   void Cleanup() override;
   bool IsOnUIThread() override;
-  base::SequencedWorkerPool* GetBlockingPool() override;
-  net::URLRequestContextGetter* GetRequestContext() override;
+  scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
   bool GetBrand(std::string* brand) override;
   bool IsBrandOrganic(const std::string& brand) override;
   bool GetReactivationBrand(std::string* brand) override;
@@ -41,6 +46,7 @@ class ChromeRLZTrackerDelegate : public rlz::RLZTrackerDelegate,
   bool ClearReferral() override;
   void SetOmniboxSearchCallback(const base::Closure& callback) override;
   void SetHomepageSearchCallback(const base::Closure& callback) override;
+  bool ShouldUpdateExistingAccessPointRlz() override;
 
   // content::NotificationObserver implementation:
   void Observe(int type,

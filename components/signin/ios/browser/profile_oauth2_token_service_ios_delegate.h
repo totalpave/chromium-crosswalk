@@ -8,33 +8,32 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/threading/thread_checker.h"
-#include "components/signin/core/browser/signin_error_controller.h"
 #include "google_apis/gaia/oauth2_token_service_delegate.h"
 
 class AccountTrackerService;
 class ProfileOAuth2TokenServiceIOSProvider;
+class SigninClient;
 
 class ProfileOAuth2TokenServiceIOSDelegate : public OAuth2TokenServiceDelegate {
  public:
   ProfileOAuth2TokenServiceIOSDelegate(
       SigninClient* client,
-      ProfileOAuth2TokenServiceIOSProvider* provider,
-      AccountTrackerService* account_tracker_service,
-      SigninErrorController* signin_error_controller);
+      std::unique_ptr<ProfileOAuth2TokenServiceIOSProvider> provider,
+      AccountTrackerService* account_tracker_service);
   ~ProfileOAuth2TokenServiceIOSDelegate() override;
 
   OAuth2AccessTokenFetcher* CreateAccessTokenFetcher(
       const std::string& account_id,
-      net::URLRequestContextGetter* getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       OAuth2AccessTokenConsumer* consumer) override;
 
   // KeyedService
   void Shutdown() override;
 
   bool RefreshTokenIsAvailable(const std::string& account_id) const override;
-  bool RefreshTokenHasError(const std::string& account_id) const override;
+  GoogleServiceAuthError GetAuthError(
+      const std::string& account_id) const override;
   void UpdateAuthError(const std::string& account_id,
                        const GoogleServiceAuthError& error) override;
 
@@ -49,6 +48,10 @@ class ProfileOAuth2TokenServiceIOSDelegate : public OAuth2TokenServiceDelegate {
   // however, it does not revoke the identities from the device.
   // Subsequent calls to |RefreshTokenIsAvailable| will return |false|.
   void RevokeAllCredentials() override;
+
+  void AddAccountFromSystem(const std::string& account_id) override;
+
+  void ReloadAccountsFromSystem(const std::string& primary_account_id) override;
 
   // Reloads accounts from the provider. Fires |OnRefreshTokenAvailable| for
   // each new account. Fires |OnRefreshTokenRevoked| for each account that was
@@ -76,29 +79,13 @@ class ProfileOAuth2TokenServiceIOSDelegate : public OAuth2TokenServiceDelegate {
   FRIEND_TEST_ALL_PREFIXES(ProfileOAuth2TokenServiceIOSDelegateTest,
                            LoadRevokeCredentialsClearsExcludedAccounts);
 
-  class AccountStatus : public SigninErrorController::AuthStatusProvider {
-   public:
-    AccountStatus(SigninErrorController* signin_error_controller,
-                  const std::string& account_id);
-    ~AccountStatus() override;
-
-    void SetLastAuthError(const GoogleServiceAuthError& error);
-
-    // SigninErrorController::AuthStatusProvider implementation.
-    std::string GetAccountId() const override;
-    GoogleServiceAuthError GetAuthStatus() const override;
-
-   private:
-    SigninErrorController* signin_error_controller_;
-    std::string account_id_;
-    GoogleServiceAuthError last_auth_error_;
-
-    DISALLOW_COPY_AND_ASSIGN(AccountStatus);
+  struct AccountStatus {
+    GoogleServiceAuthError last_auth_error;
   };
 
   // Maps the |account_id| of accounts known to ProfileOAuth2TokenService
   // to information about the account.
-  typedef std::map<std::string, linked_ptr<AccountStatus>> AccountStatusMap;
+  typedef std::map<std::string, AccountStatus> AccountStatusMap;
 
   // Clears exclude secondary accounts preferences.
   void ClearExcludedSecondaryAccounts();
@@ -116,11 +103,8 @@ class ProfileOAuth2TokenServiceIOSDelegate : public OAuth2TokenServiceDelegate {
 
   // The client with which this instance was initialied, or NULL.
   SigninClient* client_;
-  ProfileOAuth2TokenServiceIOSProvider* provider_;
+  std::unique_ptr<ProfileOAuth2TokenServiceIOSProvider> provider_;
   AccountTrackerService* account_tracker_service_;
-
-  // The error controller with which this instance was initialized, or NULL.
-  SigninErrorController* signin_error_controller_;
 
   DISALLOW_COPY_AND_ASSIGN(ProfileOAuth2TokenServiceIOSDelegate);
 };

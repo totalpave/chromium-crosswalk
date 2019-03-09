@@ -12,9 +12,9 @@
 #include "components/webcrypto/crypto_data.h"
 #include "components/webcrypto/status.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithmParams.h"
-#include "third_party/WebKit/public/platform/WebCryptoKey.h"
-#include "third_party/WebKit/public/platform/WebCryptoKeyAlgorithm.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
+#include "third_party/blink/public/platform/web_crypto_key.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
 
 namespace webcrypto {
 
@@ -23,13 +23,13 @@ namespace {
 class WebCryptoShaTest : public WebCryptoTestBase {};
 
 TEST_F(WebCryptoShaTest, DigestSampleSets) {
-  std::unique_ptr<base::ListValue> tests;
+  base::ListValue tests;
   ASSERT_TRUE(ReadJsonTestFileToList("sha.json", &tests));
 
-  for (size_t test_index = 0; test_index < tests->GetSize(); ++test_index) {
+  for (size_t test_index = 0; test_index < tests.GetSize(); ++test_index) {
     SCOPED_TRACE(test_index);
     base::DictionaryValue* test;
-    ASSERT_TRUE(tests->GetDictionary(test_index, &test));
+    ASSERT_TRUE(tests.GetDictionary(test_index, &test));
 
     blink::WebCryptoAlgorithm test_algorithm =
         GetDigestAlgorithm(test, "algorithm");
@@ -44,13 +44,13 @@ TEST_F(WebCryptoShaTest, DigestSampleSets) {
 }
 
 TEST_F(WebCryptoShaTest, DigestSampleSetsInChunks) {
-  std::unique_ptr<base::ListValue> tests;
+  base::ListValue tests;
   ASSERT_TRUE(ReadJsonTestFileToList("sha.json", &tests));
 
-  for (size_t test_index = 0; test_index < tests->GetSize(); ++test_index) {
+  for (size_t test_index = 0; test_index < tests.GetSize(); ++test_index) {
     SCOPED_TRACE(test_index);
     base::DictionaryValue* test;
-    ASSERT_TRUE(tests->GetDictionary(test_index, &test));
+    ASSERT_TRUE(tests.GetDictionary(test_index, &test));
 
     blink::WebCryptoAlgorithm test_algorithm =
         GetDigestAlgorithm(test, "algorithm");
@@ -64,19 +64,19 @@ TEST_F(WebCryptoShaTest, DigestSampleSetsInChunks) {
     static const size_t kChunkSizeBytes = 129;
     size_t length = test_input.size();
     std::unique_ptr<blink::WebCryptoDigestor> digestor(
-        CreateDigestor(test_algorithm.id()));
-    std::vector<uint8_t>::iterator begin = test_input.begin();
+        CreateDigestor(test_algorithm.Id()));
+    auto begin = test_input.begin();
     size_t chunk_index = 0;
     while (begin != test_input.end()) {
       size_t chunk_length = std::min(kChunkSizeBytes, length - chunk_index);
       std::vector<uint8_t> chunk(begin, begin + chunk_length);
       ASSERT_TRUE(chunk.size() > 0);
-      EXPECT_TRUE(digestor->consume(chunk.data(),
+      EXPECT_TRUE(digestor->Consume(chunk.data(),
                                     static_cast<unsigned int>(chunk.size())));
       chunk_index = chunk_index + chunk_length;
       begin = begin + chunk_length;
     }
-    EXPECT_TRUE(digestor->finish(output, output_length));
+    EXPECT_TRUE(digestor->Finish(output, output_length));
     EXPECT_BYTES_EQ(test_output, CryptoData(output, output_length));
   }
 }

@@ -8,16 +8,12 @@ gyp_chromium and landmines.py which run at different stages of runhooks. To
 make sure settings are consistent between them, all setup should happen here.
 """
 
-import gyp_helper
-import mac_toolchain
 import os
 import sys
 import vs_toolchain
 
 def SetEnvironment():
   """Sets defaults for GYP_* variables."""
-  gyp_helper.apply_chromium_gyp_env()
-
   # Default to ninja on linux and windows, but only if no generator has
   # explicitly been set.
   # Also default to ninja on mac, but only when not building chrome/ios.
@@ -29,4 +25,3 @@ def SetEnvironment():
     os.environ['GYP_GENERATORS'] = 'ninja'
 
   vs_toolchain.SetEnvironmentAndGetRuntimeDllDirs()
-  mac_toolchain.SetToolchainEnvironment()

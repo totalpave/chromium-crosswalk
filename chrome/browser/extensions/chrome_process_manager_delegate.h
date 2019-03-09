@@ -25,7 +25,11 @@ class ChromeProcessManagerDelegate : public ProcessManagerDelegate,
   ~ChromeProcessManagerDelegate() override;
 
   // ProcessManagerDelegate implementation:
-  bool IsBackgroundPageAllowed(content::BrowserContext* context) const override;
+  bool AreBackgroundPagesAllowedForContext(
+      content::BrowserContext* context) const override;
+  bool IsExtensionBackgroundPageAllowed(
+      content::BrowserContext* context,
+      const Extension& extension) const override;
   bool DeferCreatingStartupBackgroundHosts(
       content::BrowserContext* context) const override;
 
@@ -36,7 +40,7 @@ class ChromeProcessManagerDelegate : public ProcessManagerDelegate,
 
  private:
   // Notification handlers.
-  void OnBrowserWindowReady(Browser* browser);
+  void OnBrowserOpened(Browser* browser);
   void OnProfileCreated(Profile* profile);
   void OnProfileDestroyed(Profile* profile);
 

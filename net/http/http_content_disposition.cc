@@ -6,6 +6,7 @@
 
 #include "base/base64.h"
 #include "base/logging.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -188,7 +189,7 @@ bool DecodeWord(const std::string& encoded_word,
   // web browser.
 
   // What IE6/7 does: %-escaped UTF-8.
-  decoded_word = UnescapeURLComponent(encoded_word, UnescapeRule::SPACES);
+  UnescapeBinaryURLComponent(encoded_word, UnescapeRule::NORMAL, &decoded_word);
   if (decoded_word != encoded_word)
     *parse_result_flags |= HttpContentDisposition::HAS_PERCENT_ENCODED_STRINGS;
   if (base::IsStringUTF8(decoded_word)) {
@@ -322,9 +323,8 @@ bool DecodeExtValue(const std::string& param_value, std::string* decoded) {
     return true;
   }
 
-  std::string unescaped = UnescapeURLComponent(
-      value, UnescapeRule::SPACES |
-                 UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS);
+  std::string unescaped;
+  UnescapeBinaryURLComponent(value, UnescapeRule::NORMAL, &unescaped);
 
   return ConvertToUtf8AndNormalize(unescaped, charset.c_str(), decoded);
 }
@@ -338,39 +338,35 @@ HttpContentDisposition::HttpContentDisposition(
   Parse(header, referrer_charset);
 }
 
-HttpContentDisposition::~HttpContentDisposition() {
-}
+HttpContentDisposition::~HttpContentDisposition() = default;
 
 std::string::const_iterator HttpContentDisposition::ConsumeDispositionType(
     std::string::const_iterator begin, std::string::const_iterator end) {
   DCHECK(type_ == INLINE);
-  std::string::const_iterator delimiter = std::find(begin, end, ';');
-
-  std::string::const_iterator type_begin = begin;
-  std::string::const_iterator type_end = delimiter;
-  HttpUtil::TrimLWS(&type_begin, &type_end);
+  base::StringPiece header(begin, end);
+  size_t delimiter = header.find(';');
+  base::StringPiece type = header.substr(0, delimiter);
+  type = HttpUtil::TrimLWS(type);
 
   // If the disposition-type isn't a valid token the then the
   // Content-Disposition header is malformed, and we treat the first bytes as
   // a parameter rather than a disposition-type.
-  if (!HttpUtil::IsToken(type_begin, type_end))
+  if (type.empty() || !HttpUtil::IsToken(type))
     return begin;
 
   parse_result_flags_ |= HAS_DISPOSITION_TYPE;
 
-  DCHECK(std::find(type_begin, type_end, '=') == type_end);
+  DCHECK(type.find('=') == base::StringPiece::npos);
 
-  if (base::LowerCaseEqualsASCII(base::StringPiece(type_begin, type_end),
-                                 "inline")) {
+  if (base::LowerCaseEqualsASCII(type, "inline")) {
     type_ = INLINE;
-  } else if (base::LowerCaseEqualsASCII(base::StringPiece(type_begin, type_end),
-                                        "attachment")) {
+  } else if (base::LowerCaseEqualsASCII(type, "attachment")) {
     type_ = ATTACHMENT;
   } else {
     parse_result_flags_ |= HAS_UNKNOWN_DISPOSITION_TYPE;
     type_ = ATTACHMENT;
   }
-  return delimiter;
+  return begin + (type.data() + type.size() - header.data());
 }
 
 // http://tools.ietf.org/html/rfc6266
@@ -411,8 +407,11 @@ void HttpContentDisposition::Parse(const std::string& header,
             "filename")) {
       DecodeFilenameValue(iter.value(), referrer_charset, &filename,
                           &parse_result_flags_);
-      if (!filename.empty())
+      if (!filename.empty()) {
         parse_result_flags_ |= HAS_FILENAME;
+        if (filename[0] == '\'')
+          parse_result_flags_ |= HAS_SINGLE_QUOTED_FILENAME;
+      }
     } else if (ext_filename.empty() &&
                base::LowerCaseEqualsASCII(
                    base::StringPiece(iter.name_begin(), iter.name_end()),
@@ -427,6 +426,9 @@ void HttpContentDisposition::Parse(const std::string& header,
     filename_ = ext_filename;
   else
     filename_ = filename;
+
+  if (!filename.empty() && filename[0] == '\'')
+    parse_result_flags_ |= HAS_SINGLE_QUOTED_FILENAME;
 }
 
 }  // namespace net

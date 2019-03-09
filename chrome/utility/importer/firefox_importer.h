@@ -9,21 +9,24 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "chrome/common/importer/imported_bookmark_entry.h"
 #include "chrome/utility/importer/importer.h"
 #include "components/favicon_base/favicon_usage_data.h"
 
 class GURL;
 
 namespace sql {
-class Connection;
+class Database;
 }
 
 // Importer for Mozilla Firefox 3 and later.
@@ -39,10 +42,21 @@ class FirefoxImporter : public Importer {
                    ImporterBridge* bridge) override;
 
  private:
-  typedef std::map<int64_t, std::set<GURL>> FaviconMap;
+  // Location of favicons in Firefox profile. It may vary depending on Firefox
+  // version.
+  enum class FaviconsLocation {
+    // Favicons are stored in places.sqlite database (older Firefox versions).
+    kPlacesDatabase,
+
+    // Favicons are stored in favicons.sqlite (Firefox 55 and newer).
+    kFaviconsDatabase,
+  };
+
+  using FaviconMap = std::map<int64_t, std::set<GURL>>;
 
   ~FirefoxImporter() override;
 
+  FRIEND_TEST_ALL_PREFIXES(FirefoxImporterTest, ImportBookmarksV25);
   void ImportBookmarks();
   void ImportPasswords();
   void ImportHistory();
@@ -57,29 +71,39 @@ class FirefoxImporter : public Importer {
 
   // The struct stores the information about a bookmark item.
   struct BookmarkItem;
-  typedef std::vector<BookmarkItem*> BookmarkList;
+  using BookmarkList = std::vector<std::unique_ptr<BookmarkItem>>;
 
-  // Gets the specific IDs of bookmark root node from |db|.
-  void LoadRootNodeID(sql::Connection* db, int* toolbar_folder_id,
-                      int* menu_folder_id, int* unsorted_folder_id);
+  // Gets the specific ID of bookmark node with given GUID from |db|.
+  // Returns -1 if not found.
+  int LoadNodeIDByGUID(sql::Database* db, const std::string& GUID);
 
   // Loads all livemark IDs from database |db|.
-  void LoadLivemarkIDs(sql::Connection* db, std::set<int>* livemark);
+  void LoadLivemarkIDs(sql::Database* db, std::set<int>* livemark);
 
   // Gets the bookmark folder with given ID, and adds the entry in |list|
   // if successful.
-  void GetTopBookmarkFolder(sql::Connection* db,
+  void GetTopBookmarkFolder(sql::Database* db,
                             int folder_id,
                             BookmarkList* list);
 
   // Loads all children of the given folder, and appends them to the |list|.
-  void GetWholeBookmarkFolder(sql::Connection* db, BookmarkList* list,
-                              size_t position, bool* empty_folder);
+  void GetWholeBookmarkFolder(sql::Database* db,
+                              BookmarkList* list,
+                              size_t position,
+                              FaviconsLocation favicons_location,
+                              bool* empty_folder);
 
-  // Loads the favicons given in the map from the database, loads the data,
-  // and converts it into FaviconUsage structures.
-  void LoadFavicons(sql::Connection* db,
+  // Loads the favicons given in the map from places.sqlite database, loads the
+  // data, and converts it into FaviconUsageData structures.
+  // This function supports older Firefox profiles (up to version 54).
+  void LoadFavicons(sql::Database* db,
                     const FaviconMap& favicon_map,
+                    favicon_base::FaviconUsageDataList* favicons);
+
+  // Loads the favicons for |bookmarks| from favicons.sqlite database, loads the
+  // data, and converts it into FaviconUsageData structures.
+  // This function supports newer Firefox profiles (Firefox 55 and later).
+  void LoadFavicons(const std::vector<ImportedBookmarkEntry>& bookmarks,
                     favicon_base::FaviconUsageDataList* favicons);
 
   base::FilePath source_path_;

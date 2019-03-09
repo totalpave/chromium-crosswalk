@@ -6,14 +6,13 @@
 
 #include "base/callback.h"
 #include "base/logging.h"
+#include "content/public/browser/permission_controller.h"
 #include "content/public/browser/permission_type.h"
 
 namespace chromecast {
 namespace shell {
 
-CastPermissionManager::CastPermissionManager()
-    : content::PermissionManager() {
-}
+CastPermissionManager::CastPermissionManager() {}
 
 CastPermissionManager::~CastPermissionManager() {
 }
@@ -22,24 +21,23 @@ int CastPermissionManager::RequestPermission(
     content::PermissionType permission,
     content::RenderFrameHost* render_frame_host,
     const GURL& origin,
+    bool user_gesture,
     const base::Callback<void(blink::mojom::PermissionStatus)>& callback) {
   LOG(INFO) << __FUNCTION__ << ": " << static_cast<int>(permission);
   callback.Run(blink::mojom::PermissionStatus::GRANTED);
-  return kNoPendingOperation;
+  return content::PermissionController::kNoPendingOperation;
 }
 
 int CastPermissionManager::RequestPermissions(
     const std::vector<content::PermissionType>& permissions,
     content::RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
+    bool user_gesture,
     const base::Callback<
         void(const std::vector<blink::mojom::PermissionStatus>&)>& callback) {
   callback.Run(std::vector<blink::mojom::PermissionStatus>(
       permissions.size(), blink::mojom::PermissionStatus::GRANTED));
-  return kNoPendingOperation;
-}
-
-void CastPermissionManager::CancelPermissionRequest(int request_id) {
+  return content::PermissionController::kNoPendingOperation;
 }
 
 void CastPermissionManager::ResetPermission(
@@ -56,18 +54,21 @@ blink::mojom::PermissionStatus CastPermissionManager::GetPermissionStatus(
   return blink::mojom::PermissionStatus::GRANTED;
 }
 
-void CastPermissionManager::RegisterPermissionUsage(
+blink::mojom::PermissionStatus
+CastPermissionManager::GetPermissionStatusForFrame(
     content::PermissionType permission,
-    const GURL& requesting_origin,
-    const GURL& embedding_origin) {
+    content::RenderFrameHost* render_frame_host,
+    const GURL& requesting_origin) {
+  LOG(INFO) << __FUNCTION__ << ": " << static_cast<int>(permission);
+  return blink::mojom::PermissionStatus::GRANTED;
 }
 
 int CastPermissionManager::SubscribePermissionStatusChange(
     content::PermissionType permission,
+    content::RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
-    const GURL& embedding_origin,
     const base::Callback<void(blink::mojom::PermissionStatus)>& callback) {
-  return kNoPendingOperation;
+  return content::PermissionController::kNoPendingOperation;
 }
 
 void CastPermissionManager::UnsubscribePermissionStatusChange(

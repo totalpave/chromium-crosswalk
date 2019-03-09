@@ -8,15 +8,23 @@
 #include <set>
 #include <vector>
 
-#include "base/memory/ptr_util.h"
+#include "cc/input/overscroll_behavior.h"
+#include "cc/input/scroll_snap_data.h"
 #include "cc/layers/layer_collections.h"
 #include "cc/layers/layer_position_constraint.h"
-#include "cc/output/filter_operations.h"
+#include "cc/layers/layer_sticky_position_constraint.h"
+#include "cc/paint/filter_operations.h"
+#include "third_party/skia/include/core/SkBlendMode.h"
 #include "ui/gfx/geometry/point3_f.h"
+#include "ui/gfx/rrect_f.h"
+#include "ui/gfx/transform.h"
+
+namespace viz {
+class CopyOutputRequest;
+}
 
 namespace cc {
 
-class CopyOutputRequest;
 class LayerImpl;
 
 struct CC_EXPORT LayerImplTestProperties {
@@ -26,30 +34,42 @@ struct CC_EXPORT LayerImplTestProperties {
   void AddChild(std::unique_ptr<LayerImpl> child);
   std::unique_ptr<LayerImpl> RemoveChild(LayerImpl* child);
   void SetMaskLayer(std::unique_ptr<LayerImpl> mask);
-  void SetReplicaLayer(std::unique_ptr<LayerImpl> replica);
 
   LayerImpl* owning_layer;
   bool double_sided;
+  bool trilinear_filtering;
+  bool cache_render_surface;
   bool force_render_surface;
   bool is_container_for_fixed_position_layers;
   bool should_flatten_transform;
   bool hide_layer_and_subtree;
   bool opacity_can_animate;
-  int num_descendants_that_draw_content;
-  size_t num_unclipped_descendants;
+  bool subtree_has_copy_request;
+  int sorting_context_id;
   float opacity;
-  FilterOperations background_filters;
+  FilterOperations filters;
+  FilterOperations backdrop_filters;
+  gfx::RRectF backdrop_filter_bounds;
+  float backdrop_filter_quality;
+  gfx::PointF filters_origin;
+  SkBlendMode blend_mode;
   LayerPositionConstraint position_constraint;
+  LayerStickyPositionConstraint sticky_position_constraint;
   gfx::Point3F transform_origin;
+  gfx::Transform transform;
+  gfx::PointF position;
   LayerImpl* scroll_parent;
-  std::unique_ptr<std::set<LayerImpl*>> scroll_children;
   LayerImpl* clip_parent;
   std::unique_ptr<std::set<LayerImpl*>> clip_children;
-  std::vector<std::unique_ptr<CopyOutputRequest>> copy_requests;
+  std::vector<std::unique_ptr<viz::CopyOutputRequest>> copy_requests;
   LayerImplList children;
   LayerImpl* mask_layer;
-  LayerImpl* replica_layer;
   LayerImpl* parent;
+  uint32_t main_thread_scrolling_reasons = 0;
+  bool user_scrollable_horizontal = true;
+  bool user_scrollable_vertical = true;
+  OverscrollBehavior overscroll_behavior;
+  base::Optional<SnapContainerData> snap_container_data;
 };
 
 }  // namespace cc

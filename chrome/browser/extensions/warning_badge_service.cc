@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/macros.h"
 #include "base/stl_util.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -16,6 +18,7 @@
 #include "chrome/browser/ui/global_error/global_error_service.h"
 #include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/grit/generated_resources.h"
+#include "content/public/browser/browser_thread.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace extensions {
@@ -100,11 +103,12 @@ int ErrorBadge::GetMenuItemCommandID() {
 
 WarningBadgeService::WarningBadgeService(Profile* profile)
     : profile_(profile), warning_service_observer_(this) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   warning_service_observer_.Add(WarningService::Get(profile_));
 }
 
 WarningBadgeService::~WarningBadgeService() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 }
 
 // static
@@ -114,7 +118,7 @@ WarningBadgeService* WarningBadgeService::Get(
 }
 
 void WarningBadgeService::SuppressCurrentWarnings() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   size_t old_size = suppressed_warnings_.size();
 
   const WarningSet& warnings = GetCurrentWarnings();
@@ -130,16 +134,15 @@ const WarningSet& WarningBadgeService::GetCurrentWarnings() const {
 
 void WarningBadgeService::ExtensionWarningsChanged(
     const ExtensionIdSet& affected_extensions) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   UpdateBadgeStatus();
 }
 
 void WarningBadgeService::UpdateBadgeStatus() {
   const std::set<Warning>& warnings = GetCurrentWarnings();
   bool non_suppressed_warnings_exist = false;
-  for (std::set<Warning>::const_iterator i = warnings.begin();
-       i != warnings.end(); ++i) {
-    if (!ContainsKey(suppressed_warnings_, *i)) {
+  for (auto i = warnings.begin(); i != warnings.end(); ++i) {
+    if (!base::ContainsKey(suppressed_warnings_, *i)) {
       non_suppressed_warnings_exist = true;
       break;
     }
@@ -154,12 +157,10 @@ void WarningBadgeService::ShowBadge(bool show) {
       ErrorBadge::GetMenuItemCommandID());
 
   // Activate or hide the warning badge in case the current state is incorrect.
-  if (error && !show) {
+  if (error && !show)
     service->RemoveGlobalError(error);
-    delete error;
-  } else if (!error && show) {
-    service->AddGlobalError(new ErrorBadge(this));
-  }
+  else if (!error && show)
+    service->AddGlobalError(std::make_unique<ErrorBadge>(this));
 }
 
 }  // namespace extensions

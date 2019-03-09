@@ -17,12 +17,21 @@ class WebContents;
 // Chrome-specific extension of the OmniboxEditController base class.
 class ChromeOmniboxEditController : public OmniboxEditController {
  public:
+  // OmniboxEditController:
+  void OnAutocompleteAccept(const GURL& destination_url,
+                            TemplateURLRef::PostContent* post_content,
+                            WindowOpenDisposition disposition,
+                            ui::PageTransition transition,
+                            AutocompleteMatchType::Type type,
+                            base::TimeTicks match_selection_timestamp) override;
+  void OnInputInProgress(bool in_progress) override;
+
   // Returns the WebContents of the currently active tab.
-  virtual content::WebContents* GetWebContents() = 0;
+  virtual content::WebContents* GetWebContents();
 
   // Called when the the controller should update itself without restoring any
   // tab state.
-  virtual void UpdateWithoutTabRestore() = 0;
+  virtual void UpdateWithoutTabRestore();
 
   CommandUpdater* command_updater() { return command_updater_; }
   const CommandUpdater* command_updater() const { return command_updater_; }
@@ -32,13 +41,7 @@ class ChromeOmniboxEditController : public OmniboxEditController {
   ~ChromeOmniboxEditController() override;
 
  private:
-  // OmniboxEditController:
-  void OnAutocompleteAccept(const GURL& destination_url,
-                            WindowOpenDisposition disposition,
-                            ui::PageTransition transition) override;
-  void OnInputInProgress(bool in_progress) override;
-
-  CommandUpdater* command_updater_;
+  CommandUpdater* const command_updater_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeOmniboxEditController);
 };

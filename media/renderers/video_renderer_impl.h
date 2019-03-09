@@ -8,12 +8,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <deque>
 #include <memory>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/condition_variable.h"
 #include "base/synchronization/lock.h"
@@ -23,27 +21,28 @@
 #include "media/base/media_log.h"
 #include "media/base/pipeline_status.h"
 #include "media/base/video_decoder.h"
+#include "media/base/video_decoder_config.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_renderer.h"
 #include "media/base/video_renderer_sink.h"
 #include "media/filters/decoder_stream.h"
 #include "media/filters/video_renderer_algorithm.h"
-#include "media/renderers/gpu_video_accelerator_factories.h"
+#include "media/renderers/default_renderer_factory.h"
 #include "media/video/gpu_memory_buffer_video_frame_pool.h"
 
 namespace base {
 class SingleThreadTaskRunner;
 class TickClock;
-}
+}  // namespace base
 
 namespace media {
 
-// VideoRendererImpl handles reading from a VideoFrameStream storing the
+// VideoRendererImpl handles reading from a VideoDecoderStream storing the
 // results in a queue of decoded frames and executing a callback when a frame is
 // ready for rendering.
 class MEDIA_EXPORT VideoRendererImpl
     : public VideoRenderer,
-      public NON_EXPORTED_BASE(VideoRendererSink::RenderCallback) {
+      public VideoRendererSink::RenderCallback {
  public:
   // |decoders| contains the VideoDecoders to use when initializing.
   //
@@ -54,12 +53,11 @@ class MEDIA_EXPORT VideoRendererImpl
   // Setting |drop_frames_| to true causes the renderer to drop expired frames.
   VideoRendererImpl(
       const scoped_refptr<base::SingleThreadTaskRunner>& media_task_runner,
-      const scoped_refptr<base::TaskRunner>& worker_task_runner,
       VideoRendererSink* sink,
-      ScopedVector<VideoDecoder> decoders,
+      const CreateVideoDecodersCB& create_video_decoders_cb,
       bool drop_frames,
-      GpuVideoAcceleratorFactories* gpu_factories,
-      const scoped_refptr<MediaLog>& media_log);
+      MediaLog* media_log,
+      std::unique_ptr<GpuMemoryBufferVideoFramePool> gmb_pool);
   ~VideoRendererImpl() override;
 
   // VideoRenderer implementation.
@@ -70,13 +68,15 @@ class MEDIA_EXPORT VideoRendererImpl
                   const PipelineStatusCB& init_cb) override;
   void Flush(const base::Closure& callback) override;
   void StartPlayingFrom(base::TimeDelta timestamp) override;
-  void OnTimeStateChanged(bool time_progressing) override;
+  void OnTimeProgressing() override;
+  void OnTimeStopped() override;
 
-  void SetTickClockForTesting(std::unique_ptr<base::TickClock> tick_clock);
-  void SetGpuMemoryBufferVideoForTesting(
-      std::unique_ptr<GpuMemoryBufferVideoFramePool> gpu_memory_buffer_pool);
+  void SetTickClockForTesting(const base::TickClock* tick_clock);
   size_t frames_queued_for_testing() const {
     return algorithm_->frames_queued();
+  }
+  size_t effective_frames_queued_for_testing() const {
+    return algorithm_->effective_frames_queued();
   }
 
   // VideoRendererSink::RenderCallback implementation.
@@ -86,51 +86,53 @@ class MEDIA_EXPORT VideoRendererImpl
   void OnFrameDropped() override;
 
  private:
-  // Callback for |video_frame_stream_| initialization.
-  void OnVideoFrameStreamInitialized(bool success);
+  // Callback for |video_decoder_stream_| initialization.
+  void OnVideoDecoderStreamInitialized(bool success);
+
+  void FinishInitialization(PipelineStatus status);
+  void FinishFlush();
 
   // Functions to notify certain events to the RendererClient.
   void OnPlaybackError(PipelineStatus error);
   void OnPlaybackEnded();
   void OnStatisticsUpdate(const PipelineStatistics& stats);
   void OnBufferingStateChange(BufferingState state);
-  void OnWaitingForDecryptionKey();
+  void OnWaiting(WaitingReason reason);
 
-  // Callback for |video_frame_stream_| to deliver decoded video frames and
-  // report video decoding status. If a frame is available the planes will be
-  // copied asynchronously and FrameReady will be called once finished copying.
-  void FrameReadyForCopyingToGpuMemoryBuffers(
-      VideoFrameStream::Status status,
-      const scoped_refptr<VideoFrame>& frame);
+  // Called by the VideoDecoderStream when a config change occurs. Will notify
+  // RenderClient of the new config.
+  void OnConfigChange(const VideoDecoderConfig& config);
 
-  // Callback for |video_frame_stream_| to deliver decoded video frames and
+  // Callback for |video_decoder_stream_| to deliver decoded video frames and
   // report video decoding status.
-  void FrameReady(VideoFrameStream::Status status,
+  void FrameReady(VideoDecoderStream::Status status,
                   const scoped_refptr<VideoFrame>& frame);
 
   // Helper method for enqueueing a frame to |alogorithm_|.
   void AddReadyFrame_Locked(const scoped_refptr<VideoFrame>& frame);
 
   // Helper method that schedules an asynchronous read from the
-  // |video_frame_stream_| as long as there isn't a pending read and we have
+  // |video_decoder_stream_| as long as there isn't a pending read and we have
   // capacity.
   void AttemptRead_Locked();
 
-  // Called when VideoFrameStream::Reset() completes.
-  void OnVideoFrameStreamResetDone();
+  // Called when VideoDecoderStream::Reset() completes.
+  void OnVideoDecoderStreamResetDone();
 
   // Returns true if the renderer has enough data for playback purposes.
   // Note that having enough data may be due to reaching end of stream.
-  bool HaveEnoughData_Locked();
+  bool HaveEnoughData_Locked() const;
   void TransitionToHaveEnough_Locked();
   void TransitionToHaveNothing();
+  void TransitionToHaveNothing_Locked();
 
   // Runs |statistics_cb_| with |frames_decoded_| and |frames_dropped_|, resets
-  // them to 0.
-  void UpdateStats_Locked();
+  // them to 0. If |force_update| is true, sends an update even if no frames
+  // have been decoded since the last update.
+  void UpdateStats_Locked(bool force_update = false);
 
   // Returns true if there is no more room for additional buffered frames.
-  bool HaveReachedBufferingCap();
+  bool HaveReachedBufferingCap() const;
 
   // Starts or stops |sink_| respectively. Do not call while |lock_| is held.
   void StartSink();
@@ -153,7 +155,7 @@ class MEDIA_EXPORT VideoRendererImpl
 
   // Helper method for checking if a frame timestamp plus the frame's expected
   // duration is before |start_timestamp_|.
-  bool IsBeforeStartTime(base::TimeDelta timestamp);
+  bool IsBeforeStartTime(const VideoFrame& frame);
 
   // Attempts to remove frames which are no longer effective for rendering when
   // |buffering_state_| == BUFFERING_HAVE_NOTHING or |was_background_rendering_|
@@ -191,18 +193,26 @@ class MEDIA_EXPORT VideoRendererImpl
   VideoRendererSink* const sink_;
   bool sink_started_;
 
+  // Stores the last decoder config that was passed to
+  // RendererClient::OnVideoConfigChange. Used to prevent signaling config
+  // to the upper layers when when the new config is the same.
+  VideoDecoderConfig current_decoder_config_;
+
   // Used for accessing data members.
   base::Lock lock_;
 
   RendererClient* client_;
 
-  // Provides video frames to VideoRendererImpl.
-  std::unique_ptr<VideoFrameStream> video_frame_stream_;
-
   // Pool of GpuMemoryBuffers and resources used to create hardware frames.
+  // Ensure this is destructed after |algorithm_| for optimal memory release
+  // when a frames are still held by the compositor. Must be destructed after
+  // |video_decoder_stream_| since it holds a callback to the pool.
   std::unique_ptr<GpuMemoryBufferVideoFramePool> gpu_memory_buffer_pool_;
 
-  scoped_refptr<MediaLog> media_log_;
+  // Provides video frames to VideoRendererImpl.
+  std::unique_ptr<VideoDecoderStream> video_decoder_stream_;
+
+  MediaLog* media_log_;
 
   // Flag indicating low-delay mode.
   bool low_delay_;
@@ -215,30 +225,30 @@ class MEDIA_EXPORT VideoRendererImpl
   // Important detail: being in kPlaying doesn't imply that video is being
   // rendered. Rather, it means that the renderer is ready to go. The actual
   // rendering of video is controlled by time advancing via |get_time_cb_|.
+  // Video renderer can be reinitialized completely by calling Initialize again
+  // when it is in a kFlushed state with video sink stopped.
   //
-  //   kUninitialized
-  //         | Initialize()
-  //         |
-  //         V
-  //    kInitializing
-  //         | Decoders initialized
-  //         |
-  //         V            Decoders reset
-  //      kFlushed <------------------ kFlushing
-  //         | StartPlayingFrom()         ^
-  //         |                            |
-  //         |                            | Flush()
-  //         `---------> kPlaying --------'
-  enum State {
-    kUninitialized,
-    kInitializing,
-    kFlushing,
-    kFlushed,
-    kPlaying
-  };
+  //    kUninitialized
+  //  +------> | Initialize()
+  //  |        |
+  //  |        V
+  //  |   kInitializing
+  //  |        | Decoders initialized
+  //  |        |
+  //  |        V            Decoders reset
+  //  ---- kFlushed <------------------ kFlushing
+  //           | StartPlayingFrom()         ^
+  //           |                            |
+  //           |                            | Flush()
+  //           `---------> kPlaying --------'
+  enum State { kUninitialized, kInitializing, kFlushing, kFlushed, kPlaying };
   State state_;
 
-  // Keep track of the outstanding read on the VideoFrameStream. Flushing can
+  // TODO(servolk): Consider using DecoderFactory here instead of the
+  // CreateVideoDecodersCB.
+  CreateVideoDecodersCB create_video_decoders_cb_;
+
+  // Keep track of the outstanding read on the VideoDecoderStream. Flushing can
   // only complete once the read has completed.
   bool pending_read_;
 
@@ -255,13 +265,14 @@ class MEDIA_EXPORT VideoRendererImpl
 
   // Keeps track of the number of frames decoded and dropped since the
   // last call to |statistics_cb_|. These must be accessed under lock.
-  int frames_decoded_;
-  int frames_dropped_;
+  PipelineStatistics stats_;
 
-  std::unique_ptr<base::TickClock> tick_clock_;
+  const base::TickClock* tick_clock_;
 
   // Algorithm for selecting which frame to render; manages frames and all
-  // timing related information.
+  // timing related information. Ensure this is destructed before
+  // |gpu_memory_buffer_pool_| for optimal memory release when a frames are
+  // still held by the compositor.
   std::unique_ptr<VideoRendererAlgorithm> algorithm_;
 
   // Indicates that Render() was called with |background_rendering| set to true,
@@ -273,16 +284,25 @@ class MEDIA_EXPORT VideoRendererImpl
   // only be accessed from |task_runner_|.
   bool time_progressing_;
 
-  // Memory usage of |algorithm_| recorded during the last UpdateStats_Locked()
-  // call.
-  int64_t last_video_memory_usage_;
-
   // Indicates if a frame has been processed by CheckForMetadataChanges().
   bool have_renderered_frames_;
 
   // Tracks last frame properties to detect and notify client of any changes.
   gfx::Size last_frame_natural_size_;
   bool last_frame_opaque_;
+
+  // Indicates if we've painted the first valid frame after StartPlayingFrom().
+  bool painted_first_frame_;
+
+  // Current minimum and maximum for buffered frames. |min_buffered_frames_| is
+  // the number of frames required to transition from BUFFERING_HAVE_NOTHING to
+  // BUFFERING_HAVE_ENOUGH.
+  size_t min_buffered_frames_;
+
+  // Last Render() and last FrameReady() times respectively. Used to avoid
+  // triggering underflow when background rendering.
+  base::TimeTicks last_render_time_;
+  base::TimeTicks last_frame_ready_time_;
 
   // NOTE: Weak pointers must be invalidated before all other member variables.
   base::WeakPtrFactory<VideoRendererImpl> weak_factory_;
@@ -291,7 +311,7 @@ class MEDIA_EXPORT VideoRendererImpl
   // This is useful when doing video frame copies asynchronously since we
   // want to discard video frames that might be received after the stream has
   // been reset.
-  base::WeakPtrFactory<VideoRendererImpl> frame_callback_weak_factory_;
+  base::WeakPtrFactory<VideoRendererImpl> cancel_on_flush_weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(VideoRendererImpl);
 };

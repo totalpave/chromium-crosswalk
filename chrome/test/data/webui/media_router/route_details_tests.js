@@ -19,53 +19,57 @@ cr.define('route_details', function() {
       var fakeRouteOne;
 
       /**
+       * The custom controller path for |fakeRouteOne|.
+       * @const @type {string}
+       */
+      var fakeRouteOneControllerPath =
+          'chrome-extension://123/custom_view.html';
+
+      /**
        * Second fake route created before each test.
        * @type {media_router.Route}
        */
       var fakeRouteTwo;
-
-      // Checks whether |expected| and the text in the span element in
-      // the |elementId| element are equal.
-      var checkSpanText = function(expected, elementId) {
-        assertEquals(expected,
-            details.$[elementId].querySelector('span').innerText);
-      };
-
-      // Checks the default route view is shown.
-      var checkDefaultViewIsShown = function() {
-        assertFalse(details.$['route-information'].hasAttribute('hidden'));
-        assertTrue(details.$['custom-controller'].hasAttribute('hidden'));
-      };
-
-      // Checks the default route view is shown.
-      var checkStartCastButtonIsShown = function() {
-        assertFalse(
-            details.$['start-casting-to-route-button'].hasAttribute('hidden'));
-      };
-
-      // Checks the default route view is not shown.
-      var checkStartCastButtonIsNotShown = function() {
-        assertTrue(
-            details.$['start-casting-to-route-button'].hasAttribute('hidden'));
-      };
-
-      // Checks the custom controller is shown.
-      var checkCustomControllerIsShown = function() {
-        assertTrue(details.$['route-information'].hasAttribute('hidden'));
-        assertFalse(details.$['custom-controller'].hasAttribute('hidden'));
-      };
-
-      // Checks whether |expected| and the text in the |elementId| element
-      // are equal given an id.
-      var checkElementTextWithId = function(expected, elementId) {
-        assertEquals(expected, details.$[elementId].innerText);
-      };
 
       /**
        * Fake sink that corresponds to |fakeRouteOne|.
        * @type {media_router.Sink}
        */
       var fakeSinkOne;
+
+      // Checks whether |expected| and the text in the span element in
+      // the |elementId| element are equal.
+      var checkSpanText = function(expected, elementId) {
+        assertEquals(
+            expected,
+            details.$$('#' + elementId).querySelector('span').innerText);
+      };
+
+      // Checks whether |expected| and the text in the element in the
+      // |elementId| element are equal.
+      var checkElementText = function(expected, elementId) {
+        assertEquals(expected, details.$$('#' + elementId).innerText);
+      };
+
+      // Checks the default route view is shown.
+      var checkDefaultViewIsShown = function() {
+        assertFalse(details.$$('#route-description').hasAttribute('hidden'));
+        assertTrue(
+            !details.$$('extension-view-wrapper') ||
+            details.$$('extension-view-wrapper').hasAttribute('hidden'));
+      };
+
+      // Checks the start button is shown.
+      var checkStartCastButtonIsShown = function() {
+        assertFalse(details.$$('#start-casting-to-route-button')
+                        .hasAttribute('hidden'));
+      };
+
+      // Checks the start button is not shown.
+      var checkStartCastButtonIsNotShown = function() {
+        assertTrue(details.$$('#start-casting-to-route-button')
+                       .hasAttribute('hidden'));
+      };
 
       // Import route_details.html before running suite.
       suiteSetup(function() {
@@ -81,11 +85,11 @@ cr.define('route_details', function() {
         document.body.appendChild(details);
 
         // Initialize routes and sinks.
-        fakeRouteOne = new media_router.Route('route id 1', 'sink id 1',
-            'Video 1', 1, true, false,
-            'chrome-extension://123/custom_view.html');
-        fakeRouteTwo = new media_router.Route('route id 2', 'sink id 2',
-            'Video 2', 2, false, true);
+        fakeRouteOne = new media_router.Route(
+            'route id 1', 'sink id 1', 'Video 1', 1, true, false,
+            fakeRouteOneControllerPath);
+        fakeRouteTwo = new media_router.Route(
+            'route id 2', 'sink id 2', 'Video 2', 2, false, true);
         fakeSinkOne = new media_router.Sink(
             'sink id 1', 'sink 1', 'description', null,
             media_router.SinkIconType.CAST, media_router.SinkStatus.ACTIVE,
@@ -140,38 +144,42 @@ cr.define('route_details', function() {
         details.addEventListener('close-route', function() {
           done();
         });
-        MockInteractions.tap(details.$['close-route-button']);
+        MockInteractions.tap(details.$$('#close-route-button'));
       });
 
       // Tests for 'join-route-click' event firing when the
       // 'start-casting-to-route-button' button is clicked when the current
       // route is joinable.
       test('start casting to route button click', function(done) {
-        details.addEventListener('join-route-click', function() { done(); });
+        details.addEventListener('join-route-click', function() {
+          done();
+        });
         details.route = fakeRouteTwo;
-        MockInteractions.tap(details.$['start-casting-to-route-button']);
+        MockInteractions.tap(details.$$('#start-casting-to-route-button'));
       });
 
       // Tests for 'replace-route-click' event firing when the
       // 'start-casting-to-route-button' button is clicked when the current
       // route is not joinable.
       test('start casting button click replaces route', function(done) {
-        details.addEventListener(
-            'change-route-source-click', function() { done(); });
+        details.addEventListener('change-route-source-click', function() {
+          done();
+        });
         details.route = fakeRouteOne;
         details.availableCastModes = 1;
-        MockInteractions.tap(details.$['start-casting-to-route-button']);
+        MockInteractions.tap(details.$$('#start-casting-to-route-button'));
       });
 
       // Tests the initial expected text.
       test('initial text setting', function() {
         // <paper-button> text is styled as upper case.
-        checkSpanText(loadTimeData.getString('stopCastingButtonText')
-            .toUpperCase(), 'close-route-button');
+        checkSpanText(
+            loadTimeData.getString('stopCastingButtonText').toUpperCase(),
+            'close-route-button');
         checkSpanText(
             loadTimeData.getString('startCastingButtonText').toUpperCase(),
             'start-casting-to-route-button');
-        checkSpanText('', 'route-information');
+        checkElementText('', 'route-description');
       });
 
       // Tests when |route| is undefined or set.
@@ -183,51 +191,16 @@ cr.define('route_details', function() {
         // Set |route|.
         details.route = fakeRouteOne;
         assertEquals(fakeRouteOne, details.route);
-        checkSpanText(loadTimeData.getStringF('castingActivityStatus',
-            fakeRouteOne.description), 'route-information');
+        checkElementText(fakeRouteOne.description, 'route-description');
         checkDefaultViewIsShown();
         checkStartCastButtonIsNotShown();
 
         // Set |route| to a different route.
         details.route = fakeRouteTwo;
         assertEquals(fakeRouteTwo, details.route);
-        checkSpanText(loadTimeData.getStringF('castingActivityStatus',
-            fakeRouteTwo.description), 'route-information');
+        checkElementText(fakeRouteTwo.description, 'route-description');
         checkDefaultViewIsShown();
         checkStartCastButtonIsShown();
-      });
-
-      // Tests when |route| exists, has a custom controller, and it loads.
-      test('route has custom controller and loading succeeds', function(done) {
-        var loadInvoked = false;
-        details.$['custom-controller'].load = function(url) {
-          loadInvoked = true;
-          assertEquals('chrome-extension://123/custom_view.html', url);
-          return Promise.resolve();
-        };
-
-        details.route = fakeRouteOne;
-        setTimeout(function() {
-          assertTrue(loadInvoked);
-          checkCustomControllerIsShown();
-          done();
-        });
-      });
-
-      // Tests when |route| exists, has a custom controller, but fails to load.
-      test('route has custom controller but loading fails', function(done) {
-        var loadInvoked = false;
-        details.$['custom-controller'].load = function(url) {
-          loadInvoked = true;
-          return Promise.reject();
-        };
-
-        details.route = fakeRouteOne;
-        setTimeout(function() {
-          assertTrue(loadInvoked);
-          checkDefaultViewIsShown();
-          done();
-        });
       });
     });
   }

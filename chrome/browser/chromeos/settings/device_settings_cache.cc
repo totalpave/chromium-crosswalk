@@ -10,9 +10,9 @@
 #include "base/bind.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chrome/common/pref_names.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "policy/proto/device_management_backend.pb.h"
 
 namespace em = enterprise_management;
 
@@ -25,17 +25,15 @@ void RegisterPrefs(PrefRegistrySimple* registry) {
 }
 
 bool Store(const em::PolicyData& policy, PrefService* local_state) {
-  if (local_state) {
-    std::string policy_string = policy.SerializeAsString();
-    std::string encoded;
-    base::Base64Encode(policy_string, &encoded);
-    local_state->SetString(prefs::kDeviceSettingsCache, encoded);
-    return true;
-  }
-  return false;
+  if (!local_state)
+    return false;
+
+  local_state->SetString(prefs::kDeviceSettingsCache,
+                         PolicyDataToString(policy));
+  return true;
 }
 
-bool Retrieve(em::PolicyData *policy, PrefService* local_state) {
+bool Retrieve(em::PolicyData* policy, PrefService* local_state) {
   if (local_state) {
     std::string encoded =
         local_state->GetString(prefs::kDeviceSettingsCache);
@@ -48,6 +46,13 @@ bool Retrieve(em::PolicyData *policy, PrefService* local_state) {
     return policy->ParseFromString(policy_string);
   }
   return false;
+}
+
+std::string PolicyDataToString(const em::PolicyData& policy) {
+  const std::string policy_string = policy.SerializeAsString();
+  std::string encoded;
+  base::Base64Encode(policy_string, &encoded);
+  return encoded;
 }
 
 }  // namespace device_settings_cache

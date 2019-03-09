@@ -32,12 +32,12 @@ bool LoadImages(const base::DictionaryValue* theme_value,
       // The value may be a dictionary of scales and files paths.
       // Or the value may be a file path, in which case a scale
       // of 100% is assumed.
-      if (iter.value().IsType(base::Value::TYPE_DICTIONARY)) {
+      if (iter.value().is_dict()) {
         const base::DictionaryValue* inner_value = NULL;
         if (iter.value().GetAsDictionary(&inner_value)) {
           for (base::DictionaryValue::Iterator inner_iter(*inner_value);
                !inner_iter.IsAtEnd(); inner_iter.Advance()) {
-            if (!inner_iter.value().IsType(base::Value::TYPE_STRING)) {
+            if (!inner_iter.value().is_string()) {
               *error = base::ASCIIToUTF16(errors::kInvalidThemeImages);
               return false;
             }
@@ -46,7 +46,7 @@ bool LoadImages(const base::DictionaryValue* theme_value,
           *error = base::ASCIIToUTF16(errors::kInvalidThemeImages);
           return false;
         }
-      } else if (!iter.value().IsType(base::Value::TYPE_STRING)) {
+      } else if (!iter.value().is_string()) {
         *error = base::ASCIIToUTF16(errors::kInvalidThemeImages);
         return false;
       }
@@ -185,7 +185,7 @@ bool ThemeHandler::Parse(Extension* extension, base::string16* error) {
   if (!LoadDisplayProperties(theme_value, error, theme_info.get()))
     return false;
 
-  extension->SetManifestData(keys::kTheme, theme_info.release());
+  extension->SetManifestData(keys::kTheme, std::move(theme_info));
   return true;
 }
 
@@ -216,8 +216,9 @@ bool ThemeHandler::Validate(const Extension* extension,
   return true;
 }
 
-const std::vector<std::string> ThemeHandler::Keys() const {
-  return SingleKey(keys::kTheme);
+base::span<const char* const> ThemeHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kTheme};
+  return kKeys;
 }
 
 }  // namespace extensions

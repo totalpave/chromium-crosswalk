@@ -16,7 +16,11 @@
 
 namespace {
 
-const std::string kVersionPrefix = "Chrome/";
+const char kVersionPrefix[] = "Chrome/";
+const size_t kVersionPrefixLen = sizeof(kVersionPrefix) - 1;
+
+const char kHeadlessVersionPrefix[] = "HeadlessChrome/";
+const size_t kHeadlessVersionPrefixLen = sizeof(kHeadlessVersionPrefix) - 1;
 
 }  // namespace
 
@@ -27,24 +31,10 @@ BrowserInfo::BrowserInfo()
       is_android(false) {
 }
 
-BrowserInfo::BrowserInfo(std::string android_package,
-                         std::string browser_name,
-                         std::string browser_version,
-                         int major_version,
-                         int build_no,
-                         int blink_revision,
-                         bool is_android)
-    : android_package(android_package),
-      browser_name(browser_name),
-      browser_version(browser_version),
-      major_version(major_version),
-      build_no(build_no),
-      blink_revision(blink_revision),
-      is_android(is_android) {
-}
+BrowserInfo::~BrowserInfo() {}
 
 Status ParseBrowserInfo(const std::string& data, BrowserInfo* browser_info) {
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(data);
+  std::unique_ptr<base::Value> value = base::JSONReader::ReadDeprecated(data);
   if (!value.get())
     return Status(kUnknownError, "version info not in JSON");
 
@@ -67,6 +57,10 @@ Status ParseBrowserInfo(const std::string& data, BrowserInfo* browser_info) {
   if (status.IsError())
     return status;
 
+  // "webSocketDebuggerUrl" is only returned on Chrome 62.0.3178 and above,
+  // thus it's not an error if it's missing.
+  dict->GetString("webSocketDebuggerUrl", &browser_info->web_socket_url);
+
   std::string blink_version;
   if (!dict->GetString("WebKit-Version", &blink_version))
     return Status(kUnknownError, "version doesn't include 'WebKit-Version'");
@@ -85,9 +79,21 @@ Status ParseBrowserString(bool has_android_package,
     return Status(kOk);
   }
 
+  const Status error =
+      Status(kUnknownError, "unrecognized Chrome version: " + browser_string);
+
   int build_no = 0;
-  if (browser_string.find(kVersionPrefix) == 0u) {
-    std::string version = browser_string.substr(kVersionPrefix.length());
+  if (base::StartsWith(browser_string, kVersionPrefix,
+                       base::CompareCase::SENSITIVE) ||
+      base::StartsWith(browser_string, kHeadlessVersionPrefix,
+                       base::CompareCase::SENSITIVE)) {
+    std::string version = browser_string.substr(kVersionPrefixLen);
+    bool headless = false;
+    if (base::StartsWith(browser_string, kHeadlessVersionPrefix,
+                         base::CompareCase::SENSITIVE)) {
+      version = browser_string.substr(kHeadlessVersionPrefixLen);
+      headless = true;
+    }
 
     Status status = ParseBrowserVersionString(
         version, &browser_info->major_version, &build_no);
@@ -95,7 +101,10 @@ Status ParseBrowserString(bool has_android_package,
       return status;
 
     if (build_no != 0) {
-      browser_info->browser_name = "chrome";
+      if (headless)
+        browser_info->browser_name = "headless chrome";
+      else
+        browser_info->browser_name = "chrome";
       browser_info->browser_version = version;
       browser_info->build_no = build_no;
       return Status(kOk);
@@ -108,7 +117,7 @@ Status ParseBrowserString(bool has_android_package,
     if (pos != std::string::npos) {
       browser_info->browser_name = "webview";
       browser_info->browser_version =
-          browser_string.substr(pos + kVersionPrefix.length());
+          browser_string.substr(pos + kVersionPrefixLen);
       browser_info->is_android = true;
       return ParseBrowserVersionString(browser_info->browser_version,
                                        &browser_info->major_version, &build_no);
@@ -116,8 +125,7 @@ Status ParseBrowserString(bool has_android_package,
     return Status(kOk);
   }
 
-  return Status(kUnknownError,
-                "unrecognized Chrome version: " + browser_string);
+  return error;
 }
 
 Status ParseBrowserVersionString(const std::string& browser_version,
@@ -145,9 +153,11 @@ Status ParseBlinkVersionString(const std::string& blink_version,
   // Chrome OS reports its Blink revision as a git hash. In this case, ignore it
   // and don't set |blink_revision|. For Chrome (and for Chrome OS) we use the
   // build number instead of the blink revision for decisions about backwards
-  // compatibility.
+  // compatibility. Also accepts empty Blink revision (happens with some Chrome
+  // OS builds).
   std::string revision = blink_version.substr(before + 1, after - before - 1);
-  if (!IsGitHash(revision) && !base::StringToInt(revision, blink_revision)) {
+  if (!IsGitHash(revision) && !base::StringToInt(revision, blink_revision) &&
+      revision.length() > 0) {
     return Status(kUnknownError, "unrecognized Blink revision: " + revision);
   }
 

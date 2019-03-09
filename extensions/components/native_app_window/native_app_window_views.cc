@@ -4,7 +4,6 @@
 
 #include "extensions/components/native_app_window/native_app_window_views.h"
 
-#include "base/threading/sequenced_worker_pool.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -12,7 +11,6 @@
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/common/draggable_region.h"
 #include "third_party/skia/include/core/SkRegion.h"
-#include "ui/gfx/path.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/non_client_view.h"
@@ -129,6 +127,10 @@ void NativeAppWindowViews::Hide() {
   widget_->Hide();
 }
 
+bool NativeAppWindowViews::IsVisible() const {
+  return widget_->IsVisible();
+}
+
 void NativeAppWindowViews::Close() {
   widget_->Close();
 }
@@ -194,9 +196,8 @@ void NativeAppWindowViews::RemoveObserver(
 }
 
 void NativeAppWindowViews::OnViewWasResized() {
-  FOR_EACH_OBSERVER(web_modal::ModalDialogHostObserver,
-                    observer_list_,
-                    OnPositionRequiresUpdate());
+  for (auto& observer : observer_list_)
+    observer.OnPositionRequiresUpdate();
 }
 
 // WidgetDelegate implementation.
@@ -216,11 +217,11 @@ bool NativeAppWindowViews::CanResize() const {
 
 bool NativeAppWindowViews::CanMaximize() const {
   return resizable_ && !size_constraints_.HasMaximumSize() &&
-         !app_window_->window_type_is_panel() && !WidgetHasHitTestMask();
+         !WidgetHasHitTestMask();
 }
 
 bool NativeAppWindowViews::CanMinimize() const {
-  return true;
+  return !app_window_->show_on_lock_screen();
 }
 
 base::string16 NativeAppWindowViews::GetWindowTitle() const {
@@ -228,11 +229,7 @@ base::string16 NativeAppWindowViews::GetWindowTitle() const {
 }
 
 bool NativeAppWindowViews::ShouldShowWindowTitle() const {
-  return app_window_->window_type() == AppWindow::WINDOW_TYPE_V1_PANEL;
-}
-
-bool NativeAppWindowViews::ShouldShowWindowIcon() const {
-  return app_window_->window_type() == AppWindow::WINDOW_TYPE_V1_PANEL;
+  return false;
 }
 
 void NativeAppWindowViews::SaveWindowPlacement(const gfx::Rect& bounds,
@@ -254,10 +251,6 @@ const views::Widget* NativeAppWindowViews::GetWidget() const {
   return widget_;
 }
 
-views::View* NativeAppWindowViews::GetContentsView() {
-  return this;
-}
-
 bool NativeAppWindowViews::ShouldDescendIntoChildForEventHandling(
     gfx::NativeView child,
     const gfx::Point& location) {
@@ -276,9 +269,8 @@ bool NativeAppWindowViews::ShouldDescendIntoChildForEventHandling(
 // WidgetObserver implementation.
 
 void NativeAppWindowViews::OnWidgetDestroying(views::Widget* widget) {
-  FOR_EACH_OBSERVER(web_modal::ModalDialogHostObserver,
-                    observer_list_,
-                    OnHostDestroying());
+  for (auto& observer : observer_list_)
+    observer.OnHostDestroying();
 }
 
 void NativeAppWindowViews::OnWidgetVisibilityChanged(views::Widget* widget,
@@ -302,6 +294,14 @@ void NativeAppWindowViews::RenderViewCreated(
         render_view_host->GetWidget()->GetView();
     DCHECK(view);
     view->SetBackgroundColor(SK_ColorTRANSPARENT);
+  } else if (app_window_->show_on_lock_screen()) {
+    content::RenderWidgetHostView* view =
+        render_view_host->GetWidget()->GetView();
+    DCHECK(view);
+    // When shown on the lock screen, app windows will be shown on top of black
+    // background - to avoid a white flash while launching the app window,
+    // initialize it with black background color.
+    view->SetBackgroundColor(SK_ColorBLACK);
   }
 }
 
@@ -374,14 +374,14 @@ SkRegion* NativeAppWindowViews::GetDraggableRegion() {
   return draggable_region_.get();
 }
 
-void NativeAppWindowViews::UpdateShape(std::unique_ptr<SkRegion> region) {
+void NativeAppWindowViews::UpdateShape(std::unique_ptr<ShapeRects> rects) {
   // Stub implementation. See also ChromeNativeAppWindowViews.
 }
 
-void NativeAppWindowViews::HandleKeyboardEvent(
+bool NativeAppWindowViews::HandleKeyboardEvent(
     const content::NativeWebKeyboardEvent& event) {
-  unhandled_keyboard_event_handler_.HandleKeyboardEvent(event,
-                                                        GetFocusManager());
+  return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
+      event, GetFocusManager());
 }
 
 bool NativeAppWindowViews::IsFrameless() const {
@@ -444,5 +444,7 @@ bool NativeAppWindowViews::CanHaveAlphaEnabled() const {
 void NativeAppWindowViews::SetVisibleOnAllWorkspaces(bool always_visible) {
   widget_->SetVisibleOnAllWorkspaces(always_visible);
 }
+
+void NativeAppWindowViews::SetActivateOnPointer(bool activate_on_pointer) {}
 
 }  // namespace native_app_window

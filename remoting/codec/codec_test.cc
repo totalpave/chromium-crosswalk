@@ -8,14 +8,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <deque>
 #include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/macros.h"
-#include "media/base/video_frame.h"
+#include "base/stl_util.h"
 #include "remoting/base/util.h"
 #include "remoting/codec/video_decoder.h"
 #include "remoting/codec/video_encoder.h"
@@ -219,7 +217,7 @@ static void TestEncodingRects(VideoEncoder* encoder,
                               DesktopFrame* frame,
                               const DesktopRegion& region) {
   *frame->mutable_updated_region() = region;
-  tester->DataAvailable(encoder->Encode(*frame, 0));
+  tester->DataAvailable(encoder->Encode(*frame));
 }
 
 void TestVideoEncoder(VideoEncoder* encoder, bool strict) {
@@ -227,8 +225,8 @@ void TestVideoEncoder(VideoEncoder* encoder, bool strict) {
 
   VideoEncoderTester tester;
 
-  for (size_t xi = 0; xi < arraysize(kSizes); ++xi) {
-    for (size_t yi = 0; yi < arraysize(kSizes); ++yi) {
+  for (size_t xi = 0; xi < base::size(kSizes); ++xi) {
+    for (size_t yi = 0; yi < base::size(kSizes); ++yi) {
       DesktopSize size(kSizes[xi], kSizes[yi]);
       std::unique_ptr<DesktopFrame> frame = PrepareFrame(size);
       for (const DesktopRegion& region : MakeTestRegionLists(size)) {
@@ -250,12 +248,12 @@ void TestVideoEncoderEmptyFrames(VideoEncoder* encoder,
 
   frame->mutable_updated_region()->SetRect(
       webrtc::DesktopRect::MakeSize(kSize));
-  EXPECT_TRUE(encoder->Encode(*frame, 0));
+  EXPECT_TRUE(encoder->Encode(*frame));
 
   int topoff_frames = 0;
   frame->mutable_updated_region()->Clear();
   for (int i = 0; i < max_topoff_frames + 1; ++i) {
-    if (!encoder->Encode(*frame, 0))
+    if (!encoder->Encode(*frame))
       break;
     topoff_frames++;
   }
@@ -288,7 +286,7 @@ static void TestEncodeDecodeRects(VideoEncoder* encoder,
     }
   }
 
-  encoder_tester->DataAvailable(encoder->Encode(*frame, 0));
+  encoder_tester->DataAvailable(encoder->Encode(*frame));
   decoder_tester->VerifyResults();
   decoder_tester->Reset();
 }
@@ -338,7 +336,7 @@ void TestVideoEncoderDecoderGradient(VideoEncoder* encoder,
   VideoDecoderTester decoder_tester(decoder, screen_size);
   decoder_tester.set_expected_frame(frame.get());
   decoder_tester.AddRegion(frame->updated_region());
-  decoder_tester.ReceivedPacket(encoder->Encode(*frame, 0));
+  decoder_tester.ReceivedPacket(encoder->Encode(*frame));
 
   decoder_tester.VerifyResultsApprox(max_error_limit, mean_error_limit);
 }

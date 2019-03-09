@@ -3,29 +3,24 @@
 // found in the LICENSE file.
 
 // This features file defines manifest keys implemented under src/chrome.
-// See extensions/common/features/* to understand this file, in particular
-// feature.h, simple_feature.h, and base_feature_provider.h.
-
-// To add a new whitelisted ID, SHA-1 it and force it to uppercase. In Bash:
-//
-// $ echo -n "aaaabbbbccccddddeeeeffffgggghhhh" | \
-// sha1sum | tr '[:lower:]' '[:upper:]'
-// 9A0417016F345C934A1A88F55CA17C05014EEEBA  -
-//
-// Google employees: please update http://go/chrome-api-whitelist to map
-// hashes back to ids.
+// See chrome/common/extensions/api/_features.md to understand this file, as
+// well as feature.h, simple_feature.h, and feature_provider.h.
 
 {
   "about_page": {
     "channel": "stable",
     "extension_types": ["shared_module"]
   },
+  "action": {
+    "channel": "trunk",
+    "extension_types": ["extension"]
+  },
   "app.icon_color": {
     "channel": "stable",
     "extension_types": ["hosted_app"]
   },
   "app.linked_icons": {
-    "channel": "dev",
+    "channel": "stable",
     "extension_types": ["hosted_app"]
   },
   "app.isolation": {
@@ -37,6 +32,10 @@
   "app.launch": {
     "channel": "stable",
     "extension_types": ["legacy_packaged_app", "hosted_app"]
+  },
+  "app.theme_color": {
+    "channel": "stable",
+    "extension_types": ["hosted_app"]
   },
   "author": {
     "channel": "stable",
@@ -54,15 +53,11 @@
     "channel": "stable",
     "extension_types": ["extension"]
   },
-  "chrome_settings_overrides": [{
+  "chrome_settings_overrides": {
     "channel": "stable",
     "extension_types": ["extension"],
-    "platforms": ["win"]
-  }, {
-    "channel": "trunk",
-    "extension_types": ["extension"],
-    "platforms": ["mac"]
-  }],
+    "platforms": ["win", "mac"]
+  },
   "chrome_ui_overrides": [{
     "channel": "dev",
     "extension_types": ["extension"]
@@ -70,7 +65,6 @@
     "channel": "stable",
     "extension_types": ["extension"],
     "whitelist": [
-      "CB2E4E7174A398FCB3AFA6840500C2E1D22DA7B2", // Bookmark Manager
       "D5736E4B5CF695CB93A2FB57E4FDC6E5AFAB6FE2", // http://crbug.com/312900
       "D57DE394F36DC1C3220E7604C575D29C51A6C495", // http://crbug.com/319444
       "3F65507A3B39259B38C8173C6FFA3D12DF64CCE9"  // http://crbug.com/371562
@@ -93,8 +87,7 @@
     "channel": "stable",
     "extension_types": [
       "extension", "legacy_packaged_app", "hosted_app"
-    ],
-    "no_doc": true
+    ]
   },
   "event_rules": {
     "channel": "stable",
@@ -117,8 +110,7 @@
       "channel": "stable",
       "extension_types": ["legacy_packaged_app", "platform_app"],
       "whitelist": [
-        "nmmhkkegccagdldgiimedpiccmgmieda",
-        "oedeeodfidgoollimchfdnbmhcpnklnd",  // ZIP unpacker.
+        "64291898C201DAF15B090EC4B9EC270BEB6BE6FF",
         "07BD6A765FFC289FF755D7CAB2893A40EC337FEC",  // http://crbug.com/453955
         "896B85CC7E913E11C34892C1425A093C0701D386",  // http://crbug.com/453955
         "11A01C82EF355E674E4F9728A801F5C3CB40D83F",  // http://crbug.com/453955
@@ -136,7 +128,7 @@
       "channel": "stable",
       "extension_types": ["legacy_packaged_app", "platform_app"],
       "whitelist": [
-        "nmmhkkegccagdldgiimedpiccmgmieda",
+        "64291898C201DAF15B090EC4B9EC270BEB6BE6FF",
         "07BD6A765FFC289FF755D7CAB2893A40EC337FEC",  // http://crbug.com/453955
         "896B85CC7E913E11C34892C1425A093C0701D386",  // http://crbug.com/453955
         "11A01C82EF355E674E4F9728A801F5C3CB40D83F",  // http://crbug.com/453955
@@ -148,21 +140,22 @@
     "channel": "stable",
     "extension_types": ["shared_module"]
   },
-  "file_browser_handlers": [
-    {
-      "channel": "stable",
-      "extension_types": ["extension", "legacy_packaged_app"]
-    },
-    {
-      "channel": "stable",
-      "extension_types": ["platform_app"],
-      "location": "component"
-    }
-  ],
-  "file_system_provider_capabilities": {
+  "file_browser_handlers": {
+    "channel": "stable",
+    "extension_types": ["extension", "legacy_packaged_app"]
+  },
+  "file_system_provider_capabilities": [{
     "channel": "stable",
     "extension_types": ["extension", "platform_app"]
-  },
+  }, {
+    "channel": "stable",
+    "extension_types": ["legacy_packaged_app"],
+    "platforms": ["chromeos"],
+    "whitelist": [
+      "0EA6B717932AD64C469C1CCB6911457733295907",  // http://crbug.com/673004
+      "58B0C2968C335964D5433E89CA4D86628A0E3D4B"   // http://crbug.com/673004
+    ]
+  }],
   "homepage_url": {
     "channel": "stable",
     "extension_types": ["extension", "legacy_packaged_app"]
@@ -201,19 +194,9 @@
     "channel": "stable",
     "extension_types": ["extension"]
   },
-  "permissions": {
-    "channel": "stable",
-    "extension_types": [
-      "extension", "legacy_packaged_app", "hosted_app", "platform_app"
-    ]
-  },
   "platforms": {
     "channel": "stable",
     "extension_types": "all"
-  },
-  "plugins": {
-    "channel": "stable",
-    "extension_types": ["extension", "legacy_packaged_app", "hosted_app"]
   },
   "requirements": {
     "channel": "stable",
@@ -271,6 +254,6 @@
   },
   "url_handlers": {
     "channel": "stable",
-    "extension_types": ["platform_app"]
+    "extension_types": ["hosted_app", "platform_app"]
   }
 }

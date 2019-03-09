@@ -14,13 +14,14 @@
 #include "base/strings/string_number_conversions.h"
 #include "remoting/base/constants.h"
 #include "remoting/signaling/mock_signal_strategy.h"
+#include "remoting/signaling/signaling_address.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
-#include "third_party/webrtc/libjingle/xmpp/constants.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmpp/constants.h"
 
-using buzz::QName;
-using buzz::XmlElement;
+using jingle_xmpp::QName;
+using jingle_xmpp::XmlElement;
 
 using testing::NotNull;
 using testing::Return;
@@ -45,6 +46,8 @@ ACTION_P(RemoveListener, list) {
 
 class HostChangeNotificationListenerTest : public testing::Test {
  protected:
+  HostChangeNotificationListenerTest()
+      : signal_strategy_(SignalingAddress(kTestJid)) {}
   class MockListener : public HostChangeNotificationListener::Listener {
    public:
     MOCK_METHOD0(OnHostDeleted, void());
@@ -55,8 +58,6 @@ class HostChangeNotificationListenerTest : public testing::Test {
         .WillRepeatedly(AddListener(&signal_strategy_listeners_));
     EXPECT_CALL(signal_strategy_, RemoveListener(NotNull()))
         .WillRepeatedly(RemoveListener(&signal_strategy_listeners_));
-    EXPECT_CALL(signal_strategy_, GetLocalJid())
-        .WillRepeatedly(Return(kTestJid));
 
     host_change_notification_listener_.reset(new HostChangeNotificationListener(
         &mock_listener_, kHostId, &signal_strategy_, kTestBotJid));
@@ -70,7 +71,7 @@ class HostChangeNotificationListenerTest : public testing::Test {
   std::unique_ptr<XmlElement> GetNotificationStanza(std::string operation,
                                                     std::string hostId,
                                                     std::string botJid) {
-    std::unique_ptr<XmlElement> stanza(new XmlElement(buzz::QN_IQ));
+    std::unique_ptr<XmlElement> stanza(new XmlElement(jingle_xmpp::QN_IQ));
     stanza->AddAttr(QName(std::string(), "type"), "set");
     XmlElement* host_changed =
         new XmlElement(QName(kChromotingXmlNamespace, "host-changed"));
@@ -78,8 +79,8 @@ class HostChangeNotificationListenerTest : public testing::Test {
                           operation);
     host_changed->AddAttr(QName(kChromotingXmlNamespace, "hostid"), hostId);
     stanza->AddElement(host_changed);
-    stanza->AddAttr(buzz::QN_FROM, botJid);
-    stanza->AddAttr(buzz::QN_TO, kTestJid);
+    stanza->AddAttr(jingle_xmpp::QN_FROM, botJid);
+    stanza->AddAttr(jingle_xmpp::QN_TO, kTestJid);
     return stanza;
   }
 
@@ -99,7 +100,7 @@ TEST_F(HostChangeNotificationListenerTest, ReceiveValidNotification) {
   host_change_notification_listener_->OnSignalStrategyIncomingStanza(
       stanza.get());
   message_loop_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(base::MessageLoop::QuitWhenIdleClosure()));
+      FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   base::RunLoop().Run();
 }
 
@@ -112,7 +113,7 @@ TEST_F(HostChangeNotificationListenerTest, ReceiveNotificationBeforeDelete) {
       stanza.get());
   host_change_notification_listener_.reset();
   message_loop_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(base::MessageLoop::QuitWhenIdleClosure()));
+      FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   base::RunLoop().Run();
 }
 
@@ -125,7 +126,7 @@ TEST_F(HostChangeNotificationListenerTest, ReceiveInvalidHostIdNotification) {
   host_change_notification_listener_->OnSignalStrategyIncomingStanza(
       stanza.get());
   message_loop_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(base::MessageLoop::QuitWhenIdleClosure()));
+      FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   base::RunLoop().Run();
 }
 
@@ -137,7 +138,7 @@ TEST_F(HostChangeNotificationListenerTest, ReceiveInvalidBotJidNotification) {
   host_change_notification_listener_->OnSignalStrategyIncomingStanza(
       stanza.get());
   message_loop_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(base::MessageLoop::QuitWhenIdleClosure()));
+      FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   base::RunLoop().Run();
 }
 
@@ -149,7 +150,7 @@ TEST_F(HostChangeNotificationListenerTest, ReceiveNonDeleteNotification) {
   host_change_notification_listener_->OnSignalStrategyIncomingStanza(
       stanza.get());
   message_loop_.task_runner()->PostTask(
-      FROM_HERE, base::Bind(base::MessageLoop::QuitWhenIdleClosure()));
+      FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   base::RunLoop().Run();
 }
 

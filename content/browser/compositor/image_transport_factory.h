@@ -6,34 +6,13 @@
 #define CONTENT_BROWSER_COMPOSITOR_IMAGE_TRANSPORT_FACTORY_H_
 
 #include <memory>
-#include <string>
 
-#include "base/memory/ref_counted.h"
 #include "build/build_config.h"
-#include "cc/surfaces/surface_id_allocator.h"
 #include "content/common/content_export.h"
-#include "gpu/ipc/common/surface_handle.h"
-#include "ui/events/latency_info.h"
-#include "ui/gfx/native_widget_types.h"
-
-namespace cc {
-class SurfaceManager;
-}
-
-namespace gfx {
-class Size;
-enum class SwapResult;
-}
 
 namespace ui {
-class Compositor;
 class ContextFactory;
-class ContextFactoryObserver;
-class Texture;
-}
-
-namespace display_compositor {
-class GLHelper;
+class ContextFactoryPrivate;
 }
 
 namespace content {
@@ -46,13 +25,8 @@ class CONTENT_EXPORT ImageTransportFactory {
  public:
   virtual ~ImageTransportFactory() {}
 
-  // Initializes the global transport factory.
-  static void Initialize();
-
-  // Initializes the global transport factory for unit tests using the provided
-  // context factory.
-  static void InitializeForUnitTests(
-      std::unique_ptr<ImageTransportFactory> factory);
+  // Sets the global transport factory.
+  static void SetFactory(std::unique_ptr<ImageTransportFactory> factory);
 
   // Terminates the global transport factory.
   static void Terminate();
@@ -60,26 +34,22 @@ class CONTENT_EXPORT ImageTransportFactory {
   // Gets the factory instance.
   static ImageTransportFactory* GetInstance();
 
+  // Disable GPU compositing. Will do nothing if GPU compositing is already
+  // disabled.
+  virtual void DisableGpuCompositing() = 0;
+
+  // Whether gpu compositing is being used or is disabled for software
+  // compositing. Clients of the compositor should give resources that match
+  // the appropriate mode.
+  virtual bool IsGpuCompositingDisabled() = 0;
+
   // Gets the image transport factory as a context factory for the compositor.
   virtual ui::ContextFactory* GetContextFactory() = 0;
 
-  virtual cc::SurfaceManager* GetSurfaceManager() = 0;
-
-  // Gets a GLHelper instance, associated with the shared context. This
-  // GLHelper will get destroyed whenever the shared context is lost
-  // (ImageTransportFactoryObserver::OnLostResources is called).
-  virtual display_compositor::GLHelper* GetGLHelper() = 0;
-
-#if defined(OS_MACOSX)
-  // Called with |suspended| as true when the ui::Compositor has been
-  // disconnected from an NSView and may be attached to another one. Called
-  // with |suspended| as false after the ui::Compositor has been connected to
-  // a new NSView and the first commit targeted at the new NSView has
-  // completed. This ensures that content and frames intended for the old
-  // NSView will not flash in the new NSView.
-  virtual void SetCompositorSuspendedForRecycle(ui::Compositor* compositor,
-                                                bool suspended) = 0;
-#endif
+  // Gets the image transport factory as the privileged context factory for the
+  // compositor. TODO(fsamuel): This interface should eventually go away once
+  // Mus subsumes this functionality.
+  virtual ui::ContextFactoryPrivate* GetContextFactoryPrivate() = 0;
 };
 
 }  // namespace content

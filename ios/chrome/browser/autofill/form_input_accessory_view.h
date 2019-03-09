@@ -7,26 +7,42 @@
 
 #import <UIKit/UIKit.h>
 
-@protocol FormInputAccessoryViewDelegate;
+@class FormInputAccessoryView;
+
+// Informs the receiver of actions in the accessory view.
+@protocol FormInputAccessoryViewDelegate
+- (void)formInputAccessoryViewDidTapNextButton:(FormInputAccessoryView*)sender;
+- (void)formInputAccessoryViewDidTapPreviousButton:
+    (FormInputAccessoryView*)sender;
+- (void)formInputAccessoryViewDidTapCloseButton:(FormInputAccessoryView*)sender;
+@end
 
 // Subview of the accessory view for web forms. Shows a custom view with form
-// navigation controls above the keyboard. Subclassed to enable input clicks by
-// way of the playInputClick method.
+// navigation controls above the keyboard. Enables input clicks by way of the
+// playInputClick method.
 @interface FormInputAccessoryView : UIView<UIInputViewAudioFeedback>
 
-// Initializes with |frame| and |delegate| to show |customView|. If the size of
-// |rightFrame| is non-zero, the view will have two parts: the left one has
-// frame |leftFrame| and the right one has frame |rightFrame|. Otherwise the
-// view will be shown in |leftFrame|.
-- (instancetype)initWithFrame:(CGRect)frame
-                     delegate:(id<FormInputAccessoryViewDelegate>)delegate
-                   customView:(UIView*)customView
-                    leftFrame:(CGRect)leftFrame
-                   rightFrame:(CGRect)rightFrame;
+// The previous button if the view was set up with a navigation delegate. Nil
+// otherwise.
+@property(nonatomic, readonly, weak) UIButton* previousButton;
 
-// Initializes with |frame| to show |customView|. Navigation controls are not
-// shown.
-- (instancetype)initWithFrame:(CGRect)frame customView:(UIView*)customView;
+// The next button if the view was set up with a navigation delegate. Nil
+// otherwise.
+@property(nonatomic, readonly, weak) UIButton* nextButton;
+
+// The leading view.
+@property(nonatomic, readonly, weak) UIView* leadingView;
+
+// Sets up the view with the given |leadingView|. Navigation controls are shown
+// on the trailing side and use |delegate| for actions.
+- (void)setUpWithLeadingView:(UIView*)leadingView
+          navigationDelegate:(id<FormInputAccessoryViewDelegate>)delegate;
+
+// Sets up the view with the given |leadingView|. Navigation controls are
+// replaced with |customTrailingView|.
+- (void)setUpWithLeadingView:(UIView*)leadingView
+          customTrailingView:(UIView*)customTrailingView;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_AUTOFILL_FORM_INPUT_ACCESSORY_VIEW_H_

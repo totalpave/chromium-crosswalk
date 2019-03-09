@@ -6,12 +6,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <memory>
 #include <utility>
 
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "components/url_matcher/url_matcher_constants.h"
@@ -81,7 +81,7 @@ class URLMatcherConditionFactoryMethods {
       URLMatcherConditionFactory* url_matcher_condition_factory,
       const std::string& pattern_type,
       const std::string& pattern_value) const {
-    FactoryMethods::const_iterator i = factory_methods_.find(pattern_type);
+    auto i = factory_methods_.find(pattern_type);
     CHECK(i != factory_methods_.end());
     const FactoryMethod& method = i->second;
     return (url_matcher_condition_factory->*method)(pattern_value);
@@ -98,7 +98,7 @@ class URLMatcherConditionFactoryMethods {
   DISALLOW_COPY_AND_ASSIGN(URLMatcherConditionFactoryMethods);
 };
 
-static base::LazyInstance<URLMatcherConditionFactoryMethods>
+static base::LazyInstance<URLMatcherConditionFactoryMethods>::DestructorAtExit
     g_url_matcher_condition_factory_methods = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
@@ -127,25 +127,25 @@ URLMatcherFactory::CreateFromURLFilterDictionary(
               &condition_attribute_value,
               error);
       if (!error->empty())
-        return scoped_refptr<URLMatcherConditionSet>(NULL);
+        return scoped_refptr<URLMatcherConditionSet>(nullptr);
       url_matcher_conditions.insert(url_matcher_condition);
     } else if (condition_attribute_name == keys::kSchemesKey) {
       // Handle scheme.
       url_matcher_schema_filter = CreateURLMatcherScheme(
           &condition_attribute_value, error);
       if (!error->empty())
-        return scoped_refptr<URLMatcherConditionSet>(NULL);
+        return scoped_refptr<URLMatcherConditionSet>(nullptr);
     } else if (condition_attribute_name == keys::kPortsKey) {
       // Handle ports.
       url_matcher_port_filter = CreateURLMatcherPorts(
           &condition_attribute_value, error);
       if (!error->empty())
-        return scoped_refptr<URLMatcherConditionSet>(NULL);
+        return scoped_refptr<URLMatcherConditionSet>(nullptr);
     } else {
       // Handle unknown attributes.
       *error = base::StringPrintf(kUnknownURLFilterAttribute,
                                   condition_attribute_name.c_str());
-      return scoped_refptr<URLMatcherConditionSet>(NULL);
+      return scoped_refptr<URLMatcherConditionSet>(nullptr);
     }
   }
 
@@ -234,7 +234,7 @@ URLMatcherFactory::CreateURLMatcherScheme(const base::Value* value,
       return nullptr;
     }
   }
-  return base::WrapUnique(new URLMatcherSchemeFilter(schemas));
+  return std::make_unique<URLMatcherSchemeFilter>(schemas);
 }
 
 // static
@@ -242,7 +242,7 @@ std::unique_ptr<URLMatcherPortFilter> URLMatcherFactory::CreateURLMatcherPorts(
     const base::Value* value,
     std::string* error) {
   std::vector<URLMatcherPortFilter::Range> ranges;
-  const base::ListValue* value_list = NULL;
+  const base::ListValue* value_list = nullptr;
   if (!value->GetAsList(&value_list)) {
     *error = kInvalidPortRanges;
     return nullptr;
@@ -250,10 +250,10 @@ std::unique_ptr<URLMatcherPortFilter> URLMatcherFactory::CreateURLMatcherPorts(
 
   for (const auto& entry : *value_list) {
     int port = 0;
-    base::ListValue* range = NULL;
-    if (entry->GetAsInteger(&port)) {
+    const base::ListValue* range = nullptr;
+    if (entry.GetAsInteger(&port)) {
       ranges.push_back(URLMatcherPortFilter::CreateRange(port));
-    } else if (entry->GetAsList(&range)) {
+    } else if (entry.GetAsList(&range)) {
       int from = 0, to = 0;
       if (range->GetSize() != 2u ||
           !range->GetInteger(0, &from) ||
@@ -268,7 +268,7 @@ std::unique_ptr<URLMatcherPortFilter> URLMatcherFactory::CreateURLMatcherPorts(
     }
   }
 
-  return base::WrapUnique(new URLMatcherPortFilter(ranges));
+  return std::make_unique<URLMatcherPortFilter>(ranges);
 }
 
 }  // namespace url_matcher

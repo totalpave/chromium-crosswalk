@@ -3,16 +3,12 @@
 # found in the LICENSE file.
 import collections
 import itertools
-import os
 import unittest
 
 from telemetry.testing import fakes
 
 from gpu_tests import fake_win_amd_gpu_info
-from gpu_tests import gpu_test_base
-from gpu_tests import path_util
 from gpu_tests import test_expectations
-from gpu_tests import webgl_conformance
 from gpu_tests import webgl_conformance_expectations
 from gpu_tests import webgl2_conformance_expectations
 
@@ -33,17 +29,17 @@ class FakeWindowsPlatform(fakes.FakePlatform):
   def GetOSVersionName(self):
     return 'win8'
 
+  def GetOSVersionDetailString(self):
+    # Not sure whether this is accurate.
+    return 'Windows 8.1'
 
-class FakePage(gpu_test_base.PageBase):
-  def __init__(self, url, expectations):
-    super(FakePage, self).__init__(
-      name=('WebglConformance.%s' %
-            url.replace('/', '_').replace('-', '_').
-            replace('\\', '_').rpartition('.')[0].replace('.', '_')),
-      url='file://' + url,
-      page_set=None,
-      shared_page_state_class=gpu_test_base.FakeGpuSharedPageState,
-      expectations=expectations)
+
+class WebGLTestInfo(object):
+  def __init__(self, url):
+    self.name = ('WebglConformance_%s' %
+                 url.replace('/', '_').replace('-', '_').
+                 replace('\\', '_').rpartition('.')[0].replace('.', '_'))
+    self.url = 'file://' + url
 
 Conditions = collections.\
   namedtuple('Conditions', ['non_gpu', 'vendors', 'devices'])
@@ -51,33 +47,24 @@ Conditions = collections.\
 class WebGLConformanceExpectationsTest(unittest.TestCase):
   def testGlslConstructVecMatIndexExpectationOnWin(self):
     possible_browser = fakes.FakePossibleBrowser()
-    browser = possible_browser.Create(None)
+    browser = possible_browser.Create()
     browser.platform = FakeWindowsPlatform()
     browser.returned_system_info = fakes.FakeSystemInfo(
       gpu_dict=fake_win_amd_gpu_info.FAKE_GPU_INFO)
-    expectations = webgl_conformance_expectations.\
-                   WebGLConformanceExpectations(
-                     os.path.join(
-                       path_util.GetChromiumSrcDir(),
-                       'third_party', 'webgl', 'src', 'sdk', 'tests'))
-    page = FakePage(
-      'conformance/glsl/constructors/glsl-construct-vec-mat-index.html',
-      expectations)
-    expectation = expectations.GetExpectationForPage(browser, page)
-    # TODO(kbr): change this expectation back to "flaky". crbug.com/534697
-    self.assertEquals(expectation, 'fail')
+    exps = webgl_conformance_expectations.WebGLConformanceExpectations()
+    test_info = WebGLTestInfo(
+      'conformance/glsl/constructors/glsl-construct-vec-mat-index.html')
+    expectation = exps.GetExpectationForTest(
+      browser, test_info.url, test_info.name)
+    self.assertEquals(expectation, 'flaky')
 
   def testWebGLExpectationsHaveNoCollisions(self):
-    conformance = webgl_conformance_expectations.\
-      WebGLConformanceExpectations(webgl_conformance.conformance_path)
-
-    self.checkConformanceHasNoCollisions(conformance)
+    exps = webgl_conformance_expectations.WebGLConformanceExpectations()
+    self.checkConformanceHasNoCollisions(exps)
 
   def testWebGL2ExpectationsHaveNoCollisions(self):
-    conformance = webgl2_conformance_expectations.\
-      WebGL2ConformanceExpectations(webgl_conformance.conformance_path)
-
-    self.checkConformanceHasNoCollisions(conformance)
+    exps = webgl2_conformance_expectations.WebGL2ConformanceExpectations()
+    self.checkConformanceHasNoCollisions(exps)
 
   def checkConformanceHasNoCollisions(self, conformance):
     # Checks that no two expectations for the same page can match the
@@ -105,6 +92,8 @@ class WebGLConformanceExpectationsTest(unittest.TestCase):
         (
           set(e.os_conditions),
           set(e.browser_conditions),
+          set(e.asan_conditions),
+          set(e.cmd_decoder_conditions),
           set(e.angle_conditions),
         ),
         set(e.gpu_conditions),
@@ -143,5 +132,10 @@ class WebGLConformanceExpectationsTest(unittest.TestCase):
         conflicts = non_gpu_conflicts and gpu_conflicts
 
         if conflicts:
-          print "WARNING: Found a conflict for", pattern
+          print "WARNING: Found a conflict for", pattern, " :"
+          print "  ", c1
+          print "  ", c2
+
+          print "  Type:" + (" (non-gpu)" if non_gpu_conflicts else "") + \
+            (" (gpu)" if gpu_conflicts else "")
         self.assertEquals(conflicts, False)

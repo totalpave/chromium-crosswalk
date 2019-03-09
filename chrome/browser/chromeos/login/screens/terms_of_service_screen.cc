@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/time/time.h"
@@ -14,71 +15,69 @@
 #include "chrome/browser/chromeos/login/screens/base_screen_delegate.h"
 #include "chrome/browser/chromeos/login/wizard_controller.h"
 #include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
+#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/storage_partition.h"
 #include "net/http/http_response_headers.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "net/url_request/url_request_status.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "url/gurl.h"
 
 namespace chromeos {
 
 TermsOfServiceScreen::TermsOfServiceScreen(
     BaseScreenDelegate* base_screen_delegate,
-    TermsOfServiceScreenActor* actor)
-    : BaseScreen(base_screen_delegate), actor_(actor) {
-  DCHECK(actor_);
-  if (actor_)
-    actor_->SetDelegate(this);
+    TermsOfServiceScreenView* view,
+    const ScreenExitCallback& exit_callback)
+    : BaseScreen(base_screen_delegate, OobeScreen::SCREEN_TERMS_OF_SERVICE),
+      view_(view),
+      exit_callback_(exit_callback) {
+  DCHECK(view_);
+  if (view_)
+    view_->SetDelegate(this);
 }
 
 TermsOfServiceScreen::~TermsOfServiceScreen() {
-  if (actor_)
-    actor_->SetDelegate(NULL);
-}
-
-void TermsOfServiceScreen::PrepareToShow() {
+  if (view_)
+    view_->SetDelegate(NULL);
 }
 
 void TermsOfServiceScreen::Show() {
-  if (!actor_)
+  if (!view_)
     return;
 
   // Set the domain name whose Terms of Service are being shown.
   policy::BrowserPolicyConnectorChromeOS* connector =
       g_browser_process->platform_part()->browser_policy_connector_chromeos();
-  actor_->SetDomain(connector->GetEnterpriseDomain());
+  view_->SetDomain(connector->GetEnterpriseDisplayDomain());
 
   // Show the screen.
-  actor_->Show();
+  view_->Show();
 
   // Start downloading the Terms of Service.
   StartDownload();
 }
 
 void TermsOfServiceScreen::Hide() {
-  if (actor_)
-    actor_->Hide();
-}
-
-std::string TermsOfServiceScreen::GetName() const {
-  return WizardController::kTermsOfServiceScreenName;
+  if (view_)
+    view_->Hide();
 }
 
 void TermsOfServiceScreen::OnDecline() {
-  Finish(BaseScreenDelegate::TERMS_OF_SERVICE_DECLINED);
+  exit_callback_.Run(Result::DECLINED);
 }
 
 void TermsOfServiceScreen::OnAccept() {
-  Finish(BaseScreenDelegate::TERMS_OF_SERVICE_ACCEPTED);
+  exit_callback_.Run(Result::ACCEPTED);
 }
 
-void TermsOfServiceScreen::OnActorDestroyed(TermsOfServiceScreenActor* actor) {
-  if (actor_ == actor)
-    actor_ = NULL;
+void TermsOfServiceScreen::OnViewDestroyed(TermsOfServiceScreenView* view) {
+  if (view_ == view)
+    view_ = NULL;
 }
 
 void TermsOfServiceScreen::StartDownload() {
@@ -88,65 +87,86 @@ void TermsOfServiceScreen::StartDownload() {
   std::string terms_of_service_url =
       prefs->GetString(prefs::kTermsOfServiceURL);
   if (terms_of_service_url.empty()) {
-    if (actor_)
-      actor_->OnLoadError();
+    if (view_)
+      view_->OnLoadError();
     return;
   }
 
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("terms_of_service_fetch", R"(
+          semantics {
+            sender: "Chrome OS Terms of Service"
+            description:
+              "Chrome OS downloads the latest terms of service document "
+              "from Google servers."
+            trigger:
+              "When a public session starts on managed devices and an admin "
+              "has uploaded a terms of service document for the domain."
+            data:
+              "URL of the terms of service document. "
+              "No user information is sent."
+            destination: WEBSITE
+          }
+          policy {
+            cookies_allowed: YES
+            cookies_store: "user"
+            setting: "Unconditionally enabled on Chrome OS."
+            policy_exception_justification:
+              "Not implemented, considered not useful."
+          })");
   // Start downloading the Terms of Service.
-  terms_of_service_fetcher_ = net::URLFetcher::Create(
-      GURL(terms_of_service_url), net::URLFetcher::GET, this);
-  terms_of_service_fetcher_->SetRequestContext(
-      g_browser_process->system_request_context());
+
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = GURL(terms_of_service_url);
   // Request a text/plain MIME type as only plain-text Terms of Service are
   // accepted.
-  terms_of_service_fetcher_->AddExtraRequestHeader("Accept: text/plain");
+  resource_request->headers.SetHeader("Accept", "text/plain");
+  terms_of_service_loader_ = network::SimpleURLLoader::Create(
+      std::move(resource_request), traffic_annotation);
   // Retry up to three times if network changes are detected during the
   // download.
-  terms_of_service_fetcher_->SetAutomaticallyRetryOnNetworkChanges(3);
-  terms_of_service_fetcher_->Start();
+  terms_of_service_loader_->SetRetryOptions(
+      3, network::SimpleURLLoader::RETRY_ON_NETWORK_CHANGE);
+  network::mojom::URLLoaderFactory* loader_factory =
+      g_browser_process->system_network_context_manager()
+          ->GetURLLoaderFactory();
+  terms_of_service_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      loader_factory, base::BindOnce(&TermsOfServiceScreen::OnDownloaded,
+                                     base::Unretained(this)));
 
   // Abort the download attempt if it takes longer than one minute.
-  download_timer_.Start(FROM_HERE, base::TimeDelta::FromMinutes(1),
-                        this, &TermsOfServiceScreen::OnDownloadTimeout);
+  download_timer_.Start(FROM_HERE, base::TimeDelta::FromMinutes(1), this,
+                        &TermsOfServiceScreen::OnDownloadTimeout);
 }
 
 void TermsOfServiceScreen::OnDownloadTimeout() {
-  // Abort the download attempt.
-  terms_of_service_fetcher_.reset();
+  // Destroy the fetcher, which will abort the download attempt.
+  terms_of_service_loader_.reset();
 
   // Show an error message to the user.
-  if (actor_)
-    actor_->OnLoadError();
+  if (view_)
+    view_->OnLoadError();
 }
 
-void TermsOfServiceScreen::OnURLFetchComplete(const net::URLFetcher* source) {
-  if (source != terms_of_service_fetcher_.get()) {
-    NOTREACHED() << "Callback from foreign URL fetcher";
-    return;
-  }
-
+void TermsOfServiceScreen::OnDownloaded(
+    std::unique_ptr<std::string> response_body) {
   download_timer_.Stop();
 
   // Destroy the fetcher when this method returns.
-  std::unique_ptr<net::URLFetcher> fetcher(
-      std::move(terms_of_service_fetcher_));
-  if (!actor_)
+  std::unique_ptr<network::SimpleURLLoader> loader(
+      std::move(terms_of_service_loader_));
+  if (!view_)
     return;
 
-  std::string terms_of_service;
-  std::string mime_type;
   // If the Terms of Service could not be downloaded, do not have a MIME type of
   // text/plain or are empty, show an error message to the user.
-  if (!source->GetStatus().is_success() ||
-      !source->GetResponseHeaders()->GetMimeType(&mime_type) ||
-      mime_type != "text/plain" ||
-      !source->GetResponseAsString(&terms_of_service)) {
-    actor_->OnLoadError();
+  if (!response_body || *response_body == "" || !loader->ResponseInfo() ||
+      loader->ResponseInfo()->mime_type != "text/plain") {
+    view_->OnLoadError();
   } else {
     // If the Terms of Service were downloaded successfully, show them to the
     // user.
-    actor_->OnLoadSuccess(terms_of_service);
+    view_->OnLoadSuccess(*response_body);
   }
 }
 

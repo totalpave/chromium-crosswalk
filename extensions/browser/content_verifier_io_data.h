@@ -11,7 +11,6 @@
 #include <string>
 
 #include "base/files/file_path.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/version.h"
 
@@ -23,11 +22,16 @@ class ContentVerifierIOData
     : public base::RefCountedThreadSafe<ContentVerifierIOData> {
  public:
   struct ExtensionData {
+    // Set of images file paths used within the browser process.
     std::unique_ptr<std::set<base::FilePath>> browser_image_paths;
+    // Set of file paths used as background scripts, pages or content scripts.
+    std::unique_ptr<std::set<base::FilePath>> background_or_content_paths;
     base::Version version;
 
-    ExtensionData(std::unique_ptr<std::set<base::FilePath>> browser_image_paths,
-                  const base::Version& version);
+    ExtensionData(
+        std::unique_ptr<std::set<base::FilePath>> browser_image_paths,
+        std::unique_ptr<std::set<base::FilePath>> background_or_content_paths,
+        const base::Version& version);
     ~ExtensionData();
   };
 
@@ -46,7 +50,7 @@ class ContentVerifierIOData
   friend class base::RefCountedThreadSafe<ContentVerifierIOData>;
   virtual ~ContentVerifierIOData();
 
-  std::map<std::string, linked_ptr<ExtensionData> > data_map_;
+  std::map<std::string, std::unique_ptr<ExtensionData>> data_map_;
 };
 
 }  // namespace extensions

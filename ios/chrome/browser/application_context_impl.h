@@ -13,11 +13,13 @@
 #include "base/threading/thread_checker.h"
 #include "ios/chrome/browser/application_context.h"
 
-class PrefRegistrySimple;
-
 namespace base {
 class CommandLine;
 class SequencedTaskRunner;
+}
+
+namespace network {
+class NetworkChangeManager;
 }
 
 class ApplicationContextImpl : public ApplicationContext {
@@ -26,9 +28,6 @@ class ApplicationContextImpl : public ApplicationContext {
                          const base::CommandLine& command_line,
                          const std::string& locale);
   ~ApplicationContextImpl() override;
-
-  // Registers local state prefs.
-  static void RegisterPrefs(PrefRegistrySimple* registry);
 
   // Called before the browser threads are created.
   void PreCreateThreads();
@@ -50,20 +49,25 @@ class ApplicationContextImpl : public ApplicationContext {
   bool WasLastShutdownClean() override;
   PrefService* GetLocalState() override;
   net::URLRequestContextGetter* GetSystemURLRequestContext() override;
+  scoped_refptr<network::SharedURLLoaderFactory> GetSharedURLLoaderFactory()
+      override;
+  network::mojom::NetworkContext* GetSystemNetworkContext() override;
   const std::string& GetApplicationLocale() override;
   ios::ChromeBrowserStateManager* GetChromeBrowserStateManager() override;
   metrics_services_manager::MetricsServicesManager* GetMetricsServicesManager()
       override;
   metrics::MetricsService* GetMetricsService() override;
+  ukm::UkmRecorder* GetUkmRecorder() override;
   variations::VariationsService* GetVariationsService() override;
-  rappor::RapporService* GetRapporService() override;
-  net_log::ChromeNetLog* GetNetLog() override;
+  rappor::RapporServiceImpl* GetRapporServiceImpl() override;
+  net::NetLog* GetNetLog() override;
+  net_log::NetExportFileWriter* GetNetExportFileWriter() override;
   network_time::NetworkTimeTracker* GetNetworkTimeTracker() override;
   IOSChromeIOThread* GetIOSChromeIOThread() override;
   gcm::GCMDriver* GetGCMDriver() override;
   component_updater::ComponentUpdateService* GetComponentUpdateService()
       override;
-  CRLSetFetcher* GetCRLSetFetcher() override;
+  network::NetworkConnectionTracker* GetNetworkConnectionTracker() override;
 
  private:
   // Sets the locale used by the application.
@@ -77,22 +81,25 @@ class ApplicationContextImpl : public ApplicationContext {
 
   base::ThreadChecker thread_checker_;
   std::unique_ptr<PrefService> local_state_;
-  std::unique_ptr<net_log::ChromeNetLog> net_log_;
+  std::unique_ptr<net::NetLog> net_log_;
+  std::unique_ptr<net_log::NetExportFileWriter> net_export_file_writer_;
   std::unique_ptr<network_time::NetworkTimeTracker> network_time_tracker_;
   std::unique_ptr<IOSChromeIOThread> ios_chrome_io_thread_;
   std::unique_ptr<metrics_services_manager::MetricsServicesManager>
       metrics_services_manager_;
   std::unique_ptr<gcm::GCMDriver> gcm_driver_;
   std::unique_ptr<component_updater::ComponentUpdateService> component_updater_;
-  scoped_refptr<CRLSetFetcher> crl_set_fetcher_;
   std::unique_ptr<ios::ChromeBrowserStateManager> chrome_browser_state_manager_;
   std::string application_locale_;
 
   // Sequenced task runner for local state related I/O tasks.
   const scoped_refptr<base::SequencedTaskRunner> local_state_task_runner_;
 
+  std::unique_ptr<network::NetworkChangeManager> network_change_manager_;
+  std::unique_ptr<network::NetworkConnectionTracker>
+      network_connection_tracker_;
+
   bool was_last_shutdown_clean_;
-  bool created_local_state_;
 
   DISALLOW_COPY_AND_ASSIGN(ApplicationContextImpl);
 };

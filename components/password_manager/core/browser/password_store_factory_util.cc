@@ -4,39 +4,53 @@
 
 #include "components/password_manager/core/browser/password_store_factory_util.h"
 
+#include <memory>
 #include <utility>
 
-#include "base/memory/ptr_util.h"
-#include "components/password_manager/core/browser/affiliated_match_helper.h"
-#include "components/password_manager/core/browser/affiliation_service.h"
-#include "components/password_manager/core/browser/affiliation_utils.h"
+#include "base/task/post_task.h"
+#include "components/password_manager/core/browser/android_affiliation/affiliated_match_helper.h"
+#include "components/password_manager/core/browser/android_affiliation/affiliation_service.h"
+#include "components/password_manager/core/browser/android_affiliation/affiliation_utils.h"
 #include "components/password_manager/core/browser/password_manager_constants.h"
 #include "components/password_manager/core/common/password_manager_features.h"
+#include "components/sync/driver/sync_service.h"
+#include "components/sync/driver/sync_user_settings.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace password_manager {
 
 namespace {
 
-bool ShouldAffiliationBasedMatchingBeActive(
-    sync_driver::SyncService* sync_service) {
+bool ShouldAffiliationBasedMatchingBeActive(syncer::SyncService* sync_service) {
   return base::FeatureList::IsEnabled(features::kAffiliationBasedMatching) &&
-         sync_service && sync_service->CanSyncStart() &&
-         sync_service->IsSyncActive() &&
-         sync_service->GetPreferredDataTypes().Has(syncer::PASSWORDS) &&
-         !sync_service->IsUsingSecondaryPassphrase();
+         sync_service && sync_service->IsSyncFeatureActive() &&
+         sync_service->GetUserSettings()->GetChosenDataTypes().Has(
+             syncer::PASSWORDS) &&
+         !sync_service->GetUserSettings()->IsUsingSecondaryPassphrase();
 }
 
 void ActivateAffiliationBasedMatching(
     PasswordStore* password_store,
-    net::URLRequestContextGetter* request_context_getter,
-    const base::FilePath& db_path,
-    scoped_refptr<base::SingleThreadTaskRunner> db_thread_runner) {
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    network::NetworkConnectionTracker* network_connection_tracker,
+    const base::FilePath& db_path) {
+  // Subsequent instances of the AffiliationService must use the same sequenced
+  // task runner for their backends. This guarantees that the backend of the
+  // first instance will have closed the affiliation database before the second
+  // instance attempts to open it again. See: https://crbug.com/786157.
+  //
+  // Task priority is USER_VISIBLE, because AffiliationService-related tasks
+  // block obtaining credentials from PasswordStore, hence password autofill.
+  static auto backend_task_runner = base::CreateSequencedTaskRunnerWithTraits(
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE});
+
   // The PasswordStore is so far the only consumer of the AffiliationService,
-  // therefore the service is owned by the AffiliatedMatchHelper, which in
-  // turn is owned by the PasswordStore.
+  // therefore the service is owned by the AffiliatedMatchHelper, which in turn
+  // is owned by the PasswordStore.
   std::unique_ptr<AffiliationService> affiliation_service(
-      new AffiliationService(db_thread_runner));
-  affiliation_service->Initialize(request_context_getter, db_path);
+      new AffiliationService(backend_task_runner));
+  affiliation_service->Initialize(std::move(url_loader_factory),
+                                  network_connection_tracker, db_path);
   std::unique_ptr<AffiliatedMatchHelper> affiliated_match_helper(
       new AffiliatedMatchHelper(password_store,
                                 std::move(affiliation_service)));
@@ -55,10 +69,10 @@ base::FilePath GetAffiliationDatabasePath(const base::FilePath& profile_path) {
 
 void ToggleAffiliationBasedMatchingBasedOnPasswordSyncedState(
     PasswordStore* password_store,
-    sync_driver::SyncService* sync_service,
-    net::URLRequestContextGetter* request_context_getter,
-    const base::FilePath& profile_path,
-    scoped_refptr<base::SingleThreadTaskRunner> db_thread_runner) {
+    syncer::SyncService* sync_service,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    network::NetworkConnectionTracker* network_connection_tracker,
+    const base::FilePath& profile_path) {
   DCHECK(password_store);
 
   const bool matching_should_be_active =
@@ -67,31 +81,18 @@ void ToggleAffiliationBasedMatchingBasedOnPasswordSyncedState(
       password_store->affiliated_match_helper() != nullptr;
 
   if (matching_should_be_active && !matching_is_active) {
-    ActivateAffiliationBasedMatching(password_store, request_context_getter,
-                                     GetAffiliationDatabasePath(profile_path),
-                                     db_thread_runner);
+    ActivateAffiliationBasedMatching(
+        password_store, std::move(url_loader_factory),
+        network_connection_tracker, GetAffiliationDatabasePath(profile_path));
   } else if (!matching_should_be_active && matching_is_active) {
-    password_store->SetAffiliatedMatchHelper(
-        base::WrapUnique<AffiliatedMatchHelper>(nullptr));
-  }
-}
-
-void TrimOrDeleteAffiliationCacheForStoreAndPath(
-    PasswordStore* password_store,
-    const base::FilePath& profile_path,
-    scoped_refptr<base::SingleThreadTaskRunner> db_thread_runner) {
-  if (password_store && password_store->affiliated_match_helper()) {
-    password_store->TrimAffiliationCache();
-  } else {
-    AffiliationService::DeleteCache(GetAffiliationDatabasePath(profile_path),
-                                    db_thread_runner.get());
+    password_store->SetAffiliatedMatchHelper(nullptr);
   }
 }
 
 std::unique_ptr<LoginDatabase> CreateLoginDatabase(
     const base::FilePath& profile_path) {
   base::FilePath login_db_file_path = profile_path.Append(kLoginDataFileName);
-  return base::WrapUnique(new LoginDatabase(login_db_file_path));
+  return std::make_unique<LoginDatabase>(login_db_file_path);
 }
 
 }  // namespace password_manager

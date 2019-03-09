@@ -7,7 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
-#include "ios/web/public/web_state/ui/crw_content_view.h"
+#import "ios/web/public/web_state/ui/crw_content_view.h"
 
 @class CRWWebControllerContainerView;
 @class CRWWebViewContentView;
@@ -21,9 +21,10 @@
 - (CRWWebViewProxyImpl*)contentViewProxyForContainerView:
         (CRWWebControllerContainerView*)containerView;
 
-// Returns the height for any toolbars that overlap the top |containerView|.
-- (CGFloat)headerHeightForContainerView:
-        (CRWWebControllerContainerView*)containerView;
+// Returns the insets from |containerView|'s bounds in which to lay out native
+// content.
+- (UIEdgeInsets)nativeContentInsetsForContainerView:
+    (CRWWebControllerContainerView*)containerView;
 
 @end
 
@@ -33,12 +34,14 @@
 
 #pragma mark Content Views
 // The web view content view being displayed.
-@property(nonatomic, retain, readonly)
+@property(nonatomic, strong, readonly)
     CRWWebViewContentView* webViewContentView;
 // The native controller whose content is being displayed.
-@property(nonatomic, retain, readonly) id<CRWNativeContent> nativeController;
+@property(nonatomic, strong, readonly) id<CRWNativeContent> nativeController;
 // The currently displayed transient content view.
-@property(nonatomic, retain, readonly) CRWContentView* transientContentView;
+@property(nonatomic, strong, readonly) CRWContentView* transientContentView;
+@property(nonatomic, weak) id<CRWWebControllerContainerViewDelegate>
+    delegate;  // weak
 
 // Designated initializer.  |proxy|'s content view will be updated as different
 // content is added to the container.
@@ -68,21 +71,6 @@
 
 // Removes the transient content view, if one is displayed.
 - (void)clearTransientContentView;
-
-#pragma mark Toolbars
-
-// |toolbar| will be resized to the container width, bottom-aligned, and added
-// as the topmost subview.
-- (void)addToolbar:(UIView*)toolbar;
-
-// Adds each toolbar in |toolbars|.
-- (void)addToolbars:(NSArray*)toolbars;
-
-// Removes |toolbar| as a subview.
-- (void)removeToolbar:(UIView*)toolbar;
-
-// Removes all toolbars added via |-addToolbar:|.
-- (void)removeAllToolbars;
 
 @end
 

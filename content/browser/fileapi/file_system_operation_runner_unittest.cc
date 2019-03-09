@@ -4,22 +4,26 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/run_loop.h"
+#include "base/task/post_task.h"
+#include "base/task/task_scheduler/task_scheduler.h"
+#include "base/task/task_traits.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/mock_special_storage_policy.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_file_system_context.h"
-#include "content/public/test/test_file_system_options.h"
 #include "storage/browser/fileapi/external_mount_points.h"
 #include "storage/browser/fileapi/file_system_backend.h"
 #include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/file_system_operation_runner.h"
+#include "storage/browser/test/mock_special_storage_policy.h"
+#include "storage/browser/test/test_file_system_context.h"
+#include "storage/browser/test/test_file_system_options.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using storage::FileSystemContext;
@@ -50,7 +54,7 @@ void GetCancelStatus(bool* operation_done,
   *status_out = status;
 }
 
-void DidOpenFile(base::File file, const base::Closure& on_close_callback) {}
+void DidOpenFile(base::File file, base::OnceClosure on_close_callback) {}
 
 }  // namespace
 
@@ -61,7 +65,7 @@ class FileSystemOperationRunnerTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(base_.CreateUniqueTempDir());
-    base::FilePath base_dir = base_.path();
+    base::FilePath base_dir = base_.GetPath();
     file_system_context_ = CreateFileSystemContextForTesting(nullptr, base_dir);
   }
 
@@ -83,7 +87,7 @@ class FileSystemOperationRunnerTest : public testing::Test {
 
  private:
   base::ScopedTempDir base_;
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   scoped_refptr<FileSystemContext> file_system_context_;
 
   DISALLOW_COPY_AND_ASSIGN(FileSystemOperationRunnerTest);
@@ -95,7 +99,7 @@ TEST_F(FileSystemOperationRunnerTest, NotFoundError) {
 
   // Regular NOT_FOUND error, which is called asynchronously.
   operation_runner()->Truncate(URL("foo"), 0,
-                               base::Bind(&GetStatus, &done, &status));
+                               base::BindOnce(&GetStatus, &done, &status));
   ASSERT_FALSE(done);
   base::RunLoop().RunUntilIdle();
   ASSERT_TRUE(done);
@@ -108,7 +112,7 @@ TEST_F(FileSystemOperationRunnerTest, InvalidURLError) {
 
   // Invalid URL error, which calls DidFinish synchronously.
   operation_runner()->Truncate(FileSystemURL(), 0,
-                               base::Bind(&GetStatus, &done, &status));
+                               base::BindOnce(&GetStatus, &done, &status));
   // The error call back shouldn't be fired synchronously.
   ASSERT_FALSE(done);
 
@@ -125,12 +129,10 @@ TEST_F(FileSystemOperationRunnerTest, NotFoundErrorAndCancel) {
 
   // Call Truncate with non-existent URL, and try to cancel it immediately
   // after that (before its callback is fired).
-  FileSystemOperationRunner::OperationID id =
-      operation_runner()->Truncate(URL("foo"), 0,
-                                   base::Bind(&GetStatus, &done, &status));
-  operation_runner()->Cancel(id, base::Bind(&GetCancelStatus,
-                                            &done, &cancel_done,
-                                            &cancel_status));
+  FileSystemOperationRunner::OperationID id = operation_runner()->Truncate(
+      URL("foo"), 0, base::BindOnce(&GetStatus, &done, &status));
+  operation_runner()->Cancel(id, base::BindOnce(&GetCancelStatus, &done,
+                                                &cancel_done, &cancel_status));
 
   ASSERT_FALSE(done);
   ASSERT_FALSE(cancel_done);
@@ -150,12 +152,10 @@ TEST_F(FileSystemOperationRunnerTest, InvalidURLErrorAndCancel) {
 
   // Call Truncate with invalid URL, and try to cancel it immediately
   // after that (before its callback is fired).
-  FileSystemOperationRunner::OperationID id =
-      operation_runner()->Truncate(FileSystemURL(), 0,
-                                  base::Bind(&GetStatus, &done, &status));
-  operation_runner()->Cancel(id, base::Bind(&GetCancelStatus,
-                                            &done, &cancel_done,
-                                            &cancel_status));
+  FileSystemOperationRunner::OperationID id = operation_runner()->Truncate(
+      FileSystemURL(), 0, base::BindOnce(&GetStatus, &done, &status));
+  operation_runner()->Cancel(id, base::BindOnce(&GetCancelStatus, &done,
+                                                &cancel_done, &cancel_status));
 
   ASSERT_FALSE(done);
   ASSERT_FALSE(cancel_done);
@@ -172,9 +172,9 @@ TEST_F(FileSystemOperationRunnerTest, CancelWithInvalidId) {
   bool done = true;  // The operation is not running.
   bool cancel_done = false;
   base::File::Error cancel_status = base::File::FILE_ERROR_FAILED;
-  operation_runner()->Cancel(kInvalidId, base::Bind(&GetCancelStatus,
-                                                    &done, &cancel_done,
-                                                    &cancel_status));
+  operation_runner()->Cancel(
+      kInvalidId,
+      base::BindOnce(&GetCancelStatus, &done, &cancel_done, &cancel_status));
 
   ASSERT_TRUE(cancel_done);
   ASSERT_EQ(base::File::FILE_ERROR_INVALID_OPERATION, cancel_status);
@@ -184,20 +184,18 @@ class MultiThreadFileSystemOperationRunnerTest : public testing::Test {
  public:
   MultiThreadFileSystemOperationRunnerTest()
       : thread_bundle_(
-            content::TestBrowserThreadBundle::REAL_FILE_THREAD |
             content::TestBrowserThreadBundle::IO_MAINLOOP) {}
 
   void SetUp() override {
     ASSERT_TRUE(base_.CreateUniqueTempDir());
 
-    base::FilePath base_dir = base_.path();
-    ScopedVector<storage::FileSystemBackend> additional_providers;
+    base::FilePath base_dir = base_.GetPath();
     file_system_context_ = new FileSystemContext(
         base::ThreadTaskRunnerHandle::Get().get(),
-        BrowserThread::GetMessageLoopProxyForThread(BrowserThread::FILE).get(),
+        base::CreateSequencedTaskRunnerWithTraits({base::MayBlock()}).get(),
         storage::ExternalMountPoints::CreateRefCounted().get(),
-        make_scoped_refptr(new MockSpecialStoragePolicy()).get(), nullptr,
-        std::move(additional_providers),
+        base::MakeRefCounted<MockSpecialStoragePolicy>().get(), nullptr,
+        std::vector<std::unique_ptr<storage::FileSystemBackend>>(),
         std::vector<storage::URLRequestAutoMountHandler>(), base_dir,
         CreateAllowFileAccessOptions());
 
@@ -232,18 +230,12 @@ class MultiThreadFileSystemOperationRunnerTest : public testing::Test {
 TEST_F(MultiThreadFileSystemOperationRunnerTest, OpenAndShutdown) {
   // Call OpenFile and immediately shutdown the runner.
   operation_runner()->OpenFile(
-      URL("foo"),
-      base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE,
-      base::Bind(&DidOpenFile));
+      URL("foo"), base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE,
+      base::BindOnce(&DidOpenFile));
   operation_runner()->Shutdown();
 
-  // Wait until the task posted on FILE thread is done.
-  base::RunLoop run_loop;
-  BrowserThread::PostTaskAndReply(
-      BrowserThread::FILE, FROM_HERE,
-      base::Bind(&base::DoNothing),
-      run_loop.QuitClosure());
-  run_loop.Run();
+  // Wait until the task posted on the blocking thread is done.
+  base::TaskScheduler::GetInstance()->FlushForTesting();
   // This should finish without thread assertion failure on debug build.
 }
 

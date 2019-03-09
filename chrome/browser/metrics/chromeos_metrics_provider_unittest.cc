@@ -6,15 +6,17 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/memory/ptr_util.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/chromeos/login/users/scoped_user_manager_enabler.h"
-#include "chrome/browser/metrics/chromeos_metrics_provider.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power_manager_client.h"
-#include "chromeos/login/login_state.h"
-#include "components/metrics/proto/system_profile.pb.h"
+#include "chromeos/login/login_state/login_state.h"
+#include "chromeos/system/fake_statistics_provider.h"
+#include "chromeos/system/statistics_provider.h"
+#include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
@@ -27,10 +29,7 @@
 #include "device/bluetooth/dbus/fake_bluetooth_gatt_service_client.h"
 #include "device/bluetooth/dbus/fake_bluetooth_input_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if defined(USE_X11)
-#include "ui/events/devices/x11/device_data_manager_x11.h"
-#endif
+#include "third_party/metrics_proto/system_profile.pb.h"
 
 using bluez::BluetoothAdapterClient;
 using bluez::BluetoothAgentManagerClient;
@@ -48,10 +47,6 @@ using bluez::FakeBluetoothGattCharacteristicClient;
 using bluez::FakeBluetoothGattDescriptorClient;
 using bluez::FakeBluetoothGattServiceClient;
 using bluez::FakeBluetoothInputClient;
-using chromeos::DBusThreadManager;
-using chromeos::DBusThreadManagerSetter;
-using chromeos::PowerManagerClient;
-using chromeos::STUB_DBUS_CLIENT_IMPLEMENTATION;
 
 class ChromeOSMetricsProviderTest : public testing::Test {
  public:
@@ -59,10 +54,6 @@ class ChromeOSMetricsProviderTest : public testing::Test {
 
  protected:
   void SetUp() override {
-#if defined(USE_X11)
-    ui::DeviceDataManagerX11::CreateInstance();
-#endif
-
     // Set up the fake Bluetooth environment,
     std::unique_ptr<BluezDBusManagerSetter> bluez_dbus_setter =
         BluezDBusManager::GetSetterForTesting();
@@ -87,16 +78,17 @@ class ChromeOSMetricsProviderTest : public testing::Test {
             new FakeBluetoothAgentManagerClient));
 
     // Set up a PowerManagerClient instance for PerfProvider.
-    std::unique_ptr<DBusThreadManagerSetter> dbus_setter =
-        DBusThreadManager::GetSetterForTesting();
-    dbus_setter->SetPowerManagerClient(std::unique_ptr<PowerManagerClient>(
-        PowerManagerClient::Create(STUB_DBUS_CLIENT_IMPLEMENTATION)));
+    chromeos::PowerManagerClient::Initialize();
 
     // Grab pointers to members of the thread manager for easier testing.
     fake_bluetooth_adapter_client_ = static_cast<FakeBluetoothAdapterClient*>(
         BluezDBusManager::Get()->GetBluetoothAdapterClient());
     fake_bluetooth_device_client_ = static_cast<FakeBluetoothDeviceClient*>(
         BluezDBusManager::Get()->GetBluetoothDeviceClient());
+
+    // Set statistic provider for hardware class tests.
+    chromeos::system::StatisticsProvider::SetTestProvider(
+        &fake_statistics_provider_);
 
     // Initialize the login state trackers.
     if (!chromeos::LoginState::IsInitialized())
@@ -106,13 +98,14 @@ class ChromeOSMetricsProviderTest : public testing::Test {
   void TearDown() override {
     // Destroy the login state tracker if it was initialized.
     chromeos::LoginState::Shutdown();
-
-    DBusThreadManager::Shutdown();
+    chromeos::PowerManagerClient::Shutdown();
   }
 
  protected:
   FakeBluetoothAdapterClient* fake_bluetooth_adapter_client_;
   FakeBluetoothDeviceClient* fake_bluetooth_device_client_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+  chromeos::system::ScopedFakeStatisticsProvider fake_statistics_provider_;
 
  private:
   content::TestBrowserThreadBundle thread_bundle_;
@@ -121,18 +114,19 @@ class ChromeOSMetricsProviderTest : public testing::Test {
 };
 
 // Wrapper around ChromeOSMetricsProvider that initializes
-// BluetoothAdapter in the constructor.
+// Bluetooth and hardware class in the constructor.
 class TestChromeOSMetricsProvider : public ChromeOSMetricsProvider {
  public:
-  TestChromeOSMetricsProvider() {
-    InitTaskGetBluetoothAdapter(
-        base::Bind(&TestChromeOSMetricsProvider::GetBluetoothAdapterCallback,
-                   base::Unretained(this)));
-    base::MessageLoop::current()->Run();
+  TestChromeOSMetricsProvider()
+      : ChromeOSMetricsProvider(metrics::MetricsLogUploader::UMA) {
+    AsyncInit(base::Bind(&TestChromeOSMetricsProvider::GetIdleCallback,
+                         base::Unretained(this)));
+    base::RunLoop().Run();
   }
-  void GetBluetoothAdapterCallback() {
-    ASSERT_TRUE(base::MessageLoop::current()->is_running());
-    base::MessageLoop::current()->QuitWhenIdle();
+
+  void GetIdleCallback() {
+    ASSERT_TRUE(base::RunLoop::IsRunningOnCurrentThread());
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 };
 
@@ -144,7 +138,8 @@ TEST_F(ChromeOSMetricsProviderTest, MultiProfileUserCount) {
   // |scoped_enabler| takes over the lifetime of |user_manager|.
   chromeos::FakeChromeUserManager* user_manager =
       new chromeos::FakeChromeUserManager();
-  chromeos::ScopedUserManagerEnabler scoped_enabler(user_manager);
+  user_manager::ScopedUserManager scoped_enabler(
+      base::WrapUnique(user_manager));
   user_manager->AddKioskAppUser(account_id1);
   user_manager->AddKioskAppUser(account_id2);
   user_manager->AddKioskAppUser(account_id3);
@@ -167,7 +162,8 @@ TEST_F(ChromeOSMetricsProviderTest, MultiProfileCountInvalidated) {
   // |scoped_enabler| takes over the lifetime of |user_manager|.
   chromeos::FakeChromeUserManager* user_manager =
       new chromeos::FakeChromeUserManager();
-  chromeos::ScopedUserManagerEnabler scoped_enabler(user_manager);
+  user_manager::ScopedUserManager scoped_enabler(
+      base::WrapUnique(user_manager));
   user_manager->AddKioskAppUser(account_id1);
   user_manager->AddKioskAppUser(account_id2);
   user_manager->AddKioskAppUser(account_id3);
@@ -285,4 +281,44 @@ TEST_F(ChromeOSMetricsProviderTest, BluetoothPairedDevices) {
   EXPECT_EQ(PairedDevice::DEVICE_PHONE, device2.type());
   EXPECT_EQ(0x207D74U, device2.vendor_prefix());
   EXPECT_EQ(PairedDevice::VENDOR_ID_UNKNOWN, device2.vendor_id_source());
+}
+
+TEST_F(ChromeOSMetricsProviderTest, DisableUmaShortHwClass) {
+  const std::string expected_full_hw_class = "feature_disabled";
+  scoped_feature_list_.InitAndDisableFeature(features::kUmaShortHWClass);
+  fake_statistics_provider_.SetMachineStatistic("hardware_class",
+                                                expected_full_hw_class);
+
+  TestChromeOSMetricsProvider provider;
+  provider.OnDidCreateMetricsLog();
+  metrics::SystemProfileProto system_profile;
+  provider.ProvideSystemProfileMetrics(&system_profile);
+
+  ASSERT_TRUE(system_profile.has_hardware());
+  std::string proto_full_hw_class =
+      system_profile.hardware().full_hardware_class();
+
+  // If disabled, the two hardware classes should be equal to each other.
+  EXPECT_EQ(system_profile.hardware().hardware_class(), proto_full_hw_class);
+  EXPECT_EQ(expected_full_hw_class, proto_full_hw_class);
+}
+
+TEST_F(ChromeOSMetricsProviderTest, EnableUmaShortHwClass) {
+  const std::string expected_full_hw_class = "feature_enabled";
+  scoped_feature_list_.InitAndEnableFeature(features::kUmaShortHWClass);
+  fake_statistics_provider_.SetMachineStatistic("hardware_class",
+                                                expected_full_hw_class);
+
+  TestChromeOSMetricsProvider provider;
+  provider.OnDidCreateMetricsLog();
+  metrics::SystemProfileProto system_profile;
+  provider.ProvideSystemProfileMetrics(&system_profile);
+
+  ASSERT_TRUE(system_profile.has_hardware());
+  std::string proto_full_hw_class =
+      system_profile.hardware().full_hardware_class();
+
+  // If enabled, the two hardware strings should be different.
+  EXPECT_NE(system_profile.hardware().hardware_class(), proto_full_hw_class);
+  EXPECT_EQ(expected_full_hw_class, proto_full_hw_class);
 }

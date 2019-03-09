@@ -4,7 +4,7 @@
 
 #include "ios/chrome/browser/crash_report/breakpad_helper.h"
 
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #include <stddef.h>
 
 #include "base/auto_reset.h"
@@ -17,14 +17,20 @@
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/task/post_task.h"
 #include "ios/chrome/browser/chrome_paths.h"
+#include "ios/chrome/browser/crash_report/crash_report_flags.h"
 #import "ios/chrome/browser/crash_report/crash_report_user_application_state.h"
-#include "ios/web/public/web_thread.h"
+#import "ios/chrome/browser/crash_report/main_thread_freeze_detector.h"
 
 // TODO(stuartmorgan): Move this up where it belongs once
-// http://code.google.com/p/google-breakpad/issues/detail?id=487
-// is fixed. For now, put it at the end to avoid compiler errors.
-#import "breakpad/src/client/ios/BreakpadController.h"
+// https://crbug.com/google-breakpad/487 is fixed. For now, put it at the end to
+// avoid compiler errors.
+#import "third_party/breakpad/breakpad/src/client/ios/BreakpadController.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace breakpad_helper {
 
@@ -46,12 +52,15 @@ NSString* const kUploadedInRecoveryMode = @"uploaded_in_recovery_mode";
 // Multiple state information are combined into one CrachReportMultiParameter
 // to save limited and finite number of ReportParameters.
 // These are the values grouped in the user_application_state parameter.
-NSString* const kDataProxyIsEnabled = @"dataproxy";
 NSString* const kOrientationState = @"orient";
 NSString* const kHorizontalSizeClass = @"sizeclass";
 NSString* const kSignedIn = @"signIn";
 NSString* const kIsShowingPDF = @"pdf";
 NSString* const kVideoPlaying = @"avplay";
+NSString* const kIncognitoTabCount = @"OTRTabs";
+NSString* const kRegularTabCount = @"regTabs";
+NSString* const kDestroyingAndRebuildingIncognitoBrowserState =
+    @"destroyingAndRebuildingOTR";
 
 // Whether the crash reporter is enabled.
 bool g_crash_reporter_enabled = false;
@@ -64,18 +73,6 @@ void DeleteAllReportsInDirectory(base::FilePath directory) {
     if (cur_file.BaseName().value() != kReporterLogFilename)
       base::DeleteFile(cur_file, false);
   }
-}
-
-// Callback for base::debug::SetCrashKeyReportingFunctions
-void SetCrashKeyValueImpl(const base::StringPiece& key,
-                          const base::StringPiece& value) {
-  AddReportParameter(base::SysUTF8ToNSString(key.as_string()),
-                     base::SysUTF8ToNSString(value.as_string()), true);
-}
-
-// Callback for base::debug::SetCrashKeyReportingFunctions
-void ClearCrashKeyValueImpl(const base::StringPiece& key) {
-  RemoveReportParameter(base::SysUTF8ToNSString(key.as_string()));
 }
 
 // Callback for logging::SetLogMessageHandler
@@ -128,8 +125,7 @@ void CacheUploadingEnabled(bool uploading_enabled) {
 void Start(const std::string& channel_name) {
   DCHECK(!g_crash_reporter_enabled);
   [[BreakpadController sharedInstance] start:YES];
-  base::debug::SetCrashKeyReportingFunctions(&SetCrashKeyValueImpl,
-                                             &ClearCrashKeyValueImpl);
+  [[MainThreadFreezeDetector sharedInstance] start];
   logging::SetLogMessageHandler(&FatalMessageHandler);
   g_crash_reporter_enabled = true;
   // Register channel information.
@@ -143,11 +139,15 @@ void Start(const std::string& channel_name) {
   NSString* cachePath = [cachesDirectories objectAtIndex:0];
   NSString* dumpDirectory =
       [cachePath stringByAppendingPathComponent:@kDefaultLibrarySubdirectory];
-  PathService::Override(ios::DIR_CRASH_DUMPS,
-                        base::FilePath(base::SysNSStringToUTF8(dumpDirectory)));
+  base::PathService::Override(
+      ios::DIR_CRASH_DUMPS,
+      base::FilePath(base::SysNSStringToUTF8(dumpDirectory)));
 }
 
 void SetEnabled(bool enabled) {
+  // It is necessary to always call |MainThreadFreezeDetector setEnabled| as
+  // the function will update its preference based on finch.
+  [[MainThreadFreezeDetector sharedInstance] setEnabled:enabled];
   if (g_crash_reporter_enabled == enabled)
     return;
   g_crash_reporter_enabled = enabled;
@@ -159,12 +159,30 @@ void SetEnabled(bool enabled) {
   }
 }
 
-void SetUploadingEnabled(bool enabled) {
+void SetBreakpadUploadingEnabled(bool enabled) {
   CacheUploadingEnabled(g_crash_reporter_enabled && enabled);
 
   if (!g_crash_reporter_enabled)
     return;
   [[BreakpadController sharedInstance] setUploadingEnabled:enabled];
+}
+
+void SetUploadingEnabled(bool enabled) {
+  if (enabled &&
+      [UIApplication sharedApplication].applicationState ==
+          UIApplicationStateInactive &&
+      !base::FeatureList::IsEnabled(
+          crash_report::kBreakpadNoDelayInitialUpload)) {
+    return;
+  }
+  if ([MainThreadFreezeDetector sharedInstance].canUploadBreakpadCrashReports) {
+    SetBreakpadUploadingEnabled(enabled);
+  } else {
+    [[MainThreadFreezeDetector sharedInstance]
+        prepareCrashReportsForUpload:^() {
+          SetBreakpadUploadingEnabled(enabled);
+        }];
+  }
 }
 
 bool IsUploadingEnabled() {
@@ -175,9 +193,10 @@ bool IsUploadingEnabled() {
 
 void CleanupCrashReports() {
   base::FilePath crash_directory;
-  PathService::Get(ios::DIR_CRASH_DUMPS, &crash_directory);
-  web::WebThread::PostBlockingPoolTask(
-      FROM_HERE, base::Bind(&DeleteAllReportsInDirectory, crash_directory));
+  base::PathService::Get(ios::DIR_CRASH_DUMPS, &crash_directory);
+  base::PostTaskWithTraits(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&DeleteAllReportsInDirectory, crash_directory));
 }
 
 void AddReportParameter(NSString* key, NSString* value, bool async) {
@@ -194,7 +213,6 @@ void AddReportParameter(NSString* key, NSString* value, bool async) {
     dispatch_semaphore_signal(semaphore);
   }];
   dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-  dispatch_release(semaphore);
 }
 
 int GetCrashReportCount() {
@@ -205,7 +223,6 @@ int GetCrashReportCount() {
     dispatch_semaphore_signal(semaphore);
   }];
   dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-  dispatch_release(semaphore);
   return outerCrashReportCount;
 }
 
@@ -224,10 +241,13 @@ void RemoveReportParameter(NSString* key) {
 }
 
 void SetCurrentlyInBackground(bool background) {
-  if (background)
+  if (background) {
     AddReportParameter(kCrashedInBackground, @"yes", true);
-  else
+    [[MainThreadFreezeDetector sharedInstance] stop];
+  } else {
     RemoveReportParameter(kCrashedInBackground);
+    [[MainThreadFreezeDetector sharedInstance] start];
+  }
 }
 
 void SetMemoryWarningCount(int count) {
@@ -289,14 +309,24 @@ void SetCurrentlySignedIn(bool signedIn) {
   }
 }
 
-void SetDataReductionProxyIsEnabled(bool value) {
-  if (value) {
+void SetRegularTabCount(int tabCount) {
+  [[CrashReportUserApplicationState sharedInstance] setValue:kRegularTabCount
+                                                   withValue:tabCount];
+}
+
+void SetIncognitoTabCount(int tabCount) {
+  [[CrashReportUserApplicationState sharedInstance] setValue:kIncognitoTabCount
+                                                   withValue:tabCount];
+}
+
+void SetDestroyingAndRebuildingIncognitoBrowserState(bool in_progress) {
+  if (in_progress) {
     [[CrashReportUserApplicationState sharedInstance]
-         setValue:kDataProxyIsEnabled
-        withValue:value];
+         setValue:kDestroyingAndRebuildingIncognitoBrowserState
+        withValue:1];
   } else {
     [[CrashReportUserApplicationState sharedInstance]
-        removeValue:kDataProxyIsEnabled];
+        removeValue:kDestroyingAndRebuildingIncognitoBrowserState];
   }
 }
 

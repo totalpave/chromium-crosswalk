@@ -4,7 +4,6 @@
 
 #include "cc/tiles/eviction_tile_priority_queue.h"
 
-#include "base/memory/ptr_util.h"
 
 namespace cc {
 
@@ -15,17 +14,24 @@ class EvictionOrderComparator {
   explicit EvictionOrderComparator(TreePriority tree_priority)
       : tree_priority_(tree_priority) {}
 
+  // Note that in this function, we have to return true if and only if
+  // b is strictly lower priority than a.
   bool operator()(
       const std::unique_ptr<TilingSetEvictionQueue>& a_queue,
       const std::unique_ptr<TilingSetEvictionQueue>& b_queue) const {
-    // Note that in this function, we have to return true if and only if
-    // b is strictly lower priority than a.
     const PrioritizedTile& a_tile = a_queue->Top();
     const PrioritizedTile& b_tile = b_queue->Top();
 
     const TilePriority& a_priority = a_tile.priority();
     const TilePriority& b_priority = b_tile.priority();
     bool prioritize_low_res = tree_priority_ == SMOOTHNESS_TAKES_PRIORITY;
+
+    // If the priority bin is the same but one of the tiles is from a
+    // non-drawing layer, then the drawing layer has a higher priority.
+    if (b_priority.priority_bin == a_priority.priority_bin &&
+        b_queue->is_drawing_layer() != a_queue->is_drawing_layer()) {
+      return a_queue->is_drawing_layer();
+    }
 
     // If the priority bin differs, b is lower priority if it has the higher
     // priority bin.
@@ -71,8 +77,10 @@ void CreateTilingSetEvictionQueues(
   DCHECK(queues->empty());
 
   for (auto* layer : layers) {
-    std::unique_ptr<TilingSetEvictionQueue> tiling_set_queue = base::WrapUnique(
-        new TilingSetEvictionQueue(layer->picture_layer_tiling_set()));
+    std::unique_ptr<TilingSetEvictionQueue> tiling_set_queue =
+        std::make_unique<TilingSetEvictionQueue>(
+            layer->picture_layer_tiling_set(),
+            layer->contributes_to_drawn_render_surface());
     // Queues will only contain non empty tiling sets.
     if (!tiling_set_queue->IsEmpty())
       queues->push_back(std::move(tiling_set_queue));
@@ -83,11 +91,9 @@ void CreateTilingSetEvictionQueues(
 
 }  // namespace
 
-EvictionTilePriorityQueue::EvictionTilePriorityQueue() {
-}
+EvictionTilePriorityQueue::EvictionTilePriorityQueue() = default;
 
-EvictionTilePriorityQueue::~EvictionTilePriorityQueue() {
-}
+EvictionTilePriorityQueue::~EvictionTilePriorityQueue() = default;
 
 void EvictionTilePriorityQueue::Build(
     const std::vector<PictureLayerImpl*>& active_layers,

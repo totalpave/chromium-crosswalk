@@ -20,8 +20,6 @@ enum SettingsApiOverrideType {
   BUBBLE_TYPE_STARTUP_PAGES,
 };
 
-class ManifestPermission;
-
 // SettingsOverride is associated with "chrome_settings_overrides" manifest key.
 // An extension can add a search engine as default or non-default, overwrite the
 // homepage and append a startup page to the list.
@@ -48,7 +46,7 @@ class SettingsOverridesHandler : public ManifestHandler {
   bool Parse(Extension* extension, base::string16* error) override;
 
  private:
-  const std::vector<std::string> Keys() const override;
+  base::span<const char* const> Keys() const override;
 
   DISALLOW_COPY_AND_ASSIGN(SettingsOverridesHandler);
 };

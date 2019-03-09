@@ -56,4 +56,16 @@ StubPasswordManagerDriver::GetPasswordAutofillManager() {
   return nullptr;
 }
 
+autofill::AutofillDriver* StubPasswordManagerDriver::GetAutofillDriver() {
+  return nullptr;
+}
+
+bool StubPasswordManagerDriver::IsMainFrame() const {
+  return true;
+}
+
+GURL StubPasswordManagerDriver::GetLastCommittedURL() const {
+  return GURL();
+}
+
 }  // namespace password_manager

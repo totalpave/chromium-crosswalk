@@ -5,10 +5,10 @@
 #ifndef IOS_WEB_WEB_STATE_UI_WK_WEB_VIEW_CONFIGURATION_PROVIDER_H_
 #define IOS_WEB_WEB_STATE_UI_WK_WEB_VIEW_CONFIGURATION_PROVIDER_H_
 
-#include "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
 #include "base/supports_user_data.h"
 
+@class CRWWebUISchemeHandler;
 @class CRWWKScriptMessageRouter;
 @class WKWebViewConfiguration;
 
@@ -22,14 +22,17 @@ class BrowserState;
 // main thread.
 class WKWebViewConfigurationProvider : public base::SupportsUserData::Data {
  public:
+  ~WKWebViewConfigurationProvider() override;
+
   // Returns a provider for the given |browser_state|. Lazily attaches one if it
   // does not exist. |browser_state| can not be null.
   static web::WKWebViewConfigurationProvider& FromBrowserState(
       web::BrowserState* browser_state);
 
-  // Returns an autoreleased copy of WKWebViewConfiguration associated with
-  // browser state. Lazily creates the config. Configuration's |preferences|
-  // will have scriptCanOpenWindowsAutomatically property set to YES.
+  // Returns an autoreleased shallow copy of WKWebViewConfiguration associated
+  // with browser state. Lazily creates the config. Configuration's
+  // |preferences| will have scriptCanOpenWindowsAutomatically property set to
+  // YES.
   // Must be used instead of [[WKWebViewConfiguration alloc] init].
   // Callers must not retain the returned object.
   WKWebViewConfiguration* GetWebViewConfiguration();
@@ -45,14 +48,13 @@ class WKWebViewConfigurationProvider : public base::SupportsUserData::Data {
   void Purge();
 
  private:
-  explicit WKWebViewConfigurationProvider(bool is_off_the_record);
+  explicit WKWebViewConfigurationProvider(BrowserState* browser_state);
   WKWebViewConfigurationProvider() = delete;
-  ~WKWebViewConfigurationProvider() override;
 
-  base::scoped_nsobject<WKWebViewConfiguration> configuration_;
-  base::scoped_nsobject<CRWWKScriptMessageRouter> router_;
-  // Result of |web::BrowserState::IsOffTheRecord| call.
-  bool is_off_the_record_;
+  CRWWebUISchemeHandler* scheme_handler_ = nil;
+  WKWebViewConfiguration* configuration_;
+  CRWWKScriptMessageRouter* router_;
+  BrowserState* browser_state_;
 
   DISALLOW_COPY_AND_ASSIGN(WKWebViewConfigurationProvider);
 };

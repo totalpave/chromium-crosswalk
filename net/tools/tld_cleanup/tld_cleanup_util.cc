@@ -6,6 +6,7 @@
 
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "url/gurl.h"
@@ -43,7 +44,7 @@ bool WriteRules(const RuleMap& rules, const base::FilePath& outfile) {
               "};\n"
               "%%\n");
 
-  for (RuleMap::const_iterator i = rules.begin(); i != rules.end(); ++i) {
+  for (auto i = rules.begin(); i != rules.end(); ++i) {
     data.append(i->first);
     data.append(", ");
     int type = 0;
@@ -55,7 +56,7 @@ bool WriteRules(const RuleMap& rules, const base::FilePath& outfile) {
     if (i->second.is_private) {
       type += kPrivateRule;
     }
-    data.append(base::IntToString(type));
+    data.append(base::NumberToString(type));
     data.append("\n");
   }
 
@@ -140,8 +141,8 @@ NormalizeResult NormalizeDataToRuleMap(const std::string data,
   size_t line_end = 0;
   bool is_private = false;
   RuleMap extra_rules;
-  int begin_private_length = arraysize(kBeginPrivateDomainsComment) - 1;
-  int end_private_length = arraysize(kEndPrivateDomainsComment) - 1;
+  int begin_private_length = base::size(kBeginPrivateDomainsComment) - 1;
+  int end_private_length = base::size(kEndPrivateDomainsComment) - 1;
   while (line_start < data.size()) {
     if (line_start + begin_private_length < data.size() &&
         !data.compare(line_start, begin_private_length,
@@ -165,7 +166,7 @@ NormalizeResult NormalizeDataToRuleMap(const std::string data,
       line_end = data.find_first_of("\r\n \t", line_start);
       if (line_end == std::string::npos)
         line_end = data.size();
-      domain.assign(data.data(), line_start, line_end - line_start);
+      domain.assign(data, line_start, line_end - line_start);
 
       Rule rule;
       rule.wildcard = false;

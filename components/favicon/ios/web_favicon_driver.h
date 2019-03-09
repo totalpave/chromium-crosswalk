@@ -7,11 +7,11 @@
 
 #include "base/macros.h"
 #include "components/favicon/core/favicon_driver_impl.h"
+#import "components/image_fetcher/ios/ios_image_data_fetcher_wrapper.h"
 #include "ios/web/public/web_state/web_state_observer.h"
 #include "ios/web/public/web_state/web_state_user_data.h"
 
 namespace web {
-struct FaviconStatus;
 class WebState;
 }
 
@@ -24,40 +24,58 @@ class WebFaviconDriver : public web::WebStateObserver,
                          public web::WebStateUserData<WebFaviconDriver>,
                          public FaviconDriverImpl {
  public:
+  ~WebFaviconDriver() override;
+
   static void CreateForWebState(web::WebState* web_state,
-                                FaviconService* favicon_service,
-                                history::HistoryService* history_service,
-                                bookmarks::BookmarkModel* bookmark_model);
+                                FaviconService* favicon_service);
 
   // FaviconDriver implementation.
-  void FetchFavicon(const GURL& url) override;
   gfx::Image GetFavicon() const override;
   bool FaviconIsValid() const override;
-  int StartDownload(const GURL& url, int max_bitmap_size) override;
-  bool IsOffTheRecord() override;
   GURL GetActiveURL() override;
+
+  // FaviconHandler::Delegate implementation.
+  int DownloadImage(const GURL& url,
+                    int max_image_size,
+                    ImageDownloadCallback callback) override;
+  void DownloadManifest(const GURL& url,
+                        ManifestDownloadCallback callback) override;
+  bool IsOffTheRecord() override;
   void OnFaviconUpdated(
       const GURL& page_url,
       FaviconDriverObserver::NotificationIconType notification_icon_type,
       const GURL& icon_url,
       bool icon_url_changed,
       const gfx::Image& image) override;
+  void OnFaviconDeleted(const GURL& page_url,
+                        FaviconDriverObserver::NotificationIconType
+                            notification_icon_type) override;
 
  private:
   friend class web::WebStateUserData<WebFaviconDriver>;
 
-  WebFaviconDriver(web::WebState* web_state,
-                   FaviconService* favicon_service,
-                   history::HistoryService* history_service,
-                   bookmarks::BookmarkModel* bookmark_model);
-  ~WebFaviconDriver() override;
+  WebFaviconDriver(web::WebState* web_state, FaviconService* favicon_service);
 
   // web::WebStateObserver implementation.
+  void DidFinishNavigation(web::WebState* web_state,
+                           web::NavigationContext* navigation_context) override;
   void FaviconUrlUpdated(
+      web::WebState* web_state,
       const std::vector<web::FaviconURL>& candidates) override;
+  void WebStateDestroyed(web::WebState* web_state) override;
 
-  // The URL passed to FetchFavicon().
-  GURL fetch_favicon_url_;
+  // Invoked when new favicon URL candidates are received.
+  void FaviconUrlUpdatedInternal(
+      const std::vector<favicon::FaviconURL>& candidates);
+
+  // Image Fetcher used to fetch favicon.
+  image_fetcher::IOSImageDataFetcherWrapper image_fetcher_;
+
+  // The WebState this instance is observing. Will be null after
+  // WebStateDestroyed has been called.
+  web::WebState* web_state_ = nullptr;
+
+  WEB_STATE_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(WebFaviconDriver);
 };

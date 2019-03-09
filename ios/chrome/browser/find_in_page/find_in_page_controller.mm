@@ -9,18 +9,22 @@
 #import <cmath>
 #include <memory>
 
-#include "base/ios/ios_util.h"
 #include "base/logging.h"
-#include "base/mac/foundation_util.h"
-#include "base/mac/scoped_nsobject.h"
+#import "base/mac/foundation_util.h"
 #import "ios/chrome/browser/find_in_page/find_in_page_model.h"
 #import "ios/chrome/browser/find_in_page/js_findinpage_manager.h"
+#include "ios/chrome/browser/metrics/ukm_url_recorder.h"
 #import "ios/chrome/browser/web/dom_altering_lock.h"
-#import "ios/web/public/web_state/crw_web_view_proxy.h"
-#import "ios/web/public/web_state/crw_web_view_scroll_view_proxy.h"
 #import "ios/web/public/web_state/js/crw_js_injection_receiver.h"
+#import "ios/web/public/web_state/ui/crw_web_view_proxy.h"
+#import "ios/web/public/web_state/ui/crw_web_view_scroll_view_proxy.h"
 #import "ios/web/public/web_state/web_state.h"
 #import "ios/web/public/web_state/web_state_observer_bridge.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 NSString* const kFindBarTextFieldWillBecomeFirstResponderNotification =
     @"kFindBarTextFieldWillBecomeFirstResponderNotification";
@@ -30,22 +34,24 @@ NSString* const kFindBarTextFieldDidResignFirstResponderNotification =
 namespace {
 // The delay (in secs) after which the find in page string will be pumped again.
 const NSTimeInterval kRecurringPumpDelay = .01;
+
+// Keeps find in page search term to be shared between different tabs. Never
+// reset, not stored on disk.
+static NSString* gSearchTerm;
 }
 
 @interface FindInPageController () <DOMAltering, CRWWebStateObserver>
-// The find in page controller delegate.
-@property(nonatomic, readonly) id<FindInPageControllerDelegate> delegate;
-// The web view's scroll view.
-@property(nonatomic, readonly) CRWWebViewScrollViewProxy* webViewScrollView;
 
-// Convenience method to obtain UIPasteboardNameFind from UIPasteBoard.
-- (UIPasteboard*)findPasteboard;
+// The web view's scroll view.
+- (CRWWebViewScrollViewProxy*)webViewScrollView;
 // Find in Page text field listeners.
 - (void)findBarTextFieldWillBecomeFirstResponder:(NSNotification*)note;
 - (void)findBarTextFieldDidResignFirstResponder:(NSNotification*)note;
 // Keyboard listeners.
 - (void)keyboardDidShow:(NSNotification*)note;
 - (void)keyboardWillHide:(NSNotification*)note;
+// Records UKM metric for Find in Page search matches.
+- (void)logFindInPageSearchUKM;
 // Constantly injects the find string in page until
 // |disableFindInPageWithCompletionHandler:| is called or the find operation is
 // complete. Calls |completionHandler| if the find operation is complete.
@@ -64,41 +70,51 @@ const NSTimeInterval kRecurringPumpDelay = .01;
 // Prevent scrolling past the end of the page.
 - (CGPoint)limitOverscroll:(CRWWebViewScrollViewProxy*)scrollViewProxy
                    atPoint:(CGPoint)point;
-// Returns the associated web state. May be null.
-- (web::WebState*)webState;
 @end
 
 @implementation FindInPageController {
- @private
   // Object that manages find_in_page.js injection into the web view.
-  JsFindinpageManager* _findInPageJsManager;
-  id<FindInPageControllerDelegate> _delegate;
+  __weak JsFindinpageManager* _findInPageJsManager;
 
   // Access to the web view from the web state.
-  base::scoped_nsprotocol<id<CRWWebViewProxy>> _webViewProxy;
+  id<CRWWebViewProxy> _webViewProxy;
 
   // True when a find is in progress. Used to avoid running JavaScript during
   // disable when there is nothing to clear.
   BOOL _findStringStarted;
 
+  // The WebState this instance is observing. Will be null after
+  // -webStateDestroyed: has been called.
+  web::WebState* _webState;
+
   // Bridge to observe the web state from Objective-C.
   std::unique_ptr<web::WebStateObserverBridge> _webStateObserverBridge;
 }
 
-@synthesize delegate = _delegate;
+@synthesize findInPageModel = _findInPageModel;
 
-- (id)initWithWebState:(web::WebState*)webState
-              delegate:(id<FindInPageControllerDelegate>)delegate {
++ (void)setSearchTerm:(NSString*)string {
+  gSearchTerm = [string copy];
+}
+
++ (NSString*)searchTerm {
+  return gSearchTerm;
+}
+
+- (id)initWithWebState:(web::WebState*)webState {
   self = [super init];
   if (self) {
-    DCHECK(delegate);
+    DCHECK(webState);
+    _webState = webState;
+    _findInPageModel = [[FindInPageModel alloc] init];
     _findInPageJsManager = base::mac::ObjCCastStrict<JsFindinpageManager>(
-        [webState->GetJSInjectionReceiver()
+        [_webState->GetJSInjectionReceiver()
             instanceOfClass:[JsFindinpageManager class]]);
-    _delegate = delegate;
-    _webStateObserverBridge.reset(
-        new web::WebStateObserverBridge(webState, self));
-    _webViewProxy.reset([webState->GetWebViewProxy() retain]);
+    _findInPageJsManager.findInPageModel = _findInPageModel;
+    _webStateObserverBridge =
+        std::make_unique<web::WebStateObserverBridge>(self);
+    _webState->AddObserver(_webStateObserverBridge.get());
+    _webViewProxy = _webState->GetWebViewProxy();
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(findBarTextFieldWillBecomeFirstResponder:)
@@ -109,18 +125,17 @@ const NSTimeInterval kRecurringPumpDelay = .01;
            selector:@selector(findBarTextFieldDidResignFirstResponder:)
                name:kFindBarTextFieldDidResignFirstResponderNotification
              object:nil];
-    DOMAlteringLock::CreateForWebState(webState);
+    DOMAlteringLock::CreateForWebState(_webState);
   }
   return self;
 }
 
 - (void)dealloc {
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
-  [super dealloc];
-}
-
-- (FindInPageModel*)findInPageModel {
-  return [_findInPageJsManager findInPageModel];
+  if (_webState) {
+    _webState->RemoveObserver(_webStateObserverBridge.get());
+    _webStateObserverBridge.reset();
+    _webState = nullptr;
+  }
 }
 
 - (BOOL)canFindInPage {
@@ -154,7 +169,6 @@ const NSTimeInterval kRecurringPumpDelay = .01;
               scrollPoint:(CGPoint)scrollPoint
         completionHandler:(ProceduralBlock)completionHandler {
   if (finished) {
-    [_delegate willAdjustScrollPosition];
     scrollPoint = [self limitOverscroll:[_webViewProxy scrollViewProxy]
                                 atPoint:scrollPoint];
     [[_webViewProxy scrollViewProxy] setContentOffset:scrollPoint animated:YES];
@@ -164,6 +178,15 @@ const NSTimeInterval kRecurringPumpDelay = .01;
     [self performSelector:@selector(startPumpingWithCompletionHandler:)
                withObject:completionHandler
                afterDelay:kRecurringPumpDelay];
+  }
+}
+
+- (void)logFindInPageSearchUKM {
+  ukm::SourceId sourceID = ukm::GetSourceIdForWebStateDocument(_webState);
+  if (sourceID != ukm::kInvalidSourceId) {
+    ukm::builders::IOS_FindInPageSearchMatches(sourceID)
+        .SetHasMatches(_findInPageModel.matches > 0)
+        .Record(ukm::UkmRecorder::Get());
   }
 }
 
@@ -182,19 +205,24 @@ const NSTimeInterval kRecurringPumpDelay = .01;
     // Keep track of whether a find is in progress so to avoid running
     // JavaScript during disable if unnecessary.
     _findStringStarted = YES;
-    base::WeakNSObject<FindInPageController> weakSelf(self);
+    __weak FindInPageController* weakSelf = self;
     [_findInPageJsManager findString:query
                    completionHandler:^(BOOL finished, CGPoint point) {
-                     [weakSelf processPumpResult:finished
-                                     scrollPoint:point
-                               completionHandler:completionHandler];
+                     FindInPageController* strongSelf = weakSelf;
+                     if (!strongSelf) {
+                       return;
+                     }
+                     [strongSelf logFindInPageSearchUKM];
+                     [strongSelf processPumpResult:finished
+                                       scrollPoint:point
+                                 completionHandler:completionHandler];
                    }];
   };
-  DOMAlteringLock::FromWebState([self webState])->Acquire(self, lockAction);
+  DOMAlteringLock::FromWebState(_webState)->Acquire(self, lockAction);
 }
 
 - (void)startPumpingWithCompletionHandler:(ProceduralBlock)completionHandler {
-  base::WeakNSObject<FindInPageController> weakSelf(self);
+  __weak FindInPageController* weakSelf = self;
   id completionHandlerBlock = ^void(BOOL findFinished) {
     if (findFinished) {
       // Pumping complete. Nothing else to do.
@@ -212,12 +240,11 @@ const NSTimeInterval kRecurringPumpDelay = .01;
 
 - (void)pumpFindStringInPageWithCompletionHandler:
     (void (^)(BOOL))completionHandler {
-  base::WeakNSObject<FindInPageController> weakSelf(self);
+  __weak FindInPageController* weakSelf = self;
   [_findInPageJsManager pumpWithCompletionHandler:^(BOOL finished,
                                                     CGPoint point) {
-    base::scoped_nsobject<FindInPageController> strongSelf([weakSelf retain]);
+    FindInPageController* strongSelf = weakSelf;
     if (finished) {
-      [[strongSelf delegate] willAdjustScrollPosition];
       point = [strongSelf limitOverscroll:[strongSelf webViewScrollView]
                                   atPoint:point];
       [[strongSelf webViewScrollView] setContentOffset:point animated:YES];
@@ -229,10 +256,9 @@ const NSTimeInterval kRecurringPumpDelay = .01;
 - (void)findNextStringInPageWithCompletionHandler:
     (ProceduralBlock)completionHandler {
   [self initFindInPage];
-  base::WeakNSObject<FindInPageController> weakSelf(self);
+  __weak FindInPageController* weakSelf = self;
   [_findInPageJsManager nextMatchWithCompletionHandler:^(CGPoint point) {
-    base::scoped_nsobject<FindInPageController> strongSelf([weakSelf retain]);
-    [[strongSelf delegate] willAdjustScrollPosition];
+    FindInPageController* strongSelf = weakSelf;
     point = [strongSelf limitOverscroll:[strongSelf webViewScrollView]
                                 atPoint:point];
     [[strongSelf webViewScrollView] setContentOffset:point animated:YES];
@@ -245,10 +271,9 @@ const NSTimeInterval kRecurringPumpDelay = .01;
 - (void)findPreviousStringInPageWithCompletionHandler:
     (ProceduralBlock)completionHandler {
   [self initFindInPage];
-  base::WeakNSObject<FindInPageController> weakSelf(self);
+  __weak FindInPageController* weakSelf = self;
   [_findInPageJsManager previousMatchWithCompletionHandler:^(CGPoint point) {
-    base::scoped_nsobject<FindInPageController> strongSelf([weakSelf retain]);
-    [[strongSelf delegate] willAdjustScrollPosition];
+    FindInPageController* strongSelf = weakSelf;
     point = [strongSelf limitOverscroll:[strongSelf webViewScrollView]
                                 atPoint:point];
     [[strongSelf webViewScrollView] setContentOffset:point animated:YES];
@@ -260,18 +285,18 @@ const NSTimeInterval kRecurringPumpDelay = .01;
 // Remove highlights from the page and disable the model.
 - (void)disableFindInPageWithCompletionHandler:
     (ProceduralBlock)completionHandler {
-  if (![self canFindInPage])
+  if (![self canFindInPage]) {
+    if (completionHandler)
+      completionHandler();
     return;
+  }
   // Cancel any queued calls to |recurringPumpWithCompletionHandler|.
   [NSObject cancelPreviousPerformRequestsWithTarget:self];
-  base::WeakNSObject<FindInPageController> weakSelf(self);
+  __weak FindInPageController* weakSelf = self;
   ProceduralBlock handler = ^{
-    base::scoped_nsobject<FindInPageController> strongSelf([weakSelf retain]);
-    if (strongSelf) {
-      [strongSelf.get().findInPageModel setEnabled:NO];
-      web::WebState* webState = [strongSelf webState];
-      if (webState)
-        DOMAlteringLock::FromWebState(webState)->Release(strongSelf);
+    FindInPageController* strongSelf = weakSelf;
+    if (strongSelf && strongSelf->_webState) {
+      DOMAlteringLock::FromWebState(strongSelf->_webState)->Release(strongSelf);
     }
     if (completionHandler)
       completionHandler();
@@ -288,7 +313,7 @@ const NSTimeInterval kRecurringPumpDelay = .01;
 }
 
 - (void)saveSearchTerm {
-  [self findPasteboard].string = [[self findInPageModel] text];
+  [[self class] setSearchTerm:[[self findInPageModel] text]];
 }
 
 - (void)restoreSearchTerm {
@@ -298,17 +323,8 @@ const NSTimeInterval kRecurringPumpDelay = .01;
     return;
   }
 
-  NSString* term = [self findPasteboard].string;
+  NSString* term = [[self class] searchTerm];
   [[self findInPageModel] updateQuery:(term ? term : @"") matches:0];
-}
-
-- (UIPasteboard*)findPasteboard {
-  return [UIPasteboard pasteboardWithName:UIPasteboardNameFind create:NO];
-}
-
-- (web::WebState*)webState {
-  return _webStateObserverBridge ? _webStateObserverBridge->web_state()
-                                 : nullptr;
 }
 
 #pragma mark - Notification listeners
@@ -344,16 +360,7 @@ const NSTimeInterval kRecurringPumpDelay = .01;
   NSDictionary* info = [note userInfo];
   CGSize kbSize =
       [[info objectForKey:UIKeyboardFrameEndUserInfoKey] CGRectValue].size;
-  UIInterfaceOrientation orientation =
-      [[UIApplication sharedApplication] statusBarOrientation];
   CGFloat kbHeight = kbSize.height;
-  // Prior to iOS 8, the keyboard frame was not dependent on interface
-  // orientation, so height and width need to be swapped in landscape mode.
-  if (UIInterfaceOrientationIsLandscape(orientation) &&
-      !base::ios::IsRunningOnIOS8OrLater()) {
-    kbHeight = kbSize.width;
-  }
-
   UIEdgeInsets insets = UIEdgeInsetsZero;
   insets.bottom = kbHeight;
   [_webViewProxy registerInsets:insets forCaller:self];
@@ -364,12 +371,17 @@ const NSTimeInterval kRecurringPumpDelay = .01;
 }
 
 - (void)detachFromWebState {
-  _webStateObserverBridge.reset();
+  if (_webState) {
+    _webState->RemoveObserver(_webStateObserverBridge.get());
+    _webStateObserverBridge.reset();
+    _webState = nullptr;
+  }
 }
 
 #pragma mark - CRWWebStateObserver Methods
 
 - (void)webStateDestroyed:(web::WebState*)webState {
+  DCHECK_EQ(_webState, webState);
   [self detachFromWebState];
 }
 

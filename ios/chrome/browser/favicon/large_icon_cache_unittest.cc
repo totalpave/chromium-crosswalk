@@ -9,6 +9,7 @@
 #include "components/favicon_base/favicon_types.h"
 #include "skia/ext/skia_utils_ios.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/platform_test.h"
 #include "ui/gfx/codec/png_codec.h"
 
 namespace {
@@ -33,16 +34,17 @@ favicon_base::FaviconRawBitmapResult CreateTestBitmap(int w,
 
   result.pixel_size = gfx::Size(w, h);
   result.icon_url = GURL(kDummyUrl);
-  result.icon_type = favicon_base::TOUCH_ICON;
+  result.icon_type = favicon_base::IconType::kTouchIcon;
   CHECK(result.is_valid());
   return result;
 }
 
-class LargeIconCacheTest : public testing::Test {
+class LargeIconCacheTest : public PlatformTest {
  public:
   LargeIconCacheTest() {
     expected_fallback_icon_style_.reset(new favicon_base::FallbackIconStyle());
     expected_fallback_icon_style_->background_color = kTestColor;
+    expected_fallback_icon_style_->is_default_background_color = false;
     expected_bitmap_ = CreateTestBitmap(24, 24, kTestColor);
     large_icon_cache_.reset(new LargeIconCache);
   }
@@ -86,6 +88,7 @@ TEST_F(LargeIconCacheTest, RetreiveItem) {
   EXPECT_EQ(false, result2->bitmap.is_valid());
   EXPECT_EQ(expected_result2->fallback_icon_style->background_color,
             result2->fallback_icon_style->background_color);
+  EXPECT_FALSE(result2->fallback_icon_style->is_default_background_color);
 
   // Test overwriting kDummyUrl.
   large_icon_cache_->SetCachedResult(GURL(kDummyUrl), *expected_result2);
@@ -94,6 +97,7 @@ TEST_F(LargeIconCacheTest, RetreiveItem) {
   EXPECT_EQ(false, result3->bitmap.is_valid());
   EXPECT_EQ(expected_result2->fallback_icon_style->background_color,
             result3->fallback_icon_style->background_color);
+  EXPECT_FALSE(result2->fallback_icon_style->is_default_background_color);
 }
 
 }  // namespace

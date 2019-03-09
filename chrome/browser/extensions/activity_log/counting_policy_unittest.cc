@@ -10,10 +10,11 @@
 #include <memory>
 #include <utility>
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/cancelable_callback.h"
 #include "base/command_line.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_split.h"
@@ -22,8 +23,10 @@
 #include "base/test/simple_test_clock.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/activity_log/activity_log.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/common/chrome_constants.h"
@@ -37,11 +40,8 @@
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
+#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
 #endif
-
-using content::BrowserThread;
 
 namespace extensions {
 
@@ -70,23 +70,23 @@ class CountingPolicyTest : public testing::Test {
     base::RunLoop().RunUntilIdle();
   }
 
-  // Wait for the task queue for the specified thread to empty.
-  void WaitOnThread(const BrowserThread::ID& thread) {
-    BrowserThread::PostTaskAndReply(
-        thread, FROM_HERE, base::Bind(&base::DoNothing),
-        base::MessageLoop::current()->QuitWhenIdleClosure());
-    base::RunLoop().Run();
+  // Waits for the task queue for the activity log sequence to empty.
+  void WaitOnActivityLogSequence() {
+    base::RunLoop run_loop;
+    GetActivityLogTaskRunner()->PostTaskAndReply(
+        FROM_HERE, base::DoNothing(), run_loop.QuitWhenIdleClosure());
+    run_loop.Run();
   }
 
   // A wrapper function for CheckReadFilteredData, so that we don't need to
   // enter empty string values for parameters we don't care about.
-  void CheckReadData(ActivityLogDatabasePolicy* policy,
-                     const std::string& extension_id,
-                     int day,
-                     const base::Callback<void(
-                         std::unique_ptr<Action::ActionVector>)>& checker) {
-    CheckReadFilteredData(
-        policy, extension_id, Action::ACTION_ANY, "", "", "", day, checker);
+  void CheckReadData(
+      ActivityLogDatabasePolicy* policy,
+      const std::string& extension_id,
+      int day,
+      base::OnceCallback<void(std::unique_ptr<Action::ActionVector>)> checker) {
+    CheckReadFilteredData(policy, extension_id, Action::ACTION_ANY, "", "", "",
+                          day, std::move(checker));
   }
 
   // A helper function to call ReadFilteredData on a policy object and wait for
@@ -99,15 +99,14 @@ class CountingPolicyTest : public testing::Test {
       const std::string& page_url,
       const std::string& arg_url,
       int day,
-      const base::Callback<void(std::unique_ptr<Action::ActionVector>)>&
-          checker) {
+      base::OnceCallback<void(std::unique_ptr<Action::ActionVector>)> checker) {
     // Submit a request to the policy to read back some data, and call the
     // checker function when results are available.  This will happen on the
     // database thread.
     policy->ReadFilteredData(
         extension_id, type, api_name, page_url, arg_url, day,
-        base::Bind(&CountingPolicyTest::CheckWrapper, checker,
-                   base::MessageLoop::current()->QuitWhenIdleClosure()));
+        base::BindOnce(&CountingPolicyTest::CheckWrapper, std::move(checker),
+                       base::RunLoop::QuitCurrentWhenIdleClosureDeprecated()));
 
     // Set up a timeout for receiving results; if we haven't received anything
     // when the timeout triggers then assume that the test is broken.
@@ -128,7 +127,7 @@ class CountingPolicyTest : public testing::Test {
   static void CheckStringTableSizes(CountingPolicy* policy,
                                     int string_size,
                                     int url_size) {
-    sql::Connection* db = policy->GetDatabaseConnection();
+    sql::Database* db = policy->GetDatabaseConnection();
     sql::Statement statement1(db->GetCachedStatement(
         sql::StatementID(SQL_FROM_HERE), "SELECT COUNT(*) FROM string_ids"));
     ASSERT_TRUE(statement1.Step());
@@ -148,16 +147,16 @@ class CountingPolicyTest : public testing::Test {
     ASSERT_LE(policy->queued_actions_.size(), 200U);
   }
 
-  static void CheckWrapper(const base::Callback<void(
-                               std::unique_ptr<Action::ActionVector>)>& checker,
-                           const base::Closure& done,
-                           std::unique_ptr<Action::ActionVector> results) {
-    checker.Run(std::move(results));
-    done.Run();
+  static void CheckWrapper(
+      base::OnceCallback<void(std::unique_ptr<Action::ActionVector>)> checker,
+      base::OnceClosure done,
+      std::unique_ptr<Action::ActionVector> results) {
+    std::move(checker).Run(std::move(results));
+    std::move(done).Run();
   }
 
   static void TimeoutCallback() {
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
     FAIL() << "Policy test timed out waiting for results";
   }
 
@@ -183,84 +182,37 @@ class CountingPolicyTest : public testing::Test {
 
   static void Arguments_Stripped(std::unique_ptr<Action::ActionVector> i) {
     scoped_refptr<Action> last = i->front();
-    CheckAction(*last.get(),
-                "odlameecjipmbmbejkplpemijjgpljce",
-                Action::ACTION_API_CALL,
-                "extension.connect",
-                "[\"hello\",\"world\"]",
-                "",
-                "",
-                "",
-                1);
+    CheckAction(*last, "odlameecjipmbmbejkplpemijjgpljce",
+                Action::ACTION_API_CALL, "extension.connect",
+                "[\"hello\",\"world\"]", "", "", "", 1);
   }
 
   static void Arguments_GetSinglesAction(
       std::unique_ptr<Action::ActionVector> actions) {
     ASSERT_EQ(1, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "http://www.google.com/",
-                "",
-                "",
-                1);
+    CheckAction(*actions->at(0), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "http://www.google.com/", "", "", 1);
   }
 
   static void Arguments_GetTodaysActions(
       std::unique_ptr<Action::ActionVector> actions) {
     ASSERT_EQ(3, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky",
-                Action::ACTION_API_CALL,
-                "brewster",
-                "",
-                "",
-                "",
-                "",
-                2);
-    CheckAction(*actions->at(1).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "http://www.google.com/",
-                "",
-                "",
-                1);
-    CheckAction(*actions->at(2).get(),
-                "punky",
-                Action::ACTION_API_CALL,
-                "extension.sendMessage",
-                "[\"not\",\"stripped\"]",
-                "",
-                "",
-                "",
+    CheckAction(*actions->at(0), "punky", Action::ACTION_API_CALL, "brewster",
+                "", "", "", "", 2);
+    CheckAction(*actions->at(1), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "http://www.google.com/", "", "", 1);
+    CheckAction(*actions->at(2), "punky", Action::ACTION_API_CALL,
+                "extension.sendMessage", "[\"not\",\"stripped\"]", "", "", "",
                 1);
   }
 
   static void Arguments_GetOlderActions(
       std::unique_ptr<Action::ActionVector> actions) {
     ASSERT_EQ(2, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "http://www.google.com/",
-                "",
-                "",
-                1);
-    CheckAction(*actions->at(1).get(),
-                "punky",
-                Action::ACTION_API_CALL,
-                "brewster",
-                "",
-                "",
-                "",
-                "",
-                1);
+    CheckAction(*actions->at(0), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "http://www.google.com/", "", "", 1);
+    CheckAction(*actions->at(1), "punky", Action::ACTION_API_CALL, "brewster",
+                "", "", "", "", 1);
   }
 
   static void Arguments_CheckMergeCount(
@@ -268,15 +220,8 @@ class CountingPolicyTest : public testing::Test {
       std::unique_ptr<Action::ActionVector> actions) {
     if (count > 0) {
       ASSERT_EQ(1u, actions->size());
-      CheckAction(*actions->at(0).get(),
-                  "punky",
-                  Action::ACTION_API_CALL,
-                  "brewster",
-                  "",
-                  "",
-                  "",
-                  "",
-                  count);
+      CheckAction(*actions->at(0), "punky", Action::ACTION_API_CALL, "brewster",
+                  "", "", "", "", count);
     } else {
       ASSERT_EQ(0u, actions->size());
     }
@@ -288,15 +233,8 @@ class CountingPolicyTest : public testing::Test {
       std::unique_ptr<Action::ActionVector> actions) {
     if (count > 0) {
       ASSERT_EQ(1u, actions->size());
-      CheckAction(*actions->at(0).get(),
-                  "punky",
-                  Action::ACTION_API_CALL,
-                  "brewster",
-                  "",
-                  "",
-                  "",
-                  "",
-                  count);
+      CheckAction(*actions->at(0), "punky", Action::ACTION_API_CALL, "brewster",
+                  "", "", "", "", count);
       ASSERT_EQ(time, actions->at(0)->time());
     } else {
       ASSERT_EQ(0u, actions->size());
@@ -305,74 +243,26 @@ class CountingPolicyTest : public testing::Test {
 
   static void AllURLsRemoved(std::unique_ptr<Action::ActionVector> actions) {
     ASSERT_EQ(2, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "",
-                "",
-                "",
-                1);
-    CheckAction(*actions->at(1).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "",
-                "",
-                "",
-                1);
+    CheckAction(*actions->at(0), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "", "", "", 1);
+    CheckAction(*actions->at(1), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "", "", "", 1);
   }
 
   static void SomeURLsRemoved(std::unique_ptr<Action::ActionVector> actions) {
     // These will be in the vector in reverse time order.
     ASSERT_EQ(5, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "http://www.google.com/",
-                "Google",
-                "http://www.args-url.com/",
+    CheckAction(*actions->at(0), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "http://www.google.com/", "Google", "http://www.args-url.com/",
                 1);
-    CheckAction(*actions->at(1).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "http://www.google.com/",
-                "Google",
-                "",
-                1);
-    CheckAction(*actions->at(2).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "",
-                "",
-                "",
-                1);
-    CheckAction(*actions->at(3).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "",
-                "",
-                "http://www.google.com/",
-                1);
-    CheckAction(*actions->at(4).get(),
-                "punky",
-                Action::ACTION_DOM_ACCESS,
-                "lets",
-                "",
-                "",
-                "",
-                "",
-                1);
+    CheckAction(*actions->at(1), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "http://www.google.com/", "Google", "", 1);
+    CheckAction(*actions->at(2), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "", "", "", 1);
+    CheckAction(*actions->at(3), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "", "", "http://www.google.com/", 1);
+    CheckAction(*actions->at(4), "punky", Action::ACTION_DOM_ACCESS, "lets", "",
+                "", "", "", 1);
   }
 
   static void CheckDuplicates(std::unique_ptr<Action::ActionVector> actions) {
@@ -411,21 +301,17 @@ class CountingPolicyTest : public testing::Test {
   void CheckRemoveActions(
       ActivityLogDatabasePolicy* policy,
       const std::vector<int64_t>& action_ids,
-      const base::Callback<void(std::unique_ptr<Action::ActionVector>)>&
-          checker) {
+      base::OnceCallback<void(std::unique_ptr<Action::ActionVector>)> checker) {
     // Use a mock clock to ensure that events are not recorded on the wrong day
     // when the test is run close to local midnight.
-    base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-    mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+    mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                        base::TimeDelta::FromHours(12));
-    policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+    policy->SetClockForTesting(&mock_clock_);
 
     // Record some actions
-    scoped_refptr<Action> action =
-        new Action("punky1",
-                   mock_clock->Now() - base::TimeDelta::FromMinutes(40),
-                   Action::ACTION_DOM_ACCESS,
-                   "lets1");
+    scoped_refptr<Action> action = new Action(
+        "punky1", mock_clock_.Now() - base::TimeDelta::FromMinutes(40),
+        Action::ACTION_DOM_ACCESS, "lets1");
     action->mutable_args()->AppendString("vamoose1");
     action->set_page_url(GURL("http://www.google1.com"));
     action->set_page_title("Google1");
@@ -436,9 +322,8 @@ class CountingPolicyTest : public testing::Test {
     policy->ProcessAction(action);
 
     action = new Action("punky2",
-                        mock_clock->Now() - base::TimeDelta::FromMinutes(30),
-                        Action::ACTION_API_CALL,
-                        "lets2");
+                        mock_clock_.Now() - base::TimeDelta::FromMinutes(30),
+                        Action::ACTION_API_CALL, "lets2");
     action->mutable_args()->AppendString("vamoose2");
     action->set_page_url(GURL("http://www.google2.com"));
     action->set_page_title("Google2");
@@ -453,7 +338,7 @@ class CountingPolicyTest : public testing::Test {
 
     // Check the result of the deletion. The checker function gets all
     // activities in the database.
-    CheckReadData(policy, "", -1, checker);
+    CheckReadData(policy, "", -1, std::move(checker));
 
     // Clean database.
     policy->DeleteDatabase();
@@ -466,66 +351,42 @@ class CountingPolicyTest : public testing::Test {
   static void NoActionsDeleted(std::unique_ptr<Action::ActionVector> actions) {
     // These will be in the vector in reverse time order.
     ASSERT_EQ(2, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky2",
-                Action::ACTION_API_CALL,
-                "lets2",
-                "",
-                "http://www.google2.com/",
-                "Google2",
-                "http://www.args-url2.com/",
-                2);
+    CheckAction(*actions->at(0), "punky2", Action::ACTION_API_CALL, "lets2", "",
+                "http://www.google2.com/", "Google2",
+                "http://www.args-url2.com/", 2);
     ASSERT_EQ(2, actions->at(0)->action_id());
-    CheckAction(*actions->at(1).get(),
-                "punky1",
-                Action::ACTION_DOM_ACCESS,
-                "lets1",
-                "",
-                "http://www.google1.com/",
-                "Google1",
-                "http://www.args-url1.com/",
-                2);
+    CheckAction(*actions->at(1), "punky1", Action::ACTION_DOM_ACCESS, "lets1",
+                "", "http://www.google1.com/", "Google1",
+                "http://www.args-url1.com/", 2);
     ASSERT_EQ(1, actions->at(1)->action_id());
   }
 
   static void Action1Deleted(std::unique_ptr<Action::ActionVector> actions) {
     // These will be in the vector in reverse time order.
     ASSERT_EQ(1, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky2",
-                Action::ACTION_API_CALL,
-                "lets2",
-                "",
-                "http://www.google2.com/",
-                "Google2",
-                "http://www.args-url2.com/",
-                2);
+    CheckAction(*actions->at(0), "punky2", Action::ACTION_API_CALL, "lets2", "",
+                "http://www.google2.com/", "Google2",
+                "http://www.args-url2.com/", 2);
     ASSERT_EQ(2, actions->at(0)->action_id());
   }
 
   static void Action2Deleted(std::unique_ptr<Action::ActionVector> actions) {
     // These will be in the vector in reverse time order.
     ASSERT_EQ(1, static_cast<int>(actions->size()));
-    CheckAction(*actions->at(0).get(),
-                "punky1",
-                Action::ACTION_DOM_ACCESS,
-                "lets1",
-                "",
-                "http://www.google1.com/",
-                "Google1",
-                "http://www.args-url1.com/",
-                2);
+    CheckAction(*actions->at(0), "punky1", Action::ACTION_DOM_ACCESS, "lets1",
+                "", "http://www.google1.com/", "Google1",
+                "http://www.args-url1.com/", 2);
     ASSERT_EQ(1, actions->at(0)->action_id());
   }
 
  protected:
+  base::SimpleTestClock mock_clock_;
   ExtensionService* extension_service_;
   std::unique_ptr<TestingProfile> profile_;
   content::TestBrowserThreadBundle thread_bundle_;
 
 #if defined OS_CHROMEOS
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
+  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
   std::unique_ptr<chromeos::ScopedTestUserManager> test_user_manager_;
 #endif
 };
@@ -566,8 +427,8 @@ TEST_F(CountingPolicyTest, LogWithStrippedArguments) {
   extension_service_->AddExtension(extension.get());
 
   std::unique_ptr<base::ListValue> args(new base::ListValue());
-  args->Set(0, new base::StringValue("hello"));
-  args->Set(1, new base::StringValue("world"));
+  args->Set(0, std::make_unique<base::Value>("hello"));
+  args->Set(1, std::make_unique<base::Value>("world"));
   scoped_refptr<Action> action = new Action(extension->id(),
                                             base::Time::Now(),
                                             Action::ACTION_API_CALL,
@@ -575,10 +436,8 @@ TEST_F(CountingPolicyTest, LogWithStrippedArguments) {
   action->set_args(std::move(args));
 
   policy->ProcessAction(action);
-  CheckReadData(policy,
-                extension->id(),
-                0,
-                base::Bind(&CountingPolicyTest::Arguments_Stripped));
+  CheckReadData(policy, extension->id(), 0,
+                base::BindOnce(&CountingPolicyTest::Arguments_Stripped));
   policy->Close();
 }
 
@@ -594,52 +453,45 @@ TEST_F(CountingPolicyTest, GetTodaysActions) {
   // to the policy, but we still keep a pointer locally.  The policy will take
   // care of destruction; this is safe since the policy outlives all our
   // accesses to the mock clock.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                      base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Record some actions
   scoped_refptr<Action> action =
-      new Action("punky",
-                 mock_clock->Now() - base::TimeDelta::FromMinutes(40),
-                 Action::ACTION_API_CALL,
-                 "brewster");
+      new Action("punky", mock_clock_.Now() - base::TimeDelta::FromMinutes(40),
+                 Action::ACTION_API_CALL, "brewster");
   action->mutable_args()->AppendString("woof");
   policy->ProcessAction(action);
 
-  action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromMinutes(30),
-                      Action::ACTION_API_CALL,
-                      "brewster");
+  action =
+      new Action("punky", mock_clock_.Now() - base::TimeDelta::FromMinutes(30),
+                 Action::ACTION_API_CALL, "brewster");
   action->mutable_args()->AppendString("meow");
   policy->ProcessAction(action);
 
-  action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromMinutes(20),
-                      Action::ACTION_API_CALL,
-                      "extension.sendMessage");
+  action =
+      new Action("punky", mock_clock_.Now() - base::TimeDelta::FromMinutes(20),
+                 Action::ACTION_API_CALL, "extension.sendMessage");
   action->mutable_args()->AppendString("not");
   action->mutable_args()->AppendString("stripped");
   policy->ProcessAction(action);
 
   action =
-      new Action("punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
-  action = new Action(
-      "scoobydoo", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+  action = new Action("scoobydoo", mock_clock_.Now(), Action::ACTION_DOM_ACCESS,
+                      "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
   CheckReadData(
-      policy,
-      "punky",
-      0,
-      base::Bind(&CountingPolicyTest::Arguments_GetTodaysActions));
+      policy, "punky", 0,
+      base::BindOnce(&CountingPolicyTest::Arguments_GetTodaysActions));
   policy->Close();
 }
 
@@ -651,50 +503,39 @@ TEST_F(CountingPolicyTest, GetOlderActions) {
 
   // Use a mock clock to ensure that events are not recorded on the wrong day
   // when the test is run close to local midnight.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                      base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Record some actions
   scoped_refptr<Action> action =
       new Action("punky",
-                 mock_clock->Now() - base::TimeDelta::FromDays(3) -
+                 mock_clock_.Now() - base::TimeDelta::FromDays(3) -
                      base::TimeDelta::FromMinutes(40),
-                 Action::ACTION_API_CALL,
-                 "brewster");
+                 Action::ACTION_API_CALL, "brewster");
   action->mutable_args()->AppendString("woof");
   policy->ProcessAction(action);
 
-  action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromDays(3),
-                      Action::ACTION_DOM_ACCESS,
-                      "lets");
+  action = new Action("punky", mock_clock_.Now() - base::TimeDelta::FromDays(3),
+                      Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
-  action = new Action("punky",
-                      mock_clock->Now(),
-                      Action::ACTION_DOM_ACCESS,
-                      "lets");
+  action =
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("too new");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
-  action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromDays(7),
-                      Action::ACTION_DOM_ACCESS,
-                      "lets");
+  action = new Action("punky", mock_clock_.Now() - base::TimeDelta::FromDays(7),
+                      Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("too old");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
-  CheckReadData(
-      policy,
-      "punky",
-      3,
-      base::Bind(&CountingPolicyTest::Arguments_GetOlderActions));
+  CheckReadData(policy, "punky", 3,
+                base::BindOnce(&CountingPolicyTest::Arguments_GetOlderActions));
 
   policy->Close();
 }
@@ -718,81 +559,62 @@ TEST_F(CountingPolicyTest, LogAndFetchFilteredActions) {
                                                 base::Time::Now(),
                                                 Action::ACTION_API_CALL,
                                                 "tabs.testMethod");
-  action_api->set_args(base::WrapUnique(new base::ListValue()));
+  action_api->set_args(std::make_unique<base::ListValue>());
   policy->ProcessAction(action_api);
 
   scoped_refptr<Action> action_dom = new Action(extension->id(),
                                                 base::Time::Now(),
                                                 Action::ACTION_DOM_ACCESS,
                                                 "document.write");
-  action_dom->set_args(base::WrapUnique(new base::ListValue()));
+  action_dom->set_args(std::make_unique<base::ListValue>());
   action_dom->set_page_url(gurl);
   policy->ProcessAction(action_dom);
 
   CheckReadFilteredData(
-      policy,
-      extension->id(),
-      Action::ACTION_API_CALL,
-      "tabs.testMethod",
-      "",
-      "",
+      policy, extension->id(), Action::ACTION_API_CALL, "tabs.testMethod", "",
+      "", -1,
+      base::BindOnce(
+          &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
+
+  // Test for case insensitive matching for api_call.
+  CheckReadFilteredData(
+      policy, extension->id(), Action::ACTION_API_CALL, "tabs.testmethod", "",
+      "", -1,
+      base::BindOnce(
+          &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
+
+  // Test for prefix matching for api_call.
+  CheckReadFilteredData(
+      policy, extension->id(), Action::ACTION_API_CALL, "tabs.testM", "", "",
       -1,
-      base::Bind(
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
 
   CheckReadFilteredData(
-      policy,
-      "",
-      Action::ACTION_DOM_ACCESS,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(
+      policy, "", Action::ACTION_DOM_ACCESS, "", "", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
 
   CheckReadFilteredData(
-      policy,
-      "",
-      Action::ACTION_DOM_ACCESS,
-      "",
-      "http://www.google.com/",
-      "",
+      policy, "", Action::ACTION_DOM_ACCESS, "", "http://www.google.com/", "",
       -1,
-      base::Bind(
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
 
   CheckReadFilteredData(
-      policy,
-      "",
-      Action::ACTION_DOM_ACCESS,
-      "",
-      "http://www.google.com",
-      "",
+      policy, "", Action::ACTION_DOM_ACCESS, "", "http://www.google.com", "",
       -1,
-      base::Bind(
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
 
   CheckReadFilteredData(
-      policy,
-      "",
-      Action::ACTION_DOM_ACCESS,
-      "",
-      "http://www.goo",
-      "",
-      -1,
-      base::Bind(
+      policy, "", Action::ACTION_DOM_ACCESS, "", "http://www.goo", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
 
   CheckReadFilteredData(
-      policy,
-      extension->id(),
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(
+      policy, extension->id(), Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions2));
 
   policy->Close();
@@ -809,62 +631,52 @@ TEST_F(CountingPolicyTest, MergingAndExpiring) {
 
   // Use a mock clock to ensure that events are not recorded on the wrong day
   // when the test is run close to local midnight.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
-                    base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
+                     base::TimeDelta::FromHours(12));
+  policy->SetClockForTesting(&mock_clock_);
 
   // The first two actions should be merged; the last one is on a separate day
   // and should not be.
   scoped_refptr<Action> action =
       new Action("punky",
-                 mock_clock->Now() - base::TimeDelta::FromDays(3) -
+                 mock_clock_.Now() - base::TimeDelta::FromDays(3) -
                      base::TimeDelta::FromMinutes(40),
-                 Action::ACTION_API_CALL,
-                 "brewster");
+                 Action::ACTION_API_CALL, "brewster");
   policy->ProcessAction(action);
 
   action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromDays(3) -
+                      mock_clock_.Now() - base::TimeDelta::FromDays(3) -
                           base::TimeDelta::FromMinutes(20),
-                      Action::ACTION_API_CALL,
-                      "brewster");
+                      Action::ACTION_API_CALL, "brewster");
   policy->ProcessAction(action);
 
   action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromDays(2) -
+                      mock_clock_.Now() - base::TimeDelta::FromDays(2) -
                           base::TimeDelta::FromMinutes(20),
-                      Action::ACTION_API_CALL,
-                      "brewster");
+                      Action::ACTION_API_CALL, "brewster");
   policy->ProcessAction(action);
 
-  CheckReadData(policy,
-                "punky",
-                3,
-                base::Bind(&CountingPolicyTest::Arguments_CheckMergeCount, 2));
-  CheckReadData(policy,
-                "punky",
-                2,
-                base::Bind(&CountingPolicyTest::Arguments_CheckMergeCount, 1));
+  CheckReadData(
+      policy, "punky", 3,
+      base::BindOnce(&CountingPolicyTest::Arguments_CheckMergeCount, 2));
+  CheckReadData(
+      policy, "punky", 2,
+      base::BindOnce(&CountingPolicyTest::Arguments_CheckMergeCount, 1));
 
   // Clean actions before midnight two days ago.  Force expiration to run by
   // clearing last_database_cleaning_time_ and submitting a new action.
   policy->set_retention_time(base::TimeDelta::FromDays(2));
   policy->last_database_cleaning_time_ = base::Time();
-  action = new Action("punky",
-                      mock_clock->Now(),
-                      Action::ACTION_API_CALL,
+  action = new Action("punky", mock_clock_.Now(), Action::ACTION_API_CALL,
                       "brewster");
   policy->ProcessAction(action);
 
-  CheckReadData(policy,
-                "punky",
-                3,
-                base::Bind(&CountingPolicyTest::Arguments_CheckMergeCount, 0));
-  CheckReadData(policy,
-                "punky",
-                2,
-                base::Bind(&CountingPolicyTest::Arguments_CheckMergeCount, 1));
+  CheckReadData(
+      policy, "punky", 3,
+      base::BindOnce(&CountingPolicyTest::Arguments_CheckMergeCount, 0));
+  CheckReadData(
+      policy, "punky", 2,
+      base::BindOnce(&CountingPolicyTest::Arguments_CheckMergeCount, 1));
 
   policy->Close();
 }
@@ -877,24 +689,21 @@ TEST_F(CountingPolicyTest, StringTableCleaning) {
   // actions we generate.
   policy->set_retention_time(base::TimeDelta::FromDays(14));
 
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now());
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  mock_clock_.SetNow(base::Time::Now());
+  policy->SetClockForTesting(&mock_clock_);
 
   // Insert an action; this should create entries in both the string table (for
   // the extension and API name) and the URL table (for page_url).
   scoped_refptr<Action> action =
-      new Action("punky",
-                 mock_clock->Now() - base::TimeDelta::FromDays(7),
-                 Action::ACTION_API_CALL,
-                 "brewster");
+      new Action("punky", mock_clock_.Now() - base::TimeDelta::FromDays(7),
+                 Action::ACTION_API_CALL, "brewster");
   action->set_page_url(GURL("http://www.google.com/"));
   policy->ProcessAction(action);
 
   // Add an action which will not be expired, so that some strings will remain
   // in use.
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_API_CALL, "tabs.create");
+  action = new Action("punky", mock_clock_.Now(), Action::ACTION_API_CALL,
+                      "tabs.create");
   policy->ProcessAction(action);
 
   // There should now be three strings ("punky", "brewster", "tabs.create") and
@@ -904,7 +713,7 @@ TEST_F(CountingPolicyTest, StringTableCleaning) {
                             &CountingPolicyTest::CheckStringTableSizes,
                             3,
                             1);
-  WaitOnThread(BrowserThread::DB);
+  WaitOnActivityLogSequence();
 
   // Trigger a cleaning.  The oldest action is expired when we submit a
   // duplicate of the newer action.  After this, there should be two strings
@@ -917,7 +726,7 @@ TEST_F(CountingPolicyTest, StringTableCleaning) {
                             &CountingPolicyTest::CheckStringTableSizes,
                             2,
                             0);
-  WaitOnThread(BrowserThread::DB);
+  WaitOnActivityLogSequence();
 
   policy->Close();
 }
@@ -932,24 +741,20 @@ TEST_F(CountingPolicyTest, MoreMerging) {
 
   // Use a mock clock to ensure that events are not recorded on the wrong day
   // when the test is run close to local midnight.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
-                    base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
+                     base::TimeDelta::FromHours(12));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Create an action 2 days ago, then 1 day ago, then 2 days ago.  Make sure
   // that we end up with two merged records (one for each day), and each has
   // the appropriate timestamp.  These merges should happen in the database
   // since the date keeps changing.
-  base::Time time1 =
-      mock_clock->Now() - base::TimeDelta::FromDays(2) -
-      base::TimeDelta::FromMinutes(40);
-  base::Time time2 =
-      mock_clock->Now() - base::TimeDelta::FromDays(1) -
-      base::TimeDelta::FromMinutes(40);
-  base::Time time3 =
-      mock_clock->Now() - base::TimeDelta::FromDays(2) -
-      base::TimeDelta::FromMinutes(20);
+  base::Time time1 = mock_clock_.Now() - base::TimeDelta::FromDays(2) -
+                     base::TimeDelta::FromMinutes(40);
+  base::Time time2 = mock_clock_.Now() - base::TimeDelta::FromDays(1) -
+                     base::TimeDelta::FromMinutes(40);
+  base::Time time3 = mock_clock_.Now() - base::TimeDelta::FromDays(2) -
+                     base::TimeDelta::FromMinutes(20);
 
   scoped_refptr<Action> action =
       new Action("punky", time1, Action::ACTION_API_CALL, "brewster");
@@ -962,24 +767,20 @@ TEST_F(CountingPolicyTest, MoreMerging) {
   policy->ProcessAction(action);
 
   CheckReadData(
-      policy,
-      "punky",
-      2,
-      base::Bind(
-          &CountingPolicyTest::Arguments_CheckMergeCountAndTime, 2, time3));
+      policy, "punky", 2,
+      base::BindOnce(&CountingPolicyTest::Arguments_CheckMergeCountAndTime, 2,
+                     time3));
   CheckReadData(
-      policy,
-      "punky",
-      1,
-      base::Bind(
-          &CountingPolicyTest::Arguments_CheckMergeCountAndTime, 1, time2));
+      policy, "punky", 1,
+      base::BindOnce(&CountingPolicyTest::Arguments_CheckMergeCountAndTime, 1,
+                     time2));
 
   // Create three actions today, where the merges should happen in memory.
   // Again these are not chronological; timestamp time5 should win out since it
   // is the latest.
-  base::Time time4 = mock_clock->Now() - base::TimeDelta::FromMinutes(60);
-  base::Time time5 = mock_clock->Now() - base::TimeDelta::FromMinutes(20);
-  base::Time time6 = mock_clock->Now() - base::TimeDelta::FromMinutes(40);
+  base::Time time4 = mock_clock_.Now() - base::TimeDelta::FromMinutes(60);
+  base::Time time5 = mock_clock_.Now() - base::TimeDelta::FromMinutes(20);
+  base::Time time6 = mock_clock_.Now() - base::TimeDelta::FromMinutes(40);
 
   action = new Action("punky", time4, Action::ACTION_API_CALL, "brewster");
   policy->ProcessAction(action);
@@ -991,11 +792,9 @@ TEST_F(CountingPolicyTest, MoreMerging) {
   policy->ProcessAction(action);
 
   CheckReadData(
-      policy,
-      "punky",
-      0,
-      base::Bind(
-          &CountingPolicyTest::Arguments_CheckMergeCountAndTime, 3, time5));
+      policy, "punky", 0,
+      base::BindOnce(&CountingPolicyTest::Arguments_CheckMergeCountAndTime, 3,
+                     time5));
   policy->Close();
 }
 
@@ -1015,7 +814,7 @@ TEST_F(CountingPolicyTest, EarlyFlush) {
   }
 
   policy->ScheduleAndForget(policy, &CountingPolicyTest::CheckQueueSize);
-  WaitOnThread(BrowserThread::DB);
+  WaitOnActivityLogSequence();
 
   policy->Close();
 }
@@ -1034,17 +833,11 @@ TEST_F(CountingPolicyTest, CapReturns) {
   }
 
   policy->Flush();
-  WaitOnThread(BrowserThread::DB);
+  WaitOnActivityLogSequence();
 
   CheckReadFilteredData(
-      policy,
-      "punky",
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(
+      policy, "punky", Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions300));
   policy->Close();
 }
@@ -1055,24 +848,22 @@ TEST_F(CountingPolicyTest, RemoveAllURLs) {
 
   // Use a mock clock to ensure that events are not recorded on the wrong day
   // when the test is run close to local midnight.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                      base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Record some actions
   scoped_refptr<Action> action =
-      new Action("punky", mock_clock->Now(),
-                 Action::ACTION_DOM_ACCESS, "lets");
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   action->set_page_title("Google");
   action->set_arg_url(GURL("http://www.args-url.com"));
   policy->ProcessAction(action);
 
-  mock_clock->Advance(base::TimeDelta::FromSeconds(1));
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+  mock_clock_.Advance(base::TimeDelta::FromSeconds(1));
+  action =
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google2.com"));
   action->set_page_title("Google");
@@ -1084,11 +875,8 @@ TEST_F(CountingPolicyTest, RemoveAllURLs) {
   std::vector<GURL> no_url_restrictions;
   policy->RemoveURLs(no_url_restrictions);
 
-  CheckReadData(
-      policy,
-      "punky",
-      0,
-      base::Bind(&CountingPolicyTest::AllURLsRemoved));
+  CheckReadData(policy, "punky", 0,
+                base::BindOnce(&CountingPolicyTest::AllURLsRemoved));
   policy->Close();
 }
 
@@ -1098,15 +886,14 @@ TEST_F(CountingPolicyTest, RemoveSpecificURLs) {
 
   // Use a mock clock to ensure that events are not recorded on the wrong day
   // when the test is run close to local midnight.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                      base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Record some actions
   // This should have the page url and args url cleared.
-  scoped_refptr<Action> action = new Action("punky", mock_clock->Now(),
-                                            Action::ACTION_DOM_ACCESS, "lets");
+  scoped_refptr<Action> action =
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google1.com"));
   action->set_page_title("Google");
@@ -1114,9 +901,9 @@ TEST_F(CountingPolicyTest, RemoveSpecificURLs) {
   policy->ProcessAction(action);
 
   // This should have the page url cleared but not args url.
-  mock_clock->Advance(base::TimeDelta::FromSeconds(1));
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+  mock_clock_.Advance(base::TimeDelta::FromSeconds(1));
+  action =
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google1.com"));
   action->set_page_title("Google");
@@ -1125,18 +912,18 @@ TEST_F(CountingPolicyTest, RemoveSpecificURLs) {
 
   // This should have the page url cleared. The args url is deliberately not
   // set to make sure this doesn't cause any issues.
-  mock_clock->Advance(base::TimeDelta::FromSeconds(1));
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+  mock_clock_.Advance(base::TimeDelta::FromSeconds(1));
+  action =
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google2.com"));
   action->set_page_title("Google");
   policy->ProcessAction(action);
 
   // This should have the args url cleared but not the page url or page title.
-  mock_clock->Advance(base::TimeDelta::FromSeconds(1));
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+  mock_clock_.Advance(base::TimeDelta::FromSeconds(1));
+  action =
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   action->set_page_title("Google");
@@ -1144,9 +931,9 @@ TEST_F(CountingPolicyTest, RemoveSpecificURLs) {
   policy->ProcessAction(action);
 
   // This should have neither cleared.
-  mock_clock->Advance(base::TimeDelta::FromSeconds(1));
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+  mock_clock_.Advance(base::TimeDelta::FromSeconds(1));
+  action =
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   action->set_page_title("Google");
@@ -1161,11 +948,8 @@ TEST_F(CountingPolicyTest, RemoveSpecificURLs) {
   urls.push_back(GURL("http://www.url_not_in_db.com"));
   policy->RemoveURLs(urls);
 
-  CheckReadData(
-      policy,
-      "punky",
-      0,
-      base::Bind(&CountingPolicyTest::SomeURLsRemoved));
+  CheckReadData(policy, "punky", 0,
+                base::BindOnce(&CountingPolicyTest::SomeURLsRemoved));
   policy->Close();
 }
 
@@ -1175,16 +959,14 @@ TEST_F(CountingPolicyTest, RemoveExtensionData) {
 
   // Use a mock clock to ensure that events are not recorded on the wrong day
   // when the test is run close to local midnight.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                      base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Record some actions
-  scoped_refptr<Action> action = new Action("deleteextensiondata",
-                                            mock_clock->Now(),
-                                            Action::ACTION_DOM_ACCESS,
-                                            "lets");
+  scoped_refptr<Action> action =
+      new Action("deleteextensiondata", mock_clock_.Now(),
+                 Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_title("Google");
   action->set_arg_url(GURL("http://www.google.com"));
@@ -1192,10 +974,8 @@ TEST_F(CountingPolicyTest, RemoveExtensionData) {
   policy->ProcessAction(action);
   policy->ProcessAction(action);
 
-  scoped_refptr<Action> action2 = new Action("dontdelete",
-                                             mock_clock->Now(),
-                                             Action::ACTION_DOM_ACCESS,
-                                             "lets");
+  scoped_refptr<Action> action2 = new Action("dontdelete", mock_clock_.Now(),
+                                             Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_title("Google");
   action->set_arg_url(GURL("http://www.google.com"));
@@ -1205,25 +985,13 @@ TEST_F(CountingPolicyTest, RemoveExtensionData) {
   policy->RemoveExtensionData("deleteextensiondata");
 
   CheckReadFilteredData(
-      policy,
-      "deleteextensiondata",
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(
+      policy, "deleteextensiondata", Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions0));
 
   CheckReadFilteredData(
-      policy,
-      "dontdelete",
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(
+      policy, "dontdelete", Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions1));
   policy->Close();
 }
@@ -1240,92 +1008,71 @@ TEST_F(CountingPolicyTest, DeleteDatabase) {
   // to the policy, but we still keep a pointer locally.  The policy will take
   // care of destruction; this is safe since the policy outlives all our
   // accesses to the mock clock.
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                      base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Record some actions
   scoped_refptr<Action> action =
-      new Action("punky",
-                 mock_clock->Now() - base::TimeDelta::FromMinutes(40),
-                 Action::ACTION_API_CALL,
-                 "brewster");
+      new Action("punky", mock_clock_.Now() - base::TimeDelta::FromMinutes(40),
+                 Action::ACTION_API_CALL, "brewster");
   action->mutable_args()->AppendString("woof");
   policy->ProcessAction(action);
 
-  action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromMinutes(30),
-                      Action::ACTION_API_CALL,
-                      "brewster");
+  action =
+      new Action("punky", mock_clock_.Now() - base::TimeDelta::FromMinutes(30),
+                 Action::ACTION_API_CALL, "brewster");
   action->mutable_args()->AppendString("meow");
   policy->ProcessAction(action);
 
-  action = new Action("punky",
-                      mock_clock->Now() - base::TimeDelta::FromMinutes(20),
-                      Action::ACTION_API_CALL,
-                      "extension.sendMessage");
+  action =
+      new Action("punky", mock_clock_.Now() - base::TimeDelta::FromMinutes(20),
+                 Action::ACTION_API_CALL, "extension.sendMessage");
   action->mutable_args()->AppendString("not");
   action->mutable_args()->AppendString("stripped");
   policy->ProcessAction(action);
 
   action =
-      new Action("punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
-  action = new Action(
-      "scoobydoo", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+  action = new Action("scoobydoo", mock_clock_.Now(), Action::ACTION_DOM_ACCESS,
+                      "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
   CheckReadData(
-      policy,
-      "punky",
-      0,
-      base::Bind(&CountingPolicyTest::Arguments_GetTodaysActions));
+      policy, "punky", 0,
+      base::BindOnce(&CountingPolicyTest::Arguments_GetTodaysActions));
 
   policy->DeleteDatabase();
 
   CheckReadFilteredData(
-      policy,
-      "",
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(
+      policy, "", Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions0));
 
   // The following code tests that the caches of url and string tables were
   // cleared by the deletion above.
   // https://code.google.com/p/chromium/issues/detail?id=341674.
   action =
-    new Action("punky", mock_clock->Now(), Action::ACTION_DOM_ACCESS, "lets");
+      new Action("punky", mock_clock_.Now(), Action::ACTION_DOM_ACCESS, "lets");
   action->mutable_args()->AppendString("vamoose");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
   CheckReadData(
-      policy,
-      "",
-      -1,
-      base::Bind(&CountingPolicyTest::Arguments_GetSinglesAction));
+      policy, "", -1,
+      base::BindOnce(&CountingPolicyTest::Arguments_GetSinglesAction));
 
   policy->DeleteDatabase();
 
   CheckReadFilteredData(
-      policy,
-      "",
-      Action::ACTION_ANY,
-      "",
-      "",
-      "",
-      -1,
-      base::Bind(
+      policy, "", Action::ACTION_ANY, "", "", "", -1,
+      base::BindOnce(
           &CountingPolicyTest::RetrieveActions_FetchFilteredActions0));
 
   policy->Close();
@@ -1336,20 +1083,19 @@ TEST_F(CountingPolicyTest, DeleteDatabase) {
 TEST_F(CountingPolicyTest, DuplicateRows) {
   CountingPolicy* policy = new CountingPolicy(profile_.get());
   policy->Init();
-  base::SimpleTestClock* mock_clock = new base::SimpleTestClock();
-  mock_clock->SetNow(base::Time::Now().LocalMidnight() +
+  mock_clock_.SetNow(base::Time::Now().LocalMidnight() +
                      base::TimeDelta::FromHours(12));
-  policy->SetClockForTesting(std::unique_ptr<base::Clock>(mock_clock));
+  policy->SetClockForTesting(&mock_clock_);
 
   // Record two actions with distinct URLs.
   scoped_refptr<Action> action;
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_API_CALL, "brewster");
+  action = new Action("punky", mock_clock_.Now(), Action::ACTION_API_CALL,
+                      "brewster");
   action->set_page_url(GURL("http://www.google.com"));
   policy->ProcessAction(action);
 
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_API_CALL, "brewster");
+  action = new Action("punky", mock_clock_.Now(), Action::ACTION_API_CALL,
+                      "brewster");
   action->set_page_url(GURL("http://www.google.co.uk"));
   policy->ProcessAction(action);
 
@@ -1360,15 +1106,12 @@ TEST_F(CountingPolicyTest, DuplicateRows) {
 
   // Record one more action, with no URL.  This should increment the count on
   // one, and exactly one, of the existing rows.
-  action = new Action(
-      "punky", mock_clock->Now(), Action::ACTION_API_CALL, "brewster");
+  action = new Action("punky", mock_clock_.Now(), Action::ACTION_API_CALL,
+                      "brewster");
   policy->ProcessAction(action);
 
-  CheckReadData(
-      policy,
-      "punky",
-      0,
-      base::Bind(&CountingPolicyTest::CheckDuplicates));
+  CheckReadData(policy, "punky", 0,
+                base::BindOnce(&CountingPolicyTest::CheckDuplicates));
   policy->Close();
 }
 
@@ -1378,41 +1121,41 @@ TEST_F(CountingPolicyTest, RemoveActions) {
 
   std::vector<int64_t> action_ids;
 
-  CheckRemoveActions(
-      policy, action_ids, base::Bind(&CountingPolicyTest::NoActionsDeleted));
+  CheckRemoveActions(policy, action_ids,
+                     base::BindOnce(&CountingPolicyTest::NoActionsDeleted));
 
   action_ids.push_back(-1);
   action_ids.push_back(-10);
   action_ids.push_back(0);
   action_ids.push_back(5);
   action_ids.push_back(10);
-  CheckRemoveActions(
-      policy, action_ids, base::Bind(&CountingPolicyTest::NoActionsDeleted));
+  CheckRemoveActions(policy, action_ids,
+                     base::BindOnce(&CountingPolicyTest::NoActionsDeleted));
   action_ids.clear();
 
   for (int i = 0; i < 50; i++) {
     action_ids.push_back(i + 3);
   }
-  CheckRemoveActions(
-      policy, action_ids, base::Bind(&CountingPolicyTest::NoActionsDeleted));
+  CheckRemoveActions(policy, action_ids,
+                     base::BindOnce(&CountingPolicyTest::NoActionsDeleted));
   action_ids.clear();
 
   // CheckRemoveActions pushes two actions to the Activity Log database with IDs
   // 1 and 2.
   action_ids.push_back(1);
   action_ids.push_back(2);
-  CheckRemoveActions(
-      policy, action_ids, base::Bind(&CountingPolicyTest::AllActionsDeleted));
+  CheckRemoveActions(policy, action_ids,
+                     base::BindOnce(&CountingPolicyTest::AllActionsDeleted));
   action_ids.clear();
 
   action_ids.push_back(1);
-  CheckRemoveActions(
-      policy, action_ids, base::Bind(&CountingPolicyTest::Action1Deleted));
+  CheckRemoveActions(policy, action_ids,
+                     base::BindOnce(&CountingPolicyTest::Action1Deleted));
   action_ids.clear();
 
   action_ids.push_back(2);
-  CheckRemoveActions(
-      policy, action_ids, base::Bind(&CountingPolicyTest::Action2Deleted));
+  CheckRemoveActions(policy, action_ids,
+                     base::BindOnce(&CountingPolicyTest::Action2Deleted));
   action_ids.clear();
 
   policy->Close();

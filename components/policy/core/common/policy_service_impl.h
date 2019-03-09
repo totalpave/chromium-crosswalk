@@ -6,6 +6,7 @@
 #define COMPONENTS_POLICY_CORE_COMMON_POLICY_SERVICE_IMPL_H_
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -28,14 +29,11 @@ class POLICY_EXPORT PolicyServiceImpl
     : public PolicyService,
       public ConfigurationPolicyProvider::Observer {
  public:
-  typedef std::vector<ConfigurationPolicyProvider*> Providers;
+  using Providers = std::vector<ConfigurationPolicyProvider*>;
 
-  // The PolicyServiceImpl will merge policies from |providers|. |providers|
-  // must be sorted in decreasing order of priority; the first provider will
-  // have the highest priority. The PolicyServiceImpl does not take ownership of
-  // the providers, and they must outlive the PolicyServiceImpl.
-  explicit PolicyServiceImpl(const Providers& providers);
-
+  // Creates a new PolicyServiceImpl with the list of
+  // ConfigurationPolicyProviders, in order of decreasing priority.
+  explicit PolicyServiceImpl(Providers providers);
   ~PolicyServiceImpl() override;
 
   // PolicyService overrides:
@@ -48,8 +46,8 @@ class POLICY_EXPORT PolicyServiceImpl
   void RefreshPolicies(const base::Closure& callback) override;
 
  private:
-  typedef base::ObserverList<PolicyService::Observer, true> Observers;
-  typedef std::map<PolicyDomain, Observers*> ObserverMap;
+  using Observers =
+      base::ObserverList<PolicyService::Observer, true>::Unchecked;
 
   // ConfigurationPolicyProvider::Observer overrides:
   void OnUpdatePolicy(ConfigurationPolicyProvider* provider) override;
@@ -71,14 +69,14 @@ class POLICY_EXPORT PolicyServiceImpl
   // Invokes all the refresh callbacks if there are no more refreshes pending.
   void CheckRefreshComplete();
 
-  // The providers passed in the constructor, in order of decreasing priority.
+  // The providers, in order of decreasing priority.
   Providers providers_;
 
   // Maps each policy namespace to its current policies.
   PolicyBundle policy_bundle_;
 
   // Maps each policy domain to its observer list.
-  ObserverMap observers_;
+  std::map<PolicyDomain, std::unique_ptr<Observers>> observers_;
 
   // True if all the providers are initialized for the indexed policy domain.
   bool initialization_complete_[POLICY_DOMAIN_SIZE];

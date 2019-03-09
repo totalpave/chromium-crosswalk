@@ -21,6 +21,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -43,9 +44,9 @@ TEST_F(BrowserCommandsTest, TabNavigationAccelerators) {
   AddTab(browser(), about_blank);
 
   // Select the second tab.
-  browser()->tab_strip_model()->ActivateTabAt(1, false);
+  browser()->tab_strip_model()->ActivateTabAt(1);
 
-  CommandUpdater* updater = browser()->command_controller()->command_updater();
+  CommandUpdater* updater = browser()->command_controller();
 
   // Navigate to the first tab using an accelerator.
   updater->ExecuteCommand(IDC_SELECT_TAB_0);
@@ -117,11 +118,8 @@ TEST_F(BrowserCommandsTest, ViewSource) {
       content::RenderFrameHostTester::For(
           browser()->tab_strip_model()->GetWebContentsAt(0)->GetMainFrame());
   content::RenderFrameHost* subframe = rfh_tester->AppendChild("subframe");
-  content::RenderFrameHostTester* subframe_tester =
-      content::RenderFrameHostTester::For(subframe);
-  subframe_tester->SimulateNavigationStart(GURL(url1_subframe));
-  subframe_tester->SimulateNavigationCommit(GURL(url1_subframe));
-  subframe_tester->SimulateNavigationStop();
+  content::NavigationSimulator::NavigateAndCommitFromDocument(
+      GURL(url1_subframe), subframe);
 
   // Now start a pending navigation that hasn't committed.
   content::NavigationController& orig_controller =
@@ -158,14 +156,15 @@ TEST_F(BrowserCommandsTest, BookmarkCurrentPage) {
   // We use profile() here, since it's a TestingProfile.
   profile()->CreateBookmarkModel(true);
 
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(profile());
+  BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile());
   bookmarks::test::WaitForBookmarkModelToLoad(model);
 
   // Navigate to a url.
   GURL url1("http://foo/1");
   AddTab(browser(), url1);
-  browser()->OpenURL(OpenURLParams(
-      url1, Referrer(), CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false));
+  browser()->OpenURL(OpenURLParams(url1, Referrer(),
+                                   WindowOpenDisposition::CURRENT_TAB,
+                                   ui::PAGE_TRANSITION_TYPED, false));
 
   chrome::BookmarkCurrentPageAllowingExtensionOverrides(browser());
 
@@ -184,7 +183,7 @@ TEST_F(BrowserCommandsTest, BackForwardInNewTab) {
   NavigateAndCommitActiveTab(url2);
 
   // Go back in a new background tab.
-  chrome::GoBack(browser(), NEW_BACKGROUND_TAB);
+  chrome::GoBack(browser(), WindowOpenDisposition::NEW_BACKGROUND_TAB);
   EXPECT_EQ(0, browser()->tab_strip_model()->active_index());
   ASSERT_EQ(2, browser()->tab_strip_model()->count());
 
@@ -203,14 +202,15 @@ TEST_F(BrowserCommandsTest, BackForwardInNewTab) {
   EXPECT_TRUE(first->GetController().CanGoForward());
 
   // Select the second tab and make it go forward in a new background tab.
-  browser()->tab_strip_model()->ActivateTabAt(1, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      1, {TabStripModel::GestureType::kOther});
   // TODO(brettw) bug 11055: It should not be necessary to commit the load here,
   // but because of this bug, it will assert later if we don't. When the bug is
   // fixed, one of the three commits here related to this bug should be removed
   // (to test both codepaths).
   CommitPendingLoad(&first->GetController());
   EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
-  chrome::GoForward(browser(), NEW_BACKGROUND_TAB);
+  chrome::GoForward(browser(), WindowOpenDisposition::NEW_BACKGROUND_TAB);
 
   // The previous tab should be unchanged and still in the foreground.
   EXPECT_EQ(url1, first->GetLastCommittedURL());
@@ -229,10 +229,11 @@ TEST_F(BrowserCommandsTest, BackForwardInNewTab) {
 
   // Now do back in a new foreground tab. Don't bother re-checking every sngle
   // thing above, just validate that it's opening properly.
-  browser()->tab_strip_model()->ActivateTabAt(2, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      2, {TabStripModel::GestureType::kOther});
   // TODO(brettw) bug 11055: see the comment above about why we need this.
   CommitPendingLoad(&second->GetController());
-  chrome::GoBack(browser(), NEW_FOREGROUND_TAB);
+  chrome::GoBack(browser(), WindowOpenDisposition::NEW_FOREGROUND_TAB);
   ASSERT_EQ(3, browser()->tab_strip_model()->active_index());
   ASSERT_EQ(url1,
             browser()->tab_strip_model()->GetActiveWebContents()->
@@ -242,7 +243,7 @@ TEST_F(BrowserCommandsTest, BackForwardInNewTab) {
   // TODO(brettw) bug 11055: see the comment above about why we need this.
   CommitPendingLoad(&
       browser()->tab_strip_model()->GetActiveWebContents()->GetController());
-  chrome::GoForward(browser(), NEW_FOREGROUND_TAB);
+  chrome::GoForward(browser(), WindowOpenDisposition::NEW_FOREGROUND_TAB);
   ASSERT_EQ(4, browser()->tab_strip_model()->active_index());
   ASSERT_EQ(url2,
             browser()->tab_strip_model()->GetActiveWebContents()->
@@ -352,7 +353,7 @@ TEST_F(BrowserCommandsTest, OnZoomChangedForActiveTab) {
   // Add Second tab.
   WebContents* second_tab = tab_strip_model->GetWebContentsAt(1);
 
-  tab_strip_model->ActivateTabAt(1, true);
+  tab_strip_model->ActivateTabAt(1, {TabStripModel::GestureType::kOther});
   EXPECT_TRUE(tab_strip_model->IsTabSelected(1));
   zoom::PageZoom::Zoom(second_tab, content::PAGE_ZOOM_OUT);
 

@@ -15,8 +15,8 @@
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
-#include "ipc/attachment_broker_privileged.h"
 #include "remoting/base/auto_thread_task_runner.h"
+#include "remoting/base/constants.h"
 #include "remoting/host/branding.h"
 #include "remoting/host/chromoting_messages.h"
 #include "remoting/host/config_file_watcher.h"
@@ -24,6 +24,7 @@
 #include "remoting/host/host_event_logger.h"
 #include "remoting/host/host_exit_codes.h"
 #include "remoting/host/host_status_observer.h"
+#include "remoting/host/process_stats_sender.h"
 #include "remoting/host/screen_resolution.h"
 #include "remoting/protocol/transport.h"
 
@@ -45,10 +46,8 @@ std::ostream& operator<<(std::ostream& os, const ScreenResolution& resolution) {
 DaemonProcess::~DaemonProcess() {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  host_event_logger_.reset();
-  weak_factory_.InvalidateWeakPtrs();
-
-  config_watcher_.reset();
+  host_event_logger_ = nullptr;
+  config_watcher_ = nullptr;
   DeleteAllDesktopSessions();
 }
 
@@ -66,18 +65,6 @@ void DaemonProcess::OnConfigWatcherError() {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
   Stop();
-}
-
-void DaemonProcess::AddStatusObserver(HostStatusObserver* observer) {
-  DCHECK(caller_task_runner()->BelongsToCurrentThread());
-
-  status_observers_.AddObserver(observer);
-}
-
-void DaemonProcess::RemoveStatusObserver(HostStatusObserver* observer) {
-  DCHECK(caller_task_runner()->BelongsToCurrentThread());
-
-  status_observers_.RemoveObserver(observer);
 }
 
 void DaemonProcess::OnChannelConnected(int32_t peer_pid) {
@@ -121,6 +108,10 @@ bool DaemonProcess::OnMessageReceived(const IPC::Message& message) {
                         OnHostStarted)
     IPC_MESSAGE_HANDLER(ChromotingNetworkDaemonMsg_HostShutdown,
                         OnHostShutdown)
+    IPC_MESSAGE_HANDLER(ChromotingNetworkToAnyMsg_StartProcessStatsReport,
+                        StartProcessStatsReport)
+    IPC_MESSAGE_HANDLER(ChromotingNetworkToAnyMsg_StopProcessStatsReport,
+                        StopProcessStatsReport)
     IPC_MESSAGE_UNHANDLED(handled = false)
   IPC_END_MESSAGE_MAP()
 
@@ -138,6 +129,11 @@ void DaemonProcess::OnPermanentError(int exit_code) {
          exit_code <= kMaxPermanentErrorExitCode);
 
   Stop();
+}
+
+void DaemonProcess::OnWorkerProcessStopped() {
+  process_stats_request_count_ = 0;
+  stats_sender_.reset();
 }
 
 void DaemonProcess::CloseDesktopSession(int terminal_id) {
@@ -181,14 +177,12 @@ DaemonProcess::DaemonProcess(
       io_task_runner_(io_task_runner),
       next_terminal_id_(0),
       stopped_callback_(stopped_callback),
-      weak_factory_(this) {
+      status_monitor_(new HostStatusMonitor()),
+      current_process_stats_("DaemonProcess") {
   DCHECK(caller_task_runner->BelongsToCurrentThread());
-
-  // TODO(sergeyu): On OSX AttachmentBroker depends on base::PortProvider
-  // implementation. Add it here when this code is used on OSX.
-#if !defined(OS_MACOSX)
-  IPC::AttachmentBrokerPrivileged::CreateBrokerIfNeeded();
-#endif  // !defined(OS_MACOSX)
+  // TODO(sammc): On OSX, mojo::core::SetMachPortProvider() should be called
+  // with a base::PortProvider implementation. Add it here when this code is
+  // used on OSX.
 }
 
 void DaemonProcess::CreateDesktopSession(int terminal_id,
@@ -258,8 +252,7 @@ void DaemonProcess::SetScreenResolution(int terminal_id,
   (*i)->SetScreenResolution(resolution);
 }
 
-void DaemonProcess::CrashNetworkProcess(
-    const tracked_objects::Location& location) {
+void DaemonProcess::CrashNetworkProcess(const base::Location& location) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
   DoCrashNetworkProcess(location);
@@ -282,7 +275,7 @@ void DaemonProcess::Initialize() {
       caller_task_runner(), io_task_runner(), config_path));
   config_watcher_->Watch(this);
   host_event_logger_ =
-      HostEventLogger::Create(weak_factory_.GetWeakPtr(), kApplicationName);
+      HostEventLogger::Create(status_monitor_, kApplicationName);
 
   // Launch the process.
   LaunchNetworkProcess();
@@ -290,6 +283,8 @@ void DaemonProcess::Initialize() {
 
 void DaemonProcess::Stop() {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
+
+  OnWorkerProcessStopped();
 
   if (!stopped_callback_.is_null()) {
     base::ResetAndReturn(&stopped_callback_).Run();
@@ -303,28 +298,29 @@ bool DaemonProcess::WasTerminalIdAllocated(int terminal_id) {
 void DaemonProcess::OnAccessDenied(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  FOR_EACH_OBSERVER(HostStatusObserver, status_observers_, OnAccessDenied(jid));
+  for (auto& observer : status_observers_)
+    observer.OnAccessDenied(jid);
 }
 
 void DaemonProcess::OnClientAuthenticated(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  FOR_EACH_OBSERVER(HostStatusObserver, status_observers_,
-                    OnClientAuthenticated(jid));
+  for (auto& observer : status_observers_)
+    observer.OnClientAuthenticated(jid);
 }
 
 void DaemonProcess::OnClientConnected(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  FOR_EACH_OBSERVER(HostStatusObserver, status_observers_,
-                    OnClientConnected(jid));
+  for (auto& observer : status_observers_)
+    observer.OnClientConnected(jid);
 }
 
 void DaemonProcess::OnClientDisconnected(const std::string& jid) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  FOR_EACH_OBSERVER(HostStatusObserver, status_observers_,
-                    OnClientDisconnected(jid));
+  for (auto& observer : status_observers_)
+    observer.OnClientDisconnected(jid);
 }
 
 void DaemonProcess::OnClientRouteChange(const std::string& jid,
@@ -334,22 +330,31 @@ void DaemonProcess::OnClientRouteChange(const std::string& jid,
 
   protocol::TransportRoute parsed_route;
   parsed_route.type = route.type;
-  parsed_route.remote_address = route.remote_address;
-  parsed_route.local_address = route.local_address;
-  FOR_EACH_OBSERVER(HostStatusObserver, status_observers_,
-                    OnClientRouteChange(jid, channel_name, parsed_route));
+
+  net::IPAddress remote_ip(route.remote_ip.data(), route.remote_ip.size());
+  CHECK(remote_ip.empty() || remote_ip.IsValid());
+  parsed_route.remote_address = net::IPEndPoint(remote_ip, route.remote_port);
+
+  net::IPAddress local_ip(route.local_ip.data(), route.local_ip.size());
+  CHECK(local_ip.empty() || local_ip.IsValid());
+  parsed_route.local_address = net::IPEndPoint(local_ip, route.local_port);
+
+  for (auto& observer : status_observers_)
+    observer.OnClientRouteChange(jid, channel_name, parsed_route);
 }
 
 void DaemonProcess::OnHostStarted(const std::string& xmpp_login) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  FOR_EACH_OBSERVER(HostStatusObserver, status_observers_, OnStart(xmpp_login));
+  for (auto& observer : status_observers_)
+    observer.OnStart(xmpp_login);
 }
 
 void DaemonProcess::OnHostShutdown() {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  FOR_EACH_OBSERVER(HostStatusObserver, status_observers_, OnShutdown());
+  for (auto& observer : status_observers_)
+    observer.OnShutdown();
 }
 
 void DaemonProcess::DeleteAllDesktopSessions() {
@@ -357,6 +362,39 @@ void DaemonProcess::DeleteAllDesktopSessions() {
     delete desktop_sessions_.front();
     desktop_sessions_.pop_front();
   }
+}
+
+void DaemonProcess::StartProcessStatsReport(base::TimeDelta interval) {
+  DCHECK(caller_task_runner()->BelongsToCurrentThread());
+  if (interval <= base::TimeDelta::FromSeconds(0)) {
+    interval = kDefaultProcessStatsInterval;
+  }
+
+  process_stats_request_count_++;
+  DCHECK_GT(process_stats_request_count_, 0);
+  if (process_stats_request_count_ == 1 ||
+      stats_sender_->interval() > interval) {
+    DCHECK_EQ(process_stats_request_count_ == 1, !stats_sender_);
+    stats_sender_.reset(new ProcessStatsSender(
+        this,
+        interval,
+        { &current_process_stats_ }));
+  }
+}
+
+void DaemonProcess::StopProcessStatsReport() {
+  DCHECK(caller_task_runner()->BelongsToCurrentThread());
+  process_stats_request_count_--;
+  DCHECK_GE(process_stats_request_count_, 0);
+  if (process_stats_request_count_ == 0) {
+    DCHECK(stats_sender_);
+    stats_sender_.reset();
+  }
+}
+
+void DaemonProcess::OnProcessStats(
+    const protocol::AggregatedProcessResourceUsage& usage) {
+  SendToNetwork(new ChromotingAnyToNetworkMsg_ReportProcessStats(usage));
 }
 
 }  // namespace remoting

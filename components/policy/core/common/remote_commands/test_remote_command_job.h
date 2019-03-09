@@ -10,7 +10,7 @@
 #include "base/macros.h"
 #include "base/time/time.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace policy {
 
@@ -29,8 +29,8 @@ class TestRemoteCommandJob : public RemoteCommandJob {
   // RemoteCommandJob:
   bool ParseCommandPayload(const std::string& command_payload) override;
   bool IsExpired(base::TimeTicks now) override;
-  void RunImpl(const CallbackWithResult& succeed_callback,
-               const CallbackWithResult& failed_callback) override;
+  void RunImpl(CallbackWithResult succeed_callback,
+               CallbackWithResult failed_callback) override;
 
   std::string command_payload_;
 

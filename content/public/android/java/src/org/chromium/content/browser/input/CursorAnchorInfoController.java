@@ -7,18 +7,16 @@ package org.chromium.content.browser.input;
 import android.annotation.TargetApi;
 import android.graphics.Matrix;
 import android.os.Build;
+import android.support.annotation.Nullable;
 import android.view.View;
 import android.view.inputmethod.CursorAnchorInfo;
-import android.view.inputmethod.InputConnection;
 
 import org.chromium.base.VisibleForTesting;
-import org.chromium.base.annotations.SuppressFBWarnings;
-import org.chromium.content.browser.RenderCoordinates;
+import org.chromium.content_public.browser.InputMethodManagerWrapper;
 
 import java.util.Arrays;
 
 import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 
 /**
  * A state machine interface which receives Chromium internal events to determines when to call
@@ -103,8 +101,7 @@ final class CursorAnchorInfoController {
     }
 
     @VisibleForTesting
-    public void setInputMethodManagerWrapperForTest(
-            InputMethodManagerWrapper inputMethodManagerWrapper) {
+    public void setInputMethodManagerWrapper(InputMethodManagerWrapper inputMethodManagerWrapper) {
         mInputMethodManagerWrapper = inputMethodManagerWrapper;
     }
 
@@ -129,18 +126,24 @@ final class CursorAnchorInfoController {
     /**
      * Sets positional information of composing text as an array of character bounds.
      * @param compositionCharacterBounds Array of character bounds in local coordinates.
+     * @param view The attached view.
      */
-    public void setCompositionCharacterBounds(float[] compositionCharacterBounds) {
+    public void setCompositionCharacterBounds(float[] compositionCharacterBounds, View view) {
         if (!mIsEditable) return;
 
         if (!Arrays.equals(compositionCharacterBounds, mCompositionCharacterBounds)) {
             mLastCursorAnchorInfo = null;
             mCompositionCharacterBounds = compositionCharacterBounds;
+            if (mHasCoordinateInfo) {
+                updateCursorAnchorInfo(view);
+            }
         }
     }
 
     /**
      * Sets coordinates system parameters and selection marker information.
+     * @param scale device scale factor.
+     * @param contentOffsetYPix Y offset below the browser controls.
      * @param hasInsertionMarker {@code true} if the insertion marker exists.
      * @param isInsertionMarkerVisible {@code true} if the insertion insertion marker is visible.
      * @param insertionMarkerHorizontal X coordinate of the top of the first selection marker.
@@ -148,11 +151,9 @@ final class CursorAnchorInfoController {
      * @param insertionMarkerBottom Y coordinate of the bottom of the first selection marker.
      * @param view The attached view.
      */
-    @SuppressFBWarnings("FE_FLOATING_POINT_EQUALITY")
-    public void onUpdateFrameInfo(@Nonnull RenderCoordinates renderCoordinates,
-            boolean hasInsertionMarker, boolean isInsertionMarkerVisible,
-            float insertionMarkerHorizontal, float insertionMarkerTop,
-            float insertionMarkerBottom, @Nonnull View view) {
+    public void onUpdateFrameInfo(float scale, float contentOffsetYPix, boolean hasInsertionMarker,
+            boolean isInsertionMarkerVisible, float insertionMarkerHorizontal,
+            float insertionMarkerTop, float insertionMarkerBottom, @Nonnull View view) {
         if (!mIsEditable) return;
 
         // Reuse {@param #mViewOrigin} to avoid object creation, as this method is supposed to be
@@ -165,10 +166,8 @@ final class CursorAnchorInfoController {
         //
         // We need to prepare parameters that convert such values to physical pixels, in the
         // screen coordinate. Hence the following values are derived.
-        float scale = renderCoordinates.getDeviceScaleFactor();
         float translationX = mViewOrigin[0];
-        float translationY = mViewOrigin[1] + renderCoordinates.getContentOffsetYPix();
-
+        float translationY = mViewOrigin[1] + contentOffsetYPix;
         if (!mHasCoordinateInfo
                 || scale != mScale
                 || translationX != mTranslationX
@@ -198,14 +197,6 @@ final class CursorAnchorInfoController {
         }
     }
 
-    /**
-     * Resets the current state on update monitoring mode to the default (= do nothing.)
-     */
-    public void resetMonitoringState() {
-        mMonitorModeEnabled = false;
-        mHasPendingImmediateRequest = false;
-    }
-
     public void focusedNodeChanged(boolean isEditable) {
         mIsEditable = isEditable;
         mCompositionCharacterBounds = null;
@@ -213,11 +204,18 @@ final class CursorAnchorInfoController {
         mLastCursorAnchorInfo = null;
     }
 
-    public boolean onRequestCursorUpdates(int cursorUpdateMode, View view) {
+    public boolean onRequestCursorUpdates(boolean immediateRequest, boolean monitorRequest,
+            View view) {
         if (!mIsEditable) return false;
 
-        mMonitorModeEnabled = (cursorUpdateMode & InputConnection.CURSOR_UPDATE_MONITOR) != 0;
-        if ((cursorUpdateMode & InputConnection.CURSOR_UPDATE_IMMEDIATE) != 0) {
+        if (mMonitorModeEnabled && !monitorRequest) {
+            // Invalidate saved cursor anchor info if monitor request is cancelled since no longer
+            // new values will be arrived from renderer and immediate request may return too old
+            // position.
+            invalidateLastCursorAnchorInfo();
+        }
+        mMonitorModeEnabled = monitorRequest;
+        if (immediateRequest) {
             mHasPendingImmediateRequest = true;
             updateCursorAnchorInfo(view);
         }

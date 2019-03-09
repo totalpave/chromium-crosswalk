@@ -18,7 +18,7 @@
 #include "components/policy/core/common/policy_bundle.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_namespace.h"
-#include "policy/policy_constants.h"
+#include "components/policy/policy_constants.h"
 
 // This policy loader loads a managed app configuration from the NSUserDefaults.
 // For example code from Apple see:
@@ -97,11 +97,11 @@ PolicyLoaderIOS::PolicyLoaderIOS(
       weak_factory_(this) {}
 
 PolicyLoaderIOS::~PolicyLoaderIOS() {
-  DCHECK(task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(task_runner()->RunsTasksInCurrentSequence());
 }
 
 void PolicyLoaderIOS::InitOnBackgroundThread() {
-  DCHECK(task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(task_runner()->RunsTasksInCurrentSequence());
   base::Closure callback = base::Bind(&PolicyLoaderIOS::UserDefaultsChanged,
                                       weak_factory_.GetWeakPtr());
   notification_observer_.reset(

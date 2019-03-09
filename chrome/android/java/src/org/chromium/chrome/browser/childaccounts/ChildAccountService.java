@@ -5,22 +5,29 @@
 package org.chromium.chrome.browser.childaccounts;
 
 import android.accounts.Account;
-import android.content.Context;
+import android.app.Activity;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
-import org.chromium.sync.signin.AccountManagerHelper;
+import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.task.PostTask;
+import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.signin.ChildAccountStatus;
+import org.chromium.content_public.browser.UiThreadTaskTraits;
+import org.chromium.ui.base.WindowAndroid;
 
 /**
- * This class serves as a simple interface for querying the child account information.
- * It has two methods namely, checkHasChildAccount(...) which is asynchronous and queries the
- * system directly for the information and the synchronous isChildAccount() which asks the native
- * side assuming it has been set correctly already.
+ * This class serves as a simple interface for querying the child account information. It has a
+ * method for querying the child account information asynchronously from the system.
  *
- * The former method is used by ForcedSigninProcessor and FirstRunFlowSequencer to detect child
- * accounts since the native side is only activated on signing in.
- * Once signed in by the ForcedSigninProcessor, the ChildAccountInfoFetcher will notify the native
- * side and also takes responsibility for monitoring changes and taking a suitable action.
+ * This method is used by ForcedSigninProcessor and FirstRunFlowSequencer to detect child accounts
+ * since the native side is only activated on signing in. Once signed in by the
+ * ForcedSigninProcessor, the ChildAccountInfoFetcher will notify the native side and also takes
+ * responsibility for monitoring changes and taking a suitable action.
+ *
+ * The class also provides an interface through which a client can listen for child account status
+ * changes. When the SupervisedUserContentProvider forces sign-in it waits for a status change
+ * before querying the URL filters.
  */
 public class ChildAccountService {
     private ChildAccountService() {
@@ -30,42 +37,48 @@ public class ChildAccountService {
     /**
      * Checks for the presence of child accounts on the device.
      *
-     * @param callback A callback which will be called with the result.
+     * @param callback A callback which will be called with a @ChildAccountStatus.Status value.
      */
-    public static void checkHasChildAccount(Context context, final Callback<Boolean> callback) {
+    public static void checkChildAccountStatus(final Callback<Integer> callback) {
         ThreadUtils.assertOnUiThread();
-        if (!nativeIsChildAccountDetectionEnabled()) {
-            callback.onResult(false);
-            return;
-        }
-        final AccountManagerHelper helper = AccountManagerHelper.get(context);
-        helper.getGoogleAccounts(new Callback<Account[]>() {
-            @Override
-            public void onResult(Account[] accounts) {
-                if (accounts.length != 1) {
-                    callback.onResult(false);
-                } else {
-                    helper.checkChildAccount(accounts[0], callback);
-                }
+        final AccountManagerFacade accountManager = AccountManagerFacade.get();
+        accountManager.tryGetGoogleAccounts(accounts -> {
+            if (accounts.size() != 1) {
+                // Child accounts can't share a device.
+                callback.onResult(ChildAccountStatus.NOT_CHILD);
+            } else {
+                accountManager.checkChildAccountStatus(accounts.get(0), callback);
             }
         });
     }
 
     /**
-     * Returns the previously determined value of whether there is a child account on the device.
-     * Should only be called after the native library and profile have been loaded.
-     *
-     * @return The previously determined value of whether there is a child account on the device.
+     * Set a callback to be called the next time a child account status change is received
+     * @param callback the callback to be called when the status changes.
      */
-    public static boolean isChildAccount() {
-        return nativeIsChildAccount();
+    public static void listenForStatusChange(Callback<Boolean> callback) {
+        nativeListenForChildStatusReceived(callback);
     }
 
-    private static native boolean nativeIsChildAccount();
+    @CalledByNative
+    private static void reauthenticateChildAccount(
+            WindowAndroid windowAndroid, String accountName, final long nativeCallback) {
+        ThreadUtils.assertOnUiThread();
 
-    /**
-     * If this returns false, Chrome will assume there are no child accounts on the device,
-     * and no further checks will be made, which has the effect of a kill switch.
-     */
-    private static native boolean nativeIsChildAccountDetectionEnabled();
+        Activity activity = windowAndroid.getActivity().get();
+        if (activity == null) {
+            PostTask.postTask(UiThreadTaskTraits.DEFAULT,
+                    () -> nativeOnReauthenticationResult(nativeCallback, false));
+            return;
+        }
+
+        Account account = AccountManagerFacade.createAccountFromName(accountName);
+        AccountManagerFacade.get().updateCredentials(account, activity,
+                result -> nativeOnReauthenticationResult(nativeCallback, result));
+    }
+
+    private static native void nativeListenForChildStatusReceived(Callback<Boolean> callback);
+
+    private static native void nativeOnReauthenticationResult(
+            long callbackPtr, boolean reauthSuccessful);
 }

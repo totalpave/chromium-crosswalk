@@ -11,10 +11,12 @@
 #include <utility>
 
 #include "cc/animation/animation_timeline.h"
-#include "cc/quads/render_pass.h"
 #include "cc/test/fake_layer_tree_host.h"
+#include "cc/test/fake_layer_tree_host_client.h"
 #include "cc/test/test_task_graph_runner.h"
+#include "cc/trees/effect_node.h"
 #include "cc/trees/layer_tree_host_impl.h"
+#include "components/viz/common/quads/render_pass.h"
 
 #define EXPECT_SET_NEEDS_COMMIT(expect, code_to_test)                 \
   do {                                                                \
@@ -32,28 +34,45 @@
 
 namespace gfx { class Rect; }
 
+namespace viz {
+class QuadList;
+}
+
 namespace cc {
 class LayerImpl;
-class OutputSurface;
-class QuadList;
+class LayerTreeFrameSink;
 class RenderSurfaceImpl;
-class ResourceProvider;
+
+// Returns the RenderSurfaceImpl into which the given layer draws.
+RenderSurfaceImpl* GetRenderSurface(LayerImpl* layer_impl);
 
 class LayerTestCommon {
  public:
   static const char* quad_string;
 
-  static void VerifyQuadsExactlyCoverRect(const QuadList& quads,
+  static void VerifyQuadsExactlyCoverRect(const viz::QuadList& quads,
                                           const gfx::Rect& rect);
 
-  static void VerifyQuadsAreOccluded(const QuadList& quads,
+  static void VerifyQuadsAreOccluded(const viz::QuadList& quads,
                                      const gfx::Rect& occluded,
                                      size_t* partially_occluded_count);
+
+  static void SetupBrowserControlsAndScrollLayerWithVirtualViewport(
+      LayerTreeHostImpl* host_impl,
+      LayerTreeImpl* tree_impl,
+      float top_controls_height,
+      const gfx::Size& inner_viewport_size,
+      const gfx::Size& outer_viewport_size,
+      const gfx::Size& scroll_layer_size);
 
   class LayerImplTest {
    public:
     LayerImplTest();
+    explicit LayerImplTest(
+        std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink);
     explicit LayerImplTest(const LayerTreeSettings& settings);
+    LayerImplTest(const LayerTreeSettings& settings,
+                  std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink);
     ~LayerImplTest();
 
     template <typename T>
@@ -75,11 +94,11 @@ class LayerTestCommon {
     }
 
     template <typename T>
-    T* AddReplicaLayer(LayerImpl* origin) {
+    T* AddMaskLayer(LayerImpl* origin) {
       std::unique_ptr<T> layer =
           T::Create(host_->host_impl()->active_tree(), layer_impl_id_++);
       T* ptr = layer.get();
-      origin->test_properties()->SetReplicaLayer(std::move(layer));
+      origin->test_properties()->SetMaskLayer(std::move(layer));
       return ptr;
     }
 
@@ -96,6 +115,15 @@ class LayerTestCommon {
     T* AddChildToRoot(const A& a, const B& b) {
       std::unique_ptr<T> layer =
           T::Create(host_->host_impl()->active_tree(), layer_impl_id_++, a, b);
+      T* ptr = layer.get();
+      root_layer_for_testing()->test_properties()->AddChild(std::move(layer));
+      return ptr;
+    }
+
+    template <typename T, typename A, typename B, typename C>
+    T* AddChildToRoot(const A& a, const B& b, const C& c) {
+      std::unique_ptr<T> layer = T::Create(host_->host_impl()->active_tree(),
+                                           layer_impl_id_++, a, b, c);
       T* ptr = layer.get();
       root_layer_for_testing()->test_properties()->AddChild(std::move(layer));
       return ptr;
@@ -128,21 +156,40 @@ class LayerTestCommon {
       return ptr;
     }
 
+    template <typename T,
+              typename A,
+              typename B,
+              typename C,
+              typename D,
+              typename E>
+    T* AddChild(LayerImpl* parent,
+                const A& a,
+                const B& b,
+                const C& c,
+                const D& d,
+                const E& e) {
+      std::unique_ptr<T> layer = T::Create(host_->host_impl()->active_tree(),
+                                           layer_impl_id_++, a, b, c, d, e);
+      T* ptr = layer.get();
+      parent->test_properties()->AddChild(std::move(layer));
+      return ptr;
+    }
+
     void CalcDrawProps(const gfx::Size& viewport_size);
     void AppendQuadsWithOcclusion(LayerImpl* layer_impl,
                                   const gfx::Rect& occluded);
     void AppendQuadsForPassWithOcclusion(LayerImpl* layer_impl,
-                                         RenderPass* given_render_pass,
+                                         viz::RenderPass* given_render_pass,
                                          const gfx::Rect& occluded);
     void AppendSurfaceQuadsWithOcclusion(RenderSurfaceImpl* surface_impl,
                                          const gfx::Rect& occluded);
 
     void RequestCopyOfOutput();
 
-    OutputSurface* output_surface() const {
-      return host_->host_impl()->output_surface();
+    LayerTreeFrameSink* layer_tree_frame_sink() const {
+      return host_->host_impl()->layer_tree_frame_sink();
     }
-    ResourceProvider* resource_provider() const {
+    viz::ClientResourceProvider* resource_provider() const {
       return host_->host_impl()->resource_provider();
     }
     LayerImpl* root_layer_for_testing() const {
@@ -153,10 +200,13 @@ class LayerTestCommon {
     TaskRunnerProvider* task_runner_provider() const {
       return host_->host_impl()->task_runner_provider();
     }
-    const QuadList& quad_list() const { return render_pass_->quad_list; }
+    const viz::QuadList& quad_list() const { return render_pass_->quad_list; }
     scoped_refptr<AnimationTimeline> timeline() { return timeline_; }
     scoped_refptr<AnimationTimeline> timeline_impl() { return timeline_impl_; }
 
+    void BuildPropertyTreesForTesting() {
+      host_impl()->active_tree()->BuildPropertyTreesForTesting();
+    }
     void SetElementIdsForTesting() {
       host_impl()->active_tree()->SetElementIdsForTesting();
     }
@@ -164,9 +214,10 @@ class LayerTestCommon {
    private:
     FakeLayerTreeHostClient client_;
     TestTaskGraphRunner task_graph_runner_;
-    std::unique_ptr<OutputSurface> output_surface_;
+    std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink_;
+    std::unique_ptr<AnimationHost> animation_host_;
     std::unique_ptr<FakeLayerTreeHost> host_;
-    std::unique_ptr<RenderPass> render_pass_;
+    std::unique_ptr<viz::RenderPass> render_pass_;
     scoped_refptr<AnimationTimeline> timeline_;
     scoped_refptr<AnimationTimeline> timeline_impl_;
     int layer_impl_id_;

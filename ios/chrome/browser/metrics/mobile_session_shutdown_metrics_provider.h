@@ -23,6 +23,7 @@ enum MobileSessionShutdownType {
   SHUTDOWN_IN_FOREGROUND_NO_CRASH_LOG_WITH_MEMORY_WARNING,
   SHUTDOWN_IN_FOREGROUND_WITH_CRASH_LOG_WITH_MEMORY_WARNING,
   FIRST_LAUNCH_AFTER_UPGRADE,
+  SHUTDOWN_IN_FOREGROUND_WITH_MAIN_THREAD_FROZEN,
   MOBILE_SESSION_SHUTDOWN_TYPE_COUNT,
 };
 
@@ -33,13 +34,13 @@ class MobileSessionShutdownMetricsProvider : public metrics::MetricsProvider {
   ~MobileSessionShutdownMetricsProvider() override;
 
   // metrics::MetricsProvider
-  bool HasInitialStabilityMetrics() override;
-  void ProvideInitialStabilityMetrics(
-      metrics::SystemProfileProto* system_profile_proto) override;
+  bool HasPreviousSessionData() override;
+  void ProvidePreviousSessionData(
+      metrics::ChromeUserMetricsExtension* uma_proto) override;
 
  protected:
   // Provides information on the last session environment, used to decide what
-  // stability metrics to provide in ProvideInitialStabilityMetrics.
+  // stability metrics to provide in ProvidePreviousSessionData.
   // These methods are virtual to be overridden in the tests.
   // The default implementations return the real values.
 
@@ -49,12 +50,11 @@ class MobileSessionShutdownMetricsProvider : public metrics::MetricsProvider {
   // Whether there are crash reports to upload.
   virtual bool HasCrashLogs();
 
-  // Whether there were crash reports that have been uploaded in background
-  // since the last full start.
-  virtual bool HasUploadedCrashReportsInBackground();
-
   // Whether there was a memory warning shortly before last shutdown.
   virtual bool ReceivedMemoryWarningBeforeLastShutdown();
+
+  // Whether the main thread was frozen on previous session termination.
+  virtual bool LastSessionEndedFrozen();
 
  private:
   metrics::MetricsService* metrics_service_;

@@ -1,8 +1,7 @@
-mattm@chromium.org
 nparker@chromium.org
+vakh@chromium.org
 
-# For Pver3 storage-related changes:
-shess@chromium.org
+# For interstitial-related changes:
+per-file *safe_browsing_blocking_page*=felt@chromium.org
 
-# For download-protection- and reporting-related changes:
-jialiul@chromium.org
+# COMPONENT: Services>Safebrowsing

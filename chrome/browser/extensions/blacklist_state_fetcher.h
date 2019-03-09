@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_BLACKLIST_STATE_FETCHER_H_
 #define CHROME_BROWSER_EXTENSIONS_BLACKLIST_STATE_FETCHER_H_
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <string>
@@ -12,54 +13,54 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/safe_browsing/protocol_manager_helper.h"
+#include "components/safe_browsing/db/util.h"
 #include "extensions/browser/blacklist_state.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_fetcher_delegate.h"
 
-namespace net {
-class URLRequestContextGetter;
-}
+namespace network {
+class SharedURLLoaderFactory;
+class SimpleURLLoader;
+}  // namespace network
 
 namespace extensions {
+class TestBlacklistStateFetcher;
 
-class BlacklistStateFetcher : public net::URLFetcherDelegate {
+class BlacklistStateFetcher {
  public:
   typedef base::Callback<void(BlacklistState)> RequestCallback;
 
   BlacklistStateFetcher();
 
-  ~BlacklistStateFetcher() override;
+  virtual ~BlacklistStateFetcher();
 
   virtual void Request(const std::string& id, const RequestCallback& callback);
 
-  void SetSafeBrowsingConfig(
-      const safe_browsing::SafeBrowsingProtocolConfig& config);
-
-  void SetURLRequestContextForTest(
-      net::URLRequestContextGetter* request_context);
+  void SetSafeBrowsingConfig(const safe_browsing::V4ProtocolConfig& config);
 
  protected:
-  // net::URLFetcherDelegate interface.
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
+  void OnURLLoaderComplete(network::SimpleURLLoader* url_loader,
+                           std::unique_ptr<std::string> response_body);
+
+  // Used for ease unit tests.
+  void OnURLLoaderCompleteInternal(network::SimpleURLLoader* url_loader,
+                                   const std::string& response_body,
+                                   int response_code,
+                                   int net_error);
 
  private:
+  friend class TestBlacklistStateFetcher;
   typedef std::multimap<std::string, RequestCallback> CallbackMultiMap;
 
   GURL RequestUrl() const;
 
   void SendRequest(const std::string& id);
 
-  // ID for URLFetchers for testing.
-  int url_fetcher_id_;
+  std::unique_ptr<safe_browsing::V4ProtocolConfig> safe_browsing_config_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
-  std::unique_ptr<safe_browsing::SafeBrowsingProtocolConfig>
-      safe_browsing_config_;
-  scoped_refptr<net::URLRequestContextGetter> url_request_context_getter_;
-  scoped_refptr<net::URLRequestContextGetter> parent_request_context_for_test_;
-
-  // Extension id by URLFetcher.
-  std::map<const net::URLFetcher*, std::string> requests_;
+  // SimpleURLLoader -> (owned loader, extension id).
+  std::map<const network::SimpleURLLoader*,
+           std::pair<std::unique_ptr<network::SimpleURLLoader>, std::string>>
+      requests_;
 
   // Callbacks by extension ID.
   CallbackMultiMap callbacks_;

@@ -20,40 +20,36 @@ settings.ProfileInfo;
 
 cr.define('settings', function() {
   /** @interface */
-  function ProfileInfoBrowserProxy() {}
-
-  ProfileInfoBrowserProxy.prototype = {
+  class ProfileInfoBrowserProxy {
     /**
      * Returns a Promise for the profile info.
      * @return {!Promise<!settings.ProfileInfo>}
      */
-    getProfileInfo: function() {},
+    getProfileInfo() {}
 
     /**
-     * Returns a Promise that's true if the profile manages supervised users.
-     * @return {!Promise<boolean>}
+     * Requests the profile stats count. The result is returned by the
+     * 'profile-stats-count-ready' WebUI listener event.
      */
-    getProfileManagesSupervisedUsers() {},
-  };
+    getProfileStatsCount() {}
+  }
 
   /**
-   * @constructor
    * @implements {ProfileInfoBrowserProxy}
    */
-  function ProfileInfoBrowserProxyImpl() {}
-  cr.addSingletonGetter(ProfileInfoBrowserProxyImpl);
-
-  ProfileInfoBrowserProxyImpl.prototype = {
+  class ProfileInfoBrowserProxyImpl {
     /** @override */
-    getProfileInfo: function() {
+    getProfileInfo() {
       return cr.sendWithPromise('getProfileInfo');
-    },
+    }
 
     /** @override */
-    getProfileManagesSupervisedUsers() {
-      return cr.sendWithPromise('getProfileManagesSupervisedUsers');
-    },
-  };
+    getProfileStatsCount() {
+      chrome.send('getProfileStatsCount');
+    }
+  }
+
+  cr.addSingletonGetter(ProfileInfoBrowserProxyImpl);
 
   return {
     ProfileInfoBrowserProxyImpl: ProfileInfoBrowserProxyImpl,

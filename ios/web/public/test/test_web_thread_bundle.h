@@ -5,26 +5,25 @@
 #ifndef IOS_WEB_PUBLIC_TEST_TEST_WEB_THREAD_BUNDLE_H_
 #define IOS_WEB_PUBLIC_TEST_TEST_WEB_THREAD_BUNDLE_H_
 
+#include "base/test/scoped_task_environment.h"
+
 // TestWebThreadBundle is a convenience class for creating a set of
-// TestWebThreads in unit tests.  For most tests, it is sufficient to
-// just instantiate the TestWebThreadBundle as a member variable.
+// TestWebThreads and a task scheduler in unit tests. For most tests, it is
+// sufficient to just instantiate the TestWebThreadBundle as a member variable.
+// It is a good idea to put the TestWebThreadBundle as the first member variable
+// in test classes, so it is destroyed last, and the test threads always exist
+// from the perspective of other classes.
 //
 // By default, all of the created TestWebThreads will be backed by a single
-// shared MessageLoop. If a test truly needs separate threads, it can do
-// so by passing the appropriate combination of RealThreadsMask values during
-// the TestWebThreadBundle construction.
+// shared MessageLoop. If a test truly needs separate threads, it can do so by
+// passing the appropriate combination of option values during the
+// TestWebThreadBundle construction.
 //
-// The TestWebThreadBundle will attempt to drain the MessageLoop on
-// destruction. Sometimes a test needs to drain currently enqueued tasks
-// mid-test.
-//
-// The TestWebThreadBundle will also flush the blocking pool on destruction.
-// We do this to avoid memory leaks, particularly in the case of threads posting
-// tasks to the blocking pool via PostTaskAndReply. By ensuring that the tasks
-// are run while the originating TestBroswserThreads still exist, we prevent
-// leakage of PostTaskAndReplyRelay objects. We also flush the blocking pool
-// again at the point where it would normally be shut down, to better simulate
-// the normal thread shutdown process.
+// To synchronously run tasks posted to TestWebThreads that use the shared
+// MessageLoop, call RunLoop::Run/RunUntilIdle() on the thread where the
+// TestWebThreadBundle lives. The destructor of TestWebThreadBundle runs
+// remaining TestWebThreads tasks and remaining BLOCK_SHUTDOWN task scheduler
+// tasks.
 //
 // Some tests using the IO thread expect a MessageLoopForIO. Passing
 // IO_MAINLOOP will use a MessageLoopForIO for the main MessageLoop.
@@ -36,41 +35,31 @@
 
 namespace base {
 class MessageLoop;
-}
+}  // namespace base
 
 namespace web {
 
 class TestWebThread;
 
-class TestWebThreadBundle {
+class TestWebThreadBundle : public base::test::ScopedTaskEnvironment {
  public:
   // Used to specify the type of MessageLoop that backs the UI thread, and
   // which of the named WebThreads should be backed by a real
   // threads. The UI thread is always the main thread in a unit test.
   enum Options {
-    DEFAULT = 0x00,
-    IO_MAINLOOP = 0x01,
-    REAL_DB_THREAD = 0x02,
-    REAL_FILE_THREAD = 0x08,
-    REAL_FILE_USER_BLOCKING_THREAD = 0x10,
-    REAL_CACHE_THREAD = 0x20,
-    REAL_IO_THREAD = 0x40,
+    DEFAULT = 0,
+    IO_MAINLOOP = 1 << 0,
+    REAL_IO_THREAD = 1 << 1,
   };
 
-  TestWebThreadBundle();
-  explicit TestWebThreadBundle(int options);
+  explicit TestWebThreadBundle(int options = Options::DEFAULT);
 
-  ~TestWebThreadBundle();
+  ~TestWebThreadBundle() override;
 
  private:
   void Init(int options);
 
-  std::unique_ptr<base::MessageLoop> message_loop_;
   std::unique_ptr<TestWebThread> ui_thread_;
-  std::unique_ptr<TestWebThread> db_thread_;
-  std::unique_ptr<TestWebThread> file_thread_;
-  std::unique_ptr<TestWebThread> file_user_blocking_thread_;
-  std::unique_ptr<TestWebThread> cache_thread_;
   std::unique_ptr<TestWebThread> io_thread_;
 
   DISALLOW_COPY_AND_ASSIGN(TestWebThreadBundle);

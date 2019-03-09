@@ -8,10 +8,10 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
@@ -23,14 +23,15 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_change_processor.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "components/sync/protocol/sync.pb.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_error_factory.h"
-#include "sync/protocol/sync.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if !defined(OS_ANDROID)
-#include "components/safe_json/testing_json_parser.h"
+#include "services/data_decoder/public/cpp/testing_json_parser.h"
 #endif
 
 namespace {
@@ -110,11 +111,11 @@ class SupervisedUserWhitelistServiceTest : public testing::Test {
     std::unique_ptr<base::DictionaryValue> whitelist_dict(
         new base::DictionaryValue);
     whitelist_dict->SetString("name", "Whitelist A");
-    dict->Set("aaaa", whitelist_dict.release());
+    dict->Set("aaaa", std::move(whitelist_dict));
 
     whitelist_dict.reset(new base::DictionaryValue);
     whitelist_dict->SetString("name", "Whitelist B");
-    dict->Set("bbbb", whitelist_dict.release());
+    dict->Set("bbbb", std::move(whitelist_dict));
 
     installer_->RegisterWhitelist(kClientId, "aaaa", "Whitelist A");
     installer_->RegisterWhitelist(kClientId, "bbbb", "Whitelist B");
@@ -161,7 +162,7 @@ class SupervisedUserWhitelistServiceTest : public testing::Test {
   TestingProfile profile_;
 
 #if !defined(OS_ANDROID)
-  safe_json::TestingJsonParser::ScopedFactoryOverride factory_override_;
+  data_decoder::TestingJsonParser::ScopedFactoryOverride factory_override_;
 #endif
 
   std::unique_ptr<MockSupervisedUserWhitelistInstaller> installer_;
@@ -199,7 +200,7 @@ TEST_F(SupervisedUserWhitelistServiceTest, MergeExisting) {
   base::RunLoop run_loop;
   site_lists_changed_callback_ = run_loop.QuitClosure();
   base::FilePath test_data_dir;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir));
   base::FilePath whitelist_path =
       test_data_dir.AppendASCII("whitelists/content_pack/site_list.json");
   installer_->NotifyWhitelistReady("aaaa", base::ASCIIToUTF16("Title"),

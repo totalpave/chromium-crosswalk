@@ -24,14 +24,16 @@ KeyboardLayoutEngineManager::~KeyboardLayoutEngineManager() {
   instance_ = NULL;
 }
 
+// static
 void KeyboardLayoutEngineManager::SetKeyboardLayoutEngine(
     std::unique_ptr<KeyboardLayoutEngine> engine) {
   if (instance_)
-    instance_->keyboard_layout_engine_.reset(engine.release());
+    instance_->keyboard_layout_engine_ = std::move(engine);
   else
     new KeyboardLayoutEngineManager(engine.release());
 }
 
+// static
 KeyboardLayoutEngine* KeyboardLayoutEngineManager::GetKeyboardLayoutEngine() {
   // TODO(kpschoedel): crbug.com/430194 This lazy initialization is a
   // workaround for not yet initializing KeyboardLayoutEngineManager

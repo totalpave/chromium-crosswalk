@@ -10,13 +10,15 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/test/simple_test_clock.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/activity_log/activity_action_constants.h"
 #include "chrome/browser/extensions/activity_log/activity_database.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/browser/extensions/activity_log/fullstream_ui_policy.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
@@ -29,16 +31,6 @@
 #include "extensions/common/dom_action_types.h"
 #include "sql/statement.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/users/mock_user_manager.h"
-#include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
-#include "chromeos/chromeos_switches.h"
-#endif
-
-using content::BrowserThread;
 
 namespace constants = activity_log_constants;
 
@@ -57,8 +49,8 @@ class ActivityDatabaseTestPolicy : public ActivityDatabase::Delegate {
   virtual void Record(ActivityDatabase* db, scoped_refptr<Action> action);
 
  protected:
-  bool InitDatabase(sql::Connection* db) override;
-  bool FlushDatabase(sql::Connection*) override;
+  bool InitDatabase(sql::Database* db) override;
+  bool FlushDatabase(sql::Database*) override;
   void OnDatabaseFailure() override {}
   void OnDatabaseClose() override { delete this; }
 
@@ -71,22 +63,20 @@ const char* const ActivityDatabaseTestPolicy::kTableContentFields[] = {
 const char* const ActivityDatabaseTestPolicy::kTableFieldTypes[] = {
     "LONGVARCHAR NOT NULL", "INTEGER", "INTEGER", "LONGVARCHAR"};
 
-bool ActivityDatabaseTestPolicy::InitDatabase(sql::Connection* db) {
-  return ActivityDatabase::InitializeTable(db,
-                                           kTableName,
-                                           kTableContentFields,
+bool ActivityDatabaseTestPolicy::InitDatabase(sql::Database* db) {
+  return ActivityDatabase::InitializeTable(db, kTableName, kTableContentFields,
                                            kTableFieldTypes,
-                                           arraysize(kTableContentFields));
+                                           base::size(kTableContentFields));
 }
 
-bool ActivityDatabaseTestPolicy::FlushDatabase(sql::Connection* db) {
+bool ActivityDatabaseTestPolicy::FlushDatabase(sql::Database* db) {
   std::string sql_str =
       "INSERT INTO " + std::string(kTableName) +
       " (extension_id, time, action_type, api_name) VALUES (?,?,?,?)";
 
   std::vector<scoped_refptr<Action> >::size_type i;
   for (i = 0; i < queue_.size(); i++) {
-    const Action& action = *queue_[i].get();
+    const Action& action = *queue_[i];
     sql::Statement statement(db->GetCachedStatement(
         sql::StatementID(SQL_FROM_HERE), sql_str.c_str()));
     statement.BindString(0, action.extension_id());
@@ -113,18 +103,15 @@ class ActivityDatabaseTest : public ChromeRenderViewHostTestHarness {
  protected:
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
-#if defined OS_CHROMEOS
-    test_user_manager_.reset(new chromeos::ScopedTestUserManager());
-#endif
+    SetActivityLogTaskRunnerForTesting(
+        base::ThreadTaskRunnerHandle::Get().get());
     base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         switches::kEnableExtensionActivityLogTesting);
   }
 
   void TearDown() override {
-#if defined OS_CHROMEOS
-    test_user_manager_.reset();
-#endif
+    SetActivityLogTaskRunnerForTesting(nullptr);
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
@@ -148,7 +135,7 @@ class ActivityDatabaseTest : public ChromeRenderViewHostTestHarness {
     db_delegate_->Record(db, action);
   }
 
-  int CountActions(sql::Connection* db, const std::string& api_name_pattern) {
+  int CountActions(sql::Database* db, const std::string& api_name_pattern) {
     if (!db->DoesTableExist(ActivityDatabaseTestPolicy::kTableName))
       return -1;
     std::string sql_str = "SELECT COUNT(*) FROM " +
@@ -163,12 +150,6 @@ class ActivityDatabaseTest : public ChromeRenderViewHostTestHarness {
   }
 
  private:
-#if defined OS_CHROMEOS
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
-  std::unique_ptr<chromeos::ScopedTestUserManager> test_user_manager_;
-#endif
-
   ActivityDatabaseTestPolicy* db_delegate_;
 };
 
@@ -177,13 +158,13 @@ TEST_F(ActivityDatabaseTest, Init) {
   base::ScopedTempDir temp_dir;
   base::FilePath db_file;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  db_file = temp_dir.path().AppendASCII("ActivityInit.db");
-  sql::Connection::Delete(db_file);
+  db_file = temp_dir.GetPath().AppendASCII("ActivityInit.db");
+  sql::Database::Delete(db_file);
 
   ActivityDatabase* activity_db = OpenDatabase(db_file);
   activity_db->Close();
 
-  sql::Connection db;
+  sql::Database db;
   ASSERT_TRUE(db.Open(db_file));
   ASSERT_TRUE(db.DoesTableExist(ActivityDatabaseTestPolicy::kTableName));
   db.Close();
@@ -194,8 +175,8 @@ TEST_F(ActivityDatabaseTest, RecordAction) {
   base::ScopedTempDir temp_dir;
   base::FilePath db_file;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  db_file = temp_dir.path().AppendASCII("ActivityRecord.db");
-  sql::Connection::Delete(db_file);
+  db_file = temp_dir.GetPath().AppendASCII("ActivityRecord.db");
+  sql::Database::Delete(db_file);
 
   ActivityDatabase* activity_db = OpenDatabase(db_file);
   activity_db->SetBatchModeForTesting(false);
@@ -203,7 +184,7 @@ TEST_F(ActivityDatabaseTest, RecordAction) {
   Record(activity_db, action);
   activity_db->Close();
 
-  sql::Connection db;
+  sql::Database db;
   ASSERT_TRUE(db.Open(db_file));
 
   ASSERT_EQ(1, CountActions(&db, "brewster"));
@@ -213,8 +194,8 @@ TEST_F(ActivityDatabaseTest, BatchModeOff) {
   base::ScopedTempDir temp_dir;
   base::FilePath db_file;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  db_file = temp_dir.path().AppendASCII("ActivityRecord.db");
-  sql::Connection::Delete(db_file);
+  db_file = temp_dir.GetPath().AppendASCII("ActivityRecord.db");
+  sql::Database::Delete(db_file);
 
   // Record some actions
   ActivityDatabase* activity_db = OpenDatabase(db_file);
@@ -231,8 +212,8 @@ TEST_F(ActivityDatabaseTest, BatchModeOn) {
   base::ScopedTempDir temp_dir;
   base::FilePath db_file;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  db_file = temp_dir.path().AppendASCII("ActivityRecord.db");
-  sql::Connection::Delete(db_file);
+  db_file = temp_dir.GetPath().AppendASCII("ActivityRecord.db");
+  sql::Database::Delete(db_file);
 
   // Record some actions
   ActivityDatabase* activity_db = OpenDatabase(db_file);
@@ -253,8 +234,8 @@ TEST_F(ActivityDatabaseTest, BatchModeFlush) {
   base::ScopedTempDir temp_dir;
   base::FilePath db_file;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  db_file = temp_dir.path().AppendASCII("ActivityFlush.db");
-  sql::Connection::Delete(db_file);
+  db_file = temp_dir.GetPath().AppendASCII("ActivityFlush.db");
+  sql::Database::Delete(db_file);
 
   // Record some actions
   ActivityDatabase* activity_db = OpenDatabase(db_file);
@@ -275,8 +256,8 @@ TEST_F(ActivityDatabaseTest, InitFailure) {
   base::ScopedTempDir temp_dir;
   base::FilePath db_file;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  db_file = temp_dir.path().AppendASCII("ActivityRecord.db");
-  sql::Connection::Delete(db_file);
+  db_file = temp_dir.GetPath().AppendASCII("ActivityRecord.db");
+  sql::Database::Delete(db_file);
 
   ActivityDatabaseTestPolicy* delegate = new ActivityDatabaseTestPolicy();
   ActivityDatabase* activity_db = new ActivityDatabase(delegate);

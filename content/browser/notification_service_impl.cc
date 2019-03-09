@@ -13,8 +13,8 @@ namespace  content {
 
 namespace {
 
-base::LazyInstance<base::ThreadLocalPointer<NotificationServiceImpl> >
-    lazy_tls_ptr = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::ThreadLocalPointer<NotificationServiceImpl>>::
+    DestructorAtExit lazy_tls_ptr = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -40,7 +40,7 @@ bool NotificationServiceImpl::HasKey(const NotificationSourceMap& map,
 }
 
 NotificationServiceImpl::NotificationServiceImpl() {
-  DCHECK(current() == NULL);
+  DCHECK(current() == nullptr);
   lazy_tls_ptr.Pointer()->Set(this);
 }
 
@@ -105,37 +105,33 @@ void NotificationServiceImpl::Notify(int type,
   // Notify observers of all types and all sources
   if (HasKey(observers_[NOTIFICATION_ALL], AllSources()) &&
       source != AllSources()) {
-    FOR_EACH_OBSERVER(NotificationObserver,
-                      *observers_[NOTIFICATION_ALL][AllSources().map_key()],
-                      Observe(type, source, details));
+    for (auto& observer : *observers_[NOTIFICATION_ALL][AllSources().map_key()])
+      observer.Observe(type, source, details);
   }
 
   // Notify observers of all types and the given source
   if (HasKey(observers_[NOTIFICATION_ALL], source)) {
-    FOR_EACH_OBSERVER(NotificationObserver,
-                      *observers_[NOTIFICATION_ALL][source.map_key()],
-                      Observe(type, source, details));
+    for (auto& observer : *observers_[NOTIFICATION_ALL][source.map_key()])
+      observer.Observe(type, source, details);
   }
 
   // Notify observers of the given type and all sources
   if (HasKey(observers_[type], AllSources()) &&
       source != AllSources()) {
-    FOR_EACH_OBSERVER(NotificationObserver,
-                      *observers_[type][AllSources().map_key()],
-                      Observe(type, source, details));
+    for (auto& observer : *observers_[type][AllSources().map_key()])
+      observer.Observe(type, source, details);
   }
 
   // Notify observers of the given type and the given source
   if (HasKey(observers_[type], source)) {
-    FOR_EACH_OBSERVER(NotificationObserver,
-                      *observers_[type][source.map_key()],
-                      Observe(type, source, details));
+    for (auto& observer : *observers_[type][source.map_key()])
+      observer.Observe(type, source, details);
   }
 }
 
 
 NotificationServiceImpl::~NotificationServiceImpl() {
-  lazy_tls_ptr.Pointer()->Set(NULL);
+  lazy_tls_ptr.Pointer()->Set(nullptr);
 
 #ifndef NDEBUG
   for (int i = 0; i < static_cast<int>(observer_counts_.size()); i++) {
@@ -150,8 +146,7 @@ NotificationServiceImpl::~NotificationServiceImpl() {
 
   for (int i = 0; i < static_cast<int>(observers_.size()); i++) {
     NotificationSourceMap omap = observers_[i];
-    for (NotificationSourceMap::iterator it = omap.begin();
-         it != omap.end(); ++it)
+    for (auto it = omap.begin(); it != omap.end(); ++it)
       delete it->second;
   }
 }

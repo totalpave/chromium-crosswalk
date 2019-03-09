@@ -5,7 +5,7 @@
 #include "content/common/cursors/webcursor.h"
 
 #include "base/logging.h"
-#include "third_party/WebKit/public/platform/WebCursorInfo.h"
+#include "third_party/blink/public/platform/web_cursor_info.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/cursor_util.h"
 
@@ -15,95 +15,103 @@ namespace content {
 
 gfx::NativeCursor WebCursor::GetNativeCursor() {
   switch (type_) {
-    case WebCursorInfo::TypePointer:
-      return ui::kCursorPointer;
-    case WebCursorInfo::TypeCross:
-      return ui::kCursorCross;
-    case WebCursorInfo::TypeHand:
-      return ui::kCursorHand;
-    case WebCursorInfo::TypeIBeam:
-      return ui::kCursorIBeam;
-    case WebCursorInfo::TypeWait:
-      return ui::kCursorWait;
-    case WebCursorInfo::TypeHelp:
-      return ui::kCursorHelp;
-    case WebCursorInfo::TypeEastResize:
-      return ui::kCursorEastResize;
-    case WebCursorInfo::TypeNorthResize:
-      return ui::kCursorNorthResize;
-    case WebCursorInfo::TypeNorthEastResize:
-      return ui::kCursorNorthEastResize;
-    case WebCursorInfo::TypeNorthWestResize:
-      return ui::kCursorNorthWestResize;
-    case WebCursorInfo::TypeSouthResize:
-      return ui::kCursorSouthResize;
-    case WebCursorInfo::TypeSouthEastResize:
-      return ui::kCursorSouthEastResize;
-    case WebCursorInfo::TypeSouthWestResize:
-      return ui::kCursorSouthWestResize;
-    case WebCursorInfo::TypeWestResize:
-      return ui::kCursorWestResize;
-    case WebCursorInfo::TypeNorthSouthResize:
-      return ui::kCursorNorthSouthResize;
-    case WebCursorInfo::TypeEastWestResize:
-      return ui::kCursorEastWestResize;
-    case WebCursorInfo::TypeNorthEastSouthWestResize:
-      return ui::kCursorNorthEastSouthWestResize;
-    case WebCursorInfo::TypeNorthWestSouthEastResize:
-      return ui::kCursorNorthWestSouthEastResize;
-    case WebCursorInfo::TypeColumnResize:
-      return ui::kCursorColumnResize;
-    case WebCursorInfo::TypeRowResize:
-      return ui::kCursorRowResize;
-    case WebCursorInfo::TypeMiddlePanning:
-      return ui::kCursorMiddlePanning;
-    case WebCursorInfo::TypeEastPanning:
-      return ui::kCursorEastPanning;
-    case WebCursorInfo::TypeNorthPanning:
-      return ui::kCursorNorthPanning;
-    case WebCursorInfo::TypeNorthEastPanning:
-      return ui::kCursorNorthEastPanning;
-    case WebCursorInfo::TypeNorthWestPanning:
-      return ui::kCursorNorthWestPanning;
-    case WebCursorInfo::TypeSouthPanning:
-      return ui::kCursorSouthPanning;
-    case WebCursorInfo::TypeSouthEastPanning:
-      return ui::kCursorSouthEastPanning;
-    case WebCursorInfo::TypeSouthWestPanning:
-      return ui::kCursorSouthWestPanning;
-    case WebCursorInfo::TypeWestPanning:
-      return ui::kCursorWestPanning;
-    case WebCursorInfo::TypeMove:
-      return ui::kCursorMove;
-    case WebCursorInfo::TypeVerticalText:
-      return ui::kCursorVerticalText;
-    case WebCursorInfo::TypeCell:
-      return ui::kCursorCell;
-    case WebCursorInfo::TypeContextMenu:
-      return ui::kCursorContextMenu;
-    case WebCursorInfo::TypeAlias:
-      return ui::kCursorAlias;
-    case WebCursorInfo::TypeProgress:
-      return ui::kCursorProgress;
-    case WebCursorInfo::TypeNoDrop:
-      return ui::kCursorNoDrop;
-    case WebCursorInfo::TypeCopy:
-      return ui::kCursorCopy;
-    case WebCursorInfo::TypeNone:
-      return ui::kCursorNone;
-    case WebCursorInfo::TypeNotAllowed:
-      return ui::kCursorNotAllowed;
-    case WebCursorInfo::TypeZoomIn:
-      return ui::kCursorZoomIn;
-    case WebCursorInfo::TypeZoomOut:
-      return ui::kCursorZoomOut;
-    case WebCursorInfo::TypeGrab:
-      return ui::kCursorGrab;
-    case WebCursorInfo::TypeGrabbing:
-      return ui::kCursorGrabbing;
-    case WebCursorInfo::TypeCustom: {
-      ui::Cursor cursor(ui::kCursorCustom);
-      cursor.SetPlatformCursor(GetPlatformCursor());
+    case WebCursorInfo::kTypePointer:
+      return ui::CursorType::kPointer;
+    case WebCursorInfo::kTypeCross:
+      return ui::CursorType::kCross;
+    case WebCursorInfo::kTypeHand:
+      return ui::CursorType::kHand;
+    case WebCursorInfo::kTypeIBeam:
+      return ui::CursorType::kIBeam;
+    case WebCursorInfo::kTypeWait:
+      return ui::CursorType::kWait;
+    case WebCursorInfo::kTypeHelp:
+      return ui::CursorType::kHelp;
+    case WebCursorInfo::kTypeEastResize:
+      return ui::CursorType::kEastResize;
+    case WebCursorInfo::kTypeNorthResize:
+      return ui::CursorType::kNorthResize;
+    case WebCursorInfo::kTypeNorthEastResize:
+      return ui::CursorType::kNorthEastResize;
+    case WebCursorInfo::kTypeNorthWestResize:
+      return ui::CursorType::kNorthWestResize;
+    case WebCursorInfo::kTypeSouthResize:
+      return ui::CursorType::kSouthResize;
+    case WebCursorInfo::kTypeSouthEastResize:
+      return ui::CursorType::kSouthEastResize;
+    case WebCursorInfo::kTypeSouthWestResize:
+      return ui::CursorType::kSouthWestResize;
+    case WebCursorInfo::kTypeWestResize:
+      return ui::CursorType::kWestResize;
+    case WebCursorInfo::kTypeNorthSouthResize:
+      return ui::CursorType::kNorthSouthResize;
+    case WebCursorInfo::kTypeEastWestResize:
+      return ui::CursorType::kEastWestResize;
+    case WebCursorInfo::kTypeNorthEastSouthWestResize:
+      return ui::CursorType::kNorthEastSouthWestResize;
+    case WebCursorInfo::kTypeNorthWestSouthEastResize:
+      return ui::CursorType::kNorthWestSouthEastResize;
+    case WebCursorInfo::kTypeColumnResize:
+      return ui::CursorType::kColumnResize;
+    case WebCursorInfo::kTypeRowResize:
+      return ui::CursorType::kRowResize;
+    case WebCursorInfo::kTypeMiddlePanning:
+      return ui::CursorType::kMiddlePanning;
+    case WebCursorInfo::kTypeEastPanning:
+      return ui::CursorType::kEastPanning;
+    case WebCursorInfo::kTypeNorthPanning:
+      return ui::CursorType::kNorthPanning;
+    case WebCursorInfo::kTypeNorthEastPanning:
+      return ui::CursorType::kNorthEastPanning;
+    case WebCursorInfo::kTypeNorthWestPanning:
+      return ui::CursorType::kNorthWestPanning;
+    case WebCursorInfo::kTypeSouthPanning:
+      return ui::CursorType::kSouthPanning;
+    case WebCursorInfo::kTypeSouthEastPanning:
+      return ui::CursorType::kSouthEastPanning;
+    case WebCursorInfo::kTypeSouthWestPanning:
+      return ui::CursorType::kSouthWestPanning;
+    case WebCursorInfo::kTypeWestPanning:
+      return ui::CursorType::kWestPanning;
+    case WebCursorInfo::kTypeMove:
+      return ui::CursorType::kMove;
+    case WebCursorInfo::kTypeVerticalText:
+      return ui::CursorType::kVerticalText;
+    case WebCursorInfo::kTypeCell:
+      return ui::CursorType::kCell;
+    case WebCursorInfo::kTypeContextMenu:
+      return ui::CursorType::kContextMenu;
+    case WebCursorInfo::kTypeAlias:
+      return ui::CursorType::kAlias;
+    case WebCursorInfo::kTypeProgress:
+      return ui::CursorType::kProgress;
+    case WebCursorInfo::kTypeNoDrop:
+      return ui::CursorType::kNoDrop;
+    case WebCursorInfo::kTypeCopy:
+      return ui::CursorType::kCopy;
+    case WebCursorInfo::kTypeNone:
+      return ui::CursorType::kNone;
+    case WebCursorInfo::kTypeNotAllowed:
+      return ui::CursorType::kNotAllowed;
+    case WebCursorInfo::kTypeZoomIn:
+      return ui::CursorType::kZoomIn;
+    case WebCursorInfo::kTypeZoomOut:
+      return ui::CursorType::kZoomOut;
+    case WebCursorInfo::kTypeGrab:
+      return ui::CursorType::kGrab;
+    case WebCursorInfo::kTypeGrabbing:
+      return ui::CursorType::kGrabbing;
+    case WebCursorInfo::kTypeCustom: {
+      ui::Cursor cursor(ui::CursorType::kCustom);
+      SkBitmap bitmap;
+      gfx::Point hotspot;
+      float scale_factor = 1.f;
+      CreateScaledBitmapAndHotspotFromCustomData(&bitmap, &hotspot,
+                                                 &scale_factor);
+      cursor.set_custom_bitmap(bitmap);
+      cursor.set_custom_hotspot(hotspot);
+      cursor.set_device_scale_factor(scale_factor);
+      cursor.SetPlatformCursor(GetPlatformCursor(cursor));
       return cursor;
     }
     default:
@@ -112,30 +120,34 @@ gfx::NativeCursor WebCursor::GetNativeCursor() {
   }
 }
 
-float WebCursor::GetCursorScaleFactor() {
-  DCHECK(custom_scale_ != 0);
-  return device_scale_factor_ / custom_scale_;
-}
-
 void WebCursor::CreateScaledBitmapAndHotspotFromCustomData(
     SkBitmap* bitmap,
-    gfx::Point* hotspot) {
+    gfx::Point* hotspot,
+    float* scale_factor) {
   if (custom_data_.empty())
     return;
   ImageFromCustomData(bitmap);
   *hotspot = hotspot_;
-  ui::ScaleAndRotateCursorBitmapAndHotpoint(
-      GetCursorScaleFactor(), display::Display::ROTATE_0, bitmap, hotspot);
+  *scale_factor = GetCursorScaleFactor(bitmap);
+  ui::ScaleAndRotateCursorBitmapAndHotpoint(*scale_factor, rotation_, bitmap,
+                                            hotspot);
 }
 
-// ozone has its own SetDisplayInfo that takes rotation into account
 #if !defined(USE_OZONE)
+// ozone has its own SetDisplayInfo that takes rotation into account
 void WebCursor::SetDisplayInfo(const display::Display& display) {
   if (device_scale_factor_ == display.device_scale_factor())
     return;
 
   device_scale_factor_ = display.device_scale_factor();
   CleanupPlatformData();
+}
+
+// ozone also has extra calculations for scale factor (taking max cursor size
+// into account).
+float WebCursor::GetCursorScaleFactor(SkBitmap* bitmap) {
+  DCHECK(custom_scale_ != 0);
+  return device_scale_factor_ / custom_scale_;
 }
 #endif
 

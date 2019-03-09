@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef CRASHPAD_SNAPSHOT_MAC_SNAPSHOT_CPU_CONTEXT_MAC_H_
-#define CRASHPAD_SNAPSHOT_MAC_SNAPSHOT_CPU_CONTEXT_MAC_H_
+#ifndef CRASHPAD_SNAPSHOT_MAC_CPU_CONTEXT_MAC_H_
+#define CRASHPAD_SNAPSHOT_MAC_CPU_CONTEXT_MAC_H_
 
 #include <mach/mach.h>
 
@@ -27,7 +27,7 @@ namespace internal {
 #if defined(ARCH_CPU_X86_FAMILY) || DOXYGEN
 
 //! \brief Initializes a CPUContextX86 structure from native context structures
-//!     on Mac OS X.
+//!     on macOS.
 //!
 //! \a flavor, \a state, and \a state_count may be supplied by exception
 //! handlers in order for the \a context parameter to be initialized by the
@@ -68,7 +68,7 @@ void InitializeCPUContextX86(CPUContextX86* context,
                              const x86_debug_state32_t* x86_debug_state32);
 
 //! \brief Initializes a CPUContextX86_64 structure from native context
-//!     structures on Mac OS X.
+//!     structures on macOS.
 //!
 //! \a flavor, \a state, and \a state_count may be supplied by exception
 //! handlers in order for the \a context parameter to be initialized by the
@@ -113,4 +113,4 @@ void InitializeCPUContextX86_64(CPUContextX86_64* context,
 }  // namespace internal
 }  // namespace crashpad
 
-#endif  // CRASHPAD_SNAPSHOT_MAC_SNAPSHOT_CPU_CONTEXT_MAC_H_
+#endif  // CRASHPAD_SNAPSHOT_MAC_CPU_CONTEXT_MAC_H_

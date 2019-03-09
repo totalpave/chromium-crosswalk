@@ -4,16 +4,34 @@
 
 #import "device/bluetooth/test/mock_bluetooth_central_manager_mac.h"
 
+#import "base/mac/foundation_util.h"
+#import "base/mac/scoped_nsobject.h"
 #import "device/bluetooth/test/bluetooth_test_mac.h"
 #import "device/bluetooth/test/mock_bluetooth_cbperipheral_mac.h"
 
-@implementation MockCentralManager
+using base::scoped_nsobject;
+
+@implementation MockCentralManager {
+  scoped_nsobject<NSMutableDictionary> _connectedMockPeripheralPerServiceUUID;
+  scoped_nsobject<NSMutableArray> _retrieveConnectedPeripheralServiceUUIDs;
+}
 
 @synthesize scanForPeripheralsCallCount = _scanForPeripheralsCallCount;
 @synthesize stopScanCallCount = _stopScanCallCount;
 @synthesize delegate = _delegate;
 @synthesize state = _state;
 @synthesize bluetoothTestMac = _bluetoothTestMac;
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _connectedMockPeripheralPerServiceUUID.reset(
+        [[NSMutableDictionary alloc] init]);
+    _retrieveConnectedPeripheralServiceUUIDs.reset(
+        [[NSMutableArray alloc] init]);
+  }
+  return self;
+}
 
 - (BOOL)isKindOfClass:(Class)aClass {
   if (aClass == [CBCentralManager class] ||
@@ -51,6 +69,46 @@
   if (_bluetoothTestMac) {
     _bluetoothTestMac->OnFakeBluetoothGattDisconnect();
   }
+
+  // When cancelPeripheralConnection is called macOS marks the device as
+  // disconnected.
+  MockCBPeripheral* mock_peripheral =
+      base::mac::ObjCCastStrict<MockCBPeripheral>(peripheral);
+  [mock_peripheral setState:CBPeripheralStateDisconnected];
+}
+
+- (NSArray*)retrieveConnectedPeripheralServiceUUIDs {
+  return [[_retrieveConnectedPeripheralServiceUUIDs copy] autorelease];
+}
+
+- (NSArray*)retrieveConnectedPeripheralsWithServices:(NSArray*)services {
+  [_retrieveConnectedPeripheralServiceUUIDs
+      addObjectsFromArray:[services copy]];
+  NSMutableArray* connectedPeripherals = [[NSMutableArray alloc] init];
+  for (CBUUID* uuid in services) {
+    NSSet* peripheralSet =
+        [_connectedMockPeripheralPerServiceUUID objectForKey:uuid];
+    [connectedPeripherals addObjectsFromArray:peripheralSet.allObjects];
+  }
+  return connectedPeripherals;
+}
+
+- (void)setConnectedMockPeripheral:(CBPeripheral*)peripheral
+                  withServiceUUIDs:(NSSet*)serviceUUIDs {
+  for (CBUUID* uuid in serviceUUIDs) {
+    NSMutableSet* peripheralSet =
+        [_connectedMockPeripheralPerServiceUUID objectForKey:uuid];
+    if (!peripheralSet) {
+      peripheralSet = [NSMutableSet set];
+      [_connectedMockPeripheralPerServiceUUID setObject:peripheralSet
+                                                 forKey:uuid];
+    }
+    [peripheralSet addObject:peripheral];
+  }
+}
+
+- (void)resetRetrieveConnectedPeripheralServiceUUIDs {
+  [_retrieveConnectedPeripheralServiceUUIDs removeAllObjects];
 }
 
 @end

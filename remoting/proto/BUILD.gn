@@ -4,13 +4,25 @@
 
 import("//third_party/protobuf/proto_library.gni")
 
+group("proto_lite") {
+  public_deps = [
+    ":proto",
+    "//third_party/protobuf:protobuf_lite",
+  ]
+}
+
 proto_library("proto") {
   sources = [
+    "action.proto",
     "audio.proto",
     "control.proto",
     "event.proto",
+    "file_transfer.proto",
     "internal.proto",
     "mux.proto",
+    "process_stats.proto",
+    "test_data_channel_manager.proto",
     "video.proto",
+    "video_stats.proto",
   ]
 }

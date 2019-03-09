@@ -18,16 +18,13 @@ class Window;
 
 namespace client {
 class DragDropClient;
+class ScreenPositionClient;
 }
-}
+}  // namespace aura
 
 namespace gfx {
 class ImageSkia;
 class Rect;
-}
-
-namespace ui {
-class NativeTheme;
 }
 
 namespace views {
@@ -50,15 +47,18 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
       internal::NativeWidgetDelegate* native_widget_delegate,
       DesktopNativeWidgetAura* desktop_native_widget_aura);
 
-  // Return the NativeTheme to use for |window|. WARNING: |window| may be NULL.
-  static ui::NativeTheme* GetNativeTheme(aura::Window* window);
-
   // Sets up resources needed before the WindowEventDispatcher has been created.
-  virtual void Init(aura::Window* content_window,
-                    const Widget::InitParams& params) = 0;
+  // It is expected this calls InitHost() on the WindowTreeHost.
+  virtual void Init(const Widget::InitParams& params) = 0;
 
   // Invoked once the DesktopNativeWidgetAura has been created.
   virtual void OnNativeWidgetCreated(const Widget::InitParams& params) = 0;
+
+  // Called from DesktopNativeWidgetAura::OnWidgetInitDone().
+  virtual void OnWidgetInitDone() = 0;
+
+  // Called from DesktopNativeWidgetAura::OnWindowActivated().
+  virtual void OnActiveWindowChanged(bool active) = 0;
 
   // Creates and returns the Tooltip implementation to use. Return value is
   // owned by DesktopNativeWidgetAura and lives as long as
@@ -71,13 +71,34 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
   virtual std::unique_ptr<aura::client::DragDropClient> CreateDragDropClient(
       DesktopNativeCursorManager* cursor_manager) = 0;
 
+  // Creates the ScreenPositionClient to use for the WindowTreeHost. Default
+  // implementation creates DesktopScreenPositionClient.
+  virtual std::unique_ptr<aura::client::ScreenPositionClient>
+  CreateScreenPositionClient();
+
   virtual void Close() = 0;
   virtual void CloseNow() = 0;
 
   virtual aura::WindowTreeHost* AsWindowTreeHost() = 0;
 
-  virtual void ShowWindowWithState(ui::WindowShowState show_state) = 0;
-  virtual void ShowMaximizedWithBounds(const gfx::Rect& restored_bounds) = 0;
+  // There are two distinct ways for DesktopWindowTreeHosts's to be shown:
+  // 1. This function is called. As this function is specific to
+  //    DesktopWindowTreeHost, it is only called from DesktopNativeWidgetAura.
+  // 2. Calling Show() directly on the WindowTreeHost associated with this
+  //    DesktopWindowTreeHost. This is very rare. In general, calls go through
+  //    Widget, which ends up in (1).
+  //
+  // Implementations must deal with these two code paths. In general, this is
+  // done by having the WindowTreeHost subclass override ShowImpl() to call this
+  // function: Show(ui::SHOW_STATE_NORMAL, gfx::Rect()). A subtle
+  // ramification is the implementation of this function can *not* call
+  // WindowTreeHost::Show(), and the implementation of this must perform the
+  // same work as WindowTreeHost::Show(). This means setting the visibility of
+  // the compositor, window() and DesktopNativeWidgetAura::content_window()
+  // appropriately. Some subclasses set the visibility of window() in the
+  // constructor and assume it's always true.
+  virtual void Show(ui::WindowShowState show_state,
+                    const gfx::Rect& restore_bounds) = 0;
 
   virtual bool IsVisible() const = 0;
 
@@ -94,9 +115,9 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
 
   virtual gfx::Rect GetWorkAreaBoundsInScreen() const = 0;
 
-  // Sets the shape of the root window. If |native_region| is NULL then the
-  // window reverts to rectangular. Takes ownership of |native_region|.
-  virtual void SetShape(SkRegion* native_region) = 0;
+  // Sets the shape of the root window. If |native_shape| is nullptr then the
+  // window reverts to rectangular.
+  virtual void SetShape(std::unique_ptr<Widget::ShapeRects> native_shape) = 0;
 
   virtual void Activate() = 0;
   virtual void Deactivate() = 0;
@@ -113,6 +134,7 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
   virtual bool IsAlwaysOnTop() const = 0;
 
   virtual void SetVisibleOnAllWorkspaces(bool always_visible) = 0;
+  virtual bool IsVisibleOnAllWorkspaces() const = 0;
 
   // Returns true if the title changed.
   virtual bool SetWindowTitle(const base::string16& title) = 0;
@@ -127,6 +149,8 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
 
   virtual void SetVisibilityChangedAnimationsEnabled(bool value) = 0;
 
+  virtual NonClientFrameView* CreateNonClientFrameView() = 0;
+
   // Determines whether the window should use native title bar and borders.
   virtual bool ShouldUseNativeFrame() const = 0;
   // Determines whether the window contents should be rendered transparently
@@ -139,19 +163,14 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
 
   virtual void SetOpacity(float opacity) = 0;
 
+  virtual void SetAspectRatio(const gfx::SizeF& aspect_ratio) = 0;
+
   virtual void SetWindowIcons(const gfx::ImageSkia& window_icon,
                               const gfx::ImageSkia& app_icon) = 0;
 
   virtual void InitModalType(ui::ModalType modal_type) = 0;
 
   virtual void FlashFrame(bool flash_frame) = 0;
-
-  virtual void OnRootViewLayout() = 0;
-
-  // Called when the DesktopNativeWidgetAura's aura::Window is focused and
-  // blurred.
-  virtual void OnNativeWidgetFocus() = 0;
-  virtual void OnNativeWidgetBlur() = 0;
 
   // Returns true if the Widget was closed but is still showing because of
   // animations.
@@ -162,6 +181,25 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
 
   // Called when the window's size constraints change.
   virtual void SizeConstraintsChanged() = 0;
+
+  // Returns true if the transparency of the DesktopNativeWidgetAura's
+  // |content_window_| should change.
+  virtual bool ShouldUpdateWindowTransparency() const = 0;
+
+  // A return value of true indicates DesktopNativeCursorManager should be
+  // used, a return value of false indicates the DesktopWindowTreeHost manages
+  // cursors itself.
+  virtual bool ShouldUseDesktopNativeCursorManager() const = 0;
+
+  // Returns whether a VisibilityController should be created.
+  virtual bool ShouldCreateVisibilityController() const = 0;
+
+  // Sets the bounds in screen coordinate DIPs (WindowTreeHost generally
+  // operates in pixels). This function is implemented in terms of Screen.
+  virtual void SetBoundsInDIP(const gfx::Rect& bounds);
+
+  // See description in Widget::OnCanActivateChanged().
+  virtual void OnCanActivateChanged() {}
 };
 
 }  // namespace views

@@ -11,22 +11,28 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/threading/thread_checker.h"
 #include "build/build_config.h"
+#include "content/common/service_worker/service_worker_types.h"
 #include "content/public/browser/browser_child_process_observer.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "third_party/blink/public/common/fetch/fetch_api_request_headers_map.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
 
 #if defined(OS_ANDROID)
 #include <jni.h>
 #endif
 
 namespace base {
-class Value;
 class CommandLine;
+class Value;
+struct Feature;
 }  // namespace base
 
 // A collection of functions designed for use with unit and browser tests.
@@ -34,32 +40,48 @@ class CommandLine;
 namespace content {
 
 class RenderFrameHost;
+class TestServiceManagerContext;
 
-// Turns on nestable tasks, runs the message loop, then resets nestable tasks
-// to what they were originally. Prefer this over MessageLoop::Run for in
-// process browser tests that need to block until a condition is met.
+// Create an blink::mojom::FetchAPIRequestPtr with given fields.
+blink::mojom::FetchAPIRequestPtr CreateFetchAPIRequest(
+    const GURL& url,
+    const std::string& method,
+    const blink::FetchAPIRequestHeadersMap& headers,
+    blink::mojom::ReferrerPtr referrer,
+    bool is_reload);
+
+// Deprecated: Use RunLoop::Run(). Use RunLoop::Type::kNestableTasksAllowed to
+// force nesting in browser tests.
 void RunMessageLoop();
 
-// Variant of RunMessageLoop that takes RunLoop.
+// Deprecated: Invoke |run_loop->Run()| directly.
 void RunThisRunLoop(base::RunLoop* run_loop);
 
-// Turns on nestable tasks, runs all pending tasks in the message loop,
-// then resets nestable tasks to what they were originally. Prefer this
-// over MessageLoop::RunAllPending for in process browser tests to run
-// all pending tasks.
+// Turns on nestable tasks, runs all pending tasks in the message loop, then
+// resets nestable tasks to what they were originally. Can only be called from
+// the UI thread. Only use this instead of RunLoop::RunUntilIdle() to work
+// around cases where a task keeps reposting itself and prevents the loop from
+// going idle.
+// TODO(gab): Assess whether this API is really needed. If you find yourself
+// needing this, post a comment on https://crbug.com/824431.
 void RunAllPendingInMessageLoop();
 
-// Blocks the current thread until all the pending messages in the loop of the
-// thread |thread_id| have been processed.
+// Deprecated: For BrowserThread::IO use
+// TestBrowserThreadBundle::RunIOThreadUntilIdle. For the main thread use
+// RunLoop. In non-unit-tests use RunLoop::QuitClosure to observe async events
+// rather than flushing entire threads.
 void RunAllPendingInMessageLoop(BrowserThread::ID thread_id);
 
-// Runs until both the blocking pool and the current message loop are empty
-// (have no more scheduled tasks) and no tasks are running.
-void RunAllBlockingPoolTasksUntilIdle();
+// Runs all tasks on the current thread and TaskScheduler threads until idle.
+// Note: Prefer TestBrowserThreadBundle::RunUntilIdle() in unit tests.
+void RunAllTasksUntilIdle();
 
 // Get task to quit the given RunLoop. It allows a few generations of pending
 // tasks to run as opposed to run_loop->QuitClosure().
-base::Closure GetQuitTaskForRunLoop(base::RunLoop* run_loop);
+// Prefer RunLoop::RunUntilIdle() to this.
+// TODO(gab): Assess the need for this API (see comment on
+// RunAllPendingInMessageLoop() above).
+base::Closure GetDeferredQuitTaskForRunLoop(base::RunLoop* run_loop);
 
 // Executes the specified JavaScript in the specified frame, and runs a nested
 // MessageLoop. When the result is available, it is returned.
@@ -78,17 +100,52 @@ bool AreAllSitesIsolatedForTesting();
 // the test; the flag will be read on the first real navigation.
 void IsolateAllSitesForTesting(base::CommandLine* command_line);
 
-#if defined(OS_ANDROID)
-// Registers content/browser JNI bindings necessary for some types of tests.
-bool RegisterJniForTesting(JNIEnv* env);
-#endif
+// Resets the internal secure schemes/origins whitelist.
+void ResetSchemesAndOriginsWhitelist();
+
+// Appends command line switches to |command_line| to enable the |feature| and
+// to set field trial params associated with the feature as specified by
+// |param_name| and |param_value|.
+//
+// Note that a dummy trial and trial group will be registered behind the scenes.
+// See also variations::testing::VariationsParamsManager class.
+// This method is deprecated because we want to unify the FeatureList change to
+// ScopedFeatureList. See crbug.com/713390
+void DeprecatedEnableFeatureWithParam(const base::Feature& feature,
+                                      const std::string& param_name,
+                                      const std::string& param_value,
+                                      base::CommandLine* command_line);
+
+// Creates a WebContents and attaches it as an inner WebContents, replacing
+// |rfh| in the frame tree. |rfh| should not be a main frame (in a browser test,
+// it should be an <iframe>). Delegate interfaces are mocked out.
+//
+// Returns a pointer to the inner WebContents, which is now owned by the outer
+// WebContents. The caller should be careful when retaining the pointer, as the
+// inner WebContents will be deleted if the frame it's attached to goes away.
+WebContents* CreateAndAttachInnerContents(RenderFrameHost* rfh);
 
 // Helper class to Run and Quit the message loop. Run and Quit can only happen
 // once per instance. Make a new instance for each use. Calling Quit after Run
 // has returned is safe and has no effect.
-class MessageLoopRunner : public base::RefCounted<MessageLoopRunner> {
+// Note that by default Quit does not quit immediately. If that is not what you
+// really need, pass QuitMode::IMMEDIATE in the constructor.
+//
+// DEPRECATED. Consider using base::RunLoop, in most cases MessageLoopRunner is
+// not needed.  If you need to defer quitting the loop, use
+// RunLoop::RunUntilIdle() and if you really think you need deferred quit (can't
+// reach idle, please post details in a comment on https://crbug.com/668707).
+class MessageLoopRunner : public base::RefCountedThreadSafe<MessageLoopRunner> {
  public:
-  MessageLoopRunner();
+  enum class QuitMode {
+    // Message loop stops after finishing the current task.
+    IMMEDIATE,
+
+    // Several generations of posted tasks are executed before stopping.
+    DEFERRED,
+  };
+
+  MessageLoopRunner(QuitMode mode = QuitMode::DEFERRED);
 
   // Run the current MessageLoop unless the quit closure
   // has already been called.
@@ -107,8 +164,10 @@ class MessageLoopRunner : public base::RefCounted<MessageLoopRunner> {
   bool loop_running() const { return loop_running_; }
 
  private:
-  friend class base::RefCounted<MessageLoopRunner>;
+  friend class base::RefCountedThreadSafe<MessageLoopRunner>;
   ~MessageLoopRunner();
+
+  QuitMode quit_mode_;
 
   // True when the message loop is running.
   bool loop_running_;
@@ -117,6 +176,8 @@ class MessageLoopRunner : public base::RefCounted<MessageLoopRunner> {
   bool quit_closure_called_;
 
   base::RunLoop run_loop_;
+
+  base::ThreadChecker thread_checker_;
 
   DISALLOW_COPY_AND_ASSIGN(MessageLoopRunner);
 };
@@ -201,15 +262,14 @@ class WindowedNotificationObserver : public NotificationObserver {
                const NotificationDetails& details) override;
 
  private:
-  bool seen_;
-  bool running_;
+  bool seen_ = false;
   NotificationRegistrar registrar_;
 
   ConditionTestCallback callback_;
 
   NotificationSource source_;
   NotificationDetails details_;
-  scoped_refptr<MessageLoopRunner> message_loop_runner_;
+  base::RunLoop run_loop_;
 
   DISALLOW_COPY_AND_ASSIGN(WindowedNotificationObserver);
 };
@@ -236,7 +296,8 @@ class InProcessUtilityThreadHelper : public BrowserChildProcessObserver {
       const ChildProcessData& data) override;
 
   int child_thread_count_;
-  scoped_refptr<MessageLoopRunner> runner_;
+  std::unique_ptr<base::RunLoop> run_loop_;
+  std::unique_ptr<TestServiceManagerContext> shell_context_;
 
   DISALLOW_COPY_AND_ASSIGN(InProcessUtilityThreadHelper);
 };
@@ -276,9 +337,45 @@ class WebContentsDestroyedWatcher : public WebContentsObserver {
   // Overridden WebContentsObserver methods.
   void WebContentsDestroyed() override;
 
-  scoped_refptr<MessageLoopRunner> message_loop_runner_;
+  base::RunLoop run_loop_;
 
   DISALLOW_COPY_AND_ASSIGN(WebContentsDestroyedWatcher);
+};
+
+// Watches a web contents for page scales.
+class TestPageScaleObserver : public WebContentsObserver {
+ public:
+  explicit TestPageScaleObserver(WebContents* web_contents);
+  ~TestPageScaleObserver() override;
+  float WaitForPageScaleUpdate();
+
+ private:
+  void OnPageScaleFactorChanged(float page_scale_factor) override;
+
+  base::OnceClosure done_callback_;
+  bool seen_page_scale_change_ = false;
+  float last_scale_ = 0.f;
+
+  DISALLOW_COPY_AND_ASSIGN(TestPageScaleObserver);
+};
+
+// A custom ContentBrowserClient that simulates GetEffectiveURL() translation
+// for a single URL.
+class EffectiveURLContentBrowserClient : public ContentBrowserClient {
+ public:
+  EffectiveURLContentBrowserClient(const GURL& url_to_modify,
+                                   const GURL& url_to_return)
+      : url_to_modify_(url_to_modify), url_to_return_(url_to_return) {}
+  ~EffectiveURLContentBrowserClient() override {}
+
+ private:
+  GURL GetEffectiveURL(BrowserContext* browser_context,
+                       const GURL& url) override;
+
+  GURL url_to_modify_;
+  GURL url_to_return_;
+
+  DISALLOW_COPY_AND_ASSIGN(EffectiveURLContentBrowserClient);
 };
 
 }  // namespace content

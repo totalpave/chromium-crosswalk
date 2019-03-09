@@ -10,6 +10,11 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/memory/ptr_util.h"
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "net/base/network_change_notifier.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/host/audio_capturer.h"
 #include "remoting/host/chromoting_host_context.h"
@@ -53,23 +58,29 @@ using testing::Sequence;
 
 namespace remoting {
 
+const size_t kNumFailuresIgnored = 5;
+
 class ChromotingHostTest : public testing::Test {
  public:
-  ChromotingHostTest() {}
+  ChromotingHostTest() = default;
 
   void SetUp() override {
-    task_runner_ = new AutoThreadTaskRunner(message_loop_.task_runner(),
-                                            base::Bind(&base::DoNothing));
+    network_change_notifier_.reset(net::NetworkChangeNotifier::Create());
 
-    desktop_environment_factory_.reset(new FakeDesktopEnvironmentFactory());
+    task_runner_ = new AutoThreadTaskRunner(base::ThreadTaskRunnerHandle::Get(),
+                                            base::DoNothing());
+
+    desktop_environment_factory_.reset(
+        new FakeDesktopEnvironmentFactory(base::ThreadTaskRunnerHandle::Get()));
     session_manager_ = new protocol::MockSessionManager();
 
     host_.reset(new ChromotingHost(
         desktop_environment_factory_.get(), base::WrapUnique(session_manager_),
         protocol::TransportContext::ForTests(protocol::TransportRole::SERVER),
-        task_runner_,    // Audio
-        task_runner_));  // Video encode
-    host_->AddStatusObserver(&host_status_observer_);
+        task_runner_,  // Audio
+        task_runner_,
+        DesktopEnvironmentOptions::CreateDefault()));  // Video encode
+    host_->status_monitor()->AddStatusObserver(&host_status_observer_);
 
     xmpp_login_ = "host@domain";
     session1_ = new MockSession();
@@ -126,24 +137,23 @@ class ChromotingHostTest : public testing::Test {
         (connection_index == 0) ? owned_connection1_ : owned_connection2_);
     protocol::ConnectionToClient* connection_ptr = connection.get();
     std::unique_ptr<ClientSession> client(new ClientSession(
-        host_.get(), task_runner_ /* audio_task_runner */,
-        std::move(connection), desktop_environment_factory_.get(),
-        base::TimeDelta(), nullptr, std::vector<HostExtension*>()));
+        host_.get(), std::move(connection), desktop_environment_factory_.get(),
+        DesktopEnvironmentOptions::CreateDefault(), base::TimeDelta(), nullptr,
+        std::vector<HostExtension*>()));
     ClientSession* client_ptr = client.get();
 
     connection_ptr->set_host_stub(client.get());
     get_client(connection_index) = client_ptr;
 
     // |host| is responsible for deleting |client| from now on.
-    host_->clients_.push_back(client.release());
+    host_->clients_.push_back(std::move(client));
 
     if (authenticate) {
-      client_ptr->OnConnectionAuthenticated(connection_ptr);
+      client_ptr->OnConnectionAuthenticated();
       if (!reject)
-        client_ptr->OnConnectionChannelsConnected(connection_ptr);
+        client_ptr->OnConnectionChannelsConnected();
     } else {
-      client_ptr->OnConnectionClosed(connection_ptr,
-                                 protocol::AUTHENTICATION_FAILED);
+      client_ptr->OnConnectionClosed(protocol::AUTHENTICATION_FAILED);
     }
   }
 
@@ -152,11 +162,7 @@ class ChromotingHostTest : public testing::Test {
       ShutdownHost();
     task_runner_ = nullptr;
 
-    message_loop_.RunUntilIdle();
-  }
-
-  void DisconnectAllClients() {
-    host_->DisconnectAllClients();
+    base::RunLoop().RunUntilIdle();
   }
 
   void NotifyConnectionClosed1() {
@@ -204,7 +210,8 @@ class ChromotingHostTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
   scoped_refptr<AutoThreadTaskRunner> task_runner_;
   MockConnectionToClientEventHandler handler_;
   std::unique_ptr<FakeDesktopEnvironmentFactory> desktop_environment_factory_;
@@ -235,18 +242,9 @@ class ChromotingHostTest : public testing::Test {
   protocol::Session::EventHandler* session_unowned1_event_handler_;
   protocol::Session::EventHandler* session_unowned2_event_handler_;
 
-  protocol::FakeConnectionToClient*& get_connection(int connection_index) {
-    return (connection_index == 0) ? connection1_ : connection2_;
-  }
-
   // Returns the cached client pointers client1_ or client2_.
   ClientSession*& get_client(int connection_index) {
     return (connection_index == 0) ? client1_ : client2_;
-  }
-
-  // Returns the list of clients of the host_.
-  std::list<ClientSession*>& get_clients_from_host() {
-    return host_->clients_;
   }
 
   const std::string& get_session_jid(int connection_index) {
@@ -282,7 +280,7 @@ TEST_F(ChromotingHostTest, Reconnect) {
 
   // Disconnect first client.
   ExpectClientDisconnected(0);
-  client1_->OnConnectionClosed(connection1_, protocol::OK);
+  client1_->OnConnectionClosed(protocol::OK);
 
   // Connect second client.
   ExpectClientConnected(1);
@@ -290,7 +288,7 @@ TEST_F(ChromotingHostTest, Reconnect) {
 
   // Disconnect second client.
   ExpectClientDisconnected(1);
-  client2_->OnConnectionClosed(connection2_, protocol::OK);
+  client2_->OnConnectionClosed(protocol::OK);
 }
 
 TEST_F(ChromotingHostTest, ConnectWhenAnotherClientIsConnected) {
@@ -310,7 +308,7 @@ TEST_F(ChromotingHostTest, ConnectWhenAnotherClientIsConnected) {
 
   // Disconnect second client.
   ExpectClientDisconnected(1);
-  client2_->OnConnectionClosed(connection2_, protocol::OK);
+  client2_->OnConnectionClosed(protocol::OK);
 }
 
 TEST_F(ChromotingHostTest, IncomingSessionAccepted) {
@@ -327,48 +325,104 @@ TEST_F(ChromotingHostTest, IncomingSessionAccepted) {
   ShutdownHost();
 }
 
-TEST_F(ChromotingHostTest, LoginBackOffUponConnection) {
+TEST_F(ChromotingHostTest, LoginBackOffTriggersIfClientsDoNotAuthenticate) {
   StartHost();
 
   protocol::SessionManager::IncomingSessionResponse response =
       protocol::SessionManager::DECLINE;
+  protocol::Session::EventHandler*
+      session_event_handlers[kNumFailuresIgnored + 1];
+  for (size_t i = 0; i < kNumFailuresIgnored + 1; ++i) {
+    // Set expectations and responses for the new session.
+    auto session = std::make_unique<MockSession>();
+    EXPECT_CALL(*session, jid())
+        .WillRepeatedly(ReturnRef(session_jid1_));
+    EXPECT_CALL(*session, config())
+        .WillRepeatedly(ReturnRef(*session_config1_));
+    EXPECT_CALL(*session, SetEventHandler(_))
+        .Times(AnyNumber())
+        .WillRepeatedly(SaveArg<0>(&session_event_handlers[i]));
+    EXPECT_CALL(*session, Close(_)).WillOnce(
+        InvokeWithoutArgs(
+            [&session_event_handlers, i]() {
+              session_event_handlers[i]->OnSessionStateChange(Session::CLOSED);
+            }));
+    // Simulate the incoming connection.
+    host_->OnIncomingSession(session.release(), &response);
+    EXPECT_EQ(protocol::SessionManager::ACCEPT, response);
+    // Begin authentication; this will increase the backoff count, and since
+    // OnSessionAuthenticated is never called, the host should only allow
+    // kNumFailuresIgnored + 1 connections before beginning the backoff.
+    host_->OnSessionAuthenticating(
+        host_->client_sessions_for_tests().front().get());
+  }
 
-  EXPECT_CALL(*session_unowned1_, Close(_)).WillOnce(
-    InvokeWithoutArgs(this, &ChromotingHostTest::NotifyConnectionClosed1));
-  host_->OnIncomingSession(session_unowned1_.release(), &response);
-  EXPECT_EQ(protocol::SessionManager::ACCEPT, response);
-
-  host_->OnSessionAuthenticating(get_clients_from_host().front());
+  // As this is connection kNumFailuresIgnored + 2, it should be rejected.
   host_->OnIncomingSession(session_unowned2_.get(), &response);
   EXPECT_EQ(protocol::SessionManager::OVERLOAD, response);
+  EXPECT_EQ(host_->client_sessions_for_tests().size(), kNumFailuresIgnored + 1);
+
+  // Shut down host while objects owned by this test are still in scope.
+  ShutdownHost();
 }
 
-TEST_F(ChromotingHostTest, LoginBackOffUponAuthenticating) {
+TEST_F(ChromotingHostTest, LoginBackOffResetsIfClientsAuthenticate) {
   StartHost();
-
-  EXPECT_CALL(*session_unowned1_, Close(_)).WillOnce(
-    InvokeWithoutArgs(this, &ChromotingHostTest::NotifyConnectionClosed1));
-
-  EXPECT_CALL(*session_unowned2_, Close(_)).WillOnce(
-    InvokeWithoutArgs(this, &ChromotingHostTest::NotifyConnectionClosed2));
 
   protocol::SessionManager::IncomingSessionResponse response =
       protocol::SessionManager::DECLINE;
+  protocol::Session::EventHandler*
+      session_event_handlers[kNumFailuresIgnored + 1];
+  for (size_t i = 0; i < kNumFailuresIgnored + 1; ++i) {
+    // Set expectations and responses for the new session.
+    auto session = std::make_unique<MockSession>();
+    EXPECT_CALL(*session, jid())
+        .WillRepeatedly(ReturnRef(session_jid1_));
+    EXPECT_CALL(*session, config())
+        .WillRepeatedly(ReturnRef(*session_config1_));
+    EXPECT_CALL(*session, SetEventHandler(_))
+        .Times(AnyNumber())
+        .WillRepeatedly(SaveArg<0>(&session_event_handlers[i]));
+    EXPECT_CALL(*session, Close(_)).WillOnce(
+        InvokeWithoutArgs(
+            [&session_event_handlers, i]() {
+              session_event_handlers[i]->OnSessionStateChange(Session::CLOSED);
+            }));
+    // Simulate the incoming connection.
+    host_->OnIncomingSession(session.release(), &response);
+    EXPECT_EQ(protocol::SessionManager::ACCEPT, response);
+    // Begin authentication; this will increase the backoff count
+    host_->OnSessionAuthenticating(
+        host_->client_sessions_for_tests().front().get());
+  }
 
-  host_->OnIncomingSession(session_unowned1_.release(), &response);
+  // Simulate successful authentication for one of the previous connections.
+  // This should reset the backoff and disconnect all the other connections.
+  host_->OnSessionAuthenticated(
+      host_->client_sessions_for_tests().front().get());
+  EXPECT_EQ(host_->client_sessions_for_tests().size(), 1U);
+
+  // This is connection kNumFailuresIgnored + 2, but since we now have a
+  // successful authentication it should not be rejected.
+  auto session = std::make_unique<MockSession>();
+  protocol::Session::EventHandler* session_event_handler;
+  EXPECT_CALL(*session, jid())
+      .WillRepeatedly(ReturnRef(session_jid1_));
+  EXPECT_CALL(*session, config())
+      .WillRepeatedly(ReturnRef(*session_config1_));
+  EXPECT_CALL(*session, SetEventHandler(_))
+      .Times(AnyNumber())
+      .WillRepeatedly(SaveArg<0>(&session_event_handler));
+  EXPECT_CALL(*session, Close(_)).WillOnce(
+      InvokeWithoutArgs(
+          [&session_event_handler]() {
+            session_event_handler->OnSessionStateChange(Session::CLOSED);
+          }));
+  host_->OnIncomingSession(session.release(), &response);
   EXPECT_EQ(protocol::SessionManager::ACCEPT, response);
 
-  host_->OnIncomingSession(session_unowned2_.release(), &response);
-  EXPECT_EQ(protocol::SessionManager::ACCEPT, response);
-
-  // This will set the backoff.
-  host_->OnSessionAuthenticating(get_clients_from_host().front());
-
-  // This should disconnect client2.
-  host_->OnSessionAuthenticating(get_clients_from_host().back());
-
-  // Verify that the host only has 1 client at this point.
-  EXPECT_EQ(get_clients_from_host().size(), 1U);
+  // Shut down host while objects owned by this test are still in scope.
+  ShutdownHost();
 }
 
 TEST_F(ChromotingHostTest, OnSessionRouteChange) {
@@ -383,17 +437,6 @@ TEST_F(ChromotingHostTest, OnSessionRouteChange) {
   EXPECT_CALL(host_status_observer_,
               OnClientRouteChange(session_jid1_, channel_name, _));
   host_->OnSessionRouteChange(get_client(0), channel_name, route);
-}
-
-TEST_F(ChromotingHostTest, DisconnectAllClients) {
-  StartHost();
-
-  ExpectClientConnected(0);
-  SimulateClientConnection(0, true, false);
-
-  ExpectClientDisconnected(0);
-  DisconnectAllClients();
-  testing::Mock::VerifyAndClearExpectations(&host_status_observer_);
 }
 
 }  // namespace remoting

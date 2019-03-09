@@ -6,9 +6,10 @@ package org.chromium.chromoting.jni;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.chromoting.CapabilityManager;
 import org.chromium.chromoting.InputStub;
+import org.chromium.chromoting.Preconditions;
+import org.chromium.chromoting.RenderStub;
 import org.chromium.chromoting.SessionAuthenticator;
 
 /**
@@ -21,10 +22,9 @@ import org.chromium.chromoting.SessionAuthenticator;
 @JNINamespace("remoting")
 public class Client implements InputStub {
     // Pointer to the C++ object, cast to a |long|.
-    private long mNativeJniClient;
+    private final long mNativeJniClient;
 
-    // Implementation-dependent display object used by the desktop view.
-    private Object mDisplay;
+    private RenderStub mRenderStub;
 
     // The global Client instance (may be null). This needs to be a global singleton so that the
     // Client can be passed between Activities.
@@ -39,32 +39,23 @@ public class Client implements InputStub {
         mNativeJniClient = nativeInit();
     }
 
-    /**
-     * Sets the display object. Called by the native code when the connection starts.
-     * @param display the implementation-dependent object used by the desktop view.
-     */
-    @CalledByNative
-    private void setDisplay(Object display) {
-        mDisplay = display;
-    }
-
-    /**
-     * Returns the display object. It will be null before calling connectToHost() or after calling
-     * disconnectFromHost().
-     * @return the display object.
-     */
-    public Object getDisplay() {
-        return mDisplay;
-    }
-
     // Suppress FindBugs warning, since |sClient| is only used on the UI thread.
-    @SuppressFBWarnings("LI_LAZY_INIT_STATIC")
     public void destroy() {
         if (sClient != null) {
             disconnectFromHost();
             nativeDestroy(mNativeJniClient);
             sClient = null;
         }
+    }
+
+    public void setRenderStub(RenderStub stub) {
+        Preconditions.isNull(mRenderStub);
+        Preconditions.notNull(stub);
+        mRenderStub = stub;
+    }
+
+    public RenderStub getRenderStub() {
+        return mRenderStub;
     }
 
     /** Returns the current Client instance, or null. */
@@ -96,7 +87,7 @@ public class Client implements InputStub {
     /** Attempts to form a connection to the user-selected host. */
     public void connectToHost(String username, String authToken, String hostJid,
             String hostId, String hostPubkey, SessionAuthenticator authenticator, String flags,
-            ConnectionListener listener) {
+            String hostVersion, String hostOs, String hostOsVersion, ConnectionListener listener) {
         disconnectFromHost();
 
         mConnectionListener = listener;
@@ -104,7 +95,7 @@ public class Client implements InputStub {
         nativeConnect(mNativeJniClient, username, authToken, hostJid,
                 hostId, hostPubkey, mAuthenticator.getPairingId(hostId),
                 mAuthenticator.getPairingSecret(hostId), mCapabilityManager.getLocalCapabilities(),
-                flags);
+                flags, hostVersion, hostOs, hostOsVersion);
         mConnected = true;
     }
 
@@ -130,15 +121,12 @@ public class Client implements InputStub {
         mConnectionListener = null;
         mConnected = false;
         mCapabilityManager.onHostDisconnect();
-
-        mDisplay = null;
     }
 
     /** Called whenever the connection status changes. */
     @CalledByNative
-    void onConnectionState(int stateCode, int errorCode) {
-        ConnectionListener.State state = ConnectionListener.State.fromValue(stateCode);
-        ConnectionListener.Error error = ConnectionListener.Error.fromValue(errorCode);
+    void onConnectionState(
+            @ConnectionListener.State int state, @ConnectionListener.Error int error) {
         mConnectionListener.onConnectionState(state, error);
         if (state == ConnectionListener.State.FAILED || state == ConnectionListener.State.CLOSED) {
             // Disconnect from the host here, otherwise the next time connectToHost() is called,
@@ -183,6 +171,7 @@ public class Client implements InputStub {
     /**
      * Moves the mouse cursor, possibly while clicking the specified (nonnegative) button.
      */
+    @Override
     public void sendMouseEvent(int x, int y, int whichButton, boolean buttonDown) {
         if (!mConnected) {
             return;
@@ -192,6 +181,7 @@ public class Client implements InputStub {
     }
 
     /** Injects a mouse-wheel event with delta values. */
+    @Override
     public void sendMouseWheelEvent(int deltaX, int deltaY) {
         if (!mConnected) {
             return;
@@ -204,6 +194,7 @@ public class Client implements InputStub {
      * Presses or releases the specified key. If scanCode is not zero then
      * keyCode is ignored.
      */
+    @Override
     public boolean sendKeyEvent(int scanCode, int keyCode, boolean keyDown) {
         if (!mConnected) {
             return false;
@@ -213,6 +204,7 @@ public class Client implements InputStub {
     }
 
     /** Sends TextEvent to the host. */
+    @Override
     public void sendTextEvent(String text) {
         if (!mConnected) {
             return;
@@ -222,12 +214,13 @@ public class Client implements InputStub {
     }
 
     /** Sends an array of TouchEvents to the host. */
-    public void sendTouchEvent(TouchEventData.EventType eventType, TouchEventData[] data) {
+    @Override
+    public void sendTouchEvent(@TouchEventData.EventType int eventType, TouchEventData[] data) {
         if (!mConnected) {
             return;
         }
 
-        nativeSendTouchEvent(mNativeJniClient, eventType.value(), data);
+        nativeSendTouchEvent(mNativeJniClient, eventType, data);
     }
 
     /**
@@ -298,6 +291,22 @@ public class Client implements InputStub {
         nativeSendExtensionMessage(mNativeJniClient, type, data);
     }
 
+    /**
+     * Sends client resolution to the host so that the host can resize itself to fit the client
+     * without showing letterboxes.
+     *
+     * @param dipsWidth The width of the screen in density independent pixels.
+     * @param dipsHeight The height of the screen in density independent pixels.
+     * @param density The pixel density of the screen.
+     */
+    public void sendClientResolution(int dipsWidth, int dipsHeight, float density) {
+        if (!mConnected) {
+            return;
+        }
+
+        nativeSendClientResolution(mNativeJniClient, dipsWidth, dipsHeight, density);
+    }
+
     private native long nativeInit();
 
     private native void nativeDestroy(long nativeJniClient);
@@ -305,7 +314,8 @@ public class Client implements InputStub {
     /** Performs the native portion of the connection. */
     private native void nativeConnect(long nativeJniClient,
             String username, String authToken, String hostJid, String hostId, String hostPubkey,
-            String pairId, String pairSecret, String capabilities, String flags);
+            String pairId, String pairSecret, String capabilities, String flags,
+            String hostVersion, String hostOs, String hostOsVersion);
 
     /** Native implementation of Client.handleAuthenticationResponse(). */
     private native void nativeAuthenticationResponse(
@@ -341,4 +351,8 @@ public class Client implements InputStub {
 
     /** Passes extension message to the native code. */
     private native void nativeSendExtensionMessage(long nativeJniClient, String type, String data);
+
+    /** Sends client resolution to the host. */
+    private native void nativeSendClientResolution(
+            long nativeJniClient, int dipsWidth, int dipsHeight, float scale);
 }

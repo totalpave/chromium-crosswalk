@@ -12,42 +12,45 @@
 #include <string>
 
 #include "base/strings/string16.h"
+#include "base/time/time.h"
 
 namespace base {
+class CommandLine;
 class FilePath;
 }
 
 // Implements the common aspects of loading the main dll for both chrome and
 // chromium scenarios, which are in charge of implementing two abstract
-// methods: GetRegistryPath() and OnBeforeLaunch().
+// methods: OnBeforeLaunch() and OnBeforeExit().
 class MainDllLoader {
  public:
   MainDllLoader();
   virtual ~MainDllLoader();
 
   // Loads and calls the entry point of chrome.dll. |instance| is the exe
-  // instance retrieved from wWinMain.
+  // instance retrieved from wWinMain. |exe_entry_point_ticks| is the time
+  // when wWinMain was entered.
   // The return value is what the main entry point of chrome.dll returns
   // upon termination.
-  int Launch(HINSTANCE instance);
+  int Launch(HINSTANCE instance, base::TimeTicks exe_entry_point_ticks);
 
   // Launches a new instance of the browser if the current instance in
   // persistent mode an upgrade is detected.
   void RelaunchChromeBrowserWithNewCommandLineIfNeeded();
 
  protected:
-  // Called after chrome.dll has been loaded but before the entry point
-  // is invoked. Derived classes can implement custom actions here.
-  // |process_type| is the argument to the --type command line argument, e.g.
-  // "renderer", "watcher", etc.
-  // |dll_path| refers to the path of the Chrome dll being loaded.
-  virtual void OnBeforeLaunch(const std::string& process_type,
+  // Called after chrome.dll has been loaded but before the entry point is
+  // invoked. Derived classes can implement custom actions here. |cmd_line| is
+  // the process command line. |process_type| is the argument to the --type
+  // command line argument (e.g., "renderer" or "watcher"). |dll_path| refers
+  // to the path of the Chrome dll being loaded.
+  virtual void OnBeforeLaunch(const base::CommandLine& cmd_line,
+                              const std::string& process_type,
                               const base::FilePath& dll_path) = 0;
 
-  // Called after the chrome.dll entry point returns and before terminating
-  // this process. The return value will be used as the process return code.
-  // |dll_path| refers to the path of the Chrome dll being loaded.
-  virtual int OnBeforeExit(int return_code, const base::FilePath& dll_path) = 0;
+  // Called after the chrome.dll entry point returns and before terminating this
+  // process. |dll_path| refers to the path of the Chrome dll that was loaded.
+  virtual void OnBeforeExit(const base::FilePath& dll_path) = 0;
 
  private:
   // Loads the appropriate DLL for the process type |process_type_|. Populates

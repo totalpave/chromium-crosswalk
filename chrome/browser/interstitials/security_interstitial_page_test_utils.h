@@ -11,18 +11,24 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
-class InterstitialPage;
 class WebContents;
 }
 
 class GURL;
+
+namespace security_interstitials {
 class SecurityInterstitialPage;
+}
 
 namespace chrome_browser_interstitials {
 
-bool IsInterstitialDisplayingText(
-    const content::InterstitialPage* const interstitial,
-    const std::string& text);
+// Looks for text in the |textContent| of |interstitial_frame|'s body and
+// returns true if found. This can be used for either transient or committed
+// interstitials. For the former, pass
+// web_contents->GetInterstitialPage()->GetMainFrame() as the first argument,
+// and for the latter, just pass web_contents->GetMainFrame().
+bool IsInterstitialDisplayingText(content::RenderFrameHost* interstitial_frame,
+                                  const std::string& text);
 
 // This class is used for testing the display of IDN names in security
 // interstitials.
@@ -36,7 +42,7 @@ class SecurityInterstitialIDNTest : public InProcessBrowserTest {
   testing::AssertionResult VerifyIDNDecoded() const;
 
  protected:
-  virtual SecurityInterstitialPage* CreateInterstitial(
+  virtual security_interstitials::SecurityInterstitialPage* CreateInterstitial(
       content::WebContents* contents,
       const GURL& request_url) const = 0;
 };

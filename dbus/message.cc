@@ -13,12 +13,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "dbus/object_path.h"
-
-#if defined(USE_SYSTEM_PROTOBUF)
-#include <google/protobuf/message_lite.h>
-#else
 #include "third_party/protobuf/src/google/protobuf/message_lite.h"
-#endif
 
 namespace {
 
@@ -38,7 +33,7 @@ void AppendUint32Header(const std::string& header_name,
                         uint32_t header_value,
                         std::string* output) {
   if (header_value != 0) {
-    *output += (header_name + ": " + base::UintToString(header_value) + "\n");
+    *output += (header_name + ": " + base::NumberToString(header_value) + "\n");
   }
 }
 
@@ -52,9 +47,7 @@ bool IsDBusTypeUnixFdSupported() {
   return major >= 1 && minor >= 4;
 }
 
-Message::Message()
-    : raw_message_(NULL) {
-}
+Message::Message() : raw_message_(nullptr) {}
 
 Message::~Message() {
   if (raw_message_)
@@ -101,7 +94,7 @@ std::string Message::ToStringInternal(const std::string& indent,
         uint8_t value = 0;
         if (!reader->PopByte(&value))
           return kBrokenMessage;
-        output += indent + "byte " + base::UintToString(value) + "\n";
+        output += indent + "byte " + base::NumberToString(value) + "\n";
         break;
       }
       case BOOL: {
@@ -115,49 +108,49 @@ std::string Message::ToStringInternal(const std::string& indent,
         int16_t value = 0;
         if (!reader->PopInt16(&value))
           return kBrokenMessage;
-        output += indent + "int16_t " + base::IntToString(value) + "\n";
+        output += indent + "int16_t " + base::NumberToString(value) + "\n";
         break;
       }
       case UINT16: {
         uint16_t value = 0;
         if (!reader->PopUint16(&value))
           return kBrokenMessage;
-        output += indent + "uint16_t " + base::UintToString(value) + "\n";
+        output += indent + "uint16_t " + base::NumberToString(value) + "\n";
         break;
       }
       case INT32: {
         int32_t value = 0;
         if (!reader->PopInt32(&value))
           return kBrokenMessage;
-        output += indent + "int32_t " + base::IntToString(value) + "\n";
+        output += indent + "int32_t " + base::NumberToString(value) + "\n";
         break;
       }
       case UINT32: {
         uint32_t value = 0;
         if (!reader->PopUint32(&value))
           return kBrokenMessage;
-        output += indent + "uint32_t " + base::UintToString(value) + "\n";
+        output += indent + "uint32_t " + base::NumberToString(value) + "\n";
         break;
       }
       case INT64: {
         int64_t value = 0;
         if (!reader->PopInt64(&value))
           return kBrokenMessage;
-        output += (indent + "int64_t " + base::Int64ToString(value) + "\n");
+        output += (indent + "int64_t " + base::NumberToString(value) + "\n");
         break;
       }
       case UINT64: {
         uint64_t value = 0;
         if (!reader->PopUint64(&value))
           return kBrokenMessage;
-        output += (indent + "uint64_t " + base::Uint64ToString(value) + "\n");
+        output += (indent + "uint64_t " + base::NumberToString(value) + "\n");
         break;
       }
       case DOUBLE: {
         double value = 0;
         if (!reader->PopDouble(&value))
           return kBrokenMessage;
-        output += indent + "double " + base::DoubleToString(value) + "\n";
+        output += indent + "double " + base::NumberToString(value) + "\n";
         break;
       }
       case STRING: {
@@ -222,11 +215,11 @@ std::string Message::ToStringInternal(const std::string& indent,
       case UNIX_FD: {
         CHECK(IsDBusTypeUnixFdSupported());
 
-        FileDescriptor file_descriptor;
+        base::ScopedFD file_descriptor;
         if (!reader->PopFileDescriptor(&file_descriptor))
           return kBrokenMessage;
-        output += indent + "fd#" +
-                  base::IntToString(file_descriptor.value()) + "\n";
+        output +=
+            indent + "fd#" + base::NumberToString(file_descriptor.get()) + "\n";
         break;
       }
       default:
@@ -270,26 +263,50 @@ std::string Message::ToString() {
 }
 
 bool Message::SetDestination(const std::string& destination) {
+  if (!dbus_validate_bus_name(destination.c_str(), nullptr)) {
+    LOG(ERROR) << "Invalid bus name: " << destination;
+    return false;
+  }
   return dbus_message_set_destination(raw_message_, destination.c_str());
 }
 
 bool Message::SetPath(const ObjectPath& path) {
+  if (!path.IsValid()) {
+    LOG(ERROR) << "Invalid path: " << path.value();
+    return false;
+  }
   return dbus_message_set_path(raw_message_, path.value().c_str());
 }
 
 bool Message::SetInterface(const std::string& interface) {
+  if (!dbus_validate_interface(interface.c_str(), nullptr)) {
+    LOG(ERROR) << "Invalid interface: " << interface;
+    return false;
+  }
   return dbus_message_set_interface(raw_message_, interface.c_str());
 }
 
 bool Message::SetMember(const std::string& member) {
+  if (!dbus_validate_member(member.c_str(), nullptr)) {
+    LOG(ERROR) << "Invalid member: " << member;
+    return false;
+  }
   return dbus_message_set_member(raw_message_, member.c_str());
 }
 
 bool Message::SetErrorName(const std::string& error_name) {
+  if (!dbus_validate_error_name(error_name.c_str(), nullptr)) {
+    LOG(ERROR) << "Invalid error name: " << error_name;
+    return false;
+  }
   return dbus_message_set_error_name(raw_message_, error_name.c_str());
 }
 
 bool Message::SetSender(const std::string& sender) {
+  if (!dbus_validate_bus_name(sender.c_str(), nullptr)) {
+    LOG(ERROR) << "Invalid bus name: " << sender;
+    return false;
+  }
   return dbus_message_set_sender(raw_message_, sender.c_str());
 }
 
@@ -349,21 +366,20 @@ uint32_t Message::GetReplySerial() {
 //
 
 MethodCall::MethodCall(const std::string& interface_name,
-                       const std::string& method_name)
-    : Message() {
+                       const std::string& method_name) {
   Init(dbus_message_new(DBUS_MESSAGE_TYPE_METHOD_CALL));
 
   CHECK(SetInterface(interface_name));
   CHECK(SetMember(method_name));
 }
 
-MethodCall::MethodCall() : Message() {
-}
+MethodCall::MethodCall() = default;
 
-MethodCall* MethodCall::FromRawMessage(DBusMessage* raw_message) {
+std::unique_ptr<MethodCall> MethodCall::FromRawMessage(
+    DBusMessage* raw_message) {
   DCHECK_EQ(DBUS_MESSAGE_TYPE_METHOD_CALL, dbus_message_get_type(raw_message));
 
-  MethodCall* method_call = new MethodCall;
+  std::unique_ptr<MethodCall> method_call(new MethodCall());
   method_call->Init(raw_message);
   return method_call;
 }
@@ -372,21 +388,19 @@ MethodCall* MethodCall::FromRawMessage(DBusMessage* raw_message) {
 // Signal implementation.
 //
 Signal::Signal(const std::string& interface_name,
-               const std::string& method_name)
-    : Message() {
+               const std::string& method_name) {
   Init(dbus_message_new(DBUS_MESSAGE_TYPE_SIGNAL));
 
   CHECK(SetInterface(interface_name));
   CHECK(SetMember(method_name));
 }
 
-Signal::Signal() : Message() {
-}
+Signal::Signal() = default;
 
-Signal* Signal::FromRawMessage(DBusMessage* raw_message) {
+std::unique_ptr<Signal> Signal::FromRawMessage(DBusMessage* raw_message) {
   DCHECK_EQ(DBUS_MESSAGE_TYPE_SIGNAL, dbus_message_get_type(raw_message));
 
-  Signal* signal = new Signal;
+  std::unique_ptr<Signal> signal(new Signal());
   signal->Init(raw_message);
   return signal;
 }
@@ -395,26 +409,25 @@ Signal* Signal::FromRawMessage(DBusMessage* raw_message) {
 // Response implementation.
 //
 
-Response::Response() : Message() {
-}
+Response::Response() = default;
 
 std::unique_ptr<Response> Response::FromRawMessage(DBusMessage* raw_message) {
   DCHECK_EQ(DBUS_MESSAGE_TYPE_METHOD_RETURN,
             dbus_message_get_type(raw_message));
 
-  std::unique_ptr<Response> response(new Response);
+  std::unique_ptr<Response> response(new Response());
   response->Init(raw_message);
   return response;
 }
 
 std::unique_ptr<Response> Response::FromMethodCall(MethodCall* method_call) {
-  std::unique_ptr<Response> response(new Response);
+  std::unique_ptr<Response> response(new Response());
   response->Init(dbus_message_new_method_return(method_call->raw_message()));
   return response;
 }
 
 std::unique_ptr<Response> Response::CreateEmpty() {
-  std::unique_ptr<Response> response(new Response);
+  std::unique_ptr<Response> response(new Response());
   response->Init(dbus_message_new(DBUS_MESSAGE_TYPE_METHOD_RETURN));
   return response;
 }
@@ -423,14 +436,13 @@ std::unique_ptr<Response> Response::CreateEmpty() {
 // ErrorResponse implementation.
 //
 
-ErrorResponse::ErrorResponse() : Response() {
-}
+ErrorResponse::ErrorResponse() = default;
 
 std::unique_ptr<ErrorResponse> ErrorResponse::FromRawMessage(
     DBusMessage* raw_message) {
   DCHECK_EQ(DBUS_MESSAGE_TYPE_ERROR, dbus_message_get_type(raw_message));
 
-  std::unique_ptr<ErrorResponse> response(new ErrorResponse);
+  std::unique_ptr<ErrorResponse> response(new ErrorResponse());
   response->Init(raw_message);
   return response;
 }
@@ -439,10 +451,9 @@ std::unique_ptr<ErrorResponse> ErrorResponse::FromMethodCall(
     MethodCall* method_call,
     const std::string& error_name,
     const std::string& error_message) {
-  std::unique_ptr<ErrorResponse> response(new ErrorResponse);
-  response->Init(dbus_message_new_error(method_call->raw_message(),
-                                        error_name.c_str(),
-                                        error_message.c_str()));
+  std::unique_ptr<ErrorResponse> response(new ErrorResponse());
+  response->Init(dbus_message_new_error(
+      method_call->raw_message(), error_name.c_str(), error_message.c_str()));
   return response;
 }
 
@@ -451,15 +462,13 @@ std::unique_ptr<ErrorResponse> ErrorResponse::FromMethodCall(
 //
 
 MessageWriter::MessageWriter(Message* message)
-    : message_(message),
-      container_is_open_(false) {
+    : message_(message), container_is_open_(false) {
   memset(&raw_message_iter_, 0, sizeof(raw_message_iter_));
   if (message)
     dbus_message_iter_init_append(message_->raw_message(), &raw_message_iter_);
 }
 
-MessageWriter::~MessageWriter() {
-}
+MessageWriter::~MessageWriter() = default;
 
 void MessageWriter::AppendByte(uint8_t value) {
   AppendBasic(DBUS_TYPE_BYTE, &value);
@@ -471,7 +480,7 @@ void MessageWriter::AppendBool(bool value) {
   // dbus_message_iter_append_basic() used in AppendBasic() expects four
   // bytes for DBUS_TYPE_BOOLEAN, so we must pass a dbus_bool_t, instead
   // of a bool, to AppendBasic().
-  dbus_bool_t dbus_value = value;
+  dbus_bool_t dbus_value = value ? 1 : 0;
   AppendBasic(DBUS_TYPE_BOOLEAN, &dbus_value);
 }
 
@@ -532,9 +541,7 @@ void MessageWriter::OpenArray(const std::string& signature,
   DCHECK(!container_is_open_);
 
   const bool success = dbus_message_iter_open_container(
-      &raw_message_iter_,
-      DBUS_TYPE_ARRAY,
-      signature.c_str(),
+      &raw_message_iter_, DBUS_TYPE_ARRAY, signature.c_str(),
       &writer->raw_message_iter_);
   CHECK(success) << "Unable to allocate memory";
   container_is_open_ = true;
@@ -545,9 +552,7 @@ void MessageWriter::OpenVariant(const std::string& signature,
   DCHECK(!container_is_open_);
 
   const bool success = dbus_message_iter_open_container(
-      &raw_message_iter_,
-      DBUS_TYPE_VARIANT,
-      signature.c_str(),
+      &raw_message_iter_, DBUS_TYPE_VARIANT, signature.c_str(),
       &writer->raw_message_iter_);
   CHECK(success) << "Unable to allocate memory";
   container_is_open_ = true;
@@ -556,11 +561,10 @@ void MessageWriter::OpenVariant(const std::string& signature,
 void MessageWriter::OpenStruct(MessageWriter* writer) {
   DCHECK(!container_is_open_);
 
-  const bool success = dbus_message_iter_open_container(
-      &raw_message_iter_,
-      DBUS_TYPE_STRUCT,
-      NULL,  // Signature should be NULL.
-      &writer->raw_message_iter_);
+  const bool success =
+      dbus_message_iter_open_container(&raw_message_iter_, DBUS_TYPE_STRUCT,
+                                       nullptr,  // Signature should be nullptr.
+                                       &writer->raw_message_iter_);
   CHECK(success) << "Unable to allocate memory";
   container_is_open_ = true;
 }
@@ -568,11 +572,10 @@ void MessageWriter::OpenStruct(MessageWriter* writer) {
 void MessageWriter::OpenDictEntry(MessageWriter* writer) {
   DCHECK(!container_is_open_);
 
-  const bool success = dbus_message_iter_open_container(
-      &raw_message_iter_,
-      DBUS_TYPE_DICT_ENTRY,
-      NULL,  // Signature should be NULL.
-      &writer->raw_message_iter_);
+  const bool success =
+      dbus_message_iter_open_container(&raw_message_iter_, DBUS_TYPE_DICT_ENTRY,
+                                       nullptr,  // Signature should be nullptr.
+                                       &writer->raw_message_iter_);
   CHECK(success) << "Unable to allocate memory";
   container_is_open_ = true;
 }
@@ -591,9 +594,30 @@ void MessageWriter::AppendArrayOfBytes(const uint8_t* values, size_t length) {
   MessageWriter array_writer(message_);
   OpenArray("y", &array_writer);
   const bool success = dbus_message_iter_append_fixed_array(
-      &(array_writer.raw_message_iter_),
-      DBUS_TYPE_BYTE,
-      &values,
+      &(array_writer.raw_message_iter_), DBUS_TYPE_BYTE, &values,
+      static_cast<int>(length));
+  CHECK(success) << "Unable to allocate memory";
+  CloseContainer(&array_writer);
+}
+
+void MessageWriter::AppendArrayOfInt32s(const int32_t* values, size_t length) {
+  DCHECK(!container_is_open_);
+  MessageWriter array_writer(message_);
+  OpenArray("i", &array_writer);
+  const bool success = dbus_message_iter_append_fixed_array(
+      &(array_writer.raw_message_iter_), DBUS_TYPE_INT32, &values,
+      static_cast<int>(length));
+  CHECK(success) << "Unable to allocate memory";
+  CloseContainer(&array_writer);
+}
+
+void MessageWriter::AppendArrayOfUint32s(const uint32_t* values,
+                                         size_t length) {
+  DCHECK(!container_is_open_);
+  MessageWriter array_writer(message_);
+  OpenArray("u", &array_writer);
+  const bool success = dbus_message_iter_append_fixed_array(
+      &(array_writer.raw_message_iter_), DBUS_TYPE_UINT32, &values,
       static_cast<int>(length));
   CHECK(success) << "Unable to allocate memory";
   CloseContainer(&array_writer);
@@ -604,9 +628,7 @@ void MessageWriter::AppendArrayOfDoubles(const double* values, size_t length) {
   MessageWriter array_writer(message_);
   OpenArray("d", &array_writer);
   const bool success = dbus_message_iter_append_fixed_array(
-      &(array_writer.raw_message_iter_),
-      DBUS_TYPE_DOUBLE,
-      &values,
+      &(array_writer.raw_message_iter_), DBUS_TYPE_DOUBLE, &values,
       static_cast<int>(length));
   CHECK(success) << "Unable to allocate memory";
   CloseContainer(&array_writer);
@@ -697,8 +719,8 @@ void MessageWriter::AppendVariantOfObjectPath(const ObjectPath& value) {
 void MessageWriter::AppendBasic(int dbus_type, const void* value) {
   DCHECK(!container_is_open_);
 
-  const bool success = dbus_message_iter_append_basic(
-      &raw_message_iter_, dbus_type, value);
+  const bool success =
+      dbus_message_iter_append_basic(&raw_message_iter_, dbus_type, value);
   // dbus_message_iter_append_basic() fails only when there is not enough
   // memory. We don't return this error as there is nothing we can do when
   // it fails to allocate memory for a byte etc.
@@ -714,31 +736,22 @@ void MessageWriter::AppendVariantOfBasic(int dbus_type, const void* value) {
   CloseContainer(&variant_writer);
 }
 
-void MessageWriter::AppendFileDescriptor(const FileDescriptor& value) {
+void MessageWriter::AppendFileDescriptor(int value) {
   CHECK(IsDBusTypeUnixFdSupported());
-
-  if (!value.is_valid()) {
-    // NB: sending a directory potentially enables sandbox escape
-    LOG(FATAL) << "Attempt to pass invalid file descriptor";
-  }
-  int fd = value.value();
-  AppendBasic(DBUS_TYPE_UNIX_FD, &fd);
+  AppendBasic(DBUS_TYPE_UNIX_FD, &value);  // This duplicates the FD.
 }
 
 //
 // MessageReader implementation.
 //
 
-MessageReader::MessageReader(Message* message)
-    : message_(message) {
+MessageReader::MessageReader(Message* message) : message_(message) {
   memset(&raw_message_iter_, 0, sizeof(raw_message_iter_));
   if (message)
     dbus_message_iter_init(message_->raw_message(), &raw_message_iter_);
 }
 
-
-MessageReader::~MessageReader() {
-}
+MessageReader::~MessageReader() = default;
 
 bool MessageReader::HasMoreData() {
   const int dbus_type = dbus_message_iter_get_arg_type(&raw_message_iter_);
@@ -788,7 +801,7 @@ bool MessageReader::PopDouble(double* value) {
 }
 
 bool MessageReader::PopString(std::string* value) {
-  char* tmp_value = NULL;
+  char* tmp_value = nullptr;
   const bool success = PopBasic(DBUS_TYPE_STRING, &tmp_value);
   if (success)
     value->assign(tmp_value);
@@ -796,7 +809,7 @@ bool MessageReader::PopString(std::string* value) {
 }
 
 bool MessageReader::PopObjectPath(ObjectPath* value) {
-  char* tmp_value = NULL;
+  char* tmp_value = nullptr;
   const bool success = PopBasic(DBUS_TYPE_OBJECT_PATH, &tmp_value);
   if (success)
     *value = ObjectPath(tmp_value);
@@ -822,19 +835,58 @@ bool MessageReader::PopVariant(MessageReader* sub_reader) {
 bool MessageReader::PopArrayOfBytes(const uint8_t** bytes, size_t* length) {
   MessageReader array_reader(message_);
   if (!PopArray(&array_reader))
-      return false;
+    return false;
   // An empty array is allowed.
   if (!array_reader.HasMoreData()) {
     *length = 0;
-    *bytes = NULL;
+    *bytes = nullptr;
     return true;
   }
   if (!array_reader.CheckDataType(DBUS_TYPE_BYTE))
     return false;
   int int_length = 0;
-  dbus_message_iter_get_fixed_array(&array_reader.raw_message_iter_,
-                                    bytes,
+  dbus_message_iter_get_fixed_array(&array_reader.raw_message_iter_, bytes,
                                     &int_length);
+  *length = static_cast<size_t>(int_length);
+  return true;
+}
+
+bool MessageReader::PopArrayOfInt32s(const int32_t** signed_ints,
+                                     size_t* length) {
+  MessageReader array_reader(message_);
+  if (!PopArray(&array_reader))
+    return false;
+  // An empty array is allowed.
+  if (!array_reader.HasMoreData()) {
+    *length = 0;
+    *signed_ints = nullptr;
+    return true;
+  }
+  if (!array_reader.CheckDataType(DBUS_TYPE_INT32))
+    return false;
+  int int_length = 0;
+  dbus_message_iter_get_fixed_array(&array_reader.raw_message_iter_,
+                                    signed_ints, &int_length);
+  *length = static_cast<size_t>(int_length);
+  return true;
+}
+
+bool MessageReader::PopArrayOfUint32s(const uint32_t** unsigned_ints,
+                                      size_t* length) {
+  MessageReader array_reader(message_);
+  if (!PopArray(&array_reader))
+    return false;
+  // An empty array is allowed.
+  if (!array_reader.HasMoreData()) {
+    *length = 0;
+    *unsigned_ints = nullptr;
+    return true;
+  }
+  if (!array_reader.CheckDataType(DBUS_TYPE_UINT32))
+    return false;
+  int int_length = 0;
+  dbus_message_iter_get_fixed_array(&array_reader.raw_message_iter_,
+                                    unsigned_ints, &int_length);
   *length = static_cast<size_t>(int_length);
   return true;
 }
@@ -851,15 +903,13 @@ bool MessageReader::PopArrayOfDoubles(const double** doubles, size_t* length) {
   if (!array_reader.CheckDataType(DBUS_TYPE_DOUBLE))
     return false;
   int int_length = 0;
-  dbus_message_iter_get_fixed_array(&array_reader.raw_message_iter_,
-                                    doubles,
+  dbus_message_iter_get_fixed_array(&array_reader.raw_message_iter_, doubles,
                                     &int_length);
   *length = static_cast<size_t>(int_length);
   return true;
 }
 
-bool MessageReader::PopArrayOfStrings(
-    std::vector<std::string> *strings) {
+bool MessageReader::PopArrayOfStrings(std::vector<std::string>* strings) {
   strings->clear();
   MessageReader array_reader(message_);
   if (!PopArray(&array_reader))
@@ -874,7 +924,7 @@ bool MessageReader::PopArrayOfStrings(
 }
 
 bool MessageReader::PopArrayOfObjectPaths(
-    std::vector<ObjectPath> *object_paths) {
+    std::vector<ObjectPath>* object_paths) {
   object_paths->clear();
   MessageReader array_reader(message_);
   if (!PopArray(&array_reader))
@@ -890,8 +940,8 @@ bool MessageReader::PopArrayOfObjectPaths(
 
 bool MessageReader::PopArrayOfBytesAsProto(
     google::protobuf::MessageLite* protobuf) {
-  DCHECK(protobuf != NULL);
-  const char* serialized_buf = NULL;
+  DCHECK(protobuf);
+  const char* serialized_buf = nullptr;
   size_t buf_size = 0;
   if (!PopArrayOfBytes(reinterpret_cast<const uint8_t**>(&serialized_buf),
                        &buf_size)) {
@@ -946,7 +996,7 @@ bool MessageReader::PopVariantOfDouble(double* value) {
 }
 
 bool MessageReader::PopVariantOfString(std::string* value) {
-  char* tmp_value = NULL;
+  char* tmp_value = nullptr;
   const bool success = PopVariantOfBasic(DBUS_TYPE_STRING, &tmp_value);
   if (success)
     value->assign(tmp_value);
@@ -954,7 +1004,7 @@ bool MessageReader::PopVariantOfString(std::string* value) {
 }
 
 bool MessageReader::PopVariantOfObjectPath(ObjectPath* value) {
-  char* tmp_value = NULL;
+  char* tmp_value = nullptr;
   const bool success = PopVariantOfBasic(DBUS_TYPE_OBJECT_PATH, &tmp_value);
   if (success)
     *value = ObjectPath(tmp_value);
@@ -979,8 +1029,7 @@ std::string MessageReader::GetDataSignature() {
 bool MessageReader::CheckDataType(int dbus_type) {
   const int actual_type = dbus_message_iter_get_arg_type(&raw_message_iter_);
   if (actual_type != dbus_type) {
-    VLOG(1) << "Type " << dbus_type  << " is expected but got "
-            << actual_type;
+    VLOG(1) << "Type " << dbus_type << " is expected but got " << actual_type;
     return false;
   }
   return true;
@@ -1003,8 +1052,7 @@ bool MessageReader::PopContainer(int dbus_type, MessageReader* sub_reader) {
 
   if (!CheckDataType(dbus_type))
     return false;
-  dbus_message_iter_recurse(&raw_message_iter_,
-                            &sub_reader->raw_message_iter_);
+  dbus_message_iter_recurse(&raw_message_iter_, &sub_reader->raw_message_iter_);
   dbus_message_iter_next(&raw_message_iter_);
   return true;
 }
@@ -1016,7 +1064,7 @@ bool MessageReader::PopVariantOfBasic(int dbus_type, void* value) {
   return variant_reader.PopBasic(dbus_type, value);
 }
 
-bool MessageReader::PopFileDescriptor(FileDescriptor* value) {
+bool MessageReader::PopFileDescriptor(base::ScopedFD* value) {
   CHECK(IsDBusTypeUnixFdSupported());
 
   int fd = -1;
@@ -1024,8 +1072,7 @@ bool MessageReader::PopFileDescriptor(FileDescriptor* value) {
   if (!success)
     return false;
 
-  value->PutValue(fd);
-  // NB: the caller must check validity before using the value
+  *value = base::ScopedFD(fd);
   return true;
 }
 

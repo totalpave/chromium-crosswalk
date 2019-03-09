@@ -8,6 +8,10 @@
 #include "base/macros.h"
 #include "content/common/content_export.h"
 
+namespace blink {
+class AssociatedInterfaceRegistry;
+}
+
 namespace IPC {
 class Message;
 }
@@ -21,16 +25,17 @@ class CONTENT_EXPORT RenderThreadObserver {
   RenderThreadObserver() {}
   virtual ~RenderThreadObserver() {}
 
+  // Allows handling incoming Mojo requests.
+  virtual void RegisterMojoInterfaces(
+      blink::AssociatedInterfaceRegistry* associated_interfaces) {}
+  virtual void UnregisterMojoInterfaces(
+      blink::AssociatedInterfaceRegistry* associated_interfaces) {}
+
   // Allows filtering of control messages.
   virtual bool OnControlMessageReceived(const IPC::Message& message);
 
-  // Notification that the render process is shutting down.
-  virtual void OnRenderProcessShutdown() {}
-
   // Called when the renderer cache of the plugin list has changed.
   virtual void PluginListChanged() {}
-
-  virtual void IdleNotification() {}
 
   // Called when the network state changes.
   virtual void NetworkStateChanged(bool online) {}

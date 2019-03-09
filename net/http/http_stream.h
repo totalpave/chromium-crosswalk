@@ -17,20 +17,16 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "net/base/completion_callback.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/net_error_details.h"
 #include "net/base/net_errors.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
-#include "net/base/upload_progress.h"
-
-namespace crypto {
-class ECPrivateKey;
-}
+#include "net/http/http_raw_request_headers.h"
 
 namespace net {
 
-class BoundNetLog;
+struct AlternativeService;
 class HttpNetworkSession;
 class HttpRequestHeaders;
 struct HttpRequestInfo;
@@ -38,6 +34,7 @@ class HttpResponseInfo;
 class IOBuffer;
 class IPEndPoint;
 struct LoadTimingInfo;
+class NetLogWithSource;
 class SSLCertRequestInfo;
 class SSLInfo;
 
@@ -47,40 +44,43 @@ class NET_EXPORT_PRIVATE HttpStream {
   virtual ~HttpStream() {}
 
   // Initialize stream.  Must be called before calling SendRequest().
-  // |request_info| must outlive the HttpStream.
+  // The consumer should ensure that request_info points to a valid value till
+  // final response headers are received; after that point, the HttpStream
+  // will not access |*request_info| and it may be deleted. If |can_send_early|
+  // is true, this stream may send data early without confirming the handshake
+  // if this is a resumption of a previously established connection.
   // Returns a net error code, possibly ERR_IO_PENDING.
   virtual int InitializeStream(const HttpRequestInfo* request_info,
+                               bool can_send_early,
                                RequestPriority priority,
-                               const BoundNetLog& net_log,
-                               const CompletionCallback& callback) = 0;
+                               const NetLogWithSource& net_log,
+                               CompletionOnceCallback callback) = 0;
 
   // Writes the headers and uploads body data to the underlying socket.
   // ERR_IO_PENDING is returned if the operation could not be completed
   // synchronously, in which case the result will be passed to the callback
   // when available. Returns OK on success.
   //
-  // The callback will only be invoked once the first full set of headers have
-  // been received, at which point |response| will have been populated with that
-  // set of headers, and is safe to read, until/unless ReadResponseHeaders is
-  // called.
+  // Some fields in |response| may be filled by this method, but it will not
+  // contain complete information until ReadResponseHeaders returns.
   //
   // |response| must remain valid until all sets of headers has been read, or
   // the HttpStream is destroyed. There's typically only one set of
   // headers, except in the case of 1xx responses (See ReadResponseHeaders).
   virtual int SendRequest(const HttpRequestHeaders& request_headers,
                           HttpResponseInfo* response,
-                          const CompletionCallback& callback) = 0;
+                          CompletionOnceCallback callback) = 0;
 
   // Reads from the underlying socket until the next set of response headers
-  // have been completely received.  This may only be called on 1xx responses
-  // after SendRequest has completed successfully, to read the next set of
-  // headers.
+  // have been completely received. Normally this is called once per request,
+  // however it may be called again in the event of a 1xx response to read the
+  // next set of headers.
   //
   // ERR_IO_PENDING is returned if the operation could not be completed
   // synchronously, in which case the result will be passed to the callback when
   // available. Returns OK on success. The response headers are available in
-  // the HttpResponseInfo passed in to original call to SendRequest.
-  virtual int ReadResponseHeaders(const CompletionCallback& callback) = 0;
+  // the HttpResponseInfo passed in the original call to SendRequest.
+  virtual int ReadResponseHeaders(CompletionOnceCallback callback) = 0;
 
   // Reads response body data, up to |buf_len| bytes. |buf_len| should be a
   // reasonable size (<2MB). The number of bytes read is returned, or an
@@ -92,8 +92,9 @@ class NET_EXPORT_PRIVATE HttpStream {
   // callback when available. If the operation is not completed immediately,
   // the socket acquires a reference to the provided buffer until the callback
   // is invoked or the socket is destroyed.
-  virtual int ReadResponseBody(IOBuffer* buf, int buf_len,
-                               const CompletionCallback& callback) = 0;
+  virtual int ReadResponseBody(IOBuffer* buf,
+                               int buf_len,
+                               CompletionOnceCallback callback) = 0;
 
   // Closes the stream.
   // |not_reusable| indicates if the stream can be used for further requests.
@@ -148,6 +149,11 @@ class NET_EXPORT_PRIVATE HttpStream {
   // undefined.
   virtual void GetSSLInfo(SSLInfo* ssl_info) = 0;
 
+  // Returns true and populates |alternative_service| if an alternative service
+  // was used to for this stream. Otherwise returns false.
+  virtual bool GetAlternativeService(
+      AlternativeService* alternative_service) const = 0;
+
   // Get the SSLCertRequestInfo associated with this stream's connection.
   // This should only be called for streams over SSL sockets, otherwise the
   // behavior is undefined.
@@ -157,11 +163,6 @@ class NET_EXPORT_PRIVATE HttpStream {
   // any. Returns true and fills in |endpoint| if it is available; returns false
   // and does not modify |endpoint| if it is unavailable.
   virtual bool GetRemoteEndpoint(IPEndPoint* endpoint) = 0;
-
-  // Signs the EKM value for Token Binding from the TLS layer using |*key| and
-  // puts the result in |*out|. Returns OK or ERR_FAILED.
-  virtual Error GetSignedEKMForTokenBinding(crypto::ECPrivateKey* key,
-                                            std::vector<uint8_t>* out) = 0;
 
   // In the case of an HTTP error or redirect, flush the response body (usually
   // a simple error or "this page has moved") so that we can re-use the
@@ -177,15 +178,14 @@ class NET_EXPORT_PRIVATE HttpStream {
   // Called when the priority of the parent transaction changes.
   virtual void SetPriority(RequestPriority priority) = 0;
 
-  // Queries the UploadDataStream for its progress (bytes sent).
-  virtual UploadProgress GetUploadProgress() const = 0;
-
   // Returns a new (not initialized) stream using the same underlying
   // connection and invalidates the old stream - no further methods should be
   // called on the old stream.  The caller should ensure that the response body
   // from the previous request is drained before calling this method.  If the
   // subclass does not support renewing the stream, NULL is returned.
   virtual HttpStream* RenewStreamForAuth() = 0;
+
+  virtual void SetRequestHeadersCallback(RequestHeadersCallback callback) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(HttpStream);

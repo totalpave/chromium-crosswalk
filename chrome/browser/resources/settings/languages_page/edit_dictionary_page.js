@@ -6,57 +6,147 @@
  * @fileoverview 'settings-edit-dictionary-page' is a sub-page for editing
  * the "dictionary" of custom words used for spell check.
  */
+
+// Max valid word size defined in
+// https://cs.chromium.org/chromium/src/components/spellcheck/common/spellcheck_common.h?l=28
+const MAX_CUSTOM_DICTIONARY_WORD_BYTES = 99;
+
 Polymer({
   is: 'settings-edit-dictionary-page',
 
+  behaviors: [settings.GlobalScrollTargetBehavior],
+
   properties: {
+    /** @private {string} */
+    newWordValue_: String,
+
+    /**
+     * Needed by GlobalScrollTargetBehavior.
+     * @override
+     */
+    subpageRoute: {
+      type: Object,
+      value: settings.routes.EDIT_DICTIONARY,
+    },
+
     /** @private {!Array<string>} */
     words_: {
       type: Array,
-      value: function() { return []; },
+      value: function() {
+        return [];
+      },
+    },
+
+    /** @private {boolean} */
+    hasWords_: {
+      type: Boolean,
+      value: false,
     },
   },
 
-  ready: function() {
-    chrome.languageSettingsPrivate.getSpellcheckWords(function(words) {
-      this.words_ = words;
-    }.bind(this));
+  /** @type {LanguageSettingsPrivate} */
+  languageSettingsPrivate: null,
 
-    // Updates are applied locally so they appear immediately, but we should
-    // listen for changes in case they come from elsewhere.
-    chrome.languageSettingsPrivate.onCustomDictionaryChanged.addListener(
+  /** @override */
+  ready: function() {
+    this.languageSettingsPrivate = settings.languageSettingsPrivateApiForTest ||
+        /** @type {!LanguageSettingsPrivate} */
+        (chrome.languageSettingsPrivate);
+
+    this.languageSettingsPrivate.getSpellcheckWords(words => {
+      this.hasWords_ = words.length > 0;
+      this.words_ = words;
+    });
+
+    this.languageSettingsPrivate.onCustomDictionaryChanged.addListener(
         this.onCustomDictionaryChanged_.bind(this));
 
-    // Add a key handler for the paper-input.
+    // Add a key handler for the new-word input.
     this.$.keys.target = this.$.newWord;
   },
 
   /**
-   * Handles updates to the word list. Additions triggered by this element are
-   * de-duped so the word list remains a set. Words are appended to the end
-   * instead of re-sorting the list so it's clear what words were added.
+   * Check if the field is empty or invalid.
+   * @param {string} word
+   * @return {boolean}
+   * @private
+   */
+  disableAddButton_: function(word) {
+    return word.trim().length == 0 || this.isWordInvalid_(word);
+  },
+
+  /**
+   * If the word is invalid, returns true (or a message if one is provided).
+   * Otherwise returns false.
+   * @param {string} word
+   * @param {string} duplicateError
+   * @param {string} lengthError
+   * @return {string|boolean}
+   * @private
+   */
+  isWordInvalid_: function(word, duplicateError, lengthError) {
+    const trimmedWord = word.trim();
+    if (this.words_.indexOf(trimmedWord) != -1) {
+      return duplicateError || true;
+    } else if (trimmedWord.length > MAX_CUSTOM_DICTIONARY_WORD_BYTES) {
+      return lengthError || true;
+    }
+
+    return false;
+  },
+
+  /**
+   * Handles updates to the word list. Additions are unshifted to the top
+   * of the list so that users can see them easily.
    * @param {!Array<string>} added
    * @param {!Array<string>} removed
    */
   onCustomDictionaryChanged_: function(added, removed) {
-    for (var i = 0; i < removed.length; i++)
-      this.arrayDelete('words_', removed[i]);
+    const wasEmpty = this.words_.length == 0;
 
-    for (var i = 0; i < added.length; i++) {
-      if (this.words_.indexOf(added[i]) == -1)
-        this.push('words_', added[i]);
+    for (const word of removed) {
+      this.arrayDelete('words_', word);
+    }
+
+    if (this.words_.length === 0 && added.length === 0 && !wasEmpty) {
+      this.hasWords_ = false;
+    }
+
+    // This is a workaround to ensure the dom-if is set to true before items
+    // are rendered so that focus works correctly in Polymer 2; see
+    // https://crbug.com/912523.
+    if (wasEmpty && added.length > 0) {
+      this.hasWords_ = true;
+    }
+
+    for (const word of added) {
+      if (this.words_.indexOf(word) == -1) {
+        this.unshift('words_', word);
+      }
+    }
+
+    // When adding a word to an _empty_ list, the template is expanded. This
+    // is a workaround to resize the iron-list as well.
+    // TODO(dschuyler): Remove this hack after iron-list no longer needs
+    // this workaround to update the list at the same time the template
+    // wrapping the list is expanded.
+    if (wasEmpty && this.words_.length > 0) {
+      Polymer.dom.flush();
+      this.$$('#list').notifyResize();
     }
   },
 
   /**
-   * Handles Enter and Escape key presses for the paper-input.
-   * @param {!{detail: !{key: string}}} e
+   * Handles Enter and Escape key presses for the new-word input.
+   * @param {!CustomEvent<!{key: string}>} e
    */
   onKeysPress_: function(e) {
-    if (e.detail.key == 'enter')
+    if (e.detail.key == 'enter' &&
+        !this.disableAddButton_(this.newWordValue_)) {
       this.addWordFromInput_();
-    else if (e.detail.key == 'esc')
+    } else if (e.detail.key == 'esc') {
       e.detail.keyboardEvent.target.value = '';
+    }
   },
 
   /**
@@ -68,33 +158,24 @@ Polymer({
   },
 
   /**
-   * Handles tapping on a paper-item's Remove Word icon button.
+   * Handles tapping on a "Remove word" icon button.
    * @param {!{model: !{item: string}}} e
    */
   onRemoveWordTap_: function(e) {
-    chrome.languageSettingsPrivate.removeSpellcheckWord(e.model.item);
-    this.arrayDelete('words_', e.model.item);
+    this.languageSettingsPrivate.removeSpellcheckWord(e.model.item);
   },
 
   /**
-   * Adds the word in the paper-input to the dictionary, also appending it
-   * to the end of the list of words shown to the user.
+   * Adds the word in the new-word input to the dictionary.
    */
   addWordFromInput_: function() {
     // Spaces are allowed, but removing leading and trailing whitespace.
-    var word = this.$.newWord.value.trim();
-    this.$.newWord.value = '';
-    if (!word)
+    const word = this.newWordValue_.trim();
+    this.newWordValue_ = '';
+    if (!word) {
       return;
-
-    var index = this.words_.indexOf(word);
-    if (index == -1) {
-      chrome.languageSettingsPrivate.addSpellcheckWord(word);
-      this.push('words_', word);
     }
 
-    // Scroll to the word (usually the bottom, or to the index if the word
-    // is already present).
-    this.$.list.scrollToIndex(index);
+    this.languageSettingsPrivate.addSpellcheckWord(word);
   },
 });

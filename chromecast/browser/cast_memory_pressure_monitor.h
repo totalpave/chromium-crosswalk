@@ -13,22 +13,25 @@ namespace chromecast {
 
 // Memory pressure monitor for Cast: polls for current memory
 // usage periodically and sends memory pressure notifications.
-// TODO(halliwell): switch to //components/memory_pressure when that's
-// ready.
 class CastMemoryPressureMonitor : public base::MemoryPressureMonitor {
  public:
   CastMemoryPressureMonitor();
   ~CastMemoryPressureMonitor() override;
 
   // base::MemoryPressureMonitor implementation:
-  MemoryPressureLevel GetCurrentPressureLevel() const override;
+  MemoryPressureLevel GetCurrentPressureLevel() override;
+  void SetDispatchCallback(const DispatchCallback& callback) override;
 
  private:
   void PollPressureLevel();
   void UpdateMemoryPressureLevel(MemoryPressureLevel new_level);
 
+  const float critical_memory_fraction_;
+  const float moderate_memory_fraction_;
+
   MemoryPressureLevel current_level_;
   const int system_reserved_kb_;
+  DispatchCallback dispatch_callback_;
   base::WeakPtrFactory<CastMemoryPressureMonitor> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(CastMemoryPressureMonitor);

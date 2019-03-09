@@ -8,8 +8,8 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/metrics/user_metrics.h"
-#include "base/test/histogram_tester.h"
+#include "base/strings/string16.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_simple_task_runner.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_service.h"
@@ -19,6 +19,11 @@
 #include "components/prefs/testing_pref_service.h"
 #include "testing/gtest/include/gtest/gtest-param-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/platform_test.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 // An MobileSessionShutdownMetricsProvider that returns fake values for the last
 // session environment query methods.
@@ -33,11 +38,11 @@ class MobileSessionShutdownMetricsProviderForTesting
     is_first_launch_after_upgrade_ = value;
   }
   void set_has_crash_logs(bool value) { has_crash_logs_ = value; }
-  void set_has_uploaded_crash_reports_in_background(bool value) {
-    has_uploaded_crash_reports_in_background_ = value;
-  }
   void set_received_memory_warning_before_last_shutdown(bool value) {
     received_memory_warning_before_last_shutdown_ = value;
+  }
+  void set_was_last_shutdown_frozen(bool value) {
+    was_last_shutdown_frozen_ = value;
   }
 
  protected:
@@ -46,28 +51,25 @@ class MobileSessionShutdownMetricsProviderForTesting
     return is_first_launch_after_upgrade_;
   }
   bool HasCrashLogs() override { return has_crash_logs_; }
-  bool HasUploadedCrashReportsInBackground() override {
-    return has_uploaded_crash_reports_in_background_;
-  }
   bool ReceivedMemoryWarningBeforeLastShutdown() override {
     return received_memory_warning_before_last_shutdown_;
   }
+  bool LastSessionEndedFrozen() override { return was_last_shutdown_frozen_; }
 
  private:
   bool is_first_launch_after_upgrade_;
   bool has_crash_logs_;
-  bool has_uploaded_crash_reports_in_background_;
   bool received_memory_warning_before_last_shutdown_;
+  bool was_last_shutdown_frozen_;
 
   DISALLOW_COPY_AND_ASSIGN(MobileSessionShutdownMetricsProviderForTesting);
 };
 
 class MobileSessionShutdownMetricsProviderTest
-    : public testing::TestWithParam<int> {
+    : public PlatformTest,
+      public testing::WithParamInterface<int> {
  public:
-  MobileSessionShutdownMetricsProviderTest()
-      : task_runner_(new base::TestSimpleTaskRunner) {
-    base::SetRecordActionTaskRunner(task_runner_);
+  MobileSessionShutdownMetricsProviderTest() {
     metrics::MetricsService::RegisterPrefs(local_state_.registry());
   }
 
@@ -78,7 +80,6 @@ class MobileSessionShutdownMetricsProviderTest
   std::unique_ptr<metrics::MetricsService> metrics_service_;
   std::unique_ptr<MobileSessionShutdownMetricsProviderForTesting>
       metrics_provider_;
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MobileSessionShutdownMetricsProviderTest);
@@ -93,13 +94,12 @@ class MobileSessionShutdownMetricsProviderTest
 // most significant):
 //  - received memory warning;
 //  - crash log present;
-//  - uploaded crash reports in background;
 //  - last shutdown was clean;
 //  - first launch after upgrade.
 TEST_P(MobileSessionShutdownMetricsProviderTest, ProvideStabilityMetrics) {
   const bool received_memory_warning = GetParam() % 2;
   const bool has_crash_logs = (GetParam() >> 1) % 2;
-  const bool has_uploaded_crash_reports_in_background = (GetParam() >> 2) % 2;
+  const bool was_last_shutdown_frozen = (GetParam() >> 2) % 2;
   const bool was_last_shutdown_clean = (GetParam() >> 3) % 2;
   const bool is_first_launch_after_upgrade = (GetParam() >> 4) % 2;
 
@@ -109,10 +109,10 @@ TEST_P(MobileSessionShutdownMetricsProviderTest, ProvideStabilityMetrics) {
       SHUTDOWN_IN_FOREGROUND_NO_CRASH_LOG_WITH_MEMORY_WARNING,
       SHUTDOWN_IN_FOREGROUND_WITH_CRASH_LOG_NO_MEMORY_WARNING,
       SHUTDOWN_IN_FOREGROUND_WITH_CRASH_LOG_WITH_MEMORY_WARNING,
-      SHUTDOWN_IN_FOREGROUND_WITH_CRASH_LOG_NO_MEMORY_WARNING,
-      SHUTDOWN_IN_FOREGROUND_WITH_CRASH_LOG_WITH_MEMORY_WARNING,
-      SHUTDOWN_IN_FOREGROUND_WITH_CRASH_LOG_NO_MEMORY_WARNING,
-      SHUTDOWN_IN_FOREGROUND_WITH_CRASH_LOG_WITH_MEMORY_WARNING,
+      SHUTDOWN_IN_FOREGROUND_WITH_MAIN_THREAD_FROZEN,
+      SHUTDOWN_IN_FOREGROUND_WITH_MAIN_THREAD_FROZEN,
+      SHUTDOWN_IN_FOREGROUND_WITH_MAIN_THREAD_FROZEN,
+      SHUTDOWN_IN_FOREGROUND_WITH_MAIN_THREAD_FROZEN,
       // If wasLastShutdownClean is true, the memory warning and crash log don't
       // matter.
       SHUTDOWN_IN_BACKGROUND,
@@ -147,7 +147,7 @@ TEST_P(MobileSessionShutdownMetricsProviderTest, ProvideStabilityMetrics) {
                           was_last_shutdown_clean);
   metrics_state_ = metrics::MetricsStateManager::Create(
       &local_state_, new metrics::TestEnabledStateProvider(false, false),
-      metrics::MetricsStateManager::StoreClientInfoCallback(),
+      base::string16(), metrics::MetricsStateManager::StoreClientInfoCallback(),
       metrics::MetricsStateManager::LoadClientInfoCallback());
   metrics_service_.reset(new metrics::MetricsService(
       metrics_state_.get(), &metrics_client_, &local_state_));
@@ -162,8 +162,7 @@ TEST_P(MobileSessionShutdownMetricsProviderTest, ProvideStabilityMetrics) {
   metrics_provider_->set_received_memory_warning_before_last_shutdown(
       received_memory_warning);
   metrics_provider_->set_has_crash_logs(has_crash_logs);
-  metrics_provider_->set_has_uploaded_crash_reports_in_background(
-      has_uploaded_crash_reports_in_background);
+  metrics_provider_->set_was_last_shutdown_frozen(was_last_shutdown_frozen);
 
   // Create a histogram tester for verifying samples written to the shutdown
   // type histogram.
@@ -171,11 +170,11 @@ TEST_P(MobileSessionShutdownMetricsProviderTest, ProvideStabilityMetrics) {
 
   // Now call the method under test and verify exactly one sample is written to
   // the expected bucket.
-  metrics_provider_->ProvideInitialStabilityMetrics(nullptr);
+  metrics_provider_->ProvidePreviousSessionData(nullptr);
   histogram_tester.ExpectUniqueSample("Stability.MobileSessionShutdownType",
                                       expected_buckets[GetParam()], 1);
 }
 
-INSTANTIATE_TEST_CASE_P(/* No InstantiationName */,
-                        MobileSessionShutdownMetricsProviderTest,
-                        testing::Range(0, 32));
+INSTANTIATE_TEST_SUITE_P(/* No InstantiationName */,
+                         MobileSessionShutdownMetricsProviderTest,
+                         testing::Range(0, 32));

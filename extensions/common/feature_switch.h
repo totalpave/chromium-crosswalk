@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/optional.h"
 
 namespace base {
 class CommandLine;
@@ -17,31 +18,23 @@ namespace extensions {
 
 // A switch that can turn a feature on or off. Typically controlled via
 // command-line switches but can be overridden, e.g., for testing.
-// Can also integrate with Finch's field trials.
 // A note about priority:
 // 1. If an override is present, the override state will be used.
 // 2. If there is no switch name, the default value will be used. This is
 //    because certain features are specifically designed *not* to be able to
-//    be turned off via command-line, so we can't consult it (or, by extension,
-//    the finch config).
+//    be turned off via command-line, so we can't consult it.
 // 3. If there is a switch name, and the switch is present in the command line,
 //    the command line value will be used.
-// 4. If there is a finch experiment associated and applicable to the machine,
-//    the finch value will be used.
-// 5. Otherwise, the default value is used.
+// 4. Otherwise, the default value is used.
 class FeatureSwitch {
  public:
-  static FeatureSwitch* easy_off_store_install();
   static FeatureSwitch* force_dev_mode_highlighting();
   static FeatureSwitch* prompt_for_external_extensions();
   static FeatureSwitch* error_console();
   static FeatureSwitch* enable_override_bookmarks_ui();
-  static FeatureSwitch* extension_action_redesign();
-  static FeatureSwitch* scripts_require_action();
   static FeatureSwitch* embedded_extension_options();
   static FeatureSwitch* trace_app_source();
-  static FeatureSwitch* media_router();
-  static FeatureSwitch* media_router_with_cast_extension();
+  static FeatureSwitch* load_media_router_component_extension();
 
   enum DefaultValue {
     DEFAULT_ENABLED,
@@ -69,32 +62,27 @@ class FeatureSwitch {
   // by the default and override values.
   FeatureSwitch(const char* switch_name,
                 DefaultValue default_value);
-  FeatureSwitch(const char* switch_name,
-                const char* field_trial_name,
-                DefaultValue default_value);
   FeatureSwitch(const base::CommandLine* command_line,
                 const char* switch_name,
-                DefaultValue default_value);
-  FeatureSwitch(const base::CommandLine* command_line,
-                const char* switch_name,
-                const char* field_trial_name,
                 DefaultValue default_value);
 
   // Consider using ScopedOverride instead.
   void SetOverrideValue(OverrideValue value);
   OverrideValue GetOverrideValue() const;
 
+  bool HasValue() const;
   bool IsEnabled() const;
 
  private:
   std::string GetLegacyEnableFlag() const;
   std::string GetLegacyDisableFlag() const;
+  bool ComputeValue() const;
 
   const base::CommandLine* command_line_;
   const char* switch_name_;
-  const char* field_trial_name_;
   bool default_value_;
   OverrideValue override_value_;
+  mutable base::Optional<bool> cached_value_;
 
   DISALLOW_COPY_AND_ASSIGN(FeatureSwitch);
 };

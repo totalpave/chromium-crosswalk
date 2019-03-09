@@ -4,16 +4,17 @@
 
 #include "crypto/hmac.h"
 
-#include <openssl/hmac.h>
 #include <stddef.h>
 
 #include <algorithm>
+#include <string>
 
 #include "base/logging.h"
 #include "base/stl_util.h"
 #include "crypto/openssl_util.h"
 #include "crypto/secure_util.h"
 #include "crypto/symmetric_key.h"
+#include "third_party/boringssl/src/include/openssl/hmac.h"
 
 namespace crypto {
 
@@ -25,7 +26,7 @@ HMAC::HMAC(HashAlgorithm hash_alg) : hash_alg_(hash_alg), initialized_(false) {
 HMAC::~HMAC() {
   // Zero out key copy.
   key_.assign(key_.size(), 0);
-  STLClearObject(&key_);
+  base::STLClearObject(&key_);
 }
 
 size_t HMAC::DigestLength() const {
@@ -48,16 +49,11 @@ bool HMAC::Init(const unsigned char* key, size_t key_length) {
   return true;
 }
 
-bool HMAC::Init(SymmetricKey* key) {
-  std::string raw_key;
-  bool result = key->GetRawKey(&raw_key) && Init(raw_key);
-  // Zero out key copy.  This might get optimized away, but one can hope.
-  // Using std::string to store key info at all is a larger problem.
-  std::fill(raw_key.begin(), raw_key.end(), 0);
-  return result;
+bool HMAC::Init(const SymmetricKey* key) {
+  return Init(key->key());
 }
 
-bool HMAC::Sign(const base::StringPiece& data,
+bool HMAC::Sign(base::StringPiece data,
                 unsigned char* digest,
                 size_t digest_length) const {
   DCHECK(initialized_);
@@ -69,15 +65,14 @@ bool HMAC::Sign(const base::StringPiece& data,
                   data.size(), result.safe_buffer(), nullptr);
 }
 
-bool HMAC::Verify(const base::StringPiece& data,
-                  const base::StringPiece& digest) const {
+bool HMAC::Verify(base::StringPiece data, base::StringPiece digest) const {
   if (digest.size() != DigestLength())
     return false;
   return VerifyTruncated(data, digest);
 }
 
-bool HMAC::VerifyTruncated(const base::StringPiece& data,
-                           const base::StringPiece& digest) const {
+bool HMAC::VerifyTruncated(base::StringPiece data,
+                           base::StringPiece digest) const {
   if (digest.empty())
     return false;
   size_t digest_length = DigestLength();

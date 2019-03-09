@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "gin/arguments.h"
@@ -39,7 +40,10 @@ class MyInterceptor : public Wrappable<MyInterceptor>,
     if (property == "value") {
       return ConvertToV8(isolate, value_);
     } else if (property == "func") {
-      return GetFunctionTemplate(isolate, "func")->GetFunction();
+      v8::Local<v8::Context> context = isolate->GetCurrentContext();
+      return GetFunctionTemplate(isolate, "func")
+          ->GetFunction(context)
+          .ToLocalChecked();
     } else {
       return v8::Local<v8::Value>();
     }
@@ -91,7 +95,7 @@ class MyInterceptor : public Wrappable<MyInterceptor>,
         IndexedPropertyInterceptor(isolate, this),
         value_(0),
         template_cache_(isolate) {}
-  ~MyInterceptor() override {}
+  ~MyInterceptor() override = default;
 
   // gin::Wrappable
   ObjectTemplateBuilder GetObjectTemplateBuilder(
@@ -114,7 +118,8 @@ class MyInterceptor : public Wrappable<MyInterceptor>,
     if (!function_template.IsEmpty())
       return function_template;
     function_template = CreateFunctionTemplate(
-        isolate, base::Bind(&MyInterceptor::Call), HolderIsFirstArgument);
+        isolate, base::BindRepeating(&MyInterceptor::Call),
+        InvokerOptions{true, nullptr});
     template_cache_.Set(name, function_template);
     return function_template;
   }
@@ -143,14 +148,18 @@ class InterceptorTest : public V8Test {
     EXPECT_FALSE(source.IsEmpty());
 
     gin::TryCatch try_catch(isolate);
-    v8::Local<v8::Script> script = v8::Script::Compile(source);
-    EXPECT_FALSE(script.IsEmpty());
-    v8::Local<v8::Value> val = script->Run();
+    v8::Local<v8::Script> script =
+        v8::Script::Compile(context_.Get(isolate), source).ToLocalChecked();
+    v8::Local<v8::Value> val =
+        script->Run(context_.Get(isolate)).ToLocalChecked();
     EXPECT_FALSE(val.IsEmpty());
     v8::Local<v8::Function> func;
     EXPECT_TRUE(ConvertFromV8(isolate, val, &func));
-    v8::Local<v8::Value> argv[] = {ConvertToV8(isolate, obj.get()), };
-    func->Call(v8::Undefined(isolate), 1, argv);
+    v8::Local<v8::Value> argv[] = {
+        ConvertToV8(isolate, obj.get()).ToLocalChecked(),
+    };
+    func->Call(context_.Get(isolate), v8::Undefined(isolate), 1, argv)
+        .ToLocalChecked();
     EXPECT_FALSE(try_catch.HasCaught());
     EXPECT_EQ("", try_catch.GetStackTrace());
 

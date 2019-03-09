@@ -21,6 +21,7 @@ class GL_EXPORT GLSurfaceWGL : public GLSurface {
   void* GetDisplay() override;
 
   static bool InitializeOneOff();
+  static bool InitializeExtensionSettingsOneOff();
   static void InitializeOneOffForTesting();
   static HDC GetDisplayDC();
 
@@ -29,6 +30,7 @@ class GL_EXPORT GLSurfaceWGL : public GLSurface {
 
  private:
   DISALLOW_COPY_AND_ASSIGN(GLSurfaceWGL);
+  static bool initialized_;
 };
 
 // A surface used to render to a view.
@@ -37,21 +39,25 @@ class GL_EXPORT NativeViewGLSurfaceWGL : public GLSurfaceWGL {
   explicit NativeViewGLSurfaceWGL(gfx::AcceleratedWidget window);
 
   // Implement GLSurface.
-  bool Initialize(GLSurface::Format format) override;
+  bool Initialize(GLSurfaceFormat format) override;
   void Destroy() override;
   bool Resize(const gfx::Size& size,
               float scale_factor,
+              ColorSpace color_space,
               bool has_alpha) override;
   bool Recreate() override;
   bool IsOffscreen() override;
-  gfx::SwapResult SwapBuffers() override;
+  gfx::SwapResult SwapBuffers(PresentationCallback callback) override;
   gfx::Size GetSize() override;
   void* GetHandle() override;
+  GLSurfaceFormat GetFormat() override;
+  bool SupportsPresentationCallback() override;
+  void SetVSyncEnabled(bool enabled) override;
 
  private:
   ~NativeViewGLSurfaceWGL() override;
 
-  GLSurface::Format format_ = GLSurface::SURFACE_DEFAULT;
+  GLSurfaceFormat format_;
 
   gfx::AcceleratedWidget window_;
   gfx::AcceleratedWidget child_window_;
@@ -67,12 +73,13 @@ class GL_EXPORT PbufferGLSurfaceWGL : public GLSurfaceWGL {
   explicit PbufferGLSurfaceWGL(const gfx::Size& size);
 
   // Implement GLSurface.
-  bool Initialize(GLSurface::Format format) override;
+  bool Initialize(GLSurfaceFormat format) override;
   void Destroy() override;
   bool IsOffscreen() override;
-  gfx::SwapResult SwapBuffers() override;
+  gfx::SwapResult SwapBuffers(PresentationCallback callback) override;
   gfx::Size GetSize() override;
   void* GetHandle() override;
+  GLSurfaceFormat GetFormat() override;
 
  private:
   ~PbufferGLSurfaceWGL() override;

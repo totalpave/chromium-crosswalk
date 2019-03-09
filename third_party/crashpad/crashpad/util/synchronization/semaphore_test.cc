@@ -16,6 +16,7 @@
 
 #include <sys/types.h>
 
+#include "base/stl_util.h"
 #include "gtest/gtest.h"
 
 #if defined(OS_POSIX)
@@ -40,7 +41,22 @@ TEST(Semaphore, TimedWait) {
 
 TEST(Semaphore, TimedWaitTimeout) {
   Semaphore semaphore(0);
-  EXPECT_FALSE(semaphore.TimedWait(0.01));  // 10ms
+  semaphore.Signal();
+  constexpr double kTenMs = 0.01;
+  EXPECT_TRUE(semaphore.TimedWait(kTenMs));
+  EXPECT_FALSE(semaphore.TimedWait(kTenMs));
+}
+
+TEST(Semaphore, TimedWaitInfinite_0) {
+  Semaphore semaphore(0);
+  semaphore.Signal();
+  EXPECT_TRUE(semaphore.TimedWait(std::numeric_limits<double>::infinity()));
+}
+
+TEST(Semaphore, TimedWaitInfinite_1) {
+  Semaphore semaphore(1);
+  EXPECT_TRUE(semaphore.TimedWait(std::numeric_limits<double>::infinity()));
+  semaphore.Signal();
 }
 
 struct ThreadMainInfo {
@@ -73,20 +89,20 @@ ThreadMain(void* argument) {
 void StartThread(ThreadMainInfo* info) {
 #if defined(OS_POSIX)
   int rv = pthread_create(&info->pthread, nullptr, ThreadMain, info);
-  ASSERT_EQ(0, rv) << "pthread_create";
+  ASSERT_EQ(rv, 0) << "pthread_create";
 #elif defined(OS_WIN)
   info->thread = CreateThread(nullptr, 0, ThreadMain, info, 0, nullptr);
-  ASSERT_NE(nullptr, info->thread) << "CreateThread";
+  ASSERT_NE(info->thread, nullptr) << "CreateThread";
 #endif  // OS_POSIX
 }
 
 void JoinThread(ThreadMainInfo* info) {
 #if defined(OS_POSIX)
   int rv = pthread_join(info->pthread, nullptr);
-  EXPECT_EQ(0, rv) << "pthread_join";
+  EXPECT_EQ(rv, 0) << "pthread_join";
 #elif defined(OS_WIN)
   DWORD result = WaitForSingleObject(info->thread, INFINITE);
-  EXPECT_EQ(WAIT_OBJECT_0, result) << "WaitForSingleObject";
+  EXPECT_EQ(result, WAIT_OBJECT_0) << "WaitForSingleObject";
 #endif  // OS_POSIX
 }
 
@@ -108,10 +124,9 @@ TEST(Semaphore, TenThreaded) {
   // resources (10), and the threads each try to obtain the resource a different
   // number of times.
   Semaphore semaphore(5);
-  const size_t kThreads = 10;
-  ThreadMainInfo info[kThreads];
+  ThreadMainInfo info[10];
   size_t iterations = 0;
-  for (size_t index = 0; index < kThreads; ++index) {
+  for (size_t index = 0; index < base::size(info); ++index) {
     info[index].semaphore = &semaphore;
     info[index].iterations = index;
     iterations += info[index].iterations;
@@ -123,7 +138,7 @@ TEST(Semaphore, TenThreaded) {
     semaphore.Signal();
   }
 
-  for (size_t index = 0; index < kThreads; ++index) {
+  for (size_t index = 0; index < base::size(info); ++index) {
     JoinThread(&info[index]);
   }
 }

@@ -4,9 +4,13 @@
 
 #include "chrome/test/chromedriver/chrome/console_logger.h"
 
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "base/compiler_specific.h"
+#include "base/containers/queue.h"
 #include "base/format_macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/chrome/log.h"
@@ -19,14 +23,14 @@ namespace {
 class FakeDevToolsClient : public StubDevToolsClient {
  public:
   explicit FakeDevToolsClient(const std::string& id)
-      : id_(id), listener_(NULL) {}
+      : id_(id), listener_(nullptr) {}
   ~FakeDevToolsClient() override {}
 
   std::string PopSentCommand() {
     std::string command;
     if (!sent_command_queue_.empty()) {
       command = sent_command_queue_.front();
-      sent_command_queue_.pop_front();
+      sent_command_queue_.pop();
     }
     return command;
   }
@@ -43,7 +47,14 @@ class FakeDevToolsClient : public StubDevToolsClient {
       const std::string& method,
       const base::DictionaryValue& params,
       std::unique_ptr<base::DictionaryValue>* result) override {
-    sent_command_queue_.push_back(method);
+    if (method == "Log.enable") {
+      // FakeDevToolsClient emulates Chrome 53 and earlier versions, which do
+      // not implement the Log.enable command. ConsoleLogger functionality for
+      // Chrome 54+ is tested by end-to-end tests in run_py_tests.py.
+      return Status(kUnknownError, "unhandled inspector error: "
+          "{\"code\":-32601,\"message\":\"'Log.enable' wasn't found\"}");
+    }
+    sent_command_queue_.push(method);
     return Status(kOk);
   }
 
@@ -56,7 +67,7 @@ class FakeDevToolsClient : public StubDevToolsClient {
 
  private:
   const std::string id_;  // WebView id.
-  std::list<std::string> sent_command_queue_;  // Commands that were sent.
+  base::queue<std::string> sent_command_queue_;  // Commands that were sent.
   DevToolsEventListener* listener_;  // The fake allows only one event listener.
 };
 
@@ -80,19 +91,26 @@ class FakeLog : public Log {
                            const std::string& source,
                            const std::string& message) override;
 
-  const ScopedVector<LogEntry>& GetEntries() {
+  bool Emptied() const override;
+
+  const std::vector<std::unique_ptr<LogEntry>>& GetEntries() {
     return entries_;
   }
 
-private:
-  ScopedVector<LogEntry> entries_;
+ private:
+  std::vector<std::unique_ptr<LogEntry>> entries_;
 };
 
 void FakeLog::AddEntryTimestamped(const base::Time& timestamp,
                                   Level level,
                                   const std::string& source,
                                   const std::string& message) {
-  entries_.push_back(new LogEntry(timestamp, level, source, message));
+  entries_.push_back(
+      std::make_unique<LogEntry>(timestamp, level, source, message));
+}
+
+bool FakeLog::Emptied() const {
+  return true;
 }
 
 void ValidateLogEntry(const LogEntry *entry,
@@ -112,17 +130,17 @@ void ConsoleLogParams(base::DictionaryValue* out_params,
                       int line,
                       int column,
                       const char* text) {
-  if (source != NULL)
+  if (source)
     out_params->SetString("message.source", source);
-  if (url != NULL)
+  if (url)
     out_params->SetString("message.url", url);
-  if (level != NULL)
+  if (level)
     out_params->SetString("message.level", level);
   if (line != -1)
     out_params->SetInteger("message.line", line);
   if (column != -1)
     out_params->SetInteger("message.column", column);
-  if (text != NULL)
+  if (text)
     out_params->SetString("message.text", text);
 }
 
@@ -139,17 +157,17 @@ TEST(ConsoleLogger, ConsoleMessages) {
   EXPECT_TRUE(client.PopSentCommand().empty());
 
   base::DictionaryValue params1;  // All fields are set.
-  ConsoleLogParams(&params1, "source1", "url1", "debug", 10, 1, "text1");
+  ConsoleLogParams(&params1, "source1", "url1", "verbose", 10, 1, "text1");
   ASSERT_EQ(kOk, client.TriggerEvent("Console.messageAdded", params1).code());
   // Ignored -- wrong method.
   ASSERT_EQ(kOk, client.TriggerEvent("Console.gaga", params1).code());
 
   base::DictionaryValue params2;  // All optionals are not set.
-  ConsoleLogParams(&params2, "source2", NULL, "log", -1, -1, "text2");
+  ConsoleLogParams(&params2, "source2", nullptr, "log", -1, -1, "text2");
   ASSERT_EQ(kOk, client.TriggerEvent("Console.messageAdded", params2).code());
 
   base::DictionaryValue params3;  // Line without column, no source.
-  ConsoleLogParams(&params3, NULL, "url3", "warning", 30, -1, "text3");
+  ConsoleLogParams(&params3, nullptr, "url3", "warning", 30, -1, "text3");
   ASSERT_EQ(kOk, client.TriggerEvent("Console.messageAdded", params3).code());
 
   base::DictionaryValue params4;  // Column without line.
@@ -161,11 +179,11 @@ TEST(ConsoleLogger, ConsoleMessages) {
   ASSERT_EQ(kOk, client.TriggerEvent("Console.messageAdded", params5).code());
 
   base::DictionaryValue params6;  // Unset level.
-  ConsoleLogParams(&params6, "source6", "url6", NULL, 60, 6, NULL);
+  ConsoleLogParams(&params6, "source6", "url6", nullptr, 60, 6, nullptr);
   ASSERT_EQ(kOk, client.TriggerEvent("Console.messageAdded", params6).code());
 
   base::DictionaryValue params7;  // No text.
-  ConsoleLogParams(&params7, "source7", "url7", "log", -1, -1, NULL);
+  ConsoleLogParams(&params7, "source7", "url7", "log", -1, -1, nullptr);
   ASSERT_EQ(kOk, client.TriggerEvent("Console.messageAdded", params7).code());
 
   base::DictionaryValue params8;  // No message object.
@@ -175,24 +193,24 @@ TEST(ConsoleLogger, ConsoleMessages) {
   EXPECT_TRUE(client.PopSentCommand().empty());  // No other commands sent.
 
   ASSERT_EQ(8u, log.GetEntries().size());
-  ValidateLogEntry(log.GetEntries()[0], Log::kDebug, "source1",
+  ValidateLogEntry(log.GetEntries()[0].get(), Log::kDebug, "source1",
                    "url1 10:1 text1");
-  ValidateLogEntry(log.GetEntries()[1], Log::kInfo, "source2",
+  ValidateLogEntry(log.GetEntries()[1].get(), Log::kInfo, "source2",
                    "source2 - text2");
-  ValidateLogEntry(log.GetEntries()[2], Log::kWarning, "", "url3 30 text3");
-  ValidateLogEntry(log.GetEntries()[3], Log::kError, "source4",
+  ValidateLogEntry(log.GetEntries()[2].get(), Log::kWarning, "",
+                   "url3 30 text3");
+  ValidateLogEntry(log.GetEntries()[3].get(), Log::kError, "source4",
                    "url4 - text4");
   ValidateLogEntry(
-      log.GetEntries()[4], Log::kWarning, "",
+      log.GetEntries()[4].get(), Log::kWarning, "",
       "{\"message\":{\"column\":5,\"level\":\"gaga\",\"line\":50,"
       "\"source\":\"source5\",\"text\":\"ulala\",\"url\":\"url5\"}}");
-  ValidateLogEntry(
-      log.GetEntries()[5], Log::kWarning, "",
-      "{\"message\":{\"column\":6,\"line\":60,"
-      "\"source\":\"source6\",\"url\":\"url6\"}}");
-  ValidateLogEntry(
-      log.GetEntries()[6], Log::kWarning, "",
-      "{\"message\":{\"level\":\"log\","
-      "\"source\":\"source7\",\"url\":\"url7\"}}");
-  ValidateLogEntry(log.GetEntries()[7], Log::kWarning, "", "{\"gaga\":8}");
+  ValidateLogEntry(log.GetEntries()[5].get(), Log::kWarning, "",
+                   "{\"message\":{\"column\":6,\"line\":60,"
+                   "\"source\":\"source6\",\"url\":\"url6\"}}");
+  ValidateLogEntry(log.GetEntries()[6].get(), Log::kWarning, "",
+                   "{\"message\":{\"level\":\"log\","
+                   "\"source\":\"source7\",\"url\":\"url7\"}}");
+  ValidateLogEntry(log.GetEntries()[7].get(), Log::kWarning, "",
+                   "{\"gaga\":8}");
 }

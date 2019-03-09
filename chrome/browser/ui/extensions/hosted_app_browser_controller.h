@@ -8,40 +8,137 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/optional.h"
+#include "base/strings/string16.h"
+#include "chrome/browser/engagement/site_engagement_observer.h"
+#include "chrome/browser/extensions/extension_uninstall_dialog.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "third_party/skia/include/core/SkColor.h"
 
 class Browser;
-class Profile;
+
+namespace gfx {
+class ImageSkia;
+}
 
 namespace extensions {
 
+// Returns true if |page_url| is in the scope of the app for |app_url|. If the
+// app has no scope defined (as in a bookmark app), we fall back to checking
+// |page_url| has the same origin as |app_url|.
+bool IsSameScope(const GURL& app_url,
+                 const GURL& page_url,
+                 content::BrowserContext* profile);
+
+// TODO(loyso): Erase this histogram. crbug.com/918089.
+extern const char kPwaWindowEngagementTypeHistogram[];
+
+class Extension;
+
 // Class to encapsulate logic to control the browser UI for hosted apps.
-class HostedAppBrowserController {
+class HostedAppBrowserController : public SiteEngagementObserver,
+                                   public TabStripModelObserver,
+                                   public ExtensionUninstallDialog::Delegate {
  public:
-  // Indicates whether |browser| is a hosted app browser.
-  static bool IsForHostedApp(Browser* browser);
+  // Returns whether |browser| uses the experimental hosted app experience.
+  // Convenience wrapper for checking IsForExperimentalHostedAppBrowser() on
+  // |browser|'s HostedAppBrowserController if it exists.
+  static bool IsForExperimentalHostedAppBrowser(const Browser* browser);
+
+  // Functions to set preferences that are unique to app windows.
+  static void SetAppPrefsForWebContents(HostedAppBrowserController* controller,
+                                        content::WebContents* web_contents);
+
+  // Renders |url|'s origin as Unicode.
+  static base::string16 FormatUrlOrigin(const GURL& url);
 
   explicit HostedAppBrowserController(Browser* browser);
-  ~HostedAppBrowserController();
+  ~HostedAppBrowserController() override;
 
-  // Whether the browser being controlled can ever show the location bar.
-  bool SupportsLocationBar() const;
+  const std::string& app_id() const { return extension_id_; }
+
+  // Returns true if the associated Hosted App is for a PWA.
+  bool created_for_installed_pwa() const { return created_for_installed_pwa_; }
+
+  // Returns true if this controller is for a System Web App.
+  bool IsForSystemWebApp() const;
+
+  // Returns true if this controller is for an experimental hosted app browser.
+  bool IsForExperimentalHostedAppBrowser() const;
 
   // Whether the browser being controlled should be currently showing the
-  // location bar.
-  bool ShouldShowLocationBar() const;
+  // toolbar.
+  bool ShouldShowToolbar() const;
+
+  // Returns true if the hosted app buttons should be shown in the frame for
+  // this BrowserView.
+  bool ShouldShowHostedAppButtonContainer() const;
 
   // Updates the location bar visibility based on whether it should be
   // currently visible or not. If |animate| is set, the change will be
   // animated.
-  void UpdateLocationBarVisibility(bool animate) const;
+  void UpdateToolbarVisibility(bool animate) const;
 
-  // Whether the controlled browser should use the web app style frame.
-  bool should_use_web_app_frame() const { return should_use_web_app_frame_; }
+  // Returns the app icon for the window to use in the task list.
+  gfx::ImageSkia GetWindowAppIcon() const;
+
+  // Returns the icon to be displayed in the window title bar.
+  gfx::ImageSkia GetWindowIcon() const;
+
+  // Returns the color of the title bar.
+  base::Optional<SkColor> GetThemeColor() const;
+
+  // Returns the title to be displayed in the window title bar.
+  base::string16 GetTitle() const;
+
+  // Gets the short name of the app.
+  std::string GetAppShortName() const;
+
+  // Returns the extension id for the app.
+  std::string GetExtensionId() const;
+
+  // Gets the origin of the app start url suitable for display (e.g
+  // example.com.au).
+  base::string16 GetFormattedUrlOrigin() const;
+
+  // Gets the launch url for the app.
+  GURL GetAppLaunchURL() const;
+
+  // Gets the extension for this controller.
+  const Extension* GetExtensionForTesting() const;
+
+  bool CanUninstall() const;
+
+  void Uninstall(UninstallReason reason, UninstallSource source);
+
+  // Returns whether the app is installed (uninstallation may complete within
+  // the lifetime of HostedAppBrowserController).
+  bool IsInstalled() const;
+
+  // SiteEngagementObserver overrides.
+  void OnEngagementEvent(content::WebContents* web_contents,
+                         const GURL& url,
+                         double score,
+                         SiteEngagementService::EngagementType type) override;
+
+  // TabStripModelObserver overrides.
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override;
 
  private:
-  Browser* browser_;
+  // Called by OnTabstripModelChanged().
+  void OnTabInserted(content::WebContents* contents);
+  void OnTabRemoved(content::WebContents* contents);
+
+  // Will return nullptr if the extension has been uninstalled.
+  const Extension* GetExtension() const;
+
+  Browser* const browser_;
   const std::string extension_id_;
-  bool should_use_web_app_frame_;
+  const bool created_for_installed_pwa_;
+  std::unique_ptr<ExtensionUninstallDialog> uninstall_dialog_;
 
   DISALLOW_COPY_AND_ASSIGN(HostedAppBrowserController);
 };

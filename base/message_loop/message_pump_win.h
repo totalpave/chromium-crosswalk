@@ -7,12 +7,17 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <list>
 #include <memory>
 
 #include "base/base_export.h"
 #include "base/message_loop/message_pump.h"
+#include "base/observer_list.h"
+#include "base/optional.h"
+#include "base/threading/thread_checker.h"
 #include "base/time/time.h"
+#include "base/win/message_window.h"
 #include "base/win/scoped_handle.h"
 
 namespace base {
@@ -23,6 +28,7 @@ namespace base {
 class BASE_EXPORT MessagePumpWin : public MessagePump {
  public:
   MessagePumpWin();
+  ~MessagePumpWin() override;
 
   // MessagePump methods:
   void Run(Delegate* delegate) override;
@@ -37,33 +43,37 @@ class BASE_EXPORT MessagePumpWin : public MessagePump {
 
     // Used to count how many Run() invocations are on the stack.
     int run_depth;
-
-    // Used to help diagnose hangs.
-    // TODO(stanisc): crbug.com/596190: Remove these once the bug is fixed.
-    int schedule_work_error_count;
-    Time last_schedule_work_error_time;
-  };
-
-  // State used with |work_state_| variable.
-  enum WorkState {
-    READY = 0,      // Ready to accept new work.
-    HAVE_WORK = 1,  // New work has been signalled.
-    WORKING = 2     // Handling the work.
   };
 
   virtual void DoRunLoop() = 0;
-  int GetCurrentDelay() const;
 
-  // The time at which delayed work should run.
-  TimeTicks delayed_work_time_;
-
-  // A value used to indicate if there is a kMsgDoWork message pending
-  // in the Windows Message queue.  There is at most one such message, and it
-  // can drive execution of tasks when a native message pump is running.
-  LONG work_state_ = READY;
+  // True iff:
+  //   * MessagePumpForUI: there's a kMsgDoWork message pending in the Windows
+  //     Message queue. i.e. when:
+  //      a. The pump is about to wakeup from idle.
+  //      b. The pump is about to enter a nested native loop and a
+  //         ScopedNestableTaskAllower was instantiated to allow application
+  //         tasks to execute in that nested loop (ScopedNestableTaskAllower
+  //         invokes ScheduleWork()).
+  //      c. While in a native (nested) loop : HandleWorkMessage() =>
+  //         ProcessPumpReplacementMessage() invokes ScheduleWork() before
+  //         processing a native message to guarantee this pump will get another
+  //         time slice if it goes into native Windows code and enters a native
+  //         nested loop. This is different from (b.) because we're not yet
+  //         processing an application task at the current run level and
+  //         therefore are expected to keep pumping application tasks without
+  //         necessitating a ScopedNestableTaskAllower.
+  //
+  //   * MessagePumpforIO: there's a dummy IO completion item with |this| as an
+  //     lpCompletionKey in the queue which is about to wakeup
+  //     WaitForIOCompletion(). MessagePumpForIO doesn't support nesting so
+  //     this is simpler than MessagePumpForUI.
+  std::atomic_bool work_scheduled_{false};
 
   // State for the current invocation of Run.
   RunState* state_ = nullptr;
+
+  THREAD_CHECKER(bound_thread_);
 };
 
 //-----------------------------------------------------------------------------
@@ -123,66 +133,50 @@ class BASE_EXPORT MessagePumpForUI : public MessagePumpWin {
   void ScheduleWork() override;
   void ScheduleDelayedWork(const TimeTicks& delayed_work_time) override;
 
+  // Make the MessagePumpForUI respond to WM_QUIT messages.
+  void EnableWmQuit();
+
+  // An observer interface to give the scheduler an opportunity to log
+  // information about MSGs before and after they are dispatched.
+  class BASE_EXPORT Observer {
+   public:
+    virtual void WillDispatchMSG(const MSG& msg) = 0;
+    virtual void DidDispatchMSG(const MSG& msg) = 0;
+  };
+
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* obseerver);
+
  private:
-  static LRESULT CALLBACK WndProcThunk(HWND window_handle,
-                                       UINT message,
-                                       WPARAM wparam,
-                                       LPARAM lparam);
+  bool MessageCallback(
+      UINT message, WPARAM wparam, LPARAM lparam, LRESULT* result);
   void DoRunLoop() override;
-  void InitMessageWnd();
-  void WaitForWork();
+  void WaitForWork(Delegate::NextWorkInfo next_work_info);
   void HandleWorkMessage();
   void HandleTimerMessage();
-  void RescheduleTimer();
+  void ScheduleNativeTimer(Delegate::NextWorkInfo next_work_info);
+  void KillNativeTimer();
   bool ProcessNextWindowsMessage();
   bool ProcessMessageHelper(const MSG& msg);
   bool ProcessPumpReplacementMessage();
 
-  // Atom representing the registered window class.
-  ATOM atom_;
+  base::win::MessageWindow message_window_;
 
-  // A hidden message-only window.
-  HWND message_hwnd_;
-};
+  // Whether MessagePumpForUI responds to WM_QUIT messages or not.
+  // TODO(thestig): Remove when the Cloud Print Service goes away.
+  bool enable_wm_quit_ = false;
 
-//-----------------------------------------------------------------------------
-// MessagePumpForGpu is a simplified version of UI message pump that is
-// optimized for the GPU process. Unlike MessagePumpForUI it doesn't have a
-// hidden window and doesn't handle a situation where a native message pump
-// might take over message processing.
-//
-class BASE_EXPORT MessagePumpForGpu : public MessagePumpWin {
- public:
-  MessagePumpForGpu();
-  ~MessagePumpForGpu() override;
+  // Non-nullopt if there's currently a native timer installed. If so, it
+  // indicates when the timer is set to fire and can be used to avoid setting
+  // redundant timers.
+  Optional<TimeTicks> installed_native_timer_;
 
-  // Factory methods.
-  static void InitFactory();
-  static std::unique_ptr<MessagePump> CreateMessagePumpForGpu();
+  // This will become true when a native loop takes our kMsgHaveWork out of the
+  // system queue. It will be reset to false whenever DoRunLoop regains control.
+  // Used to decide whether ScheduleDelayedWork() should start a native timer.
+  bool in_native_loop_ = false;
 
-  // MessagePump methods:
-  void ScheduleWork() override;
-  void ScheduleDelayedWork(const TimeTicks& delayed_work_time) override;
-
-  // TODO (stanisc): crbug.com/596190: Remove this after the signaling issue
-  // has been investigated.
-  // This should be used for diagnostic only. If message pump wake-up mechanism
-  // is based on auto-reset event this call would reset the event to unset
-  // state.
-  bool WasSignaled() override;
-
- private:
-  // MessagePumpWin methods:
-  void DoRunLoop() override;
-
-  void WaitForWork();
-  bool ProcessNextMessage();
-
-  win::ScopedHandle event_;
-
-  // Used to help diagnose hangs.
-  // TODO(stanisc): crbug.com/596190: Remove these once the bug is fixed.
-  TimeTicks last_set_event_timeticks_;
+  ObserverList<Observer>::Unchecked observers_;
 };
 
 //-----------------------------------------------------------------------------
@@ -255,7 +249,7 @@ class BASE_EXPORT MessagePumpForIO : public MessagePumpWin {
   // Register the handler to be used when asynchronous IO for the given file
   // completes. The registration persists as long as |file_handle| is valid, so
   // |handler| must be valid as long as there is pending IO for the given file.
-  void RegisterIOHandler(HANDLE file_handle, IOHandler* handler);
+  HRESULT RegisterIOHandler(HANDLE file_handle, IOHandler* handler);
 
   // Register the handler to be used to process job events. The registration
   // persists as long as the job object is live, so |handler| must be valid
@@ -283,7 +277,7 @@ class BASE_EXPORT MessagePumpForIO : public MessagePumpWin {
   };
 
   void DoRunLoop() override;
-  void WaitForWork();
+  void WaitForWork(Delegate::NextWorkInfo next_work_info);
   bool MatchCompletedIOItem(IOHandler* filter, IOItem* item);
   bool GetIOItem(DWORD timeout, IOItem* item);
   bool ProcessInternalIOItem(const IOItem& item);

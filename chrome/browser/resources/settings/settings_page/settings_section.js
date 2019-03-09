@@ -7,34 +7,56 @@
  * 'settings-section' shows a paper material themed section with a header
  * which shows its page title.
  *
+ * The section can expand vertically to fill its container's padding edge.
+ *
  * Example:
  *
  *    <settings-section page-title="[[pageTitle]]" section="privacy">
  *      <!-- Insert your section controls here -->
  *    </settings-section>
  */
-Polymer({
+
+// eslint-disable-next-line prefer-const
+let SettingsSectionElement = Polymer({
   is: 'settings-section',
 
   properties: {
     /**
-     * The current active route.
+     * The section name should match a name specified in route.js. The
+     * MainPageBehavior will expand this section if this section name matches
+     * currentRoute.section.
      */
-    currentRoute: Object,
+    section: String,
 
     /**
-     * The section is expanded to a full-page view when this property matches
-     * currentRoute.section.
-     *
-     * The section name must match the name specified in settings_router.js.
+     * Title for the section header. Initialize so we can use the
+     * getTitleHiddenStatus_ method for accessibility.
      */
-    section: {
+    pageTitle: {
       type: String,
+      value: '',
     },
 
     /**
-     * Title for the page header and navigation menu.
+     * A CSS attribute used for temporarily hiding a SETTINGS-SECTION for the
+     * purposes of searching.
      */
-    pageTitle: String,
+    hiddenBySearch: {
+      type: Boolean,
+      value: false,
+      reflectToAttribute: true,
+    },
   },
+
+  /**
+   * Get the value to which to set the aria-hidden attribute of the section
+   * heading.
+   * @return {boolean|string} A return value of false will not add aria-hidden
+   *    while aria-hidden requires a string of 'true' to be hidden as per aria
+   *    specs. This function ensures we have the right return type.
+   * @private
+   */
+  getTitleHiddenStatus_: function() {
+    return this.pageTitle ? false : 'true';
+  }
 });

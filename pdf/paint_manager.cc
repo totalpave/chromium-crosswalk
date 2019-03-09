@@ -14,15 +14,25 @@
 #include "ppapi/cpp/instance.h"
 #include "ppapi/cpp/module.h"
 
+PaintManager::ReadyRect::ReadyRect() = default;
+
+PaintManager::ReadyRect::ReadyRect(const pp::Rect& r,
+                                   const pp::ImageData& i,
+                                   bool f)
+    : rect(r), image_data(i), flush_now(f) {}
+
+PaintManager::ReadyRect::ReadyRect(const ReadyRect& that) = default;
+
 PaintManager::PaintManager(pp::Instance* instance,
                            Client* client,
                            bool is_always_opaque)
     : instance_(instance),
       client_(client),
       is_always_opaque_(is_always_opaque),
-      callback_factory_(NULL),
+      callback_factory_(nullptr),
       manual_callback_pending_(false),
       flush_pending_(false),
+      flush_requested_(false),
       has_pending_resize_(false),
       graphics_need_to_be_bound_(false),
       pending_device_scale_(1.0),
@@ -38,15 +48,14 @@ PaintManager::PaintManager(pp::Instance* instance,
   DCHECK(client);
 }
 
-PaintManager::~PaintManager() {
-}
+PaintManager::~PaintManager() = default;
 
 // static
 pp::Size PaintManager::GetNewContextSize(const pp::Size& current_context_size,
                                          const pp::Size& plugin_size) {
   // The amount of additional space in pixels to allocate to the right/bottom of
   // the context.
-  const int kBufferSize = 50;
+  constexpr int kBufferSize = 50;
 
   // Default to returning the same size.
   pp::Size result = current_context_size;
@@ -67,10 +76,10 @@ pp::Size PaintManager::GetNewContextSize(const pp::Size& current_context_size,
       plugin_size.height() > current_context_size.height() ||
       plugin_size.width() < min_size.width() ||
       plugin_size.height() < min_size.height()) {
-      // Create a larger context than needed so that if we only resize by a
-      // small margin, we don't need a new context.
-      result = pp::Size(plugin_size.width() + kBufferSize,
-                        plugin_size.height() + kBufferSize);
+    // Create a larger context than needed so that if we only resize by a
+    // small margin, we don't need a new context.
+    result = pp::Size(plugin_size.width() + kBufferSize,
+                      plugin_size.height() + kBufferSize);
   }
 
   return result;
@@ -97,6 +106,29 @@ void PaintManager::SetSize(const pp::Size& new_size, float device_scale) {
   view_size_changed_waiting_for_paint_ = true;
 
   Invalidate();
+}
+
+void PaintManager::SetTransform(float scale,
+                                const pp::Point& origin,
+                                const pp::Point& translate,
+                                bool schedule_flush) {
+  if (graphics_.is_null())
+    return;
+
+  graphics_.SetLayerTransform(scale, origin, translate);
+
+  if (!schedule_flush)
+    return;
+
+  if (flush_pending_) {
+    flush_requested_ = true;
+    return;
+  }
+  Flush();
+}
+
+void PaintManager::ClearTransform() {
+  SetTransform(1.f, pp::Point(), pp::Point(), false);
 }
 
 void PaintManager::Invalidate() {
@@ -155,8 +187,7 @@ void PaintManager::EnsureCallbackPending() {
     return;
 
   pp::Module::Get()->core()->CallOnMainThread(
-      0,
-      callback_factory_.NewCallback(&PaintManager::OnManualCallbackComplete),
+      0, callback_factory_.NewCallback(&PaintManager::OnManualCallbackComplete),
       0);
   manual_callback_pending_ = true;
 }
@@ -164,8 +195,8 @@ void PaintManager::EnsureCallbackPending() {
 void PaintManager::DoPaint() {
   in_paint_ = true;
 
-  std::vector<ReadyRect> ready;
-  std::vector<pp::Rect> pending;
+  std::vector<ReadyRect> ready_rects;
+  std::vector<pp::Rect> pending_rects;
 
   DCHECK(aggregator_.HasPendingUpdate());
 
@@ -201,18 +232,18 @@ void PaintManager::DoPaint() {
   }
 
   PaintAggregator::PaintUpdate update = aggregator_.GetPendingUpdate();
-  client_->OnPaint(update.paint_rects, &ready, &pending);
+  client_->OnPaint(update.paint_rects, &ready_rects, &pending_rects);
 
-  if (ready.empty() && pending.empty()) {
+  if (ready_rects.empty() && pending_rects.empty()) {
     in_paint_ = false;
     return;  // Nothing was painted, don't schedule a flush.
   }
 
   std::vector<PaintAggregator::ReadyRect> ready_now;
-  if (pending.empty()) {
+  if (pending_rects.empty()) {
     std::vector<PaintAggregator::ReadyRect> temp_ready;
-    temp_ready.insert(temp_ready.end(), ready.begin(), ready.end());
-    aggregator_.SetIntermediateResults(temp_ready, pending);
+    temp_ready.insert(temp_ready.end(), ready_rects.begin(), ready_rects.end());
+    aggregator_.SetIntermediateResults(temp_ready, pending_rects);
     ready_now = aggregator_.GetReadyRects();
     aggregator_.ClearPendingUpdate();
 
@@ -223,7 +254,7 @@ void PaintManager::DoPaint() {
     view_size_changed_waiting_for_paint_ = false;
   } else {
     std::vector<PaintAggregator::ReadyRect> ready_later;
-    for (const auto& ready_rect : ready) {
+    for (const auto& ready_rect : ready_rects) {
       // Don't flush any part (i.e. scrollbars) if we're resizing the browser,
       // as that'll lead to flashes.  Until we flush, the browser will use the
       // previous image, but if we flush, it'll revert to using the blank image.
@@ -238,7 +269,7 @@ void PaintManager::DoPaint() {
     }
     // Take the rectangles, except the ones that need to be flushed right away,
     // and save them so that everything is flushed at once.
-    aggregator_.SetIntermediateResults(ready_later, pending);
+    aggregator_.SetIntermediateResults(ready_later, pending_rects);
 
     if (ready_now.empty()) {
       in_paint_ = false;
@@ -248,9 +279,23 @@ void PaintManager::DoPaint() {
   }
 
   for (const auto& ready_rect : ready_now) {
-    graphics_.PaintImageData(
-        ready_rect.image_data, ready_rect.offset, ready_rect.rect);
+    graphics_.PaintImageData(ready_rect.image_data, ready_rect.offset,
+                             ready_rect.rect);
   }
+
+  Flush();
+
+  in_paint_ = false;
+  first_paint_ = false;
+
+  if (graphics_need_to_be_bound_) {
+    instance_->BindGraphics(graphics_);
+    graphics_need_to_be_bound_ = false;
+  }
+}
+
+void PaintManager::Flush() {
+  flush_requested_ = false;
 
   int32_t result = graphics_.Flush(
       callback_factory_.NewCallback(&PaintManager::OnFlushComplete));
@@ -271,14 +316,6 @@ void PaintManager::DoPaint() {
   } else {
     DCHECK(result == PP_OK);  // Catch all other errors in debug mode.
   }
-
-  in_paint_ = false;
-  first_paint_ = false;
-
-  if (graphics_need_to_be_bound_) {
-    instance_->BindGraphics(graphics_);
-    graphics_need_to_be_bound_ = false;
-  }
 }
 
 void PaintManager::OnFlushComplete(int32_t) {
@@ -289,6 +326,11 @@ void PaintManager::OnFlushComplete(int32_t) {
   // complete, execute them now.
   if (aggregator_.HasPendingUpdate())
     DoPaint();
+
+  // If there was another flush request while flushing we flush again.
+  if (flush_requested_) {
+    Flush();
+  }
 }
 
 void PaintManager::OnManualCallbackComplete(int32_t) {

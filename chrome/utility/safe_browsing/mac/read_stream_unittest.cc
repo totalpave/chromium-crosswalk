@@ -77,7 +77,7 @@ std::unique_ptr<ReadStream> ReadStreamTest<MemoryReadStreamTest>::CreateStream(
 template <>
 std::unique_ptr<ReadStream> ReadStreamTest<FileReadStreamTest>::CreateStream(
     size_t data_size) {
-  base::FilePath path = test_helper_.temp_dir.path().Append("stream");
+  base::FilePath path = test_helper_.temp_dir.GetPath().Append("stream");
   test_helper_.file.Initialize(path,
       base::File::FLAG_CREATE | base::File::FLAG_WRITE);
   if (!test_helper_.file.IsValid()) {
@@ -105,7 +105,7 @@ std::unique_ptr<ReadStream> ReadStreamTest<FileReadStreamTest>::CreateStream(
 
 using ReadStreamImpls = testing::Types<MemoryReadStreamTest,
                                        FileReadStreamTest>;
-TYPED_TEST_CASE(ReadStreamTest, ReadStreamImpls);
+TYPED_TEST_SUITE(ReadStreamTest, ReadStreamImpls);
 
 TYPED_TEST(ReadStreamTest, Read) {
   std::unique_ptr<ReadStream> stream =
@@ -134,7 +134,7 @@ TYPED_TEST(ReadStreamTest, ReadAll) {
       ReadStreamTest<TypeParam>::CreateStream(kStreamSize);
 
   std::vector<uint8_t> data;
-  EXPECT_TRUE(test::ReadEntireStream(stream.get(), &data));
+  EXPECT_TRUE(ReadEntireStream(stream.get(), &data));
   EXPECT_EQ(kStreamSize, data.size());
 }
 

@@ -10,30 +10,28 @@
 #include <set>
 #include <string>
 
+#include "base/bind.h"
 #include "base/command_line.h"
-#include "base/macros.h"
-#include "base/memory/singleton.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
-#include "chrome/browser/profiles/incognito_helpers.h"
+#include "chrome/browser/font_pref_change_notifier_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_preferences_util.h"
-#include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
+#include "chrome/browser/ui/prefs/pref_watcher.h"
 #include "chrome/common/pref_font_webkit_names.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/pref_names_util.h"
-#include "chrome/grit/locale_settings.h"
-#include "components/keyed_service/content/browser_context_dependency_manager.h"
-#include "components/keyed_service/content/browser_context_keyed_service_factory.h"
-#include "components/keyed_service/core/keyed_service.h"
+#include "chrome/grit/platform_locale_settings.h"
+#include "components/language/core/browser/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/overlay_user_pref_store.h"
-#include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
 #include "components/strings/grit/components_locale_settings.h"
@@ -41,61 +39,29 @@
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/renderer_preferences.h"
 #include "content/public/common/web_preferences.h"
-#include "grit/platform_locale_settings.h"
+#include "extensions/buildflags/buildflags.h"
+#include "media/media_buildflags.h"
+#include "third_party/blink/public/mojom/renderer_preferences.mojom.h"
 #include "third_party/icu/source/common/unicode/uchar.h"
 #include "third_party/icu/source/common/unicode/uscript.h"
 #include "ui/base/l10n/l10n_util.h"
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && defined(ENABLE_THEMES)
-#include "chrome/browser/themes/theme_service.h"
-#include "chrome/browser/themes/theme_service_factory.h"
+#if defined(OS_ANDROID)
+#include "chrome/browser/android/chrome_feature_list.h"
+#else  // !defined(OS_ANDROID)
+#include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
 #endif
 
-#if defined(OS_WIN)
-#include "base/win/windows_version.h"
+#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #endif
 
 using content::WebContents;
 using content::WebPreferences;
 
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(PrefsTabHelper);
-
 namespace {
-
-// The list of prefs we want to observe.
-const char* kPrefsToObserve[] = {
-#if defined(ENABLE_EXTENSIONS)
-  prefs::kAnimationPolicy,
-#endif
-  prefs::kDataSaverEnabled,
-  prefs::kDefaultCharset,
-  prefs::kDisable3DAPIs,
-  prefs::kEnableHyperlinkAuditing,
-  prefs::kWebKitAllowDisplayingInsecureContent,
-  prefs::kWebKitAllowRunningInsecureContent,
-  prefs::kWebKitDefaultFixedFontSize,
-  prefs::kWebKitDefaultFontSize,
-  prefs::kWebKitDomPasteEnabled,
-#if defined(OS_ANDROID)
-  prefs::kWebKitFontScaleFactor,
-  prefs::kWebKitForceEnableZoom,
-  prefs::kWebKitPasswordEchoEnabled,
-#endif
-  prefs::kWebKitJavascriptCanOpenWindowsAutomatically,
-  prefs::kWebKitJavascriptEnabled,
-  prefs::kWebKitLoadsImagesAutomatically,
-  prefs::kWebKitMinimumFontSize,
-  prefs::kWebKitMinimumLogicalFontSize,
-  prefs::kWebKitPluginsEnabled,
-  prefs::kWebkitTabsToLinks,
-  prefs::kWebKitTextAreasAreResizable,
-  prefs::kWebKitUsesUniversalDetector,
-  prefs::kWebKitWebSecurityEnabled,
-};
-
-const int kPrefsToObserveLength = arraysize(kPrefsToObserve);
 
 #if !defined(OS_ANDROID)
 // Registers a preference under the path |pref_name| for each script used for
@@ -126,7 +92,7 @@ ALL_FONT_SCRIPTS(WEBKIT_WEBPREFS_FONTS_STANDARD)
 #undef EXPAND_SCRIPT_FONT
   };
 
-  for (size_t i = 0; i < arraysize(kFontFamilyMap); ++i) {
+  for (size_t i = 0; i < base::size(kFontFamilyMap); ++i) {
     const char* pref_name = kFontFamilyMap[i];
     if (fonts_with_defaults.find(pref_name) == fonts_with_defaults.end()) {
       // We haven't already set a default value for this font preference, so set
@@ -137,23 +103,6 @@ ALL_FONT_SCRIPTS(WEBKIT_WEBPREFS_FONTS_STANDARD)
 }
 #endif  // !defined(OS_ANDROID)
 
-// Registers |obs| to observe per-script font prefs under the path |map_name|.
-// On android, there's no exposed way to change these prefs, so we can save
-// ~715KB of heap and some startup cycles by avoiding observing these prefs
-// since they will never change.
-void RegisterFontFamilyMapObserver(
-    PrefChangeRegistrar* registrar,
-    const char* map_name,
-    const PrefChangeRegistrar::NamedChangeCallback& obs) {
-  DCHECK(base::StartsWith(map_name, "webkit.webprefs.",
-                          base::CompareCase::SENSITIVE));
-
-  for (size_t i = 0; i < prefs::kWebKitScriptsForFontFamilyMapsLength; ++i) {
-    const char* script = prefs::kWebKitScriptsForFontFamilyMaps[i];
-    registrar->Add(base::StringPrintf("%s.%s", map_name, script), obs);
-  }
-}
-
 #if defined(OS_WIN)
 // On Windows with antialising we want to use an alternate fixed font like
 // Consolas, which looks much better than Courier New.
@@ -163,8 +112,7 @@ bool ShouldUseAlternateDefaultFixedFont(const std::string& script) {
     return false;
   UINT smooth_type = 0;
   SystemParametersInfo(SPI_GETFONTSMOOTHINGTYPE, 0, &smooth_type, 0);
-  return (base::win::GetVersion() >= base::win::VERSION_WIN7) &&
-         (smooth_type == FE_FONTSMOOTHINGCLEARTYPE);
+  return smooth_type == FE_FONTSMOOTHINGCLEARTYPE;
 }
 #endif
 
@@ -178,71 +126,77 @@ struct FontDefault {
 // TODO(falken): add proper defaults when possible for all
 // platforms/scripts/generic families.
 const FontDefault kFontDefaults[] = {
-  { prefs::kWebKitStandardFontFamily, IDS_STANDARD_FONT_FAMILY },
-  { prefs::kWebKitFixedFontFamily, IDS_FIXED_FONT_FAMILY },
-  { prefs::kWebKitSerifFontFamily, IDS_SERIF_FONT_FAMILY },
-  { prefs::kWebKitSansSerifFontFamily, IDS_SANS_SERIF_FONT_FAMILY },
-  { prefs::kWebKitCursiveFontFamily, IDS_CURSIVE_FONT_FAMILY },
-  { prefs::kWebKitFantasyFontFamily, IDS_FANTASY_FONT_FAMILY },
-  { prefs::kWebKitPictographFontFamily, IDS_PICTOGRAPH_FONT_FAMILY },
+    {prefs::kWebKitStandardFontFamily, IDS_STANDARD_FONT_FAMILY},
+    {prefs::kWebKitFixedFontFamily, IDS_FIXED_FONT_FAMILY},
+    {prefs::kWebKitSerifFontFamily, IDS_SERIF_FONT_FAMILY},
+    {prefs::kWebKitSansSerifFontFamily, IDS_SANS_SERIF_FONT_FAMILY},
+    {prefs::kWebKitCursiveFontFamily, IDS_CURSIVE_FONT_FAMILY},
+    {prefs::kWebKitFantasyFontFamily, IDS_FANTASY_FONT_FAMILY},
+    {prefs::kWebKitPictographFontFamily, IDS_PICTOGRAPH_FONT_FAMILY},
 #if defined(OS_CHROMEOS) || defined(OS_MACOSX) || defined(OS_WIN)
-  { prefs::kWebKitStandardFontFamilyJapanese,
-    IDS_STANDARD_FONT_FAMILY_JAPANESE },
-  { prefs::kWebKitFixedFontFamilyJapanese, IDS_FIXED_FONT_FAMILY_JAPANESE },
-  { prefs::kWebKitSerifFontFamilyJapanese, IDS_SERIF_FONT_FAMILY_JAPANESE },
-  { prefs::kWebKitSansSerifFontFamilyJapanese,
-    IDS_SANS_SERIF_FONT_FAMILY_JAPANESE },
-  { prefs::kWebKitStandardFontFamilyKorean, IDS_STANDARD_FONT_FAMILY_KOREAN },
-  { prefs::kWebKitSerifFontFamilyKorean, IDS_SERIF_FONT_FAMILY_KOREAN },
-  { prefs::kWebKitSansSerifFontFamilyKorean,
-    IDS_SANS_SERIF_FONT_FAMILY_KOREAN },
-  { prefs::kWebKitStandardFontFamilySimplifiedHan,
-    IDS_STANDARD_FONT_FAMILY_SIMPLIFIED_HAN },
-  { prefs::kWebKitSerifFontFamilySimplifiedHan,
-    IDS_SERIF_FONT_FAMILY_SIMPLIFIED_HAN },
-  { prefs::kWebKitSansSerifFontFamilySimplifiedHan,
-    IDS_SANS_SERIF_FONT_FAMILY_SIMPLIFIED_HAN },
-  { prefs::kWebKitStandardFontFamilyTraditionalHan,
-    IDS_STANDARD_FONT_FAMILY_TRADITIONAL_HAN },
-  { prefs::kWebKitSerifFontFamilyTraditionalHan,
-    IDS_SERIF_FONT_FAMILY_TRADITIONAL_HAN },
-  { prefs::kWebKitSansSerifFontFamilyTraditionalHan,
-    IDS_SANS_SERIF_FONT_FAMILY_TRADITIONAL_HAN },
+    {prefs::kWebKitStandardFontFamilyJapanese,
+     IDS_STANDARD_FONT_FAMILY_JAPANESE},
+    {prefs::kWebKitFixedFontFamilyJapanese, IDS_FIXED_FONT_FAMILY_JAPANESE},
+    {prefs::kWebKitSerifFontFamilyJapanese, IDS_SERIF_FONT_FAMILY_JAPANESE},
+    {prefs::kWebKitSansSerifFontFamilyJapanese,
+     IDS_SANS_SERIF_FONT_FAMILY_JAPANESE},
+    {prefs::kWebKitStandardFontFamilyKorean, IDS_STANDARD_FONT_FAMILY_KOREAN},
+    {prefs::kWebKitSerifFontFamilyKorean, IDS_SERIF_FONT_FAMILY_KOREAN},
+    {prefs::kWebKitSansSerifFontFamilyKorean,
+     IDS_SANS_SERIF_FONT_FAMILY_KOREAN},
+    {prefs::kWebKitStandardFontFamilySimplifiedHan,
+     IDS_STANDARD_FONT_FAMILY_SIMPLIFIED_HAN},
+    {prefs::kWebKitSerifFontFamilySimplifiedHan,
+     IDS_SERIF_FONT_FAMILY_SIMPLIFIED_HAN},
+    {prefs::kWebKitSansSerifFontFamilySimplifiedHan,
+     IDS_SANS_SERIF_FONT_FAMILY_SIMPLIFIED_HAN},
+    {prefs::kWebKitStandardFontFamilyTraditionalHan,
+     IDS_STANDARD_FONT_FAMILY_TRADITIONAL_HAN},
+    {prefs::kWebKitSerifFontFamilyTraditionalHan,
+     IDS_SERIF_FONT_FAMILY_TRADITIONAL_HAN},
+    {prefs::kWebKitSansSerifFontFamilyTraditionalHan,
+     IDS_SANS_SERIF_FONT_FAMILY_TRADITIONAL_HAN},
+#endif
+#if defined(OS_MACOSX) || defined(OS_WIN)
+    {prefs::kWebKitCursiveFontFamilySimplifiedHan,
+     IDS_CURSIVE_FONT_FAMILY_SIMPLIFIED_HAN},
+    {prefs::kWebKitCursiveFontFamilyTraditionalHan,
+     IDS_CURSIVE_FONT_FAMILY_TRADITIONAL_HAN},
 #endif
 #if defined(OS_CHROMEOS)
-  { prefs::kWebKitStandardFontFamilyArabic, IDS_STANDARD_FONT_FAMILY_ARABIC },
-  { prefs::kWebKitSerifFontFamilyArabic, IDS_SERIF_FONT_FAMILY_ARABIC },
-  { prefs::kWebKitSansSerifFontFamilyArabic,
-    IDS_SANS_SERIF_FONT_FAMILY_ARABIC },
-  { prefs::kWebKitFixedFontFamilyKorean, IDS_FIXED_FONT_FAMILY_KOREAN },
-  { prefs::kWebKitFixedFontFamilySimplifiedHan,
-    IDS_FIXED_FONT_FAMILY_SIMPLIFIED_HAN },
-  { prefs::kWebKitFixedFontFamilyTraditionalHan,
-    IDS_FIXED_FONT_FAMILY_TRADITIONAL_HAN },
+    {prefs::kWebKitStandardFontFamilyArabic, IDS_STANDARD_FONT_FAMILY_ARABIC},
+    {prefs::kWebKitSerifFontFamilyArabic, IDS_SERIF_FONT_FAMILY_ARABIC},
+    {prefs::kWebKitSansSerifFontFamilyArabic,
+     IDS_SANS_SERIF_FONT_FAMILY_ARABIC},
+    {prefs::kWebKitFixedFontFamilyKorean, IDS_FIXED_FONT_FAMILY_KOREAN},
+    {prefs::kWebKitFixedFontFamilySimplifiedHan,
+     IDS_FIXED_FONT_FAMILY_SIMPLIFIED_HAN},
+    {prefs::kWebKitFixedFontFamilyTraditionalHan,
+     IDS_FIXED_FONT_FAMILY_TRADITIONAL_HAN},
 #elif defined(OS_WIN)
-  { prefs::kWebKitFixedFontFamilyArabic, IDS_FIXED_FONT_FAMILY_ARABIC },
-  { prefs::kWebKitSansSerifFontFamilyArabic,
-    IDS_SANS_SERIF_FONT_FAMILY_ARABIC },
-  { prefs::kWebKitStandardFontFamilyCyrillic,
-    IDS_STANDARD_FONT_FAMILY_CYRILLIC },
-  { prefs::kWebKitFixedFontFamilyCyrillic, IDS_FIXED_FONT_FAMILY_CYRILLIC },
-  { prefs::kWebKitSerifFontFamilyCyrillic, IDS_SERIF_FONT_FAMILY_CYRILLIC },
-  { prefs::kWebKitSansSerifFontFamilyCyrillic,
-    IDS_SANS_SERIF_FONT_FAMILY_CYRILLIC },
-  { prefs::kWebKitStandardFontFamilyGreek, IDS_STANDARD_FONT_FAMILY_GREEK },
-  { prefs::kWebKitFixedFontFamilyGreek, IDS_FIXED_FONT_FAMILY_GREEK },
-  { prefs::kWebKitSerifFontFamilyGreek, IDS_SERIF_FONT_FAMILY_GREEK },
-  { prefs::kWebKitSansSerifFontFamilyGreek, IDS_SANS_SERIF_FONT_FAMILY_GREEK },
-  { prefs::kWebKitFixedFontFamilyKorean, IDS_FIXED_FONT_FAMILY_KOREAN },
-  { prefs::kWebKitCursiveFontFamilyKorean, IDS_CURSIVE_FONT_FAMILY_KOREAN },
-  { prefs::kWebKitFixedFontFamilySimplifiedHan,
-    IDS_FIXED_FONT_FAMILY_SIMPLIFIED_HAN },
-  { prefs::kWebKitFixedFontFamilyTraditionalHan,
-    IDS_FIXED_FONT_FAMILY_TRADITIONAL_HAN },
+    {prefs::kWebKitFixedFontFamilyArabic, IDS_FIXED_FONT_FAMILY_ARABIC},
+    {prefs::kWebKitSansSerifFontFamilyArabic,
+     IDS_SANS_SERIF_FONT_FAMILY_ARABIC},
+    {prefs::kWebKitStandardFontFamilyCyrillic,
+     IDS_STANDARD_FONT_FAMILY_CYRILLIC},
+    {prefs::kWebKitFixedFontFamilyCyrillic, IDS_FIXED_FONT_FAMILY_CYRILLIC},
+    {prefs::kWebKitSerifFontFamilyCyrillic, IDS_SERIF_FONT_FAMILY_CYRILLIC},
+    {prefs::kWebKitSansSerifFontFamilyCyrillic,
+     IDS_SANS_SERIF_FONT_FAMILY_CYRILLIC},
+    {prefs::kWebKitStandardFontFamilyGreek, IDS_STANDARD_FONT_FAMILY_GREEK},
+    {prefs::kWebKitFixedFontFamilyGreek, IDS_FIXED_FONT_FAMILY_GREEK},
+    {prefs::kWebKitSerifFontFamilyGreek, IDS_SERIF_FONT_FAMILY_GREEK},
+    {prefs::kWebKitSansSerifFontFamilyGreek, IDS_SANS_SERIF_FONT_FAMILY_GREEK},
+    {prefs::kWebKitFixedFontFamilyKorean, IDS_FIXED_FONT_FAMILY_KOREAN},
+    {prefs::kWebKitCursiveFontFamilyKorean, IDS_CURSIVE_FONT_FAMILY_KOREAN},
+    {prefs::kWebKitFixedFontFamilySimplifiedHan,
+     IDS_FIXED_FONT_FAMILY_SIMPLIFIED_HAN},
+    {prefs::kWebKitFixedFontFamilyTraditionalHan,
+     IDS_FIXED_FONT_FAMILY_TRADITIONAL_HAN},
 #endif
 };
 
-const size_t kFontDefaultsLength = arraysize(kFontDefaults);
+const size_t kFontDefaultsLength = base::size(kFontDefaults);
 
 // Returns the script of the font pref |pref_name|.  For example, suppose
 // |pref_name| is "webkit.webprefs.fonts.serif.Hant".  Since the script code for
@@ -316,6 +270,7 @@ void OverrideFontFamily(WebPreferences* prefs,
   (*map)[script] = base::UTF8ToUTF16(pref_value);
 }
 
+#if !defined(OS_ANDROID)
 void RegisterLocalizedFontPref(user_prefs::PrefRegistrySyncable* registry,
                                const char* path,
                                int default_message_id) {
@@ -325,134 +280,9 @@ void RegisterLocalizedFontPref(user_prefs::PrefRegistrySyncable* registry,
   DCHECK(success);
   registry->RegisterIntegerPref(path, val);
 }
+#endif
 
 }  // namespace
-
-// Watching all these settings per tab is slow when a user has a lot of tabs and
-// and they use session restore. So watch them once per profile.
-// http://crbug.com/452693
-class PrefWatcher : public KeyedService {
- public:
-  explicit PrefWatcher(Profile* profile) : profile_(profile) {
-    pref_change_registrar_.Init(profile_->GetPrefs());
-
-    base::Closure renderer_callback = base::Bind(
-        &PrefWatcher::UpdateRendererPreferences, base::Unretained(this));
-    pref_change_registrar_.Add(prefs::kAcceptLanguages, renderer_callback);
-    pref_change_registrar_.Add(prefs::kEnableDoNotTrack, renderer_callback);
-    pref_change_registrar_.Add(prefs::kEnableReferrers, renderer_callback);
-
-#if defined(ENABLE_WEBRTC)
-    pref_change_registrar_.Add(prefs::kWebRTCMultipleRoutesEnabled,
-                               renderer_callback);
-    pref_change_registrar_.Add(prefs::kWebRTCNonProxiedUdpEnabled,
-                               renderer_callback);
-    pref_change_registrar_.Add(prefs::kWebRTCIPHandlingPolicy,
-                               renderer_callback);
-#endif
-
-#if !defined(OS_MACOSX)
-    pref_change_registrar_.Add(prefs::kFullscreenAllowed, renderer_callback);
-#endif
-
-    PrefChangeRegistrar::NamedChangeCallback webkit_callback = base::Bind(
-        &PrefWatcher::OnWebPrefChanged, base::Unretained(this));
-    for (int i = 0; i < kPrefsToObserveLength; ++i) {
-      const char* pref_name = kPrefsToObserve[i];
-      pref_change_registrar_.Add(pref_name, webkit_callback);
-    }
-
-    RegisterFontFamilyMapObserver(&pref_change_registrar_,
-                                  prefs::kWebKitStandardFontFamilyMap,
-                                  webkit_callback);
-    RegisterFontFamilyMapObserver(&pref_change_registrar_,
-                                  prefs::kWebKitFixedFontFamilyMap,
-                                  webkit_callback);
-    RegisterFontFamilyMapObserver(&pref_change_registrar_,
-                                  prefs::kWebKitSerifFontFamilyMap,
-                                  webkit_callback);
-    RegisterFontFamilyMapObserver(&pref_change_registrar_,
-                                  prefs::kWebKitSansSerifFontFamilyMap,
-                                  webkit_callback);
-    RegisterFontFamilyMapObserver(&pref_change_registrar_,
-                                  prefs::kWebKitCursiveFontFamilyMap,
-                                  webkit_callback);
-    RegisterFontFamilyMapObserver(&pref_change_registrar_,
-                                  prefs::kWebKitFantasyFontFamilyMap,
-                                  webkit_callback);
-    RegisterFontFamilyMapObserver(&pref_change_registrar_,
-                                  prefs::kWebKitPictographFontFamilyMap,
-                                  webkit_callback);
-  }
-
-  static PrefWatcher* Get(Profile* profile);
-
-  void RegisterHelper(PrefsTabHelper* helper) {
-    helpers_.insert(helper);
-  }
-
-  void UnregisterHelper(PrefsTabHelper* helper) {
-    helpers_.erase(helper);
-  }
-
- private:
-  // KeyedService overrides:
-  void Shutdown() override {
-    pref_change_registrar_.RemoveAll();
-  }
-
-  void UpdateRendererPreferences() {
-    for (const auto& helper : helpers_)
-      helper->UpdateRendererPreferences();
-  }
-
-  void OnWebPrefChanged(const std::string& pref_name) {
-    for (const auto& helper : helpers_)
-      helper->OnWebPrefChanged(pref_name);
-  }
-
-  Profile* profile_;
-  PrefChangeRegistrar pref_change_registrar_;
-  std::set<PrefsTabHelper*> helpers_;
-};
-
-class PrefWatcherFactory : public BrowserContextKeyedServiceFactory {
- public:
-  static PrefWatcher* GetForProfile(Profile* profile) {
-    return static_cast<PrefWatcher*>(
-        GetInstance()->GetServiceForBrowserContext(profile, true));
-  }
-
-  static PrefWatcherFactory* GetInstance() {
-    return base::Singleton<PrefWatcherFactory>::get();
-  }
-
- private:
-  friend struct base::DefaultSingletonTraits<PrefWatcherFactory>;
-
-  PrefWatcherFactory() : BrowserContextKeyedServiceFactory(
-      "PrefWatcher",
-      BrowserContextDependencyManager::GetInstance()) {
-  }
-
-  ~PrefWatcherFactory() override {}
-
-  // BrowserContextKeyedServiceFactory:
-  KeyedService* BuildServiceInstanceFor(
-      content::BrowserContext* browser_context) const override {
-    return new PrefWatcher(Profile::FromBrowserContext(browser_context));
-  }
-
-  content::BrowserContext* GetBrowserContextToUse(
-      content::BrowserContext* context) const override {
-    return chrome::GetBrowserContextOwnInstanceInIncognito(context);
-  }
-};
-
-// static
-PrefWatcher* PrefWatcher::Get(Profile* profile) {
-  return PrefWatcherFactory::GetForProfile(profile);
-}
 
 PrefsTabHelper::PrefsTabHelper(WebContents* contents)
     : web_contents_(contents),
@@ -460,6 +290,7 @@ PrefsTabHelper::PrefsTabHelper(WebContents* contents)
       weak_ptr_factory_(this) {
   PrefService* prefs = profile_->GetPrefs();
   if (prefs) {
+#if !defined(OS_ANDROID)
     // If the tab is in an incognito profile, we track changes in the default
     // zoom level of the parent profile instead.
     Profile* profile_to_track = profile_->GetOriginalProfile();
@@ -474,25 +305,24 @@ PrefsTabHelper::PrefsTabHelper(WebContents* contents)
           zoom_level_prefs->RegisterDefaultZoomLevelCallback(renderer_callback);
     }
 
+    // Unretained is safe because the registrar will be scoped to this class.
+    font_change_registrar_.Register(
+        FontPrefChangeNotifierFactory::GetForProfile(profile_),
+        base::Bind(&PrefsTabHelper::OnWebPrefChanged, base::Unretained(this)));
+#endif  // !defined(OS_ANDROID)
+
     PrefWatcher::Get(profile_)->RegisterHelper(this);
   }
 
-  content::RendererPreferences* render_prefs =
+  blink::mojom::RendererPreferences* render_prefs =
       web_contents_->GetMutableRendererPrefs();
-  renderer_preferences_util::UpdateFromSystemSettings(render_prefs,
-                                                      profile_,
-                                                      web_contents_);
+  renderer_preferences_util::UpdateFromSystemSettings(render_prefs, profile_);
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && defined(ENABLE_THEMES)
+#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
   registrar_.Add(this,
                  chrome::NOTIFICATION_BROWSER_THEME_CHANGED,
                  content::Source<ThemeService>(
                      ThemeServiceFactory::GetForProfile(profile_)));
-#endif
-#if defined(USE_AURA)
-  registrar_.Add(this,
-                 chrome::NOTIFICATION_BROWSER_FLING_CURVE_PARAMETERS_CHANGED,
-                 content::NotificationService::AllSources());
 #endif
 }
 
@@ -508,8 +338,6 @@ void PrefsTabHelper::RegisterProfilePrefs(
                                 pref_defaults.javascript_enabled);
   registry->RegisterBooleanPref(prefs::kWebKitWebSecurityEnabled,
                                 pref_defaults.web_security_enabled);
-  registry->RegisterBooleanPref(
-      prefs::kWebKitJavascriptCanOpenWindowsAutomatically, true);
   registry->RegisterBooleanPref(prefs::kWebKitLoadsImagesAutomatically,
                                 pref_defaults.loads_images_automatically);
   registry->RegisterBooleanPref(prefs::kWebKitPluginsEnabled,
@@ -518,24 +346,28 @@ void PrefsTabHelper::RegisterProfilePrefs(
                                 pref_defaults.dom_paste_enabled);
   registry->RegisterBooleanPref(prefs::kWebKitTextAreasAreResizable,
                                 pref_defaults.text_areas_are_resizable);
+  registry->RegisterBooleanPref(prefs::kWebKitJavascriptCanAccessClipboard,
+                                pref_defaults.javascript_can_access_clipboard);
   registry->RegisterBooleanPref(prefs::kWebkitTabsToLinks,
                                 pref_defaults.tabs_to_links);
   registry->RegisterBooleanPref(prefs::kWebKitAllowRunningInsecureContent,
                                 false);
-  registry->RegisterBooleanPref(prefs::kWebKitAllowDisplayingInsecureContent,
-                                true);
   registry->RegisterBooleanPref(prefs::kEnableReferrers, true);
+  registry->RegisterBooleanPref(prefs::kEnableEncryptedMedia, true);
 #if defined(OS_ANDROID)
   registry->RegisterDoublePref(prefs::kWebKitFontScaleFactor, 1.0);
   registry->RegisterBooleanPref(prefs::kWebKitForceEnableZoom,
                                 pref_defaults.force_enable_zoom);
   registry->RegisterBooleanPref(prefs::kWebKitPasswordEchoEnabled,
                                 pref_defaults.password_echo_enabled);
+
+  bool force_dark_mode_enabled =
+      base::FeatureList::IsEnabled(chrome::android::kAndroidWebContentsDarkMode)
+          ? true
+          : pref_defaults.force_dark_mode_enabled;
+  registry->RegisterBooleanPref(prefs::kWebKitForceDarkModeEnabled,
+                                force_dark_mode_enabled);
 #endif
-  registry->RegisterStringPref(
-      prefs::kAcceptLanguages,
-      l10n_util::GetStringUTF8(IDS_ACCEPT_LANGUAGES),
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterStringPref(
       prefs::kDefaultCharset,
       l10n_util::GetStringUTF8(IDS_DEFAULT_ENCODING),
@@ -552,15 +384,6 @@ void PrefsTabHelper::RegisterProfilePrefs(
       if (ShouldUseAlternateDefaultFixedFont(
               l10n_util::GetStringUTF8(pref.resource_id)))
         pref.resource_id = IDS_FIXED_FONT_FAMILY_ALT_WIN;
-    }
-
-    // The standard font (Meiryo) isn't installed by default as of Win 10.
-    if (base::win::GetVersion() >= base::win::VERSION_WIN10) {
-      if (pref.pref_name == prefs::kWebKitStandardFontFamilyJapanese) {
-        pref.resource_id = IDS_STANDARD_FONT_FAMILY_JAPANESE_ALT_WIN;
-      } else if (pref.pref_name == prefs::kWebKitSansSerifFontFamilyJapanese) {
-        pref.resource_id = IDS_SANS_SERIF_FONT_FAMILY_JAPANESE_ALT_WIN;
-      }
     }
 #endif
 
@@ -585,10 +408,9 @@ void PrefsTabHelper::RegisterProfilePrefs(
     }
   }
 
-  // Register per-script font prefs that don't have defaults.
+// Register font prefs.  This is only configurable on desktop Chrome.
 #if !defined(OS_ANDROID)
   RegisterFontFamilyPrefs(registry, fonts_with_defaults);
-#endif
 
   RegisterLocalizedFontPref(registry, prefs::kWebKitDefaultFontSize,
                             IDS_DEFAULT_FONT_SIZE);
@@ -598,14 +420,7 @@ void PrefsTabHelper::RegisterProfilePrefs(
                             IDS_MINIMUM_FONT_SIZE);
   RegisterLocalizedFontPref(registry, prefs::kWebKitMinimumLogicalFontSize,
                             IDS_MINIMUM_LOGICAL_FONT_SIZE);
-  registry->RegisterBooleanPref(
-      prefs::kWebKitUsesUniversalDetector,
-      l10n_util::GetStringUTF8(IDS_USES_UNIVERSAL_DETECTOR) == "true",
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterStringPref(
-      prefs::kStaticEncodings,
-      l10n_util::GetStringUTF8(IDS_STATIC_ENCODING_LIST));
-  registry->RegisterStringPref(prefs::kRecentlySelectedEncoding, std::string());
+#endif
 }
 
 // static
@@ -616,19 +431,12 @@ void PrefsTabHelper::GetServiceInstance() {
 void PrefsTabHelper::Observe(int type,
                              const content::NotificationSource& source,
                              const content::NotificationDetails& details) {
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && defined(ENABLE_THEMES)
+#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
   if (type == chrome::NOTIFICATION_BROWSER_THEME_CHANGED) {
     UpdateRendererPreferences();
     return;
   }
 #endif
-
-#if defined(USE_AURA)
-  if (type == chrome::NOTIFICATION_BROWSER_FLING_CURVE_PARAMETERS_CHANGED) {
-    UpdateRendererPreferences();
-    return;
-  }
-#endif  // defined(USE_AURA)
 
   NOTREACHED();
 }
@@ -639,12 +447,12 @@ void PrefsTabHelper::UpdateWebPreferences() {
 }
 
 void PrefsTabHelper::UpdateRendererPreferences() {
-  content::RendererPreferences* prefs =
+  blink::mojom::RendererPreferences* prefs =
       web_contents_->GetMutableRendererPrefs();
-  renderer_preferences_util::UpdateFromSystemSettings(
-      prefs, profile_, web_contents_);
+  renderer_preferences_util::UpdateFromSystemSettings(prefs, profile_);
   web_contents_->GetRenderViewHost()->SyncRendererPrefs();
 }
+
 void PrefsTabHelper::OnFontFamilyPrefChanged(const std::string& pref_name) {
   // When a font family pref's value goes from non-empty to the empty string, we
   // must add it to the usual WebPreferences struct passed to the renderer.
@@ -676,9 +484,21 @@ void PrefsTabHelper::OnFontFamilyPrefChanged(const std::string& pref_name) {
 }
 
 void PrefsTabHelper::OnWebPrefChanged(const std::string& pref_name) {
+  // Use PostTask to dispatch the OnWebkitPreferencesChanged notification to
+  // give other observers (particularly the FontFamilyCache) a chance to react
+  // to the pref change.
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&PrefsTabHelper::NotifyWebkitPreferencesChanged,
+                                weak_ptr_factory_.GetWeakPtr(), pref_name));
+}
+
+void PrefsTabHelper::NotifyWebkitPreferencesChanged(
+    const std::string& pref_name) {
 #if !defined(OS_ANDROID)
   OnFontFamilyPrefChanged(pref_name);
 #endif
 
   web_contents_->GetRenderViewHost()->OnWebkitPreferencesChanged();
 }
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(PrefsTabHelper)

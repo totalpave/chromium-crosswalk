@@ -10,14 +10,16 @@
 #include "base/time/time.h"
 
 // Returns common timeouts to use in tests. Makes it possible to adjust
-// the timeouts for different environments (like Valgrind).
+// the timeouts for different environments (like TSan).
 class TestTimeouts {
  public:
   // Initializes the timeouts. Non thread-safe. Should be called exactly once
   // by the test suite.
   static void Initialize();
 
-  // Timeout for actions that are expected to finish "almost instantly".
+  // Timeout for actions that are expected to finish "almost instantly".  This
+  // is used in various tests to post delayed tasks and usually functions more
+  // like a delay value than a timeout.
   static base::TimeDelta tiny_timeout() {
     DCHECK(initialized_);
     return base::TimeDelta::FromMilliseconds(tiny_timeout_ms_);

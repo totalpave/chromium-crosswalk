@@ -19,10 +19,10 @@ if {[permutation]=="mmap"} {
   return
 }
 
-# Do not use a codec for tests in this file, as the database file is
-# manipulated directly using tcl scripts (using the [hexio_write] command).
-#
-do_not_use_codec
+# This module uses hard-coded offsets which do not work if the reserved_bytes
+# value is nonzero.
+if {[nonzero_reserved_bytes]} {finish_test; return;}
+
 database_may_be_corrupt
 
 # Initialize the database.
@@ -90,7 +90,7 @@ if {[db one {SELECT sqlite_compileoption_used('ENABLE_OVERSIZE_CELL_CHECK')}]} {
      )
      INSERT INTO t1 SELECT * FROM s;
    } {}
-   
+
    do_test 3.2 {
      hexio_write test.db [expr 512+3] 0054
      db close
@@ -98,7 +98,7 @@ if {[db one {SELECT sqlite_compileoption_used('ENABLE_OVERSIZE_CELL_CHECK')}]} {
      execsql { INSERT INTO t1 VALUES(5, 'klmnopqrst') }
      execsql { INSERT INTO t1 VALUES(7, 'klmnopqrst') }
    } {}
-   
+
    db close
    sqlite3 db test.db
    do_catchsql_test 3.3 {
@@ -169,11 +169,11 @@ do_test 5.0 {
   }
 } {}
 
-do_execsql_test 5.1 { 
-  PRAGMA page_count 
+do_execsql_test 5.1 {
+  PRAGMA page_count
 } [expr $nPage+1]
 
-do_test 5.2 { 
+do_test 5.2 {
   # The last page of the db is now the only leaf of the sqlite_master table.
   # Corrupt the db by adding it to the free-list as well (the second last
   # page of the db is the free-list trunk).
@@ -206,13 +206,12 @@ do_test 6.1 {
   db close
   hexio_write test.db 616 8FFFFFFF7F02
   sqlite3 db test.db
-  breakpoint
   execsql { DELETE FROM t1 WHERE rowid=2 }
 } {}
 
 #-------------------------------------------------------------------------
 # See what happens if the sqlite_master entry associated with a PRIMARY
-# KEY or UNIQUE index is removed. 
+# KEY or UNIQUE index is removed.
 #
 reset_db
 do_execsql_test 7.0 {
@@ -223,6 +222,7 @@ do_execsql_test 7.0 {
   INSERT INTO t1 VALUES('c', 'A');
   SELECT name FROM sqlite_master;
 } {t1 sqlite_autoindex_t1_1}
+sqlite3_db_config db DEFENSIVE 0
 do_execsql_test 7.1 {
   PRAGMA writable_schema = 1;
   DELETE FROM sqlite_master WHERE name = 'sqlite_autoindex_t1_1';

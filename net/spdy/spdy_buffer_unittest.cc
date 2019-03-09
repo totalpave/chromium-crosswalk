@@ -6,13 +6,15 @@
 
 #include <cstddef>
 #include <cstring>
-#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
+#include "base/callback.h"
 #include "base/memory/ref_counted.h"
+#include "base/stl_util.h"
 #include "net/base/io_buffer.h"
-#include "net/spdy/spdy_protocol.h"
+#include "net/third_party/quiche/src/spdy/core/spdy_protocol.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -20,7 +22,7 @@ namespace net {
 namespace {
 
 const char kData[] = "hello!\0hi.";
-const size_t kDataSize = arraysize(kData);
+const size_t kDataSize = base::size(kData);
 
 class SpdyBufferTest : public ::testing::Test {};
 
@@ -29,12 +31,11 @@ std::string BufferToString(const SpdyBuffer& buffer) {
   return std::string(buffer.GetRemainingData(), buffer.GetRemainingSize());
 }
 
-// Construct a SpdyBuffer from a SpdySerializedFrame and make sure its data
-// points to the frame's underlying data.
+// Construct a SpdyBuffer from a spdy::SpdySerializedFrame and make sure its
+// data points to the frame's underlying data.
 TEST_F(SpdyBufferTest, FrameConstructor) {
-  SpdyBuffer buffer(
-      std::unique_ptr<SpdySerializedFrame>(new SpdySerializedFrame(
-          const_cast<char*>(kData), kDataSize, false /* owns_buffer */)));
+  SpdyBuffer buffer(std::make_unique<spdy::SpdySerializedFrame>(
+      const_cast<char*>(kData), kDataSize, false /* owns_buffer */));
 
   EXPECT_EQ(kData, buffer.GetRemainingData());
   EXPECT_EQ(kDataSize, buffer.GetRemainingSize());
@@ -120,8 +121,7 @@ TEST_F(SpdyBufferTest, GetIOBufferForRemainingData) {
 // Make sure the IOBuffer returned by GetIOBufferForRemainingData()
 // outlives the buffer itself.
 TEST_F(SpdyBufferTest, IOBufferForRemainingDataOutlivesBuffer) {
-  std::unique_ptr<SpdyBuffer> buffer(new SpdyBuffer(kData, kDataSize));
-
+  auto buffer = std::make_unique<SpdyBuffer>(kData, kDataSize);
   scoped_refptr<IOBuffer> io_buffer = buffer->GetIOBufferForRemainingData();
   buffer.reset();
 

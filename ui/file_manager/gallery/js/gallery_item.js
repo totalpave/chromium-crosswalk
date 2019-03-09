@@ -57,12 +57,22 @@ function GalleryItem(
    * @private
    */
   this.original_ = original;
-};
+}
+
+/**
+ * Types of metadata Gallery uses (to query the metadata cache).
+ * @const
+ * @type {!Array<string>}
+ */
+GalleryItem.PREFETCH_PROPERTY_NAMES =
+    ['imageWidth', 'imageHeight', 'imageRotation', 'size', 'present'];
 
 /**
  * @return {!FileEntry} Image entry.
  */
-GalleryItem.prototype.getEntry = function() { return this.entry_; };
+GalleryItem.prototype.getEntry = function() {
+  return this.entry_;
+};
 
 /**
  * @return {!EntryLocation} Entry location information.
@@ -109,7 +119,9 @@ GalleryItem.prototype.getFileName = function() {
 /**
  * @return {boolean} True if this image has not been created in this session.
  */
-GalleryItem.prototype.isOriginal = function() { return this.original_; };
+GalleryItem.prototype.isOriginal = function() {
+  return this.original_;
+};
 
 /**
  * Sets an item as original.
@@ -208,6 +220,13 @@ GalleryItem.prototype.createCopyName_ = function(
 };
 
 /**
+ * @return {boolean} True if this item can be edited by the ImageEditor.
+ */
+GalleryItem.prototype.isEditable = function() {
+  return FileType.isImage(this.entry_) || FileType.isRaw(this.entry_);
+};
+
+/**
  * Returns true if the original format is writable format of Gallery.
  * @return {boolean} True if the original format is writable format.
  */
@@ -219,7 +238,7 @@ GalleryItem.prototype.isWritableFormat = function() {
 
 /**
  * Returns true if the entry of item is writable.
- * @param {!VolumeManagerWrapper} volumeManager Volume manager.
+ * @param {!VolumeManager} volumeManager Volume manager.
  * @return {boolean} True if the entry of item is writable.
  */
 GalleryItem.prototype.isWritableFile = function(volumeManager) {
@@ -251,7 +270,7 @@ GalleryItem.prototype.getCopyName = function(dirEntry) {
 /**
  * Writes the new item content to either the existing or a new file.
  *
- * @param {!VolumeManagerWrapper} volumeManager Volume manager instance.
+ * @param {!VolumeManager} volumeManager Volume manager instance.
  * @param {!MetadataModel} metadataModel
  * @param {!DirectoryEntry} fallbackDir Fallback directory in case the current
  *     directory is read only.
@@ -261,7 +280,7 @@ GalleryItem.prototype.getCopyName = function(dirEntry) {
  */
 GalleryItem.prototype.saveToFile = function(
     volumeManager, metadataModel, fallbackDir, canvas, overwrite, callback) {
-  ImageUtil.metrics.startInterval(ImageUtil.getMetricName('SaveTime'));
+  metrics.startInterval(ImageUtil.getMetricName('SaveTime'));
   var saveResultRecorded = false;
 
   Promise.all([this.getEntryToWrite_(overwrite, fallbackDir, volumeManager),
@@ -304,9 +323,9 @@ GalleryItem.prototype.saveToFile = function(
         locationInfo = this.locationInfo_;
       }
 
-      ImageUtil.metrics.recordEnum(ImageUtil.getMetricName('SaveResult'), 1, 2);
+      metrics.recordEnum(ImageUtil.getMetricName('SaveResult'), 1, 2);
       saveResultRecorded = true;
-      ImageUtil.metrics.recordInterval(ImageUtil.getMetricName('SaveTime'));
+      metrics.recordInterval(ImageUtil.getMetricName('SaveTime'));
 
       this.entry_ = fileEntry;
       this.locationInfo_ = locationInfo;
@@ -314,7 +333,7 @@ GalleryItem.prototype.saveToFile = function(
       // Updates the metadata.
       metadataModel.notifyEntriesChanged([this.entry_]);
       Promise.all([
-        metadataModel.get([this.entry_], Gallery.PREFETCH_PROPERTY_NAMES),
+        metadataModel.get([this.entry_], GalleryItem.PREFETCH_PROPERTY_NAMES),
         new ThumbnailModel(metadataModel).get([this.entry_])
       ]).then(function(metadataLists) {
         this.metadataItem_ = metadataLists[0][0];
@@ -327,8 +346,9 @@ GalleryItem.prototype.saveToFile = function(
   }.bind(this)).catch(function(error) {
     console.error('Error saving from gallery', this.entry_.name, error);
 
-    if (!saveResultRecorded)
-      ImageUtil.metrics.recordEnum(ImageUtil.getMetricName('SaveResult'), 0, 2);
+    if (!saveResultRecorded) {
+      metrics.recordEnum(ImageUtil.getMetricName('SaveResult'), 0, 2);
+    }
 
     callback(false);
   }.bind(this));
@@ -339,14 +359,14 @@ GalleryItem.prototype.saveToFile = function(
  * @param {boolean} overwrite True to overwrite original file.
  * @param {!DirectoryEntry} fallbackDirectory Directory to fallback if current
  *     directory is not writable.
- * @param {!VolumeManagerWrapper} volumeManager
+ * @param {!VolumeManager} volumeManager
  * @return {!Promise<!FileEntry>}
  * @private
  */
 GalleryItem.prototype.getEntryToWrite_ = function(
     overwrite, fallbackDirectory, volumeManager) {
   return new Promise(function(resolve, reject) {
-    // Since in-place editing is not supported on MTP volume, Gallery.app
+    // Since in-place editing is not supported on MTP volume, the Gallery app
     // handles MTP volume as read only volume.
     if (this.locationInfo_.isReadOnly ||
         GalleryUtil.isOnMTPVolume(this.entry_, volumeManager)) {
@@ -415,11 +435,13 @@ GalleryItem.prototype.rename = function(displayName) {
   var newFileName = this.entry_.name.replace(
       ImageUtil.getDisplayNameFromName(this.entry_.name), displayName);
 
-  if (newFileName === this.entry_.name)
+  if (newFileName === this.entry_.name) {
     return Promise.reject('NOT_CHANGED');
+  }
 
-  if (/^\s*$/.test(displayName))
+  if (/^\s*$/.test(displayName)) {
     return Promise.reject(str('ERROR_WHITESPACE_NAME'));
+  }
 
   var parentDirectoryPromise = new Promise(
       this.entry_.getParent.bind(this.entry_));
@@ -439,4 +461,29 @@ GalleryItem.prototype.rename = function(displayName) {
   }.bind(this)).then(function(entry) {
     this.entry_ = entry;
   }.bind(this));
+};
+
+/**
+ * The threshold size of an image in pixels, which we always use thumbnail
+ * image for slide-in animation above this. This is a hack to avoid an UI
+ * unresponsiveness when switching between images.
+ * @type {number}
+ * @const
+ */
+GalleryItem.HEAVY_RENDERING_THRESHOLD_PIXELS = 4000 * 3000;
+
+/**
+ * Whether the image requires long rendering time.
+ *
+ * @return {boolean}
+ */
+GalleryItem.prototype.requireLongRenderingTime = function() {
+  // Check for undefined values.
+  if (!this.metadataItem_ || !this.metadataItem_.imageHeight ||
+      !this.metadataItem_.imageWidth) {
+    return false;
+  }
+  var numPixels = this.metadataItem_.imageHeight *
+      this.metadataItem_.imageWidth;
+  return numPixels > GalleryItem.HEAVY_RENDERING_THRESHOLD_PIXELS;
 };

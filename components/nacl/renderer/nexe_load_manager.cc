@@ -20,7 +20,6 @@
 #include "components/nacl/renderer/pnacl_translation_resource_host.h"
 #include "components/nacl/renderer/progress_event.h"
 #include "components/nacl/renderer/trusted_plugin_channel.h"
-#include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/sandbox_init.h"
 #include "content/public/renderer/pepper_plugin_instance.h"
@@ -36,9 +35,9 @@
 #include "ppapi/shared_impl/var.h"
 #include "ppapi/shared_impl/var_tracker.h"
 #include "ppapi/thunk/enter.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebPluginContainer.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_plugin_container.h"
+#include "third_party/blink/public/web/web_view.h"
 #include "v8/include/v8.h"
 
 namespace nacl {
@@ -55,9 +54,6 @@ const char* const kSrcManifestAttribute = "src";
 // MIME type because the "src" attribute is used to supply us with the resource
 // of that MIME type that we're supposed to display.
 const char* const kNaClManifestAttribute = "nacl";
-// Define an argument name to enable 'dev' interfaces. To make sure it doesn't
-// collide with any user-defined HTML attribute, make the first character '@'.
-const char* const kDevAttribute = "@dev";
 
 const char* const kNaClMIMEType = "application/x-nacl";
 const char* const kPNaClMIMEType = "application/x-pnacl";
@@ -74,7 +70,7 @@ static int GetRoutingID(PP_Instance instance) {
 
 std::string LookupAttribute(const std::map<std::string, std::string>& args,
                             const std::string& key) {
-  std::map<std::string, std::string>::const_iterator it = args.find(key);
+  auto it = args.find(key);
   if (it != args.end())
     return it->second;
   return std::string();
@@ -82,8 +78,7 @@ std::string LookupAttribute(const std::map<std::string, std::string>& args,
 
 }  // namespace
 
-NexeLoadManager::NexeLoadManager(
-    PP_Instance pp_instance)
+NexeLoadManager::NexeLoadManager(PP_Instance pp_instance)
     : pp_instance_(pp_instance),
       nacl_ready_state_(PP_NACL_READY_STATE_UNSENT),
       nexe_error_reported_(false),
@@ -92,14 +87,12 @@ NexeLoadManager::NexeLoadManager(
       nexe_size_(0),
       plugin_instance_(content::PepperPluginInstance::Get(pp_instance)),
       nonsfi_(false),
-      crash_info_shmem_handle_(base::SharedMemory::NULLHandle()),
       weak_factory_(this) {
   set_exit_status(-1);
   SetLastError("");
   HistogramEnumerateOsArch(GetSandboxArch());
   if (plugin_instance_) {
-    plugin_base_url_ =
-        plugin_instance_->GetContainer()->document().url();
+    plugin_base_url_ = plugin_instance_->GetContainer()->GetDocument().Url();
   }
 }
 
@@ -268,6 +261,9 @@ void NexeLoadManager::NexeDidCrash() {
   // have been received and we'll just get an EOF indication.
 
   base::SharedMemory shmem(crash_info_shmem_handle_, true);
+  // When shmem goes out of scope, the handle will be closed. Invalidate
+  // our handle so our destructor doesn't try to close it again.
+  crash_info_shmem_handle_ = base::SharedMemoryHandle();
   if (shmem.Map(kNaClCrashInfoShmemSize)) {
     uint32_t crash_log_length;
     // We cast the length value to volatile here to prevent the compiler from
@@ -411,14 +407,12 @@ std::string NexeLoadManager::GetManifestURLArgument() const {
   return manifest_url;
 }
 
-bool NexeLoadManager::IsPNaCl() const {
-  return mime_type_ == kPNaClMIMEType;
+void NexeLoadManager::CloseTrustedPluginChannel() {
+  trusted_plugin_channel_.reset();
 }
 
-bool NexeLoadManager::DevInterfacesEnabled() const {
-  // Look for the developer attribute; if it's present, enable 'dev'
-  // interfaces.
-  return args_.find(kDevAttribute) != args_.end();
+bool NexeLoadManager::IsPNaCl() const {
+  return mime_type_ == kPNaClMIMEType;
 }
 
 void NexeLoadManager::ReportDeadNexe() {

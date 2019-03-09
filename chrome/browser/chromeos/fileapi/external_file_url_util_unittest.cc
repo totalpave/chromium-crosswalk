@@ -8,6 +8,7 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/drive/file_system_core_util.h"
+#include "content/public/common/url_constants.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "storage/browser/fileapi/file_system_url.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -32,13 +33,10 @@ class ExternalFileURLUtilTest : public testing::Test {
 
   storage::FileSystemURL CreateExpectedURL(const base::FilePath& path) {
     return storage::FileSystemURL::CreateForTest(
-        GURL("chrome-extension://xxx"),
+        url::Origin::Create(GURL("chrome-extension://xxx")),
         storage::kFileSystemTypeExternal,
-        base::FilePath("drive-test-user-hash").Append(path),
-        "",
-        storage::kFileSystemTypeDrive,
-        base::FilePath(),
-        "",
+        base::FilePath("drive-test-user-hash").Append(path), "",
+        storage::kFileSystemTypeDrive, base::FilePath(), "",
         storage::FileSystemMountOption());
   }
 
@@ -76,6 +74,40 @@ TEST_F(ExternalFileURLUtilTest, FilePathToExternalFileURL) {
   EXPECT_EQ(url.virtual_path().AsUTF8Unsafe(),
             ExternalFileURLToVirtualPath(FileSystemURLToExternalFileURL(url))
                 .AsUTF8Unsafe());
+}
+
+// Tests that given virtual path is encoded to an expected externalfile: URL
+// and then the original path is reconstructed from it.
+void ExpectVirtualPathRoundtrip(
+    const base::FilePath::StringType& virtual_path_string,
+    std::string expected_url) {
+  base::FilePath virtual_path(virtual_path_string);
+  GURL result = VirtualPathToExternalFileURL(virtual_path);
+  EXPECT_TRUE(result.is_valid());
+  EXPECT_EQ(content::kExternalFileScheme, result.scheme());
+  EXPECT_EQ(expected_url, result.path());
+  EXPECT_EQ(virtual_path.value(), ExternalFileURLToVirtualPath(result).value());
+}
+
+TEST_F(ExternalFileURLUtilTest, VirtualPathToExternalFileURL) {
+  ExpectVirtualPathRoundtrip(FILE_PATH_LITERAL("foo/bar012.txt"),
+                             "foo/bar012.txt");
+
+  // Path containing precent character, which is also used for URL encoding.
+  ExpectVirtualPathRoundtrip(FILE_PATH_LITERAL("foo/bar012%41%.txt"),
+                             "foo/bar012%2541%25.txt");
+
+  // Path containing some ASCII characters that are escaped by URL enconding.
+  ExpectVirtualPathRoundtrip(FILE_PATH_LITERAL("foo/bar \"#<>?`{}.txt"),
+                             "foo/bar%20%22%23%3C%3E%3F%60%7B%7D.txt");
+
+  // (U+3000) IDEOGRAPHIC SPACE and (U+1F512) LOCK are examples of characters
+  // potentially used for URL spoofing. Those are blacklisted from unescaping
+  // when a URL is displayed, but this should not prevent it from being
+  // unescaped when converting a URL to a virtual file path. See
+  // crbug.com/585422 for detail.
+  ExpectVirtualPathRoundtrip(FILE_PATH_LITERAL("foo/bar/space\u3000lock🔒.zip"),
+                             "foo/bar/space%E3%80%80lock%F0%9F%94%92.zip");
 }
 
 }  // namespace chromeos

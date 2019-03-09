@@ -4,7 +4,9 @@
 
 #include "remoting/host/desktop_session_win.h"
 
+#include <objbase.h>
 #include <sddl.h>
+#include <wrl/client.h>
 
 #include <limits>
 #include <memory>
@@ -14,24 +16,20 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/guid.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_checker.h"
 #include "base/timer/timer.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_bstr.h"
-#include "base/win/scoped_comptr.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/windows_version.h"
 #include "ipc/ipc_message_macros.h"
 #include "ipc/ipc_platform_file.h"
 #include "remoting/base/auto_thread_task_runner.h"
-// MIDL-generated declarations and definitions.
-#include "remoting/host/chromoting_lib.h"
 #include "remoting/host/chromoting_messages.h"
 #include "remoting/host/daemon_process.h"
 #include "remoting/host/desktop_session.h"
@@ -39,6 +37,9 @@
 #include "remoting/host/ipc_constants.h"
 #include "remoting/host/sas_injector.h"
 #include "remoting/host/screen_resolution.h"
+#include "remoting/host/switches.h"
+// MIDL-generated declarations and definitions.
+#include "remoting/host/win/chromoting_lib.h"
 #include "remoting/host/win/host_service.h"
 #include "remoting/host/win/worker_process_launcher.h"
 #include "remoting/host/win/wts_session_process_delegate.h"
@@ -59,22 +60,6 @@ const wchar_t kDaemonIpcSecurityDescriptor[] =
     SDDL_GROUP L":" SDDL_LOCAL_SYSTEM
     SDDL_DACL L":("
         SDDL_ACCESS_ALLOWED L";;" SDDL_GENERIC_ALL L";;;" SDDL_LOCAL_SYSTEM
-    L")";
-
-// This security descriptor is used to give the network process, running in the
-// local service context, the PROCESS_QUERY_LIMITED_INFORMATION access right.
-// It also gives SYSTEM full control of the process and PROCESS_VM_READ,
-// PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, and READ_CONTROL rights to the
-// built-in administrators group.
-const wchar_t kDesktopProcessSecurityDescriptor[] =
-    SDDL_OWNER L":" SDDL_LOCAL_SYSTEM
-    SDDL_GROUP L":" SDDL_LOCAL_SYSTEM
-    SDDL_DACL L":"
-        SDDL_ACCESS_ALLOWED L";;" SDDL_GENERIC_ALL L";;;" SDDL_LOCAL_SYSTEM
-    L")("
-        SDDL_ACCESS_ALLOWED L";;0x21411;;;" SDDL_BUILTIN_ADMINISTRATORS
-    L")("
-        SDDL_ACCESS_ALLOWED L";;0x1000;;;" SDDL_LOCAL_SERVICE
     L")";
 
 // The command line parameters that should be copied from the service's command
@@ -116,6 +101,12 @@ const wchar_t kRdpPortValueName[] = L"PortNumber";
 const wchar_t kDenyTsConnectionsValueName[] = L"fDenyTSConnections";
 const wchar_t kNetworkLevelAuthValueName[] = L"UserAuthentication";
 const wchar_t kSecurityLayerValueName[] = L"SecurityLayer";
+
+webrtc::DesktopSize GetBoundedRdpDesktopSize(int width, int height) {
+  return webrtc::DesktopSize(
+      std::min(kMaxRdpScreenWidth, std::max(kMinRdpScreenWidth, width)),
+      std::min(kMaxRdpScreenHeight, std::max(kMinRdpScreenHeight, height)));
+}
 
 // DesktopSession implementation which attaches to the host's physical console.
 // Receives IPC messages from the desktop process, running in the console
@@ -214,7 +205,7 @@ class RdpSession : public DesktopSessionWin {
                                   DWORD* value);
 
   // Used to create an RDP desktop session.
-  base::win::ScopedComPtr<IRdpDesktopSession> rdp_desktop_session_;
+  Microsoft::WRL::ComPtr<IRdpDesktopSession> rdp_desktop_session_;
 
   // Used to match |rdp_desktop_session_| with the session it is attached to.
   std::string terminal_id_;
@@ -276,8 +267,9 @@ bool RdpSession::Initialize(const ScreenResolution& resolution) {
   }
 
   // Create the RDP wrapper object.
-  HRESULT result = rdp_desktop_session_.CreateInstance(
-      __uuidof(RdpDesktopSession));
+  HRESULT result =
+      ::CoCreateInstance(__uuidof(RdpDesktopSession), nullptr, CLSCTX_ALL,
+                         IID_PPV_ARGS(&rdp_desktop_session_));
   if (FAILED(result)) {
     LOG(ERROR) << "Failed to create RdpSession object, 0x"
                << std::hex << result << std::dec << ".";
@@ -299,11 +291,7 @@ bool RdpSession::Initialize(const ScreenResolution& resolution) {
       webrtc::DesktopVector(kDefaultRdpDpi, kDefaultRdpDpi));
 
   // Make sure that the host resolution is within the limits supported by RDP.
-  host_size = webrtc::DesktopSize(
-      std::min(kMaxRdpScreenWidth,
-               std::max(kMinRdpScreenWidth, host_size.width())),
-      std::min(kMaxRdpScreenHeight,
-               std::max(kMinRdpScreenHeight, host_size.height())));
+  host_size = GetBoundedRdpDesktopSize(host_size.width(), host_size.height());
 
   // Read the port number used by RDP.
   DWORD server_port = kDefaultRdpPort;
@@ -315,13 +303,14 @@ bool RdpSession::Initialize(const ScreenResolution& resolution) {
   }
 
   // Create an RDP session.
-  base::win::ScopedComPtr<IRdpDesktopSessionEventHandler> event_handler(
+  Microsoft::WRL::ComPtr<IRdpDesktopSessionEventHandler> event_handler(
       new EventHandler(weak_factory_.GetWeakPtr()));
   terminal_id_ = base::GenerateGUID();
-  base::win::ScopedBstr terminal_id(base::UTF8ToUTF16(terminal_id_).c_str());
+  base::win::ScopedBstr terminal_id(base::UTF8ToUTF16(terminal_id_));
   result = rdp_desktop_session_->Connect(host_size.width(), host_size.height(),
+                                         kDefaultRdpDpi, kDefaultRdpDpi,
                                          terminal_id, server_port,
-                                         event_handler.get());
+                                         event_handler.Get());
   if (FAILED(result)) {
     LOG(ERROR) << "RdpSession::Create() failed, 0x"
                << std::hex << result << std::dec << ".";
@@ -346,10 +335,14 @@ void RdpSession::OnRdpClosed() {
 
 void RdpSession::SetScreenResolution(const ScreenResolution& resolution) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
+  DCHECK(!resolution.IsEmpty());
 
-  // TODO(alexeypa): implement resize-to-client for RDP sessions here.
-  // See http://crbug.com/137696.
-  NOTIMPLEMENTED();
+  webrtc::DesktopSize new_size = resolution.ScaleDimensionsToDpi(
+      webrtc::DesktopVector(kDefaultRdpDpi, kDefaultRdpDpi));
+  new_size = GetBoundedRdpDesktopSize(new_size.width(), new_size.height());
+
+  rdp_desktop_session_->ChangeResolution(new_size.width(), new_size.height(),
+      kDefaultRdpDpi, kDefaultRdpDpi);
 }
 
 void RdpSession::InjectSas() {
@@ -488,9 +481,9 @@ std::unique_ptr<DesktopSession> DesktopSessionWin::CreateForConsole(
     DaemonProcess* daemon_process,
     int id,
     const ScreenResolution& resolution) {
-  return base::WrapUnique(new ConsoleSession(caller_task_runner, io_task_runner,
-                                             daemon_process, id,
-                                             HostService::GetInstance()));
+  return std::make_unique<ConsoleSession>(caller_task_runner, io_task_runner,
+                                          daemon_process, id,
+                                          HostService::GetInstance());
 }
 
 // static
@@ -582,15 +575,6 @@ void DesktopSessionWin::OnChannelConnected(int32_t peer_pid) {
 
   ReportElapsedTime("channel connected");
 
-  // Obtain the handle of the desktop process. It will be passed to the network
-  // process to use to duplicate handles of shared memory objects from
-  // the desktop process.
-  desktop_process_.Set(OpenProcess(PROCESS_DUP_HANDLE, false, peer_pid));
-  if (!desktop_process_.IsValid()) {
-    CrashDesktopProcess(FROM_HERE);
-    return;
-  }
-
   VLOG(1) << "IPC: daemon <- desktop (" << peer_pid << ")";
 }
 
@@ -620,6 +604,8 @@ void DesktopSessionWin::OnPermanentError(int exit_code) {
   TerminateSession();
 }
 
+void DesktopSessionWin::OnWorkerProcessStopped() {}
+
 void DesktopSessionWin::OnSessionAttached(uint32_t session_id) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
   DCHECK(!launcher_);
@@ -627,11 +613,11 @@ void DesktopSessionWin::OnSessionAttached(uint32_t session_id) {
 
   ReportElapsedTime("attached");
 
-  // Launch elevated on Win8 to be able to inject Alt+Tab.
+  // Launch elevated on Win8+ to enable injection of Alt+Tab and Ctrl+Alt+Del.
   bool launch_elevated = base::win::GetVersion() >= base::win::VERSION_WIN8;
 
   // Get the name of the executable to run. |kDesktopBinaryName| specifies
-  // uiAccess="true" in it's manifest.
+  // uiAccess="true" in its manifest.
   base::FilePath desktop_binary;
   bool result;
   if (launch_elevated) {
@@ -652,14 +638,13 @@ void DesktopSessionWin::OnSessionAttached(uint32_t session_id) {
   target->AppendSwitchASCII(kProcessTypeSwitchName, kProcessTypeDesktop);
   // Copy the command line switches enabling verbose logging.
   target->CopySwitchesFrom(*base::CommandLine::ForCurrentProcess(),
-                           kCopiedSwitchNames, arraysize(kCopiedSwitchNames));
+                           kCopiedSwitchNames, base::size(kCopiedSwitchNames));
 
   // Create a delegate capable of launching a process in a different session.
   std::unique_ptr<WtsSessionProcessDelegate> delegate(
       new WtsSessionProcessDelegate(
           io_task_runner_, std::move(target), launch_elevated,
-          base::WideToUTF8(kDaemonIpcSecurityDescriptor),
-          base::WideToUTF8(kDesktopProcessSecurityDescriptor)));
+          base::WideToUTF8(kDaemonIpcSecurityDescriptor)));
   if (!delegate->Initialize(session_id)) {
     TerminateSession();
     return;
@@ -667,12 +652,14 @@ void DesktopSessionWin::OnSessionAttached(uint32_t session_id) {
 
   // Create a launcher for the desktop process, using the per-session delegate.
   launcher_.reset(new WorkerProcessLauncher(std::move(delegate), this));
+  session_id_ = session_id;
 }
 
 void DesktopSessionWin::OnSessionDetached() {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   launcher_.reset();
+  session_id_ = UINT32_MAX;
 
   if (monitoring_notifications_) {
     ReportElapsedTime("detached");
@@ -684,16 +671,14 @@ void DesktopSessionWin::OnSessionDetached() {
 }
 
 void DesktopSessionWin::OnDesktopSessionAgentAttached(
-      IPC::PlatformFileForTransit desktop_pipe) {
-  if (!daemon_process()->OnDesktopSessionAgentAttached(id(),
-                                                       desktop_process_.Get(),
+      const IPC::ChannelHandle& desktop_pipe) {
+  if (!daemon_process()->OnDesktopSessionAgentAttached(id(), session_id_,
                                                        desktop_pipe)) {
     CrashDesktopProcess(FROM_HERE);
   }
 }
 
-void DesktopSessionWin::CrashDesktopProcess(
-    const tracked_objects::Location& location) {
+void DesktopSessionWin::CrashDesktopProcess(const base::Location& location) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   launcher_->Crash(location);

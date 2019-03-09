@@ -1,7 +1,6 @@
 # Copyright 2013 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-
 """Extract histogram names from the description XML file.
 
 For more information on the format of the XML file, which is self-documenting,
@@ -54,8 +53,11 @@ XML below will generate the following five histograms:
 
 """
 
+import bisect
 import copy
+import datetime
 import logging
+import re
 import xml.dom.minidom
 
 OWNER_FIELD_PLACEHOLDER = (
@@ -63,6 +65,11 @@ OWNER_FIELD_PLACEHOLDER = (
 
 MAX_HISTOGRAM_SUFFIX_DEPENDENCY_DEPTH = 5
 
+DEFAULT_BASE_HISTOGRAM_OBSOLETE_REASON = (
+    'Base histogram. Use suffixes of this histogram instead.')
+
+EXPIRY_DATE_PATTERN = "%Y-%m-%d"
+EXPIRY_MILESTONE_RE = re.compile(r'M[0-9]{2,3}\Z')
 
 class Error(Exception):
   pass
@@ -139,6 +146,12 @@ def _ExpandHistogramNameWithSuffixes(suffix_name, histogram_name,
     ordering = histogram_suffixes_node.getAttribute('ordering')
   else:
     ordering = 'suffix'
+  parts = ordering.split(',')
+  ordering = parts[0]
+  if len(parts) > 1:
+    placement = int(parts[1])
+  else:
+    placement = 1
   if ordering not in ['prefix', 'suffix']:
     logging.error('ordering needs to be prefix or suffix, value is %s',
                   ordering)
@@ -153,15 +166,16 @@ def _ExpandHistogramNameWithSuffixes(suffix_name, histogram_name,
   # For prefixes, the suffix_name is inserted between the "cluster" and the
   # "remainder", e.g. Foo.BarHist expanded with gamma becomes Foo.gamma_BarHist.
   sections = histogram_name.split('.')
-  if len(sections) <= 1:
+  if len(sections) <= placement:
     logging.error(
-        'Prefix Field Trial expansions require histogram names which include a '
-        'dot separator. Histogram name is %s, and Field Trial is %s',
-        histogram_name, histogram_suffixes_node.getAttribute('name'))
+        'Prefix histogram_suffixes expansions require histogram names which '
+        'include a dot separator. Histogram name is %s, histogram_suffixes is '
+        '%s, and placment is %d', histogram_name,
+        histogram_suffixes_node.getAttribute('name'), placement)
     raise Error()
 
-  cluster = sections[0] + '.'
-  remainder = '.'.join(sections[1:])
+  cluster = '.'.join(sections[0:placement]) + '.'
+  remainder = '.'.join(sections[placement:])
   return cluster + suffix_name + separator + remainder
 
 
@@ -173,15 +187,10 @@ def _ExtractEnumsFromXmlTree(tree):
 
   last_name = None
   for enum in tree.getElementsByTagName('enum'):
-    if enum.getAttribute('type') != 'int':
-      logging.error('Unknown enum type %s', enum.getAttribute('type'))
-      have_errors = True
-      continue
-
     name = enum.getAttribute('name')
     if last_name is not None and name.lower() < last_name.lower():
-      logging.error('Enums %s and %s are not in alphabetical order',
-                    last_name, name)
+      logging.error('Enums %s and %s are not in alphabetical order', last_name,
+                    name)
       have_errors = True
     last_name = name
 
@@ -190,7 +199,6 @@ def _ExtractEnumsFromXmlTree(tree):
       have_errors = True
       continue
 
-    last_int_value = None
     enum_dict = {}
     enum_dict['name'] = name
     enum_dict['values'] = {}
@@ -198,11 +206,6 @@ def _ExtractEnumsFromXmlTree(tree):
     for int_tag in enum.getElementsByTagName('int'):
       value_dict = {}
       int_value = int(int_tag.getAttribute('value'))
-      if last_int_value is not None and int_value < last_int_value:
-        logging.error('Enum %s int values %d and %d are not in numerical order',
-                      name, last_int_value, int_value)
-        have_errors = True
-      last_int_value = int_value
       if int_value in enum_dict['values']:
         logging.error('Duplicate enum value %d for enum %s', int_value, name)
         have_errors = True
@@ -210,6 +213,26 @@ def _ExtractEnumsFromXmlTree(tree):
       value_dict['label'] = int_tag.getAttribute('label')
       value_dict['summary'] = _JoinChildNodes(int_tag)
       enum_dict['values'][int_value] = value_dict
+
+    enum_int_values = sorted(enum_dict['values'].keys())
+
+    last_int_value = None
+    for int_tag in enum.getElementsByTagName('int'):
+      int_value = int(int_tag.getAttribute('value'))
+      if last_int_value is not None and int_value < last_int_value:
+        logging.error('Enum %s int values %d and %d are not in numerical order',
+                      name, last_int_value, int_value)
+        have_errors = True
+        left_item_index = bisect.bisect_left(enum_int_values, int_value)
+        if left_item_index == 0:
+          logging.warning('Insert value %d at the beginning', int_value)
+        else:
+          left_int_value = enum_int_values[left_item_index - 1]
+          left_label = enum_dict['values'][left_int_value]['label']
+          logging.warning('Insert value %d after %d ("%s")', int_value,
+                          left_int_value, left_label)
+      else:
+        last_int_value = int_value
 
     summary_nodes = enum.getElementsByTagName('summary')
     if summary_nodes:
@@ -228,6 +251,33 @@ def _ExtractOwners(xml_node):
     if OWNER_FIELD_PLACEHOLDER not in owner_entry:
       owners.append(owner_entry)
   return owners
+
+
+def _ValidateDateString(date_str):
+  """Check if |date_str| matches 'YYYY-MM-DD'.
+
+  Args:
+    date_str: string
+
+  Returns:
+    True iff |date_str| matches 'YYYY-MM-DD' format.
+  """
+  try:
+    _ = datetime.datetime.strptime(date_str, EXPIRY_DATE_PATTERN).date()
+  except ValueError:
+    return False
+  return True
+
+def _ValidateMilestoneString(milestone_str):
+  """Check if |milestone_str| matches 'M*'."""
+  return EXPIRY_MILESTONE_RE.match(milestone_str) is not None
+
+def _ProcessBaseHistogramAttribute(node, histogram_entry):
+  if node.hasAttribute('base'):
+    is_base = node.getAttribute('base').lower() == 'true'
+    histogram_entry['base'] = is_base
+    if is_base and 'obsolete' not in histogram_entry:
+      histogram_entry['obsolete'] = DEFAULT_BASE_HISTOGRAM_OBSOLETE_REASON
 
 
 def _ExtractHistogramsFromXmlTree(tree, enums):
@@ -249,6 +299,19 @@ def _ExtractHistogramsFromXmlTree(tree, enums):
       have_errors = True
       continue
     histograms[name] = histogram_entry = {}
+
+    # Handle expiry attribute.
+    if histogram.hasAttribute('expires_after'):
+      expiry_str = histogram.getAttribute('expires_after')
+      if (expiry_str == "never" or _ValidateMilestoneString(expiry_str) or
+          _ValidateDateString(expiry_str)):
+        histogram_entry['expires_after'] = expiry_str
+      else:
+        logging.error(
+            'Expiry of histogram %s does not match expected date format ("%s"),'
+            ' milestone format (M*), or "never": found %s.', name,
+            EXPIRY_DATE_PATTERN, expiry_str)
+        have_errors = True
 
     # Find <owner> tag.
     owners = _ExtractOwners(histogram)
@@ -287,6 +350,8 @@ def _ExtractHistogramsFromXmlTree(tree, enums):
         have_errors = True
       else:
         histogram_entry['enum'] = enums[enum_name]
+
+    _ProcessBaseHistogramAttribute(histogram, histogram_entry)
 
   return histograms, have_errors
 
@@ -336,6 +401,7 @@ def _UpdateHistogramsWithSuffixes(tree, histograms):
   # queue. histogram_suffixes whose dependencies have not yet been processed
   # will get relegated to the back of the queue to be processed later.
   reprocess_queue = []
+
   def GenerateHistogramSuffixes():
     for f in tree.getElementsByTagName(histogram_suffix_tag):
       yield 0, f
@@ -380,11 +446,11 @@ def _UpdateHistogramsWithSuffixes(tree, histograms):
     last_histogram_name = None
     for affected_histogram in affected_histograms:
       histogram_name = affected_histogram.getAttribute('name')
-      if (last_histogram_name is not None
-          and histogram_name.lower() < last_histogram_name.lower()):
+      if (last_histogram_name is not None and
+          histogram_name.lower() < last_histogram_name.lower()):
         logging.error('Affected histograms %s and %s of histogram_suffixes %s '
-                      'are not in alphabetical order',
-                      last_histogram_name, histogram_name, name)
+                      'are not in alphabetical order', last_histogram_name,
+                      histogram_name, name)
         have_errors = True
       last_histogram_name = histogram_name
       with_suffixes = affected_histogram.getElementsByTagName(with_tag)
@@ -398,8 +464,17 @@ def _UpdateHistogramsWithSuffixes(tree, histograms):
           new_histogram_name = _ExpandHistogramNameWithSuffixes(
               suffix_name, histogram_name, histogram_suffixes)
           if new_histogram_name != histogram_name:
-            histograms[new_histogram_name] = copy.deepcopy(
-                histograms[histogram_name])
+            new_histogram = copy.deepcopy(histograms[histogram_name])
+            # Do not copy forward base histogram state to suffixed
+            # histograms. Any suffixed histograms that wish to remain base
+            # histograms must explicitly re-declare themselves as base
+            # histograms.
+            if new_histogram.get('base', False):
+              del new_histogram['base']
+              if (new_histogram.get(
+                  'obsolete', '') == DEFAULT_BASE_HISTOGRAM_OBSOLETE_REASON):
+                del new_histogram['obsolete']
+            histograms[new_histogram_name] = new_histogram
 
           suffix_label = suffix_labels.get(suffix_name, '')
 
@@ -436,24 +511,25 @@ def _UpdateHistogramsWithSuffixes(tree, histograms):
           if obsolete_reason:
             histograms[new_histogram_name]['obsolete'] = obsolete_reason
 
+          _ProcessBaseHistogramAttribute(suffix, histograms[new_histogram_name])
+
         except Error:
           have_errors = True
 
   return have_errors
 
 
-def ExtractHistogramsFromFile(file_handle):
+def ExtractHistogramsFromDom(tree):
   """Compute the histogram names and descriptions from the XML representation.
 
   Args:
-    file_handle: A file or file-like with XML content.
+    tree: A DOM tree of XML content.
 
   Returns:
     a tuple of (histograms, status) where histograms is a dictionary mapping
     histogram names to dictionaries containing histogram descriptions and status
     is a boolean indicating if errros were encoutered in processing.
   """
-  tree = xml.dom.minidom.parse(file_handle)
   _NormalizeAllAttributeValues(tree)
 
   enums, enum_errors = _ExtractEnumsFromXmlTree(tree)
@@ -476,7 +552,8 @@ def ExtractHistograms(filename):
     Error: if the file is not well-formatted.
   """
   with open(filename, 'r') as f:
-    histograms, had_errors = ExtractHistogramsFromFile(f)
+    tree = xml.dom.minidom.parse(f)
+    histograms, had_errors = ExtractHistogramsFromDom(tree)
     if had_errors:
       logging.error('Error parsing %s', filename)
       raise Error()

@@ -7,16 +7,12 @@
 
 #include <memory>
 
+#include "base/files/file_path.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "headless/public/headless_browser.h"
 
-namespace devtools_http_handler {
-class DevToolsHttpHandler;
-}
-
 namespace headless {
 
-class HeadlessBrowserContextImpl;
 class HeadlessBrowserImpl;
 
 class HeadlessBrowserMainParts : public content::BrowserMainParts {
@@ -26,15 +22,19 @@ class HeadlessBrowserMainParts : public content::BrowserMainParts {
 
   // content::BrowserMainParts implementation:
   void PreMainMessageLoopRun() override;
+  void PreDefaultMainMessageLoopRun(base::OnceClosure quit_closure) override;
   void PostMainMessageLoopRun() override;
+#if defined(OS_MACOSX)
+  void PreMainMessageLoopStart() override;
+#endif
 
-  HeadlessBrowserContextImpl* default_browser_context() const;
+  void QuitMainMessageLoop();
 
  private:
   HeadlessBrowserImpl* browser_;  // Not owned.
-  std::unique_ptr<HeadlessBrowserContextImpl> browser_context_;
-  std::unique_ptr<devtools_http_handler::DevToolsHttpHandler>
-      devtools_http_handler_;
+
+  bool devtools_http_handler_started_ = false;
+  base::OnceClosure quit_main_message_loop_;
 
   DISALLOW_COPY_AND_ASSIGN(HeadlessBrowserMainParts);
 };

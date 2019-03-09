@@ -17,8 +17,10 @@ common_packages="\
 atk1.0 \
 dee \
 freetype \
-libappindicator1 \
+libappindicator3-1 \
 libasound2 \
+libatk-bridge2.0-0 \
+libatspi2.0-0 \
 libcairo2 \
 libcap2 \
 libcups2 \
@@ -29,13 +31,14 @@ libdbusmenu-glib4 \
 libexpat1 \
 libffi6 \
 libfontconfig1 \
-libgconf-2-4 \
 libgcrypt11 \
 libgdk-pixbuf2.0-0 \
 libglib2.0-0 \
 libgnome-keyring0 \
 libgpg-error0 \
-libgtk2.0-0 \
+libgtk-3-0 \
+libido3-0.1-0 \
+libindicator3-7 \
 libnspr4 \
 libp11-kit0 \
 libpci3 \
@@ -65,7 +68,6 @@ udev \
 zlib1g \
 brltty"
 
-precise_specific_packages="libtasn1-3"
 trusty_specific_packages="\
 libtasn1-6 \
 harfbuzz
@@ -73,9 +75,7 @@ libsecret"
 
 ubuntu_release=$(lsb_release -cs)
 
-if test "$ubuntu_release" = "precise" ; then
-  packages="$common_packages $precise_specific_packages"
-else
+if test "$ubuntu_release" = "trusty" ; then
   packages="$common_packages $trusty_specific_packages"
 fi
 
@@ -83,9 +83,9 @@ fi
 # for reasons which are not entirely clear. 
 sudo apt-get install libltdl3-dev libjson0-dev \
          libsndfile1-dev libspeexdsp-dev libjack0 \
-         chrpath -y  # Chrpath is required by fix_rpaths.sh.
+         chrpath -y --force-yes  # Chrpath is required by fix_rpaths.sh.
 
-sudo apt-get build-dep -y $packages
+sudo apt-get build-dep -y --force-yes $packages
 
 if test "$ubuntu_release" = "trusty" ; then
   # On Trusty, build deps for some of the instrumented packages above conflict

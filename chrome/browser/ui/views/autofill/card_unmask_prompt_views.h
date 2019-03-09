@@ -10,8 +10,7 @@
 #include "base/macros.h"
 #include "chrome/browser/ui/autofill/autofill_dialog_models.h"
 #include "components/autofill/core/browser/ui/card_unmask_prompt_view.h"
-#include "ui/gfx/animation/animation_delegate.h"
-#include "ui/gfx/animation/slide_animation.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/combobox/combobox_listener.h"
 #include "ui/views/controls/link_listener.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
@@ -23,22 +22,22 @@ class WebContents;
 
 namespace views {
 class Checkbox;
-class ImageView;
+class GridLayout;
 class Label;
 class Link;
+class Textfield;
 class Throbber;
 }
 
 namespace autofill {
 
-class DecoratedTextfield;
+class CardUnmaskPromptController;
 
 class CardUnmaskPromptViews : public CardUnmaskPromptView,
                               public views::ComboboxListener,
-                              public views::DialogDelegateView,
+                              public views::BubbleDialogDelegateView,
                               public views::TextfieldController,
-                              public views::LinkListener,
-                              public gfx::AnimationDelegate {
+                              public views::LinkListener {
  public:
   CardUnmaskPromptViews(CardUnmaskPromptController* controller,
                         content::WebContents* web_contents);
@@ -56,17 +55,17 @@ class CardUnmaskPromptViews : public CardUnmaskPromptView,
   View* CreateFootnoteView() override;
 
   // views::View
-  gfx::Size GetPreferredSize() const override;
-  void Layout() override;
-  int GetHeightForWidth(int width) const override;
+  gfx::Size CalculatePreferredSize() const override;
+  void AddedToWidget() override;
   void OnNativeThemeChanged(const ui::NativeTheme* theme) override;
   ui::ModalType GetModalType() const override;
   base::string16 GetWindowTitle() const override;
   void DeleteDelegate() override;
+  int GetDialogButtons() const override;
   base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  bool ShouldDefaultButtonBeBlue() const override;
   bool IsDialogButtonEnabled(ui::DialogButton button) const override;
   View* GetInitiallyFocusedView() override;
+  bool ShouldShowCloseButton() const override;
   bool Cancel() override;
   bool Accept() override;
 
@@ -80,39 +79,8 @@ class CardUnmaskPromptViews : public CardUnmaskPromptView,
   // views::LinkListener
   void LinkClicked(views::Link* source, int event_flags) override;
 
-  // gfx::AnimationDelegate
-  void AnimationProgressed(const gfx::Animation* animation) override;
-
  private:
   friend class CardUnmaskPromptViewTesterViews;
-
-  // A view that allows changing the opacity of its contents.
-  class FadeOutView : public View {
-   public:
-    FadeOutView();
-    ~FadeOutView() override;
-
-    // views::View
-    void PaintChildren(const ui::PaintContext& context) override;
-    void OnPaint(gfx::Canvas* canvas) override;
-
-    void set_fade_everything(bool fade_everything) {
-      fade_everything_ = fade_everything;
-    }
-
-    // Set the alpha channel for this view. 0 is transparent and 255 is opaque.
-    void SetAlpha(uint8_t alpha);
-
-   private:
-    // Controls whether the background and border are faded out as well. Default
-    // is false, meaning only children are faded.
-    bool fade_everything_;
-
-    // The alpha channel for this view. 0 is transparent and 255 is opaque.
-    uint8_t alpha_;
-
-    DISALLOW_COPY_AND_ASSIGN(FadeOutView);
-  };
 
   void InitIfNecessary();
   void SetRetriableErrorMessage(const base::string16& message);
@@ -120,43 +88,37 @@ class CardUnmaskPromptViews : public CardUnmaskPromptView,
   void SetInputsEnabled(bool enabled);
   void ShowNewCardLink();
   void ClosePrompt();
+  views::GridLayout* ResetOverlayLayout();
 
   CardUnmaskPromptController* controller_;
   content::WebContents* web_contents_;
 
-  View* main_contents_;
-
   // Expository language at the top of the dialog.
-  views::Label* instructions_;
-
-  // The error label for permanent errors (where the user can't retry).
-  views::Label* permanent_error_label_;
+  views::Label* instructions_ = nullptr;
 
   // Holds the cvc and expiration inputs.
-  View* input_row_;
-
-  DecoratedTextfield* cvc_input_;
-
-  views::Combobox* month_input_;
-  views::Combobox* year_input_;
+  View* input_row_ = nullptr;
+  views::Textfield* cvc_input_ = nullptr;
+  views::Combobox* month_input_ = nullptr;
+  views::Combobox* year_input_ = nullptr;
 
   MonthComboboxModel month_combobox_model_;
   YearComboboxModel year_combobox_model_;
 
-  views::Link* new_card_link_;
+  views::Link* new_card_link_ = nullptr;
 
-  // The error icon and label for most errors, which live beneath the inputs.
-  views::ImageView* error_icon_;
-  views::Label* error_label_;
+  // The error row view and label for most errors, which live beneath the
+  // inputs.
+  views::View* temporary_error_ = nullptr;
+  views::Label* error_label_ = nullptr;
 
-  FadeOutView* storage_row_;
-  views::Checkbox* storage_checkbox_;
+  views::View* controls_container_ = nullptr;
+  views::Checkbox* storage_checkbox_ = nullptr;
 
-  FadeOutView* progress_overlay_;
-  views::Throbber* progress_throbber_;
-  views::Label* progress_label_;
-
-  gfx::SlideAnimation overlay_animation_;
+  // Elements related to progress or error when the request is being made.
+  views::View* overlay_ = nullptr;
+  views::Label* overlay_label_ = nullptr;
+  views::Throbber* progress_throbber_ = nullptr;
 
   base::WeakPtrFactory<CardUnmaskPromptViews> weak_ptr_factory_;
 

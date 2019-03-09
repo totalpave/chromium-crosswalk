@@ -5,20 +5,27 @@
 #ifndef CONTENT_BROWSER_LOADER_RESOURCE_LOADER_DELEGATE_H_
 #define CONTENT_BROWSER_LOADER_RESOURCE_LOADER_DELEGATE_H_
 
+#include <memory>
+
 #include "content/common/content_export.h"
+
+class GURL;
 
 namespace net {
 class AuthChallengeInfo;
-class ClientCertStore;
+}
+
+namespace network {
+struct ResourceResponse;
 }
 
 namespace content {
-class ResourceDispatcherHostLoginDelegate;
+class LoginDelegate;
 class ResourceLoader;
 
 class CONTENT_EXPORT ResourceLoaderDelegate {
  public:
-  virtual ResourceDispatcherHostLoginDelegate* CreateLoginDelegate(
+  virtual std::unique_ptr<LoginDelegate> CreateLoginDelegate(
       ResourceLoader* loader,
       net::AuthChallengeInfo* auth_info) = 0;
 
@@ -27,16 +34,14 @@ class CONTENT_EXPORT ResourceLoaderDelegate {
 
   virtual void DidStartRequest(ResourceLoader* loader) = 0;
   virtual void DidReceiveRedirect(ResourceLoader* loader,
-                                  const GURL& new_url) = 0;
-  virtual void DidReceiveResponse(ResourceLoader* loader) = 0;
+                                  const GURL& new_url,
+                                  network::ResourceResponse* response) = 0;
+  virtual void DidReceiveResponse(ResourceLoader* loader,
+                                  network::ResourceResponse* response) = 0;
 
   // This method informs the delegate that the loader is done, and the loader
   // expects to be destroyed as a side-effect of this call.
   virtual void DidFinishLoading(ResourceLoader* loader) = 0;
-
-  // Get platform ClientCertStore. May return nullptr.
-  virtual std::unique_ptr<net::ClientCertStore> CreateClientCertStore(
-      ResourceLoader* loader) = 0;
 
  protected:
   virtual ~ResourceLoaderDelegate() {}

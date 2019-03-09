@@ -13,14 +13,14 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/values.h"
+#include "chrome/browser/apps/platform_apps/api/sync_file_system/sync_file_system_api_helpers.h"
 #include "chrome/browser/drive/drive_notification_manager_factory.h"
-#include "chrome/browser/extensions/api/sync_file_system/sync_file_system_api_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync_file_system/logger.h"
 #include "chrome/browser/sync_file_system/sync_file_system_service.h"
 #include "chrome/browser/sync_file_system/sync_file_system_service_factory.h"
 #include "chrome/browser/sync_file_system/sync_service_state.h"
-#include "chrome/common/extensions/api/sync_file_system.h"
+#include "chrome/common/apps/platform_apps/api/sync_file_system.h"
 #include "components/drive/drive_notification_manager.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_ui.h"
@@ -54,39 +54,39 @@ SyncFileSystemInternalsHandler::~SyncFileSystemInternalsHandler() {
 void SyncFileSystemInternalsHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       "getServiceStatus",
-      base::Bind(&SyncFileSystemInternalsHandler::GetServiceStatus,
-                 base::Unretained(this)));
+      base::BindRepeating(&SyncFileSystemInternalsHandler::GetServiceStatus,
+                          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
-      "getLog",
-      base::Bind(&SyncFileSystemInternalsHandler::GetLog,
-                 base::Unretained(this)));
+      "getLog", base::BindRepeating(&SyncFileSystemInternalsHandler::GetLog,
+                                    base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       "clearLogs",
-      base::Bind(&SyncFileSystemInternalsHandler::ClearLogs,
-                 base::Unretained(this)));
+      base::BindRepeating(&SyncFileSystemInternalsHandler::ClearLogs,
+                          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       "getNotificationSource",
-      base::Bind(&SyncFileSystemInternalsHandler::GetNotificationSource,
-                 base::Unretained(this)));
+      base::BindRepeating(
+          &SyncFileSystemInternalsHandler::GetNotificationSource,
+          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       "observeTaskLog",
-      base::Bind(&SyncFileSystemInternalsHandler::ObserveTaskLog,
-                 base::Unretained(this)));
+      base::BindRepeating(&SyncFileSystemInternalsHandler::ObserveTaskLog,
+                          base::Unretained(this)));
 }
 
 void SyncFileSystemInternalsHandler::OnSyncStateUpdated(
     const GURL& app_origin,
     sync_file_system::SyncServiceState state,
     const std::string& description) {
-  std::string state_string = extensions::api::sync_file_system::ToString(
-        extensions::SyncServiceStateToExtensionEnum(state));
+  std::string state_string = chrome_apps::api::sync_file_system::ToString(
+      chrome_apps::api::SyncServiceStateToExtensionEnum(state));
   if (!description.empty())
     state_string += " (" + description + ")";
 
   // TODO(calvinlo): OnSyncStateUpdated should be updated to also provide the
   // notification mechanism (XMPP or Polling).
   web_ui()->CallJavascriptFunctionUnsafe("SyncService.onGetServiceStatus",
-                                         base::StringValue(state_string));
+                                         base::Value(state_string));
 }
 
 void SyncFileSystemInternalsHandler::OnFileSynced(
@@ -107,7 +107,7 @@ void SyncFileSystemInternalsHandler::OnLogRecorded(
 
   std::unique_ptr<base::ListValue> details(new base::ListValue);
   details->AppendStrings(task_log.details);
-  dict.Set("details", details.release());
+  dict.Set("details", std::move(details));
   web_ui()->CallJavascriptFunctionUnsafe("TaskLog.onTaskLogRecorded", dict);
 }
 
@@ -118,10 +118,10 @@ void SyncFileSystemInternalsHandler::GetServiceStatus(
       SyncFileSystemServiceFactory::GetForProfile(profile_);
   if (sync_service)
     state_enum = sync_service->GetSyncServiceState();
-  const std::string state_string = extensions::api::sync_file_system::ToString(
-      extensions::SyncServiceStateToExtensionEnum(state_enum));
+  const std::string state_string = chrome_apps::api::sync_file_system::ToString(
+      chrome_apps::api::SyncServiceStateToExtensionEnum(state_enum));
   web_ui()->CallJavascriptFunctionUnsafe("SyncService.onGetServiceStatus",
-                                         base::StringValue(state_string));
+                                         base::Value(state_string));
 }
 
 void SyncFileSystemInternalsHandler::GetNotificationSource(
@@ -132,9 +132,8 @@ void SyncFileSystemInternalsHandler::GetNotificationSource(
     return;
   bool xmpp_enabled = drive_notification_manager->push_notification_enabled();
   std::string notification_source = xmpp_enabled ? "XMPP" : "Polling";
-  web_ui()->CallJavascriptFunctionUnsafe(
-      "SyncService.onGetNotificationSource",
-      base::StringValue(notification_source));
+  web_ui()->CallJavascriptFunctionUnsafe("SyncService.onGetNotificationSource",
+                                         base::Value(notification_source));
 }
 
 void SyncFileSystemInternalsHandler::GetLog(
@@ -148,9 +147,7 @@ void SyncFileSystemInternalsHandler::GetLog(
 
   // Collate events which haven't been sent to WebUI yet.
   base::ListValue list;
-  for (std::vector<EventLogger::Event>::const_iterator log_entry = log.begin();
-       log_entry != log.end();
-       ++log_entry) {
+  for (auto log_entry = log.begin(); log_entry != log.end(); ++log_entry) {
     if (log_entry->id <= last_log_id_sent)
       continue;
 

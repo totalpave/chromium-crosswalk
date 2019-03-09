@@ -24,7 +24,7 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
  public:
   ImageBurnerClientImpl() : proxy_(NULL), weak_ptr_factory_(this) {}
 
-  ~ImageBurnerClientImpl() override {}
+  ~ImageBurnerClientImpl() override = default;
 
   // ImageBurnerClient override.
   void BurnImage(const std::string& from_path,
@@ -35,10 +35,10 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
     dbus::MessageWriter writer(&method_call);
     writer.AppendString(from_path);
     writer.AppendString(to_path);
-    proxy_->CallMethod(&method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-                       base::Bind(&ImageBurnerClientImpl::OnBurnImage,
-                                  weak_ptr_factory_.GetWeakPtr(),
-                                  error_callback));
+    proxy_->CallMethod(
+        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
+        base::BindOnce(&ImageBurnerClientImpl::OnBurnImage,
+                       weak_ptr_factory_.GetWeakPtr(), error_callback));
   }
 
   // ImageBurnerClient override.
@@ -65,15 +65,14 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
         imageburn::kSignalBurnFinishedName,
         base::Bind(&ImageBurnerClientImpl::OnBurnFinished,
                    weak_ptr_factory_.GetWeakPtr()),
-        base::Bind(&ImageBurnerClientImpl::OnSignalConnected,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&ImageBurnerClientImpl::OnSignalConnected,
+                       weak_ptr_factory_.GetWeakPtr()));
     proxy_->ConnectToSignal(
-        imageburn::kImageBurnServiceInterface,
-        imageburn::kSignalBurnUpdateName,
+        imageburn::kImageBurnServiceInterface, imageburn::kSignalBurnUpdateName,
         base::Bind(&ImageBurnerClientImpl::OnBurnProgressUpdate,
                    weak_ptr_factory_.GetWeakPtr()),
-        base::Bind(&ImageBurnerClientImpl::OnSignalConnected,
-                   weak_ptr_factory_.GetWeakPtr()));
+        base::BindOnce(&ImageBurnerClientImpl::OnSignalConnected,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
  private:
@@ -139,11 +138,9 @@ class ImageBurnerClientImpl : public ImageBurnerClient {
 
 }  // namespace
 
-ImageBurnerClient::ImageBurnerClient() {
-}
+ImageBurnerClient::ImageBurnerClient() = default;
 
-ImageBurnerClient::~ImageBurnerClient() {
-}
+ImageBurnerClient::~ImageBurnerClient() = default;
 
 // static
 ImageBurnerClient* ImageBurnerClient::Create() {

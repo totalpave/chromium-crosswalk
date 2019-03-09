@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/sync_file_system/drive_backend/callback_helper.h"
 #include "chrome/browser/sync_file_system/drive_backend/conflict_resolver.h"
@@ -35,8 +36,6 @@ namespace drive_backend {
 
 namespace {
 
-void EmptyStatusCallback(SyncStatusCode status) {}
-
 void InvokeIdleCallback(const base::Closure& idle_callback,
                         const SyncStatusCallback& callback) {
   idle_callback.Run();
@@ -47,7 +46,8 @@ void InvokeIdleCallback(const base::Closure& idle_callback,
 
 SyncWorker::SyncWorker(
     const base::FilePath& base_dir,
-    const base::WeakPtr<ExtensionServiceInterface>& extension_service,
+    const base::WeakPtr<extensions::ExtensionServiceInterface>&
+        extension_service,
     leveldb::Env* env_override)
     : base_dir_(base_dir),
       env_override_(env_override),
@@ -67,15 +67,14 @@ SyncWorker::~SyncWorker() {
 }
 
 void SyncWorker::Initialize(std::unique_ptr<SyncEngineContext> context) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   DCHECK(!task_manager_);
 
   context_ = std::move(context);
 
-  task_manager_.reset(new SyncTaskManager(
-      weak_ptr_factory_.GetWeakPtr(), 0 /* maximum_background_task */,
-      context_->GetWorkerTaskRunner(),
-      context_->GetWorkerPool()));
+  task_manager_.reset(new SyncTaskManager(weak_ptr_factory_.GetWeakPtr(),
+                                          0 /* maximum_background_task */,
+                                          context_->GetWorkerTaskRunner()));
   task_manager_->Initialize(SYNC_STATUS_OK);
 
   PostInitializeTask();
@@ -84,7 +83,7 @@ void SyncWorker::Initialize(std::unique_ptr<SyncEngineContext> context) {
 void SyncWorker::RegisterOrigin(
     const GURL& origin,
     const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!GetMetadataDatabase())
     PostInitializeTask();
@@ -103,7 +102,7 @@ void SyncWorker::RegisterOrigin(
 void SyncWorker::EnableOrigin(
     const GURL& origin,
     const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   task_manager_->ScheduleTask(
       FROM_HERE,
@@ -117,7 +116,7 @@ void SyncWorker::EnableOrigin(
 void SyncWorker::DisableOrigin(
     const GURL& origin,
     const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   task_manager_->ScheduleTask(
       FROM_HERE,
@@ -132,7 +131,7 @@ void SyncWorker::UninstallOrigin(
     const GURL& origin,
     RemoteFileSyncService::UninstallFlag flag,
     const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   task_manager_->ScheduleSyncTask(
       FROM_HERE, std::unique_ptr<SyncTask>(
@@ -141,7 +140,7 @@ void SyncWorker::UninstallOrigin(
 }
 
 void SyncWorker::ProcessRemoteChange(const SyncFileCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   RemoteToLocalSyncer* syncer = new RemoteToLocalSyncer(context_.get());
   task_manager_->ScheduleSyncTask(
@@ -153,13 +152,13 @@ void SyncWorker::ProcessRemoteChange(const SyncFileCallback& callback) {
 
 void SyncWorker::SetRemoteChangeProcessor(
     RemoteChangeProcessorOnWorker* remote_change_processor_on_worker) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   context_->SetRemoteChangeProcessor(remote_change_processor_on_worker);
 }
 
 RemoteServiceState SyncWorker::GetCurrentState() const {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!sync_enabled_)
     return REMOTE_SERVICE_DISABLED;
@@ -168,7 +167,7 @@ RemoteServiceState SyncWorker::GetCurrentState() const {
 
 void SyncWorker::GetOriginStatusMap(
     const RemoteFileSyncService::StatusMapCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!GetMetadataDatabase())
     return;
@@ -190,7 +189,7 @@ void SyncWorker::GetOriginStatusMap(
 }
 
 std::unique_ptr<base::ListValue> SyncWorker::DumpFiles(const GURL& origin) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!GetMetadataDatabase())
     return std::unique_ptr<base::ListValue>();
@@ -198,7 +197,7 @@ std::unique_ptr<base::ListValue> SyncWorker::DumpFiles(const GURL& origin) {
 }
 
 std::unique_ptr<base::ListValue> SyncWorker::DumpDatabase() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!GetMetadataDatabase())
     return std::unique_ptr<base::ListValue>();
@@ -206,7 +205,7 @@ std::unique_ptr<base::ListValue> SyncWorker::DumpDatabase() {
 }
 
 void SyncWorker::SetSyncEnabled(bool enabled) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (sync_enabled_ == enabled)
     return;
@@ -216,24 +215,20 @@ void SyncWorker::SetSyncEnabled(bool enabled) {
   if (old_state == GetCurrentState())
     return;
 
-  FOR_EACH_OBSERVER(
-      Observer,
-      observers_,
-      UpdateServiceState(
-          GetCurrentState(),
-          enabled ? "Sync is enabled" : "Sync is disabled"));
+  for (auto& observer : observers_) {
+    observer.UpdateServiceState(
+        GetCurrentState(), enabled ? "Sync is enabled" : "Sync is disabled");
+  }
 }
 
 void SyncWorker::PromoteDemotedChanges(const base::Closure& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   MetadataDatabase* metadata_db = GetMetadataDatabase();
   if (metadata_db && metadata_db->HasDemotedDirtyTracker()) {
     metadata_db->PromoteDemotedTrackers();
-    FOR_EACH_OBSERVER(
-        Observer,
-        observers_,
-        OnPendingFileListUpdated(metadata_db->CountDirtyTracker()));
+    for (auto& observer : observers_)
+      observer.OnPendingFileListUpdated(metadata_db->CountDirtyTracker());
   }
   callback.Run();
 }
@@ -243,7 +238,7 @@ void SyncWorker::ApplyLocalChange(const FileChange& local_change,
                                   const SyncFileMetadata& local_metadata,
                                   const storage::FileSystemURL& url,
                                   const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   LocalToRemoteSyncer* syncer = new LocalToRemoteSyncer(
       context_.get(), local_metadata, local_change, local_path, url);
@@ -255,7 +250,7 @@ void SyncWorker::ApplyLocalChange(const FileChange& local_change,
 }
 
 void SyncWorker::MaybeScheduleNextTask() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (GetCurrentState() == REMOTE_SERVICE_DISABLED)
     return;
@@ -277,30 +272,30 @@ void SyncWorker::MaybeScheduleNextTask() {
 void SyncWorker::NotifyLastOperationStatus(
     SyncStatusCode status,
     bool used_network) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   UpdateServiceStateFromSyncStatusCode(status, used_network);
 
   if (GetMetadataDatabase()) {
-    FOR_EACH_OBSERVER(
-        Observer, observers_,
-        OnPendingFileListUpdated(GetMetadataDatabase()->CountDirtyTracker()));
+    for (auto& observer : observers_) {
+      observer.OnPendingFileListUpdated(
+          GetMetadataDatabase()->CountDirtyTracker());
+    }
   }
 }
 
 void SyncWorker::RecordTaskLog(std::unique_ptr<TaskLogger::TaskLog> task_log) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   context_->GetUITaskRunner()->PostTask(
       FROM_HERE,
-      base::Bind(&TaskLogger::RecordLog,
-                 context_->GetTaskLogger(),
-                 base::Passed(&task_log)));
+      base::BindOnce(&TaskLogger::RecordLog, context_->GetTaskLogger(),
+                     std::move(task_log)));
 }
 
 void SyncWorker::ActivateService(RemoteServiceState service_state,
                                  const std::string& description) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   UpdateServiceState(service_state, description);
   if (!GetMetadataDatabase()) {
     PostInitializeTask();
@@ -312,7 +307,7 @@ void SyncWorker::ActivateService(RemoteServiceState service_state,
 }
 
 void SyncWorker::DeactivateService(const std::string& description) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   UpdateServiceState(REMOTE_SERVICE_TEMPORARY_UNAVAILABLE, description);
 }
 
@@ -328,7 +323,7 @@ void SyncWorker::AddObserver(Observer* observer) {
 
 void SyncWorker::DoDisableApp(const std::string& app_id,
                               const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!GetMetadataDatabase()) {
     callback.Run(SYNC_STATUS_OK);
@@ -341,7 +336,7 @@ void SyncWorker::DoDisableApp(const std::string& app_id,
 
 void SyncWorker::DoEnableApp(const std::string& app_id,
                              const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!GetMetadataDatabase()) {
     callback.Run(SYNC_STATUS_OK);
@@ -353,7 +348,7 @@ void SyncWorker::DoEnableApp(const std::string& app_id,
 }
 
 void SyncWorker::PostInitializeTask() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   DCHECK(!GetMetadataDatabase());
 
   // This initializer task may not run if MetadataDatabase in context_ is
@@ -371,7 +366,7 @@ void SyncWorker::PostInitializeTask() {
 
 void SyncWorker::DidInitialize(SyncEngineInitializer* initializer,
                                SyncStatusCode status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (status == SYNC_STATUS_ACCESS_FORBIDDEN) {
     UpdateServiceState(REMOTE_SERVICE_ACCESS_FORBIDDEN, "Access forbidden");
@@ -396,7 +391,7 @@ void SyncWorker::DidInitialize(SyncEngineInitializer* initializer,
 
 void SyncWorker::UpdateRegisteredApps() {
   MetadataDatabase* metadata_db = GetMetadataDatabase();
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   DCHECK(metadata_db);
 
   std::unique_ptr<std::vector<std::string>> app_ids(
@@ -411,28 +406,26 @@ void SyncWorker::UpdateRegisteredApps() {
 
   context_->GetUITaskRunner()->PostTask(
       FROM_HERE,
-      base::Bind(&SyncWorker::QueryAppStatusOnUIThread,
-                 extension_service_,
-                 base::Owned(app_ids.release()),
-                 app_status,
-                 RelayCallbackToTaskRunner(
-                     context_->GetWorkerTaskRunner(),
-                     FROM_HERE, callback)));
+      base::BindOnce(&SyncWorker::QueryAppStatusOnUIThread, extension_service_,
+                     base::Owned(app_ids.release()), app_status,
+                     RelayCallbackToTaskRunner(context_->GetWorkerTaskRunner(),
+                                               FROM_HERE, callback)));
 }
 
 void SyncWorker::QueryAppStatusOnUIThread(
-    const base::WeakPtr<ExtensionServiceInterface>& extension_service_ptr,
+    const base::WeakPtr<extensions::ExtensionServiceInterface>&
+        extension_service_ptr,
     const std::vector<std::string>* app_ids,
     AppStatusMap* status,
     const base::Closure& callback) {
-  ExtensionServiceInterface* extension_service = extension_service_ptr.get();
+  extensions::ExtensionServiceInterface* extension_service =
+      extension_service_ptr.get();
   if (!extension_service) {
     callback.Run();
     return;
   }
 
-  for (std::vector<std::string>::const_iterator itr = app_ids->begin();
-       itr != app_ids->end(); ++itr) {
+  for (auto itr = app_ids->begin(); itr != app_ids->end(); ++itr) {
     const std::string& app_id = *itr;
     if (!extension_service->GetInstalledExtension(app_id))
       (*status)[app_id] = APP_STATUS_UNINSTALLED;
@@ -446,14 +439,13 @@ void SyncWorker::QueryAppStatusOnUIThread(
 }
 
 void SyncWorker::DidQueryAppStatus(const AppStatusMap* app_status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   MetadataDatabase* metadata_db = GetMetadataDatabase();
   DCHECK(metadata_db);
 
   // Update the status of every origin using status from ExtensionService.
-  for (AppStatusMap::const_iterator itr = app_status->begin();
-       itr != app_status->end(); ++itr) {
+  for (auto itr = app_status->begin(); itr != app_status->end(); ++itr) {
     const std::string& app_id = itr->first;
     GURL origin = extensions::Extension::GetBaseURLFromExtensionId(app_id);
 
@@ -461,9 +453,8 @@ void SyncWorker::DidQueryAppStatus(const AppStatusMap* app_status) {
       // Extension has been uninstalled.
       // (At this stage we can't know if it was unpacked extension or not,
       // so just purge the remote folder.)
-      UninstallOrigin(origin,
-                      RemoteFileSyncService::UNINSTALL_AND_PURGE_REMOTE,
-                      base::Bind(&EmptyStatusCallback));
+      UninstallOrigin(origin, RemoteFileSyncService::UNINSTALL_AND_PURGE_REMOTE,
+                      base::DoNothing());
       continue;
     }
 
@@ -479,16 +470,16 @@ void SyncWorker::DidQueryAppStatus(const AppStatusMap* app_status) {
     bool is_app_root_tracker_enabled =
         (tracker.tracker_kind() == TRACKER_KIND_APP_ROOT);
     if (is_app_enabled && !is_app_root_tracker_enabled)
-      EnableOrigin(origin, base::Bind(&EmptyStatusCallback));
+      EnableOrigin(origin, base::DoNothing());
     else if (!is_app_enabled && is_app_root_tracker_enabled)
-      DisableOrigin(origin, base::Bind(&EmptyStatusCallback));
+      DisableOrigin(origin, base::DoNothing());
   }
 }
 
 void SyncWorker::DidProcessRemoteChange(RemoteToLocalSyncer* syncer,
                                         const SyncFileCallback& callback,
                                         SyncStatusCode status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (syncer->is_sync_root_deletion()) {
     MetadataDatabase::ClearDatabase(context_->PassMetadataDatabase());
@@ -500,20 +491,17 @@ void SyncWorker::DidProcessRemoteChange(RemoteToLocalSyncer* syncer,
   if (status == SYNC_STATUS_OK) {
     if (syncer->sync_action() != SYNC_ACTION_NONE &&
         syncer->url().is_valid()) {
-      FOR_EACH_OBSERVER(
-          Observer, observers_,
-          OnFileStatusChanged(
-              syncer->url(),
-              syncer->file_type(),
-              SYNC_FILE_STATUS_SYNCED,
-              syncer->sync_action(),
-              SYNC_DIRECTION_REMOTE_TO_LOCAL));
+      for (auto& observer : observers_) {
+        observer.OnFileStatusChanged(
+            syncer->url(), syncer->file_type(), SYNC_FILE_STATUS_SYNCED,
+            syncer->sync_action(), SYNC_DIRECTION_REMOTE_TO_LOCAL);
+      }
     }
 
     if (syncer->sync_action() == SYNC_ACTION_DELETED &&
         syncer->url().is_valid() &&
         storage::VirtualPath::IsRootPath(syncer->url().path())) {
-      RegisterOrigin(syncer->url().origin(), base::Bind(&EmptyStatusCallback));
+      RegisterOrigin(syncer->url().origin().GetURL(), base::DoNothing());
     }
     should_check_conflict_ = true;
   }
@@ -523,28 +511,25 @@ void SyncWorker::DidProcessRemoteChange(RemoteToLocalSyncer* syncer,
 void SyncWorker::DidApplyLocalChange(LocalToRemoteSyncer* syncer,
                                      const SyncStatusCallback& callback,
                                      SyncStatusCode status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if ((status == SYNC_STATUS_OK || status == SYNC_STATUS_RETRY) &&
       syncer->url().is_valid() &&
       syncer->sync_action() != SYNC_ACTION_NONE) {
     storage::FileSystemURL updated_url = syncer->url();
     if (!syncer->target_path().empty()) {
-      updated_url = CreateSyncableFileSystemURL(syncer->url().origin(),
+      updated_url = CreateSyncableFileSystemURL(syncer->url().origin().GetURL(),
                                                 syncer->target_path());
     }
-    FOR_EACH_OBSERVER(Observer, observers_,
-                      OnFileStatusChanged(updated_url,
-                                          syncer->file_type(),
-                                          SYNC_FILE_STATUS_SYNCED,
-                                          syncer->sync_action(),
-                                          SYNC_DIRECTION_LOCAL_TO_REMOTE));
+    for (auto& observer : observers_) {
+      observer.OnFileStatusChanged(
+          updated_url, syncer->file_type(), SYNC_FILE_STATUS_SYNCED,
+          syncer->sync_action(), SYNC_DIRECTION_LOCAL_TO_REMOTE);
+    }
   }
 
-  if (status == SYNC_STATUS_UNKNOWN_ORIGIN && syncer->url().is_valid()) {
-    RegisterOrigin(syncer->url().origin(),
-                   base::Bind(&EmptyStatusCallback));
-  }
+  if (status == SYNC_STATUS_UNKNOWN_ORIGIN && syncer->url().is_valid())
+    RegisterOrigin(syncer->url().origin().GetURL(), base::DoNothing());
 
   if (syncer->needs_remote_change_listing() &&
       !listing_remote_changes_) {
@@ -568,7 +553,7 @@ void SyncWorker::DidApplyLocalChange(LocalToRemoteSyncer* syncer,
 }
 
 bool SyncWorker::MaybeStartFetchChanges() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (GetCurrentState() == REMOTE_SERVICE_DISABLED)
     return false;
@@ -608,14 +593,14 @@ bool SyncWorker::MaybeStartFetchChanges() {
 }
 
 void SyncWorker::DidResolveConflict(SyncStatusCode status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (status == SYNC_STATUS_OK || status == SYNC_STATUS_RETRY)
     should_check_conflict_ = true;
 }
 
 void SyncWorker::DidFetchChanges(SyncStatusCode status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (status == SYNC_STATUS_OK)
     should_check_conflict_ = true;
@@ -668,7 +653,7 @@ void SyncWorker::UpdateServiceStateFromSyncStatusCode(
 
 void SyncWorker::UpdateServiceState(RemoteServiceState state,
                                     const std::string& description) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   RemoteServiceState old_state = GetCurrentState();
   service_state_ = state;
@@ -680,16 +665,14 @@ void SyncWorker::UpdateServiceState(RemoteServiceState state,
             "Service state changed: %d->%d: %s",
             old_state, GetCurrentState(), description.c_str());
 
-  FOR_EACH_OBSERVER(
-      Observer, observers_,
-      UpdateServiceState(GetCurrentState(), description));
+  for (auto& observer : observers_)
+    observer.UpdateServiceState(GetCurrentState(), description);
 }
 
 void SyncWorker::CallOnIdleForTesting(const base::Closure& callback) {
   if (task_manager_->ScheduleTaskIfIdle(
-          FROM_HERE,
-          base::Bind(&InvokeIdleCallback, callback),
-          base::Bind(&EmptyStatusCallback)))
+          FROM_HERE, base::Bind(&InvokeIdleCallback, callback),
+          base::DoNothing()))
     return;
   call_on_idle_callback_ = base::Bind(
       &SyncWorker::CallOnIdleForTesting,
@@ -698,17 +681,17 @@ void SyncWorker::CallOnIdleForTesting(const base::Closure& callback) {
 }
 
 drive::DriveServiceInterface* SyncWorker::GetDriveService() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   return context_->GetDriveService();
 }
 
 drive::DriveUploaderInterface* SyncWorker::GetDriveUploader() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   return context_->GetDriveUploader();
 }
 
 MetadataDatabase* SyncWorker::GetMetadataDatabase() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   return context_->GetMetadataDatabase();
 }
 

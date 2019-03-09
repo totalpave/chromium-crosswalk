@@ -19,13 +19,14 @@
 #include "gpu/gpu_export.h"
 
 extern "C" typedef struct _ClientBuffer* ClientBuffer;
+extern "C" typedef struct _ClientGpuFence* ClientGpuFence;
 
 namespace base {
 class Lock;
 }
 
 namespace gfx {
-class GpuMemoryBuffer;
+class GpuFence;
 }
 
 namespace gpu {
@@ -35,38 +36,30 @@ struct SyncToken;
 // Common interface for GpuControl implementations.
 class GPU_EXPORT GpuControl {
  public:
-  GpuControl() {}
-  virtual ~GpuControl() {}
+  GpuControl() = default;
+  virtual ~GpuControl() = default;
 
   virtual void SetGpuControlClient(GpuControlClient* gpu_control_client) = 0;
 
-  virtual Capabilities GetCapabilities() = 0;
+  virtual const Capabilities& GetCapabilities() const = 0;
 
-  // Create an image for a client buffer with the given dimensions and
-  // format. Returns its ID or -1 on error.
+  // Create an image for a client buffer with the given dimensions. Returns its
+  // ID or -1 on error.
   virtual int32_t CreateImage(ClientBuffer buffer,
                               size_t width,
-                              size_t height,
-                              unsigned internalformat) = 0;
+                              size_t height) = 0;
 
   // Destroy an image. The ID must be positive.
   virtual void DestroyImage(int32_t id) = 0;
 
-  // Create a gpu memory buffer backed image with the given dimensions and
-  // format for |usage|. Returns its ID or -1 on error.
-  virtual int32_t CreateGpuMemoryBufferImage(size_t width,
-                                             size_t height,
-                                             unsigned internalformat,
-                                             unsigned usage) = 0;
-
-  // Returns the id of the GpuMemoryBuffer associated with the given image. If
-  // the image doesn't exist, or isn't associated with a GpuMemoryBuffer,
-  // returns -1.
-  virtual int32_t GetImageGpuMemoryBufferId(unsigned image_id) = 0;
-
   // Runs |callback| when a query created via glCreateQueryEXT() has cleared
   // passed the glEndQueryEXT() point.
-  virtual void SignalQuery(uint32_t query, const base::Closure& callback) = 0;
+  virtual void SignalQuery(uint32_t query, base::OnceClosure callback) = 0;
+
+  virtual void CreateGpuFence(uint32_t gpu_fence_id, ClientGpuFence source) = 0;
+  virtual void GetGpuFence(
+      uint32_t gpu_fence_id,
+      base::OnceCallback<void(std::unique_ptr<gfx::GpuFence>)> callback) = 0;
 
   // Sets a lock this will be held on every callback from the GPU
   // implementation. This lock must be set and must be held on every call into
@@ -89,29 +82,37 @@ class GPU_EXPORT GpuControl {
   // the CanWaitUnverifiedSyncToken() function.
   virtual CommandBufferNamespace GetNamespaceID() const = 0;
   virtual CommandBufferId GetCommandBufferID() const = 0;
-  virtual int32_t GetExtraCommandBufferData() const = 0;
 
-  // Fence Syncs use release counters at a context level, these fence syncs
-  // need to be flushed before they can be shared with other contexts across
-  // channels. Subclasses should implement these functions and take care of
-  // figuring out when a fence sync has been flushed. The difference between
-  // IsFenceSyncFlushed and IsFenceSyncFlushReceived, one is testing is the
-  // client has issued the flush, and the other is testing if the service
-  // has received the flush.
+  // Flush any outstanding ordering barriers on all contexts.
+  virtual void FlushPendingWork() = 0;
+
+  // Generates a fence sync which should be inserted into the GL command stream.
+  // When the service executes the fence sync it is released. Fence syncs are
+  // shared with other contexts as sync tokens which encapsulate the fence sync
+  // and the command buffer on which it was generated. Fence syncs need to be
+  // flushed before they can be used by other contexts. Furthermore, the flush
+  // must be verified before sending a sync token across channel boundaries.
   virtual uint64_t GenerateFenceSyncRelease() = 0;
-  virtual bool IsFenceSyncRelease(uint64_t release) = 0;
-  virtual bool IsFenceSyncFlushed(uint64_t release) = 0;
-  virtual bool IsFenceSyncFlushReceived(uint64_t release) = 0;
 
-  // Runs |callback| when sync token is signalled.
+  // Returns true if the service has released (executed) the fence sync. Some
+  // implementations may support calling this from any thread without holding
+  // the lock provided by the client.
+  virtual bool IsFenceSyncReleased(uint64_t release) = 0;
+
+  // Runs |callback| when sync token is signaled.
   virtual void SignalSyncToken(const SyncToken& sync_token,
-                               const base::Closure& callback) = 0;
+                               base::OnceClosure callback) = 0;
+
+  // This allows the command buffer proxy to mark the next flush with sync token
+  // dependencies for the gpu scheduler, or to block prior to the flush in case
+  // of android webview.
+  virtual void WaitSyncToken(const SyncToken& sync_token) = 0;
 
   // Under some circumstances a sync token may be used which has not been
-  // verified to have been flushed. For example, fence syncs queued on the
-  // same channel as the wait command guarantee that the fence sync will
-  // be enqueued first so does not need to be flushed.
-  virtual bool CanWaitUnverifiedSyncToken(const SyncToken* sync_token) = 0;
+  // verified to have been flushed. For example, fence syncs queued on the same
+  // channel as the wait command guarantee that the fence sync will be enqueued
+  // first so does not need to be flushed.
+  virtual bool CanWaitUnverifiedSyncToken(const SyncToken& sync_token) = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(GpuControl);

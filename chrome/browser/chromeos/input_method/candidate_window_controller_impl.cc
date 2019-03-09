@@ -7,12 +7,12 @@
 #include <string>
 #include <vector>
 
-#include "ash/common/shell_window_ids.h"
-#include "ash/shell.h"
-#include "ash/wm/window_util.h"
+#include "ash/public/cpp/shell_window_ids.h"
+#include "ash/shell.h"           // mash-ok
+#include "ash/wm/window_util.h"  // mash-ok
 #include "base/logging.h"
-#include "chrome/browser/chromeos/input_method/mode_indicator_controller.h"
 #include "ui/base/ime/ime_bridge.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/ime/infolist_window.h"
 #include "ui/views/widget/widget.h"
 
@@ -23,17 +23,12 @@ namespace {
 
 }  // namespace
 
-CandidateWindowControllerImpl::CandidateWindowControllerImpl()
-    : candidate_window_view_(NULL),
-      infolist_window_(NULL) {
+CandidateWindowControllerImpl::CandidateWindowControllerImpl() {
   ui::IMEBridge::Get()->SetCandidateWindowHandler(this);
-  // Create the mode indicator controller.
-  mode_indicator_controller_.reset(
-      new ModeIndicatorController(InputMethodManager::Get()));
 }
 
 CandidateWindowControllerImpl::~CandidateWindowControllerImpl() {
-  ui::IMEBridge::Get()->SetCandidateWindowHandler(NULL);
+  ui::IMEBridge::Get()->SetCandidateWindowHandler(nullptr);
   if (candidate_window_view_) {
     candidate_window_view_->RemoveObserver(this);
     candidate_window_view_->GetWidget()->RemoveObserver(this);
@@ -44,19 +39,25 @@ void CandidateWindowControllerImpl::InitCandidateWindowView() {
   if (candidate_window_view_)
     return;
 
-  aura::Window* active_window = ash::wm::GetActiveWindow();
-  candidate_window_view_ =
-      new ui::ime::CandidateWindowView(ash::Shell::GetContainer(
-          active_window ? active_window->GetRootWindow()
-                        : ash::Shell::GetTargetRootWindow(),
-          ash::kShellWindowId_SettingBubbleContainer));
+  gfx::NativeView parent = nullptr;
+
+  // NOTE: CandidateWindowView takes care of the mash (window-service) case.
+  if (!features::IsUsingWindowService()) {
+    aura::Window* active_window = ash::wm::GetActiveWindow();
+    parent = ash::Shell::GetContainer(
+        active_window ? active_window->GetRootWindow()
+                      : ash::Shell::GetRootWindowForNewWindows(),
+        ash::kShellWindowId_SettingBubbleContainer);
+  }
+  candidate_window_view_ = new ui::ime::CandidateWindowView(
+      parent, ash::kShellWindowId_SettingBubbleContainer);
   candidate_window_view_->AddObserver(this);
   candidate_window_view_->SetCursorBounds(cursor_bounds_, composition_head_);
   views::Widget* widget = candidate_window_view_->InitWidget();
   widget->AddObserver(this);
   widget->Show();
-  FOR_EACH_OBSERVER(CandidateWindowController::Observer, observers_,
-                    CandidateWindowOpened());
+  for (auto& observer : observers_)
+    observer.CandidateWindowOpened();
 }
 
 void CandidateWindowControllerImpl::Hide() {
@@ -89,13 +90,16 @@ void CandidateWindowControllerImpl::SetCursorBounds(
   // Remember the cursor bounds.
   if (candidate_window_view_)
     candidate_window_view_->SetCursorBounds(cursor_bounds, composition_head);
+}
 
-  // Mode indicator controller also needs the cursor bounds.
-  mode_indicator_controller_->SetCursorBounds(cursor_bounds);
+gfx::Rect CandidateWindowControllerImpl::GetCursorBounds() const {
+  return is_focused_ ? cursor_bounds_ : gfx::Rect();
 }
 
 void CandidateWindowControllerImpl::FocusStateChanged(bool is_focused) {
-  mode_indicator_controller_->FocusStateChanged(is_focused);
+  is_focused_ = is_focused;
+  if (candidate_window_view_)
+    candidate_window_view_->HidePreeditText();
 }
 
 void CandidateWindowControllerImpl::UpdateLookupTable(
@@ -166,21 +170,21 @@ void CandidateWindowControllerImpl::UpdatePreeditText(
 }
 
 void CandidateWindowControllerImpl::OnCandidateCommitted(int index) {
-  FOR_EACH_OBSERVER(CandidateWindowController::Observer, observers_,
-                    CandidateClicked(index));
+  for (auto& observer : observers_)
+    observer.CandidateClicked(index);
 }
 
 void CandidateWindowControllerImpl::OnWidgetClosing(views::Widget* widget) {
   if (infolist_window_ && widget == infolist_window_->GetWidget()) {
     widget->RemoveObserver(this);
-    infolist_window_ = NULL;
+    infolist_window_ = nullptr;
   } else if (candidate_window_view_ &&
              widget == candidate_window_view_->GetWidget()) {
     widget->RemoveObserver(this);
     candidate_window_view_->RemoveObserver(this);
-    candidate_window_view_ = NULL;
-    FOR_EACH_OBSERVER(CandidateWindowController::Observer, observers_,
-                      CandidateWindowClosed());
+    candidate_window_view_ = nullptr;
+    for (auto& observer : observers_)
+      observer.CandidateWindowClosed();
   }
 }
 

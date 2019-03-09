@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "base/macros.h"
+#include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -29,6 +30,7 @@ const char* const kShowNotificationLanguages[] = {
     "br",   // Breton
     "bs",   // Bosnian
     "ca",   // Catalan
+    "ceb",  // Cebuano
     "ckb",  // Sorani (Kurdish-Arabic)
     "co",   // Corsican
     "cs",   // Czech
@@ -53,14 +55,17 @@ const char* const kShowNotificationLanguages[] = {
     "haw",  // Hawaiian
     "he",   // Hebrew
     "hi",   // Hindi
+    "hmn",  // Hmong
     "hr",   // Croatian
+    "ht",   // Haitian Creole
     "hu",   // Hungarian
     "hy",   // Armenian
     "ia",   // Interlingua
     "id",   // Indonesian
+    "ig",   // Igbo
     "is",   // Icelandic
     "ja",   // Japanese
-    "jw",   // Javanese
+    "jv",   // Javanese
     "ka",   // Georgian
     "kk",   // Kazakh
     "km",   // Cambodian
@@ -69,10 +74,13 @@ const char* const kShowNotificationLanguages[] = {
     "ku",   // Kurdish
     "ky",   // Kyrgyz
     "la",   // Latin
+    "lb",   // Luxembourgish
     "ln",   // Lingala
     "lo",   // Laothian
     "lt",   // Lithuanian
     "lv",   // Latvian
+    "mg",   // Malagasy
+    "mi",   // Maori
     "mk",   // Macedonian
     "ml",   // Malayalam
     "mn",   // Mongolian
@@ -80,11 +88,13 @@ const char* const kShowNotificationLanguages[] = {
     "mr",   // Marathi
     "ms",   // Malay
     "mt",   // Maltese
+    "my",   // Burmese
     "nb",   // Norwegian (Bokmal)
     "ne",   // Nepali
     "nl",   // Dutch
     "nn",   // Norwegian (Nynorsk)
     "no",   // Norwegian
+    "ny",   // Nyanja
     "oc",   // Occitan
     "om",   // Oromo
     "or",   // Oriya
@@ -101,6 +111,7 @@ const char* const kShowNotificationLanguages[] = {
     "si",   // Sinhalese
     "sk",   // Slovak
     "sl",   // Slovenian
+    "sm",   // Samoan
     "sn",   // Shona
     "so",   // Somali
     "sq",   // Albanian
@@ -199,11 +210,8 @@ TEST(LocaleChangeGuardTest, ShowNotificationLocaleChangedList) {
     const std::string language =
         (dash ? std::string(locale, dash - locale) : std::string(locale));
 
-    const char* const* allowed_begin = kShowNotificationLanguages;
-    const char* const* allowed_end =
-        kShowNotificationLanguages + arraysize(kShowNotificationLanguages);
     const bool notification_allowed =
-        (std::find(allowed_begin, allowed_end, language) != allowed_end);
+        base::ContainsValue(kShowNotificationLanguages, language);
 
     const char* const* skipped_begin =
         LocaleChangeGuard::GetSkipShowNotificationLanguagesForTesting();

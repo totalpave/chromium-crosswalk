@@ -7,8 +7,8 @@
 #include <memory>
 #include <string>
 
-#include "base/memory/ptr_util.h"
-#include "net/proxy/proxy_config_service_fixed.h"
+#include "base/single_thread_task_runner.h"
+#include "net/proxy_resolution/proxy_config_service_fixed.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
 
@@ -24,8 +24,9 @@ net::URLRequestContext* URLRequestContextGetter::GetURLRequestContext() {
     // net::HttpServer fails to parse headers if user-agent header is blank.
     builder.set_user_agent("chromedriver");
     builder.DisableHttpCache();
-    builder.set_proxy_config_service(base::WrapUnique(
-        new net::ProxyConfigServiceFixed(net::ProxyConfig::CreateDirect())));
+    builder.set_proxy_config_service(
+        std::make_unique<net::ProxyConfigServiceFixed>(
+            net::ProxyConfigWithAnnotation::CreateDirect()));
     url_request_context_ = builder.Build();
   }
   return url_request_context_.get();

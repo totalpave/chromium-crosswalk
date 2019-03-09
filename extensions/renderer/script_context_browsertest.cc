@@ -6,20 +6,21 @@
 #include "content/public/renderer/render_frame.h"
 #include "content/public/test/frame_load_waiter.h"
 #include "extensions/renderer/script_context.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "extensions/renderer/script_context_set.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 #include "url/gurl.h"
 
-using blink::WebFrame;
+using blink::WebLocalFrame;
 
 namespace extensions {
 namespace {
 
 class ScriptContextTest : public ChromeRenderViewTest {
  protected:
-  GURL GetEffectiveDocumentURL(const WebFrame* frame) {
+  GURL GetEffectiveDocumentURL(WebLocalFrame* frame) {
     return ScriptContext::GetEffectiveDocumentURL(
-        frame, frame->document().url(), true);
+        frame, frame->GetDocument().Url(), true);
   }
 };
 
@@ -41,31 +42,41 @@ TEST_F(ScriptContextTest, GetEffectiveDocumentURL) {
 
   const char frame3_html[] = "<iframe name='frame3_1'></iframe>";
 
-  WebFrame* frame = GetMainFrame();
+  WebLocalFrame* frame = GetMainFrame();
   ASSERT_TRUE(frame);
 
-  frame->loadHTMLString(frame_html, top_url);
+  content::RenderFrame::FromWebFrame(frame)->LoadHTMLString(
+      frame_html, top_url, "UTF-8", GURL(), false /* replace_current_item */);
   content::FrameLoadWaiter(content::RenderFrame::FromWebFrame(frame)).Wait();
 
-  WebFrame* frame1 = frame->findChildByName("frame1");
+  WebLocalFrame* frame1 = frame->FirstChild()->ToWebLocalFrame();
   ASSERT_TRUE(frame1);
-  WebFrame* frame1_1 = frame1->findChildByName("frame1_1");
+  ASSERT_EQ("frame1", frame1->AssignedName());
+  WebLocalFrame* frame1_1 = frame1->FirstChild()->ToWebLocalFrame();
   ASSERT_TRUE(frame1_1);
-  WebFrame* frame1_2 = frame1->findChildByName("frame1_2");
+  ASSERT_EQ("frame1_1", frame1_1->AssignedName());
+  WebLocalFrame* frame1_2 = frame1_1->NextSibling()->ToWebLocalFrame();
   ASSERT_TRUE(frame1_2);
-  WebFrame* frame2 = frame->findChildByName("frame2");
+  ASSERT_EQ("frame1_2", frame1_2->AssignedName());
+  WebLocalFrame* frame2 = frame1->NextSibling()->ToWebLocalFrame();
   ASSERT_TRUE(frame2);
-  WebFrame* frame2_1 = frame2->findChildByName("frame2_1");
+  ASSERT_EQ("frame2", frame2->AssignedName());
+  WebLocalFrame* frame2_1 = frame2->FirstChild()->ToWebLocalFrame();
   ASSERT_TRUE(frame2_1);
-  WebFrame* frame3 = frame->findChildByName("frame3");
+  ASSERT_EQ("frame2_1", frame2_1->AssignedName());
+  WebLocalFrame* frame3 = frame2->NextSibling()->ToWebLocalFrame();
   ASSERT_TRUE(frame3);
+  ASSERT_EQ("frame3", frame3->AssignedName());
 
   // Load a blank document in a frame from a different origin.
-  frame3->loadHTMLString(frame3_html, different_url);
+  content::RenderFrame::FromWebFrame(frame3)->LoadHTMLString(
+      frame3_html, different_url, "UTF-8", GURL(),
+      false /* replace_current_item */);
   content::FrameLoadWaiter(content::RenderFrame::FromWebFrame(frame3)).Wait();
 
-  WebFrame* frame3_1 = frame->findChildByName("frame3");
+  WebLocalFrame* frame3_1 = frame3->FirstChild()->ToWebLocalFrame();
   ASSERT_TRUE(frame3_1);
+  ASSERT_EQ("frame3_1", frame3_1->AssignedName());
 
   // Top-level frame
   EXPECT_EQ(GetEffectiveDocumentURL(frame), top_url);
@@ -85,6 +96,17 @@ TEST_F(ScriptContextTest, GetEffectiveDocumentURL) {
   EXPECT_EQ(GetEffectiveDocumentURL(frame3), different_url);
   // top -> different origin -> about:blank = inherit
   EXPECT_EQ(GetEffectiveDocumentURL(frame3_1), different_url);
+}
+
+TEST_F(ScriptContextTest, GetMainWorldContextForFrame) {
+  // ScriptContextSet::GetMainWorldContextForFrame should work, even without an
+  // existing v8::HandleScope.
+  content::RenderFrame* render_frame =
+      content::RenderFrame::FromWebFrame(GetMainFrame());
+  ScriptContext* script_context =
+      ScriptContextSet::GetMainWorldContextForFrame(render_frame);
+  ASSERT_TRUE(script_context);
+  EXPECT_EQ(render_frame, script_context->GetRenderFrame());
 }
 
 }  // namespace

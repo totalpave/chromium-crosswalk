@@ -15,7 +15,9 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/stl_util.h"
-#include "base/threading/thread_restrictions.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "chrome/browser/image_decoder.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -27,7 +29,8 @@ namespace {
 const int kMaxImageFileSize = 50*1014*1024;
 
 std::unique_ptr<std::string> ReadOnFileThread(const base::FilePath& path) {
-  base::ThreadRestrictions::AssertIOAllowed();
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   std::unique_ptr<std::string> result;
 
   base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
@@ -42,8 +45,7 @@ std::unique_ptr<std::string> ReadOnFileThread(const base::FilePath& path) {
 
   result.reset(new std::string);
   result->resize(file_info.size);
-  if (file.Read(0, string_as_array(result.get()), file_info.size) !=
-      file_info.size) {
+  if (file.Read(0, base::data(*result), file_info.size) != file_info.size) {
     result.reset();
   }
 
@@ -105,9 +107,8 @@ void SupportedImageTypeValidator::StartPreWriteValidation(
   DCHECK(callback_.is_null());
   callback_ = result_callback;
 
-  BrowserThread::PostTaskAndReplyWithResult(
-      BrowserThread::FILE,
-      FROM_HERE,
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::Bind(&ReadOnFileThread, path_),
       base::Bind(&SupportedImageTypeValidator::OnFileOpen,
                  weak_factory_.GetWeakPtr()));

@@ -11,14 +11,15 @@ GEN_INCLUDE(['../testing/chromevox_unittest_base.js',
  * @constructor
  * @extends {ChromeVoxUnitTestBase}
  */
-function CvoxExpandingBrailleTranslatorUnitTest() {}
+function ChromeVoxExpandingBrailleTranslatorUnitTest() {}
 
-CvoxExpandingBrailleTranslatorUnitTest.prototype = {
+ChromeVoxExpandingBrailleTranslatorUnitTest.prototype = {
   __proto__: ChromeVoxUnitTestBase.prototype,
 
   /** @override */
   closureModuleDeps: [
     'Spannable',
+    'cvox.BrailleTextStyleSpan',
     'cvox.ExpandingBrailleTranslator',
     'cvox.LibLouis',
     'cvox.ValueSelectionSpan',
@@ -36,19 +37,24 @@ CvoxExpandingBrailleTranslatorUnitTest.prototype = {
  * @constructor
  * @extends {cvox.LibLouis.Translator}
  */
-function FakeTranslator(resultChar) {
+function FakeTranslator(resultChar, opt_styleMap) {
   /** @private {string} */
   this.resultChar_ = resultChar;
+  /** @private {!Object} */
+  this.styleMap_ = opt_styleMap || {};
 }
 
 FakeTranslator.prototype = {
   /** @Override */
-  translate: function(text, callback) {
+  translate: function(text, formTypeMap, callback) {
     var result = new Uint8Array(text.length);
     var textToBraille = [];
     var brailleToText = [];
     for (var i = 0; i < text.length; ++i) {
-      result[i] = this.resultChar_.charCodeAt(0);
+      var formType = this.styleMap_[formTypeMap[i]];
+      if (formType)
+        formType = formType.charCodeAt(0);
+      result[i] = formType || this.resultChar_.charCodeAt(0);
       textToBraille.push(i);
       brailleToText.push(i);
     }
@@ -72,14 +78,14 @@ function assertArrayBufferMatches(expected, actual) {
   }
 }
 
-TEST_F('CvoxExpandingBrailleTranslatorUnitTest', 'TranslationError',
+TEST_F('ChromeVoxExpandingBrailleTranslatorUnitTest', 'TranslationError',
     function() {
   var text = new Spannable('error ok', new cvox.ValueSpan());
   text.setSpan(new cvox.ValueSelectionSpan, 0, 0);
   var contractedTranslator = new FakeTranslator('c');
   // Translator that always results in an error.
   var uncontractedTranslator = {
-    translate: function(text, callback) {
+    translate: function(text, formTypeMap, callback) {
       callback(null, null, null);
     }
   };
@@ -141,7 +147,7 @@ function doTranslationTest(name, contracted, valueExpansion, text,
     }
     if (extraCellsSpan)
       expectedBrailleToText.splice(extraCellsSpanPos, 0, extraCellsSpanPos);
-  
+
     expandingTranslator.translate(
         text, valueExpansion, function(cells, textToBraille, brailleToText) {
           assertArrayBufferMatches(expectedOutput, cells, name);
@@ -226,7 +232,7 @@ function runTranslationTestVariants(testCase, contracted, valueExpansion,
  *     selection is added if undefined.
  * @param {=opt_selectionEnd} Selection end if selection is not a caret.
  */
-function createText(text, opt_selectionStart, opt_selectionEnd) {
+function createText(text, opt_selectionStart, opt_selectionEnd, opt_style) {
   var result = new Spannable(text);
 
   result.setSpan(new cvox.ValueSpan, 0, text.length);
@@ -236,13 +242,20 @@ function createText(text, opt_selectionStart, opt_selectionEnd) {
         opt_selectionStart,
         goog.isDef(opt_selectionEnd) ? opt_selectionEnd : opt_selectionStart);
   }
+
+  if (goog.isDef(opt_style)) {
+    result.setSpan(
+        new cvox.BrailleTextStyleSpan(opt_style.formType),
+        opt_style.start,
+        opt_style.end);
+  }
   return result;
 }
 
 
 var TEXT = 'Hello, world!';
 
-TEST_F('CvoxExpandingBrailleTranslatorUnitTest', 'successfulTranslations',
+TEST_F('ChromeVoxExpandingBrailleTranslatorUnitTest', 'successfulTranslations',
        function() {
   /**
    * Dictionary of test strings, keyed on a descriptive name for the
@@ -298,4 +311,21 @@ TEST_F('CvoxExpandingBrailleTranslatorUnitTest', 'successfulTranslations',
   var totalExpectedTranslationTests =
       2 * (TESTDATA.length * 4 + TESTDATA_WITH_SELECTION.length);
   assertEquals(totalExpectedTranslationTests, totalRunTranslationTests);
+});
+
+TEST_F('ChromeVoxExpandingBrailleTranslatorUnitTest', 'StyleTranslations',
+       function() {
+  var formTypeMap = {};
+  formTypeMap[cvox.LibLouis.FormType.BOLD] = 'b';
+  formTypeMap[cvox.LibLouis.FormType.ITALIC] = 'i';
+  formTypeMap[cvox.LibLouis.FormType.UNDERLINE] = 'u';
+  var translator = new cvox.ExpandingBrailleTranslator(
+      new FakeTranslator('c', formTypeMap),
+      new FakeTranslator('u'));
+  translator.translate(createText('a test of text', undefined, undefined, {
+     start: 2, end: 6, formType: cvox.LibLouis.FormType.BOLD}),
+      cvox.ExpandingBrailleTranslator.ExpansionType.NONE,
+      function(cells) {
+        assertArrayBufferMatches('ccbbbbcccccccc', cells);
+      });
 });

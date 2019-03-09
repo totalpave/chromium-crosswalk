@@ -15,6 +15,7 @@
 namespace content {
 class ContentClient;
 class ShellContentBrowserClient;
+class ShellContentGpuClient;
 class ShellContentRendererClient;
 class ShellContentUtilityClient;
 
@@ -24,7 +25,7 @@ class BrowserMainRunner;
 
 class ShellMainDelegate : public ContentMainDelegate {
  public:
-  ShellMainDelegate();
+  explicit ShellMainDelegate(bool is_browsertest = false);
   ~ShellMainDelegate() override;
 
   // ContentMainDelegate implementation:
@@ -32,17 +33,21 @@ class ShellMainDelegate : public ContentMainDelegate {
   void PreSandboxStartup() override;
   int RunProcess(const std::string& process_type,
                  const MainFunctionParams& main_function_params) override;
-#if defined(OS_POSIX) && !defined(OS_ANDROID) && !defined(OS_MACOSX)
+#if defined(OS_LINUX)
   void ZygoteForked() override;
 #endif
+  void PreCreateMainMessageLoop() override;
   ContentBrowserClient* CreateContentBrowserClient() override;
+  ContentGpuClient* CreateContentGpuClient() override;
   ContentRendererClient* CreateContentRendererClient() override;
   ContentUtilityClient* CreateContentUtilityClient() override;
 
   static void InitializeResourceBundle();
 
  private:
+  bool is_browsertest_;
   std::unique_ptr<ShellContentBrowserClient> browser_client_;
+  std::unique_ptr<ShellContentGpuClient> gpu_client_;
   std::unique_ptr<ShellContentRendererClient> renderer_client_;
   std::unique_ptr<ShellContentUtilityClient> utility_client_;
   std::unique_ptr<ContentClient> content_client_;

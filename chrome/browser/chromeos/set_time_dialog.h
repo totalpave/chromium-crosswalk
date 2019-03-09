@@ -7,36 +7,25 @@
 
 #include <string>
 
-#include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/values.h"
+#include "chrome/browser/ui/webui/chromeos/system_web_dialog_delegate.h"
 #include "ui/gfx/native_widget_types.h"
-#include "ui/web_dialogs/web_dialog_delegate.h"
 
 namespace chromeos {
 
 // Set Time dialog for setting the system time, date and time zone.
-class SetTimeDialog : public ui::WebDialogDelegate {
+class SetTimeDialog : public SystemWebDialogDelegate {
  public:
+  // Shows the set time/date dialog. If |parent| is not null, shows the dialog
+  // as a child of |parent|, e.g. the Settings window.
+  static void ShowDialog(gfx::NativeWindow parent = nullptr);
+
+ private:
   SetTimeDialog();
   ~SetTimeDialog() override;
 
-  static void ShowDialog(gfx::NativeWindow owning_window);
-
- private:
-  // ui::WebDialogDelegate:
-  ui::ModalType GetDialogModalType() const override;
-  base::string16 GetDialogTitle() const override;
-  GURL GetDialogContentURL() const override;
-  void GetWebUIMessageHandlers(
-      std::vector<content::WebUIMessageHandler*>* handlers) const override;
+  // SystemWebDialogDelegate
   void GetDialogSize(gfx::Size* size) const override;
-  std::string GetDialogArgs() const override;
-  void OnDialogClosed(const std::string& json_retval) override;
-  void OnCloseContents(content::WebContents* source,
-                       bool* out_close_dialog) override;
-  bool ShouldShowDialogTitle() const override;
-  bool HandleContextMenu(const content::ContextMenuParams& params) override;
 
   DISALLOW_COPY_AND_ASSIGN(SetTimeDialog);
 };

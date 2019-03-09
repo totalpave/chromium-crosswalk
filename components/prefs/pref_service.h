@@ -16,27 +16,33 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "base/values.h"
-#include "components/prefs/base_prefs_export.h"
 #include "components/prefs/persistent_pref_store.h"
+#include "components/prefs/pref_value_store.h"
+#include "components/prefs/prefs_export.h"
 
 class PrefNotifier;
 class PrefNotifierImpl;
 class PrefObserver;
 class PrefRegistry;
-class PrefValueStore;
 class PrefStore;
 
 namespace base {
 class FilePath;
+}
+
+namespace prefs {
+class ScopedDictionaryPrefUpdate;
 }
 
 namespace subtle {
@@ -51,13 +57,18 @@ class ScopedUserPrefUpdateBase;
 // Settings and storage accessed through this class represent
 // user-selected preferences and information and MUST not be
 // extracted, overwritten or modified except through the defined APIs.
-class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
+class COMPONENTS_PREFS_EXPORT PrefService {
  public:
   enum PrefInitializationStatus {
     INITIALIZATION_STATUS_WAITING,
     INITIALIZATION_STATUS_SUCCESS,
     INITIALIZATION_STATUS_CREATED_NEW_PREF_STORE,
     INITIALIZATION_STATUS_ERROR
+  };
+
+  enum IncludeDefaults {
+    INCLUDE_DEFAULTS,
+    EXCLUDE_DEFAULTS,
   };
 
   // A helper class to store all the information associated with a preference.
@@ -68,16 +79,16 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
     // dictionary (a branch), or list.  You shouldn't need to construct this on
     // your own; use the PrefService::Register*Pref methods instead.
     Preference(const PrefService* service,
-               const std::string& name,
+               std::string name,
                base::Value::Type type);
     ~Preference() {}
 
     // Returns the name of the Preference (i.e., the key, e.g.,
     // browser.window_placement).
-    const std::string name() const;
+    std::string name() const { return name_; }
 
     // Returns the registered type of the preference.
-    base::Value::Type GetType() const;
+    base::Value::Type GetType() const { return type_; }
 
     // Returns the value of the Preference, falling back to the registered
     // default value if no other has been set.
@@ -96,8 +107,9 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
     // policy, this is the controlling pref if set.
     bool IsManagedByCustodian() const;
 
-    // Returns true if the Preference is recommended, i.e. set by an admin
-    // policy but the user is allowed to change it.
+    // Returns true if the Preference's current value is one recommended by
+    // admin policy. Note that this will be false if any other higher-priority
+    // source overrides the value (e.g., the user has set a value).
     bool IsRecommended() const;
 
     // Returns true if the Preference has a value set by an extension, even if
@@ -146,27 +158,34 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
 
     const base::Value::Type type_;
 
-    uint32_t registration_flags_;
+    const uint32_t registration_flags_;
 
     // Reference to the PrefService in which this pref was created.
-    const PrefService* pref_service_;
+    const PrefService* const pref_service_;
   };
 
   // You may wish to use PrefServiceFactory or one of its subclasses
   // for simplified construction.
-  PrefService(
-      PrefNotifierImpl* pref_notifier,
-      PrefValueStore* pref_value_store,
-      PersistentPrefStore* user_prefs,
-      PrefRegistry* pref_registry,
-      base::Callback<void(PersistentPrefStore::PrefReadError)>
-          read_error_callback,
-      bool async);
+  PrefService(std::unique_ptr<PrefNotifierImpl> pref_notifier,
+              std::unique_ptr<PrefValueStore> pref_value_store,
+              scoped_refptr<PersistentPrefStore> user_prefs,
+              scoped_refptr<PrefRegistry> pref_registry,
+              base::RepeatingCallback<void(PersistentPrefStore::PrefReadError)>
+                  read_error_callback,
+              bool async);
   virtual ~PrefService();
 
   // Lands pending writes to disk. This should only be used if we need to save
-  // immediately (basically, during shutdown).
-  void CommitPendingWrite();
+  // immediately (basically, during shutdown). |reply_callback| will be posted
+  // to the current sequence when changes have been written.
+  // |synchronous_done_callback| on the other hand will be invoked right away
+  // wherever the writes complete (could even be invoked synchronously if no
+  // writes need to occur); this is useful when the current thread cannot pump
+  // messages to observe the reply (e.g. nested loops banned on main thread
+  // during shutdown). |synchronous_done_callback| must be thread-safe.
+  void CommitPendingWrite(
+      base::OnceClosure reply_callback = base::OnceClosure(),
+      base::OnceClosure synchronous_done_callback = base::OnceClosure());
 
   // Schedule a write if there is any lossy data pending. Unlike
   // CommitPendingWrite() this does not immediately sync to disk, instead it
@@ -202,6 +221,7 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   // Returns the branch if it exists, or the registered default value otherwise.
   // Note that |path| must point to a registered preference. In that case, these
   // functions will never return NULL.
+  const base::Value* Get(const std::string& path) const;
   const base::DictionaryValue* GetDictionary(const std::string& path) const;
   const base::ListValue* GetList(const std::string& path) const;
 
@@ -222,7 +242,7 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
 
   // Int64 helper methods that actually store the given value as a string.
   // Note that if obtaining the named value via GetDictionary or GetList, the
-  // Value type will be TYPE_STRING.
+  // Value type will be Type::STRING.
   void SetInt64(const std::string& path, int64_t value);
   int64_t GetInt64(const std::string& path) const;
 
@@ -230,18 +250,29 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   void SetUint64(const std::string& path, uint64_t value);
   uint64_t GetUint64(const std::string& path) const;
 
+  // Time helper methods that actually store the given value as a string, which
+  // represents the number of microseconds elapsed (absolute for TimeDelta and
+  // relative to Windows epoch for Time variants). Note that if obtaining the
+  // named value via GetDictionary or GetList, the Value type will be
+  // Type::STRING.
+  void SetTime(const std::string& path, base::Time value);
+  base::Time GetTime(const std::string& path) const;
+  void SetTimeDelta(const std::string& path, base::TimeDelta value);
+  base::TimeDelta GetTimeDelta(const std::string& path) const;
+
   // Returns the value of the given preference, from the user pref store. If
   // the preference is not set in the user pref store, returns NULL.
   const base::Value* GetUserPrefValue(const std::string& path) const;
 
-  // Changes the default value for a preference. Takes ownership of |value|.
+  // Changes the default value for a preference.
   //
   // Will cause a pref change notification to be fired if this causes
   // the effective value to change.
-  void SetDefaultPrefValue(const std::string& path, base::Value* value);
+  void SetDefaultPrefValue(const std::string& path, base::Value value);
 
   // Returns the default value of the given preference. |path| must point to a
-  // registered preference. In that case, will never return NULL.
+  // registered preference. In that case, will never return nullptr, so callers
+  // do not need to check this.
   const base::Value* GetDefaultPrefValue(const std::string& path) const;
 
   // Returns true if a value has been set for the specified path.
@@ -250,27 +281,30 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   // this checks if a value exists for the path.
   bool HasPrefPath(const std::string& path) const;
 
-  // Returns a dictionary with effective preference values.
-  std::unique_ptr<base::DictionaryValue> GetPreferenceValues() const;
+  // Issues a callback for every preference value. The preferences must not be
+  // mutated during iteration.
+  void IteratePreferenceValues(
+      base::RepeatingCallback<void(const std::string& key,
+                                   const base::Value& value)> callback) const;
 
-  // Returns a dictionary with effective preference values, omitting prefs that
-  // are at their default values.
-  std::unique_ptr<base::DictionaryValue> GetPreferenceValuesOmitDefaults()
-      const;
-
-  // Returns a dictionary with effective preference values. Contrary to
-  // GetPreferenceValues(), the paths of registered preferences are not split on
-  // '.' characters. If a registered preference stores a dictionary, however,
-  // the hierarchical structure inside the preference will be preserved.
-  // For example, if "foo.bar" is a registered preference, the result could look
-  // like this:
-  //   {"foo.bar": {"a": {"b": true}}}.
-  std::unique_ptr<base::DictionaryValue>
-  GetPreferenceValuesWithoutPathExpansion() const;
+  // Returns a dictionary with effective preference values. This is an expensive
+  // operation which does a deep copy. Use only if you really need the results
+  // in a base::Value (for example, for JSON serialization). Otherwise use
+  // IteratePreferenceValues above to avoid the copies.
+  //
+  // If INCLUDE_DEFAULTS is requested, preferences set to their default values
+  // will be included. Otherwise, these will be omitted from the returned
+  // dictionary.
+  std::unique_ptr<base::DictionaryValue> GetPreferenceValues(
+      IncludeDefaults include_defaults) const;
 
   bool ReadOnly() const;
 
+  // Returns the initialization state, taking only user prefs into account.
   PrefInitializationStatus GetInitializationStatus() const;
+
+  // Returns the initialization state, taking all pref stores into account.
+  PrefInitializationStatus GetAllPrefStoresInitializationStatus() const;
 
   // Tell our PrefValueStore to update itself to |command_line_store|.
   // Takes ownership of the store.
@@ -279,7 +313,7 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   // We run the callback once, when initialization completes. The bool
   // parameter will be set to true for successful initialization,
   // false for unsuccessful.
-  void AddPrefInitObserver(base::Callback<void(bool)> callback);
+  void AddPrefInitObserver(base::OnceCallback<void(bool)> callback);
 
   // Returns the PrefRegistry object for this service. You should not
   // use this; the intent is for no registrations to take place after
@@ -299,34 +333,69 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   // Clears mutable values.
   void ClearMutableValues();
 
+  // Invoked when the store is deleted from disk. Allows this PrefService
+  // to tangentially cleanup data it may have saved outside the store.
+  void OnStoreDeletionFromDisk();
+
+  // Add new pref stores to the existing PrefValueStore. Only adding new
+  // stores are allowed. If a corresponding store already exists, calling this
+  // will cause DCHECK failures. If the newly added stores already contain
+  // values, PrefNotifier associated with this object will be notified with
+  // these values. |delegate| can be passed to observe events of the new
+  // PrefValueStore.
+  // TODO(qinmin): packaging all the input params in a struct, and do the same
+  // for the constructor.
+  void ChangePrefValueStore(
+      PrefStore* managed_prefs,
+      PrefStore* supervised_user_prefs,
+      PrefStore* extension_prefs,
+      PrefStore* recommended_prefs,
+      std::unique_ptr<PrefValueStore::Delegate> delegate = nullptr);
+
+  // A low level function for registering an observer for every single
+  // preference changed notification. The caller must ensure that the observer
+  // remains valid as long as it is registered. Pointer ownership is not
+  // transferred.
+  //
+  // Almost all calling code should use a PrefChangeRegistrar instead.
+  //
+  // AVOID ADDING THESE. These are low-level observer notifications that are
+  // called for every pref change. This can lead to inefficiency, and the lack
+  // of a "registrar" model makes it easy to forget to undregister. It is
+  // really designed for integrating other notification systems, not for normal
+  // observation.
+  void AddPrefObserverAllPrefs(PrefObserver* obs);
+  void RemovePrefObserverAllPrefs(PrefObserver* obs);
+
  protected:
   // The PrefNotifier handles registering and notifying preference observers.
   // It is created and owned by this PrefService. Subclasses may access it for
   // unit testing.
-  std::unique_ptr<PrefNotifierImpl> pref_notifier_;
+  const std::unique_ptr<PrefNotifierImpl> pref_notifier_;
 
   // The PrefValueStore provides prioritized preference values. It is owned by
   // this PrefService. Subclasses may access it for unit testing.
   std::unique_ptr<PrefValueStore> pref_value_store_;
 
-  scoped_refptr<PrefRegistry> pref_registry_;
-
   // Pref Stores and profile that we passed to the PrefValueStore.
-  scoped_refptr<PersistentPrefStore> user_pref_store_;
+  const scoped_refptr<PersistentPrefStore> user_pref_store_;
 
-  // Callback to call when a read error occurs.
-  base::Callback<void(PersistentPrefStore::PrefReadError)> read_error_callback_;
+  // Callback to call when a read error occurs. Always invoked on the sequence
+  // this PrefService was created own.
+  const base::RepeatingCallback<void(PersistentPrefStore::PrefReadError)>
+      read_error_callback_;
 
  private:
   // Hash map expected to be fastest here since it minimises expensive
   // string comparisons. Order is unimportant, and deletions are rare.
   // Confirmed on Android where this speeded Chrome startup by roughly 50ms
   // vs. std::map, and by roughly 180ms vs. std::set of Preference pointers.
-  typedef base::hash_map<std::string, Preference> PreferenceMap;
+  typedef std::unordered_map<std::string, Preference> PreferenceMap;
 
   // Give access to ReportUserPrefChanged() and GetMutableUserPref().
   friend class subtle::ScopedUserPrefUpdateBase;
   friend class PrefServiceTest_WriteablePrefStoreFlags_Test;
+  friend class prefs::ScopedDictionaryPrefUpdate;
 
   // Registration of pref change observers must be done using the
   // PrefChangeRegistrar, which is declared as a friend here to grant it
@@ -350,12 +419,17 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   virtual void RemovePrefObserver(const std::string& path, PrefObserver* obs);
 
   // Sends notification of a changed preference. This needs to be called by
-  // a ScopedUserPrefUpdate if a DictionaryValue or ListValue is changed.
+  // a ScopedUserPrefUpdate or ScopedDictionaryPrefUpdate if a DictionaryValue
+  // or ListValue is changed.
   void ReportUserPrefChanged(const std::string& key);
+  void ReportUserPrefChanged(
+      const std::string& key,
+      std::set<std::vector<std::string>> path_components);
 
   // Sets the value for this pref path in the user pref store and informs the
   // PrefNotifier of the change.
-  void SetUserPrefValue(const std::string& path, base::Value* new_value);
+  void SetUserPrefValue(const std::string& path,
+                        std::unique_ptr<base::Value> new_value);
 
   // Load preferences from storage, attempting to diagnose and handle errors.
   // This should only be called from the constructor.
@@ -365,7 +439,7 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   // This will create a dictionary or list if one does not exist in the user
   // pref store. This method returns NULL only if you're requesting an
   // unregistered pref or a non-dict/non-list pref.
-  // |type| may only be Values::TYPE_DICTIONARY or Values::TYPE_LIST and
+  // |type| may only be Values::Type::DICTIONARY or Values::Type::LIST and
   // |path| must point to a registered preference of type |type|.
   // Ownership of the returned value remains at the user pref store.
   base::Value* GetMutableUserPref(const std::string& path,
@@ -378,10 +452,14 @@ class COMPONENTS_PREFS_EXPORT PrefService : public base::NonThreadSafe {
   // actually get the value.).
   const base::Value* GetPreferenceValue(const std::string& path) const;
 
+  const scoped_refptr<PrefRegistry> pref_registry_;
+
   // Local cache of registered Preference objects. The pref_registry_
   // is authoritative with respect to what the types and default values
   // of registered preferences are.
   mutable PreferenceMap prefs_map_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(PrefService);
 };

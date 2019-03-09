@@ -13,7 +13,6 @@
 
 namespace content {
 class BackgroundTracingConfig;
-struct BackgroundTracingUploadConfig;
 
 // BackgroundTracingManager is used on the browser process to trigger the
 // collection of trace data and upload the results. Only the browser UI thread
@@ -23,30 +22,28 @@ class BackgroundTracingManager {
  public:
   CONTENT_EXPORT static BackgroundTracingManager* GetInstance();
 
-  // ReceiveCallback will will be called on the UI thread every time the
-  // BackgroundTracingManager finalizes a trace. The first parameter of
-  // this callback is the trace data. The second is metadata that was
-  // generated and embedded into the trace. The third is a callback to
-  // notify the BackgroundTracingManager that you've finished processing
-  // the trace data.
+  // ReceiveCallback will be called on the UI thread every time the
+  // BackgroundTracingManager finalizes a trace. The first parameter of this
+  // callback is the trace data. The second is metadata that was generated and
+  // embedded into the trace. The third is a callback to notify the
+  // BackgroundTracingManager that you've finished processing the trace data
+  // and whether we were successful or not.
   //
   // Example:
   //
   // void Upload(const scoped_refptr<base::RefCountedString>& data,
-  //             std::unique_ptr<base::DictionaryValue>,
-  //             base::Closure done_callback) {
-  //   BrowserThread::PostTaskAndReply(
-  //       BrowserThread::FILE,
-  //       FROM_HERE,
-  //       base::Bind(&DoUploadOnFileThread, data),
-  //       done_callback
-  //     );
+  //             FinishedProcessingCallback done_callback) {
+  //   base::PostTaskWithTraitsAndReply(
+  //       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+  //       base::BindOnce(&DoUploadInBackground, data),
+  //       std::move(done_callback));
   // }
   //
-  typedef base::Callback<void(const scoped_refptr<base::RefCountedString>&,
-                              std::unique_ptr<const base::DictionaryValue>,
-                              base::Closure)>
-      ReceiveCallback;
+  using FinishedProcessingCallback = base::OnceCallback<void(bool success)>;
+  using ReceiveCallback =
+      base::RepeatingCallback<void(const scoped_refptr<base::RefCountedString>&,
+                                   std::unique_ptr<const base::DictionaryValue>,
+                                   FinishedProcessingCallback)>;
 
   // Set the triggering rules for when to start recording.
   //
@@ -69,7 +66,7 @@ class BackgroundTracingManager {
   };
   virtual bool SetActiveScenario(
       std::unique_ptr<BackgroundTracingConfig> config,
-      const ReceiveCallback& receive_callback,
+      ReceiveCallback receive_callback,
       DataFiltering data_filtering) = 0;
 
   // Notifies the caller when the manager is idle (not recording or uploading),
@@ -93,9 +90,9 @@ class BackgroundTracingManager {
 
   virtual bool HasActiveScenario() = 0;
 
+  // For tests
+  virtual void AbortScenario() = 0;
   virtual void InvalidateTriggerHandlesForTesting() = 0;
-  virtual void SetTracingEnabledCallbackForTesting(
-      const base::Closure& callback) = 0;
   virtual void FireTimerForTesting() = 0;
 
  protected:

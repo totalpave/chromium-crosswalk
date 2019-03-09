@@ -15,12 +15,13 @@
 
 namespace chromeos {
 
-class SigninScreenHandler;
+// TODO(jdufault): Rename to UserSelectionScreenHandler and ensure this in the
+// right directory. See crbug.com/672142.
 
 // A class that handles WebUI hooks in Gaia screen.
 class UserBoardScreenHandler : public BaseScreenHandler, public UserBoardView {
  public:
-  UserBoardScreenHandler();
+  explicit UserBoardScreenHandler(JSCallsContainer* js_calls_container);
   ~UserBoardScreenHandler() override;
 
  private:
@@ -33,10 +34,8 @@ class UserBoardScreenHandler : public BaseScreenHandler, public UserBoardView {
   void Initialize() override;
 
   // Handlers
-  void HandleGetUsers();
   void HandleHardlockPod(const AccountId& account_id);
   void HandleAttemptUnlock(const AccountId& account_id);
-  void HandleRecordClickOnLockIcon(const AccountId& account_id);
 
   // UserBoardView implementation:
   void SetPublicSessionDisplayName(const AccountId& account_id,
@@ -45,19 +44,24 @@ class UserBoardScreenHandler : public BaseScreenHandler, public UserBoardView {
                                std::unique_ptr<base::ListValue> locales,
                                const std::string& default_locale,
                                bool multiple_recommended_locales) override;
-  void ShowBannerMessage(const base::string16& message) override;
-  void ShowUserPodCustomIcon(const AccountId& account_id,
-                             const base::DictionaryValue& icon) override;
-  void HideUserPodCustomIcon(const AccountId& account_id) override;
-  void SetAuthType(
+  void SetPublicSessionShowFullManagementDisclosure(
+      bool show_full_management_disclosure) override;
+  void ShowBannerMessage(const base::string16& message,
+                         bool is_warning) override;
+  void ShowUserPodCustomIcon(
       const AccountId& account_id,
-      proximity_auth::ScreenlockBridge::LockHandler::AuthType auth_type,
-      const base::string16& initial_value) override;
-
-  void Bind(UserBoardModel& model) override;
+      const proximity_auth::ScreenlockBridge::UserPodCustomIconOptions&
+          icon_options) override;
+  void HideUserPodCustomIcon(const AccountId& account_id) override;
+  void SetAuthType(const AccountId& account_id,
+                   proximity_auth::mojom::AuthType auth_type,
+                   const base::string16& initial_value) override;
+  void Bind(UserSelectionScreen* screen) override;
   void Unbind() override;
+  base::WeakPtr<UserBoardView> GetWeakPtr() override;
 
-  UserBoardModel* model_;
+  UserSelectionScreen* screen_ = nullptr;
+  base::WeakPtrFactory<UserBoardScreenHandler> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(UserBoardScreenHandler);
 };

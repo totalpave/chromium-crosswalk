@@ -15,7 +15,8 @@ namespace cc {
 scoped_refptr<VideoFrameProviderClientImpl>
 VideoFrameProviderClientImpl::Create(VideoFrameProvider* provider,
                                      VideoFrameControllerClient* client) {
-  return make_scoped_refptr(new VideoFrameProviderClientImpl(provider, client));
+  return base::WrapRefCounted(
+      new VideoFrameProviderClientImpl(provider, client));
 }
 
 VideoFrameProviderClientImpl::VideoFrameProviderClientImpl(
@@ -35,14 +36,6 @@ VideoFrameProviderClientImpl::VideoFrameProviderClientImpl(
     // the call to Stop().
     provider_->SetVideoFrameProviderClient(this);
   }
-
-  // This matrix is the default transformation for stream textures, and flips
-  // on the Y axis.
-  stream_texture_matrix_ = gfx::Transform(
-      1.0, 0.0, 0.0, 0.0,
-      0.0, -1.0, 0.0, 1.0,
-      0.0, 0.0, 1.0, 0.0,
-      0.0, 0.0, 0.0, 1.0);
 }
 
 VideoFrameProviderClientImpl::~VideoFrameProviderClientImpl() {
@@ -64,6 +57,7 @@ void VideoFrameProviderClientImpl::SetActiveVideoLayer(
 
 void VideoFrameProviderClientImpl::Stop() {
   DCHECK(thread_checker_.CalledOnValidThread());
+  active_video_layer_ = nullptr;
   // It's called when the main thread is blocked, so lock isn't needed.
   if (provider_) {
     provider_->SetVideoFrameProviderClient(nullptr);
@@ -71,7 +65,6 @@ void VideoFrameProviderClientImpl::Stop() {
   }
   if (rendering_)
     StopRendering();
-  active_video_layer_ = nullptr;
   stopped_ = true;
 }
 
@@ -108,12 +101,6 @@ bool VideoFrameProviderClientImpl::HasCurrentFrame() {
   return provider_ && provider_->HasCurrentFrame();
 }
 
-const gfx::Transform& VideoFrameProviderClientImpl::StreamTextureMatrix()
-    const {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  return stream_texture_matrix_;
-}
-
 void VideoFrameProviderClientImpl::StopUsingProvider() {
   {
     // Block the provider from shutting down until this client is done
@@ -141,6 +128,8 @@ void VideoFrameProviderClientImpl::StopRendering() {
   DCHECK(!stopped_);
   client_->RemoveVideoFrameController(this);
   rendering_ = false;
+  if (active_video_layer_)
+    active_video_layer_->SetNeedsRedraw();
 }
 
 void VideoFrameProviderClientImpl::DidReceiveFrame() {
@@ -154,7 +143,8 @@ void VideoFrameProviderClientImpl::DidReceiveFrame() {
     active_video_layer_->SetNeedsRedraw();
 }
 
-void VideoFrameProviderClientImpl::OnBeginFrame(const BeginFrameArgs& args) {
+void VideoFrameProviderClientImpl::OnBeginFrame(
+    const viz::BeginFrameArgs& args) {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK(rendering_);
   DCHECK(!stopped_);
@@ -185,6 +175,11 @@ void VideoFrameProviderClientImpl::DidDrawFrame() {
       provider_->PutCurrentFrame();
   }
   needs_put_current_frame_ = false;
+}
+
+bool VideoFrameProviderClientImpl::IsDrivingFrameUpdates() const {
+  // We drive frame updates any time we're rendering, even if we're off-screen.
+  return rendering_;
 }
 
 }  // namespace cc

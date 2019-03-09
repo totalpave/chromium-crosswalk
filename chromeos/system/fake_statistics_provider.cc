@@ -4,18 +4,26 @@
 
 #include "chromeos/system/fake_statistics_provider.h"
 
+#include <utility>
+
+#include "base/threading/sequenced_task_runner_handle.h"
+
 namespace chromeos {
 namespace system {
 
-FakeStatisticsProvider::FakeStatisticsProvider() {
-}
+FakeStatisticsProvider::FakeStatisticsProvider() = default;
 
-FakeStatisticsProvider::~FakeStatisticsProvider() {
-}
+FakeStatisticsProvider::~FakeStatisticsProvider() = default;
 
 void FakeStatisticsProvider::StartLoadingMachineStatistics(
-    const scoped_refptr<base::TaskRunner>& file_task_runner,
     bool load_oem_manifest) {
+}
+
+void FakeStatisticsProvider::ScheduleOnMachineStatisticsLoaded(
+    base::OnceClosure callback) {
+  // No load is required for FakeStatisticsProvider.
+  base::SequencedTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                   std::move(callback));
 }
 
 bool FakeStatisticsProvider::GetMachineStatistic(const std::string& name,
@@ -37,6 +45,12 @@ bool FakeStatisticsProvider::GetMachineFlag(const std::string& name,
 
 void FakeStatisticsProvider::Shutdown() {
 }
+
+bool FakeStatisticsProvider::IsRunningOnVm() {
+  std::string is_vm;
+  return GetMachineStatistic(kIsVmKey, &is_vm) && is_vm == kIsVmValueTrue;
+}
+
 
 void FakeStatisticsProvider::SetMachineStatistic(const std::string& key,
                                                  const std::string& value) {

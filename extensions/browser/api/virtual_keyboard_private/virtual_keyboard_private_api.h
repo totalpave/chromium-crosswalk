@@ -9,138 +9,203 @@
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/extension_function.h"
 
+namespace base {
+class DictionaryValue;
+}
+
 namespace content {
 class BrowserContext;
 }
 
 namespace extensions {
 
-class VirtualKeyboardPrivateInsertTextFunction : public SyncExtensionFunction {
+class VirtualKeyboardDelegate;
+
+class VirtualKeyboardPrivateFunction : public UIThreadExtensionFunction {
+ public:
+  bool PreRunValidation(std::string* error) override;
+
+ protected:
+  VirtualKeyboardDelegate* delegate() { return delegate_; }
+  ~VirtualKeyboardPrivateFunction() override;
+
+ private:
+  VirtualKeyboardDelegate* delegate_ = nullptr;
+};
+
+class VirtualKeyboardPrivateInsertTextFunction
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.insertText",
-                             VIRTUALKEYBOARDPRIVATE_INSERTTEXT);
+                             VIRTUALKEYBOARDPRIVATE_INSERTTEXT)
 
  protected:
   ~VirtualKeyboardPrivateInsertTextFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardPrivateSendKeyEventFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.sendKeyEvent",
-                             VIRTUALKEYBOARDPRIVATE_SENDKEYEVENT);
+                             VIRTUALKEYBOARDPRIVATE_SENDKEYEVENT)
 
  protected:
   ~VirtualKeyboardPrivateSendKeyEventFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardPrivateHideKeyboardFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.hideKeyboard",
-                             VIRTUALKEYBOARDPRIVATE_HIDEKEYBOARD);
+                             VIRTUALKEYBOARDPRIVATE_HIDEKEYBOARD)
 
  protected:
   ~VirtualKeyboardPrivateHideKeyboardFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardPrivateSetHotrodKeyboardFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.setHotrodKeyboard",
-                             VIRTUALKEYBOARDPRIVATE_SETHOTRODKEYBOARD);
+                             VIRTUALKEYBOARDPRIVATE_SETHOTRODKEYBOARD)
 
  protected:
   ~VirtualKeyboardPrivateSetHotrodKeyboardFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardPrivateLockKeyboardFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.lockKeyboard",
-                             VIRTUALKEYBOARDPRIVATE_LOCKKEYBOARD);
+                             VIRTUALKEYBOARDPRIVATE_LOCKKEYBOARD)
 
  protected:
   ~VirtualKeyboardPrivateLockKeyboardFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardPrivateKeyboardLoadedFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.keyboardLoaded",
-                             VIRTUALKEYBOARDPRIVATE_KEYBOARDLOADED);
+                             VIRTUALKEYBOARDPRIVATE_KEYBOARDLOADED)
 
  protected:
   ~VirtualKeyboardPrivateKeyboardLoadedFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardPrivateGetKeyboardConfigFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.getKeyboardConfig",
-                             VIRTUALKEYBOARDPRIVATE_GETKEYBOARDCONFIG);
+                             VIRTUALKEYBOARDPRIVATE_GETKEYBOARDCONFIG)
 
  protected:
   ~VirtualKeyboardPrivateGetKeyboardConfigFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
+
+ private:
+  void OnKeyboardConfig(std::unique_ptr<base::DictionaryValue> results);
 };
 
 class VirtualKeyboardPrivateOpenSettingsFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.openSettings",
-                             VIRTUALKEYBOARDPRIVATE_OPENSETTINGS);
+                             VIRTUALKEYBOARDPRIVATE_OPENSETTINGS)
 
  protected:
   ~VirtualKeyboardPrivateOpenSettingsFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
 };
 
-class VirtualKeyboardPrivateSetModeFunction : public SyncExtensionFunction {
+class VirtualKeyboardPrivateSetContainerBehaviorFunction
+    : public VirtualKeyboardPrivateFunction {
  public:
-  DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.setMode",
-                             VIRTUALKEYBOARDPRIVATE_SETMODE);
+  DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.setContainerBehavior",
+                             VIRTUALKEYBOARDPRIVATE_SETCONTAINERBEHAVIOR)
 
  protected:
-  ~VirtualKeyboardPrivateSetModeFunction() override {}
+  ~VirtualKeyboardPrivateSetContainerBehaviorFunction() override = default;
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
+
+ private:
+  void OnSetContainerBehavior(bool success);
+};
+
+class VirtualKeyboardPrivateSetDraggableAreaFunction
+    : public VirtualKeyboardPrivateFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.setDraggableArea",
+                             VIRTUALKEYBOARDPRIVATE_SETDRAGGABLEAREA)
+
+ protected:
+  ~VirtualKeyboardPrivateSetDraggableAreaFunction() override {}
+
+  // ExtensionFunction:
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardPrivateSetKeyboardStateFunction
-    : public SyncExtensionFunction {
+    : public VirtualKeyboardPrivateFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.setKeyboardState",
-                             VIRTUALKEYBOARDPRIVATE_SETKEYBOARDSTATE);
+                             VIRTUALKEYBOARDPRIVATE_SETKEYBOARDSTATE)
 
  protected:
   ~VirtualKeyboardPrivateSetKeyboardStateFunction() override {}
 
   // ExtensionFunction:
-  bool RunSync() override;
+  ResponseAction Run() override;
+};
+
+class VirtualKeyboardPrivateSetOccludedBoundsFunction
+    : public VirtualKeyboardPrivateFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.setOccludedBounds",
+                             VIRTUALKEYBOARDPRIVATE_SETOCCLUDEDBOUNDS)
+
+ protected:
+  ~VirtualKeyboardPrivateSetOccludedBoundsFunction() override {}
+
+  // ExtensionFunction:
+  ResponseAction Run() override;
+};
+
+class VirtualKeyboardPrivateSetHitTestBoundsFunction
+    : public VirtualKeyboardPrivateFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("virtualKeyboardPrivate.setHitTestBounds",
+                             VIRTUALKEYBOARDPRIVATE_SETHITTESTBOUNDS)
+
+ protected:
+  ~VirtualKeyboardPrivateSetHitTestBoundsFunction() override {}
+
+  // ExtensionFunction:
+  ResponseAction Run() override;
 };
 
 class VirtualKeyboardDelegate;

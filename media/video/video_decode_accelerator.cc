@@ -20,7 +20,7 @@ VideoDecodeAccelerator::Config::~Config() = default;
 std::string VideoDecodeAccelerator::Config::AsHumanReadableString() const {
   std::ostringstream s;
   s << "profile: " << GetProfileName(profile) << " encrypted? "
-    << (is_encrypted ? "true" : "false");
+    << (is_encrypted() ? "true" : "false");
   return s.str();
 }
 
@@ -29,7 +29,12 @@ void VideoDecodeAccelerator::Client::NotifyInitializationComplete(
   NOTREACHED() << "By default deferred initialization is not supported.";
 }
 
-VideoDecodeAccelerator::~VideoDecodeAccelerator() {}
+VideoDecodeAccelerator::~VideoDecodeAccelerator() = default;
+
+void VideoDecodeAccelerator::Decode(scoped_refptr<DecoderBuffer> buffer,
+                                    int32_t bitstream_id) {
+  NOTREACHED() << "By default DecoderBuffer is not supported.";
+}
 
 bool VideoDecodeAccelerator::TryToSetupDecodeOnSeparateThread(
     const base::WeakPtr<Client>& decode_client,
@@ -41,8 +46,13 @@ bool VideoDecodeAccelerator::TryToSetupDecodeOnSeparateThread(
 
 void VideoDecodeAccelerator::ImportBufferForPicture(
     int32_t picture_buffer_id,
+    VideoPixelFormat pixel_format,
     const gfx::GpuMemoryBufferHandle& gpu_memory_buffer_handle) {
   NOTREACHED() << "Buffer import not supported.";
+}
+
+void VideoDecodeAccelerator::SetOverlayInfo(const OverlayInfo& overlay_info) {
+  NOTREACHED() << "Overlays are not supported.";
 }
 
 GLenum VideoDecodeAccelerator::GetSurfaceInternalFormat() const {
@@ -52,14 +62,14 @@ GLenum VideoDecodeAccelerator::GetSurfaceInternalFormat() const {
 VideoDecodeAccelerator::SupportedProfile::SupportedProfile()
     : profile(media::VIDEO_CODEC_PROFILE_UNKNOWN), encrypted_only(false) {}
 
-VideoDecodeAccelerator::SupportedProfile::~SupportedProfile() {}
+VideoDecodeAccelerator::SupportedProfile::~SupportedProfile() = default;
 
 VideoDecodeAccelerator::Capabilities::Capabilities() : flags(NO_FLAGS) {}
 
 VideoDecodeAccelerator::Capabilities::Capabilities(const Capabilities& other) =
     default;
 
-VideoDecodeAccelerator::Capabilities::~Capabilities() {}
+VideoDecodeAccelerator::Capabilities::~Capabilities() = default;
 
 std::string VideoDecodeAccelerator::Capabilities::AsHumanReadableString()
     const {

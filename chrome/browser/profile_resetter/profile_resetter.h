@@ -16,11 +16,12 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/strings/string16.h"
-#include "base/threading/non_thread_safe.h"
-#include "chrome/browser/browsing_data/browsing_data_remover.h"
 #include "chrome/browser/profile_resetter/brandcoded_default_settings.h"
+#include "chrome/browser/search/instant_service.h"
 #include "components/search_engines/template_url_service.h"
+#include "content/public/browser/browsing_data_remover.h"
 
 class Profile;
 
@@ -28,11 +29,14 @@ namespace base {
 class CancellationFlag;
 }
 
+namespace {
+FORWARD_DECLARE_TEST(ProfileResetterTest, ResetNTPCustomizationsTest);
+}
+
 // This class allows resetting certain aspects of a profile to default values.
 // It is used in case the profile has been damaged due to malware or bad user
 // settings.
-class ProfileResetter : public base::NonThreadSafe,
-                        public BrowsingDataRemover::Observer {
+class ProfileResetter : public content::BrowsingDataRemover::Observer {
  public:
   // Flags indicating what aspects of a profile shall be reset.
   enum Resettable {
@@ -44,11 +48,12 @@ class ProfileResetter : public base::NonThreadSafe,
     STARTUP_PAGES = 1 << 5,
     PINNED_TABS = 1 << 6,
     SHORTCUTS = 1 << 7,
+    NTP_CUSTOMIZATIONS = 1 << 8,
     // Update ALL if you add new values and check whether the type of
     // ResettableFlags needs to be enlarged.
     ALL = DEFAULT_SEARCH_ENGINE | HOMEPAGE | CONTENT_SETTINGS |
           COOKIES_AND_SITE_DATA | EXTENSIONS | STARTUP_PAGES | PINNED_TABS |
-          SHORTCUTS
+          SHORTCUTS | NTP_CUSTOMIZATIONS
   };
 
   // Bit vector for Resettable enum.
@@ -70,6 +75,8 @@ class ProfileResetter : public base::NonThreadSafe,
   virtual bool IsActive() const;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(::ProfileResetterTest, ResetNTPCustomizationsTest);
+
   // Marks |resettable| as done and triggers |callback_| if all pending jobs
   // have completed.
   void MarkAsDone(Resettable resettable);
@@ -82,6 +89,7 @@ class ProfileResetter : public base::NonThreadSafe,
   void ResetStartupPages();
   void ResetPinnedTabs();
   void ResetShortcuts();
+  void ResetNtpCustomizations();
 
   // BrowsingDataRemover::Observer:
   void OnBrowsingDataRemoverDone() override;
@@ -102,9 +110,14 @@ class ProfileResetter : public base::NonThreadSafe,
 
   // If non-null it means removal is in progress. BrowsingDataRemover takes care
   // of deleting itself when done.
-  BrowsingDataRemover* cookies_remover_;
+  content::BrowsingDataRemover* cookies_remover_;
 
   std::unique_ptr<TemplateURLService::Subscription> template_url_service_sub_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  // Used for resetting NTP customizations.
+  InstantService* ntp_service_;
 
   base::WeakPtrFactory<ProfileResetter> weak_ptr_factory_;
 
@@ -116,10 +129,12 @@ typedef std::pair<base::FilePath, base::string16> ShortcutCommand;
 
 typedef base::RefCountedData<base::CancellationFlag> SharedCancellationFlag;
 
+#if defined(OS_WIN)
 // On Windows returns all the shortcuts which launch Chrome and corresponding
 // arguments. |cancel| can be passed to abort the operation earlier.
-// Call on FILE thread.
+// Call on COM task runner that may block.
 std::vector<ShortcutCommand> GetChromeLaunchShortcuts(
     const scoped_refptr<SharedCancellationFlag>& cancel);
+#endif
 
 #endif  // CHROME_BROWSER_PROFILE_RESETTER_PROFILE_RESETTER_H_

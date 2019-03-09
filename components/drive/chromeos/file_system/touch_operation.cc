@@ -32,8 +32,10 @@ FileError UpdateLocalState(internal::ResourceMetadata* metadata,
   PlatformFileInfoProto* file_info = entry->mutable_file_info();
   if (!last_access_time.is_null())
     file_info->set_last_accessed(last_access_time.ToInternalValue());
-  if (!last_modified_time.is_null())
+  if (!last_modified_time.is_null()) {
     file_info->set_last_modified(last_modified_time.ToInternalValue());
+    entry->set_last_modified_by_me(last_modified_time.ToInternalValue());
+  }
   entry->set_metadata_edit_state(ResourceEntry::DIRTY);
   entry->set_modification_date(base::Time::Now().ToInternalValue());
   return metadata->RefreshEntry(*entry);
@@ -50,15 +52,14 @@ TouchOperation::TouchOperation(base::SequencedTaskRunner* blocking_task_runner,
       weak_ptr_factory_(this) {
 }
 
-TouchOperation::~TouchOperation() {
-}
+TouchOperation::~TouchOperation() = default;
 
 void TouchOperation::TouchFile(const base::FilePath& file_path,
                                const base::Time& last_access_time,
                                const base::Time& last_modified_time,
                                const FileOperationCallback& callback) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!callback.is_null());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  DCHECK(callback);
 
   ResourceEntry* entry = new ResourceEntry;
   base::PostTaskAndReplyWithResult(
@@ -75,8 +76,8 @@ void TouchOperation::TouchFileAfterUpdateLocalState(
     const FileOperationCallback& callback,
     const ResourceEntry* entry,
     FileError error) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!callback.is_null());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  DCHECK(callback);
 
   FileChange changed_files;
   changed_files.Update(file_path, entry->file_info().is_directory()

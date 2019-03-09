@@ -6,95 +6,34 @@
 
 #include "base/logging.h"
 #import "base/mac/foundation_util.h"
+#include "base/strings/sys_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
 #import "chrome/browser/app_controller_mac.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/bookmarks/bookmark_utils.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
-#import "chrome/browser/ui/cocoa/browser_window_controller_private.h"
-#include "chrome/browser/ui/toolbar/encoding_menu_controller.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/grit/generated_resources.h"
-#include "content/public/browser/user_metrics.h"
 #include "content/public/browser/web_contents.h"
 #import "ui/base/cocoa/cocoa_base_utils.h"
-#include "ui/base/l10n/l10n_util.h"
-#include "ui/base/l10n/l10n_util_mac.h"
+#include "ui/views_bridge_mac/bridged_native_widget_impl.h"
+#include "ui/views_bridge_mac/mojo/bridged_native_widget_host.mojom.h"
 
 namespace {
 
 void SetToggleState(bool toggled, id item) {
-  DCHECK([item respondsToSelector:@selector(state)] &&
-         [item respondsToSelector:@selector(setState:)]);
-
-  NSInteger old_state = [item state];
-  NSInteger new_state = toggled ? NSOnState : NSOffState;
-  if (old_state != new_state)
-    [item setState:new_state];
-}
-
-// Update a toggle state for an item if modified. The item may be an NSMenuItem
-// or NSButton. Called by -validateUserInterfaceItem:.
-void UpdateToggleStateWithTag(NSInteger tag, id item, NSWindow* window) {
-  if (![item respondsToSelector:@selector(state)] ||
-      ![item respondsToSelector:@selector(setState:)])
-    return;
-
-  Browser* browser = chrome::FindBrowserWithWindow(window);
-  DCHECK(browser);
-
-  // On Windows this logic happens in bookmark_bar_view.cc. This simply updates
-  // the menu item; it does not display the bookmark bar itself.
-  if (tag == IDC_SHOW_BOOKMARK_BAR) {
-    SetToggleState(browser->window()->IsBookmarkBarVisible(), item);
-    return;
+  NSMenuItem* menuItem = base::mac::ObjCCast<NSMenuItem>(item);
+  NSButton* buttonItem = base::mac::ObjCCast<NSButton>(item);
+  if (menuItem) {
+    NSInteger old_state = [menuItem state];
+    NSInteger new_state = toggled ? NSOnState : NSOffState;
+    if (old_state != new_state)
+      [menuItem setState:new_state];
+  } else if (buttonItem) {
+    NSInteger old_state = [buttonItem state];
+    NSInteger new_state = toggled ? NSOnState : NSOffState;
+    if (old_state != new_state)
+      [buttonItem setState:new_state];
   }
-
-  if (tag == IDC_TOGGLE_FULLSCREEN_TOOLBAR) {
-    PrefService* prefs = browser->profile()->GetPrefs();
-    SetToggleState(prefs->GetBoolean(prefs::kShowFullscreenToolbar), item);
-    return;
-  }
-
-  // Update the checked/unchecked state of items in the encoding menu.
-  // On Windows, this logic is part of |EncodingMenuModel| in
-  // browser/ui/views/toolbar_view.h.
-  EncodingMenuController encoding_controller;
-  if (!encoding_controller.DoesCommandBelongToEncodingMenu(tag))
-    return;
-
-  Profile* profile = browser->profile();
-  DCHECK(profile);
-  content::WebContents* current_tab =
-      browser->tab_strip_model()->GetActiveWebContents();
-  if (!current_tab)
-    return;
-
-  const std::string encoding = current_tab->GetEncoding();
-
-  SetToggleState(encoding_controller.IsItemChecked(profile, encoding, tag),
-                 item);
-}
-
-NSString* GetTitleForViewsFullscreenMenuItem(Browser* browser) {
-  return l10n_util::GetNSString(browser->window()->IsFullscreen()
-                                    ? IDS_EXIT_FULLSCREEN_MAC
-                                    : IDS_ENTER_FULLSCREEN_MAC);
-}
-
-// Get the text for the "Enter/Exit Fullscreen" menu item.
-// TODO(jackhou): Remove the dependency on BrowserWindowController(Private).
-NSString* GetTitleForFullscreenMenuItem(Browser* browser) {
-  NSWindow* ns_window = browser->window()->GetNativeWindow();
-  if (BrowserWindowController* controller = [ns_window windowController]) {
-    return l10n_util::GetNSString([controller isInAppKitFullscreen]
-                                      ? IDS_EXIT_FULLSCREEN_MAC
-                                      : IDS_ENTER_FULLSCREEN_MAC);
-  }
-
-  return GetTitleForViewsFullscreenMenuItem(browser);
 }
 
 // Identify the actual Browser to which the command should be dispatched. It
@@ -103,13 +42,15 @@ NSString* GetTitleForFullscreenMenuItem(Browser* browser) {
 // Some senders don't have this problem (for example, menus only operate on the
 // foreground window), so this is only an issue for senders that are part of
 // windows.
-Browser* FindBrowserForSender(id sender, NSWindow* window) {
+views::BridgedNativeWidgetImpl* FindBridgeForSender(id sender,
+                                                    NSWindow* window) {
   NSWindow* targetWindow = window;
   if ([sender respondsToSelector:@selector(window)])
     targetWindow = [sender window];
-  Browser* browser = chrome::FindBrowserWithWindow(targetWindow);
-  DCHECK(browser);
-  return browser;
+  auto* bridge =
+      views::BridgedNativeWidgetImpl::GetFromNativeWindow(targetWindow);
+  DCHECK(bridge);
+  return bridge;
 }
 
 }  // namespace
@@ -131,87 +72,39 @@ Browser* FindBrowserForSender(id sender, NSWindow* window) {
     return YES;
   }
 
-  Browser* browser = chrome::FindBrowserWithWindow(window);
-  DCHECK(browser);
-  NSInteger tag = [item tag];
-  if (!chrome::SupportsCommand(browser, tag))
+  auto* bridge = views::BridgedNativeWidgetImpl::GetFromNativeWindow(window);
+  DCHECK(bridge);
+
+  views_bridge_mac::mojom::ValidateUserInterfaceItemResultPtr result;
+  if (!bridge->host()->ValidateUserInterfaceItem([item tag], &result))
     return NO;
 
-  // Generate return value (enabled state).
-  BOOL enable = chrome::IsCommandEnabled(browser, tag);
-  switch (tag) {
-    case IDC_CLOSE_TAB:
-      // Disable "close tab" if the receiving window is not tabbed.
-      // We simply check whether the item has a keyboard shortcut set here;
-      // app_controller_mac.mm actually determines whether the item should
-      // be enabled.
-      if (NSMenuItem* menuItem = base::mac::ObjCCast<NSMenuItem>(item))
-        enable &= !![[menuItem keyEquivalent] length];
-      break;
-    case IDC_FULLSCREEN: {
-      if (NSMenuItem* menuItem = base::mac::ObjCCast<NSMenuItem>(item))
-        [menuItem setTitle:GetTitleForFullscreenMenuItem(browser)];
-      break;
-    }
-    case IDC_SHOW_SIGNIN: {
-      Profile* original_profile = browser->profile()->GetOriginalProfile();
-      [AppController updateSigninItem:item
-                           shouldShow:enable
-                       currentProfile:original_profile];
-      content::RecordAction(
-          base::UserMetricsAction("Signin_Impression_FromMenu"));
-      break;
-    }
-    case IDC_BOOKMARK_PAGE: {
-      // Extensions have the ability to hide the bookmark page menu item.
-      // This only affects the bookmark page menu item under the main menu.
-      // The bookmark page menu item under the app menu has its visibility
-      // controlled by AppMenuModel.
-      bool shouldHide =
-          chrome::ShouldRemoveBookmarkThisPageUI(browser->profile());
-      NSMenuItem* menuItem = base::mac::ObjCCast<NSMenuItem>(item);
-      [menuItem setHidden:shouldHide];
-      break;
-    }
-    case IDC_BOOKMARK_ALL_TABS: {
-      // Extensions have the ability to hide the bookmark all tabs menu
-      // item.  This only affects the bookmark page menu item under the main
-      // menu.  The bookmark page menu item under the app menu has its
-      // visibility controlled by AppMenuModel.
-      bool shouldHide =
-          chrome::ShouldRemoveBookmarkOpenPagesUI(browser->profile());
-      NSMenuItem* menuItem = base::mac::ObjCCast<NSMenuItem>(item);
-      [menuItem setHidden:shouldHide];
-      break;
-    }
-    case IDC_SHOW_AS_TAB: {
-      // Hide this menu option if the window is tabbed or is the devtools
-      // window.
-      NSMenuItem* menuItem = base::mac::ObjCCast<NSMenuItem>(item);
-      [menuItem setHidden:browser->is_type_tabbed() || browser->is_devtools()];
-      break;
-    }
-    default:
-      // Special handling for the contents of the Text Encoding submenu. On
-      // Mac OS, instead of enabling/disabling the top-level menu item, we
-      // enable/disable the submenu's contents (per Apple's HIG).
-      EncodingMenuController encoding_controller;
-      if (encoding_controller.DoesCommandBelongToEncodingMenu(tag))
-        enable &= chrome::IsCommandEnabled(browser, IDC_ENCODING_MENU);
+  if (result->set_toggle_state)
+    SetToggleState(result->new_toggle_state, item);
+
+  if (NSMenuItem* menuItem = base::mac::ObjCCast<NSMenuItem>(item)) {
+    if (result->disable_if_has_no_key_equivalent)
+      result->enable &= !![[menuItem keyEquivalent] length];
+
+    if (result->set_hidden_state)
+      [menuItem setHidden:result->new_hidden_state];
+
+    if (result->new_title)
+      [menuItem setTitle:base::SysUTF16ToNSString(*result->new_title)];
   }
 
-  // If the item is toggleable, find its toggle state and
-  // try to update it.  This is a little awkward, but the alternative is
-  // to check after a commandDispatch, which seems worse.
-  UpdateToggleStateWithTag(tag, item, window);
-
-  return enable;
+  return result->enable;
 }
 
 - (void)commandDispatch:(id)sender window:(NSWindow*)window {
   DCHECK(sender);
   int command = [sender tag];
-  chrome::ExecuteCommand(FindBrowserForSender(sender, window), command);
+  bool was_executed = false;
+  FindBridgeForSender(sender, window)
+      ->host()
+      ->ExecuteCommand(command, WindowOpenDisposition::CURRENT_TAB,
+                       false /* is_before_first_responder */, &was_executed);
+  DCHECK(was_executed);
 }
 
 - (void)commandDispatchUsingKeyModifiers:(id)sender window:(NSWindow*)window {
@@ -237,10 +130,15 @@ Browser* FindBrowserForSender(id sender, NSWindow* window) {
     // the background" in this case.
     modifierFlags &= ~NSCommandKeyMask;
   }
-  chrome::ExecuteCommandWithDisposition(
-      FindBrowserForSender(sender, window), command,
-      ui::WindowOpenDispositionFromNSEventWithFlags([NSApp currentEvent],
-                                                    modifierFlags));
+
+  bool was_executed = false;
+  FindBridgeForSender(sender, window)
+      ->host()
+      ->ExecuteCommand(command,
+                       ui::WindowOpenDispositionFromNSEventWithFlags(
+                           [NSApp currentEvent], modifierFlags),
+                       false /* is_before_first_responder */, &was_executed);
+  DCHECK(was_executed);
 }
 
 @end

@@ -8,12 +8,9 @@
 
 #include "base/json/json_file_value_serializer.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/test/test_browser_context.h"
-#include "content/public/test/test_browser_thread.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/browser/image_loader.h"
 #include "extensions/browser/test_image_loader.h"
@@ -26,8 +23,6 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/image/image_skia_source.h"
 #include "ui/gfx/skia_util.h"
-
-using content::BrowserThread;
 
 namespace extensions {
 namespace {
@@ -72,12 +67,7 @@ class ExtensionIconImageTest : public ExtensionsTest,
                                public IconImage::Observer {
  public:
   ExtensionIconImageTest()
-      : image_loaded_count_(0),
-        quit_in_image_loaded_(false),
-        ui_thread_(BrowserThread::UI, &ui_loop_),
-        file_thread_(BrowserThread::FILE),
-        io_thread_(BrowserThread::IO),
-        notification_service_(content::NotificationService::Create()) {}
+      : image_loaded_count_(0), quit_in_image_loaded_(false) {}
 
   ~ExtensionIconImageTest() override {}
 
@@ -97,7 +87,7 @@ class ExtensionIconImageTest : public ExtensionsTest,
                                            Manifest::Location location) {
     // Create and load an extension.
     base::FilePath test_file;
-    if (!PathService::Get(DIR_TEST_DATA, &test_file)) {
+    if (!base::PathService::Get(DIR_TEST_DATA, &test_file)) {
       EXPECT_FALSE(true);
       return NULL;
     }
@@ -121,17 +111,11 @@ class ExtensionIconImageTest : public ExtensionsTest,
                              Extension::NO_FLAGS, &error);
   }
 
-  // testing::Test overrides:
-  void SetUp() override {
-    file_thread_.Start();
-    io_thread_.Start();
-  }
-
   // IconImage::Delegate overrides:
   void OnExtensionIconImageChanged(IconImage* image) override {
     image_loaded_count_++;
     if (quit_in_image_loaded_)
-      base::MessageLoop::current()->QuitWhenIdle();
+      base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
   gfx::ImageSkia GetDefaultIcon() {
@@ -141,11 +125,6 @@ class ExtensionIconImageTest : public ExtensionsTest,
  private:
   int image_loaded_count_;
   bool quit_in_image_loaded_;
-  base::MessageLoop ui_loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread file_thread_;
-  content::TestBrowserThread io_thread_;
-  std::unique_ptr<content::NotificationService> notification_service_;
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionIconImageTest);
 };
@@ -192,7 +171,7 @@ TEST_F(ExtensionIconImageTest, Basic) {
   // Before the image representation is loaded, image should contain blank
   // image representation.
   EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
+      representation.GetBitmap(),
       CreateBlankBitmapForScale(16, ui::SCALE_FACTOR_100P)));
 
   WaitForImageLoad();
@@ -202,14 +181,14 @@ TEST_F(ExtensionIconImageTest, Basic) {
   representation = image.image_skia().GetRepresentation(1.0f);
 
   // We should get the right representation now.
-  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.sk_bitmap(), bitmap_16));
+  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.GetBitmap(), bitmap_16));
   EXPECT_EQ(16, representation.pixel_width());
 
   // Gets representation for an additional scale factor.
   representation = image.image_skia().GetRepresentation(2.0f);
 
   EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
+      representation.GetBitmap(),
       CreateBlankBitmapForScale(16, ui::SCALE_FACTOR_200P)));
 
   WaitForImageLoad();
@@ -220,7 +199,7 @@ TEST_F(ExtensionIconImageTest, Basic) {
 
   // Image should have been resized.
   EXPECT_EQ(32, representation.pixel_width());
-  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.sk_bitmap(),
+  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.GetBitmap(),
                                    bitmap_48_resized_to_32));
 }
 
@@ -262,7 +241,7 @@ TEST_F(ExtensionIconImageTest, FallbackToSmallerWhenNoBigger) {
   // size.
   EXPECT_EQ(2.0f, representation.scale());
   EXPECT_EQ(64, representation.pixel_width());
-  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.sk_bitmap(),
+  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.GetBitmap(),
                                    EnsureBitmapSize(bitmap_48, 64)));
 }
 
@@ -299,7 +278,7 @@ TEST_F(ExtensionIconImageTest, FallbackToBigger) {
   // We should have loaded the smallest bigger (resized) resource.
   EXPECT_EQ(1.0f, representation.scale());
   EXPECT_EQ(17, representation.pixel_width());
-  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.sk_bitmap(),
+  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.GetBitmap(),
                                    EnsureBitmapSize(bitmap_24, 17)));
 }
 
@@ -321,23 +300,25 @@ TEST_F(ExtensionIconImageTest, NoResources) {
                   default_icon,
                   this);
 
+  // Default icon is loaded asynchronously.
+  image.image_skia().GetRepresentation(1.0f);
+  base::RunLoop().RunUntilIdle();
   gfx::ImageSkiaRep representation = image.image_skia().GetRepresentation(1.0f);
-  EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
-      EnsureBitmapSize(
-          default_icon.GetRepresentation(1.0f).sk_bitmap(),
-          kRequestedSize)));
 
-  EXPECT_EQ(0, ImageLoadedCount());
+  EXPECT_TRUE(gfx::BitmapsAreEqual(
+      representation.GetBitmap(),
+      EnsureBitmapSize(default_icon.GetRepresentation(1.0f).GetBitmap(),
+                       kRequestedSize)));
+
+  EXPECT_EQ(1, ImageLoadedCount());
   // We should have a default icon representation.
   ASSERT_EQ(1u, image.image_skia().image_reps().size());
 
   representation = image.image_skia().GetRepresentation(1.0f);
   EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
-      EnsureBitmapSize(
-          default_icon.GetRepresentation(1.0f).sk_bitmap(),
-          kRequestedSize)));
+      representation.GetBitmap(),
+      EnsureBitmapSize(default_icon.GetRepresentation(1.0f).GetBitmap(),
+                       kRequestedSize)));
 }
 
 // If resource set is invalid, image load should be done asynchronously and
@@ -363,7 +344,7 @@ TEST_F(ExtensionIconImageTest, InvalidResource) {
 
   gfx::ImageSkiaRep representation = image.image_skia().GetRepresentation(1.0f);
   EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
+      representation.GetBitmap(),
       CreateBlankBitmapForScale(kInvalidIconSize, ui::SCALE_FACTOR_100P)));
 
   WaitForImageLoad();
@@ -373,10 +354,9 @@ TEST_F(ExtensionIconImageTest, InvalidResource) {
 
   representation = image.image_skia().GetRepresentation(1.0f);
   EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
-      EnsureBitmapSize(
-          default_icon.GetRepresentation(1.0f).sk_bitmap(),
-          kInvalidIconSize)));
+      representation.GetBitmap(),
+      EnsureBitmapSize(default_icon.GetRepresentation(1.0f).GetBitmap(),
+                       kInvalidIconSize)));
 }
 
 // Test that IconImage works with lazily (but synchronously) created default
@@ -387,8 +367,8 @@ TEST_F(ExtensionIconImageTest, LazyDefaultIcon) {
   ASSERT_TRUE(extension.get() != NULL);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
-  gfx::ImageSkia lazy_default_icon(new MockImageSkiaSource(default_icon),
-                                    default_icon.size());
+  gfx::ImageSkia lazy_default_icon(
+      std::make_unique<MockImageSkiaSource>(default_icon), default_icon.size());
 
   ExtensionIconSet empty_icon_set;
 
@@ -402,15 +382,17 @@ TEST_F(ExtensionIconImageTest, LazyDefaultIcon) {
 
   ASSERT_FALSE(lazy_default_icon.HasRepresentation(1.0f));
 
+  // Default icon is loaded asynchronously.
+  image.image_skia().GetRepresentation(1.0f);
+  base::RunLoop().RunUntilIdle();
   gfx::ImageSkiaRep representation = image.image_skia().GetRepresentation(1.0f);
 
   // The resouce set is empty, so we should get the result right away.
   EXPECT_TRUE(lazy_default_icon.HasRepresentation(1.0f));
   EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
-      EnsureBitmapSize(
-          default_icon.GetRepresentation(1.0f).sk_bitmap(),
-          kRequestedSize)));
+      representation.GetBitmap(),
+      EnsureBitmapSize(default_icon.GetRepresentation(1.0f).GetBitmap(),
+                       kRequestedSize)));
 
   // We should have a default icon representation.
   ASSERT_EQ(1u, image.image_skia().image_reps().size());
@@ -424,8 +406,8 @@ TEST_F(ExtensionIconImageTest, LazyDefaultIcon_AsyncIconImage) {
   ASSERT_TRUE(extension.get() != NULL);
 
   gfx::ImageSkia default_icon = GetDefaultIcon();
-  gfx::ImageSkia lazy_default_icon(new MockImageSkiaSource(default_icon),
-                                    default_icon.size());
+  gfx::ImageSkia lazy_default_icon(
+      std::make_unique<MockImageSkiaSource>(default_icon), default_icon.size());
 
   const int kInvalidIconSize = 24;
   ExtensionIconSet invalid_icon_set;
@@ -451,10 +433,9 @@ TEST_F(ExtensionIconImageTest, LazyDefaultIcon_AsyncIconImage) {
 
   representation = image.image_skia().GetRepresentation(1.0f);
   EXPECT_TRUE(gfx::BitmapsAreEqual(
-      representation.sk_bitmap(),
-      EnsureBitmapSize(
-          default_icon.GetRepresentation(1.0f).sk_bitmap(),
-          kInvalidIconSize)));
+      representation.GetBitmap(),
+      EnsureBitmapSize(default_icon.GetRepresentation(1.0f).GetBitmap(),
+                       kInvalidIconSize)));
 }
 
 // Tests behavior of image created by IconImage after IconImage host goes
@@ -496,7 +477,7 @@ TEST_F(ExtensionIconImageTest, IconImageDestruction) {
 
   EXPECT_EQ(1.0f, representation.scale());
   EXPECT_EQ(16, representation.pixel_width());
-  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.sk_bitmap(), bitmap_16));
+  EXPECT_TRUE(gfx::BitmapsAreEqual(representation.GetBitmap(), bitmap_16));
 
   // When requesting another representation, we should not crash and return some
   // image of the size. It could be blank or a rescale from the existing 1.0f
@@ -508,8 +489,8 @@ TEST_F(ExtensionIconImageTest, IconImageDestruction) {
   EXPECT_EQ(2.0f, representation.scale());
 }
 
-// Test that new representations added to the image of an IconImage are cached
-// for future use.
+// Test that new representations added to the image of an IconImageSkia are
+// cached for future use.
 TEST_F(ExtensionIconImageTest, ImageCachesNewRepresentations) {
   // Load up an extension and create an icon image.
   scoped_refptr<Extension> extension(
@@ -520,28 +501,18 @@ TEST_F(ExtensionIconImageTest, ImageCachesNewRepresentations) {
       browser_context(), extension.get(), IconsInfo::GetIcons(extension.get()),
       16, default_icon, this));
 
-  // Load an image representation.
-  gfx::ImageSkiaRep representation =
-      icon_image->image_skia().GetRepresentation(1.0f);
+  // Load an blank image representation.
+  EXPECT_EQ(0, ImageLoadedCount());
+  icon_image->image_skia().GetRepresentation(1.0f);
+  EXPECT_EQ(0, ImageLoadedCount());
   WaitForImageLoad();
-
-  // Cache for later use.
-  gfx::Image prior_image = icon_image->image();
-
-  // Now the fun part: access the image from the IconImage, and create a png
-  // representation of it.
-  gfx::Image image = icon_image->image();
-  scoped_refptr<base::RefCountedMemory> image_as_png = image.As1xPNGBytes();
-
-  // Access the image from the IconImage again, and get a png representation.
-  // The two png representations should be exactly equal (the same object),
-  // because image storage is shared, so when we created one from the first
-  // image, all other images should also have that representation...
-  gfx::Image image2 = icon_image->image();
-  EXPECT_EQ(image_as_png.get(), image2.As1xPNGBytes().get());
-
-  // ...even images that were copied before the representation was constructed.
-  EXPECT_EQ(image_as_png.get(), prior_image.As1xPNGBytes().get());
+  EXPECT_EQ(1, ImageLoadedCount());
+  icon_image->image_skia().GetRepresentation(1.0f);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, ImageLoadedCount());
+  icon_image->image_skia().GetRepresentation(1.0f);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, ImageLoadedCount());
 }
 
 }  // namespace extensions

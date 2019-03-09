@@ -4,15 +4,14 @@
 
 #include "ui/gfx/android/view_configuration.h"
 
-#include "base/android/context_utils.h"
 #include "base/android/jni_android.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/synchronization/lock.h"
 #include "jni/ViewConfigurationHelper_jni.h"
 
 using base::android::AttachCurrentThread;
-using base::android::GetApplicationContext;
+using base::android::JavaParamRef;
 
 namespace gfx {
 
@@ -23,7 +22,6 @@ struct ViewConfigurationData {
       : double_tap_timeout_in_ms_(0),
         long_press_timeout_in_ms_(0),
         tap_timeout_in_ms_(0),
-        scroll_friction_(1.f),
         max_fling_velocity_in_dips_s_(0),
         min_fling_velocity_in_dips_s_(0),
         touch_slop_in_dips_(0),
@@ -31,22 +29,24 @@ struct ViewConfigurationData {
         min_scaling_span_in_dips_(0) {
     JNIEnv* env = AttachCurrentThread();
     j_view_configuration_helper_.Reset(
-        Java_ViewConfigurationHelper_createWithListener(
-            env, base::android::GetApplicationContext()));
+        Java_ViewConfigurationHelper_createWithListener(env));
 
     double_tap_timeout_in_ms_ =
         Java_ViewConfigurationHelper_getDoubleTapTimeout(env);
     long_press_timeout_in_ms_ =
         Java_ViewConfigurationHelper_getLongPressTimeout(env);
     tap_timeout_in_ms_ = Java_ViewConfigurationHelper_getTapTimeout(env);
-    scroll_friction_ = Java_ViewConfigurationHelper_getScrollFriction(env);
 
-    jobject obj = j_view_configuration_helper_.obj();
-    Update(Java_ViewConfigurationHelper_getMaximumFlingVelocity(env, obj),
-           Java_ViewConfigurationHelper_getMinimumFlingVelocity(env, obj),
-           Java_ViewConfigurationHelper_getTouchSlop(env, obj),
-           Java_ViewConfigurationHelper_getDoubleTapSlop(env, obj),
-           Java_ViewConfigurationHelper_getMinScalingSpan(env, obj));
+    Update(Java_ViewConfigurationHelper_getMaximumFlingVelocity(
+               env, j_view_configuration_helper_),
+           Java_ViewConfigurationHelper_getMinimumFlingVelocity(
+               env, j_view_configuration_helper_),
+           Java_ViewConfigurationHelper_getTouchSlop(
+               env, j_view_configuration_helper_),
+           Java_ViewConfigurationHelper_getDoubleTapSlop(
+               env, j_view_configuration_helper_),
+           Java_ViewConfigurationHelper_getMinScalingSpan(
+               env, j_view_configuration_helper_));
   }
 
   ~ViewConfigurationData() {}
@@ -64,7 +64,6 @@ struct ViewConfigurationData {
   int double_tap_timeout_in_ms() const { return double_tap_timeout_in_ms_; }
   int long_press_timeout_in_ms() const { return long_press_timeout_in_ms_; }
   int tap_timeout_in_ms() const { return tap_timeout_in_ms_; }
-  float scroll_friction() const { return scroll_friction_; }
 
   int max_fling_velocity_in_dips_s() {
     base::AutoLock autolock(lock_);
@@ -113,7 +112,6 @@ struct ViewConfigurationData {
   int double_tap_timeout_in_ms_;
   int long_press_timeout_in_ms_;
   int tap_timeout_in_ms_;
-  float scroll_friction_;
 
   // These values may vary as view-specific parameters change, so read/write
   // access must be synchronized.
@@ -133,13 +131,14 @@ base::LazyInstance<ViewConfigurationData>::Leaky g_view_configuration =
 
 }  // namespace
 
-static void UpdateSharedViewConfiguration(JNIEnv* env,
-                                          const JavaParamRef<jobject>& obj,
-                                          jfloat maximum_fling_velocity,
-                                          jfloat minimum_fling_velocity,
-                                          jfloat touch_slop,
-                                          jfloat double_tap_slop,
-                                          jfloat min_scaling_span) {
+static void JNI_ViewConfigurationHelper_UpdateSharedViewConfiguration(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    jfloat maximum_fling_velocity,
+    jfloat minimum_fling_velocity,
+    jfloat touch_slop,
+    jfloat double_tap_slop,
+    jfloat min_scaling_span) {
   g_view_configuration.Get().SynchronizedUpdate(
       maximum_fling_velocity, minimum_fling_velocity, touch_slop,
       double_tap_slop, min_scaling_span);
@@ -155,10 +154,6 @@ int ViewConfiguration::GetLongPressTimeoutInMs() {
 
 int ViewConfiguration::GetTapTimeoutInMs() {
   return g_view_configuration.Get().tap_timeout_in_ms();
-}
-
-float ViewConfiguration::GetScrollFriction() {
-  return g_view_configuration.Get().scroll_friction();
 }
 
 int ViewConfiguration::GetMaximumFlingVelocityInDipsPerSecond() {
@@ -179,10 +174,6 @@ int ViewConfiguration::GetDoubleTapSlopInDips() {
 
 int ViewConfiguration::GetMinScalingSpanInDips() {
   return g_view_configuration.Get().min_scaling_span_in_dips();
-}
-
-bool ViewConfiguration::RegisterViewConfiguration(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace gfx

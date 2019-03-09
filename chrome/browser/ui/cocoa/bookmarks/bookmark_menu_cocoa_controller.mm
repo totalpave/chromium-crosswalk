@@ -5,6 +5,7 @@
 #import "chrome/browser/ui/cocoa/bookmarks/bookmark_menu_cocoa_controller.h"
 
 #import "base/mac/foundation_util.h"
+#include "base/metrics/user_metrics.h"
 #include "base/strings/sys_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"  // IDC_BOOKMARK_MENU
 #import "chrome/browser/app_controller_mac.h"
@@ -16,7 +17,6 @@
 #import "chrome/browser/ui/cocoa/bookmarks/bookmark_menu_bridge.h"
 #import "chrome/browser/ui/cocoa/l10n_util.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
-#include "content/public/browser/user_metrics.h"
 #import "ui/base/cocoa/cocoa_base_utils.h"
 #import "ui/base/cocoa/menu_controller.h"
 
@@ -27,18 +27,21 @@ using content::Referrer;
 
 namespace {
 
-// Menus more than this many pixels wide will get trimmed
-// TODO(jrg): ask UI dudes what a good value is.
-const NSUInteger kMaximumMenuPixelsWide = 300;
-
+// Returns the NSMenuItem in |submenu|'s supermenu that holds |submenu|.
+NSMenuItem* GetItemWithSubmenu(NSMenu* submenu) {
+  NSArray* parent_items = [[submenu supermenu] itemArray];
+  for (NSMenuItem* item in parent_items) {
+    if ([item submenu] == submenu)
+      return item;
+  }
+  return nil;
 }
 
-@implementation BookmarkMenuCocoaController
+}  // namespace
 
-+ (NSString*)menuTitleForNode:(const BookmarkNode*)node {
-  base::string16 title = [MenuController elideMenuTitle:node->GetTitle()
-                                          toWidth:kMaximumMenuPixelsWide];
-  return base::SysUTF16ToNSString(title);
+@implementation BookmarkMenuCocoaController {
+ @private
+  BookmarkMenuBridge* bridge_;  // Weak. Owns |self|.
 }
 
 + (NSString*)tooltipForNode:(const BookmarkNode*)node {
@@ -50,25 +53,12 @@ const NSUInteger kMaximumMenuPixelsWide = 300;
   return cocoa_l10n_util::TooltipForURLAndTitle(url, title);
 }
 
-- (id)initWithBridge:(BookmarkMenuBridge*)bridge
-             andMenu:(NSMenu*)menu {
+- (id)initWithBridge:(BookmarkMenuBridge*)bridge {
   if ((self = [super init])) {
     bridge_ = bridge;
     DCHECK(bridge_);
-    menu_.reset([menu retain]);
-    [[self menu] setDelegate:self];
   }
   return self;
-}
-
-- (void)dealloc {
-  if ([[self menu] delegate] == self)
-    [[self menu] setDelegate:nil];
-  [super dealloc];
-}
-
-- (NSMenu*)menu {
-  return menu_;
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)menuItem {
@@ -79,7 +69,18 @@ const NSUInteger kMaximumMenuPixelsWide = 300;
 
 // NSMenu delegate method: called just before menu is displayed.
 - (void)menuNeedsUpdate:(NSMenu*)menu {
-  bridge_->UpdateMenu(menu);
+  NSMenuItem* item = GetItemWithSubmenu(menu);
+  const BookmarkNode* node = [self nodeForIdentifier:[item tag]];
+  bridge_->UpdateMenu(menu, node);
+}
+
+- (BOOL)menuHasKeyEquivalent:(NSMenu*)menu
+                    forEvent:(NSEvent*)event
+                      target:(id*)target
+                      action:(SEL*)action {
+  // Note it is OK to return NO if there's already an item in |menu| that
+  // handles |event|.
+  return NO;
 }
 
 // Return the a BookmarkNode that has the given id (called
@@ -93,7 +94,7 @@ const NSUInteger kMaximumMenuPixelsWide = 300;
 - (void)openURLForNode:(const BookmarkNode*)node {
   Browser* browser = chrome::FindTabbedBrowser(bridge_->GetProfile(), true);
   if (!browser) {
-    browser = new Browser(Browser::CreateParams(bridge_->GetProfile()));
+    browser = new Browser(Browser::CreateParams(bridge_->GetProfile(), true));
   }
   WindowOpenDisposition disposition =
       ui::WindowOpenDispositionFromNSEvent([NSApp currentEvent]);
@@ -101,35 +102,6 @@ const NSUInteger kMaximumMenuPixelsWide = 300;
       node->url(), Referrer(), disposition,
       ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
   browser->OpenURL(params);
-}
-
-// Open sites under BookmarkNode with the specified disposition.
-- (void)openAll:(NSInteger)tag
-    withDisposition:(WindowOpenDisposition)disposition {
-  int identifier = tag;
-
-  const BookmarkNode* node = [self nodeForIdentifier:identifier];
-  DCHECK(node);
-
-  Browser* browser = chrome::FindTabbedBrowser(bridge_->GetProfile(), true);
-  if (!browser) {
-    browser = new Browser(Browser::CreateParams(bridge_->GetProfile()));
-  }
-  DCHECK(browser);
-
-  if (!node || !browser)
-    return; // shouldn't be reached
-
-  chrome::OpenAll(NULL, browser, node, disposition, browser->profile());
-
-  if (disposition == NEW_FOREGROUND_TAB) {
-    content::RecordAction(UserMetricsAction("OpenAllBookmarks"));
-  } else if (disposition == NEW_WINDOW) {
-    content::RecordAction(UserMetricsAction("OpenAllBookmarksNewWindow"));
-  } else {
-    content::RecordAction(
-        UserMetricsAction("OpenAllBookmarksIncognitoWindow"));
-  }
 }
 
 - (IBAction)openBookmarkMenuItem:(id)sender {
@@ -141,18 +113,6 @@ const NSUInteger kMaximumMenuPixelsWide = 300;
     return;  // shouldn't be reached
 
   [self openURLForNode:node];
-}
-
-- (IBAction)openAllBookmarks:(id)sender {
-  [self openAll:[sender tag] withDisposition:NEW_FOREGROUND_TAB];
-}
-
-- (IBAction)openAllBookmarksNewWindow:(id)sender {
-  [self openAll:[sender tag] withDisposition:NEW_WINDOW];
-}
-
-- (IBAction)openAllBookmarksIncognitoWindow:(id)sender {
-  [self openAll:[sender tag] withDisposition:OFF_THE_RECORD];
 }
 
 @end  // BookmarkMenuCocoaController

@@ -9,19 +9,40 @@
 #include <objc/runtime.h>
 #include <stdint.h>
 
+#include "base/bind.h"
+#include "base/callback.h"
 #include "base/command_line.h"
 #include "base/logging.h"
 #include "base/mac/mac_util.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
-#include "content/common/sandbox_init_mac.h"
-#include "content/common/sandbox_mac.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/sandbox_init.h"
+#include "sandbox/mac/seatbelt.h"
+#include "sandbox/mac/system_services.h"
+#include "services/service_manager/sandbox/mac/sandbox_mac.h"
+
+extern "C" {
+CGError CGSSetDenyWindowServerConnections(bool);
+}
 
 namespace content {
 
 namespace {
+
+// This tells Core Graphics not to attempt to connect to the WindowServer (and
+// verifies there are no existing open connections), and then indicates that
+// Chrome should continue execution without access to launchservicesd.
+void DisableSystemServices() {
+  // Tell the WindowServer that we don't want to make any future connections.
+  // This will return Success as long as there are no open connections, which
+  // is what we want.
+  CGError result = CGSSetDenyWindowServerConnections(true);
+  CHECK_EQ(result, kCGErrorSuccess);
+
+  sandbox::DisableLaunchServices();
+}
 
 // You are about to read a pretty disgusting hack. In a static initializer,
 // CoreFoundation decides to connect with cfprefsd(8) using Mach IPC. There is
@@ -71,15 +92,9 @@ void DisconnectCFNotificationCenter() {
     // Convert the string to an address.
     std::string port_address_std_string =
         base::SysCFStringRefToUTF8(port_address_string);
-#if __LP64__
     uint64_t port_address = 0;
     if (!base::HexStringToUInt64(port_address_std_string, &port_address))
       continue;
-#else
-    uint32_t port_address = 0;
-    if (!base::HexStringToUInt(port_address_std_string, &port_address))
-      continue;
-#endif
 
     // Cast the address to an object.
     CFMachPortRef mach_port = reinterpret_cast<CFMachPortRef>(port_address);
@@ -116,13 +131,6 @@ RendererMainPlatformDelegate::~RendererMainPlatformDelegate() {
 // running a renderer needs to also be reflected in chrome_main.cc for
 // --single-process support.
 void RendererMainPlatformDelegate::PlatformInitialize() {
-  if (base::mac::IsOSYosemiteOrLater()) {
-    // This is needed by the NSAnimations run for the scrollbars. If we switch
-    // from native scrollers to drawing them in some other way, this warmup can
-    // be removed <http://crbug.com/306348>.
-    [NSScreen screens];
-  }
-
   if (![NSThread isMultiThreaded]) {
     NSString* string = @"";
     [NSThread detachNewThreadSelector:@selector(length)
@@ -135,8 +143,15 @@ void RendererMainPlatformDelegate::PlatformUninitialize() {
 }
 
 bool RendererMainPlatformDelegate::EnableSandbox() {
-  // Enable the sandbox.
-  bool sandbox_initialized = InitializeSandbox();
+  bool sandbox_initialized = sandbox::Seatbelt::IsSandboxed();
+
+  // If the sandbox is already engaged, just disable system services.
+  if (sandbox_initialized) {
+    DisableSystemServices();
+  } else {
+    sandbox_initialized =
+        InitializeSandbox(base::BindOnce(&DisableSystemServices));
+  }
 
   // The sandbox is now engaged. Make sure that the renderer has not connected
   // itself to Cocoa.

@@ -22,15 +22,19 @@ import org.chromium.chrome.browser.webapps.ActivityAssigner;
  * limited number of activities that we will cycle through.
  */
 public class SeparateTaskManagedCustomTabActivity extends SeparateTaskCustomTabActivity {
+    private static final String FORCE_FINISH = "CCT.ForceFinish";
+
     // Time at which an intent was received and handled.
-    private long mIntentHandlingTimeMs = 0;
+    private long mIntentHandlingTimeMs;
 
     @Override
     public void onStartWithNative() {
         super.onStartWithNative();
 
         if (!isFinishing()) {
-            ActivityAssigner.instance(ActivityAssigner.SEPARATE_TASK_CCT_NAMESPACE)
+            ActivityAssigner
+                    .instance(
+                            ActivityAssigner.ActivityAssignerNamespace.SEPARATE_TASK_CCT_NAMESPACE)
                     .markActivityUsed(getActivityIndex(), getIntent().getData().getAuthority());
         }
     }
@@ -38,13 +42,16 @@ public class SeparateTaskManagedCustomTabActivity extends SeparateTaskCustomTabA
     @Override
     public void onNewIntent(Intent intent) {
         mIntentHandlingTimeMs = SystemClock.uptimeMillis();
+        if (intent != null && intent.getBooleanExtra(FORCE_FINISH, false)) {
+            finish();
+            return;
+        }
         super.onNewIntent(intent);
     }
 
     @Override
     public ChromeTabCreator getTabCreator(boolean incognito) {
         TabCreator tabCreator = super.getTabCreator(incognito);
-        assert tabCreator instanceof ChromeTabCreator;
         return (ChromeTabCreator) tabCreator;
     }
 
@@ -57,7 +64,7 @@ public class SeparateTaskManagedCustomTabActivity extends SeparateTaskCustomTabA
 
             @Override
             public void processUrlViewIntent(String url, String referer, String headers,
-                    TabOpenType tabOpenType, String externalAppId, int tabIdToBringToFront,
+                    @TabOpenType int tabOpenType, String externalAppId, int tabIdToBringToFront,
                     boolean hasUserGesture, Intent intent) {
                 Tab currentTab = getTabCreator(false).launchUrlFromExternalApp(
                         url, referer, headers, externalAppId, true, intent, mIntentHandlingTimeMs);
@@ -79,5 +86,14 @@ public class SeparateTaskManagedCustomTabActivity extends SeparateTaskCustomTabA
         assert className.matches("^" + baseClassName + "[0-9]+$");
         String indexString = className.substring(baseClassName.length());
         return Integer.parseInt(indexString);
+    }
+
+    @Override
+    protected void handleFinishAndClose() {
+        Intent intent = new Intent(getIntent());
+        intent.setFlags(intent.getFlags() & ~Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+        intent.putExtra(FORCE_FINISH, true);
+        startActivity(intent);
     }
 }

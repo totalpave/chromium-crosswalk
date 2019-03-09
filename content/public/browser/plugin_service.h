@@ -19,6 +19,10 @@ namespace base {
 class FilePath;
 }
 
+namespace url {
+class Origin;
+}
+
 namespace content {
 
 class BrowserContext;
@@ -31,22 +35,21 @@ struct WebPluginInfo;
 // thread. This is an asynchronous wrapper around the PluginList interface for
 // querying plugin information. This must be used instead of that to avoid
 // doing expensive disk operations on the IO/UI threads.
-class PluginService {
+class CONTENT_EXPORT PluginService {
  public:
-  typedef base::Callback<void(const std::vector<WebPluginInfo>&)>
-      GetPluginsCallback;
+  using GetPluginsCallback =
+      base::OnceCallback<void(const std::vector<WebPluginInfo>&)>;
 
   // Returns the PluginService singleton.
-  CONTENT_EXPORT static PluginService* GetInstance();
+  static PluginService* GetInstance();
 
   // Tells all the renderer processes associated with the given browser context
   // to throw away their cache of the plugin list, and optionally also reload
   // all the pages with plugins. If |browser_context| is nullptr, purges the
   // cache in all renderers.
   // NOTE: can only be called on the UI thread.
-  CONTENT_EXPORT static void PurgePluginListCache(
-      BrowserContext* browser_context,
-      bool reload_pages);
+  static void PurgePluginListCache(BrowserContext* browser_context,
+                                   bool reload_pages);
 
   virtual ~PluginService() {}
 
@@ -70,7 +73,7 @@ class PluginService {
                              int render_frame_id,
                              ResourceContext* context,
                              const GURL& url,
-                             const GURL& page_url,
+                             const url::Origin& main_frame_origin,
                              const std::string& mime_type,
                              bool allow_wildcard,
                              bool* is_stale,
@@ -90,13 +93,13 @@ class PluginService {
       const base::FilePath& plugin_path) = 0;
 
   // Asynchronously loads plugins if necessary and then calls back to the
-  // provided function on the calling MessageLoop on completion.
-  virtual void GetPlugins(const GetPluginsCallback& callback) = 0;
+  // provided function on the calling sequence on completion.
+  virtual void GetPlugins(GetPluginsCallback callback) = 0;
 
   // Returns information about a pepper plugin if it exists, otherwise nullptr.
   // The caller does not own the pointer, and it's not guaranteed to live past
   // the call stack.
-  virtual PepperPluginInfo* GetRegisteredPpapiPluginInfo(
+  virtual const PepperPluginInfo* GetRegisteredPpapiPluginInfo(
       const base::FilePath& plugin_path) = 0;
 
   virtual void SetFilter(PluginServiceFilter* filter) = 0;
@@ -128,6 +131,12 @@ class PluginService {
   // Returns true iff PPAPI "dev channel" methods are supported.
   virtual bool PpapiDevChannelSupported(BrowserContext* browser_context,
                                         const GURL& document_url) = 0;
+
+  // Determine the number of PPAPI processes currently tracked by the service.
+  // Exposed primarily for testing purposes.
+  virtual int CountPpapiPluginProcessesForProfile(
+      const base::FilePath& plugin_path,
+      const base::FilePath& profile_data_directory) = 0;
 };
 
 }  // namespace content

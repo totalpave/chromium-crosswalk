@@ -7,86 +7,133 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
+#include <memory>
+
+#include "base/bind.h"
+#include "base/feature_list.h"
 #include "base/i18n/case_conversion.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/data_use_measurement/core/data_use_user_data.h"
-#include "components/metrics/proto/omnibox_event.pb.h"
-#include "components/metrics/proto/omnibox_input_type.pb.h"
 #include "components/omnibox/browser/autocomplete_provider_client.h"
 #include "components/omnibox/browser/autocomplete_provider_listener.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/suggestion_answer.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/variations/net/variations_http_headers.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_fetcher_delegate.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
+#include "third_party/metrics_proto/omnibox_input_type.pb.h"
 #include "url/gurl.h"
-
-using metrics::OmniboxEventProto;
 
 // SuggestionDeletionHandler -------------------------------------------------
 
 // This class handles making requests to the server in order to delete
 // personalized suggestions.
-class SuggestionDeletionHandler : public net::URLFetcherDelegate {
+class SuggestionDeletionHandler {
  public:
   typedef base::Callback<void(bool, SuggestionDeletionHandler*)>
       DeletionCompletedCallback;
 
-  SuggestionDeletionHandler(
-      const std::string& deletion_url,
-      net::URLRequestContextGetter* request_context,
-      const DeletionCompletedCallback& callback);
+  SuggestionDeletionHandler(AutocompleteProviderClient* client,
+                            const std::string& deletion_url,
+                            const DeletionCompletedCallback& callback);
 
-  ~SuggestionDeletionHandler() override;
+  ~SuggestionDeletionHandler();
 
  private:
-  // net::URLFetcherDelegate:
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
+  // Callback from SimpleURLLoader
+  void OnURLLoadComplete(const network::SimpleURLLoader* source,
+                         std::unique_ptr<std::string> response_body);
 
-  std::unique_ptr<net::URLFetcher> deletion_fetcher_;
+  std::unique_ptr<network::SimpleURLLoader> deletion_fetcher_;
   DeletionCompletedCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(SuggestionDeletionHandler);
 };
 
 SuggestionDeletionHandler::SuggestionDeletionHandler(
+    AutocompleteProviderClient* client,
     const std::string& deletion_url,
-    net::URLRequestContextGetter* request_context,
-    const DeletionCompletedCallback& callback) : callback_(callback) {
+    const DeletionCompletedCallback& callback)
+    : callback_(callback) {
   GURL url(deletion_url);
   DCHECK(url.is_valid());
 
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("omnibox_suggest_deletion", R"(
+        semantics {
+          sender: "Omnibox"
+          description:
+            "When users attempt to delete server-provided personalized search "
+            "or navigation suggestions from the omnibox dropdown, Chrome sends "
+            "a message to the server requesting deletion of the suggestion."
+          trigger:
+            "A user attempt to delete a server-provided omnibox suggestion, "
+            "for which the server provided a custom deletion URL."
+          data:
+            "No user data is explicitly sent with the request, but because the "
+            "requested URL is provided by the server for each specific "
+            "suggestion, it necessarily uniquely identifies the suggestion the "
+            "user is attempting to delete."
+          destination: WEBSITE
+        }
+        policy {
+          cookies_allowed: YES
+          cookies_store: "user"
+          setting:
+            "Since this can only be triggered on seeing server-provided "
+            "suggestions in the omnibox dropdown, whether it is enabled is the "
+            "same as whether those suggestions are enabled.\n"
+            "Users can control this feature via the 'Use a prediction service "
+            "to help complete searches and URLs typed in the address bar' "
+            "setting under 'Privacy'. The feature is enabled by default."
+          chrome_policy {
+            SearchSuggestEnabled {
+                policy_options {mode: MANDATORY}
+                SearchSuggestEnabled: false
+            }
+          }
+        })");
+  auto request = std::make_unique<network::ResourceRequest>();
+  request->url = url;
+  variations::AppendVariationsHeaderUnknownSignedIn(
+      request->url,
+      client->IsOffTheRecord() ? variations::InIncognito::kYes
+                               : variations::InIncognito::kNo,
+      request.get());
+  // TODO(https://crbug.com/808498) re-add data use measurement once
+  // SimpleURLLoader supports it.
+  // data_use_measurement::DataUseUserData::OMNIBOX
   deletion_fetcher_ =
-      net::URLFetcher::Create(BaseSearchProvider::kDeletionURLFetcherID, url,
-                              net::URLFetcher::GET, this);
-  data_use_measurement::DataUseUserData::AttachToFetcher(
-      deletion_fetcher_.get(), data_use_measurement::DataUseUserData::OMNIBOX);
-  deletion_fetcher_->SetRequestContext(request_context);
-  deletion_fetcher_->Start();
+      network::SimpleURLLoader::Create(std::move(request), traffic_annotation);
+  deletion_fetcher_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      client->GetURLLoaderFactory().get(),
+      base::BindOnce(&SuggestionDeletionHandler::OnURLLoadComplete,
+                     base::Unretained(this), deletion_fetcher_.get()));
 }
 
 SuggestionDeletionHandler::~SuggestionDeletionHandler() {
 }
 
-void SuggestionDeletionHandler::OnURLFetchComplete(
-    const net::URLFetcher* source) {
+void SuggestionDeletionHandler::OnURLLoadComplete(
+    const network::SimpleURLLoader* source,
+    std::unique_ptr<std::string> response_body) {
   DCHECK(source == deletion_fetcher_.get());
-  callback_.Run(
-      source->GetStatus().is_success() && (source->GetResponseCode() == 200),
-      this);
+  const bool ok = source->NetError() == net::OK &&
+                  (source->ResponseInfo() && source->ResponseInfo()->headers &&
+                   source->ResponseInfo()->headers->response_code() == 200);
+  callback_.Run(ok, this);
 }
 
 // BaseSearchProvider ---------------------------------------------------------
-
-// static
-const int BaseSearchProvider::kDefaultProviderURLFetcherID = 1;
-const int BaseSearchProvider::kKeywordProviderURLFetcherID = 2;
-const int BaseSearchProvider::kDeletionURLFetcherID = 3;
 
 BaseSearchProvider::BaseSearchProvider(AutocompleteProvider::Type type,
                                        AutocompleteProviderClient* client)
@@ -105,7 +152,7 @@ bool BaseSearchProvider::ShouldPrefetch(const AutocompleteMatch& match) {
 AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
     const base::string16& suggestion,
     AutocompleteMatchType::Type type,
-    bool from_keyword_provider,
+    bool from_keyword,
     const TemplateURL* template_url,
     const SearchTermsData& search_terms_data) {
   // These calls use a number of default values.  For instance, they assume
@@ -113,30 +160,46 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
   // mode.  They also assume the caller knows what it's doing and we set
   // this match to look as if it was received/created synchronously.
   SearchSuggestionParser::SuggestResult suggest_result(
-      suggestion, type, suggestion, base::string16(), base::string16(),
-      base::string16(), base::string16(), nullptr, std::string(),
-      std::string(), from_keyword_provider, 0, false, false, base::string16());
+      suggestion, type, /*subtype_identifier=*/0, from_keyword,
+      /*relevance=*/0, /*relevance_from_server=*/false,
+      /*input_text=*/base::string16());
   suggest_result.set_received_after_last_keystroke(false);
-  return CreateSearchSuggestion(
-      NULL, AutocompleteInput(), from_keyword_provider, suggest_result,
-      template_url, search_terms_data, 0, false);
+  return CreateSearchSuggestion(nullptr, AutocompleteInput(), from_keyword,
+                                suggest_result, template_url, search_terms_data,
+                                0, false);
+}
+
+// static
+void BaseSearchProvider::AppendSuggestClientToAdditionalQueryParams(
+    const TemplateURL* template_url,
+    const SearchTermsData& search_terms_data,
+    metrics::OmniboxEventProto::PageClassification page_classification,
+    TemplateURLRef::SearchTermsArgs* search_terms_args) {
+  // Only append the suggest client query param for Google template URL.
+  if (template_url->GetEngineType(search_terms_data) != SEARCH_ENGINE_GOOGLE)
+    return;
+
+  if (page_classification == metrics::OmniboxEventProto::CHROMEOS_APP_LIST) {
+    if (!search_terms_args->additional_query_params.empty())
+      search_terms_args->additional_query_params.append("&");
+    search_terms_args->additional_query_params.append("sclient=cros-launcher");
+  }
 }
 
 void BaseSearchProvider::DeleteMatch(const AutocompleteMatch& match) {
   DCHECK(match.deletable);
   if (!match.GetAdditionalInfo(BaseSearchProvider::kDeletionUrlKey).empty()) {
-    deletion_handlers_.push_back(base::WrapUnique(new SuggestionDeletionHandler(
-        match.GetAdditionalInfo(BaseSearchProvider::kDeletionUrlKey),
-        client_->GetRequestContext(),
+    deletion_handlers_.push_back(std::make_unique<SuggestionDeletionHandler>(
+        client(), match.GetAdditionalInfo(BaseSearchProvider::kDeletionUrlKey),
         base::Bind(&BaseSearchProvider::OnDeletionComplete,
-                   base::Unretained(this)))));
+                   base::Unretained(this))));
   }
 
-  TemplateURL* template_url =
+  const TemplateURL* template_url =
       match.GetTemplateURL(client_->GetTemplateURLService(), false);
-  // This may be NULL if the template corresponding to the keyword has been
+  // This may be nullptr if the template corresponding to the keyword has been
   // deleted or there is no keyword set.
-  if (template_url != NULL) {
+  if (template_url != nullptr) {
     client_->DeleteMatchingURLsForKeywordFromHistory(template_url->id(),
                                                      match.contents);
   }
@@ -174,23 +237,14 @@ const char BaseSearchProvider::kFalse[] = "false";
 
 BaseSearchProvider::~BaseSearchProvider() {}
 
-void BaseSearchProvider::SetDeletionURL(const std::string& deletion_url,
-                                        AutocompleteMatch* match) {
-  if (deletion_url.empty())
-    return;
-
-  TemplateURLService* template_url_service = client_->GetTemplateURLService();
-  if (!template_url_service)
-    return;
-  GURL url =
-      template_url_service->GetDefaultSearchProvider()->GenerateSearchURL(
-          template_url_service->search_terms_data());
-  url = url.GetOrigin().Resolve(deletion_url);
-  if (url.is_valid()) {
-    match->RecordAdditionalInfo(BaseSearchProvider::kDeletionUrlKey,
-        url.spec());
-    match->deletable = true;
-  }
+// static
+bool BaseSearchProvider::IsNTPPage(
+    metrics::OmniboxEventProto::PageClassification classification) {
+  using OEP = metrics::OmniboxEventProto;
+  return (classification == OEP::NTP) ||
+         (classification == OEP::OBSOLETE_INSTANT_NTP) ||
+         (classification == OEP::INSTANT_NTP_WITH_FAKEBOX_AS_STARTING_FOCUS) ||
+         (classification == OEP::INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS);
 }
 
 // static
@@ -202,21 +256,22 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
     const TemplateURL* template_url,
     const SearchTermsData& search_terms_data,
     int accepted_suggestion,
-    bool append_extra_query_params) {
+    bool append_extra_query_params_from_command_line) {
   AutocompleteMatch match(autocomplete_provider, suggestion.relevance(), false,
                           suggestion.type());
 
   if (!template_url)
     return match;
   match.keyword = template_url->keyword();
+  match.image_dominant_color = suggestion.image_dominant_color();
+  match.image_url = suggestion.image_url();
   match.contents = suggestion.match_contents();
   match.contents_class = suggestion.match_contents_class();
-  match.answer_contents = suggestion.answer_contents();
-  match.answer_type = suggestion.answer_type();
-  match.answer = SuggestionAnswer::copy(suggestion.answer());
+  match.answer = suggestion.answer();
+  match.subtype_identifier = suggestion.subtype_identifier();
   if (suggestion.type() == AutocompleteMatchType::SEARCH_SUGGEST_TAIL) {
-    match.RecordAdditionalInfo(
-        kACMatchPropertyInputText, base::UTF16ToUTF8(input.text()));
+    match.RecordAdditionalInfo(kACMatchPropertySuggestionText,
+                               base::UTF16ToUTF8(suggestion.suggestion()));
     match.RecordAdditionalInfo(
         kACMatchPropertyContentsPrefix,
         base::UTF16ToUTF8(suggestion.match_contents_prefix()));
@@ -235,17 +290,18 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
   const base::string16 input_lower = base::i18n::ToLower(input.text());
   // suggestion.match_contents() should have already been collapsed.
   match.allowed_to_be_default_match =
-      (!in_keyword_mode || suggestion.from_keyword_provider()) &&
+      (!in_keyword_mode || suggestion.from_keyword()) &&
       (base::CollapseWhitespace(input_lower, false) ==
        base::i18n::ToLower(suggestion.match_contents()));
 
-  if (suggestion.from_keyword_provider())
-    match.fill_into_edit.append(match.keyword + base::char16(' '));
+  if (suggestion.from_keyword())
+    match.from_keyword = true;
+
   // We only allow inlinable navsuggestions that were received before the
   // last keystroke because we don't want asynchronous inline autocompletions.
   if (!input.prevent_inline_autocomplete() &&
       !suggestion.received_after_last_keystroke() &&
-      (!in_keyword_mode || suggestion.from_keyword_provider()) &&
+      (!in_keyword_mode || suggestion.from_keyword()) &&
       base::StartsWith(
           base::i18n::ToLower(suggestion.suggestion()), input_lower,
           base::CompareCase::SENSITIVE)) {
@@ -253,55 +309,63 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
         suggestion.suggestion().substr(input.text().length());
     match.allowed_to_be_default_match = true;
   }
-  match.fill_into_edit.append(suggestion.suggestion());
 
   const TemplateURLRef& search_url = template_url->url_ref();
   DCHECK(search_url.SupportsReplacement(search_terms_data));
-  match.search_terms_args.reset(
-      new TemplateURLRef::SearchTermsArgs(suggestion.suggestion()));
-  match.search_terms_args->original_query = input.text();
+  base::string16 query(suggestion.suggestion());
+  base::string16 original_query(input.text());
+  if (suggestion.type() == AutocompleteMatchType::CALCULATOR) {
+    // Use query text, rather than the calculator answer suggestion, to search.
+    query = original_query;
+    original_query.clear();
+  }
+  match.fill_into_edit = GetFillIntoEdit(suggestion, template_url);
+  match.search_terms_args.reset(new TemplateURLRef::SearchTermsArgs(query));
+  match.search_terms_args->original_query = original_query;
   match.search_terms_args->accepted_suggestion = accepted_suggestion;
-  match.search_terms_args->suggest_query_params =
-      suggestion.suggest_query_params();
-  match.search_terms_args->append_extra_query_params =
-      append_extra_query_params;
+  match.search_terms_args->additional_query_params =
+      suggestion.additional_query_params();
+  match.search_terms_args->append_extra_query_params_from_command_line =
+      append_extra_query_params_from_command_line;
   // This is the destination URL sans assisted query stats.  This must be set
   // so the AutocompleteController can properly de-dupe; the controller will
   // eventually overwrite it before it reaches the user.
-  match.destination_url =
-      GURL(search_url.ReplaceSearchTerms(*match.search_terms_args.get(),
-                                         search_terms_data));
+  match.destination_url = GURL(search_url.ReplaceSearchTerms(
+      *match.search_terms_args, search_terms_data));
 
   // Search results don't look like URLs.
-  match.transition = suggestion.from_keyword_provider() ?
-      ui::PAGE_TRANSITION_KEYWORD : ui::PAGE_TRANSITION_GENERATED;
+  match.transition = suggestion.from_keyword() ? ui::PAGE_TRANSITION_KEYWORD
+                                               : ui::PAGE_TRANSITION_GENERATED;
 
   return match;
 }
 
 // static
-bool BaseSearchProvider::ZeroSuggestEnabled(
+base::string16 BaseSearchProvider::GetFillIntoEdit(
+    const SearchSuggestionParser::SuggestResult& suggest_result,
+    const TemplateURL* template_url) {
+  base::string16 fill_into_edit;
+
+  if (suggest_result.from_keyword())
+    fill_into_edit.append(template_url->keyword() + base::char16(' '));
+
+  fill_into_edit.append(suggest_result.suggestion());
+
+  return fill_into_edit;
+}
+
+// static
+bool BaseSearchProvider::CanSendURL(
+    const GURL& current_page_url,
     const GURL& suggest_url,
     const TemplateURL* template_url,
-    OmniboxEventProto::PageClassification page_classification,
+    metrics::OmniboxEventProto::PageClassification page_classification,
     const SearchTermsData& search_terms_data,
-    const AutocompleteProviderClient* client) {
-  if (!OmniboxFieldTrial::InZeroSuggestFieldTrial())
-    return false;
-
+    AutocompleteProviderClient* client) {
   // Make sure we are sending the suggest request through a cryptographically
   // secure channel to prevent exposing the current page URL or personalized
   // results without encryption.
   if (!suggest_url.SchemeIsCryptographic())
-    return false;
-
-  // Don't show zero suggest on the NTP.
-  // TODO(hfung): Experiment with showing MostVisited zero suggest on NTP
-  // under the conditions described in crbug.com/305366.
-  if ((page_classification ==
-       OmniboxEventProto::INSTANT_NTP_WITH_FAKEBOX_AS_STARTING_FOCUS) ||
-      (page_classification ==
-       OmniboxEventProto::INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS))
     return false;
 
   // Don't run if in incognito mode.
@@ -312,44 +376,51 @@ bool BaseSearchProvider::ZeroSuggestEnabled(
   if (!client->SearchSuggestEnabled())
     return false;
 
-  // Only make the request if we know that the provider supports zero suggest
-  // (currently only the prepopulated Google provider).
-  if (template_url == NULL ||
+  // Only make the request if we know that the provider supports sending zero
+  // suggest. (Currently only the prepopulated Google provider supports it.)
+  if (template_url == nullptr ||
       !template_url->SupportsReplacement(search_terms_data) ||
       template_url->GetEngineType(search_terms_data) != SEARCH_ENGINE_GOOGLE)
-    return false;
-
-  return true;
-}
-
-// static
-bool BaseSearchProvider::CanSendURL(
-    const GURL& current_page_url,
-    const GURL& suggest_url,
-    const TemplateURL* template_url,
-    OmniboxEventProto::PageClassification page_classification,
-    const SearchTermsData& search_terms_data,
-    AutocompleteProviderClient* client) {
-  if (!ZeroSuggestEnabled(suggest_url, template_url, page_classification,
-                          search_terms_data, client))
     return false;
 
   if (!current_page_url.is_valid())
     return false;
 
-  // Only allow HTTP URLs or HTTPS URLs for the same domain as the search
-  // provider.
-  if ((current_page_url.scheme() != url::kHttpScheme) &&
-      ((current_page_url.scheme() != url::kHttpsScheme) ||
-       !net::registry_controlled_domains::SameDomainOrHost(
-           current_page_url, suggest_url,
-           net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES)))
+  // Don't bother sending the URL of an NTP page; it's not useful.  The server
+  // already gets equivalent information in the form of the current page
+  // classification.
+  if (IsNTPPage(page_classification))
     return false;
 
-  if (!client->TabSyncEnabledAndUnencrypted())
+  // Only allow HTTP URLs or HTTPS URLs.
+  const bool scheme_allowed = (current_page_url.scheme() == url::kHttpScheme) ||
+                              (current_page_url.scheme() == url::kHttpsScheme);
+  if (!scheme_allowed)
+    return false;
+
+  if (!client->IsPersonalizedUrlDataCollectionActive())
     return false;
 
   return true;
+}
+
+void BaseSearchProvider::SetDeletionURL(const std::string& deletion_url,
+                                        AutocompleteMatch* match) {
+  if (deletion_url.empty())
+    return;
+
+  TemplateURLService* template_url_service = client_->GetTemplateURLService();
+  if (!template_url_service)
+    return;
+  GURL url =
+      template_url_service->GetDefaultSearchProvider()->GenerateSearchURL(
+          template_url_service->search_terms_data());
+  url = url.GetOrigin().Resolve(deletion_url);
+  if (url.is_valid()) {
+    match->RecordAdditionalInfo(BaseSearchProvider::kDeletionUrlKey,
+                                url.spec());
+    match->deletable = true;
+  }
 }
 
 void BaseSearchProvider::AddMatchToMap(
@@ -360,8 +431,8 @@ void BaseSearchProvider::AddMatchToMap(
     bool in_keyword_mode,
     MatchMap* map) {
   AutocompleteMatch match = CreateSearchSuggestion(
-      this, GetInput(result.from_keyword_provider()), in_keyword_mode, result,
-      GetTemplateURL(result.from_keyword_provider()),
+      this, GetInput(result.from_keyword()), in_keyword_mode, result,
+      GetTemplateURL(result.from_keyword()),
       client_->GetTemplateURLService()->search_terms_data(),
       accepted_suggestion, ShouldAppendExtraParams(result));
   if (!match.destination_url.is_valid())
@@ -382,7 +453,7 @@ void BaseSearchProvider::AddMatchToMap(
   // NOTE: Keep this ToLower() call in sync with url_database.cc.
   MatchKey match_key(
       std::make_pair(base::i18n::ToLower(result.suggestion()),
-                     match.search_terms_args->suggest_query_params));
+                     match.search_terms_args->additional_query_params));
   const std::pair<MatchMap::iterator, bool> i(
        map->insert(std::make_pair(match_key, match)));
 
@@ -432,10 +503,7 @@ void BaseSearchProvider::AddMatchToMap(
     const AutocompleteMatch& less_relevant_match =
         more_relevant_match.duplicate_matches.back();
     if (less_relevant_match.answer && !more_relevant_match.answer) {
-      more_relevant_match.answer_type = less_relevant_match.answer_type;
-      more_relevant_match.answer_contents = less_relevant_match.answer_contents;
-      more_relevant_match.answer =
-          SuggestionAnswer::copy(less_relevant_match.answer.get());
+      more_relevant_match.answer = less_relevant_match.answer;
     }
   }
 }
@@ -450,9 +518,6 @@ bool BaseSearchProvider::ParseSuggestResults(
           default_result_relevance, is_keyword_result, results))
     return false;
 
-  for (const GURL& url : results->answers_image_urls)
-    client_->PrefetchImage(url);
-
   field_trial_triggered_ |= results->field_trial_triggered;
   field_trial_triggered_in_session_ |= results->field_trial_triggered;
   return true;
@@ -460,7 +525,7 @@ bool BaseSearchProvider::ParseSuggestResults(
 
 void BaseSearchProvider::DeleteMatchFromMatches(
     const AutocompleteMatch& match) {
-  for (ACMatches::iterator i(matches_.begin()); i != matches_.end(); ++i) {
+  for (auto i(matches_.begin()); i != matches_.end(); ++i) {
     // Find the desired match to delete by checking the type and contents.
     // We can't check the destination URL, because the autocomplete controller
     // may have reformulated that. Not that while checking for matching
@@ -476,9 +541,9 @@ void BaseSearchProvider::DeleteMatchFromMatches(
 void BaseSearchProvider::OnDeletionComplete(
     bool success, SuggestionDeletionHandler* handler) {
   RecordDeletionResult(success);
-  deletion_handlers_.erase(std::remove_if(
-      deletion_handlers_.begin(), deletion_handlers_.end(),
+  base::EraseIf(
+      deletion_handlers_,
       [handler](const std::unique_ptr<SuggestionDeletionHandler>& elem) {
         return elem.get() == handler;
-      }));
+      });
 }

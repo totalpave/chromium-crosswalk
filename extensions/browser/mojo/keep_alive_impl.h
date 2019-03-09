@@ -10,11 +10,11 @@
 #include "base/scoped_observer.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/mojo/keep_alive.mojom.h"
-#include "mojo/public/cpp/bindings/interface_request.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "mojo/public/cpp/bindings/binding.h"
 
 namespace content {
 class BrowserContext;
+class RenderFrameHost;
 }
 
 namespace extensions {
@@ -26,20 +26,21 @@ class KeepAliveImpl : public KeepAlive, public ExtensionRegistryObserver {
  public:
   // Create a keep alive for |extension| running in |context| and connect it to
   // |request|. When the requester closes its pipe, the keep alive ends.
-  static void Create(content::BrowserContext* context,
+  static void Create(content::BrowserContext* browser_context,
                      const Extension* extension,
-                     mojo::InterfaceRequest<KeepAlive> request);
+                     KeepAliveRequest request,
+                     content::RenderFrameHost* render_frame_host);
 
  private:
   KeepAliveImpl(content::BrowserContext* context,
                 const Extension* extension,
-                mojo::InterfaceRequest<KeepAlive> request);
+                KeepAliveRequest request);
   ~KeepAliveImpl() override;
 
   // ExtensionRegistryObserver overrides.
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
   void OnShutdown(ExtensionRegistry* registry) override;
 
   // Invoked when the mojo connection is disconnected.
@@ -48,7 +49,7 @@ class KeepAliveImpl : public KeepAlive, public ExtensionRegistryObserver {
   content::BrowserContext* context_;
   const Extension* extension_;
   ScopedObserver<ExtensionRegistry, KeepAliveImpl> extension_registry_observer_;
-  mojo::StrongBinding<KeepAlive> binding_;
+  mojo::Binding<KeepAlive> binding_;
 
   DISALLOW_COPY_AND_ASSIGN(KeepAliveImpl);
 };

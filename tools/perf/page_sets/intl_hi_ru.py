@@ -1,28 +1,41 @@
 # Copyright 2014 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-from telemetry.page import page as page_module
+
+from page_sets import page_cycler_story
+from telemetry.page import cache_temperature as cache_temperature_module
 from telemetry.page import shared_page_state
 from telemetry import story
 
 
-class IntlHiRuPage(page_module.Page):
+class IntlHiRuPage(page_cycler_story.PageCyclerStory):
 
-  def __init__(self, url, page_set):
+  def __init__(self, url, page_set, cache_temperature=None):
+    if cache_temperature == cache_temperature_module.COLD:
+      temp_suffix = '_cold'
+    elif cache_temperature == cache_temperature_module.WARM:
+      temp_suffix = '_warm'
+    else:
+      raise NotImplementedError
+
     super(IntlHiRuPage, self).__init__(
         url=url, page_set=page_set,
-        shared_page_state_class=shared_page_state.SharedDesktopPageState)
-    self.archive_data_file = 'data/intl_hi_ru.json'
+        shared_page_state_class=shared_page_state.SharedDesktopPageState,
+        cache_temperature=cache_temperature,
+        name=url+temp_suffix)
 
 
 class IntlHiRuPageSet(story.StorySet):
 
   """ Popular pages in Hindi and Russian. """
 
-  def __init__(self):
+  def __init__(self, cache_temperatures=(cache_temperature_module.COLD,
+                                         cache_temperature_module.WARM)):
     super(IntlHiRuPageSet, self).__init__(
       archive_data_file='data/intl_hi_ru.json',
       cloud_storage_bucket=story.PARTNER_BUCKET)
+    if cache_temperatures is None:
+      cache_temperatures = [cache_temperature_module.ANY]
 
     urls_list = [
       # Why: #12 site in Russia
@@ -45,4 +58,5 @@ class IntlHiRuPageSet(story.StorySet):
     ]
 
     for url in urls_list:
-      self.AddStory(IntlHiRuPage(url, self))
+      for temp in cache_temperatures:
+        self.AddStory(IntlHiRuPage(url, self, cache_temperature=temp))

@@ -11,6 +11,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "components/user_manager/known_user.h"
 #include "google_apis/gaia/gaia_oauth_client.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace {
 
@@ -19,9 +20,9 @@ const char kTokenHandleStatusPref[] = "TokenHandleStatus";
 
 const char kHandleStatusValid[] = "valid";
 const char kHandleStatusInvalid[] = "invalid";
-const char* kDefaultHandleStatus = kHandleStatusValid;
+const char* const kDefaultHandleStatus = kHandleStatusValid;
 
-static const int kMaxRetries = 3;
+constexpr int kMaxRetries = 3;
 
 }  // namespace
 
@@ -86,16 +87,18 @@ void TokenHandleUtil::CheckToken(const AccountId& account_id,
   }
 
   if (!gaia_client_.get()) {
-    auto request_context =
-        chromeos::ProfileHelper::Get()->GetSigninProfile()->GetRequestContext();
-    gaia_client_.reset(new gaia::GaiaOAuthClient(request_context));
+    auto url_loader_factory = chromeos::ProfileHelper::Get()
+                                  ->GetSigninProfile()
+                                  ->GetURLLoaderFactory();
+    gaia_client_.reset(
+        new gaia::GaiaOAuthClient(std::move(url_loader_factory)));
   }
 
-  validation_delegates_.set(
-      token, std::unique_ptr<TokenDelegate>(new TokenDelegate(
-                 weak_factory_.GetWeakPtr(), account_id, token, callback)));
+  validation_delegates_[token] =
+      std::unique_ptr<TokenDelegate>(new TokenDelegate(
+          weak_factory_.GetWeakPtr(), account_id, token, callback));
   gaia_client_->GetTokenHandleInfo(token, kMaxRetries,
-                                   validation_delegates_.get(token));
+                                   validation_delegates_[token].get());
 }
 
 void TokenHandleUtil::StoreTokenHandle(const AccountId& account_id,
@@ -109,10 +112,6 @@ void TokenHandleUtil::OnValidationComplete(const std::string& token) {
   validation_delegates_.erase(token);
 }
 
-void TokenHandleUtil::OnObtainTokenComplete(const AccountId& account_id) {
-  obtain_delegates_.erase(account_id);
-}
-
 TokenHandleUtil::TokenDelegate::TokenDelegate(
     const base::WeakPtr<TokenHandleUtil>& owner,
     const AccountId& account_id,
@@ -124,8 +123,7 @@ TokenHandleUtil::TokenDelegate::TokenDelegate(
       tokeninfo_response_start_time_(base::TimeTicks::Now()),
       callback_(callback) {}
 
-TokenHandleUtil::TokenDelegate::~TokenDelegate() {
-}
+TokenHandleUtil::TokenDelegate::~TokenDelegate() {}
 
 void TokenHandleUtil::TokenDelegate::OnOAuthError() {
   callback_.Run(account_id_, INVALID);
@@ -135,7 +133,7 @@ void TokenHandleUtil::TokenDelegate::OnOAuthError() {
 // Warning: NotifyDone() deletes |this|
 void TokenHandleUtil::TokenDelegate::NotifyDone() {
   if (owner_)
-      owner_->OnValidationComplete(token_);
+    owner_->OnValidationComplete(token_);
 }
 
 void TokenHandleUtil::TokenDelegate::OnNetworkError(int response_code) {

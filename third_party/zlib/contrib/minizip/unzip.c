@@ -68,10 +68,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef NOUNCRYPT
-        #define NOUNCRYPT
-#endif
-
 #include "third_party/zlib/zlib.h"
 #include "unzip.h"
 
@@ -200,7 +196,7 @@ typedef struct
 /* ===========================================================================
      Read a byte from a gz_stream; update next_in and avail_in. Return EOF
    for end of file.
-   IN assertion: the stream s has been sucessfully opened for reading.
+   IN assertion: the stream s has been successfully opened for reading.
 */
 
 
@@ -1630,6 +1626,7 @@ extern int ZEXPORT unzOpenCurrentFile3 (unzFile file, int* method,
             zdecode(s->keys,s->pcrc_32_tab,source[i]);
 
         s->pfile_in_zip_read->pos_in_zipfile+=12;
+        s->pfile_in_zip_read->rest_read_compressed-=12;
         s->encrypted=1;
     }
 #    endif

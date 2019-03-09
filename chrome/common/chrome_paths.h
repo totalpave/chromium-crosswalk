@@ -26,10 +26,13 @@ enum {
 #if defined(OS_WIN)
   DIR_WATCHER_DATA,             // Directory where the Chrome watcher stores
                                 // data.
+  DIR_ROAMING_USER_DATA,        // Directory where user data is stored that
+                                // needs to be roamed between computers.
 #endif
   DIR_RESOURCES,                // Directory containing separate file resources
                                 // used by Chrome at runtime.
-  DIR_INSPECTOR,                // Directory where web inspector is located.
+  DIR_INSPECTOR_DEBUG,          // Directory where non-bundled and non-minified
+                                // web inspector is located.
   DIR_APP_DICTIONARIES,         // Directory where the global dictionaries are.
   DIR_USER_DOCUMENTS,           // Directory for a user's "My Documents".
   DIR_USER_MUSIC,               // Directory for a user's music.
@@ -86,17 +89,13 @@ enum {
                                     // Pepper Flash plugin, downloadable from
                                     // Adobe website. Querying this path might
                                     // succeed no matter the file exists or not.
-  FILE_NACL_PLUGIN,             // Full path to the internal NaCl plugin file.
   DIR_PNACL_BASE,               // Full path to the base dir for PNaCl.
   DIR_PNACL_COMPONENT,          // Full path to the latest PNaCl version
                                 // (subdir of DIR_PNACL_BASE).
-  DIR_COMPONENT_WIDEVINE_CDM,   // Directory that contains component-updated
-                                // Widevine CDM files.
-  FILE_WIDEVINE_CDM_ADAPTER,    // Full path to the Widevine CDM adapter file.
+  FILE_WIDEVINE_CDM,            // Full path to the Widevine CDM.
   FILE_RESOURCES_PACK,          // Full path to the .pak file containing
                                 // binary data (e.g., html files and images
                                 // used by internal pages).
-  DIR_RESOURCES_EXTENSION,      // Full path to extension resources.
 #if defined(OS_CHROMEOS)
   DIR_CHROMEOS_WALLPAPERS,      // Directory where downloaded chromeos
                                 // wallpapers reside.
@@ -105,9 +104,6 @@ enum {
   DIR_CHROMEOS_CUSTOM_WALLPAPERS,     // Directory where custom wallpapers
                                       // reside.
 #endif
-  DIR_SUPERVISED_USERS_DEFAULT_APPS,  // Directory where installer places .crx
-                                      // files to be installed when managed user
-                                      // session starts.
   DIR_SUPERVISED_USER_INSTALLED_WHITELISTS,  // Directory where sanitized
                                              // supervised user whitelists are
                                              // installed.
@@ -129,8 +125,18 @@ enum {
 #if defined(OS_LINUX)
   FILE_COMPONENT_FLASH_HINT,    // A file in a known location that points to
                                 // the component updated flash plugin.
-#endif // defined(OS_LINUX)
+#endif  // defined(OS_LINUX)
+#if defined(OS_CHROMEOS)
+  FILE_CHROME_OS_COMPONENT_FLASH,  // The location of component updated Flash on
+                                   // Chrome OS.
 
+  // File containing the location of the updated TPM firmware binary in the file
+  // system.
+  FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_LOCATION,
+
+  // Flag file indicating SRK ROCA vulnerability status.
+  FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA,
+#endif  // defined(OS_CHROMEOS)
   PATH_END
 };
 

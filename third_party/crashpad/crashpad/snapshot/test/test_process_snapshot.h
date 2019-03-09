@@ -35,7 +35,7 @@
 #include "snapshot/thread_snapshot.h"
 #include "snapshot/unloaded_module_snapshot.h"
 #include "util/misc/uuid.h"
-#include "util/stdlib/pointer_container.h"
+#include "util/process/process_memory.h"
 
 namespace crashpad {
 namespace test {
@@ -82,7 +82,7 @@ class TestProcessSnapshot final : public ProcessSnapshot {
   //! \param[in] thread The thread snapshot that will be included in Threads().
   //!     The TestProcessSnapshot object takes ownership of \a thread.
   void AddThread(std::unique_ptr<ThreadSnapshot> thread) {
-    threads_.push_back(thread.release());
+    threads_.push_back(std::move(thread));
   }
 
   //! \brief Adds a module snapshot to be returned by Modules().
@@ -90,7 +90,7 @@ class TestProcessSnapshot final : public ProcessSnapshot {
   //! \param[in] module The module snapshot that will be included in Modules().
   //!     The TestProcessSnapshot object takes ownership of \a module.
   void AddModule(std::unique_ptr<ModuleSnapshot> module) {
-    modules_.push_back(module.release());
+    modules_.push_back(std::move(module));
   }
 
   //! \brief Adds an unloaded module snapshot to be returned by
@@ -116,12 +116,12 @@ class TestProcessSnapshot final : public ProcessSnapshot {
   //!     MemoryMap(). The TestProcessSnapshot object takes ownership of \a
   //!     region.
   void AddMemoryMapRegion(std::unique_ptr<MemoryMapRegionSnapshot> region) {
-    memory_map_.push_back(region.release());
+    memory_map_.push_back(std::move(region));
   }
 
   //! \brief Adds a handle snapshot to be returned by Handles().
   //!
-  //! \param[in] region The handle snapshot that will be included in Handles().
+  //! \param[in] handle The handle snapshot that will be included in Handles().
   void AddHandle(const HandleSnapshot& handle) {
     handles_.push_back(handle);
   }
@@ -132,7 +132,16 @@ class TestProcessSnapshot final : public ProcessSnapshot {
   //!     ExtraMemory(). The TestProcessSnapshot object takes ownership of \a
   //!     extra_memory.
   void AddExtraMemory(std::unique_ptr<MemorySnapshot> extra_memory) {
-    extra_memory_.push_back(extra_memory.release());
+    extra_memory_.push_back(std::move(extra_memory));
+  }
+
+  //! \brief Add a process memory object to be returned by Memory().
+  //!
+  //! \param[in] process_memory The memory object that will be returned by
+  //!     Memory(). The TestProcessSnapshot object takes ownership of \a
+  //!     extra_memory.
+  void SetProcessMemory(std::unique_ptr<ProcessMemory> process_memory) {
+    process_memory_ = std::move(process_memory);
   }
 
   // ProcessSnapshot:
@@ -154,6 +163,7 @@ class TestProcessSnapshot final : public ProcessSnapshot {
   std::vector<const MemoryMapRegionSnapshot*> MemoryMap() const override;
   std::vector<HandleSnapshot> Handles() const override;
   std::vector<const MemorySnapshot*> ExtraMemory() const override;
+  const ProcessMemory* Memory() const override;
 
  private:
   pid_t process_id_;
@@ -166,13 +176,14 @@ class TestProcessSnapshot final : public ProcessSnapshot {
   UUID client_id_;
   std::map<std::string, std::string> annotations_simple_map_;
   std::unique_ptr<SystemSnapshot> system_;
-  PointerVector<ThreadSnapshot> threads_;
-  PointerVector<ModuleSnapshot> modules_;
+  std::vector<std::unique_ptr<ThreadSnapshot>> threads_;
+  std::vector<std::unique_ptr<ModuleSnapshot>> modules_;
   std::vector<UnloadedModuleSnapshot> unloaded_modules_;
   std::unique_ptr<ExceptionSnapshot> exception_;
-  PointerVector<MemoryMapRegionSnapshot> memory_map_;
+  std::vector<std::unique_ptr<MemoryMapRegionSnapshot>> memory_map_;
   std::vector<HandleSnapshot> handles_;
-  PointerVector<MemorySnapshot> extra_memory_;
+  std::vector<std::unique_ptr<MemorySnapshot>> extra_memory_;
+  std::unique_ptr<ProcessMemory> process_memory_;
 
   DISALLOW_COPY_AND_ASSIGN(TestProcessSnapshot);
 };

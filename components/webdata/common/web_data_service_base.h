@@ -9,24 +9,21 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/ref_counted_delete_on_message_loop.h"
+#include "base/memory/ref_counted_delete_on_sequence.h"
 #include "components/webdata/common/webdata_export.h"
 #include "sql/init_status.h"
 
 class WebDatabase;
 class WebDatabaseService;
-class WebDatabaseTable;
 
 namespace base {
-// TODO(skyostil): Migrate to SingleThreadTaskRunner (crbug.com/465354).
 class SingleThreadTaskRunner;
-class Thread;
 }
 
 // Base for WebDataService class hierarchy.
-// WebDataServiceBase is destroyed on the UI thread.
+// WebDataServiceBase is destroyed on the UI sequence.
 class WEBDATA_EXPORT WebDataServiceBase
-    : public base::RefCountedDeleteOnMessageLoop<WebDataServiceBase> {
+    : public base::RefCountedDeleteOnSequence<WebDataServiceBase> {
  public:
   // All requests return an opaque handle of the following type.
   typedef int Handle;
@@ -36,7 +33,8 @@ class WEBDATA_EXPORT WebDataServiceBase
   // takes a single parameter, the sql::InitStatus value from trying
   // to open the database.
   // TODO(joi): Should we combine this with WebDatabaseService::InitCallback?
-  typedef base::Callback<void(sql::InitStatus)> ProfileErrorCallback;
+  typedef base::Callback<void(sql::InitStatus, const std::string&)>
+      ProfileErrorCallback;
 
   typedef base::Closure DBLoadedCallback;
 
@@ -48,11 +46,11 @@ class WEBDATA_EXPORT WebDataServiceBase
   // WebDataServiceBase, which receive |wdbs| upon construction. The
   // WebDataServiceWrapper handles the initializing and shutting down and of
   // the |wdbs| object.
-  // WebDataServiceBase is destroyed on |ui_thread|.
+  // WebDataServiceBase is destroyed on the UI sequence.
   WebDataServiceBase(
       scoped_refptr<WebDatabaseService> wdbs,
       const ProfileErrorCallback& callback,
-      const scoped_refptr<base::SingleThreadTaskRunner>& ui_thread);
+      const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner);
 
   // Cancel any pending request. You need to call this method if your
   // WebDataServiceConsumer is about to be deleted.
@@ -60,7 +58,7 @@ class WEBDATA_EXPORT WebDataServiceBase
 
   // Shutdown the web data service. The service can no longer be used after this
   // call.
-  virtual void ShutdownOnUIThread();
+  virtual void ShutdownOnUISequence();
 
   // Initializes the web data service.
   virtual void Init();
@@ -76,16 +74,16 @@ class WEBDATA_EXPORT WebDataServiceBase
   virtual void RegisterDBLoadedCallback(const DBLoadedCallback& callback);
 
   // Returns true if the database load has completetd successfully, and
-  // ShutdownOnUIThread has not yet been called.
+  // ShutdownOnUISequence() has not yet been called.
   virtual bool IsDatabaseLoaded();
 
   // Returns a pointer to the DB (used by SyncableServices). May return NULL if
-  // the database is not loaded or otherwise unavailable. Must be called on
-  // DBThread.
+  // the database is not loaded or otherwise unavailable. Must be called on DB
+  // sequence.
   virtual WebDatabase* GetDatabase();
 
  protected:
-  friend class base::RefCountedDeleteOnMessageLoop<WebDataServiceBase>;
+  friend class base::RefCountedDeleteOnSequence<WebDataServiceBase>;
   friend class base::DeleteHelper<WebDataServiceBase>;
 
   virtual ~WebDataServiceBase();

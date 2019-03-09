@@ -5,11 +5,14 @@
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "chrome/browser/sync/test/integration/extensions_helper.h"
+#include "chrome/browser/sync/test/integration/feature_toggler.h"
 #include "chrome/browser/sync/test/integration/profile_sync_service_harness.h"
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
+#include "components/sync/driver/sync_driver_switches.h"
 
-using extensions_helper::AwaitAllProfilesHaveSameExtensions;
+namespace {
+
 using extensions_helper::AllProfilesHaveSameExtensions;
 using extensions_helper::DisableExtension;
 using extensions_helper::EnableExtension;
@@ -20,21 +23,24 @@ using extensions_helper::IncognitoEnableExtension;
 using extensions_helper::InstallExtension;
 using extensions_helper::UninstallExtension;
 
-class TwoClientExtensionsSyncTest : public SyncTest {
+class TwoClientExtensionsSyncTest : public FeatureToggler, public SyncTest {
  public:
-  TwoClientExtensionsSyncTest() : SyncTest(TWO_CLIENT) {}
+  TwoClientExtensionsSyncTest()
+      : FeatureToggler(switches::kSyncPseudoUSSExtensions),
+        SyncTest(TWO_CLIENT) {
+    DisableVerifier();
+  }
 
-  ~TwoClientExtensionsSyncTest() override {}
   bool TestUsesSelfNotifications() override { return false; }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(TwoClientExtensionsSyncTest);
 };
 
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest,
                        E2E_ENABLED(StartWithNoExtensions)) {
   ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 }
 
 // E2E tests flaky on Mac: https://crbug.com/597319
@@ -50,7 +56,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
 #else
 #define MAYBE_StartWithSameExtensions StartWithSameExtensions
 #endif
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest,
                        E2E_ENABLED(MAYBE_StartWithSameExtensions)) {
   ASSERT_TRUE(SetupClients());
 
@@ -61,7 +67,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
   }
 
   ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
   EXPECT_EQ(kNumExtensions,
             static_cast<int>(GetInstalledExtensions(GetProfile(0)).size()));
 }
@@ -72,7 +78,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
 #else
 #define MAYBE_StartWithDifferentExtensions StartWithDifferentExtensions
 #endif
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest,
                        MAYBE_E2E(MAYBE_StartWithDifferentExtensions)) {
   ASSERT_TRUE(SetupClients());
 
@@ -95,13 +101,13 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
   }
 
   ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
   EXPECT_EQ(
       kNumCommonExtensions + kNumProfile0Extensions + kNumProfile1Extensions,
       static_cast<int>(GetInstalledExtensions(GetProfile(0)).size()));
 }
 
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest,
                        E2E_ENABLED(InstallDifferentExtensions)) {
   ASSERT_TRUE(SetupClients());
 
@@ -114,7 +120,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
   }
 
   ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 
   const int kNumProfile0Extensions = 10;
   for (int i = 0; i < kNumProfile0Extensions; ++extension_index, ++i) {
@@ -126,79 +132,75 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
     InstallExtension(GetProfile(1), extension_index);
   }
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
   EXPECT_EQ(
       kNumCommonExtensions + kNumProfile0Extensions + kNumProfile1Extensions,
       static_cast<int>(GetInstalledExtensions(GetProfile(0)).size()));
 }
 
-// TCM ID - 3637311.
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest, MAYBE_E2E(Add)) {
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest, MAYBE_E2E(Add)) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameExtensions());
 
   InstallExtension(GetProfile(0), 0);
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
   EXPECT_EQ(1u, GetInstalledExtensions(GetProfile(0)).size());
 }
 
-// TCM ID - 3724281.
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest, MAYBE_E2E(Uninstall)) {
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest, MAYBE_E2E(Uninstall)) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameExtensions());
 
   InstallExtension(GetProfile(0), 0);
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 
   UninstallExtension(GetProfile(0), 0);
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
   EXPECT_TRUE(GetInstalledExtensions(GetProfile(0)).empty());
 }
 
-// TCM ID - 3605300.
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest,
                        MAYBE_E2E(UpdateEnableDisableExtension)) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameExtensions());
 
   InstallExtension(GetProfile(0), 0);
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 
   DisableExtension(GetProfile(0), 0);
   ASSERT_FALSE(HasSameExtensions(0, 1));
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 
   EnableExtension(GetProfile(1), 0);
   ASSERT_FALSE(HasSameExtensions(0, 1));
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 }
 
-// TCM ID - 3728322.
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest,
                        E2E_ENABLED(UpdateIncognitoEnableDisable)) {
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(AllProfilesHaveSameExtensions());
 
   InstallExtension(GetProfile(0), 0);
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 
   IncognitoEnableExtension(GetProfile(0), 0);
   ASSERT_FALSE(HasSameExtensions(0, 1));
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 
   IncognitoDisableExtension(GetProfile(1), 0);
   ASSERT_FALSE(HasSameExtensions(0, 1));
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
 }
 
 // Regression test for bug 104399: ensure that an extension installed prior to
 // setting up sync, when uninstalled, is also uninstalled from sync.
-IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
+IN_PROC_BROWSER_TEST_P(TwoClientExtensionsSyncTest,
                        E2E_ENABLED(UninstallPreinstalledExtensions)) {
   ASSERT_TRUE(SetupClients());
   ASSERT_TRUE(AllProfilesHaveSameExtensions());
@@ -207,14 +209,20 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionsSyncTest,
 
   ASSERT_TRUE(SetupSync());
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
   ASSERT_EQ(1u, GetInstalledExtensions(GetProfile(0)).size());
 
   UninstallExtension(GetProfile(0), 0);
 
-  ASSERT_TRUE(AwaitAllProfilesHaveSameExtensions());
+  ASSERT_TRUE(ExtensionsMatchChecker().Wait());
   EXPECT_TRUE(GetInstalledExtensions(GetProfile(0)).empty());
 }
 
 // TODO(akalin): Add tests exercising:
 //   - Offline installation/uninstallation behavior
+
+INSTANTIATE_TEST_SUITE_P(USS,
+                         TwoClientExtensionsSyncTest,
+                         ::testing::Values(false, true));
+
+}  // namespace

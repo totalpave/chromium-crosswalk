@@ -8,30 +8,96 @@
 
 #include "base/i18n/rtl.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_list_observer.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/find_bar/find_bar_state.h"
 #include "chrome/browser/ui/find_bar/find_bar_state_factory.h"
 #include "chrome/browser/ui/find_bar/find_tab_helper.h"
+#include "chrome/browser/ui/page_action/page_action_icon_container.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/range/range.h"
 
 using content::NavigationController;
 using content::WebContents;
 
-// The minimum space between the FindInPage window and the search result.
-static const int kMinFindWndDistanceFromSelection = 5;
+namespace {
 
-FindBarController::FindBarController(FindBar* find_bar)
+// The minimum space between the FindInPage window and the search result.
+constexpr int kMinFindWndDistanceFromSelection = 5;
+
+// Tracks windows and makes sure that closing the last Guest browser window
+// clears the find pre-populate text.
+class FindBrowserListObserver : public BrowserListObserver {
+ public:
+  FindBrowserListObserver() {
+    // Can't use base::ScopedObserver because BrowserListObserver isn't derived
+    // from Observer. Not that this object will ever be destructed anyway.
+    BrowserList::AddObserver(this);
+  }
+
+  static void EnsureInstance() {
+    static base::NoDestructor<FindBrowserListObserver> the_instance;
+    the_instance.get();
+  }
+
+ protected:
+  // BrowserListObserver:
+  void OnBrowserRemoved(Browser* browser) override {
+    Profile* const guest_profile = GetGuestProfile(browser);
+    if (!guest_profile)
+      return;
+
+    if (IsGuestWindowOpen())
+      return;
+
+    // Remove persistent find text across guest sessions. If we don't do this, a
+    // future guest session in this browser process might get its find text
+    // prepopulated with something that was searched in this session, which is a
+    // violation of privacy expectations.
+    FindBarState* const find_bar_state =
+        FindBarStateFactory::GetForProfile(guest_profile);
+    find_bar_state->set_last_prepopulate_text(base::string16());
+  }
+
+ private:
+  // Returns a guest profile if the current browser has one, or nullptr
+  // otherwise.
+  static Profile* GetGuestProfile(Browser* browser) {
+    Profile* profile = browser->profile();
+    DCHECK(profile);
+    return profile->IsGuestSession() ? profile : nullptr;
+  }
+
+  static bool IsGuestWindowOpen() {
+    for (Browser* other : *BrowserList::GetInstance()) {
+      if (GetGuestProfile(other))
+        return true;
+    }
+    return false;
+  }
+};
+
+}  // namespace
+
+FindBarController::FindBarController(FindBar* find_bar, Browser* browser)
     : find_bar_(find_bar),
-      web_contents_(NULL),
-      last_reported_matchcount_(0) {
+      browser_(browser),
+      find_bar_platform_helper_(FindBarPlatformHelper::Create(this)) {
+  FindBrowserListObserver::EnsureInstance();
 }
 
 FindBarController::~FindBarController() {
@@ -76,6 +142,11 @@ void FindBarController::EndFindSession(SelectionAction selection_action,
   }
 }
 
+void FindBarController::FindBarVisibilityChanged() {
+  browser_->window()->GetPageActionIconContainer()->UpdatePageActionIcon(
+      PageActionIconType::kFind);
+}
+
 void FindBarController::ChangeWebContents(WebContents* contents) {
   if (web_contents_) {
     registrar_.RemoveAll();
@@ -89,8 +160,7 @@ void FindBarController::ChangeWebContents(WebContents* contents) {
 
   web_contents_ = contents;
   FindTabHelper* find_tab_helper =
-      web_contents_ ? FindTabHelper::FromWebContents(web_contents_)
-                    : NULL;
+      web_contents_ ? FindTabHelper::FromWebContents(web_contents_) : nullptr;
 
   // Hide any visible find window from the previous tab if a NULL tab contents
   // is passed in or if the find UI is not active in the new tab.
@@ -125,28 +195,24 @@ void FindBarController::ChangeWebContents(WebContents* contents) {
   find_bar_->UpdateFindBarForChangedWebContents();
 }
 
+void FindBarController::SetText(base::string16 text) {
+  find_bar_->SetFindTextAndSelectedRange(text, find_bar_->GetSelectedRange());
+}
+
+void FindBarController::OnUserChangedFindText(base::string16 text) {
+  if (find_bar_platform_helper_)
+    find_bar_platform_helper_->OnUserChangedFindText(text);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
-// FindBarHost, content::NotificationObserver implementation:
+// FindBarController, content::NotificationObserver implementation:
 
 void FindBarController::Observe(int type,
                                 const content::NotificationSource& source,
                                 const content::NotificationDetails& details) {
-  FindTabHelper* find_tab_helper =
-      FindTabHelper::FromWebContents(web_contents_);
   if (type == chrome::NOTIFICATION_FIND_RESULT_AVAILABLE) {
-    // Don't update for notifications from WebContentses other than the one we
-    // are actively tracking.
-    if (content::Source<WebContents>(source).ptr() == web_contents_) {
-      UpdateFindBarForCurrentResult();
-      if (find_tab_helper->find_result().final_update() &&
-          find_tab_helper->find_result().number_of_matches() == 0) {
-        const base::string16& last_search =
-            find_tab_helper->previous_find_text();
-        const base::string16& current_search = find_tab_helper->find_text();
-        if (last_search.find(current_search) != 0)
-          find_bar_->AudibleAlert();
-      }
-    }
+    DCHECK(content::Source<WebContents>(source).ptr() == web_contents_);
+    OnFindResultAvailable();
   } else if (type == content::NOTIFICATION_NAV_ENTRY_COMMITTED) {
     NavigationController* source_controller =
         content::Source<NavigationController>(source).ptr();
@@ -156,7 +222,7 @@ void FindBarController::Observe(int type,
       ui::PageTransition transition_type =
           commit_details->entry->GetTransitionType();
       // Hide the find bar on reload or navigation.
-      if (find_bar_->IsFindBarVisible() &&
+      if (find_bar_->IsFindBarVisible() && commit_details->is_main_frame &&
           (ui::PageTransitionCoreTypeIs(transition_type,
                                         ui::PAGE_TRANSITION_RELOAD) ||
            commit_details->is_navigation_to_different_page()))
@@ -205,11 +271,37 @@ gfx::Rect FindBarController::GetLocationForFindbarView(
   return new_pos;
 }
 
+void FindBarController::OnFindResultAvailable() {
+  UpdateFindBarForCurrentResult();
+
+  FindTabHelper* find_tab_helper =
+      FindTabHelper::FromWebContents(web_contents_);
+
+  // Only "final" results may audibly alert the user.
+  if (!find_tab_helper->find_result().final_update())
+    return;
+
+  const base::string16& current_search = find_tab_helper->find_text();
+
+  // If no results were found, play an audible alert (depending upon platform
+  // convention). Alert only once per unique search, and don't alert on
+  // backspace.
+  if ((find_tab_helper->find_result().number_of_matches() == 0) &&
+      (current_search != find_tab_helper->last_completed_find_text() &&
+       !base::StartsWith(find_tab_helper->previous_find_text(), current_search,
+                         base::CompareCase::SENSITIVE))) {
+    find_bar_->AudibleAlert();
+  }
+
+  // Record the completion of the search to suppress future alerts, even if the
+  // page's contents change.
+  find_tab_helper->set_last_completed_find_text(current_search);
+}
+
 void FindBarController::UpdateFindBarForCurrentResult() {
   FindTabHelper* find_tab_helper =
       FindTabHelper::FromWebContents(web_contents_);
   const FindNotificationDetails& find_result = find_tab_helper->find_result();
-
   // Avoid bug 894389: When a new search starts (and finds something) it reports
   // an interim match count result of 1 before the scoping effort starts. This
   // is to provide feedback as early as possible that we will find something.
@@ -218,11 +310,13 @@ void FindBarController::UpdateFindBarForCurrentResult() {
   // the scoping effort starts updating the match count. We avoid this flash by
   // ignoring interim results of 1 if we already have a positive number.
   if (find_result.number_of_matches() > -1) {
-    if (last_reported_matchcount_ > 0 &&
-        find_result.number_of_matches() == 1 &&
-        !find_result.final_update())
+    if (last_reported_matchcount_ > 0 && find_result.number_of_matches() == 1 &&
+        !find_result.final_update() &&
+        last_reported_ordinal_ == find_result.active_match_ordinal()) {
       return;  // Don't let interim result override match count.
+    }
     last_reported_matchcount_ = find_result.number_of_matches();
+    last_reported_ordinal_ = find_result.active_match_ordinal();
   }
 
   find_bar_->UpdateUIForFindResult(find_result, find_tab_helper->find_text());

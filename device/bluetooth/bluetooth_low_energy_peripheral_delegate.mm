@@ -25,11 +25,11 @@ class BluetoothLowEnergyPeripheralBridge {
 
   void DidDiscoverPrimaryServices(NSError* error) {
     device_mac_->DidDiscoverPrimaryServices(error);
-  };
+  }
 
   void DidDiscoverCharacteristics(CBService* service, NSError* error) {
     device_mac_->DidDiscoverCharacteristics(service, error);
-  };
+  }
 
   void DidUpdateValue(CBCharacteristic* characteristic, NSError* error) {
     device_mac_->DidUpdateValue(characteristic, error);
@@ -42,6 +42,19 @@ class BluetoothLowEnergyPeripheralBridge {
   void DidUpdateNotificationState(CBCharacteristic* characteristic,
                                   NSError* error) {
     device_mac_->DidUpdateNotificationState(characteristic, error);
+  }
+
+  void DidDiscoverDescriptors(CBCharacteristic* characteristic,
+                              NSError* error) {
+    device_mac_->DidDiscoverDescriptors(characteristic, error);
+  }
+
+  void DidUpdateValueForDescriptor(CBDescriptor* descriptor, NSError* error) {
+    device_mac_->DidUpdateValueForDescriptor(descriptor, error);
+  }
+
+  void DidWriteValueForDescriptor(CBDescriptor* descriptor, NSError* error) {
+    device_mac_->DidWriteValueForDescriptor(descriptor, error);
   }
 
   CBPeripheral* GetPeripheral() { return device_mac_->GetPeripheral(); }
@@ -60,11 +73,6 @@ class BluetoothLowEnergyPeripheralBridge {
     bridge_.reset(new device::BluetoothLowEnergyPeripheralBridge(device_mac));
   }
   return self;
-}
-
-- (void)dealloc {
-  [bridge_->GetPeripheral() setDelegate:nil];
-  [super dealloc];
 }
 
 - (void)peripheral:(CBPeripheral*)peripheral
@@ -101,4 +109,23 @@ class BluetoothLowEnergyPeripheralBridge {
                                           error:(nullable NSError*)error {
   bridge_->DidUpdateNotificationState(characteristic, error);
 }
+
+- (void)peripheral:(CBPeripheral*)peripheral
+    didDiscoverDescriptorsForCharacteristic:(CBCharacteristic*)characteristic
+                                      error:(nullable NSError*)error {
+  bridge_->DidDiscoverDescriptors(characteristic, error);
+}
+
+- (void)peripheral:(CBPeripheral*)peripheral
+    didUpdateValueForDescriptor:(CBDescriptor*)descriptor
+                          error:(nullable NSError*)error {
+  bridge_->DidUpdateValueForDescriptor(descriptor, error);
+}
+
+- (void)peripheral:(CBPeripheral*)peripheral
+    didWriteValueForDescriptor:(CBDescriptor*)descriptor
+                         error:(nullable NSError*)error {
+  bridge_->DidWriteValueForDescriptor(descriptor, error);
+}
+
 @end

@@ -8,33 +8,36 @@
 
 #include "base/command_line.h"
 #include "base/memory/ptr_util.h"
-#include "base/sys_info.h"
+#include "base/message_loop/message_loop.h"
+#include "base/system/sys_info.h"
 #include "base/threading/thread.h"
-#include "chromeos/chromeos_switches.h"
-#include "chromeos/dbus/amplifier_client.h"
-#include "chromeos/dbus/ap_manager_client.h"
+#include "chromeos/dbus/arc_midis_client.h"
 #include "chromeos/dbus/arc_obb_mounter_client.h"
-#include "chromeos/dbus/audio_dsp_client.h"
+#include "chromeos/dbus/arc_oemcrypto_client.h"
+#include "chromeos/dbus/auth_policy_client.h"
+#include "chromeos/dbus/biod/biod_client.h"
+#include "chromeos/dbus/cec_service_client.h"
+#include "chromeos/dbus/cicerone_client.h"
+#include "chromeos/dbus/concierge_client.h"
+#include "chromeos/dbus/constants/dbus_switches.h"
 #include "chromeos/dbus/cras_audio_client.h"
 #include "chromeos/dbus/cros_disks_client.h"
 #include "chromeos/dbus/cryptohome_client.h"
 #include "chromeos/dbus/dbus_client.h"
+#include "chromeos/dbus/dbus_clients_browser.h"
+#include "chromeos/dbus/dbus_clients_common.h"
 #include "chromeos/dbus/debug_daemon_client.h"
 #include "chromeos/dbus/easy_unlock_client.h"
 #include "chromeos/dbus/gsm_sms_client.h"
 #include "chromeos/dbus/image_burner_client.h"
-#include "chromeos/dbus/introspectable_client.h"
+#include "chromeos/dbus/image_loader_client.h"
 #include "chromeos/dbus/lorgnette_manager_client.h"
+#include "chromeos/dbus/machine_learning_client.h"
+#include "chromeos/dbus/media_analytics_client.h"
 #include "chromeos/dbus/modem_messaging_client.h"
-#include "chromeos/dbus/nfc_adapter_client.h"
-#include "chromeos/dbus/nfc_device_client.h"
-#include "chromeos/dbus/nfc_manager_client.h"
-#include "chromeos/dbus/nfc_record_client.h"
-#include "chromeos/dbus/nfc_tag_client.h"
-#include "chromeos/dbus/peer_daemon_manager_client.h"
 #include "chromeos/dbus/permission_broker_client.h"
-#include "chromeos/dbus/power_manager_client.h"
-#include "chromeos/dbus/privet_daemon_manager_client.h"
+#include "chromeos/dbus/runtime_probe_client.h"
+#include "chromeos/dbus/seneschal_client.h"
 #include "chromeos/dbus/session_manager_client.h"
 #include "chromeos/dbus/shill_device_client.h"
 #include "chromeos/dbus/shill_ipconfig_client.h"
@@ -42,24 +45,29 @@
 #include "chromeos/dbus/shill_profile_client.h"
 #include "chromeos/dbus/shill_service_client.h"
 #include "chromeos/dbus/shill_third_party_vpn_driver_client.h"
+#include "chromeos/dbus/smb_provider_client.h"
 #include "chromeos/dbus/sms_client.h"
-#include "chromeos/dbus/system_clock_client.h"
 #include "chromeos/dbus/update_engine_client.h"
+#include "chromeos/dbus/upstart_client.h"
 #include "dbus/bus.h"
 #include "dbus/dbus_statistics.h"
 
 namespace chromeos {
 
-static DBusThreadManager* g_dbus_thread_manager = NULL;
+static DBusThreadManager* g_dbus_thread_manager = nullptr;
 static bool g_using_dbus_thread_manager_for_testing = false;
 
-DBusThreadManager::DBusThreadManager(
-    std::unique_ptr<DBusClientBundle> client_bundle)
-    : client_bundle_(std::move(client_bundle)) {
+DBusThreadManager::DBusThreadManager(ClientSet client_set,
+                                     bool use_real_clients)
+    : use_real_clients_(use_real_clients),
+      clients_common_(new DBusClientsCommon(use_real_clients)) {
+  if (client_set == DBusThreadManager::kAll)
+    clients_browser_.reset(new DBusClientsBrowser(use_real_clients));
+  // NOTE: When there are clients only used by ash, create them here.
+
   dbus::statistics::Initialize();
 
-  if (client_bundle_->IsUsingAnyRealClient()) {
-    // At least one real DBusClient is used.
+  if (use_real_clients) {
     // Create the D-Bus thread.
     base::Thread::Options thread_options;
     thread_options.message_loop_type = base::MessageLoop::TYPE_IO;
@@ -77,7 +85,8 @@ DBusThreadManager::DBusThreadManager(
 
 DBusThreadManager::~DBusThreadManager() {
   // Delete all D-Bus clients before shutting down the system bus.
-  client_bundle_.reset();
+  clients_browser_.reset();
+  clients_common_.reset();
 
   // Shut down the bus. During the browser shutdown, it's ok to shut down
   // the bus synchronously.
@@ -94,9 +103,9 @@ DBusThreadManager::~DBusThreadManager() {
     return;  // Called form Shutdown() or local test instance.
 
   // There should never be both a global instance and a local instance.
-  CHECK(this == g_dbus_thread_manager);
+  CHECK_EQ(this, g_dbus_thread_manager);
   if (g_using_dbus_thread_manager_for_testing) {
-    g_dbus_thread_manager = NULL;
+    g_dbus_thread_manager = nullptr;
     g_using_dbus_thread_manager_for_testing = false;
     VLOG(1) << "DBusThreadManager destroyed";
   } else {
@@ -108,219 +117,211 @@ dbus::Bus* DBusThreadManager::GetSystemBus() {
   return system_bus_.get();
 }
 
-AmplifierClient* DBusThreadManager::GetAmplifierClient() {
-  return client_bundle_->amplifier_client();
+ArcAppfuseProviderClient* DBusThreadManager::GetArcAppfuseProviderClient() {
+  return clients_browser_ ? clients_browser_->arc_appfuse_provider_client_.get()
+                          : nullptr;
 }
 
-ApManagerClient* DBusThreadManager::GetApManagerClient() {
-  return client_bundle_->ap_manager_client();
+ArcMidisClient* DBusThreadManager::GetArcMidisClient() {
+  return clients_browser_ ? clients_browser_->arc_midis_client_.get() : nullptr;
 }
 
 ArcObbMounterClient* DBusThreadManager::GetArcObbMounterClient() {
-  return client_bundle_->arc_obb_mounter_client();
+  return clients_browser_ ? clients_browser_->arc_obb_mounter_client_.get()
+                          : nullptr;
 }
 
-AudioDspClient* DBusThreadManager::GetAudioDspClient() {
-  return client_bundle_->audio_dsp_client();
+ArcOemCryptoClient* DBusThreadManager::GetArcOemCryptoClient() {
+  return clients_browser_ ? clients_browser_->arc_oemcrypto_client_.get()
+                          : nullptr;
+}
+
+AuthPolicyClient* DBusThreadManager::GetAuthPolicyClient() {
+  return clients_browser_ ? clients_browser_->auth_policy_client_.get()
+                          : nullptr;
+}
+
+BiodClient* DBusThreadManager::GetBiodClient() {
+  return clients_common_->biod_client_.get();
+}
+
+CecServiceClient* DBusThreadManager::GetCecServiceClient() {
+  return clients_common_->cec_service_client_.get();
+}
+
+CiceroneClient* DBusThreadManager::GetCiceroneClient() {
+  return clients_browser_ ? clients_browser_->cicerone_client_.get() : nullptr;
+}
+
+ConciergeClient* DBusThreadManager::GetConciergeClient() {
+  return clients_browser_ ? clients_browser_->concierge_client_.get() : nullptr;
 }
 
 CrasAudioClient* DBusThreadManager::GetCrasAudioClient() {
-  return client_bundle_->cras_audio_client();
+  return clients_common_->cras_audio_client_.get();
 }
 
 CrosDisksClient* DBusThreadManager::GetCrosDisksClient() {
-  return client_bundle_->cros_disks_client();
+  return clients_browser_ ? clients_browser_->cros_disks_client_.get()
+                          : nullptr;
 }
 
 CryptohomeClient* DBusThreadManager::GetCryptohomeClient() {
-  return client_bundle_->cryptohome_client();
+  return clients_common_->cryptohome_client_.get();
 }
 
 DebugDaemonClient* DBusThreadManager::GetDebugDaemonClient() {
-  return client_bundle_->debug_daemon_client();
+  return clients_browser_ ? clients_browser_->debug_daemon_client_.get()
+                          : nullptr;
+}
+
+DiagnosticsdClient* DBusThreadManager::GetDiagnosticsdClient() {
+  return clients_browser_ ? clients_browser_->diagnosticsd_client_.get()
+                          : nullptr;
 }
 
 EasyUnlockClient* DBusThreadManager::GetEasyUnlockClient() {
-  return client_bundle_->easy_unlock_client();
+  return clients_browser_ ? clients_browser_->easy_unlock_client_.get()
+                          : nullptr;
 }
 
-LorgnetteManagerClient*
-DBusThreadManager::GetLorgnetteManagerClient() {
-  return client_bundle_->lorgnette_manager_client();
+ShillDeviceClient* DBusThreadManager::GetShillDeviceClient() {
+  return clients_common_->shill_device_client_.get();
 }
 
-ShillDeviceClient*
-DBusThreadManager::GetShillDeviceClient() {
-  return client_bundle_->shill_device_client();
+ShillIPConfigClient* DBusThreadManager::GetShillIPConfigClient() {
+  return clients_common_->shill_ipconfig_client_.get();
 }
 
-ShillIPConfigClient*
-DBusThreadManager::GetShillIPConfigClient() {
-  return client_bundle_->shill_ipconfig_client();
+ShillManagerClient* DBusThreadManager::GetShillManagerClient() {
+  return clients_common_->shill_manager_client_.get();
 }
 
-ShillManagerClient*
-DBusThreadManager::GetShillManagerClient() {
-  return client_bundle_->shill_manager_client();
+ShillServiceClient* DBusThreadManager::GetShillServiceClient() {
+  return clients_common_->shill_service_client_.get();
 }
 
-ShillServiceClient*
-DBusThreadManager::GetShillServiceClient() {
-  return client_bundle_->shill_service_client();
-}
-
-ShillProfileClient*
-DBusThreadManager::GetShillProfileClient() {
-  return client_bundle_->shill_profile_client();
+ShillProfileClient* DBusThreadManager::GetShillProfileClient() {
+  return clients_common_->shill_profile_client_.get();
 }
 
 ShillThirdPartyVpnDriverClient*
 DBusThreadManager::GetShillThirdPartyVpnDriverClient() {
-  return client_bundle_->shill_third_party_vpn_driver_client();
+  return clients_common_->shill_third_party_vpn_driver_client_.get();
 }
 
 GsmSMSClient* DBusThreadManager::GetGsmSMSClient() {
-  return client_bundle_->gsm_sms_client();
+  return clients_common_->gsm_sms_client_.get();
 }
 
 ImageBurnerClient* DBusThreadManager::GetImageBurnerClient() {
-  return client_bundle_->image_burner_client();
+  return clients_browser_ ? clients_browser_->image_burner_client_.get()
+                          : nullptr;
 }
 
-IntrospectableClient* DBusThreadManager::GetIntrospectableClient() {
-  return client_bundle_->introspectable_client();
+ImageLoaderClient* DBusThreadManager::GetImageLoaderClient() {
+  return clients_browser_ ? clients_browser_->image_loader_client_.get()
+                          : nullptr;
+}
+
+LorgnetteManagerClient* DBusThreadManager::GetLorgnetteManagerClient() {
+  return clients_browser_ ? clients_browser_->lorgnette_manager_client_.get()
+                          : nullptr;
+}
+
+MachineLearningClient* DBusThreadManager::GetMachineLearningClient() {
+  return clients_common_->machine_learning_client_.get();
+}
+
+MediaAnalyticsClient* DBusThreadManager::GetMediaAnalyticsClient() {
+  return clients_browser_ ? clients_browser_->media_analytics_client_.get()
+                          : nullptr;
 }
 
 ModemMessagingClient* DBusThreadManager::GetModemMessagingClient() {
-  return client_bundle_->modem_messaging_client();
+  return clients_common_->modem_messaging_client_.get();
 }
 
-NfcAdapterClient* DBusThreadManager::GetNfcAdapterClient() {
-  return client_bundle_->nfc_adapter_client();
-}
-
-NfcDeviceClient* DBusThreadManager::GetNfcDeviceClient() {
-  return client_bundle_->nfc_device_client();
-}
-
-NfcManagerClient* DBusThreadManager::GetNfcManagerClient() {
-  return client_bundle_->nfc_manager_client();
-}
-
-NfcRecordClient* DBusThreadManager::GetNfcRecordClient() {
-  return client_bundle_->nfc_record_client();
-}
-
-NfcTagClient* DBusThreadManager::GetNfcTagClient() {
-  return client_bundle_->nfc_tag_client();
-}
-
-PeerDaemonManagerClient* DBusThreadManager::GetPeerDaemonManagerClient() {
-  return client_bundle_->peer_daemon_manager_client();
+OobeConfigurationClient* DBusThreadManager::GetOobeConfigurationClient() {
+  return clients_browser_->oobe_configuration_client_.get();
 }
 
 PermissionBrokerClient* DBusThreadManager::GetPermissionBrokerClient() {
-  return client_bundle_->permission_broker_client();
-}
-
-PowerManagerClient* DBusThreadManager::GetPowerManagerClient() {
-  return client_bundle_->power_manager_client();
-}
-
-PrivetDaemonManagerClient* DBusThreadManager::GetPrivetDaemonManagerClient() {
-  return client_bundle_->privet_daemon_manager_client();
+  return clients_common_->permission_broker_client_.get();
 }
 
 SessionManagerClient* DBusThreadManager::GetSessionManagerClient() {
-  return client_bundle_->session_manager_client();
+  return clients_common_->session_manager_client_.get();
+}
+
+RuntimeProbeClient* DBusThreadManager::GetRuntimeProbeClient() {
+  return clients_browser_ ? clients_browser_->runtime_probe_client_.get()
+                          : nullptr;
+}
+
+SeneschalClient* DBusThreadManager::GetSeneschalClient() {
+  return clients_browser_ ? clients_browser_->seneschal_client_.get() : nullptr;
+}
+
+SmbProviderClient* DBusThreadManager::GetSmbProviderClient() {
+  return clients_browser_ ? clients_browser_->smb_provider_client_.get()
+                          : nullptr;
 }
 
 SMSClient* DBusThreadManager::GetSMSClient() {
-  return client_bundle_->sms_client();
-}
-
-SystemClockClient* DBusThreadManager::GetSystemClockClient() {
-  return client_bundle_->system_clock_client();
+  return clients_common_->sms_client_.get();
 }
 
 UpdateEngineClient* DBusThreadManager::GetUpdateEngineClient() {
-  return client_bundle_->update_engine_client();
+  return clients_common_->update_engine_client_.get();
+}
+
+UpstartClient* DBusThreadManager::GetUpstartClient() {
+  return clients_common_ ? clients_common_->upstart_client_.get() : nullptr;
+}
+
+VirtualFileProviderClient* DBusThreadManager::GetVirtualFileProviderClient() {
+  return clients_browser_
+             ? clients_browser_->virtual_file_provider_client_.get()
+             : nullptr;
 }
 
 void DBusThreadManager::InitializeClients() {
-  GetAmplifierClient()->Init(GetSystemBus());
-  GetApManagerClient()->Init(GetSystemBus());
-  GetArcObbMounterClient()->Init(GetSystemBus());
-  GetAudioDspClient()->Init(GetSystemBus());
-  GetCrasAudioClient()->Init(GetSystemBus());
-  GetCrosDisksClient()->Init(GetSystemBus());
-  GetCryptohomeClient()->Init(GetSystemBus());
-  GetDebugDaemonClient()->Init(GetSystemBus());
-  GetEasyUnlockClient()->Init(GetSystemBus());
-  GetGsmSMSClient()->Init(GetSystemBus());
-  GetImageBurnerClient()->Init(GetSystemBus());
-  GetIntrospectableClient()->Init(GetSystemBus());
-  GetLorgnetteManagerClient()->Init(GetSystemBus());
-  GetModemMessagingClient()->Init(GetSystemBus());
-  GetPermissionBrokerClient()->Init(GetSystemBus());
-  GetPeerDaemonManagerClient()->Init(GetSystemBus());
-  GetPrivetDaemonManagerClient()->Init(GetSystemBus());
-  GetPowerManagerClient()->Init(GetSystemBus());
-  GetSessionManagerClient()->Init(GetSystemBus());
-  GetShillDeviceClient()->Init(GetSystemBus());
-  GetShillIPConfigClient()->Init(GetSystemBus());
-  GetShillManagerClient()->Init(GetSystemBus());
-  GetShillServiceClient()->Init(GetSystemBus());
-  GetShillProfileClient()->Init(GetSystemBus());
-  GetShillThirdPartyVpnDriverClient()->Init(GetSystemBus());
-  GetSMSClient()->Init(GetSystemBus());
-  GetSystemClockClient()->Init(GetSystemBus());
-  GetUpdateEngineClient()->Init(GetSystemBus());
+  // Some clients call DBusThreadManager::Get() during initialization.
+  DCHECK(g_dbus_thread_manager);
 
-  // Initialize the NFC clients in the correct order. The order of
-  // initialization matters due to dependencies that exist between the
-  // client objects.
-  GetNfcManagerClient()->Init(GetSystemBus());
-  GetNfcAdapterClient()->Init(GetSystemBus());
-  GetNfcDeviceClient()->Init(GetSystemBus());
-  GetNfcTagClient()->Init(GetSystemBus());
-  GetNfcRecordClient()->Init(GetSystemBus());
+  clients_common_->Initialize(GetSystemBus());
+  if (clients_browser_)
+    clients_browser_->Initialize(GetSystemBus());
 
-  // This must be called after the list of clients so they've each had a
-  // chance to register with their object g_dbus_thread_managers.
-  if (GetSystemBus())
-    GetSystemBus()->GetManagedObjects();
-
-  client_bundle_->SetupDefaultEnvironment();
+  if (use_real_clients_)
+    VLOG(1) << "DBusThreadManager initialized for Chrome OS";
+  else
+    VLOG(1) << "DBusThreadManager created for testing";
 }
 
-bool DBusThreadManager::IsUsingStub(DBusClientBundle::DBusClientType client) {
-  return client_bundle_->IsUsingStub(client);
+bool DBusThreadManager::IsUsingFakes() {
+  return !use_real_clients_;
 }
 
 // static
-void DBusThreadManager::Initialize() {
+void DBusThreadManager::Initialize(ClientSet client_set) {
   // If we initialize DBusThreadManager twice we may also be shutting it down
   // early; do not allow that.
   if (g_using_dbus_thread_manager_for_testing)
     return;
 
   CHECK(!g_dbus_thread_manager);
-  bool use_dbus_stub = !base::SysInfo::IsRunningOnChromeOS() ||
-                       base::CommandLine::ForCurrentProcess()->HasSwitch(
-                           chromeos::switches::kDbusStub);
-  bool force_unstub_clients = base::CommandLine::ForCurrentProcess()->HasSwitch(
-      chromeos::switches::kDbusUnstubClients);
-  // Determine whether we use stub or real client implementations.
-  if (force_unstub_clients) {
-    InitializeWithPartialStub(
-        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-            chromeos::switches::kDbusUnstubClients));
-  } else if (use_dbus_stub) {
-    InitializeWithStubs();
-  } else {
-    InitializeWithRealClients();
-  }
+  bool use_real_clients = base::SysInfo::IsRunningOnChromeOS() &&
+                          !base::CommandLine::ForCurrentProcess()->HasSwitch(
+                              chromeos::switches::kDbusStub);
+  g_dbus_thread_manager = new DBusThreadManager(client_set, use_real_clients);
+  g_dbus_thread_manager->InitializeClients();
+}
+
+// static
+void DBusThreadManager::Initialize() {
+  Initialize(kAll);
 }
 
 // static
@@ -328,49 +329,20 @@ std::unique_ptr<DBusThreadManagerSetter>
 DBusThreadManager::GetSetterForTesting() {
   if (!g_using_dbus_thread_manager_for_testing) {
     g_using_dbus_thread_manager_for_testing = true;
-    InitializeWithStubs();
+    CHECK(!g_dbus_thread_manager);
+    // TODO(jamescook): Don't initialize clients as a side-effect of using a
+    // test API. For now, assume the caller wants all clients.
+    g_dbus_thread_manager =
+        new DBusThreadManager(kAll, false /* use_real_clients */);
+    g_dbus_thread_manager->InitializeClients();
   }
 
   return base::WrapUnique(new DBusThreadManagerSetter());
 }
 
 // static
-void DBusThreadManager::CreateGlobalInstance(
-    DBusClientBundle::DBusClientTypeMask unstub_client_mask) {
-  CHECK(!g_dbus_thread_manager);
-  g_dbus_thread_manager = new DBusThreadManager(
-      base::WrapUnique(new DBusClientBundle(unstub_client_mask)));
-  g_dbus_thread_manager->InitializeClients();
-}
-
-// static
-void DBusThreadManager::InitializeWithRealClients() {
-  CreateGlobalInstance(~static_cast<DBusClientBundle::DBusClientTypeMask>(0));
-  VLOG(1) << "DBusThreadManager initialized for Chrome OS";
-}
-
-// static
-void DBusThreadManager::InitializeWithStubs() {
-  CreateGlobalInstance(0 /* unstub_client_mask */);
-  VLOG(1) << "DBusThreadManager created for testing";
-}
-
-// static
-void DBusThreadManager::InitializeWithPartialStub(
-    const std::string& unstub_clients) {
-  DBusClientBundle::DBusClientTypeMask unstub_client_mask =
-      DBusClientBundle::ParseUnstubList(unstub_clients);
-  // We should have something parsed correctly here.
-  LOG_IF(FATAL, unstub_client_mask == 0)
-      << "Switch values for --" << chromeos::switches::kDbusUnstubClients
-      << " cannot be parsed: " << unstub_clients;
-  VLOG(1) << "DBusThreadManager initialized for mixed runtime environment";
-  CreateGlobalInstance(unstub_client_mask);
-}
-
-// static
 bool DBusThreadManager::IsInitialized() {
-  return g_dbus_thread_manager != NULL;
+  return !!g_dbus_thread_manager;
 }
 
 // static
@@ -378,7 +350,7 @@ void DBusThreadManager::Shutdown() {
   // Ensure that we only shutdown DBusThreadManager once.
   CHECK(g_dbus_thread_manager);
   DBusThreadManager* dbus_thread_manager = g_dbus_thread_manager;
-  g_dbus_thread_manager = NULL;
+  g_dbus_thread_manager = nullptr;
   g_using_dbus_thread_manager_for_testing = false;
   delete dbus_thread_manager;
   VLOG(1) << "DBusThreadManager Shutdown completed";
@@ -391,192 +363,151 @@ DBusThreadManager* DBusThreadManager::Get() {
   return g_dbus_thread_manager;
 }
 
-DBusThreadManagerSetter::DBusThreadManagerSetter() {
-}
+DBusThreadManagerSetter::DBusThreadManagerSetter() = default;
 
-DBusThreadManagerSetter::~DBusThreadManagerSetter() {
-}
+DBusThreadManagerSetter::~DBusThreadManagerSetter() = default;
 
-void DBusThreadManagerSetter::SetAmplifierClient(
-    std::unique_ptr<AmplifierClient> client) {
-  DBusThreadManager::Get()->client_bundle_->amplifier_client_ =
+void DBusThreadManagerSetter::SetAuthPolicyClient(
+    std::unique_ptr<AuthPolicyClient> client) {
+  DBusThreadManager::Get()->clients_browser_->auth_policy_client_ =
       std::move(client);
 }
 
-void DBusThreadManagerSetter::SetAudioDspClient(
-    std::unique_ptr<AudioDspClient> client) {
-  DBusThreadManager::Get()->client_bundle_->audio_dsp_client_ =
+void DBusThreadManagerSetter::SetBiodClient(
+    std::unique_ptr<BiodClient> client) {
+  DBusThreadManager::Get()->clients_common_->biod_client_ = std::move(client);
+}
+
+void DBusThreadManagerSetter::SetCiceroneClient(
+    std::unique_ptr<CiceroneClient> client) {
+  DBusThreadManager::Get()->clients_browser_->cicerone_client_ =
+      std::move(client);
+}
+
+void DBusThreadManagerSetter::SetConciergeClient(
+    std::unique_ptr<ConciergeClient> client) {
+  DBusThreadManager::Get()->clients_browser_->concierge_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetCrasAudioClient(
     std::unique_ptr<CrasAudioClient> client) {
-  DBusThreadManager::Get()->client_bundle_->cras_audio_client_ =
+  DBusThreadManager::Get()->clients_common_->cras_audio_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetCrosDisksClient(
     std::unique_ptr<CrosDisksClient> client) {
-  DBusThreadManager::Get()->client_bundle_->cros_disks_client_ =
+  DBusThreadManager::Get()->clients_browser_->cros_disks_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetCryptohomeClient(
     std::unique_ptr<CryptohomeClient> client) {
-  DBusThreadManager::Get()->client_bundle_->cryptohome_client_ =
+  DBusThreadManager::Get()->clients_common_->cryptohome_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetDebugDaemonClient(
     std::unique_ptr<DebugDaemonClient> client) {
-  DBusThreadManager::Get()->client_bundle_->debug_daemon_client_ =
+  DBusThreadManager::Get()->clients_browser_->debug_daemon_client_ =
       std::move(client);
 }
 
-void DBusThreadManagerSetter::SetEasyUnlockClient(
-    std::unique_ptr<EasyUnlockClient> client) {
-  DBusThreadManager::Get()->client_bundle_->easy_unlock_client_ =
+void DBusThreadManagerSetter::SetRuntimeProbeClient(
+    std::unique_ptr<RuntimeProbeClient> client) {
+  DBusThreadManager::Get()->clients_browser_->runtime_probe_client_ =
       std::move(client);
 }
 
-void DBusThreadManagerSetter::SetLorgnetteManagerClient(
-    std::unique_ptr<LorgnetteManagerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->lorgnette_manager_client_ =
+void DBusThreadManagerSetter::SetSeneschalClient(
+    std::unique_ptr<SeneschalClient> client) {
+  DBusThreadManager::Get()->clients_browser_->seneschal_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetShillDeviceClient(
     std::unique_ptr<ShillDeviceClient> client) {
-  DBusThreadManager::Get()->client_bundle_->shill_device_client_ =
+  DBusThreadManager::Get()->clients_common_->shill_device_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetShillIPConfigClient(
     std::unique_ptr<ShillIPConfigClient> client) {
-  DBusThreadManager::Get()->client_bundle_->shill_ipconfig_client_ =
+  DBusThreadManager::Get()->clients_common_->shill_ipconfig_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetShillManagerClient(
     std::unique_ptr<ShillManagerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->shill_manager_client_ =
+  DBusThreadManager::Get()->clients_common_->shill_manager_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetShillServiceClient(
     std::unique_ptr<ShillServiceClient> client) {
-  DBusThreadManager::Get()->client_bundle_->shill_service_client_ =
+  DBusThreadManager::Get()->clients_common_->shill_service_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetShillProfileClient(
     std::unique_ptr<ShillProfileClient> client) {
-  DBusThreadManager::Get()->client_bundle_->shill_profile_client_ =
+  DBusThreadManager::Get()->clients_common_->shill_profile_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetShillThirdPartyVpnDriverClient(
     std::unique_ptr<ShillThirdPartyVpnDriverClient> client) {
   DBusThreadManager::Get()
-      ->client_bundle_->shill_third_party_vpn_driver_client_ =
+      ->clients_common_->shill_third_party_vpn_driver_client_ =
       std::move(client);
-}
-
-void DBusThreadManagerSetter::SetGsmSMSClient(
-    std::unique_ptr<GsmSMSClient> client) {
-  DBusThreadManager::Get()->client_bundle_->gsm_sms_client_ = std::move(client);
 }
 
 void DBusThreadManagerSetter::SetImageBurnerClient(
     std::unique_ptr<ImageBurnerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->image_burner_client_ =
+  DBusThreadManager::Get()->clients_browser_->image_burner_client_ =
       std::move(client);
 }
 
-void DBusThreadManagerSetter::SetIntrospectableClient(
-    std::unique_ptr<IntrospectableClient> client) {
-  DBusThreadManager::Get()->client_bundle_->introspectable_client_ =
+void DBusThreadManagerSetter::SetImageLoaderClient(
+    std::unique_ptr<ImageLoaderClient> client) {
+  DBusThreadManager::Get()->clients_browser_->image_loader_client_ =
       std::move(client);
 }
 
-void DBusThreadManagerSetter::SetModemMessagingClient(
-    std::unique_ptr<ModemMessagingClient> client) {
-  DBusThreadManager::Get()->client_bundle_->modem_messaging_client_ =
-      std::move(client);
-}
-
-void DBusThreadManagerSetter::SetNfcAdapterClient(
-    std::unique_ptr<NfcAdapterClient> client) {
-  DBusThreadManager::Get()->client_bundle_->nfc_adapter_client_ =
-      std::move(client);
-}
-
-void DBusThreadManagerSetter::SetNfcDeviceClient(
-    std::unique_ptr<NfcDeviceClient> client) {
-  DBusThreadManager::Get()->client_bundle_->nfc_device_client_ =
-      std::move(client);
-}
-
-void DBusThreadManagerSetter::SetNfcManagerClient(
-    std::unique_ptr<NfcManagerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->nfc_manager_client_ =
-      std::move(client);
-}
-
-void DBusThreadManagerSetter::SetNfcRecordClient(
-    std::unique_ptr<NfcRecordClient> client) {
-  DBusThreadManager::Get()->client_bundle_->nfc_record_client_ =
-      std::move(client);
-}
-
-void DBusThreadManagerSetter::SetNfcTagClient(
-    std::unique_ptr<NfcTagClient> client) {
-  DBusThreadManager::Get()->client_bundle_->nfc_tag_client_ = std::move(client);
-}
-
-void DBusThreadManagerSetter::SetPeerDaemonManagerClient(
-    std::unique_ptr<PeerDaemonManagerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->peer_daemon_manager_client_ =
+void DBusThreadManagerSetter::SetMediaAnalyticsClient(
+    std::unique_ptr<MediaAnalyticsClient> client) {
+  DBusThreadManager::Get()->clients_browser_->media_analytics_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetPermissionBrokerClient(
     std::unique_ptr<PermissionBrokerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->permission_broker_client_ =
-      std::move(client);
-}
-
-void DBusThreadManagerSetter::SetPrivetDaemonManagerClient(
-    std::unique_ptr<PrivetDaemonManagerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->privet_daemon_manager_client_ =
-      std::move(client);
-}
-
-void DBusThreadManagerSetter::SetPowerManagerClient(
-    std::unique_ptr<PowerManagerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->power_manager_client_ =
+  DBusThreadManager::Get()->clients_common_->permission_broker_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetSessionManagerClient(
     std::unique_ptr<SessionManagerClient> client) {
-  DBusThreadManager::Get()->client_bundle_->session_manager_client_ =
+  DBusThreadManager::Get()->clients_common_->session_manager_client_ =
       std::move(client);
 }
 
-void DBusThreadManagerSetter::SetSMSClient(std::unique_ptr<SMSClient> client) {
-  DBusThreadManager::Get()->client_bundle_->sms_client_ = std::move(client);
-}
-
-void DBusThreadManagerSetter::SetSystemClockClient(
-    std::unique_ptr<SystemClockClient> client) {
-  DBusThreadManager::Get()->client_bundle_->system_clock_client_ =
+void DBusThreadManagerSetter::SetSmbProviderClient(
+    std::unique_ptr<SmbProviderClient> client) {
+  DBusThreadManager::Get()->clients_browser_->smb_provider_client_ =
       std::move(client);
 }
 
 void DBusThreadManagerSetter::SetUpdateEngineClient(
     std::unique_ptr<UpdateEngineClient> client) {
-  DBusThreadManager::Get()->client_bundle_->update_engine_client_ =
+  DBusThreadManager::Get()->clients_common_->update_engine_client_ =
+      std::move(client);
+}
+
+void DBusThreadManagerSetter::SetUpstartClient(
+    std::unique_ptr<UpstartClient> client) {
+  DBusThreadManager::Get()->clients_common_->upstart_client_ =
       std::move(client);
 }
 

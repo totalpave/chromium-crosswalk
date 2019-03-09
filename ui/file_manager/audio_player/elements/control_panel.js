@@ -2,6 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+/**
+ * @typedef {?{
+ *   mute: string,
+ *   next: string,
+ *   pause: string,
+ *   play: string,
+ *   playList: string,
+ *   previous: string,
+ *   repeat: string,
+ *   seekSlider: string,
+ *   shuffle: string,
+ *   unmute: string,
+ *   volumeSlider: string,
+ * }}
+ */
+var AriaLabels;
+
 (function() {
   'use strict';
 
@@ -47,16 +64,6 @@
       time: {
         type: Number,
         value: 0,
-        notify: true
-      },
-
-      /**
-       * Current seeking position on the time slider in millisecond.
-       */
-      seekingTime: {
-        type: Number,
-        value: 0,
-        readOnly: true
       },
 
       /**
@@ -64,7 +71,7 @@
        */
       duration: {
         type: Number,
-        value: 0
+        value: 0,
       },
 
       /**
@@ -73,16 +80,17 @@
       shuffle: {
         type: Boolean,
         value: false,
-        notify: true
+        notify: true,
       },
 
       /**
-       * Whether the repeat button is ON.
+       * What mode the repeat button idicates.
+       * repeat-modes can be "no-repeat", "repeat-all", "repeat-one".
        */
-      repeat: {
-        type: Boolean,
-        value: false,
-        notify: true
+      repeatMode: {
+        type: String,
+        value: 'no-repeat',
+        notify: true,
       },
 
       /**
@@ -93,7 +101,7 @@
         value: 50,
         notify: true,
         reflectToAttribute: true,
-        observer: 'volumeChanged_'
+        observer: 'volumeChanged_',
       },
 
       /**
@@ -102,7 +110,7 @@
       playlistExpanded: {
         type: Boolean,
         value: false,
-        notify: true
+        notify: true,
       },
 
       /**
@@ -111,16 +119,17 @@
       dragging: {
         type: Boolean,
         value: false,
-        notify: true
+        notify: true,
       },
 
       /**
        * Dictionary which contains aria-labels for each controls.
+       * @type {AriaLabels}
        */
       ariaLabels: {
         type: Object,
-        observer: 'ariaLabelsChanged_'
-      }
+        observer: 'ariaLabelsChanged_',
+      },
     },
 
     /**
@@ -128,28 +137,15 @@
      * element is ready.
      */
     ready: function() {
-      var timeSlider = /** @type {PaperSliderElement} */ (this.$.timeSlider);
-      timeSlider.addEventListener('change', function() {
-        if (this.dragging)
-          this.dragging = false;
-        this._setSeekingTime(0);
-      }.bind(this));
-      timeSlider.addEventListener('immediate-value-change', function() {
-        this._setSeekingTime(timeSlider.immediateValue);
-        if (!this.dragging)
-          this.dragging = true;
-      }.bind(this));
+      var timeSlider = /** @type {!CrSliderElement} */ (this.$.timeSlider);
+      timeSlider.addEventListener('cr-slider-value-changed', () => {
+        this.fire('update-time', timeSlider.value);
+      });
 
-      // Update volume on user inputs for volume slider.
-      // During a drag operation, the volume should be updated immediately.
-      var volumeSlider =
-          /** @type {PaperSliderElement} */ (this.$.volumeSlider);
-      volumeSlider.addEventListener('change', function() {
+      var volumeSlider = /** @type {!CrSliderElement} */ (this.$.volumeSlider);
+      volumeSlider.addEventListener('cr-slider-value-changed', () => {
         this.volume = volumeSlider.value;
-      }.bind(this));
-      volumeSlider.addEventListener('immediate-value-change', function() {
-        this.volume = volumeSlider.immediateValue;
-      }.bind(this));
+      });
     },
 
     /**
@@ -186,38 +182,35 @@
     },
 
     /**
-     * Skips min(5 seconds, 10% of duration).
      * @param {boolean} forward Whether to skip forward/backword.
      */
     smallSkip: function(forward) {
-      var millisecondsToSkip = Math.min(5000, this.duration / 10);
-      if (!forward) {
-        millisecondsToSkip *= -1;
-      }
-      this.skip_(millisecondsToSkip);
+      this.skip_(true /* small */, forward);
     },
 
     /**
-     * Skips min(10 seconds, 20% of duration).
      * @param {boolean} forward Whether to skip forward/backword.
      */
     bigSkip: function(forward) {
-      var millisecondsToSkip = Math.min(10000, this.duration / 5);
-      if (!forward) {
-        millisecondsToSkip *= -1;
-      }
-      this.skip_(millisecondsToSkip);
+      this.skip_(false /* small */, forward);
     },
 
     /**
-     * Skips forward/backword.
-     * @param {number} millis Milliseconds to skip. Set negative value to skip
-     *     backword.
+     * Skips small min(5 seconds, 10% of duration) or large
+     * min(10 seconds, 20% of duration).
+     * @param {boolean} small Whether to skip small/large interval.
+     * @param {boolean} forward Whether to skip forward/backword.
      * @private
      */
-    skip_: function(millis) {
-      if (this.duration > 0)
-        this.time = Math.max(Math.min(this.time + millis, this.duration), 0);
+    skip_: function(small, forward) {
+      var maxSkip = small ? 5000 : 10000;
+      var percentOfDuration = (small ? .1 : .2) * this.duration;
+      var update = (forward ? 1 : -1) * Math.min(maxSkip, percentOfDuration);
+      if (this.duration > 0) {
+        this.fire(
+            'update-time',
+            Math.max(Math.min(this.time + update, this.duration), 0));
+      }
     },
 
     /**
@@ -240,23 +233,6 @@
     },
 
     /**
-     * Computes string representation of displayed time. If a user is dragging
-     * the knob of seek bar, seeking position should be shown. Otherwise,
-     * playing position should be shown.
-     * @param {boolean} dragging Whether the know of seek bar is being dragged.
-     * @param {number} time Time corresponding to the playing position.
-     * @param {number} seekingTime Time corresponding to the seeking position.
-     * @param {number} duration Duration of the audio file.
-     * @return {string} String representation to be displayed as current time.
-     */
-    computeDisplayTimeString_: function(dragging, time, seekingTime, duration) {
-      if (dragging)
-        return this.computeTimeString_(seekingTime, duration);
-      else
-        return this.computeTimeString_(time, duration);
-    },
-
-    /**
      * Invoked when the playing property is changed.
      * @param {boolean} playing
      * @private
@@ -274,13 +250,22 @@
      * @private
      */
     volumeChanged_: function(volume) {
-      if (!this.$.volumeSlider.dragging)
+      if (!this.$.volumeSlider.dragging) {
         this.$.volumeSlider.value = volume;
+      }
 
       if (this.ariaLabels) {
         this.$.volumeButton.setAttribute('aria-label',
             volume !== 0 ? this.ariaLabels.mute : this.ariaLabels.unmute);
       }
+    },
+
+    /**
+     * @param {!CustomEvent<{value: boolean}>} e
+     * @private
+     */
+    onSeekingChanged_: function(e) {
+      this.fire('seeking-changed', e.detail);
     },
 
     /**
@@ -298,7 +283,6 @@
       this.$.play.setAttribute('aria-label',
           this.playing ? ariaLabels.pause : ariaLabels.play);
       this.$.next.setAttribute('aria-label', ariaLabels.next);
-      this.$.volumeButton.setAttribute('aria-label', ariaLabels.volume);
       this.$.playList.setAttribute('aria-label', ariaLabels.playList);
       this.$.timeSlider.setAttribute('aria-label', ariaLabels.seekSlider);
       this.$.volumeButton.setAttribute('aria-label',

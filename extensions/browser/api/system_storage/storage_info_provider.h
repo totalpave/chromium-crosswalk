@@ -10,7 +10,6 @@
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/observer_list_threadsafe.h"
 #include "extensions/browser/api/system_info/system_info_provider.h"
 #include "extensions/common/api/system_storage.h"
 
@@ -43,7 +42,7 @@ class StorageInfoProvider : public SystemInfoProvider {
   void PrepareQueryOnUIThread() override;
   void InitializeProvider(const base::Closure& do_query_info_callback) override;
 
-  virtual double GetStorageFreeSpaceFromTransientIdOnFileThread(
+  virtual double GetStorageFreeSpaceFromTransientIdAsync(
       const std::string& transient_id);
 
   const StorageUnitInfoList& storage_unit_info_list() const { return info_; }
@@ -73,7 +72,8 @@ class StorageInfoProvider : public SystemInfoProvider {
   // the blocking pool, including fixed and removable devices.
   bool QueryInfo() override;
 
-  static base::LazyInstance<scoped_refptr<StorageInfoProvider> > provider_;
+  static base::LazyInstance<
+      scoped_refptr<StorageInfoProvider>>::DestructorAtExit provider_;
 
   DISALLOW_COPY_AND_ASSIGN(StorageInfoProvider);
 };

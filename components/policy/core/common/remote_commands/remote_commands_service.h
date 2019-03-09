@@ -5,17 +5,18 @@
 #ifndef COMPONENTS_POLICY_CORE_COMMON_REMOTE_COMMANDS_REMOTE_COMMANDS_SERVICE_H_
 #define COMPONENTS_POLICY_CORE_COMMON_REMOTE_COMMANDS_REMOTE_COMMANDS_SERVICE_H_
 
-#include <deque>
 #include <memory>
 #include <vector>
 
+#include "base/callback_forward.h"
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
 #include "components/policy/core/common/remote_commands/remote_commands_queue.h"
 #include "components/policy/policy_export.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace base {
 class TickClock;
@@ -51,7 +52,9 @@ class POLICY_EXPORT RemoteCommandsService
   }
 
   // Set an alternative clock for testing.
-  void SetClockForTesting(std::unique_ptr<base::TickClock> clock);
+  void SetClockForTesting(const base::TickClock* clock);
+
+  virtual void SetOnCommandAckedCallback(base::OnceClosure callback);
 
  private:
   // Helper function to enqueue a command which we get from server.
@@ -90,11 +93,15 @@ class POLICY_EXPORT RemoteCommandsService
   // IDs will be stored in the order that they are fetched from the server,
   // and acknowledging a command will discard its ID from
   // |fetched_command_ids_|, as well as the IDs of every command before it.
-  std::deque<RemoteCommandJob::UniqueIDType> fetched_command_ids_;
+  base::circular_deque<RemoteCommandJob::UniqueIDType> fetched_command_ids_;
 
   RemoteCommandsQueue queue_;
   std::unique_ptr<RemoteCommandsFactory> factory_;
   CloudPolicyClient* const client_;
+
+  // Callback which gets called after the last command got ACK'd to the server
+  // as executed.
+  base::OnceClosure on_command_acked_callback_;
 
   base::WeakPtrFactory<RemoteCommandsService> weak_factory_;
 

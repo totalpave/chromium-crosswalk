@@ -9,18 +9,24 @@
 #include <string>
 
 #include "base/callback_forward.h"
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "base/optional.h"
 #include "base/values.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
+#include "extensions/common/extension_id.h"
+#include "url/origin.h"
 
 namespace net {
 class AuthChallengeInfo;
 class HttpRequestHeaders;
 class HttpResponseHeaders;
-class URLRequest;
-}
+}  // namespace net
 
 namespace extensions {
+
+class InfoMap;
+struct WebRequestInfo;
 
 // This helper class is used to construct the details for a webRequest event
 // dictionary. Some keys are present on every event, others are only relevant
@@ -46,12 +52,13 @@ class WebRequestEventDetails {
   // - timeStamp
   // - type
   // - url
-  WebRequestEventDetails(const net::URLRequest* request, int extra_info_spec);
+  WebRequestEventDetails(const WebRequestInfo& request, int extra_info_spec);
   ~WebRequestEventDetails();
 
   // Sets the following key:
   // - requestBody (on demand)
-  void SetRequestBody(const net::URLRequest* request);
+  // Takes ownership of |request_body_data| in |*request|.
+  void SetRequestBody(WebRequestInfo* request);
 
   // Sets the following key:
   // - requestHeaders (on demand)
@@ -68,13 +75,13 @@ class WebRequestEventDetails {
   // - responseHeaders (on demand)
   // - statusCode
   // - statusLine
-  void SetResponseHeaders(const net::URLRequest* request,
+  void SetResponseHeaders(const WebRequestInfo& request,
                           const net::HttpResponseHeaders* response_headers);
 
   // Sets the following key:
   // - fromCache
   // - ip
-  void SetResponseSource(const net::URLRequest* request);
+  void SetResponseSource(const WebRequestInfo& request);
 
   void SetBoolean(const std::string& key, bool value) {
     dict_.SetBoolean(key, value);
@@ -88,6 +95,12 @@ class WebRequestEventDetails {
     dict_.SetString(key, value);
   }
 
+  // Sets the following keys using the value provided.
+  // - tabId
+  // - frameId
+  // - parentFrameId
+  void SetFrameData(const ExtensionApiFrameIdMap::FrameData& frame_data);
+
   // Sets the following keys using information from constructor.
   // - tabId
   // - frameId
@@ -95,36 +108,30 @@ class WebRequestEventDetails {
   // This must be called from the UI thread.
   void DetermineFrameDataOnUI();
 
-  // Sets the following keys using information from constructor.
-  // - tabId
-  // - frameId
-  // - parentFrameId
-  //
-  // This method is more expensive than DetermineFrameDataOnUI because it may
-  // involve thread hops, so prefer using DetermineFrameDataOnUI() if possible.
-  // The callback is called as soon as these IDs are determined, which can be
-  // synchronous or asynchronous.
-  //
-  // The caller must not use or delete this WebRequestEventDetails instance
-  // after calling this method. Ownership of this instance is transferred to
-  // |callback|.
-  void DetermineFrameDataOnIO(const DeterminedFrameDataCallback& callback);
-
   // Create an event dictionary that contains all required keys, and also the
-  // extra keys as specified by the |extra_info_spec| filter.
+  // extra keys as specified by the |extra_info_spec| filter. If the listener
+  // this event will be dispatched to doesn't have permission for the initiator
+  // then the initiator will not be populated.
   // This can be called from any thread.
   std::unique_ptr<base::DictionaryValue> GetFilteredDict(
-      int extra_info_spec) const;
+      int extra_info_spec,
+      const InfoMap* extension_info_map,
+      const ExtensionId& extension_id,
+      bool crosses_incognito) const;
 
   // Get the internal dictionary, unfiltered. After this call, the internal
   // dictionary is empty.
   std::unique_ptr<base::DictionaryValue> GetAndClearDict();
 
+  // Returns a filtered copy with only whitelisted data for public session.
+  std::unique_ptr<WebRequestEventDetails> CreatePublicSessionCopy();
+
  private:
-  void OnDeterminedFrameData(
-      std::unique_ptr<WebRequestEventDetails> self,
-      const DeterminedFrameDataCallback& callback,
-      const ExtensionApiFrameIdMap::FrameData& frame_data);
+  FRIEND_TEST_ALL_PREFIXES(
+      WebRequestEventDetailsTest, WhitelistedCopyForPublicSession);
+
+  // Empty constructor used in unittests.
+  WebRequestEventDetails();
 
   // The details that are always included in a webRequest event object.
   base::DictionaryValue dict_;
@@ -133,6 +140,7 @@ class WebRequestEventDetails {
   std::unique_ptr<base::DictionaryValue> request_body_;
   std::unique_ptr<base::ListValue> request_headers_;
   std::unique_ptr<base::ListValue> response_headers_;
+  base::Optional<url::Origin> initiator_;
 
   int extra_info_spec_;
 

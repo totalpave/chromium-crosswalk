@@ -6,24 +6,27 @@
 #define MEDIA_GPU_VP8_PICTURE_H_
 
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
+#include "media/filters/vp8_parser.h"
+#include "media/gpu/codec_picture.h"
 
 namespace media {
 
 class V4L2VP8Picture;
 class VaapiVP8Picture;
 
-class VP8Picture : public base::RefCounted<VP8Picture> {
+class VP8Picture : public CodecPicture {
  public:
   VP8Picture();
 
   virtual V4L2VP8Picture* AsV4L2VP8Picture();
   virtual VaapiVP8Picture* AsVaapiVP8Picture();
 
- protected:
-  friend class base::RefCounted<VP8Picture>;
-  virtual ~VP8Picture();
+  std::unique_ptr<Vp8FrameHeader> frame_hdr;
 
+ protected:
+  ~VP8Picture() override;
+
+ private:
   DISALLOW_COPY_AND_ASSIGN(VP8Picture);
 };
 

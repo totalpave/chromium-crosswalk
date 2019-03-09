@@ -13,10 +13,10 @@
 #include "base/i18n/file_util_icu.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/task/post_task.h"
 #include "base/task_runner.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/threading/thread_restrictions.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "base/threading/worker_pool.h"
 #include "net/base/net_errors.h"
 
 namespace net {
@@ -79,12 +79,15 @@ DirectoryLister::~DirectoryLister() {
   Cancel();
 }
 
-bool DirectoryLister::Start(base::TaskRunner* dir_task_runner) {
-  return dir_task_runner->PostTask(FROM_HERE, base::Bind(&Core::Start, core_));
+void DirectoryLister::Start() {
+  base::PostTaskWithTraits(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(&Core::Start, core_));
 }
 
 void DirectoryLister::Cancel() {
-  core_->CancelOnOriginThread();
+  core_->CancelOnOriginSequence();
 }
 
 DirectoryLister::Core::Core(const base::FilePath& dir,
@@ -92,16 +95,16 @@ DirectoryLister::Core::Core(const base::FilePath& dir,
                             DirectoryLister* lister)
     : dir_(dir),
       type_(type),
-      origin_task_runner_(base::ThreadTaskRunnerHandle::Get().get()),
+      origin_task_runner_(base::SequencedTaskRunnerHandle::Get().get()),
       lister_(lister),
       cancelled_(0) {
   DCHECK(lister_);
 }
 
-DirectoryLister::Core::~Core() {}
+DirectoryLister::Core::~Core() = default;
 
-void DirectoryLister::Core::CancelOnOriginThread() {
-  DCHECK(origin_task_runner_->RunsTasksOnCurrentThread());
+void DirectoryLister::Core::CancelOnOriginSequence() {
+  DCHECK(origin_task_runner_->RunsTasksInCurrentSequence());
 
   base::subtle::NoBarrier_Store(&cancelled_, 1);
   // Core must not call into |lister_| after cancellation, as the |lister_| may
@@ -115,9 +118,9 @@ void DirectoryLister::Core::Start() {
 
   if (!base::DirectoryExists(dir_)) {
     origin_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&Core::DoneOnOriginThread, this,
-                              base::Passed(std::move(directory_list)),
-                              ERR_FILE_NOT_FOUND));
+        FROM_HERE, base::BindOnce(&Core::DoneOnOriginSequence, this,
+                                  base::Passed(std::move(directory_list)),
+                                  ERR_FILE_NOT_FOUND));
     return;
   }
 
@@ -134,13 +137,14 @@ void DirectoryLister::Core::Start() {
   base::FilePath path;
   while (!(path = file_enum.Next()).empty()) {
     // Abort on cancellation. This is purely for performance reasons.
-    // Correctness guarantees are made by checks in DoneOnOriginThread.
+    // Correctness guarantees are made by checks in DoneOnOriginSequence.
     if (IsCancelled())
       return;
 
     DirectoryListerData data;
     data.info = file_enum.GetInfo();
     data.path = path;
+    data.absolute_path = base::MakeAbsoluteFilePath(path);
     directory_list->push_back(data);
 
     /* TODO(brettw) bug 24107: It would be nice to send incremental updates.
@@ -154,7 +158,7 @@ void DirectoryLister::Core::Start() {
 
     origin_loop_->PostTask(
         FROM_HERE,
-        base::Bind(&DirectoryLister::Core::SendData, file_data));
+        base::BindOnce(&DirectoryLister::Core::SendData, file_data));
     file_data.clear();
     */
   }
@@ -162,18 +166,18 @@ void DirectoryLister::Core::Start() {
   SortData(directory_list.get(), type_);
 
   origin_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&Core::DoneOnOriginThread, this,
-                            base::Passed(std::move(directory_list)), OK));
+      FROM_HERE, base::BindOnce(&Core::DoneOnOriginSequence, this,
+                                base::Passed(std::move(directory_list)), OK));
 }
 
 bool DirectoryLister::Core::IsCancelled() const {
   return !!base::subtle::NoBarrier_Load(&cancelled_);
 }
 
-void DirectoryLister::Core::DoneOnOriginThread(
+void DirectoryLister::Core::DoneOnOriginSequence(
     std::unique_ptr<DirectoryList> directory_list,
     int error) const {
-  DCHECK(origin_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(origin_task_runner_->RunsTasksInCurrentSequence());
 
   // Need to check if the operation was before first callback.
   if (IsCancelled())

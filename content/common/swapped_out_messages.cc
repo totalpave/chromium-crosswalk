@@ -6,8 +6,8 @@
 
 #include "content/common/accessibility_messages.h"
 #include "content/common/frame_messages.h"
-#include "content/common/input_messages.h"
 #include "content/common/view_messages.h"
+#include "content/common/widget_messages.h"
 #include "content/public/common/content_client.h"
 
 namespace content {
@@ -17,38 +17,20 @@ bool SwappedOutMessages::CanSendWhileSwappedOut(const IPC::Message* msg) {
   // important (e.g., ACKs) for keeping the browser and renderer state
   // consistent in case we later return to the same renderer.
   switch (msg->type()) {
-    // Handled by RenderWidgetHost.
-    case InputHostMsg_HandleInputEvent_ACK::ID:
-    case ViewHostMsg_UpdateRect::ID:
-    // Allow targeted navigations while swapped out.
-    case FrameHostMsg_OpenURL::ID:
-    case ViewHostMsg_Focus::ID:
     // Handled by RenderViewHost.
+    case FrameHostMsg_RenderProcessGone::ID:
     case ViewHostMsg_ClosePage_ACK::ID:
-    case ViewHostMsg_SwapCompositorFrame::ID:
-    // Handled by SharedWorkerMessageFilter.
-    case ViewHostMsg_DocumentDetached::ID:
-    // Allow cross-process JavaScript calls.
-    case ViewHostMsg_RouteCloseEvent::ID:
+    case ViewHostMsg_Focus::ID:
+    case ViewHostMsg_OpenDateTimeDialog::ID:
+    case ViewHostMsg_ShowFullscreenWidget::ID:
+    case ViewHostMsg_ShowWidget::ID:
+    case ViewHostMsg_UpdateTargetURL::ID:
     // Send page scale factor reset notification upon cross-process navigations.
     case ViewHostMsg_PageScaleFactorChanged::ID:
-    // Handled by RenderFrameHost.
-    case FrameHostMsg_BeforeUnload_ACK::ID:
-    case FrameHostMsg_SwapOut_ACK::ID:
-    case FrameHostMsg_RenderProcessGone::ID:
-    // Frame detach must occur after the RenderView has swapped out.
-    case FrameHostMsg_Detach::ID:
-    case FrameHostMsg_DomOperationResponse::ID:
-    // Input events propagate from parent to child.
-    case FrameHostMsg_ForwardInputEvent::ID:
-    case FrameHostMsg_InitializeChildFrame::ID:
-    // The browser should always have an accurate mirror of the renderer's
-    // notion of the current page id.
-    case FrameHostMsg_DidAssignPageId::ID:
-    // A swapped-out frame's opener might be updated with window.open.
-    case FrameHostMsg_DidChangeOpener::ID:
-    // For handling pop-ups from cross-site frames.
-    case ViewHostMsg_CreateWidget::ID:
+    // Allow history.back() in OOPIFs - https://crbug.com/845923.
+    case ViewHostMsg_GoToEntryAtOffset::ID:
+    // Allow cross-process JavaScript calls.
+    case WidgetHostMsg_RouteCloseEvent::ID:
       return true;
     default:
       break;
@@ -72,22 +54,12 @@ bool SwappedOutMessages::CanHandleWhileSwappedOut(
   // Note that synchronous messages that are not handled will receive an
   // error reply instead, to avoid leaving the renderer in a stuck state.
   switch (msg.type()) {
-    // Sends an ACK.
-    case ViewHostMsg_ShowView::ID:
-    // Sends an ACK.
-    case ViewHostMsg_ShowWidget::ID:
-    // Sends an ACK.
-    case ViewHostMsg_ShowFullscreenWidget::ID:
-    // Updates the previous navigation entry.
-    case ViewHostMsg_UpdateState::ID:
-    // Sends an ACK.
-    case ViewHostMsg_UpdateTargetURL::ID:
     // We allow closing even if we are in the process of swapping out.
-    case ViewHostMsg_Close::ID:
+    case WidgetHostMsg_Close::ID:
     // Sends an ACK.
-    case ViewHostMsg_RequestMove::ID:
+    case WidgetHostMsg_RequestSetBounds::ID:
     // Sends an ACK.
-    case AccessibilityHostMsg_Events::ID:
+    case AccessibilityHostMsg_EventBundle::ID:
       return true;
     default:
       break;

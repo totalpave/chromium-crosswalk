@@ -11,8 +11,9 @@
 #include "base/test/values_test_util.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate_evaluator.h"
 #include "chrome/browser/extensions/api/declarative_content/declarative_content_condition_tracker_test.h"
-#include "content/public/browser/navigation_details.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "extensions/common/extension_messages.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -92,8 +93,8 @@ class DeclarativeContentCssConditionTrackerTest
   void SendOnWatchedPageChangeMessage(
       content::WebContents* tab,
       const std::vector<std::string>& selectors) {
-    ExtensionHostMsg_OnWatchedPageChange page_change(tab->GetRoutingID(),
-                                                     selectors);
+    ExtensionHostMsg_OnWatchedPageChange page_change(
+        tab->GetRenderViewHost()->GetRoutingID(), selectors);
     EXPECT_TRUE(GetMockRenderProcessHost(tab)->OnMessageReceived(page_change));
   }
 
@@ -107,9 +108,7 @@ class DeclarativeContentCssConditionTrackerTest
                            std::unique_ptr<const ContentPredicate>* predicate) {
     std::string error;
     *predicate = tracker_.CreatePredicate(
-        nullptr,
-        *base::test::ParseJson(value),
-        &error);
+        nullptr, *base::test::ParseJsonDeprecated(value), &error);
     EXPECT_EQ("", error);
     ASSERT_TRUE(*predicate);
   }
@@ -121,7 +120,7 @@ TEST(DeclarativeContentCssPredicateTest, WrongCssDatatype) {
   std::string error;
   std::unique_ptr<DeclarativeContentCssPredicate> predicate =
       DeclarativeContentCssPredicate::Create(
-          nullptr, *base::test::ParseJson("\"selector\""), &error);
+          nullptr, *base::test::ParseJsonDeprecated("\"selector\""), &error);
   EXPECT_THAT(error, HasSubstr("invalid type"));
   EXPECT_FALSE(predicate);
 }
@@ -130,7 +129,8 @@ TEST(DeclarativeContentCssPredicateTest, CssPredicate) {
   std::string error;
   std::unique_ptr<DeclarativeContentCssPredicate> predicate =
       DeclarativeContentCssPredicate::Create(
-          nullptr, *base::test::ParseJson("[\"input\", \"a\"]"), &error);
+          nullptr, *base::test::ParseJsonDeprecated("[\"input\", \"a\"]"),
+          &error);
   EXPECT_EQ("", error);
   ASSERT_TRUE(predicate);
 
@@ -301,10 +301,10 @@ TEST_F(DeclarativeContentCssConditionTrackerTest, Navigation) {
 
   // Check that an in-page navigation has no effect on the matching selectors.
   {
-    content::LoadCommittedDetails details;
-    details.is_in_page = true;
-    content::FrameNavigateParams params;
-    tracker_.OnWebContentsNavigation(tab.get(), details, params);
+    content::MockNavigationHandle test_handle;
+    test_handle.set_has_committed(true);
+    test_handle.set_is_same_document(true);
+    tracker_.OnWebContentsNavigation(tab.get(), &test_handle);
     EXPECT_TRUE(tracker_.EvaluatePredicate(predicate.get(), tab.get()));
     EXPECT_EQ(expected_evaluation_requests, delegate_.evaluation_requests());
   }
@@ -312,10 +312,9 @@ TEST_F(DeclarativeContentCssConditionTrackerTest, Navigation) {
   // Check that a non in-page navigation clears the matching selectors and
   // requests condition evaluation.
   {
-    content::LoadCommittedDetails details;
-    details.is_in_page = false;
-    content::FrameNavigateParams params;
-    tracker_.OnWebContentsNavigation(tab.get(), details, params);
+    content::MockNavigationHandle test_handle;
+    test_handle.set_has_committed(true);
+    tracker_.OnWebContentsNavigation(tab.get(), &test_handle);
     EXPECT_FALSE(tracker_.EvaluatePredicate(predicate.get(), tab.get()));
     EXPECT_EQ(++expected_evaluation_requests, delegate_.evaluation_requests());
   }

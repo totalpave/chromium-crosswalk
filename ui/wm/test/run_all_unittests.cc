@@ -9,7 +9,9 @@
 #include "base/macros.h"
 #include "base/path_service.h"
 #include "base/test/launcher/unit_test_launcher.h"
+#include "base/test/test_discardable_memory_allocator.h"
 #include "base/test/test_suite.h"
+#include "mojo/core/embedder/embedder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/env.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -27,10 +29,13 @@ class WMTestSuite : public base::TestSuite {
     ui::RegisterPathProvider();
 
     base::FilePath ui_test_pak_path;
-    ASSERT_TRUE(PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
+    ASSERT_TRUE(base::PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
     ui::ResourceBundle::InitSharedInstanceWithPakPath(ui_test_pak_path);
 
     env_ = aura::Env::CreateInstance();
+
+    base::DiscardableMemoryAllocator::SetInstance(
+        &discardable_memory_allocator_);
   }
 
   void Shutdown() override {
@@ -41,12 +46,16 @@ class WMTestSuite : public base::TestSuite {
 
  private:
   std::unique_ptr<aura::Env> env_;
+  base::TestDiscardableMemoryAllocator discardable_memory_allocator_;
   DISALLOW_COPY_AND_ASSIGN(WMTestSuite);
 };
 
 int main(int argc, char** argv) {
   WMTestSuite test_suite(argc, argv);
 
+  mojo::core::Init();
+
   return base::LaunchUnitTests(
-      argc, argv, base::Bind(&WMTestSuite::Run, base::Unretained(&test_suite)));
+      argc, argv,
+      base::BindOnce(&WMTestSuite::Run, base::Unretained(&test_suite)));
 }

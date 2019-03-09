@@ -40,50 +40,51 @@ class CommandLine;
 //     // Do stuff involving |test_child_process| and the child process....
 //
 //     int rv = -1;
-//     ASSERT_TRUE(test_child_process.WaitForExitWithTimeout(
+//     ASSERT_TRUE(base::WaitForMultiprocessTestChildExit(test_child_process,
 //         TestTimeouts::action_timeout(), &rv));
 //     EXPECT_EQ(0, rv);
 //   }
 //
 //   // Note: |MULTIPROCESS_TEST_MAIN()| is defined in
-//   // testing/multi_process_function_list.h.
+//   // testing/multiprocess_func_list.h.
 //   MULTIPROCESS_TEST_MAIN(a_test_func) {
 //     // Code here runs in a child process....
 //     return 0;
 //   }
+//
+// If you need to terminate the child process, use the
+// TerminateMultiProcessTestChild method to ensure that test will work on
+// Android.
 
 // Spawns a child process and executes the function |procname| declared using
 // |MULTIPROCESS_TEST_MAIN()| or |MULTIPROCESS_TEST_MAIN_WITH_SETUP()|.
 // |command_line| should be as provided by
 // |GetMultiProcessTestChildBaseCommandLine()| (below), possibly with arguments
 // added. Note: On Windows, you probably want to set |options.start_hidden|.
-Process SpawnMultiProcessTestChild(
-    const std::string& procname,
-    const CommandLine& command_line,
-    const LaunchOptions& options);
+Process SpawnMultiProcessTestChild(const std::string& procname,
+                                   const CommandLine& command_line,
+                                   const LaunchOptions& options);
 
 // Gets the base command line for |SpawnMultiProcessTestChild()|. To this, you
 // may add any flags needed for your child process.
 CommandLine GetMultiProcessTestChildBaseCommandLine();
 
+// Waits for the child process to exit. Returns true if the process exited
+// within |timeout| and sets |exit_code| if non null.
+bool WaitForMultiprocessTestChildExit(const Process& process,
+                                      TimeDelta timeout,
+                                      int* exit_code);
+
+// Terminates |process| with |exit_code|. If |wait| is true, this call blocks
+// until the process actually terminates.
+bool TerminateMultiProcessTestChild(const Process& process,
+                                    int exit_code,
+                                    bool wait);
+
 #if defined(OS_ANDROID)
-
-// Enable the alternate test child implementation which support spawning a child
-// after threads have been created. If used, this MUST be the first line of
-// main(). The main function is passed in to avoid a link-time dependency in
-// component builds.
-void InitAndroidMultiProcessTestHelper(int (*main)(int, char**));
-
-// Returns true if the current process is a test child.
-bool AndroidIsChildProcess();
-
-// Wait for a test child to exit if the alternate test child implementation is
-// being used.
-bool AndroidWaitForChildExitWithTimeout(
-    const Process& process, TimeDelta timeout, int* exit_code)
-    WARN_UNUSED_RESULT;
-
-#endif  // defined(OS_ANDROID)
+// Returns whether the child process exited cleanly from the main runloop.
+bool MultiProcessTestChildHasCleanExit(const Process& process);
+#endif
 
 // MultiProcessTest ------------------------------------------------------------
 

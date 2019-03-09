@@ -8,9 +8,8 @@
 #include <memory>
 
 #import "base/mac/scoped_nsobject.h"
-#include "chrome/browser/media/desktop_media_picker.h"
+#include "chrome/browser/media/webrtc/desktop_media_picker.h"
 
-@class DesktopMediaPickerControllerDeprecated;
 @class DesktopMediaPickerController;
 
 // Cocoa's DesktopMediaPicker implementation.
@@ -20,21 +19,11 @@ class DesktopMediaPickerCocoa : public DesktopMediaPicker {
   ~DesktopMediaPickerCocoa() override;
 
   // Overridden from DesktopMediaPicker:
-  void Show(content::WebContents* web_contents,
-            gfx::NativeWindow context,
-            gfx::NativeWindow parent,
-            const base::string16& app_name,
-            const base::string16& target_name,
-            std::unique_ptr<DesktopMediaList> screen_list,
-            std::unique_ptr<DesktopMediaList> window_list,
-            std::unique_ptr<DesktopMediaList> tab_list,
-            bool request_audio,
+  void Show(const DesktopMediaPicker::Params& params,
+            std::vector<std::unique_ptr<DesktopMediaList>> source_lists,
             const DoneCallback& done_callback) override;
 
  private:
-  base::scoped_nsobject<DesktopMediaPickerControllerDeprecated>
-      controller_deprecated_;
-
   base::scoped_nsobject<DesktopMediaPickerController> controller_;
 };
 

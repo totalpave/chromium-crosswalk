@@ -13,15 +13,9 @@
 #include "third_party/skia/include/core/SkPixmap.h"
 
 struct SkIRect;
-struct SkPoint;
 struct SkRect;
-class SkCanvas;
 class SkMatrix;
-#ifdef __LP64__
-typedef CGSize NSSize;
-#else
-typedef struct _NSSize NSSize;
-#endif
+using NSSize = CGSize;
 
 #ifdef __OBJC__
 @class NSBitmapImageRep;
@@ -47,10 +41,11 @@ SK_API SkRect CGRectToSkRect(const CGRect& rect);
 CGRect SkIRectToCGRect(const SkIRect& rect);
 CGRect SkRectToCGRect(const SkRect& rect);
 
-// Converts CGColorRef to the ARGB layout Skia expects.
+// Converts CGColorRef to the ARGB layout Skia expects. The given CGColorRef
+// should be in the sRGB color space and include alpha.
 SK_API SkColor CGColorRefToSkColor(CGColorRef color);
 
-// Converts ARGB to CGColorRef.
+// Converts a Skia ARGB color to CGColorRef. Assumes sRGB color space.
 SK_API CGColorRef CGColorCreateFromSkColor(SkColor color);
 
 // Converts NSColor to ARGB. Returns raw rgb values and does no colorspace
@@ -93,48 +88,6 @@ SK_API NSImage* SkBitmapToNSImageWithColorSpace(const SkBitmap& icon,
 // DEPRECATED, use SkBitmapToNSImageWithColorSpace() instead.
 // TODO(thakis): Remove this -- http://crbug.com/69432
 SK_API NSImage* SkBitmapToNSImage(const SkBitmap& icon);
-
-// Converts a SkCanvas temporarily to a CGContext
-class SK_API SkiaBitLocker {
- public:
-  /**
-    User clip rect is an *additional* clip to be applied in addition to the
-    current state of the canvas, in *local* rather than device coordinates.
-    If no additional clipping is desired, pass in
-    SkIRect::MakeSize(canvas->getBaseLayerSize()) transformed by the inverse
-    CTM.
-   */
-  SkiaBitLocker(SkCanvas* canvas,
-                const SkIRect& userClipRect,
-                SkScalar bitmapScaleFactor = 1);
-  ~SkiaBitLocker();
-  CGContextRef cgContext();
-  bool hasEmptyClipRegion() const;
-
- private:
-  void releaseIfNeeded();
-  SkIRect computeDirtyRect();
-
-  SkCanvas* canvas_;
-
-  CGContextRef cgContext_;
-  // offscreen_ is only valid if useDeviceBits_ is false
-  SkBitmap offscreen_;
-  SkIPoint bitmapOffset_;
-  SkScalar bitmapScaleFactor_;
-
-  // True if we are drawing to |canvas_|'s backing store directly.
-  // Otherwise, the bits in |bitmap_| are our allocation and need to
-  // be copied over to |canvas_|.
-  bool useDeviceBits_;
-
-  // True if |bitmap_| is a dummy 1x1 bitmap allocated for the sake of creating
-  // a non-NULL CGContext (it is invalid to use a NULL CGContext), and will not
-  // be copied to |canvas_|. This will happen if |canvas_|'s clip region is
-  // empty.
-  bool bitmapIsDummy_;
-};
-
 
 }  // namespace skia
 

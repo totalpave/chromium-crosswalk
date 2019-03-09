@@ -8,26 +8,72 @@ from model import Platforms
 from schema_util import CapitalizeFirstLetter
 from schema_util import JsFunctionNameToClassName
 
+import collections
+import copy
 import json
 import os
 import re
 
 
-def _RemoveDescriptions(node):
-  """Returns a copy of |schema| with "description" fields removed.
-  """
+def _RemoveKey(node, key, type_restriction):
   if isinstance(node, dict):
-    result = {}
-    for key, value in node.items():
-      # Some schemas actually have properties called "description", so only
-      # remove descriptions that have string values.
-      if key == 'description' and isinstance(value, basestring):
-        continue
-      result[key] = _RemoveDescriptions(value)
-    return result
-  if isinstance(node, list):
-    return [_RemoveDescriptions(v) for v in node]
-  return node
+    if key in node and isinstance(node[key], type_restriction):
+      del node[key]
+    for value in node.values():
+      _RemoveKey(value, key, type_restriction)
+  elif isinstance(node, list):
+    for value in node:
+      _RemoveKey(value, key, type_restriction)
+
+def _RemoveUnneededFields(schema):
+  """Returns a copy of |schema| with fields that aren't necessary at runtime
+  removed.
+  """
+  # Return a copy so that we don't pollute the global api object, which may be
+  # used elsewhere.
+  ret = copy.deepcopy(schema)
+  _RemoveKey(ret, 'description', basestring)
+  _RemoveKey(ret, 'compiler_options', dict)
+  _RemoveKey(ret, 'nodoc', bool)
+  _RemoveKey(ret, 'nocompile', bool)
+  _RemoveKey(ret, 'noinline_doc', bool)
+  _RemoveKey(ret, 'jsexterns', object)
+  return ret
+
+def _PrefixSchemaWithNamespace(schema):
+  """Modifies |schema| in place to prefix all types and references with a
+  namespace, if they aren't already qualified. That is, in the tabs API, this
+  will turn type Tab into tabs.Tab, but will leave the fully-qualified
+  windows.Window as-is.
+  """
+  assert isinstance(schema, dict), "Schema is unexpected type"
+  namespace = schema['namespace']
+  def prefix(obj, key, mandatory):
+    if not key in obj:
+      assert not mandatory, (
+             'Required key "%s" is not present in object.' % key)
+      return
+    assert type(obj[key]) in [str, unicode]
+    if obj[key].find('.') == -1:
+      obj[key] = '%s.%s' % (namespace, obj[key])
+
+  if 'types' in schema:
+    assert isinstance(schema['types'], list)
+    for t in schema['types']:
+      assert isinstance(t, dict), "Type entry is unexpected type"
+      prefix(t, 'id', True)
+      prefix(t, 'customBindings', False)
+
+  def prefix_refs(val):
+    if type(val) is list:
+      for sub_val in val:
+        prefix_refs(sub_val)
+    elif type(val) is dict or type(val) is collections.OrderedDict:
+      prefix(val, '$ref', False)
+      for key, sub_val in val.items():
+        prefix_refs(sub_val)
+  prefix_refs(schema)
+  return schema
 
 
 class CppBundleGenerator(object):
@@ -103,15 +149,19 @@ class CppBundleGenerator(object):
         raise ValueError("Unsupported platform ifdef: %s" % platform.name)
     return ' || '.join(ifdefs)
 
-  def _GenerateRegisterFunctions(self, namespace_name, function):
+  def _GenerateRegistrationEntry(self, namespace_name, function):
     c = code.Code()
     function_ifdefs = self._GetPlatformIfdefs(function)
     if function_ifdefs is not None:
       c.Append("#if %s" % function_ifdefs, indent_level=0)
 
-    function_name = JsFunctionNameToClassName(namespace_name, function.name)
-    c.Append("registry->RegisterFunction<%sFunction>();" % (
-        function_name))
+    function_name = '%sFunction' % JsFunctionNameToClassName(
+        namespace_name, function.name)
+    c.Sblock('{')
+    c.Append('&NewExtensionFunction<%s>,' % function_name)
+    c.Append('%s::function_name(),' % function_name)
+    c.Append('%s::histogram_value(),' % function_name)
+    c.Eblock('},')
 
     if function_ifdefs is not None:
       c.Append("#endif  // %s" % function_ifdefs, indent_level=0)
@@ -122,6 +172,7 @@ class CppBundleGenerator(object):
     c.Append('// static')
     c.Sblock('void %s::RegisterAll(ExtensionFunctionRegistry* registry) {' %
              self._GenerateBundleClass('GeneratedFunctionRegistry'))
+    c.Sblock('constexpr ExtensionFunctionRegistry::FactoryEntry kEntries[] = {')
     for namespace in self._model.namespaces.values():
       namespace_ifdefs = self._GetPlatformIfdefs(namespace)
       if namespace_ifdefs is not None:
@@ -130,7 +181,7 @@ class CppBundleGenerator(object):
       for function in namespace.functions.values():
         if function.nocompile:
           continue
-        c.Concat(self._GenerateRegisterFunctions(namespace.name, function))
+        c.Concat(self._GenerateRegistrationEntry(namespace.name, function))
 
       for type_ in namespace.types.values():
         for function in type_.functions.values():
@@ -138,11 +189,15 @@ class CppBundleGenerator(object):
             continue
           namespace_types_name = JsFunctionNameToClassName(
                 namespace.name, type_.name)
-          c.Concat(self._GenerateRegisterFunctions(namespace_types_name,
+          c.Concat(self._GenerateRegistrationEntry(namespace_types_name,
                                                    function))
 
       if namespace_ifdefs is not None:
         c.Append("#endif  // %s" % namespace_ifdefs, indent_level=0)
+    c.Eblock("};")
+    c.Sblock("for (const auto& entry : kEntries) {")
+    c.Append("  registry->Register(entry);")
+    c.Eblock("}")
     c.Eblock("}")
     return c
 
@@ -235,9 +290,6 @@ class _SchemasHGenerator(object):
 
   def Generate(self, _):  # namespace not relevant, this is a bundle
     c = code.Code()
-    c.Append('#include <map>')
-    c.Append('#include <string>')
-    c.Append()
     c.Append('#include "base/strings/string_piece.h"')
     c.Append()
     c.Concat(cpp_util.OpenNamespace(self._bundle._cpp_namespace))
@@ -246,10 +298,10 @@ class _SchemasHGenerator(object):
              self._bundle._GenerateBundleClass('GeneratedSchemas'))
     c.Sblock(' public:')
     c.Append('// Determines if schema named |name| is generated.')
-    c.Append('static bool IsGenerated(std::string name);')
+    c.Append('static bool IsGenerated(base::StringPiece name);')
     c.Append()
     c.Append('// Gets the API schema named |name|.')
-    c.Append('static base::StringPiece Get(const std::string& name);')
+    c.Append('static base::StringPiece Get(base::StringPiece name);')
     c.Eblock('};')
     c.Append()
     c.Concat(cpp_util.CloseNamespace(self._bundle._cpp_namespace))
@@ -277,13 +329,11 @@ class _SchemasCCGenerator(object):
     c.Append('#include "%s"' % (os.path.join(self._bundle._source_file_dir,
                                              'generated_schemas.h')))
     c.Append()
-    c.Append('#include "base/lazy_instance.h"')
-    c.Append()
     c.Append('namespace {')
     for api in self._bundle._api_defs:
       namespace = self._bundle._model.namespaces[api.get('namespace')]
-      # JSON parsing code expects lists of schemas, so dump a singleton list.
-      json_content = json.dumps([_RemoveDescriptions(api)],
+      json_content = json.dumps(_PrefixSchemaWithNamespace(
+                                     _RemoveUnneededFields(api)),
                                 separators=(',', ':'))
       # Escape all double-quotes and backslashes. For this to output a valid
       # JSON C string, we need to escape \ and ". Note that some schemas are
@@ -295,35 +345,37 @@ class _SchemasCCGenerator(object):
                   for i in xrange(0, len(json_content), max_length)]
       c.Append('const char %s[] = "%s";' %
           (_FormatNameAsConstant(namespace.name), '" "'.join(segments)))
-    c.Append()
-    c.Sblock('struct Static {')
-    c.Sblock('Static() {')
-    for api in self._bundle._api_defs:
-      namespace = self._bundle._model.namespaces[api.get('namespace')]
-      c.Append('schemas["%s"] = %s;' % (namespace.name,
-                                        _FormatNameAsConstant(namespace.name)))
-    c.Eblock('}')
-    c.Append()
-    c.Append('std::map<std::string, const char*> schemas;')
-    c.Eblock('};')
-    c.Append()
-    c.Append('base::LazyInstance<Static> g_lazy_instance;')
-    c.Append()
     c.Append('}  // namespace')
     c.Append()
     c.Concat(cpp_util.OpenNamespace(self._bundle._cpp_namespace))
     c.Append()
     c.Append('// static')
-    c.Sblock('base::StringPiece %s::Get(const std::string& name) {' %
+    c.Sblock('bool %s::IsGenerated(base::StringPiece name) {' %
              self._bundle._GenerateBundleClass('GeneratedSchemas'))
-    c.Append('return IsGenerated(name) ? '
-             'g_lazy_instance.Get().schemas[name] : "";')
+    c.Append('return !Get(name).empty();')
     c.Eblock('}')
     c.Append()
     c.Append('// static')
-    c.Sblock('bool %s::IsGenerated(std::string name) {' %
+    c.Sblock('base::StringPiece %s::Get(base::StringPiece name) {' %
              self._bundle._GenerateBundleClass('GeneratedSchemas'))
-    c.Append('return g_lazy_instance.Get().schemas.count(name) > 0;')
+    c.Append('static const struct {')
+    c.Append('  base::StringPiece name;')
+    c.Append('  base::StringPiece schema;')
+    c.Sblock('} kSchemas[] = {')
+    namespaces = [self._bundle._model.namespaces[api.get('namespace')].name
+                  for api in self._bundle._api_defs]
+    for namespace in sorted(namespaces):
+      schema_constant_name = _FormatNameAsConstant(namespace)
+      c.Append('{{"%s", %d}, {%s, sizeof(%s) - 1}},' %
+               (namespace, len(namespace),
+                schema_constant_name, schema_constant_name))
+    c.Eblock('};')
+    c.Sblock('for (const auto& schema : kSchemas) {')
+    c.Sblock('if (schema.name == name)')
+    c.Append('return schema.schema;')
+    c.Eblock()
+    c.Eblock('}')
+    c.Append('return base::StringPiece();')
     c.Eblock('}')
     c.Append()
     c.Concat(cpp_util.CloseNamespace(self._bundle._cpp_namespace))

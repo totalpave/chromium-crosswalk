@@ -8,14 +8,27 @@
 #include <stddef.h>
 
 // Assert things at compile time. (|msg| should be a valid identifier name.)
-// This macro is currently C++-only, but we want to use it in the C core.h.
 // Use like:
-//   MOJO_STATIC_ASSERT(sizeof(Foo) == 12, "Foo has invalid size");
+//   MOJO_STATIC_ASSERT(sizeof(struct Foo) == 12, "Foo has invalid size");
 #if defined(__cplusplus)
 #define MOJO_STATIC_ASSERT(expr, msg) static_assert(expr, msg)
+#elif defined(__clang__)
+// TODO(thakis): Use #include <assert.h> and static_assert() in C11 mode
+// (__STDC_VERSION__>= 201112L) once https://reviews.llvm.org/D17444 made its
+// way into Chromium.
+#define MOJO_STATIC_ASSERT(expr, msg) _Static_assert(expr, msg)
 #else
 #define MOJO_STATIC_ASSERT(expr, msg)
 #endif
+
+// Defines a pointer-sized struct field of the given type. This ensures that the
+// field has an 8-byte footprint on both 32-bit and 64-bit systems, using an
+// anonymous bitfield of either 32 or 0 bits, depending on pointer size. Weird
+// formatting here courtesy of clang-format.
+#define MOJO_POINTER_FIELD(type, name) \
+  type name;                           \
+  uint32_t:                            \
+  (sizeof(void*) == 4 ? 32 : 0)
 
 // Like the C++11 |alignof| operator.
 #if __cplusplus >= 201103L

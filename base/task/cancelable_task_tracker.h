@@ -15,44 +15,46 @@
 //
 // CancelableCallback (base/cancelable_callback.h) and WeakPtr binding are
 // preferred solutions for canceling a task. However, they don't support
-// cancelation from another thread. This is sometimes a performance critical
+// cancelation from another sequence. This is sometimes a performance critical
 // requirement. E.g. We need to cancel database lookup task on DB thread when
 // user changes inputed text. If it is performance critical to do a best effort
-// cancelation of a task, then CancelableTaskTracker is appropriate,
-// otherwise use one of the other mechanisms.
+// cancelation of a task, then CancelableTaskTracker is appropriate, otherwise
+// use one of the other mechanisms.
 //
 // THREAD-SAFETY:
 //
-// 1. CancelableTaskTracker objects are not thread safe. They must
-// be created, used, and destroyed on the originating thread that posts the
-// task. It's safe to destroy a CancelableTaskTracker while there
-// are outstanding tasks. This is commonly used to cancel all outstanding
-// tasks.
+// 1. A CancelableTaskTracker object must be created, used, and destroyed on a
+//    single sequence.
 //
-// 2. Both task and reply are deleted on the originating thread.
+// 2. It's safe to destroy a CancelableTaskTracker while there are outstanding
+//    tasks. This is commonly used to cancel all outstanding tasks.
 //
-// 3. IsCanceledCallback is thread safe and can be run or deleted on any
-// thread.
+// 3. The task is deleted on the target sequence, and the reply are deleted on
+//    the originating sequence.
+//
+// 4. IsCanceledCallback can be run or deleted on any sequence.
 #ifndef BASE_TASK_CANCELABLE_TASK_TRACKER_H_
 #define BASE_TASK_CANCELABLE_TASK_TRACKER_H_
 
 #include <stdint.h>
 
-#include "base/base_export.h"
-#include "base/callback.h"
-#include "base/containers/hash_tables.h"
-#include "base/macros.h"
-#include "base/memory/weak_ptr.h"
-#include "base/task_runner_util.h"
-#include "base/threading/thread_checker.h"
+#include <memory>
+#include <utility>
 
-namespace tracked_objects {
-class Location;
-}  // namespace tracked_objects
+#include "base/base_export.h"
+#include "base/bind.h"
+#include "base/callback.h"
+#include "base/containers/small_map.h"
+#include "base/macros.h"
+#include "base/memory/ref_counted.h"
+#include "base/post_task_and_reply_with_result_internal.h"
+#include "base/sequence_checker.h"
+#include "base/synchronization/atomic_flag.h"
 
 namespace base {
 
-class CancellationFlag;
+class Location;
+class ScopedClosureRunner;
 class TaskRunner;
 
 class BASE_EXPORT CancelableTaskTracker {
@@ -61,38 +63,50 @@ class BASE_EXPORT CancelableTaskTracker {
   typedef int64_t TaskId;
   static const TaskId kBadTaskId;
 
-  typedef base::Callback<bool()> IsCanceledCallback;
+  typedef Callback<bool()> IsCanceledCallback;
 
   CancelableTaskTracker();
 
   // Cancels all tracked tasks.
   ~CancelableTaskTracker();
 
-  TaskId PostTask(base::TaskRunner* task_runner,
-                  const tracked_objects::Location& from_here,
-                  const base::Closure& task);
+  TaskId PostTask(TaskRunner* task_runner,
+                  const Location& from_here,
+                  OnceClosure task);
 
-  TaskId PostTaskAndReply(base::TaskRunner* task_runner,
-                          const tracked_objects::Location& from_here,
-                          const base::Closure& task,
-                          const base::Closure& reply);
+  TaskId PostTaskAndReply(TaskRunner* task_runner,
+                          const Location& from_here,
+                          OnceClosure task,
+                          OnceClosure reply);
 
   template <typename TaskReturnType, typename ReplyArgType>
-  TaskId PostTaskAndReplyWithResult(
-      base::TaskRunner* task_runner,
-      const tracked_objects::Location& from_here,
-      const base::Callback<TaskReturnType(void)>& task,
-      const base::Callback<void(ReplyArgType)>& reply) {
-    TaskReturnType* result = new TaskReturnType();
+  TaskId PostTaskAndReplyWithResult(TaskRunner* task_runner,
+                                    const Location& from_here,
+                                    OnceCallback<TaskReturnType()> task,
+                                    OnceCallback<void(ReplyArgType)> reply) {
+    auto* result = new std::unique_ptr<TaskReturnType>();
     return PostTaskAndReply(
-        task_runner,
-        from_here,
-        base::Bind(&base::internal::ReturnAsParamAdapter<TaskReturnType>,
-                   task,
-                   base::Unretained(result)),
-        base::Bind(&base::internal::ReplyAdapter<TaskReturnType, ReplyArgType>,
-                   reply,
-                   base::Owned(result)));
+        task_runner, from_here,
+        BindOnce(&internal::ReturnAsParamAdapter<TaskReturnType>,
+                 std::move(task), Unretained(result)),
+        BindOnce(&internal::ReplyAdapter<TaskReturnType, ReplyArgType>,
+                 std::move(reply), Owned(result)));
+  }
+
+  // Callback version of PostTaskWithTraitsAndReplyWithResult above.
+  // Though RepeatingCallback is convertible to OnceCallback, we need this since
+  // we can not use template deduction and object conversion at once on the
+  // overload resolution.
+  // TODO(tzik): Update all callers of the Callback version to use OnceCallback.
+  template <typename TaskReturnType, typename ReplyArgType>
+  TaskId PostTaskAndReplyWithResult(TaskRunner* task_runner,
+                                    const Location& from_here,
+                                    Callback<TaskReturnType()> task,
+                                    Callback<void(ReplyArgType)> reply) {
+    return PostTaskAndReplyWithResult(
+        task_runner, from_here,
+        static_cast<OnceCallback<TaskReturnType()>>(std::move(task)),
+        static_cast<OnceCallback<void(ReplyArgType)>>(std::move(reply)));
   }
 
   // Creates a tracked TaskId and an associated IsCanceledCallback. Client can
@@ -124,15 +138,32 @@ class BASE_EXPORT CancelableTaskTracker {
   bool HasTrackedTasks() const;
 
  private:
-  void Track(TaskId id, base::CancellationFlag* flag);
+  // Cancellation flags are ref-counted to ensure they remain valid even if the
+  // tracker and its calling thread are torn down while there are still
+  // cancelable tasks queued to the target TaskRunner.
+  // See https://crbug.com/918948.
+  using TaskCancellationFlag = RefCountedData<AtomicFlag>;
+
+  static void RunIfNotCanceled(const TaskCancellationFlag* flag,
+                               OnceClosure task);
+  static void RunThenUntrackIfNotCanceled(const TaskCancellationFlag* flag,
+                                          OnceClosure task,
+                                          OnceClosure untrack);
+  static bool IsCanceled(const TaskCancellationFlag* flag,
+                         const ScopedClosureRunner& cleanup_runner);
+
+  void Track(TaskId id, scoped_refptr<TaskCancellationFlag> flag);
   void Untrack(TaskId id);
 
-  base::hash_map<TaskId, base::CancellationFlag*> task_flags_;
+  // Typically the number of tasks are 0-2 and occationally 3-4. But since
+  // this is a general API that could be used in unexpected ways, use a
+  // small_map instead of a flat_map to avoid falling over if there are many
+  // tasks.
+  small_map<std::map<TaskId, scoped_refptr<TaskCancellationFlag>>, 4>
+      task_flags_;
 
-  TaskId next_id_;
-  base::ThreadChecker thread_checker_;
-
-  base::WeakPtrFactory<CancelableTaskTracker> weak_factory_;
+  TaskId next_id_ = 1;
+  SequenceChecker sequence_checker_;
 
   DISALLOW_COPY_AND_ASSIGN(CancelableTaskTracker);
 };

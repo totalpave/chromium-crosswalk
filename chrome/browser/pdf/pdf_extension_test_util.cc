@@ -4,15 +4,15 @@
 
 #include "chrome/browser/pdf/pdf_extension_test_util.h"
 
+#include "chrome/grit/component_extension_resources.h"
 #include "content/public/test/browser_test_utils.h"
-#include "grit/component_extension_resources.h"
 #include "ui/base/resource/resource_bundle.h"
 
 namespace pdf_extension_test_util {
 
 bool EnsurePDFHasLoaded(content::WebContents* web_contents) {
   std::string scripting_api_js =
-      ResourceBundle::GetSharedInstance()
+      ui::ResourceBundle::GetSharedInstance()
           .GetRawDataResource(IDR_PDF_PDF_SCRIPTING_API_JS)
           .as_string();
   CHECK(content::ExecuteScript(web_contents, scripting_api_js));

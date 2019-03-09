@@ -4,33 +4,31 @@
 
 #include "chrome/browser/ui/webui/app_launcher_page_ui.h"
 
+#include <memory>
 #include <string>
 
 #include "base/memory/ref_counted_memory.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/app_launcher_login_handler.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
+#include "chrome/browser/ui/webui/ntp/app_icon_webui_handler.h"
 #include "chrome/browser/ui/webui/ntp/app_launcher_handler.h"
 #include "chrome/browser/ui/webui/ntp/app_resource_cache_factory.h"
 #include "chrome/browser/ui/webui/ntp/core_app_launcher_handler.h"
-#include "chrome/browser/ui/webui/ntp/favicon_webui_handler.h"
 #include "chrome/browser/ui/webui/ntp/ntp_resource_cache.h"
+#include "chrome/browser/ui/webui/theme_handler.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/grit/theme_resources.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "extensions/browser/extension_system.h"
-#include "grit/theme_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
-
-#if defined(ENABLE_THEMES)
-#include "chrome/browser/ui/webui/theme_handler.h"
-#endif
-
-class ExtensionService;
 
 using content::BrowserThread;
 
@@ -42,26 +40,24 @@ AppLauncherPageUI::AppLauncherPageUI(content::WebUI* web_ui)
   web_ui->OverrideTitle(l10n_util::GetStringUTF16(IDS_APP_LAUNCHER_TAB_TITLE));
 
   if (!GetProfile()->IsOffTheRecord()) {
-    ExtensionService* service =
+    extensions::ExtensionService* service =
         extensions::ExtensionSystem::Get(GetProfile())->extension_service();
     // We should not be launched without an ExtensionService.
     DCHECK(service);
-    web_ui->AddMessageHandler(new AppLauncherHandler(service));
-    web_ui->AddMessageHandler(new CoreAppLauncherHandler());
-    web_ui->AddMessageHandler(new FaviconWebUIHandler());
-    web_ui->AddMessageHandler(new MetricsHandler());
+    web_ui->AddMessageHandler(std::make_unique<AppLauncherHandler>(service));
+    web_ui->AddMessageHandler(std::make_unique<CoreAppLauncherHandler>());
+    web_ui->AddMessageHandler(std::make_unique<AppIconWebUIHandler>());
+    web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
   }
 
-#if defined(ENABLE_THEMES)
   // The theme handler can require some CPU, so do it after hooking up the most
   // visited handler. This allows the DB query for the new tab thumbs to happen
   // earlier.
-  web_ui->AddMessageHandler(new ThemeHandler());
-#endif
+  web_ui->AddMessageHandler(std::make_unique<ThemeHandler>());
 
-  std::unique_ptr<HTMLSource> html_source(
-      new HTMLSource(GetProfile()->GetOriginalProfile()));
-  content::URLDataSource::Add(GetProfile(), html_source.release());
+  content::URLDataSource::Add(
+      GetProfile(),
+      std::make_unique<HTMLSource>(GetProfile()->GetOriginalProfile()));
 }
 
 AppLauncherPageUI::~AppLauncherPageUI() {
@@ -81,7 +77,7 @@ bool AppLauncherPageUI::OverrideHandleWebUIMessage(
     const base::ListValue& args) {
   if (message == "getApps" &&
       AppLauncherLoginHandler::ShouldShow(GetProfile())) {
-    web_ui()->AddMessageHandler(new AppLauncherLoginHandler());
+    web_ui()->AddMessageHandler(std::make_unique<AppLauncherLoginHandler>());
   }
   return false;
 }
@@ -104,16 +100,15 @@ std::string AppLauncherPageUI::HTMLSource::GetSource() const {
 
 void AppLauncherPageUI::HTMLSource::StartDataRequest(
     const std::string& path,
-    int render_process_id,
-    int render_frame_id,
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
     const content::URLDataSource::GotDataCallback& callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   NTPResourceCache* resource = AppResourceCacheFactory::GetForProfile(profile_);
-  resource->set_should_show_other_devices_menu(false);
 
+  content::WebContents* web_contents = wc_getter.Run();
   content::RenderProcessHost* render_host =
-      content::RenderProcessHost::FromID(render_process_id);
+      web_contents ? web_contents->GetMainFrame()->GetProcess() : nullptr;
   NTPResourceCache::WindowType win_type = NTPResourceCache::GetWindowType(
       profile_, render_host);
   scoped_refptr<base::RefCountedMemory> html_bytes(
@@ -128,6 +123,12 @@ std::string AppLauncherPageUI::HTMLSource::GetMimeType(
 }
 
 bool AppLauncherPageUI::HTMLSource::ShouldReplaceExistingSource() const {
+  return false;
+}
+
+bool AppLauncherPageUI::HTMLSource::AllowCaching() const {
+  // Should not be cached to reflect dynamically-generated contents that may
+  // depend on user profiles.
   return false;
 }
 

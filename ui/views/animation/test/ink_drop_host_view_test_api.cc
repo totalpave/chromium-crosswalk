@@ -12,17 +12,28 @@ InkDropHostViewTestApi::InkDropHostViewTestApi(InkDropHostView* host_view)
 
 InkDropHostViewTestApi::~InkDropHostViewTestApi() {}
 
-void InkDropHostViewTestApi::SetHasInkDrop(bool has_an_ink_drop) {
-  host_view_->SetHasInkDrop(has_an_ink_drop);
+void InkDropHostViewTestApi::SetInkDropMode(InkDropMode ink_drop_mode) {
+  host_view_->SetInkDropMode(ink_drop_mode);
 }
 
-void InkDropHostViewTestApi::SetInkDrop(std::unique_ptr<InkDrop> ink_drop) {
-  host_view_->SetHasInkDrop(true);
+void InkDropHostViewTestApi::SetInkDrop(std::unique_ptr<InkDrop> ink_drop,
+                                        bool handles_gesture_events) {
+  host_view_->SetInkDropMode(handles_gesture_events
+                                 ? InkDropMode::ON
+                                 : InkDropMode::ON_NO_GESTURE_HANDLER);
   host_view_->ink_drop_ = std::move(ink_drop);
 }
 
-bool InkDropHostViewTestApi::HasGestureHandler() const {
-  return host_view_->gesture_handler_ != nullptr;
+void InkDropHostViewTestApi::SetInkDrop(std::unique_ptr<InkDrop> ink_drop) {
+  SetInkDrop(std::move(ink_drop), true);
+}
+
+bool InkDropHostViewTestApi::HasInkDrop() const {
+  return host_view_->HasInkDrop();
+}
+
+InkDrop* InkDropHostViewTestApi::GetInkDrop() {
+  return host_view_->GetInkDrop();
 }
 
 gfx::Point InkDropHostViewTestApi::GetInkDropCenterBasedOnLastEvent() const {

@@ -8,8 +8,8 @@
 
 #include <limits>
 
-#include "base/macros.h"
-#include "third_party/skia/include/core/SkPaint.h"
+#include "base/stl_util.h"
+#include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/core/SkScalar.h"
 #include "ui/gfx/canvas.h"
@@ -43,17 +43,17 @@ void Fill(Canvas* c,
           int y,
           int w,
           int h,
-          const SkPaint& paint) {
+          const cc::PaintFlags& flags) {
   if (rep.is_null())
     return;
-  c->DrawImageIntInPixel(rep, x, y, w, h, false, paint);
+  c->DrawImageIntInPixel(rep, x, y, w, h, false, flags);
 }
 
 }  // namespace
 
 NineImagePainter::NineImagePainter(const std::vector<ImageSkia>& images) {
-  DCHECK_EQ(arraysize(images_), images.size());
-  for (size_t i = 0; i < arraysize(images_); ++i)
+  DCHECK_EQ(base::size(images_), images.size());
+  for (size_t i = 0; i < base::size(images_); ++i)
     images_[i] = images[i];
 }
 
@@ -112,8 +112,8 @@ void NineImagePainter::Paint(Canvas* canvas,
   canvas->Translate(gfx::Vector2d(left_in_pixels, top_in_pixels));
 
   ImageSkiaRep image_reps[9];
-  static_assert(arraysize(image_reps) == arraysize(images_), "");
-  for (size_t i = 0; i < arraysize(image_reps); ++i) {
+  static_assert(base::size(image_reps) == std::extent<decltype(images_)>(), "");
+  for (size_t i = 0; i < base::size(image_reps); ++i) {
     image_reps[i] = images_[i].GetRepresentation(scale);
     DCHECK(image_reps[i].is_null() || image_reps[i].scale() == scale);
   }
@@ -157,21 +157,21 @@ void NineImagePainter::Paint(Canvas* canvas,
   int i4h =
       std::max(height_in_pixels - i4y - std::min(std::min(i6h, i7h), i8h), 0);
 
-  SkPaint paint;
-  paint.setAlpha(alpha);
+  cc::PaintFlags flags;
+  flags.setAlpha(alpha);
 
-  Fill(canvas, image_reps[4], i4x, i4y, i4w, i4h, paint);
-  Fill(canvas, image_reps[0], 0, 0, i0w, i0h, paint);
-  Fill(canvas, image_reps[1], i0w, 0, width_in_pixels - i0w - i2w, i1h, paint);
-  Fill(canvas, image_reps[2], width_in_pixels - i2w, 0, i2w, i2h, paint);
-  Fill(canvas, image_reps[3], 0, i0h, i3w, height_in_pixels - i0h - i6h, paint);
+  Fill(canvas, image_reps[4], i4x, i4y, i4w, i4h, flags);
+  Fill(canvas, image_reps[0], 0, 0, i0w, i0h, flags);
+  Fill(canvas, image_reps[1], i0w, 0, width_in_pixels - i0w - i2w, i1h, flags);
+  Fill(canvas, image_reps[2], width_in_pixels - i2w, 0, i2w, i2h, flags);
+  Fill(canvas, image_reps[3], 0, i0h, i3w, height_in_pixels - i0h - i6h, flags);
   Fill(canvas, image_reps[5], width_in_pixels - i5w, i2h, i5w,
-       height_in_pixels - i2h - i8h, paint);
-  Fill(canvas, image_reps[6], 0, height_in_pixels - i6h, i6w, i6h, paint);
+       height_in_pixels - i2h - i8h, flags);
+  Fill(canvas, image_reps[6], 0, height_in_pixels - i6h, i6w, i6h, flags);
   Fill(canvas, image_reps[7], i6w, height_in_pixels - i7h,
-       width_in_pixels - i6w - i8w, i7h, paint);
+       width_in_pixels - i6w - i8w, i7h, flags);
   Fill(canvas, image_reps[8], width_in_pixels - i8w, height_in_pixels - i8h,
-       i8w, i8h, paint);
+       i8w, i8h, flags);
 }
 
 // static

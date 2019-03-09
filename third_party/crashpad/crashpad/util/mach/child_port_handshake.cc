@@ -31,6 +31,7 @@
 #include "base/mac/scoped_mach_port.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/rand_util.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "util/file/file_io.h"
 #include "util/mach/child_port.h"
@@ -125,8 +126,12 @@ mach_port_t ChildPortHandshakeServer::RunServer(
     return MACH_PORT_NULL;
   }
 
-  // A kqueue cannot monitor a raw Mach receive right with EVFILT_MACHPORT. It
-  // requires a port set. Create a new port set and add the receive right to it.
+  // Prior to macOS 10.12, a kqueue cannot monitor a raw Mach receive right with
+  // EVFILT_MACHPORT. It requires a port set. Compare 10.11.6
+  // xnu-3248.60.10/osfmk/ipc/ipc_pset.c filt_machportattach(), which requires
+  // MACH_PORT_RIGHT_PORT_SET, to 10.12.0 xnu-3789.1.32/osfmk/ipc/ipc_pset.c
+  // filt_machportattach(), which also handles MACH_PORT_TYPE_RECEIVE. Create a
+  // new port set and add the receive right to it.
   base::mac::ScopedMachPortSet server_port_set(
       NewMachPort(MACH_PORT_RIGHT_PORT_SET));
   CHECK(server_port_set.is_valid());
@@ -157,8 +162,8 @@ mach_port_t ChildPortHandshakeServer::RunServer(
          0,
          0,
          nullptr);
-  int rv = HANDLE_EINTR(
-      kevent(kq.get(), changelist, arraysize(changelist), nullptr, 0, nullptr));
+  int rv = HANDLE_EINTR(kevent(
+      kq.get(), changelist, base::size(changelist), nullptr, 0, nullptr));
   PCHECK(rv != -1) << "kevent";
 
   ChildPortServer child_port_server(this);
@@ -175,7 +180,7 @@ mach_port_t ChildPortHandshakeServer::RunServer(
     // be delivered out of order and the check-in message will still be
     // processed.
     struct kevent event;
-    const timespec nonblocking_timeout = {};
+    constexpr timespec nonblocking_timeout = {};
     const timespec* timeout = blocking ? nullptr : &nonblocking_timeout;
     rv = HANDLE_EINTR(kevent(kq.get(), nullptr, 0, &event, 1, timeout));
     PCHECK(rv != -1) << "kevent";
@@ -341,7 +346,7 @@ ChildPortHandshake::ChildPortHandshake()
 
   // SIGPIPE is undesirable when writing to this pipe. Allow broken-pipe writes
   // to fail with EPIPE instead.
-  const int value = 1;
+  constexpr int value = 1;
   PCHECK(setsockopt(server_write_fd_.get(),
                     SOL_SOCKET,
                     SO_NOSIGPIPE,
@@ -403,20 +408,20 @@ bool ChildPortHandshake::RunClientInternal_ReadPipe(int client_read_fd,
                                                     child_port_token_t* token,
                                                     std::string* service_name) {
   // Read the token from the pipe.
-  if (!LoggingReadFile(client_read_fd, token, sizeof(*token))) {
+  if (!LoggingReadFileExactly(client_read_fd, token, sizeof(*token))) {
     return false;
   }
 
   // Read the service name from the pipe.
   uint32_t service_name_length;
-  if (!LoggingReadFile(
-      client_read_fd, &service_name_length, sizeof(service_name_length))) {
+  if (!LoggingReadFileExactly(
+          client_read_fd, &service_name_length, sizeof(service_name_length))) {
     return false;
   }
 
   service_name->resize(service_name_length);
   if (!service_name->empty() &&
-      !LoggingReadFile(
+      !LoggingReadFileExactly(
           client_read_fd, &(*service_name)[0], service_name_length)) {
     return false;
   }

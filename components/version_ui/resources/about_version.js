@@ -15,6 +15,17 @@ function returnVariationInfo(variationsList) {
 }
 
 /**
+ * Callback from the backend with the variations formatted as command line
+ * input. This call will build the variations-cmd section of the version page
+ * if needed.
+ * @param {string} variationsCmd The variations info in command line format.
+ */
+function returnVariationCmd(variationsCmd) {
+  $('variations-cmd-section').hidden = !variationsCmd;
+  $('variations-cmd').textContent = variationsCmd;
+}
+
+/**
  * Callback from the backend with the executable and profile paths to display.
  * @param {string} execPath The executable path to display.
  * @param {string} profilePath The profile path to display.
@@ -40,6 +51,13 @@ function returnOsVersion(osVersion) {
   $('os_version').textContent = osVersion;
 }
 
+/**
+ * Callback from the backend with the firmware version to display.
+ * @param {string} firmwareVersion
+ */
+function returnOsFirmwareVersion(firmwareVersion) {
+  $('firmware_version').textContent = firmwareVersion;
+}
 
 /**
  * Callback from the backend with the ARC version to display.
@@ -50,10 +68,25 @@ function returnARCVersion(arcVersion) {
   $('arc_holder').hidden = !arcVersion;
 }
 
+/**
+ * Callback from chromeosInfoPrivate with the value of the customization ID.
+ * @param {!{customizationId: string}} response
+ */
+function returnCustomizationId(response) {
+  if (!response.customizationId) {
+    return;
+  }
+  $('customization_id_holder').hidden = false;
+  $('customization_id').textContent = response.customizationId;
+}
+
 /* All the work we do onload. */
 function onLoadWork() {
   chrome.send('requestVersionInfo');
-  $('arc_holder').hidden = true;
+  if (cr.isChromeOS) {
+    $('arc_holder').hidden = true;
+    chrome.chromeosInfoPrivate.get(['customizationId'], returnCustomizationId);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', onLoadWork);

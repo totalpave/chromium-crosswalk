@@ -5,11 +5,15 @@
 #include "chrome/browser/signin/chrome_signin_client.h"
 
 #include <stddef.h>
+
+#include <memory>
+#include <string>
 #include <utility>
 
-#include "base/command_line.h"
+#include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -17,90 +21,95 @@
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_metrics.h"
-#include "chrome/browser/profiles/profile_window.h"
-#include "chrome/browser/signin/local_auth.h"
-#include "chrome/browser/signin/profile_oauth2_token_service_factory.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
-#include "chrome/browser/web_data_service_factory.h"
+#include "chrome/browser/signin/account_consistency_mode_manager.h"
+#include "chrome/browser/signin/chrome_device_id_helper.h"
+#include "chrome/browser/signin/force_signin_verifier.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_util.h"
+#include "chrome/browser/ui/browser_list.h"
+#include "chrome/common/buildflags.h"
 #include "chrome/common/channel_info.h"
+#include "chrome/common/pref_names.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/metrics/metrics_service.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/profile_oauth2_token_service.h"
-#include "components/signin/core/browser/signin_cookie_changed_subscription.h"
+#include "components/signin/core/browser/account_consistency_method.h"
+#include "components/signin/core/browser/cookie_settings_util.h"
+#include "components/signin/core/browser/signin_buildflags.h"
 #include "components/signin/core/browser/signin_header_helper.h"
-#include "components/signin/core/common/profile_management_switches.h"
-#include "components/signin/core/common/signin_pref_names.h"
-#include "components/signin/core/common/signin_switches.h"
+#include "components/signin/core/browser/signin_pref_names.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/network_service_instance.h"
+#include "content/public/browser/storage_partition.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_urls.h"
-#include "net/url_request/url_request_context_getter.h"
+#include "services/identity/public/cpp/access_token_info.h"
+#include "services/identity/public/cpp/identity_manager.h"
+#include "services/identity/public/cpp/scope_set.h"
 #include "url/gurl.h"
 
-#if defined(ENABLE_SUPERVISED_USERS)
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
 #include "chrome/browser/supervised_user/supervised_user_constants.h"
 #endif
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/net/delay_network_call.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#include "components/user_manager/known_user.h"
-#include "components/user_manager/user_manager.h"
 #endif
 
 #if !defined(OS_ANDROID)
 #include "chrome/browser/first_run/first_run.h"
+#include "chrome/browser/profiles/profile_window.h"
 #endif
 
-ChromeSigninClient::ChromeSigninClient(
-    Profile* profile, SigninErrorController* signin_error_controller)
-    : OAuth2TokenService::Consumer("chrome_signin_client"),
-      profile_(profile),
-      signin_error_controller_(signin_error_controller) {
-  signin_error_controller_->AddObserver(this);
-#if !defined(OS_CHROMEOS)
-  net::NetworkChangeNotifier::AddNetworkChangeObserver(this);
-#else
-  // UserManager may not exist in unit_tests.
-  if (!user_manager::UserManager::IsInitialized())
-    return;
+#if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
+#include "chrome/browser/ui/user_manager.h"
+#endif
 
-  const user_manager::User* user =
-      chromeos::ProfileHelper::Get()->GetUserByProfile(profile_);
-  if (!user)
-    return;
-  const AccountId account_id = user->GetAccountId();
-  if (user_manager::known_user::GetDeviceId(account_id).empty()) {
-    const std::string legacy_device_id =
-        GetPrefs()->GetString(prefs::kGoogleServicesSigninScopedDeviceId);
-    if (!legacy_device_id.empty()) {
-      // Need to move device ID from the old location to the new one, if it has
-      // not been done yet.
-      user_manager::known_user::SetDeviceId(account_id, legacy_device_id);
-    } else {
-      user_manager::known_user::SetDeviceId(
-          account_id, GenerateSigninScopedDeviceID(
-                          user_manager::UserManager::Get()
-                              ->IsUserNonCryptohomeDataEphemeral(account_id)));
-    }
+namespace {
+
+// List of sources for which sign out is always allowed.
+signin_metrics::ProfileSignout kAlwaysAllowedSignoutSources[] = {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    // Allowed, because data has not been synced yet.
+    signin_metrics::ProfileSignout::ABORT_SIGNIN,
+#endif
+    // Allowed, because only used on Android and the primary account must be
+    // cleared when the account is removed from device
+    signin_metrics::ProfileSignout::ACCOUNT_REMOVED_FROM_DEVICE,
+    signin_metrics::ProfileSignout::FORCE_SIGNOUT_ALWAYS_ALLOWED_FOR_TEST};
+
+SigninClient::SignoutDecision IsSignoutAllowed(
+    Profile* profile,
+    const signin_metrics::ProfileSignout signout_source) {
+  if (signin_util::IsUserSignoutAllowedForProfile(profile))
+    return SigninClient::SignoutDecision::ALLOW_SIGNOUT;
+
+  for (const auto& always_allowed_source : kAlwaysAllowedSignoutSources) {
+    if (signout_source == always_allowed_source)
+      return SigninClient::SignoutDecision::ALLOW_SIGNOUT;
   }
-  GetPrefs()->SetString(prefs::kGoogleServicesSigninScopedDeviceId,
-                        std::string());
+
+  return SigninClient::SignoutDecision::DISALLOW_SIGNOUT;
+}
+
+}  // namespace
+
+ChromeSigninClient::ChromeSigninClient(Profile* profile)
+    : profile_(profile), weak_ptr_factory_(this) {
+#if !defined(OS_CHROMEOS)
+  content::GetNetworkConnectionTracker()->AddNetworkConnectionObserver(this);
 #endif
 }
 
 ChromeSigninClient::~ChromeSigninClient() {
-  signin_error_controller_->RemoveObserver(this);
-}
-
-void ChromeSigninClient::Shutdown() {
 #if !defined(OS_CHROMEOS)
-  net::NetworkChangeNotifier::RemoveNetworkChangeObserver(this);
+  content::GetNetworkConnectionTracker()->RemoveNetworkConnectionObserver(this);
 #endif
 }
 
 void ChromeSigninClient::DoFinalInit() {
   MaybeFetchSigninTokenHandle();
+  VerifySyncToken();
 }
 
 // static
@@ -112,82 +121,18 @@ bool ChromeSigninClient::ProfileAllowsSigninCookies(Profile* profile) {
 
 PrefService* ChromeSigninClient::GetPrefs() { return profile_->GetPrefs(); }
 
-scoped_refptr<TokenWebData> ChromeSigninClient::GetDatabase() {
-  return WebDataServiceFactory::GetTokenWebDataForProfile(
-      profile_, ServiceAccessType::EXPLICIT_ACCESS);
+scoped_refptr<network::SharedURLLoaderFactory>
+ChromeSigninClient::GetURLLoaderFactory() {
+  if (url_loader_factory_for_testing_)
+    return url_loader_factory_for_testing_;
+
+  return content::BrowserContext::GetDefaultStoragePartition(profile_)
+      ->GetURLLoaderFactoryForBrowserProcess();
 }
 
-bool ChromeSigninClient::CanRevokeCredentials() {
-#if defined(OS_CHROMEOS)
-  // UserManager may not exist in unit_tests.
-  if (user_manager::UserManager::IsInitialized() &&
-      user_manager::UserManager::Get()->IsLoggedInAsSupervisedUser()) {
-    // Don't allow revoking credentials for Chrome OS supervised users.
-    // See http://crbug.com/332032
-    LOG(ERROR) << "Attempt to revoke supervised user refresh "
-               << "token detected, ignoring.";
-    return false;
-  }
-#else
-  // Don't allow revoking credentials for legacy supervised users.
-  // See http://crbug.com/332032
-  if (profile_->IsLegacySupervised()) {
-    LOG(ERROR) << "Attempt to revoke supervised user refresh "
-               << "token detected, ignoring.";
-    return false;
-  }
-#endif
-  return true;
-}
-
-std::string ChromeSigninClient::GetSigninScopedDeviceId() {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisableSigninScopedDeviceId)) {
-    return std::string();
-  }
-
-#if !defined(OS_CHROMEOS)
-  return SigninClient::GetOrCreateScopedDeviceIdPref(GetPrefs());
-#else
-  // UserManager may not exist in unit_tests.
-  if (!user_manager::UserManager::IsInitialized())
-    return std::string();
-
-  const user_manager::User* user =
-      chromeos::ProfileHelper::Get()->GetUserByProfile(profile_);
-  if (!user)
-    return std::string();
-
-  const std::string signin_scoped_device_id =
-      user_manager::known_user::GetDeviceId(user->GetAccountId());
-  LOG_IF(ERROR, signin_scoped_device_id.empty())
-      << "Device ID is not set for user.";
-  return signin_scoped_device_id;
-#endif
-}
-
-void ChromeSigninClient::OnSignedOut() {
-  ProfileAttributesEntry* entry;
-  bool has_entry = g_browser_process->profile_manager()->
-      GetProfileAttributesStorage().
-      GetProfileAttributesWithPath(profile_->GetPath(), &entry);
-
-  // If sign out occurs because Sync setup was in progress and the Profile got
-  // deleted, then the profile's no longer in the ProfileAttributesStorage.
-  if (!has_entry)
-    return;
-
-  entry->SetLocalAuthCredentials(std::string());
-  entry->SetAuthInfo(std::string(), base::string16());
-  entry->SetIsSigninRequired(false);
-}
-
-net::URLRequestContextGetter* ChromeSigninClient::GetURLRequestContext() {
-  return profile_->GetRequestContext();
-}
-
-bool ChromeSigninClient::ShouldMergeSigninCredentialsIntoCookieJar() {
-  return !switches::IsEnableAccountConsistency();
+network::mojom::CookieManager* ChromeSigninClient::GetCookieManager() {
+  return content::BrowserContext::GetDefaultStoragePartition(profile_)
+      ->GetCookieManagerForBrowserProcess();
 }
 
 std::string ChromeSigninClient::GetProductVersion() {
@@ -203,8 +148,12 @@ bool ChromeSigninClient::IsFirstRun() const {
 }
 
 base::Time ChromeSigninClient::GetInstallDate() {
+  // metrics service might be nullptr in tests. TestingBrowserProcess returns
+  // nullptr for metrics_service().
   return base::Time::FromTimeT(
-      g_browser_process->metrics_service()->GetInstallDate());
+      g_browser_process->metrics_service()
+          ? g_browser_process->metrics_service()->GetInstallDate()
+          : 0);
 }
 
 bool ChromeSigninClient::AreSigninCookiesAllowed() {
@@ -223,55 +172,51 @@ void ChromeSigninClient::RemoveContentSettingsObserver(
       ->RemoveObserver(observer);
 }
 
-std::unique_ptr<SigninClient::CookieChangedSubscription>
-ChromeSigninClient::AddCookieChangedCallback(
-    const GURL& url,
-    const std::string& name,
-    const net::CookieStore::CookieChangedCallback& callback) {
-  scoped_refptr<net::URLRequestContextGetter> context_getter =
-      profile_->GetRequestContext();
-  DCHECK(context_getter.get());
-  std::unique_ptr<SigninCookieChangedSubscription> subscription(
-      new SigninCookieChangedSubscription(context_getter, url, name, callback));
-  return std::move(subscription);
-}
+void ChromeSigninClient::PreSignOut(
+    base::OnceCallback<void(SignoutDecision)> on_signout_decision_reached,
+    signin_metrics::ProfileSignout signout_source_metric) {
+  DCHECK(on_signout_decision_reached);
+  DCHECK(!on_signout_decision_reached_) << "SignOut already in-progress!";
+  on_signout_decision_reached_ = std::move(on_signout_decision_reached);
 
-void ChromeSigninClient::OnSignedIn(const std::string& account_id,
-                                    const std::string& gaia_id,
-                                    const std::string& username,
-                                    const std::string& password) {
-  ProfileManager* profile_manager = g_browser_process->profile_manager();
-  ProfileAttributesEntry* entry;
-  if (profile_manager->GetProfileAttributesStorage().
-          GetProfileAttributesWithPath(profile_->GetPath(), &entry)) {
-    entry->SetAuthInfo(gaia_id, base::UTF8ToUTF16(username));
-    ProfileMetrics::UpdateReportedProfilesStatistics(profile_manager);
-  }
-}
-
-void ChromeSigninClient::PostSignedIn(const std::string& account_id,
-                                      const std::string& username,
-                                      const std::string& password) {
 #if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
-  // Don't store password hash except when lock is available for the user.
-  if (!password.empty() && profiles::IsLockAvailable(profile_))
-    LocalAuth::SetLocalAuthCredentials(profile_, password);
+
+  // These sign out won't remove the policy cache, keep the window opened.
+  bool keep_window_opened =
+      signout_source_metric ==
+          signin_metrics::GOOGLE_SERVICE_NAME_PATTERN_CHANGED ||
+      signout_source_metric == signin_metrics::SERVER_FORCED_DISABLE ||
+      signout_source_metric == signin_metrics::SIGNOUT_PREF_CHANGED;
+  if (signin_util::IsForceSigninEnabled() && !profile_->IsSystemProfile() &&
+      !profile_->IsGuestSession() && !profile_->IsSupervised() &&
+      !keep_window_opened) {
+    if (signout_source_metric ==
+        signin_metrics::SIGNIN_PREF_CHANGED_DURING_SIGNIN) {
+      // SIGNIN_PREF_CHANGED_DURING_SIGNIN will be triggered when SigninManager
+      // is initialized before window opening, there is no need to close window.
+      // Call OnCloseBrowsersSuccess to continue sign out and show UserManager
+      // afterwards.
+      should_display_user_manager_ = false;  // Don't show UserManager twice.
+      OnCloseBrowsersSuccess(signout_source_metric, profile_->GetPath());
+    } else {
+      BrowserList::CloseAllBrowsersWithProfile(
+          profile_,
+          base::Bind(&ChromeSigninClient::OnCloseBrowsersSuccess,
+                     base::Unretained(this), signout_source_metric),
+          base::Bind(&ChromeSigninClient::OnCloseBrowsersAborted,
+                     base::Unretained(this)),
+          signout_source_metric == signin_metrics::ABORT_SIGNIN ||
+              signout_source_metric ==
+                  signin_metrics::AUTHENTICATION_FAILED_WITH_FORCE_SIGNIN ||
+              signout_source_metric == signin_metrics::TRANSFER_CREDENTIALS);
+    }
+  } else {
+#else
+  {
 #endif
-}
-
-void ChromeSigninClient::OnErrorChanged() {
-  // Some tests don't have a ProfileManager.
-  if (g_browser_process->profile_manager() == nullptr)
-    return;
-
-  ProfileAttributesEntry* entry;
-
-  if (!g_browser_process->profile_manager()->GetProfileAttributesStorage().
-          GetProfileAttributesWithPath(profile_->GetPath(), &entry)) {
-    return;
+    std::move(on_signout_decision_reached_)
+        .Run(IsSignoutAllowed(profile_, signout_source_metric));
   }
-
-  entry->SetIsAuthError(signin_error_controller_->HasError());
 }
 
 void ChromeSigninClient::OnGetTokenInfoResponse(
@@ -287,74 +232,81 @@ void ChromeSigninClient::OnGetTokenInfoResponse(
       entry->SetPasswordChangeDetectionToken(handle);
     }
   }
-  oauth_request_.reset();
+  access_token_fetcher_.reset();
 }
 
 void ChromeSigninClient::OnOAuthError() {
   // Ignore the failure.  It's not essential and we'll try again next time.
-    oauth_request_.reset();
+  access_token_fetcher_.reset();
 }
 
 void ChromeSigninClient::OnNetworkError(int response_code) {
   // Ignore the failure.  It's not essential and we'll try again next time.
-    oauth_request_.reset();
+  access_token_fetcher_.reset();
 }
 
-void ChromeSigninClient::OnGetTokenSuccess(
-    const OAuth2TokenService::Request* request,
-    const std::string& access_token,
-    const base::Time& expiration_time) {
+void ChromeSigninClient::OnAccessTokenAvailable(
+    GoogleServiceAuthError error,
+    identity::AccessTokenInfo access_token_info) {
+  access_token_fetcher_.reset();
+
   // Exchange the access token for a handle that can be used for later
   // verification that the token is still valid (i.e. the password has not
   // been changed).
-    if (!oauth_client_) {
-        oauth_client_.reset(new gaia::GaiaOAuthClient(
-            profile_->GetRequestContext()));
-    }
-    oauth_client_->GetTokenInfo(access_token, 3 /* retries */, this);
-}
-
-void ChromeSigninClient::OnGetTokenFailure(
-    const OAuth2TokenService::Request* request,
-    const GoogleServiceAuthError& error) {
-  // Ignore the failure.  It's not essential and we'll try again next time.
-  oauth_request_.reset();
+  if (!oauth_client_) {
+    oauth_client_.reset(new gaia::GaiaOAuthClient(GetURLLoaderFactory()));
+  }
+  oauth_client_->GetTokenInfo(access_token_info.token, 3 /* retries */, this);
 }
 
 #if !defined(OS_CHROMEOS)
-void ChromeSigninClient::OnNetworkChanged(
-    net::NetworkChangeNotifier::ConnectionType type) {
-  if (type >= net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE)
+void ChromeSigninClient::OnConnectionChanged(
+    network::mojom::ConnectionType type) {
+  if (type == network::mojom::ConnectionType::CONNECTION_NONE)
     return;
 
-  for (const base::Closure& callback : delayed_callbacks_)
-    callback.Run();
+  for (base::OnceClosure& callback : delayed_callbacks_)
+    std::move(callback).Run();
 
   delayed_callbacks_.clear();
 }
 #endif
 
-void ChromeSigninClient::DelayNetworkCall(const base::Closure& callback) {
+void ChromeSigninClient::DelayNetworkCall(base::OnceClosure callback) {
 #if defined(OS_CHROMEOS)
   chromeos::DelayNetworkCall(
       base::TimeDelta::FromMilliseconds(chromeos::kDefaultNetworkRetryDelayMS),
-      callback);
+      std::move(callback));
   return;
 #else
   // Don't bother if we don't have any kind of network connection.
-  if (net::NetworkChangeNotifier::IsOffline()) {
-    delayed_callbacks_.push_back(callback);
+  network::mojom::ConnectionType type;
+  bool sync = content::GetNetworkConnectionTracker()->GetConnectionType(
+      &type, base::BindOnce(&ChromeSigninClient::OnConnectionChanged,
+                            weak_ptr_factory_.GetWeakPtr()));
+  if (!sync || type == network::mojom::ConnectionType::CONNECTION_NONE) {
+    // Connection type cannot be retrieved synchronously so delay the callback.
+    delayed_callbacks_.push_back(std::move(callback));
   } else {
-    callback.Run();
+    std::move(callback).Run();
   }
 #endif
 }
 
-GaiaAuthFetcher* ChromeSigninClient::CreateGaiaAuthFetcher(
+std::unique_ptr<GaiaAuthFetcher> ChromeSigninClient::CreateGaiaAuthFetcher(
     GaiaAuthConsumer* consumer,
-    const std::string& source,
-    net::URLRequestContextGetter* getter) {
-  return new GaiaAuthFetcher(consumer, source, getter);
+    gaia::GaiaSource source,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
+  return std::make_unique<GaiaAuthFetcher>(consumer, source,
+                                           url_loader_factory);
+}
+
+void ChromeSigninClient::VerifySyncToken() {
+#if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
+  // We only verifiy the token once when Profile is just created.
+  if (signin_util::IsForceSigninEnabled() && !force_signin_verifier_)
+    force_signin_verifier_ = std::make_unique<ForceSigninVerifier>(profile_);
+#endif
 }
 
 void ChromeSigninClient::MaybeFetchSigninTokenHandle() {
@@ -370,17 +322,82 @@ void ChromeSigninClient::MaybeFetchSigninTokenHandle() {
     ProfileAttributesEntry* entry;
     // If we don't have a token for detecting a password change, create one.
     if (storage.GetProfileAttributesWithPath(profile_->GetPath(), &entry) &&
-        entry->GetPasswordChangeDetectionToken().empty() && !oauth_request_) {
-      std::string account_id = SigninManagerFactory::GetForProfile(profile_)
-          ->GetAuthenticatedAccountId();
-      if (!account_id.empty()) {
-        ProfileOAuth2TokenService* token_service =
-            ProfileOAuth2TokenServiceFactory::GetForProfile(profile_);
-        OAuth2TokenService::ScopeSet scopes;
-        scopes.insert(GaiaConstants::kGoogleUserInfoEmail);
-        oauth_request_ = token_service->StartRequest(account_id, scopes, this);
+        entry->GetPasswordChangeDetectionToken().empty() &&
+        !access_token_fetcher_) {
+      auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
+      if (identity_manager->HasPrimaryAccount()) {
+        const identity::ScopeSet scopes{GaiaConstants::kGoogleUserInfoEmail};
+        access_token_fetcher_ =
+            std::make_unique<identity::PrimaryAccountAccessTokenFetcher>(
+                "chrome_signin_client", identity_manager, scopes,
+                base::BindOnce(&ChromeSigninClient::OnAccessTokenAvailable,
+                               base::Unretained(this)),
+                identity::PrimaryAccountAccessTokenFetcher::Mode::kImmediate);
       }
     }
   }
+#endif
+}
+
+void ChromeSigninClient::SetReadyForDiceMigration(bool is_ready) {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  AccountConsistencyModeManager::GetForProfile(profile_)
+      ->SetReadyForDiceMigration(is_ready);
+#else
+  NOTREACHED();
+#endif
+}
+
+void ChromeSigninClient::SetURLLoaderFactoryForTest(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
+  url_loader_factory_for_testing_ = url_loader_factory;
+}
+
+void ChromeSigninClient::OnCloseBrowsersSuccess(
+    const signin_metrics::ProfileSignout signout_source_metric,
+    const base::FilePath& profile_path) {
+#if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
+  if (signin_util::IsForceSigninEnabled() && force_signin_verifier_.get()) {
+    force_signin_verifier_->Cancel();
+  }
+#endif
+
+  std::move(on_signout_decision_reached_)
+      .Run(IsSignoutAllowed(profile_, signout_source_metric));
+
+  LockForceSigninProfile(profile_path);
+  // After sign out, lock the profile and show UserManager if necessary.
+  if (should_display_user_manager_) {
+    ShowUserManager(profile_path);
+  } else {
+    should_display_user_manager_ = true;
+  }
+}
+
+void ChromeSigninClient::OnCloseBrowsersAborted(
+    const base::FilePath& profile_path) {
+  should_display_user_manager_ = true;
+
+  // Disallow sign-out (aborted).
+  std::move(on_signout_decision_reached_)
+      .Run(SignoutDecision::DISALLOW_SIGNOUT);
+}
+
+void ChromeSigninClient::LockForceSigninProfile(
+    const base::FilePath& profile_path) {
+  ProfileAttributesEntry* entry;
+  bool has_entry =
+      g_browser_process->profile_manager()
+          ->GetProfileAttributesStorage()
+          .GetProfileAttributesWithPath(profile_->GetPath(), &entry);
+  if (!has_entry)
+    return;
+  entry->LockForceSigninProfile(true);
+}
+
+void ChromeSigninClient::ShowUserManager(const base::FilePath& profile_path) {
+#if !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
+  UserManager::Show(profile_path,
+                    profiles::USER_MANAGER_SELECT_PROFILE_NO_ACTION);
 #endif
 }

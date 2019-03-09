@@ -6,313 +6,224 @@
 
 #include <string>
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/common/url_constants.h"
-#include "chrome/grit/generated_resources.h"
-#include "components/feedback/feedback_util.h"
-#include "components/strings/grit/components_strings.h"
-#include "content/public/browser/navigation_controller.h"
+#include "chrome/browser/ui/views/bulleted_label_list_view.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/chrome_typography.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "content/public/browser/web_contents.h"
-#include "grit/components_strings.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/paint_vector_icon.h"
-#include "ui/gfx/vector_icons_public.h"
 #include "ui/native_theme/common_theme.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
-#include "ui/views/controls/button/blue_button.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/link.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/grid_layout.h"
-#include "ui/views/layout/layout_constants.h"
 #include "ui/views/widget/widget.h"
-
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/memory/oom_memory_details.h"
-#endif
-
-using content::OpenURLParams;
-using content::WebContents;
 
 namespace {
 
-const int kMaxContentWidth = 600;
-const int kMinColumnWidth = 120;
-const char kCategoryTagCrash[] = "Crash";
-const int kCrashesBeforeFeedbackIsDisplayed = 1;
+constexpr int kMaxContentWidth = 600;
+constexpr int kMinColumnWidth = 120;
+constexpr int kTitleBottomSpacing = 13;
 
-void RecordKillCreated() {
-  static int killed = 0;
-  killed++;
-  UMA_HISTOGRAM_CUSTOM_COUNTS(
-      "Tabs.SadTab.KillCreated", killed, 1, 1000, 50);
-}
+views::Label* CreateFormattedLabel(const base::string16& message) {
+  views::Label* label =
+      new views::Label(message, views::style::CONTEXT_LABEL, STYLE_SECONDARY);
 
-void RecordKillDisplayed() {
-  static int killed = 0;
-  killed++;
-  UMA_HISTOGRAM_CUSTOM_COUNTS(
-      "Tabs.SadTab.KillDisplayed", killed, 1, 1000, 50);
+  label->SetMultiLine(true);
+  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  label->SetLineHeight(ChromeLayoutProvider::Get()->GetDistanceMetric(
+      views::DISTANCE_UNRELATED_CONTROL_VERTICAL));
+  return label;
 }
-
-#if defined(OS_CHROMEOS)
-void RecordKillCreatedOOM() {
-  static int oom_killed = 0;
-  oom_killed++;
-  UMA_HISTOGRAM_CUSTOM_COUNTS(
-      "Tabs.SadTab.KillCreated.OOM", oom_killed, 1, 1000, 50);
-}
-
-void RecordKillDisplayedOOM() {
-  static int oom_killed = 0;
-  oom_killed++;
-  UMA_HISTOGRAM_CUSTOM_COUNTS(
-      "Tabs.SadTab.KillDisplayed.OOM", oom_killed, 1, 1000, 50);
-}
-#endif
 
 }  // namespace
 
-int SadTabView::total_crashes_ = 0;
+// static
+const char SadTabView::kViewClassName[] = "SadTabView";
 
-SadTabView::SadTabView(WebContents* web_contents, chrome::SadTabKind kind)
-    : web_contents_(web_contents),
-      kind_(kind),
-      painted_(false),
-      message_(nullptr),
-      help_link_(nullptr),
-      action_button_(nullptr),
-      title_(nullptr),
-      help_message_(nullptr) {
-  DCHECK(web_contents);
+SadTabView::SadTabView(content::WebContents* web_contents, SadTabKind kind)
+    : SadTab(web_contents, kind) {
+  // This view gets inserted as a child of a WebView, but we don't want the
+  // WebView to delete us if the WebView gets deleted before the SadTabHelper
+  // does.
+  set_owned_by_client();
 
-  // These stats should use the same counting approach and bucket size used for
-  // tab discard events in memory::OomPriorityManager so they can be directly
-  // compared.
-  // TODO(jamescook): Maybe track time between sad tabs?
-  total_crashes_++;
+  SetBackground(views::CreateThemedSolidBackground(
+      this, ui::NativeTheme::kColorId_DialogBackground));
 
-  switch (kind_) {
-    case chrome::SAD_TAB_KIND_CRASHED: {
-      static int crashed = 0;
-      crashed++;
-      UMA_HISTOGRAM_CUSTOM_COUNTS(
-          "Tabs.SadTab.CrashCreated", crashed, 1, 1000, 50);
-      break;
-    }
-    case chrome::SAD_TAB_KIND_KILLED: {
-      RecordKillCreated();
-      LOG(WARNING) << "Tab Killed: "
-                   <<  web_contents->GetURL().GetOrigin().spec();
-      break;
-    }
-#if defined(OS_CHROMEOS)
-    case chrome::SAD_TAB_KIND_KILLED_BY_OOM: {
-      RecordKillCreated();
-      RecordKillCreatedOOM();
-      const std::string spec = web_contents->GetURL().GetOrigin().spec();
-      memory::OomMemoryDetails::Log(
-          "Tab OOM-Killed Memory details: " + spec + ", ", base::Closure());
-      break;
-    }
-#endif
-  }
-
-  // Set the background color.
-  set_background(
-      views::Background::CreateSolidBackground(GetNativeTheme()->GetSystemColor(
-          ui::NativeTheme::kColorId_DialogBackground)));
-
-  views::GridLayout* layout = new views::GridLayout(this);
-  SetLayoutManager(layout);
+  views::GridLayout* layout =
+      SetLayoutManager(std::make_unique<views::GridLayout>(this));
 
   const int column_set_id = 0;
   views::ColumnSet* columns = layout->AddColumnSet(column_set_id);
-  columns->AddPaddingColumn(1, views::kPanelSubVerticalSpacing);
-  columns->AddColumn(views::GridLayout::LEADING, views::GridLayout::LEADING, 0,
-                     views::GridLayout::USE_PREF, 0, kMinColumnWidth);
-  columns->AddColumn(views::GridLayout::TRAILING, views::GridLayout::LEADING, 0,
-                     views::GridLayout::USE_PREF, 0, kMinColumnWidth);
-  columns->AddPaddingColumn(1, views::kPanelSubVerticalSpacing);
+
+  // TODO(ananta)
+  // This view should probably be styled as web UI.
+  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
+  const int unrelated_horizontal_spacing = provider->GetDistanceMetric(
+          DISTANCE_UNRELATED_CONTROL_HORIZONTAL);
+  columns->AddPaddingColumn(1.0, unrelated_horizontal_spacing);
+  columns->AddColumn(views::GridLayout::LEADING, views::GridLayout::LEADING,
+                     views::GridLayout::kFixedSize, views::GridLayout::USE_PREF,
+                     0, kMinColumnWidth);
+  columns->AddColumn(views::GridLayout::TRAILING, views::GridLayout::LEADING,
+                     views::GridLayout::kFixedSize, views::GridLayout::USE_PREF,
+                     0, kMinColumnWidth);
+  columns->AddPaddingColumn(1.0, unrelated_horizontal_spacing);
 
   views::ImageView* image = new views::ImageView();
 
-  image->SetImage(gfx::CreateVectorIcon(gfx::VectorIconId::CRASHED_TAB, 48,
-                                        gfx::kChromeIconGrey));
-  layout->AddPaddingRow(1, views::kPanelVerticalSpacing);
-  layout->StartRow(0, column_set_id);
+  image->SetImage(
+      gfx::CreateVectorIcon(kCrashedTabIcon, 48, gfx::kChromeIconGrey));
+
+  const int unrelated_vertical_spacing_large = provider->GetDistanceMetric(
+      DISTANCE_UNRELATED_CONTROL_VERTICAL_LARGE);
+  layout->AddPaddingRow(1.0, unrelated_vertical_spacing_large);
+  layout->StartRow(views::GridLayout::kFixedSize, column_set_id);
   layout->AddView(image, 2, 1);
 
-  title_ = CreateLabel(l10n_util::GetStringUTF16(IDS_SAD_TAB_TITLE));
+  title_ = new views::Label(l10n_util::GetStringUTF16(GetTitle()));
   ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
   title_->SetFontList(rb.GetFontList(ui::ResourceBundle::LargeFont));
   title_->SetMultiLine(true);
   title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  layout->StartRowWithPadding(0, column_set_id, 0,
-                              views::kPanelVerticalSpacing);
-  layout->AddView(title_, 2, 1);
+  layout->StartRowWithPadding(views::GridLayout::kFixedSize, column_set_id,
+                              views::GridLayout::kFixedSize,
+                              unrelated_vertical_spacing_large);
+  layout->AddView(title_, 2, 1.0);
 
-  const SkColor text_color = GetNativeTheme()->GetSystemColor(
-      ui::NativeTheme::kColorId_LabelDisabledColor);
-
-  int message_id = IDS_SAD_TAB_MESSAGE;
-#if defined(OS_CHROMEOS)
-  if (kind_ == chrome::SAD_TAB_KIND_KILLED_BY_OOM)
-    message_id = IDS_KILLED_TAB_BY_OOM_MESSAGE;
-#endif
-
-  message_ = CreateLabel(l10n_util::GetStringUTF16(message_id));
-
-  message_->SetMultiLine(true);
-  message_->SetEnabledColor(text_color);
-  message_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  message_->SetLineHeight(views::kPanelSubVerticalSpacing);
-
-  layout->StartRowWithPadding(0, column_set_id, 0, views::kPanelVertMargin);
-  layout->AddView(message_, 2, 1, views::GridLayout::LEADING,
+  message_ = CreateFormattedLabel(l10n_util::GetStringUTF16(GetInfoMessage()));
+  layout->StartRowWithPadding(views::GridLayout::kFixedSize, column_set_id,
+                              views::GridLayout::kFixedSize,
+                              kTitleBottomSpacing);
+  layout->AddView(message_, 2, 1.0, views::GridLayout::LEADING,
                   views::GridLayout::LEADING);
 
-  if (web_contents_) {
-    // In the cases of multiple crashes in a session the 'Feedback' button
-    // replaces the 'Reload' button as primary action.
-    int button_type = total_crashes_ > kCrashesBeforeFeedbackIsDisplayed ?
-        SAD_TAB_BUTTON_FEEDBACK : SAD_TAB_BUTTON_RELOAD;
-    action_button_ = new views::BlueButton(this,
-        l10n_util::GetStringUTF16(button_type == SAD_TAB_BUTTON_FEEDBACK
-                                  ? IDS_CRASHED_TAB_FEEDBACK_LINK
-                                  : IDS_SAD_TAB_RELOAD_LABEL));
-    action_button_->set_tag(button_type);
-    help_link_ =
-        CreateLink(l10n_util::GetStringUTF16(IDS_LEARN_MORE), text_color);
-    layout->StartRowWithPadding(0, column_set_id, 0,
-                                views::kPanelVerticalSpacing);
-    layout->AddView(help_link_, 1, 1, views::GridLayout::LEADING,
-                    views::GridLayout::CENTER);
-    layout->AddView(action_button_, 1, 1, views::GridLayout::TRAILING,
-                    views::GridLayout::LEADING);
+  std::vector<int> bullet_string_ids = GetSubMessages();
+  if (!bullet_string_ids.empty()) {
+    auto list_view = std::make_unique<BulletedLabelListView>();
+    for (const auto& id : bullet_string_ids)
+      list_view->AddLabel(l10n_util::GetStringUTF16(id));
+
+    layout->StartRow(views::GridLayout::kFixedSize, column_set_id);
+    layout->AddView(list_view.release(), 2, 1.0);
   }
-  layout->AddPaddingRow(2, views::kPanelSubVerticalSpacing);
+
+  action_button_ = views::MdTextButton::CreateSecondaryUiBlueButton(
+      this, l10n_util::GetStringUTF16(GetButtonTitle()));
+  help_link_ = new views::Link(l10n_util::GetStringUTF16(GetHelpLinkTitle()));
+  help_link_->set_listener(this);
+  layout->StartRowWithPadding(views::GridLayout::kFixedSize, column_set_id,
+                              views::GridLayout::kFixedSize,
+                              unrelated_vertical_spacing_large);
+  layout->AddView(help_link_, 1.0, 1.0, views::GridLayout::LEADING,
+                  views::GridLayout::CENTER);
+  layout->AddView(action_button_, 1.0, 1.0, views::GridLayout::TRAILING,
+                  views::GridLayout::LEADING);
+
+  layout->AddPaddingRow(2, provider->GetDistanceMetric(
+                               views::DISTANCE_UNRELATED_CONTROL_VERTICAL));
+
+  // Needed to ensure this View is drawn even if a sibling (such as dev tools)
+  // has a z-order.
+  SetPaintToLayer();
+
+  AttachToWebView();
+
+  // Make the accessibility role of this view an alert dialog, and
+  // put focus on the action button. This causes screen readers to
+  // immediately announce the text of this view.
+  GetViewAccessibility().OverrideRole(ax::mojom::Role::kDialog);
+  if (action_button_->GetWidget() && action_button_->GetWidget()->IsActive())
+    action_button_->RequestFocus();
 }
 
-SadTabView::~SadTabView() {}
+SadTabView::~SadTabView() {
+  if (owner_)
+    owner_->SetCrashedOverlayView(nullptr);
+}
+
+void SadTabView::ReinstallInWebView() {
+  if (owner_) {
+    owner_->SetCrashedOverlayView(nullptr);
+    owner_ = nullptr;
+  }
+  AttachToWebView();
+}
+
+void SadTabView::AttachToWebView() {
+  Browser* browser = chrome::FindBrowserWithWebContents(web_contents());
+  // This can be null during prefetch.
+  if (!browser)
+    return;
+
+  // In unit tests, browser->window() might not be a real BrowserView.
+  if (!browser->window()->GetNativeWindow())
+    return;
+
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+  DCHECK(browser_view);
+
+  views::WebView* web_view = browser_view->contents_web_view();
+  if (web_view->GetWebContents() == web_contents()) {
+    owner_ = web_view;
+    owner_->SetCrashedOverlayView(this);
+  }
+}
 
 void SadTabView::LinkClicked(views::Link* source, int event_flags) {
-  DCHECK(web_contents_);
-  OpenURLParams params(GURL(total_crashes_ > kCrashesBeforeFeedbackIsDisplayed ?
-                       chrome::kCrashReasonFeedbackDisplayedURL :
-                       chrome::kCrashReasonURL), content::Referrer(),
-                       CURRENT_TAB, ui::PAGE_TRANSITION_LINK, false);
-  web_contents_->OpenURL(params);
+  PerformAction(Action::HELP_LINK);
 }
 
 void SadTabView::ButtonPressed(views::Button* sender,
                                const ui::Event& event) {
-  DCHECK(web_contents_);
   DCHECK_EQ(action_button_, sender);
-
-  if (action_button_->tag() == SAD_TAB_BUTTON_FEEDBACK) {
-    chrome::ShowFeedbackPage(
-        chrome::FindBrowserWithWebContents(web_contents_),
-        l10n_util::GetStringUTF8(kind_ == chrome::SAD_TAB_KIND_CRASHED ?
-            IDS_CRASHED_TAB_FEEDBACK_MESSAGE : IDS_KILLED_TAB_FEEDBACK_MESSAGE),
-        std::string(kCategoryTagCrash));
-  } else {
-    web_contents_->GetController().Reload(true);
-  }
+  PerformAction(Action::BUTTON);
 }
 
 void SadTabView::Layout() {
   // Specify the maximum message width explicitly.
   const int max_width =
-      std::min(width() - views::kPanelSubVerticalSpacing * 2, kMaxContentWidth);
+      std::min(width() - ChromeLayoutProvider::Get()->GetDistanceMetric(
+          DISTANCE_UNRELATED_CONTROL_HORIZONTAL) * 2, kMaxContentWidth);
+
   message_->SizeToFit(max_width);
   title_->SizeToFit(max_width);
-
-  if (help_message_ != nullptr)
-    help_message_->SizeToFit(max_width);
 
   View::Layout();
 }
 
+const char* SadTabView::GetClassName() const {
+  return kViewClassName;
+}
+
 void SadTabView::OnPaint(gfx::Canvas* canvas) {
   if (!painted_) {
-    // These stats should use the same counting approach and bucket size used
-    // for tab discard events in memory::OomPriorityManager so they can be
-    // directly compared.
-    switch (kind_) {
-      case chrome::SAD_TAB_KIND_CRASHED: {
-        static int crashed = 0;
-        UMA_HISTOGRAM_CUSTOM_COUNTS(
-            "Tabs.SadTab.CrashDisplayed", ++crashed, 1, 1000, 50);
-        break;
-      }
-      case chrome::SAD_TAB_KIND_KILLED:
-        RecordKillDisplayed();
-        break;
-#if defined(OS_CHROMEOS)
-      case chrome::SAD_TAB_KIND_KILLED_BY_OOM:
-        RecordKillDisplayed();
-        RecordKillDisplayedOOM();
-        break;
-#endif
-    }
+    RecordFirstPaint();
     painted_ = true;
   }
   View::OnPaint(canvas);
 }
 
-void SadTabView::Show() {
-  views::Widget::InitParams sad_tab_params(
-      views::Widget::InitParams::TYPE_CONTROL);
-
-  // It is not possible to create a native_widget_win that has no parent in
-  // and later re-parent it.
-  // TODO(avi): This is a cheat. Can this be made cleaner?
-  sad_tab_params.parent = web_contents_->GetNativeView();
-
-  set_owned_by_client();
-
-  views::Widget* sad_tab = new views::Widget;
-  sad_tab->Init(sad_tab_params);
-  sad_tab->SetContentsView(this);
-
-  views::Widget::ReparentNativeView(sad_tab->GetNativeView(),
-                                    web_contents_->GetNativeView());
-  gfx::Rect bounds = web_contents_->GetContainerBounds();
-  sad_tab->SetBounds(gfx::Rect(bounds.size()));
+void SadTabView::RemovedFromWidget() {
+  owner_ = nullptr;
 }
-
-void SadTabView::Close() {
-  if (GetWidget())
-    GetWidget()->Close();
-}
-
-views::Label* SadTabView::CreateLabel(const base::string16& text) {
-  views::Label* label = new views::Label(text);
-  label->SetBackgroundColor(background()->get_color());
-  return label;
-}
-
-views::Link* SadTabView::CreateLink(const base::string16& text,
-                                    const SkColor& color) {
-  views::Link* link = new views::Link(text);
-  link->SetBackgroundColor(background()->get_color());
-  link->SetEnabledColor(color);
-  link->set_listener(this);
-  return link;
-}
-
-namespace chrome {
 
 SadTab* SadTab::Create(content::WebContents* web_contents,
                        SadTabKind kind) {
   return new SadTabView(web_contents, kind);
 }
-
-}  // namespace chrome

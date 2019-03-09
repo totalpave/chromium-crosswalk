@@ -22,24 +22,23 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_icon_set.h"
 #include "extensions/common/extension_l10n_util.h"
 #include "extensions/common/extension_set.h"
+#include "extensions/common/image_util.h"
 #include "extensions/common/install_warning.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handler.h"
 #include "extensions/common/manifest_handlers/default_locale_handler.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
-#include "extensions/common/manifest_handlers/shared_module_info.h"
-#include "grit/extensions_strings.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "net/base/escape.h"
 #include "net/base/filename_util.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -55,6 +54,8 @@ enum SafeInstallationFlag {
   ENABLED,   // Safe installation is enabled.
 };
 SafeInstallationFlag g_use_safe_installation = DEFAULT;
+
+bool g_report_error_for_invisible_icon = false;
 
 // Returns true if the given file path exists and is not zero-length.
 bool ValidateFilePath(const base::FilePath& path) {
@@ -132,7 +133,7 @@ base::FilePath InstallExtension(const base::FilePath& unpacked_source_dir,
     return base::FilePath();
   }
   base::FilePath crx_temp_source =
-      extension_temp_dir.path().Append(unpacked_source_dir.BaseName());
+      extension_temp_dir.GetPath().Append(unpacked_source_dir.BaseName());
   if (!base::Move(unpacked_source_dir, crx_temp_source)) {
     LOG(ERROR) << "Moving extension from : " << unpacked_source_dir.value()
                << " to : " << crx_temp_source.value() << " failed.";
@@ -224,7 +225,7 @@ scoped_refptr<Extension> LoadExtension(const base::FilePath& extension_path,
   std::vector<InstallWarning> warnings;
   if (!ValidateExtension(extension.get(), error, &warnings))
     return NULL;
-  extension->AddInstallWarnings(warnings);
+  extension->AddInstallWarnings(std::move(warnings));
 
   return extension;
 }
@@ -261,7 +262,7 @@ std::unique_ptr<base::DictionaryValue> LoadManifest(
     return NULL;
   }
 
-  if (!root->IsType(base::Value::TYPE_DICTIONARY)) {
+  if (!root->is_dict()) {
     *error = l10n_util::GetStringUTF8(IDS_EXTENSION_MANIFEST_INVALID);
     return NULL;
   }
@@ -342,14 +343,6 @@ std::vector<base::FilePath> FindPrivateKeyFiles(
 
 bool CheckForIllegalFilenames(const base::FilePath& extension_path,
                               std::string* error) {
-  // Reserved underscore names.
-  static const base::FilePath::CharType* reserved_names[] = {
-      kLocaleFolder, kPlatformSpecificFolder, FILE_PATH_LITERAL("__MACOSX"), };
-  CR_DEFINE_STATIC_LOCAL(
-      std::set<base::FilePath::StringType>,
-      reserved_underscore_names,
-      (reserved_names, reserved_names + arraysize(reserved_names)));
-
   // Enumerate all files and directories in the extension root.
   // There is a problem when using pattern "_*" with FileEnumerator, so we have
   // to cheat with find_first_of and match all.
@@ -361,17 +354,21 @@ bool CheckForIllegalFilenames(const base::FilePath& extension_path,
   while (!(file = all_files.Next()).empty()) {
     base::FilePath::StringType filename = file.BaseName().value();
 
-    // Skip all that don't start with "_".
+    // Skip all filenames that don't start with "_".
     if (filename.find_first_of(FILE_PATH_LITERAL("_")) != 0)
       continue;
-    if (reserved_underscore_names.find(filename) ==
-        reserved_underscore_names.end()) {
-      *error = base::StringPrintf(
-          "Cannot load extension with file or directory name %s. "
-          "Filenames starting with \"_\" are reserved for use by the system.",
-          file.BaseName().AsUTF8Unsafe().c_str());
-      return false;
+
+    // Some filenames are special and allowed to start with "_".
+    if (filename == kLocaleFolder || filename == kPlatformSpecificFolder ||
+        filename == FILE_PATH_LITERAL("__MACOSX")) {
+      continue;
     }
+
+    *error = base::StringPrintf(
+        "Cannot load extension with file or directory name %s. "
+        "Filenames starting with \"_\" are reserved for use by the system.",
+        file.BaseName().AsUTF8Unsafe().c_str());
+    return false;
   }
 
   return true;
@@ -402,9 +399,7 @@ bool CheckForWindowsReservedFilenames(const base::FilePath& extension_dir,
 base::FilePath GetInstallTempDir(const base::FilePath& extensions_dir) {
   // We do file IO in this function, but only when the current profile's
   // Temp directory has never been used before, or in a rare error case.
-  // Developers are not likely to see these situations often, so do an
-  // explicit thread check.
-  base::ThreadRestrictions::AssertIOAllowed();
+  // Developers are not likely to see these situations often.
 
   // Create the temp directory as a sub-directory of the Extensions directory.
   // This guarantees it is on the same file system as the extension's eventual
@@ -460,41 +455,42 @@ base::FilePath ExtensionURLToRelativeFilePath(const GURL& url) {
   return path;
 }
 
-base::FilePath ExtensionResourceURLToFilePath(const GURL& url,
-                                              const base::FilePath& root) {
-  std::string host = net::UnescapeURLComponent(
-      url.host(),
-      net::UnescapeRule::SPACES |
-          net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS);
-  if (host.empty())
-    return base::FilePath();
-
-  base::FilePath relative_path = ExtensionURLToRelativeFilePath(url);
-  if (relative_path.empty())
-    return base::FilePath();
-
-  base::FilePath path = root.AppendASCII(host).Append(relative_path);
-  if (!base::PathExists(path))
-    return base::FilePath();
-  path = base::MakeAbsoluteFilePath(path);
-  if (path.empty() || !root.IsParent(path))
-    return base::FilePath();
-  return path;
+void SetReportErrorForInvisibleIconForTesting(bool value) {
+  g_report_error_for_invisible_icon = value;
 }
 
 bool ValidateExtensionIconSet(const ExtensionIconSet& icon_set,
                               const Extension* extension,
                               int error_message_id,
+                              SkColor background_color,
                               std::string* error) {
-  for (ExtensionIconSet::IconMap::const_iterator iter = icon_set.map().begin();
-       iter != icon_set.map().end();
-       ++iter) {
+  for (const auto& entry : icon_set.map()) {
     const base::FilePath path =
-        extension->GetResource(iter->second).GetFilePath();
+        extension->GetResource(entry.second).GetFilePath();
     if (!ValidateFilePath(path)) {
       *error = l10n_util::GetStringFUTF8(error_message_id,
-                                         base::UTF8ToUTF16(iter->second));
+                                         base::UTF8ToUTF16(entry.second));
       return false;
+    }
+
+    if (extension->location() == Manifest::UNPACKED) {
+      const bool is_sufficiently_visible =
+          image_util::IsIconAtPathSufficientlyVisible(path);
+      const bool is_sufficiently_visible_rendered =
+          image_util::IsRenderedIconAtPathSufficientlyVisible(path,
+                                                              background_color);
+      UMA_HISTOGRAM_BOOLEAN(
+          "Extensions.ManifestIconSetIconWasVisibleForUnpacked",
+          is_sufficiently_visible);
+      UMA_HISTOGRAM_BOOLEAN(
+          "Extensions.ManifestIconSetIconWasVisibleForUnpackedRendered",
+          is_sufficiently_visible_rendered);
+      if (!is_sufficiently_visible && g_report_error_for_invisible_icon) {
+        *error = l10n_util::GetStringFUTF8(
+            IDS_EXTENSION_LOAD_ICON_NOT_SUFFICIENTLY_VISIBLE,
+            base::UTF8ToUTF16(entry.second));
+        return false;
+      }
     }
   }
   return true;
@@ -526,7 +522,6 @@ MessageBundle* LoadMessageBundle(
       extension_l10n_util::LoadMessageCatalogs(
           locale_path,
           default_locale,
-          extension_l10n_util::CurrentLocaleOrDefault(),
           error);
 
   return message_bundle;
@@ -536,77 +531,40 @@ MessageBundle::SubstitutionMap* LoadMessageBundleSubstitutionMap(
     const base::FilePath& extension_path,
     const std::string& extension_id,
     const std::string& default_locale) {
+  return LoadMessageBundleSubstitutionMapFromPaths(
+      {extension_path}, extension_id, default_locale);
+}
+
+MessageBundle::SubstitutionMap* LoadNonLocalizedMessageBundleSubstitutionMap(
+    const std::string& extension_id) {
   MessageBundle::SubstitutionMap* return_value =
       new MessageBundle::SubstitutionMap();
-  if (!default_locale.empty()) {
-    // Touch disk only if extension is localized.
-    std::string error;
-    std::unique_ptr<MessageBundle> bundle(
-        LoadMessageBundle(extension_path, default_locale, &error));
 
-    if (bundle.get())
-      *return_value = *bundle->dictionary();
-  }
-
-  // Add @@extension_id reserved message here, so it's available to
-  // non-localized extensions too.
+  // Add @@extension_id reserved message here.
   return_value->insert(
       std::make_pair(MessageBundle::kExtensionIdKey, extension_id));
 
   return return_value;
 }
 
-MessageBundle::SubstitutionMap* LoadMessageBundleSubstitutionMapWithImports(
+MessageBundle::SubstitutionMap* LoadMessageBundleSubstitutionMapFromPaths(
+    const std::vector<base::FilePath>& paths,
     const std::string& extension_id,
-    const ExtensionSet& extension_set) {
-  const Extension* extension = extension_set.GetByID(extension_id);
+    const std::string& default_locale) {
   MessageBundle::SubstitutionMap* return_value =
-      new MessageBundle::SubstitutionMap();
-
-  // Add @@extension_id reserved message here, so it's available to
-  // non-localized extensions too.
-  return_value->insert(
-      std::make_pair(MessageBundle::kExtensionIdKey, extension_id));
-
-  base::FilePath extension_path;
-  std::string default_locale;
-  if (!extension) {
-    NOTREACHED() << "Missing extension " << extension_id;
-    return return_value;
-  }
+      LoadNonLocalizedMessageBundleSubstitutionMap(extension_id);
 
   // Touch disk only if extension is localized.
-  default_locale = LocaleInfo::GetDefaultLocale(extension);
-  if (default_locale.empty()) {
+  if (default_locale.empty())
     return return_value;
-  }
 
   std::string error;
-  std::unique_ptr<MessageBundle> bundle(
-      LoadMessageBundle(extension->path(), default_locale, &error));
+  for (const base::FilePath& path : paths) {
+    std::unique_ptr<MessageBundle> bundle(
+        LoadMessageBundle(path, default_locale, &error));
 
-  if (bundle.get()) {
-    for (auto iter : *bundle->dictionary()) {
-      return_value->insert(std::make_pair(iter.first, iter.second));
-    }
-  }
-
-  auto imports = extensions::SharedModuleInfo::GetImports(extension);
-  // Iterate through the imports in reverse.  This will allow later imported
-  // modules to override earlier imported modules, as the list order is
-  // maintained from the definition in manifest.json of the imports.
-  for (auto it = imports.rbegin(); it != imports.rend(); ++it) {
-    const extensions::Extension* imported_extension =
-        extension_set.GetByID(it->extension_id);
-    if (!imported_extension) {
-      NOTREACHED() << "Missing shared module " << it->extension_id;
-      continue;
-    }
-    std::unique_ptr<MessageBundle> imported_bundle(
-        LoadMessageBundle(imported_extension->path(), default_locale, &error));
-
-    if (imported_bundle.get()) {
-      for (auto iter : *imported_bundle->dictionary()) {
+    if (bundle) {
+      for (const auto& iter : *bundle->dictionary()) {
         // |insert| only adds new entries, and does not replace entries in
         // the main extension or previously processed imports.
         return_value->insert(std::make_pair(iter.first, iter.second));
@@ -623,6 +581,18 @@ base::FilePath GetVerifiedContentsPath(const base::FilePath& extension_path) {
 }
 base::FilePath GetComputedHashesPath(const base::FilePath& extension_path) {
   return extension_path.Append(kMetadataFolder).Append(kComputedHashesFilename);
+}
+base::FilePath GetIndexedRulesetPath(const base::FilePath& extension_path) {
+  return extension_path.Append(kMetadataFolder).Append(kIndexedRulesetFilename);
+}
+
+std::vector<base::FilePath> GetReservedMetadataFilePaths(
+    const base::FilePath& extension_path) {
+  return {
+      GetVerifiedContentsPath(extension_path),
+      GetComputedHashesPath(extension_path),
+      GetIndexedRulesetPath(extension_path),
+  };
 }
 
 }  // namespace file_util

@@ -7,7 +7,7 @@
 
 #include <string>
 
-#include "base/logging.h"
+#include "base/memory/ref_counted.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
 #include "ipc/ipc_sender.h"
@@ -17,17 +17,17 @@
 #endif
 
 namespace base {
+class SingleThreadTaskRunner;
 struct UserMetricsAction;
 }
 
-namespace shell {
-class InterfaceProvider;
-class InterfaceRegistry;
+namespace service_manager {
+class Connector;
 }
 
 namespace content {
 
-  class MojoShellConnection;
+class ServiceManagerConnection;
 
 // An abstract base class that contains logic shared between most child
 // processes of the embedder.
@@ -38,15 +38,6 @@ class CONTENT_EXPORT ChildThread : public IPC::Sender {
   static ChildThread* Get();
 
   ~ChildThread() override {}
-
-#if defined(OS_WIN)
-  // Request that the given font be loaded by the browser so it's cached by the
-  // OS. Please see ChildProcessHost::PreCacheFont for details.
-  virtual void PreCacheFont(const LOGFONT& log_font) = 0;
-
-  // Release cached font.
-  virtual void ReleaseCachedFonts() = 0;
-#endif
 
   // Sends over a base::UserMetricsAction to be recorded by user metrics as
   // an action. Once a new user metric is added, run
@@ -67,17 +58,28 @@ class CONTENT_EXPORT ChildThread : public IPC::Sender {
   // actions in chrome/tools/extract_actions.py.
   virtual void RecordComputedAction(const std::string& action) = 0;
 
-  // Returns the MojoShellConnection for the thread (from which a
-  // shell::Connector can be obtained).
-  virtual MojoShellConnection* GetMojoShellConnection() = 0;
+  // Returns the ServiceManagerConnection for the thread (from which a
+  // service_manager::Connector can be obtained).
+  virtual ServiceManagerConnection* GetServiceManagerConnection() = 0;
 
-  // Returns the InterfaceRegistry that this process uses to expose interfaces
-  // to the browser.
-  virtual shell::InterfaceRegistry* GetInterfaceRegistry() = 0;
+  // Returns a connector that can be used to bind interfaces exposed by other
+  // services.
+  virtual service_manager::Connector* GetConnector() = 0;
 
-  // Returns the InterfaceProvider that this process can use to bind
-  // interfaces exposed to it by the browser.
-  virtual shell::InterfaceProvider* GetRemoteInterfaces() = 0;
+  virtual scoped_refptr<base::SingleThreadTaskRunner> GetIOTaskRunner() = 0;
+
+  // Tells the child process that a field trial was activated.
+  virtual void SetFieldTrialGroup(const std::string& trial_name,
+                                  const std::string& group_name) = 0;
+
+#if defined(OS_WIN)
+  // Request that the given font be loaded by the browser so it's cached by the
+  // OS. Please see ChildProcessHost::PreCacheFont for details.
+  virtual void PreCacheFont(const LOGFONT& log_font) = 0;
+
+  // Release cached font.
+  virtual void ReleaseCachedFonts() = 0;
+#endif
 };
 
 }  // namespace content

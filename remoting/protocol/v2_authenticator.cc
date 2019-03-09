@@ -12,7 +12,7 @@
 #include "remoting/base/constants.h"
 #include "remoting/base/rsa_key_pair.h"
 #include "remoting/protocol/ssl_hmac_channel_authenticator.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using crypto::P224EncryptedKeyExchange;
 
@@ -21,15 +21,15 @@ namespace protocol {
 
 namespace {
 
-const buzz::StaticQName kEkeTag = { kChromotingXmlNamespace,
+const jingle_xmpp::StaticQName kEkeTag = { kChromotingXmlNamespace,
                                     "eke-message" };
-const buzz::StaticQName kCertificateTag = { kChromotingXmlNamespace,
+const jingle_xmpp::StaticQName kCertificateTag = { kChromotingXmlNamespace,
                                             "certificate" };
 
 }  // namespace
 
 // static
-bool V2Authenticator::IsEkeMessage(const buzz::XmlElement* message) {
+bool V2Authenticator::IsEkeMessage(const jingle_xmpp::XmlElement* message) {
   return message->FirstNamed(kEkeTag) != nullptr;
 }
 
@@ -66,8 +66,7 @@ V2Authenticator::V2Authenticator(
   pending_messages_.push(key_exchange_impl_.GetNextMessage());
 }
 
-V2Authenticator::~V2Authenticator() {
-}
+V2Authenticator::~V2Authenticator() = default;
 
 Authenticator::State V2Authenticator::state() const {
   if (state_ == ACCEPTED && !pending_messages_.empty())
@@ -84,13 +83,13 @@ Authenticator::RejectionReason V2Authenticator::rejection_reason() const {
   return rejection_reason_;
 }
 
-void V2Authenticator::ProcessMessage(const buzz::XmlElement* message,
+void V2Authenticator::ProcessMessage(const jingle_xmpp::XmlElement* message,
                                      const base::Closure& resume_callback) {
   ProcessMessageInternal(message);
   resume_callback.Run();
 }
 
-void V2Authenticator::ProcessMessageInternal(const buzz::XmlElement* message) {
+void V2Authenticator::ProcessMessageInternal(const jingle_xmpp::XmlElement* message) {
   DCHECK_EQ(state(), WAITING_MESSAGE);
 
   // Parse the certificate.
@@ -110,7 +109,7 @@ void V2Authenticator::ProcessMessageInternal(const buzz::XmlElement* message) {
     return;
   }
 
-  const buzz::XmlElement* eke_element = message->FirstNamed(kEkeTag);
+  const jingle_xmpp::XmlElement* eke_element = message->FirstNamed(kEkeTag);
   if (!eke_element) {
     LOG(WARNING) << "No eke-message found.";
     state_ = REJECTED;
@@ -151,10 +150,10 @@ void V2Authenticator::ProcessMessageInternal(const buzz::XmlElement* message) {
   state_ = MESSAGE_READY;
 }
 
-std::unique_ptr<buzz::XmlElement> V2Authenticator::GetNextMessage() {
+std::unique_ptr<jingle_xmpp::XmlElement> V2Authenticator::GetNextMessage() {
   DCHECK_EQ(state(), MESSAGE_READY);
 
-  std::unique_ptr<buzz::XmlElement> message = CreateEmptyAuthenticatorMessage();
+  std::unique_ptr<jingle_xmpp::XmlElement> message = CreateEmptyAuthenticatorMessage();
 
   DCHECK(!pending_messages_.empty());
   while (!pending_messages_.empty()) {
@@ -162,7 +161,7 @@ std::unique_ptr<buzz::XmlElement> V2Authenticator::GetNextMessage() {
     std::string base64_message;
     base::Base64Encode(spake_message, &base64_message);
 
-    buzz::XmlElement* eke_tag = new buzz::XmlElement(kEkeTag);
+    jingle_xmpp::XmlElement* eke_tag = new jingle_xmpp::XmlElement(kEkeTag);
     eke_tag->SetBodyText(base64_message);
     message->AddElement(eke_tag);
 
@@ -170,7 +169,7 @@ std::unique_ptr<buzz::XmlElement> V2Authenticator::GetNextMessage() {
   }
 
   if (!local_cert_.empty() && !certificate_sent_) {
-    buzz::XmlElement* certificate_tag = new buzz::XmlElement(kCertificateTag);
+    jingle_xmpp::XmlElement* certificate_tag = new jingle_xmpp::XmlElement(kCertificateTag);
     std::string base64_cert;
     base::Base64Encode(local_cert_, &base64_cert);
     certificate_tag->SetBodyText(base64_cert);

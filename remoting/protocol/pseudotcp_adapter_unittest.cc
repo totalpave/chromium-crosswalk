@@ -10,14 +10,18 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/compiler_specific.h"
+#include "base/containers/circular_deque.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "jingle/glue/thread_wrapper.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "remoting/protocol/p2p_datagram_socket.h"
 #include "remoting/protocol/p2p_stream_socket.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -34,7 +38,8 @@ const int kTestDataSize = kMessages * kMessageSize;
 
 class RateLimiter {
  public:
-  virtual ~RateLimiter() { };
+  virtual ~RateLimiter() = default;
+
   // Returns true if the new packet needs to be dropped, false otherwise.
   virtual bool DropNextPacket() = 0;
 };
@@ -49,7 +54,7 @@ class LeakyBucket : public RateLimiter {
         last_update_(base::TimeTicks::Now()) {
   }
 
-  ~LeakyBucket() override {}
+  ~LeakyBucket() override = default;
 
   bool DropNextPacket() override {
     base::TimeTicks now = base::TimeTicks::Now();
@@ -78,7 +83,7 @@ class FakeSocket : public P2PDatagramSocket {
       : rate_limiter_(NULL),
         latency_ms_(0) {
   }
-  ~FakeSocket() override {}
+  ~FakeSocket() override = default;
 
   void AppendInputPacket(const std::vector<char>& data) {
     if (rate_limiter_ && rate_limiter_->DropNextPacket())
@@ -102,9 +107,9 @@ class FakeSocket : public P2PDatagramSocket {
 
   void set_rate_limiter(RateLimiter* rate_limiter) {
     rate_limiter_ = rate_limiter;
-  };
+  }
 
-  void set_latency(int latency_ms) { latency_ms_ = latency_ms; };
+  void set_latency(int latency_ms) { latency_ms_ = latency_ms; }
 
   // P2PDatagramSocket interface.
   int Recv(const scoped_refptr<net::IOBuffer>& buf, int buf_len,
@@ -133,9 +138,9 @@ class FakeSocket : public P2PDatagramSocket {
     if (peer_socket_) {
       base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
           FROM_HERE,
-          base::Bind(&FakeSocket::AppendInputPacket,
-                     base::Unretained(peer_socket_),
-                     std::vector<char>(buf->data(), buf->data() + buf_len)),
+          base::BindOnce(&FakeSocket::AppendInputPacket,
+                         base::Unretained(peer_socket_),
+                         std::vector<char>(buf->data(), buf->data() + buf_len)),
           base::TimeDelta::FromMilliseconds(latency_ms_));
     }
 
@@ -147,7 +152,7 @@ class FakeSocket : public P2PDatagramSocket {
   int read_buffer_size_;
   net::CompletionCallback read_callback_;
 
-  std::deque<std::vector<char> > incoming_packets_;
+  base::circular_deque<std::vector<char>> incoming_packets_;
 
   FakeSocket* peer_socket_;
   RateLimiter* rate_limiter_;
@@ -168,7 +173,7 @@ class TCPChannelTester : public base::RefCountedThreadSafe<TCPChannelTester> {
 
   void Start() {
     task_runner_->PostTask(FROM_HERE,
-                           base::Bind(&TCPChannelTester::DoStart, this));
+                           base::BindOnce(&TCPChannelTester::DoStart, this));
   }
 
   void CheckResults() {
@@ -185,11 +190,12 @@ class TCPChannelTester : public base::RefCountedThreadSafe<TCPChannelTester> {
   }
 
  protected:
-  virtual ~TCPChannelTester() {}
+  virtual ~TCPChannelTester() = default;
 
   void Done() {
     done_ = true;
-    task_runner_->PostTask(FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+    task_runner_->PostTask(
+        FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   }
 
   void DoStart() {
@@ -199,11 +205,11 @@ class TCPChannelTester : public base::RefCountedThreadSafe<TCPChannelTester> {
   }
 
   void InitBuffers() {
-    output_buffer_ = new net::DrainableIOBuffer(
-        new net::IOBuffer(kTestDataSize), kTestDataSize);
+    output_buffer_ = base::MakeRefCounted<net::DrainableIOBuffer>(
+        base::MakeRefCounted<net::IOBuffer>(kTestDataSize), kTestDataSize);
     memset(output_buffer_->data(), 123, kTestDataSize);
 
-    input_buffer_ = new net::GrowableIOBuffer();
+    input_buffer_ = base::MakeRefCounted<net::GrowableIOBuffer>();
     // Always keep kMessageSize bytes available at the end of the input buffer.
     input_buffer_->SetCapacity(kMessageSize);
   }
@@ -217,9 +223,9 @@ class TCPChannelTester : public base::RefCountedThreadSafe<TCPChannelTester> {
       int bytes_to_write = std::min(output_buffer_->BytesRemaining(),
                                     kMessageSize);
       result = client_socket_->Write(
-          output_buffer_.get(),
-          bytes_to_write,
-          base::Bind(&TCPChannelTester::OnWritten, base::Unretained(this)));
+          output_buffer_.get(), bytes_to_write,
+          base::Bind(&TCPChannelTester::OnWritten, base::Unretained(this)),
+          TRAFFIC_ANNOTATION_FOR_TESTS);
       HandleWriteResult(result);
     }
   }
@@ -376,7 +382,8 @@ class DeleteOnConnected {
       : task_runner_(std::move(task_runner)), adapter_(adapter) {}
   void OnConnected(int error) {
     adapter_->reset();
-    task_runner_->PostTask(FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+    task_runner_->PostTask(
+        FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   }
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   std::unique_ptr<PseudoTcpAdapter>* adapter_;

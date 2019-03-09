@@ -14,10 +14,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
-#include "content/common/media/video_capture.h"
-#include "media/base/video_capture_types.h"
-
-class GURL;
+#include "media/capture/video_capture_types.h"
+#include "third_party/blink/public/common/media/video_capture.h"
 
 namespace media {
 class VideoFrame;
@@ -32,7 +30,6 @@ class PepperPlatformVideoCapture {
  public:
   PepperPlatformVideoCapture(int render_frame_id,
                              const std::string& device_id,
-                             const GURL& document_url,
                              PepperVideoCaptureHost* handler);
   virtual ~PepperPlatformVideoCapture();
 
@@ -44,7 +41,7 @@ class PepperPlatformVideoCapture {
 
  private:
   void OnDeviceOpened(int request_id, bool succeeded, const std::string& label);
-  void OnStateUpdate(VideoCaptureState state);
+  void OnStateUpdate(blink::VideoCaptureState state);
   void OnFrameReady(const scoped_refptr<media::VideoFrame>& frame,
                     base::TimeTicks estimated_capture_time);
 

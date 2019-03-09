@@ -4,7 +4,7 @@
 
 #include <stddef.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "ui/base/ime/chromeos/ime_keyboard.h"
 
 namespace chromeos {
@@ -75,12 +75,19 @@ void ImeKeyboard::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
+bool ImeKeyboard::SetCurrentKeyboardLayoutByName(
+    const std::string& layout_name) {
+  for (ImeKeyboard::Observer& observer : observers_)
+    observer.OnLayoutChanging(layout_name);
+  return true;
+}
+
 void ImeKeyboard::SetCapsLockEnabled(bool enable_caps_lock) {
   bool old_state = caps_lock_is_enabled_;
   caps_lock_is_enabled_ = enable_caps_lock;
   if (old_state != enable_caps_lock) {
-    FOR_EACH_OBSERVER(ImeKeyboard::Observer, observers_,
-                      OnCapsLockChanged(enable_caps_lock));
+    for (ImeKeyboard::Observer& observer : observers_)
+      observer.OnCapsLockChanged(enable_caps_lock);
   }
 }
 
@@ -89,7 +96,7 @@ bool ImeKeyboard::CapsLockIsEnabled() {
 }
 
 bool ImeKeyboard::IsISOLevel5ShiftAvailable() const {
-  for (size_t i = 0; i < arraysize(kISOLevel5ShiftLayoutIds); ++i) {
+  for (size_t i = 0; i < base::size(kISOLevel5ShiftLayoutIds); ++i) {
     if (last_layout_ == kISOLevel5ShiftLayoutIds[i])
       return true;
   }
@@ -97,7 +104,7 @@ bool ImeKeyboard::IsISOLevel5ShiftAvailable() const {
 }
 
 bool ImeKeyboard::IsAltGrAvailable() const {
-  for (size_t i = 0; i < arraysize(kAltGrLayoutIds); ++i) {
+  for (size_t i = 0; i < base::size(kAltGrLayoutIds); ++i) {
     if (last_layout_ == kAltGrLayoutIds[i])
       return true;
   }

@@ -4,12 +4,15 @@
 
 #include "ui/ozone/public/ozone_gpu_test_helper.h"
 
+#include "base/bind.h"
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ipc/ipc_listener.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_sender.h"
 #include "ipc/message_filter.h"
-#include "ui/ozone/public/gpu_platform_support.h"
 #include "ui/ozone/public/gpu_platform_support_host.h"
 #include "ui/ozone/public/ozone_platform.h"
 
@@ -26,56 +29,44 @@ void DispatchToGpuPlatformSupportHostTask(IPC::Message* msg) {
   delete msg;
 }
 
-void DispatchToGpuPlatformSupportTask(IPC::Message* msg) {
-  ui::OzonePlatform::GetInstance()->GetGpuPlatformSupport()->OnMessageReceived(
-      *msg);
+void DispatchToGpuPlatformSupportTaskOnIO(IPC::Message* msg) {
+  IPC::MessageFilter* filter =
+      ui::OzonePlatform::GetInstance()->GetGpuMessageFilter();
+  if (filter)
+    filter->OnMessageReceived(*msg);
   delete msg;
-}
-
-void DispatchToGpuPlatformSupportTaskOnIO(
-    const scoped_refptr<base::SingleThreadTaskRunner>& gpu_task_runner,
-    IPC::Message* msg) {
-  IPC::MessageFilter* filter = ui::OzonePlatform::GetInstance()
-                                   ->GetGpuPlatformSupport()
-                                   ->GetMessageFilter();
-  if (filter && filter->OnMessageReceived(*msg)) {
-    delete msg;
-    return;
-  }
-
-  gpu_task_runner->PostTask(FROM_HERE,
-                            base::Bind(DispatchToGpuPlatformSupportTask, msg));
 }
 
 }  // namespace
 
-class FakeGpuProcess : public IPC::Sender {
+class FakeGpuProcess : public IPC::Channel {
  public:
   FakeGpuProcess(
       const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner)
       : ui_task_runner_(ui_task_runner) {}
   ~FakeGpuProcess() override {}
 
-  void Init() {
-    ui::OzonePlatform::GetInstance()
-        ->GetGpuPlatformSupport()
-        ->OnChannelEstablished(this);
-  }
-
   void InitOnIO() {
-    IPC::MessageFilter* filter = ui::OzonePlatform::GetInstance()
-                                     ->GetGpuPlatformSupport()
-                                     ->GetMessageFilter();
+    IPC::MessageFilter* filter =
+        ui::OzonePlatform::GetInstance()->GetGpuMessageFilter();
 
     if (filter)
       filter->OnFilterAdded(this);
   }
 
+  // IPC::Channel implementation:
   bool Send(IPC::Message* msg) override {
     ui_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&DispatchToGpuPlatformSupportHostTask, msg));
+        FROM_HERE, base::BindOnce(&DispatchToGpuPlatformSupportHostTask, msg));
     return true;
   }
+
+  bool Connect() override {
+    NOTREACHED();
+    return false;
+  }
+
+  void Close() override { NOTREACHED(); }
 
  private:
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
@@ -84,23 +75,24 @@ class FakeGpuProcess : public IPC::Sender {
 class FakeGpuProcessHost {
  public:
   FakeGpuProcessHost(
-      const scoped_refptr<base::SingleThreadTaskRunner>& gpu_task_runner,
+      const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
       const scoped_refptr<base::SingleThreadTaskRunner>& gpu_io_task_runner)
-      : gpu_task_runner_(gpu_task_runner),
+      : ui_task_runner_(ui_task_runner),
         gpu_io_task_runner_(gpu_io_task_runner) {}
   ~FakeGpuProcessHost() {}
 
-  void Init() {
-    base::Callback<void(IPC::Message*)> sender =
-        base::Bind(&DispatchToGpuPlatformSupportTaskOnIO, gpu_task_runner_);
+  void InitOnIO() {
+    base::RepeatingCallback<void(IPC::Message*)> sender =
+        base::BindRepeating(&DispatchToGpuPlatformSupportTaskOnIO);
 
     ui::OzonePlatform::GetInstance()
         ->GetGpuPlatformSupportHost()
-        ->OnChannelEstablished(kGpuProcessHostId, gpu_io_task_runner_, sender);
+        ->OnGpuProcessLaunched(kGpuProcessHostId, ui_task_runner_,
+                               gpu_io_task_runner_, sender);
   }
 
  private:
-  scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner_;
+  scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> gpu_io_task_runner_;
 };
 
@@ -111,8 +103,7 @@ OzoneGpuTestHelper::~OzoneGpuTestHelper() {
 }
 
 bool OzoneGpuTestHelper::Initialize(
-    const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
-    const scoped_refptr<base::SingleThreadTaskRunner>& gpu_task_runner) {
+    const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner) {
   io_helper_thread_.reset(new base::Thread("IOHelperThread"));
   if (!io_helper_thread_->StartWithOptions(
           base::Thread::Options(base::MessageLoop::TYPE_IO, 0)))
@@ -120,13 +111,23 @@ bool OzoneGpuTestHelper::Initialize(
 
   fake_gpu_process_.reset(new FakeGpuProcess(ui_task_runner));
   io_helper_thread_->task_runner()->PostTask(
-      FROM_HERE, base::Bind(&FakeGpuProcess::InitOnIO,
-                            base::Unretained(fake_gpu_process_.get())));
-  fake_gpu_process_->Init();
+      FROM_HERE, base::BindOnce(&FakeGpuProcess::InitOnIO,
+                                base::Unretained(fake_gpu_process_.get())));
 
   fake_gpu_process_host_.reset(new FakeGpuProcessHost(
-      gpu_task_runner, io_helper_thread_->task_runner()));
-  fake_gpu_process_host_->Init();
+      ui_task_runner, io_helper_thread_->task_runner()));
+  io_helper_thread_->task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&FakeGpuProcessHost::InitOnIO,
+                     base::Unretained(fake_gpu_process_host_.get())));
+  io_helper_thread_->FlushForTesting();
+
+  // Give the UI thread a chance to run any tasks posted from the IO thread
+  // after the GPU process is launched. This is needed for Ozone DRM, see
+  // https://crbug.com/830233.
+  base::RunLoop run_loop;
+  ui_task_runner->PostTask(FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
 
   return true;
 }

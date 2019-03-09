@@ -10,12 +10,14 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/callback_forward.h"
 #include "base/command_line.h"
 #include "base/macros.h"
 
 namespace base {
+class FeatureList;
 class ListValue;
 }
 
@@ -41,7 +43,6 @@ enum {
   kOsAndroid = 1 << 4,
   kOsCrOSOwnerOnly = 1 << 5,
   kOsIos = 1 << 6,
-  kOsIosAppleReview = 1 << 7,
 };
 
 // A flag controlling the behavior of the |ConvertFlagsToSwitches| function -
@@ -52,10 +53,7 @@ enum SentinelsMode { kNoSentinels, kAddSentinels };
 // that influence the whole machine and can be said by the admin only. This flag
 // is relevant for ChromeOS for now only and dictates whether entries marked
 // with the |kOsCrOSOwnerOnly| label should be enabled in the UI or not.
-// On iOS, |kAppleReviewAccessToFlags| indicates that the flags shown should
-// be the ones marked for Apple review (which otherwise will not be shown).
-enum FlagAccess { kGeneralAccessFlagsOnly, kOwnerAccessToFlags,
-                  kAppleReviewAccessToFlags };
+enum FlagAccess { kGeneralAccessFlagsOnly, kOwnerAccessToFlags };
 
 // Stores and encapsulates the little state that about:flags has.
 class FlagsState {
@@ -71,18 +69,41 @@ class FlagsState {
                               SentinelsMode sentinels,
                               const char* enable_features_flag_name,
                               const char* disable_features_flag_name);
+
+  // Reads the state from |flags_storage| and fills |switches| with the set of
+  // switches corresponding to enabled entries and |features| with the set of
+  // strings corresponding to enabled/disabled base::Feature states. Feature
+  // names are suffixed with ":enabled" or ":disabled" depending on their state.
+  void GetSwitchesAndFeaturesFromFlags(FlagsStorage* flags_storage,
+                                       std::set<std::string>* switches,
+                                       std::set<std::string>* features) const;
+
   bool IsRestartNeededToCommitChanges();
   void SetFeatureEntryEnabled(FlagsStorage* flags_storage,
                               const std::string& internal_name,
                               bool enable);
-  void RemoveFlagsSwitches(
-      std::map<std::string, base::CommandLine::StringType>* switch_list);
+
+  // Sets |value| as the command line switch for feature given by
+  // |internal_name|. |value| contains a list of origins (serialized form of
+  // url::Origin()) separated by whitespace and/or comma. Invalid values in this
+  // list are ignored.
+  void SetOriginListFlag(const std::string& internal_name,
+                         const std::string& value,
+                         FlagsStorage* flags_storage);
+
+  void RemoveFlagsSwitches(base::CommandLine::SwitchMap* switch_list);
   void ResetAllFlags(FlagsStorage* flags_storage);
   void Reset();
 
-  // Registers variations parameter values stored in |flags_storage| (previously
-  // selected in about:flags).
-  void RegisterAllFeatureVariationParameters(FlagsStorage* flags_storage);
+  // Registers variations parameter values selected for features in about:flags.
+  // The selected flags are retrieved from |flags_storage|, the registered
+  // variation parameters are connected to their corresponding features in
+  // |feature_list|. Returns the (possibly empty) comma separated list of
+  // additional variation ids to register in the MetricsService that come from
+  // variations selected using chrome://flags.
+  std::vector<std::string> RegisterAllFeatureVariationParameters(
+      FlagsStorage* flags_storage,
+      base::FeatureList* feature_list);
 
   // Gets the list of feature entries. Entries that are available for the
   // current platform are appended to |supported_entries|; all other entries are
@@ -114,11 +135,16 @@ class FlagsState {
       const char* extra_flag_sentinel_end_flag_name);
 
  private:
+  // Keeps track of affected switches for each FeatureEntry, based on which
+  // choice is selected for it.
+  struct SwitchEntry;
+
   // Adds mapping to |name_to_switch_map| to set the given switch name/value.
-  void AddSwitchMapping(const std::string& key,
-                        const std::string& switch_name,
-                        const std::string& switch_value,
-                        std::map<std::string, SwitchEntry>* name_to_switch_map);
+  void AddSwitchMapping(
+      const std::string& key,
+      const std::string& switch_name,
+      const std::string& switch_value,
+      std::map<std::string, SwitchEntry>* name_to_switch_map) const;
 
   // Adds mapping to |name_to_switch_map| to toggle base::Feature |feature_name|
   // to state |feature_state|.
@@ -126,7 +152,7 @@ class FlagsState {
       const std::string& key,
       const std::string& feature_name,
       bool feature_state,
-      std::map<std::string, SwitchEntry>* name_to_switch_map);
+      std::map<std::string, SwitchEntry>* name_to_switch_map) const;
 
   // Updates the switches in |command_line| by applying the modifications
   // specified in |name_to_switch_map| for each entry in |enabled_entries|.
@@ -150,18 +176,42 @@ class FlagsState {
       bool feature_state,
       base::CommandLine* command_line);
 
-  // Removes all entries from prefs::kEnabledLabsExperiments that are unknown,
-  // to prevent this list to become very long as entries are added and removed.
-  void SanitizeList(FlagsStorage* flags_storage);
+  // Sanitizes |enabled_entries| to only contain entries that are defined in the
+  // |feature_entries_| and whose |supported_platforms| matches |platform_mask|.
+  // Pass -1 to |platform_mask| to not do platform filtering.
+  std::set<std::string> SanitizeList(
+      const std::set<std::string>& enabled_entries,
+      int platform_mask) const;
 
+  // Gets sanitized entries from |flags_storage|, filtering out any entries that
+  // don't exist in |feature_entries_|, and updates |flags_storage|.
   void GetSanitizedEnabledFlags(FlagsStorage* flags_storage,
-                                std::set<std::string>* result);
+                                std::set<std::string>* result) const;
 
   // Variant of GetSanitizedEnabledFlags that also removes any flags that aren't
   // enabled on the current platform.
   void GetSanitizedEnabledFlagsForCurrentPlatform(
       FlagsStorage* flags_storage,
-      std::set<std::string>* result);
+      std::set<std::string>* result) const;
+
+  // Generates a flags to switches mapping based on the set of enabled flags
+  // from |flags_storage|. On output, |enabled_entries| will contain the
+  // internal names of enabled flags and |name_to_switch_map| will contain
+  // information on how they map to command-line flags or features.
+  void GenerateFlagsToSwitchesMapping(
+      FlagsStorage* flags_storage,
+      std::set<std::string>* enabled_entries,
+      std::map<std::string, SwitchEntry>* name_to_switch_map) const;
+
+  // Called when the value of an entry with ORIGIN_LIST_VALUE is modified.
+  // Modifies the corresponding command line by adding or removing the switch
+  // based on the value of |enabled|.
+  void DidModifyOriginListFlag(const FeatureEntry& entry, bool enabled);
+
+  // Returns the FeatureEntry named |internal_name|. Returns null if no entry is
+  // matched.
+  const FeatureEntry* FindFeatureEntryByName(
+      const std::string& internal_name) const;
 
   const FeatureEntry* feature_entries_;
   size_t num_feature_entries_;
@@ -172,6 +222,10 @@ class FlagsState {
   // Map from switch name to a set of string, that keeps track which strings
   // were appended to existing (list value) switches.
   std::map<std::string, std::set<std::string>> appended_switches_;
+
+  // Map from switch name to switch value. Only filled for features with
+  // ORIGIN_LIST_VALUE type.
+  std::map<std::string, std::string> switch_values_;
 
   DISALLOW_COPY_AND_ASSIGN(FlagsState);
 };

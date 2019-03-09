@@ -5,78 +5,106 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AUTOFILL_SAVE_CARD_BUBBLE_VIEWS_H_
 #define CHROME_BROWSER_UI_VIEWS_AUTOFILL_SAVE_CARD_BUBBLE_VIEWS_H_
 
-#include "base/macros.h"
-#include "chrome/browser/ui/autofill/save_card_bubble_controller.h"
+#include <memory>
+
 #include "chrome/browser/ui/autofill/save_card_bubble_view.h"
+#include "chrome/browser/ui/sync/bubble_sync_promo_delegate.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
-#include "ui/views/controls/link_listener.h"
-#include "ui/views/controls/styled_label_listener.h"
+#include "components/autofill/core/browser/ui/save_card_bubble_controller.h"
+#include "components/signin/core/browser/signin_metrics.h"
 
 namespace content {
 class WebContents;
 }
 
-namespace views {
-class Link;
-class StyledLabel;
-}
-
 namespace autofill {
 
-// This class displays the "Save credit card?" bubble that is shown when the
-// user submits a form with a credit card number that Autofill has not
-// previously saved.
+// This class serves as a base view to any of the bubble views that are part of
+// the flow for when the user submits a form with a credit card number that
+// Autofill has not previously saved. The base view establishes the button
+// handlers, the calculated size, the Super G logo, testing methods, the
+// SyncPromoDelegate and the window title (controller eventually handles the
+// title for each sub-class).
 class SaveCardBubbleViews : public SaveCardBubbleView,
-                            public LocationBarBubbleDelegateView,
-                            public views::LinkListener,
-                            public views::StyledLabelListener {
+                            public LocationBarBubbleDelegateView {
  public:
   // Bubble will be anchored to |anchor_view|.
   SaveCardBubbleViews(views::View* anchor_view,
+                      const gfx::Point& anchor_point,
                       content::WebContents* web_contents,
                       SaveCardBubbleController* controller);
 
   void Show(DisplayReason reason);
 
-  // SaveCardBubbleView
+  // SaveCardBubbleView:
   void Hide() override;
 
-  // views::BubbleDialogDelegateView
-  views::View* CreateExtraView() override;
+  // views::BubbleDialogDelegateView:
   views::View* CreateFootnoteView() override;
   bool Accept() override;
   bool Cancel() override;
   bool Close() override;
-  int GetDialogButtons() const override;
-  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-  bool ShouldDefaultButtonBeBlue() const override;
 
-  // views::View
-  gfx::Size GetPreferredSize() const override;
+  // views::View:
+  gfx::Size CalculatePreferredSize() const override;
+  void AddedToWidget() override;
 
-  // views::WidgetDelegate
+  // views::WidgetDelegate:
+  bool ShouldShowCloseButton() const override;
   base::string16 GetWindowTitle() const override;
   void WindowClosing() override;
 
-  // views::LinkListener
-  void LinkClicked(views::Link* source, int event_flags) override;
+  // Returns the footnote view, so it can be searched for clickable views.
+  // Exists for testing (specifically, browsertests).
+  views::View* GetFootnoteViewForTesting();
 
-  // views::StyledLabelListener
-  void StyledLabelLinkClicked(views::StyledLabel* label,
-                              const gfx::Range& range,
-                              int event_flags) override;
+ protected:
+  // Delegate for the personalized sync promo view used when desktop identity
+  // consistency is enabled.
+  class SyncPromoDelegate : public BubbleSyncPromoDelegate {
+   public:
+    SyncPromoDelegate(SaveCardBubbleController* controller,
+                      signin_metrics::AccessPoint access_point);
 
- private:
-  ~SaveCardBubbleViews() override;
+    // BubbleSyncPromoDelegate:
+    void OnEnableSync(const AccountInfo& account,
+                      bool is_default_promo_account) override;
 
-  std::unique_ptr<views::View> CreateMainContentView();
+   private:
+    SaveCardBubbleController* controller_;
 
-  // views::BubbleDialogDelegateView
+    signin_metrics::AccessPoint access_point_;
+
+    DISALLOW_COPY_AND_ASSIGN(SyncPromoDelegate);
+  };
+
+  // Create the dialog's content view containing everything except for the
+  // footnote.
+  virtual std::unique_ptr<views::View> CreateMainContentView();
+
+  // Called by sub-classes to initialize |footnote_view_|.
+  virtual void InitFootnoteView(views::View* footnote_view);
+
+  SaveCardBubbleController* controller() {
+    return controller_;
+  }  // Weak reference.
+
+  // Attributes IDs to the DialogClientView and its buttons.
+  void AssignIdsToDialogClientView();
+
+  // views::BubbleDialogDelegateView:
   void Init() override;
 
-  SaveCardBubbleController* controller_;  // Weak reference.
+  std::unique_ptr<SyncPromoDelegate> sync_promo_delegate_;
 
-  views::Link* learn_more_link_;
+  ~SaveCardBubbleViews() override;
+
+ private:
+  friend class SaveCardBubbleViewsFullFormBrowserTest;
+
+  views::View* footnote_view_ = nullptr;
+
+  SaveCardBubbleController* controller_;  // Weak reference.
 
   DISALLOW_COPY_AND_ASSIGN(SaveCardBubbleViews);
 };

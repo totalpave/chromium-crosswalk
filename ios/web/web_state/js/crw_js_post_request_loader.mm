@@ -5,10 +5,13 @@
 #import "ios/web/web_state/js/crw_js_post_request_loader.h"
 
 #include "base/json/string_escape.h"
-#import "base/mac/scoped_nsobject.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/web/web_state/js/page_script_util.h"
 #import "ios/web/web_state/ui/crw_wk_script_message_router.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 
@@ -28,7 +31,7 @@ NSString* const kSuccessHandlerName = @"POSTSuccessHandler";
 }  // namespace
 
 @interface CRWJSPOSTRequestLoader () {
-  base::scoped_nsobject<NSString> _requestScript;
+  NSString* _requestScript;
 }
 
 // JavaScript used to execute POST requests. Lazily instantiated.
@@ -62,32 +65,32 @@ NSString* const kSuccessHandlerName = @"POSTSuccessHandler";
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
-  [super dealloc];
 }
 
 - (NSString*)requestScript {
   if (!_requestScript) {
-    _requestScript.reset([web::GetPageScript(@"post_request") copy]);
+    _requestScript = [web::GetPageScript(@"post_request") copy];
   }
   return _requestScript;
 }
 
-- (void)loadPOSTRequest:(NSURLRequest*)request
-              inWebView:(WKWebView*)webView
-          messageRouter:(CRWWKScriptMessageRouter*)messageRouter
-      completionHandler:(void (^)(NSError*))completionHandler {
+- (WKNavigation*)loadPOSTRequest:(NSURLRequest*)request
+                       inWebView:(WKWebView*)webView
+                   messageRouter:(CRWWKScriptMessageRouter*)messageRouter
+               completionHandler:(void (^)(NSError*))completionHandler {
   DCHECK([request.HTTPMethod isEqualToString:@"POST"]);
   DCHECK(webView);
   DCHECK(messageRouter);
   DCHECK(completionHandler);
 
   // Install error handling and success routers.
+  __weak CRWWKScriptMessageRouter* weakRouter = messageRouter;
   [messageRouter setScriptMessageHandler:^(WKScriptMessage* message) {
     // Cleaning up script handlers.
-    [messageRouter removeScriptMessageHandlerForName:kErrorHandlerName
-                                             webView:webView];
-    [messageRouter removeScriptMessageHandlerForName:kSuccessHandlerName
-                                             webView:webView];
+    [weakRouter removeScriptMessageHandlerForName:kErrorHandlerName
+                                          webView:webView];
+    [weakRouter removeScriptMessageHandlerForName:kSuccessHandlerName
+                                          webView:webView];
     completionHandler(nil);
   }
                                     name:kSuccessHandlerName
@@ -98,10 +101,10 @@ NSString* const kSuccessHandlerName = @"POSTSuccessHandler";
     NSError* error = [NSError errorWithDomain:NSURLErrorDomain
                                          code:statusCode.integerValue
                                      userInfo:nil];
-    [messageRouter removeScriptMessageHandlerForName:kErrorHandlerName
-                                             webView:webView];
-    [messageRouter removeScriptMessageHandlerForName:kSuccessHandlerName
-                                             webView:webView];
+    [weakRouter removeScriptMessageHandlerForName:kErrorHandlerName
+                                          webView:webView];
+    [weakRouter removeScriptMessageHandlerForName:kSuccessHandlerName
+                                          webView:webView];
     completionHandler(error);
   }
                                     name:kErrorHandlerName
@@ -111,14 +114,14 @@ NSString* const kSuccessHandlerName = @"POSTSuccessHandler";
       [NSString stringWithFormat:@"<html><script>%@%@</script></html>",
                                  self.requestScript,
                                  [self scriptToExecutePOSTRequest:request]];
-  [webView loadHTMLString:HTML baseURL:request.URL];
+  return [webView loadHTMLString:HTML baseURL:request.URL];
 }
 
 #pragma mark - Private methods.
 
 - (void)handleMemoryWarning {
   // Request script can be recreated from file at any moment.
-  _requestScript.reset();
+  _requestScript = nil;
 }
 
 - (NSString*)scriptToExecutePOSTRequest:(NSURLRequest*)request {
@@ -146,8 +149,8 @@ NSString* const kSuccessHandlerName = @"POSTSuccessHandler";
       // This string is properly escaped by NSJSONSerialization. It needs to
       // have no quotes since JavaScripts takes this parameter as an
       // Object<string, string>.
-      return [[[NSString alloc] initWithData:headerData
-                                    encoding:NSUTF8StringEncoding] autorelease];
+      return [[NSString alloc] initWithData:headerData
+                                   encoding:NSUTF8StringEncoding];
     }
   }
   return @"{}";

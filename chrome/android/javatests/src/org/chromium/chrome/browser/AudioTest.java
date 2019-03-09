@@ -4,13 +4,22 @@
 
 package org.chromium.chrome.browser;
 
-import android.os.Environment;
+import android.support.test.InstrumentationRegistry;
 
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.FlakyTest;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.browser.TabTitleObserver;
-import org.chromium.content.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.net.test.EmbeddedTestServer;
 
 import java.util.concurrent.TimeoutException;
@@ -18,25 +27,24 @@ import java.util.concurrent.TimeoutException;
 /**
  * Simple HTML5 audio tests.
  */
-public class AudioTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class AudioTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
 
     private EmbeddedTestServer mTestServer;
 
-    public AudioTest() {
-        super(ChromeActivity.class);
+    @Before
+    public void setUp() throws Exception {
+        mActivityTestRule.startMainActivityOnBlankPage();
+        mTestServer = EmbeddedTestServer.createAndStartServer(InstrumentationRegistry.getContext());
     }
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        mTestServer = EmbeddedTestServer.createAndStartFileServer(
-                getInstrumentation().getContext(), Environment.getExternalStorageDirectory());
-    }
-
-    @Override
-    protected void tearDown() throws Exception {
+    @After
+    public void tearDown() throws Exception {
         mTestServer.stopAndDestroyServer();
-        super.tearDown();
     }
 
     /**
@@ -45,24 +53,21 @@ public class AudioTest extends ChromeActivityTestCaseBase<ChromeActivity> {
      * @MediumTest
      */
     // TODO(jbudorick): Attempt to reenable this after the server switch has stabilized.
+    @Test
     @FlakyTest(message = "crbug.com/331122")
     public void testPlayMp3() throws InterruptedException, TimeoutException {
-        Tab tab = getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivity().getActivityTab();
         TabTitleObserver titleObserver = new TabTitleObserver(tab, "ready_to_play");
-        loadUrl(mTestServer.getURL("/chrome/test/data/android/media/audio-play.html"));
+        mActivityTestRule.loadUrl(
+                mTestServer.getURL("/chrome/test/data/android/media/audio-play.html"));
         titleObserver.waitForTitleUpdate(5);
-        assertEquals("ready_to_play", tab.getTitle());
+        Assert.assertEquals("ready_to_play", tab.getTitle());
 
         titleObserver = new TabTitleObserver(tab, "ended");
-        DOMUtils.clickNode(this, tab.getContentViewCore(), "button1");
+        DOMUtils.clickNode(tab.getWebContents(), "button1");
 
         // Make sure that the audio playback "ended" and title is changed.
         titleObserver.waitForTitleUpdate(15);
-        assertEquals("ended", tab.getTitle());
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityOnBlankPage();
+        Assert.assertEquals("ended", tab.getTitle());
     }
 }

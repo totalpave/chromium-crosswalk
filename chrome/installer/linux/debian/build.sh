@@ -4,9 +4,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# TODO(mmoss) This currently only works with official builds, since non-official
-# builds don't add the "${BUILDDIR}/installer/" files needed for packaging.
-
 set -e
 set -o pipefail
 if [ "$VERBOSE" ]; then
@@ -54,15 +51,8 @@ stage_install_debian() {
   # use update-alternatives for /usr/bin/google-chrome.
   local USR_BIN_SYMLINK_NAME="${PACKAGE}-${CHANNEL}"
 
+  local PACKAGE_ORIG="${PACKAGE}"
   if [ "$CHANNEL" != "stable" ]; then
-    # This would ideally be compiled into the app, but that's a bit too
-    # intrusive of a change for these limited use channels, so we'll just hack
-    # it into the wrapper script. The user can still override since it seems to
-    # work to specify --user-data-dir multiple times on the command line, with
-    # the last occurrence winning.
-    local SXS_USER_DATA_DIR="\${XDG_CONFIG_HOME:-\${HOME}/.config}/${PACKAGE}-${CHANNEL}"
-    local DEFAULT_FLAGS="--user-data-dir=\"${SXS_USER_DATA_DIR}\""
-
     # Avoid file collisions between channels.
     local INSTALLDIR="${INSTALLDIR}-${CHANNEL}"
 
@@ -73,15 +63,16 @@ stage_install_debian() {
     local MENUNAME="${MENUNAME} (${CHANNEL})"
   fi
   prep_staging_debian
+  SHLIB_PERMS=644
   stage_install_common
-  echo "Staging Debian install files in '${STAGEDIR}'..."
+  log_cmd echo "Staging Debian install files in '${STAGEDIR}'..."
   install -m 755 -d "${STAGEDIR}/${INSTALLDIR}/cron"
   process_template "${BUILDDIR}/installer/common/repo.cron" \
       "${STAGEDIR}/${INSTALLDIR}/cron/${PACKAGE}"
   chmod 755 "${STAGEDIR}/${INSTALLDIR}/cron/${PACKAGE}"
-  pushd "${STAGEDIR}/etc/cron.daily/"
+  pushd "${STAGEDIR}/etc/cron.daily/" > /dev/null
   ln -snf "${INSTALLDIR}/cron/${PACKAGE}" "${PACKAGE}"
-  popd
+  popd > /dev/null
   process_template "${BUILDDIR}/installer/debian/debian.menu" \
     "${STAGEDIR}/usr/share/menu/${PACKAGE}.menu"
   chmod 644 "${STAGEDIR}/usr/share/menu/${PACKAGE}.menu"
@@ -96,13 +87,30 @@ stage_install_debian() {
   chmod 755 "${STAGEDIR}/DEBIAN/postrm"
 }
 
+verify_package() {
+  local DEPENDS="$1"
+  local EXPECTED_DEPENDS="${TMPFILEDIR}/expected_deb_depends"
+  local ACTUAL_DEPENDS="${TMPFILEDIR}/actual_deb_depends"
+  echo ${DEPENDS} | sed 's/, /\n/g' | LANG=C sort > "${EXPECTED_DEPENDS}"
+  dpkg -I "${PACKAGE}-${CHANNEL}_${VERSIONFULL}_${ARCHITECTURE}.deb" | \
+      grep '^ Depends: ' | sed 's/^ Depends: //' | sed 's/, /\n/g' | \
+      LANG=C sort > "${ACTUAL_DEPENDS}"
+  BAD_DIFF=0
+  diff -u "${EXPECTED_DEPENDS}" "${ACTUAL_DEPENDS}" || BAD_DIFF=1
+  if [ $BAD_DIFF -ne 0 ]; then
+    echo
+    echo "ERROR: bad dpkg dependencies!"
+    echo
+    exit $BAD_DIFF
+  fi
+}
+
 # Actually generate the package file.
 do_package() {
-  echo "Packaging ${ARCHITECTURE}..."
+  log_cmd echo "Packaging ${ARCHITECTURE}..."
   PREDEPENDS="$COMMON_PREDEPS"
   DEPENDS="${COMMON_DEPS}"
-  REPLACES=""
-  CONFLICTS=""
+  RECOMMENDS="${COMMON_RECOMMENDS}"
   PROVIDES="www-browser"
   gen_changelog
   process_template "${SCRIPTDIR}/control.template" "${DEB_CONTROL}"
@@ -110,25 +118,34 @@ do_package() {
   if [ -f "${DEB_CONTROL}" ]; then
     gen_control
   fi
-  fakeroot dpkg-deb -Zxz -z9 -b "${STAGEDIR}" .
+  if [ ${IS_OFFICIAL_BUILD} -ne 0 ]; then
+    local COMPRESSION_OPTS="-Zxz -z9"
+  else
+    local COMPRESSION_OPTS="-Znone"
+  fi
+  log_cmd fakeroot dpkg-deb ${COMPRESSION_OPTS} -b "${STAGEDIR}" .
+  verify_package "$DEPENDS"
 }
 
 # Remove temporary files and unwanted packaging output.
 cleanup() {
-  echo "Cleaning..."
+  log_cmd echo "Cleaning..."
   rm -rf "${STAGEDIR}"
   rm -rf "${TMPFILEDIR}"
 }
 
 usage() {
-  echo "usage: $(basename $0) [-c channel] [-a target_arch] [-o 'dir'] "
-  echo "                      [-b 'dir'] -d branding"
-  echo "-c channel the package channel (trunk, asan, unstable, beta, stable)"
-  echo "-a arch    package architecture (ia32 or x64)"
-  echo "-o dir     package output directory [${OUTPUTDIR}]"
-  echo "-b dir     build input directory    [${BUILDDIR}]"
-  echo "-d brand   either chromium or google_chrome"
-  echo "-h         this help message"
+  echo "usage: $(basename $0) [-a target_arch] [-b 'dir'] -c channel"
+  echo "                      -d branding [-f] [-o 'dir'] -s 'dir' -t target_os"
+  echo "-a arch      package architecture (ia32 or x64)"
+  echo "-b dir       build input directory    [${BUILDDIR}]"
+  echo "-c channel   the package channel (unstable, beta, stable)"
+  echo "-d brand     either chromium or google_chrome"
+  echo "-f           indicates that this is an official build"
+  echo "-h           this help message"
+  echo "-o dir       package output directory [${OUTPUTDIR}]"
+  echo "-s dir       /path/to/sysroot"
+  echo "-t platform  target platform"
 }
 
 # Check that the channel name is one of the allowable ones.
@@ -146,12 +163,6 @@ verify_channel() {
       CHANNEL=beta
       RELEASENOTES="http://googlechromereleases.blogspot.com/search/label/Beta%20updates"
       ;;
-    trunk|asan )
-      # Setting this to empty will prevent it from updating any existing configs
-      # from release packages.
-      REPOCONFIG=""
-      RELEASENOTES="http://googlechromereleases.blogspot.com/"
-      ;;
     * )
       echo
       echo "ERROR: '$CHANNEL' is not a valid channel type."
@@ -162,12 +173,11 @@ verify_channel() {
 }
 
 process_opts() {
-  while getopts ":o:b:c:a:d:h" OPTNAME
+  while getopts ":a:b:c:d:fho:s:t:" OPTNAME
   do
     case $OPTNAME in
-      o )
-        OUTPUTDIR=$(readlink -f "${OPTARG}")
-        mkdir -p "${OUTPUTDIR}"
+      a )
+        TARGETARCH="$OPTARG"
         ;;
       b )
         BUILDDIR=$(readlink -f "${OPTARG}")
@@ -175,17 +185,27 @@ process_opts() {
       c )
         CHANNEL="$OPTARG"
         ;;
-      a )
-        TARGETARCH="$OPTARG"
-        ;;
       d )
         BRANDING="$OPTARG"
+        ;;
+      f )
+        IS_OFFICIAL_BUILD=1
         ;;
       h )
         usage
         exit 0
         ;;
-      \: )
+      o )
+        OUTPUTDIR=$(readlink -f "${OPTARG}")
+        mkdir -p "${OUTPUTDIR}"
+        ;;
+      s )
+        SYSROOT="$OPTARG"
+        ;;
+      t )
+        TARGET_OS="$OPTARG"
+        ;;
+     \: )
         echo "'-$OPTARG' needs an argument."
         usage
         exit 1
@@ -205,12 +225,6 @@ process_opts() {
 
 SCRIPTDIR=$(readlink -f "$(dirname "$0")")
 OUTPUTDIR="${PWD}"
-STAGEDIR=$(mktemp -d -t deb.build.XXXXXX) || exit 1
-TMPFILEDIR=$(mktemp -d -t deb.tmp.XXXXXX) || exit 1
-DEB_CHANGELOG="${TMPFILEDIR}/changelog"
-DEB_FILES="${TMPFILEDIR}/files"
-DEB_CONTROL="${TMPFILEDIR}/control"
-CHANNEL="trunk"
 # Default target architecture to same as build host.
 if [ "$(uname -m)" = "x86_64" ]; then
   TARGETARCH="x64"
@@ -222,6 +236,15 @@ fi
 trap cleanup 0
 process_opts "$@"
 BUILDDIR=${BUILDDIR:=$(readlink -f "${SCRIPTDIR}/../../../../out/Release")}
+IS_OFFICIAL_BUILD=${IS_OFFICIAL_BUILD:=0}
+
+STAGEDIR="${BUILDDIR}/deb-staging-${CHANNEL}"
+mkdir -p "${STAGEDIR}"
+TMPFILEDIR="${BUILDDIR}/deb-tmp-${CHANNEL}"
+mkdir -p "${TMPFILEDIR}"
+DEB_CHANGELOG="${TMPFILEDIR}/changelog"
+DEB_FILES="${TMPFILEDIR}/files"
+DEB_CONTROL="${TMPFILEDIR}/control"
 
 source ${BUILDDIR}/installer/common/installer.include
 
@@ -242,88 +265,33 @@ verify_channel
 export DEBFULLNAME="${MAINTNAME}"
 export DEBEMAIL="${MAINTMAIL}"
 
-# We'd like to eliminate more of these deps by relying on the 'lsb' package, but
-# that brings in tons of unnecessary stuff, like an mta and rpm. Until that full
-# 'lsb' package is installed by default on DEB distros, we'll have to stick with
-# the LSB sub-packages, to avoid pulling in all that stuff that's not installed
-# by default.
-
-# Need a dummy debian/control file for dpkg-shlibdeps.
-DUMMY_STAGING_DIR="${TMPFILEDIR}/dummy_staging"
-mkdir "$DUMMY_STAGING_DIR"
-cd "$DUMMY_STAGING_DIR"
-mkdir debian
-touch debian/control
-
-# Generate the dependencies,
-# TODO(mmoss): This is a workaround for a problem where dpkg-shlibdeps was
-# resolving deps using some of our build output shlibs (i.e.
-# out/Release/lib.target/libfreetype.so.6), and was then failing with:
-#   dpkg-shlibdeps: error: no dependency information found for ...
-# It's not clear if we ever want to look in LD_LIBRARY_PATH to resolve deps,
-# but it seems that we don't currently, so this is the most expediant fix.
-SAVE_LDLP=${LD_LIBRARY_PATH:-}
-unset LD_LIBRARY_PATH
-DPKG_SHLIB_DEPS=$(dpkg-shlibdeps -O "$BUILDDIR/chrome" | \
-  sed 's/^shlibs:Depends=//')
-if [ -n "$SAVE_LDLP" ]; then
-  LD_LIBRARY_PATH=$SAVE_LDLP
-fi
-
-# Format it nicely and save it for comparison.
-# The grep -v is for a duplicate libc6 dep caused by Lucid glibc silliness.
-echo "$DPKG_SHLIB_DEPS" | sed 's/, /\n/g' | \
-  grep -v '^libc6 (>= 2.3.6-6~)$' | LANG=C sort > actual
-
-# Compare the expected dependency list to the generate list.
-BAD_DIFF=0
-diff -u "$SCRIPTDIR/expected_deps_$TARGETARCH" actual || BAD_DIFF=1
-if [ $BAD_DIFF -ne 0 ] && [ -z "${IGNORE_DEPS_CHANGES:-}" ]; then
-  echo
-  echo "ERROR: Shared library dependencies changed!"
-  echo "If this is intentional, please update:"
-  echo "chrome/installer/linux/debian/expected_deps_ia32"
-  echo "chrome/installer/linux/debian/expected_deps_x64"
-  echo
-  exit $BAD_DIFF
-fi
-rm -rf "$DUMMY_STAGING_DIR"
-
-# Additional dependencies not in the dpkg-shlibdeps output.
-# ca-certificates: Make sure users have SSL certificates.
-# fonts-liberation: Make sure users have compatible fonts for viewing PDFs.
-# libappindicator1: Make systray icons work in Unity.
-# libcurl3: Was for NPAPI Flash. TODO(thestig): Remove?
-# libnss3: Pull a more recent version of NSS than required by runtime linking,
-#          for security and stability updates in NSS.
-# libstdc++6: For C++11 support.
-# lsb-base: Implies many other dependencies.
-# xdg-utils: For OS integration.
-# wget: For uploading crash reports with Breakpad.
-ADDITION_DEPS="ca-certificates, fonts-liberation, libappindicator1, libcurl3, \
-  libnss3 (>= 3.17.2), libstdc++6 (>=4.8.0), lsb-base (>=4.1), \
-  xdg-utils (>= 1.0.2), wget"
-
-# Fix-up libnspr dependency due to renaming in Ubuntu (the old package still
-# exists, but it was moved to "universe" repository, which isn't installed by
-# default).
-DPKG_SHLIB_DEPS=$(sed \
-    's/\(libnspr4-0d ([^)]*)\), /\1 | libnspr4 (>= 4.9.5-0ubuntu0), /g' \
-    <<< $DPKG_SHLIB_DEPS)
-
-COMMON_DEPS="${DPKG_SHLIB_DEPS}, ${ADDITION_DEPS}"
+DEB_COMMON_DEPS="${BUILDDIR}/deb_common.deps"
+COMMON_DEPS=$(sed ':a;N;$!ba;s/\n/, /g' "${DEB_COMMON_DEPS}")
 COMMON_PREDEPS="dpkg (>= 1.14.0)"
+COMMON_RECOMMENDS="libu2f-udev"
 
 
 # Make everything happen in the OUTPUTDIR.
 cd "${OUTPUTDIR}"
 
 case "$TARGETARCH" in
+  arm )
+    export ARCHITECTURE="armhf"
+    ;;
+  arm64 )
+    export ARCHITECTURE="arm64"
+    ;;
   ia32 )
     export ARCHITECTURE="i386"
     ;;
   x64 )
     export ARCHITECTURE="amd64"
+    ;;
+  mipsel )
+    export ARCHITECTURE="mipsel"
+    ;;
+  mips64el )
+    export ARCHITECTURE="mips64el"
     ;;
   * )
     echo

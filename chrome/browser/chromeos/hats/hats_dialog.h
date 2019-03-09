@@ -1,4 +1,4 @@
-// Copyright (c) 2016 The Chromium Authors. All rights reserved.
+// Copyright 2016 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -7,22 +7,25 @@
 
 #include <string>
 
-#include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/values.h"
-#include "ui/gfx/native_widget_types.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
 
 namespace chromeos {
 
+// Happiness tracking survey dialog. Sometimes appears after login to ask the
+// user how satisfied they are with their Chromebook.
+// This class lives on the UI thread and is self deleting.
 class HatsDialog : public ui::WebDialogDelegate {
  public:
-  HatsDialog();
-
-  virtual void Show();
+  // Creates an instance of HatsDialog and posts a task to load all the relevant
+  // device info before displaying the dialog.
+  static void CreateAndShow(bool is_google_account);
 
  private:
-  // Object is self deleting on close.
+  static void Show(bool is_google_account, const std::string& site_context);
+
+  // Use CreateAndShow() above.
+  explicit HatsDialog(const std::string& html_data);
   ~HatsDialog() override;
 
   // ui::WebDialogDelegate implementation.
@@ -39,7 +42,8 @@ class HatsDialog : public ui::WebDialogDelegate {
   void OnCloseContents(content::WebContents* source,
                        bool* out_close_dialog) override;
   bool ShouldShowDialogTitle() const override;
-  bool HandleContextMenu(const content::ContextMenuParams& params) override;
+  bool HandleContextMenu(content::RenderFrameHost* render_frame_host,
+                         const content::ContextMenuParams& params) override;
 
   const std::string html_data_;
 

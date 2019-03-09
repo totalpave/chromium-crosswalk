@@ -12,7 +12,8 @@
 #include "components/keyed_service/core/service_access_type.h"
 
 namespace base {
-template <typename T> struct DefaultSingletonTraits;
+template <typename T>
+struct DefaultSingletonTraits;
 }
 
 class KeywordWebDataService;
@@ -20,9 +21,9 @@ class Profile;
 class TokenWebData;
 class WebDataServiceWrapper;
 
-#if defined(OS_WIN)
-class PasswordWebDataService;
-#endif
+namespace payments {
+class PaymentManifestWebDataService;
+}
 
 namespace autofill {
 class AutofillWebDataService;
@@ -44,6 +45,11 @@ class WebDataServiceFactory : public BrowserContextKeyedServiceFactory {
   static scoped_refptr<autofill::AutofillWebDataService>
   GetAutofillWebDataForProfile(Profile* profile, ServiceAccessType access_type);
 
+  // Returns the account-scoped AutofillWebDataService associated with the
+  // |profile|.
+  static scoped_refptr<autofill::AutofillWebDataService>
+  GetAutofillWebDataForAccount(Profile* profile, ServiceAccessType access_type);
+
   // Returns the KeywordWebDataService associated with the |profile|.
   static scoped_refptr<KeywordWebDataService> GetKeywordWebDataForProfile(
       Profile* profile,
@@ -54,12 +60,9 @@ class WebDataServiceFactory : public BrowserContextKeyedServiceFactory {
       Profile* profile,
       ServiceAccessType access_type);
 
-#if defined(OS_WIN)
-  // Returns the PasswordWebDataService associated with the |profile|.
-  static scoped_refptr<PasswordWebDataService> GetPasswordWebDataForProfile(
-      Profile* profile,
-      ServiceAccessType access_type);
-#endif
+  static scoped_refptr<payments::PaymentManifestWebDataService>
+  GetPaymentManifestWebDataForProfile(Profile* profile,
+                                      ServiceAccessType access_type);
 
   static WebDataServiceFactory* GetInstance();
 

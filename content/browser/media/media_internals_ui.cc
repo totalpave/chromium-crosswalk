@@ -24,6 +24,7 @@ WebUIDataSource* CreateMediaInternalsHTMLSource() {
 
   source->AddResourcePath("media_internals.js", IDR_MEDIA_INTERNALS_JS);
   source->SetDefaultResource(IDR_MEDIA_INTERNALS_HTML);
+  source->UseGzip();
   return source;
 }
 
@@ -37,7 +38,7 @@ WebUIDataSource* CreateMediaInternalsHTMLSource() {
 
 MediaInternalsUI::MediaInternalsUI(WebUI* web_ui)
     : WebUIController(web_ui) {
-  web_ui->AddMessageHandler(new MediaInternalsMessageHandler());
+  web_ui->AddMessageHandler(std::make_unique<MediaInternalsMessageHandler>());
 
   BrowserContext* browser_context =
       web_ui->GetWebContents()->GetBrowserContext();

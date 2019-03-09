@@ -4,59 +4,54 @@
 
 #include "ui/wm/core/easy_resize_window_targeter.h"
 
+#include <algorithm>
+
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
+#include "ui/aura/client/aura_constants.h"
+#include "ui/aura/client/transient_window_client.h"
 #include "ui/aura/window.h"
 #include "ui/events/event.h"
-#include "ui/gfx/geometry/insets_f.h"
-#include "ui/gfx/geometry/rect.h"
-#include "ui/wm/public/transient_window_client.h"
+#include "ui/gfx/geometry/insets.h"
 
 namespace wm {
 
 EasyResizeWindowTargeter::EasyResizeWindowTargeter(
-    aura::Window* container,
     const gfx::Insets& mouse_extend,
-    const gfx::Insets& touch_extend)
-    : container_(container),
-      mouse_extend_(mouse_extend),
-      touch_extend_(touch_extend) {
+    const gfx::Insets& touch_extend) {
+  SetInsets(mouse_extend, touch_extend);
 }
 
-EasyResizeWindowTargeter::~EasyResizeWindowTargeter() {
-}
+EasyResizeWindowTargeter::~EasyResizeWindowTargeter() {}
 
 bool EasyResizeWindowTargeter::EventLocationInsideBounds(
-    aura::Window* window,
+    aura::Window* target,
     const ui::LocatedEvent& event) const {
-  if (ShouldUseExtendedBounds(window)) {
-    // Note that |event|'s location is in |window|'s parent's coordinate system,
-    // so convert it to |window|'s coordinate system first.
-    gfx::Point point = event.location();
-    if (window->parent())
-      aura::Window::ConvertPointToTarget(window->parent(), window, &point);
-
-    gfx::Rect bounds(window->bounds().size());
-    if (event.IsTouchEvent() || event.IsGestureEvent())
-      bounds.Inset(touch_extend_);
-    else
-      bounds.Inset(mouse_extend_);
-
-    return bounds.Contains(point);
-  }
-  return WindowTargeter::EventLocationInsideBounds(window, event);
+  return WindowTargeter::EventLocationInsideBounds(target, event);
 }
 
 bool EasyResizeWindowTargeter::ShouldUseExtendedBounds(
-    const aura::Window* window) const {
-  // Use the extended bounds only for immediate child windows of |container_|.
+    const aura::Window* w) const {
+  DCHECK(window());
+  // Use the extended bounds only for immediate child windows of window().
   // Use the default targeter otherwise.
-  if (window->parent() != container_)
+  if (w->parent() != window())
     return false;
 
+  // Only resizable windows benefit from the extended hit-test region.
+  if ((w->GetProperty(aura::client::kResizeBehaviorKey) &
+       ws::mojom::kResizeBehaviorCanResize) == 0) {
+    return false;
+  }
+
+  // For transient children use extended bounds if a transient parent or if
+  // transient parent's parent is a top level window in window().
   aura::client::TransientWindowClient* transient_window_client =
       aura::client::GetTransientWindowClient();
-  return !transient_window_client ||
-      !transient_window_client->GetTransientParent(window) ||
-      transient_window_client->GetTransientParent(window) == container_;
+  const aura::Window* transient_parent =
+      transient_window_client ? transient_window_client->GetTransientParent(w)
+                              : nullptr;
+  return !transient_parent || transient_parent == window() ||
+         transient_parent->parent() == window();
 }
 
 }  // namespace wm

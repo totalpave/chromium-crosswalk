@@ -5,7 +5,9 @@
 #ifndef CC_TREES_MUTATOR_HOST_CLIENT_H_
 #define CC_TREES_MUTATOR_HOST_CLIENT_H_
 
-#include "cc/animation/element_id.h"
+#include "cc/trees/element_id.h"
+#include "cc/trees/property_animation_state.h"
+#include "cc/trees/target_property.h"
 
 namespace gfx {
 class Transform;
@@ -18,7 +20,12 @@ class FilterOperations;
 
 enum class ElementListType { ACTIVE, PENDING };
 
-enum class AnimationChangeType { POTENTIAL, RUNNING, BOTH };
+enum class AnimationWorkletMutationState {
+  STARTED,
+  COMPLETED_WITH_UPDATE,
+  COMPLETED_NO_UPDATE,
+  CANCELED
+};
 
 class MutatorHostClient {
  public:
@@ -42,20 +49,20 @@ class MutatorHostClient {
       ElementListType list_type,
       const gfx::ScrollOffset& scroll_offset) = 0;
 
-  virtual void ElementTransformIsAnimatingChanged(
-      ElementId element_id,
+  // Allows to change IsAnimating value for a set of properties.
+  virtual void ElementIsAnimatingChanged(
+      const PropertyToElementIdMap& element_id_map,
       ElementListType list_type,
-      AnimationChangeType change_type,
-      bool is_animating) = 0;
-
-  virtual void ElementOpacityIsAnimatingChanged(ElementId element_id,
-                                                ElementListType list_type,
-                                                AnimationChangeType change_type,
-                                                bool is_animating) = 0;
+      const PropertyAnimationState& mask,
+      const PropertyAnimationState& state) = 0;
 
   virtual void ScrollOffsetAnimationFinished() = 0;
   virtual gfx::ScrollOffset GetScrollOffsetForAnimation(
       ElementId element_id) const = 0;
+
+  virtual void NotifyAnimationWorkletStateChange(
+      AnimationWorkletMutationState state,
+      ElementListType tree_type) = 0;
 };
 
 }  // namespace cc

@@ -6,6 +6,7 @@
 
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/gfx/animation/test_animation_delegate.h"
@@ -17,22 +18,6 @@ using gfx::TestAnimationDelegate;
 
 namespace views {
 namespace {
-
-class TestBoundsAnimator : public BoundsAnimator {
- public:
-  explicit TestBoundsAnimator(View* view) : BoundsAnimator(view) {
-  }
-
- protected:
-  SlideAnimation* CreateAnimation() override {
-    SlideAnimation* animation = BoundsAnimator::CreateAnimation();
-    animation->SetSlideDuration(10);
-    return animation;
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(TestBoundsAnimator);
-};
 
 class OwnedDelegate : public gfx::AnimationDelegate {
  public:
@@ -91,19 +76,24 @@ class TestView : public View {
 
 class BoundsAnimatorTest : public testing::Test {
  public:
-  BoundsAnimatorTest() : child_(new TestView()), animator_(&parent_) {
+  BoundsAnimatorTest()
+      : scoped_task_environment_(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI),
+        child_(new TestView()),
+        animator_(&parent_) {
     parent_.AddChildView(child_);
+    animator_.SetAnimationDuration(10);
   }
 
   TestView* parent() { return &parent_; }
   TestView* child() { return child_; }
-  TestBoundsAnimator* animator() { return &animator_; }
+  BoundsAnimator* animator() { return &animator_; }
 
  private:
-  base::MessageLoopForUI message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   TestView parent_;
   TestView* child_;  // Owned by |parent_|.
-  TestBoundsAnimator animator_;
+  BoundsAnimator animator_;
 
   DISALLOW_COPY_AND_ASSIGN(BoundsAnimatorTest);
 };

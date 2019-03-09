@@ -7,20 +7,6 @@
 
 namespace switches {
 
-// Enable scroll prediction for scroll update events.
-const char kEnableScrollPrediction[] = "enable-scroll-prediction";
-
-// Enable support for touch events.
-const char kTouchEvents[] = "touch-events";
-
-// The values the kTouchEvents switch may have, as in --touch-events=disabled.
-//   auto: enabled at startup when an attached touchscreen is present.
-const char kTouchEventsAuto[] = "auto";
-//   enabled: touch events always enabled.
-const char kTouchEventsEnabled[] = "enabled";
-//   disabled: touch events are disabled.
-const char kTouchEventsDisabled[] = "disabled";
-
 // Enable compensation for unstable pinch zoom. Some touch screens display
 // significant amount of wobble when moving a finger in a straight line. This
 // makes two finger scroll trigger an oscillating pinch zoom. See
@@ -33,6 +19,11 @@ const char kCompensateForUnstablePinchZoom[] =
 // available with XInput 2 (i.e. X server 1.8 or above). The id's of the
 // devices can be retrieved from 'xinput list'.
 const char kTouchDevices[] = "touch-devices";
+
+// Tells chrome to interpret events from these devices as pen events. Only
+// available with XInput 2 (i.e. X server 1.8 or above). The id's of the
+// devices can be retrieved from 'xinput list'.
+const char kPenDevices[] = "pen-devices";
 #endif
 
 #if defined(USE_X11) || defined(USE_OZONE)
@@ -42,6 +33,13 @@ const char kExtraTouchNoiseFiltering[] = "touch-noise-filtering";
 
 // The calibration factors given as "<left>,<right>,<top>,<bottom>".
 const char kTouchCalibration[] = "touch-calibration";
+
+// Tells Chrome to do edge touch filtering. Useful for convertible tablet.
+const char kEdgeTouchFiltering[] = "edge-touch-filtering";
+
+// Tells Chrome to do filter out low pressure touches, as from a pencil. Should
+// only be used if the driver level filtering is insufficient.
+const char kLowPressureTouchFiltering[] = "low-pressure-touch-filtering";
 #endif
 
 }  // namespace switches

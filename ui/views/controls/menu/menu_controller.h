@@ -10,38 +10,42 @@
 #include <list>
 #include <memory>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
+#include "ui/gfx/animation/throb_animation.h"
 #include "ui/views/controls/button/menu_button.h"
+#include "ui/views/controls/button/menu_button_event_handler.h"
 #include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_delegate.h"
 #include "ui/views/widget/widget_observer.h"
 
+#if defined(OS_MACOSX)
+#include "ui/views/controls/menu/menu_closure_animation_mac.h"
+#include "ui/views/controls/menu/menu_cocoa_watcher_mac.h"
+#endif
+
 namespace ui {
 class OSExchangeData;
-class ScopedEventDispatcher;
 }
 namespace views {
 
 class MenuButton;
 class MenuHostRootView;
 class MenuItemView;
-class MenuMessageLoop;
+class MenuPreTargetHandler;
 class MouseEvent;
 class SubmenuView;
 class View;
-
-#if defined(USE_AURA)
-class MenuKeyEventHandler;
-#endif
+class ViewTracker;
 
 namespace internal {
 class MenuControllerDelegate;
@@ -51,6 +55,7 @@ class MenuRunnerImpl;
 namespace test {
 class MenuControllerTest;
 class MenuControllerTestApi;
+class MenuControllerUITest;
 }
 
 // MenuController -------------------------------------------------------------
@@ -58,7 +63,10 @@ class MenuControllerTestApi;
 // MenuController is used internally by the various menu classes to manage
 // showing, selecting and drag/drop for menus. All relevant events are
 // forwarded to the MenuController from SubmenuView and MenuHost.
-class VIEWS_EXPORT MenuController : public WidgetObserver {
+class VIEWS_EXPORT MenuController
+    : public base::SupportsWeakPtr<MenuController>,
+      public gfx::AnimationDelegate,
+      public WidgetObserver {
  public:
   // Enumeration of how the menu should exit.
   enum ExitType {
@@ -76,23 +84,26 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
     EXIT_DESTROYED
   };
 
+  // Types of comboboxes.
+  enum ComboboxType {
+    kNotACombobox,
+    kEditableCombobox,
+    kReadonlyCombobox,
+  };
+
   // If a menu is currently active, this returns the controller for it.
   static MenuController* GetActiveInstance();
 
-  // Runs the menu at the specified location. If the menu was configured to
-  // block, the selected item is returned. If the menu does not block this
-  // returns NULL immediately.
-  MenuItemView* Run(Widget* parent,
-                    MenuButton* button,
-                    MenuItemView* root,
-                    const gfx::Rect& bounds,
-                    MenuAnchorPosition position,
-                    bool context_menu,
-                    bool is_nested_drag,
-                    int* event_flags);
+  // Runs the menu at the specified location.
+  void Run(Widget* parent,
+           MenuButton* button,
+           MenuItemView* root,
+           const gfx::Rect& bounds,
+           MenuAnchorPosition position,
+           bool context_menu,
+           bool is_nested_drag);
 
-  // Whether or not Run blocks.
-  bool IsBlockingRun() const { return blocking_run_; }
+  bool for_drop() const { return for_drop_; }
 
   bool in_nested_run() const { return !menu_stack_.empty(); }
 
@@ -103,11 +114,19 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // is no drag in progress.
   bool did_initiate_drag() const { return did_initiate_drag_; }
 
+  bool send_gesture_events_to_owner() const {
+    return send_gesture_events_to_owner_;
+  }
+
+  void set_send_gesture_events_to_owner(bool send_gesture_events_to_owner) {
+    send_gesture_events_to_owner_ = send_gesture_events_to_owner;
+  }
+
   // Returns the owner of child windows.
   // WARNING: this may be NULL.
   Widget* owner() { return owner_; }
 
-  // Get the anchor position wich is used to show this menu.
+  // Get the anchor position which is used to show this menu.
   MenuAnchorPosition GetAnchorPosition() { return state_.anchor; }
 
   // Cancels the current Run. See ExitType for a description of what happens
@@ -122,11 +141,6 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // nested menu. Ownership is not taken.
   void AddNestedDelegate(internal::MenuControllerDelegate* delegate);
 
-  // Sets whether the subsequent call to Run is asynchronous. When nesting calls
-  // to Run, if a new MenuControllerDelegate has been nested, the previous
-  // asynchronous state will be reapplied once nesting has ended.
-  void SetAsyncRun(bool is_async);
-
   // Returns the current exit type. This returns a value other than EXIT_NONE if
   // the menu is being canceled.
   ExitType exit_type() const { return exit_type_; }
@@ -134,7 +148,15 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // Returns the time from the event which closed the menu - or 0.
   base::TimeTicks closing_event_time() const { return closing_event_time_; }
 
-  void set_is_combobox(bool is_combobox) { is_combobox_ = is_combobox; }
+  // Set/Get combobox type.
+  void set_combobox_type(ComboboxType combobox_type) {
+    combobox_type_ = combobox_type;
+  }
+  bool IsCombobox() const;
+  bool IsEditableCombobox() const;
+  bool IsReadonlyCombobox() const;
+
+  bool IsContextMenu() const;
 
   // Various events, forwarded from the submenu.
   //
@@ -154,7 +176,7 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
 
   bool GetDropFormats(SubmenuView* source,
                       int* formats,
-                      std::set<ui::Clipboard::FormatType>* format_types);
+                      std::set<ui::ClipboardFormatType>* format_types);
   bool AreDropTypesRequired(SubmenuView* source);
   bool CanDrop(SubmenuView* source, const ui::OSExchangeData& data);
   void OnDragEntered(SubmenuView* source, const ui::DropTargetEvent& event);
@@ -166,12 +188,12 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   void OnDragEnteredScrollButton(SubmenuView* source, bool is_up);
   void OnDragExitedScrollButton(SubmenuView* source);
 
-  // Called by the Widget when a drag is about to start on a child view. This
-  // could be initiated by one of our MenuItemViews, or could be through another
-  // child View.
+  // Called by the MenuHost when a drag is about to start on a child view.
+  // This could be initiated by one of our MenuItemViews, or could be through
+  // another child View.
   void OnDragWillStart();
 
-  // Called by the Widget when the drag has completed. |should_close|
+  // Called by the MenuHost when the drag has completed. |should_close|
   // corresponds to whether or not the menu should close.
   void OnDragComplete(bool should_close);
 
@@ -188,14 +210,37 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // Only used for testing.
   bool IsCancelAllTimerRunningForTest();
 
+  // Only used for testing. Clears |state_| and |pending_state_| without
+  // notifying any menu items.
+  void ClearStateForTest();
+
   // Only used for testing.
   static void TurnOffMenuSelectionHoldForTest();
+
+  void set_use_touchable_layout(bool use_touchable_layout) {
+    use_touchable_layout_ = use_touchable_layout;
+  }
+  bool use_touchable_layout() const { return use_touchable_layout_; }
+
+  // Notifies |this| that |menu_item| is being destroyed.
+  void OnMenuItemDestroying(MenuItemView* menu_item);
+
+  // Returns whether this menu can handle input events right now. This method
+  // can return false while running animations.
+  bool CanProcessInputEvents() const;
+
+  // Gets the animation used for menu item alerts. The returned pointer lives as
+  // long as the MenuController.
+  const gfx::Animation* GetAlertAnimation() const { return &alert_animation_; }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override;
 
  private:
   friend class internal::MenuRunnerImpl;
   friend class test::MenuControllerTest;
   friend class test::MenuControllerTestApi;
-  friend class MenuKeyEventHandler;
+  friend class test::MenuControllerUITest;
   friend class MenuHostRootView;
   friend class MenuItemView;
   friend class SubmenuView;
@@ -206,18 +251,18 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
 
   // Values supplied to SetSelection.
   enum SetSelectionTypes {
-    SELECTION_DEFAULT               = 0,
+    SELECTION_DEFAULT = 0,
 
     // If set submenus are opened immediately, otherwise submenus are only
-    // openned after a timer fires.
-    SELECTION_UPDATE_IMMEDIATELY    = 1 << 0,
+    // opened after a timer fires.
+    SELECTION_UPDATE_IMMEDIATELY = 1 << 0,
 
     // If set and the menu_item has a submenu, the submenu is shown.
-    SELECTION_OPEN_SUBMENU          = 1 << 1,
+    SELECTION_OPEN_SUBMENU = 1 << 1,
 
     // SetSelection is being invoked as the result exiting or cancelling the
     // menu. This is used for debugging.
-    SELECTION_EXIT                  = 1 << 2,
+    SELECTION_EXIT = 1 << 2,
   };
 
   // Direction for IncrementSelection and FindInitialSelectableMenuItem.
@@ -240,7 +285,7 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
 
     // Used to capture a hot tracked child button when a nested menu is opened
     // and to restore the hot tracked state when exiting a nested menu.
-    CustomButton* hot_button;
+    Button* hot_button;
 
     // If item has a submenu this indicates if the submenu is showing.
     bool submenu_open;
@@ -271,13 +316,11 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
       SCROLL_DOWN
     };
 
-    MenuPart() : type(NONE), menu(NULL), parent(NULL), submenu(NULL) {}
-
     // Convenience for testing type == SCROLL_DOWN or type == SCROLL_UP.
     bool is_scroll() const { return type == SCROLL_DOWN || type == SCROLL_UP; }
 
     // Type of part.
-    Type type;
+    Type type = NONE;
 
     // If type is MENU_ITEM, this is the menu item the mouse is over, otherwise
     // this is NULL.
@@ -285,20 +328,23 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
     //       but is over a menu (for example, the mouse is over a separator or
     //       empty menu), this is NULL and parent is the menu the mouse was
     //       clicked on.
-    MenuItemView* menu;
+    MenuItemView* menu = nullptr;
 
     // If type is MENU_ITEM but the mouse is not over a menu item this is the
     // parent of the menu item the user clicked on. Otherwise this is NULL.
-    MenuItemView* parent;
+    MenuItemView* parent = nullptr;
 
     // This is the submenu the mouse is over.
-    SubmenuView* submenu;
+    SubmenuView* submenu = nullptr;
+
+    // Whether the controller should apply SELECTION_OPEN_SUBMENU to this item.
+    bool should_submenu_show = false;
   };
 
   // Sets the selection to |menu_item|. A value of NULL unselects
   // everything. |types| is a bitmask of |SetSelectionTypes|.
   //
-  // Internally this updates pending_state_ immediatley. state_ is only updated
+  // Internally this updates pending_state_ immediately. state_ is only updated
   // immediately if SELECTION_UPDATE_IMMEDIATELY is set. If
   // SELECTION_UPDATE_IMMEDIATELY is not set CommitPendingSelection is invoked
   // to show/hide submenus and update state_.
@@ -311,17 +357,13 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // Key processing.
   void OnKeyDown(ui::KeyboardCode key_code);
 
-  // Creates a MenuController. If |blocking| is true a nested message loop is
-  // started in |Run|.
-  MenuController(bool blocking,
-                 internal::MenuControllerDelegate* delegate);
+  // Creates a MenuController. See |for_drop_| member for details on |for_drop|.
+  MenuController(bool for_drop, internal::MenuControllerDelegate* delegate);
 
   ~MenuController() override;
 
-  // Runs the platform specific bits of the message loop. If |nested_menu| is
-  // true we're being asked to run a menu from within a menu (eg a context
-  // menu).
-  void RunMessageLoop(bool nested_menu);
+  // Runs the platform specific bits of the message loop.
+  void RunMessageLoop();
 
   // Invokes AcceleratorPressed() on the hot tracked view if there is one.
   // Returns true if AcceleratorPressed() was invoked.
@@ -334,6 +376,7 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // Invoked when the user accepts the selected item. This is only used
   // when blocking. This schedules the loop to quit.
   void Accept(MenuItemView* item, int event_flags);
+  void ReallyAccept(MenuItemView* item, int event_flags);
 
   bool ShowSiblingMenu(SubmenuView* source, const gfx::Point& mouse_location);
 
@@ -397,6 +440,11 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   bool DoesSubmenuContainLocation(SubmenuView* submenu,
                                   const gfx::Point& screen_loc);
 
+  // Returns whether the location is over the ACTIONABLE_SUBMENU's submenu area.
+  bool IsLocationOverSubmenuAreaOfActionableSubmenu(
+      MenuItemView* item,
+      const gfx::Point& screen_loc) const;
+
   // Opens/Closes the necessary menus such that state_ matches that of
   // pending_state_. This is invoked if submenus are not opened immediately,
   // but after a delay.
@@ -458,6 +506,18 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // Selects the next or previous (depending on |direction|) menu item.
   void IncrementSelection(SelectionIncrementDirectionType direction);
 
+  // Sets up accessible indices for menu items based on up/down arrow selection
+  // logic, to be used by screen readers to give accurate "item X of Y"
+  // information (and to be consistent with accessible keyboard use).
+  //
+  // This only sets one level of menu, so it must be called when submenus are
+  // opened as well.
+  void SetSelectionIndices(MenuItemView* parent);
+
+  // Selects the first or last (depending on |direction|) menu item.
+  void MoveSelectionToFirstOrLastItem(
+      SelectionIncrementDirectionType direction);
+
   // Returns the first (|direction| == NAVIGATE_SELECTION_DOWN) or the last
   // (|direction| == INCREMENT_SELECTION_UP) selectable child menu item of
   // |parent|. If there are no selectable items returns NULL.
@@ -471,7 +531,8 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   MenuItemView* FindNextSelectableMenuItem(
       MenuItemView* parent,
       int index,
-      SelectionIncrementDirectionType direction);
+      SelectionIncrementDirectionType direction,
+      bool is_initial);
 
   // If the selected item has a submenu and it isn't currently open, the
   // the selection is changed such that the menu opens immediately.
@@ -529,25 +590,16 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // it to null.
   void SendMouseCaptureLostToActiveView();
 
-  // Sets/gets the active mouse view. See UpdateActiveMouseView() for details.
-  void SetActiveMouseView(View* view);
-  View* GetActiveMouseView();
-
   // Sets exit type. Calling this can terminate the active nested message-loop.
   void SetExitType(ExitType type);
 
-  // Terminates the current nested message-loop, if there is any. Returns |true|
-  // if any message loop is terminated.
-  bool TerminateNestedMessageLoopIfNecessary();
-
-  // Performs the teardown of menus launched with |async_run_|. This will
-  // notifiy the |delegate_|. If |exit_type_| is EXIT_ALL all nested
-  // asynchronous runs will be exited.
-  void ExitAsyncRun();
+  // Performs the teardown of menus. This will notify the |delegate_|. If
+  // |exit_type_| is EXIT_ALL all nested runs will be exited.
+  void ExitMenu();
 
   // Performs the teardown of the menu launched by Run(). The selected item is
   // returned.
-  MenuItemView* ExitMenuRun();
+  MenuItemView* ExitTopMostMenu();
 
   // Handles the mouse location event on the submenu |source|.
   void HandleMouseLocation(SubmenuView* source,
@@ -558,26 +610,35 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
                                 SelectionIncrementDirectionType direction);
 
   // Updates the current |hot_button_| and its hot tracked state.
-  void SetHotTrackedButton(CustomButton* hot_button);
+  void SetHotTrackedButton(Button* hot_button);
+
+  // Returns whether typing a new character will continue the existing prefix
+  // selection. If this returns false, typing a new character will start a new
+  // prefix selection, and some characters (such as Space) will be treated as
+  // commands instead of parts of the prefix.
+  bool ShouldContinuePrefixSelection() const;
+
+  // Manage alerted MenuItemViews that we are animating.
+  void RegisterAlertedItem(MenuItemView* item);
+  void UnregisterAlertedItem(MenuItemView* item);
 
   // The active instance.
   static MenuController* active_instance_;
 
-  // If true, Run blocks. If false, Run doesn't block and this is used for
-  // drag and drop. Note that the semantics for drag and drop are slightly
-  // different: cancel timer is kicked off any time the drag moves outside the
-  // menu, mouse events do nothing...
-  bool blocking_run_;
+  // If true the menu is shown for a drag and drop. Note that the semantics for
+  // drag and drop are slightly different: cancel timer is kicked off any time
+  // the drag moves outside the menu, mouse events do nothing...
+  const bool for_drop_;
 
   // If true, we're showing.
-  bool showing_;
+  bool showing_ = false;
 
   // Indicates what to exit.
-  ExitType exit_type_;
+  ExitType exit_type_ = EXIT_NONE;
 
   // Whether we did a capture. We do a capture only if we're blocking and
   // the mouse was down when Run.
-  bool did_capture_;
+  bool did_capture_ = false;
 
   // As the user drags the mouse around pending_state_ changes immediately.
   // When the user stops moving/dragging the mouse (or clicks the mouse)
@@ -589,22 +650,22 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   State state_;
 
   // If the user accepted the selection, this is the result.
-  MenuItemView* result_;
+  MenuItemView* result_ = nullptr;
 
   // The event flags when the user selected the menu.
-  int accept_event_flags_;
+  int accept_event_flags_ = 0;
 
   // If not empty, it means we're nested. When Run is invoked from within
   // Run, the current state (state_) is pushed onto menu_stack_. This allows
   // MenuController to restore the state when the nested run returns.
-  typedef std::pair<State, linked_ptr<MenuButton::PressedLock> > NestedState;
+  using NestedState =
+      std::pair<State, std::unique_ptr<MenuButtonEventHandler::PressedLock>>;
   std::list<NestedState> menu_stack_;
 
   // When Run is invoked during an active Run, it may be called from a separate
-  // MenuControllerDelegate. If not empty is means we are nested, and the
+  // MenuControllerDelegate. If not empty it means we are nested, and the
   // stacked delegates should be notified instead of |delegate_|.
-  typedef std::pair<internal::MenuControllerDelegate*, bool> NestedDelegate;
-  std::list<NestedDelegate> delegate_stack_;
+  std::list<internal::MenuControllerDelegate*> delegate_stack_;
 
   // As the mouse moves around submenus are not opened immediately. Instead
   // they open after this timer fires.
@@ -617,55 +678,51 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   base::OneShotTimer cancel_all_timer_;
 
   // Drop target.
-  MenuItemView* drop_target_;
-  MenuDelegate::DropPosition drop_position_;
+  MenuItemView* drop_target_ = nullptr;
+  MenuDelegate::DropPosition drop_position_ = MenuDelegate::DROP_UNKNOWN;
 
   // Owner of child windows.
   // WARNING: this may be NULL.
-  Widget* owner_;
+  Widget* owner_ = nullptr;
 
   // Indicates a possible drag operation.
-  bool possible_drag_;
+  bool possible_drag_ = false;
 
   // True when drag operation is in progress.
-  bool drag_in_progress_;
+  bool drag_in_progress_ = false;
 
   // True when the drag operation in progress was initiated by the
   // MenuController for a child MenuItemView (as opposed to initiated separately
   // by a child View).
-  bool did_initiate_drag_;
+  bool did_initiate_drag_ = false;
 
   // Location the mouse was pressed at. Used to detect d&d.
   gfx::Point press_pt_;
 
   // We get a slew of drag updated messages as the mouse is over us. To avoid
   // continually processing whether we can drop, we cache the coordinates.
-  bool valid_drop_coordinates_;
+  bool valid_drop_coordinates_ = false;
   gfx::Point drop_pt_;
-  int last_drop_operation_;
+  int last_drop_operation_ = MenuDelegate::DROP_UNKNOWN;
 
   // If true, we're in the middle of invoking ShowAt on a submenu.
-  bool showing_submenu_;
+  bool showing_submenu_ = false;
 
   // Task for scrolling the menu. If non-null indicates a scroll is currently
   // underway.
   std::unique_ptr<MenuScrollTask> scroll_task_;
 
   // The lock to keep the menu button pressed while a menu is visible.
-  std::unique_ptr<MenuButton::PressedLock> pressed_lock_;
+  std::unique_ptr<MenuButtonEventHandler::PressedLock> pressed_lock_;
 
-  // ViewStorage id used to store the view mouse drag events are forwarded to.
-  // See UpdateActiveMouseView() for details.
-  const int active_mouse_view_id_;
+  // ViewTracker used to store the View mouse drag events are forwarded to. See
+  // UpdateActiveMouseView() for details.
+  std::unique_ptr<ViewTracker> active_mouse_view_tracker_;
 
   // Current hot tracked child button if any.
-  CustomButton* hot_button_;
+  Button* hot_button_ = nullptr;
 
   internal::MenuControllerDelegate* delegate_;
-
-  // How deep we are in nested message loops. This should be at most 2 (when
-  // showing a context menu from a menu).
-  int message_loop_depth_;
 
   // The timestamp of the event which closed the menu - or 0 otherwise.
   base::TimeTicks closing_event_time_;
@@ -677,31 +734,49 @@ class VIEWS_EXPORT MenuController : public WidgetObserver {
   // screen coordinates). Otherwise this will be (0, 0).
   gfx::Point menu_start_mouse_press_loc_;
 
-  // Controls behaviour differences between an asynchronous run, and other types
-  // of run (blocking, drag and drop).
-  bool async_run_;
+  // If the mouse was under the menu when the menu was run, this will have its
+  // location. Otherwise it will be null. This is used to ignore mouse move
+  // events triggered by the menu opening, to avoid selecting the menu item
+  // over the mouse.
+  base::Optional<gfx::Point> menu_open_mouse_loc_;
 
   // Controls behavior differences between a combobox and other types of menu
   // (like a context menu).
-  bool is_combobox_;
+  ComboboxType combobox_type_ = kNotACombobox;
+
+  // Whether the menu |owner_| needs gesture events. When set to true, the menu
+  // will preserve the gesture events of the |owner_| and MenuController will
+  // forward the gesture events to |owner_| until no |ET_GESTURE_END| event is
+  // captured.
+  bool send_gesture_events_to_owner_ = false;
 
   // Set to true if the menu item was selected by touch.
-  bool item_selected_by_touch_;
+  bool item_selected_by_touch_ = false;
+
+  // Whether to use the touchable layout.
+  bool use_touchable_layout_ = false;
 
   // During mouse event handling, this is the RootView to forward mouse events
   // to. We need this, because if we forward one event to it (e.g., mouse
   // pressed), subsequent events (like dragging) should also go to it, even if
   // the mouse is no longer over the view.
-  MenuHostRootView* current_mouse_event_target_;
+  MenuHostRootView* current_mouse_event_target_ = nullptr;
 
   // A mask of the EventFlags for the mouse buttons currently pressed.
-  int current_mouse_pressed_state_;
+  int current_mouse_pressed_state_ = 0;
 
-  std::unique_ptr<MenuMessageLoop> message_loop_;
-
-#if defined(USE_AURA)
-  std::unique_ptr<MenuKeyEventHandler> key_event_handler_;
+#if defined(OS_MACOSX)
+  std::unique_ptr<MenuClosureAnimationMac> menu_closure_animation_;
+  std::unique_ptr<MenuCocoaWatcherMac> menu_cocoa_watcher_;
 #endif
+
+  std::unique_ptr<MenuPreTargetHandler> menu_pre_target_handler_;
+
+  // Animation used for alerted MenuItemViews. Started on demand.
+  gfx::ThrobAnimation alert_animation_;
+
+  // Currently showing alerted menu items. Updated when submenus open and close.
+  base::flat_set<MenuItemView*> alerted_items_;
 
   DISALLOW_COPY_AND_ASSIGN(MenuController);
 };

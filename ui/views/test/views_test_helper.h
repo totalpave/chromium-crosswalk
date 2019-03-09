@@ -8,12 +8,9 @@
 #include "base/macros.h"
 #include "ui/gfx/native_widget_types.h"
 
-namespace base {
-class MessageLoopForUI;
-}
-
 namespace ui {
 class ContextFactory;
+class ContextFactoryPrivate;
 }
 
 namespace views {
@@ -26,8 +23,9 @@ class ViewsTestHelper {
   virtual ~ViewsTestHelper();
 
   // Create a platform specific instance.
-  static ViewsTestHelper* Create(base::MessageLoopForUI* message_loop,
-                                 ui::ContextFactory* context_factory);
+  static ViewsTestHelper* Create(
+      ui::ContextFactory* context_factory,
+      ui::ContextFactoryPrivate* context_factory_private);
 
   // Creates objects that are needed for tests.
   virtual void SetUp();

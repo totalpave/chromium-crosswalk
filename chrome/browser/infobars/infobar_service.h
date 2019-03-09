@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "build/build_config.h"
 #include "components/infobars/core/infobar_manager.h"
+#include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/base/window_open_disposition.h"
@@ -29,6 +31,8 @@ class InfoBarService : public infobars::InfoBarManager,
                        public content::WebContentsObserver,
                        public content::WebContentsUserData<InfoBarService> {
  public:
+  ~InfoBarService() override;
+
   static infobars::InfoBarDelegate::NavigationDetails
       NavigationDetailsFromLoadCommittedDetails(
           const content::LoadCommittedDetails& details);
@@ -54,34 +58,27 @@ class InfoBarService : public infobars::InfoBarManager,
       std::unique_ptr<ConfirmInfoBarDelegate> delegate) override;
   void OpenURL(const GURL& url, WindowOpenDisposition disposition) override;
 
+ protected:
+  explicit InfoBarService(content::WebContents* web_contents);
+
  private:
   friend class content::WebContentsUserData<InfoBarService>;
 
-  explicit InfoBarService(content::WebContents* web_contents);
-  ~InfoBarService() override;
-
   // InfoBarManager:
   int GetActiveEntryID() override;
-  // TODO(droger): Remove these functions once infobar notifications are
-  // removed. See http://crbug.com/354380
-  void NotifyInfoBarAdded(infobars::InfoBar* infobar) override;
-  void NotifyInfoBarRemoved(infobars::InfoBar* infobar, bool animate) override;
 
   // content::WebContentsObserver:
   void RenderProcessGone(base::TerminationStatus status) override;
-  void DidStartNavigationToPendingEntry(
-      const GURL& url,
-      content::NavigationController::ReloadType reload_type) override;
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void NavigationEntryCommitted(
       const content::LoadCommittedDetails& load_details) override;
   void WebContentsDestroyed() override;
-  bool OnMessageReceived(const IPC::Message& message) override;
-
-  // Message handlers.
-  void OnDidBlockDisplayingInsecureContent();
 
   // See description in set_ignore_next_reload().
   bool ignore_next_reload_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(InfoBarService);
 };

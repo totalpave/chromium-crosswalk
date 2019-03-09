@@ -15,76 +15,83 @@ Polymer({
   properties: {
     /**
      * Network property associated with the indicator.
-     * @type {!CrOnc.ManagedProperty|undefined}
+     * @type {?CrOnc.ManagedProperty|undefined}
      */
-    property: {type: Object, observer: 'propertyChanged_'},
+    property: Object,
 
-    /**
-     * Which indicator type to show (or NONE).
-     * @type {!CrPolicyIndicatorType}
-     */
-    indicatorType: {type: String, value: CrPolicyIndicatorType.NONE},
+    /** Position of tooltip popup related to the policy indicator. */
+    tooltipPosition: String,
 
     /**
      * Recommended value for non enforced properties.
-     * @type {?CrOnc.NetworkPropertyType}
+     * @private {!CrOnc.NetworkPropertyType|undefined}
      */
-    recommended: {type: Object, value: null},
+    recommended_: Object,
+
+    /** @private */
+    indicatorTooltip_: {
+      type: String,
+      computed: 'getNetworkIndicatorTooltip_(indicatorType, property.*)',
+    },
   },
 
-  /**
-   * @param {!CrOnc.ManagedProperty} property Always defined property value.
-   * @private
-   */
-  propertyChanged_: function(property) {
-    if (!this.isNetworkPolicyControlled(property)) {
+  observers: ['propertyChanged_(property.*)'],
+
+  /** @private */
+  propertyChanged_: function() {
+    const property = this.property;
+    if (property == null || !this.isControlled(property)) {
       this.indicatorType = CrPolicyIndicatorType.NONE;
       return;
     }
-    var effective = property.Effective;
-    var active = property.Active;
-    if (active == undefined)
+    const effective = property.Effective;
+    let active = property.Active;
+    if (active == undefined) {
       active = property[effective];
+    }
 
     if (property.UserEditable === true &&
         property.hasOwnProperty('UserPolicy')) {
       // We ignore UserEditable unless there is a UserPolicy.
+      this.recommended_ =
+          /** @type {!CrOnc.NetworkPropertyType} */ (property.UserPolicy);
       this.indicatorType = CrPolicyIndicatorType.RECOMMENDED;
-      this.recommended =
-          /** @type {CrOnc.NetworkPropertyType} */(property.UserPolicy);
-    } else if (property.DeviceEditable === true &&
-               property.hasOwnProperty('DevicePolicy')) {
+    } else if (
+        property.DeviceEditable === true &&
+        property.hasOwnProperty('DevicePolicy')) {
       // We ignore DeviceEditable unless there is a DevicePolicy.
+      this.recommended_ =
+          /** @type {!CrOnc.NetworkPropertyType} */ (property.DevicePolicy);
       this.indicatorType = CrPolicyIndicatorType.RECOMMENDED;
-      this.recommended =
-          /** @type {CrOnc.NetworkPropertyType} */(property.DevicePolicy);
     } else if (effective == 'UserPolicy') {
       this.indicatorType = CrPolicyIndicatorType.USER_POLICY;
     } else if (effective == 'DevicePolicy') {
       this.indicatorType = CrPolicyIndicatorType.DEVICE_POLICY;
+    } else if (effective == 'ActiveExtension') {
+      this.indicatorType = CrPolicyIndicatorType.EXTENSION;
     } else {
       this.indicatorType = CrPolicyIndicatorType.NONE;
     }
   },
 
   /**
-   * @param {CrPolicyIndicatorType} type
-   * @param {!CrOnc.ManagedProperty} property
-   * @param {!CrOnc.NetworkPropertyType} recommended
    * @return {string} The tooltip text for |type|.
    * @private
    */
-  getTooltip_: function(type, property, recommended) {
-    if (type == CrPolicyIndicatorType.NONE || typeof property != 'object')
+  getNetworkIndicatorTooltip_: function() {
+    if (this.property === undefined) {
       return '';
-    if (type == CrPolicyIndicatorType.RECOMMENDED) {
-      var value = property.Active;
-      if (value == undefined && property.Effective)
-        value = property[property.Effective];
-      if (value == recommended)
-        return this.i18n_('controlledSettingRecommendedMatches');
-      return this.i18n_('controlledSettingRecommendedDiffers');
     }
-    return this.getPolicyIndicatorTooltip(type, '');
+
+    let matches;
+    if (this.indicatorType == CrPolicyIndicatorType.RECOMMENDED &&
+        this.property) {
+      let value = this.property.Active;
+      if (value == undefined && this.property.Effective) {
+        value = this.property[this.property.Effective];
+      }
+      matches = value == this.recommended_;
+    }
+    return this.getIndicatorTooltip(this.indicatorType, '', matches);
   }
 });

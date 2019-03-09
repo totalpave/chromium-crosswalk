@@ -19,7 +19,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/events/event_utils.h"
 
-typedef ExtensionApiTest BookmarkOverrideTest;
+typedef extensions::ExtensionApiTest BookmarkOverrideTest;
 
 namespace {
 // Bookmark this page keybinding.
@@ -49,8 +49,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkOverrideTest, DISABLED_NonOverrideStarClick) {
   // Check that the BookmarkBubbleView is shown when clicking on the star.
   BrowserView* browser_view = reinterpret_cast<BrowserView*>(
       browser()->window());
-  views::View* star_view =
-      browser_view->GetToolbarView()->location_bar()->star_view();
+  views::View* star_view = browser_view->toolbar()->location_bar()->star_view();
 
   ui::MouseEvent pressed_event(
       ui::ET_MOUSE_PRESSED, gfx::Point(), gfx::Point(), ui::EventTimeForNow(),

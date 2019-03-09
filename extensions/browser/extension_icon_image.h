@@ -14,7 +14,6 @@
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/common/extension_icon_set.h"
-#include "ui/base/layout.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
 
@@ -27,7 +26,6 @@ class Extension;
 }
 
 namespace gfx {
-class Size;
 class Image;
 }
 
@@ -68,6 +66,17 @@ class IconImage : public content::NotificationObserver {
   // |context| is required by the underlying implementation to retrieve the
   // |ImageLoader| instance associated with the given context. |ImageLoader| is
   // used to perform the asynchronous image load work.
+  // Set |keep_original_size| to true to load the icon at the original size
+  // without resizing. In this case |resource_size_in_dip| will still be used to
+  // pick the correct icon representation. This is useful if the client code
+  // performs its own resizing.
+  IconImage(content::BrowserContext* context,
+            const Extension* extension,
+            const ExtensionIconSet& icon_set,
+            int resource_size_in_dip,
+            bool keep_original_size,
+            const gfx::ImageSkia& default_icon,
+            Observer* observer);
   IconImage(content::BrowserContext* context,
             const Extension* extension,
             const ExtensionIconSet& icon_set,
@@ -79,21 +88,21 @@ class IconImage : public content::NotificationObserver {
   gfx::Image image() const { return image_; }
   const gfx::ImageSkia& image_skia() const { return image_skia_; }
 
+  // Returns true if the icon is attached to an existing extension.
+  bool is_valid() const { return extension_ ? true : false; }
+
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
  private:
   class Source;
 
-  // Loads an image representation for the scale factor.
-  // If the representation gets loaded synchronously, it is returned by this
-  // method.
-  // If representation loading is asynchronous, an empty image
-  // representation is returned. When the representation gets loaded the
-  // observers' OnExtensionIconImageLoaded() will be called.
-  gfx::ImageSkiaRep LoadImageForScaleFactor(ui::ScaleFactor scale_factor);
+  // Loads an image representation for the scale factor asynchronously. Result
+  // is passed to OnImageRepLoaded.
+  void LoadImageForScaleAsync(float scale);
 
-  void OnImageLoaded(float scale_factor, const gfx::Image& image);
+  void OnImageLoaded(float scale, const gfx::Image& image);
+  void OnImageRepLoaded(const gfx::ImageSkiaRep& rep);
 
   // content::NotificationObserver overrides:
   void Observe(int type,
@@ -104,8 +113,10 @@ class IconImage : public content::NotificationObserver {
   scoped_refptr<const Extension> extension_;
   ExtensionIconSet icon_set_;
   const int resource_size_in_dip_;
+  // Whether the loaded icon should be kept at the original size.
+  const bool keep_original_size_;
 
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   Source* source_;  // Owned by ImageSkia storage.
   gfx::ImageSkia image_skia_;

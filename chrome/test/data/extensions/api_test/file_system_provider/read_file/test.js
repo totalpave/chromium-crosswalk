@@ -188,6 +188,9 @@ function setUpFileSystem(openedFilesLimit, callback) {
   var options = {};
   if (openedFilesLimit)
     options.openedFilesLimit = openedFilesLimit;
+  // TODO(mtomasz): Rather than clearing out opened files tests should wait for
+  // all files to be closed before unmounting the file system. crbug.com/789083
+  test_util.openedFiles = [];
   if (test_util.fileSystem) {
     chrome.fileSystemProvider.unmount({
       fileSystemId: test_util.FILE_SYSTEM_ID
@@ -340,7 +343,7 @@ function runTests() {
             chrome.test.callbackPass(function(fileEntry) {
               fileEntry.file(chrome.test.callbackPass(function(file) {
                 var fileReader = new FileReader();
-                fileReader.onerror = chrome.test.callbackPass(function(e) {
+                fileReader.onabort = chrome.test.callbackPass(function(e) {
                   chrome.test.assertEq(
                       'AbortError', fileReader.error.name);
                 });
@@ -371,7 +374,7 @@ function runTests() {
             chrome.test.callbackPass(function(fileEntry) {
               fileEntry.file(chrome.test.callbackPass(function(file) {
                 var fileReader = new FileReader();
-                fileReader.onerror = chrome.test.callbackPass(function(e) {
+                fileReader.onabort = chrome.test.callbackPass(function(e) {
                   chrome.test.assertEq(
                       'AbortError', fileReader.error.name);
                   // Confirm that the file is closed on the provider side.
@@ -413,7 +416,7 @@ function runTests() {
               fileEntry.file(chrome.test.callbackPass(function(file) {
                 var fileReader = new FileReader();
                 var fileReader2 = new FileReader();
-                fileReader.onerror = chrome.test.callbackPass(function(e) {
+                fileReader.onabort = chrome.test.callbackPass(function(e) {
                   chrome.test.assertEq(
                       'AbortError', fileReader.error.name);
                   // Confirm that the file is closed on the provider side.

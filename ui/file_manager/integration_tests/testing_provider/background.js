@@ -33,28 +33,26 @@ chrome.fileSystemProvider.onReadDirectoryRequested.addListener(
 
 chrome.fileSystemProvider.onMountRequested.addListener(mountFileSystem);
 
-chrome.fileSystemProvider.onUnmountRequested.addListener(
-    function(options, onSuccess, onError) {
-      chrome.fileSystemProvider.unmount(
-          {
-            fileSystemId: options.fileSystemId
-          },
-          function() {
-            if (chrome.runtime.lastError)
-              onError(chrome.runtime.lastError.message);
-            else
-              onSuccess();
-          });
-    });
+chrome.fileSystemProvider.onUnmountRequested.addListener(function(
+    options, onSuccess, onError) {
+  chrome.fileSystemProvider.unmount(
+      {fileSystemId: options.fileSystemId}, function() {
+        if (chrome.runtime.lastError) {
+          onError(chrome.runtime.lastError.message);
+        } else {
+          onSuccess();
+        }
+      });
+});
 
 chrome.fileSystemProvider.onGetActionsRequested.addListener(
     function(options, onSuccess, onError) {
-      onSucces([]);
+      onSuccess([]);
     });
 
 // If the manifest for device or file source is used, then mount a fake file
 // system on install.
-if (chrome.runtime.getManifest().name === "Testing Provider Device" ||
-    chrome.runtime.getManifest().name === "Testing Provider File") {
+if (chrome.runtime.getManifest().description === "Testing Provider device" ||
+    chrome.runtime.getManifest().description === "Testing Provider file") {
   chrome.runtime.onInstalled.addListener(mountFileSystem);
 }

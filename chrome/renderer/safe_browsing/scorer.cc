@@ -7,9 +7,11 @@
 #include <math.h>
 
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_piece.h"
 #include "chrome/common/safe_browsing/client_model.pb.h"
 #include "chrome/renderer/safe_browsing/features.h"
@@ -88,11 +90,11 @@ int Scorer::model_version() const {
   return model_.version();
 }
 
-const base::hash_set<std::string>& Scorer::page_terms() const {
+const std::unordered_set<std::string>& Scorer::page_terms() const {
   return page_terms_;
 }
 
-const base::hash_set<uint32_t>& Scorer::page_words() const {
+const std::unordered_set<uint32_t>& Scorer::page_words() const {
   return page_words_;
 }
 
@@ -114,11 +116,11 @@ size_t Scorer::shingle_size() const {
 
 double Scorer::ComputeRuleScore(const ClientSideModel::Rule& rule,
                                 const FeatureMap& features) const {
-  const base::hash_map<std::string, double>& feature_map = features.features();
+  const std::unordered_map<std::string, double>& feature_map =
+      features.features();
   double rule_score = 1.0;
   for (int i = 0; i < rule.feature_size(); ++i) {
-    base::hash_map<std::string, double>::const_iterator it = feature_map.find(
-        model_.hashes(rule.feature(i)));
+    const auto it = feature_map.find(model_.hashes(rule.feature(i)));
     if (it == feature_map.end() || it->second == 0.0) {
       // If the feature of the rule does not exist in the given feature map the
       // feature weight is considered to be zero.  If the feature weight is zero

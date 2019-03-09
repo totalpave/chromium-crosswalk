@@ -19,17 +19,13 @@
 #ifndef CHROME_BROWSER_ANDROID_DOWNLOAD_DOWNLOAD_CONTROLLER_H_
 #define CHROME_BROWSER_ANDROID_DOWNLOAD_DOWNLOAD_CONTROLLER_H_
 
+#include <map>
+#include <string>
+#include <utility>
+
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/singleton.h"
 #include "chrome/browser/android/download/download_controller_base.h"
-
-namespace net {
-class URLRequest;
-}
-
-namespace ui {
-class WindowAndroid;
-}
 
 namespace content {
 class WebContents;
@@ -39,16 +35,14 @@ class DownloadController : public DownloadControllerBase {
  public:
   static DownloadController* GetInstance();
 
-  static bool RegisterDownloadController(JNIEnv* env);
-
-  // Called when DownloadController Java object is instantiated.
-  void Init(JNIEnv* env, jobject obj);
-
   // DownloadControllerBase implementation.
   void AcquireFileAccessPermission(
-      content::WebContents* web_contents,
-      const AcquireFileAccessPermissionCallback& callback) override;
-  void SetDefaultDownloadFileName(const std::string& file_name) override;
+      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
+      AcquireFileAccessPermissionCallback callback) override;
+  void CreateAndroidDownload(
+      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
+      const DownloadInfo& info) override;
+  void AboutToResumeDownload(download::DownloadItem* download_item) override;
 
   // UMA histogram enum for download cancellation reasons. Keep this
   // in sync with MobileDownloadCancelReason in histograms.xml. This should be
@@ -60,58 +54,73 @@ class DownloadController : public DownloadControllerBase {
     CANCEL_REASON_OVERWRITE_INFOBAR_DISMISSED,
     CANCEL_REASON_NO_STORAGE_PERMISSION,
     CANCEL_REASON_DANGEROUS_DOWNLOAD_INFOBAR_DISMISSED,
+    CANCEL_REASON_NO_EXTERNAL_STORAGE,
+    CANCEL_REASON_CANNOT_DETERMINE_DOWNLOAD_TARGET,
+    CANCEL_REASON_OTHER_NATIVE_RESONS,
+    CANCEL_REASON_USER_CANCELED,
     CANCEL_REASON_MAX
   };
   static void RecordDownloadCancelReason(DownloadCancelReason reason);
 
+  // UMA histogram enum for download storage permission requests. Keep this
+  // in sync with MobileDownloadStoragePermission in histograms.xml. This should
+  // be append only.
+  enum StoragePermissionType {
+    STORAGE_PERMISSION_REQUESTED = 0,
+    STORAGE_PERMISSION_NO_ACTION_NEEDED,
+    STORAGE_PERMISSION_GRANTED,
+    STORAGE_PERMISSION_DENIED,
+    STORAGE_PERMISSION_NO_WEB_CONTENTS,
+    STORAGE_PERMISSION_MAX
+  };
+  static void RecordStoragePermission(StoragePermissionType type);
+
+  // Callback when user permission prompt finishes. Args: whether file access
+  // permission is acquired, which permission to update.
+  using AcquirePermissionCallback =
+      base::OnceCallback<void(bool, const std::string&)>;
+
  private:
-  struct JavaObject;
   friend struct base::DefaultSingletonTraits<DownloadController>;
   DownloadController();
   ~DownloadController() override;
 
   // Helper method for implementing AcquireFileAccessPermission().
-  bool HasFileAccessPermission(ui::WindowAndroid* window_android);
+  bool HasFileAccessPermission();
 
   // DownloadControllerBase implementation.
-  void CreateGETDownload(int render_process_id,
-                         int render_view_id,
-                         bool must_download,
-                         const DownloadInfo& info) override;
-  void OnDownloadStarted(content::DownloadItem* download_item) override;
+  void OnDownloadStarted(download::DownloadItem* download_item) override;
   void StartContextMenuDownload(const content::ContextMenuParams& params,
                                 content::WebContents* web_contents,
                                 bool is_link,
                                 const std::string& extra_headers) override;
-  void DangerousDownloadValidated(content::WebContents* web_contents,
-                                  const std::string& download_guid,
-                                  bool accept) override;
 
   // DownloadItem::Observer interface.
-  void OnDownloadUpdated(content::DownloadItem* item) override;
-
-  void StartAndroidDownload(int render_process_id,
-                            int render_view_id,
-                            bool must_download,
-                            const DownloadInfo& info);
-  void StartAndroidDownloadInternal(int render_process_id,
-                                    int render_view_id,
-                                    bool must_download,
-                                    const DownloadInfo& info,
-                                    bool allowed);
+  void OnDownloadUpdated(download::DownloadItem* item) override;
 
   // The download item contains dangerous file types.
-  void OnDangerousDownload(content::DownloadItem *item);
+  void OnDangerousDownload(download::DownloadItem* item);
 
-  base::android::ScopedJavaLocalRef<jobject> GetContentViewCoreFromWebContents(
-      content::WebContents* web_contents);
+  // Helper methods to start android download on UI thread.
+  void StartAndroidDownload(
+      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
+      const DownloadInfo& info);
+  void StartAndroidDownloadInternal(
+      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
+      const DownloadInfo& info, bool allowed);
 
-  // Creates Java object if it is not created already and returns it.
-  JavaObject* GetJavaObject();
-
-  JavaObject* java_object_;
+  // Check if an interrupted download item can be auto resumed.
+  bool IsInterruptedDownloadAutoResumable(
+      download::DownloadItem* download_item);
 
   std::string default_file_name_;
+
+  using StrongValidatorsMap =
+      std::map<std::string, std::pair<std::string, std::string>>;
+  // Stores the previous strong validators before a download is resumed. If the
+  // strong validators change after resumption starts, the download will restart
+  // from the beginning and all downloaded data will be lost.
+  StrongValidatorsMap strong_validators_map_;
 
   DISALLOW_COPY_AND_ASSIGN(DownloadController);
 };

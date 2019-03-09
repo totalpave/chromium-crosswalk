@@ -10,7 +10,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "components/policy/core/common/cloud/cloud_external_data_manager.h"
 #include "components/policy/core/common/policy_details.h"
 
@@ -27,17 +27,15 @@ class ExternalPolicyDataFetcherBackend;
 // policies.
 // This is a common base class used by specializations for regular users and
 // device-local accounts.
-class CloudExternalDataManagerBase : public CloudExternalDataManager,
-                                     public base::NonThreadSafe {
+class CloudExternalDataManagerBase : public CloudExternalDataManager {
  public:
   // |get_policy_details| is used to determine the maximum size that the
   // data referenced by each policy can have. Download scheduling, verification,
   // caching and retrieval tasks are done via the |backend_task_runner|, which
-  // must support file I/O. Network I/O is done via the |io_task_runner|.
+  // must support file I/O.
   CloudExternalDataManagerBase(
       const GetChromePolicyDetailsCallback& get_policy_details,
-      scoped_refptr<base::SequencedTaskRunner> backend_task_runner,
-      scoped_refptr<base::SequencedTaskRunner> io_task_runner);
+      scoped_refptr<base::SequencedTaskRunner> backend_task_runner);
   ~CloudExternalDataManagerBase() override;
 
   // Allows downloaded external data to be cached in |external_data_store|.
@@ -51,11 +49,11 @@ class CloudExternalDataManagerBase : public CloudExternalDataManager,
   // CloudExternalDataManager:
   void SetPolicyStore(CloudPolicyStore* policy_store) override;
   void OnPolicyStoreLoaded() override;
-  void Connect(
-      scoped_refptr<net::URLRequestContextGetter> request_context) override;
+  void Connect(scoped_refptr<network::SharedURLLoaderFactory>
+                   url_loader_factory) override;
   void Disconnect() override;
   void Fetch(const std::string& policy,
-             const ExternalDataFetcher::FetchCallback& callback) override;
+             ExternalDataFetcher::FetchCallback callback) override;
 
   // Allows policies to reference |max_size| bytes of external data even if no
   // |max_size| was specified in policy_templates.json.
@@ -72,7 +70,6 @@ class CloudExternalDataManagerBase : public CloudExternalDataManager,
   void FetchAll();
 
   scoped_refptr<base::SequencedTaskRunner> backend_task_runner_;
-  scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
 
  private:
   // The |external_policy_data_fetcher_backend_| handles network I/O for the
@@ -89,6 +86,8 @@ class CloudExternalDataManagerBase : public CloudExternalDataManager,
   // |backend_task_runner_|.
   class Backend;
   std::unique_ptr<Backend> backend_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(CloudExternalDataManagerBase);
 };

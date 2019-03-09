@@ -21,14 +21,12 @@ namespace base {
 bool PathProviderAndroid(int key, FilePath* result) {
   switch (key) {
     case base::FILE_EXE: {
-      char bin_dir[PATH_MAX + 1];
-      int bin_dir_size = readlink(kProcSelfExe, bin_dir, PATH_MAX);
-      if (bin_dir_size < 0 || bin_dir_size > PATH_MAX) {
+      FilePath bin_dir;
+      if (!ReadSymbolicLink(FilePath(kProcSelfExe), &bin_dir)) {
         NOTREACHED() << "Unable to resolve " << kProcSelfExe << ".";
         return false;
       }
-      bin_dir[bin_dir_size] = 0;
-      *result = FilePath(bin_dir);
+      *result = bin_dir;
       return true;
     }
     case base::FILE_MODULE:
@@ -48,6 +46,11 @@ bool PathProviderAndroid(int key, FilePath* result) {
       return false;
     case base::DIR_CACHE:
       return base::android::GetCacheDirectory(result);
+    case base::DIR_ASSETS:
+      // On Android assets are normally loaded from the APK using
+      // base::android::OpenApkAsset(). In tests, since the assets are no
+      // packaged, DIR_ASSETS is overridden to point to the build directory.
+      return false;
     case base::DIR_ANDROID_APP_DATA:
       return base::android::GetDataDirectory(result);
     case base::DIR_ANDROID_EXTERNAL_STORAGE:

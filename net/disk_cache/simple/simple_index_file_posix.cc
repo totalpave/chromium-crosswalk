@@ -5,6 +5,7 @@
 #include "net/disk_cache/simple/simple_index_file.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -12,6 +13,7 @@
 #include <memory>
 #include <string>
 
+#include "base/files/file_util.h"
 #include "base/logging.h"
 
 namespace disk_cache {
@@ -34,19 +36,37 @@ bool SimpleIndexFile::TraverseCacheDirectory(
     PLOG(ERROR) << "opendir " << cache_path.value();
     return false;
   }
-  dirent entry, *result;
-  while (readdir_r(dir.get(), &entry, &result) == 0) {
-    if (!result)
-      return true;  // The traversal completed successfully.
-    const std::string file_name(result->d_name);
+  while (true) {
+    // errno must be set to 0 before every readdir() call to detect errors.
+    errno = 0;
+    dirent* entry = readdir(dir.get());
+    if (!entry) {
+      // Some implementations of readdir() (particularly older versions of
+      // Android Bionic) may leave errno set to EINTR even after they handle
+      // this case internally. It's safe to ignore EINTR in that case.
+      if (errno && errno != EINTR) {
+        PLOG(ERROR) << "readdir " << cache_path.value();
+        return false;
+      }
+      break;
+    }
+
+    const std::string file_name(entry->d_name);
     if (file_name == "." || file_name == "..")
       continue;
     const base::FilePath file_path = cache_path.Append(
         base::FilePath(file_name));
-    entry_file_callback.Run(file_path);
+    base::File::Info file_info;
+    if (!base::GetFileInfo(file_path, &file_info)) {
+      LOG(ERROR) << "Could not get file info for " << file_path.value();
+      continue;
+    }
+
+    entry_file_callback.Run(file_path, file_info.last_accessed,
+                            file_info.last_modified, file_info.size);
   }
-  PLOG(ERROR) << "readdir_r " << cache_path.value();
-  return false;
+
+  return true;
 }
 
 }  // namespace disk_cache

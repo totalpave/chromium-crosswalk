@@ -1,7 +1,6 @@
 /* Copyright 2015 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 :host {
   display: inline-block;
@@ -17,7 +16,7 @@ paper-button {
 :host([type='link']) paper-button,
 :host([type='dialog']) paper-button {
   background-color: transparent;
-  color: var(--google-blue-500);
+  color: var(--google-blue-600);
   margin: 0;
   min-width: 0;
 }

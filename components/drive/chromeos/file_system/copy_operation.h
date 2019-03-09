@@ -57,6 +57,8 @@ class CopyOperation {
   // with a target of |dest_file_path|.
   // If |preserve_last_modified| is set to true, this tries to preserve
   // last modified time stamp. This is supported only on Drive API v2.
+  // Regardless of preserve_last_modified's value, last_modified_by_me timestamp
+  // will always be set to the same timestamp as last_modified.
   // Invokes |callback| when finished with the result of the operation.
   // |callback| must not be null.
   void Copy(const base::FilePath& src_file_path,
@@ -167,7 +169,7 @@ class CopyOperation {
   // Uploading a new file is internally implemented by creating a dirty file.
   std::unique_ptr<CreateFileOperation> create_file_operation_;
 
-  base::ThreadChecker thread_checker_;
+  THREAD_CHECKER(thread_checker_);
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate the weak pointers before any other members are destroyed.

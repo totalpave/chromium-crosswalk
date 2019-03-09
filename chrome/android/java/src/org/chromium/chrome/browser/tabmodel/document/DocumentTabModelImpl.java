@@ -13,14 +13,16 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.chrome.browser.document.DocumentActivity;
 import org.chromium.chrome.browser.document.DocumentUtils;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelJniBridge;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
 import org.chromium.content_public.browser.WebContents;
 
-import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,6 +30,15 @@ import java.util.List;
  * Maintains a list of Tabs displayed when Chrome is running in document-mode.
  */
 public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentTabModel {
+    /** Serves as a callback from DocumentTabModelImpl to DocumentTabModelSelector. */
+    public interface TabModelDelegate {
+        /**
+         * @param model The specified model.
+         * @return Whether the specified model is currently selected.
+         */
+        boolean isCurrentModel(TabModel model);
+    }
+
     private static final String TAG = "DocumentTabModel";
 
     public static final String PREF_PACKAGE = "com.google.android.apps.chrome.document";
@@ -94,6 +105,8 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
     /** Context to use. */
     private final Context mContext;
 
+    private final TabModelDelegate mTabModelDelegate;
+
     /** Current loading status. */
     private int mCurrentState;
 
@@ -119,11 +132,12 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
      */
     public DocumentTabModelImpl(ActivityDelegate activityDelegate, StorageDelegate storageDelegate,
             TabCreatorManager tabCreatorManager, boolean isIncognito, int prioritizedTabId,
-            Context context) {
-        super(isIncognito);
+            Context context, TabModelDelegate tabModelDelegate) {
+        super(isIncognito, false);
         mActivityDelegate = activityDelegate;
         mStorageDelegate = storageDelegate;
         mContext = context;
+        mTabModelDelegate = tabModelDelegate;
 
         mCurrentState = STATE_UNINITIALIZED;
         mTabIdList = new ArrayList<Integer>();
@@ -193,9 +207,7 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
 
         // Return a live tab if the corresponding DocumentActivity is currently alive.
         int tabId = mTabIdList.get(index);
-        List<WeakReference<Activity>> activities = ApplicationStatus.getRunningActivities();
-        for (WeakReference<Activity> activityRef : activities) {
-            Activity activity = activityRef.get();
+        for (Activity activity : ApplicationStatus.getRunningActivities()) {
             if (!(activity instanceof DocumentActivity)
                     || !mActivityDelegate.isValidActivity(isIncognito(), activity.getIntent())) {
                 continue;
@@ -225,15 +237,15 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
 
         // Create a placeholder Tab that just has the ID.
         if (entry.placeholderTab == null) {
-            entry.placeholderTab = new Tab(tabId, isIncognito(), null);
+            entry.placeholderTab =
+                    new TabBuilder().setId(tabId).setIncognito(isIncognito()).build();
         }
 
         return entry.placeholderTab;
     }
 
     @Override
-    public void setIndex(int index, TabSelectionType type) {
-    }
+    public void setIndex(int index, @TabSelectionType int type) {}
 
     @Override
     protected boolean closeTabAt(int index) {
@@ -264,6 +276,11 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
     @Override
     protected boolean isSessionRestoreInProgress() {
         return mCurrentState < STATE_FULLY_LOADED;
+    }
+
+    @Override
+    public boolean isCurrentModel() {
+        return mTabModelDelegate.isCurrentModel(this);
     }
 
     @Override
@@ -299,7 +316,7 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
     }
 
     @Override
-    public void addTab(Tab tab, int index, TabLaunchType type) {
+    public void addTab(Tab tab, int index, @TabLaunchType int type) {
         assert false;
     }
 
@@ -314,16 +331,13 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
     }
 
     @Override
-    public void commitAllTabClosures() {
-    }
+    public void commitAllTabClosures() {}
 
     @Override
-    public void commitTabClosure(int tabId) {
-    }
+    public void commitTabClosure(int tabId) {}
 
     @Override
-    public void cancelTabClosure(int tabId) {
-    }
+    public void cancelTabClosure(int tabId) {}
 
     @Override
     public TabList getComprehensiveModel() {
@@ -331,10 +345,11 @@ public class DocumentTabModelImpl extends TabModelJniBridge implements DocumentT
     }
 
     @Override
-    public void addObserver(TabModelObserver observer) {
-    }
+    public void addObserver(TabModelObserver observer) {}
 
     @Override
-    public void removeObserver(TabModelObserver observer) {
-    }
+    public void removeObserver(TabModelObserver observer) {}
+
+    @Override
+    public void openMostRecentlyClosedTab() {}
 }

@@ -8,8 +8,8 @@ import("//testing/libfuzzer/fuzzer_test.gni")
 # On Linux, we implicitly already depend on expat via fontconfig;
 # let's not pull it in twice.
 # Chromecast doesn't ship expat as a system library.
-# Libfuzzer needs to build library from sources.
-if (is_linux && !is_chromecast && !use_libfuzzer) {
+# Libfuzzer and AFL need to build library from sources.
+if (is_linux && !is_chromecast && !use_fuzzing_engine) {
   config("expat_config") {
     libs = [ "expat" ]
   }
@@ -26,12 +26,18 @@ if (is_linux && !is_chromecast && !use_libfuzzer) {
   static_library("expat") {
     sources = [
       "files/lib/expat.h",
+      "files/lib/loadlibrary.c",
       "files/lib/xmlparse.c",
       "files/lib/xmlrole.c",
       "files/lib/xmltok.c",
     ]
 
     public_configs = [ ":expat_config" ]
+
+    # TODO(thakis): Remove this once clang no longer crashes when building
+    # libexpat with -Oz.
+    configs -= [ "//build/config/compiler:default_optimization" ]
+    configs += [ "//build/config/compiler:optimize_max" ]
 
     defines = [ "_LIB" ]
     if (is_win) {
@@ -49,5 +55,6 @@ fuzzer_test("expat_xml_parse_fuzzer") {
   deps = [
     ":expat",
   ]
-  dict = "//testing/libfuzzer/fuzzers/dicts/xml.dict"
+  dict = "//third_party/libxml/fuzz/xml.dict"
+  seed_corpus = "//third_party/libxml/fuzz/seed_corpus"
 }

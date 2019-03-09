@@ -6,23 +6,25 @@
 
 #include <utility>
 
+#include "base/bind.h"
+#include "base/containers/flat_map.h"
 #include "base/strings/string_util.h"
 #include "content/public/browser/stream_handle.h"
 #include "content/public/browser/stream_info.h"
 #include "content/public/common/content_constants.h"
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 #include "extensions/common/constants.h"
-#include "mojo/public/cpp/bindings/map.h"
+#include "mojo/public/cpp/bindings/strong_binding.h"
 #include "net/http/http_response_headers.h"
 
 namespace extensions {
 namespace {
 
-mojo::Map<mojo::String, mojo::String> CreateResponseHeadersMap(
+base::flat_map<std::string, std::string> CreateResponseHeadersMap(
     const net::HttpResponseHeaders* headers) {
-  std::map<std::string, std::string> result;
+  base::flat_map<std::string, std::string> result;
   if (!headers)
-    return mojo::Map<mojo::String, mojo::String>::From(result);
+    return result;
 
   size_t iter = 0;
   std::string header_name;
@@ -42,49 +44,47 @@ mojo::Map<mojo::String, mojo::String> CreateResponseHeadersMap(
       current_value += ", ";
     current_value += header_value;
   }
-  return mojo::Map<mojo::String, mojo::String>::From(result);
+  return result;
 }
 
 }  // namespace
 
+MimeHandlerServiceImpl::MimeHandlerServiceImpl(
+    base::WeakPtr<StreamContainer> stream_container)
+    : stream_(stream_container), weak_factory_(this) {}
+
+MimeHandlerServiceImpl::~MimeHandlerServiceImpl() {}
+
 // static
 void MimeHandlerServiceImpl::Create(
     base::WeakPtr<StreamContainer> stream_container,
-    mojo::InterfaceRequest<mime_handler::MimeHandlerService> request) {
-  new MimeHandlerServiceImpl(stream_container, std::move(request));
+    mime_handler::MimeHandlerServiceRequest request) {
+  mojo::MakeStrongBinding(
+      std::make_unique<MimeHandlerServiceImpl>(stream_container),
+      std::move(request));
 }
 
-MimeHandlerServiceImpl::MimeHandlerServiceImpl(
-    base::WeakPtr<StreamContainer> stream_container,
-    mojo::InterfaceRequest<mime_handler::MimeHandlerService> request)
-    : stream_(stream_container),
-      binding_(this, std::move(request)),
-      weak_factory_(this) {}
-
-MimeHandlerServiceImpl::~MimeHandlerServiceImpl() {
-}
-
-void MimeHandlerServiceImpl::GetStreamInfo(
-    const GetStreamInfoCallback& callback) {
+void MimeHandlerServiceImpl::GetStreamInfo(GetStreamInfoCallback callback) {
   if (!stream_) {
-    callback.Run(mime_handler::StreamInfoPtr());
+    std::move(callback).Run(mime_handler::StreamInfoPtr());
     return;
   }
-  callback.Run(mojo::ConvertTo<mime_handler::StreamInfoPtr>(*stream_));
+  std::move(callback).Run(
+      mojo::ConvertTo<mime_handler::StreamInfoPtr>(*stream_));
 }
 
-void MimeHandlerServiceImpl::AbortStream(const AbortStreamCallback& callback) {
+void MimeHandlerServiceImpl::AbortStream(AbortStreamCallback callback) {
   if (!stream_) {
-    callback.Run();
+    std::move(callback).Run();
     return;
   }
   stream_->Abort(base::Bind(&MimeHandlerServiceImpl::OnStreamClosed,
-                            weak_factory_.GetWeakPtr(), callback));
+                            weak_factory_.GetWeakPtr(),
+                            base::Passed(&callback)));
 }
 
-void MimeHandlerServiceImpl::OnStreamClosed(
-    const AbortStreamCallback& callback) {
-  callback.Run();
+void MimeHandlerServiceImpl::OnStreamClosed(AbortStreamCallback callback) {
+  std::move(callback).Run();
 }
 
 }  // namespace extensions
@@ -95,29 +95,28 @@ extensions::mime_handler::StreamInfoPtr TypeConverter<
     extensions::mime_handler::StreamInfoPtr,
     extensions::StreamContainer>::Convert(const extensions::StreamContainer&
                                               stream) {
-  if (!stream.stream_info()->handle)
+  if (stream.stream_url().is_empty())
     return extensions::mime_handler::StreamInfoPtr();
 
   auto result = extensions::mime_handler::StreamInfo::New();
   result->embedded = stream.embedded();
   result->tab_id = stream.tab_id();
-  const content::StreamInfo* info = stream.stream_info();
-  result->mime_type = info->mime_type;
+  result->mime_type = stream.mime_type();
 
   // If the URL is too long, mojo will give up on sending the URL. In these
   // cases truncate it. Only data: URLs should ever really suffer this problem
   // so only worry about those for now.
   // TODO(raymes): This appears to be a bug in mojo somewhere. crbug.com/480099.
-  if (info->original_url.SchemeIs(url::kDataScheme) &&
-      info->original_url.spec().size() > content::kMaxURLDisplayChars) {
-    result->original_url = info->original_url.scheme() + ":";
+  if (stream.original_url().SchemeIs(url::kDataScheme) &&
+      stream.original_url().spec().size() > content::kMaxURLDisplayChars) {
+    result->original_url = stream.original_url().scheme() + ":";
   } else {
-    result->original_url = info->original_url.spec();
+    result->original_url = stream.original_url().spec();
   }
 
-  result->stream_url = info->handle->GetURL().spec();
+  result->stream_url = stream.stream_url().spec();
   result->response_headers =
-      extensions::CreateResponseHeadersMap(info->response_headers.get());
+      extensions::CreateResponseHeadersMap(stream.response_headers());
   return result;
 }
 

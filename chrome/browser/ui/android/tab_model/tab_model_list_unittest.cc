@@ -11,11 +11,11 @@
 
 namespace {
 class TabModelListTest : public ChromeRenderViewHostTestHarness {};
-}  // namespace
 
 class TestTabModel : public TabModel {
  public:
-  explicit TestTabModel(Profile* profile) : TabModel(profile), tab_count_(0) {}
+  explicit TestTabModel(Profile* profile)
+      : TabModel(profile, false), tab_count_(0) {}
 
   int GetTabCount() const override { return tab_count_; }
   int GetActiveIndex() const override { return 0; }
@@ -29,13 +29,17 @@ class TestTabModel : public TabModel {
     return nullptr;
   }
   bool IsSessionRestoreInProgress() const override { return false; }
+  bool IsCurrentModel() const override { return false; }
   TabAndroid* GetTabAt(int index) const override { return nullptr; }
   void SetActiveIndex(int index) override {}
   void CloseTabAt(int index) override {}
+  void AddObserver(TabModelObserver* observer) override {}
+  void RemoveObserver(TabModelObserver* observer) override {}
 
   // A fake value for the current number of tabs.
   int tab_count_;
 };
+}  // namespace
 
 // Regression test for http://crbug.com/432685.
 TEST_F(TabModelListTest, TestGetTabModelForWebContents) {

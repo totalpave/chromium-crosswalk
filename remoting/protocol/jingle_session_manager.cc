@@ -14,10 +14,11 @@
 #include "remoting/protocol/transport.h"
 #include "remoting/signaling/iq_sender.h"
 #include "remoting/signaling/signal_strategy.h"
-#include "third_party/webrtc/base/socketaddress.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmpp/constants.h"
+#include "third_party/webrtc/rtc_base/socket_address.h"
 
-using buzz::QName;
+using jingle_xmpp::QName;
 
 namespace remoting {
 namespace protocol {
@@ -45,17 +46,17 @@ void JingleSessionManager::set_protocol_config(
 }
 
 std::unique_ptr<Session> JingleSessionManager::Connect(
-    const std::string& host_jid,
+    const SignalingAddress& peer_address,
     std::unique_ptr<Authenticator> authenticator) {
   std::unique_ptr<JingleSession> session(new JingleSession(this));
-  session->StartConnection(host_jid, std::move(authenticator));
+  session->StartConnection(peer_address, std::move(authenticator));
   sessions_[session->session_id_] = session.get();
   return std::move(session);
 }
 
 void JingleSessionManager::set_authenticator_factory(
     std::unique_ptr<AuthenticatorFactory> authenticator_factory) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   authenticator_factory_ = std::move(authenticator_factory);
 }
 
@@ -63,35 +64,37 @@ void JingleSessionManager::OnSignalStrategyStateChange(
     SignalStrategy::State state) {}
 
 bool JingleSessionManager::OnSignalStrategyIncomingStanza(
-    const buzz::XmlElement* stanza) {
+    const jingle_xmpp::XmlElement* stanza) {
   if (!JingleMessage::IsJingleMessage(stanza))
     return false;
 
-  JingleMessage message;
+  std::unique_ptr<jingle_xmpp::XmlElement> stanza_copy(new jingle_xmpp::XmlElement(*stanza));
+  std::unique_ptr<JingleMessage> message(new JingleMessage());
   std::string error;
-  if (!message.ParseXml(stanza, &error)) {
-    SendReply(stanza, JingleMessageReply::BAD_REQUEST);
+  if (!message->ParseXml(stanza, &error)) {
+    SendReply(std::move(stanza_copy), JingleMessageReply::BAD_REQUEST);
     return true;
   }
 
-  if (message.action == JingleMessage::SESSION_INITIATE) {
+  if (message->action == JingleMessage::SESSION_INITIATE) {
     // Description must be present in session-initiate messages.
-    DCHECK(message.description.get());
+    DCHECK(message->description.get());
 
-    SendReply(stanza, JingleMessageReply::NONE);
+    SendReply(std::move(stanza_copy), JingleMessageReply::NONE);
 
     std::unique_ptr<Authenticator> authenticator =
         authenticator_factory_->CreateAuthenticator(
-            signal_strategy_->GetLocalJid(), message.from.id());
+            signal_strategy_->GetLocalAddress().id(), message->from.id());
 
     JingleSession* session = new JingleSession(this);
-    session->InitializeIncomingConnection(message, std::move(authenticator));
+    session->InitializeIncomingConnection(stanza->Attr(jingle_xmpp::QN_ID), *message,
+                                          std::move(authenticator));
     sessions_[session->session_id_] = session;
 
     // Destroy the session if it was rejected due to incompatible protocol.
     if (session->state_ != Session::ACCEPTING) {
       delete session;
-      DCHECK(sessions_.find(message.sid) == sessions_.end());
+      DCHECK(sessions_.find(message->sid) == sessions_.end());
       return true;
     }
 
@@ -100,7 +103,7 @@ bool JingleSessionManager::OnSignalStrategyIncomingStanza(
       incoming_session_callback_.Run(session, &response);
 
     if (response == SessionManager::ACCEPT) {
-      session->AcceptIncomingConnection(message);
+      session->AcceptIncomingConnection(*message);
     } else {
       ErrorCode error;
       switch (response) {
@@ -119,27 +122,30 @@ bool JingleSessionManager::OnSignalStrategyIncomingStanza(
 
       session->Close(error);
       delete session;
-      DCHECK(sessions_.find(message.sid) == sessions_.end());
+      DCHECK(sessions_.find(message->sid) == sessions_.end());
     }
 
     return true;
   }
 
-  SessionsMap::iterator it = sessions_.find(message.sid);
+  auto it = sessions_.find(message->sid);
   if (it == sessions_.end()) {
-    SendReply(stanza, JingleMessageReply::INVALID_SID);
+    SendReply(std::move(stanza_copy), JingleMessageReply::INVALID_SID);
     return true;
   }
 
-  it->second->OnIncomingMessage(message, base::Bind(
-      &JingleSessionManager::SendReply, base::Unretained(this), stanza));
+  it->second->OnIncomingMessage(
+      stanza->Attr(jingle_xmpp::QN_ID), std::move(message),
+      base::Bind(&JingleSessionManager::SendReply, base::Unretained(this),
+                 base::Passed(std::move(stanza_copy))));
   return true;
 }
 
-void JingleSessionManager::SendReply(const buzz::XmlElement* original_stanza,
-                                     JingleMessageReply::ErrorType error) {
+void JingleSessionManager::SendReply(
+    std::unique_ptr<jingle_xmpp::XmlElement> original_stanza,
+    JingleMessageReply::ErrorType error) {
   signal_strategy_->SendStanza(
-      JingleMessageReply(error).ToXml(original_stanza));
+      JingleMessageReply(error).ToXml(original_stanza.get()));
 }
 
 void JingleSessionManager::SessionDestroyed(JingleSession* session) {

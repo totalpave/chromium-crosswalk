@@ -5,7 +5,8 @@
 #include "base/memory/memory_pressure_listener.h"
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace base {
@@ -14,15 +15,17 @@ using MemoryPressureLevel = MemoryPressureListener::MemoryPressureLevel;
 
 class MemoryPressureListenerTest : public testing::Test {
  public:
+  MemoryPressureListenerTest()
+      : scoped_task_environment_(
+            test::ScopedTaskEnvironment::MainThreadType::UI) {}
+
   void SetUp() override {
-    message_loop_.reset(new MessageLoopForUI());
     listener_.reset(new MemoryPressureListener(
         Bind(&MemoryPressureListenerTest::OnMemoryPressure, Unretained(this))));
   }
 
   void TearDown() override {
     listener_.reset();
-    message_loop_.reset();
   }
 
  protected:
@@ -31,7 +34,7 @@ class MemoryPressureListenerTest : public testing::Test {
       MemoryPressureLevel level) {
     EXPECT_CALL(*this, OnMemoryPressure(level)).Times(1);
     notification_function(level);
-    message_loop_->RunUntilIdle();
+    RunLoop().RunUntilIdle();
   }
 
   void ExpectNoNotification(
@@ -39,14 +42,14 @@ class MemoryPressureListenerTest : public testing::Test {
       MemoryPressureLevel level) {
     EXPECT_CALL(*this, OnMemoryPressure(testing::_)).Times(0);
     notification_function(level);
-    message_loop_->RunUntilIdle();
+    RunLoop().RunUntilIdle();
   }
 
  private:
   MOCK_METHOD1(OnMemoryPressure,
                void(MemoryPressureListener::MemoryPressureLevel));
 
-  std::unique_ptr<MessageLoopForUI> message_loop_;
+  test::ScopedTaskEnvironment scoped_task_environment_;
   std::unique_ptr<MemoryPressureListener> listener_;
 };
 

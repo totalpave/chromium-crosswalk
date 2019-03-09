@@ -6,7 +6,10 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "extensions/browser/api/socket/tcp_socket.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_system.h"
@@ -23,8 +26,8 @@ namespace api {
 using content::BrowserThread;
 
 static base::LazyInstance<
-    BrowserContextKeyedAPIFactory<TCPSocketEventDispatcher> > g_factory =
-    LAZY_INSTANCE_INITIALIZER;
+    BrowserContextKeyedAPIFactory<TCPSocketEventDispatcher>>::DestructorAtExit
+    g_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<TCPSocketEventDispatcher>*
@@ -118,7 +121,8 @@ void TCPSocketEventDispatcher::StartRead(const ReadParams& params) {
 void TCPSocketEventDispatcher::ReadCallback(
     const ReadParams& params,
     int bytes_read,
-    scoped_refptr<net::IOBuffer> io_buffer) {
+    scoped_refptr<net::IOBuffer> io_buffer,
+    bool socket_destroying) {
   DCHECK_CURRENTLY_ON(params.thread_id);
 
   // If |bytes_read| == 0, the connection has been closed by the peer.
@@ -143,10 +147,9 @@ void TCPSocketEventDispatcher::ReadCallback(
 
     // Post a task to delay the read until the socket is available, as
     // calling StartReceive at this point would error with ERR_IO_PENDING.
-    BrowserThread::PostTask(
-        params.thread_id,
-        FROM_HERE,
-        base::Bind(&TCPSocketEventDispatcher::StartRead, params));
+    base::PostTaskWithTraits(
+        FROM_HERE, {params.thread_id},
+        base::BindOnce(&TCPSocketEventDispatcher::StartRead, params));
   } else if (bytes_read == net::ERR_IO_PENDING) {
     // This happens when resuming a socket which already had an
     // active "read" callback.
@@ -163,12 +166,14 @@ void TCPSocketEventDispatcher::ReadCallback(
                   sockets_tcp::OnReceiveError::kEventName, std::move(args)));
     PostEvent(params, std::move(event));
 
-    // Since we got an error, the socket is now "paused" until the application
-    // "resumes" it.
-    ResumableTCPSocket* socket =
-        params.sockets->Get(params.extension_id, params.socket_id);
-    if (socket) {
-      socket->set_paused(true);
+    // Do not try to access |socket| when we are destroying it.
+    if (!socket_destroying) {
+      // Since we got an error, the socket is now "paused" until the application
+      // "resumes" it.
+      ResumableTCPSocket* socket =
+          params.sockets->Get(params.extension_id, params.socket_id);
+      if (socket)
+        socket->set_paused(true);
     }
   }
 }
@@ -178,10 +183,10 @@ void TCPSocketEventDispatcher::PostEvent(const ReadParams& params,
                                          std::unique_ptr<Event> event) {
   DCHECK_CURRENTLY_ON(params.thread_id);
 
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&DispatchEvent, params.browser_context_id, params.extension_id,
-                 base::Passed(std::move(event))));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&DispatchEvent, params.browser_context_id,
+                     params.extension_id, std::move(event)));
 }
 
 // static

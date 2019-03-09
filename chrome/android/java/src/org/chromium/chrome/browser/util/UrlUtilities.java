@@ -4,11 +4,15 @@
 
 package org.chromium.chrome.browser.util;
 
+import android.net.Uri;
+import android.support.annotation.NonNull;
 import android.text.TextUtils;
 
 import org.chromium.base.CollectionUtil;
 import org.chromium.base.Log;
 import org.chromium.base.VisibleForTesting;
+import org.chromium.chrome.browser.UrlConstants;
+import org.chromium.content_public.common.ContentUrlConstants;
 
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
@@ -22,41 +26,50 @@ import java.util.regex.Pattern;
  * Utilities for working with URIs (and URLs). These methods may be used in security-sensitive
  * contexts (after all, origins are the security boundary on the web), and so the correctness bar
  * must be high.
+ *
+ * Use ShadowUrlUtilities to mock out native-dependent methods in tests.
+ * TODO(pshmakov): we probably should just make those methods non-static.
  */
 public class UrlUtilities {
     private static final String TAG = "UrlUtilities";
 
     /**
-     * URI schemes that ContentView can handle.
-     */
-    private static final HashSet<String> ACCEPTED_SCHEMES = CollectionUtil.newHashSet(
-            "about", "data", "file", "http", "https", "inline", "javascript");
-
-    /**
-     * URI schemes that Chrome can download.
-     */
-    private static final HashSet<String> DOWNLOADABLE_SCHEMES = CollectionUtil.newHashSet(
-            "data", "filesystem", "http", "https", "blob", "file");
-
-    /**
      * URI schemes that are internal to Chrome.
      */
-    private static final HashSet<String> INTERNAL_SCHEMES = CollectionUtil.newHashSet(
-            "chrome", "chrome-native", "about");
+    private static final HashSet<String> INTERNAL_SCHEMES =
+            CollectionUtil.newHashSet(UrlConstants.CHROME_SCHEME, UrlConstants.CHROME_NATIVE_SCHEME,
+                    ContentUrlConstants.ABOUT_SCHEME);
 
-    /**
-     * URI schemes that can be handled in Intent fallback navigation.
-     */
-    private static final HashSet<String> FALLBACK_VALID_SCHEMES = CollectionUtil.newHashSet(
-            "http", "https");
+    // Patterns used in validateIntentUrl.
+    private static final Pattern DNS_HOSTNAME_PATTERN =
+            Pattern.compile("^[\\w\\.-]*$");
+    private static final Pattern JAVA_PACKAGE_NAME_PATTERN =
+            Pattern.compile("^[\\w\\.-]*$");
+    private static final Pattern ANDROID_COMPONENT_NAME_PATTERN =
+            Pattern.compile("^[\\w\\./-]*$");
+    private static final Pattern URL_SCHEME_PATTERN =
+            Pattern.compile("^[a-zA-Z]+$");
+
+    private static final String TEL_URL_PREFIX = "tel:";
 
     /**
      * @param uri A URI.
      *
-     * @return True if the URI's scheme is one that ContentView can handle.
+     * @return True if the URI's scheme is phone number scheme.
      */
-    public static boolean isAcceptedScheme(URI uri) {
-        return ACCEPTED_SCHEMES.contains(uri.getScheme());
+    public static boolean isTelScheme(String uri) {
+        return uri != null && uri.startsWith(TEL_URL_PREFIX);
+    }
+
+    /**
+     * @param uri A URI.
+     *
+     * @return The string after tel: scheme. Normally, it should be a phone number, but isn't
+     *         guaranteed.
+     */
+    public static String getTelNumber(String uri) {
+        if (uri == null || !uri.contains(":")) return "";
+        return uri.split(":")[1];
     }
 
     /**
@@ -65,20 +78,7 @@ public class UrlUtilities {
      * @return True if the URI's scheme is one that ContentView can handle.
      */
     public static boolean isAcceptedScheme(String uri) {
-        try {
-            return isAcceptedScheme(new URI(uri));
-        } catch (URISyntaxException e) {
-            return false;
-        }
-    }
-
-    /**
-     * @param uri A URI.
-     *
-     * @return True if the URI is valid for Intent fallback navigation.
-     */
-    public static boolean isValidForIntentFallbackNavigation(URI uri) {
-        return FALLBACK_VALID_SCHEMES.contains(uri.getScheme());
+        return nativeIsAcceptedScheme(uri);
     }
 
     /**
@@ -87,20 +87,7 @@ public class UrlUtilities {
      * @return True if the URI is valid for Intent fallback navigation.
      */
     public static boolean isValidForIntentFallbackNavigation(String uri) {
-        try {
-            return isValidForIntentFallbackNavigation(new URI(uri));
-        } catch (URISyntaxException e) {
-            return false;
-        }
-    }
-
-    /**
-     * @param uri A URI.
-     *
-     * @return True if the URI's scheme is one that Chrome can download.
-     */
-    public static boolean isDownloadableScheme(URI uri) {
-        return DOWNLOADABLE_SCHEMES.contains(uri.getScheme());
+        return nativeIsValidForIntentFallbackNavigation(uri);
     }
 
     /**
@@ -109,11 +96,7 @@ public class UrlUtilities {
      * @return True if the URI's scheme is one that Chrome can download.
      */
     public static boolean isDownloadableScheme(String uri) {
-        try {
-            return isDownloadableScheme(new URI(uri));
-        } catch (URISyntaxException e) {
-            return false;
-        }
+        return nativeIsDownloadable(uri);
     }
 
     /**
@@ -126,46 +109,22 @@ public class UrlUtilities {
     }
 
     /**
-     * Refer to url_formatter::FixupURL.
+     * @param url A URL.
      *
-     * Given a URL-like string, returns a real URL or null. For example:
-     *  - "google.com" -> "http://google.com/"
-     *  - "about:" -> "chrome://version/"
-     *  - "//mail.google.com:/" -> "file:///mail.google.com:/"
-     *  - "..." -> null
+     * @return Whether the URL's scheme is HTTP or HTTPS.
      */
-    public static String fixupUrl(String uri) {
-        if (TextUtils.isEmpty(uri)) return null;
-        return nativeFixupUrl(uri, null);
+    public static boolean isHttpOrHttps(@NonNull String url) {
+        // URI#getScheme would throw URISyntaxException if the other parts contain invalid
+        // characters. For example, "http://foo.bar/has[square].html" has [] in the path, which
+        // is not valid in URI. Both Uri.parse().getScheme() and URL().getProtocol() work in
+        // this case.
+        //
+        // URL().getProtocol() throws MalformedURLException if the scheme is "invalid",
+        // including common ones like "about:", "javascript:", "data:", etc.
+        String scheme = Uri.parse(url).getScheme();
+        return UrlConstants.HTTP_SCHEME.equals(scheme) || UrlConstants.HTTPS_SCHEME.equals(scheme);
     }
 
-    /**
-     * Builds a String that strips down the URL to its scheme, host, and port.
-     * @param uri URI to break down.
-     * @param showScheme Whether or not to show the scheme.  If the URL can't be parsed, this value
-     *                   is ignored.
-     * @return Stripped-down String containing the essential bits of the URL, or the original URL if
-     *         it fails to parse it.
-     */
-    public static String formatUrlForSecurityDisplay(URI uri, boolean showScheme) {
-        return formatUrlForSecurityDisplay(uri.toString(), showScheme);
-    }
-
-    /**
-     * Builds a String that strips down |url| to its scheme, host, and port.
-     * @param uri The URI to break down.
-     * @param showScheme Whether or not to show the scheme.  If the URL can't be parsed, this value
-     *                   is ignored.
-     * @return Stripped-down String containing the essential bits of the URL, or the original URL if
-     *         it fails to parse it.
-     */
-    public static String formatUrlForSecurityDisplay(String uri, boolean showScheme) {
-        if (showScheme) {
-            return nativeFormatUrlForSecurityDisplay(uri);
-        } else {
-            return nativeFormatUrlForSecurityDisplayOmitScheme(uri);
-        }
-    }
     /**
      * Determines whether or not the given URLs belong to the same broad domain or host.
      * "Broad domain" is defined as the TLD + 1 or the host.
@@ -192,15 +151,6 @@ public class UrlUtilities {
     }
 
     /**
-     * Determines whether or not the given URLs have the same host.
-     * Unlike the above sameDomainOrHost(...) method, this does a simpler host matching, so
-     * http://news.google.com and http://finance.google.com do not have the same host.
-     */
-    public static boolean sameHost(String primaryUrl, String secondaryUrl) {
-        return nativeSameHost(primaryUrl, secondaryUrl);
-    }
-
-    /**
      * This function works by calling net::registry_controlled_domains::GetDomainAndRegistry
      *
      * @param uri A URI
@@ -217,6 +167,12 @@ public class UrlUtilities {
         return nativeGetDomainAndRegistry(uri, includePrivateRegistries);
     }
 
+    /** Returns whether a URL is within another URL's scope. */
+    @VisibleForTesting
+    public static boolean isUrlWithinScope(String url, String scopeUrl) {
+        return nativeIsUrlWithinScope(url, scopeUrl);
+    }
+
     /** @return whether two URLs match, ignoring the #fragment. */
     @VisibleForTesting
     public static boolean urlsMatchIgnoringFragments(String url, String url2) {
@@ -230,16 +186,6 @@ public class UrlUtilities {
         if (TextUtils.equals(url, url2)) return false;
         return nativeUrlsFragmentsDiffer(url, url2);
     }
-
-    // Patterns used in validateIntentUrl.
-    private static final Pattern DNS_HOSTNAME_PATTERN =
-            Pattern.compile("^[\\w\\.-]*$");
-    private static final Pattern JAVA_PACKAGE_NAME_PATTERN =
-            Pattern.compile("^[\\w\\.-]*$");
-    private static final Pattern ANDROID_COMPONENT_NAME_PATTERN =
-            Pattern.compile("^[\\w\\./-]*$");
-    private static final Pattern URL_SCHEME_PATTERN =
-            Pattern.compile("^[a-zA-Z]+$");
 
     /**
      * @param url An Android intent:// URL to validate.
@@ -389,16 +335,43 @@ public class UrlUtilities {
         return true;
     }
 
+    /**
+     * @param url An HTTP or HTTPS URL.
+     * @return The URL without path and query.
+     */
+    public static String stripPath(String url) {
+        assert isHttpOrHttps(url);
+        Uri parsed = Uri.parse(url);
+
+        return parsed.getScheme() + "://" + ((parsed.getHost() != null) ? parsed.getHost() : "")
+                + ((parsed.getPort() != -1) ? (":" + parsed.getPort()) : "");
+    }
+
+    /**
+     * @param url An HTTP or HTTPS URL.
+     * @return The URL without the scheme.
+     */
+    public static String stripScheme(String url) {
+        String noScheme = url.trim();
+        if (noScheme.startsWith(UrlConstants.HTTPS_URL_PREFIX)) {
+            noScheme = noScheme.substring(8);
+        } else if (noScheme.startsWith(UrlConstants.HTTP_URL_PREFIX)) {
+            noScheme = noScheme.substring(7);
+        }
+        return noScheme;
+    }
+
+    private static native boolean nativeIsDownloadable(String url);
+    private static native boolean nativeIsValidForIntentFallbackNavigation(String url);
+    private static native boolean nativeIsAcceptedScheme(String url);
     private static native boolean nativeSameDomainOrHost(String primaryUrl, String secondaryUrl,
             boolean includePrivateRegistries);
-    private static native boolean nativeSameHost(String primaryUrl, String secondaryUrl);
     private static native String nativeGetDomainAndRegistry(String url,
             boolean includePrivateRegistries);
+    public static native boolean nativeIsGoogleDomainUrl(String url, boolean allowNonStandardPort);
     public static native boolean nativeIsGoogleSearchUrl(String url);
     public static native boolean nativeIsGoogleHomePageUrl(String url);
-    public static native String nativeFormatUrlForSecurityDisplay(String url);
-    public static native String nativeFormatUrlForSecurityDisplayOmitScheme(String url);
-    private static native String nativeFixupUrl(String url, String desiredTld);
+    private static native boolean nativeIsUrlWithinScope(String url, String scopeUrl);
     private static native boolean nativeUrlsMatchIgnoringFragments(String url, String url2);
     private static native boolean nativeUrlsFragmentsDiffer(String url, String url2);
 }

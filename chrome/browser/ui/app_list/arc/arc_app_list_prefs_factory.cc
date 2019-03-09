@@ -4,10 +4,13 @@
 
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs_factory.h"
 
+#include "chrome/browser/chromeos/arc/arc_util.h"
+#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
 #include "components/arc/arc_bridge_service.h"
+#include "components/arc/arc_service_manager.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "content/public/browser/browser_context.h"
 
@@ -30,6 +33,11 @@ void ArcAppListPrefsFactory::SetFactoryForSyncTest() {
   is_sync_test_ = true;
 }
 
+// static
+bool ArcAppListPrefsFactory::IsFactorySetForSyncTest() {
+  return is_sync_test_;
+}
+
 void ArcAppListPrefsFactory::RecreateServiceInstanceForTesting(
     content::BrowserContext* context) {
   Disassociate(context);
@@ -40,6 +48,7 @@ ArcAppListPrefsFactory::ArcAppListPrefsFactory()
     : BrowserContextKeyedServiceFactory(
           "ArcAppListPrefs",
           BrowserContextDependencyManager::GetInstance()) {
+  DependsOn(NotificationDisplayServiceFactory::GetInstance());
 }
 
 ArcAppListPrefsFactory::~ArcAppListPrefsFactory() {
@@ -48,21 +57,24 @@ ArcAppListPrefsFactory::~ArcAppListPrefsFactory() {
 KeyedService* ArcAppListPrefsFactory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
   Profile* profile = static_cast<Profile*>(context);
-  if (!arc::ArcAuthService::IsAllowedForProfile(profile))
-    return nullptr;
 
+  // Profiles are always treated as allowed to ARC in sync integration test.
   if (is_sync_test_) {
-    sync_test_app_instance_holders_[context].reset(
-        new arc::InstanceHolder<arc::mojom::AppInstance>());
+    sync_test_app_connection_holders_[context] = std::make_unique<
+        arc::ConnectionHolder<arc::mojom::AppInstance, arc::mojom::AppHost>>();
     return ArcAppListPrefs::Create(
-        profile, sync_test_app_instance_holders_[context].get());
+        profile, sync_test_app_connection_holders_[context].get());
   }
 
-  arc::ArcBridgeService* bridge_service = arc::ArcBridgeService::Get();
-  if (!bridge_service)
+  if (!arc::IsArcAllowedForProfile(profile))
     return nullptr;
 
-  return ArcAppListPrefs::Create(profile, bridge_service->app());
+  auto* arc_service_manager = arc::ArcServiceManager::Get();
+  if (!arc_service_manager)
+    return nullptr;
+
+  return ArcAppListPrefs::Create(
+      profile, arc_service_manager->arc_bridge_service()->app());
 }
 
 content::BrowserContext* ArcAppListPrefsFactory::GetBrowserContextToUse(

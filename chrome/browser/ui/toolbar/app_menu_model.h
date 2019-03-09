@@ -19,6 +19,7 @@
 #include "ui/base/models/button_menu_item_model.h"
 #include "ui/base/models/simple_menu_model.h"
 
+class AppMenuIconController;
 class BookmarkSubMenuModel;
 class Browser;
 class RecentTabsSubMenuModel;
@@ -27,7 +28,7 @@ namespace {
 class MockAppMenuModel;
 }  // namespace
 
-// Values should correspond to 'WretchMenuAction' enum in histograms.xml.
+// Values should correspond to 'WrenchMenuAction' enum in histograms.xml.
 enum AppMenuAction {
   MENU_ACTION_NEW_TAB = 0,
   MENU_ACTION_NEW_WINDOW = 1,
@@ -47,7 +48,6 @@ enum AppMenuAction {
   MENU_ACTION_COPY = 18,
   MENU_ACTION_PASTE = 19,
   MENU_ACTION_CREATE_HOSTED_APP = 20,
-  MENU_ACTION_CREATE_SHORTCUTS = 21,
   MENU_ACTION_MANAGE_EXTENSIONS = 22,
   MENU_ACTION_TASK_MANAGER = 23,
   MENU_ACTION_CLEAR_BROWSING_DATA = 24,
@@ -72,29 +72,12 @@ enum AppMenuAction {
   MENU_ACTION_BOOKMARK_OPEN = 42,
   MENU_ACTION_UPGRADE_DIALOG = 44,
   MENU_ACTION_CAST = 45,
+  MENU_ACTION_BETA_FORUM = 46,
+  MENU_ACTION_COPY_URL = 47,
+  MENU_ACTION_OPEN_IN_CHROME = 48,
+  MENU_ACTION_SITE_SETTINGS = 49,
+  MENU_ACTION_APP_INFO = 50,
   LIMIT_MENU_ACTION
-};
-
-// A menu model that builds the contents of an encoding menu.
-class EncodingMenuModel : public ui::SimpleMenuModel,
-                          public ui::SimpleMenuModel::Delegate {
- public:
-  explicit EncodingMenuModel(Browser* browser);
-  ~EncodingMenuModel() override;
-
-  // Overridden from ui::SimpleMenuModel::Delegate:
-  bool IsCommandIdChecked(int command_id) const override;
-  bool IsCommandIdEnabled(int command_id) const override;
-  bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override;
-  void ExecuteCommand(int command_id, int event_flags) override;
-
- private:
-  void Build();
-
-  Browser* browser_;  // weak
-
-  DISALLOW_COPY_AND_ASSIGN(EncodingMenuModel);
 };
 
 // A menu model that builds the contents of the zoom menu.
@@ -117,8 +100,6 @@ class ToolsMenuModel : public ui::SimpleMenuModel {
  private:
   void Build(Browser* browser);
 
-  std::unique_ptr<EncodingMenuModel> encoding_menu_model_;
-
   DISALLOW_COPY_AND_ASSIGN(ToolsMenuModel);
 };
 
@@ -133,8 +114,17 @@ class AppMenuModel : public ui::SimpleMenuModel,
   static const int kMinRecentTabsCommandId = 1001;
   static const int kMaxRecentTabsCommandId = 1200;
 
-  AppMenuModel(ui::AcceleratorProvider* provider, Browser* browser);
+  // Creates an app menu model for the given browser. Init() must be called
+  // before passing this to an AppMenu. |app_menu_icon_controller|, if provided,
+  // is used to decide whether or not to include an item for opening the upgrade
+  // dialog.
+  AppMenuModel(ui::AcceleratorProvider* provider,
+               Browser* browser,
+               AppMenuIconController* app_menu_icon_controller = nullptr);
   ~AppMenuModel() override;
+
+  // Runs Build() and registers observers.
+  void Init();
 
   // Overridden for ButtonMenuItemModel::Delegate:
   bool DoesCommandIdDismissMenu(int command_id) const override;
@@ -148,17 +138,13 @@ class AppMenuModel : public ui::SimpleMenuModel,
   bool IsCommandIdEnabled(int command_id) const override;
   bool IsCommandIdVisible(int command_id) const override;
   bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override;
+                                  ui::Accelerator* accelerator) const override;
 
   // Overridden from TabStripModelObserver:
-  void ActiveTabChanged(content::WebContents* old_contents,
-                        content::WebContents* new_contents,
-                        int index,
-                        int reason) override;
-  void TabReplacedAt(TabStripModel* tab_strip_model,
-                     content::WebContents* old_contents,
-                     content::WebContents* new_contents,
-                     int index) override;
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override;
 
   // Overridden from content::NotificationObserver:
   void Observe(int type,
@@ -175,42 +161,40 @@ class AppMenuModel : public ui::SimpleMenuModel,
   // Calculates |zoom_label_| in response to a zoom change.
   void UpdateZoomControls();
 
+ protected:
+  // Helper function to record the menu action in a UMA histogram.
+  virtual void LogMenuAction(AppMenuAction action_id);
+
+  // Builds the menu model, adding appropriate menu items.
+  virtual void Build();
+
+  // Appends a clipboard menu (without separators).
+  void CreateCutCopyPasteMenu();
+
+  // Add a menu item for the browser action icons if there is overflow, returns
+  // whether the menu was added.
+  bool CreateActionToolbarOverflowMenu();
+
+  // Appends a zoom menu (without separators).
+  void CreateZoomMenu();
+
  private:
   class HelpMenuModel;
-  // Testing constructor used for mocking.
   friend class ::MockAppMenuModel;
 
-  AppMenuModel();
-
-  void Build();
+  bool ShouldShowNewIncognitoWindowMenuItem();
 
   // Adds actionable global error menu items to the menu.
   // Examples: Extension permissions and sign in errors.
   // Returns a boolean indicating whether any menu items were added.
   bool AddGlobalErrorMenuItems();
 
-  // Appends everything needed for the clipboard menu: a menu break, the
-  // clipboard menu content and the finalizing menu break.
-  void CreateCutCopyPasteMenu();
-
-  // Add a menu item for the browser action icons.
-  void CreateActionToolbarOverflowMenu();
-
-  // Appends everything needed for the zoom menu: a menu break, then the zoom
-  // menu content and then another menu break.
-  void CreateZoomMenu();
-
   void OnZoomLevelChanged(const content::HostZoomMap::ZoomLevelChange& change);
-
-  bool ShouldShowNewIncognitoWindowMenuItem();
 
   // Called when a command is selected.
   // Logs UMA metrics about which command was chosen and how long the user
   // took to select the command.
   void LogMenuMetrics(int command_id);
-
-  // Helper function to record the menu action in a UMA histogram.
-  void LogMenuAction(int action_id);
 
   // Time menu has been open. Used by LogMenuMetrics() to record the time
   // to action when the user selects a menu item.
@@ -244,7 +228,8 @@ class AppMenuModel : public ui::SimpleMenuModel,
 
   ui::AcceleratorProvider* provider_;  // weak
 
-  Browser* browser_;  // weak
+  Browser* const browser_;  // weak
+  AppMenuIconController* const app_menu_icon_controller_;
 
   std::unique_ptr<content::HostZoomMap::Subscription>
       browser_zoom_subscription_;

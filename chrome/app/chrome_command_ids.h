@@ -8,16 +8,10 @@
 // This file lists all the command IDs understood by e.g. the browser.
 // It is used by Windows RC files, Mac NIB files, and other platforms too.
 
-// Mac NIB files (e.g. chrome/app/nibs/MainMenu.xib) include ID numbers rather
-// than the corresponding #define labels.  If you change a given command's
-// number, any NIB files that refer to it will also need to be updated.
+// clang-format off
 
 // Values below IDC_MinimumLabelValue are reserved for dynamic menu items.
 #define IDC_MinimumLabelValue           4000
-
-#define IDC_Messages                    4000
-#define IDC_MessagesAll                 4007
-#define IDC_MessagesNone                4008
 
 // NOTE: Within each of the following sections, the IDs are ordered roughly by
 // how they appear in the GUI/menus (left to right, top to bottom, etc.).
@@ -33,12 +27,6 @@
 #define IDC_RELOAD_BYPASSING_CACHE      33007
 #define IDC_LOAD_NEW_TAB_PAGE           33008
 #define IDC_RELOAD_CLEARING_CACHE       33009
-// Temporary commands to capture the old Back/Forward shortcuts and tell users
-// the new shortcut. May also trigger Back/Forward action if the
-// BackspaceGoesBack field trial is enabled.
-// TODO(mgiuca): Remove these in M54 (https://crbug.com/610039).
-#define IDC_BACKSPACE_BACK              33010
-#define IDC_BACKSPACE_FORWARD           33011
 
 // Window management commands
 #define IDC_NEW_WINDOW                  34000
@@ -74,7 +62,19 @@
 #define IDC_ALL_WINDOWS_FRONT           34048
 #define IDC_VISIT_DESKTOP_OF_LRU_USER_2 34049
 #define IDC_VISIT_DESKTOP_OF_LRU_USER_3 34050
+
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
 #define IDC_USE_SYSTEM_TITLE_BAR        34051
+#define IDC_RESTORE_WINDOW              34052
+#endif
+
+#define IDC_OPEN_IN_PWA_WINDOW          34053
+
+// Hosted app commands
+#define IDC_COPY_URL                    34060
+#define IDC_OPEN_IN_CHROME              34061
+#define IDC_SITE_SETTINGS               34062
+#define IDC_HOSTED_APP_MENU_APP_INFO    34063
 
 // Page-related commands
 #define IDC_BOOKMARK_PAGE               35000
@@ -82,54 +82,17 @@
 #define IDC_VIEW_SOURCE                 35002
 #define IDC_PRINT                       35003
 #define IDC_SAVE_PAGE                   35004
-#define IDC_ENCODING_MENU               35005
 #define IDC_EMAIL_PAGE_LOCATION         35006
 #define IDC_BASIC_PRINT                 35007
 #define IDC_SAVE_CREDIT_CARD_FOR_PAGE   35008
 #define IDC_TRANSLATE_PAGE              35009
 #define IDC_MANAGE_PASSWORDS_FOR_PAGE   35010
 #define IDC_ROUTE_MEDIA                 35011
-
-// When adding a new encoding to this list, be sure to append it to the
-// EncodingMenuController::kValidEncodingIds array in
-// encoding_menu_controller.cc.
-#define IDC_ENCODING_AUTO_DETECT        35500
-#define IDC_ENCODING_UTF8               35501
-#define IDC_ENCODING_UTF16LE            35502
-#define IDC_ENCODING_WINDOWS1252        35503
-#define IDC_ENCODING_GBK                35504
-#define IDC_ENCODING_GB18030            35505
-#define IDC_ENCODING_BIG5               35506
-#define IDC_ENCODING_KOREAN             35507
-#define IDC_ENCODING_SHIFTJIS           35508
-#define IDC_ENCODING_ISO2022JP          35509
-#define IDC_ENCODING_EUCJP              35510
-#define IDC_ENCODING_THAI               35511
-#define IDC_ENCODING_ISO885915          35512
-#define IDC_ENCODING_MACINTOSH          35513
-#define IDC_ENCODING_ISO88592           35514
-#define IDC_ENCODING_WINDOWS1250        35515
-#define IDC_ENCODING_ISO88595           35516
-#define IDC_ENCODING_WINDOWS1251        35517
-#define IDC_ENCODING_KOI8R              35518
-#define IDC_ENCODING_KOI8U              35519
-#define IDC_ENCODING_ISO88597           35520
-#define IDC_ENCODING_WINDOWS1253        35521
-#define IDC_ENCODING_ISO88594           35522
-#define IDC_ENCODING_ISO885913          35523
-#define IDC_ENCODING_WINDOWS1257        35524
-#define IDC_ENCODING_ISO88593           35525
-#define IDC_ENCODING_ISO885910          35526
-#define IDC_ENCODING_ISO885914          35527
-#define IDC_ENCODING_ISO885916          35528
-#define IDC_ENCODING_WINDOWS1254        35529
-#define IDC_ENCODING_ISO88596           35530
-#define IDC_ENCODING_WINDOWS1256        35531
-#define IDC_ENCODING_ISO88598           35532
-#define IDC_ENCODING_WINDOWS1255        35533
-#define IDC_ENCODING_WINDOWS1258        35534
-#define IDC_ENCODING_ISO88598I          35535
-#define IDC_ENCODING_IBM866             35536
+#define IDC_WINDOW_MUTE_SITE            35012
+#define IDC_WINDOW_PIN_TAB              35013
+#define IDC_MIGRATE_LOCAL_CREDIT_CARD_FOR_PAGE 35014
+#define IDC_SEND_TO_MY_DEVICES          35015
+#define IDC_FOCUS_THIS_TAB              35016
 
 // Clipboard commands
 #define IDC_CUT                         36000
@@ -158,12 +121,11 @@
 #define IDC_FOCUS_NEXT_PANE             39004
 #define IDC_FOCUS_PREVIOUS_PANE         39005
 #define IDC_FOCUS_BOOKMARKS             39006
-#define IDC_FOCUS_INFOBARS              39007
+#define IDC_FOCUS_INACTIVE_POPUP_FOR_ACCESSIBILITY 39007
 
 // Show various bits of UI
 #define IDC_OPEN_FILE                   40000
-#define IDC_CREATE_SHORTCUTS            40001
-#define IDC_CREATE_HOSTED_APP           40002
+#define IDC_CREATE_SHORTCUT             40002
 #define IDC_DEVELOPER_MENU              40003
 #define IDC_DEV_TOOLS                   40004
 #define IDC_DEV_TOOLS_CONSOLE           40005
@@ -188,13 +150,8 @@
 #define IDC_MANAGE_EXTENSIONS           40022
 #define IDC_DEV_TOOLS_INSPECT           40023
 #define IDC_UPGRADE_DIALOG              40024
-#define IDC_VIEW_INCOMPATIBILITIES      40025
-#define IDC_SHOW_KEYBOARD_OVERLAY       40027
 #define IDC_PROFILING_ENABLED           40028
 #define IDC_BOOKMARKS_MENU              40029
-// TODO(atwilson): Remove IDC_SHOW_SYNC_SETUP when we officially allow signin
-// when sync is disabled.
-#define IDC_SHOW_SYNC_SETUP             40030
 #define IDC_SHOW_SIGNIN                 40030
 #define IDC_EXTENSION_ERRORS            40031
 #define IDC_SHOW_SIGNIN_ERROR           40032
@@ -216,8 +173,13 @@
 #define IDC_ELEVATED_RECOVERY_DIALOG    40247
 #define IDC_TAKE_SCREENSHOT             40248
 #define IDC_MORE_TOOLS_MENU             40249
-#define IDC_SHOW_FAST_USER_SWITCHER     40250
-#define IDC_TOGGLE_FULLSCREEN_TOOLBAR   40251
+#define IDC_TOGGLE_FULLSCREEN_TOOLBAR   40250
+#define IDC_CUSTOMIZE_TOUCH_BAR         40251
+#define IDC_SHOW_BETA_FORUM             40252
+#define IDC_TOGGLE_JAVASCRIPT_APPLE_EVENTS 40253
+#define IDC_INSTALL_PWA                 40254
+#define IDC_SHOW_MANAGEMENT_PAGE             40255
+#define IDC_PASTE_AND_GO                40256
 
 // Spell-check
 // Insert any additional suggestions before _LAST; these have to be consecutive.
@@ -256,7 +218,6 @@
 #define IDC_HISTORY_MENU                46000     // OSX only
 #define IDC_PROFILE_MAIN_MENU           46100     // OSX only
 #define IDC_INPUT_METHODS_MENU          46300     // Linux only
-#define IDC_TOUCH_HUD_PROJECTION_TOGGLE 46400     // ChromeOS only
 
 // The range of command ids reserved for context menus added by web content.
 #define IDC_CONTENT_CONTEXT_CUSTOM_FIRST 47000
@@ -277,6 +238,7 @@
 #define IDC_CONTENT_CONTEXT_OPENLINKWITH 50106
 #define IDC_CONTENT_CONTEXT_COPYLINKTEXT 50107
 #define IDC_CONTENT_CONTEXT_OPENLINKINPROFILE 50108
+#define IDC_CONTENT_CONTEXT_OPENLINKBOOKMARKAPP 50109
 // Image items.
 #define IDC_CONTENT_CONTEXT_SAVEIMAGEAS 50110
 #define IDC_CONTENT_CONTEXT_COPYIMAGELOCATION 50111
@@ -284,11 +246,12 @@
 #define IDC_CONTENT_CONTEXT_OPENIMAGENEWTAB 50113
 #define IDC_CONTENT_CONTEXT_SEARCHWEBFORIMAGE 50114
 #define IDC_CONTENT_CONTEXT_OPEN_ORIGINAL_IMAGE_NEW_TAB 50115
-#define IDC_CONTENT_CONTEXT_LOAD_ORIGINAL_IMAGE 50116
+#define IDC_CONTENT_CONTEXT_LOAD_IMAGE 50116
 // Audio/video items.
 #define IDC_CONTENT_CONTEXT_SAVEAVAS 50120
 #define IDC_CONTENT_CONTEXT_COPYAVLOCATION 50121
 #define IDC_CONTENT_CONTEXT_OPENAVNEWTAB 50122
+#define IDC_CONTENT_CONTEXT_PICTUREINPICTURE 50123
 // Media items.
 #define IDC_CONTENT_CONTEXT_PLAYPAUSE 50130
 #define IDC_CONTENT_CONTEXT_MUTE 50131
@@ -314,14 +277,13 @@
 #define IDC_CONTENT_CONTEXT_NO_SPELLING_SUGGESTIONS 50155
 #define IDC_CONTENT_CONTEXT_SPELLING_SUGGESTION 50156
 #define IDC_CONTENT_CONTEXT_SPELLING_TOGGLE 50157
-#define IDC_CONTENT_CONTEXT_SPEECH_MENU 50158
-#define IDC_CONTENT_CONTEXT_SPEECH_START_SPEAKING 50159
-#define IDC_CONTENT_CONTEXT_SPEECH_STOP_SPEAKING 50160
 #define IDC_CONTENT_CONTEXT_INSPECTBACKGROUNDPAGE 50161
 #define IDC_CONTENT_CONTEXT_RELOAD_PACKAGED_APP 50162
 #define IDC_CONTENT_CONTEXT_RESTART_PACKAGED_APP 50163
-#define IDC_CONTENT_CONTEXT_FORCESAVEPASSWORD 50165
+// A gap here. Feel free to insert new IDs.
 #define IDC_CONTENT_CONTEXT_GENERATEPASSWORD 50166
+#define IDC_CONTENT_CONTEXT_EXIT_FULLSCREEN 50167
+#define IDC_CONTENT_CONTEXT_SHOWALLSAVEDPASSWORDS 50168
 // Frame items.
 #define IDC_CONTENT_CONTEXT_RELOADFRAME 50170
 #define IDC_CONTENT_CONTEXT_VIEWFRAMESOURCE 50171
@@ -345,6 +307,8 @@
 #define IDC_CONTENT_CONTEXT_OPEN_WITH13 50202
 #define IDC_CONTENT_CONTEXT_OPEN_WITH14 50203
 #define IDC_CONTENT_CONTEXT_OPEN_WITH_LAST IDC_CONTENT_CONTEXT_OPEN_WITH14
+// Context menu items that provide fast access to input methods.
+#define IDC_CONTENT_CONTEXT_EMOJI 50210
 // Context menu items in the bookmark bar
 #define IDC_BOOKMARK_BAR_OPEN_ALL 51000
 #define IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW 51001
@@ -370,11 +334,11 @@
 #define IDC_MEDIA_ROUTER_HELP 51201
 #define IDC_MEDIA_ROUTER_LEARN_MORE 51202
 #define IDC_MEDIA_ROUTER_REPORT_ISSUE 51203
-#define IDC_MEDIA_ROUTER_REMOVE_TOOLBAR_ACTION 51204
-#if defined(GOOGLE_CHROME_BUILD)
+#define IDC_MEDIA_ROUTER_ALWAYS_SHOW_TOOLBAR_ACTION 51204
 #define IDC_MEDIA_ROUTER_CLOUD_SERVICES_TOGGLE 51205
-#endif  // defined(GOOGLE_CHROME_BUILD)
-#define IDC_MEDIA_ROUTER_MANAGE_DEVICES 51206
+#define IDC_MEDIA_ROUTER_SHOWN_BY_POLICY 51206
+#define IDC_MEDIA_ROUTER_SHOW_IN_TOOLBAR 51207
+#define IDC_MEDIA_ROUTER_TOGGLE_MEDIA_REMOTING 51208
 
 // Context menu items for media stream status tray
 #define IDC_MEDIA_STREAM_DEVICE_STATUS_TRAY 51300
@@ -390,6 +354,20 @@
 // Open link in profile entries
 #define IDC_OPEN_LINK_IN_PROFILE_FIRST 52300
 #define IDC_OPEN_LINK_IN_PROFILE_LAST  52399
+
+// Start smart text selection actions
+#define IDC_CONTENT_CONTEXT_START_SMART_SELECTION_ACTION1 52400
+#define IDC_CONTENT_CONTEXT_START_SMART_SELECTION_ACTION2 52401
+#define IDC_CONTENT_CONTEXT_START_SMART_SELECTION_ACTION3 52402
+#define IDC_CONTENT_CONTEXT_START_SMART_SELECTION_ACTION4 52403
+#define IDC_CONTENT_CONTEXT_START_SMART_SELECTION_ACTION5 52404
+#define IDC_CONTENT_CONTEXT_START_SMART_SELECTION_ACTION_LAST IDC_CONTENT_CONTEXT_START_SMART_SELECTION_ACTION5
+// A gap here for new smart text selection actions.
+
+// Accessibility labels
+#define IDC_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_TOGGLE 52410
+#define IDC_CONTENT_CONTEXT_ACCESSIBILITY_LABELS 52411
+#define IDC_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_TOGGLE_ONCE 52412
 
 // NOTE: The last valid command value is 57343 (0xDFFF)
 // See http://msdn.microsoft.com/en-us/library/t2zechd4(VS.71).aspx

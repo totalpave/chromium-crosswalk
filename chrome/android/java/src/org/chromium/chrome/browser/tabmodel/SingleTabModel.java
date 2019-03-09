@@ -18,7 +18,7 @@ import org.chromium.chrome.browser.tab.Tab;
  */
 public class SingleTabModel implements TabModel {
     private final Activity mActivity;
-    private final ObserverList<TabModelObserver> mObservers = new ObserverList<TabModelObserver>();
+    private final ObserverList<TabModelObserver> mObservers = new ObserverList<>();
 
     private Tab mTab;
     private boolean mIsIncognito;
@@ -32,16 +32,17 @@ public class SingleTabModel implements TabModel {
 
     /**
      * Sets the Tab that is managed by the SingleTabModel.
-     * Should only be called once.
      * @param tab Tab to manage.
      */
     void setTab(Tab tab) {
+        Tab oldTab = mTab;
         mTab = tab;
         assert mTab.isIncognito() == mIsIncognito;
         if (mBlockNewWindows) nativePermanentlyBlockAllNewWindows(mTab);
 
         for (TabModelObserver observer : mObservers) {
             observer.didAddTab(tab, TabLaunchType.FROM_LINK);
+            observer.didSelectTab(tab, TabSelectionType.FROM_USER, Tab.INVALID_TAB_ID);
         }
 
         int state = ApplicationStatus.getStateForActivity(mActivity);
@@ -49,11 +50,17 @@ public class SingleTabModel implements TabModel {
                 || state == ActivityState.RESUMED) {
             mTab.show(TabSelectionType.FROM_USER);
         }
+        if (oldTab != null && oldTab.isInitialized()) {
+            for (TabModelObserver observer : mObservers) {
+                observer.didCloseTab(oldTab.getId(), oldTab.isIncognito());
+            }
+            oldTab.destroy();
+        }
     }
 
     @Override
     public Profile getProfile() {
-        return mTab.getProfile();
+        return mTab == null ? null : mTab.getProfile();
     }
 
     @Override
@@ -120,8 +127,13 @@ public class SingleTabModel implements TabModel {
     }
 
     @Override
-    public void setIndex(int i, final TabSelectionType type) {
+    public void setIndex(int i, final @TabSelectionType int type) {
         assert i == 0;
+    }
+
+    @Override
+    public boolean isCurrentModel() {
+        return true;
     }
 
     @Override
@@ -151,16 +163,13 @@ public class SingleTabModel implements TabModel {
     }
 
     @Override
-    public void commitAllTabClosures() {
-    }
+    public void commitAllTabClosures() {}
 
     @Override
-    public void commitTabClosure(int tabId) {
-    }
+    public void commitTabClosure(int tabId) {}
 
     @Override
-    public void cancelTabClosure(int tabId) {
-    }
+    public void cancelTabClosure(int tabId) {}
 
     @Override
     public boolean supportsPendingClosures() {
@@ -168,12 +177,12 @@ public class SingleTabModel implements TabModel {
     }
 
     @Override
-    public void addTab(Tab tab, int index, TabLaunchType type) {
-    }
+    public void addTab(Tab tab, int index, @TabLaunchType int type) {}
 
     @Override
     public void removeTab(Tab tab) {
-        assert false;
+        mTab = null;
+        for (TabModelObserver obs : mObservers) obs.tabRemoved(tab);
     }
 
     @Override
@@ -188,4 +197,6 @@ public class SingleTabModel implements TabModel {
 
     private static native void nativePermanentlyBlockAllNewWindows(Tab nativeTabAndroid);
 
+    @Override
+    public void openMostRecentlyClosedTab() {}
 }

@@ -6,22 +6,44 @@
 
 #include "chrome/grit/generated_resources.h"
 #include "content/public/browser/web_contents.h"
-#include "grit/theme_resources.h"
 #include "ui/base/l10n/l10n_util.h"
+
+#if defined(OS_ANDROID)
+#include "chrome/browser/android/android_theme_resources.h"
+#include "components/url_formatter/elide_url.h"
+#include "url/origin.h"
+#else
+#include "chrome/app/vector_icons/vector_icons.h"
+#endif
 
 DownloadPermissionRequest::DownloadPermissionRequest(
     base::WeakPtr<DownloadRequestLimiter::TabDownloadState> host)
     : host_(host) {
-  const content::WebContents* web_contents = host_->web_contents();
+  content::WebContents* web_contents = host_->web_contents();
   DCHECK(web_contents);
   request_origin_ = web_contents->GetURL().GetOrigin();
 }
 
 DownloadPermissionRequest::~DownloadPermissionRequest() {}
 
-int DownloadPermissionRequest::GetIconId() const {
-  return IDR_INFOBAR_MULTIPLE_DOWNLOADS;
+PermissionRequest::IconId DownloadPermissionRequest::GetIconId() const {
+#if defined(OS_ANDROID)
+  return IDR_ANDROID_INFOBAR_MULTIPLE_DOWNLOADS;
+#else
+  return kFileDownloadIcon;
+#endif
 }
+
+#if defined(OS_ANDROID)
+base::string16 DownloadPermissionRequest::GetMessageText() const {
+  return l10n_util::GetStringFUTF16(
+      IDS_MULTI_DOWNLOAD_WARNING,
+      url_formatter::FormatOriginForSecurityDisplay(
+          url::Origin::Create(request_origin_),
+          /*scheme_display = */ url_formatter::
+              SchemeDisplay::OMIT_CRYPTOGRAPHIC));
+}
+#endif
 
 base::string16 DownloadPermissionRequest::GetMessageTextFragment() const {
   return l10n_util::GetStringUTF16(IDS_MULTI_DOWNLOAD_PERMISSION_FRAGMENT);
@@ -56,7 +78,7 @@ void DownloadPermissionRequest::RequestFinished() {
   delete this;
 }
 
-PermissionBubbleType DownloadPermissionRequest::GetPermissionBubbleType()
+PermissionRequestType DownloadPermissionRequest::GetPermissionRequestType()
     const {
-  return PermissionBubbleType::DOWNLOAD;
+  return PermissionRequestType::DOWNLOAD;
 }

@@ -7,15 +7,30 @@
 #include <stddef.h>
 
 #include <limits>
+#include <memory>
+#include <set>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
+#include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
+#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_base.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
 #include "base/process/process.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
 #include "base/win/registry.h"
+#include "components/browser_watcher/features.h"
+#include "components/browser_watcher/postmortem_report_collector.h"
+#include "components/browser_watcher/stability_paths.h"
+#include "components/metrics/system_session_analyzer_win.h"
+#include "third_party/crashpad/crashpad/client/crash_report_database.h"
 
 namespace browser_watcher {
 
@@ -120,59 +135,10 @@ void DeleteAllValues(base::win::RegKey* key) {
   }
 }
 
-void DeleteExitFunnels(const base::string16& registry_path) {
-  base::win::RegistryKeyIterator it(HKEY_CURRENT_USER, registry_path.c_str());
-  if (!it.Valid())
-    return;
-
-  // Exit early if no work to do.
-  if (it.SubkeyCount() == 0)
-    return;
-
-  // Open the key we use for deletion preemptively to prevent reporting
-  // multiple times on permission problems.
-  base::win::RegKey key(HKEY_CURRENT_USER,
-                        registry_path.c_str(),
-                        KEY_QUERY_VALUE);
-  if (!key.Valid()) {
-    DVLOG(1) << "Failed to open " << registry_path << " for writing.";
-    return;
-  }
-
-  // Key names to delete.
-  std::vector<base::string16> keys_to_delete;
-  // Constrain the cleanup to 100 exit funnels at a time, as otherwise this may
-  // take a long time to finish where a lot of data has accrued. This will be
-  // the case in particular for non-UMA users, as the exit funnel data will
-  // accrue without bounds for those users.
-  const size_t kMaxCleanup = 100;
-  for (; it.Valid() && keys_to_delete.size() < kMaxCleanup; ++it) {
-    base::win::RegKey sub_key;
-    LONG res =
-        sub_key.Open(key.Handle(), it.Name(), KEY_QUERY_VALUE | KEY_SET_VALUE);
-    if (res != ERROR_SUCCESS) {
-      DVLOG(1) << "Failed to open subkey " << it.Name();
-      return;
-    }
-    DeleteAllValues(&sub_key);
-
-    // Schedule the subkey for deletion.
-    keys_to_delete.push_back(it.Name());
-  }
-
-  for (const base::string16& key_name : keys_to_delete) {
-    LONG res = key.DeleteEmptyKey(key_name.c_str());
-    if (res != ERROR_SUCCESS)
-      DVLOG(1) << "Failed to delete key " << key_name;
-  }
-}
-
 // Called from the blocking pool when metrics reporting is disabled, as there
 // may be a sizable stash of data to delete.
 void DeleteExitCodeRegistryKey(const base::string16& registry_path) {
   CHECK_NE(L"", registry_path);
-
-  DeleteExitFunnels(registry_path);
 
   base::win::RegKey key;
   LONG res = key.Open(HKEY_CURRENT_USER, registry_path.c_str(),
@@ -185,6 +151,27 @@ void DeleteExitCodeRegistryKey(const base::string16& registry_path) {
     DVLOG(1) << "Failed to delete exit code key " << registry_path;
 }
 
+enum CollectionInitializationStatus {
+  INIT_SUCCESS = 0,
+  UNKNOWN_DIR = 1,
+  GET_STABILITY_FILE_PATH_FAILED = 2,
+  CRASHPAD_DATABASE_INIT_FAILED = 3,
+  INIT_STATUS_MAX = 4
+};
+
+void LogCollectionInitStatus(CollectionInitializationStatus status) {
+  UMA_HISTOGRAM_ENUMERATION("ActivityTracker.Collect.InitStatus", status,
+                            INIT_STATUS_MAX);
+}
+
+// Returns a task runner appropriate for running background tasks that perform
+// file I/O.
+scoped_refptr<base::TaskRunner> CreateBackgroundTaskRunner() {
+  return base::CreateSequencedTaskRunnerWithTraits(
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
+}
+
 }  // namespace
 
 const char WatcherMetricsProviderWin::kBrowserExitCodeHistogramName[] =
@@ -192,13 +179,17 @@ const char WatcherMetricsProviderWin::kBrowserExitCodeHistogramName[] =
 
 WatcherMetricsProviderWin::WatcherMetricsProviderWin(
     const base::string16& registry_path,
-    base::TaskRunner* cleanup_io_task_runner)
+    const base::FilePath& user_data_dir,
+    const base::FilePath& crash_dir,
+    const GetExecutableDetailsCallback& exe_details_cb)
     : recording_enabled_(false),
       cleanup_scheduled_(false),
       registry_path_(registry_path),
-      cleanup_io_task_runner_(cleanup_io_task_runner) {
-  DCHECK(cleanup_io_task_runner_);
-}
+      user_data_dir_(user_data_dir),
+      crash_dir_(crash_dir),
+      exe_details_cb_(exe_details_cb),
+      task_runner_(CreateBackgroundTaskRunner()),
+      weak_ptr_factory_(this) {}
 
 WatcherMetricsProviderWin::~WatcherMetricsProviderWin() {
 }
@@ -211,9 +202,10 @@ void WatcherMetricsProviderWin::OnRecordingDisabled() {
   if (!recording_enabled_ && !cleanup_scheduled_) {
     // When metrics reporting is disabled, the providers get an
     // OnRecordingDisabled notification at startup. Use that first notification
-    // to issue the cleanup task.
-    cleanup_io_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&DeleteExitCodeRegistryKey, registry_path_));
+    // to issue the cleanup task. Runs in the background because interacting
+    // with the registry can block.
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&DeleteExitCodeRegistryKey, registry_path_));
 
     cleanup_scheduled_ = true;
   }
@@ -228,7 +220,84 @@ void WatcherMetricsProviderWin::ProvideStabilityMetrics(
   // necessary to implement some form of global locking, which is not worth it
   // here.
   RecordExitCodes(registry_path_);
-  DeleteExitFunnels(registry_path_);
+}
+
+void WatcherMetricsProviderWin::AsyncInit(const base::Closure& done_callback) {
+  task_runner_->PostTaskAndReply(
+      FROM_HERE,
+      base::BindOnce(&WatcherMetricsProviderWin::CollectPostmortemReportsImpl,
+                     weak_ptr_factory_.GetWeakPtr()),
+      done_callback);
+}
+
+// TODO(manzagop): consider mechanisms for partial collection if this is to be
+//     used on a critical path.
+void WatcherMetricsProviderWin::CollectPostmortemReportsImpl() {
+  SCOPED_UMA_HISTOGRAM_TIMER("ActivityTracker.Collect.TotalTime");
+
+  bool is_stability_debugging_on =
+      base::FeatureList::IsEnabled(browser_watcher::kStabilityDebuggingFeature);
+  if (!is_stability_debugging_on) {
+    return;  // TODO(manzagop): scan for possible data to delete?
+  }
+
+  if (user_data_dir_.empty() || crash_dir_.empty()) {
+    LogCollectionInitStatus(UNKNOWN_DIR);
+    return;
+  }
+
+  // Determine which files to harvest.
+  base::FilePath stability_dir = GetStabilityDir(user_data_dir_);
+
+  base::FilePath current_stability_file;
+  if (!GetStabilityFileForProcess(base::Process::Current(), user_data_dir_,
+                                  &current_stability_file)) {
+    LogCollectionInitStatus(GET_STABILITY_FILE_PATH_FAILED);
+    return;
+  }
+  const std::set<base::FilePath>& excluded_stability_files = {
+      current_stability_file};
+
+  std::vector<base::FilePath> stability_files = GetStabilityFiles(
+      stability_dir, GetStabilityFilePattern(), excluded_stability_files);
+  UMA_HISTOGRAM_COUNTS_100("ActivityTracker.Collect.StabilityFileCount",
+                           stability_files.size());
+
+  // If postmortem collection is disabled, delete the files.
+  const bool should_collect = base::GetFieldTrialParamByFeatureAsBool(
+      browser_watcher::kStabilityDebuggingFeature,
+      browser_watcher::kCollectPostmortemParam, false);
+
+  // Create a database. Note: Chrome already has a g_database in crashpad.cc but
+  // it has internal linkage. Create a new one.
+  std::unique_ptr<crashpad::CrashReportDatabase> crashpad_database;
+  if (should_collect) {
+    crashpad_database =
+        crashpad::CrashReportDatabase::InitializeWithoutCreating(crash_dir_);
+    if (!crashpad_database) {
+      LOG(ERROR) << "Failed to initialize a CrashPad database.";
+      LogCollectionInitStatus(CRASHPAD_DATABASE_INIT_FAILED);
+      // Note: continue to processing the files anyway.
+    }
+  }
+
+  // Note: this is logged even when Crashpad database initialization fails.
+  LogCollectionInitStatus(INIT_SUCCESS);
+
+  const size_t kSystemSessionsToInspect = 5U;
+  metrics::SystemSessionAnalyzer analyzer(kSystemSessionsToInspect);
+
+  if (should_collect) {
+    base::string16 product_name, version_number, channel_name;
+    exe_details_cb_.Run(&product_name, &version_number, &channel_name);
+    PostmortemReportCollector collector(
+        base::UTF16ToUTF8(product_name), base::UTF16ToUTF8(version_number),
+        base::UTF16ToUTF8(channel_name), crashpad_database.get(), &analyzer);
+    collector.Process(stability_files);
+  } else {
+    PostmortemReportCollector collector(&analyzer);
+    collector.Process(stability_files);
+  }
 }
 
 }  // namespace browser_watcher

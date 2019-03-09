@@ -9,12 +9,12 @@
 #include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/crypto_module_password_dialog.h"
+#include "chrome/test/views/chrome_views_test_base.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/test/views_test_base.h"
 
-namespace chrome {
-
-class CryptoModulePasswordDialogViewTest : public testing::Test {
+class CryptoModulePasswordDialogViewTest : public ChromeViewsTestBase {
  public:
   CryptoModulePasswordDialogViewTest() {}
   ~CryptoModulePasswordDialogViewTest() override {}
@@ -25,7 +25,7 @@ class CryptoModulePasswordDialogViewTest : public testing::Test {
 
   void CreateCryptoDialog(const CryptoModulePasswordCallback& callback) {
     dialog_.reset(new CryptoModulePasswordDialogView("slot",
-        kCryptoModulePasswordKeygen, "server", callback));
+        kCryptoModulePasswordCertEnrollment, "server", callback));
   }
 
   std::string text_;
@@ -46,5 +46,3 @@ TEST_F(CryptoModulePasswordDialogViewTest, TestAccept) {
   const base::string16 empty;
   EXPECT_EQ(empty, dialog_->password_entry_->text());
 }
-
-}  // namespace chrome

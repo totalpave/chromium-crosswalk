@@ -8,19 +8,16 @@
 #include <memory>
 #include <utility>
 
-#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/chrome_extension_web_contents_observer.h"
 #include "chrome/browser/favicon/favicon_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu.h"
-#include "chrome/browser/ui/ash/ash_util.h"
 #include "chrome/browser/ui/pdf/chrome_pdf_web_contents_helper_client.h"
-#include "chrome/common/url_constants.h"
-#include "components/browsing_data/storage_partition_http_cache_data_remover.h"
 #include "components/guest_view/browser/guest_view_event.h"
 #include "components/renderer_context_menu/context_menu_delegate.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "extensions/browser/api/web_request/web_request_api.h"
 #include "extensions/browser/guest_view/web_view/web_view_constants.h"
 
@@ -40,22 +37,25 @@ ChromeWebViewGuestDelegate::~ChromeWebViewGuestDelegate() {
 
 bool ChromeWebViewGuestDelegate::HandleContextMenu(
     const content::ContextMenuParams& params) {
+  if ((params.source_type == ui::MENU_SOURCE_LONG_PRESS ||
+       params.source_type == ui::MENU_SOURCE_LONG_TAP ||
+       params.source_type == ui::MENU_SOURCE_TOUCH) &&
+      !params.selection_text.empty() &&
+      (guest_web_contents()->GetRenderWidgetHostView() &&
+       guest_web_contents()
+           ->GetRenderWidgetHostView()
+           ->GetTouchSelectionControllerClientManager())) {
+    // This context menu request should be handled by the
+    // TouchSelectionController. If the user selects the full context menu from
+    // the QuickMenu, the request will come back here (with different source
+    // parameters) to complete.
+    return true;
+  }
+
   ContextMenuDelegate* menu_delegate =
       ContextMenuDelegate::FromWebContents(guest_web_contents());
   DCHECK(menu_delegate);
-
-  content::ContextMenuParams new_params = params;
-  // The only case where |context_menu_position_| is not initialized is the case
-  // where the input event is directly sent to the guest WebContents without
-  // ever going throught the embedder and BrowserPlugin's
-  // RenderWidgetHostViewGuest. This only happens in some tests, e.g.,
-  // WebViewInteractiveTest.ContextMenuParamCoordinates.
-  if (context_menu_position_) {
-    new_params.x = context_menu_position_->x();
-    new_params.y = context_menu_position_->y();
-  }
-
-  pending_menu_ = menu_delegate->BuildMenu(guest_web_contents(), new_params);
+  pending_menu_ = menu_delegate->BuildMenu(guest_web_contents(), params);
   // It's possible for the returned menu to be null, so early out to avoid
   // a crash. TODO(wjmaclean): find out why it's possible for this to happen
   // in the first place, and if it's an error.
@@ -67,26 +67,11 @@ bool ChromeWebViewGuestDelegate::HandleContextMenu(
   std::unique_ptr<base::DictionaryValue> args(new base::DictionaryValue());
   std::unique_ptr<base::ListValue> items =
       MenuModelToValue(pending_menu_->menu_model());
-  args->Set(webview::kContextMenuItems, items.release());
+  args->Set(webview::kContextMenuItems, std::move(items));
   args->SetInteger(webview::kRequestId, request_id);
-  web_view_guest()->DispatchEventToView(base::WrapUnique(
-      new GuestViewEvent(webview::kEventContextMenuShow, std::move(args))));
+  web_view_guest()->DispatchEventToView(std::make_unique<GuestViewEvent>(
+      webview::kEventContextMenuShow, std::move(args)));
   return true;
-}
-
-void ChromeWebViewGuestDelegate::OnDidInitialize() {
-#if defined(OS_CHROMEOS)
-  if (chrome::IsRunningInMash()) {
-    NOTIMPLEMENTED();
-    return;
-  }
-  chromeos::AccessibilityManager* accessibility_manager =
-      chromeos::AccessibilityManager::Get();
-  CHECK(accessibility_manager);
-  accessibility_subscription_ = accessibility_manager->RegisterCallback(
-      base::Bind(&ChromeWebViewGuestDelegate::OnAccessibilityStatusChanged,
-                 weak_ptr_factory_.GetWeakPtr()));
-#endif
 }
 
 // static
@@ -119,50 +104,6 @@ void ChromeWebViewGuestDelegate::OnShowContextMenu(int request_id) {
   ContextMenuDelegate* menu_delegate =
       ContextMenuDelegate::FromWebContents(guest_web_contents());
   menu_delegate->ShowMenu(std::move(pending_menu_));
-}
-
-bool ChromeWebViewGuestDelegate::ShouldHandleFindRequestsForEmbedder() const {
-  // Find requests will be handled by the guest for the Chrome signin page.
-  return web_view_guest_->owner_web_contents()->GetWebUI() != nullptr &&
-         web_view_guest_->GetOwnerSiteURL().GetOrigin().spec() ==
-             chrome::kChromeUIChromeSigninURL;
-}
-
-void ChromeWebViewGuestDelegate::InjectChromeVoxIfNeeded(
-    content::RenderViewHost* render_view_host) {
-#if defined(OS_CHROMEOS)
-  if (!chromevox_injected_) {
-    chromeos::AccessibilityManager* manager =
-        chromeos::AccessibilityManager::Get();
-    if (manager && manager->IsSpokenFeedbackEnabled()) {
-      manager->InjectChromeVox(render_view_host);
-      chromevox_injected_ = true;
-    }
-  }
-#endif
-}
-
-#if defined(OS_CHROMEOS)
-void ChromeWebViewGuestDelegate::OnAccessibilityStatusChanged(
-    const chromeos::AccessibilityStatusEventDetails& details) {
-  if (details.notification_type == chromeos::ACCESSIBILITY_MANAGER_SHUTDOWN) {
-    accessibility_subscription_.reset();
-  } else if (details.notification_type ==
-      chromeos::ACCESSIBILITY_TOGGLE_SPOKEN_FEEDBACK) {
-    if (details.enabled)
-      InjectChromeVoxIfNeeded(guest_web_contents()->GetRenderViewHost());
-    else
-      chromevox_injected_ = false;
-  }
-}
-#endif
-
-void ChromeWebViewGuestDelegate::SetContextMenuPosition(
-    const gfx::Point& position) {
-  if (context_menu_position_ == nullptr)
-    context_menu_position_.reset(new gfx::Point());
-
-  *context_menu_position_ = position;
 }
 
 }  // namespace extensions

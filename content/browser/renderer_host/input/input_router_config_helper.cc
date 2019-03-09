@@ -19,8 +19,8 @@ namespace {
 const int kDesktopTouchAckTimeoutDelayMs = 200;
 const int kMobileTouchAckTimeoutDelayMs = 1000;
 
-TouchEventQueue::Config GetTouchEventQueueConfig() {
-  TouchEventQueue::Config config;
+PassthroughTouchEventQueue::Config GetTouchEventQueueConfig() {
+  PassthroughTouchEventQueue::Config config;
 
   config.desktop_touch_ack_timeout_delay =
       base::TimeDelta::FromMilliseconds(kDesktopTouchAckTimeoutDelayMs);
@@ -44,31 +44,27 @@ GestureEventQueue::Config GetGestureEventQueueConfig() {
   config.debounce_interval = base::TimeDelta::FromMilliseconds(
       gesture_config->scroll_debounce_interval_in_ms());
 
-  config.touchscreen_tap_suppression_config.enabled =
+  config.fling_config.touchscreen_tap_suppression_config.enabled =
       gesture_config->fling_touchscreen_tap_suppression_enabled();
-  config.touchscreen_tap_suppression_config.max_cancel_to_down_time =
-      base::TimeDelta::FromMilliseconds(
-          gesture_config->fling_max_cancel_to_down_time_in_ms());
-  config.touchscreen_tap_suppression_config.max_tap_gap_time =
-      base::TimeDelta::FromMilliseconds(
-          gesture_config->long_press_time_in_ms());
+  config.fling_config.touchscreen_tap_suppression_config
+      .max_cancel_to_down_time = base::TimeDelta::FromMilliseconds(
+      gesture_config->fling_max_cancel_to_down_time_in_ms());
 
-  config.touchpad_tap_suppression_config.enabled =
+  config.fling_config.touchpad_tap_suppression_config.enabled =
       gesture_config->fling_touchpad_tap_suppression_enabled();
-  config.touchpad_tap_suppression_config.max_cancel_to_down_time =
+  config.fling_config.touchpad_tap_suppression_config.max_cancel_to_down_time =
       base::TimeDelta::FromMilliseconds(
           gesture_config->fling_max_cancel_to_down_time_in_ms());
-  config.touchpad_tap_suppression_config.max_tap_gap_time =
-      base::TimeDelta::FromMilliseconds(
-          gesture_config->fling_max_tap_gap_time_in_ms());
 
   return config;
 }
 
 }  // namespace
 
-InputRouterImpl::Config GetInputRouterConfigForPlatform() {
-  InputRouterImpl::Config config;
+InputRouter::Config::Config() {}
+
+InputRouter::Config GetInputRouterConfigForPlatform() {
+  InputRouter::Config config;
   config.gesture_config = GetGestureEventQueueConfig();
   config.touch_config = GetTouchEventQueueConfig();
   return config;

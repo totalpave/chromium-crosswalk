@@ -4,7 +4,9 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import android.content.ComponentName;
 import android.content.Intent;
+import android.support.annotation.Nullable;
 
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -17,17 +19,15 @@ public class TabReparentingParams implements AsyncTabParams {
     private final Tab mTabToReparent;
     private final Intent mOriginalIntent;
     private final Runnable mFinalizeCallback;
-    private final boolean mStayInChrome;
 
     /**
      * Basic constructor for {@link TabReparentingParams}.
      */
-    public TabReparentingParams(Tab tabToReparent, Intent originalIntent, Runnable finalizeCallback,
-            boolean stayInChrome) {
+    public TabReparentingParams(
+            Tab tabToReparent, Intent originalIntent, Runnable finalizeCallback) {
         mTabToReparent = tabToReparent;
         mOriginalIntent = originalIntent;
         mFinalizeCallback = finalizeCallback;
-        mStayInChrome = stayInChrome;
     }
 
     @Override
@@ -51,22 +51,20 @@ public class TabReparentingParams implements AsyncTabParams {
     }
 
     @Override
+    public ComponentName getComponentName() {
+        return null;
+    }
+
+    @Override
     public Tab getTabToReparent() {
         return mTabToReparent;
     }
 
     /**
-     * @return Whether the user should stay in Chrome after the tab is reparented.
+     * Returns the callback to be used once Tab reparenting has finished, if any.
      */
-    public boolean shouldStayInChrome() {
-        return mStayInChrome;
-    }
-
-    /**
-     * Carry out any remaining finalization to be done after the tab is reparented.
-     */
-    public void finalizeTabReparenting() {
-        if (mFinalizeCallback != null) mFinalizeCallback.run();
+    public @Nullable Runnable getFinalizeCallback() {
+        return mFinalizeCallback;
     }
 
     @Override

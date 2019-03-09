@@ -6,6 +6,7 @@
 
 #include <map>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/stl_util.h"
@@ -25,7 +26,7 @@ BluetoothInputClient::Properties::Properties(
   RegisterProperty(bluetooth_input::kReconnectModeProperty, &reconnect_mode);
 }
 
-BluetoothInputClient::Properties::~Properties() {}
+BluetoothInputClient::Properties::~Properties() = default;
 
 // The BluetoothInputClient implementation used in production.
 class BluetoothInputClientImpl : public BluetoothInputClient,
@@ -69,9 +70,10 @@ class BluetoothInputClientImpl : public BluetoothInputClient,
   }
 
  protected:
-  void Init(dbus::Bus* bus) override {
+  void Init(dbus::Bus* bus,
+            const std::string& bluetooth_service_name) override {
     object_manager_ = bus->GetObjectManager(
-        bluetooth_object_manager::kBluetoothObjectManagerServiceName,
+        bluetooth_service_name,
         dbus::ObjectPath(
             bluetooth_object_manager::kBluetoothObjectManagerServicePath));
     object_manager_->RegisterInterface(
@@ -83,16 +85,16 @@ class BluetoothInputClientImpl : public BluetoothInputClient,
   // is created. Informs observers.
   void ObjectAdded(const dbus::ObjectPath& object_path,
                    const std::string& interface_name) override {
-    FOR_EACH_OBSERVER(BluetoothInputClient::Observer, observers_,
-                      InputAdded(object_path));
+    for (auto& observer : observers_)
+      observer.InputAdded(object_path);
   }
 
   // Called by dbus::ObjectManager when an object with the input interface
   // is removed. Informs observers.
   void ObjectRemoved(const dbus::ObjectPath& object_path,
                      const std::string& interface_name) override {
-    FOR_EACH_OBSERVER(BluetoothInputClient::Observer, observers_,
-                      InputRemoved(object_path));
+    for (auto& observer : observers_)
+      observer.InputRemoved(object_path);
   }
 
   // Called by BluetoothPropertySet when a property value is changed,
@@ -100,14 +102,14 @@ class BluetoothInputClientImpl : public BluetoothInputClient,
   // call. Informs observers.
   void OnPropertyChanged(const dbus::ObjectPath& object_path,
                          const std::string& property_name) {
-    FOR_EACH_OBSERVER(BluetoothInputClient::Observer, observers_,
-                      InputPropertyChanged(object_path, property_name));
+    for (auto& observer : observers_)
+      observer.InputPropertyChanged(object_path, property_name);
   }
 
   dbus::ObjectManager* object_manager_;
 
   // List of observers interested in event notifications from us.
-  base::ObserverList<BluetoothInputClient::Observer> observers_;
+  base::ObserverList<BluetoothInputClient::Observer>::Unchecked observers_;
 
   // Weak pointer factory for generating 'this' pointers that might live longer
   // than we do.
@@ -118,9 +120,9 @@ class BluetoothInputClientImpl : public BluetoothInputClient,
   DISALLOW_COPY_AND_ASSIGN(BluetoothInputClientImpl);
 };
 
-BluetoothInputClient::BluetoothInputClient() {}
+BluetoothInputClient::BluetoothInputClient() = default;
 
-BluetoothInputClient::~BluetoothInputClient() {}
+BluetoothInputClient::~BluetoothInputClient() = default;
 
 BluetoothInputClient* BluetoothInputClient::Create() {
   return new BluetoothInputClientImpl();

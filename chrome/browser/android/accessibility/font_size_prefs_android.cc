@@ -4,6 +4,7 @@
 
 #include "chrome/browser/android/accessibility/font_size_prefs_android.h"
 
+#include "base/bind.h"
 #include "base/observer_list.h"
 #include "chrome/browser/profiles/profile_android.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -12,6 +13,7 @@
 #include "components/prefs/pref_service.h"
 #include "jni/FontSizePrefs_jni.h"
 
+using base::android::JavaParamRef;
 using base::android::JavaRef;
 
 FontSizePrefsAndroid::FontSizePrefsAndroid(JNIEnv* env, jobject obj)
@@ -57,12 +59,7 @@ bool FontSizePrefsAndroid::GetForceEnableZoom(
   return pref_service_->GetBoolean(prefs::kWebKitForceEnableZoom);
 }
 
-// static
-bool FontSizePrefsAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
-jlong Init(JNIEnv* env, const JavaParamRef<jobject>& obj) {
+jlong JNI_FontSizePrefs_Init(JNIEnv* env, const JavaParamRef<jobject>& obj) {
   FontSizePrefsAndroid* font_size_prefs_android =
       new FontSizePrefsAndroid(env, obj);
   return reinterpret_cast<intptr_t>(font_size_prefs_android);
@@ -71,11 +68,11 @@ jlong Init(JNIEnv* env, const JavaParamRef<jobject>& obj) {
 void FontSizePrefsAndroid::OnFontScaleFactorChanged() {
   JNIEnv* env = base::android::AttachCurrentThread();
   float factor = GetFontScaleFactor(env, java_ref_);
-  Java_FontSizePrefs_onFontScaleFactorChanged(env, java_ref_.obj(), factor);
+  Java_FontSizePrefs_onFontScaleFactorChanged(env, java_ref_, factor);
 }
 
 void FontSizePrefsAndroid::OnForceEnableZoomChanged() {
   JNIEnv* env = base::android::AttachCurrentThread();
   bool enabled = GetForceEnableZoom(env, java_ref_);
-  Java_FontSizePrefs_onForceEnableZoomChanged(env, java_ref_.obj(), enabled);
+  Java_FontSizePrefs_onForceEnableZoomChanged(env, java_ref_, enabled);
 }

@@ -12,10 +12,11 @@
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/process/kill.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/api/messaging/native_messaging_host_manifest.h"
 #include "chrome/browser/extensions/api/messaging/native_process_launcher.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/features/feature.h"
@@ -29,7 +30,7 @@ namespace {
 // Maximum message size in bytes for messages received from Native Messaging
 // hosts. Message size is limited mainly to prevent Chrome from crashing when
 // native application misbehaves (e.g. starts writing garbage to the pipe).
-const size_t kMaximumMessageSize = 1024 * 1024;
+const size_t kMaximumNativeMessageSize = 1024 * 1024;
 
 // Message header contains 4-byte integer size of the message.
 const size_t kMessageHeaderSize = 4;
@@ -58,21 +59,21 @@ NativeMessageProcessHost::NativeMessageProcessHost(
       weak_factory_(this) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  task_runner_ = content::BrowserThread::GetMessageLoopProxyForThread(
-      content::BrowserThread::IO);
+  task_runner_ = base::CreateSingleThreadTaskRunnerWithTraits(
+      {content::BrowserThread::IO});
 }
 
 NativeMessageProcessHost::~NativeMessageProcessHost() {
   DCHECK(task_runner_->BelongsToCurrentThread());
 
   if (process_.IsValid()) {
-    // Kill the host process if necessary to make sure we don't leave zombies.
-    // On OSX base::EnsureProcessTerminated() may block, so we have to post a
-    // task on the blocking pool.
+// Kill the host process if necessary to make sure we don't leave zombies.
+// TODO(https://crbug.com/806451): On OSX EnsureProcessTerminated() may
+// block, so we have to post a task on the blocking pool.
 #if defined(OS_MACOSX)
-    content::BrowserThread::PostBlockingPoolTask(
-        FROM_HERE,
-        base::Bind(&base::EnsureProcessTerminated, Passed(&process_)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+        base::BindOnce(&base::EnsureProcessTerminated, Passed(&process_)));
 #else
     base::EnsureProcessTerminated(std::move(process_));
 #endif
@@ -140,14 +141,14 @@ void NativeMessageProcessHost::OnHostProcessLaunched(
 
   process_ = std::move(process);
 #if defined(OS_POSIX)
-  // This object is not the owner of the file so it should not keep an fd.
+  // |read_stream_| will take ownership of |read_file|, so note the underlying
+  // file descript for use with FileDescriptorWatcher.
   read_file_ = read_file.GetPlatformFile();
 #endif
 
-  scoped_refptr<base::TaskRunner> task_runner(
-      content::BrowserThread::GetBlockingPool()->
-          GetTaskRunnerWithShutdownBehavior(
-              base::SequencedWorkerPool::SKIP_ON_SHUTDOWN));
+  scoped_refptr<base::TaskRunner> task_runner(base::CreateTaskRunnerWithTraits(
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
 
   read_stream_.reset(new net::FileStream(std::move(read_file), task_runner));
   write_stream_.reset(new net::FileStream(std::move(write_file), task_runner));
@@ -164,7 +165,8 @@ void NativeMessageProcessHost::OnMessage(const std::string& json) {
 
   // Allocate new buffer for the message.
   scoped_refptr<net::IOBufferWithSize> buffer =
-      new net::IOBufferWithSize(json.size() + kMessageHeaderSize);
+      base::MakeRefCounted<net::IOBufferWithSize>(json.size() +
+                                                  kMessageHeaderSize);
 
   // Copy size and content of the message to the buffer.
   static_assert(sizeof(uint32_t) == kMessageHeaderSize,
@@ -189,29 +191,13 @@ void NativeMessageProcessHost::Start(Client* client) {
   // It's safe to use base::Unretained() here because NativeMessagePort always
   // deletes us on the IO thread.
   task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&NativeMessageProcessHost::LaunchHostProcess,
-                 weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&NativeMessageProcessHost::LaunchHostProcess,
+                                weak_factory_.GetWeakPtr()));
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
 NativeMessageProcessHost::task_runner() const {
   return task_runner_;
-}
-
-#if defined(OS_POSIX)
-void NativeMessageProcessHost::OnFileCanReadWithoutBlocking(int fd) {
-  DCHECK_EQ(fd, read_file_);
-  DoRead();
-}
-
-void NativeMessageProcessHost::OnFileCanWriteWithoutBlocking(int fd) {
-  NOTREACHED();
-}
-#endif  // !defined(OS_POSIX)
-
-void NativeMessageProcessHost::ReadNowForTesting() {
-  DoRead();
 }
 
 void NativeMessageProcessHost::WaitRead() {
@@ -225,9 +211,11 @@ void NativeMessageProcessHost::WaitRead() {
   // would always be consuming one thread in the thread pool. On Windows
   // FileStream uses overlapped IO, so that optimization isn't necessary there.
 #if defined(OS_POSIX)
-  base::MessageLoopForIO::current()->WatchFileDescriptor(
-    read_file_, false /* persistent */,
-    base::MessageLoopForIO::WATCH_READ, &read_watcher_, this);
+  if (!read_controller_) {
+    read_controller_ = base::FileDescriptorWatcher::WatchReadable(
+        read_file_,
+        base::Bind(&NativeMessageProcessHost::DoRead, base::Unretained(this)));
+  }
 #else  // defined(OS_POSIX)
   DoRead();
 #endif  // defined(!OS_POSIX)
@@ -237,11 +225,11 @@ void NativeMessageProcessHost::DoRead() {
   DCHECK(task_runner_->BelongsToCurrentThread());
 
   while (!closed_ && !read_pending_) {
-    read_buffer_ = new net::IOBuffer(kReadBufferSize);
+    read_buffer_ = base::MakeRefCounted<net::IOBuffer>(kReadBufferSize);
     int result =
         read_stream_->Read(read_buffer_.get(), kReadBufferSize,
-                           base::Bind(&NativeMessageProcessHost::OnRead,
-                                      weak_factory_.GetWeakPtr()));
+                           base::BindOnce(&NativeMessageProcessHost::OnRead,
+                                          weak_factory_.GetWeakPtr()));
     HandleReadResult(result);
   }
 }
@@ -270,8 +258,7 @@ void NativeMessageProcessHost::HandleReadResult(int result) {
     // Posix read() returns 0 in that case.
     Close(kNativeHostExited);
   } else {
-    LOG(ERROR) << "Error when reading from Native Messaging host: " << result;
-    Close(kHostInputOuputError);
+    Close(kHostInputOutputError);
   }
 }
 
@@ -288,10 +275,10 @@ void NativeMessageProcessHost::ProcessIncomingData(
     size_t message_size =
         *reinterpret_cast<const uint32_t*>(incoming_data_.data());
 
-    if (message_size > kMaximumMessageSize) {
+    if (message_size > kMaximumNativeMessageSize) {
       LOG(ERROR) << "Native Messaging host tried sending a message that is "
                  << message_size << " bytes long.";
-      Close(kHostInputOuputError);
+      Close(kHostInputOutputError);
       return;
     }
 
@@ -313,16 +300,18 @@ void NativeMessageProcessHost::DoWrite() {
         !current_write_buffer_->BytesRemaining()) {
       if (write_queue_.empty())
         return;
-      current_write_buffer_ = new net::DrainableIOBuffer(
-          write_queue_.front().get(), write_queue_.front()->size());
+      scoped_refptr<net::IOBufferWithSize> buffer =
+          std::move(write_queue_.front());
+      int buffer_size = buffer->size();
+      current_write_buffer_ = base::MakeRefCounted<net::DrainableIOBuffer>(
+          std::move(buffer), buffer_size);
       write_queue_.pop();
     }
 
-    int result =
-        write_stream_->Write(current_write_buffer_.get(),
-                             current_write_buffer_->BytesRemaining(),
-                             base::Bind(&NativeMessageProcessHost::OnWritten,
-                                        weak_factory_.GetWeakPtr()));
+    int result = write_stream_->Write(
+        current_write_buffer_.get(), current_write_buffer_->BytesRemaining(),
+        base::BindOnce(&NativeMessageProcessHost::OnWritten,
+                       weak_factory_.GetWeakPtr()));
     HandleWriteResult(result);
   }
 }
@@ -335,7 +324,7 @@ void NativeMessageProcessHost::HandleWriteResult(int result) {
       write_pending_ = true;
     } else {
       LOG(ERROR) << "Error when writing to Native Messaging host: " << result;
-      Close(kHostInputOuputError);
+      Close(kHostInputOutputError);
     }
     return;
   }
@@ -358,6 +347,9 @@ void NativeMessageProcessHost::Close(const std::string& error_message) {
 
   if (!closed_) {
     closed_ = true;
+#if defined(OS_POSIX)
+    read_controller_.reset();
+#endif
     read_stream_.reset();
     write_stream_.reset();
     client_->CloseChannel(error_message);

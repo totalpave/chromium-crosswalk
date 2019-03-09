@@ -4,22 +4,35 @@
 
 package org.chromium.chrome.browser.util;
 
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
+import android.os.BadParcelableException;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.TransactionTooLargeException;
+import android.provider.Browser;
+import android.support.annotation.Nullable;
 import android.support.v4.app.BundleCompat;
 
+import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.VisibleForTesting;
+import org.chromium.chrome.browser.IntentHandler.TabOpenType;
+import org.chromium.chrome.browser.customtabs.CustomTabActivity;
+import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 
 /**
- * Utilities dealing with extracting information from intents.
+ * Utilities dealing with extracting information from intents and creating common intents.
  */
 public class IntentUtils {
     private static final String TAG = "IntentUtils";
@@ -41,6 +54,18 @@ public class IntentUtils {
     }
 
     /**
+     * Just like {@link Intent#removeExtra(String)} but doesn't throw exceptions.
+     */
+    public static void safeRemoveExtra(Intent intent, String name) {
+        try {
+            intent.removeExtra(name);
+        } catch (Throwable t) {
+            // Catches un-parceling exceptions.
+            Log.e(TAG, "removeExtra failed on intent " + intent);
+        }
+    }
+
+    /**
      * Just like {@link Intent#getBooleanExtra(String, boolean)} but doesn't throw exceptions.
      */
     public static boolean safeGetBooleanExtra(Intent intent, String name, boolean defaultValue) {
@@ -49,6 +74,19 @@ public class IntentUtils {
         } catch (Throwable t) {
             // Catches un-parceling exceptions.
             Log.e(TAG, "getBooleanExtra failed on intent " + intent);
+            return defaultValue;
+        }
+    }
+
+    /**
+     * Just like {@link Bundle#getBoolean(String, boolean)} but doesn't throw exceptions.
+     */
+    public static boolean safeGetBoolean(Bundle bundle, String name, boolean defaultValue) {
+        try {
+            return bundle.getBoolean(name, defaultValue);
+        } catch (Throwable t) {
+            // Catches un-parceling exceptions.
+            Log.e(TAG, "getBoolean failed on bundle " + bundle);
             return defaultValue;
         }
     }
@@ -211,6 +249,32 @@ public class IntentUtils {
     }
 
     /**
+     * Just link {@link Bundle#getParcelableArrayList(String)} but doesn't throw exceptions.
+     */
+    public static <T extends Parcelable> ArrayList<T> safeGetParcelableArrayList(
+            Bundle bundle, String name) {
+        try {
+            return bundle.getParcelableArrayList(name);
+        } catch (Throwable t) {
+            // Catches un-parceling exceptions.
+            Log.e(TAG, "getParcelableArrayList failed on bundle " + bundle);
+            return null;
+        }
+    }
+
+    /**
+     * Just like {@link Intent#getParcelableArrayExtra(String)} but doesn't throw exceptions.
+     */
+    public static Parcelable[] safeGetParcelableArrayExtra(Intent intent, String name) {
+        try {
+            return intent.getParcelableArrayExtra(name);
+        } catch (Throwable t) {
+            Log.e(TAG, "getParcelableArrayExtra failed on intent " + intent);
+            return null;
+        }
+    }
+
+    /**
      * Just like {@link Intent#getStringArrayListExtra(String)} but doesn't throw exceptions.
      */
     public static ArrayList<String> safeGetStringArrayListExtra(Intent intent, String name) {
@@ -232,6 +296,23 @@ public class IntentUtils {
         } catch (Throwable t) {
             // Catches un-parceling exceptions.
             Log.e(TAG, "getByteArrayExtra failed on intent " + intent);
+            return null;
+        }
+    }
+
+    /**
+     * Just like {@link Intent#getSerializableExtra(String)} but doesn't throw exceptions.
+     */
+    @SuppressWarnings("unchecked")
+    public static <T extends Serializable> T safeGetSerializableExtra(Intent intent, String name) {
+        try {
+            return (T) intent.getSerializableExtra(name);
+        } catch (ClassCastException ex) {
+            Log.e(TAG, "Invalide class for Serializable: " + name, ex);
+            return null;
+        } catch (Throwable t) {
+            // Catches un-serializable exceptions.
+            Log.e(TAG, "getSerializableExtra failed on intent " + intent);
             return null;
         }
     }
@@ -285,6 +366,35 @@ public class IntentUtils {
         intent.putExtras(bundle);
     }
 
+    /** See {@link #safeStartActivity(Context, Intent, Bundle)}. */
+    public static boolean safeStartActivity(Context context, Intent intent) {
+        return safeStartActivity(context, intent, null);
+    }
+
+    /**
+     * Catches any failures to start an Activity.
+     * @param context Context to use when starting the Activity.
+     * @param intent  Intent to fire.
+     * @param bundle  Bundle of launch options.
+     * @return Whether or not Android accepted the Intent.
+     */
+    public static boolean safeStartActivity(
+            Context context, Intent intent, @Nullable Bundle bundle) {
+        try {
+            context.startActivity(intent, bundle);
+            return true;
+        } catch (ActivityNotFoundException e) {
+            return false;
+        }
+    }
+
+    /** Returns whether the intent starts an activity in a new task or a new document. */
+    public static boolean isIntentForNewTaskOrNewDocument(Intent intent) {
+        int testFlags =
+                Intent.FLAG_ACTIVITY_NEW_TASK | ApiCompatibilityUtils.getActivityNewDocumentFlag();
+        return (intent.getFlags() & testFlags) != 0;
+    }
+
     /**
      * Returns how large the Intent will be in Parcel form, which is helpful for gauging whether
      * Android will deliver the Intent instead of throwing a TransactionTooLargeException.
@@ -307,5 +417,71 @@ public class IntentUtils {
      */
     public static boolean isIntentTooLarge(Intent intent) {
         return getParceledIntentSize(intent) > MAX_INTENT_SIZE_THRESHOLD;
+    }
+
+    /**
+     * Given an exception, check whether it wrapped a {@link TransactionTooLargeException}.  If it
+     * does, then log the underlying error.  If not, throw the original exception again.
+     *
+     * @param e      The caught RuntimeException.
+     * @param intent The intent that triggered the RuntimeException to be thrown.
+     */
+    public static void logTransactionTooLargeOrRethrow(RuntimeException e, Intent intent) {
+        // See http://crbug.com/369574.
+        if (e.getCause() instanceof TransactionTooLargeException) {
+            Log.e(TAG, "Could not resolve Activity for intent " + intent.toString(), e);
+        } else {
+            throw e;
+        }
+    }
+
+    /**
+     * Creates an Intent that tells Chrome to bring an Activity for a particular Tab back to the
+     * foreground.
+     * @param tabId The id of the Tab to bring to the foreground.
+     * @return Created Intent or null if this operation isn't possible.
+     */
+    @Nullable
+    public static Intent createBringTabToFrontIntent(int tabId) {
+        // Iterate through all {@link CustomTab}s and check whether the given tabId belongs to a
+        // {@link CustomTab}. If so, return null as the client app's task cannot be foregrounded.
+        for (Activity activity : ApplicationStatus.getRunningActivities()) {
+            if (activity instanceof CustomTabActivity
+                    && ((CustomTabActivity) activity).getActivityTab() != null
+                    && tabId == ((CustomTabActivity) activity).getActivityTab().getId()) {
+                return null;
+            }
+        }
+
+        Context context = ContextUtils.getApplicationContext();
+        Intent intent = new Intent(context, ChromeLauncherActivity.class);
+        intent.putExtra(Browser.EXTRA_APPLICATION_ID, context.getPackageName());
+        intent.putExtra(TabOpenType.BRING_TAB_TO_FRONT_STRING, tabId);
+        return intent;
+    }
+
+    private static Intent logInvalidIntent(Intent intent, Exception e) {
+        Log.e(TAG, "Invalid incoming intent.", e);
+        return intent.replaceExtras((Bundle) null);
+    }
+
+    /**
+     * Sanitizes an intent. In case the intent cannot be unparcelled, all extras will be removed to
+     * make it safe to use.
+     * @return A safe to use version of this intent.
+     */
+    public static Intent sanitizeIntent(final Intent incomingIntent) {
+        if (incomingIntent == null) return null;
+        try {
+            incomingIntent.getBooleanExtra("TriggerUnparcel", false);
+            return incomingIntent;
+        } catch (BadParcelableException e) {
+            return logInvalidIntent(incomingIntent, e);
+        } catch (RuntimeException e) {
+            if (e.getCause() instanceof ClassNotFoundException) {
+                return logInvalidIntent(incomingIntent, e);
+            }
+            throw e;
+        }
     }
 }

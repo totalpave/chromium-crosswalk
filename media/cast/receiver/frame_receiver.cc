@@ -10,7 +10,6 @@
 #include "base/big_endian.h"
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/cast/cast_config.h"
 #include "media/cast/cast_environment.h"
@@ -40,21 +39,24 @@ FrameReceiver::FrameReceiver(
     CastTransport* const transport)
     : cast_environment_(cast_environment),
       transport_(transport),
-      packet_parser_(config.sender_ssrc, config.rtp_payload_type),
+      packet_parser_(
+          config.sender_ssrc,
+          config.rtp_payload_type <= RtpPayloadType::AUDIO_LAST ? 127 : 96),
       stats_(cast_environment->Clock()),
       event_media_type_(event_media_type),
       event_subscriber_(kReceiverRtcpEventHistorySize, event_media_type),
       rtp_timebase_(config.rtp_timebase),
       target_playout_delay_(
           base::TimeDelta::FromMilliseconds(config.rtp_max_delay_ms)),
-      expected_frame_duration_(base::TimeDelta::FromSeconds(1) /
-                               config.target_frame_rate),
+      expected_frame_duration_(
+          base::TimeDelta::FromSecondsD(1.0 / config.target_frame_rate)),
       reports_are_scheduled_(false),
       framer_(cast_environment->Clock(),
               this,
               config.sender_ssrc,
               true,
-              config.rtp_max_delay_ms * config.target_frame_rate / 1000),
+              static_cast<int>(
+                  config.rtp_max_delay_ms * config.target_frame_rate / 1000)),
       rtcp_(cast_environment_->Clock(),
             config.receiver_ssrc,
             config.sender_ssrc),
@@ -108,6 +110,10 @@ bool FrameReceiver::ProcessPacket(std::unique_ptr<Packet> packet) {
   }
 
   return true;
+}
+
+base::WeakPtr<FrameReceiver> FrameReceiver::AsWeakPtr() {
+  return weak_factory_.GetWeakPtr();
 }
 
 void FrameReceiver::ProcessParsedPacket(const RtpCastHeader& rtp_header,
@@ -239,10 +245,9 @@ void FrameReceiver::EmitAvailableEncodedFrames() {
         if (!is_waiting_for_consecutive_frame_) {
           is_waiting_for_consecutive_frame_ = true;
           cast_environment_->PostDelayedTask(
-              CastEnvironment::MAIN,
-              FROM_HERE,
+              CastEnvironment::MAIN, FROM_HERE,
               base::Bind(&FrameReceiver::EmitAvailableEncodedFramesAfterWaiting,
-                         weak_factory_.GetWeakPtr()),
+                         AsWeakPtr()),
               playout_time - now);
         }
         return;
@@ -274,12 +279,10 @@ void FrameReceiver::EmitAvailableEncodedFrames() {
       target_playout_delay_ = base::TimeDelta::FromMilliseconds(
           encoded_frame->new_playout_delay_ms);
     }
-    cast_environment_->PostTask(CastEnvironment::MAIN,
-                                FROM_HERE,
-                                base::Bind(&FrameReceiver::EmitOneFrame,
-                                           weak_factory_.GetWeakPtr(),
-                                           frame_request_queue_.front(),
-                                           base::Passed(&encoded_frame)));
+    cast_environment_->PostTask(
+        CastEnvironment::MAIN, FROM_HERE,
+        base::Bind(&FrameReceiver::EmitOneFrame, AsWeakPtr(),
+                   frame_request_queue_.front(), base::Passed(&encoded_frame)));
     frame_request_queue_.pop_front();
   }
 }
@@ -320,10 +323,8 @@ void FrameReceiver::ScheduleNextCastMessage() {
   time_to_send = std::max(
       time_to_send, base::TimeDelta::FromMilliseconds(kMinSchedulingDelayMs));
   cast_environment_->PostDelayedTask(
-      CastEnvironment::MAIN,
-      FROM_HERE,
-      base::Bind(&FrameReceiver::SendNextCastMessage,
-                 weak_factory_.GetWeakPtr()),
+      CastEnvironment::MAIN, FROM_HERE,
+      base::Bind(&FrameReceiver::SendNextCastMessage, AsWeakPtr()),
       time_to_send);
 }
 
@@ -338,8 +339,7 @@ void FrameReceiver::ScheduleNextRtcpReport() {
 
   cast_environment_->PostDelayedTask(
       CastEnvironment::MAIN, FROM_HERE,
-      base::Bind(&FrameReceiver::SendNextRtcpReport,
-                 weak_factory_.GetWeakPtr()),
+      base::Bind(&FrameReceiver::SendNextRtcpReport, AsWeakPtr()),
       base::TimeDelta::FromMilliseconds(kRtcpReportIntervalMs));
 }
 

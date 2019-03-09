@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "ui/views/controls/label.h"
 
+class LocationBarView;
 class Profile;
 namespace gfx {
 class FontList;
@@ -21,9 +22,8 @@ class Size;
 // SelectedKeywordView displays the tab-to-search UI in the location bar view.
 class SelectedKeywordView : public IconLabelBubbleView {
  public:
-  SelectedKeywordView(const gfx::FontList& font_list,
-                      SkColor text_color,
-                      SkColor parent_background_color,
+  SelectedKeywordView(LocationBarView* location_bar,
+                      const gfx::FontList& font_list,
                       Profile* profile);
   ~SelectedKeywordView() override;
 
@@ -33,10 +33,10 @@ class SelectedKeywordView : public IconLabelBubbleView {
 
   // IconLabelBubbleView:
   SkColor GetTextColor() const override;
-  SkColor GetBorderColor() const override;
+  SkColor GetInkDropBaseColor() const override;
 
   // views::View:
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   gfx::Size GetMinimumSize() const override;
   void Layout() override;
 
@@ -44,11 +44,14 @@ class SelectedKeywordView : public IconLabelBubbleView {
   void SetKeyword(const base::string16& keyword);
   const base::string16& keyword() const { return keyword_; }
 
+  using IconLabelBubbleView::label;
+
  private:
   // IconLabelBubbleView:
+  int GetExtraInternalSpacing() const override;
   const char* GetClassName() const override;
 
-  SkColor text_color_;
+  LocationBarView* location_bar_;
 
   // The keyword we're showing. If empty, no keyword is selected.
   // NOTE: we don't cache the TemplateURL as it is possible for it to get

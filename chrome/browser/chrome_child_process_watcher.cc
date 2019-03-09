@@ -5,11 +5,12 @@
 #include "chrome/browser/chrome_child_process_watcher.h"
 
 #include "base/command_line.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "chrome/common/chrome_switches.h"
 #include "content/public/browser/browser_child_process_observer.h"
 #include "content/public/browser/child_process_data.h"
+#include "content/public/browser/child_process_termination_info.h"
 
 namespace {
 
@@ -36,6 +37,6 @@ ChromeChildProcessWatcher::~ChromeChildProcessWatcher() {
 
 void ChromeChildProcessWatcher::BrowserChildProcessCrashed(
     const content::ChildProcessData& data,
-    int exit_code) {
-  AnalyzeCrash(exit_code);
+    const content::ChildProcessTerminationInfo& info) {
+  AnalyzeCrash(info.exit_code);
 }

@@ -4,128 +4,137 @@
 
 #include "components/navigation_interception/intercept_navigation_throttle.h"
 
-#include "components/navigation_interception/navigation_params.h"
+#include "base/bind.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
+#include "build/build_config.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
-
-using content::BrowserThread;
+#include "url/gurl.h"
 
 namespace navigation_interception {
 
-namespace {
-
-using ChecksPerformedCallback = base::Callback<void(bool, bool)>;
-
-// This is used to run |should_ignore_callback| if it can destroy the
-// WebContents (and the InterceptNavigationThrottle along). In that case,
-// |on_checks_performed_callback| will be a no-op.
-void RunCallback(
-    content::WebContents* web_contents,
-    const NavigationParams& navigation_params,
-    InterceptNavigationThrottle::CheckCallback should_ignore_callback,
-    ChecksPerformedCallback on_checks_performed_callback,
-    base::WeakPtr<InterceptNavigationThrottle> throttle) {
-  bool should_ignore_navigation =
-      should_ignore_callback.Run(web_contents, navigation_params);
-
-  // If the InterceptNavigationThrottle that called RunCallback is still alive
-  // after |should_ignore_callback| has run, this will run
-  // InterceptNavigationThrottle::OnAsynchronousChecksPerformed.
-  // TODO(clamy): remove this boolean after crbug.com/570200 is fixed.
-  bool throttle_was_destroyed = !throttle.get();
-  on_checks_performed_callback.Run(should_ignore_navigation,
-                                   throttle_was_destroyed);
-}
-
-}  // namespace
+// Note: this feature is a no-op on non-Android platforms.
+const base::Feature InterceptNavigationThrottle::kAsyncCheck{
+    "AsyncNavigationIntercept", base::FEATURE_ENABLED_BY_DEFAULT};
 
 InterceptNavigationThrottle::InterceptNavigationThrottle(
     content::NavigationHandle* navigation_handle,
     CheckCallback should_ignore_callback,
-    bool run_callback_synchronously)
+    SynchronyMode async_mode)
     : content::NavigationThrottle(navigation_handle),
       should_ignore_callback_(should_ignore_callback),
-      run_callback_synchronously_(run_callback_synchronously),
+      ui_task_runner_(base::ThreadTaskRunnerHandle::Get()),
+      mode_(async_mode),
       weak_factory_(this) {}
 
-InterceptNavigationThrottle::~InterceptNavigationThrottle() {}
+InterceptNavigationThrottle::~InterceptNavigationThrottle() {
+  UMA_HISTOGRAM_BOOLEAN("Navigation.Intercept.Ignored", should_ignore_);
+}
 
 content::NavigationThrottle::ThrottleCheckResult
 InterceptNavigationThrottle::WillStartRequest() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  return CheckIfShouldIgnoreNavigation(false);
+  DCHECK(!should_ignore_);
+  base::ElapsedTimer timer;
+
+  auto result = CheckIfShouldIgnoreNavigation(false /* is_redirect */);
+  UMA_HISTOGRAM_COUNTS_10M("Navigation.Intercept.WillStart",
+                           timer.Elapsed().InMicroseconds());
+  return result;
 }
 
 content::NavigationThrottle::ThrottleCheckResult
 InterceptNavigationThrottle::WillRedirectRequest() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  return CheckIfShouldIgnoreNavigation(true);
+  if (should_ignore_)
+    return content::NavigationThrottle::CANCEL_AND_IGNORE;
+  return CheckIfShouldIgnoreNavigation(true /* is_redirect */);
+}
+
+content::NavigationThrottle::ThrottleCheckResult
+InterceptNavigationThrottle::WillProcessResponse() {
+  DCHECK(!deferring_);
+  if (should_ignore_)
+    return content::NavigationThrottle::CANCEL_AND_IGNORE;
+
+  if (pending_checks_ > 0) {
+    deferring_ = true;
+    return content::NavigationThrottle::DEFER;
+  }
+
+  return content::NavigationThrottle::PROCEED;
+}
+
+const char* InterceptNavigationThrottle::GetNameForLogging() {
+  return "InterceptNavigationThrottle";
 }
 
 content::NavigationThrottle::ThrottleCheckResult
 InterceptNavigationThrottle::CheckIfShouldIgnoreNavigation(bool is_redirect) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  NavigationParams navigation_params(
+  if (ShouldCheckAsynchronously()) {
+    pending_checks_++;
+    ui_task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&InterceptNavigationThrottle::RunCheckAsync,
+                                  weak_factory_.GetWeakPtr(),
+                                  GetNavigationParams(is_redirect)));
+    return content::NavigationThrottle::PROCEED;
+  }
+  // No need to set |should_ignore_| since if it is true, we'll cancel the
+  // navigation immediately.
+  return should_ignore_callback_.Run(navigation_handle()->GetWebContents(),
+                                     GetNavigationParams(is_redirect))
+             ? content::NavigationThrottle::CANCEL_AND_IGNORE
+             : content::NavigationThrottle::PROCEED;
+  // Careful, |this| can be deleted at this point.
+}
+
+void InterceptNavigationThrottle::RunCheckAsync(
+    const NavigationParams& params) {
+  DCHECK(base::FeatureList::IsEnabled(kAsyncCheck));
+  DCHECK_GT(pending_checks_, 0);
+  pending_checks_--;
+  bool final_deferred_check = deferring_ && pending_checks_ == 0;
+  auto weak_this = weak_factory_.GetWeakPtr();
+  bool should_ignore = should_ignore_callback_.Run(
+      navigation_handle()->GetWebContents(), params);
+  if (!weak_this)
+    return;
+
+  should_ignore_ |= should_ignore;
+  if (!final_deferred_check)
+    return;
+
+  if (should_ignore) {
+    CancelDeferredNavigation(content::NavigationThrottle::CANCEL_AND_IGNORE);
+  } else {
+    Resume();
+  }
+}
+
+bool InterceptNavigationThrottle::ShouldCheckAsynchronously() const {
+  // Do not apply the async optimization for:
+  // - Throttles in non-async mode.
+  // - POST navigations, to ensure we aren't violating idempotency.
+  // - Subframe navigations, which aren't observed on Android, and should be
+  //   fast on other platforms.
+  // - non-http/s URLs, which are more likely to be intercepted.
+  return mode_ == SynchronyMode::kAsync &&
+         navigation_handle()->IsInMainFrame() &&
+         !navigation_handle()->IsPost() &&
+         navigation_handle()->GetURL().SchemeIsHTTPOrHTTPS() &&
+         base::FeatureList::IsEnabled(kAsyncCheck);
+}
+
+NavigationParams InterceptNavigationThrottle::GetNavigationParams(
+    bool is_redirect) const {
+  return NavigationParams(
       navigation_handle()->GetURL(), navigation_handle()->GetReferrer(),
       navigation_handle()->HasUserGesture(), navigation_handle()->IsPost(),
       navigation_handle()->GetPageTransition(), is_redirect,
-      navigation_handle()->IsExternalProtocol(), true);
-
-  if (run_callback_synchronously_) {
-    bool should_ignore_navigation = should_ignore_callback_.Run(
-        navigation_handle()->GetWebContents(), navigation_params);
-    return should_ignore_navigation
-               ? content::NavigationThrottle::CANCEL_AND_IGNORE
-               : content::NavigationThrottle::PROCEED;
-  }
-
-  // When the callback can potentially destroy the WebContents, along with the
-  // NavigationHandle and this InterceptNavigationThrottle, it should be run
-  // asynchronously. This will ensure that no objects on the stack can be
-  // deleted, and that the stack does not unwind through them in a deleted
-  // state.
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&InterceptNavigationThrottle::RunCallbackAsynchronously,
-                 weak_factory_.GetWeakPtr(), navigation_params));
-  return DEFER;
-}
-
-void InterceptNavigationThrottle::RunCallbackAsynchronously(
-    const NavigationParams& navigation_params) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  // Run the callback in a helper function as it may lead ot the destruction of
-  // this InterceptNavigationThrottle.
-  RunCallback(
-      navigation_handle()->GetWebContents(), navigation_params,
-      should_ignore_callback_,
-      base::Bind(&InterceptNavigationThrottle::OnAsynchronousChecksPerformed,
-                 weak_factory_.GetWeakPtr()),
-      weak_factory_.GetWeakPtr());
-
-  // DO NOT ADD CODE AFTER HERE: at this point the InterceptNavigationThrottle
-  // may have been destroyed by the |should_ignore_callback_|. Adding code here
-  // will cause use-after-free bugs.
-  //
-  // Code that needs to act on the result of the |should_ignore_callback_|
-  // should be put inside OnAsynchronousChecksPerformed. This function will be
-  // called after |should_ignore_callback_| has run, if this
-  // InterceptNavigationThrottle is still alive.
-}
-
-void InterceptNavigationThrottle::OnAsynchronousChecksPerformed(
-    bool should_ignore_navigation,
-    bool throttle_was_destroyed) {
-  CHECK(!throttle_was_destroyed);
-  content::NavigationHandle* handle = navigation_handle();
-  CHECK(handle);
-  if (should_ignore_navigation) {
-    navigation_handle()->CancelDeferredNavigation(
-        content::NavigationThrottle::CANCEL_AND_IGNORE);
-  } else {
-    handle->Resume();
-  }
+      navigation_handle()->IsExternalProtocol(), true,
+      navigation_handle()->IsRendererInitiated(),
+      navigation_handle()->GetBaseURLForDataURL());
 }
 
 }  // namespace navigation_interception

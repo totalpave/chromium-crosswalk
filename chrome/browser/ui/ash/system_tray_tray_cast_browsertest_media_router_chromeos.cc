@@ -2,32 +2,38 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <vector>
 
-#include "ash/common/system/tray/system_tray_delegate.h"
-#include "ash/common/wm_shell.h"
-#include "ash/shell.h"
-#include "ash/system/tray/system_tray.h"
-#include "ash/test/tray_cast_test_api.h"
+#include "ash/public/cpp/ash_view_ids.h"
+#include "ash/public/interfaces/ash_message_center_controller.mojom-test-utils.h"
+#include "ash/public/interfaces/ash_message_center_controller.mojom.h"
+#include "ash/public/interfaces/constants.mojom.h"
+#include "ash/public/interfaces/system_tray_test_api.test-mojom-test-utils.h"
+#include "ash/public/interfaces/system_tray_test_api.test-mojom.h"
 #include "base/macros.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/media/router/media_routes_observer.h"
 #include "chrome/browser/media/router/media_sinks_observer.h"
-#include "chrome/browser/media/router/media_source_helper.h"
-#include "chrome/browser/media/router/mock_media_router.h"
-#include "chrome/browser/ui/ash/cast_config_delegate_media_router.h"
+#include "chrome/browser/media/router/test/mock_media_router.h"
+#include "chrome/browser/ui/ash/cast_config_client_media_router.h"
+#include "chrome/common/media_router/media_source_helper.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/common/service_manager_connection.h"
 #include "content/public/test/test_utils.h"
+#include "services/service_manager/public/cpp/connector.h"
 #include "url/gurl.h"
 
 using testing::_;
 
 namespace {
 
+const char kNotificationId[] = "chrome://cast";
+
 // Helper to create a MediaSink intance.
 media_router::MediaSink MakeSink(const std::string& id,
                                  const std::string& name) {
-  return media_router::MediaSink(id, name,
-                                 media_router::MediaSink::IconType::GENERIC);
+  return media_router::MediaSink(id, name, media_router::SinkIconType::GENERIC);
 }
 
 // Helper to create a MediaRoute instance.
@@ -35,20 +41,8 @@ media_router::MediaRoute MakeRoute(const std::string& route_id,
                                    const std::string& sink_id,
                                    bool is_local) {
   return media_router::MediaRoute(
-      route_id, media_router::MediaSourceForDesktop(), sink_id,
-      std::string() /*description*/, is_local,
-      std::string() /*custom_controller_path*/, true /*for_display*/);
-}
-
-// Returns the cast tray instance.
-ash::TrayCast* GetTrayCast() {
-  ash::SystemTray* tray = ash::Shell::GetInstance()->GetPrimarySystemTray();
-
-  // Make sure we actually popup the tray, otherwise the TrayCast instance will
-  // not be created.
-  tray->ShowDefaultView(ash::BubbleCreationType::BUBBLE_CREATE_NEW);
-
-  return tray->GetTrayCastForTesting();
+      route_id, media_router::MediaSourceForDesktop(), sink_id, "description",
+      is_local, true /*for_display*/);
 }
 
 class SystemTrayTrayCastMediaRouterChromeOSTest : public InProcessBrowserTest {
@@ -56,15 +50,78 @@ class SystemTrayTrayCastMediaRouterChromeOSTest : public InProcessBrowserTest {
   SystemTrayTrayCastMediaRouterChromeOSTest() : InProcessBrowserTest() {}
   ~SystemTrayTrayCastMediaRouterChromeOSTest() override {}
 
+  void ShowBubble() {
+    ash::mojom::SystemTrayTestApiAsyncWaiter wait_for(tray_test_api_.get());
+    wait_for.ShowBubble();
+  }
+
+  bool IsViewDrawn(int view_id) {
+    ash::mojom::SystemTrayTestApiAsyncWaiter wait_for(tray_test_api_.get());
+    bool visible = false;
+    wait_for.IsBubbleViewVisible(view_id, false /* open_tray */, &visible);
+    return visible;
+  }
+
+  bool IsTrayVisible() { return IsViewDrawn(ash::VIEW_ID_CAST_MAIN_VIEW); }
+
+  bool IsCastingNotificationVisible() {
+    return !GetNotificationString().empty();
+  }
+
+  base::string16 GetNotificationString() {
+    ash::mojom::AshMessageCenterControllerAsyncWaiter wait_for(
+        ash_message_center_controller_.get());
+    std::vector<message_center::Notification> notifications;
+    wait_for.GetActiveNotifications(&notifications);
+    for (const auto& notification : notifications) {
+      if (notification.id() == kNotificationId)
+        return notification.title();
+    }
+    return base::string16();
+  }
+
   media_router::MediaSinksObserver* media_sinks_observer() const {
+    DCHECK(media_sinks_observer_);
     return media_sinks_observer_;
   }
 
   media_router::MediaRoutesObserver* media_routes_observer() const {
+    DCHECK(media_routes_observer_);
     return media_routes_observer_;
   }
 
  private:
+  // InProcessBrowserTest:
+  void PreRunTestOnMainThread() override {
+    media_router_ = std::make_unique<media_router::MockMediaRouter>();
+    ON_CALL(*media_router_, RegisterMediaSinksObserver(_))
+        .WillByDefault(Invoke(
+            this, &SystemTrayTrayCastMediaRouterChromeOSTest::CaptureSink));
+    ON_CALL(*media_router_, RegisterMediaRoutesObserver(_))
+        .WillByDefault(Invoke(
+            this, &SystemTrayTrayCastMediaRouterChromeOSTest::CaptureRoutes));
+    CastConfigClientMediaRouter::SetMediaRouterForTest(media_router_.get());
+    InProcessBrowserTest::PreRunTestOnMainThread();
+  }
+
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    // Connect to the ash test interface.
+    content::ServiceManagerConnection::GetForProcess()
+        ->GetConnector()
+        ->BindInterface(ash::mojom::kServiceName, &tray_test_api_);
+    // Connect to ash message center interface.
+    content::ServiceManagerConnection::GetForProcess()
+        ->GetConnector()
+        ->BindInterface(ash::mojom::kServiceName,
+                        &ash_message_center_controller_);
+  }
+
+  void PostRunTestOnMainThread() override {
+    InProcessBrowserTest::PostRunTestOnMainThread();
+    CastConfigClientMediaRouter::SetMediaRouterForTest(nullptr);
+  }
+
   bool CaptureSink(media_router::MediaSinksObserver* media_sinks_observer) {
     media_sinks_observer_ = media_sinks_observer;
     return true;
@@ -74,44 +131,22 @@ class SystemTrayTrayCastMediaRouterChromeOSTest : public InProcessBrowserTest {
     media_routes_observer_ = media_routes_observer;
   }
 
-  void SetUpInProcessBrowserTestFixture() override {
-    ON_CALL(media_router_, RegisterMediaSinksObserver(_))
-        .WillByDefault(Invoke(
-            this, &SystemTrayTrayCastMediaRouterChromeOSTest::CaptureSink));
-    ON_CALL(media_router_, RegisterMediaRoutesObserver(_))
-        .WillByDefault(Invoke(
-            this, &SystemTrayTrayCastMediaRouterChromeOSTest::CaptureRoutes));
-
-    CastConfigDelegateMediaRouter::SetMediaRouterForTest(&media_router_);
-  }
-
-  media_router::MockMediaRouter media_router_;
+  std::unique_ptr<media_router::MockMediaRouter> media_router_;
   media_router::MediaSinksObserver* media_sinks_observer_ = nullptr;
   media_router::MediaRoutesObserver* media_routes_observer_ = nullptr;
+  ash::mojom::SystemTrayTestApiPtr tray_test_api_;
+  ash::mojom::AshMessageCenterControllerPtr ash_message_center_controller_;
 
   DISALLOW_COPY_AND_ASSIGN(SystemTrayTrayCastMediaRouterChromeOSTest);
 };
 
 }  // namespace
 
-// Sanity check to make sure that the media router delegate is getting used.
-IN_PROC_BROWSER_TEST_F(SystemTrayTrayCastMediaRouterChromeOSTest,
-                       VerifyThatMediaRouterIsBeingUsed) {
-  ash::CastConfigDelegate* cast_config_delegate =
-      ash::WmShell::Get()->system_tray_delegate()->GetCastConfigDelegate();
-
-  // The media router always reports false for HasOptions(); the extension
-  // always reports true.
-  EXPECT_FALSE(cast_config_delegate->HasOptions());
-}
-
 // Verifies that we only show the tray view if there are available cast
 // targets/sinks.
 IN_PROC_BROWSER_TEST_F(SystemTrayTrayCastMediaRouterChromeOSTest,
                        VerifyCorrectVisiblityWithSinks) {
-  ash::TrayCast* tray = GetTrayCast();
-  ash::TrayCastTestAPI test_api(tray);
-  EXPECT_TRUE(test_api.IsTrayInitialized());
+  ShowBubble();
 
   std::vector<media_router::MediaSink> zero_sinks;
   std::vector<media_router::MediaSink> one_sink;
@@ -121,27 +156,26 @@ IN_PROC_BROWSER_TEST_F(SystemTrayTrayCastMediaRouterChromeOSTest,
   two_sinks.push_back(MakeSink("id2", "name"));
 
   // The tray should be hidden when there are no sinks.
-  EXPECT_FALSE(test_api.IsTrayVisible());
-  media_sinks_observer()->OnSinksUpdated(zero_sinks, std::vector<GURL>());
-  EXPECT_FALSE(test_api.IsTrayVisible());
-  EXPECT_FALSE(test_api.IsTraySelectViewVisible());
+  EXPECT_FALSE(IsTrayVisible());
+  media_sinks_observer()->OnSinksUpdated(zero_sinks,
+                                         std::vector<url::Origin>());
+  // Flush mojo messages from the chrome object to the ash object.
+  content::RunAllPendingInMessageLoop();
+  EXPECT_FALSE(IsTrayVisible());
 
   // The tray should be visible with any more than zero sinks.
-  media_sinks_observer()->OnSinksUpdated(one_sink, std::vector<GURL>());
-  EXPECT_TRUE(test_api.IsTrayVisible());
-  media_sinks_observer()->OnSinksUpdated(two_sinks, std::vector<GURL>());
-  EXPECT_TRUE(test_api.IsTrayVisible());
-  EXPECT_TRUE(test_api.IsTraySelectViewVisible());
+  media_sinks_observer()->OnSinksUpdated(one_sink, std::vector<url::Origin>());
+  content::RunAllPendingInMessageLoop();
+  EXPECT_TRUE(IsTrayVisible());
+  media_sinks_observer()->OnSinksUpdated(two_sinks, std::vector<url::Origin>());
+  content::RunAllPendingInMessageLoop();
+  EXPECT_TRUE(IsTrayVisible());
 
   // And if all of the sinks go away, it should be hidden again.
-  media_sinks_observer()->OnSinksUpdated(zero_sinks, std::vector<GURL>());
-  EXPECT_FALSE(test_api.IsTrayVisible());
-  EXPECT_FALSE(test_api.IsTraySelectViewVisible());
-
-  // The CastConfigDelegate instance gets destroyed before the TrayCast
-  // instance. The delegate will assert if there are still callbacks registered.
-  // We need to cleanup the TrayCast callbacks to prevent the assert.
-  ash::TrayCastTestAPI(GetTrayCast()).ReleaseConfigCallbacks();
+  media_sinks_observer()->OnSinksUpdated(zero_sinks,
+                                         std::vector<url::Origin>());
+  content::RunAllPendingInMessageLoop();
+  EXPECT_FALSE(IsTrayVisible());
 }
 
 // Verifies that we show the cast view when we start a casting session, and that
@@ -149,41 +183,45 @@ IN_PROC_BROWSER_TEST_F(SystemTrayTrayCastMediaRouterChromeOSTest,
 // sessions.
 IN_PROC_BROWSER_TEST_F(SystemTrayTrayCastMediaRouterChromeOSTest,
                        VerifyCastingShowsCastView) {
-  ash::TrayCast* tray = GetTrayCast();
-  ash::TrayCastTestAPI test_api(tray);
-  EXPECT_TRUE(test_api.IsTrayInitialized());
+  ShowBubble();
 
   // Setup the sinks.
-  std::vector<media_router::MediaSink> sinks;
-  sinks.push_back(MakeSink("remote_sink", "name"));
-  sinks.push_back(MakeSink("local_sink", "name"));
-  media_sinks_observer()->OnSinksUpdated(sinks, std::vector<GURL>());
+  const std::vector<media_router::MediaSink> sinks = {
+      MakeSink("remote_sink", "Remote Sink"),
+      MakeSink("local_sink", "Local Sink")};
+  media_sinks_observer()->OnSinksUpdated(sinks, std::vector<url::Origin>());
+  content::RunAllPendingInMessageLoop();
 
   // Create route combinations. More details below.
-  media_router::MediaRoute non_local_route =
+  const media_router::MediaRoute non_local_route =
       MakeRoute("remote_route", "remote_sink", false /*is_local*/);
-  media_router::MediaRoute local_route =
+  const media_router::MediaRoute local_route =
       MakeRoute("local_route", "local_sink", true /*is_local*/);
-  std::vector<media_router::MediaRoute> no_routes;
-  std::vector<media_router::MediaRoute> multiple_routes;
+  const std::vector<media_router::MediaRoute> no_routes;
+  const std::vector<media_router::MediaRoute> non_local_routes{non_local_route};
   // We put the non-local route first to make sure that we prefer the local one.
-  multiple_routes.push_back(non_local_route);
-  multiple_routes.push_back(local_route);
+  const std::vector<media_router::MediaRoute> multiple_routes{non_local_route,
+                                                              local_route};
+
+  // We do not show the cast view for non-local routes.
+  media_routes_observer()->OnRoutesUpdated(
+      non_local_routes, std::vector<media_router::MediaRoute::Id>());
+  content::RunAllPendingInMessageLoop();
+  EXPECT_FALSE(IsCastingNotificationVisible());
 
   // If there are multiple routes active at the same time, then we need to
   // display the local route over a non-local route. This also verifies that we
   // display the cast view when we're casting.
-  test_api.OnCastingSessionStartedOrStopped(true /*is_casting*/);
   media_routes_observer()->OnRoutesUpdated(
       multiple_routes, std::vector<media_router::MediaRoute::Id>());
-  EXPECT_TRUE(test_api.IsTrayCastViewVisible());
-  EXPECT_EQ("local_route", test_api.GetDisplayedCastId());
+  content::RunAllPendingInMessageLoop();
+  EXPECT_TRUE(IsCastingNotificationVisible());
+  EXPECT_NE(base::string16::npos,
+            GetNotificationString().find(base::ASCIIToUTF16("Local Sink")));
 
   // When a casting session stops, we shouldn't display the cast view.
-  test_api.OnCastingSessionStartedOrStopped(false /*is_casting*/);
   media_routes_observer()->OnRoutesUpdated(
       no_routes, std::vector<media_router::MediaRoute::Id>());
-  EXPECT_FALSE(test_api.IsTrayCastViewVisible());
-
-  ash::TrayCastTestAPI(GetTrayCast()).ReleaseConfigCallbacks();
+  content::RunAllPendingInMessageLoop();
+  EXPECT_FALSE(IsCastingNotificationVisible());
 }

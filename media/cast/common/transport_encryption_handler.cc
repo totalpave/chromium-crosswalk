@@ -9,7 +9,6 @@
 #include "base/logging.h"
 #include "crypto/encryptor.h"
 #include "crypto/symmetric_key.h"
-#include "media/cast/net/cast_transport_defines.h"
 
 namespace media {
 namespace cast {
@@ -44,7 +43,7 @@ std::string GetAesNonce(FrameId frame_id, const std::string& iv_mask) {
 TransportEncryptionHandler::TransportEncryptionHandler()
     : key_(), encryptor_(), iv_mask_(), is_activated_(false) {}
 
-TransportEncryptionHandler::~TransportEncryptionHandler() {}
+TransportEncryptionHandler::~TransportEncryptionHandler() = default;
 
 bool TransportEncryptionHandler::Initialize(const std::string& aes_key,
                                             const std::string& aes_iv_mask) {

@@ -43,20 +43,7 @@ chrome.test.getConfig(function(config) {
       chrome.tabs.create({ url: test_url });
     },
     function testDocumentStartRunsInSameWorldAsDocumentEndOfJavaScriptUrl() {
-      var hasReceivedFirstMessage = false;
-      onRequest.addListener(function listener(request) {
-        if (!hasReceivedFirstMessage) {
-          hasReceivedFirstMessage = true;
-          // Step one: Empty document where the JavaScript code was executed.
-          checkFirstMessageEquals('jsresult/')(request);
-        } else {
-          onRequest.removeListener(listener);
-          // Step 2: The empty document was replaced with the result of
-          // the evaluated JavaScript code.
-          checkFirstMessageEquals('jsresult/something')(request);
-          chrome.test.succeed();
-        }
-      });
+      chrome.test.listenOnce(onRequest, checkFirstMessageEquals('parent'));
       chrome.test.log('Creating tab...');
       var test_url =
           ('http://localhost:PORT/extensions/' +

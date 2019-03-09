@@ -9,33 +9,28 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "media/base/media_log.h"
 #include "media/blink/media_blink_export.h"
-#include "third_party/WebKit/public/platform/WebMediaSource.h"
+#include "third_party/blink/public/platform/web_media_source.h"
 
 namespace media {
 class ChunkDemuxer;
 
-class MEDIA_BLINK_EXPORT WebMediaSourceImpl
-    : NON_EXPORTED_BASE(public blink::WebMediaSource) {
+class MEDIA_BLINK_EXPORT WebMediaSourceImpl : public blink::WebMediaSource {
  public:
-  WebMediaSourceImpl(ChunkDemuxer* demuxer,
-                     const scoped_refptr<MediaLog>& media_log);
+  WebMediaSourceImpl(ChunkDemuxer* demuxer);
   ~WebMediaSourceImpl() override;
 
   // blink::WebMediaSource implementation.
-  AddStatus addSourceBuffer(
-      const blink::WebString& type,
-      const blink::WebString& codecs,
-      blink::WebSourceBuffer** source_buffer) override;
-  double duration() override;
-  void setDuration(double duration) override;
-  void markEndOfStream(EndOfStreamStatus status) override;
-  void unmarkEndOfStream() override;
+  AddStatus AddSourceBuffer(const blink::WebString& content_type,
+                            const blink::WebString& codecs,
+                            blink::WebSourceBuffer** source_buffer) override;
+  double Duration() override;
+  void SetDuration(double duration) override;
+  void MarkEndOfStream(EndOfStreamStatus status) override;
+  void UnmarkEndOfStream() override;
 
  private:
   ChunkDemuxer* demuxer_;  // Owned by WebMediaPlayerImpl.
-  scoped_refptr<MediaLog> media_log_;
 
   DISALLOW_COPY_AND_ASSIGN(WebMediaSourceImpl);
 };

@@ -1,56 +1,71 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef CONTENT_BROWSER_DEVTOOLS_PROTOCOL_BROWSER_HANDLER_H_
 #define CONTENT_BROWSER_DEVTOOLS_PROTOCOL_BROWSER_HANDLER_H_
 
-#include <stdint.h>
-
-#include "content/browser/devtools/protocol/devtools_protocol_dispatcher.h"
-#include "content/public/browser/devtools_agent_host.h"
-
-namespace net {
-class ServerSocket;
-}
-
-// Windows headers will redefine SendMessage.
-#ifdef SendMessage
-#undef SendMessage
-#endif
+#include "base/containers/flat_set.h"
+#include "base/macros.h"
+#include "content/browser/devtools/protocol/browser.h"
+#include "content/browser/devtools/protocol/devtools_domain_handler.h"
 
 namespace content {
-namespace devtools {
-namespace browser {
 
-class BrowserHandler : public DevToolsAgentHostClient {
+class BrowserContext;
+
+namespace protocol {
+
+class BrowserHandler : public DevToolsDomainHandler, public Browser::Backend {
  public:
-  using Response = DevToolsProtocolClient::Response;
-
   BrowserHandler();
   ~BrowserHandler() override;
 
-  void SetClient(std::unique_ptr<Client> client);
+  void Wire(UberDispatcher* dispatcher) override;
 
-  using TargetInfos = std::vector<scoped_refptr<devtools::browser::TargetInfo>>;
-  Response GetTargets(TargetInfos* infos);
-  Response Attach(const std::string& targetId);
-  Response Detach(const std::string& targetId);
-  Response SendMessage(const std::string& targetId, const std::string& message);
+  Response Disable() override;
+
+  // Protocol methods.
+  Response GetVersion(std::string* protocol_version,
+                      std::string* product,
+                      std::string* revision,
+                      std::string* user_agent,
+                      std::string* js_version) override;
+
+  Response GetHistograms(
+      Maybe<std::string> in_query,
+      Maybe<bool> in_delta,
+      std::unique_ptr<Array<Browser::Histogram>>* histograms) override;
+
+  Response GetHistogram(
+      const std::string& in_name,
+      Maybe<bool> in_delta,
+      std::unique_ptr<Browser::Histogram>* out_histogram) override;
+
+  Response GetBrowserCommandLine(
+      std::unique_ptr<protocol::Array<std::string>>* arguments) override;
+
+  Response GrantPermissions(
+      const std::string& origin,
+      std::unique_ptr<protocol::Array<protocol::Browser::PermissionType>>
+          permissions,
+      Maybe<std::string> browser_context_id) override;
+
+  Response ResetPermissions(Maybe<std::string> browser_context_id) override;
+
+  Response Crash() override;
+  Response CrashGpuProcess() override;
 
  private:
-  void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
-                               const std::string& message) override;
+  Response FindBrowserContext(const Maybe<std::string>& browser_context_id,
+                              BrowserContext** browser_context);
 
-  void AgentHostClosed(DevToolsAgentHost* agent_host,
-                       bool replaced_with_another_client) override;
+  base::flat_set<std::string> contexts_with_overridden_permissions_;
 
-  std::unique_ptr<Client> client_;
   DISALLOW_COPY_AND_ASSIGN(BrowserHandler);
 };
 
-}  // namespace browser
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content
 
 #endif  // CONTENT_BROWSER_DEVTOOLS_PROTOCOL_BROWSER_HANDLER_H_

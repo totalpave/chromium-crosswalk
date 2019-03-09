@@ -5,28 +5,15 @@
 #ifndef CC_BASE_TIME_UTIL_H_
 #define CC_BASE_TIME_UTIL_H_
 
-namespace base {
-class TimeDelta;
-}
+#include "base/time/time.h"
 
 namespace cc {
 
-class CC_EXPORT TimeUtil {
+class TimeUtil {
  public:
-  static base::TimeDelta Scale(base::TimeDelta time_delta, double value) {
-    return base::TimeDelta::FromInternalValue(static_cast<int64_t>(
-        static_cast<double>(time_delta.ToInternalValue()) * value));
-  }
-
   static double Divide(base::TimeDelta dividend, base::TimeDelta divisor) {
-    return static_cast<double>(dividend.ToInternalValue()) /
-           static_cast<double>(divisor.ToInternalValue());
-  }
-
-  static base::TimeDelta Mod(base::TimeDelta dividend,
-                             base::TimeDelta divisor) {
-    return base::TimeDelta::FromInternalValue(dividend.ToInternalValue() %
-                                              divisor.ToInternalValue());
+    return static_cast<double>(dividend.InMicroseconds()) /
+           static_cast<double>(divisor.InMicroseconds());
   }
 };
 

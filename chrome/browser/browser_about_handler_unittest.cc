@@ -10,10 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "base/feature_list.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/browser/navigation_controller.h"
@@ -63,8 +60,6 @@ TEST_F(BrowserAboutHandlerTest, WillHandleBrowserAboutURL) {
         GURL(chrome_prefix + chrome::kChromeUIVersionHost)},
        {GURL(chrome_prefix + chrome::kChromeUIAboutHost),
         GURL(chrome_prefix + chrome::kChromeUIChromeURLsHost)},
-       {GURL(chrome_prefix + chrome::kChromeUICacheHost),
-        GURL(chrome_prefix + content::kChromeUINetworkViewCacheHost)},
        {GURL(chrome_prefix + chrome::kChromeUISignInInternalsHost),
         GURL(chrome_prefix + chrome::kChromeUISignInInternalsHost)},
        {GURL(chrome_prefix + chrome::kChromeUISyncHost),
@@ -78,56 +73,22 @@ TEST_F(BrowserAboutHandlerTest, WillHandleBrowserAboutURL) {
   TestWillHandleBrowserAboutURL(test_cases);
 }
 
-#if defined(OS_CHROMEOS)
-// Chrome OS defaults to showing Options in a window and including About in
-// Options.
-TEST_F(BrowserAboutHandlerTest, WillHandleBrowserAboutURLForOptionsChromeOS) {
-  std::string chrome_prefix(content::kChromeUIScheme);
-  chrome_prefix.append(url::kStandardSchemeSeparator);
-  std::vector<AboutURLTestCase> test_cases(
-      {{GURL(chrome_prefix + chrome::kChromeUISettingsHost),
-        GURL(chrome_prefix + chrome::kChromeUISettingsFrameHost)},
-       {GURL(chrome_prefix + chrome::kChromeUIHelpHost),
-        GURL(chrome_prefix + chrome::kChromeUISettingsFrameHost + "/" +
-             chrome::kChromeUIHelpHost)}});
-  TestWillHandleBrowserAboutURL(test_cases);
-}
-
-#else
-TEST_F(BrowserAboutHandlerTest, WillHandleBrowserAboutURLForOptions) {
-  std::string chrome_prefix(content::kChromeUIScheme);
-  chrome_prefix.append(url::kStandardSchemeSeparator);
-  std::vector<AboutURLTestCase> test_cases(
-      {{
-           GURL(chrome_prefix + chrome::kChromeUISettingsHost),
-           GURL(chrome_prefix + chrome::kChromeUIUberHost + "/" +
-                chrome::kChromeUISettingsHost + "/"),
-       },
-       {
-           GURL(chrome_prefix + chrome::kChromeUIHelpHost),
-           GURL(chrome_prefix + chrome::kChromeUIUberHost + "/" +
-                chrome::kChromeUIHelpHost + "/"),
-       }});
-  TestWillHandleBrowserAboutURL(test_cases);
-}
-#endif
-
 TEST_F(BrowserAboutHandlerTest, WillHandleBrowserAboutURLForMDSettings) {
-  std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
-  feature_list->InitializeFromCommandLine(
-      features::kMaterialDesignSettingsFeature.name, "");
-  base::FeatureList::ClearInstanceForTesting();
-  base::FeatureList::SetInstance(std::move(feature_list));
-
   std::string chrome_prefix(content::kChromeUIScheme);
   chrome_prefix.append(url::kStandardSchemeSeparator);
   std::vector<AboutURLTestCase> test_cases(
       {{GURL(chrome_prefix + chrome::kChromeUISettingsHost),
-        GURL(chrome_prefix + chrome::kChromeUISettingsHost)},
-       {GURL(chrome_prefix + chrome::kChromeUIHelpHost),
-        GURL(chrome_prefix + chrome::kChromeUISettingsHost + "/" +
-             chrome::kChromeUIHelpHost)}});
+        GURL(chrome_prefix + chrome::kChromeUISettingsHost)}});
   TestWillHandleBrowserAboutURL(test_cases);
+}
+
+TEST_F(BrowserAboutHandlerTest, WillHandleBrowserAboutURLForHistory) {
+  TestWillHandleBrowserAboutURL(std::vector<AboutURLTestCase>({
+      {GURL("about:history"), GURL("chrome://history/")},
+      {GURL("chrome://history"), GURL("chrome://history/")},
+      {GURL("chrome://history/"), GURL("chrome://history/")},
+      {GURL("chrome://history/?q=foo"), GURL("chrome://history/?q=foo")},
+  }));
 }
 
 // Ensure that minor BrowserAboutHandler fixup to a URL does not cause us to
@@ -147,7 +108,7 @@ TEST_F(BrowserAboutHandlerTest, NoVirtualURLForFixup) {
   std::unique_ptr<NavigationEntry> entry(
       NavigationController::CreateNavigationEntry(
           url, Referrer(), ui::PAGE_TRANSITION_RELOAD, false, std::string(),
-          &profile));
+          &profile, nullptr /* blob_url_loader_factory */));
   EXPECT_EQ(fixed_url, entry->GetVirtualURL());
   EXPECT_EQ(rewritten_url, entry->GetURL());
 }

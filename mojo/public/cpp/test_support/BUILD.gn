@@ -2,8 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# GYP version: mojo/public/mojo_public.gyp:mojo_public_test_utils
-source_set("test_utils") {
+static_library("test_utils") {
   testonly = true
 
   sources = [
@@ -13,7 +12,9 @@ source_set("test_utils") {
   ]
 
   deps = [
+    "//mojo/core/embedder",
     "//mojo/public/c/test_support",
+    "//mojo/public/cpp/bindings",
     "//mojo/public/cpp/system",
     "//testing/gtest",
   ]

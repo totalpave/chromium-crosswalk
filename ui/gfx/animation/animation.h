@@ -8,8 +8,10 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/optional.h"
 #include "base/time/time.h"
 #include "ui/gfx/animation/animation_container_element.h"
+#include "ui/gfx/animation/animation_export.h"
 
 namespace gfx {
 class Rect;
@@ -19,6 +21,7 @@ namespace gfx {
 
 class AnimationContainer;
 class AnimationDelegate;
+class AnimationTestApi;
 
 // Base class used in implementing animations. You only need use this class if
 // you're implementing a new animation type, otherwise you'll likely want one of
@@ -26,8 +29,16 @@ class AnimationDelegate;
 //
 // To subclass override Step, which is invoked as the animation progresses and
 // GetCurrentValue() to return the value appropriate to the animation.
-class GFX_EXPORT Animation : public AnimationContainerElement {
+class ANIMATION_EXPORT Animation : public AnimationContainerElement {
  public:
+  // Used with SetRichAnimationRenderMode() to force enable/disable rich
+  // animations during tests.
+  enum class RichAnimationRenderMode {
+    PLATFORM,
+    FORCE_ENABLED,
+    FORCE_DISABLED
+  };
+
   explicit Animation(base::TimeDelta timer_interval);
   ~Animation() override;
 
@@ -69,6 +80,11 @@ class GFX_EXPORT Animation : public AnimationContainerElement {
   // process.
   static bool ScrollAnimationsEnabledBySystem();
 
+  // Determines whether the user desires reduced motion based on platform APIs.
+  // Should only be called from the browser process, on the UI thread.
+  static bool PrefersReducedMotion();
+  static void UpdatePrefersReducedMotion();
+
  protected:
   // Invoked from Start to allow subclasses to prepare for the animation.
   virtual void AnimationStarted() {}
@@ -92,6 +108,13 @@ class GFX_EXPORT Animation : public AnimationContainerElement {
   base::TimeDelta GetTimerInterval() const override;
 
  private:
+  friend class AnimationTestApi;
+
+  static bool ShouldRenderRichAnimationImpl();
+
+  // The mode in which to render rich animations.
+  static RichAnimationRenderMode rich_animation_rendering_mode_;
+
   // Interval for the animation.
   const base::TimeDelta timer_interval_;
 
@@ -106,6 +129,10 @@ class GFX_EXPORT Animation : public AnimationContainerElement {
 
   // Time we started at.
   base::TimeTicks start_time_;
+
+  // Obtaining the PrefersReducedMotion system setting can be expensive, so it
+  // is cached in this boolean.
+  static base::Optional<bool> prefers_reduced_motion_;
 
   DISALLOW_COPY_AND_ASSIGN(Animation);
 };

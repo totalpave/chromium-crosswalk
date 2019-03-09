@@ -9,12 +9,10 @@
 #include <vector>
 
 #include "base/json/json_writer.h"
-#include "base/memory/ptr_util.h"
 #include "chrome/browser/safe_browsing/incident_reporting/incident_receiver.h"
 #include "chrome/browser/safe_browsing/incident_reporting/tracked_preference_incident.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
-#include "components/user_prefs/tracked/pref_hash_store_transaction.h"
-#include "components/user_prefs/tracked/tracked_preference_helper.h"
+#include "components/safe_browsing/proto/csd.pb.h"
+#include "services/preferences/public/mojom/tracked_preference_validation_delegate.mojom.h"
 
 namespace safe_browsing {
 
@@ -24,19 +22,30 @@ typedef ClientIncidentReport_IncidentData_TrackedPreferenceIncident TPIncident;
 typedef ClientIncidentReport_IncidentData_TrackedPreferenceIncident_ValueState
     TPIncident_ValueState;
 
-// Maps a PrefHashStoreTransaction::ValueState to a
-// TrackedPreferenceIncident::ValueState.
+using ValueState =
+    prefs::mojom::TrackedPreferenceValidationDelegate::ValueState;
+
+// Maps a primary PrefHashStoreTransaction::ValueState and an external
+// validation state to a TrackedPreferenceIncident::ValueState.
 TPIncident_ValueState MapValueState(
-    PrefHashStoreTransaction::ValueState value_state) {
+    ValueState value_state,
+    ValueState external_validation_value_state) {
   switch (value_state) {
-    case PrefHashStoreTransaction::CLEARED:
+    case ValueState::CLEARED:
       return TPIncident::CLEARED;
-    case PrefHashStoreTransaction::CHANGED:
+    case ValueState::CHANGED:
       return TPIncident::CHANGED;
-    case PrefHashStoreTransaction::UNTRUSTED_UNKNOWN_VALUE:
+    case ValueState::UNTRUSTED_UNKNOWN_VALUE:
       return TPIncident::UNTRUSTED_UNKNOWN_VALUE;
     default:
-      return TPIncident::UNKNOWN;
+      switch (external_validation_value_state) {
+        case ValueState::CLEARED:
+          return TPIncident::BYPASS_CLEARED;
+        case ValueState::CHANGED:
+          return TPIncident::BYPASS_CHANGED;
+        default:
+          return TPIncident::UNKNOWN;
+      }
   }
 }
 
@@ -52,47 +61,58 @@ PreferenceValidationDelegate::~PreferenceValidationDelegate() {
 
 void PreferenceValidationDelegate::OnAtomicPreferenceValidation(
     const std::string& pref_path,
-    const base::Value* value,
-    PrefHashStoreTransaction::ValueState value_state,
+    base::Optional<base::Value> value,
+    ValueState value_state,
+    ValueState external_validation_value_state,
     bool is_personal) {
-  TPIncident_ValueState proto_value_state = MapValueState(value_state);
+  TPIncident_ValueState proto_value_state =
+      MapValueState(value_state, external_validation_value_state);
   if (proto_value_state != TPIncident::UNKNOWN) {
     std::unique_ptr<TPIncident> incident(
         new ClientIncidentReport_IncidentData_TrackedPreferenceIncident());
     incident->set_path(pref_path);
-    if (!value ||
-        (!value->GetAsString(incident->mutable_atomic_value()) &&
-         !base::JSONWriter::Write(*value, incident->mutable_atomic_value()))) {
+    if (!value || (!value->GetAsString(incident->mutable_atomic_value()) &&
+                   !base::JSONWriter::Write(
+                       std::move(*value), incident->mutable_atomic_value()))) {
       incident->clear_atomic_value();
     }
     incident->set_value_state(proto_value_state);
     incident_receiver_->AddIncidentForProfile(
-        profile_, base::WrapUnique(new TrackedPreferenceIncident(
-                      std::move(incident), is_personal)));
+        profile_, std::make_unique<TrackedPreferenceIncident>(
+                      std::move(incident), is_personal));
   }
 }
 
 void PreferenceValidationDelegate::OnSplitPreferenceValidation(
     const std::string& pref_path,
-    const base::DictionaryValue* /* dict_value */,
     const std::vector<std::string>& invalid_keys,
-    PrefHashStoreTransaction::ValueState value_state,
+    const std::vector<std::string>& external_validation_invalid_keys,
+    ValueState value_state,
+    ValueState external_validation_value_state,
     bool is_personal) {
-  TPIncident_ValueState proto_value_state = MapValueState(value_state);
+  TPIncident_ValueState proto_value_state =
+      MapValueState(value_state, external_validation_value_state);
   if (proto_value_state != TPIncident::UNKNOWN) {
     std::unique_ptr<ClientIncidentReport_IncidentData_TrackedPreferenceIncident>
         incident(
             new ClientIncidentReport_IncidentData_TrackedPreferenceIncident());
     incident->set_path(pref_path);
-    for (std::vector<std::string>::const_iterator scan(invalid_keys.begin());
-         scan != invalid_keys.end();
-         ++scan) {
-      incident->add_split_key(*scan);
+    if (proto_value_state == TPIncident::BYPASS_CLEARED ||
+        proto_value_state == TPIncident::BYPASS_CHANGED) {
+      for (auto scan(external_validation_invalid_keys.begin());
+           scan != external_validation_invalid_keys.end(); ++scan) {
+        incident->add_split_key(*scan);
+      }
+    } else {
+      for (auto scan(invalid_keys.begin()); scan != invalid_keys.end();
+           ++scan) {
+        incident->add_split_key(*scan);
+      }
     }
     incident->set_value_state(proto_value_state);
     incident_receiver_->AddIncidentForProfile(
-        profile_, base::WrapUnique(new TrackedPreferenceIncident(
-                      std::move(incident), is_personal)));
+        profile_, std::make_unique<TrackedPreferenceIncident>(
+                      std::move(incident), is_personal));
   }
 }
 

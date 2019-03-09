@@ -5,7 +5,10 @@
 #ifndef CHROME_BROWSER_PREFS_BROWSER_PREFS_H_
 #define CHROME_BROWSER_PREFS_BROWSER_PREFS_H_
 
+#include <set>
+
 #include "build/build_config.h"
+#include "components/prefs/pref_value_store.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -14,8 +17,6 @@ class Profile;
 namespace user_prefs {
 class PrefRegistrySyncable;
 }
-
-namespace chrome {
 
 // Register all prefs that will be used via the local state PrefService.
 void RegisterLocalState(PrefRegistrySimple* registry);
@@ -43,7 +44,5 @@ void MigrateObsoleteBrowserPrefs(Profile* profile, PrefService* local_state);
 // should never go away (even if it becomes an empty call for some time) as it
 // should remain *the* place to drop deprecated profile prefs at.
 void MigrateObsoleteProfilePrefs(Profile* profile);
-
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_PREFS_BROWSER_PREFS_H_

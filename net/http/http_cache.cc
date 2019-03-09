@@ -21,29 +21,34 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/pickle.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/threading/worker_pool.h"
 #include "base/time/default_clock.h"
 #include "base/time/time.h"
+#include "base/trace_event/memory_allocator_dump.h"
+#include "base/trace_event/memory_usage_estimator.h"
+#include "base/trace_event/process_memory_dump.h"
 #include "net/base/cache_type.h"
+#include "net/base/features.h"
 #include "net/base/io_buffer.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/base/upload_data_stream.h"
 #include "net/disk_cache/disk_cache.h"
-#include "net/http/disk_cache_based_quic_server_info.h"
+#include "net/http/http_cache_lookup_manager.h"
 #include "net/http/http_cache_transaction.h"
+#include "net/http/http_cache_writers.h"
 #include "net/http/http_network_layer.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_request_info.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
 #include "net/http/http_util.h"
-#include "net/quic/crypto/quic_server_info.h"
+#include "net/log/net_log_with_source.h"
+#include "net/quic/quic_server_info.h"
 
 #if defined(OS_POSIX)
 #include <unistd.h>
@@ -51,59 +56,80 @@
 
 namespace net {
 
-HttpCache::DefaultBackend::DefaultBackend(
-    CacheType type,
-    BackendType backend_type,
-    const base::FilePath& path,
-    int max_bytes,
-    const scoped_refptr<base::SingleThreadTaskRunner>& thread)
+HttpCache::DefaultBackend::DefaultBackend(CacheType type,
+                                          BackendType backend_type,
+                                          const base::FilePath& path,
+                                          int max_bytes)
     : type_(type),
       backend_type_(backend_type),
       path_(path),
-      max_bytes_(max_bytes),
-      thread_(thread) {
-}
+      max_bytes_(max_bytes) {}
 
-HttpCache::DefaultBackend::~DefaultBackend() {}
+HttpCache::DefaultBackend::~DefaultBackend() = default;
 
 // static
 std::unique_ptr<HttpCache::BackendFactory> HttpCache::DefaultBackend::InMemory(
     int max_bytes) {
-  return base::WrapUnique(
-      new DefaultBackend(MEMORY_CACHE, CACHE_BACKEND_DEFAULT, base::FilePath(),
-                         max_bytes, nullptr));
+  return std::make_unique<DefaultBackend>(MEMORY_CACHE, CACHE_BACKEND_DEFAULT,
+                                          base::FilePath(), max_bytes);
 }
 
 int HttpCache::DefaultBackend::CreateBackend(
     NetLog* net_log,
     std::unique_ptr<disk_cache::Backend>* backend,
-    const CompletionCallback& callback) {
+    CompletionOnceCallback callback) {
   DCHECK_GE(max_bytes_, 0);
-  return disk_cache::CreateCacheBackend(type_,
-                                        backend_type_,
-                                        path_,
-                                        max_bytes_,
-                                        true,
-                                        thread_,
-                                        net_log,
-                                        backend,
-                                        callback);
+#if defined(OS_ANDROID)
+  if (app_status_listener_) {
+    return disk_cache::CreateCacheBackend(
+        type_, backend_type_, path_, max_bytes_, true, net_log, backend,
+        std::move(callback), app_status_listener_);
+  }
+#endif
+  return disk_cache::CreateCacheBackend(type_, backend_type_, path_, max_bytes_,
+                                        true, net_log, backend,
+                                        std::move(callback));
 }
+
+#if defined(OS_ANDROID)
+void HttpCache::DefaultBackend::SetAppStatusListener(
+    base::android::ApplicationStatusListener* app_status_listener) {
+  app_status_listener_ = app_status_listener;
+}
+#endif
 
 //-----------------------------------------------------------------------------
 
 HttpCache::ActiveEntry::ActiveEntry(disk_cache::Entry* entry)
-    : disk_entry(entry),
-      writer(NULL),
-      will_process_pending_queue(false),
-      doomed(false) {
-}
+    : disk_entry(entry) {}
 
 HttpCache::ActiveEntry::~ActiveEntry() {
   if (disk_entry) {
     disk_entry->Close();
-    disk_entry = NULL;
+    disk_entry = nullptr;
   }
+}
+
+size_t HttpCache::ActiveEntry::EstimateMemoryUsage() const {
+  // Skip |disk_entry| which is tracked in simple_backend_impl; Skip |readers|
+  // and |add_to_entry_queue| because the Transactions are owned by their
+  // respective URLRequestHttpJobs.
+  return 0;
+}
+
+bool HttpCache::ActiveEntry::HasNoTransactions() {
+  return (!writers || writers->IsEmpty()) && readers.empty() &&
+         add_to_entry_queue.empty() && done_headers_queue.empty() &&
+         !headers_transaction;
+}
+
+bool HttpCache::ActiveEntry::SafeToDestroy() {
+  return HasNoTransactions() && !writers && !will_process_queued_transactions;
+}
+
+bool HttpCache::ActiveEntry::TransactionInReaders(
+    Transaction* transaction) const {
+  return readers.count(transaction) > 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -111,53 +137,60 @@ HttpCache::ActiveEntry::~ActiveEntry() {
 // This structure keeps track of work items that are attempting to create or
 // open cache entries or the backend itself.
 struct HttpCache::PendingOp {
-  PendingOp() : disk_entry(NULL), writer(NULL) {}
-  ~PendingOp() {}
+  PendingOp() : callback_will_delete(false) {}
+  ~PendingOp() = default;
 
-  disk_cache::Entry* disk_entry;
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const {
+    // Note that backend isn't counted because it doesn't provide an EMU
+    // function.
+    return base::trace_event::EstimateMemoryUsage(writer) +
+           base::trace_event::EstimateMemoryUsage(pending_queue);
+  }
+
+  disk_cache::EntryWithOpened disk_entry_struct;
+
   std::unique_ptr<disk_cache::Backend> backend;
-  WorkItem* writer;
-  CompletionCallback callback;  // BackendCallback.
+  std::unique_ptr<WorkItem> writer;
+  // True if there is a posted OnPendingOpComplete() task that might delete
+  // |this| without removing it from |pending_ops_|.  Note that since
+  // OnPendingOpComplete() is static, it will not get cancelled when HttpCache
+  // is destroyed.
+  bool callback_will_delete;
   WorkItemList pending_queue;
 };
 
 //-----------------------------------------------------------------------------
 
-// The type of operation represented by a work item.
-enum WorkItemOperation {
-  WI_CREATE_BACKEND,
-  WI_OPEN_ENTRY,
-  WI_CREATE_ENTRY,
-  WI_DOOM_ENTRY
-};
-
 // A work item encapsulates a single request to the backend with all the
 // information needed to complete that request.
 class HttpCache::WorkItem {
  public:
-  WorkItem(WorkItemOperation operation, Transaction* trans, ActiveEntry** entry)
+  WorkItem(WorkItemOperation operation,
+           Transaction* transaction,
+           ActiveEntry** entry)
       : operation_(operation),
-        trans_(trans),
+        transaction_(transaction),
         entry_(entry),
         backend_(NULL) {}
   WorkItem(WorkItemOperation operation,
-           Transaction* trans,
-           const CompletionCallback& cb,
+           Transaction* transaction,
+           CompletionOnceCallback callback,
            disk_cache::Backend** backend)
       : operation_(operation),
-        trans_(trans),
+        transaction_(transaction),
         entry_(NULL),
-        callback_(cb),
+        callback_(std::move(callback)),
         backend_(backend) {}
-  ~WorkItem() {}
+  ~WorkItem() = default;
 
   // Calls back the transaction with the result of the operation.
   void NotifyTransaction(int result, ActiveEntry* entry) {
     DCHECK(!entry || entry->disk_entry);
     if (entry_)
       *entry_ = entry;
-    if (trans_)
-      trans_->io_callback().Run(result);
+    if (transaction_)
+      transaction_->io_callback().Run(result);
   }
 
   // Notifies the caller about the operation completion. Returns true if the
@@ -166,24 +199,31 @@ class HttpCache::WorkItem {
     if (backend_)
       *backend_ = backend;
     if (!callback_.is_null()) {
-      callback_.Run(result);
+      std::move(callback_).Run(result);
       return true;
     }
     return false;
   }
 
   WorkItemOperation operation() { return operation_; }
-  void ClearTransaction() { trans_ = NULL; }
+  void ClearTransaction() { transaction_ = NULL; }
   void ClearEntry() { entry_ = NULL; }
   void ClearCallback() { callback_.Reset(); }
-  bool Matches(Transaction* trans) const { return trans == trans_; }
-  bool IsValid() const { return trans_ || entry_ || !callback_.is_null(); }
+  bool Matches(Transaction* transaction) const {
+    return transaction == transaction_;
+  }
+  bool IsValid() const {
+    return transaction_ || entry_ || !callback_.is_null();
+  }
+
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const { return 0; }
 
  private:
   WorkItemOperation operation_;
-  Transaction* trans_;
+  Transaction* transaction_;
   ActiveEntry** entry_;
-  CompletionCallback callback_;  // User callback.
+  CompletionOnceCallback callback_;  // User callback.
   disk_cache::Backend** backend_;
 };
 
@@ -193,13 +233,10 @@ class HttpCache::WorkItem {
 // to a given entry.
 class HttpCache::MetadataWriter {
  public:
-  explicit MetadataWriter(HttpCache::Transaction* trans)
-      : transaction_(trans),
-        verified_(false),
-        buf_len_(0) {
-  }
+  explicit MetadataWriter(HttpCache::Transaction* transaction)
+      : verified_(false), buf_len_(0), transaction_(transaction) {}
 
-  ~MetadataWriter() {}
+  ~MetadataWriter() = default;
 
   // Implements the bulk of HttpCache::WriteMetadata.
   void Write(const GURL& url,
@@ -212,12 +249,15 @@ class HttpCache::MetadataWriter {
   void SelfDestroy();
   void OnIOComplete(int result);
 
-  std::unique_ptr<HttpCache::Transaction> transaction_;
   bool verified_;
   scoped_refptr<IOBuffer> buf_;
   int buf_len_;
   base::Time expected_response_time_;
   HttpRequestInfo request_info_;
+
+  // |transaction_| to come after |request_info_| so that |request_info_| is not
+  // destroyed earlier.
+  std::unique_ptr<HttpCache::Transaction> transaction_;
   DISALLOW_COPY_AND_ASSIGN(MetadataWriter);
 };
 
@@ -230,7 +270,10 @@ void HttpCache::MetadataWriter::Write(const GURL& url,
   DCHECK(buf->data());
   request_info_.url = url;
   request_info_.method = "GET";
-  request_info_.load_flags = LOAD_ONLY_FROM_CACHE;
+
+  // todo (crbug.com/690099): Incorrect usage of LOAD_ONLY_FROM_CACHE.
+  request_info_.load_flags =
+      LOAD_ONLY_FROM_CACHE | LOAD_SKIP_CACHE_VALIDATION | LOAD_SKIP_VARY_CHECK;
 
   expected_response_time_ = expected_response_time;
   buf_ = buf;
@@ -240,7 +283,7 @@ void HttpCache::MetadataWriter::Write(const GURL& url,
   int rv = transaction_->Start(
       &request_info_,
       base::Bind(&MetadataWriter::OnIOComplete, base::Unretained(this)),
-      BoundNetLog());
+      NetLogWithSource());
   if (rv != ERR_IO_PENDING)
     VerifyResponse(rv);
 }
@@ -274,106 +317,89 @@ void HttpCache::MetadataWriter::OnIOComplete(int result) {
 }
 
 //-----------------------------------------------------------------------------
-
-class HttpCache::QuicServerInfoFactoryAdaptor : public QuicServerInfoFactory {
- public:
-  explicit QuicServerInfoFactoryAdaptor(HttpCache* http_cache)
-      : http_cache_(http_cache) {
-  }
-
-  QuicServerInfo* GetForServer(const QuicServerId& server_id) override {
-    return new DiskCacheBasedQuicServerInfo(server_id, http_cache_);
-  }
-
- private:
-  HttpCache* const http_cache_;
-};
-
-//-----------------------------------------------------------------------------
 HttpCache::HttpCache(HttpNetworkSession* session,
                      std::unique_ptr<BackendFactory> backend_factory,
-                     bool set_up_quic_server_info)
-    : HttpCache(base::WrapUnique(new HttpNetworkLayer(session)),
+                     bool is_main_cache)
+    : HttpCache(std::make_unique<HttpNetworkLayer>(session),
                 std::move(backend_factory),
-                set_up_quic_server_info) {}
+                is_main_cache) {}
 
 HttpCache::HttpCache(std::unique_ptr<HttpTransactionFactory> network_layer,
                      std::unique_ptr<BackendFactory> backend_factory,
-                     bool set_up_quic_server_info)
+                     bool is_main_cache)
     : net_log_(nullptr),
       backend_factory_(std::move(backend_factory)),
       building_backend_(false),
       bypass_lock_for_test_(false),
+      bypass_lock_after_headers_for_test_(false),
       fail_conditionalization_for_test_(false),
       mode_(NORMAL),
       network_layer_(std::move(network_layer)),
-      clock_(new base::DefaultClock()),
+      clock_(base::DefaultClock::GetInstance()),
       weak_factory_(this) {
   HttpNetworkSession* session = network_layer_->GetSession();
   // Session may be NULL in unittests.
   // TODO(mmenke): Seems like tests could be changed to provide a session,
   // rather than having logic only used in unit tests here.
-  if (session) {
-    net_log_ = session->net_log();
-    if (set_up_quic_server_info &&
-        !session->quic_stream_factory()->has_quic_server_info_factory()) {
-      // QuicStreamFactory takes ownership of QuicServerInfoFactoryAdaptor.
-      session->quic_stream_factory()->set_quic_server_info_factory(
-          new QuicServerInfoFactoryAdaptor(this));
-    }
-  }
+  if (!session)
+    return;
+
+  net_log_ = session->net_log();
+  if (!is_main_cache)
+    return;
+
+  session->SetServerPushDelegate(
+      std::make_unique<HttpCacheLookupManager>(this));
 }
 
 HttpCache::~HttpCache() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   // Transactions should see an invalid cache after this point; otherwise they
   // could see an inconsistent object (half destroyed).
   weak_factory_.InvalidateWeakPtrs();
 
   // If we have any active entries remaining, then we need to deactivate them.
-  // We may have some pending calls to OnProcessPendingQueue, but since those
-  // won't run (due to our destruction), we can simply ignore the corresponding
-  // will_process_pending_queue flag.
+  // We may have some pending tasks to process queued transactions ,but since
+  // those won't run (due to our destruction), we can simply ignore the
+  // corresponding flags.
   while (!active_entries_.empty()) {
-    ActiveEntry* entry = active_entries_.begin()->second;
-    entry->will_process_pending_queue = false;
-    entry->pending_queue.clear();
+    ActiveEntry* entry = active_entries_.begin()->second.get();
+    entry->will_process_queued_transactions = false;
+    entry->add_to_entry_queue.clear();
     entry->readers.clear();
-    entry->writer = NULL;
+    entry->done_headers_queue.clear();
+    entry->headers_transaction = nullptr;
+    entry->writers.reset();
     DeactivateEntry(entry);
   }
 
-  STLDeleteElements(&doomed_entries_);
+  doomed_entries_.clear();
 
   // Before deleting pending_ops_, we have to make sure that the disk cache is
   // done with said operations, or it will attempt to use deleted data.
   disk_cache_.reset();
 
-  PendingOpsMap::iterator pending_it = pending_ops_.begin();
-  for (; pending_it != pending_ops_.end(); ++pending_it) {
+  for (auto pending_it = pending_ops_.begin(); pending_it != pending_ops_.end();
+       ++pending_it) {
     // We are not notifying the transactions about the cache going away, even
     // though they are waiting for a callback that will never fire.
     PendingOp* pending_op = pending_it->second;
-    delete pending_op->writer;
+    pending_op->writer.reset();
     bool delete_pending_op = true;
-    if (building_backend_) {
+    if (building_backend_ && pending_op->callback_will_delete) {
       // If we don't have a backend, when its construction finishes it will
       // deliver the callbacks.
-      if (!pending_op->callback.is_null()) {
-        // If not null, the callback will delete the pending operation later.
-        delete_pending_op = false;
-      }
-    } else {
-      pending_op->callback.Reset();
+      delete_pending_op = false;
     }
 
-    STLDeleteElements(&pending_op->pending_queue);
+    pending_op->pending_queue.clear();
     if (delete_pending_op)
       delete pending_op;
   }
 }
 
 int HttpCache::GetBackend(disk_cache::Backend** backend,
-                          const CompletionCallback& callback) {
+                          CompletionOnceCallback callback) {
   DCHECK(!callback.is_null());
 
   if (disk_cache_.get()) {
@@ -381,7 +407,7 @@ int HttpCache::GetBackend(disk_cache::Backend** backend,
     return OK;
   }
 
-  return CreateBackend(backend, callback);
+  return CreateBackend(backend, std::move(callback));
 }
 
 disk_cache::Backend* HttpCache::GetCurrentBackend() const {
@@ -407,12 +433,12 @@ void HttpCache::WriteMetadata(const GURL& url,
   // Do lazy initialization of disk cache if needed.
   if (!disk_cache_.get()) {
     // We don't care about the result.
-    CreateBackend(NULL, CompletionCallback());
+    CreateBackend(NULL, CompletionOnceCallback());
   }
 
-  HttpCache::Transaction* trans =
+  HttpCache::Transaction* transaction =
       new HttpCache::Transaction(priority, this);
-  MetadataWriter* writer = new MetadataWriter(trans);
+  MetadataWriter* writer = new MetadataWriter(transaction);
 
   // The writer will self destruct when done.
   writer->Write(url, expected_response_time, buf, buf_len);
@@ -430,34 +456,40 @@ void HttpCache::CloseIdleConnections() {
     session->CloseIdleConnections();
 }
 
-void HttpCache::OnExternalCacheHit(const GURL& url,
-                                   const std::string& http_method) {
+void HttpCache::OnExternalCacheHit(
+    const GURL& url,
+    const std::string& http_method,
+    base::Optional<url::Origin> top_frame_origin) {
   if (!disk_cache_.get() || mode_ == DISABLE)
     return;
 
   HttpRequestInfo request_info;
   request_info.url = url;
   request_info.method = http_method;
+  request_info.top_frame_origin = std::move(top_frame_origin);
   std::string key = GenerateCacheKey(&request_info);
   disk_cache_->OnExternalCacheHit(key);
 }
 
-int HttpCache::CreateTransaction(RequestPriority priority,
-                                 std::unique_ptr<HttpTransaction>* trans) {
+int HttpCache::CreateTransaction(
+    RequestPriority priority,
+    std::unique_ptr<HttpTransaction>* transaction) {
   // Do lazy initialization of disk cache if needed.
   if (!disk_cache_.get()) {
     // We don't care about the result.
-    CreateBackend(NULL, CompletionCallback());
+    CreateBackend(NULL, CompletionOnceCallback());
   }
 
-   HttpCache::Transaction* transaction =
+  HttpCache::Transaction* new_transaction =
       new HttpCache::Transaction(priority, this);
-   if (bypass_lock_for_test_)
-    transaction->BypassLockForTest();
-   if (fail_conditionalization_for_test_)
-     transaction->FailConditionalizationForTest();
+  if (bypass_lock_for_test_)
+    new_transaction->BypassLockForTest();
+  if (bypass_lock_after_headers_for_test_)
+    new_transaction->BypassLockAfterHeadersForTest();
+  if (fail_conditionalization_for_test_)
+    new_transaction->FailConditionalizationForTest();
 
-  trans->reset(transaction);
+  transaction->reset(new_transaction);
   return OK;
 }
 
@@ -478,62 +510,113 @@ HttpCache::SetHttpNetworkTransactionFactoryForTesting(
   return old_network_layer;
 }
 
+void HttpCache::DumpMemoryStats(base::trace_event::ProcessMemoryDump* pmd,
+                                const std::string& parent_absolute_name) const {
+  // Skip tracking members like |clock_| and |backend_factory_| because they
+  // don't allocate.
+  std::string name = parent_absolute_name + "/http_cache";
+  base::trace_event::MemoryAllocatorDump* dump = pmd->CreateAllocatorDump(name);
+  size_t size = base::trace_event::EstimateMemoryUsage(active_entries_) +
+                base::trace_event::EstimateMemoryUsage(doomed_entries_) +
+                base::trace_event::EstimateMemoryUsage(playback_cache_map_) +
+                base::trace_event::EstimateMemoryUsage(pending_ops_);
+  if (disk_cache_)
+    size += disk_cache_->DumpMemoryStats(pmd, name);
+
+  dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
+                  base::trace_event::MemoryAllocatorDump::kUnitsBytes, size);
+}
+
 //-----------------------------------------------------------------------------
 
-int HttpCache::CreateBackend(disk_cache::Backend** backend,
-                             const CompletionCallback& callback) {
-  if (!backend_factory_.get())
-    return ERR_FAILED;
+net::Error HttpCache::CreateAndSetWorkItem(ActiveEntry** entry,
+                                           Transaction* transaction,
+                                           WorkItemOperation operation,
+                                           PendingOp* pending_op) {
+  auto item = std::make_unique<WorkItem>(operation, transaction, entry);
 
-  building_backend_ = true;
-
-  std::unique_ptr<WorkItem> item(
-      new WorkItem(WI_CREATE_BACKEND, NULL, callback, backend));
-
-  // This is the only operation that we can do that is not related to any given
-  // entry, so we use an empty key for it.
-  PendingOp* pending_op = GetPendingOp(std::string());
   if (pending_op->writer) {
-    if (!callback.is_null())
-      pending_op->pending_queue.push_back(item.release());
+    pending_op->pending_queue.push_back(std::move(item));
     return ERR_IO_PENDING;
   }
 
   DCHECK(pending_op->pending_queue.empty());
 
-  pending_op->writer = item.release();
-  pending_op->callback = base::Bind(&HttpCache::OnPendingOpComplete,
-                                    GetWeakPtr(), pending_op);
+  pending_op->writer = std::move(item);
+  return OK;
+}
 
-  int rv = backend_factory_->CreateBackend(net_log_, &pending_op->backend,
-                                           pending_op->callback);
-  if (rv != ERR_IO_PENDING) {
-    pending_op->writer->ClearCallback();
-    pending_op->callback.Run(rv);
+int HttpCache::CreateBackend(disk_cache::Backend** backend,
+                             CompletionOnceCallback callback) {
+  if (!backend_factory_.get())
+    return ERR_FAILED;
+
+  building_backend_ = true;
+
+  const bool callback_is_null = callback.is_null();
+  std::unique_ptr<WorkItem> item = std::make_unique<WorkItem>(
+      WI_CREATE_BACKEND, nullptr, std::move(callback), backend);
+
+  // This is the only operation that we can do that is not related to any given
+  // entry, so we use an empty key for it.
+  PendingOp* pending_op = GetPendingOp(std::string());
+  if (pending_op->writer) {
+    if (!callback_is_null)
+      pending_op->pending_queue.push_back(std::move(item));
+    return ERR_IO_PENDING;
   }
 
+  DCHECK(pending_op->pending_queue.empty());
+
+  pending_op->writer = std::move(item);
+
+  int rv = backend_factory_->CreateBackend(
+      net_log_, &pending_op->backend,
+      base::BindOnce(&HttpCache::OnPendingOpComplete, GetWeakPtr(),
+                     pending_op));
+  if (rv == ERR_IO_PENDING) {
+    pending_op->callback_will_delete = true;
+    return rv;
+  }
+
+  pending_op->writer->ClearCallback();
+  OnPendingOpComplete(GetWeakPtr(), pending_op, rv);
   return rv;
 }
 
-int HttpCache::GetBackendForTransaction(Transaction* trans) {
+int HttpCache::GetBackendForTransaction(Transaction* transaction) {
   if (disk_cache_.get())
     return OK;
 
   if (!building_backend_)
     return ERR_FAILED;
 
-  WorkItem* item =
-      new WorkItem(WI_CREATE_BACKEND, trans, CompletionCallback(), NULL);
+  std::unique_ptr<WorkItem> item = std::make_unique<WorkItem>(
+      WI_CREATE_BACKEND, transaction, CompletionOnceCallback(), nullptr);
   PendingOp* pending_op = GetPendingOp(std::string());
   DCHECK(pending_op->writer);
-  pending_op->pending_queue.push_back(item);
+  pending_op->pending_queue.push_back(std::move(item));
   return ERR_IO_PENDING;
 }
 
 // Generate a key that can be used inside the cache.
 std::string HttpCache::GenerateCacheKey(const HttpRequestInfo* request) {
   // Strip out the reference, username, and password sections of the URL.
-  std::string url = HttpUtil::SpecForRequest(request->url);
+  std::string url;
+
+  // If we're splitting the cache by top frame origin, then prefix the key with
+  // the origin.
+  if (request->top_frame_origin &&
+      base::FeatureList::IsEnabled(features::kSplitCacheByTopFrameOrigin)) {
+    // Prepend the key with "_dk_" to mark it as double keyed (and makes it an
+    // invalid url so that it doesn't get confused with a single-keyed
+    // entry). Separate the origin and url with invalid whitespace and control
+    // characters.
+    url = base::StrCat({"_dk_", request->top_frame_origin->Serialize(), " \n",
+                        HttpUtil::SpecForRequest(request->url)});
+  } else {
+    url = HttpUtil::SpecForRequest(request->url);
+  }
 
   DCHECK_NE(DISABLE, mode_);
   // No valid URL can begin with numerals, so we should not have to worry
@@ -544,11 +627,12 @@ std::string HttpCache::GenerateCacheKey(const HttpRequestInfo* request) {
                base::StringPrintf("%" PRId64 "/",
                                   request->upload_data_stream->identifier()));
   }
+
   return url;
 }
 
 void HttpCache::DoomActiveEntry(const std::string& key) {
-  ActiveEntriesMap::iterator it = active_entries_.find(key);
+  auto it = active_entries_.find(key);
   if (it == active_entries_.end())
     return;
 
@@ -558,62 +642,66 @@ void HttpCache::DoomActiveEntry(const std::string& key) {
   DCHECK_EQ(OK, rv);
 }
 
-int HttpCache::DoomEntry(const std::string& key, Transaction* trans) {
+int HttpCache::DoomEntry(const std::string& key, Transaction* transaction) {
   // Need to abandon the ActiveEntry, but any transaction attached to the entry
   // should not be impacted.  Dooming an entry only means that it will no
   // longer be returned by FindActiveEntry (and it will also be destroyed once
   // all consumers are finished with the entry).
-  ActiveEntriesMap::iterator it = active_entries_.find(key);
+  auto it = active_entries_.find(key);
   if (it == active_entries_.end()) {
-    DCHECK(trans);
-    return AsyncDoomEntry(key, trans);
+    DCHECK(transaction);
+    return AsyncDoomEntry(key, transaction);
   }
 
-  ActiveEntry* entry = it->second;
+  std::unique_ptr<ActiveEntry> entry = std::move(it->second);
   active_entries_.erase(it);
 
   // We keep track of doomed entries so that we can ensure that they are
   // cleaned up properly when the cache is destroyed.
-  doomed_entries_.insert(entry);
+  ActiveEntry* entry_ptr = entry.get();
+  DCHECK_EQ(0u, doomed_entries_.count(entry_ptr));
+  doomed_entries_[entry_ptr] = std::move(entry);
 
-  entry->disk_entry->Doom();
-  entry->doomed = true;
+  entry_ptr->disk_entry->Doom();
+  entry_ptr->doomed = true;
 
-  DCHECK(entry->writer || !entry->readers.empty() ||
-         entry->will_process_pending_queue);
+  DCHECK(!entry_ptr->SafeToDestroy());
   return OK;
 }
 
-int HttpCache::AsyncDoomEntry(const std::string& key, Transaction* trans) {
-  WorkItem* item = new WorkItem(WI_DOOM_ENTRY, trans, NULL);
+int HttpCache::AsyncDoomEntry(const std::string& key,
+                              Transaction* transaction) {
   PendingOp* pending_op = GetPendingOp(key);
-  if (pending_op->writer) {
-    pending_op->pending_queue.push_back(item);
-    return ERR_IO_PENDING;
+  int rv =
+      CreateAndSetWorkItem(nullptr, transaction, WI_DOOM_ENTRY, pending_op);
+  if (rv != OK)
+    return rv;
+
+  net::RequestPriority priority =
+      transaction ? transaction->priority() : net::LOWEST;
+  rv = disk_cache_->DoomEntry(key, priority,
+                              base::BindOnce(&HttpCache::OnPendingOpComplete,
+                                             GetWeakPtr(), pending_op));
+  if (rv == ERR_IO_PENDING) {
+    pending_op->callback_will_delete = true;
+    return rv;
   }
 
-  DCHECK(pending_op->pending_queue.empty());
-
-  pending_op->writer = item;
-  pending_op->callback = base::Bind(&HttpCache::OnPendingOpComplete,
-                                    GetWeakPtr(), pending_op);
-
-  int rv = disk_cache_->DoomEntry(key, pending_op->callback);
-  if (rv != ERR_IO_PENDING) {
-    item->ClearTransaction();
-    pending_op->callback.Run(rv);
-  }
-
+  pending_op->writer->ClearTransaction();
+  OnPendingOpComplete(GetWeakPtr(), pending_op, rv);
   return rv;
 }
 
-void HttpCache::DoomMainEntryForUrl(const GURL& url) {
+void HttpCache::DoomMainEntryForUrl(
+    const GURL& url,
+    base::Optional<url::Origin> top_frame_origin) {
   if (!disk_cache_)
     return;
 
   HttpRequestInfo temp_info;
   temp_info.url = url;
   temp_info.method = "GET";
+  temp_info.top_frame_origin = std::move(top_frame_origin);
   std::string key = GenerateCacheKey(&temp_info);
 
   // Defer to DoomEntry if there is an active entry, otherwise call
@@ -626,57 +714,47 @@ void HttpCache::DoomMainEntryForUrl(const GURL& url) {
 
 void HttpCache::FinalizeDoomedEntry(ActiveEntry* entry) {
   DCHECK(entry->doomed);
-  DCHECK(!entry->writer);
-  DCHECK(entry->readers.empty());
-  DCHECK(entry->pending_queue.empty());
+  DCHECK(entry->SafeToDestroy());
 
-  ActiveEntriesSet::iterator it = doomed_entries_.find(entry);
+  auto it = doomed_entries_.find(entry);
   DCHECK(it != doomed_entries_.end());
   doomed_entries_.erase(it);
-
-  delete entry;
 }
 
 HttpCache::ActiveEntry* HttpCache::FindActiveEntry(const std::string& key) {
-  ActiveEntriesMap::const_iterator it = active_entries_.find(key);
-  return it != active_entries_.end() ? it->second : NULL;
+  auto it = active_entries_.find(key);
+  return it != active_entries_.end() ? it->second.get() : nullptr;
 }
 
 HttpCache::ActiveEntry* HttpCache::ActivateEntry(
     disk_cache::Entry* disk_entry) {
   DCHECK(!FindActiveEntry(disk_entry->GetKey()));
   ActiveEntry* entry = new ActiveEntry(disk_entry);
-  active_entries_[disk_entry->GetKey()] = entry;
+  active_entries_[disk_entry->GetKey()] = base::WrapUnique(entry);
   return entry;
 }
 
 void HttpCache::DeactivateEntry(ActiveEntry* entry) {
-  DCHECK(!entry->will_process_pending_queue);
   DCHECK(!entry->doomed);
-  DCHECK(!entry->writer);
   DCHECK(entry->disk_entry);
-  DCHECK(entry->readers.empty());
-  DCHECK(entry->pending_queue.empty());
+  DCHECK(entry->SafeToDestroy());
 
   std::string key = entry->disk_entry->GetKey();
   if (key.empty())
     return SlowDeactivateEntry(entry);
 
-  ActiveEntriesMap::iterator it = active_entries_.find(key);
+  auto it = active_entries_.find(key);
   DCHECK(it != active_entries_.end());
-  DCHECK(it->second == entry);
+  DCHECK(it->second.get() == entry);
 
   active_entries_.erase(it);
-  delete entry;
 }
 
 // We don't know this entry's key so we have to find it without it.
 void HttpCache::SlowDeactivateEntry(ActiveEntry* entry) {
-  for (ActiveEntriesMap::iterator it = active_entries_.begin();
-       it != active_entries_.end(); ++it) {
-    if (it->second == entry) {
+  for (auto it = active_entries_.begin(); it != active_entries_.end(); ++it) {
+    if (it->second.get() == entry) {
       active_entries_.erase(it);
-      delete entry;
       break;
     }
   }
@@ -685,7 +763,7 @@ void HttpCache::SlowDeactivateEntry(ActiveEntry* entry) {
 HttpCache::PendingOp* HttpCache::GetPendingOp(const std::string& key) {
   DCHECK(!FindActiveEntry(key));
 
-  PendingOpsMap::const_iterator it = pending_ops_.find(key);
+  auto it = pending_ops_.find(key);
   if (it != pending_ops_.end())
     return it->second;
 
@@ -696,16 +774,15 @@ HttpCache::PendingOp* HttpCache::GetPendingOp(const std::string& key) {
 
 void HttpCache::DeletePendingOp(PendingOp* pending_op) {
   std::string key;
-  if (pending_op->disk_entry)
-    key = pending_op->disk_entry->GetKey();
+  if (pending_op->disk_entry_struct.entry)
+    key = pending_op->disk_entry_struct.entry->GetKey();
 
   if (!key.empty()) {
-    PendingOpsMap::iterator it = pending_ops_.find(key);
+    auto it = pending_ops_.find(key);
     DCHECK(it != pending_ops_.end());
     pending_ops_.erase(it);
   } else {
-    for (PendingOpsMap::iterator it = pending_ops_.begin();
-         it != pending_ops_.end(); ++it) {
+    for (auto it = pending_ops_.begin(); it != pending_ops_.end(); ++it) {
       if (it->second == pending_op) {
         pending_ops_.erase(it);
         break;
@@ -717,63 +794,88 @@ void HttpCache::DeletePendingOp(PendingOp* pending_op) {
   delete pending_op;
 }
 
-int HttpCache::OpenEntry(const std::string& key, ActiveEntry** entry,
-                         Transaction* trans) {
-  ActiveEntry* active_entry = FindActiveEntry(key);
-  if (active_entry) {
-    *entry = active_entry;
-    return OK;
-  }
+int HttpCache::OpenOrCreateEntry(const std::string& key,
+                                 ActiveEntry** entry,
+                                 Transaction* transaction) {
+  DCHECK(!FindActiveEntry(key));
 
-  WorkItem* item = new WorkItem(WI_OPEN_ENTRY, trans, entry);
   PendingOp* pending_op = GetPendingOp(key);
-  if (pending_op->writer) {
-    pending_op->pending_queue.push_back(item);
-    return ERR_IO_PENDING;
+  int rv = CreateAndSetWorkItem(entry, transaction, WI_OPEN_OR_CREATE_ENTRY,
+                                pending_op);
+  if (rv != OK)
+    return rv;
+
+  rv = disk_cache_->OpenOrCreateEntry(
+      key, transaction->priority(), &(pending_op->disk_entry_struct),
+      base::BindOnce(&HttpCache::OnPendingOpComplete, GetWeakPtr(),
+                     pending_op));
+
+  if (rv == ERR_IO_PENDING) {
+    pending_op->callback_will_delete = true;
+    return rv;
   }
 
-  DCHECK(pending_op->pending_queue.empty());
-
-  pending_op->writer = item;
-  pending_op->callback = base::Bind(&HttpCache::OnPendingOpComplete,
-                                    GetWeakPtr(), pending_op);
-
-  int rv = disk_cache_->OpenEntry(key, &(pending_op->disk_entry),
-                                  pending_op->callback);
-  if (rv != ERR_IO_PENDING) {
-    item->ClearTransaction();
-    pending_op->callback.Run(rv);
-  }
-
+  pending_op->writer->ClearTransaction();
+  OnPendingOpComplete(GetWeakPtr(), pending_op, rv);
   return rv;
 }
 
-int HttpCache::CreateEntry(const std::string& key, ActiveEntry** entry,
-                           Transaction* trans) {
+int HttpCache::OpenEntry(const std::string& key,
+                         ActiveEntry** entry,
+                         Transaction* transaction) {
+  DCHECK(!FindActiveEntry(key));
+
+  PendingOp* pending_op = GetPendingOp(key);
+  int rv = CreateAndSetWorkItem(entry, transaction, WI_OPEN_ENTRY, pending_op);
+  if (rv != OK)
+    return rv;
+
+  rv = disk_cache_->OpenEntry(key, transaction->priority(),
+                              &(pending_op->disk_entry_struct.entry),
+                              base::BindOnce(&HttpCache::OnPendingOpComplete,
+                                             GetWeakPtr(), pending_op));
+  // Manually set the opened flag as disk_cache::OpenEntry() doesn't use
+  // EntryWithOpened struct.
+  pending_op->disk_entry_struct.opened = true;
+
+  if (rv == ERR_IO_PENDING) {
+    pending_op->callback_will_delete = true;
+    return rv;
+  }
+
+  pending_op->writer->ClearTransaction();
+  OnPendingOpComplete(GetWeakPtr(), pending_op, rv);
+  return rv;
+}
+
+int HttpCache::CreateEntry(const std::string& key,
+                           ActiveEntry** entry,
+                           Transaction* transaction) {
   if (FindActiveEntry(key)) {
     return ERR_CACHE_RACE;
   }
 
-  WorkItem* item = new WorkItem(WI_CREATE_ENTRY, trans, entry);
   PendingOp* pending_op = GetPendingOp(key);
-  if (pending_op->writer) {
-    pending_op->pending_queue.push_back(item);
-    return ERR_IO_PENDING;
+  int rv =
+      CreateAndSetWorkItem(entry, transaction, WI_CREATE_ENTRY, pending_op);
+  if (rv != OK)
+    return rv;
+
+  rv = disk_cache_->CreateEntry(key, transaction->priority(),
+                                &(pending_op->disk_entry_struct.entry),
+                                base::BindOnce(&HttpCache::OnPendingOpComplete,
+                                               GetWeakPtr(), pending_op));
+  // Manually set the opened flag as disk_cache::CreateEntry() doesn't use
+  // EntryWithOpened struct.
+  pending_op->disk_entry_struct.opened = false;
+
+  if (rv == ERR_IO_PENDING) {
+    pending_op->callback_will_delete = true;
+    return rv;
   }
 
-  DCHECK(pending_op->pending_queue.empty());
-
-  pending_op->writer = item;
-  pending_op->callback = base::Bind(&HttpCache::OnPendingOpComplete,
-                                    GetWeakPtr(), pending_op);
-
-  int rv = disk_cache_->CreateEntry(key, &(pending_op->disk_entry),
-                                    pending_op->callback);
-  if (rv != ERR_IO_PENDING) {
-    item->ClearTransaction();
-    pending_op->callback.Run(rv);
-  }
-
+  pending_op->writer->ClearTransaction();
+  OnPendingOpComplete(GetWeakPtr(), pending_op, rv);
   return rv;
 }
 
@@ -785,195 +887,454 @@ void HttpCache::DestroyEntry(ActiveEntry* entry) {
   }
 }
 
-int HttpCache::AddTransactionToEntry(ActiveEntry* entry, Transaction* trans) {
+int HttpCache::AddTransactionToEntry(ActiveEntry* entry,
+                                     Transaction* transaction) {
   DCHECK(entry);
   DCHECK(entry->disk_entry);
-
-  // We implement a basic reader/writer lock for the disk cache entry.  If
-  // there is already a writer, then everyone has to wait for the writer to
-  // finish before they can access the cache entry.  There can be multiple
-  // readers.
-  //
-  // NOTE: If the transaction can only write, then the entry should not be in
-  // use (since any existing entry should have already been doomed).
-
-  if (entry->writer || entry->will_process_pending_queue) {
-    entry->pending_queue.push_back(trans);
-    return ERR_IO_PENDING;
-  }
-
-  if (trans->mode() & Transaction::WRITE) {
-    // transaction needs exclusive access to the entry
-    if (entry->readers.empty()) {
-      entry->writer = trans;
-    } else {
-      entry->pending_queue.push_back(trans);
-      return ERR_IO_PENDING;
-    }
-  } else {
-    // transaction needs read access to the entry
-    entry->readers.push_back(trans);
-  }
-
-  // We do this before calling EntryAvailable to force any further calls to
-  // AddTransactionToEntry to add their transaction to the pending queue, which
-  // ensures FIFO ordering.
-  if (!entry->writer && !entry->pending_queue.empty())
-    ProcessPendingQueue(entry);
-
-  return OK;
+  // Always add a new transaction to the queue to maintain FIFO order.
+  entry->add_to_entry_queue.push_back(transaction);
+  ProcessQueuedTransactions(entry);
+  return ERR_IO_PENDING;
 }
 
-void HttpCache::DoneWithEntry(ActiveEntry* entry, Transaction* trans,
-                              bool cancel) {
-  // If we already posted a task to move on to the next transaction and this was
-  // the writer, there is nothing to cancel.
-  if (entry->will_process_pending_queue && entry->readers.empty())
+int HttpCache::DoneWithResponseHeaders(ActiveEntry* entry,
+                                       Transaction* transaction,
+                                       bool is_partial) {
+  // If |transaction| is the current writer, do nothing. This can happen for
+  // range requests since they can go back to headers phase after starting to
+  // write.
+  if (entry->writers && entry->writers->HasTransaction(transaction)) {
+    DCHECK(is_partial && entry->writers->GetTransactionsCount() == 1);
+    return OK;
+  }
+
+  DCHECK_EQ(entry->headers_transaction, transaction);
+
+  entry->headers_transaction = nullptr;
+
+  // If transaction is responsible for writing the response body, then do not go
+  // through done_headers_queue for performance benefit. (Also, in case of
+  // writer transaction, the consumer sometimes depend on synchronous behaviour
+  // e.g. while computing raw headers size. (crbug.com/711766))
+  if ((transaction->mode() & Transaction::WRITE) && !entry->writers &&
+      entry->readers.empty()) {
+    AddTransactionToWriters(entry, transaction,
+                            CanTransactionJoinExistingWriters(transaction));
+    ProcessQueuedTransactions(entry);
+    return OK;
+  }
+
+  entry->done_headers_queue.push_back(transaction);
+  ProcessQueuedTransactions(entry);
+  return ERR_IO_PENDING;
+}
+
+void HttpCache::DoneWithEntry(ActiveEntry* entry,
+                              Transaction* transaction,
+                              bool entry_is_complete,
+                              bool is_partial) {
+  bool is_mode_read_only = transaction->mode() == Transaction::READ;
+
+  if (!entry_is_complete && !is_mode_read_only && is_partial)
+    entry->disk_entry->CancelSparseIO();
+
+  // Transaction is waiting in the done_headers_queue.
+  auto it = std::find(entry->done_headers_queue.begin(),
+                      entry->done_headers_queue.end(), transaction);
+  if (it != entry->done_headers_queue.end()) {
+    entry->done_headers_queue.erase(it);
+
+    // Restart other transactions if this transaction could have written
+    // response body.
+    if (!entry_is_complete && !is_mode_read_only)
+      ProcessEntryFailure(entry);
     return;
-
-  if (entry->writer) {
-    DCHECK(trans == entry->writer);
-
-    // Assume there was a failure.
-    bool success = false;
-    if (cancel) {
-      DCHECK(entry->disk_entry);
-      // This is a successful operation in the sense that we want to keep the
-      // entry.
-      success = trans->AddTruncatedFlag();
-      // The previous operation may have deleted the entry.
-      if (!trans->entry())
-        return;
-    }
-    DoneWritingToEntry(entry, success);
-  } else {
-    DoneReadingFromEntry(entry, trans);
   }
+
+  // Transaction is removed in the headers phase.
+  if (transaction == entry->headers_transaction) {
+    entry->headers_transaction = nullptr;
+
+    if (entry_is_complete || is_mode_read_only) {
+      ProcessQueuedTransactions(entry);
+    } else {
+      // Restart other transactions if this transaction could have written
+      // response body.
+      ProcessEntryFailure(entry);
+    }
+    return;
+  }
+
+  // Transaction is removed in the writing phase.
+  if (entry->writers && entry->writers->HasTransaction(transaction)) {
+    entry->writers->RemoveTransaction(transaction,
+                                      entry_is_complete /* success */);
+    return;
+  }
+
+  // Transaction is reading from the entry.
+  DCHECK(!entry->writers);
+  auto readers_it = entry->readers.find(transaction);
+  DCHECK(readers_it != entry->readers.end());
+  entry->readers.erase(readers_it);
+  ProcessQueuedTransactions(entry);
 }
 
-void HttpCache::DoneWritingToEntry(ActiveEntry* entry, bool success) {
-  DCHECK(entry->readers.empty());
+void HttpCache::WritersDoomEntryRestartTransactions(ActiveEntry* entry) {
+  DCHECK(!entry->writers->IsEmpty());
+  ProcessEntryFailure(entry);
+}
 
-  entry->writer = NULL;
+void HttpCache::WritersDoneWritingToEntry(ActiveEntry* entry,
+                                          bool success,
+                                          bool should_keep_entry,
+                                          TransactionSet make_readers) {
+  // Impacts the queued transactions in one of the following ways:
+  // - restart them but do not doom the entry since entry can be saved in
+  // its truncated form.
+  // - restart them and doom/destroy the entry since entry does not
+  // have valid contents.
+  // - let them continue by invoking their callback since entry is
+  // successfully written.
+  DCHECK(entry->writers);
+  DCHECK(entry->writers->IsEmpty());
+  DCHECK(success || make_readers.empty());
+
+  if (!success && should_keep_entry) {
+    // Restart already validated transactions so that they are able to read
+    // the truncated status of the entry.
+    RestartHeadersPhaseTransactions(entry);
+    entry->writers.reset();
+    if (entry->SafeToDestroy()) {
+      DestroyEntry(entry);
+    }
+    return;
+  }
 
   if (success) {
-    ProcessPendingQueue(entry);
-  } else {
-    DCHECK(!entry->will_process_pending_queue);
-
-    // We failed to create this entry.
-    TransactionList pending_queue;
-    pending_queue.swap(entry->pending_queue);
-
-    entry->disk_entry->Doom();
-    DestroyEntry(entry);
-
-    // We need to do something about these pending entries, which now need to
-    // be added to a new entry.
-    while (!pending_queue.empty()) {
-      // ERR_CACHE_RACE causes the transaction to restart the whole process.
-      pending_queue.front()->io_callback().Run(ERR_CACHE_RACE);
-      pending_queue.pop_front();
+    // Add any idle writers to readers.
+    for (auto* reader : make_readers) {
+      reader->WriteModeTransactionAboutToBecomeReader();
+      entry->readers.insert(reader);
     }
+    // Reset writers here so that WriteModeTransactionAboutToBecomeReader can
+    // access the network transaction.
+    entry->writers.reset();
+    ProcessQueuedTransactions(entry);
+  } else {
+    entry->writers.reset();
+    ProcessEntryFailure(entry);
   }
 }
 
-void HttpCache::DoneReadingFromEntry(ActiveEntry* entry, Transaction* trans) {
-  DCHECK(!entry->writer);
+void HttpCache::DoomEntryValidationNoMatch(ActiveEntry* entry) {
+  // Validating transaction received a non-matching response.
+  DCHECK(entry->headers_transaction);
 
-  TransactionList::iterator it =
-      std::find(entry->readers.begin(), entry->readers.end(), trans);
-  DCHECK(it != entry->readers.end());
+  entry->headers_transaction = nullptr;
+  if (entry->SafeToDestroy()) {
+    entry->disk_entry->Doom();
+    DestroyEntry(entry);
+    return;
+  }
 
-  entry->readers.erase(it);
+  DoomActiveEntry(entry->disk_entry->GetKey());
 
-  ProcessPendingQueue(entry);
+  // Restart only add_to_entry_queue transactions.
+  // Post task here to avoid a race in creating the entry between |transaction|
+  // and the add_to_entry_queue transactions. Reset the queued transaction's
+  // cache pending state so that in case it's destructor is invoked, it's ok
+  // for the transaction to not be found in this entry.
+  for (auto* transaction : entry->add_to_entry_queue) {
+    transaction->ResetCachePendingState();
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE,
+        base::BindOnce(transaction->io_callback(), net::ERR_CACHE_RACE));
+  }
+  entry->add_to_entry_queue.clear();
 }
 
-void HttpCache::ConvertWriterToReader(ActiveEntry* entry) {
-  DCHECK(entry->writer);
-  DCHECK(entry->writer->mode() == Transaction::READ_WRITE);
-  DCHECK(entry->readers.empty());
+void HttpCache::RemoveAllQueuedTransactions(ActiveEntry* entry,
+                                            TransactionList* list) {
+  // Process done_headers_queue before add_to_entry_queue to maintain FIFO
+  // order.
 
-  Transaction* trans = entry->writer;
+  for (auto* transaction : entry->done_headers_queue)
+    list->push_back(transaction);
+  entry->done_headers_queue.clear();
 
-  entry->writer = NULL;
-  entry->readers.push_back(trans);
+  for (auto* pending_transaction : entry->add_to_entry_queue)
+    list->push_back(pending_transaction);
+  entry->add_to_entry_queue.clear();
+}
 
-  ProcessPendingQueue(entry);
+void HttpCache::ProcessEntryFailure(ActiveEntry* entry) {
+  // The writer failed to completely write the response to
+  // the cache.
+
+  if (entry->headers_transaction)
+    RestartHeadersTransaction(entry);
+
+  TransactionList list;
+  RemoveAllQueuedTransactions(entry, &list);
+
+  if (entry->SafeToDestroy()) {
+    entry->disk_entry->Doom();
+    DestroyEntry(entry);
+  } else {
+    DoomActiveEntry(entry->disk_entry->GetKey());
+  }
+  // ERR_CACHE_RACE causes the transaction to restart the whole process.
+  for (auto* queued_transaction : list)
+    queued_transaction->io_callback().Run(net::ERR_CACHE_RACE);
+}
+
+void HttpCache::RestartHeadersPhaseTransactions(ActiveEntry* entry) {
+  if (entry->headers_transaction)
+    RestartHeadersTransaction(entry);
+
+  auto it = entry->done_headers_queue.begin();
+  while (it != entry->done_headers_queue.end()) {
+    Transaction* done_headers_transaction = *it;
+    it = entry->done_headers_queue.erase(it);
+    done_headers_transaction->io_callback().Run(net::ERR_CACHE_RACE);
+  }
+}
+
+void HttpCache::RestartHeadersTransaction(ActiveEntry* entry) {
+  entry->headers_transaction->SetValidatingCannotProceed();
+  entry->headers_transaction = nullptr;
+}
+
+void HttpCache::ProcessQueuedTransactions(ActiveEntry* entry) {
+  // Multiple readers may finish with an entry at once, so we want to batch up
+  // calls to OnProcessQueuedTransactions. This flag also tells us that we
+  // should not delete the entry before OnProcessQueuedTransactions runs.
+  if (entry->will_process_queued_transactions)
+    return;
+
+  entry->will_process_queued_transactions = true;
+
+  // Post a task instead of invoking the io callback of another transaction here
+  // to avoid re-entrancy.
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&HttpCache::OnProcessQueuedTransactions,
+                                GetWeakPtr(), entry));
+}
+
+void HttpCache::ProcessAddToEntryQueue(ActiveEntry* entry) {
+  DCHECK(!entry->add_to_entry_queue.empty());
+
+  // Note the entry may be new or may already have a response body written to
+  // it. In both cases, a transaction needs to wait since only one transaction
+  // can be in the headers phase at a time.
+  if (entry->headers_transaction) {
+    return;
+  }
+  Transaction* transaction = entry->add_to_entry_queue.front();
+  entry->add_to_entry_queue.erase(entry->add_to_entry_queue.begin());
+  entry->headers_transaction = transaction;
+
+  transaction->io_callback().Run(OK);
+}
+
+HttpCache::ParallelWritingPattern HttpCache::CanTransactionJoinExistingWriters(
+    Transaction* transaction) {
+  if (transaction->method() != "GET")
+    return PARALLEL_WRITING_NOT_JOIN_METHOD_NOT_GET;
+  if (transaction->partial())
+    return PARALLEL_WRITING_NOT_JOIN_RANGE;
+  if (transaction->mode() == Transaction::READ)
+    return PARALLEL_WRITING_NOT_JOIN_READ_ONLY;
+  if (transaction->GetResponseInfo()->headers &&
+      transaction->GetResponseInfo()->headers->GetContentLength() >
+          disk_cache_->MaxFileSize())
+    return PARALLEL_WRITING_NOT_JOIN_TOO_BIG_FOR_CACHE;
+  return PARALLEL_WRITING_JOIN;
+}
+
+void HttpCache::ProcessDoneHeadersQueue(ActiveEntry* entry) {
+  ParallelWritingPattern writers_pattern;
+  DCHECK(!entry->writers || entry->writers->CanAddWriters(&writers_pattern));
+  DCHECK(!entry->done_headers_queue.empty());
+
+  Transaction* transaction = entry->done_headers_queue.front();
+
+  ParallelWritingPattern parallel_writing_pattern =
+      CanTransactionJoinExistingWriters(transaction);
+  if (IsWritingInProgress(entry)) {
+    transaction->MaybeSetParallelWritingPatternForMetrics(
+        parallel_writing_pattern);
+    if (parallel_writing_pattern != PARALLEL_WRITING_JOIN) {
+      // TODO(shivanisha): Returning from here instead of checking the next
+      // transaction in the queue because the FIFO order is maintained
+      // throughout, until it becomes a reader or writer. May be at this point
+      // the ordering is not important but that would be optimizing a rare
+      // scenario where write mode transactions are insterspersed with read-only
+      // transactions.
+      return;
+    }
+    AddTransactionToWriters(entry, transaction, parallel_writing_pattern);
+  } else {  // no writing in progress
+    if (transaction->mode() & Transaction::WRITE) {
+      if (transaction->partial()) {
+        if (entry->readers.empty())
+          AddTransactionToWriters(entry, transaction, parallel_writing_pattern);
+        else
+          return;
+      } else {
+        // Add the transaction to readers since the response body should have
+        // already been written. (If it was the first writer about to start
+        // writing to the cache, it would have been added to writers in
+        // DoneWithResponseHeaders, thus no writers here signify the response
+        // was completely written).
+        transaction->WriteModeTransactionAboutToBecomeReader();
+        auto return_val = entry->readers.insert(transaction);
+        DCHECK(return_val.second);
+        transaction->MaybeSetParallelWritingPatternForMetrics(
+            PARALLEL_WRITING_NONE_CACHE_READ);
+      }
+    } else {  // mode READ
+      auto return_val = entry->readers.insert(transaction);
+      DCHECK(return_val.second);
+      transaction->MaybeSetParallelWritingPatternForMetrics(
+          PARALLEL_WRITING_NONE_CACHE_READ);
+    }
+  }
+
+  // Post another task to give a chance to more transactions to either join
+  // readers or another transaction to start parallel validation.
+  ProcessQueuedTransactions(entry);
+
+  entry->done_headers_queue.erase(entry->done_headers_queue.begin());
+  transaction->io_callback().Run(OK);
+}
+
+void HttpCache::AddTransactionToWriters(
+    ActiveEntry* entry,
+    Transaction* transaction,
+    ParallelWritingPattern parallel_writing_pattern) {
+  if (!entry->writers) {
+    entry->writers = std::make_unique<Writers>(this, entry);
+    transaction->MaybeSetParallelWritingPatternForMetrics(
+        PARALLEL_WRITING_CREATE);
+  } else {
+    ParallelWritingPattern writers_pattern;
+    DCHECK(entry->writers->CanAddWriters(&writers_pattern));
+    DCHECK_EQ(PARALLEL_WRITING_JOIN, writers_pattern);
+  }
+
+  Writers::TransactionInfo info(transaction->partial(),
+                                transaction->is_truncated(),
+                                *(transaction->GetResponseInfo()));
+
+  entry->writers->AddTransaction(transaction, parallel_writing_pattern,
+                                 transaction->priority(), info);
+}
+
+bool HttpCache::CanTransactionWriteResponseHeaders(ActiveEntry* entry,
+                                                   Transaction* transaction,
+                                                   bool is_partial,
+                                                   bool is_match) const {
+  // If |transaction| is the current writer, do nothing. This can happen for
+  // range requests since they can go back to headers phase after starting to
+  // write.
+  if (entry->writers && entry->writers->HasTransaction(transaction)) {
+    DCHECK(is_partial);
+    return true;
+  }
+
+  if (transaction != entry->headers_transaction)
+    return false;
+
+  if (!(transaction->mode() & Transaction::WRITE))
+    return false;
+
+  // If its not a match then check if it is the transaction responsible for
+  // writing the response body.
+  if (!is_match) {
+    return (!entry->writers || entry->writers->IsEmpty()) &&
+           entry->done_headers_queue.empty() && entry->readers.empty();
+  }
+
+  return true;
+}
+
+bool HttpCache::IsWritingInProgress(ActiveEntry* entry) const {
+  return entry->writers.get();
 }
 
 LoadState HttpCache::GetLoadStateForPendingTransaction(
-      const Transaction* trans) {
-  ActiveEntriesMap::const_iterator i = active_entries_.find(trans->key());
+    const Transaction* transaction) {
+  auto i = active_entries_.find(transaction->key());
   if (i == active_entries_.end()) {
     // If this is really a pending transaction, and it is not part of
     // active_entries_, we should be creating the backend or the entry.
     return LOAD_STATE_WAITING_FOR_CACHE;
   }
 
-  Transaction* writer = i->second->writer;
-  return writer ? writer->GetWriterLoadState() : LOAD_STATE_WAITING_FOR_CACHE;
+  Writers* writers = i->second->writers.get();
+  return !writers ? LOAD_STATE_WAITING_FOR_CACHE : writers->GetLoadState();
 }
 
-void HttpCache::RemovePendingTransaction(Transaction* trans) {
-  ActiveEntriesMap::const_iterator i = active_entries_.find(trans->key());
+void HttpCache::RemovePendingTransaction(Transaction* transaction) {
+  auto i = active_entries_.find(transaction->key());
   bool found = false;
   if (i != active_entries_.end())
-    found = RemovePendingTransactionFromEntry(i->second, trans);
+    found = RemovePendingTransactionFromEntry(i->second.get(), transaction);
 
   if (found)
     return;
 
   if (building_backend_) {
-    PendingOpsMap::const_iterator j = pending_ops_.find(std::string());
+    auto j = pending_ops_.find(std::string());
     if (j != pending_ops_.end())
-      found = RemovePendingTransactionFromPendingOp(j->second, trans);
+      found = RemovePendingTransactionFromPendingOp(j->second, transaction);
 
     if (found)
       return;
   }
 
-  PendingOpsMap::const_iterator j = pending_ops_.find(trans->key());
+  auto j = pending_ops_.find(transaction->key());
   if (j != pending_ops_.end())
-    found = RemovePendingTransactionFromPendingOp(j->second, trans);
+    found = RemovePendingTransactionFromPendingOp(j->second, transaction);
 
   if (found)
     return;
 
-  ActiveEntriesSet::iterator k = doomed_entries_.begin();
-  for (; k != doomed_entries_.end() && !found; ++k)
-    found = RemovePendingTransactionFromEntry(*k, trans);
+  for (auto k = doomed_entries_.begin(); k != doomed_entries_.end() && !found;
+       ++k) {
+    found = RemovePendingTransactionFromEntry(k->first, transaction);
+  }
 
   DCHECK(found) << "Pending transaction not found";
 }
 
 bool HttpCache::RemovePendingTransactionFromEntry(ActiveEntry* entry,
-                                                  Transaction* trans) {
-  TransactionList& pending_queue = entry->pending_queue;
+                                                  Transaction* transaction) {
+  TransactionList& add_to_entry_queue = entry->add_to_entry_queue;
 
-  TransactionList::iterator j =
-      find(pending_queue.begin(), pending_queue.end(), trans);
-  if (j == pending_queue.end())
+  auto j =
+      find(add_to_entry_queue.begin(), add_to_entry_queue.end(), transaction);
+  if (j == add_to_entry_queue.end())
     return false;
 
-  pending_queue.erase(j);
+  add_to_entry_queue.erase(j);
   return true;
 }
 
-bool HttpCache::RemovePendingTransactionFromPendingOp(PendingOp* pending_op,
-                                                      Transaction* trans) {
-  if (pending_op->writer->Matches(trans)) {
+bool HttpCache::RemovePendingTransactionFromPendingOp(
+    PendingOp* pending_op,
+    Transaction* transaction) {
+  if (pending_op->writer->Matches(transaction)) {
     pending_op->writer->ClearTransaction();
     pending_op->writer->ClearEntry();
     return true;
   }
   WorkItemList& pending_queue = pending_op->pending_queue;
 
-  WorkItemList::iterator it = pending_queue.begin();
-  for (; it != pending_queue.end(); ++it) {
-    if ((*it)->Matches(trans)) {
-      delete *it;
+  for (auto it = pending_queue.begin(); it != pending_queue.end(); ++it) {
+    if ((*it)->Matches(transaction)) {
       pending_queue.erase(it);
       return true;
     }
@@ -981,41 +1342,44 @@ bool HttpCache::RemovePendingTransactionFromPendingOp(PendingOp* pending_op,
   return false;
 }
 
-void HttpCache::ProcessPendingQueue(ActiveEntry* entry) {
-  // Multiple readers may finish with an entry at once, so we want to batch up
-  // calls to OnProcessPendingQueue.  This flag also tells us that we should
-  // not delete the entry before OnProcessPendingQueue runs.
-  if (entry->will_process_pending_queue)
-    return;
-  entry->will_process_pending_queue = true;
+void HttpCache::OnProcessQueuedTransactions(ActiveEntry* entry) {
+  entry->will_process_queued_transactions = false;
 
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&HttpCache::OnProcessPendingQueue, GetWeakPtr(), entry));
-}
-
-void HttpCache::OnProcessPendingQueue(ActiveEntry* entry) {
-  entry->will_process_pending_queue = false;
-  DCHECK(!entry->writer);
+  // Note that this function should only invoke one transaction's IO callback
+  // since its possible for IO callbacks' consumers to destroy the cache/entry.
 
   // If no one is interested in this entry, then we can deactivate it.
-  if (entry->pending_queue.empty()) {
-    if (entry->readers.empty())
-      DestroyEntry(entry);
+  if (entry->SafeToDestroy()) {
+    DestroyEntry(entry);
     return;
   }
 
-  // Promote next transaction from the pending queue.
-  Transaction* next = entry->pending_queue.front();
-  if ((next->mode() & Transaction::WRITE) && !entry->readers.empty())
-    return;  // Have to wait.
+  if (entry->done_headers_queue.empty() && entry->add_to_entry_queue.empty())
+    return;
 
-  entry->pending_queue.erase(entry->pending_queue.begin());
+  // To maintain FIFO order of transactions, done_headers_queue should be
+  // checked for processing before add_to_entry_queue.
 
-  int rv = AddTransactionToEntry(entry, next);
-  if (rv != ERR_IO_PENDING) {
-    next->io_callback().Run(rv);
+  // If another transaction is writing the response, let validated transactions
+  // wait till the response is complete. If the response is not yet started, the
+  // done_headers_queue transaction should start writing it.
+  if (!entry->done_headers_queue.empty()) {
+    ParallelWritingPattern reason = PARALLEL_WRITING_NONE;
+    if (entry->writers && !entry->writers->CanAddWriters(&reason)) {
+      if (reason != PARALLEL_WRITING_NONE) {
+        for (auto* done_headers_transaction : entry->done_headers_queue) {
+          done_headers_transaction->MaybeSetParallelWritingPatternForMetrics(
+              reason);
+        }
+      }
+    } else {
+      ProcessDoneHeadersQueue(entry);
+      return;
+    }
   }
+
+  if (!entry->add_to_entry_queue.empty())
+    ProcessAddToEntryQueue(entry);
 }
 
 void HttpCache::OnIOComplete(int result, PendingOp* pending_op) {
@@ -1025,25 +1389,26 @@ void HttpCache::OnIOComplete(int result, PendingOp* pending_op) {
   if (op == WI_CREATE_BACKEND)
     return OnBackendCreated(result, pending_op);
 
-  std::unique_ptr<WorkItem> item(pending_op->writer);
-  bool fail_requests = false;
+  std::unique_ptr<WorkItem> item = std::move(pending_op->writer);
+  bool try_restart_requests = false;
 
-  ActiveEntry* entry = NULL;
+  ActiveEntry* entry = nullptr;
   std::string key;
   if (result == OK) {
     if (op == WI_DOOM_ENTRY) {
       // Anything after a Doom has to be restarted.
-      fail_requests = true;
+      try_restart_requests = true;
     } else if (item->IsValid()) {
-      key = pending_op->disk_entry->GetKey();
-      entry = ActivateEntry(pending_op->disk_entry);
+      key = pending_op->disk_entry_struct.entry->GetKey();
+      entry = ActivateEntry(pending_op->disk_entry_struct.entry);
     } else {
       // The writer transaction is gone.
-      if (op == WI_CREATE_ENTRY)
-        pending_op->disk_entry->Doom();
-      pending_op->disk_entry->Close();
-      pending_op->disk_entry = NULL;
-      fail_requests = true;
+      if (!pending_op->disk_entry_struct.opened)
+        pending_op->disk_entry_struct.entry->Doom();
+
+      pending_op->disk_entry_struct.entry->Close();
+      pending_op->disk_entry_struct.entry = nullptr;
+      try_restart_requests = true;
     }
   }
 
@@ -1065,41 +1430,53 @@ void HttpCache::OnIOComplete(int result, PendingOp* pending_op) {
   item->NotifyTransaction(result, entry);
 
   while (!pending_items.empty()) {
-    item.reset(pending_items.front());
+    item = std::move(pending_items.front());
     pending_items.pop_front();
 
     if (item->operation() == WI_DOOM_ENTRY) {
       // A queued doom request is always a race.
-      fail_requests = true;
+      try_restart_requests = true;
     } else if (result == OK) {
       entry = FindActiveEntry(key);
       if (!entry)
-        fail_requests = true;
+        try_restart_requests = true;
     }
 
-    if (fail_requests) {
+    if (try_restart_requests) {
       item->NotifyTransaction(ERR_CACHE_RACE, NULL);
       continue;
     }
-
+    // At this point item->operation() is anything except Doom.
     if (item->operation() == WI_CREATE_ENTRY) {
       if (result == OK) {
-        // A second Create request, but the first request succeeded.
+        // Successful OpenOrCreate, Open, or Create followed by a Create.
         item->NotifyTransaction(ERR_CACHE_CREATE_FAILURE, NULL);
       } else {
-        if (op != WI_CREATE_ENTRY) {
-          // Failed Open followed by a Create.
+        if (op != WI_CREATE_ENTRY && op != WI_OPEN_OR_CREATE_ENTRY) {
+          // Failed Open or Doom followed by a Create.
           item->NotifyTransaction(ERR_CACHE_RACE, NULL);
-          fail_requests = true;
+          try_restart_requests = true;
         } else {
           item->NotifyTransaction(result, entry);
         }
       }
-    } else {
+    }
+    // item->operation() is OpenOrCreate or Open
+    else if (item->operation() == WI_OPEN_OR_CREATE_ENTRY) {
+      if ((op == WI_OPEN_ENTRY || op == WI_CREATE_ENTRY) && result != OK) {
+        // Failed Open or Create followed by an OpenOrCreate.
+        item->NotifyTransaction(ERR_CACHE_RACE, NULL);
+        try_restart_requests = true;
+      } else {
+        item->NotifyTransaction(result, entry);
+      }
+    }
+    // item->operation() is Open.
+    else {
       if (op == WI_CREATE_ENTRY && result != OK) {
         // Failed Create followed by an Open.
         item->NotifyTransaction(ERR_CACHE_RACE, NULL);
-        fail_requests = true;
+        try_restart_requests = true;
       } else {
         item->NotifyTransaction(result, entry);
       }
@@ -1112,6 +1489,7 @@ void HttpCache::OnPendingOpComplete(const base::WeakPtr<HttpCache>& cache,
                                     PendingOp* pending_op,
                                     int rv) {
   if (cache.get()) {
+    pending_op->callback_will_delete = false;
     cache->OnIOComplete(rv, pending_op);
   } else {
     // The callback was cancelled so we should delete the pending_op that
@@ -1121,12 +1499,9 @@ void HttpCache::OnPendingOpComplete(const base::WeakPtr<HttpCache>& cache,
 }
 
 void HttpCache::OnBackendCreated(int result, PendingOp* pending_op) {
-  std::unique_ptr<WorkItem> item(pending_op->writer);
+  std::unique_ptr<WorkItem> item = std::move(pending_op->writer);
   WorkItemOperation op = item->operation();
   DCHECK_EQ(WI_CREATE_BACKEND, op);
-
-  // We don't need the callback anymore.
-  pending_op->callback.Reset();
 
   if (backend_factory_.get()) {
     // We may end up calling OnBackendCreated multiple times if we have pending
@@ -1139,17 +1514,18 @@ void HttpCache::OnBackendCreated(int result, PendingOp* pending_op) {
   }
 
   if (!pending_op->pending_queue.empty()) {
-    WorkItem* pending_item = pending_op->pending_queue.front();
+    std::unique_ptr<WorkItem> pending_item =
+        std::move(pending_op->pending_queue.front());
     pending_op->pending_queue.pop_front();
     DCHECK_EQ(WI_CREATE_BACKEND, pending_item->operation());
 
     // We want to process a single callback at a time, because the cache may
     // go away from the callback.
-    pending_op->writer = pending_item;
+    pending_op->writer = std::move(pending_item);
 
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&HttpCache::OnBackendCreated, GetWeakPtr(),
-                              result, pending_op));
+        FROM_HERE, base::BindOnce(&HttpCache::OnBackendCreated, GetWeakPtr(),
+                                  result, pending_op));
   } else {
     building_backend_ = false;
     DeletePendingOp(pending_op);

@@ -16,8 +16,6 @@ namespace gfx {
 class Image;
 }
 
-class StatusIconMenuModelTest;
-
 // StatusIconMenuModel contains the state of the SimpleMenuModel as well as that
 // of its delegate. This is done so that we can easily identify when the menu
 // model state has changed and can tell the status icon to update the menu. This
@@ -30,10 +28,6 @@ class StatusIconMenuModel
  public:
   class Delegate {
    public:
-    // Notifies the delegate that the item with the specified command id was
-    // visually highlighted within the menu.
-    virtual void CommandIdHighlighted(int command_id);
-
     // Performs the action associates with the specified command id.
     // The passed |event_flags| are the flags from the event which issued this
     // command and they can be examined to find modifier keys.
@@ -82,7 +76,7 @@ class StatusIconMenuModel
   bool IsCommandIdEnabled(int command_id) const override;
   bool IsCommandIdVisible(int command_id) const override;
   bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override;
+                                  ui::Accelerator* accelerator) const override;
   bool IsItemForCommandIdDynamic(int command_id) const override;
   base::string16 GetLabelForCommandId(int command_id) const override;
   base::string16 GetSublabelForCommandId(int command_id) const override;
@@ -99,7 +93,6 @@ class StatusIconMenuModel
 
  private:
   // Overridden from ui::SimpleMenuModel::Delegate:
-  void CommandIdHighlighted(int command_id) override;
   void ExecuteCommand(int command_id, int event_flags) override;
 
   struct ItemState;
@@ -109,7 +102,7 @@ class StatusIconMenuModel
 
   ItemStateMap item_states_;
 
-  base::ObserverList<Observer> observer_list_;
+  base::ObserverList<Observer>::Unchecked observer_list_;
 
   Delegate* delegate_;
 

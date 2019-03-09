@@ -16,19 +16,17 @@
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/threading/thread.h"
-#include "base/threading/thread_restrictions.h"
-#include "content/browser/browser_thread_impl.h"
 #include "content/browser/download/drag_download_file.h"
 #include "content/browser/download/drag_download_util.h"
-#include "content/browser/renderer_host/render_view_host_impl.h"
-#include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/drop_data.h"
+#include "content/public/common/web_contents_ns_view_bridge.mojom.h"
 #include "net/base/escape.h"
 #include "net/base/filename_util.h"
 #include "net/base/mime_util.h"
+#include "ui/base/clipboard/clipboard_constants.h"
+#include "ui/base/clipboard/clipboard_util_mac.h"
 #include "ui/base/clipboard/custom_data_helper.h"
 #include "ui/base/cocoa/cocoa_base_utils.h"
 #include "ui/base/dragdrop/cocoa_dnd_util.h"
@@ -39,62 +37,7 @@
 using base::SysNSStringToUTF8;
 using base::SysUTF8ToNSString;
 using base::SysUTF16ToNSString;
-using content::BrowserThread;
-using content::DragDownloadFile;
 using content::DropData;
-using content::PromiseFileFinalizer;
-using content::RenderViewHostImpl;
-
-namespace {
-
-// An unofficial standard pasteboard title type to be provided alongside the
-// |NSURLPboardType|.
-NSString* const kNSURLTitlePboardType = @"public.url-name";
-
-// Converts a base::string16 into a FilePath. Use this method instead of
-// -[NSString fileSystemRepresentation] to prevent exceptions from being thrown.
-// See http://crbug.com/78782 for more info.
-base::FilePath FilePathFromFilename(const base::string16& filename) {
-  NSString* str = SysUTF16ToNSString(filename);
-  char buf[MAXPATHLEN];
-  if (![str getFileSystemRepresentation:buf maxLength:sizeof(buf)])
-    return base::FilePath();
-  return base::FilePath(buf);
-}
-
-// Returns a filename appropriate for the drop data
-// TODO(viettrungluu): Refactor to make it common across platforms,
-// and move it somewhere sensible.
-base::FilePath GetFileNameFromDragData(const DropData& drop_data) {
-  base::FilePath file_name(
-      FilePathFromFilename(drop_data.file_description_filename));
-
-  // Images without ALT text will only have a file extension so we need to
-  // synthesize one from the provided extension and URL.
-  if (file_name.empty()) {
-    // Retrieve the name from the URL.
-    base::string16 suggested_filename =
-        net::GetSuggestedFilename(drop_data.url, "", "", "", "", "");
-    const std::string extension = file_name.Extension();
-    file_name = FilePathFromFilename(suggested_filename);
-    file_name = file_name.ReplaceExtension(extension);
-  }
-
-  return file_name;
-}
-
-// This helper's sole task is to write out data for a promised file; the caller
-// is responsible for opening the file. It takes the drop data and an open file
-// stream.
-void PromiseWriterHelper(const DropData& drop_data,
-                         base::File file) {
-  DCHECK(file.IsValid());
-  file.WriteAtCurrentPos(drop_data.file_contents.data(),
-                         drop_data.file_contents.length());
-}
-
-}  // namespace
-
 
 @interface WebDragSource(Private)
 
@@ -106,16 +49,15 @@ void PromiseWriterHelper(const DropData& drop_data,
 
 @implementation WebDragSource
 
-- (id)initWithContents:(content::WebContentsImpl*)contents
-                  view:(NSView*)contentsView
-              dropData:(const DropData*)dropData
-                 image:(NSImage*)image
-                offset:(NSPoint)offset
-            pasteboard:(NSPasteboard*)pboard
-     dragOperationMask:(NSDragOperation)dragOperationMask {
+- (id)initWithClient:(content::mojom::WebContentsNSViewClient*)client
+                view:(NSView*)contentsView
+            dropData:(const DropData*)dropData
+               image:(NSImage*)image
+              offset:(NSPoint)offset
+          pasteboard:(NSPasteboard*)pboard
+   dragOperationMask:(NSDragOperation)dragOperationMask {
   if ((self = [super init])) {
-    contents_ = contents;
-    DCHECK(contents_);
+    client_ = client;
 
     contentsView_ = contentsView;
     DCHECK(contentsView_);
@@ -137,8 +79,8 @@ void PromiseWriterHelper(const DropData& drop_data,
   return self;
 }
 
-- (void)clearWebContentsView {
-  contents_ = nil;
+- (void)clearClientAndWebContentsView {
+  client_ = nullptr;
   contentsView_ = nil;
 }
 
@@ -167,27 +109,25 @@ void PromiseWriterHelper(const DropData& drop_data,
               forType:type];
 
   // URL.
-  } else if ([type isEqualToString:NSURLPboardType]) {
+  } else if ([type isEqualToString:NSURLPboardType] ||
+             [type isEqualToString:base::mac::CFToNSCast(kUTTypeURL)]) {
     DCHECK(dropData_->url.is_valid());
     NSURL* url = [NSURL URLWithString:SysUTF8ToNSString(dropData_->url.spec())];
     // If NSURL creation failed, check for a badly-escaped JavaScript URL.
     // Strip out any existing escapes and then re-escape uniformly.
     if (!url && dropData_->url.SchemeIs(url::kJavaScriptScheme)) {
-      net::UnescapeRule::Type unescapeRules =
-          net::UnescapeRule::SPACES | net::UnescapeRule::PATH_SEPARATORS |
-          net::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-          net::UnescapeRule::SPOOFING_AND_CONTROL_CHARS;
-      std::string unescapedUrlString =
-          net::UnescapeURLComponent(dropData_->url.spec(), unescapeRules);
+      std::string unescapedUrlString;
+      net::UnescapeBinaryURLComponent(dropData_->url.spec(),
+                                      &unescapedUrlString);
       std::string escapedUrlString =
           net::EscapeUrlEncodedData(unescapedUrlString, false);
       url = [NSURL URLWithString:SysUTF8ToNSString(escapedUrlString)];
     }
     [url writeToPasteboard:pboard];
   // URL title.
-  } else if ([type isEqualToString:kNSURLTitlePboardType]) {
+  } else if ([type isEqualToString:ui::kUTTypeURLName]) {
     [pboard setString:SysUTF16ToNSString(dropData_->url_title)
-              forType:kNSURLTitlePboardType];
+              forType:ui::kUTTypeURLName];
 
   // File contents.
   } else if ([type isEqualToString:base::mac::CFToNSCast(fileUTI_)]) {
@@ -267,77 +207,49 @@ void PromiseWriterHelper(const DropData& drop_data,
 
 - (void)endDragAt:(NSPoint)screenPoint
         operation:(NSDragOperation)operation {
-  if (!contents_ || !contentsView_)
+  if (!client_ || !contentsView_)
     return;
-  contents_->SystemDragEnded();
 
-  RenderViewHostImpl* rvh = static_cast<RenderViewHostImpl*>(
-      contents_->GetRenderViewHost());
-  if (rvh) {
-    // Convert |screenPoint| to view coordinates and flip it.
-    NSPoint localPoint = NSZeroPoint;
-    if ([contentsView_ window])
-      localPoint = [self convertScreenPoint:screenPoint];
-    NSRect viewFrame = [contentsView_ frame];
-    localPoint.y = viewFrame.size.height - localPoint.y;
-    // Flip |screenPoint|.
-    NSRect screenFrame = [[[contentsView_ window] screen] frame];
-    screenPoint.y = screenFrame.size.height - screenPoint.y;
-
-    // If AppKit returns a copy and move operation, mask off the move bit
-    // because WebCore does not understand what it means to do both, which
-    // results in an assertion failure/renderer crash.
-    if (operation == (NSDragOperationMove | NSDragOperationCopy))
-      operation &= ~NSDragOperationMove;
-
-    contents_->DragSourceEndedAt(localPoint.x, localPoint.y, screenPoint.x,
-        screenPoint.y, static_cast<blink::WebDragOperation>(operation));
+  if (dragImage_) {
+    screenPoint.x += imageOffset_.x;
+    // Deal with Cocoa's flipped coordinate system.
+    screenPoint.y += [dragImage_.get() size].height - imageOffset_.y;
   }
+
+  // Convert |screenPoint| to view coordinates and flip it.
+  NSPoint localPoint = NSZeroPoint;
+  if ([contentsView_ window])
+    localPoint = [self convertScreenPoint:screenPoint];
+  NSRect viewFrame = [contentsView_ frame];
+  // Flip |screenPoint|.
+  NSRect screenFrame = [[[contentsView_ window] screen] frame];
+
+  // If AppKit returns a copy and move operation, mask off the move bit
+  // because WebCore does not understand what it means to do both, which
+  // results in an assertion failure/renderer crash.
+  if (operation == (NSDragOperationMove | NSDragOperationCopy))
+    operation &= ~NSDragOperationMove;
+
+  client_->EndDrag(
+      operation,
+      gfx::PointF(localPoint.x, viewFrame.size.height - localPoint.y),
+      gfx::PointF(screenPoint.x, screenFrame.size.height - screenPoint.y));
 
   // Make sure the pasteboard owner isn't us.
   [pasteboard_ declareTypes:[NSArray array] owner:nil];
 }
 
 - (NSString*)dragPromisedFileTo:(NSString*)path {
+  if (!client_)
+    return nil;
   // Be extra paranoid; avoid crashing.
   if (!dropData_) {
     NOTREACHED() << "No drag-and-drop data available for promised file.";
     return nil;
   }
-
   base::FilePath filePath(SysNSStringToUTF8(path));
   filePath = filePath.Append(downloadFileName_);
-
-  // CreateFileForDrop() will call base::PathExists(),
-  // which is blocking.  Since this operation is already blocking the
-  // UI thread on OSX, it should be reasonable to let it happen.
-  base::ThreadRestrictions::ScopedAllowIO allowIO;
-  base::File file(content::CreateFileForDrop(&filePath));
-  if (!file.IsValid())
-    return nil;
-
-  if (downloadURL_.is_valid() && contents_) {
-    scoped_refptr<DragDownloadFile> dragFileDownloader(
-        new DragDownloadFile(filePath, std::move(file), downloadURL_,
-                             content::Referrer(contents_->GetLastCommittedURL(),
-                                               dropData_->referrer_policy),
-                             contents_->GetEncoding(), contents_));
-
-    // The finalizer will take care of closing and deletion.
-    dragFileDownloader->Start(new PromiseFileFinalizer(
-        dragFileDownloader.get()));
-  } else {
-    // The writer will take care of closing and deletion.
-    BrowserThread::PostTask(BrowserThread::FILE,
-                            FROM_HERE,
-                            base::Bind(&PromiseWriterHelper,
-                                       *dropData_,
-                                       base::Passed(&file)));
-  }
-
-  // The DragDownloadFile constructor may have altered the value of |filePath|
-  // if, say, an existing file at the drop site has the same name. Return the
-  // actual name that was used to write the file.
+  client_->DragPromisedFileTo(filePath, *dropData_, downloadURL_, &filePath);
   return SysUTF8ToNSString(filePath.BaseName().value());
 }
 
@@ -356,7 +268,9 @@ void PromiseWriterHelper(const DropData& drop_data,
 
   // URL (and title).
   if (dropData_->url.is_valid()) {
-    [pasteboard_ addTypes:@[ NSURLPboardType, kNSURLTitlePboardType ]
+    [pasteboard_ addTypes:@[
+      NSURLPboardType, ui::kUTTypeURLName, base::mac::CFToNSCast(kUTTypeURL)
+    ]
                     owner:contentsView_];
   }
 
@@ -366,9 +280,15 @@ void PromiseWriterHelper(const DropData& drop_data,
   // File.
   if (!dropData_->file_contents.empty() ||
       !dropData_->download_metadata.empty()) {
+    // TODO(https://crbug.com/898608): The |downloadFileName_| and
+    // |downloadURL_| values should be computed by the caller.
     if (dropData_->download_metadata.empty()) {
-      downloadFileName_ = GetFileNameFromDragData(*dropData_);
-      net::GetMimeTypeFromExtension(downloadFileName_.Extension(), &mimeType);
+      base::Optional<base::FilePath> suggestedFilename =
+          dropData_->GetSafeFilenameForImageFileContents();
+      if (suggestedFilename) {
+        downloadFileName_ = std::move(*suggestedFilename);
+        net::GetMimeTypeFromFile(downloadFileName_, &mimeType);
+      }
     } else {
       base::string16 mimeType16;
       base::FilePath fileName;

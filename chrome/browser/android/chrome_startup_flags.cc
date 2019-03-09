@@ -11,10 +11,10 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_switches.h"
-#include "components/browser_sync/common/browser_sync_switches.h"
+#include "components/browser_sync/browser_sync_switches.h"
 #include "components/dom_distiller/core/dom_distiller_switches.h"
 #include "media/base/media_switches.h"
 
@@ -36,10 +36,6 @@ void SetCommandLineSwitchASCII(const std::string& switch_string,
 }  // namespace
 
 void SetChromeSpecificCommandLineFlags() {
-  // Enable prerender for the omnibox.
-  SetCommandLineSwitchASCII(switches::kPrerenderFromOmnibox,
-                            switches::kPrerenderFromOmniboxSwitchValueEnabled);
-
   // Disable syncing favicons on low end devices.
   if (base::SysInfo::IsLowEndDevice())
     SetCommandLineSwitchASCII(switches::kDisableSyncTypes, "Favicon Images");

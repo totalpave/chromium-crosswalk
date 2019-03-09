@@ -8,21 +8,21 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
+#include <set>
 #include <vector>
 
 #include "base/macros.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/aura/client/focus_change_observer.h"
-#include "ui/aura/window_observer.h"
 #include "ui/views/views_export.h"
 
 namespace base {
-template <typename T> struct DefaultSingletonTraits;
-}
+template <typename T>
+class NoDestructor;
+}  // namespace base
 
 namespace aura {
-namespace client {
-class FocusClient;
-}
 class Window;
 }  // namespace aura
 
@@ -32,15 +32,25 @@ class View;
 class Widget;
 
 // A cache responsible for assigning id's to a set of interesting Aura views.
-class VIEWS_EXPORT AXAuraObjCache
-    : public aura::client::FocusChangeObserver,
-      public aura::WindowObserver {
+class VIEWS_EXPORT AXAuraObjCache : public aura::client::FocusChangeObserver {
  public:
   // Get the single instance of this class.
   static AXAuraObjCache* GetInstance();
 
-  // Get or create an entry in the cache based on an Aura view.
+  class Delegate {
+   public:
+    virtual ~Delegate() {}
+
+    virtual void OnChildWindowRemoved(AXAuraObjWrapper* parent) = 0;
+    virtual void OnEvent(AXAuraObjWrapper* aura_obj,
+                         ax::mojom::Event event_type) = 0;
+  };
+
+  // Get or create an entry in the cache. May return null if the View is not
+  // associated with a Widget.
   AXAuraObjWrapper* GetOrCreate(View* view);
+
+  // Get or create an entry in the cache.
   AXAuraObjWrapper* GetOrCreate(Widget* widget);
   AXAuraObjWrapper* GetOrCreate(aura::Window* window);
 
@@ -49,14 +59,13 @@ class VIEWS_EXPORT AXAuraObjCache
   int32_t GetID(Widget* widget) const;
   int32_t GetID(aura::Window* window) const;
 
-  // Gets the next unique id for this cache. Useful for non-Aura view backed
-  // views.
-  int32_t GetNextID() { return current_id_++; }
-
   // Removes an entry from this cache based on an Aura view.
   void Remove(View* view);
   void Remove(Widget* widget);
-  void Remove(aura::Window* window);
+
+  // Removes |window| and optionally notifies delegate by sending an event on
+  // the |parent| if provided.
+  void Remove(aura::Window* window, aura::Window* parent);
 
   // Removes a view and all of its descendants from the cache.
   void RemoveViewSubtree(View* view);
@@ -64,20 +73,36 @@ class VIEWS_EXPORT AXAuraObjCache
   // Lookup a cached entry based on an id.
   AXAuraObjWrapper* Get(int32_t id);
 
-  // Remove a cached entry based on an id.
-  void Remove(int32_t id);
-
-  // Get all top level windows this cache knows about.
+  // Get all top level windows this cache knows about. Under classic ash and
+  // SingleProcessMash this is a list of per-display root windows.
   void GetTopLevelWindows(std::vector<AXAuraObjWrapper*>* children);
 
   // Get the object that has focus.
   AXAuraObjWrapper* GetFocus();
 
-  // Indicates if this object's currently being destroyed.
-  bool is_destroying() { return is_destroying_; }
+  // Send a notification that the focused view may have changed.
+  void OnFocusedViewChanged();
+
+  // Tell our delegate to fire an event on a given object.
+  void FireEvent(AXAuraObjWrapper* aura_obj, ax::mojom::Event event_type);
+
+  // Notifies this cache of a change in root window.
+  void OnRootWindowObjCreated(aura::Window* window);
+
+  // Notifies this cache of a change in root window.
+  void OnRootWindowObjDestroyed(aura::Window* window);
+
+  void SetDelegate(Delegate* delegate) { delegate_ = delegate; }
+
+  // Changes the behavior of GetFocusedView() so that it only considers
+  // views within the given Widget, this enables making tests
+  // involving focus reliable.
+  void set_focused_widget_for_testing(views::Widget* widget) {
+    focused_widget_for_testing_ = widget;
+  }
 
  private:
-  friend struct base::DefaultSingletonTraits<AXAuraObjCache>;
+  friend class base::NoDestructor<AXAuraObjCache>;
 
   AXAuraObjCache();
   ~AXAuraObjCache() override;
@@ -87,9 +112,6 @@ class VIEWS_EXPORT AXAuraObjCache
   // aura::client::FocusChangeObserver override.
   void OnWindowFocused(aura::Window* gained_focus,
                        aura::Window* lost_focus) override;
-
-  // aura::WindowObserver override.
-  void OnWindowDestroying(aura::Window* window) override;
 
   template <typename AuraViewWrapper, typename AuraView>
   AXAuraObjWrapper* CreateInternal(
@@ -109,13 +131,13 @@ class VIEWS_EXPORT AXAuraObjCache
   std::map<views::Widget*, int32_t> widget_to_id_map_;
   std::map<aura::Window*, int32_t> window_to_id_map_;
 
-  std::map<int32_t, AXAuraObjWrapper*> cache_;
-  int32_t current_id_;
+  std::map<int32_t, std::unique_ptr<AXAuraObjWrapper>> cache_;
 
-  aura::client::FocusClient* focus_client_;
+  Delegate* delegate_ = nullptr;
 
-  // True immediately when entering this object's destructor.
-  bool is_destroying_;
+  std::set<aura::Window*> root_windows_;
+
+  views::Widget* focused_widget_for_testing_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(AXAuraObjCache);
 };

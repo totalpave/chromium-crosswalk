@@ -12,11 +12,13 @@
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
+#include "base/message_loop/message_loop.h"
 #include "base/process/process.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "ipc/ipc_channel_handle.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_macros.h"
-#include "ipc/ipc_platform_file.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/host/chromoting_messages.h"
 #include "remoting/host/desktop_session.h"
@@ -38,7 +40,8 @@ enum Messages {
   kMessageConnectTerminal = ChromotingNetworkHostMsg_ConnectTerminal::ID,
   kMessageDisconnectTerminal = ChromotingNetworkHostMsg_DisconnectTerminal::ID,
   kMessageTerminalDisconnected =
-      ChromotingDaemonNetworkMsg_TerminalDisconnected::ID
+      ChromotingDaemonNetworkMsg_TerminalDisconnected::ID,
+  kMessageReportProcessStats = ChromotingAnyToNetworkMsg_ReportProcessStats::ID,
 };
 
 // Provides a public constructor allowing the test to create instances of
@@ -74,10 +77,10 @@ class MockDaemonProcess : public DaemonProcess {
   MOCK_METHOD1(Sent, void(const IPC::Message&));
 
   MOCK_METHOD3(OnDesktopSessionAgentAttached,
-               bool(int, base::ProcessHandle, IPC::PlatformFileForTransit));
+               bool(int, int, const IPC::ChannelHandle&));
 
   MOCK_METHOD1(DoCreateDesktopSessionPtr, DesktopSession*(int));
-  MOCK_METHOD1(DoCrashNetworkProcess, void(const tracked_objects::Location&));
+  MOCK_METHOD1(DoCrashNetworkProcess, void(const base::Location&));
   MOCK_METHOD0(LaunchNetworkProcess, void());
 
  private:
@@ -88,8 +91,7 @@ FakeDesktopSession::FakeDesktopSession(DaemonProcess* daemon_process, int id)
     : DesktopSession(daemon_process, id) {
 }
 
-FakeDesktopSession::~FakeDesktopSession() {
-}
+FakeDesktopSession::~FakeDesktopSession() = default;
 
 MockDaemonProcess::MockDaemonProcess(
     scoped_refptr<AutoThreadTaskRunner> caller_task_runner,
@@ -98,8 +100,7 @@ MockDaemonProcess::MockDaemonProcess(
     : DaemonProcess(caller_task_runner, io_task_runner, stopped_callback) {
 }
 
-MockDaemonProcess::~MockDaemonProcess() {
-}
+MockDaemonProcess::~MockDaemonProcess() = default;
 
 std::unique_ptr<DesktopSession> MockDaemonProcess::DoCreateDesktopSession(
     int terminal_id,
@@ -134,7 +135,7 @@ class DaemonProcessTest : public testing::Test {
 
   // DaemonProcess mocks
   DesktopSession* DoCreateDesktopSession(int terminal_id);
-  void DoCrashNetworkProcess(const tracked_objects::Location& location);
+  void DoCrashNetworkProcess(const base::Location& location);
   void LaunchNetworkProcess();
 
   // Deletes |daemon_process_|.
@@ -159,8 +160,7 @@ class DaemonProcessTest : public testing::Test {
 DaemonProcessTest::DaemonProcessTest() : terminal_id_(0) {
 }
 
-DaemonProcessTest::~DaemonProcessTest() {
-}
+DaemonProcessTest::~DaemonProcessTest() = default;
 
 void DaemonProcessTest::SetUp() {
   scoped_refptr<AutoThreadTaskRunner> task_runner = new AutoThreadTaskRunner(
@@ -186,15 +186,14 @@ void DaemonProcessTest::SetUp() {
 
 void DaemonProcessTest::TearDown() {
   daemon_process_->Stop();
-  message_loop_.Run();
+  base::RunLoop().Run();
 }
 
 DesktopSession* DaemonProcessTest::DoCreateDesktopSession(int terminal_id) {
   return new FakeDesktopSession(daemon_process_.get(), terminal_id);
 }
 
-void DaemonProcessTest::DoCrashNetworkProcess(
-    const tracked_objects::Location& location) {
+void DaemonProcessTest::DoCrashNetworkProcess(const base::Location& location) {
   daemon_process_->SendToNetwork(
       new ChromotingDaemonMsg_Crash(location.function_name(),
                                     location.file_name(),
@@ -212,7 +211,7 @@ void DaemonProcessTest::DeleteDaemonProcess() {
 
 void DaemonProcessTest::QuitMessageLoop() {
   message_loop_.task_runner()->PostTask(
-      FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+      FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
 }
 
 void DaemonProcessTest::StartDaemonProcess() {
@@ -343,6 +342,59 @@ TEST_F(DaemonProcessTest, InvalidConnectTerminal) {
       ChromotingNetworkHostMsg_ConnectTerminal(id, resolution, false)));
   EXPECT_TRUE(desktop_sessions().empty());
   EXPECT_EQ(0, terminal_id_);
+}
+
+TEST_F(DaemonProcessTest, StartProcessStatsReport) {
+  EXPECT_CALL(*daemon_process_, Sent(Message(kMessageReportProcessStats)));
+  daemon_process_->OnMessageReceived(
+      ChromotingNetworkToAnyMsg_StartProcessStatsReport(
+          base::TimeDelta::FromMilliseconds(1)));
+  base::RunLoop run_loop;
+  ON_CALL(*daemon_process_, Sent(Message(kMessageReportProcessStats)))
+      .WillByDefault(testing::Invoke(
+          [&run_loop](const IPC::Message& message) {
+            run_loop.Quit();
+          }));
+  run_loop.Run();
+}
+
+TEST_F(DaemonProcessTest, StartProcessStatsReportWithDifferentDelta) {
+  EXPECT_CALL(*daemon_process_, Sent(Message(kMessageReportProcessStats)))
+      .Times(AnyNumber());
+  int received = 0;
+  daemon_process_->OnMessageReceived(
+      ChromotingNetworkToAnyMsg_StartProcessStatsReport(
+          base::TimeDelta::FromHours(1)));
+  daemon_process_->OnMessageReceived(
+      ChromotingNetworkToAnyMsg_StartProcessStatsReport(
+          base::TimeDelta::FromMilliseconds(1)));
+  base::RunLoop run_loop;
+  ON_CALL(*daemon_process_, Sent(Message(kMessageReportProcessStats)))
+      .WillByDefault(testing::Invoke(
+          [&run_loop, &received](const IPC::Message& message) {
+            received++;
+            if (received == 5) {
+              run_loop.Quit();
+            }
+          }));
+  run_loop.Run();
+}
+
+TEST_F(DaemonProcessTest, StopProcessStatsReportWhenTheWorkerProcessDied) {
+  daemon_process_->OnMessageReceived(
+      ChromotingNetworkToAnyMsg_StartProcessStatsReport(
+          base::TimeDelta::FromMilliseconds(1)));
+  base::RunLoop run_loop;
+  ON_CALL(*daemon_process_, Sent(Message(kMessageReportProcessStats)))
+      .WillByDefault(testing::Invoke(
+          [](const IPC::Message& message) {
+            ASSERT_TRUE(false);
+          }));
+  static_cast<WorkerProcessIpcDelegate*>(daemon_process_.get())
+      ->OnWorkerProcessStopped();
+  message_loop_.task_runner()->PostDelayedTask(
+      FROM_HERE, run_loop.QuitClosure(), base::TimeDelta::FromMilliseconds(10));
+  run_loop.Run();
 }
 
 }  // namespace remoting

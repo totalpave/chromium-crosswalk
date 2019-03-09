@@ -17,12 +17,15 @@
 #include "base/process/process_iterator.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/chromium_strings.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_child_process_host.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/process_type.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -47,6 +50,13 @@ void CollectProcessDataForChromeProcess(
   info.product_name = base::ASCIIToUTF16(version_info::GetProductName());
   info.version = base::ASCIIToUTF16(version_info::GetVersionNumber());
 
+  // A PortProvider is not necessary to acquire information about the number
+  // of open file descriptors.
+  std::unique_ptr<base::ProcessMetrics> metrics(
+      base::ProcessMetrics::CreateProcessMetrics(pid, nullptr));
+  info.num_open_fds = metrics->GetOpenFdCount();
+  info.open_fds_soft_limit = metrics->GetOpenFdSoftLimit();
+
   // Check if this is one of the child processes whose data was already
   // collected and exists in |child_data|.
   for (const ProcessMemoryInformation& child : child_info) {
@@ -56,11 +66,6 @@ void CollectProcessDataForChromeProcess(
       break;
     }
   }
-
-  std::unique_ptr<base::ProcessMetrics> metrics;
-  metrics.reset(base::ProcessMetrics::CreateProcessMetrics(
-      pid, content::BrowserChildProcessHost::GetPortProvider()));
-  metrics->GetCommittedAndWorkingSetKBytes(&info.committed, &info.working_set);
 
   processes->push_back(info);
 }
@@ -84,10 +89,8 @@ ProcessData* MemoryDetails::ChromeBrowser() {
 
 void MemoryDetails::CollectProcessData(
     const std::vector<ProcessMemoryInformation>& child_info) {
-  // TODO(ellyjones): Does this still need to be run in the blocking pool?
-  // It used to need to be because it ran /bin/ps, but it might not need to any
-  // more.
-  DCHECK(BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
 
   // Clear old data.
   process_data_[0].processes.clear();
@@ -126,7 +129,7 @@ void MemoryDetails::CollectProcessData(
     CollectProcessDataForChromeProcess(child_info, pid, chrome_processes);
 
   // Finally return to the browser thread.
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&MemoryDetails::CollectChildInfoOnUIThread, this));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&MemoryDetails::CollectChildInfoOnUIThread, this));
 }

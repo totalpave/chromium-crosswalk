@@ -21,19 +21,25 @@ public class ThreadUtils {
 
     private static final Object sLock = new Object();
 
-    private static boolean sWillOverride = false;
+    private static boolean sWillOverride;
 
-    private static Handler sUiThreadHandler = null;
+    private static Handler sUiThreadHandler;
 
-    public static void setWillOverrideUiThread() {
+    private static boolean sThreadAssertsDisabled;
+
+    public static void setWillOverrideUiThread(boolean willOverrideUiThread) {
         synchronized (sLock) {
-            sWillOverride = true;
+            sWillOverride = willOverrideUiThread;
         }
     }
 
-    @VisibleForTesting
     public static void setUiThread(Looper looper) {
         synchronized (sLock) {
+            if (looper == null) {
+                // Used to reset the looper after tests.
+                sUiThreadHandler = null;
+                return;
+            }
             if (sUiThreadHandler != null && sUiThreadHandler.getLooper() != looper) {
                 throw new RuntimeException("UI thread looper is already set to "
                         + sUiThreadHandler.getLooper() + " (Main thread looper is "
@@ -44,7 +50,7 @@ public class ThreadUtils {
         }
     }
 
-    private static Handler getUiThreadHandler() {
+    public static Handler getUiThreadHandler() {
         synchronized (sLock) {
             if (sUiThreadHandler == null) {
                 if (sWillOverride) {
@@ -71,7 +77,7 @@ public class ThreadUtils {
             try {
                 task.get();
             } catch (Exception e) {
-                throw new RuntimeException("Exception occured while waiting for runnable", e);
+                throw new RuntimeException("Exception occurred while waiting for runnable", e);
             }
         }
     }
@@ -88,7 +94,7 @@ public class ThreadUtils {
         try {
             return runOnUiThreadBlocking(c);
         } catch (ExecutionException e) {
-            throw new RuntimeException("Error occured waiting for callable", e);
+            throw new RuntimeException("Error occurred waiting for callable", e);
         }
     }
 
@@ -186,10 +192,49 @@ public class ThreadUtils {
     }
 
     /**
-     * Asserts that the current thread is running on the main thread.
+     * Throw an exception (when DCHECKs are enabled) if currently not running on the UI thread.
+     *
+     * Can be disabled by setThreadAssertsDisabledForTesting(true).
      */
     public static void assertOnUiThread() {
-        assert runningOnUiThread();
+        if (sThreadAssertsDisabled) return;
+
+        assert runningOnUiThread() : "Must be called on the UI thread.";
+    }
+
+    /**
+     * Throw an exception (regardless of build) if currently not running on the UI thread.
+     *
+     * Can be disabled by setThreadAssertsEnabledForTesting(false).
+     *
+     * @see #assertOnUiThread()
+     */
+    public static void checkUiThread() {
+        if (!sThreadAssertsDisabled && !runningOnUiThread()) {
+            throw new IllegalStateException("Must be called on the UI thread.");
+        }
+    }
+
+    /**
+     * Throw an exception (when DCHECKs are enabled) if currently running on the UI thread.
+     *
+     * Can be disabled by setThreadAssertsDisabledForTesting(true).
+     */
+    public static void assertOnBackgroundThread() {
+        if (sThreadAssertsDisabled) return;
+
+        assert !runningOnUiThread() : "Must be called on a thread other than UI.";
+    }
+
+    /**
+     * Disables thread asserts.
+     *
+     * Can be used by tests where code that normally runs multi-threaded is going to run
+     * single-threaded for the test (otherwise asserts that are valid in production would fail in
+     * those tests).
+     */
+    public static void setThreadAssertsDisabledForTesting(boolean disabled) {
+        sThreadAssertsDisabled = disabled;
     }
 
     /**

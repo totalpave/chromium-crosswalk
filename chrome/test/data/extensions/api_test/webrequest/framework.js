@@ -8,9 +8,11 @@ var expectedEventData;
 var capturedEventData;
 var capturedUnexpectedData;
 var expectedEventOrder;
+var networkServiceState = "unknown";
 var tabId;
 var tabIdMap;
 var frameIdMap;
+var testWebSocketPort;
 var testServerPort;
 var testServer = "www.a.com";
 var defaultScheme = "http";
@@ -26,6 +28,13 @@ var listeners = {
   'onCompleted': [],
   'onErrorOccurred': []
 };
+// Requests initiated by an extension or user interaction with the browser is a
+// BROWSER_INITIATED action. If the request was instead initiated by a website
+// or code run in the context of a website then it's WEB_INITIATED.
+const initiators = {
+  BROWSER_INITIATED: 2,
+  WEB_INITIATED: 3
+};
 
 // If true, don't bark on events that were not registered via expect().
 // These events are recorded in capturedUnexpectedData instead of
@@ -36,31 +45,77 @@ var ignoreUnexpected = false;
 // information whether they were expected.
 var logAllRequests = false;
 
+// Runs the |tests| using the |tab| as a default tab.
+function runTestsForTab(tests, tab) {
+  tabId = tab.id;
+  tabIdMap = {"-1": -1};
+  tabIdMap[tabId] = 0;
+  chrome.test.getConfig(function(config) {
+    testServerPort = config.testServer.port;
+    testWebSocketPort = config.testWebSocketPort;
+    chrome.test.runTests(tests);
+  });
+}
+
+// Creates an "about:blank" tab and runs |tests| with this tab as default.
 function runTests(tests) {
-  var waitForAboutBlank = function(_, info, tab) {
-    if (info.status == "complete" && tab.url == "about:blank") {
-      tabId = tab.id;
-      tabIdMap = {"-1": -1};
-      tabIdMap[tabId] = 0;
-      chrome.tabs.onUpdated.removeListener(waitForAboutBlank);
-      chrome.test.getConfig(function(config) {
-        testServerPort = config.testServer.port;
-        chrome.test.runTests(tests);
-      });
-    }
-  };
-  chrome.tabs.onUpdated.addListener(waitForAboutBlank);
-  chrome.tabs.create({url: "about:blank"});
+  chrome.test.getConfig(function(config) {
+    var waitForAboutBlank = function(_, info, tab) {
+      if (info.status == "complete" && tab.url == "about:blank") {
+        chrome.tabs.onUpdated.removeListener(waitForAboutBlank);
+        runTestsForTab(tests, tab);
+      }
+    };
+
+    if (config.customArg === "NetworkServiceEnabled")
+      networkServiceState = "enabled";
+    else if (config.customArg === "NetworkServiceDisabled")
+      networkServiceState = "disabled";
+
+    chrome.tabs.onUpdated.addListener(waitForAboutBlank);
+    chrome.tabs.create({url: "about:blank"});
+  });
 }
 
 // Returns an URL from the test server, fixing up the port. Must be called
 // from within a test case passed to runTests.
-function getServerURL(path, opt_host, opt_scheme) {
+function getServerURL(opt_path, opt_host, opt_scheme) {
   if (!testServerPort)
     throw new Error("Called getServerURL outside of runTests.");
   var host = opt_host || testServer;
   var scheme = opt_scheme || defaultScheme;
+  var path = opt_path || '';
   return scheme + "://" + host + ":" + testServerPort + "/" + path;
+}
+
+// Throws error if an invalid navigation type was presented.
+function validateNavigationType(navigationType) {
+  if (navigationType == undefined)
+    throw new Error("A navigation type must be defined.");
+  if(Object.values(initiators).indexOf(navigationType) === -1)
+    throw new Error("Unknown navigation type.");
+}
+
+// Similar to getURL without the path. The |navigationType| specifies if the
+// navigation was performed by the browser or the renderer. A browser initiated
+// navigation doesn't have an initiator.
+function getDomain(navigationType) {
+  validateNavigationType(navigationType);
+  if (navigationType == initiators.BROWSER_INITIATED)
+    return undefined;
+  else
+    return getURL('').slice(0,-1);
+}
+
+// Similar to getServerURL without the path. The |navigationType| specifies if
+// the navigation was performed by the browser or the renderer. A browser
+// initiated navigation doesn't have an initiator.
+function getServerDomain(navigationType, opt_host, opt_scheme) {
+  validateNavigationType(navigationType);
+  if (navigationType == initiators.BROWSER_INITIATED)
+    return undefined;
+  else
+    return getServerURL(undefined, opt_host, opt_scheme).slice(0, -1);
 }
 
 // Helper to advance to the next test only when the tab has finished loading.
@@ -70,18 +125,43 @@ function navigateAndWait(url, callback) {
   var done = chrome.test.listenForever(chrome.tabs.onUpdated,
       function (_, info, tab) {
     if (tab.id == tabId && info.status == "complete") {
-      if (callback) callback();
+      if (callback) callback(tab);
       done();
     }
   });
   chrome.tabs.update(tabId, {url: url});
 }
 
-// data: array of extected events, each one is a dictionary:
+function deepCopy(obj) {
+  if (obj === null)
+    return null;
+  if (typeof(obj) != 'object')
+    return obj;
+  if (Array.isArray(obj)) {
+    var tmp_array = new Array;
+    for (var i = 0; i < obj.length; i++) {
+      tmp_array.push(deepCopy(obj[i]));
+    }
+    return tmp_array;
+  }
+
+  var tmp_object = {}
+  for (var p in obj) {
+    tmp_object[p] = deepCopy(obj[p]);
+  }
+  return tmp_object;
+}
+
+// data: array of expected events, each one is a dictionary:
 //     { label: "<unique identifier>",
 //       event: "<webrequest event type>",
 //       details: { <expected details of the webrequest event> },
 //       retval: { <dictionary that the event handler shall return> } (optional)
+//       retval_function: <function to run when the event occurs, this overrides
+//                         any retval handling. The function takes
+//                         (name, details, optional callback). The value it
+//                         returns is returned out of the event
+//                         handler> (optional)
 //     }
 // order: an array of sequences, e.g. [ ["a", "b", "c"], ["d", "e"] ] means that
 //     event with label "a" needs to occur before event with label "b". The
@@ -94,6 +174,24 @@ function expect(data, order, filter, extraInfoSpec) {
   capturedEventData = [];
   capturedUnexpectedData = [];
   expectedEventOrder = order || [];
+
+  expectedEventData = expectedEventData.filter(function(event) {
+    if (!event.details.requiredNetworkServiceState)
+      return true;
+
+    if (networkServiceState == "unknown") {
+      chrome.test.fail("Test expectations specify a Network Service " +
+          "requirement, but the Network Service was neither explicitly set " +
+          "as enabled or disabled by the test runner. This test should be " +
+          "run with the custom argument NetworkServiceEnabled or " +
+          "NetworkServiceDisabled.");
+    }
+
+    var requiredState = event.details.requiredNetworkServiceState;
+    delete event.details.requiredNetworkServiceState;
+    return networkServiceState === requiredState;
+  });
+
   if (expectedEventData.length > 0) {
     eventsCaptured = chrome.test.callbackAdded();
   }
@@ -118,6 +216,10 @@ function expect(data, order, filter, extraInfoSpec) {
     }
     if (!('type' in expectedEventData[i].details)) {
       expectedEventData[i].details.type = "main_frame";
+    }
+    if ('initiator' in expectedEventData[i].details &&
+        expectedEventData[i].details.initiator == undefined) {
+      delete expectedEventData[i].details.initiator;
     }
   }
 }
@@ -204,23 +306,14 @@ function isUnexpectedDetachedRequest(name, details) {
 function captureEvent(name, details, callback) {
   // Ignore system-level requests like safebrowsing updates and favicon fetches
   // since they are unpredictable.
-  if (details.type == "other" ||
+  if ((details.type == "other" && !details.url.includes('dont-ignore-me')) ||
       isUnexpectedDetachedRequest(name, details) ||
       details.url.match(/\/favicon.ico$/) ||
-      details.url.match(/https:\/\/dl.google.com/))
+      details.url.match(/https:\/\/dl.google.com/)) {
     return;
-
-  // Pull the extra per-event options out of the expected data. These let
-  // us specify special return values per event.
-  var currentIndex = capturedEventData.length;
-  var extraOptions;
-  var retval;
-  if (expectedEventData.length > currentIndex) {
-    retval =
-        expectedEventData[currentIndex].retval_function ?
-        expectedEventData[currentIndex].retval_function(name, details) :
-        expectedEventData[currentIndex].retval;
   }
+
+  var originalDetails = deepCopy(details);
 
   // Check that the frameId can be used to reliably determine the URL of the
   // frame that caused requests.
@@ -267,41 +360,62 @@ function captureEvent(name, details, callback) {
     delete details.responseHeaders;
   }
 
-  // find |details| in expectedEventData
-  var found = false;
-  var label = undefined;
+  // Check if the equivalent event is already captured, and issue a unique
+  // |eventCount| to identify each.
+  var eventCount = 0;
+  capturedEventData.forEach(function (event) {
+    if (deepEq(event.event, name) && deepEq(event.details, details)) {
+      eventCount++;
+      // update |details| for the next match.
+      details.eventCount = eventCount;
+    }
+  });
+
+  // find |details| in matchingExpectedEventData
+  var matchingExpectedEvent = undefined;
   expectedEventData.forEach(function (exp) {
     if (deepEq(exp.event, name) && deepEq(exp.details, details)) {
-      if (found) {
-        chrome.test.fail("Received event twice '" + name + "':" +
-            JSON.stringify(details));
+      if (matchingExpectedEvent) {
+        chrome.test.fail("Duplicated expectation entry '" + exp.label +
+        "' should be identified by |eventCount|: " + JSON.stringify(details));
       } else {
-        found = true;
-        label = exp.label;
+        matchingExpectedEvent = exp;
       }
     }
   });
-  if (!found && !ignoreUnexpected) {
+  if (!matchingExpectedEvent && !ignoreUnexpected) {
     console.log("Expected events: " +
         JSON.stringify(expectedEventData, null, 2));
     chrome.test.fail("Received unexpected event '" + name + "':" +
         JSON.stringify(details, null, 2));
   }
 
-  if (found) {
+  var retval;
+  var retval_function;
+  if (matchingExpectedEvent) {
     if (logAllRequests) {
       console.log("Expected: " + name + ": " + JSON.stringify(details));
     }
-    capturedEventData.push({label: label, event: name, details: details});
+    capturedEventData.push(
+        {label: matchingExpectedEvent.label, event: name, details: details});
 
     // checkExpecations decrements the counter of pending events. We may only
     // call it if an expected event has occurred.
     checkExpectations();
+
+    // Pull the extra per-event options out of the expected data. These let us
+    // specify special return values per event.
+    retval = matchingExpectedEvent.retval;
+    retval_function = matchingExpectedEvent.retval_function;
   } else {
     if (logAllRequests) {
-      console.log("NOT Expected: " + name + ": " + JSON.stringify(details));
+      console.log('NOT Expected: ' + name + ': ' + JSON.stringify(details));
     }
-    capturedUnexpectedData.push({label: label, event: name, details: details});
+    capturedUnexpectedData.push({event: name, details: details});
+  }
+
+  if (retval_function) {
+    return retval_function(name, originalDetails, callback);
   }
 
   if (callback) {
@@ -338,7 +452,7 @@ function initListeners(filter, extraInfoSpec) {
   };
   listeners['onHeadersReceived'].push(onHeadersReceived);
 
-  var onAuthRequired = function(details) {
+  var onAuthRequired = function(details, callback) {
     return captureEvent("onAuthRequired", details, callback);
   };
   listeners['onAuthRequired'].push(onAuthRequired);
@@ -365,35 +479,37 @@ function initListeners(filter, extraInfoSpec) {
 
   chrome.webRequest.onBeforeRequest.addListener(
       onBeforeRequest, filter,
-      intersect(extraInfoSpec, ["blocking", "requestBody"]));
+      intersect(extraInfoSpec, ['blocking', 'requestBody']));
 
   chrome.webRequest.onBeforeSendHeaders.addListener(
       onBeforeSendHeaders, filter,
-      intersect(extraInfoSpec, ["blocking", "requestHeaders"]));
+      intersect(extraInfoSpec, ['blocking', 'requestHeaders', 'extraHeaders']));
 
   chrome.webRequest.onSendHeaders.addListener(
       onSendHeaders, filter,
-      intersect(extraInfoSpec, ["requestHeaders"]));
+      intersect(extraInfoSpec, ['requestHeaders', 'extraHeaders']));
 
   chrome.webRequest.onHeadersReceived.addListener(
       onHeadersReceived, filter,
-      intersect(extraInfoSpec, ["blocking", "responseHeaders"]));
+      intersect(extraInfoSpec, ['blocking', 'responseHeaders',
+                                'extraHeaders']));
 
   chrome.webRequest.onAuthRequired.addListener(
       onAuthRequired, filter,
-      intersect(extraInfoSpec, ["asyncBlocking", "blocking",
-                                "responseHeaders"]));
+      intersect(extraInfoSpec, ['asyncBlocking', 'blocking',
+                                'responseHeaders', 'extraHeaders']));
 
   chrome.webRequest.onResponseStarted.addListener(
       onResponseStarted, filter,
-      intersect(extraInfoSpec, ["responseHeaders"]));
+      intersect(extraInfoSpec, ['responseHeaders', 'extraHeaders']));
 
   chrome.webRequest.onBeforeRedirect.addListener(
-      onBeforeRedirect, filter, intersect(extraInfoSpec, ["responseHeaders"]));
+      onBeforeRedirect, filter, intersect(extraInfoSpec,
+      ['responseHeaders','extraHeaders']));
 
   chrome.webRequest.onCompleted.addListener(
       onCompleted, filter,
-      intersect(extraInfoSpec, ["responseHeaders"]));
+      intersect(extraInfoSpec, ['responseHeaders', 'extraHeaders']));
 
   chrome.webRequest.onErrorOccurred.addListener(onErrorOccurred, filter);
 }

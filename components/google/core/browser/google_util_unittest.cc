@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "components/google/core/common/google_util.h"
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
-#include "components/google/core/browser/google_switches.h"
 #include "components/google/core/browser/google_url_tracker.h"
-#include "components/google/core/browser/google_util.h"
+#include "components/google/core/common/google_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using google_util::IsGoogleDomainUrl;
@@ -64,6 +64,14 @@ TEST(GoogleUtilTest, GoodHomePagesNonSecure) {
   EXPECT_TRUE(IsHomePage("http://www.google.com/ig/foo"));
   EXPECT_TRUE(IsHomePage("http://www.google.com/ig?rlz=TEST"));
   EXPECT_TRUE(IsHomePage("http://www.google.com/ig/foo?rlz=TEST"));
+
+  // Accepted subdomains.
+  EXPECT_TRUE(IsHomePage("http://ipv4.google.com/"));
+  EXPECT_TRUE(IsHomePage("http://ipv6.google.com/"));
+
+  // Trailing dots.
+  EXPECT_TRUE(IsHomePage("http://ipv4.google.com./"));
+  EXPECT_TRUE(IsHomePage("http://google.com./"));
 }
 
 TEST(GoogleUtilTest, GoodHomePagesSecure) {
@@ -121,37 +129,54 @@ TEST(GoogleUtilTest, BadHomePages) {
 
   // Path is case sensitive.
   EXPECT_FALSE(IsHomePage("https://www.google.com/WEBHP"));
+
+  // Only .com subdomain and no www.
+  EXPECT_FALSE(IsHomePage("http://ipv4.google.co.uk"));
+  EXPECT_FALSE(IsHomePage("http://www.ipv4.google.com"));
 }
 
 TEST(GoogleUtilTest, GoodSearches) {
   const std::string patterns[] = {
-    // Queries with path "/search" need to have the query parameter in either
-    // the url parameter or the hash fragment.
-    "%s://www.google.com/search?%s=something",
-    "%s://www.google.com/search#%s=something",
-    "%s://www.google.com/search?name=bob&%s=something",
-    "%s://www.google.com/search?name=bob#%s=something",
-    "%s://www.google.com/search?name=bob#age=24&%s=thng",
-    "%s://www.google.co.uk/search?%s=something",
-    // It's actually valid for both to have the query parameter.
-    "%s://www.google.com/search?%s=something#q=other",
+      // Queries with path "/search" need to have the query parameter in either
+      // the url parameter or the hash fragment.
+      "%s://www.google.com/search?%s=something",
+      "%s://www.google.com/search#%s=something",
+      "%s://www.google.com/search?name=bob&%s=something",
+      "%s://www.google.com/search?name=bob#%s=something",
+      "%s://www.google.com/search?name=bob#age=24&%s=thng",
+      "%s://www.google.co.uk/search?%s=something",
+      // It's actually valid for both to have the query parameter.
+      "%s://www.google.com/search?%s=something#q=other",
+      // Also valid to have an empty query parameter
+      "%s://www.google.com/search?%s=",
 
-    // Queries with path "/webhp", "/" or "" need to have the query parameter in
-    // the hash fragment.
-    "%s://www.google.com/webhp#%s=something",
-    "%s://www.google.com/webhp#name=bob&%s=something",
-    "%s://www.google.com/webhp?name=bob#%s=something",
-    "%s://www.google.com/webhp?name=bob#age=24&%s=thing",
+      // Queries with path "/webhp", "/" or "" need to have the query parameter
+      // in the hash fragment.
+      "%s://www.google.com/webhp#%s=something",
+      "%s://www.google.com/webhp#name=bob&%s=something",
+      "%s://www.google.com/webhp?name=bob#%s=something",
+      "%s://www.google.com/webhp?name=bob#age=24&%s=thing",
 
-    "%s://www.google.com/#%s=something",
-    "%s://www.google.com/#name=bob&%s=something",
-    "%s://www.google.com/?name=bob#%s=something",
-    "%s://www.google.com/?name=bob#age=24&%s=something",
+      "%s://www.google.com/#%s=something",
+      "%s://www.google.com/#name=bob&%s=something",
+      "%s://www.google.com/?name=bob#%s=something",
+      "%s://www.google.com/?name=bob#age=24&%s=something",
 
-    "%s://www.google.com#%s=something",
-    "%s://www.google.com#name=bob&%s=something",
-    "%s://www.google.com?name=bob#%s=something",
-    "%s://www.google.com?name=bob#age=24&%s=something"
+      "%s://www.google.com#%s=something",
+      "%s://www.google.com#name=bob&%s=something",
+      "%s://www.google.com?name=bob#%s=something",
+      "%s://www.google.com?name=bob#age=24&%s=something",
+
+      // Google subdomain queries.
+      "%s://ipv4.google.com/search?%s=something",
+      "%s://ipv4.google.com#name=bob&%s=something",
+      "%s://ipv6.google.com?name=bob#%s=something",
+      "%s://ipv6.google.com?name=bob#age=24&%s=something",
+
+      // Trailing dots in the hosts.
+      "%s://www.google.com./#%s=something", "%s://www.google.de./#%s=something",
+      "%s://ipv4.google.com./#%s=something",
+      "%s://ipv6.google.com./#%s=something",
   };
 
   for (const std::string& pattern : patterns) {
@@ -193,12 +218,6 @@ TEST(GoogleUtilTest, BadSearches) {
   }
 
   const std::string patterns_q[] = {
-    // Can't have an empty query parameter.
-    "%s://www.google.com/search?%s=",
-    "%s://www.google.com/search?name=bob&%s=",
-    "%s://www.google.com/webhp#%s=",
-    "%s://www.google.com/webhp#name=bob&%s=",
-
     // Home page searches without a hash fragment query parameter are invalid.
     "%s://www.google.com/webhp?%s=something",
     "%s://www.google.com/webhp?%s=something#no=good",
@@ -239,7 +258,7 @@ TEST(GoogleUtilTest, GoogleDomains) {
   EXPECT_TRUE(IsGoogleDomainUrl(GURL("http://www.google.ca"),
                                 google_util::ALLOW_SUBDOMAIN,
                                 google_util::DISALLOW_NON_STANDARD_PORTS));
-  EXPECT_TRUE(IsGoogleDomainUrl(GURL("http://www.google.biz.tj"),
+  EXPECT_TRUE(IsGoogleDomainUrl(GURL("http://www.google.off.ai"),
                                 google_util::ALLOW_SUBDOMAIN,
                                 google_util::DISALLOW_NON_STANDARD_PORTS));
   EXPECT_TRUE(IsGoogleDomainUrl(GURL("http://www.google.com/search?q=thing"),
@@ -249,14 +268,20 @@ TEST(GoogleUtilTest, GoogleDomains) {
                                 google_util::ALLOW_SUBDOMAIN,
                                 google_util::DISALLOW_NON_STANDARD_PORTS));
 
-  // Test some bad Google domains (invalid TLDs).
+  // Test some bad Google domains (invalid/non-Google TLDs).
   EXPECT_FALSE(IsGoogleDomainUrl(GURL("http://www.google.notrealtld"),
+                                 google_util::ALLOW_SUBDOMAIN,
+                                 google_util::DISALLOW_NON_STANDARD_PORTS));
+  EXPECT_FALSE(IsGoogleDomainUrl(GURL("http://www.google.sd"),
                                  google_util::ALLOW_SUBDOMAIN,
                                  google_util::DISALLOW_NON_STANDARD_PORTS));
   EXPECT_FALSE(IsGoogleDomainUrl(GURL("http://www.google.faketld/search?q=q"),
                                  google_util::ALLOW_SUBDOMAIN,
                                  google_util::DISALLOW_NON_STANDARD_PORTS));
   EXPECT_FALSE(IsGoogleDomainUrl(GURL("http://www.yahoo.com"),
+                                 google_util::ALLOW_SUBDOMAIN,
+                                 google_util::DISALLOW_NON_STANDARD_PORTS));
+  EXPECT_FALSE(IsGoogleDomainUrl(GURL("http://www.google.biz.tj"),
                                  google_util::ALLOW_SUBDOMAIN,
                                  google_util::DISALLOW_NON_STANDARD_PORTS));
 
@@ -422,4 +447,30 @@ TEST(GoogleUtilTest, YoutubeDomains) {
   EXPECT_FALSE(IsYoutubeDomainUrl(GURL("file://www.youtube.com"),
                                   google_util::DISALLOW_SUBDOMAIN,
                                   google_util::DISALLOW_NON_STANDARD_PORTS));
+}
+
+TEST(GoogleUtilTest, GoogleAssociatedDomains) {
+  EXPECT_FALSE(google_util::IsGoogleAssociatedDomainUrl(GURL()));
+
+  EXPECT_FALSE(google_util::IsGoogleAssociatedDomainUrl(GURL("invalid")));
+
+  EXPECT_FALSE(
+      google_util::IsGoogleAssociatedDomainUrl(GURL("https://myblog.com.au")));
+
+  // A typical URL for a Google production API.
+  EXPECT_TRUE(google_util::IsGoogleAssociatedDomainUrl(
+      GURL("https://myapi-pa.googleapis.com/v1/myservice")));
+
+  // A typical URL for a test instance of a Google API.
+  EXPECT_TRUE(google_util::IsGoogleAssociatedDomainUrl(
+      GURL("https://daily0-myapi-pa.sandbox.googleapis.com/v1/myservice")));
+
+  // A Google production API with parameters.
+  EXPECT_TRUE(google_util::IsGoogleAssociatedDomainUrl(
+      GURL("https://myapi-pa.googleapis.com/v1/myservice?k1=v1&k2=v2")));
+
+  // A Google test API with parameters.
+  EXPECT_TRUE(google_util::IsGoogleAssociatedDomainUrl(
+      GURL("https://daily0-myapi-pa.sandbox.googleapis.com/v1/"
+           "myservice?k1=v1&k2=v2")));
 }

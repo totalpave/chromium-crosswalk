@@ -12,14 +12,16 @@
 #include <ApplicationServices/ApplicationServices.h>
 #endif
 
+#include "base/numerics/clamped_math.h"
 #include "base/numerics/safe_math.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
+#include "ui/gfx/geometry/safe_integer_conversions.h"
 #include "ui/gfx/geometry/size_conversions.h"
 
 namespace gfx {
 
-#if defined(OS_MACOSX)
+#if defined(OS_MACOSX) || defined(OS_IOS)
 Size::Size(const CGSize& s)
     : width_(s.width < 0 ? 0 : s.width),
       height_(s.height < 0 ? 0 : s.height) {
@@ -39,7 +41,7 @@ SIZE Size::ToSIZE() const {
   s.cy = height();
   return s;
 }
-#elif defined(OS_MACOSX)
+#elif defined(OS_MACOSX) || defined(OS_IOS)
 CGSize Size::ToCGSize() const {
   return CGSizeMake(width(), height());
 }
@@ -56,7 +58,8 @@ base::CheckedNumeric<int> Size::GetCheckedArea() const {
 }
 
 void Size::Enlarge(int grow_width, int grow_height) {
-  SetSize(width() + grow_width, height() + grow_height);
+  SetSize(base::ClampAdd(width(), grow_width),
+          base::ClampAdd(height(), grow_height));
 }
 
 void Size::SetToMin(const Size& other) {

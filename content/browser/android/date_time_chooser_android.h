@@ -16,7 +16,6 @@
 
 namespace content {
 
-class ContentViewCore;
 class RenderViewHost;
 struct DateTimeSuggestion;
 
@@ -53,9 +52,6 @@ class DateTimeChooserAndroid {
 
   DISALLOW_COPY_AND_ASSIGN(DateTimeChooserAndroid);
 };
-
-// Native JNI methods
-bool RegisterDateTimeChooserAndroid(JNIEnv* env);
 
 }  // namespace content
 

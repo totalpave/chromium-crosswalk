@@ -19,10 +19,12 @@ public interface BrowserParts {
 
     /**
      * Called during {@link ChromeBrowserInitializer#handlePreNativeStartup(BrowserParts)}.
-     * It should include a call to setContentView and also should start loading libraries using
-     * {@link NativeInitializationController#startBackgroundTasks()}
+     * It should start layout inflation and also should start loading libraries
+     * using {@link NativeInitializationController#startBackgroundTasks}. The {@param
+     * onInflationCompleteCallback} should be called once inflation is complete and the content view
+     * has been set.
      */
-    void setContentViewAndLoadLibrary();
+    void setContentViewAndLoadLibrary(Runnable onInflationCompleteCallback);
 
     /**
      * Called during {@link ChromeBrowserInitializer#handlePreNativeStartup(BrowserParts)}.
@@ -63,17 +65,21 @@ public interface BrowserParts {
     void onStartupFailure();
 
     /**
-     * @return Whether the activity this delegate represents has been destoyed.
+     * @return Whether the activity this delegate represents has been destoyed or is in the
+     *         process of finishing.
      */
-    boolean isActivityDestroyed();
-
-    /**
-     * @return Whether the activity is marked itself to be closed.
-     */
-    boolean isActivityFinishing();
+    boolean isActivityFinishingOrDestroyed();
 
     /**
      * @return Whether GPU process needs to be started during the startup.
      */
     boolean shouldStartGpuProcess();
+
+    /**
+     * @return Whether only ServiceManager should be launched during the startup, without running
+     *         remaining parts of the Chrome.
+     */
+    default boolean startServiceManagerOnly() {
+        return false;
+    }
 }

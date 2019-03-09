@@ -5,76 +5,81 @@
 #include "media/base/user_input_monitor.h"
 
 #include <memory>
+#include <utility>
 
-#include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
-#include "media/base/keyboard_event_counter.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/skia/include/core/SkPoint.h"
+
+#if defined(OS_LINUX)
+#include "base/files/file_descriptor_watcher_posix.h"
+#endif
 
 namespace media {
 
-class MockMouseListener : public UserInputMonitor::MouseEventListener {
- public:
-  MOCK_METHOD1(OnMouseMoved, void(const SkIPoint& position));
-
-  virtual ~MockMouseListener() {}
-};
-
-#if defined(OS_LINUX) || defined(OS_WIN)
-TEST(UserInputMonitorTest, KeyPressCounter) {
-  KeyboardEventCounter counter;
-
-  EXPECT_EQ(0u, counter.GetKeyPressCount());
-
-  counter.OnKeyboardEvent(ui::ET_KEY_PRESSED, ui::VKEY_0);
-  EXPECT_EQ(1u, counter.GetKeyPressCount());
-
-  // Holding the same key without releasing it does not increase the count.
-  counter.OnKeyboardEvent(ui::ET_KEY_PRESSED, ui::VKEY_0);
-  EXPECT_EQ(1u, counter.GetKeyPressCount());
-
-  // Releasing the key does not affect the total count.
-  counter.OnKeyboardEvent(ui::ET_KEY_RELEASED, ui::VKEY_0);
-  EXPECT_EQ(1u, counter.GetKeyPressCount());
-
-  counter.OnKeyboardEvent(ui::ET_KEY_PRESSED, ui::VKEY_0);
-  counter.OnKeyboardEvent(ui::ET_KEY_RELEASED, ui::VKEY_0);
-  EXPECT_EQ(2u, counter.GetKeyPressCount());
-}
-#endif  // defined(OS_LINUX) || defined(OS_WIN)
-
 TEST(UserInputMonitorTest, CreatePlatformSpecific) {
 #if defined(OS_LINUX)
-  base::MessageLoopForIO message_loop;
+  base::test::ScopedTaskEnvironment task_environment(
+      base::test::ScopedTaskEnvironment::MainThreadType::IO);
 #else
-  base::MessageLoopForUI message_loop;
+  base::test::ScopedTaskEnvironment task_environment(
+      base::test::ScopedTaskEnvironment::MainThreadType::UI);
 #endif  // defined(OS_LINUX)
 
-  base::RunLoop run_loop;
   std::unique_ptr<UserInputMonitor> monitor = UserInputMonitor::Create(
-      message_loop.task_runner(), message_loop.task_runner());
+      base::ThreadTaskRunnerHandle::Get(), base::ThreadTaskRunnerHandle::Get());
 
   if (!monitor)
     return;
-
-  MockMouseListener listener;
-  // Ignore any callbacks.
-  EXPECT_CALL(listener, OnMouseMoved(testing::_)).Times(testing::AnyNumber());
-
-#if !defined(OS_MACOSX)
-  monitor->AddMouseListener(&listener);
-  monitor->RemoveMouseListener(&listener);
-#endif  // !define(OS_MACOSX)
 
   monitor->EnableKeyPressMonitoring();
   monitor->DisableKeyPressMonitoring();
 
   monitor.reset();
-  run_loop.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
+}
+
+TEST(UserInputMonitorTest, CreatePlatformSpecificWithMapping) {
+#if defined(OS_LINUX)
+  base::test::ScopedTaskEnvironment task_environment(
+      base::test::ScopedTaskEnvironment::MainThreadType::IO);
+#else
+  base::test::ScopedTaskEnvironment task_environment(
+      base::test::ScopedTaskEnvironment::MainThreadType::UI);
+#endif  // defined(OS_LINUX)
+
+  std::unique_ptr<UserInputMonitor> monitor = UserInputMonitor::Create(
+      base::ThreadTaskRunnerHandle::Get(), base::ThreadTaskRunnerHandle::Get());
+
+  if (!monitor)
+    return;
+
+  base::ReadOnlySharedMemoryMapping readonly_mapping =
+      static_cast<UserInputMonitorBase*>(monitor.get())
+          ->EnableKeyPressMonitoringWithMapping()
+          .Map();
+  EXPECT_EQ(0u, ReadKeyPressMonitorCount(readonly_mapping));
+  monitor->DisableKeyPressMonitoring();
+
+  monitor.reset();
+  base::RunLoop().RunUntilIdle();
+
+  // Check that read only region remains valid after disable.
+  EXPECT_EQ(0u, ReadKeyPressMonitorCount(readonly_mapping));
+}
+
+TEST(UserInputMonitorTest, ReadWriteKeyPressMonitorCount) {
+  std::unique_ptr<base::MappedReadOnlyRegion> shmem =
+      std::make_unique<base::MappedReadOnlyRegion>(
+          base::ReadOnlySharedMemoryRegion::Create(sizeof(uint32_t)));
+  ASSERT_TRUE(shmem->IsValid());
+
+  constexpr uint32_t count = 10;
+  WriteKeyPressMonitorCount(shmem->mapping, count);
+  base::ReadOnlySharedMemoryMapping readonly_mapping = shmem->region.Map();
+  EXPECT_EQ(count, ReadKeyPressMonitorCount(readonly_mapping));
 }
 
 }  // namespace media

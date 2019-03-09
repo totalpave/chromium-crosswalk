@@ -8,6 +8,7 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
@@ -16,17 +17,19 @@
 #include "chrome/browser/importer/importer_unittest_utils.h"
 #include "chrome/common/importer/imported_bookmark_entry.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/bookmarks/browser/bookmark_match.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
+#include "components/bookmarks/browser/titled_url_match.h"
+#include "components/bookmarks/browser/url_and_title.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-using bookmarks::BookmarkMatch;
 using bookmarks::BookmarkModel;
+using bookmarks::UrlAndTitle;
+using bookmarks::TitledUrlMatch;
 
 class TestProfileWriter : public ProfileWriter {
  public:
@@ -77,11 +80,10 @@ class ProfileWriterTest : public testing::Test {
     pages_.push_back(row2);
   }
 
-  void VerifyBookmarksCount(
-      const std::vector<BookmarkModel::URLAndTitle>& bookmarks_record,
-      BookmarkModel* bookmark_model,
-      size_t expected) {
-    std::vector<BookmarkMatch> matches;
+  void VerifyBookmarksCount(const std::vector<UrlAndTitle>& bookmarks_record,
+                            BookmarkModel* bookmark_model,
+                            size_t expected) {
+    std::vector<TitledUrlMatch> matches;
     for (size_t i = 0; i < bookmarks_record.size(); ++i) {
       bookmark_model->GetBookmarksMatching(
           bookmarks_record[i].title, 10, &matches);
@@ -106,7 +108,7 @@ class ProfileWriterTest : public testing::Test {
   }
 
   void HistoryQueryComplete(history::QueryResults* results) {
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
     history_count_ = results->size();
   }
 
@@ -138,7 +140,7 @@ TEST_F(ProfileWriterTest, CheckBookmarksWithMultiProfile) {
   profile2.CreateBookmarkModel(true);
 
   BookmarkModel* bookmark_model2 =
-      BookmarkModelFactory::GetForProfile(&profile2);
+      BookmarkModelFactory::GetForBrowserContext(&profile2);
   bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model2);
   bookmarks::AddIfNotBookmarked(
       bookmark_model2, GURL("http://www.bing.com"), base::ASCIIToUTF16("Bing"));
@@ -147,7 +149,7 @@ TEST_F(ProfileWriterTest, CheckBookmarksWithMultiProfile) {
 
   CreateImportedBookmarksEntries();
   BookmarkModel* bookmark_model1 =
-      BookmarkModelFactory::GetForProfile(&profile1);
+      BookmarkModelFactory::GetForBrowserContext(&profile1);
   bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model1);
 
   scoped_refptr<TestProfileWriter> profile_writer(
@@ -155,11 +157,11 @@ TEST_F(ProfileWriterTest, CheckBookmarksWithMultiProfile) {
   profile_writer->AddBookmarks(bookmarks_,
                                base::ASCIIToUTF16("Imported from Firefox"));
 
-  std::vector<BookmarkModel::URLAndTitle> url_record1;
+  std::vector<UrlAndTitle> url_record1;
   bookmark_model1->GetBookmarks(&url_record1);
   EXPECT_EQ(2u, url_record1.size());
 
-  std::vector<BookmarkModel::URLAndTitle> url_record2;
+  std::vector<UrlAndTitle> url_record2;
   bookmark_model2->GetBookmarks(&url_record2);
   EXPECT_EQ(1u, url_record2.size());
 }
@@ -171,14 +173,14 @@ TEST_F(ProfileWriterTest, CheckBookmarksAfterWritingDataTwice) {
 
   CreateImportedBookmarksEntries();
   BookmarkModel* bookmark_model =
-      BookmarkModelFactory::GetForProfile(&profile);
+      BookmarkModelFactory::GetForBrowserContext(&profile);
   bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model);
 
   scoped_refptr<TestProfileWriter> profile_writer(
       new TestProfileWriter(&profile));
   profile_writer->AddBookmarks(bookmarks_,
                                base::ASCIIToUTF16("Imported from Firefox"));
-  std::vector<BookmarkModel::URLAndTitle> bookmarks_record;
+  std::vector<UrlAndTitle> bookmarks_record;
   bookmark_model->GetBookmarks(&bookmarks_record);
   EXPECT_EQ(2u, bookmarks_record.size());
 

@@ -7,8 +7,6 @@
 
 #include "chrome/browser/ui/extensions/extension_action_view_controller.h"
 
-class GURL;
-
 namespace extensions {
 class ExtensionViewHost;
 }
@@ -36,9 +34,6 @@ class ExtensionActionPlatformDelegate {
       std::unique_ptr<extensions::ExtensionViewHost> host,
       bool grant_tab_permissions,
       ExtensionActionViewController::PopupShowAction show_action) = 0;
-
-  // Closes the overflow menu, if it was open.
-  virtual void CloseOverflowMenu() = 0;
 
   // Shows the context menu for the extension.
   virtual void ShowContextMenu() = 0;

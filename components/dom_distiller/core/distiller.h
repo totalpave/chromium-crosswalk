@@ -10,12 +10,13 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "base/callback.h"
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "components/dom_distiller/core/article_distillation_update.h"
 #include "components/dom_distiller/core/distiller_page.h"
@@ -84,6 +85,8 @@ class DistillerImpl : public Distiller {
 
   void SetMaxNumPagesInArticle(size_t max_num_pages);
 
+  static bool DoesFetchImages();
+
  private:
   // In case of multiple pages, the Distiller maintains state of multiple pages
   // as page numbers relative to the page number where distillation started.
@@ -96,7 +99,7 @@ class DistillerImpl : public Distiller {
     virtual ~DistilledPageData();
     // Relative page number of the page.
     int page_num;
-    ScopedVector<DistillerURLFetcher> image_fetchers_;
+    std::vector<std::unique_ptr<DistillerURLFetcher>> image_fetchers_;
     scoped_refptr<base::RefCountedData<DistilledPageProto> >
         distilled_page_proto;
 
@@ -116,9 +119,9 @@ class DistillerImpl : public Distiller {
       std::unique_ptr<proto::DomDistillerResult> distilled_page,
       bool distillation_successful);
 
-  virtual void FetchImage(int page_num,
-                          const std::string& image_id,
-                          const std::string& image_url);
+  virtual void MaybeFetchImage(int page_num,
+                               const std::string& image_id,
+                               const std::string& image_url);
 
   // Distills the next page.
   void DistillNextPage();
@@ -162,7 +165,7 @@ class DistillerImpl : public Distiller {
   // Set of pages that are under distillation or have finished distillation.
   // |started_pages_index_| and |finished_pages_index_| maintains the mapping
   // from page number to the indices in |pages_|.
-  ScopedVector<DistilledPageData> pages_;
+  std::vector<std::unique_ptr<DistilledPageData>> pages_;
 
   // Maps page numbers of finished pages to the indices in |pages_|.
   std::map<int, size_t> finished_pages_index_;
@@ -170,7 +173,7 @@ class DistillerImpl : public Distiller {
   // Maps page numbers of pages under distillation to the indices in |pages_|.
   // If a page is |started_pages_| that means it is still waiting for an action
   // (distillation or image fetch) to finish.
-  base::hash_map<int, size_t> started_pages_index_;
+  std::unordered_map<int, size_t> started_pages_index_;
 
   // The list of pages that are still waiting for distillation to start.
   // This is a map, to make distiller prefer distilling lower page numbers
@@ -179,7 +182,7 @@ class DistillerImpl : public Distiller {
 
   // Set to keep track of which urls are already seen by the distiller. Used to
   // prevent distiller from distilling the same url twice.
-  base::hash_set<std::string> seen_urls_;
+  std::unordered_set<std::string> seen_urls_;
 
   size_t max_pages_in_article_;
 

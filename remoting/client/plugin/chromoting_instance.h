@@ -14,6 +14,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/timer/timer.h"
 #include "ppapi/c/pp_instance.h"
 #include "ppapi/c/pp_rect.h"
 #include "ppapi/c/pp_resource.h"
@@ -23,11 +24,11 @@
 #include "remoting/client/client_context.h"
 #include "remoting/client/client_user_interface.h"
 #include "remoting/client/empty_cursor_filter.h"
-#include "remoting/client/key_event_mapper.h"
+#include "remoting/client/input/key_event_mapper.h"
+#include "remoting/client/input/touch_input_scaler.h"
 #include "remoting/client/plugin/pepper_cursor_setter.h"
 #include "remoting/client/plugin/pepper_input_handler.h"
 #include "remoting/client/plugin/pepper_video_renderer.h"
-#include "remoting/client/touch_input_scaler.h"
 #include "remoting/proto/event.pb.h"
 #include "remoting/protocol/client_authentication_config.h"
 #include "remoting/protocol/client_stub.h"
@@ -44,7 +45,6 @@ class DictionaryValue;
 
 namespace pp {
 class InputEvent;
-class Module;
 class VarDictionary;
 }  // namespace pp
 
@@ -209,8 +209,12 @@ class ChromotingInstance : public ClientUserInterface,
   void HandleDelegateLargeCursors();
   void HandleEnableDebugRegion(const base::DictionaryValue& data);
   void HandleEnableTouchEvents(const base::DictionaryValue& data);
+  void HandleEnableStuckModifierKeyDetection(const base::DictionaryValue& data);
 
   void Disconnect();
+
+  void UpdateNetConfigAndConnect(const base::DictionaryValue& data);
+  void OnNetConfigUpdated(std::unique_ptr<base::DictionaryValue> data);
 
   // Helper method to post messages to the webapp.
   void PostChromotingMessage(const std::string& method,
@@ -242,6 +246,8 @@ class ChromotingInstance : public ClientUserInterface,
       bool pairing_supported,
       const protocol::SecretFetchedCallback& secret_fetched_callback);
 
+  void SendNetworkInfo();
+
   bool initialized_;
 
   scoped_refptr<base::SingleThreadTaskRunner> plugin_task_runner_;
@@ -259,6 +265,8 @@ class ChromotingInstance : public ClientUserInterface,
   std::unique_ptr<DelegatingSignalStrategy> signal_strategy_;
 
   std::unique_ptr<ChromotingClient> client_;
+
+  scoped_refptr<protocol::TransportContext> transport_context_;
 
   // Input pipeline components, in reverse order of distance from input source.
   protocol::MouseInputFilter mouse_input_filter_;

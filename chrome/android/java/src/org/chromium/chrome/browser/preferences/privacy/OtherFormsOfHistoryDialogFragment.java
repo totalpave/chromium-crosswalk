@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.preferences.privacy;
 import android.app.Activity;
 import android.app.Dialog;
 import android.app.DialogFragment;
-import android.content.Context;
 import android.content.DialogInterface;
 import android.content.SharedPreferences;
 import android.os.Bundle;
@@ -21,7 +20,8 @@ import android.widget.TextView;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
+import org.chromium.chrome.browser.UrlConstants;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.document.TabDelegate;
 import org.chromium.ui.text.NoUnderlineClickableSpan;
 import org.chromium.ui.text.SpanApplier;
@@ -36,23 +36,14 @@ public class OtherFormsOfHistoryDialogFragment extends DialogFragment implements
             "org.chromium.chrome.browser.preferences.privacy."
             + "PREF_OTHER_FORMS_OF_HISTORY_DIALOG_SHOWN";
 
-    /** The my activity URL. */
-    private static final String WEB_HISTORY_URL =
-            "https://history.google.com/history/?utm_source=chrome_n";
-
     private static final String TAG = "OtherFormsOfHistoryDialogFragment";
 
     /**
-     * Create and show the dialog.
+     * Show the dialog.
+     * @param activity The activity in which to show the dialog.
      */
-    public static OtherFormsOfHistoryDialogFragment show(Activity activity) {
-        OtherFormsOfHistoryDialogFragment dialog = new OtherFormsOfHistoryDialogFragment();
-        dialog.show(activity.getFragmentManager(), TAG);
-        return dialog;
-    }
-
-    private OtherFormsOfHistoryDialogFragment() {
-        super();
+    public void show(Activity activity) {
+        show(activity.getFragmentManager(), TAG);
     }
 
     @Override
@@ -63,26 +54,24 @@ public class OtherFormsOfHistoryDialogFragment extends DialogFragment implements
 
         // Linkify the <link></link> span in the dialog text.
         TextView textView = (TextView) view.findViewById(R.id.text);
-        final SpannableString textWithLink = SpanApplier.applySpans(
-                textView.getText().toString(),
-                new SpanApplier.SpanInfo("<link>", "</link>", new NoUnderlineClickableSpan() {
-                    @Override
-                    public void onClick(View widget) {
-                        new TabDelegate(false /* incognito */).launchUrl(
-                                WEB_HISTORY_URL, TabLaunchType.FROM_CHROME_UI);
-                    }
-                }));
+        final SpannableString textWithLink = SpanApplier.applySpans(textView.getText().toString(),
+                new SpanApplier.SpanInfo("<link>", "</link>",
+                        new NoUnderlineClickableSpan(getResources(), (widget) -> {
+                            new TabDelegate(false /* incognito */)
+                                    .launchUrl(UrlConstants.MY_ACTIVITY_URL_IN_CBD_NOTICE,
+                                            TabLaunchType.FROM_CHROME_UI);
+                        })));
 
         textView.setText(textWithLink);
         textView.setMovementMethod(LinkMovementMethod.getInstance());
 
         // Construct the dialog.
-        AlertDialog dialog = new AlertDialog.Builder(getActivity(), R.style.AlertDialogTheme)
-                .setView(view)
-                .setTitle(R.string.clear_browsing_data_history_dialog_title)
-                .setPositiveButton(
-                        R.string.ok_got_it, this)
-                .create();
+        AlertDialog dialog =
+                new AlertDialog.Builder(getActivity(), R.style.Theme_Chromium_AlertDialog)
+                        .setView(view)
+                        .setTitle(R.string.clear_browsing_data_history_dialog_title)
+                        .setPositiveButton(R.string.ok_got_it, this)
+                        .create();
 
         dialog.setCanceledOnTouchOutside(false);
         return dialog;
@@ -116,7 +105,7 @@ public class OtherFormsOfHistoryDialogFragment extends DialogFragment implements
     /**
      * @return Whether the dialog has already been shown to the user before.
      */
-    static boolean wasDialogShown(Context context) {
+    static boolean wasDialogShown() {
         return ContextUtils.getAppSharedPreferences().getBoolean(
                 PREF_OTHER_FORMS_OF_HISTORY_DIALOG_SHOWN, false);
     }

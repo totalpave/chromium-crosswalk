@@ -9,12 +9,13 @@
 
 // WKUserContentController wrapper that allows adding multiple message handlers
 // for the same message name. CRWWKScriptMessageRouter will route the messages
-// from the underlying user content controller to a designated reciever by
+// from the underlying user content controller to a designated receiver by
 // matching the message's name and webView.
 @interface CRWWKScriptMessageRouter : NSObject
 
 // Underlying WKUserContentController.
-@property(nonatomic, readonly) WKUserContentController* userContentController;
+@property(weak, nonatomic, readonly)
+    WKUserContentController* userContentController;
 
 // Designated initializer. |userContentController| must not be nil.
 - (instancetype)initWithUserContentController:

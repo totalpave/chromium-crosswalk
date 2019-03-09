@@ -5,6 +5,8 @@
 #include "chrome/browser/themes/theme_syncable_service.h"
 
 #include <stddef.h>
+
+#include <string>
 #include <utility>
 
 #include "base/strings/stringprintf.h"
@@ -13,12 +15,13 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/common/extensions/sync_helper.h"
+#include "components/sync/model/sync_change_processor.h"
+#include "components/sync/protocol/sync.pb.h"
+#include "components/sync/protocol/theme_specifics.pb.h"
+#include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_system.h"
-#include "extensions/common/extension.h"
 #include "extensions/common/manifest_url_handlers.h"
-#include "sync/protocol/sync.pb.h"
-#include "sync/protocol/theme_specifics.pb.h"
 
 using std::string;
 
@@ -86,9 +89,8 @@ syncer::SyncMergeResult ThemeSyncableService::MergeDataAndStartSyncing(
 
   // Find the last SyncData that has theme data and set the current theme from
   // it.
-  for (syncer::SyncDataList::const_reverse_iterator sync_data =
-      initial_sync_data.rbegin(); sync_data != initial_sync_data.rend();
-      ++sync_data) {
+  for (auto sync_data = initial_sync_data.rbegin();
+       sync_data != initial_sync_data.rend(); ++sync_data) {
     if (sync_data->GetSpecifics().has_theme()) {
       if (!current_specifics.use_custom_theme() ||
           sync_data->GetSpecifics().theme().use_custom_theme()) {
@@ -128,7 +130,7 @@ syncer::SyncDataList ThemeSyncableService::GetAllSyncData(
 }
 
 syncer::SyncError ThemeSyncableService::ProcessSyncChanges(
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const syncer::SyncChangeList& change_list) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
@@ -168,9 +170,8 @@ syncer::SyncError ThemeSyncableService::ProcessSyncChanges(
 
   // Set current theme from the theme specifics of the last change of type
   // |ACTION_ADD| or |ACTION_UPDATE|.
-  for (syncer::SyncChangeList::const_reverse_iterator theme_change =
-      change_list.rbegin(); theme_change != change_list.rend();
-      ++theme_change) {
+  for (auto theme_change = change_list.rbegin();
+       theme_change != change_list.rend(); ++theme_change) {
     if (theme_change->sync_data().GetSpecifics().has_theme() &&
         (theme_change->change_type() == syncer::SyncChange::ACTION_ADD ||
             theme_change->change_type() == syncer::SyncChange::ACTION_UPDATE)) {
@@ -209,7 +210,7 @@ void ThemeSyncableService::SetCurrentThemeFromThemeSpecifics(
     string id(theme_specifics.custom_theme_id());
     GURL update_url(theme_specifics.custom_theme_update_url());
     DVLOG(1) << "Applying theme " << id << " with update_url " << update_url;
-    ExtensionService* extensions_service =
+    extensions::ExtensionService* extensions_service =
         extensions::ExtensionSystem::Get(profile_)->extension_service();
     CHECK(extensions_service);
     const extensions::Extension* extension =
@@ -222,7 +223,7 @@ void ThemeSyncableService::SetCurrentThemeFromThemeSpecifics(
       int disabled_reasons =
           extensions::ExtensionPrefs::Get(profile_)->GetDisableReasons(id);
       if (!extensions_service->IsExtensionEnabled(id) &&
-          disabled_reasons != extensions::Extension::DISABLE_USER_ACTION) {
+          disabled_reasons != extensions::disable_reason::DISABLE_USER_ACTION) {
         DVLOG(1) << "Theme " << id << " is disabled with reason "
                  << disabled_reasons << "; aborting";
         return;

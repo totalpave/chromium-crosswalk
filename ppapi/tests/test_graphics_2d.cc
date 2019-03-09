@@ -653,7 +653,7 @@ void TestGraphics2D::ResetViewChangedState() {
 }
 
 bool TestGraphics2D::WaitUntilViewChanged() {
-  // Run a nested message loop. It will exit either on ViewChanged or if the
+  // Run a nested run loop. It will exit either on ViewChanged or if the
   // timeout happens.
 
   // If view changed before we have chance to run message loop, return directly.
@@ -685,6 +685,7 @@ std::string TestGraphics2D::TestFlushOffscreenUpdate() {
       "big.setAttribute('style', 'height: ' + offset + '; width: 100%;');"
       "document.body.insertBefore(big, document.body.firstChild);");
   ASSERT_TRUE(WaitUntilViewChanged());
+  ASSERT_SUBTEST_SUCCESS(FlushAndWaitForDone(&dc));
 
   // Allocate a red image chunk
   pp::ImageData chunk(instance_, PP_IMAGEDATAFORMAT_RGBA_PREMUL,

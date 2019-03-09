@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <string>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
@@ -18,7 +19,7 @@
 namespace chromeos {
 
 // A fake implementation of GsmSMSClient used for tests.
-class CHROMEOS_EXPORT FakeGsmSMSClient : public GsmSMSClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) FakeGsmSMSClient : public GsmSMSClient {
  public:
   FakeGsmSMSClient();
   ~FakeGsmSMSClient() override;
@@ -33,14 +34,14 @@ class CHROMEOS_EXPORT FakeGsmSMSClient : public GsmSMSClient {
   void Delete(const std::string& service_name,
               const dbus::ObjectPath& object_path,
               uint32_t index,
-              const DeleteCallback& callback) override;
+              VoidDBusMethodCallback callback) override;
   void Get(const std::string& service_name,
            const dbus::ObjectPath& object_path,
            uint32_t index,
-           const GetCallback& callback) override;
+           DBusMethodCallback<base::DictionaryValue> callback) override;
   void List(const std::string& service_name,
             const dbus::ObjectPath& object_path,
-            const ListCallback& callback) override;
+            DBusMethodCallback<base::ListValue> callback) override;
   void RequestUpdate(const std::string& service_name,
                      const dbus::ObjectPath& object_path) override;
 

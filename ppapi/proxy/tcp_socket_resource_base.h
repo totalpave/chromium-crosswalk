@@ -7,10 +7,10 @@
 
 #include <stdint.h>
 
-#include <queue>
 #include <string>
 #include <vector>
 
+#include "base/containers/queue.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "ppapi/c/ppb_tcp_socket.h"
@@ -24,31 +24,10 @@ namespace ppapi {
 
 class PPB_X509Certificate_Fields;
 class PPB_X509Certificate_Private_Shared;
-class SocketOptionData;
 
 namespace proxy {
 
 class PPAPI_PROXY_EXPORT TCPSocketResourceBase : public PluginResource {
- public:
-  // TODO(yzshen): Move these constants to ppb_tcp_socket_shared.
-  // The maximum number of bytes that each PpapiHostMsg_PPBTCPSocket_Read
-  // message is allowed to request.
-  static const int32_t kMaxReadSize;
-  // The maximum number of bytes that each PpapiHostMsg_PPBTCPSocket_Write
-  // message is allowed to carry.
-  static const int32_t kMaxWriteSize;
-
-  // The maximum number that we allow for setting
-  // PP_TCPSOCKET_OPTION_SEND_BUFFER_SIZE. This number is only for input
-  // argument sanity check, it doesn't mean the browser guarantees to support
-  // such a buffer size.
-  static const int32_t kMaxSendBufferSize;
-  // The maximum number that we allow for setting
-  // PP_TCPSOCKET_OPTION_RECV_BUFFER_SIZE. This number is only for input
-  // argument sanity check, it doesn't mean the browser guarantees to support
-  // such a buffer size.
-  static const int32_t kMaxReceiveBufferSize;
-
  protected:
   // C-tor used for new sockets.
   TCPSocketResourceBase(Connection connection,
@@ -128,7 +107,7 @@ class PPAPI_PROXY_EXPORT TCPSocketResourceBase : public PluginResource {
   scoped_refptr<TrackedCallback> write_callback_;
   scoped_refptr<TrackedCallback> listen_callback_;
   scoped_refptr<TrackedCallback> accept_callback_;
-  std::queue<scoped_refptr<TrackedCallback> > set_option_callbacks_;
+  base::queue<scoped_refptr<TrackedCallback>> set_option_callbacks_;
 
   TCPSocketState state_;
   char* read_buffer_;

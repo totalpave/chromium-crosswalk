@@ -1,5 +1,0 @@
-PASS win is undefined.
-PASS successfullyParsed is true
-
-TEST COMPLETE
-

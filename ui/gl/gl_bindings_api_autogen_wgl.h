@@ -1,4 +1,4 @@
-// Copyright 2014 The Chromium Authors. All rights reserved.
+// Copyright 2016 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -7,6 +7,10 @@
 // It's formatted by clang-format using chromium coding style:
 //    clang-format -i -style=chromium filename
 // DO NOT EDIT!
+
+// Silence presubmit and Tricium warnings about include guards
+// no-include-guard-because-multiply-included
+// NOLINT(build/header_guard)
 
 BOOL wglChoosePixelFormatARBFn(HDC dc,
                                const int* int_attrib_list,

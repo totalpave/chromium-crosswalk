@@ -4,16 +4,16 @@
 
 #include "base/path_service.h"
 
+#include <unordered_map>
+
 #if defined(OS_WIN)
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #endif
 
-#include "base/containers/hash_tables.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/synchronization/lock.h"
 #include "build/build_config.h"
@@ -28,6 +28,8 @@ bool PathProviderWin(int key, FilePath* result);
 bool PathProviderMac(int key, FilePath* result);
 #elif defined(OS_ANDROID)
 bool PathProviderAndroid(int key, FilePath* result);
+#elif defined(OS_FUCHSIA)
+bool PathProviderFuchsia(int key, FilePath* result);
 #elif defined(OS_POSIX)
 // PathProviderPosix is the default path provider on POSIX OSes other than
 // Mac and Android.
@@ -36,7 +38,7 @@ bool PathProviderPosix(int key, FilePath* result);
 
 namespace {
 
-typedef hash_map<int, FilePath> PathMap;
+typedef std::unordered_map<int, FilePath> PathMap;
 
 // We keep a linked list of providers.  In a debug build we ensure that no two
 // providers claim overlapping keys.
@@ -50,15 +52,11 @@ struct Provider {
   bool is_static;
 };
 
-Provider base_provider = {
-  PathProvider,
-  NULL,
+Provider base_provider = {PathProvider, nullptr,
 #ifndef NDEBUG
-  PATH_START,
-  PATH_END,
+                          PATH_START, PATH_END,
 #endif
-  true
-};
+                          true};
 
 #if defined(OS_WIN)
 Provider base_provider_win = {
@@ -96,7 +94,16 @@ Provider base_provider_android = {
 };
 #endif
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
+#if defined(OS_FUCHSIA)
+Provider base_provider_fuchsia = {PathProviderFuchsia, &base_provider,
+#ifndef NDEBUG
+                                  0, 0,
+#endif
+                                  true};
+#endif
+
+#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID) && \
+    !defined(OS_FUCHSIA)
 Provider base_provider_posix = {
   PathProviderPosix,
   &base_provider,
@@ -123,16 +130,17 @@ struct PathData {
     providers = &base_provider_mac;
 #elif defined(OS_ANDROID)
     providers = &base_provider_android;
+#elif defined(OS_FUCHSIA)
+    providers = &base_provider_fuchsia;
 #elif defined(OS_POSIX)
     providers = &base_provider_posix;
 #endif
   }
 };
 
-static LazyInstance<PathData>::Leaky g_path_data = LAZY_INSTANCE_INITIALIZER;
-
 static PathData* GetPathData() {
-  return g_path_data.Pointer();
+  static auto* path_data = new PathData();
+  return path_data;
 }
 
 // Tries to find |key| in the cache. |path_data| should be locked by the caller!
@@ -140,7 +148,7 @@ bool LockedGetFromCache(int key, const PathData* path_data, FilePath* result) {
   if (path_data->cache_disabled)
     return false;
   // check for a cached version
-  PathMap::const_iterator it = path_data->cache.find(key);
+  auto it = path_data->cache.find(key);
   if (it != path_data->cache.end()) {
     *result = it->second;
     return true;
@@ -178,7 +186,7 @@ bool PathService::Get(int key, FilePath* result) {
   if (key == DIR_CURRENT)
     return GetCurrentDirectory(result);
 
-  Provider* provider = NULL;
+  Provider* provider = nullptr;
   {
     AutoLock scoped_lock(path_data->lock);
     if (LockedGetFromCache(key, path_data, result))

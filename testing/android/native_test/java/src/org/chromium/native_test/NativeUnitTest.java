@@ -6,10 +6,12 @@ package org.chromium.native_test;
 
 import android.app.Activity;
 
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PathUtils;
 import org.chromium.base.PowerMonitor;
+import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.NativeLibraries;
 
 /**
@@ -21,14 +23,20 @@ public class NativeUnitTest extends NativeTest {
     @Override
     public void preCreate(Activity activity) {
         super.preCreate(activity);
+        // Necessary because NativeUnitTestActivity uses BaseChromiumApplication which does not
+        // initialize ContextUtils.
+        ContextUtils.initApplicationContext(activity.getApplicationContext());
+
+        // Necessary because BaseChromiumApplication no longer automatically initializes application
+        // tracking.
+        ApplicationStatus.initialize(activity.getApplication());
 
         // Needed by path_utils_unittest.cc
-        PathUtils.setPrivateDataDirectorySuffix("chrome", activity.getApplicationContext());
+        PathUtils.setPrivateDataDirectorySuffix("chrome");
 
         // Needed by system_monitor_unittest.cc
-        PowerMonitor.createForTests(activity);
+        PowerMonitor.createForTests();
 
-        ContextUtils.initApplicationContext(activity.getApplicationContext());
         // For NativeActivity based tests,
         // dependency libraries must be loaded before NativeActivity::OnCreate,
         // otherwise loading android.app.lib_name will fail
@@ -36,11 +44,11 @@ public class NativeUnitTest extends NativeTest {
     }
 
     private void loadLibraries() {
+        LibraryLoader.setEnvForNative();
         for (String library : NativeLibraries.LIBRARIES) {
             Log.i(TAG, "loading: %s", library);
             System.loadLibrary(library);
             Log.i(TAG, "loaded: %s", library);
         }
-        ContextUtils.initApplicationContextForNative();
     }
 }

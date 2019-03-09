@@ -6,14 +6,14 @@
 
 #include <algorithm>
 
+#include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/task_runner_util.h"
+#include "base/task/post_task.h"
 #include "base/values.h"
-#include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"
 
 const int kLegacyWhitelistFormatVersion = 2;
@@ -47,7 +47,7 @@ std::vector<std::string> ConvertListValues(const base::ListValue* list_values) {
   if (list_values) {
     for (const auto& entry : *list_values) {
       std::string entry_string;
-      if (!entry->GetAsString(&entry_string)) {
+      if (!entry.GetAsString(&entry_string)) {
         LOG(ERROR) << "Invalid whitelist entry";
         continue;
       }
@@ -90,14 +90,13 @@ void SupervisedUserSiteList::Load(const std::string& id,
                                   const base::FilePath& large_icon_path,
                                   const base::FilePath& path,
                                   const LoadedCallback& callback) {
-  base::PostTaskAndReplyWithResult(
-      content::BrowserThread::GetBlockingPool()
-          ->GetTaskRunnerWithShutdownBehavior(
-              base::SequencedWorkerPool::CONTINUE_ON_SHUTDOWN)
-          .get(),
-      FROM_HERE, base::Bind(&ReadFileOnBlockingThread, path),
-      base::Bind(&SupervisedUserSiteList::OnJsonLoaded, id, title,
-                 large_icon_path, path, base::TimeTicks::Now(), callback));
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(&ReadFileOnBlockingThread, path),
+      base::BindOnce(&SupervisedUserSiteList::OnJsonLoaded, id, title,
+                     large_icon_path, path, base::TimeTicks::Now(), callback));
 }
 
 SupervisedUserSiteList::SupervisedUserSiteList(
@@ -193,7 +192,7 @@ void SupervisedUserSiteList::OnJsonLoaded(
   base::ListValue* hostname_hashes = nullptr;
   dict->GetList(kHostnameHashesKey, &hostname_hashes);
 
-  callback.Run(make_scoped_refptr(
+  callback.Run(base::WrapRefCounted(
       new SupervisedUserSiteList(id, title, GURL(entry_point_url),
                                  large_icon_path, patterns, hostname_hashes)));
 }

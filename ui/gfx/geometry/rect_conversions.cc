@@ -12,34 +12,47 @@
 
 namespace gfx {
 
-Rect ToEnclosingRect(const RectF& rect) {
-  int min_x = ToFlooredInt(rect.x());
-  int min_y = ToFlooredInt(rect.y());
-  float max_x = rect.right();
-  float max_y = rect.bottom();
-  int width =
-      rect.width() == 0
-          ? 0
-          : std::max(
-                ToCeiledInt(static_cast<float>(ToCeiledInt(max_x)) - min_x), 0);
-  int height =
-      rect.height() == 0
-          ? 0
-          : std::max(
-                ToCeiledInt(static_cast<float>(ToCeiledInt(max_y)) - min_y), 0);
-  return Rect(min_x, min_y, width, height);
+namespace {
+
+int ToFlooredIntIgnoringError(float f, float error) {
+  int rounded = ToRoundedInt(f);
+  return std::abs(rounded - f) < error ? rounded : ToFlooredInt(f);
+}
+
+int ToCeiledIntIgnoringError(float f, float error) {
+  int rounded = ToRoundedInt(f);
+  return std::abs(rounded - f) < error ? rounded : ToCeiledInt(f);
+}
+
+}  // anonymous namespace
+
+Rect ToEnclosingRect(const RectF& r) {
+  int left = ToFlooredInt(r.x());
+  int right = r.width() ? ToCeiledInt(r.right()) : left;
+  int top = ToFlooredInt(r.y());
+  int bottom = r.height() ? ToCeiledInt(r.bottom()) : top;
+
+  Rect result;
+  result.SetByBounds(left, top, right, bottom);
+  return result;
+}
+
+Rect ToEnclosingRectIgnoringError(const RectF& r, float error) {
+  int left = ToFlooredIntIgnoringError(r.x(), error);
+  int right = r.width() ? ToCeiledIntIgnoringError(r.right(), error) : left;
+  int top = ToFlooredIntIgnoringError(r.y(), error);
+  int bottom = r.height() ? ToCeiledIntIgnoringError(r.bottom(), error) : top;
+
+  Rect result;
+  result.SetByBounds(left, top, right, bottom);
+  return result;
 }
 
 Rect ToEnclosedRect(const RectF& rect) {
-  int min_x = ToCeiledInt(rect.x());
-  int min_y = ToCeiledInt(rect.y());
-  float max_x = rect.right();
-  float max_y = rect.bottom();
-  int width = std::max(
-      ToFlooredInt(static_cast<float>(ToFlooredInt(max_x)) - min_x), 0);
-  int height = std::max(
-      ToFlooredInt(static_cast<float>(ToFlooredInt(max_y)) - min_y), 0);
-  return Rect(min_x, min_y, width, height);
+  Rect result;
+  result.SetByBounds(ToCeiledInt(rect.x()), ToCeiledInt(rect.y()),
+                     ToFlooredInt(rect.right()), ToFlooredInt(rect.bottom()));
+  return result;
 }
 
 Rect ToNearestRect(const RectF& rect) {
@@ -60,7 +73,10 @@ Rect ToNearestRect(const RectF& rect) {
   DCHECK(std::abs(max_x - float_max_x) < 0.01f);
   DCHECK(std::abs(max_y - float_max_y) < 0.01f);
 
-  return Rect(min_x, min_y, max_x - min_x, max_y - min_y);
+  Rect result;
+  result.SetByBounds(min_x, min_y, max_x, max_y);
+
+  return result;
 }
 
 bool IsNearestRectWithinDistance(const gfx::RectF& rect, float distance) {
@@ -89,4 +105,3 @@ Rect ToFlooredRectDeprecated(const RectF& rect) {
 }
 
 }  // namespace gfx
-

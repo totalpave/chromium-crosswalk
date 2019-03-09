@@ -8,26 +8,28 @@
 #include <map>
 #include <string>
 
+#include "base/callback.h"
 #include "base/macros.h"
+#include "chromeos/chromeos_export.h"
 #include "chromeos/system/statistics_provider.h"
 
 namespace chromeos {
 namespace system {
 
 // A fake StatisticsProvider implementation that is useful in tests.
-class FakeStatisticsProvider : public StatisticsProvider {
+class CHROMEOS_EXPORT FakeStatisticsProvider : public StatisticsProvider {
  public:
   FakeStatisticsProvider();
   ~FakeStatisticsProvider() override;
 
   // StatisticsProvider implementation:
-  void StartLoadingMachineStatistics(
-      const scoped_refptr<base::TaskRunner>& file_task_runner,
-      bool load_oem_manifest) override;
+  void ScheduleOnMachineStatisticsLoaded(base::OnceClosure callback) override;
+  void StartLoadingMachineStatistics(bool load_oem_manifest) override;
   bool GetMachineStatistic(const std::string& name,
                            std::string* result) override;
   bool GetMachineFlag(const std::string& name, bool* result) override;
   void Shutdown() override;
+  bool IsRunningOnVm() override;
 
   void SetMachineStatistic(const std::string& key, const std::string& value);
   void ClearMachineStatistic(const std::string& key);
@@ -43,7 +45,8 @@ class FakeStatisticsProvider : public StatisticsProvider {
 
 // A convenience subclass that automatically registers itself as the test
 // StatisticsProvider during construction and cleans up at destruction.
-class ScopedFakeStatisticsProvider : public FakeStatisticsProvider {
+class CHROMEOS_EXPORT ScopedFakeStatisticsProvider
+    : public FakeStatisticsProvider {
  public:
   ScopedFakeStatisticsProvider();
   ~ScopedFakeStatisticsProvider() override;

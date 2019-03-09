@@ -4,6 +4,8 @@
 
 #include "components/zoom/zoom_event_manager.h"
 
+#include <memory>
+
 #include "components/zoom/zoom_event_manager_observer.h"
 #include "content/public/browser/browser_context.h"
 
@@ -15,8 +17,10 @@ namespace zoom {
 
 ZoomEventManager* ZoomEventManager::GetForBrowserContext(
     content::BrowserContext* context) {
-  if (!context->GetUserData(kBrowserZoomEventManager))
-    context->SetUserData(kBrowserZoomEventManager, new ZoomEventManager);
+  if (!context->GetUserData(kBrowserZoomEventManager)) {
+    context->SetUserData(kBrowserZoomEventManager,
+                         std::make_unique<ZoomEventManager>());
+  }
   return static_cast<ZoomEventManager*>(
       context->GetUserData(kBrowserZoomEventManager));
 }
@@ -37,17 +41,15 @@ ZoomEventManager::AddZoomLevelChangedCallback(
 }
 
 void ZoomEventManager::OnDefaultZoomLevelChanged() {
-  FOR_EACH_OBSERVER(ZoomEventManagerObserver, observers_,
-                    OnDefaultZoomLevelChanged());
+  for (auto& observer : observers_)
+    observer.OnDefaultZoomLevelChanged();
 }
 
-void ZoomEventManager::AddZoomEventManagerObserver(
-    ZoomEventManagerObserver* observer) {
+void ZoomEventManager::AddObserver(ZoomEventManagerObserver* observer) {
   observers_.AddObserver(observer);
 }
 
-void ZoomEventManager::RemoveZoomEventManagerObserver(
-    ZoomEventManagerObserver* observer) {
+void ZoomEventManager::RemoveObserver(ZoomEventManagerObserver* observer) {
   observers_.RemoveObserver(observer);
 }
 

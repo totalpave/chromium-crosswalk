@@ -4,25 +4,23 @@
 
 #include "chrome/browser/ui/views/outdated_upgrade_bubble_view.h"
 
-#include "base/metrics/histogram.h"
+#include "base/bind.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/metrics/user_metrics.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/views/elevation_icon_setter.h"
-#include "chrome/browser/upgrade_detector.h"
+#include "chrome/browser/ui/browser_dialogs.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/page_navigator.h"
-#include "content/public/browser/user_metrics.h"
-#include "grit/theme_resources.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/resource/resource_bundle.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/fill_layout.h"
-#include "ui/views/layout/layout_constants.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
@@ -32,19 +30,16 @@
 
 namespace {
 
-// Fixed width of the description label of the bubble.
-// TODO(mad): Make sure there is enough room for all languages.
-const int kWidthOfDescriptionText = 330;
-
 // The URL to be used to re-install Chrome when auto-update failed for too long.
-const char kDownloadChromeUrl[] = "https://www.google.com/chrome/?&brand=CHWL"
+constexpr char kDownloadChromeUrl[] =
+    "https://www.google.com/chrome/?&brand=CHWL"
     "&utm_campaign=en&utm_source=en-et-na-us-chrome-bubble&utm_medium=et";
 
 // The maximum number of ignored bubble we track in the NumLaterPerReinstall
 // histogram.
-const int kMaxIgnored = 50;
+constexpr int kMaxIgnored = 50;
 // The number of buckets we want the NumLaterPerReinstall histogram to use.
-const int kNumIgnoredBuckets = 5;
+constexpr int kNumIgnoredBuckets = 5;
 
 // The currently showing bubble.
 OutdatedUpgradeBubbleView* g_upgrade_bubble = nullptr;
@@ -66,19 +61,10 @@ void OutdatedUpgradeBubbleView::ShowBubble(views::View* anchor_view,
   g_upgrade_bubble = new OutdatedUpgradeBubbleView(anchor_view, navigator,
                                                    auto_update_enabled);
   views::BubbleDialogDelegateView::CreateBubble(g_upgrade_bubble)->Show();
-  content::RecordAction(auto_update_enabled ?
-      base::UserMetricsAction("OutdatedUpgradeBubble.Show") :
-      base::UserMetricsAction("OutdatedUpgradeBubble.ShowNoAU"));
-}
-
-bool OutdatedUpgradeBubbleView::IsAvailable() {
-// This should only work on non-Chrome OS desktop platforms.
-#if defined(OS_WIN) || defined(OS_MACOSX) || \
-    (defined(OS_LINUX) && !defined(OS_CHROMEOS))
-  return true;
-#else
-  return false;
-#endif
+  base::RecordAction(
+      auto_update_enabled
+          ? base::UserMetricsAction("OutdatedUpgradeBubble.Show")
+          : base::UserMetricsAction("OutdatedUpgradeBubble.ShowNoAU"));
 }
 
 OutdatedUpgradeBubbleView::~OutdatedUpgradeBubbleView() {
@@ -100,41 +86,32 @@ base::string16 OutdatedUpgradeBubbleView::GetWindowTitle() const {
   return l10n_util::GetStringUTF16(IDS_UPGRADE_BUBBLE_TITLE);
 }
 
-gfx::ImageSkia OutdatedUpgradeBubbleView::GetWindowIcon() {
-  return *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-      IDR_UPDATE_MENU_SEVERITY_HIGH);
-}
-
-bool OutdatedUpgradeBubbleView::ShouldShowWindowIcon() const {
-  return true;
-}
-
-bool OutdatedUpgradeBubbleView::Cancel() {
-  content::RecordAction(base::UserMetricsAction("OutdatedUpgradeBubble.Later"));
+bool OutdatedUpgradeBubbleView::ShouldShowCloseButton() const {
   return true;
 }
 
 bool OutdatedUpgradeBubbleView::Accept() {
+  uma_recorded_ = true;
   // Offset the +1 in the dtor.
   --g_num_ignored_bubbles;
-
   if (auto_update_enabled_) {
     DCHECK(UpgradeDetector::GetInstance()->is_outdated_install());
     UMA_HISTOGRAM_CUSTOM_COUNTS("OutdatedUpgradeBubble.NumLaterPerReinstall",
-                                g_num_ignored_bubbles, 0, kMaxIgnored,
+                                g_num_ignored_bubbles, 1, kMaxIgnored,
                                 kNumIgnoredBuckets);
-    content::RecordAction(
+    base::RecordAction(
         base::UserMetricsAction("OutdatedUpgradeBubble.Reinstall"));
-    navigator_->OpenURL(content::OpenURLParams(
-        GURL(kDownloadChromeUrl), content::Referrer(), NEW_FOREGROUND_TAB,
-        ui::PAGE_TRANSITION_LINK, false));
+    navigator_->OpenURL(
+        content::OpenURLParams(GURL(kDownloadChromeUrl), content::Referrer(),
+                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                               ui::PAGE_TRANSITION_LINK, false));
 #if defined(OS_WIN)
   } else {
     DCHECK(UpgradeDetector::GetInstance()->is_outdated_install_no_au());
     UMA_HISTOGRAM_CUSTOM_COUNTS("OutdatedUpgradeBubble.NumLaterPerEnableAU",
-                                g_num_ignored_bubbles, 0, kMaxIgnored,
+                                g_num_ignored_bubbles, 1, kMaxIgnored,
                                 kNumIgnoredBuckets);
-    content::RecordAction(
+    base::RecordAction(
         base::UserMetricsAction("OutdatedUpgradeBubble.EnableAU"));
     // Record that the autoupdate flavour of the dialog has been shown.
     if (g_browser_process->local_state()) {
@@ -142,42 +119,47 @@ bool OutdatedUpgradeBubbleView::Accept() {
           prefs::kAttemptedToEnableAutoupdate, true);
     }
 
-    // Re-enable updates by shelling out to setup.exe in the blocking pool.
-    content::BrowserThread::PostBlockingPoolTask(
+    // Re-enable updates by shelling out to setup.exe asynchronously.
+    base::PostTaskWithTraits(
         FROM_HERE,
-        base::Bind(&google_update::ElevateIfNeededToReenableUpdates));
+        {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+         base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+        base::BindOnce(&google_update::ElevateIfNeededToReenableUpdates));
 #endif  // defined(OS_WIN)
   }
 
   return true;
 }
 
-void OutdatedUpgradeBubbleView::UpdateButton(views::LabelButton* button,
-                                             ui::DialogButton type) {
-  BubbleDialogDelegateView::UpdateButton(button, type);
-  if (type == ui::DIALOG_BUTTON_OK) {
-    elevation_icon_setter_.reset(new ElevationIconSetter(
-        button, base::Bind(&OutdatedUpgradeBubbleView::SizeToContents,
-                           base::Unretained(this))));
-  }
+bool OutdatedUpgradeBubbleView::Close() {
+  // DialogDelegate::Close() would call Accept(), as there is only one button.
+  // Prevent that and record UMA. Note in the past there was also a "Later"
+  // button, hence the name.
+  if (!uma_recorded_)
+    base::RecordAction(base::UserMetricsAction("OutdatedUpgradeBubble.Later"));
+  return true;
+}
+
+int OutdatedUpgradeBubbleView::GetDialogButtons() const {
+  return ui::DIALOG_BUTTON_OK;
 }
 
 base::string16 OutdatedUpgradeBubbleView::GetDialogButtonLabel(
     ui::DialogButton button) const {
-  return l10n_util::GetStringUTF16(
-      button == ui::DIALOG_BUTTON_CANCEL
-          ? IDS_LATER
-          : auto_update_enabled_ ? IDS_REINSTALL_APP : IDS_REENABLE_UPDATES);
+  return l10n_util::GetStringUTF16(auto_update_enabled_ ? IDS_REINSTALL_APP
+                                                        : IDS_REENABLE_UPDATES);
 }
 
 void OutdatedUpgradeBubbleView::Init() {
-  SetLayoutManager(new views::FillLayout());
-  views::Label* text_label = new views::Label(l10n_util::GetStringUTF16(
-      auto_update_enabled_ ? IDS_UPGRADE_BUBBLE_TEXT
-                           : IDS_UPGRADE_BUBBLE_REENABLE_TEXT));
+  SetLayoutManager(std::make_unique<views::FillLayout>());
+  views::Label* text_label =
+      new views::Label(l10n_util::GetStringUTF16(IDS_UPGRADE_BUBBLE_TEXT));
   text_label->SetMultiLine(true);
   text_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  text_label->SizeToFit(kWidthOfDescriptionText);
+  text_label->SizeToFit(
+      ChromeLayoutProvider::Get()->GetDistanceMetric(
+          ChromeDistanceMetric::DISTANCE_BUBBLE_PREFERRED_WIDTH) -
+      margins().width());
   AddChildView(text_label);
 }
 
@@ -188,7 +170,5 @@ OutdatedUpgradeBubbleView::OutdatedUpgradeBubbleView(
     : BubbleDialogDelegateView(anchor_view, views::BubbleBorder::TOP_RIGHT),
       auto_update_enabled_(auto_update_enabled),
       navigator_(navigator) {
-  // Compensate for built-in vertical padding in the anchor view's image.
-  set_anchor_view_insets(gfx::Insets(
-      GetLayoutConstant(LOCATION_BAR_BUBBLE_ANCHOR_VERTICAL_INSET), 0));
+  chrome::RecordDialogCreation(chrome::DialogIdentifier::OUTDATED_UPGRADE);
 }

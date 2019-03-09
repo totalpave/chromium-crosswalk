@@ -15,19 +15,15 @@ class UsbServiceAndroid;
 
 class UsbDeviceAndroid : public UsbDevice {
  public:
-  // Register C++ methods exposed to Java using JNI.
-  static bool RegisterJNI(JNIEnv* env);
-
   static scoped_refptr<UsbDeviceAndroid> Create(
       JNIEnv* env,
       base::WeakPtr<UsbServiceAndroid> service,
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner,
       const base::android::JavaRef<jobject>& usb_device);
 
   // UsbDevice:
-  void RequestPermission(const ResultCallback& callback) override;
+  void RequestPermission(ResultCallback callback) override;
   bool permission_granted() const override;
-  void Open(const OpenCallback& callback) override;
+  void Open(OpenCallback callback) override;
 
   jint device_id() const { return device_id_; }
   void PermissionGranted(bool granted);
@@ -46,7 +42,6 @@ class UsbDeviceAndroid : public UsbDevice {
       const base::string16& manufacturer_string,
       const base::string16& product_string,
       const base::string16& serial_number,
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner,
       const base::android::JavaRef<jobject>& wrapper);
   ~UsbDeviceAndroid() override;
 
@@ -57,10 +52,7 @@ class UsbDeviceAndroid : public UsbDevice {
                          std::unique_ptr<UsbDeviceDescriptor> descriptor);
   void OnReadWebUsbDescriptors(
       scoped_refptr<UsbDeviceHandle> device_handle,
-      std::unique_ptr<WebUsbAllowedOrigins> allowed_origins,
       const GURL& landing_page);
-
-  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
 
   const jint device_id_;
   bool permission_granted_ = false;

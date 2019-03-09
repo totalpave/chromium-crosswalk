@@ -4,13 +4,16 @@
 
 #include "extensions/browser/guest_view/extensions_guest_view_manager_delegate.h"
 
+#include <memory>
 #include <utility>
 
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/guest_view/browser/guest_view_manager.h"
 #include "components/guest_view/common/guest_view_constants.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/render_view_host.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/guest_view/app_view/app_view_guest.h"
@@ -21,6 +24,7 @@
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_map.h"
+#include "extensions/browser/view_type_utils.h"
 #include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_provider.h"
 
@@ -37,13 +41,19 @@ ExtensionsGuestViewManagerDelegate::ExtensionsGuestViewManagerDelegate(
 ExtensionsGuestViewManagerDelegate::~ExtensionsGuestViewManagerDelegate() {
 }
 
+void ExtensionsGuestViewManagerDelegate::OnGuestAdded(
+    content::WebContents* guest_web_contents) const {
+  // Set the view type so extensions sees the guest view as a foreground page.
+  SetViewType(guest_web_contents, VIEW_TYPE_EXTENSION_GUEST);
+}
+
 void ExtensionsGuestViewManagerDelegate::DispatchEvent(
     const std::string& event_name,
     std::unique_ptr<base::DictionaryValue> args,
     GuestViewBase* guest,
     int instance_id) {
   EventFilteringInfo info;
-  info.SetInstanceID(instance_id);
+  info.instance_id = instance_id;
   std::unique_ptr<base::ListValue> event_args(new base::ListValue());
   event_args->Append(std::move(args));
 
@@ -57,10 +67,13 @@ void ExtensionsGuestViewManagerDelegate::DispatchEvent(
                                               << " must have a histogram value";
 
   content::WebContents* owner = guest->owner_web_contents();
-  EventRouter::DispatchEventToSender(owner, guest->browser_context(),
-                                     guest->owner_host(), histogram_value,
-                                     event_name, std::move(event_args),
-                                     EventRouter::USER_GESTURE_UNKNOWN, info);
+  if (!owner)
+    return;  // Could happen at tab shutdown.
+
+  EventRouter::DispatchEventToSender(
+      owner->GetRenderViewHost(), guest->browser_context(), guest->owner_host(),
+      histogram_value, event_name, std::move(event_args),
+      EventRouter::USER_GESTURE_UNKNOWN, info);
 }
 
 bool ExtensionsGuestViewManagerDelegate::IsGuestAvailableToContext(
@@ -81,7 +94,7 @@ bool ExtensionsGuestViewManagerDelegate::IsGuestAvailableToContext(
       owner_extension,
       process_map->GetMostLikelyContextType(
           owner_extension,
-          guest->owner_web_contents()->GetRenderProcessHost()->GetID()),
+          guest->owner_web_contents()->GetMainFrame()->GetProcess()->GetID()),
       guest->GetOwnerSiteURL());
 
   return availability.is_available();

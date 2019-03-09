@@ -7,10 +7,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#if BUILDFLAG(ENABLE_KASKO)
-#include <psapi.h>
-#endif  // BUILDFLAG(ENABLE_KASKO)
-
 #include <algorithm>
 #include <map>
 #include <vector>
@@ -24,42 +20,37 @@
 #include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/system/sys_info.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/crash/content/app/crash_reporter_client.h"
+#include "third_party/crashpad/crashpad/client/annotation.h"
+#include "third_party/crashpad/crashpad/client/annotation_list.h"
 #include "third_party/crashpad/crashpad/client/crash_report_database.h"
 #include "third_party/crashpad/crashpad/client/crashpad_client.h"
 #include "third_party/crashpad/crashpad/client/crashpad_info.h"
 #include "third_party/crashpad/crashpad/client/settings.h"
-#include "third_party/crashpad/crashpad/client/simple_string_dictionary.h"
 #include "third_party/crashpad/crashpad/client/simulate_crash.h"
 
 #if defined(OS_POSIX)
 #include <unistd.h>
 #endif  // OS_POSIX
 
-#if BUILDFLAG(ENABLE_KASKO)
-#include "base/win/scoped_handle.h"
-#include "third_party/crashpad/crashpad/snapshot/api/module_annotations_win.h"
+#if defined(OS_WIN)
+#include "components/crash/content/app/crash_export_thunks.h"
 #endif
 
 namespace crash_reporter {
 
 namespace {
 
-crashpad::SimpleStringDictionary* g_simple_string_dictionary;
+base::FilePath* g_database_path;
+
 crashpad::CrashReportDatabase* g_database;
-
-void SetCrashKeyValue(const base::StringPiece& key,
-                      const base::StringPiece& value) {
-  g_simple_string_dictionary->SetKeyValue(key.data(), value.data());
-}
-
-void ClearCrashKey(const base::StringPiece& key) {
-  g_simple_string_dictionary->RemoveKey(key.data());
-}
 
 bool LogMessageHandler(int severity,
                        const char* file,
@@ -92,87 +83,26 @@ bool LogMessageHandler(int severity,
   CHECK_LE(message_start, string.size());
   std::string message = base::StringPrintf("%s:%d: %s", file, line,
                                            string.c_str() + message_start);
-  SetCrashKeyValue("LOG_FATAL", message);
+  static crashpad::StringAnnotation<512> crash_key("LOG_FATAL");
+  crash_key.Set(message);
 
   // Rather than including the code to force the crash here, allow the caller to
   // do it.
   return false;
 }
 
-void DumpWithoutCrashing() {
-  CRASHPAD_SIMULATE_CRASH();
+void InitializeDatabasePath(const base::FilePath& database_path) {
+  DCHECK(!g_database_path);
+
+  // Intentionally leaked.
+  g_database_path = new base::FilePath(database_path);
 }
-
-#if BUILDFLAG(ENABLE_KASKO)
-// TODO(ananta)
-// We cannot depend on functionality in base which pulls in dependencies on
-// user32 directly or indirectly. The GetLoadedModulesSnapshot is a copy of the
-// function in base/win/win_util.cc. Depending on the base function pulls in
-// dependencies on user32 due to other functionality in win_util.cc. This
-// function should be removed when KASKO is removed.
-bool GetLoadedModulesSnapshot(HANDLE process, std::vector<HMODULE>* snapshot) {
-  DCHECK(snapshot);
-  DCHECK_EQ(0u, snapshot->size());
-  snapshot->resize(128);
-
-  // We will retry at least once after first determining |bytes_required|. If
-  // the list of modules changes after we receive |bytes_required| we may retry
-  // more than once.
-  int retries_remaining = 5;
-  do {
-    DWORD bytes_required = 0;
-    // EnumProcessModules returns 'success' even if the buffer size is too
-    // small.
-    DCHECK_GE(std::numeric_limits<DWORD>::max(),
-      snapshot->size() * sizeof(HMODULE));
-    if (!::EnumProcessModules(
-      process, &(*snapshot)[0],
-      static_cast<DWORD>(snapshot->size() * sizeof(HMODULE)),
-      &bytes_required)) {
-      DPLOG(ERROR) << "::EnumProcessModules failed.";
-      return false;
-    }
-    DCHECK_EQ(0u, bytes_required % sizeof(HMODULE));
-    size_t num_modules = bytes_required / sizeof(HMODULE);
-    if (num_modules <= snapshot->size()) {
-      // Buffer size was too big, presumably because a module was unloaded.
-      snapshot->erase(snapshot->begin() + num_modules, snapshot->end());
-      return true;
-    } else if (num_modules == 0) {
-      DLOG(ERROR) << "Can't determine the module list size.";
-      return false;
-    } else {
-      // Buffer size was too small. Try again with a larger buffer. A little
-      // more room is given to avoid multiple expensive calls to
-      // ::EnumProcessModules() just because one module has been added.
-      snapshot->resize(num_modules + 8, NULL);
-    }
-  } while (--retries_remaining);
-
-  DLOG(ERROR) << "Failed to enumerate modules.";
-  return false;
-}
-
-HMODULE GetModuleInProcess(base::ProcessHandle process,
-                           const wchar_t* module_name) {
-  std::vector<HMODULE> modules_snapshot;
-  if (!GetLoadedModulesSnapshot(process, &modules_snapshot))
-    return nullptr;
-
-  for (HMODULE module : modules_snapshot) {
-    wchar_t current_module_name[MAX_PATH];
-    if (!::GetModuleBaseName(process, module, current_module_name, MAX_PATH))
-      continue;
-
-    if (std::wcscmp(module_name, current_module_name) == 0)
-      return module;
-  }
-  return nullptr;
-}
-#endif  // BUILDFLAG(ENABLE_KASKO)
 
 void InitializeCrashpadImpl(bool initial_client,
                             const std::string& process_type,
+                            const std::string& user_data_dir,
+                            const base::FilePath& exe_path,
+                            const std::vector<std::string>& initial_arguments,
                             bool embedded_handler) {
   static bool initialized = false;
   DCHECK(!initialized);
@@ -186,11 +116,16 @@ void InitializeCrashpadImpl(bool initial_client,
     // "relauncher" is hard-coded because it's a Chrome --type, but this
     // component can't see Chrome's switches. This is only used for argument
     // sanitization.
-    DCHECK(browser_process || process_type == "relauncher");
+    DCHECK(browser_process || process_type == "relauncher" ||
+           process_type == "app_shim");
 #elif defined(OS_WIN)
     // "Chrome Installer" is the name historically used for installer binaries
     // as processed by the backend.
-    DCHECK(browser_process || process_type == "Chrome Installer");
+    DCHECK(browser_process || process_type == "Chrome Installer" ||
+           process_type == "notification-helper" ||
+           process_type == "GCPW Installer" || process_type == "GCPW DLL");
+#elif defined(OS_LINUX) || defined(OS_ANDROID)
+    DCHECK(browser_process);
 #else
 #error Port.
 #endif  // OS_MACOSX
@@ -200,10 +135,8 @@ void InitializeCrashpadImpl(bool initial_client,
 
   // database_path is only valid in the browser process.
   base::FilePath database_path = internal::PlatformCrashpadInitialization(
-      initial_client, browser_process, embedded_handler);
-
-  crashpad::CrashpadInfo* crashpad_info =
-      crashpad::CrashpadInfo::GetCrashpadInfo();
+      initial_client, browser_process, embedded_handler, user_data_dir,
+      exe_path, initial_arguments);
 
 #if defined(OS_MACOSX)
 #if defined(NDEBUG)
@@ -220,31 +153,26 @@ void InitializeCrashpadImpl(bool initial_client,
   // browser process, because the system's crash reporter can take a very long
   // time to chew on symbols.
   if (!browser_process || is_debug_build) {
-    crashpad_info->set_system_crash_reporter_forwarding(
-        crashpad::TriState::kDisabled);
+    crashpad::CrashpadInfo::GetCrashpadInfo()
+        ->set_system_crash_reporter_forwarding(crashpad::TriState::kDisabled);
   }
 #endif  // OS_MACOSX
 
-  g_simple_string_dictionary = new crashpad::SimpleStringDictionary();
-  crashpad_info->set_simple_annotations(g_simple_string_dictionary);
+  crashpad::AnnotationList::Register();
 
-#if !defined(OS_WIN) || !defined(COMPONENT_BUILD)
-  // chrome/common/child_process_logging_win.cc registers crash keys for
-  // chrome.dll. In a component build, that is sufficient as chrome.dll and
-  // chrome.exe share a copy of base (in base.dll). In a static build, the EXE
-  // must separately initialize the crash keys configuration as it has its own
-  // statically linked copy of base.
-  base::debug::SetCrashKeyReportingFunctions(SetCrashKeyValue, ClearCrashKey);
-  crash_reporter_client->RegisterCrashKeys();
-#endif
+  static crashpad::StringAnnotation<24> ptype_key("ptype");
+  ptype_key.Set(browser_process ? base::StringPiece("browser")
+                                : base::StringPiece(process_type));
 
-  SetCrashKeyValue("ptype", browser_process ? base::StringPiece("browser")
-                                            : base::StringPiece(process_type));
+  static crashpad::StringAnnotation<12> pid_key("pid");
 #if defined(OS_POSIX)
-  SetCrashKeyValue("pid", base::IntToString(getpid()));
+  pid_key.Set(base::NumberToString(getpid()));
 #elif defined(OS_WIN)
-  SetCrashKeyValue("pid", base::IntToString(::GetCurrentProcessId()));
+  pid_key.Set(base::NumberToString(::GetCurrentProcessId()));
 #endif
+
+  static crashpad::StringAnnotation<24> osarch_key("osarch");
+  osarch_key.Set(base::SysInfo::OperatingSystemArchitecture());
 
   logging::SetLogMessageHandler(LogMessageHandler);
 
@@ -264,44 +192,70 @@ void InitializeCrashpadImpl(bool initial_client,
   // other "main, first process" to initialize things. There is no "relauncher"
   // on Windows, so this is synonymous with initial_client.
   const bool should_initialize_database_and_set_upload_policy = initial_client;
+#elif defined(OS_LINUX) || defined(OS_ANDROID)
+  const bool should_initialize_database_and_set_upload_policy = browser_process;
 #endif
   if (should_initialize_database_and_set_upload_policy) {
+    InitializeDatabasePath(database_path);
+
     g_database =
         crashpad::CrashReportDatabase::Initialize(database_path).release();
 
-    bool enable_uploads = false;
-    if (!crash_reporter_client->ReportingIsEnforcedByPolicy(&enable_uploads)) {
-      // Breakpad provided a --disable-breakpad switch to disable crash dumping
-      // (not just uploading) here. Crashpad doesn't need it: dumping is enabled
-      // unconditionally and uploading is gated on consent, which tests/bots
-      // shouldn't have. As a precaution, uploading is also disabled on bots
-      // even if consent is present.
-      enable_uploads = crash_reporter_client->GetCollectStatsConsent() &&
-                       !crash_reporter_client->IsRunningUnattended();
-    }
-
-    SetUploadsEnabled(enable_uploads);
+    SetUploadConsent(crash_reporter_client->GetCollectStatsConsent());
   }
 }
 
 }  // namespace
 
 void InitializeCrashpad(bool initial_client, const std::string& process_type) {
-  InitializeCrashpadImpl(initial_client, process_type, false);
+  InitializeCrashpadImpl(initial_client, process_type, std::string(),
+                         base::FilePath(), std::vector<std::string>(), false);
 }
 
 #if defined(OS_WIN)
 void InitializeCrashpadWithEmbeddedHandler(bool initial_client,
-                                           const std::string& process_type) {
-  InitializeCrashpadImpl(initial_client, process_type, true);
+                                           const std::string& process_type,
+                                           const std::string& user_data_dir,
+                                           const base::FilePath& exe_path) {
+  InitializeCrashpadImpl(initial_client, process_type, user_data_dir, exe_path,
+                         std::vector<std::string>(), true);
+}
+
+void InitializeCrashpadWithDllEmbeddedHandler(
+    bool initial_client,
+    const std::string& process_type,
+    const std::string& user_data_dir,
+    const base::FilePath& exe_path,
+    const std::vector<std::string>& initial_arguments) {
+  InitializeCrashpadImpl(initial_client, process_type, user_data_dir, exe_path,
+                         initial_arguments, true);
 }
 #endif  // OS_WIN
 
-void SetUploadsEnabled(bool enable_uploads) {
-  if (g_database) {
-    crashpad::Settings* settings = g_database->GetSettings();
-    settings->SetUploadsEnabled(enable_uploads);
+crashpad::CrashpadClient& GetCrashpadClient() {
+  static crashpad::CrashpadClient* const client =
+      new crashpad::CrashpadClient();
+  return *client;
+}
+
+void SetUploadConsent(bool consent) {
+  if (!g_database)
+    return;
+
+  bool enable_uploads = false;
+  CrashReporterClient* crash_reporter_client = GetCrashReporterClient();
+  if (!crash_reporter_client->ReportingIsEnforcedByPolicy(&enable_uploads)) {
+    // Breakpad provided a --disable-breakpad switch to disable crash dumping
+    // (not just uploading) here. Crashpad doesn't need it: dumping is enabled
+    // unconditionally and uploading is gated on consent, which tests/bots
+    // shouldn't have. As a precaution, uploading is also disabled on bots even
+    // if consent is present.
+    enable_uploads = consent && !crash_reporter_client->IsRunningUnattended();
   }
+
+  crashpad::Settings* settings = g_database->GetSettings();
+  settings->SetUploadsEnabled(enable_uploads &&
+                              crash_reporter_client->GetCollectStatsInSample());
 }
 
 bool GetUploadsEnabled() {
@@ -316,7 +270,75 @@ bool GetUploadsEnabled() {
   return false;
 }
 
+#if !defined(OS_ANDROID)
+void DumpWithoutCrashing() {
+  CRASHPAD_SIMULATE_CRASH();
+}
+#endif
+
+#if defined(OS_LINUX) || defined(OS_ANDROID)
+void CrashWithoutDumping(const std::string& message) {
+  crashpad::CrashpadClient::CrashWithoutDump(message);
+}
+#endif  // defined(OS_LINUX) || defined(OS_ANDROID)
+
 void GetReports(std::vector<Report>* reports) {
+#if defined(OS_WIN)
+  // On Windows, the crash client may be linked into another module, which
+  // does the client registration. That means the global that holds the crash
+  // report database lives across a module boundary, where the other module
+  // implements the GetCrashReportsImpl function. Since the other module has
+  // a separate allocation domain, this awkward copying is necessary.
+
+  // Start with an arbitrary copy size.
+  reports->resize(25);
+  while (true) {
+    size_t available_reports =
+        GetCrashReports_ExportThunk(&reports->at(0), reports->size());
+    if (available_reports <= reports->size()) {
+      // The input size was large enough to capture all available crashes.
+      // Trim the vector to the actual number of reports returned and return.
+      reports->resize(available_reports);
+      return;
+    }
+
+    // Resize to the number of available reports, plus some slop to all but
+    // eliminate the possibility of running around the loop again due to a
+    // newly arrived crash report.
+    reports->resize(available_reports + 5);
+  }
+#else
+  GetReportsImpl(reports);
+#endif
+}
+
+void RequestSingleCrashUpload(const std::string& local_id) {
+#if defined(OS_WIN)
+  // On Windows, crash reporting may be implemented in another module, which is
+  // why this can't call crash_reporter::RequestSingleCrashUpload directly.
+  RequestSingleCrashUpload_ExportThunk(local_id.c_str());
+#else
+  crash_reporter::RequestSingleCrashUploadImpl(local_id);
+#endif
+}
+
+base::FilePath GetCrashpadDatabasePath() {
+#if defined(OS_WIN)
+  return base::FilePath(GetCrashpadDatabasePath_ExportThunk());
+#else
+  return base::FilePath(GetCrashpadDatabasePathImpl());
+#endif
+}
+
+void ClearReportsBetween(const base::Time& begin, const base::Time& end) {
+#if defined(OS_WIN)
+  ClearReportsBetween_ExportThunk(begin.ToTimeT(), end.ToTimeT());
+#else
+  ClearReportsBetweenImpl(begin.ToTimeT(), end.ToTimeT());
+#endif
+}
+
+void GetReportsImpl(std::vector<Report>* reports) {
   reports->clear();
 
   if (!g_database) {
@@ -338,10 +360,15 @@ void GetReports(std::vector<Report>* reports) {
 
   for (const crashpad::CrashReportDatabase::Report& completed_report :
        completed_reports) {
-    Report report;
-    report.local_id = completed_report.uuid.ToString();
+    Report report = {};
+
+    // TODO(siggi): CHECK that this fits?
+    base::strlcpy(report.local_id, completed_report.uuid.ToString().c_str(),
+                  sizeof(report.local_id));
+
     report.capture_time = completed_report.creation_time;
-    report.remote_id = completed_report.id;
+    base::strlcpy(report.remote_id, completed_report.id.c_str(),
+                  sizeof(report.remote_id));
     if (completed_report.uploaded) {
       report.upload_time = completed_report.last_upload_attempt_time;
       report.state = ReportUploadState::Uploaded;
@@ -354,11 +381,14 @@ void GetReports(std::vector<Report>* reports) {
 
   for (const crashpad::CrashReportDatabase::Report& pending_report :
        pending_reports) {
-    Report report;
-    report.local_id = pending_report.uuid.ToString();
+    Report report = {};
+    base::strlcpy(report.local_id, pending_report.uuid.ToString().c_str(),
+                  sizeof(report.local_id));
     report.capture_time = pending_report.creation_time;
     report.upload_time = 0;
-    report.state = ReportUploadState::Pending;
+    report.state = pending_report.upload_explicitly_requested
+                       ? ReportUploadState::Pending_UserRequested
+                       : ReportUploadState::Pending;
     reports->push_back(report);
   }
 
@@ -368,117 +398,42 @@ void GetReports(std::vector<Report>* reports) {
             });
 }
 
-#if BUILDFLAG(ENABLE_KASKO)
+void RequestSingleCrashUploadImpl(const std::string& local_id) {
+  if (!g_database)
+    return;
+  crashpad::UUID uuid;
+  uuid.InitializeFromString(local_id);
+  g_database->RequestUpload(uuid);
+}
 
-void GetCrashKeysForKasko(std::vector<kasko::api::CrashKey>* crash_keys) {
-  // Get the platform annotations.
-  std::map<std::string, std::string> annotations;
-  internal::GetPlatformCrashpadAnnotations(&annotations);
+base::FilePath::StringType::const_pointer GetCrashpadDatabasePathImpl() {
+  if (!g_database_path)
+    return nullptr;
 
-  // Reserve room for the GUID and the platform annotations.
-  crash_keys->clear();
-  crash_keys->reserve(
-      g_simple_string_dictionary->GetCount() + 1 + annotations.size());
+  return g_database_path->value().c_str();
+}
 
-  // Set the Crashpad client ID in the crash keys.
-  bool got_guid = false;
-  if (g_database) {
-    crashpad::Settings* settings = g_database->GetSettings();
-    crashpad::UUID uuid;
-    if (settings->GetClientID(&uuid)) {
-      kasko::api::CrashKey kv;
-      wcsncpy_s(kv.name, L"guid", _TRUNCATE);
-      wcsncpy_s(kv.value, base::UTF8ToWide(uuid.ToString()).c_str(), _TRUNCATE);
-      crash_keys->push_back(kv);
-      got_guid = true;
+void ClearReportsBetweenImpl(time_t begin, time_t end) {
+  std::vector<Report> reports;
+  GetReports(&reports);
+  for (const Report& report : reports) {
+    // Delete if either time lies in the range, as they both reveal that the
+    // browser was open.
+    if ((begin <= report.capture_time && report.capture_time <= end) ||
+        (begin <= report.upload_time && report.upload_time <= end)) {
+      crashpad::UUID uuid;
+      uuid.InitializeFromString(report.local_id);
+      g_database->DeleteReport(uuid);
     }
   }
-
-  crashpad::SimpleStringDictionary::Iterator iter(*g_simple_string_dictionary);
-  for (;;) {
-    const auto* entry = iter.Next();
-    if (!entry)
-      break;
-
-    // Skip the 'guid' key if it was already set.
-    static const char kGuid[] = "guid";
-    if (got_guid && ::strncmp(entry->key, kGuid, arraysize(kGuid)) == 0)
-      continue;
-
-    // Skip any platform annotations as they'll be set below.
-    if (annotations.count(entry->key))
-      continue;
-
-    kasko::api::CrashKey kv;
-    wcsncpy_s(kv.name, base::UTF8ToWide(entry->key).c_str(), _TRUNCATE);
-    wcsncpy_s(kv.value, base::UTF8ToWide(entry->value).c_str(), _TRUNCATE);
-    crash_keys->push_back(kv);
-  }
-
-  // Merge in the platform annotations.
-  for (const auto& entry : annotations) {
-    kasko::api::CrashKey kv;
-    wcsncpy_s(kv.name, base::UTF8ToWide(entry.first).c_str(), _TRUNCATE);
-    wcsncpy_s(kv.value, base::UTF8ToWide(entry.second).c_str(), _TRUNCATE);
-    crash_keys->push_back(kv);
-  }
 }
 
-void ReadMainModuleAnnotationsForKasko(
-    const base::Process& process,
-    std::vector<kasko::api::CrashKey>* crash_keys) {
-  // Reopen process with necessary access.
-  base::win::ScopedHandle process_handle(::OpenProcess(
-      PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process.Pid()));
-  if (!process_handle.IsValid())
-    return;
+namespace internal {
 
-  // The executable name is the same for the browser process and the crash
-  // reporter.
-  wchar_t exe_file[MAX_PATH] = {};
-  CHECK(::GetModuleFileName(nullptr, exe_file, arraysize(exe_file)));
-
-  base::FilePath exe_path(exe_file);
-
-  HMODULE module = GetModuleInProcess(process_handle.Get(),
-                                      exe_path.BaseName().value().c_str());
-  if (!module)
-    return;
-
-  std::map<std::string, std::string> annotations;
-  crashpad::ReadModuleAnnotations(process_handle.Get(), module, &annotations);
-
-  // Append the annotations to the crash keys.
-  for (const auto& entry : annotations) {
-    kasko::api::CrashKey kv;
-    wcsncpy_s(kv.name, base::UTF8ToWide(entry.first).c_str(), _TRUNCATE);
-    wcsncpy_s(kv.value, base::UTF8ToWide(entry.second).c_str(), _TRUNCATE);
-    crash_keys->push_back(kv);
-  }
+crashpad::CrashReportDatabase* GetCrashReportDatabase() {
+  return g_database;
 }
 
-#endif  // BUILDFLAG(ENABLE_KASKO)
+}  // namespace internal
 
 }  // namespace crash_reporter
-
-#if defined(OS_WIN)
-
-extern "C" {
-
-// NOTE: This function is used by SyzyASAN to annotate crash reports. If you
-// change the name or signature of this function you will break SyzyASAN
-// instrumented releases of Chrome. Please contact syzygy-team@chromium.org
-// before doing so! See also http://crbug.com/567781.
-void __declspec(dllexport) __cdecl SetCrashKeyValueImpl(const wchar_t* key,
-                                                        const wchar_t* value) {
-  crash_reporter::SetCrashKeyValue(base::UTF16ToUTF8(key),
-                                   base::UTF16ToUTF8(value));
-}
-
-void __declspec(dllexport) __cdecl ClearCrashKeyValueImpl(const wchar_t* key) {
-  crash_reporter::ClearCrashKey(base::UTF16ToUTF8(key));
-}
-
-}  // extern "C"
-
-#endif  // OS_WIN

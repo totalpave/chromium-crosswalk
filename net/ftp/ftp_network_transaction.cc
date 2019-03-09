@@ -4,8 +4,11 @@
 
 #include "net/ftp/ftp_network_transaction.h"
 
+#include <vector>
+
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
@@ -14,13 +17,18 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "net/base/address_list.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/escape.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/base/parse_number.h"
 #include "net/base/port_util.h"
 #include "net/base/url_util.h"
 #include "net/ftp/ftp_request_info.h"
 #include "net/ftp/ftp_util.h"
 #include "net/log/net_log.h"
+#include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/stream_socket.h"
 #include "url/url_constants.h"
@@ -33,8 +41,8 @@ const char kCRLF[] = "\r\n";
 
 const int kCtrlBufLen = 1024;
 
-// Returns true if |input| can be safely used as a part of FTP command.
-bool IsValidFTPCommandString(const std::string& input) {
+// Returns true if |input| can be safely used as a part of an FTP command.
+bool IsValidFTPCommandSubstring(const std::string& input) {
   // RFC 959 only allows ASCII strings, but at least Firefox can send non-ASCII
   // characters in the command if the request path contains them. To be
   // compatible, we do the same and allow non-ASCII characters in a command.
@@ -121,25 +129,32 @@ int GetNetErrorCodeForFtpResponseCode(int response_code) {
 bool ExtractPortFromEPSVResponse(const FtpCtrlResponse& response, int* port) {
   if (response.lines.size() != 1)
     return false;
-  const char* ptr = response.lines[0].c_str();
-  while (*ptr && *ptr != '(')
-    ++ptr;
-  if (!*ptr)
-    return false;
-  char sep = *(++ptr);
-  if (!sep || isdigit(sep) || *(++ptr) != sep || *(++ptr) != sep)
-    return false;
-  if (!isdigit(*(++ptr)))
-    return false;
-  *port = *ptr - '0';
-  while (isdigit(*(++ptr))) {
-    *port *= 10;
-    *port += *ptr - '0';
-  }
-  if (*ptr != sep)
+
+  base::StringPiece epsv_line(response.lines[0]);
+  size_t start = epsv_line.find('(');
+  // If the line doesn't have a '(' or doesn't have enough characters after the
+  // first '(', fail.
+  if (start == base::StringPiece::npos || epsv_line.length() - start < 7)
     return false;
 
-  return true;
+  char separator = epsv_line[start + 1];
+
+  // Make sure we have "(<d><d><d>...", where <d> is not a number.
+  if ((separator >= '0' && separator <= '9') ||
+      epsv_line[start + 2] != separator || epsv_line[start + 3] != separator) {
+    return false;
+  }
+
+  // Skip over those characters.
+  start += 4;
+
+  // Make sure there's a terminal <d>.
+  size_t end = epsv_line.find(separator, start);
+  if (end == base::StringPiece::npos)
+    return false;
+
+  return ParseInt32(epsv_line.substr(start, end - start),
+                    ParseIntFormat::NON_NEGATIVE, port);
 }
 
 // There are two way we can receive IP address and port.
@@ -188,13 +203,15 @@ bool ExtractPortFromPASVResponse(const FtpCtrlResponse& response, int* port) {
 
   // Ignore the IP address supplied in the response. We are always going
   // to connect back to the same server to prevent FTP PASV port scanning.
-  int p0, p1;
-  if (!base::StringToInt(pieces[4], &p0))
+  uint32_t p0, p1;
+  if (!ParseUint32(pieces[4], &p0))
     return false;
-  if (!base::StringToInt(pieces[5], &p1))
+  if (!ParseUint32(pieces[5], &p1))
     return false;
-  *port = (p0 << 8) + p1;
+  if (p0 > 0xFF || p1 > 0xFF)
+    return false;
 
+  *port = (p0 << 8) + p1;
   return true;
 }
 
@@ -204,11 +221,11 @@ FtpNetworkTransaction::FtpNetworkTransaction(
     HostResolver* resolver,
     ClientSocketFactory* socket_factory)
     : command_sent_(COMMAND_NONE),
-      io_callback_(base::Bind(&FtpNetworkTransaction::OnIOComplete,
-                              base::Unretained(this))),
-      request_(NULL),
+      io_callback_(base::BindRepeating(&FtpNetworkTransaction::OnIOComplete,
+                                       base::Unretained(this))),
+      request_(nullptr),
       resolver_(resolver),
-      read_ctrl_buf_(new IOBuffer(kCtrlBufLen)),
+      read_ctrl_buf_(base::MakeRefCounted<IOBuffer>(kCtrlBufLen)),
       read_data_buf_len_(0),
       last_error_(OK),
       system_type_(SYSTEM_TYPE_UNKNOWN),
@@ -220,28 +237,38 @@ FtpNetworkTransaction::FtpNetworkTransaction(
       data_connection_port_(0),
       socket_factory_(socket_factory),
       next_state_(STATE_NONE),
-      state_after_data_connect_complete_(STATE_NONE) {
-}
+      state_after_data_connect_complete_(STATE_NONE) {}
 
-FtpNetworkTransaction::~FtpNetworkTransaction() {
-}
+FtpNetworkTransaction::~FtpNetworkTransaction() = default;
 
 int FtpNetworkTransaction::Stop(int error) {
-  if (command_sent_ == COMMAND_QUIT)
-    return error;
+  if (command_sent_ == COMMAND_QUIT) {
+    if (error != ERR_EMPTY_RESPONSE)
+      return error;
+
+    // For empty responses, if this is propagating an error, then it will return
+    // the error. If the error occurred during a QUIT command, then this will
+    // return OK since there was no previous error. Some FTP servers are lazy
+    // and do not bother responding to QUIT commands.
+    // See https://crbug.com/633841
+    return last_error_;
+  }
 
   next_state_ = STATE_CTRL_WRITE_QUIT;
   last_error_ = error;
   return OK;
 }
 
-int FtpNetworkTransaction::Start(const FtpRequestInfo* request_info,
-                                 const CompletionCallback& callback,
-                                 const BoundNetLog& net_log) {
+int FtpNetworkTransaction::Start(
+    const FtpRequestInfo* request_info,
+    CompletionOnceCallback callback,
+    const NetLogWithSource& net_log,
+    const NetworkTrafficAnnotationTag& traffic_annotation) {
   net_log_ = net_log;
   request_ = request_info;
+  traffic_annotation_ = MutableNetworkTrafficAnnotationTag(traffic_annotation);
 
-  ctrl_response_buffer_.reset(new FtpCtrlResponseBuffer(net_log_));
+  ctrl_response_buffer_ = std::make_unique<FtpCtrlResponseBuffer>(net_log_);
 
   if (request_->url.has_username()) {
     base::string16 username;
@@ -258,12 +285,12 @@ int FtpNetworkTransaction::Start(const FtpRequestInfo* request_info,
   next_state_ = STATE_CTRL_RESOLVE_HOST;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    user_callback_ = callback;
+    user_callback_ = std::move(callback);
   return rv;
 }
 
 int FtpNetworkTransaction::RestartWithAuth(const AuthCredentials& credentials,
-                                           const CompletionCallback& callback) {
+                                           CompletionOnceCallback callback) {
   ResetStateForRestart();
 
   credentials_ = credentials;
@@ -271,13 +298,13 @@ int FtpNetworkTransaction::RestartWithAuth(const AuthCredentials& credentials,
   next_state_ = STATE_CTRL_RESOLVE_HOST;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    user_callback_ = callback;
+    user_callback_ = std::move(callback);
   return rv;
 }
 
 int FtpNetworkTransaction::Read(IOBuffer* buf,
                                 int buf_len,
-                                const CompletionCallback& callback) {
+                                CompletionOnceCallback callback) {
   DCHECK(buf);
   DCHECK_GT(buf_len, 0);
 
@@ -287,7 +314,7 @@ int FtpNetworkTransaction::Read(IOBuffer* buf,
   next_state_ = STATE_DATA_READ;
   int rv = DoLoop(OK);
   if (rv == ERR_IO_PENDING)
-    user_callback_ = callback;
+    user_callback_ = std::move(callback);
   return rv;
 }
 
@@ -326,9 +353,9 @@ void FtpNetworkTransaction::ResetStateForRestart() {
   command_sent_ = COMMAND_NONE;
   user_callback_.Reset();
   response_ = FtpResponseInfo();
-  read_ctrl_buf_ = new IOBuffer(kCtrlBufLen);
-  ctrl_response_buffer_.reset(new FtpCtrlResponseBuffer(net_log_));
-  read_data_buf_ = NULL;
+  read_ctrl_buf_ = base::MakeRefCounted<IOBuffer>(kCtrlBufLen);
+  ctrl_response_buffer_ = std::make_unique<FtpCtrlResponseBuffer>(net_log_);
+  read_data_buf_ = nullptr;
   read_data_buf_len_ = 0;
   if (write_buf_.get())
     write_buf_->SetOffset(0);
@@ -349,12 +376,8 @@ void FtpNetworkTransaction::EstablishDataConnection(State state_after_connect) {
 
 void FtpNetworkTransaction::DoCallback(int rv) {
   DCHECK(rv != ERR_IO_PENDING);
-  DCHECK(!user_callback_.is_null());
 
-  // Since Run may result in Read being called, clear callback_ up front.
-  CompletionCallback c = user_callback_;
-  user_callback_.Reset();
-  c.Run(rv);
+  std::move(user_callback_).Run(rv);
 }
 
 void FtpNetworkTransaction::OnIOComplete(int result) {
@@ -415,7 +438,9 @@ int FtpNetworkTransaction::ProcessCtrlResponse() {
   }
 
   // We may get multiple responses for some commands,
-  // see http://crbug.com/18036.
+  // see http://crbug.com/18036. Consume all responses, regardless of whether
+  // they make sense. On unexpected responses, SendFtpCommand expects all data
+  // to have already been consumed, even when sending the QUIT command.
   while (ctrl_response_buffer_->ResponseAvailable() && rv == OK) {
     response = ctrl_response_buffer_->PopResponse();
 
@@ -428,7 +453,8 @@ int FtpNetworkTransaction::ProcessCtrlResponse() {
         break;
       default:
         // Multiple responses for other commands are invalid.
-        return Stop(ERR_INVALID_RESPONSE);
+        rv = Stop(ERR_INVALID_RESPONSE);
+        break;
     }
   }
 
@@ -447,7 +473,7 @@ int FtpNetworkTransaction::SendFtpCommand(const std::string& command,
   DCHECK(!write_command_buf_.get());
   DCHECK(!write_buf_.get());
 
-  if (!IsValidFTPCommandString(command)) {
+  if (!IsValidFTPCommandSubstring(command)) {
     // Callers should validate the command themselves and return a more specific
     // error code.
     NOTREACHED();
@@ -456,13 +482,14 @@ int FtpNetworkTransaction::SendFtpCommand(const std::string& command,
 
   command_sent_ = cmd;
 
-  write_command_buf_ = new IOBufferWithSize(command.length() + 2);
-  write_buf_ = new DrainableIOBuffer(write_command_buf_.get(),
-                                     write_command_buf_->size());
+  write_command_buf_ =
+      base::MakeRefCounted<IOBufferWithSize>(command.length() + 2);
+  write_buf_ = base::MakeRefCounted<DrainableIOBuffer>(
+      write_command_buf_, write_command_buf_->size());
   memcpy(write_command_buf_->data(), command.data(), command.length());
   memcpy(write_command_buf_->data() + command.length(), kCRLF, 2);
 
-  net_log_.AddEvent(NetLog::TYPE_FTP_COMMAND_SENT,
+  net_log_.AddEvent(NetLogEventType::FTP_COMMAND_SENT,
                     NetLog::StringCallback("command", &command_for_log));
 
   next_state_ = STATE_CTRL_WRITE;
@@ -490,7 +517,7 @@ std::string FtpNetworkTransaction::GetRequestPathForFtpCommand(
       UnescapeRule::SPACES |
       UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS;
   // This may unescape to non-ASCII characters, but we allow that. See the
-  // comment for IsValidFTPCommandString.
+  // comment for IsValidFTPCommandSubstring.
   path = UnescapeURLComponent(path, unescape_rules);
 
   if (system_type_ == SYSTEM_TYPE_VMS) {
@@ -500,7 +527,7 @@ std::string FtpNetworkTransaction::GetRequestPathForFtpCommand(
       path = FtpUtil::UnixFilePathToVMS(path);
   }
 
-  DCHECK(IsValidFTPCommandString(path));
+  DCHECK(IsValidFTPCommandSubstring(path));
   return path;
 }
 
@@ -635,14 +662,10 @@ int FtpNetworkTransaction::DoLoop(int result) {
 int FtpNetworkTransaction::DoCtrlResolveHost() {
   next_state_ = STATE_CTRL_RESOLVE_HOST_COMPLETE;
 
-  HostResolver::RequestInfo info(HostPortPair::FromURL(request_->url));
-  // No known referrer.
-  return resolver_.Resolve(
-      info,
-      DEFAULT_PRIORITY,
-      &addresses_,
-      base::Bind(&FtpNetworkTransaction::OnIOComplete, base::Unretained(this)),
-      net_log_);
+  resolve_request_ = resolver_->CreateRequest(
+      HostPortPair::FromURL(request_->url), net_log_, base::nullopt);
+  return resolve_request_->Start(base::BindOnce(
+      &FtpNetworkTransaction::OnIOComplete, base::Unretained(this)));
 }
 
 int FtpNetworkTransaction::DoCtrlResolveHostComplete(int result) {
@@ -653,10 +676,12 @@ int FtpNetworkTransaction::DoCtrlResolveHostComplete(int result) {
 
 int FtpNetworkTransaction::DoCtrlConnect() {
   next_state_ = STATE_CTRL_CONNECT_COMPLETE;
+  DCHECK(resolve_request_ && resolve_request_->GetAddressResults());
   ctrl_socket_ = socket_factory_->CreateTransportClientSocket(
-      addresses_, NULL, net_log_.net_log(), net_log_.source());
+      resolve_request_->GetAddressResults().value(), nullptr,
+      net_log_.net_log(), net_log_.source());
   net_log_.AddEvent(
-      NetLog::TYPE_FTP_CONTROL_CONNECTION,
+      NetLogEventType::FTP_CONTROL_CONNECTION,
       ctrl_socket_->NetLog().source().ToEventParametersCallback());
   return ctrl_socket_->Connect(io_callback_);
 }
@@ -667,7 +692,7 @@ int FtpNetworkTransaction::DoCtrlConnectComplete(int result) {
     IPEndPoint ip_endpoint;
     result = ctrl_socket_->GetPeerAddress(&ip_endpoint);
     if (result == OK) {
-      response_.socket_address = HostPortPair::FromIPEndPoint(ip_endpoint);
+      response_.remote_endpoint = ip_endpoint;
       next_state_ = STATE_CTRL_READ;
 
       if (ip_endpoint.GetFamily() == ADDRESS_FAMILY_IPV4) {
@@ -716,8 +741,9 @@ int FtpNetworkTransaction::DoCtrlReadComplete(int result) {
 int FtpNetworkTransaction::DoCtrlWrite() {
   next_state_ = STATE_CTRL_WRITE_COMPLETE;
 
-  return ctrl_socket_->Write(
-      write_buf_.get(), write_buf_->BytesRemaining(), io_callback_);
+  return ctrl_socket_->Write(write_buf_.get(), write_buf_->BytesRemaining(),
+                             io_callback_,
+                             NetworkTrafficAnnotationTag(traffic_annotation_));
 }
 
 int FtpNetworkTransaction::DoCtrlWriteComplete(int result) {
@@ -727,8 +753,8 @@ int FtpNetworkTransaction::DoCtrlWriteComplete(int result) {
   write_buf_->DidConsume(result);
   if (write_buf_->BytesRemaining() == 0) {
     // Clear the write buffer.
-    write_buf_ = NULL;
-    write_command_buf_ = NULL;
+    write_buf_ = nullptr;
+    write_command_buf_ = nullptr;
 
     next_state_ = STATE_CTRL_READ;
   } else {
@@ -743,7 +769,7 @@ int FtpNetworkTransaction::DoCtrlWriteComplete(int result) {
 int FtpNetworkTransaction::DoCtrlWriteUSER() {
   std::string command = "USER " + base::UTF16ToUTF8(credentials_.username());
 
-  if (!IsValidFTPCommandString(command))
+  if (!IsValidFTPCommandSubstring(command))
     return Stop(ERR_MALFORMED_IDENTITY);
 
   next_state_ = STATE_CTRL_READ;
@@ -753,6 +779,8 @@ int FtpNetworkTransaction::DoCtrlWriteUSER() {
 int FtpNetworkTransaction::ProcessResponseUSER(
     const FtpCtrlResponse& response) {
   switch (GetErrorClass(response.status_code)) {
+    case ERROR_CLASS_INITIATED:
+      return Stop(ERR_INVALID_RESPONSE);
     case ERROR_CLASS_OK:
       next_state_ = STATE_CTRL_WRITE_SYST;
       break;
@@ -763,9 +791,6 @@ int FtpNetworkTransaction::ProcessResponseUSER(
     case ERROR_CLASS_PERMANENT_ERROR:
       response_.needs_auth = true;
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -774,7 +799,7 @@ int FtpNetworkTransaction::ProcessResponseUSER(
 int FtpNetworkTransaction::DoCtrlWritePASS() {
   std::string command = "PASS " + base::UTF16ToUTF8(credentials_.password());
 
-  if (!IsValidFTPCommandString(command))
+  if (!IsValidFTPCommandSubstring(command))
     return Stop(ERR_MALFORMED_IDENTITY);
 
   next_state_ = STATE_CTRL_READ;
@@ -784,6 +809,8 @@ int FtpNetworkTransaction::DoCtrlWritePASS() {
 int FtpNetworkTransaction::ProcessResponsePASS(
     const FtpCtrlResponse& response) {
   switch (GetErrorClass(response.status_code)) {
+    case ERROR_CLASS_INITIATED:
+      return Stop(ERR_INVALID_RESPONSE);
     case ERROR_CLASS_OK:
       next_state_ = STATE_CTRL_WRITE_SYST;
       break;
@@ -793,9 +820,6 @@ int FtpNetworkTransaction::ProcessResponsePASS(
     case ERROR_CLASS_PERMANENT_ERROR:
       response_.needs_auth = true;
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -853,9 +877,6 @@ int FtpNetworkTransaction::ProcessResponseSYST(
       // Server does not recognize the SYST command so proceed.
       next_state_ = STATE_CTRL_WRITE_PWD;
       break;
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -888,6 +909,11 @@ int FtpNetworkTransaction::ProcessResponsePWD(const FtpCtrlResponse& response) {
         line = FtpUtil::VMSPathToUnix(line);
       if (!line.empty() && line.back() == '/')
         line.erase(line.length() - 1);
+      // Fail if the "path" contains characters not allowed in commands.
+      // This does mean that files with CRs or LFs in their names aren't
+      // handled, but that's probably for the best.
+      if (!IsValidFTPCommandSubstring(line))
+        return Stop(ERR_INVALID_RESPONSE);
       current_remote_directory_ = line;
       next_state_ = STATE_CTRL_WRITE_TYPE;
       break;
@@ -898,9 +924,6 @@ int FtpNetworkTransaction::ProcessResponsePWD(const FtpCtrlResponse& response) {
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
     case ERROR_CLASS_PERMANENT_ERROR:
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -934,9 +957,6 @@ int FtpNetworkTransaction::ProcessResponseTYPE(
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
     case ERROR_CLASS_PERMANENT_ERROR:
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -972,9 +992,6 @@ int FtpNetworkTransaction::ProcessResponseEPSV(
       use_epsv_ = false;
       next_state_ = STATE_CTRL_WRITE_PASV;
       return OK;
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -1009,9 +1026,6 @@ int FtpNetworkTransaction::ProcessResponsePASV(
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
     case ERROR_CLASS_PERMANENT_ERROR:
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -1045,9 +1059,6 @@ int FtpNetworkTransaction::ProcessResponseRETR(
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
     case ERROR_CLASS_PERMANENT_ERROR:
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
 
   return OK;
@@ -1091,9 +1102,6 @@ int FtpNetworkTransaction::ProcessResponseSIZE(
         return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
       }
       break;
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
 
   // If the resource is known beforehand to be a file, RETR should be issued,
@@ -1137,9 +1145,6 @@ int FtpNetworkTransaction::ProcessResponseCWD(const FtpCtrlResponse& response) {
         return ProcessResponseCWDNotADirectory();
 
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
 
   return OK;
@@ -1197,9 +1202,6 @@ int FtpNetworkTransaction::ProcessResponseLIST(
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
     case ERROR_CLASS_PERMANENT_ERROR:
       return Stop(GetNetErrorCodeForFtpResponseCode(response.status_code));
-    default:
-      NOTREACHED();
-      return Stop(ERR_UNEXPECTED);
   }
   return OK;
 }
@@ -1231,9 +1233,9 @@ int FtpNetworkTransaction::DoDataConnect() {
   data_address = AddressList::CreateFromIPAddress(
       ip_endpoint.address(), data_connection_port_);
   data_socket_ = socket_factory_->CreateTransportClientSocket(
-      data_address, NULL, net_log_.net_log(), net_log_.source());
+      data_address, nullptr, net_log_.net_log(), net_log_.source());
   net_log_.AddEvent(
-      NetLog::TYPE_FTP_DATA_CONNECTION,
+      NetLogEventType::FTP_DATA_CONNECTION,
       data_socket_->NetLog().source().ToEventParametersCallback());
   return data_socket_->Connect(io_callback_);
 }
@@ -1264,7 +1266,7 @@ int FtpNetworkTransaction::DoDataRead() {
   DCHECK(read_data_buf_.get());
   DCHECK_GT(read_data_buf_len_, 0);
 
-  if (data_socket_ == NULL || !data_socket_->IsConnected()) {
+  if (!data_socket_ || !data_socket_->IsConnected()) {
     // If we don't destroy the data socket completely, some servers will wait
     // for us (http://crbug.com/21127). The half-closed TCP connection needs
     // to be closed on our side too.
@@ -1365,7 +1367,7 @@ void FtpNetworkTransaction::RecordDataConnectionError(int result) {
     default:
       type = NET_ERROR_OTHER;
       break;
-  };
+  }
   static bool had_error_type[NUM_OF_NET_ERROR_TYPES];
 
   DCHECK(type >= 0 && type < NUM_OF_NET_ERROR_TYPES);

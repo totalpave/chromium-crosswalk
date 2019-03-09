@@ -15,17 +15,11 @@
 #include "build/build_config.h"
 #include "content/common/content_export.h"
 #include "content/public/common/menu_item.h"
-#include "content/public/common/page_state.h"
-#include "content/public/common/ssl_status.h"
-#include "third_party/WebKit/public/platform/WebCString.h"
-#include "third_party/WebKit/public/platform/WebReferrerPolicy.h"
-#include "third_party/WebKit/public/web/WebContextMenuData.h"
+#include "services/network/public/mojom/referrer_policy.mojom.h"
+#include "third_party/blink/public/web/web_context_menu_data.h"
 #include "ui/base/ui_base_types.h"
+#include "ui/gfx/geometry/rect.h"
 #include "url/gurl.h"
-
-#if defined(OS_ANDROID)
-#include "ui/gfx/geometry/point.h"
-#endif
 
 namespace content {
 
@@ -92,15 +86,8 @@ struct CONTENT_EXPORT ContextMenuParams {
   // on.
   GURL page_url;
 
-  // This is the absolute keyword search URL including the %s search tag when
-  // the "Add as search engine..." option is clicked (left empty if not used).
-  GURL keyword_url;
-
   // This is the URL of the subframe that the context menu was invoked on.
   GURL frame_url;
-
-  // This is the page state of the frame on which the context menu was invoked.
-  PageState frame_page_state;
 
   // These are the parameters for the media element that the context menu
   // was invoked on.
@@ -120,9 +107,6 @@ struct CONTENT_EXPORT ContextMenuParams {
   // The misspelled word under the cursor, if any. Used to generate the
   // |dictionary_suggestions| list.
   base::string16 misspelled_word;
-
-  // The identifier of the misspelling under the cursor, if any.
-  uint32_t misspelling_hash;
 
   // Suggested replacements for a misspelled word under the cursor.
   // This vector gets populated in the render process host
@@ -146,14 +130,11 @@ struct CONTENT_EXPORT ContextMenuParams {
   // able to perform the corresponding action.
   int edit_flags;
 
-  // The security info for the resource we are showing the menu on.
-  SSLStatus security_info;
-
   // The character encoding of the frame on which the menu is invoked.
   std::string frame_charset;
 
   // The referrer policy of the frame on which the menu is invoked.
-  blink::WebReferrerPolicy referrer_policy;
+  network::mojom::ReferrerPolicy referrer_policy;
 
   CustomContextMenuContext custom_context;
   std::vector<MenuItem> custom_items;
@@ -163,15 +144,14 @@ struct CONTENT_EXPORT ContextMenuParams {
   // Extra properties for the context menu.
   std::map<std::string, std::string> properties;
 
-#if defined(OS_ANDROID)
-  // Points representing the coordinates in the document space of the start and
-  // end of the selection, if there is one.
-  gfx::Point selection_start;
-  gfx::Point selection_end;
-#endif
-
   // If this node is an input field, the type of that field.
   blink::WebContextMenuData::InputFieldType input_field_type;
+
+  // Rect representing the coordinates in the document space of the selection.
+  gfx::Rect selection_rect;
+
+  // Start position of the selection text.
+  int selection_start_offset;
 };
 
 }  // namespace content

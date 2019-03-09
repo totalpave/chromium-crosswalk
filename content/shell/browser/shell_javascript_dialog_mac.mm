@@ -26,9 +26,8 @@
    andCallback:(content::JavaScriptDialogManager::DialogClosedCallback)callback;
 - (NSAlert*)alert;
 - (NSTextField*)textField;
-- (void)alertDidEnd:(NSAlert*)alert
-         returnCode:(int)returnCode
-        contextInfo:(void*)contextInfo;
+- (void)alertDidEndWithResult:(NSModalResponse)returnCode
+                       dialog:(content::ShellJavaScriptDialog*)dialog;
 - (void)cancel;
 
 @end
@@ -39,7 +38,7 @@
   andCallback:(content::JavaScriptDialogManager::DialogClosedCallback)callback {
   if (self = [super init]) {
     manager_ = manager;
-    callback_ = callback;
+    callback_ = std::move(callback);
   }
 
   return self;
@@ -60,10 +59,9 @@
   return textField_;
 }
 
-- (void)alertDidEnd:(NSAlert*)alert
-         returnCode:(int)returnCode
-        contextInfo:(void*)contextInfo {
-  if (returnCode == NSRunStoppedResponse)
+- (void)alertDidEndWithResult:(NSModalResponse)returnCode
+                       dialog:(content::ShellJavaScriptDialog*)dialog {
+  if (returnCode == NSModalResponseStop)
     return;
 
   bool success = returnCode == NSAlertFirstButtonReturn;
@@ -71,10 +69,8 @@
   if (textField_)
     input = base::SysNSStringToUTF16([textField_ stringValue]);
 
-  content::ShellJavaScriptDialog* native_dialog =
-      reinterpret_cast<content::ShellJavaScriptDialog*>(contextInfo);
-  callback_.Run(success, input);
-  manager_->DialogClosed(native_dialog);
+  std::move(callback_).Run(success, input);
+  manager_->DialogClosed(dialog);
 }
 
 - (void)cancel {
@@ -89,17 +85,17 @@ namespace content {
 ShellJavaScriptDialog::ShellJavaScriptDialog(
     ShellJavaScriptDialogManager* manager,
     gfx::NativeWindow parent_window,
-    JavaScriptMessageType message_type,
+    JavaScriptDialogType dialog_type,
     const base::string16& message_text,
     const base::string16& default_prompt_text,
-    const JavaScriptDialogManager::DialogClosedCallback& callback)
-    : callback_(callback) {
-  bool text_field = message_type == JAVASCRIPT_MESSAGE_TYPE_PROMPT;
-  bool one_button = message_type == JAVASCRIPT_MESSAGE_TYPE_ALERT;
+    JavaScriptDialogManager::DialogClosedCallback callback)
+    : callback_(std::move(callback)) {
+  bool text_field = dialog_type == JAVASCRIPT_DIALOG_TYPE_PROMPT;
+  bool one_button = dialog_type == JAVASCRIPT_DIALOG_TYPE_ALERT;
 
-  helper_ =
-      [[ShellJavaScriptDialogHelper alloc] initHelperWithManager:manager
-                                                     andCallback:callback];
+  helper_ = [[ShellJavaScriptDialogHelper alloc]
+      initHelperWithManager:manager
+                andCallback:std::move(callback)];
 
   // Show the modal dialog.
   NSAlert* alert = [helper_ alert];
@@ -117,11 +113,10 @@ ShellJavaScriptDialog::ShellJavaScriptDialog(
     [other setKeyEquivalent:@"\e"];
   }
 
-  [alert
-      beginSheetModalForWindow:nil  // nil here makes it app-modal
-                 modalDelegate:helper_
-                didEndSelector:@selector(alertDidEnd:returnCode:contextInfo:)
-                   contextInfo:this];
+  [alert beginSheetModalForWindow:nil  // nil here makes it app-modal
+                completionHandler:^void(NSModalResponse returnCode) {
+                  [helper_ alertDidEndWithResult:returnCode dialog:this];
+                }];
 }
 
 ShellJavaScriptDialog::~ShellJavaScriptDialog() {

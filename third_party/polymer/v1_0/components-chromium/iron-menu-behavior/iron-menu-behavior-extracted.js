@@ -25,12 +25,41 @@
        */
       attrForItemTitle: {
         type: String
-      }
+      },
+
+      disabled: {
+        type: Boolean,
+        value: false,
+        observer: '_disabledChanged',
+      },
     },
+
+    // The list of keys has been taken from
+    // https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/getModifierState
+    _MODIFIER_KEYS : [
+      'Alt',
+      'AltGraph',
+      'CapsLock',
+      'Control',
+      'Fn',
+      'FnLock',
+      'Hyper',
+      'Meta',
+      'NumLock',
+      'OS',
+      'ScrollLock',
+      'Shift',
+      'Super',
+      'Symbol',
+      'SymbolLock'
+    ],
+
+    _SEARCH_RESET_TIMEOUT_MS: 1000,
+
+    _previousTabIndex: 0,
 
     hostAttributes: {
       'role': 'menu',
-      'tabindex': '0'
     },
 
     observers: [
@@ -108,30 +137,68 @@
      * @param {KeyboardEvent} event A KeyboardEvent.
      */
     _focusWithKeyboardEvent: function(event) {
-      for (var i = 0, item; item = this.items[i]; i++) {
-        var attr = this.attrForItemTitle || 'textContent';
-        var title = item[attr] || item.getAttribute(attr);
+      // Make sure that the key pressed is not a modifier key.
+      // getModifierState is not being used, as it is not available in Safari
+      // earlier than 10.0.2 (https://trac.webkit.org/changeset/206725/webkit)
+      if (this._MODIFIER_KEYS.indexOf(event.key) !== -1)
+        return;
 
-        if (!item.hasAttribute('disabled') && title &&
-            title.trim().charAt(0).toLowerCase() === String.fromCharCode(event.keyCode).toLowerCase()) {
+      this.cancelDebouncer('_clearSearchText');
+
+      var searchText = this._searchText || '';
+      var key = event.key && event.key.length == 1 ? event.key :
+          String.fromCharCode(event.keyCode);
+      searchText += key.toLocaleLowerCase();
+
+      var searchLength = searchText.length;
+
+      for (var i = 0, item; item = this.items[i]; i++) {
+        if (item.hasAttribute('disabled')) {
+          continue;
+        }
+
+        var attr = this.attrForItemTitle || 'textContent';
+        var title = (item[attr] || item.getAttribute(attr) || '').trim();
+
+        if (title.length < searchLength) {
+          continue;
+        }
+
+        if (title.slice(0, searchLength).toLocaleLowerCase() == searchText) {
           this._setFocusedItem(item);
           break;
         }
       }
+
+      this._searchText = searchText;
+      this.debounce('_clearSearchText', this._clearSearchText,
+                    this._SEARCH_RESET_TIMEOUT_MS);
+    },
+
+    _clearSearchText: function() {
+      this._searchText = '';
     },
 
     /**
      * Focuses the previous item (relative to the currently focused item) in the
      * menu, disabled items will be skipped.
+     * Loop until length + 1 to handle case of single item in menu.
      */
     _focusPrevious: function() {
       var length = this.items.length;
       var curFocusIndex = Number(this.indexOf(this.focusedItem));
-      for (var i = 1; i < length; i++) {
+
+      for (var i = 1; i < length + 1; i++) {
         var item = this.items[(curFocusIndex - i + length) % length];
         if (!item.hasAttribute('disabled')) {
+          var owner = Polymer.dom(item).getOwnerRoot() || document;
           this._setFocusedItem(item);
-          return;
+
+          // Focus might not have worked, if the element was hidden or not
+          // focusable. In that case, try again.
+          if (Polymer.dom(owner).activeElement == item) {
+            return;
+          }
         }
       }
     },
@@ -139,15 +206,23 @@
     /**
      * Focuses the next item (relative to the currently focused item) in the
      * menu, disabled items will be skipped.
+     * Loop until length + 1 to handle case of single item in menu.
      */
     _focusNext: function() {
       var length = this.items.length;
       var curFocusIndex = Number(this.indexOf(this.focusedItem));
-      for (var i = 1; i < length; i++) {
+
+      for (var i = 1; i < length + 1; i++) {
         var item = this.items[(curFocusIndex + i) % length];
         if (!item.hasAttribute('disabled')) {
+          var owner = Polymer.dom(item).getOwnerRoot() || document;
           this._setFocusedItem(item);
-          return;
+
+          // Focus might not have worked, if the element was hidden or not
+          // focusable. In that case, try again.
+          if (Polymer.dom(owner).activeElement == item) {
+            return;
+          }
         }
       }
     },
@@ -179,7 +254,7 @@
      */
     _focusedItemChanged: function(focusedItem, old) {
       old && old.setAttribute('tabindex', '-1');
-      if (focusedItem) {
+      if (focusedItem && !focusedItem.hasAttribute('disabled') && !this.disabled) {
         focusedItem.setAttribute('tabindex', '0');
         focusedItem.focus();
       }
@@ -282,8 +357,10 @@
      * @param {CustomEvent} event A key combination event.
      */
     _onEscKey: function(event) {
-      // esc blurs the control
-      this.focusedItem.blur();
+      var focusedItem = this.focusedItem;
+      if (focusedItem) {
+        focusedItem.blur();
+      }
     },
 
     /**
@@ -303,6 +380,19 @@
     _activateHandler: function(event) {
       Polymer.IronSelectableBehavior._activateHandler.call(this, event);
       event.stopPropagation();
+    },
+
+    /**
+     * Updates this element's tab index when it's enabled/disabled.
+     * @param {boolean} disabled
+     */
+    _disabledChanged: function(disabled) {
+      if (disabled) {
+        this._previousTabIndex = this.hasAttribute('tabindex') ? this.tabIndex : 0;
+        this.removeAttribute('tabindex');  // No tabindex means not tab-able or select-able.
+      } else if (!this.hasAttribute('tabindex')) {
+        this.setAttribute('tabindex', this._previousTabIndex);
+      }
     }
   };
 

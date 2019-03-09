@@ -73,16 +73,14 @@
 // Note: we're glossing over how the sub-sample handling works with
 // |virtual_source_idx_|, etc.
 
-// MSVC++ requires this to be set before any other includes to get M_PI.
-#define _USE_MATH_DEFINES
-
 #include "media/base/sinc_resampler.h"
 
-#include <cmath>
 #include <limits>
 
 #include "base/logging.h"
+#include "base/numerics/math_constants.h"
 #include "build/build_config.h"
+#include "cc/base/math_util.h"
 
 #if defined(ARCH_CPU_X86_FAMILY)
 #include <xmmintrin.h>
@@ -149,7 +147,7 @@ SincResampler::SincResampler(double io_sample_rate_ratio,
   InitializeKernel();
 }
 
-SincResampler::~SincResampler() {}
+SincResampler::~SincResampler() = default;
 
 void SincResampler::UpdateRegions(bool second_load) {
   // Setup various region pointers in the buffer (see diagram above).  If we're
@@ -185,21 +183,21 @@ void SincResampler::InitializeKernel() {
     for (int i = 0; i < kKernelSize; ++i) {
       const int idx = i + offset_idx * kKernelSize;
       const float pre_sinc =
-          static_cast<float>(M_PI * (i - kKernelSize / 2 - subsample_offset));
+          base::kPiFloat * (i - kKernelSize / 2 - subsample_offset);
       kernel_pre_sinc_storage_[idx] = pre_sinc;
 
       // Compute Blackman window, matching the offset of the sinc().
       const float x = (i - subsample_offset) / kKernelSize;
-      const float window = static_cast<float>(kA0 - kA1 * cos(2.0 * M_PI * x) +
-          kA2 * cos(4.0 * M_PI * x));
+      const float window =
+          static_cast<float>(kA0 - kA1 * cos(2.0 * base::kPiDouble * x) +
+                             kA2 * cos(4.0 * base::kPiDouble * x));
       kernel_window_storage_[idx] = window;
 
       // Compute the sinc with offset, then window the sinc() function and store
       // at the correct offset.
-      kernel_storage_[idx] = static_cast<float>(window *
-          ((pre_sinc == 0) ?
-              sinc_scale_factor :
-              (sin(sinc_scale_factor * pre_sinc) / pre_sinc)));
+      kernel_storage_[idx] = static_cast<float>(
+          window * (pre_sinc ? sin(sinc_scale_factor * pre_sinc) / pre_sinc
+                             : sinc_scale_factor));
     }
   }
 }
@@ -222,10 +220,9 @@ void SincResampler::SetRatio(double io_sample_rate_ratio) {
       const float window = kernel_window_storage_[idx];
       const float pre_sinc = kernel_pre_sinc_storage_[idx];
 
-      kernel_storage_[idx] = static_cast<float>(window *
-          ((pre_sinc == 0) ?
-              sinc_scale_factor :
-              (sin(sinc_scale_factor * pre_sinc) / pre_sinc)));
+      kernel_storage_[idx] = static_cast<float>(
+          window * (pre_sinc ? sin(sinc_scale_factor * pre_sinc) / pre_sinc
+                             : sinc_scale_factor));
     }
   }
 }
@@ -239,48 +236,45 @@ void SincResampler::Resample(int frames, float* destination) {
     buffer_primed_ = true;
   }
 
-  // Step (2) -- Resample!  const what we can outside of the loop for speed.  It
-  // actually has an impact on ARM performance.  See inner loop comment below.
-  const double current_io_ratio = io_sample_rate_ratio_;
-  const float* const kernel_ptr = kernel_storage_.get();
+  // Step (2) -- Resample!
   while (remaining_frames) {
-    // Note: The loop construct here can severely impact performance on ARM
-    // or when built with clang.  See https://codereview.chromium.org/18566009/
-    int source_idx = static_cast<int>(virtual_source_idx_);
-    while (source_idx < block_size_) {
-      // |virtual_source_idx_| lies in between two kernel offsets so figure out
-      // what they are.
-      const double subsample_remainder = virtual_source_idx_ - source_idx;
+    // Silent audio can contain non-zero samples small enough to result in
+    // subnormals internally. Disabling subnormals can be significantly faster.
+    {
+      cc::ScopedSubnormalFloatDisabler disable_subnormals;
 
-      const double virtual_offset_idx =
-          subsample_remainder * kKernelOffsetCount;
-      const int offset_idx = static_cast<int>(virtual_offset_idx);
+      while (virtual_source_idx_ < block_size_) {
+        // |virtual_source_idx_| lies in between two kernel offsets so figure
+        // out what they are.
+        const int source_idx = static_cast<int>(virtual_source_idx_);
+        const double virtual_offset_idx =
+            (virtual_source_idx_ - source_idx) * kKernelOffsetCount;
+        const int offset_idx = static_cast<int>(virtual_offset_idx);
 
-      // We'll compute "convolutions" for the two kernels which straddle
-      // |virtual_source_idx_|.
-      const float* const k1 = kernel_ptr + offset_idx * kKernelSize;
-      const float* const k2 = k1 + kKernelSize;
+        // We'll compute "convolutions" for the two kernels which straddle
+        // |virtual_source_idx_|.
+        const float* k1 = kernel_storage_.get() + offset_idx * kKernelSize;
+        const float* k2 = k1 + kKernelSize;
 
-      // Ensure |k1|, |k2| are 16-byte aligned for SIMD usage.  Should always be
-      // true so long as kKernelSize is a multiple of 16.
-      DCHECK_EQ(0u, reinterpret_cast<uintptr_t>(k1) & 0x0F);
-      DCHECK_EQ(0u, reinterpret_cast<uintptr_t>(k2) & 0x0F);
+        // Ensure |k1|, |k2| are 16-byte aligned for SIMD usage.  Should always
+        // be true so long as kKernelSize is a multiple of 16.
+        DCHECK_EQ(0u, reinterpret_cast<uintptr_t>(k1) & 0x0F);
+        DCHECK_EQ(0u, reinterpret_cast<uintptr_t>(k2) & 0x0F);
 
-      // Initialize input pointer based on quantized |virtual_source_idx_|.
-      const float* const input_ptr = r1_ + source_idx;
+        // Initialize input pointer based on quantized |virtual_source_idx_|.
+        const float* input_ptr = r1_ + source_idx;
 
-      // Figure out how much to weight each kernel's "convolution".
-      const double kernel_interpolation_factor =
-          virtual_offset_idx - offset_idx;
-      *destination++ = CONVOLVE_FUNC(
-          input_ptr, k1, k2, kernel_interpolation_factor);
+        // Figure out how much to weight each kernel's "convolution".
+        const double kernel_interpolation_factor =
+            virtual_offset_idx - offset_idx;
+        *destination++ =
+            CONVOLVE_FUNC(input_ptr, k1, k2, kernel_interpolation_factor);
 
-      // Advance the virtual index.
-      virtual_source_idx_ += current_io_ratio;
-      source_idx = static_cast<int>(virtual_source_idx_);
-
-      if (!--remaining_frames)
-        return;
+        // Advance the virtual index.
+        virtual_source_idx_ += io_sample_rate_ratio_;
+        if (!--remaining_frames)
+          return;
+      }
     }
 
     // Wrap back around to the start.
@@ -317,11 +311,7 @@ void SincResampler::Flush() {
 }
 
 double SincResampler::BufferedFrames() const {
-  if (buffer_primed_) {
-    return request_frames_ - virtual_source_idx_;
-  } else {
-    return 0.0;
-  }
+  return buffer_primed_ ? request_frames_ - virtual_source_idx_ : 0;
 }
 
 float SincResampler::Convolve_C(const float* input_ptr, const float* k1,

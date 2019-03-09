@@ -20,9 +20,12 @@ class NavigationMetricsRecorder
   friend class content::WebContentsUserData<NavigationMetricsRecorder>;
 
   // content::WebContentsObserver overrides:
-  void DidNavigateMainFrame(
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
+
+  void RegisterSyntheticSigninIsolationTrial();
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(NavigationMetricsRecorder);
 };

@@ -6,7 +6,7 @@
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "content/browser/appcache/appcache.h"
 #include "content/browser/appcache/appcache_entry.h"
 #include "content/browser/appcache/appcache_group.h"
@@ -16,10 +16,7 @@
 namespace content {
 
 AppCacheTestHelper::AppCacheTestHelper()
-    : group_id_(0),
-      appcache_id_(0),
-      response_id_(0),
-      origins_(NULL) {}
+    : group_id_(0), appcache_id_(0), response_id_(0), origins_(nullptr) {}
 
 AppCacheTestHelper::~AppCacheTestHelper() {}
 
@@ -29,7 +26,7 @@ void AppCacheTestHelper::OnGroupAndNewestCacheStored(
     bool success,
     bool /*would_exceed_quota*/) {
   ASSERT_TRUE(success);
-  base::MessageLoop::current()->QuitWhenIdle();
+  base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 void AppCacheTestHelper::AddGroupAndCache(AppCacheServiceImpl*
@@ -49,32 +46,30 @@ void AppCacheTestHelper::AddGroupAndCache(AppCacheServiceImpl*
                                                         appcache,
                                                         this);
   // OnGroupAndNewestCacheStored will quit the message loop.
-  base::MessageLoop::current()->Run();
+  base::RunLoop().Run();
 }
 
-void AppCacheTestHelper::GetOriginsWithCaches(AppCacheServiceImpl*
-    appcache_service, std::set<GURL>* origins) {
+void AppCacheTestHelper::GetOriginsWithCaches(
+    AppCacheServiceImpl* appcache_service,
+    std::set<url::Origin>* origins) {
   appcache_info_ = new AppCacheInfoCollection;
   origins_ = origins;
   appcache_service->GetAllAppCacheInfo(
       appcache_info_.get(),
-      base::Bind(&AppCacheTestHelper::OnGotAppCacheInfo,
-                 base::Unretained(this)));
+      base::BindOnce(&AppCacheTestHelper::OnGotAppCacheInfo,
+                     base::Unretained(this)));
 
   // OnGotAppCacheInfo will quit the message loop.
-  base::MessageLoop::current()->Run();
+  base::RunLoop().Run();
 }
 
 void AppCacheTestHelper::OnGotAppCacheInfo(int rv) {
-  typedef std::map<GURL, AppCacheInfoVector> InfoByOrigin;
 
   origins_->clear();
-  for (InfoByOrigin::const_iterator origin =
-           appcache_info_->infos_by_origin.begin();
-       origin != appcache_info_->infos_by_origin.end(); ++origin) {
-    origins_->insert(origin->first);
-  }
-  base::MessageLoop::current()->QuitWhenIdle();
+  for (const auto& kvp : appcache_info_->infos_by_origin)
+    origins_->insert(kvp.first);
+
+  base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 }  // namespace content

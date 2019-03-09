@@ -1,6 +1,10 @@
 include_rules = [
-  "+grit/components_resources.h",
+  "+cc/paint",
+  "+components/grit/components_resources.h",
+  "+content/public/renderer",
+  "+mojo/public",
   "+net/base",
+  "+services/service_manager/public/cpp",
   "+third_party/skia",
   "+ui/base",
 ]

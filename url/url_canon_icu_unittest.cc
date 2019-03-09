@@ -4,7 +4,7 @@
 
 #include <stddef.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/icu/source/common/unicode/ucnv.h"
 #include "url/url_canon.h"
@@ -13,8 +13,6 @@
 #include "url/url_test_utils.h"
 
 namespace url {
-
-using test_utils::WStringToUTF16;
 
 namespace {
 
@@ -56,7 +54,7 @@ TEST(URLCanonIcuTest, ICUCharsetConverter) {
       "hello\xa7\x41%26%231758%3B\xa6\x6eworld"},
   };
 
-  for (size_t i = 0; i < arraysize(icu_cases); i++) {
+  for (size_t i = 0; i < base::size(icu_cases); i++) {
     UConvScoper conv(icu_cases[i].encoding);
     ASSERT_TRUE(conv.converter() != NULL);
     ICUCharsetConverter converter(conv.converter());
@@ -64,7 +62,8 @@ TEST(URLCanonIcuTest, ICUCharsetConverter) {
     std::string str;
     StdStringCanonOutput output(&str);
 
-    base::string16 input_str(WStringToUTF16(icu_cases[i].input));
+    base::string16 input_str(
+        test_utils::TruncateWStringToUTF16(icu_cases[i].input));
     int input_len = static_cast<int>(input_str.length());
     converter.ConvertFromUTF16(input_str.c_str(), input_len, &output);
     output.Complete();
@@ -113,7 +112,7 @@ TEST(URLCanonIcuTest, QueryWithConverter) {
       "?q=Chinese%26%2365319%3B"},
   };
 
-  for (size_t i = 0; i < arraysize(query_cases); i++) {
+  for (size_t i = 0; i < base::size(query_cases); i++) {
     Component out_comp;
 
     UConvScoper conv(query_cases[i].encoding);
@@ -134,7 +133,8 @@ TEST(URLCanonIcuTest, QueryWithConverter) {
     }
 
     if (query_cases[i].input16) {
-      base::string16 input16(WStringToUTF16(query_cases[i].input16));
+      base::string16 input16(
+          test_utils::TruncateWStringToUTF16(query_cases[i].input16));
       int len = static_cast<int>(input16.length());
       Component in_comp(0, len);
       std::string out_str;

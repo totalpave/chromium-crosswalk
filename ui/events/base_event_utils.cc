@@ -19,13 +19,16 @@ namespace {
 
 #if defined(OS_CHROMEOS)
 const int kSystemKeyModifierMask = EF_ALT_DOWN | EF_COMMAND_DOWN;
+#elif defined(OS_MACOSX)
+// Alt modifier is used to input extended characters on Mac.
+const int kSystemKeyModifierMask = EF_COMMAND_DOWN;
 #else
 const int kSystemKeyModifierMask = EF_ALT_DOWN;
-#endif  // defined(OS_CHROMEOS)
+#endif  // !defined(OS_CHROMEOS) && !defined(OS_MACOSX)
 
 }  // namespace
 
-base::StaticAtomicSequenceNumber g_next_event_id;
+base::AtomicSequenceNumber g_next_event_id;
 
 uint32_t GetNextTouchEventId() {
   // Set the first touch event ID to 1 because we set id to 0 for other types
@@ -44,7 +47,7 @@ bool IsSystemKeyModifier(int flags) {
          (EF_ALTGR_DOWN & flags) == 0;
 }
 
-base::LazyInstance<std::unique_ptr<base::TickClock>>::Leaky g_tick_clock =
+base::LazyInstance<const base::TickClock*>::Leaky g_tick_clock =
     LAZY_INSTANCE_INITIALIZER;
 
 base::TimeTicks EventTimeForNow() {
@@ -52,8 +55,8 @@ base::TimeTicks EventTimeForNow() {
                             : base::TimeTicks::Now();
 }
 
-void SetEventTickClockForTesting(std::unique_ptr<base::TickClock> tick_clock) {
-  g_tick_clock.Get() = std::move(tick_clock);
+void SetEventTickClockForTesting(const base::TickClock* tick_clock) {
+  g_tick_clock.Get() = tick_clock;
 }
 
 double EventTimeStampToSeconds(base::TimeTicks time_stamp) {
@@ -65,4 +68,3 @@ base::TimeTicks EventTimeStampFromSeconds(double time_stamp_seconds) {
 }
 
 }  // namespace ui
-

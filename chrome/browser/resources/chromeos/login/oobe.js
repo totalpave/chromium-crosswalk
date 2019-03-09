@@ -7,84 +7,93 @@
  * This is the main code for the OOBE WebUI implementation.
  */
 
-<include src="login_shared.js">
-<include src="login_non_lock_shared.js">
-<include src="oobe_screen_auto_enrollment_check.js">
-<include src="oobe_screen_controller_pairing.js">
-<include src="oobe_screen_enable_debugging.js">
-<include src="oobe_screen_eula.js">
-<include src="oobe_screen_hid_detection.js">
-<include src="oobe_screen_host_pairing.js">
-<include src="oobe_screen_network.js">
-<include src="oobe_screen_update.js">
+// <include src="test_util.js">
+// <include src="../../../../../ui/login/screen.js">
+// <include src="screen_context.js">
+// <include src="apps_menu.js">
+// <include src="../../../../../ui/login/bubble.js">
+// <include src="../../../../../ui/login/display_manager.js">
+// <include src="md_header_bar.js">
+// <include src="demo_mode_test_helper.js">
+
+// <include
+// src="../../../../../ui/login/account_picker/chromeos_screen_account_picker.js">
+
+// <include src="../../../../../ui/login/login_ui_tools.js">
+// <include
+// src="../../../../../ui/login/account_picker/chromeos_user_pod_row.js">
+// <include src="../../../../../ui/login/resource_loader.js">
+// <include src="cr_ui.js">
+// <include src="oobe_screen_reset.js">
+// <include src="oobe_screen_autolaunch.js">
+// <include src="oobe_screen_enable_kiosk.js">
+// <include src="oobe_screen_terms_of_service.js">
+// <include src="oobe_screen_user_image.js">
+// <include src="oobe_screen_supervision_transition.js">
+// <include src="oobe_screen_assistant_optin_flow.js">
+// <include src="oobe_select.js">
+
+// <include src="screen_app_launch_splash.js">
+// <include src="screen_arc_kiosk_splash.js">
+// <include src="screen_arc_terms_of_service.js">
+// <include src="screen_error_message.js">
+// <include src="screen_gaia_signin.js">
+// <include src="screen_password_changed.js">
+// <include src="screen_tpm_error.js">
+// <include src="screen_wrong_hwid.js">
+// <include src="screen_confirm_password.js">
+// <include src="screen_fatal_error.js">
+// <include src="screen_device_disabled.js">
+// <include src="screen_unrecoverable_cryptohome_error.js">
+// <include src="screen_active_directory_password_change.js">
+// <include src="screen_encryption_migration.js">
+// <include src="screen_update_required.js">
+// <include src="screen_sync_consent.js">
+// <include src="screen_fingerprint_setup.js">
+// <include src="screen_recommend_apps.js">
+// <include src="screen_app_downloading.js">
+// <include src="screen_discover.js">
+// <include src="screen_marketing_opt_in.js">
+// <include src="screen_multidevice_setup.js">
+
+// <include src="../../gaia_auth_host/authenticator.js">
+
+// Register assets for async loading.
+[{
+  id: SCREEN_OOBE_ENROLLMENT,
+  html: [{url: 'chrome://oobe/enrollment.html', targetID: 'inner-container'}],
+  css: ['chrome://oobe/enrollment.css'],
+  js: ['chrome://oobe/enrollment.js']
+}].forEach(cr.ui.login.ResourceLoader.registerAssets);
+
+(function() {
+'use strict';
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Immediately load async assets.
+  cr.ui.login.ResourceLoader.loadAssets(SCREEN_OOBE_ENROLLMENT, function() {
+    // This screen is async-loaded so we manually trigger i18n processing.
+    i18nTemplate.process($('oauth-enrollment'), loadTimeData);
+    // Delayed binding since this isn't defined yet.
+    login.OAuthEnrollmentScreen.register();
+  });
+});
+})();
+// <include src="oobe_screen_auto_enrollment_check.js">
+// <include src="oobe_screen_demo_setup.js">
+// <include src="oobe_screen_demo_preferences.js">
+// <include src="oobe_screen_enable_debugging.js">
+// <include src="oobe_screen_eula.js">
+// <include src="oobe_screen_hid_detection.js">
+// <include src="oobe_screen_network.js">
+// <include src="oobe_screen_update.js">
+// <include src="oobe_screen_welcome.js">
+// <include src="multi_tap_detector.js">
+// <include src="web_view_helper.js">
 
 cr.define('cr.ui.Oobe', function() {
+
   return {
-    /**
-     * Setups given "select" element using the list and adds callback.
-     * Creates option groups if needed.
-     * @param {!Element} select Select object to be updated.
-     * @param {!Object} list List of the options to be added.
-     * Elements with optionGroupName are considered option group.
-     * @param {string} callback Callback name which should be send to Chrome or
-     * an empty string if the event listener shouldn't be added.
-     *
-     * Note: do not forget to update getSelectedTitle() below if this is
-     * updated!
-     */
-    setupSelect: function(select, list, callback) {
-      select.innerHTML = '';
-      var optgroup = select;
-      for (var i = 0; i < list.length; ++i) {
-        var item = list[i];
-        if (item.optionGroupName) {
-          optgroup = document.createElement('optgroup');
-          optgroup.label = item.optionGroupName;
-          select.appendChild(optgroup);
-        } else {
-          var option =
-              new Option(item.title, item.value, item.selected, item.selected);
-          optgroup.appendChild(option);
-        }
-      }
-      if (callback) {
-        var runCallback = function() {
-          callback(select.options[select.selectedIndex].value);
-        };
-        select.addEventListener('blur', runCallback);
-        select.addEventListener('click', runCallback);
-        select.addEventListener('keyup', function(event) {
-          var keycodeInterested = [
-            9,  // Tab
-            13,  // Enter
-            27,  // Escape
-          ];
-          if (keycodeInterested.indexOf(event.keyCode) >= 0)
-            runCallback();
-        });
-      }
-    },
-
-    /**
-     * Returns title of the selected option (see setupSelect() above).
-     * @param {!Object} list The same as in setupSelect() above.
-     */
-    getSelectedTitle: function(list) {
-      var firstTitle = '';
-      for (var i = 0; i < list.length; ++i) {
-        var item = list[i];
-        if (item.optionGroupName)
-          continue;
-
-        if (!firstTitle)
-          firstTitle = item.title;
-
-        if (item.selected)
-          return item.title;
-      }
-      return firstTitle;
-    },
-
     /**
      * Initializes the OOBE flow.  This will cause all C++ handlers to
      * be invoked to do final setup.
@@ -93,6 +102,7 @@ cr.define('cr.ui.Oobe', function() {
       cr.ui.login.DisplayManager.initialize();
       login.HIDDetectionScreen.register();
       login.WrongHWIDScreen.register();
+      login.WelcomeScreen.register();
       login.NetworkScreen.register();
       login.EulaScreen.register();
       login.UpdateScreen.register();
@@ -107,137 +117,34 @@ cr.define('cr.ui.Oobe', function() {
       login.ErrorMessageScreen.register();
       login.TPMErrorMessageScreen.register();
       login.PasswordChangedScreen.register();
-      login.SupervisedUserCreationScreen.register();
       login.TermsOfServiceScreen.register();
+      login.SyncConsentScreen.register();
+      login.FingerprintSetupScreen.register();
+      login.ArcTermsOfServiceScreen.register();
+      login.RecommendAppsScreen.register();
+      login.AppDownloadingScreen.register();
       login.AppLaunchSplashScreen.register();
+      login.ArcKioskSplashScreen.register();
       login.ConfirmPasswordScreen.register();
       login.FatalErrorScreen.register();
-      login.ControllerPairingScreen.register();
-      login.HostPairingScreen.register();
       login.DeviceDisabledScreen.register();
+      login.ActiveDirectoryPasswordChangeScreen.register(/* lazyInit= */ true);
+      login.SupervisionTransitionScreen.register();
+      login.DemoSetupScreen.register();
+      login.DemoPreferencesScreen.register();
+      login.DiscoverScreen.register();
+      login.MarketingOptInScreen.register();
+      login.AssistantOptInFlowScreen.register();
+      login.MultiDeviceSetupScreen.register();
+
+      cr.ui.Bubble.decorate($('bubble-persistent'));
+      $('bubble-persistent').persistent = true;
+      $('bubble-persistent').hideOnKeyPress = false;
 
       cr.ui.Bubble.decorate($('bubble'));
       login.HeaderBar.decorate($('login-header-bar'));
 
-      Oobe.initializeA11yMenu();
-
       chrome.send('screenStateInitialize');
-    },
-
-    /**
-     * Initializes OOBE accessibility menu.
-     */
-    initializeA11yMenu: function() {
-      cr.ui.Bubble.decorate($('accessibility-menu'));
-      $('connect-accessibility-link').addEventListener(
-        'click', Oobe.handleAccessibilityLinkClick);
-      $('eula-accessibility-link').addEventListener(
-        'click', Oobe.handleAccessibilityLinkClick);
-      $('update-accessibility-link').addEventListener(
-        'click', Oobe.handleAccessibilityLinkClick);
-      // Same behaviour on hitting spacebar. See crbug.com/342991.
-      function reactOnSpace(event) {
-        if (event.keyCode == 32)
-          Oobe.handleAccessibilityLinkClick(event);
-      }
-      $('connect-accessibility-link').addEventListener(
-        'keyup', reactOnSpace);
-      $('eula-accessibility-link').addEventListener(
-        'keyup', reactOnSpace);
-      $('update-accessibility-link').addEventListener(
-        'keyup', reactOnSpace);
-
-      $('high-contrast').addEventListener('click',
-                                          Oobe.handleHighContrastClick);
-      $('large-cursor').addEventListener('click',
-                                         Oobe.handleLargeCursorClick);
-      $('spoken-feedback').addEventListener('click',
-                                            Oobe.handleSpokenFeedbackClick);
-      $('screen-magnifier').addEventListener('click',
-                                             Oobe.handleScreenMagnifierClick);
-      $('virtual-keyboard').addEventListener('click',
-                                              Oobe.handleVirtualKeyboardClick);
-
-      // A11y menu should be accessible i.e. disable autohide on any
-      // keydown or click inside menu.
-      $('accessibility-menu').hideOnKeyPress = false;
-      $('accessibility-menu').hideOnSelfClick = false;
-    },
-
-    /**
-     * Accessibility link handler.
-     */
-    handleAccessibilityLinkClick: function(e) {
-      /** @const */ var BUBBLE_OFFSET = 5;
-      /** @const */ var BUBBLE_PADDING = 10;
-      $('accessibility-menu').showForElement(e.target,
-                                             cr.ui.Bubble.Attachment.BOTTOM,
-                                             BUBBLE_OFFSET, BUBBLE_PADDING);
-
-      var maxHeight = cr.ui.LoginUITools.getMaxHeightBeforeShelfOverlapping(
-          $('accessibility-menu'));
-      if (maxHeight < $('accessibility-menu').offsetHeight) {
-        $('accessibility-menu').showForElement(e.target,
-                                               cr.ui.Bubble.Attachment.TOP,
-                                               BUBBLE_OFFSET, BUBBLE_PADDING);
-      }
-
-      $('accessibility-menu').firstBubbleElement = $('spoken-feedback');
-      $('accessibility-menu').lastBubbleElement = $('close-accessibility-menu');
-      $('spoken-feedback').focus();
-
-      if (Oobe.getInstance().currentScreen &&
-          Oobe.getInstance().currentScreen.defaultControl) {
-        $('accessibility-menu').elementToFocusOnHide =
-          Oobe.getInstance().currentScreen.defaultControl;
-      } else {
-        // Update screen falls into this category. Since it doesn't have any
-        // controls other than a11y link we don't want that link to receive
-        // focus when screen is shown i.e. defaultControl is not defined.
-        // Focus a11y link instead.
-        $('accessibility-menu').elementToFocusOnHide = e.target;
-      }
-      e.stopPropagation();
-    },
-
-    /**
-     * Spoken feedback checkbox handler.
-     */
-    handleSpokenFeedbackClick: function(e) {
-      chrome.send('enableSpokenFeedback', [$('spoken-feedback').checked]);
-      e.stopPropagation();
-    },
-
-    /**
-     * Large cursor checkbox handler.
-     */
-    handleLargeCursorClick: function(e) {
-      chrome.send('enableLargeCursor', [$('large-cursor').checked]);
-      e.stopPropagation();
-    },
-
-    /**
-     * High contrast mode checkbox handler.
-     */
-    handleHighContrastClick: function(e) {
-      chrome.send('enableHighContrast', [$('high-contrast').checked]);
-      e.stopPropagation();
-    },
-
-    /**
-     * Screen magnifier checkbox handler.
-     */
-    handleScreenMagnifierClick: function(e) {
-      chrome.send('enableScreenMagnifier', [$('screen-magnifier').checked]);
-      e.stopPropagation();
-    },
-
-    /**
-     * On-screen keyboard checkbox handler.
-     */
-    handleVirtualKeyboardClick: function(e) {
-      chrome.send('enableVirtualKeyboard', [$('virtual-keyboard').checked]);
-      e.stopPropagation();
     },
 
     /**
@@ -245,20 +152,7 @@ cr.define('cr.ui.Oobe', function() {
      * @param {boolean} checked Is the checkbox checked?
      */
     setUsageStats: function(checked) {
-      $('usage-stats').checked = checked;
-    },
-
-    /**
-     * Set OEM EULA URL.
-     * @param {text} oemEulaUrl OEM EULA URL.
-     */
-    setOemEulaUrl: function(oemEulaUrl) {
-      if (oemEulaUrl) {
-        $('oem-eula-frame').src = oemEulaUrl;
-        $('eulas').classList.remove('one-column');
-      } else {
-        $('eulas').classList.add('one-column');
-      }
+      $('oobe-eula-md').usageStatsChecked = checked;
     },
 
     /**
@@ -266,15 +160,7 @@ cr.define('cr.ui.Oobe', function() {
      * @param {text} password TPM password to be shown.
      */
     setTpmPassword: function(password) {
-      $('tpm-busy').hidden = true;
-
-      if (password.length) {
-        $('tpm-password').textContent = password;
-        $('tpm-password').hidden = false;
-      } else {
-        $('tpm-desc').hidden = true;
-        $('tpm-desc-powerwash').hidden = false;
-      }
+      $('eula').setTpmPassword(password);
     },
 
     /**
@@ -282,11 +168,7 @@ cr.define('cr.ui.Oobe', function() {
      * @param {!Object} data New dictionary with a11y features state.
      */
     refreshA11yInfo: function(data) {
-      $('high-contrast').checked = data.highContrastEnabled;
-      $('spoken-feedback').checked = data.spokenFeedbackEnabled;
-      $('screen-magnifier').checked = data.screenMagnifierEnabled;
-      $('large-cursor').checked = data.largeCursorEnabled;
-      $('virtual-keyboard').checked = data.virtualKeyboardEnabled;
+      $('oobe-welcome-md').a11yStatus = data;
     },
 
     /**
@@ -299,26 +181,25 @@ cr.define('cr.ui.Oobe', function() {
       loadTimeData.overrideValues(data);
       i18nTemplate.process(document, loadTimeData);
 
-      // Update language and input method menu lists.
-      Oobe.setupSelect($('language-select'), data.languageList);
-      Oobe.setupSelect($('keyboard-select'), data.inputMethodsList);
-      Oobe.setupSelect($('timezone-select'), data.timezoneList);
-
-      // ---------- Welcome screen
-      $('oobe-welcome-md').currentLanguage =
-          Oobe.getSelectedTitle(data.languageList);
-
-      if (data.newOobeUI == 'on') {
-        $('oobe-connect').hidden = true;
-        $('oobe-welcome-md').hidden = false;
-      } else {
-        $('oobe-connect').hidden = false;
-        $('oobe-welcome-md').hidden = true;
-      }
-      // ----------
-
       // Update localized content of the screens.
       Oobe.updateLocalizedContent();
+    },
+
+    /**
+     * Updates "device in tablet mode" state when tablet mode is changed.
+     * @param {Boolean} isInTabletMode True when in tablet mode.
+     */
+    setTabletModeState: function(isInTabletMode) {
+      Oobe.getInstance().setTabletModeState_(isInTabletMode);
+    },
+
+    /**
+     * Reloads localized strings for the eula page.
+     * @param {!Object} data New dictionary with changed eula i18n values.
+     */
+    reloadEulaContent: function(data) {
+      loadTimeData.overrideValues(data);
+      i18nTemplate.process(document, loadTimeData);
     },
 
     /**
@@ -328,6 +209,14 @@ cr.define('cr.ui.Oobe', function() {
     updateLocalizedContent: function() {
       // Buttons, headers and links.
       Oobe.getInstance().updateLocalizedContent_();
-    }
+    },
+
+    /**
+     * Updates OOBE configuration when it is loaded.
+     * @param {!OobeTypes.OobeConfiguration} configuration OOBE configuration.
+     */
+    updateOobeConfiguration: function(configuration) {
+      Oobe.getInstance().updateOobeConfiguration_(configuration);
+    },
   };
 });

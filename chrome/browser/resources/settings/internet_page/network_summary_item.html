@@ -1,89 +1,98 @@
 <link rel="import" href="chrome://resources/html/polymer.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-button/paper-button.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-spinner/paper-spinner.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-toggle-button/paper-toggle-button.html">
-<link rel="import" href="chrome://resources/cr_elements/cr_expand_button/cr_expand_button.html">
-<link rel="import" href="chrome://resources/cr_elements/network/cr_network_list.html">
-<link rel="import" href="chrome://resources/cr_elements/network/cr_network_list_network_item.html">
-<link rel="import" href="/settings_shared_css.html">
 
-<dom-module name="network-summary-item">
+<link rel="import" href="chrome://resources/cr_components/chromeos/network/network_siminfo.html">
+<link rel="import" href="chrome://resources/cr_elements/chromeos/network/cr_network_icon.html">
+<link rel="import" href="chrome://resources/cr_elements/cr_toggle/cr_toggle.html">
+<link rel="import" href="chrome://resources/cr_elements/policy/cr_policy_indicator.html">
+<link rel="import" href="chrome://resources/cr_elements/shared_vars_css.html">
+<link rel="import" href="chrome://resources/html/i18n_behavior.html">
+<link rel="import" href="chrome://resources/polymer/v1_0/iron-collapse/iron-collapse.html">
+<link rel="import" href="chrome://resources/polymer/v1_0/paper-icon-button/paper-icon-button-light.html">
+<link rel="import" href="../settings_page/settings_subpage.html">
+<link rel="import" href="../settings_shared_css.html">
+
+<dom-module id="network-summary-item">
   <template>
-    <style include="settings-shared">
-      :host {
-        --cr-network-icon-mixin: {
-          height: 24px;
-          left: -4px;
-          width: 24px;
-        }
-        --cr-network-name-mixin: {
-          font-size: inherit;
-        };
-        --cr-network-state-mixin: {
-          @apply(--settings-secondary);
-          font-size: inherit;
-        };
+    <style include="internet-shared iron-flex">
+      network-siminfo {
+        padding-inline-start: var(--settings-box-row-padding);
       }
 
-      #buttons {
+      #outerBox {
+        padding: 0 var(--settings-box-row-padding);
+        @apply(--network-summary-item-outer-box);
+      }
+
+      #details {
         align-items: center;
+        display: flex;
+        flex: auto;
       }
 
-      .invisible {
-        visibility: hidden;
+      #networkTitleText {
+        color: #333;
+        font-weight: 500;
+        @apply(--network-summary-item-title);
       }
 
-      paper-spinner {
-        -webkit-margin-start: 20px;
-      }
-
-      #deviceEnabledButton {
-        -webkit-margin-start: 10px;
-      }
-
-      #networkList {
-        margin: 5px 0 10px;
-        max-height: 400px;
+      #networkState {
+        color: var(--cr-secondary-text-color);
+        font-size: inherit;
+        font-weight: 400;
       }
     </style>
-    <div class="settings-box two-line" hidden$="[[isHidden]]">
-      <div id="details" class="start" on-tap="onDetailsTap_" actionable>
-        <cr-network-list-network-item id="detailsItem" network-state="[[networkState]]" show-buttons>
-        </cr-network-list-network-item>
-        <paper-spinner active="[[showScanning_(deviceState, expanded)]]">
-        </paper-spinner>
-      </div>
-      <div>
-        <div id="buttons" class="layout horizontal">
-          <cr-expand-button id="expandListButton"
-              class$="[[getExpandButtonClass_(deviceState, networkStateList)]]"
-              expanded="{{expanded}}">
-          </cr-expand-button>
-          <paper-toggle-button id="deviceEnabledButton"
-              checked="[[deviceIsEnabled_(deviceState)]]"
-              class$="[[getDeviceEnabledButtonClass_(deviceState)]]"
-              on-tap="onDeviceEnabledTap_">
-          </paper-toggle-button>
+    <div id="outerBox" class="settings-box two-line">
+      <div actionable class="flex layout horizontal center"
+          on-click="onShowDetailsTap_">
+        <div id="details" no-flex$="[[showSimInfo_(deviceState)]]">
+          <cr-network-icon
+              show-technology-badge="[[showTechnologyBadge_]]"
+              network-state="[[activeNetworkState]]"
+              device-state="[[deviceState]]">
+          </cr-network-icon>
+          <div class="flex settings-box-text">
+            <div id="networkTitleText">
+              [[getTitleText_(activeNetworkState)]]
+            </div>
+            <div id="networkState">
+              [[getNetworkStateText_(activeNetworkState, deviceState)]]
+            </div>
+          </div>
         </div>
+
+        <template is="dom-if" if="[[showSimInfo_(deviceState)]]" restamp>
+          <network-siminfo editable on-click="doNothing_"
+              network-properties="[[getCellularState_(deviceState)]]"
+              networking-private="[[networkingPrivate]]">
+          </network-siminfo>
+        </template>
+
+        <template is="dom-if" if="[[showPolicyIndicator_(activeNetworkState)]]">
+          <cr-policy-indicator indicator-type="[[getIndicatorTypeForSource(
+              activeNetworkState.Source)]]" on-click="doNothing_">
+          </cr-policy-indicator>
+        </template>
+
+        <template is="dom-if" if="[[showDetailsIsVisible_(activeNetworkState,
+            deviceState, networkStateList)]]">
+          <paper-icon-button-light class="subpage-arrow">
+            <button aria-label$="[[getDetailsA11yString_(activeNetworkState,
+                    deviceState, networkStateList)]]">
+            </button>
+          </paper-icon-button-light>
+        </template>
       </div>
+
+      <template is="dom-if" if="[[enableToggleIsVisible_(deviceState)]]">
+        <div class="separator"></div>
+        <cr-toggle id="deviceEnabledButton"
+            aria-label$="[[getToggleA11yString_(deviceState)]]"
+            checked="[[deviceIsEnabled_(deviceState)]]"
+            disabled="[[!enableToggleIsEnabled_(deviceState)]]"
+            on-change="onDeviceEnabledChange_">
+        </cr-toggle>
+      </template>
     </div>
-    <template is="dom-if" if="[[expanded]]">
-      <div class="list-frame">
-        <cr-network-list id="networkList"
-            max-height="[[maxHeight]]"
-            networks="[[networkStateList]]"
-            opened="{{expanded}}"
-            show-buttons>
-        </cr-network-list>
-        <div class="layout horizontal">
-          <paper-button
-              hidden$="[[!showKnownNetworks_(networkState, expanded)]]"
-              on-tap="onKnownNetworksTap_">
-            Known networks
-          </paper-button>
-        </div>
-      </div>
-    </template>
   </template>
   <script src="network_summary_item.js"></script>
 </dom-module>

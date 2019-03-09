@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "net/base/net_string_util_icu_alternatives_android.h"
-
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_piece.h"
 #include "jni/NetStringUtil_jni.h"
 #include "net/base/net_string_util.h"
+
+using base::android::ScopedJavaLocalRef;
 
 namespace net {
 
@@ -26,8 +26,8 @@ ScopedJavaLocalRef<jstring> ConvertToJstring(const std::string& text,
   base::android::ScopedJavaLocalRef<jstring> java_charset =
       base::android::ConvertUTF8ToJavaString(env, base::StringPiece(charset));
   ScopedJavaLocalRef<jstring> java_result =
-      android::Java_NetStringUtil_convertToUnicode(env, java_byte_buffer.obj(),
-                                                   java_charset.obj());
+      android::Java_NetStringUtil_convertToUnicode(env, java_byte_buffer,
+                                                   java_charset);
   return java_result;
 }
 
@@ -44,7 +44,7 @@ ScopedJavaLocalRef<jstring> ConvertToNormalizedJstring(
       base::android::ConvertUTF8ToJavaString(env, base::StringPiece(charset));
   ScopedJavaLocalRef<jstring> java_result =
       android::Java_NetStringUtil_convertToUnicodeAndNormalize(
-          env, java_byte_buffer.obj(), java_charset.obj());
+          env, java_byte_buffer, java_charset);
   return java_result;
 }
 
@@ -60,7 +60,7 @@ ScopedJavaLocalRef<jstring> ConvertToJstringWithSubstitutions(
       base::android::ConvertUTF8ToJavaString(env, base::StringPiece(charset));
   ScopedJavaLocalRef<jstring> java_result =
       android::Java_NetStringUtil_convertToUnicodeWithSubstitutions(
-          env, java_byte_buffer.obj(), java_charset.obj());
+          env, java_byte_buffer, java_charset);
   return java_result;
 }
 
@@ -113,8 +113,19 @@ bool ConvertToUTF16WithSubstitutions(const std::string& text,
   return true;
 }
 
-bool RegisterNetStringUtils(JNIEnv* env) {
-  return android::RegisterNativesImpl(env);
+bool ToUpper(const base::string16& str, base::string16* output) {
+  output->clear();
+  JNIEnv* env = base::android::AttachCurrentThread();
+  ScopedJavaLocalRef<jstring> java_new_str(
+      env, env->NewString(str.data(), str.length()));
+  if (java_new_str.is_null())
+    return false;
+  ScopedJavaLocalRef<jstring> java_result =
+      android::Java_NetStringUtil_toUpperCase(env, java_new_str);
+  if (java_result.is_null())
+    return false;
+  *output = base::android::ConvertJavaStringToUTF16(java_result);
+  return true;
 }
 
 }  // namespace net

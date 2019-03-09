@@ -24,25 +24,16 @@
 #include "storage/browser/quota/quota_callbacks.h"
 #include "storage/common/fileapi/file_system_types.h"
 #include "storage/common/fileapi/file_system_util.h"
-#include "storage/common/quota/quota_types.h"
+#include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
 
 namespace base {
 class SingleThreadTaskRunner;
-class Thread;
 }
 
 namespace storage {
 class FileSystemContext;
 class FileSystemOperationRunner;
 class FileSystemURL;
-}
-
-namespace leveldb {
-class Env;
-}
-
-namespace net {
-class URLRequestContext;
 }
 
 namespace storage {
@@ -61,9 +52,8 @@ class SyncFileSystemBackend;
 class CannedSyncableFileSystem
     : public LocalFileSyncStatus::Observer {
  public:
-  typedef base::Callback<void(const GURL& root,
-                              const std::string& name,
-                              base::File::Error result)>
+  typedef base::OnceCallback<
+      void(const GURL& root, const std::string& name, base::File::Error result)>
       OpenFileSystemCallback;
   typedef base::Callback<void(base::File::Error)> StatusCallback;
   typedef base::Callback<void(int64_t)> WriteCallback;
@@ -76,7 +66,7 @@ class CannedSyncableFileSystem
 
   CannedSyncableFileSystem(
       const GURL& origin,
-      leveldb::Env* env_override,
+      bool in_memory_file_system,
       const scoped_refptr<base::SingleThreadTaskRunner>& io_task_runner,
       const scoped_refptr<base::SingleThreadTaskRunner>& file_task_runner);
   ~CannedSyncableFileSystem() override;
@@ -111,7 +101,7 @@ class CannedSyncableFileSystem
   storage::QuotaManager* quota_manager() { return quota_manager_.get(); }
   GURL origin() const { return origin_; }
   storage::FileSystemType type() const { return type_; }
-  storage::StorageType storage_type() const {
+  blink::mojom::StorageType storage_type() const {
     return FileSystemTypeToQuotaStorageType(type_);
   }
 
@@ -143,8 +133,7 @@ class CannedSyncableFileSystem
                                   FileEntryList* entries);
 
   // Returns the # of bytes written (>=0) or an error code (<0).
-  int64_t Write(net::URLRequestContext* url_request_context,
-                const storage::FileSystemURL& url,
+  int64_t Write(const storage::FileSystemURL& url,
                 std::unique_ptr<storage::BlobDataHandle> blob_data_handle);
   int64_t WriteString(const storage::FileSystemURL& url,
                       const std::string& data);
@@ -153,7 +142,8 @@ class CannedSyncableFileSystem
   base::File::Error DeleteFileSystem();
 
   // Retrieves the quota and usage.
-  storage::QuotaStatusCode GetUsageAndQuota(int64_t* usage, int64_t* quota);
+  blink::mojom::QuotaStatusCode GetUsageAndQuota(int64_t* usage,
+                                                 int64_t* quota);
 
   // ChangeTracker related methods. They run on file task runner.
   void GetChangedURLsInTracker(storage::FileSystemURLSet* urls);
@@ -170,7 +160,7 @@ class CannedSyncableFileSystem
 
   // Operation methods body.
   // They can be also called directly if the caller is already on IO thread.
-  void DoOpenFileSystem(const OpenFileSystemCallback& callback);
+  void DoOpenFileSystem(OpenFileSystemCallback callback);
   void DoCreateDirectory(const storage::FileSystemURL& url,
                          const StatusCallback& callback);
   void DoCreateFile(const storage::FileSystemURL& url,
@@ -205,8 +195,7 @@ class CannedSyncableFileSystem
   void DoReadDirectory(const storage::FileSystemURL& url,
                        FileEntryList* entries,
                        const StatusCallback& callback);
-  void DoWrite(net::URLRequestContext* url_request_context,
-               const storage::FileSystemURL& url,
+  void DoWrite(const storage::FileSystemURL& url,
                std::unique_ptr<storage::BlobDataHandle> blob_data_handle,
                const WriteCallback& callback);
   void DoWriteString(const storage::FileSystemURL& url,
@@ -214,7 +203,7 @@ class CannedSyncableFileSystem
                      const WriteCallback& callback);
   void DoGetUsageAndQuota(int64_t* usage,
                           int64_t* quota,
-                          const storage::StatusCallback& callback);
+                          storage::StatusCallback callback);
 
  private:
   typedef base::ObserverListThreadSafe<LocalFileSyncStatus::Observer>
@@ -242,7 +231,7 @@ class CannedSyncableFileSystem
   base::File::Error result_;
   sync_file_system::SyncStatusCode sync_status_;
 
-  leveldb::Env* env_override_;
+  const bool in_memory_file_system_;
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> file_task_runner_;
 

@@ -13,18 +13,20 @@
  *   y: number
  * }}
  */
-var DragPosition;
+let DragPosition;
 
 /** @polymerBehavior */
-var DragBehavior = {
+const DragBehavior = {
+  properties: {
+    /** Whether or not drag is enabled (e.g. not mirrored). */
+    dragEnabled: Boolean,
+  },
+
   /**
    * The id of the element being dragged, or empty if not dragging.
-   * @private {string}
+   * @protected {string}
    */
-  dragId_: '',
-
-  /** @private {boolean} */
-  enabled_: false,
+  dragId: '',
 
   /** @private {!HTMLDivElement|undefined} */
   container_: undefined,
@@ -62,70 +64,83 @@ var DragBehavior = {
    * @param {!function(string, ?DragPosition):void=} opt_callback
    */
   initializeDrag: function(enabled, opt_container, opt_callback) {
-    this.enabled_ = enabled;
+    this.dragEnabled = enabled;
     if (!enabled) {
-      if (this.container) {
-        this.container.removeEventListener('mousdown', this.mouseDownListener_);
-        this.mouseDownListener_ = null;
-        this.container.removeEventListener(
-            'mousemove', this.mouseMoveListener_);
-        this.mouseMoveListener_ = null;
-        this.container.removeEventListener(
-            'touchstart', this.touchStartListener_);
-        this.touchStartListener_ = null;
-        this.container.removeEventListener(
-            'touchmove', this.touchMoveListener_);
-        this.touchMoveListener_ = null;
-        this.container.removeEventListener('touchend', this.endDragListener_);
-      }
-      if (this.mouseUpListener_)
-        window.removeEventListener('mouseup', this.endDragListener_);
-      this.endDragListener_ = null;
+      this.removeListeners_();
       return;
     }
 
-    if (opt_container !== undefined)
+    if (opt_container !== undefined) {
       this.container_ = opt_container;
-    var container = this.container_;
-    assert(container);
+    }
 
+    this.addListeners_();
+
+    if (opt_callback !== undefined) {
+      this.callback_ = opt_callback;
+    }
+  },
+
+  /** @private */
+  addListeners_: function() {
+    const container = this.container_;
+    if (!container || this.mouseDownListener_) {
+      return;
+    }
     this.mouseDownListener_ = this.onMouseDown_.bind(this);
-    container.addEventListener('mousedown', this.mouseDownListener_, true);
+    container.addEventListener('mousedown', this.mouseDownListener_);
 
     this.mouseMoveListener_ = this.onMouseMove_.bind(this);
-    container.addEventListener('mousemove', this.mouseMoveListener_, true);
+    container.addEventListener('mousemove', this.mouseMoveListener_);
 
     this.touchStartListener_ = this.onTouchStart_.bind(this);
-    container.addEventListener('touchstart', this.touchStartListener_, true);
+    container.addEventListener('touchstart', this.touchStartListener_);
 
     this.touchMoveListener_ = this.onTouchMove_.bind(this);
-    container.addEventListener('touchmove', this.touchMoveListener_, true);
+    container.addEventListener('touchmove', this.touchMoveListener_);
 
     this.endDragListener_ = this.endDrag_.bind(this);
-    window.addEventListener('mouseup', this.endDragListener_, true);
-    container.addEventListener('touchend', this.endDragListener_, true);
+    window.addEventListener('mouseup', this.endDragListener_);
+    container.addEventListener('touchend', this.endDragListener_);
+  },
 
-    if (opt_callback !== undefined)
-      this.callback_ = opt_callback;
+  /** @private */
+  removeListeners_: function() {
+    const container = this.container_;
+    if (!container || !this.mouseDownListener_) {
+      return;
+    }
+    container.removeEventListener('mousedown', this.mouseDownListener_);
+    this.mouseDownListener_ = null;
+    container.removeEventListener('mousemove', this.mouseMoveListener_);
+    this.mouseMoveListener_ = null;
+    container.removeEventListener('touchstart', this.touchStartListener_);
+    this.touchStartListener_ = null;
+    container.removeEventListener('touchmove', this.touchMoveListener_);
+    this.touchMoveListener_ = null;
+    container.removeEventListener('touchend', this.endDragListener_);
+    if (this.endDragListener_) {
+      window.removeEventListener('mouseup', this.endDragListener_);
+    }
+    this.endDragListener_ = null;
   },
 
   /**
-   * @param {Event} e The mouse down event.
+   * @param {!Event} e The mouse down event.
    * @return {boolean}
    * @private
    */
   onMouseDown_: function(e) {
-    if (e.button != 0)
+    if (e.button != 0 || !e.target.getAttribute('draggable')) {
       return true;
-    if (!e.target.getAttribute('draggable'))
-      return true;
+    }
     e.preventDefault();
-    var target = assertInstanceof(e.target, HTMLElement);
+    const target = assertInstanceof(e.target, HTMLElement);
     return this.startDrag_(target, {x: e.pageX, y: e.pageY});
   },
 
   /**
-   * @param {Event} e The mouse move event.
+   * @param {!Event} e The mouse move event.
    * @return {boolean}
    * @private
    */
@@ -135,39 +150,43 @@ var DragBehavior = {
   },
 
   /**
-   * @param {Event} e The touch start event.
+   * @param {!Event} e The touch start event.
    * @return {boolean}
    * @private
    */
   onTouchStart_: function(e) {
-    if (e.touches.length != 1)
+    if (e.touches.length != 1) {
       return false;
+    }
 
     e.preventDefault();
-    var touch = e.touches[0];
+    const touch = e.touches[0];
     this.lastTouchLocation_ = {x: touch.pageX, y: touch.pageY};
-    var target = assertInstanceof(e.target, HTMLElement);
+    const target = assertInstanceof(e.target, HTMLElement);
     return this.startDrag_(target, this.lastTouchLocation_);
   },
 
   /**
-   * @param {Event} e The touch move event.
+   * @param {!Event} e The touch move event.
    * @return {boolean}
    * @private
    */
   onTouchMove_: function(e) {
-    if (e.touches.length != 1)
+    if (e.touches.length != 1) {
       return true;
+    }
 
-    var touchLocation = {x: e.touches[0].pageX, y: e.touches[0].pageY};
+    const touchLocation = {x: e.touches[0].pageX, y: e.touches[0].pageY};
     // Touch move events can happen even if the touch location doesn't change
     // and on small unintentional finger movements. Ignore these small changes.
     if (this.lastTouchLocation_) {
-      /** @const */ var IGNORABLE_TOUCH_MOVE_PX = 1;
-      var xDiff = Math.abs(touchLocation.x - this.lastTouchLocation_.x);
-      var yDiff = Math.abs(touchLocation.y - this.lastTouchLocation_.y);
-      if (xDiff <= IGNORABLE_TOUCH_MOVE_PX && yDiff <= IGNORABLE_TOUCH_MOVE_PX)
+      const IGNORABLE_TOUCH_MOVE_PX = 1;
+      const xDiff = Math.abs(touchLocation.x - this.lastTouchLocation_.x);
+      const yDiff = Math.abs(touchLocation.y - this.lastTouchLocation_.y);
+      if (xDiff <= IGNORABLE_TOUCH_MOVE_PX &&
+          yDiff <= IGNORABLE_TOUCH_MOVE_PX) {
         return true;
+      }
     }
     this.lastTouchLocation_ = touchLocation;
     e.preventDefault();
@@ -181,39 +200,44 @@ var DragBehavior = {
    * @private
    */
   startDrag_: function(target, eventLocation) {
-    this.dragId_ = target.id;
+    assert(this.dragEnabled);
+    this.dragId = target.id;
     this.dragStartLocation_ = eventLocation;
     return false;
   },
 
   /**
-   * @param {Event} e
+   * @param {!Event} e
    * @return {boolean}
    * @private
    */
   endDrag_: function(e) {
-    if (this.dragId_ && this.callback_)
-      this.callback_(this.dragId_, null);
-    this.dragId_ = '';
+    assert(this.dragEnabled);
+    if (this.dragId && this.callback_) {
+      this.callback_(this.dragId, null);
+    }
+    this.dragId = '';
     this.lastTouchLocation_ = null;
     return false;
   },
 
   /**
-   * @param {Event} e The event which triggers this drag.
+   * @param {!Event} e The event which triggers this drag.
    * @param {DragPosition} eventLocation The location of the event.
    * @return {boolean}
    * @private
    */
   processDrag_: function(e, eventLocation) {
-    if (!this.dragId_)
+    assert(this.dragEnabled);
+    if (!this.dragId) {
       return true;
+    }
     if (this.callback_) {
-      var delta = {
+      const delta = {
         x: eventLocation.x - this.dragStartLocation_.x,
         y: eventLocation.y - this.dragStartLocation_.y,
       };
-      this.callback_(this.dragId_, delta);
+      this.callback_(this.dragId, delta);
     }
     return false;
   },

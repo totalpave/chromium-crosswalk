@@ -12,25 +12,26 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
+#include "base/strings/string_piece.h"
 #include "content/browser/speech/audio_encoder.h"
 #include "content/browser/speech/chunked_byte_buffer.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/speech_recognition_session_preamble.h"
-#include "content/public/common/speech_recognition_error.h"
-#include "content/public/common/speech_recognition_grammar.h"
-#include "content/public/common/speech_recognition_result.h"
-#include "net/url_request/url_fetcher_delegate.h"
+#include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "third_party/blink/public/mojom/speech/speech_recognition_error.mojom.h"
+#include "third_party/blink/public/mojom/speech/speech_recognition_grammar.mojom.h"
+#include "third_party/blink/public/mojom/speech/speech_recognition_result.mojom.h"
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace content {
 
 class AudioChunk;
 struct SpeechRecognitionError;
-struct SpeechRecognitionResult;
 
 // A speech recognition engine supporting continuous recognition by means of
 // interaction with the Google streaming speech recognition webservice.
@@ -58,18 +59,17 @@ struct SpeechRecognitionResult;
 // EndRecognition. If a recognition was started, the caller can free the
 // SpeechRecognitionEngine only after calling EndRecognition.
 
-class CONTENT_EXPORT SpeechRecognitionEngine
-    : public net::URLFetcherDelegate,
-      public NON_EXPORTED_BASE(base::NonThreadSafe) {
+class CONTENT_EXPORT SpeechRecognitionEngine {
  public:
   class Delegate {
    public:
     // Called whenever a result is retrieved.
     virtual void OnSpeechRecognitionEngineResults(
-        const SpeechRecognitionResults& results) = 0;
+        const std::vector<blink::mojom::SpeechRecognitionResultPtr>&
+            results) = 0;
     virtual void OnSpeechRecognitionEngineEndOfUtterance() = 0;
     virtual void OnSpeechRecognitionEngineError(
-        const SpeechRecognitionError& error) = 0;
+        const blink::mojom::SpeechRecognitionError& error) = 0;
 
    protected:
     virtual ~Delegate() {}
@@ -81,7 +81,7 @@ class CONTENT_EXPORT SpeechRecognitionEngine
     ~Config();
 
     std::string language;
-    SpeechRecognitionGrammarArray grammars;
+    std::vector<blink::mojom::SpeechRecognitionGrammar> grammars;
     bool filter_profanities;
     bool continuous;
     bool interim_results;
@@ -100,12 +100,15 @@ class CONTENT_EXPORT SpeechRecognitionEngine
   // Duration of each audio packet.
   static const int kAudioPacketIntervalMs;
 
-  // IDs passed to URLFetcher::Create(). Used for testing.
-  static const int kUpstreamUrlFetcherIdForTesting;
-  static const int kDownstreamUrlFetcherIdForTesting;
+  // |accept_language| is the default Accept-Language header.
+  SpeechRecognitionEngine(
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      const std::string& accept_language);
+  ~SpeechRecognitionEngine();
 
-  explicit SpeechRecognitionEngine(net::URLRequestContextGetter* context);
-  ~SpeechRecognitionEngine() override;
+  // Sets the URL requests are sent to for tests.
+  static void set_web_service_base_url_for_tests(
+      const char* base_url_for_tests);
 
   void SetConfig(const Config& config);
   void StartRecognition();
@@ -115,13 +118,10 @@ class CONTENT_EXPORT SpeechRecognitionEngine
   bool IsRecognitionPending() const;
   int GetDesiredAudioChunkDurationMs() const;
 
-  // net::URLFetcherDelegate methods.
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
-  void OnURLFetchDownloadProgress(const net::URLFetcher* source,
-                                  int64_t current,
-                                  int64_t total) override;
-
  private:
+  class UpstreamLoader;
+  class DownstreamLoader;
+
   Delegate* delegate_;
 
   // Response status codes from the speech recognition webservice.
@@ -171,10 +171,10 @@ class CONTENT_EXPORT SpeechRecognitionEngine
     DISALLOW_COPY_AND_ASSIGN(FSMEventArgs);
   };
 
-  // Invoked by both upstream and downstream URLFetcher callbacks to handle
-  // new chunk data, connection closed or errors notifications.
-  void DispatchHTTPResponse(const net::URLFetcher* source,
-                            bool end_of_response);
+  void OnUpstreamDataComplete(bool success, int response_code);
+
+  void OnDownstreamDataReceived(base::StringPiece new_response_data);
+  void OnDownstreamDataComplete(bool success, int response_code);
 
   // Entry point for pushing any new external event into the recognizer FSM.
   void DispatchEvent(const FSMEventArgs& event_args);
@@ -192,7 +192,7 @@ class CONTENT_EXPORT SpeechRecognitionEngine
   FSMState CloseDownstream(const FSMEventArgs& event_args);
   FSMState AbortSilently(const FSMEventArgs& event_args);
   FSMState AbortWithError(const FSMEventArgs& event_args);
-  FSMState Abort(SpeechRecognitionErrorCode error);
+  FSMState Abort(blink::mojom::SpeechRecognitionErrorCode error);
   FSMState DoNothing(const FSMEventArgs& event_args);
   FSMState NotFeasible(const FSMEventArgs& event_args);
 
@@ -204,17 +204,19 @@ class CONTENT_EXPORT SpeechRecognitionEngine
   void UploadAudioChunk(const std::string& data, FrameType type, bool is_final);
 
   Config config_;
-  std::unique_ptr<net::URLFetcher> upstream_fetcher_;
-  std::unique_ptr<net::URLFetcher> downstream_fetcher_;
-  scoped_refptr<net::URLRequestContextGetter> url_context_;
+  std::unique_ptr<UpstreamLoader> upstream_loader_;
+  std::unique_ptr<DownstreamLoader> downstream_loader_;
+  scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory_;
+  const std::string accept_language_;
   std::unique_ptr<AudioEncoder> encoder_;
   std::unique_ptr<AudioEncoder> preamble_encoder_;
   ChunkedByteBuffer chunked_byte_buffer_;
-  size_t previous_response_length_;
   bool got_last_definitive_result_;
   bool is_dispatching_event_;
   bool use_framed_post_data_;
   FSMState state_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(SpeechRecognitionEngine);
 };

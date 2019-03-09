@@ -15,42 +15,52 @@
 #include <windows.h>
 #endif
 
+namespace base {
+namespace mac {
+class ScopedNSAutoreleasePool;
+}
+}
+
 namespace sandbox {
 struct SandboxInterfaceInfo;
 }
 
 namespace content {
+
+class BrowserMainParts;
 class ContentMainDelegate;
+
+using CreatedMainPartsClosure = base::Callback<void(BrowserMainParts*)>;
 
 struct ContentMainParams {
   explicit ContentMainParams(ContentMainDelegate* delegate)
-      : delegate(delegate),
-#if defined(OS_WIN)
-        instance(NULL),
-        sandbox_info(NULL),
-#elif !defined(OS_ANDROID)
-        argc(0),
-        argv(NULL),
-#endif
-        ui_task(NULL) {
-  }
+      : delegate(delegate) {}
 
   ContentMainDelegate* delegate;
 
 #if defined(OS_WIN)
-  HINSTANCE instance;
+  HINSTANCE instance = nullptr;
 
   // |sandbox_info| should be initialized using InitializeSandboxInfo from
   // content_main_win.h
-  sandbox::SandboxInterfaceInfo* sandbox_info;
+  sandbox::SandboxInterfaceInfo* sandbox_info = nullptr;
 #elif !defined(OS_ANDROID)
-  int argc;
-  const char** argv;
+  int argc = 0;
+  const char** argv = nullptr;
 #endif
 
   // Used by browser_tests. If non-null BrowserMain schedules this task to run
   // on the MessageLoop. It's owned by the test code.
-  base::Closure* ui_task;
+  base::Closure* ui_task = nullptr;
+
+  // Used by InProcessBrowserTest. If non-null this is Run() after
+  // BrowserMainParts has been created and before PreEarlyInitialization().
+  CreatedMainPartsClosure* created_main_parts_closure = nullptr;
+
+#if defined(OS_MACOSX)
+  // The outermost autorelease pool to pass to main entry points.
+  base::mac::ScopedNSAutoreleasePool* autorelease_pool = nullptr;
+#endif
 };
 
 #if defined(OS_ANDROID)

@@ -6,18 +6,20 @@
 #define CHROMEOS_DBUS_FAKE_SHILL_DEVICE_CLIENT_H_
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/shill_device_client.h"
 
 namespace chromeos {
 
 // A fake implementation of ShillDeviceClient.
 // Implemented: Stub cellular device for SMS testing.
-class CHROMEOS_EXPORT FakeShillDeviceClient
+class COMPONENT_EXPORT(CHROMEOS_DBUS) FakeShillDeviceClient
     : public ShillDeviceClient,
       public ShillDeviceClient::TestInterface {
  public:
@@ -34,8 +36,6 @@ class CHROMEOS_EXPORT FakeShillDeviceClient
       ShillPropertyChangedObserver* observer) override;
   void GetProperties(const dbus::ObjectPath& device_path,
                      const DictionaryValueCallback& callback) override;
-  void ProposeScan(const dbus::ObjectPath& device_path,
-                   const VoidDBusMethodCallback& callback) override;
   void SetProperty(const dbus::ObjectPath& device_path,
                    const std::string& name,
                    const base::Value& value,
@@ -43,10 +43,7 @@ class CHROMEOS_EXPORT FakeShillDeviceClient
                    const ErrorCallback& error_callback) override;
   void ClearProperty(const dbus::ObjectPath& device_path,
                      const std::string& name,
-                     const VoidDBusMethodCallback& callback) override;
-  void AddIPConfig(const dbus::ObjectPath& device_path,
-                   const std::string& method,
-                   const ObjectPathDBusMethodCallback& callback) override;
+                     VoidDBusMethodCallback callback) override;
   void RequirePin(const dbus::ObjectPath& device_path,
                   const std::string& pin,
                   bool require,
@@ -82,16 +79,23 @@ class CHROMEOS_EXPORT FakeShillDeviceClient
                             const std::string& peer,
                             const StringCallback& callback,
                             const ErrorCallback& error_callback) override;
-  void AddWakeOnPacketConnection(
-      const dbus::ObjectPath& device_path,
-      const net::IPEndPoint& ip_endpoint,
-      const base::Closure& callback,
-      const ErrorCallback& error_callback) override;
+  void AddWakeOnPacketConnection(const dbus::ObjectPath& device_path,
+                                 const net::IPEndPoint& ip_endpoint,
+                                 const base::Closure& callback,
+                                 const ErrorCallback& error_callback) override;
+  void AddWakeOnPacketOfTypes(const dbus::ObjectPath& device_path,
+                              const std::vector<std::string>& types,
+                              const base::Closure& callback,
+                              const ErrorCallback& error_callback) override;
   void RemoveWakeOnPacketConnection(
       const dbus::ObjectPath& device_path,
       const net::IPEndPoint& ip_endpoint,
       const base::Closure& callback,
       const ErrorCallback& error_callback) override;
+  void RemoveWakeOnPacketOfTypes(const dbus::ObjectPath& device_path,
+                                 const std::vector<std::string>& types,
+                                 const base::Closure& callback,
+                                 const ErrorCallback& error_callback) override;
   void RemoveAllWakeOnPacketConnections(
       const dbus::ObjectPath& device_path,
       const base::Closure& callback,
@@ -107,11 +111,13 @@ class CHROMEOS_EXPORT FakeShillDeviceClient
   void ClearDevices() override;
   void SetDeviceProperty(const std::string& device_path,
                          const std::string& name,
-                         const base::Value& value) override;
+                         const base::Value& value,
+                         bool notify_changed) override;
   std::string GetDevicePathForType(const std::string& type) override;
   void SetTDLSBusyCount(int count) override;
   void SetTDLSState(const std::string& state) override;
   void SetSimLocked(const std::string& device_path, bool locked) override;
+  void AddCellularFoundNetwork(const std::string& device_path) override;
 
   static const char kDefaultSimPin[];
   static const int kSimPinRetryCount;
@@ -122,7 +128,8 @@ class CHROMEOS_EXPORT FakeShillDeviceClient
     int retries_left = 0;
     bool lock_enabled = true;
   };
-  typedef base::ObserverList<ShillPropertyChangedObserver> PropertyObserverList;
+  typedef base::ObserverList<ShillPropertyChangedObserver>::Unchecked
+      PropertyObserverList;
 
   SimLockStatus GetSimLockStatus(const std::string& device_path);
   void SetSimLockStatus(const std::string& device_path,
@@ -132,25 +139,28 @@ class CHROMEOS_EXPORT FakeShillDeviceClient
   void PassStubDeviceProperties(const dbus::ObjectPath& device_path,
                                 const DictionaryValueCallback& callback) const;
 
-  // Posts a task to run a void callback with status code |status|.
-  void PostVoidCallback(const VoidDBusMethodCallback& callback,
-                        DBusMethodCallStatus status);
+  // Posts a task to run a void callback with status code |result|.
+  void PostVoidCallback(VoidDBusMethodCallback callback, bool result);
 
+  // If |notify_changed| is true, NotifyObserversPropertyChanged is called,
+  // otherwise it is not (e.g. when setting up initial properties).
   void SetPropertyInternal(const dbus::ObjectPath& device_path,
                            const std::string& name,
                            const base::Value& value,
                            const base::Closure& callback,
-                           const ErrorCallback& error_callback);
+                           const ErrorCallback& error_callback,
+                           bool notify_changed);
 
   void NotifyObserversPropertyChanged(const dbus::ObjectPath& device_path,
                                       const std::string& property);
-  base::DictionaryValue* GetDeviceProperties(const std::string& device_path);
+  base::Value* GetDeviceProperties(const std::string& device_path);
   PropertyObserverList& GetObserverList(const dbus::ObjectPath& device_path);
 
   // Dictionary of <device_name, Dictionary>.
   base::DictionaryValue stub_devices_;
   // Observer list for each device.
-  std::map<dbus::ObjectPath, PropertyObserverList*> observer_list_;
+  std::map<dbus::ObjectPath, std::unique_ptr<PropertyObserverList>>
+      observer_list_;
 
   // Number of times to return InProgress for TDLS. Set to -1 to emulate
   // TDLS failure.
@@ -163,8 +173,13 @@ class CHROMEOS_EXPORT FakeShillDeviceClient
   std::string tdls_state_;
 
   // Wake on packet connections for each device.
-  std::map<dbus::ObjectPath, std::set<net::IPEndPoint> >
+  std::map<dbus::ObjectPath, std::set<net::IPEndPoint>>
       wake_on_packet_connections_;
+
+  // Wake on packet types for each device. The string types in the value set
+  // correspond to "Wake on WiFi Packet Type Constants." in
+  // third_party/cros_system_api/dbus/shill/dbus-constants.h.
+  std::map<dbus::ObjectPath, std::set<std::string>> wake_on_packet_types_;
 
   // Current SIM PIN per device path.
   std::map<std::string, std::string> sim_pin_;

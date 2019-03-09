@@ -10,21 +10,22 @@
 namespace content {
 
 RenderViewHostDelegateView* RenderViewHostDelegate::GetDelegateView() {
-  return NULL;
+  return nullptr;
 }
 
-bool RenderViewHostDelegate::OnMessageReceived(RenderViewHost* render_view_host,
-                                               const IPC::Message& message) {
+bool RenderViewHostDelegate::OnMessageReceived(
+    RenderViewHostImpl* render_view_host,
+    const IPC::Message& message) {
   return false;
 }
 
 WebContents* RenderViewHostDelegate::GetAsWebContents() {
-  return NULL;
+  return nullptr;
 }
 
 SessionStorageNamespace* RenderViewHostDelegate::GetSessionStorageNamespace(
     SiteInstance* instance) {
-  return NULL;
+  return nullptr;
 }
 
 SessionStorageNamespaceMap
@@ -33,22 +34,38 @@ RenderViewHostDelegate::GetSessionStorageNamespaceMap() {
 }
 
 FrameTree* RenderViewHostDelegate::GetFrameTree() {
-  return NULL;
-}
-
-double RenderViewHostDelegate::GetPendingPageZoomLevel() {
-  return 0.0;
+  return nullptr;
 }
 
 bool RenderViewHostDelegate::IsNeverVisible() {
   return false;
 }
 
-bool RenderViewHostDelegate::IsVirtualKeyboardRequested() {
+bool RenderViewHostDelegate::IsOverridingUserAgent() {
   return false;
 }
 
-bool RenderViewHostDelegate::IsOverridingUserAgent() {
+bool RenderViewHostDelegate::IsJavaScriptDialogShowing() const {
+  return false;
+}
+
+bool RenderViewHostDelegate::ShouldIgnoreUnresponsiveRenderer() {
+  return false;
+}
+
+bool RenderViewHostDelegate::HideDownloadUI() const {
+  return false;
+}
+
+bool RenderViewHostDelegate::HasPersistentVideo() const {
+  return false;
+}
+
+RenderFrameHost* RenderViewHostDelegate::GetPendingMainFrame() {
+  return nullptr;
+}
+
+bool RenderViewHostDelegate::IsPortal() const {
   return false;
 }
 

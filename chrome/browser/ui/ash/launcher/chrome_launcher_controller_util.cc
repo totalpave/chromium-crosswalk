@@ -4,25 +4,19 @@
 
 #include "chrome/browser/ui/ash/launcher/chrome_launcher_controller_util.h"
 
+#include "chrome/browser/chromeos/login/demo_mode/demo_session.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
+#include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
+#include "chrome/browser/ui/app_list/extension_app_utils.h"
 #include "chrome/browser/ui/ash/chrome_launcher_prefs.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager.h"
+#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager_client.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
-
-bool IsBrowserFromActiveUser(Browser* browser) {
-  // If running multi user mode with separate desktops, we have to check if the
-  // browser is from the active user.
-  if (chrome::MultiUserWindowManager::GetMultiProfileMode() !=
-      chrome::MultiUserWindowManager::MULTI_PROFILE_MODE_SEPARATED)
-    return true;
-  return multi_user_util::IsProfileFromActiveUser(browser->profile());
-}
 
 const extensions::Extension* GetExtensionForAppID(const std::string& app_id,
                                                   Profile* profile) {
@@ -44,23 +38,33 @@ AppListControllerDelegate::Pinnable GetPinnableForAppID(
   // (package name + activity). This means that we must identify the package
   // from the hash, and check if this package is pinned by policy.
   const ArcAppListPrefs* const arc_prefs = ArcAppListPrefs::Get(profile);
-  std::string arc_app_packege_name;
+  std::string arc_app_package_name;
   if (arc_prefs) {
     std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =
         arc_prefs->GetApp(app_id);
     if (app_info)
-      arc_app_packege_name = app_info->package_name;
+      arc_app_package_name = app_info->package_name;
   }
   for (size_t index = 0; index < pref->GetSize(); ++index) {
     const base::DictionaryValue* app = nullptr;
     std::string app_id_or_package;
     if (pref->GetDictionary(index, &app) &&
-        app->GetString(ash::launcher::kPinnedAppsPrefAppIDPath,
-                       &app_id_or_package) &&
+        app->GetString(kPinnedAppsPrefAppIDKey, &app_id_or_package) &&
         (app_id == app_id_or_package ||
-         arc_app_packege_name == app_id_or_package)) {
+         arc_app_package_name == app_id_or_package)) {
+      if (chromeos::DemoSession::Get() &&
+          chromeos::DemoSession::Get()->ShouldIgnorePinPolicy(
+              app_id_or_package)) {
+        return AppListControllerDelegate::PIN_EDITABLE;
+      }
       return AppListControllerDelegate::PIN_FIXED;
     }
   }
   return AppListControllerDelegate::PIN_EDITABLE;
+}
+
+bool IsCameraApp(const std::string& app_id) {
+  return app_id == arc::kCameraAppId || app_id == arc::kLegacyCameraAppId ||
+         app_id == arc::kCameraMigrationAppId ||
+         app_id == extension_misc::kChromeCameraAppId;
 }

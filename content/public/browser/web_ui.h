@@ -5,11 +5,13 @@
 #ifndef CONTENT_PUBLIC_BROWSER_WEB_UI_H_
 #define CONTENT_PUBLIC_BROWSER_WEB_UI_H_
 
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "base/callback.h"
-#include "base/memory/scoped_vector.h"
 #include "base/strings/string16.h"
+#include "base/strings/string_piece.h"
 #include "content/common/content_export.h"
 #include "ui/base/page_transition_types.h"
 
@@ -32,7 +34,7 @@ class CONTENT_EXPORT WebUI {
  public:
   // An opaque identifier used to identify a WebUI. This can only be compared to
   // kNoWebUI or other WebUI types. See GetWebUIType.
-  typedef void* TypeID;
+  typedef const void* TypeID;
 
   // A special WebUI type that signifies that a given page would not use the
   // Web UI system.
@@ -49,7 +51,7 @@ class CONTENT_EXPORT WebUI {
   virtual WebContents* GetWebContents() const = 0;
 
   virtual WebUIController* GetController() const = 0;
-  virtual void SetController(WebUIController* controller) = 0;
+  virtual void SetController(std::unique_ptr<WebUIController> controller) = 0;
 
   // Returns the device scale factor of the monitor that the renderer is on.
   // Whenever possible, WebUI should push resources with this scale factor to
@@ -62,28 +64,18 @@ class CONTENT_EXPORT WebUI {
   virtual const base::string16& GetOverriddenTitle() const = 0;
   virtual void OverrideTitle(const base::string16& title) = 0;
 
-  // Returns the transition type that should be used for link clicks on this
-  // Web UI. This will default to LINK but may be overridden.
-  virtual ui::PageTransition GetLinkTransitionType() const = 0;
-  virtual void SetLinkTransitionType(ui::PageTransition type) = 0;
-
   // Allows a controller to override the BindingsPolicy that should be enabled
   // for this page.
   virtual int GetBindings() const = 0;
   virtual void SetBindings(int bindings) = 0;
 
-  // Whether this WebUI has a render frame associated with it. This will be true
-  // if the URL that created this WebUI was actually visited.
-  virtual bool HasRenderFrame() = 0;
-
-  // Takes ownership of |handler|, which will be destroyed when the WebUI is.
-  virtual void AddMessageHandler(WebUIMessageHandler* handler) = 0;
+  virtual void AddMessageHandler(
+      std::unique_ptr<WebUIMessageHandler> handler) = 0;
 
   // Used by WebUIMessageHandlers. If the given message is already registered,
-  // the call has no effect unless |register_callback_overwrites_| is set to
-  // true.
-  typedef base::Callback<void(const base::ListValue*)> MessageCallback;
-  virtual void RegisterMessageCallback(const std::string& message,
+  // the call has no effect.
+  using MessageCallback = base::RepeatingCallback<void(const base::ListValue*)>;
+  virtual void RegisterMessageCallback(base::StringPiece message,
                                        const MessageCallback& callback) = 0;
 
   // This is only needed if an embedder overrides handling of a WebUIMessage and
@@ -127,7 +119,8 @@ class CONTENT_EXPORT WebUI {
       const std::vector<const base::Value*>& args) = 0;
 
   // Allows mutable access to this WebUI's message handlers for testing.
-  virtual ScopedVector<WebUIMessageHandler>* GetHandlersForTesting() = 0;
+  virtual std::vector<std::unique_ptr<WebUIMessageHandler>>*
+  GetHandlersForTesting() = 0;
 };
 
 }  // namespace content

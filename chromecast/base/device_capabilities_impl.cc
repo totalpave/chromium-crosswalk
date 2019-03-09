@@ -8,6 +8,8 @@
 
 #include <utility>
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
@@ -61,28 +63,25 @@ std::unique_ptr<DeviceCapabilities> DeviceCapabilities::Create() {
 // static
 std::unique_ptr<DeviceCapabilities> DeviceCapabilities::CreateForTesting() {
   DeviceCapabilities* capabilities = new DeviceCapabilitiesImpl;
-  capabilities->SetCapability(
-      kKeyBluetoothSupported,
-      base::WrapUnique(new base::FundamentalValue(false)));
-  capabilities->SetCapability(
-      kKeyDisplaySupported, base::WrapUnique(new base::FundamentalValue(true)));
-  capabilities->SetCapability(
-      kKeyHiResAudioSupported,
-      base::WrapUnique(new base::FundamentalValue(false)));
-  capabilities->SetCapability(
-      kKeyAssistantSupported,
-      base::WrapUnique(new base::FundamentalValue(true)));
+  capabilities->SetCapability(kKeyBluetoothSupported,
+                              std::make_unique<base::Value>(false));
+  capabilities->SetCapability(kKeyDisplaySupported,
+                              std::make_unique<base::Value>(true));
+  capabilities->SetCapability(kKeyHiResAudioSupported,
+                              std::make_unique<base::Value>(false));
+  capabilities->SetCapability(kKeyAssistantSupported,
+                              std::make_unique<base::Value>(true));
   return base::WrapUnique(capabilities);
 }
 
 scoped_refptr<DeviceCapabilities::Data> DeviceCapabilities::CreateData() {
-  return make_scoped_refptr(new Data);
+  return base::WrapRefCounted(new Data);
 }
 
 scoped_refptr<DeviceCapabilities::Data> DeviceCapabilities::CreateData(
     std::unique_ptr<const base::DictionaryValue> dictionary) {
   DCHECK(dictionary.get());
-  return make_scoped_refptr(new Data(std::move(dictionary)));
+  return base::WrapRefCounted(new Data(std::move(dictionary)));
 }
 
 DeviceCapabilities::Validator::Validator(DeviceCapabilities* capabilities)
@@ -104,16 +103,13 @@ void DeviceCapabilities::Validator::SetPrivateValidatedValue(
 
 DeviceCapabilities::Data::Data()
     : dictionary_(new base::DictionaryValue),
-      json_string_(SerializeToJson(*dictionary_)) {
-  DCHECK(json_string_.get());
-}
+      json_string_(*SerializeToJson(*dictionary_)) {}
 
 DeviceCapabilities::Data::Data(
     std::unique_ptr<const base::DictionaryValue> dictionary)
     : dictionary_(std::move(dictionary)),
-      json_string_(SerializeToJson(*dictionary_)) {
+      json_string_(*SerializeToJson(*dictionary_)) {
   DCHECK(dictionary_.get());
-  DCHECK(json_string_.get());
 }
 
 DeviceCapabilitiesImpl::Data::~Data() {}
@@ -162,7 +158,7 @@ void DeviceCapabilitiesImpl::Register(const std::string& key,
   base::AutoLock auto_lock(validation_lock_);
   // Check that a validator has not already been registered for this key
   DCHECK_EQ(0u, validator_map_.count(key));
-  validator_map_[key] = base::WrapUnique(new ValidatorInfo(validator));
+  validator_map_[key] = std::make_unique<ValidatorInfo>(validator);
 }
 
 void DeviceCapabilitiesImpl::Unregister(const std::string& key,
@@ -274,9 +270,9 @@ void DeviceCapabilitiesImpl::SetCapability(
       // post a task to the Validator's thread with weak_ptr. This way, if the
       // Validator gets unregistered, the call to Validate will get skipped.
       validator_it->second->task_runner()->PostTask(
-          FROM_HERE, base::Bind(&ValidatorInfo::Validate,
-                                validator_it->second->AsWeakPtr(), path,
-                                base::Passed(&proposed_value)));
+          FROM_HERE, base::BindOnce(&ValidatorInfo::Validate,
+                                    validator_it->second->AsWeakPtr(), path,
+                                    std::move(proposed_value)));
       return;
     }
   }
@@ -312,8 +308,8 @@ void DeviceCapabilitiesImpl::SetPublicValidatedValue(
   if (!task_runner_for_writes_->BelongsToCurrentThread()) {
     task_runner_for_writes_->PostTask(
         FROM_HERE,
-        base::Bind(&DeviceCapabilitiesImpl::SetPublicValidatedValue,
-                   base::Unretained(this), path, base::Passed(&new_value)));
+        base::BindOnce(&DeviceCapabilitiesImpl::SetPublicValidatedValue,
+                       base::Unretained(this), path, std::move(new_value)));
     return;
   }
 
@@ -375,8 +371,8 @@ void DeviceCapabilitiesImpl::SetPrivateValidatedValue(
   if (!task_runner_for_writes_->BelongsToCurrentThread()) {
     task_runner_for_writes_->PostTask(
         FROM_HERE,
-        base::Bind(&DeviceCapabilitiesImpl::SetPrivateValidatedValue,
-                   base::Unretained(this), path, base::Passed(&new_value)));
+        base::BindOnce(&DeviceCapabilitiesImpl::SetPrivateValidatedValue,
+                       base::Unretained(this), path, std::move(new_value)));
     return;
   }
 

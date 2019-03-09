@@ -15,11 +15,11 @@
 
 namespace chromeos {
 
-FakeShillThirdPartyVpnDriverClient::FakeShillThirdPartyVpnDriverClient() {
-}
+FakeShillThirdPartyVpnDriverClient::FakeShillThirdPartyVpnDriverClient() =
+    default;
 
-FakeShillThirdPartyVpnDriverClient::~FakeShillThirdPartyVpnDriverClient() {
-}
+FakeShillThirdPartyVpnDriverClient::~FakeShillThirdPartyVpnDriverClient() =
+    default;
 
 void FakeShillThirdPartyVpnDriverClient::Init(dbus::Bus* bus) {
 }
@@ -49,7 +49,7 @@ void FakeShillThirdPartyVpnDriverClient::SetParameters(
     const ShillClientHelper::StringCallback& callback,
     const ShillClientHelper::ErrorCallback& error_callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, std::string()));
+      FROM_HERE, base::BindOnce(callback, std::string()));
 }
 
 void FakeShillThirdPartyVpnDriverClient::UpdateConnectionState(

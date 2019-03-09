@@ -19,7 +19,7 @@
 #include "base/i18n/rtl.h"
 #include "base/i18n/string_compare.h"
 #include "base/lazy_instance.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -49,159 +49,178 @@
 namespace {
 
 static const char* const kAcceptLanguageList[] = {
-  "af",     // Afrikaans
-  "am",     // Amharic
-  "an",     // Aragonese
-  "ar",     // Arabic
-  "ast",    // Asturian
-  "az",     // Azerbaijani
-  "be",     // Belarusian
-  "bg",     // Bulgarian
-  "bh",     // Bihari
-  "bn",     // Bengali
-  "br",     // Breton
-  "bs",     // Bosnian
-  "ca",     // Catalan
-  "ckb",    // Kurdish (Arabci),  Sorani
-  "co",     // Corsican
-  "cs",     // Czech
-  "cy",     // Welsh
-  "da",     // Danish
-  "de",     // German
-  "de-AT",  // German (Austria)
-  "de-CH",  // German (Switzerland)
-  "de-DE",  // German (Germany)
-  "de-LI",  // German (Liechtenstein)
-  "el",     // Greek
-  "en",     // English
-  "en-AU",  // English (Australia)
-  "en-CA",  // English (Canada)
-  "en-GB",  // English (UK)
-  "en-IN",  // English (India)
-  "en-NZ",  // English (New Zealand)
-  "en-US",  // English (US)
-  "en-ZA",  // English (South Africa)
-  "eo",     // Esperanto
-  // TODO(jungshik) : Do we want to list all es-Foo for Latin-American
-  // Spanish speaking countries?
-  "es",     // Spanish
-  "es-419", // Spanish (Latin America)
-  "es-AR",  // Spanish (Argentina)
-  "es-ES",  // Spanish (Spain)
-  "es-MX",  // Spanish (Mexico)
-  "es-US",  // Spanish (US)
-  "et",     // Estonian
-  "eu",     // Basque
-  "fa",     // Persian
-  "fi",     // Finnish
-  "fil",    // Filipino
-  "fo",     // Faroese
-  "fr",     // French
-  "fr-CA",  // French (Canada)
-  "fr-CH",  // French (Switzerland)
-  "fr-FR",  // French (France)
-  "fy",     // Frisian
-  "ga",     // Irish
-  "gd",     // Scots Gaelic
-  "gl",     // Galician
-  "gn",     // Guarani
-  "gu",     // Gujarati
-  "ha",     // Hausa
-  "haw",    // Hawaiian
-  "he",     // Hebrew
-  "hi",     // Hindi
-  "hr",     // Croatian
-  "hu",     // Hungarian
-  "hy",     // Armenian
-  "ia",     // Interlingua
-  "id",     // Indonesian
-  "is",     // Icelandic
-  "it",     // Italian
-  "it-CH",  // Italian (Switzerland)
-  "it-IT",  // Italian (Italy)
-  "ja",     // Japanese
-  "jw",     // Javanese
-  "ka",     // Georgian
-  "kk",     // Kazakh
-  "km",     // Cambodian
-  "kn",     // Kannada
-  "ko",     // Korean
-  "ku",     // Kurdish
-  "ky",     // Kyrgyz
-  "la",     // Latin
-  "ln",     // Lingala
-  "lo",     // Laothian
-  "lt",     // Lithuanian
-  "lv",     // Latvian
-  "mk",     // Macedonian
-  "ml",     // Malayalam
-  "mn",     // Mongolian
-  "mo",     // Moldavian
-  "mr",     // Marathi
-  "ms",     // Malay
-  "mt",     // Maltese
-  "nb",     // Norwegian (Bokmal)
-  "ne",     // Nepali
-  "nl",     // Dutch
-  "nn",     // Norwegian (Nynorsk)
-  "no",     // Norwegian
-  "oc",     // Occitan
-  "om",     // Oromo
-  "or",     // Oriya
-  "pa",     // Punjabi
-  "pl",     // Polish
-  "ps",     // Pashto
-  "pt",     // Portuguese
-  "pt-BR",  // Portuguese (Brazil)
-  "pt-PT",  // Portuguese (Portugal)
-  "qu",     // Quechua
-  "rm",     // Romansh
-  "ro",     // Romanian
-  "ru",     // Russian
-  "sd",     // Sindhi
-  "sh",     // Serbo-Croatian
-  "si",     // Sinhalese
-  "sk",     // Slovak
-  "sl",     // Slovenian
-  "sn",     // Shona
-  "so",     // Somali
-  "sq",     // Albanian
-  "sr",     // Serbian
-  "st",     // Sesotho
-  "su",     // Sundanese
-  "sv",     // Swedish
-  "sw",     // Swahili
-  "ta",     // Tamil
-  "te",     // Telugu
-  "tg",     // Tajik
-  "th",     // Thai
-  "ti",     // Tigrinya
-  "tk",     // Turkmen
-  "to",     // Tonga
-  "tr",     // Turkish
-  "tt",     // Tatar
-  "tw",     // Twi
-  "ug",     // Uighur
-  "uk",     // Ukrainian
-  "ur",     // Urdu
-  "uz",     // Uzbek
-  "vi",     // Vietnamese
-  "wa",     // Walloon
-  "xh",     // Xhosa
-  "yi",     // Yiddish
-  "yo",     // Yoruba
-  "zh",     // Chinese
-  "zh-CN",  // Chinese (China)
-  "zh-HK",  // Chinese (Hong Kong)
-  "zh-TW",  // Chinese (Taiwan)
-  "zu",     // Zulu
+    "af",     // Afrikaans
+    "am",     // Amharic
+    "an",     // Aragonese
+    "ar",     // Arabic
+    "ast",    // Asturian
+    "az",     // Azerbaijani
+    "be",     // Belarusian
+    "bg",     // Bulgarian
+    "bh",     // Bihari
+    "bn",     // Bengali
+    "br",     // Breton
+    "bs",     // Bosnian
+    "ca",     // Catalan
+    "ceb",    // Cebuano
+    "ckb",    // Kurdish (Arabci),  Sorani
+    "co",     // Corsican
+    "cs",     // Czech
+    "cy",     // Welsh
+    "da",     // Danish
+    "de",     // German
+    "de-AT",  // German (Austria)
+    "de-CH",  // German (Switzerland)
+    "de-DE",  // German (Germany)
+    "de-LI",  // German (Liechtenstein)
+    "el",     // Greek
+    "en",     // English
+    "en-AU",  // English (Australia)
+    "en-CA",  // English (Canada)
+    "en-GB",  // English (UK)
+    "en-IN",  // English (India)
+    "en-NZ",  // English (New Zealand)
+    "en-US",  // English (US)
+    "en-ZA",  // English (South Africa)
+    "eo",     // Esperanto
+    // TODO(jungshik) : Do we want to list all es-Foo for Latin-American
+    // Spanish speaking countries?
+    "es",      // Spanish
+    "es-419",  // Spanish (Latin America)
+    "es-AR",   // Spanish (Argentina)
+    "es-CL",   // Spanish (Chile)
+    "es-CO",   // Spanish (Colombia)
+    "es-CR",   // Spanish (Costa Rica)
+    "es-ES",   // Spanish (Spain)
+    "es-HN",   // Spanish (Honduras)
+    "es-MX",   // Spanish (Mexico)
+    "es-PE",   // Spanish (Peru)
+    "es-US",   // Spanish (US)
+    "es-UY",   // Spanish (Uruguay)
+    "es-VE",   // Spanish (Venezuela)
+    "et",      // Estonian
+    "eu",      // Basque
+    "fa",      // Persian
+    "fi",      // Finnish
+    "fil",     // Filipino
+    "fo",      // Faroese
+    "fr",      // French
+    "fr-CA",   // French (Canada)
+    "fr-CH",   // French (Switzerland)
+    "fr-FR",   // French (France)
+    "fy",      // Frisian
+    "ga",      // Irish
+    "gd",      // Scots Gaelic
+    "gl",      // Galician
+    "gn",      // Guarani
+    "gu",      // Gujarati
+    "ha",      // Hausa
+    "haw",     // Hawaiian
+    "he",      // Hebrew
+    "hi",      // Hindi
+    "hmn",     // Hmong
+    "hr",      // Croatian
+    "ht",      // Haitian Creole
+    "hu",      // Hungarian
+    "hy",      // Armenian
+    "ia",      // Interlingua
+    "id",      // Indonesian
+    "ig",      // Igbo
+    "is",      // Icelandic
+    "it",      // Italian
+    "it-CH",   // Italian (Switzerland)
+    "it-IT",   // Italian (Italy)
+    "ja",      // Japanese
+    "jv",      // Javanese
+    "ka",      // Georgian
+    "kk",      // Kazakh
+    "km",      // Cambodian
+    "kn",      // Kannada
+    "ko",      // Korean
+    "ku",      // Kurdish
+    "ky",      // Kyrgyz
+    "la",      // Latin
+    "lb",      // Luxembourgish
+    "ln",      // Lingala
+    "lo",      // Laothian
+    "lt",      // Lithuanian
+    "lv",      // Latvian
+    "mg",      // Malagasy
+    "mi",      // Maori
+    "mk",      // Macedonian
+    "ml",      // Malayalam
+    "mn",      // Mongolian
+    "mo",      // Moldavian
+    "mr",      // Marathi
+    "ms",      // Malay
+    "mt",      // Maltese
+    "my",      // Burmese
+    "nb",      // Norwegian (Bokmal)
+    "ne",      // Nepali
+    "nl",      // Dutch
+    "nn",      // Norwegian (Nynorsk)
+    "no",      // Norwegian
+    "ny",      // Nyanja
+    "oc",      // Occitan
+    "om",      // Oromo
+    "or",      // Oriya
+    "pa",      // Punjabi
+    "pl",      // Polish
+    "ps",      // Pashto
+    "pt",      // Portuguese
+    "pt-BR",   // Portuguese (Brazil)
+    "pt-PT",   // Portuguese (Portugal)
+    "qu",      // Quechua
+    "rm",      // Romansh
+    "ro",      // Romanian
+    "ru",      // Russian
+    "sd",      // Sindhi
+    "sh",      // Serbo-Croatian
+    "si",      // Sinhalese
+    "sk",      // Slovak
+    "sl",      // Slovenian
+    "sm",      // Samoan
+    "sn",      // Shona
+    "so",      // Somali
+    "sq",      // Albanian
+    "sr",      // Serbian
+    "st",      // Sesotho
+    "su",      // Sundanese
+    "sv",      // Swedish
+    "sw",      // Swahili
+    "ta",      // Tamil
+    "te",      // Telugu
+    "tg",      // Tajik
+    "th",      // Thai
+    "ti",      // Tigrinya
+    "tk",      // Turkmen
+    "to",      // Tonga
+    "tr",      // Turkish
+    "tt",      // Tatar
+    "tw",      // Twi
+    "ug",      // Uighur
+    "uk",      // Ukrainian
+    "ur",      // Urdu
+    "uz",      // Uzbek
+    "vi",      // Vietnamese
+    "wa",      // Walloon
+    "xh",      // Xhosa
+    "yi",      // Yiddish
+    "yo",      // Yoruba
+    "zh",      // Chinese
+    "zh-CN",   // Chinese (China)
+    "zh-HK",   // Chinese (Hong Kong)
+    "zh-TW",   // Chinese (Taiwan)
+    "zu",      // Zulu
 };
 
 // Returns true if |locale_name| has an alias in the ICU data file.
 bool IsDuplicateName(const std::string& locale_name) {
   static const char* const kDuplicateNames[] = {
+    "ar_001",
     "en",
     "en_001",
+    "en_150",
     "pt", // pt-BR and pt-PT are used.
     "zh",
     "zh_hans_cn",
@@ -215,9 +234,8 @@ bool IsDuplicateName(const std::string& locale_name) {
   if (base::StartsWith(locale_name, "es_",
                        base::CompareCase::INSENSITIVE_ASCII))
     return !base::EndsWith(locale_name, "419", base::CompareCase::SENSITIVE);
-
-  for (size_t i = 0; i < arraysize(kDuplicateNames); ++i) {
-    if (base::EqualsCaseInsensitiveASCII(kDuplicateNames[i], locale_name))
+  for (const char* duplicate_name : kDuplicateNames) {
+    if (base::EqualsCaseInsensitiveASCII(duplicate_name, locale_name))
       return true;
   }
   return false;
@@ -250,15 +268,7 @@ bool IsLocaleAvailable(const std::string& locale) {
   if (!l10n_util::IsLocaleSupportedByOS(locale))
     return false;
 
-  // If the ResourceBundle is not yet initialized, return false to avoid the
-  // CHECK failure in ResourceBundle::GetSharedInstance().
-  if (!ResourceBundle::HasSharedInstance())
-    return false;
-
-  // TODO(hshi): make ResourceBundle::LocaleDataPakExists() a static function
-  // so that this can be invoked without initializing the global instance.
-  // See crbug.com/230432: CHECK failure in GetUserDataDir().
-  return ResourceBundle::GetSharedInstance().LocaleDataPakExists(locale);
+  return ui::ResourceBundle::LocaleDataPakExists(locale);
 }
 #endif
 
@@ -278,11 +288,12 @@ void AdjustParagraphDirectionality(base::string16* paragraph) {
 }
 
 struct AvailableLocalesTraits
-    : base::DefaultLazyInstanceTraits<std::vector<std::string> > {
+    : base::internal::DestructorAtExitLazyInstanceTraits<
+          std::vector<std::string>> {
   static std::vector<std::string>* New(void* instance) {
     std::vector<std::string>* locales =
-        base::DefaultLazyInstanceTraits<std::vector<std::string> >::New(
-            instance);
+        base::internal::DestructorAtExitLazyInstanceTraits<
+            std::vector<std::string>>::New(instance);
     int num_locales = uloc_countAvailable();
     for (int i = 0; i < num_locales; ++i) {
       std::string locale_name = uloc_getAvailable(i);
@@ -324,7 +335,7 @@ std::string GetLanguage(const std::string& locale) {
   return std::string(locale, 0, hyphen_pos);
 }
 
-// TOOD(jshin): revamp this function completely to use a more sytematic
+// TODO(jshin): revamp this function completely to use a more sytematic
 // and generic locale fallback based on ICU/CLDR.
 bool CheckAndResolveLocale(const std::string& locale,
                            std::string* resolved_locale) {
@@ -358,6 +369,10 @@ bool CheckAndResolveLocale(const std::string& locale,
     if (base::LowerCaseEqualsASCII(lang, "es") &&
         !base::LowerCaseEqualsASCII(region, "es")) {
       tmp_locale.append("-419");
+    } else if (base::LowerCaseEqualsASCII(lang, "pt")) {
+      // Map pt-RR other than pt-BR to pt-PT. Note that "pt" by itself maps to
+      // pt-BR (logic below).
+      tmp_locale.append("-PT");
     } else if (base::LowerCaseEqualsASCII(lang, "zh")) {
       // Map zh-HK and zh-MO to zh-TW. Otherwise, zh-FOO is mapped to zh-CN.
       if (base::LowerCaseEqualsASCII(region, "hk") ||
@@ -388,19 +403,17 @@ bool CheckAndResolveLocale(const std::string& locale,
   }
 
   // Google updater uses no, tl, iw and en for our nb, fil, he, and en-US.
+  // Note that pt-RR is mapped to pt-PT above, but we want pt -> pt-BR here.
   struct {
     const char* source;
     const char* dest;
   } alias_map[] = {
-      {"no", "nb"},
-      {"tl", "fil"},
-      {"iw", "he"},
-      {"en", "en-US"},
+      {"en", "en-US"}, {"iw", "he"},  {"no", "nb"},
+      {"pt", "pt-BR"}, {"tl", "fil"}, {"zh", "zh-CN"},
   };
-
-  for (size_t i = 0; i < arraysize(alias_map); ++i) {
-    if (base::LowerCaseEqualsASCII(lang, alias_map[i].source)) {
-      std::string tmp_locale(alias_map[i].dest);
+  for (const auto& alias : alias_map) {
+    if (base::LowerCaseEqualsASCII(lang, alias.source)) {
+      std::string tmp_locale(alias.dest);
       if (IsLocaleAvailable(tmp_locale)) {
         resolved_locale->swap(tmp_locale);
         return true;
@@ -458,8 +471,12 @@ std::string GetApplicationLocaleInternal(const std::string& pref_locale) {
 
 #elif defined(OS_ANDROID)
 
+  // Try pref_locale first.
+  if (!pref_locale.empty())
+    candidates.push_back(base::i18n::GetCanonicalLocale(pref_locale));
+
   // On Android, query java.util.Locale for the default locale.
-  candidates.push_back(base::android::GetDefaultLocale());
+  candidates.push_back(base::android::GetDefaultLocaleString());
 
 #elif defined(USE_GLIB) && !defined(OS_CHROMEOS)
 
@@ -548,6 +565,11 @@ base::string16 GetDisplayNameForLocale(const std::string& locale,
     locale_code = "ro-MD";
 
   base::string16 display_name;
+#if defined(OS_IOS)
+  // Use the Foundation API to get the localized display name, removing the need
+  // for the ICU data file to include this data.
+  display_name = GetDisplayNameForLocale(locale_code, display_locale);
+#else
 #if defined(OS_ANDROID)
   // Use Java API to get locale display name so that we can remove most of
   // the lang data from icu data to reduce binary size, except for zh-Hans and
@@ -557,7 +579,7 @@ base::string16 GetDisplayNameForLocale(const std::string& locale,
   if (!base::StartsWith(locale_code, "zh-Han", base::CompareCase::SENSITIVE)) {
     display_name = GetDisplayNameForLocale(locale_code, display_locale);
   } else
-#endif
+#endif  // defined(OS_ANDROID)
   {
     UErrorCode error = U_ZERO_ERROR;
     const int kBufferSize = 1024;
@@ -568,6 +590,7 @@ base::string16 GetDisplayNameForLocale(const std::string& locale,
     DCHECK(U_SUCCESS(error));
     display_name.resize(actual_size);
   }
+#endif
 
   // Add directional markup so parentheses are properly placed.
   if (is_for_ui && base::i18n::IsRTL())
@@ -677,7 +700,7 @@ std::string GetStringUTF8(int message_id) {
 }
 
 base::string16 GetStringUTF16(int message_id) {
-  ResourceBundle& rb = ResourceBundle::GetSharedInstance();
+  ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
   base::string16 str = rb.GetLocalizedString(message_id);
   AdjustParagraphDirectionality(&str);
 
@@ -691,7 +714,7 @@ base::string16 GetStringFUTF16(int message_id,
   // a StringPiece and were able to call ReplaceStringPlaceholders with
   // a StringPiece format string and base::string16 substitution strings.  In
   // practice, the strings should be relatively short.
-  ResourceBundle& rb = ResourceBundle::GetSharedInstance();
+  ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
   const base::string16& format_string = rb.GetLocalizedString(message_id);
 
 #ifndef NDEBUG
@@ -862,15 +885,25 @@ const std::vector<std::string>& GetAvailableLocales() {
 
 void GetAcceptLanguagesForLocale(const std::string& display_locale,
                                  std::vector<std::string>* locale_codes) {
-  for (size_t i = 0; i < arraysize(kAcceptLanguageList); ++i) {
-    if (!l10n_util::IsLocaleNameTranslated(kAcceptLanguageList[i],
-                                           display_locale)) {
+  for (const char* accept_language : kAcceptLanguageList) {
+    if (!l10n_util::IsLocaleNameTranslated(accept_language, display_locale)) {
       // TODO(jungshik) : Put them at the end of the list with language codes
       // enclosed by brackets instead of skipping.
       continue;
     }
-    locale_codes->push_back(kAcceptLanguageList[i]);
+    locale_codes->push_back(accept_language);
   }
+}
+
+bool IsLanguageAccepted(const std::string& display_locale,
+                        const std::string& locale) {
+  for (const char* accept_language : kAcceptLanguageList) {
+    if (accept_language == locale &&
+        l10n_util::IsLocaleNameTranslated(locale.c_str(), display_locale)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 int GetLocalizedContentsWidthInPixels(int pixel_resource_id) {
@@ -885,7 +918,7 @@ const char* const* GetAcceptLanguageListForTesting() {
 }
 
 size_t GetAcceptLanguageListSizeForTesting() {
-  return arraysize(kAcceptLanguageList);
+  return base::size(kAcceptLanguageList);
 }
 
 }  // namespace l10n_util

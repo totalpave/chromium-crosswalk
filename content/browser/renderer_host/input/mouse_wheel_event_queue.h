@@ -5,21 +5,17 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_INPUT_MOUSE_WHEEL_EVENT_QUEUE_H_
 #define CONTENT_BROWSER_RENDERER_HOST_INPUT_MOUSE_WHEEL_EVENT_QUEUE_H_
 
-#include <deque>
+#include <memory>
 
+#include "base/containers/circular_deque.h"
 #include "base/time/time.h"
 #include "content/browser/renderer_host/event_with_latency_info.h"
 #include "content/common/content_export.h"
-#include "content/common/input/input_event_ack_state.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "content/public/common/input_event_ack_source.h"
+#include "content/public/common/input_event_ack_state.h"
+#include "third_party/blink/public/platform/web_input_event.h"
 
 namespace content {
-
-// The duration in which a ScrollEnd will be sent after the last
-// ScrollUpdate was sent for wheel based gesture scrolls.
-// Set the default wheel transaction to 0ms until
-// crbug.com/526463 is fully implemented.
-const int64_t kDefaultWheelScrollTransactionMs = 0;  // 100;
 
 class QueuedWebMouseWheelEvent;
 
@@ -35,19 +31,19 @@ class CONTENT_EXPORT MouseWheelEventQueueClient {
       const blink::WebGestureEvent& event,
       const ui::LatencyInfo& latency_info) = 0;
   virtual void OnMouseWheelEventAck(const MouseWheelEventWithLatencyInfo& event,
+                                    InputEventAckSource ack_source,
                                     InputEventAckState ack_result) = 0;
+  virtual bool IsWheelScrollInProgress() = 0;
+  virtual bool IsAutoscrollInProgress() = 0;
 };
 
 // A queue for throttling and coalescing mouse wheel events.
 class CONTENT_EXPORT MouseWheelEventQueue {
  public:
-  // The |client| must outlive the MouseWheelEventQueue. |send_gestures|
-  // indicates whether mouse wheel events should generate
-  // Scroll[Begin|Update|End] on unhandled acknowledge events.
-  // |scroll_transaction_ms| is the duration in which the
-  // ScrollEnd should be sent after a ScrollUpdate.
-  MouseWheelEventQueue(MouseWheelEventQueueClient* client,
-                       int64_t scroll_transaction_ms);
+  // The |client| must outlive the MouseWheelEventQueue.
+  // |IsWheelScrollInProgress| indicates whether mouse wheel events should
+  // generate Scroll[Begin|Update|End] on unhandled acknowledge events.
+  MouseWheelEventQueue(MouseWheelEventQueueClient* client);
 
   ~MouseWheelEventQueue();
 
@@ -59,7 +55,8 @@ class CONTENT_EXPORT MouseWheelEventQueue {
 
   // Notifies the queue that a mouse wheel event has been processed by the
   // renderer.
-  void ProcessMouseWheelAck(InputEventAckState ack_result,
+  void ProcessMouseWheelAck(InputEventAckSource ack_source,
+                            InputEventAckState ack_result,
                             const ui::LatencyInfo& latency_info);
 
   // When GestureScrollBegin is received, and it is a different source
@@ -82,22 +79,22 @@ class CONTENT_EXPORT MouseWheelEventQueue {
   void SendScrollEnd(blink::WebGestureEvent update_event, bool synthetic);
   void SendScrollBegin(const blink::WebGestureEvent& gesture_update,
                        bool synthetic);
+  void RecordLatchingUmaMetric(bool latched);
+
+  // True if gesture scroll events can be generated for the wheel event sent for
+  // ack.
+  bool CanGenerateGestureScroll(InputEventAckState ack_result) const;
 
   MouseWheelEventQueueClient* client_;
-  base::OneShotTimer scroll_end_timer_;
 
-  typedef std::deque<QueuedWebMouseWheelEvent*> WheelEventQueue;
-  WheelEventQueue wheel_queue_;
+  base::circular_deque<std::unique_ptr<QueuedWebMouseWheelEvent>> wheel_queue_;
   std::unique_ptr<QueuedWebMouseWheelEvent> event_sent_for_gesture_ack_;
 
-  // True if a non-synthetic GSB needs to be sent before a GSU is sent.
-  bool needs_scroll_begin_;
+  // True if the ack for the first wheel event in a scroll sequence is not
+  // consumed. This lets us to send the rest of the wheel events in the sequence
+  // as non-blocking.
+  bool send_wheel_events_async_;
 
-  // True if a non-synthetic GSE needs to be sent because a non-synthetic
-  // GSB has been sent in the past.
-  bool needs_scroll_end_;
-
-  int64_t scroll_transaction_ms_;
   blink::WebGestureDevice scrolling_device_;
 
   DISALLOW_COPY_AND_ASSIGN(MouseWheelEventQueue);

@@ -6,15 +6,17 @@
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "content/public/renderer/resource_fetcher.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
-#include "third_party/WebKit/public/web/WebFrame.h"
+#include "content/public/renderer/associated_resource_fetcher.h"
+#include "services/network/public/mojom/request_context_frame_type.mojom.h"
+#include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/public/web/web_associated_url_loader_options.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 
 namespace content {
 
 ManifestFetcher::ManifestFetcher(const GURL& url)
     : completed_(false) {
-  fetcher_.reset(ResourceFetcher::Create(url));
+  fetcher_.reset(AssociatedResourceFetcher::Create(url));
 }
 
 ManifestFetcher::~ManifestFetcher() {
@@ -22,23 +24,23 @@ ManifestFetcher::~ManifestFetcher() {
     Cancel();
 }
 
-void ManifestFetcher::Start(blink::WebFrame* frame,
+void ManifestFetcher::Start(blink::WebLocalFrame* frame,
                             bool use_credentials,
                             const Callback& callback) {
   callback_ = callback;
 
-  blink::WebURLLoaderOptions options;
-  options.allowCredentials = use_credentials;
-  options.crossOriginRequestPolicy =
-      blink::WebURLLoaderOptions::CrossOriginRequestPolicyUseAccessControl;
+  blink::WebAssociatedURLLoaderOptions options;
   fetcher_->SetLoaderOptions(options);
 
-  fetcher_->Start(frame,
-                  blink::WebURLRequest::RequestContextManifest,
-                  blink::WebURLRequest::FrameTypeNone,
-                  ResourceFetcher::FRAME_ASSOCIATED_LOADER,
-                  base::Bind(&ManifestFetcher::OnLoadComplete,
-                             base::Unretained(this)));
+  // See https://w3c.github.io/manifest/. Use "include" when use_credentials is
+  // true, and "omit" otherwise.
+  fetcher_->Start(
+      frame, blink::mojom::RequestContextType::MANIFEST,
+      network::mojom::FetchRequestMode::kCors,
+      use_credentials ? network::mojom::FetchCredentialsMode::kInclude
+                      : network::mojom::FetchCredentialsMode::kOmit,
+      network::mojom::RequestContextFrameType::kNone,
+      base::Bind(&ManifestFetcher::OnLoadComplete, base::Unretained(this)));
 }
 
 void ManifestFetcher::Cancel() {
@@ -52,7 +54,7 @@ void ManifestFetcher::OnLoadComplete(const blink::WebURLResponse& response,
   completed_ = true;
 
   Callback callback = callback_;
-  callback.Run(response, data);
+  std::move(callback).Run(response, data);
 }
 
-} // namespace content
+}  // namespace content

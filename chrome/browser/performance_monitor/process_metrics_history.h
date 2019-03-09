@@ -5,10 +5,11 @@
 #ifndef CHROME_BROWSER_PERFORMANCE_MONITOR_PROCESS_METRICS_HISTORY_H_
 #define CHROME_BROWSER_PERFORMANCE_MONITOR_PROCESS_METRICS_HISTORY_H_
 
+#include <memory>
+
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/process/process_handle.h"
-#include "content/public/browser/background_tracing_manager.h"
+#include "build/build_config.h"
 #include "content/public/browser/child_process_data.h"
 #include "content/public/common/process_type.h"
 
@@ -38,7 +39,7 @@ struct ProcessMetricsMetadata {
 class ProcessMetricsHistory {
  public:
   ProcessMetricsHistory();
-  ProcessMetricsHistory(const ProcessMetricsHistory& other);
+  ProcessMetricsHistory(const ProcessMetricsHistory& other) = delete;
   ~ProcessMetricsHistory();
 
   // Configure this to monitor a specific process.
@@ -63,12 +64,20 @@ class ProcessMetricsHistory {
   // May not be fully populated. e.g. no |id| and no |name| for browser and
   // renderer processes.
   ProcessMetricsMetadata process_data_;
-  linked_ptr<base::ProcessMetrics> process_metrics_;
-  int last_update_sequence_;
+  std::unique_ptr<base::ProcessMetrics> process_metrics_;
+  int last_update_sequence_ = 0;
 
-  double cpu_usage_;
+  double cpu_usage_ = 0.0;
+#if defined(OS_WIN)
+  uint64_t disk_usage_ = 0;
+#endif
 
-  content::BackgroundTracingManager::TriggerHandle trace_trigger_handle_;
+#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_AIX)
+  int idle_wakeups_ = 0;
+#endif
+#if defined(OS_MACOSX)
+  int package_idle_wakeups_ = 0;
+#endif
 
   DISALLOW_ASSIGN(ProcessMetricsHistory);
 };

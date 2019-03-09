@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_APP_LIST_TEST_TEST_APP_LIST_CONTROLLER_DELEGATE_H_
 #define CHROME_BROWSER_UI_APP_LIST_TEST_TEST_APP_LIST_CONTROLLER_DELEGATE_H_
 
+#include <string>
+
 #include "chrome/browser/ui/app_list/app_list_controller_delegate.h"
 
 namespace test {
@@ -14,16 +16,13 @@ class TestAppListControllerDelegate : public AppListControllerDelegate {
   TestAppListControllerDelegate();
   ~TestAppListControllerDelegate() override;
 
+  int64_t GetAppListDisplayId() override;
   void DismissView() override;
-  gfx::NativeWindow GetAppListWindow() override;
   bool IsAppPinned(const std::string& app_id) override;
   void PinApp(const std::string& app_id) override;
   void UnpinApp(const std::string& app_id) override;
   Pinnable GetPinnable(const std::string& app_id) override;
   bool IsAppOpen(const std::string& app_id) const override;
-  bool CanDoCreateShortcutsFlow() override;
-  void DoCreateShortcutsFlow(Profile* profile,
-                             const std::string& extension_id) override;
   bool CanDoShowAppInfoFlow() override;
   void DoShowAppInfoFlow(Profile* profile,
                          const std::string& extension_id) override;
@@ -39,9 +38,8 @@ class TestAppListControllerDelegate : public AppListControllerDelegate {
   void LaunchApp(Profile* profile,
                  const extensions::Extension* extension,
                  AppListSource source,
-                 int event_flags) override;
-  void ShowForProfileByPath(const base::FilePath& profile_path) override;
-  bool ShouldShowUserIcon() override;
+                 int event_flags,
+                 int64_t display_id) override;
 
   const GURL& last_opened_url() const { return last_opened_url_; }
 

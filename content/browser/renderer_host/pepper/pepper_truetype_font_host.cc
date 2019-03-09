@@ -5,11 +5,10 @@
 #include "content/browser/renderer_host/pepper/pepper_truetype_font_host.h"
 
 #include "base/bind.h"
+#include "base/task/post_task.h"
 #include "base/task_runner_util.h"
-#include "base/threading/sequenced_worker_pool.h"
 #include "content/browser/renderer_host/pepper/pepper_truetype_font.h"
 #include "content/public/browser/browser_ppapi_host.h"
-#include "content/public/browser/browser_thread.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/host/dispatch_host_message.h"
 #include "ppapi/host/ppapi_host.h"
@@ -30,10 +29,10 @@ PepperTrueTypeFontHost::PepperTrueTypeFontHost(
       initialize_completed_(false),
       weak_factory_(this) {
   font_ = PepperTrueTypeFont::Create();
-  // Initialize the font on a blocking pool thread. This must complete before
+  // Initialize the font on a TaskScheduler thread. This must complete before
   // using |font_|.
-  base::SequencedWorkerPool* pool = BrowserThread::GetBlockingPool();
-  task_runner_ = pool->GetSequencedTaskRunner(pool->GetSequenceToken());
+  task_runner_ = base::CreateSequencedTaskRunnerWithTraits(
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT});
   SerializedTrueTypeFontDesc* actual_desc =
       new SerializedTrueTypeFontDesc(desc);
   base::PostTaskAndReplyWithResult(
@@ -46,14 +45,9 @@ PepperTrueTypeFontHost::PepperTrueTypeFontHost(
 }
 
 PepperTrueTypeFontHost::~PepperTrueTypeFontHost() {
-  if (font_.get()) {
-    // Release the font on the task runner in case the implementation requires
-    // long blocking operations.
-    font_->AddRef();
-    PepperTrueTypeFont* raw_font = font_.get();
-    font_ = NULL;
-    task_runner_->ReleaseSoon(FROM_HERE, raw_font);
-  }
+  // Release the font on the task runner in case the implementation requires
+  // long blocking operations.
+  task_runner_->ReleaseSoon(FROM_HERE, std::move(font_));
 }
 
 int32_t PepperTrueTypeFontHost::OnResourceMessageReceived(
@@ -125,7 +119,7 @@ void PepperTrueTypeFontHost::OnInitializeComplete(
   initialize_completed_ = true;
   // Release the font if there was an error, so future calls will fail.
   if (result != PP_OK)
-    font_ = NULL;
+    font_ = nullptr;
   host()->SendUnsolicitedReply(
       pp_resource(), PpapiPluginMsg_TrueTypeFont_CreateReply(*desc, result));
 }

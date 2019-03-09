@@ -9,14 +9,16 @@
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/trace_event/trace_event.h"
 #include "components/policy/core/common/cloud/cloud_policy_refresh_scheduler.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
 #include "components/policy/core/common/configuration_policy_provider.h"
@@ -24,9 +26,9 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/policy/core/common/policy_statistics_collector.h"
 #include "components/policy/core/common/policy_switches.h"
+#include "components/policy/policy_constants.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "google_apis/gaia/gaia_auth_util.h"
-#include "policy/policy_constants.h"
 #include "third_party/icu/source/i18n/unicode/regex.h"
 
 namespace policy {
@@ -46,17 +48,26 @@ void ReportRegexSuccessMetric(bool success) {
 // these users are not from hosted enterprise domains.
 const wchar_t* const kNonManagedDomainPatterns[] = {
   L"aol\\.com",
+  L"comcast\\.net",
   L"googlemail\\.com",
   L"gmail\\.com",
+  L"gmx\\.de",
   L"hotmail(\\.co|\\.com|)\\.[^.]+",  // hotmail.com, hotmail.it, hotmail.co.uk
   L"live\\.com",
   L"mail\\.ru",
   L"msn\\.com",
+  L"naver\\.com",
+  L"orange\\.fr",
+  L"outlook\\.com",
   L"qq\\.com",
   L"yahoo(\\.co|\\.com|)\\.[^.]+",  // yahoo.com, yahoo.co.uk, yahoo.com.tw
   L"yandex\\.ru",
+  L"web\\.de",
+  L"wp\\.pl",
   L"consumer\\.example\\.com",
 };
+
+const char* non_managed_domain_for_testing = nullptr;
 
 // Returns true if |domain| matches the regex |pattern|.
 bool MatchDomain(const base::string16& domain, const base::string16& pattern,
@@ -73,10 +84,10 @@ bool MatchDomain(const base::string16& domain, const base::string16& pattern,
     DLOG(ERROR) << "Possible invalid domain pattern: " << pattern
                 << " - Error: " << status;
     ReportRegexSuccessMetric(false);
-    UMA_HISTOGRAM_ENUMERATION("Enterprise.DomainWhitelistRegexFailure",
-                              index, arraysize(kNonManagedDomainPatterns));
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Enterprise.DomainWhitelistRegexFailureStatus",
-                                status);
+    UMA_HISTOGRAM_ENUMERATION("Enterprise.DomainWhitelistRegexFailure", index,
+                              base::size(kNonManagedDomainPatterns));
+    base::UmaHistogramSparse("Enterprise.DomainWhitelistRegexFailureStatus",
+                             status);
     return false;
   }
   ReportRegexSuccessMetric(true);
@@ -101,16 +112,12 @@ BrowserPolicyConnector::~BrowserPolicyConnector() {
 void BrowserPolicyConnector::InitInternal(
     PrefService* local_state,
     std::unique_ptr<DeviceManagementService> device_management_service) {
-  DCHECK(!is_initialized());
-
   device_management_service_ = std::move(device_management_service);
 
   policy_statistics_collector_.reset(new policy::PolicyStatisticsCollector(
       base::Bind(&GetChromePolicyDetails), GetChromeSchema(),
       GetPolicyService(), local_state, base::ThreadTaskRunnerHandle::Get()));
   policy_statistics_collector_->Initialize();
-
-  InitPolicyProviders();
 }
 
 void BrowserPolicyConnector::Shutdown() {
@@ -128,6 +135,7 @@ void BrowserPolicyConnector::ScheduleServiceInitialization(
 
 // static
 bool BrowserPolicyConnector::IsNonEnterpriseUser(const std::string& username) {
+  TRACE_EVENT0("browser", "BrowserPolicyConnector::IsNonEnterpriseUser");
   if (username.empty() || username.find('@') == std::string::npos) {
     // An empty username means incognito user in case of ChromiumOS and
     // no logged-in user in case of Chromium (SigninService). Many tests use
@@ -137,12 +145,22 @@ bool BrowserPolicyConnector::IsNonEnterpriseUser(const std::string& username) {
   }
   const base::string16 domain = base::UTF8ToUTF16(
       gaia::ExtractDomainName(gaia::CanonicalizeEmail(username)));
-  for (size_t i = 0; i < arraysize(kNonManagedDomainPatterns); i++) {
+  for (size_t i = 0; i < base::size(kNonManagedDomainPatterns); i++) {
     base::string16 pattern = base::WideToUTF16(kNonManagedDomainPatterns[i]);
     if (MatchDomain(domain, pattern, i))
       return true;
   }
+  if (non_managed_domain_for_testing &&
+      domain == base::UTF8ToUTF16(non_managed_domain_for_testing)) {
+    return true;
+  }
   return false;
+}
+
+// static
+void BrowserPolicyConnector::SetNonEnterpriseDomainForTesting(
+    const char* domain) {
+  non_managed_domain_for_testing = domain;
 }
 
 // static
@@ -159,7 +177,12 @@ void BrowserPolicyConnector::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(
       policy_prefs::kUserPolicyRefreshRate,
       CloudPolicyRefreshScheduler::kDefaultRefreshDelayMs);
+  registry->RegisterStringPref(
+      policy_prefs::kMachineLevelUserCloudPolicyEnrollmentToken, std::string());
+  registry->RegisterBooleanPref(
+      policy_prefs::kCloudManagementEnrollmentMandatory, false);
+  registry->RegisterBooleanPref(
+      policy_prefs::kCloudPolicyOverridesMachinePolicy, false);
 }
-
 
 }  // namespace policy

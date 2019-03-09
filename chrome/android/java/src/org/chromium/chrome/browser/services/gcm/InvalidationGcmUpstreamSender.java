@@ -5,24 +5,29 @@
 package org.chromium.chrome.browser.services.gcm;
 
 import android.accounts.Account;
+import android.annotation.SuppressLint;
 import android.content.Context;
-import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Parcel;
+import android.support.annotation.MainThread;
+import android.support.annotation.Nullable;
 import android.util.Log;
 
 import com.google.android.gms.gcm.GoogleCloudMessaging;
 import com.google.ipc.invalidation.ticl.android2.channel.GcmUpstreamSenderService;
 
-import org.chromium.chrome.browser.signin.OAuth2TokenService;
-import org.chromium.sync.SyncConstants;
-import org.chromium.sync.signin.AccountManagerHelper;
-import org.chromium.sync.signin.ChromeSigninController;
+import org.chromium.base.ContextUtils;
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
+import org.chromium.chrome.browser.init.ProcessInitializationHandler;
+import org.chromium.components.signin.ChromeSigninController;
+import org.chromium.components.signin.OAuth2TokenService;
+import org.chromium.components.sync.SyncConstants;
+import org.chromium.content_public.browser.UiThreadTaskTraits;
 
 import java.io.IOException;
 import java.util.UUID;
-
-import javax.annotation.Nullable;
 
 /**
  * Sends Upstream messages for Invalidations using GCM.
@@ -35,8 +40,24 @@ public class InvalidationGcmUpstreamSender extends GcmUpstreamSenderService {
 
     @Override
     public void deliverMessage(final String to, final Bundle data) {
+        final Bundle dataToSend = createDeepCopy(data);
+
+        PostTask.postTask(UiThreadTaskTraits.DEFAULT, new Runnable() {
+            @Override
+            public void run() {
+                doDeliverMessage(ContextUtils.getApplicationContext(), to, dataToSend);
+            }
+        });
+    }
+
+    @MainThread
+    private void doDeliverMessage(
+            final Context applicationContext, final String to, final Bundle data) {
+        ThreadUtils.assertOnUiThread();
+        ProcessInitializationHandler.getInstance().initializePreNative();
+
         @Nullable
-        Account account = ChromeSigninController.get(this).getSignedInUser();
+        Account account = ChromeSigninController.get().getSignedInUser();
         if (account == null) {
             // This should never happen, because this code should only be run if a user is
             // signed-in.
@@ -44,34 +65,26 @@ public class InvalidationGcmUpstreamSender extends GcmUpstreamSenderService {
             return;
         }
 
-        final Bundle dataToSend = createDeepCopy(data);
-        final Context applicationContext = getApplicationContext();
-
         // Attempt to retrieve a token for the user.
-        OAuth2TokenService.getOAuth2AccessToken(this, account,
-                SyncConstants.CHROME_SYNC_OAUTH2_SCOPE,
-                new AccountManagerHelper.GetAuthTokenCallback() {
+        OAuth2TokenService.getAccessToken(account, SyncConstants.CHROME_SYNC_OAUTH2_SCOPE,
+                new OAuth2TokenService.GetAccessTokenCallback() {
                     @Override
-                    public void tokenAvailable(final String token) {
-                        new AsyncTask<Void, Void, Void>() {
-                            @Override
-                            protected Void doInBackground(Void... voids) {
-                                sendUpstreamMessage(to, dataToSend, token, applicationContext);
-                                return null;
-                            }
-                        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+                    public void onGetTokenSuccess(final String token) {
+                        PostTask.postTask(TaskTraits.BEST_EFFORT_MAY_BLOCK, () -> {
+                            sendUpstreamMessage(to, data, token, applicationContext);
+                        });
                     }
 
                     @Override
-                    public void tokenUnavailable(boolean isTransientError) {
-                        GcmUma.recordGcmUpstreamHistogram(
-                                getApplicationContext(), GcmUma.UMA_UPSTREAM_TOKEN_REQUEST_FAILED);
+                    public void onGetTokenFailure(boolean isTransientError) {
+                        GcmUma.recordGcmUpstreamHistogram(ContextUtils.getApplicationContext(),
+                                GcmUma.UMA_UPSTREAM_TOKEN_REQUEST_FAILED);
                     }
                 });
     }
 
     /*
-     * This function runs on a thread from the AsyncTask.THREAD_POOL_EXECUTOR.
+     * This function runs on a thread pool executor thread.
      */
     private void sendUpstreamMessage(String to, Bundle data, String token, Context context) {
         // Add the OAuth2 token to the bundle. The token should have the prefix Bearer added to it.
@@ -82,7 +95,8 @@ public class InvalidationGcmUpstreamSender extends GcmUpstreamSenderService {
         }
         String msgId = UUID.randomUUID().toString();
         try {
-            GoogleCloudMessaging.getInstance(getApplicationContext()).send(to, msgId, 1, data);
+            GoogleCloudMessaging.getInstance(ContextUtils.getApplicationContext())
+                    .send(to, msgId, 1, data);
         } catch (IOException | IllegalArgumentException exception) {
             Log.w(TAG, "Send message failed");
             GcmUma.recordGcmUpstreamHistogram(context, GcmUma.UMA_UPSTREAM_SEND_FAILED);
@@ -103,6 +117,8 @@ public class InvalidationGcmUpstreamSender extends GcmUpstreamSenderService {
     /*
      * Creates and returns a deep copy of the original Bundle.
      */
+    // TODO(crbug.com/635567): Fix this properly.
+    @SuppressLint("ParcelClassLoader")
     private Bundle createDeepCopy(Bundle original) {
         Parcel temp = Parcel.obtain();
         original.writeToParcel(temp, 0);

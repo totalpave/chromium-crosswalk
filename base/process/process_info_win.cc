@@ -5,57 +5,43 @@
 #include "base/process/process_info.h"
 
 #include <windows.h>
-
 #include <memory>
 
+#include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/time/time.h"
 #include "base/win/scoped_handle.h"
-#include "base/win/windows_version.h"
 
 namespace base {
 
-// static
-const Time CurrentProcessInfo::CreationTime() {
-  FILETIME creation_time = {};
-  FILETIME ignore1 = {};
-  FILETIME ignore2 = {};
-  FILETIME ignore3 = {};
-  if (!::GetProcessTimes(::GetCurrentProcess(), &creation_time, &ignore1,
-                         &ignore2, &ignore3)) {
-    return Time();
-  }
-  return Time::FromFileTime(creation_time);
+namespace {
+
+HANDLE GetCurrentProcessToken() {
+  HANDLE process_token;
+  OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &process_token);
+  DCHECK(process_token != NULL && process_token != INVALID_HANDLE_VALUE);
+  return process_token;
 }
 
-IntegrityLevel GetCurrentProcessIntegrityLevel() {
-  if (win::GetVersion() < base::win::VERSION_VISTA)
-    return INTEGRITY_UNKNOWN;
+}  // namespace
 
-  HANDLE process_token;
-  if (!::OpenProcessToken(::GetCurrentProcess(),
-                          TOKEN_QUERY | TOKEN_QUERY_SOURCE, &process_token)) {
-    return INTEGRITY_UNKNOWN;
-  }
-  win::ScopedHandle scoped_process_token(process_token);
+IntegrityLevel GetCurrentProcessIntegrityLevel() {
+  HANDLE process_token(GetCurrentProcessToken());
 
   DWORD token_info_length = 0;
   if (::GetTokenInformation(process_token, TokenIntegrityLevel, nullptr, 0,
                             &token_info_length) ||
       ::GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    NOTREACHED();
     return INTEGRITY_UNKNOWN;
   }
 
-  std::unique_ptr<char[]> token_label_bytes(new char[token_info_length]);
-  if (!token_label_bytes.get())
-    return INTEGRITY_UNKNOWN;
-
+  auto token_label_bytes = std::make_unique<char[]>(token_info_length);
   TOKEN_MANDATORY_LABEL* token_label =
       reinterpret_cast<TOKEN_MANDATORY_LABEL*>(token_label_bytes.get());
-  if (!token_label)
-    return INTEGRITY_UNKNOWN;
-
   if (!::GetTokenInformation(process_token, TokenIntegrityLevel, token_label,
                              token_info_length, &token_info_length)) {
+    NOTREACHED();
     return INTEGRITY_UNKNOWN;
   }
 
@@ -63,6 +49,9 @@ IntegrityLevel GetCurrentProcessIntegrityLevel() {
       token_label->Label.Sid,
       static_cast<DWORD>(*::GetSidSubAuthorityCount(token_label->Label.Sid) -
                          1));
+
+  if (integrity_level < SECURITY_MANDATORY_LOW_RID)
+    return UNTRUSTED_INTEGRITY;
 
   if (integrity_level < SECURITY_MANDATORY_MEDIUM_RID)
     return LOW_INTEGRITY;
@@ -77,6 +66,21 @@ IntegrityLevel GetCurrentProcessIntegrityLevel() {
 
   NOTREACHED();
   return INTEGRITY_UNKNOWN;
+}
+
+bool IsCurrentProcessElevated() {
+  HANDLE process_token(GetCurrentProcessToken());
+
+  // Unlike TOKEN_ELEVATION_TYPE which returns TokenElevationTypeDefault when
+  // UAC is turned off, TOKEN_ELEVATION returns whether the process is elevated.
+  DWORD size;
+  TOKEN_ELEVATION elevation;
+  if (!GetTokenInformation(process_token, TokenElevation, &elevation,
+                           sizeof(elevation), &size)) {
+    PLOG(ERROR) << "GetTokenInformation() failed";
+    return false;
+  }
+  return !!elevation.TokenIsElevated;
 }
 
 }  // namespace base

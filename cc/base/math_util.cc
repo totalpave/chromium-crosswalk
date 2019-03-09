@@ -7,21 +7,23 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#if defined(ARCH_CPU_X86_FAMILY)
+#include <xmmintrin.h>
+#endif
 
-#include "base/trace_event/trace_event_argument.h"
+#include "base/trace_event/traced_value.h"
 #include "base/values.h"
+#include "ui/gfx/geometry/angle_conversions.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/gfx/geometry/vector3d_f.h"
+#include "ui/gfx/rrect_f.h"
 #include "ui/gfx/transform.h"
 
 namespace cc {
-
-const double MathUtil::kPiDouble = 3.14159265358979323846;
-const float MathUtil::kPiFloat = 3.14159265358979323846f;
 
 static HomogeneousCoordinate ProjectHomogeneousPoint(
     const gfx::Transform& transform,
@@ -152,16 +154,36 @@ static inline void ExpandBoundsToIncludePoint(float* xmin,
   *ymax = std::max(p.y(), *ymax);
 }
 
-static inline void AddVertexToClippedQuad(const gfx::PointF& new_vertex,
-                                          gfx::PointF clipped_quad[8],
-                                          int* num_vertices_in_clipped_quad) {
-  clipped_quad[*num_vertices_in_clipped_quad] = new_vertex;
-  (*num_vertices_in_clipped_quad)++;
+static inline bool IsNearlyTheSame(float f, float g) {
+  // The idea behind this is to use this fraction of the larger of the
+  // two numbers as the limit of the difference.  This breaks down near
+  // zero, so we reuse this as the minimum absolute size we will use
+  // for the base of the scale too.
+  static const float epsilon_scale = 0.00001f;
+  return std::abs(f - g) <
+         epsilon_scale *
+             std::max(std::max(std::abs(f), std::abs(g)), epsilon_scale);
+}
+
+static inline bool IsNearlyTheSame(const gfx::PointF& lhs,
+                                   const gfx::PointF& rhs) {
+  return IsNearlyTheSame(lhs.x(), rhs.x()) && IsNearlyTheSame(lhs.y(), rhs.y());
+}
+
+static inline bool IsNearlyTheSame(const gfx::Point3F& lhs,
+                                   const gfx::Point3F& rhs) {
+  return IsNearlyTheSame(lhs.x(), rhs.x()) &&
+         IsNearlyTheSame(lhs.y(), rhs.y()) && IsNearlyTheSame(lhs.z(), rhs.z());
 }
 
 static inline void AddVertexToClippedQuad3d(const gfx::Point3F& new_vertex,
-                                            gfx::Point3F clipped_quad[8],
+                                            gfx::Point3F clipped_quad[6],
                                             int* num_vertices_in_clipped_quad) {
+  if (*num_vertices_in_clipped_quad > 0 &&
+      IsNearlyTheSame(clipped_quad[*num_vertices_in_clipped_quad - 1],
+                      new_vertex))
+    return;
+
   clipped_quad[*num_vertices_in_clipped_quad] = new_vertex;
   (*num_vertices_in_clipped_quad)++;
 }
@@ -249,6 +271,22 @@ gfx::RectF MathUtil::ProjectClippedRect(const gfx::Transform& transform,
   return ComputeEnclosingClippedRect(h1, h2, h3, h4);
 }
 
+gfx::QuadF MathUtil::InverseMapQuadToLocalSpace(
+    const gfx::Transform& device_transform,
+    const gfx::QuadF& device_quad) {
+  gfx::Transform inverse_device_transform(gfx::Transform::kSkipInitialization);
+  DCHECK(device_transform.IsInvertible());
+  bool did_invert = device_transform.GetInverse(&inverse_device_transform);
+  DCHECK(did_invert);
+  bool clipped = false;
+  gfx::QuadF local_quad =
+      MathUtil::MapQuad(inverse_device_transform, device_quad, &clipped);
+  // We should not DCHECK(!clipped) here, because anti-aliasing inflation may
+  // cause device_quad to become clipped. To our knowledge this scenario does
+  // not need to be handled differently than the unclipped case.
+  return local_quad;
+}
+
 gfx::Rect MathUtil::MapEnclosedRectWith2dAxisAlignedTransform(
     const gfx::Transform& transform,
     const gfx::Rect& rect) {
@@ -284,70 +322,9 @@ gfx::Rect MathUtil::MapEnclosedRectWith2dAxisAlignedTransform(
   return gfx::ToEnclosedRect(gfx::BoundingRect(top_left, bottom_right));
 }
 
-void MathUtil::MapClippedQuad(const gfx::Transform& transform,
-                              const gfx::QuadF& src_quad,
-                              gfx::PointF clipped_quad[8],
-                              int* num_vertices_in_clipped_quad) {
-  HomogeneousCoordinate h1 =
-      MapHomogeneousPoint(transform, gfx::Point3F(src_quad.p1()));
-  HomogeneousCoordinate h2 =
-      MapHomogeneousPoint(transform, gfx::Point3F(src_quad.p2()));
-  HomogeneousCoordinate h3 =
-      MapHomogeneousPoint(transform, gfx::Point3F(src_quad.p3()));
-  HomogeneousCoordinate h4 =
-      MapHomogeneousPoint(transform, gfx::Point3F(src_quad.p4()));
-
-  // The order of adding the vertices to the array is chosen so that
-  // clockwise / counter-clockwise orientation is retained.
-
-  *num_vertices_in_clipped_quad = 0;
-
-  if (!h1.ShouldBeClipped()) {
-    AddVertexToClippedQuad(
-        h1.CartesianPoint2d(), clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  if (h1.ShouldBeClipped() ^ h2.ShouldBeClipped()) {
-    AddVertexToClippedQuad(ComputeClippedCartesianPoint2dForEdge(h1, h2),
-                           clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  if (!h2.ShouldBeClipped()) {
-    AddVertexToClippedQuad(
-        h2.CartesianPoint2d(), clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  if (h2.ShouldBeClipped() ^ h3.ShouldBeClipped()) {
-    AddVertexToClippedQuad(ComputeClippedCartesianPoint2dForEdge(h2, h3),
-                           clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  if (!h3.ShouldBeClipped()) {
-    AddVertexToClippedQuad(
-        h3.CartesianPoint2d(), clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  if (h3.ShouldBeClipped() ^ h4.ShouldBeClipped()) {
-    AddVertexToClippedQuad(ComputeClippedCartesianPoint2dForEdge(h3, h4),
-                           clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  if (!h4.ShouldBeClipped()) {
-    AddVertexToClippedQuad(
-        h4.CartesianPoint2d(), clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  if (h4.ShouldBeClipped() ^ h1.ShouldBeClipped()) {
-    AddVertexToClippedQuad(ComputeClippedCartesianPoint2dForEdge(h4, h1),
-                           clipped_quad, num_vertices_in_clipped_quad);
-  }
-
-  DCHECK_LE(*num_vertices_in_clipped_quad, 8);
-}
-
 bool MathUtil::MapClippedQuad3d(const gfx::Transform& transform,
                                 const gfx::QuadF& src_quad,
-                                gfx::Point3F clipped_quad[8],
+                                gfx::Point3F clipped_quad[6],
                                 int* num_vertices_in_clipped_quad) {
   HomogeneousCoordinate h1 =
       MapHomogeneousPoint(transform, gfx::Point3F(src_quad.p1()));
@@ -403,7 +380,12 @@ bool MathUtil::MapClippedQuad3d(const gfx::Transform& transform,
                              clipped_quad, num_vertices_in_clipped_quad);
   }
 
-  DCHECK_LE(*num_vertices_in_clipped_quad, 8);
+  if (*num_vertices_in_clipped_quad > 2 &&
+      IsNearlyTheSame(clipped_quad[0],
+                      clipped_quad[*num_vertices_in_clipped_quad - 1]))
+    *num_vertices_in_clipped_quad -= 1;
+
+  DCHECK_LE(*num_vertices_in_clipped_quad, 6);
   return (*num_vertices_in_clipped_quad >= 4);
 }
 
@@ -523,47 +505,6 @@ gfx::QuadF MathUtil::MapQuad(const gfx::Transform& transform,
                     h4.CartesianPoint2d());
 }
 
-gfx::QuadF MathUtil::MapQuad3d(const gfx::Transform& transform,
-                               const gfx::QuadF& q,
-                               gfx::Point3F* p,
-                               bool* clipped) {
-  if (transform.IsIdentityOrTranslation()) {
-    gfx::QuadF mapped_quad(q);
-    mapped_quad += gfx::Vector2dF(transform.matrix().getFloat(0, 3),
-                                  transform.matrix().getFloat(1, 3));
-    *clipped = false;
-    p[0] = gfx::Point3F(mapped_quad.p1().x(), mapped_quad.p1().y(), 0.0f);
-    p[1] = gfx::Point3F(mapped_quad.p2().x(), mapped_quad.p2().y(), 0.0f);
-    p[2] = gfx::Point3F(mapped_quad.p3().x(), mapped_quad.p3().y(), 0.0f);
-    p[3] = gfx::Point3F(mapped_quad.p4().x(), mapped_quad.p4().y(), 0.0f);
-    return mapped_quad;
-  }
-
-  HomogeneousCoordinate h1 =
-      MapHomogeneousPoint(transform, gfx::Point3F(q.p1()));
-  HomogeneousCoordinate h2 =
-      MapHomogeneousPoint(transform, gfx::Point3F(q.p2()));
-  HomogeneousCoordinate h3 =
-      MapHomogeneousPoint(transform, gfx::Point3F(q.p3()));
-  HomogeneousCoordinate h4 =
-      MapHomogeneousPoint(transform, gfx::Point3F(q.p4()));
-
-  *clipped = h1.ShouldBeClipped() || h2.ShouldBeClipped() ||
-             h3.ShouldBeClipped() || h4.ShouldBeClipped();
-
-  // Result will be invalid if clipped == true. But, compute it anyway just in
-  // case, to emulate existing behavior.
-  p[0] = h1.CartesianPoint3d();
-  p[1] = h2.CartesianPoint3d();
-  p[2] = h3.CartesianPoint3d();
-  p[3] = h4.CartesianPoint3d();
-
-  return gfx::QuadF(h1.CartesianPoint2d(),
-                    h2.CartesianPoint2d(),
-                    h3.CartesianPoint2d(),
-                    h4.CartesianPoint2d());
-}
-
 gfx::PointF MathUtil::MapPoint(const gfx::Transform& transform,
                                const gfx::PointF& p,
                                bool* clipped) {
@@ -586,47 +527,6 @@ gfx::PointF MathUtil::MapPoint(const gfx::Transform& transform,
   // and (2) this behavior is more consistent with existing behavior of WebKit
   // transforms if the user really does not ignore the return value.
   return h.CartesianPoint2d();
-}
-
-gfx::Point3F MathUtil::MapPoint(const gfx::Transform& transform,
-                                const gfx::Point3F& p,
-                                bool* clipped) {
-  HomogeneousCoordinate h = MapHomogeneousPoint(transform, p);
-
-  if (h.w() > 0) {
-    *clipped = false;
-    return h.CartesianPoint3d();
-  }
-
-  // The cartesian coordinates will be invalid after dividing by w.
-  *clipped = true;
-
-  // Avoid dividing by w if w == 0.
-  if (!h.w())
-    return gfx::Point3F();
-
-  // This return value will be invalid because clipped == true, but (1) users of
-  // this code should be ignoring the return value when clipped == true anyway,
-  // and (2) this behavior is more consistent with existing behavior of WebKit
-  // transforms if the user really does not ignore the return value.
-  return h.CartesianPoint3d();
-}
-
-gfx::QuadF MathUtil::ProjectQuad(const gfx::Transform& transform,
-                                 const gfx::QuadF& q,
-                                 bool* clipped) {
-  gfx::QuadF projected_quad;
-  bool clipped_point;
-  projected_quad.set_p1(ProjectPoint(transform, q.p1(), &clipped_point));
-  *clipped = clipped_point;
-  projected_quad.set_p2(ProjectPoint(transform, q.p2(), &clipped_point));
-  *clipped |= clipped_point;
-  projected_quad.set_p3(ProjectPoint(transform, q.p3(), &clipped_point));
-  *clipped |= clipped_point;
-  projected_quad.set_p4(ProjectPoint(transform, q.p4(), &clipped_point));
-  *clipped |= clipped_point;
-
-  return projected_quad;
 }
 
 gfx::PointF MathUtil::ProjectPoint(const gfx::Transform& transform,
@@ -703,12 +603,18 @@ gfx::Vector2dF MathUtil::ComputeTransform2dScaleComponents(
   return gfx::Vector2dF(x_scale, y_scale);
 }
 
+float MathUtil::ComputeApproximateMaxScale(const gfx::Transform& transform) {
+  gfx::RectF unit(0.f, 0.f, 1.f, 1.f);
+  transform.TransformRect(&unit);
+  return std::max(unit.width(), unit.height());
+}
+
 float MathUtil::SmallestAngleBetweenVectors(const gfx::Vector2dF& v1,
                                             const gfx::Vector2dF& v2) {
   double dot_product = gfx::DotProduct(v1, v2) / v1.Length() / v2.Length();
   // Clamp to compensate for rounding errors.
   dot_product = std::max(-1.0, std::min(1.0, dot_product));
-  return static_cast<float>(Rad2Deg(std::acos(dot_product)));
+  return static_cast<float>(gfx::RadToDeg(std::acos(dot_product)));
 }
 
 gfx::Vector2dF MathUtil::ProjectVector(const gfx::Vector2dF& source,
@@ -898,6 +804,25 @@ void MathUtil::AddToTracedValue(const char* name,
   res->EndArray();
 }
 
+void MathUtil::AddToTracedValue(const char* name,
+                                const gfx::RRectF& rect,
+                                base::trace_event::TracedValue* res) {
+  res->BeginArray(name);
+  res->AppendDouble(rect.rect().x());
+  res->AppendDouble(rect.rect().y());
+  res->AppendDouble(rect.rect().width());
+  res->AppendDouble(rect.rect().height());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kUpperLeft).x());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kUpperLeft).y());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kUpperRight).x());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kUpperRight).y());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kLowerRight).x());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kLowerRight).y());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kLowerLeft).x());
+  res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kLowerLeft).y());
+  res->EndArray();
+}
+
 double MathUtil::AsDoubleSafely(double value) {
   return std::min(value, std::numeric_limits<double>::max());
 }
@@ -916,6 +841,34 @@ gfx::Vector3dF MathUtil::GetYAxis(const gfx::Transform& transform) {
   return gfx::Vector3dF(transform.matrix().getFloat(0, 1),
                         transform.matrix().getFloat(1, 1),
                         transform.matrix().getFloat(2, 1));
+}
+
+ScopedSubnormalFloatDisabler::ScopedSubnormalFloatDisabler() {
+#if defined(ARCH_CPU_X86_FAMILY)
+  // Turn on "subnormals are zero" and "flush to zero" CSR flags.
+  orig_state_ = _mm_getcsr();
+  _mm_setcsr(orig_state_ | 0x8040);
+#endif
+}
+
+ScopedSubnormalFloatDisabler::~ScopedSubnormalFloatDisabler() {
+#if defined(ARCH_CPU_X86_FAMILY)
+  _mm_setcsr(orig_state_);
+#endif
+}
+
+bool MathUtil::IsFloatNearlyTheSame(float left, float right) {
+  return IsNearlyTheSame(left, right);
+}
+
+bool MathUtil::IsNearlyTheSameForTesting(const gfx::PointF& left,
+                                         const gfx::PointF& right) {
+  return IsNearlyTheSame(left, right);
+}
+
+bool MathUtil::IsNearlyTheSameForTesting(const gfx::Point3F& left,
+                                         const gfx::Point3F& right) {
+  return IsNearlyTheSame(left, right);
 }
 
 }  // namespace cc

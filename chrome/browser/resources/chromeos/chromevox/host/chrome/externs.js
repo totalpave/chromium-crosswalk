@@ -8,7 +8,8 @@
 chrome.brailleDisplayPrivate = {};
 
 /**
- * @param {function(!{available: boolean, textCellCount: (number|undefined)})}
+ * @param {function(!{available: boolean, textRowCount: (number|undefined),
+ *        textColumnCount: (number|undefined)})}
  *        callback
  */
 chrome.brailleDisplayPrivate.getDisplayState = function(callback) {};
@@ -25,8 +26,17 @@ chrome.brailleDisplayPrivate.onKeyEvent;
 
 /**
  * @param {ArrayBuffer} cells
+ * @param {number} columns
+ * @param {number} rows
  */
-chrome.brailleDisplayPrivate.writeDots = function(cells) {};
+chrome.brailleDisplayPrivate.writeDots = function(cells, columns, rows) {};
+
+
+/**
+ * @param {string} address
+ */
+chrome.brailleDisplayPrivate.updateBluetoothBrailleDisplayAddress = function(
+    address) {};
 
 /**
  * @const
@@ -43,8 +53,12 @@ chrome.virtualKeyboardPrivate.VirtualKeyboardEvent;
  * @param {chrome.virtualKeyboardPrivate.VirtualKeyboardEvent} keyEvent
  * @param {Function=} opt_callback
  */
-chrome.virtualKeyboardPrivate.sendKeyEvent =
-    function(keyEvent, opt_callback) {};
+chrome.virtualKeyboardPrivate.sendKeyEvent = function(keyEvent, opt_callback) {
+};
+/**
+ * @param {function(!{a11ymode: boolean})} opt_callback
+ */
+chrome.virtualKeyboardPrivate.getKeyboardConfig = function(opt_callback) {};
 /**
  * @type {Object}
  */

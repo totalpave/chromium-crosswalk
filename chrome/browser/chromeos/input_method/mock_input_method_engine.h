@@ -21,28 +21,10 @@ class KeyEvent;
 
 namespace chromeos {
 
-class CompositionText;
-
 class MockInputMethodEngine : public ui::IMEEngineHandlerInterface {
  public:
   MockInputMethodEngine();
   ~MockInputMethodEngine() override;
-
-  // IMEEngineHandlerInterface overrides.
-  const std::string& GetActiveComponentId() const override;
-  bool ClearComposition(int context_id, std::string* error) override;
-  bool CommitText(int context_id,
-                  const char* text,
-                  std::string* error) override;
-  bool SetCandidateWindowVisible(bool visible, std::string* error) override;
-  bool SetCursorPosition(int context_id,
-                         int candidate_id,
-                         std::string* error) override;
-  bool IsActive() const override;
-  bool DeleteSurroundingText(int context_id,
-                             int offset,
-                             size_t number_of_chars,
-                             std::string* error) override;
 
   // IMEEngineHandlerInterface overrides.
   void FocusIn(
@@ -50,18 +32,21 @@ class MockInputMethodEngine : public ui::IMEEngineHandlerInterface {
   void FocusOut() override;
   void Enable(const std::string& component_id) override;
   void Disable() override;
-  void PropertyActivate(const std::string& property_name) override;
   void Reset() override;
   bool IsInterestedInKeyEvent() const override;
   void ProcessKeyEvent(const ui::KeyEvent& key_event,
-                       KeyEventDoneCallback& callback) override;
-  void CandidateClicked(uint32_t index) override;
+                       KeyEventDoneCallback callback) override;
   void SetSurroundingText(const std::string& text,
                           uint32_t cursor_pos,
                           uint32_t anchor_pos,
                           uint32_t offset_pos) override;
   void SetCompositionBounds(const std::vector<gfx::Rect>& bounds) override;
-  void HideInputView() override;
+  void PropertyActivate(const std::string& property_name) override;
+  void CandidateClicked(uint32_t index) override;
+  void SetMirroringEnabled(bool mirroring_enabled) override;
+  void SetCastingEnabled(bool casting_enabled) override;
+
+  const std::string& GetActiveComponentId() const;
 
   std::string last_activated_property() const {
     return last_activated_property_;

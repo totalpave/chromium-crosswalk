@@ -6,17 +6,24 @@
 
 #include <stddef.h>
 
+#include <string>
+#include <utility>
+
 #include "base/debug/dump_without_crashing.h"
 #include "base/json/json_writer.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "content/browser/child_process_security_policy_impl.h"
+#include "content/browser/frame_host/frame_tree.h"
+#include "content/browser/frame_host/frame_tree_node.h"
+#include "content/browser/frame_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/dip_util.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_contents/web_contents_view.h"
 #include "content/browser/webui/web_ui_controller_factory_registry.h"
-#include "content/common/view_messages.h"
+#include "content/common/frame_messages.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -39,7 +46,8 @@ class WebUIImpl::MainFrameNavigationObserver : public WebContentsObserver {
   void DidFinishNavigation(NavigationHandle* navigation_handle) override {
     // Only disallow JavaScript on cross-document navigations in the main frame.
     if (!navigation_handle->IsInMainFrame() ||
-        !navigation_handle->HasCommitted() || navigation_handle->IsSamePage()) {
+        !navigation_handle->HasCommitted() ||
+        navigation_handle->IsSameDocument()) {
       return;
     }
 
@@ -49,31 +57,33 @@ class WebUIImpl::MainFrameNavigationObserver : public WebContentsObserver {
   WebUIImpl* web_ui_;
 };
 
-const WebUI::TypeID WebUI::kNoWebUI = NULL;
+const WebUI::TypeID WebUI::kNoWebUI = nullptr;
 
 // static
 base::string16 WebUI::GetJavascriptCall(
     const std::string& function_name,
     const std::vector<const base::Value*>& arg_list) {
-  base::string16 parameters;
+  base::string16 result(base::ASCIIToUTF16(function_name));
+  result.push_back('(');
+
   std::string json;
   for (size_t i = 0; i < arg_list.size(); ++i) {
     if (i > 0)
-      parameters += base::char16(',');
+      result.push_back(',');
 
     base::JSONWriter::Write(*arg_list[i], &json);
-    parameters += base::UTF8ToUTF16(json);
+    result.append(base::UTF8ToUTF16(json));
   }
-  return base::ASCIIToUTF16(function_name) +
-      base::char16('(') + parameters + base::char16(')') + base::char16(';');
+
+  result.push_back(')');
+  result.push_back(';');
+  return result;
 }
 
-WebUIImpl::WebUIImpl(WebContents* contents, const std::string& frame_name)
-    : link_transition_type_(ui::PAGE_TRANSITION_LINK),
-      bindings_(BINDINGS_POLICY_WEB_UI),
+WebUIImpl::WebUIImpl(WebContentsImpl* contents)
+    : bindings_(BINDINGS_POLICY_WEB_UI),
       web_contents_(contents),
-      web_contents_observer_(new MainFrameNavigationObserver(this, contents)),
-      frame_name_(frame_name) {
+      web_contents_observer_(new MainFrameNavigationObserver(this, contents)) {
   DCHECK(contents);
 }
 
@@ -85,37 +95,52 @@ WebUIImpl::~WebUIImpl() {
 
 // WebUIImpl, public: ----------------------------------------------------------
 
-bool WebUIImpl::OnMessageReceived(const IPC::Message& message) {
+bool WebUIImpl::OnMessageReceived(const IPC::Message& message,
+                                  RenderFrameHost* sender) {
   bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(WebUIImpl, message)
-    IPC_MESSAGE_HANDLER(ViewHostMsg_WebUISend, OnWebUISend)
+  IPC_BEGIN_MESSAGE_MAP_WITH_PARAM(WebUIImpl, message, sender)
+    IPC_MESSAGE_HANDLER(FrameHostMsg_WebUISend, OnWebUISend)
     IPC_MESSAGE_UNHANDLED(handled = false)
   IPC_END_MESSAGE_MAP()
   return handled;
 }
 
-void WebUIImpl::OnWebUISend(const GURL& source_url,
+void WebUIImpl::OnWebUISend(RenderFrameHost* sender,
                             const std::string& message,
                             const base::ListValue& args) {
-  if (!ChildProcessSecurityPolicyImpl::GetInstance()->
-          HasWebUIBindings(web_contents_->GetRenderProcessHost()->GetID()) ||
+  // Ignore IPCs from frames that are pending deletion.  See also
+  // https://crbug.com/780920.
+  if (!sender->IsCurrent())
+    return;
+
+  const GURL& source_url = sender->GetLastCommittedURL();
+  if (!ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
+          sender->GetProcess()->GetID()) ||
       !WebUIControllerFactoryRegistry::GetInstance()->IsURLAcceptableForWebUI(
           web_contents_->GetBrowserContext(), source_url)) {
-    NOTREACHED() << "Blocked unauthorized use of WebUIBindings.";
+    bad_message::ReceivedBadMessage(
+        sender->GetProcess(),
+        bad_message::WEBUI_SEND_FROM_UNAUTHORIZED_PROCESS);
+    return;
+  }
+
+  if (base::EndsWith(message, "RequiringGesture",
+                     base::CompareCase::SENSITIVE) &&
+      !web_contents_->HasRecentInteractiveInputEvent()) {
+    LOG(ERROR) << message << " received without recent user interaction";
     return;
   }
 
   ProcessWebUIMessage(source_url, message, args);
 }
 
-void WebUIImpl::RenderViewCreated(RenderViewHost* render_view_host) {
-  controller_->RenderViewCreated(render_view_host);
+void WebUIImpl::RenderFrameCreated(RenderFrameHost* render_frame_host) {
+  controller_->RenderFrameCreated(render_frame_host);
 }
 
-void WebUIImpl::RenderViewReused(RenderViewHost* render_view_host,
-                                 bool was_main_frame) {
-  if (was_main_frame) {
-    GURL site_url = render_view_host->GetSiteInstance()->GetSiteURL();
+void WebUIImpl::RenderFrameReused(RenderFrameHost* render_frame_host) {
+  if (!render_frame_host->GetParent()) {
+    GURL site_url = render_frame_host->GetSiteInstance()->GetSiteURL();
     GetContentClient()->browser()->LogWebUIUrl(site_url);
   }
 }
@@ -140,14 +165,6 @@ void WebUIImpl::OverrideTitle(const base::string16& title) {
   overridden_title_ = title;
 }
 
-ui::PageTransition WebUIImpl::GetLinkTransitionType() const {
-  return link_transition_type_;
-}
-
-void WebUIImpl::SetLinkTransitionType(ui::PageTransition type) {
-  link_transition_type_ = type;
-}
-
 int WebUIImpl::GetBindings() const {
   return bindings_;
 }
@@ -156,26 +173,23 @@ void WebUIImpl::SetBindings(int bindings) {
   bindings_ = bindings;
 }
 
-bool WebUIImpl::HasRenderFrame() {
-  return TargetFrame() != nullptr;
-}
-
 WebUIController* WebUIImpl::GetController() const {
   return controller_.get();
 }
 
-void WebUIImpl::SetController(WebUIController* controller) {
-  controller_.reset(controller);
+void WebUIImpl::SetController(std::unique_ptr<WebUIController> controller) {
+  DCHECK(controller);
+  controller_ = std::move(controller);
 }
 
 bool WebUIImpl::CanCallJavascript() {
-  RenderFrameHost* target_frame = TargetFrame();
-  return target_frame &&
+  RenderFrameHost* frame_host = web_contents_->GetMainFrame();
+  return frame_host &&
          (ChildProcessSecurityPolicyImpl::GetInstance()->HasWebUIBindings(
-              target_frame->GetProcess()->GetID()) ||
+              frame_host->GetProcess()->GetID()) ||
           // It's possible to load about:blank in a Web UI renderer.
           // See http://crbug.com/42547
-          target_frame->GetLastCommittedURL().spec() == url::kAboutBlankURL);
+          frame_host->GetLastCommittedURL().spec() == url::kAboutBlankURL);
 }
 
 void WebUIImpl::CallJavascriptFunctionUnsafe(const std::string& function_name) {
@@ -235,9 +249,9 @@ void WebUIImpl::CallJavascriptFunctionUnsafe(
   ExecuteJavascript(GetJavascriptCall(function_name, args));
 }
 
-void WebUIImpl::RegisterMessageCallback(const std::string &message,
+void WebUIImpl::RegisterMessageCallback(base::StringPiece message,
                                         const MessageCallback& callback) {
-  message_callbacks_.insert(std::make_pair(message, callback));
+  message_callbacks_.emplace(message.as_string(), callback);
 }
 
 void WebUIImpl::ProcessWebUIMessage(const GURL& source_url,
@@ -247,27 +261,28 @@ void WebUIImpl::ProcessWebUIMessage(const GURL& source_url,
     return;
 
   // Look up the callback for this message.
-  MessageCallbackMap::const_iterator callback =
-      message_callbacks_.find(message);
-  if (callback != message_callbacks_.end()) {
+  auto callback_pair = message_callbacks_.find(message);
+  if (callback_pair != message_callbacks_.end()) {
     // Forward this message and content on.
-    callback->second.Run(&args);
+    callback_pair->second.Run(&args);
   } else {
     NOTREACHED() << "Unhandled chrome.send(\"" << message << "\");";
   }
 }
 
-ScopedVector<WebUIMessageHandler>* WebUIImpl::GetHandlersForTesting() {
+std::vector<std::unique_ptr<WebUIMessageHandler>>*
+WebUIImpl::GetHandlersForTesting() {
   return &handlers_;
 }
 
 // WebUIImpl, protected: -------------------------------------------------------
 
-void WebUIImpl::AddMessageHandler(WebUIMessageHandler* handler) {
+void WebUIImpl::AddMessageHandler(
+    std::unique_ptr<WebUIMessageHandler> handler) {
   DCHECK(!handler->web_ui());
   handler->set_web_ui(this);
   handler->RegisterMessages();
-  handlers_.push_back(handler);
+  handlers_.push_back(std::move(handler));
 }
 
 void WebUIImpl::ExecuteJavascript(const base::string16& javascript) {
@@ -276,35 +291,11 @@ void WebUIImpl::ExecuteJavascript(const base::string16& javascript) {
   if (!CanCallJavascript())
     return;
 
-  TargetFrame()->ExecuteJavaScript(javascript);
-}
-
-RenderFrameHost* WebUIImpl::TargetFrame() {
-  if (frame_name_.empty())
-    return web_contents_->GetMainFrame();
-
-  std::set<RenderFrameHost*> frame_set;
-  web_contents_->ForEachFrame(base::Bind(&WebUIImpl::AddToSetIfFrameNameMatches,
-                                         base::Unretained(this),
-                                         &frame_set));
-
-  // It happens that some sub-pages attempt to send JavaScript messages before
-  // their frames are loaded.
-  DCHECK_GE(1U, frame_set.size());
-  if (frame_set.empty())
-    return NULL;
-  return *frame_set.begin();
-}
-
-void WebUIImpl::AddToSetIfFrameNameMatches(
-    std::set<RenderFrameHost*>* frame_set,
-    RenderFrameHost* host) {
-  if (host->GetFrameName() == frame_name_)
-    frame_set->insert(host);
+  web_contents_->GetMainFrame()->ExecuteJavaScript(javascript);
 }
 
 void WebUIImpl::DisallowJavascriptOnAllHandlers() {
-  for (WebUIMessageHandler* handler : handlers_)
+  for (const std::unique_ptr<WebUIMessageHandler>& handler : handlers_)
     handler->DisallowJavascript();
 }
 

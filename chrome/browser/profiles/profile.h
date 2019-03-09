@@ -9,53 +9,35 @@
 
 #include <string>
 
-#include "base/containers/hash_tables.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "build/build_config.h"
 #include "components/domain_reliability/clear_mode.h"
+#include "components/keyed_service/core/simple_factory_key.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/content_browser_client.h"
+#include "services/network/public/mojom/network_service.mojom-forward.h"
 
-class ChromeAppCacheService;
+#if !defined(OS_ANDROID)
 class ChromeZoomLevelPrefs;
-class DevToolsNetworkControllerHandle;
-class ExtensionSpecialStoragePolicy;
-class HostContentSettingsMap;
-class PrefProxyConfigTracker;
-class PrefService;
-class PromoCounter;
-class ProtocolHandlerRegistry;
-class TestingProfile;
+#endif
 
-namespace android {
-class TabContentsProvider;
-}
+class ExtensionSpecialStoragePolicy;
+class PrefService;
+class PrefStore;
+class TestingProfile;
 
 namespace base {
 class SequencedTaskRunner;
-class Time;
-}
-
-namespace chrome_browser_net {
-class Predictor;
-}
-
-namespace chromeos {
-class LibCrosServiceLibraryImpl;
-class ResetDefaultProxyConfigServiceTask;
 }
 
 namespace content {
 class WebUI;
 }
 
-namespace storage {
-class FileSystemContext;
-}
-
-namespace net {
-class SSLConfigService;
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace user_prefs {
@@ -117,8 +99,6 @@ class Profile : public content::BrowserContext {
 
   // Key used to bind profile to the widget with which it is associated.
   static const char kProfileKey[];
-  // Value representing no hosted domain in the kProfileHostedDomain preference.
-  static const char kNoHostedDomainFound[];
 
   Profile();
   ~Profile() override;
@@ -176,6 +156,10 @@ class Profile : public content::BrowserContext {
   // profile is not incognito.
   virtual Profile* GetOriginalProfile() = 0;
 
+  // Return the original "recording" profile. This method returns this if the
+  // profile is not incognito.
+  virtual const Profile* GetOriginalProfile() const = 0;
+
   // Returns whether the profile is supervised (either a legacy supervised
   // user or a child account; see SupervisedUserService).
   virtual bool IsSupervised() const = 0;
@@ -183,6 +167,10 @@ class Profile : public content::BrowserContext {
   virtual bool IsChild() const = 0;
   // Returns whether the profile is a legacy supervised user profile.
   virtual bool IsLegacySupervised() const = 0;
+
+  // Returns whether opening browser windows is allowed in this profile. For
+  // example, browser windows are not allowed in Sign-in profile on Chrome OS.
+  virtual bool AllowsBrowserWindows() const = 0;
 
   // Accessor. The instance is created upon first access.
   virtual ExtensionSpecialStoragePolicy*
@@ -193,25 +181,34 @@ class Profile : public content::BrowserContext {
   virtual PrefService* GetPrefs() = 0;
   virtual const PrefService* GetPrefs() const = 0;
 
+#if !defined(OS_ANDROID)
   // Retrieves a pointer to the PrefService that manages the default zoom
   // level and the per-host zoom levels for this user profile.
   // TODO(wjmaclean): Remove this when HostZoomMap migrates to StoragePartition.
   virtual ChromeZoomLevelPrefs* GetZoomLevelPrefs();
+#endif
 
   // Retrieves a pointer to the PrefService that manages the preferences
   // for OffTheRecord Profiles.  This PrefService is lazily created the first
   // time that this method is called.
   virtual PrefService* GetOffTheRecordPrefs() = 0;
 
+  // Like GetOffTheRecordPrefs but gives a read-only view of prefs that can be
+  // used even if there's no OTR profile at the moment
+  // (i.e. HasOffTheRecordProfile is false).
+  virtual PrefService* GetReadOnlyOffTheRecordPrefs();
+
   // Returns the main request context.
   virtual net::URLRequestContextGetter* GetRequestContext() = 0;
 
-  // Returns the request context used for extension-related requests.  This
-  // is only used for a separate cookie store currently.
-  virtual net::URLRequestContextGetter* GetRequestContextForExtensions() = 0;
+  // Returns a callback (which must be executed on the IO thread) that returns
+  // the cookie store for the chrome-extensions:// scheme.
+  virtual base::OnceCallback<net::CookieStore*()>
+  GetExtensionsCookieStoreGetter() = 0;
 
-  // Returns the SSLConfigService for this profile.
-  virtual net::SSLConfigService* GetSSLConfigService() = 0;
+  // Returns the main URLLoaderFactory.
+  virtual scoped_refptr<network::SharedURLLoaderFactory>
+  GetURLLoaderFactory() = 0;
 
   // Return whether 2 profiles are the same. 2 profiles are the same if they
   // represent the same profile. This can happen if there is pointer equality
@@ -224,6 +221,10 @@ class Profile : public content::BrowserContext {
   // this profile. For the single profile case, this corresponds to the time
   // the user started chrome.
   virtual base::Time GetStartTime() const = 0;
+
+  // Returns the key used to index KeyedService instances created by a
+  // SimpleKeyedServiceFactory.
+  virtual SimpleFactoryKey* GetSimpleFactoryKey() const = 0;
 
   // Returns the last directory that was chosen for uploading or opening a file.
   virtual base::FilePath last_selected_directory() = 0;
@@ -239,6 +240,12 @@ class Profile : public content::BrowserContext {
     APP_LOCALE_CHANGED_VIA_LOGIN,
     // From login to a public session.
     APP_LOCALE_CHANGED_VIA_PUBLIC_SESSION_LOGIN,
+    // From AllowedLanguages policy.
+    APP_LOCALE_CHANGED_VIA_POLICY,
+    // From demo session.
+    APP_LOCALE_CHANGED_VIA_DEMO_SESSION,
+    // From system tray.
+    APP_LOCALE_CHANGED_VIA_SYSTEM_TRAY,
     // Source unknown.
     APP_LOCALE_CHANGED_VIA_UNKNOWN
   };
@@ -253,26 +260,6 @@ class Profile : public content::BrowserContext {
   // Initializes Chrome OS's preferences.
   virtual void InitChromeOSPreferences() = 0;
 #endif  // defined(OS_CHROMEOS)
-
-  // Returns the helper object that provides the proxy configuration service
-  // access to the the proxy configuration possibly defined by preferences.
-  virtual PrefProxyConfigTracker* GetProxyConfigTracker() = 0;
-
-  // Returns the Predictor object used for dns prefetch.
-  virtual chrome_browser_net::Predictor* GetNetworkPredictor() = 0;
-
-  // Returns the DevToolsNetworkControllerHandle for this profile.
-  virtual DevToolsNetworkControllerHandle*
-  GetDevToolsNetworkControllerHandle() = 0;
-
-  // Deletes all network related data since |time|. It deletes transport
-  // security state since |time| and it also deletes HttpServerProperties data.
-  // Works asynchronously, however if the |completion| callback is non-null, it
-  // will be posted on the UI thread once the removal process completes.
-  // Be aware that theoretically it is possible that |completion| will be
-  // invoked after the Profile instance has been destroyed.
-  virtual void ClearNetworkingHistorySince(base::Time time,
-                                           const base::Closure& completion) = 0;
 
   // Returns the home page for this profile.
   virtual GURL GetHomePage() = 0;
@@ -310,6 +297,17 @@ class Profile : public content::BrowserContext {
   // Returns how the last session was shutdown.
   virtual ExitType GetLastSessionExitType() = 0;
 
+  // Returns whether session cookies are restored and saved. The value is
+  // ignored for in-memory profiles.
+  virtual bool ShouldRestoreOldSessionCookies();
+  virtual bool ShouldPersistSessionCookies();
+
+  // Creates NetworkContext for the specified isolated app (or for the profile
+  // itself, if |relative_path| is empty).
+  virtual network::mojom::NetworkContextPtr CreateNetworkContext(
+      bool in_memory,
+      const base::FilePath& relative_partition_path);
+
   // Stop sending accessibility events until ResumeAccessibilityEvents().
   // Calls to Pause nest; no events will be sent until the number of
   // Resume calls matches the number of Pause calls received.
@@ -328,7 +326,8 @@ class Profile : public content::BrowserContext {
 
   // Returns whether the profile is new.  A profile is new if the browser has
   // not been shut down since the profile was created.
-  bool IsNewProfile();
+  // This method is virtual in order to be overridden for tests.
+  virtual bool IsNewProfile();
 
   // Checks whether sync is configurable by the user. Returns false if sync is
   // disallowed by the command line or controlled by configuration management.
@@ -342,9 +341,11 @@ class Profile : public content::BrowserContext {
   // Creates an OffTheRecordProfile which points to this Profile.
   Profile* CreateOffTheRecordProfile();
 
+#if !defined(OS_ANDROID)
   // Convenience method to retrieve the default zoom level for the default
   // storage partition.
   double GetDefaultZoomLevelForProfile();
+#endif
 
  protected:
   void set_is_guest_profile(bool is_guest_profile) {
@@ -354,6 +355,11 @@ class Profile : public content::BrowserContext {
   void set_is_system_profile(bool is_system_profile) {
     is_system_profile_ = is_system_profile;
   }
+
+  // Returns a newly created ExtensionPrefStore suitable for the supplied
+  // Profile.
+  static PrefStore* CreateExtensionPrefStore(Profile*,
+                                             bool incognito_pref_store);
 
  private:
   bool restored_last_session_;

@@ -11,15 +11,36 @@ namespace usersPrivate {
     // Email for the user.
     DOMString email;
 
+    // Display email for the user.
+    DOMString displayEmail;
+
+    // Display name for the user.
+    DOMString name;
+
     // Whether this user is the device owner.
     boolean isOwner;
+
+    // Whether this user is supervised.
+    boolean isSupervised;
+
+    // Whether this user is Child.
+    boolean isChild;
+  };
+
+  dictionary LoginStatusDict {
+    // True if a user is logged in (including guest, public session, etc).
+    boolean isLoggedIn;
+
+    // True if the screen is locked.
+    boolean isScreenLocked;
   };
 
   callback UsersCallback = void (User[] users);
   callback UserAddedCallback = void (boolean success);
   callback UserRemovedCallback = void (boolean success);
-  callback IsOwnerCallback = void (boolean isOwner);
   callback ManagedCallback = void (boolean managed);
+  callback UserCallback = void (User user);
+  callback LoginStatusCallback = void (LoginStatusDict status);
 
   interface Functions {
     // Gets a list of the currently whitelisted users.
@@ -37,10 +58,13 @@ namespace usersPrivate {
     // the current user isn't the owner).
     static void removeWhitelistedUser(DOMString email, UserRemovedCallback callback);
 
-    // Whether the current user is the owner of the device.
-    static void isCurrentUserOwner(IsOwnerCallback callback);
-
     // Whether the whitelist is managed by enterprise.
     static void isWhitelistManaged(ManagedCallback callback);
+
+    // Returns the current user.
+    static void getCurrentUser(UserCallback callback);
+
+    // Get login status.
+    static void getLoginStatus(LoginStatusCallback callback);
   };
 };

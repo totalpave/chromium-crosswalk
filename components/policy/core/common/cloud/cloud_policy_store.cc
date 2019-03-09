@@ -6,6 +6,7 @@
 
 #include "base/logging.h"
 #include "components/policy/core/common/cloud/cloud_external_data_manager.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace policy {
 
@@ -13,12 +14,16 @@ CloudPolicyStore::Observer::~Observer() {}
 
 CloudPolicyStore::CloudPolicyStore()
     : status_(STATUS_OK),
-      validation_status_(CloudPolicyValidatorBase::VALIDATION_OK),
       invalidation_version_(0),
       is_initialized_(false) {}
 
 CloudPolicyStore::~CloudPolicyStore() {
   DCHECK(!external_data_manager_);
+}
+
+bool CloudPolicyStore::is_managed() const {
+  return policy_.get() &&
+         policy_->state() == enterprise_management::PolicyData::ACTIVE;
 }
 
 void CloudPolicyStore::Store(
@@ -44,12 +49,14 @@ void CloudPolicyStore::NotifyStoreLoaded() {
   // metadata already.
   if (external_data_manager_)
     external_data_manager_->OnPolicyStoreLoaded();
-  FOR_EACH_OBSERVER(Observer, observers_, OnStoreLoaded(this));
+  for (auto& observer : observers_)
+    observer.OnStoreLoaded(this);
 }
 
 void CloudPolicyStore::NotifyStoreError() {
   is_initialized_ = true;
-  FOR_EACH_OBSERVER(Observer, observers_, OnStoreError(this));
+  for (auto& observer : observers_)
+    observer.OnStoreError(this);
 }
 
 void CloudPolicyStore::SetExternalDataManager(

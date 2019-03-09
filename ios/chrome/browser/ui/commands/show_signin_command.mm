@@ -5,41 +5,54 @@
 #import "ios/chrome/browser/ui/commands/show_signin_command.h"
 
 #include "base/logging.h"
-#include "base/mac/scoped_block.h"
-#include "ios/chrome/browser/ui/commands/ios_command_ids.h"
 
-@implementation ShowSigninCommand {
-  base::mac::ScopedBlock<ShowSigninCommandCompletionCallback> _callback;
-}
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
+@implementation ShowSigninCommand
 
 @synthesize operation = _operation;
-@synthesize signInSource = _signInSource;
-
-- (instancetype)initWithTag:(NSInteger)tag {
-  NOTREACHED();
-  return nil;
-}
+@synthesize identity = _identity;
+@synthesize accessPoint = _accessPoint;
+@synthesize promoAction = _promoAction;
+@synthesize callback = _callback;
 
 - (instancetype)initWithOperation:(AuthenticationOperation)operation
-                     signInSource:(SignInSource)signInSource
+                         identity:(ChromeIdentity*)identity
+                      accessPoint:(signin_metrics::AccessPoint)accessPoint
+                      promoAction:(signin_metrics::PromoAction)promoAction
                          callback:
                              (ShowSigninCommandCompletionCallback)callback {
-  if ((self = [super initWithTag:IDC_SHOW_SIGNIN_IOS])) {
+  if ((self = [super init])) {
+    DCHECK(operation == AUTHENTICATION_OPERATION_SIGNIN || identity == nil);
     _operation = operation;
-    _signInSource = signInSource;
-    _callback.reset(callback, base::scoped_policy::RETAIN);
+    _identity = identity;
+    _accessPoint = accessPoint;
+    _promoAction = promoAction;
+    _callback = [callback copy];
   }
   return self;
 }
 
 - (instancetype)initWithOperation:(AuthenticationOperation)operation
-                     signInSource:(SignInSource)signInSource {
-  return
-      [self initWithOperation:operation signInSource:signInSource callback:nil];
+                      accessPoint:(signin_metrics::AccessPoint)accessPoint
+                      promoAction:(signin_metrics::PromoAction)promoAction {
+  return [self initWithOperation:operation
+                        identity:nil
+                     accessPoint:accessPoint
+                     promoAction:promoAction
+                        callback:nil];
 }
 
-- (ShowSigninCommandCompletionCallback)callback {
-  return _callback.get();
+- (instancetype)initWithOperation:(AuthenticationOperation)operation
+                      accessPoint:(signin_metrics::AccessPoint)accessPoint {
+  return [self initWithOperation:operation
+                        identity:nil
+                     accessPoint:accessPoint
+                     promoAction:signin_metrics::PromoAction::
+                                     PROMO_ACTION_NO_SIGNIN_PROMO
+                        callback:nil];
 }
 
 @end

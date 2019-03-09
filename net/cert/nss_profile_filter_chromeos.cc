@@ -36,7 +36,7 @@ std::string CertSlotsString(CERTCertificate* cert) {
 
 }  // namespace
 
-NSSProfileFilterChromeOS::NSSProfileFilterChromeOS() {}
+NSSProfileFilterChromeOS::NSSProfileFilterChromeOS() = default;
 
 NSSProfileFilterChromeOS::NSSProfileFilterChromeOS(
     const NSSProfileFilterChromeOS& other) {
@@ -50,7 +50,7 @@ NSSProfileFilterChromeOS::NSSProfileFilterChromeOS(
       other.system_slot_ ? PK11_ReferenceSlot(other.system_slot_.get()) : NULL);
 }
 
-NSSProfileFilterChromeOS::~NSSProfileFilterChromeOS() {}
+NSSProfileFilterChromeOS::~NSSProfileFilterChromeOS() = default;
 
 NSSProfileFilterChromeOS& NSSProfileFilterChromeOS::operator=(
     const NSSProfileFilterChromeOS& other) {
@@ -139,23 +139,4 @@ bool NSSProfileFilterChromeOS::IsCertAllowed(CERTCertificate* cert) const {
   return false;
 }
 
-NSSProfileFilterChromeOS::CertNotAllowedForProfilePredicate::
-    CertNotAllowedForProfilePredicate(const NSSProfileFilterChromeOS& filter)
-    : filter_(filter) {}
-
-bool NSSProfileFilterChromeOS::CertNotAllowedForProfilePredicate::operator()(
-    const scoped_refptr<X509Certificate>& cert) const {
-  return !filter_.IsCertAllowed(cert->os_cert_handle());
-}
-
-NSSProfileFilterChromeOS::ModuleNotAllowedForProfilePredicate::
-    ModuleNotAllowedForProfilePredicate(const NSSProfileFilterChromeOS& filter)
-    : filter_(filter) {}
-
-bool NSSProfileFilterChromeOS::ModuleNotAllowedForProfilePredicate::operator()(
-    const scoped_refptr<CryptoModule>& module) const {
-  return !filter_.IsModuleAllowed(module->os_module_handle());
-}
-
 }  // namespace net
-

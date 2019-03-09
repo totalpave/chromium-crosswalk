@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/single_thread_task_runner.h"
 #include "media/mojo/services/mojo_media_client.h"
 
 namespace media {
@@ -22,7 +23,7 @@ class AndroidMojoMediaClient : public MojoMediaClient {
       scoped_refptr<base::SingleThreadTaskRunner> task_runner) final;
 
   std::unique_ptr<CdmFactory> CreateCdmFactory(
-      shell::mojom::InterfaceProvider* interface_provider) final;
+      service_manager::mojom::InterfaceProvider* host_interfaces) final;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(AndroidMojoMediaClient);

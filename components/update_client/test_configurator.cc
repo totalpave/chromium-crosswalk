@@ -4,9 +4,18 @@
 
 #include "components/update_client/test_configurator.h"
 
+#include <utility>
+
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/version.h"
 #include "components/prefs/pref_service.h"
-#include "components/update_client/component_patcher_operation.h"
+#include "components/services/patch/public/interfaces/constants.mojom.h"
+#include "components/services/unzip/public/interfaces/constants.mojom.h"
+#include "components/update_client/activity_data_service.h"
+#include "components/update_client/net/network_chromium.h"
+#include "components/update_client/protocol_handler.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/service_manager/public/cpp/connector.h"
 #include "url/gurl.h"
 
 namespace update_client {
@@ -22,15 +31,26 @@ std::vector<GURL> MakeDefaultUrls() {
 
 }  // namespace
 
-TestConfigurator::TestConfigurator(
-    const scoped_refptr<base::SequencedTaskRunner>& worker_task_runner,
-    const scoped_refptr<base::SingleThreadTaskRunner>& network_task_runner)
-    : worker_task_runner_(worker_task_runner),
-      brand_("TEST"),
+TestConfigurator::TestConfigurator()
+    : brand_("TEST"),
       initial_time_(0),
       ondemand_time_(0),
-      use_cup_signing_(false),
-      context_(new net::TestURLRequestContextGetter(network_task_runner)) {}
+      enabled_cup_signing_(false),
+      enabled_component_updates_(true),
+      use_JSON_(false),
+      connector_(connector_factory_.CreateConnector()),
+      unzip_service_(
+          connector_factory_.RegisterInstance(unzip::mojom::kServiceName)),
+      patch_service_(
+          connector_factory_.RegisterInstance(patch::mojom::kServiceName)),
+      test_shared_loader_factory_(
+          base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+              &test_url_loader_factory_)),
+      network_fetcher_factory_(
+          base::MakeRefCounted<NetworkFetcherChromiumFactory>(
+              test_shared_loader_factory_)) {
+  connector_factory_.set_ignore_quit_requests(true);
+}
 
 TestConfigurator::~TestConfigurator() {
 }
@@ -41,10 +61,6 @@ int TestConfigurator::InitialDelay() const {
 
 int TestConfigurator::NextCheckDelay() const {
   return 1;
-}
-
-int TestConfigurator::StepDelay() const {
-  return 0;
 }
 
 int TestConfigurator::OnDemandDelay() const {
@@ -69,6 +85,10 @@ std::vector<GURL> TestConfigurator::PingUrl() const {
   return UpdateUrl();
 }
 
+std::string TestConfigurator::GetProdId() const {
+  return "fake_prodid";
+}
+
 base::Version TestConfigurator::GetBrowserVersion() const {
   // Needs to be larger than the required version in tested component manifests.
   return base::Version("30.0");
@@ -90,33 +110,39 @@ std::string TestConfigurator::GetOSLongName() const {
   return "Fake Operating System";
 }
 
-std::string TestConfigurator::ExtraRequestParams() const {
-  return "extra=\"foo\"";
+base::flat_map<std::string, std::string> TestConfigurator::ExtraRequestParams()
+    const {
+  return {{"extra", "foo"}};
 }
 
 std::string TestConfigurator::GetDownloadPreference() const {
   return download_preference_;
 }
 
-net::URLRequestContextGetter* TestConfigurator::RequestContext() const {
-  return context_.get();
+scoped_refptr<NetworkFetcherFactory>
+TestConfigurator::GetNetworkFetcherFactory() {
+  return network_fetcher_factory_;
 }
 
-scoped_refptr<OutOfProcessPatcher> TestConfigurator::CreateOutOfProcessPatcher()
-    const {
-  return NULL;
+std::unique_ptr<service_manager::Connector>
+TestConfigurator::CreateServiceManagerConnector() const {
+  return connector_->Clone();
 }
 
-bool TestConfigurator::DeltasEnabled() const {
+bool TestConfigurator::EnabledDeltas() const {
   return true;
 }
 
-bool TestConfigurator::UseBackgroundDownloader() const {
+bool TestConfigurator::EnabledComponentUpdates() const {
+  return enabled_component_updates_;
+}
+
+bool TestConfigurator::EnabledBackgroundDownloader() const {
   return false;
 }
 
-bool TestConfigurator::UseCupSigning() const {
-  return use_cup_signing_;
+bool TestConfigurator::EnabledCupSigning() const {
+  return enabled_cup_signing_;
 }
 
 void TestConfigurator::SetBrand(const std::string& brand) {
@@ -131,8 +157,13 @@ void TestConfigurator::SetInitialDelay(int seconds) {
   initial_time_ = seconds;
 }
 
-void TestConfigurator::SetUseCupSigning(bool use_cup_signing) {
-  use_cup_signing_ = use_cup_signing;
+void TestConfigurator::SetEnabledCupSigning(bool enabled_cup_signing) {
+  enabled_cup_signing_ = enabled_cup_signing;
+}
+
+void TestConfigurator::SetEnabledComponentUpdates(
+    bool enabled_component_updates) {
+  enabled_component_updates_ = enabled_component_updates;
 }
 
 void TestConfigurator::SetDownloadPreference(
@@ -148,14 +179,43 @@ void TestConfigurator::SetPingUrl(const GURL& url) {
   ping_url_ = url;
 }
 
-scoped_refptr<base::SequencedTaskRunner>
-TestConfigurator::GetSequencedTaskRunner() const {
-  DCHECK(worker_task_runner_.get());
-  return worker_task_runner_;
+void TestConfigurator::SetAppGuid(const std::string& app_guid) {
+  app_guid_ = app_guid;
+}
+
+void TestConfigurator::SetUseJSON(bool use_JSON) {
+  use_JSON_ = use_JSON;
 }
 
 PrefService* TestConfigurator::GetPrefService() const {
   return nullptr;
+}
+
+ActivityDataService* TestConfigurator::GetActivityDataService() const {
+  return nullptr;
+}
+
+bool TestConfigurator::IsPerUserInstall() const {
+  return true;
+}
+
+std::vector<uint8_t> TestConfigurator::GetRunActionKeyHash() const {
+  return std::vector<uint8_t>(std::begin(gjpm_hash), std::end(gjpm_hash));
+}
+
+std::string TestConfigurator::GetAppGuid() const {
+  return app_guid_;
+}
+
+std::unique_ptr<ProtocolHandlerFactory>
+TestConfigurator::GetProtocolHandlerFactory() const {
+  if (use_JSON_)
+    return std::make_unique<ProtocolHandlerFactoryJSON>();
+  return std::make_unique<ProtocolHandlerFactoryXml>();
+}
+
+RecoveryCRXElevator TestConfigurator::GetRecoveryCRXElevator() const {
+  return {};
 }
 
 }  // namespace update_client

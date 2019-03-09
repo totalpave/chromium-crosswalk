@@ -7,14 +7,18 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/observer_list.h"
+#include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
+#include "media/audio/audio_debug_recording_manager.h"
+#include "media/audio/audio_device_name.h"
 #include "media/audio/audio_manager.h"
 #include "media/audio/audio_output_dispatcher.h"
 
@@ -29,13 +33,10 @@ class AudioOutputDispatcher;
 // AudioManagerBase provides AudioManager functions common for all platforms.
 class MEDIA_EXPORT AudioManagerBase : public AudioManager {
  public:
+  enum class VoiceProcessingMode { kDisabled = 0, kEnabled = 1 };
+
   ~AudioManagerBase() override;
 
-  // AudioManager:
-  base::string16 GetAudioInputDeviceModel() override;
-  void ShowAudioInputSettings() override;
-  void GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
-  void GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
   AudioOutputStream* MakeAudioOutputStream(
       const AudioParameters& params,
       const std::string& device_id,
@@ -52,15 +53,9 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
   void AddOutputDeviceChangeListener(AudioDeviceListener* listener) override;
   void RemoveOutputDeviceChangeListener(AudioDeviceListener* listener) override;
 
-  AudioParameters GetDefaultOutputStreamParameters() override;
-  AudioParameters GetOutputStreamParameters(
-      const std::string& device_id) override;
-  AudioParameters GetInputStreamParameters(
-      const std::string& device_id) override;
-  std::string GetAssociatedOutputDeviceID(
-      const std::string& input_device_id) override;
   std::unique_ptr<AudioLog> CreateAudioLog(
-      AudioLogFactory::AudioComponent component) override;
+      AudioLogFactory::AudioComponent component,
+      int component_id) override;
 
   // AudioManagerBase:
 
@@ -80,6 +75,12 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
       const std::string& device_id,
       const LogCallback& log_callback) = 0;
 
+  // Creates the output stream for the |AUDIO_BITSTREAM_XXX| format.
+  virtual AudioOutputStream* MakeBitstreamOutputStream(
+      const AudioParameters& params,
+      const std::string& device_id,
+      const LogCallback& log_callback);
+
   // Creates the input stream for the |AUDIO_PCM_LINEAR| format. The legacy
   // name is also from |AUDIO_PCM_LINEAR|.
   virtual AudioInputStream* MakeLinearInputStream(
@@ -94,20 +95,30 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
       const LogCallback& log_callback) = 0;
 
   // Get number of input or output streams.
-  int input_stream_count() const { return num_input_streams_; }
+  int input_stream_count() const {
+    return static_cast<int>(input_streams_.size());
+  }
   int output_stream_count() const { return num_output_streams_; }
 
  protected:
-  AudioManagerBase(
-      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> worker_task_runner,
-      AudioLogFactory* audio_log_factory);
+  AudioManagerBase(std::unique_ptr<AudioThread> audio_thread,
+                   AudioLogFactory* audio_log_factory);
 
-  // Releases all the audio output dispatchers.
-  // All audio streams should be closed before Shutdown() is called.
-  // This must be called in the destructor of every AudioManagerBase
-  // implementation.
-  void Shutdown();
+  // AudioManager:
+  void ShutdownOnAudioThread() override;
+
+  void GetAudioInputDeviceDescriptions(
+      AudioDeviceDescriptions* device_descriptions) final;
+  void GetAudioOutputDeviceDescriptions(
+      AudioDeviceDescriptions* device_descriptions) final;
+
+  AudioParameters GetDefaultOutputStreamParameters() override;
+  AudioParameters GetOutputStreamParameters(
+      const std::string& device_id) override;
+  AudioParameters GetInputStreamParameters(
+      const std::string& device_id) override;
+  std::string GetAssociatedOutputDeviceID(
+      const std::string& input_device_id) override;
 
   void SetMaxOutputStreamsAllowed(int max) { max_num_output_streams_ = max; }
 
@@ -118,7 +129,7 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
 
   // Returns user buffer size as specified on the command line or 0 if no buffer
   // size has been specified.
-  int GetUserBufferSize();
+  static int GetUserBufferSize();
 
   // Returns the preferred hardware audio output parameters for opening output
   // streams. If the users inject a valid |input_params|, each AudioManager
@@ -131,31 +142,65 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
       const std::string& output_device_id,
       const AudioParameters& input_params) = 0;
 
-  // Returns the ID of the default audio output device.
-  // Implementations that don't yet support this should return an empty string.
-  virtual std::string GetDefaultOutputDeviceID();
+  // Appends a list of available input devices to |device_names|,
+  // which must initially be empty.
+  virtual void GetAudioInputDeviceNames(AudioDeviceNames* device_names);
+
+  // Appends a list of available output devices to |device_names|,
+  // which must initially be empty.
+  virtual void GetAudioOutputDeviceNames(AudioDeviceNames* device_names);
+
+  std::string GetDefaultInputDeviceID() override;
+  std::string GetDefaultOutputDeviceID() override;
+  std::string GetCommunicationsInputDeviceID() override;
+  std::string GetCommunicationsOutputDeviceID() override;
+
+  virtual std::unique_ptr<AudioDebugRecordingManager>
+  CreateAudioDebugRecordingManager(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner);
+  AudioDebugRecordingManager* GetAudioDebugRecordingManager() final;
+
+  // These functions assign group ids to devices based on their device ids. The
+  // default implementation is an attempt to do this based on
+  // GetAssociatedOutputDeviceID. They may be overridden by subclasses that want
+  // a different logic for assigning group ids. Must be called on the audio
+  // worker thread (see GetTaskRunner()).
+  virtual std::string GetGroupIDOutput(const std::string& output_device_id);
+  virtual std::string GetGroupIDInput(const std::string& input_device_id);
+
+  // Closes all currently open input streams.
+  void CloseAllInputStreams();
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(AudioManagerTest, AudioDebugRecording);
+
   struct DispatcherParams;
-  typedef ScopedVector<DispatcherParams> AudioOutputDispatchers;
+  typedef std::vector<std::unique_ptr<DispatcherParams>> AudioOutputDispatchers;
 
   class CompareByParams;
+
+  // AudioManager:
+  void InitializeDebugRecording() final;
+
+  void GetAudioDeviceDescriptions(
+      AudioDeviceDescriptions* descriptions,
+      void (AudioManagerBase::*get_device_names)(AudioDeviceNames*),
+      std::string (AudioManagerBase::*get_default_device_id)(),
+      std::string (AudioManagerBase::*get_communications_device_id)(),
+      std::string (AudioManagerBase::*get_group_id)(const std::string&));
 
   // Max number of open output streams, modified by
   // SetMaxOutputStreamsAllowed().
   int max_num_output_streams_;
 
-  // Max number of open input streams.
-  int max_num_input_streams_;
-
   // Number of currently open output streams.
   int num_output_streams_;
 
-  // Number of currently open input streams.
-  int num_input_streams_;
-
   // Track output state change listeners.
-  base::ObserverList<AudioDeviceListener> output_listeners_;
+  base::ObserverList<AudioDeviceListener>::Unchecked output_listeners_;
+
+  // Contains currently open input streams.
+  std::unordered_set<AudioInputStream*> input_streams_;
 
   // Map of cached AudioOutputDispatcher instances.  Must only be touched
   // from the audio thread (no locking).
@@ -163,6 +208,9 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
 
   // Proxy for creating AudioLog objects.
   AudioLogFactory* const audio_log_factory_;
+
+  // Debug recording manager.
+  std::unique_ptr<AudioDebugRecordingManager> debug_recording_manager_;
 
   DISALLOW_COPY_AND_ASSIGN(AudioManagerBase);
 };

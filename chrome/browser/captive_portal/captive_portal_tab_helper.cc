@@ -5,6 +5,7 @@
 #include "chrome/browser/captive_portal/captive_portal_tab_helper.h"
 
 #include "base/bind.h"
+#include "base/debug/dump_without_crashing.h"
 #include "chrome/browser/captive_portal/captive_portal_login_detector.h"
 #include "chrome/browser/captive_portal/captive_portal_service_factory.h"
 #include "chrome/browser/captive_portal/captive_portal_tab_reloader.h"
@@ -14,6 +15,7 @@
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
@@ -22,15 +24,11 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
-#include "content/public/browser/resource_request_details.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/net_errors.h"
 #include "net/ssl/ssl_info.h"
 
 using captive_portal::CaptivePortalResult;
-using content::ResourceType;
-
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(CaptivePortalTabHelper);
 
 CaptivePortalTabHelper::CaptivePortalTabHelper(
     content::WebContents* web_contents)
@@ -44,36 +42,46 @@ CaptivePortalTabHelper::CaptivePortalTabHelper(
                      web_contents,
                      false))),
       login_detector_(new CaptivePortalLoginDetector(profile_)) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   registrar_.Add(this,
                  chrome::NOTIFICATION_CAPTIVE_PORTAL_CHECK_RESULT,
                  content::Source<Profile>(profile_));
 }
 
 CaptivePortalTabHelper::~CaptivePortalTabHelper() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 }
 
 void CaptivePortalTabHelper::DidStartNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK(CalledOnValidThread());
-  if (!navigation_handle->IsInMainFrame())
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!navigation_handle->IsInMainFrame() ||
+      navigation_handle->IsSameDocument()) {
     return;
+  }
+
+  // TODO(clamy): The root cause behind crbug.com/704892 is known.
+  // Remove this code if it is never reached until ~ 2017-July-20.
+  if (navigation_handle == navigation_handle_)
+    base::debug::DumpWithoutCrashing();
+
+  bool was_tracking_navigation = !!navigation_handle_;
+  navigation_handle_ = navigation_handle;
 
   // Always track the latest navigation. If a navigation was already tracked,
   // and it committed (either the navigation proper or an error page), it is
   // safe to start tracking the new navigation. Otherwise simulate an abort
   // before reporting the start of the new navigation.
-  if (navigation_handle_ && !navigation_handle_->HasCommitted()) {
+  if (was_tracking_navigation)
     tab_reloader_->OnAbort();
-  }
 
-  navigation_handle_ = navigation_handle;
   tab_reloader_->OnLoadStart(
       navigation_handle->GetURL().SchemeIsCryptographic());
 }
 
 void CaptivePortalTabHelper::DidRedirectNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (navigation_handle != navigation_handle_)
     return;
   DCHECK(navigation_handle->IsInMainFrame());
@@ -83,18 +91,31 @@ void CaptivePortalTabHelper::DidRedirectNavigation(
 
 void CaptivePortalTabHelper::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  // Exclude subframe navigations.
   if (!navigation_handle->IsInMainFrame())
     return;
 
-  if (navigation_handle_ != navigation_handle) {
-    // Another navigation is being tracked, so there is no need to update the
-    // TabReloader.
-    if (!navigation_handle->HasCommitted())
-      return;
-    // An untracked navigation just committed. Simulate its start before
-    // informing the TabReloader of its commit.
-    DidStartNavigation(navigation_handle);
+  // Exclude same-document navigations and aborted navigations that were not
+  // being tracked.
+  if (navigation_handle_ != navigation_handle &&
+      (!navigation_handle->HasCommitted() ||
+       navigation_handle->IsSameDocument())) {
+    return;
+  }
+
+  bool need_to_simulate_start = navigation_handle_ != navigation_handle;
+  bool need_to_simulate_previous_abort =
+      need_to_simulate_start && !!navigation_handle_;
+  navigation_handle_ = nullptr;
+
+  if (need_to_simulate_previous_abort)
+    tab_reloader_->OnAbort();
+
+  if (need_to_simulate_start) {
+    tab_reloader_->OnLoadStart(
+        navigation_handle->GetURL().SchemeIsCryptographic());
   }
 
   if (navigation_handle->HasCommitted()) {
@@ -102,8 +123,6 @@ void CaptivePortalTabHelper::DidFinishNavigation(
   } else {
     tab_reloader_->OnAbort();
   }
-
-  navigation_handle_ = nullptr;
 }
 
 void CaptivePortalTabHelper::DidStopLoading() {
@@ -114,7 +133,7 @@ void CaptivePortalTabHelper::Observe(
     int type,
     const content::NotificationSource& source,
     const content::NotificationDetails& details) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK_EQ(chrome::NOTIFICATION_CAPTIVE_PORTAL_CHECK_RESULT, type);
   DCHECK_EQ(profile_, content::Source<Profile>(source).ptr());
 
@@ -153,7 +172,7 @@ void CaptivePortalTabHelper::OpenLoginTabForWebContents(
         CaptivePortalTabHelper::FromWebContents(contents);
     if (captive_portal_tab_helper->IsLoginTab()) {
       if (focus)
-        browser->tab_strip_model()->ActivateTabAt(i, false);
+        browser->tab_strip_model()->ActivateTabAt(i);
       return;
     }
   }
@@ -189,3 +208,5 @@ void CaptivePortalTabHelper::SetTabReloaderForTest(
 CaptivePortalTabReloader* CaptivePortalTabHelper::GetTabReloaderForTest() {
   return tab_reloader_.get();
 }
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(CaptivePortalTabHelper)

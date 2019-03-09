@@ -7,39 +7,57 @@
 #include <utility>
 
 #include "base/i18n/rtl.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/captive_portal/captive_portal_tab_helper.h"
+#include "chrome/browser/interstitials/chrome_metrics_helper.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/cert_report_helper.h"
+#include "chrome/browser/ssl/certificate_error_reporter.h"
 #include "chrome/browser/ssl/ssl_cert_reporter.h"
+#include "chrome/browser/ssl/ssl_error_controller_client.h"
 #include "components/captive_portal/captive_portal_detector.h"
-#include "components/certificate_reporting/error_reporter.h"
+#include "components/captive_portal/captive_portal_metrics.h"
+#include "components/safe_browsing/common/safe_browsing_prefs.h"
 #include "components/security_interstitials/core/controller_client.h"
+#include "components/security_interstitials/core/metrics_helper.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/wifi/wifi_service.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/ssl_status.h"
 #include "content/public/browser/web_contents.h"
-#include "grit/generated_resources.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_interfaces.h"
 #include "net/ssl/ssl_info.h"
 #include "ui/base/l10n/l10n_util.h"
 
+#if defined(OS_ANDROID)
+#include "base/android/jni_android.h"
+#include "chrome/browser/ssl/captive_portal_helper_android.h"
+#include "content/public/common/referrer.h"
+#include "net/android/network_library.h"
+#include "ui/base/window_open_disposition.h"
+#endif
+
 namespace {
 
-// Events for UMA.
-enum CaptivePortalBlockingPageEvent {
-  SHOW_ALL,
-  OPEN_LOGIN_PAGE,
-  CAPTIVE_PORTAL_BLOCKING_PAGE_EVENT_COUNT
-};
+const char kCaptivePortalMetricsName[] = "captive_portal";
 
-void RecordUMA(CaptivePortalBlockingPageEvent event) {
-  UMA_HISTOGRAM_ENUMERATION("interstitial.captive_portal", event,
-                            CAPTIVE_PORTAL_BLOCKING_PAGE_EVENT_COUNT);
+std::unique_ptr<ChromeMetricsHelper> CreateCaptivePortalMetricsHelper(
+    content::WebContents* web_contents,
+    const GURL& request_url) {
+  security_interstitials::MetricsHelper::ReportDetails reporting_info;
+  reporting_info.metric_prefix = kCaptivePortalMetricsName;
+  std::unique_ptr<ChromeMetricsHelper> metrics_helper =
+      std::make_unique<ChromeMetricsHelper>(web_contents, request_url,
+                                            reporting_info);
+  metrics_helper.get()->StartRecordingCaptivePortalMetrics(false);
+  return metrics_helper;
 }
 
 } // namespace
@@ -54,20 +72,28 @@ CaptivePortalBlockingPage::CaptivePortalBlockingPage(
     const GURL& login_url,
     std::unique_ptr<SSLCertReporter> ssl_cert_reporter,
     const net::SSLInfo& ssl_info,
-    const base::Callback<void(bool)>& callback)
-    : SecurityInterstitialPage(web_contents, request_url),
+    int cert_error,
+    const base::Callback<void(content::CertificateRequestResultType)>& callback)
+    : SSLBlockingPageBase(
+          web_contents,
+          cert_error,
+          CertificateErrorReport::INTERSTITIAL_CAPTIVE_PORTAL,
+          ssl_info,
+          request_url,
+          std::move(ssl_cert_reporter),
+          false /* overridable */,
+          base::Time::Now(),
+          std::make_unique<SSLErrorControllerClient>(
+              web_contents,
+              ssl_info,
+              cert_error,
+              request_url,
+              CreateCaptivePortalMetricsHelper(web_contents, request_url))),
       login_url_(login_url),
+      ssl_info_(ssl_info),
       callback_(callback) {
-  DCHECK(login_url_.is_valid());
-
-  if (ssl_cert_reporter) {
-    cert_report_helper_.reset(new CertReportHelper(
-        std::move(ssl_cert_reporter), web_contents, request_url, ssl_info,
-        certificate_reporting::ErrorReport::INTERSTITIAL_CAPTIVE_PORTAL, false,
-        nullptr));
-  }
-
-  RecordUMA(SHOW_ALL);
+  captive_portal::CaptivePortalMetrics::LogCaptivePortalBlockingPageEvent(
+      captive_portal::CaptivePortalMetrics::SHOW_ALL);
 }
 
 CaptivePortalBlockingPage::~CaptivePortalBlockingPage() {
@@ -100,6 +126,8 @@ std::string CaptivePortalBlockingPage::GetWiFiSSID() const {
     return std::string();
 #elif defined(OS_LINUX)
   ssid = net::GetWifiSSID();
+#elif defined(OS_ANDROID)
+  ssid = net::android::GetWifiSSID();
 #endif
   // TODO(meacer): Handle non UTF8 SSIDs.
   if (!base::IsStringUTF8(ssid))
@@ -119,6 +147,7 @@ void CaptivePortalBlockingPage::PopulateInterstitialStrings(
   load_time_data->SetString("iconClass", "icon-offline");
   load_time_data->SetString("type", "CAPTIVE_PORTAL");
   load_time_data->SetBoolean("overridable", false);
+  load_time_data->SetBoolean("hide_primary_button", false);
 
   // |IsWifiConnection| isn't accurate on some platforms, so always try to get
   // the Wi-Fi SSID even if |IsWifiConnection| is false.
@@ -136,10 +165,15 @@ void CaptivePortalBlockingPage::PopulateInterstitialStrings(
   load_time_data->SetString("heading", tab_title);
 
   base::string16 paragraph;
-  if (login_url_.spec() == captive_portal::CaptivePortalDetector::kDefaultURL) {
-    // Captive portal may intercept requests without HTTP redirects, in which
-    // case the login url would be the same as the captive portal detection url.
-    // Don't show the login url in that case.
+  if (login_url_.is_empty() ||
+      login_url_.spec() == captive_portal::CaptivePortalDetector::kDefaultURL) {
+    // Don't show the login url when it's empty or is the portal detection URL.
+    // login_url_ can be empty when:
+    // - The captive portal intercepted requests without HTTP redirects, in
+    // which case the login url would be the same as the captive portal
+    // detection url.
+    // - The captive portal was detected via Captive portal certificate list.
+    // - The captive portal was reported by the OS.
     if (wifi_ssid.empty()) {
       paragraph = l10n_util::GetStringUTF16(
           is_wifi ? IDS_CAPTIVE_PORTAL_PRIMARY_PARAGRAPH_NO_LOGIN_URL_WIFI
@@ -170,13 +204,15 @@ void CaptivePortalBlockingPage::PopulateInterstitialStrings(
   }
   load_time_data->SetString("primaryParagraph", paragraph);
   // Explicitly specify other expected fields to empty.
-  load_time_data->SetString("openDetails", base::string16());
-  load_time_data->SetString("closeDetails", base::string16());
-  load_time_data->SetString("explanationParagraph", base::string16());
-  load_time_data->SetString("finalParagraph", base::string16());
+  load_time_data->SetString("openDetails", "");
+  load_time_data->SetString("closeDetails", "");
+  load_time_data->SetString("explanationParagraph", "");
+  load_time_data->SetString("finalParagraph", "");
+  load_time_data->SetString("recurrentErrorParagraph", "");
+  load_time_data->SetBoolean("show_recurrent_error_paragraph", false);
 
-  if (cert_report_helper_)
-    cert_report_helper_->PopulateExtendedReportingOption(load_time_data);
+  if (cert_report_helper())
+    cert_report_helper()->PopulateExtendedReportingOption(load_time_data);
   else
     load_time_data->SetBoolean(security_interstitials::kDisplayCheckBox, false);
 }
@@ -190,34 +226,64 @@ void CaptivePortalBlockingPage::CommandReceived(const std::string& command) {
   int command_num = 0;
   bool command_is_num = base::StringToInt(command, &command_num);
   DCHECK(command_is_num) << command;
-  // Any command other than "open the login page" is ignored.
-  if (command_num == security_interstitials::CMD_OPEN_LOGIN) {
-    RecordUMA(OPEN_LOGIN_PAGE);
-    CaptivePortalTabHelper::OpenLoginTabForWebContents(web_contents(), true);
+  security_interstitials::SecurityInterstitialCommand cmd =
+      static_cast<security_interstitials::SecurityInterstitialCommand>(
+          command_num);
+  cert_report_helper()->HandleReportingCommands(cmd,
+                                                controller()->GetPrefService());
+  switch (cmd) {
+    case security_interstitials::CMD_OPEN_LOGIN:
+      captive_portal::CaptivePortalMetrics::LogCaptivePortalBlockingPageEvent(
+          captive_portal::CaptivePortalMetrics::OPEN_LOGIN_PAGE);
+#if defined(OS_ANDROID)
+      {
+        // CaptivePortalTabHelper is not available on Android. Simply open the
+        // login URL in a new tab. login_url_ is also always empty on Android,
+        // use the platform's portal detection URL.
+        const std::string url = chrome::android::GetCaptivePortalServerUrl(
+            base::android::AttachCurrentThread());
+        content::OpenURLParams params(GURL(url), content::Referrer(),
+                                      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                                      ui::PAGE_TRANSITION_LINK, false);
+        web_contents()->OpenURL(params);
+      }
+#else
+      CaptivePortalTabHelper::OpenLoginTabForWebContents(web_contents(), true);
+#endif
+      break;
+    case security_interstitials::CMD_OPEN_REPORTING_PRIVACY:
+      controller()->OpenExtendedReportingPrivacyPolicy(true);
+      break;
+    case security_interstitials::CMD_OPEN_WHITEPAPER:
+      controller()->OpenExtendedReportingWhitepaper(true);
+      break;
+    case security_interstitials::CMD_ERROR:
+    case security_interstitials::CMD_TEXT_FOUND:
+    case security_interstitials::CMD_TEXT_NOT_FOUND:
+      // Commands are for testing.
+      break;
+    default:
+      NOTREACHED() << "Command " << cmd
+                   << " isn't handled by the captive portal interstitial.";
   }
+}
+
+void CaptivePortalBlockingPage::OverrideEntry(content::NavigationEntry* entry) {
+  entry->GetSSL() = content::SSLStatus(ssl_info_);
 }
 
 void CaptivePortalBlockingPage::OnProceed() {
-  if (cert_report_helper_) {
-    // Finish collecting information about invalid certificates, if the
-    // user opted in to.
-    cert_report_helper_->FinishCertCollection(
-        certificate_reporting::ErrorReport::USER_PROCEEDED);
-  }
+  NOTREACHED()
+      << "Cannot proceed through the error on a captive portal interstitial.";
 }
 
 void CaptivePortalBlockingPage::OnDontProceed() {
-  if (cert_report_helper_) {
-    // Finish collecting information about invalid certificates, if the
-    // user opted in to.
-    cert_report_helper_->FinishCertCollection(
-        certificate_reporting::ErrorReport::USER_DID_NOT_PROCEED);
-  }
+  OnInterstitialClosing();
 
   // Need to explicity deny the certificate via the callback, otherwise memory
   // is leaked.
   if (!callback_.is_null()) {
-    callback_.Run(false);
+    callback_.Run(content::CERTIFICATE_REQUEST_RESULT_TYPE_CANCEL);
     callback_.Reset();
   }
 }

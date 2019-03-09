@@ -24,6 +24,15 @@ function ChromeVoxNextE2ETest() {
       }.bind(this));
     }.bind(this));
   }
+
+  // For tests, enable announcement of events we trigger via automation.
+  DesktopAutomationHandler.announceActions = true;
+
+  this.originalOutputContextValues_ = {};
+  for (var role in Output.ROLE_INFO_) {
+    this.originalOutputContextValues_[role] =
+        Output.ROLE_INFO_[role]['outputContextFirst'];
+  }
 }
 
 ChromeVoxNextE2ETest.prototype = {
@@ -55,18 +64,18 @@ ChromeVoxNextE2ETest.prototype = {
         if (evt.target.root.url != url)
           return;
 
+        if (!evt.target.root.docLoaded)
+          return;
+
         r.removeEventListener('focus', listener, true);
         r.removeEventListener('loadComplete', listener, true);
-        ChromeVoxState.instance.onGotCommand('nextObject');
+        CommandHandler.onCommand('nextObject');
         callback && callback(evt.target);
         callback = null;
       };
       r.addEventListener('focus', listener, true);
       r.addEventListener('loadComplete', listener, true);
-      var createParams = {
-        active: true,
-        url: url
-      };
+      var createParams = {active: true, url: url};
       chrome.tabs.create(createParams);
     }.bind(this));
   },
@@ -77,5 +86,30 @@ ChromeVoxNextE2ETest.prototype = {
       callback.apply(this, arguments);
     });
     node.addEventListener(eventType, innerCallback, capture);
+  },
+
+  /**
+   * Forces output to place context utterances at the end of output. This eases
+   * rebaselining when changing context ordering for a specific role.
+   */
+  forceContextualLastOutput: function() {
+    for (var role in Output.ROLE_INFO_)
+      Output.ROLE_INFO_[role]['outputContextFirst'] = undefined;
+  },
+
+  /**
+   * Forces output to place context utterances at the beginning of output.
+   */
+  forceContextualFirstOutput: function() {
+    for (var role in Output.ROLE_INFO_)
+      Output.ROLE_INFO_[role]['outputContextFirst'] = true;
+  },
+
+  /** Resets contextual output values to their defaults. */
+  resetContextualOutput: function() {
+    for (var role in Output.ROLE_INFO_) {
+      Output.ROLE_INFO_[role]['outputContextFirst'] =
+          this.originalOutputContextValues_[role];
+    }
   }
 };

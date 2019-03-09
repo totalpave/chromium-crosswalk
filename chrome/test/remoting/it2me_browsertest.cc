@@ -6,6 +6,7 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "chrome/test/remoting/remote_desktop_browsertest.h"
+#include "chrome/test/remoting/remote_test_helper.h"
 
 namespace remoting {
 
@@ -26,7 +27,7 @@ std::string It2MeBrowserTest::GetAccessCode(content::WebContents* contents) {
 
 content::WebContents* It2MeBrowserTest::SetUpHelperInstance() {
   content::WebContents* helper_content =
-      LaunchChromotingApp(false, NEW_FOREGROUND_TAB);
+      LaunchChromotingApp(false, WindowOpenDisposition::NEW_FOREGROUND_TAB);
   LoadBrowserTestJavaScript(helper_content);
   LoadScript(helper_content, FILE_PATH_LITERAL("it2me_browser_test.js"));
   return helper_content;

@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
 #include "chrome/common/extensions/api/tabs.h"
 #include "components/zoom/zoom_controller.h"
@@ -17,6 +16,7 @@
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/api/execute_code_function.h"
 #include "extensions/browser/api/web_contents_capture_client.h"
+#include "extensions/browser/extension_function.h"
 #include "extensions/common/extension_resource.h"
 #include "extensions/common/user_script.h"
 #include "url/gurl.h"
@@ -24,10 +24,6 @@
 class GURL;
 class SkBitmap;
 class TabStripModel;
-
-namespace base {
-class DictionaryValue;
-}
 
 namespace content {
 class WebContents;
@@ -48,29 +44,29 @@ void ZoomModeToZoomSettings(zoom::ZoomController::ZoomMode zoom_mode,
                             api::tabs::ZoomSettings* zoom_settings);
 
 // Windows
-class WindowsGetFunction : public ChromeSyncExtensionFunction {
+class WindowsGetFunction : public UIThreadExtensionFunction {
   ~WindowsGetFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("windows.get", WINDOWS_GET)
 };
-class WindowsGetCurrentFunction : public ChromeSyncExtensionFunction {
+class WindowsGetCurrentFunction : public UIThreadExtensionFunction {
   ~WindowsGetCurrentFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("windows.getCurrent", WINDOWS_GETCURRENT)
 };
-class WindowsGetLastFocusedFunction : public ChromeSyncExtensionFunction {
+class WindowsGetLastFocusedFunction : public UIThreadExtensionFunction {
   ~WindowsGetLastFocusedFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("windows.getLastFocused", WINDOWS_GETLASTFOCUSED)
 };
-class WindowsGetAllFunction : public ChromeSyncExtensionFunction {
+class WindowsGetAllFunction : public UIThreadExtensionFunction {
   ~WindowsGetAllFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("windows.getAll", WINDOWS_GETALL)
 };
-class WindowsCreateFunction : public ChromeSyncExtensionFunction {
+class WindowsCreateFunction : public UIThreadExtensionFunction {
   ~WindowsCreateFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   // Returns whether the window should be created in incognito mode.
   // |create_data| are the options passed by the extension. It may be NULL.
   // |urls| is the list of urls to open. If we are creating an incognito window,
@@ -81,112 +77,114 @@ class WindowsCreateFunction : public ChromeSyncExtensionFunction {
   bool ShouldOpenIncognitoWindow(
       const api::windows::Create::Params::CreateData* create_data,
       std::vector<GURL>* urls,
-      bool* is_error);
+      std::string* error);
   DECLARE_EXTENSION_FUNCTION("windows.create", WINDOWS_CREATE)
 };
-class WindowsUpdateFunction : public ChromeSyncExtensionFunction {
+class WindowsUpdateFunction : public UIThreadExtensionFunction {
   ~WindowsUpdateFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("windows.update", WINDOWS_UPDATE)
 };
-class WindowsRemoveFunction : public ChromeSyncExtensionFunction {
+class WindowsRemoveFunction : public UIThreadExtensionFunction {
   ~WindowsRemoveFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("windows.remove", WINDOWS_REMOVE)
 };
 
 // Tabs
-class TabsGetFunction : public ChromeSyncExtensionFunction {
+class TabsGetFunction : public UIThreadExtensionFunction {
   ~TabsGetFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.get", TABS_GET)
 };
-class TabsGetCurrentFunction : public ChromeSyncExtensionFunction {
+class TabsGetCurrentFunction : public UIThreadExtensionFunction {
   ~TabsGetCurrentFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.getCurrent", TABS_GETCURRENT)
 };
-class TabsGetSelectedFunction : public ChromeSyncExtensionFunction {
+class TabsGetSelectedFunction : public UIThreadExtensionFunction {
   ~TabsGetSelectedFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.getSelected", TABS_GETSELECTED)
 };
-class TabsGetAllInWindowFunction : public ChromeSyncExtensionFunction {
+class TabsGetAllInWindowFunction : public UIThreadExtensionFunction {
   ~TabsGetAllInWindowFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.getAllInWindow", TABS_GETALLINWINDOW)
 };
-class TabsQueryFunction : public ChromeSyncExtensionFunction {
+class TabsQueryFunction : public UIThreadExtensionFunction {
   ~TabsQueryFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.query", TABS_QUERY)
 };
-class TabsCreateFunction : public ChromeSyncExtensionFunction {
+class TabsCreateFunction : public UIThreadExtensionFunction {
   ~TabsCreateFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.create", TABS_CREATE)
 };
-class TabsDuplicateFunction : public ChromeSyncExtensionFunction {
+class TabsDuplicateFunction : public UIThreadExtensionFunction {
   ~TabsDuplicateFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.duplicate", TABS_DUPLICATE)
 };
-class TabsHighlightFunction : public ChromeSyncExtensionFunction {
+class TabsHighlightFunction : public UIThreadExtensionFunction {
   ~TabsHighlightFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   bool HighlightTab(TabStripModel* tabstrip,
                     ui::ListSelectionModel* selection,
-                    int *active_index,
-                    int index);
+                    int* active_index,
+                    int index,
+                    std::string* error);
   DECLARE_EXTENSION_FUNCTION("tabs.highlight", TABS_HIGHLIGHT)
 };
-class TabsUpdateFunction : public ChromeAsyncExtensionFunction {
+class TabsUpdateFunction : public UIThreadExtensionFunction {
  public:
   TabsUpdateFunction();
 
  protected:
   ~TabsUpdateFunction() override {}
-  virtual bool UpdateURL(const std::string& url,
-                         int tab_id,
-                         bool* is_async);
-  virtual void PopulateResult();
+  bool UpdateURL(const std::string& url,
+                 int tab_id,
+                 std::string* error);
+  ResponseValue GetResult();
 
   content::WebContents* web_contents_;
 
  private:
-  bool RunAsync() override;
+  ResponseAction Run() override;
   void OnExecuteCodeFinished(const std::string& error,
                              const GURL& on_url,
                              const base::ListValue& script_result);
 
   DECLARE_EXTENSION_FUNCTION("tabs.update", TABS_UPDATE)
 };
-class TabsMoveFunction : public ChromeSyncExtensionFunction {
+class TabsMoveFunction : public UIThreadExtensionFunction {
   ~TabsMoveFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   bool MoveTab(int tab_id,
                int* new_index,
                int iteration,
                base::ListValue* tab_values,
-               int* window_id);
+               int* window_id,
+               std::string* error);
   DECLARE_EXTENSION_FUNCTION("tabs.move", TABS_MOVE)
 };
-class TabsReloadFunction : public ChromeSyncExtensionFunction {
+class TabsReloadFunction : public UIThreadExtensionFunction {
   ~TabsReloadFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tabs.reload", TABS_RELOAD)
 };
-class TabsRemoveFunction : public ChromeSyncExtensionFunction {
+class TabsRemoveFunction : public UIThreadExtensionFunction {
   ~TabsRemoveFunction() override {}
-  bool RunSync() override;
-  bool RemoveTab(int tab_id);
+  ResponseAction Run() override;
+  bool RemoveTab(int tab_id, std::string* error);
   DECLARE_EXTENSION_FUNCTION("tabs.remove", TABS_REMOVE)
 };
-class TabsDetectLanguageFunction : public ChromeAsyncExtensionFunction,
+class TabsDetectLanguageFunction : public UIThreadExtensionFunction,
                                    public content::NotificationObserver {
  private:
   ~TabsDetectLanguageFunction() override {}
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
   void Observe(int type,
                const content::NotificationSource& source,
@@ -198,14 +196,13 @@ class TabsDetectLanguageFunction : public ChromeAsyncExtensionFunction,
 
 class TabsCaptureVisibleTabFunction
     : public extensions::WebContentsCaptureClient,
-      public AsyncExtensionFunction {
+      public UIThreadExtensionFunction {
  public:
   TabsCaptureVisibleTabFunction();
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
   // ExtensionFunction implementation.
-  bool HasPermission() override;
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
  protected:
   ~TabsCaptureVisibleTabFunction() override {}
@@ -213,15 +210,20 @@ class TabsCaptureVisibleTabFunction
  private:
   ChromeExtensionFunctionDetails chrome_details_;
 
-  content::WebContents* GetWebContentsForID(int window_id);
+  content::WebContents* GetWebContentsForID(int window_id, std::string* error);
 
   // extensions::WebContentsCaptureClient:
-  bool IsScreenshotEnabled() override;
+  bool IsScreenshotEnabled() const override;
   bool ClientAllowsTransparency() override;
   void OnCaptureSuccess(const SkBitmap& bitmap) override;
-  void OnCaptureFailure(FailureReason reason) override;
+  void OnCaptureFailure(CaptureResult result) override;
 
+ private:
   DECLARE_EXTENSION_FUNCTION("tabs.captureVisibleTab", TABS_CAPTUREVISIBLETAB)
+
+  static std::string CaptureResultToErrorMessage(CaptureResult result);
+
+  DISALLOW_COPY_AND_ASSIGN(TabsCaptureVisibleTabFunction);
 };
 
 // Implement API call tabs.executeScript and tabs.insertCSS.
@@ -232,14 +234,10 @@ class ExecuteCodeInTabFunction : public ExecuteCodeFunction {
  protected:
   ~ExecuteCodeInTabFunction() override;
 
-  // ExtensionFunction:
-  bool HasPermission() override;
-
-  // Initialize the |execute_tab_id_| and |details_| if they haven't already
-  // been. Returns whether initialization was successful.
-  bool Init() override;
-  bool CanExecuteScriptOnPage() override;
-  ScriptExecutor* GetScriptExecutor() override;
+  // Initializes |execute_tab_id_| and |details_|.
+  InitResult Init() override;
+  bool CanExecuteScriptOnPage(std::string* error) override;
+  ScriptExecutor* GetScriptExecutor(std::string* error) override;
   bool IsWebView() const override;
   const GURL& GetWebViewSrc() const override;
 
@@ -257,10 +255,6 @@ class TabsExecuteScriptFunction : public ExecuteCodeInTabFunction {
  private:
   ~TabsExecuteScriptFunction() override {}
 
-  void OnExecuteCodeFinished(const std::string& error,
-                             const GURL& on_url,
-                             const base::ListValue& script_result) override;
-
   DECLARE_EXTENSION_FUNCTION("tabs.executeScript", TABS_EXECUTESCRIPT)
 };
 
@@ -273,53 +267,85 @@ class TabsInsertCSSFunction : public ExecuteCodeInTabFunction {
   DECLARE_EXTENSION_FUNCTION("tabs.insertCSS", TABS_INSERTCSS)
 };
 
-class ZoomAPIFunction : public ChromeAsyncExtensionFunction {
- protected:
-  ~ZoomAPIFunction() override {}
-
-  // Gets the WebContents for |tab_id| if it is specified. Otherwise get the
-  // WebContents for the active tab in the current window. Calling this function
-  // may set error_.
-  //
-  // TODO(...) many other tabs API functions use similar behavior. There should
-  // be a way to share this implementation somehow.
-  content::WebContents* GetWebContents(int tab_id);
-};
-
-class TabsSetZoomFunction : public ZoomAPIFunction {
+class TabsSetZoomFunction : public UIThreadExtensionFunction {
  private:
   ~TabsSetZoomFunction() override {}
 
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
   DECLARE_EXTENSION_FUNCTION("tabs.setZoom", TABS_SETZOOM)
 };
 
-class TabsGetZoomFunction : public ZoomAPIFunction {
+class TabsGetZoomFunction : public UIThreadExtensionFunction {
  private:
   ~TabsGetZoomFunction() override {}
 
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
   DECLARE_EXTENSION_FUNCTION("tabs.getZoom", TABS_GETZOOM)
 };
 
-class TabsSetZoomSettingsFunction : public ZoomAPIFunction {
+class TabsSetZoomSettingsFunction : public UIThreadExtensionFunction {
  private:
   ~TabsSetZoomSettingsFunction() override {}
 
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
   DECLARE_EXTENSION_FUNCTION("tabs.setZoomSettings", TABS_SETZOOMSETTINGS)
 };
 
-class TabsGetZoomSettingsFunction : public ZoomAPIFunction {
+class TabsGetZoomSettingsFunction : public UIThreadExtensionFunction {
  private:
   ~TabsGetZoomSettingsFunction() override {}
 
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
   DECLARE_EXTENSION_FUNCTION("tabs.getZoomSettings", TABS_GETZOOMSETTINGS)
+};
+
+class TabsDiscardFunction : public UIThreadExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("tabs.discard", TABS_DISCARD)
+
+  TabsDiscardFunction();
+
+ private:
+  ~TabsDiscardFunction() override;
+
+  // ExtensionFunction:
+  ExtensionFunction::ResponseAction Run() override;
+
+  DISALLOW_COPY_AND_ASSIGN(TabsDiscardFunction);
+};
+
+class TabsGoForwardFunction : public UIThreadExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("tabs.goForward", TABS_GOFORWARD)
+
+  TabsGoForwardFunction() {}
+
+ private:
+  ~TabsGoForwardFunction() override {}
+
+  // ExtensionFunction:
+  ExtensionFunction::ResponseAction Run() override;
+
+  DISALLOW_COPY_AND_ASSIGN(TabsGoForwardFunction);
+};
+
+class TabsGoBackFunction : public UIThreadExtensionFunction {
+ public:
+  DECLARE_EXTENSION_FUNCTION("tabs.goBack", TABS_GOBACK)
+
+  TabsGoBackFunction() {}
+
+ private:
+  ~TabsGoBackFunction() override {}
+
+  // ExtensionFunction:
+  ExtensionFunction::ResponseAction Run() override;
+
+  DISALLOW_COPY_AND_ASSIGN(TabsGoBackFunction);
 };
 
 }  // namespace extensions

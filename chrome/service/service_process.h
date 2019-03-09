@@ -10,9 +10,15 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "chrome/service/cloud_print/cloud_print_proxy.h"
+#include "chrome/service/net/in_process_network_connection_tracker.h"
 #include "chrome/service/service_ipc_server.h"
+#include "mojo/public/cpp/platform/named_platform_channel.h"
+#include "mojo/public/cpp/platform/platform_channel_server_endpoint.h"
+#include "mojo/public/cpp/system/isolated_connection.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 
 class ServiceProcessPrefs;
 class ServiceURLRequestContextGetter;
@@ -20,12 +26,12 @@ class ServiceProcessState;
 
 namespace base {
 class CommandLine;
-class SequencedWorkerPool;
 class WaitableEvent;
 }
 
 namespace mojo {
-namespace edk {
+class IsolatedConnection;
+namespace core {
 class ScopedIPCSupport;
 }
 }
@@ -45,11 +51,11 @@ class ServiceProcess : public ServiceIPCServer::Client,
   ServiceProcess();
   ~ServiceProcess() override;
 
-  // Initialize the ServiceProcess with the message loop that it should run on.
-  // ServiceProcess takes ownership of |state|.
-  bool Initialize(base::MessageLoopForUI* message_loop,
+  // Initialize the ServiceProcess. |quit_closure| will be run when the service
+  // process is ready to exit.
+  bool Initialize(base::OnceClosure quit_closure,
                   const base::CommandLine& command_line,
-                  ServiceProcessState* state);
+                  std::unique_ptr<ServiceProcessState> state);
 
   bool Teardown();
 
@@ -58,14 +64,6 @@ class ServiceProcess : public ServiceIPCServer::Client,
   // called and after Teardown is called.
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner() {
     return io_thread_ ? io_thread_->task_runner() : nullptr;
-  }
-
-  // Returns the SingleThreadTaskRunner for the service process file thread.
-  // Used to do I/O operations (not network requests or even file: URL requests)
-  // to avoid blocking the main thread. Returns null before Initialize is
-  // called and after Teardown is called.
-  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner() {
-    return file_thread_ ? file_thread_->task_runner() : nullptr;
   }
 
   // A global event object that is signalled when the main thread's message
@@ -82,6 +80,7 @@ class ServiceProcess : public ServiceIPCServer::Client,
   void OnShutdown() override;
   void OnUpdateAvailable() override;
   bool OnIPCClientDisconnect() override;
+  mojo::ScopedMessagePipeHandle CreateChannelMessagePipe() override;
 
   // CloudPrintProxy::Provider implementation.
   cloud_print::CloudPrintProxy* GetCloudPrintProxy() override;
@@ -114,20 +113,21 @@ class ServiceProcess : public ServiceIPCServer::Client,
   void Terminate();
 
   std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier_;
+  std::unique_ptr<InProcessNetworkConnectionTracker>
+      network_connection_tracker_;
   std::unique_ptr<base::Thread> io_thread_;
-  std::unique_ptr<base::Thread> file_thread_;
-  scoped_refptr<base::SequencedWorkerPool> blocking_pool_;
   std::unique_ptr<cloud_print::CloudPrintProxy> cloud_print_proxy_;
   std::unique_ptr<ServiceProcessPrefs> service_prefs_;
   std::unique_ptr<ServiceIPCServer> ipc_server_;
   std::unique_ptr<ServiceProcessState> service_process_state_;
-  std::unique_ptr<mojo::edk::ScopedIPCSupport> mojo_ipc_support_;
+  std::unique_ptr<mojo::core::ScopedIPCSupport> mojo_ipc_support_;
+  std::unique_ptr<mojo::IsolatedConnection> mojo_connection_;
 
   // An event that will be signalled when we shutdown.
   base::WaitableEvent shutdown_event_;
 
-  // Pointer to the main message loop that host this object.
-  base::MessageLoop* main_message_loop_;
+  // Closure to run to cause the main message loop to exit.
+  base::OnceClosure quit_closure_;
 
   // Count of currently enabled services in this process.
   int enabled_services_;
@@ -136,6 +136,12 @@ class ServiceProcess : public ServiceIPCServer::Client,
   bool update_available_;
 
   scoped_refptr<ServiceURLRequestContextGetter> request_context_getter_;
+
+#if defined(OS_POSIX)
+  mojo::PlatformChannelServerEndpoint server_endpoint_;
+#elif defined(OS_WIN)
+  mojo::NamedPlatformChannel::ServerName server_name_;
+#endif
 
   DISALLOW_COPY_AND_ASSIGN(ServiceProcess);
 };

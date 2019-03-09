@@ -6,18 +6,19 @@
 
 #include <stdint.h>
 
+#include <string>
+
 #include "base/files/file_path.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/values.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/extensions/api/bookmarks/bookmarks_api.h"
 #include "chrome/common/chrome_paths.h"
+#include "components/sync/base/extensions_activity.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_constants.h"
-#include "sync/util/extensions_activity.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using extensions::Extension;
@@ -31,7 +32,7 @@ namespace keys = extensions::manifest_keys;
 // Create and return an extension with the given path.
 scoped_refptr<Extension> MakeExtension(const std::string& name) {
   base::FilePath path;
-  EXPECT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &path));
+  EXPECT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &path));
   path = path.AppendASCII(name);
 
   base::DictionaryValue value;
@@ -64,8 +65,7 @@ void FireBookmarksApiEvent(
 class SyncChromeExtensionsActivityMonitorTest : public testing::Test {
  public:
   SyncChromeExtensionsActivityMonitorTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::DEFAULT),
-        extension1_(MakeExtension("extension1")),
+      : extension1_(MakeExtension("extension1")),
         extension2_(MakeExtension("extension2")),
         id1_(extension1_->id()),
         id2_(extension2_->id()) {}

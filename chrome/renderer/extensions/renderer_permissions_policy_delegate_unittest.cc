@@ -34,10 +34,8 @@ class RendererPermissionsPolicyDelegateTest : public testing::Test {
     render_thread_.reset(new content::MockRenderThread());
     renderer_client_.reset(new TestExtensionsRendererClient);
     ExtensionsRendererClient::Set(renderer_client_.get());
-    extension_dispatcher_delegate_.reset(
-        new ChromeExtensionsDispatcherDelegate());
-    extension_dispatcher_.reset(
-        new Dispatcher(extension_dispatcher_delegate_.get()));
+    extension_dispatcher_ = std::make_unique<Dispatcher>(
+        std::make_unique<ChromeExtensionsDispatcherDelegate>());
     policy_delegate_.reset(
         new RendererPermissionsPolicyDelegate(extension_dispatcher_.get()));
   }
@@ -45,7 +43,6 @@ class RendererPermissionsPolicyDelegateTest : public testing::Test {
  protected:
   std::unique_ptr<content::MockRenderThread> render_thread_;
   std::unique_ptr<ExtensionsRendererClient> renderer_client_;
-  std::unique_ptr<DispatcherDelegate> extension_dispatcher_delegate_;
   std::unique_ptr<Dispatcher> extension_dispatcher_;
   std::unique_ptr<RendererPermissionsPolicyDelegate> policy_delegate_;
 };
@@ -72,8 +69,7 @@ TEST_F(RendererPermissionsPolicyDelegateTest, CannotScriptWebstore) {
   scoped_refptr<const Extension> extension(CreateTestExtension("a"));
   std::string error;
 
-  EXPECT_TRUE(extension->permissions_data()->CanAccessPage(extension.get(),
-                                                           kAnyUrl, -1, &error))
+  EXPECT_TRUE(extension->permissions_data()->CanAccessPage(kAnyUrl, -1, &error))
       << error;
 
   // Pretend we are in the webstore process. We should not be able to execute
@@ -82,8 +78,8 @@ TEST_F(RendererPermissionsPolicyDelegateTest, CannotScriptWebstore) {
       CreateTestExtension(extensions::kWebStoreAppId));
   RendererExtensionRegistry::Get()->Insert(webstore_extension.get());
   extension_dispatcher_->OnActivateExtension(extensions::kWebStoreAppId);
-  EXPECT_FALSE(extension->permissions_data()->CanAccessPage(
-      extension.get(), kAnyUrl, -1, &error))
+  EXPECT_FALSE(
+      extension->permissions_data()->CanAccessPage(kAnyUrl, -1, &error))
       << error;
 }
 

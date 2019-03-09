@@ -3,12 +3,13 @@
 // found in the LICENSE file.
 
 #include <gtk/gtk.h>
-#include <math.h>
+
+#include <memory>
 
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/numerics/math_constants.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "remoting/base/string_resources.h"
@@ -31,13 +32,27 @@ class DisconnectWindowGtk : public HostWindow {
       override;
 
  private:
-  CHROMEG_CALLBACK_1(DisconnectWindowGtk, gboolean, OnDelete,
-                     GtkWidget*, GdkEvent*);
+  CHROMEG_CALLBACK_1(DisconnectWindowGtk,
+                     gboolean,
+                     OnDelete,
+                     GtkWidget*,
+                     GdkEvent*);
   CHROMEG_CALLBACK_0(DisconnectWindowGtk, void, OnClicked, GtkButton*);
-  CHROMEG_CALLBACK_1(DisconnectWindowGtk, gboolean, OnConfigure,
-                     GtkWidget*, GdkEventConfigure*);
-  CHROMEG_CALLBACK_1(DisconnectWindowGtk, gboolean, OnButtonPress,
-                     GtkWidget*, GdkEventButton*);
+  CHROMEG_CALLBACK_1(DisconnectWindowGtk,
+                     gboolean,
+                     OnConfigure,
+                     GtkWidget*,
+                     GdkEventConfigure*);
+  CHROMEG_CALLBACK_1(DisconnectWindowGtk,
+                     gboolean,
+                     OnDraw,
+                     GtkWidget*,
+                     cairo_t*);
+  CHROMEG_CALLBACK_1(DisconnectWindowGtk,
+                     gboolean,
+                     OnButtonPress,
+                     GtkWidget*,
+                     GdkEventButton*);
 
   // Used to disconnect the client session.
   base::WeakPtr<ClientSessionControl> client_session_control_;
@@ -60,11 +75,68 @@ class DisconnectWindowGtk : public HostWindow {
 void AddRoundRectPath(cairo_t* cairo_context, int width, int height,
                       int radius) {
   cairo_new_sub_path(cairo_context);
-  cairo_arc(cairo_context, width - radius, radius, radius, -M_PI_2, 0);
-  cairo_arc(cairo_context, width - radius, height - radius, radius, 0, M_PI_2);
-  cairo_arc(cairo_context, radius, height - radius, radius, M_PI_2, 2 * M_PI_2);
-  cairo_arc(cairo_context, radius, radius, radius, 2 * M_PI_2, 3 * M_PI_2);
+  cairo_arc(cairo_context, width - radius, radius, radius, -base::kPiDouble / 2,
+            0);
+  cairo_arc(cairo_context, width - radius, height - radius, radius, 0,
+            base::kPiDouble / 2);
+  cairo_arc(cairo_context, radius, height - radius, radius, base::kPiDouble / 2,
+            base::kPiDouble);
+  cairo_arc(cairo_context, radius, radius, radius, base::kPiDouble,
+            3 * base::kPiDouble / 2);
   cairo_close_path(cairo_context);
+}
+
+// Renders the disconnect window background.
+void DrawBackground(cairo_t* cairo_context, int width, int height) {
+  // Set the arc radius for the corners.
+  const int kCornerRadius = 6;
+
+  // Initialize the whole bitmap to be transparent.
+  cairo_save(cairo_context);
+  cairo_set_source_rgba(cairo_context, 0, 0, 0, 0);
+  cairo_set_operator(cairo_context, CAIRO_OPERATOR_SOURCE);
+  cairo_paint(cairo_context);
+  cairo_restore(cairo_context);
+
+  AddRoundRectPath(cairo_context, width, height, kCornerRadius);
+  cairo_clip(cairo_context);
+
+  // Paint the whole bitmap one color.
+  cairo_set_source_rgb(cairo_context, 0.91, 0.91, 0.91);
+  cairo_paint(cairo_context);
+
+  // Paint the round-rectangle edge.
+  cairo_set_source_rgb(cairo_context, 0.13, 0.69, 0.11);
+  cairo_set_line_width(cairo_context, 6);
+  AddRoundRectPath(cairo_context, width, height, kCornerRadius);
+  cairo_stroke(cairo_context);
+
+  // Render the window-gripper.  In order for a straight line to light up
+  // single pixels, Cairo requires the coordinates to have fractional
+  // components of 0.5 (so the "/ 2" is a deliberate integer division).
+  double gripper_top = height / 2 - 10.5;
+  double gripper_bottom = height / 2 + 10.5;
+  cairo_set_line_width(cairo_context, 1);
+
+  double x = 12.5;
+  cairo_set_source_rgb(cairo_context, 0.70, 0.70, 0.70);
+  cairo_move_to(cairo_context, x, gripper_top);
+  cairo_line_to(cairo_context, x, gripper_bottom);
+  cairo_stroke(cairo_context);
+  x += 3;
+  cairo_move_to(cairo_context, x, gripper_top);
+  cairo_line_to(cairo_context, x, gripper_bottom);
+  cairo_stroke(cairo_context);
+
+  x -= 2;
+  cairo_set_source_rgb(cairo_context, 0.97, 0.97, 0.97);
+  cairo_move_to(cairo_context, x, gripper_top);
+  cairo_line_to(cairo_context, x, gripper_bottom);
+  cairo_stroke(cairo_context);
+  x += 3;
+  cairo_move_to(cairo_context, x, gripper_top);
+  cairo_line_to(cairo_context, x, gripper_bottom);
+  cairo_stroke(cairo_context);
 }
 
 DisconnectWindowGtk::DisconnectWindowGtk()
@@ -74,7 +146,7 @@ DisconnectWindowGtk::DisconnectWindowGtk()
 }
 
 DisconnectWindowGtk::~DisconnectWindowGtk() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (disconnect_window_) {
     gtk_widget_destroy(disconnect_window_);
@@ -84,7 +156,7 @@ DisconnectWindowGtk::~DisconnectWindowGtk() {
 
 void DisconnectWindowGtk::Start(
     const base::WeakPtr<ClientSessionControl>& client_session_control) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!client_session_control_.get());
   DCHECK(client_session_control.get());
   DCHECK(!disconnect_window_);
@@ -114,7 +186,10 @@ void DisconnectWindowGtk::Start(
   gtk_window_set_deletable(window, FALSE);
 
   // Allow custom rendering of the background pixmap.
+#if !GTK_CHECK_VERSION(3, 90, 0)
   gtk_widget_set_app_paintable(disconnect_window_, TRUE);
+#endif
+  g_signal_connect(disconnect_window_, "draw", G_CALLBACK(OnDrawThunk), this);
 
   // Handle window resizing, to regenerate the background pixmap and window
   // shape bitmap.  The stored width & height need to be initialized here
@@ -126,7 +201,9 @@ void DisconnectWindowGtk::Start(
                    G_CALLBACK(OnConfigureThunk), this);
 
   // Handle mouse events to allow the user to drag the window around.
+#if !GTK_CHECK_VERSION(3, 90, 0)
   gtk_widget_set_events(disconnect_window_, GDK_BUTTON_PRESS_MASK);
+#endif
   g_signal_connect(disconnect_window_, "button-press-event",
                    G_CALLBACK(OnButtonPressThunk), this);
 
@@ -134,21 +211,40 @@ void DisconnectWindowGtk::Start(
   // The alignment sets narrow margins at the top and bottom, compared with
   // left and right.  The left margin is made larger to accommodate the
   // window movement gripper.
+  GtkWidget* button_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_box_set_homogeneous(GTK_BOX(button_row), FALSE);
+
+#if GTK_CHECK_VERSION(3, 90, 0)
+  gtk_widget_set_margin_start(GTK_WIDGET(button_row), 24);
+  gtk_widget_set_margin_end(GTK_WIDGET(button_row), 12);
+  gtk_widget_set_margin_top(GTK_WIDGET(button_row), 8);
+  gtk_widget_set_margin_bottom(GTK_WIDGET(button_row), 8);
+  gtk_container_add(GTK_CONTAINER(window), button_row);
+#else
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
   GtkWidget* align = gtk_alignment_new(0, 0, 1, 1);
   gtk_alignment_set_padding(GTK_ALIGNMENT(align), 8, 8, 24, 12);
+  G_GNUC_END_IGNORE_DEPRECATIONS;
   gtk_container_add(GTK_CONTAINER(window), align);
-
-  GtkWidget* button_row = gtk_hbox_new(FALSE, 12);
   gtk_container_add(GTK_CONTAINER(align), button_row);
+#endif
 
   button_ = gtk_button_new_with_label(
       l10n_util::GetStringUTF8(IDS_STOP_SHARING_BUTTON).c_str());
+#if GTK_CHECK_VERSION(3, 90, 0)
+  gtk_box_pack_end(GTK_BOX(button_row), button_);
+#else
   gtk_box_pack_end(GTK_BOX(button_row), button_, FALSE, FALSE, 0);
+#endif
 
   g_signal_connect(button_, "clicked", G_CALLBACK(OnClickedThunk), this);
 
   message_ = gtk_label_new(nullptr);
+#if GTK_CHECK_VERSION(3, 90, 0)
+  gtk_box_pack_end(GTK_BOX(button_row), message_);
+#else
   gtk_box_pack_end(GTK_BOX(button_row), message_, FALSE, FALSE, 0);
+#endif
 
   // Override any theme setting for the text color, so that the text is
   // readable against the window's background pixmap.
@@ -158,7 +254,16 @@ void DisconnectWindowGtk::Start(
   gtk_label_set_attributes(GTK_LABEL(message_), attributes);
   pango_attr_list_unref(attributes);
 
+#if !GTK_CHECK_VERSION(3, 90, 0)
+  // GTK4 always uses an RGBA visual for windows.
+  GdkScreen* screen = gtk_widget_get_screen(disconnect_window_);
+  GdkVisual* visual = gdk_screen_get_rgba_visual(screen);
+  if (visual)
+    gtk_widget_set_visual(disconnect_window_, visual);
+
+  // GTK4 shows windows by default.
   gtk_widget_show_all(disconnect_window_);
+#endif
 
   // Extract the user name from the JID.
   std::string client_jid = client_session_control_->client_jid();
@@ -171,7 +276,7 @@ void DisconnectWindowGtk::Start(
 }
 
 void DisconnectWindowGtk::OnClicked(GtkButton* button) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (client_session_control_.get())
     client_session_control_->DisconnectSession(protocol::OK);
@@ -179,7 +284,7 @@ void DisconnectWindowGtk::OnClicked(GtkButton* button) {
 
 gboolean DisconnectWindowGtk::OnDelete(GtkWidget* window,
                                        GdkEvent* event) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (client_session_control_.get())
     client_session_control_->DisconnectSession(protocol::OK);
@@ -188,7 +293,7 @@ gboolean DisconnectWindowGtk::OnDelete(GtkWidget* window,
 
 gboolean DisconnectWindowGtk::OnConfigure(GtkWidget* widget,
                                           GdkEventConfigure* event) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Only generate bitmaps if the size has actually changed.
   if (event->width == current_width_ && event->height == current_height_)
@@ -197,86 +302,21 @@ gboolean DisconnectWindowGtk::OnConfigure(GtkWidget* widget,
   current_width_ = event->width;
   current_height_ = event->height;
 
-  // Create the depth 1 pixmap for the window shape.
-  GdkPixmap* shape_mask =
-      gdk_pixmap_new(nullptr, current_width_, current_height_, 1);
-  cairo_t* cairo_context = gdk_cairo_create(shape_mask);
+  // gdk_window_set_back_pixmap() is not supported in GDK3, and
+  // background drawing is handled in OnDraw().
+  return FALSE;
+}
 
-  // Set the arc radius for the corners.
-  const int kCornerRadius = 6;
+gboolean DisconnectWindowGtk::OnDraw(GtkWidget* widget, cairo_t* cr) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // Initialize the whole bitmap to be transparent.
-  cairo_set_source_rgba(cairo_context, 0, 0, 0, 0);
-  cairo_set_operator(cairo_context, CAIRO_OPERATOR_SOURCE);
-  cairo_paint(cairo_context);
-
-  // Paint an opaque round rect covering the whole area (leaving the extreme
-  // corners transparent).
-  cairo_set_source_rgba(cairo_context, 1, 1, 1, 1);
-  cairo_set_operator(cairo_context, CAIRO_OPERATOR_SOURCE);
-  AddRoundRectPath(cairo_context, current_width_, current_height_,
-                   kCornerRadius);
-  cairo_fill(cairo_context);
-
-  cairo_destroy(cairo_context);
-  gdk_window_shape_combine_mask(widget->window, shape_mask, 0, 0);
-  g_object_unref(shape_mask);
-
-  // Create a full-color pixmap for the window background image.
-  GdkPixmap* background =
-      gdk_pixmap_new(nullptr, current_width_, current_height_, 24);
-  cairo_context = gdk_cairo_create(background);
-
-  // Paint the whole bitmap one color.
-  cairo_set_source_rgb(cairo_context, 0.91, 0.91, 0.91);
-  cairo_paint(cairo_context);
-
-  // Paint the round-rectangle edge.
-  cairo_set_source_rgb(cairo_context, 0.13, 0.69, 0.11);
-  cairo_set_line_width(cairo_context, 6);
-  AddRoundRectPath(cairo_context, current_width_, current_height_,
-                   kCornerRadius);
-  cairo_stroke(cairo_context);
-
-  // Render the window-gripper.  In order for a straight line to light up
-  // single pixels, Cairo requires the coordinates to have fractional
-  // components of 0.5 (so the "/ 2" is a deliberate integer division).
-  double gripper_top = current_height_ / 2 - 10.5;
-  double gripper_bottom = current_height_ / 2 + 10.5;
-  cairo_set_line_width(cairo_context, 1);
-
-  double x = 12.5;
-  cairo_set_source_rgb(cairo_context, 0.70, 0.70, 0.70);
-  cairo_move_to(cairo_context, x, gripper_top);
-  cairo_line_to(cairo_context, x, gripper_bottom);
-  cairo_stroke(cairo_context);
-  x += 3;
-  cairo_move_to(cairo_context, x, gripper_top);
-  cairo_line_to(cairo_context, x, gripper_bottom);
-  cairo_stroke(cairo_context);
-
-  x -= 2;
-  cairo_set_source_rgb(cairo_context, 0.97, 0.97, 0.97);
-  cairo_move_to(cairo_context, x, gripper_top);
-  cairo_line_to(cairo_context, x, gripper_bottom);
-  cairo_stroke(cairo_context);
-  x += 3;
-  cairo_move_to(cairo_context, x, gripper_top);
-  cairo_line_to(cairo_context, x, gripper_bottom);
-  cairo_stroke(cairo_context);
-
-  cairo_destroy(cairo_context);
-
-  gdk_window_set_back_pixmap(widget->window, background, FALSE);
-  g_object_unref(background);
-  gdk_window_invalidate_rect(widget->window, nullptr, TRUE);
-
+  DrawBackground(cr, current_width_, current_height_);
   return FALSE;
 }
 
 gboolean DisconnectWindowGtk::OnButtonPress(GtkWidget* widget,
                                             GdkEventButton* event) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   gtk_window_begin_move_drag(GTK_WINDOW(disconnect_window_),
                              event->button,
@@ -290,7 +330,7 @@ gboolean DisconnectWindowGtk::OnButtonPress(GtkWidget* widget,
 
 // static
 std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
-  return base::WrapUnique(new DisconnectWindowGtk());
+  return std::make_unique<DisconnectWindowGtk>();
 }
 
 }  // namespace remoting

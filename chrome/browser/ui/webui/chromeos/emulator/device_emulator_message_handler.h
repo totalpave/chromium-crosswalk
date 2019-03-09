@@ -8,10 +8,15 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
+#include "chrome/browser/chromeos/system/pointer_device_observer.h"
 #include "chromeos/dbus/power_manager/power_supply_properties.pb.h"
 #include "content/public/browser/web_ui_message_handler.h"
+#include "device/bluetooth/bluetooth_adapter.h"
 
 namespace base {
+class DictionaryValue;
 class ListValue;
 }  // namespace base
 
@@ -29,8 +34,9 @@ class FakeCrasAudioClient;
 class FakePowerManagerClient;
 
 // Handler class for the Device Emulator page operations.
-class DeviceEmulatorMessageHandler
-    : public content::WebUIMessageHandler {
+class DeviceEmulatorMessageHandler :
+    public system::PointerDeviceObserver::Observer,
+    public content::WebUIMessageHandler {
  public:
   DeviceEmulatorMessageHandler();
   ~DeviceEmulatorMessageHandler() override;
@@ -72,6 +78,12 @@ class DeviceEmulatorMessageHandler
   // based on the node id.
   void HandleRemoveAudioNode(const base::ListValue* args);
 
+  // Connects or disconnects a fake touchpad.
+  void HandleSetHasTouchpad(const base::ListValue* args);
+
+  // Connects or disconnects a fake mouse.
+  void HandleSetHasMouse(const base::ListValue* args);
+
   // Callbacks for JS update methods. All these methods work
   // asynchronously.
   void UpdateBatteryPercent(const base::ListValue* args);
@@ -97,6 +109,9 @@ class DeviceEmulatorMessageHandler
   class CrasAudioObserver;
   class PowerObserver;
 
+  void BluetoothDeviceAdapterReady(
+      scoped_refptr<device::BluetoothAdapter> adapter);
+
   // Creates a bluetooth device with the properties given in |args|. |args|
   // should contain a dictionary so that each dictionary value can be mapped
   // to its respective property upon creating the device. Returns the device
@@ -108,6 +123,12 @@ class DeviceEmulatorMessageHandler
   std::unique_ptr<base::DictionaryValue> GetDeviceInfo(
       const dbus::ObjectPath& object_path);
 
+  void ConnectToBluetoothDevice(const std::string& address);
+
+  // system::PointerDeviceObserver::Observer:
+  void TouchpadExists(bool exists) override;
+  void MouseExists(bool exists) override;
+
   bluez::FakeBluetoothDeviceClient* fake_bluetooth_device_client_;
   std::unique_ptr<BluetoothObserver> bluetooth_observer_;
 
@@ -116,6 +137,10 @@ class DeviceEmulatorMessageHandler
 
   FakePowerManagerClient* fake_power_manager_client_;
   std::unique_ptr<PowerObserver> power_observer_;
+
+  scoped_refptr<device::BluetoothAdapter> bluetooth_adapter_;
+
+  base::WeakPtrFactory<DeviceEmulatorMessageHandler> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(DeviceEmulatorMessageHandler);
 };

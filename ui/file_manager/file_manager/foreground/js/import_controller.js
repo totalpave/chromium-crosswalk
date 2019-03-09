@@ -10,7 +10,8 @@ importer.ActivityState = {
   READY: 'ready',
   HIDDEN: 'hidden',
   IMPORTING: 'importing',
-  INSUFFICIENT_SPACE: 'insufficient-space',
+  INSUFFICIENT_CLOUD_SPACE: 'insufficient-cloud-space',
+  INSUFFICIENT_LOCAL_SPACE: 'insufficient-local-space',
   NO_MEDIA: 'no-media',
   SCANNING: 'scanning'
 };
@@ -28,10 +29,9 @@ importer.ActivityState = {
  * @param {!importer.MediaScanner} scanner
  * @param {!importer.ImportRunner} importRunner
  * @param {!importer.CommandWidget} commandWidget
- * @param {!analytics.Tracker} tracker
  */
-importer.ImportController =
-    function(environment, scanner, importRunner, commandWidget, tracker) {
+importer.ImportController = function(
+    environment, scanner, importRunner, commandWidget) {
 
   /** @private {!importer.ControllerEnvironment} */
   this.environment_ = environment;
@@ -51,9 +51,6 @@ importer.ImportController =
   /** @type {!importer.ScanManager} */
   this.scanManager_ = new importer.ScanManager(environment, scanner);
 
-  /** @private {!analytics.Tracker} */
-  this.tracker_ = tracker;
-
   /**
    * The active import task, if any.
    * @private {?importer.TaskDetails_}
@@ -71,14 +68,21 @@ importer.ImportController =
    */
   this.lastActivityState_ = importer.ActivityState.HIDDEN;
 
-  var listener = this.onScanEvent_.bind(this);
+  /**
+   * Whether the window was opened by plugging a media device and user hadn't
+   * navigated to other directories.
+   * @private {boolean}
+   */
+  this.isRightAfterPluggingMedia_ = false;
+
+  const listener = this.onScanEvent_.bind(this);
   this.scanner_.addObserver(listener);
   // Remove the observer when the foreground window is closed.
   window.addEventListener(
       'pagehide',
-      function() {
+      () => {
         this.scanner_.removeObserver(listener);
-      }.bind(this));
+      });
 
   this.environment_.addWindowCloseListener(
       this.onWindowClosing_.bind(this));
@@ -98,12 +102,11 @@ importer.ImportController =
   this.storage_.get(importer.Setting.HAS_COMPLETED_IMPORT, false)
       .then(
           /**
-           * @param {boolean} importCompleted If so, we hide the banner
-           * @this {importer.ImportController}
-           */
-          function(importCompleted) {
+          * @param {boolean} importCompleted If so, we hide the banner
+          */
+          importCompleted => {
             this.commandWidget_.setDetailsBannerVisible(!importCompleted);
-          }.bind(this));
+          });
 };
 
 /**
@@ -152,7 +155,7 @@ importer.ImportController.prototype.onVolumeUnmounted_ = function(volumeId) {
   if (this.activeImport_) {
     this.activeImport_.task.requestCancel();
     this.finalizeActiveImport_();
-    this.tracker_.send(metrics.ImportEvents.DEVICE_YANKED);
+    metrics.recordBoolean('ImportController.DeviceYanked');
   }
   this.scanManager_.reset();
   this.checkState_();
@@ -163,16 +166,12 @@ importer.ImportController.prototype.onVolumeUnmounted_ = function(volumeId) {
  * @private
  */
 importer.ImportController.prototype.onDirectoryChanged_ = function(event) {
-  if (!event.previousDirEntry &&
-      event.newDirEntry &&
-      importer.isMediaDirectory(event.newDirEntry, this.environment_)) {
-    this.commandWidget_.setDetailsVisible(true);
-  }
+  this.isRightAfterPluggingMedia_ = !event.previousDirEntry;
 
   this.scanManager_.reset();
   if (this.isCurrentDirectoryScannable_()) {
     this.checkState_(
-        this.scanManager_.getDirectoryScan());
+        this.scanManager_.getDirectoryScan(importer.ScanMode.HISTORY));
   } else {
     this.checkState_();
   }
@@ -199,7 +198,7 @@ importer.ImportController.prototype.onSelectionChanged_ = function() {
   if (this.environment_.getSelection().length === 0 &&
       this.isCurrentDirectoryScannable_()) {
     this.checkState_(
-        this.scanManager_.getDirectoryScan());
+        this.scanManager_.getDirectoryScan(importer.ScanMode.HISTORY));
   } else {
     this.checkState_();
   }
@@ -223,7 +222,7 @@ importer.ImportController.prototype.onScanInvalidated_ = function() {
   if (this.environment_.getSelection().length === 0 &&
       this.isCurrentDirectoryScannable_()) {
     this.checkState_(
-        this.scanManager_.getDirectoryScan());
+        this.scanManager_.getDirectoryScan(importer.ScanMode.HISTORY));
   } else {
     this.checkState_();
   }
@@ -279,21 +278,20 @@ importer.ImportController.prototype.onClick_ =
 };
 
 /**
- * Executes import against the current directory. Should only
- * be called when the current directory has been validated
- * by calling "update" on this class.
+ * Executes import against the current context. Should only be called
+ * after the current context has been validated by a scan.
  *
  * @private
  */
-importer.ImportController.prototype.execute_ = function() {
+importer.ImportController.prototype.startImportTask_ = function() {
   console.assert(!this.activeImport_,
       'Cannot execute while an import task is already active.');
 
-  var scan = this.scanManager_.getActiveScan();
+  const scan = this.scanManager_.getActiveScan();
   assert(scan != null);
 
-  var startDate = new Date();
-  var importTask = this.importRunner_.importFromScanResult(
+  const startDate = new Date();
+  const importTask = this.importRunner_.importFromScanResult(
       scan,
       importer.Destination.GOOGLE_DRIVE,
       this.environment_.getImportDestination(startDate));
@@ -303,8 +301,19 @@ importer.ImportController.prototype.execute_ = function() {
     task: importTask,
     started: startDate
   };
-  var taskFinished = this.onImportFinished_.bind(this, importTask);
+  const taskFinished = this.onImportFinished_.bind(this, importTask);
   importTask.whenFinished.then(taskFinished).catch(taskFinished);
+};
+
+/**
+ * Executes import against the current context. Should only be called
+ * when user clicked an import button after the current context has
+ * been validated by a scan.
+ *
+ * @private
+ */
+importer.ImportController.prototype.execute_ = function() {
+  this.startImportTask_();
   this.checkState_();
 };
 
@@ -316,7 +325,7 @@ importer.ImportController.prototype.cancel_ = function() {
   if (this.activeImport_) {
     this.activeImport_.task.requestCancel();
     this.finalizeActiveImport_();
-    this.tracker_.send(metrics.ImportEvents.IMPORT_CANCELLED);
+    metrics.recordBoolean('ImportController.ImportCancelled');
   }
 
   this.scanManager_.reset();
@@ -336,7 +345,7 @@ importer.ImportController.prototype.checkState_ = function(opt_scan) {
     return;
   }
 
-  if (!!this.activeImport_) {
+  if (this.activeImport_) {
     this.updateUi_(importer.ActivityState.IMPORTING, this.activeImport_.scan);
     return;
   }
@@ -354,7 +363,7 @@ importer.ImportController.prototype.checkState_ = function(opt_scan) {
     // NOTE, that tryScan_ lazily initializes scans...so if
     // no scan is returned, no scan is possible for the
     // current context.
-    var scan = this.tryScan_();
+    const scan = this.tryScan_(importer.ScanMode.HISTORY);
     // If no scan is created, then no scan is possible in
     // the current context...so hide the UI.
     if (!scan) {
@@ -372,37 +381,77 @@ importer.ImportController.prototype.checkState_ = function(opt_scan) {
   }
 
   if (opt_scan.getFileEntries().length === 0) {
-    this.updateUi_(importer.ActivityState.NO_MEDIA);
+    if (opt_scan.getDuplicateFileEntries().length === 0) {
+      this.updateUi_(importer.ActivityState.NO_MEDIA);
+      return;
+    }
+    // Some scanned files found already exist in Drive.
+    // It means those files weren't marked as already backed up but need to be.
+    // Trigger sync for that purpose, but no files will actually be copied.
+    this.startImportTask_();
+    this.updateUi_(importer.ActivityState.IMPORTING, this.activeImport_.scan);
     return;
   }
 
   // We have a final scan that is either too big, or juuuussttt right.
-  this.fitsInAvailableSpace_(opt_scan).then(
-      /** @param {boolean} fits */
-      function(fits) {
-          if (!fits) {
-            this.updateUi_(
-                importer.ActivityState.INSUFFICIENT_SPACE,
-                opt_scan);
-            return;
-          }
+  Promise
+      .all([
+        this.environment_.getFreeStorageSpace(
+            VolumeManagerCommon.VolumeType.DOWNLOADS),
+        this.environment_.getFreeStorageSpace(
+            VolumeManagerCommon.VolumeType.DRIVE),
+      ])
+      .then(/** @param {Array<number>} availableSpace in bytes */
+  availableSpace => {
+    // TODO(smckay): We might want to disqualify some small amount of
+    // local storage in this calculation on the assumption that we
+    // don't want to completely max out storage...even though synced
+    // files will eventually be evicted from the cache.
+    if (availableSpace[0] < opt_scan.getStatistics().sizeBytes) {
+      // Doesn't fit in local space.
+      this.updateUi_(
+          importer.ActivityState.INSUFFICIENT_LOCAL_SPACE, opt_scan,
+          availableSpace[0]);
+      return;
+    }
+    if (availableSpace[1] !== -1 &&
+        availableSpace[1] < opt_scan.getStatistics().sizeBytes) {
+      // Could retrieve cloud quota and doesn't fit.
+      this.updateUi_(
+          importer.ActivityState.INSUFFICIENT_CLOUD_SPACE, opt_scan,
+          availableSpace[1]);
+      return;
+    }
 
-        this.updateUi_(
-            importer.ActivityState.READY,  // to import...
-            opt_scan);
-      }.bind(this))
-      .catch(importer.getLogger().catcher('import-controller-check-state'));
+    // Enough space available!
+    this.updateUi_(
+        importer.ActivityState.READY,  // to import...
+        opt_scan);
+    if (this.isRightAfterPluggingMedia_) {
+      this.isRightAfterPluggingMedia_ = false;
+      this.commandWidget_.setDetailsVisible(true);
+    }
+  })
+      .catch(error => {
+               // If an error occurs, it will appear to scan forever - hide the
+               // cloud backup option in that case.
+               importer.getLogger().catcher('import-controller-check-state')(
+                   error);
+               this.updateUi_(importer.ActivityState.HIDDEN);
+             });
 };
 
 /**
  * @param {importer.ActivityState} activityState
  * @param {importer.ScanResult=} opt_scan
+ * @param {number=} opt_destinationSizeBytes specifies the destination size in
+ *     bytes in case of space issues.
  * @private
  */
-importer.ImportController.prototype.updateUi_ =
-    function(activityState, opt_scan) {
+importer.ImportController.prototype.updateUi_ = function(
+    activityState, opt_scan, opt_destinationSizeBytes) {
   this.lastActivityState_ = activityState;
-  this.commandWidget_.update(activityState, opt_scan);
+  this.commandWidget_.update(activityState, opt_scan, opt_destinationSizeBytes);
 };
 
 /**
@@ -411,46 +460,28 @@ importer.ImportController.prototype.updateUi_ =
  */
 importer.ImportController.prototype.isCurrentDirectoryScannable_ =
     function() {
-  var directory = this.environment_.getCurrentDirectory();
+  const directory = this.environment_.getCurrentDirectory();
   return !!directory &&
-      importer.isMediaDirectory(directory, this.environment_);
-};
-
-/**
- * @param {!importer.ScanResult} scanResult
- * @return {!Promise<boolean>} True if the files in scan will fit
- *     in available local storage space.
- * @private
- */
-importer.ImportController.prototype.fitsInAvailableSpace_ =
-    function(scanResult) {
-  return this.environment_.getFreeStorageSpace().then(
-      /** @param {number} availableSpace In bytes. */
-      function(availableSpace) {
-        // TODO(smckay): We might want to disqualify some small amount
-        // storage in this calculation on the assumption that we
-        // don't want to completely max out storage...even though
-        // synced files will eventually be evicted from the cache.
-        return availableSpace > scanResult.getStatistics().sizeBytes;
-      });
+      importer.isMediaDirectory(directory, this.environment_.volumeManager);
 };
 
 /**
  * Attempts to scan the current context.
  *
+ * @param {importer.ScanMode} mode How to detect new files.
  * @return {importer.ScanResult} A scan object,
  *     or null if scan is not possible in current context.
  * @private
  */
-importer.ImportController.prototype.tryScan_ = function() {
-  var entries = this.environment_.getSelection();
+importer.ImportController.prototype.tryScan_ = function(mode) {
+  const entries = this.environment_.getSelection();
   if (entries.length) {
-    if (entries.every(
-        importer.isEligibleEntry.bind(null, this.environment_))) {
-      return this.scanManager_.getSelectionScan(entries);
+    if (entries.every(importer.isEligibleEntry.bind(
+            null, this.environment_.volumeManager))) {
+      return this.scanManager_.getSelectionScan(entries, mode);
     }
   } else if (this.isCurrentDirectoryScannable_()) {
-    return this.scanManager_.getDirectoryScan();
+    return this.scanManager_.getDirectoryScan(mode);
   }
 
   return null;
@@ -475,6 +506,8 @@ importer.CommandWidget.prototype.addClickListener;
 /**
  * @param {importer.ActivityState} activityState
  * @param {importer.ScanResult=} opt_scan
+ * @param {number=} opt_destinationSizeBytes specifies the destination size in
+ *     bytes in case of space issues.
  */
 importer.CommandWidget.prototype.update;
 
@@ -516,8 +549,8 @@ importer.ClickSource = {
 importer.RuntimeCommandWidget = function() {
 
   /** @private {HTMLElement} */
-  this.detailsPanel_ = /** @type {HTMLElement} */(
-      document.getElementById('cloud-import-details'));
+  this.detailsPanel_ = /** @type {HTMLElement} */ (
+      document.querySelector('#cloud-import-details'));
   this.detailsPanel_.addEventListener(
       'transitionend',
       this.onDetailsTransitionEnd_.bind(this),
@@ -530,7 +563,7 @@ importer.RuntimeCommandWidget = function() {
   // Stop further propagation of click events.
   // This allows us to listen for *any other* clicks
   // to hide the panel.
-  this.detailsPanel_.onclick = function(event) {
+  this.detailsPanel_.onclick = event => {
     event.stopPropagation();
   };
 
@@ -597,6 +630,10 @@ importer.RuntimeCommandWidget = function() {
   this.clickListener_;
 
   document.addEventListener('keydown', this.onKeyDown_.bind(this));
+
+  /** @private{number} */
+  this.cloudImportButtonTabIndex_ =
+      document.querySelector('button#cloud-import-button').tabIndex;
 };
 
 /**
@@ -620,16 +657,17 @@ importer.RuntimeCommandWidget.prototype.onKeyDown_ = function(event) {
  * @param {number} timeout In milliseconds.
  */
 importer.RuntimeCommandWidget.ensureTransitionEndEvent =
-    function(element, timeout) {
-    var fired = false;
+    (element, timeout) => {
+    let fired = false;
   element.addEventListener('transitionend', function f(e) {
     element.removeEventListener('transitionend', f);
     fired = true;
   });
   // Use a timeout of 400 ms.
-  window.setTimeout(function() {
-    if (!fired)
+  window.setTimeout(() => {
+    if (!fired) {
       cr.dispatchSimpleEvent(element, 'transitionend', true);
+    }
   }, timeout);
 };
 
@@ -649,8 +687,9 @@ importer.RuntimeCommandWidget.prototype.onButtonClicked_ =
   console.assert(!!this.clickListener_, 'Listener not set.');
 
   // Clear focus from the toolbar button after it is clicked.
-  if (source === importer.ClickSource.MAIN)
+  if (source === importer.ClickSource.MAIN) {
     this.mainButton_.blur();
+  }
 
   switch (source) {
     case importer.ClickSource.MAIN:
@@ -702,14 +741,16 @@ importer.RuntimeCommandWidget.prototype.setDetailsVisible = function(visible) {
   if (visible) {
     // Align the detail panel horizontally to the dropdown button.
     if (document.documentElement.getAttribute('dir') === 'rtl') {
-      var anchorLeft = this.comboButton_.getBoundingClientRect().left;
-      if (anchorLeft)
+      const anchorLeft = this.comboButton_.getBoundingClientRect().left;
+      if (anchorLeft) {
         this.detailsPanel_.style.left = anchorLeft + 'px';
+      }
     } else {
-      var availableWidth = document.body.getBoundingClientRect().width;
-      var anchorRight = this.comboButton_.getBoundingClientRect().right;
-      if (anchorRight)
+      const availableWidth = document.body.getBoundingClientRect().width;
+      const anchorRight = this.comboButton_.getBoundingClientRect().right;
+      if (anchorRight) {
         this.detailsPanel_.style.right = (availableWidth - anchorRight) + 'px';
+      }
     }
 
     this.detailsPanel_.hidden = false;
@@ -746,9 +787,35 @@ importer.RuntimeCommandWidget.prototype.onDetailsFocusLost_ =
   this.setDetailsVisible(false);
 };
 
+/**
+ * Overwrites the tabIndexes of all anchors under the given element.
+ *
+ * @param {Element} root The root node of all nodes to process.
+ * @param {number} newTabIndex The tabindex value to be given to <a> elements.
+ * @private
+ */
+importer.RuntimeCommandWidget.prototype.updateTabindexOfAnchors_ =
+    (root, newTabIndex) => {
+  const anchors = root.querySelectorAll('a');
+  anchors.forEach(element => {
+    element.tabIndex = newTabIndex;
+  });
+};
+
 /** @override */
-importer.RuntimeCommandWidget.prototype.update =
-    function(activityState, opt_scan) {
+importer.RuntimeCommandWidget.prototype.update = function(
+    activityState, opt_scan, opt_destinationSizeBytes) {
+  let photosText;
+  if (opt_scan) {
+    const detectedFilesCount = opt_scan.getFileEntries().length;
+    if (detectedFilesCount) {
+      photosText = detectedFilesCount == 1 ?
+          strf('CLOUD_IMPORT_ONE_FILE') :
+          strf('CLOUD_IMPORT_MULTIPLE_FILES', detectedFilesCount);
+    } else {
+      photosText = '';
+    }
+  }
   switch(activityState) {
     case importer.ActivityState.HIDDEN:
       this.setDetailsVisible(false);
@@ -764,12 +831,10 @@ importer.RuntimeCommandWidget.prototype.update =
       console.assert(!!opt_scan, 'Scan not defined, but is required.');
       this.setDetailsVisible(false);
 
-      this.mainButton_.setAttribute('aria-label', strf(
-          'CLOUD_IMPORT_TOOLTIP_IMPORTING',
-          opt_scan.getFileEntries().length));
-      this.statusContent_.innerHTML = strf(
-          'CLOUD_IMPORT_STATUS_IMPORTING',
-          opt_scan.getFileEntries().length);
+      this.mainButton_.setAttribute(
+          'aria-label', strf('CLOUD_IMPORT_TOOLTIP_IMPORTING', photosText));
+      this.statusContent_.innerHTML =
+          strf('CLOUD_IMPORT_STATUS_IMPORTING', photosText);
 
       this.comboButton_.hidden = false;
       this.importButton_.hidden = true;
@@ -781,14 +846,26 @@ importer.RuntimeCommandWidget.prototype.update =
 
       break;
 
-    case importer.ActivityState.INSUFFICIENT_SPACE:
+    case importer.ActivityState.INSUFFICIENT_CLOUD_SPACE:
+    case importer.ActivityState.INSUFFICIENT_LOCAL_SPACE:
       console.assert(!!opt_scan, 'Scan not defined, but is required.');
 
-      this.mainButton_.setAttribute('aria-label', strf(
-          'CLOUD_IMPORT_TOOLTIP_INSUFFICIENT_SPACE'));
-      this.statusContent_.innerHTML = strf(
-          'CLOUD_IMPORT_STATUS_INSUFFICIENT_SPACE',
-          opt_scan.getFileEntries().length);
+      {
+        let attrLabel;
+        let messageLabel;
+        if (activityState === importer.ActivityState.INSUFFICIENT_CLOUD_SPACE) {
+          attrLabel = 'CLOUD_IMPORT_TOOLTIP_INSUFFICIENT_CLOUD_SPACE';
+          messageLabel = 'CLOUD_IMPORT_STATUS_INSUFFICIENT_CLOUD_SPACE';
+        } else {
+          attrLabel = 'CLOUD_IMPORT_TOOLTIP_INSUFFICIENT_LOCAL_SPACE';
+          messageLabel = 'CLOUD_IMPORT_STATUS_INSUFFICIENT_LOCAL_SPACE';
+        }
+        this.mainButton_.setAttribute('aria-label', strf(attrLabel));
+        this.statusContent_.innerHTML = strf(
+            messageLabel, photosText,
+            util.bytesToString(
+                opt_scan.getStatistics().sizeBytes - opt_destinationSizeBytes));
+      }
 
       this.comboButton_.hidden = false;
       this.importButton_.hidden = true;
@@ -817,12 +894,10 @@ importer.RuntimeCommandWidget.prototype.update =
     case importer.ActivityState.READY:
       console.assert(!!opt_scan, 'Scan not defined, but is required.');
 
-      this.mainButton_.setAttribute('aria-label', strf(
-          'CLOUD_IMPORT_TOOLTIP_READY',
-          opt_scan.getFileEntries().length));
-      this.statusContent_.innerHTML = strf(
-          'CLOUD_IMPORT_STATUS_READY',
-          opt_scan.getFileEntries().length);
+      this.mainButton_.setAttribute(
+          'aria-label', strf('CLOUD_IMPORT_TOOLTIP_READY', photosText));
+      this.statusContent_.innerHTML =
+          strf('CLOUD_IMPORT_STATUS_READY', photosText);
 
       this.comboButton_.hidden = false;
       this.importButton_.hidden = false;
@@ -838,9 +913,8 @@ importer.RuntimeCommandWidget.prototype.update =
 
       this.mainButton_.setAttribute('aria-label', str(
           'CLOUD_IMPORT_TOOLTIP_SCANNING'));
-      this.statusContent_.innerHTML = strf(
-          'CLOUD_IMPORT_STATUS_SCANNING',
-          opt_scan.getFileEntries().length);
+      this.statusContent_.innerHTML =
+          strf('CLOUD_IMPORT_STATUS_SCANNING', photosText);
 
       this.comboButton_.hidden = false;
       this.importButton_.hidden = true;
@@ -848,7 +922,7 @@ importer.RuntimeCommandWidget.prototype.update =
       this.cancelButton_.hidden = true;
       this.progressContainer_.hidden = false;
 
-      var stats = opt_scan.getStatistics();
+      const stats = opt_scan.getStatistics();
       this.progressBar_.style.width = stats.progress + '%';
 
       this.toolbarIcon_.setAttribute('icon', 'files:autorenew');
@@ -857,6 +931,11 @@ importer.RuntimeCommandWidget.prototype.update =
 
     default:
       assertNotReached('Unrecognized response id: ' + activityState);
+  }
+  // Make all anchors synthesized from the localized text focusable.
+  if (this.cloudImportButtonTabIndex_) {
+    this.updateTabindexOfAnchors_(
+        this.statusContent_, this.cloudImportButtonTabIndex_);
   }
 };
 
@@ -949,27 +1028,29 @@ importer.ScanManager.prototype.isActiveScan = function(scan) {
  * selection.
  *
  * @param {!Array<!FileEntry>} entries
+ * @param {!importer.ScanMode} mode
  *
  * @return {!importer.ScanResult}
  */
-importer.ScanManager.prototype.getSelectionScan = function(entries) {
+importer.ScanManager.prototype.getSelectionScan = function(entries, mode) {
   console.assert(!this.selectionScan_,
       'Cannot create new selection scan with another in the cache.');
-  this.selectionScan_ = this.scanner_.scanFiles(entries);
+  this.selectionScan_ = this.scanner_.scanFiles(entries, mode);
   return this.selectionScan_;
 };
 
 /**
  * Returns a scan for the directory.
  *
+ * @param {!importer.ScanMode} mode
  * @return {importer.ScanResult}
  */
-importer.ScanManager.prototype.getDirectoryScan = function() {
+importer.ScanManager.prototype.getDirectoryScan = function(mode) {
   if (!this.directoryScan_) {
-    var directory = this.environment_.getCurrentDirectory();
+    const directory = this.environment_.getCurrentDirectory();
     if (directory) {
       this.directoryScan_ = this.scanner_.scanDirectory(
-          /** @type {!DirectoryEntry} */ (directory));
+          /** @type {!DirectoryEntry} */ (directory), mode);
     }
   }
   return this.directoryScan_;
@@ -981,9 +1062,11 @@ importer.ScanManager.prototype.getDirectoryScan = function() {
  * ImportController.
  *
  * @interface
- * @extends {VolumeManagerCommon.VolumeInfoProvider}
  */
 importer.ControllerEnvironment = function() {};
+
+/** @type {!VolumeManager} */
+importer.ControllerEnvironment.prototype.volumeManager;
 
 /**
  * Returns the current file selection, if any. May be empty.
@@ -993,7 +1076,7 @@ importer.ControllerEnvironment.prototype.getSelection;
 
 /**
  * Returns the directory entry for the current directory.
- * @return {DirectoryEntry|FakeEntry}
+ * @return {DirectoryEntry|FilesAppEntry}
  */
 importer.ControllerEnvironment.prototype.getCurrentDirectory;
 
@@ -1003,13 +1086,24 @@ importer.ControllerEnvironment.prototype.getCurrentDirectory;
 importer.ControllerEnvironment.prototype.setCurrentDirectory;
 
 /**
+ * Obtains a volume info containing the passed entry.
+ * @param {!Entry|!FilesAppEntry} entry Entry on the volume to be
+ *     returned. Can be fake.
+ * @return {VolumeInfo} The VolumeInfo instance or null if not found.
+ */
+importer.ControllerEnvironment.prototype.getVolumeInfo;
+
+/**
  * Returns true if the Drive mount is present.
  * @return {boolean}
  */
 importer.ControllerEnvironment.prototype.isGoogleDriveMounted;
 
 /**
- * Returns the available space for the local volume in bytes.
+ * Returns the available space for the given volume in bytes, or -1
+ * if the the available space is not checkable.
+ * Rejects if the volume is not mounted.
+ * @param {!VolumeManagerCommon.VolumeType} volumeType
  * @return {!Promise<number>}
  */
 importer.ControllerEnvironment.prototype.getFreeStorageSpace;
@@ -1045,7 +1139,7 @@ importer.ControllerEnvironment.prototype.addSelectionChangedListener;
 
 /**
  * Reveals the import root directory (the parent of all import destinations)
- * in a new Files.app window.
+ * in a new Files app window.
  * E.g. "Chrome OS Cloud backup". Creates it if it doesn't exist.
  *
  * @return {!Promise} Resolves when the folder has been shown.
@@ -1054,7 +1148,7 @@ importer.ControllerEnvironment.prototype.showImportRoot;
 
 /**
  * Returns the date-stamped import destination directory in a new
- * Files.app window. E.g. "2015-12-04".
+ * Files app window. E.g. "2015-12-04".
  * Creates it if it doesn't exist.
  *
  * @param {!Date} date The import date
@@ -1065,7 +1159,7 @@ importer.ControllerEnvironment.prototype.getImportDestination;
 
 /**
  * Reveals the date-stamped import destination directory in a new
- * Files.app window. E.g. "2015-12-04".
+ * Files app window. E.g. "2015-12-04".
  * Creates it if it doesn't exist.
  *
  * @param {!Date} date The import date
@@ -1082,12 +1176,14 @@ importer.ControllerEnvironment.prototype.showImportDestination;
  * @constructor
  * @implements {importer.ControllerEnvironment}
  *
- * @param {!FileManager} fileManager
+ * @param {!CommandHandlerDeps} fileManager
  * @param {!FileSelectionHandler} selectionHandler
  */
-importer.RuntimeControllerEnvironment =
-    function(fileManager, selectionHandler) {
-  /** @private {!FileManager} */
+importer.RuntimeControllerEnvironment = function(
+    fileManager, selectionHandler) {
+  this.volumeManager = fileManager.volumeManager;
+
+  /** @private {!CommandHandlerDeps} */
   this.fileManager_ = fileManager;
 
   /** @private {!FileSelectionHandler} */
@@ -1121,49 +1217,51 @@ importer.RuntimeControllerEnvironment.prototype.getVolumeInfo =
 /** @override */
 importer.RuntimeControllerEnvironment.prototype.isGoogleDriveMounted =
     function() {
-  var drive = this.fileManager_.volumeManager.getCurrentProfileVolumeInfo(
+  const drive = this.fileManager_.volumeManager.getCurrentProfileVolumeInfo(
       VolumeManagerCommon.VolumeType.DRIVE);
   return !!drive;
 };
 
 /** @override */
-importer.RuntimeControllerEnvironment.prototype.getFreeStorageSpace =
-    function() {
-  // Checking DOWNLOADS returns the amount of available local storage space.
-  var localVolumeInfo =
-      this.fileManager_.volumeManager.getCurrentProfileVolumeInfo(
-          VolumeManagerCommon.VolumeType.DOWNLOADS);
-  return new Promise(
-      function(resolve, reject) {
-        chrome.fileManagerPrivate.getSizeStats(
-            localVolumeInfo.volumeId,
-            function(stats) {
-              if (chrome.runtime.lastError) {
-                reject('Failed to ascertain available free space: ' +
-                    chrome.runtime.lastError.message);
-                return;
-              }
-              resolve(assert(stats).remainingSize);
-            });
-      });
+importer.RuntimeControllerEnvironment.prototype.getFreeStorageSpace = function(
+    volumeType) {
+  // VolumeInfo will exist, because if it doesn't, the scan would never have
+  // been initiated (see importer.ImportController.prototype.checkState_)
+  const volumeInfo = assert(
+      this.fileManager_.volumeManager.getCurrentProfileVolumeInfo(volumeType));
+  return new Promise((resolve, reject) => {
+    chrome.fileManagerPrivate.getSizeStats(
+        volumeInfo.volumeId, stats => {
+          if (chrome.runtime.lastError) {
+            reject(
+                'Failed to ascertain available free space: ' +
+                chrome.runtime.lastError.message);
+            return;
+          }
+          if (!stats) {
+            resolve(-1);
+          }
+          resolve(stats.remainingSize);
+        });
+  });
 };
 
 /** @override */
 importer.RuntimeControllerEnvironment.prototype.addWindowCloseListener =
-    function(listener) {
+    listener => {
   window.addEventListener('pagehide', listener);
 };
 
 /** @override */
 importer.RuntimeControllerEnvironment.prototype.addVolumeUnmountListener =
-    function(listener) {
+    listener => {
   // TODO(smckay): remove listeners when the page is torn down.
   chrome.fileManagerPrivate.onMountCompleted.addListener(
       /**
-       * @param {!MountCompletedEvent} event
+       * @param {!chrome.fileManagerPrivate.MountCompletedEvent} event
        * @this {importer.RuntimeControllerEnvironment}
        */
-      function(event) {
+      event => {
         if (event.eventType === 'unmount') {
           listener(event.volumeMetadata.volumeId);
         }
@@ -1183,7 +1281,7 @@ importer.RuntimeControllerEnvironment.prototype.addDirectoryChangedListener =
 importer.RuntimeControllerEnvironment.prototype.addSelectionChangedListener =
     function(listener) {
   this.selectionHandler_.addEventListener(
-      FileSelectionHandler.EventType.CHANGE,
+      FileSelectionHandler.EventType.CHANGE_THROTTLED,
       listener);
 };
 
@@ -1196,7 +1294,7 @@ importer.RuntimeControllerEnvironment.prototype.addSelectionChangedListener =
  */
 importer.RuntimeControllerEnvironment.prototype.revealDirectory_ =
     function(directory) {
-  this.fileManager_.backgroundPage.launchFileManager(
+  this.fileManager_.backgroundPage.launcher.launchFileManager(
       {currentDirectoryURL: directory.toURL()},
       /* App ID */ undefined);
 };
@@ -1207,7 +1305,7 @@ importer.RuntimeControllerEnvironment.prototype.revealDirectory_ =
  * @private
  */
 importer.RuntimeControllerEnvironment.prototype.getDriveRoot_ = function() {
-  var drive = this.fileManager_.volumeManager.getCurrentProfileVolumeInfo(
+  const drive = this.fileManager_.volumeManager.getCurrentProfileVolumeInfo(
       VolumeManagerCommon.VolumeType.DRIVE);
   return /** @type {!Promise<!DirectoryEntry>} */ (drive.resolveDisplayRoot());
 };
@@ -1218,7 +1316,7 @@ importer.RuntimeControllerEnvironment.prototype.getDriveRoot_ = function() {
  * @private
  */
 importer.RuntimeControllerEnvironment.prototype.demandCloudFolder_ =
-    function(root) {
+    root => {
   return importer.demandChildDirectory(
       root,
       str('CLOUD_IMPORT_DESTINATION_FOLDER'));
@@ -1243,7 +1341,7 @@ importer.RuntimeControllerEnvironment.prototype.getImportDestination =
            * @param {!DirectoryEntry} root
            * @return {!Promise<!DirectoryEntry>}
            */
-          function(root) {
+          root => {
             return importer.demandChildDirectory(
                 root,
                 importer.getDirectoryNameForDate(date));

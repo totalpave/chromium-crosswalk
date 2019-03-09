@@ -6,7 +6,9 @@ package org.chromium.chrome.browser.widget;
 
 import android.content.Context;
 import android.view.LayoutInflater;
+import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
 import android.widget.ListView;
 
@@ -16,6 +18,7 @@ import org.chromium.chrome.browser.compositor.layouts.Layout;
 import org.chromium.chrome.browser.compositor.layouts.LayoutRenderHost;
 import org.chromium.chrome.browser.compositor.layouts.LayoutUpdateHost;
 import org.chromium.chrome.browser.compositor.layouts.content.TabContentManager;
+import org.chromium.chrome.browser.compositor.layouts.eventfilter.BlackHoleEventFilter;
 import org.chromium.chrome.browser.compositor.layouts.eventfilter.EventFilter;
 import org.chromium.chrome.browser.compositor.scene_layer.SceneLayer;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -23,6 +26,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.widget.accessibility.AccessibilityTabModelAdapter.AccessibilityTabModelAdapterListener;
 import org.chromium.chrome.browser.widget.accessibility.AccessibilityTabModelWrapper;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /**
  * A {@link Layout} that shows the tabs as two {@link ListView}s, one for each {@link TabModel} to
@@ -30,13 +34,15 @@ import org.chromium.chrome.browser.widget.accessibility.AccessibilityTabModelWra
  */
 public class OverviewListLayout extends Layout implements AccessibilityTabModelAdapterListener {
     private AccessibilityTabModelWrapper mTabModelWrapper;
-    private final float mDpToPx;
+    private final float mDensity;
+    private final BlackHoleEventFilter mBlackHoleEventFilter;
     private final SceneLayer mSceneLayer;
 
-    public OverviewListLayout(Context context, LayoutUpdateHost updateHost,
-            LayoutRenderHost renderHost, EventFilter eventFilter) {
-        super(context, updateHost, renderHost, eventFilter);
-        mDpToPx = context.getResources().getDisplayMetrics().density;
+    public OverviewListLayout(
+            Context context, LayoutUpdateHost updateHost, LayoutRenderHost renderHost) {
+        super(context, updateHost, renderHost);
+        mBlackHoleEventFilter = new BlackHoleEventFilter(context);
+        mDensity = context.getResources().getDisplayMetrics().density;
         mSceneLayer = new SceneLayer();
     }
 
@@ -51,16 +57,17 @@ public class OverviewListLayout extends Layout implements AccessibilityTabModelA
             adjustForFullscreen();
         }
 
-        if (container == null) return;
+        if (container == null || mTabModelWrapper.getParent() != null) return;
 
-        if (mTabModelWrapper.getParent() == null) {
-            container.addView(mTabModelWrapper);
-        }
+        ViewGroup overviewList =
+                (ViewGroup) container.findViewById(R.id.overview_list_layout_holder);
+        overviewList.setVisibility(View.VISIBLE);
+        overviewList.addView(mTabModelWrapper);
     }
 
     @Override
-    public int getSizingFlags() {
-        return SizingFlags.REQUIRE_FULLSCREEN_SIZE;
+    public @ViewportMode int getViewportMode() {
+        return ViewportMode.ALWAYS_FULLSCREEN;
     }
 
     @Override
@@ -73,7 +80,10 @@ public class OverviewListLayout extends Layout implements AccessibilityTabModelA
         FrameLayout.LayoutParams params =
                 (FrameLayout.LayoutParams) mTabModelWrapper.getLayoutParams();
         if (params == null) return;
-        params.topMargin = (int) ((getHeight() - getHeightMinusTopControls()) * mDpToPx);
+
+        params.bottomMargin = (int) (getBottomBrowserControlsHeight() * mDensity);
+        params.topMargin = (int) (getTopBrowserControlsHeight() * mDensity);
+
         mTabModelWrapper.setLayoutParams(params);
     }
 
@@ -107,6 +117,15 @@ public class OverviewListLayout extends Layout implements AccessibilityTabModelA
     }
 
     @Override
+    public void onTabRestored(long time, int tabId) {
+        super.onTabRestored(time, tabId);
+        // Call show() so that new tabs and potentially the toggle between incognito and normal
+        // lists are created.
+        // TODO(twellington): add animation for showing the restored tab.
+        show(time, false);
+    }
+
+    @Override
     public void onTabModelSwitched(boolean incognito) {
         super.onTabModelSwitched(incognito);
         if (mTabModelWrapper == null) return;
@@ -134,8 +153,23 @@ public class OverviewListLayout extends Layout implements AccessibilityTabModelA
         if (mTabModelSelector != null) mTabModelSelector.commitAllTabClosures();
         if (mTabModelWrapper != null) {
             ViewGroup parent = (ViewGroup) mTabModelWrapper.getParent();
-            if (parent != null) parent.removeView(mTabModelWrapper);
+            if (parent != null) {
+                parent.setVisibility(View.GONE);
+                parent.removeView(mTabModelWrapper);
+            }
         }
+    }
+
+    @Override
+    public boolean canHostBeFocusable() {
+        // TODO(https://crbug.com/918171): Consider fine-tuning accessibility support for the
+        // overview list layout.
+        // We don't allow the host to gain focus for phones so that the CompositorViewHolder doesn't
+        // steal focus when trying to focus the disabled tab switcher button when there are no tabs
+        // open (https://crbug.com/584423). This solution never worked on tablets, however, and
+        // caused a different focus bug, so on tablets we do allow the host to gain focus
+        // (https://crbug.com/925277).
+        return DeviceFormFactor.isNonMultiDisplayContextOnTablet(getContext());
     }
 
     @Override
@@ -148,7 +182,7 @@ public class OverviewListLayout extends Layout implements AccessibilityTabModelA
     }
 
     @VisibleForTesting
-    public ViewGroup getContainer() {
+    public AccessibilityTabModelWrapper getContainer() {
         return mTabModelWrapper;
     }
 
@@ -177,7 +211,29 @@ public class OverviewListLayout extends Layout implements AccessibilityTabModelA
     }
 
     @Override
+    protected EventFilter getEventFilter() {
+        return mBlackHoleEventFilter;
+    }
+
+    @Override
     protected SceneLayer getSceneLayer() {
         return mSceneLayer;
+    }
+
+    /**
+     * Set whether or not the accessibility tab switcher is visible (from an accessibility
+     * perspective), or whether it is obscured by another view.
+     * @param isVisible Whether or not accessibility tab switcher is visible.
+     */
+    public void updateAccessibilityVisibility(boolean isVisible) {
+        if (mTabModelWrapper == null) return;
+
+        int importantForAccessibility = isVisible
+                ? View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+                : View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS;
+        if (mTabModelWrapper.getImportantForAccessibility() != importantForAccessibility) {
+            mTabModelWrapper.setImportantForAccessibility(importantForAccessibility);
+            mTabModelWrapper.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        }
     }
 }

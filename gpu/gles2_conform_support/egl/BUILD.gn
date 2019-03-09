@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# GYP version: gpu/gles2_conform_support/gles_conform_support.gyp:egl_native
 source_set("egl") {
   output_name = "egl_native"
   sources = [
@@ -32,12 +31,14 @@ source_set("egl") {
     "//base",
     "//gpu",
     "//gpu/command_buffer/client:gles2_c_lib_nocheck",
+    "//gpu/command_buffer/client:gles2_cmd_helper",
     "//gpu/command_buffer/client:gles2_implementation_no_check",
-    "//gpu/command_buffer/common:gles2_utils",
     "//gpu/command_buffer/service",
+    "//gpu/command_buffer/service:gles2",
     "//ui/base",
     "//ui/gfx",
     "//ui/gfx/geometry",
     "//ui/gl",
+    "//ui/gl/init",
   ]
 }

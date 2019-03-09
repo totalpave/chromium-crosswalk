@@ -9,17 +9,15 @@ import android.graphics.Bitmap;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.chrome.browser.profiles.Profile;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
-
 /**
  * Provides access to the search provider's logo via the C++ LogoService.
  */
-class LogoBridge {
+public class LogoBridge {
 
     /**
      * A logo for a search provider (e.g. the Yahoo! logo or Google doodle).
      */
-    static class Logo {
+    public static class Logo {
         /**
          * The logo image. Non-null.
          */
@@ -51,7 +49,7 @@ class LogoBridge {
     /**
      * Observer for receiving the logo when it's available.
      */
-    interface LogoObserver {
+    public interface LogoObserver {
         /**
          * Called when the cached or fresh logo is available. This may be called up to two times,
          * once with the cached logo and once with a freshly downloaded logo.
@@ -63,20 +61,6 @@ class LogoBridge {
         void onLogoAvailable(Logo logo, boolean fromCache);
     }
 
-    /**
-     * A callback that is called when the animated logo is successfully downloaded.
-     */
-    interface AnimatedLogoCallback {
-
-        /**
-         * Called when the animated GIF logo is successfully downloaded.
-         *
-         * @param animatedLogoImage The {@link BaseGifImage} representing the animated logo.
-         */
-        @CalledByNative("AnimatedLogoCallback")
-        void onAnimatedLogoAvailable(BaseGifImage animatedLogoImage);
-    }
-
     private long mNativeLogoBridge;
 
     /**
@@ -84,7 +68,7 @@ class LogoBridge {
      *
      * @param profile Profile of the tab that will show the logo.
      */
-    LogoBridge(Profile profile) {
+    public LogoBridge(Profile profile) {
         mNativeLogoBridge = nativeInit(profile);
     }
 
@@ -109,30 +93,12 @@ class LogoBridge {
         nativeGetCurrentLogo(mNativeLogoBridge, logoObserver);
     }
 
-    /**
-     * Downloads an animated GIF logo. The given callback will not be called if the download failed
-     * or there is already an ongoing url fetching for the same url.
-     *
-     * @param callback The callback to be called when the animated logo is successfully downloaded.
-     * @param animatedLogoUrl The url from which to download the animated GIF logo.
-     */
-    void getAnimatedLogo(AnimatedLogoCallback callback, String animatedLogoUrl) {
-        nativeGetAnimatedLogo(mNativeLogoBridge, callback, animatedLogoUrl);
-    }
-
     @CalledByNative
     private static Logo createLogo(Bitmap image, String onClickUrl, String altText, String gifUrl) {
         return new Logo(image, onClickUrl, altText, gifUrl);
     }
 
-    @CalledByNative
-    private static BaseGifImage createGifImage(byte[] bytes) {
-        return new BaseGifImage(bytes);
-    }
-
     private native long nativeInit(Profile profile);
     private native void nativeGetCurrentLogo(long nativeLogoBridge, LogoObserver logoObserver);
-    private native void nativeGetAnimatedLogo(long nativeLogoBridge, AnimatedLogoCallback callback,
-            String gifUrl);
     private native void nativeDestroy(long nativeLogoBridge);
 }

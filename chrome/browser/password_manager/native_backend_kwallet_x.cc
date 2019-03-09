@@ -7,22 +7,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <iterator>
 #include <map>
 #include <utility>
 #include <vector>
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/pickle.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/grit/chromium_strings.h"
 #include "components/autofill/core/common/password_form.h"
+#include "components/dbus/dbus_thread_linux.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
-#include "content/public/browser/browser_thread.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
 #include "dbus/object_path.h"
@@ -30,13 +32,12 @@
 #include "url/origin.h"
 
 using autofill::PasswordForm;
-using content::BrowserThread;
 
 namespace {
 
 // In case the fields in the pickle ever change, version them so we can try to
 // read old pickles. (Note: do not eat old pickles past the expiration date.)
-const int kPickleVersion = 8;
+const int kPickleVersion = 9;
 
 // We could localize this string, but then changing your locale would cause
 // you to lose access to all your stored passwords. Maybe best not to do that.
@@ -84,7 +85,7 @@ bool ReadOrigin(base::PickleIterator* iter,
     *origin = url::Origin();
     return false;
   }
-  *origin = url::Origin(GURL(origin_string));
+  *origin = url::Origin::Create(GURL(origin_string));
   return true;
 }
 
@@ -114,7 +115,7 @@ bool DeserializeValueSize(const std::string& signon_realm,
                           int version,
                           bool size_32,
                           bool warn_only,
-                          ScopedVector<autofill::PasswordForm>* forms) {
+                          std::vector<std::unique_ptr<PasswordForm>>* forms) {
   base::PickleIterator iter = init_iter;
 
   size_t count = 0;
@@ -152,7 +153,7 @@ bool DeserializeValueSize(const std::string& signon_realm,
 
   // We'll swap |converted_forms| with |*forms| on success, to make sure we
   // don't return partial results on failure.
-  ScopedVector<autofill::PasswordForm> converted_forms;
+  std::vector<std::unique_ptr<PasswordForm>> converted_forms;
   converted_forms.reserve(count);
   for (size_t i = 0; i < count; ++i) {
     std::unique_ptr<PasswordForm> form(new PasswordForm());
@@ -164,16 +165,24 @@ bool DeserializeValueSize(const std::string& signon_realm,
     int generation_upload_status = 0;
     // Note that these will be read back in the order listed due to
     // short-circuit evaluation. This is important.
-    if (!iter.ReadInt(&scheme) ||
-        !ReadGURL(&iter, warn_only, &form->origin) ||
+    if (!iter.ReadInt(&scheme) || !ReadGURL(&iter, warn_only, &form->origin) ||
         !ReadGURL(&iter, warn_only, &form->action) ||
         !iter.ReadString16(&form->username_element) ||
         !iter.ReadString16(&form->username_value) ||
         !iter.ReadString16(&form->password_element) ||
         !iter.ReadString16(&form->password_value) ||
-        !iter.ReadString16(&form->submit_element) ||
-        !iter.ReadBool(&form->ssl_valid) ||
-        !iter.ReadBool(&form->preferred) ||
+        !iter.ReadString16(&form->submit_element)) {
+      LogDeserializationWarning(version, signon_realm, warn_only);
+      return false;
+    }
+    if (version <= 8) {
+      bool dummy_unused_flag = false;
+      if (!iter.ReadBool(&dummy_unused_flag)) {
+        LogDeserializationWarning(version, signon_realm, warn_only);
+        return false;
+      }
+    }
+    if (!iter.ReadBool(&form->preferred) ||
         !iter.ReadBool(&form->blacklisted_by_user) ||
         !iter.ReadInt64(&date_created)) {
       LogDeserializationWarning(version, signon_realm, warn_only);
@@ -241,11 +250,11 @@ bool DeserializeValueSize(const std::string& signon_realm,
 }
 
 // Serializes a list of PasswordForms to be stored in the wallet.
-void SerializeValue(const std::vector<autofill::PasswordForm*>& forms,
+void SerializeValue(const std::vector<std::unique_ptr<PasswordForm>>& forms,
                     base::Pickle* pickle) {
   pickle->WriteInt(kPickleVersion);
   pickle->WriteUInt64(forms.size());
-  for (autofill::PasswordForm* form : forms) {
+  for (const auto& form : forms) {
     pickle->WriteInt(form->scheme);
     pickle->WriteString(form->origin.spec());
     pickle->WriteString(form->action.spec());
@@ -254,7 +263,6 @@ void SerializeValue(const std::vector<autofill::PasswordForm*>& forms,
     pickle->WriteString16(form->password_element);
     pickle->WriteString16(form->password_value);
     pickle->WriteString16(form->submit_element);
-    pickle->WriteBool(form->ssl_valid);
     pickle->WriteBool(form->preferred);
     pickle->WriteBool(form->blacklisted_by_user);
     pickle->WriteInt64(form->date_created.ToInternalValue());
@@ -266,20 +274,12 @@ void SerializeValue(const std::vector<autofill::PasswordForm*>& forms,
     pickle->WriteString(form->icon_url.spec());
     // We serialize unique origins as "", in order to make other systems that
     // read from the login database happy. https://crbug.com/591310
-    pickle->WriteString(form->federation_origin.unique()
+    pickle->WriteString(form->federation_origin.opaque()
                             ? std::string()
                             : form->federation_origin.Serialize());
     pickle->WriteBool(form->skip_zero_click);
     pickle->WriteInt(form->generation_upload_status);
   }
-}
-
-// Moves the content of |second| to the end of |first|.
-void AppendSecondToFirst(ScopedVector<autofill::PasswordForm>* first,
-                         ScopedVector<autofill::PasswordForm> second) {
-  first->reserve(first->size() + second.size());
-  first->insert(first->end(), second.begin(), second.end());
-  second.weak_clear();
 }
 
 void UMALogDeserializationStatus(bool success) {
@@ -289,6 +289,8 @@ void UMALogDeserializationStatus(bool success) {
 
 }  // namespace
 
+// Using USER_VISIBLE priority, because the passwords obtained through tasks on
+// the background runner influence what the user sees.
 NativeBackendKWallet::NativeBackendKWallet(
     LocalProfileId id,
     base::nix::DesktopEnvironment desktop_env)
@@ -301,14 +303,15 @@ NativeBackendKWallet::NativeBackendKWallet(
 NativeBackendKWallet::~NativeBackendKWallet() {
   // This destructor is called on the thread that is destroying the Profile
   // containing the PasswordStore that owns this NativeBackend. Generally that
-  // won't be the DB thread; it will be the UI thread. So we post a message to
-  // shut it down on the DB thread, and it will be destructed afterward when the
-  // scoped_refptr<dbus::Bus> goes out of scope. The NativeBackend will be
-  // destroyed before that occurs, but that's OK.
+  // won't be run by the background task runner; it will be on the main one. So
+  // we post a message to shut it down on the background task runner, and it
+  // will be destroyed afterward when the scoped_refptr<dbus::Bus> goes out of
+  // scope. The NativeBackend will be destroyed before that occurs, but that's
+  // OK.
   if (kwallet_dbus_.GetSessionBus()) {
-    BrowserThread::PostTask(BrowserThread::DB, FROM_HERE,
-                            base::Bind(&dbus::Bus::ShutdownAndBlock,
-                                       kwallet_dbus_.GetSessionBus()));
+    dbus_thread_linux::GetTaskRunner()->PostTask(
+        FROM_HERE, base::BindOnce(&dbus::Bus::ShutdownAndBlock,
+                                  kwallet_dbus_.GetSessionBus()));
   }
 }
 
@@ -319,28 +322,32 @@ bool NativeBackendKWallet::Init() {
 
 bool NativeBackendKWallet::InitWithBus(scoped_refptr<dbus::Bus> optional_bus) {
   // We must synchronously do a few DBus calls to figure out if initialization
-  // succeeds, but later, we'll want to do most work on the DB thread. So we
-  // have to do the initialization on the DB thread here too, and wait for it.
+  // succeeds, but later, we'll want to do most of the work on the background
+  // task runner. So we have to do the initialization on the background task
+  // runner here too, and wait for it.
   bool success = false;
   base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                             base::WaitableEvent::InitialState::NOT_SIGNALED);
   // NativeBackendKWallet isn't reference counted, but we wait for InitWithBus
   // to finish, so we can safely use base::Unretained here.
-  BrowserThread::PostTask(BrowserThread::DB, FROM_HERE,
-                          base::Bind(&NativeBackendKWallet::InitOnDBThread,
-                                     base::Unretained(this),
-                                     optional_bus, &event, &success));
+  dbus_thread_linux::GetTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&NativeBackendKWallet::InitOnBackgroundTaskRunner,
+                     base::Unretained(this), optional_bus, &event, &success));
 
-  // This ScopedAllowWait should not be here. http://crbug.com/125331
-  base::ThreadRestrictions::ScopedAllowWait allow_wait;
+  // This ScopedAllowBaseSyncPrimitives should not be here. However, the whole
+  // backend is so close to deprecation that it does not make sense to refactor
+  // it. More info on https://crbug.com/739897.
+  base::ScopedAllowBaseSyncPrimitives allow_wait;
   event.Wait();
   return success;
 }
 
-void NativeBackendKWallet::InitOnDBThread(scoped_refptr<dbus::Bus> optional_bus,
-                                          base::WaitableEvent* event,
-                                          bool* success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::DB);
+void NativeBackendKWallet::InitOnBackgroundTaskRunner(
+    scoped_refptr<dbus::Bus> optional_bus,
+    base::WaitableEvent* event,
+    bool* success) {
+  DCHECK(dbus_thread_linux::GetTaskRunner()->RunsTasksInCurrentSequence());
   DCHECK(!kwallet_dbus_.GetSessionBus());
   if (optional_bus.get()) {
     // The optional_bus parameter is given when this method is called in tests.
@@ -362,7 +369,7 @@ void NativeBackendKWallet::InitOnDBThread(scoped_refptr<dbus::Bus> optional_bus,
 }
 
 NativeBackendKWallet::InitResult NativeBackendKWallet::InitWallet() {
-  DCHECK_CURRENTLY_ON(BrowserThread::DB);
+  DCHECK(dbus_thread_linux::GetTaskRunner()->RunsTasksInCurrentSequence());
 
   // Check that KWallet is enabled.
   bool enabled = false;
@@ -399,14 +406,15 @@ password_manager::PasswordStoreChangeList NativeBackendKWallet::AddLogin(
   if (wallet_handle == kInvalidKWalletHandle)
     return password_manager::PasswordStoreChangeList();
 
-  ScopedVector<autofill::PasswordForm> forms;
+  std::vector<std::unique_ptr<PasswordForm>> forms;
   if (!GetLoginsList(form.signon_realm, wallet_handle, &forms))
     return password_manager::PasswordStoreChangeList();
 
-  auto it = std::partition(forms.begin(), forms.end(),
-                           [&form](const PasswordForm* current_form) {
-    return !ArePasswordFormUniqueKeyEqual(form, *current_form);
-  });
+  auto it = std::partition(
+      forms.begin(), forms.end(),
+      [&form](const std::unique_ptr<PasswordForm>& current_form) {
+        return !ArePasswordFormUniqueKeyEqual(form, *current_form);
+      });
   password_manager::PasswordStoreChangeList changes;
   if (it != forms.end()) {
     // It's an update.
@@ -415,11 +423,11 @@ password_manager::PasswordStoreChangeList NativeBackendKWallet::AddLogin(
     forms.erase(it, forms.end());
   }
 
-  forms.push_back(new PasswordForm(form));
+  forms.push_back(std::make_unique<PasswordForm>(form));
   changes.push_back(password_manager::PasswordStoreChange(
       password_manager::PasswordStoreChange::ADD, form));
 
-  bool ok = SetLoginsList(forms.get(), form.signon_realm, wallet_handle);
+  bool ok = SetLoginsList(forms, form.signon_realm, wallet_handle);
   if (!ok)
     changes.clear();
 
@@ -434,21 +442,22 @@ bool NativeBackendKWallet::UpdateLogin(
   if (wallet_handle == kInvalidKWalletHandle)
     return false;
 
-  ScopedVector<autofill::PasswordForm> forms;
+  std::vector<std::unique_ptr<PasswordForm>> forms;
   if (!GetLoginsList(form.signon_realm, wallet_handle, &forms))
     return false;
 
-  auto it = std::partition(forms.begin(), forms.end(),
-                           [&form](const PasswordForm* current_form) {
-    return !ArePasswordFormUniqueKeyEqual(form, *current_form);
-  });
+  auto it = std::partition(
+      forms.begin(), forms.end(),
+      [&form](const std::unique_ptr<PasswordForm>& current_form) {
+        return !ArePasswordFormUniqueKeyEqual(form, *current_form);
+      });
 
   if (it == forms.end())
     return true;
 
   forms.erase(it, forms.end());
-  forms.push_back(new PasswordForm(form));
-  if (SetLoginsList(forms.get(), form.signon_realm, wallet_handle)) {
+  forms.push_back(std::make_unique<PasswordForm>(form));
+  if (SetLoginsList(forms, form.signon_realm, wallet_handle)) {
     changes->push_back(password_manager::PasswordStoreChange(
         password_manager::PasswordStoreChange::UPDATE, form));
     return true;
@@ -465,23 +474,22 @@ bool NativeBackendKWallet::RemoveLogin(
   if (wallet_handle == kInvalidKWalletHandle)
     return false;
 
-  ScopedVector<autofill::PasswordForm> all_forms;
+  std::vector<std::unique_ptr<PasswordForm>> all_forms;
   if (!GetLoginsList(form.signon_realm, wallet_handle, &all_forms))
     return false;
 
-  ScopedVector<autofill::PasswordForm> kept_forms;
+  std::vector<std::unique_ptr<PasswordForm>> kept_forms;
   kept_forms.reserve(all_forms.size());
-  for (auto& saved_form : all_forms) {
+  for (std::unique_ptr<PasswordForm>& saved_form : all_forms) {
     if (!ArePasswordFormUniqueKeyEqual(form, *saved_form)) {
-      kept_forms.push_back(saved_form);
-      saved_form = nullptr;
+      kept_forms.push_back(std::move(saved_form));
     }
   }
 
   if (kept_forms.size() != all_forms.size()) {
     changes->push_back(password_manager::PasswordStoreChange(
         password_manager::PasswordStoreChange::REMOVE, form));
-    return SetLoginsList(kept_forms.get(), form.signon_realm, wallet_handle);
+    return SetLoginsList(kept_forms, form.signon_realm, wallet_handle);
   }
 
   return true;
@@ -502,14 +510,15 @@ bool NativeBackendKWallet::RemoveLoginsSyncedBetween(
   return RemoveLoginsBetween(delete_begin, delete_end, SYNC_TIMESTAMP, changes);
 }
 
-bool NativeBackendKWallet::DisableAutoSignInForAllLogins(
+bool NativeBackendKWallet::DisableAutoSignInForOrigins(
+    const base::Callback<bool(const GURL&)>& origin_filter,
     password_manager::PasswordStoreChangeList* changes) {
-  ScopedVector<autofill::PasswordForm> all_forms;
+  std::vector<std::unique_ptr<PasswordForm>> all_forms;
   if (!GetAllLogins(&all_forms))
     return false;
 
-  for (auto& form : all_forms) {
-    if (!form->skip_zero_click) {
+  for (const std::unique_ptr<PasswordForm>& form : all_forms) {
+    if (origin_filter.Run(form->origin) && !form->skip_zero_click) {
       form->skip_zero_click = true;
       if (!UpdateLogin(*form, changes))
         return false;
@@ -519,8 +528,8 @@ bool NativeBackendKWallet::DisableAutoSignInForAllLogins(
 }
 
 bool NativeBackendKWallet::GetLogins(
-    const PasswordForm& form,
-    ScopedVector<autofill::PasswordForm>* forms) {
+    const password_manager::PasswordStore::FormDigest& form,
+    std::vector<std::unique_ptr<PasswordForm>>* forms) {
   int wallet_handle = WalletHandle();
   if (wallet_handle == kInvalidKWalletHandle)
     return false;
@@ -528,7 +537,7 @@ bool NativeBackendKWallet::GetLogins(
 }
 
 bool NativeBackendKWallet::GetAutofillableLogins(
-    ScopedVector<autofill::PasswordForm>* forms) {
+    std::vector<std::unique_ptr<PasswordForm>>* forms) {
   int wallet_handle = WalletHandle();
   if (wallet_handle == kInvalidKWalletHandle)
     return false;
@@ -536,7 +545,7 @@ bool NativeBackendKWallet::GetAutofillableLogins(
 }
 
 bool NativeBackendKWallet::GetBlacklistLogins(
-    ScopedVector<autofill::PasswordForm>* forms) {
+    std::vector<std::unique_ptr<PasswordForm>>* forms) {
   int wallet_handle = WalletHandle();
   if (wallet_handle == kInvalidKWalletHandle)
     return false;
@@ -544,17 +553,22 @@ bool NativeBackendKWallet::GetBlacklistLogins(
 }
 
 bool NativeBackendKWallet::GetAllLogins(
-    ScopedVector<autofill::PasswordForm>* forms) {
+    std::vector<std::unique_ptr<PasswordForm>>* forms) {
   int wallet_handle = WalletHandle();
   if (wallet_handle == kInvalidKWalletHandle)
     return false;
   return GetAllLoginsInternal(wallet_handle, forms);
 }
 
+scoped_refptr<base::SequencedTaskRunner>
+NativeBackendKWallet::GetBackgroundTaskRunner() {
+  return dbus_thread_linux::GetTaskRunner();
+}
+
 bool NativeBackendKWallet::GetLoginsList(
     const std::string& signon_realm,
     int wallet_handle,
-    ScopedVector<autofill::PasswordForm>* forms) {
+    std::vector<std::unique_ptr<PasswordForm>>* forms) {
   forms->clear();
   // Is there an entry in the wallet?
   bool has_entry = false;
@@ -590,43 +604,45 @@ bool NativeBackendKWallet::GetLoginsList(
 bool NativeBackendKWallet::GetLoginsList(
     BlacklistOptions options,
     int wallet_handle,
-    ScopedVector<autofill::PasswordForm>* forms) {
+    std::vector<std::unique_ptr<PasswordForm>>* forms) {
   forms->clear();
-  ScopedVector<autofill::PasswordForm> all_forms;
+  std::vector<std::unique_ptr<PasswordForm>> all_forms;
   if (!GetAllLoginsInternal(wallet_handle, &all_forms))
     return false;
 
   // Remove the duplicate sync tags.
-  ScopedVector<autofill::PasswordForm> duplicates;
+  std::vector<std::unique_ptr<PasswordForm>> duplicates;
   password_manager_util::FindDuplicates(&all_forms, &duplicates, nullptr);
   if (!duplicates.empty()) {
     // Fill the signon realms to be updated.
-    std::map<std::string, std::vector<autofill::PasswordForm*>> update_forms;
-    for (autofill::PasswordForm* form : duplicates) {
+    std::map<std::string, std::vector<std::unique_ptr<PasswordForm>>>
+        update_forms;
+    for (const auto& form : duplicates) {
       update_forms.insert(std::make_pair(
-          form->signon_realm, std::vector<autofill::PasswordForm*>()));
+          form->signon_realm, std::vector<std::unique_ptr<PasswordForm>>()));
     }
 
     // Fill the actual forms to be saved.
-    for (autofill::PasswordForm* form : all_forms) {
+    for (const auto& form : all_forms) {
       auto it = update_forms.find(form->signon_realm);
       if (it != update_forms.end())
-        it->second.push_back(form);
+        it->second.push_back(std::make_unique<PasswordForm>(*form));
     }
 
     // Update the backend.
-    for (const auto& forms : update_forms) {
-      if (!SetLoginsList(forms.second, forms.first, wallet_handle))
+    for (const auto& update_forms_for_realm : update_forms) {
+      if (!SetLoginsList(update_forms_for_realm.second,
+                         update_forms_for_realm.first, wallet_handle)) {
         return false;
+      }
     }
   }
   // We have to read all the entries, and then filter them here.
   forms->reserve(all_forms.size());
-  for (auto& saved_form : all_forms) {
+  for (std::unique_ptr<PasswordForm>& saved_form : all_forms) {
     if (saved_form->blacklisted_by_user ==
         (options == BlacklistOptions::BLACKLISTED)) {
-      forms->push_back(saved_form);
-      saved_form = nullptr;
+      forms->push_back(std::move(saved_form));
     }
   }
 
@@ -635,7 +651,7 @@ bool NativeBackendKWallet::GetLoginsList(
 
 bool NativeBackendKWallet::GetAllLoginsInternal(
     int wallet_handle,
-    ScopedVector<autofill::PasswordForm>* forms) {
+    std::vector<std::unique_ptr<PasswordForm>>* forms) {
   // We could probably also use readEntryList here.
   std::vector<std::string> realm_list;
   KWalletDBus::Error error = kwallet_dbus_.EntryList(
@@ -657,13 +673,17 @@ bool NativeBackendKWallet::GetAllLoginsInternal(
     // Can't we all just agree on whether bytes are signed or not? Please?
     base::Pickle pickle(reinterpret_cast<const char*>(bytes.data()),
                         bytes.size());
-    AppendSecondToFirst(forms, DeserializeValue(signon_realm, pickle));
+    std::vector<std::unique_ptr<PasswordForm>> from_pickle =
+        DeserializeValue(signon_realm, pickle);
+    forms->reserve(forms->size() + from_pickle.size());
+    std::move(from_pickle.begin(), from_pickle.end(),
+              std::back_inserter(*forms));
   }
   return true;
 }
 
 bool NativeBackendKWallet::SetLoginsList(
-    const std::vector<autofill::PasswordForm*>& forms,
+    const std::vector<std::unique_ptr<PasswordForm>>& forms,
     const std::string& signon_realm,
     int wallet_handle) {
   if (forms.empty()) {
@@ -725,27 +745,26 @@ bool NativeBackendKWallet::RemoveLoginsBetween(
     // Can't we all just agree on whether bytes are signed or not? Please?
     base::Pickle pickle(reinterpret_cast<const char*>(bytes.data()),
                         bytes.size());
-    ScopedVector<autofill::PasswordForm> all_forms =
+    std::vector<std::unique_ptr<PasswordForm>> all_forms =
         DeserializeValue(signon_realm, pickle);
 
-    ScopedVector<autofill::PasswordForm> kept_forms;
+    std::vector<std::unique_ptr<PasswordForm>> kept_forms;
     kept_forms.reserve(all_forms.size());
-    base::Time autofill::PasswordForm::*date_member =
-        date_to_compare == CREATION_TIMESTAMP
-            ? &autofill::PasswordForm::date_created
-            : &autofill::PasswordForm::date_synced;
-    for (auto& saved_form : all_forms) {
-      if (delete_begin <= saved_form->*date_member &&
-          (delete_end.is_null() || saved_form->*date_member < delete_end)) {
+    base::Time PasswordForm::*date_member =
+        date_to_compare == CREATION_TIMESTAMP ? &PasswordForm::date_created
+                                              : &PasswordForm::date_synced;
+    for (std::unique_ptr<PasswordForm>& saved_form : all_forms) {
+      if (delete_begin <= saved_form.get()->*date_member &&
+          (delete_end.is_null() ||
+           saved_form.get()->*date_member < delete_end)) {
         changes->push_back(password_manager::PasswordStoreChange(
             password_manager::PasswordStoreChange::REMOVE, *saved_form));
       } else {
-        kept_forms.push_back(saved_form);
-        saved_form = nullptr;
+        kept_forms.push_back(std::move(saved_form));
       }
     }
 
-    if (!SetLoginsList(kept_forms.get(), signon_realm, wallet_handle)) {
+    if (!SetLoginsList(kept_forms, signon_realm, wallet_handle)) {
       ok = false;
       changes->clear();
     }
@@ -754,9 +773,9 @@ bool NativeBackendKWallet::RemoveLoginsBetween(
 }
 
 // static
-ScopedVector<autofill::PasswordForm> NativeBackendKWallet::DeserializeValue(
-    const std::string& signon_realm,
-    const base::Pickle& pickle) {
+std::vector<std::unique_ptr<PasswordForm>>
+NativeBackendKWallet::DeserializeValue(const std::string& signon_realm,
+                                       const base::Pickle& pickle) {
   base::PickleIterator iter(pickle);
 
   int version = -1;
@@ -764,10 +783,10 @@ ScopedVector<autofill::PasswordForm> NativeBackendKWallet::DeserializeValue(
       version < 0 || version > kPickleVersion) {
     LOG(ERROR) << "Failed to deserialize KWallet entry "
                << "(realm: " << signon_realm << ")";
-    return ScopedVector<autofill::PasswordForm>();
+    return std::vector<std::unique_ptr<PasswordForm>>();
   }
 
-  ScopedVector<autofill::PasswordForm> forms;
+  std::vector<std::unique_ptr<PasswordForm>> forms;
   bool success = true;
   if (version > 0) {
     // In current pickles, we expect 64-bit sizes. Failure is an error.
@@ -792,7 +811,7 @@ ScopedVector<autofill::PasswordForm> NativeBackendKWallet::DeserializeValue(
 }
 
 int NativeBackendKWallet::WalletHandle() {
-  DCHECK_CURRENTLY_ON(BrowserThread::DB);
+  DCHECK(dbus_thread_linux::GetTaskRunner()->RunsTasksInCurrentSequence());
 
   // Open the wallet.
   // TODO(mdm): Are we leaking these handles? Find out.

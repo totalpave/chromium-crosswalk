@@ -13,7 +13,6 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/page_navigator.h"
-#include "content/public/browser/user_metrics.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/views/controls/button/menu_button.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -39,8 +38,10 @@ BookmarkMenuController::BookmarkMenuController(Browser* browser,
   menu_delegate_->Init(this, NULL, node, start_child_index,
                        BookmarkMenuDelegate::HIDE_PERMANENT_FOLDERS,
                        BOOKMARK_LAUNCH_LOCATION_BAR_SUBFOLDER);
-  menu_runner_.reset(new views::MenuRunner(
-      menu_delegate_->menu(), for_drop ? views::MenuRunner::FOR_DROP : 0));
+  int run_type = 0;
+  if (for_drop)
+    run_type |= views::MenuRunner::FOR_DROP;
+  menu_runner_.reset(new views::MenuRunner(menu_delegate_->menu(), run_type));
 }
 
 void BookmarkMenuController::RunMenuAt(BookmarkBarView* bookmark_bar) {
@@ -51,17 +52,13 @@ void BookmarkMenuController::RunMenuAt(BookmarkBarView* bookmark_bar) {
   bookmark_bar_->GetAnchorPositionForButton(menu_button, &anchor);
   gfx::Point screen_loc;
   views::View::ConvertPointToScreen(menu_button, &screen_loc);
-  // Subtract 1 from the height to make the popup flush with the button border.
   gfx::Rect bounds(screen_loc.x(), screen_loc.y(), menu_button->width(),
-                   menu_button->height() - 1);
+                   menu_button->height());
   menu_delegate_->GetBookmarkModel()->AddObserver(this);
   // We only delete ourself after the menu completes, so we can safely ignore
   // the return value.
-  ignore_result(menu_runner_->RunMenuAt(menu_delegate_->parent(),
-                                        menu_button,
-                                        bounds,
-                                        anchor,
-                                        ui::MENU_SOURCE_NONE));
+  menu_runner_->RunMenuAt(menu_delegate_->parent(), menu_button, bounds, anchor,
+                          ui::MENU_SOURCE_NONE);
 }
 
 void BookmarkMenuController::Cancel() {
@@ -102,7 +99,7 @@ bool BookmarkMenuController::ShouldExecuteCommandWithoutClosingMenu(
 bool BookmarkMenuController::GetDropFormats(
     MenuItemView* menu,
     int* formats,
-    std::set<ui::Clipboard::FormatType>* format_types) {
+    std::set<ui::ClipboardFormatType>* format_types) {
   return menu_delegate_->GetDropFormats(menu, formats, format_types);
 }
 
@@ -151,8 +148,7 @@ int BookmarkMenuController::GetDragOperations(MenuItemView* sender) {
   return menu_delegate_->GetDragOperations(sender);
 }
 
-void BookmarkMenuController::OnMenuClosed(views::MenuItemView* menu,
-                                          views::MenuRunner::RunResult result) {
+void BookmarkMenuController::OnMenuClosed(views::MenuItemView* menu) {
   delete this;
 }
 
@@ -190,6 +186,13 @@ void BookmarkMenuController::WillShowMenu(MenuItemView* menu) {
 void BookmarkMenuController::BookmarkModelChanged() {
   if (!menu_delegate_->is_mutating_model())
     menu()->Cancel();
+}
+
+bool BookmarkMenuController::ShouldTryPositioningBesideAnchor() const {
+  // The bookmark menu appears from the bookmark bar, which has a set of buttons positioned next to
+  // each other; if the bookmark menu appears beside its anchor button, it will likely overlay the
+  // adjacent bookmark button, which prevents easy scrubbing through the bookmark bar's menus.
+  return false;
 }
 
 BookmarkMenuController::~BookmarkMenuController() {

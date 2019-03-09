@@ -4,17 +4,19 @@
 
 #include "base/files/file_path_watcher_fsevents.h"
 
+#include <dispatch/dispatch.h>
+
 #include <list>
 
 #include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
-#include "base/mac/libdispatch_task_runner.h"
 #include "base/mac/scoped_cftyperef.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/stl_util.h"
+#include "base/strings/stringprintf.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 
 namespace base {
 
@@ -22,19 +24,6 @@ namespace {
 
 // The latency parameter passed to FSEventsStreamCreate().
 const CFAbsoluteTime kEventLatencySeconds = 0.3;
-
-class FSEventsTaskRunner : public mac::LibDispatchTaskRunner {
- public:
-   FSEventsTaskRunner()
-       : mac::LibDispatchTaskRunner("org.chromium.FilePathWatcherFSEvents") {
-   }
-
- protected:
-  ~FSEventsTaskRunner() override {}
-};
-
-static LazyInstance<FSEventsTaskRunner>::Leaky g_task_runner =
-    LAZY_INSTANCE_INITIALIZER;
 
 // Resolve any symlinks in the path.
 FilePath ResolvePath(const FilePath& path) {
@@ -79,13 +68,23 @@ FilePath ResolvePath(const FilePath& path) {
 
 }  // namespace
 
-FilePathWatcherFSEvents::FilePathWatcherFSEvents() : fsevent_stream_(NULL) {
+FilePathWatcherFSEvents::FilePathWatcherFSEvents()
+    : queue_(dispatch_queue_create(
+          base::StringPrintf("org.chromium.base.FilePathWatcher.%p", this)
+              .c_str(),
+          DISPATCH_QUEUE_SERIAL)),
+      fsevent_stream_(nullptr),
+      weak_factory_(this) {}
+
+FilePathWatcherFSEvents::~FilePathWatcherFSEvents() {
+  DCHECK(!task_runner() || task_runner()->RunsTasksInCurrentSequence());
+  DCHECK(callback_.is_null())
+      << "Cancel() must be called before FilePathWatcher is destroyed.";
 }
 
 bool FilePathWatcherFSEvents::Watch(const FilePath& path,
                                     bool recursive,
                                     const FilePathWatcher::Callback& callback) {
-  DCHECK(MessageLoopForIO::current());
   DCHECK(!callback.is_null());
   DCHECK(callback_.is_null());
 
@@ -94,13 +93,18 @@ bool FilePathWatcherFSEvents::Watch(const FilePath& path,
   if (!recursive)
     return false;
 
-  set_task_runner(ThreadTaskRunnerHandle::Get());
+  set_task_runner(SequencedTaskRunnerHandle::Get());
   callback_ = callback;
 
   FSEventStreamEventId start_event = FSEventsGetCurrentEventId();
-  g_task_runner.Get().PostTask(
-      FROM_HERE, Bind(&FilePathWatcherFSEvents::StartEventStream, this,
-                      start_event, path));
+  // The block runtime would implicitly capture the reference, not the object
+  // it's referencing. Copy the path into a local, so that the value is
+  // captured by the block's scope.
+  const FilePath path_copy(path);
+
+  dispatch_async(queue_, ^{
+      StartEventStream(start_event, path_copy);
+  });
   return true;
 }
 
@@ -108,10 +112,17 @@ void FilePathWatcherFSEvents::Cancel() {
   set_cancelled();
   callback_.Reset();
 
-  // Switch to the dispatch queue thread to tear down the event stream.
-  g_task_runner.Get().PostTask(
-      FROM_HERE,
-      Bind(&FilePathWatcherFSEvents::CancelOnMessageLoopThread, this));
+  ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+  // Switch to the dispatch queue to tear down the event stream. As the queue is
+  // owned by |this|, and this method is called from the destructor, execute the
+  // block synchronously.
+  dispatch_sync(queue_, ^{
+    if (fsevent_stream_) {
+      DestroyEventStream();
+      target_.clear();
+      resolved_target_.clear();
+    }
+  });
 }
 
 // static
@@ -124,8 +135,6 @@ void FilePathWatcherFSEvents::FSEventsCallback(
     const FSEventStreamEventId event_ids[]) {
   FilePathWatcherFSEvents* watcher =
       reinterpret_cast<FilePathWatcherFSEvents*>(event_watcher);
-  DCHECK(g_task_runner.Get().RunsTasksOnCurrentThread());
-
   bool root_changed = watcher->ResolveTargetPath();
   std::vector<FilePath> paths;
   FSEventStreamEventId root_change_at = FSEventStreamGetLatestEventId(stream);
@@ -143,39 +152,46 @@ void FilePathWatcherFSEvents::FSEventsCallback(
   // the directory to be watched gets created.
   if (root_changed) {
     // Resetting the event stream from within the callback fails (FSEvents spews
-    // bad file descriptor errors), so post a task to do the reset.
-    g_task_runner.Get().PostTask(
-        FROM_HERE,
-        Bind(&FilePathWatcherFSEvents::UpdateEventStream, watcher,
-             root_change_at));
+    // bad file descriptor errors), so do the reset asynchronously.
+    //
+    // We can't dispatch_async a call to UpdateEventStream() directly because
+    // there would be no guarantee that |watcher| still exists when it runs.
+    //
+    // Instead, bounce on task_runner() and use a WeakPtr to verify that
+    // |watcher| still exists. If it does, dispatch_async a call to
+    // UpdateEventStream(). Because the destructor of |watcher| runs on
+    // task_runner() and calls dispatch_sync, it is guaranteed that |watcher|
+    // still exists when UpdateEventStream() runs.
+    watcher->task_runner()->PostTask(
+        FROM_HERE, BindOnce(
+                       [](WeakPtr<FilePathWatcherFSEvents> weak_watcher,
+                          FSEventStreamEventId root_change_at) {
+                         if (!weak_watcher)
+                           return;
+                         FilePathWatcherFSEvents* watcher = weak_watcher.get();
+                         dispatch_async(watcher->queue_, ^{
+                           watcher->UpdateEventStream(root_change_at);
+                         });
+                       },
+                       watcher->weak_factory_.GetWeakPtr(), root_change_at));
   }
 
   watcher->OnFilePathsChanged(paths);
 }
 
-FilePathWatcherFSEvents::~FilePathWatcherFSEvents() {
-  // This method may be called on either the libdispatch or task_runner()
-  // thread. Checking callback_ on the libdispatch thread here is safe because
-  // it is executing in a task posted by Cancel() which first reset callback_.
-  // PostTask forms a sufficient memory barrier to ensure that the value is
-  // consistent on the target thread.
-  DCHECK(callback_.is_null())
-      << "Cancel() must be called before FilePathWatcher is destroyed.";
-}
-
 void FilePathWatcherFSEvents::OnFilePathsChanged(
     const std::vector<FilePath>& paths) {
-  DCHECK(g_task_runner.Get().RunsTasksOnCurrentThread());
   DCHECK(!resolved_target_.empty());
   task_runner()->PostTask(
-      FROM_HERE, Bind(&FilePathWatcherFSEvents::DispatchEvents, this, paths,
-                      target_, resolved_target_));
+      FROM_HERE,
+      BindOnce(&FilePathWatcherFSEvents::DispatchEvents,
+               weak_factory_.GetWeakPtr(), paths, target_, resolved_target_));
 }
 
 void FilePathWatcherFSEvents::DispatchEvents(const std::vector<FilePath>& paths,
                                              const FilePath& target,
                                              const FilePath& resolved_target) {
-  DCHECK(task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(task_runner()->RunsTasksInCurrentSequence());
 
   // Don't issue callbacks after Cancel() has been called.
   if (is_cancelled() || callback_.is_null()) {
@@ -190,23 +206,8 @@ void FilePathWatcherFSEvents::DispatchEvents(const std::vector<FilePath>& paths,
   }
 }
 
-void FilePathWatcherFSEvents::CancelOnMessageLoopThread() {
-  // For all other implementations, the "message loop thread" is the IO thread,
-  // as returned by task_runner(). This implementation, however, needs to
-  // cancel pending work on the Dispatch Queue thread.
-  DCHECK(g_task_runner.Get().RunsTasksOnCurrentThread());
-
-  if (fsevent_stream_) {
-    DestroyEventStream();
-    target_.clear();
-    resolved_target_.clear();
-  }
-}
-
 void FilePathWatcherFSEvents::UpdateEventStream(
     FSEventStreamEventId start_event) {
-  DCHECK(g_task_runner.Get().RunsTasksOnCurrentThread());
-
   // It can happen that the watcher gets canceled while tasks that call this
   // function are still in flight, so abort if this situation is detected.
   if (resolved_target_.empty())
@@ -221,9 +222,9 @@ void FilePathWatcherFSEvents::UpdateEventStream(
       NULL, resolved_target_.DirName().value().c_str(),
       kCFStringEncodingMacHFS));
   CFStringRef paths_array[] = { cf_path.get(), cf_dir_path.get() };
-  ScopedCFTypeRef<CFArrayRef> watched_paths(CFArrayCreate(
-      NULL, reinterpret_cast<const void**>(paths_array), arraysize(paths_array),
-      &kCFTypeArrayCallBacks));
+  ScopedCFTypeRef<CFArrayRef> watched_paths(
+      CFArrayCreate(NULL, reinterpret_cast<const void**>(paths_array),
+                    base::size(paths_array), &kCFTypeArrayCallBacks));
 
   FSEventStreamContext context;
   context.version = 0;
@@ -237,29 +238,29 @@ void FilePathWatcherFSEvents::UpdateEventStream(
                                         start_event,
                                         kEventLatencySeconds,
                                         kFSEventStreamCreateFlagWatchRoot);
-  FSEventStreamSetDispatchQueue(fsevent_stream_,
-                                g_task_runner.Get().GetDispatchQueue());
+  FSEventStreamSetDispatchQueue(fsevent_stream_, queue_);
 
   if (!FSEventStreamStart(fsevent_stream_)) {
-    task_runner()->PostTask(
-        FROM_HERE, Bind(&FilePathWatcherFSEvents::ReportError, this, target_));
+    task_runner()->PostTask(FROM_HERE,
+                            BindOnce(&FilePathWatcherFSEvents::ReportError,
+                                     weak_factory_.GetWeakPtr(), target_));
   }
 }
 
 bool FilePathWatcherFSEvents::ResolveTargetPath() {
-  DCHECK(g_task_runner.Get().RunsTasksOnCurrentThread());
   FilePath resolved = ResolvePath(target_).StripTrailingSeparators();
   bool changed = resolved != resolved_target_;
   resolved_target_ = resolved;
   if (resolved_target_.empty()) {
-    task_runner()->PostTask(
-        FROM_HERE, Bind(&FilePathWatcherFSEvents::ReportError, this, target_));
+    task_runner()->PostTask(FROM_HERE,
+                            BindOnce(&FilePathWatcherFSEvents::ReportError,
+                                     weak_factory_.GetWeakPtr(), target_));
   }
   return changed;
 }
 
 void FilePathWatcherFSEvents::ReportError(const FilePath& target) {
-  DCHECK(task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(task_runner()->RunsTasksInCurrentSequence());
   if (!callback_.is_null()) {
     callback_.Run(target, true);
   }
@@ -274,7 +275,6 @@ void FilePathWatcherFSEvents::DestroyEventStream() {
 
 void FilePathWatcherFSEvents::StartEventStream(FSEventStreamEventId start_event,
                                                const FilePath& path) {
-  DCHECK(g_task_runner.Get().RunsTasksOnCurrentThread());
   DCHECK(resolved_target_.empty());
 
   target_ = path;

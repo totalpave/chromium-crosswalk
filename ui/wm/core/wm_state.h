@@ -8,23 +8,25 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "ui/wm/wm_export.h"
+#include "ui/wm/core/wm_core_export.h"
 
 namespace wm {
 
+class CaptureController;
 class TransientWindowController;
 class TransientWindowStackingClient;
 
 // Installs state needed by the window manager.
-class WM_EXPORT WMState {
+class WM_CORE_EXPORT WMState {
  public:
   WMState();
   ~WMState();
 
-  // WindowStackingClient:
  private:
   std::unique_ptr<TransientWindowStackingClient> window_stacking_client_;
   std::unique_ptr<TransientWindowController> transient_window_client_;
+  // NOTE: this is really only needed in ash
+  std::unique_ptr<CaptureController> capture_controller_;
 
   DISALLOW_COPY_AND_ASSIGN(WMState);
 };

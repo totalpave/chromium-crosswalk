@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "content/public/browser/browser_thread.h"
 #include "extensions/browser/api/api_resource_manager.h"
 #include "extensions/browser/api/sockets_udp/sockets_udp_api.h"
 
@@ -75,6 +76,7 @@ class UDPSocketEventDispatcher
   static void ReceiveCallback(const ReceiveParams& params,
                               int bytes_read,
                               scoped_refptr<net::IOBuffer> io_buffer,
+                              bool socket_destroying,
                               const std::string& address,
                               uint16_t port);
 

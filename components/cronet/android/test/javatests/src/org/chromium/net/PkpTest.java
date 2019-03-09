@@ -4,11 +4,27 @@
 
 package org.chromium.net;
 
-import android.test.suitebuilder.annotation.SmallTest;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-import org.chromium.base.test.util.Feature;
-import org.chromium.net.test.util.CertTestUtil;
+import static org.chromium.net.CronetTestRule.getContext;
+import static org.chromium.net.CronetTestRule.getTestStorage;
+
+import android.support.test.filters.SmallTest;
+
 import org.json.JSONObject;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.BaseJUnit4ClassRunner;
+import org.chromium.base.test.util.Feature;
+import org.chromium.net.CronetTestRule.OnlyRunNativeCronet;
+import org.chromium.net.test.util.CertTestUtil;
 
 import java.io.ByteArrayInputStream;
 import java.security.cert.CertificateFactory;
@@ -22,37 +38,45 @@ import java.util.Set;
 /**
  * Public-Key-Pinning tests of Cronet Java API.
  */
-public class PkpTest extends CronetTestBase {
-    private static final String CERT_USED = "quic_test.example.com.crt";
+@RunWith(BaseJUnit4ClassRunner.class)
+public class PkpTest {
+    private static final String CERT_USED = "quic-chain.pem";
     private static final String[] CERTS_USED = {CERT_USED};
     private static final int DISTANT_FUTURE = Integer.MAX_VALUE;
     private static final boolean INCLUDE_SUBDOMAINS = true;
     private static final boolean EXCLUDE_SUBDOMAINS = false;
+    private static final boolean KNOWN_ROOT = true;
+    private static final boolean UNKNOWN_ROOT = false;
+    private static final boolean ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS = true;
+    private static final boolean DISABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS = false;
 
-    private CronetTestFramework mTestFramework;
-    private CronetEngine.Builder mBuilder;
+    @Rule
+    public final CronetTestRule mTestRule = new CronetTestRule();
+
+    private CronetEngine mCronetEngine;
+    private ExperimentalCronetEngine.Builder mBuilder;
     private TestUrlRequestCallback mListener;
     private String mServerUrl; // https://test.example.com:6121
     private String mServerHost; // test.example.com
     private String mDomain; // example.com
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUp() throws Exception {
+        if (mTestRule.testingJavaImpl()) {
+            return;
+        }
         // Start QUIC Test Server
         System.loadLibrary("cronet_tests");
         QuicTestServer.startQuicTestServer(getContext());
         mServerUrl = QuicTestServer.getServerURL();
         mServerHost = QuicTestServer.getServerHost();
         mDomain = mServerHost.substring(mServerHost.indexOf('.') + 1, mServerHost.length());
-        createCronetEngineBuilder();
     }
 
-    @Override
-    protected void tearDown() throws Exception {
+    @After
+    public void tearDown() throws Exception {
         QuicTestServer.shutdownQuicTestServer();
         shutdownCronetEngine();
-        super.tearDown();
     }
 
     /**
@@ -61,14 +85,15 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testErrorCodeIfPinDoesNotMatch() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         byte[] nonMatchingHash = generateSomeSha256();
         addPkpSha256(mServerHost, nonMatchingHash, EXCLUDE_SUBDOMAINS, DISTANT_FUTURE);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
 
         assertErrorResponse();
@@ -80,17 +105,18 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testSuccessIfPinMatches() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         // Get PKP hash of the real certificate
         X509Certificate cert = readCertFromFileInPemFormat(CERT_USED);
         byte[] matchingHash = CertTestUtil.getPublicKeySha256(cert);
 
         addPkpSha256(mServerHost, matchingHash, EXCLUDE_SUBDOMAINS, DISTANT_FUTURE);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
 
         assertSuccessfulResponse();
@@ -103,14 +129,15 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testIncludeSubdomainsFlagEqualTrue() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         byte[] nonMatchingHash = generateSomeSha256();
         addPkpSha256(mDomain, nonMatchingHash, INCLUDE_SUBDOMAINS, DISTANT_FUTURE);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
 
         assertErrorResponse();
@@ -123,14 +150,15 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testIncludeSubdomainsFlagEqualFalse() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         byte[] nonMatchingHash = generateSomeSha256();
         addPkpSha256(mDomain, nonMatchingHash, EXCLUDE_SUBDOMAINS, DISTANT_FUTURE);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
 
         assertSuccessfulResponse();
@@ -143,14 +171,15 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testSuccessIfNoPinSpecified() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         byte[] nonMatchingHash = generateSomeSha256();
         addPkpSha256("otherhost.com", nonMatchingHash, INCLUDE_SUBDOMAINS, DISTANT_FUTURE);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
 
         assertSuccessfulResponse();
@@ -162,15 +191,16 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testSoonExpiringPin() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         final int tenSecondsAhead = 10;
         byte[] nonMatchingHash = generateSomeSha256();
         addPkpSha256(mServerHost, nonMatchingHash, EXCLUDE_SUBDOMAINS, tenSecondsAhead);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
 
         assertErrorResponse();
@@ -182,18 +212,61 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testRecentlyExpiredPin() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         final int oneSecondAgo = -1;
         byte[] nonMatchingHash = generateSomeSha256();
         addPkpSha256(mServerHost, nonMatchingHash, EXCLUDE_SUBDOMAINS, oneSecondAgo);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
 
         assertSuccessfulResponse();
+    }
+
+    /**
+     * Tests that the pinning of local trust anchors is enforced when pinning bypass for local
+     * trust anchors is disabled.
+     *
+     * @throws Exception
+     */
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    @OnlyRunNativeCronet
+    public void testLocalTrustAnchorPinningEnforced() throws Exception {
+        createCronetEngineBuilder(DISABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, UNKNOWN_ROOT);
+        byte[] nonMatchingHash = generateSomeSha256();
+        addPkpSha256(mServerHost, nonMatchingHash, EXCLUDE_SUBDOMAINS, DISTANT_FUTURE);
+        startCronetEngine();
+        sendRequestAndWaitForResult();
+
+        assertErrorResponse();
+        shutdownCronetEngine();
+    }
+
+    /**
+     * Tests that the pinning of local trust anchors is not enforced when pinning bypass for local
+     * trust anchors is enabled.
+     *
+     * @throws Exception
+     */
+    @Test
+    @SmallTest
+    @Feature({"Cronet"})
+    @OnlyRunNativeCronet
+    public void testLocalTrustAnchorPinningNotEnforced() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, UNKNOWN_ROOT);
+        byte[] nonMatchingHash = generateSomeSha256();
+        addPkpSha256(mServerHost, nonMatchingHash, EXCLUDE_SUBDOMAINS, DISTANT_FUTURE);
+        startCronetEngine();
+        sendRequestAndWaitForResult();
+
+        assertSuccessfulResponse();
+        shutdownCronetEngine();
     }
 
     /**
@@ -201,23 +274,23 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     @OnlyRunNativeCronet
     public void testPinsAreNotPersisted() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         byte[] nonMatchingHash = generateSomeSha256();
         addPkpSha256(mServerHost, nonMatchingHash, EXCLUDE_SUBDOMAINS, DISTANT_FUTURE);
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        startCronetEngine();
         sendRequestAndWaitForResult();
         assertErrorResponse();
         shutdownCronetEngine();
 
         // Restart Cronet engine and try the same request again. Since the pins are not persisted,
         // a successful response is expected.
-        createCronetEngineBuilder();
-        startCronetFramework();
-        registerHostResolver(mTestFramework);
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
+        startCronetEngine();
         sendRequestAndWaitForResult();
         assertSuccessfulResponse();
     }
@@ -228,9 +301,11 @@ public class PkpTest extends CronetTestBase {
      *
      * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     public void testHostNameArgumentValidation() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         final String label63 = "123456789-123456789-123456789-123456789-123456789-123456789-123";
         final String host255 = label63 + "." + label63 + "." + label63 + "." + label63;
         // Valid host names.
@@ -281,10 +356,14 @@ public class PkpTest extends CronetTestBase {
     /**
      * Tests that NullPointerException is thrown if the host name or the collection of pins or
      * the expiration date is null.
+     *
+     * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
-    public void testNullArguments() {
+    public void testNullArguments() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         verifyExceptionWhenAddPkpArgumentIsNull(true, false, false);
         verifyExceptionWhenAddPkpArgumentIsNull(false, true, false);
         verifyExceptionWhenAddPkpArgumentIsNull(false, false, true);
@@ -293,10 +372,14 @@ public class PkpTest extends CronetTestBase {
 
     /**
      * Tests that IllegalArgumentException is thrown if SHA1 is passed as the value of a pin.
+     *
+     * @throws Exception
      */
+    @Test
     @SmallTest
     @Feature({"Cronet"})
-    public void testIllegalArgumentExceptionWhenPinValueIsSHA1() {
+    public void testIllegalArgumentExceptionWhenPinValueIsSHA1() throws Exception {
+        createCronetEngineBuilder(ENABLE_PINNING_BYPASS_FOR_LOCAL_ANCHORS, KNOWN_ROOT);
         byte[] sha1 = new byte[20];
         try {
             addPkpSha256(mServerHost, sha1, EXCLUDE_SUBDOMAINS, DISTANT_FUTURE);
@@ -317,7 +400,7 @@ public class PkpTest extends CronetTestBase {
      */
     private void assertErrorResponse() {
         assertNotNull("Expected an error", mListener.mError);
-        int errorCode = mListener.mError.getCronetInternalErrorCode();
+        int errorCode = ((NetworkException) mListener.mError).getCronetInternalErrorCode();
         Set<Integer> expectedErrors = new HashSet<>();
         expectedErrors.add(NetError.ERR_QUIC_PROTOCOL_ERROR);
         expectedErrors.add(NetError.ERR_CONNECTION_REFUSED);
@@ -333,33 +416,38 @@ public class PkpTest extends CronetTestBase {
     private void assertSuccessfulResponse() {
         if (mListener.mError != null) {
             fail("Did not expect an error but got error code "
-                    + mListener.mError.getCronetInternalErrorCode());
+                    + ((NetworkException) mListener.mError).getCronetInternalErrorCode());
         }
         assertNotNull("Expected non-null response from the server", mListener.mResponseInfo);
         assertEquals(200, mListener.mResponseInfo.getHttpStatusCode());
     }
 
-    private void createCronetEngineBuilder() throws Exception {
+    private void createCronetEngineBuilder(boolean bypassPinningForLocalAnchors, boolean knownRoot)
+            throws Exception {
         // Set common CronetEngine parameters
-        mBuilder = new CronetEngine.Builder(getContext());
-        mBuilder.enableQUIC(true);
+        mBuilder = new ExperimentalCronetEngine.Builder(getContext());
+        mBuilder.enablePublicKeyPinningBypassForLocalTrustAnchors(bypassPinningForLocalAnchors);
+        mBuilder.enableQuic(true);
         mBuilder.addQuicHint(QuicTestServer.getServerHost(), QuicTestServer.getServerPort(),
                 QuicTestServer.getServerPort());
-        JSONObject quicParams = new JSONObject().put("host_whitelist", "test.example.com");
-        JSONObject experimentalOptions = new JSONObject().put("QUIC", quicParams);
+        JSONObject hostResolverParams = CronetTestUtil.generateHostResolverRules();
+        JSONObject experimentalOptions = new JSONObject()
+                                                 .put("HostResolverRules", hostResolverParams);
         mBuilder.setExperimentalOptions(experimentalOptions.toString());
-        mBuilder.setStoragePath(CronetTestFramework.getTestStorage(getContext()));
+        mBuilder.setStoragePath(getTestStorage(getContext()));
         mBuilder.enableHttpCache(CronetEngine.Builder.HTTP_CACHE_DISK_NO_HTTP, 1000 * 1024);
-        mBuilder.setMockCertVerifierForTesting(MockCertVerifier.createMockCertVerifier(CERTS_USED));
+        CronetTestUtil.setMockCertVerifierForTesting(
+                mBuilder, MockCertVerifier.createMockCertVerifier(CERTS_USED, knownRoot));
     }
 
-    private void startCronetFramework() {
-        mTestFramework = startCronetTestFrameworkWithUrlAndCronetEngineBuilder(null, mBuilder);
+    private void startCronetEngine() {
+        mCronetEngine = mBuilder.build();
     }
 
     private void shutdownCronetEngine() {
-        if (mTestFramework != null && mTestFramework.mCronetEngine != null) {
-            mTestFramework.mCronetEngine.shutdown();
+        if (mCronetEngine != null) {
+            mCronetEngine.shutdown();
+            mCronetEngine = null;
         }
     }
 
@@ -380,8 +468,8 @@ public class PkpTest extends CronetTestBase {
         mListener = new TestUrlRequestCallback();
 
         String quicURL = mServerUrl + "/simple.txt";
-        UrlRequest.Builder requestBuilder = new UrlRequest.Builder(
-                quicURL, mListener, mListener.getExecutor(), mTestFramework.mCronetEngine);
+        UrlRequest.Builder requestBuilder =
+                mCronetEngine.newUrlRequestBuilder(quicURL, mListener, mListener.getExecutor());
         requestBuilder.build().start();
         mListener.blockForDone();
     }

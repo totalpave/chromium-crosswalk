@@ -5,12 +5,12 @@
 #include "ui/aura/test/test_window_delegate.h"
 
 #include "base/strings/stringprintf.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "ui/aura/window.h"
 #include "ui/base/hit_test.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/events/event.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/path.h"
 #include "ui/gfx/skia_util.h"
 
 #if defined(USE_AURA)
@@ -76,8 +76,8 @@ void TestWindowDelegate::OnPaint(const ui::PaintContext& context) {
 }
 
 void TestWindowDelegate::OnDeviceScaleFactorChanged(
-    float device_scale_factor) {
-}
+    float old_device_scale_factor,
+    float new_device_scale_factor) {}
 
 void TestWindowDelegate::OnWindowDestroying(Window* window) {
 }
@@ -94,8 +94,7 @@ bool TestWindowDelegate::HasHitTestMask() const {
   return false;
 }
 
-void TestWindowDelegate::GetHitTestMask(gfx::Path* mask) const {
-}
+void TestWindowDelegate::GetHitTestMask(SkPath* mask) const {}
 
 ////////////////////////////////////////////////////////////////////////////////
 // ColorTestWindowDelegate
@@ -124,7 +123,7 @@ void ColorTestWindowDelegate::OnWindowDestroyed(Window* window) {
 
 void ColorTestWindowDelegate::OnPaint(const ui::PaintContext& context) {
   ui::PaintRecorder recorder(context, window_size_);
-  recorder.canvas()->DrawColor(color_, SkXfermode::kSrc_Mode);
+  recorder.canvas()->DrawColor(color_, SkBlendMode::kSrc);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -138,7 +137,7 @@ bool MaskedWindowDelegate::HasHitTestMask() const {
   return true;
 }
 
-void MaskedWindowDelegate::GetHitTestMask(gfx::Path* mask) const {
+void MaskedWindowDelegate::GetHitTestMask(SkPath* mask) const {
   mask->addRect(RectToSkRect(mask_rect_));
 }
 
@@ -163,6 +162,7 @@ void EventCountDelegate::OnKeyEvent(ui::KeyEvent* event) {
       break;
     case ui::ET_KEY_RELEASED:
       key_release_count_++;
+      break;
     default:
       break;
   }

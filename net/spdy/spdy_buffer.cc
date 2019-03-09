@@ -10,8 +10,9 @@
 #include "base/callback.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "net/base/io_buffer.h"
-#include "net/spdy/spdy_protocol.h"
+#include "net/third_party/quiche/src/spdy/core/spdy_protocol.h"
 
 namespace net {
 
@@ -20,18 +21,19 @@ namespace {
 // Bound on largest frame any SPDY version has allowed.
 const size_t kMaxSpdyFrameSize = 0x00ffffff;
 
-// Makes a SpdySerializedFrame with |size| bytes of data copied from |data|.
-// |data| must be non-NULL and |size| must be positive.
-std::unique_ptr<SpdySerializedFrame> MakeSpdySerializedFrame(const char* data,
-                                                             size_t size) {
+// Makes a spdy::SpdySerializedFrame with |size| bytes of data copied from
+// |data|. |data| must be non-NULL and |size| must be positive.
+std::unique_ptr<spdy::SpdySerializedFrame> MakeSpdySerializedFrame(
+    const char* data,
+    size_t size) {
   DCHECK(data);
   CHECK_GT(size, 0u);
   CHECK_LE(size, kMaxSpdyFrameSize);
-  std::unique_ptr<char[]> frame_data(new char[size]);
+
+  auto frame_data = std::make_unique<char[]>(size);
   std::memcpy(frame_data.get(), data, size);
-  std::unique_ptr<SpdySerializedFrame> frame(new SpdySerializedFrame(
-      frame_data.release(), size, true /* owns_buffer */));
-  return frame;
+  return std::make_unique<spdy::SpdySerializedFrame>(frame_data.release(), size,
+                                                     true /* owns_buffer */);
 }
 
 }  // namespace
@@ -57,10 +59,8 @@ class SpdyBuffer::SharedFrameIOBuffer : public IOBuffer {
   DISALLOW_COPY_AND_ASSIGN(SharedFrameIOBuffer);
 };
 
-SpdyBuffer::SpdyBuffer(std::unique_ptr<SpdySerializedFrame> frame)
-    : shared_frame_(new SharedFrame()), offset_(0) {
-  shared_frame_->data = std::move(frame);
-}
+SpdyBuffer::SpdyBuffer(std::unique_ptr<spdy::SpdySerializedFrame> frame)
+    : shared_frame_(new SharedFrame(std::move(frame))), offset_(0) {}
 
 // The given data may not be strictly a SPDY frame; we (ab)use
 // |frame_| just as a container.
@@ -91,10 +91,15 @@ void SpdyBuffer::AddConsumeCallback(const ConsumeCallback& consume_callback) {
 
 void SpdyBuffer::Consume(size_t consume_size) {
   ConsumeHelper(consume_size, CONSUME);
-};
+}
 
-IOBuffer* SpdyBuffer::GetIOBufferForRemainingData() {
-  return new SharedFrameIOBuffer(shared_frame_, offset_);
+scoped_refptr<IOBuffer> SpdyBuffer::GetIOBufferForRemainingData() {
+  return base::MakeRefCounted<SharedFrameIOBuffer>(shared_frame_, offset_);
+}
+
+size_t SpdyBuffer::EstimateMemoryUsage() const {
+  // TODO(xunjieli): Estimate |consume_callbacks_|. https://crbug.com/669108.
+  return base::trace_event::EstimateMemoryUsage(shared_frame_->data);
 }
 
 void SpdyBuffer::ConsumeHelper(size_t consume_size,
@@ -106,6 +111,6 @@ void SpdyBuffer::ConsumeHelper(size_t consume_size,
            consume_callbacks_.begin(); it != consume_callbacks_.end(); ++it) {
     it->Run(consume_size, consume_source);
   }
-};
+}
 
 }  // namespace net

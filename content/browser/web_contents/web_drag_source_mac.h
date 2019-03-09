@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef CONTENT_BROWSER_WEB_CONTENTS_WEB_DRAG_SOURCE_MAC_H_
+#define CONTENT_BROWSER_WEB_CONTENTS_WEB_DRAG_SOURCE_MAC_H_
+
 #import <Cocoa/Cocoa.h>
 
 #include <memory>
@@ -9,23 +12,25 @@
 #include "base/files/file_path.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/mac/scoped_nsobject.h"
+#include "base/memory/weak_ptr.h"
 #include "content/common/content_export.h"
 #include "url/gurl.h"
 
 namespace content {
-class WebContentsImpl;
 struct DropData;
-}
+namespace mojom {
+class WebContentsNSViewClient;
+}  // namespace mojom
+}  // namespace content
 
 // A class that handles tracking and event processing for a drag and drop
 // originating from the content area.
 CONTENT_EXPORT
 @interface WebDragSource : NSObject {
  @private
-  // Our contents. Weak reference (owns or co-owns us).
-  // An instance of this class may outlive |contents_|. The destructor of
-  // |contents_| must set this ivar to |nullptr|.
-  content::WebContentsImpl* contents_;
+  // The client through which to communicate with the WebContentsImpl. Owns
+  // |self| and resets |client_| via clearClientAndWebContentsView.
+  content::mojom::WebContentsNSViewClient* client_;
 
   // The view from which the drag was initiated. Weak reference.
   // An instance of this class may outlive |contentsView_|. The destructor of
@@ -60,16 +65,16 @@ CONTENT_EXPORT
 // Initialize a WebDragSource object for a drag (originating on the given
 // contentsView and with the given dropData and pboard). Fill the pasteboard
 // with data types appropriate for dropData.
-- (id)initWithContents:(content::WebContentsImpl*)contents
-                  view:(NSView*)contentsView
-              dropData:(const content::DropData*)dropData
-                 image:(NSImage*)image
-                offset:(NSPoint)offset
-            pasteboard:(NSPasteboard*)pboard
-     dragOperationMask:(NSDragOperation)dragOperationMask;
+- (id)initWithClient:(content::mojom::WebContentsNSViewClient*)client
+                view:(NSView*)contentsView
+            dropData:(const content::DropData*)dropData
+               image:(NSImage*)image
+              offset:(NSPoint)offset
+          pasteboard:(NSPasteboard*)pboard
+   dragOperationMask:(NSDragOperation)dragOperationMask;
 
 // Call when the web contents is gone.
-- (void)clearWebContentsView;
+- (void)clearClientAndWebContentsView;
 
 // Returns a mask of the allowed drag operations.
 - (NSDragOperation)draggingSourceOperationMaskForLocal:(BOOL)isLocal;
@@ -95,3 +100,5 @@ CONTENT_EXPORT
 - (NSString*)dragPromisedFileTo:(NSString*)path;
 
 @end
+
+#endif  // CONTENT_BROWSER_WEB_CONTENTS_WEB_DRAG_SOURCE_MAC_H_

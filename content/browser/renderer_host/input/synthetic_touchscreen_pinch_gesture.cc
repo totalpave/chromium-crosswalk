@@ -9,7 +9,7 @@
 #include <cmath>
 
 #include "base/logging.h"
-#include "ui/events/latency_info.h"
+#include "ui/latency/latency_info.h"
 
 namespace content {
 
@@ -40,8 +40,9 @@ SyntheticGesture::Result SyntheticTouchscreenPinchGesture::ForwardInputEvents(
 
   DCHECK_NE(gesture_source_type_, SyntheticGestureParams::DEFAULT_INPUT);
 
-  if (!synthetic_pointer_)
-    synthetic_pointer_ = SyntheticPointer::Create(gesture_source_type_);
+  if (!synthetic_pointer_driver_)
+    synthetic_pointer_driver_ =
+        SyntheticPointerDriver::Create(gesture_source_type_);
 
   if (gesture_source_type_ == SyntheticGestureParams::TOUCH_INPUT) {
     ForwardTouchInputEvents(timestamp, target);
@@ -51,6 +52,13 @@ SyntheticGesture::Result SyntheticTouchscreenPinchGesture::ForwardInputEvents(
 
   return (state_ == DONE) ? SyntheticGesture::GESTURE_FINISHED
                           : SyntheticGesture::GESTURE_RUNNING;
+}
+
+void SyntheticTouchscreenPinchGesture::WaitForTargetAck(
+    base::OnceClosure callback,
+    SyntheticGestureTarget* target) const {
+  target->WaitForTargetAck(params_.GetGestureType(), gesture_source_type_,
+                           std::move(callback));
 }
 
 void SyntheticTouchscreenPinchGesture::ForwardTouchInputEvents(
@@ -78,17 +86,19 @@ void SyntheticTouchscreenPinchGesture::ForwardTouchInputEvents(
     } break;
     case SETUP:
       NOTREACHED() << "State SETUP invalid for synthetic pinch.";
+      break;
     case DONE:
       NOTREACHED() << "State DONE invalid for synthetic pinch.";
+      break;
   }
 }
 
 void SyntheticTouchscreenPinchGesture::PressTouchPoints(
     SyntheticGestureTarget* target,
     const base::TimeTicks& timestamp) {
-  synthetic_pointer_->Press(params_.anchor.x(), start_y_0_, target, timestamp);
-  synthetic_pointer_->Press(params_.anchor.x(), start_y_1_, target, timestamp);
-  synthetic_pointer_->DispatchEvent(target, timestamp);
+  synthetic_pointer_driver_->Press(params_.anchor.x(), start_y_0_, 0);
+  synthetic_pointer_driver_->Press(params_.anchor.x(), start_y_1_, 1);
+  synthetic_pointer_driver_->DispatchEvent(target, timestamp);
 }
 
 void SyntheticTouchscreenPinchGesture::MoveTouchPoints(
@@ -99,19 +109,17 @@ void SyntheticTouchscreenPinchGesture::MoveTouchPoints(
   float current_y_0 = start_y_0_ + delta;
   float current_y_1 = start_y_1_ - delta;
 
-  synthetic_pointer_->Move(0, params_.anchor.x(), current_y_0, target,
-                           timestamp);
-  synthetic_pointer_->Move(1, params_.anchor.x(), current_y_1, target,
-                           timestamp);
-  synthetic_pointer_->DispatchEvent(target, timestamp);
+  synthetic_pointer_driver_->Move(params_.anchor.x(), current_y_0, 0);
+  synthetic_pointer_driver_->Move(params_.anchor.x(), current_y_1, 1);
+  synthetic_pointer_driver_->DispatchEvent(target, timestamp);
 }
 
 void SyntheticTouchscreenPinchGesture::ReleaseTouchPoints(
     SyntheticGestureTarget* target,
     const base::TimeTicks& timestamp) {
-  synthetic_pointer_->Release(0, target, timestamp);
-  synthetic_pointer_->Release(1, target, timestamp);
-  synthetic_pointer_->DispatchEvent(target, timestamp);
+  synthetic_pointer_driver_->Release(0);
+  synthetic_pointer_driver_->Release(1);
+  synthetic_pointer_driver_->DispatchEvent(target, timestamp);
 }
 
 void SyntheticTouchscreenPinchGesture::SetupCoordinatesAndStopTime(
@@ -121,16 +129,15 @@ void SyntheticTouchscreenPinchGesture::SetupCoordinatesAndStopTime(
   // factor. Since we're moving both pointers at the same speed, each pointer's
   // distance to the anchor is half the span.
   float initial_distance_to_anchor, final_distance_to_anchor;
+  const float single_point_slop = target->GetSpanSlopInDips() / 2.0f;
   if (params_.scale_factor > 1.0f) {  // zooming in
     initial_distance_to_anchor = target->GetMinScalingSpanInDips() / 2.0f;
     final_distance_to_anchor =
-        (initial_distance_to_anchor + target->GetTouchSlopInDips()) *
-        params_.scale_factor;
+        (initial_distance_to_anchor + single_point_slop) * params_.scale_factor;
   } else {  // zooming out
     final_distance_to_anchor = target->GetMinScalingSpanInDips() / 2.0f;
     initial_distance_to_anchor =
-        (final_distance_to_anchor / params_.scale_factor) +
-        target->GetTouchSlopInDips();
+        (final_distance_to_anchor / params_.scale_factor) + single_point_slop;
   }
 
   start_y_0_ = params_.anchor.y() - initial_distance_to_anchor;

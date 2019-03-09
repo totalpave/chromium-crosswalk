@@ -6,41 +6,27 @@
 
 #include <algorithm>
 
+#include "base/trace_event/memory_usage_estimator.h"
+
 namespace history {
 
 URLRow::URLRow() {
-  Initialize();
 }
 
 URLRow::URLRow(const GURL& url) : url_(url) {
-  // Initialize will not set the URL, so our initialization above will stay.
-  Initialize();
 }
 
-URLRow::URLRow(const GURL& url, URLID id) : url_(url) {
-  // Initialize will not set the URL, so our initialization above will stay.
-  Initialize();
-  // Initialize will zero the id_, so set it here.
-  id_ = id;
-}
+URLRow::URLRow(const GURL& url, URLID id) : id_(id), url_(url) {}
 
 URLRow::URLRow(const URLRow& other) = default;
+
+URLRow::URLRow(URLRow&& other) noexcept = default;
 
 URLRow::~URLRow() {
 }
 
-URLRow& URLRow::operator=(const URLRow& other) {
-  if (this == &other)
-    return *this;
-  id_ = other.id_;
-  url_ = other.url_;
-  title_ = other.title_;
-  visit_count_ = other.visit_count_;
-  typed_count_ = other.typed_count_;
-  last_visit_ = other.last_visit_;
-  hidden_ = other.hidden_;
-  return *this;
-}
+URLRow& URLRow::operator=(const URLRow& other) = default;
+URLRow& URLRow::operator=(URLRow&& other) = default;
 
 void URLRow::Swap(URLRow* other) {
   std::swap(id_, other->id_);
@@ -52,39 +38,33 @@ void URLRow::Swap(URLRow* other) {
   std::swap(hidden_, other->hidden_);
 }
 
-void URLRow::Initialize() {
-  id_ = 0;
-  visit_count_ = 0;
-  typed_count_ = 0;
-  last_visit_ = base::Time();
-  hidden_ = false;
+size_t URLRow::EstimateMemoryUsage() const {
+  return base::trace_event::EstimateMemoryUsage(url_) +
+         base::trace_event::EstimateMemoryUsage(title_);
 }
 
-
-URLResult::URLResult()
-    : blocked_visit_(false) {
-}
+URLResult::URLResult() {}
 
 URLResult::URLResult(const GURL& url, base::Time visit_time)
-    : URLRow(url),
-      visit_time_(visit_time),
-      blocked_visit_(false) {
-}
+    : URLRow(url), visit_time_(visit_time) {}
 
-URLResult::URLResult(const GURL& url,
-                     const query_parser::Snippet::MatchPositions& title_matches)
-    : URLRow(url) {
-  title_match_positions_ = title_matches;
-}
-URLResult::URLResult(const URLRow& url_row)
-    : URLRow(url_row),
-      blocked_visit_(false) {
-}
+URLResult::URLResult(const URLRow& url_row) : URLRow(url_row) {}
 
 URLResult::URLResult(const URLResult& other) = default;
 
+// TODO(bug 706963) this should be implemented as "= default" when Android
+// toolchain is updated.
+URLResult::URLResult(URLResult&& other) noexcept
+    : URLRow(std::move(other)),
+      visit_time_(other.visit_time_),
+      snippet_(std::move(other.snippet_)),
+      title_match_positions_(std::move(other.title_match_positions_)),
+      blocked_visit_(other.blocked_visit_) {}
+
 URLResult::~URLResult() {
 }
+
+URLResult& URLResult::operator=(const URLResult&) = default;
 
 void URLResult::SwapResult(URLResult* other) {
   URLRow::Swap(other);

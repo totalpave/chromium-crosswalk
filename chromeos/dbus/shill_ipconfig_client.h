@@ -8,8 +8,8 @@
 #include <string>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/dbus_client.h"
 #include "chromeos/dbus/shill_client_helper.h"
 
@@ -33,7 +33,7 @@ class ShillPropertyChangedObserver;
 // ShillIPConfigClient is used to communicate with the Shill IPConfig
 // service.  All methods should be called from the origin thread which
 // initializes the DBusThreadManager instance.
-class CHROMEOS_EXPORT ShillIPConfigClient : public DBusClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) ShillIPConfigClient : public DBusClient {
  public:
   typedef ShillClientHelper::PropertyChangedHandler PropertyChangedHandler;
   typedef ShillClientHelper::DictionaryValueCallback DictionaryValueCallback;
@@ -67,7 +67,7 @@ class CHROMEOS_EXPORT ShillIPConfigClient : public DBusClient {
   // Refreshes the active IP configuration after service property changes and
   // renews the DHCP lease, if any.
   virtual void Refresh(const dbus::ObjectPath& ipconfig_path,
-                       const VoidDBusMethodCallback& callback) = 0;
+                       VoidDBusMethodCallback callback) = 0;
 
   // Calls GetProperties method.
   // |callback| is called after the method call succeeds.
@@ -79,18 +79,18 @@ class CHROMEOS_EXPORT ShillIPConfigClient : public DBusClient {
   virtual void SetProperty(const dbus::ObjectPath& ipconfig_path,
                            const std::string& name,
                            const base::Value& value,
-                           const VoidDBusMethodCallback& callback) = 0;
+                           VoidDBusMethodCallback callback) = 0;
 
   // Calls ClearProperty method.
   // |callback| is called after the method call succeeds.
   virtual void ClearProperty(const dbus::ObjectPath& ipconfig_path,
                              const std::string& name,
-                             const VoidDBusMethodCallback& callback) = 0;
+                             VoidDBusMethodCallback callback) = 0;
 
   // Calls Remove method.
   // |callback| is called after the method call succeeds.
   virtual void Remove(const dbus::ObjectPath& ipconfig_path,
-                      const VoidDBusMethodCallback& callback) = 0;
+                      VoidDBusMethodCallback callback) = 0;
 
   // Returns an interface for testing (stub only), or returns NULL.
   virtual ShillIPConfigClient::TestInterface* GetTestInterface() = 0;

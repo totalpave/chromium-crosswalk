@@ -8,11 +8,11 @@
 #include <utility>
 
 #include "base/callback.h"
-#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "components/policy/core/common/external_data_fetcher.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
+#include "components/strings/grit/components_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace policy {
@@ -32,14 +32,13 @@ const char kExtension3[] = "extension-3";
 // Adds test policies to |policy|.
 void AddTestPolicies(PolicyMap* policy) {
   policy->Set("mandatory-user", POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-              POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::FundamentalValue(123)), nullptr);
+              POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(123), nullptr);
   policy->Set("mandatory-machine", POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
-              POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::StringValue("omg")), nullptr);
+              POLICY_SOURCE_CLOUD, std::make_unique<base::Value>("omg"),
+              nullptr);
   policy->Set("recommended-user", POLICY_LEVEL_RECOMMENDED, POLICY_SCOPE_USER,
-              POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::FundamentalValue(true)), nullptr);
+              POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(true),
+              nullptr);
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   dict->SetBoolean("false", false);
   dict->SetInteger("int", 456);
@@ -59,13 +58,13 @@ void AddTestPoliciesWithParams(PolicyMap *policy,
                                PolicyLevel level,
                                PolicyScope scope) {
   policy->Set(kPolicyClashing0, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-              POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::FundamentalValue(value)), nullptr);
+              POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(value),
+              nullptr);
   policy->Set(kPolicyClashing1, level, scope, POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::FundamentalValue(value)), nullptr);
+              std::make_unique<base::Value>(value), nullptr);
   policy->Set(name, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-              POLICY_SOURCE_CLOUD,
-              base::WrapUnique(new base::FundamentalValue(value)), nullptr);
+              POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(value),
+              nullptr);
 }
 
 // Returns true if |bundle| is empty.
@@ -193,20 +192,31 @@ TEST(PolicyBundleTest, MergeFrom) {
   // - kPolicyN are merged from each bundle.
   PolicyMap expected;
   expected.Set(kPolicyClashing0, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-               POLICY_SOURCE_CLOUD,
-               base::WrapUnique(new base::FundamentalValue(0)), nullptr);
+               POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(0), nullptr);
+  expected.GetMutable(kPolicyClashing0)
+      ->AddConflictingPolicy(*policy1.Get(kPolicyClashing0));
+  expected.GetMutable(kPolicyClashing0)
+      ->AddConflictingPolicy(*policy2.Get(kPolicyClashing0));
+  expected.GetMutable(kPolicyClashing0)
+      ->AddError(IDS_POLICY_CONFLICT_DIFF_VALUE);
+  expected.GetMutable(kPolicyClashing0)
+      ->AddError(IDS_POLICY_CONFLICT_DIFF_VALUE);
   expected.Set(kPolicyClashing1, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
-               POLICY_SOURCE_CLOUD,
-               base::WrapUnique(new base::FundamentalValue(1)), nullptr);
+               POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(1), nullptr);
+  expected.GetMutable(kPolicyClashing1)
+      ->AddConflictingPolicy(*policy0.Get(kPolicyClashing1));
+  expected.GetMutable(kPolicyClashing1)
+      ->AddConflictingPolicy(*policy2.Get(kPolicyClashing1));
+  expected.GetMutable(kPolicyClashing1)
+      ->AddError(IDS_POLICY_CONFLICT_DIFF_VALUE);
+  expected.GetMutable(kPolicyClashing1)
+      ->AddError(IDS_POLICY_CONFLICT_DIFF_VALUE);
   expected.Set(kPolicy0, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-               POLICY_SOURCE_CLOUD,
-               base::WrapUnique(new base::FundamentalValue(0)), nullptr);
+               POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(0), nullptr);
   expected.Set(kPolicy1, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-               POLICY_SOURCE_CLOUD,
-               base::WrapUnique(new base::FundamentalValue(1)), nullptr);
+               POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(1), nullptr);
   expected.Set(kPolicy2, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-               POLICY_SOURCE_CLOUD,
-               base::WrapUnique(new base::FundamentalValue(2)), nullptr);
+               POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(2), nullptr);
   EXPECT_TRUE(merged.Get(PolicyNamespace(POLICY_DOMAIN_CHROME,
                                          std::string())).Equals(expected));
   EXPECT_TRUE(merged.Get(PolicyNamespace(POLICY_DOMAIN_EXTENSIONS,
@@ -246,15 +256,13 @@ TEST(PolicyBundleTest, Equals) {
   other.CopyFrom(bundle);
   bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()))
       .Set(kPolicy0, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-           POLICY_SOURCE_CLOUD,
-           base::WrapUnique(new base::FundamentalValue(123)), nullptr);
+           POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(123), nullptr);
   EXPECT_FALSE(bundle.Equals(other));
   other.CopyFrom(bundle);
   EXPECT_TRUE(bundle.Equals(other));
   bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()))
       .Set(kPolicy0, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
-           POLICY_SOURCE_CLOUD,
-           base::WrapUnique(new base::FundamentalValue(123)), nullptr);
+           POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(123), nullptr);
   EXPECT_FALSE(bundle.Equals(other));
 
   // Test non-const Get().
@@ -264,8 +272,8 @@ TEST(PolicyBundleTest, Equals) {
       bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()));
   EXPECT_TRUE(bundle.Equals(other));
   policy_map.Set(kPolicy0, POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER,
-                 POLICY_SOURCE_CLOUD,
-                 base::WrapUnique(new base::FundamentalValue(123)), nullptr);
+                 POLICY_SOURCE_CLOUD, std::make_unique<base::Value>(123),
+                 nullptr);
   EXPECT_FALSE(bundle.Equals(other));
 }
 

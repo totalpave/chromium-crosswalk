@@ -10,13 +10,14 @@
 #include <string>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "chrome/browser/chromeos/file_system_provider/fake_extension_provider.h"
 #include "chrome/browser/chromeos/file_system_provider/fake_provided_file_system.h"
 #include "chrome/browser/chromeos/file_system_provider/service.h"
 #include "chrome/browser/chromeos/file_system_provider/service_factory.h"
@@ -24,13 +25,13 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_file_system_context.h"
 #include "extensions/browser/extension_registry.h"
 #include "storage/browser/blob/shareable_file_reference.h"
 #include "storage/browser/fileapi/async_file_util.h"
 #include "storage/browser/fileapi/external_mount_points.h"
 #include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/test/test_file_system_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
@@ -39,6 +40,7 @@ namespace {
 
 const char kExtensionId[] = "mbflcebpggnecokmikipoihdbecnjfoj";
 const char kFileSystemId[] = "testing-file-system";
+const ProviderId kProviderId = ProviderId::CreateFromExtensionId(kExtensionId);
 
 // Logs callbacks invocations on the tested operations.
 // TODO(mtomasz): Store and verify more arguments, once the operations return
@@ -52,8 +54,7 @@ class EventLogger {
     result_.reset(new base::File::Error(error));
   }
 
-  void OnCreateOrOpen(base::File file,
-                      const base::Closure& on_close_callback) {
+  void OnCreateOrOpen(base::File file, base::OnceClosure on_close_callback) {
     if (file.IsValid())
       result_.reset(new base::File::Error(base::File::FILE_OK));
 
@@ -70,7 +71,7 @@ class EventLogger {
   }
 
   void OnReadDirectory(base::File::Error error,
-                       const storage::AsyncFileUtil::EntryList& file_list,
+                       storage::AsyncFileUtil::EntryList file_list,
                        bool has_more) {
     result_.reset(new base::File::Error(error));
   }
@@ -79,7 +80,7 @@ class EventLogger {
       base::File::Error error,
       const base::File::Info& file_info,
       const base::FilePath& platform_path,
-      const scoped_refptr<storage::ShareableFileReference>& file_ref) {
+      scoped_refptr<storage::ShareableFileReference> file_ref) {
     result_.reset(new base::File::Error(error));
   }
 
@@ -99,8 +100,7 @@ storage::FileSystemURL CreateFileSystemURL(const std::string& mount_point_name,
   const storage::ExternalMountPoints* const mount_points =
       storage::ExternalMountPoints::GetSystemInstance();
   return mount_points->CreateCrackedFileSystemURL(
-      GURL(origin),
-      storage::kFileSystemTypeExternal,
+      url::Origin::Create(GURL(origin)), storage::kFileSystemTypeExternal,
       base::FilePath::FromUTF8Unsafe(mount_point_name).Append(file_path));
 }
 
@@ -125,17 +125,16 @@ class FileSystemProviderProviderAsyncFileUtilTest : public testing::Test {
     async_file_util_.reset(new internal::ProviderAsyncFileUtil);
 
     file_system_context_ =
-        content::CreateFileSystemContextForTesting(NULL, data_dir_.path());
+        content::CreateFileSystemContextForTesting(NULL, data_dir_.GetPath());
 
     Service* service = Service::Get(profile_);  // Owned by its factory.
-    service->SetFileSystemFactoryForTesting(
-        base::Bind(&FakeProvidedFileSystem::Create));
+    service->RegisterProvider(FakeExtensionProvider::Create(kExtensionId));
 
     const base::File::Error result = service->MountFileSystem(
-        kExtensionId, MountOptions(kFileSystemId, "Testing File System"));
+        kProviderId, MountOptions(kFileSystemId, "Testing File System"));
     ASSERT_EQ(base::File::FILE_OK, result);
     const ProvidedFileSystemInfo& file_system_info =
-        service->GetProvidedFileSystem(kExtensionId, kFileSystemId)
+        service->GetProvidedFileSystem(kProviderId, kFileSystemId)
             ->GetFileSystemInfo();
     const std::string mount_point_name =
         file_system_info.mount_path().BaseName().AsUTF8Unsafe();
@@ -153,8 +152,8 @@ class FileSystemProviderProviderAsyncFileUtilTest : public testing::Test {
 
   std::unique_ptr<storage::FileSystemOperationContext>
   CreateOperationContext() {
-    return base::WrapUnique(
-        new storage::FileSystemOperationContext(file_system_context_.get()));
+    return std::make_unique<storage::FileSystemOperationContext>(
+        file_system_context_.get());
   }
 
   content::TestBrowserThreadBundle thread_bundle_;

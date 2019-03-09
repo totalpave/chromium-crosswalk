@@ -61,9 +61,14 @@ public interface NavigationController {
     public void loadIfNecessary();
 
     /**
+     * @return Whether a reload has been requested.
+     */
+    public boolean needsReload();
+
+    /**
      * Requests the current navigation to be loaded upon the next call to loadIfNecessary().
      */
-    public void requestRestoreLoad();
+    public void setNeedsReload();
 
     /**
      * Reload the current page.
@@ -71,19 +76,9 @@ public interface NavigationController {
     public void reload(boolean checkForRepost);
 
     /**
-     * Reload the current page to refresh page contents, may not revalidate the cache contents.
-     */
-    public void reloadToRefreshContent(boolean checkForRepost);
-
-    /**
      * Reload the current page, bypassing the contents of the cache.
      */
     public void reloadBypassingCache(boolean checkForRepost);
-
-    /**
-     * Reload the current page with Lo-Fi off, ignoring the contents of the cache.
-     */
-    public void reloadDisableLoFi(boolean checkForRepost);
 
     /**
      * Cancel the pending reload.
@@ -107,7 +102,6 @@ public interface NavigationController {
      * Clears NavigationController's page history in both backwards and
      * forwards directions.
      */
-    @VisibleForTesting
     public void clearHistory();
 
     /**
@@ -125,13 +119,6 @@ public interface NavigationController {
     * @return navigation history by keeping above constraints.
     */
     public NavigationHistory getDirectedNavigationHistory(boolean isForward, int itemLimit);
-
-    /**
-     * Get Original URL for current Navigation entry of NavigationController.
-     * @return The original request URL for the current navigation entry, or null if there is no
-     *         current entry.
-     */
-    public String getOriginalUrlForVisibleNavigationEntry();
 
     /**
      * Clears SSL preferences for this NavigationController.
@@ -178,27 +165,24 @@ public interface NavigationController {
     public boolean removeEntryAtIndex(int index);
 
     /**
-     * @return Whether it is safe to call CopyStateFrom (i.e. the navigation state is empty).
+     * Gets extra data on the {@link NavigationEntry} at {@code index}.
+     * @param index The index of the navigation entry.
+     * @param key The data key.
+     * @return The data value, or null if not found.
      */
-    public boolean canCopyStateOver();
+    String getEntryExtraData(int index, String key);
 
     /**
-     * @return Whether it is safe to call CopyStateFromAndPrune.
+     * Sets extra data on the {@link NavigationEntry} at {@code index}.
+     * @param index The index of the navigation entry.
+     * @param key The data key.
+     * @param value The data value.
      */
-    public boolean canPruneAllButLastCommitted();
+    void setEntryExtraData(int index, String key, String value);
 
     /**
-     * Copies the navigation state from the given controller to this one. This one should be empty.
-     * @param source A source of the navigation state
+     * @param index The index of the navigation entry.
+     * @return true if the entry at |index| is marked to be skipped on back/forward UI.
      */
-    public void copyStateFrom(NavigationController source);
-
-    /**
-     * A variant of CopyStateFrom. Removes all entries from this except the last committed entry,
-     * and inserts all entries from |source| before and including its last committed entry.
-     * See navigation_controller.h for more detailed description.
-     * @param source A source of the navigation state
-     * @param replaceEntry Whether to replace the current entry in source
-     */
-    public void copyStateFromAndPrune(NavigationController source, boolean replaceEntry);
+    public boolean isEntryMarkedToBeSkipped(int index);
 }

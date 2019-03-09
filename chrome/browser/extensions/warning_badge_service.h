@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROME_BROWSER_EXTENSIONS_EXTENSION_WARNING_BADGE_SERVICE_H_
-#define CHROME_BROWSER_EXTENSIONS_EXTENSION_WARNING_BADGE_SERVICE_H_
+#ifndef CHROME_BROWSER_EXTENSIONS_WARNING_BADGE_SERVICE_H_
+#define CHROME_BROWSER_EXTENSIONS_WARNING_BADGE_SERVICE_H_
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/warning_service.h"
 #include "extensions/browser/warning_set.h"
@@ -19,8 +18,7 @@ namespace extensions {
 // A service that is responsible for showing an extension warning badge on the
 // wrench menu.
 class WarningBadgeService : public KeyedService,
-                            public WarningService::Observer,
-                            public base::NonThreadSafe {
+                            public WarningService::Observer {
  public:
   explicit WarningBadgeService(Profile* profile);
   ~WarningBadgeService() override;
@@ -56,4 +54,4 @@ class WarningBadgeService : public KeyedService,
 
 }  // namespace extensions
 
-#endif  // CHROME_BROWSER_EXTENSIONS_EXTENSION_WARNING_BADGE_SERVICE_H_
+#endif  // CHROME_BROWSER_EXTENSIONS_WARNING_BADGE_SERVICE_H_

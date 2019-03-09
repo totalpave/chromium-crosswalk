@@ -9,8 +9,9 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/chromeos/login/login_manager_test.h"
 #include "chrome/browser/chromeos/login/screens/error_screen.h"
 #include "chrome/browser/chromeos/login/screens/network_error_view.h"
@@ -21,7 +22,7 @@
 #include "chrome/browser/chromeos/login/ui/webui_login_view.h"
 #include "chrome/browser/chromeos/net/network_portal_detector_test_impl.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/dbus/fake_shill_manager_client.h"
 #include "chromeos/network/portal_detector/network_portal_detector.h"
 
@@ -34,8 +35,7 @@ namespace {
 class CaptivePortalWindowProxyStubDelegate
     : public CaptivePortalWindowProxyDelegate {
  public:
-  CaptivePortalWindowProxyStubDelegate(): num_portal_notifications_(0) {
-  }
+  CaptivePortalWindowProxyStubDelegate() : num_portal_notifications_(0) {}
 
   ~CaptivePortalWindowProxyStubDelegate() override {}
 
@@ -51,21 +51,13 @@ class CaptivePortalWindowProxyStubDelegate
 
 class CaptivePortalWindowTest : public InProcessBrowserTest {
  protected:
-  void ShowIfRedirected() {
-    captive_portal_window_proxy_->ShowIfRedirected();
-  }
+  void ShowIfRedirected() { captive_portal_window_proxy_->ShowIfRedirected(); }
 
-  void Show() {
-    captive_portal_window_proxy_->Show();
-  }
+  void Show() { captive_portal_window_proxy_->Show(); }
 
-  void Close() {
-    captive_portal_window_proxy_->Close();
-  }
+  void Close() { captive_portal_window_proxy_->Close(); }
 
-  void OnRedirected() {
-    captive_portal_window_proxy_->OnRedirected();
-  }
+  void OnRedirected() { captive_portal_window_proxy_->OnRedirected(); }
 
   void OnOriginalURLLoaded() {
     captive_portal_window_proxy_->OnOriginalURLLoaded();
@@ -81,28 +73,23 @@ class CaptivePortalWindowTest : public InProcessBrowserTest {
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitch(chromeos::switches::kForceLoginManagerInTests);
     command_line->AppendSwitch(chromeos::switches::kLoginManager);
+    command_line->AppendSwitch(chromeos::switches::kDisableHIDDetectionOnOOBE);
   }
 
   void SetUpOnMainThread() override {
-    host_ = LoginDisplayHost::default_host();
     content::WebContents* web_contents =
-        host_->GetWebUILoginView()->GetWebContents();
+        LoginDisplayHost::default_host()->GetOobeWebContents();
     captive_portal_window_proxy_.reset(
         new CaptivePortalWindowProxy(&delegate_, web_contents));
   }
 
   void TearDownOnMainThread() override {
     captive_portal_window_proxy_.reset();
-    base::MessageLoopForUI::current()->task_runner()->DeleteSoon(FROM_HERE,
-                                                                 host_);
-    base::MessageLoopForUI::current()->RunUntilIdle();
   }
 
  private:
   std::unique_ptr<CaptivePortalWindowProxy> captive_portal_window_proxy_;
   CaptivePortalWindowProxyStubDelegate delegate_;
-
-  LoginDisplayHost* host_;
 };
 
 IN_PROC_BROWSER_TEST_F(CaptivePortalWindowTest, Show) {
@@ -116,6 +103,8 @@ IN_PROC_BROWSER_TEST_F(CaptivePortalWindowTest, ShowClose) {
   CheckState(true, 0);
 
   Close();
+  // Wait for widget to be destroyed
+  base::RunLoop().RunUntilIdle();
   CheckState(false, 0);
 }
 
@@ -129,6 +118,8 @@ IN_PROC_BROWSER_TEST_F(CaptivePortalWindowTest, OnRedirected) {
   CheckState(true, 1);
 
   Close();
+  // Wait for widget to be destroyed
+  base::RunLoop().RunUntilIdle();
   CheckState(false, 1);
 }
 
@@ -142,6 +133,8 @@ IN_PROC_BROWSER_TEST_F(CaptivePortalWindowTest, OnOriginalURLLoaded) {
   CheckState(true, 1);
 
   OnOriginalURLLoaded();
+  // Wait for widget to be destroyed
+  base::RunLoop().RunUntilIdle();
   CheckState(false, 1);
 }
 
@@ -155,12 +148,16 @@ IN_PROC_BROWSER_TEST_F(CaptivePortalWindowTest, MultipleCalls) {
   CheckState(true, 0);
 
   Close();
+  // Wait for widget to be destroyed
+  base::RunLoop().RunUntilIdle();
   CheckState(false, 0);
 
   OnRedirected();
   CheckState(false, 1);
 
   OnOriginalURLLoaded();
+  // Wait for widget to be destroyed
+  base::RunLoop().RunUntilIdle();
   CheckState(false, 1);
 
   Show();
@@ -170,6 +167,8 @@ IN_PROC_BROWSER_TEST_F(CaptivePortalWindowTest, MultipleCalls) {
   CheckState(true, 2);
 
   Close();
+  // Wait for widget to be destroyed
+  base::RunLoop().RunUntilIdle();
   CheckState(false, 2);
 
   OnOriginalURLLoaded();
@@ -179,7 +178,7 @@ IN_PROC_BROWSER_TEST_F(CaptivePortalWindowTest, MultipleCalls) {
 class CaptivePortalWindowCtorDtorTest : public LoginManagerTest {
  public:
   CaptivePortalWindowCtorDtorTest()
-      : LoginManagerTest(false) {}
+      : LoginManagerTest(false, true /* should_initialize_webui */) {}
   ~CaptivePortalWindowCtorDtorTest() override {}
 
   void SetUpInProcessBrowserTestFixture() override {
@@ -193,8 +192,7 @@ class CaptivePortalWindowCtorDtorTest : public LoginManagerTest {
     network_portal_detector_->SetDefaultNetworkForTesting(
         FakeShillManagerClient::kFakeEthernetNetworkGuid);
     network_portal_detector_->SetDetectionResultsForTesting(
-        FakeShillManagerClient::kFakeEthernetNetworkGuid,
-        portal_state);
+        FakeShillManagerClient::kFakeEthernetNetworkGuid, portal_state);
   }
 
  protected:

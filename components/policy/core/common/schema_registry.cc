@@ -5,6 +5,7 @@
 #include "components/policy/core/common/schema_registry.h"
 
 #include "base/logging.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace policy {
 
@@ -15,19 +16,20 @@ SchemaRegistry::InternalObserver::~InternalObserver() {}
 SchemaRegistry::SchemaRegistry() : schema_map_(new SchemaMap) {
   for (int i = 0; i < POLICY_DOMAIN_SIZE; ++i)
     domains_ready_[i] = false;
-#if !defined(ENABLE_EXTENSIONS)
-  domains_ready_[POLICY_DOMAIN_EXTENSIONS] = true;
+#if !BUILDFLAG(ENABLE_EXTENSIONS)
+  SetExtensionsDomainsReady();
 #endif
 }
 
 SchemaRegistry::~SchemaRegistry() {
-  FOR_EACH_OBSERVER(InternalObserver,
-                    internal_observers_,
-                    OnSchemaRegistryShuttingDown(this));
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  for (auto& observer : internal_observers_)
+    observer.OnSchemaRegistryShuttingDown(this);
 }
 
 void SchemaRegistry::RegisterComponent(const PolicyNamespace& ns,
                                        const Schema& schema) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ComponentMap map;
   map[ns.component_id] = schema;
   RegisterComponents(ns.domain, map);
@@ -35,31 +37,35 @@ void SchemaRegistry::RegisterComponent(const PolicyNamespace& ns,
 
 void SchemaRegistry::RegisterComponents(PolicyDomain domain,
                                         const ComponentMap& components) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Don't issue notifications if nothing is being registered.
   if (components.empty())
     return;
   // Assume that a schema was updated if the namespace was already registered
   // before.
   DomainMap map(schema_map_->GetDomains());
-  for (ComponentMap::const_iterator it = components.begin();
-       it != components.end(); ++it) {
+  for (auto it = components.begin(); it != components.end(); ++it)
     map[domain][it->first] = it->second;
-  }
   schema_map_ = new SchemaMap(map);
   Notify(true);
 }
 
 void SchemaRegistry::UnregisterComponent(const PolicyNamespace& ns) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DomainMap map(schema_map_->GetDomains());
   if (map[ns.domain].erase(ns.component_id) != 0) {
     schema_map_ = new SchemaMap(map);
     Notify(false);
   } else {
-    NOTREACHED();
+    // Extension might be uninstalled before install so the associated policies
+    // are unregistered before registered. For example, a policy forced
+    // extension is removed from forced list during launch due to policy update.
+    DCHECK(ns.domain != POLICY_DOMAIN_CHROME);
   }
 }
 
 bool SchemaRegistry::IsReady() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (int i = 0; i < POLICY_DOMAIN_SIZE; ++i) {
     if (!domains_ready_[i])
       return false;
@@ -67,33 +73,53 @@ bool SchemaRegistry::IsReady() const {
   return true;
 }
 
-void SchemaRegistry::SetReady(PolicyDomain domain) {
+void SchemaRegistry::SetDomainReady(PolicyDomain domain) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (domains_ready_[domain])
     return;
   domains_ready_[domain] = true;
-  if (IsReady())
-    FOR_EACH_OBSERVER(Observer, observers_, OnSchemaRegistryReady());
+  if (IsReady()) {
+    for (auto& observer : observers_)
+      observer.OnSchemaRegistryReady();
+  }
+}
+
+void SchemaRegistry::SetAllDomainsReady() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  for (int i = 0; i < POLICY_DOMAIN_SIZE; ++i)
+    SetDomainReady(static_cast<PolicyDomain>(i));
+}
+
+void SchemaRegistry::SetExtensionsDomainsReady() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  SetDomainReady(POLICY_DOMAIN_EXTENSIONS);
+  SetDomainReady(POLICY_DOMAIN_SIGNIN_EXTENSIONS);
 }
 
 void SchemaRegistry::AddObserver(Observer* observer) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   observers_.AddObserver(observer);
 }
 
 void SchemaRegistry::RemoveObserver(Observer* observer) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   observers_.RemoveObserver(observer);
 }
 
 void SchemaRegistry::AddInternalObserver(InternalObserver* observer) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   internal_observers_.AddObserver(observer);
 }
 
 void SchemaRegistry::RemoveInternalObserver(InternalObserver* observer) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   internal_observers_.RemoveObserver(observer);
 }
 
 void SchemaRegistry::Notify(bool has_new_schemas) {
-  FOR_EACH_OBSERVER(
-      Observer, observers_, OnSchemaRegistryUpdated(has_new_schemas));
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  for (auto& observer : observers_)
+    observer.OnSchemaRegistryUpdated(has_new_schemas);
 }
 
 CombinedSchemaRegistry::CombinedSchemaRegistry()
@@ -101,13 +127,13 @@ CombinedSchemaRegistry::CombinedSchemaRegistry()
   // The combined registry is always ready, since it can always start tracking
   // another registry that is not ready yet and going from "ready" to "not
   // ready" is not allowed.
-  for (int i = 0; i < POLICY_DOMAIN_SIZE; ++i)
-    SetReady(static_cast<PolicyDomain>(i));
+  SetAllDomainsReady();
 }
 
 CombinedSchemaRegistry::~CombinedSchemaRegistry() {}
 
 void CombinedSchemaRegistry::Track(SchemaRegistry* registry) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   registries_.insert(registry);
   registry->AddObserver(this);
   registry->AddInternalObserver(this);
@@ -120,16 +146,16 @@ void CombinedSchemaRegistry::Track(SchemaRegistry* registry) {
 void CombinedSchemaRegistry::RegisterComponents(
     PolicyDomain domain,
     const ComponentMap& components) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DomainMap map(own_schema_map_->GetDomains());
-  for (ComponentMap::const_iterator it = components.begin();
-       it != components.end(); ++it) {
+  for (auto it = components.begin(); it != components.end(); ++it)
     map[domain][it->first] = it->second;
-  }
   own_schema_map_ = new SchemaMap(map);
   Combine(true);
 }
 
 void CombinedSchemaRegistry::UnregisterComponent(const PolicyNamespace& ns) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DomainMap map(own_schema_map_->GetDomains());
   if (map[ns.domain].erase(ns.component_id) != 0) {
     own_schema_map_ = new SchemaMap(map);
@@ -140,11 +166,13 @@ void CombinedSchemaRegistry::UnregisterComponent(const PolicyNamespace& ns) {
 }
 
 void CombinedSchemaRegistry::OnSchemaRegistryUpdated(bool has_new_schemas) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   Combine(has_new_schemas);
 }
 
 void CombinedSchemaRegistry::OnSchemaRegistryShuttingDown(
     SchemaRegistry* registry) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   registry->RemoveObserver(this);
   registry->RemoveInternalObserver(this);
   if (registries_.erase(registry) != 0) {
@@ -156,6 +184,7 @@ void CombinedSchemaRegistry::OnSchemaRegistryShuttingDown(
 }
 
 void CombinedSchemaRegistry::Combine(bool has_new_schemas) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // If two registries publish a Schema for the same component then it's
   // undefined which version gets in the combined registry.
   //
@@ -168,13 +197,13 @@ void CombinedSchemaRegistry::Combine(bool has_new_schemas) {
   // way policies are loaded currently, but isn't a problem worth fixing for
   // the time being.
   DomainMap map(own_schema_map_->GetDomains());
-  for (std::set<SchemaRegistry*>::const_iterator reg_it = registries_.begin();
-       reg_it != registries_.end(); ++reg_it) {
+  for (auto reg_it = registries_.begin(); reg_it != registries_.end();
+       ++reg_it) {
     const DomainMap& reg_domain_map = (*reg_it)->schema_map()->GetDomains();
-    for (DomainMap::const_iterator domain_it = reg_domain_map.begin();
+    for (auto domain_it = reg_domain_map.begin();
          domain_it != reg_domain_map.end(); ++domain_it) {
       const ComponentMap& reg_component_map = domain_it->second;
-      for (ComponentMap::const_iterator comp_it = reg_component_map.begin();
+      for (auto comp_it = reg_component_map.begin();
            comp_it != reg_component_map.end(); ++comp_it) {
         map[domain_it->first][comp_it->first] = comp_it->second;
       }
@@ -189,6 +218,7 @@ ForwardingSchemaRegistry::ForwardingSchemaRegistry(SchemaRegistry* wrapped)
   schema_map_ = wrapped_->schema_map();
   wrapped_->AddObserver(this);
   wrapped_->AddInternalObserver(this);
+  UpdateReadiness();
 }
 
 ForwardingSchemaRegistry::~ForwardingSchemaRegistry() {
@@ -201,6 +231,7 @@ ForwardingSchemaRegistry::~ForwardingSchemaRegistry() {
 void ForwardingSchemaRegistry::RegisterComponents(
     PolicyDomain domain,
     const ComponentMap& components) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // POLICY_DOMAIN_CHROME is skipped to avoid spurious updates when a new
   // Profile is created. If the ForwardingSchemaRegistry is used outside
   // device-level accounts then this should become configurable.
@@ -210,23 +241,37 @@ void ForwardingSchemaRegistry::RegisterComponents(
 }
 
 void ForwardingSchemaRegistry::UnregisterComponent(const PolicyNamespace& ns) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (wrapped_)
     wrapped_->UnregisterComponent(ns);
   // Ignore otherwise.
 }
 
 void ForwardingSchemaRegistry::OnSchemaRegistryUpdated(bool has_new_schemas) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   schema_map_ = wrapped_->schema_map();
   Notify(has_new_schemas);
 }
 
+void ForwardingSchemaRegistry::OnSchemaRegistryReady() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  UpdateReadiness();
+}
+
 void ForwardingSchemaRegistry::OnSchemaRegistryShuttingDown(
     SchemaRegistry* registry) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(wrapped_, registry);
   wrapped_->RemoveObserver(this);
   wrapped_->RemoveInternalObserver(this);
-  wrapped_ = NULL;
+  wrapped_ = nullptr;
   // Keep serving the same |schema_map_|.
+}
+
+void ForwardingSchemaRegistry::UpdateReadiness() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (wrapped_->IsReady())
+    SetAllDomainsReady();
 }
 
 }  // namespace policy

@@ -13,7 +13,7 @@
 class ContextualSearchFieldTrial {
  public:
   ContextualSearchFieldTrial();
-  ~ContextualSearchFieldTrial();
+  virtual ~ContextualSearchFieldTrial();
 
   // Returns a partial URL to use for a Contextual Search Resolve request, or
   // an empty string if no override is required.  The returned value is a prefix
@@ -23,11 +23,10 @@ class ContextualSearchFieldTrial {
 
   // Gets the size of the surrounding text to return for normal Resolve requests
   // when a Contextual Search is being performed.
-  int GetSurroundingSize();
+  int GetResolveSurroundingSize();
 
-  // Gets the size of the surrounding text to return for Icing when a Contextual
-  // Search is being performed.
-  int GetIcingSurroundingSize();
+  // Gets the size of the surrounding text to return as a sample to Java.
+  int GetSampleSurroundingSize();
 
   // Gets whether sending the URL of the base page is disabled.
   bool IsSendBasePageURLDisabled();
@@ -35,11 +34,15 @@ class ContextualSearchFieldTrial {
   // Gets whether decoding the mentions fields in the Resolve is disabled.
   bool IsDecodeMentionsDisabled();
 
+  // Gets an explicit version to use for Contextual Cards integration, or 0 if
+  // not set.
+  int GetContextualCardsVersion();
+
   // Disables the cache.
   void DisableCache();
 
   // Constant used in tests.
-  static const int kContextualSearchDefaultIcingSurroundingSize;
+  static const int kContextualSearchDefaultSampleSurroundingSize;
 
  protected:
   // Checks if command-line switch of the given name exists.
@@ -71,14 +74,21 @@ class ContextualSearchFieldTrial {
   // Cached values.
   bool is_resolver_url_prefix_cached_;
   std::string resolver_url_prefix_;
+
   bool is_surrounding_size_cached_;
   int surrounding_size_;
-  bool is_icing_surrounding_size_cached_;
-  int icing_surrounding_size_;
+
+  bool is_sample_surrounding_size_cached_;
+  int sample_surrounding_size_;
+
   bool is_send_base_page_url_disabled_cached_;
   bool is_send_base_page_url_disabled_;
+
   bool is_decode_mentions_disabled_cached_;
   bool is_decode_mentions_disabled_;
+
+  bool is_contextual_cards_version_cached_;
+  int contextual_cards_version_;
 
   DISALLOW_COPY_AND_ASSIGN(ContextualSearchFieldTrial);
 };

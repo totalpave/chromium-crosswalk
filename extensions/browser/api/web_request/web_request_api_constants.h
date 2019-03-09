@@ -50,6 +50,7 @@ extern const char kRealmKey[];
 extern const char kAuthCredentialsKey[];
 extern const char kUsernameKey[];
 extern const char kPasswordKey[];
+extern const char kInitiatorKey[];
 
 // Events.
 extern const char kOnAuthRequiredEvent[];
@@ -74,6 +75,7 @@ extern const char kOnResponseStarted[];
 extern const char kOnSendHeaders[];
 
 // Error messages.
+extern const char kInvalidPublicSessionBlockingResponse[];
 extern const char kInvalidRedirectUrl[];
 extern const char kInvalidBlockingResponse[];
 extern const char kInvalidRequestFilterUrl[];

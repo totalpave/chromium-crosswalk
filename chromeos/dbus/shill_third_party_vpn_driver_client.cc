@@ -7,8 +7,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <map>
+#include <set>
+
 #include "base/bind.h"
-#include "base/macros.h"
+#include "base/bind_helpers.h"
+#include "base/stl_util.h"
 #include "chromeos/dbus/shill_third_party_vpn_observer.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
@@ -131,7 +135,7 @@ ShillThirdPartyVpnDriverClientImpl::HelperInfo::HelperInfo(
 
 ShillThirdPartyVpnDriverClientImpl::ShillThirdPartyVpnDriverClientImpl()
     : bus_(nullptr) {
-  for (uint32_t i = 0; i < arraysize(kSetParametersKeyList); ++i) {
+  for (uint32_t i = 0; i < base::size(kSetParametersKeyList); ++i) {
     valid_keys_.insert(kSetParametersKeyList[i]);
   }
 }
@@ -142,7 +146,7 @@ ShillThirdPartyVpnDriverClientImpl::~ShillThirdPartyVpnDriverClientImpl() {
     bus_->RemoveObjectProxy(
         shill::kFlimflamServiceName,
         helper_info->helper()->object_proxy()->object_path(),
-        base::Bind(&base::DoNothing));
+        base::DoNothing());
     delete helper_info;
   }
 }
@@ -165,13 +169,13 @@ void ShillThirdPartyVpnDriverClientImpl::AddShillThirdPartyVpnObserver(
       shill::kFlimflamThirdPartyVpnInterface, shill::kOnPlatformMessageFunction,
       base::Bind(&ShillThirdPartyVpnDriverClientImpl::OnPlatformMessage,
                  helper_info->GetWeakPtr()),
-      base::Bind(&ShillThirdPartyVpnDriverClientImpl::OnSignalConnected));
+      base::BindOnce(&ShillThirdPartyVpnDriverClientImpl::OnSignalConnected));
 
   proxy->ConnectToSignal(
       shill::kFlimflamThirdPartyVpnInterface, shill::kOnPacketReceivedFunction,
       base::Bind(&ShillThirdPartyVpnDriverClientImpl::OnPacketReceived,
                  helper_info->GetWeakPtr()),
-      base::Bind(&ShillThirdPartyVpnDriverClientImpl::OnSignalConnected));
+      base::BindOnce(&ShillThirdPartyVpnDriverClientImpl::OnSignalConnected));
 }
 
 void ShillThirdPartyVpnDriverClientImpl::RemoveShillThirdPartyVpnObserver(
@@ -196,7 +200,7 @@ void ShillThirdPartyVpnDriverClientImpl::DeleteHelper(
   }
 
   bus_->RemoveObjectProxy(shill::kFlimflamServiceName, object_path,
-                          base::Bind(&base::DoNothing));
+                          base::DoNothing());
   helpers_.erase(helpers_.find(object_path.value()));
   delete helper_info;
 }
@@ -331,11 +335,9 @@ ShillThirdPartyVpnDriverClientImpl::GetHelperInfo(
 
 }  // namespace
 
-ShillThirdPartyVpnDriverClient::ShillThirdPartyVpnDriverClient() {
-}
+ShillThirdPartyVpnDriverClient::ShillThirdPartyVpnDriverClient() = default;
 
-ShillThirdPartyVpnDriverClient::~ShillThirdPartyVpnDriverClient() {
-}
+ShillThirdPartyVpnDriverClient::~ShillThirdPartyVpnDriverClient() = default;
 
 // static
 ShillThirdPartyVpnDriverClient* ShillThirdPartyVpnDriverClient::Create() {

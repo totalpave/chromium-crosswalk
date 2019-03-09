@@ -8,6 +8,7 @@
 #include <list>
 #include <map>
 #include <utility>
+#include <vector>
 
 #include "base/macros.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -16,7 +17,8 @@
 
 namespace ui {
 
-// The AcceleratorManger is used to handle keyboard accelerators.
+// AcceleratorManger handles processing of accelerators. A delegate may be
+// supplied which is notified as unique accelerators are added and removed.
 class UI_BASE_EXPORT AcceleratorManager {
  public:
   enum HandlerPriority {
@@ -27,10 +29,10 @@ class UI_BASE_EXPORT AcceleratorManager {
   AcceleratorManager();
   ~AcceleratorManager();
 
-  // Register a keyboard accelerator for the specified target. If multiple
+  // Register keyboard accelerators for the specified target. If multiple
   // targets are registered for an accelerator, a target registered later has
   // higher priority.
-  // |accelerator| is the accelerator to register.
+  // |accelerators| contains accelerators to register.
   // |priority| denotes the priority of the handler.
   // NOTE: In almost all cases, you should specify kNormalPriority for this
   // parameter. Setting it to kHighPriority prevents Chrome from sending the
@@ -44,9 +46,17 @@ class UI_BASE_EXPORT AcceleratorManager {
   // - the enter key
   // - any F key (F1, F2, F3 ...)
   // - any browser specific keys (as available on special keyboards)
-  void Register(const Accelerator& accelerator,
+  void Register(const std::vector<ui::Accelerator>& accelerators,
                 HandlerPriority priority,
                 AcceleratorTarget* target);
+
+  // Registers a keyboard accelerator for the specified target. This function
+  // calls the function Register() with vector argument above.
+  inline void RegisterAccelerator(const Accelerator& accelerator,
+                                  HandlerPriority priority,
+                                  AcceleratorTarget* target) {
+    Register({accelerator}, priority, target);
+  }
 
   // Unregister the specified keyboard accelerator for the specified target.
   void Unregister(const Accelerator& accelerator, AcceleratorTarget* target);
@@ -57,7 +67,7 @@ class UI_BASE_EXPORT AcceleratorManager {
   // Returns whether |accelerator| is already registered.
   bool IsRegistered(const Accelerator& accelerator) const;
 
-  // Activate the target associated with the specified accelerator.
+  // Activates the target associated with the specified accelerator.
   // First, AcceleratorPressed handler of the most recently registered target
   // is called, and if that handler processes the event (i.e. returns true),
   // this method immediately returns. If not, we do the same thing on the next
@@ -70,11 +80,17 @@ class UI_BASE_EXPORT AcceleratorManager {
 
  private:
   // The accelerators and associated targets.
-  typedef std::list<AcceleratorTarget*> AcceleratorTargetList;
+  using AcceleratorTargetList = std::list<AcceleratorTarget*>;
   // This construct pairs together a |bool| (denoting whether the list contains
   // a priority_handler at the front) with the list of AcceleratorTargets.
-  typedef std::pair<bool, AcceleratorTargetList> AcceleratorTargets;
-  typedef std::map<Accelerator, AcceleratorTargets> AcceleratorMap;
+  using AcceleratorTargets = std::pair<bool, AcceleratorTargetList>;
+  using AcceleratorMap = std::map<Accelerator, AcceleratorTargets>;
+
+  // Implementation of Unregister(). |map_iter| points to the accelerator to
+  // remove, and |target| the AcceleratorTarget to remove.
+  void UnregisterImpl(AcceleratorMap::iterator map_iter,
+                      AcceleratorTarget* target);
+
   AcceleratorMap accelerators_;
 
   DISALLOW_COPY_AND_ASSIGN(AcceleratorManager);

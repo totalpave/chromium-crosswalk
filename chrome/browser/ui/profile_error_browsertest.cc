@@ -8,7 +8,7 @@
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/simple_message_box_internal.h"
@@ -33,7 +33,7 @@ class ProfileErrorBrowserTest : public InProcessBrowserTest,
 
   bool SetUpUserDataDirectory() override {
     base::FilePath profile_dir;
-    if (!PathService::Get(chrome::DIR_USER_DATA, &profile_dir)) {
+    if (!base::PathService::Get(chrome::DIR_USER_DATA, &profile_dir)) {
       ADD_FAILURE();
       return false;
     }
@@ -48,8 +48,9 @@ class ProfileErrorBrowserTest : public InProcessBrowserTest,
     // Write either an empty or an invalid string to the user profile as
     // determined by the boolean parameter.
     const std::string kUserProfileData(do_corrupt_ ? "invalid json" : "{}");
-    if (!base::WriteFile(pref_file, kUserProfileData.c_str(),
-                         kUserProfileData.size())) {
+    if (base::WriteFile(pref_file, kUserProfileData.c_str(),
+                        kUserProfileData.size()) !=
+        static_cast<int>(kUserProfileData.size())) {
       ADD_FAILURE();
       return false;
     }
@@ -57,8 +58,6 @@ class ProfileErrorBrowserTest : public InProcessBrowserTest,
   }
 
   void SetUpInProcessBrowserTestFixture() override {
-    InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
-
     // Skip showing the error message box in order to avoid freezing the main
     // thread.
     chrome::internal::g_should_skip_message_box_for_test = true;
@@ -112,8 +111,8 @@ IN_PROC_BROWSER_TEST_P(ProfileErrorBrowserTest, MAYBE_CorruptedProfile) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(ProfileErrorBrowserTestInstance,
-                        ProfileErrorBrowserTest,
-                        testing::Bool());
+INSTANTIATE_TEST_SUITE_P(ProfileErrorBrowserTestInstance,
+                         ProfileErrorBrowserTest,
+                         testing::Bool());
 
 }  // namespace

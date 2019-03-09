@@ -6,11 +6,14 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/scoped_observer.h"
 #include "build/build_config.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/views/painter.h"
 #include "ui/views/view.h"
+#include "ui/views/view_observer.h"
 
 #if defined(OS_WIN)
 #include "skia/ext/skia_utils_win.h"
@@ -36,80 +39,78 @@ class SolidBackground : public Background {
   DISALLOW_COPY_AND_ASSIGN(SolidBackground);
 };
 
+// ThemedSolidBackground is a solid background that stays in sync with a view's
+// native theme.
+class ThemedSolidBackground : public SolidBackground, public ViewObserver {
+ public:
+  explicit ThemedSolidBackground(View* view, ui::NativeTheme::ColorId color_id)
+      : SolidBackground(gfx::kPlaceholderColor),
+        observer_(this),
+        color_id_(color_id) {
+    observer_.Add(view);
+    OnViewNativeThemeChanged(view);
+  }
+  ~ThemedSolidBackground() override {}
+
+  // ViewObserver:
+  void OnViewNativeThemeChanged(View* view) override {
+    SetNativeControlColor(view->GetNativeTheme()->GetSystemColor(color_id_));
+    view->SchedulePaint();
+  }
+  void OnViewIsDeleting(View* view) override { observer_.Remove(view); }
+
+ private:
+  ScopedObserver<View, ViewObserver> observer_;
+  ui::NativeTheme::ColorId color_id_;
+
+  DISALLOW_COPY_AND_ASSIGN(ThemedSolidBackground);
+};
+
 class BackgroundPainter : public Background {
  public:
-  BackgroundPainter(bool owns_painter, Painter* painter)
-      : owns_painter_(owns_painter), painter_(painter) {
-    DCHECK(painter);
+  explicit BackgroundPainter(std::unique_ptr<Painter> painter)
+      : painter_(std::move(painter)) {
+    DCHECK(painter_);
   }
 
-  ~BackgroundPainter() override {
-    if (owns_painter_)
-      delete painter_;
-  }
+  ~BackgroundPainter() override {}
 
   void Paint(gfx::Canvas* canvas, View* view) const override {
-    Painter::PaintPainterAt(canvas, painter_, view->GetLocalBounds());
+    Painter::PaintPainterAt(canvas, painter_.get(), view->GetLocalBounds());
   }
 
  private:
-  bool owns_painter_;
-  Painter* painter_;
+  std::unique_ptr<Painter> painter_;
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundPainter);
 };
 
-Background::Background()
-    : color_(SK_ColorWHITE)
-{
-}
+Background::Background() : color_(SK_ColorWHITE) {}
 
-Background::~Background() {
-}
+Background::~Background() {}
 
 void Background::SetNativeControlColor(SkColor color) {
   color_ = color;
 }
 
-// static
-Background* Background::CreateSolidBackground(SkColor color) {
-  return new SolidBackground(color);
+std::unique_ptr<Background> CreateSolidBackground(SkColor color) {
+  return std::make_unique<SolidBackground>(color);
 }
 
-// static
-Background* Background::CreateStandardPanelBackground() {
+std::unique_ptr<Background> CreateThemedSolidBackground(
+    View* view,
+    ui::NativeTheme::ColorId color_id) {
+  return std::make_unique<ThemedSolidBackground>(view, color_id);
+}
+
+std::unique_ptr<Background> CreateStandardPanelBackground() {
   // TODO(beng): Should be in NativeTheme.
   return CreateSolidBackground(SK_ColorWHITE);
 }
 
-// static
-Background* Background::CreateVerticalGradientBackground(SkColor color1,
-                                                         SkColor color2) {
-  Background* background = CreateBackgroundPainter(
-      true, Painter::CreateVerticalGradient(color1, color2));
-  background->SetNativeControlColor(
-      color_utils::AlphaBlend(color1, color2, 128));
-
-  return background;
-}
-
-// static
-Background* Background::CreateVerticalMultiColorGradientBackground(
-    SkColor* colors,
-    SkScalar* pos,
-    size_t count) {
-  Background* background = CreateBackgroundPainter(
-      true, Painter::CreateVerticalMultiColorGradient(colors, pos, count));
-  background->SetNativeControlColor(
-      color_utils::AlphaBlend(colors[0], colors[count-1], 128));
-
-  return background;
-}
-
-// static
-Background* Background::CreateBackgroundPainter(bool owns_painter,
-                                                Painter* painter) {
-  return new BackgroundPainter(owns_painter, painter);
+std::unique_ptr<Background> CreateBackgroundFromPainter(
+    std::unique_ptr<Painter> painter) {
+  return std::make_unique<BackgroundPainter>(std::move(painter));
 }
 
 }  // namespace views

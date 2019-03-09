@@ -5,7 +5,7 @@
 #include "chrome/browser/chromeos/login/error_screens_histogram_helper.h"
 
 #include "base/metrics/statistics_recorder.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/chromeos/login/screens/network_error.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -75,8 +75,8 @@ TEST_F(ErrorScreensHistogramHelperTest, TestShowHideTime) {
   now += base::TimeDelta::FromMilliseconds(1000);
   helper_->OnErrorHideTime(now);
   helper_.reset();
-  histograms_.ExpectUniqueSample(
-      "OOBE.ErrorScreensTime.TestScreen.Portal", 1000, 1);
+  histograms_.ExpectUniqueSample("OOBE.ErrorScreensTime.TestScreen.Portal",
+                                 1000, 1);
 }
 
 // Show, hide, show, hide error with 1 sec interval. Make sure time logged in
@@ -93,8 +93,8 @@ TEST_F(ErrorScreensHistogramHelperTest, TestShowHideShowHideTime) {
   now += base::TimeDelta::FromMilliseconds(1000);
   helper_->OnErrorHideTime(now);
   helper_.reset();
-  histograms_.ExpectUniqueSample(
-      "OOBE.ErrorScreensTime.TestScreen.Portal", 2000, 1);
+  histograms_.ExpectUniqueSample("OOBE.ErrorScreensTime.TestScreen.Portal",
+                                 2000, 1);
 }
 
 // Show, show, hide error with 1 sec interval. Make sure time logged in
@@ -109,8 +109,8 @@ TEST_F(ErrorScreensHistogramHelperTest, TestShowShowHideTime) {
   now += base::TimeDelta::FromMilliseconds(1000);
   helper_->OnErrorHideTime(now);
   helper_.reset();
-  histograms_.ExpectUniqueSample(
-      "OOBE.ErrorScreensTime.TestScreen.Portal", 2000, 1);
+  histograms_.ExpectUniqueSample("OOBE.ErrorScreensTime.TestScreen.Portal",
+                                 2000, 1);
 }
 
 }  // namespace chromeos

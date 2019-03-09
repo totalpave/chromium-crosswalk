@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/toolbar/toolbar_action_view.h"
+
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/strings/string16.h"
@@ -9,13 +11,11 @@
 #include "chrome/browser/sessions/session_tab_helper.h"
 #include "chrome/browser/ui/toolbar/test_toolbar_action_view_controller.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_controller.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_action_view.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/test/test_browser_thread.h"
+#include "chrome/test/views/chrome_views_test_base.h"
 #include "content/public/test/test_web_contents_factory.h"
-#include "ui/accessibility/ax_view_state.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/events/test/event_generator.h"
-#include "ui/views/test/views_test_base.h"
 
 namespace {
 
@@ -36,6 +36,7 @@ class TestToolbarActionViewDelegate : public ToolbarActionView::Delegate {
   views::MenuButton* GetOverflowReferenceView() override {
     return overflow_reference_view_;
   }
+  gfx::Size GetToolbarActionSize() override { return gfx::Size(32, 32); }
   void WriteDragDataForView(views::View* sender,
                             const gfx::Point& press_pt,
                             ui::OSExchangeData* data) override {}
@@ -80,7 +81,7 @@ class OpenMenuListener : public views::ContextMenuController {
                               const gfx::Point& point,
                               ui::MenuSourceType source_type) override {
     opened_menu_ = true;
-  };
+  }
 
   bool opened_menu() const { return opened_menu_; }
 
@@ -94,15 +95,13 @@ class OpenMenuListener : public views::ContextMenuController {
 
 }  // namespace
 
-class ToolbarActionViewUnitTest : public views::ViewsTestBase {
+class ToolbarActionViewUnitTest : public ChromeViewsTestBase {
  public:
-  ToolbarActionViewUnitTest()
-      : widget_(nullptr),
-        ui_thread_(content::BrowserThread::UI, message_loop()) {}
+  ToolbarActionViewUnitTest() : widget_(nullptr) {}
   ~ToolbarActionViewUnitTest() override {}
 
   void SetUp() override {
-    views::ViewsTestBase::SetUp();
+    ChromeViewsTestBase::SetUp();
 
     widget_ = new views::Widget;
     views::Widget::InitParams params =
@@ -110,10 +109,11 @@ class ToolbarActionViewUnitTest : public views::ViewsTestBase {
     params.bounds = gfx::Rect(0, 0, 200, 200);
     widget_->Init(params);
   }
+
   void TearDown() override {
     if (!widget_->IsClosed())
       widget_->Close();
-    views::ViewsTestBase::TearDown();
+    ChromeViewsTestBase::TearDown();
   }
 
   views::Widget* widget() { return widget_; }
@@ -121,9 +121,6 @@ class ToolbarActionViewUnitTest : public views::ViewsTestBase {
  private:
   // The widget managed by this test.
   views::Widget* widget_;
-
-  // Web contents need a fake ui thread.
-  content::TestBrowserThread ui_thread_;
 
   DISALLOW_COPY_AND_ASSIGN(ToolbarActionViewUnitTest);
 };
@@ -218,9 +215,10 @@ TEST_F(ToolbarActionViewUnitTest, BasicToolbarActionViewTest) {
   base::string16 tooltip_test;
   EXPECT_TRUE(view.GetTooltipText(gfx::Point(), &tooltip_test));
   EXPECT_EQ(tooltip, tooltip_test);
-  ui::AXViewState ax_state;
-  view.GetAccessibleState(&ax_state);
-  EXPECT_EQ(name, ax_state.name);
+  ui::AXNodeData ax_node_data;
+  view.GetAccessibleNodeData(&ax_node_data);
+  EXPECT_EQ(name, ax_node_data.GetString16Attribute(
+                      ax::mojom::StringAttribute::kName));
 
   // The button should start in normal state, with no actions executed.
   EXPECT_EQ(views::Button::STATE_NORMAL, view.state());
@@ -270,7 +268,7 @@ TEST_F(ToolbarActionViewUnitTest, BasicToolbarActionViewTest) {
   EXPECT_FALSE(view.wants_to_run_for_testing());
 
   // Create an overflow button.
-  views::MenuButton overflow_button(base::string16(), nullptr, false);
+  views::MenuButton overflow_button(base::string16(), nullptr);
   overflow_button.set_owned_by_client();
   action_view_delegate.set_overflow_reference_view(&overflow_button);
 

@@ -8,12 +8,10 @@
 #include <memory>
 
 #include "base/compiler_specific.h"
-#include "base/lazy_instance.h"
 #include "base/macros.h"
-#include "chrome/common/extensions/permissions/chrome_api_permissions.h"
 #include "chrome/common/extensions/permissions/chrome_permission_message_provider.h"
 #include "extensions/common/extensions_client.h"
-#include "extensions/common/permissions/extensions_api_permissions.h"
+#include "url/gurl.h"
 
 namespace extensions {
 
@@ -26,13 +24,11 @@ class ChromeExtensionsClient : public ExtensionsClient {
 
   void Initialize() override;
 
+  void InitializeWebStoreUrls(base::CommandLine* command_line) override;
+
   const PermissionMessageProvider& GetPermissionMessageProvider()
       const override;
   const std::string GetProductName() override;
-  std::unique_ptr<FeatureProvider> CreateFeatureProvider(
-      const std::string& name) const override;
-  std::unique_ptr<JSONFeatureProviderSource> CreateFeatureProviderSource(
-      const std::string& name) const override;
   void FilterHostPermissions(const URLPatternSet& hosts,
                              URLPatternSet* new_hosts,
                              PermissionIDSet* permissions) const override;
@@ -42,24 +38,21 @@ class ChromeExtensionsClient : public ExtensionsClient {
       const Extension* extension,
       const APIPermissionSet& api_permissions) const override;
   bool IsScriptableURL(const GURL& url, std::string* error) const override;
-  bool IsAPISchemaGenerated(const std::string& name) const override;
-  base::StringPiece GetAPISchema(const std::string& name) const override;
-  void RegisterAPISchemaResources(ExtensionAPI* api) const override;
   bool ShouldSuppressFatalErrors() const override;
   void RecordDidSuppressFatalError() override;
-  std::string GetWebstoreBaseURL() const override;
-  std::string GetWebstoreUpdateURL() const override;
+  const GURL& GetWebstoreBaseURL() const override;
+  const GURL& GetWebstoreUpdateURL() const override;
   bool IsBlacklistUpdateURL(const GURL& url) const override;
   std::set<base::FilePath> GetBrowserImagePaths(
       const Extension* extension) override;
   bool ExtensionAPIEnabledInExtensionServiceWorkers() const override;
-
-  // Get the LazyInstance for ChromeExtensionsClient.
-  static ChromeExtensionsClient* GetInstance();
+  void AddOriginAccessPermissions(
+      const Extension& extension,
+      bool is_extension_active,
+      std::vector<network::mojom::CorsOriginPatternPtr>* origin_patterns)
+      const override;
 
  private:
-  const ChromeAPIPermissions chrome_api_permissions_;
-  const ExtensionsAPIPermissions extensions_api_permissions_;
   const ChromePermissionMessageProvider permission_message_provider_;
 
   // A whitelist of extensions that can script anywhere. Do not add to this
@@ -68,7 +61,8 @@ class ChromeExtensionsClient : public ExtensionsClient {
   // added to this list.
   ScriptingWhitelist scripting_whitelist_;
 
-  friend struct base::DefaultLazyInstanceTraits<ChromeExtensionsClient>;
+  GURL webstore_base_url_;
+  GURL webstore_update_url_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeExtensionsClient);
 };

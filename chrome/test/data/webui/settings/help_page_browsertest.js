@@ -5,12 +5,11 @@
 /** @fileoverview Material Help page tests. */
 
 GEN_INCLUDE(['settings_page_browsertest.js']);
-GEN('#include "base/command_line.h"');
 
 /**
  * @constructor
  * @extends {SettingsPageBrowserTest}
-*/
+ */
 function SettingsHelpPageBrowserTest() {}
 
 SettingsHelpPageBrowserTest.prototype = {
@@ -19,23 +18,27 @@ SettingsHelpPageBrowserTest.prototype = {
   /** @override */
   browsePreload: 'chrome://help/',
 
-  commandLineSwitches: [{switchName: 'enable-features',
-                         switchValue: 'MaterialDesignSettings'}],
-
   /** @override */
   extraLibraries: PolymerTest.getLibraries(ROOT_PATH),
+
+  /** @override */
+  setUp: function() {
+    // Intentionally bypassing SettingsPageBrowserTest#setUp.
+    PolymerTest.prototype.setUp.call(this);
+  },
 };
 
 TEST_F('SettingsHelpPageBrowserTest', 'Load', function() {
   // Assign |self| to |this| instead of binding since 'this' in suite()
   // and test() will be a Mocha 'Suite' or 'Test' instance.
-  var self = this;
+  const self = this;
 
   // Register mocha tests.
   suite('Help page', function() {
     test('about section', function() {
-      var page = self.getPage('about');
-      expectTrue(!!self.getSection(page, 'about'));
+      return self.getPage('about').then(function(page) {
+        expectTrue(!!self.getSection(page, 'about'));
+      });
     });
   });
 

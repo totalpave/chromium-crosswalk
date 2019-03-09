@@ -9,25 +9,19 @@
 #include "base/macros.h"
 #include "ui/base/models/menu_separator_types.h"
 #include "ui/views/view.h"
+#include "ui/views/views_export.h"
 
 namespace views {
 
-class MenuItemView;
-
-class MenuSeparator : public View {
+class VIEWS_EXPORT MenuSeparator : public View {
  public:
   explicit MenuSeparator(ui::MenuSeparatorType type) : type_(type) {}
 
   // View overrides.
   void OnPaint(gfx::Canvas* canvas) override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
 
  private:
-  // Gets the bounds where the separator should be painted.
-  gfx::Rect GetPaintBounds();
-
-  void OnPaintAura(gfx::Canvas* canvas);
-
   // The type of the separator.
   const ui::MenuSeparatorType type_;
 

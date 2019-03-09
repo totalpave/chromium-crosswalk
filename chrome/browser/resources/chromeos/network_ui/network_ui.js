@@ -2,37 +2,54 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+/**
+ * @fileoverview Builds UI elements shown in chrome://networks debugging page.
+ */
+var networkUI = {};
+
+/** @typedef {CrOnc.NetworkStateProperties|CrOnc.DeviceStateProperties} */
+networkUI.StateProperties;
+
 var NetworkUI = (function() {
   'use strict';
+
+  CrOncStrings = {
+    OncTypeCellular: loadTimeData.getString('OncTypeCellular'),
+    OncTypeEthernet: loadTimeData.getString('OncTypeEthernet'),
+    OncTypeTether: loadTimeData.getString('OncTypeTether'),
+    OncTypeVPN: loadTimeData.getString('OncTypeVPN'),
+    OncTypeWiFi: loadTimeData.getString('OncTypeWiFi'),
+    OncTypeWiMAX: loadTimeData.getString('OncTypeWiMAX'),
+    networkListItemConnected:
+        loadTimeData.getString('networkListItemConnected'),
+    networkListItemConnecting:
+        loadTimeData.getString('networkListItemConnecting'),
+    networkListItemConnectingTo:
+        loadTimeData.getString('networkListItemConnectingTo'),
+    networkListItemInitializing:
+        loadTimeData.getString('networkListItemInitializing'),
+    networkListItemScanning: loadTimeData.getString('networkListItemScanning'),
+    networkListItemNotConnected:
+        loadTimeData.getString('networkListItemNotConnected'),
+    networkListItemNoNetwork:
+        loadTimeData.getString('networkListItemNoNetwork'),
+    vpnNameTemplate: loadTimeData.getString('vpnNameTemplate'),
+  };
 
   // Properties to display in the network state table. Each entry can be either
   // a single state field or an array of state fields. If more than one is
   // specified then the first non empty value is used.
   var NETWORK_STATE_FIELDS = [
-    'GUID',
-    'service_path',
-    'Name',
-    'Type',
-    'ConnectionState',
-    'connectable',
-    'ErrorState',
-    'WiFi.Security',
-    ['Cellular.NetworkTechnology', 'EAP.EAP'],
-    'Cellular.ActivationState',
-    'Cellular.RoamingState',
-    'WiFi.Frequency',
+    'GUID', 'Name', 'Type', 'ConnectionState', 'connectable', 'ErrorState',
+    'WiFi.Security', ['Cellular.NetworkTechnology', 'EAP.EAP'],
+    'Cellular.ActivationState', 'Cellular.RoamingState', 'WiFi.Frequency',
     'WiFi.SignalStrength'
   ];
 
-  var FAVORITE_STATE_FIELDS = [
-    'GUID',
-    'service_path',
-    'Name',
-    'Type',
-    'profile_path',
-    'visible',
-    'Source'
-  ];
+  var FAVORITE_STATE_FIELDS =
+      ['GUID', 'Name', 'Type', 'profile_path', 'visible', 'Source'];
+
+  var DEVICE_STATE_FIELDS = ['Type', 'State'];
 
   /**
    * Creates and returns a typed HTMLTableCellElement.
@@ -40,7 +57,7 @@ var NetworkUI = (function() {
    * @return {!HTMLTableCellElement} A new td element.
    */
   var createTableCellElement = function() {
-    return /** @type {!HTMLTableCellElement} */(document.createElement('td'));
+    return /** @type {!HTMLTableCellElement} */ (document.createElement('td'));
   };
 
   /**
@@ -49,23 +66,22 @@ var NetworkUI = (function() {
    * @return {!HTMLTableRowElement} A new tr element.
    */
   var createTableRowElement = function() {
-    return /** @type {!HTMLTableRowElement} */(document.createElement('tr'));
+    return /** @type {!HTMLTableRowElement} */ (document.createElement('tr'));
   };
 
   /**
-   * Returns the ONC data property for networkState associated with a key. Used
-   * to access properties in the networkState by |key| which may may refer to a
+   * Returns the ONC data property for |state| associated with a key. Used
+   * to access properties in the state by |key| which may may refer to a
    * nested property, e.g. 'WiFi.Security'. If any part of a nested key is
    * missing, this will return undefined.
    *
-   * @param {!chrome.networkingPrivate.NetworkStateProperties} networkState The
-   *     network state property dictionary.
+   * @param {!networkUI.StateProperties} state
    * @param {string} key The ONC key for the property.
    * @return {*} The value associated with the property or undefined if the
    *     key (any part of it) is not defined.
    */
-  var getOncProperty = function(networkState, key) {
-    var dict = /** @type {!Object} */(networkState);
+  var getOncProperty = function(state, key) {
+    var dict = /** @type {!Object} */ (state);
     var keys = key.split('.');
     while (keys.length > 1) {
       var k = keys.shift();
@@ -79,16 +95,16 @@ var NetworkUI = (function() {
   /**
    * Creates a cell with a button for expanding a network state table row.
    *
-   * @param {string} guid The GUID identifying the network.
+   * @param {!networkUI.StateProperties} state
    * @return {!HTMLTableCellElement} The created td element that displays the
    *     given value.
    */
-  var createStateTableExpandButton = function(guid) {
+  var createStateTableExpandButton = function(state) {
     var cell = createTableCellElement();
     cell.className = 'state-table-expand-button-cell';
     var button = document.createElement('button');
     button.addEventListener('click', function(event) {
-      toggleExpandRow(/** @type {!HTMLElement} */(event.target), guid);
+      toggleExpandRow(/** @type {!HTMLElement} */ (event.target), state);
     });
     button.className = 'state-table-expand-button';
     button.textContent = '+';
@@ -99,18 +115,20 @@ var NetworkUI = (function() {
   /**
    * Creates a cell with an icon representing the network state.
    *
-   * @param {!chrome.networkingPrivate.NetworkStateProperties} networkState The
-   *     network state properties.
+   * @param {!networkUI.StateProperties} state
    * @return {!HTMLTableCellElement} The created td element that displays the
    *     icon.
    */
-  var createStateTableIcon = function(networkState) {
+  var createStateTableIcon = function(state) {
     var cell = createTableCellElement();
     cell.className = 'state-table-icon-cell';
-    var icon = /** @type {!CrNetworkIconElement} */(
+    var icon = /** @type {!CrNetworkIconElement} */ (
         document.createElement('cr-network-icon'));
     icon.isListItem = true;
-    icon.networkState = networkState;
+    icon.networkState = {
+      GUID: '',
+      Type: state.Type,
+    };
     cell.appendChild(icon);
     return cell;
   };
@@ -132,25 +150,23 @@ var NetworkUI = (function() {
    * Creates a row in the network state table.
    *
    * @param {Array} stateFields The state fields to use for the row.
-   * @param {!chrome.networkingPrivate.NetworkStateProperties} networkState The
-   *     network state properties.
+   * @param {!networkUI.StateProperties} state
    * @return {!HTMLTableRowElement} The created tr element that contains the
    *     network state information.
    */
-  var createStateTableRow = function(stateFields, networkState) {
+  var createStateTableRow = function(stateFields, state) {
     var row = createTableRowElement();
     row.className = 'state-table-row';
-    var guid = networkState.GUID;
-    row.appendChild(createStateTableExpandButton(guid));
-    row.appendChild(createStateTableIcon(networkState));
+    row.appendChild(createStateTableExpandButton(state));
+    row.appendChild(createStateTableIcon(state));
     for (var i = 0; i < stateFields.length; ++i) {
       var field = stateFields[i];
       var value;
       if (typeof field == 'string') {
-        value = getOncProperty(networkState, field);
+        value = getOncProperty(state, field);
       } else {
         for (var j = 0; j < field.length; ++j) {
-          value = getOncProperty(networkState, field[j]);
+          value = getOncProperty(state, field[j]);
           if (value != undefined)
             break;
         }
@@ -167,8 +183,7 @@ var NetworkUI = (function() {
    *
    * @param {string} tablename The name of the table to be created.
    * @param {!Array<string>} stateFields The list of fields for the table.
-   * @param {!Array<!chrome.networkingPrivate.NetworkStateProperties>} states
-   *     An array of network or favorite states.
+   * @param {!Array<!networkUI.StateProperties>} states
    */
   var createStateTable = function(tablename, stateFields, states) {
     var table = $(tablename);
@@ -191,10 +206,20 @@ var NetworkUI = (function() {
   };
 
   /**
+   * Returns a valid HTMLElement id from |type|. Note: |type| may be a Shill
+   * type or an ONC type, so strip _ and convert to lowercase to unify them.
+   *
+   * @param {string} type A Shill or ONC network type
+   * @return {string} A valid HTMLElement id.
+   */
+  var idFromType = function(type) {
+    return '_' + type.replace(/[{}_]/g, '').toLowerCase();
+  };
+
+  /**
    * This callback function is triggered when visible networks are received.
    *
-   * @param {!Array<!chrome.networkingPrivate.NetworkStateProperties>} states
-   *     A list of network state information for each visible network.
+   * @param {!Array<!CrOnc.NetworkStateProperties>} states
    */
   var onVisibleNetworksReceived = function(states) {
     createStateTable('network-state-table', NETWORK_STATE_FIELDS, states);
@@ -203,11 +228,19 @@ var NetworkUI = (function() {
   /**
    * This callback function is triggered when favorite networks are received.
    *
-   * @param {!Array<!chrome.networkingPrivate.NetworkStateProperties>} states
-   *     A list of network state information for each favorite network.
+   * @param {!Array<!CrOnc.NetworkStateProperties>} states
    */
   var onFavoriteNetworksReceived = function(states) {
     createStateTable('favorite-state-table', FAVORITE_STATE_FIELDS, states);
+  };
+
+  /**
+   * This callback function is triggered when device states are received.
+   *
+   * @param {!Array<!CrOnc.DeviceStateProperties>} states
+   */
+  var onDeviceStatesReceived = function(states) {
+    createStateTable('device-state-table', DEVICE_STATE_FIELDS, states);
   };
 
   /**
@@ -215,17 +248,17 @@ var NetworkUI = (function() {
    * state information for a row.
    *
    * @param {!HTMLElement} btn The button that was clicked.
-   * @param {string} guid GUID identifying the network.
+   * @param {!networkUI.StateProperties} state
    */
-  var toggleExpandRow = function(btn, guid) {
+  var toggleExpandRow = function(btn, state) {
     var cell = btn.parentNode;
-    var row = /** @type {!HTMLTableRowElement} */(cell.parentNode);
+    var row = /** @type {!HTMLTableRowElement} */ (cell.parentNode);
     if (btn.textContent == '-') {
       btn.textContent = '+';
       row.parentNode.removeChild(row.nextSibling);
     } else {
       btn.textContent = '-';
-      var expandedRow = createExpandedRow(guid, row);
+      var expandedRow = createExpandedRow(state, row);
       row.parentNode.insertBefore(expandedRow, row.nextSibling);
     }
   };
@@ -233,56 +266,96 @@ var NetworkUI = (function() {
   /**
    * Creates the expanded row for displaying the complete state as JSON.
    *
-   * @param {string} guid The GUID identifying the network.
+   * @param {!networkUI.StateProperties} state
    * @param {!HTMLTableRowElement} baseRow The unexpanded row associated with
    *     the new row.
    * @return {!HTMLTableRowElement} The created tr element for the expanded row.
    */
-  var createExpandedRow = function(guid, baseRow) {
+  var createExpandedRow = function(state, baseRow) {
+    assert(state);
+    var guid = state.GUID || '';
     var expandedRow = createTableRowElement();
     expandedRow.className = 'state-table-row';
     var emptyCell = createTableCellElement();
     emptyCell.style.border = 'none';
     expandedRow.appendChild(emptyCell);
     var detailCell = createTableCellElement();
-    detailCell.id = idFromGuid(guid);
+    detailCell.id = guid ? idFromGuid(guid) : idFromType(state.Type);
     detailCell.className = 'state-table-expanded-cell';
     detailCell.colSpan = baseRow.childNodes.length - 1;
     expandedRow.appendChild(detailCell);
-    var showDetail = function(state, error) {
-      if (error && error.message)
-        detailCell.textContent = error.message;
-      else
-        detailCell.textContent = JSON.stringify(state, null, '\t');
-    };
     var selected = $('get-property-format').selectedIndex;
     var selectedId = $('get-property-format').options[selected].value;
-    if (selectedId == 'shill') {
-      chrome.send('getShillProperties', [guid]);
-    } else if (selectedId == 'state') {
-      chrome.networkingPrivate.getState(guid, function(properties) {
-        showDetail(properties, chrome.runtime.lastError); });
-    } else if (selectedId == 'managed') {
-      chrome.networkingPrivate.getManagedProperties(guid, function(properties) {
-        showDetail(properties, chrome.runtime.lastError); });
-    } else {
-      chrome.networkingPrivate.getProperties(guid, function(properties) {
-        showDetail(properties, chrome.runtime.lastError); });
-    }
+    if (guid)
+      handleNetworkDetail(guid, selectedId, detailCell);
+    else
+      handleDeviceDetail(state, selectedId, detailCell);
     return expandedRow;
   };
 
   /**
-   * Callback invoked by Chrome after a getShillProperties call.
+   * Requests network details and calls showDetail with the result.
+   * @param {string} guid
+   * @param {string} selectedId
+   * @param {!HTMLTableCellElement} detailCell
+   */
+  var handleNetworkDetail = function(guid, selectedId, detailCell) {
+    if (selectedId == 'shill') {
+      chrome.send('getShillNetworkProperties', [guid]);
+    } else if (selectedId == 'state') {
+      chrome.networkingPrivate.getState(guid, function(properties) {
+        showDetail(detailCell, properties, chrome.runtime.lastError);
+      });
+    } else if (selectedId == 'managed') {
+      chrome.networkingPrivate.getManagedProperties(guid, function(properties) {
+        showDetail(detailCell, properties, chrome.runtime.lastError);
+      });
+    } else {
+      chrome.networkingPrivate.getProperties(guid, function(properties) {
+        showDetail(detailCell, properties, chrome.runtime.lastError);
+      });
+    }
+  };
+
+  /**
+   * Requests network details and calls showDetail with the result.
+   * @param {!networkUI.StateProperties} state
+   * @param {string} selectedId
+   * @param {!HTMLTableCellElement} detailCell
+   */
+  var handleDeviceDetail = function(state, selectedId, detailCell) {
+    if (selectedId == 'shill') {
+      chrome.send('getShillDeviceProperties', [state.Type]);
+    } else {
+      showDetail(detailCell, state);
+    }
+  };
+
+  /**
+   * @param {!HTMLTableCellElement} detailCell
+   * @param {!CrOnc.NetworkStateProperties|!CrOnc.DeviceStateProperties|
+   *     !chrome.networkingPrivate.ManagedProperties|
+   *     !chrome.networkingPrivate.NetworkProperties} state
+   * @param {!Object=} error
+   */
+  var showDetail = function(detailCell, state, error) {
+    if (error && error.message)
+      detailCell.textContent = error.message;
+    else
+      detailCell.textContent = JSON.stringify(state, null, '\t');
+  };
+
+  /**
+   * Callback invoked by Chrome after a getShillNetworkProperties call.
    *
    * @param {Array} args The requested Shill properties. Will contain
    *     just the 'GUID' and 'ShillError' properties if the call failed.
    */
-  var getShillPropertiesResult = function(args) {
+  var getShillNetworkPropertiesResult = function(args) {
     var properties = args.shift();
     var guid = properties['GUID'];
     if (!guid) {
-      console.error('No GUID in getShillPropertiesResult');
+      console.error('No GUID in getShillNetworkPropertiesResult');
       return;
     }
 
@@ -300,17 +373,59 @@ var NetworkUI = (function() {
   };
 
   /**
+   * Callback invoked by Chrome after a getShillDeviceProperties call.
+   *
+   * @param {Array} args The requested Shill properties. Will contain
+   *     just the 'Type' and 'ShillError' properties if the call failed.
+   */
+  var getShillDevicePropertiesResult = function(args) {
+    var properties = args.shift();
+    var type = properties['Type'];
+    if (!type) {
+      console.error('No Type in getShillDevicePropertiesResult');
+      return;
+    }
+
+    var detailCell = document.querySelector('td#' + idFromType(type));
+    if (!detailCell) {
+      console.error('No cell for Type: ' + type);
+      return;
+    }
+
+    if (properties['ShillError'])
+      detailCell.textContent = properties['ShillError'];
+    else
+      detailCell.textContent = JSON.stringify(properties, null, '\t');
+
+  };
+
+  /**
    * Requests an update of all network info.
    */
   var requestNetworks = function() {
     chrome.networkingPrivate.getNetworks(
-        {'networkType': chrome.networkingPrivate.NetworkType.ALL,
-         'visible': true},
+        {
+          'networkType': chrome.networkingPrivate.NetworkType.ALL,
+          'visible': true
+        },
         onVisibleNetworksReceived);
     chrome.networkingPrivate.getNetworks(
-        {'networkType': chrome.networkingPrivate.NetworkType.ALL,
-         'configured': true},
+        {
+          'networkType': chrome.networkingPrivate.NetworkType.ALL,
+          'configured': true
+        },
         onFavoriteNetworksReceived);
+    chrome.networkingPrivate.getDeviceStates(onDeviceStatesReceived);
+  };
+
+  /**
+   * Requests the global policy dictionary and updates the page.
+   */
+  var requestGlobalPolicy = function() {
+    chrome.networkingPrivate.getGlobalPolicy(function(policy) {
+      document.querySelector('#global-policy').textContent =
+          JSON.stringify(policy, null, '\t');
+    });
   };
 
   /**
@@ -323,15 +438,26 @@ var NetworkUI = (function() {
   };
 
   /**
-   * Gets network information from WebUI.
+   * Gets network information from WebUI and sets custom items.
    */
   document.addEventListener('DOMContentLoaded', function() {
+    let select = document.querySelector('cr-network-select');
+    select.customItems = [
+      {customItemName: 'Add WiFi', polymerIcon: 'cr:add', customData: 'WiFi'},
+      {customItemName: 'Add VPN', polymerIcon: 'cr:add', customData: 'VPN'}
+    ];
     $('refresh').onclick = requestNetworks;
     setRefresh();
     requestNetworks();
+    requestGlobalPolicy();
+  });
+
+  document.addEventListener('custom-item-selected', function(event) {
+    chrome.send('addNetwork', [event.detail.customData]);
   });
 
   return {
-    getShillPropertiesResult: getShillPropertiesResult
+    getShillNetworkPropertiesResult: getShillNetworkPropertiesResult,
+    getShillDevicePropertiesResult: getShillDevicePropertiesResult
   };
 })();

@@ -19,7 +19,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "build/build_config.h"
 #include "chrome/browser/diagnostics/diagnostics_test.h"
 #include "chrome/common/channel_info.h"
@@ -29,8 +29,6 @@
 #include "components/version_info/version_info.h"
 
 #if defined(OS_WIN)
-#include "base/win/windows_version.h"
-#include "chrome/browser/win/enumerate_modules_model.h"
 #include "chrome/installer/util/install_util.h"
 #endif
 
@@ -52,62 +50,6 @@ const int64_t kOneMegabyte = 1024 * kOneKilobyte;
 class InstallTypeTest;
 InstallTypeTest* g_install_type = 0;
 
-// Check if any conflicting DLLs are loaded.
-class ConflictingDllsTest : public DiagnosticsTest {
- public:
-  ConflictingDllsTest()
-      : DiagnosticsTest(DIAGNOSTICS_CONFLICTING_DLLS_TEST) {}
-
-  bool ExecuteImpl(DiagnosticsModel::Observer* observer) override {
-#if defined(OS_WIN)
-    EnumerateModulesModel* model = EnumerateModulesModel::GetInstance();
-    model->set_limited_mode(true);
-    model->ScanNow();
-    std::unique_ptr<base::ListValue> list(model->GetModuleList());
-    if (!model->confirmed_bad_modules_detected() &&
-        !model->suspected_bad_modules_detected()) {
-      RecordSuccess("No conflicting modules found");
-      return true;
-    }
-
-    std::string failures = "Possibly conflicting modules:";
-    base::DictionaryValue* dictionary;
-    for (size_t i = 0; i < list->GetSize(); ++i) {
-      if (!list->GetDictionary(i, &dictionary))
-        RecordFailure(DIAG_RECON_DICTIONARY_LOOKUP_FAILED,
-                      "Dictionary lookup failed");
-      int status;
-      std::string location;
-      std::string name;
-      if (!dictionary->GetInteger("status", &status))
-        RecordFailure(DIAG_RECON_NO_STATUS_FIELD, "No 'status' field found");
-      if (status < ModuleEnumerator::SUSPECTED_BAD)
-        continue;
-
-      if (!dictionary->GetString("location", &location)) {
-        RecordFailure(DIAG_RECON_NO_LOCATION_FIELD,
-                      "No 'location' field found");
-        return true;
-      }
-      if (!dictionary->GetString("name", &name)) {
-        RecordFailure(DIAG_RECON_NO_NAME_FIELD, "No 'name' field found");
-        return true;
-      }
-
-      failures += "\n" + location + name;
-    }
-    RecordFailure(DIAG_RECON_CONFLICTING_MODULES, failures);
-    return true;
-#else
-    RecordFailure(DIAG_RECON_NOT_IMPLEMENTED, "Not implemented");
-    return true;
-#endif  // defined(OS_WIN)
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ConflictingDllsTest);
-};
-
 // Check that the disk space in the volume where the user data directory
 // normally lives is not dangerously low.
 class DiskSpaceTest : public DiagnosticsTest {
@@ -116,14 +58,14 @@ class DiskSpaceTest : public DiagnosticsTest {
 
   bool ExecuteImpl(DiagnosticsModel::Observer* observer) override {
     base::FilePath data_dir;
-    if (!PathService::Get(chrome::DIR_USER_DATA, &data_dir))
+    if (!base::PathService::Get(chrome::DIR_USER_DATA, &data_dir))
       return false;
     int64_t disk_space = base::SysInfo::AmountOfFreeDiskSpace(data_dir);
     if (disk_space < 0) {
       RecordFailure(DIAG_RECON_UNABLE_TO_QUERY, "Unable to query free space");
       return true;
     }
-    std::string printable_size = base::Int64ToString(disk_space);
+    std::string printable_size = base::NumberToString(disk_space);
     if (disk_space < 80 * kOneMegabyte) {
       RecordFailure(DIAG_RECON_LOW_DISK_SPACE,
                     "Low disk space: " + printable_size);
@@ -145,12 +87,7 @@ class InstallTypeTest : public DiagnosticsTest {
 
   bool ExecuteImpl(DiagnosticsModel::Observer* observer) override {
 #if defined(OS_WIN)
-    base::FilePath chrome_exe;
-    if (!PathService::Get(base::FILE_EXE, &chrome_exe)) {
-      RecordFailure(DIAG_RECON_INSTALL_PATH_PROVIDER, "Path provider failure");
-      return false;
-    }
-    user_level_ = InstallUtil::IsPerUserInstall(chrome_exe);
+    user_level_ = InstallUtil::IsPerUserInstall();
     const char* type = user_level_ ? "User Level" : "System Level";
     std::string install_type(type);
 #else
@@ -224,7 +161,7 @@ class JSONTest : public DiagnosticsTest {
         json.Deserialize(&error_code, &error_message));
     if (base::JSONReader::JSON_NO_ERROR != error_code) {
       if (error_message.empty()) {
-        error_message = "Parse error " + base::IntToString(error_code);
+        error_message = "Parse error " + base::NumberToString(error_code);
       }
       RecordFailure(DIAG_RECON_PARSE_ERROR, error_message);
       return true;
@@ -248,22 +185,10 @@ class OperatingSystemTest : public DiagnosticsTest {
       : DiagnosticsTest(DIAGNOSTICS_OPERATING_SYSTEM_TEST) {}
 
   bool ExecuteImpl(DiagnosticsModel::Observer* observer) override {
-#if defined(OS_WIN)
-    base::win::Version version = base::win::GetVersion();
-    if ((version < base::win::VERSION_XP) ||
-        ((version == base::win::VERSION_XP) &&
-         (base::win::OSInfo::GetInstance()->service_pack().major < 2))) {
-      RecordFailure(DIAG_RECON_PRE_WINDOW_XP_SP2,
-                    "Must have Windows XP SP2 or later");
-      return false;
-    }
-#else
-// TODO(port): define the OS criteria for Linux and Mac.
-#endif  // defined(OS_WIN)
-    RecordSuccess(
-        base::StringPrintf("%s %s",
-                           base::SysInfo::OperatingSystemName().c_str(),
-                           base::SysInfo::OperatingSystemVersion().c_str()));
+    // TODO(port): define the OS criteria for Linux and Mac.
+    RecordSuccess(base::StringPrintf(
+        "%s %s", base::SysInfo::OperatingSystemName().c_str(),
+        base::SysInfo::OperatingSystemVersion().c_str()));
     return true;
   }
 
@@ -292,8 +217,6 @@ const TestPathInfo kPathsToTest[] = {
 };
 
 // Check that the user's data directory exists and the paths are writable.
-// If it is a system-wide install some paths are not expected to be writable.
-// This test depends on |InstallTypeTest| having run successfully.
 class PathTest : public DiagnosticsTest {
  public:
   explicit PathTest(const TestPathInfo& path_info)
@@ -306,7 +229,7 @@ class PathTest : public DiagnosticsTest {
       return false;
     }
     base::FilePath dir_or_file;
-    if (!PathService::Get(path_info_.path_id, &dir_or_file)) {
+    if (!base::PathService::Get(path_info_.path_id, &dir_or_file)) {
       RecordStopFailure(DIAG_RECON_PATH_PROVIDER, "Path provider failure");
       return false;
     }
@@ -330,7 +253,7 @@ class PathTest : public DiagnosticsTest {
                         base::UTF16ToUTF8(dir_or_file.LossyDisplayName()));
       return true;
     }
-    std::string printable_size = base::Int64ToString(dir_or_file_size);
+    std::string printable_size = base::NumberToString(dir_or_file_size);
 
     if (path_info_.max_size > 0) {
       if (dir_or_file_size > path_info_.max_size) {
@@ -340,7 +263,7 @@ class PathTest : public DiagnosticsTest {
         return true;
       }
     }
-    if (g_install_type->system_level() && !path_info_.test_writable) {
+    if (!path_info_.test_writable) {
       RecordSuccess("Path exists");
       return true;
     }
@@ -370,7 +293,7 @@ class VersionTest : public DiagnosticsTest {
       RecordFailure(DIAG_RECON_EMPTY_VERSION, "Empty Version");
       return true;
     }
-    std::string version_modifier = chrome::GetChannelString();
+    std::string version_modifier = chrome::GetChannelName();
     if (!version_modifier.empty())
       current_version += " " + version_modifier;
 #if defined(GOOGLE_CHROME_BUILD)
@@ -386,57 +309,58 @@ class VersionTest : public DiagnosticsTest {
 
 }  // namespace
 
-DiagnosticsTest* MakeConflictingDllsTest() { return new ConflictingDllsTest(); }
+std::unique_ptr<DiagnosticsTest> MakeDiskSpaceTest() {
+  return std::make_unique<DiskSpaceTest>();
+}
 
-DiagnosticsTest* MakeDiskSpaceTest() { return new DiskSpaceTest(); }
+std::unique_ptr<DiagnosticsTest> MakeInstallTypeTest() {
+  return std::make_unique<InstallTypeTest>();
+}
 
-DiagnosticsTest* MakeInstallTypeTest() { return new InstallTypeTest(); }
-
-DiagnosticsTest* MakeBookMarksTest() {
+std::unique_ptr<DiagnosticsTest> MakeBookMarksTest() {
   base::FilePath path = DiagnosticsTest::GetUserDefaultProfileDir();
   path = path.Append(bookmarks::kBookmarksFileName);
-  return new JSONTest(path,
-                      DIAGNOSTICS_JSON_BOOKMARKS_TEST,
-                      2 * kOneMegabyte,
-                      JSONTest::NON_CRITICAL);
+  return std::make_unique<JSONTest>(path, DIAGNOSTICS_JSON_BOOKMARKS_TEST,
+                                    2 * kOneMegabyte, JSONTest::NON_CRITICAL);
 }
 
-DiagnosticsTest* MakeLocalStateTest() {
+std::unique_ptr<DiagnosticsTest> MakeLocalStateTest() {
   base::FilePath path;
-  PathService::Get(chrome::DIR_USER_DATA, &path);
+  base::PathService::Get(chrome::DIR_USER_DATA, &path);
   path = path.Append(chrome::kLocalStateFilename);
-  return new JSONTest(path,
-                      DIAGNOSTICS_JSON_LOCAL_STATE_TEST,
-                      50 * kOneKilobyte,
-                      JSONTest::CRITICAL);
+  return std::make_unique<JSONTest>(path, DIAGNOSTICS_JSON_LOCAL_STATE_TEST,
+                                    50 * kOneKilobyte, JSONTest::CRITICAL);
 }
 
-DiagnosticsTest* MakePreferencesTest() {
+std::unique_ptr<DiagnosticsTest> MakePreferencesTest() {
   base::FilePath path = DiagnosticsTest::GetUserDefaultProfileDir();
   path = path.Append(chrome::kPreferencesFilename);
-  return new JSONTest(path,
-                      DIAGNOSTICS_JSON_PREFERENCES_TEST,
-                      100 * kOneKilobyte,
-                      JSONTest::CRITICAL);
+  return std::make_unique<JSONTest>(path, DIAGNOSTICS_JSON_PREFERENCES_TEST,
+                                    100 * kOneKilobyte, JSONTest::CRITICAL);
 }
 
-
-DiagnosticsTest* MakeOperatingSystemTest() { return new OperatingSystemTest(); }
-
-DiagnosticsTest* MakeDictonaryDirTest() {
-  return new PathTest(kPathsToTest[0]);
+std::unique_ptr<DiagnosticsTest> MakeOperatingSystemTest() {
+  return std::make_unique<OperatingSystemTest>();
 }
 
-DiagnosticsTest* MakeLocalStateFileTest() {
-  return new PathTest(kPathsToTest[1]);
+std::unique_ptr<DiagnosticsTest> MakeDictonaryDirTest() {
+  return std::make_unique<PathTest>(kPathsToTest[0]);
 }
 
-DiagnosticsTest* MakeResourcesFileTest() {
-  return new PathTest(kPathsToTest[2]);
+std::unique_ptr<DiagnosticsTest> MakeLocalStateFileTest() {
+  return std::make_unique<PathTest>(kPathsToTest[1]);
 }
 
-DiagnosticsTest* MakeUserDirTest() { return new PathTest(kPathsToTest[3]); }
+std::unique_ptr<DiagnosticsTest> MakeResourcesFileTest() {
+  return std::make_unique<PathTest>(kPathsToTest[2]);
+}
 
-DiagnosticsTest* MakeVersionTest() { return new VersionTest(); }
+std::unique_ptr<DiagnosticsTest> MakeUserDirTest() {
+  return std::make_unique<PathTest>(kPathsToTest[3]);
+}
+
+std::unique_ptr<DiagnosticsTest> MakeVersionTest() {
+  return std::make_unique<VersionTest>();
+}
 
 }  // namespace diagnostics

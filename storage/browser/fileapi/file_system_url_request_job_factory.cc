@@ -25,6 +25,10 @@ class FileSystemProtocolHandler
       net::URLRequest* request,
       net::NetworkDelegate* network_delegate) const override;
 
+  bool IsSafeRedirectTarget(const GURL& location) const override {
+    return false;
+  }
+
  private:
   const std::string storage_domain_;
 
@@ -43,7 +47,7 @@ FileSystemProtocolHandler::FileSystemProtocolHandler(
   DCHECK(file_system_context_);
 }
 
-FileSystemProtocolHandler::~FileSystemProtocolHandler() {}
+FileSystemProtocolHandler::~FileSystemProtocolHandler() = default;
 
 net::URLRequestJob* FileSystemProtocolHandler::MaybeCreateJob(
     net::URLRequest* request, net::NetworkDelegate* network_delegate) const {
@@ -52,7 +56,7 @@ net::URLRequestJob* FileSystemProtocolHandler::MaybeCreateJob(
   // If the path ends with a /, we know it's a directory. If the path refers
   // to a directory and gets dispatched to FileSystemURLRequestJob, that class
   // redirects back here, by adding a / to the URL.
-  if (!path.empty() && path[path.size() - 1] == '/') {
+  if (!path.empty() && path.back() == '/') {
     return new FileSystemDirURLRequestJob(
         request, network_delegate, storage_domain_, file_system_context_);
   }
@@ -62,10 +66,11 @@ net::URLRequestJob* FileSystemProtocolHandler::MaybeCreateJob(
 
 }  // anonymous namespace
 
-net::URLRequestJobFactory::ProtocolHandler* CreateFileSystemProtocolHandler(
-    const std::string& storage_domain, FileSystemContext* context) {
+std::unique_ptr<net::URLRequestJobFactory::ProtocolHandler>
+CreateFileSystemProtocolHandler(const std::string& storage_domain,
+                                FileSystemContext* context) {
   DCHECK(context);
-  return new FileSystemProtocolHandler(storage_domain, context);
+  return std::make_unique<FileSystemProtocolHandler>(storage_domain, context);
 }
 
 }  // namespace storage

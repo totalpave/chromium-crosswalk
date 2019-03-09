@@ -11,7 +11,7 @@ ContentMetadataProvider.WORKER_SCRIPT = '/js/metadata_worker.js';
 /**
  * Gallery for viewing and editing image files.
  *
- * @param {!VolumeManagerWrapper} volumeManager
+ * @param {!VolumeManager} volumeManager
  * @constructor
  * @struct
  */
@@ -24,7 +24,9 @@ function Gallery(volumeManager) {
   this.context_ = {
     appWindow: chrome.app.window.current(),
     readonlyDirName: '',
-    displayStringFunction: function() { return ''; },
+    displayStringFunction: function() {
+      return '';
+    },
     loadTimeData: {},
   };
   this.container_ = queryRequiredElement('.gallery');
@@ -88,7 +90,7 @@ function Gallery(volumeManager) {
    * @const
    */
   this.filenameEdit_ = /** @type {HTMLInputElement} */
-      (queryRequiredElement('input', this.filenameSpacer_));
+      (queryRequiredElement('#rename-input', this.filenameSpacer_));
 
   this.filenameCanvas_ = document.createElement('canvas');
   this.filenameCanvasContext_ = this.filenameCanvas_.getContext('2d');
@@ -108,7 +110,7 @@ function Gallery(volumeManager) {
 
   var buttonSpacer = queryRequiredElement('.button-spacer', this.topToolbar_);
 
-  this.prompt_ = new ImageEditor.Prompt(this.container_, strf);
+  this.prompt_ = new ImageEditorPrompt(this.container_, strf);
 
   this.errorBanner_ = new ErrorBanner(this.container_);
 
@@ -130,10 +132,8 @@ function Gallery(volumeManager) {
 
   this.thumbnailMode_ = new ThumbnailMode(
       assertInstanceof(document.querySelector('.thumbnail-view'), HTMLElement),
-      this.errorBanner_,
-      this.dataModel_,
-      this.selectionModel_,
-      this.onChangeToSlideMode_.bind(this));
+      this.errorBanner_, this.dataModel_, this.selectionModel_,
+      this.onThumbnailActivated_.bind(this));
   this.thumbnailMode_.hide();
 
   this.slideMode_ = new SlideMode(this.container_,
@@ -183,8 +183,6 @@ function Gallery(volumeManager) {
   this.selectionModel_.addEventListener('change', this.onSelection_.bind(this));
   this.slideMode_.addEventListener('useraction', this.onUserAction_.bind(this));
 
-  this.shareDialog_ = new ShareDialog(this.container_);
-
   // -----------------------------------------------------------------
   // Initialize listeners.
 
@@ -228,54 +226,19 @@ function Gallery(volumeManager) {
 }
 
 /**
- * Tools fade-out timeout in milliseconds.
- * @const
- * @type {number}
- */
-Gallery.FADE_TIMEOUT = 2000;
-
-/**
  * First time tools fade-out timeout in milliseconds.
- * @const
- * @type {number}
+ * @const {number}
+ * @private
  */
-Gallery.FIRST_FADE_TIMEOUT = 1000;
+Gallery.FIRST_FADE_TIMEOUT_ = 1000;
 
 /**
  * Time until mosaic is initialized in the background. Used to make gallery
  * in the slide mode load faster. In milliseconds.
- * @const
- * @type {number}
+ * @const {number}
+ * @private
  */
-Gallery.MOSAIC_BACKGROUND_INIT_DELAY = 1000;
-
-/**
- * Types of metadata Gallery uses (to query the metadata cache).
- * @const
- * @type {!Array<string>}
- */
-Gallery.PREFETCH_PROPERTY_NAMES =
-    ['imageWidth', 'imageHeight', 'imageRotation', 'size', 'present'];
-
-/**
- * Modes in Gallery.
- * @enum {string}
- */
-Gallery.Mode = {
-  SLIDE: 'slide',
-  THUMBNAIL: 'thumbnail'
-};
-
-/**
- * Sub modes in Gallery.
- * @enum {string}
- * TODO(yawano): Remove sub modes by extracting them as modes.
- */
-Gallery.SubMode = {
-  BROWSE: 'browse',
-  EDIT: 'edit',
-  SLIDESHOW: 'slideshow'
-};
+Gallery.MOSAIC_BACKGROUND_INIT_DELAY_ = 1000;
 
 /**
  * Updates attributes of container element when accessibility configuration has
@@ -299,8 +262,9 @@ Gallery.prototype.onGetOrChangedAccessibilityConfiguration_ = function(
  * @private
  */
 Gallery.prototype.onExternallyUnmounted_ = function(event) {
-  if (!this.selectedEntry_)
+  if (!this.selectedEntry_) {
     return;
+  }
 
   if (this.volumeManager_.getVolumeInfo(this.selectedEntry_) ===
       event.volumeInfo) {
@@ -341,8 +305,9 @@ Gallery.prototype.loadInternal_ = function(entries, selectedEntries) {
   var items = [];
   for (var i = 0; i < entries.length; i++) {
     var locationInfo = this.volumeManager_.getLocationInfo(entries[i]);
-    if (!locationInfo)  // Skip the item, since gone.
+    if (!locationInfo) {  // Skip the item, since gone.
       return;
+    }
     items.push(new GalleryItem(
         entries[i],
         locationInfo,
@@ -362,8 +327,9 @@ Gallery.prototype.loadInternal_ = function(entries, selectedEntries) {
     selectedSet[selectedEntries[i].toURL()] = true;
   }
   for (var i = 0; i < items.length; i++) {
-    if (!selectedSet[items[i].getEntry().toURL()])
+    if (!selectedSet[items[i].getEntry().toURL()]) {
       continue;
+    }
     this.selectionModel_.setIndexSelected(i, true);
   }
   this.onSelection_();
@@ -390,12 +356,13 @@ Gallery.prototype.loadInternal_ = function(entries, selectedEntries) {
   var thumbnailModel = new ThumbnailModel(this.metadataModel_);
   var loadNext = function(index) {
     // Extract chunk.
-    if (index >= items.length)
+    if (index >= items.length) {
       return;
+    }
     var item = items[index];
     var entry = item.getEntry();
     var metadataPromise = self.metadataModel_.get([entry],
-        Gallery.PREFETCH_PROPERTY_NAMES);
+        GalleryItem.PREFETCH_PROPERTY_NAMES);
     var thumbnailPromise = thumbnailModel.get([entry]);
     return Promise.all([metadataPromise, thumbnailPromise]).then(
         function(metadataLists) {
@@ -431,7 +398,7 @@ Gallery.prototype.loadInternal_ = function(entries, selectedEntries) {
           null,
           function() {
             // Flash the toolbar briefly to show it is there.
-            self.dimmableUIController_.kick(Gallery.FIRST_FADE_TIMEOUT);
+            self.dimmableUIController_.kick(Gallery.FIRST_FADE_TIMEOUT_);
           },
           function() {});
     }
@@ -461,14 +428,14 @@ Gallery.prototype.onUserAction_ = function() {
 
 /**
  * Returns the current mode.
- * @return {Gallery.Mode}
+ * @return {GalleryMode}
  */
 Gallery.prototype.getCurrentMode = function() {
   switch (/** @type {(SlideMode|ThumbnailMode)} */ (this.currentMode_)) {
     case this.slideMode_:
-      return Gallery.Mode.SLIDE;
+      return GalleryMode.SLIDE;
     case this.thumbnailMode_:
-      return Gallery.Mode.THUMBNAIL;
+      return GalleryMode.THUMBNAIL;
     default:
       assertNotReached();
   }
@@ -477,7 +444,7 @@ Gallery.prototype.getCurrentMode = function() {
 /**
  * Returns sub mode of current mode. If current mode is not set yet, null is
  * returned.
- * @return {Gallery.SubMode}
+ * @return {GallerySubMode}
  */
 Gallery.prototype.getCurrentSubMode = function() {
   assert(this.currentMode_);
@@ -490,8 +457,9 @@ Gallery.prototype.getCurrentSubMode = function() {
  * @private
  */
 Gallery.prototype.setCurrentMode_ = function(mode) {
-  if (mode !== this.slideMode_ && mode !== this.thumbnailMode_)
+  if (mode !== this.slideMode_ && mode !== this.thumbnailMode_) {
     console.error('Invalid Gallery mode');
+  }
 
   if (this.currentMode_) {
     this.currentMode_.removeEventListener(
@@ -506,6 +474,7 @@ Gallery.prototype.setCurrentMode_ = function(mode) {
 
   this.container_.setAttribute('mode', this.currentMode_.getName());
   this.updateSelectionAndState_();
+  this.updateModeButtonAttribute_();
 };
 
 /**
@@ -527,24 +496,39 @@ Gallery.prototype.onModeSwitchButtonClicked_ = function(event) {
 };
 
 /**
- * Change to slide mode.
+ * Callback from ThumbnailMode: changes to slide mode, possibly autoplaying the
+ *     selected item.
  * @private
  */
-Gallery.prototype.onChangeToSlideMode_ = function() {
-  if (this.modeSwitchButton_.disabled)
+Gallery.prototype.onThumbnailActivated_ = function() {
+  if (this.modeSwitchButton_.disabled) {
     return;
+  }
 
-  this.changeCurrentMode_(this.slideMode_);
+  this.changeCurrentMode_(this.slideMode_, true /* activate */);
+};
+
+/**
+ * Update attributes of slide/thumbnail toggle button
+ * @private
+ */
+Gallery.prototype.updateModeButtonAttribute_ = function() {
+  if (this.currentMode_ === this.slideMode_) {
+    this.modeSwitchButton_.setAttribute('aria-label', str('GALLERY_THUMBNAIL'));
+  } else {
+    this.modeSwitchButton_.setAttribute('aria-label', str('GALLERY_SLIDE'));
+  }
 };
 
 /**
  * Change current mode.
  * @param {!(SlideMode|ThumbnailMode)} mode Target mode.
+ * @param {boolean} activate Whether to activate a selected item (if any).
  * @param {Event=} opt_event Event that caused this call.
  * @return {!Promise} Resolved when mode has been changed.
  * @private
  */
-Gallery.prototype.changeCurrentMode_ = function(mode, opt_event) {
+Gallery.prototype.changeCurrentMode_ = function(mode, activate, opt_event) {
   return new Promise(function(fulfill, reject) {
     // Do not re-enter while changing the mode.
     if (this.currentMode_ === mode || this.changingMode_) {
@@ -552,8 +536,9 @@ Gallery.prototype.changeCurrentMode_ = function(mode, opt_event) {
       return;
     }
 
-    if (opt_event)
+    if (opt_event) {
       this.onUserAction_();
+    }
 
     this.changingMode_ = true;
 
@@ -590,6 +575,9 @@ Gallery.prototype.changeCurrentMode_ = function(mode, opt_event) {
           function() {
             // Animate to zoomed position.
             this.thumbnailMode_.hide();
+            if (activate) {
+              this.slideMode_.activateContent();
+            }
           }.bind(this),
           onModeChanged);
       this.bottomToolbar_.hidden = false;
@@ -605,15 +593,18 @@ Gallery.prototype.changeCurrentMode_ = function(mode, opt_event) {
  */
 Gallery.prototype.toggleMode_ = function(opt_callback, opt_event) {
   // If it's in editing, leave edit mode.
-  if (this.slideMode_.isEditing())
+  if (this.slideMode_.isEditing()) {
     this.slideMode_.toggleEditor();
+  }
 
   var targetMode = this.currentMode_ === this.slideMode_ ?
       this.thumbnailMode_ : this.slideMode_;
 
-  this.changeCurrentMode_(targetMode, opt_event).then(function() {
-    if (opt_callback)
+  let activate = false;
+  this.changeCurrentMode_(targetMode, activate, opt_event).then(function() {
+    if (opt_callback) {
       opt_callback();
+    }
   });
 };
 
@@ -626,8 +617,9 @@ Gallery.prototype.delete_ = function() {
 
   // Clone the sorted selected indexes array.
   var indexesToRemove = this.selectionModel_.selectedIndexes.slice();
-  if (!indexesToRemove.length)
+  if (!indexesToRemove.length) {
     return;
+  }
 
   /* TODO(dgozman): Implement Undo delete, Remove the confirmation dialog. */
 
@@ -636,8 +628,9 @@ Gallery.prototype.delete_ = function() {
   var param = plural ? itemsToRemove.length : itemsToRemove[0].getFileName();
 
   function deleteNext() {
-    if (!itemsToRemove.length)
+    if (!itemsToRemove.length) {
       return;  // All deleted.
+    }
 
     var entry = itemsToRemove.pop().getEntry();
     entry.remove(deleteNext, function() {
@@ -661,8 +654,9 @@ Gallery.prototype.delete_ = function() {
         this.selectionModel_.unselectAll();
         this.selectionModel_.leadIndex = -1;
         // Remove items from the data model, starting from the highest index.
-        while (indexesToRemove.length)
+        while (indexesToRemove.length) {
           this.dataModel_.splice(indexesToRemove.pop(), 1);
+        }
         // Delete actual files.
         deleteNext();
       }.bind(this),
@@ -759,10 +753,6 @@ Gallery.prototype.onKeyDown_ = function(event) {
       break;
   }
 
-  // Do not capture keys when share dialog is shown.
-  if (this.shareDialog_.isShowing())
-    return;
-
   // Show UIs when user types any key.
   this.dimmableUIController_.kick();
 
@@ -776,12 +766,16 @@ Gallery.prototype.onKeyDown_ = function(event) {
   switch (keyString) {
     case 'Backspace':
       // The default handler would call history.back and close the Gallery.
-      event.preventDefault();
+      // Except while typing into text.
+      if (!event.target.classList.contains('text')) {
+        event.preventDefault();
+      }
       break;
 
     case 'm':  // 'm' switches between Slide and Mosaic mode.
-      if (!this.modeSwitchButton_.disabled)
+      if (!this.modeSwitchButton_.disabled) {
         this.toggleMode_(undefined, event);
+      }
       break;
 
     case 'v':
@@ -795,11 +789,13 @@ Gallery.prototype.onKeyDown_ = function(event) {
     case 'Delete':
     case 'Shift-3':  // Shift+'3' (Delete key might be missing).
     case 'd':
-      if (!this.deleteButton_.disabled)
+      if (!this.deleteButton_.disabled) {
         this.delete_();
+      }
       break;
 
     case 'Escape':
+    case 'BrowserBack':
       window.close();
       break;
   }
@@ -837,6 +833,9 @@ Gallery.prototype.updateSelectionAndState_ = function() {
     selectedItem.touch();
     this.dataModel_.evictCache();
 
+    // Filename Edit field shows for anything selected.
+    this.filenameEdit_.hidden = false;
+
     // Update the title and the display name.
     if (numSelectedItems === 1) {
       document.title = this.selectedEntry_.name;
@@ -864,6 +863,7 @@ Gallery.prototype.updateSelectionAndState_ = function() {
     }
   } else {
     document.title = '';
+    this.filenameEdit_.hidden = true;
     this.filenameEdit_.disabled = true;
     this.filenameEdit_.value = '';
     this.resizeRenameField_();
@@ -873,12 +873,12 @@ Gallery.prototype.updateSelectionAndState_ = function() {
     this.shareButton_.disabled = true;
   }
 
-  util.updateAppState(
-      null,  // Keep the current directory.
+  appUtil.updateAppState(
+      null,              // Keep the current directory.
       selectedEntryURL,  // Update the selection.
       {
-        gallery: (this.currentMode_ === this.thumbnailMode_ ?
-                  'thumbnail' : 'slide')
+        gallery:
+            (this.currentMode_ === this.thumbnailMode_ ? 'thumbnail' : 'slide')
       });
 };
 
@@ -906,26 +906,32 @@ Gallery.prototype.onFilenameEditBlur_ = function(event) {
   if (item) {
     var oldEntry = item.getEntry();
 
-    item.rename(this.filenameEdit_.value).then(function() {
-      var event = new Event('content');
-      event.item = item;
-      event.oldEntry = oldEntry;
-      event.thumbnailChanged = false;
-      this.dataModel_.dispatchEvent(event);
-    }.bind(this), function(error) {
-      if (error === 'NOT_CHANGED')
-        return Promise.resolve();
-      this.filenameEdit_.value =
-          ImageUtil.getDisplayNameFromName(item.getEntry().name);
-      this.resizeRenameField_();
-      this.filenameEdit_.focus();
-      if (typeof error === 'string')
-        this.prompt_.showStringAt('center', error, 5000);
-      else
-        return Promise.reject(error);
-    }.bind(this)).catch(function(error) {
-      console.error(error.stack || error);
-    });
+    item.rename(this.filenameEdit_.value)
+        .then(
+            function() {
+              var event = new Event('content');
+              event.item = item;
+              event.oldEntry = oldEntry;
+              event.thumbnailChanged = false;
+              this.dataModel_.dispatchEvent(event);
+            }.bind(this),
+            function(error) {
+              if (error === 'NOT_CHANGED') {
+                return Promise.resolve();
+              }
+              this.filenameEdit_.value =
+                  ImageUtil.getDisplayNameFromName(item.getEntry().name);
+              this.resizeRenameField_();
+              this.filenameEdit_.focus();
+              if (typeof error === 'string') {
+                this.prompt_.showStringAt('center', error, 5000);
+              } else {
+                return Promise.reject(error);
+              }
+            }.bind(this))
+        .catch(function(error) {
+          console.error(error.stack || error);
+        });
   }
 
   ImageUtil.setAttribute(this.filenameSpacer_, 'renaming', false);
@@ -936,14 +942,16 @@ Gallery.prototype.onFilenameEditBlur_ = function(event) {
 /**
  * Minimum width of rename field.
  * @const {number}
+ * @private
  */
-Gallery.MIN_WIDTH_RENAME_FIELD = 160; // px
+Gallery.MIN_WIDTH_RENAME_FIELD_ = 160;  // px
 
 /**
  * End padding for rename field.
  * @const {number}
+ * @private
  */
-Gallery.END_PADDING_RENAME_FIELD = 20; // px
+Gallery.END_PADDING_RENAME_FIELD_ = 20;  // px
 
 /**
  * Resize rename field depending on its content.
@@ -952,9 +960,11 @@ Gallery.END_PADDING_RENAME_FIELD = 20; // px
 Gallery.prototype.resizeRenameField_ = function() {
   var size = this.filenameCanvasContext_.measureText(this.filenameEdit_.value);
 
-  var width = Math.min(Math.max(
-      size.width + Gallery.END_PADDING_RENAME_FIELD,
-      Gallery.MIN_WIDTH_RENAME_FIELD), window.innerWidth / 2);
+  var width = Math.min(
+      Math.max(
+          size.width + Gallery.END_PADDING_RENAME_FIELD_,
+          Gallery.MIN_WIDTH_RENAME_FIELD_),
+      window.innerWidth / 2);
 
   this.filenameEdit_.style.width = width + 'px';
 };
@@ -1002,9 +1012,27 @@ Gallery.prototype.onContentClick_ = function() {
  */
 Gallery.prototype.onShareButtonClick_ = function() {
   var item = this.getSingleSelectedItem();
-  if (!item)
+  if (!item) {
     return;
-  this.shareDialog_.showEntry(item.getEntry(), function() {});
+  }
+  chrome.fileManagerPrivate.getEntryProperties(
+      [item.getEntry()], ['shareUrl'], results => {
+        if (chrome.runtime.lastError) {
+          console.error(chrome.runtime.lastError.message);
+          return;
+        }
+        if (results.length != 1) {
+          console.error(
+              'getEntryProperties for shareUrl should return 1 entry ' +
+              '(returned ' + results.length + ')');
+          return;
+        }
+        if (results[0].shareUrl === undefined) {
+          console.error('getEntryProperties shareUrl is undefined');
+          return;
+        }
+        util.visitURL(assert(results[0].shareUrl));
+      });
 };
 
 /**
@@ -1012,15 +1040,16 @@ Gallery.prototype.onShareButtonClick_ = function() {
  * @private
  */
 Gallery.prototype.updateThumbnails_ = function() {
-  if (this.currentMode_ === this.slideMode_)
+  if (this.currentMode_ === this.slideMode_) {
     this.slideMode_.updateThumbnails();
+  }
 };
 
 /**
  * Singleton gallery.
  * @type {Gallery}
  */
-var gallery = null;
+let gallery = null;
 
 /**
  * (Re-)loads entries.
@@ -1037,10 +1066,9 @@ function reload() {
  * Promise to initialize the load time data.
  * @type {!Promise}
  */
-var loadTimeDataPromise = new Promise(function(fulfill, reject) {
+const loadTimeDataPromise = new Promise(function(fulfill, reject) {
   chrome.fileManagerPrivate.getStrings(function(strings) {
     window.loadTimeData.data = strings;
-    i18nTemplate.process(document, loadTimeData);
     fulfill(true);
   });
 });
@@ -1049,21 +1077,61 @@ var loadTimeDataPromise = new Promise(function(fulfill, reject) {
  * Promise to initialize volume manager.
  * @type {!Promise}
  */
-var volumeManagerPromise = new Promise(function(fulfill, reject) {
-  var volumeManager = new VolumeManagerWrapper(AllowedPaths.ANY_PATH);
+const volumeManagerPromise = new Promise(function(fulfill, reject) {
+  let volumeManager = new FilteredVolumeManager(AllowedPaths.ANY_PATH, false);
   volumeManager.ensureInitialized(fulfill.bind(null, volumeManager));
 });
 
 /**
- * Promise to initialize both the volume manager and the load time data.
- * @type {!Promise}
+ * Promise to initialize both the volume manager and the load time data, and
+ * then create the gallery.
+ * @type {Promise}
  */
-var initializePromise =
-    Promise.all([loadTimeDataPromise, volumeManagerPromise]).
-    then(function(args) {
-      var volumeManager = args[1];
-      gallery = new Gallery(volumeManager);
-    });
+let initializePromise = null;
 
-// Loads entries.
-initializePromise.then(reload);
+/**
+ * Initializes the gallery: setup the gallery |initializePromise| and invoke
+ * it to create the gallery. Calls reload() to populate the gallery entries.
+ */
+function initializeGallery() {
+  const htmlImportsPromise = new Promise(resolve => {
+    window.HTMLImports.whenReady(resolve);
+  });
+  const promise = htmlImportsPromise.then(() => {
+    return Promise.all([loadTimeDataPromise, volumeManagerPromise]);
+  });
+
+  /**
+   * Define the initializePromise, which runs |promise| and then creates the
+   * Gallery. Define that as a 'createGallery' function here so that name is
+   * shown in the error stack if .catch((error)) fires.
+   */
+  initializePromise = promise.then(function createGallery(results) {
+    const isReady = window.document.readyState !== 'loading';
+    assert(isReady, 'Gallery DOM document is still loading');
+    i18nTemplate.process(window.document, window.loadTimeData);
+    const volumeManager = results[1];
+    gallery = new Gallery(volumeManager);
+    window.gallery = gallery;  // for debug.
+  }).catch((error) => {
+    console.error('gallery ' + (error.stack ? error.stack : error));
+  });
+
+  /**
+   * Initialize the gallery, and reload its entries. Then expose reload() on
+   * the global window (for background page use).
+   */
+  initializePromise.then(reload).then(() => {
+    window.reload = reload;  // can be called from background page.
+  });
+}
+
+/**
+ * Ensure the gallery.html DOM is loaded before attempting to initialize the
+ * gallery from script: crbug.com/882606
+ */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeGallery);
+} else {
+  initializeGallery();
+}

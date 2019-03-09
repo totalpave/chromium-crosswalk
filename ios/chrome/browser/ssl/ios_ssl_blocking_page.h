@@ -11,16 +11,11 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/time/time.h"
-#include "components/certificate_reporting/error_report.h"
 #include "ios/chrome/browser/interstitials/ios_security_interstitial_page.h"
 #include "net/ssl/ssl_info.h"
 
 class IOSChromeControllerClient;
 class GURL;
-
-namespace ios {
-class ChromeBrowserState;
-}
 
 namespace security_interstitials {
 class SSLErrorUI;
@@ -43,7 +38,7 @@ class IOSSSLBlockingPage : public IOSSecurityInterstitialPage {
                      const GURL& request_url,
                      int options_mask,
                      const base::Time& time_triggered,
-                     const base::Callback<void(bool)>& callback);
+                     base::OnceCallback<void(bool)> callback);
 
  protected:
   // InterstitialPageDelegate implementation.
@@ -64,7 +59,7 @@ class IOSSSLBlockingPage : public IOSSecurityInterstitialPage {
   // Returns true if |options_mask| refers to a soft-overridable SSL error.
   static bool IsOverridable(int options_mask);
 
-  base::Callback<void(bool)> callback_;
+  base::OnceCallback<void(bool)> callback_;
   const net::SSLInfo ssl_info_;
   const bool overridable_;  // The UI allows the user to override the error.
 

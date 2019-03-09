@@ -24,8 +24,8 @@
 #include "extensions/common/manifest_url_handlers.h"
 #include "extensions/common/permissions/api_permission.h"
 
-#if defined(USE_AURA)
-#include "ui/keyboard/content/keyboard_constants.h"  // nogncheck
+#if defined(OS_CHROMEOS)
+#include "ui/keyboard/resources/keyboard_resource_util.h"
 #endif
 
 namespace extensions {
@@ -51,8 +51,8 @@ URLOverrides::URLOverrides() {
 URLOverrides::~URLOverrides() {
 }
 
-static base::LazyInstance<URLOverrides::URLOverrideMap> g_empty_url_overrides =
-    LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<URLOverrides::URLOverrideMap>::DestructorAtExit
+    g_empty_url_overrides = LAZY_INSTANCE_INITIALIZER;
 
 // static
 const URLOverrides::URLOverrideMap& URLOverrides::GetChromeURLOverrides(
@@ -77,13 +77,14 @@ bool DevToolsPageHandler::Parse(Extension* extension, base::string16* error) {
     return false;
   }
   manifest_url->url_ = extension->GetResourceURL(devtools_str);
-  extension->SetManifestData(keys::kDevToolsPage, manifest_url.release());
+  extension->SetManifestData(keys::kDevToolsPage, std::move(manifest_url));
   PermissionsParser::AddAPIPermission(extension, APIPermission::kDevtools);
   return true;
 }
 
-const std::vector<std::string> DevToolsPageHandler::Keys() const {
-  return SingleKey(keys::kDevToolsPage);
+base::span<const char* const> DevToolsPageHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kDevToolsPage};
+  return kKeys;
 }
 
 URLOverridesHandler::URLOverridesHandler() {
@@ -103,7 +104,7 @@ bool URLOverridesHandler::Parse(Extension* extension, base::string16* error) {
   // Validate that the overrides are all strings
   for (base::DictionaryValue::Iterator iter(*overrides); !iter.IsAtEnd();
        iter.Advance()) {
-    std::string page = iter.key();
+    const std::string& page = iter.key();
     std::string val;
     // Restrict override pages to a list of supported URLs.
     bool is_allowed_host = page == chrome::kChromeUINewTabHost ||
@@ -128,7 +129,7 @@ bool URLOverridesHandler::Parse(Extension* extension, base::string16* error) {
       URLPattern pattern(URLPattern::SCHEME_CHROMEUI);
       std::string url =
           base::StringPrintf(kOverrideExtentUrlPatternFormat, page.c_str());
-      if (pattern.Parse(url) != URLPattern::PARSE_SUCCESS) {
+      if (pattern.Parse(url) != URLPattern::ParseResult::kSuccess) {
         *error = ErrorUtils::FormatErrorMessageUTF16(
             errors::kInvalidURLPatternError, url);
         return false;
@@ -142,8 +143,16 @@ bool URLOverridesHandler::Parse(Extension* extension, base::string16* error) {
     *error = base::ASCIIToUTF16(errors::kMultipleOverrides);
     return false;
   }
+
+  // If this is an NTP override extension, add the NTP override permission.
+  if (url_overrides->chrome_url_overrides_.count(chrome::kChromeUINewTabHost)) {
+    PermissionsParser::AddAPIPermission(extension,
+                                        APIPermission::kNewTabPageOverride);
+  }
+
   extension->SetManifestData(keys::kChromeURLOverrides,
-                             url_overrides.release());
+                             std::move(url_overrides));
+
   return true;
 }
 
@@ -170,8 +179,9 @@ bool URLOverridesHandler::Validate(
   return true;
 }
 
-const std::vector<std::string> URLOverridesHandler::Keys() const {
-  return SingleKey(keys::kChromeURLOverrides);
+base::span<const char* const> URLOverridesHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kChromeURLOverrides};
+  return kKeys;
 }
 
 }  // namespace extensions

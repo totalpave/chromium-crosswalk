@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/single_thread_task_runner.h"
 #include "ios/chrome/browser/net/net_types.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_getter.h"
@@ -30,7 +31,7 @@ class IOSChromeURLRequestContextGetter : public net::URLRequestContextGetter {
 
   // Note that GetURLRequestContext() can only be called from the IO
   // thread (it will assert otherwise).
-  // GetIOMessageLoopProxy however can be called from any thread.
+  // GetIOTaskRunner however can be called from any thread.
   //
   // net::URLRequestContextGetter implementation.
   net::URLRequestContext* GetURLRequestContext() override;

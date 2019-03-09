@@ -8,9 +8,11 @@
 
 #include <list>
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
+#include "base/location.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_local.h"
@@ -21,23 +23,29 @@ namespace remoting {
 namespace {
 
 // RDP session disconnect reason codes that should not be interpreted as errors.
-const long kDisconnectReasonNoInfo = 0;
-const long kDisconnectReasonLocalNotError = 1;
-const long kDisconnectReasonRemoteByUser = 2;
-const long kDisconnectReasonByServer = 3;
+constexpr long kDisconnectReasonNoInfo = 0;
+constexpr long kDisconnectReasonLocalNotError = 1;
+constexpr long kDisconnectReasonRemoteByUser = 2;
+constexpr long kDisconnectReasonByServer = 3;
 
 // Maximum length of a window class name including the terminating nullptr.
-const int kMaxWindowClassLength = 256;
+constexpr int kMaxWindowClassLength = 256;
 
 // Each member of the array returned by GetKeyboardState() contains status data
 // for a virtual key. If the high-order bit is 1, the key is down; otherwise, it
 // is up.
-const BYTE kKeyPressedFlag = 0x80;
+constexpr BYTE kKeyPressedFlag = 0x80;
 
-const int kKeyboardStateLength = 256;
+constexpr int kKeyboardStateLength = 256;
+
+constexpr base::TimeDelta kReapplyResolutionPeriod =
+    base::TimeDelta::FromMilliseconds(250);
+
+// We want to try to reapply resolution changes for ~5 seconds (20 * 250ms).
+constexpr int kMaxResolutionReapplyAttempts = 20;
 
 // The RDP control creates 'IHWindowClass' window to handle keyboard input.
-const wchar_t kRdpInputWindowClass[] = L"IHWindowClass";
+constexpr wchar_t kRdpInputWindowClass[] = L"IHWindowClass";
 
 enum RdpAudioMode {
   // Redirect sounds to the client. This is the default value.
@@ -52,8 +60,8 @@ enum RdpAudioMode {
 };
 
 // Points to a per-thread instance of the window activation hook handle.
-base::LazyInstance<base::ThreadLocalPointer<RdpClientWindow::WindowHook> >
-    g_window_hook = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::ThreadLocalPointer<RdpClientWindow::WindowHook>>::
+    DestructorAtExit g_window_hook = LAZY_INSTANCE_INITIALIZER;
 
 // Finds a child window with the class name matching |class_name|. Unlike
 // FindWindowEx() this function walks the tree of windows recursively. The walk
@@ -68,7 +76,7 @@ HWND FindWindowRecursively(HWND parent, const base::string16& class_name) {
     while (child != nullptr) {
       // See if the window class name matches |class_name|.
       WCHAR name[kMaxWindowClassLength];
-      int length = GetClassName(child, name, arraysize(name));
+      int length = GetClassName(child, name, base::size(name));
       if (base::string16(name, length)  == class_name)
         return child;
 
@@ -119,36 +127,42 @@ RdpClientWindow::RdpClientWindow(const net::IPEndPoint& server_endpoint,
 }
 
 RdpClientWindow::~RdpClientWindow() {
-  if (m_hWnd)
+  if (m_hWnd) {
     DestroyWindow();
+  }
 
-  DCHECK(!client_.get());
-  DCHECK(!client_settings_.get());
+  DCHECK(!client_.Get());
+  DCHECK(!client_9_.Get());
+  DCHECK(!client_settings_.Get());
 }
 
-bool RdpClientWindow::Connect(const webrtc::DesktopSize& screen_size) {
+bool RdpClientWindow::Connect(const ScreenResolution& resolution) {
   DCHECK(!m_hWnd);
 
-  screen_size_ = screen_size;
-  RECT rect = { 0, 0, screen_size_.width(), screen_size_.height() };
+  screen_resolution_ = resolution;
+  RECT rect = {0, 0, screen_resolution_.dimensions().width(),
+               screen_resolution_.dimensions().height()};
   bool result = Create(nullptr, rect, nullptr) != nullptr;
 
   // Hide the window since this class is about establishing a connection, not
   // about showing a UI to the user.
-  if (result)
+  if (result) {
     ShowWindow(SW_HIDE);
+  }
 
   return result;
 }
 
 void RdpClientWindow::Disconnect() {
-  if (m_hWnd)
+  if (m_hWnd) {
     SendMessage(WM_CLOSE);
+  }
 }
 
 void RdpClientWindow::InjectSas() {
-  if (!m_hWnd)
+  if (!m_hWnd) {
     return;
+  }
 
   // Find the window handling the keyboard input.
   HWND input_window = FindWindowRecursively(m_hWnd, kRdpInputWindowClass);
@@ -208,8 +222,19 @@ void RdpClientWindow::InjectSas() {
   SendMessage(input_window, WM_KEYUP, VK_CONTROL, MAKELPARAM(1, control | up));
 }
 
+void RdpClientWindow::ChangeResolution(const ScreenResolution& resolution) {
+  // Stop any pending resolution changes.
+  apply_resolution_timer_.Stop();
+  screen_resolution_ = resolution;
+  HRESULT result = UpdateDesktopResolution();
+  if (FAILED(result)) {
+    LOG(WARNING) << "UpdateSessionDisplaySettings() failed: 0x" << std::hex
+                 << result;
+  }
+}
+
 void RdpClientWindow::OnClose() {
-  if (!client_.get()) {
+  if (!client_.Get()) {
     NotifyDisconnected();
     return;
   }
@@ -219,7 +244,7 @@ void RdpClientWindow::OnClose() {
   HRESULT result = client_->RequestClose(&close_status);
   if (FAILED(result)) {
     LOG(ERROR) << "Failed to request a graceful shutdown of an RDP connection"
-               << ", result=0x" << std::hex << result << std::dec;
+               << ", result=0x" << std::hex << result;
     NotifyDisconnected();
     return;
   }
@@ -235,16 +260,17 @@ void RdpClientWindow::OnClose() {
 
 LRESULT RdpClientWindow::OnCreate(CREATESTRUCT* create_struct) {
   CAxWindow2 activex_window;
-  base::win::ScopedComPtr<IUnknown> control;
+  Microsoft::WRL::ComPtr<IUnknown> control;
   HRESULT result = E_FAIL;
-  base::win::ScopedComPtr<mstsc::IMsTscSecuredSettings> secured_settings;
-  base::win::ScopedComPtr<mstsc::IMsRdpClientSecuredSettings> secured_settings2;
+  Microsoft::WRL::ComPtr<mstsc::IMsTscSecuredSettings> secured_settings;
+  Microsoft::WRL::ComPtr<mstsc::IMsRdpClientSecuredSettings> secured_settings2;
   base::win::ScopedBstr server_name(
-      base::UTF8ToUTF16(server_endpoint_.ToStringWithoutPort()).c_str());
-  base::win::ScopedBstr terminal_id(base::UTF8ToUTF16(terminal_id_).c_str());
+      base::UTF8ToUTF16(server_endpoint_.ToStringWithoutPort()));
+  base::win::ScopedBstr terminal_id(base::UTF8ToUTF16(terminal_id_));
 
   // Create the child window that actually hosts the ActiveX control.
-  RECT rect = { 0, 0, screen_size_.width(), screen_size_.height() };
+  RECT rect = {0, 0, screen_resolution_.dimensions().width(),
+               screen_resolution_.dimensions().height()};
   activex_window.Create(m_hWnd, rect, nullptr,
                         WS_CHILD | WS_VISIBLE | WS_BORDER);
   if (activex_window.m_hWnd == nullptr)
@@ -252,16 +278,13 @@ LRESULT RdpClientWindow::OnCreate(CREATESTRUCT* create_struct) {
 
   // Instantiate the RDP ActiveX control.
   result = activex_window.CreateControlEx(
-      OLESTR("MsTscAx.MsTscAx"),
-      nullptr,
-      nullptr,
-      control.Receive(),
+      OLESTR("MsTscAx.MsTscAx"), nullptr, nullptr, control.GetAddressOf(),
       __uuidof(mstsc::IMsTscAxEvents),
       reinterpret_cast<IUnknown*>(static_cast<RdpEventsSink*>(this)));
   if (FAILED(result))
     return LogOnCreateError(result);
 
-  result = control.QueryInterface(client_.Receive());
+  result = control.CopyTo(client_.GetAddressOf());
   if (FAILED(result))
     return LogOnCreateError(result);
 
@@ -271,12 +294,18 @@ LRESULT RdpClientWindow::OnCreate(CREATESTRUCT* create_struct) {
     return LogOnCreateError(result);
 
   // Set dimensions of the remote desktop.
-  result = client_->put_DesktopWidth(screen_size_.width());
+  result = client_->put_DesktopWidth(screen_resolution_.dimensions().width());
   if (FAILED(result))
     return LogOnCreateError(result);
-  result = client_->put_DesktopHeight(screen_size_.height());
+  result = client_->put_DesktopHeight(screen_resolution_.dimensions().height());
   if (FAILED(result))
     return LogOnCreateError(result);
+
+  // Check to see if the platform exposes the interface used for resizing.
+  result = client_.CopyTo(client_9_.GetAddressOf());
+  if (FAILED(result) && result != E_NOINTERFACE) {
+    return LogOnCreateError(result);
+  }
 
   // Set the server name to connect to.
   result = client_->put_Server(server_name);
@@ -284,7 +313,7 @@ LRESULT RdpClientWindow::OnCreate(CREATESTRUCT* create_struct) {
     return LogOnCreateError(result);
 
   // Fetch IMsRdpClientAdvancedSettings interface for the client.
-  result = client_->get_AdvancedSettings2(client_settings_.Receive());
+  result = client_->get_AdvancedSettings2(client_settings_.GetAddressOf());
   if (FAILED(result))
     return LogOnCreateError(result);
 
@@ -338,7 +367,7 @@ LRESULT RdpClientWindow::OnCreate(CREATESTRUCT* create_struct) {
   if (FAILED(result))
     return LogOnCreateError(result);
 
-  result = client_->get_SecuredSettings2(secured_settings2.Receive());
+  result = client_->get_SecuredSettings2(secured_settings2.GetAddressOf());
   if (SUCCEEDED(result)) {
     result =
         secured_settings2->put_AudioRedirectionMode(kRdpAudioModeRedirect);
@@ -346,7 +375,7 @@ LRESULT RdpClientWindow::OnCreate(CREATESTRUCT* create_struct) {
       return LogOnCreateError(result);
   }
 
-  result = client_->get_SecuredSettings(secured_settings.Receive());
+  result = client_->get_SecuredSettings(secured_settings.GetAddressOf());
   if (FAILED(result))
     return LogOnCreateError(result);
 
@@ -369,8 +398,10 @@ LRESULT RdpClientWindow::OnCreate(CREATESTRUCT* create_struct) {
 }
 
 void RdpClientWindow::OnDestroy() {
-  client_.Release();
-  client_settings_.Release();
+  client_.Reset();
+  client_9_.Reset();
+  client_settings_.Reset();
+  apply_resolution_timer_.Stop();
 }
 
 HRESULT RdpClientWindow::OnAuthenticationWarningDisplayed() {
@@ -397,6 +428,25 @@ HRESULT RdpClientWindow::OnConnected() {
   return S_OK;
 }
 
+HRESULT RdpClientWindow::OnLoginComplete() {
+  VLOG(1) << "RDP: user successfully logged in.";
+
+  user_logged_in_ = true;
+
+  // Set up a timer to periodically apply pending screen size changes to the
+  // desktop.  Attempting to set the resolution now seems to fail consistently,
+  // but succeeds after a brief timeout.
+  if (client_9_) {
+    apply_resolution_attempts_ = 0;
+    apply_resolution_timer_.Start(
+        FROM_HERE, kReapplyResolutionPeriod,
+        base::BindRepeating(&RdpClientWindow::ReapplyDesktopResolution,
+                            Microsoft::WRL::ComPtr<RdpClientWindow>(this)));
+  }
+
+  return S_OK;
+}
+
 HRESULT RdpClientWindow::OnDisconnected(long reason) {
   if (reason == kDisconnectReasonNoInfo ||
       reason == kDisconnectReasonLocalNotError ||
@@ -416,8 +466,8 @@ HRESULT RdpClientWindow::OnDisconnected(long reason) {
 
   // Get the error message as well.
   base::win::ScopedBstr error_message;
-  base::win::ScopedComPtr<mstsc::IMsRdpClient5> client5;
-  result = client_.QueryInterface(client5.Receive());
+  Microsoft::WRL::ComPtr<mstsc::IMsRdpClient5> client5;
+  result = client_.CopyTo(client5.GetAddressOf());
   if (SUCCEEDED(result)) {
     result = client5->GetErrorDescription(reason, extended_code,
                                           error_message.Receive());
@@ -450,16 +500,17 @@ HRESULT RdpClientWindow::OnConfirmClose(VARIANT_BOOL* allow_close) {
 
 int RdpClientWindow::LogOnCreateError(HRESULT error) {
   LOG(ERROR) << "RDP: failed to initiate a connection to "
-             << server_endpoint_.ToString() << ": error="
-             << std::hex << error << std::dec;
-  client_.Release();
-  client_settings_.Release();
+             << server_endpoint_.ToString() << ": error=" << std::hex << error;
+  client_.Reset();
+  client_9_.Reset();
+  client_settings_.Reset();
   return -1;
 }
 
 void RdpClientWindow::NotifyConnected() {
-  if (event_handler_)
+  if (event_handler_) {
     event_handler_->OnConnected();
+  }
 }
 
 void RdpClientWindow::NotifyDisconnected() {
@@ -470,12 +521,51 @@ void RdpClientWindow::NotifyDisconnected() {
   }
 }
 
+HRESULT RdpClientWindow::UpdateDesktopResolution() {
+  if (!client_9_ || !user_logged_in_) {
+    return S_FALSE;
+  }
+
+  // UpdateSessionDisplaySettings() is poorly documented in MSDN and has a few
+  // quirks that should be noted.
+  // 1.) This method will only work when the user is logged into their session.
+  // 2.) The method may return E_UNEXPECTED until some amount of time (seconds)
+  //     have elapsed after logging in to the user's session.
+  return client_9_->UpdateSessionDisplaySettings(
+      screen_resolution_.dimensions().width(),
+      screen_resolution_.dimensions().height(),
+      screen_resolution_.dimensions().width(),
+      screen_resolution_.dimensions().height(),
+      /*ulOrientation=*/0,
+      screen_resolution_.dpi().x(),
+      screen_resolution_.dpi().y());
+}
+
+void RdpClientWindow::ReapplyDesktopResolution() {
+  DCHECK_LT(apply_resolution_attempts_, kMaxResolutionReapplyAttempts);
+
+  HRESULT result = UpdateDesktopResolution();
+  apply_resolution_attempts_++;
+
+  if (SUCCEEDED(result)) {
+    // Successfully applied the new resolution so stop the retry timer.
+    apply_resolution_timer_.Stop();
+  } else if (apply_resolution_attempts_ == kMaxResolutionReapplyAttempts) {
+    // Only log an error on the last attempt to reduce log spam since a few
+    // errors can be expected and don't signal an actual failure.
+    LOG(WARNING) << "All UpdateSessionDisplaySettings() retries failed: 0x"
+                 << std::hex << result;
+    apply_resolution_timer_.Stop();
+  }
+}
+
 scoped_refptr<RdpClientWindow::WindowHook>
 RdpClientWindow::WindowHook::Create() {
   scoped_refptr<WindowHook> window_hook = g_window_hook.Pointer()->Get();
 
-  if (!window_hook.get())
+  if (!window_hook.get()) {
     window_hook = new WindowHook();
+  }
 
   return window_hook;
 }
@@ -512,12 +602,13 @@ LRESULT CALLBACK RdpClientWindow::WindowHook::CloseWindowOnActivation(
   // Get the hook handle.
   HHOOK hook = g_window_hook.Pointer()->Get()->hook_;
 
-  if (code != HCBT_ACTIVATE)
+  if (code != HCBT_ACTIVATE) {
     return CallNextHookEx(hook, code, wparam, lparam);
+  }
 
   // Close the window once all pending window messages are processed.
   HWND window = reinterpret_cast<HWND>(wparam);
-  LOG(WARNING) << "RDP: closing a window: " << std::hex << window << std::dec;
+  LOG(WARNING) << "RDP: closing a window: " << std::hex << window;
   ::PostMessage(window, WM_CLOSE, 0, 0);
   return 0;
 }

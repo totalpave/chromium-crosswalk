@@ -8,17 +8,22 @@
 #include <stddef.h>
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "base/callback.h"
+#include "base/containers/span.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "extensions/common/permissions/api_permission.h"
 #include "extensions/common/permissions/api_permission_set.h"
-#include "extensions/common/permissions/permissions_provider.h"
 
 namespace extensions {
+
+struct Alias;
 
 // A global object that holds the extension permission instances and provides
 // methods for accessing them.
@@ -26,8 +31,10 @@ class PermissionsInfo {
  public:
   static PermissionsInfo* GetInstance();
 
-  // Initializes the permissions from the provider.
-  void AddProvider(const PermissionsProvider& provider);
+  // Registers the permissions specified by |infos| along with the
+  // |aliases|.
+  void RegisterPermissions(base::span<const APIPermissionInfo::InitInfo> infos,
+                           base::span<const Alias> aliases);
 
   // Returns the permission with the given |id|, and NULL if it doesn't exist.
   const APIPermissionInfo* GetByID(APIPermission::ID id) const;
@@ -51,22 +58,24 @@ class PermissionsInfo {
   size_t get_permission_count() const { return permission_count_; }
 
  private:
-  friend struct base::DefaultLazyInstanceTraits<PermissionsInfo>;
+  friend struct base::LazyInstanceTraitsBase<PermissionsInfo>;
 
   PermissionsInfo();
 
   virtual ~PermissionsInfo();
 
   // Registers an |alias| for a given permission |name|.
-  void RegisterAlias(const char* name, const char* alias);
+  void RegisterAlias(const Alias& alias);
 
   // Registers a permission with the specified attributes and flags.
-  void RegisterPermission(APIPermissionInfo* permission);
+  void RegisterPermission(std::unique_ptr<APIPermissionInfo> permission);
 
-  // Maps permission ids to permissions.
-  typedef std::map<APIPermission::ID, APIPermissionInfo*> IDMap;
+  // Maps permission ids to permissions. Owns the permissions.
+  typedef std::unordered_map<APIPermission::ID,
+                             std::unique_ptr<APIPermissionInfo>>
+      IDMap;
 
-  // Maps names and aliases to permissions.
+  // Maps names and aliases to permissions. Doesn't own the permissions.
   typedef std::map<std::string, APIPermissionInfo*> NameMap;
 
   IDMap id_map_;

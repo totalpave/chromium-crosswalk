@@ -5,10 +5,10 @@
 #include "chrome/browser/drive/drive_notification_manager_factory.h"
 
 #include "base/logging.h"
-#include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
+#include "chrome/browser/invalidation/deprecated_profile_invalidation_provider_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/profile_sync_service_factory.h"
-#include "components/browser_sync/browser/profile_sync_service.h"
+#include "components/browser_sync/browser_sync_switches.h"
 #include "components/drive/drive_notification_manager.h"
 #include "components/invalidation/impl/profile_invalidation_provider.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
@@ -27,10 +27,10 @@ DriveNotificationManagerFactory::FindForBrowserContext(
 DriveNotificationManager*
 DriveNotificationManagerFactory::GetForBrowserContext(
     content::BrowserContext* context) {
-  if (!ProfileSyncService::IsSyncAllowedByFlag())
+  if (!switches::IsSyncAllowedByFlag())
     return NULL;
-  if (!invalidation::ProfileInvalidationProviderFactory::GetForProfile(
-          Profile::FromBrowserContext(context))) {
+  if (!invalidation::DeprecatedProfileInvalidationProviderFactory::
+          GetForProfile(Profile::FromBrowserContext(context))) {
     // Do not create a DriveNotificationManager for |context|s that do not
     // support invalidation.
     return NULL;
@@ -51,7 +51,8 @@ DriveNotificationManagerFactory::DriveNotificationManagerFactory()
         "DriveNotificationManager",
         BrowserContextDependencyManager::GetInstance()) {
   DependsOn(ProfileSyncServiceFactory::GetInstance());
-  DependsOn(invalidation::ProfileInvalidationProviderFactory::GetInstance());
+  DependsOn(invalidation::DeprecatedProfileInvalidationProviderFactory::
+                GetInstance());
 }
 
 DriveNotificationManagerFactory::~DriveNotificationManagerFactory() {}
@@ -59,7 +60,7 @@ DriveNotificationManagerFactory::~DriveNotificationManagerFactory() {}
 KeyedService* DriveNotificationManagerFactory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
   invalidation::ProfileInvalidationProvider* invalidation_provider =
-      invalidation::ProfileInvalidationProviderFactory::GetForProfile(
+      invalidation::DeprecatedProfileInvalidationProviderFactory::GetForProfile(
           Profile::FromBrowserContext(context));
   DCHECK(invalidation_provider);
   DCHECK(invalidation_provider->GetInvalidationService());

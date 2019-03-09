@@ -9,8 +9,8 @@
 
 #include "base/logging.h"
 #include "base/strings/string_util.h"
-#include "content/child/request_extra_data.h"
-#include "content/common/fileapi/file_system_messages.h"
+#include "content/public/common/service_names.mojom.h"
+#include "content/renderer/loader/request_extra_data.h"
 #include "content/renderer/pepper/host_globals.h"
 #include "content/renderer/pepper/pepper_file_ref_renderer_host.h"
 #include "content/renderer/pepper/pepper_plugin_instance_impl.h"
@@ -24,12 +24,16 @@
 #include "ppapi/shared_impl/url_request_info_data.h"
 #include "ppapi/shared_impl/var.h"
 #include "ppapi/thunk/enter.h"
-#include "third_party/WebKit/public/platform/WebData.h"
-#include "third_party/WebKit/public/platform/WebHTTPBody.h"
-#include "third_party/WebKit/public/platform/WebURL.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebFrame.h"
+#include "services/service_manager/public/cpp/connector.h"
+#include "third_party/blink/public/mojom/filesystem/file_system.mojom.h"
+#include "third_party/blink/public/mojom/web_feature/web_feature.mojom.h"
+#include "third_party/blink/public/platform/file_path_conversion.h"
+#include "third_party/blink/public/platform/web_data.h"
+#include "third_party/blink/public/platform/web_http_body.h"
+#include "third_party/blink/public/platform/web_url.h"
+#include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_local_frame.h"
 #include "url/gurl.h"
 #include "url/url_util.h"
 
@@ -39,13 +43,20 @@ using ppapi::thunk::EnterResourceNoLock;
 using blink::WebData;
 using blink::WebHTTPBody;
 using blink::WebString;
-using blink::WebFrame;
+using blink::WebLocalFrame;
 using blink::WebURL;
 using blink::WebURLRequest;
 
 namespace content {
 
 namespace {
+
+blink::mojom::FileSystemManagerPtr GetFileSystemManager() {
+  blink::mojom::FileSystemManagerPtr file_system_manager_ptr;
+  ChildThreadImpl::current()->GetConnector()->BindInterface(
+      mojom::kBrowserServiceName, mojo::MakeRequest(&file_system_manager_ptr));
+  return file_system_manager_ptr;
+}
 
 // Appends the file ref given the Resource pointer associated with it to the
 // given HTTP body, returning true on success.
@@ -76,9 +87,8 @@ bool AppendFileRefToBody(PP_Instance instance,
     case PP_FILESYSTEMTYPE_LOCALPERSISTENT:
       // TODO(kinuko): remove this sync IPC when we fully support
       // AppendURLRange for FileSystem URL.
-      RenderThreadImpl::current()->Send(
-          new FileSystemHostMsg_SyncGetPlatformPath(
-              file_ref_host->GetFileSystemURL(), &platform_path));
+      GetFileSystemManager()->GetPlatformPath(file_ref_host->GetFileSystemURL(),
+                                              &platform_path);
       break;
     case PP_FILESYSTEMTYPE_EXTERNAL:
       platform_path = file_ref_host->GetExternalFilePath();
@@ -86,9 +96,8 @@ bool AppendFileRefToBody(PP_Instance instance,
     default:
       NOTREACHED();
   }
-  http_body->appendFileRange(platform_path.AsUTF16Unsafe(),
-                             start_offset,
-                             number_of_bytes,
+  http_body->AppendFileRange(blink::FilePathToWebString(platform_path),
+                             start_offset, number_of_bytes,
                              expected_last_modified_time);
   return true;
 }
@@ -146,7 +155,7 @@ std::string MakeXRequestedWithValue(const std::string& name,
 
 bool CreateWebURLRequest(PP_Instance instance,
                          URLRequestInfoData* data,
-                         WebFrame* frame,
+                         WebLocalFrame* frame,
                          WebURLRequest* dest) {
   // In the out-of-process case, we've received the URLRequestInfoData
   // from the untrusted plugin and done no validation on it. We need to be
@@ -154,44 +163,48 @@ bool CreateWebURLRequest(PP_Instance instance,
   if (!ValidateURLRequestData(*data))
     return false;
 
-   std::string name_version;
+  std::string name_version;
 
-   // Allow instance to be 0 or -1 for testing purposes.
-   if (instance && instance != -1) {
-     PepperPluginInstanceImpl* instance_impl =
-         HostGlobals::Get()->GetInstance(instance);
-     if (instance_impl) {
-       name_version = MakeXRequestedWithValue(
-           instance_impl->module()->name(),
-           instance_impl->module()->version());
-     }
-   } else {
-     name_version = "internal_testing_only";
-   }
+  // Allow instance to be 0 or -1 for testing purposes.
+  if (instance && instance != -1) {
+    PepperPluginInstanceImpl* instance_impl =
+        HostGlobals::Get()->GetInstance(instance);
+    if (instance_impl) {
+      name_version = MakeXRequestedWithValue(
+          instance_impl->module()->name(), instance_impl->module()->version());
+    }
+  } else {
+    name_version = "internal_testing_only";
+  }
 
-  dest->initialize();
-  dest->setURL(frame->document().completeURL(WebString::fromUTF8(data->url)));
-  dest->setDownloadToFile(data->stream_to_file);
-  dest->setReportUploadProgress(data->record_upload_progress);
+  dest->SetURL(
+      frame->GetDocument().CompleteURL(WebString::FromUTF8(data->url)));
+  dest->SetReportUploadProgress(data->record_upload_progress);
 
   if (!data->method.empty())
-    dest->setHTTPMethod(WebString::fromUTF8(data->method));
+    dest->SetHTTPMethod(WebString::FromUTF8(data->method));
 
-  dest->setFirstPartyForCookies(frame->document().firstPartyForCookies());
+  dest->SetSiteForCookies(frame->GetDocument().SiteForCookies());
+
+  // Plug-ins should not load via service workers as plug-ins may have their own
+  // origin checking logic that may get confused if service workers respond with
+  // resources from another origin.
+  // https://w3c.github.io/ServiceWorker/#implementer-concerns
+  dest->SetSkipServiceWorker(true);
 
   const std::string& headers = data->headers;
   if (!headers.empty()) {
     net::HttpUtil::HeadersIterator it(headers.begin(), headers.end(), "\n\r");
     while (it.GetNext()) {
-      dest->addHTTPHeaderField(WebString::fromUTF8(it.name()),
-                               WebString::fromUTF8(it.values()));
+      dest->AddHTTPHeaderField(WebString::FromUTF8(it.name()),
+                               WebString::FromUTF8(it.values()));
     }
   }
 
   // Append the upload data.
   if (!data->body.empty()) {
     WebHTTPBody http_body;
-    http_body.initialize();
+    http_body.Initialize();
     int file_index = 0;
     for (size_t i = 0; i < data->body.size(); ++i) {
       const URLRequestInfoData::BodyItem& item = data->body[i];
@@ -206,35 +219,33 @@ bool CreateWebURLRequest(PP_Instance instance,
         file_index++;
       } else {
         DCHECK(!item.data.empty());
-        http_body.appendData(WebData(item.data));
+        http_body.AppendData(WebData(item.data));
       }
     }
-    dest->setHTTPBody(http_body);
+    dest->SetHTTPBody(http_body);
   }
 
   // Add the "Referer" header if there is a custom referrer. Such requests
   // require universal access. For all other requests, "Referer" will be set
   // after header security checks are done in AssociatedURLLoader.
   if (data->has_custom_referrer_url && !data->custom_referrer_url.empty())
-    frame->setReferrerForRequest(*dest, GURL(data->custom_referrer_url));
+    frame->SetReferrerForRequest(*dest, GURL(data->custom_referrer_url));
 
   if (data->has_custom_content_transfer_encoding &&
       !data->custom_content_transfer_encoding.empty()) {
-    dest->addHTTPHeaderField(
-        WebString::fromUTF8("Content-Transfer-Encoding"),
-        WebString::fromUTF8(data->custom_content_transfer_encoding));
+    dest->AddHTTPHeaderField(
+        WebString::FromUTF8("Content-Transfer-Encoding"),
+        WebString::FromUTF8(data->custom_content_transfer_encoding));
   }
 
-  if (data->has_custom_user_agent || !name_version.empty()) {
-    RequestExtraData* extra_data = new RequestExtraData();
-    if (data->has_custom_user_agent) {
-      extra_data->set_custom_user_agent(
-          WebString::fromUTF8(data->custom_user_agent));
-    }
-    if (!name_version.empty()) {
-      extra_data->set_requested_with(WebString::fromUTF8(name_version));
-    }
-    dest->setExtraData(extra_data);
+  if (!name_version.empty())
+    dest->SetRequestedWithHeader(WebString::FromUTF8(name_version));
+
+  if (data->has_custom_user_agent) {
+    auto extra_data = std::make_unique<RequestExtraData>();
+    extra_data->set_custom_user_agent(
+        WebString::FromUTF8(data->custom_user_agent));
+    dest->SetExtraData(std::move(extra_data));
   }
 
   return true;
@@ -244,7 +255,7 @@ bool URLRequestRequiresUniversalAccess(const URLRequestInfoData& data) {
   return data.has_custom_referrer_url ||
          data.has_custom_content_transfer_encoding ||
          data.has_custom_user_agent ||
-         url::FindAndCompareScheme(data.url, url::kJavaScriptScheme, NULL);
+         url::FindAndCompareScheme(data.url, url::kJavaScriptScheme, nullptr);
 }
 
 }  // namespace content

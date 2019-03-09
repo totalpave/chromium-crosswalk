@@ -7,7 +7,9 @@
 
 #include <stdint.h>
 
+#include "base/time/time.h"
 #include "media/base/audio_bus.h"
+#include "media/base/media_export.h"
 
 // Low-level audio output support. To make sound there are 3 objects involved:
 // - AudioSource : produces audio samples on a pull model. Implements
@@ -59,19 +61,25 @@ class MEDIA_EXPORT AudioOutputStream {
    public:
     virtual ~AudioSourceCallback() {}
 
-    // Provide more data by fully filling |dest|.  The source will return
-    // the number of frames it filled.  |total_bytes_delay| contains current
-    // number of bytes of delay buffered by the AudioOutputStream.
-    // |frames_skipped| contains the number of frames skipped by the consumer.
-    virtual int OnMoreData(AudioBus* dest,
-                           uint32_t total_bytes_delay,
-                           uint32_t frames_skipped) = 0;
+    // Provide more data by fully filling |dest|. The source will return the
+    // number of frames it filled. |delay| is the duration of audio written to
+    // |dest| in prior calls to OnMoreData() that has not yet been played out,
+    // and |delay_timestamp| is the time when |delay| was measured. The time
+    // when the first sample added to |dest| is expected to be played out can be
+    // calculated by adding |delay| to |delay_timestamp|. The accuracy of
+    // |delay| and |delay_timestamp| may vary depending on the platform and
+    // implementation. |prior_frames_skipped| is the number of frames skipped by
+    // the consumer.
+    virtual int OnMoreData(base::TimeDelta delay,
+                           base::TimeTicks delay_timestamp,
+                           int prior_frames_skipped,
+                           AudioBus* dest) = 0;
 
     // There was an error while playing a buffer. Audio source cannot be
     // destroyed yet. No direct action needed by the AudioStream, but it is
     // a good place to stop accumulating sound data since is is likely that
     // playback will not continue.
-    virtual void OnError(AudioOutputStream* stream) = 0;
+    virtual void OnError() = 0;
   };
 
   virtual ~AudioOutputStream() {}
@@ -87,8 +95,11 @@ class MEDIA_EXPORT AudioOutputStream {
   // The output stream does not take ownership of this callback.
   virtual void Start(AudioSourceCallback* callback) = 0;
 
-  // Stops playing audio. Effect might not be instantaneous as the hardware
-  // might have locked audio data that is processing.
+  // Stops playing audio.  The operation completes synchronously meaning that
+  // once Stop() has completed executing, no further callbacks will be made to
+  // the callback object that was supplied to Start() and it can be safely
+  // deleted. Stop() may be called in any state, e.g. before Start() or after
+  // Stop().
   virtual void Stop() = 0;
 
   // Sets the relative volume, with range [0.0, 1.0] inclusive.
@@ -97,7 +108,7 @@ class MEDIA_EXPORT AudioOutputStream {
   // Gets the relative volume, with range [0.0, 1.0] inclusive.
   virtual void GetVolume(double* volume) = 0;
 
-  // Close the stream. This also generates AudioSourceCallback::OnClose().
+  // Close the stream.
   // After calling this method, the object should not be used anymore.
   virtual void Close() = 0;
 };
@@ -110,24 +121,20 @@ class MEDIA_EXPORT AudioInputStream {
     // Called by the audio recorder when a full packet of audio data is
     // available. This is called from a special audio thread and the
     // implementation should return as soon as possible.
-    // TODO(henrika): should be pure virtual when old OnData() is phased out.
-    virtual void OnData(AudioInputStream* stream,
-                        const AudioBus* source,
-                        uint32_t hardware_delay_bytes,
-                        double volume){};
-
-    // TODO(henrika): don't use; to be removed.
-    virtual void OnData(AudioInputStream* stream,
-                        const uint8_t* src,
-                        uint32_t size,
-                        uint32_t hardware_delay_bytes,
-                        double volume){};
+    //
+    // |capture_time| is the time at which the first sample in |source| was
+    // received. The age of the audio data may be calculated by subtracting
+    // |capture_time| from base::TimeTicks::Now(). |capture_time| is always
+    // monotonically increasing.
+    virtual void OnData(const AudioBus* source,
+                        base::TimeTicks capture_time,
+                        double volume) = 0;
 
     // There was an error while recording audio. The audio sink cannot be
     // destroyed yet. No direct action needed by the AudioInputStream, but it
     // is a good place to stop accumulating sound data since is is likely that
     // recording will not continue.
-    virtual void OnError(AudioInputStream* stream) = 0;
+    virtual void OnError() = 0;
 
    protected:
     virtual ~AudioInputCallback() {}
@@ -170,6 +177,11 @@ class MEDIA_EXPORT AudioInputStream {
 
   // Returns the current muting state for the microphone.
   virtual bool IsMuted() = 0;
+
+  // Sets the output device from which to cancel echo, if echo cancellation is
+  // supported by this stream. E.g. called by WebRTC when it changes playback
+  // devices.
+  virtual void SetOutputDeviceForAec(const std::string& output_device_id) = 0;
 };
 
 }  // namespace media

@@ -16,17 +16,30 @@
 #include "net/base/completion_callback.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
+#include "net/log/net_log_source.h"
 #include "net/socket/tcp_client_socket.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "third_party/blink/public/public_buildflags.h"
 
 namespace {
 
 const int kBufferSize = 16 * 1024;
+const int kBufferGrowthRate = 16 * 1024;
+const size_t kAdbDataChunkSize = 32 * 1024;
 const char kOkayResponse[] = "OKAY";
+const char kFailResponse[] = "FAIL";
 const char kHostTransportCommand[] = "host:transport:%s";
 const char kLocalAbstractCommand[] = "localabstract:%s";
+const char kSyncCommand[] = "sync:";
+const char kSendCommand[] = "SEND";
+const char kDataCommand[] = "DATA";
+const char kDoneCommand[] = "DONE";
+const int kAdbFailure = 1;
+const int kAdbSuccess = 0;
 
 typedef base::Callback<void(int, const std::string&)> CommandCallback;
 typedef base::Callback<void(int, net::StreamSocket*)> SocketCallback;
+typedef base::Callback<void(const std::string&)> ParserCallback;
 
 std::string EncodeMessage(const std::string& message) {
   static const char kHexChars[] = "0123456789ABCDEF";
@@ -63,16 +76,18 @@ class AdbTransportSocket : public AdbClientSocket {
     if (!CheckNetResultOrDie(result))
       return;
     SendCommand(base::StringPrintf(kHostTransportCommand, serial_.c_str()),
-        true, true, base::Bind(&AdbTransportSocket::SendLocalAbstract,
-                         base::Unretained(this)));
+                false, true,
+                base::Bind(&AdbTransportSocket::SendLocalAbstract,
+                           base::Unretained(this)));
   }
 
   void SendLocalAbstract(int result, const std::string& response) {
     if (!CheckNetResultOrDie(result))
       return;
     SendCommand(base::StringPrintf(kLocalAbstractCommand, socket_name_.c_str()),
-        true, true, base::Bind(&AdbTransportSocket::OnSocketAvailable,
-                         base::Unretained(this)));
+                false, true,
+                base::Bind(&AdbTransportSocket::OnSocketAvailable,
+                           base::Unretained(this)));
   }
 
   void OnSocketAvailable(int result, const std::string& response) {
@@ -140,12 +155,12 @@ class HttpOverAdbSocket {
     socket_.reset(socket);
 
     scoped_refptr<net::StringIOBuffer> request_buffer =
-        new net::StringIOBuffer(request_);
+        base::MakeRefCounted<net::StringIOBuffer>(request_);
 
     result = socket_->Write(
-        request_buffer.get(),
-        request_buffer->size(),
-        base::Bind(&HttpOverAdbSocket::ReadResponse, base::Unretained(this)));
+        request_buffer.get(), request_buffer->size(),
+        base::Bind(&HttpOverAdbSocket::ReadResponse, base::Unretained(this)),
+        TRAFFIC_ANNOTATION_FOR_TESTS);
     if (result != net::ERR_IO_PENDING)
       ReadResponse(result);
   }
@@ -155,7 +170,7 @@ class HttpOverAdbSocket {
       return;
 
     scoped_refptr<net::IOBuffer> response_buffer =
-        new net::IOBuffer(kBufferSize);
+        base::MakeRefCounted<net::IOBuffer>(kBufferSize);
 
     result = socket_->Read(response_buffer.get(),
                            kBufferSize,
@@ -268,11 +283,13 @@ class AdbQuerySocket : AdbClientSocket {
       CheckNetResultOrDie(net::ERR_MSG_TOO_BIG);
       return;
     }
-    bool is_void = current_query_ < queries_.size() - 1;
+    bool has_output = current_query_ == queries_.size() - 1;
     // The |shell| command is a special case because it is the only command that
     // doesn't include a length at the beginning of the data stream.
-    bool has_length = query.find("shell:") != 0;
-    SendCommand(query, is_void, has_length,
+    bool has_length =
+        !base::StartsWith(query, "shell:", base::CompareCase::SENSITIVE);
+    SendCommand(
+        query, has_output, has_length,
         base::Bind(&AdbQuerySocket::OnResponse, base::Unretained(this)));
   }
 
@@ -298,6 +315,129 @@ class AdbQuerySocket : AdbClientSocket {
   CommandCallback callback_;
 };
 
+// Implement the ADB protocol to send a file to the device.
+// The protocol consists of the following steps:
+// * Send "host:transport" command with device serial
+// * Send "sync:" command to initialize file transfer
+// * Send "SEND" command with name and mode of the file
+// * Send "DATA" command one or more times for the file content
+// * Send "DONE" command to indicate end of file transfer
+// The first two commands use normal ADB command format implemented by
+// AdbClientSocket::SendCommand. The remaining commands use a special
+// format implemented by AdbSendFileSocket::SendPayload.
+class AdbSendFileSocket : AdbClientSocket {
+ public:
+  AdbSendFileSocket(int port,
+                    const std::string& serial,
+                    const std::string& filename,
+                    const std::string& content,
+                    const CommandCallback& callback)
+      : AdbClientSocket(port),
+        serial_(serial),
+        filename_(filename),
+        content_(content),
+        current_offset_(0),
+        callback_(callback) {
+    Connect(
+        base::Bind(&AdbSendFileSocket::SendTransport, base::Unretained(this)));
+  }
+
+ private:
+  ~AdbSendFileSocket() {}
+
+  void SendTransport(int result) {
+    if (!CheckNetResultOrDie(result))
+      return;
+    SendCommand(
+        base::StringPrintf(kHostTransportCommand, serial_.c_str()), false, true,
+        base::Bind(&AdbSendFileSocket::SendSync, base::Unretained(this)));
+  }
+
+  void SendSync(int result, const std::string& response) {
+    if (!CheckNetResultOrDie(result))
+      return;
+    SendCommand(
+        kSyncCommand, false, true,
+        base::Bind(&AdbSendFileSocket::SendSend, base::Unretained(this)));
+  }
+
+  void SendSend(int result, const std::string& response) {
+    if (!CheckNetResultOrDie(result))
+      return;
+    // File mode. The following value is equivalent to S_IRUSR | S_IWUSR.
+    // Can't use the symbolic names since they are not available on Windows.
+    int mode = 0600;
+    std::string payload = base::StringPrintf("%s,%d", filename_.c_str(), mode);
+    SendPayload(
+        kSendCommand, payload.length(), payload.c_str(), payload.length(),
+        base::Bind(&AdbSendFileSocket::SendContent, base::Unretained(this)));
+  }
+
+  void SendContent(int result) {
+    if (!CheckNetResultOrDie(result))
+      return;
+    if (current_offset_ >= content_.length()) {
+      SendDone();
+      return;
+    }
+    size_t offset = current_offset_;
+    size_t length = std::min(content_.length() - offset, kAdbDataChunkSize);
+    current_offset_ += length;
+    SendPayload(
+        kDataCommand, length, content_.c_str() + offset, length,
+        base::Bind(&AdbSendFileSocket::SendContent, base::Unretained(this)));
+  }
+
+  void SendDone() {
+    int data = time(NULL);
+    SendPayload(kDoneCommand, data, nullptr, 0,
+                base::Bind(&AdbSendFileSocket::ReadFinalResponse,
+                           base::Unretained(this)));
+  }
+
+  void ReadFinalResponse(int result) {
+    ReadResponse(callback_, false, false, result);
+  }
+
+  // Send a special payload command ("SEND", "DATA", or "DONE").
+  // Each command consists of a command line, followed by a 4-byte integer
+  // sent in raw little-endian format, followed by an optional payload.
+  void SendPayload(const char* command,
+                   int data,
+                   const char* payload,
+                   size_t payloadLength,
+                   const net::CompletionCallback& callback) {
+    std::string buffer(command);
+    for (int i = 0; i < 4; i++) {
+      buffer.append(1, static_cast<char>(data & 0xff));
+      data >>= 8;
+    }
+    if (payloadLength > 0)
+      buffer.append(payload, payloadLength);
+
+    scoped_refptr<net::StringIOBuffer> request_buffer =
+        base::MakeRefCounted<net::StringIOBuffer>(buffer);
+    int result = socket_->Write(request_buffer.get(), request_buffer->size(),
+                                callback, TRAFFIC_ANNOTATION_FOR_TESTS);
+    if (result != net::ERR_IO_PENDING)
+      callback.Run(result);
+  }
+
+  bool CheckNetResultOrDie(int result) {
+    if (result >= 0)
+      return true;
+    callback_.Run(result, NULL);
+    delete this;
+    return false;
+  }
+
+  std::string serial_;
+  std::string filename_;
+  std::string content_;
+  size_t current_offset_;
+  CommandCallback callback_;
+};
+
 }  // namespace
 
 // static
@@ -307,20 +447,29 @@ void AdbClientSocket::AdbQuery(int port,
   new AdbQuerySocket(port, query, callback);
 }
 
-#if defined(DEBUG_DEVTOOLS)
+// static
+void AdbClientSocket::SendFile(int port,
+                               const std::string& serial,
+                               const std::string& filename,
+                               const std::string& content,
+                               const CommandCallback& callback) {
+  new AdbSendFileSocket(port, serial, filename, content, callback);
+}
+
+#if BUILDFLAG(DEBUG_DEVTOOLS)
 static void UseTransportQueryForDesktop(const SocketCallback& callback,
                                         net::StreamSocket* socket,
                                         int result) {
   callback.Run(result, socket);
 }
-#endif  // defined(DEBUG_DEVTOOLS)
+#endif  // BUILDFLAG(DEBUG_DEVTOOLS)
 
 // static
 void AdbClientSocket::TransportQuery(int port,
                                      const std::string& serial,
                                      const std::string& socket_name,
                                      const SocketCallback& callback) {
-#if defined(DEBUG_DEVTOOLS)
+#if BUILDFLAG(DEBUG_DEVTOOLS)
   if (serial.empty()) {
     // Use plain socket for remote debugging on Desktop (debugging purposes).
     int tcp_port = 0;
@@ -330,11 +479,11 @@ void AdbClientSocket::TransportQuery(int port,
     net::AddressList address_list = net::AddressList::CreateFromIPAddress(
         net::IPAddress::IPv4Localhost(), tcp_port);
     net::TCPClientSocket* socket = new net::TCPClientSocket(
-        address_list, NULL, net::NetLog::Source());
+        address_list, nullptr, nullptr, net::NetLogSource());
     socket->Connect(base::Bind(&UseTransportQueryForDesktop, callback, socket));
     return;
   }
-#endif  // defined(DEBUG_DEVTOOLS)
+#endif  // BUILDFLAG(DEBUG_DEVTOOLS)
   new AdbTransportSocket(port, serial, socket_name, callback);
 }
 
@@ -364,171 +513,153 @@ AdbClientSocket::~AdbClientSocket() {
 }
 
 void AdbClientSocket::Connect(const net::CompletionCallback& callback) {
-  net::AddressList address_list = net::AddressList::CreateFromIPAddress(
-      net::IPAddress::IPv4Localhost(), port_);
+  // In a IPv4/IPv6 dual stack environment, getaddrinfo for localhost could
+  // only return IPv6 address while current adb (1.0.36) will always listen
+  // on IPv4. So just try IPv4 first, then fall back to IPv6.
+  net::IPAddressList list = {net::IPAddress::IPv4Localhost(),
+                             net::IPAddress::IPv6Localhost()};
+  net::AddressList ip_list = net::AddressList::CreateFromIPAddressList(
+      list, "localhost");
+  net::AddressList address_list = net::AddressList::CopyWithPort(
+      ip_list, port_);
+
   socket_.reset(new net::TCPClientSocket(address_list, NULL, NULL,
-                                         net::NetLog::Source()));
+                                         net::NetLogSource()));
   int result = socket_->Connect(callback);
   if (result != net::ERR_IO_PENDING)
     callback.Run(result);
 }
 
 void AdbClientSocket::SendCommand(const std::string& command,
-                                  bool is_void,
+                                  bool has_output,
                                   bool has_length,
-                                  const CommandCallback& callback) {
+                                  const CommandCallback& response_callback) {
   scoped_refptr<net::StringIOBuffer> request_buffer =
-      new net::StringIOBuffer(EncodeMessage(command));
-  int result = socket_->Write(request_buffer.get(),
-                              request_buffer->size(),
-                              base::Bind(&AdbClientSocket::ReadResponse,
-                                         base::Unretained(this),
-                                         callback,
-                                         is_void,
-                                         has_length));
+      base::MakeRefCounted<net::StringIOBuffer>(EncodeMessage(command));
+  int result = socket_->Write(
+      request_buffer.get(), request_buffer->size(),
+      base::Bind(&AdbClientSocket::ReadResponse, base::Unretained(this),
+                 response_callback, has_output, has_length),
+      TRAFFIC_ANNOTATION_FOR_TESTS);
   if (result != net::ERR_IO_PENDING)
-    ReadResponse(callback, is_void, has_length, result);
+    ReadResponse(response_callback, has_output, has_length, result);
 }
 
-void AdbClientSocket::ReadResponse(const CommandCallback& callback,
-                                   bool is_void,
+void AdbClientSocket::ReadResponse(const CommandCallback& response_callback,
+                                   bool has_output,
                                    bool has_length,
                                    int result) {
   if (result < 0) {
-    callback.Run(result, "IO error");
+    response_callback.Run(result, "IO error");
     return;
   }
-  scoped_refptr<net::IOBuffer> response_buffer =
-      new net::IOBuffer(kBufferSize);
-  result = socket_->Read(response_buffer.get(),
-                         kBufferSize,
-                         base::Bind(&AdbClientSocket::OnResponseStatus,
-                                    base::Unretained(this),
-                                    callback,
-                                    is_void,
-                                    has_length,
-                                    response_buffer));
-  if (result != net::ERR_IO_PENDING)
-    OnResponseStatus(callback, is_void, has_length, response_buffer, result);
+  scoped_refptr<net::GrowableIOBuffer> socket_buffer =
+      base::MakeRefCounted<net::GrowableIOBuffer>();
+  socket_buffer->SetCapacity(kBufferSize);
+  if (has_output) {
+    const ParserCallback& parse_output_callback = base::Bind(
+        &AdbClientSocket::ParseOutput, has_length, response_callback);
+    int socket_result = socket_->Read(
+        socket_buffer.get(), kBufferSize,
+        base::Bind(&AdbClientSocket::ReadUntilEOF, base::Unretained(this),
+                   parse_output_callback, response_callback, socket_buffer));
+    if (socket_result != net::ERR_IO_PENDING) {
+      ReadUntilEOF(parse_output_callback, response_callback, socket_buffer,
+                   socket_result);
+    }
+  } else {
+    int socket_result =
+        socket_->Read(socket_buffer.get(), kBufferSize,
+                      base::Bind(&AdbClientSocket::ReadStatusOutput,
+                                 response_callback, socket_buffer));
+    if (socket_result != net::ERR_IO_PENDING) {
+      ReadStatusOutput(response_callback, socket_buffer, socket_result);
+    }
+  }
 }
 
-void AdbClientSocket::OnResponseStatus(
-    const CommandCallback& callback,
-    bool is_void,
-    bool has_length,
-    scoped_refptr<net::IOBuffer> response_buffer,
-    int result) {
-  if (result <= 0) {
-    callback.Run(result == 0 ? net::ERR_CONNECTION_CLOSED : result,
-                 "IO error");
+void AdbClientSocket::ReadStatusOutput(
+    const CommandCallback& response_callback,
+    scoped_refptr<net::IOBuffer> socket_buffer,
+    int socket_result) {
+  // Sometimes adb-server responds with the 8 char string "OKAY\0\0\0\0" instead
+  // of the expected "OKAY".
+  if (socket_result >= 4 &&
+      std::string(socket_buffer->data(), 4) == kOkayResponse) {
+    response_callback.Run(kAdbSuccess, kOkayResponse);
     return;
   }
+  response_callback.Run(kAdbFailure, kFailResponse);
+}
 
-  std::string data = std::string(response_buffer->data(), result);
-  if (result < 4) {
-    callback.Run(net::ERR_FAILED, "Response is too short: " + data);
+void AdbClientSocket::ReadUntilEOF(
+    const ParserCallback& parse_output_callback,
+    const CommandCallback& response_callback,
+    scoped_refptr<net::GrowableIOBuffer> socket_buffer,
+    int socket_result) {
+  if (socket_result < 0) {
+    VLOG(3) << "IO error";
+    response_callback.Run(socket_result, "IO error");
     return;
+  } else if (socket_result > 0) {
+    // We read in data. Let's try to read in more.
+    socket_buffer->set_offset(socket_buffer->offset() + socket_result);
+    if (socket_buffer->RemainingCapacity() == 0) {
+      socket_buffer->SetCapacity(socket_buffer->capacity() + kBufferGrowthRate);
+    }
+    int new_socket_result = socket_->Read(
+        socket_buffer.get(), socket_buffer->RemainingCapacity(),
+        base::Bind(&AdbClientSocket::ReadUntilEOF, base::Unretained(this),
+                   parse_output_callback, response_callback, socket_buffer));
+    if (new_socket_result != net::ERR_IO_PENDING) {
+      ReadUntilEOF(parse_output_callback, response_callback, socket_buffer,
+                   new_socket_result);
+    }
+  } else if (socket_result == 0) {
+    // We hit EOF. The socket is closed on the other side.
+    std::string adb_output(socket_buffer->StartOfBuffer(),
+                           socket_buffer->offset());
+    parse_output_callback.Run(adb_output);
   }
+}
 
-  std::string status = data.substr(0, 4);
-  if (status != kOkayResponse) {
-    callback.Run(net::ERR_FAILED, data);
-    return;
+void AdbClientSocket::ParseOutput(bool has_length,
+                                  const CommandCallback& response_callback,
+                                  const std::string& adb_output) {
+  int result = kAdbFailure;
+  // Expected data format is
+  // "OKAY<payload_length><payload>" if has_length
+  // or "OKAY<payload>" if not has_length.
+  // or "OKAY" if there is no output (regardless of has_length).
+  // FAIL is returned instead of OKAY if there was an error.
+  std::string output(adb_output);
+  if (output.substr(0, 4) == kOkayResponse) {
+    output = output.substr(4);
+    result = kAdbSuccess;
   }
-
-  data = data.substr(4);
-
-  if (!is_void) {
-    if (!has_length) {
-      // Payload doesn't include length, so skip straight to reading in data.
-      OnResponseData(callback, data, response_buffer, -1, 0);
-    } else if (data.length() >= 4) {
-      // We've already read the length out of the socket, so we don't need to
-      // read more yet.
-      OnResponseLength(callback, data, response_buffer, 0);
+  if (output.substr(0, 4) == kFailResponse) {
+    output = output.substr(4);
+    result = kAdbFailure;
+  }
+  if (output.substr(0, 4) == kOkayResponse) {
+    VLOG(3) << "ADB server responded with \"OKAYOKAY\" instead of \"OKAY\".";
+    output = output.substr(4);
+    // Note: It's unclear whether we should set result = kAdbSuccess here or
+    // not. I've never seen "FAILOKAY" in the wild.
+  }
+  // Note that has_length=true implies that the payload length will be prepended
+  // to the payload in the case that there is a payload. If there is no payload,
+  // then there may not be a payload length.
+  if (has_length && output.size() != 0) {
+    if (output.size() >= 4) {
+      // Just skip the hex string length. It is unnecessary since
+      // EOF is sent after the message is complete.
+      output = output.substr(4);
     } else {
-      // Part or all of the length is still in the socket, so we need to read it
-      // out of the socket before parsing the length.
-      result = socket_->Read(response_buffer.get(),
-                             kBufferSize,
-                             base::Bind(&AdbClientSocket::OnResponseLength,
-                                        base::Unretained(this),
-                                        callback,
-                                        data,
-                                        response_buffer));
-      if (result != net::ERR_IO_PENDING)
-        OnResponseLength(callback, data, response_buffer, result);
+      VLOG(3) << "Error: ADB server responded without the expected hexstring"
+              << " length";
+      result = kAdbFailure;
     }
-  } else {
-    callback.Run(net::OK, data);
   }
-}
-
-void AdbClientSocket::OnResponseLength(
-    const CommandCallback& callback,
-    const std::string& response,
-    scoped_refptr<net::IOBuffer> response_buffer,
-    int result) {
-  if (result < 0) {
-    callback.Run(result, "IO error");
-    return;
-  }
-
-  std::string new_response =
-      response + std::string(response_buffer->data(), result);
-  if (new_response.length() < 4) {
-    result = socket_->Read(response_buffer.get(),
-                           kBufferSize,
-                           base::Bind(&AdbClientSocket::OnResponseLength,
-                                      base::Unretained(this),
-                                      callback,
-                                      new_response,
-                                      response_buffer));
-    if (result != net::ERR_IO_PENDING)
-      OnResponseLength(callback, new_response, response_buffer, result);
-  } else {
-    int payload_length = 0;
-    if (!base::HexStringToInt(new_response.substr(0, 4), &payload_length)) {
-      callback.Run(net::ERR_FAILED, new_response);
-      return;
-    }
-
-    new_response = new_response.substr(4);
-    int bytes_left = payload_length - new_response.length();
-    OnResponseData(callback, new_response, response_buffer, bytes_left, 0);
-  }
-}
-
-void AdbClientSocket::OnResponseData(
-    const CommandCallback& callback,
-    const std::string& response,
-    scoped_refptr<net::IOBuffer> response_buffer,
-    int bytes_left,
-    int result) {
-  if (result < 0) {
-    callback.Run(result, "IO error");
-    return;
-  }
-
-  bytes_left -= result;
-  std::string new_response =
-      response + std::string(response_buffer->data(), result);
-  if (bytes_left == 0) {
-    callback.Run(net::OK, new_response);
-    return;
-  }
-
-  // Read tail
-  result = socket_->Read(response_buffer.get(),
-                         kBufferSize,
-                         base::Bind(&AdbClientSocket::OnResponseData,
-                                    base::Unretained(this),
-                                    callback,
-                                    new_response,
-                                    response_buffer,
-                                    bytes_left));
-  if (result > 0)
-    OnResponseData(callback, new_response, response_buffer, bytes_left, result);
-  else if (result != net::ERR_IO_PENDING)
-    callback.Run(net::OK, new_response);
+  response_callback.Run(result, output);
 }

@@ -7,10 +7,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <utility>
+
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
-#include "chromeos/login/login_state.h"
+#include "base/values.h"
+#include "chromeos/login/login_state/login_state.h"
 #include "chromeos/network/device_state.h"
 #include "chromeos/network/managed_network_configuration_handler.h"
 #include "chromeos/network/network_state.h"
@@ -31,17 +34,20 @@ WifiAccessPoint::WifiAccessPoint()
 
 WifiAccessPoint::WifiAccessPoint(const WifiAccessPoint& other) = default;
 
-WifiAccessPoint::~WifiAccessPoint() {
-}
+WifiAccessPoint::~WifiAccessPoint() = default;
 
-CellularScanResult::CellularScanResult() {
-}
+CellTower::CellTower() = default;
+
+CellTower::CellTower(const CellTower& other) = default;
+
+CellTower::~CellTower() = default;
+
+CellularScanResult::CellularScanResult() = default;
 
 CellularScanResult::CellularScanResult(const CellularScanResult& other) =
     default;
 
-CellularScanResult::~CellularScanResult() {
-}
+CellularScanResult::~CellularScanResult() = default;
 
 namespace network_util {
 
@@ -62,7 +68,7 @@ std::string PrefixLengthToNetmask(int32_t prefix_length) {
       netmask += ".";
     int value = remainder == 0 ? 0 :
         ((2L << (remainder - 1)) - 1) << (8 - remainder);
-    netmask += base::IntToString(value);
+    netmask += base::NumberToString(value);
   }
   return netmask;
 }
@@ -129,7 +135,7 @@ bool ParseCellularScanResults(const base::ListValue& list,
   scan_results->reserve(list.GetSize());
   for (const auto& value : list) {
     const base::DictionaryValue* dict;
-    if (!value->GetAsDictionary(&dict))
+    if (!value.GetAsDictionary(&dict))
       return false;
     CellularScanResult scan_result;
     // If the network id property is not present then this network cannot be
@@ -159,19 +165,19 @@ std::unique_ptr<base::DictionaryValue> TranslateNetworkStateToONC(
 
   // Get any Device properties required to translate state.
   if (NetworkTypePattern::Cellular().MatchesType(network->type())) {
-    // We need to set Device[Cellular.ProviderRequiresRoaming] so that
-    // Cellular[RoamingState] can be set correctly for badging network icons.
     const DeviceState* device =
         NetworkHandler::Get()->network_state_handler()->GetDeviceState(
             network->device_path());
     if (device) {
-      std::unique_ptr<base::DictionaryValue> device_dict(
-          new base::DictionaryValue);
-      device_dict->SetBooleanWithoutPathExpansion(
-          shill::kProviderRequiresRoamingProperty,
-          device->provider_requires_roaming());
-      shill_dictionary->SetWithoutPathExpansion(shill::kDeviceProperty,
-                                                device_dict.release());
+      base::DictionaryValue device_dict;
+      // We need to set Device.Cellular.ProviderRequiresRoaming so that
+      // Cellular.RoamingState can be set correctly for badging network icons.
+      device_dict.SetKey(shill::kProviderRequiresRoamingProperty,
+                         base::Value(device->provider_requires_roaming()));
+      // Scanning is also used in the UI when displaying a list of networks.
+      device_dict.SetKey(shill::kScanningProperty,
+                         base::Value(device->scanning()));
+      shill_dictionary->SetKey(shill::kDeviceProperty, std::move(device_dict));
     }
   }
 
@@ -204,7 +210,7 @@ std::unique_ptr<base::ListValue> TranslateNetworkListToONC(
   for (const NetworkState* state : network_states) {
     std::unique_ptr<base::DictionaryValue> onc_dictionary =
         TranslateNetworkStateToONC(state);
-    network_properties_list->Append(onc_dictionary.release());
+    network_properties_list->Append(std::move(onc_dictionary));
   }
   return network_properties_list;
 }
@@ -215,6 +221,13 @@ std::string TranslateONCTypeToShill(const std::string& onc_type) {
   std::string shill_type;
   onc::TranslateStringToShill(onc::kNetworkTypeTable, onc_type, &shill_type);
   return shill_type;
+}
+
+std::string TranslateONCSecurityToShill(const std::string& onc_security) {
+  std::string shill_security;
+  onc::TranslateStringToShill(onc::kWiFiSecurityTable, onc_security,
+                              &shill_security);
+  return shill_security;
 }
 
 std::string TranslateShillTypeToONC(const std::string& shill_type) {

@@ -25,13 +25,15 @@ namespace protocol {
 static const int kReadBufferSize = 4096;
 
 MessageReader::MessageReader() : weak_factory_(this) {}
-MessageReader::~MessageReader() {}
+MessageReader::~MessageReader() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+}
 
 void MessageReader::StartReading(
     P2PStreamSocket* socket,
     const MessageReceivedCallback& message_received_callback,
     const ReadFailedCallback& read_failed_callback) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!socket_);
   DCHECK(socket);
   DCHECK(!message_received_callback.is_null());
@@ -44,12 +46,12 @@ void MessageReader::StartReading(
 }
 
 void MessageReader::DoRead() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Don't try to read again if there is another read pending or we
   // have messages that we haven't finished processing yet.
   bool read_succeeded = true;
   while (read_succeeded && !closed_ && !read_pending_) {
-    read_buffer_ = new net::IOBuffer(kReadBufferSize);
+    read_buffer_ = base::MakeRefCounted<net::IOBuffer>(kReadBufferSize);
     int result = socket_->Read(
         read_buffer_.get(),
         kReadBufferSize,
@@ -60,7 +62,7 @@ void MessageReader::DoRead() {
 }
 
 void MessageReader::OnRead(int result) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(read_pending_);
   read_pending_ = false;
 
@@ -73,7 +75,7 @@ void MessageReader::OnRead(int result) {
 }
 
 void MessageReader::HandleReadResult(int result, bool* read_succeeded) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (closed_)
     return;
 
@@ -85,8 +87,6 @@ void MessageReader::HandleReadResult(int result, bool* read_succeeded) {
   } else if (result == net::ERR_IO_PENDING) {
     read_pending_ = true;
   } else {
-    DCHECK_LT(result, 0);
-
     // Stop reading after any error.
     closed_ = true;
     *read_succeeded = false;
@@ -97,7 +97,7 @@ void MessageReader::HandleReadResult(int result, bool* read_succeeded) {
 }
 
 void MessageReader::OnDataReceived(net::IOBuffer* data, int data_size) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   message_decoder_.AddData(data, data_size);
 
   // Get list of all new messages first, and then call the callback
@@ -108,14 +108,15 @@ void MessageReader::OnDataReceived(net::IOBuffer* data, int data_size) {
       break;
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&MessageReader::RunCallback, weak_factory_.GetWeakPtr(),
-                   base::Passed(base::WrapUnique(buffer))));
+        base::BindOnce(&MessageReader::RunCallback, weak_factory_.GetWeakPtr(),
+                       base::Passed(base::WrapUnique(buffer))));
   }
 }
 
 void MessageReader::RunCallback(std::unique_ptr<CompoundBuffer> message) {
-  if (!message_received_callback_.is_null())
+  if (!message_received_callback_.is_null()) {
     message_received_callback_.Run(std::move(message));
+  }
 }
 
 }  // namespace protocol

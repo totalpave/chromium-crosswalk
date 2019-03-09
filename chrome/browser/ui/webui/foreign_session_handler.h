@@ -5,25 +5,17 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_FOREIGN_SESSION_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_FOREIGN_SESSION_HANDLER_H_
 
+#include <memory>
+#include <string>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
 #include "base/time/time.h"
 #include "chrome/browser/sessions/session_service.h"
-#include "components/sync_driver/sync_service_observer.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_message_handler.h"
-
-namespace sessions {
-struct SessionTab;
-struct SessionWindow;
-}
-
-namespace sync_driver {
-class SyncService;
-}
 
 namespace user_prefs {
 class PrefRegistrySyncable;
@@ -31,12 +23,8 @@ class PrefRegistrySyncable;
 
 namespace browser_sync {
 
-class ForeignSessionHandler : public content::WebUIMessageHandler,
-                              public sync_driver::SyncServiceObserver {
+class ForeignSessionHandler : public content::WebUIMessageHandler {
  public:
-  // Invalid value, used to note that we don't have a tab or window number.
-  static const int kInvalidId = -1;
-
   // WebUIMessageHandler implementation.
   void RegisterMessages() override;
 
@@ -47,26 +35,20 @@ class ForeignSessionHandler : public content::WebUIMessageHandler,
 
   static void OpenForeignSessionTab(content::WebUI* web_ui,
                                     const std::string& session_string_value,
-                                    SessionID::id_type window_num,
-                                    SessionID::id_type tab_id,
+                                    int window_num,
+                                    SessionID tab_id,
                                     const WindowOpenDisposition& disposition);
 
   static void OpenForeignSessionWindows(content::WebUI* web_ui,
                                         const std::string& session_string_value,
-                                        SessionID::id_type window_num);
+                                        int window_num);
 
   // Returns a pointer to the current session model associator or NULL.
-  static sync_driver::OpenTabsUIDelegate* GetOpenTabsUIDelegate(
+  static sync_sessions::OpenTabsUIDelegate* GetOpenTabsUIDelegate(
       content::WebUI* web_ui);
 
  private:
-  // sync_driver::SyncServiceObserver:
-  void OnStateChanged() override {}
-  void OnSyncConfigurationCompleted() override;
-  void OnForeignSessionUpdated() override;
-
-  // Returns true if tab sync is enabled for this profile, otherwise false.
-  bool IsTabSyncEnabled();
+  void OnForeignSessionUpdated();
 
   // Returns a string used to show the user when a session was last modified.
   base::string16 FormatSessionTime(const base::Time& time);
@@ -89,13 +71,12 @@ class ForeignSessionHandler : public content::WebUIMessageHandler,
 
   void HandleSetForeignSessionCollapsed(const base::ListValue* args);
 
-  // ScopedObserver used to observe the ProfileSyncService.
-  ScopedObserver<sync_driver::SyncService, sync_driver::SyncServiceObserver>
-      scoped_observer_;
-
   // The time at which this WebUI was created. Used to calculate how long
   // the WebUI was present before the sessions data was visible.
   base::TimeTicks load_attempt_time_;
+
+  std::unique_ptr<base::CallbackList<void()>::Subscription>
+      foreign_session_updated_subscription_;
 
   DISALLOW_COPY_AND_ASSIGN(ForeignSessionHandler);
 };

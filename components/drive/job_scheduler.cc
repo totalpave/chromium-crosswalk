@@ -6,10 +6,12 @@
 
 #include <stddef.h>
 #include <algorithm>
+#include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file_util.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -138,25 +140,12 @@ google_apis::CancelCallback RunResumeUploadFile(
                                     params.progress_callback);
 }
 
-// Collects information about sizes of files copied or moved from or to Drive
-// Otherwise does nothing. Temporary for crbug.com/229650.
-void CollectCopyHistogramSample(const std::string& histogram_name,
-                                int64_t size) {
-  base::HistogramBase* const counter =
-      base::Histogram::FactoryGet(histogram_name,
-                                  1,
-                                  1024 * 1024 /* 1 GB */,
-                                  50,
-                                  base::Histogram::kUmaTargetedHistogramFlag);
-  counter->Add(size / 1024);
-}
-
 }  // namespace
 
 // Metadata jobs are cheap, so we run them concurrently. File jobs run serially.
 const int JobScheduler::kMaxJobCount[] = {
-  5,  // METADATA_QUEUE
-  1,  // FILE_QUEUE
+    20,  // METADATA_QUEUE
+    1,   // FILE_QUEUE
 };
 
 JobScheduler::JobEntry::JobEntry(JobType type)
@@ -175,24 +164,30 @@ struct JobScheduler::ResumeUploadParams {
   std::string content_type;
 };
 
-JobScheduler::JobScheduler(PrefService* pref_service,
-                           EventLogger* logger,
-                           DriveServiceInterface* drive_service,
-                           base::SequencedTaskRunner* blocking_task_runner)
+JobScheduler::JobScheduler(
+    PrefService* pref_service,
+    EventLogger* logger,
+    DriveServiceInterface* drive_service,
+    network::NetworkConnectionTracker* network_connection_tracker,
+    base::SequencedTaskRunner* blocking_task_runner,
+    device::mojom::WakeLockProviderPtr wake_lock_provider)
     : throttle_count_(0),
       wait_until_(base::Time::Now()),
       disable_throttling_(false),
       logger_(logger),
       drive_service_(drive_service),
+      network_connection_tracker_(network_connection_tracker),
       blocking_task_runner_(blocking_task_runner),
-      uploader_(new DriveUploader(drive_service, blocking_task_runner)),
+      uploader_(new DriveUploader(drive_service,
+                                  blocking_task_runner,
+                                  std::move(wake_lock_provider))),
       pref_service_(pref_service),
       weak_ptr_factory_(this) {
   for (int i = 0; i < NUM_QUEUES; ++i)
-    queue_[i].reset(new JobQueue(kMaxJobCount[i], NUM_CONTEXT_TYPES,
-                                 kMaxBatchCount, kMaxBatchSize));
+    queue_[i] = std::make_unique<JobQueue>(kMaxJobCount[i], NUM_CONTEXT_TYPES,
+                                           kMaxBatchCount, kMaxBatchSize);
 
-  net::NetworkChangeNotifier::AddConnectionTypeObserver(this);
+  network_connection_tracker_->AddNetworkConnectionObserver(this);
 }
 
 JobScheduler::~JobScheduler() {
@@ -203,7 +198,7 @@ JobScheduler::~JobScheduler() {
     num_queued_jobs += queue_[i]->GetNumberOfJobs();
   DCHECK_EQ(num_queued_jobs, job_map_.size());
 
-  net::NetworkChangeNotifier::RemoveConnectionTypeObserver(this);
+  network_connection_tracker_->RemoveNetworkConnectionObserver(this);
 }
 
 std::vector<JobInfo> JobScheduler::GetJobInfoList() {
@@ -266,35 +261,50 @@ void JobScheduler::GetAboutResource(
   StartJob(new_job);
 }
 
-void JobScheduler::GetAppList(const google_apis::AppListCallback& callback) {
+void JobScheduler::GetStartPageToken(
+    const std::string& team_drive_id,
+    const google_apis::StartPageTokenCallback& callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK(!callback.is_null());
 
-  JobEntry* new_job = CreateNewJob(TYPE_GET_APP_LIST);
-  new_job->task = base::Bind(
-      &DriveServiceInterface::GetAppList,
-      base::Unretained(drive_service_),
-      base::Bind(&JobScheduler::OnGetAppListJobDone,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 new_job->job_info.job_id,
-                 callback));
+  JobEntry* new_job = CreateNewJob(TYPE_GET_START_PAGE_TOKEN);
+  new_job->task = base::BindRepeating(
+      &DriveServiceInterface::GetStartPageToken,
+      base::Unretained(drive_service_), team_drive_id,
+      base::BindRepeating(&JobScheduler::OnGetStartPageTokenDone,
+                          weak_ptr_factory_.GetWeakPtr(),
+                          new_job->job_info.job_id, callback));
+  new_job->abort_callback = CreateErrorRunCallback(callback);
+  StartJob(new_job);
+}
+
+void JobScheduler::GetAllTeamDriveList(
+    const google_apis::TeamDriveListCallback& callback) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK(!callback.is_null());
+  JobEntry* new_job = CreateNewJob(TYPE_GET_ALL_TEAM_DRIVE_LIST);
+  new_job->task =
+      base::Bind(&DriveServiceInterface::GetAllTeamDriveList,
+                 base::Unretained(drive_service_),
+                 base::Bind(&JobScheduler::OnGetTeamDriveListJobDone,
+                            weak_ptr_factory_.GetWeakPtr(),
+                            new_job->job_info.job_id, callback));
   new_job->abort_callback = CreateErrorRunCallback(callback);
   StartJob(new_job);
 }
 
 void JobScheduler::GetAllFileList(
+    const std::string& team_drive_id,
     const google_apis::FileListCallback& callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK(!callback.is_null());
 
   JobEntry* new_job = CreateNewJob(TYPE_GET_ALL_RESOURCE_LIST);
-  new_job->task = base::Bind(
-      &DriveServiceInterface::GetAllFileList,
-      base::Unretained(drive_service_),
-      base::Bind(&JobScheduler::OnGetFileListJobDone,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 new_job->job_info.job_id,
-                 callback));
+  new_job->task = base::Bind(&DriveServiceInterface::GetAllFileList,
+                             base::Unretained(drive_service_), team_drive_id,
+                             base::Bind(&JobScheduler::OnGetFileListJobDone,
+                                        weak_ptr_factory_.GetWeakPtr(),
+                                        new_job->job_info.job_id, callback));
   new_job->abort_callback = CreateErrorRunCallback(callback);
   StartJob(new_job);
 }
@@ -356,6 +366,21 @@ void JobScheduler::GetChangeList(
   StartJob(new_job);
 }
 
+void JobScheduler::GetChangeList(
+    const std::string& team_drive_id,
+    const std::string& start_page_token,
+    const google_apis::ChangeListCallback& callback) {
+  JobEntry* new_job = CreateNewJob(TYPE_GET_CHANGE_LIST);
+  new_job->task = base::BindRepeating(
+      &DriveServiceInterface::GetChangeListByToken,
+      base::Unretained(drive_service_), team_drive_id, start_page_token,
+      base::BindRepeating(&JobScheduler::OnGetChangeListJobDone,
+                          weak_ptr_factory_.GetWeakPtr(),
+                          new_job->job_info.job_id, callback));
+  new_job->abort_callback = CreateErrorRunCallback(callback);
+  StartJob(new_job);
+}
+
 void JobScheduler::GetRemainingChangeList(
     const GURL& next_link,
     const google_apis::ChangeListCallback& callback) {
@@ -371,6 +396,22 @@ void JobScheduler::GetRemainingChangeList(
                  weak_ptr_factory_.GetWeakPtr(),
                  new_job->job_info.job_id,
                  callback));
+  new_job->abort_callback = CreateErrorRunCallback(callback);
+  StartJob(new_job);
+}
+
+void JobScheduler::GetRemainingTeamDriveList(
+    const std::string& page_token,
+    const google_apis::TeamDriveListCallback& callback) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK(!callback.is_null());
+  JobEntry* new_job = CreateNewJob(TYPE_GET_REMAINING_TEAM_DRIVE_LIST);
+  new_job->task =
+      base::Bind(&DriveServiceInterface::GetRemainingTeamDriveList,
+                 base::Unretained(drive_service_), page_token,
+                 base::Bind(&JobScheduler::OnGetTeamDriveListJobDone,
+                            weak_ptr_factory_.GetWeakPtr(),
+                            new_job->job_info.job_id, callback));
   new_job->abort_callback = CreateErrorRunCallback(callback);
   StartJob(new_job);
 }
@@ -408,29 +449,6 @@ void JobScheduler::GetFileResource(
       base::Unretained(drive_service_),
       resource_id,
       base::Bind(&JobScheduler::OnGetFileResourceJobDone,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 new_job->job_info.job_id,
-                 callback));
-  new_job->abort_callback = CreateErrorRunCallback(callback);
-  StartJob(new_job);
-}
-
-void JobScheduler::GetShareUrl(
-    const std::string& resource_id,
-    const GURL& embed_origin,
-    const ClientContext& context,
-    const google_apis::GetShareUrlCallback& callback) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!callback.is_null());
-
-  JobEntry* new_job = CreateNewJob(TYPE_GET_SHARE_URL);
-  new_job->context = context;
-  new_job->task = base::Bind(
-      &DriveServiceInterface::GetShareUrl,
-      base::Unretained(drive_service_),
-      resource_id,
-      embed_origin,
-      base::Bind(&JobScheduler::OnGetShareUrlJobDone,
                  weak_ptr_factory_.GetWeakPtr(),
                  new_job->job_info.job_id,
                  callback));
@@ -586,10 +604,6 @@ JobID JobScheduler::DownloadFile(
     const google_apis::GetContentCallback& get_content_callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  // Temporary histogram for crbug.com/229650.
-  CollectCopyHistogramSample("Drive.DownloadFromDriveFileSize",
-                             expected_file_size);
-
   JobEntry* new_job = CreateNewJob(TYPE_DOWNLOAD_FILE);
   new_job->job_info.file_path = virtual_path;
   new_job->job_info.num_total_bytes = expected_file_size;
@@ -628,9 +642,6 @@ void JobScheduler::UploadNewFile(
   new_job->job_info.file_path = drive_file_path;
   new_job->job_info.num_total_bytes = expected_file_size;
   new_job->context = context;
-
-  // Temporary histogram for crbug.com/229650.
-  CollectCopyHistogramSample("Drive.UploadToDriveFileSize", expected_file_size);
 
   UploadNewFileParams params;
   params.parent_resource_id = parent_resource_id;
@@ -671,9 +682,6 @@ void JobScheduler::UploadExistingFile(
   new_job->job_info.file_path = drive_file_path;
   new_job->job_info.num_total_bytes = expected_file_size;
   new_job->context = context;
-
-  // Temporary histogram for crbug.com/229650.
-  CollectCopyHistogramSample("Drive.UploadToDriveFileSize", expected_file_size);
 
   UploadExistingFileParams params;
   params.resource_id = resource_id;
@@ -721,9 +729,11 @@ void JobScheduler::AddPermission(
 }
 
 JobScheduler::JobEntry* JobScheduler::CreateNewJob(JobType type) {
-  JobEntry* job = new JobEntry(type);
-  job->job_info.job_id = job_map_.Add(job);  // Takes the ownership of |job|.
-  return job;
+  auto job = std::make_unique<JobEntry>(type);
+  JobEntry* job_raw = job.get();
+  int32_t job_key = job_map_.Add(std::move(job));
+  job_raw->job_info.job_id = job_key;
+  return job_raw;
 }
 
 void JobScheduler::StartJob(JobEntry* job) {
@@ -746,20 +756,6 @@ void JobScheduler::QueueJob(JobID job_id) {
                          job_info.job_type == TYPE_UPLOAD_NEW_FILE;
   queue_[queue_type]->Push(job_id, job_entry->context.type, batchable,
                            job_info.num_total_bytes);
-
-  // Temporary histogram for crbug.com/229650.
-  if (job_info.job_type == TYPE_DOWNLOAD_FILE ||
-      job_info.job_type == TYPE_UPLOAD_EXISTING_FILE ||
-      job_info.job_type == TYPE_UPLOAD_NEW_FILE) {
-    std::vector<JobID> jobs_with_the_same_priority;
-    queue_[queue_type]->GetQueuedJobs(job_entry->context.type,
-                                      &jobs_with_the_same_priority);
-    DCHECK(!jobs_with_the_same_priority.empty());
-
-    const size_t blocking_jobs_count = jobs_with_the_same_priority.size() - 1;
-    UMA_HISTOGRAM_COUNTS_10000("Drive.TransferBlockedOnJobs",
-                               blocking_jobs_count);
-  }
 
   const std::string retry_prefix = job_entry->retry_count > 0 ?
       base::StringPrintf(" (retry %d)", job_entry->retry_count) : "";
@@ -791,9 +787,8 @@ void JobScheduler::DoJobLoop(QueueType queue_type) {
   if (now < wait_until_) {
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&JobScheduler::DoJobLoop,
-                   weak_ptr_factory_.GetWeakPtr(),
-                   queue_type),
+        base::BindOnce(&JobScheduler::DoJobLoop, weak_ptr_factory_.GetWeakPtr(),
+                       queue_type),
         wait_until_ - now);
     return;
   }
@@ -838,15 +833,18 @@ int JobScheduler::GetCurrentAcceptedPriority(QueueType queue_type) {
     return kNoJobShouldRun;
 
   // Should stop if the network is not online.
-  if (net::NetworkChangeNotifier::IsOffline())
+  auto connection_type = network::mojom::ConnectionType::CONNECTION_UNKNOWN;
+  network_connection_tracker_->GetConnectionType(
+      &connection_type, base::BindOnce(&JobScheduler::OnConnectionChanged,
+                                       weak_ptr_factory_.GetWeakPtr()));
+  if (connection_type == network::mojom::ConnectionType::CONNECTION_NONE)
     return kNoJobShouldRun;
 
   // For the file queue, if it is on cellular network, only user initiated
   // operations are allowed to start.
   if (queue_type == FILE_QUEUE &&
       pref_service_->GetBoolean(prefs::kDisableDriveOverCellular) &&
-      net::NetworkChangeNotifier::IsConnectionCellular(
-          net::NetworkChangeNotifier::GetConnectionType()))
+      network::NetworkConnectionTracker::IsConnectionCellular(connection_type))
     return USER_INITIATED;
 
   // Otherwise, every operations including background tasks are allowed.
@@ -885,7 +883,7 @@ bool JobScheduler::OnJobDone(JobID job_id,
                "Job done: %s => %s (elapsed time: %sms) - %s",
                job_info->ToString().c_str(),
                DriveApiErrorCodeToString(error).c_str(),
-               base::Int64ToString(elapsed.InMilliseconds()).c_str(),
+               base::NumberToString(elapsed.InMilliseconds()).c_str(),
                GetQueueInfo(queue_type).c_str());
 
   // Retry, depending on the error.
@@ -921,11 +919,21 @@ bool JobScheduler::OnJobDone(JobID job_id,
   // Post a task to continue the job loop.  This allows us to finish handling
   // the current job before starting the next one.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&JobScheduler::DoJobLoop,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 queue_type));
+      FROM_HERE, base::BindOnce(&JobScheduler::DoJobLoop,
+                                weak_ptr_factory_.GetWeakPtr(), queue_type));
   return !should_retry;
+}
+
+void JobScheduler::OnGetTeamDriveListJobDone(
+    JobID job_id,
+    const google_apis::TeamDriveListCallback& callback,
+    google_apis::DriveApiErrorCode error,
+    std::unique_ptr<google_apis::TeamDriveList> team_drive_list) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK(!callback.is_null());
+
+  if (OnJobDone(job_id, error))
+    callback.Run(error, std::move(team_drive_list));
 }
 
 void JobScheduler::OnGetFileListJobDone(
@@ -976,28 +984,16 @@ void JobScheduler::OnGetAboutResourceJobDone(
     callback.Run(error, std::move(about_resource));
 }
 
-void JobScheduler::OnGetShareUrlJobDone(
+void JobScheduler::OnGetStartPageTokenDone(
     JobID job_id,
-    const google_apis::GetShareUrlCallback& callback,
+    const google_apis::StartPageTokenCallback& callback,
     google_apis::DriveApiErrorCode error,
-    const GURL& share_url) {
+    std::unique_ptr<google_apis::StartPageToken> start_page_token) {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK(!callback.is_null());
 
   if (OnJobDone(job_id, error))
-    callback.Run(error, share_url);
-}
-
-void JobScheduler::OnGetAppListJobDone(
-    JobID job_id,
-    const google_apis::AppListCallback& callback,
-    google_apis::DriveApiErrorCode error,
-    std::unique_ptr<google_apis::AppList> app_list) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK(!callback.is_null());
-
-  if (OnJobDone(job_id, error))
-    callback.Run(error, std::move(app_list));
+    callback.Run(error, std::move(start_page_token));
 }
 
 void JobScheduler::OnEntryActionJobDone(
@@ -1095,13 +1091,19 @@ void JobScheduler::UpdateProgress(JobID job_id,
   NotifyJobUpdated(job_entry->job_info);
 }
 
-void JobScheduler::OnConnectionTypeChanged(
-    net::NetworkChangeNotifier::ConnectionType type) {
+void JobScheduler::OnConnectionChanged(network::mojom::ConnectionType type) {
+  // When connection type switches from one connection to another,
+  // CONNECTION_NONE signal comes right before the changed connection signal.
+  // Ignore such signals to avoid aborting jobs.
+  if (type == network::mojom::ConnectionType::CONNECTION_NONE &&
+      !network_connection_tracker_->IsOffline())
+    return;
+
   DCHECK(thread_checker_.CalledOnValidThread());
 
   // Resume the job loop.
-  // Note that we don't need to check the network connection status as it will
-  // be checked in GetCurrentAcceptedPriority().
+  // The network connection status will be checked
+  // in GetCurrentAcceptedPriority().
   for (int i = METADATA_QUEUE; i < NUM_QUEUES; ++i)
     DoJobLoop(static_cast<QueueType>(i));
 }
@@ -1110,14 +1112,17 @@ JobScheduler::QueueType JobScheduler::GetJobQueueType(JobType type) {
   switch (type) {
     case TYPE_GET_ABOUT_RESOURCE:
     case TYPE_GET_APP_LIST:
+    case TYPE_GET_ALL_TEAM_DRIVE_LIST:
     case TYPE_GET_ALL_RESOURCE_LIST:
     case TYPE_GET_RESOURCE_LIST_IN_DIRECTORY:
     case TYPE_SEARCH:
     case TYPE_GET_CHANGE_LIST:
     case TYPE_GET_REMAINING_CHANGE_LIST:
+    case TYPE_GET_REMAINING_TEAM_DRIVE_LIST:
     case TYPE_GET_REMAINING_FILE_LIST:
     case TYPE_GET_RESOURCE_ENTRY:
     case TYPE_GET_SHARE_URL:
+    case TYPE_GET_START_PAGE_TOKEN:
     case TYPE_TRASH_RESOURCE:
     case TYPE_COPY_RESOURCE:
     case TYPE_UPDATE_RESOURCE:
@@ -1146,7 +1151,7 @@ void JobScheduler::AbortNotRunningJob(JobEntry* job,
                "Job aborted: %s => %s (elapsed time: %sms) - %s",
                job->job_info.ToString().c_str(),
                DriveApiErrorCodeToString(error).c_str(),
-               base::Int64ToString(elapsed.InMilliseconds()).c_str(),
+               base::NumberToString(elapsed.InMilliseconds()).c_str(),
                GetQueueInfo(queue_type).c_str());
 
   base::Callback<void(google_apis::DriveApiErrorCode)> callback =
@@ -1154,25 +1159,27 @@ void JobScheduler::AbortNotRunningJob(JobEntry* job,
   queue_[GetJobQueueType(job->job_info.job_type)]->Remove(job->job_info.job_id);
   NotifyJobDone(job->job_info, error);
   job_map_.Remove(job->job_info.job_id);
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                base::Bind(callback, error));
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(callback, error));
 }
 
 void JobScheduler::NotifyJobAdded(const JobInfo& job_info) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  FOR_EACH_OBSERVER(JobListObserver, observer_list_, OnJobAdded(job_info));
+  for (auto& observer : observer_list_)
+    observer.OnJobAdded(job_info);
 }
 
 void JobScheduler::NotifyJobDone(const JobInfo& job_info,
                                  google_apis::DriveApiErrorCode error) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  FOR_EACH_OBSERVER(JobListObserver, observer_list_,
-                    OnJobDone(job_info, GDataToFileError(error)));
+  for (auto& observer : observer_list_)
+    observer.OnJobDone(job_info, GDataToFileError(error));
 }
 
 void JobScheduler::NotifyJobUpdated(const JobInfo& job_info) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  FOR_EACH_OBSERVER(JobListObserver, observer_list_, OnJobUpdated(job_info));
+  for (auto& observer : observer_list_)
+    observer.OnJobUpdated(job_info);
 }
 
 std::string JobScheduler::GetQueueInfo(QueueType type) const {

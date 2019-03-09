@@ -6,19 +6,28 @@
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
-#include "base/macros.h"
+#include "base/i18n/case_conversion.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/metrics/proto/omnibox_event.pb.h"
-#include "components/metrics/proto/omnibox_input_type.pb.h"
+#include "components/google/core/common/google_util.h"
 #include "components/search_engines/search_engines_switches.h"
 #include "components/search_engines/search_terms_data.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/testing_search_terms_data.h"
+#include "net/base/url_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "third_party/metrics_proto/omnibox_input_type.pb.h"
 
 using base::ASCIIToUTF16;
+
+namespace {
+bool IsLowerCase(const base::string16& str) {
+  return str == base::i18n::ToLower(str);
+}
+}
 
 class TemplateURLTest : public testing::Test {
  public:
@@ -54,7 +63,6 @@ void TemplateURLTest::ExpectPostParamIs(const TemplateURLRef::PostParam& param,
 
 TEST_F(TemplateURLTest, Defaults) {
   TemplateURLData data;
-  EXPECT_FALSE(data.show_in_default_list);
   EXPECT_FALSE(data.safe_for_autoreplace);
   EXPECT_EQ(0, data.prepopulate_id);
 }
@@ -81,7 +89,7 @@ TEST_F(TemplateURLTest, URLRefTestSearchTerms) {
     { "http://en.wikipedia.org/{searchTerms}", ASCIIToUTF16("wiki/?"),
       "http://en.wikipedia.org/wiki/%3F" }
   };
-  for (size_t i = 0; i < arraysize(search_term_cases); ++i) {
+  for (size_t i = 0; i < base::size(search_term_cases); ++i) {
     const SearchTermsCase& value = search_term_cases[i];
     TemplateURLData data;
     data.SetURL(value.url);
@@ -213,17 +221,16 @@ TEST_F(TemplateURLTest, URLRefTestImageURLWithPOST) {
   const TemplateURLRef::PostParams& post_params =
       url.image_url_ref().post_params_;
   EXPECT_EQ(7U, post_params.size());
-  for (TemplateURLRef::PostParams::const_iterator i = post_params.begin();
-       i != post_params.end(); ++i) {
-    TemplateURLRef::Replacements::const_iterator j = replacements.begin();
+  for (auto i = post_params.begin(); i != post_params.end(); ++i) {
+    auto j = replacements.begin();
     for (; j != replacements.end(); ++j) {
       if (j->is_post_param && j->index ==
           static_cast<size_t>(i - post_params.begin())) {
         switch (j->type) {
           case TemplateURLRef::GOOGLE_IMAGE_ORIGINAL_WIDTH:
-            ExpectPostParamIs(*i, "width",
-                              base::IntToString(
-                                   search_args.image_original_size.width()));
+            ExpectPostParamIs(
+                *i, "width",
+                base::NumberToString(search_args.image_original_size.width()));
             break;
           case TemplateURLRef::GOOGLE_IMAGE_SEARCH_SOURCE:
             ExpectPostParamIs(*i, "sbisrc",
@@ -255,6 +262,21 @@ TEST_F(TemplateURLTest, URLRefTestImageURLWithPOST) {
   }
 }
 
+TEST_F(TemplateURLTest, ImageURLWithGetShouldNotCrash) {
+  TemplateURLData data;
+  data.SetURL("http://foo/?q={searchTerms}&t={google:imageThumbnail}");
+  TemplateURL url(data);
+  EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
+  ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
+
+  TemplateURLRef::SearchTermsArgs search_args(ASCIIToUTF16("X"));
+  search_args.image_thumbnail_content = "dummy-image-thumbnail";
+  GURL result(
+      url.url_ref().ReplaceSearchTerms(search_args, search_terms_data_));
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ("http://foo/?q=X&t=dummy-image-thumbnail", result.spec());
+}
+
 // Test that setting the prepopulate ID from TemplateURL causes the stored
 // TemplateURLRef to handle parsing the URL parameters differently.
 TEST_F(TemplateURLTest, SetPrepopulatedAndParse) {
@@ -263,16 +285,17 @@ TEST_F(TemplateURLTest, SetPrepopulatedAndParse) {
   TemplateURL url(data);
   TemplateURLRef::Replacements replacements;
   bool valid = false;
-  EXPECT_EQ("http://foo{fhqwhgads}bar", url.url_ref().ParseURL(
-      "http://foo{fhqwhgads}bar", &replacements, NULL, &valid));
+  EXPECT_EQ("http://foo{fhqwhgads}bar",
+            url.url_ref().ParseURL("http://foo{fhqwhgads}bar", &replacements,
+                                   nullptr, &valid));
   EXPECT_TRUE(replacements.empty());
   EXPECT_TRUE(valid);
 
   data.prepopulate_id = 123;
   TemplateURL url2(data);
-  EXPECT_EQ("http://foobar", url2.url_ref().ParseURL("http://foo{fhqwhgads}bar",
-                                                     &replacements, NULL,
-                                                     &valid));
+  EXPECT_EQ("http://foobar",
+            url2.url_ref().ParseURL("http://foo{fhqwhgads}bar", &replacements,
+                                    nullptr, &valid));
   EXPECT_TRUE(replacements.empty());
   EXPECT_TRUE(valid);
 }
@@ -283,7 +306,6 @@ TEST_F(TemplateURLTest, SetPrepopulatedAndReplace) {
   TemplateURLData data;
   data.SetURL("http://foo{fhqwhgads}search/?q={searchTerms}");
   data.suggestions_url = "http://foo{fhqwhgads}suggest/?q={searchTerms}";
-  data.instant_url = "http://foo{fhqwhgads}instant/";
   data.image_url = "http://foo{fhqwhgads}image/";
   data.new_tab_url = "http://foo{fhqwhgads}newtab/";
   data.contextual_search_url = "http://foo{fhqwhgads}context/";
@@ -302,8 +324,6 @@ TEST_F(TemplateURLTest, SetPrepopulatedAndReplace) {
             url.url_refs()[1].ReplaceSearchTerms(args, stdata));
   EXPECT_EQ("http://foo%7Bfhqwhgads%7Dsuggest/?q=X",
             url.suggestions_url_ref().ReplaceSearchTerms(args, stdata));
-  EXPECT_EQ("http://foo{fhqwhgads}instant/",
-            url.instant_url_ref().ReplaceSearchTerms(args, stdata));
   EXPECT_EQ("http://foo{fhqwhgads}image/",
             url.image_url_ref().ReplaceSearchTerms(args, stdata));
   EXPECT_EQ("http://foo{fhqwhgads}newtab/",
@@ -321,8 +341,6 @@ TEST_F(TemplateURLTest, SetPrepopulatedAndReplace) {
             url2.url_refs()[1].ReplaceSearchTerms(args, stdata));
   EXPECT_EQ("http://foosuggest/?q=X",
             url2.suggestions_url_ref().ReplaceSearchTerms(args, stdata));
-  EXPECT_EQ("http://fooinstant/",
-            url2.instant_url_ref().ReplaceSearchTerms(args, stdata));
   EXPECT_EQ("http://fooimage/",
             url2.image_url_ref().ReplaceSearchTerms(args, stdata));
   EXPECT_EQ("http://foonewtab/",
@@ -369,14 +387,15 @@ TEST_F(TemplateURLTest, URLRefTestSearchTermsUsingTermsData) {
 
   TestingSearchTermsData search_terms_data("http://example.com/e/");
   TemplateURLData data;
-  for (size_t i = 0; i < arraysize(search_term_cases); ++i) {
+  for (size_t i = 0; i < base::size(search_term_cases); ++i) {
     const SearchTermsCase& value = search_term_cases[i];
     data.SetURL(value.url);
     TemplateURL url(data);
     EXPECT_TRUE(url.url_ref().IsValid(search_terms_data));
     ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data));
     GURL result(url.url_ref().ReplaceSearchTerms(
-        TemplateURLRef::SearchTermsArgs(value.terms), search_terms_data, NULL));
+        TemplateURLRef::SearchTermsArgs(value.terms), search_terms_data,
+        nullptr));
     ASSERT_TRUE(result.is_valid());
     EXPECT_EQ(value.output, result.spec());
   }
@@ -410,7 +429,7 @@ TEST_F(TemplateURLTest, URLRefTermToWide) {
   TemplateURL url(data);
   EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
   ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
-  for (size_t i = 0; i < arraysize(to_wide_cases); i++) {
+  for (size_t i = 0; i < base::size(to_wide_cases); i++) {
     EXPECT_EQ(to_wide_cases[i].expected_decoded_term,
               url.url_ref().SearchTermToString16(
                   to_wide_cases[i].encoded_search_term));
@@ -432,7 +451,7 @@ TEST_F(TemplateURLTest, DisplayURLToURLRef) {
       ASCIIToUTF16("http://foo%s{language}") },
   };
   TemplateURLData data;
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
     EXPECT_EQ(test_data[i].expected_result,
@@ -475,7 +494,7 @@ TEST_F(TemplateURLTest, ReplaceSearchTerms) {
   };
   TemplateURLData data;
   data.input_encodings.push_back("UTF-8");
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
     EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
@@ -502,24 +521,71 @@ TEST_F(TemplateURLTest, ReplaceArbitrarySearchTerms) {
     const std::string url;
     const std::string expected_result;
   } test_data[] = {
-    { "BIG5",  base::WideToUTF16(L"\x60BD"),
-      "http://foo/?{searchTerms}{inputEncoding}",
-      "http://foo/?%B1~BIG5" },
-    { "UTF-8", ASCIIToUTF16("blah"),
-      "http://foo/?{searchTerms}{inputEncoding}",
-      "http://foo/?blahUTF-8" },
-    { "Shift_JIS", base::UTF8ToUTF16("\xe3\x81\x82"),
-      "http://foo/{searchTerms}/bar",
-      "http://foo/%82%A0/bar"},
-    { "Shift_JIS", base::UTF8ToUTF16("\xe3\x81\x82 \xe3\x81\x84"),
-      "http://foo/{searchTerms}/bar",
-      "http://foo/%82%A0%20%82%A2/bar"},
+      {"BIG5", base::WideToUTF16(L"\x60BD"),
+       "http://foo/?{searchTerms}{inputEncoding}", "http://foo/?%B1~BIG5"},
+      {"UTF-8", ASCIIToUTF16("blah"),
+       "http://foo/?{searchTerms}{inputEncoding}", "http://foo/?blahUTF-8"},
+      {"Shift_JIS", base::UTF8ToUTF16("\xe3\x81\x82"),
+       "http://foo/{searchTerms}/bar", "http://foo/%82%A0/bar"},
+      {"Shift_JIS", base::UTF8ToUTF16("\xe3\x81\x82 \xe3\x81\x84"),
+       "http://foo/{searchTerms}/bar", "http://foo/%82%A0%20%82%A2/bar"},
   };
   TemplateURLData data;
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     data.SetURL(test_data[i].url);
     data.input_encodings.clear();
     data.input_encodings.push_back(test_data[i].encoding);
+    TemplateURL url(data);
+    EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
+    ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
+    GURL result(url.url_ref().ReplaceSearchTerms(
+        TemplateURLRef::SearchTermsArgs(test_data[i].search_term),
+        search_terms_data_));
+    ASSERT_TRUE(result.is_valid());
+    EXPECT_EQ(test_data[i].expected_result, result.spec());
+  }
+}
+
+// Test that encoding with several optional codepages works as intended.
+// Codepages are tried in order, fallback is UTF-8.
+TEST_F(TemplateURLTest, ReplaceSearchTermsMultipleEncodings) {
+  struct TestData {
+    const std::vector<std::string> encodings;
+    const base::string16 search_term;
+    const std::string url;
+    const std::string expected_result;
+  } test_data[] = {
+      // First and third encodings are valid. First is used.
+      {{"windows-1251", "cp-866", "UTF-8"},
+       base::UTF8ToUTF16("\xD1\x8F"),
+       "http://foo/?{searchTerms}{inputEncoding}",
+       "http://foo/?%FFwindows-1251"},
+      // Second and third encodings are valid, second is used.
+      {{"cp-866", "GB2312", "UTF-8"},
+       base::UTF8ToUTF16("\xE7\x8B\x97"),
+       "http://foo/?{searchTerms}{inputEncoding}",
+       "http://foo/?%B9%B7GB2312"},
+      // Second and third encodings are valid in another order, second is used.
+      {{"cp-866", "UTF-8", "GB2312"},
+       base::UTF8ToUTF16("\xE7\x8B\x97"),
+       "http://foo/?{searchTerms}{inputEncoding}",
+       "http://foo/?%E7%8B%97UTF-8"},
+      // Both encodings are invalid, fallback to UTF-8.
+      {{"cp-866", "windows-1251"},
+       base::UTF8ToUTF16("\xE7\x8B\x97"),
+       "http://foo/?{searchTerms}{inputEncoding}",
+       "http://foo/?%E7%8B%97UTF-8"},
+      // No encodings are given, fallback to UTF-8.
+      {{},
+       base::UTF8ToUTF16("\xE7\x8B\x97"),
+       "http://foo/?{searchTerms}{inputEncoding}",
+       "http://foo/?%E7%8B%97UTF-8"},
+  };
+
+  TemplateURLData data;
+  for (size_t i = 0; i < base::size(test_data); ++i) {
+    data.SetURL(test_data[i].url);
+    data.input_encodings = test_data[i].encodings;
     TemplateURL url(data);
     EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
     ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
@@ -573,7 +639,7 @@ TEST_F(TemplateURLTest, ReplaceAssistedQueryStats) {
   };
   TemplateURLData data;
   data.input_encodings.push_back("UTF-8");
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
     EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
@@ -611,7 +677,7 @@ TEST_F(TemplateURLTest, ReplaceCursorPosition) {
   };
   TemplateURLData data;
   data.input_encodings.push_back("UTF-8");
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
     EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
@@ -629,22 +695,20 @@ TEST_F(TemplateURLTest, ReplaceCursorPosition) {
 TEST_F(TemplateURLTest, ReplaceInputType) {
   struct TestData {
     const base::string16 search_term;
-    metrics::OmniboxInputType::Type input_type;
+    metrics::OmniboxInputType input_type;
     const std::string url;
     const std::string expected_result;
   } test_data[] = {
-    { ASCIIToUTF16("foo"),
-      metrics::OmniboxInputType::UNKNOWN,
-      "{google:baseURL}?{searchTerms}&{google:inputType}",
-      "http://www.google.com/?foo&oit=1&" },
-    { ASCIIToUTF16("foo"),
-      metrics::OmniboxInputType::URL,
-      "{google:baseURL}?{searchTerms}&{google:inputType}",
-      "http://www.google.com/?foo&oit=3&" },
+      {ASCIIToUTF16("foo"), metrics::OmniboxInputType::UNKNOWN,
+       "{google:baseURL}?{searchTerms}&{google:inputType}",
+       "http://www.google.com/?foo&oit=1&"},
+      {ASCIIToUTF16("foo"), metrics::OmniboxInputType::URL,
+       "{google:baseURL}?{searchTerms}&{google:inputType}",
+       "http://www.google.com/?foo&oit=3&"},
   };
   TemplateURLData data;
   data.input_encodings.push_back("UTF-8");
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
     EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
@@ -681,7 +745,7 @@ TEST_F(TemplateURLTest, ReplaceCurrentPageUrl) {
   };
   TemplateURLData data;
   data.input_encodings.push_back("UTF-8");
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
     EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
@@ -719,7 +783,7 @@ TEST_F(TemplateURLTest, Suggestions) {
   TemplateURL url(data);
   EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
   ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     TemplateURLRef::SearchTermsArgs search_terms_args(
         ASCIIToUTF16("foobar"));
     search_terms_args.accepted_suggestion = test_data[i].accepted_suggestion;
@@ -770,26 +834,26 @@ TEST_F(TemplateURLTest, HostAndSearchTermKey) {
     const std::string path;
     const std::string search_term_key;
   } test_data[] = {
-    { "http://blah/?foo=bar&q={searchTerms}&b=x", "blah", "/", "q"},
-    { "http://blah/{searchTerms}", "blah", "/", ""},
+      {"http://blah/?foo=bar&q={searchTerms}&b=x", "blah", "/", "q"},
+      {"http://blah/{searchTerms}", "blah", "", ""},
 
-    // No term should result in empty values.
-    { "http://blah/", "", "", ""},
+      // No term should result in empty values.
+      {"http://blah/", "", "", ""},
 
-    // Multiple terms should result in empty values.
-    { "http://blah/?q={searchTerms}&x={searchTerms}", "", "", ""},
+      // Multiple terms should result in empty values.
+      {"http://blah/?q={searchTerms}&x={searchTerms}", "", "", ""},
 
-    // Term in the host shouldn't match.
-    { "http://{searchTerms}", "", "", ""},
+      // Term in the host shouldn't match.
+      {"http://{searchTerms}", "", "", ""},
 
-    { "http://blah/?q={searchTerms}", "blah", "/", "q"},
-    { "https://blah/?q={searchTerms}", "blah", "/", "q"},
+      {"http://blah/?q={searchTerms}", "blah", "/", "q"},
+      {"https://blah/?q={searchTerms}", "blah", "/", "q"},
 
-    // Single term with extra chars in value should match.
-    { "http://blah/?q=stock:{searchTerms}", "blah", "/", "q"},
+      // Single term with extra chars in value should match.
+      {"http://blah/?q=stock:{searchTerms}", "blah", "/", "q"},
   };
 
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     TemplateURLData data;
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
@@ -805,31 +869,36 @@ TEST_F(TemplateURLTest, SearchTermKeyLocation) {
     const std::string url;
     const url::Parsed::ComponentType location;
     const std::string path;
-    size_t position_in_path;
+    const std::string key;
+    const std::string value_prefix;
+    const std::string value_suffix;
   } test_data[] = {
-    { "http://blah/{searchTerms}/", url::Parsed::PATH, "//", 1 },
-    { "http://blah/{searchTerms}", url::Parsed::PATH, "/", 1 },
-    { "http://blah/begin/{searchTerms}/end", url::Parsed::PATH, "/begin//end", 7 },
+      {"http://blah/{searchTerms}/", url::Parsed::PATH, "", "", "/", "/"},
+      {"http://blah/{searchTerms}", url::Parsed::PATH, "", "", "/", ""},
+      {"http://blah/begin/{searchTerms}/end", url::Parsed::PATH, "", "",
+       "/begin/", "/end"},
+      {"http://blah/?foo=bar&q={searchTerms}&b=x", url::Parsed::QUERY, "/", "q",
+       "", ""},
+      {"http://blah/?foo=bar#x={searchTerms}&b=x", url::Parsed::REF, "/", "x",
+       "", ""},
+      {"http://www.example.com/?q=chromium-{searchTerms}@chromium.org/info",
+       url::Parsed::QUERY, "/", "q", "chromium-", "@chromium.org/info"},
 
-    { "http://blah/?foo=bar&q={searchTerms}&b=x", url::Parsed::QUERY,
-      "/", std::string::npos },
-    { "http://blah/?foo=bar#x={searchTerms}&b=x", url::Parsed::REF,
-      "/", std::string::npos },
-    // searchTerms is a key, not a value, so this should result in an empty
-    // value.
-    { "http://blah/?foo=bar#x=012345678901234&a=b&{searchTerms}=x",
-      url::Parsed::QUERY, std::string(), std::string::npos },
+      // searchTerms is a key, not a value, so this should result in an empty
+      // value.
+      {"http://blah/?foo=bar#x=012345678901234&a=b&{searchTerms}=x",
+       url::Parsed::QUERY, "", "", "", ""},
 
-    // Multiple search terms should result in empty values.
-    { "http://blah/{searchTerms}?q={searchTerms}", url::Parsed::QUERY,
-      "", std::string::npos },
-    { "http://blah/{searchTerms}#x={searchTerms}", url::Parsed::QUERY,
-      "", std::string::npos },
-    { "http://blah/?q={searchTerms}#x={searchTerms}", url::Parsed::QUERY,
-      "", std::string::npos },
+      // Multiple search terms should result in empty values.
+      {"http://blah/{searchTerms}?q={searchTerms}", url::Parsed::QUERY, "", "",
+       "", ""},
+      {"http://blah/{searchTerms}#x={searchTerms}", url::Parsed::QUERY, "", "",
+       "", ""},
+      {"http://blah/?q={searchTerms}#x={searchTerms}", url::Parsed::QUERY, "",
+       "", "", ""},
   };
 
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     TemplateURLData data;
     data.SetURL(test_data[i].url);
     TemplateURL url(data);
@@ -837,8 +906,12 @@ TEST_F(TemplateURLTest, SearchTermKeyLocation) {
               url.url_ref().GetSearchTermKeyLocation(search_terms_data_));
     EXPECT_EQ(test_data[i].path,
               url.url_ref().GetPath(search_terms_data_));
-    EXPECT_EQ(test_data[i].position_in_path,
-              url.url_ref().GetSearchTermPositionInPath(search_terms_data_));
+    EXPECT_EQ(test_data[i].key,
+              url.url_ref().GetSearchTermKey(search_terms_data_));
+    EXPECT_EQ(test_data[i].value_prefix,
+              url.url_ref().GetSearchTermValuePrefix(search_terms_data_));
+    EXPECT_EQ(test_data[i].value_suffix,
+              url.url_ref().GetSearchTermValueSuffix(search_terms_data_));
   }
 }
 
@@ -854,7 +927,7 @@ TEST_F(TemplateURLTest, GoogleBaseSuggestURL) {
     { "http://google.com/intl/xx/", "http://google.com/complete/", },
   };
 
-  for (size_t i = 0; i < arraysize(data); ++i)
+  for (size_t i = 0; i < base::size(data); ++i)
     CheckSuggestBaseURL(data[i].base_url, data[i].base_suggest_url);
 }
 
@@ -897,8 +970,8 @@ TEST_F(TemplateURLTest, ParseURLEmpty) {
   TemplateURL url((TemplateURLData()));
   TemplateURLRef::Replacements replacements;
   bool valid = false;
-  EXPECT_EQ(std::string(),
-            url.url_ref().ParseURL(std::string(), &replacements, NULL, &valid));
+  EXPECT_EQ(std::string(), url.url_ref().ParseURL(std::string(), &replacements,
+                                                  nullptr, &valid));
   EXPECT_TRUE(replacements.empty());
   EXPECT_TRUE(valid);
 }
@@ -909,8 +982,8 @@ TEST_F(TemplateURLTest, ParseURLNoTemplateEnd) {
   TemplateURL url(data);
   TemplateURLRef::Replacements replacements;
   bool valid = false;
-  EXPECT_EQ(std::string(), url.url_ref().ParseURL("{", &replacements, NULL,
-                                                  &valid));
+  EXPECT_EQ(std::string(),
+            url.url_ref().ParseURL("{", &replacements, nullptr, &valid));
   EXPECT_TRUE(replacements.empty());
   EXPECT_FALSE(valid);
 }
@@ -921,7 +994,7 @@ TEST_F(TemplateURLTest, ParseURLNoKnownParameters) {
   TemplateURL url(data);
   TemplateURLRef::Replacements replacements;
   bool valid = false;
-  EXPECT_EQ("{}", url.url_ref().ParseURL("{}", &replacements, NULL, &valid));
+  EXPECT_EQ("{}", url.url_ref().ParseURL("{}", &replacements, nullptr, &valid));
   EXPECT_TRUE(replacements.empty());
   EXPECT_TRUE(valid);
 }
@@ -932,9 +1005,8 @@ TEST_F(TemplateURLTest, ParseURLTwoParameters) {
   TemplateURL url(data);
   TemplateURLRef::Replacements replacements;
   bool valid = false;
-  EXPECT_EQ("{}{}",
-            url.url_ref().ParseURL("{}{{searchTerms}}", &replacements, NULL,
-                                   &valid));
+  EXPECT_EQ("{}{}", url.url_ref().ParseURL("{}{{searchTerms}}", &replacements,
+                                           nullptr, &valid));
   ASSERT_EQ(1U, replacements.size());
   EXPECT_EQ(3U, replacements[0].index);
   EXPECT_EQ(TemplateURLRef::SEARCH_TERMS, replacements[0].type);
@@ -947,9 +1019,8 @@ TEST_F(TemplateURLTest, ParseURLNestedParameter) {
   TemplateURL url(data);
   TemplateURLRef::Replacements replacements;
   bool valid = false;
-  EXPECT_EQ("{",
-            url.url_ref().ParseURL("{{searchTerms}", &replacements, NULL,
-                                   &valid));
+  EXPECT_EQ("{", url.url_ref().ParseURL("{{searchTerms}", &replacements,
+                                        nullptr, &valid));
   ASSERT_EQ(1U, replacements.size());
   EXPECT_EQ(1U, replacements[0].index);
   EXPECT_EQ(TemplateURLRef::SEARCH_TERMS, replacements[0].type);
@@ -984,24 +1055,9 @@ TEST_F(TemplateURLTest, SearchClient) {
   EXPECT_EQ("http://google.com/?foobar&client=search_client&", result_2.spec());
 }
 
-TEST_F(TemplateURLTest, GetURLNoInstantURL) {
-  TemplateURLData data;
-  data.SetURL("http://google.com/?q={searchTerms}");
-  data.suggestions_url = "http://google.com/suggest?q={searchTerms}";
-  data.alternate_urls.push_back("http://google.com/alt?q={searchTerms}");
-  data.alternate_urls.push_back("{google:baseURL}/alt/#q={searchTerms}");
-  TemplateURL url(data);
-  const std::vector<TemplateURLRef>& url_refs = url.url_refs();
-  ASSERT_EQ(3U, url_refs.size());
-  EXPECT_EQ("http://google.com/alt?q={searchTerms}", url_refs[0].GetURL());
-  EXPECT_EQ("{google:baseURL}/alt/#q={searchTerms}", url_refs[1].GetURL());
-  EXPECT_EQ("http://google.com/?q={searchTerms}", url_refs[2].GetURL());
-}
-
 TEST_F(TemplateURLTest, GetURLNoSuggestionsURL) {
   TemplateURLData data;
   data.SetURL("http://google.com/?q={searchTerms}");
-  data.instant_url = "http://google.com/instant#q={searchTerms}";
   data.alternate_urls.push_back("http://google.com/alt?q={searchTerms}");
   data.alternate_urls.push_back("{google:baseURL}/alt/#q={searchTerms}");
   TemplateURL url(data);
@@ -1024,7 +1080,6 @@ TEST_F(TemplateURLTest, GetURLOnlyOneURL) {
 TEST_F(TemplateURLTest, ExtractSearchTermsFromURL) {
   TemplateURLData data;
   data.SetURL("http://google.com/?q={searchTerms}");
-  data.instant_url = "http://google.com/instant#q={searchTerms}";
   data.alternate_urls.push_back("http://google.com/alt/#q={searchTerms}");
   data.alternate_urls.push_back(
       "http://google.com/alt/?ext=foo&q={searchTerms}#ref=bar");
@@ -1036,18 +1091,15 @@ TEST_F(TemplateURLTest, ExtractSearchTermsFromURL) {
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_TRUE(url.ExtractSearchTermsFromURL(
-      GURL("http://google.com/?espv&q=something"),
-      search_terms_data_, &result));
+      GURL("http://google.com/?q=something"), search_terms_data_, &result));
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_TRUE(url.ExtractSearchTermsFromURL(
-      GURL("http://google.com/?espv=1&q=something"),
-      search_terms_data_, &result));
+      GURL("http://google.com/?q=something"), search_terms_data_, &result));
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_TRUE(url.ExtractSearchTermsFromURL(
-      GURL("http://google.com/?espv=0&q=something"),
-      search_terms_data_, &result));
+      GURL("http://google.com/?q=something"), search_terms_data_, &result));
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_TRUE(url.ExtractSearchTermsFromURL(
@@ -1056,18 +1108,15 @@ TEST_F(TemplateURLTest, ExtractSearchTermsFromURL) {
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_TRUE(url.ExtractSearchTermsFromURL(
-      GURL("http://google.com/alt/#espv&q=something"),
-      search_terms_data_, &result));
+      GURL("http://google.com/alt/#q=something"), search_terms_data_, &result));
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_TRUE(url.ExtractSearchTermsFromURL(
-      GURL("http://google.com/alt/#espv=1&q=something"),
-      search_terms_data_, &result));
+      GURL("http://google.com/alt/#q=something"), search_terms_data_, &result));
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_TRUE(url.ExtractSearchTermsFromURL(
-      GURL("http://google.com/alt/#espv=0&q=something"),
-      search_terms_data_, &result));
+      GURL("http://google.com/alt/#q=something"), search_terms_data_, &result));
   EXPECT_EQ(ASCIIToUTF16("something"), result);
 
   EXPECT_FALSE(url.ExtractSearchTermsFromURL(
@@ -1266,94 +1315,19 @@ TEST_F(TemplateURLTest, ExtractSearchTermsWithPrefixAndSuffix) {
   // Don't match if the prefix and suffix aren't there.
   EXPECT_FALSE(url.ExtractSearchTermsFromURL(
       GURL("http://www.example.com/?q=invalid"), search_terms_data_, &result));
-}
 
-TEST_F(TemplateURLTest, HasSearchTermsReplacementKey) {
-  TemplateURLData data;
-  data.SetURL("http://google.com/?q={searchTerms}");
-  data.instant_url = "http://google.com/instant#q={searchTerms}";
-  data.alternate_urls.push_back("http://google.com/alt/#q={searchTerms}");
+  // Don't match if the prefix and suffix overlap.
+  TemplateURLData data_with_overlap;
   data.alternate_urls.push_back(
-      "http://google.com/alt/?ext=foo&q={searchTerms}#ref=bar");
-  data.search_terms_replacement_key = "espv";
-  TemplateURL url(data);
-
-  // Test with instant enabled required.
-  EXPECT_FALSE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?espv")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/#espv")));
-
-  EXPECT_FALSE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?q=something&espv")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?q=something&espv=1")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?q=something&espv=0")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?espv&q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?espv=1&q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?espv=0&q=something")));
-
-  EXPECT_FALSE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/alt/#q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/alt/#q=something&espv")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/alt/#q=something&espv=1")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/alt/#q=something&espv=0")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/alt/#espv&q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/alt/#espv=1&q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/alt/#espv=0&q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?espv#q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?espv=1#q=something")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?q=something#espv")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://google.com/?q=something#espv=1")));
-
-  // This does not ensure the domain matches.
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://bing.com/?espv")));
-
-  EXPECT_TRUE(url.HasSearchTermsReplacementKey(
-      GURL("http://bing.com/#espv")));
+      "http://www.example.com/?q=goo{searchTerms}oogle");
+  TemplateURL url_with_overlap(data);
+  EXPECT_FALSE(url_with_overlap.ExtractSearchTermsFromURL(
+      GURL("http://www.example.com/?q=google"), search_terms_data_, &result));
 }
 
 TEST_F(TemplateURLTest, ReplaceSearchTermsInURL) {
   TemplateURLData data;
   data.SetURL("http://google.com/?q={searchTerms}");
-  data.instant_url = "http://google.com/instant#q={searchTerms}";
   data.alternate_urls.push_back("http://google.com/alt/#q={searchTerms}");
   data.alternate_urls.push_back(
       "http://google.com/alt/?ext=foo&q={searchTerms}#ref=bar");
@@ -1524,7 +1498,7 @@ TEST_F(TemplateURLTest, ReplaceSearchTermsInNonUTF8URL) {
             result);
 }
 
-// Test the |suggest_query_params| field of SearchTermsArgs.
+// Test the |additional_query_params| field of SearchTermsArgs.
 TEST_F(TemplateURLTest, SuggestQueryParams) {
   TemplateURLData data;
   // Pick a URL with replacements before, during, and after the query, to ensure
@@ -1533,27 +1507,29 @@ TEST_F(TemplateURLTest, SuggestQueryParams) {
       "#{google:originalQueryForSuggestion}x");
   TemplateURL url(data);
 
-  // Baseline: no |suggest_query_params| field.
+  // Baseline: no |additional_query_params| field.
   TemplateURLRef::SearchTermsArgs search_terms(ASCIIToUTF16("abc"));
   search_terms.original_query = ASCIIToUTF16("def");
   search_terms.accepted_suggestion = 0;
   EXPECT_EQ("http://www.google.com/search?q=abc#oq=def&x",
             url.url_ref().ReplaceSearchTerms(search_terms, search_terms_data_));
 
-  // Set the suggest_query_params.
-  search_terms.suggest_query_params = "pq=xyz";
+  // Set the |additional_query_params|.
+  search_terms.additional_query_params = "pq=xyz";
   EXPECT_EQ("http://www.google.com/search?pq=xyz&q=abc#oq=def&x",
             url.url_ref().ReplaceSearchTerms(search_terms, search_terms_data_));
 
-  // Add extra_query_params in the mix, and ensure it works.
-  search_terms.append_extra_query_params = true;
+  // Add |append_extra_query_params_from_command_line| into the mix, and ensure
+  // it works.
+  search_terms.append_extra_query_params_from_command_line = true;
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
       switches::kExtraSearchQueryParams, "a=b");
   EXPECT_EQ("http://www.google.com/search?a=b&pq=xyz&q=abc#oq=def&x",
             url.url_ref().ReplaceSearchTerms(search_terms, search_terms_data_));
 }
 
-// Test the |append_extra_query_params| field of SearchTermsArgs.
+// Test the |search_terms.append_extra_query_params_from_command_line| field of
+// SearchTermsArgs.
 TEST_F(TemplateURLTest, ExtraQueryParams) {
   TemplateURLData data;
   // Pick a URL with replacements before, during, and after the query, to ensure
@@ -1562,7 +1538,8 @@ TEST_F(TemplateURLTest, ExtraQueryParams) {
       "#{google:originalQueryForSuggestion}x");
   TemplateURL url(data);
 
-  // Baseline: no command-line args, no |append_extra_query_params| flag.
+  // Baseline: no command-line args, no
+  // |search_terms.append_extra_query_params_from_command_line| flag.
   TemplateURLRef::SearchTermsArgs search_terms(ASCIIToUTF16("abc"));
   search_terms.original_query = ASCIIToUTF16("def");
   search_terms.accepted_suggestion = 0;
@@ -1571,7 +1548,7 @@ TEST_F(TemplateURLTest, ExtraQueryParams) {
 
   // Set the flag.  Since there are no command-line args, this should have no
   // effect.
-  search_terms.append_extra_query_params = true;
+  search_terms.append_extra_query_params_from_command_line = true;
   EXPECT_EQ("http://www.google.com/search?q=abc#oq=def&x",
             url.url_ref().ReplaceSearchTerms(search_terms, search_terms_data_));
 
@@ -1582,7 +1559,7 @@ TEST_F(TemplateURLTest, ExtraQueryParams) {
             url.url_ref().ReplaceSearchTerms(search_terms, search_terms_data_));
 
   // Turn off the flag.  Now the command-line arg should be ignored again.
-  search_terms.append_extra_query_params = false;
+  search_terms.append_extra_query_params_from_command_line = false;
   EXPECT_EQ("http://www.google.com/search?q=abc#oq=def&x",
             url.url_ref().ReplaceSearchTerms(search_terms, search_terms_data_));
 }
@@ -1617,7 +1594,6 @@ TEST_F(TemplateURLTest, ReplacePageClassification) {
 TEST_F(TemplateURLTest, IsSearchResults) {
   TemplateURLData data;
   data.SetURL("http://bar/search?q={searchTerms}");
-  data.instant_url = "http://bar/instant#q={searchTerms}";
   data.new_tab_url = "http://bar/newtab";
   data.alternate_urls.push_back("http://bar/?q={searchTerms}");
   data.alternate_urls.push_back("http://bar/#q={searchTerms}");
@@ -1641,7 +1617,7 @@ TEST_F(TemplateURLTest, IsSearchResults) {
     { "http://bar/newtab", false, },
   };
 
-  for (size_t i = 0; i < arraysize(url_data); ++i) {
+  for (size_t i = 0; i < base::size(url_data); ++i) {
     EXPECT_EQ(url_data[i].result,
               search_provider.IsSearchURL(GURL(url_data[i].url),
                                           search_terms_data_));
@@ -1690,24 +1666,36 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   TemplateURLRef::SearchTermsArgs search_terms_args(ASCIIToUTF16("foo"));
   std::string result = url.url_ref().ReplaceSearchTerms(search_terms_args,
                                                         search_terms_data_);
-  EXPECT_EQ("http://bar/_/contextualsearch?ctxsl_resolve=1", result);
+  EXPECT_EQ("http://bar/_/contextualsearch?", result);
 
+  // Test the current common case, which uses no home country or previous
+  // event.
   TemplateURLRef::SearchTermsArgs::ContextualSearchParams params(
-      1, 6, 11, "allen", "woody+allen+movies", "www.wikipedia.org",
-      "utf-8", true);
+      2, 1, std::string(), 0, 0);
   search_terms_args.contextual_search_params = params;
   result = url.url_ref().ReplaceSearchTerms(search_terms_args,
                                             search_terms_data_);
-  EXPECT_EQ("http://bar/_/contextualsearch?"
-                "ctxs=1&"
-                "ctxs_start=6&"
-                "ctxs_end=11&"
-                "q=allen&"
-                "ctxs_content=woody+allen+movies&"
-                "ctxsl_url=www.wikipedia.org&"
-                "ctxs_encoding=utf-8&"
-                "ctxsl_resolve=1",
-            result);
+  EXPECT_EQ(
+      "http://bar/_/contextualsearch?"
+      "ctxs=2&"
+      "ctxsl_coca=1",
+      result);
+
+  // Test the home country and non-zero event data case.
+  search_terms_args.contextual_search_params =
+      TemplateURLRef::SearchTermsArgs::ContextualSearchParams(2, 2, "CH",
+                                                              1657713458, 5);
+  result =
+      url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
+
+  EXPECT_EQ(
+      "http://bar/_/contextualsearch?"
+      "ctxs=2&"
+      "ctxsl_coca=2&"
+      "ctxs_hc=CH&"
+      "ctxsl_pid=1657713458&"
+      "ctxsl_per=5",
+      result);
 }
 
 TEST_F(TemplateURLTest, GenerateKeyword) {
@@ -1725,6 +1713,13 @@ TEST_F(TemplateURLTest, GenerateKeyword) {
   ASSERT_EQ(
       base::UTF8ToUTF16("\xd0\xb0\xd0\xb1\xd0\xb2"),
       TemplateURL::GenerateKeyword(GURL("http://xn--80acd")));
+
+  // Generated keywords must always be in lowercase, because TemplateURLs always
+  // converts keywords to lowercase in its constructor and TemplateURLService
+  // stores TemplateURLs in maps using keyword as key.
+  EXPECT_TRUE(IsLowerCase(TemplateURL::GenerateKeyword(GURL("http://BLAH/"))));
+  EXPECT_TRUE(IsLowerCase(
+      TemplateURL::GenerateKeyword(GURL("http://embeddedhtml.<head>/"))));
 }
 
 TEST_F(TemplateURLTest, GenerateSearchURL) {
@@ -1739,7 +1734,7 @@ TEST_F(TemplateURLTest, GenerateSearchURL) {
       "http://foo/blah.blah.blah.blah.blah" }
   };
 
-  for (size_t i = 0; i < arraysize(generate_url_cases); ++i) {
+  for (size_t i = 0; i < base::size(generate_url_cases); ++i) {
     TemplateURLData data;
     data.SetURL(generate_url_cases[i].url);
     TemplateURL t_url(data);
@@ -1777,7 +1772,6 @@ TEST_F(TemplateURLTest, InvalidateCachedValues) {
   TemplateURLData data;
   data.SetURL("{google:baseURL}search?q={searchTerms}");
   data.suggestions_url = "{google:baseSuggestURL}search?q={searchTerms}";
-  data.instant_url = "{google:baseURL}webhp";
   data.image_url = "{google:baseURL}searchbyimage/upload";
   data.new_tab_url = "{google:baseURL}_/chrome/newtab";
   data.contextual_search_url = "{google:baseURL}_/contextualsearch";
@@ -1799,9 +1793,6 @@ TEST_F(TemplateURLTest, InvalidateCachedValues) {
   EXPECT_EQ("http://www.google.com/complete/search?q=X",
             url.suggestions_url_ref().ReplaceSearchTerms(search_terms_args,
                                                          search_terms_data_));
-  EXPECT_EQ("http://www.google.com/webhp",
-            url.instant_url_ref().ReplaceSearchTerms(search_terms_args,
-                                                     search_terms_data_));
   EXPECT_EQ("http://www.google.com/searchbyimage/upload",
             url.image_url_ref().ReplaceSearchTerms(search_terms_args,
                                                    search_terms_data_));
@@ -1837,9 +1828,6 @@ TEST_F(TemplateURLTest, InvalidateCachedValues) {
   EXPECT_EQ("https://www.foo.org/complete/search?q=X",
             url.suggestions_url_ref().ReplaceSearchTerms(search_terms_args,
                                                          search_terms_data_));
-  EXPECT_EQ("https://www.foo.org/webhp",
-            url.instant_url_ref().ReplaceSearchTerms(search_terms_args,
-                                                     search_terms_data_));
   EXPECT_EQ("https://www.foo.org/searchbyimage/upload",
             url.image_url_ref().ReplaceSearchTerms(search_terms_args,
                                                    search_terms_data_));
@@ -1860,4 +1848,55 @@ TEST_F(TemplateURLTest, InvalidateCachedValues) {
   EXPECT_EQ(base::ASCIIToUTF16("123"), search_terms);
 
   search_terms_data_.set_google_base_url("http://www.google.com/");
+}
+
+// Tests the use of wildcards in the path to ensure both extracting search terms
+// and generating a search URL work correctly.
+TEST_F(TemplateURLTest, PathWildcard) {
+  TemplateURLData data;
+  data.SetURL(
+      "https://www.google.com/search{google:pathWildcard}?q={searchTerms}");
+  TemplateURL url(data);
+
+  // Test extracting search terms from a URL.
+  base::string16 search_terms;
+  url.ExtractSearchTermsFromURL(GURL("https://www.google.com/search?q=testing"),
+                                search_terms_data_, &search_terms);
+  EXPECT_EQ(base::ASCIIToUTF16("testing"), search_terms);
+  url.ExtractSearchTermsFromURL(
+      GURL("https://www.google.com/search;_this_is_a_test;_?q=testing"),
+      search_terms_data_, &search_terms);
+  EXPECT_EQ(base::ASCIIToUTF16("testing"), search_terms);
+
+  // Tests overlapping prefix/suffix.
+  data.SetURL(
+      "https://www.google.com/search{google:pathWildcard}rch?q={searchTerms}");
+  TemplateURL overlap_url(data);
+  overlap_url.ExtractSearchTermsFromURL(
+      GURL("https://www.google.com/search?q=testing"), search_terms_data_,
+      &search_terms);
+  EXPECT_TRUE(search_terms.empty());
+
+  // Tests wildcard at beginning of path so we only have a suffix.
+  data.SetURL(
+      "https://www.google.com/{google:pathWildcard}rch?q={searchTerms}");
+  TemplateURL suffix_url(data);
+  suffix_url.ExtractSearchTermsFromURL(
+      GURL("https://www.google.com/search?q=testing"), search_terms_data_,
+      &search_terms);
+  EXPECT_EQ(base::ASCIIToUTF16("testing"), search_terms);
+
+  // Tests wildcard between prefix/suffix.
+  overlap_url.ExtractSearchTermsFromURL(
+      GURL("https://www.google.com/search_testing_rch?q=testing"),
+      search_terms_data_, &search_terms);
+  EXPECT_EQ(base::ASCIIToUTF16("testing"), search_terms);
+
+  // Test generating a URL.
+  TemplateURLRef::SearchTermsArgs search_terms_args(ASCIIToUTF16("foo"));
+  GURL generated_url;
+  url.ReplaceSearchTermsInURL(url.GenerateSearchURL(search_terms_data_),
+                              search_terms_args, search_terms_data_,
+                              &generated_url);
+  EXPECT_EQ("https://www.google.com/search?q=foo", generated_url.spec());
 }

@@ -43,8 +43,8 @@ Status ExecuteGetAlert(Session* session,
                        WebView* web_view,
                        const base::DictionaryValue& params,
                        std::unique_ptr<base::Value>* value) {
-  value->reset(new base::FundamentalValue(
-      web_view->GetJavaScriptDialogManager()->IsDialogOpen()));
+  value->reset(
+      new base::Value(web_view->GetJavaScriptDialogManager()->IsDialogOpen()));
   return Status(kOk);
 }
 
@@ -57,22 +57,37 @@ Status ExecuteGetAlertText(Session* session,
       web_view->GetJavaScriptDialogManager()->GetDialogMessage(&message);
   if (status.IsError())
     return status;
-  value->reset(new base::StringValue(message));
+  value->reset(new base::Value(message));
   return Status(kOk);
 }
 
-Status ExecuteSetAlertValue(Session* session,
-                            WebView* web_view,
-                            const base::DictionaryValue& params,
-                            std::unique_ptr<base::Value>* value) {
+Status ExecuteSetAlertText(Session* session,
+                           WebView* web_view,
+                           const base::DictionaryValue& params,
+                           std::unique_ptr<base::Value>* value) {
   std::string text;
   if (!params.GetString("text", &text))
-    return Status(kUnknownError, "missing or invalid 'text'");
+    return Status(kInvalidArgument, "missing or invalid 'text'");
 
-  if (!web_view->GetJavaScriptDialogManager()->IsDialogOpen())
-    return Status(kNoAlertOpen);
+  JavaScriptDialogManager* dialog_manager =
+      web_view->GetJavaScriptDialogManager();
 
-  session->prompt_text.reset(new std::string(text));
+  if (!dialog_manager->IsDialogOpen())
+    return Status(kNoSuchAlert);
+
+  std::string type;
+  Status status = dialog_manager->GetTypeOfDialog(&type);
+  if (status.IsError())
+    return status;
+
+  if (type == "prompt")
+    session->prompt_text.reset(new std::string(text));
+  else if (type == "alert" || type == "confirm")
+    return Status(kElementNotInteractable,
+                  "User dialog does not have a text box input field.");
+  else
+    return Status(kUnsupportedOperation,
+                  "Text can only be sent to window.prompt dialogs.");
   return Status(kOk);
 }
 

@@ -9,44 +9,50 @@
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
 #include "net/http/http_status_code.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace remoting {
 
 const int kMaxSendAttempts = 5;
+constexpr char kAuthorizationHeaderPrefix[] = "Authorization:Bearer ";
 
 TelemetryLogWriter::TelemetryLogWriter(
     const std::string& telemetry_base_url,
-    std::unique_ptr<UrlRequestFactory> request_factory)
+    std::unique_ptr<OAuthTokenGetter> token_getter)
     : telemetry_base_url_(telemetry_base_url),
-      request_factory_(std::move(request_factory)) {}
-TelemetryLogWriter::~TelemetryLogWriter() {}
-
-void TelemetryLogWriter::SetAuthToken(const std::string& auth_token) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  auth_token_ = auth_token;
-  SendPendingEntries();
+      token_getter_(std::move(token_getter)) {
+  DETACH_FROM_THREAD(thread_checker_);
+  DCHECK(token_getter_);
 }
 
-void TelemetryLogWriter::SetAuthClosure(const base::Closure& closure) {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  auth_closure_ = closure;
+TelemetryLogWriter::~TelemetryLogWriter() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+}
+
+void TelemetryLogWriter::Init(
+    std::unique_ptr<UrlRequestFactory> request_factory) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  DCHECK(!request_factory_);
+  DCHECK(request_factory);
+  request_factory_ = std::move(request_factory);
 }
 
 void TelemetryLogWriter::Log(const ChromotingEvent& entry) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   pending_entries_.push_back(entry);
   SendPendingEntries();
 }
 
 void TelemetryLogWriter::SendPendingEntries() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  if (request_ || pending_entries_.empty()) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  if (!sending_entries_.empty() || pending_entries_.empty()) {
     return;
   }
 
   std::unique_ptr<base::ListValue> events(new base::ListValue());
   while (!pending_entries_.empty()) {
     ChromotingEvent& entry = pending_entries_.front();
+    DCHECK(entry.IsDataValid());
     events->Append(entry.CopyDictionaryValue());
     entry.IncrementSendAttempts();
     sending_entries_.push_back(std::move(entry));
@@ -61,28 +67,54 @@ void TelemetryLogWriter::SendPendingEntries() {
     LOG(ERROR) << "Failed to serialize log to JSON.";
     return;
   }
-  PostJsonToServer(json);
+  token_getter_->CallWithToken(base::BindOnce(
+      &TelemetryLogWriter::PostJsonToServer, base::Unretained(this), json));
 }
 
-void TelemetryLogWriter::PostJsonToServer(const std::string& json) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+void TelemetryLogWriter::PostJsonToServer(const std::string& json,
+                                          OAuthTokenGetter::Status status,
+                                          const std::string& user_email,
+                                          const std::string& access_token) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(!request_);
-  request_ = request_factory_->CreateUrlRequest(UrlRequest::Type::POST,
-                                                telemetry_base_url_);
-  if (!auth_token_.empty()) {
-    request_->AddHeader("Authorization:Bearer " + auth_token_);
-  }
+  DCHECK(request_factory_);
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("CRD_telemetry_log", R"(
+        semantics {
+          sender: "Chrome Remote Desktop"
+          description: "Telemetry logs for Chrome Remote Desktop."
+          trigger:
+            "These requests are sent periodically when a session is connected, "
+            "i.e. CRD app is open and is connected to a host."
+          data:
+            "Anonymous usage statistics. Please see https://cs.chromium.org/"
+            "chromium/src/remoting/base/chromoting_event.h for more details."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This feature cannot be disabled by settings. You can block Chrome "
+            "Remote Desktop as specified here: "
+            "https://support.google.com/chrome/?p=remote_desktop"
+          policy_exception_justification:
+            "The product is shipped separately from Chromium, except on Chrome "
+            "OS."
+        })");
+  request_ = request_factory_->CreateUrlRequest(
+      UrlRequest::Type::POST, telemetry_base_url_, traffic_annotation);
+  request_->AddHeader(kAuthorizationHeaderPrefix + access_token);
 
   VLOG(1) << "Posting log to telemetry server: " << json;
 
   request_->SetPostData("application/json", json);
-  request_->Start(
-      base::Bind(&TelemetryLogWriter::OnSendLogResult, base::Unretained(this)));
+  request_->Start(base::BindRepeating(&TelemetryLogWriter::OnSendLogResult,
+                                      base::Unretained(this)));
 }
 
 void TelemetryLogWriter::OnSendLogResult(
     const remoting::UrlRequest::Result& result) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(request_);
   if (!result.success || result.status != net::HTTP_OK) {
     LOG(WARNING) << "Error occur when sending logs to the telemetry server, "
@@ -102,15 +134,8 @@ void TelemetryLogWriter::OnSendLogResult(
             << " log(s) to telemetry server.";
   }
   sending_entries_.clear();
-  bool should_call_auth_closure =
-      result.status == net::HTTP_UNAUTHORIZED && !auth_closure_.is_null();
   request_.reset();  // This may also destroy the result.
-  if (should_call_auth_closure) {
-    VLOG(1) << "Request is unauthorized. Trying to call the auth closure...";
-    auth_closure_.Run();
-  } else {
-    SendPendingEntries();
-  }
+  SendPendingEntries();
 }
 
 }  // namespace remoting

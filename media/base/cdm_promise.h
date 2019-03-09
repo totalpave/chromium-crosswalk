@@ -11,8 +11,8 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
+#include "media/base/cdm_key_information.h"
 #include "media/base/media_export.h"
-#include "media/base/media_keys.h"
 
 namespace media {
 
@@ -29,24 +29,32 @@ namespace media {
 // indicates the type of CdmPromiseTemplate. CdmPromiseTemplate<T> adds the
 // resolve(T) method that is dependent on the type of promise. This base class
 // is specified so that the promises can be easily saved before passing across
-// the pepper interface.
+// IPC.
 class MEDIA_EXPORT CdmPromise {
  public:
+  enum class Exception {
+    NOT_SUPPORTED_ERROR,
+    INVALID_STATE_ERROR,
+    QUOTA_EXCEEDED_ERROR,
+    TYPE_ERROR,
+    EXCEPTION_MAX = TYPE_ERROR
+  };
+
   enum ResolveParameterType {
     VOID_TYPE,
     INT_TYPE,
     STRING_TYPE,
-    KEY_IDS_VECTOR_TYPE
+    KEY_STATUS_TYPE
   };
 
-  CdmPromise();
-  virtual ~CdmPromise();
+  CdmPromise() = default;
+  virtual ~CdmPromise() = default;
 
   // Used to indicate that the operation failed. |exception_code| must be
   // specified. |system_code| is a Key System-specific value for the error
   // that occurred, or 0 if there is no associated status code or such status
   // codes are not supported by the Key System. |error_message| is optional.
-  virtual void reject(MediaKeys::Exception exception_code,
+  virtual void reject(Exception exception_code,
                       uint32_t system_code,
                       const std::string& error_message) = 0;
 
@@ -58,30 +66,33 @@ class MEDIA_EXPORT CdmPromise {
   DISALLOW_COPY_AND_ASSIGN(CdmPromise);
 };
 
-// For some reason the Windows compiler is not happy with the implementation
-// of CdmPromiseTemplate being in the .cc file, so moving it here.
 template <typename... T>
 struct CdmPromiseTraits {};
 
 template <>
-struct CdmPromiseTraits<> {
-  static const CdmPromise::ResolveParameterType kType = CdmPromise::VOID_TYPE;
+struct MEDIA_EXPORT CdmPromiseTraits<> {
+  static const CdmPromise::ResolveParameterType kType;
 };
 
 template <>
-struct CdmPromiseTraits<int> {
-  static const CdmPromise::ResolveParameterType kType = CdmPromise::INT_TYPE;
+struct MEDIA_EXPORT CdmPromiseTraits<int> {
+  static const CdmPromise::ResolveParameterType kType;
 };
 
 template <>
-struct CdmPromiseTraits<std::string> {
-  static const CdmPromise::ResolveParameterType kType = CdmPromise::STRING_TYPE;
+struct MEDIA_EXPORT CdmPromiseTraits<std::string> {
+  static const CdmPromise::ResolveParameterType kType;
+};
+
+template <>
+struct MEDIA_EXPORT CdmPromiseTraits<CdmKeyInformation::KeyStatus> {
+  static const CdmPromise::ResolveParameterType kType;
 };
 
 // This class adds the resolve(T) method. This class is still an interface, and
 // is used as the type of promise that gets passed around.
 template <typename... T>
-class MEDIA_EXPORT CdmPromiseTemplate : public CdmPromise {
+class CdmPromiseTemplate : public CdmPromise {
  public:
   CdmPromiseTemplate() : is_settled_(false) {}
 
@@ -90,13 +101,11 @@ class MEDIA_EXPORT CdmPromiseTemplate : public CdmPromise {
   virtual void resolve(const T&... result) = 0;
 
   // CdmPromise implementation.
-  virtual void reject(MediaKeys::Exception exception_code,
+  virtual void reject(Exception exception_code,
                       uint32_t system_code,
                       const std::string& error_message) = 0;
 
-  ResolveParameterType GetResolveParameterType() const override {
-    return CdmPromiseTraits<T...>::kType;
-  }
+  ResolveParameterType GetResolveParameterType() const final;
 
  protected:
   bool IsPromiseSettled() const { return is_settled_; }
@@ -116,7 +125,7 @@ class MEDIA_EXPORT CdmPromiseTemplate : public CdmPromise {
     std::string message =
         "Unfulfilled promise rejected automatically during destruction.";
     DVLOG(1) << message;
-    reject(MediaKeys::INVALID_STATE_ERROR, 0, message);
+    reject(Exception::INVALID_STATE_ERROR, 0, message);
     DCHECK(is_settled_);
   }
 
@@ -126,6 +135,25 @@ class MEDIA_EXPORT CdmPromiseTemplate : public CdmPromise {
 
   DISALLOW_COPY_AND_ASSIGN(CdmPromiseTemplate);
 };
+
+// Explicitly defining all variants of GetResolveParameterType().
+// Without this component builds on Windows fail due to versions of the same
+// method being generated in multiple DLLs.
+template <>
+MEDIA_EXPORT CdmPromise::ResolveParameterType
+CdmPromiseTemplate<>::GetResolveParameterType() const;
+
+template <>
+MEDIA_EXPORT CdmPromise::ResolveParameterType
+CdmPromiseTemplate<int>::GetResolveParameterType() const;
+
+template <>
+MEDIA_EXPORT CdmPromise::ResolveParameterType
+CdmPromiseTemplate<std::string>::GetResolveParameterType() const;
+
+template <>
+MEDIA_EXPORT CdmPromise::ResolveParameterType CdmPromiseTemplate<
+    CdmKeyInformation::KeyStatus>::GetResolveParameterType() const;
 
 }  // namespace media
 

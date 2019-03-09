@@ -8,6 +8,9 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -34,7 +37,12 @@ class SystemLogUploader : public UploadJob::Delegate {
  public:
   // Structure that stores the system log files as pairs: (file name, loaded
   // from the disk binary file data).
-  typedef std::vector<std::pair<std::string, std::string>> SystemLogs;
+  using SystemLogs = std::vector<std::pair<std::string, std::string>>;
+
+  // Remove lines from |data| that contain common PII (IP addresses, BSSIDs,
+  // SSIDs, URLs, e-mail addresses).
+  static std::string RemoveSensitiveData(feedback::AnonymizerTool* anonymizer,
+                                         const std::string& data);
 
   // Refresh constants.
   static const int64_t kDefaultUploadDelayMs;
@@ -50,13 +58,16 @@ class SystemLogUploader : public UploadJob::Delegate {
   // from the disk and create an upload job.
   class Delegate {
    public:
-    typedef base::Callback<void(std::unique_ptr<SystemLogs> system_logs)>
-        LogUploadCallback;
+    using LogUploadCallback =
+        base::OnceCallback<void(std::unique_ptr<SystemLogs> system_logs)>;
 
     virtual ~Delegate() {}
 
+    // Returns current policy dump in JSON format.
+    virtual std::string GetPolicyAsJSON() = 0;
+
     // Loads system logs and invokes |upload_callback|.
-    virtual void LoadSystemLogs(const LogUploadCallback& upload_callback) = 0;
+    virtual void LoadSystemLogs(LogUploadCallback upload_callback) = 0;
 
     // Creates a new fully configured instance of an UploadJob. This method
     // will be called exactly once per every system log upload.
@@ -67,7 +78,7 @@ class SystemLogUploader : public UploadJob::Delegate {
 
   // Constructor. Callers can inject their own Delegate. A nullptr can be passed
   // for |syslog_delegate| to use the default implementation.
-  explicit SystemLogUploader(
+  SystemLogUploader(
       std::unique_ptr<Delegate> syslog_delegate,
       const scoped_refptr<base::SequencedTaskRunner>& task_runner);
 
@@ -77,17 +88,15 @@ class SystemLogUploader : public UploadJob::Delegate {
   // ever happened.
   base::Time last_upload_attempt() const { return last_upload_attempt_; }
 
+  void ScheduleNextSystemLogUploadImmediately();
+
   // UploadJob::Delegate:
   // Callbacks handle success and failure results of upload, destroy the
   // upload job.
   void OnSuccess() override;
   void OnFailure(UploadJob::ErrorCode error_code) override;
 
-  // Remove lines from |data| that contain common PII (IP addresses, BSSIDs,
-  // SSIDs, URLs, e-mail addresses).
-  static std::string RemoveSensitiveData(
-      feedback::AnonymizerTool* const anonymizer,
-      const std::string& data);
+  bool upload_enabled() const { return upload_enabled_; }
 
  private:
   // Updates the system log upload enabled field from settings.
@@ -97,7 +106,10 @@ class SystemLogUploader : public UploadJob::Delegate {
   void StartLogUpload();
 
   // The callback is invoked by the Delegate if system logs have been loaded
-  // from disk, uploads system logs.
+  // from disk, adds policy dump and calls UploadSystemLogs.
+  void OnSystemLogsLoaded(std::unique_ptr<SystemLogs> system_logs);
+
+  // Uploads system logs.
   void UploadSystemLogs(std::unique_ptr<SystemLogs> system_logs);
 
   // Helper method that figures out when the next system log upload should
@@ -132,6 +144,10 @@ class SystemLogUploader : public UploadJob::Delegate {
       upload_enabled_observer_;
 
   base::ThreadChecker thread_checker_;
+
+  // Used to prevent a race condition where two log uploads are being executed
+  // in parallel.
+  bool log_upload_in_progress_ = false;
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate the weak pointers before any other members are destroyed.

@@ -12,39 +12,207 @@ class FieldTrialToStruct(unittest.TestCase):
 
   def test_FieldTrialToDescription(self):
     config = {
-      'Study1': [
+      'Trial1': [
         {
-          'group_name': 'Group1',
-          'params': {
-            'x': '1',
-            'y': '2'
-          },
-          'enable_features': ['A', 'B'],
-          'disable_features': ['C']
+          'platforms': ['windows'],
+          'experiments': [
+            {
+              'name': 'Group1',
+              'params': {
+                'x': '1',
+                'y': '2'
+              },
+              'enable_features': ['A', 'B'],
+              'disable_features': ['C']
+            },
+            {
+              'name': 'Group2',
+              'params': {
+                'x': '3',
+                'y': '4'
+              },
+              'enable_features': ['D', 'E'],
+              'disable_features': ['F']
+            },
+          ]
         }
       ],
-      'Study2': [{'group_name': 'OtherGroup'}]
+      'Trial2': [
+        {
+          'platforms': ['windows'],
+          'experiments': [{'name': 'OtherGroup'}]
+        }
+      ],
+      'TrialWithForcingFlag':  [
+        {
+          'platforms': ['windows'],
+          'experiments': [
+            {
+              'name': 'ForcedGroup',
+              'forcing_flag': "my-forcing-flag"
+            }
+          ]
+        }
+      ]
     }
-    result = fieldtrial_to_struct._FieldTrialConfigToDescription(config)
+    result = fieldtrial_to_struct._FieldTrialConfigToDescription(config,
+                                                                 ['windows'])
     expected = {
       'elements': {
         'kFieldTrialConfig': {
-          'groups': [
+          'studies': [
             {
-              'study': 'Study1',
-              'group_name': 'Group1',
-              'params': [
-                {'key': 'x', 'value': '1'},
-                {'key': 'y', 'value': '2'}
+              'name': 'Trial1',
+              'experiments': [
+                {
+                  'name': 'Group1',
+                  'platforms': ['Study::PLATFORM_WINDOWS'],
+                  'params': [
+                    {'key': 'x', 'value': '1'},
+                    {'key': 'y', 'value': '2'}
+                  ],
+                  'enable_features': ['A', 'B'],
+                  'disable_features': ['C']
+                },
+                {
+                  'name': 'Group2',
+                  'platforms': ['Study::PLATFORM_WINDOWS'],
+                  'params': [
+                    {'key': 'x', 'value': '3'},
+                    {'key': 'y', 'value': '4'}
+                  ],
+                  'enable_features': ['D', 'E'],
+                  'disable_features': ['F']
+                },
               ],
-             'enable_features': ['A',
-                                 'B'],
-             'disable_features': ['C']
             },
             {
-              'study': 'Study2',
-              'group_name': 'OtherGroup'
-            }
+              'name': 'Trial2',
+              'experiments': [
+                {
+                  'name': 'OtherGroup',
+                  'platforms': ['Study::PLATFORM_WINDOWS'],
+                }
+              ]
+            },
+            {
+              'name': 'TrialWithForcingFlag',
+              'experiments': [
+                  {
+                    'name': 'ForcedGroup',
+                    'platforms': ['Study::PLATFORM_WINDOWS'],
+                    'forcing_flag': "my-forcing-flag"
+                  }
+              ]
+            },
+          ]
+        }
+      }
+    }
+    self.maxDiff = None
+    self.assertEqual(expected, result)
+
+  _MULTIPLE_PLATFORM_CONFIG = {
+    'Trial1': [
+      {
+        'platforms': ['windows', 'ios'],
+        'experiments': [
+          {
+            'name': 'Group1',
+            'params': {
+              'x': '1',
+              'y': '2'
+            },
+            'enable_features': ['A', 'B'],
+            'disable_features': ['C']
+          },
+          {
+            'name': 'Group2',
+            'params': {
+              'x': '3',
+              'y': '4'
+            },
+            'enable_features': ['D', 'E'],
+            'disable_features': ['F']
+          }
+        ]
+      },
+      {
+        'platforms': ['ios'],
+        'experiments': [
+          {
+            'name': 'IOSOnly'
+          }
+        ]
+      },
+    ],
+    'Trial2': [
+      {
+        'platforms': ['windows', 'mac'],
+        'experiments': [{'name': 'OtherGroup'}]
+      }
+    ]
+  }
+
+  def test_FieldTrialToDescriptionMultipleSinglePlatformMultipleTrial(self):
+    result = fieldtrial_to_struct._FieldTrialConfigToDescription(
+        self._MULTIPLE_PLATFORM_CONFIG, ['ios'])
+    expected = {
+      'elements': {
+        'kFieldTrialConfig': {
+          'studies': [
+            {
+              'name': 'Trial1',
+              'experiments': [
+                {
+                  'name': 'Group1',
+                  'platforms': ['Study::PLATFORM_IOS'],
+                  'params': [
+                    {'key': 'x', 'value': '1'},
+                    {'key': 'y', 'value': '2'}
+                  ],
+                  'enable_features': ['A', 'B'],
+                  'disable_features': ['C']
+                },
+                {
+                  'name': 'Group2',
+                  'platforms': ['Study::PLATFORM_IOS'],
+                  'params': [
+                    {'key': 'x', 'value': '3'},
+                    {'key': 'y', 'value': '4'}
+                  ],
+                  'enable_features': ['D', 'E'],
+                  'disable_features': ['F']
+                },
+                {
+                  'name': 'IOSOnly',
+                  'platforms': ['Study::PLATFORM_IOS'],
+                },
+              ],
+            },
+          ]
+        }
+      }
+    }
+    self.maxDiff = None
+    self.assertEqual(expected, result)
+
+  def test_FieldTrialToDescriptionMultipleSinglePlatformSingleTrial(self):
+    result = fieldtrial_to_struct._FieldTrialConfigToDescription(
+        self._MULTIPLE_PLATFORM_CONFIG, ['mac'])
+    expected = {
+      'elements': {
+        'kFieldTrialConfig': {
+          'studies': [
+            {
+              'name': 'Trial2',
+              'experiments': [
+                {
+                  'name': 'OtherGroup',
+                  'platforms': ['Study::PLATFORM_MAC'],
+                },
+              ],
+            },
           ]
         }
       }
@@ -53,27 +221,30 @@ class FieldTrialToStruct(unittest.TestCase):
     self.assertEqual(expected, result)
 
   def test_FieldTrialToStructMain(self):
-    schema = (
-        '../../chrome/common/variations/fieldtrial_testing_config_schema.json')
-    test_ouput_filename = 'test_ouput'
+    schema = (os.path.dirname(__file__) +
+              '/../../components/variations/field_trial_config/'
+              'field_trial_testing_config_schema.json')
+    unittest_data_dir = os.path.dirname(__file__) + '/unittest_data/'
+    test_output_filename = 'test_output'
     fieldtrial_to_struct.main([
       '--schema=' + schema,
-      '--output=' + test_ouput_filename,
+      '--output=' + test_output_filename,
+      '--platform=windows',
       '--year=2015',
-      'unittest_data/test_config.json'
+      unittest_data_dir + 'test_config.json'
     ])
-    header_filename = test_ouput_filename + '.h'
+    header_filename = test_output_filename + '.h'
     with open(header_filename, 'r') as header:
       test_header = header.read()
-      with open('unittest_data/expected_output.h', 'r') as expected:
+      with open(unittest_data_dir + 'expected_output.h', 'r') as expected:
         expected_header = expected.read()
         self.assertEqual(expected_header, test_header)
     os.unlink(header_filename)
 
-    cc_filename = test_ouput_filename + '.cc'
+    cc_filename = test_output_filename + '.cc'
     with open(cc_filename, 'r') as cc:
       test_cc = cc.read()
-      with open('unittest_data/expected_output.cc', 'r') as expected:
+      with open(unittest_data_dir + 'expected_output.cc', 'r') as expected:
         expected_cc = expected.read()
         self.assertEqual(expected_cc, test_cc)
     os.unlink(cc_filename)

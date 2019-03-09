@@ -7,13 +7,12 @@
 
 #include <memory>
 
+#include "base/memory/ref_counted.h"
 #include "crypto/scoped_nss_types.h"
-#include "net/base/crypto_module.h"
 #include "net/base/net_export.h"
+#include "net/cert/scoped_nss_types.h"
 
 namespace net {
-
-class X509Certificate;
 
 // On ChromeOS each user has separate NSS databases, which are loaded
 // simultaneously when multiple users are logged in at the same time. NSS
@@ -42,26 +41,6 @@ class NET_EXPORT NSSProfileFilterChromeOS {
 
   bool IsModuleAllowed(PK11SlotInfo* slot) const;
   bool IsCertAllowed(CERTCertificate* cert) const;
-
-  class CertNotAllowedForProfilePredicate {
-   public:
-    explicit CertNotAllowedForProfilePredicate(
-        const NSSProfileFilterChromeOS& filter);
-    bool operator()(const scoped_refptr<X509Certificate>& cert) const;
-
-   private:
-    const NSSProfileFilterChromeOS& filter_;
-  };
-
-  class ModuleNotAllowedForProfilePredicate {
-   public:
-    explicit ModuleNotAllowedForProfilePredicate(
-        const NSSProfileFilterChromeOS& filter);
-    bool operator()(const scoped_refptr<CryptoModule>& module) const;
-
-   private:
-    const NSSProfileFilterChromeOS& filter_;
-  };
 
  private:
   crypto::ScopedPK11Slot public_slot_;

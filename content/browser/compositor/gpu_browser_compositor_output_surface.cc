@@ -6,68 +6,59 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "build/build_config.h"
-#include "cc/output/compositor_frame.h"
-#include "cc/output/output_surface_client.h"
-#include "components/display_compositor/compositor_overlay_candidate_validator.h"
+#include "components/viz/service/display/output_surface_client.h"
+#include "components/viz/service/display/output_surface_frame.h"
+#include "components/viz/service/display_embedder/compositor_overlay_candidate_validator.h"
 #include "content/browser/compositor/reflector_impl.h"
 #include "content/browser/compositor/reflector_texture.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
-#include "content/common/gpu/client/context_provider_command_buffer.h"
 #include "gpu/command_buffer/client/context_support.h"
+#include "gpu/command_buffer/client/gles2_interface.h"
+#include "gpu/command_buffer/common/swap_buffers_complete_params.h"
+#include "gpu/command_buffer/common/swap_buffers_flags.h"
 #include "gpu/ipc/client/command_buffer_proxy_impl.h"
+#include "services/ws/public/cpp/gpu/context_provider_command_buffer.h"
+#include "ui/gl/gl_utils.h"
 
 namespace content {
 
 GpuBrowserCompositorOutputSurface::GpuBrowserCompositorOutputSurface(
-    scoped_refptr<ContextProviderCommandBuffer> context,
-    scoped_refptr<ui::CompositorVSyncManager> vsync_manager,
-    cc::SyntheticBeginFrameSource* begin_frame_source,
-    std::unique_ptr<display_compositor::CompositorOverlayCandidateValidator>
+    scoped_refptr<ws::ContextProviderCommandBuffer> context,
+    const UpdateVSyncParametersCallback& update_vsync_parameters_callback,
+    std::unique_ptr<viz::CompositorOverlayCandidateValidator>
         overlay_candidate_validator)
     : BrowserCompositorOutputSurface(std::move(context),
-                                     std::move(vsync_manager),
-                                     begin_frame_source,
+                                     update_vsync_parameters_callback,
                                      std::move(overlay_candidate_validator)),
-      swap_buffers_completion_callback_(base::Bind(
-          &GpuBrowserCompositorOutputSurface::OnGpuSwapBuffersCompleted,
-          base::Unretained(this))),
-      update_vsync_parameters_callback_(base::Bind(
-          &BrowserCompositorOutputSurface::OnUpdateVSyncParametersFromGpu,
-          base::Unretained(this))) {}
-
-GpuBrowserCompositorOutputSurface::~GpuBrowserCompositorOutputSurface() {}
-
-gpu::CommandBufferProxyImpl*
-GpuBrowserCompositorOutputSurface::GetCommandBufferProxy() {
-  ContextProviderCommandBuffer* provider_command_buffer =
-      static_cast<content::ContextProviderCommandBuffer*>(
-          context_provider_.get());
-  gpu::CommandBufferProxyImpl* command_buffer_proxy =
-      provider_command_buffer->GetCommandBufferProxy();
-  DCHECK(command_buffer_proxy);
-  return command_buffer_proxy;
-}
-
-bool GpuBrowserCompositorOutputSurface::BindToClient(
-    cc::OutputSurfaceClient* client) {
-  if (!BrowserCompositorOutputSurface::BindToClient(client))
-    return false;
-
-  GetCommandBufferProxy()->SetSwapBuffersCompletionCallback(
-      swap_buffers_completion_callback_.callback());
-  GetCommandBufferProxy()->SetUpdateVSyncParametersCallback(
-      update_vsync_parameters_callback_.callback());
+      weak_ptr_factory_(this) {
   if (capabilities_.uses_default_gl_framebuffer) {
     capabilities_.flipped_output_surface =
         context_provider()->ContextCapabilities().flips_vertically;
   }
-  return true;
+  capabilities_.supports_stencil =
+      context_provider()->ContextCapabilities().num_stencil_bits > 0;
+  // Since one of the buffers is used by the surface for presentation, there can
+  // be at most |num_surface_buffers - 1| pending buffers that the compositor
+  // can use.
+  capabilities_.max_frames_pending =
+      context_provider()->ContextCapabilities().num_surface_buffers - 1;
 }
 
-uint32_t GpuBrowserCompositorOutputSurface::GetFramebufferCopyTextureFormat() {
-  auto* gl = static_cast<ContextProviderCommandBuffer*>(context_provider());
-  return gl->GetCopyTextureInternalFormat();
+GpuBrowserCompositorOutputSurface::~GpuBrowserCompositorOutputSurface() =
+    default;
+
+void GpuBrowserCompositorOutputSurface::OnGpuSwapBuffersCompleted(
+    std::vector<ui::LatencyInfo> latency_info,
+    const gpu::SwapBuffersCompleteParams& params) {
+  if (!params.ca_layer_params.is_empty)
+    client_->DidReceiveCALayerParams(params.ca_layer_params);
+  if (!params.texture_in_use_responses.empty())
+    client_->DidReceiveTextureInUseResponses(params.texture_in_use_responses);
+  client_->DidReceiveSwapBuffersAck();
+  UpdateLatencyInfoOnSwap(params.swap_response, &latency_info);
+  latency_tracker_.OnGpuSwapBuffersCompleted(latency_info);
 }
 
 void GpuBrowserCompositorOutputSurface::OnReflectorChanged() {
@@ -77,47 +68,141 @@ void GpuBrowserCompositorOutputSurface::OnReflectorChanged() {
     reflector_texture_.reset(new ReflectorTexture(context_provider()));
     reflector_->OnSourceTextureMailboxUpdated(reflector_texture_->mailbox());
   }
+  reflector_texture_defined_ = false;
 }
 
-void GpuBrowserCompositorOutputSurface::SwapBuffers(cc::CompositorFrame frame) {
-  DCHECK(frame.gl_frame_data);
+void GpuBrowserCompositorOutputSurface::BindToClient(
+    viz::OutputSurfaceClient* client) {
+  DCHECK(client);
+  DCHECK(!client_);
+  client_ = client;
 
-  GetCommandBufferProxy()->SetLatencyInfo(frame.metadata.latency_info);
+  GetCommandBufferProxy()->SetUpdateVSyncParametersCallback(base::BindRepeating(
+      &GpuBrowserCompositorOutputSurface::OnUpdateVSyncParameters,
+      weak_ptr_factory_.GetWeakPtr()));
+}
 
+void GpuBrowserCompositorOutputSurface::EnsureBackbuffer() {}
+
+void GpuBrowserCompositorOutputSurface::DiscardBackbuffer() {
+  context_provider()->ContextGL()->DiscardBackbufferCHROMIUM();
+}
+
+void GpuBrowserCompositorOutputSurface::BindFramebuffer() {
+  context_provider()->ContextGL()->BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void GpuBrowserCompositorOutputSurface::Reshape(
+    const gfx::Size& size,
+    float device_scale_factor,
+    const gfx::ColorSpace& color_space,
+    bool has_alpha,
+    bool use_stencil) {
+  size_ = size;
+  has_set_draw_rectangle_since_last_resize_ = false;
+  context_provider()->ContextGL()->ResizeCHROMIUM(
+      size.width(), size.height(), device_scale_factor,
+      gl::GetGLColorSpace(color_space), has_alpha);
+}
+
+void GpuBrowserCompositorOutputSurface::SwapBuffers(
+    viz::OutputSurfaceFrame frame) {
+  gfx::Size surface_size = frame.size;
   if (reflector_) {
-    if (frame.gl_frame_data->sub_buffer_rect ==
-        gfx::Rect(frame.gl_frame_data->size)) {
-      reflector_texture_->CopyTextureFullImage(SurfaceSize());
-      reflector_->OnSourceSwapBuffers();
+    if (frame.sub_buffer_rect && reflector_texture_defined_) {
+      reflector_texture_->CopyTextureSubImage(*frame.sub_buffer_rect);
+      reflector_->OnSourcePostSubBuffer(*frame.sub_buffer_rect, surface_size);
     } else {
-      const gfx::Rect& rect = frame.gl_frame_data->sub_buffer_rect;
-      reflector_texture_->CopyTextureSubImage(rect);
-      reflector_->OnSourcePostSubBuffer(rect);
+      reflector_texture_->CopyTextureFullImage(surface_size);
+      reflector_->OnSourceSwapBuffers(surface_size);
+      reflector_texture_defined_ = true;
     }
   }
 
-  if (frame.gl_frame_data->sub_buffer_rect ==
-      gfx::Rect(frame.gl_frame_data->size)) {
-    context_provider_->ContextSupport()->Swap();
-  } else {
+  set_draw_rectangle_for_frame_ = false;
+
+  auto swap_callback = base::BindOnce(
+      &GpuBrowserCompositorOutputSurface::OnGpuSwapBuffersCompleted,
+      weak_ptr_factory_.GetWeakPtr(), std::move(frame.latency_info));
+  uint32_t flags = gpu::SwapBuffersFlags::kVSyncParams;
+  gpu::ContextSupport::PresentationCallback presentation_callback;
+  presentation_callback =
+      base::BindOnce(&GpuBrowserCompositorOutputSurface::OnPresentation,
+                     weak_ptr_factory_.GetWeakPtr());
+  if (frame.sub_buffer_rect) {
+    DCHECK(frame.content_bounds.empty());
     context_provider_->ContextSupport()->PartialSwapBuffers(
-        frame.gl_frame_data->sub_buffer_rect);
+        *frame.sub_buffer_rect, flags, std::move(swap_callback),
+        std::move(presentation_callback));
+  } else if (!frame.content_bounds.empty()) {
+    context_provider_->ContextSupport()->SwapWithBounds(
+        frame.content_bounds, flags, std::move(swap_callback),
+        std::move(presentation_callback));
+  } else {
+    context_provider_->ContextSupport()->Swap(flags, std::move(swap_callback),
+                                              std::move(presentation_callback));
   }
-
-  client_->DidSwapBuffers();
 }
 
-void GpuBrowserCompositorOutputSurface::OnGpuSwapBuffersCompleted(
-    const std::vector<ui::LatencyInfo>& latency_info,
-    gfx::SwapResult result,
-    const gpu::GpuProcessHostedCALayerTreeParamsMac* params_mac) {
-  RenderWidgetHostImpl::CompositorFrameDrawn(latency_info);
-  OnSwapBuffersComplete();
+uint32_t GpuBrowserCompositorOutputSurface::GetFramebufferCopyTextureFormat() {
+  auto* gl = static_cast<ws::ContextProviderCommandBuffer*>(context_provider());
+  return gl->GetCopyTextureInternalFormat();
 }
 
-#if defined(OS_MACOSX)
-void GpuBrowserCompositorOutputSurface::SetSurfaceSuspendedForRecycle(
-    bool suspended) {}
-#endif
+bool GpuBrowserCompositorOutputSurface::IsDisplayedAsOverlayPlane() const {
+  return false;
+}
+
+unsigned GpuBrowserCompositorOutputSurface::GetOverlayTextureId() const {
+  return 0;
+}
+
+gfx::BufferFormat GpuBrowserCompositorOutputSurface::GetOverlayBufferFormat()
+    const {
+  return gfx::BufferFormat::RGBX_8888;
+}
+
+void GpuBrowserCompositorOutputSurface::SetDrawRectangle(
+    const gfx::Rect& rect) {
+  if (!context_provider_->ContextCapabilities().dc_layers)
+    return;
+
+  if (set_draw_rectangle_for_frame_)
+    return;
+  DCHECK(gfx::Rect(size_).Contains(rect));
+  DCHECK(has_set_draw_rectangle_since_last_resize_ ||
+         (gfx::Rect(size_) == rect));
+  set_draw_rectangle_for_frame_ = true;
+  has_set_draw_rectangle_since_last_resize_ = true;
+  context_provider()->ContextGL()->SetDrawRectangleCHROMIUM(
+      rect.x(), rect.y(), rect.width(), rect.height());
+}
+
+void GpuBrowserCompositorOutputSurface::OnPresentation(
+    const gfx::PresentationFeedback& feedback) {
+  DCHECK(client_);
+  client_->DidReceivePresentationFeedback(feedback);
+}
+
+void GpuBrowserCompositorOutputSurface::OnUpdateVSyncParameters(
+    base::TimeTicks timebase,
+    base::TimeDelta interval) {
+  if (update_vsync_parameters_callback_)
+    update_vsync_parameters_callback_.Run(timebase, interval);
+}
+
+gpu::CommandBufferProxyImpl*
+GpuBrowserCompositorOutputSurface::GetCommandBufferProxy() {
+  ws::ContextProviderCommandBuffer* provider_command_buffer =
+      static_cast<ws::ContextProviderCommandBuffer*>(context_provider_.get());
+  gpu::CommandBufferProxyImpl* command_buffer_proxy =
+      provider_command_buffer->GetCommandBufferProxy();
+  DCHECK(command_buffer_proxy);
+  return command_buffer_proxy;
+}
+
+unsigned GpuBrowserCompositorOutputSurface::UpdateGpuFence() {
+  return 0;
+}
 
 }  // namespace content

@@ -8,8 +8,8 @@
 #include "content/public/renderer/render_view.h"
 #include "content/public/renderer/render_view_observer.h"
 #include "content/shell/common/shell_switches.h"
-#include "third_party/WebKit/public/web/WebTestingSupport.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/web/web_testing_support.h"
+#include "third_party/blink/public/web/web_view.h"
 
 namespace content {
 
@@ -24,7 +24,7 @@ void ShellRenderViewObserver::DidClearWindowObject(
     blink::WebLocalFrame* frame) {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kExposeInternalsForTesting)) {
-    blink::WebTestingSupport::injectInternalsObject(frame);
+    blink::WebTestingSupport::InjectInternalsObject(frame);
   }
 }
 

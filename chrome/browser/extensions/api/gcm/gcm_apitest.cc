@@ -2,16 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "chrome/browser/extensions/api/gcm/gcm_api.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_gcm_app_handler.h"
+#include "chrome/browser/gcm/gcm_profile_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/services/gcm/fake_gcm_profile_service.h"
-#include "chrome/browser/services/gcm/gcm_profile_service_factory.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/browser_sync/common/browser_sync_switches.h"
+#include "components/browser_sync/browser_sync_switches.h"
+#include "components/gcm_driver/fake_gcm_profile_service.h"
 #include "extensions/test/result_catcher.h"
 
 using extensions::ResultCatcher;
@@ -85,7 +87,8 @@ void GcmApiTest::SetUpCommandLine(base::CommandLine* command_line) {
 
 void GcmApiTest::SetUpOnMainThread() {
   gcm::GCMProfileServiceFactory::GetInstance()->SetTestingFactory(
-      browser()->profile(), &gcm::FakeGCMProfileService::Build);
+      browser()->profile(),
+      base::BindRepeating(&gcm::FakeGCMProfileService::Build));
   fake_gcm_profile_service_ = static_cast<gcm::FakeGCMProfileService*>(
       gcm::GCMProfileServiceFactory::GetInstance()->GetForProfile(
           browser()->profile()));
@@ -123,10 +126,8 @@ IN_PROC_BROWSER_TEST_F(GcmApiTest, Register) {
 
   const std::vector<std::string>& sender_ids =
       service()->last_registered_sender_ids();
-  EXPECT_TRUE(std::find(sender_ids.begin(), sender_ids.end(), "Sender1") !=
-                  sender_ids.end());
-  EXPECT_TRUE(std::find(sender_ids.begin(), sender_ids.end(), "Sender2") !=
-                  sender_ids.end());
+  EXPECT_TRUE(base::ContainsValue(sender_ids, "Sender1"));
+  EXPECT_TRUE(base::ContainsValue(sender_ids, "Sender2"));
 }
 
 IN_PROC_BROWSER_TEST_F(GcmApiTest, Unregister) {

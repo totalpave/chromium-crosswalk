@@ -19,7 +19,7 @@
 #include <limits>
 
 #include "base/format_macros.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "gtest/gtest.h"
@@ -46,7 +46,7 @@ bool ExpectationForValidity64(Validity validity) {
 }
 
 TEST(CheckedAddressRange, IsValid) {
-  const struct TestData {
+  static constexpr struct {
     uint64_t base;
     uint64_t size;
     Validity validity;
@@ -119,24 +119,24 @@ TEST(CheckedAddressRange, IsValid) {
       {0xffffffffffffffff, 1, kInvalid},
   };
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& testcase = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& testcase = kTestData[index];
     SCOPED_TRACE(base::StringPrintf("index %" PRIuS
-                                    ", base 0x%llx, size 0x%llx",
+                                    ", base 0x%" PRIx64 ", size 0x%" PRIx64,
                                     index,
                                     testcase.base,
                                     testcase.size));
 
     CheckedAddressRange range_32(false, testcase.base, testcase.size);
-    EXPECT_EQ(ExpectationForValidity32(testcase.validity), range_32.IsValid());
+    EXPECT_EQ(range_32.IsValid(), ExpectationForValidity32(testcase.validity));
 
     CheckedAddressRange range_64(true, testcase.base, testcase.size);
-    EXPECT_EQ(ExpectationForValidity64(testcase.validity), range_64.IsValid());
+    EXPECT_EQ(range_64.IsValid(), ExpectationForValidity64(testcase.validity));
   }
 }
 
 TEST(CheckedAddressRange, ContainsValue) {
-  const struct TestData {
+  static constexpr struct {
     uint64_t value;
     bool expectation;
   } kTestData[] = {
@@ -170,13 +170,13 @@ TEST(CheckedAddressRange, ContainsValue) {
   CheckedAddressRange parent_range_32(false, 0x2000, 0x1000);
   ASSERT_TRUE(parent_range_32.IsValid());
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& testcase = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& testcase = kTestData[index];
     SCOPED_TRACE(base::StringPrintf(
-        "index %" PRIuS ", value 0x%llx", index, testcase.value));
+        "index %" PRIuS ", value 0x%" PRIx64, index, testcase.value));
 
-    EXPECT_EQ(testcase.expectation,
-              parent_range_32.ContainsValue(testcase.value));
+    EXPECT_EQ(parent_range_32.ContainsValue(testcase.value),
+              testcase.expectation);
   }
 
   CheckedAddressRange parent_range_64(true, 0x100000000, 0x1000);
@@ -189,7 +189,7 @@ TEST(CheckedAddressRange, ContainsValue) {
 }
 
 TEST(CheckedAddressRange, ContainsRange) {
-  const struct TestData {
+  static constexpr struct {
     uint64_t base;
     uint64_t size;
     bool expectation;
@@ -227,18 +227,18 @@ TEST(CheckedAddressRange, ContainsRange) {
   CheckedAddressRange parent_range_32(false, 0x2000, 0x1000);
   ASSERT_TRUE(parent_range_32.IsValid());
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& testcase = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& testcase = kTestData[index];
     SCOPED_TRACE(base::StringPrintf("index %" PRIuS
-                                    ", base 0x%llx, size 0x%llx",
+                                    ", base 0x%" PRIx64 ", size 0x%" PRIx64,
                                     index,
                                     testcase.base,
                                     testcase.size));
 
     CheckedAddressRange child_range_32(false, testcase.base, testcase.size);
     ASSERT_TRUE(child_range_32.IsValid());
-    EXPECT_EQ(testcase.expectation,
-              parent_range_32.ContainsRange(child_range_32));
+    EXPECT_EQ(parent_range_32.ContainsRange(child_range_32),
+              testcase.expectation);
   }
 
   CheckedAddressRange parent_range_64(true, 0x100000000, 0x1000);

@@ -5,17 +5,27 @@
 #ifndef UI_MESSAGE_CENTER_VIEWS_MESSAGE_VIEW_CONTEXT_MENU_CONTROLLER_H_
 #define UI_MESSAGE_CENTER_VIEWS_MESSAGE_VIEW_CONTEXT_MENU_CONTROLLER_H_
 
+#include <memory>
+
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "ui/message_center/message_center_export.h"
 #include "ui/views/context_menu_controller.h"
 
-namespace message_center {
-class MessageCenterController;
+namespace ui {
+class MenuModel;
+}  // namespace ui
 
-class MessageViewContextMenuController : public views::ContextMenuController {
+namespace views {
+class MenuRunner;
+}  // namespace views
+
+namespace message_center {
+
+class MESSAGE_CENTER_EXPORT MessageViewContextMenuController
+    : public views::ContextMenuController {
  public:
-  explicit MessageViewContextMenuController(
-      MessageCenterController* controller);
+  explicit MessageViewContextMenuController();
   ~MessageViewContextMenuController() override;
 
  private:
@@ -24,7 +34,11 @@ class MessageViewContextMenuController : public views::ContextMenuController {
                               const gfx::Point& point,
                               ui::MenuSourceType source_type) override;
 
-  MessageCenterController* controller_;
+  // Callback for MenuRunner
+  void OnMenuClosed();
+
+  std::unique_ptr<ui::MenuModel> menu_model_;
+  std::unique_ptr<views::MenuRunner> menu_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(MessageViewContextMenuController);
 };

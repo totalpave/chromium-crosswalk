@@ -42,14 +42,9 @@ static scoped_refptr<AudioBuffer> MakeTestBuffer(SampleFormat format,
                                                  T start,
                                                  T step,
                                                  int frames) {
-  return MakeAudioBuffer<T>(format,
-                            channel_layout,
+  return MakeAudioBuffer<T>(format, channel_layout,
                             ChannelLayoutToChannelCount(channel_layout),
-                            kSampleRate,
-                            start,
-                            step,
-                            frames,
-                            kNoTimestamp());
+                            kSampleRate, start, step, frames, kNoTimestamp);
 }
 
 TEST(AudioBufferQueueTest, AppendAndClear) {
@@ -150,6 +145,30 @@ TEST(AudioBufferQueueTest, Seek) {
 
   // At end, seek now fails unless 0 specified.
   buffer.SeekFrames(0);
+}
+
+TEST(AudioBufferQueueTest, ReadBitstream) {
+  const ChannelLayout channel_layout = CHANNEL_LAYOUT_STEREO;
+  const int channels = ChannelLayoutToChannelCount(channel_layout);
+  AudioBufferQueue buffer;
+
+  // Add 24 frames of data.
+  buffer.Append(MakeBitstreamAudioBuffer(kSampleFormatEac3, channel_layout,
+                                         channels, kSampleRate, 1, 1, 4, 2,
+                                         kNoTimestamp));
+  buffer.Append(MakeBitstreamAudioBuffer(kSampleFormatEac3, channel_layout,
+                                         channels, kSampleRate, 9, 1, 20, 10,
+                                         kNoTimestamp));
+  EXPECT_EQ(24, buffer.frames());
+
+  // The first audio buffer contains 4 frames.
+  std::unique_ptr<AudioBus> bus = AudioBus::Create(channels, buffer.frames());
+  EXPECT_EQ(4, buffer.ReadFrames(buffer.frames(), 0, bus.get()));
+  VerifyBitstreamAudioBus(bus.get(), 2, 1, 1);
+
+  // The second audio buffer contains 20 frames.
+  EXPECT_EQ(20, buffer.ReadFrames(buffer.frames(), 0, bus.get()));
+  VerifyBitstreamAudioBus(bus.get(), 10, 9, 1);
 }
 
 TEST(AudioBufferQueueTest, ReadF32) {

@@ -6,14 +6,22 @@
 #define CHROME_BROWSER_UI_WEBUI_SETTINGS_SEARCH_ENGINES_HANDLER_H_
 
 #include <memory>
+#include <string>
 
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/search_engines/edit_search_engine_controller.h"
 #include "chrome/browser/ui/search_engines/keyword_editor_controller.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "ui/base/models/table_model_observer.h"
 
 class Profile;
+
+namespace base {
+class DictionaryValue;
+class ListValue;
+}
 
 namespace extensions {
 class Extension;
@@ -46,7 +54,7 @@ class SearchEnginesHandler : public SettingsPageUIHandler,
   void OnJavascriptDisallowed() override;
 
  private:
-  // Retrieves all search engines and returns the to WebUI.
+  // Retrieves all search engines and returns them to WebUI.
   void HandleGetSearchEnginesList(const base::ListValue* args);
 
   std::unique_ptr<base::DictionaryValue> GetSearchEnginesList();
@@ -71,16 +79,13 @@ class SearchEnginesHandler : public SettingsPageUIHandler,
   bool CheckFieldValidity(const std::string& field_name,
                           const std::string& field_value);
 
-  // Called when an edit is cancelled.
+  // Called when an edit is canceled.
   // Called from WebUI.
   void HandleSearchEngineEditCancelled(const base::ListValue* args);
 
   // Called when an edit is finished and should be saved.
   // Called from WebUI.
   void HandleSearchEngineEditCompleted(const base::ListValue* args);
-
-  // Disables a Chrome (omnibox) extension.
-  void HandleDisableExtension(const base::ListValue* args);
 
   // Returns a dictionary to pass to WebUI representing the given search engine.
   std::unique_ptr<base::DictionaryValue> CreateDictionaryForEngine(
@@ -95,6 +100,8 @@ class SearchEnginesHandler : public SettingsPageUIHandler,
 
   KeywordEditorController list_controller_;
   std::unique_ptr<EditSearchEngineController> edit_controller_;
+  PrefChangeRegistrar pref_change_registrar_;
+  base::WeakPtrFactory<SearchEnginesHandler> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(SearchEnginesHandler);
 };

@@ -5,6 +5,7 @@
 // Include test fixture.
 GEN_INCLUDE(['../../testing/chromevox_next_e2e_test_base.js']);
 
+GEN_INCLUDE(['../../testing/assert_additions.js']);
 GEN_INCLUDE(['../../testing/snippets.js']);
 
 /**
@@ -12,11 +13,11 @@ GEN_INCLUDE(['../../testing/snippets.js']);
  * @constructor
  * @extends {ChromeVoxE2ETestBase}
  */
-function AutomationUtilE2ETest() {
+function ChromeVoxAutomationUtilE2ETest() {
   ChromeVoxNextE2ETest.call(this);
 }
 
-AutomationUtilE2ETest.prototype = {
+ChromeVoxAutomationUtilE2ETest.prototype = {
   __proto__: ChromeVoxNextE2ETest.prototype,
 
   /** @override */
@@ -26,7 +27,7 @@ AutomationUtilE2ETest.prototype = {
 
     /** Filters nodes not rooted by desktop. */
     function filterNonDesktopRoot(node) {
-      return node.root.role != RoleType.desktop;
+      return node.root.role != RoleType.DESKTOP;
     }
 
     window.getNonDesktopAncestors = function(node) {
@@ -42,7 +43,7 @@ AutomationUtilE2ETest.prototype = {
 
   basicDoc: function() {/*!
     <p><a href='#'></a>hello</p>
-    <h1><ul><li>a</ul><button></h1>
+    <h1><ul><li>a</ul><div role="group"><button></button></div></h1>
   */},
 
   secondDoc: function() {/*!
@@ -62,7 +63,7 @@ AutomationUtilE2ETest.prototype = {
   */}
 };
 
-TEST_F('AutomationUtilE2ETest', 'GetAncestors', function() {
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'GetAncestors', function() {
   this.runWithLoadedTree(this.basicDoc, function(root) {
     var expectedLength = 1;
     while (root) {
@@ -72,8 +73,8 @@ TEST_F('AutomationUtilE2ETest', 'GetAncestors', function() {
     }
   });
 });
-  
-TEST_F('AutomationUtilE2ETest', 'GetUniqueAncestors', function() {
+
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'GetUniqueAncestors', function() {
   this.runWithLoadedTree(this.basicDoc, function(root) {
     var leftmost = root, rightmost = root;
     while (leftmost.firstChild)
@@ -83,8 +84,8 @@ TEST_F('AutomationUtilE2ETest', 'GetUniqueAncestors', function() {
 
     var leftAncestors = getNonDesktopAncestors(leftmost);
     var rightAncestors = getNonDesktopAncestors(rightmost);
-    assertEquals(RoleType.link, leftmost.role);
-    assertEquals(RoleType.button, rightmost.role);
+    assertEquals(RoleType.LINK, leftmost.role);
+    assertEquals(RoleType.BUTTON, rightmost.role);
     assertEquals(
         1, AutomationUtil.getDivergence(leftAncestors, rightAncestors));
 
@@ -97,17 +98,17 @@ TEST_F('AutomationUtilE2ETest', 'GetUniqueAncestors', function() {
         getNonDesktopUniqueAncestors(leftmost, rightmost);
 
     assertEquals(2, uniqueAncestorsLeft.length);
-    assertEquals(RoleType.paragraph,
+    assertEquals(RoleType.PARAGRAPH,
         uniqueAncestorsLeft[0].role);
-    assertEquals(RoleType.link,
+    assertEquals(RoleType.LINK,
         uniqueAncestorsLeft[1].role);
 
     assertEquals(3, uniqueAncestorsRight.length);
-    assertEquals(RoleType.heading,
+    assertEquals(RoleType.HEADING,
         uniqueAncestorsRight[0].role);
-    assertEquals(RoleType.group,
+    assertEquals(RoleType.GROUP,
         uniqueAncestorsRight[1].role);
-    assertEquals(RoleType.button,
+    assertEquals(RoleType.BUTTON,
         uniqueAncestorsRight[2].role);
 
     assertEquals(
@@ -116,16 +117,18 @@ TEST_F('AutomationUtilE2ETest', 'GetUniqueAncestors', function() {
   }.bind(this));
 });
 
-TEST_F('AutomationUtilE2ETest', 'GetDirection', function() {
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'GetDirection', function() {
   this.runWithLoadedTree(this.basicDoc, function(root) {
     var left = root, right = root;
 
     // Same node.
     assertEquals(Dir.FORWARD, AutomationUtil.getDirection(left, right));
 
-    // Ancestor.
+    // Ancestry.
     left = left.firstChild;
-    assertEquals(Dir.FORWARD, AutomationUtil.getDirection(left, right));
+    // Upward movement is backward (in dfs).
+    assertEquals(Dir.BACKWARD, AutomationUtil.getDirection(left, right));
+    // Downward movement is forward.
     assertEquals(Dir.FORWARD, AutomationUtil.getDirection(right, left));
 
     // Ordered.
@@ -135,63 +138,7 @@ TEST_F('AutomationUtilE2ETest', 'GetDirection', function() {
   });
 });
 
-TEST_F('AutomationUtilE2ETest', 'IsInSameWebpage', function() {
-  this.runWithLoadedTree(this.basicDoc, function(root) {
-    this.runWithLoadedTree(this.secondDoc, function(root2) {
-      chrome.automation.getDesktop(this.newCallback(function(desktop) {
-        assertTrue(AutomationUtil.isInSameWebpage(root, root));
-        assertTrue(AutomationUtil.isInSameWebpage(root.firstChild, root));
-        assertTrue(AutomationUtil.isInSameWebpage(root, root.firstChild));
-
-        assertTrue(AutomationUtil.isInSameWebpage(root2, root2));
-        assertTrue(AutomationUtil.isInSameWebpage(root2.firstChild, root2));
-        assertTrue(AutomationUtil.isInSameWebpage(root2, root2.firstChild));
-
-        assertFalse(AutomationUtil.isInSameWebpage(root, root2));
-        assertFalse(AutomationUtil.isInSameWebpage(root.firstChild, root2));
-        assertFalse(AutomationUtil.isInSameWebpage(root2.firstChild));
-        assertFalse(AutomationUtil.isInSameWebpage(
-            root.firstChild, root2.firstChild));
-
-        assertFalse(AutomationUtil.isInSameWebpage(root, desktop));
-        assertFalse(AutomationUtil.isInSameWebpage(root2, desktop));
-      }.bind(this)));
-    }.bind(this));
-  }.bind(this));
-});
-
-TEST_F('AutomationUtilE2ETest', 'IsInSameWebpageIframe', function() {
-  // Wait for load complete on both outer frame and iframe.
-  var outerFrame;
-  var innerFrame;
-  var desktop;
-  var onSuccess = this.newCallback(function() {
-    assertTrue(AutomationUtil.isInSameWebpage(outerFrame, innerFrame));
-    assertFalse(AutomationUtil.isInSameWebpage(outerFrame, desktop));
-    assertFalse(AutomationUtil.isInSameWebpage(innerFrame, desktop));
-    assertFalse(AutomationUtil.isInSameWebpage(outerFrame.parent, innerFrame));
-  }.bind(this));
-
-  chrome.automation.getDesktop(function(r) {
-    desktop = r;
-    this.runWithTab(this.iframeDoc, function(newTabUrl) {
-      var listener = function(evt) {
-        if (evt.target.docUrl == newTabUrl)
-          outerFrame = evt.target;
-	if (evt.target.docUrl.indexOf('data:text/html') == 0)
-	  innerFrame = evt.target;
-
-        if (outerFrame && innerFrame) {
-          desktop.removeEventListener('loadComplete', listener, true);
-          onSuccess();
-        }
-      }.bind(this);
-      desktop.addEventListener('loadComplete', listener, true);
-    }.bind(this));
-  }.bind(this));
-});
-
-TEST_F('AutomationUtilE2ETest', 'VisitContainer', function() {
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'VisitContainer', function() {
   this.runWithLoadedTree(toolbarDoc, function(r) {
     var pred = function(n) { return n.role != 'rootWebArea'; };
 
@@ -210,7 +157,7 @@ TEST_F('AutomationUtilE2ETest', 'VisitContainer', function() {
   });
 });
 
-TEST_F('AutomationUtilE2ETest', 'HitTest', function() {
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'HitTest', function() {
   this.runWithLoadedTree(headingDoc, function(r) {
     // Gets the center point of a rect.
     function getCP(node) {
@@ -229,5 +176,40 @@ TEST_F('AutomationUtilE2ETest', 'HitTest', function() {
     assertEquals(a, AutomationUtil.hitTest(r, getCP(a.parent)));
     assertEquals(a.parent.parent,
                  AutomationUtil.hitTest(r, getCP(a.parent.parent)));
+  });
+});
+
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'FindLastNodeSimple', function() {
+  this.runWithLoadedTree(function() {/*!
+    <p aria-label=" "><div aria-label="x"></div></p>
+  */}, function(r) {
+    assertEquals('x',
+        AutomationUtil.findLastNode(r, function(n) {
+          return n.role == RoleType.GENERIC_CONTAINER;
+        }).name);
+  });
+});
+
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'FindLastNodeNonLeaf', function() {
+  this.runWithLoadedTree(function() {/*!
+    <div aria-label="x"><div aria-label=" "></div></div>
+  */}, function(r) {
+    assertEquals('x',
+        AutomationUtil.findLastNode(r, function(n) {
+          return n.role == RoleType.GENERIC_CONTAINER;
+        }).name);
+  });
+});
+
+TEST_F('ChromeVoxAutomationUtilE2ETest', 'FindLastNodeComplex', function() {
+  this.runWithLoadedTree(function() {/*!
+    <p>start</p>
+    <div aria-label="x"><div aria-label=" "></div></div>
+    <p>end</p>
+  */}, function(r) {
+    assertEquals('x',
+        AutomationUtil.findLastNode(r, function(n) {
+          return n.role == RoleType.GENERIC_CONTAINER;
+        }).name);
   });
 });

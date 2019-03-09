@@ -85,12 +85,12 @@ class scoped_nsprotocol
   using Traits = internal::ScopedNSProtocolTraits<NST>;
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
-  explicit scoped_nsprotocol(
+  explicit constexpr scoped_nsprotocol(
       NST object = Traits::InvalidValue(),
       base::scoped_policy::OwnershipPolicy policy = base::scoped_policy::ASSUME)
       : ScopedTypeRef<NST, Traits>(object, policy) {}
 #else
-  explicit scoped_nsprotocol(NST object = Traits::InvalidValue())
+  explicit constexpr scoped_nsprotocol(NST object = Traits::InvalidValue())
       : ScopedTypeRef<NST, Traits>(object, base::scoped_policy::RETAIN) {}
 #endif
 
@@ -102,7 +102,7 @@ class scoped_nsprotocol
       : ScopedTypeRef<NST, Traits>(that_as_subclass) {}
 
   scoped_nsprotocol(scoped_nsprotocol<NST>&& that)
-      : ScopedTypeRef<NST, Traits>(that) {}
+      : ScopedTypeRef<NST, Traits>(std::move(that)) {}
 
   scoped_nsprotocol& operator=(const scoped_nsprotocol<NST>& that) {
     ScopedTypeRef<NST, Traits>::operator=(that);
@@ -149,12 +149,12 @@ class scoped_nsobject : public scoped_nsprotocol<NST*> {
   using Traits = typename scoped_nsprotocol<NST*>::Traits;
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
-  explicit scoped_nsobject(
+  explicit constexpr scoped_nsobject(
       NST* object = Traits::InvalidValue(),
       base::scoped_policy::OwnershipPolicy policy = base::scoped_policy::ASSUME)
       : scoped_nsprotocol<NST*>(object, policy) {}
 #else
-  explicit scoped_nsobject(NST* object = Traits::InvalidValue())
+  explicit constexpr scoped_nsobject(NST* object = Traits::InvalidValue())
       : scoped_nsprotocol<NST*>(object) {}
 #endif
 
@@ -166,7 +166,7 @@ class scoped_nsobject : public scoped_nsprotocol<NST*> {
       : scoped_nsprotocol<NST*>(that_as_subclass) {}
 
   scoped_nsobject(scoped_nsobject<NST>&& that)
-      : scoped_nsprotocol<NST*>(that) {}
+      : scoped_nsprotocol<NST*>(std::move(that)) {}
 
   scoped_nsobject& operator=(const scoped_nsobject<NST>& that) {
     scoped_nsprotocol<NST*>::operator=(that);
@@ -198,12 +198,12 @@ class scoped_nsobject<id> : public scoped_nsprotocol<id> {
   using Traits = typename scoped_nsprotocol<id>::Traits;
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
-  explicit scoped_nsobject(
+  explicit constexpr scoped_nsobject(
       id object = Traits::InvalidValue(),
       base::scoped_policy::OwnershipPolicy policy = base::scoped_policy::ASSUME)
       : scoped_nsprotocol<id>(object, policy) {}
 #else
-  explicit scoped_nsobject(id object = Traits::InvalidValue())
+  explicit constexpr scoped_nsobject(id object = Traits::InvalidValue())
       : scoped_nsprotocol<id>(object) {}
 #endif
 
@@ -214,7 +214,8 @@ class scoped_nsobject<id> : public scoped_nsprotocol<id> {
   explicit scoped_nsobject(const scoped_nsobject<NSR>& that_as_subclass)
       : scoped_nsprotocol<id>(that_as_subclass) {}
 
-  scoped_nsobject(scoped_nsobject<id>&& that) : scoped_nsprotocol<id>(that) {}
+  scoped_nsobject(scoped_nsobject<id>&& that)
+      : scoped_nsprotocol<id>(std::move(that)) {}
 
   scoped_nsobject& operator=(const scoped_nsobject<id>& that) {
     scoped_nsprotocol<id>::operator=(that);

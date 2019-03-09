@@ -14,7 +14,7 @@ namespace content {
 
 class CONTENT_EXPORT PepperFlashSettingsHelperImpl
     : public PepperFlashSettingsHelper,
-      NON_EXPORTED_BASE(public PpapiPluginProcessHost::BrokerClient) {
+      public PpapiPluginProcessHost::BrokerClient {
  public:
   PepperFlashSettingsHelperImpl();
 
@@ -28,7 +28,7 @@ class CONTENT_EXPORT PepperFlashSettingsHelperImpl
   void OnPpapiChannelOpened(const IPC::ChannelHandle& channel_handle,
                             base::ProcessId plugin_pid,
                             int plugin_child_id) override;
-  bool OffTheRecord() override;
+  bool Incognito() override;
 
  protected:
   ~PepperFlashSettingsHelperImpl() override;

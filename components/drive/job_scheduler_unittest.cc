@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <set>
 
 #include "base/bind.h"
@@ -15,17 +16,20 @@
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/drive/chromeos/drive_test_util.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/drive/event_logger.h"
+#include "components/drive/file_system_core_util.h"
 #include "components/drive/service/fake_drive_service.h"
 #include "components/drive/service/test_util.h"
 #include "components/prefs/testing_pref_service.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "google_apis/drive/drive_api_parser.h"
 #include "google_apis/drive/test_util.h"
+#include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace drive {
@@ -128,6 +132,9 @@ class CancelTestableFakeDriveService : public FakeDriveService {
   bool upload_new_file_cancelable_;
 };
 
+const char kHello[] = "Hello";
+const size_t kHelloLen = sizeof(kHello) - 1;
+
 }  // namespace
 
 class JobSchedulerTest : public testing::Test {
@@ -138,48 +145,46 @@ class JobSchedulerTest : public testing::Test {
   }
 
   void SetUp() override {
-    fake_network_change_notifier_.reset(
-        new test_util::FakeNetworkChangeNotifier);
+    logger_ = std::make_unique<EventLogger>();
 
-    logger_.reset(new EventLogger);
-
-    fake_drive_service_.reset(new CancelTestableFakeDriveService);
+    fake_drive_service_ = std::make_unique<CancelTestableFakeDriveService>();
     test_util::SetUpTestEntries(fake_drive_service_.get());
-    fake_drive_service_->LoadAppListForDriveApi("drive/applist.json");
 
-    scheduler_.reset(new JobScheduler(
-        pref_service_.get(),
-        logger_.get(),
-        fake_drive_service_.get(),
-        base::ThreadTaskRunnerHandle::Get().get()));
+    ConnectToWifi();
+    scheduler_ = std::make_unique<JobScheduler>(
+        pref_service_.get(), logger_.get(), fake_drive_service_.get(),
+        network::TestNetworkConnectionTracker::GetInstance(),
+        base::ThreadTaskRunnerHandle::Get().get(), nullptr);
     scheduler_->SetDisableThrottling(true);
   }
 
  protected:
-  // Sets up FakeNetworkChangeNotifier as if it's connected to a network with
+  // Sets up TestNetworkConnectionTracker as if it's connected to a network with
   // the specified connection type.
-  void ChangeConnectionType(net::NetworkChangeNotifier::ConnectionType type) {
-    fake_network_change_notifier_->SetConnectionType(type);
+  void ChangeConnectionType(network::mojom::ConnectionType type) {
+    network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
+        type);
   }
 
-  // Sets up FakeNetworkChangeNotifier as if it's connected to wifi network.
+  // Sets up TestNetworkConnectionTracker as if it's connected to wifi network.
   void ConnectToWifi() {
-    ChangeConnectionType(net::NetworkChangeNotifier::CONNECTION_WIFI);
+    ChangeConnectionType(network::mojom::ConnectionType::CONNECTION_WIFI);
   }
 
-  // Sets up FakeNetworkChangeNotifier as if it's connected to cellular network.
+  // Sets up TestNetworkConnectionTracker as if it's connected to cellular
+  // network.
   void ConnectToCellular() {
-    ChangeConnectionType(net::NetworkChangeNotifier::CONNECTION_2G);
+    ChangeConnectionType(network::mojom::ConnectionType::CONNECTION_2G);
   }
 
-  // Sets up FakeNetworkChangeNotifier as if it's connected to wimax network.
+  // Sets up TestNetworkConnectionTracker as if it's connected to wimax network.
   void ConnectToWimax() {
-    ChangeConnectionType(net::NetworkChangeNotifier::CONNECTION_4G);
+    ChangeConnectionType(network::mojom::ConnectionType::CONNECTION_4G);
   }
 
-  // Sets up FakeNetworkChangeNotifier as if it's disconnected.
+  // Sets up TestNetworkConnectionTracker as if it's disconnected.
   void ConnectToNone() {
-    ChangeConnectionType(net::NetworkChangeNotifier::CONNECTION_NONE);
+    ChangeConnectionType(network::mojom::ConnectionType::CONNECTION_NONE);
   }
 
   static int GetMetadataQueueMaxJobCount() {
@@ -188,8 +193,6 @@ class JobSchedulerTest : public testing::Test {
 
   content::TestBrowserThreadBundle thread_bundle_;
   std::unique_ptr<TestingPrefServiceSimple> pref_service_;
-  std::unique_ptr<test_util::FakeNetworkChangeNotifier>
-      fake_network_change_notifier_;
   std::unique_ptr<EventLogger> logger_;
   std::unique_ptr<CancelTestableFakeDriveService> fake_drive_service_;
   std::unique_ptr<JobScheduler> scheduler_;
@@ -208,18 +211,34 @@ TEST_F(JobSchedulerTest, GetAboutResource) {
   ASSERT_TRUE(about_resource);
 }
 
-TEST_F(JobSchedulerTest, GetAppList) {
+TEST_F(JobSchedulerTest, GetStartPageToken) {
   ConnectToWifi();
 
   google_apis::DriveApiErrorCode error = google_apis::DRIVE_OTHER_ERROR;
-  std::unique_ptr<google_apis::AppList> app_list;
+  std::unique_ptr<google_apis::StartPageToken> start_page_token;
+  scheduler_->GetStartPageToken(
+      util::kTeamDriveIdDefaultCorpus,
+      google_apis::test_util::CreateCopyResultCallback(&error,
+                                                       &start_page_token));
+  base::RunLoop().RunUntilIdle();
+  ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
+  ASSERT_TRUE(start_page_token);
+}
 
-  scheduler_->GetAppList(
-      google_apis::test_util::CreateCopyResultCallback(&error, &app_list));
+TEST_F(JobSchedulerTest, GetAllTeamDriveList) {
+  ConnectToWifi();
+
+  fake_drive_service_->AddTeamDrive("TEAM_DRIVE_ID", "TEAM_DRIVE_NAME");
+  google_apis::DriveApiErrorCode error = google_apis::DRIVE_OTHER_ERROR;
+  std::unique_ptr<google_apis::TeamDriveList> team_drive_list;
+
+  scheduler_->GetAllTeamDriveList(
+      google_apis::test_util::CreateCopyResultCallback(&error,
+                                                       &team_drive_list));
   base::RunLoop().RunUntilIdle();
 
   ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
-  ASSERT_TRUE(app_list);
+  ASSERT_TRUE(team_drive_list);
 }
 
 TEST_F(JobSchedulerTest, GetAllFileList) {
@@ -229,6 +248,7 @@ TEST_F(JobSchedulerTest, GetAllFileList) {
   std::unique_ptr<google_apis::FileList> file_list;
 
   scheduler_->GetAllFileList(
+      util::kTeamDriveIdDefaultCorpus,
       google_apis::test_util::CreateCopyResultCallback(&error, &file_list));
   base::RunLoop().RunUntilIdle();
 
@@ -296,6 +316,38 @@ TEST_F(JobSchedulerTest, GetChangeList) {
   ASSERT_TRUE(change_list);
 }
 
+TEST_F(JobSchedulerTest, GetChangeListWithStartToken) {
+  ConnectToWifi();
+
+  // TODO(slangley): Find the start page token from the fake drive service
+  const std::string& start_page_token =
+      fake_drive_service_->start_page_token().start_page_token();
+
+  const std::string team_drive_id;  // Empty means users default corpus
+  google_apis::DriveApiErrorCode error = google_apis::DRIVE_OTHER_ERROR;
+
+  // Create a new directory.
+  {
+    std::unique_ptr<google_apis::FileResource> entry;
+    fake_drive_service_->AddNewDirectory(
+        fake_drive_service_->GetRootResourceId(), "new directory",
+        AddNewDirectoryOptions(),
+        google_apis::test_util::CreateCopyResultCallback(&error, &entry));
+    base::RunLoop().RunUntilIdle();
+    ASSERT_EQ(google_apis::HTTP_CREATED, error);
+  }
+
+  error = google_apis::DRIVE_OTHER_ERROR;
+  std::unique_ptr<google_apis::ChangeList> change_list;
+  scheduler_->GetChangeList(
+      team_drive_id, start_page_token,
+      google_apis::test_util::CreateCopyResultCallback(&error, &change_list));
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
+  ASSERT_TRUE(change_list);
+}
+
 TEST_F(JobSchedulerTest, GetRemainingChangeList) {
   ConnectToWifi();
   fake_drive_service_->set_default_max_results(2);
@@ -324,6 +376,39 @@ TEST_F(JobSchedulerTest, GetRemainingChangeList) {
 
   ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
   ASSERT_TRUE(change_list);
+}
+
+TEST_F(JobSchedulerTest, GetRemainingTeamDriveList) {
+  ConnectToWifi();
+  fake_drive_service_->set_default_max_results(2);
+  fake_drive_service_->AddTeamDrive("TEAM_DRIVE_ID_1", "TEAM_DRIVE_NAME 1");
+  fake_drive_service_->AddTeamDrive("TEAM_DRIVE_ID_2", "TEAM_DRIVE_NAME 2");
+  fake_drive_service_->AddTeamDrive("TEAM_DRIVE_ID_3", "TEAM_DRIVE_NAME 3");
+
+  google_apis::DriveApiErrorCode error = google_apis::DRIVE_OTHER_ERROR;
+  std::unique_ptr<google_apis::TeamDriveList> team_drive_list;
+
+  scheduler_->GetAllTeamDriveList(
+      google_apis::test_util::CreateCopyResultCallback(&error,
+                                                       &team_drive_list));
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
+  ASSERT_TRUE(team_drive_list);
+
+  // Keep the next page_token before releasing the |file_list|.
+  std::string next_page_token(team_drive_list->next_page_token());
+
+  error = google_apis::DRIVE_OTHER_ERROR;
+  team_drive_list.reset();
+
+  scheduler_->GetRemainingTeamDriveList(
+      next_page_token, google_apis::test_util::CreateCopyResultCallback(
+                           &error, &team_drive_list));
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
+  ASSERT_TRUE(team_drive_list);
 }
 
 TEST_F(JobSchedulerTest, GetRemainingFileList) {
@@ -370,23 +455,6 @@ TEST_F(JobSchedulerTest, GetFileResource) {
 
   ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
   ASSERT_TRUE(entry);
-}
-
-TEST_F(JobSchedulerTest, GetShareUrl) {
-  ConnectToWifi();
-
-  google_apis::DriveApiErrorCode error = google_apis::DRIVE_OTHER_ERROR;
-  GURL share_url;
-
-  scheduler_->GetShareUrl(
-      "2_file_resource_id",  // resource ID
-      GURL("chrome-extension://test-id/"), // embed origin
-      ClientContext(USER_INITIATED),
-      google_apis::test_util::CreateCopyResultCallback(&error, &share_url));
-  base::RunLoop().RunUntilIdle();
-
-  ASSERT_EQ(google_apis::HTTP_SUCCESS, error);
-  ASSERT_FALSE(share_url.is_empty());
 }
 
 TEST_F(JobSchedulerTest, TrashResource) {
@@ -584,7 +652,7 @@ TEST_F(JobSchedulerTest, DownloadFileCellularDisabled) {
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
   const base::FilePath kOutputFilePath =
-      temp_dir.path().AppendASCII("whatever.txt");
+      temp_dir.GetPath().AppendASCII("whatever.txt");
   google_apis::DriveApiErrorCode download_error =
       google_apis::DRIVE_OTHER_ERROR;
   base::FilePath output_file_path;
@@ -639,7 +707,7 @@ TEST_F(JobSchedulerTest, DownloadFileWimaxDisabled) {
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
   const base::FilePath kOutputFilePath =
-      temp_dir.path().AppendASCII("whatever.txt");
+      temp_dir.GetPath().AppendASCII("whatever.txt");
   google_apis::DriveApiErrorCode download_error =
       google_apis::DRIVE_OTHER_ERROR;
   base::FilePath output_file_path;
@@ -694,7 +762,7 @@ TEST_F(JobSchedulerTest, DownloadFileCellularEnabled) {
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
   const base::FilePath kOutputFilePath =
-      temp_dir.path().AppendASCII("whatever.txt");
+      temp_dir.GetPath().AppendASCII("whatever.txt");
   google_apis::DriveApiErrorCode download_error =
       google_apis::DRIVE_OTHER_ERROR;
   base::FilePath output_file_path;
@@ -741,7 +809,7 @@ TEST_F(JobSchedulerTest, DownloadFileWimaxEnabled) {
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
   const base::FilePath kOutputFilePath =
-      temp_dir.path().AppendASCII("whatever.txt");
+      temp_dir.GetPath().AppendASCII("whatever.txt");
   google_apis::DriveApiErrorCode download_error =
       google_apis::DRIVE_OTHER_ERROR;
   base::FilePath output_file_path;
@@ -814,10 +882,8 @@ TEST_F(JobSchedulerTest, JobInfo) {
   expected_types.insert(TYPE_DOWNLOAD_FILE);
   scheduler_->DownloadFile(
       base::FilePath::FromUTF8Unsafe("drive/whatever.txt"),  // virtual path
-      kDummyDownloadFileSize,
-      temp_dir.path().AppendASCII("whatever.txt"),
-      "2_file_resource_id",
-      ClientContext(BACKGROUND),
+      kDummyDownloadFileSize, temp_dir.GetPath().AppendASCII("whatever.txt"),
+      "2_file_resource_id", ClientContext(BACKGROUND),
       google_apis::test_util::CreateCopyResultCallback(&error, &path),
       google_apis::GetContentCallback());
 
@@ -911,10 +977,8 @@ TEST_F(JobSchedulerTest, JobInfoProgress) {
   // Download job.
   scheduler_->DownloadFile(
       base::FilePath::FromUTF8Unsafe("drive/whatever.txt"),  // virtual path
-      kDummyDownloadFileSize,
-      temp_dir.path().AppendASCII("whatever.txt"),
-      "2_file_resource_id",
-      ClientContext(BACKGROUND),
+      kDummyDownloadFileSize, temp_dir.GetPath().AppendASCII("whatever.txt"),
+      "2_file_resource_id", ClientContext(BACKGROUND),
       google_apis::test_util::CreateCopyResultCallback(&error, &path),
       google_apis::GetContentCallback());
   base::RunLoop().RunUntilIdle();
@@ -927,14 +991,14 @@ TEST_F(JobSchedulerTest, JobInfoProgress) {
   EXPECT_LE(download_progress.back(), 26);
 
   // Upload job.
-  path = temp_dir.path().AppendASCII("new_file.txt");
-  ASSERT_TRUE(google_apis::test_util::WriteStringToFile(path, "Hello"));
+  path = temp_dir.GetPath().AppendASCII("new_file.txt");
+  ASSERT_TRUE(google_apis::test_util::WriteStringToFile(path, kHello));
   google_apis::DriveApiErrorCode upload_error =
       google_apis::DRIVE_OTHER_ERROR;
   std::unique_ptr<google_apis::FileResource> entry;
 
   scheduler_->UploadNewFile(
-      fake_drive_service_->GetRootResourceId(), std::string("Hello").size(),
+      fake_drive_service_->GetRootResourceId(), kHelloLen,
       base::FilePath::FromUTF8Unsafe("drive/new_file.txt"), path, "dummy title",
       "plain/plain", UploadNewFileOptions(), ClientContext(BACKGROUND),
       google_apis::test_util::CreateCopyResultCallback(&upload_error, &entry));
@@ -951,8 +1015,8 @@ TEST_F(JobSchedulerTest, JobInfoProgress) {
 TEST_F(JobSchedulerTest, CancelPendingJob) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  base::FilePath upload_path = temp_dir.path().AppendASCII("new_file.txt");
-  ASSERT_TRUE(google_apis::test_util::WriteStringToFile(upload_path, "Hello"));
+  base::FilePath upload_path = temp_dir.GetPath().AppendASCII("new_file.txt");
+  ASSERT_TRUE(google_apis::test_util::WriteStringToFile(upload_path, kHello));
 
   // To create a pending job for testing, set the mode to cellular connection
   // and issue BACKGROUND jobs.
@@ -963,7 +1027,7 @@ TEST_F(JobSchedulerTest, CancelPendingJob) {
   google_apis::DriveApiErrorCode error1 = google_apis::DRIVE_OTHER_ERROR;
   std::unique_ptr<google_apis::FileResource> entry;
   scheduler_->UploadNewFile(
-      fake_drive_service_->GetRootResourceId(), std::string("Hello").size(),
+      fake_drive_service_->GetRootResourceId(), kHelloLen,
       base::FilePath::FromUTF8Unsafe("dummy/path"), upload_path,
       "dummy title 1", "text/plain", UploadNewFileOptions(),
       ClientContext(BACKGROUND),
@@ -977,7 +1041,7 @@ TEST_F(JobSchedulerTest, CancelPendingJob) {
   // Start the second job.
   google_apis::DriveApiErrorCode error2 = google_apis::DRIVE_OTHER_ERROR;
   scheduler_->UploadNewFile(
-      fake_drive_service_->GetRootResourceId(), std::string("Hello").size(),
+      fake_drive_service_->GetRootResourceId(), kHelloLen,
       base::FilePath::FromUTF8Unsafe("dummy/path"), upload_path,
       "dummy title 2", "text/plain", UploadNewFileOptions(),
       ClientContext(BACKGROUND),
@@ -999,15 +1063,15 @@ TEST_F(JobSchedulerTest, CancelRunningJob) {
 
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
-  base::FilePath upload_path = temp_dir.path().AppendASCII("new_file.txt");
-  ASSERT_TRUE(google_apis::test_util::WriteStringToFile(upload_path, "Hello"));
+  base::FilePath upload_path = temp_dir.GetPath().AppendASCII("new_file.txt");
+  ASSERT_TRUE(google_apis::test_util::WriteStringToFile(upload_path, kHello));
 
   // Run as a cancelable task.
   fake_drive_service_->set_upload_new_file_cancelable(true);
   google_apis::DriveApiErrorCode error1 = google_apis::DRIVE_OTHER_ERROR;
   std::unique_ptr<google_apis::FileResource> entry;
   scheduler_->UploadNewFile(
-      fake_drive_service_->GetRootResourceId(), std::string("Hello").size(),
+      fake_drive_service_->GetRootResourceId(), kHelloLen,
       base::FilePath::FromUTF8Unsafe("dummy/path"), upload_path,
       "dummy title 1", "text/plain", UploadNewFileOptions(),
       ClientContext(USER_INITIATED),
@@ -1022,7 +1086,7 @@ TEST_F(JobSchedulerTest, CancelRunningJob) {
   fake_drive_service_->set_upload_new_file_cancelable(false);
   google_apis::DriveApiErrorCode error2 = google_apis::DRIVE_OTHER_ERROR;
   scheduler_->UploadNewFile(
-      fake_drive_service_->GetRootResourceId(), std::string("Hello").size(),
+      fake_drive_service_->GetRootResourceId(), kHelloLen,
       base::FilePath::FromUTF8Unsafe("dummy/path"), upload_path,
       "dummy title 2", "text/plain", UploadNewFileOptions(),
       ClientContext(USER_INITIATED),

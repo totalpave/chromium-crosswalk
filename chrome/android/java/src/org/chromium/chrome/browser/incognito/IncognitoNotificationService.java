@@ -16,28 +16,22 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.text.TextUtils;
-import android.util.Pair;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.VisibleForTesting;
-import org.chromium.chrome.browser.ChromeApplication;
+import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.TabState;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.document.DocumentUtils;
-import org.chromium.chrome.browser.tabmodel.TabPersistentStore;
-import org.chromium.chrome.browser.tabmodel.TabWindowManager;
-import org.chromium.chrome.browser.util.FeatureUtilities;
+import org.chromium.chrome.browser.notifications.PendingIntentProvider;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.content_public.browser.BrowserStartupController;
 
-import java.io.File;
-import java.lang.ref.WeakReference;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Callable;
 
 /**
  * Service that handles the action of clicking on the incognito notification.
@@ -50,10 +44,11 @@ public class IncognitoNotificationService extends IntentService {
             "com.google.android.apps.chrome.incognito.CLOSE_ALL_INCOGNITO";
 
     @VisibleForTesting
-    public static PendingIntent getRemoveAllIncognitoTabsIntent(Context context) {
+    public static PendingIntentProvider getRemoveAllIncognitoTabsIntent(Context context) {
         Intent intent = new Intent(context, IncognitoNotificationService.class);
         intent.setAction(ACTION_CLOSE_ALL_INCOGNITO);
-        return PendingIntent.getService(context, 0, intent, PendingIntent.FLAG_ONE_SHOT);
+        return PendingIntentProvider.getService(
+                context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
     /** Empty public constructor needed by Android. */
@@ -63,55 +58,35 @@ public class IncognitoNotificationService extends IntentService {
 
     @Override
     protected void onHandleIntent(Intent intent) {
-        boolean isDocumentMode = ThreadUtils.runOnUiThreadBlockingNoException(
-                new Callable<Boolean>() {
-                    @Override
-                    public Boolean call() throws Exception {
-                        return FeatureUtilities.isDocumentMode(IncognitoNotificationService.this);
-                    }
-                });
+        ThreadUtils.runOnUiThreadBlocking(IncognitoUtils::closeAllIncognitoTabs);
 
-        boolean clearedIncognito = true;
-        if (isDocumentMode) {
-            // TODO(dfalcantara): Delete this when document mode goes away.
-            ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-                @Override
-                public void run() {
-                    ChromeApplication.getDocumentTabModelSelector().getModel(true).closeAllTabs();
-                }
-            });
-        } else {
-            closeIncognitoTabsInRunningTabbedActivities();
-
-            clearedIncognito = deleteIncognitoStateFilesInDirectory(
-                    TabPersistentStore.getOrCreateStateDirectory());
-        }
+        boolean clearedIncognito = IncognitoUtils.deleteIncognitoStateFiles();
 
         // If we failed clearing all of the incognito tabs, then do not dismiss the notification.
         if (!clearedIncognito) return;
 
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                int incognitoCount = TabWindowManager.getInstance().getIncognitoTabCount();
-                assert incognitoCount == 0;
+        ThreadUtils.runOnUiThreadBlocking(() -> {
+            if (IncognitoUtils.doIncognitoTabsExist()) {
+                assert false : "Not all incognito tabs closed as expected";
+                return;
+            }
+            IncognitoNotificationManager.dismissIncognitoNotification();
 
-                if (incognitoCount == 0) {
-                    IncognitoNotificationManager.dismissIncognitoNotification();
+            if (BrowserStartupController.get(LibraryProcessType.PROCESS_BROWSER)
+                            .isStartupSuccessfullyCompleted()) {
+                if (Profile.getLastUsedProfile().hasOffTheRecordProfile()) {
+                    Profile.getLastUsedProfile().getOffTheRecordProfile().destroyWhenAppropriate();
                 }
             }
         });
 
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                // Now ensure that the snapshots in recents are all cleared for Tabbed activities
-                // to remove any trace of incognito mode.
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-                    focusChromeIfNecessary();
-                } else {
-                    removeNonVisibleChromeTabbedRecentEntries();
-                }
+        ThreadUtils.runOnUiThreadBlocking(() -> {
+            // Now ensure that the snapshots in recents are all cleared for Tabbed activities
+            // to remove any trace of incognito mode.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+                focusChromeIfNecessary();
+            } else {
+                removeNonVisibleChromeTabbedRecentEntries();
             }
         });
     }
@@ -120,12 +95,7 @@ public class IncognitoNotificationService extends IntentService {
         Set<Integer> visibleTaskIds = getTaskIdsForVisibleActivities();
         int tabbedTaskId = -1;
 
-        List<WeakReference<Activity>> runningActivities =
-                ApplicationStatus.getRunningActivities();
-        for (int i = 0; i < runningActivities.size(); i++) {
-            Activity activity = runningActivities.get(i).get();
-            if (activity == null) continue;
-
+        for (Activity activity : ApplicationStatus.getRunningActivities()) {
             if (activity instanceof ChromeTabbedActivity) {
                 tabbedTaskId = activity.getTaskId();
                 break;
@@ -155,13 +125,13 @@ public class IncognitoNotificationService extends IntentService {
         for (AppTask task : manager.getAppTasks()) {
             RecentTaskInfo info = DocumentUtils.getTaskInfoFromTask(task);
             if (info == null) continue;
-            String className = DocumentUtils.getTaskClassName(task, pm);
+            String componentName = DocumentUtils.getTaskComponentName(task, pm);
 
             // It is not easily possible to distinguish between tasks sitting on top of
             // ChromeLauncherActivity, so we treat them all as likely ChromeTabbedActivities and
             // close them to be on the cautious side of things.
-            if ((TextUtils.equals(className, ChromeTabbedActivity.class.getName())
-                    || TextUtils.equals(className, ChromeLauncherActivity.class.getName()))
+            if ((ChromeTabbedActivity.isTabbedModeComponentName(componentName)
+                        || TextUtils.equals(componentName, ChromeLauncherActivity.class.getName()))
                     && !visibleTaskIds.contains(info.id)) {
                 task.finishAndRemoveTask();
             }
@@ -169,13 +139,8 @@ public class IncognitoNotificationService extends IntentService {
     }
 
     private Set<Integer> getTaskIdsForVisibleActivities() {
-        List<WeakReference<Activity>> runningActivities =
-                ApplicationStatus.getRunningActivities();
         Set<Integer> visibleTaskIds = new HashSet<>();
-        for (int i = 0; i < runningActivities.size(); i++) {
-            Activity activity = runningActivities.get(i).get();
-            if (activity == null) continue;
-
+        for (Activity activity : ApplicationStatus.getRunningActivities()) {
             int activityState = ApplicationStatus.getStateForActivity(activity);
             if (activityState != ActivityState.STOPPED
                     && activityState != ActivityState.DESTROYED) {
@@ -184,49 +149,4 @@ public class IncognitoNotificationService extends IntentService {
         }
         return visibleTaskIds;
     }
-
-    /**
-     * Iterate across the running activities and for any running tabbed mode activities close their
-     * incognito tabs.
-     *
-     * @see TabWindowManager#getIndexForWindow(Activity)
-     */
-    private void closeIncognitoTabsInRunningTabbedActivities() {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                List<WeakReference<Activity>> runningActivities =
-                        ApplicationStatus.getRunningActivities();
-                for (int i = 0; i < runningActivities.size(); i++) {
-                    Activity activity = runningActivities.get(i).get();
-                    if (activity == null) continue;
-                    if (!(activity instanceof ChromeTabbedActivity)) continue;
-
-                    ChromeTabbedActivity tabbedActivity = (ChromeTabbedActivity) activity;
-                    if (tabbedActivity.isActivityDestroyed()) continue;
-
-                    tabbedActivity.getTabModelSelector().getModel(true).closeAllTabs(
-                            false, false);
-                }
-            }
-        });
-    }
-
-    /**
-     * @return Whether deleting all the incognito files was successful.
-     */
-    private boolean deleteIncognitoStateFilesInDirectory(File directory) {
-        File[] allTabStates = directory.listFiles();
-        if (allTabStates == null) return true;
-
-        boolean deletionSuccessful = true;
-        for (int i = 0; i < allTabStates.length; i++) {
-            String fileName = allTabStates[i].getName();
-            Pair<Integer, Boolean> tabInfo = TabState.parseInfoFromFilename(fileName);
-            if (tabInfo == null || !tabInfo.second) continue;
-            deletionSuccessful &= allTabStates[i].delete();
-        }
-        return deletionSuccessful;
-    }
-
 }

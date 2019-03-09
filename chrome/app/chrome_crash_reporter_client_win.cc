@@ -6,176 +6,26 @@
 // Add test coverage for Crashpad.
 #include "chrome/app/chrome_crash_reporter_client_win.h"
 
-#include <assert.h>
 #include <windows.h>
+
+#include <assert.h>
 #include <shellapi.h>
+
+#include <iterator>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/command_line.h"
-#include "base/debug/crash_logging.h"
 #include "base/debug/leak_annotations.h"
+#include "base/files/file_path.h"
 #include "base/format_macros.h"
+#include "base/rand_util.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "chrome/install_static/install_util.h"
+#include "chrome/install_static/user_data_dir.h"
 #include "components/crash/content/app/crashpad.h"
-#include "components/crash/core/common/crash_keys.h"
-
-namespace {
-
-// TODO(ananta)
-// When the new crash key map implementation lands, we should remove the
-// constants defined below, the RegisterCrashKeysHelper function, the
-// RegisterCrashKeys function in the crash_keys::CrashReporterClient interface
-// and the snprintf function defined here.
-constexpr char kActiveURL[] = "url-chunk";
-constexpr char kFontKeyName[] = "font_key_name";
-
-// Installed extensions. |kExtensionID| should be formatted with an integer,
-// in the range [0, kExtensionIDMaxCount).
-constexpr char kNumExtensionsCount[] = "num-extensions";
-constexpr size_t kExtensionIDMaxCount = 10;
-constexpr char kExtensionID[] = "extension-%" PRIuS;
-
-constexpr char kShutdownType[] = "shutdown-type";
-
-constexpr char kGPUVendorID[] = "gpu-venid";
-constexpr char kGPUDeviceID[] = "gpu-devid";
-constexpr char kGPUDriverVersion[] = "gpu-driver";
-constexpr char kGPUPixelShaderVersion[] = "gpu-psver";
-constexpr char kGPUVertexShaderVersion[] = "gpu-vsver";
-
-constexpr char kHungAudioThreadDetails[] = "hung-audio-thread-details";
-
-constexpr char kViewCount[] = "view-count";
-constexpr char kZeroEncodeDetails[] = "zero-encode-details";
-
-// The user's printers, up to kPrinterInfoCount. Should be set with
-// ScopedPrinterInfo.
-constexpr size_t kPrinterInfoCount = 4;
-constexpr char kPrinterInfo[] = "prn-info-%" PRIuS;
-
-using namespace crash_keys;
-
-int snprintf(char* buffer,
-             size_t size,
-             _Printf_format_string_ const char* format,
-             ...) {
-  va_list arguments;
-  va_start(arguments, format);
-  int result = vsnprintf(buffer, size, format, arguments);
-  va_end(arguments);
-  return result;
-}
-
-size_t RegisterCrashKeysHelper() {
-  // The following keys may be chunked by the underlying crash logging system,
-  // but ultimately constitute a single key-value pair.
-  //
-  // If you're adding keys here, please also add them to the list in
-  // //blimp/engine/app/blimp_engine_crash_keys.cc
-  constexpr base::debug::CrashKey fixed_keys[] = {
-      {kMetricsClientId, kSmallSize},
-      {kChannel, kSmallSize},
-      {kActiveURL, kLargeSize},
-      {kNumVariations, kSmallSize},
-      {kVariations, kLargeSize},
-      {kNumExtensionsCount, kSmallSize},
-      {kShutdownType, kSmallSize},
-      {kGPUVendorID, kSmallSize},
-      {kGPUDeviceID, kSmallSize},
-      {kGPUDriverVersion, kSmallSize},
-      {kGPUPixelShaderVersion, kSmallSize},
-      {kGPUVertexShaderVersion, kSmallSize},
-
-      // content/:
-      {"discardable-memory-allocated", kSmallSize},
-      {"discardable-memory-free", kSmallSize},
-      {kFontKeyName, kSmallSize},
-      {"ppapi_path", kMediumSize},
-      {"subresource_url", kLargeSize},
-      {"total-discardable-memory-allocated", kSmallSize},
-      {kBug464926CrashKey, kSmallSize},
-      {kViewCount, kSmallSize},
-
-      // media/:
-      {kHungAudioThreadDetails, kSmallSize},
-      {kZeroEncodeDetails, kSmallSize},
-
-      // Temporary for http://crbug.com/575245.
-      {"swapout_frame_id", kSmallSize},
-      {"swapout_proxy_id", kSmallSize},
-      {"swapout_view_id", kSmallSize},
-      {"commit_frame_id", kSmallSize},
-      {"commit_proxy_id", kSmallSize},
-      {"commit_view_id", kSmallSize},
-      {"commit_main_render_frame_id", kSmallSize},
-      {"newproxy_proxy_id", kSmallSize},
-      {"newproxy_view_id", kSmallSize},
-      {"newproxy_opener_id", kSmallSize},
-      {"newproxy_parent_id", kSmallSize},
-      {"rvinit_view_id", kSmallSize},
-      {"rvinit_proxy_id", kSmallSize},
-      {"rvinit_main_frame_id", kSmallSize},
-      {"initrf_frame_id", kSmallSize},
-      {"initrf_proxy_id", kSmallSize},
-      {"initrf_view_id", kSmallSize},
-      {"initrf_main_frame_id", kSmallSize},
-      {"initrf_view_is_live", kSmallSize},
-
-      // Temporary for https://crbug.com/591478.
-      {"initrf_parent_proxy_exists", kSmallSize},
-      {"initrf_render_view_is_live", kSmallSize},
-      {"initrf_parent_is_in_same_site_instance", kSmallSize},
-      {"initrf_parent_process_is_live", kSmallSize},
-      {"initrf_root_is_in_same_site_instance", kSmallSize},
-      {"initrf_root_is_in_same_site_instance_as_parent", kSmallSize},
-      {"initrf_root_process_is_live", kSmallSize},
-      {"initrf_root_proxy_is_live", kSmallSize},
-
-      // Temporary for https://crbug.com/612711.
-      {"aci_wrong_sp_extension_id", kSmallSize},
-
-      // Temporary for https://crbug.com/616149.
-      {"existing_extension_pref_value_type", crash_keys::kSmallSize},
-  };
-
-  // This dynamic set of keys is used for sets of key value pairs when gathering
-  // a collection of data, like command line switches or extension IDs.
-  std::vector<base::debug::CrashKey> keys(fixed_keys,
-                                          fixed_keys + arraysize(fixed_keys));
-
-  crash_keys::GetCrashKeysForCommandLineSwitches(&keys);
-
-  // Register the extension IDs.
-  {
-    static char formatted_keys[kExtensionIDMaxCount]
-                              [sizeof(kExtensionID) + 1] = {{0}};
-    const size_t formatted_key_len = sizeof(formatted_keys[0]);
-    for (size_t i = 0; i < kExtensionIDMaxCount; ++i) {
-      snprintf(formatted_keys[i], formatted_key_len, kExtensionID, i + 1);
-      base::debug::CrashKey crash_key = {formatted_keys[i], kSmallSize};
-      keys.push_back(crash_key);
-    }
-  }
-
-  // Register the printer info.
-  {
-    static char formatted_keys[kPrinterInfoCount]
-                              [sizeof(kPrinterInfo) + 1] = {{0}};
-    const size_t formatted_key_len = sizeof(formatted_keys[0]);
-    for (size_t i = 0; i < kPrinterInfoCount; ++i) {
-      // Key names are 1-indexed.
-      snprintf(formatted_keys[i], formatted_key_len, kPrinterInfo, i + 1);
-      base::debug::CrashKey crash_key = {formatted_keys[i], kSmallSize};
-      keys.push_back(crash_key);
-    }
-  }
-
-  return base::debug::InitCrashKeys(&keys[0], keys.size(), kChunkMaxLength);
-}
-
-}  // namespace
+#include "components/version_info/channel.h"
 
 ChromeCrashReporterClient::ChromeCrashReporterClient() {}
 
@@ -191,15 +41,24 @@ void ChromeCrashReporterClient::InitializeCrashReportingForProcess() {
   instance = new ChromeCrashReporterClient();
   ANNOTATE_LEAKING_OBJECT_PTR(instance);
 
-  std::string process_type = install_static::GetSwitchValueFromCommandLine(
-      ::GetCommandLineA(), install_static::kProcessType);
-  if (process_type != install_static::kCrashpadHandler) {
+  std::wstring process_type = install_static::GetSwitchValueFromCommandLine(
+      ::GetCommandLine(), install_static::kProcessType);
+  // Don't set up Crashpad crash reporting in the Crashpad handler itself, nor
+  // in the fallback crash handler for the Crashpad handler process.
+  if (process_type != install_static::kCrashpadHandler &&
+      process_type != install_static::kFallbackHandler) {
     crash_reporter::SetCrashReporterClient(instance);
-    crash_reporter::InitializeCrashpadWithEmbeddedHandler(process_type.empty(),
-                                                          process_type);
+
+    std::wstring user_data_dir;
+    if (process_type.empty())
+      install_static::GetUserDataDirectory(&user_data_dir, nullptr);
+
+    crash_reporter::InitializeCrashpadWithEmbeddedHandler(
+        process_type.empty(), install_static::UTF16ToUTF8(process_type),
+        install_static::UTF16ToUTF8(user_data_dir), base::FilePath());
   }
 }
-#endif  // NACL_WIN64
+#endif  // !defined(NACL_WIN64)
 
 bool ChromeCrashReporterClient::GetAlternativeCrashDumpLocation(
     base::string16* crash_dir) {
@@ -266,23 +125,14 @@ bool ChromeCrashReporterClient::GetDeferredUploadsSupported(
   return false;
 }
 
-bool ChromeCrashReporterClient::GetIsPerUserInstall(
-    const base::string16& exe_path) {
-  return !install_static::IsSystemInstall(exe_path.c_str());
+bool ChromeCrashReporterClient::GetIsPerUserInstall() {
+  return !install_static::IsSystemInstall();
 }
 
-bool ChromeCrashReporterClient::GetShouldDumpLargerDumps(
-    bool is_per_user_install) {
-  base::string16 channel_name;
-  install_static::GetChromeChannelName(is_per_user_install,
-                                       false, // !add_modifier
-                                       &channel_name);
-  // Capture more detail in crash dumps for Beta, Dev, Canary channels and
-  // if channel is unknown (e.g. Chromium or developer builds).
-  return (channel_name == install_static::kChromeChannelBeta ||
-          channel_name == install_static::kChromeChannelDev ||
-          channel_name == install_static::kChromeChannelCanary ||
-          channel_name == install_static::kChromeChannelUnknown);
+bool ChromeCrashReporterClient::GetShouldDumpLargerDumps() {
+  // Capture larger dumps for Google Chrome beta, dev, and canary channels, and
+  // Chromium builds. The Google Chrome stable channel uses smaller dumps.
+  return install_static::GetChromeChannel() != version_info::Channel::STABLE;
 }
 
 int ChromeCrashReporterClient::GetResultCodeRespawnFailed() {
@@ -312,16 +162,14 @@ bool ChromeCrashReporterClient::GetCrashDumpLocation(
   if (GetAlternativeCrashDumpLocation(crash_dir))
     return true;
 
-  // TODO(scottmg): Consider supporting --user-data-dir. See
-  // https://crbug.com/565446.
-  return install_static::GetDefaultCrashDumpLocation(crash_dir);
+  *crash_dir = install_static::GetCrashDumpLocation();
+  return !crash_dir->empty();
 }
 
-// TODO(ananta)
-// This function should be removed when the new crash key map implementation
-// lands.
-size_t ChromeCrashReporterClient::RegisterCrashKeys() {
-  return RegisterCrashKeysHelper();
+bool ChromeCrashReporterClient::GetCrashMetricsLocation(
+    base::string16* metrics_dir) {
+  install_static::GetUserDataDirectory(metrics_dir, nullptr);
+  return !metrics_dir->empty();
 }
 
 bool ChromeCrashReporterClient::IsRunningUnattended() {
@@ -332,9 +180,41 @@ bool ChromeCrashReporterClient::GetCollectStatsConsent() {
   return install_static::GetCollectStatsConsent();
 }
 
+bool ChromeCrashReporterClient::GetCollectStatsInSample() {
+  return install_static::GetCollectStatsInSample();
+}
+
+bool ChromeCrashReporterClient::ShouldMonitorCrashHandlerExpensively() {
+  // The expensive mechanism dedicates a process to be crashpad_handler's own
+  // crashpad_handler. In Google Chrome, scale back on this in the more stable
+  // channels. There's a fallback crash handler that can catch crashes when this
+  // expensive mechanism isn't used, although the fallback crash handler has
+  // different characteristics so it's desirable to use the expensive mechanism
+  // at least some of the time.
+  double probability;
+  switch (install_static::GetChromeChannel()) {
+    case version_info::Channel::STABLE:
+      return false;
+
+    case version_info::Channel::BETA:
+      probability = 0.1;
+      break;
+
+    case version_info::Channel::DEV:
+      probability = 0.25;
+      break;
+
+    default:
+      probability = 0.5;
+      break;
+  }
+
+  return base::RandDouble() < probability;
+}
+
 bool ChromeCrashReporterClient::EnableBreakpadForProcess(
     const std::string& process_type) {
-  return process_type == install_static::kRendererProcess ||
-         process_type == install_static::kPpapiPluginProcess ||
-         process_type == install_static::kGpuProcess;
+  // This is not used by Crashpad (at least on Windows).
+  NOTREACHED();
+  return true;
 }

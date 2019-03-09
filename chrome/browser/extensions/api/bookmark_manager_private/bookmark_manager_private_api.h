@@ -16,6 +16,7 @@
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_node_data.h"
 #include "components/undo/bookmark_undo_service.h"
+#include "content/public/browser/web_contents_user_data.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
 
@@ -42,11 +43,6 @@ class BookmarkManagerPrivateEventRouter
   // bookmarks::BaseBookmarkModelObserver:
   void BookmarkModelChanged() override;
   void BookmarkModelBeingDeleted(bookmarks::BookmarkModel* model) override;
-  void OnWillChangeBookmarkMetaInfo(
-      bookmarks::BookmarkModel* model,
-      const bookmarks::BookmarkNode* node) override;
-  void BookmarkMetaInfoChanged(bookmarks::BookmarkModel* model,
-                               const bookmarks::BookmarkNode* node) override;
 
  private:
   // Helper to actually dispatch an event to extension listeners.
@@ -93,10 +89,12 @@ class BookmarkManagerPrivateAPI : public BrowserContextKeyedAPI,
 // Class that handles the drag and drop related chrome.bookmarkManagerPrivate
 // events. This class has one instance per bookmark manager tab.
 class BookmarkManagerPrivateDragEventRouter
-    : public BookmarkTabHelper::BookmarkDrag {
+    : public BookmarkTabHelper::BookmarkDrag,
+      public content::WebContentsUserData<
+          BookmarkManagerPrivateDragEventRouter> {
  public:
-  BookmarkManagerPrivateDragEventRouter(Profile* profile,
-                                        content::WebContents* web_contents);
+  explicit BookmarkManagerPrivateDragEventRouter(
+      content::WebContents* web_contents);
   ~BookmarkManagerPrivateDragEventRouter() override;
 
   // BookmarkTabHelper::BookmarkDrag interface
@@ -113,14 +111,18 @@ class BookmarkManagerPrivateDragEventRouter
   void ClearBookmarkNodeData();
 
  private:
+  friend class content::WebContentsUserData<
+      BookmarkManagerPrivateDragEventRouter>;
   // Helper to actually dispatch an event to extension listeners.
   void DispatchEvent(events::HistogramValue histogram_value,
                      const std::string& event_name,
                      std::unique_ptr<base::ListValue> args);
 
-  Profile* profile_;
   content::WebContents* web_contents_;
+  Profile* profile_;
   bookmarks::BookmarkNodeData bookmark_drag_data_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(BookmarkManagerPrivateDragEventRouter);
 };
@@ -171,19 +173,6 @@ class BookmarkManagerPrivatePasteFunction
   bool RunOnReady() override;
 };
 
-class BookmarkManagerPrivateCanPasteFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.canPaste",
-                             BOOKMARKMANAGERPRIVATE_CANPASTE)
-
- protected:
-  ~BookmarkManagerPrivateCanPasteFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
 class BookmarkManagerPrivateSortChildrenFunction
     : public extensions::BookmarksFunction {
  public:
@@ -195,19 +184,6 @@ class BookmarkManagerPrivateSortChildrenFunction
 
   // ExtensionFunction:
   bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateGetStringsFunction
-    : public UIThreadExtensionFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.getStrings",
-                             BOOKMARKMANAGERPRIVATE_GETSTRINGS)
-
- protected:
-  ~BookmarkManagerPrivateGetStringsFunction() override {}
-
-  // UIThreadExtensionFunction:
-  ResponseAction Run() override;
 };
 
 class BookmarkManagerPrivateStartDragFunction
@@ -249,97 +225,6 @@ class BookmarkManagerPrivateGetSubtreeFunction
   bool RunOnReady() override;
 };
 
-class BookmarkManagerPrivateCanEditFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.canEdit",
-                             BOOKMARKMANAGERPRIVATE_CANEDIT)
-
- protected:
-  ~BookmarkManagerPrivateCanEditFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateRecordLaunchFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.recordLaunch",
-                             BOOKMARKMANAGERPRIVATE_RECORDLAUNCH)
-
- protected:
-  ~BookmarkManagerPrivateRecordLaunchFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateCreateWithMetaInfoFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.createWithMetaInfo",
-                             BOOKMARKMANAGERPRIVATE_CREATEWITHMETAINFO)
-
- protected:
-  ~BookmarkManagerPrivateCreateWithMetaInfoFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateGetMetaInfoFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.getMetaInfo",
-                             BOOKMARKMANAGERPRIVATE_GETMETAINFO)
-
- protected:
-  ~BookmarkManagerPrivateGetMetaInfoFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateSetMetaInfoFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.setMetaInfo",
-                             BOOKMARKMANAGERPRIVATE_SETMETAINFO)
-
- protected:
-  ~BookmarkManagerPrivateSetMetaInfoFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateUpdateMetaInfoFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.updateMetaInfo",
-                             BOOKMARKMANAGERPRIVATE_UPDATEMETAINFO)
-
- protected:
-  ~BookmarkManagerPrivateUpdateMetaInfoFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateCanOpenNewWindowsFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.canOpenNewWindows",
-                             BOOKMARKMANAGERPRIVATE_CANOPENNEWWINDOWS)
-
- protected:
-  ~BookmarkManagerPrivateCanOpenNewWindowsFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
 class BookmarkManagerPrivateRemoveTreesFunction
     : public extensions::BookmarksFunction {
  public:
@@ -374,32 +259,6 @@ class BookmarkManagerPrivateRedoFunction
 
  protected:
   ~BookmarkManagerPrivateRedoFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateGetUndoInfoFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.getUndoInfo",
-                             BOOKMARKMANAGERPRIVATE_UNDOINFO)
-
- protected:
-  ~BookmarkManagerPrivateGetUndoInfoFunction() override {}
-
-  // ExtensionFunction:
-  bool RunOnReady() override;
-};
-
-class BookmarkManagerPrivateGetRedoInfoFunction
-    : public extensions::BookmarksFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("bookmarkManagerPrivate.getRedoInfo",
-                             BOOKMARKMANAGERPRIVATE_REDOINFO)
-
- protected:
-  ~BookmarkManagerPrivateGetRedoInfoFunction() override {}
 
   // ExtensionFunction:
   bool RunOnReady() override;

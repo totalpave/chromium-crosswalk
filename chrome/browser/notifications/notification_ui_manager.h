@@ -5,30 +5,35 @@
 #ifndef CHROME_BROWSER_NOTIFICATIONS_NOTIFICATION_UI_MANAGER_H_
 #define CHROME_BROWSER_NOTIFICATIONS_NOTIFICATION_UI_MANAGER_H_
 
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "base/macros.h"
+#include "chrome/browser/notifications/notification_common.h"
 
 typedef void* ProfileID;
 
 class GURL;
-class Notification;
-class PrefService;
 class Profile;
 
-// This virtual interface is used to manage the UI surfaces for desktop
-// notifications. There is just one instance for all profiles.
-// This represents the middle layer of notification and it's aware of profile.
-// It identifies a notification by the id string and a profile, hence two
-// notifications from two different profiles, even though they may have
-// identical ids, will not be considered the same notification.
-// This interface will generate a new id behind the scene based on the id string
-// and the profile's characteristics for each notification and use this new id
-// to call lower layer MessageCenter interface which is profile agnostic.
-// Therefore the ids passed into this interface are not the same as those passed
-// into the MessageCenter interface.
+namespace message_center {
+class Notification;
+}
+
+// This interface is used to manage the UI surfaces for non-native desktop
+// notifications (hence, this is not used by Chrome OS and is not used for
+// Windows Action Center notifications). There is just one instance for all
+// profiles. This represents the middle layer of notification and it's aware of
+// profile. It identifies a notification by the id string and a profile, hence
+// two notifications from two different profiles, even though they may have
+// identical ids, will not be considered the same notification. This interface
+// will generate a new id behind the scene based on the id string and the
+// profile's characteristics for each notification and use this new id to call
+// lower layer MessageCenter interface which is profile agnostic. Therefore the
+// ids passed into this interface are not the same as those passed into the
+// MessageCenter interface.
 class NotificationUIManager {
  public:
   // Convert a profile pointer into an opaque profile id, which can be safely
@@ -41,24 +46,25 @@ class NotificationUIManager {
   virtual ~NotificationUIManager() {}
 
   // Creates an initialized UI manager.
-  // TODO(dewittj): Remove the PrefService argument which is unused. See
-  // crbug.com/530376
-  static NotificationUIManager* Create(PrefService* local_state);
+  static std::unique_ptr<NotificationUIManager> Create();
 
-  // Adds a notification to be displayed. Virtual for unit test override.
-  virtual void Add(const Notification& notification, Profile* profile) = 0;
+  // Adds a notification to be displayed.
+  virtual void Add(const message_center::Notification& notification,
+                   Profile* profile) = 0;
 
-  // Updates an existing notification. If |update_progress_only|, assume
-  // only message and progress properties are updated.
-  virtual bool Update(const Notification& notification, Profile* profile) = 0;
+  // Updates the given notification, if it already exists.Returns true for
+  // update and false to report a no-op.
+  virtual bool Update(const message_center::Notification& notification,
+                      Profile* profile) = 0;
 
   // Returns the pointer to a notification if it match the supplied ID, either
   // currently displayed or in the queue.
   // This function can be bound for delayed execution, where a profile pointer
   // may not be valid. Hence caller needs to call the static GetProfileID(...)
   // function to turn a profile pointer into a profile id and pass that in.
-  virtual const Notification* FindById(const std::string& delegate_id,
-                                       ProfileID profile_id) const = 0;
+  virtual const message_center::Notification* FindById(
+      const std::string& delegate_id,
+      ProfileID profile_id) const = 0;
 
   // Removes any notifications matching the supplied ID, either currently
   // displayed or in the queue.  Returns true if anything was removed.
@@ -67,12 +73,6 @@ class NotificationUIManager {
   // function to turn a profile pointer into a profile id and pass that in.
   virtual bool CancelById(const std::string& delegate_id,
                           ProfileID profile_id) = 0;
-
-  // Returns the set of all delegate IDs for notifications from the passed
-  // |profile_id| and |source|.
-  virtual std::set<std::string> GetAllIdsByProfileAndSourceOrigin(
-      ProfileID profile_id,
-      const GURL& source) = 0;
 
   // Returns the set of all delegate IDs for notifications from |profile_id|.
   virtual std::set<std::string> GetAllIdsByProfile(ProfileID profile_id) = 0;
@@ -88,6 +88,11 @@ class NotificationUIManager {
   // Cancels all pending notifications and closes anything currently showing.
   // Used when the app is terminating.
   virtual void CancelAll() = 0;
+
+  // Cancels all pending notifications and closes anything currently showing.
+  // After this is called, no new notifications can be added. Used when the app
+  // is terminating.
+  virtual void StartShutdown() = 0;
 
  protected:
   NotificationUIManager() {}

@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <utility>
 
+#include "extensions/renderer/dispatcher.h"
 #include "extensions/renderer/script_context.h"
+#include "extensions/renderer/worker_thread_util.h"
 
 namespace extensions {
 
-using ContextVector = ScopedVector<ScriptContext>;
+using ContextVector = std::vector<std::unique_ptr<ScriptContext>>;
 
 namespace {
 
@@ -19,11 +21,12 @@ namespace {
 // |contexts|, or |contexts|->end() if not found.
 ContextVector::iterator FindContext(ContextVector* contexts,
                                     v8::Local<v8::Context> v8_context) {
-  auto context_matches = [&v8_context](ScriptContext* context) {
-    v8::HandleScope handle_scope(context->isolate());
-    v8::Context::Scope context_scope(context->v8_context());
-    return context->v8_context() == v8_context;
-  };
+  auto context_matches =
+      [&v8_context](const std::unique_ptr<ScriptContext>& context) {
+        v8::HandleScope handle_scope(context->isolate());
+        v8::Context::Scope context_scope(context->v8_context());
+        return context->v8_context() == v8_context;
+      };
   return std::find_if(contexts->begin(), contexts->end(), context_matches);
 }
 
@@ -33,8 +36,23 @@ WorkerScriptContextSet::WorkerScriptContextSet() {}
 
 WorkerScriptContextSet::~WorkerScriptContextSet() {}
 
+void WorkerScriptContextSet::ForEach(
+    const std::string& extension_id,
+    content::RenderFrame* render_frame,
+    const base::RepeatingCallback<void(ScriptContext*)>& callback) {
+  DCHECK(!render_frame);
+  ContextVector* contexts = contexts_tls_.Get();
+  for (const std::unique_ptr<ScriptContext>& context : *contexts) {
+    DCHECK(!context->GetRenderFrame());
+    if (!extension_id.empty() && context->GetExtensionID() != extension_id)
+      continue;
+
+    callback.Run(context.get());
+  }
+}
+
 void WorkerScriptContextSet::Insert(std::unique_ptr<ScriptContext> context) {
-  DCHECK_GT(content::WorkerThread::GetCurrentId(), 0)
+  DCHECK(worker_thread_util::IsWorkerThread())
       << "Must be called on a worker thread";
   ContextVector* contexts = contexts_tls_.Get();
   if (!contexts) {
@@ -51,7 +69,7 @@ void WorkerScriptContextSet::Insert(std::unique_ptr<ScriptContext> context) {
 
 void WorkerScriptContextSet::Remove(v8::Local<v8::Context> v8_context,
                                     const GURL& url) {
-  DCHECK_GT(content::WorkerThread::GetCurrentId(), 0)
+  DCHECK(worker_thread_util::IsWorkerThread())
       << "Must be called on a worker thread";
   ContextVector* contexts = contexts_tls_.Get();
   if (!contexts) {
@@ -63,9 +81,8 @@ void WorkerScriptContextSet::Remove(v8::Local<v8::Context> v8_context,
   auto context_it = FindContext(contexts, v8_context);
   CHECK(context_it != contexts->end()) << "Worker for " << url
                                        << " is not in this set";
-  ScriptContext* context = *context_it;
-  DCHECK_EQ(url, context->url());
-  context->Invalidate();
+  DCHECK_EQ(url, (*context_it)->url());
+  (*context_it)->Invalidate();
   contexts->erase(context_it);
 }
 
@@ -73,7 +90,7 @@ void WorkerScriptContextSet::WillStopCurrentWorkerThread() {
   content::WorkerThread::RemoveObserver(this);
   ContextVector* contexts = contexts_tls_.Get();
   DCHECK(contexts);
-  for (ScriptContext* context : *contexts)
+  for (const auto& context : *contexts)
     context->Invalidate();
   contexts_tls_.Set(nullptr);
   delete contexts;

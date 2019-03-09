@@ -4,9 +4,11 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import android.support.annotation.Nullable;
+
 import org.chromium.base.VisibleForTesting;
+import org.chromium.chrome.browser.compositor.layouts.OverviewModeBehavior;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
 import org.chromium.content_public.browser.LoadUrlParams;
 
 import java.util.List;
@@ -42,6 +44,12 @@ public interface TabModelSelector {
     TabModel getModel(boolean incognito);
 
     /**
+     * Get the {@link TabModelFilterProvider} that provides {@link TabModelFilter}.
+     * @return  Never returns null. Returns a stub when real model is uninitialized.
+     */
+    TabModelFilterProvider getTabModelFilterProvider();
+
+    /**
      * @return a list for the underlying models
      */
     List<TabModel> getModels();
@@ -62,6 +70,7 @@ public interface TabModelSelector {
      * Convenience function to get the current tab on the current model
      * @return Current tab or null if none exists or if the model is not initialized.
      */
+    @Nullable
     Tab getCurrentTab();
 
     /**
@@ -98,7 +107,8 @@ public interface TabModelSelector {
      * @param incognito Whether to open the new tab in incognito mode.
      * @return The newly opened tab.
      */
-    Tab openNewTab(LoadUrlParams loadUrlParams, TabLaunchType type, Tab parent, boolean incognito);
+    Tab openNewTab(
+            LoadUrlParams loadUrlParams, @TabLaunchType int type, Tab parent, boolean incognito);
 
     /**
      * Searches through all children models for the specified Tab and closes the tab if it exists.
@@ -153,6 +163,13 @@ public interface TabModelSelector {
      * @param delegate The delegate to be used.
      */
     void setCloseAllTabsDelegate(CloseAllTabsDelegate delegate);
+
+    /**
+     * Sets the {@link OverviewModeBehavior} that should be used to determine
+     * when the app is in overview mode or not.
+     * @param overviewModeBehavior The {@link OverviewModeBehavior} to use.
+     */
+    void setOverviewModeBehavior(OverviewModeBehavior overviewModeBehavior);
 
     /**
      * @return Whether the tab state for this {@link TabModelSelector} has been initialized.

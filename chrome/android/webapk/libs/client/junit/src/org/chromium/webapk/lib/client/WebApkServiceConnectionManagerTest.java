@@ -4,25 +4,28 @@
 
 package org.chromium.webapk.lib.client;
 
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.ServiceConnection;
-
-import org.chromium.testing.local.CustomShadowAsyncTask;
-import org.chromium.testing.local.LocalRobolectricTestRunner;
-import org.chromium.webapk.lib.runtime_library.IWebApkApi;
+import android.os.IBinder;
 
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.Robolectric;
+import org.mockito.Mockito;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowApplication;
 
+import org.chromium.base.task.test.CustomShadowAsyncTask;
+import org.chromium.testing.local.LocalRobolectricTestRunner;
+
 /**
- * Unit tests for {@link org.chromium.libs.client.WebApkServiceConnectionManager}.
+ * Unit tests for {@link org.chromium.webapk.lib.client.WebApkServiceConnectionManager}.
  */
 @RunWith(LocalRobolectricTestRunner.class)
 @Config(manifest = Config.NONE, shadows = {CustomShadowAsyncTask.class})
@@ -30,22 +33,27 @@ public class WebApkServiceConnectionManagerTest {
 
     private static final String WEB_APK_PACKAGE = "com.webapk.package";
 
+    private static final String CATEGORY_WEBAPK_SERVICE_API = "android.intent.category.WEBAPK_API";
+
     private ShadowApplication mShadowApplication;
     private WebApkServiceConnectionManager mConnectionManager;
 
     private class TestCallback implements WebApkServiceConnectionManager.ConnectionCallback {
-        public boolean mGotResult = false;
+        public boolean mGotResult;
 
         @Override
-        public void onConnected(IWebApkApi api) {
+        public void onConnected(IBinder service) {
             mGotResult = true;
         }
     }
 
     @Before
     public void setUp() {
-        mShadowApplication = Robolectric.shadowOf(Robolectric.application);
-        mConnectionManager = new WebApkServiceConnectionManager();
+        mShadowApplication = Shadows.shadowOf(RuntimeEnvironment.application);
+        mConnectionManager =
+                new WebApkServiceConnectionManager(CATEGORY_WEBAPK_SERVICE_API, null /* action*/);
+        mShadowApplication.setComponentNameAndServiceForBindService(
+                new ComponentName(WEB_APK_PACKAGE, ""), Mockito.mock(IBinder.class));
     }
 
     /**
@@ -57,8 +65,8 @@ public class WebApkServiceConnectionManagerTest {
         TestCallback callback1 = new TestCallback();
         TestCallback callback2 = new TestCallback();
 
-        mConnectionManager.connect(Robolectric.application, WEB_APK_PACKAGE, callback1);
-        mConnectionManager.connect(Robolectric.application, WEB_APK_PACKAGE, callback2);
+        mConnectionManager.connect(RuntimeEnvironment.application, WEB_APK_PACKAGE, callback1);
+        mConnectionManager.connect(RuntimeEnvironment.application, WEB_APK_PACKAGE, callback2);
 
         // Only one connection should have been created.
         Assert.assertEquals(WEB_APK_PACKAGE, getNextStartedServicePackage());
@@ -94,7 +102,7 @@ public class WebApkServiceConnectionManagerTest {
             public Context getApplicationContext() {
                 // Need to return real context so that ContextUtils#fetchAppSharedPreferences() does
                 // not crash.
-                return Robolectric.application;
+                return RuntimeEnvironment.application;
             }
 
             // Create pending connection.
@@ -128,12 +136,14 @@ public class WebApkServiceConnectionManagerTest {
      */
     @Test
     public void testDisconnectConnect() throws Exception {
-        mConnectionManager.connect(Robolectric.application, WEB_APK_PACKAGE, new TestCallback());
+        mConnectionManager.connect(
+                RuntimeEnvironment.application, WEB_APK_PACKAGE, new TestCallback());
         Assert.assertEquals(WEB_APK_PACKAGE, getNextStartedServicePackage());
         Assert.assertEquals(null, getNextStartedServicePackage());
 
-        mConnectionManager.disconnect(Robolectric.application, WEB_APK_PACKAGE);
-        mConnectionManager.connect(Robolectric.application, WEB_APK_PACKAGE, new TestCallback());
+        mConnectionManager.disconnectAll(RuntimeEnvironment.application);
+        mConnectionManager.connect(
+                RuntimeEnvironment.application, WEB_APK_PACKAGE, new TestCallback());
         Assert.assertEquals(WEB_APK_PACKAGE, getNextStartedServicePackage());
         Assert.assertEquals(null, getNextStartedServicePackage());
     }

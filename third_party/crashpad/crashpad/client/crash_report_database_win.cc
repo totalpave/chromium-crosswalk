@@ -29,21 +29,23 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "client/settings.h"
+#include "util/misc/implicit_cast.h"
 #include "util/misc/initialization_state_dcheck.h"
+#include "util/misc/metrics.h"
 
 namespace crashpad {
 
 namespace {
 
-const wchar_t kReportsDirectory[] = L"reports";
-const wchar_t kMetadataFileName[] = L"metadata";
+constexpr wchar_t kReportsDirectory[] = L"reports";
+constexpr wchar_t kMetadataFileName[] = L"metadata";
 
-const wchar_t kSettings[] = L"settings.dat";
+constexpr wchar_t kSettings[] = L"settings.dat";
 
-const wchar_t kCrashReportFileExtension[] = L"dmp";
+constexpr wchar_t kCrashReportFileExtension[] = L"dmp";
 
-const uint32_t kMetadataFileHeaderMagic = 'CPAD';
-const uint32_t kMetadataFileVersion = 1;
+constexpr uint32_t kMetadataFileHeaderMagic = 'CPAD';
+constexpr uint32_t kMetadataFileVersion = 1;
 
 using OperationStatus = CrashReportDatabase::OperationStatus;
 
@@ -76,8 +78,8 @@ std::string ReadRestOfFileAsString(FileHandle file) {
   DCHECK_GT(end, read_from);
   size_t data_length = static_cast<size_t>(end - read_from);
   std::string buffer(data_length, '\0');
-  return LoggingReadFile(file, &buffer[0], data_length) ? buffer
-                                                        : std::string();
+  return LoggingReadFileExactly(file, &buffer[0], data_length) ? buffer
+                                                               : std::string();
 }
 
 // Helper structures, and conversions ------------------------------------------
@@ -103,6 +105,14 @@ enum class ReportState {
   kCompleted,
 };
 
+enum {
+  //! \brief Corresponds to uploaded bit of the report state.
+  kAttributeUploaded = 1 << 0,
+
+  //! \brief Corresponds to upload_explicity_requested bit of the report state.
+  kAttributeUploadExplicitlyRequested = 1 << 1,
+};
+
 struct MetadataFileReportRecord {
   // Note that this default constructor does no initialization. It is used only
   // to create an array of records that are immediately initialized by reading
@@ -121,7 +131,7 @@ struct MetadataFileReportRecord {
   int64_t last_upload_attempt_time;  // Holds a time_t.
   int32_t upload_attempts;
   int32_t state;  // A ReportState.
-  uint8_t uploaded;  // Boolean, 0 or 1.
+  uint8_t attributes;  // Bitfield of kAttribute*.
   uint8_t padding[7];
 };
 
@@ -151,7 +161,10 @@ MetadataFileReportRecord::MetadataFileReportRecord(const ReportDisk& report,
       last_upload_attempt_time(report.last_upload_attempt_time),
       upload_attempts(report.upload_attempts),
       state(static_cast<uint32_t>(report.state)),
-      uploaded(report.uploaded) {
+      attributes((report.uploaded ? kAttributeUploaded : 0) |
+                 (report.upload_explicitly_requested
+                      ? kAttributeUploadExplicitlyRequested
+                      : 0)) {
   memset(&padding, 0, sizeof(padding));
 }
 
@@ -164,10 +177,12 @@ ReportDisk::ReportDisk(const MetadataFileReportRecord& record,
       base::UTF8ToUTF16(&string_table[record.file_path_index]));
   id = &string_table[record.id_index];
   creation_time = record.creation_time;
-  uploaded = record.uploaded != 0;
   last_upload_attempt_time = record.last_upload_attempt_time;
   upload_attempts = record.upload_attempts;
   state = static_cast<ReportState>(record.state);
+  uploaded = (record.attributes & kAttributeUploaded) != 0;
+  upload_explicitly_requested =
+      (record.attributes & kAttributeUploadExplicitlyRequested) != 0;
 }
 
 ReportDisk::ReportDisk(const UUID& uuid,
@@ -228,8 +243,9 @@ class Metadata {
   //! written to disk via Write().
   //!
   //! \return #kNoError on success. #kReportNotFound if there was no report with
-  //!     the specified UUID. #kBusyError if the report was not in the specified
-  //!     state.
+  //!     the specified UUID, or if the report was not in the specified state
+  //!     and was not uploading. #kBusyError if the report was not in the
+  //!     specified state and was uploading.
   OperationStatus FindSingleReportAndMarkDirty(const UUID& uuid,
                                                ReportState desired_state,
                                                ReportDisk** report_disk);
@@ -403,7 +419,7 @@ void Metadata::Read() {
   }
 
   MetadataFileHeader header;
-  if (!LoggingReadFile(handle_.get(), &header, sizeof(header))) {
+  if (!LoggingReadFileExactly(handle_.get(), &header, sizeof(header))) {
     LOG(ERROR) << "failed to read header";
     return;
   }
@@ -424,7 +440,7 @@ void Metadata::Read() {
   std::vector<ReportDisk> reports;
   if (header.num_records > 0) {
     std::vector<MetadataFileReportRecord> records(header.num_records);
-    if (!LoggingReadFile(
+    if (!LoggingReadFileExactly(
             handle_.get(), &records[0], records_size.ValueOrDie())) {
       LOG(ERROR) << "failed to read records";
       return;
@@ -516,9 +532,13 @@ OperationStatus Metadata::VerifyReportAnyState(const ReportDisk& report_disk) {
 // static
 OperationStatus Metadata::VerifyReport(const ReportDisk& report_disk,
                                        ReportState desired_state) {
-  return (report_disk.state == desired_state)
-             ? VerifyReportAnyState(report_disk)
-             : CrashReportDatabase::kBusyError;
+  if (report_disk.state == desired_state) {
+    return VerifyReportAnyState(report_disk);
+  }
+
+  return report_disk.state == ReportState::kUploading
+             ? CrashReportDatabase::kBusyError
+             : CrashReportDatabase::kReportNotFound;
 }
 
 bool EnsureDirectory(const base::FilePath& path) {
@@ -552,6 +572,8 @@ bool CreateDirectoryIfNecessary(const base::FilePath& path) {
   return EnsureDirectory(path);
 }
 
+}  // namespace
+
 // CrashReportDatabaseWin ------------------------------------------------------
 
 class CrashReportDatabaseWin : public CrashReportDatabase {
@@ -563,22 +585,28 @@ class CrashReportDatabaseWin : public CrashReportDatabase {
 
   // CrashReportDatabase:
   Settings* GetSettings() override;
-  OperationStatus PrepareNewCrashReport(NewReport** report) override;
-  OperationStatus FinishedWritingCrashReport(NewReport* report,
+  OperationStatus PrepareNewCrashReport(
+      std::unique_ptr<NewReport>* report) override;
+  OperationStatus FinishedWritingCrashReport(std::unique_ptr<NewReport> report,
                                              UUID* uuid) override;
-  OperationStatus ErrorWritingCrashReport(NewReport* report) override;
   OperationStatus LookUpCrashReport(const UUID& uuid, Report* report) override;
   OperationStatus GetPendingReports(std::vector<Report>* reports) override;
   OperationStatus GetCompletedReports(std::vector<Report>* reports) override;
-  OperationStatus GetReportForUploading(const UUID& uuid,
-                                        const Report** report) override;
-  OperationStatus RecordUploadAttempt(const Report* report,
-                                      bool successful,
-                                      const std::string& id) override;
-  OperationStatus SkipReportUpload(const UUID& uuid) override;
+  OperationStatus GetReportForUploading(
+      const UUID& uuid,
+      std::unique_ptr<const UploadReport>* report,
+      bool report_metrics) override;
+  OperationStatus SkipReportUpload(const UUID& uuid,
+                                   Metrics::CrashSkippedReason reason) override;
   OperationStatus DeleteReport(const UUID& uuid) override;
+  OperationStatus RequestUpload(const UUID& uuid) override;
 
  private:
+  // CrashReportDatabase:
+  OperationStatus RecordUploadAttempt(UploadReport* report,
+                                      bool successful,
+                                      const std::string& id) override;
+
   std::unique_ptr<Metadata> AcquireMetadata();
 
   base::FilePath base_dir_;
@@ -588,12 +616,18 @@ class CrashReportDatabaseWin : public CrashReportDatabase {
   DISALLOW_COPY_AND_ASSIGN(CrashReportDatabaseWin);
 };
 
-CrashReportDatabaseWin::CrashReportDatabaseWin(const base::FilePath& path)
-    : CrashReportDatabase(),
-      base_dir_(path),
-      settings_(base_dir_.Append(kSettings)),
-      initialized_() {
+FileWriter* CrashReportDatabase::NewReport::AddAttachment(
+    const std::string& name) {
+  // Attachments aren't implemented in the Windows database yet.
+  return nullptr;
 }
+
+void CrashReportDatabase::UploadReport::InitializeAttachments() {
+  // Attachments aren't implemented in the Windows database yet.
+}
+
+CrashReportDatabaseWin::CrashReportDatabaseWin(const base::FilePath& path)
+    : CrashReportDatabase(), base_dir_(path), settings_(), initialized_() {}
 
 CrashReportDatabaseWin::~CrashReportDatabaseWin() {
 }
@@ -613,7 +647,7 @@ bool CrashReportDatabaseWin::Initialize(bool may_create) {
   if (!CreateDirectoryIfNecessary(base_dir_.Append(kReportsDirectory)))
     return false;
 
-  if (!settings_.Initialize())
+  if (!settings_.Initialize(base_dir_.Append(kSettings)))
     return false;
 
   INITIALIZATION_STATE_SET_VALID(initialized_);
@@ -626,63 +660,39 @@ Settings* CrashReportDatabaseWin::GetSettings() {
 }
 
 OperationStatus CrashReportDatabaseWin::PrepareNewCrashReport(
-    NewReport** report) {
+    std::unique_ptr<NewReport>* report) {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
 
   std::unique_ptr<NewReport> new_report(new NewReport());
-  if (!new_report->uuid.InitializeWithNew())
+  if (!new_report->Initialize(this,
+                              base_dir_.Append(kReportsDirectory),
+                              std::wstring(L".") + kCrashReportFileExtension)) {
     return kFileSystemError;
-  new_report->path = base_dir_.Append(kReportsDirectory)
-                         .Append(new_report->uuid.ToString16() + L"." +
-                                 kCrashReportFileExtension);
-  new_report->handle = LoggingOpenFileForWrite(new_report->path,
-                                               FileWriteMode::kCreateOrFail,
-                                               FilePermissions::kOwnerOnly);
-  if (new_report->handle == INVALID_HANDLE_VALUE)
-    return kFileSystemError;
+  }
 
-  *report = new_report.release();
+  report->reset(new_report.release());
   return kNoError;
 }
 
 OperationStatus CrashReportDatabaseWin::FinishedWritingCrashReport(
-    NewReport* report,
+    std::unique_ptr<NewReport> report,
     UUID* uuid) {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
-
-  // Take ownership of the report.
-  std::unique_ptr<NewReport> scoped_report(report);
-  // Take ownership of the file handle.
-  ScopedFileHandle handle(report->handle);
 
   std::unique_ptr<Metadata> metadata(AcquireMetadata());
   if (!metadata)
     return kDatabaseError;
-  metadata->AddNewRecord(ReportDisk(scoped_report->uuid,
-                                    scoped_report->path,
+  metadata->AddNewRecord(ReportDisk(report->ReportID(),
+                                    report->file_remover_.get(),
                                     time(nullptr),
                                     ReportState::kPending));
-  *uuid = scoped_report->uuid;
-  return kNoError;
-}
 
-OperationStatus CrashReportDatabaseWin::ErrorWritingCrashReport(
-    NewReport* report) {
-  INITIALIZATION_STATE_DCHECK_VALID(initialized_);
+  ignore_result(report->file_remover_.release());
 
-  // Take ownership of the report.
-  std::unique_ptr<NewReport> scoped_report(report);
+  *uuid = report->ReportID();
 
-  // Close the outstanding handle.
-  LoggingCloseFile(report->handle);
-
-  // We failed to write, so remove the dump file. There's no entry in the
-  // metadata table yet.
-  if (!DeleteFile(scoped_report->path.value().c_str())) {
-    PLOG(ERROR) << "DeleteFile "
-                << base::UTF16ToUTF8(scoped_report->path.value());
-    return kFileSystemError;
-  }
+  Metrics::CrashReportPending(Metrics::PendingReportReason::kNewlyCreated);
+  Metrics::CrashReportSize(report->Writer()->Seek(0, SEEK_END));
 
   return kNoError;
 }
@@ -722,42 +732,42 @@ OperationStatus CrashReportDatabaseWin::GetCompletedReports(
 
 OperationStatus CrashReportDatabaseWin::GetReportForUploading(
     const UUID& uuid,
-    const Report** report) {
+    std::unique_ptr<const UploadReport>* report,
+    bool report_metrics) {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
 
   std::unique_ptr<Metadata> metadata(AcquireMetadata());
   if (!metadata)
     return kDatabaseError;
-  // TODO(scottmg): After returning this report to the client, there is no way
-  // to reap this report if the uploader fails to call RecordUploadAttempt() or
-  // SkipReportUpload() (if it crashed or was otherwise buggy). To resolve this,
-  // one possibility would be to change the interface to be FileHandle based, so
-  // that instead of giving the file_path back to the client and changing state
-  // to kUploading, we return an exclusive access handle, and use that as the
-  // signal that the upload is pending, rather than an update to state in the
-  // metadata. Alternatively, there could be a "garbage collection" at startup
-  // where any reports that are orphaned in the kUploading state are either
-  // reset to kPending to retry, or discarded.
+
   ReportDisk* report_disk;
   OperationStatus os = metadata->FindSingleReportAndMarkDirty(
       uuid, ReportState::kPending, &report_disk);
   if (os == kNoError) {
     report_disk->state = ReportState::kUploading;
-    // Create a copy for passing back to client. This will be freed in
-    // RecordUploadAttempt.
-    *report = new Report(*report_disk);
+    auto upload_report = std::make_unique<UploadReport>();
+    *implicit_cast<Report*>(upload_report.get()) = *report_disk;
+
+    if (!upload_report->Initialize(upload_report->file_path, this)) {
+      return kFileSystemError;
+    }
+    upload_report->report_metrics_ = report_metrics;
+
+    report->reset(upload_report.release());
   }
   return os;
 }
 
 OperationStatus CrashReportDatabaseWin::RecordUploadAttempt(
-    const Report* report,
+    UploadReport* report,
     bool successful,
     const std::string& id) {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
 
-  // Take ownership, allocated in GetReportForUploading.
-  std::unique_ptr<const Report> upload_report(report);
+  if (report->report_metrics_) {
+    Metrics::CrashUploadAttempted(successful);
+  }
+
   std::unique_ptr<Metadata> metadata(AcquireMetadata());
   if (!metadata)
     return kDatabaseError;
@@ -773,8 +783,14 @@ OperationStatus CrashReportDatabaseWin::RecordUploadAttempt(
   report_disk->id = id;
   report_disk->last_upload_attempt_time = now;
   report_disk->upload_attempts++;
-  report_disk->state =
-      successful ? ReportState::kCompleted : ReportState::kPending;
+  if (successful) {
+    report_disk->state = ReportState::kCompleted;
+    report_disk->upload_explicitly_requested = false;
+  } else {
+    report_disk->state = ReportState::kPending;
+    report_disk->upload_explicitly_requested =
+        report->upload_explicitly_requested;
+  }
 
   if (!settings_.SetLastUploadAttemptTime(now))
     return kDatabaseError;
@@ -802,8 +818,12 @@ OperationStatus CrashReportDatabaseWin::DeleteReport(const UUID& uuid) {
   return kNoError;
 }
 
-OperationStatus CrashReportDatabaseWin::SkipReportUpload(const UUID& uuid) {
+OperationStatus CrashReportDatabaseWin::SkipReportUpload(
+    const UUID& uuid,
+    Metrics::CrashSkippedReason reason) {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
+
+  Metrics::CrashUploadSkipped(reason);
 
   std::unique_ptr<Metadata> metadata(AcquireMetadata());
   if (!metadata)
@@ -811,8 +831,10 @@ OperationStatus CrashReportDatabaseWin::SkipReportUpload(const UUID& uuid) {
   ReportDisk* report_disk;
   OperationStatus os = metadata->FindSingleReportAndMarkDirty(
       uuid, ReportState::kPending, &report_disk);
-  if (os == kNoError)
+  if (os == kNoError) {
     report_disk->state = ReportState::kCompleted;
+    report_disk->upload_explicitly_requested = false;
+  }
   return os;
 }
 
@@ -831,7 +853,38 @@ std::unique_ptr<CrashReportDatabase> InitializeInternal(
              : std::unique_ptr<CrashReportDatabaseWin>();
 }
 
-}  // namespace
+OperationStatus CrashReportDatabaseWin::RequestUpload(const UUID& uuid) {
+  INITIALIZATION_STATE_DCHECK_VALID(initialized_);
+
+  std::unique_ptr<Metadata> metadata(AcquireMetadata());
+  if (!metadata)
+    return kDatabaseError;
+
+  ReportDisk* report_disk;
+  // TODO(gayane): Search for the report only once regardless of its state.
+  OperationStatus os = metadata->FindSingleReportAndMarkDirty(
+      uuid, ReportState::kCompleted, &report_disk);
+  if (os == kReportNotFound) {
+    os = metadata->FindSingleReportAndMarkDirty(
+        uuid, ReportState::kPending, &report_disk);
+  }
+
+  if (os != kNoError)
+    return os;
+
+  // If the crash report has already been uploaded, don't request new upload.
+  if (report_disk->uploaded)
+    return kCannotRequestUpload;
+
+  // Mark the crash report as having upload explicitly requested by the user,
+  // and move it to the pending state.
+  report_disk->upload_explicitly_requested = true;
+  report_disk->state = ReportState::kPending;
+
+  Metrics::CrashReportPending(Metrics::PendingReportReason::kUserInitiated);
+
+  return kNoError;
+}
 
 // static
 std::unique_ptr<CrashReportDatabase> CrashReportDatabase::Initialize(

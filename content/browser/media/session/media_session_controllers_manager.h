@@ -11,7 +11,12 @@
 
 #include "base/macros.h"
 #include "base/time/time.h"
+#include "content/common/content_export.h"
 #include "content/public/browser/web_contents_observer.h"  // For MediaPlayerId.
+
+namespace media {
+enum class MediaContentType;
+}  // namespace media
 
 namespace content {
 
@@ -21,9 +26,11 @@ class RenderFrameHost;
 
 // MediaSessionControllersManager is a delegate of MediaWebContentsObserver that
 // handles MediaSessionController instances.
-class MediaSessionControllersManager {
+class CONTENT_EXPORT MediaSessionControllersManager {
  public:
   using MediaPlayerId = WebContentsObserver::MediaPlayerId;
+  using ControllersMap =
+      std::map<MediaPlayerId, std::unique_ptr<MediaSessionController>>;
 
   explicit MediaSessionControllersManager(
       MediaWebContentsObserver* media_web_contents_observer);
@@ -39,7 +46,7 @@ class MediaSessionControllersManager {
   bool RequestPlay(const MediaPlayerId& id,
                    bool has_audio,
                    bool is_remote,
-                   base::TimeDelta duration);
+                   media::MediaContentType media_content_type);
 
   // Called when the given player |id| has paused.
   void OnPause(const MediaPlayerId& id);
@@ -47,12 +54,15 @@ class MediaSessionControllersManager {
   // Called when the given player |id| has ended.
   void OnEnd(const MediaPlayerId& id);
 
+  // Called when the WebContents was muted or unmuted.
+  void WebContentsMutedStateChanged(bool muted);
+
  private:
+  friend class MediaSessionControllersManagerTest;
+
   // Weak pointer because |this| is owned by |media_web_contents_observer_|.
   MediaWebContentsObserver* const media_web_contents_observer_;
 
-  using ControllersMap =
-      std::map<MediaPlayerId, std::unique_ptr<MediaSessionController>>;
   ControllersMap controllers_map_;
 
   DISALLOW_COPY_AND_ASSIGN(MediaSessionControllersManager);

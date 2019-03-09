@@ -11,8 +11,7 @@
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/memory/linked_ptr.h"
-#include "base/message_loop/message_loop.h"
+#include "base/json/json_reader.h"
 #include "base/run_loop.h"
 #include "base/threading/thread.h"
 #include "base/values.h"
@@ -22,7 +21,287 @@
 #include "chrome/test/chromedriver/session.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-TEST(SessionCommandTest, FileUpload) {
+TEST(SessionCommandsTest, ExecuteGetTimeouts) {
+  Session session("id");
+  base::DictionaryValue params;
+  std::unique_ptr<base::Value> value;
+
+  Status status = ExecuteGetTimeouts(&session, params, &value);
+  ASSERT_EQ(kOk, status.code());
+  base::DictionaryValue* response;
+  ASSERT_TRUE(value->GetAsDictionary(&response));
+
+  int script;
+  ASSERT_TRUE(response->GetInteger("script", &script));
+  ASSERT_EQ(script, 30000);
+  int page_load;
+  ASSERT_TRUE(response->GetInteger("pageLoad", &page_load));
+  ASSERT_EQ(page_load, 300000);
+  int implicit;
+  ASSERT_TRUE(response->GetInteger("implicit", &implicit));
+  ASSERT_EQ(implicit, 0);
+}
+
+TEST(SessionCommandsTest, ExecuteSetTimeouts) {
+  Session session("id");
+  base::DictionaryValue params;
+  std::unique_ptr<base::Value> value;
+
+  // W3C spec doesn't forbid passing in an empty object, so we should get kOk.
+  Status status = ExecuteSetTimeouts(&session, params, &value);
+  ASSERT_EQ(kOk, status.code());
+
+  params.SetInteger("pageLoad", 5000);
+  status = ExecuteSetTimeouts(&session, params, &value);
+  ASSERT_EQ(kOk, status.code());
+
+  params.SetInteger("script", 5000);
+  params.SetInteger("implicit", 5000);
+  status = ExecuteSetTimeouts(&session, params, &value);
+  ASSERT_EQ(kOk, status.code());
+
+  params.SetInteger("implicit", -5000);
+  status = ExecuteSetTimeouts(&session, params, &value);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  params.Clear();
+  params.SetInteger("unknown", 5000);
+  status = ExecuteSetTimeouts(&session, params, &value);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // Old pre-W3C format.
+  params.Clear();
+  params.SetDouble("ms", 5000.0);
+  params.SetString("type", "page load");
+  status = ExecuteSetTimeouts(&session, params, &value);
+  ASSERT_EQ(kOk, status.code());
+}
+
+TEST(SessionCommandsTest, MergeCapabilities) {
+  base::DictionaryValue primary;
+  primary.SetString("strawberry", "velociraptor");
+  primary.SetString("pear", "unicorn");
+
+  base::DictionaryValue secondary;
+  secondary.SetString("broccoli", "giraffe");
+  secondary.SetString("celery", "hippo");
+  secondary.SetString("eggplant", "elephant");
+
+  base::DictionaryValue merged;
+
+  // key collision should return false
+  ASSERT_FALSE(MergeCapabilities(&primary, &primary, &merged));
+  // non key collision should return true
+  ASSERT_TRUE(MergeCapabilities(&primary, &secondary, &merged));
+
+  merged.Clear();
+  MergeCapabilities(&primary, &secondary, &merged);
+  primary.MergeDictionary(&secondary);
+
+  ASSERT_EQ(primary, merged);
+}
+
+TEST(SessionCommandsTest, ProcessCapabilities_Empty) {
+  // "capabilities" is required
+  base::DictionaryValue params;
+  base::DictionaryValue result;
+  Status status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // "capabilities" must be a JSON object
+  params.SetList("capabilities", std::make_unique<base::ListValue>());
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // Empty "capabilities" is OK
+  params.SetDictionary("capabilities",
+                       std::make_unique<base::DictionaryValue>());
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_TRUE(result.empty());
+}
+
+TEST(SessionCommandsTest, ProcessCapabilities_AlwaysMatch) {
+  base::DictionaryValue params;
+  base::DictionaryValue result;
+
+  // "alwaysMatch" must be a JSON object
+  params.SetList("capabilities.alwaysMatch",
+                 std::make_unique<base::ListValue>());
+  Status status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // Empty "alwaysMatch" is OK
+  params.SetDictionary("capabilities.alwaysMatch",
+                       std::make_unique<base::DictionaryValue>());
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_TRUE(result.empty());
+
+  // Invalid "alwaysMatch"
+  params.SetInteger("capabilities.alwaysMatch.browserName", 10);
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // Valid "alwaysMatch"
+  params.SetString("capabilities.alwaysMatch.browserName", "chrome");
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_EQ(result.size(), 1u);
+  std::string result_string;
+  ASSERT_TRUE(result.GetString("browserName", &result_string));
+  ASSERT_EQ(result_string, "chrome");
+
+  // Null "browserName" treated as not specifying "browserName"
+  params.SetPath({"capabilities", "alwaysMatch", "browserName"}, base::Value());
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_FALSE(result.GetString("browserName", &result_string));
+}
+
+TEST(SessionCommandsTest, ProcessCapabilities_FirstMatch) {
+  base::DictionaryValue params;
+  base::DictionaryValue result;
+
+  // "firstMatch" must be a JSON list
+  params.SetDictionary("capabilities.firstMatch",
+                       std::make_unique<base::DictionaryValue>());
+  Status status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // "firstMatch" must have at least one entry
+  params.SetList("capabilities.firstMatch",
+                 std::make_unique<base::ListValue>());
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // Each entry must be a JSON object
+  base::ListValue* list_ptr;
+  ASSERT_TRUE(params.GetList("capabilities.firstMatch", &list_ptr));
+  list_ptr->Set(0, std::make_unique<base::ListValue>());
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // Empty JSON object allowed as an entry
+  list_ptr->Set(0, std::make_unique<base::DictionaryValue>());
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_TRUE(result.empty());
+
+  // Invalid entry
+  base::DictionaryValue* entry_ptr;
+  ASSERT_TRUE(list_ptr->GetDictionary(0, &entry_ptr));
+  entry_ptr->SetString("pageLoadStrategy", "invalid");
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // Valid entry
+  entry_ptr->SetString("pageLoadStrategy", "eager");
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_EQ(result.size(), 1u);
+  std::string result_string;
+  ASSERT_TRUE(result.GetString("pageLoadStrategy", &result_string));
+  ASSERT_EQ(result_string, "eager");
+
+  // Multiple entries, the first one should be selected.
+  list_ptr->Set(1, std::make_unique<base::DictionaryValue>());
+  ASSERT_TRUE(list_ptr->GetDictionary(1, &entry_ptr));
+  entry_ptr->SetString("pageLoadStrategy", "normal");
+  entry_ptr->SetString("browserName", "chrome");
+  status = ProcessCapabilities(params, &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_EQ(result.size(), 1u);
+  ASSERT_TRUE(result.GetString("pageLoadStrategy", &result_string));
+  ASSERT_EQ(result_string, "eager");
+}
+
+namespace {
+
+Status ProcessCapabilitiesJson(const std::string& paramsJson,
+                               base::DictionaryValue* result_capabilities) {
+  std::unique_ptr<base::Value> params =
+      base::JSONReader::ReadDeprecated(paramsJson);
+  if (!params || !params->is_dict())
+    return Status(kUnknownError);
+  return ProcessCapabilities(
+      *static_cast<const base::DictionaryValue*>(params.get()),
+      result_capabilities);
+}
+
+}  // namespace
+
+TEST(SessionCommandsTest, ProcessCapabilities_Merge) {
+  base::DictionaryValue result;
+  Status status(kOk);
+
+  // Disallow setting same capability in alwaysMatch and firstMatch
+  status = ProcessCapabilitiesJson(
+      R"({
+        "capabilities": {
+          "alwaysMatch": { "pageLoadStrategy": "normal" },
+          "firstMatch": [
+            { "unhandledPromptBehavior": "accept" },
+            { "pageLoadStrategy": "normal" }
+          ]
+        }
+      })",
+      &result);
+  ASSERT_EQ(kInvalidArgument, status.code());
+
+  // No conflicts between alwaysMatch and firstMatch, select first firstMatch
+  status = ProcessCapabilitiesJson(
+      R"({
+        "capabilities": {
+          "alwaysMatch": { "timeouts": { } },
+          "firstMatch": [
+            { "unhandledPromptBehavior": "accept" },
+            { "pageLoadStrategy": "normal" }
+          ]
+        }
+      })",
+      &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_EQ(result.size(), 2u);
+  ASSERT_TRUE(result.HasKey("timeouts"));
+  ASSERT_TRUE(result.HasKey("unhandledPromptBehavior"));
+  ASSERT_FALSE(result.HasKey("pageLoadStrategy"));
+
+  // Selection by browserName
+  status = ProcessCapabilitiesJson(
+      R"({
+        "capabilities": {
+          "alwaysMatch": { "timeouts": { } },
+          "firstMatch": [
+            { "browserName": "firefox", "unhandledPromptBehavior": "accept" },
+            { "browserName": "chrome", "pageLoadStrategy": "normal" }
+          ]
+        }
+      })",
+      &result);
+  ASSERT_EQ(kOk, status.code()) << status.message();
+  ASSERT_EQ(result.size(), 3u);
+  ASSERT_TRUE(result.HasKey("timeouts"));
+  ASSERT_EQ(result.FindKey("browserName")->GetString(), "chrome");
+  ASSERT_FALSE(result.HasKey("unhandledPromptBehavior"));
+  ASSERT_TRUE(result.HasKey("pageLoadStrategy"));
+
+  // No acceptable firstMatch
+  status = ProcessCapabilitiesJson(
+      R"({
+        "capabilities": {
+          "alwaysMatch": { "timeouts": { } },
+          "firstMatch": [
+            { "browserName": "firefox", "unhandledPromptBehavior": "accept" },
+            { "browserName": "edge", "pageLoadStrategy": "normal" }
+          ]
+        }
+      })",
+      &result);
+  ASSERT_EQ(kSessionNotCreated, status.code());
+}
+
+TEST(SessionCommandsTest, FileUpload) {
   Session session("id");
   base::DictionaryValue params;
   std::unique_ptr<base::Value> value;
@@ -60,6 +339,18 @@ class DetachChrome : public StubChrome {
 };
 
 }  // namespace
+
+TEST(SessionCommandsTest, MatchCapabilities) {
+  base::DictionaryValue merged;
+  merged.SetString("browserName", "not chrome");
+
+  ASSERT_FALSE(MatchCapabilities(&merged));
+
+  merged.Clear();
+  merged.SetString("browserName", "chrome");
+
+  ASSERT_TRUE(MatchCapabilities(&merged));
+}
 
 TEST(SessionCommandsTest, Quit) {
   DetachChrome* chrome = new DetachChrome();
@@ -128,7 +419,7 @@ TEST(SessionCommandsTest, AutoReporting) {
 
   // an error should be given if the |enabled| parameter is not set
   status_code = ExecuteSetAutoReporting(&session, params, &value).code();
-  ASSERT_EQ(kUnknownError, status_code);
+  ASSERT_EQ(kInvalidArgument, status_code);
 
   // try to enable autoreporting
   params.SetBoolean("enabled", true);

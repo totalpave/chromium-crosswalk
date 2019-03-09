@@ -20,6 +20,10 @@
 #include <jni.h>
 #endif
 
+#if defined(OS_WIN)
+#include <windows.h>
+#endif
+
 namespace base {
 
 class FilePath;
@@ -35,19 +39,22 @@ bool EvictFileFromSystemCacheWithRetry(const FilePath& file);
 // success.
 bool DieFileDie(const FilePath& file, bool recurse);
 
+// Synchronize all the dirty pages from the page cache to disk (on POSIX
+// systems). The Windows analogy for this operation is to 'Flush file buffers'.
+// Note: This is currently implemented as a no-op on Windows.
+void SyncPageCacheToDisk();
+
 // Clear a specific file from the system cache. After this call, trying
 // to access this file will result in a cold load from the hard drive.
 bool EvictFileFromSystemCache(const FilePath& file);
 
 #if defined(OS_WIN)
-// Returns true if the volume supports Alternate Data Streams.
-bool VolumeSupportsADS(const FilePath& path);
-
-// Returns true if the ZoneIdentifier is correctly set to "Internet" (3).
-// Note that this function must be called from the same process as
-// the one that set the zone identifier.  I.e. don't use it in UI/automation
-// based tests.
-bool HasInternetZoneIdentifier(const FilePath& full_path);
+// Deny |permission| on the file |path| for the current user. |permission| is an
+// ACCESS_MASK structure which is defined in
+// https://msdn.microsoft.com/en-us/library/windows/desktop/aa374892.aspx
+// Refer to https://msdn.microsoft.com/en-us/library/aa822867.aspx for a list of
+// possible values.
+bool DenyFilePermission(const FilePath& path, DWORD permission);
 #endif  // defined(OS_WIN)
 
 // For testing, make the file unreadable or unwritable.
@@ -70,9 +77,6 @@ class FilePermissionRestorer {
 };
 
 #if defined(OS_ANDROID)
-// Register the ContentUriTestUrils JNI bindings.
-bool RegisterContentUriTestUtils(JNIEnv* env);
-
 // Insert an image file into the MediaStore, and retrieve the content URI for
 // testing purpose.
 FilePath InsertImageIntoMediaStore(const FilePath& path);

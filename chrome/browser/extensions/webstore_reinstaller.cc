@@ -4,6 +4,8 @@
 
 #include "chrome/browser/extensions/webstore_reinstaller.h"
 
+#include <utility>
+
 #include "base/memory/ref_counted.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -21,12 +23,15 @@ const char kTabClosed[] = "Tab was closed.";
 WebstoreReinstaller::WebstoreReinstaller(
     content::WebContents* web_contents,
     const std::string& extension_id,
-    const WebstoreStandaloneInstaller::Callback& callback)
+    WebstoreStandaloneInstaller::Callback callback)
     : WebstoreStandaloneInstaller(
           extension_id,
           Profile::FromBrowserContext(web_contents->GetBrowserContext()),
-          callback),
+          std::move(callback)),
       content::WebContentsObserver(web_contents) {
+  DCHECK(
+      ExtensionPrefs::Get(web_contents->GetBrowserContext())
+          ->HasDisableReason(extension_id, disable_reason::DISABLE_CORRUPTED));
 }
 
 WebstoreReinstaller::~WebstoreReinstaller() {
@@ -38,10 +43,6 @@ void WebstoreReinstaller::BeginReinstall() {
 
 bool WebstoreReinstaller::CheckRequestorAlive() const {
   return web_contents() != NULL;
-}
-
-const GURL& WebstoreReinstaller::GetRequestorURL() const {
-  return GURL::EmptyGURL();
 }
 
 std::unique_ptr<ExtensionInstallPrompt::Prompt>
@@ -68,18 +69,6 @@ content::WebContents* WebstoreReinstaller::GetWebContents() const {
   return web_contents();
 }
 
-bool WebstoreReinstaller::CheckInlineInstallPermitted(
-    const base::DictionaryValue& webstore_data,
-    std::string* error) const {
-  return true;
-}
-
-bool WebstoreReinstaller::CheckRequestorPermitted(
-    const base::DictionaryValue& webstore_data,
-    std::string* error) const {
-  return true;
-}
-
 void WebstoreReinstaller::WebContentsDestroyed() {
   // Run the callback now, because AbortInstall() doesn't do it.
   RunCallback(false, kTabClosed, webstore_install::ABORTED);
@@ -96,18 +85,14 @@ void WebstoreReinstaller::OnInstallPromptDone(
   if (!ExtensionSystem::Get(profile())->extension_service()->UninstallExtension(
           id(),
           UNINSTALL_REASON_REINSTALL,
-          base::Bind(&WebstoreReinstaller::OnDeletionDone, this),
           NULL)) {
     // Run the callback now, because AbortInstall() doesn't do it.
     RunCallback(
         false, kCouldNotUninstallExtension, webstore_install::OTHER_ERROR);
     AbortInstall();
+    return;
   }
-}
-
-void WebstoreReinstaller::OnDeletionDone() {
-  WebstoreStandaloneInstaller::OnInstallPromptDone(
-      ExtensionInstallPrompt::Result::ACCEPTED);
+  WebstoreStandaloneInstaller::OnInstallPromptDone(result);
 }
 
 }  // namespace extensions

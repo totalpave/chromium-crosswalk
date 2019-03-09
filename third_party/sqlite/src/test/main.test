@@ -204,7 +204,7 @@ ifcapable {trigger} {
   ifcapable {explain} {
     do_test main-1.27.5 {
       db complete {
-        EXPLAIN 
+        EXPLAIN
         CREATE TEMP TRIGGER xyz AFTER DELETE backend BEGIN
            UPDATE pqr SET a=5;
       }
@@ -310,7 +310,7 @@ if {[permutation] == ""} {
   } {0 {}}
 }
 
-# Here are some tests for tokenize.c.  
+# Here are some tests for tokenize.c.
 #
 do_test main-3.1 {
   catch {db close}
@@ -319,7 +319,7 @@ do_test main-3.1 {
   sqlite3 db testdb
   set v [catch {execsql {SELECT * from T1 where x!!5}} msg]
   lappend v $msg
-} {1 {unrecognized token: "!!"}}
+} {1 {unrecognized token: "!"}}
 do_test main-3.2 {
   catch {db close}
   foreach f [glob -nocomplain testdb/*] {forcedelete $f}
@@ -434,7 +434,7 @@ do_test main-3.2.28 {
 } {0 246}
 do_test main-3.2.29 {
   catchsql {select 123/}
-} {1 {near "/": syntax error}}
+} {1 {incomplete input}}
 do_test main-3.2.30 {
   catchsql {select 123--5}
 } {0 123}
@@ -467,38 +467,38 @@ do_test main-3.4 {
 do_test main-3.5 {
   set v [catch {execsql {create}} msg]
   lappend v $msg
-} {1 {near "create": syntax error}}
+} {1 {incomplete input}}
 do_test main-3.6 {
   catchsql {SELECT 'abc' + #9}
 } {1 {near "#9": syntax error}}
 
 # The following test-case tests the linked list code used to manage
 # sqlite3_vfs structures.
-if {$::tcl_platform(platform)=="unix" 
+if {$::tcl_platform(platform)=="unix"
      && [info command sqlite3async_initialize]!=""} {
   ifcapable threadsafe {
     do_test main-4.1 {
       sqlite3_crash_enable 1
       sqlite3_crash_enable 0
-    
+
       sqlite3async_initialize "" 1
       sqlite3async_shutdown
-    
+
       sqlite3_crash_enable 1
       sqlite3async_initialize "" 1
       sqlite3_crash_enable 0
       sqlite3async_shutdown
-    
+
       sqlite3_crash_enable 1
       sqlite3async_initialize "" 1
       sqlite3async_shutdown
       sqlite3_crash_enable 0
-    
+
       sqlite3async_initialize "" 1
       sqlite3_crash_enable 1
       sqlite3_crash_enable 0
       sqlite3async_shutdown
-    
+
       sqlite3async_initialize "" 1
       sqlite3_crash_enable 1
       sqlite3async_shutdown
@@ -534,5 +534,5 @@ if {[info exists ::env(TEST_FAILURE)]} {
      set x 123
   } $res
 }
-    
+
 finish_test

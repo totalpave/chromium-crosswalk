@@ -22,7 +22,7 @@ proc finish_test {} {}
 #
 set TIMEOUT 3600
 
-# Process command-line arguments. 
+# Process command-line arguments.
 #
 if {[llength $argv]>0} {
   foreach {name value} $argv {
@@ -42,9 +42,9 @@ set argv [list]
 # Test plan:
 #
 # The general principle is to run those SQLite tests that use
-# pseudo-random data in some way over and over again for a very 
-# long time. The number of tests run depends on the value of 
-# global variable $TIMEOUT - tests are run for at least $TIMEOUT 
+# pseudo-random data in some way over and over again for a very
+# long time. The number of tests run depends on the value of
+# global variable $TIMEOUT - tests are run for at least $TIMEOUT
 # seconds.
 #
 #   fuzz.test     (pseudo-random SQL statements)
@@ -52,7 +52,7 @@ set argv [list]
 #   fuzz_malloc.test
 #   corruptC.test (pseudo-random corruption to a database)
 #
-# Many database changes maintaining some kind of invariant. 
+# Many database changes maintaining some kind of invariant.
 # Storing checksums etc.
 #
 
@@ -67,12 +67,12 @@ set SOAKTESTS {
 
 set G(isquick) 1
 
-set soak_starttime  [clock seconds]
+set soak_starttime  [clock_seconds]
 set soak_finishtime [expr {$soak_starttime + $TIMEOUT}]
 
 # Loop until the timeout is reached or an error occurs.
 #
-for {set iRun 0} {[clock seconds] < $soak_finishtime} {incr iRun} {
+for {set iRun 0} {[clock_seconds] < $soak_finishtime} {incr iRun} {
 
   set iIdx [expr {$iRun % [llength $SOAKTESTS]}]
   source [file join $testdir [lindex $SOAKTESTS $iIdx]]

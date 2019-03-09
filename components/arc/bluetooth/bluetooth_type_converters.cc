@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <algorithm>
 #include <cctype>
 #include <iomanip>
 #include <ios>
@@ -11,14 +10,19 @@
 #include <string>
 #include <vector>
 
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/arc/bluetooth/bluetooth_type_converters.h"
 #include "device/bluetooth/bluetooth_gatt_service.h"
 #include "device/bluetooth/bluetooth_uuid.h"
-#include "mojo/public/cpp/bindings/array.h"
 
 namespace {
+
+constexpr size_t kAddressSize = 6;
+constexpr char kInvalidAddress[] = "00:00:00:00:00:00";
 
 // SDP Service attribute IDs.
 constexpr uint16_t kServiceClassIDList = 0x0001;
@@ -33,9 +37,7 @@ bool IsNonHex(char c) {
 
 std::string StripNonHex(const std::string& str) {
   std::string result = str;
-  result.erase(std::remove_if(result.begin(), result.end(), IsNonHex),
-               result.end());
-
+  base::EraseIf(result, IsNonHex);
   return result;
 }
 
@@ -43,20 +45,14 @@ std::string StripNonHex(const std::string& str) {
 
 namespace mojo {
 
-// TODO(smbarber): Add unit tests for Bluetooth type converters.
-
 // static
 arc::mojom::BluetoothAddressPtr
 TypeConverter<arc::mojom::BluetoothAddressPtr, std::string>::Convert(
     const std::string& address) {
-  std::string stripped = StripNonHex(address);
-
-  std::vector<uint8_t> address_bytes;
-  base::HexStringToBytes(stripped, &address_bytes);
 
   arc::mojom::BluetoothAddressPtr mojo_addr =
       arc::mojom::BluetoothAddress::New();
-  mojo_addr->address = mojo::Array<uint8_t>::From(address_bytes);
+  base::HexStringToBytes(StripNonHex(address), &mojo_addr->address);
 
   return mojo_addr;
 }
@@ -67,7 +63,10 @@ std::string TypeConverter<std::string, arc::mojom::BluetoothAddress>::Convert(
   std::ostringstream addr_stream;
   addr_stream << std::setfill('0') << std::hex << std::uppercase;
 
-  const mojo::Array<uint8_t>& bytes = address.address;
+  const std::vector<uint8_t>& bytes = address.address;
+
+  if (address.address.size() != kAddressSize)
+    return std::string(kInvalidAddress);
 
   for (size_t k = 0; k < bytes.size(); k++) {
     addr_stream << std::setw(2) << (unsigned int)bytes[k];
@@ -78,76 +77,137 @@ std::string TypeConverter<std::string, arc::mojom::BluetoothAddress>::Convert(
 }
 
 // static
-arc::mojom::BluetoothUUIDPtr
-TypeConverter<arc::mojom::BluetoothUUIDPtr, device::BluetoothUUID>::Convert(
-    const device::BluetoothUUID& uuid) {
-  std::string uuid_str = StripNonHex(uuid.canonical_value());
-
-  std::vector<uint8_t> address_bytes;
-  base::HexStringToBytes(uuid_str, &address_bytes);
-
-  arc::mojom::BluetoothUUIDPtr uuidp = arc::mojom::BluetoothUUID::New();
-  uuidp->uuid = mojo::Array<uint8_t>::From(address_bytes);
-
-  return uuidp;
+arc::mojom::BluetoothSdpAttributePtr
+TypeConverter<arc::mojom::BluetoothSdpAttributePtr,
+              bluez::BluetoothServiceAttributeValueBlueZ>::
+    Convert(const bluez::BluetoothServiceAttributeValueBlueZ& attr_bluez,
+            size_t depth) {
+  auto result = arc::mojom::BluetoothSdpAttribute::New();
+  result->type = attr_bluez.type();
+  result->type_size = attr_bluez.size();
+  switch (result->type) {
+    case bluez::BluetoothServiceAttributeValueBlueZ::NULLTYPE:
+      result->value = base::Value();
+      return result;
+    case bluez::BluetoothServiceAttributeValueBlueZ::UINT:
+    case bluez::BluetoothServiceAttributeValueBlueZ::INT:
+      result->value = base::Value(attr_bluez.value().GetInt());
+      return result;
+    case bluez::BluetoothServiceAttributeValueBlueZ::URL:
+    case bluez::BluetoothServiceAttributeValueBlueZ::UUID:
+    case bluez::BluetoothServiceAttributeValueBlueZ::STRING:
+      result->value = base::Value(attr_bluez.value().GetString());
+      return result;
+    case bluez::BluetoothServiceAttributeValueBlueZ::BOOL:
+      result->value = base::Value(attr_bluez.value().GetBool());
+      return result;
+    case bluez::BluetoothServiceAttributeValueBlueZ::SEQUENCE:
+      if (depth + 1 >= arc::kBluetoothSDPMaxDepth)
+        return Convert(bluez::BluetoothServiceAttributeValueBlueZ(), 0);
+      for (const auto& child : attr_bluez.sequence())
+        result->sequence.push_back(Convert(child, depth + 1));
+      result->type_size = result->sequence.size();
+      return result;
+    default:
+      NOTREACHED();
+  }
 }
 
 // static
-device::BluetoothUUID
-TypeConverter<device::BluetoothUUID, arc::mojom::BluetoothUUIDPtr>::Convert(
-    const arc::mojom::BluetoothUUIDPtr& uuid) {
-  std::vector<uint8_t> address_bytes = uuid->uuid.To<std::vector<uint8_t>>();
+bluez::BluetoothServiceAttributeValueBlueZ
+TypeConverter<bluez::BluetoothServiceAttributeValueBlueZ,
+              arc::mojom::BluetoothSdpAttributePtr>::
+    Convert(const arc::mojom::BluetoothSdpAttributePtr& attr, size_t depth) {
+  bluez::BluetoothServiceAttributeValueBlueZ::Type type = attr->type;
+  if (type != bluez::BluetoothServiceAttributeValueBlueZ::SEQUENCE &&
+      !attr->value.has_value()) {
+    return bluez::BluetoothServiceAttributeValueBlueZ();
+  }
 
-  // BluetoothUUID expects the format below with the dashes inserted.
-  // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  std::string uuid_str =
-      base::HexEncode(address_bytes.data(), address_bytes.size());
-  const size_t uuid_dash_pos[] = {8, 13, 18, 23};
-  for (auto pos : uuid_dash_pos)
-    uuid_str = uuid_str.insert(pos, "-");
+  switch (type) {
+    case bluez::BluetoothServiceAttributeValueBlueZ::NULLTYPE:
+      return bluez::BluetoothServiceAttributeValueBlueZ();
+    case bluez::BluetoothServiceAttributeValueBlueZ::UINT:
+    case bluez::BluetoothServiceAttributeValueBlueZ::INT:
+      return bluez::BluetoothServiceAttributeValueBlueZ(
+          type, attr->type_size,
+          std::make_unique<base::Value>(attr->value->GetInt()));
+    case bluez::BluetoothServiceAttributeValueBlueZ::URL:
+    case bluez::BluetoothServiceAttributeValueBlueZ::UUID:
+    case bluez::BluetoothServiceAttributeValueBlueZ::STRING:
+      return bluez::BluetoothServiceAttributeValueBlueZ(
+          type, attr->type_size,
+          std::make_unique<base::Value>(attr->value->GetString()));
+    case bluez::BluetoothServiceAttributeValueBlueZ::BOOL:
+      return bluez::BluetoothServiceAttributeValueBlueZ(
+          type, attr->type_size,
+          std::make_unique<base::Value>(attr->value->GetBool()));
+    case bluez::BluetoothServiceAttributeValueBlueZ::SEQUENCE: {
+      if (depth + 1 >= arc::kBluetoothSDPMaxDepth || attr->sequence.empty())
+        return bluez::BluetoothServiceAttributeValueBlueZ();
+      auto sequence = std::make_unique<
+          bluez::BluetoothServiceAttributeValueBlueZ::Sequence>();
+      for (const auto& child : attr->sequence)
+        sequence->emplace_back(Convert(child, depth + 1));
+      return bluez::BluetoothServiceAttributeValueBlueZ(std::move(sequence));
+    }
+    default:
+      NOTREACHED();
+  }
+}
 
-  device::BluetoothUUID result(uuid_str);
+// static
+arc::mojom::BluetoothSdpRecordPtr
+TypeConverter<arc::mojom::BluetoothSdpRecordPtr,
+              bluez::BluetoothServiceRecordBlueZ>::
+    Convert(const bluez::BluetoothServiceRecordBlueZ& record_bluez) {
+  arc::mojom::BluetoothSdpRecordPtr result =
+      arc::mojom::BluetoothSdpRecord::New();
 
-  DCHECK(result.IsValid());
+  for (auto id : record_bluez.GetAttributeIds()) {
+    switch (id) {
+      case kServiceClassIDList:
+      case kProtocolDescriptorList:
+      case kBrowseGroupList:
+      case kBluetoothProfileDescriptorList:
+      case kServiceName:
+        result->attrs[id] = arc::mojom::BluetoothSdpAttribute::From(
+            record_bluez.GetAttributeValue(id));
+        break;
+      default:
+        // Android does not support this.
+        break;
+    }
+  }
+
   return result;
 }
 
 // static
-arc::mojom::BluetoothGattStatus
-TypeConverter<arc::mojom::BluetoothGattStatus,
-              device::BluetoothGattService::GattErrorCode>::
-    Convert(const device::BluetoothGattService::GattErrorCode& error_code) {
-  arc::mojom::BluetoothGattStatus ret;
+bluez::BluetoothServiceRecordBlueZ
+TypeConverter<bluez::BluetoothServiceRecordBlueZ,
+              arc::mojom::BluetoothSdpRecordPtr>::
+    Convert(const arc::mojom::BluetoothSdpRecordPtr& record) {
+  bluez::BluetoothServiceRecordBlueZ record_bluez;
 
-  switch (error_code) {
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_INVALID_LENGTH:
-      ret = arc::mojom::BluetoothGattStatus::GATT_INVALID_ATTRIBUTE_LENGTH;
-      break;
-
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_NOT_PERMITTED:
-      ret = arc::mojom::BluetoothGattStatus::GATT_READ_NOT_PERMITTED;
-      break;
-
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_NOT_AUTHORIZED:
-      ret = arc::mojom::BluetoothGattStatus::GATT_INSUFFICIENT_AUTHENTICATION;
-      break;
-
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_NOT_SUPPORTED:
-      ret = arc::mojom::BluetoothGattStatus::GATT_REQUEST_NOT_SUPPORTED;
-      break;
-
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_UNKNOWN:
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_FAILED:
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_IN_PROGRESS:
-    case device::BluetoothGattService::GattErrorCode::GATT_ERROR_NOT_PAIRED:
-      ret = arc::mojom::BluetoothGattStatus::GATT_FAILURE;
-      break;
-
-    default:
-      ret = arc::mojom::BluetoothGattStatus::GATT_FAILURE;
-      break;
+  for (const auto& pair : record->attrs) {
+    switch (pair.first) {
+      case kServiceClassIDList:
+      case kProtocolDescriptorList:
+      case kBrowseGroupList:
+      case kBluetoothProfileDescriptorList:
+      case kServiceName:
+        record_bluez.AddRecordEntry(
+            pair.first,
+            pair.second.To<bluez::BluetoothServiceAttributeValueBlueZ>());
+        break;
+      default:
+        NOTREACHED();
+        break;
+    }
   }
-  return ret;
+
+  return record_bluez;
 }
 
 // static

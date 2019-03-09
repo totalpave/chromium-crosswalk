@@ -10,20 +10,21 @@
 #include "base/memory/weak_ptr.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_export.h"
-#include "net/log/net_log.h"
-#include "net/quic/quic_protocol.h"
-#include "net/quic/quic_time.h"
-#include "net/udp/datagram_client_socket.h"
+#include "net/log/net_log_with_source.h"
+#include "net/socket/datagram_client_socket.h"
+#include "net/third_party/quic/core/quic_packets.h"
+#include "net/third_party/quic/core/quic_time.h"
 
-namespace net {
-
+namespace quic {
 class QuicClock;
+}  // namespace quic
+namespace net {
 
 // If more than this many packets have been read or more than that many
 // milliseconds have passed, QuicChromiumPacketReader::StartReading() yields by
 // doing a QuicChromiumPacketReader::PostTask().
 const int kQuicYieldAfterPacketsRead = 32;
-const int kQuicYieldAfterDurationMilliseconds = 20;
+const int kQuicYieldAfterDurationMilliseconds = 2;
 
 class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
  public:
@@ -32,37 +33,42 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
     virtual ~Visitor() {}
     virtual void OnReadError(int result,
                              const DatagramClientSocket* socket) = 0;
-    virtual bool OnPacket(const QuicReceivedPacket& packet,
-                          IPEndPoint local_address,
-                          IPEndPoint peer_address) = 0;
+    virtual bool OnPacket(const quic::QuicReceivedPacket& packet,
+                          const quic::QuicSocketAddress& local_address,
+                          const quic::QuicSocketAddress& peer_address) = 0;
   };
 
   QuicChromiumPacketReader(DatagramClientSocket* socket,
-                           QuicClock* clock,
+                           quic::QuicClock* clock,
                            Visitor* visitor,
                            int yield_after_packets,
-                           QuicTime::Delta yield_after_duration,
-                           const BoundNetLog& net_log);
+                           quic::QuicTime::Delta yield_after_duration,
+                           const NetLogWithSource& net_log);
   virtual ~QuicChromiumPacketReader();
 
   // Causes the QuicConnectionHelper to start reading from the socket
-  // and passing the data along to the QuicConnection.
+  // and passing the data along to the quic::QuicConnection.
   void StartReading();
+
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const;
 
  private:
   // A completion callback invoked when a read completes.
   void OnReadComplete(int result);
+  // Return true if reading should continue.
+  bool ProcessReadResult(int result);
 
   DatagramClientSocket* socket_;
   Visitor* visitor_;
   bool read_pending_;
   int num_packets_read_;
-  QuicClock* clock_;  // Owned by QuicStreamFactory
+  quic::QuicClock* clock_;  // Owned by QuicStreamFactory
   int yield_after_packets_;
-  QuicTime::Delta yield_after_duration_;
-  QuicTime yield_after_;
+  quic::QuicTime::Delta yield_after_duration_;
+  quic::QuicTime yield_after_;
   scoped_refptr<IOBufferWithSize> read_buffer_;
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
 
   base::WeakPtrFactory<QuicChromiumPacketReader> weak_factory_;
 

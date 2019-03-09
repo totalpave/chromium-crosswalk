@@ -7,12 +7,13 @@
 #include <map>
 #include <utility>
 
+#include "base/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/active_tab_permission_granter.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_sync_service_factory.h"
-#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/permissions_updater.h"
 #include "chrome/browser/extensions/scripting_permissions_modifier.h"
 #include "chrome/browser/extensions/tab_helper.h"
@@ -22,10 +23,11 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/navigation_simulator.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/feature_switch.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/user_script.h"
 #include "extensions/common/value_builder.h"
@@ -78,12 +80,12 @@ class ExtensionActionRunnerUnitTest : public ChromeRenderViewHostTestHarness {
 
   void SetUp() override;
 
-  // Since ExtensionActionRunner's behavior is behind a flag, override the
-  // feature switch.
-  FeatureSwitch::ScopedOverride feature_override_;
+  // Used to enable extensions_features::kRuntimeHostPermissions for
+  // ExtensionActionRunner to take effect.
+  base::test::ScopedFeatureList scoped_feature_list_;
 
   // The associated ExtensionActionRunner.
-  ExtensionActionRunner* extension_action_runner_;
+  ExtensionActionRunner* extension_action_runner_ = nullptr;
 
   // The map of observed executions, keyed by extension id.
   std::map<std::string, int> extension_executions_;
@@ -93,12 +95,8 @@ class ExtensionActionRunnerUnitTest : public ChromeRenderViewHostTestHarness {
   DISALLOW_COPY_AND_ASSIGN(ExtensionActionRunnerUnitTest);
 };
 
-ExtensionActionRunnerUnitTest::ExtensionActionRunnerUnitTest()
-    : feature_override_(FeatureSwitch::scripts_require_action(),
-                        FeatureSwitch::OVERRIDE_ENABLED),
-      extension_action_runner_(nullptr) {}
-
-ExtensionActionRunnerUnitTest::~ExtensionActionRunnerUnitTest() {}
+ExtensionActionRunnerUnitTest::ExtensionActionRunnerUnitTest() = default;
+ExtensionActionRunnerUnitTest::~ExtensionActionRunnerUnitTest() = default;
 
 const Extension* ExtensionActionRunnerUnitTest::AddExtension() {
   const std::string kId = crx_file::id_util::GenerateId("all_hosts_extension");
@@ -119,6 +117,9 @@ const Extension* ExtensionActionRunnerUnitTest::AddExtension() {
 
   ExtensionRegistry::Get(profile())->AddEnabled(extension_);
   PermissionsUpdater(profile()).InitializePermissions(extension_.get());
+
+  ScriptingPermissionsModifier(profile(), extension_.get())
+      .SetWithholdHostPermissions(true);
   return extension_.get();
 }
 
@@ -129,12 +130,12 @@ const Extension* ExtensionActionRunnerUnitTest::ReloadExtension() {
 
 bool ExtensionActionRunnerUnitTest::RequiresUserConsent(
     const Extension* extension) const {
-  PermissionsData::AccessType access_type =
+  PermissionsData::PageAccess access_type =
       runner()->RequiresUserConsentForScriptInjectionForTesting(
           extension, UserScript::PROGRAMMATIC_SCRIPT);
   // We should never downright refuse access in these tests.
-  DCHECK_NE(PermissionsData::ACCESS_DENIED, access_type);
-  return access_type == PermissionsData::ACCESS_WITHHELD;
+  DCHECK_NE(PermissionsData::PageAccess::kDenied, access_type);
+  return access_type == PermissionsData::PageAccess::kWithheld;
 }
 
 void ExtensionActionRunnerUnitTest::RequestInjection(
@@ -152,8 +153,7 @@ void ExtensionActionRunnerUnitTest::RequestInjection(
 
 size_t ExtensionActionRunnerUnitTest::GetExecutionCountForExtension(
     const std::string& extension_id) const {
-  std::map<std::string, int>::const_iterator iter =
-      extension_executions_.find(extension_id);
+  auto iter = extension_executions_.find(extension_id);
   if (iter != extension_executions_.end())
     return iter->second;
   return 0u;
@@ -175,9 +175,12 @@ void ExtensionActionRunnerUnitTest::IncrementExecutionCount(
 void ExtensionActionRunnerUnitTest::SetUp() {
   ChromeRenderViewHostTestHarness::SetUp();
 
+  scoped_feature_list_.InitAndEnableFeature(
+      extensions_features::kRuntimeHostPermissions);
+
   // Skip syncing for testing purposes.
-  ExtensionSyncServiceFactory::GetInstance()->SetTestingFactory(profile(),
-                                                                nullptr);
+  ExtensionSyncServiceFactory::GetInstance()->SetTestingFactory(
+      profile(), BrowserContextKeyedServiceFactory::TestingFactory());
 
   TabHelper::CreateForWebContents(web_contents());
   TabHelper* tab_helper = TabHelper::FromWebContents(web_contents());
@@ -221,7 +224,7 @@ TEST_F(ExtensionActionRunnerUnitTest, RequestPermissionAndExecute) {
 
   // Reloading and same-origin navigations shouldn't clear those permissions,
   // and we shouldn't require user constent again.
-  Reload();
+  content::NavigationSimulator::Reload(web_contents());
   EXPECT_FALSE(RequiresUserConsent(extension));
   NavigateAndCommit(GURL("https://www.google.com/foo"));
   EXPECT_FALSE(RequiresUserConsent(extension));
@@ -260,7 +263,7 @@ TEST_F(ExtensionActionRunnerUnitTest, PendingInjectionsRemovedAtNavigation) {
 
   // Reload. This should remove the pending injection, and we should not
   // execute anything.
-  Reload();
+  content::NavigationSimulator::Reload(web_contents());
   EXPECT_FALSE(runner()->WantsToRun(extension));
   EXPECT_EQ(0u, GetExecutionCountForExtension(extension->id()));
 
@@ -315,7 +318,7 @@ TEST_F(ExtensionActionRunnerUnitTest, ActiveScriptsUseActiveTabPermissions) {
 
   // Reloading and other same-origin navigations maintain the permission to
   // execute.
-  Reload();
+  content::NavigationSimulator::Reload(web_contents());
   EXPECT_FALSE(RequiresUserConsent(extension));
   NavigateAndCommit(GURL("https://www.google.com/foo"));
   EXPECT_FALSE(RequiresUserConsent(extension));
@@ -351,7 +354,8 @@ TEST_F(ExtensionActionRunnerUnitTest, ActiveScriptsCanHaveAllUrlsPref) {
   EXPECT_TRUE(RequiresUserConsent(extension));
 
   // Enable the extension on all urls.
-  util::SetAllowedScriptingOnAllUrls(extension->id(), profile(), true);
+  ScriptingPermissionsModifier permissions_modifier(profile(), extension);
+  permissions_modifier.SetWithholdHostPermissions(false);
 
   EXPECT_FALSE(RequiresUserConsent(extension));
   // This should carry across navigations, and websites.
@@ -359,7 +363,7 @@ TEST_F(ExtensionActionRunnerUnitTest, ActiveScriptsCanHaveAllUrlsPref) {
   EXPECT_FALSE(RequiresUserConsent(extension));
 
   // Turning off the preference should have instant effect.
-  util::SetAllowedScriptingOnAllUrls(extension->id(), profile(), false);
+  permissions_modifier.SetWithholdHostPermissions(true);
   EXPECT_TRUE(RequiresUserConsent(extension));
 
   // And should also persist across navigations and websites.
@@ -409,7 +413,7 @@ TEST_F(ExtensionActionRunnerUnitTest, TestAlwaysRun) {
 
   // Reloading the extension should not clear any granted host permissions.
   extension = ReloadExtension();
-  Reload();
+  content::NavigationSimulator::Reload(web_contents());
   EXPECT_FALSE(RequiresUserConsent(extension));
 
   // Different host...

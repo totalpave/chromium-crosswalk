@@ -5,14 +5,15 @@
 #include "base/command_line.h"
 #include "chrome/browser/extensions/api/processes/processes_api.h"
 #include "chrome/browser/extensions/extension_apitest.h"
-#include "chrome/browser/task_management/task_manager_interface.h"
+#include "chrome/browser/task_manager/task_manager_interface.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/common/extensions/api/processes.h"
 #include "extensions/common/switches.h"
 #include "extensions/test/extension_test_message_listener.h"
 
-class ProcessesApiTest : public ExtensionApiTest {
+class ProcessesApiTest : public extensions::ExtensionApiTest {
  public:
   ProcessesApiTest() {}
   ~ProcessesApiTest() override {}
@@ -27,13 +28,8 @@ class ProcessesApiTest : public ExtensionApiTest {
 };
 
 
-// This test is flaky on Win7 Tests (dbg)(1). https://crbug.com/598445
-#if defined(OS_WIN)
-#define MAYBE_Processes DISABLED_Processes
-#else
-#define MAYBE_Processes Processes
-#endif
-IN_PROC_BROWSER_TEST_F(ProcessesApiTest, MAYBE_Processes) {
+// This test is flaky. https://crbug.com/598445
+IN_PROC_BROWSER_TEST_F(ProcessesApiTest, DISABLED_Processes) {
   ASSERT_TRUE(RunExtensionTest("processes/api")) << message_;
 }
 
@@ -61,16 +57,58 @@ IN_PROC_BROWSER_TEST_F(ProcessesApiTest, ProcessesApiListeners) {
   ASSERT_TRUE(listener2.WaitUntilSatisfied());
 
   // The memory refresh type must be enabled now.
-  const task_management::TaskManagerInterface* task_manager =
-      task_management::TaskManagerInterface::GetTaskManager();
+  const task_manager::TaskManagerInterface* task_manager =
+      task_manager::TaskManagerInterface::GetTaskManager();
   EXPECT_EQ(2, GetListenersCount());
   EXPECT_TRUE(task_manager->IsResourceRefreshEnabled(
-      task_management::REFRESH_TYPE_MEMORY));
+      task_manager::REFRESH_TYPE_MEMORY_FOOTPRINT));
 
   // Unload the extensions and make sure the listeners count is updated.
   UnloadExtension(extension2->id());
   EXPECT_EQ(1, GetListenersCount());
   UnloadExtension(extension1->id());
+  EXPECT_EQ(0, GetListenersCount());
+}
+
+IN_PROC_BROWSER_TEST_F(ProcessesApiTest, OnUpdatedWithMemoryRefreshTypes) {
+  EXPECT_EQ(0, GetListenersCount());
+
+  // Load an extension that listen to the onUpdatedWithMemory.
+  ExtensionTestMessageListener listener("ready", false /* will_reply */);
+  const extensions::Extension* extension =
+      LoadExtension(test_data_dir_.AppendASCII("processes")
+                        .AppendASCII("onupdated_with_memory"));
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(listener.WaitUntilSatisfied());
+
+  // The memory refresh type must be enabled now.
+  const task_manager::TaskManagerInterface* task_manager =
+      task_manager::TaskManagerInterface::GetTaskManager();
+  EXPECT_EQ(1, GetListenersCount());
+  extensions::EventRouter* event_router =
+      extensions::EventRouter::Get(profile());
+  EXPECT_TRUE(event_router->HasEventListener(
+      extensions::api::processes::OnUpdatedWithMemory::kEventName));
+  EXPECT_FALSE(event_router->HasEventListener(
+      extensions::api::processes::OnUpdated::kEventName));
+  EXPECT_TRUE(task_manager->IsResourceRefreshEnabled(
+      task_manager::REFRESH_TYPE_MEMORY_FOOTPRINT));
+
+  // Despite the fact that there are no onUpdated listeners, refresh types for
+  // CPU, Network, SQLite, V8 memory, and webcache stats should be enabled.
+  constexpr task_manager::RefreshType kOnUpdatedRefreshTypes[] = {
+      task_manager::REFRESH_TYPE_CPU,
+      task_manager::REFRESH_TYPE_NETWORK_USAGE,
+      task_manager::REFRESH_TYPE_SQLITE_MEMORY,
+      task_manager::REFRESH_TYPE_V8_MEMORY,
+      task_manager::REFRESH_TYPE_WEBCACHE_STATS,
+  };
+
+  for (const auto& type : kOnUpdatedRefreshTypes)
+    EXPECT_TRUE(task_manager->IsResourceRefreshEnabled(type));
+
+  // Unload the extensions and make sure the listeners count is updated.
+  UnloadExtension(extension->id());
   EXPECT_EQ(0, GetListenersCount());
 }
 

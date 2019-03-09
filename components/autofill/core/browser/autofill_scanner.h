@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <vector>
 
 #include "base/macros.h"
@@ -20,6 +21,8 @@ class AutofillField;
 class AutofillScanner {
  public:
   explicit AutofillScanner(const std::vector<AutofillField*>& fields);
+  explicit AutofillScanner(
+      const std::vector<std::unique_ptr<AutofillField>>& fields);
   ~AutofillScanner();
 
   // Advances the cursor by one step, if possible.
@@ -42,7 +45,12 @@ class AutofillScanner {
   // |RewindTo()|.
   size_t SaveCursor();
 
+  // This is only for logging purposes.
+  size_t CursorIndex() { return static_cast<size_t>(cursor_ - begin_); }
+
  private:
+  void Init(const std::vector<AutofillField*>& fields);
+
   // Indicates the current position in the stream, represented as a vector.
   std::vector<AutofillField*>::const_iterator cursor_;
 
@@ -50,10 +58,13 @@ class AutofillScanner {
   std::vector<AutofillField*>::const_iterator saved_cursor_;
 
   // The beginning pointer for the stream.
-  const std::vector<AutofillField*>::const_iterator begin_;
+  std::vector<AutofillField*>::const_iterator begin_;
 
   // The past-the-end pointer for the stream.
-  const std::vector<AutofillField*>::const_iterator end_;
+  std::vector<AutofillField*>::const_iterator end_;
+
+  // The storage of non-owning pointers, used for the unique_ptr constructor.
+  std::vector<AutofillField*> non_owning_;
 
   DISALLOW_COPY_AND_ASSIGN(AutofillScanner);
 };

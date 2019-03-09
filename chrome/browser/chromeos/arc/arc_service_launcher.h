@@ -7,11 +7,20 @@
 
 #include <memory>
 
+#include "ash/public/cpp/default_scale_factor_retriever.h"
 #include "base/macros.h"
-#include "base/memory/weak_ptr.h"
-#include "components/arc/arc_service_manager.h"
+
+class Profile;
+
+namespace ash {
+class DefaultScaleFactorRetriever;
+}
 
 namespace arc {
+
+class ArcPlayStoreEnabledPreferenceHandler;
+class ArcServiceManager;
+class ArcSessionManager;
 
 // Detects ARC availability and launches ARC bridge service.
 class ArcServiceLauncher {
@@ -19,15 +28,33 @@ class ArcServiceLauncher {
   ArcServiceLauncher();
   ~ArcServiceLauncher();
 
-  void Initialize();
+  // Returns a global instance.
+  static ArcServiceLauncher* Get();
+
+  // Called just before most of BrowserContextKeyedService instance creation.
+  // Set the given |profile| to ArcSessionManager, if the profile is allowed
+  // to use ARC.
+  void MaybeSetProfile(Profile* profile);
+
+  // Called when the main profile is initialized after user logs in.
+  void OnPrimaryUserProfilePrepared(Profile* profile);
+
+  // Called after the main MessageLoop stops, and before the Profile is
+  // destroyed.
   void Shutdown();
 
- private:
-  // DBus callback.
-  void OnArcAvailable(bool available);
+  // Resets internal state for testing. Specifically this needs to be
+  // called if other profile needs to be used in the tests. In that case,
+  // following this call, MaybeSetProfile() and
+  // OnPrimaryUserProfilePrepared() should be called.
+  void ResetForTesting();
 
+ private:
+  ash::DefaultScaleFactorRetriever default_scale_factor_retriever_;
   std::unique_ptr<ArcServiceManager> arc_service_manager_;
-  base::WeakPtrFactory<ArcServiceLauncher> weak_factory_;
+  std::unique_ptr<ArcSessionManager> arc_session_manager_;
+  std::unique_ptr<ArcPlayStoreEnabledPreferenceHandler>
+      arc_play_store_enabled_preference_handler_;
 
   DISALLOW_COPY_AND_ASSIGN(ArcServiceLauncher);
 };

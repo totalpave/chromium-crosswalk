@@ -7,89 +7,81 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/bind.h"
 #include "base/logging.h"
-#include "base/memory/shared_memory.h"
-#include "components/visitedlink/common/visitedlink_messages.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/web/web_view.h"
 
 using blink::WebView;
 
 namespace visitedlink {
 
-VisitedLinkSlave::VisitedLinkSlave() : shared_memory_(NULL) {}
+VisitedLinkSlave::VisitedLinkSlave() : binding_(this), weak_factory_(this) {}
 
 VisitedLinkSlave::~VisitedLinkSlave() {
   FreeTable();
 }
 
-bool VisitedLinkSlave::OnControlMessageReceived(const IPC::Message& message) {
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(VisitedLinkSlave, message)
-    IPC_MESSAGE_HANDLER(ChromeViewMsg_VisitedLink_NewTable,
-                        OnUpdateVisitedLinks)
-    IPC_MESSAGE_HANDLER(ChromeViewMsg_VisitedLink_Add, OnAddVisitedLinks)
-    IPC_MESSAGE_HANDLER(ChromeViewMsg_VisitedLink_Reset, OnResetVisitedLinks)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-  return handled;
+base::Callback<void(mojom::VisitedLinkNotificationSinkRequest)>
+VisitedLinkSlave::GetBindCallback() {
+  return base::Bind(&VisitedLinkSlave::Bind, weak_factory_.GetWeakPtr());
 }
 
-// This function's job is to initialize the table with the given
-// shared memory handle. This memory is mapped into the process.
-void VisitedLinkSlave::OnUpdateVisitedLinks(base::SharedMemoryHandle table) {
-  DCHECK(base::SharedMemory::IsHandleValid(table)) << "Bad table handle";
-  // since this function may be called again to change the table, we may need
-  // to free old objects
+// Initializes the table with the given shared memory handle. This memory is
+// mapped into the process.
+void VisitedLinkSlave::UpdateVisitedLinks(
+    base::ReadOnlySharedMemoryRegion table_region) {
+  // Since this function may be called again to change the table, we may need
+  // to free old objects.
   FreeTable();
-  DCHECK(shared_memory_ == NULL && hash_table_ == NULL);
+  DCHECK(hash_table_ == nullptr);
 
-  // create the shared memory object
-  shared_memory_ = new base::SharedMemory(table, true);
-  if (!shared_memory_)
-    return;
+  int32_t table_len = 0;
+  {
+    // Map the header into our process so we can see how long the rest is,
+    // and set the salt.
+    base::ReadOnlySharedMemoryMapping header_mapping =
+        table_region.MapAt(0, sizeof(SharedHeader));
+    if (!header_mapping.IsValid())
+      return;
 
-  // map the header into our process so we can see how long the rest is,
-  // and set the salt
-  if (!shared_memory_->Map(sizeof(SharedHeader)))
-    return;
-  SharedHeader* header =
-    static_cast<SharedHeader*>(shared_memory_->memory());
-  DCHECK(header);
-  int32_t table_len = header->length;
-  memcpy(salt_, header->salt, sizeof(salt_));
-  shared_memory_->Unmap();
-
-  // now do the whole table because we know the length
-  if (!shared_memory_->Map(sizeof(SharedHeader) +
-                          table_len * sizeof(Fingerprint))) {
-    shared_memory_->Close();
-    return;
+    const SharedHeader* header =
+        static_cast<const SharedHeader*>(header_mapping.memory());
+    table_len = header->length;
+    memcpy(salt_, header->salt, sizeof(salt_));
   }
 
-  // commit the data
-  DCHECK(shared_memory_->memory());
-  hash_table_ = reinterpret_cast<Fingerprint*>(
-      static_cast<char*>(shared_memory_->memory()) + sizeof(SharedHeader));
+  // Now we know the length, so map the table contents.
+  table_mapping_ = table_region.Map();
+  if (!table_mapping_.IsValid())
+    return;
+
+  // Commit the data.
+  hash_table_ = const_cast<Fingerprint*>(reinterpret_cast<const Fingerprint*>(
+      static_cast<const SharedHeader*>(table_mapping_.memory()) + 1));
   table_length_ = table_len;
 }
 
-void VisitedLinkSlave::OnAddVisitedLinks(
-    const VisitedLinkSlave::Fingerprints& fingerprints) {
+void VisitedLinkSlave::AddVisitedLinks(
+    const std::vector<VisitedLinkSlave::Fingerprint>& fingerprints) {
   for (size_t i = 0; i < fingerprints.size(); ++i)
-    WebView::updateVisitedLinkState(fingerprints[i]);
+    WebView::UpdateVisitedLinkState(fingerprints[i]);
 }
 
-void VisitedLinkSlave::OnResetVisitedLinks(bool invalidate_hashes) {
-  WebView::resetVisitedLinkState(invalidate_hashes);
+void VisitedLinkSlave::ResetVisitedLinks(bool invalidate_hashes) {
+  WebView::ResetVisitedLinkState(invalidate_hashes);
 }
 
 void VisitedLinkSlave::FreeTable() {
-  if (shared_memory_) {
-    delete shared_memory_;
-    shared_memory_ = NULL;
-  }
-  hash_table_ = NULL;
+  if (!hash_table_)
+    return;
+
+  table_mapping_ = base::ReadOnlySharedMemoryMapping();
+  hash_table_ = nullptr;
   table_length_ = 0;
+}
+
+void VisitedLinkSlave::Bind(mojom::VisitedLinkNotificationSinkRequest request) {
+  binding_.Bind(std::move(request));
 }
 
 }  // namespace visitedlink

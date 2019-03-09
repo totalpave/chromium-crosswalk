@@ -10,6 +10,7 @@
 #include "jni/CombinedPolicyProvider_jni.h"
 
 using base::android::AttachCurrentThread;
+using base::android::JavaParamRef;
 
 namespace {
 
@@ -28,18 +29,18 @@ AndroidCombinedPolicyProvider::AndroidCombinedPolicyProvider(
   policy_converter_.reset(new policy::android::PolicyConverter(schema));
   java_combined_policy_provider_.Reset(Java_CombinedPolicyProvider_linkNative(
       AttachCurrentThread(), reinterpret_cast<intptr_t>(this),
-      policy_converter_->GetJavaObject().obj()));
+      policy_converter_->GetJavaObject()));
 }
 
 AndroidCombinedPolicyProvider::~AndroidCombinedPolicyProvider() {
-  Java_CombinedPolicyProvider_linkNative(AttachCurrentThread(), 0, jobject());
+  Java_CombinedPolicyProvider_linkNative(AttachCurrentThread(), 0, nullptr);
   java_combined_policy_provider_.Reset();
 }
 
 void AndroidCombinedPolicyProvider::RefreshPolicies() {
   JNIEnv* env = AttachCurrentThread();
-  Java_CombinedPolicyProvider_refreshPolicies(
-      env, java_combined_policy_provider_.obj());
+  Java_CombinedPolicyProvider_refreshPolicies(env,
+                                              java_combined_policy_provider_);
 }
 
 void AndroidCombinedPolicyProvider::FlushPolicies(
@@ -58,10 +59,6 @@ void AndroidCombinedPolicyProvider::SetShouldWaitForPolicy(
 bool AndroidCombinedPolicyProvider::IsInitializationComplete(
     PolicyDomain domain) const {
   return initialized_;
-}
-
-bool AndroidCombinedPolicyProvider::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace android

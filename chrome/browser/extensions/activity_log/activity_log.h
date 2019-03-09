@@ -23,7 +23,7 @@
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/extension_registry_observer.h"
-#include "extensions/browser/script_execution_observer.h"
+#include "extensions/browser/script_executor.h"
 #include "extensions/common/dom_action_types.h"
 
 class Profile;
@@ -39,6 +39,7 @@ class PrefRegistrySyncable;
 namespace extensions {
 class Extension;
 class ExtensionRegistry;
+class ExtensionSystem;
 
 // A utility for tracing interesting activity for each extension.
 // It writes to an ActivityDatabase on a separate thread to record the activity.
@@ -46,7 +47,6 @@ class ExtensionRegistry;
 // each profile.
 //
 class ActivityLog : public BrowserContextKeyedAPI,
-                    public ScriptExecutionObserver,
                     public ExtensionRegistryObserver,
                     public content::NotificationObserver {
  public:
@@ -62,6 +62,14 @@ class ActivityLog : public BrowserContextKeyedAPI,
   // ActivityLog is a KeyedService, so don't instantiate it with
   // the constructor; use GetInstance instead.
   static ActivityLog* GetInstance(content::BrowserContext* context);
+
+  // Invoked when a ContentScript is executed.
+  void OnScriptsExecuted(content::WebContents* web_contents,
+                         const ExecutingScriptsMap& extension_ids,
+                         const GURL& on_url);
+
+  // Observe tabs.executeScript on the given |executor|.
+  void ObserveScripts(ScriptExecutor* executor);
 
   // Add/remove observer: the activityLogPrivate API only listens when the
   // ActivityLog extension is registered for an event.
@@ -87,8 +95,8 @@ class ActivityLog : public BrowserContextKeyedAPI,
       const std::string& page_url,
       const std::string& arg_url,
       const int days_ago,
-      const base::Callback<
-          void(std::unique_ptr<std::vector<scoped_refptr<Action>>>)>& callback);
+      base::OnceCallback<
+          void(std::unique_ptr<std::vector<scoped_refptr<Action>>>)> callback);
 
   // ExtensionRegistryObserver.
   // We keep track of whether the whitelisted extension is installed; if it is,
@@ -97,7 +105,7 @@ class ActivityLog : public BrowserContextKeyedAPI,
                          const Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const Extension* extension,
                               extensions::UninstallReason reason) override;
@@ -107,6 +115,10 @@ class ActivityLog : public BrowserContextKeyedAPI,
   // Remove actions from the activity log database which IDs specified in the
   // action_ids array.
   void RemoveActions(const std::vector<int64_t>& action_ids);
+
+  // Remove all actions from the activity log database with the specified
+  // extension_id.
+  void RemoveExtensionData(const std::string& extension_id);
 
   // Clean up URLs from the activity log database.
   // If restrict_urls is empty then all URLs in the activity log database are
@@ -124,6 +136,10 @@ class ActivityLog : public BrowserContextKeyedAPI,
   // active.
   void SetWatchdogAppActiveForTesting(bool active);
 
+  bool has_listeners() const { return has_listeners_; }
+
+  void SetHasListeners(bool has_listeners);
+
  private:
   friend class ActivityLogTest;
   friend class BrowserContextKeyedAPIFactory<ActivityLog>;
@@ -133,6 +149,8 @@ class ActivityLog : public BrowserContextKeyedAPI,
 
   // Specifies if the Watchdog app is active (installed & enabled).
   // If so, we need to log to the database and stream to the API.
+  // TODO(kelvinjiang): eliminate this check if possible to simplify logic and
+  // for the deprecation of the Chrome Apps & Extensions Developer Tool.
   bool IsWatchdogAppActive();
 
   // Specifies if we need to record actions to the db. If so, we need to log to
@@ -140,11 +158,9 @@ class ActivityLog : public BrowserContextKeyedAPI,
   // --enable-extension-activity-logging flag is set.
   bool IsDatabaseEnabled();
 
-  // ScriptExecutionObserver implementation.
-  // Fires when a ContentScript is executed.
-  void OnScriptsExecuted(const content::WebContents* web_contents,
-                         const ExecutingScriptsMap& extension_ids,
-                         const GURL& on_url) override;
+  // Updates cached_consumer_count_ to be active_consumers_ and stores the value
+  // in prefs.
+  void UpdateCachedConsumerCount();
 
   // At the moment, ActivityLog will use only one policy for summarization.
   // These methods are used to choose and set the most appropriate policy.
@@ -154,12 +170,17 @@ class ActivityLog : public BrowserContextKeyedAPI,
   void SetDatabasePolicy(ActivityLogPolicy::PolicyType policy_type);
 
   // Checks the current |is_active_| state and modifies it if appropriate.
-  void CheckActive();
+  // If |use_cached| is true, then this checks the cached_consumer_count_ for
+  // whether or not a consumer is active. Otherwise, checks active_consumers_.
+  void CheckActive(bool use_cached);
 
   // content::NotificationObserver:
   void Observe(int type,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
+
+  // Called once the ExtensionSystem is ready.
+  void OnExtensionSystemReady();
 
   // BrowserContextKeyedAPI implementation.
   static const char* service_name() { return "ActivityLog"; }
@@ -181,6 +202,9 @@ class ActivityLog : public BrowserContextKeyedAPI,
   ActivityLogPolicy::PolicyType database_policy_type_;
 
   Profile* profile_;
+
+  ExtensionSystem* extension_system_;
+
   bool db_enabled_;  // Whether logging to disk is currently enabled.
   // testing_mode_ controls which policy is selected.
   // * By default, we choose a policy that doesn't log most arguments to avoid
@@ -188,11 +212,6 @@ class ActivityLog : public BrowserContextKeyedAPI,
   // * In testing mode, we choose a policy that logs all arguments.
   // testing_mode_ also causes us to print to the console.
   bool testing_mode_;
-  // We need the DB, FILE, and IO threads to write to the database.
-  // In some cases (tests), these threads might not exist, so we avoid
-  // dispatching anything to the policies/database to prevent things from
-  // exploding.
-  bool has_threads_;
 
   // Used to track whether the whitelisted extension is installed. If it's
   // added or removed, enabled_ may change.
@@ -200,10 +219,20 @@ class ActivityLog : public BrowserContextKeyedAPI,
                  extensions::ExtensionRegistryObserver>
       extension_registry_observer_;
 
-  // Set if the watchdog app is installed and enabled. Maintained by
-  // kWatchdogExtensionActive pref variable. Since there are multiple valid
-  // extension IDs, this needs to be an int to count how many are installed.
-  int watchdog_apps_active_;
+  // The number of active consumers of the activity log.
+  // TODO(kelvinjiang): eliminate this flag if possible and use has_listeners_
+  // instead to simplify logic.
+  int active_consumers_;
+
+  // The cached number of consumers of the activity log. Maintained by the
+  // kWatchdogExtensionActive pref variable, and updated on startup. We cache
+  // the result so that we can record extension actions that happen before
+  // all extensions have finished loading.
+  int cached_consumer_count_;
+
+  // Whether there are listeners on the browser side for the onExtensionActivity
+  // event.
+  bool has_listeners_;
 
   // True if the activity log is currently active, meaning that the user has
   // either added the commandline switch or has loaded a compatible extension.
@@ -212,6 +241,8 @@ class ActivityLog : public BrowserContextKeyedAPI,
   bool is_active_;
 
   content::NotificationRegistrar registrar_;
+
+  base::WeakPtrFactory<ActivityLog> weak_factory_;
 
   FRIEND_TEST_ALL_PREFIXES(ActivityLogApiTest, TriggerEvent);
   FRIEND_TEST_ALL_PREFIXES(ActivityLogEnabledTest, AppAndCommandLine);

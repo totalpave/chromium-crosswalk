@@ -4,10 +4,11 @@
 
 #include "net/cert/ct_log_response_parser.h"
 
+#include <memory>
+
 #include "base/base64.h"
 #include "base/json/json_value_converter.h"
 #include "base/logging.h"
-#include "base/memory/scoped_vector.h"
 #include "base/strings/string_piece.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -32,7 +33,7 @@ struct JsonSignedTreeHead {
       base::JSONValueConverter<JsonSignedTreeHead>* converted);
 };
 
-bool ConvertSHA256RootHash(const base::StringPiece& s, std::string* result) {
+bool ConvertSHA256RootHash(base::StringPiece s, std::string* result) {
   if (!base::Base64Decode(s, result)) {
     DVLOG(1) << "Failed decoding sha256_root_hash";
     return false;
@@ -47,8 +48,7 @@ bool ConvertSHA256RootHash(const base::StringPiece& s, std::string* result) {
   return true;
 }
 
-bool ConvertTreeHeadSignature(const base::StringPiece& s,
-                              DigitallySigned* result) {
+bool ConvertTreeHeadSignature(base::StringPiece s, DigitallySigned* result) {
   std::string tree_head_signature;
   if (!base::Base64Decode(s, &tree_head_signature)) {
     DVLOG(1) << "Failed decoding tree_head_signature";
@@ -105,7 +105,7 @@ bool IsJsonSTHStructurallyValid(const JsonSignedTreeHead& sth) {
 // Structure for making JSON decoding easier. The string fields
 // are base64-encoded so will require further decoding.
 struct JsonConsistencyProof {
-  ScopedVector<std::string> proof_nodes;
+  std::vector<std::unique_ptr<std::string>> proof_nodes;
 
   static void RegisterJSONConverter(
       base::JSONValueConverter<JsonConsistencyProof>* converter);
@@ -170,7 +170,7 @@ bool FillConsistencyProof(const base::Value& json_consistency_proof,
   }
 
   consistency_proof->reserve(parsed_proof.proof_nodes.size());
-  for (std::string* proof_node : parsed_proof.proof_nodes) {
+  for (const auto& proof_node : parsed_proof.proof_nodes) {
     consistency_proof->push_back(*proof_node);
   }
 

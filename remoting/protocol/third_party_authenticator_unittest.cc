@@ -22,7 +22,7 @@
 #include "remoting/protocol/v2_authenticator.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using testing::_;
 using testing::DeleteArg;
@@ -73,7 +73,7 @@ class ThirdPartyAuthenticatorTest : public AuthenticatorTestBase {
      : token_url_(kTokenUrl),
        token_scope_(kTokenScope) {}
 
-    ~FakeTokenValidator() override {}
+    ~FakeTokenValidator() override = default;
 
     void ValidateThirdPartyToken(
         const std::string& token,
@@ -98,8 +98,8 @@ class ThirdPartyAuthenticatorTest : public AuthenticatorTestBase {
   };
 
  public:
-  ThirdPartyAuthenticatorTest() {}
-  ~ThirdPartyAuthenticatorTest() override {}
+  ThirdPartyAuthenticatorTest() = default;
+  ~ThirdPartyAuthenticatorTest() override = default;
 
  protected:
   void InitAuthenticators() {

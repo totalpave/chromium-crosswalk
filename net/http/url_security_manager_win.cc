@@ -5,11 +5,11 @@
 #include "net/http/url_security_manager.h"
 
 #include <urlmon.h>
+#include <wrl/client.h>
 
 #include "base/macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/win/scoped_comptr.h"
 #include "net/http/http_auth_filter.h"
 #include "url/gurl.h"
 
@@ -37,7 +37,7 @@ class URLSecurityManagerWin : public URLSecurityManagerWhitelist {
  private:
   bool EnsureSystemSecurityManager();
 
-  base::win::ScopedComPtr<IInternetSecurityManager> security_manager_;
+  Microsoft::WRL::ComPtr<IInternetSecurityManager> security_manager_;
 
   DISALLOW_COPY_AND_ASSIGN(URLSecurityManagerWin);
 };
@@ -55,11 +55,9 @@ bool URLSecurityManagerWin::CanUseDefaultCredentials(
   base::string16 url16 = base::ASCIIToUTF16(auth_origin.spec());
   DWORD policy = 0;
   HRESULT hr;
-  hr = security_manager_->ProcessUrlAction(url16.c_str(),
-                                           URLACTION_CREDENTIALS_USE,
-                                           reinterpret_cast<BYTE*>(&policy),
-                                           sizeof(policy), NULL, 0,
-                                           PUAF_NOUI, 0);
+  hr = security_manager_->ProcessUrlAction(
+      base::as_wcstr(url16), URLACTION_CREDENTIALS_USE,
+      reinterpret_cast<BYTE*>(&policy), sizeof(policy), NULL, 0, PUAF_NOUI, 0);
   if (FAILED(hr)) {
     LOG(ERROR) << "IInternetSecurityManager::ProcessUrlAction failed: " << hr;
     return false;
@@ -83,7 +81,7 @@ bool URLSecurityManagerWin::CanUseDefaultCredentials(
       // URLZONE_INTERNET      3
       // URLZONE_UNTRUSTED     4
       DWORD zone = 0;
-      hr = security_manager_->MapUrlToZone(url16.c_str(), &zone, 0);
+      hr = security_manager_->MapUrlToZone(base::as_wcstr(url16), &zone, 0);
       if (FAILED(hr)) {
         LOG(ERROR) << "IInternetSecurityManager::MapUrlToZone failed: " << hr;
         return false;
@@ -103,11 +101,10 @@ bool URLSecurityManagerWin::CanUseDefaultCredentials(
 // TODO(cbentzel): Could CanDelegate use the security zone as well?
 
 bool URLSecurityManagerWin::EnsureSystemSecurityManager() {
-  if (!security_manager_.get()) {
-    HRESULT hr = CoInternetCreateSecurityManager(NULL,
-                                                 security_manager_.Receive(),
-                                                 NULL);
-    if (FAILED(hr) || !security_manager_.get()) {
+  if (!security_manager_.Get()) {
+    HRESULT hr = CoInternetCreateSecurityManager(
+        NULL, security_manager_.GetAddressOf(), NULL);
+    if (FAILED(hr) || !security_manager_.Get()) {
       LOG(ERROR) << "Unable to create the Windows Security Manager instance";
       return false;
     }
@@ -116,8 +113,8 @@ bool URLSecurityManagerWin::EnsureSystemSecurityManager() {
 }
 
 // static
-URLSecurityManager* URLSecurityManager::Create() {
-  return new URLSecurityManagerWin;
+std::unique_ptr<URLSecurityManager> URLSecurityManager::Create() {
+  return std::make_unique<URLSecurityManagerWin>();
 }
 
 }  //  namespace net

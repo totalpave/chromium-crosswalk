@@ -7,6 +7,10 @@
 
 #include "ash/ash_export.h"
 
+namespace ui {
+class Event;
+}
+
 namespace views {
 class Button;
 class InkDrop;

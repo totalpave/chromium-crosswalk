@@ -20,24 +20,29 @@ namespace password_manager {
 class PasswordStoreDefault : public PasswordStore {
  public:
   // The |login_db| must not have been Init()-ed yet. It will be initialized in
-  // a deferred manner on the DB thread.
-  PasswordStoreDefault(
-      scoped_refptr<base::SingleThreadTaskRunner> main_thread_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> db_thread_runner,
-      std::unique_ptr<LoginDatabase> login_db);
-
-  bool Init(const syncer::SyncableService::StartSyncFlare& flare) override;
+  // a deferred manner on the background sequence.
+  explicit PasswordStoreDefault(std::unique_ptr<LoginDatabase> login_db);
 
   void ShutdownOnUIThread() override;
 
-  // To be used only for testing.
+#if defined(USE_X11)
+  // Dispose the current |login_db_| and use |login_db|. |login_db| is expected
+  // to have been initialised. A null value is equivalent to a database which
+  // can't be opened.
+  // TODO(crbug.com/571003) This is only used to migrate Linux to an encrypted
+  // LoginDatabase.
+  void SetLoginDB(std::unique_ptr<LoginDatabase> login_db);
+#endif  // defined(USE_X11)
+
+  // To be used only for testing or in subclasses.
   LoginDatabase* login_db() const { return login_db_.get(); }
 
  protected:
   ~PasswordStoreDefault() override;
 
-  // Opens |login_db_| on the DB thread.
-  void InitOnDBThread();
+  // Opens |login_db_| on the background sequence.
+  bool InitOnBackgroundSequence(
+      const syncer::SyncableService::StartSyncFlare& flare) override;
 
   // Implements PasswordStore interface.
   void ReportMetricsImpl(const std::string& sync_username,
@@ -58,36 +63,47 @@ class PasswordStoreDefault : public PasswordStore {
   PasswordStoreChangeList RemoveLoginsSyncedBetweenImpl(
       base::Time delete_begin,
       base::Time delete_end) override;
-  PasswordStoreChangeList DisableAutoSignInForAllLoginsImpl() override;
-  bool RemoveStatisticsCreatedBetweenImpl(base::Time delete_begin,
-                                          base::Time delete_end) override;
-  ScopedVector<autofill::PasswordForm> FillMatchingLogins(
-      const autofill::PasswordForm& form) override;
+  PasswordStoreChangeList DisableAutoSignInForOriginsImpl(
+      const base::Callback<bool(const GURL&)>& origin_filter) override;
+  bool RemoveStatisticsByOriginAndTimeImpl(
+      const base::Callback<bool(const GURL&)>& origin_filter,
+      base::Time delete_begin,
+      base::Time delete_end) override;
+  std::vector<std::unique_ptr<autofill::PasswordForm>> FillMatchingLogins(
+      const FormDigest& form) override;
+  std::vector<std::unique_ptr<autofill::PasswordForm>>
+  FillLoginsForSameOrganizationName(const std::string& signon_realm) override;
   bool FillAutofillableLogins(
-      ScopedVector<autofill::PasswordForm>* forms) override;
+      std::vector<std::unique_ptr<autofill::PasswordForm>>* forms) override;
   bool FillBlacklistLogins(
-      ScopedVector<autofill::PasswordForm>* forms) override;
+      std::vector<std::unique_ptr<autofill::PasswordForm>>* forms) override;
+  DatabaseCleanupResult DeleteUndecryptableLogins() override;
   void AddSiteStatsImpl(const InteractionsStats& stats) override;
   void RemoveSiteStatsImpl(const GURL& origin_domain) override;
-  std::vector<std::unique_ptr<InteractionsStats>> GetSiteStatsImpl(
+  std::vector<InteractionsStats> GetAllSiteStatsImpl() override;
+  std::vector<InteractionsStats> GetSiteStatsImpl(
       const GURL& origin_domain) override;
+
+  // Implements PasswordStoreSync interface.
+  bool BeginTransaction() override;
+  bool CommitTransaction() override;
+  FormRetrievalResult ReadAllLogins(
+      PrimaryKeyToFormMap* key_to_form_map) override;
+  PasswordStoreChangeList RemoveLoginByPrimaryKeySync(int primary_key) override;
+  PasswordStoreSync::MetadataStore* GetMetadataStore() override;
 
   inline bool DeleteAndRecreateDatabaseFile() {
     return login_db_->DeleteAndRecreateDatabaseFile();
   }
 
-  void set_login_db(std::unique_ptr<password_manager::LoginDatabase> login_db) {
-    login_db_.swap(login_db);
-  }
-
  private:
-  // Resets |login_db_| on the background thread.
+  // Resets |login_db_| on the background sequence.
   void ResetLoginDB();
 
   // The login SQL database. The LoginDatabase instance is received via the
   // in an uninitialized state, so as to allow injecting mocks, then Init() is
-  // called on the DB thread in a deferred manner. If opening the DB fails,
-  // |login_db_| will be reset and stay NULL for the lifetime of |this|.
+  // called on the background sequence in a deferred manner. If opening the DB
+  // fails, |login_db_| will be reset and stay NULL for the lifetime of |this|.
   std::unique_ptr<LoginDatabase> login_db_;
 
   DISALLOW_COPY_AND_ASSIGN(PasswordStoreDefault);

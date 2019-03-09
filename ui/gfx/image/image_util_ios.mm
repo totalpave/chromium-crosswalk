@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <UIKit/UIKit.h>
+#import <UIKit/UIKit.h>
 
+#include "third_party/google_toolbox_for_mac/src/iPhone/GTMUIImage+Resize.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_util.h"
+#include "ui/gfx/image/resize_image_dimensions.h"
 
 #include "base/logging.h"
 
@@ -22,6 +24,22 @@ bool JPEG1xEncodedDataFromImage(const Image& image,
   dst->resize([data length]);
   [data getBytes:&dst->at(0) length:[data length]];
   return true;
+}
+
+Image ResizedImageForSearchByImage(const Image& image) {
+  UIImage* ui_image = image.ToUIImage();
+
+  if (ui_image &&
+      ui_image.size.height * ui_image.size.width > kSearchByImageMaxImageArea &&
+      (ui_image.size.width > kSearchByImageMaxImageWidth ||
+       ui_image.size.height > kSearchByImageMaxImageHeight)) {
+    CGSize new_image_size =
+        CGSizeMake(kSearchByImageMaxImageWidth, kSearchByImageMaxImageHeight);
+    ui_image = [ui_image gtm_imageByResizingToSize:new_image_size
+                               preserveAspectRatio:YES
+                                         trimToFit:NO];
+  }
+  return Image(ui_image);
 }
 
 }  // end namespace gfx

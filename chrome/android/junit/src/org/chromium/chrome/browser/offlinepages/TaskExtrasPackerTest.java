@@ -10,14 +10,16 @@ import static org.junit.Assert.assertTrue;
 
 import android.os.Bundle;
 
-import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.ChromeBackgroundService;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
+import org.robolectric.annotation.Config;
+
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Feature;
 
 /** Unit tests for {@link TaskExtrasPacker}. */
-@RunWith(JUnit4.class)
+@RunWith(BaseRobolectricTestRunner.class)
+@Config(manifest = Config.NONE)
 public class TaskExtrasPackerTest {
     @Test
     @Feature({"OfflinePages"})
@@ -29,7 +31,6 @@ public class TaskExtrasPackerTest {
         long scheduledTimeMillis = TaskExtrasPacker.unpackTimeFromBundle(taskExtras);
         assertTrue(scheduledTimeMillis >= beforeMillis);
         assertTrue(scheduledTimeMillis <= afterMillis);
-        assertTrue(taskExtras.getBoolean(ChromeBackgroundService.HOLD_WAKELOCK, false));
     }
 
     @Test
@@ -54,6 +55,7 @@ public class TaskExtrasPackerTest {
     public void testTriggerConditionsExtraDefaults() {
         TriggerConditions unpackedConditionsFromEmptyBundle =
                 TaskExtrasPacker.unpackTriggerConditionsFromBundle(new Bundle());
+
         // Verify conservative defaults:
         assertTrue(unpackedConditionsFromEmptyBundle.requirePowerConnected());
         assertEquals(100, unpackedConditionsFromEmptyBundle.getMinimumBatteryPercentage());

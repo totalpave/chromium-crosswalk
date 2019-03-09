@@ -10,8 +10,21 @@
 
 namespace extensions {
 
+class ImageWriterPrivateBaseFunction : public ChromeAsyncExtensionFunction {
+ public:
+  ImageWriterPrivateBaseFunction();
+
+  virtual void OnComplete(bool success, const std::string& error);
+
+ protected:
+  ~ImageWriterPrivateBaseFunction() override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(ImageWriterPrivateBaseFunction);
+};
+
 class ImageWriterPrivateWriteFromUrlFunction
-    : public ChromeAsyncExtensionFunction {
+    : public ImageWriterPrivateBaseFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("imageWriterPrivate.writeFromUrl",
                              IMAGEWRITER_WRITEFROMURL)
@@ -20,11 +33,10 @@ class ImageWriterPrivateWriteFromUrlFunction
  private:
   ~ImageWriterPrivateWriteFromUrlFunction() override;
   bool RunAsync() override;
-  void OnWriteStarted(bool success, const std::string& error);
 };
 
 class ImageWriterPrivateWriteFromFileFunction
-    : public ChromeAsyncExtensionFunction {
+    : public ImageWriterPrivateBaseFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("imageWriterPrivate.writeFromFile",
                              IMAGEWRITER_WRITEFROMFILE)
@@ -33,11 +45,10 @@ class ImageWriterPrivateWriteFromFileFunction
  private:
   ~ImageWriterPrivateWriteFromFileFunction() override;
   bool RunAsync() override;
-  void OnWriteStarted(bool success, const std::string& error);
 };
 
 class ImageWriterPrivateCancelWriteFunction
-    : public ChromeAsyncExtensionFunction {
+    : public ImageWriterPrivateBaseFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("imageWriterPrivate.cancelWrite",
                              IMAGEWRITER_CANCELWRITE)
@@ -46,11 +57,10 @@ class ImageWriterPrivateCancelWriteFunction
  private:
   ~ImageWriterPrivateCancelWriteFunction() override;
   bool RunAsync() override;
-  void OnWriteCancelled(bool success, const std::string& error);
 };
 
 class ImageWriterPrivateDestroyPartitionsFunction
-    : public ChromeAsyncExtensionFunction {
+    : public ImageWriterPrivateBaseFunction {
  public:
   DECLARE_EXTENSION_FUNCTION("imageWriterPrivate.destroyPartitions",
                              IMAGEWRITER_DESTROYPARTITIONS)
@@ -59,21 +69,19 @@ class ImageWriterPrivateDestroyPartitionsFunction
  private:
   ~ImageWriterPrivateDestroyPartitionsFunction() override;
   bool RunAsync() override;
-  void OnDestroyComplete(bool success, const std::string& error);
 };
 
 class ImageWriterPrivateListRemovableStorageDevicesFunction
     : public ChromeAsyncExtensionFunction {
   public:
-    DECLARE_EXTENSION_FUNCTION("imageWriterPrivate.listRemovableStorageDevices",
-                               IMAGEWRITER_LISTREMOVABLESTORAGEDEVICES);
-  ImageWriterPrivateListRemovableStorageDevicesFunction();
+   DECLARE_EXTENSION_FUNCTION("imageWriterPrivate.listRemovableStorageDevices",
+                              IMAGEWRITER_LISTREMOVABLESTORAGEDEVICES)
+   ImageWriterPrivateListRemovableStorageDevicesFunction();
 
- private:
-  ~ImageWriterPrivateListRemovableStorageDevicesFunction() override;
-  bool RunAsync() override;
-  void OnDeviceListReady(scoped_refptr<StorageDeviceList> device_list,
-                         bool success);
+  private:
+   ~ImageWriterPrivateListRemovableStorageDevicesFunction() override;
+   bool RunAsync() override;
+   void OnDeviceListReady(scoped_refptr<StorageDeviceList> device_list);
 };
 
 }  // namespace extensions

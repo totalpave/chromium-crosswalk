@@ -35,14 +35,14 @@ ExtensionCommandsGlobalRegistry::~ExtensionCommandsGlobalRegistry() {
   }
 }
 
-static base::LazyInstance<
-    BrowserContextKeyedAPIFactory<ExtensionCommandsGlobalRegistry> > g_factory =
-    LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BrowserContextKeyedAPIFactory<
+    ExtensionCommandsGlobalRegistry>>::DestructorAtExit
+    g_extension_commands_global_registry_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<ExtensionCommandsGlobalRegistry>*
 ExtensionCommandsGlobalRegistry::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_extension_commands_global_registry_factory.Pointer();
 }
 
 // static
@@ -83,10 +83,6 @@ void ExtensionCommandsGlobalRegistry::AddExtensionKeybindings(
       continue;
     const ui::Accelerator& accelerator = iter->second.accelerator();
 
-    VLOG(0) << "Adding global keybinding for " << extension->name().c_str()
-            << " " << command_name.c_str()
-            << " key: " << accelerator.GetShortcutText();
-
     if (!IsAcceleratorRegistered(accelerator)) {
       if (!GlobalShortcutListener::GetInstance()->RegisterAccelerator(
               accelerator, this))
@@ -100,8 +96,6 @@ void ExtensionCommandsGlobalRegistry::AddExtensionKeybindings(
 void ExtensionCommandsGlobalRegistry::RemoveExtensionKeybindingImpl(
     const ui::Accelerator& accelerator,
     const std::string& command_name) {
-  VLOG(0) << "Removing keybinding for " << command_name.c_str();
-
   GlobalShortcutListener::GetInstance()->UnregisterAccelerator(
       accelerator, this);
 }

@@ -8,9 +8,12 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/test/test_timeouts.h"
+#include "base/timer/timer.h"
 #include "remoting/protocol/protocol_mock_objects.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -62,10 +65,10 @@ TEST_F(MonitoredVideoStubTest, OnChannelDisconnected) {
   EXPECT_CALL(*this, OnVideoChannelStatus(true));
   monitor_->ProcessVideoPacket(std::move(packet_), base::Closure());
 
+  base::RunLoop run_loop;
   EXPECT_CALL(*this, OnVideoChannelStatus(false))
-      .WillOnce(
-          InvokeWithoutArgs(&message_loop_, &base::MessageLoop::QuitWhenIdle));
-  message_loop_.Run();
+      .WillOnce(InvokeWithoutArgs(&run_loop, &base::RunLoop::QuitWhenIdle));
+  run_loop.Run();
 }
 
 TEST_F(MonitoredVideoStubTest, OnChannelStayConnected) {
@@ -88,11 +91,11 @@ TEST_F(MonitoredVideoStubTest, OnChannelStayDisconnected) {
 
   monitor_->ProcessVideoPacket(std::move(packet_), base::Closure());
 
-  message_loop_.PostDelayedTask(
-      FROM_HERE, base::MessageLoop::QuitWhenIdleClosure(),
+  message_loop_.task_runner()->PostDelayedTask(
+      FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated(),
       // The delay should be much greater than |kTestOverrideDelayMilliseconds|.
       TestTimeouts::tiny_timeout());
-  message_loop_.Run();
+  base::RunLoop().Run();
 }
 
 }  // namespace protocol

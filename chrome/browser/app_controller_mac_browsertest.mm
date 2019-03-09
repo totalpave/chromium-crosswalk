@@ -10,28 +10,35 @@
 #import <objc/runtime.h>
 #include <stddef.h>
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/command_line.h"
 #include "base/mac/foundation_util.h"
 #include "base/mac/scoped_nsobject.h"
 #include "base/run_loop.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/app/chrome_command_ids.h"
 #import "chrome/browser/app_controller_mac.h"
-#include "chrome/browser/apps/app_browsertest_util.h"
+#include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/cocoa/bookmarks/bookmark_menu_bridge.h"
 #include "chrome/browser/ui/cocoa/history_menu_bridge.h"
-#include "chrome/browser/ui/cocoa/run_loop_testing.h"
+#include "chrome/browser/ui/cocoa/last_active_browser_cocoa.h"
+#include "chrome/browser/ui/cocoa/test/run_loop_testing.h"
+#include "chrome/browser/ui/search/local_ntp_test_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/user_manager.h"
 #include "chrome/common/chrome_constants.h"
@@ -43,7 +50,7 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/common/profile_management_switches.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
@@ -51,6 +58,9 @@
 #include "extensions/common/extension.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#import "ui/events/test/cocoa_test_event_utils.h"
+
+using base::SysUTF16ToNSString;
 
 namespace {
 
@@ -111,6 +121,61 @@ void RunClosureWhenProfileInitialized(const base::Closure& closure,
 
 namespace {
 
+using AppControllerBrowserTest = InProcessBrowserTest;
+
+// Returns whether a window's pixels are actually on the screen, which is the
+// case when it and all of its parents are marked visible.
+bool IsReallyVisible(NSWindow* window) {
+  while (window) {
+    if (!window.visible)
+      return false;
+    window = [window parentWindow];
+  }
+  return true;
+}
+
+size_t CountVisibleWindows() {
+  size_t count = 0;
+  for (NSWindow* w in [NSApp windows])
+    count = count + (IsReallyVisible(w) ? 1 : 0);
+  return count;
+}
+
+// Returns how many visible NSWindows are expected for a given count of browser
+// windows.
+size_t ExpectedWindowCountForBrowserCount(size_t browsers) {
+  return browsers;
+}
+
+// Test browser shutdown with a command in the message queue.
+IN_PROC_BROWSER_TEST_F(AppControllerBrowserTest, CommandDuringShutdown) {
+  EXPECT_EQ(1u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(ExpectedWindowCountForBrowserCount(1), CountVisibleWindows());
+
+  chrome::AttemptExit();  // Set chrome::IsTryingToQuit and close all windows.
+
+  // Opening a new window here is fine (unload handlers can also interrupt
+  // exit). But closing the window posts an autorelease on
+  // BrowserWindowController, which calls ~Browser() and, if that was the last
+  // Browser, it invokes applicationWillTerminate: (because IsTryingToQuit is
+  // set). So, verify assumptions then process that autorelease.
+
+  EXPECT_EQ(1u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(ExpectedWindowCountForBrowserCount(0), CountVisibleWindows());
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(0u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(ExpectedWindowCountForBrowserCount(0), CountVisibleWindows());
+
+  NSEvent* cmd_n = cocoa_test_event_utils::KeyEventWithKeyCode(
+      'n', 'n', NSKeyDown, NSCommandKeyMask);
+  [[NSApp mainMenu] performSelector:@selector(performKeyEquivalent:)
+                         withObject:cmd_n
+                         afterDelay:0];
+  // Let the run loop get flushed, during process cleanup and try not to crash.
+}
+
 class AppControllerPlatformAppBrowserTest
     : public extensions::PlatformAppBrowserTest {
  protected:
@@ -130,7 +195,10 @@ class AppControllerPlatformAppBrowserTest
 // open then a reopen event does nothing.
 IN_PROC_BROWSER_TEST_F(AppControllerPlatformAppBrowserTest,
                        PlatformAppReopenWithWindows) {
-  base::scoped_nsobject<AppController> ac([[AppController alloc] init]);
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
+
   NSUInteger old_window_count = [[NSApp windows] count];
   EXPECT_EQ(1u, active_browser_list_->size());
   [ac applicationShouldHandleReopen:NSApp hasVisibleWindows:YES];
@@ -144,8 +212,9 @@ IN_PROC_BROWSER_TEST_F(AppControllerPlatformAppBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(AppControllerPlatformAppBrowserTest,
                        ActivationFocusesBrowserWindow) {
-  base::scoped_nsobject<AppController> app_controller(
-      [[AppController alloc] init]);
+  AppController* app_controller = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(app_controller);
 
   ExtensionTestMessageListener listener("Launched", false);
   const extensions::Extension* app =
@@ -155,8 +224,10 @@ IN_PROC_BROWSER_TEST_F(AppControllerPlatformAppBrowserTest,
   NSWindow* app_window = extensions::AppWindowRegistry::Get(profile())
                              ->GetAppWindowsForApp(app->id())
                              .front()
-                             ->GetNativeWindow();
-  NSWindow* browser_window = browser()->window()->GetNativeWindow();
+                             ->GetNativeWindow()
+                             .GetNativeNSWindow();
+  NSWindow* browser_window =
+      browser()->window()->GetNativeWindow().GetNativeNSWindow();
 
   chrome::testing::NSRunLoopRunAllPending();
   EXPECT_LE([[NSApp orderedWindows] indexOfObject:app_window],
@@ -187,7 +258,10 @@ class AppControllerWebAppBrowserTest : public InProcessBrowserTest {
 // Test that in web app mode a reopen event opens the app URL.
 IN_PROC_BROWSER_TEST_F(AppControllerWebAppBrowserTest,
                        WebAppReopenWithNoWindows) {
-  base::scoped_nsobject<AppController> ac([[AppController alloc] init]);
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
+
   EXPECT_EQ(1u, active_browser_list_->size());
   BOOL result = [ac applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];
 
@@ -216,12 +290,11 @@ void CreateProfileCallback(const base::Closure& quit_closure,
 void CreateAndWaitForSystemProfile() {
   ProfileManager::CreateCallback create_callback =
       base::Bind(&CreateProfileCallback,
-                 base::MessageLoop::current()->QuitWhenIdleClosure());
+                 base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   g_browser_process->profile_manager()->CreateProfileAsync(
       ProfileManager::GetSystemProfilePath(),
       create_callback,
       base::string16(),
-      std::string(),
       std::string());
   base::RunLoop().Run();
 }
@@ -232,17 +305,16 @@ class AppControllerNewProfileManagementBrowserTest
   AppControllerNewProfileManagementBrowserTest()
       : active_browser_list_(BrowserList::GetInstance()) {}
 
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    switches::EnableNewProfileManagementForTesting(command_line);
-  }
-
   const BrowserList* active_browser_list_;
 };
 
 // Test that for a regular last profile, a reopen event opens a browser.
 IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
                        RegularProfileReopenWithNoWindows) {
-  base::scoped_nsobject<AppController> ac([[AppController alloc] init]);
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
+
   EXPECT_EQ(1u, active_browser_list_->size());
   BOOL result = [ac applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];
 
@@ -258,9 +330,12 @@ IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
   // minimize flakiness due to the scheduling/descheduling of tasks on the
   // different threads, pre-initialize the guest profile before it is needed.
   CreateAndWaitForSystemProfile();
-  base::scoped_nsobject<AppController> ac([[AppController alloc] init]);
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
 
   // Lock the active profile.
+  base::ScopedAllowBlockingForTesting allow_blocking;
   Profile* profile = [ac lastProfile];
   ProfileAttributesEntry* entry;
   ASSERT_TRUE(g_browser_process->profile_manager()->
@@ -279,17 +354,66 @@ IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
   UserManager::Hide();
 }
 
+// Test that for a guest last profile, commandDispatch should open UserManager
+// if guest mode is disabled. Note that this test might be flaky under ASAN
+// due to https://crbug.com/674475. Please disable this test under ASAN
+// as the tests below if that happened.
+IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
+                       OpenGuestProfileOnlyIfGuestModeIsEnabled) {
+  CreateAndWaitForSystemProfile();
+  PrefService* local_state = g_browser_process->local_state();
+  local_state->SetString(prefs::kProfileLastUsed, chrome::kGuestProfileDir);
+  local_state->SetBoolean(prefs::kBrowserGuestModeEnabled, false);
+
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  Profile* profile = [ac lastProfile];
+  EXPECT_TRUE(profile->IsGuestSession());
+
+  NSMenu* menu = [ac applicationDockMenu:NSApp];
+  ASSERT_TRUE(menu);
+  NSMenuItem* item = [menu itemWithTag:IDC_NEW_WINDOW];
+  ASSERT_TRUE(item);
+  EXPECT_EQ(1u, active_browser_list_->size());
+
+  [ac commandDispatch:item];
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(1u, active_browser_list_->size());
+  EXPECT_TRUE(UserManager::IsShowing());
+  UserManager::Hide();
+
+  local_state->SetBoolean(prefs::kBrowserGuestModeEnabled, true);
+  [ac commandDispatch:item];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(2u, active_browser_list_->size());
+  EXPECT_FALSE(UserManager::IsShowing());
+}
+
+#if defined(ADDRESS_SANITIZER)
+// Flaky under ASAN. See https://crbug.com/674475.
+#define MAYBE_GuestProfileReopenWithNoWindows DISABLED_GuestProfileReopenWithNoWindows
+#else
+#define MAYBE_GuestProfileReopenWithNoWindows GuestProfileReopenWithNoWindows
+#endif
 // Test that for a guest last profile, a reopen event opens the User Manager.
 IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
-                       GuestProfileReopenWithNoWindows) {
+                       MAYBE_GuestProfileReopenWithNoWindows) {
   // Create the system profile. Set the guest as the last used profile so the
   // app controller can use it on init.
   CreateAndWaitForSystemProfile();
   PrefService* local_state = g_browser_process->local_state();
   local_state->SetString(prefs::kProfileLastUsed, chrome::kGuestProfileDir);
 
-  base::scoped_nsobject<AppController> ac([[AppController alloc] init]);
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
 
+  base::ScopedAllowBlockingForTesting allow_blocking;
   Profile* profile = [ac lastProfile];
   EXPECT_EQ(ProfileManager::GetGuestProfilePath(), profile->GetPath());
   EXPECT_TRUE(profile->IsGuestSession());
@@ -305,9 +429,17 @@ IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
   UserManager::Hide();
 }
 
+#if defined(ADDRESS_SANITIZER)
+// Flaky under ASAN. See https://crbug.com/674475.
+#define MAYBE_AboutChromeForcesUserManager DISABLED_AboutChromeForcesUserManager
+#else
+#define MAYBE_AboutChromeForcesUserManager AboutChromeForcesUserManager
+#endif
 IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
-                       AboutChromeForcesUserManager) {
-  base::scoped_nsobject<AppController> ac([[AppController alloc] init]);
+                       MAYBE_AboutChromeForcesUserManager) {
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
 
   // Create the guest profile, and set it as the last used profile so the
   // app controller can use it on init.
@@ -318,6 +450,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerNewProfileManagementBrowserTest,
   // Prohibiting guest mode forces the user manager flow for About Chrome.
   local_state->SetBoolean(prefs::kBrowserGuestModeEnabled, false);
 
+  base::ScopedAllowBlockingForTesting allow_blocking;
   Profile* guest_profile = [ac lastProfile];
   EXPECT_EQ(ProfileManager::GetGuestProfilePath(), guest_profile->GetPath());
   EXPECT_TRUE(guest_profile->IsGuestSession());
@@ -381,7 +514,8 @@ class AppControllerOpenShortcutBrowserTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(AppControllerOpenShortcutBrowserTest,
                        OpenShortcutOnStartup) {
-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  // The two tabs expected are the Welcome page and the desired URL.
+  EXPECT_EQ(2, browser()->tab_strip_model()->count());
   EXPECT_EQ(g_open_shortcut_url,
       browser()->tab_strip_model()->GetActiveWebContents()
           ->GetLastCommittedURL());
@@ -405,9 +539,24 @@ class AppControllerReplaceNTPBrowserTest : public InProcessBrowserTest {
 // Tests that when a GURL is opened after startup, it replaces the NTP.
 IN_PROC_BROWSER_TEST_F(AppControllerReplaceNTPBrowserTest,
                        ReplaceNTPAfterStartup) {
+  // Depending on network connectivity, the NTP URL can either be
+  // chrome://newtab/ or chrome-search://local-ntp/local-ntp.html. See
+  // local_ntp_test_utils::GetFinalNtpUrl for more details.
+  std::string expected_url =
+      local_ntp_test_utils::GetFinalNtpUrl(browser()->profile()).spec();
+
   // Ensure that there is exactly 1 tab showing, and the tab is the NTP.
-  GURL ntp(chrome::kChromeUINewTabURL);
+  GURL ntp(expected_url);
   EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  browser()->tab_strip_model()->GetActiveWebContents()->GetController().LoadURL(
+      GURL(expected_url), content::Referrer(),
+      ui::PageTransition::PAGE_TRANSITION_LINK, std::string());
+
+  // Wait for one navigation on the active web contents.
+  content::TestNavigationObserver ntp_navigation_observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  ntp_navigation_observer.Wait();
+
   EXPECT_EQ(ntp,
             browser()
                 ->tab_strip_model()
@@ -417,17 +566,39 @@ IN_PROC_BROWSER_TEST_F(AppControllerReplaceNTPBrowserTest,
   GURL simple(embedded_test_server()->GetURL("/simple.html"));
   SendAppleEventToOpenUrlToAppController(simple);
 
-  // Wait for one navigation on the active web contents.
   EXPECT_EQ(1, browser()->tab_strip_model()->count());
-  content::TestNavigationObserver obs(
-      browser()->tab_strip_model()->GetActiveWebContents(), 1);
-  obs.Wait();
+  content::TestNavigationObserver event_navigation_observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  event_navigation_observer.Wait();
 
   EXPECT_EQ(simple,
             browser()
                 ->tab_strip_model()
                 ->GetActiveWebContents()
                 ->GetLastCommittedURL());
+}
+
+// Tests that when a GURL is opened, it is not opened in incognito mode.
+IN_PROC_BROWSER_TEST_F(AppControllerBrowserTest, OpenInRegularBrowser) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  // Create an incognito browser.
+  Browser* incognito_browser = CreateIncognitoBrowser(browser()->profile());
+  EXPECT_EQ(incognito_browser, chrome::GetLastActiveBrowser());
+  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, incognito_browser->tab_strip_model()->count());
+  // Open a url.
+  GURL simple(embedded_test_server()->GetURL("/simple.html"));
+  SendAppleEventToOpenUrlToAppController(simple);
+  // It should be opened in the regular browser.
+  content::TestNavigationObserver event_navigation_observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  event_navigation_observer.Wait();
+  EXPECT_EQ(2, browser()->tab_strip_model()->count());
+  EXPECT_EQ(1, incognito_browser->tab_strip_model()->count());
+  EXPECT_EQ(simple, browser()
+                        ->tab_strip_model()
+                        ->GetActiveWebContents()
+                        ->GetLastCommittedURL());
 }
 
 class AppControllerMainMenuBrowserTest : public InProcessBrowserTest {
@@ -454,12 +625,16 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
       base::Bind(&RunClosureWhenProfileInitialized,
                  run_loop.QuitClosure()),
       base::string16(),
-      std::string(),
       std::string());
   run_loop.Run();
   Profile* profile2 = profile_manager->GetProfileByPath(profile2_path);
   ASSERT_TRUE(profile2);
 
+  // Load profile1's History Service backend so it will be assigned to the
+  // HistoryMenuBridge when windowChangedToProfile is called, or else this test
+  // will fail flaky.
+  ui_test_utils::WaitForHistoryToLoad(HistoryServiceFactory::GetForProfile(
+      profile1, ServiceAccessType::EXPLICIT_ACCESS));
   // Switch the controller to profile1.
   [ac windowChangedToProfile:profile1];
   base::RunLoop().RunUntilIdle();
@@ -492,8 +667,8 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
                                            ServiceAccessType::EXPLICIT_ACCESS));
 
   // Delete profile2.
-  profile_manager->ScheduleProfileForDeletion(
-      profile2->GetPath(), ProfileManager::CreateCallback());
+  profile_manager->ScheduleProfileForDeletion(profile2->GetPath(),
+                                              base::DoNothing());
   base::RunLoop().RunUntilIdle();
 
   // Verify the controller's history is back to profile1.
@@ -505,8 +680,11 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
 IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
     BookmarksMenuIsRestoredAfterProfileSwitch) {
   ProfileManager* profile_manager = g_browser_process->profile_manager();
-  base::scoped_nsobject<AppController> ac([[AppController alloc] init]);
-  [ac awakeFromNib];
+  AppController* ac = base::mac::ObjCCast<AppController>(
+      [[NSApplication sharedApplication] delegate]);
+  ASSERT_TRUE(ac);
+
+  [ac mainMenuCreated];
 
   // Constants for bookmarks that we will create later.
   const base::string16 title1(base::ASCIIToUTF16("Dinosaur Comics"));
@@ -518,29 +696,33 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
   // Use the existing profile as profile 1.
   Profile* profile1 = browser()->profile();
   bookmarks::test::WaitForBookmarkModelToLoad(
-      BookmarkModelFactory::GetForProfile(profile1));
+      BookmarkModelFactory::GetForBrowserContext(profile1));
 
   // Create profile 2.
+  base::ScopedAllowBlockingForTesting allow_blocking;
   base::FilePath path2 = profile_manager->GenerateNextProfileDirectoryPath();
   Profile* profile2 =
       Profile::CreateProfile(path2, NULL, Profile::CREATE_MODE_SYNCHRONOUS);
   profile_manager->RegisterTestingProfile(profile2, false, true);
   bookmarks::test::WaitForBookmarkModelToLoad(
-      BookmarkModelFactory::GetForProfile(profile2));
+      BookmarkModelFactory::GetForBrowserContext(profile2));
 
   // Switch to profile 1, create bookmark 1 and force the menu to build.
   [ac windowChangedToProfile:profile1];
   [ac bookmarkMenuBridge]->GetBookmarkModel()->AddURL(
       [ac bookmarkMenuBridge]->GetBookmarkModel()->bookmark_bar_node(),
       0, title1, url1);
-  [ac bookmarkMenuBridge]->BuildMenu();
+  NSMenu* profile1_submenu = [ac bookmarkMenuBridge]->BookmarkMenu();
+  [[profile1_submenu delegate] menuNeedsUpdate:profile1_submenu];
 
   // Switch to profile 2, create bookmark 2 and force the menu to build.
   [ac windowChangedToProfile:profile2];
   [ac bookmarkMenuBridge]->GetBookmarkModel()->AddURL(
       [ac bookmarkMenuBridge]->GetBookmarkModel()->bookmark_bar_node(),
       0, title2, url2);
-  [ac bookmarkMenuBridge]->BuildMenu();
+  NSMenu* profile2_submenu = [ac bookmarkMenuBridge]->BookmarkMenu();
+  [[profile2_submenu delegate] menuNeedsUpdate:profile2_submenu];
+  EXPECT_NE(profile1_submenu, profile2_submenu);
 
   // Test that only bookmark 2 is shown.
   EXPECT_FALSE([[ac bookmarkMenuBridge]->BookmarkMenu() itemWithTitle:
@@ -556,6 +738,9 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
       SysUTF16ToNSString(title1)]);
   EXPECT_FALSE([[ac bookmarkMenuBridge]->BookmarkMenu() itemWithTitle:
       SysUTF16ToNSString(title2)]);
+
+  // Ensure a cached menu was used.
+  EXPECT_EQ(profile1_submenu, [ac bookmarkMenuBridge]->BookmarkMenu());
 }
 
 }  // namespace
@@ -641,13 +826,14 @@ IN_PROC_BROWSER_TEST_F(AppControllerHandoffBrowserTest, TestHandoffURLs) {
 
   // Test that opening a new tab updates the handoff URL.
   GURL test_url2 = embedded_test_server()->GetURL("/title2.html");
-  chrome::NavigateParams params(browser(), test_url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = NEW_FOREGROUND_TAB;
+  NavigateParams params(browser(), test_url2, ui::PAGE_TRANSITION_LINK);
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
   ui_test_utils::NavigateToURL(&params);
   EXPECT_EQ(g_handoff_url, test_url2);
 
   // Test that switching tabs updates the handoff URL.
-  browser()->tab_strip_model()->ActivateTabAt(0, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      0, {TabStripModel::GestureType::kOther});
   EXPECT_EQ(g_handoff_url, test_url1);
 
   // Test that closing the current tab updates the handoff URL.
@@ -657,7 +843,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerHandoffBrowserTest, TestHandoffURLs) {
   // Test that opening a new browser window updates the handoff URL.
   GURL test_url3 = embedded_test_server()->GetURL("/title3.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(test_url3), NEW_WINDOW,
+      browser(), GURL(test_url3), WindowOpenDisposition::NEW_WINDOW,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   EXPECT_EQ(g_handoff_url, test_url3);
 
@@ -673,7 +859,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerHandoffBrowserTest, TestHandoffURLs) {
   // The URLs of incognito windows should not be passed to Handoff.
   GURL test_url4 = embedded_test_server()->GetURL("/simple.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(test_url4), OFF_THE_RECORD,
+      browser(), GURL(test_url4), WindowOpenDisposition::OFF_THE_RECORD,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   EXPECT_EQ(g_handoff_url, GURL());
 
@@ -681,7 +867,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerHandoffBrowserTest, TestHandoffURLs) {
   EXPECT_EQ(2u, active_browser_list->size());
   Browser* browser3 = active_browser_list->get(1);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser3, test_url4, NEW_FOREGROUND_TAB,
+      browser3, test_url4, WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
   EXPECT_EQ(g_handoff_url, GURL());
 

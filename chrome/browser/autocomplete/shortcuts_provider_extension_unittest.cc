@@ -8,9 +8,10 @@
 #include <string>
 #include <vector>
 
-#include "base/macros.h"
+#include "base/bind.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_provider_client.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
@@ -22,12 +23,12 @@
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/shortcuts_backend.h"
 #include "components/omnibox/browser/shortcuts_provider_test_util.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(ENABLE_EXTENSIONS)
-#include "extensions/browser/notification_types.h"
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #endif
@@ -40,7 +41,7 @@ struct TestShortcutData shortcut_test_db[] = {
     {"BD85DBA2-8C29-49F9-84AE-48E1E90880F1", "echo echo", "echo echo",
      "chrome-extension://cedabbhfglmiikkmdgcpjdkocfcmbkee/?q=echo",
      "Run Echo command: echo", "0,0", "Echo", "0,4", ui::PAGE_TRANSITION_TYPED,
-     AutocompleteMatchType::EXTENSION_APP, "echo", 1, 1},
+     AutocompleteMatchType::EXTENSION_APP_DEPRECATED, "", 1, 1},
 };
 
 }  // namespace
@@ -55,9 +56,7 @@ class ShortcutsProviderExtensionTest : public testing::Test {
   void SetUp() override;
   void TearDown() override;
 
-  base::MessageLoopForUI message_loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread file_thread_;
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
   TestingProfile profile_;
   ChromeAutocompleteProviderClient client_;
   scoped_refptr<ShortcutsBackend> backend_;
@@ -65,33 +64,31 @@ class ShortcutsProviderExtensionTest : public testing::Test {
 };
 
 ShortcutsProviderExtensionTest::ShortcutsProviderExtensionTest()
-    : ui_thread_(content::BrowserThread::UI, &message_loop_),
-      file_thread_(content::BrowserThread::FILE, &message_loop_),
-      client_(&profile_) {}
+    : client_(&profile_) {}
 
 void ShortcutsProviderExtensionTest::SetUp() {
   ShortcutsBackendFactory::GetInstance()->SetTestingFactoryAndUse(
-      &profile_, &ShortcutsBackendFactory::BuildProfileNoDatabaseForTesting);
+      &profile_,
+      base::BindRepeating(
+          &ShortcutsBackendFactory::BuildProfileNoDatabaseForTesting));
   backend_ = ShortcutsBackendFactory::GetForProfile(&profile_);
   ASSERT_TRUE(backend_.get());
   ASSERT_TRUE(profile_.CreateHistoryService(true, false));
   provider_ = new ShortcutsProvider(&client_);
   PopulateShortcutsBackendWithTestData(client_.GetShortcutsBackend(),
                                        shortcut_test_db,
-                                       arraysize(shortcut_test_db));
+                                       base::size(shortcut_test_db));
 }
 
 void ShortcutsProviderExtensionTest::TearDown() {
   // Run all pending tasks or else some threads hold on to the message loop
   // and prevent it from being deleted.
-  message_loop_.RunUntilIdle();
-  profile_.DestroyHistoryService();
-  provider_ = NULL;
+  base::RunLoop().RunUntilIdle();
 }
 
 // Actual tests ---------------------------------------------------------------
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 TEST_F(ShortcutsProviderExtensionTest, Extension) {
   // Try an input string that matches an extension URL.
   base::string16 text(base::ASCIIToUTF16("echo"));
@@ -104,19 +101,11 @@ TEST_F(ShortcutsProviderExtensionTest, Extension) {
 
   // Claim the extension has been unloaded.
   scoped_refptr<const extensions::Extension> extension =
-      extensions::ExtensionBuilder()
-          .SetManifest(extensions::DictionaryBuilder()
-                           .Set("name", "Echo")
-                           .Set("version", "1.0")
-                           .Build())
+      extensions::ExtensionBuilder("Echo")
           .SetID("cedabbhfglmiikkmdgcpjdkocfcmbkee")
           .Build();
-  extensions::UnloadedExtensionInfo details(
-      extension.get(), extensions::UnloadedExtensionInfo::REASON_UNINSTALL);
-  content::NotificationService::current()->Notify(
-      extensions::NOTIFICATION_EXTENSION_UNLOADED_DEPRECATED,
-      content::Source<Profile>(&profile_),
-      content::Details<extensions::UnloadedExtensionInfo>(&details));
+  extensions::ExtensionRegistry::Get(&profile_)->TriggerOnUnloaded(
+      extension.get(), extensions::UnloadedExtensionReason::UNINSTALL);
 
   // Now the URL should have disappeared.
   RunShortcutsProviderTest(provider_, text, false, ExpectedURLs(),

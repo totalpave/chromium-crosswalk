@@ -6,14 +6,13 @@
 
 #include "base/logging.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
+#include "components/spellcheck/browser/pref_names.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
-#include "grit/components_strings.h"
-#include "grit/theme_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/image/image.h"
@@ -55,12 +54,13 @@ base::string16 SpellingBubbleModel::GetLinkText() const {
   return l10n_util::GetStringUTF16(IDS_LEARN_MORE);
 }
 
-GURL SpellingBubbleModel::GetLinkURL() const {
+GURL SpellingBubbleModel::GetHelpPageURL() const {
   return GURL(chrome::kPrivacyLearnMoreURL);
 }
 
-void SpellingBubbleModel::LinkClicked() {
-  OpenURLParams params(GetLinkURL(), Referrer(), NEW_FOREGROUND_TAB,
+void SpellingBubbleModel::OpenHelpPage() {
+  OpenURLParams params(GetHelpPageURL(), Referrer(),
+                       WindowOpenDisposition::NEW_FOREGROUND_TAB,
                        ui::PAGE_TRANSITION_LINK, false);
   web_contents_->OpenURL(params);
 }
@@ -68,5 +68,5 @@ void SpellingBubbleModel::LinkClicked() {
 void SpellingBubbleModel::SetPref(bool enabled) {
   PrefService* pref = profile_->GetPrefs();
   DCHECK(pref);
-  pref->SetBoolean(prefs::kSpellCheckUseSpellingService, enabled);
+  pref->SetBoolean(spellcheck::prefs::kSpellCheckUseSpellingService, enabled);
 }

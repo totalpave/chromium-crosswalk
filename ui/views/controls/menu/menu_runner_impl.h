@@ -10,6 +10,7 @@
 #include <set>
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -23,22 +24,27 @@ class MenuController;
 class MenuDelegate;
 class MenuItemView;
 
+namespace test {
+
+class MenuRunnerDestructionTest;
+
+}  // namespace test
+
 namespace internal {
 
 // A menu runner implementation that uses views::MenuItemView to show a menu.
-class VIEWS_EXPORT MenuRunnerImpl
-    : NON_EXPORTED_BASE(public MenuRunnerImplInterface),
-      NON_EXPORTED_BASE(public MenuControllerDelegate) {
+class VIEWS_EXPORT MenuRunnerImpl : public MenuRunnerImplInterface,
+                                    public MenuControllerDelegate {
  public:
   explicit MenuRunnerImpl(MenuItemView* menu);
 
   bool IsRunning() const override;
   void Release() override;
-  MenuRunner::RunResult RunMenuAt(Widget* parent,
-                                  MenuButton* button,
-                                  const gfx::Rect& bounds,
-                                  MenuAnchorPosition anchor,
-                                  int32_t run_types) override;
+  void RunMenuAt(Widget* parent,
+                 MenuButton* button,
+                 const gfx::Rect& bounds,
+                 MenuAnchorPosition anchor,
+                 int32_t run_types) override;
   void Cancel() override;
   base::TimeTicks GetClosingEventTime() const override;
 
@@ -49,13 +55,9 @@ class VIEWS_EXPORT MenuRunnerImpl
   void SiblingMenuCreated(MenuItemView* menu) override;
 
  private:
-  ~MenuRunnerImpl() override;
+  friend class ::views::test::MenuRunnerDestructionTest;
 
-  // Cleans up after the menu is no longer showing. |result| is the menu that
-  // the user selected, or NULL if nothing was selected.
-  MenuRunner::RunResult MenuDone(NotifyType type,
-                                 MenuItemView* result,
-                                 int mouse_event_flags);
+  ~MenuRunnerImpl() override;
 
   // Returns true if mnemonics should be shown in the menu.
   bool ShouldShowMnemonics(MenuButton* button);
@@ -79,14 +81,11 @@ class VIEWS_EXPORT MenuRunnerImpl
   // Set if |running_| and Release() has been invoked.
   bool delete_after_run_;
 
-  // Are we running asynchronously?
-  bool async_;
-
   // Are we running for a drop?
   bool for_drop_;
 
   // The controller.
-  MenuController* controller_;
+  base::WeakPtr<MenuController> controller_;
 
   // Do we own the controller?
   bool owns_controller_;

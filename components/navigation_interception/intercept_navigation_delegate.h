@@ -10,17 +10,12 @@
 #include "base/android/jni_weak_ref.h"
 #include "base/macros.h"
 #include "base/supports_user_data.h"
-
-class GURL;
+#include "components/navigation_interception/intercept_navigation_throttle.h"
 
 namespace content {
 class NavigationHandle;
 class NavigationThrottle;
 class WebContents;
-}
-
-namespace net {
-class URLRequest;
 }
 
 namespace navigation_interception {
@@ -55,11 +50,8 @@ class InterceptNavigationDelegate : public base::SupportsUserData::Data {
   // Creates a InterceptNavigationThrottle that will direct all callbacks to
   // the InterceptNavigationDelegate.
   static std::unique_ptr<content::NavigationThrottle> CreateThrottleFor(
-      content::NavigationHandle* handle);
-
-  // Updates information to determine whether to have user gesture carryover or
-  // not.
-  static void UpdateUserGestureCarryoverInfo(net::URLRequest* request);
+      content::NavigationHandle* handle,
+      navigation_interception::SynchronyMode mode);
 
   virtual bool ShouldIgnoreNavigation(
       const NavigationParams& navigation_params);
@@ -74,8 +66,6 @@ class InterceptNavigationDelegate : public base::SupportsUserData::Data {
 
   DISALLOW_COPY_AND_ASSIGN(InterceptNavigationDelegate);
 };
-
-bool RegisterInterceptNavigationDelegate(JNIEnv* env);
 
 }  // namespace navigation_interception
 

@@ -4,6 +4,7 @@
 
 #include "net/url_request/url_request_simple_job.h"
 
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
@@ -11,8 +12,8 @@
 #include "base/location.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/single_thread_task_runner.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/threading/worker_pool.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_request_headers.h"
@@ -36,7 +37,6 @@ URLRequestSimpleJob::URLRequestSimpleJob(URLRequest* request,
                                          NetworkDelegate* network_delegate)
     : URLRangeRequestJob(request, network_delegate),
       next_data_offset_(0),
-      task_runner_(base::WorkerPool::GetTaskRunner(false)),
       weak_factory_(this) {
 }
 
@@ -44,8 +44,8 @@ void URLRequestSimpleJob::Start() {
   // Start reading asynchronously so that all error reporting and data
   // callbacks happen as they would for network requests.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&URLRequestSimpleJob::StartAsync, weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&URLRequestSimpleJob::StartAsync,
+                                weak_factory_.GetWeakPtr()));
 }
 
 void URLRequestSimpleJob::Kill() {
@@ -63,7 +63,7 @@ bool URLRequestSimpleJob::GetCharset(std::string* charset) {
   return true;
 }
 
-URLRequestSimpleJob::~URLRequestSimpleJob() {}
+URLRequestSimpleJob::~URLRequestSimpleJob() = default;
 
 int URLRequestSimpleJob::ReadRawData(IOBuffer* buf, int buf_size) {
   buf_size = std::min(static_cast<int64_t>(buf_size),
@@ -71,24 +71,22 @@ int URLRequestSimpleJob::ReadRawData(IOBuffer* buf, int buf_size) {
   if (buf_size == 0)
     return 0;
 
-  // Do memory copy on a background thread. See crbug.com/422489.
-  GetTaskRunner()->PostTaskAndReply(
-      FROM_HERE, base::Bind(&CopyData, make_scoped_refptr(buf), buf_size, data_,
-                            next_data_offset_),
+  // Do memory copy asynchronously on a thread that is not the network thread.
+  // See crbug.com/422489.
+  base::PostTaskWithTraitsAndReply(
+      FROM_HERE, {base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::Bind(&CopyData, base::WrapRefCounted(buf), buf_size, data_,
+                 next_data_offset_),
       base::Bind(&URLRequestSimpleJob::ReadRawDataComplete,
                  weak_factory_.GetWeakPtr(), buf_size));
   next_data_offset_ += buf_size;
   return ERR_IO_PENDING;
 }
 
-base::TaskRunner* URLRequestSimpleJob::GetTaskRunner() const {
-  return task_runner_.get();
-}
-
 int URLRequestSimpleJob::GetData(std::string* mime_type,
                                  std::string* charset,
                                  std::string* data,
-                                 const CompletionCallback& callback) const {
+                                 CompletionOnceCallback callback) const {
   NOTREACHED();
   return ERR_UNEXPECTED;
 }
@@ -97,9 +95,10 @@ int URLRequestSimpleJob::GetRefCountedData(
     std::string* mime_type,
     std::string* charset,
     scoped_refptr<base::RefCountedMemory>* data,
-    const CompletionCallback& callback) const {
+    CompletionOnceCallback callback) const {
   scoped_refptr<base::RefCountedString> str_data(new base::RefCountedString());
-  int result = GetData(mime_type, charset, &str_data->data(), callback);
+  int result =
+      GetData(mime_type, charset, &str_data->data(), std::move(callback));
   *data = str_data;
   return result;
 }

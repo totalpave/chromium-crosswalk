@@ -31,8 +31,8 @@ class VerticalCandidateLabel : public views::Label {
   // views::Label:
   // Returns the preferred size, but guarantees that the width has at
   // least kMinCandidateLabelWidth pixels.
-  gfx::Size GetPreferredSize() const override {
-    gfx::Size size = Label::GetPreferredSize();
+  gfx::Size CalculatePreferredSize() const override {
+    gfx::Size size = Label::CalculatePreferredSize();
     size.SetToMax(gfx::Size(kMinCandidateLabelWidth, 0));
     size.SetToMin(gfx::Size(kMaxCandidateLabelWidth, size.height()));
     return size;
@@ -53,6 +53,7 @@ views::Label* CreateShortcutLabel(
   // |wrapped_shortcut_label| is deleted.
   views::Label* shortcut_label = new views::Label;
 
+  // TODO(tapted): Get this FontList from views::style.
   if (orientation == ui::CandidateWindow::VERTICAL) {
     shortcut_label->SetFontList(shortcut_label->font_list().Derive(
         kFontSizeDelta, gfx::Font::NORMAL, gfx::Font::Weight::BOLD));
@@ -62,10 +63,6 @@ views::Label* CreateShortcutLabel(
   }
   // TODO(satorux): Maybe we need to use language specific fonts for
   // candidate_label, like Chinese font for Chinese input method?
-  shortcut_label->SetEnabledColor(theme.GetSystemColor(
-      ui::NativeTheme::kColorId_LabelEnabledColor));
-  shortcut_label->SetDisabledColor(theme.GetSystemColor(
-      ui::NativeTheme::kColorId_LabelDisabledColor));
 
   // Setup paddings.
   const gfx::Insets kVerticalShortcutLabelInsets(1, 6, 1, 6);
@@ -74,7 +71,7 @@ views::Label* CreateShortcutLabel(
       (orientation == ui::CandidateWindow::VERTICAL ?
        kVerticalShortcutLabelInsets :
        kHorizontalShortcutLabelInsets);
-  shortcut_label->SetBorder(views::Border::CreateEmptyBorder(
+  shortcut_label->SetBorder(views::CreateEmptyBorder(
       insets.top(), insets.left(), insets.bottom(), insets.right()));
 
   // Add decoration based on the orientation.
@@ -83,11 +80,9 @@ views::Label* CreateShortcutLabel(
     SkColor blackish = color_utils::AlphaBlend(
         SK_ColorBLACK,
         theme.GetSystemColor(ui::NativeTheme::kColorId_WindowBackground),
-        0x40);
-    SkColor transparent_blakish = color_utils::AlphaBlend(
-        SK_ColorTRANSPARENT, blackish, 0xE0);
-    shortcut_label->set_background(
-        views::Background::CreateSolidBackground(transparent_blakish));
+        0.25f);
+    shortcut_label->SetBackground(
+        views::CreateSolidBackground(SkColorSetA(blackish, 0xE0)));
   }
   shortcut_label->SetElideBehavior(gfx::NO_ELIDE);
 
@@ -138,10 +133,9 @@ views::Label* CreateAnnotationLabel(
 
 }  // namespace
 
-CandidateView::CandidateView(
-    views::ButtonListener* listener,
-    ui::CandidateWindow::Orientation orientation)
-    : views::CustomButton(listener),
+CandidateView::CandidateView(views::ButtonListener* listener,
+                             ui::CandidateWindow::Orientation orientation)
+    : views::Button(listener),
       orientation_(orientation),
       shortcut_label_(NULL),
       candidate_label_(NULL),
@@ -150,7 +144,7 @@ CandidateView::CandidateView(
       shortcut_width_(0),
       candidate_width_(0),
       highlighted_(false) {
-  SetBorder(views::Border::CreateEmptyBorder(1, 1, 1, 1));
+  SetBorder(views::CreateEmptyBorder(1, 1, 1, 1));
 
   const ui::NativeTheme& theme = *GetNativeTheme();
   shortcut_label_ = CreateShortcutLabel(orientation, theme);
@@ -163,9 +157,8 @@ CandidateView::CandidateView(
 
   if (orientation == ui::CandidateWindow::VERTICAL) {
     infolist_icon_ = new views::View;
-    infolist_icon_->set_background(
-        views::Background::CreateSolidBackground(theme.GetSystemColor(
-            ui::NativeTheme::kColorId_FocusedBorderColor)));
+    infolist_icon_->SetBackground(views::CreateSolidBackground(
+        theme.GetSystemColor(ui::NativeTheme::kColorId_FocusedBorderColor)));
     AddChildView(infolist_icon_);
   }
 }
@@ -204,10 +197,9 @@ void CandidateView::SetHighlighted(bool highlighted) {
   highlighted_ = highlighted;
   if (highlighted) {
     ui::NativeTheme* theme = GetNativeTheme();
-    set_background(
-        views::Background::CreateSolidBackground(theme->GetSystemColor(
-            ui::NativeTheme::kColorId_TextfieldSelectionBackgroundFocused)));
-    SetBorder(views::Border::CreateSolidBorder(
+    SetBackground(views::CreateSolidBackground(theme->GetSystemColor(
+        ui::NativeTheme::kColorId_TextfieldSelectionBackgroundFocused)));
+    SetBorder(views::CreateSolidBorder(
         1,
         theme->GetSystemColor(ui::NativeTheme::kColorId_FocusedBorderColor)));
 
@@ -219,14 +211,17 @@ void CandidateView::SetHighlighted(bool highlighted) {
         view->SetHighlighted(false);
     }
   } else {
-    set_background(NULL);
-    SetBorder(views::Border::CreateEmptyBorder(1, 1, 1, 1));
+    SetBackground(nullptr);
+    SetBorder(views::CreateEmptyBorder(1, 1, 1, 1));
   }
   SchedulePaint();
 }
 
-void CandidateView::StateChanged() {
-  shortcut_label_->SetEnabled(state() != STATE_DISABLED);
+void CandidateView::StateChanged(ButtonState old_state) {
+  int text_style = state() == STATE_DISABLED ? views::style::STYLE_DISABLED
+                                             : views::style::STYLE_PRIMARY;
+  shortcut_label_->SetEnabledColor(views::style::GetColor(
+      *shortcut_label_, views::style::CONTEXT_LABEL, text_style));
   if (state() == STATE_PRESSED)
     SetHighlighted(true);
 }
@@ -257,7 +252,7 @@ bool CandidateView::OnMouseDragged(const ui::MouseEvent& event) {
     return false;
   }
 
-  return views::CustomButton::OnMouseDragged(event);
+  return views::Button::OnMouseDragged(event);
 }
 
 void CandidateView::Layout() {
@@ -282,7 +277,7 @@ void CandidateView::Layout() {
   annotation_label_->SetBounds(x, 0, right - x, height());
 }
 
-gfx::Size CandidateView::GetPreferredSize() const {
+gfx::Size CandidateView::CalculatePreferredSize() const {
   const int padding_width =
       orientation_ == ui::CandidateWindow::VERTICAL ? 4 : 6;
   gfx::Size size;

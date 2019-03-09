@@ -11,15 +11,19 @@ namespace content {
 
 FakePepperPluginInstance::~FakePepperPluginInstance() {}
 
-content::RenderView* FakePepperPluginInstance::GetRenderView() { return NULL; }
-
-blink::WebPluginContainer* FakePepperPluginInstance::GetContainer() {
-  return NULL;
+content::RenderFrame* FakePepperPluginInstance::GetRenderFrame() {
+  return nullptr;
 }
 
-v8::Isolate* FakePepperPluginInstance::GetIsolate() const { return NULL; }
+blink::WebPluginContainer* FakePepperPluginInstance::GetContainer() {
+  return nullptr;
+}
 
-ppapi::VarTracker* FakePepperPluginInstance::GetVarTracker() { return NULL; }
+v8::Isolate* FakePepperPluginInstance::GetIsolate() {
+  return nullptr;
+}
+
+ppapi::VarTracker* FakePepperPluginInstance::GetVarTracker() { return nullptr; }
 
 const GURL& FakePepperPluginInstance::GetPluginURL() { return gurl_; }
 
@@ -75,5 +79,36 @@ void FakePepperPluginInstance::SetLinkUnderCursor(const std::string& url) {}
 void FakePepperPluginInstance::SetTextInputType(ui::TextInputType type) {}
 void FakePepperPluginInstance::PostMessageToJavaScript(PP_Var message) {}
 
+void FakePepperPluginInstance::SetCaretPosition(const gfx::PointF& position) {}
+
+void FakePepperPluginInstance::MoveRangeSelectionExtent(
+    const gfx::PointF& extent) {}
+
+void FakePepperPluginInstance::SetSelectionBounds(const gfx::PointF& base,
+                                                  const gfx::PointF& extent) {}
+
+bool FakePepperPluginInstance::CanEditText() {
+  return false;
+}
+
+bool FakePepperPluginInstance::HasEditableText() {
+  return false;
+}
+
+void FakePepperPluginInstance::ReplaceSelection(const std::string& text) {}
+
+void FakePepperPluginInstance::SelectAll() {}
+
+bool FakePepperPluginInstance::CanUndo() {
+  return false;
+}
+
+bool FakePepperPluginInstance::CanRedo() {
+  return false;
+}
+
+void FakePepperPluginInstance::Undo() {}
+
+void FakePepperPluginInstance::Redo() {}
 
 }  // namespace content

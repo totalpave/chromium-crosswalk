@@ -4,16 +4,18 @@
 
 #include "content/public/browser/download_manager_delegate.h"
 
-#include "content/public/browser/download_item.h"
+#include "base/bind.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "components/download/public/common/download_item.h"
 
 namespace content {
 
 void DownloadManagerDelegate::GetNextId(const DownloadIdCallback& callback) {
-  callback.Run(content::DownloadItem::kInvalidId);
+  callback.Run(download::DownloadItem::kInvalidId);
 }
 
 bool DownloadManagerDelegate::DetermineDownloadTarget(
-    DownloadItem* item,
+    download::DownloadItem* item,
     const DownloadTargetCallback& callback) {
   return false;
 }
@@ -24,13 +26,30 @@ bool DownloadManagerDelegate::ShouldOpenFileBasedOnExtension(
 }
 
 bool DownloadManagerDelegate::ShouldCompleteDownload(
-    DownloadItem* item,
+    download::DownloadItem* item,
     const base::Closure& callback) {
   return true;
 }
 
 bool DownloadManagerDelegate::ShouldOpenDownload(
-    DownloadItem* item, const DownloadOpenDelayedCallback& callback) {
+    download::DownloadItem* item,
+    const DownloadOpenDelayedCallback& callback) {
+  return true;
+}
+
+bool DownloadManagerDelegate::InterceptDownloadIfApplicable(
+    const GURL& url,
+    const std::string& user_agent,
+    const std::string& content_disposition,
+    const std::string& mime_type,
+    const std::string& request_origin,
+    int64_t content_length,
+    WebContents* web_contents) {
+  return false;
+}
+
+bool DownloadManagerDelegate::IsMostRecentDownloadItemAtFilePath(
+    download::DownloadItem* download) {
   return true;
 }
 
@@ -41,6 +60,15 @@ bool DownloadManagerDelegate::GenerateFileHash() {
 std::string
 DownloadManagerDelegate::ApplicationClientIdForFileScanning() const {
   return std::string();
+}
+
+void DownloadManagerDelegate::CheckDownloadAllowed(
+    const ResourceRequestInfo::WebContentsGetter& web_contents_getter,
+    const GURL& url,
+    const std::string& request_method,
+    CheckDownloadAllowedCallback check_download_allowed_cb) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(check_download_allowed_cb), true));
 }
 
 DownloadManagerDelegate::~DownloadManagerDelegate() {}

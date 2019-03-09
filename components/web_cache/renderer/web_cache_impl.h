@@ -10,7 +10,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "components/web_cache/public/interfaces/web_cache.mojom.h"
+#include "components/web_cache/public/mojom/web_cache.mojom.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
 
 namespace web_cache {
@@ -21,7 +21,7 @@ class WebCacheImpl : public mojom::WebCache {
   WebCacheImpl();
   ~WebCacheImpl() override;
 
-  void BindRequest(mojo::InterfaceRequest<mojom::WebCache> web_cache_request);
+  void BindRequest(mojom::WebCacheRequest web_cache_request);
 
   // Needs to be called by RenderViews in case of navigations to execute
   // any 'clear cache' commands that were delayed until the next navigation.
@@ -35,9 +35,7 @@ class WebCacheImpl : public mojom::WebCache {
   };
 
   // mojom::WebCache methods:
-  void SetCacheCapacities(uint64_t min_dead_capacity,
-                          uint64_t max_dead_capacity,
-                          uint64_t capacity) override;
+  void SetCacheCapacity(uint64_t capacity) override;
   // If |on_navigation| is true, the clearing is delayed until the next
   // navigation event.
   void ClearCache(bool on_navigation) override;

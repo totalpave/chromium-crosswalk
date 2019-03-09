@@ -11,19 +11,25 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "google_apis/gaia/oauth2_access_token_consumer.h"
 #include "google_apis/gaia/oauth2_access_token_fetcher.h"
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
+}
+
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 class GoogleServiceAuthError;
@@ -53,7 +59,7 @@ class OAuth2TokenServiceDelegate;
 //
 // The caller of StartRequest() owns the returned request and is responsible to
 // delete the request even once the callback has been invoked.
-class OAuth2TokenService : public base::NonThreadSafe {
+class OAuth2TokenService {
  public:
   // A set of scopes in OAuth2 authentication.
   typedef std::set<std::string> ScopeSet;
@@ -78,9 +84,9 @@ class OAuth2TokenService : public base::NonThreadSafe {
 
     // |request| is a Request that is started by this consumer and has
     // completed.
-    virtual void OnGetTokenSuccess(const Request* request,
-                                   const std::string& access_token,
-                                   const base::Time& expiration_time) = 0;
+    virtual void OnGetTokenSuccess(
+        const Request* request,
+        const OAuth2AccessTokenConsumer::TokenResponse& token_response) = 0;
     virtual void OnGetTokenFailure(const Request* request,
                                    const GoogleServiceAuthError& error) = 0;
    private:
@@ -93,8 +99,12 @@ class OAuth2TokenService : public base::NonThreadSafe {
    public:
     // Called whenever a new login-scoped refresh token is available for
     // account |account_id|. Once available, access tokens can be retrieved for
-    // this account.  This is called during initial startup for each token
-    // loaded.
+    // this account. This is called during initial startup for each token
+    // loaded (and any time later when, e.g., credentials change). When called,
+    // any pending token request is cancelled and needs to be retried. Such a
+    // pending request can easily occur on Android, where refresh tokens are
+    // held by the OS and are thus often available on startup even before
+    // OnRefreshTokenAvailable() is called.
     virtual void OnRefreshTokenAvailable(const std::string& account_id) {}
     // Called whenever the login-scoped refresh token becomes unavailable for
     // account |account_id|.
@@ -102,10 +112,13 @@ class OAuth2TokenService : public base::NonThreadSafe {
     // Called after all refresh tokens are loaded during OAuth2TokenService
     // startup.
     virtual void OnRefreshTokensLoaded() {}
-    // Sent before starting a batch of refresh token changes.
-    virtual void OnStartBatchChanges() {}
     // Sent after a batch of refresh token changes is done.
     virtual void OnEndBatchChanges() {}
+    // Called when the authentication error state for |account_id| has changed.
+    // Note: It is always called after |OnRefreshTokenAvailable| when refresh
+    // token is updated. It is not called when the refresh token is revoked.
+    virtual void OnAuthErrorChanged(const std::string& account_id,
+                                    const GoogleServiceAuthError& auth_error) {}
 
    protected:
     virtual ~Observer() {}
@@ -119,7 +132,7 @@ class OAuth2TokenService : public base::NonThreadSafe {
     // Called when receiving request for access token.
     virtual void OnAccessTokenRequested(const std::string& account_id,
                                         const std::string& consumer_id,
-                                        const ScopeSet& scopes) = 0;
+                                        const ScopeSet& scopes) {}
     // Called when access token fetching finished successfully or
     // unsuccessfully. |expiration_time| are only valid with
     // successful completion.
@@ -127,12 +140,26 @@ class OAuth2TokenService : public base::NonThreadSafe {
                                             const std::string& consumer_id,
                                             const ScopeSet& scopes,
                                             GoogleServiceAuthError error,
-                                            base::Time expiration_time) = 0;
-    virtual void OnTokenRemoved(const std::string& account_id,
-                                const ScopeSet& scopes) = 0;
+                                            base::Time expiration_time) {}
+    // Called when an access token was removed.
+    virtual void OnAccessTokenRemoved(const std::string& account_id,
+                                      const ScopeSet& scopes) {}
+
+    // Caled when a new refresh token is available. Contains diagnostic
+    // information about the source of the update credentials operation.
+    virtual void OnRefreshTokenAvailableFromSource(
+        const std::string& account_id,
+        bool is_refresh_token_valid,
+        const std::string& source) {}
+
+    // Called when a refreh token is revoked. Contains diagnostic information
+    // about the source that initiated the revokation operation.
+    virtual void OnRefreshTokenRevokedFromSource(const std::string& account_id,
+                                                 const std::string& source) {}
   };
 
-  explicit OAuth2TokenService(OAuth2TokenServiceDelegate* delegate);
+  explicit OAuth2TokenService(
+      std::unique_ptr<OAuth2TokenServiceDelegate> delegate);
   virtual ~OAuth2TokenService();
 
   // Add or remove observers of this token service.
@@ -154,6 +181,13 @@ class OAuth2TokenService : public base::NonThreadSafe {
                                                 const ScopeSet& scopes,
                                                 Consumer* consumer);
 
+  // Try to get refresh token from delegate. If it is accessible (i.e. not
+  // empty), return it directly, otherwise start request to get access token.
+  // Used for getting tokens to send to Gaia Multilogin endpoint.
+  std::unique_ptr<OAuth2TokenService::Request> StartRequestForMultilogin(
+      const std::string& account_id,
+      OAuth2TokenService::Consumer* consumer);
+
   // This method does the same as |StartRequest| except it uses |client_id| and
   // |client_secret| to identify OAuth client app instead of using
   // Chrome's default values.
@@ -164,26 +198,35 @@ class OAuth2TokenService : public base::NonThreadSafe {
       const ScopeSet& scopes,
       Consumer* consumer);
 
-  // This method does the same as |StartRequest| except it uses the request
-  // context given by |getter| instead of using the one returned by
-  // |GetRequestContext| implemented by derived classes.
+  // This method does the same as |StartRequest| except it uses the
+  // URLLoaderfactory given by |url_loader_factory| instead of using the one
+  // returned by |GetURLLoaderFactory| implemented by derived classes.
   std::unique_ptr<Request> StartRequestWithContext(
       const std::string& account_id,
-      net::URLRequestContextGetter* getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const ScopeSet& scopes,
       Consumer* consumer);
 
   // Lists account IDs of all accounts with a refresh token maintained by this
   // instance.
+  // Note: For each account returned by |GetAccounts|, |RefreshTokenIsAvailable|
+  // will return true.
+  // Note: If tokens have not been fully loaded yet, an empty list is returned.
   std::vector<std::string> GetAccounts() const;
 
   // Returns true if a refresh token exists for |account_id|. If false, calls to
   // |StartRequest| will result in a Consumer::OnGetTokenFailure callback.
+  // Note: This will return |true| if and only if |account_id| is contained in
+  // the list returned by |GetAccounts|.
   bool RefreshTokenIsAvailable(const std::string& account_id) const;
 
-  // This method cancels all token requests, revoke all refresh tokens and
-  // cached access tokens.
-  void RevokeAllCredentials();
+  // Returns true if a refresh token exists for |account_id| and it is in a
+  // persistent error state.
+  bool RefreshTokenHasError(const std::string& account_id) const;
+
+  // Returns the auth error associated with |account_id|. Only persistent errors
+  // will be returned.
+  GoogleServiceAuthError GetAuthError(const std::string& account_id) const;
 
   // Mark an OAuth2 |access_token| issued for |account_id| and |scopes| as
   // invalid. This should be done if the token was received from this class,
@@ -201,6 +244,13 @@ class OAuth2TokenService : public base::NonThreadSafe {
                                       const ScopeSet& scopes,
                                       const std::string& access_token);
 
+  // Removes token from cache (if it is cached) and calls
+  // InvalidateTokenForMultilogin method of the delegate. This should be done if
+  // the token was received from this class, but was not accepted by the server
+  // (e.g., the server returned 401 Unauthorized).
+  virtual void InvalidateTokenForMultilogin(const std::string& failed_account,
+                                            const std::string& token);
+
   void set_max_authorization_token_fetch_retries_for_testing(int max_retries);
   // Returns the current number of pending fetchers matching given params.
   size_t GetNumPendingRequestsForTesting(
@@ -209,13 +259,13 @@ class OAuth2TokenService : public base::NonThreadSafe {
       const ScopeSet& scopes) const;
 
   OAuth2TokenServiceDelegate* GetDelegate();
+  const OAuth2TokenServiceDelegate* GetDelegate() const;
 
  protected:
   // Implements a cancelable |OAuth2TokenService::Request|, which should be
   // operated on the UI thread.
   // TODO(davidroche): move this out of header file.
   class RequestImpl : public base::SupportsWeakPtr<RequestImpl>,
-                      public base::NonThreadSafe,
                       public Request {
    public:
     // |consumer| is required to outlive this.
@@ -228,14 +278,16 @@ class OAuth2TokenService : public base::NonThreadSafe {
     std::string GetConsumerId() const;
 
     // Informs |consumer_| that this request is completed.
-    void InformConsumer(const GoogleServiceAuthError& error,
-                        const std::string& access_token,
-                        const base::Time& expiration_date);
+    void InformConsumer(
+        const GoogleServiceAuthError& error,
+        const OAuth2AccessTokenConsumer::TokenResponse& token_response);
 
    private:
     // |consumer_| to call back when this request completes.
     const std::string account_id_;
     Consumer* const consumer_;
+
+    SEQUENCE_CHECKER(sequence_checker_);
   };
 
   // Implement it in delegates if they want to report errors to the user.
@@ -245,11 +297,11 @@ class OAuth2TokenService : public base::NonThreadSafe {
   // Add a new entry to the cache.
   // Subclasses can override if there are implementation-specific reasons
   // that an access token should ever not be cached.
-  virtual void RegisterCacheEntry(const std::string& client_id,
-                                  const std::string& account_id,
-                                  const ScopeSet& scopes,
-                                  const std::string& access_token,
-                                  const base::Time& expiration_date);
+  virtual void RegisterTokenResponse(
+      const std::string& client_id,
+      const std::string& account_id,
+      const ScopeSet& scopes,
+      const OAuth2AccessTokenConsumer::TokenResponse& token_response);
 
   // Clears the internal token cache.
   void ClearCache();
@@ -259,25 +311,28 @@ class OAuth2TokenService : public base::NonThreadSafe {
   // used to request the tokens.
   void ClearCacheForAccount(const std::string& account_id);
 
-  // Cancels all requests that are currently in progress.
-  void CancelAllRequests();
+  // Cancels all requests that are currently in progress. Virtual so it can be
+  // overridden for tests.
+  virtual void CancelAllRequests();
 
-  // Cancels all requests related to a given |account_id|.
-  void CancelRequestsForAccount(const std::string& account_id);
+  // Cancels all requests related to a given |account_id|. Virtual so it can be
+  // overridden for tests.
+  virtual void CancelRequestsForAccount(const std::string& account_id);
 
   // Fetches an OAuth token for the specified client/scopes. Virtual so it can
   // be overridden for tests and for platform-specific behavior.
-  virtual void FetchOAuth2Token(RequestImpl* request,
-                                const std::string& account_id,
-                                net::URLRequestContextGetter* getter,
-                                const std::string& client_id,
-                                const std::string& client_secret,
-                                const ScopeSet& scopes);
+  virtual void FetchOAuth2Token(
+      RequestImpl* request,
+      const std::string& account_id,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const std::string& client_id,
+      const std::string& client_secret,
+      const ScopeSet& scopes);
 
   // Create an access token fetcher for the given account id.
   OAuth2AccessTokenFetcher* CreateAccessTokenFetcher(
       const std::string& account_id,
-      net::URLRequestContextGetter* getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       OAuth2AccessTokenConsumer* consumer);
 
   // Invalidates the |access_token| issued for |account_id|, |client_id| and
@@ -287,6 +342,11 @@ class OAuth2TokenService : public base::NonThreadSafe {
                                          const std::string& client_id,
                                          const ScopeSet& scopes,
                                          const std::string& access_token);
+
+  const base::ObserverList<DiagnosticsObserver, true>::Unchecked&
+  GetDiagnicsObservers() {
+    return diagnostics_observer_list_;
+  }
 
  private:
   class Fetcher;
@@ -310,49 +370,38 @@ class OAuth2TokenService : public base::NonThreadSafe {
     ScopeSet scopes;
   };
 
-  typedef std::map<RequestParameters, Fetcher*> PendingFetcherMap;
-
-  // Provide a request context used for fetching access tokens with the
+  // Provide a URLLoaderFactory used for fetching access tokens with the
   // |StartRequest| method.
-  net::URLRequestContextGetter* GetRequestContext() const;
-
-  // Struct that contains the information of an OAuth2 access token.
-  struct CacheEntry {
-    std::string access_token;
-    base::Time expiration_date;
-  };
+  scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() const;
 
   // This method does the same as |StartRequestWithContext| except it
   // uses |client_id| and |client_secret| to identify OAuth
   // client app instead of using Chrome's default values.
   std::unique_ptr<Request> StartRequestForClientWithContext(
       const std::string& account_id,
-      net::URLRequestContextGetter* getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const std::string& client_id,
       const std::string& client_secret,
       const ScopeSet& scopes,
       Consumer* consumer);
 
-  // Returns true if GetCacheEntry would return a valid cache entry for the
-  // given scopes.
-  bool HasCacheEntry(const RequestParameters& client_scopes);
-
-  // Posts a task to fire the Consumer callback with the cached token.  Must
-  // Must only be called if HasCacheEntry() returns true.
-  void StartCacheLookupRequest(RequestImpl* request,
-                               const RequestParameters& client_scopes,
-                               Consumer* consumer);
+  // Posts a task to fire the Consumer callback with the cached token response.
+  void InformConsumerWithCachedTokenResponse(
+      const OAuth2AccessTokenConsumer::TokenResponse* token_response,
+      RequestImpl* request,
+      const RequestParameters& client_scopes);
 
   // Returns a currently valid OAuth2 access token for the given set of scopes,
   // or NULL if none have been cached. Note the user of this method should
   // ensure no entry with the same |client_scopes| is added before the usage of
   // the returned entry is done.
-  const CacheEntry* GetCacheEntry(const RequestParameters& client_scopes);
+  const OAuth2AccessTokenConsumer::TokenResponse* GetCachedTokenResponse(
+      const RequestParameters& client_scopes);
 
   // Removes an access token for the given set of scopes from the cache.
   // Returns true if the entry was removed, otherwise false.
-  bool RemoveCacheEntry(const RequestParameters& client_scopes,
-                        const std::string& token_to_remove);
+  bool RemoveCachedTokenResponse(const RequestParameters& client_scopes,
+                                 const std::string& token_to_remove);
 
   // Called when |fetcher| finishes fetching.
   void OnFetchComplete(Fetcher* fetcher);
@@ -361,17 +410,19 @@ class OAuth2TokenService : public base::NonThreadSafe {
   void CancelFetchers(std::vector<Fetcher*> fetchers_to_cancel);
 
   // The cache of currently valid tokens.
-  typedef std::map<RequestParameters, CacheEntry> TokenCache;
+  typedef std::map<RequestParameters, OAuth2AccessTokenConsumer::TokenResponse>
+      TokenCache;
   TokenCache token_cache_;
 
   std::unique_ptr<OAuth2TokenServiceDelegate> delegate_;
 
   // A map from fetch parameters to a fetcher that is fetching an OAuth2 access
   // token using these parameters.
-  PendingFetcherMap pending_fetchers_;
+  std::map<RequestParameters, std::unique_ptr<Fetcher>> pending_fetchers_;
 
   // List of observers to notify when access token status changes.
-  base::ObserverList<DiagnosticsObserver, true> diagnostics_observer_list_;
+  base::ObserverList<DiagnosticsObserver, true>::Unchecked
+      diagnostics_observer_list_;
 
   // The depth of batch changes.
   int batch_change_depth_;
@@ -383,6 +434,8 @@ class OAuth2TokenService : public base::NonThreadSafe {
   FRIEND_TEST_ALL_PREFIXES(OAuth2TokenServiceTest,
                            SameScopesRequestedForDifferentClients);
   FRIEND_TEST_ALL_PREFIXES(OAuth2TokenServiceTest, UpdateClearsCache);
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(OAuth2TokenService);
 };

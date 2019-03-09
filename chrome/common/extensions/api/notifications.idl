@@ -10,9 +10,11 @@ namespace notifications {
     basic,
 
     // icon, title, message, expandedMessage, image, up to two buttons
+    [deprecated="The image is not visible for Mac OS X users."]
     image,
 
-    // icon, title, message, items, up to two buttons
+    // icon, title, message, items, up to two buttons. Users on Mac OS X only
+    // see the first item.
     list,
 
     // icon, title, message, progress, up to two buttons
@@ -44,6 +46,7 @@ namespace notifications {
 
   dictionary NotificationButton {
     DOMString title;
+    [deprecated="Button icons not visible for Mac OS X users."]
     DOMString? iconUrl;
     [nodoc] NotificationBitmap? iconBitmap;
   };
@@ -64,9 +67,10 @@ namespace notifications {
 
     // A URL to the app icon mask. URLs have the same restrictions as
     // $(ref:notifications.NotificationOptions.iconUrl iconUrl).
-    // 
+    //
     // The app icon mask should be in alpha channel, as only the alpha channel
     // of the image will be considered.
+    [deprecated="The app icon mask is not visible for Mac OS X users."]
     DOMString? appIconMaskUrl;
     [nodoc] NotificationBitmap? appIconMaskBitmap;
 
@@ -98,24 +102,29 @@ namespace notifications {
     [nodoc] DOMString? expandedMessage;
 
     // A URL to the image thumbnail for image-type notifications.
-    // URLs have the same restrictions as 
+    // URLs have the same restrictions as
     // $(ref:notifications.NotificationOptions.iconUrl iconUrl).
+    [deprecated="The image is not visible for Mac OS X users."]
     DOMString? imageUrl;
     [nodoc] NotificationBitmap? imageBitmap;
 
-    // Items for multi-item notifications.
+    // Items for multi-item notifications. Users on Mac OS X only see the first
+    // item.
     NotificationItem[]? items;
 
     // Current progress ranges from 0 to 100.
     long? progress;
 
-    // Whether to show UI indicating that the app will visibly respond to
-    // clicks on the body of a notification.
+    [deprecated="This UI hint is ignored as of Chrome 67"]
     boolean? isClickable;
 
     // Indicates that the notification should remain visible on screen until the
     // user activates or dismisses the notification. This defaults to false.
     boolean? requireInteraction;
+
+    // Indicates that no sounds or vibrations should be made when the
+    // notification is being shown. This defaults to false.
+    boolean? silent;
   };
 
   callback CreateCallback = void (DOMString notificationId);
@@ -133,7 +142,8 @@ namespace notifications {
     // |notificationId|: Identifier of the notification. If not set or empty, an
     // ID will automatically be generated. If it matches an existing
     // notification, this method first clears that notification before
-    // proceeding with the create operation.
+    // proceeding with the create operation. The identifier may not be longer
+    // than 500 characters.
     //
     // The <code>notificationId</code> parameter is required before Chrome 42.
     // |options|: Contents of the notification.
@@ -191,6 +201,8 @@ namespace notifications {
 
     // The user clicked on a link for the app's notification settings.  As of
     // Chrome 47, only ChromeOS has UI that dispatches this event.
+    // As of Chrome 65, that UI has been removed from ChromeOS, too.
+    [deprecated="Custom notification settings button is no longer supported."]
     static void onShowSettings();
   };
 };

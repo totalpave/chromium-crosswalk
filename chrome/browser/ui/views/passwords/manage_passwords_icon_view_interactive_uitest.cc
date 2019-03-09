@@ -4,16 +4,15 @@
 
 #include "base/macros.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/passwords/manage_passwords_icon.h"
 #include "chrome/browser/ui/passwords/manage_passwords_test.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller_mock.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_icon_container_view.h"
 #include "chrome/browser/ui/views/passwords/manage_passwords_icon_views.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/password_manager/core/common/password_manager_ui.h"
 #include "content/public/test/test_utils.h"
-#include "grit/theme_resources.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event_utils.h"
@@ -23,18 +22,16 @@ class ManagePasswordsIconViewTest : public ManagePasswordsTest {
   ManagePasswordsIconViewTest() {}
   ~ManagePasswordsIconViewTest() override {}
 
-  ManagePasswordsIconView* view() override {
-    BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
-    return static_cast<ManagePasswordsIconViews*>(
-        browser_view->GetToolbarView()
-            ->location_bar()
-            ->manage_passwords_icon_view());
-  }
-
   password_manager::ui::State ViewState() { return GetView()->state_; }
 
   ManagePasswordsIconViews* GetView() {
-    return static_cast<ManagePasswordsIconViews*>(view());
+    views::View* view =
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->toolbar_button_provider()
+            ->GetPageActionIconContainerView()
+            ->GetPageActionIconView(PageActionIconType::kManagePasswords);
+    DCHECK_EQ(view->GetClassName(), ManagePasswordsIconViews::kClassName);
+    return static_cast<ManagePasswordsIconViews*>(view);
   }
 
   base::string16 GetTooltipText() {
@@ -44,7 +41,7 @@ class ManagePasswordsIconViewTest : public ManagePasswordsTest {
   }
 
   const gfx::ImageSkia& GetImage() {
-    return GetView()->GetImage();
+    return GetView()->GetImageView()->GetImage();
   }
 
  private:

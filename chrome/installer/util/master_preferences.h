@@ -38,18 +38,13 @@ const char kDefaultMasterPrefs[] = "master_preferences";
 // {
 //   "distribution": {
 //      "create_all_shortcuts": true,
-//      "import_bookmarks": false,
-//      "import_bookmarks_from_file": "c:\\path",
-//      "import_history": false,
-//      "import_home_page": false,
-//      "import_search_engine": true,
-//      "ping_delay": 40,
-//      "show_welcome_page": true,
-//      "skip_first_run_ui": true,
 //      "do_not_launch_chrome": false,
+//      "import_bookmarks_from_file": "c:\\path",
 //      "make_chrome_default": false,
 //      "make_chrome_default_for_user": true,
+//      "ping_delay": 40,
 //      "require_eula": true,
+//      "skip_first_run_ui": true,
 //      "system_level": false,
 //      "verbose_logging": true,
 //      "welcome_page_on_os_upgrade_enabled": false
@@ -65,7 +60,13 @@ const char kDefaultMasterPrefs[] = "master_preferences";
 //      "https://igoogle.com"
 //   ],
 //   "homepage": "http://example.org",
-//   "homepage_is_newtabpage": false
+//   "homepage_is_newtabpage": false,
+//   "import_autofill_form_data": false,
+//   "import_bookmarks": false,
+//   "import_history": false,
+//   "import_home_page": false,
+//   "import_saved_passwords": false,
+//   "import_search_engine": false
 // }
 //
 // A reserved "distribution" entry in the file is used to group related
@@ -159,23 +160,12 @@ class MasterPreferences {
   // Returns the compressed variations seed entry from the master prefs.
   std::string GetCompressedVariationsSeed() const;
 
-  // Returns the variations seed entry from the master prefs.
-  std::string GetVariationsSeed() const;
-
   // Returns the variations seed signature entry from the master prefs.
   std::string GetVariationsSeedSignature() const;
 
   // Returns true iff the master preferences were successfully read from a file.
   bool read_from_file() const {
     return preferences_read_from_file_;
-  }
-
-  bool install_chrome() const {
-    return chrome_;
-  }
-
-  bool is_multi_install() const {
-    return multi_install_;
   }
 
   // Returns a reference to this MasterPreferences' root dictionary of values.
@@ -197,8 +187,6 @@ class MasterPreferences {
   // string was successfully parsed.
   bool InitializeFromString(const std::string& json_data);
 
-  void InitializeProductFlags();
-
   // Enforces legacy preferences that should no longer be used, but could be
   // found in older master_preferences files.
   void EnforceLegacyPreferences();
@@ -209,10 +197,8 @@ class MasterPreferences {
   std::string ExtractPrefString(const std::string& name) const;
 
   std::unique_ptr<base::DictionaryValue> master_dictionary_;
-  base::DictionaryValue* distribution_;
-  bool preferences_read_from_file_;
-  bool chrome_;
-  bool multi_install_;
+  base::DictionaryValue* distribution_ = nullptr;
+  bool preferences_read_from_file_ = false;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MasterPreferences);

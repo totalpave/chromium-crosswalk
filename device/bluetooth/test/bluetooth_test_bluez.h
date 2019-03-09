@@ -16,6 +16,7 @@
 
 namespace bluez {
 class FakeBluetoothDeviceClient;
+class FakeBluetoothAdapterClient;
 }
 
 namespace device {
@@ -46,6 +47,14 @@ class BluetoothTestBlueZ : public BluetoothTestBase {
       const std::vector<uint8_t>& value_to_write,
       const base::Closure& success_callback,
       const base::Closure& error_callback) override;
+  void SimulateLocalGattCharacteristicValuePrepareWriteRequest(
+      BluetoothDevice* from_device,
+      BluetoothLocalGattCharacteristic* characteristic,
+      const std::vector<uint8_t>& value_to_write,
+      int offset,
+      bool has_subsequent_write,
+      const base::Closure& success_callback,
+      const base::Closure& error_callback) override;
   void SimulateLocalGattDescriptorValueReadRequest(
       BluetoothDevice* from_device,
       BluetoothLocalGattDescriptor* descriptor,
@@ -66,6 +75,7 @@ class BluetoothTestBlueZ : public BluetoothTestBase {
 
  private:
   bluez::FakeBluetoothDeviceClient* fake_bluetooth_device_client_;
+  bluez::FakeBluetoothAdapterClient* fake_bluetooth_adapter_client_;
 };
 
 // Defines common test fixture name. Use TEST_F(BluetoothTest, YourTestName).

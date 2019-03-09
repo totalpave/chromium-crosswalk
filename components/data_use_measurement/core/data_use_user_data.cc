@@ -4,12 +4,34 @@
 
 #include "components/data_use_measurement/core/data_use_user_data.h"
 
+#include <memory>
+
+#if defined(OS_ANDROID)
+#include "base/android/application_status_listener.h"
+#endif
+
 #include "net/url_request/url_fetcher.h"
 
 namespace data_use_measurement {
 
-DataUseUserData::DataUseUserData(ServiceName service_name)
-    : service_name_(service_name) {}
+namespace {
+
+DataUseUserData::AppState GetCurrentAppState() {
+#if defined(OS_ANDROID)
+  return base::android::ApplicationStatusListener::GetState() ==
+                 base::android::APPLICATION_STATE_HAS_RUNNING_ACTIVITIES
+             ? DataUseUserData::FOREGROUND
+             : DataUseUserData::BACKGROUND;
+#else
+  // If the OS is not Android, all the requests are considered Foreground.
+  return DataUseUserData::FOREGROUND;
+#endif
+}
+
+}  // namespace
+
+DataUseUserData::DataUseUserData(AppState app_state)
+    : app_state_(app_state), content_type_(DataUseContentType::OTHER) {}
 
 DataUseUserData::~DataUseUserData() {}
 
@@ -18,55 +40,14 @@ const void* const DataUseUserData::kUserDataKey =
     &DataUseUserData::kUserDataKey;
 
 // static
-base::SupportsUserData::Data* DataUseUserData::Create(
+std::unique_ptr<base::SupportsUserData::Data> DataUseUserData::Create(
     ServiceName service_name) {
-  return new DataUseUserData(service_name);
-}
-
-// static
-std::string DataUseUserData::GetServiceNameAsString(ServiceName service_name) {
-  switch (service_name) {
-    case SUGGESTIONS:
-      return "Suggestions";
-    case NOT_TAGGED:
-      return "NotTagged";
-    case TRANSLATE:
-      return "Translate";
-    case SYNC:
-      return "Sync";
-    case OMNIBOX:
-      return "Omnibox";
-    case INVALIDATION:
-      return "Invalidation";
-    case RAPPOR:
-      return "Rappor";
-    case VARIATIONS:
-      return "Variations";
-    case UMA:
-      return "UMA";
-    case DOMAIN_RELIABILITY:
-      return "DomainReliability";
-    case PROFILE_DOWNLOADER:
-      return "ProfileDownloader";
-    case GOOGLE_URL_TRACKER:
-      return "GoogleURLTracker";
-    case AUTOFILL:
-      return "Autofill";
-    case POLICY:
-      return "Policy";
-    case SPELL_CHECKER:
-      return "SpellChecker";
-    case NTP_SNIPPETS:
-      return "NTPSnippets";
-  }
-  return "INVALID";
+  return std::make_unique<DataUseUserData>(GetCurrentAppState());
 }
 
 // static
 void DataUseUserData::AttachToFetcher(net::URLFetcher* fetcher,
                                       ServiceName service_name) {
-  fetcher->SetURLRequestUserData(kUserDataKey,
-                                 base::Bind(&Create, service_name));
 }
 
 }  // namespace data_use_measurement

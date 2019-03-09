@@ -6,14 +6,25 @@
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram.h"
-#include "base/time/time.h"
 #include "content/browser/indexed_db/indexed_db_tracing.h"
 #include "content/browser/indexed_db/leveldb/leveldb_database.h"
 #include "content/browser/indexed_db/leveldb/leveldb_write_batch.h"
 #include "third_party/leveldatabase/src/include/leveldb/db.h"
 
 using base::StringPiece;
+
+namespace {
+
+// Tests if the given key is before the end of a range, which
+// may have an open (exclusive) or closed (inclusive) bound.
+bool IsKeyBeforeEndOfRange(const content::LevelDBComparator* comparator,
+                           const StringPiece& key,
+                           const StringPiece& end,
+                           bool open) {
+  return (open ? comparator->Compare(key, end) < 0
+               : comparator->Compare(key, end) <= 0);
+}
+}  // namespace
 
 namespace content {
 
@@ -22,48 +33,64 @@ LevelDBTransaction::LevelDBTransaction(LevelDBDatabase* db)
       snapshot_(db),
       comparator_(db->Comparator()),
       data_comparator_(comparator_),
-      data_(data_comparator_),
-      finished_(false) {}
+      data_(data_comparator_) {}
 
-LevelDBTransaction::Record::Record() : deleted(false) {}
+LevelDBTransaction::Record::Record() {}
 LevelDBTransaction::Record::~Record() {}
 
-void LevelDBTransaction::Clear() {
-  for (const auto& it : data_)
-    delete it.second;
-  data_.clear();
-}
+LevelDBTransaction::~LevelDBTransaction() {}
 
-LevelDBTransaction::~LevelDBTransaction() { Clear(); }
-
-bool LevelDBTransaction::Set(const StringPiece& key,
+void LevelDBTransaction::Set(const StringPiece& key,
                              std::string* value,
                              bool deleted) {
   DCHECK(!finished_);
-  DataType::iterator it = data_.find(key);
+  auto it = data_.find(key);
 
   if (it == data_.end()) {
-    Record* record = new Record();
+    std::unique_ptr<Record> record = std::make_unique<Record>();
+    size_ += SizeOfRecordInMap(key.size()) + value->size();
     record->key.assign(key.begin(), key.end() - key.begin());
     record->value.swap(*value);
     record->deleted = deleted;
-    data_[record->key] = record;
+    data_[record->key] = std::move(record);
     NotifyIterators();
-    return false;
+    return;
   }
-  bool replaced_deleted_value = it->second->deleted;
+  size_ += value->size();
   it->second->value.swap(*value);
+  size_ -= value->size();
   it->second->deleted = deleted;
-  return replaced_deleted_value;
 }
 
 void LevelDBTransaction::Put(const StringPiece& key, std::string* value) {
   Set(key, value, false);
 }
 
-bool LevelDBTransaction::Remove(const StringPiece& key) {
+void LevelDBTransaction::Remove(const StringPiece& key) {
   std::string empty;
-  return !Set(key, &empty, true);
+  Set(key, &empty, true);
+}
+
+leveldb::Status LevelDBTransaction::RemoveRange(const StringPiece& begin,
+                                                const StringPiece& end,
+                                                bool upper_open) {
+  leveldb::Status s;
+  bool dirty = false;
+  {
+    // Scope this iterator so it is deleted before other iterators are
+    // notified.
+    std::unique_ptr<TransactionIterator> it = TransactionIterator::Create(this);
+    for (s = it->Seek(begin);
+         s.ok() && it->IsValid() &&
+         IsKeyBeforeEndOfRange(comparator_, it->Key(), end, upper_open);
+         s = it->Next()) {
+      it->Delete();
+      dirty = true;
+    }
+  }
+  if (dirty)
+    NotifyIterators();
+  return s;
 }
 
 leveldb::Status LevelDBTransaction::Get(const StringPiece& key,
@@ -98,7 +125,6 @@ leveldb::Status LevelDBTransaction::Commit() {
     return leveldb::Status::OK();
   }
 
-  base::TimeTicks begin_time = base::TimeTicks::Now();
   std::unique_ptr<LevelDBWriteBatch> write_batch = LevelDBWriteBatch::Create();
 
   auto it = data_.begin();
@@ -107,26 +133,21 @@ leveldb::Status LevelDBTransaction::Commit() {
       write_batch->Put(it->first, it->second->value);
     else
       write_batch->Remove(it->first);
-
-    delete it->second;
     data_.erase(it++);
   }
 
   DCHECK(data_.empty());
 
   leveldb::Status s = db_->Write(*write_batch);
-  if (s.ok()) {
+  if (s.ok())
     finished_ = true;
-    UMA_HISTOGRAM_TIMES("WebCore.IndexedDB.LevelDB.Transaction.CommitTime",
-                         base::TimeTicks::Now() - begin_time);
-  }
   return s;
 }
 
 void LevelDBTransaction::Rollback() {
   DCHECK(!finished_);
   finished_ = true;
-  Clear();
+  data_.clear();
 }
 
 std::unique_ptr<LevelDBIterator> LevelDBTransaction::CreateIterator() {
@@ -136,6 +157,10 @@ std::unique_ptr<LevelDBIterator> LevelDBTransaction::CreateIterator() {
 std::unique_ptr<LevelDBTransaction::DataIterator>
 LevelDBTransaction::DataIterator::Create(LevelDBTransaction* transaction) {
   return base::WrapUnique(new DataIterator(transaction));
+}
+
+constexpr uint64_t LevelDBTransaction::SizeOfRecordInMap(size_t key_size) {
+  return sizeof(Record) + key_size * 2;
 }
 
 bool LevelDBTransaction::DataIterator::IsValid() const {
@@ -186,6 +211,12 @@ bool LevelDBTransaction::DataIterator::IsDeleted() const {
   return iterator_->second->deleted;
 }
 
+void LevelDBTransaction::DataIterator::Delete() {
+  DCHECK(IsValid());
+  iterator_->second->deleted = true;
+  iterator_->second->value.clear();
+}
+
 LevelDBTransaction::DataIterator::~DataIterator() {}
 
 LevelDBTransaction::DataIterator::DataIterator(LevelDBTransaction* transaction)
@@ -203,10 +234,8 @@ LevelDBTransaction::TransactionIterator::TransactionIterator(
     : transaction_(transaction),
       comparator_(transaction_->comparator_),
       data_iterator_(DataIterator::Create(transaction_.get())),
-      db_iterator_(transaction_->db_->CreateIterator(&transaction_->snapshot_)),
-      current_(0),
-      direction_(FORWARD),
-      data_changed_(false) {
+      db_iterator_(transaction_->db_->CreateIterator(
+          transaction_->db_->DefaultReadOptions(&transaction_->snapshot_))) {
   transaction_->RegisterIterator(this);
 }
 
@@ -334,9 +363,27 @@ StringPiece LevelDBTransaction::TransactionIterator::Value() const {
     RefreshDataIterator();
   return current_->Value();
 }
+bool LevelDBTransaction::TransactionIterator::IsDetached() const {
+  return db_iterator_->IsDetached();
+}
 
 void LevelDBTransaction::TransactionIterator::DataChanged() {
   data_changed_ = true;
+}
+
+void LevelDBTransaction::TransactionIterator::Delete() {
+  DCHECK(IsValid());
+  if (current_ == data_iterator_.get()) {
+    transaction_->size_ -= data_iterator_->Value().size();
+    data_iterator_->Delete();
+  } else {
+    std::unique_ptr<Record> record = std::make_unique<Record>();
+    record->key = Key().as_string();
+    record->deleted = true;
+    transaction_->size_ +=
+        LevelDBTransaction::SizeOfRecordInMap(record->key.size());
+    transaction_->data_[record->key] = std::move(record);
+  }
 }
 
 void LevelDBTransaction::TransactionIterator::RefreshDataIterator() const {
@@ -411,7 +458,7 @@ void LevelDBTransaction::TransactionIterator::HandleConflictsAndDeletes() {
 
 void
 LevelDBTransaction::TransactionIterator::SetCurrentIteratorToSmallestKey() {
-  LevelDBIterator* smallest = 0;
+  LevelDBIterator* smallest = nullptr;
 
   if (data_iterator_->IsValid())
     smallest = data_iterator_.get();
@@ -426,7 +473,7 @@ LevelDBTransaction::TransactionIterator::SetCurrentIteratorToSmallestKey() {
 }
 
 void LevelDBTransaction::TransactionIterator::SetCurrentIteratorToLargestKey() {
-  LevelDBIterator* largest = 0;
+  LevelDBIterator* largest = nullptr;
 
   if (data_iterator_->IsValid())
     largest = data_iterator_.get();
@@ -461,7 +508,7 @@ std::unique_ptr<LevelDBDirectTransaction> LevelDBDirectTransaction::Create(
 }
 
 LevelDBDirectTransaction::LevelDBDirectTransaction(LevelDBDatabase* db)
-    : db_(db), write_batch_(LevelDBWriteBatch::Create()), finished_(false) {}
+    : db_(db), write_batch_(LevelDBWriteBatch::Create()) {}
 
 LevelDBDirectTransaction::~LevelDBDirectTransaction() {
   write_batch_->Clear();

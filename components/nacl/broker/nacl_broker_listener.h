@@ -11,9 +11,11 @@
 
 #include "base/macros.h"
 #include "base/process/process.h"
+#include "base/run_loop.h"
 #include "components/nacl/common/nacl_types.h"
 #include "content/public/common/sandboxed_process_launcher_delegate.h"
 #include "ipc/ipc_listener.h"
+#include "services/service_manager/sandbox/sandbox_type.h"
 
 namespace IPC {
 class Channel;
@@ -31,6 +33,7 @@ class NaClBrokerListener : public content::SandboxedProcessLauncherDelegate,
 
   // content::SandboxedProcessLauncherDelegate implementation:
   bool PreSpawnTarget(sandbox::TargetPolicy* policy) override;
+  service_manager::SandboxType GetSandboxType() override;
 
   // IPC::Listener implementation.
   void OnChannelConnected(int32_t peer_pid) override;
@@ -38,12 +41,15 @@ class NaClBrokerListener : public content::SandboxedProcessLauncherDelegate,
   void OnChannelError() override;
 
  private:
-  void OnLaunchLoaderThroughBroker(const std::string& loader_channel_id);
+  void OnLaunchLoaderThroughBroker(
+      int launch_id,
+      mojo::MessagePipeHandle service_request_pipe);
   void OnLaunchDebugExceptionHandler(int32_t pid,
                                      base::ProcessHandle process_handle,
                                      const std::string& startup_info);
   void OnStopBroker();
 
+  base::RunLoop run_loop_;
   base::Process browser_process_;
   std::unique_ptr<IPC::Channel> channel_;
 

@@ -7,9 +7,9 @@
 
 #include <stdint.h>
 
-#include "base/containers/scoped_ptr_hash_map.h"
+#include <unordered_map>
+
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/observer_list.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/ozone/platform/drm/gpu/hardware_display_controller.h"
@@ -19,19 +19,17 @@ typedef struct _drmModeModeInfo drmModeModeInfo;
 namespace gfx {
 class Point;
 class Rect;
-class Size;
 }  // namespace gfx
 
 namespace ui {
 
 class DrmDevice;
 class DrmWindow;
-class ScanoutBufferGenerator;
 
 // Responsible for keeping track of active displays and configuring them.
 class ScreenManager {
  public:
-  ScreenManager(ScanoutBufferGenerator* surface_generator);
+  ScreenManager();
   virtual ~ScreenManager();
 
   // Register a display controller. This must be called before trying to
@@ -81,11 +79,10 @@ class ScreenManager {
   void UpdateControllerToWindowMapping();
 
  private:
-  typedef std::vector<std::unique_ptr<HardwareDisplayController>>
-      HardwareDisplayControllers;
-  typedef base::ScopedPtrHashMap<gfx::AcceleratedWidget,
-                                 std::unique_ptr<DrmWindow>>
-      WidgetToWindowMap;
+  using HardwareDisplayControllers =
+      std::vector<std::unique_ptr<HardwareDisplayController>>;
+  using WidgetToWindowMap =
+      std::unordered_map<gfx::AcceleratedWidget, std::unique_ptr<DrmWindow>>;
 
   // Returns an iterator into |controllers_| for the controller identified by
   // (|crtc|, |connector|).
@@ -104,6 +101,12 @@ class ScreenManager {
   HardwareDisplayControllers::iterator FindActiveDisplayControllerByLocation(
       const gfx::Rect& bounds);
 
+  // Returns an iterator into |controllers_| for the controller located at
+  // |origin| with matching DRM device.
+  HardwareDisplayControllers::iterator FindActiveDisplayControllerByLocation(
+      const scoped_refptr<DrmDevice>& drm,
+      const gfx::Rect& bounds);
+
   // Tries to set the controller identified by (|crtc|, |connector|) to mirror
   // those in |mirror|. |original| is an iterator to the HDC where the
   // controller is currently present.
@@ -114,8 +117,8 @@ class ScreenManager {
                         uint32_t connector,
                         const drmModeModeInfo& mode);
 
-  OverlayPlane GetModesetBuffer(HardwareDisplayController* controller,
-                                const gfx::Rect& bounds);
+  DrmOverlayPlane GetModesetBuffer(HardwareDisplayController* controller,
+                                   const gfx::Rect& bounds);
 
   bool EnableController(HardwareDisplayController* controller);
 
@@ -127,7 +130,6 @@ class ScreenManager {
 
   DrmWindow* FindWindowAt(const gfx::Rect& bounds) const;
 
-  ScanoutBufferGenerator* buffer_generator_;  // Not owned.
   // List of display controllers (active and disabled).
   HardwareDisplayControllers controllers_;
 

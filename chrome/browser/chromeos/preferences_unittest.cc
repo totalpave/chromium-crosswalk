@@ -8,33 +8,32 @@
 
 #include "base/json/json_string_value_serializer.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/chromeos/input_method/input_method_configuration.h"
-#include "chrome/browser/chromeos/input_method/mock_input_method_manager.h"
+#include "chrome/browser/chromeos/input_method/mock_input_method_manager_impl.h"
 #include "chrome/browser/chromeos/login/session/user_session_manager.h"
 #include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/chromeos/login/users/scoped_user_manager_enabler.h"
-#include "chrome/browser/chromeos/system/fake_input_device_settings.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/language/core/browser/pref_names.h"
 #include "components/prefs/pref_member.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/sync/model/fake_sync_change_processor.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_data.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "components/sync/model/sync_error_factory_mock.h"
+#include "components/sync/model/syncable_service.h"
+#include "components/sync/protocol/preference_specifics.pb.h"
+#include "components/sync/protocol/sync.pb.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
-#include "sync/api/attachments/attachment_id.h"
-#include "sync/api/fake_sync_change_processor.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_data.h"
-#include "sync/api/sync_error_factory.h"
-#include "sync/api/sync_error_factory_mock.h"
-#include "sync/api/syncable_service.h"
-#include "sync/internal_api/public/attachments/attachment_service_proxy_for_test.h"
-#include "sync/protocol/preference_specifics.pb.h"
-#include "sync/protocol/sync.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/chromeos/extension_ime_util.h"
 #include "ui/base/ime/chromeos/input_method_whitelist.h"
@@ -62,12 +61,7 @@ CreatePrefSyncData(const std::string& name, const base::Value& value) {
   sync_pb::PreferenceSpecifics* pref = specifics.mutable_preference();
   pref->set_name(name);
   pref->set_value(serialized);
-  return syncer::SyncData::CreateRemoteData(
-      1,
-      specifics,
-      base::Time(),
-      syncer::AttachmentIdList(),
-      syncer::AttachmentServiceProxyForTest::Create());
+  return syncer::SyncData::CreateRemoteData(1, specifics);
 }
 
 }  // anonymous namespace
@@ -75,12 +69,12 @@ CreatePrefSyncData(const std::string& name, const base::Value& value) {
 namespace input_method {
 namespace {
 
-class MyMockInputMethodManager : public MockInputMethodManager {
+class MyMockInputMethodManager : public MockInputMethodManagerImpl {
  public:
-  class State : public MockInputMethodManager::State {
+  class State : public MockInputMethodManagerImpl::State {
    public:
     explicit State(MyMockInputMethodManager* manager)
-        : MockInputMethodManager::State(manager), manager_(manager) {
+        : MockInputMethodManagerImpl::State(manager), manager_(manager) {
       input_method_extensions_.reset(new InputMethodDescriptors);
     }
 
@@ -111,7 +105,7 @@ class MyMockInputMethodManager : public MockInputMethodManager {
     }
 
    protected:
-    ~State() override{};
+    ~State() override {}
 
    private:
     MyMockInputMethodManager* const manager_;
@@ -155,8 +149,8 @@ class PreferencesTest : public testing::Test {
 
     chromeos::FakeChromeUserManager* user_manager =
         new chromeos::FakeChromeUserManager();
-    user_manager_enabler_.reset(
-        new chromeos::ScopedUserManagerEnabler(user_manager));
+    user_manager_enabler_ = std::make_unique<user_manager::ScopedUserManager>(
+        base::WrapUnique(user_manager));
 
     const char test_user_email[] = "test_user@example.com";
     const AccountId test_account_id(AccountId::FromUserEmail(test_user_email));
@@ -178,8 +172,6 @@ class PreferencesTest : public testing::Test {
     mock_manager_ = new input_method::MyMockInputMethodManager(
         &previous_input_method_, &current_input_method_);
     input_method::InitializeForTesting(mock_manager_);
-    system::InputDeviceSettings::SetSettingsForTesting(
-        new system::FakeInputDeviceSettings());
 
     prefs_.reset(new Preferences(mock_manager_));
   }
@@ -200,7 +192,7 @@ class PreferencesTest : public testing::Test {
 
   content::TestBrowserThreadBundle thread_bundle_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
-  std::unique_ptr<chromeos::ScopedUserManagerEnabler> user_manager_enabler_;
+  std::unique_ptr<user_manager::ScopedUserManager> user_manager_enabler_;
   std::unique_ptr<Preferences> prefs_;
   StringPrefMember previous_input_method_;
   StringPrefMember current_input_method_;
@@ -208,7 +200,7 @@ class PreferencesTest : public testing::Test {
   // Not owned.
   const user_manager::User* test_user_;
   TestingProfile* test_profile_;
-  syncable_prefs::TestingPrefServiceSyncable* pref_service_;
+  sync_preferences::TestingPrefServiceSyncable* pref_service_;
   input_method::MyMockInputMethodManager* mock_manager_;
 
  private:
@@ -233,34 +225,26 @@ class InputMethodPreferencesTest : public PreferencesTest {
     PreferencesTest::SetUp();
 
     // Initialize pref members.
-    preferred_languages_.Init(prefs::kLanguagePreferredLanguages,
+    preferred_languages_.Init(language::prefs::kPreferredLanguages,
                               pref_service_);
     preferred_languages_syncable_.Init(
-        prefs::kLanguagePreferredLanguagesSyncable,
-        pref_service_);
+        language::prefs::kPreferredLanguagesSyncable, pref_service_);
     preload_engines_.Init(prefs::kLanguagePreloadEngines, pref_service_);
     preload_engines_syncable_.Init(prefs::kLanguagePreloadEnginesSyncable,
                                    pref_service_);
-    enabled_extension_imes_.Init(prefs::kLanguageEnabledExtensionImes,
-                                 pref_service_);
-    enabled_extension_imes_syncable_.Init(
-        prefs::kLanguageEnabledExtensionImesSyncable, pref_service_);
+    enabled_imes_.Init(prefs::kLanguageEnabledImes, pref_service_);
+    enabled_imes_syncable_.Init(prefs::kLanguageEnabledImesSyncable,
+                                pref_service_);
 
     // Initialize component and 3rd-party input method extensions.
     InitComponentExtensionIMEManager();
     input_method::InputMethodDescriptors descriptors;
     mock_manager_->GetActiveIMEState()->AddInputMethodExtension(
-        kIdentityIMEID,
-        descriptors,
-        NULL);
+        kIdentityIMEID, descriptors, nullptr);
     mock_manager_->GetActiveIMEState()->AddInputMethodExtension(
-        kToUpperIMEID,
-        descriptors,
-        NULL);
+        kToUpperIMEID, descriptors, nullptr);
     mock_manager_->GetActiveIMEState()->AddInputMethodExtension(
-        kAPIArgumentIMEID,
-        descriptors,
-        NULL);
+        kAPIArgumentIMEID, descriptors, nullptr);
   }
 
   void InitComponentExtensionIMEManager() {
@@ -310,38 +294,37 @@ class InputMethodPreferencesTest : public PreferencesTest {
   // Helper function to set local language and input values.
   void SetLocalValues(const std::string& preferred_languages,
                       const std::string& preload_engines,
-                      const std::string& enabled_extension_imes) {
+                      const std::string& enabled_imes) {
     preferred_languages_.SetValue(preferred_languages);
     preload_engines_.SetValue(preload_engines);
-    enabled_extension_imes_.SetValue(enabled_extension_imes);
+    enabled_imes_.SetValue(enabled_imes);
   }
 
   // Helper function to set global language and input values.
   void SetGlobalValues(const std::string& preferred_languages,
                        const std::string& preload_engines,
-                       const std::string& enabled_extension_imes) {
+                       const std::string& enabled_imes) {
     preferred_languages_syncable_.SetValue(preferred_languages);
     preload_engines_syncable_.SetValue(preload_engines);
-    enabled_extension_imes_syncable_.SetValue(enabled_extension_imes);
+    enabled_imes_syncable_.SetValue(enabled_imes);
   }
 
   // Helper function to check local language and input values.
   void ExpectLocalValues(const std::string& preferred_languages,
                          const std::string& preload_engines,
-                         const std::string& enabled_extension_imes) {
+                         const std::string& enabled_imes) {
     EXPECT_EQ(preferred_languages, preferred_languages_.GetValue());
     EXPECT_EQ(preload_engines, preload_engines_.GetValue());
-    EXPECT_EQ(enabled_extension_imes, enabled_extension_imes_.GetValue());
+    EXPECT_EQ(enabled_imes, enabled_imes_.GetValue());
   }
 
   // Helper function to check global language and input values.
   void ExpectGlobalValues(const std::string& preferred_languages,
                           const std::string& preload_engines,
-                          const std::string& enabled_extension_imes) {
+                          const std::string& enabled_imes) {
     EXPECT_EQ(preferred_languages, preferred_languages_syncable_.GetValue());
     EXPECT_EQ(preload_engines, preload_engines_syncable_.GetValue());
-    EXPECT_EQ(enabled_extension_imes,
-              enabled_extension_imes_syncable_.GetValue());
+    EXPECT_EQ(enabled_imes, enabled_imes_syncable_.GetValue());
   }
 
   // Translates engine IDs in a CSV string to input method IDs.
@@ -357,8 +340,8 @@ class InputMethodPreferencesTest : public PreferencesTest {
   StringPrefMember preferred_languages_syncable_;
   StringPrefMember preload_engines_;
   StringPrefMember preload_engines_syncable_;
-  StringPrefMember enabled_extension_imes_;
-  StringPrefMember enabled_extension_imes_syncable_;
+  StringPrefMember enabled_imes_;
+  StringPrefMember enabled_imes_syncable_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(InputMethodPreferencesTest);
@@ -381,13 +364,11 @@ TEST_F(InputMethodPreferencesTest, TestOobeAndSync) {
   // Create some values to come from the server.
   syncer::SyncDataList sync_data_list;
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreferredLanguagesSyncable, base::StringValue("ru,fi")));
+      language::prefs::kPreferredLanguagesSyncable, base::Value("ru,fi")));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreloadEnginesSyncable,
-      base::StringValue("xkb:se::swe")));
+      prefs::kLanguagePreloadEnginesSyncable, base::Value("xkb:se::swe")));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguageEnabledExtensionImesSyncable,
-      base::StringValue(kIdentityIMEID)));
+      prefs::kLanguageEnabledImesSyncable, base::Value(kIdentityIMEID)));
 
   // Sync for the first time.
   syncer::SyncableService* sync =
@@ -398,7 +379,7 @@ TEST_F(InputMethodPreferencesTest, TestOobeAndSync) {
                                      new syncer::FakeSyncChangeProcessor),
                                  std::unique_ptr<syncer::SyncErrorFactory>(
                                      new syncer::SyncErrorFactoryMock));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   // Note that we expect the preload_engines to have been translated to input
   // method IDs during the merge.
@@ -422,25 +403,19 @@ TEST_F(InputMethodPreferencesTest, TestOobeAndSync) {
   // Update the global values from the server again.
   syncer::SyncChangeList change_list;
   change_list.push_back(syncer::SyncChange(
-      FROM_HERE,
-      syncer::SyncChange::ACTION_UPDATE,
-      CreatePrefSyncData(
-          prefs::kLanguagePreferredLanguagesSyncable,
-          base::StringValue("de"))));
+      FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+      CreatePrefSyncData(language::prefs::kPreferredLanguagesSyncable,
+                         base::Value("de"))));
   change_list.push_back(syncer::SyncChange(
-      FROM_HERE,
-      syncer::SyncChange::ACTION_UPDATE,
-      CreatePrefSyncData(
-          prefs::kLanguagePreloadEnginesSyncable,
-          base::StringValue(ToInputMethodIds("xkb:de::ger")))));
-  change_list.push_back(syncer::SyncChange(
-      FROM_HERE,
-      syncer::SyncChange::ACTION_UPDATE,
-      CreatePrefSyncData(
-          prefs::kLanguageEnabledExtensionImesSyncable,
-          base::StringValue(kToUpperIMEID))));
+      FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+      CreatePrefSyncData(prefs::kLanguagePreloadEnginesSyncable,
+                         base::Value(ToInputMethodIds("xkb:de::ger")))));
+  change_list.push_back(
+      syncer::SyncChange(FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+                         CreatePrefSyncData(prefs::kLanguageEnabledImesSyncable,
+                                            base::Value(kToUpperIMEID))));
   sync->ProcessSyncChanges(FROM_HERE, change_list);
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   {
     SCOPED_TRACE("Local preferences should have remained the same.");
@@ -455,7 +430,7 @@ TEST_F(InputMethodPreferencesTest, TestOobeAndSync) {
     SCOPED_TRACE("Global preferences should have been updated.");
     ExpectGlobalValues("ja", "xkb:jp::jpn", "ime2");
   }
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 }
 
 // Tests that logging in after sync has completed changes nothing.
@@ -474,12 +449,12 @@ TEST_F(InputMethodPreferencesTest, TestLogIn) {
   // Create some values to come from the server.
   syncer::SyncDataList sync_data_list;
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreferredLanguages, base::StringValue("ru,fi")));
-  sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreloadEngines,
-      base::StringValue(ToInputMethodIds("xkb:ru::rus"))));
-  sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguageEnabledExtensionImes, base::StringValue(kIdentityIMEID)));
+      language::prefs::kPreferredLanguages, base::Value("ru,fi")));
+  sync_data_list.push_back(
+      CreatePrefSyncData(prefs::kLanguagePreloadEngines,
+                         base::Value(ToInputMethodIds("xkb:ru::rus"))));
+  sync_data_list.push_back(CreatePrefSyncData(prefs::kLanguageEnabledImes,
+                                              base::Value(kIdentityIMEID)));
 
   // Sync.
   syncer::SyncableService* sync =
@@ -490,14 +465,14 @@ TEST_F(InputMethodPreferencesTest, TestLogIn) {
                                      new syncer::FakeSyncChangeProcessor),
                                  std::unique_ptr<syncer::SyncErrorFactory>(
                                      new syncer::SyncErrorFactoryMock));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   {
     SCOPED_TRACE("Local preferences should have remained the same.");
     ExpectLocalValues(languages, preload_engines, extensions);
   }
   // Change local preferences.
   SetLocalValues("ja", ToInputMethodIds("xkb:jp::jpn"), kToUpperIMEID);
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   {
     SCOPED_TRACE("Global preferences should have been updated.");
     ExpectGlobalValues("ja", "xkb:jp::jpn", kToUpperIMEID);
@@ -514,13 +489,12 @@ TEST_F(InputMethodPreferencesTest, TestLogInLegacy) {
   // Sync. Since this is an existing profile, the local values shouldn't change.
   syncer::SyncDataList sync_data_list;
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreferredLanguagesSyncable, base::StringValue("ru,fi")));
+      language::prefs::kPreferredLanguagesSyncable, base::Value("ru,fi")));
+  sync_data_list.push_back(
+      CreatePrefSyncData(prefs::kLanguagePreloadEnginesSyncable,
+                         base::Value(ToInputMethodIds("xkb:ru::rus"))));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreloadEnginesSyncable,
-      base::StringValue(ToInputMethodIds("xkb:ru::rus"))));
-  sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguageEnabledExtensionImesSyncable,
-      base::StringValue(kToUpperIMEID)));
+      prefs::kLanguageEnabledImesSyncable, base::Value(kToUpperIMEID)));
 
   syncer::SyncableService* sync =
       pref_service_->GetSyncableService(
@@ -530,7 +504,7 @@ TEST_F(InputMethodPreferencesTest, TestLogInLegacy) {
                                      new syncer::FakeSyncChangeProcessor),
                                  std::unique_ptr<syncer::SyncErrorFactory>(
                                      new syncer::SyncErrorFactoryMock));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   {
     SCOPED_TRACE("Local preferences should have remained the same.");
     ExpectLocalValues("es", "xkb:es::spa", kIdentityIMEID);
@@ -568,16 +542,15 @@ TEST_F(InputMethodPreferencesTest, MergeStressTest) {
 
   // Create some tricky values to come from the server.
   syncer::SyncDataList sync_data_list;
-  sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreferredLanguagesSyncable,
-      base::StringValue("ar,fi,es,de,ar")));
+  sync_data_list.push_back(
+      CreatePrefSyncData(language::prefs::kPreferredLanguagesSyncable,
+                         base::Value("ar,fi,es,de,ar")));
   sync_data_list.push_back(CreatePrefSyncData(
       prefs::kLanguagePreloadEnginesSyncable,
-      base::StringValue(
+      base::Value(
           "nacl_mozc_us,xkb:ru::rus,xkb:ru::rus,xkb:es::spa,xkb:es::spa")));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguageEnabledExtensionImesSyncable,
-      base::StringValue(std::string())));
+      prefs::kLanguageEnabledImesSyncable, base::Value(std::string())));
 
   // Sync for the first time.
   syncer::SyncableService* sync =
@@ -588,7 +561,7 @@ TEST_F(InputMethodPreferencesTest, MergeStressTest) {
                                      new syncer::FakeSyncChangeProcessor),
                                  std::unique_ptr<syncer::SyncErrorFactory>(
                                      new syncer::SyncErrorFactoryMock));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   {
     SCOPED_TRACE("Server values should have merged into local values.");
     ExpectLocalValues(
@@ -621,15 +594,13 @@ TEST_F(InputMethodPreferencesTest, MergeInvalidValues) {
       "_comp_ime_nothisisnotactuallyanextensionidxkb:es::spa," +
       ToInputMethodIds("xkb:jp::jpn"));
   syncer::SyncDataList sync_data_list;
+  sync_data_list.push_back(
+      CreatePrefSyncData(language::prefs::kPreferredLanguagesSyncable,
+                         base::Value("klingon,en-US")));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreferredLanguagesSyncable,
-      base::StringValue("klingon,en-US")));
+      prefs::kLanguagePreloadEnginesSyncable, base::Value(preload_engines)));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreloadEnginesSyncable,
-      base::StringValue(preload_engines)));
-  sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguageEnabledExtensionImesSyncable,
-      base::StringValue(kUnknownIMEID)));
+      prefs::kLanguageEnabledImesSyncable, base::Value(kUnknownIMEID)));
 
   // Sync for the first time.
   syncer::SyncableService* sync =
@@ -640,7 +611,7 @@ TEST_F(InputMethodPreferencesTest, MergeInvalidValues) {
                                      new syncer::FakeSyncChangeProcessor),
                                  std::unique_ptr<syncer::SyncErrorFactory>(
                                      new syncer::SyncErrorFactoryMock));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   {
     SCOPED_TRACE("Only valid server values should have been merged in.");
     ExpectLocalValues(
@@ -664,14 +635,11 @@ TEST_F(InputMethodPreferencesTest, MergeAfterSyncing) {
       "xkb:ru::rus,xkb:xy::xyz," + ToInputMethodIds("xkb:jp::jpn"));
   syncer::SyncDataList sync_data_list;
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreferredLanguagesSyncable,
-      base::StringValue("en-US")));
+      language::prefs::kPreferredLanguagesSyncable, base::Value("en-US")));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguagePreloadEnginesSyncable,
-      base::StringValue(preload_engines)));
+      prefs::kLanguagePreloadEnginesSyncable, base::Value(preload_engines)));
   sync_data_list.push_back(CreatePrefSyncData(
-      prefs::kLanguageEnabledExtensionImesSyncable,
-      base::StringValue(kUnknownIMEID)));
+      prefs::kLanguageEnabledImesSyncable, base::Value(kUnknownIMEID)));
 
   // Sync for the first time.
   syncer::SyncableService* sync =
@@ -682,9 +650,9 @@ TEST_F(InputMethodPreferencesTest, MergeAfterSyncing) {
                                      new syncer::FakeSyncChangeProcessor),
                                  std::unique_ptr<syncer::SyncErrorFactory>(
                                      new syncer::SyncErrorFactoryMock));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   InitPreferences();
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 
   {
     SCOPED_TRACE("Local values should have been merged on initialization.");

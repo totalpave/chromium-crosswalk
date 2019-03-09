@@ -8,6 +8,8 @@
 
 #include "base/compiler_specific.h"
 #include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "jingle/glue/network_service_config_test_util.h"
 #include "jingle/notifier/base/fake_base_task.h"
 #include "jingle/notifier/base/notifier_options.h"
 #include "jingle/notifier/listener/push_client_observer.h"
@@ -33,10 +35,11 @@ class MockObserver : public PushClientObserver {
 
 class XmppPushClientTest : public testing::Test {
  protected:
-  XmppPushClientTest() {
-    notifier_options_.request_context_getter =
-        new net::TestURLRequestContextGetter(
-            message_loop_.task_runner());
+  XmppPushClientTest()
+      : net_config_helper_(
+            base::MakeRefCounted<net::TestURLRequestContextGetter>(
+                message_loop_.task_runner())) {
+    net_config_helper_.FillInNetworkConfig(&notifier_options_.network_config);
   }
 
   ~XmppPushClientTest() override {}
@@ -48,13 +51,15 @@ class XmppPushClientTest : public testing::Test {
 
   void TearDown() override {
     // Clear out any messages posted by XmppPushClient.
-    message_loop_.RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
     xmpp_push_client_->RemoveObserver(&mock_observer_);
     xmpp_push_client_.reset();
   }
 
   // The sockets created by the XMPP code expect an IO loop.
   base::MessageLoopForIO message_loop_;
+
+  jingle_glue::NetworkServiceConfigTestUtil net_config_helper_;
   NotifierOptions notifier_options_;
   StrictMock<MockObserver> mock_observer_;
   std::unique_ptr<XmppPushClient> xmpp_push_client_;

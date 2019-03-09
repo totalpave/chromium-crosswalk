@@ -9,18 +9,20 @@
 #include "base/command_line.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/common/extensions/features/feature_channel.h"
 #include "components/version_info/version_info.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/features/feature_channel.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_url_handlers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
 
-const char kManifest[] = "{"
+const char kManifest[] =
+    "{"
     " \"version\" : \"1.0.0.0\","
+    " \"manifest_version\" : 2,"
     " \"name\" : \"Test\","
     " \"chrome_ui_overrides\" : {"
     "   \"bookmarks_ui\" : {"
@@ -30,8 +32,10 @@ const char kManifest[] = "{"
     "  }"
     "}";
 
-const char kBrokenManifest[] = "{"
+const char kBrokenManifest[] =
+    "{"
     " \"version\" : \"1.0.0.0\","
+    " \"manifest_version\" : 2,"
     " \"name\" : \"Test\","
     " \"chrome_ui_overrides\" : {"
     "  }"
@@ -57,7 +61,7 @@ TEST_F(UIOverrideTest, ParseManifest) {
   std::string error;
   std::unique_ptr<base::Value> root(json.Deserialize(NULL, &error));
   ASSERT_TRUE(root);
-  ASSERT_TRUE(root->IsType(base::Value::TYPE_DICTIONARY));
+  ASSERT_TRUE(root->is_dict());
   scoped_refptr<Extension> extension = Extension::Create(
       base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
       Manifest::INVALID_LOCATION,
@@ -85,7 +89,7 @@ TEST_F(UIOverrideTest, ParseBrokenManifest) {
   std::string error;
   std::unique_ptr<base::Value> root(json.Deserialize(NULL, &error));
   ASSERT_TRUE(root);
-  ASSERT_TRUE(root->IsType(base::Value::TYPE_DICTIONARY));
+  ASSERT_TRUE(root->is_dict());
   scoped_refptr<Extension> extension = Extension::Create(
       base::FilePath(FILE_PATH_LITERAL("//nonexistent")),
       Manifest::INVALID_LOCATION,

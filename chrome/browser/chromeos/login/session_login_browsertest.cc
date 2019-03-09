@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/common/session/session_state_delegate.h"
-#include "ash/common/wm_shell.h"
 #include "base/command_line.h"
 #include "chrome/browser/chromeos/login/login_manager_test.h"
 #include "chrome/browser/chromeos/login/startup_utils.h"
@@ -13,6 +11,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/common/chrome_switches.h"
+#include "components/session_manager/core/session_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/view.h"
@@ -22,13 +21,14 @@ namespace chromeos {
 
 namespace {
 
-const char kTestUser[] = "test-user@gmail.com";
+constexpr char kTestUser[] = "test-user@gmail.com";
+constexpr char kTestUserGaiaId[] = "1234567890";
 
 }  // namespace
 
 class BrowserLoginTest : public chromeos::LoginManagerTest {
  public:
-  BrowserLoginTest() : LoginManagerTest(true) {}
+  BrowserLoginTest() : LoginManagerTest(true, true) {}
   ~BrowserLoginTest() override {}
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -38,18 +38,18 @@ class BrowserLoginTest : public chromeos::LoginManagerTest {
 };
 
 IN_PROC_BROWSER_TEST_F(BrowserLoginTest, PRE_BrowserActive) {
-  RegisterUser(kTestUser);
-  EXPECT_EQ(ash::SessionStateDelegate::SESSION_STATE_LOGIN_PRIMARY,
-            ash::WmShell::Get()->GetSessionStateDelegate()->GetSessionState());
+  RegisterUser(AccountId::FromUserEmailGaiaId(kTestUser, kTestUserGaiaId));
+  EXPECT_EQ(session_manager::SessionState::OOBE,
+            session_manager::SessionManager::Get()->session_state());
   chromeos::StartupUtils::MarkOobeCompleted();
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserLoginTest, BrowserActive) {
-  EXPECT_EQ(ash::SessionStateDelegate::SESSION_STATE_LOGIN_PRIMARY,
-            ash::WmShell::Get()->GetSessionStateDelegate()->GetSessionState());
-  LoginUser(kTestUser);
-  EXPECT_EQ(ash::SessionStateDelegate::SESSION_STATE_ACTIVE,
-            ash::WmShell::Get()->GetSessionStateDelegate()->GetSessionState());
+  EXPECT_EQ(session_manager::SessionState::LOGIN_PRIMARY,
+            session_manager::SessionManager::Get()->session_state());
+  LoginUser(AccountId::FromUserEmailGaiaId(kTestUser, kTestUserGaiaId));
+  EXPECT_EQ(session_manager::SessionState::ACTIVE,
+            session_manager::SessionManager::Get()->session_state());
 
   Browser* browser =
       chrome::FindAnyBrowser(ProfileManager::GetActiveUserProfile(), false);

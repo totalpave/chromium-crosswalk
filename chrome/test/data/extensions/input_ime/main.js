@@ -139,7 +139,12 @@ EngineBridge.prototype = {
     this.focusedContext_ = context;
     if (this.activeEngine_)
       this.engineInstance_[this.activeEngine_].onFocus(context);
-    chrome.test.sendMessage('onFocus:' + context.type);
+    chrome.test.sendMessage('onFocus:' +
+                            context.type + ':' +
+                            context.autoComplete + ':' +
+                            context.autoCorrect + ':' +
+                            context.spellCheck + ':' +
+                            context.shouldDoLearning);
   },
 
   /**
@@ -233,7 +238,7 @@ EngineBridge.prototype = {
   /**
    * Returns active engine ID. Returns null if there is no active engine.
    * @this EngineBridge
-   * @return {string} An string which identify the engine.
+   * @return {string} A string that identifies the engine.
    **/
   getActiveEngineID: function() {
     return this.activeEngine_;

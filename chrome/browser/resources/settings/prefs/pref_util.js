@@ -18,10 +18,11 @@ cr.define('Settings.PrefUtil', function() {
       case chrome.settingsPrivate.PrefType.BOOLEAN:
         return value == 'true';
       case chrome.settingsPrivate.PrefType.NUMBER:
-        var n = parseInt(value, 10);
+        const n = parseFloat(value);
         if (isNaN(n)) {
-          console.error('Argument to stringToPrefValue for number pref ' +
-                        'was unparsable: ' + value);
+          console.error(
+              'Argument to stringToPrefValue for number pref ' +
+              'was unparsable: ' + value);
           return undefined;
         }
         return n;
@@ -45,7 +46,7 @@ cr.define('Settings.PrefUtil', function() {
         return pref.value.toString();
       case chrome.settingsPrivate.PrefType.STRING:
       case chrome.settingsPrivate.PrefType.URL:
-        return /** @type {string} */(pref.value);
+        return /** @type {string} */ (pref.value);
       default:
         assertNotReached('No conversion from ' + pref.type + ' pref to string');
     }

@@ -5,6 +5,7 @@
 #include "chrome/browser/extensions/extension_system_impl.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "base/base_switches.h"
 #include "base/bind.h"
@@ -13,31 +14,34 @@
 #include "base/files/file_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_tokenizer.h"
+#include "base/task/post_task.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/chrome_app_sorting.h"
 #include "chrome/browser/extensions/chrome_content_verifier_delegate.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/extension_error_reporter.h"
+#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_garbage_collector.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_sync_service.h"
 #include "chrome/browser/extensions/extension_system_factory.h"
-#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/install_verifier.h"
+#include "chrome/browser/extensions/load_error_reporter.h"
 #include "chrome/browser/extensions/navigation_observer.h"
 #include "chrome/browser/extensions/shared_module_service.h"
-#include "chrome/browser/extensions/shared_user_script_master.h"
 #include "chrome/browser/extensions/state_store_notification_observer.h"
 #include "chrome/browser/extensions/unpacked_installer.h"
 #include "chrome/browser/extensions/update_install_gate.h"
+#include "chrome/browser/notifications/notifier_state_tracker.h"
+#include "chrome/browser/notifications/notifier_state_tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
+#include "chrome/browser/ui/webui/extensions/extensions_internals_source.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/extensions/features/feature_channel.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/url_data_source.h"
 #include "extensions/browser/content_verifier.h"
@@ -46,30 +50,29 @@
 #include "extensions/browser/extension_pref_value_map_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/info_map.h"
 #include "extensions/browser/quota_service.h"
 #include "extensions/browser/runtime_data.h"
 #include "extensions/browser/service_worker_manager.h"
+#include "extensions/browser/shared_user_script_master.h"
 #include "extensions/browser/state_store.h"
 #include "extensions/browser/uninstall_ping_sender.h"
 #include "extensions/browser/value_store/value_store_factory_impl.h"
 #include "extensions/common/constants.h"
+#include "extensions/common/features/feature_channel.h"
 #include "extensions/common/manifest_url_handlers.h"
-
-#if defined(ENABLE_NOTIFICATIONS)
-#include "chrome/browser/notifications/notifier_state_tracker.h"
-#include "chrome/browser/notifications/notifier_state_tracker_factory.h"
-#include "ui/message_center/notifier_settings.h"
-#endif
+#include "ui/message_center/public/cpp/notifier_id.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/app_mode/app_mode_utils.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_app_update_install_gate.h"
 #include "chrome/browser/chromeos/extensions/device_local_account_management_policy_provider.h"
+#include "chrome/browser/chromeos/extensions/signin_screen_policy_provider.h"
 #include "chrome/browser/chromeos/policy/device_local_account.h"
-#include "chromeos/chromeos_switches.h"
-#include "chromeos/login/login_state.h"
-#include "components/user_manager/user.h"
+#include "chrome/browser/chromeos/profiles/profile_helper.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "chromeos/login/login_state/login_state.h"
 #include "components/user_manager/user_manager.h"
 #endif
 
@@ -96,9 +99,7 @@ UninstallPingSender::FilterResult ShouldSendUninstallPing(
 // ExtensionSystemImpl::Shared
 //
 
-ExtensionSystemImpl::Shared::Shared(Profile* profile)
-    : profile_(profile) {
-}
+ExtensionSystemImpl::Shared::Shared(Profile* profile) : profile_(profile) {}
 
 ExtensionSystemImpl::Shared::~Shared() {
 }
@@ -118,16 +119,21 @@ void ExtensionSystemImpl::Shared::InitPrefs() {
       profile_, store_factory_, ValueStoreFrontend::BackendType::RULES, false));
 
 #if defined(OS_CHROMEOS)
+  // We can not perform check for Signin Profile here, as it would result in
+  // recursive call upon creation of Signin Profile, so we will create
+  // SigninScreenPolicyProvider lazily in RegisterManagementPolicyProviders.
+
   const user_manager::User* user =
       user_manager::UserManager::Get()->GetActiveUser();
   policy::DeviceLocalAccount::Type device_local_account_type;
-  if (user && policy::IsDeviceLocalAccountUser(user->email(),
-                                               &device_local_account_type)) {
+  if (user &&
+      policy::IsDeviceLocalAccountUser(user->GetAccountId().GetUserEmail(),
+                                       &device_local_account_type)) {
     device_local_account_management_policy_provider_.reset(
         new chromeos::DeviceLocalAccountManagementPolicyProvider(
             device_local_account_type));
   }
-#endif  // defined(OS_CHROMEOS)
+#endif
 }
 
 void ExtensionSystemImpl::Shared::RegisterManagementPolicyProviders() {
@@ -136,10 +142,20 @@ void ExtensionSystemImpl::Shared::RegisterManagementPolicyProviders() {
           ->GetProviders());
 
 #if defined(OS_CHROMEOS)
+  // Lazy creation of SigninScreenPolicyProvider.
+  if (!signin_screen_policy_provider_) {
+    if (chromeos::ProfileHelper::IsSigninProfile(profile_)) {
+      signin_screen_policy_provider_.reset(
+          new chromeos::SigninScreenPolicyProvider());
+    }
+  }
+
   if (device_local_account_management_policy_provider_) {
     management_policy_->RegisterProvider(
         device_local_account_management_policy_provider_.get());
   }
+  if (signin_screen_policy_provider_)
+    management_policy_->RegisterProvider(signin_screen_policy_provider_.get());
 #endif  // defined(OS_CHROMEOS)
 
   management_policy_->RegisterProvider(InstallVerifier::Get(profile_));
@@ -173,11 +189,12 @@ void ExtensionSystemImpl::Shared::Init(bool extensions_enabled) {
 
   navigation_observer_.reset(new NavigationObserver(profile_));
 
-  bool allow_noisy_errors = !command_line->HasSwitch(switches::kNoErrorDialogs);
-  ExtensionErrorReporter::Init(allow_noisy_errors);
+  bool allow_noisy_errors =
+      !command_line->HasSwitch(::switches::kNoErrorDialogs);
+  LoadErrorReporter::Init(allow_noisy_errors);
 
   content_verifier_ = new ContentVerifier(
-      profile_, new ChromeContentVerifierDelegate(profile_));
+      profile_, std::make_unique<ChromeContentVerifierDelegate>(profile_));
 
   service_worker_manager_.reset(new ServiceWorkerManager(profile_));
 
@@ -189,8 +206,10 @@ void ExtensionSystemImpl::Shared::Init(bool extensions_enabled) {
   bool autoupdate_enabled = !profile_->IsGuestSession() &&
                             !profile_->IsSystemProfile();
 #if defined(OS_CHROMEOS)
-  if (!extensions_enabled)
+  if (!extensions_enabled ||
+      chromeos::ProfileHelper::IsLockScreenAppProfile(profile_)) {
     autoupdate_enabled = false;
+  }
 #endif  // defined(OS_CHROMEOS)
   extension_service_.reset(new ExtensionService(
       profile_, base::CommandLine::ForCurrentProcess(),
@@ -213,15 +232,27 @@ void ExtensionSystemImpl::Shared::Init(bool extensions_enabled) {
     if (mode >= ContentVerifierDelegate::BOOTSTRAP)
       content_verifier_->Start();
     info_map()->SetContentVerifier(content_verifier_.get());
-
+#if defined(OS_CHROMEOS)
+    if (chromeos::ProfileHelper::IsLockScreenAppProfile(profile_))
+      info_map()->SetIsLockScreenContext(true);
+#endif
     management_policy_.reset(new ManagementPolicy);
     RegisterManagementPolicyProviders();
   }
 
+  // Extension API calls require QuotaService, so create it before loading any
+  // extensions.
+  quota_service_.reset(new QuotaService);
+
   bool skip_session_extensions = false;
 #if defined(OS_CHROMEOS)
-  // Skip loading session extensions if we are not in a user session.
-  skip_session_extensions = !chromeos::LoginState::Get()->IsUserLoggedIn();
+  // Skip loading session extensions if we are not in a user session or if the
+  // profile is the sign-in or lock screen app profile, which don't correspond
+  // to a user session.
+  skip_session_extensions =
+      !chromeos::LoginState::Get()->IsUserLoggedIn() ||
+      chromeos::ProfileHelper::IsSigninProfile(profile_) ||
+      chromeos::ProfileHelper::IsLockScreenAppProfile(profile_);
   if (chrome::IsRunningInForcedAppMode()) {
     extension_service_->component_loader()->
         AddDefaultComponentExtensionsForKioskMode(skip_session_extensions);
@@ -233,21 +264,6 @@ void ExtensionSystemImpl::Shared::Init(bool extensions_enabled) {
   extension_service_->component_loader()->AddDefaultComponentExtensions(
       skip_session_extensions);
 #endif
-  if (command_line->HasSwitch(switches::kLoadComponentExtension)) {
-    base::CommandLine::StringType path_list =
-        command_line->GetSwitchValueNative(switches::kLoadComponentExtension);
-    base::StringTokenizerT<base::CommandLine::StringType,
-                           base::CommandLine::StringType::const_iterator>
-        t(path_list, FILE_PATH_LITERAL(","));
-    while (t.GetNext()) {
-      // Load the component extension manifest synchronously.
-      // Blocking the UI thread is acceptable here since
-      // this flag designated for developers.
-      base::ThreadRestrictions::ScopedAllowIO allow_io;
-      extension_service_->component_loader()->AddOrReplace(
-          base::FilePath(t.token()));
-    }
-  }
 
   app_sorting_.reset(new ChromeAppSorting(profile_));
 
@@ -259,27 +275,12 @@ void ExtensionSystemImpl::Shared::Init(bool extensions_enabled) {
   ExtensionSyncService::Get(profile_);
 
   // Make the chrome://extension-icon/ resource available.
-  content::URLDataSource::Add(profile_, new ExtensionIconSource(profile_));
+  content::URLDataSource::Add(profile_,
+                              std::make_unique<ExtensionIconSource>(profile_));
 
-  quota_service_.reset(new QuotaService);
-
-  if (extensions_enabled) {
-    // Load any extensions specified with --load-extension.
-    // TODO(yoz): Seems like this should move into ExtensionService::Init.
-    // But maybe it's no longer important.
-    if (command_line->HasSwitch(switches::kLoadExtension)) {
-      base::CommandLine::StringType path_list =
-          command_line->GetSwitchValueNative(switches::kLoadExtension);
-      base::StringTokenizerT<base::CommandLine::StringType,
-                             base::CommandLine::StringType::const_iterator>
-          t(path_list, FILE_PATH_LITERAL(","));
-      while (t.GetNext()) {
-        std::string extension_id;
-        UnpackedInstaller::Create(extension_service_.get())->
-            LoadFromCommandLine(base::FilePath(t.token()), &extension_id);
-      }
-    }
-  }
+  // Register the source for the chrome://extensions-internals page.
+  content::URLDataSource::Add(
+      profile_, std::make_unique<ExtensionsInternalsSource>(profile_));
 }
 
 void ExtensionSystemImpl::Shared::Shutdown() {
@@ -362,13 +363,18 @@ void ExtensionSystemImpl::Shutdown() {
 
 void ExtensionSystemImpl::InitForRegularProfile(bool extensions_enabled) {
   TRACE_EVENT0("browser,startup", "ExtensionSystemImpl::InitForRegularProfile");
-  DCHECK(!profile_->IsOffTheRecord());
+  cookie_notifier_ = std::make_unique<ExtensionCookieNotifier>(profile_);
+
   if (shared_user_script_master() || extension_service())
     return;  // Already initialized.
 
   // The InfoMap needs to be created before the ProcessManager.
   shared_->info_map();
   shared_->Init(extensions_enabled);
+}
+
+void ExtensionSystemImpl::InitForIncognitoProfile() {
+  cookie_notifier_ = std::make_unique<ExtensionCookieNotifier>(profile_);
 }
 
 ExtensionService* ExtensionSystemImpl::extension_service() {
@@ -427,10 +433,33 @@ std::unique_ptr<ExtensionSet> ExtensionSystemImpl::GetDependentExtensions(
       extension);
 }
 
-void ExtensionSystemImpl::InstallUpdate(const std::string& extension_id,
-                                        const base::FilePath& temp_dir) {
-  NOTREACHED() << "Not yet implemented";
-  base::DeleteFile(temp_dir, true /* recursive */);
+void ExtensionSystemImpl::InstallUpdate(
+    const std::string& extension_id,
+    const std::string& public_key,
+    const base::FilePath& unpacked_dir,
+    bool install_immediately,
+    InstallUpdateCallback install_update_callback) {
+  DCHECK(!install_update_callback.is_null());
+
+  ExtensionService* service = extension_service();
+  DCHECK(service);
+
+  scoped_refptr<CrxInstaller> installer = CrxInstaller::CreateSilent(service);
+  installer->set_delete_source(true);
+  installer->set_installer_callback(std::move(install_update_callback));
+  installer->set_install_immediately(install_immediately);
+  installer->UpdateExtensionFromUnpackedCrx(extension_id, public_key,
+                                            unpacked_dir);
+}
+
+bool ExtensionSystemImpl::FinishDelayedInstallationIfReady(
+    const std::string& extension_id,
+    bool install_immediately) {
+  ExtensionService* service = extension_service();
+  DCHECK(service);
+  return service->GetPendingExtensionUpdate(extension_id) &&
+         service->FinishDelayedInstallationIfReady(extension_id,
+                                                   install_immediately);
 }
 
 void ExtensionSystemImpl::RegisterExtensionWithRequestContexts(
@@ -444,32 +473,28 @@ void ExtensionSystemImpl::RegisterExtensionWithRequestContexts(
   bool incognito_enabled = util::IsIncognitoEnabled(extension->id(), profile_);
 
   bool notifications_disabled = false;
-#if defined(ENABLE_NOTIFICATIONS)
   message_center::NotifierId notifier_id(
-      message_center::NotifierId::APPLICATION,
-      extension->id());
+      message_center::NotifierType::APPLICATION, extension->id());
 
   NotifierStateTracker* notifier_state_tracker =
       NotifierStateTrackerFactory::GetForProfile(profile_);
   notifications_disabled =
       !notifier_state_tracker->IsNotifierEnabled(notifier_id);
-#endif
 
-  BrowserThread::PostTaskAndReply(
-      BrowserThread::IO, FROM_HERE,
-      base::Bind(&InfoMap::AddExtension, info_map(),
-                 base::RetainedRef(extension), install_time, incognito_enabled,
-                 notifications_disabled),
+  base::PostTaskWithTraitsAndReply(
+      FROM_HERE, {BrowserThread::IO},
+      base::BindOnce(&InfoMap::AddExtension, info_map(),
+                     base::RetainedRef(extension), install_time,
+                     incognito_enabled, notifications_disabled),
       callback);
 }
 
 void ExtensionSystemImpl::UnregisterExtensionWithRequestContexts(
     const std::string& extension_id,
-    const UnloadedExtensionInfo::Reason reason) {
-  BrowserThread::PostTask(
-      BrowserThread::IO,
-      FROM_HERE,
-      base::Bind(&InfoMap::RemoveExtension, info_map(), extension_id, reason));
+    const UnloadedExtensionReason reason) {
+  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::IO},
+                           base::BindOnce(&InfoMap::RemoveExtension, info_map(),
+                                          extension_id, reason));
 }
 
 }  // namespace extensions

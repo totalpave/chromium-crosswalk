@@ -7,7 +7,6 @@
 
 #include <stddef.h>
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,12 +14,18 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
+#include "base/strings/string16.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
-#include "chrome/browser/ui/passwords/password_manager_presenter.h"
-#include "chrome/browser/ui/passwords/password_ui_view.h"
+#include "chrome/browser/extensions/api/passwords_private/passwords_private_utils.h"
+#include "chrome/browser/password_manager/reauth_purpose.h"
+#include "chrome/browser/ui/passwords/settings/password_access_authenticator.h"
+#include "chrome/browser/ui/passwords/settings/password_manager_porter.h"
+#include "chrome/browser/ui/passwords/settings/password_manager_presenter.h"
+#include "chrome/browser/ui/passwords/settings/password_ui_view.h"
 #include "chrome/common/extensions/api/passwords_private.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/password_manager/core/browser/ui/export_progress_status.h"
 #include "extensions/browser/extension_function.h"
 
 class Profile;
@@ -40,37 +45,49 @@ class PasswordsPrivateDelegateImpl : public PasswordsPrivateDelegate,
 
   // PasswordsPrivateDelegate implementation.
   void SendSavedPasswordsList() override;
-  const std::vector<api::passwords_private::PasswordUiEntry>*
-  GetSavedPasswordsList() const override;
+  void GetSavedPasswordsList(UiEntriesCallback callback) override;
   void SendPasswordExceptionsList() override;
-  const std::vector<api::passwords_private::ExceptionPair>*
-  GetPasswordExceptionsList() const override;
-  void RemoveSavedPassword(
-      const std::string& origin_url, const std::string& username) override;
-  void RemovePasswordException(const std::string& exception_url) override;
-  void RequestShowPassword(const std::string& origin_url,
-                           const std::string& username,
+  void GetPasswordExceptionsList(
+      const ExceptionEntriesCallback& callback) override;
+  void ChangeSavedPassword(
+      int id,
+      base::string16 new_username,
+      base::Optional<base::string16> new_password) override;
+  void RemoveSavedPassword(int id) override;
+  void RemovePasswordException(int id) override;
+  void UndoRemoveSavedPasswordOrException() override;
+  void RequestShowPassword(int id,
+                           PlaintextPasswordCallback callback,
                            content::WebContents* web_contents) override;
+  void ImportPasswords(content::WebContents* web_contents) override;
+  void ExportPasswords(base::OnceCallback<void(const std::string&)> accepted,
+                       content::WebContents* web_contents) override;
+  void CancelExportPasswords() override;
+  api::passwords_private::ExportProgressStatus GetExportProgressStatus()
+      override;
 
   // PasswordUIView implementation.
   Profile* GetProfile() override;
-  void ShowPassword(
-      size_t index,
-      const std::string& origin_url,
-      const std::string& username,
-      const base::string16& plaintext_password) override;
   void SetPasswordList(
       const std::vector<std::unique_ptr<autofill::PasswordForm>>& password_list)
       override;
   void SetPasswordExceptionList(
       const std::vector<std::unique_ptr<autofill::PasswordForm>>&
           password_exception_list) override;
-#if !defined(OS_ANDROID)
-  gfx::NativeWindow GetNativeWindow() const override;
-#endif
+
+  // Callback for when the password list has been written to the destination.
+  void OnPasswordsExportProgress(password_manager::ExportProgressStatus status,
+                                 const std::string& folder_name);
 
   // KeyedService overrides:
   void Shutdown() override;
+
+  SortKeyIdGenerator& GetPasswordIdGeneratorForTesting();
+
+  // Use this in tests to mock the OS-level reauthentication.
+  void SetOsReauthCallForTesting(
+      base::RepeatingCallback<bool(password_manager::ReauthPurpose)>
+          os_reauth_call);
 
  private:
   // Called after the lists are fetched. Once both lists have been set, the
@@ -80,14 +97,15 @@ class PasswordsPrivateDelegateImpl : public PasswordsPrivateDelegate,
 
   // Executes a given callback by either invoking it immediately if the class
   // has been initialized or by deferring it until initialization has completed.
-  void ExecuteFunction(const base::Callback<void()>& callback);
+  void ExecuteFunction(const base::Closure& callback);
 
-  void RemoveSavedPasswordInternal(
-      const std::string& origin_url, const std::string& username);
-  void RemovePasswordExceptionInternal(const std::string& exception_url);
-  void RequestShowPasswordInternal(const std::string& origin_url,
-                                   const std::string& username,
-                                   content::WebContents* web_contents);
+  void RemoveSavedPasswordInternal(int id);
+  void RemovePasswordExceptionInternal(int id);
+  void UndoRemoveSavedPasswordOrExceptionInternal();
+
+  // Triggers an OS-dependent UI to present OS account login challenge and
+  // returns true if the user passed that challenge.
+  bool OsReauthCall(password_manager::ReauthPurpose purpose);
 
   // Not owned by this class.
   Profile* profile_;
@@ -95,35 +113,39 @@ class PasswordsPrivateDelegateImpl : public PasswordsPrivateDelegate,
   // Used to communicate with the password store.
   std::unique_ptr<PasswordManagerPresenter> password_manager_presenter_;
 
+  // Used to control the export and import flows.
+  std::unique_ptr<PasswordManagerPorter> password_manager_porter_;
+
+  PasswordAccessAuthenticator password_access_authenticator_;
+
   // The current list of entries/exceptions. Cached here so that when new
   // observers are added, this delegate can send the current lists without
   // having to request them from |password_manager_presenter_| again.
-  std::vector<api::passwords_private::PasswordUiEntry> current_entries_;
-  std::vector<api::passwords_private::ExceptionPair> current_exceptions_;
+  UiEntries current_entries_;
+  ExceptionEntries current_exceptions_;
+
+  // Generators that map between sort keys used by |password_manager_presenter_|
+  // and ids used by the JavaScript front end.
+  SortKeyIdGenerator password_id_generator_;
+  SortKeyIdGenerator exception_id_generator_;
 
   // Whether SetPasswordList and SetPasswordExceptionList have been called, and
   // whether this class has been initialized, meaning both have been called.
-  bool set_password_list_called_;
-  bool set_password_exception_list_called_;
+  bool current_entries_initialized_;
+  bool current_exceptions_initialized_;
   bool is_initialized_;
 
   // Vector of callbacks which are queued up before the password store has been
   // initialized. Once both SetPasswordList() and SetPasswordExceptionList()
   // have been called, this class is considered initialized and can these
   // callbacks are invoked.
-  std::vector<base::Callback<void()>> pre_initialization_callbacks_;
+  std::vector<base::Closure> pre_initialization_callbacks_;
+  std::vector<UiEntriesCallback> get_saved_passwords_list_callbacks_;
+  std::vector<ExceptionEntriesCallback> get_password_exception_list_callbacks_;
 
   // The WebContents used when invoking this API. Used to fetch the
   // NativeWindow for the window where the API was called.
   content::WebContents* web_contents_;
-
-  // Map from origin URL and username to the index of |password_list_| at which
-  // the corresponding entry resides.
-  std::map<std::string, size_t> login_pair_to_index_map_;
-
-  // Map from password exception URL to the index of |password_exception_list_|
-  // at which the correponding entry resides.
-  std::map<std::string, size_t> exception_url_to_index_map_;
 
   DISALLOW_COPY_AND_ASSIGN(PasswordsPrivateDelegateImpl);
 };

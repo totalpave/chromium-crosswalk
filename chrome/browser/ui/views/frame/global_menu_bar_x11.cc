@@ -8,6 +8,10 @@
 #include <glib-object.h>
 #include <stddef.h>
 
+#include <utility>
+#include <vector>
+
+#include "base/bind.h"
 #include "base/debug/leak_annotations.h"
 #include "base/logging.h"
 #include "base/macros.h"
@@ -34,7 +38,7 @@
 #include "components/history/core/browser/top_sites.h"
 #include "components/prefs/pref_service.h"
 #include "components/sessions/core/tab_restore_service.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/accelerators/menu_label_accelerator_util_linux.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
@@ -152,10 +156,6 @@ GlobalMenuBarCommand file_menu[] = {
 
   { MENU_SEPARATOR, MENU_SEPARATOR },
 
-  { IDS_CREATE_SHORTCUTS, IDC_CREATE_SHORTCUTS },
-
-  { MENU_SEPARATOR, MENU_SEPARATOR },
-
   { IDS_CLOSE_WINDOW_LINUX, IDC_CLOSE_WINDOW },
   { IDS_CLOSE_TAB_LINUX, IDC_CLOSE_TAB },
   { IDS_SAVE_PAGE, IDC_SAVE_PAGE },
@@ -234,6 +234,7 @@ GlobalMenuBarCommand tools_menu[] = {
 
     {IDS_VIEW_SOURCE, IDC_VIEW_SOURCE},
     {IDS_DEV_TOOLS, IDC_DEV_TOOLS},
+    {IDS_DEV_TOOLS_ELEMENTS, IDC_DEV_TOOLS_INSPECT},
     {IDS_DEV_TOOLS_CONSOLE, IDC_DEV_TOOLS_CONSOLE},
     {IDS_DEV_TOOLS_DEVICES, IDC_DEV_TOOLS_DEVICES},
 
@@ -298,7 +299,7 @@ void EnsureMethodsLoaded() {
 }  // namespace
 
 struct GlobalMenuBarX11::HistoryItem {
-  HistoryItem() : session_id(0) {}
+  HistoryItem() : session_id(SessionID::InvalidValue()) {}
 
   // The title for the menu item.
   base::string16 title;
@@ -307,10 +308,10 @@ struct GlobalMenuBarX11::HistoryItem {
 
   // This ID is unique for a browser session and can be passed to the
   // TabRestoreService to re-open the closed window or tab that this
-  // references. A non-0 session ID indicates that this is an entry can be
+  // references. A valid session ID indicates that this is an entry can be
   // restored that way. Otherwise, the URL will be used to open the item and
-  // this ID will be 0.
-  SessionID::id_type session_id;
+  // this ID will be invalid.
+  SessionID session_id;
 
   // If the HistoryItem is a window, this will be the vector of tabs. Note
   // that this is a list of weak references. The |menu_item_map_| is the owner
@@ -356,7 +357,7 @@ GlobalMenuBarX11::~GlobalMenuBarX11() {
 }
 
 // static
-std::string GlobalMenuBarX11::GetPathForWindow(unsigned long xid) {
+std::string GlobalMenuBarX11::GetPathForWindow(XID xid) {
   return base::StringPrintf("/com/canonical/menu/%lX", xid);
 }
 
@@ -380,10 +381,10 @@ DbusmenuMenuitem* GlobalMenuBarX11::BuildMenuItem(
   return item;
 }
 
-void GlobalMenuBarX11::InitServer(unsigned long xid) {
+void GlobalMenuBarX11::InitServer(XID xid) {
   std::string path = GetPathForWindow(xid);
   {
-    ANNOTATE_SCOPED_MEMORY_LEAK; // http://crbug.com/314087
+    ANNOTATE_SCOPED_MEMORY_LEAK;  // http://crbug.com/314087
     server_ = server_new(path.c_str());
   }
 
@@ -465,8 +466,8 @@ DbusmenuMenuitem* GlobalMenuBarX11::BuildStaticMenu(
   DbusmenuMenuitem* top = menuitem_new();
   menuitem_property_set(
       top, kPropertyLabel,
-      ui::RemoveWindowsStyleAccelerators(
-          l10n_util::GetStringUTF8(menu_str_id)).c_str());
+      ui::RemoveWindowsStyleAccelerators(l10n_util::GetStringUTF8(menu_str_id))
+          .c_str());
   menuitem_property_set_bool(top, kPropertyVisible, true);
 
   for (int i = 0; commands[i].str_id != MENU_END; ++i) {
@@ -569,9 +570,8 @@ void GlobalMenuBarX11::AddHistoryItemToMenu(HistoryItem* item,
 void GlobalMenuBarX11::GetTopSitesData() {
   DCHECK(top_sites_);
 
-  top_sites_->GetMostVisitedURLs(
-      base::Bind(&GlobalMenuBarX11::OnTopSitesReceived,
-                 weak_ptr_factory_.GetWeakPtr()), false);
+  top_sites_->GetMostVisitedURLs(base::Bind(
+      &GlobalMenuBarX11::OnTopSitesReceived, weak_ptr_factory_.GetWeakPtr()));
 }
 
 void GlobalMenuBarX11::OnTopSitesReceived(
@@ -598,8 +598,7 @@ void GlobalMenuBarX11::OnTopSitesReceived(
 }
 
 void GlobalMenuBarX11::OnBookmarkBarVisibilityChanged() {
-  CommandIDMenuItemMap::iterator it =
-      id_to_menu_item_.find(IDC_SHOW_BOOKMARK_BAR);
+  auto it = id_to_menu_item_.find(IDC_SHOW_BOOKMARK_BAR);
   if (it != id_to_menu_item_.end()) {
     PrefService* prefs = browser_->profile()->GetPrefs();
     // Note: Unlike the GTK version, we don't appear to need to do tricks where
@@ -716,14 +715,15 @@ void GlobalMenuBarX11::OnAvatarMenuChanged(AvatarMenu* avatar_menu) {
 }
 
 void GlobalMenuBarX11::OnBrowserSetLastActive(Browser* browser) {
-  // Rebuild the avatar menu so that the items have the correct active state.
-  avatar_menu_->RebuildMenu();
+  // Notify the avatar menu of the change and rebuild the menu. Note: The
+  // ActiveBrowserChanged() call needs to happen first to update the state.
   avatar_menu_->ActiveBrowserChanged(browser);
+  avatar_menu_->RebuildMenu();
   RebuildProfilesMenu();
 }
 
 void GlobalMenuBarX11::EnabledStateChangedForCommand(int id, bool enabled) {
-  CommandIDMenuItemMap::iterator it = id_to_menu_item_.find(id);
+  auto it = id_to_menu_item_.find(id);
   if (it != id_to_menu_item_.end())
     menuitem_property_set_bool(it->second, kPropertyEnabled, enabled);
 }
@@ -748,15 +748,14 @@ void GlobalMenuBarX11::TabRestoreServiceChanged(
                                         TAG_RECENTLY_CLOSED_HEADER) + 1;
 
   unsigned int added_count = 0;
-  for (sessions::TabRestoreService::Entries::const_iterator it =
-           entries.begin();
+  for (auto it = entries.begin();
        it != entries.end() && added_count < kRecentlyClosedCount; ++it) {
-    sessions::TabRestoreService::Entry* entry = *it;
+    sessions::TabRestoreService::Entry* entry = it->get();
 
     if (entry->type == sessions::TabRestoreService::WINDOW) {
       sessions::TabRestoreService::Window* entry_win =
           static_cast<sessions::TabRestoreService::Window*>(entry);
-      std::vector<sessions::TabRestoreService::Tab>& tabs = entry_win->tabs;
+      auto& tabs = entry_win->tabs;
       if (tabs.empty())
         continue;
 
@@ -792,10 +791,8 @@ void GlobalMenuBarX11::TabRestoreServiceChanged(
 
       // Loop over the window's tabs and add them to the submenu.
       int subindex = 2;
-      std::vector<sessions::TabRestoreService::Tab>::const_iterator iter;
-      for (iter = tabs.begin(); iter != tabs.end(); ++iter) {
-        sessions::TabRestoreService::Tab tab = *iter;
-        HistoryItem* tab_item = HistoryItemForTab(tab);
+      for (const auto& tab : tabs) {
+        HistoryItem* tab_item = HistoryItemForTab(*tab);
         item->tabs.push_back(tab_item);
         AddHistoryItemToMenu(tab_item,
                              parent_item,
@@ -822,14 +819,14 @@ void GlobalMenuBarX11::TabRestoreServiceDestroyed(
   tab_restore_service_ = nullptr;
 }
 
-void GlobalMenuBarX11::OnWindowMapped(unsigned long xid) {
+void GlobalMenuBarX11::OnWindowMapped(XID xid) {
   if (!server_)
     InitServer(xid);
 
   GlobalMenuBarRegistrarX11::GetInstance()->OnWindowMapped(xid);
 }
 
-void GlobalMenuBarX11::OnWindowUnmapped(unsigned long xid) {
+void GlobalMenuBarX11::OnWindowUnmapped(XID xid) {
   GlobalMenuBarRegistrarX11::GetInstance()->OnWindowUnmapped(xid);
 }
 
@@ -850,17 +847,15 @@ void GlobalMenuBarX11::OnHistoryItemActivated(DbusmenuMenuitem* sender,
   // just load the URL.
   sessions::TabRestoreService* service =
       TabRestoreServiceFactory::GetForProfile(profile_);
-  if (item->session_id && service) {
+  if (item->session_id.is_valid() && service) {
     service->RestoreEntryById(browser_->live_tab_context(), item->session_id,
-                              UNKNOWN);
+                              WindowOpenDisposition::UNKNOWN);
   } else {
     DCHECK(item->url.is_valid());
-    browser_->OpenURL(content::OpenURLParams(
-        item->url,
-        content::Referrer(),
-        NEW_FOREGROUND_TAB,
-        ui::PAGE_TRANSITION_AUTO_BOOKMARK,
-        false));
+    browser_->OpenURL(
+        content::OpenURLParams(item->url, content::Referrer(),
+                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                               ui::PAGE_TRANSITION_AUTO_BOOKMARK, false));
   }
 }
 

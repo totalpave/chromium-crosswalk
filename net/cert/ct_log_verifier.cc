@@ -5,17 +5,19 @@
 #include "net/cert/ct_log_verifier.h"
 
 #include <string.h>
-#include <openssl/bytestring.h>
-#include <openssl/evp.h>
+
+#include <vector>
 
 #include "base/logging.h"
 #include "crypto/openssl_util.h"
-#include "crypto/scoped_openssl_types.h"
 #include "crypto/sha2.h"
 #include "net/cert/ct_log_verifier_util.h"
 #include "net/cert/ct_serialization.h"
+#include "net/cert/merkle_audit_proof.h"
 #include "net/cert/merkle_consistency_proof.h"
 #include "net/cert/signed_tree_head.h"
+#include "third_party/boringssl/src/include/openssl/bytestring.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
 
 namespace net {
 
@@ -57,28 +59,25 @@ const EVP_MD* GetEvpAlg(ct::DigitallySigned::HashAlgorithm alg) {
 // static
 scoped_refptr<const CTLogVerifier> CTLogVerifier::Create(
     const base::StringPiece& public_key,
-    const base::StringPiece& description,
-    const base::StringPiece& url) {
-  GURL log_url(url.as_string());
-  if (!log_url.is_valid())
-    return nullptr;
-  scoped_refptr<CTLogVerifier> result(new CTLogVerifier(description, log_url));
+    std::string description,
+    std::string dns_domain) {
+  scoped_refptr<CTLogVerifier> result(
+      new CTLogVerifier(std::move(description), std::move(dns_domain)));
   if (!result->Init(public_key))
     return nullptr;
   return result;
 }
 
-CTLogVerifier::CTLogVerifier(const base::StringPiece& description,
-                             const GURL& url)
-    : description_(description.as_string()),
-      url_(url),
+CTLogVerifier::CTLogVerifier(std::string description, std::string dns_domain)
+    : description_(std::move(description)),
+      dns_domain_(std::move(dns_domain)),
       hash_algorithm_(ct::DigitallySigned::HASH_ALGO_NONE),
       signature_algorithm_(ct::DigitallySigned::SIG_ALGO_ANONYMOUS),
       public_key_(NULL) {
-  DCHECK(url_.is_valid());
+  DCHECK(!dns_domain_.empty());
 }
 
-bool CTLogVerifier::Verify(const ct::LogEntry& entry,
+bool CTLogVerifier::Verify(const ct::SignedEntryData& entry,
                            const ct::SignedCertificateTimestamp& sct) const {
   if (sct.log_id != key_id()) {
     DVLOG(1) << "SCT is not signed by this log.";
@@ -89,7 +88,7 @@ bool CTLogVerifier::Verify(const ct::LogEntry& entry,
     return false;
 
   std::string serialized_log_entry;
-  if (!ct::EncodeLogEntry(entry, &serialized_log_entry)) {
+  if (!ct::EncodeSignedEntry(entry, &serialized_log_entry)) {
     DVLOG(1) << "Unable to serialize entry.";
     return false;
   }
@@ -109,7 +108,9 @@ bool CTLogVerifier::VerifySignedTreeHead(
     return false;
 
   std::string serialized_data;
-  ct::EncodeTreeHeadSignature(signed_tree_head, &serialized_data);
+  if (!ct::EncodeTreeHeadSignature(signed_tree_head, &serialized_data))
+    return false;
+
   if (VerifySignature(serialized_data,
                       signed_tree_head.signature.signature_data)) {
     if (signed_tree_head.tree_size == 0) {
@@ -178,7 +179,7 @@ bool CTLogVerifier::VerifyConsistencyProof(
   // 1. If "first" is an exact power of 2, then prepend "first_hash" to the
   // "consistency_path" array.
   base::StringPiece first_proof_node = old_tree_hash;
-  std::vector<std::string>::const_iterator iter = proof.nodes.begin();
+  auto iter = proof.nodes.begin();
   if (!IsPowerOfTwo(proof.first_tree_size)) {
     if (iter == proof.nodes.end())
       return false;
@@ -238,6 +239,61 @@ bool CTLogVerifier::VerifyConsistencyProof(
   return fr == old_tree_hash && sr == new_tree_hash && sn == 0;
 }
 
+bool CTLogVerifier::VerifyAuditProof(const ct::MerkleAuditProof& proof,
+                                     const std::string& root_hash,
+                                     const std::string& leaf_hash) const {
+  // Implements the algorithm described in
+  // https://tools.ietf.org/html/draft-ietf-trans-rfc6962-bis-19#section-10.4.1
+  //
+  // It maintains a hash |r|, initialized to |leaf_hash|, and hashes nodes from
+  // |proof| into it. The proof is then valid if |r| is |root_hash|, proving
+  // that |root_hash| includes |leaf_hash|.
+
+  // 1.  Compare "leaf_index" against "tree_size".  If "leaf_index" is
+  //     greater than or equal to "tree_size" fail the proof verification.
+  if (proof.leaf_index >= proof.tree_size)
+    return false;
+
+  // 2.  Set "fn" to "leaf_index" and "sn" to "tree_size - 1".
+  uint64_t fn = proof.leaf_index;
+  uint64_t sn = proof.tree_size - 1;
+  // 3.  Set "r" to "hash".
+  std::string r = leaf_hash;
+
+  // 4.  For each value "p" in the "inclusion_path" array:
+  for (const std::string& p : proof.nodes) {
+    // If "sn" is 0, stop the iteration and fail the proof verification.
+    if (sn == 0)
+      return false;
+
+    // If "LSB(fn)" is set, or if "fn" is equal to "sn", then:
+    if ((fn & 1) || fn == sn) {
+      // 1.  Set "r" to "HASH(0x01 || p || r)"
+      r = ct::internal::HashNodes(p, r);
+
+      // 2.  If "LSB(fn)" is not set, then right-shift both "fn" and "sn"
+      //     equally until either "LSB(fn)" is set or "fn" is "0".
+      while (!(fn & 1) && fn != 0) {
+        fn >>= 1;
+        sn >>= 1;
+      }
+    } else {  // Otherwise:
+      // Set "r" to "HASH(0x01 || r || p)"
+      r = ct::internal::HashNodes(r, p);
+    }
+
+    // Finally, right-shift both "fn" and "sn" one time.
+    fn >>= 1;
+    sn >>= 1;
+  }
+
+  // 5.  Compare "sn" to 0.  Compare "r" against the "root_hash".  If "sn"
+  //     is equal to 0, and "r" and the "root_hash" are equal, then the
+  //     log has proven the inclusion of "hash".  Otherwise, fail the
+  //     proof verification.
+  return sn == 0 && r == root_hash;
+}
+
 CTLogVerifier::~CTLogVerifier() {
   crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
 
@@ -292,19 +348,13 @@ bool CTLogVerifier::VerifySignature(const base::StringPiece& data_to_sign,
   if (hash_alg == NULL)
     return false;
 
-  EVP_MD_CTX ctx;
-  EVP_MD_CTX_init(&ctx);
-
-  bool ok =
-      (1 == EVP_DigestVerifyInit(&ctx, NULL, hash_alg, NULL, public_key_) &&
-       1 == EVP_DigestVerifyUpdate(&ctx, data_to_sign.data(),
-                                   data_to_sign.size()) &&
-       1 == EVP_DigestVerifyFinal(
-                &ctx, reinterpret_cast<const uint8_t*>(signature.data()),
-                signature.size()));
-
-  EVP_MD_CTX_cleanup(&ctx);
-  return ok;
+  bssl::ScopedEVP_MD_CTX ctx;
+  return EVP_DigestVerifyInit(ctx.get(), NULL, hash_alg, NULL, public_key_) &&
+         EVP_DigestVerifyUpdate(ctx.get(), data_to_sign.data(),
+                                data_to_sign.size()) &&
+         EVP_DigestVerifyFinal(
+             ctx.get(), reinterpret_cast<const uint8_t*>(signature.data()),
+             signature.size());
 }
 
 }  // namespace net

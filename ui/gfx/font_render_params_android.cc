@@ -6,6 +6,7 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/no_destructor.h"
 
 namespace gfx {
 
@@ -28,6 +29,10 @@ FontRenderParams LoadDefaults() {
   return params;
 }
 
+// A device scale factor used to determine if subpixel positioning
+// should be used.
+float device_scale_factor_ = 1.0f;
+
 }  // namespace
 
 FontRenderParams GetFontRenderParams(const FontRenderParamsQuery& query,
@@ -35,8 +40,16 @@ FontRenderParams GetFontRenderParams(const FontRenderParamsQuery& query,
   if (family_out)
     NOTIMPLEMENTED();
   // Customized font rendering settings are not supported, only defaults.
-  CR_DEFINE_STATIC_LOCAL(const gfx::FontRenderParams, params, (LoadDefaults()));
-  return params;
+  static const base::NoDestructor<gfx::FontRenderParams> params(LoadDefaults());
+  return *params;
+}
+
+float GetFontRenderParamsDeviceScaleFactor() {
+  return device_scale_factor_;
+}
+
+void SetFontRenderParamsDeviceScaleFactor(float device_scale_factor) {
+  device_scale_factor_ = device_scale_factor;
 }
 
 }  // namespace gfx

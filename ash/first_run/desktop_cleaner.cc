@@ -4,8 +4,11 @@
 
 #include "ash/first_run/desktop_cleaner.h"
 
-#include "ash/common/shell_window_ids.h"
+#include <memory>
+
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
+#include "base/stl_util.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_observer.h"
 #include "ui/compositor/layer_animation_observer.h"
@@ -18,7 +21,6 @@ namespace {
 
 const int kContainerIdsToHide[] = {
     kShellWindowId_DefaultContainer, kShellWindowId_AlwaysOnTopContainer,
-    kShellWindowId_PanelContainer,
     // TODO(dzhioev): uncomment this when issue with BrowserView::CanActivate
     // will be fixed.
     // kShellWindowId_SystemModalContainer
@@ -77,12 +79,12 @@ class NotificationBlocker : public message_center::NotificationBlocker {
     NotifyBlockingStateChanged();
   }
 
-  ~NotificationBlocker() override {}
+  ~NotificationBlocker() override = default;
 
  private:
   // Overriden from message_center::NotificationBlocker.
   bool ShouldShowNotificationAsPopup(
-      const message_center::NotifierId& notifier_id) const override {
+      const message_center::Notification& notification) const override {
     return false;
   }
 
@@ -91,21 +93,22 @@ class NotificationBlocker : public message_center::NotificationBlocker {
 
 DesktopCleaner::DesktopCleaner() {
   // TODO(dzhioev): Add support for secondary displays.
-  aura::Window* root_window = Shell::GetInstance()->GetPrimaryRootWindow();
-  for (size_t i = 0; i < arraysize(kContainerIdsToHide); ++i) {
+  aura::Window* root_window = Shell::Get()->GetPrimaryRootWindow();
+  for (size_t i = 0; i < base::size(kContainerIdsToHide); ++i) {
     aura::Window* container =
         Shell::GetContainer(root_window, kContainerIdsToHide[i]);
-    container_hiders_.push_back(make_linked_ptr(new ContainerHider(container)));
+    container_hiders_.push_back(std::make_unique<ContainerHider>(container));
   }
   notification_blocker_.reset(new NotificationBlocker());
 }
 
-DesktopCleaner::~DesktopCleaner() {}
+DesktopCleaner::~DesktopCleaner() = default;
 
 // static
 std::vector<int> DesktopCleaner::GetContainersToHideForTest() {
-  return std::vector<int>(kContainerIdsToHide,
-                          kContainerIdsToHide + arraysize(kContainerIdsToHide));
+  return std::vector<int>(
+      kContainerIdsToHide,
+      kContainerIdsToHide + base::size(kContainerIdsToHide));
 }
 
 }  // namespace ash

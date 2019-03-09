@@ -4,9 +4,12 @@
 
 #include "chrome/browser/ui/startup/bad_flags_prompt.h"
 
+#include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/trace_event/memory_dump_manager.h"
 #include "build/build_config.h"
 #include "chrome/browser/infobars/infobar_service.h"
 #include "chrome/browser/ui/browser.h"
@@ -14,63 +17,72 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/switch_utils.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/autofill/core/common/autofill_switches.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "components/infobars/core/simple_alert_infobar_delegate.h"
 #include "components/invalidation/impl/invalidation_switches.h"
+#include "components/nacl/common/buildflags.h"
 #include "components/nacl/common/nacl_switches.h"
-#include "components/network_session_configurator/switches.h"
+#include "components/network_session_configurator/common/network_switches.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
 #include "components/translate/core/common/translate_switches.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "extensions/common/switches.h"
 #include "google_apis/gaia/gaia_switches.h"
+#include "media/base/media_switches.h"
+#include "media/media_buildflags.h"
+#include "services/network/public/cpp/network_switches.h"
+#include "services/service_manager/sandbox/switches.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/vector_icons_public.h"
+
+#if defined(OS_ANDROID)
+#include "chrome/browser/android/chrome_feature_list.h"
+#endif  // OS_ANDROID
 
 namespace chrome {
 
-void ShowBadFlagsPrompt(Browser* browser) {
-  content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
-  if (!web_contents)
-    return;
+namespace {
 
-  // Unsupported flags for which to display a warning that "stability and
-  // security will suffer".
-  static const char* kBadFlags[] = {
+#if !defined(OS_ANDROID)
+// Dangerous command line flags for which to display a warning that "stability
+// and security will suffer".
+static const char* kBadFlags[] = {
+    network::switches::kIgnoreCertificateErrorsSPKIList,
     // These flags disable sandbox-related security.
-    switches::kDisableGpuSandbox,
-    switches::kDisableSeccompFilterSandbox,
-    switches::kDisableSetuidSandbox,
+    service_manager::switches::kDisableGpuSandbox,
+    service_manager::switches::kDisableSeccompFilterSandbox,
+    service_manager::switches::kDisableSetuidSandbox,
+    service_manager::switches::kNoSandbox,
+#if defined(OS_WIN)
+    service_manager::switches::kAllowThirdPartyModules,
+#endif
+    switches::kDisableSiteIsolation,
     switches::kDisableWebSecurity,
-#if !defined(DISABLE_NACL)
+#if BUILDFLAG(ENABLE_NACL)
     switches::kNaClDangerousNoSandboxNonSfi,
 #endif
-    switches::kNoSandbox,
     switches::kSingleProcess,
 
     // These flags disable or undermine the Same Origin Policy.
     translate::switches::kTranslateSecurityOrigin,
 
     // These flags undermine HTTPS / connection security.
-#if defined(ENABLE_WEBRTC)
     switches::kDisableWebRtcEncryption,
-#endif
     switches::kIgnoreCertificateErrors,
-    switches::kReduceSecurityForTesting,
     invalidation::switches::kSyncAllowInsecureXmppConnection,
 
     // These flags change the URLs that handle PII.
     switches::kGaiaUrl,
     translate::switches::kTranslateScriptURL,
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
     // This flag gives extensions more powers.
     extensions::switches::kExtensionsOnChromeURLs,
+#endif
 
 #if defined(OS_LINUX) && !defined(OS_CHROMEOS)
     // Speech dispatcher is buggy, it can crash and it can make Chrome freeze.
@@ -87,35 +99,85 @@ void ShowBadFlagsPrompt(Browser* browser) {
     // if they are not.
     switches::kUnsafelyTreatInsecureOriginAsSecure,
 
-    // This flag enables Web Bluetooth. Since the UI for Web Bluetooth is
-    // not yet implemented, websites could take control over paired devices
-    // without the users knowledge, so we need to show a warning for when
-    // the flag is enabled.
-    switches::kEnableWebBluetooth,
+    // This flag allows sites to access the camera and microphone without
+    // getting the user's permission.
+    switches::kUseFakeUIForMediaStream,
 
-    // This flag disables WebUSB's CORS-like checks for origin to device
-    // communication, allowing any origin to ask the user for permission to
-    // connect to a device. It is intended for manufacturers testing their
-    // existing devices until https://crbug.com/598766 is implemented.
-    switches::kDisableWebUsbSecurity,
+    // This flag allows sites to access protected media identifiers without
+    // getting the user's permission.
+    switches::kUnsafelyAllowProtectedMediaIdentifierForDomain,
 
-    NULL
-  };
+    // This flag delays execution of base::TaskPriority::BEST_EFFORT tasks until
+    // shutdown. The queue of base::TaskPriority::BEST_EFFORT tasks can increase
+    // memory usage. Also, while it should be possible to use Chrome almost
+    // normally with this flag, it is expected that some non-visible operations
+    // such as writing user data to disk, cleaning caches, reporting metrics or
+    // updating components won't be performed until shutdown.
+    switches::kDisableBestEffortTasks,
 
-  for (const char** flag = kBadFlags; *flag; ++flag) {
-    if (base::CommandLine::ForCurrentProcess()->HasSwitch(*flag)) {
-      SimpleAlertInfoBarDelegate::Create(
-          InfoBarService::FromWebContents(web_contents),
-          infobars::InfoBarDelegate::BAD_FLAGS_PROMPT,
-          infobars::InfoBarDelegate::kNoIconID,
-          gfx::VectorIconId::VECTOR_ICON_NONE,
-          l10n_util::GetStringFUTF16(
-              IDS_BAD_FLAGS_WARNING_MESSAGE,
-              base::UTF8ToUTF16(std::string("--") + *flag)),
-          false);
+    // The UI for Web Bluetooth scanning is not yet implemented. Without the
+    // UI websites can scan for bluetooth without user intervention. Show a
+    // warning until the UI is complete.
+    switches::kEnableWebBluetoothScanning,
+};
+#endif  // OS_ANDROID
+
+// Dangerous feature flags in about:flags for which to display a warning that
+// "stability and security will suffer".
+static const base::Feature* kBadFeatureFlagsInAboutFlags[] = {
+    &features::kAllowSignedHTTPExchangeCertsWithoutExtension,
+#if defined(OS_ANDROID)
+    &chrome::android::kCommandLineOnNonRooted,
+#endif  // OS_ANDROID
+};
+
+void ShowBadFeatureFlagsInfoBar(content::WebContents* web_contents,
+                                int message_id,
+                                const base::Feature* feature) {
+  SimpleAlertInfoBarDelegate::Create(
+      InfoBarService::FromWebContents(web_contents),
+      infobars::InfoBarDelegate::BAD_FLAGS_INFOBAR_DELEGATE, nullptr,
+      l10n_util::GetStringFUTF16(message_id, base::UTF8ToUTF16(feature->name)),
+      false);
+}
+
+}  // namespace
+
+void ShowBadFlagsPrompt(content::WebContents* web_contents) {
+// On Android, ShowBadFlagsPrompt doesn't show the warning notification
+// for flags which are not available in about:flags.
+#if !defined(OS_ANDROID)
+  for (const char* flag : kBadFlags) {
+    if (base::CommandLine::ForCurrentProcess()->HasSwitch(flag)) {
+      ShowBadFlagsInfoBar(web_contents, IDS_BAD_FLAGS_WARNING_MESSAGE, flag);
       return;
     }
   }
+#endif  // OS_ANDROID
+
+  for (const base::Feature* feature : kBadFeatureFlagsInAboutFlags) {
+    if (base::FeatureList::IsEnabled(*feature)) {
+      ShowBadFeatureFlagsInfoBar(web_contents, IDS_BAD_FEATURES_WARNING_MESSAGE,
+                                 feature);
+      return;
+    }
+  }
+}
+
+void ShowBadFlagsInfoBar(content::WebContents* web_contents,
+                         int message_id,
+                         const char* flag) {
+  std::string switch_value =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(flag);
+  if (!switch_value.empty())
+    switch_value = "=" + switch_value;
+  SimpleAlertInfoBarDelegate::Create(
+      InfoBarService::FromWebContents(web_contents),
+      infobars::InfoBarDelegate::BAD_FLAGS_INFOBAR_DELEGATE, nullptr,
+      l10n_util::GetStringFUTF16(
+          message_id,
+          base::UTF8ToUTF16(std::string("--") + flag + switch_value)),
+      false);
 }
 
 void MaybeShowInvalidUserDataDirWarningDialog() {
@@ -127,7 +189,7 @@ void MaybeShowInvalidUserDataDirWarningDialog() {
 
   // Ensure the ResourceBundle is initialized for string resource access.
   bool cleanup_resource_bundle = false;
-  if (!ResourceBundle::HasSharedInstance()) {
+  if (!ui::ResourceBundle::HasSharedInstance()) {
     cleanup_resource_bundle = true;
     std::string locale = l10n_util::GetApplicationLocale(std::string());
     const char kUserDataDirDialogFallbackLocale[] = "en-US";
@@ -144,7 +206,7 @@ void MaybeShowInvalidUserDataDirWarningDialog() {
                                  user_data_dir.LossyDisplayName());
 
   if (cleanup_resource_bundle)
-    ResourceBundle::CleanupSharedInstance();
+    ui::ResourceBundle::CleanupSharedInstance();
 
   // More complex dialogs cannot be shown before the earliest calls here.
   ShowWarningMessageBox(NULL, title, message);

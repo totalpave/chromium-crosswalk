@@ -8,18 +8,22 @@
 
 #include "base/atomic_sequence_num.h"
 #include "base/json/json_writer.h"
+#include "base/memory/ptr_util.h"
+#include "base/strings/string_util.h"
 #include "base/values.h"
 
 namespace media {
 
 // A count of all MediaLogs created in the current process. Used to generate
 // unique IDs.
-static base::StaticAtomicSequenceNumber g_media_log_count;
+static base::AtomicSequenceNumber g_media_log_count;
 
 std::string MediaLog::MediaLogLevelToString(MediaLogLevel level) {
   switch (level) {
     case MEDIALOG_ERROR:
       return "error";
+    case MEDIALOG_WARNING:
+      return "warning";
     case MEDIALOG_INFO:
       return "info";
     case MEDIALOG_DEBUG:
@@ -33,6 +37,8 @@ MediaLogEvent::Type MediaLog::MediaLogLevelToEventType(MediaLogLevel level) {
   switch (level) {
     case MEDIALOG_ERROR:
       return MediaLogEvent::MEDIA_ERROR_LOG_ENTRY;
+    case MEDIALOG_WARNING:
+      return MediaLogEvent::MEDIA_WARNING_LOG_ENTRY;
     case MEDIALOG_INFO:
       return MediaLogEvent::MEDIA_INFO_LOG_ENTRY;
     case MEDIALOG_DEBUG:
@@ -64,66 +70,55 @@ std::string MediaLog::EventTypeToString(MediaLogEvent::Type type) {
       return "VIDEO_SIZE_SET";
     case MediaLogEvent::DURATION_SET:
       return "DURATION_SET";
-    case MediaLogEvent::TOTAL_BYTES_SET:
-      return "TOTAL_BYTES_SET";
-    case MediaLogEvent::NETWORK_ACTIVITY_SET:
-      return "NETWORK_ACTIVITY_SET";
     case MediaLogEvent::ENDED:
       return "ENDED";
     case MediaLogEvent::TEXT_ENDED:
       return "TEXT_ENDED";
-    case MediaLogEvent::BUFFERED_EXTENTS_CHANGED:
-      return "BUFFERED_EXTENTS_CHANGED";
     case MediaLogEvent::MEDIA_ERROR_LOG_ENTRY:
       return "MEDIA_ERROR_LOG_ENTRY";
+    case MediaLogEvent::MEDIA_WARNING_LOG_ENTRY:
+      return "MEDIA_WARNING_LOG_ENTRY";
     case MediaLogEvent::MEDIA_INFO_LOG_ENTRY:
       return "MEDIA_INFO_LOG_ENTRY";
     case MediaLogEvent::MEDIA_DEBUG_LOG_ENTRY:
       return "MEDIA_DEBUG_LOG_ENTRY";
     case MediaLogEvent::PROPERTY_CHANGE:
       return "PROPERTY_CHANGE";
+    case MediaLogEvent::SUSPENDED:
+      return "SUSPENDED";
   }
   NOTREACHED();
   return NULL;
 }
 
 std::string MediaLog::PipelineStatusToString(PipelineStatus status) {
+#define STRINGIFY_STATUS_CASE(status) \
+  case status:                        \
+    return #status
+
   switch (status) {
-    case PIPELINE_OK:
-      return "pipeline: ok";
-    case PIPELINE_ERROR_NETWORK:
-      return "pipeline: network error";
-    case PIPELINE_ERROR_DECODE:
-      return "pipeline: decode error";
-    case PIPELINE_ERROR_ABORT:
-      return "pipeline: abort";
-    case PIPELINE_ERROR_INITIALIZATION_FAILED:
-      return "pipeline: initialization failed";
-    case PIPELINE_ERROR_COULD_NOT_RENDER:
-      return "pipeline: could not render";
-    case PIPELINE_ERROR_READ:
-      return "pipeline: read error";
-    case PIPELINE_ERROR_INVALID_STATE:
-      return "pipeline: invalid state";
-    case DEMUXER_ERROR_COULD_NOT_OPEN:
-      return "demuxer: could not open";
-    case DEMUXER_ERROR_COULD_NOT_PARSE:
-      return "demuxer: could not parse";
-    case DEMUXER_ERROR_NO_SUPPORTED_STREAMS:
-      return "demuxer: no supported streams";
-    case DECODER_ERROR_NOT_SUPPORTED:
-      return "decoder: not supported";
-    case CHUNK_DEMUXER_ERROR_APPEND_FAILED:
-      return "chunk demuxer: append failed";
-    case CHUNK_DEMUXER_ERROR_EOS_STATUS_DECODE_ERROR:
-      return "chunk demuxer: application requested decode error on eos";
-    case CHUNK_DEMUXER_ERROR_EOS_STATUS_NETWORK_ERROR:
-      return "chunk demuxer: application requested network error on eos";
-    case AUDIO_RENDERER_ERROR:
-      return "audio renderer: output device reported an error";
-    case AUDIO_RENDERER_ERROR_SPLICE_FAILED:
-      return "audio renderer: post-decode audio splicing failed";
+    STRINGIFY_STATUS_CASE(PIPELINE_OK);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_NETWORK);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_DECODE);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_ABORT);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_INITIALIZATION_FAILED);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_COULD_NOT_RENDER);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_EXTERNAL_RENDERER_FAILED);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_READ);
+    STRINGIFY_STATUS_CASE(PIPELINE_ERROR_INVALID_STATE);
+    STRINGIFY_STATUS_CASE(DEMUXER_ERROR_COULD_NOT_OPEN);
+    STRINGIFY_STATUS_CASE(DEMUXER_ERROR_COULD_NOT_PARSE);
+    STRINGIFY_STATUS_CASE(DEMUXER_ERROR_NO_SUPPORTED_STREAMS);
+    STRINGIFY_STATUS_CASE(DEMUXER_ERROR_DETECTED_HLS);
+    STRINGIFY_STATUS_CASE(DECODER_ERROR_NOT_SUPPORTED);
+    STRINGIFY_STATUS_CASE(CHUNK_DEMUXER_ERROR_APPEND_FAILED);
+    STRINGIFY_STATUS_CASE(CHUNK_DEMUXER_ERROR_EOS_STATUS_DECODE_ERROR);
+    STRINGIFY_STATUS_CASE(CHUNK_DEMUXER_ERROR_EOS_STATUS_NETWORK_ERROR);
+    STRINGIFY_STATUS_CASE(AUDIO_RENDERER_ERROR);
   }
+
+#undef STRINGIFY_STATUS_CASE
+
   NOTREACHED();
   return NULL;
 }
@@ -136,26 +131,107 @@ std::string MediaLog::MediaEventToLogString(const MediaLogEvent& event) {
   if (event.type == MediaLogEvent::PIPELINE_ERROR &&
       event.params.GetInteger("pipeline_error", &error_code)) {
     PipelineStatus status = static_cast<PipelineStatus>(error_code);
-    return EventTypeToString(event.type) + " " +
-        media::MediaLog::PipelineStatusToString(status);
+    return EventTypeToString(event.type) + " " + PipelineStatusToString(status);
   }
+
   std::string params_json;
   base::JSONWriter::Write(event.params, &params_json);
   return EventTypeToString(event.type) + " " + params_json;
 }
 
-MediaLog::MediaLog() : id_(g_media_log_count.GetNext()) {}
+std::string MediaLog::MediaEventToMessageString(const MediaLogEvent& event) {
+  switch (event.type) {
+    case MediaLogEvent::PIPELINE_ERROR: {
+      int error_code = 0;
+      event.params.GetInteger("pipeline_error", &error_code);
+      DCHECK_NE(error_code, 0);
+      return PipelineStatusToString(static_cast<PipelineStatus>(error_code));
+    }
+    case MediaLogEvent::MEDIA_ERROR_LOG_ENTRY: {
+      std::string result = "";
+      if (event.params.GetString(MediaLogLevelToString(MEDIALOG_ERROR),
+                                 &result))
+        base::ReplaceChars(result, "\n", " ", &result);
+      return result;
+    }
+    default:
+      NOTREACHED();
+      return "";
+  }
+}
 
-MediaLog::~MediaLog() {}
+std::string MediaLog::BufferingStateToString(BufferingState state) {
+  switch (state) {
+    case BUFFERING_HAVE_NOTHING:
+      return "BUFFERING_HAVE_NOTHING";
+    case BUFFERING_HAVE_ENOUGH:
+      return "BUFFERING_HAVE_ENOUGH";
+  }
+  NOTREACHED();
+  return "";
+}
 
-void MediaLog::AddEvent(std::unique_ptr<MediaLogEvent> event) {}
+MediaLog::MediaLog() : MediaLog(new ParentLogRecord(this)) {}
 
-std::string MediaLog::GetLastErrorMessage() {
+MediaLog::MediaLog(scoped_refptr<ParentLogRecord> parent_log_record)
+    : parent_log_record_(std::move(parent_log_record)),
+      id_(g_media_log_count.GetNext()) {}
+
+MediaLog::~MediaLog() {
+  // If we are the underlying log, then somebody should have called
+  // InvalidateLog before now.  Otherwise, there could be concurrent calls into
+  // this after we're destroyed.  Note that calling it here isn't really much
+  // better, since there could be concurrent calls into the now destroyed
+  // derived class.
+  //
+  // However, we can't DCHECK on it, since lots of folks create a base Medialog
+  // implementation temporarily.  So, the best we can do is invalidate the log.
+  // We could get around this if we introduce a new NullMediaLog that handles
+  // log invalidation, so we could dcheck here.  However, that seems like a lot
+  // of boilerplate.
+  if (parent_log_record_->media_log == this)
+    InvalidateLog();
+}
+
+void MediaLog::AddEvent(std::unique_ptr<MediaLogEvent> event) {
+  base::AutoLock auto_lock(parent_log_record_->lock);
+  // Forward to the parent log's implementation.
+  if (parent_log_record_->media_log)
+    parent_log_record_->media_log->AddEventLocked(std::move(event));
+}
+
+void MediaLog::AddEventLocked(std::unique_ptr<MediaLogEvent> event) {}
+
+std::string MediaLog::GetErrorMessage() {
+  base::AutoLock auto_lock(parent_log_record_->lock);
+  // Forward to the parent log's implementation.
+  if (parent_log_record_->media_log)
+    return parent_log_record_->media_log->GetErrorMessageLocked();
+
+  return "";
+}
+
+std::string MediaLog::GetErrorMessageLocked() {
   return "";
 }
 
 void MediaLog::RecordRapporWithSecurityOrigin(const std::string& metric) {
-  NOTIMPLEMENTED() << "Default MediaLog doesn't support rappor reporting.";
+  base::AutoLock auto_lock(parent_log_record_->lock);
+  // Forward to the parent log's implementation.
+  if (parent_log_record_->media_log)
+    parent_log_record_->media_log->RecordRapporWithSecurityOriginLocked(metric);
+}
+
+void MediaLog::RecordRapporWithSecurityOriginLocked(const std::string& metric) {
+  DVLOG(1) << "Default MediaLog doesn't support rappor reporting.";
+}
+
+std::unique_ptr<MediaLogEvent> MediaLog::CreateCreatedEvent(
+    const std::string& origin_url) {
+  std::unique_ptr<MediaLogEvent> event(
+      CreateEvent(MediaLogEvent::WEBMEDIAPLAYER_CREATED));
+  event->params.SetString("origin_url", TruncateUrlString(origin_url));
+  return event;
 }
 
 std::unique_ptr<MediaLogEvent> MediaLog::CreateEvent(MediaLogEvent::Type type) {
@@ -188,24 +264,25 @@ std::unique_ptr<MediaLogEvent> MediaLog::CreateTimeEvent(
     MediaLogEvent::Type type,
     const std::string& property,
     base::TimeDelta value) {
+  return CreateTimeEvent(type, property, value.InSecondsF());
+}
+
+std::unique_ptr<MediaLogEvent> MediaLog::CreateTimeEvent(
+    MediaLogEvent::Type type,
+    const std::string& property,
+    double value) {
   std::unique_ptr<MediaLogEvent> event(CreateEvent(type));
-  if (value.is_max())
-    event->params.SetString(property, "unknown");
+  if (std::isfinite(value))
+    event->params.SetDouble(property, value);
   else
-    event->params.SetDouble(property, value.InSecondsF());
+    event->params.SetString(property, "unknown");
   return event;
 }
 
 std::unique_ptr<MediaLogEvent> MediaLog::CreateLoadEvent(
     const std::string& url) {
   std::unique_ptr<MediaLogEvent> event(CreateEvent(MediaLogEvent::LOAD));
-  event->params.SetString("url", url);
-  return event;
-}
-
-std::unique_ptr<MediaLogEvent> MediaLog::CreateSeekEvent(float seconds) {
-  std::unique_ptr<MediaLogEvent> event(CreateEvent(MediaLogEvent::SEEK));
-  event->params.SetDouble("seek_target", seconds);
+  event->params.SetString("url", TruncateUrlString(url));
   return event;
 }
 
@@ -236,18 +313,11 @@ std::unique_ptr<MediaLogEvent> MediaLog::CreateVideoSizeSetEvent(
   return event;
 }
 
-std::unique_ptr<MediaLogEvent> MediaLog::CreateBufferedExtentsChangedEvent(
-    int64_t start,
-    int64_t current,
-    int64_t end) {
-  std::unique_ptr<MediaLogEvent> event(
-      CreateEvent(MediaLogEvent::BUFFERED_EXTENTS_CHANGED));
-  // These values are headed to JS where there is no int64_t so we use a double
-  // and accept loss of precision above 2^53 bytes (8 Exabytes).
-  event->params.SetDouble("buffer_start", start);
-  event->params.SetDouble("buffer_current", current);
-  event->params.SetDouble("buffer_end", end);
-  return event;
+std::unique_ptr<MediaLogEvent> MediaLog::CreateBufferingStateChangedEvent(
+    const std::string& property,
+    BufferingState state) {
+  return CreateStringEvent(MediaLogEvent::PROPERTY_CHANGE, property,
+                           BufferingStateToString(state));
 }
 
 void MediaLog::AddLogEvent(MediaLogLevel level, const std::string& message) {
@@ -281,11 +351,45 @@ void MediaLog::SetBooleanProperty(
   AddEvent(std::move(event));
 }
 
-LogHelper::LogHelper(MediaLog::MediaLogLevel level,
-                     const scoped_refptr<MediaLog>& media_log)
-    : level_(level), media_log_(media_log) {
-  DCHECK(media_log_.get());
+std::unique_ptr<MediaLog> MediaLog::Clone() {
+  // Protected ctor, so we can't use std::make_unique.
+  return base::WrapUnique(new MediaLog(parent_log_record_));
 }
+
+// static
+std::string MediaLog::TruncateUrlString(std::string log_string) {
+  if (log_string.length() > kMaxUrlLength) {
+    log_string.resize(kMaxUrlLength);
+
+    // Room for the ellipsis.
+    DCHECK_GE(kMaxUrlLength, std::size_t{3});
+    log_string.replace(log_string.end() - 3, log_string.end(), "...");
+  }
+
+  return log_string;
+}
+
+MediaLog::ParentLogRecord::ParentLogRecord(MediaLog* log) : media_log(log) {}
+MediaLog::ParentLogRecord::~ParentLogRecord() = default;
+
+void MediaLog::InvalidateLog() {
+  base::AutoLock auto_lock(parent_log_record_->lock);
+  // It's almost certainly unintentional to invalidate a parent log.
+  DCHECK(parent_log_record_->media_log == nullptr ||
+         parent_log_record_->media_log == this);
+
+  parent_log_record_->media_log = nullptr;
+  // Keep |parent_log_record_| around, since the lock must keep working.
+}
+
+LogHelper::LogHelper(MediaLog::MediaLogLevel level, MediaLog* media_log)
+    : level_(level), media_log_(media_log) {
+  DCHECK(media_log_);
+}
+
+LogHelper::LogHelper(MediaLog::MediaLogLevel level,
+                     const std::unique_ptr<MediaLog>& media_log)
+    : LogHelper(level, media_log.get()) {}
 
 LogHelper::~LogHelper() {
   media_log_->AddLogEvent(level_, stream_.str());

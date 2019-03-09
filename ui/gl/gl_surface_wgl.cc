@@ -5,10 +5,12 @@
 #include "ui/gl/gl_surface_wgl.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/logging.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/gl/gl_bindings.h"
+#include "ui/gl/gl_context.h"
 #include "ui/gl/gl_gl_api_implementation.h"
 #include "ui/gl/gl_wgl_api_implementation.h"
 
@@ -145,8 +147,11 @@ class DisplayWGL {
   HDC device_context_;
   int pixel_format_;
 };
-DisplayWGL* g_display;
+DisplayWGL* g_wgl_display;
 }  // namespace
+
+// static
+bool GLSurfaceWGL::initialized_ = false;
 
 GLSurfaceWGL::GLSurfaceWGL() {
 }
@@ -158,29 +163,37 @@ void* GLSurfaceWGL::GetDisplay() {
   return GetDisplayDC();
 }
 
+// static
 bool GLSurfaceWGL::InitializeOneOff() {
-  static bool initialized = false;
-  if (initialized)
+  if (initialized_)
     return true;
 
-  DCHECK(g_display == NULL);
+  DCHECK(g_wgl_display == NULL);
   std::unique_ptr<DisplayWGL> wgl_display(new DisplayWGL);
   if (!wgl_display->Init())
     return false;
 
-  g_display = wgl_display.release();
-  initialized = true;
+  g_wgl_display = wgl_display.release();
+  initialized_ = true;
+  return true;
+}
+
+// static
+bool GLSurfaceWGL::InitializeExtensionSettingsOneOff() {
+  if (!initialized_)
+    return false;
+  g_driver_wgl.InitializeExtensionBindings();
   return true;
 }
 
 void GLSurfaceWGL::InitializeOneOffForTesting() {
-  if (g_display == NULL) {
-    g_display = new DisplayWGL;
+  if (g_wgl_display == NULL) {
+    g_wgl_display = new DisplayWGL;
   }
 }
 
 HDC GLSurfaceWGL::GetDisplayDC() {
-  return g_display->device_context();
+  return g_wgl_display->device_context();
 }
 
 NativeViewGLSurfaceWGL::NativeViewGLSurfaceWGL(gfx::AcceleratedWidget window)
@@ -192,7 +205,7 @@ NativeViewGLSurfaceWGL::~NativeViewGLSurfaceWGL() {
   Destroy();
 }
 
-bool NativeViewGLSurfaceWGL::Initialize(GLSurface::Format format) {
+bool NativeViewGLSurfaceWGL::Initialize(GLSurfaceFormat format) {
   DCHECK(!device_context_);
 
   RECT rect;
@@ -204,19 +217,11 @@ bool NativeViewGLSurfaceWGL::Initialize(GLSurface::Format format) {
 
   // Create a child window. WGL has problems using a window handle owned by
   // another process.
-  child_window_ =
-      CreateWindowEx(WS_EX_NOPARENTNOTIFY,
-                     reinterpret_cast<wchar_t*>(g_display->window_class()),
-                     L"",
-                     WS_CHILDWINDOW | WS_DISABLED | WS_VISIBLE,
-                     0,
-                     0,
-                     rect.right - rect.left,
-                     rect.bottom - rect.top,
-                     window_,
-                     NULL,
-                     NULL,
-                     NULL);
+  child_window_ = CreateWindowEx(
+      WS_EX_NOPARENTNOTIFY,
+      reinterpret_cast<wchar_t*>(g_wgl_display->window_class()), L"",
+      WS_CHILDWINDOW | WS_DISABLED | WS_VISIBLE, 0, 0, rect.right - rect.left,
+      rect.bottom - rect.top, window_, NULL, NULL, NULL);
   if (!child_window_) {
     LOG(ERROR) << "CreateWindow failed.\n";
     Destroy();
@@ -231,8 +236,7 @@ bool NativeViewGLSurfaceWGL::Initialize(GLSurface::Format format) {
     return false;
   }
 
-  if (!SetPixelFormat(device_context_,
-                      g_display->pixel_format(),
+  if (!SetPixelFormat(device_context_, g_wgl_display->pixel_format(),
                       &kPixelFormatDescriptor)) {
     LOG(ERROR) << "Unable to set the pixel format for GL context.";
     Destroy();
@@ -257,6 +261,7 @@ void NativeViewGLSurfaceWGL::Destroy() {
 
 bool NativeViewGLSurfaceWGL::Resize(const gfx::Size& size,
                                     float scale_factor,
+                                    ColorSpace color_space,
                                     bool has_alpha) {
   RECT rect;
   if (!GetClientRect(window_, &rect)) {
@@ -285,7 +290,9 @@ bool NativeViewGLSurfaceWGL::IsOffscreen() {
   return false;
 }
 
-gfx::SwapResult NativeViewGLSurfaceWGL::SwapBuffers() {
+gfx::SwapResult NativeViewGLSurfaceWGL::SwapBuffers(
+    PresentationCallback callback) {
+  // TODO(penghuang): Provide presentation feedback. https://crbug.com/776877
   TRACE_EVENT2("gpu", "NativeViewGLSurfaceWGL:RealSwapBuffers",
       "width", GetSize().width(),
       "height", GetSize().height());
@@ -305,8 +312,19 @@ gfx::SwapResult NativeViewGLSurfaceWGL::SwapBuffers() {
   }
 
   DCHECK(device_context_);
-  return ::SwapBuffers(device_context_) == TRUE ? gfx::SwapResult::SWAP_ACK
-                                                : gfx::SwapResult::SWAP_FAILED;
+  if (::SwapBuffers(device_context_) == TRUE) {
+    // TODO(penghuang): Provide more accurate values for presentation feedback.
+    constexpr int64_t kRefreshIntervalInMicroseconds =
+        base::Time::kMicrosecondsPerSecond / 60;
+    std::move(callback).Run(gfx::PresentationFeedback(
+        base::TimeTicks::Now(),
+        base::TimeDelta::FromMicroseconds(kRefreshIntervalInMicroseconds),
+        0 /* flags */));
+    return gfx::SwapResult::SWAP_ACK;
+  } else {
+    std::move(callback).Run(gfx::PresentationFeedback::Failure());
+    return gfx::SwapResult::SWAP_FAILED;
+  }
 }
 
 gfx::Size NativeViewGLSurfaceWGL::GetSize() {
@@ -318,6 +336,24 @@ gfx::Size NativeViewGLSurfaceWGL::GetSize() {
 
 void* NativeViewGLSurfaceWGL::GetHandle() {
   return device_context_;
+}
+
+GLSurfaceFormat NativeViewGLSurfaceWGL::GetFormat() {
+  return GLSurfaceFormat();
+}
+
+bool NativeViewGLSurfaceWGL::SupportsPresentationCallback() {
+  return true;
+}
+
+void NativeViewGLSurfaceWGL::SetVSyncEnabled(bool enabled) {
+  DCHECK(GLContext::GetCurrent() && GLContext::GetCurrent()->IsCurrent(this));
+  if (g_driver_wgl.ext.b_WGL_EXT_swap_control) {
+    wglSwapIntervalEXT(enabled ? 1 : 0);
+  } else {
+    LOG(WARNING) << "Could not disable vsync: driver does not "
+                    "support WGL_EXT_swap_control";
+  }
 }
 
 PbufferGLSurfaceWGL::PbufferGLSurfaceWGL(const gfx::Size& size)
@@ -334,7 +370,7 @@ PbufferGLSurfaceWGL::~PbufferGLSurfaceWGL() {
   Destroy();
 }
 
-bool PbufferGLSurfaceWGL::Initialize(GLSurface::Format format) {
+bool PbufferGLSurfaceWGL::Initialize(GLSurfaceFormat format) {
   DCHECK(!device_context_);
 
   if (!g_driver_wgl.fn.wglCreatePbufferARBFn) {
@@ -344,10 +380,9 @@ bool PbufferGLSurfaceWGL::Initialize(GLSurface::Format format) {
   }
 
   const int kNoAttributes[] = { 0 };
-  pbuffer_ = wglCreatePbufferARB(g_display->device_context(),
-                                 g_display->pixel_format(),
-                                 size_.width(), size_.height(),
-                                 kNoAttributes);
+  pbuffer_ = wglCreatePbufferARB(g_wgl_display->device_context(),
+                                 g_wgl_display->pixel_format(), size_.width(),
+                                 size_.height(), kNoAttributes);
 
   if (!pbuffer_) {
     LOG(ERROR) << "Unable to create pbuffer.";
@@ -381,7 +416,8 @@ bool PbufferGLSurfaceWGL::IsOffscreen() {
   return true;
 }
 
-gfx::SwapResult PbufferGLSurfaceWGL::SwapBuffers() {
+gfx::SwapResult PbufferGLSurfaceWGL::SwapBuffers(
+    PresentationCallback callback) {
   NOTREACHED() << "Attempted to call SwapBuffers on a pbuffer.";
   return gfx::SwapResult::SWAP_FAILED;
 }
@@ -392,6 +428,10 @@ gfx::Size PbufferGLSurfaceWGL::GetSize() {
 
 void* PbufferGLSurfaceWGL::GetHandle() {
   return device_context_;
+}
+
+GLSurfaceFormat PbufferGLSurfaceWGL::GetFormat() {
+  return GLSurfaceFormat();
 }
 
 }  // namespace gl

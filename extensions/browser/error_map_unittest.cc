@@ -27,8 +27,6 @@ class ErrorMapUnitTest : public testing::Test {
   ErrorMapUnitTest() { }
   ~ErrorMapUnitTest() override {}
 
-  void SetUp() override { testing::Test::SetUp(); }
-
  protected:
   ErrorMap errors_;
 };
@@ -44,7 +42,7 @@ TEST_F(ErrorMapUnitTest, AddAndRemoveErrors) {
   // Populate with both incognito and non-incognito errors (evenly distributed).
   for (size_t i = 0; i < kNumTotalErrors; ++i) {
     ASSERT_TRUE(errors_.AddError(
-        CreateNewRuntimeError(kId, base::SizeTToString(i), i % 2 == 0)));
+        CreateNewRuntimeError(kId, base::NumberToString(i), i % 2 == 0)));
   }
 
   // There should only be one entry in the map, since errors are stored in lists
@@ -119,7 +117,7 @@ TEST_F(ErrorMapUnitTest, ExcessiveErrorsGetCropped) {
   // Add new errors, with each error's message set to its number.
   for (size_t i = 0; i < kMaxErrorsPerExtension + kNumExtraErrors; ++i) {
     ASSERT_TRUE(
-        errors_.AddError(CreateNewRuntimeError(kId, base::SizeTToString(i))));
+        errors_.AddError(CreateNewRuntimeError(kId, base::NumberToString(i))));
   }
 
   ASSERT_EQ(1u, errors_.size());
@@ -129,10 +127,11 @@ TEST_F(ErrorMapUnitTest, ExcessiveErrorsGetCropped) {
 
   // We should have popped off errors in the order they arrived, so the
   // first stored error should be the 6th reported (zero-based)...
-  ASSERT_EQ(base::SizeTToString16(kNumExtraErrors), list.front()->message());
+  ASSERT_EQ(base::NumberToString16(kNumExtraErrors), list.front()->message());
   // ..and the last stored should be the 105th reported.
-  ASSERT_EQ(base::SizeTToString16(kMaxErrorsPerExtension + kNumExtraErrors - 1),
-            list.back()->message());
+  ASSERT_EQ(
+      base::NumberToString16(kMaxErrorsPerExtension + kNumExtraErrors - 1),
+      list.back()->message());
 }
 
 // Test to ensure that the error console will not add duplicate errors, but will
@@ -146,13 +145,13 @@ TEST_F(ErrorMapUnitTest, DuplicateErrorsAreReplaced) {
   // Report three errors.
   for (size_t i = 0; i < kNumErrors; ++i) {
     ASSERT_TRUE(
-        errors_.AddError(CreateNewRuntimeError(kId, base::SizeTToString(i))));
+        errors_.AddError(CreateNewRuntimeError(kId, base::NumberToString(i))));
   }
 
   // Create an error identical to the second error reported, save its
   // location, and add it to the error map.
   std::unique_ptr<ExtensionError> runtime_error2 =
-      CreateNewRuntimeError(kId, base::UintToString(1u));
+      CreateNewRuntimeError(kId, base::NumberToString(1u));
   const ExtensionError* weak_error = runtime_error2.get();
   ASSERT_TRUE(errors_.AddError(std::move(runtime_error2)));
 
@@ -163,7 +162,7 @@ TEST_F(ErrorMapUnitTest, DuplicateErrorsAreReplaced) {
   ASSERT_EQ(kNumErrors, list.size());
 
   // The duplicate error should be the last reported (pointer comparison)...
-  ASSERT_EQ(weak_error, list.back());
+  ASSERT_EQ(weak_error, list.back().get());
   // ... and should have two reported occurrences.
   ASSERT_EQ(2u, list.back()->occurrences());
 }

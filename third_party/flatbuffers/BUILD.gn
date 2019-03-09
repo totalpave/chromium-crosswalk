@@ -9,34 +9,71 @@ config("flatbuffers_config") {
   include_dirs = [ "src/include" ]
 }
 
+# The part of FlatBuffers that Chrome is interested in.
 source_set("flatbuffers") {
   sources = [
+    "src/include/flatbuffers/base.h",
     "src/include/flatbuffers/flatbuffers.h",
-    "src/include/flatbuffers/hash.h",
+    "src/include/flatbuffers/stl_emulation.h",
   ]
+
+  if (is_win) {
+    data_deps = [ "//build/win:runtime_libs" ]
+  }
 
   configs -= [ "//build/config/compiler:chromium_code" ]
   configs += [ "//build/config/compiler:no_chromium_code" ]
+
   public_configs = [ ":flatbuffers_config" ]
 }
 
+# The complete FlatBuffers library, as required to build the flatc compiler and
+# some of the tests.
 source_set("compiler_files") {
+  include_dirs = [ "src/grpc" ]
   sources = [
+    "src/grpc/src/compiler/config.h",
+    "src/grpc/src/compiler/cpp_generator.cc",
+    "src/grpc/src/compiler/cpp_generator.h",
+    "src/grpc/src/compiler/go_generator.cc",
+    "src/grpc/src/compiler/go_generator.h",
+    "src/grpc/src/compiler/java_generator.cc",
+    "src/grpc/src/compiler/java_generator.h",
+    "src/grpc/src/compiler/schema_interface.h",
     "src/include/flatbuffers/code_generators.h",
+    "src/include/flatbuffers/flatbuffers.h",
+    "src/include/flatbuffers/flatc.h",
+    "src/include/flatbuffers/flexbuffers.h",
+    "src/include/flatbuffers/grpc.h",
+    "src/include/flatbuffers/hash.h",
     "src/include/flatbuffers/idl.h",
+    "src/include/flatbuffers/minireflect.h",
+    "src/include/flatbuffers/reflection.h",
+    "src/include/flatbuffers/reflection_generated.h",
+    "src/include/flatbuffers/registry.h",
     "src/include/flatbuffers/util.h",
+    "src/src/code_generators.cpp",
+    "src/src/flatc.cpp",
     "src/src/idl_gen_cpp.cpp",
+    "src/src/idl_gen_dart.cpp",
     "src/src/idl_gen_fbs.cpp",
     "src/src/idl_gen_general.cpp",
     "src/src/idl_gen_go.cpp",
-    "src/src/idl_gen_js.cpp",
+    "src/src/idl_gen_grpc.cpp",
+    "src/src/idl_gen_js_ts.cpp",
+    "src/src/idl_gen_json_schema.cpp",
+    "src/src/idl_gen_lobster.cpp",
+    "src/src/idl_gen_lua.cpp",
     "src/src/idl_gen_php.cpp",
     "src/src/idl_gen_python.cpp",
+    "src/src/idl_gen_rust.cpp",
     "src/src/idl_gen_text.cpp",
     "src/src/idl_parser.cpp",
     "src/src/reflection.cpp",
     "src/src/util.cpp",
   ]
+  configs -= [ "//build/config/compiler:chromium_code" ]
+  configs += [ "//build/config/compiler:no_chromium_code" ]
   visibility = [ ":*" ]
   deps = [
     ":flatbuffers",
@@ -45,12 +82,11 @@ source_set("compiler_files") {
 
 executable("flatc") {
   sources = [
-    "src/src/flatc.cpp",
+    "src/src/flatc_main.cpp",
   ]
   deps = [
     ":compiler_files",
     ":flatbuffers",
-    "//build/config/sanitizers:deps",
   ]
 }
 
@@ -59,25 +95,20 @@ executable("flatc") {
 flatbuffer("flatbuffers_samplebuffer") {
   testonly = true
   sources = [
-    # Disabled as workaround for crbug.com/611351
-    # "src/tests/include_test1.fbs",
-    # "src/tests/include_test2.fbs",
+    "src/tests/include_test/include_test1.fbs",
+    "src/tests/include_test/sub/include_test2.fbs",
     "src/tests/monster_test.fbs",
     "src/tests/namespace_test/namespace_test1.fbs",
     "src/tests/namespace_test/namespace_test2.fbs",
   ]
+  flatc_include_dirs = [ "src/tests/include_test" ]
 }
 
-test("flatbuffers_unittest") {
+test("flatbuffers_unittests") {
   sources = [
-    # The following files are not included in :flatbuffers
-    # but are listed here because test.cpp tests more than what will
-    # get included into Chrome (reflection and generation).
-    "src/include/reflection.h",
-    "src/include/reflection_generated.h",
-
-    # This is the actual test.
     "src/tests/test.cpp",
+    "src/tests/test_assert.cpp",
+    "src/tests/test_builder.cpp",
   ]
   deps = [
     ":compiler_files",
@@ -86,5 +117,18 @@ test("flatbuffers_unittest") {
   ]
   data = [
     "src/tests/",
+
+    "//testing/scripts/common.py",
+    "//testing/scripts/run_flatbuffers_unittests.py",
+    "//testing/xvfb.py",
+  ]
+
+  defines = [
+    "FLATBUFFERS_TRACK_VERIFIER_BUFFER_SIZE",
+
+    # Careful, this test suite needs to be run in the actual out/<build_dir>
+    # directory.
+    "FLATBUFFERS_TEST_PATH_PREFIX=" +
+        rebase_path("//third_party/flatbuffers/src/", root_build_dir),
   ]
 }

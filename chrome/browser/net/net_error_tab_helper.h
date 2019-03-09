@@ -12,11 +12,19 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/net/dns_probe_service.h"
-#include "chrome/common/features.h"
+#include "chrome/common/network_diagnostics.mojom.h"
+#include "chrome/common/network_easter_egg.mojom.h"
 #include "components/error_page/common/net_error_info.h"
+#include "components/offline_pages/buildflags/buildflags.h"
 #include "components/prefs/pref_member.h"
+#include "content/public/browser/reload_type.h"
+#include "content/public/browser/web_contents_binding_set.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
+
+namespace user_prefs {
+class PrefRegistrySyncable;
+}  // namespace user_prefs
 
 namespace chrome_browser_net {
 
@@ -25,7 +33,9 @@ namespace chrome_browser_net {
 // DnsProbeService whenever a page fails to load with a DNS-related error.
 class NetErrorTabHelper
     : public content::WebContentsObserver,
-      public content::WebContentsUserData<NetErrorTabHelper> {
+      public content::WebContentsUserData<NetErrorTabHelper>,
+      public chrome::mojom::NetworkDiagnostics,
+      public chrome::mojom::NetworkEasterEgg {
  public:
   enum TestingState {
     TESTING_DEFAULT,
@@ -40,6 +50,8 @@ class NetErrorTabHelper
 
   static void set_state_for_testing(TestingState testing_state);
 
+  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* prefs);
+
   // Sets a callback that will be called immediately after the helper sends
   // a NetErrorHelper IPC.  (Used by the DNS probe browser test to know when to
   // check the error page for updates, instead of polling.)
@@ -48,33 +60,20 @@ class NetErrorTabHelper
     dns_probe_status_snoop_callback_ = dns_probe_status_snoop_callback;
   }
 
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  bool is_showing_download_button_in_error_page() const {
+    return is_showing_download_button_in_error_page_;
+  }
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
+
   // content::WebContentsObserver implementation.
   void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
-
-  void DidStartNavigationToPendingEntry(
-      const GURL& url,
-      content::NavigationController::ReloadType reload_type) override;
-
-  void DidStartProvisionalLoadForFrame(
-      content::RenderFrameHost* render_frame_host,
-      const GURL& validated_url,
-      bool is_error_page,
-      bool is_iframe_srcdoc) override;
-
-  void DidCommitProvisionalLoadForFrame(
-      content::RenderFrameHost* render_frame_host,
-      const GURL& url,
-      ui::PageTransition transition_type) override;
-
-  void DidFailProvisionalLoad(content::RenderFrameHost* render_frame_host,
-                              const GURL& validated_url,
-                              int error_code,
-                              const base::string16& error_description,
-                              bool was_ignored_by_handler) override;
-
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
   bool OnMessageReceived(const IPC::Message& message,
                          content::RenderFrameHost* render_frame_host) override;
-
 
  protected:
   // |contents| is the WebContents of the tab this NetErrorTabHelper is
@@ -88,6 +87,16 @@ class NetErrorTabHelper
     return dns_probe_status_;
   }
 
+  content::WebContentsFrameBindingSet<chrome::mojom::NetworkDiagnostics>&
+  network_diagnostics_bindings_for_testing() {
+    return network_diagnostics_bindings_;
+  }
+
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  void OnDownloadPageLater();
+  void OnSetIsShowingDownloadButtonInErrorPage(bool is_showing_download_button);
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
+
  private:
   friend class content::WebContentsUserData<NetErrorTabHelper>;
 
@@ -96,20 +105,27 @@ class NetErrorTabHelper
   void InitializePref(content::WebContents* contents);
   bool ProbesAllowed() const;
 
-  // Sanitizes |url| and shows a dialog for it.
-  void RunNetworkDiagnostics(const GURL& url);
+  // chrome::mojom::NetworkDiagnostics:
+  void RunNetworkDiagnostics(const GURL& url) override;
+
+  // chrome::mojom::NetworkEasterEgg:
+  void GetHighScore(GetHighScoreCallback callback) override;
+  void UpdateHighScore(uint32_t high_score) override;
+  void ResetHighScore() override;
 
   // Shows the diagnostics dialog after its been sanitized, virtual for
   // testing.
   virtual void RunNetworkDiagnosticsHelper(const std::string& sanitized_url);
 
-  // Relates to offline pages handling.
-#if BUILDFLAG(ANDROID_JAVA_UI)
-  void UpdateHasOfflinePages(content::RenderFrameHost* render_frame_host);
-  void SetHasOfflinePages(int frame_tree_node_id, bool has_offline_pages);
-  void ShowOfflinePages();
-  bool IsFromErrorPage() const;
-#endif  // BUILDFLAG(ANDROID_JAVA_UI)
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  // Virtual for testing.
+  virtual void DownloadPageLaterHelper(const GURL& url);
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
+
+  content::WebContentsFrameBindingSet<chrome::mojom::NetworkDiagnostics>
+      network_diagnostics_bindings_;
+  content::WebContentsFrameBindingSet<chrome::mojom::NetworkEasterEgg>
+      network_easter_egg_bindings_;
 
   // True if the last provisional load that started was for an error page.
   bool is_error_page_;
@@ -121,6 +137,11 @@ class NetErrorTabHelper
   // True if the helper has seen an error page commit while |dns_error_active_|
   // is true.  (This should never be true if |dns_error_active_| is false.)
   bool dns_error_page_committed_;
+
+#if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+  // True if download button is being shown when the error page commits.
+  bool is_showing_download_button_in_error_page_;
+#endif  // BUILDFLAG(ENABLE_OFFLINE_PAGES)
 
   // The status of a DNS probe that may or may not have started or finished.
   // Since the renderer can change out from under the helper (in cross-process
@@ -134,7 +155,12 @@ class NetErrorTabHelper
   // to allow probes.
   BooleanPrefMember resolve_errors_with_web_service_;
 
+  // Preference storing the user's current easter egg game high score.
+  IntegerPrefMember easter_egg_high_score_;
+
   base::WeakPtrFactory<NetErrorTabHelper> weak_factory_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(NetErrorTabHelper);
 };

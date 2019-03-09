@@ -17,7 +17,6 @@
 #include "extensions/common/url_pattern_set.h"
 
 using extensions::ErrorUtils;
-namespace helpers = extensions::context_menus_api_helpers;
 
 namespace {
 
@@ -28,39 +27,40 @@ const char kIdRequiredError[] = "Extensions using event pages must pass an "
 
 namespace extensions {
 
-namespace Create = api::context_menus::Create;
-namespace Remove = api::context_menus::Remove;
-namespace Update = api::context_menus::Update;
-
-bool ContextMenusCreateFunction::RunSync() {
-  MenuItem::Id id(GetProfile()->IsOffTheRecord(),
+ExtensionFunction::ResponseAction ContextMenusCreateFunction::Run() {
+  MenuItem::Id id(browser_context()->IsOffTheRecord(),
                   MenuItem::ExtensionKey(extension_id()));
-  std::unique_ptr<Create::Params> params(Create::Params::Create(*args_));
+  std::unique_ptr<api::context_menus::Create::Params> params(
+      api::context_menus::Create::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params.get());
 
   if (params->create_properties.id.get()) {
     id.string_uid = *params->create_properties.id;
   } else {
-    if (BackgroundInfo::HasLazyBackgroundPage(extension())) {
-      error_ = kIdRequiredError;
-      return false;
-    }
+    if (BackgroundInfo::HasLazyBackgroundPage(extension()))
+      return RespondNow(Error(kIdRequiredError));
 
     // The Generated Id is added by context_menus_custom_bindings.js.
     base::DictionaryValue* properties = NULL;
     EXTENSION_FUNCTION_VALIDATE(args_->GetDictionary(0, &properties));
-    EXTENSION_FUNCTION_VALIDATE(
-        properties->GetInteger(helpers::kGeneratedIdKey, &id.uid));
+    EXTENSION_FUNCTION_VALIDATE(properties->GetInteger(
+        extensions::context_menus_api_helpers::kGeneratedIdKey, &id.uid));
   }
 
-  return helpers::CreateMenuItem(
-      params->create_properties, GetProfile(), extension(), id, &error_);
+  std::string error;
+  if (!extensions::context_menus_api_helpers::CreateMenuItem(
+          params->create_properties, browser_context(), extension(), id,
+          &error)) {
+    return RespondNow(Error(error));
+  }
+  return RespondNow(NoArguments());
 }
 
-bool ContextMenusUpdateFunction::RunSync() {
-  MenuItem::Id item_id(GetProfile()->IsOffTheRecord(),
+ExtensionFunction::ResponseAction ContextMenusUpdateFunction::Run() {
+  MenuItem::Id item_id(browser_context()->IsOffTheRecord(),
                        MenuItem::ExtensionKey(extension_id()));
-  std::unique_ptr<Update::Params> params(Update::Params::Create(*args_));
+  std::unique_ptr<api::context_menus::Update::Params> params(
+      api::context_menus::Update::Params::Create(*args_));
 
   EXTENSION_FUNCTION_VALIDATE(params.get());
   if (params->id.as_string)
@@ -70,17 +70,23 @@ bool ContextMenusUpdateFunction::RunSync() {
   else
     NOTREACHED();
 
-  return helpers::UpdateMenuItem(
-      params->update_properties, GetProfile(), extension(), item_id, &error_);
+  std::string error;
+  if (!extensions::context_menus_api_helpers::UpdateMenuItem(
+          params->update_properties, browser_context(), extension(), item_id,
+          &error)) {
+    return RespondNow(Error(error));
+  }
+  return RespondNow(NoArguments());
 }
 
-bool ContextMenusRemoveFunction::RunSync() {
-  std::unique_ptr<Remove::Params> params(Remove::Params::Create(*args_));
+ExtensionFunction::ResponseAction ContextMenusRemoveFunction::Run() {
+  std::unique_ptr<api::context_menus::Remove::Params> params(
+      api::context_menus::Remove::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params.get());
 
-  MenuManager* manager = MenuManager::Get(GetProfile());
+  MenuManager* manager = MenuManager::Get(browser_context());
 
-  MenuItem::Id id(GetProfile()->IsOffTheRecord(),
+  MenuItem::Id id(browser_context()->IsOffTheRecord(),
                   MenuItem::ExtensionKey(extension_id()));
   if (params->menu_item_id.as_string)
     id.string_uid = *params->menu_item_id.as_string;
@@ -92,23 +98,23 @@ bool ContextMenusRemoveFunction::RunSync() {
   MenuItem* item = manager->GetItemById(id);
   // Ensure one extension can't remove another's menu items.
   if (!item || item->extension_id() != extension_id()) {
-    error_ = ErrorUtils::FormatErrorMessage(
-        helpers::kCannotFindItemError, helpers::GetIDString(id));
-    return false;
+    return RespondNow(
+        Error(extensions::context_menus_api_helpers::kCannotFindItemError,
+              extensions::context_menus_api_helpers::GetIDString(id)));
   }
 
   if (!manager->RemoveContextMenuItem(id))
-    return false;
+    return RespondNow(Error("Cannot remove menu item."));
   manager->WriteToStorage(extension(), id.extension_key);
-  return true;
+  return RespondNow(NoArguments());
 }
 
-bool ContextMenusRemoveAllFunction::RunSync() {
-  MenuManager* manager = MenuManager::Get(GetProfile());
+ExtensionFunction::ResponseAction ContextMenusRemoveAllFunction::Run() {
+  MenuManager* manager = MenuManager::Get(browser_context());
   manager->RemoveAllContextItems(MenuItem::ExtensionKey(extension()->id()));
   manager->WriteToStorage(extension(),
                           MenuItem::ExtensionKey(extension()->id()));
-  return true;
+  return RespondNow(NoArguments());
 }
 
 }  // namespace extensions

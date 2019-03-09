@@ -6,16 +6,15 @@
 
 #include <stdint.h>
 
-#include <algorithm>
 #include <set>
 
 #include "base/i18n/icu_string_conversions.h"
 #include "base/logging.h"
+#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "ui/base/clipboard/clipboard.h"
-#include "ui/base/x/x11_util.h"
+#include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/gfx/x/x11_atom_cache.h"
 
 namespace ui {
@@ -26,48 +25,35 @@ const char kTextPlain[] = "text/plain";
 const char kTextPlainUtf8[] = "text/plain;charset=utf-8";
 const char kUtf8String[] = "UTF8_STRING";
 
-const char* kSelectionDataAtoms[] = {
-  Clipboard::kMimeTypeHTML,
-  kString,
-  kText,
-  kTextPlain,
-  kTextPlainUtf8,
-  kUtf8String,
-  NULL
-};
-
-std::vector< ::Atom> GetTextAtomsFrom(const X11AtomCache* atom_cache) {
+std::vector<::Atom> GetTextAtomsFrom() {
   std::vector< ::Atom> atoms;
-  atoms.push_back(atom_cache->GetAtom(kUtf8String));
-  atoms.push_back(atom_cache->GetAtom(kString));
-  atoms.push_back(atom_cache->GetAtom(kText));
-  atoms.push_back(atom_cache->GetAtom(kTextPlain));
-  atoms.push_back(atom_cache->GetAtom(kTextPlainUtf8));
+  atoms.push_back(gfx::GetAtom(kUtf8String));
+  atoms.push_back(gfx::GetAtom(kString));
+  atoms.push_back(gfx::GetAtom(kText));
+  atoms.push_back(gfx::GetAtom(kTextPlain));
+  atoms.push_back(gfx::GetAtom(kTextPlainUtf8));
   return atoms;
 }
 
-std::vector< ::Atom> GetURLAtomsFrom(const X11AtomCache* atom_cache) {
+std::vector<::Atom> GetURLAtomsFrom() {
   std::vector< ::Atom> atoms;
-  atoms.push_back(atom_cache->GetAtom(Clipboard::kMimeTypeURIList));
-  atoms.push_back(atom_cache->GetAtom(Clipboard::kMimeTypeMozillaURL));
+  atoms.push_back(gfx::GetAtom(kMimeTypeURIList));
+  atoms.push_back(gfx::GetAtom(kMimeTypeMozillaURL));
   return atoms;
 }
 
-std::vector< ::Atom> GetURIListAtomsFrom(const X11AtomCache* atom_cache) {
+std::vector<::Atom> GetURIListAtomsFrom() {
   std::vector< ::Atom> atoms;
-  atoms.push_back(atom_cache->GetAtom(Clipboard::kMimeTypeURIList));
+  atoms.push_back(gfx::GetAtom(kMimeTypeURIList));
   return atoms;
 }
 
 void GetAtomIntersection(const std::vector< ::Atom>& desired,
                          const std::vector< ::Atom>& offered,
                          std::vector< ::Atom>* output) {
-  for (std::vector< ::Atom>::const_iterator it = desired.begin();
-       it != desired.end(); ++it) {
-    std::vector< ::Atom>::const_iterator jt =
-      std::find(offered.begin(), offered.end(), *it);
-    if (jt != offered.end())
-      output->push_back(*it);
+  for (const auto& desired_atom : desired) {
+    if (base::ContainsValue(offered, desired_atom))
+      output->push_back(desired_atom);
   }
 }
 
@@ -134,9 +120,8 @@ void SelectionFormatMap::Insert(
 
 ui::SelectionData SelectionFormatMap::GetFirstOf(
     const std::vector< ::Atom>& requested_types) const {
-  for (std::vector< ::Atom>::const_iterator it = requested_types.begin();
-       it != requested_types.end(); ++it) {
-    const_iterator data_it = data_.find(*it);
+  for (const auto& requested_type : requested_types) {
+    auto data_it = data_.find(requested_type);
     if (data_it != data_.end()) {
       return SelectionData(data_it->first, data_it->second);
     }
@@ -147,32 +132,23 @@ ui::SelectionData SelectionFormatMap::GetFirstOf(
 
 std::vector< ::Atom> SelectionFormatMap::GetTypes() const {
   std::vector< ::Atom> atoms;
-  for (const_iterator it = data_.begin(); it != data_.end(); ++it)
-    atoms.push_back(it->first);
+  for (const auto& datum : data_)
+    atoms.push_back(datum.first);
 
   return atoms;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-SelectionData::SelectionData()
-    : type_(None),
-      atom_cache_(gfx::GetXDisplay(), kSelectionDataAtoms) {
-}
+SelectionData::SelectionData() : type_(x11::None) {}
 
 SelectionData::SelectionData(
     ::Atom type,
     const scoped_refptr<base::RefCountedMemory>& memory)
-    : type_(type),
-      memory_(memory),
-      atom_cache_(gfx::GetXDisplay(), kSelectionDataAtoms) {
-}
+    : type_(type), memory_(memory) {}
 
 SelectionData::SelectionData(const SelectionData& rhs)
-    : type_(rhs.type_),
-      memory_(rhs.memory_),
-      atom_cache_(gfx::GetXDisplay(), kSelectionDataAtoms) {
-}
+    : type_(rhs.type_), memory_(rhs.memory_) {}
 
 SelectionData::~SelectionData() {}
 
@@ -185,7 +161,7 @@ SelectionData& SelectionData::operator=(const SelectionData& rhs) {
 }
 
 bool SelectionData::IsValid() const {
-  return type_ != None;
+  return type_ != x11::None;
 }
 
 ::Atom SelectionData::GetType() const {
@@ -193,7 +169,7 @@ bool SelectionData::IsValid() const {
 }
 
 const unsigned char* SelectionData::GetData() const {
-  return memory_.get() ? memory_->front() : NULL;
+  return memory_.get() ? memory_->front() : nullptr;
 }
 
 size_t SelectionData::GetSize() const {
@@ -201,12 +177,11 @@ size_t SelectionData::GetSize() const {
 }
 
 std::string SelectionData::GetText() const {
-  if (type_ == atom_cache_.GetAtom(kUtf8String) ||
-      type_ == atom_cache_.GetAtom(kText) ||
-      type_ == atom_cache_.GetAtom(kTextPlainUtf8)) {
+  if (type_ == gfx::GetAtom(kUtf8String) || type_ == gfx::GetAtom(kText) ||
+      type_ == gfx::GetAtom(kTextPlainUtf8)) {
     return RefCountedMemoryToString(memory_);
-  } else if (type_ == atom_cache_.GetAtom(kString) ||
-             type_ == atom_cache_.GetAtom(kTextPlain)) {
+  } else if (type_ == gfx::GetAtom(kString) ||
+             type_ == gfx::GetAtom(kTextPlain)) {
     std::string result;
     base::ConvertToUtf8AndNormalize(RefCountedMemoryToString(memory_),
                                     base::kCodepageLatin1,
@@ -223,7 +198,7 @@ std::string SelectionData::GetText() const {
 base::string16 SelectionData::GetHtml() const {
   base::string16 markup;
 
-  if (type_ == atom_cache_.GetAtom(Clipboard::kMimeTypeHTML)) {
+  if (type_ == gfx::GetAtom(kMimeTypeHTML)) {
     const unsigned char* data = GetData();
     size_t size = GetSize();
 

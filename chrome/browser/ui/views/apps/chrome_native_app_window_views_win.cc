@@ -8,21 +8,17 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/threading/sequenced_worker_pool.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/shell_integration_win.h"
 #include "chrome/browser/ui/views/apps/app_window_desktop_native_widget_aura_win.h"
 #include "chrome/browser/ui/views/apps/glass_app_window_frame_view_win.h"
-#include "chrome/browser/web_applications/web_app.h"
-#include "chrome/browser/web_applications/web_app_win.h"
-#include "chrome/common/chrome_icon_resources_win.h"
+#include "chrome/browser/web_applications/components/web_app_helpers.h"
+#include "chrome/browser/web_applications/extensions/web_app_extension_shortcut.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/common/extension.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/win/shell.h"
 #include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 #include "ui/views/win/hwnd_util.h"
@@ -68,7 +64,7 @@ void ChromeNativeAppWindowViewsWin::InitializeDefaultWindow(
     return;
 
   std::string app_name =
-      web_app::GenerateApplicationNameFromExtensionId(extension->id());
+      web_app::GenerateApplicationNameFromAppId(extension->id());
   base::string16 app_name_wide = base::UTF8ToWide(app_name);
   HWND hwnd = GetNativeAppWindowHWND();
   Profile* profile =

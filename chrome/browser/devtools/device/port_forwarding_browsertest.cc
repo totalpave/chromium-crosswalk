@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
-#include "base/location.h"
-#include "base/single_thread_task_runner.h"
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/devtools/device/devtools_android_bridge.h"
@@ -39,9 +41,9 @@ class PortForwardingTest: public InProcessBrowserTest {
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    InProcessBrowserTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitchASCII(switches::kRemoteDebuggingPort,
-        base::IntToString(GetRemoteDebuggingPort()));
+    command_line->AppendSwitchASCII(
+        switches::kRemoteDebuggingPort,
+        base::NumberToString(GetRemoteDebuggingPort()));
   }
 
  protected:
@@ -63,7 +65,7 @@ class PortForwardingTest: public InProcessBrowserTest {
       if (status.empty() && skip_empty_devices_)
         return;
       base::ThreadTaskRunnerHandle::Get()->PostTask(
-          FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+          FROM_HERE, base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
     }
 
     void set_skip_empty_devices(bool skip_empty_devices) {
@@ -110,29 +112,20 @@ IN_PROC_BROWSER_TEST_F(PortForwardingTest,
 
   ui_test_utils::NavigateToURL(browser(), forwarding_url);
 
-  content::RenderViewHost* rvh = browser()->tab_strip_model()->
-      GetWebContentsAt(0)->GetRenderViewHost();
+  content::WebContents* wc = browser()->tab_strip_model()->GetWebContentsAt(0);
 
   std::string result;
-  ASSERT_TRUE(
-      content::ExecuteScriptAndExtractString(
-          rvh,
-          "window.domAutomationController.send(document.title)",
-          &result));
+  ASSERT_TRUE(content::ExecuteScriptAndExtractString(
+      wc, "window.domAutomationController.send(document.title)", &result));
   ASSERT_EQ("Port forwarding test", result) << "Document has not loaded.";
 
-  ASSERT_TRUE(
-      content::ExecuteScriptAndExtractString(
-          rvh,
-          "window.domAutomationController.send(getBodyTextContent())",
-          &result));
+  ASSERT_TRUE(content::ExecuteScriptAndExtractString(
+      wc, "window.domAutomationController.send(getBodyTextContent())",
+      &result));
   ASSERT_EQ("content", result) << "Javascript has not loaded.";
 
-  ASSERT_TRUE(
-      content::ExecuteScriptAndExtractString(
-          rvh,
-          "window.domAutomationController.send(getBodyMarginLeft())",
-          &result));
+  ASSERT_TRUE(content::ExecuteScriptAndExtractString(
+      wc, "window.domAutomationController.send(getBodyMarginLeft())", &result));
   ASSERT_EQ("100px", result) << "CSS has not loaded.";
 
   // Test that disabling port forwarding is handled normally.
@@ -177,10 +170,13 @@ IN_PROC_BROWSER_TEST_F(PortForwardingDisconnectTest, DisconnectOnRelease) {
   std::unique_ptr<Listener> wait_for_port_forwarding(new Listener(profile));
   content::RunMessageLoop();
 
+  base::RunLoop run_loop;
+
   self_provider->set_release_callback_for_test(
-      base::Bind(&base::MessageLoop::PostTask,
-                 base::Unretained(base::MessageLoop::current()), FROM_HERE,
-                 base::MessageLoop::QuitWhenIdleClosure()));
+      base::Bind(base::IgnoreResult(&base::SingleThreadTaskRunner::PostTask),
+                 base::ThreadTaskRunnerHandle::Get(), FROM_HERE,
+                 run_loop.QuitWhenIdleClosure()));
   wait_for_port_forwarding.reset();
-  content::RunMessageLoop();
+
+  content::RunThisRunLoop(&run_loop);
 }

@@ -12,6 +12,7 @@
 #include "chrome/browser/chromeos/file_system_provider/operations/get_metadata.h"
 #include "chrome/common/extensions/api/file_system_provider.h"
 #include "chrome/common/extensions/api/file_system_provider_internal.h"
+#include "components/services/filesystem/public/interfaces/types.mojom.h"
 
 namespace chromeos {
 namespace file_system_provider {
@@ -38,11 +39,10 @@ bool ConvertRequestValueToEntryList(std::unique_ptr<RequestValue> value,
       return false;
     }
 
-    storage::DirectoryEntry output_entry;
-    output_entry.is_directory = *entry_metadata.is_directory;
-    output_entry.name = *entry_metadata.name;
-
-    output->push_back(output_entry);
+    output->emplace_back(base::FilePath(*entry_metadata.name),
+                         *entry_metadata.is_directory
+                             ? filesystem::mojom::FsFileType::DIRECTORY
+                             : filesystem::mojom::FsFileType::REGULAR_FILE);
   }
 
   return true;
@@ -54,11 +54,10 @@ ReadDirectory::ReadDirectory(
     extensions::EventRouter* event_router,
     const ProvidedFileSystemInfo& file_system_info,
     const base::FilePath& directory_path,
-    const storage::AsyncFileUtil::ReadDirectoryCallback& callback)
+    storage::AsyncFileUtil::ReadDirectoryCallback callback)
     : Operation(event_router, file_system_info),
       directory_path_(directory_path),
-      callback_(callback) {
-}
+      callback_(std::move(callback)) {}
 
 ReadDirectory::~ReadDirectory() {
 }

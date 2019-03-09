@@ -8,8 +8,7 @@
 
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/macros.h"
-#include "base/strings/stringprintf.h"
+#include "base/stl_util.h"
 #include "base/time/time.h"
 #include "chrome/test/base/interactive_test_utils_aura.h"
 #include "ui/aura/window_tree_host.h"
@@ -20,18 +19,18 @@
 namespace ui_test_utils {
 
 void HideNativeWindow(gfx::NativeWindow window) {
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
   HideNativeWindowAura(window);
 #else
   HWND hwnd = window->GetHost()->GetAcceleratedWidget();
   ::ShowWindow(hwnd, SW_HIDE);
-#endif  // USE_ASH
+#endif  // OS_CHROMEOS
 }
 
 bool ShowAndFocusNativeWindow(gfx::NativeWindow window) {
-#if defined(USE_ASH)
+#if defined(OS_CHROMEOS)
   ShowAndFocusNativeWindowAura(window);
-#endif  // USE_ASH
+#endif  // OS_CHROMEOS
   window->Show();
   // Always make sure the window hosting ash is visible and focused.
   HWND hwnd = window->GetHost()->GetAcceleratedWidget();
@@ -64,7 +63,7 @@ bool ShowAndFocusNativeWindow(gfx::NativeWindow window) {
       CloseHandle(process_handle);
     }
   }
-  GetWindowText(foreground_window, window_title, arraysize(window_title));
+  GetWindowText(foreground_window, window_title, base::size(window_title));
   LOG(ERROR) << "ShowAndFocusNativeWindow failed. foreground window: "
              << foreground_window << ", title: " << window_title << ", path: "
              << path_str;

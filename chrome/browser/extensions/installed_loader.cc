@@ -5,25 +5,28 @@
 #include "chrome/browser/extensions/installed_loader.h"
 
 #include <stddef.h>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "base/files/file_path.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/metrics/sparse_histogram.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/extensions/extension_error_reporter.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_util.h"
+#include "chrome/browser/extensions/load_error_reporter.h"
+#include "chrome/browser/extensions/scripting_permissions_modifier.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/chrome_manifest_url_handlers.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
-#include "content/public/browser/user_metrics.h"
+#include "content/public/common/url_constants.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
@@ -39,13 +42,12 @@
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_url_handlers.h"
+#include "extensions/common/permissions/api_permission.h"
+#include "extensions/common/permissions/permissions_data.h"
 
-using base::UserMetricsAction;
 using content::BrowserThread;
 
 namespace extensions {
-
-namespace errors = manifest_errors;
 
 namespace {
 
@@ -132,8 +134,8 @@ void RecordCreationFlags(const Extension* extension) {
   for (int i = 0; i < Extension::kInitFromValueFlagBits; ++i) {
     int flag = 1 << i;
     if (extension->creation_flags() & flag) {
-      UMA_HISTOGRAM_ENUMERATION(
-          "Extensions.LoadCreationFlags", i, Extension::kInitFromValueFlagBits);
+      UMA_HISTOGRAM_EXACT_LINEAR("Extensions.LoadCreationFlags", i,
+                                 Extension::kInitFromValueFlagBits);
     }
   }
 }
@@ -141,19 +143,20 @@ void RecordCreationFlags(const Extension* extension) {
 // Helper to record a single disable reason histogram value (see
 // RecordDisableReasons below).
 void RecordDisbleReasonHistogram(int reason) {
-  UMA_HISTOGRAM_SPARSE_SLOWLY("Extensions.DisableReason", reason);
+  base::UmaHistogramSparse("Extensions.DisableReason", reason);
 }
 
 // Records the disable reasons for a single extension grouped by
-// Extension::DisableReason.
+// disable_reason::DisableReason.
 void RecordDisableReasons(int reasons) {
-  // |reasons| is a bitmask with values from Extension::DisabledReason
+  // |reasons| is a bitmask with values from ExtensionDisabledReason
   // which are increasing powers of 2.
-  if (reasons == Extension::DISABLE_NONE) {
-    RecordDisbleReasonHistogram(Extension::DISABLE_NONE);
+  if (reasons == disable_reason::DISABLE_NONE) {
+    RecordDisbleReasonHistogram(disable_reason::DISABLE_NONE);
     return;
   }
-  for (int reason = 1; reason < Extension::DISABLE_REASON_LAST; reason <<= 1) {
+  for (int reason = 1; reason < disable_reason::DISABLE_REASON_LAST;
+       reason <<= 1) {
     if (reasons & reason)
       RecordDisbleReasonHistogram(reason);
   }
@@ -177,7 +180,7 @@ void InstalledLoader::Load(const ExtensionInfo& info, bool write_to_prefs) {
     return;
 
   std::string error;
-  scoped_refptr<const Extension> extension(NULL);
+  scoped_refptr<const Extension> extension;
   if (info.extension_manifest) {
     extension = Extension::Create(
         info.extension_path,
@@ -186,7 +189,7 @@ void InstalledLoader::Load(const ExtensionInfo& info, bool write_to_prefs) {
         GetCreationFlags(&info),
         &error);
   } else {
-    error = errors::kManifestUnreadable;
+    error = manifest_errors::kManifestUnreadable;
   }
 
   // Once installed, non-unpacked extensions cannot change their IDs (e.g., by
@@ -194,39 +197,52 @@ void InstalledLoader::Load(const ExtensionInfo& info, bool write_to_prefs) {
   // TODO(jstritar): migrate preferences when unpacked extensions change IDs.
   if (extension.get() && !Manifest::IsUnpackedLocation(extension->location()) &&
       info.extension_id != extension->id()) {
-    error = errors::kCannotChangeExtensionID;
-    extension = NULL;
-  }
-
-  // Check policy on every load in case an extension was blacklisted while
-  // Chrome was not running.
-  const ManagementPolicy* policy = extensions::ExtensionSystem::Get(
-      extension_service_->profile())->management_policy();
-  if (extension.get()) {
-    Extension::DisableReason disable_reason = Extension::DISABLE_NONE;
-    bool force_disabled = false;
-    if (!policy->UserMayLoad(extension.get(), NULL)) {
-      // The error message from UserMayInstall() often contains the extension ID
-      // and is therefore not well suited to this UI.
-      error = errors::kDisabledByPolicy;
-      extension = NULL;
-    } else if (!extension_prefs_->IsExtensionDisabled(extension->id()) &&
-               policy->MustRemainDisabled(
-                   extension.get(), &disable_reason, NULL)) {
-      extension_prefs_->SetExtensionDisabled(extension->id(), disable_reason);
-      force_disabled = true;
-    }
-    UMA_HISTOGRAM_BOOLEAN("ExtensionInstalledLoader.ForceDisabled",
-                          force_disabled);
+    error = manifest_errors::kCannotChangeExtensionID;
+    extension = nullptr;
   }
 
   if (!extension.get()) {
-    ExtensionErrorReporter::GetInstance()->ReportLoadError(
-        info.extension_path,
-        error,
-        extension_service_->profile(),
+    LoadErrorReporter::GetInstance()->ReportLoadError(
+        info.extension_path, error, extension_service_->profile(),
         false);  // Be quiet.
     return;
+  }
+
+  const ManagementPolicy* policy = extensions::ExtensionSystem::Get(
+      extension_service_->profile())->management_policy();
+
+  if (extension_prefs_->IsExtensionDisabled(extension->id())) {
+    int disable_reasons = extension_prefs_->GetDisableReasons(extension->id());
+
+    // Update the extension prefs to reflect if the extension is no longer
+    // blocked due to admin policy.
+    if ((disable_reasons & disable_reason::DISABLE_BLOCKED_BY_POLICY) &&
+        !policy->MustRemainDisabled(extension.get(), nullptr, nullptr)) {
+      disable_reasons &= (~disable_reason::DISABLE_BLOCKED_BY_POLICY);
+      extension_prefs_->ReplaceDisableReasons(extension->id(), disable_reasons);
+      if (disable_reasons == disable_reason::DISABLE_NONE)
+        extension_prefs_->SetExtensionEnabled(extension->id());
+    }
+
+    if ((disable_reasons & disable_reason::DISABLE_CORRUPTED) &&
+        policy->MustRemainEnabled(extension.get(), nullptr)) {
+      // This extension must have been disabled due to corruption on a
+      // previous run of chrome, and for some reason we weren't successful in
+      // auto-reinstalling it. So we want to notify the
+      // PendingExtensionManager that we'd still like to keep attempt to
+      // re-download and reinstall it whenever the ExtensionService checks for
+      // external updates.
+      PendingExtensionManager* pending_manager =
+          extension_service_->pending_extension_manager();
+      pending_manager->ExpectPolicyReinstallForCorruption(extension->id());
+    }
+  } else {
+    // Extension is enabled. Check management policy to verify if it should
+    // remain so.
+    disable_reason::DisableReason disable_reason = disable_reason::DISABLE_NONE;
+    if (policy->MustRemainDisabled(extension.get(), &disable_reason, nullptr)) {
+      extension_prefs_->SetExtensionDisabled(extension->id(), disable_reason);
+    }
   }
 
   if (write_to_prefs)
@@ -277,11 +293,9 @@ void InstalledLoader::LoadAllExtensions() {
 
       if (!extension.get() || extension->id() != info->extension_id) {
         invalid_extensions_.insert(info->extension_path);
-        ExtensionErrorReporter::GetInstance()->ReportLoadError(
-            info->extension_path,
-            error,
-            profile,
-            false);  // Be quiet.
+        LoadErrorReporter::GetInstance()->ReportLoadError(info->extension_path,
+                                                          error, profile,
+                                                          false);  // Be quiet.
         continue;
       }
 
@@ -296,8 +310,6 @@ void InstalledLoader::LoadAllExtensions() {
     if (extensions_info->at(i)->extension_location != Manifest::COMMAND_LINE)
       Load(*extensions_info->at(i), should_write_prefs);
   }
-
-  extension_service_->OnLoadedInstalledExtensions();
 
   // The histograms Extensions.ManifestReload* allow us to validate
   // the assumption that reloading manifest is a rare event.
@@ -316,6 +328,10 @@ void InstalledLoader::LoadAllExtensions() {
   // TODO(rkaplow): Obsolete this when verified similar to LoadAllTime2.
   UMA_HISTOGRAM_TIMES("Extensions.LoadAllTime",
                       base::TimeTicks::Now() - start_time);
+  RecordExtensionsMetrics();
+}
+
+void InstalledLoader::RecordExtensionsMetricsForTesting() {
   RecordExtensionsMetrics();
 }
 
@@ -341,6 +357,9 @@ void InstalledLoader::RecordExtensionsMetrics() {
   int file_access_allowed_count = 0;
   int file_access_not_allowed_count = 0;
   int eventless_event_pages_count = 0;
+  int off_store_item_count = 0;
+  int web_request_blocking_count = 0;
+  int web_request_count = 0;
 
   const ExtensionSet& extensions = extension_registry_->enabled_extensions();
   for (ExtensionSet::const_iterator iter = extensions.begin();
@@ -392,6 +411,16 @@ void InstalledLoader::RecordExtensionsMetrics() {
       }
     }
 
+    if (extension->permissions_data()->HasAPIPermission(
+            APIPermission::kWebRequestBlocking)) {
+      web_request_blocking_count++;
+    }
+
+    if (extension->permissions_data()->HasAPIPermission(
+            APIPermission::kWebRequest)) {
+      web_request_count++;
+    }
+
     // From now on, don't count component extensions, since they are only
     // extensions as an implementation detail. Continue to count unpacked
     // extensions for a few metrics.
@@ -425,8 +454,8 @@ void InstalledLoader::RecordExtensionsMetrics() {
         // Count extension event pages with no registered events. Either the
         // event page is badly designed, or there may be a bug where the event
         // page failed to start after an update (crbug.com/469361).
-        if (EventRouter::Get(extension_service_->profile())->
-                GetRegisteredEvents(extension->id()).size() == 0) {
+        if (!EventRouter::Get(extension_service_->profile())
+                 ->HasRegisteredEvents(extension->id())) {
           ++eventless_event_pages_count;
           VLOG(1) << "Event page without registered event listeners: "
                   << extension->id() << " " << extension->name();
@@ -511,6 +540,41 @@ void InstalledLoader::RecordExtensionsMetrics() {
           ++file_access_allowed_count;
         else
           ++file_access_not_allowed_count;
+      }
+    }
+
+    if (!ManifestURL::UpdatesFromGallery(extension))
+      ++off_store_item_count;
+
+    ScriptingPermissionsModifier scripting_modifier(profile, extension);
+    // NOTE: CanAffectExtension() returns false in all cases when the
+    // RuntimeHostPermissions feature is disabled.
+    if (scripting_modifier.CanAffectExtension()) {
+      bool extension_has_withheld_hosts =
+          scripting_modifier.HasWithheldHostPermissions();
+      UMA_HISTOGRAM_BOOLEAN(
+          "Extensions.RuntimeHostPermissions.ExtensionHasWithheldHosts",
+          extension_has_withheld_hosts);
+      if (extension_has_withheld_hosts) {
+        // Record the number of granted hosts if and only if the extension
+        // has withheld host permissions. This lets us equate "0" granted
+        // hosts to "on click only".
+        size_t num_granted_hosts = 0;
+        for (const auto& pattern : extension->permissions_data()
+                                       ->active_permissions()
+                                       .effective_hosts()) {
+          // Ignore chrome:-scheme patterns (like chrome://favicon); these
+          // aren't withheld, and thus shouldn't be considered "granted".
+          if (pattern.scheme() != content::kChromeUIScheme)
+            ++num_granted_hosts;
+        }
+        // TODO(devlin): This only takes into account the granted hosts that
+        // were also requested by the extension (because it looks at the active
+        // permissions). We could potentially also record the granted hosts that
+        // were explicitly not requested.
+        UMA_HISTOGRAM_COUNTS_100(
+            "Extensions.RuntimeHostPermissions.GrantedHostCount",
+            num_granted_hosts);
       }
     }
   }
@@ -601,6 +665,11 @@ void InstalledLoader::RecordExtensionsMetrics() {
                            extension_prefs_->GetCorruptedDisableCount());
   UMA_HISTOGRAM_COUNTS_100("Extensions.EventlessEventPages",
                            eventless_event_pages_count);
+  UMA_HISTOGRAM_COUNTS_100("Extensions.LoadOffStoreItems",
+                           off_store_item_count);
+  UMA_HISTOGRAM_COUNTS_100("Extensions.WebRequestBlockingCount",
+                           web_request_blocking_count);
+  UMA_HISTOGRAM_COUNTS_100("Extensions.WebRequestCount", web_request_count);
 }
 
 int InstalledLoader::GetCreationFlags(const ExtensionInfo* info) {

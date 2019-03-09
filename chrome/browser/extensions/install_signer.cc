@@ -15,14 +15,12 @@
 #include "base/json/json_writer.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
-#include "base/metrics/histogram.h"
-#include "base/process/process_info.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/process/process.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -31,13 +29,14 @@
 #include "crypto/secure_hash.h"
 #include "crypto/sha2.h"
 #include "crypto/signature_verifier.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_fetcher_delegate.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "net/url_request/url_request_status.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "rlz/buildflags/buildflags.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 #include "url/gurl.h"
 
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
 #include "rlz/lib/machine_id.h"
 #endif
 
@@ -55,6 +54,8 @@ const char kSaltKey[] = "salt";
 const char kSignatureKey[] = "signature";
 const char kSignatureFormatVersionKey[] = "signature_format_version";
 const char kTimestampKey[] = "timestamp";
+
+const char kContentTypeJSON[] = "application/json";
 
 // This allows us to version the format of what we write into the prefs,
 // allowing for forward migration, as well as detecting forwards/backwards
@@ -85,7 +86,7 @@ GURL GetBackendUrl() {
 // |result|.
 bool HashWithMachineId(const std::string& salt, std::string* result) {
   std::string machine_id;
-#if defined(ENABLE_RLZ)
+#if BUILDFLAG(ENABLE_RLZ)
   if (!rlz_lib::GetMachineId(&machine_id))
     return false;
 #else
@@ -99,7 +100,7 @@ bool HashWithMachineId(const std::string& salt, std::string* result) {
   hash->Update(salt.data(), salt.size());
 
   std::string result_bytes(crypto::kSHA256Length, 0);
-  hash->Finish(string_as_array(&result_bytes), result_bytes.size());
+  hash->Finish(base::data(result_bytes), result_bytes.size());
 
   base::Base64Encode(result_bytes, result);
   return true;
@@ -125,10 +126,10 @@ bool ValidateExpireDateFormat(const std::string& input) {
 void SetExtensionIdSet(base::DictionaryValue* dictionary,
                        const char* key,
                        const ExtensionIdSet& ids) {
-  base::ListValue* id_list = new base::ListValue();
-  for (ExtensionIdSet::const_iterator i = ids.begin(); i != ids.end(); ++i)
+  auto id_list = std::make_unique<base::ListValue>();
+  for (auto i = ids.begin(); i != ids.end(); ++i)
     id_list->AppendString(*i);
-  dictionary->Set(key, id_list);
+  dictionary->Set(key, std::move(id_list));
 }
 
 // Tries to fetch a list of strings from |dictionay| for |key|, and inserts
@@ -141,11 +142,9 @@ bool GetExtensionIdSet(const base::DictionaryValue& dictionary,
   const base::ListValue* id_list = NULL;
   if (!dictionary.GetList(key, &id_list))
     return false;
-  for (base::ListValue::const_iterator i = id_list->begin();
-       i != id_list->end();
-       ++i) {
+  for (auto i = id_list->begin(); i != id_list->end(); ++i) {
     std::string id;
-    if (!(*i)->GetAsString(&id)) {
+    if (!i->GetAsString(&id)) {
       return false;
     }
     ids->insert(id);
@@ -177,7 +176,7 @@ void InstallSignature::ToValue(base::DictionaryValue* value) const {
   value->SetString(kSaltKey, salt_base64);
   value->SetString(kSignatureKey, signature_base64);
   value->SetString(kTimestampKey,
-                   base::Int64ToString(timestamp.ToInternalValue()));
+                   base::NumberToString(timestamp.ToInternalValue()));
 }
 
 // static
@@ -227,11 +226,10 @@ std::unique_ptr<InstallSignature> InstallSignature::FromValue(
   return result;
 }
 
-
-InstallSigner::InstallSigner(net::URLRequestContextGetter* context_getter,
-                             const ExtensionIdSet& ids)
-    : ids_(ids), context_getter_(context_getter) {
-}
+InstallSigner::InstallSigner(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    const ExtensionIdSet& ids)
+    : ids_(ids), url_loader_factory_(std::move(url_loader_factory)) {}
 
 InstallSigner::~InstallSigner() {
 }
@@ -242,8 +240,7 @@ bool InstallSigner::VerifySignature(const InstallSignature& signature) {
     return true;
 
   std::string signed_data;
-  for (ExtensionIdSet::const_iterator i = signature.ids.begin();
-       i != signature.ids.end(); ++i)
+  for (auto i = signature.ids.begin(); i != signature.ids.end(); ++i)
     signed_data.append(*i);
 
   std::string hash_base64;
@@ -258,42 +255,20 @@ bool InstallSigner::VerifySignature(const InstallSignature& signature) {
     return false;
 
   crypto::SignatureVerifier verifier;
-  if (!verifier.VerifyInit(
-          crypto::SignatureVerifier::RSA_PKCS1_SHA1,
-          reinterpret_cast<const uint8_t*>(signature.signature.data()),
-          signature.signature.size(),
-          reinterpret_cast<const uint8_t*>(public_key.data()),
-          public_key.size()))
+  if (!verifier.VerifyInit(crypto::SignatureVerifier::RSA_PKCS1_SHA1,
+                           base::as_bytes(base::make_span(signature.signature)),
+                           base::as_bytes(base::make_span(public_key))))
     return false;
 
-  verifier.VerifyUpdate(reinterpret_cast<const uint8_t*>(signed_data.data()),
-                        signed_data.size());
+  verifier.VerifyUpdate(base::as_bytes(base::make_span(signed_data)));
   return verifier.VerifyFinal();
 }
-
-
-class InstallSigner::FetcherDelegate : public net::URLFetcherDelegate {
- public:
-  explicit FetcherDelegate(const base::Closure& callback)
-      : callback_(callback) {
-  }
-
-  ~FetcherDelegate() override {}
-
-  void OnURLFetchComplete(const net::URLFetcher* source) override {
-    callback_.Run();
-  }
-
- private:
-  base::Closure callback_;
-  DISALLOW_COPY_AND_ASSIGN(FetcherDelegate);
-};
 
 // static
 ExtensionIdSet InstallSigner::GetForcedNotFromWebstore() {
   std::string value =
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          switches::kExtensionsNotWebstore);
+          ::switches::kExtensionsNotWebstore);
   if (value.empty())
     return ExtensionIdSet();
 
@@ -304,25 +279,26 @@ ExtensionIdSet InstallSigner::GetForcedNotFromWebstore() {
 
 namespace {
 
-static int g_request_count = 0;
+int g_request_count = 0;
 
-base::LazyInstance<base::TimeTicks> g_last_request_time =
+base::LazyInstance<base::TimeTicks>::DestructorAtExit g_last_request_time =
     LAZY_INSTANCE_INITIALIZER;
 
-base::LazyInstance<base::ThreadChecker> g_single_thread_checker =
-    LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::ThreadChecker>::DestructorAtExit
+    g_single_thread_checker = LAZY_INSTANCE_INITIALIZER;
 
 void LogRequestStartHistograms() {
   // Make sure we only ever call this from one thread, so that we don't have to
   // worry about race conditions setting g_last_request_time.
   DCHECK(g_single_thread_checker.Get().CalledOnValidThread());
 
-  // CurrentProcessInfo::CreationTime is only defined on some platforms.
+  // Process::Current().CreationTime is only defined on some platforms.
 #if defined(OS_MACOSX) || defined(OS_WIN) || defined(OS_LINUX)
   const base::Time process_creation_time =
-      base::CurrentProcessInfo::CreationTime();
-  UMA_HISTOGRAM_COUNTS("ExtensionInstallSigner.UptimeAtTimeOfRequest",
-                       (base::Time::Now() - process_creation_time).InSeconds());
+      base::Process::Current().CreationTime();
+  UMA_HISTOGRAM_COUNTS_1M(
+      "ExtensionInstallSigner.UptimeAtTimeOfRequest",
+      (base::Time::Now() - process_creation_time).InSeconds());
 #endif  // defined(OS_MACOSX) || defined(OS_WIN) || defined(OS_LINUX)
 
   base::TimeDelta delta;
@@ -330,8 +306,8 @@ void LogRequestStartHistograms() {
   if (!g_last_request_time.Get().is_null())
     delta = now - g_last_request_time.Get();
   g_last_request_time.Get() = now;
-  UMA_HISTOGRAM_COUNTS("ExtensionInstallSigner.SecondsSinceLastRequest",
-                       delta.InSeconds());
+  UMA_HISTOGRAM_COUNTS_1M("ExtensionInstallSigner.SecondsSinceLastRequest",
+                          delta.InSeconds());
 
   g_request_count += 1;
   UMA_HISTOGRAM_COUNTS_100("ExtensionInstallSigner.RequestCount",
@@ -340,23 +316,22 @@ void LogRequestStartHistograms() {
 
 }  // namespace
 
-void InstallSigner::GetSignature(const SignatureCallback& callback) {
-  CHECK(!url_fetcher_.get());
+void InstallSigner::GetSignature(SignatureCallback callback) {
+  CHECK(!simple_loader_.get());
   CHECK(callback_.is_null());
   CHECK(salt_.empty());
-  callback_ = callback;
+  callback_ = std::move(callback);
 
   // If the set of ids is empty, just return an empty signature and skip the
   // call to the server.
   if (ids_.empty()) {
     if (!callback_.is_null())
-      callback_.Run(std::unique_ptr<InstallSignature>(new InstallSignature()));
+      std::move(callback_).Run(std::make_unique<InstallSignature>());
     return;
   }
 
   salt_ = std::string(kSaltBytes, 0);
-  DCHECK_EQ(kSaltBytes, salt_.size());
-  crypto::RandBytes(string_as_array(&salt_), salt_.size());
+  crypto::RandBytes(base::data(salt_), salt_.size());
 
   std::string hash_base64;
   if (!HashWithMachineId(salt_, &hash_base64)) {
@@ -364,18 +339,41 @@ void InstallSigner::GetSignature(const SignatureCallback& callback) {
     return;
   }
 
-  if (!context_getter_) {
+  if (!url_loader_factory_) {
     ReportErrorViaCallback();
     return;
   }
 
-  base::Closure closure = base::Bind(&InstallSigner::ParseFetchResponse,
-                                     base::Unretained(this));
-
-  delegate_.reset(new FetcherDelegate(closure));
-  url_fetcher_ = net::URLFetcher::Create(GetBackendUrl(), net::URLFetcher::POST,
-                                         delegate_.get());
-  url_fetcher_->SetRequestContext(context_getter_);
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("extension_install_signer", R"(
+        semantics {
+          sender: "Extension Install Signer"
+          description: "Fetches the signatures for installed extensions."
+          trigger:
+            "Chrome detects an extension that requires installation "
+            "verification."
+          data:
+            "The ids of the extensions that need to be verified, as well as a "
+            "non-revertable salted hash of the user's machine id provided by "
+            "RLZ library, which varies between different installs. This id is "
+            "only used to verify the validity of the response."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: YES
+          cookies_store: "user"
+          setting:
+            "This feature cannot be disabled, but it is only activated if "
+            "extensions are installed."
+          chrome_policy {
+            ExtensionInstallBlacklist {
+              policy_options {mode: MANDATORY}
+              ExtensionInstallBlacklist: {
+                entries: '*'
+              }
+            }
+          }
+        })");
 
   // The request protocol is JSON of the form:
   // {
@@ -387,45 +385,52 @@ void InstallSigner::GetSignature(const SignatureCallback& callback) {
   dictionary.SetInteger(kProtocolVersionKey, 1);
   dictionary.SetString(kHashKey, hash_base64);
   std::unique_ptr<base::ListValue> id_list(new base::ListValue);
-  for (ExtensionIdSet::const_iterator i = ids_.begin(); i != ids_.end(); ++i) {
+  for (auto i = ids_.begin(); i != ids_.end(); ++i) {
     id_list->AppendString(*i);
   }
-  dictionary.Set(kIdsKey, id_list.release());
+  dictionary.Set(kIdsKey, std::move(id_list));
   std::string json;
   base::JSONWriter::Write(dictionary, &json);
   if (json.empty()) {
     ReportErrorViaCallback();
     return;
   }
-  url_fetcher_->SetUploadData("application/json", json);
+
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = GetBackendUrl();
+  resource_request->method = "POST";
+
+  simple_loader_ = network::SimpleURLLoader::Create(std::move(resource_request),
+                                                    traffic_annotation);
+  simple_loader_->AttachStringForUpload(json, kContentTypeJSON);
+
   LogRequestStartHistograms();
   request_start_time_ = base::Time::Now();
   VLOG(1) << "Sending request: " << json;
-  url_fetcher_->Start();
+
+  // TODO: Set a cap value to the expected content to be loaded, and use
+  // DownloadToString instead.
+  simple_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      url_loader_factory_.get(),
+      base::BindOnce(&InstallSigner::ParseFetchResponse,
+                     base::Unretained(this)));
 }
 
 void InstallSigner::ReportErrorViaCallback() {
-  InstallSignature* null_signature = NULL;
   if (!callback_.is_null())
-    callback_.Run(std::unique_ptr<InstallSignature>(null_signature));
+    std::move(callback_).Run(nullptr);
 }
 
-void InstallSigner::ParseFetchResponse() {
-  bool fetch_success = url_fetcher_->GetStatus().is_success();
-  UMA_HISTOGRAM_BOOLEAN("ExtensionInstallSigner.FetchSuccess", fetch_success);
-
-  std::string response;
-  if (fetch_success) {
-    if (!url_fetcher_->GetResponseAsString(&response))
-      response.clear();
-  }
+void InstallSigner::ParseFetchResponse(
+    std::unique_ptr<std::string> response_body) {
+  UMA_HISTOGRAM_BOOLEAN("ExtensionInstallSigner.FetchSuccess", !!response_body);
   UMA_HISTOGRAM_BOOLEAN("ExtensionInstallSigner.GetResponseSuccess",
-                        !response.empty());
-  if (!fetch_success || response.empty()) {
+                        !!response_body && !response_body->empty());
+  if (!response_body || response_body->empty()) {
     ReportErrorViaCallback();
     return;
   }
-  VLOG(1) << "Got response: " << response;
+  VLOG(1) << "Got response: " << *response_body;
 
   // The response is JSON of the form:
   // {
@@ -438,7 +443,8 @@ void InstallSigner::ParseFetchResponse() {
   // could not be verified to be in the webstore.
 
   base::DictionaryValue* dictionary = NULL;
-  std::unique_ptr<base::Value> parsed = base::JSONReader::Read(response);
+  std::unique_ptr<base::Value> parsed =
+      base::JSONReader::ReadDeprecated(*response_body);
   bool json_success = parsed.get() && parsed->GetAsDictionary(&dictionary);
   UMA_HISTOGRAM_BOOLEAN("ExtensionInstallSigner.ParseJsonSuccess",
                         json_success);
@@ -507,7 +513,7 @@ void InstallSigner::HandleSignatureResult(const std::string& signature,
   }
 
   if (!callback_.is_null())
-    callback_.Run(std::move(result));
+    std::move(callback_).Run(std::move(result));
 }
 
 

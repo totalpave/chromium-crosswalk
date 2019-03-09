@@ -7,17 +7,22 @@
 #include <stdint.h>
 
 #include "base/strings/stringprintf.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "build/build_config.h"
 #include "chromecast/base/cast_constants.h"
 #include "chromecast/base/version.h"
+#include "chromecast/chromecast_buildflags.h"
 #include "content/public/common/user_agent.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "url/url_util.h"
 
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+#include "extensions/common/constants.h"  // nogncheck
+#endif
+
 #if defined(OS_ANDROID)
-#include "chromecast/common/media/cast_media_client_android.h"
+#include "chromecast/common/media/cast_media_drm_bridge_client.h"
 #endif
 
 namespace chromecast {
@@ -56,10 +61,6 @@ std::string BuildAndroidOsInfo() {
 }
 #endif
 
-const url::SchemeWithType kChromeResourceSchemeWithType = {
-  kChromeResourceScheme, url::SCHEME_WITHOUT_PORT
-};
-
 }  // namespace
 
 std::string GetUserAgent() {
@@ -71,9 +72,11 @@ std::string GetUserAgent() {
 #if defined(OS_ANDROID)
       "Linux; ",
       BuildAndroidOsInfo().c_str()
+#elif BUILDFLAG(USE_ANDROID_USER_AGENT)
+                      "Linux; ", "Android"
 #else
       "X11; ",
-      content::BuildOSCpuInfo().c_str()
+      content::BuildOSCpuInfo(false /* include_android_build_number */).c_str()
 #endif
       );
   return content::BuildUserAgentFromOSAndProduct(os_info, product) +
@@ -83,15 +86,23 @@ std::string GetUserAgent() {
 CastContentClient::~CastContentClient() {
 }
 
-void CastContentClient::AddAdditionalSchemes(
-    std::vector<url::SchemeWithType>* standard_schemes,
-    std::vector<url::SchemeWithType>* referrer_schemes,
-    std::vector<std::string>* savable_schemes) {
-  standard_schemes->push_back(kChromeResourceSchemeWithType);
+void CastContentClient::SetActiveURL(const GURL& url, std::string top_origin) {
+  if (url.is_empty() || url == last_active_url_)
+    return;
+  LOG(INFO) << "Active URL: " << url.possibly_invalid_spec() << " for origin '"
+            << top_origin << "'";
+  last_active_url_ = url;
 }
 
-std::string CastContentClient::GetUserAgent() const {
-  return chromecast::shell::GetUserAgent();
+void CastContentClient::AddAdditionalSchemes(Schemes* schemes) {
+  schemes->standard_schemes.push_back(kChromeResourceScheme);
+#if BUILDFLAG(ENABLE_CHROMECAST_EXTENSIONS)
+  schemes->standard_schemes.push_back(extensions::kExtensionScheme);
+  // Treat as secure because we only load extension code written by us.
+  schemes->secure_schemes.push_back(extensions::kExtensionScheme);
+  schemes->service_worker_schemes.push_back(extensions::kExtensionScheme);
+  schemes->csp_bypassing_schemes.push_back(extensions::kExtensionScheme);
+#endif
 }
 
 base::string16 CastContentClient::GetLocalizedString(int message_id) const {
@@ -107,7 +118,7 @@ base::StringPiece CastContentClient::GetDataResource(
 
 base::RefCountedMemory* CastContentClient::GetDataResourceBytes(
     int resource_id) const {
-  return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytes(
+  return ui::ResourceBundle::GetSharedInstance().LoadLocalizedResourceBytes(
       resource_id);
 }
 
@@ -117,8 +128,8 @@ gfx::Image& CastContentClient::GetNativeImageNamed(int resource_id) const {
 }
 
 #if defined(OS_ANDROID)
-::media::MediaClientAndroid* CastContentClient::GetMediaClientAndroid() {
-  return new media::CastMediaClientAndroid();
+::media::MediaDrmBridgeClient* CastContentClient::GetMediaDrmBridgeClient() {
+  return new media::CastMediaDrmBridgeClient();
 }
 #endif  // OS_ANDROID
 

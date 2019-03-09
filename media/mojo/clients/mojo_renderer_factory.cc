@@ -4,40 +4,76 @@
 
 #include "media/mojo/clients/mojo_renderer_factory.h"
 
+#include <utility>
+
 #include "base/single_thread_task_runner.h"
+#include "build/build_config.h"
 #include "media/mojo/clients/mojo_renderer.h"
+#include "media/renderers/decrypting_renderer.h"
 #include "media/renderers/video_overlay_factory.h"
-#include "services/shell/public/cpp/connect.h"
-#include "services/shell/public/interfaces/interface_provider.mojom.h"
+#include "mojo/public/cpp/bindings/interface_request.h"
+#include "services/service_manager/public/cpp/connect.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 
 namespace media {
 
 MojoRendererFactory::MojoRendererFactory(
     const GetGpuFactoriesCB& get_gpu_factories_cb,
-    shell::mojom::InterfaceProvider* interface_provider)
+    media::mojom::InterfaceFactory* interface_factory)
     : get_gpu_factories_cb_(get_gpu_factories_cb),
-      interface_provider_(interface_provider) {
-  DCHECK(!get_gpu_factories_cb_.is_null());
-  DCHECK(interface_provider_);
+      interface_factory_(interface_factory) {
+  DCHECK(interface_factory_);
 }
 
-MojoRendererFactory::~MojoRendererFactory() {}
+MojoRendererFactory::~MojoRendererFactory() = default;
 
 std::unique_ptr<Renderer> MojoRendererFactory::CreateRenderer(
     const scoped_refptr<base::SingleThreadTaskRunner>& media_task_runner,
     const scoped_refptr<base::TaskRunner>& /* worker_task_runner */,
     AudioRendererSink* /* audio_renderer_sink */,
     VideoRendererSink* video_renderer_sink,
-    const RequestSurfaceCB& /* request_surface_cb */) {
-  std::unique_ptr<VideoOverlayFactory> overlay_factory(
-      new VideoOverlayFactory(get_gpu_factories_cb_.Run()));
+    const RequestOverlayInfoCB& /* request_overlay_info_cb */,
+    const gfx::ColorSpace& /* target_color_space */) {
+  DCHECK(interface_factory_);
+
+  DCHECK(get_gpu_factories_cb_);
+  auto overlay_factory =
+      std::make_unique<VideoOverlayFactory>(get_gpu_factories_cb_.Run());
 
   mojom::RendererPtr renderer_ptr;
-  shell::GetInterface<mojom::Renderer>(interface_provider_, &renderer_ptr);
+  interface_factory_->CreateDefaultRenderer(std::string(),
+                                            mojo::MakeRequest(&renderer_ptr));
 
-  return std::unique_ptr<Renderer>(
-      new MojoRenderer(media_task_runner, std::move(overlay_factory),
-                       video_renderer_sink, std::move(renderer_ptr)));
+  return std::make_unique<MojoRenderer>(
+      media_task_runner, std::move(overlay_factory), video_renderer_sink,
+      std::move(renderer_ptr));
 }
+
+#if defined(OS_ANDROID)
+std::unique_ptr<MojoRenderer> MojoRendererFactory::CreateFlingingRenderer(
+    const std::string& presentation_id,
+    const scoped_refptr<base::SingleThreadTaskRunner>& media_task_runner,
+    VideoRendererSink* video_renderer_sink) {
+  DCHECK(interface_factory_);
+  mojom::RendererPtr renderer_ptr;
+  interface_factory_->CreateFlingingRenderer(presentation_id,
+                                             mojo::MakeRequest(&renderer_ptr));
+
+  return std::make_unique<MojoRenderer>(
+      media_task_runner, nullptr, video_renderer_sink, std::move(renderer_ptr));
+}
+
+std::unique_ptr<MojoRenderer> MojoRendererFactory::CreateMediaPlayerRenderer(
+    const scoped_refptr<base::SingleThreadTaskRunner>& media_task_runner,
+    VideoRendererSink* video_renderer_sink) {
+  DCHECK(interface_factory_);
+  mojom::RendererPtr renderer_ptr;
+  interface_factory_->CreateMediaPlayerRenderer(
+      mojo::MakeRequest(&renderer_ptr));
+
+  return std::make_unique<MojoRenderer>(
+      media_task_runner, nullptr, video_renderer_sink, std::move(renderer_ptr));
+}
+#endif  // defined(OS_ANDROID)
 
 }  // namespace media

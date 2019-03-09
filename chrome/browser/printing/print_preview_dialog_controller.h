@@ -42,6 +42,9 @@ class PrintPreviewDialogController
   // Call this instead of GetOrCreatePreviewDialog().
   static void PrintPreview(content::WebContents* initiator);
 
+  // Returns true if |url| is a print preview url.
+  static bool IsPrintPreviewURL(const GURL& url);
+
   // Get/Create the print preview dialog for |initiator|.
   // Exposed for unit tests.
   content::WebContents* GetOrCreatePreviewDialog(
@@ -65,12 +68,6 @@ class PrintPreviewDialogController
   void Observe(int type,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
-
-  // Returns true if |contents| is a print preview dialog.
-  static bool IsPrintPreviewDialog(content::WebContents* contents);
-
-  // Returns true if |url| is a print preview url.
-  static bool IsPrintPreviewURL(const GURL& url);
 
   // Erase the initiator info associated with |preview_dialog|.
   void EraseInitiatorInfo(content::WebContents* preview_dialog);
@@ -101,7 +98,13 @@ class PrintPreviewDialogController
   // Handler for the NAV_ENTRY_COMMITTED notification. This is observed when the
   // renderer is navigated to a different page.
   void OnNavEntryCommitted(content::WebContents* contents,
-                           content::LoadCommittedDetails* details);
+                           const content::LoadCommittedDetails* details);
+
+  // Helpers for OnNavEntryCommitted().
+  void OnInitiatorNavigated(content::WebContents* initiator,
+                            const content::LoadCommittedDetails* details);
+  void OnPreviewDialogNavigated(content::WebContents* preview_dialog,
+                                const content::LoadCommittedDetails* details);
 
   // Creates a new print preview dialog.
   content::WebContents* CreatePrintPreviewDialog(
@@ -127,11 +130,17 @@ class PrintPreviewDialogController
 
   // True if the controller is waiting for a new preview dialog via
   // content::NAVIGATION_TYPE_NEW_PAGE.
-  bool waiting_for_new_preview_page_;
+  bool waiting_for_new_preview_page_ = false;
 
   // Whether the PrintPreviewDialogController is in the middle of creating a
   // print preview dialog.
-  bool is_creating_print_preview_dialog_;
+  bool is_creating_print_preview_dialog_ = false;
+
+  // How many web contents (dialogs and initiators) are watching a given render
+  // process host. Used to determine when a render process host's
+  // NOTIFICATION_RENDERER_PROCESS_CLOSED notification should be removed from
+  // the registrar.
+  std::map<content::RenderProcessHost*, int> host_contents_count_map_;
 
   DISALLOW_COPY_AND_ASSIGN(PrintPreviewDialogController);
 };

@@ -5,16 +5,15 @@
 #include "chrome/browser/ui/sync/profile_signin_confirmation_helper.h"
 
 #include <memory>
+#include <string>
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
-#include "base/callback.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -30,19 +29,19 @@
 #include "components/prefs/pref_notifier_impl.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
+#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
 #endif
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/common/extensions/extension_constants.h"
@@ -91,7 +90,7 @@ class TestingPrefStoreWithCustomReadError : public TestingPrefStore {
   PrefReadError read_error_;
 };
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #if defined(OS_WIN)
 const base::FilePath::CharType kExtensionFilePath[] =
     FILE_PATH_LITERAL("c:\\foo");
@@ -106,6 +105,7 @@ static scoped_refptr<extensions::Extension> CreateExtension(
     extensions::Manifest::Location location) {
   base::DictionaryValue manifest;
   manifest.SetString(extensions::manifest_keys::kVersion, "1.0.0.0");
+  manifest.SetInteger(extensions::manifest_keys::kManifestVersion, 2);
   manifest.SetString(extensions::manifest_keys::kName, name);
   std::string error;
   scoped_refptr<extensions::Extension> extension =
@@ -133,21 +133,22 @@ class ProfileSigninConfirmationHelperTest : public testing::Test {
     // Create the profile.
     TestingProfile::Builder builder;
     user_prefs_ = new TestingPrefStoreWithCustomReadError;
-    syncable_prefs::TestingPrefServiceSyncable* pref_service =
-        new syncable_prefs::TestingPrefServiceSyncable(
-            new TestingPrefStore(), user_prefs_, new TestingPrefStore(),
-            new user_prefs::PrefRegistrySyncable(), new PrefNotifierImpl());
-    chrome::RegisterUserProfilePrefs(pref_service->registry());
+    sync_preferences::TestingPrefServiceSyncable* pref_service =
+        new sync_preferences::TestingPrefServiceSyncable(
+            new TestingPrefStore(), new TestingPrefStore(), user_prefs_,
+            new TestingPrefStore(), new user_prefs::PrefRegistrySyncable(),
+            new PrefNotifierImpl());
+    RegisterUserProfilePrefs(pref_service->registry());
     builder.SetPrefService(
-        base::WrapUnique<syncable_prefs::PrefServiceSyncable>(pref_service));
+        base::WrapUnique<sync_preferences::PrefServiceSyncable>(pref_service));
     profile_ = builder.Build();
 
     // Initialize the services we check.
     profile_->CreateBookmarkModel(true);
-    model_ = BookmarkModelFactory::GetForProfile(profile_.get());
+    model_ = BookmarkModelFactory::GetForBrowserContext(profile_.get());
     bookmarks::test::WaitForBookmarkModelToLoad(model_);
     ASSERT_TRUE(profile_->CreateHistoryService(true, false));
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
     extensions::TestExtensionSystem* system =
         static_cast<extensions::TestExtensionSystem*>(
             extensions::ExtensionSystem::Get(profile_.get()));
@@ -172,8 +173,7 @@ class ProfileSigninConfirmationHelperTest : public testing::Test {
   BookmarkModel* model_;
 
 #if defined OS_CHROMEOS
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
+  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
   chromeos::ScopedTestUserManager test_user_manager_;
 #endif
 };
@@ -202,9 +202,9 @@ TEST_F(ProfileSigninConfirmationHelperTest, PromptForNewProfile_Bookmarks) {
               profile_.get())));
 }
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 TEST_F(ProfileSigninConfirmationHelperTest, PromptForNewProfile_Extensions) {
-  ExtensionService* extensions =
+  extensions::ExtensionService* extensions =
       extensions::ExtensionSystem::Get(profile_.get())->extension_service();
   ASSERT_TRUE(extensions);
 
@@ -242,7 +242,7 @@ TEST_F(ProfileSigninConfirmationHelperTest,
   // history items.
   char buf[18];
   for (int i = 0; i < 10; i++) {
-    base::snprintf(buf, arraysize(buf), "http://foo.com/%d", i);
+    base::snprintf(buf, base::size(buf), "http://foo.com/%d", i);
     history->AddPage(
         GURL(std::string(buf)), base::Time::Now(), NULL, 1,
         GURL(), history::RedirectList(), ui::PAGE_TRANSITION_LINK,

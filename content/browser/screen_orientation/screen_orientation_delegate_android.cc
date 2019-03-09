@@ -4,58 +4,49 @@
 
 #include "content/browser/screen_orientation/screen_orientation_delegate_android.h"
 
-#include "content/browser/android/content_view_core_impl.h"
-#include "jni/ScreenOrientationProvider_jni.h"
+#include "content/browser/screen_orientation/screen_orientation_provider.h"
+#include "jni/ScreenOrientationProviderImpl_jni.h"
+#include "ui/android/window_android.h"
+#include "ui/gfx/native_widget_types.h"
 
 namespace content {
 
 ScreenOrientationDelegateAndroid::ScreenOrientationDelegateAndroid() {
+  ScreenOrientationProvider::SetDelegate(this);
 }
 
 ScreenOrientationDelegateAndroid::~ScreenOrientationDelegateAndroid() {
-}
-
-// static
-bool ScreenOrientationDelegateAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
-// static
-void ScreenOrientationDelegateAndroid::StartAccurateListening() {
-  Java_ScreenOrientationProvider_startAccurateListening(
-      base::android::AttachCurrentThread());
-}
-
-// static
-void ScreenOrientationDelegateAndroid::StopAccurateListening() {
-  Java_ScreenOrientationProvider_stopAccurateListening(
-      base::android::AttachCurrentThread());
+  ScreenOrientationProvider::SetDelegate(nullptr);
 }
 
 bool ScreenOrientationDelegateAndroid::FullScreenRequired(
     WebContents* web_contents) {
-  ContentViewCoreImpl* cvc =
-      ContentViewCoreImpl::FromWebContents(web_contents);
-  bool fullscreen_required = cvc ? cvc->IsFullscreenRequiredForOrientationLock()
-                                 : true;
-  return fullscreen_required;
+  return true;
 }
 
 void ScreenOrientationDelegateAndroid::Lock(
     WebContents* web_contents,
     blink::WebScreenOrientationLockType lock_orientation) {
-  Java_ScreenOrientationProvider_lockOrientation(
-      base::android::AttachCurrentThread(), lock_orientation);
+  gfx::NativeWindow window = web_contents->GetTopLevelNativeWindow();
+  Java_ScreenOrientationProviderImpl_lockOrientation(
+      base::android::AttachCurrentThread(),
+      window ? window->GetJavaObject() : nullptr,
+      lock_orientation);
 }
 
 bool ScreenOrientationDelegateAndroid::ScreenOrientationProviderSupported() {
-  // Always supported on Android
-  return true;
+  // TODO(MLamouri): Consider moving isOrientationLockEnabled to a separate
+  // function, so reported error messages can differentiate between the device
+  // never supporting orientation or currently not support orientation.
+  return Java_ScreenOrientationProviderImpl_isOrientationLockEnabled(
+      base::android::AttachCurrentThread());
 }
 
 void ScreenOrientationDelegateAndroid::Unlock(WebContents* web_contents) {
-  Java_ScreenOrientationProvider_unlockOrientation(
-      base::android::AttachCurrentThread());
+  gfx::NativeWindow window = web_contents->GetTopLevelNativeWindow();
+  Java_ScreenOrientationProviderImpl_unlockOrientation(
+      base::android::AttachCurrentThread(),
+      window ? window->GetJavaObject() : nullptr);
 }
 
 } // namespace content

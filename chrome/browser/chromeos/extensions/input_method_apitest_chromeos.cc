@@ -8,24 +8,24 @@
 
 #include "base/command_line.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/stringprintf.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/chromeos/extensions/input_method_event_router.h"
-#include "chrome/browser/chromeos/input_method/input_method_util.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/common/content_switches.h"
-#include "extensions/common/switches.h"
 #include "extensions/browser/api/test/test_api.h"
 #include "extensions/browser/notification_types.h"
+#include "extensions/common/switches.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/chromeos/extension_ime_util.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
+#include "ui/base/ime/chromeos/input_method_util.h"
 #include "ui/base/ime/chromeos/input_method_whitelist.h"
 #include "ui/base/ime/ime_bridge.h"
 
@@ -76,15 +76,22 @@ class TestListener : public content::NotificationObserver {
   content::NotificationRegistrar registrar_;
 };
 
-class ExtensionInputMethodApiTest : public ExtensionApiTest {
+class ExtensionInputMethodApiTest : public extensions::ExtensionApiTest {
+ public:
+  ExtensionInputMethodApiTest() {}
+  ~ExtensionInputMethodApiTest() override {}
+
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    ExtensionApiTest::SetUpCommandLine(command_line);
+    extensions::ExtensionApiTest::SetUpCommandLine(command_line);
     command_line->AppendSwitchASCII(
         extensions::switches::kWhitelistedExtensionID,
         "ilanclmaeigfpnmdlgelmhkpkegdioip");
-    command_line->AppendSwitchASCII(switches::kEnableFeatures,
-                                    features::kOptInImeMenu.name);
   }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+
+  DISALLOW_COPY_AND_ASSIGN(ExtensionInputMethodApiTest);
 };
 
 }  // namespace
@@ -151,4 +158,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionInputMethodApiTest, ImeMenuAPITest) {
       kTestIMEID2, false /* show_message */);
   engine_handler->Enable("test2");
   ASSERT_TRUE(list_listenter.WaitUntilSatisfied()) << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionInputMethodApiTest, Settings) {
+  ASSERT_TRUE(RunExtensionTest("input_method/settings")) << message_;
 }

@@ -11,6 +11,7 @@
 #include "remoting/codec/audio_encoder.h"
 #include "remoting/codec/video_encoder.h"
 #include "remoting/host/audio_capturer.h"
+#include "remoting/host/file_transfer/file_operations.h"
 #include "remoting/host/input_injector.h"
 #include "remoting/proto/event.pb.h"
 #include "remoting/proto/video.pb.h"
@@ -20,9 +21,13 @@
 
 namespace remoting {
 
-MockDesktopEnvironment::MockDesktopEnvironment() {}
+MockDesktopEnvironment::MockDesktopEnvironment() = default;
 
-MockDesktopEnvironment::~MockDesktopEnvironment() {}
+MockDesktopEnvironment::~MockDesktopEnvironment() = default;
+
+std::unique_ptr<ActionExecutor> MockDesktopEnvironment::CreateActionExecutor() {
+  return base::WrapUnique(CreateActionExecutorPtr());
+}
 
 std::unique_ptr<AudioCapturer> MockDesktopEnvironment::CreateAudioCapturer() {
   return base::WrapUnique(CreateAudioCapturerPtr());
@@ -46,56 +51,61 @@ MockDesktopEnvironment::CreateMouseCursorMonitor() {
   return base::WrapUnique(CreateMouseCursorMonitorPtr());
 }
 
-MockDesktopEnvironmentFactory::MockDesktopEnvironmentFactory() {}
+std::unique_ptr<FileOperations> MockDesktopEnvironment::CreateFileOperations() {
+  return base::WrapUnique(CreateFileOperationsPtr());
+}
 
-MockDesktopEnvironmentFactory::~MockDesktopEnvironmentFactory() {}
+MockDesktopEnvironmentFactory::MockDesktopEnvironmentFactory() = default;
+
+MockDesktopEnvironmentFactory::~MockDesktopEnvironmentFactory() = default;
 
 std::unique_ptr<DesktopEnvironment> MockDesktopEnvironmentFactory::Create(
-    base::WeakPtr<ClientSessionControl> client_session_control) {
+    base::WeakPtr<ClientSessionControl> client_session_control,
+    const DesktopEnvironmentOptions& options) {
   return base::WrapUnique(CreatePtr());
 }
 
-MockInputInjector::MockInputInjector() {}
+MockInputInjector::MockInputInjector() = default;
 
-MockInputInjector::~MockInputInjector() {}
+MockInputInjector::~MockInputInjector() = default;
 
 void MockInputInjector::Start(
     std::unique_ptr<protocol::ClipboardStub> client_clipboard) {
   StartPtr(client_clipboard.get());
 }
 
-MockClientSessionControl::MockClientSessionControl() {}
+MockClientSessionControl::MockClientSessionControl() = default;
 
-MockClientSessionControl::~MockClientSessionControl() {}
+MockClientSessionControl::~MockClientSessionControl() = default;
 
-MockClientSessionDetails::MockClientSessionDetails() {}
+MockClientSessionDetails::MockClientSessionDetails() = default;
 
-MockClientSessionDetails::~MockClientSessionDetails() {}
+MockClientSessionDetails::~MockClientSessionDetails() = default;
 
-MockClientSessionEventHandler::MockClientSessionEventHandler() {}
+MockClientSessionEventHandler::MockClientSessionEventHandler() = default;
 
-MockClientSessionEventHandler::~MockClientSessionEventHandler() {}
+MockClientSessionEventHandler::~MockClientSessionEventHandler() = default;
 
-MockHostStatusObserver::MockHostStatusObserver() {}
+MockHostStatusObserver::MockHostStatusObserver() = default;
 
-MockHostStatusObserver::~MockHostStatusObserver() {}
+MockHostStatusObserver::~MockHostStatusObserver() = default;
 
-MockGnubbyAuthHandler::MockGnubbyAuthHandler() {}
+MockSecurityKeyAuthHandler::MockSecurityKeyAuthHandler() = default;
 
-MockGnubbyAuthHandler::~MockGnubbyAuthHandler() {}
+MockSecurityKeyAuthHandler::~MockSecurityKeyAuthHandler() = default;
 
-void MockGnubbyAuthHandler::SetSendMessageCallback(
-    const GnubbyAuthHandler::SendMessageCallback& callback) {
+void MockSecurityKeyAuthHandler::SetSendMessageCallback(
+    const SecurityKeyAuthHandler::SendMessageCallback& callback) {
   callback_ = callback;
 }
 
-const GnubbyAuthHandler::SendMessageCallback&
-MockGnubbyAuthHandler::GetSendMessageCallback() {
+const SecurityKeyAuthHandler::SendMessageCallback&
+MockSecurityKeyAuthHandler::GetSendMessageCallback() {
   return callback_;
 }
 
-MockMouseCursorMonitor::MockMouseCursorMonitor() {}
+MockMouseCursorMonitor::MockMouseCursorMonitor() = default;
 
-MockMouseCursorMonitor::~MockMouseCursorMonitor() {}
+MockMouseCursorMonitor::~MockMouseCursorMonitor() = default;
 
 }  // namespace remoting

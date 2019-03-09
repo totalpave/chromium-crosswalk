@@ -5,8 +5,7 @@
 #include "chrome/browser/chromeos/extensions/gfx_utils.h"
 
 #include "base/lazy_instance.h"
-#include "chrome/browser/chromeos/arc/arc_auth_service.h"
-#include "chrome/browser/chromeos/arc/arc_support_host.h"
+#include "base/stl_util.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
@@ -15,6 +14,7 @@
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/common/constants.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/chromeos/resources/grit/ui_chromeos_resources.h"
 #include "ui/gfx/image/image_skia.h"
@@ -69,12 +69,12 @@ const struct {
     {"com.google.android.youtube", extension_misc::kYoutubeAppId},
     {"com.google.android.youtube", "pbdihpaifchmclcmkfdgffnnpfbobefh"},
     // Google Play Books
-    {"com.google.android.apps.books", "mmimngoggfoobjdlefbcabngfnmieonb"},
+    {"com.google.android.apps.books", extension_misc::kGooglePlayBooksAppId},
     // Google+
     {"com.google.android.apps.plus", "dlppkpafhbajpcmmoheippocdidnckmm"},
     {"com.google.android.apps.plus", "fgjnkhlabjcaajddbaenilcmpcidahll"},
     // Google Play Movies & TV
-    {"com.google.android.videos", "gdijeikdkaembjbdobgfkoidjkpbmlkd"},
+    {"com.google.android.videos", extension_misc::kGooglePlayMoviesAppId},
     {"com.google.android.videos", "amfoiggnkefambnaaphodjdmdooiinna"},
     // Google Play Music
     {"com.google.android.music", extension_misc::kGooglePlayMusicAppId},
@@ -96,10 +96,12 @@ const struct {
     // Google News
     {"com.google.android.apps.genie.geniewidget",
      "dllkocilcinkggkchnjgegijklcililc"},
+    // Used in unit tests.
+    {"fake.package.name1", "emfkafnhnpcmabnnkckkchdilgeoekbo"},
 };
 
 // This class maintains the maps between the extension id and its equivalent
-// Arc package name.
+// ARC package name.
 class AppDualBadgeMap {
  public:
   using ArcAppToExtensionsMap =
@@ -107,7 +109,7 @@ class AppDualBadgeMap {
   using ExtensionToArcAppMap = std::unordered_map<std::string, std::string>;
 
   AppDualBadgeMap() {
-    for (size_t i = 0; i < arraysize(kDualBadgeMap); ++i) {
+    for (size_t i = 0; i < base::size(kDualBadgeMap); ++i) {
       arc_app_to_extensions_map_[kDualBadgeMap[i].arc_package_name].push_back(
           kDualBadgeMap[i].extension_id);
       extension_to_arc_app_map_[kDualBadgeMap[i].extension_id] =
@@ -137,28 +139,36 @@ class AppDualBadgeMap {
   DISALLOW_COPY_AND_ASSIGN(AppDualBadgeMap);
 };
 
-base::LazyInstance<AppDualBadgeMap> g_dual_badge_map =
+base::LazyInstance<AppDualBadgeMap>::DestructorAtExit g_dual_badge_map =
     LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
 namespace util {
 
-std::string GetEquivalentInstalledArcApp(content::BrowserContext* context,
-                                         const std::string& extension_id) {
+bool HasEquivalentInstalledArcApp(content::BrowserContext* context,
+                                  const std::string& extension_id) {
+  std::unordered_set<std::string> arc_apps;
+  return GetEquivalentInstalledArcApps(context, extension_id, &arc_apps);
+}
+
+bool GetEquivalentInstalledArcApps(content::BrowserContext* context,
+                                   const std::string& extension_id,
+                                   std::unordered_set<std::string>* arc_apps) {
   const std::string arc_package_name =
       g_dual_badge_map.Get().GetArcPackageNameFromExtensionId(extension_id);
   if (arc_package_name.empty())
-    return std::string();
+    return false;
 
-  ArcAppListPrefs* prefs = ArcAppListPrefs::Get(context);
-  if (prefs) {
-    std::unique_ptr<ArcAppListPrefs::PackageInfo> arc_info =
-        prefs->GetPackage(arc_package_name);
-    if (arc_info.get() && !arc_info->package_name.empty())
-      return arc_package_name;
-  }
-  return std::string();
+  const ArcAppListPrefs* const prefs = ArcAppListPrefs::Get(context);
+  if (!prefs)
+    return false;
+
+  // TODO(hidehiko): The icon is per launcher, so we should have more precise
+  // check here.
+  DCHECK(arc_apps);
+  prefs->GetAppsForPackage(arc_package_name).swap(*arc_apps);
+  return !arc_apps->empty();
 }
 
 const std::vector<std::string> GetEquivalentInstalledExtensions(
@@ -173,46 +183,38 @@ const std::vector<std::string> GetEquivalentInstalledExtensions(
   if (extension_ids.empty())
     return std::vector<std::string>();
 
-  extension_ids.erase(
-      std::remove_if(extension_ids.begin(), extension_ids.end(),
-                     [registry](std::string extension_id) {
-                       return !registry->GetInstalledExtension(extension_id);
-                     }),
-      extension_ids.end());
+  base::EraseIf(extension_ids, [registry](std::string extension_id) {
+    return !registry->GetInstalledExtension(extension_id);
+  });
   return extension_ids;
 }
 
-void MaybeApplyChromeBadge(content::BrowserContext* context,
-                           const std::string& extension_id,
-                           gfx::ImageSkia* icon_out) {
+bool ShouldApplyChromeBadge(content::BrowserContext* context,
+                            const std::string& extension_id) {
   DCHECK(context);
-  DCHECK(icon_out);
 
   Profile* profile = Profile::FromBrowserContext(context);
   // Only apply Chrome badge for the primary profile.
   if (!chromeos::ProfileHelper::IsPrimaryProfile(profile) ||
       !multi_user_util::IsProfileFromActiveUser(profile)) {
-    return;
-  }
-
-  arc::ArcAuthService* arc_auth_service = arc::ArcAuthService::Get();
-  // Only apply Chrome badge when ARC service is enabled.
-  if (!arc_auth_service ||
-      arc_auth_service->state() != arc::ArcAuthService::State::ACTIVE) {
-    return;
+    return false;
   }
 
   const ExtensionRegistry* registry = ExtensionRegistry::Get(context);
   if (!registry || !registry->GetInstalledExtension(extension_id))
-    return;
+    return false;
 
-  std::string arc_package_name =
-      GetEquivalentInstalledArcApp(context, extension_id);
-  if (arc_package_name.empty())
-    return;
+  if (!HasEquivalentInstalledArcApp(context, extension_id))
+    return false;
+
+  return true;
+}
+
+void ApplyChromeBadge(gfx::ImageSkia* icon_out) {
+  DCHECK(icon_out);
 
   const gfx::ImageSkia* badge_image =
-      ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+      ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
           IDR_ARC_DUAL_ICON_BADGE);
   DCHECK(badge_image);
 
@@ -223,7 +225,6 @@ void MaybeApplyChromeBadge(content::BrowserContext* context,
   }
   *icon_out = gfx::ImageSkiaOperations::CreateSuperimposedImage(
       *icon_out, resized_badge_image);
-  return;
 }
 
 }  // namespace util

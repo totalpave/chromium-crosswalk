@@ -40,13 +40,39 @@ def XmlEscape(s):
   return s
 
 
+def SplitParagraphs(text):
+  """Split a block of text into paragraphs.
+
+  Args:
+    text: The text to split.
+  Returns:
+    A list of paragraphs as strings.
+  """
+  text = textwrap.dedent(text.strip('\n'))
+  lines = text.split('\n')
+  # Split the text into paragraphs at blank line boundaries.
+  paragraphs = [[]]
+  for l in lines:
+    if paragraphs[-1] and not l.strip():
+      paragraphs.append([])
+    else:
+      # Replace runs of repeated whitespace with a single space.
+      transformed_line = ' '.join(l.split())
+      paragraphs[-1].append(transformed_line)
+  # Remove trailing empty paragraph if present.
+  if paragraphs and not paragraphs[-1]:
+    paragraphs = paragraphs[:-1]
+  return ['\n'.join(p) for p in paragraphs]
+
+
 class XmlStyle(object):
   """A class that stores all style specification for an output xml file."""
 
-  def __init__(self, attribute_order, tags_that_have_extra_newline,
-               tags_that_dont_indent, tags_that_allow_single_line,
-               tags_alphabetization_rules):
+  def __init__(self, attribute_order, required_attributes,
+               tags_that_have_extra_newline, tags_that_dont_indent,
+               tags_that_allow_single_line, tags_alphabetization_rules):
     self.attribute_order = attribute_order
+    self.required_attributes = required_attributes
     self.tags_that_have_extra_newline = tags_that_have_extra_newline
     self.tags_that_dont_indent = tags_that_dont_indent
     self.tags_that_allow_single_line = tags_that_allow_single_line
@@ -91,16 +117,21 @@ class XmlStyle(object):
       return node
 
     # Element node with a tag name that we alphabetize the children of?
-    if node.tagName in self.tags_alphabetization_rules:
+    alpha_rules = self.tags_alphabetization_rules
+    if node.tagName in alpha_rules:
       # Put subnodes in a list of node, key pairs to allow for custom sorting.
-      subtag, key_function = self.tags_alphabetization_rules[node.tagName]
+      subtags = {}
+      for index, (subtag, key_function) in enumerate(alpha_rules[node.tagName]):
+        subtags[subtag] = (index, key_function)
+
       subnodes = []
       sort_key = -1
       pending_node_indices = []
       for c in node.childNodes:
         if (c.nodeType == xml.dom.minidom.Node.ELEMENT_NODE and
-            c.tagName == subtag):
-          sort_key = key_function(c)
+            c.tagName in subtags):
+          subtag_sort_index, key_function = subtags[c.tagName]
+          sort_key = (subtag_sort_index, key_function(c))
           # Replace sort keys for delayed nodes.
           for idx in pending_node_indices:
             subnodes[idx][1] = sort_key
@@ -110,7 +141,7 @@ class XmlStyle(object):
           # so they stay in the same relative position.
           # Therefore we delay setting key until the next node is found.
           pending_node_indices.append(len(subnodes))
-        subnodes.append( [c, sort_key] )
+        subnodes.append([c, sort_key])
 
       # Sort the subnode list.
       subnodes.sort(key=lambda pair: pair[1])
@@ -154,21 +185,9 @@ class XmlStyle(object):
       wrapper.break_long_words = False
       wrapper.width = WRAP_COLUMN
       text = XmlEscape(node.data)
-      # Remove any common indent.
-      text = textwrap.dedent(text.strip('\n'))
-      lines = text.split('\n')
-      # Split the text into paragraphs at blank line boundaries.
-      paragraphs = [[]]
-      for l in lines:
-        if paragraphs[-1] and not l.strip():
-          paragraphs.append([])
-        else:
-          paragraphs[-1].append(l)
-      # Remove trailing empty paragraph if present.
-      if paragraphs and not paragraphs[-1]:
-        paragraphs = paragraphs[:-1]
+      paragraphs = SplitParagraphs(text)
       # Wrap each paragraph and separate with two newlines.
-      return '\n\n'.join([wrapper.fill('\n'.join(p)) for p in paragraphs])
+      return '\n\n'.join(wrapper.fill(p) for p in paragraphs)
 
     # Handle element nodes.
     if node.nodeType == xml.dom.minidom.Node.ELEMENT_NODE:
@@ -188,8 +207,27 @@ class XmlStyle(object):
       if not node.childNodes:
         closing_chars = 2
 
-      # Pretty-print the attributes.
       attributes = node.attributes.keys()
+      required_attributes = [attribute for attribute in self.required_attributes
+                             if attribute in self.attribute_order[node.tagName]]
+      missing_attributes = [attribute for attribute in required_attributes
+                            if attribute not in attributes]
+
+      for attribute in missing_attributes:
+        logging.error(
+            'Missing attribute "%s" in tag "%s"', attribute, node.tagName)
+      if missing_attributes:
+        missing_attributes_str = (
+            ', '.join('"%s"' % attribute for attribute in missing_attributes))
+        present_attributes = [
+            ' {0}="{1}"'.format(name, value)
+            for name, value in node.attributes.items()]
+        node_str = '<{0}{1}>'.format(node.tagName, ''.join(present_attributes))
+        raise Error(
+            'Missing attributes {0} in tag "{1}"'.format(
+                missing_attributes_str, node_str))
+
+      # Pretty-print the attributes.
       if attributes:
         # Reorder the attributes.
         unrecognized_attributes = (

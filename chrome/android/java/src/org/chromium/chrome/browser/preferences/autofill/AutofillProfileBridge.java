@@ -4,11 +4,14 @@
 
 package org.chromium.chrome.browser.preferences.autofill;
 
+import android.support.annotation.IntDef;
 import android.util.Pair;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -22,31 +25,34 @@ import java.util.Locale;
  */
 @JNINamespace("autofill")
 public class AutofillProfileBridge {
-
     /**
      * Address field types.
      * This list must be kept in-sync with the corresponding enum in
      * third_party/libaddressinput/src/cpp/include/libaddressinput/address_field.h
      */
-    public static class AddressField {
-        public static final int COUNTRY = 0;
-        public static final int ADMIN_AREA = 1;
-        public static final int LOCALITY = 2;
-        public static final int DEPENDENT_LOCALITY = 3;
-        public static final int SORTING_CODE = 4;
-        public static final int POSTAL_CODE = 5;
-        public static final int STREET_ADDRESS = 6;
-        public static final int ORGANIZATION = 7;
-        public static final int RECIPIENT = 8;
+    @IntDef({AddressField.COUNTRY, AddressField.ADMIN_AREA, AddressField.LOCALITY,
+            AddressField.DEPENDENT_LOCALITY, AddressField.SORTING_CODE, AddressField.POSTAL_CODE,
+            AddressField.STREET_ADDRESS, AddressField.ORGANIZATION, AddressField.RECIPIENT})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AddressField {
+        int COUNTRY = 0;
+        int ADMIN_AREA = 1;
+        int LOCALITY = 2;
+        int DEPENDENT_LOCALITY = 3;
+        int SORTING_CODE = 4;
+        int POSTAL_CODE = 5;
+        int STREET_ADDRESS = 6;
+        int ORGANIZATION = 7;
+        int RECIPIENT = 8;
 
-        public static final int NUM_FIELDS = 9;
+        int NUM_ENTRIES = 9;
     }
 
     /**
      * A convenience class for displaying keyed values in a dropdown.
      */
-    public static class DropdownKeyValue extends Pair<String, String> {
-        public DropdownKeyValue(String key, String value) {
+    public static class DropdownKeyValue extends Pair<String, CharSequence> {
+        public DropdownKeyValue(String key, CharSequence value) {
             super(key, value);
         }
 
@@ -56,13 +62,13 @@ public class AutofillProfileBridge {
         }
 
         /** @return The human-readable localized display value. */
-        public String getValue() {
+        public CharSequence getValue() {
             return super.second;
         }
 
         @Override
         public String toString() {
-            return super.second;
+            return super.second.toString();
         }
     }
 
@@ -97,8 +103,29 @@ public class AutofillProfileBridge {
                 return result;
             }
         });
-
         return countries;
+    }
+
+    /** @return The list of admin areas sorted by their localized display names. */
+    public static List<DropdownKeyValue> getAdminAreaDropdownList(
+            String[] adminAreaCodes, String[] adminAreaNames) {
+        List<DropdownKeyValue> adminAreas = new ArrayList<>();
+
+        for (int i = 0; i < adminAreaCodes.length; ++i) {
+            adminAreas.add(new DropdownKeyValue(adminAreaCodes[i], adminAreaNames[i]));
+        }
+
+        final Collator collator = Collator.getInstance(Locale.getDefault());
+        collator.setStrength(Collator.PRIMARY);
+        Collections.sort(adminAreas, new Comparator<DropdownKeyValue>() {
+            @Override
+            public int compare(DropdownKeyValue lhs, DropdownKeyValue rhs) {
+                // Sorted according to the admin area values, such as Quebec,
+                // rather than the admin area keys, such as QC.
+                return collator.compare(lhs.getValue(), rhs.getValue());
+            }
+        });
+        return adminAreas;
     }
 
     /** @return The list of required fields. COUNTRY is always included. RECIPIENT often omitted. */

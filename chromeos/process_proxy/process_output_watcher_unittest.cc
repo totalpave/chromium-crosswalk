@@ -16,6 +16,7 @@
 #include "base/callback.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
+#include "base/message_loop/message_loop.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
@@ -48,7 +49,7 @@ struct TestCase {
 
 class ProcessWatcherExpectations {
  public:
-  ProcessWatcherExpectations() {}
+  ProcessWatcherExpectations() = default;
 
   void SetTestCase(const TestCase& test_case) {
     received_from_out_ = 0;
@@ -100,7 +101,7 @@ class ProcessOutputWatcherTest : public testing::Test {
                                failed_(false) {
   }
 
-  ~ProcessOutputWatcherTest() override {}
+  ~ProcessOutputWatcherTest() override = default;
 
   void TearDown() override {
     if (output_watch_thread_started_)
@@ -156,8 +157,8 @@ class ProcessOutputWatcherTest : public testing::Test {
                                             base::Unretained(this))));
 
     output_watch_thread_->task_runner()->PostTask(
-        FROM_HERE, base::Bind(&ProcessOutputWatcher::Start,
-                              base::Unretained(crosh_watcher.get())));
+        FROM_HERE, base::BindOnce(&ProcessOutputWatcher::Start,
+                                  base::Unretained(crosh_watcher.get())));
 
     for (size_t i = 0; i < test_cases.size(); i++) {
       expectations_.SetTestCase(test_cases[i]);
@@ -183,7 +184,7 @@ class ProcessOutputWatcherTest : public testing::Test {
 
     output_watch_thread_->task_runner()->PostTask(
         FROM_HERE,
-        base::Bind(&StopProcessOutputWatcher, base::Passed(&crosh_watcher)));
+        base::BindOnce(&StopProcessOutputWatcher, std::move(crosh_watcher)));
 
     EXPECT_NE(-1, IGNORE_EINTR(close(pt_pipe[1])));
   }

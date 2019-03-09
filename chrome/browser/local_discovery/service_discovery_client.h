@@ -15,10 +15,6 @@
 #include "net/base/host_port_pair.h"
 #include "net/base/ip_address.h"
 
-namespace net {
-class MDnsClient;
-}
-
 namespace local_discovery {
 
 struct ServiceDescription {
@@ -67,7 +63,7 @@ class ServiceWatcher {
   virtual void Start() = 0;
 
   // Probe for services of this type.
-  virtual void DiscoverNewServices(bool force_update) = 0;
+  virtual void DiscoverNewServices() = 0;
 
   virtual void SetActivelyRefreshServices(bool actively_refresh_services) = 0;
 
@@ -86,7 +82,7 @@ class ServiceResolver {
   };
 
   // A callback called once the service has been resolved.
-  typedef base::Callback<void(RequestStatus, const ServiceDescription&)>
+  typedef base::OnceCallback<void(RequestStatus, const ServiceDescription&)>
       ResolveCompleteCallback;
 
   // Listening will automatically stop when the destructor is called.
@@ -100,9 +96,9 @@ class ServiceResolver {
 
 class LocalDomainResolver {
  public:
-  typedef base::Callback<void(bool /*success*/,
-                              const net::IPAddress& /*address_ipv4*/,
-                              const net::IPAddress& /*address_ipv6*/)>
+  typedef base::OnceCallback<void(bool /*success*/,
+                                  const net::IPAddress& /*address_ipv4*/,
+                                  const net::IPAddress& /*address_ipv6*/)>
       IPAddressCallback;
 
   virtual ~LocalDomainResolver() {}
@@ -124,13 +120,13 @@ class ServiceDiscoveryClient {
   // for the service called |service_name|.
   virtual std::unique_ptr<ServiceResolver> CreateServiceResolver(
       const std::string& service_name,
-      const ServiceResolver::ResolveCompleteCallback& callback) = 0;
+      ServiceResolver::ResolveCompleteCallback callback) = 0;
 
   // Create a resolver for local domain, both ipv4 or ipv6.
   virtual std::unique_ptr<LocalDomainResolver> CreateLocalDomainResolver(
       const std::string& domain,
       net::AddressFamily address_family,
-      const LocalDomainResolver::IPAddressCallback& callback) = 0;
+      LocalDomainResolver::IPAddressCallback callback) = 0;
 };
 
 }  // namespace local_discovery

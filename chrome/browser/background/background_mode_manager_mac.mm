@@ -5,14 +5,16 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/mac/mac_util.h"
+#include "base/sequenced_task_runner.h"
+#include "base/task/post_task.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "chrome/browser/background/background_mode_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "ui/base/l10n/l10n_util.h"
 
 using content::BrowserThread;
 
@@ -29,8 +31,9 @@ void SetCreatedLoginItemPrefOnUIThread() {
   service->SetBoolean(prefs::kChromeCreatedLoginItem, true);
 }
 
-void DisableLaunchOnStartupOnFileThread() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
+void DisableLaunchOnStartupOnWorkerThread() {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   // If the LoginItem is not hidden, it means it's user created, so don't
   // delete it.
   bool is_hidden = false;
@@ -38,17 +41,20 @@ void DisableLaunchOnStartupOnFileThread() {
     base::mac::RemoveFromLoginItems();
 }
 
-void CheckForUserRemovedLoginItemOnFileThread() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
+void CheckForUserRemovedLoginItemOnWorkerThread() {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   if (!base::mac::CheckLoginItemStatus(NULL)) {
     // There's no LoginItem, so set the kUserRemovedLoginItem pref.
-    BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                            base::Bind(SetUserRemovedLoginItemPrefOnUIThread));
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::UI},
+        base::BindOnce(SetUserRemovedLoginItemPrefOnUIThread));
   }
 }
 
-void EnableLaunchOnStartupOnFileThread(bool need_migration) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
+void EnableLaunchOnStartupOnWorkerThread(bool need_migration) {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   if (need_migration) {
     // This is the first time running Chrome since the kChromeCreatedLoginItem
     // pref was added. Initialize the status of this pref based on whether
@@ -58,8 +64,9 @@ void EnableLaunchOnStartupOnFileThread(bool need_migration) {
       if (is_hidden) {
       // We already have a hidden login item, so set the kChromeCreatedLoginItem
       // flag.
-        BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                                base::Bind(SetCreatedLoginItemPrefOnUIThread));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::UI},
+          base::BindOnce(SetCreatedLoginItemPrefOnUIThread));
       }
       // LoginItem already exists - just exit.
       return;
@@ -74,8 +81,8 @@ void EnableLaunchOnStartupOnFileThread(bool need_migration) {
     // before our callback is run, but the user can manually disable
     // "Open At Login" via the dock if this happens.
     base::mac::AddToLoginItems(true);  // Hide on startup.
-    BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                            base::Bind(SetCreatedLoginItemPrefOnUIThread));
+    base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
+                             base::BindOnce(SetCreatedLoginItemPrefOnUIThread));
   }
 }
 
@@ -116,16 +123,16 @@ void BackgroundModeManager::EnableLaunchOnStartup(bool should_launch) {
       // If we previously created a login item, we don't need to create
       // a new one - just check to see if the user removed it so we don't
       // ever create another one.
-      BrowserThread::PostTask(BrowserThread::FILE, FROM_HERE,
-                              base::Bind(
-                                  CheckForUserRemovedLoginItemOnFileThread));
+      task_runner_->PostTask(
+          FROM_HERE,
+          base::BindOnce(CheckForUserRemovedLoginItemOnWorkerThread));
     } else {
       bool need_migration = !service->GetBoolean(
           prefs::kMigratedLoginItemPref);
       service->SetBoolean(prefs::kMigratedLoginItemPref, true);
-      BrowserThread::PostTask(BrowserThread::FILE, FROM_HERE,
-                              base::Bind(EnableLaunchOnStartupOnFileThread,
-                                         need_migration));
+      task_runner_->PostTask(
+          FROM_HERE,
+          base::BindOnce(EnableLaunchOnStartupOnWorkerThread, need_migration));
     }
   } else {
     PrefService* service = g_browser_process->local_state();
@@ -138,14 +145,13 @@ void BackgroundModeManager::EnableLaunchOnStartup(bool should_launch) {
 
     // If the user removed our login item, note this so we don't ever create
     // another one.
-    BrowserThread::PostTask(BrowserThread::FILE, FROM_HERE,
-                            base::Bind(
-                                CheckForUserRemovedLoginItemOnFileThread));
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(CheckForUserRemovedLoginItemOnWorkerThread));
 
     // Call to the File thread to remove the login item since it requires
     // accessing the disk.
-    BrowserThread::PostTask(BrowserThread::FILE, FROM_HERE,
-                            base::Bind(DisableLaunchOnStartupOnFileThread));
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(DisableLaunchOnStartupOnWorkerThread));
   }
 }
 
@@ -155,6 +161,9 @@ void BackgroundModeManager::DisplayClientInstalledNotification(
   // http://crbug.com/74970
 }
 
-base::string16 BackgroundModeManager::GetPreferencesMenuLabel() {
-  return l10n_util::GetStringUTF16(IDS_OPTIONS);
+scoped_refptr<base::SequencedTaskRunner>
+BackgroundModeManager::CreateTaskRunner() {
+  return base::CreateSequencedTaskRunnerWithTraits(
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
 }

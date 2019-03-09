@@ -10,12 +10,14 @@ login.createScreen('UpdateScreen', 'update', function() {
   var USER_ACTION_CANCEL_UPDATE_SHORTCUT = 'cancel-update';
   var CONTEXT_KEY_TIME_LEFT_SEC = 'time-left-sec';
   var CONTEXT_KEY_SHOW_TIME_LEFT = 'show-time-left';
-  var CONTEXT_KEY_UPDATE_MESSAGE = 'update-msg';
+  var CONTEXT_KEY_UPDATE_COMPLETED = 'update-completed';
   var CONTEXT_KEY_SHOW_CURTAIN = 'show-curtain';
   var CONTEXT_KEY_SHOW_PROGRESS_MESSAGE = 'show-progress-msg';
   var CONTEXT_KEY_PROGRESS = 'progress';
   var CONTEXT_KEY_PROGRESS_MESSAGE = 'progress-msg';
   var CONTEXT_KEY_CANCEL_UPDATE_SHORTCUT_ENABLED = 'cancel-update-enabled';
+  var CONTEXT_KEY_REQUIRES_PERMISSION_FOR_CELLULAR =
+      'requires-permission-for-cellular';
 
   return {
     EXTERNAL_API: [],
@@ -24,38 +26,48 @@ login.createScreen('UpdateScreen', 'update', function() {
     decorate: function() {
       var self = this;
 
-      this.context.addObserver(CONTEXT_KEY_TIME_LEFT_SEC,
-                               function(time_left_sec) {
-        self.setEstimatedTimeLeft(time_left_sec);
-      });
-      this.context.addObserver(CONTEXT_KEY_SHOW_TIME_LEFT,
-                               function(show_time_left) {
-        self.showEstimatedTimeLeft(show_time_left);
-      });
-      this.context.addObserver(CONTEXT_KEY_UPDATE_MESSAGE,
-                               function(update_msg) {
-        self.setUpdateMessage(update_msg);
-      });
-      this.context.addObserver(CONTEXT_KEY_SHOW_CURTAIN,
-                               function(show_curtain) {
-        self.showUpdateCurtain(show_curtain);
-      });
-      this.context.addObserver(CONTEXT_KEY_SHOW_PROGRESS_MESSAGE,
-                               function(show_progress_msg) {
-        self.showProgressMessage(show_progress_msg);
-      });
-      this.context.addObserver(CONTEXT_KEY_PROGRESS,
-                               function(progress) {
+      this.context.addObserver(
+          CONTEXT_KEY_TIME_LEFT_SEC, function(time_left_sec) {
+            self.setEstimatedTimeLeft(time_left_sec);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_SHOW_TIME_LEFT, function(show_time_left) {
+            self.showEstimatedTimeLeft(show_time_left);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_UPDATE_COMPLETED, function(is_completed) {
+            self.setUpdateCompleted(is_completed);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_SHOW_CURTAIN, function(show_curtain) {
+            self.showUpdateCurtain(show_curtain);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_SHOW_PROGRESS_MESSAGE, function(show_progress_msg) {
+            self.showProgressMessage(show_progress_msg);
+          });
+      this.context.addObserver(CONTEXT_KEY_PROGRESS, function(progress) {
         self.setUpdateProgress(progress);
       });
-      this.context.addObserver(CONTEXT_KEY_PROGRESS_MESSAGE,
-                               function(progress_msg) {
-        self.setProgressMessage(progress_msg);
-      });
-      this.context.addObserver(CONTEXT_KEY_CANCEL_UPDATE_SHORTCUT_ENABLED,
-                               function(enabled) {
-        $('update-cancel-hint').hidden = !enabled;
-      });
+      this.context.addObserver(
+          CONTEXT_KEY_PROGRESS_MESSAGE, function(progress_msg) {
+            self.setProgressMessage(progress_msg);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_REQUIRES_PERMISSION_FOR_CELLULAR,
+          function(requires_permission) {
+            self.setRequiresPermissionForCellular(requires_permission);
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_CANCEL_UPDATE_SHORTCUT_ENABLED, function(enabled) {
+            $('oobe-update-md').cancelAllowed = enabled;
+            var configuration = Oobe.getInstance().getOobeConfiguration();
+            if (!configuration)
+              return;
+            if (configuration.updateSkipNonCritical && enabled) {
+              self.cancel();
+            }
+          });
     },
 
     /**
@@ -67,16 +79,21 @@ login.createScreen('UpdateScreen', 'update', function() {
     },
 
     /**
+     * Returns default event target element.
+     * @type {Object}
+     */
+    get defaultControl() {
+      return $('oobe-update-md');
+    },
+
+    /**
      * Cancels the screen.
      */
     cancel: function() {
-      // It's safe to act on the accelerator even if it's disabled on official
-      // builds, since Chrome will just ignore this user action in that case.
-      var updateCancelHint = $('update-cancel-hint').firstElementChild;
-      updateCancelHint.textContent =
-          loadTimeData.getString('cancelledUpdateMessage');
-      this.send(login.Screen.CALLBACK_USER_ACTED,
-                USER_ACTION_CANCEL_UPDATE_SHORTCUT);
+      $('oobe-update-md')
+          .setCancelHint(loadTimeData.getString('cancelledUpdateMessage'));
+      this.send(
+          login.Screen.CALLBACK_USER_ACTED, USER_ACTION_CANCEL_UPDATE_SHORTCUT);
     },
 
     /**
@@ -84,7 +101,11 @@ login.createScreen('UpdateScreen', 'update', function() {
      * @param {number} progress Percentage of the progress bar.
      */
     setUpdateProgress: function(progress) {
-      $('update-progress-bar').value = progress;
+      $('oobe-update-md').progressValue = progress;
+    },
+
+    setRequiresPermissionForCellular: function(requiresPermission) {
+      $('oobe-update-md').requiresPermissionForCellular = requiresPermission;
     },
 
     /**
@@ -92,8 +113,8 @@ login.createScreen('UpdateScreen', 'update', function() {
      * @param {boolean} visible Are ETA message visible?
      */
     showEstimatedTimeLeft: function(visible) {
-      $('progress-message').hidden = visible;
-      $('estimated-time-left').hidden = !visible;
+      $('oobe-update-md').estimatedTimeLeftShown = visible;
+      $('oobe-update-md').progressMessageShown = !visible;
     },
 
     /**
@@ -108,16 +129,16 @@ login.createScreen('UpdateScreen', 'update', function() {
       } else if (minutes > 55) {
         message = loadTimeData.getString('downloadingTimeLeftStatusOneHour');
       } else if (minutes > 20) {
-        message = loadTimeData.getStringF('downloadingTimeLeftStatusMinutes',
-                                          Math.ceil(minutes / 5) * 5);
+        message = loadTimeData.getStringF(
+            'downloadingTimeLeftStatusMinutes', Math.ceil(minutes / 5) * 5);
       } else if (minutes > 1) {
-        message = loadTimeData.getStringF('downloadingTimeLeftStatusMinutes',
-                                          minutes);
+        message = loadTimeData.getStringF(
+            'downloadingTimeLeftStatusMinutes', minutes);
       } else {
         message = loadTimeData.getString('downloadingTimeLeftSmall');
       }
-      $('estimated-time-left').textContent =
-        loadTimeData.getStringF('downloading', message);
+      $('oobe-update-md').estimatedTimeLeft =
+          loadTimeData.getStringF('downloading', message);
     },
 
     /**
@@ -125,8 +146,8 @@ login.createScreen('UpdateScreen', 'update', function() {
      * @param {boolean} visible Are message visible?
      */
     showProgressMessage: function(visible) {
-      $('estimated-time-left').hidden = visible;
-      $('progress-message').hidden = !visible;
+      $('oobe-update-md').estimatedTimeLeftShown = !visible;
+      $('oobe-update-md').progressMessageShown = visible;
     },
 
     /**
@@ -134,15 +155,15 @@ login.createScreen('UpdateScreen', 'update', function() {
      * @param {string} message Message that should be shown.
      */
     setProgressMessage: function(message) {
-      $('progress-message').innerText = message;
+      $('oobe-update-md').progressMessage = message;
     },
 
     /**
-     * Sets update message, which is shown above the progress bar.
-     * @param {text} message Message which is shown by the label.
+     * Marks update completed. Shows "update completed" message.
+     * @param {boolean} is_completed True if update process is completed.
      */
-    setUpdateMessage: function(message) {
-      $('update-upper-label').textContent = message;
+    setUpdateCompleted: function(is_completed) {
+      $('oobe-update-md').updateCompleted = is_completed;
     },
 
     /**
@@ -150,8 +171,7 @@ login.createScreen('UpdateScreen', 'update', function() {
      * @param {boolean} visible Are curtains visible?
      */
     showUpdateCurtain: function(visible) {
-      $('update-screen-curtain').hidden = !visible;
-      $('update-screen-main').hidden = visible;
-    }
+      $('oobe-update-md').checkingForUpdate = visible;
+    },
   };
 });

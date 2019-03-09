@@ -5,9 +5,11 @@
 #include <memory>
 #include <string>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/json/json_reader.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -25,7 +27,13 @@
 
 using extensions::Extension;
 
-class ChromeAppAPITest : public ExtensionBrowserTest {
+class ChromeAppAPITest : public extensions::ExtensionBrowserTest {
+  void SetUpOnMainThread() override {
+    extensions::ExtensionBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+
  protected:
   bool IsAppInstalledInMainFrame() {
     return IsAppInstalledInFrame(
@@ -89,8 +97,6 @@ class ChromeAppAPITest : public ExtensionBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, IsInstalled) {
-  host_resolver()->AddRule("*", "127.0.0.1");
-  ASSERT_TRUE(embedded_test_server()->Start());
   GURL app_url =
       embedded_test_server()->GetURL("app.com", "/extensions/test_file.html");
   GURL non_app_url = embedded_test_server()->GetURL(
@@ -139,7 +145,7 @@ IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, IsInstalled) {
           &result));
   std::unique_ptr<base::DictionaryValue> app_details(
       static_cast<base::DictionaryValue*>(
-          base::JSONReader::Read(result).release()));
+          base::JSONReader::ReadDeprecated(result).release()));
   // extension->manifest() does not contain the id.
   app_details->Remove("id", NULL);
   EXPECT_TRUE(app_details.get());
@@ -167,9 +173,35 @@ IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, IsInstalled) {
   EXPECT_EQ("true", result);
 }
 
+// Test accessing app.isInstalled when the context has been invalidated (e.g.
+// by removing the frame). Regression test for https://crbug.com/855853.
+IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, IsInstalledFromRemovedFrame) {
+  GURL app_url =
+      embedded_test_server()->GetURL("app.com", "/extensions/test_file.html");
+  const Extension* extension =
+      LoadExtension(test_data_dir_.AppendASCII("app_dot_com_app"));
+  ASSERT_TRUE(extension);
+  ui_test_utils::NavigateToURL(browser(), app_url);
+
+  constexpr char kScript[] =
+      R"(var i = document.createElement('iframe');
+         i.onload = function() {
+           var frameApp = i.contentWindow.chrome.app;
+           document.body.removeChild(i);
+           var isInstalled = frameApp.isInstalled;
+           window.domAutomationController.send(
+               isInstalled === undefined);
+         };
+         i.src = '%s';
+         document.body.appendChild(i);)";
+  bool result = false;
+  ASSERT_TRUE(content::ExecuteScriptAndExtractBool(
+      browser()->tab_strip_model()->GetActiveWebContents(),
+      base::StringPrintf(kScript, app_url.spec().c_str()), &result));
+  EXPECT_TRUE(result);
+}
+
 IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, InstallAndRunningState) {
-  host_resolver()->AddRule("*", "127.0.0.1");
-  ASSERT_TRUE(embedded_test_server()->Start());
   GURL app_url = embedded_test_server()->GetURL(
       "app.com", "/extensions/get_app_details_for_frame.html");
   GURL non_app_url = embedded_test_server()->GetURL(
@@ -197,10 +229,12 @@ IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, InstallAndRunningState) {
   EXPECT_TRUE(IsAppInstalledInMainFrame());
 
   // Disable the extension and verify the state.
-  ExtensionService* service = extensions::ExtensionSystem::Get(
-      browser()->profile())->extension_service();
-  service->DisableExtension(extension->id(),
-                            Extension::DISABLE_PERMISSIONS_INCREASE);
+  extensions::ExtensionService* service =
+      extensions::ExtensionSystem::Get(browser()->profile())
+          ->extension_service();
+  service->DisableExtension(
+      extension->id(),
+      extensions::disable_reason::DISABLE_PERMISSIONS_INCREASE);
   ui_test_utils::NavigateToURL(browser(), app_url);
 
   EXPECT_EQ("disabled", InstallStateInMainFrame());
@@ -221,12 +255,16 @@ IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, InstallAndRunningState) {
 
   EXPECT_EQ("installed", InstallStateInIFrame());
   EXPECT_EQ("cannot_run", RunningStateInIFrame());
-  EXPECT_FALSE(IsAppInstalledInIFrame());
+
+  // With --site-per-process, the iframe on nonapp.com will currently swap
+  // processes and go into the hosted app process.
+  if (content::AreAllSitesIsolatedForTesting())
+    EXPECT_TRUE(IsAppInstalledInIFrame());
+  else
+    EXPECT_FALSE(IsAppInstalledInIFrame());
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeAppAPITest, InstallAndRunningStateFrame) {
-  host_resolver()->AddRule("*", "127.0.0.1");
-  ASSERT_TRUE(embedded_test_server()->Start());
   GURL app_url = embedded_test_server()->GetURL(
       "app.com", "/extensions/get_app_details_for_frame_reversed.html");
 

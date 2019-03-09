@@ -4,31 +4,33 @@
 
 #include "chrome/browser/chromeos/login/enrollment/mock_auto_enrollment_check_screen.h"
 
-using ::testing::AtLeast;
-using ::testing::NotNull;
-
 namespace chromeos {
 
 MockAutoEnrollmentCheckScreen::MockAutoEnrollmentCheckScreen(
     BaseScreenDelegate* base_screen_delegate,
-    AutoEnrollmentCheckScreenActor* actor)
-    : AutoEnrollmentCheckScreen(base_screen_delegate, actor) {
+    AutoEnrollmentCheckScreenView* view,
+    const base::RepeatingClosure& exit_callback)
+    : AutoEnrollmentCheckScreen(base_screen_delegate, view, exit_callback) {}
+
+MockAutoEnrollmentCheckScreen::~MockAutoEnrollmentCheckScreen() {}
+
+void MockAutoEnrollmentCheckScreen::RealShow() {
+  AutoEnrollmentCheckScreen::Show();
 }
 
-MockAutoEnrollmentCheckScreen::~MockAutoEnrollmentCheckScreen() { }
-
-MockAutoEnrollmentCheckScreenActor::MockAutoEnrollmentCheckScreenActor()
-    : screen_(NULL) {
-  EXPECT_CALL(*this, MockSetDelegate(NotNull())).Times(AtLeast(1));
+void MockAutoEnrollmentCheckScreen::ExitScreen() {
+  RunExitCallback();
 }
 
+MockAutoEnrollmentCheckScreenView::MockAutoEnrollmentCheckScreenView() =
+    default;
 
-MockAutoEnrollmentCheckScreenActor::~MockAutoEnrollmentCheckScreenActor() {
+MockAutoEnrollmentCheckScreenView::~MockAutoEnrollmentCheckScreenView() {
   if (screen_)
-    screen_->OnActorDestroyed(this);
+    screen_->OnViewDestroyed(this);
 }
 
-void MockAutoEnrollmentCheckScreenActor::SetDelegate(Delegate* screen) {
+void MockAutoEnrollmentCheckScreenView::SetDelegate(Delegate* screen) {
   screen_ = screen;
   MockSetDelegate(screen);
 }

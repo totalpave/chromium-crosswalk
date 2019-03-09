@@ -15,7 +15,7 @@ namespace {
 class ArchivePatchHelperTest : public testing::Test {
  protected:
   static void SetUpTestCase() {
-    ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &data_dir_));
+    ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &data_dir_));
     data_dir_ = data_dir_.AppendASCII("installer");
     ASSERT_TRUE(base::PathExists(data_dir_));
   }
@@ -46,16 +46,53 @@ base::FilePath ArchivePatchHelperTest::data_dir_;
 }  // namespace
 
 // Test that patching works.
-TEST_F(ArchivePatchHelperTest, Patching) {
+TEST_F(ArchivePatchHelperTest, CourgettePatching) {
   base::FilePath src = data_dir_.AppendASCII("archive1.7z");
-  base::FilePath patch = data_dir_.AppendASCII("archive.diff");
-  base::FilePath dest = test_dir_.path().AppendASCII("archive2.7z");
-  installer::ArchivePatchHelper archive_helper(test_dir_.path(),
-                                               base::FilePath(),
-                                               src,
-                                               dest);
+  base::FilePath patch = data_dir_.AppendASCII("courgette_archive.diff");
+  base::FilePath dest = test_dir_.GetPath().AppendASCII("archive2.7z");
+  installer::ArchivePatchHelper archive_helper(
+      test_dir_.GetPath(), base::FilePath(), src, dest,
+      installer::UnPackConsumer::SETUP_EXE_PATCH);
   archive_helper.set_last_uncompressed_file(patch);
-  EXPECT_TRUE(archive_helper.EnsemblePatch() || archive_helper.BinaryPatch());
+  EXPECT_TRUE(archive_helper.CourgetteEnsemblePatch() ||
+              archive_helper.BinaryPatch());
   base::FilePath base = data_dir_.AppendASCII("archive2.7z");
   EXPECT_TRUE(base::ContentsEqual(dest, base));
+}
+
+TEST_F(ArchivePatchHelperTest, ZucchiniPatching) {
+  base::FilePath src = data_dir_.AppendASCII("archive1.7z");
+  base::FilePath patch = data_dir_.AppendASCII("zucchini_archive.diff");
+  base::FilePath dest = test_dir_.GetPath().AppendASCII("archive2.7z");
+  installer::ArchivePatchHelper archive_helper(
+      test_dir_.GetPath(), base::FilePath(), src, dest,
+      installer::UnPackConsumer::SETUP_EXE_PATCH);
+  archive_helper.set_last_uncompressed_file(patch);
+  EXPECT_TRUE(archive_helper.ZucchiniEnsemblePatch());
+  base::FilePath base = data_dir_.AppendASCII("archive2.7z");
+  EXPECT_TRUE(base::ContentsEqual(dest, base));
+}
+
+TEST_F(ArchivePatchHelperTest, InvalidDiff_MisalignedCblen) {
+  base::FilePath src = data_dir_.AppendASCII("bin.old");
+  base::FilePath patch = data_dir_.AppendASCII("misaligned_cblen.diff");
+  base::FilePath dest = test_dir_.GetPath().AppendASCII("bin.new");
+  installer::ArchivePatchHelper archive_helper(
+      test_dir_.GetPath(), base::FilePath(), src, dest,
+      installer::UnPackConsumer::SETUP_EXE_PATCH);
+  archive_helper.set_last_uncompressed_file(patch);
+  // Should fail, but not crash.
+  EXPECT_FALSE(archive_helper.BinaryPatch());
+}
+
+TEST_F(ArchivePatchHelperTest, InvalidDiff_NegativeSeek) {
+  base::FilePath src = data_dir_.AppendASCII("bin.old");
+  base::FilePath patch = data_dir_.AppendASCII("negative_seek.diff");
+  base::FilePath dest = test_dir_.GetPath().AppendASCII("bin.new");
+  installer::ArchivePatchHelper archive_helper(
+      test_dir_.GetPath(), base::FilePath(), src, dest,
+      installer::UnPackConsumer::SETUP_EXE_PATCH);
+  archive_helper.set_last_uncompressed_file(patch);
+  // Should fail, but not crash.
+  EXPECT_FALSE(archive_helper.BinaryPatch());
 }

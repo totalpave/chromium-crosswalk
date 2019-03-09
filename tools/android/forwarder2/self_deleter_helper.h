@@ -107,20 +107,19 @@ class SelfDeleterHelper {
         weak_ptr_factory_(this) {}
 
   ~SelfDeleterHelper() {
-    DCHECK(construction_runner_->RunsTasksOnCurrentThread());
+    DCHECK(construction_runner_->RunsTasksInCurrentSequence());
   }
 
   void MaybeSelfDeleteSoon() {
-    DCHECK(!construction_runner_->RunsTasksOnCurrentThread());
+    DCHECK(!construction_runner_->RunsTasksInCurrentSequence());
     construction_runner_->PostTask(
-        FROM_HERE,
-        base::Bind(&SelfDeleterHelper::SelfDelete,
-                   weak_ptr_factory_.GetWeakPtr()));
+        FROM_HERE, base::BindOnce(&SelfDeleterHelper::SelfDelete,
+                                  weak_ptr_factory_.GetWeakPtr()));
   }
 
  private:
   void SelfDelete() {
-    DCHECK(construction_runner_->RunsTasksOnCurrentThread());
+    DCHECK(construction_runner_->RunsTasksInCurrentSequence());
     deletion_callback_.Run(base::WrapUnique(self_deleting_object_));
   }
 

@@ -32,7 +32,7 @@ BASE_EXPORT void EnableTerminationOnOutOfMemory();
 // Crash reporting classifies such crashes as OOM.
 BASE_EXPORT void TerminateBecauseOutOfMemory(size_t size);
 
-#if defined(OS_LINUX) || defined(OS_ANDROID)
+#if defined(OS_LINUX) || defined(OS_ANDROID) || defined(OS_AIX)
 BASE_EXPORT extern size_t g_oom_size;
 
 // The maximum allowed value for the OOM score.
@@ -46,6 +46,20 @@ const int kMaxOomScore = 1000;
 // translate the given value into [0, 15].  Some aliasing of values
 // may occur in that case, of course.
 BASE_EXPORT bool AdjustOOMScore(ProcessId process, int score);
+#endif
+
+#if defined(OS_WIN)
+namespace win {
+
+// Custom Windows exception code chosen to indicate an out of memory error.
+// See https://msdn.microsoft.com/en-us/library/het71c37.aspx.
+// "To make sure that you do not define a code that conflicts with an existing
+// exception code" ... "The resulting error code should therefore have the
+// highest four bits set to hexadecimal E."
+// 0xe0000008 was chosen arbitrarily, as 0x00000008 is ERROR_NOT_ENOUGH_MEMORY.
+const DWORD kOomExceptionCode = 0xe0000008;
+
+}  // namespace win
 #endif
 
 // Special allocator functions for callers that want to check for OOM.

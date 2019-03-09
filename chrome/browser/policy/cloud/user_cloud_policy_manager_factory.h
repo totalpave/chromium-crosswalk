@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
@@ -29,16 +30,16 @@ class UserCloudPolicyManager;
 // instances that initialize per-profile cloud policy settings on the desktop
 // platforms.
 //
-// UserCloudPolicyManager is handled different than other
-// KeyedServices because it is a dependency of PrefService.
-// Therefore, lifetime of instances is managed by Profile, Profile startup code
-// invokes CreateForBrowserContext() explicitly, takes ownership, and the
-// instance is only deleted after PrefService destruction.
+// UserCloudPolicyManager is handled different than other KeyedServices because
+// it is a dependency of PrefService. Therefore, lifetime of instances is
+// managed by Profile, Profile startup code invokes CreateForBrowserContext()
+// explicitly, takes ownership, and the instance is only deleted after
+// PrefService destruction.
 //
 // TODO(mnissler): Remove the special lifetime management in favor of
 // PrefService directly depending on UserCloudPolicyManager once the former has
-// been converted to a KeyedService.
-// See also http://crbug.com/131843 and http://crbug.com/131844.
+// been converted to a KeyedService. See also https://crbug.com/131843 and
+// https://crbug.com/131844.
 class UserCloudPolicyManagerFactory : public BrowserContextKeyedBaseFactory {
  public:
   // Returns an instance of the UserCloudPolicyManagerFactory singleton.
@@ -51,38 +52,32 @@ class UserCloudPolicyManagerFactory : public BrowserContextKeyedBaseFactory {
   // Creates an instance for |context|. Note that the caller is responsible for
   // managing the lifetime of the instance. Subsequent calls to
   // GetForBrowserContext() will return the created instance as long as it
-  // lives. If RegisterTestingFactory() has been called, then calls to
-  // this method will return null.
+  // lives. If RegisterTestingFactory() has been called, then calls to this
+  // method will return null.
   //
   // If |force_immediate_load| is true, policy is loaded synchronously from
   // UserCloudPolicyStore at startup.
   //
   // |background_task_runner| is used for the cloud policy store.
-  // |file_task_runner| is used for file operations. Currently this must be the
-  // FILE BrowserThread.
-  // |io_task_runner| is used for network IO. Currently this must be the IO
-  // BrowserThread.
   static std::unique_ptr<UserCloudPolicyManager>
   CreateForOriginalBrowserContext(
       content::BrowserContext* context,
       bool force_immediate_load,
-      const scoped_refptr<base::SequencedTaskRunner>& background_task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& file_task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& io_task_runner);
+      const scoped_refptr<base::SequencedTaskRunner>& background_task_runner);
 
   static UserCloudPolicyManager* RegisterForOffTheRecordBrowserContext(
       content::BrowserContext* original_context,
       content::BrowserContext* off_the_record_context);
 
-  typedef UserCloudPolicyManager*
-      (*TestingFactoryFunction)(content::BrowserContext* context);
+  using TestingFactory = base::RepeatingCallback<UserCloudPolicyManager*(
+      content::BrowserContext* context)>;
 
   // Allows testing code to inject UserCloudPolicyManager objects for tests.
   // The factory function will be invoked for every Profile created. Because
   // this class does not free the UserCloudPolicyManager objects it manages,
   // it is up to the tests themselves to free the objects after the profile is
   // shut down.
-  void RegisterTestingFactory(TestingFactoryFunction factory);
+  void RegisterTestingFactory(TestingFactory factory);
   void ClearTestingFactory();
 
  private:
@@ -100,9 +95,7 @@ class UserCloudPolicyManagerFactory : public BrowserContextKeyedBaseFactory {
   CreateManagerForOriginalBrowserContext(
       content::BrowserContext* context,
       bool force_immediate_load,
-      const scoped_refptr<base::SequencedTaskRunner>& background_task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& file_task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& io_task_runner);
+      const scoped_refptr<base::SequencedTaskRunner>& background_task_runner);
 
   UserCloudPolicyManager* RegisterManagerForOffTheRecordBrowserContext(
       content::BrowserContext* original_context,
@@ -119,7 +112,7 @@ class UserCloudPolicyManagerFactory : public BrowserContextKeyedBaseFactory {
   typedef std::map<content::BrowserContext*, ManagerWrapper*> ManagerWrapperMap;
 
   ManagerWrapperMap manager_wrappers_;
-  TestingFactoryFunction testing_factory_;
+  TestingFactory testing_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(UserCloudPolicyManagerFactory);
 };

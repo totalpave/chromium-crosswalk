@@ -9,19 +9,51 @@ namespace content {
 
 NavigationRequestInfo::NavigationRequestInfo(
     const CommonNavigationParams& common_params,
-    const BeginNavigationParams& begin_params,
-    const GURL& first_party_for_cookies,
-    const url::Origin& request_initiator,
+    mojom::BeginNavigationParamsPtr begin_params,
+    const GURL& site_for_cookies,
+    const base::Optional<url::Origin>& top_frame_origin,
     bool is_main_frame,
     bool parent_is_main_frame,
-    int frame_tree_node_id)
+    bool are_ancestors_secure,
+    int frame_tree_node_id,
+    bool is_for_guests_only,
+    bool report_raw_headers,
+    bool is_prerendering,
+    bool upgrade_if_insecure,
+    std::unique_ptr<network::SharedURLLoaderFactoryInfo>
+        blob_url_loader_factory,
+    const base::UnguessableToken& devtools_navigation_token,
+    const base::UnguessableToken& devtools_frame_token)
     : common_params(common_params),
-      begin_params(begin_params),
-      first_party_for_cookies(first_party_for_cookies),
-      request_initiator(request_initiator),
+      begin_params(std::move(begin_params)),
+      site_for_cookies(site_for_cookies),
+      top_frame_origin(top_frame_origin),
       is_main_frame(is_main_frame),
       parent_is_main_frame(parent_is_main_frame),
-      frame_tree_node_id(frame_tree_node_id) {}
+      are_ancestors_secure(are_ancestors_secure),
+      frame_tree_node_id(frame_tree_node_id),
+      is_for_guests_only(is_for_guests_only),
+      report_raw_headers(report_raw_headers),
+      is_prerendering(is_prerendering),
+      upgrade_if_insecure(upgrade_if_insecure),
+      blob_url_loader_factory(std::move(blob_url_loader_factory)),
+      devtools_navigation_token(devtools_navigation_token),
+      devtools_frame_token(devtools_frame_token) {}
+
+NavigationRequestInfo::NavigationRequestInfo(const NavigationRequestInfo& other)
+    : common_params(other.common_params),
+      begin_params(other.begin_params.Clone()),
+      site_for_cookies(other.site_for_cookies),
+      top_frame_origin(other.top_frame_origin),
+      is_main_frame(other.is_main_frame),
+      parent_is_main_frame(other.parent_is_main_frame),
+      are_ancestors_secure(other.are_ancestors_secure),
+      frame_tree_node_id(other.frame_tree_node_id),
+      is_for_guests_only(other.is_for_guests_only),
+      report_raw_headers(other.report_raw_headers),
+      is_prerendering(other.is_prerendering),
+      upgrade_if_insecure(other.upgrade_if_insecure),
+      devtools_frame_token(other.devtools_frame_token) {}
 
 NavigationRequestInfo::~NavigationRequestInfo() {}
 

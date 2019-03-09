@@ -7,11 +7,14 @@
 #include "base/command_line.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "ui/gl/gl_context.h"
 #include "ui/gl/gl_implementation.h"
+#include "ui/gl/gl_surface_wgl.h"
 
 namespace gl {
 
-RealWGLApi* g_real_wgl;
+RealWGLApi* g_real_wgl = nullptr;
+DebugWGLApi* g_debug_wgl = nullptr;
 
 void InitializeStaticGLBindingsWGL() {
   g_driver_wgl.InitializeStaticBindings();
@@ -20,14 +23,20 @@ void InitializeStaticGLBindingsWGL() {
   }
   g_real_wgl->Initialize(&g_driver_wgl);
   g_current_wgl_context = g_real_wgl;
-  g_driver_wgl.InitializeExtensionBindings();
 }
 
 void InitializeDebugGLBindingsWGL() {
-  g_driver_wgl.InitializeDebugBindings();
+  if (!g_debug_wgl) {
+    g_debug_wgl = new DebugWGLApi(g_real_wgl);
+  }
+  g_current_wgl_context = g_debug_wgl;
 }
 
-void ClearGLBindingsWGL() {
+void ClearBindingsWGL() {
+  if (g_debug_wgl) {
+    delete g_debug_wgl;
+    g_debug_wgl = NULL;
+  }
   if (g_real_wgl) {
     delete g_real_wgl;
     g_real_wgl = NULL;
@@ -60,16 +69,10 @@ RealWGLApi::~RealWGLApi() {
 }
 
 void RealWGLApi::Initialize(DriverWGL* driver) {
-  InitializeWithCommandLine(driver, base::CommandLine::ForCurrentProcess());
+  InitializeBase(driver);
 }
 
-void RealWGLApi::InitializeWithCommandLine(DriverWGL* driver,
-                                           base::CommandLine* command_line) {
-  DCHECK(command_line);
-  InitializeBase(driver);
-
-  const std::string disabled_extensions = command_line->GetSwitchValueASCII(
-      switches::kDisableGLExtensions);
+void RealWGLApi::SetDisabledExtensions(const std::string& disabled_extensions) {
   disabled_exts_.clear();
   filtered_ext_exts_ = "";
   filtered_arb_exts_ = "";
@@ -111,7 +114,25 @@ const char* RealWGLApi::wglGetExtensionsStringEXTFn() {
   return filtered_ext_exts_.c_str();
 }
 
+DebugWGLApi::DebugWGLApi(WGLApi* wgl_api) : wgl_api_(wgl_api) {}
+
+DebugWGLApi::~DebugWGLApi() {}
+
+void DebugWGLApi::SetDisabledExtensions(
+    const std::string& disabled_extensions) {
+  if (wgl_api_) {
+    wgl_api_->SetDisabledExtensions(disabled_extensions);
+  }
+}
+
 TraceWGLApi::~TraceWGLApi() {
+}
+
+void TraceWGLApi::SetDisabledExtensions(
+    const std::string& disabled_extensions) {
+  if (wgl_api_) {
+    wgl_api_->SetDisabledExtensions(disabled_extensions);
+  }
 }
 
 bool GetGLWindowSystemBindingInfoWGL(GLWindowSystemBindingInfo* info) {
@@ -120,6 +141,16 @@ bool GetGLWindowSystemBindingInfoWGL(GLWindowSystemBindingInfo* info) {
   if (extensions)
     info->extensions = extensions;
   return true;
+}
+
+void SetDisabledExtensionsWGL(const std::string& disabled_extensions) {
+  DCHECK(g_current_wgl_context);
+  DCHECK(GLContext::TotalGLContexts() == 0);
+  g_current_wgl_context->SetDisabledExtensions(disabled_extensions);
+}
+
+bool InitializeExtensionSettingsOneOffWGL() {
+  return GLSurfaceWGL::InitializeExtensionSettingsOneOff();
 }
 
 }  // namespace gl

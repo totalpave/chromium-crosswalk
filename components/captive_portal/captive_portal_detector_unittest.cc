@@ -10,11 +10,12 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "components/captive_portal/captive_portal_testing_utils.h"
 #include "net/base/net_errors.h"
-#include "net/url_request/url_request_test_util.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -56,11 +57,7 @@ class CaptivePortalDetectorTest : public testing::Test,
   ~CaptivePortalDetectorTest() override {}
 
   void SetUp() override {
-    scoped_refptr<net::URLRequestContextGetter> request_context_getter(
-        new net::TestURLRequestContextGetter(
-            base::ThreadTaskRunnerHandle::Get()));
-
-    detector_.reset(new CaptivePortalDetector(request_context_getter.get()));
+    detector_.reset(new CaptivePortalDetector(test_loader_factory()));
     set_detector(detector_.get());
   }
 
@@ -75,9 +72,11 @@ class CaptivePortalDetectorTest : public testing::Test,
     GURL url(CaptivePortalDetector::kDefaultURL);
     CaptivePortalClient client(detector());
 
-    detector()->DetectCaptivePortal(url,
-        base::Bind(&CaptivePortalClient::OnPortalDetectionCompleted,
-                   base::Unretained(&client)));
+    detector()->DetectCaptivePortal(
+        url,
+        base::BindOnce(&CaptivePortalClient::OnPortalDetectionCompleted,
+                       base::Unretained(&client)),
+        TRAFFIC_ANNOTATION_FOR_TESTS);
 
     ASSERT_TRUE(FetchingURL());
     base::RunLoop().RunUntilIdle();
@@ -99,9 +98,11 @@ class CaptivePortalDetectorTest : public testing::Test,
     GURL url(CaptivePortalDetector::kDefaultURL);
     CaptivePortalClient client(detector());
 
-    detector()->DetectCaptivePortal(url,
-        base::Bind(&CaptivePortalClient::OnPortalDetectionCompleted,
-                   base::Unretained(&client)));
+    detector()->DetectCaptivePortal(
+        url,
+        base::BindOnce(&CaptivePortalClient::OnPortalDetectionCompleted,
+                       base::Unretained(&client)),
+        TRAFFIC_ANNOTATION_FOR_TESTS);
 
     ASSERT_TRUE(FetchingURL());
     base::RunLoop().RunUntilIdle();
@@ -113,7 +114,7 @@ class CaptivePortalDetectorTest : public testing::Test,
   }
 
  private:
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   std::unique_ptr<CaptivePortalDetector> detector_;
 };
 
@@ -124,30 +125,29 @@ TEST_F(CaptivePortalDetectorTest, CaptivePortalResultCodes) {
   results.result = captive_portal::RESULT_INTERNET_CONNECTED;
   results.response_code = 204;
 
-  RunTest(results, net::OK, 204, NULL);
+  RunTest(results, net::OK, 204, nullptr);
 
   // The server may return an HTTP error when it's acting up.
   results.result = captive_portal::RESULT_NO_RESPONSE;
   results.response_code = 500;
-  RunTest(results, net::OK, 500, NULL);
+  RunTest(results, net::OK, 500, nullptr);
 
   // Generic network error case.
   results.result = captive_portal::RESULT_NO_RESPONSE;
-  results.response_code = net::URLFetcher::RESPONSE_CODE_INVALID;
-  RunTest(results, net::ERR_TIMED_OUT, net::URLFetcher::RESPONSE_CODE_INVALID,
-          NULL);
+  results.response_code = 0;
+  RunTest(results, net::ERR_TIMED_OUT, 0, nullptr);
 
   // In the general captive portal case, the portal will return a page with a
   // 200 status.
   results.result = captive_portal::RESULT_BEHIND_CAPTIVE_PORTAL;
   results.response_code = 200;
-  RunTest(results, net::OK, 200, NULL);
+  RunTest(results, net::OK, 200, nullptr);
 
   // Some captive portals return 511 instead, to advertise their captive
   // portal-ness.
   results.result = captive_portal::RESULT_BEHIND_CAPTIVE_PORTAL;
   results.response_code = 511;
-  RunTest(results, net::OK, 511, NULL);
+  RunTest(results, net::OK, 511, nullptr);
 }
 
 // Check a Retry-After header that contains a delay in seconds.
@@ -165,7 +165,7 @@ TEST_F(CaptivePortalDetectorTest, CaptivePortalRetryAfterSeconds) {
   results.result = captive_portal::RESULT_INTERNET_CONNECTED;
   results.response_code = 204;
   results.retry_after_delta = base::TimeDelta();
-  RunTest(results, net::OK, 204, NULL);
+  RunTest(results, net::OK, 204, nullptr);
 }
 
 // Check a Retry-After header that contains a date.
@@ -206,7 +206,7 @@ TEST_F(CaptivePortalDetectorTest, Cancel) {
   CaptivePortalDetector::Results results;
   results.result = captive_portal::RESULT_INTERNET_CONNECTED;
   results.response_code = 204;
-  RunTest(results, net::OK, 204, NULL);
+  RunTest(results, net::OK, 204, nullptr);
 }
 
 }  // namespace captive_portal

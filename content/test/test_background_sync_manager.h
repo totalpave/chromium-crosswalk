@@ -15,17 +15,17 @@
 #include "content/browser/background_sync/background_sync_manager.h"
 #include "content/browser/service_worker/service_worker_storage.h"
 
-class GURL;
-
 namespace base {
 class TimeDelta;
 }
 
+namespace url {
+class Origin;
+}
+
 namespace content {
 
-class BackgroundSyncNetworkObserver;
 struct BackgroundSyncParameters;
-class BackgroundSyncPowerObserver;
 class ServiceWorkerContextWrapper;
 class ServiceWorkerVersion;
 
@@ -38,8 +38,8 @@ class ServiceWorkerVersion;
 class TestBackgroundSyncManager : public BackgroundSyncManager {
  public:
   using DispatchSyncCallback =
-      base::Callback<void(const scoped_refptr<ServiceWorkerVersion>&,
-                          const ServiceWorkerVersion::StatusCallback&)>;
+      base::RepeatingCallback<void(scoped_refptr<ServiceWorkerVersion>,
+                                   ServiceWorkerVersion::StatusCallback)>;
 
   explicit TestBackgroundSyncManager(
       scoped_refptr<ServiceWorkerContextWrapper> service_worker_context);
@@ -77,12 +77,12 @@ class TestBackgroundSyncManager : public BackgroundSyncManager {
     has_main_frame_provider_host_ = value;
   }
 
+  bool IsDelayedTaskScheduled() const { return !delayed_task_.is_null(); }
+  void RunDelayedTask() { std::move(delayed_task_).Run(); }
+
   // Accessors to internal state
-  base::Closure delayed_task() const { return delayed_task_; }
   base::TimeDelta delayed_task_delta() const { return delayed_task_delta_; }
-  blink::mojom::BackgroundSyncEventLastChance last_chance() const {
-    return last_chance_;
-  }
+  bool last_chance() const { return last_chance_; }
   const BackgroundSyncParameters* background_sync_parameters() const {
     return parameters_.get();
   }
@@ -91,60 +91,58 @@ class TestBackgroundSyncManager : public BackgroundSyncManager {
   // Override to allow delays to be injected by tests.
   void StoreDataInBackend(
       int64_t sw_registration_id,
-      const GURL& origin,
+      const url::Origin& origin,
       const std::string& key,
       const std::string& data,
-      const ServiceWorkerStorage::StatusCallback& callback) override;
+      ServiceWorkerStorage::StatusCallback callback) override;
 
   // Override to allow delays to be injected by tests.
   void GetDataFromBackend(
       const std::string& key,
-      const ServiceWorkerStorage::GetUserDataForAllRegistrationsCallback&
-          callback) override;
+      ServiceWorkerStorage::GetUserDataForAllRegistrationsCallback callback)
+      override;
 
   // Override to avoid actual dispatching of the event, just call the provided
   // callback instead.
   void DispatchSyncEvent(
       const std::string& tag,
       scoped_refptr<ServiceWorkerVersion> active_version,
-      blink::mojom::BackgroundSyncEventLastChance last_chance,
-      const ServiceWorkerVersion::StatusCallback& callback) override;
+      bool last_chance,
+      ServiceWorkerVersion::StatusCallback callback) override;
 
   // Override to just store delayed task, and allow tests to control the clock
   // and when delayed tasks are executed.
-  void ScheduleDelayedTask(const base::Closure& callback,
+  void ScheduleDelayedTask(base::OnceClosure callback,
                            base::TimeDelta delay) override;
 
   // Override to avoid actual check for main frame, instead return the value set
   // by tests.
-  void HasMainFrameProviderHost(const GURL& origin,
-                                const BoolCallback& callback) override;
+  void HasMainFrameProviderHost(const url::Origin& origin,
+                                BoolCallback callback) override;
 
  private:
   // Callback to resume the StoreDataInBackend operation, after explicit
   // delays injected by tests.
   void StoreDataInBackendContinue(
       int64_t sw_registration_id,
-      const GURL& origin,
+      const url::Origin& origin,
       const std::string& key,
       const std::string& data,
-      const ServiceWorkerStorage::StatusCallback& callback);
+      ServiceWorkerStorage::StatusCallback callback);
 
   // Callback to resume the GetDataFromBackend operation, after explicit delays
   // injected by tests.
   void GetDataFromBackendContinue(
       const std::string& key,
-      const ServiceWorkerStorage::GetUserDataForAllRegistrationsCallback&
-          callback);
+      ServiceWorkerStorage::GetUserDataForAllRegistrationsCallback callback);
 
   bool corrupt_backend_ = false;
   bool delay_backend_ = false;
   bool has_main_frame_provider_host_ = true;
-  blink::mojom::BackgroundSyncEventLastChance last_chance_ =
-      blink::mojom::BackgroundSyncEventLastChance::IS_NOT_LAST_CHANCE;
-  base::Closure continuation_;
+  bool last_chance_ = false;
+  base::OnceClosure continuation_;
   DispatchSyncCallback dispatch_sync_callback_;
-  base::Closure delayed_task_;
+  base::OnceClosure delayed_task_;
   base::TimeDelta delayed_task_delta_;
 
   DISALLOW_COPY_AND_ASSIGN(TestBackgroundSyncManager);

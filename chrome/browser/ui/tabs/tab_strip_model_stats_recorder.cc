@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/supports_user_data.h"
 #include "base/time/time.h"
@@ -17,8 +18,7 @@
 
 TabStripModelStatsRecorder::TabStripModelStatsRecorder()
     : browser_tab_strip_tracker_(this, nullptr, nullptr) {
-  browser_tab_strip_tracker_.Init(
-      BrowserTabStripTracker::InitWith::ALL_BROWERS);
+  browser_tab_strip_tracker_.Init();
 }
 
 TabStripModelStatsRecorder::~TabStripModelStatsRecorder() {
@@ -37,7 +37,7 @@ class TabStripModelStatsRecorder::TabInfo
         contents->GetUserData(kKey));
     if (!info) {
       info = new TabInfo();
-      contents->SetUserData(kKey, info);
+      contents->SetUserData(kKey, base::WrapUnique(info));
     }
     return info;
   }
@@ -46,7 +46,6 @@ class TabStripModelStatsRecorder::TabInfo
 
  private:
   TabState current_state_ = TabState::INITIAL;
-  base::TimeTicks last_state_modified_;
   base::TimeTicks creation_time_ = base::TimeTicks::Now();
 
   static const char kKey[];
@@ -68,9 +67,6 @@ void TabStripModelStatsRecorder::TabInfo::UpdateState(TabState new_state) {
   if (current_state_ == TabState::CLOSED)
     return;
 
-  base::TimeTicks now = base::TimeTicks::Now();
-  base::TimeDelta delta = now - last_state_modified_;
-
   switch (current_state_) {
     case TabState::INITIAL:
       break;
@@ -80,22 +76,6 @@ void TabStripModelStatsRecorder::TabInfo::UpdateState(TabState new_state) {
                                 static_cast<int>(TabState::MAX));
       break;
     case TabState::INACTIVE:
-      switch (new_state) {
-        case TabState::INITIAL:
-        case TabState::INACTIVE:
-        case TabState::MAX:
-          NOTREACHED();
-          break;
-        case TabState::ACTIVE:
-          UMA_HISTOGRAM_LONG_TIMES_100(
-              "Tabs.StateTransfer.Time_Inactive_Active", delta);
-          break;
-        case TabState::CLOSED:
-          UMA_HISTOGRAM_LONG_TIMES_100(
-              "Tabs.StateTransfer.Time_Inactive_Closed", delta);
-          break;
-      }
-
       UMA_HISTOGRAM_ENUMERATION("Tabs.StateTransfer.Target_Inactive",
                                 static_cast<int>(new_state),
                                 static_cast<int>(TabState::MAX));
@@ -109,16 +89,13 @@ void TabStripModelStatsRecorder::TabInfo::UpdateState(TabState new_state) {
   if (new_state == TabState::CLOSED) {
     UMA_HISTOGRAM_MEDIUM_TIMES(
         "Tabs.FineTiming.TimeBetweenTabCreatedAndSameTabClosed",
-        now - creation_time_);
+        base::TimeTicks::Now() - creation_time_);
   }
 
-  last_state_modified_ = now;
   current_state_ = new_state;
 }
 
-void TabStripModelStatsRecorder::TabClosingAt(TabStripModel*,
-                                              content::WebContents* contents,
-                                              int index) {
+void TabStripModelStatsRecorder::OnTabClosing(content::WebContents* contents) {
   TabInfo::Get(contents)->UpdateState(TabState::CLOSED);
   last_close_time_ = base::TimeTicks::Now();
 
@@ -127,10 +104,9 @@ void TabStripModelStatsRecorder::TabClosingAt(TabStripModel*,
                static_cast<content::WebContents*>(nullptr));
 }
 
-void TabStripModelStatsRecorder::ActiveTabChanged(
+void TabStripModelStatsRecorder::OnActiveTabChanged(
     content::WebContents* old_contents,
     content::WebContents* new_contents,
-    int index,
     int reason) {
   if (reason & TabStripModelObserver::CHANGE_REASON_REPLACED) {
     // We already handled tab clobber at TabReplacedAt notification.
@@ -183,14 +159,35 @@ void TabStripModelStatsRecorder::ActiveTabChanged(
     active_tab_history_.resize(kMaxTabHistory);
 }
 
-void TabStripModelStatsRecorder::TabReplacedAt(
-    TabStripModel* tab_strip_model,
+void TabStripModelStatsRecorder::OnTabReplaced(
     content::WebContents* old_contents,
-    content::WebContents* new_contents,
-    int index) {
+    content::WebContents* new_contents) {
   DCHECK(old_contents != new_contents);
   *TabInfo::Get(new_contents) = *TabInfo::Get(old_contents);
 
   std::replace(active_tab_history_.begin(), active_tab_history_.end(),
                old_contents, new_contents);
+}
+
+void TabStripModelStatsRecorder::OnTabStripModelChanged(
+    TabStripModel* tab_strip_model,
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {
+  if (change.type() == TabStripModelChange::kRemoved) {
+    for (const auto& delta : change.deltas()) {
+      if (!delta.remove.will_be_deleted)
+        continue;
+
+      OnTabClosing(delta.remove.contents);
+    }
+  } else if (change.type() == TabStripModelChange::kReplaced) {
+    for (const auto& delta : change.deltas())
+      OnTabReplaced(delta.replace.old_contents, delta.replace.new_contents);
+  }
+
+  if (!selection.active_tab_changed() || tab_strip_model->empty())
+    return;
+
+  OnActiveTabChanged(selection.old_contents, selection.new_contents,
+                     selection.reason);
 }

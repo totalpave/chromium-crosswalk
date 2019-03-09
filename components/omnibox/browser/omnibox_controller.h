@@ -14,17 +14,12 @@
 #include "components/omnibox/browser/autocomplete_controller_delegate.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 
-class AUtocompleteInput;
 struct AutocompleteMatch;
 class AutocompleteResult;
 class InstantController;
 class OmniboxClient;
 class OmniboxEditModel;
 class OmniboxPopupModel;
-
-namespace gfx {
-class Rect;
-}
 
 // This class controls the various services that can modify the content
 // for the omnibox, including AutocompleteController and InstantController. It
@@ -73,7 +68,7 @@ class OmniboxController : public AutocompleteControllerDelegate {
 
  private:
   // Stores the bitmap in the OmniboxPopupModel.
-  void SetAnswerBitmap(const SkBitmap& bitmap);
+  void SetRichSuggestionBitmap(int result_index, const SkBitmap& bitmap);
 
   // Weak, it owns us.
   // TODO(beaudoin): Consider defining a delegate to ease unit testing.

@@ -8,11 +8,14 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/toolbar/browser_actions_bar_browsertest.h"
 
 namespace extensions {
 class TestExtensionDir;
 }
+
+class ToolbarActionsBarBubbleViews;
 
 class ExtensionMessageBubbleBrowserTest
     : public BrowserActionsBarBrowserTest {
@@ -24,6 +27,26 @@ class ExtensionMessageBubbleBrowserTest
 
   ExtensionMessageBubbleBrowserTest();
   ~ExtensionMessageBubbleBrowserTest() override;
+
+  // Returns the toolkit-views bubble that is currently attached to |browser|.
+  // Returns null if there is no bubble showing. Implemented in platform files.
+  static ToolbarActionsBarBubbleViews* GetViewsBubbleForBrowser(
+      Browser* browser);
+
+#if defined(OS_MACOSX)
+  static ToolbarActionsBarBubbleViews* GetViewsBubbleForCocoaBrowser(
+      Browser* browser);
+#endif
+
+  // Returns the expected test anchor bounds on |browser| which may be a Cocoa
+  // browser or a Views browser. Implemented in platform files.
+  static gfx::Rect GetAnchorReferenceBoundsForBrowser(Browser* browser,
+                                                      AnchorPosition anchor);
+#if defined(OS_MACOSX)
+  static gfx::Rect GetAnchorReferenceBoundsForCocoaBrowser(
+      Browser* browser,
+      AnchorPosition anchor);
+#endif
 
   // BrowserActionsBarBrowserTest:
   void SetUpCommandLine(base::CommandLine* command_line) override;
@@ -39,7 +62,7 @@ class ExtensionMessageBubbleBrowserTest
   virtual void CheckBubbleNative(Browser* browser, AnchorPosition anchor) = 0;
 
   // Closes the bubble present in the given |browser|.
-  void CloseBubble(Browser* browser);
+  virtual void CloseBubble(Browser* browser);
   // Performs the platform-specific close.
   virtual void CloseBubbleNative(Browser* browser) = 0;
 
@@ -80,6 +103,10 @@ class ExtensionMessageBubbleBrowserTest
   // Regression test for crbug.com/485614.
   void TestBubbleAnchoredToAppMenuWithOtherAction();
 
+  // Tests that a displayed extension bubble will be closed after its associated
+  // extension is uninstalled.
+  void TestBubbleClosedAfterExtensionUninstall();
+
   // Tests that uninstalling the extension between when the bubble is originally
   // slated to show and when it does show is handled gracefully.
   // Regression test for crbug.com/531648.
@@ -95,8 +122,9 @@ class ExtensionMessageBubbleBrowserTest
   void TestDevModeBubbleIsntShownTwice();
 
   // Tests that the bubble indicating an extension is controlling a user's
-  // new tab page is shown.
-  void TestControlledNewTabPageBubbleShown();
+  // new tab page is shown. When |click_learn_more| is true, the bubble is
+  // closed by clicking the Learn More link, otherwise CloseBubble() is used.
+  void TestControlledNewTabPageBubbleShown(bool click_learn_more);
 
   // Tests that the bubble indicating an extension is controlling a user's
   // home page is shown.
@@ -105,6 +133,17 @@ class ExtensionMessageBubbleBrowserTest
   // Tests that the bubble indicating an extension is controlling a user's
   // search engine is shown.
   void TestControlledSearchBubbleShown();
+
+  // Tests that the bubble indicating an extension is controlling a user's
+  // startup pages is shown.
+  void PreTestControlledStartupBubbleShown();
+  void TestControlledStartupBubbleShown();
+
+  // Tests that the startup controlled bubble is *not* shown in the case of a
+  // browser restart, since restarts always result in a session restore rather
+  // than showing the normal startup pages.
+  void PreTestControlledStartupNotShownOnRestart();
+  void TestControlledStartupNotShownOnRestart();
 
   // Tests that having multiple windows, all of which could be vying to show a
   // warning bubble, behaves properly.

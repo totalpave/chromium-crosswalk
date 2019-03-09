@@ -10,8 +10,8 @@
 #include <limits>
 
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/stl_util.h"
 #include "media/base/bit_reader.h"
 
 namespace media {
@@ -73,11 +73,17 @@ static bool StartsWith(const uint8_t* buffer,
 }
 
 // Helper function to read up to 64 bits from a bit stream.
+// TODO(chcunningham): Delete this helper and replace with direct calls to
+// reader that handle read failure. As-is, we hide failure because returning 0
+// is valid for both a successful and failed read.
 static uint64_t ReadBits(BitReader* reader, int num_bits) {
   DCHECK_GE(reader->bits_available(), num_bits);
   DCHECK((num_bits > 0) && (num_bits <= 64));
-  uint64_t value;
-  reader->ReadBits(num_bits, &value);
+  uint64_t value = 0;
+
+  if (!reader->ReadBits(num_bits, &value))
+    return 0;
+
   return value;
 }
 
@@ -304,7 +310,9 @@ static bool CheckDts(const uint8_t* buffer, int buffer_size) {
     reader.SkipBits(6);
 
     // Verify core audio sampling frequency is an allowed value.
-    RCHECK(kSamplingFrequencyValid[ReadBits(&reader, 4)]);
+    size_t sampling_freq_index = ReadBits(&reader, 4);
+    RCHECK(sampling_freq_index < base::size(kSamplingFrequencyValid));
+    RCHECK(kSamplingFrequencyValid[sampling_freq_index]);
 
     // Verify transmission bit rate is valid.
     RCHECK(ReadBits(&reader, 5) <= 25);
@@ -316,7 +324,9 @@ static bool CheckDts(const uint8_t* buffer, int buffer_size) {
     reader.SkipBits(1 + 1 + 1 + 1);
 
     // Verify extension audio descriptor flag is an allowed value.
-    RCHECK(kExtAudioIdValid[ReadBits(&reader, 3)]);
+    size_t audio_id_index = ReadBits(&reader, 3);
+    RCHECK(audio_id_index < base::size(kExtAudioIdValid));
+    RCHECK(kExtAudioIdValid[audio_id_index]);
 
     // Skip extended coding flag and audio sync word insertion flag.
     reader.SkipBits(1 + 1);
@@ -375,7 +385,7 @@ static bool CheckDV(const uint8_t* buffer, int buffer_size) {
       reader.SkipBits(3);
       RCHECK(ReadBits(&reader, 24) == 0xffffff);
       current_sequence_number = sequence_number;
-      for (size_t i = 0; i < arraysize(last_block_number); ++i)
+      for (size_t i = 0; i < base::size(last_block_number); ++i)
         last_block_number[i] = -1;
     } else {
       // Sequence number must match (this will also fail if no header seen).
@@ -956,29 +966,35 @@ static bool CheckMov(const uint8_t* buffer, int buffer_size) {
   RCHECK(buffer_size > 8);
 
   int offset = 0;
+  int valid_top_level_boxes = 0;
   while (offset + 8 < buffer_size) {
     uint32_t atomsize = Read32(buffer + offset);
     uint32_t atomtype = Read32(buffer + offset + 4);
-    // Only need to check for ones that are valid at the top level.
+
+    // Only need to check for atoms that are valid at the top level. However,
+    // "Boxes with an unrecognized type shall be ignored and skipped." So
+    // simply make sure that at least two recognized top level boxes are found.
+    // This list matches BoxReader::IsValidTopLevelBox().
     switch (atomtype) {
-      case TAG('f','t','y','p'):
-      case TAG('p','d','i','n'):
-      case TAG('m','o','o','v'):
-      case TAG('m','o','o','f'):
-      case TAG('m','f','r','a'):
-      case TAG('m','d','a','t'):
-      case TAG('f','r','e','e'):
-      case TAG('s','k','i','p'):
-      case TAG('m','e','t','a'):
-      case TAG('m','e','c','o'):
-      case TAG('s','t','y','p'):
-      case TAG('s','i','d','x'):
-      case TAG('s','s','i','x'):
-      case TAG('p','r','f','t'):
-      case TAG('b','l','o','c'):
+      case TAG('f', 't', 'y', 'p'):
+      case TAG('p', 'd', 'i', 'n'):
+      case TAG('b', 'l', 'o', 'c'):
+      case TAG('m', 'o', 'o', 'v'):
+      case TAG('m', 'o', 'o', 'f'):
+      case TAG('m', 'f', 'r', 'a'):
+      case TAG('m', 'd', 'a', 't'):
+      case TAG('f', 'r', 'e', 'e'):
+      case TAG('s', 'k', 'i', 'p'):
+      case TAG('m', 'e', 't', 'a'):
+      case TAG('m', 'e', 'c', 'o'):
+      case TAG('s', 't', 'y', 'p'):
+      case TAG('s', 'i', 'd', 'x'):
+      case TAG('s', 's', 'i', 'x'):
+      case TAG('p', 'r', 'f', 't'):
+      case TAG('u', 'u', 'i', 'd'):
+      case TAG('e', 'm', 's', 'g'):
+        ++valid_top_level_boxes;
         break;
-      default:
-        return false;
     }
     if (atomsize == 1) {
       // Indicates that the length is the next 64bits.
@@ -992,7 +1008,7 @@ static bool CheckMov(const uint8_t* buffer, int buffer_size) {
       break;  // Indicates the last atom or length too big.
     offset += atomsize;
   }
-  return true;
+  return valid_top_level_boxes >= 2;
 }
 
 enum MPEGVersion {
@@ -1084,32 +1100,20 @@ static bool ValidMpegAudioFrameHeader(const uint8_t* header,
   return (bitrate > 0 && sampling_rate > 0);
 }
 
-// Extract a size encoded the MP3 way.
-static int GetMp3HeaderSize(const uint8_t* buffer, int buffer_size) {
-  DCHECK_GE(buffer_size, 9);
-  int size = ((buffer[6] & 0x7f) << 21) + ((buffer[7] & 0x7f) << 14) +
-             ((buffer[8] & 0x7f) << 7) + (buffer[9] & 0x7f) + 10;
-  if (buffer[5] & 0x10)  // Footer added?
-    size += 10;
-  return size;
-}
-
 // Additional checks for a MP3 container.
-static bool CheckMp3(const uint8_t* buffer, int buffer_size, bool seenHeader) {
-  RCHECK(buffer_size >= 10);  // Must be enough to read the initial header.
-
-  int framesize;
+static bool CheckMp3(const uint8_t* buffer, int buffer_size) {
+  // This function assumes that the ID3 header is not present in the file and
+  // simply checks for several valid MPEG audio buffers after skipping any
+  // optional padding characters.
   int numSeen = 0;
   int offset = 0;
-  if (seenHeader) {
-    offset = GetMp3HeaderSize(buffer, buffer_size);
-  } else {
-    // Skip over leading 0's.
-    while (offset < buffer_size && buffer[offset] == 0)
-      ++offset;
-  }
+
+  // Skip over any padding (0's).
+  while (offset < buffer_size && buffer[offset] == 0)
+    ++offset;
 
   while (offset + 3 < buffer_size) {
+    int framesize;
     RCHECK(ValidMpegAudioFrameHeader(
         buffer + offset, buffer_size - offset, &framesize));
 
@@ -1431,7 +1435,7 @@ static const uint8_t kWtvSignature[] = {0xb7, 0xd8, 0x00, 0x20, 0x37, 0x49,
 static MediaContainerName LookupContainerByFirst4(const uint8_t* buffer,
                                                   int buffer_size) {
   // Minimum size that the code expects to exist without checking size.
-  if (buffer_size < 12)
+  if (buffer_size < kMinimumContainerSize)
     return CONTAINER_UNKNOWN;
 
   uint32_t first4 = Read32(buffer);
@@ -1594,9 +1598,7 @@ static MediaContainerName LookupContainerByFirst4(const uint8_t* buffer,
       return CONTAINER_SWF;
 
     case TAG('I','D','3',0):
-      if (CheckMp3(buffer, buffer_size, true))
-        return CONTAINER_MP3;
-      break;
+      return CONTAINER_MP3;
   }
 
   // Maybe the first 2 characters are something we can use.
@@ -1618,8 +1620,8 @@ static MediaContainerName LookupContainerByFirst4(const uint8_t* buffer,
       break;
   }
 
-  // Check if the file is in MP3 format without the header.
-  if (CheckMp3(buffer, buffer_size, false))
+  // Check if the file is in MP3 format without the ID3 header.
+  if (CheckMp3(buffer, buffer_size))
     return CONTAINER_MP3;
 
   return CONTAINER_UNKNOWN;

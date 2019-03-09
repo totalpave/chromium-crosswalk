@@ -5,10 +5,11 @@
 #include "net/base/network_activity_monitor.h"
 
 #include <stdint.h>
+
+#include <memory>
 #include <vector>
 
 #include "base/bind.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread.h"
@@ -94,9 +95,9 @@ void IncrementBytesSent(uint64_t bytes) {
 }  // namespace
 
 TEST_F(NetworkActivityMontiorTest, Threading) {
-  std::vector<base::Thread*> threads;
+  std::vector<std::unique_ptr<base::Thread>> threads;
   for (size_t i = 0; i < 3; ++i) {
-    threads.push_back(new base::Thread(base::SizeTToString(i)));
+    threads.push_back(std::make_unique<base::Thread>(base::NumberToString(i)));
     ASSERT_TRUE(threads.back()->Start());
   }
 
@@ -106,20 +107,17 @@ TEST_F(NetworkActivityMontiorTest, Threading) {
   for (size_t i = 0; i < num_increments; ++i) {
     size_t thread_num = i % threads.size();
     threads[thread_num]->task_runner()->PostTask(
-        FROM_HERE,
-        base::Bind(&IncrementBytesReceived, bytes_received));
+        FROM_HERE, base::BindOnce(&IncrementBytesReceived, bytes_received));
+    threads[thread_num]->task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(&IncrementBytesSent, bytes_sent));
+    threads[thread_num]->task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(&VerifyBytesSentIsMultipleOf, bytes_sent));
     threads[thread_num]->task_runner()->PostTask(
         FROM_HERE,
-        base::Bind(&IncrementBytesSent, bytes_sent));
-    threads[thread_num]->task_runner()->PostTask(
-        FROM_HERE,
-        base::Bind(&VerifyBytesSentIsMultipleOf, bytes_sent));
-    threads[thread_num]->task_runner()->PostTask(
-        FROM_HERE,
-        base::Bind(&VerifyBytesReceivedIsMultipleOf, bytes_received));
+        base::BindOnce(&VerifyBytesReceivedIsMultipleOf, bytes_received));
   }
 
-  STLDeleteElements(&threads);
+  threads.clear();
 
   NetworkActivityMonitor* monitor = NetworkActivityMonitor::GetInstance();
   EXPECT_EQ(num_increments * bytes_received, monitor->GetBytesReceived());

@@ -9,15 +9,17 @@
 
 #include <map>
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/command_line.h"
 #include "base/location.h"
+#include "base/optional.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chromeos/chromeos_switches.h"
-#include "dbus/file_descriptor.h"
+#include "chromeos/dbus/constants/dbus_switches.h"
 
 namespace {
 
@@ -29,25 +31,23 @@ const char kCrOSTraceLabel[] = "systemTraceEvents";
 namespace chromeos {
 
 FakeDebugDaemonClient::FakeDebugDaemonClient()
-    : featues_mask_(DebugDaemonClient::DEV_FEATURE_NONE),
+    : features_mask_(DebugDaemonClient::DEV_FEATURE_NONE),
       service_is_available_(true) {
 }
 
-FakeDebugDaemonClient::~FakeDebugDaemonClient() {}
+FakeDebugDaemonClient::~FakeDebugDaemonClient() = default;
 
 void FakeDebugDaemonClient::Init(dbus::Bus* bus) {}
 
-void FakeDebugDaemonClient::DumpDebugLogs(
-    bool is_compressed,
-    base::File file,
-    scoped_refptr<base::TaskRunner> task_runner,
-    const GetDebugLogsCallback& callback) {
-  callback.Run(true);
+void FakeDebugDaemonClient::DumpDebugLogs(bool is_compressed,
+                                          int file_descriptor,
+                                          VoidDBusMethodCallback callback) {
+  std::move(callback).Run(true);
 }
 
 void FakeDebugDaemonClient::SetDebugMode(const std::string& subsystem,
-                                         const SetDebugModeCallback& callback) {
-  callback.Run(false);
+                                         VoidDBusMethodCallback callback) {
+  std::move(callback).Run(false);
 }
 
 std::string FakeDebugDaemonClient::GetTracingAgentName() {
@@ -60,67 +60,65 @@ std::string FakeDebugDaemonClient::GetTraceEventLabel() {
 
 void FakeDebugDaemonClient::StartAgentTracing(
     const base::trace_event::TraceConfig& trace_config,
-    const StartAgentTracingCallback& callback) {
+    StartAgentTracingCallback callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(callback, GetTracingAgentName(), true /* success */));
+      FROM_HERE, base::BindOnce(std::move(callback), GetTracingAgentName(),
+                                true /* success */));
 }
 
 void FakeDebugDaemonClient::StopAgentTracing(
-    const StopAgentTracingCallback& callback) {
-  std::string no_data;
-  callback.Run(GetTracingAgentName(), GetTraceEventLabel(),
-               base::RefCountedString::TakeString(&no_data));
+    StopAgentTracingCallback callback) {
+  std::string trace_data = "# tracer: nop\n";
+  std::move(callback).Run(GetTracingAgentName(), GetTraceEventLabel(),
+                          base::RefCountedString::TakeString(&trace_data));
 }
 
 void FakeDebugDaemonClient::SetStopAgentTracingTaskRunner(
     scoped_refptr<base::TaskRunner> task_runner) {}
 
-void FakeDebugDaemonClient::GetRoutes(bool numeric,
-                                      bool ipv6,
-                                      const GetRoutesCallback& callback) {
-  std::vector<std::string> empty;
+void FakeDebugDaemonClient::GetRoutes(
+    bool numeric,
+    bool ipv6,
+    DBusMethodCallback<std::vector<std::string>> callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, empty));
+      FROM_HERE, base::BindOnce(std::move(callback), base::nullopt));
 }
 
 void FakeDebugDaemonClient::GetNetworkStatus(
-    const GetNetworkStatusCallback& callback) {
+    DBusMethodCallback<std::string> callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, ""));
+      FROM_HERE, base::BindOnce(std::move(callback), base::nullopt));
 }
 
 void FakeDebugDaemonClient::GetModemStatus(
-    const GetModemStatusCallback& callback) {
+    DBusMethodCallback<std::string> callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, ""));
+      FROM_HERE, base::BindOnce(std::move(callback), base::nullopt));
 }
 
 void FakeDebugDaemonClient::GetWiMaxStatus(
-    const GetWiMaxStatusCallback& callback) {
+    DBusMethodCallback<std::string> callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, ""));
+      FROM_HERE, base::BindOnce(std::move(callback), base::nullopt));
 }
 
 void FakeDebugDaemonClient::GetNetworkInterfaces(
-    const GetNetworkInterfacesCallback& callback) {
+    DBusMethodCallback<std::string> callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, ""));
+      FROM_HERE, base::BindOnce(std::move(callback), base::nullopt));
 }
 
 void FakeDebugDaemonClient::GetPerfOutput(
     base::TimeDelta duration,
     const std::vector<std::string>& perf_args,
-    dbus::ScopedFileDescriptor file_descriptor,
-    const DBusMethodErrorCallback& error_callback) {
-  // Nothing to do but close the file descriptor, which its dtor will do.
-}
+    int file_descriptor,
+    DBusMethodCallback<uint64_t> error_callback) {}
 
 void FakeDebugDaemonClient::GetScrubbedLogs(const GetLogsCallback& callback) {
   std::map<std::string, std::string> sample;
   sample["Sample Scrubbed Log"] = "Your email address is xxxxxxxx";
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, sample));
+      FROM_HERE, base::BindOnce(callback, false, sample));
 }
 
 void FakeDebugDaemonClient::GetScrubbedBigLogs(
@@ -128,14 +126,14 @@ void FakeDebugDaemonClient::GetScrubbedBigLogs(
   std::map<std::string, std::string> sample;
   sample["Sample Scrubbed Big Log"] = "Your email address is xxxxxxxx";
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, sample));
+      FROM_HERE, base::BindOnce(callback, false, sample));
 }
 
 void FakeDebugDaemonClient::GetAllLogs(const GetLogsCallback& callback) {
   std::map<std::string, std::string> sample;
   sample["Sample Log"] = "Your email address is abc@abc.com";
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, sample));
+      FROM_HERE, base::BindOnce(callback, false, sample));
 }
 
 void FakeDebugDaemonClient::GetUserLogFiles(const GetLogsCallback& callback) {
@@ -143,13 +141,20 @@ void FakeDebugDaemonClient::GetUserLogFiles(const GetLogsCallback& callback) {
   user_logs["preferences"] = "Preferences";
   user_logs["invalid_file"] = "Invalid File";
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, true, user_logs));
+      FROM_HERE, base::BindOnce(callback, true, user_logs));
+}
+
+void FakeDebugDaemonClient::GetLog(const std::string& log_name,
+                                   DBusMethodCallback<std::string> callback) {
+  std::string result = log_name + ": response from GetLog";
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), std::move(result)));
 }
 
 void FakeDebugDaemonClient::TestICMP(const std::string& ip_address,
                                      const TestICMPCallback& callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, ""));
+      FROM_HERE, base::BindOnce(callback, false, ""));
 }
 
 void FakeDebugDaemonClient::TestICMPWithOptions(
@@ -157,7 +162,7 @@ void FakeDebugDaemonClient::TestICMPWithOptions(
     const std::map<std::string, std::string>& options,
     const TestICMPCallback& callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(callback, false, ""));
+      FROM_HERE, base::BindOnce(callback, false, ""));
 }
 
 void FakeDebugDaemonClient::UploadCrashes() {
@@ -167,7 +172,7 @@ void FakeDebugDaemonClient::EnableDebuggingFeatures(
     const std::string& password,
     const DebugDaemonClient::EnableDebuggingCallback& callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                base::Bind(callback, true));
+                                                base::BindOnce(callback, true));
 }
 
 void FakeDebugDaemonClient::QueryDebuggingFeatures(
@@ -176,31 +181,39 @@ void FakeDebugDaemonClient::QueryDebuggingFeatures(
       chromeos::switches::kSystemDevMode);
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(
+      base::BindOnce(
           callback, true,
           static_cast<int>(
-              supported ? featues_mask_
+              supported ? features_mask_
                         : debugd::DevFeatureFlag::DEV_FEATURES_DISABLED)));
 }
 
 void FakeDebugDaemonClient::RemoveRootfsVerification(
     const DebugDaemonClient::EnableDebuggingCallback& callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                base::Bind(callback, true));
+                                                base::BindOnce(callback, true));
 }
 
 void FakeDebugDaemonClient::WaitForServiceToBeAvailable(
-    const WaitForServiceToBeAvailableCallback& callback) {
+    WaitForServiceToBeAvailableCallback callback) {
   if (service_is_available_) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                  base::Bind(callback, true));
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), true));
   } else {
-    pending_wait_for_service_to_be_available_callbacks_.push_back(callback);
+    pending_wait_for_service_to_be_available_callbacks_.push_back(
+        std::move(callback));
   }
 }
 
-void FakeDebugDaemonClient::SetDebuggingFeaturesStatus(int featues_mask) {
-  featues_mask_ = featues_mask;
+void FakeDebugDaemonClient::SetOomScoreAdj(
+    const std::map<pid_t, int32_t>& pid_to_oom_score_adj,
+    const SetOomScoreAdjCallback& callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(callback, true, ""));
+}
+
+void FakeDebugDaemonClient::SetDebuggingFeaturesStatus(int features_mask) {
+  features_mask_ = features_mask;
 }
 
 void FakeDebugDaemonClient::SetServiceIsAvailable(bool is_available) {
@@ -210,8 +223,62 @@ void FakeDebugDaemonClient::SetServiceIsAvailable(bool is_available) {
 
   std::vector<WaitForServiceToBeAvailableCallback> callbacks;
   callbacks.swap(pending_wait_for_service_to_be_available_callbacks_);
-  for (size_t i = 0; i < callbacks.size(); ++i)
-    callbacks[i].Run(is_available);
+  for (auto& callback : callbacks)
+    std::move(callback).Run(true);
+}
+
+void FakeDebugDaemonClient::CupsAddManuallyConfiguredPrinter(
+    const std::string& name,
+    const std::string& uri,
+    const std::string& ppd_contents,
+    DebugDaemonClient::CupsAddPrinterCallback callback) {
+  printers_.insert(name);
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), 0));
+}
+
+void FakeDebugDaemonClient::CupsAddAutoConfiguredPrinter(
+    const std::string& name,
+    const std::string& uri,
+    DebugDaemonClient::CupsAddPrinterCallback callback) {
+  printers_.insert(name);
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), 0));
+}
+
+void FakeDebugDaemonClient::CupsRemovePrinter(
+    const std::string& name,
+    const DebugDaemonClient::CupsRemovePrinterCallback& callback,
+    const base::Closure& error_callback) {
+  const bool has_printer = base::ContainsKey(printers_, name);
+  if (has_printer)
+    printers_.erase(name);
+
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(callback, has_printer));
+}
+
+void FakeDebugDaemonClient::StartConcierge(ConciergeCallback callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), true));
+}
+
+void FakeDebugDaemonClient::StopConcierge(ConciergeCallback callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), true));
+}
+
+void FakeDebugDaemonClient::SetRlzPingSent(SetRlzPingSentCallback callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), true));
+}
+
+void FakeDebugDaemonClient::SetSchedulerConfiguration(
+    const std::string& config_name,
+    VoidDBusMethodCallback callback) {
+  scheduler_configuration_name_ = config_name;
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), true));
 }
 
 }  // namespace chromeos

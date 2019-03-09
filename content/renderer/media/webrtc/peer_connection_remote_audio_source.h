@@ -9,9 +9,9 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
-#include "content/renderer/media/media_stream_audio_source.h"
-#include "content/renderer/media/media_stream_audio_track.h"
-#include "third_party/webrtc/api/mediastreaminterface.h"
+#include "third_party/blink/public/platform/modules/mediastream/media_stream_audio_source.h"
+#include "third_party/blink/public/platform/modules/mediastream/media_stream_audio_track.h"
+#include "third_party/webrtc/api/media_stream_interface.h"
 
 namespace media {
 class AudioBus;
@@ -22,7 +22,7 @@ namespace content {
 // PeerConnectionRemoteAudioTrack is a WebRTC specific implementation of an
 // audio track whose data is sourced from a PeerConnection.
 class PeerConnectionRemoteAudioTrack final
-    : NON_EXPORTED_BASE(public MediaStreamAudioTrack) {
+    : public blink::MediaStreamAudioTrack {
  public:
   explicit PeerConnectionRemoteAudioTrack(
       scoped_refptr<webrtc::AudioTrackInterface> track_interface);
@@ -30,7 +30,8 @@ class PeerConnectionRemoteAudioTrack final
 
   // If |track| is an instance of PeerConnectionRemoteAudioTrack, return a
   // type-casted pointer to it. Otherwise, return null.
-  static PeerConnectionRemoteAudioTrack* From(MediaStreamAudioTrack* track);
+  static PeerConnectionRemoteAudioTrack* From(
+      blink::MediaStreamAudioTrack* track);
 
   webrtc::AudioTrackInterface* track_interface() const {
     return track_interface_.get();
@@ -54,8 +55,8 @@ class PeerConnectionRemoteAudioTrack final
 
 // Represents the audio provided by the receiving end of a PeerConnection.
 class PeerConnectionRemoteAudioSource final
-    : NON_EXPORTED_BASE(public MediaStreamAudioSource),
-      NON_EXPORTED_BASE(protected webrtc::AudioTrackSinkInterface) {
+    : public blink::MediaStreamAudioSource,
+      protected webrtc::AudioTrackSinkInterface {
  public:
   explicit PeerConnectionRemoteAudioSource(
       scoped_refptr<webrtc::AudioTrackInterface> track_interface);
@@ -63,7 +64,7 @@ class PeerConnectionRemoteAudioSource final
 
  protected:
   // MediaStreamAudioSource implementation.
-  std::unique_ptr<MediaStreamAudioTrack> CreateMediaStreamAudioTrack(
+  std::unique_ptr<blink::MediaStreamAudioTrack> CreateMediaStreamAudioTrack(
       const std::string& id) final;
   bool EnsureSourceIsStarted() final;
   void EnsureSourceIsStopped() final;

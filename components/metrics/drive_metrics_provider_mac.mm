@@ -6,7 +6,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
-#include <Foundation/Foundation.h>
+#import <Foundation/Foundation.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/storage/IOStorageDeviceCharacteristics.h>
 #include <stdlib.h>
@@ -62,7 +62,8 @@ bool DriveMetricsProvider::HasSeekPenalty(const base::FilePath& path,
   if ([type isEqualToString:@kIOPropertyMediumTypeRotationalKey]) {
     *has_seek_penalty = true;
     return true;
-  } else if ([type isEqualToString:@kIOPropertyMediumTypeSolidStateKey]) {
+  }
+  if ([type isEqualToString:@kIOPropertyMediumTypeSolidStateKey]) {
     *has_seek_penalty = false;
     return true;
   }

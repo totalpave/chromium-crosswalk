@@ -7,16 +7,21 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "base/observer_list.h"
+#include "chrome/browser/sessions/session_restore_observer.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/sessions/core/session_types.h"
 #include "ui/base/window_open_disposition.h"
 
 class Browser;
 class Profile;
+class SessionRestoreImpl;
 
 namespace content {
 class WebContents;
@@ -27,7 +32,11 @@ class WebContents;
 // variety is meant for startup and blocks until restore is complete.
 class SessionRestore {
  public:
-  enum Behavior {
+  // Bitmask representing behaviors available when restoring a session. Populate
+  // using the values below.
+  using BehaviorBitmask = uint32_t;
+
+  enum {
     // Indicates the active tab of the supplied browser should be closed.
     CLOBBER_CURRENT_TAB          = 1 << 0,
 
@@ -55,12 +64,15 @@ class SessionRestore {
   // If |urls_to_open| is non-empty, a tab is added for each of the URLs.
   static Browser* RestoreSession(Profile* profile,
                                  Browser* browser,
-                                 uint32_t behavior,
+                                 BehaviorBitmask behavior,
                                  const std::vector<GURL>& urls_to_open);
 
   // Restores the last session when the last session crashed. It's a wrapper
   // of function RestoreSession.
   static void RestoreSessionAfterCrash(Browser* browser);
+
+  // Opens the startup pages when the last session crashed.
+  static void OpenStartupPagesAfterCrash(Browser* browser);
 
   // Specifically used in the restoration of a foreign session.  This function
   // restores the given session windows to multiple browsers. Returns the
@@ -93,7 +105,31 @@ class SessionRestore {
   static CallbackSubscription RegisterOnSessionRestoredCallback(
       const base::Callback<void(int)>& callback);
 
+  // Add/remove an observer to/from this session restore.
+  static void AddObserver(SessionRestoreObserver* observer);
+  static void RemoveObserver(SessionRestoreObserver* observer);
+
+  // Get called when the tab loader finishes loading tabs in tab restore even
+  // without session restore started.
+  static void OnTabLoaderFinishedLoadingTabs();
+
+  // Is called when session restore is going to restore a tab.
+  static void OnWillRestoreTab(content::WebContents* web_contents);
+
  private:
+  friend class SessionRestoreImpl;
+  FRIEND_TEST_ALL_PREFIXES(SessionRestoreObserverTest, SingleSessionRestore);
+  FRIEND_TEST_ALL_PREFIXES(SessionRestoreObserverTest,
+                           SequentialSessionRestores);
+  FRIEND_TEST_ALL_PREFIXES(SessionRestoreObserverTest,
+                           ConcurrentSessionRestores);
+  FRIEND_TEST_ALL_PREFIXES(SessionRestoreObserverTest,
+                           TabManagerShouldObserveSessionRestore);
+
+  // Session restore observer list.
+  using SessionRestoreObserverList =
+      base::ObserverList<SessionRestoreObserver>::Unchecked;
+
   SessionRestore();
 
   // Accessor for |*on_session_restored_callbacks_|. Creates a new object the
@@ -104,8 +140,27 @@ class SessionRestore {
     return on_session_restored_callbacks_;
   }
 
+  // Accessor for the observer list. Create the list the first time to always
+  // return a valid reference.
+  static SessionRestoreObserverList* observers() {
+    if (!observers_)
+      observers_ = new SessionRestoreObserverList();
+    return observers_;
+  }
+
   // Contains all registered callbacks for session restore notifications.
   static CallbackList* on_session_restored_callbacks_;
+
+  // Notify SessionRestoreObservers session restore started. If there are
+  // multiple concurrent session restores, observers get notified only once in
+  // the first session restore.
+  static void NotifySessionRestoreStartedLoadingTabs();
+
+  // Contains all registered observers for session restore events.
+  static SessionRestoreObserverList* observers_;
+
+  // Whether session restore started or not.
+  static bool session_restore_started_;
 
   DISALLOW_COPY_AND_ASSIGN(SessionRestore);
 };

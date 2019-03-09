@@ -2,20 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <deque>
 #include <memory>
 #include <set>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
+#include "base/run_loop.h"
+#include "base/scoped_observer.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/extensions/api/runtime/chrome_runtime_api_delegate.h"
+#include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_with_install.h"
 #include "chrome/browser/extensions/test_extension_system.h"
@@ -27,6 +30,8 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/updater/extension_downloader.h"
 #include "extensions/browser/updater/extension_downloader_test_delegate.h"
+#include "extensions/common/extension.h"
+#include "extensions/common/verifier_formats.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
@@ -45,9 +50,8 @@ class TestEventRouter : public EventRouter {
   using Entry = std::pair<std::string, std::string>;
 
   bool ExtensionHasEventListener(const std::string& extension_id,
-                                 const std::string& event_name) override {
-    return fake_registry_.find(Entry(extension_id, event_name)) !=
-           fake_registry_.end();
+                                 const std::string& event_name) const override {
+    return base::ContainsKey(fake_registry_, Entry(extension_id, event_name));
   }
 
   // Pretend that |extension_id| is listening for |event_name|.
@@ -64,7 +68,7 @@ class TestEventRouter : public EventRouter {
 
 std::unique_ptr<KeyedService> TestEventRouterFactoryFunction(
     content::BrowserContext* context) {
-  return base::WrapUnique(new TestEventRouter(context));
+  return std::make_unique<TestEventRouter>(context);
 }
 
 // This class lets us intercept extension update checks and respond as if
@@ -109,21 +113,23 @@ class DownloaderTestDelegate : public ExtensionDownloaderTestDelegate {
         no_updates_.erase(no_update);
         base::ThreadTaskRunnerHandle::Get()->PostTask(
             FROM_HERE,
-            base::Bind(&ExtensionDownloaderDelegate::OnExtensionDownloadFailed,
-                       base::Unretained(delegate), id,
-                       ExtensionDownloaderDelegate::NO_UPDATE_AVAILABLE,
-                       ExtensionDownloaderDelegate::PingResult(),
-                       fetch_data->request_ids()));
+            base::BindOnce(
+                &ExtensionDownloaderDelegate::OnExtensionDownloadFailed,
+                base::Unretained(delegate), id,
+                ExtensionDownloaderDelegate::NO_UPDATE_AVAILABLE,
+                ExtensionDownloaderDelegate::PingResult(),
+                fetch_data->request_ids()));
         continue;
       }
       auto update = updates_.find(id);
       if (update != updates_.end()) {
-        CRXFileInfo info(id, update->second.path, "" /* no hash */);
+        CRXFileInfo info(id, update->second.path, "" /* no hash */,
+                         GetTestVerifierFormat());
         std::string version = update->second.version;
         updates_.erase(update);
         base::ThreadTaskRunnerHandle::Get()->PostTask(
             FROM_HERE,
-            base::Bind(
+            base::BindOnce(
                 &ExtensionDownloaderDelegate::OnExtensionDownloadFinished,
                 base::Unretained(delegate), info,
                 false /* file_ownership_passed */, GURL(), version,
@@ -159,15 +165,15 @@ class UpdateCheckResultCatcher {
 
   void OnResult(const RuntimeAPIDelegate::UpdateCheckResult& result) {
     EXPECT_EQ(nullptr, result_.get());
-    result_.reset(new RuntimeAPIDelegate::UpdateCheckResult(
-        result.success, result.response, result.version));
+    result_ = std::make_unique<RuntimeAPIDelegate::UpdateCheckResult>(
+        result.success, result.response, result.version);
     if (run_loop_)
       run_loop_->Quit();
   }
 
   std::unique_ptr<RuntimeAPIDelegate::UpdateCheckResult> WaitForResult() {
     if (!result_) {
-      run_loop_.reset(new base::RunLoop);
+      run_loop_ = std::make_unique<base::RunLoop>();
       run_loop_->Run();
     }
     return std::move(result_);
@@ -190,14 +196,16 @@ class ChromeRuntimeAPIDelegateTest : public ExtensionServiceTestWithInstall {
     ChromeRuntimeAPIDelegate::set_tick_clock_for_tests(&clock_);
 
     InitializeExtensionServiceWithUpdater();
-    runtime_delegate_.reset(new ChromeRuntimeAPIDelegate(browser_context()));
+    runtime_delegate_ =
+        std::make_unique<ChromeRuntimeAPIDelegate>(browser_context());
     service()->updater()->SetExtensionCacheForTesting(nullptr);
     EventRouterFactory::GetInstance()->SetTestingFactory(
-        browser_context(), &TestEventRouterFactoryFunction);
+        browser_context(),
+        base::BindRepeating(&TestEventRouterFactoryFunction));
 
     // Setup the ExtensionService so that extension updates won't complete
     // installation until the extension is idle.
-    update_install_gate_.reset(new UpdateInstallGate(service()));
+    update_install_gate_ = std::make_unique<UpdateInstallGate>(service());
     service()->RegisterInstallGate(ExtensionPrefs::DELAY_REASON_WAIT_FOR_IDLE,
                                    update_install_gate_.get());
     static_cast<TestExtensionSystem*>(ExtensionSystem::Get(browser_context()))
@@ -249,8 +257,16 @@ class ChromeRuntimeAPIDelegateTest : public ExtensionServiceTestWithInstall {
 };
 
 TEST_F(ChromeRuntimeAPIDelegateTest, RequestUpdateCheck) {
-  base::FilePath v1_path = data_dir().AppendASCII("autoupdate/v1.crx");
-  base::FilePath v2_path = data_dir().AppendASCII("autoupdate/v2.crx");
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  base::FilePath root_dir = data_dir().AppendASCII("autoupdate");
+  base::FilePath pem_path = root_dir.AppendASCII("key.pem");
+  base::FilePath v1_path = temp_dir.GetPath().AppendASCII("v1.crx");
+  base::FilePath v2_path = temp_dir.GetPath().AppendASCII("v2.crx");
+  PackCRX(root_dir.AppendASCII("v1"), pem_path, v1_path);
+  PackCRX(root_dir.AppendASCII("v2"), pem_path, v2_path);
 
   // Start by installing version 1.
   scoped_refptr<const Extension> v1(InstallCRX(v1_path, INSTALL_NEW));
@@ -313,6 +329,116 @@ TEST_F(ChromeRuntimeAPIDelegateTest, RequestUpdateCheck) {
   clock_.Advance(base::TimeDelta::FromHours(8));
   downloader_test_delegate_.AddNoUpdateResponse(id);
   DoUpdateCheck(id, "no_update", "");
+}
+
+class ExtensionLoadWaiter : public ExtensionRegistryObserver {
+ public:
+  explicit ExtensionLoadWaiter(content::BrowserContext* context)
+      : context_(context), extension_registry_observer_(this) {
+    extension_registry_observer_.Add(ExtensionRegistry::Get(context_));
+  }
+
+  void WaitForReload() { run_loop_.Run(); }
+
+ protected:
+  // ExtensionRegistryObserver:
+  void OnExtensionLoaded(content::BrowserContext* browser_context,
+                         const Extension* extension) override {
+    // We unblock the test every time the extension has been reloaded.
+    run_loop_.Quit();
+  }
+
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const Extension* extension,
+                           UnloadedExtensionReason reason) override {
+    // This gets triggered before OnExtensionLoaded. If an extension is being
+    // reloaded, we wait until OnExtensionLoaded to unblock the test to reload
+    // again. Otherwise, a race condition occurs where the test tries to reload
+    // the extension while it's disabled in between reloads. We unblock the test
+    // if the extension gets terminated as this will be the last lifecycle
+    // method called.
+    if (reason == UnloadedExtensionReason::TERMINATE) {
+      run_loop_.Quit();
+    }
+  }
+
+ private:
+  base::RunLoop run_loop_;
+  content::BrowserContext* context_;
+  ScopedObserver<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observer_;
+
+  DISALLOW_COPY_AND_ASSIGN(ExtensionLoadWaiter);
+};
+
+class ChromeRuntimeAPIDelegateReloadTest : public ChromeRuntimeAPIDelegateTest {
+ public:
+  ChromeRuntimeAPIDelegateReloadTest() {}
+
+  void SetUp() override {
+    ChromeRuntimeAPIDelegateTest::SetUp();
+
+    ChromeTestExtensionLoader loader(browser_context());
+    scoped_refptr<const Extension> extension =
+        loader.LoadExtension(data_dir().AppendASCII("common/background_page"));
+
+    extension_id_ = extension->id();
+  }
+
+ protected:
+  void ReloadExtensionAndWait() {
+    ExtensionLoadWaiter waiter(browser_context());
+    runtime_delegate_->ReloadExtension(extension_id_);
+    waiter.WaitForReload();
+  }
+
+  ExtensionId extension_id() const { return extension_id_; }
+
+ private:
+  ExtensionId extension_id_;
+
+  DISALLOW_COPY_AND_ASSIGN(ChromeRuntimeAPIDelegateReloadTest);
+};
+
+TEST_F(ChromeRuntimeAPIDelegateReloadTest,
+       TerminateExtensionWithTooManyReloads) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
+  // We expect the extension to be reloaded 30 times in quick succession before
+  // the next reload goes over the threshold for an unpacked extension and
+  // causes it to terminate.
+  const int kNumReloadsBeforeDisable = 30;
+  clock_.SetNowTicks(base::TimeTicks::Now());
+  for (int i = 0; i < kNumReloadsBeforeDisable; i++) {
+    ReloadExtensionAndWait();
+    EXPECT_TRUE(registry()->enabled_extensions().Contains(extension_id()));
+  }
+
+  // The 31st reload should terminate the extension.
+  ReloadExtensionAndWait();
+  EXPECT_TRUE(registry()->terminated_extensions().Contains(extension_id()));
+}
+
+TEST_F(ChromeRuntimeAPIDelegateReloadTest,
+       ReloadExtensionAfterThresholdInterval) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
+  // Reload only thirty times, as we will pause until the fast reload threshold
+  // has passed before reloading again.
+  const int kNumReloads = 30;
+
+  clock_.SetNowTicks(base::TimeTicks::Now());
+  for (int i = 0; i < kNumReloads; i++) {
+    ReloadExtensionAndWait();
+    EXPECT_TRUE(registry()->enabled_extensions().Contains(extension_id()));
+  }
+
+  // Reload one more time after the time threshold for a suspiciously fast
+  // reload has passed.
+  clock_.Advance(base::TimeDelta::FromSeconds(1000));
+
+  ReloadExtensionAndWait();
+  EXPECT_TRUE(registry()->enabled_extensions().Contains(extension_id()));
 }
 
 }  // namespace

@@ -65,12 +65,19 @@ class FakeDevToolsClient : public DevToolsClient {
       std::unique_ptr<base::DictionaryValue>* result) override {
     return SendCommandAndGetResult(method, params, result);
   }
+  Status SendCommandAndIgnoreResponse(
+      const std::string& method,
+      const base::DictionaryValue& params) override {
+    return SendCommandAndGetResult(method, params, nullptr);
+  }
   void AddListener(DevToolsEventListener* listener) override {}
   Status HandleEventsUntil(const ConditionalFunc& conditional_func,
                            const Timeout& timeout) override {
     return Status(kOk);
   }
   Status HandleReceivedEvents() override { return Status(kOk); }
+  void SetDetached() override {}
+  void SetOwner(WebViewImpl* owner) override {}
 
  private:
   const std::string id_;
@@ -152,7 +159,7 @@ TEST(EvaluateScriptAndGetValue, Undefined) {
   Status status =
       internal::EvaluateScriptAndGetValue(&client, 0, std::string(), &result);
   ASSERT_EQ(kOk, status.code());
-  ASSERT_TRUE(result && result->IsType(base::Value::TYPE_NULL));
+  ASSERT_TRUE(result && result->is_none());
 }
 
 TEST(EvaluateScriptAndGetValue, Ok) {
@@ -201,7 +208,7 @@ TEST(EvaluateScriptAndGetObject, Ok) {
 
 TEST(ParseCallFunctionResult, NotDict) {
   std::unique_ptr<base::Value> result;
-  base::FundamentalValue value(1);
+  base::Value value(1);
   ASSERT_NE(kOk, internal::ParseCallFunctionResult(value, &result).code());
 }
 

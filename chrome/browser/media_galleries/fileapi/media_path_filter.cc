@@ -12,10 +12,11 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
-#include "components/mime_util/mime_util.h"
 #include "net/base/mime_util.h"
+#include "third_party/blink/public/common/mime_util/mime_util.h"
 
 namespace {
 
@@ -82,18 +83,14 @@ const base::FilePath::CharType* const kExtraSupportedAudioExtensions[] = {
 bool IsUnsupportedExtension(const base::FilePath::StringType& extension) {
   std::string mime_type;
   return !net::GetMimeTypeFromExtension(extension, &mime_type) ||
-         !mime_util::IsSupportedMimeType(mime_type);
+         !blink::IsSupportedMimeType(mime_type);
 }
 
 std::vector<base::FilePath::StringType> GetMediaExtensionList(
     const std::string& mime_type) {
   std::vector<base::FilePath::StringType> extensions;
   net::GetExtensionsForMimeType(mime_type, &extensions);
-  std::vector<base::FilePath::StringType>::iterator new_end =
-      std::remove_if(extensions.begin(),
-                     extensions.end(),
-                     &IsUnsupportedExtension);
-  extensions.erase(new_end, extensions.end());
+  base::EraseIf(extensions, &IsUnsupportedExtension);
   return extensions;
 }
 
@@ -161,7 +158,7 @@ MediaGalleryFileType MediaPathFilter::GetType(const base::FilePath& path) {
 }
 
 void MediaPathFilter::EnsureInitialized() {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   if (initialized_)
     return;
 
@@ -175,13 +172,16 @@ void MediaPathFilter::EnsureInitialized() {
   AddExtensionsToMediaFileExtensionMap(GetMediaExtensionList("video/*"),
                                        MEDIA_GALLERY_FILE_TYPE_VIDEO);
   AddAdditionalExtensionsToMediaFileExtensionMap(
-      kExtraSupportedImageExtensions, arraysize(kExtraSupportedImageExtensions),
+      kExtraSupportedImageExtensions,
+      base::size(kExtraSupportedImageExtensions),
       MEDIA_GALLERY_FILE_TYPE_IMAGE);
   AddAdditionalExtensionsToMediaFileExtensionMap(
-      kExtraSupportedAudioExtensions, arraysize(kExtraSupportedAudioExtensions),
+      kExtraSupportedAudioExtensions,
+      base::size(kExtraSupportedAudioExtensions),
       MEDIA_GALLERY_FILE_TYPE_AUDIO);
   AddAdditionalExtensionsToMediaFileExtensionMap(
-      kExtraSupportedVideoExtensions, arraysize(kExtraSupportedVideoExtensions),
+      kExtraSupportedVideoExtensions,
+      base::size(kExtraSupportedVideoExtensions),
       MEDIA_GALLERY_FILE_TYPE_VIDEO);
 
   initialized_ = true;

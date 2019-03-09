@@ -7,24 +7,30 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 #include "base/base64.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/i18n/rtl.h"
+#include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/singleton.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/stl_util.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/values.h"
 #include "base/version.h"
 #include "components/crx_file/id_util.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/error_utils.h"
@@ -71,6 +77,40 @@ bool ContainsReservedCharacters(const base::FilePath& path) {
   return !net::IsSafePortableRelativePath(path);
 }
 
+// Returns true if the given |manifest_version| is supported for the specified
+// |type| of extension.
+bool IsManifestSupported(int manifest_version,
+                         Manifest::Type type,
+                         int creation_flags) {
+  // Modern is always safe.
+  if (manifest_version >= kModernManifestVersion)
+    return true;
+
+  // Allow an exception for extensions if a special commandline flag is present.
+  // Note: This allows the extension to load, but it may effectively be treated
+  // as a higher manifest version. For instance, all extension v1-specific
+  // handling has been removed, which means they will effectively be treated as
+  // v2s.
+  bool allow_legacy_extensions =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kAllowLegacyExtensionManifests);
+  if (type == Manifest::TYPE_EXTENSION && allow_legacy_extensions)
+    return true;
+
+  if ((creation_flags & Extension::REQUIRE_MODERN_MANIFEST_VERSION) != 0)
+    return false;
+
+  static constexpr int kMinimumExtensionManifestVersion = 2;
+  if (type == Manifest::TYPE_EXTENSION)
+    return manifest_version >= kMinimumExtensionManifestVersion;
+
+  static constexpr int kMinimumPlatformAppManifestVersion = 2;
+  if (type == Manifest::TYPE_PLATFORM_APP)
+    return manifest_version >= kMinimumPlatformAppManifestVersion;
+
+  return true;
+}
+
 }  // namespace
 
 const int Extension::kInitFromValueFlagBits = 13;
@@ -84,11 +124,10 @@ const int Extension::kValidBookmarkAppSchemes = URLPattern::SCHEME_HTTP |
                                                 URLPattern::SCHEME_HTTPS |
                                                 URLPattern::SCHEME_EXTENSION;
 
-const int Extension::kValidHostPermissionSchemes = URLPattern::SCHEME_CHROMEUI |
-                                                   URLPattern::SCHEME_HTTP |
-                                                   URLPattern::SCHEME_HTTPS |
-                                                   URLPattern::SCHEME_FILE |
-                                                   URLPattern::SCHEME_FTP;
+const int Extension::kValidHostPermissionSchemes =
+    URLPattern::SCHEME_CHROMEUI | URLPattern::SCHEME_HTTP |
+    URLPattern::SCHEME_HTTPS | URLPattern::SCHEME_FILE |
+    URLPattern::SCHEME_FTP | URLPattern::SCHEME_WS | URLPattern::SCHEME_WSS;
 
 //
 // Extension
@@ -116,10 +155,11 @@ scoped_refptr<Extension> Extension::Create(const base::FilePath& path,
                                            int flags,
                                            const std::string& explicit_id,
                                            std::string* utf8_error) {
+  base::ElapsedTimer timer;
   DCHECK(utf8_error);
   base::string16 error;
-  std::unique_ptr<extensions::Manifest> manifest(new extensions::Manifest(
-      location, std::unique_ptr<base::DictionaryValue>(value.DeepCopy())));
+  std::unique_ptr<extensions::Manifest> manifest(
+      new extensions::Manifest(location, value.CreateDeepCopy()));
 
   if (!InitExtensionID(manifest.get(), path, explicit_id, flags, &error)) {
     *utf8_error = base::UTF16ToUTF8(error);
@@ -139,6 +179,27 @@ scoped_refptr<Extension> Extension::Create(const base::FilePath& path,
     return NULL;
   }
 
+  const base::CommandLine& command_line =
+      *base::CommandLine::ForCurrentProcess();
+  std::string process_type =
+      command_line.GetSwitchValueASCII(::switches::kProcessType);
+  // Use microsecond accuracy for increased granularity. Max at 10 seconds.
+  base::TimeDelta elapsed_time = timer.Elapsed();
+  const int kMaxTimeInMicroseconds = 10000000;
+  if (process_type.empty()) {
+    UMA_HISTOGRAM_CUSTOM_COUNTS(
+        "Extensions.ExtensionCreationTime.BrowserProcess",
+        elapsed_time.InMicroseconds(), 1, kMaxTimeInMicroseconds, 100);
+  } else if (command_line.HasSwitch(switches::kExtensionProcess)) {
+    UMA_HISTOGRAM_CUSTOM_COUNTS(
+        "Extensions.ExtensionCreationTime.ExtensionProcess",
+        elapsed_time.InMicroseconds(), 1, kMaxTimeInMicroseconds, 100);
+  } else if (process_type == ::switches::kRendererProcess) {
+    UMA_HISTOGRAM_CUSTOM_COUNTS(
+        "Extensions.ExtensionCreationTime.RendererProcess",
+        elapsed_time.InMicroseconds(), 1, kMaxTimeInMicroseconds, 100);
+  }
+
   return extension;
 }
 
@@ -150,22 +211,8 @@ Manifest::Type Extension::GetType() const {
 // static
 GURL Extension::GetResourceURL(const GURL& extension_url,
                                const std::string& relative_path) {
-  DCHECK(extension_url.SchemeIs(extensions::kExtensionScheme));
-  DCHECK_EQ("/", extension_url.path());
-
-  std::string path = relative_path;
-
-  // If the relative path starts with "/", it is "absolute" relative to the
-  // extension base directory, but extension_url is already specified to refer
-  // to that base directory, so strip the leading "/" if present.
-  if (relative_path.size() > 0 && relative_path[0] == '/')
-    path = relative_path.substr(1);
-
-  GURL ret_val = GURL(extension_url.spec() + path);
-  DCHECK(base::StartsWith(ret_val.spec(), extension_url.spec(),
-                          base::CompareCase::INSENSITIVE_ASCII));
-
-  return ret_val;
+  DCHECK(extension_url.SchemeIs(kExtensionScheme));
+  return extension_url.Resolve(relative_path);
 }
 
 bool Extension::ResourceMatches(const URLPatternSet& pattern_set,
@@ -277,20 +324,8 @@ bool Extension::FormatPEMForFileOutput(const std::string& input,
 
 // static
 GURL Extension::GetBaseURLFromExtensionId(const std::string& extension_id) {
-  return GURL(std::string(extensions::kExtensionScheme) +
-              url::kStandardSchemeSeparator + extension_id + "/");
-}
-
-bool Extension::ShowConfigureContextMenus() const {
-  // Normally we don't show a context menu for component actions, but when
-  // re-design is enabled we show them in the toolbar (if they have an action),
-  // and it is weird to have a random button that has no context menu when the
-  // rest do.
-  if (location() == Manifest::COMPONENT ||
-      location() == Manifest::EXTERNAL_COMPONENT)
-    return FeatureSwitch::extension_action_redesign()->IsEnabled();
-
-  return true;
+  return GURL(base::StrCat({extensions::kExtensionScheme,
+                            url::kStandardSchemeSeparator, extension_id}));
 }
 
 bool Extension::OverlapsWithOrigin(const GURL& origin) const {
@@ -332,58 +367,44 @@ bool Extension::ShouldDisplayInExtensionSettings() const {
   if (is_theme())
     return false;
 
-  // Don't show component extensions and invisible apps.
-  if (ShouldNotBeVisible())
+  // Hide component extensions because they are only extensions as an
+  // implementation detail of Chrome.
+  if (extensions::Manifest::IsComponentLocation(location()) &&
+      !base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kShowComponentExtensionOptions)) {
     return false;
-
-  // Always show unpacked extensions and apps.
-  if (Manifest::IsUnpackedLocation(location()))
-    return true;
+  }
 
   // Unless they are unpacked, never show hosted apps. Note: We intentionally
   // show packaged apps and platform apps because there are some pieces of
   // functionality that are only available in chrome://extensions/ but which
   // are needed for packaged and platform apps. For example, inspecting
   // background pages. See http://crbug.com/116134.
-  if (is_hosted_app())
+  if (!Manifest::IsUnpackedLocation(location()) && is_hosted_app())
     return false;
 
   return true;
 }
 
-bool Extension::ShouldNotBeVisible() const {
-  // Don't show component extensions because they are only extensions as an
+bool Extension::ShouldExposeViaManagementAPI() const {
+  // Hide component extensions because they are only extensions as an
   // implementation detail of Chrome.
-  if (extensions::Manifest::IsComponentLocation(location()) &&
-      !base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kShowComponentExtensionOptions)) {
-    return true;
-  }
-
-  // Always show unpacked extensions and apps.
-  if (Manifest::IsUnpackedLocation(location()))
-    return false;
-
-  // Don't show apps that aren't visible in either launcher or ntp.
-  if (is_app() && !ShouldDisplayInAppLauncher() && !ShouldDisplayInNewTabPage())
-    return true;
-
-  return false;
+  return !extensions::Manifest::IsComponentLocation(location());
 }
 
 Extension::ManifestData* Extension::GetManifestData(const std::string& key)
     const {
   DCHECK(finished_parsing_manifest_ || thread_checker_.CalledOnValidThread());
-  ManifestDataMap::const_iterator iter = manifest_data_.find(key);
+  auto iter = manifest_data_.find(key);
   if (iter != manifest_data_.end())
     return iter->second.get();
   return NULL;
 }
 
 void Extension::SetManifestData(const std::string& key,
-                                Extension::ManifestData* data) {
+                                std::unique_ptr<Extension::ManifestData> data) {
   DCHECK(!finished_parsing_manifest_ && thread_checker_.CalledOnValidThread());
-  manifest_data_[key] = std::unique_ptr<ManifestData>(data);
+  manifest_data_[key] = std::move(data);
 }
 
 Manifest::Location Extension::location() const {
@@ -394,8 +415,12 @@ const std::string& Extension::id() const {
   return manifest_->extension_id();
 }
 
+const HashedExtensionId& Extension::hashed_id() const {
+  return manifest_->hashed_id();
+}
+
 const std::string Extension::VersionString() const {
-  return version()->GetString();
+  return version_.GetString();
 }
 
 const std::string Extension::GetVersionForDisplay() const {
@@ -404,14 +429,14 @@ const std::string Extension::GetVersionForDisplay() const {
   return VersionString();
 }
 
-void Extension::AddInstallWarning(const InstallWarning& new_warning) {
-  install_warnings_.push_back(new_warning);
+void Extension::AddInstallWarning(InstallWarning new_warning) {
+  install_warnings_.push_back(std::move(new_warning));
 }
 
-void Extension::AddInstallWarnings(
-    const std::vector<InstallWarning>& new_warnings) {
+void Extension::AddInstallWarnings(std::vector<InstallWarning> new_warnings) {
   install_warnings_.insert(install_warnings_.end(),
-                           new_warnings.begin(), new_warnings.end());
+                           std::make_move_iterator(new_warnings.begin()),
+                           std::make_move_iterator(new_warnings.end()));
 }
 
 bool Extension::is_app() const {
@@ -457,7 +482,7 @@ bool Extension::InitExtensionID(extensions::Manifest* manifest,
                                 int creation_flags,
                                 base::string16* error) {
   if (!explicit_id.empty()) {
-    manifest->set_extension_id(explicit_id);
+    manifest->SetExtensionId(explicit_id);
     return true;
   }
 
@@ -470,7 +495,7 @@ bool Extension::InitExtensionID(extensions::Manifest* manifest,
       return false;
     }
     std::string extension_id = crx_file::id_util::GenerateId(public_key_bytes);
-    manifest->set_extension_id(extension_id);
+    manifest->SetExtensionId(extension_id);
     return true;
   }
 
@@ -486,7 +511,7 @@ bool Extension::InitExtensionID(extensions::Manifest* manifest,
       NOTREACHED() << "Could not create ID from path.";
       return false;
     }
-    manifest->set_extension_id(extension_id);
+    manifest->SetExtensionId(extension_id);
     return true;
   }
 }
@@ -513,6 +538,14 @@ bool Extension::InitFromValue(int flags, base::string16* error) {
 
   creation_flags_ = flags;
 
+  // Check for |converted_from_user_script| first, since it affects the type
+  // returned by GetType(). This is needed to determine if the manifest version
+  // is valid.
+  if (manifest_->HasKey(keys::kConvertedFromUserScript)) {
+    manifest_->GetBoolean(keys::kConvertedFromUserScript,
+                          &converted_from_user_script_);
+  }
+
   // Important to load manifest version first because many other features
   // depend on its value.
   if (!LoadManifestVersion(error))
@@ -536,11 +569,6 @@ bool Extension::InitFromValue(int flags, base::string16* error) {
   if (!permissions_parser_->Parse(this, error))
     return false;
 
-  if (manifest_->HasKey(keys::kConvertedFromUserScript)) {
-    manifest_->GetBoolean(keys::kConvertedFromUserScript,
-                          &converted_from_user_script_);
-  }
-
   if (!LoadSharedFeatures(error))
     return false;
 
@@ -549,7 +577,9 @@ bool Extension::InitFromValue(int flags, base::string16* error) {
 
   finished_parsing_manifest_ = true;
 
-  permissions_data_.reset(new PermissionsData(this));
+  permissions_data_ = std::make_unique<PermissionsData>(
+      id(), GetType(), location(),
+      PermissionsParser::GetRequiredPermissions(this).Clone());
 
   return true;
 }
@@ -567,9 +597,12 @@ bool Extension::LoadName(base::string16* error) {
     *error = base::ASCIIToUTF16(errors::kInvalidName);
     return false;
   }
+
   non_localized_name_ = base::UTF16ToUTF8(localized_name);
-  base::i18n::AdjustStringForLocaleDirection(&localized_name);
-  name_ = base::UTF16ToUTF8(localized_name);
+  base::string16 sanitized_name =
+      base::CollapseWhitespace(localized_name, true);
+  base::i18n::SanitizeUserSuppliedString(&sanitized_name);
+  display_name_ = base::UTF16ToUTF8(sanitized_name);
   return true;
 }
 
@@ -579,8 +612,8 @@ bool Extension::LoadVersion(base::string16* error) {
     *error = base::ASCIIToUTF16(errors::kInvalidVersion);
     return false;
   }
-  version_.reset(new Version(version_str));
-  if (!version_->IsValid() || version_->components().size() > 4) {
+  version_ = base::Version(version_str);
+  if (!version_.IsValid() || version_.components().size() > 4) {
     *error = base::ASCIIToUTF16(errors::kInvalidVersion);
     return false;
   }
@@ -635,20 +668,20 @@ bool Extension::LoadExtent(const char* key,
     std::string pattern_string;
     if (!pattern_list->GetString(i, &pattern_string)) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          value_error, base::SizeTToString(i), errors::kExpectString);
+          value_error, base::NumberToString(i), errors::kExpectString);
       return false;
     }
 
     URLPattern pattern(kValidWebExtentSchemes);
     URLPattern::ParseResult parse_result = pattern.Parse(pattern_string);
-    if (parse_result == URLPattern::PARSE_ERROR_EMPTY_PATH) {
+    if (parse_result == URLPattern::ParseResult::kEmptyPath) {
       pattern_string += "/";
       parse_result = pattern.Parse(pattern_string);
     }
 
-    if (parse_result != URLPattern::PARSE_SUCCESS) {
+    if (parse_result != URLPattern::ParseResult::kSuccess) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          value_error, base::SizeTToString(i),
+          value_error, base::NumberToString(i),
           URLPattern::GetParseResultString(parse_result));
       return false;
     }
@@ -656,7 +689,7 @@ bool Extension::LoadExtent(const char* key,
     // Do not allow authors to claim "<all_urls>".
     if (pattern.match_all_urls()) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          value_error, base::SizeTToString(i),
+          value_error, base::NumberToString(i),
           errors::kCannotClaimAllURLsInExtent);
       return false;
     }
@@ -664,7 +697,7 @@ bool Extension::LoadExtent(const char* key,
     // Do not allow authors to claim "*" for host.
     if (pattern.host().empty()) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          value_error, base::SizeTToString(i),
+          value_error, base::NumberToString(i),
           errors::kCannotClaimAllHostsInExtent);
       return false;
     }
@@ -673,7 +706,7 @@ bool Extension::LoadExtent(const char* key,
     // imply one at the end.
     if (pattern.path().find('*') != std::string::npos) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          value_error, base::SizeTToString(i), errors::kNoWildCardsInPaths);
+          value_error, base::NumberToString(i), errors::kNoWildCardsInPaths);
       return false;
     }
     pattern.SetPath(pattern.path() + '*');
@@ -715,14 +748,13 @@ bool Extension::LoadManifestVersion(base::string16* error) {
   }
 
   manifest_version_ = manifest_->GetManifestVersion();
-  if (manifest_version_ < kModernManifestVersion &&
-      ((creation_flags_ & REQUIRE_MODERN_MANIFEST_VERSION &&
-        !base::CommandLine::ForCurrentProcess()->HasSwitch(
-            switches::kAllowLegacyExtensionManifests)) ||
-       GetType() == Manifest::TYPE_PLATFORM_APP)) {
+  if (!IsManifestSupported(manifest_version_, GetType(), creation_flags_)) {
+    std::string json;
+    base::JSONWriter::Write(*manifest_->value(), &json);
+    LOG(WARNING) << "Failed to load extension.  Manifest JSON: " << json;
     *error = ErrorUtils::FormatErrorMessageUTF16(
         errors::kInvalidManifestVersionOld,
-        base::IntToString(kModernManifestVersion),
+        base::NumberToString(kModernManifestVersion),
         is_platform_app() ? "apps" : "extensions");
     return false;
   }
@@ -742,7 +774,7 @@ bool Extension::LoadShortName(base::string16* error) {
     base::i18n::AdjustStringForLocaleDirection(&localized_short_name);
     short_name_ = base::UTF16ToUTF8(localized_short_name);
   } else {
-    short_name_ = name_;
+    short_name_ = display_name_;
   }
   return true;
 }
@@ -755,26 +787,10 @@ ExtensionInfo::ExtensionInfo(const base::DictionaryValue* manifest,
       extension_path(path),
       extension_location(location) {
   if (manifest)
-    extension_manifest.reset(manifest->DeepCopy());
+    extension_manifest = manifest->CreateDeepCopy();
 }
 
 ExtensionInfo::~ExtensionInfo() {}
-
-InstalledExtensionInfo::InstalledExtensionInfo(
-    const Extension* extension,
-    bool is_update,
-    bool from_ephemeral,
-    const std::string& old_name)
-    : extension(extension),
-      is_update(is_update),
-      from_ephemeral(from_ephemeral),
-      old_name(old_name) {}
-
-UnloadedExtensionInfo::UnloadedExtensionInfo(
-    const Extension* extension,
-    UnloadedExtensionInfo::Reason reason)
-    : reason(reason),
-      extension(extension) {}
 
 UpdatedExtensionPermissionsInfo::UpdatedExtensionPermissionsInfo(
     const Extension* extension,

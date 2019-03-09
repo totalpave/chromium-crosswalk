@@ -9,15 +9,18 @@
 #include "components/sync_sessions/sync_sessions_client.h"
 #include "components/sync_sessions/synced_window_delegate.h"
 #include "components/sync_sessions/synced_window_delegates_getter.h"
+#include "components/sync_sessions/tab_node_pool.h"
 #include "ios/chrome/browser/sessions/ios_chrome_session_tab_helper.h"
 #include "ios/web/public/favicon_status.h"
 #include "ios/web/public/navigation_item.h"
 #import "ios/web/public/navigation_manager.h"
-#include "ios/web/public/web_state/web_state.h"
+#import "ios/web/public/web_state/web_state.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 using web::NavigationItem;
-
-DEFINE_WEB_STATE_USER_DATA_KEY(IOSChromeSyncedTabDelegate);
 
 namespace {
 
@@ -32,20 +35,26 @@ NavigationItem* GetPossiblyPendingItemAtIndex(web::WebState* web_state, int i) {
 }  // namespace
 
 IOSChromeSyncedTabDelegate::IOSChromeSyncedTabDelegate(web::WebState* web_state)
-    : web_state_(web_state), sync_session_id_(0) {}
+    : web_state_(web_state) {}
 
 IOSChromeSyncedTabDelegate::~IOSChromeSyncedTabDelegate() {}
 
-SessionID::id_type IOSChromeSyncedTabDelegate::GetWindowId() const {
-  return IOSChromeSessionTabHelper::FromWebState(web_state_)->window_id().id();
+SessionID IOSChromeSyncedTabDelegate::GetWindowId() const {
+  return IOSChromeSessionTabHelper::FromWebState(web_state_)->window_id();
 }
 
-SessionID::id_type IOSChromeSyncedTabDelegate::GetSessionId() const {
-  return IOSChromeSessionTabHelper::FromWebState(web_state_)->session_id().id();
+SessionID IOSChromeSyncedTabDelegate::GetSessionId() const {
+  return IOSChromeSessionTabHelper::FromWebState(web_state_)->session_id();
 }
 
 bool IOSChromeSyncedTabDelegate::IsBeingDestroyed() const {
   return web_state_->IsBeingDestroyed();
+}
+
+// todo(pnoland): add logic to store and return the source tab id on ios.
+// http://crbug/695241
+SessionID IOSChromeSyncedTabDelegate::GetSourceTabID() const {
+  return SessionID::InvalidValue();
 }
 
 std::string IOSChromeSyncedTabDelegate::GetExtensionAppId() const {
@@ -57,7 +66,7 @@ bool IOSChromeSyncedTabDelegate::IsInitialBlankNavigation() const {
 }
 
 int IOSChromeSyncedTabDelegate::GetCurrentEntryIndex() const {
-  return web_state_->GetNavigationManager()->GetCurrentItemIndex();
+  return web_state_->GetNavigationManager()->GetLastCommittedItemIndex();
 }
 
 int IOSChromeSyncedTabDelegate::GetEntryCount() const {
@@ -70,8 +79,9 @@ GURL IOSChromeSyncedTabDelegate::GetVirtualURLAtIndex(int i) const {
 }
 
 GURL IOSChromeSyncedTabDelegate::GetFaviconURLAtIndex(int i) const {
+  DCHECK_GE(i, 0);
   NavigationItem* item = GetPossiblyPendingItemAtIndex(web_state_, i);
-  return (item->GetFavicon().valid ? item->GetFavicon().url : GURL());
+  return (item && item->GetFavicon().valid ? item->GetFavicon().url : GURL());
 }
 
 ui::PageTransition IOSChromeSyncedTabDelegate::GetTransitionAtIndex(
@@ -84,15 +94,17 @@ void IOSChromeSyncedTabDelegate::GetSerializedNavigationAtIndex(
     int i,
     sessions::SerializedNavigationEntry* serialized_entry) const {
   NavigationItem* item = GetPossiblyPendingItemAtIndex(web_state_, i);
-  *serialized_entry =
-      sessions::IOSSerializedNavigationBuilder::FromNavigationItem(i, *item);
+  if (item) {
+    *serialized_entry =
+        sessions::IOSSerializedNavigationBuilder::FromNavigationItem(i, *item);
+  }
 }
 
 bool IOSChromeSyncedTabDelegate::ProfileIsSupervised() const {
   return false;
 }
 
-const std::vector<const sessions::SerializedNavigationEntry*>*
+const std::vector<std::unique_ptr<const sessions::SerializedNavigationEntry>>*
 IOSChromeSyncedTabDelegate::GetBlockedNavigations() const {
   NOTREACHED();
   return nullptr;
@@ -100,14 +112,6 @@ IOSChromeSyncedTabDelegate::GetBlockedNavigations() const {
 
 bool IOSChromeSyncedTabDelegate::IsPlaceholderTab() const {
   return false;
-}
-
-int IOSChromeSyncedTabDelegate::GetSyncId() const {
-  return sync_session_id_;
-}
-
-void IOSChromeSyncedTabDelegate::SetSyncId(int sync_id) {
-  sync_session_id_ = sync_id;
 }
 
 bool IOSChromeSyncedTabDelegate::ShouldSync(
@@ -130,3 +134,5 @@ bool IOSChromeSyncedTabDelegate::ShouldSync(
   }
   return false;
 }
+
+WEB_STATE_USER_DATA_KEY_IMPL(IOSChromeSyncedTabDelegate)

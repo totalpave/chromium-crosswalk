@@ -9,14 +9,14 @@
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/client_certificate_delegate.h"
 #include "content/public/browser/content_browser_client.h"
-#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/resource_request_info.h"
-#include "content/public/browser/web_contents.h"
-#include "net/cert/x509_certificate.h"
 #include "net/ssl/client_cert_store.h"
+#include "net/ssl/ssl_private_key.h"
 #include "net/url_request/url_request.h"
 
 namespace content {
@@ -31,21 +31,22 @@ class ClientCertificateDelegateImpl : public ClientCertificateDelegate {
 
   ~ClientCertificateDelegateImpl() override {
     if (!continue_called_) {
-      BrowserThread::PostTask(
-          BrowserThread::IO, FROM_HERE,
-          base::Bind(&SSLClientAuthHandler::CancelCertificateSelection,
-                     handler_));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::IO},
+          base::BindOnce(&SSLClientAuthHandler::CancelCertificateSelection,
+                         handler_));
     }
   }
 
   // ClientCertificateDelegate implementation:
-  void ContinueWithCertificate(net::X509Certificate* cert) override {
+  void ContinueWithCertificate(scoped_refptr<net::X509Certificate> cert,
+                               scoped_refptr<net::SSLPrivateKey> key) override {
     DCHECK(!continue_called_);
     continue_called_ = true;
-    BrowserThread::PostTask(
-        BrowserThread::IO, FROM_HERE,
-        base::Bind(&SSLClientAuthHandler::ContinueWithCertificate, handler_,
-                   base::RetainedRef(cert)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(&SSLClientAuthHandler::ContinueWithCertificate, handler_,
+                       std::move(cert), std::move(key)));
   }
 
  private:
@@ -56,23 +57,22 @@ class ClientCertificateDelegateImpl : public ClientCertificateDelegate {
 };
 
 void SelectCertificateOnUIThread(
-    int render_process_host_id,
-    int render_frame_host_id,
+    const ResourceRequestInfo::WebContentsGetter& wc_getter,
     net::SSLCertRequestInfo* cert_request_info,
+    net::ClientCertIdentityList client_certs,
     const base::WeakPtr<SSLClientAuthHandler>& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   std::unique_ptr<ClientCertificateDelegate> delegate(
       new ClientCertificateDelegateImpl(handler));
 
-  RenderFrameHost* rfh =
-      RenderFrameHost::FromID(render_process_host_id, render_frame_host_id);
-  WebContents* web_contents = WebContents::FromRenderFrameHost(rfh);
+  WebContents* web_contents = wc_getter.Run();
   if (!web_contents)
     return;
 
   GetContentClient()->browser()->SelectClientCertificate(
-      web_contents, cert_request_info, std::move(delegate));
+      web_contents, cert_request_info, std::move(client_certs),
+      std::move(delegate));
 }
 
 }  // namespace
@@ -97,10 +97,10 @@ class SSLClientAuthHandler::Core : public base::RefCountedThreadSafe<Core> {
       // until the call completes is maintained by the reference held in the
       // callback.
       client_cert_store_->GetClientCerts(
-          *cert_request_info_, &cert_request_info_->client_certs,
+          *cert_request_info_,
           base::Bind(&SSLClientAuthHandler::Core::DidGetClientCerts, this));
     } else {
-      DidGetClientCerts();
+      DidGetClientCerts(net::ClientCertIdentityList());
     }
   }
 
@@ -110,9 +110,9 @@ class SSLClientAuthHandler::Core : public base::RefCountedThreadSafe<Core> {
   ~Core() {}
 
   // Called when |client_cert_store_| is done retrieving the cert list.
-  void DidGetClientCerts() {
+  void DidGetClientCerts(net::ClientCertIdentityList client_certs) {
     if (handler_)
-      handler_->DidGetClientCerts();
+      handler_->DidGetClientCerts(std::move(client_certs));
   }
 
   base::WeakPtr<SSLClientAuthHandler> handler_;
@@ -122,10 +122,10 @@ class SSLClientAuthHandler::Core : public base::RefCountedThreadSafe<Core> {
 
 SSLClientAuthHandler::SSLClientAuthHandler(
     std::unique_ptr<net::ClientCertStore> client_cert_store,
-    net::URLRequest* request,
+    ResourceRequestInfo::WebContentsGetter web_contents_getter,
     net::SSLCertRequestInfo* cert_request_info,
-    SSLClientAuthHandler::Delegate* delegate)
-    : request_(request),
+    Delegate* delegate)
+    : web_contents_getter_(web_contents_getter),
       cert_request_info_(cert_request_info),
       delegate_(delegate),
       weak_factory_(this) {
@@ -148,9 +148,11 @@ void SSLClientAuthHandler::SelectCertificate() {
 // static
 void SSLClientAuthHandler::ContinueWithCertificate(
     const base::WeakPtr<SSLClientAuthHandler>& handler,
-    net::X509Certificate* cert) {
+    scoped_refptr<net::X509Certificate> cert,
+    scoped_refptr<net::SSLPrivateKey> key) {
   if (handler)
-    handler->delegate_->ContinueWithCertificate(cert);
+    handler->delegate_->ContinueWithCertificate(std::move(cert),
+                                                std::move(key));
 }
 
 // static
@@ -160,45 +162,33 @@ void SSLClientAuthHandler::CancelCertificateSelection(
     handler->delegate_->CancelCertificateSelection();
 }
 
-void SSLClientAuthHandler::DidGetClientCerts() {
+void SSLClientAuthHandler::DidGetClientCerts(
+    net::ClientCertIdentityList client_certs) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   // Note that if |client_cert_store_| is NULL, we intentionally fall through to
   // SelectCertificateOnUIThread. This is for platforms where the client cert
   // matching is not performed by Chrome. Those platforms handle the cert
   // matching before showing the dialog.
-  if (core_->has_client_cert_store() &&
-      cert_request_info_->client_certs.empty()) {
+  if (core_->has_client_cert_store() && client_certs.empty()) {
     // No need to query the user if there are no certs to choose from.
     //
     // TODO(davidben): The WebContents-less check on the UI thread should come
     // before checking ClientCertStore; ClientCertStore itself should probably
     // be handled by the embedder (https://crbug.com/394131), especially since
     // this doesn't work on Android (https://crbug.com/345641).
-    BrowserThread::PostTask(
-        BrowserThread::IO, FROM_HERE,
-        base::Bind(&SSLClientAuthHandler::ContinueWithCertificate,
-                   weak_factory_.GetWeakPtr(), nullptr));
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(&SSLClientAuthHandler::ContinueWithCertificate,
+                       weak_factory_.GetWeakPtr(), nullptr, nullptr));
     return;
   }
 
-  int render_process_host_id;
-  int render_frame_host_id;
-  if (!ResourceRequestInfo::ForRequest(request_)->GetAssociatedRenderFrame(
-          &render_process_host_id, &render_frame_host_id)) {
-    NOTREACHED();
-    BrowserThread::PostTask(
-        BrowserThread::IO, FROM_HERE,
-        base::Bind(&SSLClientAuthHandler::CancelCertificateSelection,
-                   weak_factory_.GetWeakPtr()));
-    return;
-  }
-
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&SelectCertificateOnUIThread, render_process_host_id,
-                 render_frame_host_id, base::RetainedRef(cert_request_info_),
-                 weak_factory_.GetWeakPtr()));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&SelectCertificateOnUIThread, web_contents_getter_,
+                     base::RetainedRef(cert_request_info_),
+                     std::move(client_certs), weak_factory_.GetWeakPtr()));
 }
 
 }  // namespace content

@@ -24,12 +24,12 @@ const int kGetCertificatesTimeoutInMinutes = 5;
 
 // Holds state for a single certificate request.
 struct CertificateRequests::CertificateRequestState {
-  CertificateRequestState() : timeout(false, false) {}
+  CertificateRequestState() {}
 
   ~CertificateRequestState() {}
 
   // Extensions that are too slow are eventually dropped from a request.
-  base::Timer timeout;
+  base::OneShotTimer timeout;
 
   // Extensions that this request is still waiting for.
   std::set<std::string> pending_extensions;
@@ -39,7 +39,7 @@ struct CertificateRequests::CertificateRequestState {
   std::map<std::string, CertificateInfoList> extension_to_certificates;
 
   // The callback that must be run with the final list of certificates.
-  base::Callback<void(const net::CertificateList&)> callback;
+  base::Callback<void(net::ClientCertIdentityList)> callback;
 };
 
 CertificateRequests::CertificateRequests() {}
@@ -48,7 +48,7 @@ CertificateRequests::~CertificateRequests() {}
 
 int CertificateRequests::AddRequest(
     const std::vector<std::string>& extension_ids,
-    const base::Callback<void(const net::CertificateList&)>& callback,
+    const base::Callback<void(net::ClientCertIdentityList)>& callback,
     const base::Callback<void(int)>& timeout_callback) {
   std::unique_ptr<CertificateRequestState> state(new CertificateRequestState);
   state->callback = callback;
@@ -87,7 +87,7 @@ bool CertificateRequests::SetCertificates(
 bool CertificateRequests::RemoveRequest(
     int request_id,
     std::map<std::string, CertificateInfoList>* certificates,
-    base::Callback<void(const net::CertificateList&)>* callback) {
+    base::Callback<void(net::ClientCertIdentityList)>* callback) {
   const auto it = requests_.find(request_id);
   if (it == requests_.end())
     return false;

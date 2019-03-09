@@ -4,8 +4,6 @@
 
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 
-#include "base/base_switches.h"
-#include "base/command_line.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "chrome/common/pref_names.h"
@@ -34,13 +32,8 @@ class ChromeMetricsServiceAccessorTest : public testing::Test {
 
 TEST_F(ChromeMetricsServiceAccessorTest, MetricsReportingEnabled) {
 #if defined(GOOGLE_CHROME_BUILD)
-#if !defined(OS_CHROMEOS)
-#if defined(OS_ANDROID)
-  const char* pref = prefs::kCrashReportingEnabled;
-#else
   const char* pref = metrics::prefs::kMetricsReportingEnabled;
-#endif  // defined(OS_ANDROID)
-  GetLocalState()->SetDefaultPrefValue(pref, new base::FundamentalValue(false));
+  GetLocalState()->SetDefaultPrefValue(pref, base::Value(false));
 
   GetLocalState()->SetBoolean(pref, false);
   EXPECT_FALSE(
@@ -51,17 +44,6 @@ TEST_F(ChromeMetricsServiceAccessorTest, MetricsReportingEnabled) {
   GetLocalState()->ClearPref(pref);
   EXPECT_FALSE(
       ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled());
-
-  // If field trials are forced, metrics should always be disabled, regardless
-  // of the value of the pref.
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kForceFieldTrials);
-  EXPECT_FALSE(
-      ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled());
-  GetLocalState()->SetBoolean(pref, true);
-  EXPECT_FALSE(
-      ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled());
-#endif  // !defined(OS_CHROMEOS)
 #else
   // Metrics Reporting is never enabled when GOOGLE_CHROME_BUILD is undefined.
   EXPECT_FALSE(

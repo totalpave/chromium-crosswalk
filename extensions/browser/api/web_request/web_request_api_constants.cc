@@ -43,6 +43,7 @@ const char kRealmKey[] = "realm";
 const char kAuthCredentialsKey[] = "authCredentials";
 const char kUsernameKey[] = "username";
 const char kPasswordKey[] = "password";
+const char kInitiatorKey[] = "initiator";
 
 const char kOnBeforeRedirectEvent[] = "webRequest.onBeforeRedirect";
 const char kOnBeforeSendHeadersEvent[] = "webRequest.onBeforeSendHeaders";
@@ -62,6 +63,8 @@ const char kOnResponseStarted[] = "onResponseStarted";
 const char kOnSendHeaders[] = "onSendHeaders";
 const char kOnAuthRequired[] = "onAuthRequired";
 
+const char kInvalidPublicSessionBlockingResponse[] =
+    "Only the 'cancel' action is allowed in Public Sessions.";
 const char kInvalidRedirectUrl[] = "redirectUrl '*' is not a valid URL.";
 const char kInvalidBlockingResponse[] =
     "cancel cannot be true in the presence of other keys.";

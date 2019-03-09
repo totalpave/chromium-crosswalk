@@ -7,24 +7,30 @@
 #include <stdint.h>
 
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/metrics/chrome_metrics_services_manager_client.h"
 #include "components/metrics/metrics_reporting_default_state.h"
 #include "jni/UmaUtils_jni.h"
+
+using base::android::JavaParamRef;
 
 class PrefService;
 
 namespace chrome {
 namespace android {
 
-base::Time GetMainEntryPointTime() {
+base::TimeTicks GetMainEntryPointTimeTicks() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  int64_t startTimeUnixMs = Java_UmaUtils_getMainEntryPointWallTime(env);
-  return base::Time::UnixEpoch() +
-         base::TimeDelta::FromMilliseconds(startTimeUnixMs);
+  return base::TimeTicks::FromUptimeMillis(
+      Java_UmaUtils_getMainEntryPointTicks(env));
 }
 
-static void RecordMetricsReportingDefaultOptIn(JNIEnv* env,
-                                               const JavaParamRef<jclass>& obj,
-                                               jboolean opt_in) {
+static jboolean JNI_UmaUtils_IsClientInMetricsReportingSample(JNIEnv* env) {
+  return ChromeMetricsServicesManagerClient::IsClientInSample();
+}
+
+static void JNI_UmaUtils_RecordMetricsReportingDefaultOptIn(
+    JNIEnv* env,
+    jboolean opt_in) {
   DCHECK(g_browser_process);
   PrefService* local_state = g_browser_process->local_state();
   metrics::RecordMetricsReportingDefaultState(
@@ -32,8 +38,9 @@ static void RecordMetricsReportingDefaultOptIn(JNIEnv* env,
                           : metrics::EnableMetricsDefault::OPT_OUT);
 }
 
-bool RegisterStartupMetricUtils(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+void SetUsageAndCrashReporting(bool enabled) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_UmaUtils_setUsageAndCrashReportingFromNative(env, enabled);
 }
 
 }  // namespace android

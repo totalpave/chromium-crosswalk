@@ -11,20 +11,6 @@
 namespace content {
 
 MHTMLGenerationParams::MHTMLGenerationParams(const base::FilePath& file_path)
-    : file_path(file_path) {
-  // Check which variant of MHTML generation is required.
-  std::string mhtmlGeneratorOptionFlag =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-      switches::kMHTMLGeneratorOption);
-  if (mhtmlGeneratorOptionFlag == switches::kMHTMLSkipNostoreMain) {
-    cache_control_policy =
-        blink::WebFrameSerializerCacheControlPolicy::
-        FailForNoStoreMainFrame;
-  } else if (mhtmlGeneratorOptionFlag == switches::kMHTMLSkipNostoreAll) {
-    cache_control_policy =
-        blink::WebFrameSerializerCacheControlPolicy::
-        SkipAnyFrameOrResourceMarkedNoStore;
-  }
-}
+    : file_path(file_path) {}
 
 }  // namespace content

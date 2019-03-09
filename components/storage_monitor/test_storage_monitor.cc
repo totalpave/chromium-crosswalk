@@ -6,24 +6,24 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/run_loop.h"
 #include "base/synchronization/waitable_event.h"
 #include "build/build_config.h"
 #include "components/storage_monitor/storage_info.h"
 
-#if defined(OS_LINUX)
-#include "components/storage_monitor/test_media_transfer_protocol_manager_linux.h"
-#include "device/media_transfer_protocol/media_transfer_protocol_manager.h"  // nogncheck
+#if defined(OS_CHROMEOS)
+#include "components/storage_monitor/test_media_transfer_protocol_manager_chromeos.h"
 #endif
 
 namespace storage_monitor {
 
-TestStorageMonitor::TestStorageMonitor()
-    : StorageMonitor(),
-      init_called_(false) {
-#if defined(OS_LINUX)
-  media_transfer_protocol_manager_.reset(
-      new TestMediaTransferProtocolManagerLinux());
+TestStorageMonitor::TestStorageMonitor() : init_called_(false) {
+#if defined(OS_CHROMEOS)
+  auto* fake_mtp_manager =
+      TestMediaTransferProtocolManagerChromeOS::GetFakeMtpManager();
+  fake_mtp_manager->AddBinding(
+      mojo::MakeRequest(&media_transfer_protocol_manager_));
 #endif
 }
 
@@ -36,12 +36,12 @@ TestStorageMonitor* TestStorageMonitor::CreateAndInstall() {
   monitor->Init();
   monitor->MarkInitialized();
 
-  if (StorageMonitor::GetInstance() == NULL) {
+  if (StorageMonitor::GetInstance() == nullptr) {
     StorageMonitor::SetStorageMonitorForTesting(std::move(pass_monitor));
     return monitor;
   }
 
-  return NULL;
+  return nullptr;
 }
 
 // static
@@ -115,8 +115,8 @@ bool TestStorageMonitor::GetMTPStorageInfoFromDeviceId(
 }
 #endif
 
-#if defined(OS_LINUX)
-device::MediaTransferProtocolManager*
+#if defined(OS_CHROMEOS)
+device::mojom::MtpManager*
 TestStorageMonitor::media_transfer_protocol_manager() {
   return media_transfer_protocol_manager_.get();
 }

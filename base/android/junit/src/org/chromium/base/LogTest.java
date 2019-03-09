@@ -8,16 +8,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import org.chromium.testing.local.LocalRobolectricTestRunner;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
 
+import org.chromium.base.test.BaseRobolectricTestRunner;
+
 import java.util.List;
 
 /** Unit tests for {@link Log}. */
-@RunWith(LocalRobolectricTestRunner.class)
+@RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class LogTest {
     /** Tests that the computed call origin is the correct one. */
@@ -26,10 +27,10 @@ public class LogTest {
         Log.d("Foo", "Bar");
 
         List<ShadowLog.LogItem> logs = ShadowLog.getLogs();
-        assertEquals("Only one log should be written", 1, logs.size());
 
-        assertTrue("The origin of the log message (" + logs.get(0).msg + ") looks wrong.",
-                logs.get(0).msg.matches("\\[LogTest.java:\\d+\\].*"));
+        assertTrue("The origin of the log message (" + logs.get(logs.size() - 1).msg
+                        + ") looks wrong.",
+                logs.get(logs.size() - 1).msg.matches("\\[LogTest.java:\\d+\\].*"));
     }
 
     @Test
@@ -57,25 +58,29 @@ public class LogTest {
             }
         };
 
-        List<ShadowLog.LogItem> logs = ShadowLog.getLogs();
+        List<ShadowLog.LogItem> logs;
 
         // The throwable gets printed out
         Log.i("Foo", "Bar", t);
+        logs = ShadowLog.getLogs();
         assertEquals(t, logs.get(logs.size() - 1).throwable);
         assertEquals("Bar", logs.get(logs.size() - 1).msg);
 
         // The throwable can be both added to the message itself and printed out
         Log.i("Foo", "Bar %s", t);
+        logs = ShadowLog.getLogs();
         assertEquals(t, logs.get(logs.size() - 1).throwable);
         assertEquals("Bar MyThrowable", logs.get(logs.size() - 1).msg);
 
         // Non throwable are properly identified
         Log.i("Foo", "Bar %s", t, "Baz");
+        logs = ShadowLog.getLogs();
         assertNull(logs.get(logs.size() - 1).throwable);
         assertEquals("Bar MyThrowable", logs.get(logs.size() - 1).msg);
 
         // The last throwable is the one used that is going to be printed out
         Log.i("Foo", "Bar %s %s", t, t2);
+        logs = ShadowLog.getLogs();
         assertEquals(t2, logs.get(logs.size() - 1).throwable);
         assertEquals("Bar MyThrowable MyOtherThrowable", logs.get(logs.size() - 1).msg);
     }

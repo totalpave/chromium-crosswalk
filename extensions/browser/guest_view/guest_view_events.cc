@@ -37,6 +37,8 @@ class EventMap {
         {extensionview::kEventLoadCommit,
          events::EXTENSION_VIEW_INTERNAL_ON_LOAD_COMMIT},
         {guest_view::kEventResize, events::GUEST_VIEW_INTERNAL_ON_RESIZE},
+        {webview::kEventAudioStateChanged,
+         events::WEB_VIEW_INTERNAL_ON_AUDIO_STATE_CHANGED},
         {webview::kEventBeforeRequest,
          events::WEB_VIEW_INTERNAL_ON_BEFORE_REQUEST},
         {webview::kEventBeforeSendHeaders,
@@ -98,7 +100,8 @@ class EventMap {
   DISALLOW_COPY_AND_ASSIGN(EventMap);
 };
 
-base::LazyInstance<EventMap> g_event_map = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<EventMap>::DestructorAtExit g_event_map =
+    LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 

@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_UI_WEBUI_SETTINGS_SETTINGS_STARTUP_PAGES_HANDLER_H_
 
 #include "base/macros.h"
-#include "chrome/browser/custom_home_pages_table_model.h"
+#include "chrome/browser/ui/webui/settings/custom_home_pages_table_model.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "ui/base/models/table_model_observer.h"
@@ -54,10 +54,6 @@ class StartupPagesHandler : public SettingsPageUIHandler,
 
   // Sets the startup page set to the current pages.
   void HandleSetStartupPagesToCurrentPages(const base::ListValue* args);
-
-  // Handles the "validateStartupPage" message. Passed a URL that might be a
-  // valid startup page.
-  void HandleValidateStartupPage(const base::ListValue* args);
 
   // Stores the current state of the startup page preferences.
   void SaveStartupPagesPref();

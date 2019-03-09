@@ -5,8 +5,7 @@
 #include "chrome/browser/ui/confirm_bubble_model.h"
 
 #include "base/logging.h"
-#include "chrome/grit/generated_resources.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 ConfirmBubbleModel::ConfirmBubbleModel() {
@@ -33,9 +32,8 @@ base::string16 ConfirmBubbleModel::GetLinkText() const {
   return base::string16();
 }
 
-GURL ConfirmBubbleModel::GetLinkURL() const {
+GURL ConfirmBubbleModel::GetHelpPageURL() const {
   return GURL();
 }
 
-void ConfirmBubbleModel::LinkClicked() {
-}
+void ConfirmBubbleModel::OpenHelpPage() {}

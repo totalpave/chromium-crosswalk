@@ -4,35 +4,43 @@
 
 #include "chrome/browser/ui/webui/signin/inline_login_ui.h"
 
+#include <memory>
+
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/chrome_extension_web_contents_observer.h"
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_tab_helper.h"
+#include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
-#include "chrome/browser/ui/webui/signin/inline_login_handler_impl.h"
 #include "chrome/browser/ui/webui/test_files_request_filter.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/chromium_strings.h"
-#include "components/signin/core/common/profile_management_switches.h"
+#include "chrome/grit/generated_resources.h"
+#include "components/signin/core/browser/account_consistency_method.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/common/content_switches.h"
-#include "grit/browser_resources.h"
-#include "grit/generated_resources.h"
+
+#if defined(OS_CHROMEOS)
+#include "chrome/browser/ui/webui/signin/inline_login_handler_chromeos.h"
+#else
+#include "chrome/browser/ui/webui/signin/inline_login_handler_impl.h"
+#endif  // defined(OS_CHROMEOS)
 
 namespace {
 
 content::WebUIDataSource* CreateWebUIDataSource() {
   content::WebUIDataSource* source =
         content::WebUIDataSource::Create(chrome::kChromeUIChromeSigninHost);
-  source->OverrideContentSecurityPolicyChildSrc("child-src chrome-extension:;");
-  source->OverrideContentSecurityPolicyObjectSrc("object-src *;");
+  source->OverrideContentSecurityPolicyObjectSrc("object-src chrome:;");
   source->SetJsonPath("strings.js");
 
-  source->SetDefaultResource(IDR_NEW_INLINE_LOGIN_HTML);
+  source->SetDefaultResource(IDR_INLINE_LOGIN_HTML);
 
   // Only add a filter when runing as test.
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -53,15 +61,62 @@ content::WebUIDataSource* CreateWebUIDataSource() {
   return source;
 }
 
-} // empty namespace
+// Returns whether |url| can be displayed in a chrome://chrome-signin tab,
+// depending on the signin reason that is encoded in the url.
+bool IsValidChromeSigninReason(const GURL& url) {
+#if defined(OS_CHROMEOS)
+  return true;
+#else
+  signin_metrics::Reason reason =
+      signin::GetSigninReasonForEmbeddedPromoURL(url);
+
+  switch (reason) {
+    case signin_metrics::Reason::REASON_FORCED_SIGNIN_PRIMARY_ACCOUNT:
+    case signin_metrics::Reason::REASON_UNLOCK:
+      // Used by the user manager.
+      return true;
+    case signin_metrics::Reason::REASON_FETCH_LST_ONLY:
+#if defined(OS_WIN)
+      // Used by the Google Credential Provider for Windows.
+      return true;
+#else
+      return false;
+#endif
+    case signin_metrics::Reason::REASON_SIGNIN_PRIMARY_ACCOUNT:
+    case signin_metrics::Reason::REASON_ADD_SECONDARY_ACCOUNT:
+    case signin_metrics::Reason::REASON_REAUTHENTICATION:
+    case signin_metrics::Reason::REASON_UNKNOWN_REASON:
+      return false;
+    case signin_metrics::Reason::REASON_MAX:
+      NOTREACHED();
+      return false;
+  }
+  NOTREACHED();
+#endif  // defined(OS_CHROMEOS)
+}
+
+}  // namespace
 
 InlineLoginUI::InlineLoginUI(content::WebUI* web_ui)
     : WebDialogUI(web_ui),
-      auth_extension_(Profile::FromWebUI(web_ui)) {
+      auth_extension_(Profile::FromWebUI(web_ui)),
+      weak_factory_(this) {
+  if (!IsValidChromeSigninReason(web_ui->GetWebContents()->GetVisibleURL()))
+    return;
+
   Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource::Add(profile, CreateWebUIDataSource());
-  web_ui->AddMessageHandler(new InlineLoginHandlerImpl());
-  web_ui->AddMessageHandler(new MetricsHandler());
+
+#if defined(OS_CHROMEOS)
+  web_ui->AddMessageHandler(
+      std::make_unique<chromeos::InlineLoginHandlerChromeOS>(
+          base::BindRepeating(&WebDialogUIBase::CloseDialog,
+                              weak_factory_.GetWeakPtr(), nullptr /* args */)));
+#else
+  web_ui->AddMessageHandler(std::make_unique<InlineLoginHandlerImpl>());
+#endif  // defined(OS_CHROMEOS)
+
+  web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
 
   content::WebContents* contents = web_ui->GetWebContents();
   // Required for intercepting extension function calls when the page is loaded

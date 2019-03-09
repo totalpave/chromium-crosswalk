@@ -8,14 +8,15 @@
 
 #include "base/strings/string_util.h"
 #include "content/public/common/drop_data.h"
-#include "third_party/WebKit/public/platform/FilePathConversion.h"
-#include "third_party/WebKit/public/platform/URLConversion.h"
-#include "third_party/WebKit/public/platform/WebDragData.h"
-#include "third_party/WebKit/public/platform/WebString.h"
-#include "third_party/WebKit/public/platform/WebVector.h"
-#include "ui/base/clipboard/clipboard.h"
+#include "third_party/blink/public/platform/file_path_conversion.h"
+#include "third_party/blink/public/platform/url_conversion.h"
+#include "third_party/blink/public/platform/web_drag_data.h"
+#include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/public/platform/web_vector.h"
+#include "ui/base/clipboard/clipboard_constants.h"
 
 using blink::WebDragData;
+using blink::WebString;
 using blink::WebVector;
 
 namespace content {
@@ -23,52 +24,66 @@ namespace content {
 // static
 DropData DropDataBuilder::Build(const WebDragData& drag_data) {
   DropData result;
-  result.key_modifiers = drag_data.modifierKeyState();
-  result.referrer_policy = blink::WebReferrerPolicyDefault;
+  result.key_modifiers = drag_data.ModifierKeyState();
+  result.referrer_policy = network::mojom::ReferrerPolicy::kDefault;
 
-  const WebVector<WebDragData::Item>& item_list = drag_data.items();
-  for (size_t i = 0; i < item_list.size(); ++i) {
-    const WebDragData::Item& item = item_list[i];
-    switch (item.storageType) {
-      case WebDragData::Item::StorageTypeString: {
-        base::string16 str_type(item.stringType);
-        if (base::EqualsASCII(str_type, ui::Clipboard::kMimeTypeText)) {
-          result.text = base::NullableString16(item.stringData, false);
+  for (const WebDragData::Item& item : drag_data.Items()) {
+    switch (item.storage_type) {
+      case WebDragData::Item::kStorageTypeString: {
+        base::string16 str_type(item.string_type.Utf16());
+        if (base::EqualsASCII(str_type, ui::kMimeTypeText)) {
+          result.text = WebString::ToNullableString16(item.string_data);
           break;
         }
-        if (base::EqualsASCII(str_type, ui::Clipboard::kMimeTypeURIList)) {
-          result.url = blink::WebStringToGURL(item.stringData);
-          result.url_title = item.title;
+        if (base::EqualsASCII(str_type, ui::kMimeTypeURIList)) {
+          result.url = blink::WebStringToGURL(item.string_data);
+          result.url_title = item.title.Utf16();
           break;
         }
-        if (base::EqualsASCII(str_type, ui::Clipboard::kMimeTypeDownloadURL)) {
-          result.download_metadata = item.stringData;
+        if (base::EqualsASCII(str_type, ui::kMimeTypeDownloadURL)) {
+          result.download_metadata = item.string_data.Utf16();
           break;
         }
-        if (base::EqualsASCII(str_type, ui::Clipboard::kMimeTypeHTML)) {
-          result.html = base::NullableString16(item.stringData, false);
-          result.html_base_url = item.baseURL;
+        if (base::EqualsASCII(str_type, ui::kMimeTypeHTML)) {
+          result.html = WebString::ToNullableString16(item.string_data);
+          result.html_base_url = item.base_url;
           break;
         }
         result.custom_data.insert(
-            std::make_pair(item.stringType, item.stringData));
+            std::make_pair(item.string_type.Utf16(), item.string_data.Utf16()));
         break;
       }
-      case WebDragData::Item::StorageTypeBinaryData:
-        result.file_contents.assign(item.binaryData.data(),
-                                    item.binaryData.size());
-        result.file_description_filename = item.title;
+      case WebDragData::Item::kStorageTypeBinaryData:
+        DCHECK(result.file_contents.empty());
+        result.file_contents.reserve(item.binary_data.size());
+        item.binary_data.ForEachSegment([&result](const char* segment,
+                                                  size_t segment_size,
+                                                  size_t segment_offset) {
+          result.file_contents.append(segment, segment_size);
+          return true;
+        });
+        result.file_contents_source_url = item.binary_data_source_url;
+#if defined(OS_WIN)
+        result.file_contents_filename_extension =
+            item.binary_data_filename_extension.Utf16();
+#else
+        result.file_contents_filename_extension =
+            item.binary_data_filename_extension.Utf8();
+#endif
+        result.file_contents_content_disposition =
+            item.binary_data_content_disposition.Utf8();
         break;
-      case WebDragData::Item::StorageTypeFilename:
+      case WebDragData::Item::kStorageTypeFilename:
         // TODO(varunjain): This only works on chromeos. Support win/mac/gtk.
-        result.filenames.push_back(ui::FileInfo(
-            blink::WebStringToFilePath(item.filenameData),
-            blink::WebStringToFilePath(item.displayNameData)));
+        result.filenames.push_back(
+            ui::FileInfo(blink::WebStringToFilePath(item.filename_data),
+                         blink::WebStringToFilePath(item.display_name_data)));
         break;
-      case WebDragData::Item::StorageTypeFileSystemFile: {
+      case WebDragData::Item::kStorageTypeFileSystemFile: {
         DropData::FileSystemFileInfo info;
-        info.url = item.fileSystemURL;
-        info.size = item.fileSystemFileSize;
+        info.url = item.file_system_url;
+        info.size = item.file_system_file_size;
+        info.filesystem_id = item.file_system_id.Ascii();
         result.file_system_files.push_back(info);
         break;
       }

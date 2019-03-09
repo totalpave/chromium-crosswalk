@@ -5,7 +5,11 @@
 #include "ios/chrome/test/ios_chrome_scoped_testing_chrome_browser_provider.h"
 
 #include "base/logging.h"
-#include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
+#import "ios/public/provider/chrome/browser/chrome_browser_provider.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 IOSChromeScopedTestingChromeBrowserProvider::
     IOSChromeScopedTestingChromeBrowserProvider(

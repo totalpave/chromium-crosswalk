@@ -4,45 +4,44 @@
 
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_params.h"
 
+#include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "base/command_line.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "components/data_reduction_proxy/core/common/data_reduction_proxy_features.h"
+#include "components/data_reduction_proxy/core/common/data_reduction_proxy_server.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_switches.h"
 #include "components/variations/variations_associated_data.h"
-#include "net/proxy/proxy_server.h"
+#include "net/base/host_port_pair.h"
+#include "net/base/proxy_server.h"
+#include "net/http/http_status_code.h"
+#include "services/network/public/cpp/features.h"
 #include "url/url_constants.h"
 
-using base::FieldTrialList;
+#if defined(OS_ANDROID)
+#include "base/system/sys_info.h"
+#endif
 
 namespace {
 
 const char kEnabled[] = "Enabled";
 const char kControl[] = "Control";
 const char kDisabled[] = "Disabled";
-const char kPreview[] = "Enabled_Preview";
-const char kDefaultSpdyOrigin[] = "https://proxy.googlezip.net:443";
-// A one-off change, until the Data Reduction Proxy configuration service is
-// available.
-const char kCarrierTestOrigin[] =
-    "http://o-o.preferred.nttdocomodcp-hnd1.proxy-dev.googlezip.net:80";
-const char kDefaultFallbackOrigin[] = "compress.googlezip.net:80";
+const char kExperimentsOption[] = "exp";
 const char kDefaultSecureProxyCheckUrl[] = "http://check.googlezip.net/connect";
-const char kDefaultWarmupUrl[] = "http://www.gstatic.com/generate_204";
-
-const char kAndroidOneIdentifier[] = "sprout";
+const char kDefaultWarmupUrl[] = "http://check.googlezip.net/e2e_probe";
 
 const char kQuicFieldTrial[] = "DataReductionProxyUseQuic";
 
 const char kLoFiFieldTrial[] = "DataCompressionProxyLoFi";
 const char kLoFiFlagFieldTrial[] = "DataCompressionProxyLoFiFlag";
-
-const char kTrustedSpdyProxyFieldTrialName[] = "DataReductionTrustedSpdyProxy";
 
 // Default URL for retrieving the Data Reduction Proxy configuration.
 const char kClientConfigURL[] =
@@ -56,33 +55,71 @@ const char kPingbackURL[] =
 const char kServerExperimentsFieldTrial[] =
     "DataReductionProxyServerExperiments";
 
+// LitePage black list version.
+const char kLitePageBlackListVersion[] = "lite-page-blacklist-version";
+
+const char kWarmupFetchCallbackEnabledParam[] = "warmup_fetch_callback_enabled";
+const char kMissingViaBypassDisabledParam[] = "bypass_missing_via_disabled";
+const char kDiscardCanaryCheckResultParam[] = "store_canary_check_result";
+
+bool IsIncludedInFieldTrial(const std::string& name) {
+  return base::StartsWith(base::FieldTrialList::FindFullName(name), kEnabled,
+                          base::CompareCase::SENSITIVE);
+}
+
+// Returns the variation value for |parameter_name|. If the value is
+// unavailable, |default_value| is returned.
+std::string GetStringValueForVariationParamWithDefaultValue(
+    const std::map<std::string, std::string>& variation_params,
+    const std::string& parameter_name,
+    const std::string& default_value) {
+  const auto it = variation_params.find(parameter_name);
+  if (it == variation_params.end())
+    return default_value;
+  return it->second;
+}
+
+bool CanShowAndroidLowMemoryDevicePromo() {
+#if defined(OS_ANDROID)
+  return base::SysInfo::IsLowEndDevice() &&
+         base::FeatureList::IsEnabled(
+             data_reduction_proxy::features::
+                 kDataReductionProxyLowMemoryDevicePromo);
+#endif
+  return false;
+}
+
 }  // namespace
 
 namespace data_reduction_proxy {
 namespace params {
 
 bool IsIncludedInPromoFieldTrial() {
-  return FieldTrialList::FindFullName("DataCompressionProxyPromoVisibility")
-             .find(kEnabled) == 0;
+  if (IsIncludedInFieldTrial("DataCompressionProxyPromoVisibility"))
+    return true;
+
+  return CanShowAndroidLowMemoryDevicePromo();
+}
+
+bool IsIncludedInFREPromoFieldTrial() {
+  if (IsIncludedInFieldTrial("DataReductionProxyFREPromo"))
+    return true;
+
+  return CanShowAndroidLowMemoryDevicePromo();
 }
 
 bool IsIncludedInHoldbackFieldTrial() {
-  return FieldTrialList::FindFullName("DataCompressionProxyHoldback")
-             .find(kEnabled) == 0;
+  return IsIncludedInFieldTrial("DataCompressionProxyHoldback");
 }
 
-bool IsIncludedInAndroidOnePromoFieldTrial(const char* build_fingerprint) {
-  base::StringPiece fingerprint(build_fingerprint);
-  return (fingerprint.find(kAndroidOneIdentifier) != std::string::npos);
+bool IsIncludedInSecureProxyHoldbackFieldTrial() {
+  return base::StartsWith(
+      base::FieldTrialList::FindFullName("DataCompressionProxyHoldback"),
+      "SecureProxy_Disabled", base::CompareCase::SENSITIVE);
 }
 
-const char* GetTrustedSpdyProxyFieldTrialName() {
-  return kTrustedSpdyProxyFieldTrialName;
-}
-
-bool IsIncludedInTrustedSpdyProxyFieldTrial() {
-  return base::FieldTrialList::FindFullName(GetTrustedSpdyProxyFieldTrialName())
-             .find(kEnabled) == 0;
+std::string HoldbackFieldTrialGroup() {
+  return base::FieldTrialList::FindFullName("DataCompressionProxyHoldback");
 }
 
 const char* GetLoFiFieldTrialName() {
@@ -93,77 +130,85 @@ const char* GetLoFiFlagFieldTrialName() {
   return kLoFiFlagFieldTrial;
 }
 
-bool IsIncludedInLoFiEnabledFieldTrial() {
-  return !IsLoFiOnViaFlags() && !IsLoFiDisabledViaFlags() &&
-         FieldTrialList::FindFullName(GetLoFiFieldTrialName()).find(kEnabled) ==
-             0;
+const char* GetMissingViaBypassParamName() {
+  return kMissingViaBypassDisabledParam;
 }
 
-bool IsIncludedInLoFiControlFieldTrial() {
-  return !IsLoFiOnViaFlags() && !IsLoFiDisabledViaFlags() &&
-         FieldTrialList::FindFullName(GetLoFiFieldTrialName()).find(kControl) ==
-             0;
+const char* GetDiscardCanaryCheckResultParam() {
+  return kDiscardCanaryCheckResultParam;
 }
 
-bool IsIncludedInLoFiPreviewFieldTrial() {
-  return !IsLoFiOnViaFlags() && !IsLoFiDisabledViaFlags() &&
-         FieldTrialList::FindFullName(GetLoFiFieldTrialName()).find(kPreview) ==
-             0;
+bool ShouldDiscardCanaryCheckResult() {
+  return GetFieldTrialParamByFeatureAsBool(
+      features::kDataReductionProxyRobustConnection,
+      GetDiscardCanaryCheckResultParam(), false);
 }
 
 bool IsIncludedInServerExperimentsFieldTrial() {
   return !base::CommandLine::ForCurrentProcess()->HasSwitch(
              data_reduction_proxy::switches::
                  kDataReductionProxyServerExperimentsDisabled) &&
-         FieldTrialList::FindFullName(kServerExperimentsFieldTrial)
+         base::FieldTrialList::FindFullName(kServerExperimentsFieldTrial)
                  .find(kDisabled) != 0;
 }
-bool IsIncludedInTamperDetectionExperiment() {
-  return IsIncludedInServerExperimentsFieldTrial() &&
-         FieldTrialList::FindFullName(kServerExperimentsFieldTrial)
-                 .find("TamperDetection_Enabled") == 0;
+
+bool IsIncludedInOnDeviceSafeBrowsingFieldTrial() {
+  if (!params::IsIncludedInServerExperimentsFieldTrial())
+    return false;
+  std::string server_experiment = variations::GetVariationParamValue(
+      params::GetServerExperimentsFieldTrialName(), kExperimentsOption);
+  return server_experiment == "disable_server_safebrowsing";
 }
 
-bool IsLoFiOnViaFlags() {
-  return IsLoFiAlwaysOnViaFlags() || IsLoFiCellularOnlyViaFlags() ||
-         IsLoFiSlowConnectionsOnlyViaFlags();
+bool FetchWarmupProbeURLEnabled() {
+  return !base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kDisableDataReductionProxyWarmupURLFetch);
 }
 
-bool IsLoFiAlwaysOnViaFlags() {
-  const std::string& lo_fi_value =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          data_reduction_proxy::switches::kDataReductionProxyLoFi);
-  return lo_fi_value ==
-         data_reduction_proxy::switches::kDataReductionProxyLoFiValueAlwaysOn;
+GURL GetWarmupURL() {
+  std::map<std::string, std::string> params;
+  variations::GetVariationParams(GetQuicFieldTrialName(), &params);
+  return GURL(GetStringValueForVariationParamWithDefaultValue(
+      params, "warmup_url", kDefaultWarmupUrl));
 }
 
-bool IsLoFiCellularOnlyViaFlags() {
-  const std::string& lo_fi_value =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          data_reduction_proxy::switches::kDataReductionProxyLoFi);
-  return lo_fi_value == data_reduction_proxy::switches::
-                            kDataReductionProxyLoFiValueCellularOnly;
+bool IsWarmupURLFetchCallbackEnabled() {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          data_reduction_proxy::switches::
+              kDisableDataReductionProxyWarmupURLFetchCallback)) {
+    return false;
+  }
+
+  if (!GetFieldTrialParamByFeatureAsBool(
+          features::kDataReductionProxyRobustConnection,
+          kWarmupFetchCallbackEnabledParam, true)) {
+    return false;
+  }
+  return true;
 }
 
-bool IsLoFiSlowConnectionsOnlyViaFlags() {
-  const std::string& lo_fi_value =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          data_reduction_proxy::switches::kDataReductionProxyLoFi);
-  return lo_fi_value == data_reduction_proxy::switches::
-                            kDataReductionProxyLoFiValueSlowConnectionsOnly;
+bool IsWarmupURL(const GURL& url) {
+  GURL warmup_url = params::GetWarmupURL();
+  return url.host() == warmup_url.host() && url.path() == warmup_url.path();
 }
 
-bool IsLoFiDisabledViaFlags() {
-  const std::string& lo_fi_value =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          data_reduction_proxy::switches::kDataReductionProxyLoFi);
-  return lo_fi_value ==
-         data_reduction_proxy::switches::kDataReductionProxyLoFiValueDisabled;
-}
+bool IsWhitelistedHttpResponseCodeForProbes(int http_response_code) {
+  // 200 and 404 are always whitelisted.
+  if (http_response_code == net::HTTP_OK ||
+      http_response_code == net::HTTP_NOT_FOUND) {
+    return true;
+  }
 
-bool AreLoFiPreviewsEnabledViaFlags() {
-  return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      data_reduction_proxy::switches::kEnableDataReductionProxyLoFiPreview);
+  // Check if there is an additional whitelisted HTTP response code provided via
+  // the field trial params.
+  std::map<std::string, std::string> params;
+  variations::GetVariationParams(GetQuicFieldTrialName(), &params);
+  const std::string value = GetStringValueForVariationParamWithDefaultValue(
+      params, "whitelisted_probe_http_response_code", "");
+  int response_code;
+  if (!base::StringToInt(value, &response_code))
+    return false;
+  return response_code == http_response_code;
 }
 
 bool IsForcePingbackEnabledViaFlags() {
@@ -172,28 +217,33 @@ bool IsForcePingbackEnabledViaFlags() {
 }
 
 bool WarnIfNoDataReductionProxy() {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          data_reduction_proxy::switches::
-          kEnableDataReductionProxyBypassWarning)) {
-    return true;
-  }
-  return false;
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      data_reduction_proxy::switches::kEnableDataReductionProxyBypassWarning);
 }
 
 bool IsIncludedInQuicFieldTrial() {
-  return FieldTrialList::FindFullName(kQuicFieldTrial).find(kEnabled) == 0;
+  if (base::StartsWith(base::FieldTrialList::FindFullName(kQuicFieldTrial),
+                       kControl, base::CompareCase::SENSITIVE)) {
+    return false;
+  }
+  if (base::StartsWith(base::FieldTrialList::FindFullName(kQuicFieldTrial),
+                       kDisabled, base::CompareCase::SENSITIVE)) {
+    return false;
+  }
+  // QUIC is enabled by default.
+  return true;
+}
+
+bool IsQuicEnabledForNonCoreProxies() {
+  DCHECK(IsIncludedInQuicFieldTrial());
+  std::map<std::string, std::string> params;
+  variations::GetVariationParams(GetQuicFieldTrialName(), &params);
+  return GetStringValueForVariationParamWithDefaultValue(
+             params, "enable_quic_non_core_proxies", "true") != "false";
 }
 
 const char* GetQuicFieldTrialName() {
   return kQuicFieldTrial;
-}
-
-bool IsConfigClientEnabled() {
-  // Config client is enabled by default. It can be disabled only if Chromium
-  // belongs to a field trial group whose name starts with "Disabled".
-  return !base::StartsWith(
-      base::FieldTrialList::FindFullName("DataReductionProxyConfigService"),
-      kDisabled, base::CompareCase::SENSITIVE);
 }
 
 GURL GetConfigServiceURL() {
@@ -241,17 +291,10 @@ bool ShouldForceEnableDataReductionProxy() {
       data_reduction_proxy::switches::kEnableDataReductionProxy);
 }
 
-bool ShouldUseSecureProxyByDefault() {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          data_reduction_proxy::switches::
-              kDataReductionProxyStartSecureDisabled))
-    return false;
-
-  if (FieldTrialList::FindFullName("DataReductionProxySecureProxyAfterCheck") ==
-      kEnabled)
-    return false;
-
-  return true;
+int LitePageVersion() {
+  return GetFieldTrialParameterAsInteger(
+      data_reduction_proxy::params::GetLoFiFieldTrialName(),
+      kLitePageBlackListVersion, 0, 0);
 }
 
 int GetFieldTrialParameterAsInteger(const std::string& group,
@@ -271,7 +314,7 @@ int GetFieldTrialParameterAsInteger(const std::string& group,
 }
 
 bool GetOverrideProxiesForHttpFromCommandLine(
-    std::vector<net::ProxyServer>* override_proxies_for_http) {
+    std::vector<DataReductionProxyServer>* override_proxies_for_http) {
   DCHECK(override_proxies_for_http);
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDataReductionProxyHttpProxies)) {
@@ -288,11 +331,18 @@ bool GetOverrideProxiesForHttpFromCommandLine(
     std::string proxy_overrides =
         base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
             switches::kDataReductionProxyHttpProxies);
-    std::vector<std::string> proxy_override_values = base::SplitString(
-        proxy_overrides, ";", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-    for (const std::string& proxy_override : proxy_override_values) {
-      override_proxies_for_http->push_back(net::ProxyServer::FromURI(
-          proxy_override, net::ProxyServer::SCHEME_HTTP));
+
+    for (const auto& proxy_override :
+         base::SplitStringPiece(proxy_overrides, ";", base::TRIM_WHITESPACE,
+                                base::SPLIT_WANT_NONEMPTY)) {
+      net::ProxyServer proxy_server = net::ProxyServer::FromURI(
+          proxy_override, net::ProxyServer::SCHEME_HTTP);
+      DCHECK(proxy_server.is_valid());
+      DCHECK(!proxy_server.is_direct());
+
+      // Overriding proxies have type UNSPECIFIED_TYPE.
+      override_proxies_for_http->push_back(DataReductionProxyServer(
+          std::move(proxy_server), ProxyServer::UNSPECIFIED_TYPE));
     }
 
     return true;
@@ -301,6 +351,7 @@ bool GetOverrideProxiesForHttpFromCommandLine(
   std::string origin =
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           switches::kDataReductionProxy);
+
   std::string fallback_origin =
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           switches::kDataReductionProxyFallback);
@@ -309,13 +360,23 @@ bool GetOverrideProxiesForHttpFromCommandLine(
     return false;
 
   override_proxies_for_http->clear();
+
+  // Overriding proxies have type UNSPECIFIED_TYPE.
   if (!origin.empty()) {
-    override_proxies_for_http->push_back(
-        net::ProxyServer::FromURI(origin, net::ProxyServer::SCHEME_HTTP));
+    net::ProxyServer primary_proxy =
+        net::ProxyServer::FromURI(origin, net::ProxyServer::SCHEME_HTTP);
+    DCHECK(primary_proxy.is_valid());
+    DCHECK(!primary_proxy.is_direct());
+    override_proxies_for_http->push_back(DataReductionProxyServer(
+        std::move(primary_proxy), ProxyServer::UNSPECIFIED_TYPE));
   }
   if (!fallback_origin.empty()) {
-    override_proxies_for_http->push_back(net::ProxyServer::FromURI(
-        fallback_origin, net::ProxyServer::SCHEME_HTTP));
+    net::ProxyServer fallback_proxy = net::ProxyServer::FromURI(
+        fallback_origin, net::ProxyServer::SCHEME_HTTP);
+    DCHECK(fallback_proxy.is_valid());
+    DCHECK(!fallback_proxy.is_direct());
+    override_proxies_for_http->push_back(DataReductionProxyServer(
+        std::move(fallback_proxy), ProxyServer::UNSPECIFIED_TYPE));
   }
 
   return true;
@@ -325,174 +386,107 @@ const char* GetServerExperimentsFieldTrialName() {
   return kServerExperimentsFieldTrial;
 }
 
+GURL GetSecureProxyCheckURL() {
+  std::string secure_proxy_check_url =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kDataReductionProxySecureProxyCheckURL);
+  if (secure_proxy_check_url.empty())
+    secure_proxy_check_url = kDefaultSecureProxyCheckUrl;
+
+  return GURL(secure_proxy_check_url);
+}
+
+bool IsDataSaverSiteBreakdownUsingPLMEnabled() {
+  return base::FeatureList::IsEnabled(
+      data_reduction_proxy::features::
+          kDataSaverSiteBreakdownUsingPageLoadMetrics);
+}
+
+bool IsEnabledWithNetworkService() {
+  return base::FeatureList::IsEnabled(
+             data_reduction_proxy::features::
+                 kDataReductionProxyEnabledWithNetworkService) &&
+         base::FeatureList::IsEnabled(network::features::kNetworkService);
+}
+
+base::Optional<DataReductionProxyTypeInfo> FindConfiguredProxyInVector(
+    const std::vector<DataReductionProxyServer>& proxies,
+    const net::ProxyServer& proxy_server) {
+  if (!proxy_server.is_valid() || proxy_server.is_direct())
+    return base::nullopt;
+
+  // Only compare the host port pair of the |proxy_server| since the proxy
+  // scheme of the stored data reduction proxy may be different than the proxy
+  // scheme of |proxy_server|. This may happen even when the |proxy_server| is a
+  // valid data reduction proxy. As an example, the stored data reduction proxy
+  // may have a proxy scheme of HTTPS while |proxy_server| may have QUIC as the
+  // proxy scheme.
+  const net::HostPortPair& host_port_pair = proxy_server.host_port_pair();
+  auto it = std::find_if(
+      proxies.begin(), proxies.end(),
+      [&host_port_pair](const DataReductionProxyServer& proxy) {
+        return proxy.proxy_server().host_port_pair().Equals(host_port_pair);
+      });
+
+  if (it == proxies.end())
+    return base::nullopt;
+
+  return DataReductionProxyTypeInfo(proxies,
+                                    static_cast<size_t>(it - proxies.begin()));
+}
+
 }  // namespace params
 
-DataReductionProxyTypeInfo::DataReductionProxyTypeInfo() : proxy_index(0) {}
+DataReductionProxyParams::DataReductionProxyParams() {
+  bool use_override_proxies_for_http =
+      params::GetOverrideProxiesForHttpFromCommandLine(&proxies_for_http_);
 
-DataReductionProxyTypeInfo::DataReductionProxyTypeInfo(
-    const DataReductionProxyTypeInfo& other) = default;
+  if (!use_override_proxies_for_http) {
+    DCHECK(proxies_for_http_.empty());
+    proxies_for_http_.push_back(DataReductionProxyServer(
+        net::ProxyServer::FromURI("https://proxy.googlezip.net:443",
+                                  net::ProxyServer::SCHEME_HTTP),
+        ProxyServer::CORE));
+    proxies_for_http_.push_back(DataReductionProxyServer(
+        net::ProxyServer::FromURI("compress.googlezip.net:80",
+                                  net::ProxyServer::SCHEME_HTTP),
+        ProxyServer::CORE));
+  }
 
-DataReductionProxyTypeInfo::~DataReductionProxyTypeInfo(){
+  DCHECK(std::all_of(proxies_for_http_.begin(), proxies_for_http_.end(),
+                     [](const DataReductionProxyServer& proxy) {
+                       return proxy.proxy_server().is_valid() &&
+                              !proxy.proxy_server().is_direct();
+                     }));
 }
 
-DataReductionProxyParams::DataReductionProxyParams(int flags)
-    : DataReductionProxyParams(flags, true) {}
+DataReductionProxyParams::~DataReductionProxyParams() {}
 
-DataReductionProxyParams::~DataReductionProxyParams() {
+void DataReductionProxyParams::SetProxiesForHttpForTesting(
+    const std::vector<DataReductionProxyServer>& proxies_for_http) {
+  DCHECK(std::all_of(proxies_for_http.begin(), proxies_for_http.end(),
+                     [](const DataReductionProxyServer& proxy) {
+                       return proxy.proxy_server().is_valid() &&
+                              !proxy.proxy_server().is_direct();
+                     }));
+
+  proxies_for_http_ = proxies_for_http;
 }
 
-DataReductionProxyParams::DataReductionProxyParams(int flags,
-                                                   bool should_call_init)
-    : allowed_((flags & kAllowed) == kAllowed),
-      fallback_allowed_((flags & kFallbackAllowed) == kFallbackAllowed),
-      promo_allowed_((flags & kPromoAllowed) == kPromoAllowed),
-      holdback_((flags & kHoldback) == kHoldback),
-      configured_on_command_line_(false),
-      use_override_proxies_for_http_(false) {
-  if (should_call_init) {
-    bool result = Init(allowed_, fallback_allowed_);
-    DCHECK(result);
-  }
-}
-
-bool DataReductionProxyParams::Init(bool allowed, bool fallback_allowed) {
-  InitWithoutChecks();
-  // Verify that all necessary params are set.
-  if (allowed) {
-    if (!origin_.is_valid()) {
-      DVLOG(1) << "Invalid data reduction proxy origin: " << origin_.ToURI();
-      return false;
-    }
-  }
-
-  if (allowed && fallback_allowed) {
-    if (!fallback_origin_.is_valid()) {
-      DVLOG(1) << "Invalid data reduction proxy fallback origin: "
-          << fallback_origin_.ToURI();
-      return false;
-    }
-  }
-
-  if (allowed && !secure_proxy_check_url_.is_valid()) {
-    DVLOG(1) << "Invalid secure proxy check url: <null>";
-    return false;
-  }
-
-  if (fallback_allowed_ && !allowed_) {
-    DVLOG(1) << "The data reduction proxy fallback cannot be allowed if "
-        << "the data reduction proxy is not allowed";
-    return false;
-  }
-  if (promo_allowed_ && !allowed_) {
-    DVLOG(1) << "The data reduction proxy promo cannot be allowed if the "
-        << "data reduction proxy is not allowed";
-    return false;
-  }
-  return true;
-}
-
-void DataReductionProxyParams::InitWithoutChecks() {
-  use_override_proxies_for_http_ =
-      params::GetOverrideProxiesForHttpFromCommandLine(
-          &override_proxies_for_http_);
-
-  const base::CommandLine& command_line =
-      *base::CommandLine::ForCurrentProcess();
-  std::string origin;
-  origin = command_line.GetSwitchValueASCII(switches::kDataReductionProxy);
-  std::string fallback_origin =
-      command_line.GetSwitchValueASCII(switches::kDataReductionProxyFallback);
-
-  configured_on_command_line_ = !(origin.empty() && fallback_origin.empty());
-
-  // Configuring the proxy on the command line overrides the values of
-  // |allowed_|.
-  if (configured_on_command_line_)
-    allowed_ = true;
-
-  std::string secure_proxy_check_url = command_line.GetSwitchValueASCII(
-      switches::kDataReductionProxySecureProxyCheckURL);
-  std::string warmup_url = command_line.GetSwitchValueASCII(
-      switches::kDataReductionProxyWarmupURL);
-
-  // Set from preprocessor constants those params that are not specified on the
-  // command line.
-  if (origin.empty())
-    origin = GetDefaultOrigin();
-  if (fallback_origin.empty())
-    fallback_origin = GetDefaultFallbackOrigin();
-  if (secure_proxy_check_url.empty())
-    secure_proxy_check_url = GetDefaultSecureProxyCheckURL();
-  if (warmup_url.empty())
-    warmup_url = GetDefaultWarmupURL();
-
-  origin_ = net::ProxyServer::FromURI(origin, net::ProxyServer::SCHEME_HTTP);
-  fallback_origin_ =
-      net::ProxyServer::FromURI(fallback_origin, net::ProxyServer::SCHEME_HTTP);
-  if (origin_.is_valid())
-    proxies_for_http_.push_back(origin_);
-  if (fallback_allowed_ && fallback_origin_.is_valid())
-    proxies_for_http_.push_back(fallback_origin_);
-
-  secure_proxy_check_url_ = GURL(secure_proxy_check_url);
-  warmup_url_ = GURL(warmup_url);
-}
-
-const std::vector<net::ProxyServer>&
+const std::vector<DataReductionProxyServer>&
 DataReductionProxyParams::proxies_for_http() const {
-  if (use_override_proxies_for_http_)
-    return override_proxies_for_http_;
   return proxies_for_http_;
 }
 
-// Returns the URL to check to decide if the secure proxy origin should be
-// used.
-const GURL& DataReductionProxyParams::secure_proxy_check_url() const {
-  return secure_proxy_check_url_;
+base::Optional<DataReductionProxyTypeInfo>
+DataReductionProxyParams::FindConfiguredDataReductionProxy(
+    const net::ProxyServer& proxy_server) const {
+  return params::FindConfiguredProxyInVector(proxies_for_http(), proxy_server);
 }
 
-// Returns true if the data reduction proxy configuration may be used.
-bool DataReductionProxyParams::allowed() const {
-  return allowed_;
-}
-
-// Returns true if the fallback proxy may be used.
-bool DataReductionProxyParams::fallback_allowed() const {
-  return fallback_allowed_;
-}
-
-// Returns true if the data reduction proxy promo may be shown.
-// This is idependent of whether the data reduction proxy is allowed.
-// TODO(bengr): maybe tie to whether proxy is allowed.
-bool DataReductionProxyParams::promo_allowed() const {
-  return promo_allowed_;
-}
-
-// Returns true if the data reduction proxy should not actually use the
-// proxy if enabled.
-bool DataReductionProxyParams::holdback() const {
-  return holdback_;
-}
-
-// TODO(kundaji): Remove tests for macro definitions.
-std::string DataReductionProxyParams::GetDefaultOrigin() const {
-  const base::CommandLine& command_line =
-      *base::CommandLine::ForCurrentProcess();
-  if (command_line.HasSwitch(switches::kEnableDataReductionProxyCarrierTest))
-    return kCarrierTestOrigin;
-  return kDefaultSpdyOrigin;
-}
-
-std::string DataReductionProxyParams::GetDefaultFallbackOrigin() const {
-  return kDefaultFallbackOrigin;
-}
-
-std::string DataReductionProxyParams::GetDefaultSecureProxyCheckURL() const {
-  return kDefaultSecureProxyCheckUrl;
-}
-
-std::string DataReductionProxyParams::GetDefaultWarmupURL() const {
-  return kDefaultWarmupUrl;
+net::ProxyList DataReductionProxyParams::GetAllConfiguredProxies() const {
+  NOTREACHED();
+  return net::ProxyList();
 }
 
 }  // namespace data_reduction_proxy

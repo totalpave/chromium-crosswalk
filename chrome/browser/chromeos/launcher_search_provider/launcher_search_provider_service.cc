@@ -8,8 +8,8 @@
 
 #include <utility>
 
-#include "base/memory/ptr_util.h"
-#include "base/memory/scoped_vector.h"
+#include "ash/public/cpp/app_list/tokenized_string.h"
+#include "ash/public/cpp/app_list/tokenized_string_match.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/chromeos/launcher_search_provider/launcher_search_provider_service_factory.h"
 #include "chrome/browser/ui/app_list/search/launcher_search/launcher_search_provider.h"
@@ -28,11 +28,7 @@ namespace launcher_search_provider {
 
 Service::Service(Profile* profile,
                  extensions::ExtensionRegistry* extension_registry)
-    : profile_(profile),
-      extension_registry_(extension_registry),
-      provider_(nullptr),
-      query_id_(0),
-      is_query_running_(false) {
+    : profile_(profile), extension_registry_(extension_registry) {
   extension_registry_->AddObserver(this);
 }
 
@@ -49,6 +45,7 @@ void Service::OnQueryStarted(app_list::LauncherSearchProvider* provider,
                              const std::string& query,
                              const int max_result) {
   DCHECK(!is_query_running_);
+  query_ = query;
   is_query_running_ = true;
   provider_ = provider;
 
@@ -63,11 +60,11 @@ void Service::OnQueryStarted(app_list::LauncherSearchProvider* provider,
     // javascript side API while we use uint32_t internally to generate it.
     event_router->DispatchEventToExtension(
         extension_id,
-        base::WrapUnique(new extensions::Event(
+        std::make_unique<extensions::Event>(
             extensions::events::LAUNCHER_SEARCH_PROVIDER_ON_QUERY_STARTED,
             api_launcher_search_provider::OnQueryStarted::kEventName,
             api_launcher_search_provider::OnQueryStarted::Create(
-                query_id_, query, max_result))));
+                query_id_, query, max_result)));
   }
 }
 
@@ -82,10 +79,10 @@ void Service::OnQueryEnded() {
   for (const ExtensionId extension_id : *cached_listener_extension_ids_.get()) {
     event_router->DispatchEventToExtension(
         extension_id,
-        base::WrapUnique(new extensions::Event(
+        std::make_unique<extensions::Event>(
             extensions::events::LAUNCHER_SEARCH_PROVIDER_ON_QUERY_ENDED,
             api_launcher_search_provider::OnQueryEnded::kEventName,
-            api_launcher_search_provider::OnQueryEnded::Create(query_id_))));
+            api_launcher_search_provider::OnQueryEnded::Create(query_id_)));
   }
 
   is_query_running_ = false;
@@ -94,16 +91,16 @@ void Service::OnQueryEnded() {
 void Service::OnOpenResult(const ExtensionId& extension_id,
                            const std::string& item_id) {
   CacheListenerExtensionIds();
-  CHECK(ContainsValue(*cached_listener_extension_ids_.get(), extension_id));
+  CHECK(base::ContainsKey(*cached_listener_extension_ids_.get(), extension_id));
 
   extensions::EventRouter* event_router =
       extensions::EventRouter::Get(profile_);
   event_router->DispatchEventToExtension(
       extension_id,
-      base::WrapUnique(new extensions::Event(
+      std::make_unique<extensions::Event>(
           extensions::events::LAUNCHER_SEARCH_PROVIDER_ON_OPEN_RESULT,
           api_launcher_search_provider::OnOpenResult::kEventName,
-          api_launcher_search_provider::OnOpenResult::Create(item_id))));
+          api_launcher_search_provider::OnOpenResult::Create(item_id)));
 }
 
 void Service::SetSearchResults(
@@ -119,24 +116,36 @@ void Service::SetSearchResults(
 
   // If |extension| is not in the listener extensions list, ignore it.
   CacheListenerExtensionIds();
-  if (!ContainsValue(*cached_listener_extension_ids_.get(), extension->id()))
+  if (!base::ContainsKey(*cached_listener_extension_ids_.get(),
+                         extension->id())) {
     return;
+  }
 
   // Set search results to provider.
   DCHECK(provider_);
-  ScopedVector<app_list::LauncherSearchResult> search_results;
+  std::vector<std::unique_ptr<app_list::LauncherSearchResult>> search_results;
   for (const auto& result : results) {
     const int relevance =
         std::min(kMaxSearchResultScore, std::max(result.relevance, 0));
     const GURL icon_url =
         result.icon_url ? GURL(*result.icon_url.get()) : GURL();
 
-    app_list::LauncherSearchResult* search_result =
-        new app_list::LauncherSearchResult(result.item_id, icon_url, relevance,
-                                           profile_, extension,
-                                           error_reporter->Duplicate());
-    search_result->set_title(base::UTF8ToUTF16(result.title));
-    search_results.push_back(search_result);
+    // Calculate the relevance score by matching the query with the title.
+    // Results with a match score of 0 are discarded. This will also be used to
+    // set the title tags (highlighting which parts of the title matched the
+    // search query).
+    const base::string16 title = base::UTF8ToUTF16(result.title);
+    app_list::TokenizedString tokenized_title(title);
+    app_list::TokenizedStringMatch match;
+    app_list::TokenizedString tokenized_query(base::UTF8ToUTF16(query_));
+    if (!match.Calculate(tokenized_query, tokenized_title))
+      continue;
+
+    auto search_result = std::make_unique<app_list::LauncherSearchResult>(
+        result.item_id, icon_url, relevance, profile_, extension,
+        error_reporter->Duplicate());
+    search_result->UpdateFromMatch(tokenized_title, match);
+    search_results.push_back(std::move(search_result));
   }
   provider_->SetSearchResults(extension->id(), std::move(search_results));
 }
@@ -151,10 +160,9 @@ void Service::OnExtensionLoaded(content::BrowserContext* browser_context,
   cached_listener_extension_ids_.reset();
 }
 
-void Service::OnExtensionUnloaded(
-    content::BrowserContext* browser_context,
-    const extensions::Extension* extension,
-    extensions::UnloadedExtensionInfo::Reason reason) {
+void Service::OnExtensionUnloaded(content::BrowserContext* browser_context,
+                                  const extensions::Extension* extension,
+                                  extensions::UnloadedExtensionReason reason) {
   // Invalidate cache.
   cached_listener_extension_ids_.reset();
 }

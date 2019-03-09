@@ -10,12 +10,11 @@
 #include <stddef.h>
 
 #include <memory>
-#include <queue>
 #include <string>
 
+#include "base/containers/queue.h"
 #include "base/mac/scoped_nsobject.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/thread_checker.h"
 #include "device/bluetooth/bluetooth_adapter.h"
@@ -173,9 +172,9 @@ class BluetoothSocketMac : public BluetoothSocket {
   base::scoped_nsobject<BluetoothL2capConnectionListener>
       l2cap_connection_listener_;
 
-  // A handle to the service record registered in the system SDP server.
-  // Used to eventually unregister the service.
-  BluetoothSDPServiceRecordHandle service_record_handle_;
+  // The service record registered in the system SDP server, used to
+  // eventually unregister the service.
+  base::scoped_nsobject<IOBluetoothSDPServiceRecord> service_record_;
 
   // The channel used to issue commands.
   std::unique_ptr<BluetoothChannelMac> channel_;
@@ -184,20 +183,20 @@ class BluetoothSocketMac : public BluetoothSocket {
   std::unique_ptr<ConnectCallbacks> connect_callbacks_;
 
   // Packets received while there is no pending "receive" callback.
-  std::queue<scoped_refptr<net::IOBufferWithSize> > receive_queue_;
+  base::queue<scoped_refptr<net::IOBufferWithSize>> receive_queue_;
 
   // Receive callbacks -- when a receive call is active.
   std::unique_ptr<ReceiveCallbacks> receive_callbacks_;
 
   // Send queue -- one entry per pending send operation.
-  std::queue<linked_ptr<SendRequest>> send_queue_;
+  base::queue<std::unique_ptr<SendRequest>> send_queue_;
 
   // The pending request to an Accept() call, or null if there is no pending
   // request.
   std::unique_ptr<AcceptRequest> accept_request_;
 
   // Queue of incoming connections.
-  std::queue<linked_ptr<BluetoothChannelMac>> accept_queue_;
+  base::queue<std::unique_ptr<BluetoothChannelMac>> accept_queue_;
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothSocketMac);
 };

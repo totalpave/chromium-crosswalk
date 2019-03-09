@@ -5,6 +5,7 @@
 #include "components/dom_distiller/core/distiller.h"
 
 #include <map>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -12,12 +13,14 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/location.h"
+#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "components/dom_distiller/core/distiller_page.h"
 #include "components/dom_distiller/core/distiller_url_fetcher.h"
 #include "components/dom_distiller/core/proto/distilled_article.pb.h"
@@ -65,6 +68,15 @@ DistillerImpl::~DistillerImpl() {
   DCHECK(destruction_allowed_);
 }
 
+bool DistillerImpl::DoesFetchImages() {
+// Only iOS makes use of the fetched image data.
+#if defined(OS_IOS)
+  return true;
+#else
+  return false;
+#endif
+}
+
 void DistillerImpl::SetMaxNumPagesInArticle(size_t max_num_pages) {
   max_pages_in_article_ = max_num_pages;
 }
@@ -95,7 +107,7 @@ bool DistillerImpl::IsPageNumberInUse(int page_num) const {
 DistillerImpl::DistilledPageData* DistillerImpl::GetPageAtIndex(size_t index)
     const {
   DCHECK_LT(index, pages_.size());
-  DistilledPageData* page_data = pages_[index];
+  DistilledPageData* page_data = pages_[index].get();
   DCHECK(page_data);
   return page_data;
 }
@@ -115,7 +127,7 @@ void DistillerImpl::DistillPage(const GURL& url,
 
 void DistillerImpl::DistillNextPage() {
   if (!waiting_pages_.empty()) {
-    std::map<int, GURL>::iterator front = waiting_pages_.begin();
+    auto front = waiting_pages_.begin();
     int page_num = front->first;
     const GURL url = front->second;
 
@@ -124,7 +136,7 @@ void DistillerImpl::DistillNextPage() {
     DCHECK(started_pages_index_.find(page_num) == started_pages_index_.end());
     DCHECK(finished_pages_index_.find(page_num) == finished_pages_index_.end());
     seen_urls_.insert(url.spec());
-    pages_.push_back(new DistilledPageData());
+    pages_.push_back(std::make_unique<DistilledPageData>());
     started_pages_index_[page_num] = pages_.size() - 1;
     distiller_page_->DistillPage(
         url,
@@ -157,7 +169,7 @@ void DistillerImpl::OnPageDistillationFinished(
     }
   }
 
-  DCHECK(distiller_result.get());
+  DCHECK(distiller_result);
   DistilledPageData* page_data =
       GetPageAtIndex(started_pages_index_[page_num]);
   page_data->distilled_page_proto =
@@ -273,25 +285,34 @@ void DistillerImpl::OnPageDistillationFinished(
 
   for (int img_num = 0; img_num < distiller_result->content_images_size();
        ++img_num) {
-    std::string image_id =
-        base::IntToString(page_num + 1) + "_" + base::IntToString(img_num);
-    FetchImage(page_num, image_id,
-        distiller_result->content_images(img_num).url());
+    std::string image_id = base::NumberToString(page_num + 1) + "_" +
+                           base::NumberToString(img_num);
+    MaybeFetchImage(page_num, image_id,
+                    distiller_result->content_images(img_num).url());
   }
 
   AddPageIfDone(page_num);
   DistillNextPage();
 }
 
-void DistillerImpl::FetchImage(int page_num,
-                               const std::string& image_id,
-                               const std::string& image_url) {
+void DistillerImpl::MaybeFetchImage(int page_num,
+                                    const std::string& image_id,
+                                    const std::string& image_url) {
   if (!GURL(image_url).is_valid()) return;
   DCHECK(started_pages_index_.find(page_num) != started_pages_index_.end());
   DistilledPageData* page_data = GetPageAtIndex(started_pages_index_[page_num]);
+
+  if (!DoesFetchImages()) {
+    DistilledPageProto_Image* image =
+        page_data->distilled_page_proto->data.add_image();
+    image->set_name(image_id);
+    image->set_url(image_url);
+    return;
+  }
+
   DistillerURLFetcher* fetcher =
       distiller_url_fetcher_factory_.CreateDistillerURLFetcher();
-  page_data->image_fetchers_.push_back(fetcher);
+  page_data->image_fetchers_.push_back(base::WrapUnique(fetcher));
 
   fetcher->FetchURL(image_url,
                     base::Bind(&DistillerImpl::OnFetchImageDone,
@@ -309,17 +330,19 @@ void DistillerImpl::OnFetchImageDone(int page_num,
                                      const std::string& response) {
   DCHECK(started_pages_index_.find(page_num) != started_pages_index_.end());
   DistilledPageData* page_data = GetPageAtIndex(started_pages_index_[page_num]);
-  DCHECK(page_data->distilled_page_proto.get());
+  DCHECK(page_data->distilled_page_proto);
   DCHECK(url_fetcher);
-  ScopedVector<DistillerURLFetcher>::iterator fetcher_it =
-      std::find(page_data->image_fetchers_.begin(),
-                page_data->image_fetchers_.end(),
-                url_fetcher);
+  auto fetcher_it = std::find_if(
+      page_data->image_fetchers_.begin(), page_data->image_fetchers_.end(),
+      [url_fetcher](const std::unique_ptr<DistillerURLFetcher>& f) {
+        return url_fetcher == f.get();
+      });
 
   DCHECK(fetcher_it != page_data->image_fetchers_.end());
   // Delete the |url_fetcher| by DeleteSoon since the OnFetchImageDone
   // callback is invoked by the |url_fetcher|.
-  page_data->image_fetchers_.weak_erase(fetcher_it);
+  fetcher_it->release();
+  page_data->image_fetchers_.erase(fetcher_it);
   base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, url_fetcher);
 
   DistilledPageProto_Image* image =
@@ -359,9 +382,8 @@ const ArticleDistillationUpdate DistillerImpl::CreateDistillationUpdate()
 
   std::vector<scoped_refptr<ArticleDistillationUpdate::RefCountedPageProto> >
       update_pages;
-  for (std::map<int, size_t>::const_iterator it = finished_pages_index_.begin();
-       it != finished_pages_index_.end();
-       ++it) {
+  for (auto it = finished_pages_index_.begin();
+       it != finished_pages_index_.end(); ++it) {
     update_pages.push_back(pages_[it->second]->distilled_page_proto);
   }
   return ArticleDistillationUpdate(update_pages, has_next_page, has_prev_page);
@@ -374,7 +396,7 @@ void DistillerImpl::RunDistillerCallbackIfDone() {
     std::unique_ptr<DistilledArticleProto> article_proto(
         new DistilledArticleProto());
     // Stitch the pages back into the article.
-    for (std::map<int, size_t>::iterator it = finished_pages_index_.begin();
+    for (auto it = finished_pages_index_.begin();
          it != finished_pages_index_.end();) {
       DistilledPageData* page_data = GetPageAtIndex(it->second);
       *(article_proto->add_pages()) = page_data->distilled_page_proto->data;

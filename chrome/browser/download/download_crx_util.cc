@@ -14,18 +14,22 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "content/public/browser/download_item.h"
+#include "components/download/public/common/download_item.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/notification_service.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/user_script.h"
 
 using content::BrowserThread;
-using content::DownloadItem;
+using download::DownloadItem;
 using extensions::WebstoreInstaller;
 
 namespace download_crx_util {
 
 namespace {
+
+bool g_allow_offstore_install_for_testing = false;
 
 // Hold a mock ExtensionInstallPrompt object that will be used when the
 // download system opens a CRX.
@@ -44,12 +48,15 @@ std::unique_ptr<ExtensionInstallPrompt> CreateExtensionInstallPrompt(
     mock_install_prompt_for_testing = NULL;
     return std::unique_ptr<ExtensionInstallPrompt>(result);
   } else {
-    content::WebContents* web_contents = download_item.GetWebContents();
+    content::WebContents* web_contents =
+        content::DownloadItemUtils::GetWebContents(
+            const_cast<DownloadItem*>(&download_item));
     if (!web_contents) {
       Browser* browser = chrome::FindLastActiveWithProfile(profile);
-      if (!browser)
-        browser =
-            new Browser(Browser::CreateParams(Browser::TYPE_TABBED, profile));
+      if (!browser) {
+        browser = new Browser(
+            Browser::CreateParams(Browser::TYPE_TABBED, profile, true));
+      }
       web_contents = browser->tab_strip_model()->GetActiveWebContents();
     }
     return std::unique_ptr<ExtensionInstallPrompt>(
@@ -68,9 +75,9 @@ void SetMockInstallPromptForTesting(
 
 scoped_refptr<extensions::CrxInstaller> CreateCrxInstaller(
     Profile* profile,
-    const content::DownloadItem& download_item) {
-  ExtensionService* service = extensions::ExtensionSystem::Get(profile)->
-      extension_service();
+    const download::DownloadItem& download_item) {
+  extensions::ExtensionService* service =
+      extensions::ExtensionSystem::Get(profile)->extension_service();
   CHECK(service);
 
   scoped_refptr<extensions::CrxInstaller> installer(
@@ -131,8 +138,15 @@ bool OffStoreInstallAllowedByPrefs(Profile* profile, const DownloadItem& item) {
   // TODO(aa): RefererURL is cleared in some cases, for example when going
   // between secure and non-secure URLs. It would be better if DownloadItem
   // tracked the initiating page explicitly.
-  return extensions::ExtensionManagementFactory::GetForBrowserContext(profile)
-      ->IsOffstoreInstallAllowed(item.GetURL(), item.GetReferrerUrl());
+  return g_allow_offstore_install_for_testing ||
+         extensions::ExtensionManagementFactory::GetForBrowserContext(profile)
+             ->IsOffstoreInstallAllowed(item.GetURL(), item.GetReferrerUrl());
+}
+
+std::unique_ptr<base::AutoReset<bool>> OverrideOffstoreInstallAllowedForTesting(
+    bool allowed) {
+  return std::make_unique<base::AutoReset<bool>>(
+      &g_allow_offstore_install_for_testing, allowed);
 }
 
 }  // namespace download_crx_util

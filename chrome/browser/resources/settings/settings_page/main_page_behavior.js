@@ -2,428 +2,385 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Fast out, slow in.
-var EASING_FUNCTION = 'cubic-bezier(0.4, 0, 0.2, 1)';
-var EXPAND_DURATION = 350;
+cr.exportPath('settings');
 
 /**
- * Calls |readyTest| repeatedly until it returns true, then calls
- * |readyCallback|.
- * @param {function():boolean} readyTest
- * @param {!Function} readyCallback
+ * @enum {string}
+ * A categorization of every possible Settings URL, necessary for implementing
+ * a finite state machine.
  */
-function doWhenReady(readyTest, readyCallback) {
-  // TODO(dschuyler): Determine whether this hack can be removed.
-  // See also: https://github.com/Polymer/polymer/issues/3629
-  var intervalId = setInterval(function() {
-    if (readyTest()) {
-      clearInterval(intervalId);
-      readyCallback();
-    }
-  }, 10);
-}
-
-/**
- * Provides animations to expand and collapse individual sections in a page.
- * Expanded sections take up the full height of the container. At most one
- * section should be expanded at any given time.
- * @polymerBehavior Polymer.MainPageBehavior
- */
-var MainPageBehaviorImpl = {
-  /**
-   * @type {string} Selector to get the sections. Derived elements
-   *     must override.
-   */
-  sectionSelector: '',
-
-  /** @type {?Element} The scrolling container. */
-  scroller: null,
-
-  /** @override */
-  attached: function() {
-    this.scroller = this.domHost && this.domHost.parentNode.$.mainContainer;
-  },
-
-  /**
-   * Hides or unhides the sections not being expanded.
-   * @param {string} sectionName The section to keep visible.
-   * @param {boolean} hidden Whether the sections should be hidden.
-   * @private
-   */
-  toggleOtherSectionsHidden_: function(sectionName, hidden) {
-    var sections = Polymer.dom(this.root).querySelectorAll(
-        this.sectionSelector + ':not([section=' + sectionName + '])');
-    for (var section of sections)
-      section.hidden = hidden;
-  },
-
-  /**
-   * Animates the card in |section|, expanding it to fill the page.
-   * @param {!SettingsSectionElement} section
-   */
-  expandSection: function(section) {
-    // If another section's card is expanding, cancel that animation first.
-    var expanding = this.$$('.expanding');
-    if (expanding) {
-      if (expanding == section)
-        return;
-
-      if (this.animations['section']) {
-        // Cancel the animation, then call startExpandSection_.
-        this.cancelAnimation('section', function() {
-          this.startExpandSection_(section);
-        }.bind(this));
-      } else {
-        // The animation must have finished but its promise hasn't resolved yet.
-        // When it resolves, collapse that section's card before expanding
-        // this one.
-        setTimeout(function() {
-          this.collapseSection(
-              /** @type {!SettingsSectionElement} */(expanding));
-          this.finishAnimation('section', function() {
-            this.startExpandSection_(section);
-          }.bind(this));
-        }.bind(this));
-      }
-
-      return;
-    }
-
-    if (this.$$('.collapsing') && this.animations['section']) {
-      // Finish the collapse animation before expanding.
-      this.finishAnimation('section', function() {
-        this.startExpandSection_(section);
-      }.bind(this));
-      return;
-    }
-
-    this.startExpandSection_(section);
-  },
-
-  /**
-   * Helper function to set up and start the expand animation.
-   * @param {!SettingsSectionElement} section
-   */
-  startExpandSection_: function(section) {
-    if (section.classList.contains('expanded'))
-      return;
-
-    // Freeze the scroller and save its position.
-    this.listScrollTop_ = this.scroller.scrollTop;
-
-    var scrollerWidth = this.scroller.clientWidth;
-    this.scroller.style.overflow = 'hidden';
-    // Adjust width to compensate for scroller.
-    var scrollbarWidth = this.scroller.clientWidth - scrollerWidth;
-    this.scroller.style.width = 'calc(100% - ' + scrollbarWidth + 'px)';
-
-    // Freezes the section's height so its card can be removed from the flow.
-    this.freezeSection_(section);
-
-    // Expand the section's card to fill the parent.
-    var animationPromise = this.playExpandSection_(section);
-
-    animationPromise.then(function() {
-      this.scroller.scrollTop = 0;
-      this.toggleOtherSectionsHidden_(section.section, true);
-    }.bind(this), function() {
-      // Animation was canceled; restore the section.
-      this.unfreezeSection_(section);
-    }.bind(this)).then(function() {
-      this.scroller.style.overflow = '';
-      this.scroller.style.width = '';
-    }.bind(this));
-  },
-
-  /**
-   * Animates the card in |section|, collapsing it back into its section.
-   * @param {!SettingsSectionElement} section
-   */
-  collapseSection: function(section) {
-    // If the section's card is still expanding, cancel the expand animation.
-    if (section.classList.contains('expanding')) {
-      if (this.animations['section']) {
-        this.cancelAnimation('section');
-      } else {
-        // The animation must have finished but its promise hasn't finished
-        // resolving; try again asynchronously.
-        this.async(function() {
-          this.collapseSection(section);
-        });
-      }
-      return;
-    }
-
-    if (!section.classList.contains('expanded'))
-      return;
-
-    this.toggleOtherSectionsHidden_(section.section, false);
-
-    var scrollerWidth = this.scroller.clientWidth;
-    this.scroller.style.overflow = 'hidden';
-    // Adjust width to compensate for scroller.
-    var scrollbarWidth = this.scroller.clientWidth - scrollerWidth;
-    this.scroller.style.width = 'calc(100% - ' + scrollbarWidth + 'px)';
-
-    this.playCollapseSection_(section).then(function() {
-      this.unfreezeSection_(section);
-      this.scroller.style.overflow = '';
-      this.scroller.style.width = '';
-      section.classList.remove('collapsing');
-    }.bind(this));
-  },
-
-  /**
-   * Freezes a section's height so its card can be removed from the flow without
-   * affecting the layout of the surrounding sections.
-   * @param {!SettingsSectionElement} section
-   * @private
-   */
-  freezeSection_: function(section) {
-    var card = section.$.card;
-    section.style.height = section.clientHeight + 'px';
-
-    var cardHeight = card.offsetHeight;
-    var cardWidth = card.offsetWidth;
-    // If the section is not displayed yet (e.g., navigated directly to a
-    // sub-page), cardHeight and cardWidth are 0, so do not set the height or
-    // width explicitly.
-    // TODO(michaelpg): Improve this logic when refactoring
-    // settings-animated-pages.
-    if (cardHeight && cardWidth) {
-      // TODO(michaelpg): Temporary hack to store the height the section should
-      // collapse to when it closes.
-      card.origHeight_ = cardHeight;
-
-      card.style.height = cardHeight + 'px';
-      card.style.width = cardWidth + 'px';
-    } else {
-      // Set an invalid value so we don't try to use it later.
-      card.origHeight_ = NaN;
-    }
-
-    // Place the section's card at its current position but removed from the
-    // flow.
-    card.style.top = card.getBoundingClientRect().top + 'px';
-    section.classList.add('frozen');
-  },
-
-  /**
-   * After freezeSection_, restores the section to its normal height.
-   * @param {!SettingsSectionElement} section
-   * @private
-   */
-  unfreezeSection_: function(section) {
-    if (!section.classList.contains('frozen'))
-      return;
-    var card = section.$.card;
-    section.classList.remove('frozen');
-    card.style.top = '';
-    card.style.height = '';
-    card.style.width = '';
-    section.style.height = '';
-  },
-
-  /**
-   * Expands the card in |section| to fill the page.
-   * @param {!SettingsSectionElement} section
-   * @return {!Promise}
-   * @private
-   */
-  playExpandSection_: function(section) {
-    var card = section.$.card;
-
-    // The card should start at the top of the page.
-    var targetTop = this.scroller.getBoundingClientRect().top;
-
-    section.classList.add('expanding');
-
-    // Expand the card, using minHeight. (The card must span the container's
-    // client height, so it must be at least 100% in case the card is too short.
-    // If the card is already taller than the container's client height, we
-    // don't want to shrink the card to 100% or the content will overflow, so
-    // we can't use height, and animating height wouldn't look right anyway.)
-    var keyframes = [{
-      top: card.style.top,
-      minHeight: card.style.height,
-      easing: EASING_FUNCTION,
-    }, {
-      top: targetTop + 'px',
-      minHeight: 'calc(100% - ' + targetTop + 'px)',
-    }];
-    var options = /** @type {!KeyframeEffectOptions} */({
-      duration: EXPAND_DURATION
-    });
-    // TODO(michaelpg): Change elevation of sections.
-    var promise;
-    if (keyframes[0].top && keyframes[0].minHeight)
-      promise = this.animateElement('section', card, keyframes, options);
-    else
-      promise = Promise.resolve();
-
-    promise.then(function() {
-      section.classList.add('expanded');
-      card.style.top = '';
-      this.style.margin = 'auto';
-      section.$.header.hidden = true;
-      section.style.height = '';
-    }.bind(this), function() {
-      // The animation was canceled; catch the error and continue.
-    }).then(function() {
-      // Whether finished or canceled, clean up the animation.
-      section.classList.remove('expanding');
-      card.style.height = '';
-      card.style.width = '';
-    });
-
-    return promise;
-  },
-
-  /**
-   * Collapses the card in |section| back to its normal position.
-   * @param {!SettingsSectionElement} section
-   * @return {!Promise}
-   * @private
-   */
-  playCollapseSection_: function(section) {
-    var card = section.$.card;
-
-    this.style.margin = '';
-    section.$.header.hidden = false;
-
-    var startingTop = this.scroller.getBoundingClientRect().top;
-
-    var cardHeightStart = card.clientHeight;
-    var cardWidthStart = card.clientWidth;
-
-    section.classList.add('collapsing');
-    section.classList.remove('expanding', 'expanded');
-
-    // If we navigated here directly, we don't know the original height of the
-    // section, so we skip the animation.
-    // TODO(michaelpg): remove this condition once sliding is implemented.
-    if (isNaN(card.origHeight_))
-      return Promise.resolve();
-
-    // Restore the section to its proper height to make room for the card.
-    section.style.height = section.clientHeight + card.origHeight_ + 'px';
-
-    // TODO(michaelpg): this should be in collapseSection(), but we need to wait
-    // until the full page height is available (setting the section height).
-    this.scroller.scrollTop = this.listScrollTop_;
-
-    // The card is unpositioned, so use its position as the ending state,
-    // but account for scroll.
-    var targetTop = card.getBoundingClientRect().top - this.scroller.scrollTop;
-
-    // Account for the section header.
-    var headerStyle = getComputedStyle(section.$.header);
-    targetTop += section.$.header.offsetHeight +
-        parseInt(headerStyle.marginBottom, 10) +
-        parseInt(headerStyle.marginTop, 10);
-
-    var keyframes = [{
-      top: startingTop + 'px',
-      minHeight: cardHeightStart + 'px',
-      easing: EASING_FUNCTION,
-    }, {
-      top: targetTop + 'px',
-      minHeight: card.origHeight_ + 'px',
-    }];
-    var options = /** @type {!KeyframeEffectOptions} */({
-      duration: EXPAND_DURATION
-    });
-
-    card.style.width = cardWidthStart + 'px';
-    var promise = this.animateElement('section', card, keyframes, options);
-    promise.then(function() {
-      card.style.width = '';
-    });
-    return promise;
-  },
+settings.RouteState = {
+  // Initial state before anything has loaded yet.
+  INITIAL: 'initial',
+  // A dialog that has a dedicated URL (e.g. /importData).
+  DIALOG: 'dialog',
+  // A section (basically a scroll position within the top level page, e.g,
+  // /appearance.
+  SECTION: 'section',
+  // A subpage, or sub-subpage e.g, /searchEngins.
+  SUBPAGE: 'subpage',
+  // The top level Settings page, '/'.
+  TOP_LEVEL: 'top-level',
 };
 
+cr.define('settings', function() {
+  const RouteState = settings.RouteState;
 
-/** @polymerBehavior */
-var MainPageBehavior = [
-  TransitionBehavior,
-  MainPageBehaviorImpl
-];
+  /**
+   * @param {?settings.Route} route
+   * @return {!settings.RouteState}
+   */
+  function classifyRoute(route) {
+    if (!route) {
+      return RouteState.INITIAL;
+    }
+    if (route === settings.routes.BASIC || route === settings.routes.ABOUT) {
+      return RouteState.TOP_LEVEL;
+    }
+    if (route.isSubpage()) {
+      return RouteState.SUBPAGE;
+    }
+    if (route.isNavigableDialog) {
+      return RouteState.DIALOG;
+    }
+    return RouteState.SECTION;
+  }
 
-
-/**
- * TODO(michaelpg): integrate slide animations.
- * @polymerBehavior RoutableBehavior
- */
-var RoutableBehaviorImpl = {
-  properties: {
-    /** Contains the current route. */
-    currentRoute: {
-      type: Object,
-      notify: true,
-      observer: 'currentRouteChanged_',
+  /**
+   * Responds to route changes by expanding, collapsing, or scrolling to
+   * sections on the page. Expanded sections take up the full height of the
+   * container. At most one section should be expanded at any given time.
+   * @polymerBehavior
+   */
+  const MainPageBehavior = {
+    properties: {
+      /**
+       * Whether a search operation is in progress or previous search results
+       * are being displayed.
+       * @private {boolean}
+       */
+      inSearchMode: {
+        type: Boolean,
+        value: false,
+        observer: 'inSearchModeChanged_',
+      },
     },
-  },
 
-  /** @private */
-  scrollToSection_: function() {
-    doWhenReady(
-        function() {
-          return this.scrollHeight > 0;
-        }.bind(this),
-        function() {
-          // If the current section changes while we are waiting for the page to
-          // be ready, scroll to the newest requested section.
-          this.getSection_(this.currentRoute.section).scrollIntoView();
-        }.bind(this));
-  },
+    /** @type {?HTMLElement} */
+    scroller: null,
 
-  /** @private */
-  currentRouteChanged_: function(newRoute, oldRoute) {
-    var newRouteIsSubpage = newRoute && newRoute.subpage.length;
-    var oldRouteIsSubpage = oldRoute && oldRoute.subpage.length;
+    /**
+     * A map holding all valid state transitions.
+     * @private {!Map<!settings.RouteState, !settings.RouteState>}
+     */
+    validTransitions_: (function() {
+      const allStates = new Set([
+        RouteState.DIALOG,
+        RouteState.SECTION,
+        RouteState.SUBPAGE,
+        RouteState.TOP_LEVEL,
+      ]);
 
-    if (!oldRoute && newRouteIsSubpage) {
-      // Allow the page to load before expanding the section. TODO(michaelpg):
-      // Time this better when refactoring settings-animated-pages.
-      setTimeout(function() {
-        var section = this.getSection_(newRoute.section);
-        if (section)
-          this.expandSection(section);
-      }.bind(this));
-      return;
-    }
+      return new Map([
+        [RouteState.INITIAL, allStates],
+        [
+          RouteState.DIALOG, new Set([
+            RouteState.SECTION,
+            RouteState.SUBPAGE,
+            RouteState.TOP_LEVEL,
+          ])
+        ],
+        [RouteState.SECTION, allStates],
+        [RouteState.SUBPAGE, allStates],
+        [RouteState.TOP_LEVEL, allStates],
+      ]);
+    })(),
 
-    if (!newRouteIsSubpage && oldRouteIsSubpage) {
-      var section = this.getSection_(oldRoute.section);
-      if (section)
-        this.collapseSection(section);
-    } else if (newRouteIsSubpage &&
-               (!oldRouteIsSubpage || newRoute.section != oldRoute.section)) {
-      var section = this.getSection_(newRoute.section);
-      if (section)
-        this.expandSection(section);
-    } else if (newRoute && newRoute.section &&
-        this.$$('[data-page=' + newRoute.page + ']')) {
-      this.scrollToSection_();
-    }
-  },
+    /** @override */
+    attached: function() {
+      this.scroller = this.domHost ? this.domHost.parentNode : document.body;
+    },
 
-  /**
-   * Helper function to get a section from the local DOM.
-   * @param {string} section Section name of the element to get.
-   * @return {?SettingsSectionElement}
-   * @private
-   */
-  getSection_: function(section) {
-    return /** @type {?SettingsSectionElement} */(
-        this.$$('[section=' + section + ']'));
-  },
-};
+    /**
+     * Method to be defined by users of MainPageBehavior.
+     * @param {!settings.Route} route
+     * @return {boolean} Whether the given route is part of |this| page.
+     */
+    containsRoute: function(route) {
+      return false;
+    },
 
+    /**
+     * @param {boolean} current
+     * @param {boolean} previous
+     * @private
+     */
+    inSearchModeChanged_: function(current, previous) {
+      // Ignore 1st occurrence which happens while the element is being
+      // initialized.
+      if (previous === undefined) {
+        return;
+      }
 
-/** @polymerBehavior */
-var RoutableBehavior = [
-  MainPageBehavior,
-  RoutableBehaviorImpl
-];
+      if (!this.inSearchMode) {
+        const route = settings.getCurrentRoute();
+        if (this.containsRoute(route) &&
+            classifyRoute(route) === RouteState.SECTION) {
+          // Re-fire the showing-section event to trigger settings-main
+          // recalculation of the overscroll, now that sections are not
+          // hidden-by-search.
+          this.fire('showing-section', this.getSection(route.section));
+        }
+      }
+    },
+
+    /**
+     * @param {!settings.Route} route
+     * @return {boolean}
+     * @private
+     */
+    shouldExpandAdvanced_: function(route) {
+      return this.tagName == 'SETTINGS-BASIC-PAGE' &&
+          settings.routes.ADVANCED && settings.routes.ADVANCED.contains(route);
+    },
+
+    /**
+     * Finds the settings section corresponding to the given route. If the
+     * section is lazily loaded it force-renders it.
+     * Note: If the section resides within "advanced" settings, a
+     * 'hide-container' event is fired (necessary to avoid flashing). Callers
+     * are responsible for firing a 'show-container' event.
+     * @param {!settings.Route} route
+     * @return {!Promise<!SettingsSectionElement>}
+     * @private
+     */
+    ensureSectionForRoute_: function(route) {
+      const section = this.getSection(route.section);
+      if (section != null) {
+        return Promise.resolve(section);
+      }
+
+      // TODO(dpapad): Remove condition when Polymer 2 migration is complete.
+      // The function to use to wait for <dom-if>s to render.
+      const waitFn = Polymer.DomIf ?
+          Polymer.RenderStatus.beforeNextRender.bind(null, this) :
+          requestAnimationFrame;
+
+      return new Promise(resolve => {
+        if (this.shouldExpandAdvanced_(route)) {
+          this.fire('hide-container');
+          waitFn(() => {
+            this.$$('#advancedPageTemplate').get().then(() => {
+              resolve(this.getSection(route.section));
+            });
+          });
+        } else {
+          waitFn(() => {
+            resolve(this.getSection(route.section));
+          });
+        }
+      });
+    },
+
+    /**
+     * @param {!settings.Route} route
+     * @private
+     */
+    enterSubpage_: function(route) {
+      this.lastScrollTop_ = this.scroller.scrollTop;
+      this.scroller.scrollTop = 0;
+      this.classList.add('showing-subpage');
+      this.fire('subpage-expand');
+      this.ensureSectionForRoute_(route).then(section => {
+        section.classList.add('expanded');
+        // Fire event used by a11y tests only.
+        this.fire('settings-section-expanded');
+
+        this.fire('show-container');
+      });
+    },
+
+    /**
+     * @param {!settings.Route} oldRoute
+     * @return {!Promise<void>}
+     * @private
+     */
+    enterMainPage_: function(oldRoute) {
+      const oldSection = this.getSection(oldRoute.section);
+      oldSection.classList.remove('expanded');
+      this.classList.remove('showing-subpage');
+      return new Promise((res, rej) => {
+        requestAnimationFrame(() => {
+          if (settings.lastRouteChangeWasPopstate()) {
+            this.scroller.scrollTop = this.lastScrollTop_;
+          }
+          this.fire('showing-main-page');
+          res();
+        });
+      });
+    },
+
+    /**
+     * @param {!settings.Route} route
+     * @private
+     */
+    scrollToSection_: function(route) {
+      this.ensureSectionForRoute_(route).then(section => {
+        if (!this.inSearchMode) {
+          this.fire('showing-section', section);
+        }
+        this.fire('show-container');
+      });
+    },
+
+    /**
+     * Detects which state transition is appropriate for the given new/old
+     * routes.
+     * @param {!settings.Route} newRoute
+     * @param {settings.Route} oldRoute
+     * @private
+     */
+    getStateTransition_(newRoute, oldRoute) {
+      const containsNew = this.containsRoute(newRoute);
+      const containsOld = this.containsRoute(oldRoute);
+
+      if (!containsNew && !containsOld) {
+        // Nothing to do, since none of the old/new routes belong to this page.
+        return null;
+      }
+
+      // Case where going from |this| page to an unrelated page. For example:
+      //  |this| is settings-basic-page AND
+      //  oldRoute is /searchEngines AND
+      //  newRoute is /help.
+      if (containsOld && !containsNew) {
+        return [classifyRoute(oldRoute), RouteState.TOP_LEVEL];
+      }
+
+      // Case where return from an unrelated page to |this| page. For example:
+      //  |this| is settings-basic-page AND
+      //  oldRoute is /help AND
+      //  newRoute is /searchEngines
+      if (!containsOld && containsNew) {
+        return [RouteState.TOP_LEVEL, classifyRoute(newRoute)];
+      }
+
+      // Case where transitioning between routes that both belong to |this|
+      // page.
+      return [classifyRoute(oldRoute), classifyRoute(newRoute)];
+    },
+
+    /**
+     * @param {!settings.Route} newRoute
+     * @param {settings.Route} oldRoute
+     */
+    currentRouteChanged(newRoute, oldRoute) {
+      const transition = this.getStateTransition_(newRoute, oldRoute);
+      if (transition === null) {
+        return;
+      }
+
+      const oldState = transition[0];
+      const newState = transition[1];
+      assert(this.validTransitions_.get(oldState).has(newState));
+
+      if (oldState == RouteState.TOP_LEVEL) {
+        if (newState == RouteState.SECTION) {
+          this.scrollToSection_(newRoute);
+        } else if (newState == RouteState.SUBPAGE) {
+          this.enterSubpage_(newRoute);
+        }
+        // Nothing to do here for the case of RouteState.DIALOG or TOP_LEVEL.
+        // The latter happens when navigating from '/?search=foo' to '/'
+        // (clearing search results).
+        return;
+      }
+
+      if (oldState == RouteState.SECTION) {
+        if (newState == RouteState.SECTION) {
+          this.scrollToSection_(newRoute);
+        } else if (newState == RouteState.SUBPAGE) {
+          this.enterSubpage_(newRoute);
+        } else if (newState == RouteState.TOP_LEVEL) {
+          this.scroller.scrollTop = 0;
+        }
+        // Nothing to do here for the case of RouteState.DIALOG.
+        return;
+      }
+
+      if (oldState == RouteState.SUBPAGE) {
+        if (newState == RouteState.SECTION) {
+          this.enterMainPage_(oldRoute);
+
+          // Scroll to the corresponding section, only if the user explicitly
+          // navigated to a section (via the menu).
+          if (!settings.lastRouteChangeWasPopstate()) {
+            this.scrollToSection_(newRoute);
+          }
+        } else if (newState == RouteState.SUBPAGE) {
+          // Handle case where the two subpages belong to
+          // different sections, but are linked to each other. For example
+          // /storage and /accounts (in ChromeOS).
+          if (!oldRoute.contains(newRoute) && !newRoute.contains(oldRoute)) {
+            this.enterMainPage_(oldRoute).then(() => {
+              this.enterSubpage_(newRoute);
+            });
+            return;
+          }
+
+          // Handle case of subpage to sub-subpage navigation.
+          if (oldRoute.contains(newRoute)) {
+            this.scroller.scrollTop = 0;
+            return;
+          }
+          // When going from a sub-subpage to its parent subpage, scroll
+          // position is automatically restored, because we focus the
+          // sub-subpage entry point.
+        } else if (newState == RouteState.TOP_LEVEL) {
+          this.enterMainPage_(oldRoute);
+        } else if (newState == RouteState.DIALOG) {
+          // The only known case currently for such a transition is from
+          // /storage to /clearBrowserData.
+          this.enterMainPage_(oldRoute);
+        }
+        return;
+      }
+
+      if (oldState == RouteState.INITIAL) {
+        if (newState == RouteState.SECTION) {
+          this.scrollToSection_(newRoute);
+        } else if (newState == RouteState.SUBPAGE) {
+          this.enterSubpage_(newRoute);
+        }
+        // Nothing to do here for the case of RouteState.DIALOG and TOP_LEVEL.
+        return;
+      }
+
+      if (oldState == RouteState.DIALOG) {
+        if (newState == RouteState.SUBPAGE) {
+          // The only known case currently for such a transition is from
+          // /clearBrowserData back to /storage.
+          this.enterSubpage_(newRoute);
+        }
+        // Nothing to do for all other cases.
+      }
+    },
+
+    /**
+     * TODO(dpapad): Rename this to |querySection| to distinguish it from
+     * ensureSectionForRoute_() which force-renders the section as needed.
+     * Helper function to get a section from the local DOM.
+     * @param {string} section Section name of the element to get.
+     * @return {?SettingsSectionElement}
+     */
+    getSection: function(section) {
+      if (!section) {
+        return null;
+      }
+      return /** @type {?SettingsSectionElement} */ (
+          this.$$(`settings-section[section="${section}"]`));
+    },
+  };
+
+  return {MainPageBehavior: MainPageBehavior};
+});

@@ -11,10 +11,10 @@
 #include "base/macros.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_observer.h"
 
 namespace views {
 
-class NativeWidget;
 class SubmenuView;
 class View;
 class Widget;
@@ -26,6 +26,10 @@ class PreMenuEventDispatchHandler;
 
 }  // internal
 
+namespace test {
+class MenuControllerTest;
+}  // test
+
 // SubmenuView uses a MenuHost to house the SubmenuView.
 //
 // SubmenuView owns the MenuHost. When SubmenuView is done with the MenuHost
@@ -33,7 +37,7 @@ class PreMenuEventDispatchHandler;
 // OS destroys the widget out from under us, in which case |MenuHostDestroyed|
 // is invoked back on the SubmenuView and the SubmenuView then drops references
 // to the MenuHost.
-class MenuHost : public Widget {
+class MenuHost : public Widget, public WidgetObserver {
  public:
   explicit MenuHost(SubmenuView* submenu);
   ~MenuHost() override;
@@ -65,13 +69,21 @@ class MenuHost : public Widget {
   void ReleaseMenuHostCapture();
 
  private:
-  // Overridden from Widget:
+  friend class test::MenuControllerTest;
+
+  // Widget:
   internal::RootView* CreateRootView() override;
   void OnMouseCaptureLost() override;
   void OnNativeWidgetDestroyed() override;
   void OnOwnerClosing() override;
   void OnDragWillStart() override;
   void OnDragComplete() override;
+
+  // WidgetObserver:
+  void OnWidgetDestroying(Widget* widget) override;
+
+  // Parent of the MenuHost widget.
+  Widget* owner_ = nullptr;
 
   // The view we contain.
   SubmenuView* submenu_;

@@ -18,8 +18,10 @@
 #include "base/memory/ref_counted.h"
 #include "base/timer/timer.h"
 #include "net/base/chunked_upload_data_stream.h"
-#include "net/base/host_port_pair.h"
+#include "net/base/ip_endpoint.h"
+#include "net/base/proxy_server.h"
 #include "net/http/http_request_headers.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/url_fetcher.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context_getter_observer.h"
@@ -27,6 +29,7 @@
 #include "url/gurl.h"
 
 namespace base {
+class SequencedTaskRunner;
 class SingleThreadTaskRunner;
 }  // namespace base
 
@@ -46,7 +49,8 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   URLFetcherCore(URLFetcher* fetcher,
                  const GURL& original_url,
                  URLFetcher::RequestType request_type,
-                 URLFetcherDelegate* d);
+                 URLFetcherDelegate* d,
+                 net::NetworkTrafficAnnotationTag traffic_annotation);
 
   // Starts the load. It's important that this not happen in the constructor
   // because it causes the IO thread to begin AddRef()ing and Release()ing
@@ -82,17 +86,17 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   // one or more of the LOAD_* flags defined in net/base/load_flags.h.
   void SetLoadFlags(int load_flags);
   int GetLoadFlags() const;
+  void SetAllowCredentials(bool allow_credentials);
   void SetReferrer(const std::string& referrer);
   void SetReferrerPolicy(URLRequest::ReferrerPolicy referrer_policy);
   void SetExtraRequestHeaders(const std::string& extra_request_headers);
   void AddExtraRequestHeader(const std::string& header_line);
   void SetRequestContext(URLRequestContextGetter* request_context_getter);
-  // Set the URL that should be considered as "initiating" the fetch. This URL
+  // Set the origin that should be considered as "initiating" the fetch. This
+  // URL
   // will be considered the "first-party" when applying cookie blocking policy
   // to requests, and treated as the request's initiator.
-  //
-  // TODO(mkwst): Convert this to a url::Origin. https://crbug.com/577565
-  void SetInitiatorURL(const GURL& initiator);
+  void SetInitiator(const base::Optional<url::Origin>& initiator);
   // Set the key and data callback that is used when setting the user
   // data on any URLRequest objects this object creates.
   void SetURLRequestUserData(
@@ -112,7 +116,8 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   void SaveResponseWithWriter(
       std::unique_ptr<URLFetcherResponseWriter> response_writer);
   HttpResponseHeaders* GetResponseHeaders() const;
-  HostPortPair GetSocketAddress() const;
+  IPEndPoint GetSocketAddress() const;
+  const ProxyServer& ProxyServerUsed() const;
   bool WasFetchedViaProxy() const;
   bool WasCached() const;
   const GURL& GetOriginalURL() const;
@@ -136,7 +141,7 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   void OnReceivedRedirect(URLRequest* request,
                           const RedirectInfo& redirect_info,
                           bool* defer_redirect) override;
-  void OnResponseStarted(URLRequest* request) override;
+  void OnResponseStarted(URLRequest* request, int net_error) override;
   void OnReadCompleted(URLRequest* request, int bytes_read) override;
   void OnCertificateRequested(URLRequest* request,
                               SSLCertRequestInfo* cert_request_info) override;
@@ -217,11 +222,13 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
 
   // Notify Delegate about the progress of upload/download.
   void InformDelegateUploadProgress();
-  void InformDelegateUploadProgressInDelegateThread(int64_t current,
-                                                    int64_t total);
-  void InformDelegateDownloadProgress();
-  void InformDelegateDownloadProgressInDelegateThread(int64_t current,
+  void InformDelegateUploadProgressInDelegateSequence(int64_t current,
                                                       int64_t total);
+  void InformDelegateDownloadProgress();
+  void InformDelegateDownloadProgressInDelegateSequence(
+      int64_t current,
+      int64_t total,
+      int64_t current_network_bytes);
 
   // Check if any upload data is set or not.
   void AssertHasNoUploadData() const;
@@ -232,30 +239,33 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   URLFetcher::RequestType request_type_;  // What type of request is this?
   URLRequestStatus status_;          // Status of the request
   URLFetcherDelegate* delegate_;     // Object to notify on completion
-  // Task runner for the creating thread. Used to interact with the delegate.
-  scoped_refptr<base::SingleThreadTaskRunner> delegate_task_runner_;
+  // Task runner for the creating sequence. Used to interact with the delegate.
+  const scoped_refptr<base::SequencedTaskRunner> delegate_task_runner_;
   // Task runner for network operations.
   scoped_refptr<base::SingleThreadTaskRunner> network_task_runner_;
   // Task runner for upload file access.
   scoped_refptr<base::TaskRunner> upload_file_task_runner_;
   std::unique_ptr<URLRequest> request_;  // The actual request this wraps
   int load_flags_;                   // Flags for the load operation
+  // Whether credentials are sent along with the request.
+  base::Optional<bool> allow_credentials_;
   int response_code_;                // HTTP status code for the request
   scoped_refptr<IOBuffer> buffer_;
                                      // Read buffer
   scoped_refptr<URLRequestContextGetter> request_context_getter_;
                                      // Cookie/cache info for the request
-  GURL initiator_;  // The request's initiator
+  base::Optional<url::Origin> initiator_;  // The request's initiator
   // The user data to add to each newly-created URLRequest.
   const void* url_request_data_key_;
   URLFetcher::CreateDataCallback url_request_create_data_callback_;
   HttpRequestHeaders extra_request_headers_;
   scoped_refptr<HttpResponseHeaders> response_headers_;
+  ProxyServer proxy_server_;
   bool was_fetched_via_proxy_;
   bool was_cached_;
   int64_t received_response_content_length_;
   int64_t total_received_bytes_;
-  HostPortPair socket_address_;
+  IPEndPoint remote_endpoint_;
 
   bool upload_content_set_;          // SetUploadData has been called
   std::string upload_content_;       // HTTP POST payload
@@ -344,7 +354,9 @@ class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
   // Total expected bytes to receive (-1 if it cannot be determined).
   int64_t total_response_bytes_;
 
-  static base::LazyInstance<Registry> g_registry;
+  const net::NetworkTrafficAnnotationTag traffic_annotation_;
+
+  static base::LazyInstance<Registry>::DestructorAtExit g_registry;
 
   DISALLOW_COPY_AND_ASSIGN(URLFetcherCore);
 };

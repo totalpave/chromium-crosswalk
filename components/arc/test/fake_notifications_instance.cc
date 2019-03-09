@@ -4,35 +4,64 @@
 
 #include "components/arc/test/fake_notifications_instance.h"
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
+
 namespace arc {
 
-FakeNotificationsInstance::FakeNotificationsInstance(
-    mojo::InterfaceRequest<mojom::NotificationsInstance> request)
-    : binding_(this, std::move(request)) {}
-
-FakeNotificationsInstance::~FakeNotificationsInstance() {}
+FakeNotificationsInstance::FakeNotificationsInstance() = default;
+FakeNotificationsInstance::~FakeNotificationsInstance() = default;
 
 void FakeNotificationsInstance::SendNotificationEventToAndroid(
-    const mojo::String& key,
+    const std::string& key,
     mojom::ArcNotificationEvent event) {
   events_.emplace_back(key, event);
 }
 
 void FakeNotificationsInstance::CreateNotificationWindow(
-    const mojo::String& key) {}
+    const std::string& key) {}
 
 void FakeNotificationsInstance::CloseNotificationWindow(
-    const mojo::String& key) {}
+    const std::string& key) {}
 
-void FakeNotificationsInstance::Init(mojom::NotificationsHostPtr host_ptr) {}
+void FakeNotificationsInstance::OpenNotificationSettings(
+    const std::string& key) {}
 
-const std::vector<std::pair<mojo::String, mojom::ArcNotificationEvent>>&
+void FakeNotificationsInstance::OpenNotificationSnoozeSettings(
+    const std::string& key) {}
+
+void FakeNotificationsInstance::SetDoNotDisturbStatusOnAndroid(
+    mojom::ArcDoNotDisturbStatusPtr status) {
+  latest_do_not_disturb_status_ = std::move(status);
+}
+
+void FakeNotificationsInstance::CancelPress(const std::string& key) {}
+
+void FakeNotificationsInstance::InitDeprecated(
+    mojom::NotificationsHostPtr host_ptr) {
+  Init(std::move(host_ptr), base::DoNothing());
+}
+
+void FakeNotificationsInstance::Init(mojom::NotificationsHostPtr host_ptr,
+                                     InitCallback callback) {
+  std::move(callback).Run();
+}
+
+const std::vector<std::pair<std::string, mojom::ArcNotificationEvent>>&
 FakeNotificationsInstance::events() const {
   return events_;
 }
 
-void FakeNotificationsInstance::WaitForIncomingMethodCall() {
-  binding_.WaitForIncomingMethodCall();
+const mojom::ArcDoNotDisturbStatusPtr&
+FakeNotificationsInstance::latest_do_not_disturb_status() const {
+  return latest_do_not_disturb_status_;
 }
+
+void FakeNotificationsInstance::PerformDeferredUserAction(uint32_t action_id) {}
+void FakeNotificationsInstance::CancelDeferredUserAction(uint32_t action_id) {}
+void FakeNotificationsInstance::SetLockScreenSettingOnAndroid(
+    mojom::ArcLockScreenNotificationSettingPtr setting) {}
+void FakeNotificationsInstance::SetNotificationConfiguration(
+    mojom::NotificationConfigurationPtr configuration) {}
 
 }  // namespace arc

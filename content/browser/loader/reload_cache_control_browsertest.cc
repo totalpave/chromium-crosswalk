@@ -3,12 +3,15 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
-#include "base/feature_list.h"
-#include "base/files/file_path.h"
-#include "content/public/common/content_features.h"
+#include "base/macros.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/synchronization/lock.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/shell/browser/shell.h"
@@ -25,8 +28,14 @@ namespace {
 using net::test_server::HttpRequest;
 using net::test_server::HttpResponse;
 
-const char kReloadTestPath[] = "/loader/reload.html";
-const char kReloadImagePath[] = "/loader/empty16x16.png";
+const char kReloadTestPath[] = "/loader/reload_test.html";
+// The test page should request resources as the content structure is described
+// below. Reload and the same page navigation will affect only the top frame
+// resource, reload_test.html. But bypassing reload will affect all resources.
+// +- reload_test.html
+//     +- empty16x16.png
+//     +- simple_frame.html
+//         +- empty16x16.png
 
 const char kNoCacheControl[] = "";
 const char kMaxAgeCacheControl[] = "max-age=0";
@@ -37,24 +46,55 @@ struct RequestLog {
   std::string cache_control;
 };
 
+struct ExpectedCacheControl {
+  const char* top_main;
+  const char* others;
+};
+
+const ExpectedCacheControl kExpectedCacheControlForNormalLoad = {
+    kNoCacheControl, kNoCacheControl};
+const ExpectedCacheControl kExpectedCacheControlForReload = {
+    kMaxAgeCacheControl, kNoCacheControl};
+const ExpectedCacheControl kExpectedCacheControlForBypassingReload = {
+    kNoCacheCacheControl, kNoCacheCacheControl};
+
+// Tests end to end behaviors between Blink and content around reload variants.
 class ReloadCacheControlBrowserTest : public ContentBrowserTest {
  protected:
-  ReloadCacheControlBrowserTest() = default;
+  ReloadCacheControlBrowserTest() {}
   ~ReloadCacheControlBrowserTest() override = default;
 
   void SetUpOnMainThread() override {
+    SetUpTestServerOnMainThread();
+  }
+
+  void SetUpTestServerOnMainThread() {
     // ContentBrowserTest creates embedded_test_server instance with
     // a registered HandleFileRequest for "content/test/data".
     // Because the handler is registered as the first handler, MonitorHandler
     // is needed to capture all requests.
     embedded_test_server()->RegisterRequestMonitor(base::Bind(
-        &ReloadCacheControlBrowserTest::MonitorRequestHandler, this));
+        &ReloadCacheControlBrowserTest::MonitorRequestHandler,
+        base::Unretained(this)));
 
     ASSERT_TRUE(embedded_test_server()->Start());
   }
 
  protected:
+  void CheckCacheControl(const ExpectedCacheControl& expectation) {
+    base::AutoLock lock(request_log_lock_);
+    EXPECT_EQ(4u, request_log_.size());
+    for (const auto& log : request_log_) {
+      if (log.relative_url == kReloadTestPath)
+        EXPECT_EQ(expectation.top_main, log.cache_control);
+      else
+        EXPECT_EQ(expectation.others, log.cache_control);
+    }
+    request_log_.clear();
+  }
+
   std::vector<RequestLog> request_log_;
+  base::Lock request_log_lock_;
 
  private:
   void MonitorRequestHandler(const HttpRequest& request) {
@@ -64,87 +104,116 @@ class ReloadCacheControlBrowserTest : public ContentBrowserTest {
     log.cache_control = cache_control == request.headers.end()
                             ? kNoCacheControl
                             : cache_control->second;
+    base::AutoLock lock(request_log_lock_);
     request_log_.push_back(log);
   }
 
   DISALLOW_COPY_AND_ASSIGN(ReloadCacheControlBrowserTest);
 };
 
-class ReloadCacheControlWithAnExperimentBrowserTest
-    : public ReloadCacheControlBrowserTest {
- protected:
-  ReloadCacheControlWithAnExperimentBrowserTest() = default;
-  ~ReloadCacheControlWithAnExperimentBrowserTest() override = default;
-
-  void SetUpOnMainThread() override {
-    base::FeatureList::ClearInstanceForTesting();
-    std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
-    feature_list->InitializeFromCommandLine(
-        features::kNonValidatingReloadOnNormalReload.name, std::string());
-    base::FeatureList::SetInstance(std::move(feature_list));
-
-    ReloadCacheControlBrowserTest::SetUpOnMainThread();
-  }
-
-  DISALLOW_COPY_AND_ASSIGN(ReloadCacheControlWithAnExperimentBrowserTest);
-};
-
+// Test if reload issues requests with proper cache control flags.
 IN_PROC_BROWSER_TEST_F(ReloadCacheControlBrowserTest, NormalReload) {
   GURL url(embedded_test_server()->GetURL(kReloadTestPath));
 
   EXPECT_TRUE(NavigateToURL(shell(), url));
+  CheckCacheControl(kExpectedCacheControlForNormalLoad);
+
   ReloadBlockUntilNavigationsComplete(shell(), 1);
+  CheckCacheControl(kExpectedCacheControlForReload);
 
-  ASSERT_EQ(4UL, request_log_.size());
-  EXPECT_EQ(kReloadTestPath, request_log_[0].relative_url);
-  EXPECT_EQ(kNoCacheControl, request_log_[0].cache_control);
-  EXPECT_EQ(kReloadImagePath, request_log_[1].relative_url);
-  EXPECT_EQ(kNoCacheControl, request_log_[1].cache_control);
+  shell()->ShowDevTools();
+  ReloadBlockUntilNavigationsComplete(shell(), 1);
+  CheckCacheControl(kExpectedCacheControlForReload);
 
-  EXPECT_EQ(kReloadTestPath, request_log_[2].relative_url);
-  EXPECT_EQ(kMaxAgeCacheControl, request_log_[2].cache_control);
-  EXPECT_EQ(kReloadImagePath, request_log_[3].relative_url);
-  EXPECT_EQ(kMaxAgeCacheControl, request_log_[3].cache_control);
+  shell()->CloseDevTools();
+  ReloadBlockUntilNavigationsComplete(shell(), 1);
+  CheckCacheControl(kExpectedCacheControlForReload);
 }
 
+// Test if bypassing reload issues requests with proper cache control flags.
 IN_PROC_BROWSER_TEST_F(ReloadCacheControlBrowserTest, BypassingReload) {
   GURL url(embedded_test_server()->GetURL(kReloadTestPath));
 
-  EXPECT_TRUE(NavigateToURL(shell(), url));
+  NavigateToURLBlockUntilNavigationsComplete(shell(), url, 1);
+  CheckCacheControl(kExpectedCacheControlForNormalLoad);
+
   ReloadBypassingCacheBlockUntilNavigationsComplete(shell(), 1);
+  CheckCacheControl(kExpectedCacheControlForBypassingReload);
 
-  ASSERT_EQ(4UL, request_log_.size());
-  EXPECT_EQ(kReloadTestPath, request_log_[0].relative_url);
-  EXPECT_EQ(kNoCacheControl, request_log_[0].cache_control);
-  EXPECT_EQ(kReloadImagePath, request_log_[1].relative_url);
-  EXPECT_EQ(kNoCacheControl, request_log_[1].cache_control);
+  shell()->ShowDevTools();
+  ReloadBypassingCacheBlockUntilNavigationsComplete(shell(), 1);
+  CheckCacheControl(kExpectedCacheControlForBypassingReload);
 
-  EXPECT_EQ(kReloadTestPath, request_log_[2].relative_url);
-  EXPECT_EQ(kNoCacheCacheControl, request_log_[2].cache_control);
-  EXPECT_EQ(kReloadImagePath, request_log_[3].relative_url);
-  EXPECT_EQ(kNoCacheCacheControl, request_log_[3].cache_control);
+  shell()->CloseDevTools();
+  ReloadBypassingCacheBlockUntilNavigationsComplete(shell(), 1);
+  CheckCacheControl(kExpectedCacheControlForBypassingReload);
 }
 
-IN_PROC_BROWSER_TEST_F(ReloadCacheControlWithAnExperimentBrowserTest,
-                       ReloadMainResource) {
+// Test if the same page navigation issues requests with proper cache control
+// flags.
+IN_PROC_BROWSER_TEST_F(ReloadCacheControlBrowserTest, NavigateToSame) {
   GURL url(embedded_test_server()->GetURL(kReloadTestPath));
 
+  // The first navigation is just a normal load.
   EXPECT_TRUE(NavigateToURL(shell(), url));
-  ReloadBlockUntilNavigationsComplete(shell(), 1);
+  CheckCacheControl(kExpectedCacheControlForNormalLoad);
 
-  ASSERT_EQ(4UL, request_log_.size());
-  EXPECT_EQ(kReloadTestPath, request_log_[0].relative_url);
-  EXPECT_EQ(kNoCacheControl, request_log_[0].cache_control);
-  EXPECT_EQ(kReloadImagePath, request_log_[1].relative_url);
-  EXPECT_EQ(kNoCacheControl, request_log_[1].cache_control);
+  // The second navigation is the same page navigation. This should be handled
+  // as a reload, revalidating the main resource, but following cache protocols
+  // for others.
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+  CheckCacheControl(kExpectedCacheControlForReload);
 
-  EXPECT_EQ(kReloadTestPath, request_log_[2].relative_url);
-  EXPECT_EQ(kMaxAgeCacheControl, request_log_[2].cache_control);
-  EXPECT_EQ(kReloadImagePath, request_log_[3].relative_url);
-  EXPECT_EQ(kNoCacheControl, request_log_[3].cache_control);
+  shell()->ShowDevTools();
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+  CheckCacheControl(kExpectedCacheControlForReload);
+
+  shell()->CloseDevTools();
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+  CheckCacheControl(kExpectedCacheControlForReload);
 }
 
-// TODO(toyoshim): Add another set of reload tests with DevTools open.
+// Reloading with ReloadType::NORMAL should respect service workers.
+IN_PROC_BROWSER_TEST_F(ReloadCacheControlBrowserTest,
+                       NormalReload_ControlledByServiceWorker) {
+  // Prepare for a service worker.
+  EXPECT_TRUE(NavigateToURL(shell(),
+                            embedded_test_server()->GetURL(
+                                "/service_worker/create_service_worker.html")));
+  EXPECT_EQ("DONE", EvalJs(shell(), "register('fetch_event_blob.js');"));
+
+  // Open a page served by the service worker.
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("/service_worker/empty.html")));
+  EXPECT_EQ(base::UTF8ToUTF16("Title"), shell()->web_contents()->GetTitle());
+
+  // Reload from the browser. The page is still controlled by the service
+  // worker.
+  ReloadBlockUntilNavigationsComplete(shell(), 1);
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  EXPECT_EQ(base::UTF8ToUTF16("Title"), shell()->web_contents()->GetTitle());
+}
+
+// Reloading with ReloadType::BYPASSING_CACHE should bypass service workers.
+IN_PROC_BROWSER_TEST_F(ReloadCacheControlBrowserTest,
+                       BypassingReload_ControlledByServiceWorker) {
+  // Prepare for a service worker.
+  EXPECT_TRUE(NavigateToURL(shell(),
+                            embedded_test_server()->GetURL(
+                                "/service_worker/create_service_worker.html")));
+  EXPECT_EQ("DONE", EvalJs(shell(), "register('fetch_event_blob.js');"));
+
+  // Open a page served by the service worker.
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("/service_worker/empty.html")));
+  EXPECT_EQ(base::UTF8ToUTF16("Title"), shell()->web_contents()->GetTitle());
+
+  // Reload from the browser with pressing shift key. It bypasses the service
+  // worker.
+  ReloadBypassingCacheBlockUntilNavigationsComplete(shell(), 1);
+  EXPECT_EQ(base::UTF8ToUTF16("ServiceWorker test - empty page"),
+            shell()->web_contents()->GetTitle());
+}
 
 }  // namespace
 

@@ -20,9 +20,9 @@ namespace net {
 namespace ct {
 
 struct DigitallySigned;
-struct LogEntry;
 struct MerkleTreeLeaf;
 struct SignedCertificateTimestamp;
+struct SignedEntryData;
 struct SignedTreeHead;
 
 // If |input.signature_data| is less than kMaxSignatureLength, encodes the
@@ -36,10 +36,10 @@ NET_EXPORT_PRIVATE bool EncodeDigitallySigned(const DigitallySigned& input,
 NET_EXPORT_PRIVATE bool DecodeDigitallySigned(base::StringPiece* input,
                                               DigitallySigned* output);
 
-// Encodes the |input| LogEntry to |output|. Returns true if the entry size
-// does not exceed allowed size in RFC6962, false otherwise.
-NET_EXPORT_PRIVATE bool EncodeLogEntry(const LogEntry& input,
-                                       std::string* output);
+// Encodes the |input| SignedEntryData to |output|. Returns true if the entry
+// size does not exceed allowed size in RFC6962, false otherwise.
+NET_EXPORT_PRIVATE bool EncodeSignedEntry(const SignedEntryData& input,
+                                          std::string* output);
 
 // Serialises the Merkle tree |leaf|, appending it to |output|.
 // These bytes can be hashed for use with audit proof fetching.
@@ -64,7 +64,9 @@ NET_EXPORT_PRIVATE bool EncodeV1SCTSignedData(
 // Encodes the data signed by a Signed Tree Head (STH) |signed_tree_head| into
 // |output|. The signature included in the |signed_tree_head| can then be
 // verified over these bytes.
-NET_EXPORT_PRIVATE void EncodeTreeHeadSignature(
+// Returns true if the data could be encoded successfully, false
+// otherwise.
+NET_EXPORT_PRIVATE bool EncodeTreeHeadSignature(
     const SignedTreeHead& signed_tree_head,
     std::string* output);
 
@@ -75,7 +77,7 @@ NET_EXPORT_PRIVATE void EncodeTreeHeadSignature(
 // Returns true if the list could be read and decoded successfully, false
 // otherwise (note that the validity of each individual SCT should be checked
 // separately).
-NET_EXPORT_PRIVATE bool DecodeSCTList(base::StringPiece* input,
+NET_EXPORT_PRIVATE bool DecodeSCTList(base::StringPiece input,
                                       std::vector<base::StringPiece>* output);
 
 // Decodes a single SCT from |input| to |output|.
@@ -84,6 +86,13 @@ NET_EXPORT_PRIVATE bool DecodeSCTList(base::StringPiece* input,
 NET_EXPORT_PRIVATE bool DecodeSignedCertificateTimestamp(
     base::StringPiece* input,
     scoped_refptr<ct::SignedCertificateTimestamp>* output);
+
+// Serializes a Signed Certificate Timestamp (SCT) into |output|.
+// Returns true if the SCT could be encoded successfully, false
+// otherwise.
+NET_EXPORT bool EncodeSignedCertificateTimestamp(
+    const scoped_refptr<ct::SignedCertificateTimestamp>& input,
+    std::string* output);
 
 // Writes an SCTList into |output|, containing a single |sct|.
 NET_EXPORT_PRIVATE bool EncodeSCTListForTesting(const base::StringPiece& sct,

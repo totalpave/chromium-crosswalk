@@ -4,188 +4,135 @@
 
 #include "ash/system/status_area_widget.h"
 
-#include "ash/common/shelf/wm_shelf.h"
-#include "ash/common/shell_window_ids.h"
-#include "ash/common/system/status_area_widget_delegate.h"
-#include "ash/common/system/tray/system_tray_delegate.h"
-#include "ash/common/system/web_notification/web_notification_tray.h"
-#include "ash/common/wm_lookup.h"
-#include "ash/common/wm_root_window_controller.h"
-#include "ash/common/wm_shell.h"
-#include "ash/common/wm_window.h"
+#include "ash/session/session_controller.h"
+#include "ash/shelf/shelf.h"
+#include "ash/shell.h"
+#include "ash/system/accessibility/autoclick_tray.h"
+#include "ash/system/accessibility/dictation_button_tray.h"
+#include "ash/system/accessibility/select_to_speak_tray.h"
+#include "ash/system/flag_warning/flag_warning_tray.h"
+#include "ash/system/ime_menu/ime_menu_tray.h"
 #include "ash/system/overview/overview_button_tray.h"
-#include "ash/system/tray/system_tray.h"
+#include "ash/system/palette/palette_tray.h"
+#include "ash/system/session/logout_button_tray.h"
+#include "ash/system/status_area_widget_delegate.h"
+#include "ash/system/unified/unified_system_tray.h"
+#include "ash/system/virtual_keyboard/virtual_keyboard_tray.h"
+#include "base/command_line.h"
 #include "base/i18n/time_formatting.h"
-
-#if defined(OS_CHROMEOS)
-#include "ash/common/system/chromeos/session/logout_button_tray.h"
-#include "ash/common/system/chromeos/virtual_keyboard/virtual_keyboard_tray.h"
-#endif
+#include "ui/accessibility/accessibility_switches.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/display/display.h"
+#include "ui/native_theme/native_theme_dark_aura.h"
 
 namespace ash {
 
-StatusAreaWidget::StatusAreaWidget(WmWindow* status_container,
-                                   WmShelf* wm_shelf)
-    : status_area_widget_delegate_(new StatusAreaWidgetDelegate),
-      overview_button_tray_(NULL),
-      system_tray_(NULL),
-      web_notification_tray_(NULL),
-#if defined(OS_CHROMEOS)
-      logout_button_tray_(NULL),
-      virtual_keyboard_tray_(NULL),
-#endif
-      login_status_(LoginStatus::NOT_LOGGED_IN),
-      wm_shelf_(wm_shelf) {
+StatusAreaWidget::StatusAreaWidget(aura::Window* status_container, Shelf* shelf)
+    : status_area_widget_delegate_(new StatusAreaWidgetDelegate(shelf)),
+      shelf_(shelf) {
+  DCHECK(status_container);
+  DCHECK(shelf);
   views::Widget::InitParams params(
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.delegate = status_area_widget_delegate_;
   params.name = "StatusAreaWidget";
   params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
-  status_container->GetRootWindowController()
-      ->ConfigureWidgetInitParamsForContainer(
-          this, status_container->GetShellWindowId(), &params);
+  params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
+  params.parent = status_container;
   Init(params);
   set_focus_on_creation(false);
   SetContentsView(status_area_widget_delegate_);
 }
 
-StatusAreaWidget::~StatusAreaWidget() {}
+void StatusAreaWidget::Initialize() {
+  // Create the child views, left to right.
 
-void StatusAreaWidget::CreateTrayViews() {
-  AddOverviewButtonTray();
-  AddSystemTray();
-  AddWebNotificationTray();
-#if defined(OS_CHROMEOS)
-  AddLogoutButtonTray();
-  AddVirtualKeyboardTray();
-#endif
+  if (::features::IsMultiProcessMash()) {
+    flag_warning_tray_ = std::make_unique<FlagWarningTray>(shelf_);
+    status_area_widget_delegate_->AddChildView(flag_warning_tray_.get());
+  }
 
-  SystemTrayDelegate* delegate = WmShell::Get()->system_tray_delegate();
-  DCHECK(delegate);
+  logout_button_tray_ = std::make_unique<LogoutButtonTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(logout_button_tray_.get());
+
+  dictation_button_tray_ = std::make_unique<DictationButtonTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(dictation_button_tray_.get());
+
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kEnableExperimentalAccessibilityAutoclick)) {
+    autoclick_tray_ = std::make_unique<AutoclickTray>(shelf_);
+    status_area_widget_delegate_->AddChildView(autoclick_tray_.get());
+  }
+
+  select_to_speak_tray_ = std::make_unique<SelectToSpeakTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(select_to_speak_tray_.get());
+
+  ime_menu_tray_ = std::make_unique<ImeMenuTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(ime_menu_tray_.get());
+
+  virtual_keyboard_tray_ = std::make_unique<VirtualKeyboardTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(virtual_keyboard_tray_.get());
+
+  palette_tray_ = std::make_unique<PaletteTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(palette_tray_.get());
+
+  unified_system_tray_ = std::make_unique<UnifiedSystemTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(unified_system_tray_.get());
+
+  overview_button_tray_ = std::make_unique<OverviewButtonTray>(shelf_);
+  status_area_widget_delegate_->AddChildView(overview_button_tray_.get());
+
+  // The layout depends on the number of children, so build it once after
+  // adding all of them.
+  status_area_widget_delegate_->UpdateLayout();
+
   // Initialize after all trays have been created.
-  system_tray_->InitializeTrayItems(delegate, web_notification_tray_);
-  web_notification_tray_->Initialize();
-#if defined(OS_CHROMEOS)
-  logout_button_tray_->Initialize();
+  unified_system_tray_->Initialize();
+  palette_tray_->Initialize();
   virtual_keyboard_tray_->Initialize();
-#endif
+  ime_menu_tray_->Initialize();
+  select_to_speak_tray_->Initialize();
+  if (autoclick_tray_)
+    autoclick_tray_->Initialize();
+  if (dictation_button_tray_)
+    dictation_button_tray_->Initialize();
   overview_button_tray_->Initialize();
-  SetShelfAlignment(system_tray_->shelf_alignment());
-  UpdateAfterLoginStatusChange(delegate->GetUserLoginStatus());
+  UpdateAfterShelfAlignmentChange();
+  UpdateAfterLoginStatusChange(
+      Shell::Get()->session_controller()->login_status());
+
+  // NOTE: Container may be hidden depending on login/display state.
+  Show();
 }
 
-void StatusAreaWidget::Shutdown() {
-  system_tray_->Shutdown();
-  // Destroy the trays early, causing them to be removed from the view
-  // hierarchy. Do not used scoped pointers since we don't want to destroy them
-  // in the destructor if Shutdown() is not called (e.g. in tests).
-  delete web_notification_tray_;
-  web_notification_tray_ = NULL;
-  // Must be destroyed after |web_notification_tray_|.
-  delete system_tray_;
-  system_tray_ = NULL;
-#if defined(OS_CHROMEOS)
-  delete virtual_keyboard_tray_;
-  virtual_keyboard_tray_ = NULL;
-  delete logout_button_tray_;
-  logout_button_tray_ = NULL;
-#endif
-  delete overview_button_tray_;
-  overview_button_tray_ = NULL;
+StatusAreaWidget::~StatusAreaWidget() {
+  unified_system_tray_.reset();
+  ime_menu_tray_.reset();
+  select_to_speak_tray_.reset();
+  autoclick_tray_.reset();
+  dictation_button_tray_.reset();
+  virtual_keyboard_tray_.reset();
+  palette_tray_.reset();
+  logout_button_tray_.reset();
+  overview_button_tray_.reset();
+  flag_warning_tray_.reset();
+
+  // All child tray views have been removed.
+  DCHECK_EQ(0, GetContentsView()->child_count());
 }
 
-bool StatusAreaWidget::ShouldShowShelf() const {
-  if ((system_tray_ && system_tray_->ShouldShowShelf()) ||
-      (web_notification_tray_ &&
-       web_notification_tray_->ShouldBlockShelfAutoHide()))
-    return true;
-
-  if (!wm_shelf_->IsVisible())
-    return false;
-
-  // If the shelf is currently visible, don't hide the shelf if the mouse
-  // is in any of the notification bubbles.
-  return (system_tray_ && system_tray_->IsMouseInNotificationBubble()) ||
-         (web_notification_tray_ &&
-          web_notification_tray_->IsMouseInNotificationBubble());
-}
-
-bool StatusAreaWidget::IsMessageBubbleShown() const {
-  return ((system_tray_ && system_tray_->IsAnyBubbleVisible()) ||
-          (web_notification_tray_ &&
-           web_notification_tray_->IsMessageCenterBubbleVisible()));
-}
-
-void StatusAreaWidget::SchedulePaint() {
-  status_area_widget_delegate_->SchedulePaint();
-  web_notification_tray_->SchedulePaint();
-  system_tray_->SchedulePaint();
-#if defined(OS_CHROMEOS)
-  virtual_keyboard_tray_->SchedulePaint();
-  logout_button_tray_->SchedulePaint();
-#endif
-  overview_button_tray_->SchedulePaint();
-}
-
-void StatusAreaWidget::OnNativeWidgetActivationChanged(bool active) {
-  Widget::OnNativeWidgetActivationChanged(active);
-  if (active)
-    status_area_widget_delegate_->SetPaneFocusAndFocusDefault();
-}
-
-void StatusAreaWidget::OnMouseEvent(ui::MouseEvent* event) {
-  Widget::OnMouseEvent(event);
-  wm_shelf_->UpdateAutoHideForMouseEvent(event);
-}
-
-void StatusAreaWidget::OnGestureEvent(ui::GestureEvent* event) {
-  Widget::OnGestureEvent(event);
-  wm_shelf_->UpdateAutoHideForGestureEvent(event);
-}
-
-void StatusAreaWidget::AddSystemTray() {
-  system_tray_ = new SystemTray(wm_shelf_);
-  status_area_widget_delegate_->AddTray(system_tray_);
-}
-
-void StatusAreaWidget::AddWebNotificationTray() {
-  DCHECK(system_tray_);
-  web_notification_tray_ = new WebNotificationTray(
-      wm_shelf_, WmLookup::Get()->GetWindowForWidget(this), system_tray_);
-  status_area_widget_delegate_->AddTray(web_notification_tray_);
-}
-
-#if defined(OS_CHROMEOS)
-void StatusAreaWidget::AddLogoutButtonTray() {
-  logout_button_tray_ = new LogoutButtonTray(wm_shelf_);
-  status_area_widget_delegate_->AddTray(logout_button_tray_);
-}
-
-void StatusAreaWidget::AddVirtualKeyboardTray() {
-  virtual_keyboard_tray_ = new VirtualKeyboardTray(wm_shelf_);
-  status_area_widget_delegate_->AddTray(virtual_keyboard_tray_);
-}
-#endif
-
-void StatusAreaWidget::AddOverviewButtonTray() {
-  overview_button_tray_ = new OverviewButtonTray(wm_shelf_);
-  status_area_widget_delegate_->AddTray(overview_button_tray_);
-}
-
-void StatusAreaWidget::SetShelfAlignment(ShelfAlignment alignment) {
-  status_area_widget_delegate_->set_alignment(alignment);
-  if (system_tray_)
-    system_tray_->SetShelfAlignment(alignment);
-  if (web_notification_tray_)
-    web_notification_tray_->SetShelfAlignment(alignment);
-#if defined(OS_CHROMEOS)
-  if (logout_button_tray_)
-    logout_button_tray_->SetShelfAlignment(alignment);
-  if (virtual_keyboard_tray_)
-    virtual_keyboard_tray_->SetShelfAlignment(alignment);
-#endif
-  if (overview_button_tray_)
-    overview_button_tray_->SetShelfAlignment(alignment);
+void StatusAreaWidget::UpdateAfterShelfAlignmentChange() {
+  unified_system_tray_->UpdateAfterShelfAlignmentChange();
+  logout_button_tray_->UpdateAfterShelfAlignmentChange();
+  virtual_keyboard_tray_->UpdateAfterShelfAlignmentChange();
+  ime_menu_tray_->UpdateAfterShelfAlignmentChange();
+  select_to_speak_tray_->UpdateAfterShelfAlignmentChange();
+  if (dictation_button_tray_)
+    dictation_button_tray_->UpdateAfterShelfAlignmentChange();
+  palette_tray_->UpdateAfterShelfAlignmentChange();
+  overview_button_tray_->UpdateAfterShelfAlignmentChange();
+  if (flag_warning_tray_)
+    flag_warning_tray_->UpdateAfterShelfAlignmentChange();
   status_area_widget_delegate_->UpdateLayout();
 }
 
@@ -193,16 +140,102 @@ void StatusAreaWidget::UpdateAfterLoginStatusChange(LoginStatus login_status) {
   if (login_status_ == login_status)
     return;
   login_status_ = login_status;
-  if (system_tray_)
-    system_tray_->UpdateAfterLoginStatusChange(login_status);
-  if (web_notification_tray_)
-    web_notification_tray_->UpdateAfterLoginStatusChange(login_status);
-#if defined(OS_CHROMEOS)
-  if (logout_button_tray_)
-    logout_button_tray_->UpdateAfterLoginStatusChange(login_status);
-#endif
-  if (overview_button_tray_)
-    overview_button_tray_->UpdateAfterLoginStatusChange(login_status);
+
+  unified_system_tray_->UpdateAfterLoginStatusChange();
+  logout_button_tray_->UpdateAfterLoginStatusChange();
+  overview_button_tray_->UpdateAfterLoginStatusChange(login_status);
+}
+
+void StatusAreaWidget::SetSystemTrayVisibility(bool visible) {
+  TrayBackgroundView* tray = unified_system_tray_.get();
+  tray->SetVisible(visible);
+  // Opacity is set to prevent flakiness in kiosk browser tests. See
+  // https://crbug.com/624584.
+  SetOpacity(visible ? 1.f : 0.f);
+  if (visible) {
+    Show();
+  } else {
+    tray->CloseBubble();
+    Hide();
+  }
+}
+
+TrayBackgroundView* StatusAreaWidget::GetSystemTrayAnchor() const {
+  // Use the target visibility of the layer instead of the visibility of the
+  // view because the view is still visible when fading away, but we do not want
+  // to anchor to this element in that case.
+  if (overview_button_tray_->layer()->GetTargetVisibility())
+    return overview_button_tray_.get();
+
+  return unified_system_tray_.get();
+}
+
+bool StatusAreaWidget::ShouldShowShelf() const {
+  // If it has main bubble, return true.
+  if (unified_system_tray_->IsBubbleShown())
+    return true;
+
+  // If it has a slider bubble, return false.
+  if (unified_system_tray_->IsSliderBubbleShown())
+    return false;
+
+  // All other tray bubbles will force the shelf to be visible.
+  return TrayBubbleView::IsATrayBubbleOpen();
+}
+
+bool StatusAreaWidget::IsMessageBubbleShown() const {
+  return unified_system_tray_->IsBubbleShown();
+}
+
+void StatusAreaWidget::SchedulePaint() {
+  status_area_widget_delegate_->SchedulePaint();
+  unified_system_tray_->SchedulePaint();
+  virtual_keyboard_tray_->SchedulePaint();
+  logout_button_tray_->SchedulePaint();
+  ime_menu_tray_->SchedulePaint();
+  select_to_speak_tray_->SchedulePaint();
+  if (dictation_button_tray_)
+    dictation_button_tray_->SchedulePaint();
+  palette_tray_->SchedulePaint();
+  overview_button_tray_->SchedulePaint();
+  if (flag_warning_tray_)
+    flag_warning_tray_->SchedulePaint();
+}
+
+const ui::NativeTheme* StatusAreaWidget::GetNativeTheme() const {
+  return ui::NativeThemeDarkAura::instance();
+}
+
+bool StatusAreaWidget::OnNativeWidgetActivationChanged(bool active) {
+  if (!Widget::OnNativeWidgetActivationChanged(active))
+    return false;
+  if (active)
+    status_area_widget_delegate_->SetPaneFocusAndFocusDefault();
+  return true;
+}
+
+void StatusAreaWidget::OnMouseEvent(ui::MouseEvent* event) {
+  // Clicking anywhere except the virtual keyboard tray icon should hide the
+  // virtual keyboard.
+  gfx::Point location = event->location();
+  views::View::ConvertPointFromWidget(virtual_keyboard_tray_.get(), &location);
+  if (event->type() == ui::ET_MOUSE_PRESSED &&
+      !virtual_keyboard_tray_->HitTestPoint(location)) {
+    keyboard::KeyboardController::Get()->HideKeyboardImplicitlyByUser();
+  }
+  views::Widget::OnMouseEvent(event);
+}
+
+void StatusAreaWidget::OnGestureEvent(ui::GestureEvent* event) {
+  // Tapping anywhere except the virtual keyboard tray icon should hide the
+  // virtual keyboard.
+  gfx::Point location = event->location();
+  views::View::ConvertPointFromWidget(virtual_keyboard_tray_.get(), &location);
+  if (event->type() == ui::ET_GESTURE_TAP_DOWN &&
+      !virtual_keyboard_tray_->HitTestPoint(location)) {
+    keyboard::KeyboardController::Get()->HideKeyboardImplicitlyByUser();
+  }
+  views::Widget::OnGestureEvent(event);
 }
 
 }  // namespace ash

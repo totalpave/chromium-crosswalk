@@ -4,8 +4,13 @@
 
 package org.chromium.android_webview.test;
 
-import android.test.suitebuilder.annotation.SmallTest;
-import android.test.suitebuilder.annotation.Smoke;
+import android.support.test.filters.SmallTest;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.base.test.util.Feature;
@@ -14,7 +19,11 @@ import org.chromium.net.test.util.TestWebServer;
 /**
  * A test suite for ContentView.getTitle().
  */
-public class GetTitleTest extends AwTestBase {
+@RunWith(AwJUnit4ClassRunner.class)
+public class GetTitleTest {
+    @Rule
+    public AwActivityTestRule mActivityTestRule = new AwActivityTestRule();
+
     private static final String TITLE = "TITLE";
 
     private static final String GET_TITLE_TEST_PATH = "/get_title_test.html";
@@ -34,12 +43,11 @@ public class GetTitleTest extends AwTestBase {
         }
     }
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
         mContentsClient = new TestAwContentsClient();
         final AwTestContainerView testContainerView =
-                createAwTestContainerViewOnMainSync(mContentsClient);
+                mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
         mAwContents = testContainerView.getAwContents();
     }
 
@@ -54,18 +62,19 @@ public class GetTitleTest extends AwTestBase {
     }
 
     private String loadFromDataAndGetTitle(String html) throws Throwable {
-        loadDataSync(mAwContents, mContentsClient.getOnPageFinishedHelper(),
-                html, "text/html", false);
-        return getTitleOnUiThread(mAwContents);
+        mActivityTestRule.loadDataSync(
+                mAwContents, mContentsClient.getOnPageFinishedHelper(), html, "text/html", false);
+        return mActivityTestRule.getTitleOnUiThread(mAwContents);
     }
 
     private PageInfo loadFromUrlAndGetTitle(String html, String filename) throws Throwable {
         TestWebServer webServer = TestWebServer.start();
         try {
             final String url = webServer.setResponse(filename, html, null);
-            loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
-            return new PageInfo(getTitleOnUiThread(mAwContents),
-                url.replaceAll("http:\\/\\/", ""));
+            mActivityTestRule.loadUrlSync(
+                    mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+            return new PageInfo(mActivityTestRule.getTitleOnUiThread(mAwContents),
+                    url.replaceAll("http:\\/\\/", ""));
         } finally {
             webServer.shutdown();
         }
@@ -75,76 +84,83 @@ public class GetTitleTest extends AwTestBase {
      * When the data has title info, the page title is set to it.
      * @throws Throwable
      */
-    @Smoke
+    @Test
     @SmallTest
     @Feature({"AndroidWebView", "Main"})
     public void testLoadDataGetTitle() throws Throwable {
         final String title = loadFromDataAndGetTitle(getHtml(TITLE));
-        assertEquals("Title should be " + TITLE, TITLE, title);
+        Assert.assertEquals("Title should be " + TITLE, TITLE, title);
     }
 
     /**
      * When the data has empty title, the page title is set to the loaded content.
      * @throws Throwable
      */
+    @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testGetTitleOnDataContainingEmptyTitle() throws Throwable {
         final String content = getHtml("");
         final String expectedTitle = "data:text/html," + content;
         final String title = loadFromDataAndGetTitle(content);
-        assertEquals("Title should be set to the loaded data:text/html content", expectedTitle,
-                     title);
+        Assert.assertEquals(
+                "Title should be set to the loaded data:text/html content", expectedTitle, title);
     }
 
     /**
      * When the data has no title, the page title is set to the loaded content.
      * @throws Throwable
      */
+    @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testGetTitleOnDataContainingNoTitle() throws Throwable {
         final String content = getHtml(null);
         final String expectedTitle = "data:text/html," + content;
         final String title = loadFromDataAndGetTitle(content);
-        assertEquals("Title should be set to the data:text/html content", expectedTitle, title);
+        Assert.assertEquals(
+                "Title should be set to the data:text/html content", expectedTitle, title);
     }
 
     /**
      * When url-file has the title info, the page title is set to it.
      * @throws Throwable
      */
+    @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testLoadUrlGetTitle() throws Throwable {
         final PageInfo info = loadFromUrlAndGetTitle(getHtml(TITLE), GET_TITLE_TEST_PATH);
-        assertEquals("Title should be " + TITLE, TITLE, info.mTitle);
+        Assert.assertEquals("Title should be " + TITLE, TITLE, info.mTitle);
     }
 
     /**
      * When the loaded file has empty title, the page title is set to the url it loads from.
-     * It also contains: hostName, portNumber information if its part of the loaded URL.
+     * It also contains: hostName, portNumber information if it's part of the loaded URL.
      * @throws Throwable
      */
+    @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testGetTitleOnLoadUrlFileContainingEmptyTitle() throws Throwable {
         final PageInfo info = loadFromUrlAndGetTitle(getHtml(""), GET_TITLE_TEST_EMPTY_PATH);
-        assertEquals("Incorrect title :: " , info.mUrl, info.mTitle);
+        Assert.assertEquals("Incorrect title :: ", info.mUrl, info.mTitle);
     }
 
     /**
      * When the loaded file has no title, the page title is set to the urk it loads from.
-     * It also contains: hostName, portNumber information if its part of the loaded URL.
+     * It also contains: hostName, portNumber information if it's part of the loaded URL.
      * @throws Throwable
      */
+    @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testGetTitleOnLoadUrlFileContainingNoTitle() throws Throwable {
         final PageInfo info = loadFromUrlAndGetTitle(getHtml(null), GET_TITLE_TEST_NO_TITLE_PATH);
-        assertEquals("Incorrect title :: " , info.mUrl, info.mTitle);
+        Assert.assertEquals("Incorrect title :: ", info.mUrl, info.mTitle);
     }
 
+    @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testGetTitleSetFromJS() throws Throwable {
@@ -154,8 +170,8 @@ public class GetTitleTest extends AwTestBase {
                 + "<script>document.title=\"" + expectedTitle + "\"</script>"
                 + "</head><body>"
                 + "</body></html>";
-        getAwSettingsOnUiThread(mAwContents).setJavaScriptEnabled(true);
+        mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setJavaScriptEnabled(true);
         final String title = loadFromDataAndGetTitle(page);
-        assertEquals("Incorrect title :: ", expectedTitle, title);
+        Assert.assertEquals("Incorrect title :: ", expectedTitle, title);
     }
 }

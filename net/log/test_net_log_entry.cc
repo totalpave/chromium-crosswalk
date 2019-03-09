@@ -12,10 +12,10 @@
 
 namespace net {
 
-TestNetLogEntry::TestNetLogEntry(NetLog::EventType type,
+TestNetLogEntry::TestNetLogEntry(NetLogEventType type,
                                  const base::TimeTicks& time,
-                                 NetLog::Source source,
-                                 NetLog::EventPhase phase,
+                                 NetLogSource source,
+                                 NetLogEventPhase phase,
                                  std::unique_ptr<base::DictionaryValue> params)
     : type(type),
       time(time),
@@ -30,8 +30,7 @@ TestNetLogEntry::TestNetLogEntry(const TestNetLogEntry& entry) {
   *this = entry;
 }
 
-TestNetLogEntry::~TestNetLogEntry() {
-}
+TestNetLogEntry::~TestNetLogEntry() = default;
 
 TestNetLogEntry& TestNetLogEntry::operator=(const TestNetLogEntry& entry) {
   type = entry.type;

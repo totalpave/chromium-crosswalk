@@ -7,29 +7,33 @@
 #include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/guid.h"
 #include "base/md5.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/cancellation_flag.h"
+#include "base/task/post_task.h"
+#include "base/task/task_traits.h"
+#include "base/task_runner_util.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/profile_resetter/profile_reset_report.pb.h"
 #include "chrome/browser/profile_resetter/reset_report_uploader.h"
 #include "chrome/browser/profile_resetter/reset_report_uploader_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/common/channel_info.h"
-#include "chrome/common/chrome_content_client.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_registry.h"
-#include "grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -64,7 +68,7 @@ ResettableSettingsSnapshot::ResettableSettingsSnapshot(
   TemplateURLService* service =
       TemplateURLServiceFactory::GetForProfile(profile);
   DCHECK(service);
-  TemplateURL* dse = service->GetDefaultSearchProvider();
+  const TemplateURL* dse = service->GetDefaultSearchProvider();
   if (dse)
     dse_url_ = dse->url();
 
@@ -133,13 +137,23 @@ void ResettableSettingsSnapshot::RequestShortcuts(
   DCHECK(!cancellation_flag_.get() && !shortcuts_determined());
 
   cancellation_flag_ = new SharedCancellationFlag;
-  content::BrowserThread::PostTaskAndReplyWithResult(
-      content::BrowserThread::FILE,
-      FROM_HERE,
-      base::Bind(&GetChromeLaunchShortcuts, cancellation_flag_),
+#if defined(OS_WIN)
+  base::PostTaskAndReplyWithResult(
+      base::CreateCOMSTATaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE})
+          .get(),
+      FROM_HERE, base::Bind(&GetChromeLaunchShortcuts, cancellation_flag_),
       base::Bind(&ResettableSettingsSnapshot::SetShortcutsAndReport,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 callback));
+                 weak_ptr_factory_.GetWeakPtr(), callback));
+#else   // defined(OS_WIN)
+  // Shortcuts are only supported on Windows.
+  std::vector<ShortcutCommand> no_shortcuts;
+  base::SequencedTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ResettableSettingsSnapshot::SetShortcutsAndReport,
+                     weak_ptr_factory_.GetWeakPtr(), callback,
+                     std::move(no_shortcuts)));
+#endif  // defined(OS_WIN)
 }
 
 void ResettableSettingsSnapshot::SetShortcutsAndReport(
@@ -229,7 +243,7 @@ std::unique_ptr<base::ListValue> GetReadableFeedbackForSnapshot(
           l10n_util::GetStringUTF16(IDS_VERSION_UI_USER_AGENT),
           GetUserAgent());
   std::string version = version_info::GetVersionNumber();
-  version += chrome::GetChannelString();
+  version += chrome::GetChannelName();
   AddPair(list.get(),
           l10n_util::GetStringUTF16(IDS_PRODUCT_NAME),
           version);
@@ -237,8 +251,7 @@ std::unique_ptr<base::ListValue> GetReadableFeedbackForSnapshot(
   // Add snapshot data.
   const std::vector<GURL>& urls = snapshot.startup_urls();
   std::string startup_urls;
-  for (std::vector<GURL>::const_iterator i = urls.begin();
-       i != urls.end(); ++i) {
+  for (auto i = urls.begin(); i != urls.end(); ++i) {
     if (!startup_urls.empty())
       startup_urls += ' ';
     startup_urls += i->host();
@@ -252,14 +265,16 @@ std::unique_ptr<base::ListValue> GetReadableFeedbackForSnapshot(
   base::string16 startup_type;
   switch (snapshot.startup_type()) {
     case SessionStartupPref::DEFAULT:
-      startup_type = l10n_util::GetStringUTF16(IDS_OPTIONS_STARTUP_SHOW_NEWTAB);
+      startup_type =
+          l10n_util::GetStringUTF16(IDS_SETTINGS_ON_STARTUP_OPEN_NEW_TAB);
       break;
     case SessionStartupPref::LAST:
-      startup_type = l10n_util::GetStringUTF16(
-          IDS_OPTIONS_STARTUP_RESTORE_LAST_SESSION);
+      startup_type =
+          l10n_util::GetStringUTF16(IDS_SETTINGS_ON_STARTUP_CONTINUE);
       break;
     case SessionStartupPref::URLS:
-      startup_type = l10n_util::GetStringUTF16(IDS_OPTIONS_STARTUP_SHOW_PAGES);
+      startup_type =
+          l10n_util::GetStringUTF16(IDS_SETTINGS_ON_STARTUP_OPEN_SPECIFIC);
       break;
     default:
       break;
@@ -292,7 +307,7 @@ std::unique_ptr<base::ListValue> GetReadableFeedbackForSnapshot(
   TemplateURLService* service =
       TemplateURLServiceFactory::GetForProfile(profile);
   DCHECK(service);
-  TemplateURL* dse = service->GetDefaultSearchProvider();
+  const TemplateURL* dse = service->GetDefaultSearchProvider();
   if (dse) {
     AddPair(list.get(),
             l10n_util::GetStringUTF16(IDS_RESET_PROFILE_SETTINGS_DSE),
@@ -302,8 +317,7 @@ std::unique_ptr<base::ListValue> GetReadableFeedbackForSnapshot(
   if (snapshot.shortcuts_determined()) {
     base::string16 shortcut_targets;
     const std::vector<ShortcutCommand>& shortcuts = snapshot.shortcuts();
-    for (std::vector<ShortcutCommand>::const_iterator i =
-         shortcuts.begin(); i != shortcuts.end(); ++i) {
+    for (auto i = shortcuts.begin(); i != shortcuts.end(); ++i) {
       if (!shortcut_targets.empty())
         shortcut_targets += base::ASCIIToUTF16("\n");
       shortcut_targets += base::ASCIIToUTF16("chrome.exe ");
@@ -324,8 +338,7 @@ std::unique_ptr<base::ListValue> GetReadableFeedbackForSnapshot(
   const ResettableSettingsSnapshot::ExtensionList& extensions =
       snapshot.enabled_extensions();
   std::string extension_names;
-  for (ResettableSettingsSnapshot::ExtensionList::const_iterator i =
-       extensions.begin(); i != extensions.end(); ++i) {
+  for (auto i = extensions.begin(); i != extensions.end(); ++i) {
     if (!extension_names.empty())
       extension_names += '\n';
     extension_names += i->second;

@@ -14,17 +14,19 @@
 
 #include "base/callback_forward.h"
 #include "content/common/content_export.h"
-#include "third_party/WebKit/public/platform/modules/permissions/permission_status.mojom.h"
+#include "content/public/browser/notification_database_data.h"
+#include "third_party/blink/public/platform/modules/permissions/permission_status.mojom.h"
 
 class GURL;
+
+namespace blink {
+struct NotificationResources;
+struct PlatformNotificationData;
+}  // namespace blink
 
 namespace content {
 
 class BrowserContext;
-class DesktopNotificationDelegate;
-struct NotificationResources;
-struct PlatformNotificationData;
-class ResourceContext;
 
 // The service using which notifications can be presented to the user. There
 // should be a unique instance of the PlatformNotificationService depending
@@ -33,55 +35,55 @@ class CONTENT_EXPORT PlatformNotificationService {
  public:
   virtual ~PlatformNotificationService() {}
 
-  // Checks if |origin| has permission to display Web Notifications.
-  // This method must only be called on the UI thread.
-  virtual blink::mojom::PermissionStatus CheckPermissionOnUIThread(
-      BrowserContext* browser_context,
-      const GURL& origin,
-      int render_process_id) = 0;
+  using DisplayedNotificationsCallback =
+      base::OnceCallback<void(std::set<std::string>,
+                              bool /* supports synchronization */)>;
 
-  // Checks if |origin| has permission to display Web Notifications. This method
-  // exists to serve the synchronous IPC required by the Notification.permission
-  // JavaScript getter, and should not be used for other purposes. See
-  // https://crbug.com/446497 for the plan to deprecate this method.
-  // This method must only be called on the IO thread.
-  virtual blink::mojom::PermissionStatus CheckPermissionOnIOThread(
-      ResourceContext* resource_context,
-      const GURL& origin,
-      int render_process_id) = 0;
-
-  // Displays the notification described in |notification_data| to the user. A
-  // closure through which the notification can be closed will be stored in the
-  // |cancel_callback| argument. This method must be called on the UI thread.
+  // Displays the notification described in |notification_data| to the user.
+  // This method must be called on the UI thread.
   virtual void DisplayNotification(
       BrowserContext* browser_context,
+      const std::string& notification_id,
       const GURL& origin,
-      const PlatformNotificationData& notification_data,
-      const NotificationResources& notification_resources,
-      std::unique_ptr<DesktopNotificationDelegate> delegate,
-      base::Closure* cancel_callback) = 0;
+      const blink::PlatformNotificationData& notification_data,
+      const blink::NotificationResources& notification_resources) = 0;
 
   // Displays the persistent notification described in |notification_data| to
   // the user. This method must be called on the UI thread.
   virtual void DisplayPersistentNotification(
       BrowserContext* browser_context,
-      int64_t persistent_notification_id,
+      const std::string& notification_id,
+      const GURL& service_worker_origin,
       const GURL& origin,
-      const PlatformNotificationData& notification_data,
-      const NotificationResources& notification_resources) = 0;
+      const blink::PlatformNotificationData& notification_data,
+      const blink::NotificationResources& notification_resources) = 0;
 
-  // Closes the persistent notification identified by
-  // |persistent_notification_id|. This method must be called on the UI thread.
+  // Closes the notification identified by |notification_id|. This method must
+  // be called on the UI thread.
+  virtual void CloseNotification(BrowserContext* browser_context,
+                                 const std::string& notification_id) = 0;
+
+  // Closes the persistent notification identified by |notification_id|. This
+  // method must be called on the UI thread.
   virtual void ClosePersistentNotification(
       BrowserContext* browser_context,
-      int64_t persistent_notification_id) = 0;
+      const std::string& notification_id) = 0;
 
-  // Writes the ids of all currently displaying persistent notifications for the
-  // given |browser_context| to |displayed_notifications|. Returns whether the
-  // platform is able to provide such a set.
-  virtual bool GetDisplayedPersistentNotifications(
+  // Retrieves the ids of all currently displaying notifications and
+  // posts |callback| with the result.
+  virtual void GetDisplayedNotifications(
       BrowserContext* browser_context,
-      std::set<std::string>* displayed_notifications) = 0;
+      DisplayedNotificationsCallback callback) = 0;
+
+  // Reads the value of the next persistent notification ID from the profile and
+  // increments the value, as it is called once per notification write.
+  virtual int64_t ReadNextPersistentNotificationId(
+      BrowserContext* browser_context) = 0;
+
+  // Records a given notification to UKM.
+  virtual void RecordNotificationUkmEvent(
+      BrowserContext* browser_context,
+      const NotificationDatabaseData& data) = 0;
 };
 
 }  // namespace content

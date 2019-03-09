@@ -15,12 +15,12 @@ from benchmarks import media_router_timeline_metric
 
 
 class _BaseCastBenchmark(perf_benchmark.PerfBenchmark):
-  options = {'page_repeat': 6}
+  options = {'pageset_repeat': 6}
 
   page_set = media_router_perf_pages.MediaRouterDialogPageSet
 
   def SetExtraBrowserOptions(self, options):
-    options.clear_sytem_cache_for_browser_and_profile_on_start = True
+    options.flush_os_page_caches_on_start = True
     # This flag is required to enable the communication between the page and
     # the test extension.
     options.disable_background_networking = False
@@ -31,7 +31,8 @@ class _BaseCastBenchmark(perf_benchmark.PerfBenchmark):
             os.path.join(path_util.GetChromiumSrcDir(), 'out',
             'Release', 'mr_extension', 'release'),
              os.path.join(path_util.GetChromiumSrcDir(), 'out',
-             'Release', 'media_router', 'test_extension')]),
+             'Release', 'media_router', 'telemetry_extension')]),
+        '--disable-features=ViewsCastDialog',
         '--whitelisted-extension-id=enhhojjnijigcajfphajepfemndkmdlo',
         '--media-router=1',
         '--enable-stats-collection-bindings'
@@ -41,7 +42,7 @@ class _BaseCastBenchmark(perf_benchmark.PerfBenchmark):
 class TraceEventCastBenckmark(_BaseCastBenchmark):
   """Benchmark for dialog latency from trace event."""
 
-  def CreateTimelineBasedMeasurementOptions(self):
+  def CreateCoreTimelineBasedMeasurementOptions(self):
     media_router_category = 'media_router'
     category_filter = chrome_trace_category_filter.ChromeTraceCategoryFilter(
         media_router_category)
@@ -56,9 +57,9 @@ class TraceEventCastBenckmark(_BaseCastBenchmark):
     return 'media_router.dialog.latency.tracing'
 
   @classmethod
-  def ValueCanBeAddedPredicate(cls, value, is_first_result):
+  def ShouldAddValue(cls, _, from_first_story_run):
     """Only drops the first result."""
-    return not is_first_result
+    return not from_first_story_run
 
 
 class HistogramCastBenckmark(_BaseCastBenchmark):
@@ -72,15 +73,15 @@ class HistogramCastBenckmark(_BaseCastBenchmark):
     return 'media_router.dialog.latency.histogram'
 
   @classmethod
-  def ValueCanBeAddedPredicate(cls, value, is_first_result):
+  def ShouldAddValue(cls, _, from_first_story_run):
     """Only drops the first result."""
-    return not is_first_result
+    return not from_first_story_run
 
 
 class CPUMemoryCastBenckmark(_BaseCastBenchmark):
   """Benchmark for CPU and memory usage with Media Router."""
 
-  options = {'page_repeat': 1}
+  options = {'pageset_repeat': 1}
 
   page_set = media_router_perf_pages.MediaRouterCPUMemoryPageSet
 
@@ -95,19 +96,20 @@ class CPUMemoryCastBenckmark(_BaseCastBenchmark):
 class CPUMemoryBenckmark(perf_benchmark.PerfBenchmark):
   """Benchmark for CPU and memory usage without Media Router."""
 
-  options = {'page_repeat': 1}
+  options = {'pageset_repeat': 1}
 
   page_set = media_router_perf_pages.CPUMemoryPageSet
 
   def SetExtraBrowserOptions(self, options):
-    options.clear_sytem_cache_for_browser_and_profile_on_start = True
+    options.flush_os_page_caches_on_start = True
     # This flag is required to enable the communication between the page and
     # the test extension.
     options.disable_background_networking = False
     options.AppendExtraBrowserArgs([
         '--load-extension=' +
              os.path.join(path_util.GetChromiumSrcDir(), 'out',
-             'Release', 'media_router', 'test_extension'),
+             'Release', 'media_router', 'telemetry_extension'),
+        '--disable-features=ViewsCastDialog',
         '--media-router=0',
         '--enable-stats-collection-bindings'
     ])

@@ -7,9 +7,12 @@
 #include <netinet/in.h>
 #include <resolv.h>
 
+#include "base/bind.h"
 #include "base/macros.h"
+#include "base/message_loop/message_loop.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
+#include "build/build_config.h"
 #include "net/dns/dns_config_service.h"
 
 namespace net {
@@ -18,24 +21,6 @@ static bool CalculateReachability(SCNetworkConnectionFlags flags) {
   bool reachable = flags & kSCNetworkFlagsReachable;
   bool connection_required = flags & kSCNetworkFlagsConnectionRequired;
   return reachable && !connection_required;
-}
-
-NetworkChangeNotifier::ConnectionType CalculateConnectionType(
-    SCNetworkConnectionFlags flags) {
-  bool reachable = CalculateReachability(flags);
-  if (reachable) {
-#if defined(OS_IOS)
-    return (flags & kSCNetworkReachabilityFlagsIsWWAN) ?
-        NetworkChangeNotifier::CONNECTION_3G :
-        NetworkChangeNotifier::CONNECTION_WIFI;
-#else
-    // TODO(droger): Get something more detailed than CONNECTION_UNKNOWN.
-    // http://crbug.com/112937
-    return NetworkChangeNotifier::CONNECTION_UNKNOWN;
-#endif  // defined(OS_IOS)
-  } else {
-    return NetworkChangeNotifier::CONNECTION_NONE;
-  }
 }
 
 // Thread on which we can run DnsConfigService, which requires a TYPE_IO
@@ -64,13 +49,18 @@ NetworkChangeNotifierMac::NetworkChangeNotifierMac()
       connection_type_(CONNECTION_UNKNOWN),
       connection_type_initialized_(false),
       initial_connection_type_cv_(&connection_type_lock_),
-      forwarder_(this),
-      dns_config_service_thread_(new DnsConfigServiceThread()) {
+      forwarder_(this) {
   // Must be initialized after the rest of this object, as it may call back into
   // SetInitialConnectionType().
-  config_watcher_.reset(new NetworkConfigWatcherMac(&forwarder_));
+  config_watcher_ = std::make_unique<NetworkConfigWatcherMac>(&forwarder_);
+#if !defined(OS_IOS)
+  // DnsConfigService on iOS doesn't watch the config so its result can become
+  // inaccurate at any time.  Disable it to prevent promulgation of inaccurate
+  // DnsConfigs.
+  dns_config_service_thread_ = std::make_unique<DnsConfigServiceThread>();
   dns_config_service_thread_->StartWithOptions(
       base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
+#endif
 }
 
 NetworkChangeNotifierMac::~NetworkChangeNotifierMac() {
@@ -103,7 +93,8 @@ NetworkChangeNotifierMac::NetworkChangeCalculatorParamsMac() {
 
 NetworkChangeNotifier::ConnectionType
 NetworkChangeNotifierMac::GetCurrentConnectionType() const {
-  base::ThreadRestrictions::ScopedAllowWait allow_wait;
+  // https://crbug.com/125097
+  base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_wait;
   base::AutoLock lock(connection_type_lock_);
   // Make sure the initial connection type is set before returning.
   while (!connection_type_initialized_) {
@@ -114,6 +105,22 @@ NetworkChangeNotifierMac::GetCurrentConnectionType() const {
 
 void NetworkChangeNotifierMac::Forwarder::Init()  {
   net_config_watcher_->SetInitialConnectionType();
+}
+
+// static
+NetworkChangeNotifier::ConnectionType
+NetworkChangeNotifierMac::CalculateConnectionType(
+    SCNetworkConnectionFlags flags) {
+  bool reachable = CalculateReachability(flags);
+  if (!reachable)
+    return CONNECTION_NONE;
+
+#if defined(OS_IOS)
+  return (flags & kSCNetworkReachabilityFlagsIsWWAN) ? CONNECTION_3G
+                                                     : CONNECTION_WIFI;
+#else
+  return ConnectionTypeFromInterfaces();
+#endif
 }
 
 void NetworkChangeNotifierMac::Forwarder::StartReachabilityNotifications() {
@@ -260,7 +267,7 @@ void NetworkChangeNotifierMac::ReachabilityCallback(
   if (old_type != new_type) {
     NotifyObserversOfConnectionTypeChange();
     double max_bandwidth_mbps =
-        NetworkChangeNotifier::GetMaxBandwidthForConnectionSubtype(
+        NetworkChangeNotifier::GetMaxBandwidthMbpsForConnectionSubtype(
             new_type == CONNECTION_NONE ? SUBTYPE_NONE : SUBTYPE_UNKNOWN);
     NotifyObserversOfMaxBandwidthChange(max_bandwidth_mbps, new_type);
   }

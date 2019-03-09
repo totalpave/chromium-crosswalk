@@ -9,21 +9,21 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "components/sessions/core/session_id.h"
 
 class SessionService;
 
 namespace base {
-class RunLoop;
+class Location;
 }
 
 namespace sessions {
 class SerializedNavigationEntry;
-class SessionCommand;
 struct SessionTab;
 struct SessionWindow;
 }
@@ -53,8 +53,9 @@ class SessionServiceTestHelper {
       bool force_browser_not_alive_with_no_windows);
 
   // Reads the contents of the last session.
-  void ReadWindows(std::vector<sessions::SessionWindow*>* windows,
-                   SessionID::id_type* active_window_id);
+  void ReadWindows(
+      std::vector<std::unique_ptr<sessions::SessionWindow>>* windows,
+      SessionID* active_window_id);
 
   void AssertTabEquals(const SessionID& window_id,
                        const SessionID& tab_id,
@@ -73,15 +74,19 @@ class SessionServiceTestHelper {
       const sessions::SerializedNavigationEntry& actual);
 
   void AssertSingleWindowWithSingleTab(
-      const std::vector<sessions::SessionWindow*>& windows,
+      const std::vector<std::unique_ptr<sessions::SessionWindow>>& windows,
       size_t nav_count);
 
   void SetService(SessionService* service);
   SessionService* ReleaseService();
   SessionService* service() { return service_.get(); }
 
-  void RunTaskOnBackendThread(const tracked_objects::Location& from_here,
+  void RunTaskOnBackendThread(const base::Location& from_here,
                               const base::Closure& task);
+
+  void SetAvailableRange(const SessionID& tab_id,
+                         const std::pair<int, int>& range);
+  bool GetAvailableRange(const SessionID& tab_id, std::pair<int, int>* range);
 
  private:
   std::unique_ptr<SessionService> service_;

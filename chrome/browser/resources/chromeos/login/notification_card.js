@@ -6,27 +6,18 @@ Polymer({
   is: 'notification-card',
 
   properties: {
-    buttonLabel: {
-      type: String,
-      value: ''
-    },
+    buttonLabel: {type: String, value: ''},
 
-    linkLabel: {
-      type: String,
-      value: ''
-    },
+    linkLabel: {type: String, value: ''},
 
-    type: {
-      type: String,
-      value: ''
-    }
+    type: {type: String, value: ''}
   },
 
   iconNameByType_: function(type) {
     if (type == 'fail')
-      return 'warning';
+      return 'cr:warning';
     if (type == 'success')
-      return 'done';
+      return 'notification-card:done';
     console.error('Unknown type "' + type + '".');
     return '';
   },

@@ -5,11 +5,12 @@
 #ifndef MEDIA_BASE_AUDIO_BUFFER_CONVERTER_H_
 #define MEDIA_BASE_AUDIO_BUFFER_CONVERTER_H_
 
-#include <deque>
 #include <memory>
 
+#include "base/containers/circular_deque.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
+#include "media/base/audio_buffer.h"
 #include "media/base/audio_converter.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/audio_timestamp_helper.h"
@@ -17,7 +18,6 @@
 
 namespace media {
 
-class AudioBuffer;
 class AudioBus;
 
 // Takes AudioBuffers in any format and uses an AudioConverter to convert them
@@ -69,7 +69,7 @@ class MEDIA_EXPORT AudioBufferConverter : public AudioConverter::InputCallback {
   // changes, so we know when to reset the AudioConverter).
   AudioParameters input_params_;
 
-  typedef std::deque<scoped_refptr<AudioBuffer> > BufferQueue;
+  using BufferQueue = base::circular_deque<scoped_refptr<AudioBuffer>>;
 
   // Queued up inputs (there will never be all that much data stored here, as
   // soon as there's enough here to produce an output buffer we will do so).
@@ -97,6 +97,9 @@ class MEDIA_EXPORT AudioBufferConverter : public AudioConverter::InputCallback {
   // Are we flushing everything, without regard for providing AudioConverter
   // full AudioBuses in ProvideInput()?
   bool is_flushing_;
+
+  // Pool to avoid thrashing memory when allocating AudioBuffers.
+  scoped_refptr<AudioBufferMemoryPool> pool_;
 
   // The AudioConverter which does the real work here.
   std::unique_ptr<AudioConverter> audio_converter_;

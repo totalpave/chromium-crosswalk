@@ -8,6 +8,8 @@
 #include <string>
 
 #include "ash/ash_export.h"
+#include "base/optional.h"
+#include "base/strings/string16.h"
 
 namespace ash {
 
@@ -17,15 +19,18 @@ struct ASH_EXPORT ToastData {
   static const int32_t kInfiniteDuration = -1;
 
   ToastData(std::string id,
-            std::string text,
+            const base::string16& text,
             int32_t duration_ms,
-            std::string dismiss_text);
+            const base::Optional<base::string16>& dismiss_text,
+            bool visible_on_lock_screen = false);
   ToastData(const ToastData& other);
+  ~ToastData();
 
   std::string id;
-  std::string text;
+  base::string16 text;
   int32_t duration_ms;
-  std::string dismiss_text;
+  base::Optional<base::string16> dismiss_text;
+  bool visible_on_lock_screen;
 };
 
 }  // namespace ash

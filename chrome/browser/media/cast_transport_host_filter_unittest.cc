@@ -5,7 +5,6 @@
 #include <stdint.h>
 
 #include "base/callback.h"
-#include "base/message_loop/message_loop.h"
 #include "base/time/default_tick_clock.h"
 #include "chrome/browser/media/cast_transport_host_filter.h"
 #include "chrome/common/cast_messages.h"
@@ -22,6 +21,8 @@ class CastTransportHostFilterTest : public testing::Test {
       : browser_thread_bundle_(
             content::TestBrowserThreadBundle::IO_MAINLOOP) {
     filter_ = new cast::CastTransportHostFilter();
+    static_cast<cast::CastTransportHostFilter*>(filter_.get())
+        ->InitializeNoOpWakeLockForTesting();
     // 127.0.0.1:7 is the local echo service port, which
     // is probably not going to respond, but that's ok.
     // TODO(hubbe): Open up an UDP port and make sure
@@ -92,13 +93,15 @@ TEST_F(CastTransportHostFilterTest, SimpleMessages) {
   media::cast::CastTransportRtpConfig audio_config;
   audio_config.ssrc = 1;
   audio_config.feedback_ssrc = 2;
-  CastHostMsg_InitializeAudio init_audio_msg(kChannelId, audio_config);
+  audio_config.rtp_payload_type = media::cast::RtpPayloadType::AUDIO_OPUS;
+  CastHostMsg_InitializeStream init_audio_msg(kChannelId, audio_config);
   FakeSend(init_audio_msg);
 
   media::cast::CastTransportRtpConfig video_config;
   video_config.ssrc = 11;
   video_config.feedback_ssrc = 12;
-  CastHostMsg_InitializeVideo init_video_msg(kChannelId, video_config);
+  video_config.rtp_payload_type = media::cast::RtpPayloadType::VIDEO_VP8;
+  CastHostMsg_InitializeStream init_video_msg(kChannelId, video_config);
   FakeSend(init_video_msg);
 
   media::cast::EncodedFrame audio_frame;

@@ -4,8 +4,6 @@
 
 #include "chrome/browser/sessions/session_service_test_helper.h"
 
-#include "base/memory/scoped_vector.h"
-#include "base/message_loop/message_loop.h"
 #include "chrome/browser/sessions/session_service.h"
 #include "components/sessions/core/base_session_service_test_helper.h"
 #include "components/sessions/core/serialized_navigation_entry_test_helper.h"
@@ -57,10 +55,9 @@ void SessionServiceTestHelper::SetForceBrowserNotAliveWithNoWindows(
 
 // Be sure and null out service to force closing the file.
 void SessionServiceTestHelper::ReadWindows(
-    std::vector<sessions::SessionWindow*>* windows,
-    SessionID::id_type* active_window_id) {
-  Time last_time;
-  ScopedVector<sessions::SessionCommand> read_commands;
+    std::vector<std::unique_ptr<sessions::SessionWindow>>* windows,
+    SessionID* active_window_id) {
+  std::vector<std::unique_ptr<sessions::SessionCommand>> read_commands;
   sessions::BaseSessionServiceTestHelper test_helper(
       service_->GetBaseSessionServiceForTest());
   test_helper.ReadLastSessionCommands(&read_commands);
@@ -100,7 +97,7 @@ void SessionServiceTestHelper::AssertNavigationEquals(
 }
 
 void SessionServiceTestHelper::AssertSingleWindowWithSingleTab(
-    const std::vector<sessions::SessionWindow*>& windows,
+    const std::vector<std::unique_ptr<sessions::SessionWindow>>& windows,
     size_t nav_count) {
   ASSERT_EQ(1U, windows.size());
   EXPECT_EQ(1U, windows[0]->tabs.size());
@@ -110,7 +107,7 @@ void SessionServiceTestHelper::AssertSingleWindowWithSingleTab(
 void SessionServiceTestHelper::SetService(SessionService* service) {
   service_.reset(service);
   // Execute IO tasks posted by the SessionService.
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
 }
 
 SessionService* SessionServiceTestHelper::ReleaseService() {
@@ -118,9 +115,20 @@ SessionService* SessionServiceTestHelper::ReleaseService() {
 }
 
 void SessionServiceTestHelper::RunTaskOnBackendThread(
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const base::Closure& task) {
   sessions::BaseSessionServiceTestHelper test_helper(
       service_->GetBaseSessionServiceForTest());
   test_helper.RunTaskOnBackendThread(from_here, task);
+}
+
+void SessionServiceTestHelper::SetAvailableRange(
+    const SessionID& tab_id,
+    const std::pair<int, int>& range) {
+  service_->SetAvailableRangeForTest(tab_id, range);
+}
+
+bool SessionServiceTestHelper::GetAvailableRange(const SessionID& tab_id,
+                                                 std::pair<int, int>* range) {
+  return service_->GetAvailableRangeForTest(tab_id, range);
 }

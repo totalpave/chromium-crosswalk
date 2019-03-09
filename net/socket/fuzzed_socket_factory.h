@@ -6,22 +6,25 @@
 #define NET_SOCKET_FUZZED_SOCKET_FACTORY_H_
 
 #include <memory>
+#include <string>
 
 #include "base/macros.h"
 #include "net/socket/client_socket_factory.h"
 
-namespace net {
-
+namespace base {
 class FuzzedDataProvider;
+}
+
+namespace net {
 
 // A socket factory that creates FuzzedSockets that share the same
 // FuzzedDataProvider. To behave consistently, the read operations on all
 // sockets must be the same, and in the same order (both on each socket, and
 // between sockets).
 //
-// Currently doesn't support UDP or SSL sockets - just returns sockets that
+// Currently doesn't support SSL sockets - just returns sockets that
 // synchronously fail to connect when trying to create either type of socket.
-// TODO(mmenke): Add support for both types of socket.
+// TODO(mmenke): Add support for ssl sockets.
 // TODO(mmenke): add fuzzing for generation of valid cryptographically signed
 // messages.
 class FuzzedSocketFactory : public ClientSocketFactory {
@@ -30,31 +33,46 @@ class FuzzedSocketFactory : public ClientSocketFactory {
   // creates. Other objects can also continue to consume |data_provider|, as
   // long as their calls into it are made on the CLientSocketFactory's thread
   // and the calls are deterministic.
-  explicit FuzzedSocketFactory(FuzzedDataProvider* data_provider);
+  explicit FuzzedSocketFactory(base::FuzzedDataProvider* data_provider);
   ~FuzzedSocketFactory() override;
 
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
-      const RandIntCallback& rand_int_cb,
       NetLog* net_log,
-      const NetLog::Source& source) override;
+      const NetLogSource& source) override;
 
-  std::unique_ptr<StreamSocket> CreateTransportClientSocket(
+  std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetLog* net_log,
-      const NetLog::Source& source) override;
+      const NetLogSource& source) override;
 
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
-      std::unique_ptr<ClientSocketHandle> transport_socket,
+      std::unique_ptr<StreamSocket> stream_socket,
       const HostPortPair& host_and_port,
       const SSLConfig& ssl_config,
       const SSLClientSocketContext& context) override;
 
-  void ClearSSLSessionCache() override;
+  std::unique_ptr<ProxyClientSocket> CreateProxyClientSocket(
+      std::unique_ptr<StreamSocket> stream_socket,
+      const std::string& user_agent,
+      const HostPortPair& endpoint,
+      const ProxyServer& proxy_server,
+      HttpAuthController* http_auth_controller,
+      bool tunnel,
+      bool using_spdy,
+      NextProto negotiated_protocol,
+      ProxyDelegate* proxy_delegate,
+      bool is_https_proxy,
+      const NetworkTrafficAnnotationTag& traffic_annotation) override;
+
+  // Sets whether Connect()ions on returned sockets can be asynchronously
+  // delayed or outright fail. Defaults to true.
+  void set_fuzz_connect_result(bool v) { fuzz_connect_result_ = v; }
 
  private:
-  FuzzedDataProvider* data_provider_;
+  base::FuzzedDataProvider* data_provider_;
+  bool fuzz_connect_result_;
 
   DISALLOW_COPY_AND_ASSIGN(FuzzedSocketFactory);
 };

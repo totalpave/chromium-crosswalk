@@ -6,6 +6,8 @@
 #define MEDIA_AUDIO_PULSE_AUDIO_MANAGER_PULSE_H_
 
 #include <pulse/pulseaudio.h>
+
+#include <memory>
 #include <string>
 
 #include "base/compiler_specific.h"
@@ -17,21 +19,20 @@ namespace media {
 
 class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
  public:
-  AudioManagerPulse(
-      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> worker_task_runner,
-      AudioLogFactory* audio_log_factory);
-
-  bool Init();
+  AudioManagerPulse(std::unique_ptr<AudioThread> audio_thread,
+                    AudioLogFactory* audio_log_factory,
+                    pa_threaded_mainloop* pa_mainloop,
+                    pa_context* pa_context);
+  ~AudioManagerPulse() override;
 
   // Implementation of AudioManager.
   bool HasAudioOutputDevices() override;
   bool HasAudioInputDevices() override;
-  void ShowAudioInputSettings() override;
   void GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
   void GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
   AudioParameters GetInputStreamParameters(
       const std::string& device_id) override;
+  const char* GetName() override;
 
   // Implementation of AudioManagerBase.
   AudioOutputStream* MakeLinearOutputStream(
@@ -49,18 +50,20 @@ class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
       const AudioParameters& params,
       const std::string& device_id,
       const LogCallback& log_callback) override;
+  std::string GetDefaultInputDeviceID() override;
+  std::string GetDefaultOutputDeviceID() override;
+  std::string GetAssociatedOutputDeviceID(
+      const std::string& input_device_id) override;
+
+  bool DefaultSourceIsMonitor() const { return default_source_is_monitor_; }
 
  protected:
-  ~AudioManagerPulse() override;
-
+  void ShutdownOnAudioThread() override;
   AudioParameters GetPreferredOutputStreamParameters(
       const std::string& output_device_id,
       const AudioParameters& input_params) override;
 
  private:
-  bool InitPulse();
-  void DestroyPulse();
-
   void GetAudioDeviceNames(bool input, media::AudioDeviceNames* device_names);
 
   // Callback to get the devices' info like names, used by GetInputDevices().
@@ -72,10 +75,15 @@ class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
                                         int error, void* user_data);
 
   // Callback to get the native sample rate of PulseAudio, used by
-  // GetNativeSampleRate().
-  static void SampleRateInfoCallback(pa_context* context,
-                                     const pa_server_info* info,
-                                     void* user_data);
+  // UpdateNativeAudioHardwareInfo().
+  static void AudioHardwareInfoCallback(pa_context* context,
+                                        const pa_server_info* info,
+                                        void* user_data);
+
+  static void DefaultSourceInfoCallback(pa_context* context,
+                                        const pa_source_info* info,
+                                        int eol,
+                                        void* user_data);
 
   // Called by MakeLinearOutputStream and MakeLowLatencyOutputStream.
   AudioOutputStream* MakeOutputStream(const AudioParameters& params,
@@ -85,13 +93,16 @@ class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
   AudioInputStream* MakeInputStream(const AudioParameters& params,
                                     const std::string& device_id);
 
-  // Gets the native sample rate of Pulse.
-  int GetNativeSampleRate();
+  // Updates |native_input_sample_rate_| and |native_channel_count_|.
+  void UpdateNativeAudioHardwareInfo();
 
   pa_threaded_mainloop* input_mainloop_;
   pa_context* input_context_;
   AudioDeviceNames* devices_;
   int native_input_sample_rate_;
+  int native_channel_count_;
+  std::string default_source_name_;
+  bool default_source_is_monitor_;
 
   DISALLOW_COPY_AND_ASSIGN(AudioManagerPulse);
 };

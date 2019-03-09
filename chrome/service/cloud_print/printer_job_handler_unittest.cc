@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/location.h"
 #include "base/md5.h"
@@ -21,6 +22,7 @@
 #include "chrome/service/cloud_print/print_system.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/test_url_fetcher_factory.h"
 #include "net/url_request/url_request_status.h"
 #include "net/url_request/url_request_test_util.h"
@@ -253,7 +255,8 @@ class CloudPrintURLFetcherNoServiceProcess
     : public CloudPrintURLFetcher {
  public:
   CloudPrintURLFetcherNoServiceProcess()
-      : context_getter_(new net::TestURLRequestContextGetter(
+      : CloudPrintURLFetcher(PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS),
+        context_getter_(new net::TestURLRequestContextGetter(
             base::ThreadTaskRunnerHandle::Get())) {}
 
  protected:
@@ -307,7 +310,7 @@ class MockPrinterJobHandlerDelegate
   MOCK_METHOD0(OnAuthError, void());
   MOCK_METHOD1(OnPrinterDeleted, void(const std::string& str));
 
-  virtual ~MockPrinterJobHandlerDelegate() {}
+  ~MockPrinterJobHandlerDelegate() override {}
 };
 
 
@@ -328,7 +331,7 @@ class MockPrintServerWatcher
   friend class scoped_refptr<MockPrintServerWatcher>;
 
  protected:
-  virtual ~MockPrintServerWatcher() {}
+  ~MockPrintServerWatcher() override {}
 
  private:
   PrintSystem::PrintServerWatcher::Delegate* delegate_;
@@ -349,7 +352,7 @@ class MockPrinterWatcher : public PrintSystem::PrinterWatcher {
   friend class scoped_refptr<MockPrinterWatcher>;
 
  protected:
-  virtual ~MockPrinterWatcher() {}
+  ~MockPrinterWatcher() override {}
 
  private:
   PrintSystem::PrinterWatcher::Delegate* delegate_;
@@ -376,7 +379,7 @@ class MockJobSpooler : public PrintSystem::JobSpooler {
   friend class scoped_refptr<MockJobSpooler>;
 
  protected:
-  virtual ~MockJobSpooler() {}
+  ~MockJobSpooler() override {}
 
  private:
   PrintSystem::JobSpooler::Delegate* delegate_;
@@ -436,7 +439,7 @@ class MockPrintSystem : public PrintSystem {
   friend class scoped_refptr<MockPrintSystem>;
 
  protected:
-  virtual ~MockPrintSystem() {}
+  ~MockPrintSystem() override {}
 
  private:
   scoped_refptr<MockJobSpooler> job_spooler_;
@@ -450,7 +453,6 @@ class PrinterJobHandlerTest : public ::testing::Test {
   PrinterJobHandlerTest();
   void SetUp() override;
   void TearDown() override;
-  void IdleOut();
   bool GetPrinterInfo(printing::PrinterBasicInfo* info);
   void SendCapsAndDefaults(
       const std::string& printer_name,
@@ -462,10 +464,8 @@ class PrinterJobHandlerTest : public ::testing::Test {
   void BeginTest(int timeout_seconds);
   void MakeJobFetchReturnNoJobs();
 
-  static void MessageLoopQuitNowHelper(base::MessageLoop* message_loop);
-  static void MessageLoopQuitSoonHelper(base::MessageLoop* message_loop);
-
   base::MessageLoopForIO loop_;
+  std::unique_ptr<base::RunLoop> active_run_loop_;
   TestURLFetcherCallback url_callback_;
   MockPrinterJobHandlerDelegate jobhandler_delegate_;
   CloudPrintTokenStore token_store_;
@@ -521,17 +521,6 @@ void PrinterJobHandlerTest::MakeJobFetchReturnNoJobs() {
                            net::URLRequestStatus::SUCCESS);
 }
 
-void PrinterJobHandlerTest::MessageLoopQuitNowHelper(
-    base::MessageLoop* message_loop) {
-  message_loop->QuitWhenIdle();
-}
-
-void PrinterJobHandlerTest::MessageLoopQuitSoonHelper(
-    base::MessageLoop* message_loop) {
-  message_loop->task_runner()->PostTask(
-      FROM_HERE, base::Bind(&MessageLoopQuitNowHelper, message_loop));
-}
-
 PrinterJobHandlerTest::PrinterJobHandlerTest()
     : factory_(NULL, base::Bind(&TestURLFetcherCallback::CreateURLFetcher,
                                 base::Unretained(&url_callback_))) {
@@ -540,13 +529,13 @@ PrinterJobHandlerTest::PrinterJobHandlerTest()
 bool PrinterJobHandlerTest::PostSpoolSuccess() {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&PrinterJobHandler::OnJobSpoolSucceeded, job_handler_, 0));
+      base::BindOnce(&PrinterJobHandler::OnJobSpoolSucceeded, job_handler_, 0));
 
   // Everything that would be posted on the printer thread queue
   // has been posted, we can tell the main message loop to quit when idle
   // and not worry about it idling while the print thread does work
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&MessageLoopQuitSoonHelper, &loop_));
+      FROM_HERE, active_run_loop_->QuitWhenIdleClosure());
   return true;
 }
 
@@ -614,12 +603,13 @@ void PrinterJobHandlerTest::BeginTest(int timeout_seconds) {
 
   job_handler_->Initialize();
 
+  active_run_loop_ = std::make_unique<base::RunLoop>();
+
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&PrinterJobHandlerTest::MessageLoopQuitSoonHelper,
-                            base::MessageLoop::current()),
+      FROM_HERE, active_run_loop_->QuitWhenIdleClosure(),
       base::TimeDelta::FromSeconds(timeout_seconds));
 
-  base::RunLoop().Run();
+  active_run_loop_->Run();
 }
 
 void PrinterJobHandlerTest::SendCapsAndDefaults(
@@ -634,12 +624,8 @@ bool PrinterJobHandlerTest::GetPrinterInfo(printing::PrinterBasicInfo* info) {
 }
 
 void PrinterJobHandlerTest::TearDown() {
-  IdleOut();
-  CloudPrintURLFetcher::set_test_factory(nullptr);
-}
-
-void PrinterJobHandlerTest::IdleOut() {
   base::RunLoop().RunUntilIdle();
+  CloudPrintURLFetcher::set_test_factory(nullptr);
 }
 
 MockPrintServerWatcher::MockPrintServerWatcher() : delegate_(NULL) {
@@ -776,9 +762,10 @@ TEST_F(PrinterJobHandlerTest, DISABLED_ManyFailureTest) {
 
   loop_.task_runner()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&net::FakeURLFetcherFactory::SetFakeResponse,
-                 base::Unretained(&factory_), TicketURI(1), kExamplePrintTicket,
-                 net::HTTP_OK, net::URLRequestStatus::SUCCESS),
+      base::BindOnce(&net::FakeURLFetcherFactory::SetFakeResponse,
+                     base::Unretained(&factory_), TicketURI(1),
+                     kExamplePrintTicket, net::HTTP_OK,
+                     net::URLRequestStatus::SUCCESS),
       base::TimeDelta::FromSeconds(1));
 
   BeginTest(5);

@@ -5,8 +5,7 @@
 #ifndef CONTENT_COMMON_TEXT_INPUT_STATE_H_
 #define CONTENT_COMMON_TEXT_INPUT_STATE_H_
 
-#include <string>
-
+#include "base/strings/string16.h"
 #include "content/common/content_export.h"
 #include "ui/base/ime/text_input_mode.h"
 #include "ui/base/ime/text_input_type.h"
@@ -30,7 +29,7 @@ struct CONTENT_EXPORT TextInputState {
   int flags;
 
   // The value of input field.
-  std::string value;
+  base::string16 value;
 
   // The cursor position of the current selection start, or the caret position
   // if nothing is selected.
@@ -54,9 +53,8 @@ struct CONTENT_EXPORT TextInputState {
   // TEXT_INPUT_TYPE_NONE).
   bool show_ime_if_needed;
 
-  // Whether this change is originated from non-IME (e.g., Javascript,
-  // Autofill).
-  bool is_non_ime_change;
+  // Whether or not this is a reply to a request from IME.
+  bool reply_to_request;
 };
 
 }  // namespace content

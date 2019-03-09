@@ -11,10 +11,11 @@
 #include "base/files/file_util.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/path_service.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
@@ -22,13 +23,10 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
-#include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_pref_value_map.h"
 #include "extensions/browser/extension_pref_value_map_factory.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/extension.h"
-#include "extensions/common/extension_l10n_util.h"
 #include "extensions/common/manifest_constants.h"
 #include "ui/base/ime/chromeos/extension_ime_util.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -45,10 +43,6 @@ struct WhitelistedComponentExtensionIME {
     {
         // Official Google XKB Input.
         extension_ime_util::kXkbExtensionId, IDR_GOOGLE_XKB_MANIFEST,
-    },
-    {
-        // Google input tools.
-        extension_ime_util::kT13nExtensionId, IDR_GOOGLE_INPUT_TOOLS_MANIFEST,
     },
 #else
     {
@@ -82,7 +76,7 @@ struct WhitelistedComponentExtensionIME {
 #endif
     {
         // Braille hardware keyboard IME that works together with ChromeVox.
-        extension_misc::kBrailleImeExtensionId, IDR_BRAILLE_MANIFEST,
+        extension_ime_util::kBrailleImeExtensionId, IDR_BRAILLE_MANIFEST,
     },
 };
 
@@ -91,7 +85,8 @@ const char kImePathKeyName[] = "ime_path";
 extensions::ComponentLoader* GetComponentLoader(Profile* profile) {
   extensions::ExtensionSystem* extension_system =
       extensions::ExtensionSystem::Get(profile);
-  ExtensionService* extension_service = extension_system->extension_service();
+  extensions::ExtensionService* extension_service =
+      extension_system->extension_service();
   return extension_service->component_loader();
 }
 
@@ -101,12 +96,22 @@ void DoLoadExtension(Profile* profile,
                      const base::FilePath& file_path) {
   extensions::ExtensionSystem* extension_system =
       extensions::ExtensionSystem::Get(profile);
-  ExtensionService* extension_service = extension_system->extension_service();
+  extensions::ExtensionService* extension_service =
+      extension_system->extension_service();
   DCHECK(extension_service);
-  if (extension_service->GetExtensionById(extension_id, false))
+  if (extension_service->GetExtensionById(extension_id, false)) {
+    VLOG(1) << "the IME extension(id=\"" << extension_id
+            << "\") is already enabled";
     return;
+  }
   const std::string loaded_extension_id =
       GetComponentLoader(profile)->Add(manifest, file_path);
+  if (loaded_extension_id.empty()) {
+    LOG(ERROR) << "Failed to add an IME extension(id=\"" << extension_id
+               << ", path=\"" << file_path.LossyDisplayName()
+               << "\") to ComponentLoader";
+    return;
+  }
   // Register IME extension with ExtensionPrefValueMap.
   ExtensionPrefValueMapFactory::GetForBrowserContext(profile)
       ->RegisterExtension(extension_id,
@@ -114,6 +119,10 @@ void DoLoadExtension(Profile* profile,
                           true,          // is_enabled.
                           true);         // is_incognito_enabled.
   DCHECK_EQ(loaded_extension_id, extension_id);
+  if (!extension_service->IsExtensionEnabled(loaded_extension_id)) {
+    LOG(ERROR) << "An IME extension(id=\"" << loaded_extension_id
+               << "\") is not enabled after loading";
+  }
 }
 
 bool CheckFilePath(const base::FilePath* file_path) {
@@ -154,13 +163,10 @@ void ComponentExtensionIMEManagerImpl::Load(Profile* profile,
   // and InputMethodEngine creation, so that the virtual keyboard web content
   // url won't be override by IME component extensions.
   base::FilePath* copied_file_path = new base::FilePath(file_path);
-  content::BrowserThread::PostTaskAndReplyWithResult(
-      content::BrowserThread::FILE,
-      FROM_HERE,
-      base::Bind(&CheckFilePath,
-                 base::Unretained(copied_file_path)),
-      base::Bind(&OnFilePathChecked,
-                 base::Unretained(profile),
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::Bind(&CheckFilePath, base::Unretained(copied_file_path)),
+      base::Bind(&OnFilePathChecked, base::Unretained(profile),
                  base::Owned(new std::string(extension_id)),
                  base::Owned(new std::string(manifest)),
                  base::Owned(copied_file_path)));
@@ -190,7 +196,7 @@ ComponentExtensionIMEManagerImpl::GetManifest(
 
 // static
 bool ComponentExtensionIMEManagerImpl::IsIMEExtensionID(const std::string& id) {
-  for (size_t i = 0; i < arraysize(whitelisted_component_extension); ++i) {
+  for (size_t i = 0; i < base::size(whitelisted_component_extension); ++i) {
     if (base::LowerCaseEqualsASCII(id, whitelisted_component_extension[i].id))
       return true;
   }
@@ -218,11 +224,11 @@ bool ComponentExtensionIMEManagerImpl::ReadEngineComponent(
   std::set<std::string> languages;
   const base::Value* language_value = NULL;
   if (dict.Get(extensions::manifest_keys::kLanguage, &language_value)) {
-    if (language_value->GetType() == base::Value::TYPE_STRING) {
+    if (language_value->is_string()) {
       std::string language_str;
       language_value->GetAsString(&language_str);
       languages.insert(language_str);
-    } else if (language_value->GetType() == base::Value::TYPE_LIST) {
+    } else if (language_value->is_list()) {
       const base::ListValue* language_list = NULL;
       language_value->GetAsList(&language_list);
       for (size_t j = 0; j < language_list->GetSize(); ++j) {
@@ -303,38 +309,51 @@ bool ComponentExtensionIMEManagerImpl::ReadExtensionInfo(
 void ComponentExtensionIMEManagerImpl::ReadComponentExtensionsInfo(
     std::vector<ComponentExtensionIME>* out_imes) {
   DCHECK(out_imes);
-  for (size_t i = 0; i < arraysize(whitelisted_component_extension); ++i) {
+  for (size_t i = 0; i < base::size(whitelisted_component_extension); ++i) {
     ComponentExtensionIME component_ime;
-    ResourceBundle& rb = ResourceBundle::GetSharedInstance();
+    ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
     component_ime.manifest =
         rb.GetRawDataResource(
                whitelisted_component_extension[i].manifest_resource_id)
             .as_string();
-    if (component_ime.manifest.empty())
+
+    if (component_ime.manifest.empty()) {
+      LOG(ERROR) << "Couldn't get manifest from resource_id("
+                 << whitelisted_component_extension[i].manifest_resource_id
+                 << ")";
       continue;
+    }
 
     std::unique_ptr<base::DictionaryValue> manifest =
         GetManifest(component_ime.manifest);
-    if (!manifest.get())
+    if (!manifest.get()) {
+      LOG(ERROR) << "Failed to load invalid manifest: "
+                 << component_ime.manifest;
       continue;
+    }
 
     if (!ReadExtensionInfo(*manifest.get(),
                            whitelisted_component_extension[i].id,
-                           &component_ime))
+                           &component_ime)) {
+      LOG(ERROR) << "manifest doesn't have needed information for IME.";
       continue;
+    }
+
     component_ime.id = whitelisted_component_extension[i].id;
 
     if (!component_ime.path.IsAbsolute()) {
       base::FilePath resources_path;
-      if (!PathService::Get(chrome::DIR_RESOURCES, &resources_path))
+      if (!base::PathService::Get(chrome::DIR_RESOURCES, &resources_path))
         NOTREACHED();
       component_ime.path = resources_path.Append(component_ime.path);
     }
 
     const base::ListValue* component_list;
     if (!manifest->GetList(extensions::manifest_keys::kInputComponents,
-                           &component_list))
+                           &component_list)) {
+      LOG(ERROR) << "No input_components is found in manifest.";
       continue;
+    }
 
     for (size_t i = 0; i < component_list->GetSize(); ++i) {
       const base::DictionaryValue* dictionary;

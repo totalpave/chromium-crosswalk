@@ -15,6 +15,7 @@
 #include "media/base/demuxer_stream.h"
 #include "media/base/pipeline_status.h"
 #include "media/base/video_decoder_config.h"
+#include "media/base/waiting.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -33,8 +34,8 @@ class MEDIA_EXPORT DecryptingDemuxerStream : public DemuxerStream {
  public:
   DecryptingDemuxerStream(
       const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
-      const scoped_refptr<MediaLog>& media_log,
-      const base::Closure& waiting_for_decryption_key_cb);
+      MediaLog* media_log,
+      const WaitingCB& waiting_cb);
 
   // Cancels all pending operations immediately and fires all pending callbacks.
   ~DecryptingDemuxerStream() override;
@@ -61,13 +62,50 @@ class MEDIA_EXPORT DecryptingDemuxerStream : public DemuxerStream {
   Liveness liveness() const override;
   void EnableBitstreamConverter() override;
   bool SupportsConfigChanges() override;
-  VideoRotation video_rotation() override;
 
  private:
-  // For a detailed state diagram please see this link: http://goo.gl/8jAok
-  // TODO(xhwang): Add a ASCII state diagram in this file after this class
-  // stabilizes.
-  // TODO(xhwang): Update this diagram for DecryptingDemuxerStream.
+  // See this link for a detailed state diagram: http://shortn/_1nXgoVIrps
+  // Each line has a number that corresponds to an action, status or function
+  // that results in a state change. These actions, etc are all listed below.
+  // NOTE: invoking Reset() will cause a transition from any state except
+  //       kUninitialized to the kIdle state.
+  //
+  //    +----------------+         +---------------------------------+
+  //    | kUninitialized |         | Any State Except kUninitialized |
+  //    +----------------+         +---------------------------------+
+  //             |                                  |
+  //             0                                  7
+  //             v                                  v
+  //         +-------+                          +-------+
+  //         | kIdle |<-------+-+               | kIdle |
+  //         +-------+        | |               +-------+
+  //             |            | |
+  //             1            4 5
+  //             v            | |
+  //  +---------------------+ | |
+  //  | kPendingDemuxerRead |-+ |
+  //  +---------------------+   |
+  //             |              |
+  //             2              |
+  //             v              |
+  //    +-----------------+     |
+  // +->| kPendingDecrypt |-----+
+  // |  +-----------------+
+  // |           |
+  // 6           3
+  // |           v
+  // |   +----------------+
+  // +---| kWaitingForKey |
+  //     +----------------+
+  //
+  // 1) Read()
+  // 2) Has encrypted buffer
+  // 3) kNoKey
+  // 4) kConfigChanged, kAborted, has clear buffer or end of stream
+  // 5) kSuccess or kAborted
+  // 6) OnKeyAdded()
+  // 7) Reset()
+
   enum State {
     kUninitialized = 0,
     kIdle,
@@ -78,13 +116,13 @@ class MEDIA_EXPORT DecryptingDemuxerStream : public DemuxerStream {
 
   // Callback for DemuxerStream::Read().
   void DecryptBuffer(DemuxerStream::Status status,
-                     const scoped_refptr<DecoderBuffer>& buffer);
+                     scoped_refptr<DecoderBuffer> buffer);
 
   void DecryptPendingBuffer();
 
   // Callback for Decryptor::Decrypt().
   void DeliverBuffer(Decryptor::Status status,
-                     const scoped_refptr<DecoderBuffer>& decrypted_buffer);
+                     scoped_refptr<DecoderBuffer> decrypted_buffer);
 
   // Callback for the |decryptor_| to notify this object that a new key has been
   // added.
@@ -100,16 +138,20 @@ class MEDIA_EXPORT DecryptingDemuxerStream : public DemuxerStream {
   // |demuxer_stream_|.
   void InitializeDecoderConfig();
 
+  // Completes traces for various pending states.
+  void CompletePendingDecrypt(Decryptor::Status status);
+  void CompleteWaitingForDecryptionKey();
+
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
 
   State state_;
 
   PipelineStatusCB init_cb_;
   ReadCB read_cb_;
   base::Closure reset_cb_;
-  base::Closure waiting_for_decryption_key_cb_;
+  WaitingCB waiting_cb_;
 
   // Pointer to the input demuxer stream that will feed us encrypted buffers.
   DemuxerStream* demuxer_stream_;

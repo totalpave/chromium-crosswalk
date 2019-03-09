@@ -7,9 +7,16 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_context.h"
+#include "extensions/browser/component_extension_resource_manager.h"
 #include "extensions/browser/extension_host_delegate.h"
 #include "extensions/browser/test_runtime_api_delegate.h"
 #include "extensions/browser/updater/null_extension_cache.h"
+#include "services/network/public/mojom/url_loader.mojom.h"
+#include "ui/base/l10n/l10n_util.h"
+
+#if defined(OS_CHROMEOS)
+#include "chromeos/login/login_state/login_state.h"
+#endif
 
 using content::BrowserContext;
 
@@ -17,20 +24,32 @@ namespace extensions {
 
 TestExtensionsBrowserClient::TestExtensionsBrowserClient(
     BrowserContext* main_context)
-    : main_context_(main_context),
-      incognito_context_(NULL),
-      process_manager_delegate_(NULL),
-      extension_system_factory_(NULL),
-      extension_cache_(new NullExtensionCache) {
-  DCHECK(main_context_);
-  DCHECK(!main_context_->IsOffTheRecord());
+    : main_context_(nullptr),
+      incognito_context_(nullptr),
+      lock_screen_context_(nullptr),
+      process_manager_delegate_(nullptr),
+      extension_system_factory_(nullptr),
+      extension_cache_(std::make_unique<NullExtensionCache>()) {
+  if (main_context)
+    SetMainContext(main_context);
 }
+
+TestExtensionsBrowserClient::TestExtensionsBrowserClient()
+    : TestExtensionsBrowserClient(nullptr) {}
 
 TestExtensionsBrowserClient::~TestExtensionsBrowserClient() {}
 
 void TestExtensionsBrowserClient::SetUpdateClientFactory(
     const base::Callback<update_client::UpdateClient*(void)>& factory) {
   update_client_factory_ = factory;
+}
+
+void TestExtensionsBrowserClient::SetMainContext(
+    content::BrowserContext* main_context) {
+  DCHECK(!main_context_);
+  DCHECK(main_context);
+  DCHECK(!main_context->IsOffTheRecord());
+  main_context_ = main_context;
 }
 
 void TestExtensionsBrowserClient::SetIncognitoContext(BrowserContext* context) {
@@ -63,14 +82,14 @@ bool TestExtensionsBrowserClient::IsSameContext(BrowserContext* first,
 
 bool TestExtensionsBrowserClient::HasOffTheRecordContext(
     BrowserContext* context) {
-  return context == main_context_ && incognito_context_ != NULL;
+  return context == main_context_ && incognito_context_ != nullptr;
 }
 
 BrowserContext* TestExtensionsBrowserClient::GetOffTheRecordContext(
     BrowserContext* context) {
   if (context == main_context_)
     return incognito_context_;
-  return NULL;
+  return nullptr;
 }
 
 BrowserContext* TestExtensionsBrowserClient::GetOriginalContext(
@@ -81,7 +100,9 @@ BrowserContext* TestExtensionsBrowserClient::GetOriginalContext(
 #if defined(OS_CHROMEOS)
 std::string TestExtensionsBrowserClient::GetUserIdHashFromContext(
     content::BrowserContext* context) {
-  return "";
+  if (context != main_context_ || !chromeos::LoginState::IsInitialized())
+    return "";
+  return chromeos::LoginState::Get()->primary_user_hash();
 }
 #endif
 
@@ -109,14 +130,38 @@ TestExtensionsBrowserClient::MaybeCreateResourceBundleRequestJob(
     const base::FilePath& directory_path,
     const std::string& content_security_policy,
     bool send_cors_header) {
-  return NULL;
+  return nullptr;
+}
+
+base::FilePath TestExtensionsBrowserClient::GetBundleResourcePath(
+    const network::ResourceRequest& request,
+    const base::FilePath& extension_resources_path,
+    ComponentExtensionResourceInfo* resource_info) const {
+  *resource_info = {};
+  return base::FilePath();
+}
+
+void TestExtensionsBrowserClient::LoadResourceFromResourceBundle(
+    const network::ResourceRequest& request,
+    network::mojom::URLLoaderRequest loader,
+    const base::FilePath& resource_relative_path,
+    const ComponentExtensionResourceInfo& resource_info,
+    const std::string& content_security_policy,
+    network::mojom::URLLoaderClientPtr client,
+    bool send_cors_header) {
+  // Should not be called because GetBundleResourcePath() returned empty path.
+  NOTREACHED() << "Resource is not from a bundle.";
 }
 
 bool TestExtensionsBrowserClient::AllowCrossRendererResourceLoad(
-    net::URLRequest* request,
+    const GURL& url,
+    content::ResourceType resource_type,
+    ui::PageTransition page_transition,
+    int child_id,
     bool is_incognito,
     const Extension* extension,
-    InfoMap* extension_info_map) {
+    const ExtensionSet& extensions,
+    const ProcessMap& process_map) {
   return false;
 }
 
@@ -146,7 +191,21 @@ bool TestExtensionsBrowserClient::DidVersionUpdate(BrowserContext* context) {
 void TestExtensionsBrowserClient::PermitExternalProtocolHandler() {
 }
 
+bool TestExtensionsBrowserClient::IsInDemoMode() {
+  return false;
+}
+
+bool TestExtensionsBrowserClient::IsScreensaverInDemoMode(
+    const std::string& app_id) {
+  return false;
+}
+
 bool TestExtensionsBrowserClient::IsRunningInForcedAppMode() { return false; }
+
+bool TestExtensionsBrowserClient::IsAppModeForcedForApp(
+    const ExtensionId& extension_id) {
+  return false;
+}
 
 bool TestExtensionsBrowserClient::IsLoggedInAsPublicAccount() {
   return false;
@@ -158,13 +217,11 @@ TestExtensionsBrowserClient::GetExtensionSystemFactory() {
   return extension_system_factory_;
 }
 
-void TestExtensionsBrowserClient::RegisterExtensionFunctions(
-    ExtensionFunctionRegistry* registry) const {}
-
-void TestExtensionsBrowserClient::RegisterMojoServices(
+void TestExtensionsBrowserClient::RegisterExtensionInterfaces(
+    service_manager::BinderRegistryWithArgs<content::RenderFrameHost*>*
+        registry,
     content::RenderFrameHost* render_frame_host,
-    const Extension* extension) const {
-}
+    const Extension* extension) const {}
 
 std::unique_ptr<RuntimeAPIDelegate>
 TestExtensionsBrowserClient::CreateRuntimeAPIDelegate(
@@ -174,7 +231,7 @@ TestExtensionsBrowserClient::CreateRuntimeAPIDelegate(
 
 const ComponentExtensionResourceManager*
 TestExtensionsBrowserClient::GetComponentExtensionResourceManager() {
-  return NULL;
+  return nullptr;
 }
 
 void TestExtensionsBrowserClient::BroadcastEventToRenderers(
@@ -183,7 +240,7 @@ void TestExtensionsBrowserClient::BroadcastEventToRenderers(
     std::unique_ptr<base::ListValue> args) {}
 
 net::NetLog* TestExtensionsBrowserClient::GetNetLog() {
-  return NULL;
+  return nullptr;
 }
 
 ExtensionCache* TestExtensionsBrowserClient::GetExtensionCache() {
@@ -205,12 +262,25 @@ TestExtensionsBrowserClient::GetExtensionWebContentsObserver(
   return nullptr;
 }
 
+KioskDelegate* TestExtensionsBrowserClient::GetKioskDelegate() {
+  return nullptr;
+}
+
 scoped_refptr<update_client::UpdateClient>
 TestExtensionsBrowserClient::CreateUpdateClient(
     content::BrowserContext* context) {
   return update_client_factory_.is_null()
              ? nullptr
-             : make_scoped_refptr(update_client_factory_.Run());
+             : base::WrapRefCounted(update_client_factory_.Run());
+}
+
+bool TestExtensionsBrowserClient::IsLockScreenContext(
+    content::BrowserContext* context) {
+  return lock_screen_context_ && context == lock_screen_context_;
+}
+
+std::string TestExtensionsBrowserClient::GetApplicationLocale() {
+  return l10n_util::GetApplicationLocale(std::string());
 }
 
 }  // namespace extensions

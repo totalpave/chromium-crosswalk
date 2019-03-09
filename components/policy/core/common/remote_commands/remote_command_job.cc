@@ -7,17 +7,18 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/chromeos/logging.h"
+#include "base/syslog_logging.h"
 
 namespace policy {
 
 namespace {
 
-const int kDefaultCommandTimeoutInMinutes = 3;
+constexpr base::TimeDelta kDefaultCommandTimeout =
+    base::TimeDelta::FromMinutes(10);
+constexpr base::TimeDelta kDefaultCommandExpirationTime =
+    base::TimeDelta::FromMinutes(10);
 
 }  // namespace
-
-namespace em = enterprise_management;
 
 RemoteCommandJob::~RemoteCommandJob() {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -25,18 +26,19 @@ RemoteCommandJob::~RemoteCommandJob() {
     Terminate();
 }
 
-bool RemoteCommandJob::Init(base::TimeTicks now,
-                            const em::RemoteCommand& command) {
+bool RemoteCommandJob::Init(
+    base::TimeTicks now,
+    const enterprise_management::RemoteCommand& command) {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK_EQ(NOT_INITIALIZED, status_);
 
   status_ = INVALID;
 
-  if (!command.has_type() || !command.has_unique_id())
+  if (!command.has_type() || !command.has_command_id())
     return false;
   DCHECK_EQ(command.type(), GetType());
 
-  unique_id_ = command.unique_id();
+  unique_id_ = command.command_id();
 
   if (command.has_age_of_command()) {
     // Use age of command provided by server to estimate the command issued time
@@ -48,63 +50,52 @@ bool RemoteCommandJob::Init(base::TimeTicks now,
     issued_time_ =
         now - base::TimeDelta::FromMilliseconds(command.age_of_command());
   } else {
-    CHROMEOS_SYSLOG(WARNING)
-        << "No age_of_command provided be server for command " << unique_id_
-        << ".";
+    SYSLOG(WARNING) << "No age_of_command provided by server for command "
+                    << unique_id_ << ".";
     // Otherwise, assuming the command was issued just now.
     issued_time_ = now;
   }
 
-  if (!ParseCommandPayload(command.payload()))
+  if (!ParseCommandPayload(command.payload())) {
+    SYSLOG(ERROR) << "Unable to parse command payload for type "
+                  << command.type() << ": " << command.payload();
     return false;
-
-  switch (command.type()) {
-    case em::RemoteCommand_Type_COMMAND_ECHO_TEST: {
-      CHROMEOS_SYSLOG(WARNING) << "Remote echo test command " << unique_id_
-                               << " initialized.";
-      break;
-    }
-    case em::RemoteCommand_Type_DEVICE_REBOOT: {
-      CHROMEOS_SYSLOG(WARNING) << "Remote reboot command " << unique_id_
-                               << " initialized.";
-      break;
-    }
-    case em::RemoteCommand_Type_DEVICE_SCREENSHOT: {
-      CHROMEOS_SYSLOG(WARNING) << "Remote screenshot command " << unique_id_
-                               << " initialized.";
-      break;
-    }
   }
+
+  SYSLOG(INFO) << "Remote command type " << command.type() << " with id "
+               << command.command_id() << " initialized.";
+
   status_ = NOT_STARTED;
   return true;
 }
 
 bool RemoteCommandJob::Run(base::TimeTicks now,
-                           const FinishedCallback& finished_callback) {
+                           FinishedCallback finished_callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   if (status_ == INVALID) {
-    CHROMEOS_SYSLOG(ERROR) << "Remote command " << unique_id_ << " is invalid.";
+    SYSLOG(ERROR) << "Remote command " << unique_id_ << " is invalid.";
     return false;
   }
 
   DCHECK_EQ(NOT_STARTED, status_);
 
   if (IsExpired(now)) {
-    CHROMEOS_SYSLOG(ERROR) << "Remote command " << unique_id_
-                           << " expired (it was issued " << now - issued_time_
-                           << " ago).";
+    SYSLOG(ERROR) << "Remote command " << unique_id_
+                  << " expired (it was issued " << now - issued_time_
+                  << " ago).";
     status_ = EXPIRED;
     return false;
   }
 
   execution_started_time_ = now;
   status_ = RUNNING;
-  finished_callback_ = finished_callback;
+  finished_callback_ = std::move(finished_callback);
 
-  RunImpl(base::Bind(&RemoteCommandJob::OnCommandExecutionFinishedWithResult,
+  RunImpl(
+      base::BindOnce(&RemoteCommandJob::OnCommandExecutionFinishedWithResult,
                      weak_factory_.GetWeakPtr(), true),
-          base::Bind(&RemoteCommandJob::OnCommandExecutionFinishedWithResult,
+      base::BindOnce(&RemoteCommandJob::OnCommandExecutionFinishedWithResult,
                      weak_factory_.GetWeakPtr(), false));
 
   // The command is expected to run asynchronously.
@@ -126,12 +117,12 @@ void RemoteCommandJob::Terminate() {
 
   TerminateImpl();
 
-  if (!finished_callback_.is_null())
-    finished_callback_.Run();
+  if (finished_callback_)
+    std::move(finished_callback_).Run();
 }
 
-base::TimeDelta RemoteCommandJob::GetCommmandTimeout() const {
-  return base::TimeDelta::FromMinutes(kDefaultCommandTimeoutInMinutes);
+base::TimeDelta RemoteCommandJob::GetCommandTimeout() const {
+  return kDefaultCommandTimeout;
 }
 
 bool RemoteCommandJob::IsExecutionFinished() const {
@@ -157,7 +148,7 @@ bool RemoteCommandJob::ParseCommandPayload(const std::string& command_payload) {
 }
 
 bool RemoteCommandJob::IsExpired(base::TimeTicks now) {
-  return false;
+  return now > issued_time() + kDefaultCommandExpirationTime;
 }
 
 void RemoteCommandJob::TerminateImpl() {
@@ -172,8 +163,8 @@ void RemoteCommandJob::OnCommandExecutionFinishedWithResult(
 
   result_payload_ = std::move(result_payload);
 
-  if (!finished_callback_.is_null())
-    finished_callback_.Run();
+  if (finished_callback_)
+    std::move(finished_callback_).Run();
 }
 
 }  // namespace policy

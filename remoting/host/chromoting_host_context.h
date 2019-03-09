@@ -19,6 +19,15 @@ namespace net {
 class URLRequestContextGetter;
 }  // namespace net
 
+namespace network {
+class SharedURLLoaderFactory;
+class TransitionalURLLoaderFactoryOwner;
+}  // namespace network
+
+namespace ui {
+class SystemInputInjectorFactory;
+}  // namespace ui
+
 namespace remoting {
 
 class AutoThreadTaskRunner;
@@ -48,7 +57,8 @@ class ChromotingHostContext {
       scoped_refptr<net::URLRequestContextGetter> url_request_context_getter,
       scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
       scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> file_task_runner);
+      scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
+      ui::SystemInputInjectorFactory* system_input_injector_factory);
 #endif  // defined(OS_CHROMEOS)
 
   ~ChromotingHostContext();
@@ -87,6 +97,15 @@ class ChromotingHostContext {
   scoped_refptr<net::URLRequestContextGetter> url_request_context_getter()
       const;
 
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory();
+
+  // Gives the factory which builds the SystemInputInjector, which takes events
+  // and passes them to the system for dispatch.
+  //
+  // Currently only implemented on chromeos, but as mus usage comes to the
+  // desktop, this will be used everywhere.
+  ui::SystemInputInjectorFactory* system_input_injector_factory() const;
+
  private:
   ChromotingHostContext(
       scoped_refptr<AutoThreadTaskRunner> ui_task_runner,
@@ -96,7 +115,8 @@ class ChromotingHostContext {
       scoped_refptr<AutoThreadTaskRunner> network_task_runner,
       scoped_refptr<AutoThreadTaskRunner> video_capture_task_runner,
       scoped_refptr<AutoThreadTaskRunner> video_encode_task_runner,
-      scoped_refptr<net::URLRequestContextGetter> url_request_context_getter);
+      scoped_refptr<net::URLRequestContextGetter> url_request_context_getter,
+      ui::SystemInputInjectorFactory* system_input_injector_factory);
 
   // Caller-supplied UI thread. This is usually the application main thread.
   scoped_refptr<AutoThreadTaskRunner> ui_task_runner_;
@@ -121,6 +141,14 @@ class ChromotingHostContext {
 
   // Serves URLRequestContexts that use the network and UI task runners.
   scoped_refptr<net::URLRequestContextGetter> url_request_context_getter_;
+
+  // Makes a SharedURLLoaderFactory out of |url_request_context_getter_|
+  std::unique_ptr<network::TransitionalURLLoaderFactoryOwner>
+      url_loader_factory_owner_;
+
+  // A factory which makes a SystemInputInjector. Currently only non-null on
+  // chromeos, though it's intended to be set everywhere mus is used.
+  ui::SystemInputInjectorFactory* system_input_injector_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ChromotingHostContext);
 };

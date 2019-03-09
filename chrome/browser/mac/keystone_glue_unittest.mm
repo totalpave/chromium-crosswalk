@@ -5,6 +5,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/objc-class.h>
 
+#include "base/test/scoped_task_environment.h"
 #import "chrome/browser/mac/keystone_glue.h"
 #import "chrome/browser/mac/keystone_registration.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -84,7 +85,7 @@ namespace ksr = keystone_registration;
 @interface FakeKeystoneGlue : KeystoneGlue {
  @public
   BOOL upToDate_;
-  NSString *latestVersion_;
+  base::scoped_nsobject<NSString> latestVersion_;
   BOOL successful_;
   int installs_;
 }
@@ -99,7 +100,7 @@ namespace ksr = keystone_registration;
   if ((self = [super init])) {
     // some lies
     upToDate_ = YES;
-    latestVersion_ = @"foo bar";
+    latestVersion_.reset([@"foo bar" copy]);
     successful_ = YES;
     installs_ = 1010101010;
 
@@ -147,7 +148,7 @@ namespace ksr = keystone_registration;
 }
 
 - (void)addFakeRegistration {
-  registration_ = [[FakeKeystoneRegistration alloc] init];
+  registration_.reset([[FakeKeystoneRegistration alloc] init]);
 }
 
 - (void)fakeAboutWindowCallback:(NSNotification*)notification {
@@ -157,7 +158,8 @@ namespace ksr = keystone_registration;
 
   if (status == kAutoupdateAvailable) {
     upToDate_ = NO;
-    latestVersion_ = [dictionary objectForKey:kAutoupdateStatusVersion];
+    latestVersion_.reset(
+        [[dictionary objectForKey:kAutoupdateStatusVersion] copy]);
   } else if (status == kAutoupdateInstallFailed) {
     successful_ = NO;
     installs_ = 0;
@@ -174,10 +176,18 @@ namespace ksr = keystone_registration;
 
 @end
 
+@interface KeystoneGlue (PrivateMethods)
+
++ (BOOL)isValidSystemKeystone:(NSDictionary*)systemKeystonePlistContents
+            comparedToBundled:(NSDictionary*)bundledKeystonePlistContents;
+
+@end
 
 namespace {
 
 class KeystoneGlueTest : public PlatformTest {
+ private:
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 };
 
 // DISABLED because the mocking isn't currently working.
@@ -223,6 +233,89 @@ TEST_F(KeystoneGlueTest, DISABLED_BasicUse) {
   [glue checkForUpdate];
   [glue installUpdate];
   ASSERT_TRUE([glue confirmCallbacks]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Nils) {
+  ASSERT_TRUE([KeystoneGlue isValidSystemKeystone:nil comparedToBundled:nil]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Nil_Bundled) {
+  ASSERT_TRUE([KeystoneGlue isValidSystemKeystone:@{} comparedToBundled:nil]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Empty_Bundled) {
+  ASSERT_TRUE([KeystoneGlue isValidSystemKeystone:@{} comparedToBundled:@{}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_Bundled) {
+  ASSERT_TRUE(
+      [KeystoneGlue isValidSystemKeystone:@{} comparedToBundled:@{
+        @[] : @2
+      }]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_Bundled_Version) {
+  ASSERT_TRUE([KeystoneGlue isValidSystemKeystone:@{}
+      comparedToBundled:@{
+        @"CFBundleVersion" : @1
+      }]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_Bundled_Version_String) {
+  ASSERT_TRUE([KeystoneGlue
+      isValidSystemKeystone:@{}
+          comparedToBundled:@{@"CFBundleVersion" : @"Hi how are you?"}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Nil_System_Keystone) {
+  ASSERT_FALSE([KeystoneGlue
+      isValidSystemKeystone:nil
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3"}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Empty_System_Keystone) {
+  ASSERT_FALSE([KeystoneGlue
+      isValidSystemKeystone:@{}
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3"}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_System_Keystone) {
+  ASSERT_FALSE([KeystoneGlue
+      isValidSystemKeystone:@{@"foo" : @"bar"}
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3"}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_System_Keystone_Version) {
+  ASSERT_FALSE([KeystoneGlue
+      isValidSystemKeystone:@{
+        @"CFBundleVersion" : @[]
+      }
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3"}]);
+}
+
+TEST_F(KeystoneGlueTest,
+       isValidSystemKeystone_Bad_System_Keystone_Version_String) {
+  ASSERT_FALSE([KeystoneGlue
+      isValidSystemKeystone:@{@"CFBundleVersion" : @"I am baddy."}
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3"}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_System_Keystone_Outdated) {
+  ASSERT_FALSE([KeystoneGlue
+      isValidSystemKeystone:@{@"CFBundleVersion" : @"1.2.2.15"}
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3"}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_System_Keystone_Same) {
+  ASSERT_TRUE([KeystoneGlue
+      isValidSystemKeystone:@{@"CFBundleVersion" : @"1.2.3.4"}
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3.4"}]);
+}
+
+TEST_F(KeystoneGlueTest, isValidSystemKeystone_Bad_System_Keystone_Newer) {
+  ASSERT_TRUE([KeystoneGlue
+      isValidSystemKeystone:@{@"CFBundleVersion" : @"1.2.4.1"}
+          comparedToBundled:@{@"CFBundleVersion" : @"1.2.3.4"}]);
 }
 
 }  // namespace

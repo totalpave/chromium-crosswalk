@@ -4,21 +4,22 @@
 
 #include "content/browser/webui/url_data_source_impl.h"
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/string_util.h"
+#include "base/task/post_task.h"
 #include "content/browser/webui/url_data_manager_backend.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/url_data_source.h"
 
 namespace content {
 
 URLDataSourceImpl::URLDataSourceImpl(const std::string& source_name,
-                                     URLDataSource* source)
-    : source_name_(source_name),
-      backend_(NULL),
-      source_(source) {
-}
+                                     std::unique_ptr<URLDataSource> source)
+    : source_name_(source_name), source_(std::move(source)) {}
 
 URLDataSourceImpl::~URLDataSourceImpl() {
 }
@@ -40,9 +41,14 @@ void URLDataSourceImpl::SendResponse(
     // when the object is deleted.
     return;
   }
-  BrowserThread::PostTask(BrowserThread::IO, FROM_HERE,
-                          base::Bind(&URLDataSourceImpl::SendResponseOnIOThread,
-                                     this, request_id, std::move(bytes)));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::IO},
+      base::BindOnce(&URLDataSourceImpl::SendResponseOnIOThread, this,
+                     request_id, std::move(bytes)));
+}
+
+bool URLDataSourceImpl::IsWebUIDataSourceImpl() const {
+  return false;
 }
 
 void URLDataSourceImpl::SendResponseOnIOThread(
@@ -51,6 +57,10 @@ void URLDataSourceImpl::SendResponseOnIOThread(
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   if (backend_)
     backend_->DataAvailable(request_id, bytes.get());
+}
+
+const ui::TemplateReplacements* URLDataSourceImpl::GetReplacements() const {
+  return nullptr;
 }
 
 }  // namespace content

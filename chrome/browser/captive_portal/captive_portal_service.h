@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
 #include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -16,9 +15,16 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_member.h"
 #include "net/base/backoff_entry.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
 class Profile;
+
+namespace network {
+namespace mojom {
+class URLLoaderFactory;
+}
+}  // namespace network
 
 // Service that checks for captive portals when queried, and sends a
 // NOTIFICATION_CAPTIVE_PORTAL_CHECK_RESULT with the Profile as the source and
@@ -27,7 +33,7 @@ class Profile;
 // Captive portal checks are rate-limited.  The CaptivePortalService may only
 // be accessed on the UI thread.
 // Design doc: https://docs.google.com/document/d/1k-gP2sswzYNvryu9NcgN7q5XrsMlUdlUdoW9WRaEmfM/edit
-class CaptivePortalService : public KeyedService, public base::NonThreadSafe {
+class CaptivePortalService : public KeyedService {
  public:
   enum TestingState {
     NOT_TESTING,
@@ -49,8 +55,10 @@ class CaptivePortalService : public KeyedService, public base::NonThreadSafe {
     GURL landing_url;
   };
 
-  explicit CaptivePortalService(Profile* profile);
-  CaptivePortalService(Profile* profile, base::TickClock* clock_for_testing);
+  CaptivePortalService(
+      Profile* profile,
+      const base::TickClock* clock_for_testing = nullptr,
+      network::mojom::URLLoaderFactory* loader_factory_for_testing = nullptr);
   ~CaptivePortalService() override;
 
   // Triggers a check for a captive portal.  If there's already a check in
@@ -151,12 +159,15 @@ class CaptivePortalService : public KeyedService, public base::NonThreadSafe {
   void set_test_url(const GURL& test_url) { test_url_ = test_url; }
 
   // The profile that owns this CaptivePortalService.
-  Profile* profile_;
+  Profile* const profile_;
 
   State state_;
 
+  scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory_;
+
   // Detector for checking active network for a portal state.
-  captive_portal::CaptivePortalDetector captive_portal_detector_;
+  std::unique_ptr<captive_portal::CaptivePortalDetector>
+      captive_portal_detector_;
 
   // True if the service is enabled.  When not enabled, all checks will return
   // RESULT_INTERNET_CONNECTED.
@@ -196,7 +207,7 @@ class CaptivePortalService : public KeyedService, public base::NonThreadSafe {
   static TestingState testing_state_;
 
   // Test tick clock used by unit tests.
-  base::TickClock* tick_clock_for_testing_;  // Not owned.
+  const base::TickClock* const tick_clock_for_testing_;  // Not owned.
 
   DISALLOW_COPY_AND_ASSIGN(CaptivePortalService);
 };

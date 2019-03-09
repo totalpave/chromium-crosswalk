@@ -14,6 +14,8 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
+#include "base/sequenced_task_runner.h"
 #include "base/threading/thread_checker.h"
 #include "components/drive/file_errors.h"
 #include "components/drive/resource_metadata_storage.h"
@@ -54,11 +56,11 @@ class ResourceMetadata {
   // Resets this object.
   FileError Reset();
 
-  // Returns the largest changestamp.
-  FileError GetLargestChangestamp(int64_t* out_value);
+  // Returns the start page token for the users default corpus.
+  FileError GetStartPageToken(std::string* out_value);
 
-  // Sets the largest changestamp.
-  FileError SetLargestChangestamp(int64_t value);
+  // Sets the start page token for the users default corpus.
+  FileError SetStartPageToken(const std::string& value);
 
   // Adds |entry| to the metadata tree based on its parent_local_id.
   FileError AddEntry(const ResourceEntry& entry, std::string* out_id);
@@ -138,7 +140,7 @@ class ResourceMetadata {
   ResourceMetadataStorage* storage_;
   FileCache* cache_;
 
-  base::ThreadChecker thread_checker_;
+  THREAD_CHECKER(thread_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(ResourceMetadata);
 };

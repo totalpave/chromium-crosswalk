@@ -2,14 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <X11/keysym.h>
-#include <X11/Xlib.h>
-
-// X macro fail.
-#if defined(RootWindow)
-#undef RootWindow
-#endif
-
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
@@ -24,7 +16,10 @@
 #include "ui/compositor/dip_util.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
 #include "ui/events/test/platform_event_waiter.h"
+#include "ui/gfx/x/x11.h"
+#include "ui/gfx/x/x11_atom_cache.h"
 #include "ui/gfx/x/x11_connection.h"
+#include "ui/views/test/test_desktop_screen_x11.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_x11.h"
 
 namespace views {
@@ -44,11 +39,11 @@ unsigned button_down_mask = 0;
 
 // Returns atom that indidates that the XEvent is marker event.
 Atom MarkerEventAtom() {
-  return XInternAtom(gfx::GetXDisplay(), "marker_event", False);
+  return gfx::GetAtom("marker_event");
 }
 
 // Returns true when the event is a marker event.
-bool Matcher(const base::NativeEvent& event) {
+bool Matcher(const ui::PlatformEvent& event) {
   return event->xany.type == ClientMessage &&
       event->xclient.message_type == MarkerEventAtom();
 }
@@ -79,8 +74,8 @@ class UIControlsDesktopX11 : public UIControlsAura {
                     bool alt,
                     bool command) override {
     DCHECK(!command);  // No command key on Aura
-    return SendKeyPressNotifyWhenDone(
-        window, key, control, shift, alt, command, base::Closure());
+    return SendKeyPressNotifyWhenDone(window, key, control, shift, alt, command,
+                                      base::OnceClosure());
   }
 
   bool SendKeyPressNotifyWhenDone(gfx::NativeWindow window,
@@ -89,7 +84,7 @@ class UIControlsDesktopX11 : public UIControlsAura {
                                   bool shift,
                                   bool alt,
                                   bool command,
-                                  const base::Closure& closure) override {
+                                  base::OnceClosure closure) override {
     DCHECK(!command);  // No command key on Aura
 
     aura::WindowTreeHost* host = window->GetHost();
@@ -119,16 +114,16 @@ class UIControlsDesktopX11 : public UIControlsAura {
       UnmaskAndSetKeycodeThenSend(host, &xevent, ControlMask, XK_Control_L);
     }
     DCHECK(!xevent.xkey.state);
-    RunClosureAfterAllPendingUIEvents(closure);
+    RunClosureAfterAllPendingUIEvents(std::move(closure));
     return true;
   }
 
   bool SendMouseMove(long screen_x, long screen_y) override {
-    return SendMouseMoveNotifyWhenDone(screen_x, screen_y, base::Closure());
+    return SendMouseMoveNotifyWhenDone(screen_x, screen_y, base::OnceClosure());
   }
   bool SendMouseMoveNotifyWhenDone(long screen_x,
                                    long screen_y,
-                                   const base::Closure& closure) override {
+                                   base::OnceClosure closure) override {
     gfx::Point screen_location(screen_x, screen_y);
     gfx::Point root_location = screen_location;
     aura::Window* root_window = RootWindowForPoint(screen_location);
@@ -143,7 +138,11 @@ class UIControlsDesktopX11 : public UIControlsAura {
     aura::WindowTreeHost* host = root_window->GetHost();
     gfx::Point root_current_location =
         aura::test::QueryLatestMousePositionRequestInHost(host);
-    host->ConvertPointFromHost(&root_current_location);
+    host->ConvertPixelsToDIP(&root_current_location);
+
+    auto* screen = views::test::TestDesktopScreenX11::GetInstance();
+    DCHECK_EQ(screen, display::Screen::GetScreen());
+    screen->set_cursor_screen_point(gfx::Point(screen_x, screen_y));
 
     if (root_location != root_current_location && button_down_mask == 0) {
       // Move the cursor because EnterNotify/LeaveNotify are generated with the
@@ -156,19 +155,23 @@ class UIControlsDesktopX11 : public UIControlsAura {
       xmotion->x = root_location.x();
       xmotion->y = root_location.y();
       xmotion->state = button_down_mask;
-      xmotion->same_screen = True;
+      xmotion->same_screen = x11::True;
       // RootWindow will take care of other necessary fields.
       aura::test::PostEventToWindowTreeHost(xevent, host);
     }
-    RunClosureAfterAllPendingUIEvents(closure);
+    RunClosureAfterAllPendingUIEvents(std::move(closure));
     return true;
   }
-  bool SendMouseEvents(MouseButton type, int state) override {
-    return SendMouseEventsNotifyWhenDone(type, state, base::Closure());
+  bool SendMouseEvents(MouseButton type,
+                       int button_state,
+                       int accelerator_state) override {
+    return SendMouseEventsNotifyWhenDone(
+        type, button_state, base::OnceClosure(), accelerator_state);
   }
   bool SendMouseEventsNotifyWhenDone(MouseButton type,
-                                     int state,
-                                     const base::Closure& closure) override {
+                                     int button_state,
+                                     base::OnceClosure closure,
+                                     int accelerator_state) override {
     XEvent xevent = {0};
     XButtonEvent* xbutton = &xevent.xbutton;
     gfx::Point mouse_loc = aura::Env::GetInstance()->last_mouse_location();
@@ -179,7 +182,7 @@ class UIControlsDesktopX11 : public UIControlsAura {
       screen_position_client->ConvertPointFromScreen(root_window, &mouse_loc);
     xbutton->x = mouse_loc.x();
     xbutton->y = mouse_loc.y();
-    xbutton->same_screen = True;
+    xbutton->same_screen = x11::True;
     switch (type) {
       case LEFT:
         xbutton->button = Button1;
@@ -194,25 +197,34 @@ class UIControlsDesktopX11 : public UIControlsAura {
         xbutton->state = Button3Mask;
         break;
     }
+    // Process the accelerator key state.
+    if (accelerator_state & ui_controls::kShift)
+      xbutton->state |= ShiftMask;
+    if (accelerator_state & ui_controls::kControl)
+      xbutton->state |= ControlMask;
+    if (accelerator_state & ui_controls::kAlt)
+      xbutton->state |= Mod1Mask;
+    if (accelerator_state & ui_controls::kCommand)
+      xbutton->state |= Mod4Mask;
+
     // RootWindow will take care of other necessary fields.
-    if (state & DOWN) {
+    if (button_state & DOWN) {
       xevent.xbutton.type = ButtonPress;
       aura::test::PostEventToWindowTreeHost(xevent, root_window->GetHost());
       button_down_mask |= xbutton->state;
     }
-    if (state & UP) {
+    if (button_state & UP) {
       xevent.xbutton.type = ButtonRelease;
       aura::test::PostEventToWindowTreeHost(xevent, root_window->GetHost());
       button_down_mask = (button_down_mask | xbutton->state) ^ xbutton->state;
     }
-    RunClosureAfterAllPendingUIEvents(closure);
+    RunClosureAfterAllPendingUIEvents(std::move(closure));
     return true;
   }
   bool SendMouseClick(MouseButton type) override {
-    return SendMouseEvents(type, UP | DOWN);
+    return SendMouseEvents(type, UP | DOWN, ui_controls::kNoAccelerator);
   }
-  void RunClosureAfterAllPendingUIEvents(
-      const base::Closure& closure) override {
+  void RunClosureAfterAllPendingUIEvents(base::OnceClosure closure) {
     if (closure.is_null())
       return;
     static XEvent* marker_event = NULL;
@@ -224,8 +236,8 @@ class UIControlsDesktopX11 : public UIControlsAura {
       marker_event->xclient.format = 8;
     }
     marker_event->xclient.message_type = MarkerEventAtom();
-    XSendEvent(x_display_, x_window_, False, 0, marker_event);
-    ui::PlatformEventWaiter::Create(closure, base::Bind(&Matcher));
+    XSendEvent(x_display_, x_window_, x11::False, 0, marker_event);
+    ui::PlatformEventWaiter::Create(std::move(closure), base::Bind(&Matcher));
   }
  private:
   aura::Window* RootWindowForPoint(const gfx::Point& point) {
@@ -238,12 +250,11 @@ class UIControlsDesktopX11 : public UIControlsAura {
         DesktopWindowTreeHostX11::GetAllOpenWindows();
     for (std::vector<aura::Window*>::const_iterator it = windows.begin();
          it != windows.end(); ++it) {
-      if ((*it)->GetBoundsInScreen().Contains(point)) {
+      if ((*it)->GetBoundsInScreen().Contains(point) || (*it)->HasCapture())
         return (*it)->GetRootWindow();
-      }
     }
 
-    NOTREACHED() << "Coulding find RW for " << point.ToString() << " among "
+    NOTREACHED() << "Couldn't find RW for " << point.ToString() << " among "
                  << windows.size() << " RWs.";
     return NULL;
   }

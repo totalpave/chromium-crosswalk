@@ -12,14 +12,23 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "chrome/browser/push_messaging/budget_database.h"
+
+#if defined(OS_CHROMEOS)
+#include "chrome/browser/chromeos/android_sms/android_sms_app_manager.h"
+#include "chromeos/services/multidevice_setup/public/cpp/multidevice_setup_client.h"
+#endif
 
 class GURL;
 class Profile;
 
 namespace content {
 struct NotificationDatabaseData;
-struct PlatformNotificationData;
 class WebContents;
+}
+
+namespace blink {
+struct PlatformNotificationData;
 }
 
 // Developers may be required to display a Web Notification in response to an
@@ -44,25 +53,20 @@ class PushMessagingNotificationManager {
   void EnforceUserVisibleOnlyRequirements(
       const GURL& origin,
       int64_t service_worker_registration_id,
-      const base::Closure& message_handled_closure);
+      base::OnceClosure message_handled_closure);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(PushMessagingNotificationManagerTest, IsTabVisible);
   FRIEND_TEST_ALL_PREFIXES(PushMessagingNotificationManagerTest,
                            IsTabVisibleViewSource);
-
-  static void DidGetNotificationsFromDatabaseIOProxy(
-      const base::WeakPtr<PushMessagingNotificationManager>& ui_weak_ptr,
-      const GURL& origin,
-      int64_t service_worker_registration_id,
-      const base::Closure& message_handled_closure,
-      bool success,
-      const std::vector<content::NotificationDatabaseData>& data);
+  FRIEND_TEST_ALL_PREFIXES(
+      PushMessagingNotificationManagerTest,
+      SkipEnforceUserVisibleOnlyRequirementsForAndroidMessages);
 
   void DidGetNotificationsFromDatabase(
       const GURL& origin,
       int64_t service_worker_registration_id,
-      const base::Closure& message_handled_closure,
+      base::OnceClosure message_handled_closure,
       bool success,
       const std::vector<content::NotificationDatabaseData>& data);
 
@@ -73,35 +77,41 @@ class PushMessagingNotificationManager {
                     content::WebContents* active_web_contents,
                     const GURL& origin);
 
-  void CheckForMissedNotification(const GURL& origin,
-                                  int64_t service_worker_registration_id,
-                                  const base::Closure& message_handled_closure,
-                                  const double budget);
-
-  static void DidWriteNotificationDataIOProxy(
-      const base::WeakPtr<PushMessagingNotificationManager>& ui_weak_ptr,
-      const GURL& origin,
-      const content::PlatformNotificationData& notification_data,
-      const base::Closure& message_handled_closure,
-      bool success,
-      int64_t persistent_notification_id);
+  void ProcessSilentPush(const GURL& origin,
+                         int64_t service_worker_registration_id,
+                         base::OnceClosure message_handled_closure,
+                         bool silent_push_allowed);
 
   void DidWriteNotificationData(
       const GURL& origin,
-      const content::PlatformNotificationData& notification_data,
-      const base::Closure& message_handled_closure,
+      const blink::PlatformNotificationData& notification_data,
+      base::OnceClosure message_handled_closure,
       bool success,
-      int64_t persistent_notification_id);
+      const std::string& notification_id);
 
-  void DidGetBudget(const GURL& origin,
-                    int64_t service_worker_registration_id,
-                    const base::Closure& message_handled_closure,
-                    bool notification_needed,
-                    bool notification_shown,
-                    double budget);
+#if defined(OS_CHROMEOS)
+  bool ShouldSkipUserVisibleOnlyRequirements(const GURL& origin);
+
+  void SetTestMultiDeviceSetupClient(
+      chromeos::multidevice_setup::MultiDeviceSetupClient*
+          multidevice_setup_client);
+
+  void SetTestAndroidSmsAppManager(
+      chromeos::android_sms::AndroidSmsAppManager* android_sms_app_manager);
+#endif
 
   // Weak. This manager is owned by a keyed service on this profile.
   Profile* profile_;
+
+  BudgetDatabase budget_database_;
+
+#if defined(OS_CHROMEOS)
+  chromeos::multidevice_setup::MultiDeviceSetupClient*
+      test_multidevice_setup_client_ = nullptr;
+
+  chromeos::android_sms::AndroidSmsAppManager* test_android_sms_app_manager_ =
+      nullptr;
+#endif
 
   base::WeakPtrFactory<PushMessagingNotificationManager> weak_factory_;
 

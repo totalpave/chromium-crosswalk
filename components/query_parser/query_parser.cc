@@ -5,13 +5,13 @@
 #include "components/query_parser/query_parser.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "base/compiler_specific.h"
 #include "base/i18n/break_iterator.h"
 #include "base/i18n/case_conversion.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 
 namespace query_parser {
@@ -36,8 +36,7 @@ bool SnippetIntersects(const Snippet::MatchPosition& mp1,
 // position at |index|.
 void CoalesceMatchesFrom(size_t index, Snippet::MatchPositions* matches) {
   Snippet::MatchPosition& mp = (*matches)[index];
-  for (Snippet::MatchPositions::iterator i = matches->begin() + index + 1;
-       i != matches->end(); ) {
+  for (auto i = matches->begin() + index + 1; i != matches->end();) {
     if (SnippetIntersects(mp, *i)) {
       mp.second = std::max(mp.second, i->second);
       i = matches->erase(i);
@@ -73,7 +72,7 @@ class QueryNodeWord : public QueryNode {
 
   const base::string16& word() const { return word_; }
 
-  bool literal() const { return literal_; };
+  bool literal() const { return literal_; }
   void set_literal(bool literal) { literal_ = literal; }
 
   // QueryNode:
@@ -156,9 +155,9 @@ class QueryNodeList : public QueryNode {
   QueryNodeList();
   ~QueryNodeList() override;
 
-  QueryNodeStarVector* children() { return &children_; }
+  QueryNodeVector* children() { return &children_; }
 
-  void AddChild(QueryNode* node);
+  void AddChild(std::unique_ptr<QueryNode> node);
 
   // Remove empty subnodes left over from other parsing.
   void RemoveEmptySubnodes();
@@ -175,7 +174,7 @@ class QueryNodeList : public QueryNode {
  protected:
   int AppendChildrenToString(base::string16* query) const;
 
-  QueryNodeStarVector children_;
+  QueryNodeVector children_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(QueryNodeList);
@@ -184,11 +183,10 @@ class QueryNodeList : public QueryNode {
 QueryNodeList::QueryNodeList() {}
 
 QueryNodeList::~QueryNodeList() {
-  STLDeleteElements(&children_);
 }
 
-void QueryNodeList::AddChild(QueryNode* node) {
-  children_.push_back(node);
+void QueryNodeList::AddChild(std::unique_ptr<QueryNode> node) {
+  children_.push_back(std::move(node));
 }
 
 void QueryNodeList::RemoveEmptySubnodes() {
@@ -196,12 +194,11 @@ void QueryNodeList::RemoveEmptySubnodes() {
     if (children_[i]->IsWord())
       continue;
 
-    QueryNodeList* list_node = static_cast<QueryNodeList*>(children_[i]);
+    QueryNodeList* list_node = static_cast<QueryNodeList*>(children_[i].get());
     list_node->RemoveEmptySubnodes();
     if (list_node->children()->empty()) {
       children_.erase(children_.begin() + i);
       --i;
-      delete list_node;
     }
   }
 }
@@ -237,8 +234,7 @@ void QueryNodeList::AppendWords(std::vector<base::string16>* words) const {
 
 int QueryNodeList::AppendChildrenToString(base::string16* query) const {
   int num_words = 0;
-  for (QueryNodeStarVector::const_iterator node = children_.begin();
-       node != children_.end(); ++node) {
+  for (auto node = children_.begin(); node != children_.end(); ++node) {
     if (node != children_.begin())
       query->push_back(L' ');
     num_words += (*node)->AppendToSQLiteQuery(query);
@@ -358,14 +354,14 @@ void QueryParser::ParseQueryWords(const base::string16& query,
 
 void QueryParser::ParseQueryNodes(const base::string16& query,
                                   MatchingAlgorithm matching_algorithm,
-                                  QueryNodeStarVector* nodes) {
+                                  QueryNodeVector* nodes) {
   QueryNodeList root;
   if (ParseQueryImpl(base::i18n::ToLower(query), matching_algorithm, &root))
     nodes->swap(*root.children());
 }
 
 bool QueryParser::DoesQueryMatch(const base::string16& text,
-                                 const QueryNodeStarVector& query_nodes,
+                                 const QueryNodeVector& query_nodes,
                                  Snippet::MatchPositions* match_positions) {
   if (query_nodes.empty())
     return false;
@@ -396,7 +392,7 @@ bool QueryParser::DoesQueryMatch(const base::string16& text,
 }
 
 bool QueryParser::DoesQueryMatch(const QueryWordVector& query_words,
-                                 const QueryNodeStarVector& query_nodes) {
+                                 const QueryNodeVector& query_nodes) {
   if (query_nodes.empty() || query_words.empty())
     return false;
 
@@ -426,17 +422,19 @@ bool QueryParser::ParseQueryImpl(const base::string16& query,
     // is not necessarily a word, but could also be a sequence of punctuation
     // or whitespace.
     if (iter.IsWord()) {
-      QueryNodeWord* word_node = new QueryNodeWord(iter.GetString(),
-                                                   matching_algorithm);
+      std::unique_ptr<QueryNodeWord> word_node =
+          std::make_unique<QueryNodeWord>(iter.GetString(), matching_algorithm);
       if (in_quotes)
         word_node->set_literal(true);
-      query_stack.back()->AddChild(word_node);
+      query_stack.back()->AddChild(std::move(word_node));
     } else {  // Punctuation.
       if (IsQueryQuote(query[iter.prev()])) {
         if (!in_quotes) {
-          QueryNodeList* quotes_node = new QueryNodePhrase;
-          query_stack.back()->AddChild(quotes_node);
-          query_stack.push_back(quotes_node);
+          std::unique_ptr<QueryNodeList> quotes_node =
+              std::make_unique<QueryNodePhrase>();
+          QueryNodeList* quotes_node_ptr = quotes_node.get();
+          query_stack.back()->AddChild(std::move(quotes_node));
+          query_stack.push_back(quotes_node_ptr);
           in_quotes = true;
         } else {
           query_stack.pop_back();  // Stop adding to the quoted phrase.

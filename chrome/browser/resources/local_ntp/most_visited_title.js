@@ -11,14 +11,7 @@ window.addEventListener('DOMContentLoaded', function() {
   'use strict';
 
   fillMostVisited(window.location, function(params, data) {
-    document.body.appendChild(
-        createMostVisitedLink(
-            params, data.url, data.title, data.title, data.direction,
-            data.provider));
+    document.body.appendChild(createMostVisitedLink(
+        params, data.url, data.title, data.title, data.direction));
   });
-});
-
-window.addEventListener('load', function() {
-  chrome.embeddedSearch.newTabPage.logEvent(
-      NTP_LOGGING_EVENT_TYPE.NTP_TILE_LOADED);
 });

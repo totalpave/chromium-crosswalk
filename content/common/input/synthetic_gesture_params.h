@@ -11,23 +11,12 @@
 
 namespace content {
 
-// Base class for storing parameters of synthetic gestures. Sending an object
-// over IPC is handled by encapsulating it in a SyntheticGesturePacket object.
+// Base class for storing parameters of synthetic gestures.
 //
 // The subclasses of this class only store data on synthetic gestures.
 // The logic for dispatching input events that implement the gesture lives
 // in separate classes in content/browser/renderer_host/input/.
 //
-// Adding new gesture types involves the following steps:
-//   1) Create a new sub-type of SyntheticGestureParams with the parameters
-//      needed for the new gesture.
-//   2) Use IPC macros to create serialization methods for the new type in
-//      content/common/input_messages.h.
-//   3) Extend ParamTraits<content::SyntheticGesturePacket>::Write/Read/Log in
-//      content/common/input/input_param_traits.cc.
-//   4) Add a new unit test to make sure that sending the type over IPC works
-//      correctly.
-// The details of each step should become clear when looking at other types.
 struct CONTENT_EXPORT SyntheticGestureParams {
   SyntheticGestureParams();
   SyntheticGestureParams(const SyntheticGestureParams& other);
@@ -40,7 +29,9 @@ struct CONTENT_EXPORT SyntheticGestureParams {
     DEFAULT_INPUT,
     TOUCH_INPUT,
     MOUSE_INPUT,
-    GESTURE_SOURCE_TYPE_MAX = MOUSE_INPUT
+    TOUCHPAD_INPUT = MOUSE_INPUT,
+    PEN_INPUT,
+    GESTURE_SOURCE_TYPE_MAX = PEN_INPUT
   };
   GestureSourceType gesture_source_type;
 
@@ -49,8 +40,8 @@ struct CONTENT_EXPORT SyntheticGestureParams {
     SMOOTH_DRAG_GESTURE,
     PINCH_GESTURE,
     TAP_GESTURE,
-    POINTER_ACTION,
-    SYNTHETIC_GESTURE_TYPE_MAX = POINTER_ACTION
+    POINTER_ACTION_LIST,
+    SYNTHETIC_GESTURE_TYPE_MAX = POINTER_ACTION_LIST
   };
 
   virtual GestureType GetGestureType() const = 0;

@@ -15,7 +15,6 @@
 #include "media/midi/usb_midi_device.h"
 #include "media/midi/usb_midi_export.h"
 
-namespace media {
 namespace midi {
 
 // This class enumerates UsbMidiDevices.
@@ -42,8 +41,6 @@ class USB_MIDI_EXPORT UsbMidiDeviceFactoryAndroid
       const base::android::JavaParamRef<jobject>& caller,
       jint index);
 
-  static bool RegisterUsbMidiDeviceFactory(JNIEnv* env);
-
  private:
   base::android::ScopedJavaGlobalRef<jobject> raw_factory_;
   // Not owned.
@@ -54,6 +51,5 @@ class USB_MIDI_EXPORT UsbMidiDeviceFactoryAndroid
 };
 
 }  // namespace midi
-}  // namespace media
 
 #endif  // MEDIA_MIDI_USB_MIDI_DEVICE_FACTORY_ANDROID_H_

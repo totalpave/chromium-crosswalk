@@ -1,2 +1,0 @@
-Has background-attachment:fixed
-

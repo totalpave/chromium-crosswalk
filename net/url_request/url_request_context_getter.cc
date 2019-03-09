@@ -24,9 +24,9 @@ void URLRequestContextGetter::RemoveObserver(
   observer_list_.RemoveObserver(observer);
 }
 
-URLRequestContextGetter::URLRequestContextGetter() {}
+URLRequestContextGetter::URLRequestContextGetter() = default;
 
-URLRequestContextGetter::~URLRequestContextGetter() {}
+URLRequestContextGetter::~URLRequestContextGetter() = default;
 
 void URLRequestContextGetter::OnDestruct() const {
   scoped_refptr<base::SingleThreadTaskRunner> network_task_runner =
@@ -47,7 +47,7 @@ void URLRequestContextGetter::OnDestruct() const {
       }
     }
   }
-  // If no IO message loop proxy was available, we will just leak memory.
+  // If no IO task runner was available, we will just leak memory.
   // This is also true if the IO thread is gone.
 }
 
@@ -57,8 +57,8 @@ void URLRequestContextGetter::NotifyContextShuttingDown() {
   // Once shutdown starts, this must always return NULL.
   DCHECK(!GetURLRequestContext());
 
-  FOR_EACH_OBSERVER(URLRequestContextGetterObserver, observer_list_,
-                    OnContextShuttingDown());
+  for (auto& observer : observer_list_)
+    observer.OnContextShuttingDown();
 }
 
 TrivialURLRequestContextGetter::TrivialURLRequestContextGetter(
@@ -67,7 +67,7 @@ TrivialURLRequestContextGetter::TrivialURLRequestContextGetter(
     : context_(context), main_task_runner_(main_task_runner) {
 }
 
-TrivialURLRequestContextGetter::~TrivialURLRequestContextGetter() {}
+TrivialURLRequestContextGetter::~TrivialURLRequestContextGetter() = default;
 
 URLRequestContext* TrivialURLRequestContextGetter::GetURLRequestContext() {
   return context_;

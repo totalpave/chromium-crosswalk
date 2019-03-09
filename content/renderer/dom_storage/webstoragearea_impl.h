@@ -9,8 +9,8 @@
 #include <stdint.h>
 
 #include "base/memory/ref_counted.h"
-#include "third_party/WebKit/public/platform/WebStorageArea.h"
-#include "third_party/WebKit/public/platform/WebString.h"
+#include "third_party/blink/public/platform/web_storage_area.h"
+#include "third_party/blink/public/platform/web_string.h"
 
 class GURL;
 
@@ -22,20 +22,20 @@ class WebStorageAreaImpl : public blink::WebStorageArea {
  public:
   static WebStorageAreaImpl* FromConnectionId(int id);
 
-  WebStorageAreaImpl(int64_t namespace_id, const GURL& origin);
+  WebStorageAreaImpl(const std::string& namespace_id, const GURL& origin);
   ~WebStorageAreaImpl() override;
 
   // See WebStorageArea.h for documentation on these functions.
   unsigned length() override;
-  blink::WebString key(unsigned index) override;
-  blink::WebString getItem(const blink::WebString& key) override;
-  void setItem(const blink::WebString& key,
+  blink::WebString Key(unsigned index, bool* did_decrease_iterator) override;
+  blink::WebString GetItem(const blink::WebString& key) override;
+  void SetItem(const blink::WebString& key,
                const blink::WebString& value,
                const blink::WebURL& page_url,
                WebStorageArea::Result& result) override;
-  void removeItem(const blink::WebString& key,
+  void RemoveItem(const blink::WebString& key,
                   const blink::WebURL& page_url) override;
-  void clear(const blink::WebURL& url) override;
+  void Clear(const blink::WebURL& url) override;
 
  private:
   int connection_id_;

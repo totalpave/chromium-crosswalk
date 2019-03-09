@@ -6,10 +6,10 @@
 
 #include <stdint.h>
 
+#include <list>
 #include <memory>
 #include <string>
 
-#include "base/macros.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "remoting/proto/event.pb.h"
@@ -64,15 +64,16 @@ void SimulateReadSequence(const int read_sequence[], int sequence_size) {
 
   // Then feed the protocol decoder using the above generated data and the
   // read pattern.
-  std::list<EventMessage*> message_list;
+  std::list<std::unique_ptr<EventMessage>> message_list;
   for (int pos = 0; pos < size;) {
-    SCOPED_TRACE("Input position: " + base::IntToString(pos));
+    SCOPED_TRACE("Input position: " + base::NumberToString(pos));
 
     // First generate the amount to feed the decoder.
     int read = std::min(size - pos, read_sequence[pos % sequence_size]);
 
     // And then prepare an IOBuffer for feeding it.
-    scoped_refptr<net::IOBuffer> buffer(new net::IOBuffer(read));
+    scoped_refptr<net::IOBuffer> buffer =
+        base::MakeRefCounted<net::IOBuffer>(read);
     memcpy(buffer->data(), test_data + pos, read);
     decoder.AddData(buffer, read);
     while (true) {
@@ -80,10 +81,10 @@ void SimulateReadSequence(const int read_sequence[], int sequence_size) {
       if (!message.get())
         break;
 
-      EventMessage* event = new EventMessage();
+      std::unique_ptr<EventMessage> event = std::make_unique<EventMessage>();
       CompoundBufferInputStream stream(message.get());
       ASSERT_TRUE(event->ParseFromZeroCopyStream(&stream));
-      message_list.push_back(event);
+      message_list.push_back(std::move(event));
     }
     pos += read;
   }
@@ -92,12 +93,9 @@ void SimulateReadSequence(const int read_sequence[], int sequence_size) {
   EXPECT_EQ(10u, message_list.size());
 
   unsigned int index = 0;
-  for (std::list<EventMessage*>::iterator it =
-           message_list.begin();
-       it != message_list.end(); ++it) {
-    SCOPED_TRACE("Message " + base::UintToString(index));
+  for (const auto& message : message_list) {
+    SCOPED_TRACE("Message " + base::NumberToString(index));
 
-    EventMessage* message = *it;
     // Partial update stream.
     EXPECT_TRUE(message->has_key_event());
 
@@ -107,22 +105,21 @@ void SimulateReadSequence(const int read_sequence[], int sequence_size) {
     EXPECT_EQ((index % 2) != 0, message->key_event().pressed());
     ++index;
   }
-  STLDeleteElements(&message_list);
 }
 
 TEST(MessageDecoderTest, SmallReads) {
   const int kReads[] = {1, 2, 3, 1};
-  SimulateReadSequence(kReads, arraysize(kReads));
+  SimulateReadSequence(kReads, base::size(kReads));
 }
 
 TEST(MessageDecoderTest, LargeReads) {
   const int kReads[] = {50, 50, 5};
-  SimulateReadSequence(kReads, arraysize(kReads));
+  SimulateReadSequence(kReads, base::size(kReads));
 }
 
 TEST(MessageDecoderTest, EmptyReads) {
   const int kReads[] = {4, 0, 50, 0};
-  SimulateReadSequence(kReads, arraysize(kReads));
+  SimulateReadSequence(kReads, base::size(kReads));
 }
 
 }  // namespace protocol

@@ -3,13 +3,13 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-""" Lexer for PPAPI IDL
+""" Lexer for Web IDL
 
-The lexer uses the PLY library to build a tokenizer which understands both
-WebIDL and Pepper tokens.
+The lexer uses the PLY library to build a tokenizer which understands
+Web IDL tokens.
 
-WebIDL, and WebIDL regular expressions can be found at:
-   http://www.w3.org/TR/2012/CR-WebIDL-20120419/
+Web IDL, and Web IDL regular expressions can be found at:
+   http://heycam.github.io/webidl/
 PLY can be found at:
    http://www.dabeaz.com/ply/
 """
@@ -17,20 +17,10 @@ PLY can be found at:
 import os.path
 import sys
 
-#
-# Try to load the ply module, if not, then assume it is in the third_party
-# directory.
-#
-try:
-  # Disable lint check which fails to find the ply module.
-  # pylint: disable=F0401
-  from ply import lex
-except ImportError:
-  module_path, module_name = os.path.split(__file__)
-  third_party = os.path.join(module_path, '..', '..', 'third_party')
-  sys.path.append(third_party)
-  # pylint: disable=F0401
-  from ply import lex
+SRC_DIR = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+sys.path.insert(0, os.path.join(SRC_DIR, 'third_party'))
+from ply import lex
+
 
 #
 # IDL Lexer
@@ -52,7 +42,7 @@ class IDLLexer(object):
       'string',
 
     # Symbol and keywords types
-      'COMMENT',
+      'SPECIAL_COMMENT',
       'identifier',
 
     # MultiChar operators
@@ -77,20 +67,21 @@ class IDLLexer(object):
     'DOMString' : 'DOMSTRING',
     'double' : 'DOUBLE',
     'enum'  : 'ENUM',
-    'exception' : 'EXCEPTION',
     'false' : 'FALSE',
     'float' : 'FLOAT',
     'FrozenArray' : 'FROZENARRAY',
     'getter': 'GETTER',
     'implements' : 'IMPLEMENTS',
+    'includes' : 'INCLUDES',
     'Infinity' : 'INFINITY',
     'inherit' : 'INHERIT',
     'interface' : 'INTERFACE',
     'iterable': 'ITERABLE',
     'legacycaller' : 'LEGACYCALLER',
-    'legacyiterable' : 'LEGACYITERABLE',
     'long' : 'LONG',
     'maplike': 'MAPLIKE',
+    'mixin': 'MIXIN',
+    'namespace' : 'NAMESPACE',
     'Nan' : 'NAN',
     'null' : 'NULL',
     'object' : 'OBJECT',
@@ -101,9 +92,9 @@ class IDLLexer(object):
     'Promise' : 'PROMISE',
     'readonly' : 'READONLY',
     'RegExp' : 'REGEXP',
+    'record' : 'RECORD',
     'required' : 'REQUIRED',
     'sequence' : 'SEQUENCE',
-    'serializer' : 'SERIALIZER',
     'setlike' : 'SETLIKE',
     'setter': 'SETTER',
     'short' : 'SHORT',
@@ -113,6 +104,7 @@ class IDLLexer(object):
     'true' : 'TRUE',
     'unsigned' : 'UNSIGNED',
     'unrestricted' : 'UNRESTRICTED',
+    'USVString' : 'USVSTRING',
     'void' : 'VOID'
   }
 
@@ -153,15 +145,23 @@ class IDLLexer(object):
     self.AddLines(t.value.count('\n'))
     return t
 
-  # A C or C++ style comment:  /* xxx */ or //
-  def t_COMMENT(self, t):
-    r'(/\*(.|\n)*?\*/)|(//.*(\n[ \t]*//.*)*)'
+  # A Javadoc style comment:  /** xxx */
+  # Unlike t_COMMENT, this is NOT ignored.
+  # Also note that this should be defined before t_COMMENT.
+  def t_SPECIAL_COMMENT(self, t):
+    r'/\*\*(.|\n)+?\*/'
     self.AddLines(t.value.count('\n'))
     return t
 
+  # A C or C++ style comment:  /* xxx */ or //
+  # This token is ignored.
+  def t_COMMENT(self, t):
+    r'(/\*(.|\n)*?\*/)|(//.*(\n[ \t]*//.*)*)'
+    self.AddLines(t.value.count('\n'))
+
   # A symbol or keyword.
   def t_KEYWORD_OR_SYMBOL(self, t):
-    r'_?[A-Za-z][A-Za-z_0-9]*'
+    r'[_-]?[A-Za-z][A-Za-z_0-9-]*'
 
     # All non-keywords are assumed to be symbols
     t.type = self.keywords.get(t.value, 'identifier')

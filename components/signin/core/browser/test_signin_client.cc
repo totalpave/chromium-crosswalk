@@ -4,16 +4,20 @@
 
 #include "components/signin/core/browser/test_signin_client.h"
 
+#include <memory>
+
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "components/signin/core/browser/webdata/token_service_table.h"
-#include "components/webdata/common/web_data_service_base.h"
-#include "components/webdata/common/web_database_service.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/test/test_cookie_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 TestSigninClient::TestSigninClient(PrefService* pref_service)
-    : pref_service_(pref_service), are_signin_cookies_allowed_(true) {}
+    : pref_service_(pref_service),
+      are_signin_cookies_allowed_(true),
+      network_calls_delayed_(false),
+      is_signout_allowed_(true),
+      is_ready_for_dice_migration_(false) {}
 
 TestSigninClient::~TestSigninClient() {}
 
@@ -23,60 +27,35 @@ PrefService* TestSigninClient::GetPrefs() {
   return pref_service_;
 }
 
-scoped_refptr<TokenWebData> TestSigninClient::GetDatabase() {
-  return database_;
+void TestSigninClient::PreSignOut(
+    base::OnceCallback<void(SignoutDecision)> on_signout_decision_reached,
+    signin_metrics::ProfileSignout signout_source_metric) {
+  std::move(on_signout_decision_reached)
+      .Run(is_signout_allowed_ ? SignoutDecision::ALLOW_SIGNOUT
+                               : SignoutDecision::DISALLOW_SIGNOUT);
 }
 
-bool TestSigninClient::CanRevokeCredentials() { return true; }
-
-std::string TestSigninClient::GetSigninScopedDeviceId() {
-  return std::string();
+scoped_refptr<network::SharedURLLoaderFactory>
+TestSigninClient::GetURLLoaderFactory() {
+  return test_url_loader_factory_.GetSafeWeakWrapper();
 }
 
-void TestSigninClient::OnSignedOut() {}
-
-void TestSigninClient::PostSignedIn(const std::string& account_id,
-                  const std::string& username,
-                  const std::string& password) {
-  signed_in_password_ = password;
-}
-
-net::URLRequestContextGetter* TestSigninClient::GetURLRequestContext() {
-  return request_context_.get();
-}
-
-void TestSigninClient::SetURLRequestContext(
-    net::URLRequestContextGetter* request_context) {
-  request_context_ = request_context;
+network::mojom::CookieManager* TestSigninClient::GetCookieManager() {
+  if (!cookie_manager_)
+    cookie_manager_ = std::make_unique<network::TestCookieManager>();
+  return cookie_manager_.get();
 }
 
 std::string TestSigninClient::GetProductVersion() { return ""; }
 
-void TestSigninClient::LoadTokenDatabase() {
-  ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-  base::FilePath path = temp_dir_.path().AppendASCII("TestWebDB");
-  scoped_refptr<WebDatabaseService> web_database =
-      new WebDatabaseService(path, base::ThreadTaskRunnerHandle::Get(),
-                             base::ThreadTaskRunnerHandle::Get());
-  web_database->AddTable(base::WrapUnique(new TokenServiceTable()));
-  web_database->LoadDatabase();
-  database_ =
-      new TokenWebData(web_database, base::ThreadTaskRunnerHandle::Get(),
-                       base::ThreadTaskRunnerHandle::Get(),
-                       WebDataServiceBase::ProfileErrorCallback());
-  database_->Init();
-}
+void TestSigninClient::SetNetworkCallsDelayed(bool value) {
+  network_calls_delayed_ = value;
 
-bool TestSigninClient::ShouldMergeSigninCredentialsIntoCookieJar() {
-  return true;
-}
-
-std::unique_ptr<SigninClient::CookieChangedSubscription>
-TestSigninClient::AddCookieChangedCallback(
-    const GURL& url,
-    const std::string& name,
-    const net::CookieStore::CookieChangedCallback& callback) {
-  return base::WrapUnique(new SigninClient::CookieChangedSubscription);
+  if (!network_calls_delayed_) {
+    for (base::OnceClosure& call : delayed_network_calls_)
+      std::move(call).Run();
+    delayed_network_calls_.clear();
+  }
 }
 
 bool TestSigninClient::IsFirstRun() const {
@@ -99,13 +78,28 @@ void TestSigninClient::RemoveContentSettingsObserver(
     content_settings::Observer* observer) {
 }
 
-void TestSigninClient::DelayNetworkCall(const base::Closure& callback) {
-  callback.Run();
+void TestSigninClient::DelayNetworkCall(base::OnceClosure callback) {
+  if (network_calls_delayed_) {
+    delayed_network_calls_.push_back(std::move(callback));
+  } else {
+    std::move(callback).Run();
+  }
 }
 
-GaiaAuthFetcher* TestSigninClient::CreateGaiaAuthFetcher(
+std::unique_ptr<GaiaAuthFetcher> TestSigninClient::CreateGaiaAuthFetcher(
     GaiaAuthConsumer* consumer,
-    const std::string& source,
-    net::URLRequestContextGetter* getter) {
-  return new GaiaAuthFetcher(consumer, source, getter);
+    gaia::GaiaSource source,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
+  return std::make_unique<GaiaAuthFetcher>(consumer, source,
+                                           url_loader_factory);
+}
+
+void TestSigninClient::PreGaiaLogout(base::OnceClosure callback) {
+  if (!callback.is_null()) {
+    std::move(callback).Run();
+  }
+}
+
+void TestSigninClient::SetReadyForDiceMigration(bool ready) {
+  is_ready_for_dice_migration_ = ready;
 }

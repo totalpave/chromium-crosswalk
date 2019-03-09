@@ -11,6 +11,7 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/core/common/cloud/cloud_policy_manager.h"
@@ -21,10 +22,10 @@
 #include "components/policy/core/common/policy_namespace.h"
 #include "components/policy/core/common/policy_service_impl.h"
 #include "components/policy/core/common/schema_registry_tracking_policy_provider.h"
-#include "google_apis/gaia/gaia_auth_util.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/browser_process_platform_part.h"
+#include "chrome/browser/chromeos/policy/active_directory_policy_manager.h"
 #include "chrome/browser/chromeos/policy/browser_policy_connector_chromeos.h"
 #include "chrome/browser/chromeos/policy/device_cloud_policy_manager_chromeos.h"
 #include "chrome/browser/chromeos/policy/device_local_account.h"
@@ -36,48 +37,25 @@
 
 namespace policy {
 
-namespace {
-
-std::string GetCloudPolicyManagementDomain(
-    const CloudPolicyManager* cloud_policy_manager) {
-  const CloudPolicyStore* const store = cloud_policy_manager->core()->store();
-  if (store) {
-    CHECK(store->is_initialized())
-        << "Cloud policy management domain must be "
-           "requested only after the policy system is fully initialized";
-    if (store->is_managed() && store->policy()->has_username())
-      return gaia::ExtractDomainName(store->policy()->username());
-  }
-  return "";
-}
-
-}  // namespace
-
-ProfilePolicyConnector::ProfilePolicyConnector()
-#if defined(OS_CHROMEOS)
-    : is_primary_user_(false),
-      user_cloud_policy_manager_(nullptr)
-#else
-    : user_cloud_policy_manager_(nullptr)
-#endif
-{
-}
+ProfilePolicyConnector::ProfilePolicyConnector() {}
 
 ProfilePolicyConnector::~ProfilePolicyConnector() {}
 
 void ProfilePolicyConnector::Init(
-#if defined(OS_CHROMEOS)
     const user_manager::User* user,
-#endif
     SchemaRegistry* schema_registry,
-    CloudPolicyManager* user_cloud_policy_manager) {
-  user_cloud_policy_manager_ = user_cloud_policy_manager;
+    ConfigurationPolicyProvider* configuration_policy_provider,
+    const CloudPolicyStore* policy_store,
+    bool force_immediate_load) {
+  configuration_policy_provider_ = configuration_policy_provider;
+  policy_store_ = policy_store;
 
 #if defined(OS_CHROMEOS)
   BrowserPolicyConnectorChromeOS* connector =
       g_browser_process->platform_part()->browser_policy_connector_chromeos();
 #else
-  BrowserPolicyConnector* connector =
+  DCHECK_EQ(nullptr, user);
+  ChromeBrowserPolicyConnector* connector =
       g_browser_process->browser_policy_connector();
 #endif
 
@@ -90,28 +68,47 @@ void ProfilePolicyConnector::Init(
   }
 
 #if defined(OS_CHROMEOS)
-  if (connector->GetDeviceCloudPolicyManager())
+  if (connector->GetDeviceCloudPolicyManager()) {
     policy_providers_.push_back(connector->GetDeviceCloudPolicyManager());
+  }
+  if (connector->GetDeviceActiveDirectoryPolicyManager()) {
+    policy_providers_.push_back(
+        connector->GetDeviceActiveDirectoryPolicyManager());
+  }
+#else
+  for (auto* provider : connector->GetPolicyProviders()) {
+    // Skip the platform provider since it was already handled above.  The
+    // platform provider should be first in the list so that it always takes
+    // precedence.
+    if (provider == connector->GetPlatformProvider()) {
+      continue;
+    } else {
+      // TODO(zmin): In the future, we may want to have special handling for
+      // the other providers too.
+      policy_providers_.push_back(provider);
+    }
+  }
 #endif
 
-  if (user_cloud_policy_manager)
-    policy_providers_.push_back(user_cloud_policy_manager);
+  if (configuration_policy_provider)
+    policy_providers_.push_back(configuration_policy_provider);
 
 #if defined(OS_CHROMEOS)
   if (!user) {
     DCHECK(schema_registry);
-    // This case occurs for the signin profile.
+    // This case occurs for the signin and the lock screen app profiles.
     special_user_policy_provider_.reset(
         new LoginProfilePolicyProvider(connector->GetPolicyService()));
   } else {
-    // |user| should never be nullptr except for the signin profile.
+    // |user| should never be nullptr except for the signin and the lock screen
+    // app profile.
     is_primary_user_ =
         user == user_manager::UserManager::Get()->GetPrimaryUser();
     // Note that |DeviceLocalAccountPolicyProvider::Create| returns nullptr when
     // the user supplied is not a device-local account user.
     special_user_policy_provider_ = DeviceLocalAccountPolicyProvider::Create(
-        user->email(),
-        connector->GetDeviceLocalAccountPolicyService());
+        user->GetAccountId().GetUserEmail(),
+        connector->GetDeviceLocalAccountPolicyService(), force_immediate_load);
   }
   if (special_user_policy_provider_) {
     special_user_policy_provider_->Init(schema_registry);
@@ -119,12 +116,12 @@ void ProfilePolicyConnector::Init(
   }
 #endif
 
-  policy_service_.reset(new PolicyServiceImpl(policy_providers_));
+  policy_service_ = std::make_unique<PolicyServiceImpl>(policy_providers_);
 
 #if defined(OS_CHROMEOS)
   if (is_primary_user_) {
-    if (user_cloud_policy_manager)
-      connector->SetUserPolicyDelegate(user_cloud_policy_manager);
+    if (configuration_policy_provider)
+      connector->SetUserPolicyDelegate(configuration_policy_provider);
     else if (special_user_policy_provider_)
       connector->SetUserPolicyDelegate(special_user_policy_provider_.get());
   }
@@ -157,41 +154,43 @@ void ProfilePolicyConnector::Shutdown() {
 bool ProfilePolicyConnector::IsManaged() const {
   if (is_managed_override_)
     return *is_managed_override_;
-  return !GetManagementDomain().empty();
+  const CloudPolicyStore* actual_policy_store = GetActualPolicyStore();
+  if (actual_policy_store)
+    return actual_policy_store->is_managed();
+  return false;
 }
 
-std::string ProfilePolicyConnector::GetManagementDomain() const {
-  if (user_cloud_policy_manager_)
-    return GetCloudPolicyManagementDomain(user_cloud_policy_manager_);
+bool ProfilePolicyConnector::IsProfilePolicy(const char* policy_key) const {
+  const ConfigurationPolicyProvider* const provider =
+      DeterminePolicyProviderForPolicy(policy_key);
+  return provider == configuration_policy_provider_;
+}
+
+const CloudPolicyStore* ProfilePolicyConnector::GetActualPolicyStore() const {
+  if (policy_store_)
+    return policy_store_;
 #if defined(OS_CHROMEOS)
   if (special_user_policy_provider_) {
-    // |special_user_policy_provider_| is non-null for device-local accounts and
-    // for the login profile.
-    // They receive policy iff the device itself is managed.
+    // |special_user_policy_provider_| is non-null for device-local accounts,
+    // for the login profile, and the lock screen app profile.
     const DeviceCloudPolicyManagerChromeOS* const device_cloud_policy_manager =
         g_browser_process->platform_part()
             ->browser_policy_connector_chromeos()
             ->GetDeviceCloudPolicyManager();
     // The device_cloud_policy_manager can be a nullptr in unit tests.
     if (device_cloud_policy_manager)
-      return GetCloudPolicyManagementDomain(device_cloud_policy_manager);
+      return device_cloud_policy_manager->core()->store();
   }
 #endif
-  return "";
-}
-
-bool ProfilePolicyConnector::IsPolicyFromCloudPolicy(const char* name) const {
-  const ConfigurationPolicyProvider* const provider =
-      DeterminePolicyProviderForPolicy(name);
-  return provider == user_cloud_policy_manager_;
+  return nullptr;
 }
 
 const ConfigurationPolicyProvider*
 ProfilePolicyConnector::DeterminePolicyProviderForPolicy(
-    const char* name) const {
+    const char* policy_key) const {
   const PolicyNamespace chrome_ns(POLICY_DOMAIN_CHROME, "");
   for (const ConfigurationPolicyProvider* provider : policy_providers_) {
-    if (provider->policies().Get(chrome_ns).Get(name))
+    if (provider->policies().Get(chrome_ns).Get(policy_key))
       return provider;
   }
   return nullptr;

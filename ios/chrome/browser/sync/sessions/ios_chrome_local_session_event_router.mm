@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/keyed_service/core/service_access_type.h"
@@ -16,12 +17,19 @@
 #include "ios/chrome/browser/sync/glue/sync_start_util.h"
 #include "ios/chrome/browser/sync/ios_chrome_synced_tab_delegate.h"
 #include "ios/chrome/browser/tab_parenting_global_observer.h"
+#import "ios/chrome/browser/tabs/tab_model.h"
+#import "ios/chrome/browser/tabs/tab_model_list.h"
+#import "ios/chrome/browser/web_state_list/web_state_list.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 
-browser_sync::SyncedTabDelegate* GetSyncedTabDelegateFromWebState(
+sync_sessions::SyncedTabDelegate* GetSyncedTabDelegateFromWebState(
     web::WebState* web_state) {
-  browser_sync::SyncedTabDelegate* delegate =
+  sync_sessions::SyncedTabDelegate* delegate =
       IOSChromeSyncedTabDelegate::FromWebState(web_state);
   return delegate;
 }
@@ -49,9 +57,60 @@ IOSChromeLocalSessionEventRouter::IOSChromeLocalSessionEventRouter(
         base::Bind(&IOSChromeLocalSessionEventRouter::OnFaviconsChanged,
                    base::Unretained(this)));
   }
+
+  for (TabModel* tab_model in TabModelList::GetTabModelsForChromeBrowserState(
+           browser_state_)) {
+    StartObservingWebStateList(tab_model.webStateList);
+  }
+
+  TabModelList::AddObserver(this);
 }
 
-IOSChromeLocalSessionEventRouter::~IOSChromeLocalSessionEventRouter() {}
+IOSChromeLocalSessionEventRouter::~IOSChromeLocalSessionEventRouter() {
+  for (TabModel* tab_model in TabModelList::GetTabModelsForChromeBrowserState(
+           browser_state_)) {
+    StopObservingWebStateList(tab_model.webStateList);
+  }
+  TabModelList::RemoveObserver(this);
+}
+
+void IOSChromeLocalSessionEventRouter::TabModelRegisteredWithBrowserState(
+    TabModel* tab_model,
+    ios::ChromeBrowserState* browser_state) {
+  StartObservingWebStateList(tab_model.webStateList);
+}
+
+void IOSChromeLocalSessionEventRouter::TabModelUnregisteredFromBrowserState(
+    TabModel* tab_model,
+    ios::ChromeBrowserState* browser_state) {
+  StopObservingWebStateList(tab_model.webStateList);
+}
+
+void IOSChromeLocalSessionEventRouter::WebStateInsertedAt(
+    WebStateList* web_state_list,
+    web::WebState* web_state,
+    int index,
+    bool activating) {
+  web_state->AddObserver(this);
+}
+
+void IOSChromeLocalSessionEventRouter::WebStateReplacedAt(
+    WebStateList* web_state_list,
+    web::WebState* old_web_state,
+    web::WebState* new_web_state,
+    int index) {
+  old_web_state->RemoveObserver(this);
+
+  if (new_web_state)
+    new_web_state->AddObserver(this);
+}
+
+void IOSChromeLocalSessionEventRouter::WebStateDetachedAt(
+    WebStateList* web_state_list,
+    web::WebState* web_state,
+    int index) {
+  web_state->RemoveObserver(this);
+}
 
 void IOSChromeLocalSessionEventRouter::NavigationItemsPruned(
     web::WebState* web_state,
@@ -59,14 +118,13 @@ void IOSChromeLocalSessionEventRouter::NavigationItemsPruned(
   OnWebStateChange(web_state);
 }
 
-void IOSChromeLocalSessionEventRouter::NavigationItemChanged(
-    web::WebState* web_state) {
+void IOSChromeLocalSessionEventRouter::TitleWasSet(web::WebState* web_state) {
   OnWebStateChange(web_state);
 }
 
-void IOSChromeLocalSessionEventRouter::NavigationItemCommitted(
+void IOSChromeLocalSessionEventRouter::DidFinishNavigation(
     web::WebState* web_state,
-    const web::LoadCommittedDetails& load_details) {
+    web::NavigationContext* navigation_context) {
   OnWebStateChange(web_state);
 }
 
@@ -76,9 +134,32 @@ void IOSChromeLocalSessionEventRouter::PageLoaded(
   OnWebStateChange(web_state);
 }
 
+void IOSChromeLocalSessionEventRouter::DidChangeBackForwardState(
+    web::WebState* web_state) {
+  OnWebStateChange(web_state);
+}
+
 void IOSChromeLocalSessionEventRouter::WebStateDestroyed(
     web::WebState* web_state) {
   OnWebStateChange(web_state);
+}
+
+void IOSChromeLocalSessionEventRouter::StartObservingWebStateList(
+    WebStateList* web_state_list) {
+  web_state_list->AddObserver(this);
+  for (int index = 0; index < web_state_list->count(); ++index) {
+    web::WebState* web_state = web_state_list->GetWebStateAt(index);
+    web_state->AddObserver(this);
+  }
+}
+
+void IOSChromeLocalSessionEventRouter::StopObservingWebStateList(
+    WebStateList* web_state_list) {
+  for (int index = 0; index < web_state_list->count(); ++index) {
+    web::WebState* web_state = web_state_list->GetWebStateAt(index);
+    web_state->RemoveObserver(this);
+  }
+  web_state_list->RemoveObserver(this);
 }
 
 void IOSChromeLocalSessionEventRouter::OnTabParented(web::WebState* web_state) {
@@ -87,9 +168,7 @@ void IOSChromeLocalSessionEventRouter::OnTabParented(web::WebState* web_state) {
 
 void IOSChromeLocalSessionEventRouter::OnWebStateChange(
     web::WebState* web_state) {
-  if (web_state->GetBrowserState() != browser_state_)
-    return;
-  browser_sync::SyncedTabDelegate* tab =
+  sync_sessions::SyncedTabDelegate* tab =
       GetSyncedTabDelegateFromWebState(web_state);
   if (!tab)
     return;
@@ -107,12 +186,12 @@ void IOSChromeLocalSessionEventRouter::OnWebStateChange(
 void IOSChromeLocalSessionEventRouter::OnFaviconsChanged(
     const std::set<GURL>& page_urls,
     const GURL& icon_url) {
-  if (handler_)
+  if (handler_ && !page_urls.empty())
     handler_->OnFaviconsChanged(page_urls, icon_url);
 }
 
 void IOSChromeLocalSessionEventRouter::StartRoutingTo(
-    browser_sync::LocalSessionEventHandler* handler) {
+    sync_sessions::LocalSessionEventHandler* handler) {
   DCHECK(!handler_);
   handler_ = handler;
 }

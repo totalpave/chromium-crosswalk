@@ -4,40 +4,94 @@
 
 #include "ui/aura/client/aura_constants.h"
 
-#include "ui/aura/window_property.h"
+#include "services/ws/public/mojom/window_tree_constants.mojom.h"
+#include "ui/base/class_property.h"
 #include "ui/gfx/geometry/rect.h"
 
-DECLARE_EXPORTED_WINDOW_PROPERTY_TYPE(AURA_EXPORT, bool)
-DECLARE_EXPORTED_WINDOW_PROPERTY_TYPE(AURA_EXPORT, ui::ModalType)
-DECLARE_EXPORTED_WINDOW_PROPERTY_TYPE(AURA_EXPORT, gfx::Rect*)
-DECLARE_EXPORTED_WINDOW_PROPERTY_TYPE(AURA_EXPORT, ui::InputMethod*)
-DECLARE_EXPORTED_WINDOW_PROPERTY_TYPE(AURA_EXPORT, ui::WindowShowState)
-DECLARE_EXPORTED_WINDOW_PROPERTY_TYPE(AURA_EXPORT, int)
-DECLARE_EXPORTED_WINDOW_PROPERTY_TYPE(AURA_EXPORT, void*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, bool)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, base::TimeDelta)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, base::UnguessableToken*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, base::string16*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, ui::ModalType)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::ImageSkia*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::NativeViewAccessible)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::Rect*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::Size*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::SizeF*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, std::string*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, ui::WindowShowState)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, ws::mojom::WindowType)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, void*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, SkColor)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, int32_t)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, int64_t)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, aura::client::FocusClient*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, aura::Window*)
+DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, std::vector<aura::Window*>*)
 
 namespace aura {
 namespace client {
 
 // Alphabetical sort.
 
-DEFINE_WINDOW_PROPERTY_KEY(bool, kAlwaysOnTopKey, false);
-DEFINE_WINDOW_PROPERTY_KEY(bool, kAnimationsDisabledKey, false);
-DEFINE_WINDOW_PROPERTY_KEY(bool, kCanMaximizeKey, false);
-DEFINE_WINDOW_PROPERTY_KEY(bool, kCanMinimizeKey, false);
-DEFINE_WINDOW_PROPERTY_KEY(bool, kCanResizeKey, true);
-DEFINE_WINDOW_PROPERTY_KEY(bool, kConstrainedWindowKey, false);
-DEFINE_WINDOW_PROPERTY_KEY(bool, kDrawAttentionKey, false);
-DEFINE_WINDOW_PROPERTY_KEY(bool, kExcludeFromMruKey, false);
-DEFINE_WINDOW_PROPERTY_KEY(Window*, kHostWindowKey, NULL);
-DEFINE_WINDOW_PROPERTY_KEY(ui::ModalType, kModalKey, ui::MODAL_TYPE_NONE);
-// gfx::Rect object for RestoreBoundsKey property is owned by the window
-// and will be freed automatically.
-DEFINE_OWNED_WINDOW_PROPERTY_KEY(gfx::Rect, kRestoreBoundsKey, NULL);
-DEFINE_WINDOW_PROPERTY_KEY(
-    ui::WindowShowState, kRestoreShowStateKey, ui::SHOW_STATE_DEFAULT);
-DEFINE_WINDOW_PROPERTY_KEY(
-    ui::WindowShowState, kShowStateKey, ui::SHOW_STATE_DEFAULT);
-DEFINE_WINDOW_PROPERTY_KEY(int, kTopViewInset, 0);
+DEFINE_UI_CLASS_PROPERTY_KEY(bool,
+                             kAccessibilityFocusFallsbackToWidgetKey,
+                             true)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool,
+                             kAccessibilityTouchExplorationPassThrough,
+                             false)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kActivateOnPointerKey, true)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kAlwaysOnTopKey, false)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kAnimationsDisabledKey, false)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::ImageSkia, kAppIconKey, nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::ImageSkia, kAppIconLargeKey, nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::ImageSkia, kAppIconSmallKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(int, kAppType, 0)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::SizeF, kAspectRatio, nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::ImageSkia, kAvatarIconKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kClientWindowHasContent, false)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kConstrainedWindowKey, false)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kCreatedByUserGesture, false)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kDrawAttentionKey, false)
+DEFINE_UI_CLASS_PROPERTY_KEY(FocusClient*, kFocusClientKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool,
+                             kGestureDragFromClientAreaTopMovesWindow,
+                             false)
+DEFINE_UI_CLASS_PROPERTY_KEY(Window*, kHostWindowKey, nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::Size, kMaximumSize, nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::Size, kMinimumSize, nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(std::vector<Window*>,
+                                   kMirrorWindowList,
+                                   nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(Window*, kChildModalParentKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(ui::ModalType, kModalKey, ui::MODAL_TYPE_NONE)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(std::string, kNameKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(gfx::NativeViewAccessible,
+                             kParentNativeViewAccessibleKey,
+                             nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::Size, kPreferredSize, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(ui::WindowShowState,
+                             kPreMinimizedShowStateKey,
+                             ui::SHOW_STATE_DEFAULT)
+DEFINE_UI_CLASS_PROPERTY_KEY(ui::WindowShowState,
+                             kPreFullscreenShowStateKey,
+                             ui::SHOW_STATE_DEFAULT)
+DEFINE_UI_CLASS_PROPERTY_KEY(int32_t,
+                             kResizeBehaviorKey,
+                             ws::mojom::kResizeBehaviorCanResize)
+DEFINE_UI_CLASS_PROPERTY_KEY(int, kResizeHandleInset, 0)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::Rect, kRestoreBoundsKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(ui::WindowShowState,
+                             kShowStateKey,
+                             ui::SHOW_STATE_DEFAULT)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(base::string16, kTitleKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kTitleShownKey, true)
+DEFINE_UI_CLASS_PROPERTY_KEY(int, kTopViewInset, 0)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(gfx::ImageSkia, kWindowIconKey, nullptr)
+DEFINE_UI_CLASS_PROPERTY_KEY(int, kWindowCornerRadiusKey, -1)
+DEFINE_UI_CLASS_PROPERTY_KEY(ws::mojom::WindowType,
+                             kWindowTypeKey,
+                             ws::mojom::WindowType::UNKNOWN)
 
 }  // namespace client
 }  // namespace aura

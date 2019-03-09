@@ -12,7 +12,7 @@
 #include "components/webcrypto/generate_key_result.h"
 #include "components/webcrypto/status.h"
 #include "crypto/openssl_util.h"
-#include "third_party/WebKit/public/platform/WebCryptoKeyAlgorithm.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
 
 namespace webcrypto {
 
@@ -22,11 +22,11 @@ Status DecryptDontCheckKeyUsage(const blink::WebCryptoAlgorithm& algorithm,
                                 const blink::WebCryptoKey& key,
                                 const CryptoData& data,
                                 std::vector<uint8_t>* buffer) {
-  if (algorithm.id() != key.algorithm().id())
+  if (algorithm.Id() != key.Algorithm().Id())
     return Status::ErrorUnexpected();
 
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -37,11 +37,11 @@ Status EncryptDontCheckUsage(const blink::WebCryptoAlgorithm& algorithm,
                              const blink::WebCryptoKey& key,
                              const CryptoData& data,
                              std::vector<uint8_t>* buffer) {
-  if (algorithm.id() != key.algorithm().id())
+  if (algorithm.Id() != key.Algorithm().Id())
     return Status::ErrorUnexpected();
 
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -51,8 +51,8 @@ Status EncryptDontCheckUsage(const blink::WebCryptoAlgorithm& algorithm,
 Status ExportKeyDontCheckExtractability(blink::WebCryptoKeyFormat format,
                                         const blink::WebCryptoKey& key,
                                         std::vector<uint8_t>* buffer) {
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(key.algorithm().id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(key.Algorithm().Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -65,7 +65,7 @@ Status Encrypt(const blink::WebCryptoAlgorithm& algorithm,
                const blink::WebCryptoKey& key,
                const CryptoData& data,
                std::vector<uint8_t>* buffer) {
-  if (!key.keyUsageAllows(blink::WebCryptoKeyUsageEncrypt))
+  if (!key.KeyUsageAllows(blink::kWebCryptoKeyUsageEncrypt))
     return Status::ErrorUnexpected();
   return EncryptDontCheckUsage(algorithm, key, data, buffer);
 }
@@ -74,7 +74,7 @@ Status Decrypt(const blink::WebCryptoAlgorithm& algorithm,
                const blink::WebCryptoKey& key,
                const CryptoData& data,
                std::vector<uint8_t>* buffer) {
-  if (!key.keyUsageAllows(blink::WebCryptoKeyUsageDecrypt))
+  if (!key.KeyUsageAllows(blink::kWebCryptoKeyUsageDecrypt))
     return Status::ErrorUnexpected();
   return DecryptDontCheckKeyUsage(algorithm, key, data, buffer);
 }
@@ -82,8 +82,8 @@ Status Decrypt(const blink::WebCryptoAlgorithm& algorithm,
 Status Digest(const blink::WebCryptoAlgorithm& algorithm,
               const CryptoData& data,
               std::vector<uint8_t>* buffer) {
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -94,8 +94,8 @@ Status GenerateKey(const blink::WebCryptoAlgorithm& algorithm,
                    bool extractable,
                    blink::WebCryptoKeyUsageMask usages,
                    GenerateKeyResult* result) {
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -103,21 +103,33 @@ Status GenerateKey(const blink::WebCryptoAlgorithm& algorithm,
   if (status.IsError())
     return status;
 
-  const blink::WebCryptoKey* key = NULL;
+  // The Web Crypto spec says to reject secret and private keys generated with
+  // empty usages:
+  //
+  // https://w3c.github.io/webcrypto/Overview.html#dfn-SubtleCrypto-method-generateKey
+  //
+  // (14.3.6.8):
+  // If result is a CryptoKey object:
+  //     If the [[type]] internal slot of result is "secret" or "private"
+  //     and usages is empty, then throw a SyntaxError.
+  //
+  // (14.3.6.9)
+  // If result is a CryptoKeyPair object:
+  //     If the [[usages]] internal slot of the privateKey attribute of
+  //     result is the empty sequence, then throw a SyntaxError.
+  const blink::WebCryptoKey* key = nullptr;
   if (result->type() == GenerateKeyResult::TYPE_SECRET_KEY)
     key = &result->secret_key();
   if (result->type() == GenerateKeyResult::TYPE_PUBLIC_PRIVATE_KEY_PAIR)
     key = &result->private_key();
-  if (key == NULL)
+  if (key == nullptr)
     return Status::ErrorUnexpected();
 
-  // This should only fail if an algorithm is implemented incorrectly and
-  // does not do its own check of the usages.
-  if (key->usages() == 0) {
-    DCHECK(false) << "Key usages for generateKey() must not be empty";
+  if (key->Usages() == 0) {
     return Status::ErrorCreateKeyEmptyUsages();
   }
-  return status;
+
+  return Status::Success();
 }
 
 Status ImportKey(blink::WebCryptoKeyFormat format,
@@ -126,22 +138,36 @@ Status ImportKey(blink::WebCryptoKeyFormat format,
                  bool extractable,
                  blink::WebCryptoKeyUsageMask usages,
                  blink::WebCryptoKey* key) {
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
-  status = impl->VerifyKeyUsagesBeforeImportKey(format, usages);
+  status =
+      impl->ImportKey(format, key_data, algorithm, extractable, usages, key);
   if (status.IsError())
     return status;
 
-  return impl->ImportKey(format, key_data, algorithm, extractable, usages, key);
+  // The Web Crypto spec says to reject secret and private keys imported with
+  // empty usages:
+  //
+  // https://w3c.github.io/webcrypto/Overview.html#dfn-SubtleCrypto-method-importKey
+  //
+  // 14.3.9.9: If the [[type]] internal slot of result is "secret" or "private"
+  //           and usages is empty, then throw a SyntaxError.
+  if (key->Usages() == 0 &&
+      (key->GetType() == blink::kWebCryptoKeyTypeSecret ||
+       key->GetType() == blink::kWebCryptoKeyTypePrivate)) {
+    return Status::ErrorCreateKeyEmptyUsages();
+  }
+
+  return Status::Success();
 }
 
 Status ExportKey(blink::WebCryptoKeyFormat format,
                  const blink::WebCryptoKey& key,
                  std::vector<uint8_t>* buffer) {
-  if (!key.extractable())
+  if (!key.Extractable())
     return Status::ErrorKeyNotExtractable();
   return ExportKeyDontCheckExtractability(format, key, buffer);
 }
@@ -150,13 +176,13 @@ Status Sign(const blink::WebCryptoAlgorithm& algorithm,
             const blink::WebCryptoKey& key,
             const CryptoData& data,
             std::vector<uint8_t>* buffer) {
-  if (!key.keyUsageAllows(blink::WebCryptoKeyUsageSign))
+  if (!key.KeyUsageAllows(blink::kWebCryptoKeyUsageSign))
     return Status::ErrorUnexpected();
-  if (algorithm.id() != key.algorithm().id())
+  if (algorithm.Id() != key.Algorithm().Id())
     return Status::ErrorUnexpected();
 
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -168,13 +194,13 @@ Status Verify(const blink::WebCryptoAlgorithm& algorithm,
               const CryptoData& signature,
               const CryptoData& data,
               bool* signature_match) {
-  if (!key.keyUsageAllows(blink::WebCryptoKeyUsageVerify))
+  if (!key.KeyUsageAllows(blink::kWebCryptoKeyUsageVerify))
     return Status::ErrorUnexpected();
-  if (algorithm.id() != key.algorithm().id())
+  if (algorithm.Id() != key.Algorithm().Id())
     return Status::ErrorUnexpected();
 
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -186,7 +212,7 @@ Status WrapKey(blink::WebCryptoKeyFormat format,
                const blink::WebCryptoKey& wrapping_key,
                const blink::WebCryptoAlgorithm& wrapping_algorithm,
                std::vector<uint8_t>* buffer) {
-  if (!wrapping_key.keyUsageAllows(blink::WebCryptoKeyUsageWrapKey))
+  if (!wrapping_key.KeyUsageAllows(blink::kWebCryptoKeyUsageWrapKey))
     return Status::ErrorUnexpected();
 
   std::vector<uint8_t> exported_data;
@@ -205,24 +231,14 @@ Status UnwrapKey(blink::WebCryptoKeyFormat format,
                  bool extractable,
                  blink::WebCryptoKeyUsageMask usages,
                  blink::WebCryptoKey* key) {
-  if (!wrapping_key.keyUsageAllows(blink::WebCryptoKeyUsageUnwrapKey))
+  if (!wrapping_key.KeyUsageAllows(blink::kWebCryptoKeyUsageUnwrapKey))
     return Status::ErrorUnexpected();
-  if (wrapping_algorithm.id() != wrapping_key.algorithm().id())
+  if (wrapping_algorithm.Id() != wrapping_key.Algorithm().Id())
     return Status::ErrorUnexpected();
-
-  // Fail fast if the import is doomed to fail.
-  const AlgorithmImplementation* import_impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &import_impl);
-  if (status.IsError())
-    return status;
-
-  status = import_impl->VerifyKeyUsagesBeforeImportKey(format, usages);
-  if (status.IsError())
-    return status;
 
   std::vector<uint8_t> buffer;
-  status = DecryptDontCheckKeyUsage(wrapping_algorithm, wrapping_key,
-                                    wrapped_key_data, &buffer);
+  Status status = DecryptDontCheckKeyUsage(wrapping_algorithm, wrapping_key,
+                                           wrapped_key_data, &buffer);
   if (status.IsError())
     return status;
 
@@ -239,14 +255,14 @@ Status DeriveBits(const blink::WebCryptoAlgorithm& algorithm,
                   const blink::WebCryptoKey& base_key,
                   unsigned int length_bits,
                   std::vector<uint8_t>* derived_bytes) {
-  if (!base_key.keyUsageAllows(blink::WebCryptoKeyUsageDeriveBits))
+  if (!base_key.KeyUsageAllows(blink::kWebCryptoKeyUsageDeriveBits))
     return Status::ErrorUnexpected();
 
-  if (algorithm.id() != base_key.algorithm().id())
+  if (algorithm.Id() != base_key.Algorithm().Id())
     return Status::ErrorUnexpected();
 
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return status;
 
@@ -261,24 +277,18 @@ Status DeriveKey(const blink::WebCryptoAlgorithm& algorithm,
                  bool extractable,
                  blink::WebCryptoKeyUsageMask usages,
                  blink::WebCryptoKey* derived_key) {
-  if (!base_key.keyUsageAllows(blink::WebCryptoKeyUsageDeriveKey))
+  if (!base_key.KeyUsageAllows(blink::kWebCryptoKeyUsageDeriveKey))
     return Status::ErrorUnexpected();
 
-  if (algorithm.id() != base_key.algorithm().id())
+  if (algorithm.Id() != base_key.Algorithm().Id())
     return Status::ErrorUnexpected();
 
-  if (import_algorithm.id() != key_length_algorithm.id())
+  if (import_algorithm.Id() != key_length_algorithm.Id())
     return Status::ErrorUnexpected();
 
-  const AlgorithmImplementation* import_impl = NULL;
+  const AlgorithmImplementation* import_impl = nullptr;
   Status status =
-      GetAlgorithmImplementation(import_algorithm.id(), &import_impl);
-  if (status.IsError())
-    return status;
-
-  // Fail fast if the requested key usages are incorect.
-  status = import_impl->VerifyKeyUsagesBeforeImportKey(
-      blink::WebCryptoKeyFormatRaw, usages);
+      GetAlgorithmImplementation(import_algorithm.Id(), &import_impl);
   if (status.IsError())
     return status;
 
@@ -291,8 +301,8 @@ Status DeriveKey(const blink::WebCryptoAlgorithm& algorithm,
     return status;
 
   // Derive the key bytes.
-  const AlgorithmImplementation* derive_impl = NULL;
-  status = GetAlgorithmImplementation(algorithm.id(), &derive_impl);
+  const AlgorithmImplementation* derive_impl = nullptr;
+  status = GetAlgorithmImplementation(algorithm.Id(), &derive_impl);
   if (status.IsError())
     return status;
 
@@ -303,7 +313,7 @@ Status DeriveKey(const blink::WebCryptoAlgorithm& algorithm,
     return status;
 
   // Create the key using the derived bytes.
-  return ImportKey(blink::WebCryptoKeyFormatRaw, CryptoData(derived_bytes),
+  return ImportKey(blink::kWebCryptoKeyFormatRaw, CryptoData(derived_bytes),
                    import_algorithm, extractable, usages, derived_key);
 }
 
@@ -315,8 +325,8 @@ std::unique_ptr<blink::WebCryptoDigestor> CreateDigestor(
 
 bool SerializeKeyForClone(const blink::WebCryptoKey& key,
                           blink::WebVector<uint8_t>* key_data) {
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(key.algorithm().id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(key.Algorithm().Id(), &impl);
   if (status.IsError())
     return false;
 
@@ -330,8 +340,8 @@ bool DeserializeKeyForClone(const blink::WebCryptoKeyAlgorithm& algorithm,
                             blink::WebCryptoKeyUsageMask usages,
                             const CryptoData& key_data,
                             blink::WebCryptoKey* key) {
-  const AlgorithmImplementation* impl = NULL;
-  Status status = GetAlgorithmImplementation(algorithm.id(), &impl);
+  const AlgorithmImplementation* impl = nullptr;
+  Status status = GetAlgorithmImplementation(algorithm.Id(), &impl);
   if (status.IsError())
     return false;
 

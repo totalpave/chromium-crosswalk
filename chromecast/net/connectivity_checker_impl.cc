@@ -4,6 +4,7 @@
 
 #include "chromecast/net/connectivity_checker_impl.h"
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/location.h"
 #include "base/logging.h"
@@ -12,23 +13,28 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "chromecast/base/metrics/cast_metrics_helper.h"
+#include "chromecast/chromecast_buildflags.h"
 #include "chromecast/net/net_switches.h"
 #include "net/base/request_priority.h"
+#include "net/http/http_network_session.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
 #include "net/http/http_status_code.h"
-#include "net/proxy/proxy_config.h"
-#include "net/proxy/proxy_config_service_fixed.h"
+#include "net/http/http_transaction_factory.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
+#include "net/url_request/url_request_context_getter.h"
 
 namespace chromecast {
 
 namespace {
 
-// How often connectivity checks are performed in seconds.
+// How often connectivity checks are performed in seconds while not connected.
 const unsigned int kConnectivityPeriodSeconds = 1;
+
+// How often connectivity checks are performed in seconds while connected.
+const unsigned int kConnectivitySuccessPeriodSeconds = 60;
 
 // Number of consecutive connectivity check errors before status is changed
 // to offline.
@@ -51,20 +57,34 @@ const char kMetricNameNetworkConnectivityCheckingErrorType[] =
 
 }  // namespace
 
+// static
+scoped_refptr<ConnectivityCheckerImpl> ConnectivityCheckerImpl::Create(
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+    net::URLRequestContextGetter* url_request_context_getter) {
+  DCHECK(task_runner);
+
+  auto connectivity_checker =
+      base::WrapRefCounted(new ConnectivityCheckerImpl(task_runner));
+  task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ConnectivityCheckerImpl::Initialize, connectivity_checker,
+                     base::RetainedRef(url_request_context_getter)));
+  return connectivity_checker;
+}
+
 ConnectivityCheckerImpl::ConnectivityCheckerImpl(
-    const scoped_refptr<base::SingleThreadTaskRunner>& task_runner)
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner)
     : ConnectivityChecker(),
-      task_runner_(task_runner),
+      task_runner_(std::move(task_runner)),
       connected_(false),
       connection_type_(net::NetworkChangeNotifier::CONNECTION_NONE),
       check_errors_(0),
       network_changed_pending_(false) {
   DCHECK(task_runner_.get());
-  task_runner->PostTask(FROM_HERE,
-                        base::Bind(&ConnectivityCheckerImpl::Initialize, this));
 }
 
-void ConnectivityCheckerImpl::Initialize() {
+void ConnectivityCheckerImpl::Initialize(
+    net::URLRequestContextGetter* url_request_context_getter) {
   DCHECK(task_runner_->BelongsToCurrentThread());
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   base::CommandLine::StringType check_url_str =
@@ -72,22 +92,17 @@ void ConnectivityCheckerImpl::Initialize() {
   connectivity_check_url_.reset(new GURL(
       check_url_str.empty() ? kDefaultConnectivityCheckUrl : check_url_str));
 
-  net::URLRequestContextBuilder builder;
-  builder.set_proxy_config_service(base::WrapUnique(
-      new net::ProxyConfigServiceFixed(net::ProxyConfig::CreateDirect())));
-  builder.DisableHttpCache();
-  url_request_context_ = builder.Build();
+  url_request_context_ = url_request_context_getter->GetURLRequestContext();
 
   net::NetworkChangeNotifier::AddNetworkChangeObserver(this);
   task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&ConnectivityCheckerImpl::Check, this));
+                         base::BindOnce(&ConnectivityCheckerImpl::Check, this));
 }
 
 ConnectivityCheckerImpl::~ConnectivityCheckerImpl() {
   DCHECK(task_runner_.get());
   net::NetworkChangeNotifier::RemoveNetworkChangeObserver(this);
   task_runner_->DeleteSoon(FROM_HERE, url_request_.release());
-  task_runner_->DeleteSoon(FROM_HERE, url_request_context_.release());
 }
 
 bool ConnectivityCheckerImpl::Connected() const {
@@ -108,13 +123,13 @@ void ConnectivityCheckerImpl::SetConnected(bool connected) {
 }
 
 void ConnectivityCheckerImpl::Check() {
-  task_runner_->PostTask(FROM_HERE,
-      base::Bind(&ConnectivityCheckerImpl::CheckInternal, this));
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&ConnectivityCheckerImpl::CheckInternal, this));
 }
 
 void ConnectivityCheckerImpl::CheckInternal() {
   DCHECK(task_runner_->BelongsToCurrentThread());
-  DCHECK(url_request_context_.get());
+  DCHECK(url_request_context_);
 
   // Don't check connectivity if network is offline, because Internet could be
   // accessible via netifs ignored.
@@ -151,7 +166,7 @@ void ConnectivityCheckerImpl::OnNetworkChanged(
   network_changed_pending_ = true;
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&ConnectivityCheckerImpl::OnNetworkChangedInternal, this),
+      base::BindOnce(&ConnectivityCheckerImpl::OnNetworkChangedInternal, this),
       base::TimeDelta::FromSeconds(kNetworkChangedDelayInSeconds));
 }
 
@@ -167,21 +182,29 @@ void ConnectivityCheckerImpl::OnNetworkChangedInternal() {
   Check();
 }
 
-void ConnectivityCheckerImpl::OnResponseStarted(net::URLRequest* request) {
+void ConnectivityCheckerImpl::OnResponseStarted(net::URLRequest* request,
+                                                int net_error) {
   DCHECK(task_runner_->BelongsToCurrentThread());
   int http_response_code =
-      (request->status().is_success() &&
+      (net_error == net::OK &&
        request->response_info().headers.get() != nullptr)
           ? request->response_info().headers->response_code()
           : net::HTTP_BAD_REQUEST;
 
   // Clears resources.
-  url_request_.reset(nullptr);  // URLRequest::Cancel() is called in destructor.
+  // URLRequest::Cancel() is called in destructor.
+  url_request_.reset(nullptr);
 
   if (http_response_code < 400) {
     VLOG(1) << "Connectivity check succeeded";
     check_errors_ = 0;
     SetConnected(true);
+    // Some products don't have an idle screen that makes periodic network
+    // requests. Schedule another check to ensure connectivity hasn't dropped.
+    task_runner_->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&ConnectivityCheckerImpl::CheckInternal, this),
+        base::TimeDelta::FromSeconds(kConnectivitySuccessPeriodSeconds));
     timeout_.Cancel();
     return;
   }
@@ -199,9 +222,20 @@ void ConnectivityCheckerImpl::OnSSLCertificateError(
     net::URLRequest* request,
     const net::SSLInfo& ssl_info,
     bool fatal) {
+  if (url_request_context_->http_transaction_factory()
+          ->GetSession()
+          ->params()
+          .ignore_certificate_errors) {
+    LOG(WARNING) << "OnSSLCertificateError: ignore cert_status="
+                 << ssl_info.cert_status;
+    request->ContinueDespiteLastError();
+    return;
+  }
   DCHECK(task_runner_->BelongsToCurrentThread());
   LOG(ERROR) << "OnSSLCertificateError: cert_status=" << ssl_info.cert_status;
-  net::SSLClientSocket::ClearSessionCache();
+  url_request_context_->http_transaction_factory()
+      ->GetSession()
+      ->ClearSSLSessionCache();
   OnUrlRequestError(ErrorType::SSL_CERTIFICATE_ERROR);
   timeout_.Cancel();
 }
@@ -222,7 +256,7 @@ void ConnectivityCheckerImpl::OnUrlRequestError(ErrorType type) {
   url_request_.reset(nullptr);
   // Check again.
   task_runner_->PostDelayedTask(
-      FROM_HERE, base::Bind(&ConnectivityCheckerImpl::Check, this),
+      FROM_HERE, base::BindOnce(&ConnectivityCheckerImpl::Check, this),
       base::TimeDelta::FromSeconds(kConnectivityPeriodSeconds));
 }
 

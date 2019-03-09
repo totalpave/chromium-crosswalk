@@ -17,10 +17,12 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/tuple.h"
+#include "components/gcm_driver/crypto/gcm_decryption_result.h"
 #include "components/gcm_driver/gcm_channel_status_syncer.h"
 #include "components/gcm_driver/gcm_client.h"
 #include "components/gcm_driver/gcm_connection_observer.h"
 #include "components/gcm_driver/gcm_driver.h"
+#include "services/network/public/mojom/proxy_resolving_socket.mojom.h"
 
 class PrefService;
 
@@ -29,12 +31,9 @@ class FilePath;
 class SequencedTaskRunner;
 }
 
-namespace extensions {
-class ExtensionGCMAppHandlerTest;
-}
-
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class NetworkConnectionTracker;
+class SharedURLLoaderFactory;
 }
 
 namespace gcm {
@@ -42,11 +41,12 @@ namespace gcm {
 class GCMAccountMapper;
 class GCMAppHandler;
 class GCMClientFactory;
+enum class GCMDecryptionResult;
 class GCMDelayedTaskController;
 
 // GCMDriver implementation for desktop and Chrome OS, using GCMClient.
 class GCMDriverDesktop : public GCMDriver,
-                         public InstanceIDHandler {
+                         protected InstanceIDHandler {
  public:
   GCMDriverDesktop(
       std::unique_ptr<GCMClientFactory> gcm_client_factory,
@@ -55,13 +55,22 @@ class GCMDriverDesktop : public GCMDriver,
       const std::string& user_agent,
       PrefService* prefs,
       const base::FilePath& store_path,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context,
+      base::RepeatingCallback<
+          void(network::mojom::ProxyResolvingSocketFactoryRequest)>
+          get_socket_factory_callback,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_for_ui,
+      network::NetworkConnectionTracker* network_connection_tracker,
       const scoped_refptr<base::SequencedTaskRunner>& ui_thread,
       const scoped_refptr<base::SequencedTaskRunner>& io_thread,
       const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner);
   ~GCMDriverDesktop() override;
 
   // GCMDriver implementation:
+  void ValidateRegistration(
+      const std::string& app_id,
+      const std::vector<std::string>& sender_ids,
+      const std::string& registration_id,
+      const ValidateRegistrationCallback& callback) override;
   void Shutdown() override;
   void OnSignedIn() override;
   void OnSignedOut() override;
@@ -106,8 +115,7 @@ class GCMDriverDesktop : public GCMDriver,
                 const std::string& receiver_id,
                 const OutgoingMessage& message) override;
   void RecordDecryptionFailure(const std::string& app_id,
-                               GCMEncryptionProvider::DecryptionResult result)
-      override;
+                               GCMDecryptionResult result) override;
 
   // InstanceIDHandler implementation:
   void GetToken(const std::string& app_id,
@@ -115,6 +123,11 @@ class GCMDriverDesktop : public GCMDriver,
                 const std::string& scope,
                 const std::map<std::string, std::string>& options,
                 const GetTokenCallback& callback) override;
+  void ValidateToken(const std::string& app_id,
+                     const std::string& authorized_entity,
+                     const std::string& scope,
+                     const std::string& token,
+                     const ValidateTokenCallback& callback) override;
   void DeleteToken(const std::string& app_id,
                    const std::string& authorized_entity,
                    const std::string& scope,
@@ -133,6 +146,10 @@ class GCMDriverDesktop : public GCMDriver,
   struct TokenTupleComparer {
     bool operator()(const TokenTuple& a, const TokenTuple& b) const;
   };
+
+  void DoValidateRegistration(scoped_refptr<RegistrationInfo> registration_info,
+                              const std::string& registration_id,
+                              const ValidateRegistrationCallback& callback);
 
   //  Stops the GCM service. It can be restarted by calling EnsureStarted again.
   void Stop();
@@ -171,6 +188,7 @@ class GCMDriverDesktop : public GCMDriver,
                       const base::Time& last_token_fetch_time);
   void OnConnected(const net::IPEndPoint& ip_endpoint);
   void OnDisconnected();
+  void OnStoreReset();
 
   void GetGCMStatisticsFinished(const GCMClient::GCMStatistics& stats);
   void GetInstanceIDDataFinished(const std::string& app_id,
@@ -203,7 +221,8 @@ class GCMDriverDesktop : public GCMDriver,
   bool connected_;
 
   // List of observers to notify when connection state changes.
-  base::ObserverList<GCMConnectionObserver, false> connection_observer_list_;
+  base::ObserverList<GCMConnectionObserver, false>::Unchecked
+      connection_observer_list_;
 
   // Account mapper. Only works when user is signed in.
   std::unique_ptr<GCMAccountMapper> account_mapper_;

@@ -6,10 +6,16 @@
 #define IOS_CHROME_TEST_TESTING_APPLICATION_CONTEXT_H_
 
 #include <memory>
+#include <string>
 
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
 #include "ios/chrome/browser/application_context.h"
+
+namespace network {
+class TestNetworkConnectionTracker;
+class TestURLLoaderFactory;
+}  // namespace network
 
 class TestingApplicationContext : public ApplicationContext {
  public:
@@ -33,22 +39,28 @@ class TestingApplicationContext : public ApplicationContext {
   void OnAppEnterForeground() override;
   void OnAppEnterBackground() override;
   bool WasLastShutdownClean() override;
+
   PrefService* GetLocalState() override;
   net::URLRequestContextGetter* GetSystemURLRequestContext() override;
+  scoped_refptr<network::SharedURLLoaderFactory> GetSharedURLLoaderFactory()
+      override;
+  network::mojom::NetworkContext* GetSystemNetworkContext() override;
   const std::string& GetApplicationLocale() override;
   ios::ChromeBrowserStateManager* GetChromeBrowserStateManager() override;
   metrics_services_manager::MetricsServicesManager* GetMetricsServicesManager()
       override;
   metrics::MetricsService* GetMetricsService() override;
+  ukm::UkmRecorder* GetUkmRecorder() override;
   variations::VariationsService* GetVariationsService() override;
-  rappor::RapporService* GetRapporService() override;
-  net_log::ChromeNetLog* GetNetLog() override;
+  rappor::RapporServiceImpl* GetRapporServiceImpl() override;
+  net::NetLog* GetNetLog() override;
+  net_log::NetExportFileWriter* GetNetExportFileWriter() override;
   network_time::NetworkTimeTracker* GetNetworkTimeTracker() override;
   IOSChromeIOThread* GetIOSChromeIOThread() override;
   gcm::GCMDriver* GetGCMDriver() override;
   component_updater::ComponentUpdateService* GetComponentUpdateService()
       override;
-  CRLSetFetcher* GetCRLSetFetcher() override;
+  network::NetworkConnectionTracker* GetNetworkConnectionTracker() override;
 
  private:
   base::ThreadChecker thread_checker_;
@@ -57,7 +69,9 @@ class TestingApplicationContext : public ApplicationContext {
   ios::ChromeBrowserStateManager* chrome_browser_state_manager_;
   std::unique_ptr<network_time::NetworkTimeTracker> network_time_tracker_;
   bool was_last_shutdown_clean_;
-
+  std::unique_ptr<network::TestURLLoaderFactory> test_url_loader_factory_;
+  std::unique_ptr<network::TestNetworkConnectionTracker>
+      test_network_connection_tracker_;
   DISALLOW_COPY_AND_ASSIGN(TestingApplicationContext);
 };
 

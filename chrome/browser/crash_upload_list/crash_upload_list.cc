@@ -4,28 +4,38 @@
 
 #include "chrome/browser/crash_upload_list/crash_upload_list.h"
 
-#include "base/files/file_path.h"
-#include "base/path_service.h"
-#include "base/threading/sequenced_worker_pool.h"
 #include "build/build_config.h"
-#include "chrome/common/chrome_paths.h"
-#include "content/public/browser/browser_thread.h"
 
 #if defined(OS_MACOSX) || defined(OS_WIN)
 #include "chrome/browser/crash_upload_list/crash_upload_list_crashpad.h"
+#else
+#include "base/files/file_path.h"
+#include "base/path_service.h"
+#include "chrome/common/chrome_paths.h"
+#include "components/upload_list/crash_upload_list.h"
+#include "components/upload_list/text_log_upload_list.h"
 #endif
 
-scoped_refptr<CrashUploadList> CreateCrashUploadList(
-    UploadList::Delegate* delegate) {
+#if defined(OS_ANDROID)
+#include "base/android/path_utils.h"
+#include "chrome/browser/crash_upload_list/crash_upload_list_android.h"
+#endif
+
+scoped_refptr<UploadList> CreateCrashUploadList() {
 #if defined(OS_MACOSX) || defined(OS_WIN)
-  return new CrashUploadListCrashpad(delegate,
-                                     content::BrowserThread::GetBlockingPool());
+  return new CrashUploadListCrashpad();
+#elif defined(OS_ANDROID)
+  base::FilePath cache_dir;
+  base::android::GetCacheDirectory(&cache_dir);
+  base::FilePath upload_log_path =
+      cache_dir.Append("Crash Reports")
+          .AppendASCII(CrashUploadList::kReporterLogFilename);
+  return new CrashUploadListAndroid(upload_log_path);
 #else
   base::FilePath crash_dir_path;
-  PathService::Get(chrome::DIR_CRASH_DUMPS, &crash_dir_path);
+  base::PathService::Get(chrome::DIR_CRASH_DUMPS, &crash_dir_path);
   base::FilePath upload_log_path =
       crash_dir_path.AppendASCII(CrashUploadList::kReporterLogFilename);
-  return new CrashUploadList(delegate, upload_log_path,
-                             content::BrowserThread::GetBlockingPool());
-#endif
+  return new TextLogUploadList(upload_log_path);
+#endif  // defined(OS_MACOSX) || defined(OS_WIN)
 }

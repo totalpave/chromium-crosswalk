@@ -29,10 +29,10 @@ ifcapable !altertable {
 # alter-1.1.* - alter-1.7.*: Basic tests of ALTER TABLE, including tables
 #     with implicit and explicit indices. These tests came from an earlier
 #     fork of SQLite that also supported ALTER TABLE.
-# alter-1.8.*: Tests for ALTER TABLE when the table resides in an 
+# alter-1.8.*: Tests for ALTER TABLE when the table resides in an
 #     attached database.
 # alter-1.9.*: Tests for ALTER TABLE when their is whitespace between the
-#     table name and left parenthesis token. i.e: 
+#     table name and left parenthesis token. i.e:
 #     "CREATE TABLE abc       (a, b, c);"
 # alter-2.*: Test error conditions and messages.
 # alter-3.*: Test ALTER TABLE on tables that have TRIGGERs attached to them.
@@ -71,13 +71,13 @@ do_test alter-1.1 {
 do_test alter-1.2 {
   execsql [subst {
     CREATE $::temp TABLE objlist(type, name, tbl_name);
-    INSERT INTO objlist SELECT type, name, tbl_name 
+    INSERT INTO objlist SELECT type, name, tbl_name
         FROM sqlite_master WHERE NAME!='objlist';
   }]
   ifcapable tempdb {
     execsql {
-      INSERT INTO objlist SELECT type, name, tbl_name 
-          FROM sqlite_temp_master WHERE NAME!='objlist';
+      INSERT INTO objlist SELECT type, name, tbl_name
+          FROM temp.sqlite_master WHERE NAME!='objlist';
     }
   }
 
@@ -122,7 +122,7 @@ do_test alter-1.5 {
         FROM sqlite_master WHERE NAME!='objlist';
   }
   catchsql {
-    INSERT INTO objlist SELECT type, name, tbl_name 
+    INSERT INTO objlist SELECT type, name, tbl_name
         FROM sqlite_temp_master WHERE NAME!='objlist';
   }
   execsql {
@@ -152,10 +152,10 @@ ifcapable tempdb {
     execsql {
       CREATE TEMP TABLE objlist(type, name, tbl_name);
       INSERT INTO objlist SELECT type, name, tbl_name FROM sqlite_master;
-      INSERT INTO objlist 
-          SELECT type, name, tbl_name FROM sqlite_temp_master 
+      INSERT INTO objlist
+          SELECT type, name, tbl_name FROM temp.sqlite_master
           WHERE NAME!='objlist';
-      SELECT type, name, tbl_name FROM objlist 
+      SELECT type, name, tbl_name FROM objlist
           ORDER BY tbl_name, type desc, name;
     }
   } [list \
@@ -173,7 +173,7 @@ ifcapable tempdb {
   }
 }
 
-# Create bogus application-defined functions for functions used 
+# Create bogus application-defined functions for functions used
 # internally by ALTER TABLE, to ensure that ALTER TABLE falls back
 # to the built-in functions.
 #
@@ -201,7 +201,7 @@ do_test alter-1.7 {
         FROM sqlite_master WHERE NAME!='objlist';
   }
   catchsql {
-    INSERT INTO objlist SELECT type, name, tbl_name 
+    INSERT INTO objlist SELECT type, name, tbl_name
         FROM sqlite_temp_master WHERE NAME!='objlist';
   }
   execsql {
@@ -428,22 +428,22 @@ ifcapable attach {
   } {0 {}}
   do_test alter-3.2.3 {
     catchsql {
-      CREATE TABLE ON.t1(a, b, c); 
+      CREATE TABLE ON.t1(a, b, c);
     }
   } {1 {near "ON": syntax error}}
   do_test alter-3.2.4 {
     catchsql {
-      CREATE TABLE 'ON'.t1(a, b, c); 
+      CREATE TABLE 'ON'.t1(a, b, c);
     }
   } {0 {}}
   do_test alter-3.2.4 {
     catchsql {
-      CREATE TABLE 'ON'.ON(a, b, c); 
+      CREATE TABLE 'ON'.ON(a, b, c);
     }
   } {1 {near "ON": syntax error}}
   do_test alter-3.2.5 {
     catchsql {
-      CREATE TABLE 'ON'.'ON'(a, b, c); 
+      CREATE TABLE 'ON'.'ON'(a, b, c);
     }
   } {0 {}}
 }
@@ -493,7 +493,7 @@ do_test alter-3.3.3 {
   execsql {
     ALTER TABLE tbl1 RENAME TO tbl2;
     INSERT INTO tbl2 VALUES('d', 'e', 'f');
-  } 
+  }
   set ::TRIGGER
 } {trig1 d e f}
 do_test alter-3.3.4 {
@@ -501,19 +501,19 @@ do_test alter-3.3.4 {
     CREATE $::temp TRIGGER trig2 AFTER UPDATE ON tbl2 BEGIN
       SELECT trigfunc('trig2', new.a, new.b, new.c);
     END;
-  }] 
+  }]
 } {}
 do_test alter-3.3.5 {
   execsql {
     ALTER TABLE tbl2 RENAME TO tbl3;
     INSERT INTO tbl3 VALUES('g', 'h', 'i');
-  } 
+  }
   set ::TRIGGER
 } {trig1 g h i}
 do_test alter-3.3.6 {
   execsql {
     UPDATE tbl3 SET a = 'G' where a = 'g';
-  } 
+  }
   set ::TRIGGER
 } {trig2 G h i}
 do_test alter-3.3.7 {
@@ -524,7 +524,7 @@ do_test alter-3.3.7 {
 ifcapable tempdb {
   do_test alter-3.3.8 {
     execsql {
-      SELECT * FROM sqlite_temp_master WHERE type = 'trigger';
+      SELECT * FROM temp.sqlite_master WHERE type = 'trigger';
     }
   } {}
 }
@@ -607,7 +607,7 @@ execsql "
 set ::tbl_name2 "abcXdef"
 do_test alter-6.3 {
   execsql "
-    ALTER TABLE $::tbl_name RENAME TO $::tbl_name2 
+    ALTER TABLE $::tbl_name RENAME TO $::tbl_name2
   "
   execsql "
     SELECT sql FROM sqlite_master WHERE oid = $::oid
@@ -681,24 +681,33 @@ do_test alter-8.2 {
 } {1 18 2 9}
 
 #--------------------------------------------------------------------------
-# alter-9.X - Special test: Make sure the sqlite_rename_trigger() and
+# alter-9.X - Special test: Make sure the sqlite_rename_column() and
 # rename_table() functions do not crash when handed bad input.
 #
-ifcapable trigger {
-  do_test alter-9.1 {
-    execsql {SELECT SQLITE_RENAME_TRIGGER(0,0)}
-  } {{}}
+sqlite3_test_control SQLITE_TESTCTRL_INTERNAL_FUNCTIONS 1
+do_test alter-9.1 {
+  execsql {SELECT SQLITE_RENAME_COLUMN(0,0,0,0,0,0,0,0,0)}
+} {{}}
+foreach {tn sql} {
+    1 { SELECT SQLITE_RENAME_TABLE(0,0,0,0,0,0,0) }
+    2 { SELECT SQLITE_RENAME_TABLE(10,20,30,40,50,60,70) }
+    3 { SELECT SQLITE_RENAME_TABLE('foo','foo','foo','foo','foo','foo','foo') }
+} {
+  do_test alter-9.2.$tn {
+    catch { execsql $sql }
+  } 1
 }
-do_test alter-9.2 {
-  execsql {
-    SELECT SQLITE_RENAME_TABLE(0,0);
-    SELECT SQLITE_RENAME_TABLE(10,20);
-    SELECT SQLITE_RENAME_TABLE('foo', 'foo');
-  }
-} {{} {} {}}
+sqlite3_test_control SQLITE_TESTCTRL_INTERNAL_FUNCTIONS 0
+
+# If the INTERNAL_FUNCTIONS test-control is disabled (which is the default),
+# then the sqlite_rename_table() SQL function is not accessible to ordinary SQL.
+#
+do_catchsql_test alter-9.3 {
+  SELECT sqlite_rename_table(0,0,0,0,0,0,0);
+} {1 {no such function: sqlite_rename_table}}
 
 #------------------------------------------------------------------------
-# alter-10.X - Make sure ALTER TABLE works with multi-byte UTF-8 characters 
+# alter-10.X - Make sure ALTER TABLE works with multi-byte UTF-8 characters
 # in the names.
 #
 do_test alter-10.1 {
@@ -796,7 +805,7 @@ do_test alter-12.4 {
   execsql { SELECT * FROM v1; }
 } {}
 do_test alter-12.5 {
-  catchsql { 
+  catchsql {
     ALTER TABLE v1 ADD COLUMN new_column;
   }
 } {1 {Cannot add a column to a view}}
@@ -875,51 +884,23 @@ do_execsql_test alter-16.2 {
   SELECT * FROM t16a_rn ORDER BY a;
 } {abc 1.25 99 xyzzy cba 5.5 98 fizzle}
 
-#-------------------------------------------------------------------------
-# Verify that NULL values into the internal-use-only sqlite_rename_*()
-# functions do not cause problems.
+# 2018-09-16 ticket b41031ea2b5372378cb3d2d43cf9fe2a4a5c2510
 #
-do_execsql_test alter-17.1 {
-  SELECT sqlite_rename_table('CREATE TABLE xyz(a,b,c)','abc');
-} {{CREATE TABLE "abc"(a,b,c)}}
-do_execsql_test alter-17.2 {
-  SELECT sqlite_rename_table('CREATE TABLE xyz(a,b,c)',NULL);
-} {{CREATE TABLE "(NULL)"(a,b,c)}}
-do_execsql_test alter-17.3 {
-  SELECT sqlite_rename_table(NULL,'abc');
-} {{}}
-do_execsql_test alter-17.4 {
-  SELECT sqlite_rename_trigger('CREATE TRIGGER r1 ON xyz WHEN','abc');
-} {{CREATE TRIGGER r1 ON "abc" WHEN}}
-do_execsql_test alter-17.5 {
-  SELECT sqlite_rename_trigger('CREATE TRIGGER r1 ON xyz WHEN',NULL);
-} {{CREATE TRIGGER r1 ON "(NULL)" WHEN}}
-do_execsql_test alter-17.6 {
-  SELECT sqlite_rename_trigger(NULL,'abc');
-} {{}}
-do_execsql_test alter-17.7 {
-  SELECT sqlite_rename_parent('CREATE TABLE t1(a REFERENCES "xyzzy")',
-         'xyzzy','lmnop');
-} {{CREATE TABLE t1(a REFERENCES "lmnop")}}
-do_execsql_test alter-17.8 {
-  SELECT sqlite_rename_parent('CREATE TABLE t1(a REFERENCES "xyzzy")',
-         'xyzzy',NULL);
-} {{CREATE TABLE t1(a REFERENCES "(NULL)")}}
-do_execsql_test alter-17.9 {
-  SELECT sqlite_rename_parent('CREATE TABLE t1(a REFERENCES "xyzzy")',
-         NULL, 'lmnop');
-} {{}}
-do_execsql_test alter-17.10 {
-  SELECT sqlite_rename_parent(NULL,'abc','xyz');
-} {{}}
-do_execsql_test alter-17.11 {
-  SELECT sqlite_rename_parent('create references ''','abc','xyz');
-} {{create references '}}
-do_execsql_test alter-17.12 {
-  SELECT sqlite_rename_parent('create references "abc"123" ','abc','xyz');
-} {{create references "xyz"123" }}
-do_execsql_test alter-17.13 {
-  SELECT sqlite_rename_parent("references '''",'abc','xyz');
-} {{references '''}}
+ifcapable rtree {
+  db close
+  sqlite3 db :memory:
+  do_execsql_test alter-17.100 {
+    CREATE TABLE t1(a INTEGER PRIMARY KEY, b);
+    CREATE VIRTUAL TABLE t2 USING rtree(id,x0,x1);
+    INSERT INTO t1 VALUES(1,'apple'),(2,'fig'),(3,'pear');
+    INSERT INTO t2 VALUES(1,1.0,2.0),(2,2.0,3.0),(3,1.5,3.5);
+    CREATE TRIGGER r1 AFTER UPDATE ON t1 BEGIN
+      DELETE FROM t2 WHERE id = OLD.a;
+    END;
+    ALTER TABLE t1 RENAME TO t3;
+    UPDATE t3 SET b='peach' WHERE a=2;
+    SELECT * FROM t2 ORDER BY 1;
+  } {1 1.0 2.0 3 1.5 3.5}
+}
 
 finish_test

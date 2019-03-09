@@ -7,6 +7,9 @@
 
 #include "extensions/browser/api/execute_code_function.h"
 
+#include "base/bind.h"
+#include "base/task/post_task.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "extensions/browser/component_extension_resource_manager.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/extensions_browser_client.h"
@@ -29,6 +32,8 @@ const char kMoreThanOneValuesError[] =
 const char kBadFileEncodingError[] =
     "Could not load file '*' for content script. It isn't UTF-8 encoded.";
 const char kLoadFileError[] = "Failed to load file: \"*\". ";
+const char kCSSOriginForNonCSSError[] =
+    "CSS origin should be specified only for CSS code.";
 
 }
 
@@ -42,95 +47,83 @@ ExecuteCodeFunction::ExecuteCodeFunction() {
 ExecuteCodeFunction::~ExecuteCodeFunction() {
 }
 
-void ExecuteCodeFunction::DidLoadFile(bool success, const std::string& data) {
-  if (!success || !details_->file) {
-    DidLoadAndLocalizeFile(
-        resource_.relative_path().AsUTF8Unsafe(), success, data);
+void ExecuteCodeFunction::GetFileURLAndMaybeLocalizeInBackground(
+    const std::string& extension_id,
+    const base::FilePath& extension_path,
+    const std::string& extension_default_locale,
+    bool might_require_localization,
+    std::string* data) {
+  // TODO(karandeepb): Limit scope of ScopedBlockingCall.
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+
+  // TODO(devlin): FilePathToFileURL() doesn't need to be done on a blocking
+  // task runner, so we could do that on the UI thread and then avoid the hop
+  // if we don't need localization.
+  file_url_ = net::FilePathToFileURL(resource_.GetFilePath());
+
+  if (!might_require_localization)
+    return;
+
+  bool needs_message_substituion =
+      data->find(extensions::MessageBundle::kMessageBegin) != std::string::npos;
+  if (!needs_message_substituion)
+    return;
+
+  std::unique_ptr<SubstitutionMap> localization_messages(
+      file_util::LoadMessageBundleSubstitutionMap(extension_path, extension_id,
+                                                  extension_default_locale));
+
+  std::string error;
+  MessageBundle::ReplaceMessagesWithExternalDictionary(*localization_messages,
+                                                       data, &error);
+}
+
+std::unique_ptr<std::string>
+ExecuteCodeFunction::GetFileURLAndLocalizeComponentResourceInBackground(
+    std::unique_ptr<std::string> data,
+    const std::string& extension_id,
+    const base::FilePath& extension_path,
+    const std::string& extension_default_locale,
+    bool might_require_localization) {
+  GetFileURLAndMaybeLocalizeInBackground(
+      extension_id, extension_path, extension_default_locale,
+      might_require_localization, data.get());
+
+  return data;
+}
+
+void ExecuteCodeFunction::DidLoadAndLocalizeFile(
+    const std::string& file,
+    bool success,
+    std::unique_ptr<std::string> data) {
+  if (!success) {
+    // TODO(viettrungluu): bug: there's no particular reason the path should be
+    // UTF-8, in which case this may fail.
+    Respond(Error(ErrorUtils::FormatErrorMessage(kLoadFileError, file)));
     return;
   }
 
-  ScriptExecutor::ScriptType script_type =
-      ShouldInsertCSS() ? ScriptExecutor::CSS : ScriptExecutor::JAVASCRIPT;
-
-  std::string extension_id;
-  base::FilePath extension_path;
-  std::string extension_default_locale;
-  if (extension()) {
-    extension_id = extension()->id();
-    extension_path = extension()->path();
-    extension()->manifest()->GetString(manifest_keys::kDefaultLocale,
-                                       &extension_default_locale);
+  if (!base::IsStringUTF8(*data)) {
+    Respond(Error(ErrorUtils::FormatErrorMessage(kBadFileEncodingError, file)));
+    return;
   }
 
-  content::BrowserThread::PostTask(
-      content::BrowserThread::FILE,
-      FROM_HERE,
-      base::Bind(&ExecuteCodeFunction::GetFileURLAndLocalizeCSS,
-                 this,
-                 script_type,
-                 data,
-                 extension_id,
-                 extension_path,
-                 extension_default_locale));
+  std::string error;
+  if (!Execute(*data, &error))
+    Respond(Error(error));
+
+  // If Execute() succeeds, the function will respond in
+  // OnExecuteCodeFinished().
 }
 
-void ExecuteCodeFunction::GetFileURLAndLocalizeCSS(
-    ScriptExecutor::ScriptType script_type,
-    const std::string& data,
-    const std::string& extension_id,
-    const base::FilePath& extension_path,
-    const std::string& extension_default_locale) {
-  std::string localized_data = data;
-  // Check if the file is CSS and needs localization.
-  if ((script_type == ScriptExecutor::CSS) && !extension_id.empty() &&
-      (data.find(MessageBundle::kMessageBegin) != std::string::npos)) {
-    std::unique_ptr<SubstitutionMap> localization_messages(
-        file_util::LoadMessageBundleSubstitutionMap(
-            extension_path, extension_id, extension_default_locale));
-
-    // We need to do message replacement on the data, so it has to be mutable.
-    std::string error;
-    MessageBundle::ReplaceMessagesWithExternalDictionary(
-        *localization_messages, &localized_data, &error);
-  }
-
-  file_url_ = net::FilePathToFileURL(resource_.GetFilePath());
-
-  // Call back DidLoadAndLocalizeFile on the UI thread. The success parameter
-  // is always true, because if loading had failed, we wouldn't have had
-  // anything to localize.
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&ExecuteCodeFunction::DidLoadAndLocalizeFile,
-                 this,
-                 resource_.relative_path().AsUTF8Unsafe(),
-                 true,
-                 localized_data));
-}
-
-void ExecuteCodeFunction::DidLoadAndLocalizeFile(const std::string& file,
-                                                 bool success,
-                                                 const std::string& data) {
-  if (success) {
-    if (!base::IsStringUTF8(data)) {
-      error_ = ErrorUtils::FormatErrorMessage(kBadFileEncodingError, file);
-      SendResponse(false);
-    } else if (!Execute(data))
-      SendResponse(false);
-  } else {
-    // TODO(viettrungluu): bug: there's no particular reason the path should be
-    // UTF-8, in which case this may fail.
-    error_ = ErrorUtils::FormatErrorMessage(kLoadFileError, file);
-    SendResponse(false);
-  }
-}
-
-bool ExecuteCodeFunction::Execute(const std::string& code_string) {
-  ScriptExecutor* executor = GetScriptExecutor();
+bool ExecuteCodeFunction::Execute(const std::string& code_string,
+                                  std::string* error) {
+  ScriptExecutor* executor = GetScriptExecutor(error);
   if (!executor)
     return false;
 
+  // TODO(lazyboy): Set |error|?
   if (!extension() && !IsWebView())
     return false;
 
@@ -166,69 +159,115 @@ bool ExecuteCodeFunction::Execute(const std::string& code_string) {
   }
   CHECK_NE(UserScript::UNDEFINED, run_at);
 
+  base::Optional<CSSOrigin> css_origin;
+  if (details_->css_origin == api::extension_types::CSS_ORIGIN_USER)
+    css_origin = CSS_ORIGIN_USER;
+  else if (details_->css_origin == api::extension_types::CSS_ORIGIN_AUTHOR)
+    css_origin = CSS_ORIGIN_AUTHOR;
+
   executor->ExecuteScript(
       host_id_, script_type, code_string, frame_scope, frame_id,
       match_about_blank, run_at, ScriptExecutor::ISOLATED_WORLD,
       IsWebView() ? ScriptExecutor::WEB_VIEW_PROCESS
                   : ScriptExecutor::DEFAULT_PROCESS,
-      GetWebViewSrc(), file_url_, user_gesture_,
+      GetWebViewSrc(), file_url_, user_gesture(), css_origin,
       has_callback() ? ScriptExecutor::JSON_SERIALIZED_RESULT
                      : ScriptExecutor::NO_RESULT,
       base::Bind(&ExecuteCodeFunction::OnExecuteCodeFinished, this));
   return true;
 }
 
-bool ExecuteCodeFunction::HasPermission() {
-  return true;
+ExtensionFunction::ResponseAction ExecuteCodeFunction::Run() {
+  InitResult init_result = Init();
+  EXTENSION_FUNCTION_VALIDATE(init_result != VALIDATION_FAILURE);
+  if (init_result == FAILURE)
+    return RespondNow(Error(init_error_.value_or(kUnknownErrorDoNotUse)));
+
+  if (!details_->code && !details_->file)
+    return RespondNow(Error(kNoCodeOrFileToExecuteError));
+
+  if (details_->code && details_->file)
+    return RespondNow(Error(kMoreThanOneValuesError));
+
+  if (details_->css_origin != api::extension_types::CSS_ORIGIN_NONE &&
+      !ShouldInsertCSS()) {
+    return RespondNow(Error(kCSSOriginForNonCSSError));
+  }
+
+  std::string error;
+  if (!CanExecuteScriptOnPage(&error))
+    return RespondNow(Error(error));
+
+  if (details_->code) {
+    if (!Execute(*details_->code, &error))
+      return RespondNow(Error(error));
+    return did_respond() ? AlreadyResponded() : RespondLater();
+  }
+
+  DCHECK(details_->file);
+  if (!LoadFile(*details_->file, &error))
+    return RespondNow(Error(error));
+
+  // LoadFile will respond asynchronously later.
+  return RespondLater();
 }
 
-bool ExecuteCodeFunction::RunAsync() {
-  EXTENSION_FUNCTION_VALIDATE(Init());
-
-  if (!details_->code.get() && !details_->file.get()) {
-    error_ = kNoCodeOrFileToExecuteError;
-    return false;
-  }
-  if (details_->code.get() && details_->file.get()) {
-    error_ = kMoreThanOneValuesError;
-    return false;
-  }
-
-  if (!CanExecuteScriptOnPage())
-    return false;
-
-  if (details_->code.get())
-    return Execute(*details_->code);
-
-  if (!details_->file.get())
-    return false;
-
-  return LoadFile(*details_->file);
-}
-
-bool ExecuteCodeFunction::LoadFile(const std::string& file) {
+bool ExecuteCodeFunction::LoadFile(const std::string& file,
+                                   std::string* error) {
   resource_ = extension()->GetResource(file);
 
   if (resource_.extension_root().empty() || resource_.relative_path().empty()) {
-    error_ = kNoCodeOrFileToExecuteError;
+    *error = kNoCodeOrFileToExecuteError;
     return false;
   }
 
-  int resource_id;
+  const std::string& extension_id = extension()->id();
+  base::FilePath extension_path = extension()->path();
+  std::string extension_default_locale;
+  extension()->manifest()->GetString(manifest_keys::kDefaultLocale,
+                                     &extension_default_locale);
+  // TODO(lazyboy): |extension_id| should not be empty(), turn this into a
+  // DCHECK.
+  bool might_require_localization = ShouldInsertCSS() && !extension_id.empty();
+
+  ComponentExtensionResourceInfo resource_info;
   const ComponentExtensionResourceManager*
       component_extension_resource_manager =
           ExtensionsBrowserClient::Get()
               ->GetComponentExtensionResourceManager();
   if (component_extension_resource_manager &&
       component_extension_resource_manager->IsComponentExtensionResource(
-          resource_.extension_root(),
-          resource_.relative_path(),
-          &resource_id)) {
-    const ResourceBundle& rb = ResourceBundle::GetSharedInstance();
-    DidLoadFile(true, rb.GetRawDataResource(resource_id).as_string());
+          resource_.extension_root(), resource_.relative_path(),
+          &resource_info)) {
+    DCHECK(!resource_info.gzipped);
+    base::StringPiece resource =
+        ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
+            resource_info.resource_id);
+    std::unique_ptr<std::string> data(
+        new std::string(resource.data(), resource.size()));
+
+    base::PostTaskWithTraitsAndReplyWithResult(
+        FROM_HERE,
+        {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
+        base::BindOnce(&ExecuteCodeFunction::
+                           GetFileURLAndLocalizeComponentResourceInBackground,
+                       this, base::Passed(std::move(data)), extension_id,
+                       extension_path, extension_default_locale,
+                       might_require_localization),
+        base::BindOnce(&ExecuteCodeFunction::DidLoadAndLocalizeFile, this,
+                       resource_.relative_path().AsUTF8Unsafe(),
+                       true /* We assume this call always succeeds */));
   } else {
-    scoped_refptr<FileReader> file_reader(new FileReader(
-        resource_, base::Bind(&ExecuteCodeFunction::DidLoadFile, this)));
+    FileReader::OptionalFileSequenceTask get_file_and_l10n_callback =
+        base::BindOnce(
+            &ExecuteCodeFunction::GetFileURLAndMaybeLocalizeInBackground, this,
+            extension_id, extension_path, extension_default_locale,
+            might_require_localization);
+
+    auto file_reader = base::MakeRefCounted<FileReader>(
+        resource_, std::move(get_file_and_l10n_callback),
+        base::BindOnce(&ExecuteCodeFunction::DidLoadAndLocalizeFile, this,
+                       resource_.relative_path().AsUTF8Unsafe()));
     file_reader->Start();
   }
 
@@ -238,10 +277,14 @@ bool ExecuteCodeFunction::LoadFile(const std::string& file) {
 void ExecuteCodeFunction::OnExecuteCodeFinished(const std::string& error,
                                                 const GURL& on_url,
                                                 const base::ListValue& result) {
-  if (!error.empty())
-    SetError(error);
+  if (!error.empty()) {
+    Respond(Error(error));
+    return;
+  }
 
-  SendResponse(error.empty());
+  // insertCSS doesn't have a result argument.
+  Respond(ShouldInsertCSS() ? NoArguments()
+                            : OneArgument(result.CreateDeepCopy()));
 }
 
 }  // namespace extensions

@@ -25,12 +25,13 @@ bool DeclarativeManifestHandler::Parse(Extension* extension,
   if (!data)
     return false;
 
-  extension->SetManifestData(manifest_keys::kEventRules, data.release());
+  extension->SetManifestData(manifest_keys::kEventRules, std::move(data));
   return true;
 }
 
-const std::vector<std::string> DeclarativeManifestHandler::Keys() const {
-  return SingleKey(manifest_keys::kEventRules);
+base::span<const char* const> DeclarativeManifestHandler::Keys() const {
+  static constexpr const char* kKeys[] = {manifest_keys::kEventRules};
+  return kKeys;
 }
 
 }  // namespace extensions

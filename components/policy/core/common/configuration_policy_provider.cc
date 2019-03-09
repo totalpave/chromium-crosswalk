@@ -5,6 +5,7 @@
 #include "components/policy/core/common/configuration_policy_provider.h"
 
 #include "base/callback.h"
+#include "components/policy/core/common/extension_policy_migrator.h"
 #include "components/policy/core/common/external_data_fetcher.h"
 #include "components/policy/core/common/policy_map.h"
 
@@ -13,8 +14,7 @@ namespace policy {
 ConfigurationPolicyProvider::Observer::~Observer() {}
 
 ConfigurationPolicyProvider::ConfigurationPolicyProvider()
-    : initialized_(false),
-      schema_registry_(NULL) {}
+    : initialized_(false), schema_registry_(nullptr) {}
 
 ConfigurationPolicyProvider::~ConfigurationPolicyProvider() {
   DCHECK(!initialized_);
@@ -32,7 +32,7 @@ void ConfigurationPolicyProvider::Shutdown() {
     // Unit tests don't initialize the BrowserPolicyConnector but call
     // shutdown; handle that.
     schema_registry_->RemoveObserver(this);
-    schema_registry_ = NULL;
+    schema_registry_ = nullptr;
   }
 }
 
@@ -41,15 +41,23 @@ bool ConfigurationPolicyProvider::IsInitializationComplete(
   return true;
 }
 
+void ConfigurationPolicyProvider::AddMigrator(
+    std::unique_ptr<ExtensionPolicyMigrator> migrator) {
+  DCHECK(migrator);
+  migrators_.push_back(std::move(migrator));
+}
+
 void ConfigurationPolicyProvider::UpdatePolicy(
     std::unique_ptr<PolicyBundle> bundle) {
-  if (bundle.get())
+  if (bundle) {
+    for (const auto& migrator : migrators_)
+      migrator->Migrate(bundle.get());
     policy_bundle_.Swap(bundle.get());
-  else
+  } else {
     policy_bundle_.Clear();
-  FOR_EACH_OBSERVER(ConfigurationPolicyProvider::Observer,
-                    observer_list_,
-                    OnUpdatePolicy(this));
+  }
+  for (auto& observer : observer_list_)
+    observer.OnUpdatePolicy(this);
 }
 
 SchemaRegistry* ConfigurationPolicyProvider::schema_registry() const {

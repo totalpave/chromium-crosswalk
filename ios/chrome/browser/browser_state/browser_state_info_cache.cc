@@ -8,9 +8,11 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 #include "base/i18n/case_conversion.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -51,11 +53,11 @@ void BrowserStateInfoCache::AddBrowserState(
   std::unique_ptr<base::DictionaryValue> info(new base::DictionaryValue);
   info->SetString(kGAIAIdKey, gaia_id);
   info->SetString(kUserNameKey, user_name);
-  cache->SetWithoutPathExpansion(key, info.release());
+  cache->SetWithoutPathExpansion(key, std::move(info));
   AddBrowserStateCacheKey(key);
 
-  FOR_EACH_OBSERVER(BrowserStateInfoCacheObserver, observer_list_,
-                    OnBrowserStateAdded(browser_state_path));
+  for (auto& observer : observer_list_)
+    observer.OnBrowserStateAdded(browser_state_path);
 }
 
 void BrowserStateInfoCache::AddObserver(
@@ -82,8 +84,8 @@ void BrowserStateInfoCache::RemoveBrowserState(
   cache->Remove(key, nullptr);
   sorted_keys_.erase(std::find(sorted_keys_.begin(), sorted_keys_.end(), key));
 
-  FOR_EACH_OBSERVER(BrowserStateInfoCacheObserver, observer_list_,
-                    OnBrowserStateWasRemoved(browser_state_path));
+  for (auto& observer : observer_list_)
+    observer.OnBrowserStateWasRemoved(browser_state_path);
 }
 
 size_t BrowserStateInfoCache::GetNumberOfBrowserStates() const {
@@ -147,14 +149,10 @@ void BrowserStateInfoCache::SetAuthInfoOfBrowserStateAtIndex(
     return;
   }
 
-  std::unique_ptr<base::DictionaryValue> info(
-      GetInfoForBrowserStateAtIndex(index)->DeepCopy());
-
-  info->SetString(kGAIAIdKey, gaia_id);
-  info->SetString(kUserNameKey, user_name);
-
-  // This takes ownership of |info|.
-  SetInfoForBrowserStateAtIndex(index, info.release());
+  base::Value info = GetInfoForBrowserStateAtIndex(index)->Clone();
+  info.SetKey(kGAIAIdKey, base::Value(gaia_id));
+  info.SetKey(kUserNameKey, base::Value(user_name));
+  SetInfoForBrowserStateAtIndex(index, std::move(info));
 }
 
 void BrowserStateInfoCache::SetBrowserStateIsAuthErrorAtIndex(size_t index,
@@ -162,11 +160,9 @@ void BrowserStateInfoCache::SetBrowserStateIsAuthErrorAtIndex(size_t index,
   if (value == BrowserStateIsAuthErrorAtIndex(index))
     return;
 
-  std::unique_ptr<base::DictionaryValue> info(
-      GetInfoForBrowserStateAtIndex(index)->DeepCopy());
-  info->SetBoolean(kIsAuthErrorKey, value);
-  // This takes ownership of |info|.
-  SetInfoForBrowserStateAtIndex(index, info.release());
+  base::Value info = GetInfoForBrowserStateAtIndex(index)->Clone();
+  info.SetKey(kIsAuthErrorKey, base::Value(value));
+  SetInfoForBrowserStateAtIndex(index, std::move(info));
 }
 
 const base::FilePath& BrowserStateInfoCache::GetUserDataDir() const {
@@ -188,12 +184,11 @@ BrowserStateInfoCache::GetInfoForBrowserStateAtIndex(size_t index) const {
   return info;
 }
 
-void BrowserStateInfoCache::SetInfoForBrowserStateAtIndex(
-    size_t index,
-    base::DictionaryValue* info) {
+void BrowserStateInfoCache::SetInfoForBrowserStateAtIndex(size_t index,
+                                                          base::Value info) {
   DictionaryPrefUpdate update(prefs_, prefs::kBrowserStateInfoCache);
   base::DictionaryValue* cache = update.Get();
-  cache->SetWithoutPathExpansion(sorted_keys_[index], info);
+  cache->SetKey(sorted_keys_[index], std::move(info));
 }
 
 std::string BrowserStateInfoCache::CacheKeyFromBrowserStatePath(

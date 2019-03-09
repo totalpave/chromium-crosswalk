@@ -4,7 +4,13 @@
 
 #include "ui/views/test/menu_test_utils.h"
 
+#include "base/run_loop.h"
+#include "build/build_config.h"
 #include "ui/views/controls/menu/menu_controller.h"
+
+#if defined(OS_MACOSX)
+#include "ui/views/controls/menu/menu_closure_animation_mac.h"
+#endif
 
 namespace views {
 namespace test {
@@ -15,20 +21,26 @@ TestMenuDelegate::TestMenuDelegate()
     : execute_command_id_(0),
       on_menu_closed_called_count_(0),
       on_menu_closed_menu_(nullptr),
-      on_menu_closed_run_result_(MenuRunner::MENU_DELETED),
       on_perform_drop_called_(false) {}
 
 TestMenuDelegate::~TestMenuDelegate() {}
+
+bool TestMenuDelegate::ShowContextMenu(MenuItemView* source,
+                                       int id,
+                                       const gfx::Point& p,
+                                       ui::MenuSourceType source_type) {
+  show_context_menu_count_++;
+  show_context_menu_source_ = source;
+  return true;
+}
 
 void TestMenuDelegate::ExecuteCommand(int id) {
   execute_command_id_ = id;
 }
 
-void TestMenuDelegate::OnMenuClosed(MenuItemView* menu,
-                                    MenuRunner::RunResult result) {
+void TestMenuDelegate::OnMenuClosed(MenuItemView* menu) {
   on_menu_closed_called_count_++;
   on_menu_closed_menu_ = menu;
-  on_menu_closed_run_result_ = result;
 }
 
 int TestMenuDelegate::OnPerformDrop(MenuItemView* menu,
@@ -38,17 +50,47 @@ int TestMenuDelegate::OnPerformDrop(MenuItemView* menu,
   return ui::DragDropTypes::DRAG_COPY;
 }
 
+int TestMenuDelegate::GetDragOperations(MenuItemView* sender) {
+  return ui::DragDropTypes::DRAG_COPY;
+}
+
+void TestMenuDelegate::WriteDragData(MenuItemView* sender,
+                                     OSExchangeData* data) {}
+
+void TestMenuDelegate::WillHideMenu(MenuItemView* menu) {
+  will_hide_menu_count_++;
+  will_hide_menu_ = menu;
+}
+
 // MenuControllerTestApi ------------------------------------------------------
 
-MenuControllerTestApi::MenuControllerTestApi() {}
+MenuControllerTestApi::MenuControllerTestApi()
+    : controller_(MenuController::GetActiveInstance()->AsWeakPtr()) {}
 
 MenuControllerTestApi::~MenuControllerTestApi() {}
 
-void MenuControllerTestApi::Hide() {
-  MenuController* controller = MenuController::GetActiveInstance();
-  if (!controller)
+void MenuControllerTestApi::ClearState() {
+  if (!controller_)
     return;
-  controller->showing_ = false;
+  controller_->ClearStateForTest();
+}
+
+void MenuControllerTestApi::SetShowing(bool showing) {
+  if (!controller_)
+    return;
+  controller_->showing_ = showing;
+}
+
+void DisableMenuClosureAnimations() {
+#if defined(OS_MACOSX)
+  MenuClosureAnimationMac::DisableAnimationsForTesting();
+#endif
+}
+
+void WaitForMenuClosureAnimation() {
+#if defined(OS_MACOSX)
+  base::RunLoop().RunUntilIdle();
+#endif
 }
 
 }  // namespace test

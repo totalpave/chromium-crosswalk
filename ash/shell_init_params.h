@@ -7,45 +7,55 @@
 
 #include <memory>
 
-#include "build/build_config.h"
-
-#if defined(OS_WIN)
-#include <windows.h>
-#endif
-
 #include "ash/ash_export.h"
-#include "base/callback.h"
 
 namespace base {
-class SequencedWorkerPool;
+class Value;
+}
+
+namespace keyboard {
+class KeyboardUIFactory;
+}
+
+namespace service_manager {
+class Connector;
 }
 
 namespace ui {
 class ContextFactory;
+class ContextFactoryPrivate;
+}
+
+namespace ws {
+class GpuInterfaceProvider;
 }
 
 namespace ash {
 
-class KeyboardUI;
 class ShellDelegate;
 
 struct ASH_EXPORT ShellInitParams {
   ShellInitParams();
+  ShellInitParams(ShellInitParams&& other);
   ~ShellInitParams();
 
-  ShellDelegate* delegate;
+  std::unique_ptr<ShellDelegate> delegate;
+  ui::ContextFactory* context_factory = nullptr;                 // Non-owning.
+  ui::ContextFactoryPrivate* context_factory_private = nullptr;  // Non-owning.
+  // Dictionary of pref values used by DisplayPrefs before
+  // ShellObserver::OnLocalStatePrefServiceInitialized is called.
+  std::unique_ptr<base::Value> initial_display_prefs;
 
-  ui::ContextFactory* context_factory;
-  base::SequencedWorkerPool* blocking_pool;
+  // Allows gpu interfaces to be injected while avoiding direct content
+  // dependencies.
+  std::unique_ptr<ws::GpuInterfaceProvider> gpu_interface_provider;
 
-  // True if running inside mus.
-  bool in_mus = false;
+  // Connector used by Shell to establish connections.
+  service_manager::Connector* connector = nullptr;
 
-  base::Callback<std::unique_ptr<KeyboardUI>()> keyboard_factory;
-
-#if defined(OS_WIN)
-  HWND remote_hwnd;
-#endif
+  // Factory for creating the virtual keyboard UI. When the window service is
+  // used, this will be null and an AshKeyboardUI instance will be created.
+  std::unique_ptr<keyboard::KeyboardUIFactory> keyboard_ui_factory;
 };
 
 }  // namespace ash

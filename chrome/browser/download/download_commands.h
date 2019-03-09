@@ -9,9 +9,10 @@
 #include "base/strings/string16.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
-#include "content/public/browser/download_item.h"
 #include "content/public/browser/page_navigator.h"
 #include "ui/gfx/image/image.h"
+
+class DownloadUIModel;
 
 class DownloadCommands {
  public:
@@ -28,36 +29,39 @@ class DownloadCommands {
     LEARN_MORE_SCANNING,  // Show information about download scanning.
     LEARN_MORE_INTERRUPTED,  // Show information about interrupted downloads.
     COPY_TO_CLIPBOARD,    // Copy the contents to the clipboard.
+    ANNOTATE,             // Open an app to annotate the image.
   };
 
-  // |download_item| must outlive DownloadCommands.
-  explicit DownloadCommands(content::DownloadItem* download_item);
-  virtual ~DownloadCommands() {}
-
-  gfx::Image GetCommandIcon(Command command);
+  // |model| must outlive DownloadCommands.
+  // TODO(shaktisahu): Investigate if model lifetime is shorter than |this|.
+  explicit DownloadCommands(DownloadUIModel* model);
+  virtual ~DownloadCommands();
 
   bool IsCommandEnabled(Command command) const;
   bool IsCommandChecked(Command command) const;
   bool IsCommandVisible(Command command) const;
   void ExecuteCommand(Command command);
 
-#if defined(OS_WIN) || defined(OS_LINUX) || \
-    (defined(OS_MACOSX) && !defined(OS_IOS))
+#if defined(OS_WIN) || defined(OS_LINUX) || defined(OS_MACOSX)
   bool IsDownloadPdf() const;
   bool CanOpenPdfInSystemViewer() const;
 #endif
+
+  Browser* GetBrowser() const;
+  GURL GetLearnMoreURLForInterruptedDownload() const;
+  void CopyFileAsImageToClipboard();
+  bool CanBeCopiedToClipboard() const;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(
       DownloadCommandsTest,
       GetLearnMoreURLForInterruptedDownload_ContainsContext);
 
-  Browser* GetBrowser() const;
-  int GetCommandIconId(Command command) const;
-  GURL GetLearnMoreURLForInterruptedDownload() const;
-  void CopyFileAsImageToClipboard() const;
+  DownloadUIModel* model_;
 
-  content::DownloadItem* const download_item_;
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
+
+  DISALLOW_COPY_AND_ASSIGN(DownloadCommands);
 };
 
 #endif  // CHROME_BROWSER_DOWNLOAD_DOWNLOAD_COMMANDS_H_

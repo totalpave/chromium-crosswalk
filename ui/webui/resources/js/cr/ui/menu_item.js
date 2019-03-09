@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 cr.define('cr.ui', function() {
-  /** @const */ var Command = cr.ui.Command;
+  /** @const */ const Command = cr.ui.Command;
 
   /**
    * Creates a new menu item element.
@@ -12,14 +12,14 @@ cr.define('cr.ui', function() {
    * @extends {HTMLElement}
    * @implements {EventListener}
    */
-  var MenuItem = cr.ui.define('cr-menu-item');
+  const MenuItem = cr.ui.define('cr-menu-item');
 
   /**
    * Creates a new menu separator element.
    * @return {cr.ui.MenuItem} The new separator element.
    */
   MenuItem.createSeparator = function() {
-    var el = cr.doc.createElement('hr');
+    const el = cr.doc.createElement('hr');
     MenuItem.decorate(el);
     return el;
   };
@@ -31,9 +31,10 @@ cr.define('cr.ui', function() {
      * Initializes the menu item.
      */
     decorate: function() {
-      var commandId;
-      if ((commandId = this.getAttribute('command')))
+      let commandId;
+      if ((commandId = this.getAttribute('command'))) {
         this.command = commandId;
+      }
 
       this.addEventListener('mouseup', this.handleMouseUp_);
 
@@ -43,12 +44,14 @@ cr.define('cr.ui', function() {
 
       // Enable Text to Speech on the menu. Additionaly, ID has to be set, since
       // it is used in element's aria-activedescendant attribute.
-      if (!this.isSeparator())
+      if (!this.isSeparator()) {
         this.setAttribute('role', 'menuitem');
+      }
 
-      var iconUrl;
-      if ((iconUrl = this.getAttribute('icon')))
+      let iconUrl;
+      if ((iconUrl = this.getAttribute('icon'))) {
         this.iconUrl = iconUrl;
+      }
     },
 
     /**
@@ -76,11 +79,13 @@ cr.define('cr.ui', function() {
 
       this.command_ = command;
       if (command) {
-        if (command.id)
+        if (command.id) {
           this.setAttribute('command', '#' + command.id);
+        }
 
-        if (typeof command.label === 'string')
+        if (typeof command.label === 'string') {
           this.label = command.label;
+        }
         this.disabled = command.disabled;
         this.hidden = command.hidden;
         this.checked = command.checked;
@@ -130,21 +135,22 @@ cr.define('cr.ui', function() {
     updateShortcut_: function() {
       this.removeAttribute('shortcutText');
 
-      if (!this.command_ ||
-          !this.command_.shortcut ||
-          this.command_.hideShortcutText)
+      if (!this.command_ || !this.command_.shortcut ||
+          this.command_.hideShortcutText) {
         return;
+      }
 
-      var shortcuts = this.command_.shortcut.split(/\s+/);
+      const shortcuts = this.command_.shortcut.split(/\s+/);
 
-      if (shortcuts.length == 0)
+      if (shortcuts.length == 0) {
         return;
+      }
 
-      var shortcut = shortcuts[0];
-      var mods = {};
-      var ident = '';
-      shortcut.split('-').forEach(function(part) {
-        var partUc = part.toUpperCase();
+      const shortcut = shortcuts[0];
+      const mods = {};
+      let ident = '';
+      shortcut.split('|').forEach(function(part) {
+        const partUc = part.toUpperCase();
         switch (partUc) {
           case 'CTRL':
           case 'ALT':
@@ -158,27 +164,23 @@ cr.define('cr.ui', function() {
         }
       });
 
-      var shortcutText = '';
-
-      // TODO(zvorygin): if more cornercases appear - optimize following
-      // code. Currently 'Enter' keystroke is passed as 'Enter', but 'Space'
-      // and 'Backspace' are passed as 'U+0020' and 'U+0008'.
-      if (ident == 'U+0020')
-        ident = 'Space';
-      else if (ident == 'U+0008')
-        ident = 'Backspace';
+      let shortcutText = '';
 
       ['CTRL', 'ALT', 'SHIFT', 'META'].forEach(function(mod) {
-        if (mods[mod])
+        if (mods[mod]) {
           shortcutText += loadTimeData.getString('SHORTCUT_' + mod) + '+';
+        }
       });
 
-      if (ident.indexOf('U+') != 0) {
+      if (ident == ' ') {
+        ident = 'Space';
+      }
+
+      if (ident.length != 1) {
         shortcutText +=
             loadTimeData.getString('SHORTCUT_' + ident.toUpperCase());
       } else {
-        shortcutText +=
-            String.fromCharCode(parseInt(ident.substring(2), 16));
+        shortcutText += ident.toUpperCase();
       }
 
       this.setAttribute('shortcutText', shortcutText);
@@ -191,22 +193,24 @@ cr.define('cr.ui', function() {
      * @private
      */
     handleMouseUp_: function(e) {
-      e = /** @type {!MouseEvent} */(e);
+      e = /** @type {!MouseEvent} */ (e);
       // Only dispatch an activate event for left or middle click.
-      if (e.button > 1)
+      if (e.button > 1) {
         return;
+      }
 
       if (!this.disabled && !this.isSeparator() && this.selected) {
         // Store |contextElement| since it'll be removed by {Menu} on handling
         // 'activate' event.
-        var contextElement = /** @type {{contextElement: Element}} */(
-            this.parentNode).contextElement;
-        var activationEvent = cr.doc.createEvent('Event');
+        const contextElement =
+            /** @type {{contextElement: Element}} */ (this.parentNode)
+                .contextElement;
+        const activationEvent = cr.doc.createEvent('Event');
         activationEvent.initEvent('activate', true, true);
         activationEvent.originalEvent = e;
         // Dispatch command event followed by executing the command object.
         if (this.dispatchEvent(activationEvent)) {
-          var command = this.command;
+          const command = this.command;
           if (command) {
             command.execute(contextElement);
             cr.ui.swallowDoubleClick(e);
@@ -273,7 +277,5 @@ cr.define('cr.ui', function() {
   cr.defineProperty(MenuItem, 'checkable', cr.PropertyKind.BOOL_ATTR);
 
   // Export
-  return {
-    MenuItem: MenuItem
-  };
+  return {MenuItem: MenuItem};
 });

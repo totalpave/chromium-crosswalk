@@ -5,36 +5,44 @@
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_dialog_views.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/metrics/histogram.h"
+#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/apps/app_info_dialog.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_dialog_container.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_footer_panel.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_header_panel.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_permissions_panel.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_summary_panel.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
+#include "ui/aura/window.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/native_widget_types.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/layout/layout_constants.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
 
 #if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/arc/arc_auth_service.h"
+#include "chrome/browser/chromeos/arc/arc_util.h"
+#include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
+#include "chrome/browser/ui/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/arc_app_info_links_panel.h"
 #endif
 
@@ -42,105 +50,74 @@ namespace {
 
 // The color of the separator used inside the dialog - should match the app
 // list's app_list::kDialogSeparatorColor
-const SkColor kDialogSeparatorColor = SkColorSetRGB(0xD1, 0xD1, 0xD1);
+constexpr SkColor kDialogSeparatorColor = SkColorSetRGB(0xD1, 0xD1, 0xD1);
 
-#if defined(OS_MACOSX)
-bool IsAppInfoDialogMacEnabled() {
-  const base::CommandLine* command_line =
-      base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kDisableAppInfoDialogMac))
-    return false;
-  if (command_line->HasSwitch(switches::kEnableAppInfoDialogMac))
-    return true;
-  return false;  // Current default.
-}
+#if BUILDFLAG(ENABLE_APP_LIST)
+// The elevation used for dialog shadow effect.
+constexpr int kDialogShadowElevation = 24;
 #endif
 
 }  // namespace
 
 bool CanShowAppInfoDialog() {
 #if defined(OS_MACOSX)
-  static const bool can_show = IsAppInfoDialogMacEnabled();
-  return can_show;
+  return false;
 #else
   return true;
 #endif
 }
 
-gfx::Size GetAppInfoNativeDialogSize() {
-  return gfx::Size(380, 490);
-}
-
-#if defined(ENABLE_APP_LIST)
-void ShowAppInfoInAppList(gfx::NativeWindow parent,
-                          const gfx::Rect& app_list_bounds,
+#if BUILDFLAG(ENABLE_APP_LIST)
+void ShowAppInfoInAppList(const gfx::Rect& app_info_bounds,
                           Profile* profile,
-                          const extensions::Extension* app,
-                          const base::Closure& close_callback) {
-  UMA_HISTOGRAM_ENUMERATION("Apps.AppInfoDialogOpenedForType",
-                            app->GetType(),
-                            extensions::Manifest::NUM_LOAD_TYPES);
-  UMA_HISTOGRAM_ENUMERATION("Apps.AppInfoDialogOpenedForLocation",
-                            app->location(),
-                            extensions::Manifest::NUM_LOCATIONS);
-
-  views::View* app_info_view = new AppInfoDialog(parent, profile, app);
-  views::DialogDelegate* dialog =
-      CreateAppListContainerForView(app_info_view, close_callback);
-  views::Widget* dialog_widget =
-      constrained_window::CreateBrowserModalDialogViews(dialog, parent);
-  dialog_widget->SetBounds(app_list_bounds);
+                          const extensions::Extension* app) {
+  views::View* app_info_view = new AppInfoDialog(profile, app);
+  views::DialogDelegate* dialog = CreateAppListContainerForView(app_info_view);
+  views::Widget* dialog_widget = new views::Widget();
+  views::Widget::InitParams params =
+      views::DialogDelegate::GetDialogWidgetInitParams(dialog, nullptr, nullptr,
+                                                       app_info_bounds);
+  params.shadow_type = views::Widget::InitParams::SHADOW_TYPE_DEFAULT;
+  params.shadow_elevation = kDialogShadowElevation;
+  dialog_widget->Init(params);
+  // The title is not shown on the dialog, but it is used for overview mode.
+  dialog_widget->GetNativeWindow()->SetTitle(base::UTF8ToUTF16(app->name()));
   dialog_widget->Show();
 }
 #endif
 
 void ShowAppInfoInNativeDialog(content::WebContents* web_contents,
-                               const gfx::Size& size,
                                Profile* profile,
                                const extensions::Extension* app,
                                const base::Closure& close_callback) {
-  gfx::NativeWindow window = web_contents->GetTopLevelNativeWindow();
-  views::View* app_info_view = new AppInfoDialog(window, profile, app);
+  views::View* app_info_view = new AppInfoDialog(profile, app);
+  constexpr gfx::Size kDialogSize = gfx::Size(380, 490);
   views::DialogDelegate* dialog =
-      CreateDialogContainerForView(app_info_view, size, close_callback);
+      CreateDialogContainerForView(app_info_view, kDialogSize, close_callback);
   views::Widget* dialog_widget;
   if (dialog->GetModalType() == ui::MODAL_TYPE_CHILD) {
     dialog_widget =
         constrained_window::ShowWebModalDialogViews(dialog, web_contents);
   } else {
+    gfx::NativeWindow window = web_contents->GetTopLevelNativeWindow();
     dialog_widget =
         constrained_window::CreateBrowserModalDialogViews(dialog, window);
     dialog_widget->Show();
   }
 }
 
-AppInfoDialog::AppInfoDialog(gfx::NativeWindow parent_window,
-                             Profile* profile,
-                             const extensions::Extension* app)
-    : dialog_header_(NULL),
-      dialog_body_(NULL),
-      dialog_footer_(NULL),
-      profile_(profile),
-      app_id_(app->id()),
-      extension_registry_(NULL) {
-  UMA_HISTOGRAM_ENUMERATION("Apps.AppInfoDialogOpenedForType",
-                            app->GetType(),
-                            extensions::Manifest::NUM_LOAD_TYPES);
-  UMA_HISTOGRAM_ENUMERATION("Apps.AppInfoDialogOpenedForLocation",
-                            app->location(),
-                            extensions::Manifest::NUM_LOCATIONS);
-
-  views::BoxLayout* layout =
-      new views::BoxLayout(views::BoxLayout::kVertical, 0, 0, 0);
-  SetLayoutManager(layout);
+AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
+    : profile_(profile), app_id_(app->id()) {
+  views::BoxLayout* layout = SetLayoutManager(
+      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
 
   const int kHorizontalSeparatorHeight = 1;
   dialog_header_ = new AppInfoHeaderPanel(profile, app);
-  dialog_header_->SetBorder(views::Border::CreateSolidSidedBorder(
+  dialog_header_->SetBorder(views::CreateSolidSidedBorder(
       0, 0, kHorizontalSeparatorHeight, 0, kDialogSeparatorColor));
 
-  dialog_footer_ = new AppInfoFooterPanel(parent_window, profile, app);
-  dialog_footer_->SetBorder(views::Border::CreateSolidSidedBorder(
+  dialog_footer_ = new AppInfoFooterPanel(profile, app);
+  dialog_footer_->SetBorder(views::CreateSolidSidedBorder(
       kHorizontalSeparatorHeight, 0, 0, 0, kDialogSeparatorColor));
   if (!dialog_footer_->has_children()) {
     // If there are no controls in the footer, don't add it to the dialog.
@@ -151,19 +128,26 @@ AppInfoDialog::AppInfoDialog(gfx::NativeWindow parent_window,
   // Make a vertically stacked view of all the panels we want to display in the
   // dialog.
   views::View* dialog_body_contents = new views::View();
-  dialog_body_contents->SetLayoutManager(
-      new views::BoxLayout(views::BoxLayout::kVertical,
-                           views::kButtonHEdgeMarginNew,
-                           views::kPanelVertMargin,
-                           views::kUnrelatedControlVerticalSpacing));
+  const ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
+  dialog_body_contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::kVertical,
+      provider->GetInsetsMetric(views::INSETS_DIALOG_SUBSECTION),
+      provider->GetDistanceMetric(views::DISTANCE_UNRELATED_CONTROL_VERTICAL)));
   dialog_body_contents->AddChildView(new AppInfoSummaryPanel(profile, app));
   dialog_body_contents->AddChildView(new AppInfoPermissionsPanel(profile, app));
 
 #if defined(OS_CHROMEOS)
-  // When ARC is enabled, show the "Manage supported links" link for Chrome.
-  if (arc::ArcAuthService::Get()->IsArcEnabled() &&
-      app->id() == extension_misc::kChromeAppId)
-    dialog_body_contents->AddChildView(new ArcAppInfoLinksPanel(profile, app));
+  // When Google Play Store is enabled and the Settings app is available, show
+  // the "Manage supported links" link for Chrome.
+  if (app->id() == extension_misc::kChromeAppId &&
+      arc::IsArcPlayStoreEnabledForProfile(profile)) {
+    const ArcAppListPrefs* arc_app_list_prefs = ArcAppListPrefs::Get(profile);
+    if (arc_app_list_prefs &&
+        arc_app_list_prefs->IsRegistered(arc::kSettingsAppId)) {
+      arc_app_info_links_ = new ArcAppInfoLinksPanel(profile, app);
+      dialog_body_contents->AddChildView(arc_app_info_links_);
+    }
+  }
 #endif
 
   // Clip the scrollable view so that the scrollbar appears. As long as this

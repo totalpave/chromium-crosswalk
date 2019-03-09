@@ -25,13 +25,14 @@
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/bookmarks/browser/bookmark_codec.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_source.h"
-#include "grit/components_strings.h"
 #include "net/base/escape.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/favicon_size.h"
@@ -95,15 +96,14 @@ const size_t kIndentSize = 4;
 // Class responsible for the actual writing. Takes ownership of favicons_map.
 class Writer : public base::RefCountedThreadSafe<Writer> {
  public:
-  Writer(base::Value* bookmarks,
+  Writer(std::unique_ptr<base::Value> bookmarks,
          const base::FilePath& path,
          BookmarkFaviconFetcher::URLFaviconMap* favicons_map,
          BookmarksExportObserver* observer)
-      : bookmarks_(bookmarks),
+      : bookmarks_(std::move(bookmarks)),
         path_(path),
         favicons_map_(favicons_map),
-        observer_(observer) {
-  }
+        observer_(observer) {}
 
   // Writing bookmarks and favicons data to file.
   void DoWrite() {
@@ -112,10 +112,10 @@ class Writer : public base::RefCountedThreadSafe<Writer> {
 
     base::Value* roots = NULL;
     if (!Write(kHeader) ||
-        bookmarks_->GetType() != base::Value::TYPE_DICTIONARY ||
-        !static_cast<base::DictionaryValue*>(bookmarks_.get())->Get(
-            BookmarkCodec::kRootsKey, &roots) ||
-        roots->GetType() != base::Value::TYPE_DICTIONARY) {
+        bookmarks_->type() != base::Value::Type::DICTIONARY ||
+        !static_cast<base::DictionaryValue*>(bookmarks_.get())
+             ->Get(BookmarkCodec::kRootsKey, &roots) ||
+        roots->type() != base::Value::Type::DICTIONARY) {
       NOTREACHED();
       return;
     }
@@ -127,13 +127,13 @@ class Writer : public base::RefCountedThreadSafe<Writer> {
     base::Value* mobile_folder_value = NULL;
     if (!roots_d_value->Get(BookmarkCodec::kRootFolderNameKey,
                             &root_folder_value) ||
-        root_folder_value->GetType() != base::Value::TYPE_DICTIONARY ||
+        root_folder_value->type() != base::Value::Type::DICTIONARY ||
         !roots_d_value->Get(BookmarkCodec::kOtherBookmarkFolderNameKey,
                             &other_folder_value) ||
-        other_folder_value->GetType() != base::Value::TYPE_DICTIONARY ||
+        other_folder_value->type() != base::Value::Type::DICTIONARY ||
         !roots_d_value->Get(BookmarkCodec::kMobileBookmarkFolderNameKey,
                             &mobile_folder_value) ||
-        mobile_folder_value->GetType() != base::Value::TYPE_DICTIONARY) {
+        mobile_folder_value->type() != base::Value::Type::DICTIONARY) {
       NOTREACHED();
       return;  // Invalid type for root folder and/or other folder.
     }
@@ -245,7 +245,7 @@ class Writer : public base::RefCountedThreadSafe<Writer> {
   bool WriteTime(const std::string& time_string) {
     int64_t internal_value;
     base::StringToInt64(time_string, &internal_value);
-    return Write(base::Int64ToString(
+    return Write(base::NumberToString(
         base::Time::FromInternalValue(internal_value).ToTimeT()));
   }
 
@@ -270,8 +270,7 @@ class Writer : public base::RefCountedThreadSafe<Writer> {
       }
 
       std::string favicon_string;
-      BookmarkFaviconFetcher::URLFaviconMap::iterator itr =
-          favicons_map_->find(url_string);
+      auto itr = favicons_map_->find(url_string);
       if (itr != favicons_map_->end()) {
         scoped_refptr<base::RefCountedMemory> data(itr->second.get());
         std::string favicon_base64_encoded;
@@ -305,7 +304,7 @@ class Writer : public base::RefCountedThreadSafe<Writer> {
     if (!value.GetString(BookmarkCodec::kDateModifiedKey,
                          &last_modified_date) ||
         !value.Get(BookmarkCodec::kChildrenKey, &child_values) ||
-        child_values->GetType() != base::Value::TYPE_LIST) {
+        child_values->type() != base::Value::Type::LIST) {
       NOTREACHED();
       return false;
     }
@@ -345,7 +344,7 @@ class Writer : public base::RefCountedThreadSafe<Writer> {
     for (size_t i = 0; i < children->GetSize(); ++i) {
       const base::Value* child_value;
       if (!children->Get(i, &child_value) ||
-          child_value->GetType() != base::Value::TYPE_DICTIONARY) {
+          child_value->type() != base::Value::Type::DICTIONARY) {
         NOTREACHED();
         return false;
       }
@@ -409,10 +408,12 @@ BookmarkFaviconFetcher::~BookmarkFaviconFetcher() {
 }
 
 void BookmarkFaviconFetcher::ExportBookmarks() {
-  ExtractUrls(BookmarkModelFactory::GetForProfile(
-      profile_)->bookmark_bar_node());
-  ExtractUrls(BookmarkModelFactory::GetForProfile(profile_)->other_node());
-  ExtractUrls(BookmarkModelFactory::GetForProfile(profile_)->mobile_node());
+  ExtractUrls(BookmarkModelFactory::GetForBrowserContext(profile_)
+                  ->bookmark_bar_node());
+  ExtractUrls(
+      BookmarkModelFactory::GetForBrowserContext(profile_)->other_node());
+  ExtractUrls(
+      BookmarkModelFactory::GetForBrowserContext(profile_)->mobile_node());
   if (!bookmark_urls_.empty())
     FetchNextFavicon();
   else
@@ -446,12 +447,15 @@ void BookmarkFaviconFetcher::ExecuteWriter() {
   // for the duration of the write), as such we make a copy of the
   // BookmarkModel using BookmarkCodec then write from that.
   BookmarkCodec codec;
-  BrowserThread::PostTask(
-      BrowserThread::FILE, FROM_HERE,
-      base::Bind(&Writer::DoWrite,
-                 new Writer(codec.Encode(BookmarkModelFactory::GetForProfile(
-                                profile_)),
-                            path_, favicons_map_.release(), observer_)));
+
+  background_io_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &Writer::DoWrite,
+          base::MakeRefCounted<Writer>(
+              codec.Encode(BookmarkModelFactory::GetForBrowserContext(profile_),
+                           /*sync_metadata_str=*/std::string()),
+              path_, favicons_map_.release(), observer_)));
   if (g_fetcher) {
     base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, g_fetcher);
     g_fetcher = nullptr;
@@ -471,9 +475,8 @@ bool BookmarkFaviconFetcher::FetchNextFavicon() {
           FaviconServiceFactory::GetForProfile(
               profile_, ServiceAccessType::EXPLICIT_ACCESS);
       favicon_service->GetRawFaviconForPageURL(
-          GURL(url),
-          favicon_base::FAVICON,
-          gfx::kFaviconSize,
+          GURL(url), {favicon_base::IconType::kFavicon}, gfx::kFaviconSize,
+          /*fallback_to_host=*/false,
           base::Bind(&BookmarkFaviconFetcher::OnFaviconDataAvailable,
                      base::Unretained(this)),
           &cancelable_task_tracker_);

@@ -8,6 +8,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.support.graphics.drawable.VectorDrawableCompat;
+import android.support.v4.view.ViewCompat;
+import android.support.v7.content.res.AppCompatResources;
 import android.support.v7.widget.Toolbar;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
@@ -15,15 +18,16 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.BaseAdapter;
+import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.TextView;
 
-import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.SynchronousInitializationActivity;
 import org.chromium.chrome.browser.bookmarks.BookmarkBridge.BookmarkItem;
 import org.chromium.chrome.browser.bookmarks.BookmarkBridge.BookmarkModelObserver;
-import org.chromium.chrome.browser.widget.TintedDrawable;
+import org.chromium.chrome.browser.util.IntentUtils;
+import org.chromium.chrome.browser.widget.selection.SelectableItemView;
 import org.chromium.components.bookmarks.BookmarkId;
 
 import java.util.ArrayList;
@@ -33,7 +37,7 @@ import java.util.List;
  * Dialog for moving bookmarks from one folder to another. A list of folders are shown and the
  * hierarchy of bookmark model is presented by indentation of list items. This dialog can be shown
  * in two cases. One is when user choose to move an existing bookmark to a new folder. The other is
- * when user creates a new folder/bookmark, he/she can choose which parent the new folder/bookmark
+ * when user creates a new folder/bookmark, they can choose which parent the new folder/bookmark
  * belong to.
  * <p>
  * Note this fragment will not be restarted by OS. It will be dismissed if chrome is killed in
@@ -113,11 +117,23 @@ public class BookmarkFolderSelectActivity extends SynchronousInitializationActiv
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        BookmarkUtils.setTaskDescriptionInDocumentMode(this,
-                getString(R.string.bookmark_choose_folder));
         mModel = new BookmarkModel();
+        List<String> stringList =
+                IntentUtils.safeGetStringArrayListExtra(getIntent(), INTENT_BOOKMARKS_TO_MOVE);
+
+        // If the intent does not contain a list of bookmarks to move, return early. See
+        // crbug.com/728244. If the bookmark model is not loaded, return early to avoid crashing
+        // when trying to access bookmark model methods. The bookmark model should always be
+        // loaded when BookmarkFolderSelectActivity is created unless the entire Chrome process
+        // is being recreated. If we add a loading screen, we could wait for the model to be
+        // loaded but this flow is rare. See crbug.com/704872.
+        if (stringList == null || !mModel.isBookmarkModelLoaded()) {
+            finish();
+            return;
+        }
+
         mModel.addObserver(mBookmarkModelObserver);
-        List<String> stringList = getIntent().getStringArrayListExtra(INTENT_BOOKMARKS_TO_MOVE);
+
         mBookmarksToMove = new ArrayList<>(stringList.size());
         for (String string : stringList) {
             BookmarkId bookmarkId = BookmarkId.getBookmarkIdFromString(string);
@@ -149,13 +165,24 @@ public class BookmarkFolderSelectActivity extends SynchronousInitializationActiv
         getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 
         updateFolderList();
+
+        View shadow = findViewById(R.id.shadow);
+        int listPaddingTop =
+                getResources().getDimensionPixelSize(R.dimen.bookmark_list_view_padding_top);
+        mBookmarkIdsList.getViewTreeObserver().addOnScrollChangedListener(() -> {
+            if (mBookmarkIdsList.getChildCount() < 1) return;
+
+            shadow.setVisibility(mBookmarkIdsList.getChildAt(0).getTop() < listPaddingTop
+                            ? View.VISIBLE
+                            : View.GONE);
+        });
     }
 
     private void updateFolderList() {
-        List<BookmarkId> folderList = new ArrayList<BookmarkId>();
-        List<Integer> depthList = new ArrayList<Integer>();
+        List<BookmarkId> folderList = new ArrayList<>();
+        List<Integer> depthList = new ArrayList<>();
         mModel.getMoveDestinations(folderList, depthList, mBookmarksToMove);
-        List<FolderListEntry> entryList = new ArrayList<FolderListEntry>(folderList.size() + 3);
+        List<FolderListEntry> entryList = new ArrayList<>(folderList.size() + 3);
 
         if (!mIsCreatingFolder) {
             entryList.add(new FolderListEntry(null, 0,
@@ -265,7 +292,7 @@ public class BookmarkFolderSelectActivity extends SynchronousInitializationActiv
         private final int mBasePadding;
         private final int mPaddingIncrement;
 
-        List<FolderListEntry> mEntryList = new ArrayList<FolderListEntry>();
+        List<FolderListEntry> mEntryList = new ArrayList<>();
 
         public FolderListAdapter(Context context) {
             mBasePadding = context.getResources()
@@ -312,13 +339,14 @@ public class BookmarkFolderSelectActivity extends SynchronousInitializationActiv
                 convertView = LayoutInflater.from(parent.getContext()).inflate(
                         R.layout.bookmark_folder_select_item, parent, false);
             }
-            TextView textView = (TextView) convertView;
+            TextView textView = (TextView) convertView.findViewById(R.id.title);
             textView.setText(entry.mTitle);
+            convertView.findViewById(R.id.description).setVisibility(View.GONE);
 
-            setUpIcons(entry, textView);
-            setUpPadding(entry, textView);
+            setUpIcons(entry, convertView);
+            setUpPadding(entry, convertView);
 
-            return textView;
+            return convertView;
         }
 
         void setEntryList(List<FolderListEntry> entryList) {
@@ -330,32 +358,32 @@ public class BookmarkFolderSelectActivity extends SynchronousInitializationActiv
          * Sets compound drawables (icons) for different kinds of list entries,
          * i.e. New Folder, Normal and Selected.
          */
-        private void setUpIcons(FolderListEntry entry, TextView textView) {
-            int iconId = 0;
+        private void setUpIcons(FolderListEntry entry, View view) {
+            ImageView startIcon = view.findViewById(R.id.icon_view);
+
+            Drawable iconDrawable;
             if (entry.mType == FolderListEntry.TYPE_NORMAL) {
-                iconId = R.drawable.bookmark_folder;
-            } else if (entry.mType == FolderListEntry.TYPE_NEW_FOLDER) {
+                iconDrawable = BookmarkUtils.getFolderIcon(view.getContext());
+            } else {
                 // For new folder, start_icon is different.
-                iconId = R.drawable.bookmark_add_folder;
+                VectorDrawableCompat vectorDrawable = VectorDrawableCompat.create(
+                        view.getResources(), R.drawable.ic_add, view.getContext().getTheme());
+                vectorDrawable.setTintList(AppCompatResources.getColorStateList(
+                        view.getContext(), R.color.standard_mode_tint));
+                iconDrawable = vectorDrawable;
             }
 
-            Drawable drawableStart = TintedDrawable.constructTintedDrawable(textView.getResources(),
-                    iconId);
-            // Selected entry has an end_icon, a blue check mark.
-            Drawable drawableEnd = entry.mIsSelected ? ApiCompatibilityUtils.getDrawable(
-                    textView.getResources(), R.drawable.bookmark_check_blue) : null;
-            ApiCompatibilityUtils.setCompoundDrawablesRelativeWithIntrinsicBounds(textView,
-                    drawableStart, null, drawableEnd, null);
+            SelectableItemView.applyModernIconStyle(startIcon, iconDrawable, entry.mIsSelected);
         }
 
         /**
          * Sets up padding for the entry
          */
-        private void setUpPadding(FolderListEntry entry, TextView textView) {
+        private void setUpPadding(FolderListEntry entry, View view) {
             int paddingStart = mBasePadding + Math.min(entry.mDepth, MAX_FOLDER_DEPTH)
                     * mPaddingIncrement;
-            ApiCompatibilityUtils.setPaddingRelative(textView, paddingStart, 0,
-                    mBasePadding, 0);
+            ViewCompat.setPaddingRelative(view, paddingStart, view.getPaddingTop(), mBasePadding,
+                    view.getPaddingBottom());
         }
     }
 }

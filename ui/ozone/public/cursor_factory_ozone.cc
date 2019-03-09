@@ -8,32 +8,36 @@
 
 namespace ui {
 
-// static
-CursorFactoryOzone* CursorFactoryOzone::impl_ = NULL;
+namespace {
+
+CursorFactoryOzone* g_instance = nullptr;
+
+}  // namespace
 
 CursorFactoryOzone::CursorFactoryOzone() {
-  DCHECK(!impl_) << "There should only be a single CursorFactoryOzone.";
-  impl_ = this;
+  DCHECK(!g_instance)
+      << "There should only be a single CursorFactoryOzone per thread.";
+  g_instance = this;
 }
 
 CursorFactoryOzone::~CursorFactoryOzone() {
-  DCHECK_EQ(impl_, this);
-  impl_ = NULL;
+  DCHECK_EQ(g_instance, this);
+  g_instance = nullptr;
 }
 
 CursorFactoryOzone* CursorFactoryOzone::GetInstance() {
-  DCHECK(impl_) << "No CursorFactoryOzone implementation set.";
-  return impl_;
+  DCHECK(g_instance);
+  return g_instance;
 }
 
-PlatformCursor CursorFactoryOzone::GetDefaultCursor(int type) {
+PlatformCursor CursorFactoryOzone::GetDefaultCursor(CursorType type) {
   NOTIMPLEMENTED();
   return NULL;
 }
 
-PlatformCursor CursorFactoryOzone::CreateImageCursor(
-    const SkBitmap& bitmap,
-    const gfx::Point& hotspot) {
+PlatformCursor CursorFactoryOzone::CreateImageCursor(const SkBitmap& bitmap,
+                                                     const gfx::Point& hotspot,
+                                                     float bitmap_dpi) {
   NOTIMPLEMENTED();
   return NULL;
 }
@@ -41,7 +45,8 @@ PlatformCursor CursorFactoryOzone::CreateImageCursor(
 PlatformCursor CursorFactoryOzone::CreateAnimatedCursor(
     const std::vector<SkBitmap>& bitmaps,
     const gfx::Point& hotspot,
-    int frame_delay_ms) {
+    int frame_delay_ms,
+    float bitmap_dpi) {
   NOTIMPLEMENTED();
   return NULL;
 }

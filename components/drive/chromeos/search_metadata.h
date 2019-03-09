@@ -7,9 +7,11 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
+#include <vector>
 
-#include "base/memory/scoped_vector.h"
+#include "base/sequenced_task_runner.h"
 #include "components/drive/chromeos/file_system_interface.h"
 
 namespace base {
@@ -23,7 +25,8 @@ namespace internal {
 
 class ResourceMetadata;
 
-typedef base::Callback<bool(const ResourceEntry&)> SearchMetadataPredicate;
+typedef base::RepeatingCallback<bool(const ResourceEntry&)>
+    SearchMetadataPredicate;
 
 // Searches the local resource metadata, and returns the entries
 // |at_most_num_matches| that contain |query| in their base names. Search is
@@ -39,7 +42,8 @@ void SearchMetadata(
     const std::string& query,
     const SearchMetadataPredicate& predicate,
     size_t at_most_num_matches,
-    const SearchMetadataCallback& callback);
+    MetadataSearchOrder order,
+    SearchMetadataCallback callback);
 
 // Returns true if |entry| is eligible for the search |options| and should be
 // tested for the match with the query.  If
@@ -61,8 +65,8 @@ bool MatchesType(int options, const ResourceEntry& entry);
 // contents of |highlighted_text| will be lost.
 bool FindAndHighlight(
     const std::string& text,
-    const ScopedVector<
-        base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>& queries,
+    const std::vector<std::unique_ptr<
+        base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents>>& queries,
     std::string* highlighted_text);
 
 }  // namespace internal

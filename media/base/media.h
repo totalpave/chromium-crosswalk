@@ -8,18 +8,25 @@
 #ifndef MEDIA_BASE_MEDIA_H_
 #define MEDIA_BASE_MEDIA_H_
 
+#include <stdint.h>
+
 #include "build/build_config.h"
 #include "media/base/media_export.h"
-
-namespace base {
-class FilePath;
-}
 
 namespace media {
 
 // Initializes media libraries (e.g. ffmpeg) as well as CPU specific media
 // features.
 MEDIA_EXPORT void InitializeMediaLibrary();
+
+// Same as InitializeMediaLibrary() but specifies the CPU flags used by libyuv
+// and ffmpeg (libavutil). Retrieving these flags may access the file system
+// (/proc/cpuinfo) which won't work in sandboxed processes. For such processes,
+// a non sandboxed process should retrieve these flags in advance (via
+// libyuv::InitCpuFlags() and av_get_cpu_flags()) and pass them to the sandboxed
+// process that should then call this method.
+MEDIA_EXPORT void InitializeMediaLibraryInSandbox(int64_t libyuv_cpu_flags,
+                                                  int64_t libavutil_cpu_flags);
 
 #if defined(OS_ANDROID)
 // Tells the media library it has support for OS level decoders. Should only be
@@ -31,20 +38,6 @@ MEDIA_EXPORT bool HasPlatformDecoderSupport();
 // Indicates if the platform supports Opus. Determined *ONLY* by the platform
 // version, so does not guarantee that either can actually be played.
 MEDIA_EXPORT bool PlatformHasOpusSupport();
-
-// Returns true if the unified media pipeline is enabled; the pipeline may still
-// not work for all codecs if HasPlatformDecoderSupport() is false. Please see
-// MimeUtil for an exhaustive listing of supported codecs.
-//
-// TODO(dalecurtis): These methods are temporary and should be removed once the
-// unified media pipeline is supported everywhere.  http://crbug.com/580626.
-MEDIA_EXPORT bool IsUnifiedMediaPipelineEnabled();
-
-// Returns whether the platform decoders are available for use.
-// This includes decoders being available on the platform and accessible, such
-// as via the GPU process. Should only be used for actual decoders
-// (e.g. MediaCodec) and not full-featured players (e.g. MediaPlayer).
-MEDIA_EXPORT bool ArePlatformDecodersAvailable();
 #endif
 
 }  // namespace media

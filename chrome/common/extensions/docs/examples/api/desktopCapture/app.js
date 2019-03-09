@@ -29,17 +29,25 @@ document.querySelector('#startFromBackgroundPage')
     });
 
 // Launch webkitGetUserMedia() based on selected media id.
-function onAccessApproved(id) {
+function onAccessApproved(id, options) {
   if (!id) {
     console.log('Access rejected.');
     return;
   }
 
-  navigator.webkitGetUserMedia({
-    audio:{
+  var audioConstraint = {
       mandatory: {
         chromeMediaSource: 'desktop',
-        chromeMediaSourceId: id} },
+        chromeMediaSourceId: id
+      }
+  };
+
+  console.log(options.canRequestAudioTrack);
+  if (!options.canRequestAudioTrack)
+    audioConstraint = false;
+
+  navigator.webkitGetUserMedia({
+    audio: audioConstraint,
     video: {
       mandatory: {
         chromeMediaSource: 'desktop',
@@ -57,15 +65,18 @@ function getUserMediaError(error) {
 function gotStream(stream) {
   console.log('Received local stream', stream);
   var video = document.querySelector('video');
-  video.src = URL.createObjectURL(stream);
+  try {
+    video.srcObject = stream;
+  } catch (error) {
+    video.src = URL.createObjectURL(stream);
+  }
   stream.onended = function() { console.log('Ended'); };
 
-  var servers = null;
-  pc1 = new webkitRTCPeerConnection(servers);
+  pc1 = new RTCPeerConnection();
   pc1.onicecandidate = function(event) {
     onIceCandidate(pc1, event);
   };
-  pc2 = new webkitRTCPeerConnection(servers);
+  pc2 = new RTCPeerConnection();
   pc2.onicecandidate = function(event) {
     onIceCandidate(pc2, event);
   };
@@ -100,7 +111,11 @@ function onCreateOfferSuccess(desc) {
 function gotRemoteStream(event) {
   // Call the polyfill wrapper to attach the media stream to this element.
   console.log('hitting this code');
-  remoteVideo.src = URL.createObjectURL(event.stream);
+  try {
+    remoteVideo.srcObject = event.stream;
+  } catch (error) {
+    remoteVideo.src = URL.createObjectURL(event.stream);
+  }
 }
 
 function onCreateAnswerSuccess(desc) {

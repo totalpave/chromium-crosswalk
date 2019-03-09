@@ -2,85 +2,136 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef CC_TEST_PIXEL_TEST_H_
+#define CC_TEST_PIXEL_TEST_H_
+
 #include "base/files/file_util.h"
-#include "cc/output/gl_renderer.h"
-#include "cc/output/software_renderer.h"
-#include "cc/quads/render_pass.h"
+#include "base/single_thread_task_runner.h"
 #include "cc/test/pixel_comparator.h"
 #include "cc/trees/layer_tree_settings.h"
+#include "components/viz/client/client_resource_provider.h"
+#include "components/viz/common/quads/render_pass.h"
+#include "components/viz/common/resources/shared_bitmap.h"
+#include "components/viz/service/display/gl_renderer.h"
+#include "components/viz/service/display/output_surface.h"
+#include "components/viz/service/display/skia_renderer.h"
+#include "components/viz/service/display/software_renderer.h"
+#include "gpu/command_buffer/client/gpu_memory_buffer_manager.h"
+#include "gpu/ipc/in_process_command_buffer.h"
+#include "gpu/vulkan/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gl/gl_implementation.h"
 
-#ifndef CC_TEST_PIXEL_TEST_H_
-#define CC_TEST_PIXEL_TEST_H_
+namespace base {
+class Thread;
+namespace test {
+class ScopedFeatureList;
+}
+}
 
-namespace cc {
+#if BUILDFLAG(ENABLE_VULKAN)
+namespace gpu {
+class VulkanImplementation;
+}
+#endif
+
+namespace viz {
 class CopyOutputResult;
 class DirectRenderer;
+class DisplayResourceProvider;
+class GLRenderer;
+class GpuServiceImpl;
+class TestSharedBitmapManager;
+}
+
+namespace cc {
 class FakeOutputSurfaceClient;
 class OutputSurface;
-class ResourceProvider;
-class SoftwareRenderer;
-class TestGpuMemoryBufferManager;
-class TestSharedBitmapManager;
 
-class PixelTest : public testing::Test, RendererClient {
+class PixelTest : public testing::Test {
  protected:
   PixelTest();
   ~PixelTest() override;
 
-  bool RunPixelTest(RenderPassList* pass_list,
+  bool RunPixelTest(viz::RenderPassList* pass_list,
                     const base::FilePath& ref_file,
                     const PixelComparator& comparator);
 
-  bool RunPixelTestWithReadbackTarget(
-      RenderPassList* pass_list,
-      RenderPass* target,
-      const base::FilePath& ref_file,
-      const PixelComparator& comparator);
+  bool RunPixelTest(viz::RenderPassList* pass_list,
+                    std::vector<SkColor>* ref_pixels,
+                    const PixelComparator& comparator);
 
-  bool RunPixelTestWithReadbackTargetAndArea(RenderPassList* pass_list,
-                                             RenderPass* target,
+  bool RunPixelTestWithReadbackTarget(viz::RenderPassList* pass_list,
+                                      viz::RenderPass* target,
+                                      const base::FilePath& ref_file,
+                                      const PixelComparator& comparator);
+
+  bool RunPixelTestWithReadbackTargetAndArea(viz::RenderPassList* pass_list,
+                                             viz::RenderPass* target,
                                              const base::FilePath& ref_file,
                                              const PixelComparator& comparator,
                                              const gfx::Rect* copy_rect);
 
-  LayerTreeSettings settings_;
+  viz::ContextProvider* context_provider() const {
+    return output_surface_->context_provider();
+  }
+
+  // Allocates a SharedMemory bitmap and registers it with the display
+  // compositor's SharedBitmapManager.
+  std::unique_ptr<base::SharedMemory> AllocateSharedBitmapMemory(
+      const viz::SharedBitmapId& id,
+      const gfx::Size& size);
+  // Uses AllocateSharedBitmapMemory() then registers a ResourceId with the
+  // |child_resource_provider_|, and copies the contents of |source| into the
+  // software resource backing.
+  viz::ResourceId AllocateAndFillSoftwareResource(const gfx::Size& size,
+                                                  const SkBitmap& source);
+
+  // For SkiaRenderer.
+  std::unique_ptr<base::Thread> gpu_thread_;
+  std::unique_ptr<base::Thread> io_thread_;
+  std::unique_ptr<viz::GpuServiceImpl> gpu_service_;
+  std::unique_ptr<gpu::GpuMemoryBufferManager> gpu_memory_buffer_manager_;
+  scoped_refptr<gpu::CommandBufferTaskExecutor> task_executor_;
+
+  viz::RendererSettings renderer_settings_;
   gfx::Size device_viewport_size_;
   bool disable_picture_quad_image_filtering_;
-  class PixelTestRendererClient;
   std::unique_ptr<FakeOutputSurfaceClient> output_surface_client_;
-  std::unique_ptr<OutputSurface> output_surface_;
-  std::unique_ptr<TestSharedBitmapManager> shared_bitmap_manager_;
-  std::unique_ptr<TestGpuMemoryBufferManager> gpu_memory_buffer_manager_;
-  std::unique_ptr<BlockingTaskRunner> main_thread_task_runner_;
-  std::unique_ptr<ResourceProvider> resource_provider_;
-  std::unique_ptr<TextureMailboxDeleter> texture_mailbox_deleter_;
-  std::unique_ptr<DirectRenderer> renderer_;
+  std::unique_ptr<viz::OutputSurface> output_surface_;
+  std::unique_ptr<viz::TestSharedBitmapManager> shared_bitmap_manager_;
+  std::unique_ptr<viz::DisplayResourceProvider> resource_provider_;
+  scoped_refptr<viz::ContextProvider> child_context_provider_;
+  std::unique_ptr<viz::ClientResourceProvider> child_resource_provider_;
+  std::unique_ptr<viz::DirectRenderer> renderer_;
+  viz::SoftwareRenderer* software_renderer_ = nullptr;
   std::unique_ptr<SkBitmap> result_bitmap_;
-  gfx::Vector2d external_device_viewport_offset_;
-  gfx::Rect external_device_clip_rect_;
 
-  void SetUpGLRenderer(bool use_skia_gpu_backend, bool flipped_output_surface);
+  void SetUpGLWithoutRenderer(bool flipped_output_surface);
+  void SetUpGLRenderer(bool flipped_output_surface);
+  void SetUpSkiaRenderer();
   void SetUpSoftwareRenderer();
 
-  void ForceExpandedViewport(const gfx::Size& surface_expansion);
-  void ForceViewportOffset(const gfx::Vector2d& viewport_offset);
-  void ForceDeviceClip(const gfx::Rect& clip);
+  void TearDown() override;
+
   void EnableExternalStencilTest();
 
-  // RendererClient implementation.
-  void SetFullRootLayerDamage() override {}
-
  private:
-  void ReadbackResult(base::Closure quit_run_loop,
-                      std::unique_ptr<CopyOutputResult> result);
+  void ReadbackResult(base::OnceClosure quit_run_loop,
+                      std::unique_ptr<viz::CopyOutputResult> result);
 
   bool PixelsMatchReference(const base::FilePath& ref_file,
                             const PixelComparator& comparator);
+  void SetUpGpuServiceOnGpuThread(base::WaitableEvent* event);
+  void TearDownGpuServiceOnGpuThread(base::WaitableEvent* event);
 
   std::unique_ptr<gl::DisableNullDrawGLBindings> enable_pixel_output_;
+  std::unique_ptr<base::test::ScopedFeatureList> scoped_feature_list_;
+
+#if BUILDFLAG(ENABLE_VULKAN)
+  std::unique_ptr<gpu::VulkanImplementation> vulkan_implementation_;
+#endif
 };
 
 template<typename RendererType>
@@ -90,88 +141,82 @@ class RendererPixelTest : public PixelTest {
     return static_cast<RendererType*>(renderer_.get());
   }
 
+  bool use_gpu() { return !!child_context_provider_; }
+
  protected:
   void SetUp() override;
 };
 
 // Wrappers to differentiate renderers where the the output surface and viewport
 // have an externally determined size and offset.
-class GLRendererWithExpandedViewport : public GLRenderer {
+class GLRendererWithExpandedViewport : public viz::GLRenderer {
  public:
-  GLRendererWithExpandedViewport(RendererClient* client,
-                                 const RendererSettings* settings,
-                                 OutputSurface* output_surface,
-                                 ResourceProvider* resource_provider,
-                                 TextureMailboxDeleter* texture_mailbox_deleter,
-                                 int highp_threshold_min)
-      : GLRenderer(client,
-                   settings,
-                   output_surface,
-                   resource_provider,
-                   texture_mailbox_deleter,
-                   highp_threshold_min) {}
+  GLRendererWithExpandedViewport(
+      const viz::RendererSettings* settings,
+      viz::OutputSurface* output_surface,
+      viz::DisplayResourceProvider* resource_provider,
+      scoped_refptr<base::SingleThreadTaskRunner> current_task_runner)
+      : viz::GLRenderer(settings,
+                        output_surface,
+                        resource_provider,
+                        std::move(current_task_runner)) {}
 };
 
-class SoftwareRendererWithExpandedViewport : public SoftwareRenderer {
+class SoftwareRendererWithExpandedViewport : public viz::SoftwareRenderer {
  public:
-  SoftwareRendererWithExpandedViewport(RendererClient* client,
-                                       const RendererSettings* settings,
-                                       OutputSurface* output_surface,
-                                       ResourceProvider* resource_provider)
-      : SoftwareRenderer(client,
-                         settings,
-                         output_surface,
-                         resource_provider,
-                         true /* use_image_hijack_canvas */) {}
+  SoftwareRendererWithExpandedViewport(
+      const viz::RendererSettings* settings,
+      viz::OutputSurface* output_surface,
+      viz::DisplayResourceProvider* resource_provider)
+      : SoftwareRenderer(settings, output_surface, resource_provider) {}
 };
 
-class GLRendererWithFlippedSurface : public GLRenderer {
+class GLRendererWithFlippedSurface : public viz::GLRenderer {
  public:
-  GLRendererWithFlippedSurface(RendererClient* client,
-                               const RendererSettings* settings,
-                               OutputSurface* output_surface,
-                               ResourceProvider* resource_provider,
-                               TextureMailboxDeleter* texture_mailbox_deleter,
-                               int highp_threshold_min)
-      : GLRenderer(client,
-                   settings,
-                   output_surface,
-                   resource_provider,
-                   texture_mailbox_deleter,
-                   highp_threshold_min) {}
+  GLRendererWithFlippedSurface(
+      const viz::RendererSettings* settings,
+      viz::OutputSurface* output_surface,
+      viz::DisplayResourceProvider* resource_provider,
+      scoped_refptr<base::SingleThreadTaskRunner> current_task_runner)
+      : viz::GLRenderer(settings,
+                        output_surface,
+                        resource_provider,
+                        std::move(current_task_runner)) {}
 };
 
-template<>
-inline void RendererPixelTest<GLRenderer>::SetUp() {
-  SetUpGLRenderer(false, false);
+template <>
+inline void RendererPixelTest<viz::GLRenderer>::SetUp() {
+  SetUpGLRenderer(false);
 }
 
 template<>
 inline void RendererPixelTest<GLRendererWithExpandedViewport>::SetUp() {
-  SetUpGLRenderer(false, false);
-  ForceExpandedViewport(gfx::Size(50, 50));
-  ForceViewportOffset(gfx::Vector2d(10, 20));
+  SetUpGLRenderer(false);
 }
 
 template <>
 inline void RendererPixelTest<GLRendererWithFlippedSurface>::SetUp() {
-  SetUpGLRenderer(false, true);
+  SetUpGLRenderer(true);
 }
 
 template <>
-inline void RendererPixelTest<SoftwareRenderer>::SetUp() {
+inline void RendererPixelTest<viz::SoftwareRenderer>::SetUp() {
   SetUpSoftwareRenderer();
 }
 
 template<>
 inline void RendererPixelTest<SoftwareRendererWithExpandedViewport>::SetUp() {
   SetUpSoftwareRenderer();
-  ForceExpandedViewport(gfx::Size(50, 50));
-  ForceViewportOffset(gfx::Vector2d(10, 20));
 }
 
-typedef RendererPixelTest<GLRenderer> GLRendererPixelTest;
-typedef RendererPixelTest<SoftwareRenderer> SoftwareRendererPixelTest;
+template <>
+inline void RendererPixelTest<viz::SkiaRenderer>::SetUp() {
+  SetUpSkiaRenderer();
+}
+
+typedef RendererPixelTest<viz::GLRenderer> GLRendererPixelTest;
+typedef RendererPixelTest<viz::SoftwareRenderer> SoftwareRendererPixelTest;
+typedef RendererPixelTest<viz::SkiaRenderer> SkiaRendererPixelTest;
 
 }  // namespace cc
 

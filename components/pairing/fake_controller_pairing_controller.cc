@@ -233,13 +233,15 @@ void FakeControllerPairingController::ChangeStage(Stage new_stage) {
   if (current_stage_ == new_stage)
     return;
   current_stage_ = new_stage;
-  FOR_EACH_OBSERVER(Observer, observers_, PairingStageChanged(new_stage));
+  for (Observer& observer : observers_)
+    observer.PairingStageChanged(new_stage);
 }
 
 void FakeControllerPairingController::ChangeStageLater(Stage new_stage) {
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&FakeControllerPairingController::ChangeStage,
-                            base::Unretained(this), new_stage),
+      FROM_HERE,
+      base::BindOnce(&FakeControllerPairingController::ChangeStage,
+                     base::Unretained(this), new_stage),
       async_duration_);
 }
 
@@ -268,8 +270,8 @@ void FakeControllerPairingController::ExecuteDiscoveryEvent(
   }
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&FakeControllerPairingController::ExecuteDiscoveryEvent,
-                 base::Unretained(this), event_position),
+      base::BindOnce(&FakeControllerPairingController::ExecuteDiscoveryEvent,
+                     base::Unretained(this), event_position),
       async_duration_);
 }
 
@@ -277,13 +279,15 @@ void FakeControllerPairingController::DeviceFound(
     const std::string& device_id) {
   CHECK(current_stage_ == STAGE_DEVICES_DISCOVERY);
   discovered_devices_.insert(device_id);
-  FOR_EACH_OBSERVER(Observer, observers_, DiscoveredDevicesListChanged());
+  for (Observer& observer : observers_)
+    observer.DiscoveredDevicesListChanged();
 }
 
 void FakeControllerPairingController::DeviceLost(const std::string& device_id) {
   CHECK(current_stage_ == STAGE_DEVICES_DISCOVERY);
   discovered_devices_.erase(device_id);
-  FOR_EACH_OBSERVER(Observer, observers_, DiscoveredDevicesListChanged());
+  for (Observer& observer : observers_)
+    observer.DiscoveredDevicesListChanged();
 }
 
 void FakeControllerPairingController::PairingStageChanged(Stage new_stage) {
@@ -293,8 +297,9 @@ void FakeControllerPairingController::PairingStageChanged(Stage new_stage) {
       discovered_devices_.clear();
       base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
           FROM_HERE,
-          base::Bind(&FakeControllerPairingController::ExecuteDiscoveryEvent,
-                     base::Unretained(this), 0),
+          base::BindOnce(
+              &FakeControllerPairingController::ExecuteDiscoveryEvent,
+              base::Unretained(this), 0),
           async_duration_);
       break;
     }

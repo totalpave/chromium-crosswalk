@@ -8,20 +8,16 @@
 
 #include "base/bind.h"
 #include "base/files/file_util.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/chromeos/extensions/install_limiter_factory.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_source.h"
+#include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/notification_types.h"
-
-using content::BrowserThread;
 
 namespace {
 
-int64_t GetFileSizeOnBlockingPool(const base::FilePath& file) {
-  DCHECK(BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
-
+int64_t GetFileSize(const base::FilePath& file) {
   // Get file size. In case of error, sets 0 as file size to let the installer
   // run and fail.
   int64_t size;
@@ -51,8 +47,17 @@ InstallLimiter::DeferredInstall::~DeferredInstall() {
 ////////////////////////////////////////////////////////////////////////////////
 // InstallLimiter
 
+// static
 InstallLimiter* InstallLimiter::Get(Profile* profile) {
   return InstallLimiterFactory::GetForProfile(profile);
+}
+
+// static
+bool InstallLimiter::ShouldDeferInstall(int64_t app_size,
+                                        const std::string& app_id) {
+  constexpr int64_t kBigAppSizeThreshold = 1048576;  // 1MB in bytes
+  return app_size > kBigAppSizeThreshold &&
+         !ExtensionsBrowserClient::Get()->IsScreensaverInDemoMode(app_id);
 }
 
 InstallLimiter::InstallLimiter() : disabled_for_test_(false) {
@@ -73,19 +78,15 @@ void InstallLimiter::Add(const scoped_refptr<CrxInstaller>& installer,
     return;
   }
 
-  base::PostTaskAndReplyWithResult(
-      BrowserThread::GetBlockingPool(),
-      FROM_HERE,
-      base::Bind(&GetFileSizeOnBlockingPool, path),
+  base::PostTaskWithTraitsAndReplyWithResult(
+      FROM_HERE, {base::MayBlock()}, base::Bind(&GetFileSize, path),
       base::Bind(&InstallLimiter::AddWithSize, AsWeakPtr(), installer, path));
 }
 
 void InstallLimiter::AddWithSize(const scoped_refptr<CrxInstaller>& installer,
                                  const base::FilePath& path,
                                  int64_t size) {
-  const int64_t kBigAppSizeThreshold = 1048576;  // 1MB
-
-  if (size <= kBigAppSizeThreshold) {
+  if (!ShouldDeferInstall(size, installer->expected_id())) {
     RunInstall(installer, path);
 
     // Stop wait timer and let install notification drive deferred installs.

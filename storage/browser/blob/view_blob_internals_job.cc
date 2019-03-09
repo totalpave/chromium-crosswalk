@@ -25,11 +25,14 @@
 #include "net/disk_cache/disk_cache.h"
 #include "net/url_request/url_request.h"
 #include "storage/browser/blob/blob_data_item.h"
+#include "storage/browser/blob/blob_entry.h"
 #include "storage/browser/blob/blob_storage_context.h"
 #include "storage/browser/blob/blob_storage_registry.h"
-#include "storage/browser/blob/internal_blob_data.h"
+#include "storage/browser/blob/shareable_blob_data_item.h"
+#include "storage/common/blob_storage/blob_storage_constants.h"
 
 namespace {
+using storage::BlobStatus;
 
 const char kEmptyBlobStorageMessage[] = "No available blob data.";
 const char kContentType[] = "Content Type: ";
@@ -44,6 +47,7 @@ const char kOffset[] = "Offset: ";
 const char kLength[] = "Length: ";
 const char kUUID[] = "Uuid: ";
 const char kRefcount[] = "Refcount: ";
+const char kStatus[] = "Status: ";
 
 void StartHTML(std::string* out) {
   out->append(
@@ -59,6 +63,47 @@ void StartHTML(std::string* out) {
       ".subsection_title { font-weight: bold; }\n"
       "</style>\n"
       "</head><body>\n\n");
+}
+
+std::string StatusToString(BlobStatus status) {
+  switch (status) {
+    case BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS:
+      return "BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS: Illegal blob "
+             "construction.";
+    case BlobStatus::ERR_OUT_OF_MEMORY:
+      return "BlobStatus::ERR_OUT_OF_MEMORY: Not enough memory or disk space "
+             "available for blob.";
+    case BlobStatus::ERR_FILE_WRITE_FAILED:
+      return "BlobStatus::ERR_FILE_WRITE_FAILED: File operation failed";
+    case BlobStatus::ERR_SOURCE_DIED_IN_TRANSIT:
+      return "BlobStatus::ERR_SOURCE_DIED_IN_TRANSIT: Blob source died before "
+             "transporting data to browser.";
+    case BlobStatus::ERR_BLOB_DEREFERENCED_WHILE_BUILDING:
+      return "BlobStatus::ERR_BLOB_DEREFERENCED_WHILE_BUILDING: Blob "
+             "references removed while building.";
+    case BlobStatus::ERR_REFERENCED_BLOB_BROKEN:
+      return "BlobStatus::ERR_REFERENCED_BLOB_BROKEN: Blob contains dependency "
+             "blob that is broken.";
+    case BlobStatus::ERR_REFERENCED_FILE_UNAVAILABLE:
+      return "BlobStatus::ERR_REFERENCED_FILE_UNAVAILABLE: Blob contains "
+             "dependency on file that is unavailable.";
+    case BlobStatus::DONE:
+      return "BlobStatus::DONE: Blob built with no errors.";
+    case BlobStatus::PENDING_QUOTA:
+      return "BlobStatus::PENDING_QUOTA: Blob construction is pending on "
+             "memory or file quota.";
+    case BlobStatus::PENDING_TRANSPORT:
+      return "BlobStatus::PENDING_TRANSPORT: Blob construction is pending on "
+             "data transport from renderer.";
+    case BlobStatus::PENDING_REFERENCED_BLOBS:
+      return "BlobStatus::PENDING_REFERENCED_BLOBS: Blob construction is "
+             "pending on dependency blobs to finish construction.";
+    case BlobStatus::PENDING_CONSTRUCTION:
+      return "BlobStatus::PENDING_CONSTRUCTION: Blob construction is pending "
+             "on resolving the UUIDs of refereneced blobs.";
+  }
+  NOTREACHED();
+  return "Invalid blob state.";
 }
 
 void EndHTML(std::string* out) {
@@ -106,21 +151,23 @@ ViewBlobInternalsJob::ViewBlobInternalsJob(
       weak_factory_(this) {
 }
 
-ViewBlobInternalsJob::~ViewBlobInternalsJob() {
-}
+ViewBlobInternalsJob::~ViewBlobInternalsJob() = default;
 
 void ViewBlobInternalsJob::Start() {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&ViewBlobInternalsJob::StartAsync,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&ViewBlobInternalsJob::StartAsync,
+                                weak_factory_.GetWeakPtr()));
 }
 
-bool ViewBlobInternalsJob::IsRedirectResponse(GURL* location,
-                                              int* http_status_code) {
+bool ViewBlobInternalsJob::IsRedirectResponse(
+    GURL* location,
+    int* http_status_code,
+    bool* insecure_scheme_was_upgraded) {
   if (request_->url().has_query()) {
     // Strip the query parameters.
     GURL::Replacements replacements;
     replacements.ClearQuery();
+    *insecure_scheme_was_upgraded = false;
     *location = request_->url().ReplaceComponents(replacements);
     *http_status_code = 307;
     return true;
@@ -133,55 +180,57 @@ void ViewBlobInternalsJob::Kill() {
   weak_factory_.InvalidateWeakPtrs();
 }
 
-int ViewBlobInternalsJob::GetData(
-    std::string* mime_type,
-    std::string* charset,
-    std::string* data,
-    const net::CompletionCallback& callback) const {
+int ViewBlobInternalsJob::GetData(std::string* mime_type,
+                                  std::string* charset,
+                                  std::string* data,
+                                  net::CompletionOnceCallback callback) const {
   mime_type->assign("text/html");
   charset->assign("UTF-8");
 
-  data->clear();
-  StartHTML(data);
-  if (blob_storage_context_->registry_.blob_map_.empty())
-    data->append(kEmptyBlobStorageMessage);
-  else
-    GenerateHTML(data);
-  EndHTML(data);
+  *data = GenerateHTML(blob_storage_context_);
   return net::OK;
 }
 
-void ViewBlobInternalsJob::GenerateHTML(std::string* out) const {
-  for (BlobStorageRegistry::BlobMap::const_iterator iter =
-           blob_storage_context_->registry_.blob_map_.begin();
-       iter != blob_storage_context_->registry_.blob_map_.end(); ++iter) {
-    AddHTMLBoldText(iter->first, out);
-    GenerateHTMLForBlobData(*iter->second->data, iter->second->content_type,
-                            iter->second->content_disposition,
-                            iter->second->refcount, out);
-  }
-  if (!blob_storage_context_->registry_.url_to_uuid_.empty()) {
-    AddHorizontalRule(out);
-    for (BlobStorageRegistry::URLMap::const_iterator iter =
-             blob_storage_context_->registry_.url_to_uuid_.begin();
-         iter != blob_storage_context_->registry_.url_to_uuid_.end(); ++iter) {
-      AddHTMLBoldText(iter->first.spec(), out);
-      StartHTMLList(out);
-      AddHTMLListItem(kUUID, iter->second, out);
-      EndHTMLList(out);
+std::string ViewBlobInternalsJob::GenerateHTML(
+    BlobStorageContext* blob_storage_context) {
+  std::string out;
+  StartHTML(&out);
+  if (blob_storage_context->registry().blob_map_.empty()) {
+    out.append(kEmptyBlobStorageMessage);
+  } else {
+    for (const auto& uuid_entry_pair :
+         blob_storage_context->registry().blob_map_) {
+      AddHTMLBoldText(uuid_entry_pair.first, &out);
+      BlobEntry* entry = uuid_entry_pair.second.get();
+      GenerateHTMLForBlobData(*entry, entry->content_type(),
+                              entry->content_disposition(), entry->refcount(),
+                              &out);
+    }
+    if (!blob_storage_context->registry().url_to_uuid_.empty()) {
+      AddHorizontalRule(&out);
+      for (const auto& url_uuid_pair :
+           blob_storage_context->registry().url_to_uuid_) {
+        AddHTMLBoldText(url_uuid_pair.first.spec(), &out);
+        StartHTMLList(&out);
+        AddHTMLListItem(kUUID, url_uuid_pair.second, &out);
+        EndHTMLList(&out);
+      }
     }
   }
+  EndHTML(&out);
+  return out;
 }
 
 void ViewBlobInternalsJob::GenerateHTMLForBlobData(
-    const InternalBlobData& blob_data,
+    const BlobEntry& blob_data,
     const std::string& content_type,
     const std::string& content_disposition,
-    int refcount,
+    size_t refcount,
     std::string* out) {
   StartHTMLList(out);
 
-  AddHTMLListItem(kRefcount, base::IntToString(refcount), out);
+  AddHTMLListItem(kRefcount, base::NumberToString(refcount), out);
+  AddHTMLListItem(kStatus, StatusToString(blob_data.status()), out);
   if (!content_type.empty())
     AddHTMLListItem(kContentType, content_type, out);
   if (!content_disposition.empty())
@@ -201,10 +250,10 @@ void ViewBlobInternalsJob::GenerateHTMLForBlobData(
     const BlobDataItem& item = *(blob_data.items().at(i)->item());
 
     switch (item.type()) {
-      case DataElement::TYPE_BYTES:
+      case BlobDataItem::Type::kBytes:
         AddHTMLListItem(kType, "data", out);
         break;
-      case DataElement::TYPE_FILE:
+      case BlobDataItem::Type::kFile:
         AddHTMLListItem(kType, "file", out);
         AddHTMLListItem(kPath,
                  net::EscapeForHTML(item.path().AsUTF8Unsafe()),
@@ -215,10 +264,7 @@ void ViewBlobInternalsJob::GenerateHTMLForBlobData(
               out);
         }
         break;
-      case DataElement::TYPE_BLOB:
-        NOTREACHED();   // Should be flattened in the storage context.
-        break;
-      case DataElement::TYPE_FILE_FILESYSTEM:
+      case BlobDataItem::Type::kFileFilesystem:
         AddHTMLListItem(kType, "filesystem", out);
         AddHTMLListItem(kURL, item.filesystem_url().spec(), out);
         if (!item.expected_modification_time().is_null()) {
@@ -227,13 +273,15 @@ void ViewBlobInternalsJob::GenerateHTMLForBlobData(
               out);
         }
         break;
-      case DataElement::TYPE_DISK_CACHE_ENTRY:
+      case BlobDataItem::Type::kDiskCacheEntry:
         AddHTMLListItem(kType, "disk cache entry", out);
-        AddHTMLListItem(kURL, item.disk_cache_entry()->GetKey(), out);
+        if (item.disk_cache_entry())
+          AddHTMLListItem(kURL, item.disk_cache_entry()->GetKey(), out);
+        else
+          AddHTMLListItem(kURL, "Broken", out);
         break;
-      case DataElement::TYPE_BYTES_DESCRIPTION:
-      case DataElement::TYPE_UNKNOWN:
-        NOTREACHED();
+      case BlobDataItem::Type::kBytesDescription:
+        AddHTMLListItem(kType, "pending data", out);
         break;
     }
     if (item.offset()) {

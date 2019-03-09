@@ -16,34 +16,18 @@ GpuDataManager* GpuDataManager::GetInstance() {
 
 // static
 GpuDataManagerImpl* GpuDataManagerImpl::GetInstance() {
-  return base::Singleton<GpuDataManagerImpl>::get();
+  static base::NoDestructor<GpuDataManagerImpl> instance;
+  return instance.get();
 }
 
-void GpuDataManagerImpl::InitializeForTesting(
-    const std::string& gpu_blacklist_json, const gpu::GPUInfo& gpu_info) {
+void GpuDataManagerImpl::BlacklistWebGLForTesting() {
   base::AutoLock auto_lock(lock_);
-  private_->InitializeForTesting(gpu_blacklist_json, gpu_info);
-}
-
-bool GpuDataManagerImpl::IsFeatureBlacklisted(int feature) const {
-  base::AutoLock auto_lock(lock_);
-  return private_->IsFeatureBlacklisted(feature);
-}
-
-bool GpuDataManagerImpl::IsDriverBugWorkaroundActive(int feature) const {
-  base::AutoLock auto_lock(lock_);
-  return private_->IsDriverBugWorkaroundActive(feature);
+  private_->BlacklistWebGLForTesting();
 }
 
 gpu::GPUInfo GpuDataManagerImpl::GetGPUInfo() const {
   base::AutoLock auto_lock(lock_);
   return private_->GetGPUInfo();
-}
-
-void GpuDataManagerImpl::GetGpuProcessHandles(
-    const GetGpuProcessHandlesCallback& callback) const {
-  base::AutoLock auto_lock(lock_);
-  private_->GetGpuProcessHandles(callback);
 }
 
 bool GpuDataManagerImpl::GpuAccessAllowed(std::string* reason) const {
@@ -61,25 +45,21 @@ bool GpuDataManagerImpl::IsEssentialGpuInfoAvailable() const {
   return private_->IsEssentialGpuInfoAvailable();
 }
 
-bool GpuDataManagerImpl::IsCompleteGpuInfoAvailable() const {
+bool GpuDataManagerImpl::IsGpuFeatureInfoAvailable() const {
   base::AutoLock auto_lock(lock_);
-  return private_->IsCompleteGpuInfoAvailable();
+  return private_->IsGpuFeatureInfoAvailable();
 }
 
-void GpuDataManagerImpl::RequestVideoMemoryUsageStatsUpdate() const {
+gpu::GpuFeatureStatus GpuDataManagerImpl::GetFeatureStatus(
+    gpu::GpuFeatureType feature) const {
   base::AutoLock auto_lock(lock_);
-  private_->RequestVideoMemoryUsageStatsUpdate();
+  return private_->GetFeatureStatus(feature);
 }
 
-bool GpuDataManagerImpl::ShouldUseSwiftShader() const {
+void GpuDataManagerImpl::RequestVideoMemoryUsageStatsUpdate(
+    VideoMemoryUsageStatsCallback callback) const {
   base::AutoLock auto_lock(lock_);
-  return private_->ShouldUseSwiftShader();
-}
-
-void GpuDataManagerImpl::RegisterSwiftShaderPath(
-    const base::FilePath& path) {
-  base::AutoLock auto_lock(lock_);
-  private_->RegisterSwiftShaderPath(path);
+  private_->RequestVideoMemoryUsageStatsUpdate(std::move(callback));
 }
 
 void GpuDataManagerImpl::AddObserver(
@@ -94,99 +74,82 @@ void GpuDataManagerImpl::RemoveObserver(
   private_->RemoveObserver(observer);
 }
 
-void GpuDataManagerImpl::UnblockDomainFrom3DAPIs(const GURL& url) {
-  base::AutoLock auto_lock(lock_);
-  private_->UnblockDomainFrom3DAPIs(url);
-}
-
-void GpuDataManagerImpl::DisableGpuWatchdog() {
-  base::AutoLock auto_lock(lock_);
-  private_->DisableGpuWatchdog();
-}
-
-void GpuDataManagerImpl::SetGLStrings(const std::string& gl_vendor,
-                                      const std::string& gl_renderer,
-                                      const std::string& gl_version) {
-  base::AutoLock auto_lock(lock_);
-  private_->SetGLStrings(gl_vendor, gl_renderer, gl_version);
-}
-
-void GpuDataManagerImpl::GetGLStrings(std::string* gl_vendor,
-                                      std::string* gl_renderer,
-                                      std::string* gl_version) {
-  base::AutoLock auto_lock(lock_);
-  private_->GetGLStrings(gl_vendor, gl_renderer, gl_version);
-}
-
 void GpuDataManagerImpl::DisableHardwareAcceleration() {
   base::AutoLock auto_lock(lock_);
   private_->DisableHardwareAcceleration();
 }
 
-bool GpuDataManagerImpl::CanUseGpuBrowserCompositor() const {
+bool GpuDataManagerImpl::HardwareAccelerationEnabled() const {
   base::AutoLock auto_lock(lock_);
-  return private_->CanUseGpuBrowserCompositor();
-}
-
-void GpuDataManagerImpl::GetDisabledExtensions(
-    std::string* disabled_extensions) const {
-  base::AutoLock auto_lock(lock_);
-  private_->GetDisabledExtensions(disabled_extensions);
-}
-
-void GpuDataManagerImpl::Initialize() {
-  base::AutoLock auto_lock(lock_);
-  private_->Initialize();
-}
-
-void GpuDataManagerImpl::UpdateGpuInfo(const gpu::GPUInfo& gpu_info) {
-  base::AutoLock auto_lock(lock_);
-  private_->UpdateGpuInfo(gpu_info);
-}
-
-void GpuDataManagerImpl::UpdateVideoMemoryUsageStats(
-    const gpu::VideoMemoryUsageStats& video_memory_usage_stats) {
-  base::AutoLock auto_lock(lock_);
-  private_->UpdateVideoMemoryUsageStats(video_memory_usage_stats);
-}
-
-void GpuDataManagerImpl::AppendRendererCommandLine(
-    base::CommandLine* command_line) const {
-  base::AutoLock auto_lock(lock_);
-  private_->AppendRendererCommandLine(command_line);
+  return private_->HardwareAccelerationEnabled();
 }
 
 void GpuDataManagerImpl::AppendGpuCommandLine(
-    base::CommandLine* command_line,
+    base::CommandLine* command_line) const {
+  base::AutoLock auto_lock(lock_);
+  private_->AppendGpuCommandLine(command_line);
+}
+
+void GpuDataManagerImpl::RequestGpuSupportedRuntimeVersion() const {
+  base::AutoLock auto_lock(lock_);
+  private_->RequestGpuSupportedRuntimeVersion();
+}
+
+bool GpuDataManagerImpl::GpuProcessStartAllowed() const {
+  base::AutoLock auto_lock(lock_);
+  return private_->GpuProcessStartAllowed();
+}
+
+void GpuDataManagerImpl::UpdateGpuInfo(
+    const gpu::GPUInfo& gpu_info,
+    const base::Optional<gpu::GPUInfo>& gpu_info_for_hardware_gpu) {
+  base::AutoLock auto_lock(lock_);
+  private_->UpdateGpuInfo(gpu_info, gpu_info_for_hardware_gpu);
+}
+
+#if defined(OS_WIN)
+void GpuDataManagerImpl::UpdateDxDiagNode(
+    const gpu::DxDiagNode& dx_diagnostics) {
+  base::AutoLock auto_lock(lock_);
+  private_->UpdateDxDiagNode(dx_diagnostics);
+}
+
+void GpuDataManagerImpl::UpdateDx12VulkanInfo(
+    const gpu::Dx12VulkanVersionInfo& dx12_vulkan_version_info) {
+  base::AutoLock auto_lock(lock_);
+  private_->UpdateDx12VulkanInfo(dx12_vulkan_version_info);
+}
+#endif
+
+void GpuDataManagerImpl::UpdateGpuFeatureInfo(
+    const gpu::GpuFeatureInfo& gpu_feature_info,
+    const base::Optional<gpu::GpuFeatureInfo>&
+        gpu_feature_info_for_hardware_gpu) {
+  base::AutoLock auto_lock(lock_);
+  private_->UpdateGpuFeatureInfo(gpu_feature_info,
+                                 gpu_feature_info_for_hardware_gpu);
+}
+
+gpu::GpuFeatureInfo GpuDataManagerImpl::GetGpuFeatureInfo() const {
+  base::AutoLock auto_lock(lock_);
+  return private_->GetGpuFeatureInfo();
+}
+
+gpu::GPUInfo GpuDataManagerImpl::GetGPUInfoForHardwareGpu() const {
+  base::AutoLock auto_lock(lock_);
+  return private_->GetGPUInfoForHardwareGpu();
+}
+
+gpu::GpuFeatureInfo GpuDataManagerImpl::GetGpuFeatureInfoForHardwareGpu()
+    const {
+  base::AutoLock auto_lock(lock_);
+  return private_->GetGpuFeatureInfoForHardwareGpu();
+}
+
+void GpuDataManagerImpl::UpdateGpuPreferences(
     gpu::GpuPreferences* gpu_preferences) const {
   base::AutoLock auto_lock(lock_);
-  private_->AppendGpuCommandLine(command_line, gpu_preferences);
-}
-
-void GpuDataManagerImpl::UpdateRendererWebPrefs(
-    WebPreferences* prefs) const {
-  base::AutoLock auto_lock(lock_);
-  private_->UpdateRendererWebPrefs(prefs);
-}
-
-std::string GpuDataManagerImpl::GetBlacklistVersion() const {
-  base::AutoLock auto_lock(lock_);
-  return private_->GetBlacklistVersion();
-}
-
-std::string GpuDataManagerImpl::GetDriverBugListVersion() const {
-  base::AutoLock auto_lock(lock_);
-  return private_->GetDriverBugListVersion();
-}
-
-void GpuDataManagerImpl::GetBlacklistReasons(base::ListValue* reasons) const {
-  base::AutoLock auto_lock(lock_);
-  private_->GetBlacklistReasons(reasons);
-}
-
-std::vector<std::string> GpuDataManagerImpl::GetDriverBugWorkarounds() const {
-  base::AutoLock auto_lock(lock_);
-  return private_->GetDriverBugWorkarounds();
+  private_->UpdateGpuPreferences(gpu_preferences);
 }
 
 void GpuDataManagerImpl::AddLogMessage(int level,
@@ -202,7 +165,7 @@ void GpuDataManagerImpl::ProcessCrashed(
   private_->ProcessCrashed(exit_code);
 }
 
-base::ListValue* GpuDataManagerImpl::GetLogMessages() const {
+std::unique_ptr<base::ListValue> GpuDataManagerImpl::GetLogMessages() const {
   base::AutoLock auto_lock(lock_);
   return private_->GetLogMessages();
 }
@@ -212,8 +175,8 @@ void GpuDataManagerImpl::HandleGpuSwitch() {
   private_->HandleGpuSwitch();
 }
 
-void GpuDataManagerImpl::BlockDomainFrom3DAPIs(
-    const GURL& url, DomainGuilt guilt) {
+void GpuDataManagerImpl::BlockDomainFrom3DAPIs(const GURL& url,
+                                               gpu::DomainGuilt guilt) {
   base::AutoLock auto_lock(lock_);
   private_->BlockDomainFrom3DAPIs(url, guilt);
 }
@@ -227,14 +190,14 @@ bool GpuDataManagerImpl::Are3DAPIsBlocked(const GURL& top_origin_url,
       top_origin_url, render_process_id, render_frame_id, requester);
 }
 
+void GpuDataManagerImpl::UnblockDomainFrom3DAPIs(const GURL& url) {
+  base::AutoLock auto_lock(lock_);
+  private_->UnblockDomainFrom3DAPIs(url);
+}
+
 void GpuDataManagerImpl::DisableDomainBlockingFor3DAPIsForTesting() {
   base::AutoLock auto_lock(lock_);
   private_->DisableDomainBlockingFor3DAPIsForTesting();
-}
-
-size_t GpuDataManagerImpl::GetBlacklistedFeatureCount() const {
-  base::AutoLock auto_lock(lock_);
-  return private_->GetBlacklistedFeatureCount();
 }
 
 bool GpuDataManagerImpl::UpdateActiveGpu(uint32_t vendor_id,
@@ -243,25 +206,34 @@ bool GpuDataManagerImpl::UpdateActiveGpu(uint32_t vendor_id,
   return private_->UpdateActiveGpu(vendor_id, device_id);
 }
 
-void GpuDataManagerImpl::Notify3DAPIBlocked(const GURL& top_origin_url,
-                                            int render_process_id,
-                                            int render_frame_id,
-                                            ThreeDAPIType requester) {
+void GpuDataManagerImpl::NotifyGpuInfoUpdate() {
   base::AutoLock auto_lock(lock_);
-  private_->Notify3DAPIBlocked(
-      top_origin_url, render_process_id, render_frame_id, requester);
+  private_->NotifyGpuInfoUpdate();
 }
 
-void GpuDataManagerImpl::OnGpuProcessInitFailure() {
+gpu::GpuMode GpuDataManagerImpl::GetGpuMode() const {
   base::AutoLock auto_lock(lock_);
-  private_->OnGpuProcessInitFailure();
+  return private_->GetGpuMode();
+}
+
+void GpuDataManagerImpl::FallBackToNextGpuMode() {
+  base::AutoLock auto_lock(lock_);
+  private_->FallBackToNextGpuMode();
+}
+
+bool GpuDataManagerImpl::IsGpuProcessUsingHardwareGpu() const {
+  base::AutoLock auto_lock(lock_);
+  return private_->IsGpuProcessUsingHardwareGpu();
+}
+
+void GpuDataManagerImpl::SetApplicationVisible(bool is_visible) {
+  base::AutoLock auto_lock(lock_);
+  private_->SetApplicationVisible(is_visible);
 }
 
 GpuDataManagerImpl::GpuDataManagerImpl()
-    : private_(GpuDataManagerImplPrivate::Create(this)) {
-}
+    : private_(std::make_unique<GpuDataManagerImplPrivate>(this)) {}
 
-GpuDataManagerImpl::~GpuDataManagerImpl() {
-}
+GpuDataManagerImpl::~GpuDataManagerImpl() = default;
 
 }  // namespace content

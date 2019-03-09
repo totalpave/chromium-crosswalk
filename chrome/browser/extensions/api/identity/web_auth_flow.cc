@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/api/identity/web_auth_flow.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/base64.h"
@@ -18,25 +19,26 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/identity_private.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chrome/grit/browser_resources.h"
 #include "components/guest_view/browser/guest_view_base.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/resource_request_details.h"
 #include "content/public/browser/web_contents.h"
 #include "crypto/random.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_system.h"
-#include "grit/browser_resources.h"
+#include "net/http/http_response_headers.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 using content::RenderViewHost;
-using content::ResourceRedirectDetails;
 using content::WebContents;
 using content::WebContentsObserver;
 using guest_view::GuestViewBase;
@@ -55,6 +57,7 @@ WebAuthFlow::WebAuthFlow(
       provider_url_(provider_url),
       mode_(mode),
       embedded_window_created_(false) {
+  TRACE_EVENT_ASYNC_BEGIN0("identity", "WebAuthFlow", this);
 }
 
 WebAuthFlow::~WebAuthFlow() {
@@ -71,6 +74,7 @@ WebAuthFlow::~WebAuthFlow() {
     if (app_window_ && app_window_->web_contents())
       app_window_->web_contents()->Close();
   }
+  TRACE_EVENT_ASYNC_END0("identity", "WebAuthFlow", this);
 }
 
 void WebAuthFlow::Start() {
@@ -91,10 +95,10 @@ void WebAuthFlow::Start() {
   else
     args->AppendString("silent");
 
-  std::unique_ptr<Event> event(new Event(
-      events::IDENTITY_PRIVATE_ON_WEB_FLOW_REQUEST,
-      identity_private::OnWebFlowRequest::kEventName, std::move(args)));
-  event->restrict_to_browser_context = profile_;
+  auto event =
+      std::make_unique<Event>(events::IDENTITY_PRIVATE_ON_WEB_FLOW_REQUEST,
+                              identity_private::OnWebFlowRequest::kEventName,
+                              std::move(args), profile_);
   ExtensionSystem* system = ExtensionSystem::Get(profile_);
 
   extensions::ComponentLoader* component_loader =
@@ -177,39 +181,7 @@ void WebAuthFlow::RenderProcessGone(base::TerminationStatus status) {
     delegate_->OnAuthFlowFailure(WebAuthFlow::WINDOW_CLOSED);
 }
 
-void WebAuthFlow::DidStartProvisionalLoadForFrame(
-    content::RenderFrameHost* render_frame_host,
-    const GURL& validated_url,
-    bool is_error_page,
-    bool is_iframe_srcdoc) {
-  if (!render_frame_host->GetParent())
-    BeforeUrlLoaded(validated_url);
-}
-
-void WebAuthFlow::DidFailProvisionalLoad(
-    content::RenderFrameHost* render_frame_host,
-    const GURL& validated_url,
-    int error_code,
-    const base::string16& error_description,
-    bool was_ignored_by_handler) {
-  TRACE_EVENT_ASYNC_STEP_PAST1("identity",
-                               "WebAuthFlow",
-                               this,
-                               "DidFailProvisionalLoad",
-                               "error_code",
-                               error_code);
-  if (delegate_)
-    delegate_->OnAuthFlowFailure(LOAD_FAILED);
-}
-
-void WebAuthFlow::DidGetRedirectForResourceRequest(
-    content::RenderFrameHost* render_frame_host,
-    const content::ResourceRedirectDetails& details) {
-  BeforeUrlLoaded(details.new_url);
-}
-
-void WebAuthFlow::TitleWasSet(content::NavigationEntry* entry,
-                              bool explicit_set) {
+void WebAuthFlow::TitleWasSet(content::NavigationEntry* entry) {
   if (delegate_)
     delegate_->OnAuthFlowTitleChange(base::UTF16ToUTF8(entry->GetTitle()));
 }
@@ -218,10 +190,57 @@ void WebAuthFlow::DidStopLoading() {
   AfterUrlLoaded();
 }
 
-void WebAuthFlow::DidNavigateMainFrame(
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
-  if (delegate_ && details.http_status_code >= 400)
+void WebAuthFlow::DidStartNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (navigation_handle->IsInMainFrame())
+    BeforeUrlLoaded(navigation_handle->GetURL());
+}
+
+void WebAuthFlow::DidRedirectNavigation(
+    content::NavigationHandle* navigation_handle) {
+  BeforeUrlLoaded(navigation_handle->GetURL());
+}
+
+void WebAuthFlow::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  bool failed = false;
+
+  if (navigation_handle->GetNetErrorCode() != net::OK) {
+    if (navigation_handle->GetURL().spec() == url::kAboutBlankURL) {
+      // As part of the OAUth 2.0 protocol with GAIA, at the end of the web
+      // authorization flow, GAIA redirects to a custom scheme URL of type
+      // |com.googleusercontent.apps.123:/<extension_id>|, where
+      // |com.googleusercontent.apps.123| is the reverse DNS notation of the
+      // client ID of the extension that started the web sign-in flow. (The
+      // intent of this weird URL scheme was to make sure it couldn't be loaded
+      // anywhere at all as this makes it much harder to pull off a cross-site
+      // attack that could leak the returned oauth token to a malicious script
+      // or site.)
+      //
+      // This URL is not an accessible URL from within a Guest WebView, so
+      // during its load of this URL, Chrome changes it to |about:blank| and
+      // then the Identity Scope Approval Dialog extension fails to load it.
+      // Failing to load |about:blank| must not be treated as a failure of
+      // the web auth flow.
+      DCHECK_EQ(net::ERR_UNKNOWN_URL_SCHEME,
+                navigation_handle->GetNetErrorCode());
+    } else {
+      failed = true;
+      TRACE_EVENT_ASYNC_STEP_PAST1("identity", "WebAuthFlow", this,
+                                   "DidFinishNavigationFailure", "error_code",
+                                   navigation_handle->GetNetErrorCode());
+    }
+  } else if (navigation_handle->IsInMainFrame() &&
+             navigation_handle->GetResponseHeaders() &&
+             navigation_handle->GetResponseHeaders()->response_code() >= 400) {
+    failed = true;
+    TRACE_EVENT_ASYNC_STEP_PAST1(
+        "identity", "WebAuthFlow", this, "DidFinishNavigationFailure",
+        "response_code",
+        navigation_handle->GetResponseHeaders()->response_code());
+  }
+
+  if (failed && delegate_)
     delegate_->OnAuthFlowFailure(LOAD_FAILED);
 }
 

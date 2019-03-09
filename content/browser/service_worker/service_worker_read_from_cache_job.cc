@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "base/bind.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/trace_event/trace_event.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_disk_cache.h"
@@ -34,18 +36,46 @@ ServiceWorkerReadFromCacheJob::ServiceWorkerReadFromCacheJob(
       resource_id_(resource_id),
       context_(context),
       version_(version),
-      weak_factory_(this) {}
+      weak_factory_(this) {
+  DCHECK(version_);
+#if DCHECK_IS_ON()
+  switch (version_->script_type()) {
+    case blink::mojom::ScriptType::kClassic:
+      // For classic scripts, the main service worker script should have the
+      // "service worker" resource type and imported scripts should have the
+      // "script" resource type.
+      DCHECK(resource_type_ == RESOURCE_TYPE_SCRIPT ||
+             (resource_type_ == RESOURCE_TYPE_SERVICE_WORKER &&
+              version_->script_url() == request_->url()));
+      break;
+    case blink::mojom::ScriptType::kModule:
+      // For module scripts, both the main service worker script and
+      // static-imported scripts should have the "service worker" resource type
+      // because static import inherits the resource type of the top-level
+      // module script.
+      DCHECK_EQ(RESOURCE_TYPE_SERVICE_WORKER, resource_type_);
+      break;
+  }
+#endif  // DCHECK_IS_ON()
+  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("ServiceWorker",
+                                    "ServiceWorkerReadFromCacheJob", this,
+                                    "URL", request_->url().spec());
+}
 
 ServiceWorkerReadFromCacheJob::~ServiceWorkerReadFromCacheJob() {
+  TRACE_EVENT_NESTABLE_ASYNC_END0("ServiceWorker",
+                                  "ServiceWorkerReadFromCacheJob", this);
 }
 
 void ServiceWorkerReadFromCacheJob::Start() {
+  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("ServiceWorker", "ReadInfo", this);
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&ServiceWorkerReadFromCacheJob::StartAsync,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&ServiceWorkerReadFromCacheJob::StartAsync,
+                                weak_factory_.GetWeakPtr()));
 }
 
 void ServiceWorkerReadFromCacheJob::Kill() {
+  TRACE_EVENT_NESTABLE_ASYNC_INSTANT0("ServiceWorker", "Kill", this);
   if (has_been_killed_)
     return;
   weak_factory_.InvalidateWeakPtrs();
@@ -83,12 +113,6 @@ void ServiceWorkerReadFromCacheJob::GetResponseInfo(
   *info = *http_info();
 }
 
-int ServiceWorkerReadFromCacheJob::GetResponseCode() const {
-  if (!http_info())
-    return -1;
-  return http_info()->headers->response_code();
-}
-
 void ServiceWorkerReadFromCacheJob::SetExtraRequestHeaders(
       const net::HttpRequestHeaders& headers) {
   std::string value;
@@ -108,20 +132,17 @@ int ServiceWorkerReadFromCacheJob::ReadRawData(net::IOBuffer* buf,
                                                int buf_size) {
   DCHECK_NE(buf_size, 0);
   DCHECK(!reader_->IsReadPending());
-  TRACE_EVENT_ASYNC_BEGIN1("ServiceWorker",
-                           "ServiceWorkerReadFromCacheJob::ReadRawData",
-                           this,
-                           "URL", request_->url().spec());
-  reader_->ReadData(buf, buf_size,
-                    base::Bind(&ServiceWorkerReadFromCacheJob::OnReadComplete,
-                               weak_factory_.GetWeakPtr()));
+  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("ServiceWorker", "ReadRawData", this,
+                                    "buf_size", buf_size);
+  reader_->ReadData(
+      buf, buf_size,
+      base::BindOnce(&ServiceWorkerReadFromCacheJob::OnReadComplete,
+                     weak_factory_.GetWeakPtr()));
   return net::ERR_IO_PENDING;
 }
 
 void ServiceWorkerReadFromCacheJob::StartAsync() {
-  TRACE_EVENT_ASYNC_BEGIN1("ServiceWorker",
-                           "ServiceWorkerReadFromCacheJob::ReadInfo", this,
-                           "URL", request_->url().spec());
+  TRACE_EVENT_NESTABLE_ASYNC_INSTANT0("ServiceWorker", "StartAsync", this);
   if (!context_) {
     // NotifyStartError is not safe to call synchronously in Start.
     NotifyStartError(
@@ -137,8 +158,8 @@ void ServiceWorkerReadFromCacheJob::StartAsync() {
   http_info_io_buffer_ = new HttpResponseInfoIOBuffer;
   reader_->ReadInfo(
       http_info_io_buffer_.get(),
-      base::Bind(&ServiceWorkerReadFromCacheJob::OnReadInfoComplete,
-                 weak_factory_.GetWeakPtr()));
+      base::BindOnce(&ServiceWorkerReadFromCacheJob::OnReadInfoComplete,
+                     weak_factory_.GetWeakPtr()));
 }
 
 const net::HttpResponseInfo* ServiceWorkerReadFromCacheJob::http_info() const {
@@ -164,12 +185,10 @@ void ServiceWorkerReadFromCacheJob::OnReadInfoComplete(int result) {
   if (is_range_request())
     SetupRangeResponse(http_info_io_buffer_->response_data_size);
   http_info_io_buffer_ = nullptr;
-  if (request_->url() == version_->script_url())
+  if (is_main_script())
     version_->SetMainScriptHttpResponseInfo(*http_info_);
-  TRACE_EVENT_ASYNC_END1("ServiceWorker",
-                         "ServiceWorkerReadFromCacheJob::ReadInfo",
-                         this,
-                         "Result", result);
+  TRACE_EVENT_NESTABLE_ASYNC_END1("ServiceWorker", "ReadInfo", this, "Result",
+                                  result);
   NotifyHeadersComplete();
 }
 
@@ -199,7 +218,8 @@ void ServiceWorkerReadFromCacheJob::SetupRangeResponse(int resource_size) {
 void ServiceWorkerReadFromCacheJob::Done(const net::URLRequestStatus& status) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   if (!status.is_success()) {
-    version_->SetStartWorkerStatusCode(SERVICE_WORKER_ERROR_DISK_CACHE);
+    version_->SetStartWorkerStatusCode(
+        blink::ServiceWorkerStatusCode::kErrorDiskCache);
     // TODO(falken): Retry before evicting.
     if (context_) {
       ServiceWorkerRegistration* registration =
@@ -223,12 +243,10 @@ void ServiceWorkerReadFromCacheJob::OnReadComplete(int result) {
     Done(net::URLRequestStatus(net::URLRequestStatus::FAILED, result));
   }
 
+  TRACE_EVENT_NESTABLE_ASYNC_END1("ServiceWorker", "ReadRawData", this,
+                                  "Result", result);
   ServiceWorkerMetrics::CountReadResponseResult(check_result);
   ReadRawDataComplete(result);
-  TRACE_EVENT_ASYNC_END1("ServiceWorker",
-                         "ServiceWorkerReadFromCacheJob::ReadRawData",
-                         this,
-                         "Result", result);
 }
 
 }  // namespace content

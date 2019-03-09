@@ -2,15 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/callback.h"
+#include "base/containers/queue.h"
 #include "base/message_loop/message_loop.h"
-#include "base/single_thread_task_runner.h"
+#include "base/sequenced_task_runner.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/platform_thread.h"
 #include "mojo/public/cpp/bindings/associated_binding.h"
-#include "mojo/public/cpp/bindings/associated_group.h"
 #include "mojo/public/cpp/bindings/associated_interface_ptr.h"
 #include "mojo/public/cpp/bindings/associated_interface_ptr_info.h"
 #include "mojo/public/cpp/bindings/associated_interface_request.h"
@@ -22,7 +24,7 @@ namespace mojo {
 namespace test {
 namespace {
 
-class TestTaskRunner : public base::SingleThreadTaskRunner {
+class TestTaskRunner : public base::SequencedTaskRunner {
  public:
   TestTaskRunner()
       : thread_id_(base::PlatformThread::CurrentRef()),
@@ -30,42 +32,42 @@ class TestTaskRunner : public base::SingleThreadTaskRunner {
         task_ready_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                     base::WaitableEvent::InitialState::NOT_SIGNALED) {}
 
-  bool PostNonNestableDelayedTask(const tracked_objects::Location& from_here,
-                                  const base::Closure& task,
+  bool PostNonNestableDelayedTask(const base::Location& from_here,
+                                  base::OnceClosure task,
                                   base::TimeDelta delay) override {
     NOTREACHED();
     return false;
   }
 
-  bool PostDelayedTask(const tracked_objects::Location& from_here,
-                       const base::Closure& task,
+  bool PostDelayedTask(const base::Location& from_here,
+                       base::OnceClosure task,
                        base::TimeDelta delay) override {
     {
       base::AutoLock locker(lock_);
-      tasks_.push(task);
+      tasks_.push(std::move(task));
     }
     task_ready_.Signal();
     return true;
   }
-  bool RunsTasksOnCurrentThread() const override {
+  bool RunsTasksInCurrentSequence() const override {
     return base::PlatformThread::CurrentRef() == thread_id_;
   }
 
   // Only quits when Quit() is called.
   void Run() {
-    DCHECK(RunsTasksOnCurrentThread());
+    DCHECK(RunsTasksInCurrentSequence());
     quit_called_ = false;
 
     while (true) {
       {
         base::AutoLock locker(lock_);
         while (!tasks_.empty()) {
-          auto task = tasks_.front();
+          auto task = std::move(tasks_.front());
           tasks_.pop();
 
           {
             base::AutoUnlock unlocker(lock_);
-            task.Run();
+            std::move(task).Run();
             if (quit_called_)
               return;
           }
@@ -76,24 +78,24 @@ class TestTaskRunner : public base::SingleThreadTaskRunner {
   }
 
   void Quit() {
-    DCHECK(RunsTasksOnCurrentThread());
+    DCHECK(RunsTasksInCurrentSequence());
     quit_called_ = true;
   }
 
   // Waits until one task is ready and runs it.
   void RunOneTask() {
-    DCHECK(RunsTasksOnCurrentThread());
+    DCHECK(RunsTasksInCurrentSequence());
 
     while (true) {
       {
         base::AutoLock locker(lock_);
         if (!tasks_.empty()) {
-          auto task = tasks_.front();
+          auto task = std::move(tasks_.front());
           tasks_.pop();
 
           {
             base::AutoUnlock unlocker(lock_);
-            task.Run();
+            std::move(task).Run();
             return;
           }
         }
@@ -111,7 +113,7 @@ class TestTaskRunner : public base::SingleThreadTaskRunner {
 
   // Protect |tasks_|.
   base::Lock lock_;
-  std::queue<base::Closure> tasks_;
+  base::queue<base::OnceClosure> tasks_;
 
   DISALLOW_COPY_AND_ASSIGN(TestTaskRunner);
 };
@@ -120,20 +122,20 @@ template <typename BindingType, typename RequestType>
 class IntegerSenderImpl : public IntegerSender {
  public:
   IntegerSenderImpl(RequestType request,
-                    scoped_refptr<base::SingleThreadTaskRunner> runner)
+                    scoped_refptr<base::SequencedTaskRunner> runner)
       : binding_(this, std::move(request), std::move(runner)) {}
 
   ~IntegerSenderImpl() override {}
 
-  using EchoHandler = base::Callback<void(int32_t, const EchoCallback&)>;
+  using EchoHandler = base::RepeatingCallback<void(int32_t, EchoCallback)>;
 
   void set_echo_handler(const EchoHandler& handler) { echo_handler_ = handler; }
 
-  void Echo(int32_t value, const EchoCallback& callback) override {
+  void Echo(int32_t value, EchoCallback callback) override {
     if (echo_handler_.is_null())
-      callback.Run(value);
+      std::move(callback).Run(value);
     else
-      echo_handler_.Run(value, callback);
+      echo_handler_.Run(value, std::move(callback));
   }
   void Send(int32_t value) override { NOTREACHED(); }
 
@@ -151,8 +153,8 @@ class IntegerSenderConnectionImpl : public IntegerSenderConnection {
 
   explicit IntegerSenderConnectionImpl(
       IntegerSenderConnectionRequest request,
-      scoped_refptr<base::SingleThreadTaskRunner> runner,
-      scoped_refptr<base::SingleThreadTaskRunner> sender_runner)
+      scoped_refptr<base::SequencedTaskRunner> runner,
+      scoped_refptr<base::SequencedTaskRunner> sender_runner)
       : binding_(this, std::move(request), std::move(runner)),
         sender_runner_(std::move(sender_runner)) {}
 
@@ -166,7 +168,7 @@ class IntegerSenderConnectionImpl : public IntegerSenderConnection {
     get_sender_notification_.Run();
   }
 
-  void AsyncGetSender(const AsyncGetSenderCallback& callback) override {
+  void AsyncGetSender(AsyncGetSenderCallback callback) override {
     NOTREACHED();
   }
 
@@ -177,7 +179,7 @@ class IntegerSenderConnectionImpl : public IntegerSenderConnection {
  private:
   Binding<IntegerSenderConnection> binding_;
   std::unique_ptr<SenderType> sender_impl_;
-  scoped_refptr<base::SingleThreadTaskRunner> sender_runner_;
+  scoped_refptr<base::SequencedTaskRunner> sender_runner_;
   base::Closure get_sender_notification_;
 };
 
@@ -187,7 +189,7 @@ class BindTaskRunnerTest : public testing::Test {
     binding_task_runner_ = scoped_refptr<TestTaskRunner>(new TestTaskRunner);
     ptr_task_runner_ = scoped_refptr<TestTaskRunner>(new TestTaskRunner);
 
-    auto request = GetProxy(&ptr_, ptr_task_runner_);
+    auto request = MakeRequest(&ptr_, ptr_task_runner_);
     impl_.reset(new ImplType(std::move(request), binding_task_runner_));
   }
 
@@ -213,7 +215,7 @@ class AssociatedBindTaskRunnerTest : public testing::Test {
     sender_ptr_task_runner_ = scoped_refptr<TestTaskRunner>(new TestTaskRunner);
 
     auto connection_request =
-        GetProxy(&connection_ptr_, connection_ptr_task_runner_);
+        MakeRequest(&connection_ptr_, connection_ptr_task_runner_);
     connection_impl_.reset(new IntegerSenderConnectionImpl(
         std::move(connection_request), connection_binding_task_runner_,
         sender_binding_task_runner_));
@@ -222,9 +224,8 @@ class AssociatedBindTaskRunnerTest : public testing::Test {
         base::Bind(&AssociatedBindTaskRunnerTest::QuitTaskRunner,
                    base::Unretained(this)));
 
-    connection_ptr_->GetSender(GetProxy(&sender_ptr_,
-                                        connection_ptr_.associated_group(),
-                                        sender_ptr_task_runner_));
+    connection_ptr_->GetSender(
+        MakeRequest(&sender_ptr_, sender_ptr_task_runner_));
     connection_binding_task_runner_->Run();
   }
 
@@ -264,10 +265,10 @@ void DoExpectValueSetFlagForwardValueAndQuitTaskRunner(
     bool* flag,
     scoped_refptr<TestTaskRunner> task_runner,
     int32_t value,
-    const IntegerSender::EchoCallback& callback) {
+    IntegerSender::EchoCallback callback) {
   EXPECT_EQ(expected_value, value);
   *flag = true;
-  callback.Run(value);
+  std::move(callback).Run(value);
   task_runner->Quit();
 }
 
@@ -320,10 +321,10 @@ TEST_F(BindTaskRunnerTest, PtrConnectionError) {
 void ExpectValueSetFlagAndForward(int32_t expected_value,
                                   bool* flag,
                                   int32_t value,
-                                  const IntegerSender::EchoCallback& callback) {
+                                  IntegerSender::EchoCallback callback) {
   EXPECT_EQ(expected_value, value);
   *flag = true;
-  callback.Run(value);
+  std::move(callback).Run(value);
 }
 
 TEST_F(AssociatedBindTaskRunnerTest, MethodCall) {

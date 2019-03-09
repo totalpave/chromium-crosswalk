@@ -4,17 +4,22 @@
 
 #include "net/dns/address_sorter_posix.h"
 
+#include <memory>
+#include <string>
+
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
+#include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_factory.h"
+#include "net/socket/datagram_client_socket.h"
 #include "net/socket/socket_performance_watcher.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/stream_socket.h"
-#include "net/udp/datagram_client_socket.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -35,18 +40,22 @@ class TestUDPClientSocket : public DatagramClientSocket {
   explicit TestUDPClientSocket(const AddressMapping* mapping)
       : mapping_(mapping), connected_(false)  {}
 
-  ~TestUDPClientSocket() override {}
+  ~TestUDPClientSocket() override = default;
 
-  int Read(IOBuffer*, int, const CompletionCallback&) override {
+  int Read(IOBuffer*, int, CompletionOnceCallback) override {
     NOTIMPLEMENTED();
     return OK;
   }
-  int Write(IOBuffer*, int, const CompletionCallback&) override {
+  int Write(IOBuffer*,
+            int,
+            CompletionOnceCallback,
+            const NetworkTrafficAnnotationTag& traffic_annotation) override {
     NOTIMPLEMENTED();
     return OK;
   }
   int SetReceiveBufferSize(int32_t) override { return OK; }
   int SetSendBufferSize(int32_t) override { return OK; }
+  int SetDoNotFragment() override { return OK; }
 
   void Close() override {}
   int GetPeerAddress(IPEndPoint* address) const override {
@@ -59,6 +68,38 @@ class TestUDPClientSocket : public DatagramClientSocket {
     *address = local_endpoint_;
     return OK;
   }
+  void UseNonBlockingIO() override {}
+  int WriteAsync(
+      const char* buffer,
+      size_t buf_len,
+      CompletionOnceCallback callback,
+      const NetworkTrafficAnnotationTag& traffic_annotation) override {
+    NOTIMPLEMENTED();
+    return OK;
+  }
+  int WriteAsync(
+      DatagramBuffers buffers,
+      CompletionOnceCallback callback,
+      const NetworkTrafficAnnotationTag& traffic_annotation) override {
+    NOTIMPLEMENTED();
+    return OK;
+  }
+  DatagramBuffers GetUnwrittenBuffers() override {
+    DatagramBuffers result;
+    NOTIMPLEMENTED();
+    return result;
+  }
+  void SetWriteAsyncEnabled(bool enabled) override {}
+  void SetMaxPacketSize(size_t max_packet_size) override {}
+  bool WriteAsyncEnabled() override { return false; }
+  void SetWriteMultiCoreEnabled(bool enabled) override {}
+  void SetSendmmsgEnabled(bool enabled) override {}
+  void SetWriteBatchingActive(bool active) override {}
+  int SetMulticastInterface(uint32_t interface_index) override {
+    NOTIMPLEMENTED();
+    return ERR_NOT_IMPLEMENTED;
+  }
+
   int ConnectUsingNetwork(NetworkChangeNotifier::NetworkHandle network,
                           const IPEndPoint& address) override {
     NOTIMPLEMENTED();
@@ -71,11 +112,13 @@ class TestUDPClientSocket : public DatagramClientSocket {
   NetworkChangeNotifier::NetworkHandle GetBoundNetwork() const override {
     return NetworkChangeNotifier::kInvalidNetworkHandle;
   }
+  void ApplySocketTag(const SocketTag& tag) override {}
+  void SetMsgConfirm(bool confirm) override {}
 
   int Connect(const IPEndPoint& remote) override {
     if (connected_)
       return ERR_UNEXPECTED;
-    AddressMapping::const_iterator it = mapping_->find(remote.address());
+    auto it = mapping_->find(remote.address());
     if (it == mapping_->end())
       return ERR_FAILED;
     connected_ = true;
@@ -83,10 +126,10 @@ class TestUDPClientSocket : public DatagramClientSocket {
     return OK;
   }
 
-  const BoundNetLog& NetLog() const override { return net_log_; }
+  const NetLogWithSource& NetLog() const override { return net_log_; }
 
  private:
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
   const AddressMapping* mapping_;
   bool connected_;
   IPEndPoint local_endpoint_;
@@ -97,35 +140,47 @@ class TestUDPClientSocket : public DatagramClientSocket {
 // Creates TestUDPClientSockets and maintains an AddressMapping.
 class TestSocketFactory : public ClientSocketFactory {
  public:
-  TestSocketFactory() {}
-  ~TestSocketFactory() override {}
+  TestSocketFactory() = default;
+  ~TestSocketFactory() override = default;
 
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType,
-      const RandIntCallback&,
       NetLog*,
-      const NetLog::Source&) override {
+      const NetLogSource&) override {
     return std::unique_ptr<DatagramClientSocket>(
         new TestUDPClientSocket(&mapping_));
   }
-  std::unique_ptr<StreamSocket> CreateTransportClientSocket(
+  std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList&,
       std::unique_ptr<SocketPerformanceWatcher>,
       NetLog*,
-      const NetLog::Source&) override {
+      const NetLogSource&) override {
     NOTIMPLEMENTED();
-    return std::unique_ptr<StreamSocket>();
+    return nullptr;
   }
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
-      std::unique_ptr<ClientSocketHandle>,
+      std::unique_ptr<StreamSocket>,
       const HostPortPair&,
       const SSLConfig&,
       const SSLClientSocketContext&) override {
     NOTIMPLEMENTED();
     return std::unique_ptr<SSLClientSocket>();
   }
-  void ClearSSLSessionCache() override { NOTIMPLEMENTED(); }
-
+  std::unique_ptr<ProxyClientSocket> CreateProxyClientSocket(
+      std::unique_ptr<StreamSocket> stream_socket,
+      const std::string& user_agent,
+      const HostPortPair& endpoint,
+      const ProxyServer& proxy_server,
+      HttpAuthController* http_auth_controller,
+      bool tunnel,
+      bool using_spdy,
+      NextProto negotiated_protocol,
+      ProxyDelegate* proxy_delegate,
+      bool is_https_proxy,
+      const NetworkTrafficAnnotationTag& traffic_annotation) override {
+    NOTIMPLEMENTED();
+    return nullptr;
+  }
   void AddMapping(const IPAddress& dst, const IPAddress& src) {
     mapping_[dst] = src;
   }
@@ -137,13 +192,13 @@ class TestSocketFactory : public ClientSocketFactory {
 };
 
 void OnSortComplete(AddressList* result_buf,
-                    const CompletionCallback& callback,
+                    CompletionOnceCallback callback,
                     bool success,
                     const AddressList& result) {
   EXPECT_TRUE(success);
   if (success)
     *result_buf = result;
-  callback.Run(OK);
+  std::move(callback).Run(OK);
 }
 
 }  // namespace
@@ -176,8 +231,8 @@ class AddressSorterPosixTest : public testing::Test {
 
     AddressList result;
     TestCompletionCallback callback;
-    sorter_.Sort(list, base::Bind(&OnSortComplete, &result,
-                                  callback.callback()));
+    sorter_.Sort(list,
+                 base::BindOnce(&OnSortComplete, &result, callback.callback()));
     callback.WaitForResult();
 
     for (size_t i = 0; (i < result.size()) || (order[i] >= 0); ++i) {

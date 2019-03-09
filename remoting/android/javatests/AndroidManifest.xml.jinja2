@@ -11,12 +11,12 @@
     <!-- We add an application tag here just so that we can indicate that this
          package needs to link against the android.test library, which is
          needed when building test cases. -->
-    <uses-sdk android:minSdkVersion="14" android:targetSdkVersion="23" />
+    <uses-sdk android:minSdkVersion="19" android:targetSdkVersion="23" />
     <uses-permission android:name="android.permission.RUN_INSTRUMENTATION" />
     <application>
         <uses-library android:name="android.test.runner" />
     </application>
-    <instrumentation android:name="android.test.InstrumentationTestRunner"
+    <instrumentation android:name="org.chromium.base.test.BaseChromiumAndroidJUnitRunner"
         android:targetPackage="{{ APK_PACKAGE_NAME }}"
         android:label="Tests for {{ APK_PACKAGE_NAME }}"/>
 </manifest>

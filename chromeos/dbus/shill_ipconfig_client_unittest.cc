@@ -4,7 +4,10 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/run_loop.h"
 #include "base/values.h"
 #include "chromeos/dbus/shill_client_unittest_base.h"
 #include "chromeos/dbus/shill_ipconfig_client.h"
@@ -38,10 +41,8 @@ class ShillIPConfigClientTest : public ShillClientUnittestBase {
     client_.reset(ShillIPConfigClient::Create());
     client_->Init(mock_bus_.get());
     // Run the message loop to run the signal connection result callback.
-    message_loop_.RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
-
-  void TearDown() override { ShillClientUnittestBase::TearDown(); }
 
  protected:
   std::unique_ptr<ShillIPConfigClient> client_;
@@ -49,7 +50,7 @@ class ShillIPConfigClientTest : public ShillClientUnittestBase {
 
 TEST_F(ShillIPConfigClientTest, PropertyChanged) {
   // Create a signal.
-  const base::FundamentalValue kConnected(true);
+  const base::Value kConnected(true);
   dbus::Signal signal(shill::kFlimflamIPConfigInterface,
                       shill::kMonitorPropertyChanged);
   dbus::MessageWriter writer(&signal);
@@ -104,10 +105,8 @@ TEST_F(ShillIPConfigClientTest, GetProperties) {
 
   // Create the expected value.
   base::DictionaryValue value;
-  value.SetWithoutPathExpansion(shill::kAddressProperty,
-                                new base::StringValue(kAddress));
-  value.SetWithoutPathExpansion(shill::kMtuProperty,
-                                new base::FundamentalValue(kMtu));
+  value.SetKey(shill::kAddressProperty, base::Value(kAddress));
+  value.SetKey(shill::kMtuProperty, base::Value(kMtu));
 
   // Set expectations.
   PrepareForMethodCall(shill::kGetPropertiesFunction,
@@ -117,7 +116,7 @@ TEST_F(ShillIPConfigClientTest, GetProperties) {
   client_->GetProperties(dbus::ObjectPath(kExampleIPConfigPath),
                          base::Bind(&ExpectDictionaryValueResult, &value));
   // Run the message loop.
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(ShillIPConfigClientTest, SetProperty) {
@@ -127,7 +126,7 @@ TEST_F(ShillIPConfigClientTest, SetProperty) {
   std::unique_ptr<dbus::Response> response(dbus::Response::CreateEmpty());
 
   // Set expectations.
-  base::StringValue value(kAddress);
+  base::Value value(kAddress);
   PrepareForMethodCall(shill::kSetPropertyFunction,
                        base::Bind(&ExpectStringAndValueArguments,
                                   shill::kAddressProperty,
@@ -135,11 +134,10 @@ TEST_F(ShillIPConfigClientTest, SetProperty) {
                        response.get());
   // Call method.
   client_->SetProperty(dbus::ObjectPath(kExampleIPConfigPath),
-                       shill::kAddressProperty,
-                       value,
-                       base::Bind(&ExpectNoResultValue));
+                       shill::kAddressProperty, value,
+                       base::BindOnce(&ExpectNoResultValue));
   // Run the message loop.
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(ShillIPConfigClientTest, ClearProperty) {
@@ -153,10 +151,10 @@ TEST_F(ShillIPConfigClientTest, ClearProperty) {
                        response.get());
   // Call method.
   client_->ClearProperty(dbus::ObjectPath(kExampleIPConfigPath),
-                       shill::kAddressProperty,
-                       base::Bind(&ExpectNoResultValue));
+                         shill::kAddressProperty,
+                         base::BindOnce(&ExpectNoResultValue));
   // Run the message loop.
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(ShillIPConfigClientTest, Remove) {
@@ -169,10 +167,10 @@ TEST_F(ShillIPConfigClientTest, Remove) {
                        response.get());
   // Call method.
   client_->Remove(dbus::ObjectPath(kExampleIPConfigPath),
-                  base::Bind(&ExpectNoResultValue));
+                  base::BindOnce(&ExpectNoResultValue));
 
   // Run the message loop.
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
 }
 
 }  // namespace chromeos

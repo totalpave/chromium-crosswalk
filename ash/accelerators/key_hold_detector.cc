@@ -7,11 +7,12 @@
 #include <utility>
 
 #include "ash/shell.h"
+#include "base/bind.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/events/event_dispatcher.h"
-#include "ui/events/event_processor.h"
+#include "ui/events/event_sink.h"
 
 namespace ash {
 namespace {
@@ -23,8 +24,7 @@ void DispatchPressedEvent(const ui::KeyEvent& key_event,
     return;
   ui::KeyEvent event(key_event);
   aura::Window* target = *(tracker->windows().begin());
-  ignore_result(
-      target->GetHost()->event_processor()->OnEventFromSource(&event));
+  ignore_result(target->GetHost()->event_sink()->OnEventFromSource(&event));
 }
 
 void PostPressedEvent(ui::KeyEvent* event) {
@@ -37,7 +37,7 @@ void PostPressedEvent(ui::KeyEvent* event) {
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&DispatchPressedEvent, pressed_event, base::Passed(&tracker)));
+      base::BindOnce(&DispatchPressedEvent, pressed_event, std::move(tracker)));
 }
 
 }  // namespace
@@ -45,7 +45,7 @@ void PostPressedEvent(ui::KeyEvent* event) {
 KeyHoldDetector::KeyHoldDetector(std::unique_ptr<Delegate> delegate)
     : state_(INITIAL), delegate_(std::move(delegate)) {}
 
-KeyHoldDetector::~KeyHoldDetector() {}
+KeyHoldDetector::~KeyHoldDetector() = default;
 
 void KeyHoldDetector::OnKeyEvent(ui::KeyEvent* event) {
   if (!delegate_->ShouldProcessEvent(event))
@@ -68,7 +68,7 @@ void KeyHoldDetector::OnKeyEvent(ui::KeyEvent* event) {
         break;
       case PRESSED:
         state_ = HOLD;
-      // pass through
+        FALLTHROUGH;
       case HOLD:
         delegate_->OnKeyHold(event);
         if (delegate_->ShouldStopEventPropagation())

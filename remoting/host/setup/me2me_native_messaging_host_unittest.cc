@@ -5,14 +5,16 @@
 #include "remoting/host/setup/me2me_native_messaging_host.h"
 
 #include <stddef.h>
-#include <stdint.h>
 
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
@@ -23,10 +25,12 @@
 #include "net/base/file_stream.h"
 #include "net/base/network_interfaces.h"
 #include "remoting/base/auto_thread_task_runner.h"
+#include "remoting/base/mock_oauth_client.h"
+#include "remoting/host/chromoting_host_context.h"
 #include "remoting/host/native_messaging/log_message_handler.h"
+#include "remoting/host/native_messaging/native_messaging_pipe.h"
 #include "remoting/host/native_messaging/pipe_messaging_channel.h"
 #include "remoting/host/pin_hash.h"
-#include "remoting/host/setup/mock_oauth_client.h"
 #include "remoting/host/setup/test_util.h"
 #include "remoting/protocol/pairing_registry.h"
 #include "remoting/protocol/protocol_mock_objects.h"
@@ -184,9 +188,9 @@ class MockDaemonControllerDelegate : public DaemonController::Delegate {
   DISALLOW_COPY_AND_ASSIGN(MockDaemonControllerDelegate);
 };
 
-MockDaemonControllerDelegate::MockDaemonControllerDelegate() {}
+MockDaemonControllerDelegate::MockDaemonControllerDelegate() = default;
 
-MockDaemonControllerDelegate::~MockDaemonControllerDelegate() {}
+MockDaemonControllerDelegate::~MockDaemonControllerDelegate() = default;
 
 DaemonController::State MockDaemonControllerDelegate::GetState() {
   return DaemonController::STATE_STARTED;
@@ -194,7 +198,7 @@ DaemonController::State MockDaemonControllerDelegate::GetState() {
 
 std::unique_ptr<base::DictionaryValue>
 MockDaemonControllerDelegate::GetConfig() {
-  return base::WrapUnique(new base::DictionaryValue());
+  return std::make_unique<base::DictionaryValue>();
 }
 
 void MockDaemonControllerDelegate::SetConfigAndStart(
@@ -279,14 +283,14 @@ class Me2MeNativeMessagingHostTest : public testing::Test {
 
   // Task runner of the host thread.
   scoped_refptr<AutoThreadTaskRunner> host_task_runner_;
-  std::unique_ptr<remoting::Me2MeNativeMessagingHost> host_;
+  std::unique_ptr<NativeMessagingPipe> native_messaging_pipe_;
 
   DISALLOW_COPY_AND_ASSIGN(Me2MeNativeMessagingHostTest);
 };
 
-Me2MeNativeMessagingHostTest::Me2MeNativeMessagingHostTest() {}
+Me2MeNativeMessagingHostTest::Me2MeNativeMessagingHostTest() = default;
 
-Me2MeNativeMessagingHostTest::~Me2MeNativeMessagingHostTest() {}
+Me2MeNativeMessagingHostTest::~Me2MeNativeMessagingHostTest() = default;
 
 void Me2MeNativeMessagingHostTest::SetUp() {
   base::File input_read_file;
@@ -309,16 +313,15 @@ void Me2MeNativeMessagingHostTest::SetUp() {
                  base::Unretained(this)));
 
   host_task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&Me2MeNativeMessagingHostTest::StartHost,
-                 base::Unretained(this)));
+      FROM_HERE, base::BindOnce(&Me2MeNativeMessagingHostTest::StartHost,
+                                base::Unretained(this)));
 
   // Wait until the host finishes starting.
   test_run_loop_->Run();
 }
 
 void Me2MeNativeMessagingHostTest::StartHost() {
-  DCHECK(host_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(host_task_runner_->RunsTasksInCurrentSequence());
 
   base::File input_read_file;
   base::File output_write_file;
@@ -334,6 +337,8 @@ void Me2MeNativeMessagingHostTest::StartHost() {
       new SynchronousPairingRegistry(
           base::WrapUnique(new MockPairingRegistryDelegate()));
 
+  native_messaging_pipe_.reset(new NativeMessagingPipe());
+
   std::unique_ptr<extensions::NativeMessagingChannel> channel(
       new PipeMessagingChannel(std::move(input_read_file),
                                std::move(output_write_file)));
@@ -341,11 +346,18 @@ void Me2MeNativeMessagingHostTest::StartHost() {
   std::unique_ptr<OAuthClient> oauth_client(
       new MockOAuthClient("fake_user_email", "fake_refresh_token"));
 
-  host_.reset(new Me2MeNativeMessagingHost(false, 0, std::move(channel),
-                                           daemon_controller, pairing_registry,
-                                           std::move(oauth_client)));
-  host_->Start(base::Bind(&Me2MeNativeMessagingHostTest::StopHost,
-                          base::Unretained(this)));
+  std::unique_ptr<ChromotingHostContext> context =
+      ChromotingHostContext::Create(new remoting::AutoThreadTaskRunner(
+          host_task_runner_, base::Bind(&Me2MeNativeMessagingHostTest::StopHost,
+                                        base::Unretained(this))));
+
+  std::unique_ptr<remoting::Me2MeNativeMessagingHost> host(
+      new Me2MeNativeMessagingHost(false, 0, std::move(context),
+                                   daemon_controller, pairing_registry,
+                                   std::move(oauth_client)));
+  host->Start(native_messaging_pipe_.get());
+
+  native_messaging_pipe_->Start(std::move(host), std::move(channel));
 
   // Notify the test that the host has finished starting up.
   test_message_loop_->task_runner()->PostTask(
@@ -353,9 +365,9 @@ void Me2MeNativeMessagingHostTest::StartHost() {
 }
 
 void Me2MeNativeMessagingHostTest::StopHost() {
-  DCHECK(host_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(host_task_runner_->RunsTasksInCurrentSequence());
 
-  host_.reset();
+  native_messaging_pipe_.reset();
 
   // Wait till all shutdown tasks have completed.
   base::RunLoop().RunUntilIdle();
@@ -365,11 +377,10 @@ void Me2MeNativeMessagingHostTest::StopHost() {
 }
 
 void Me2MeNativeMessagingHostTest::ExitTest() {
-  if (!test_message_loop_->task_runner()->RunsTasksOnCurrentThread()) {
+  if (!test_message_loop_->task_runner()->RunsTasksInCurrentSequence()) {
     test_message_loop_->task_runner()->PostTask(
-        FROM_HERE,
-        base::Bind(&Me2MeNativeMessagingHostTest::ExitTest,
-                   base::Unretained(this)));
+        FROM_HERE, base::BindOnce(&Me2MeNativeMessagingHostTest::ExitTest,
+                                  base::Unretained(this)));
     return;
   }
   test_run_loop_->Quit();
@@ -404,14 +415,15 @@ Me2MeNativeMessagingHostTest::ReadMessageFromOutputPipe() {
     }
 
     std::string message_json(length, '\0');
-    read_result = output_read_file_.ReadAtCurrentPos(
-        string_as_array(&message_json), length);
+    read_result =
+        output_read_file_.ReadAtCurrentPos(base::data(message_json), length);
     if (read_result != static_cast<int>(length)) {
       return nullptr;
     }
 
-    std::unique_ptr<base::Value> message = base::JSONReader::Read(message_json);
-    if (!message || !message->IsType(base::Value::TYPE_DICTIONARY)) {
+    std::unique_ptr<base::Value> message =
+        base::JSONReader::ReadDeprecated(message_json);
+    if (!message || !message->is_dict()) {
       return nullptr;
     }
 
@@ -529,7 +541,7 @@ TEST_F(Me2MeNativeMessagingHostTest, All) {
       &VerifyStartDaemonResponse,
       &VerifyGetCredentialsFromAuthCodeResponse,
   };
-  ASSERT_EQ(arraysize(verify_routines), static_cast<size_t>(next_id));
+  ASSERT_EQ(base::size(verify_routines), static_cast<size_t>(next_id));
 
   // Read all responses from output pipe, and verify them.
   for (int i = 0; i < next_id; ++i) {

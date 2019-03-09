@@ -10,14 +10,15 @@
 #include "components/nacl/renderer/histogram.h"
 #include "components/nacl/renderer/nexe_load_manager.h"
 #include "net/base/net_errors.h"
-#include "third_party/WebKit/public/platform/WebURLError.h"
-#include "third_party/WebKit/public/platform/WebURLLoader.h"
-#include "third_party/WebKit/public/platform/WebURLResponse.h"
+#include "third_party/blink/public/platform/web_url_error.h"
+#include "third_party/blink/public/platform/web_url_loader.h"
+#include "third_party/blink/public/platform/web_url_response.h"
+#include "third_party/blink/public/web/web_associated_url_loader.h"
 
 namespace nacl {
 
 ManifestDownloader::ManifestDownloader(
-    std::unique_ptr<blink::WebURLLoader> url_loader,
+    std::unique_ptr<blink::WebAssociatedURLLoader> url_loader,
     bool is_installed,
     Callback cb)
     : url_loader_(std::move(url_loader)),
@@ -31,22 +32,17 @@ ManifestDownloader::ManifestDownloader(
 ManifestDownloader::~ManifestDownloader() { }
 
 void ManifestDownloader::Load(const blink::WebURLRequest& request) {
-  url_loader_->loadAsynchronously(request, this);
+  url_loader_->LoadAsynchronously(request, this);
 }
 
-void ManifestDownloader::didReceiveResponse(
-    blink::WebURLLoader* loader,
+void ManifestDownloader::DidReceiveResponse(
     const blink::WebURLResponse& response) {
-  if (response.httpStatusCode() != 200)
+  if (response.HttpStatusCode() != 200)
     pp_nacl_error_ = PP_NACL_ERROR_MANIFEST_LOAD_URL;
-  status_code_ = response.httpStatusCode();
+  status_code_ = response.HttpStatusCode();
 }
 
-void ManifestDownloader::didReceiveData(
-    blink::WebURLLoader* loader,
-    const char* data,
-    int data_length,
-    int encoded_data_length) {
+void ManifestDownloader::DidReceiveData(const char* data, int data_length) {
   if (buffer_.size() + data_length > kNaClManifestMaxFileBytes) {
     pp_nacl_error_ = PP_NACL_ERROR_MANIFEST_TOO_LARGE;
     buffer_.clear();
@@ -68,29 +64,22 @@ void ManifestDownloader::Close() {
   delete this;
 }
 
-void ManifestDownloader::didFinishLoading(
-    blink::WebURLLoader* loader,
-    double finish_time,
-    int64_t total_encoded_data_length) {
+void ManifestDownloader::DidFinishLoading() {
   Close();
 }
 
-void ManifestDownloader::didFail(
-    blink::WebURLLoader* loader,
-    const blink::WebURLError& error) {
+void ManifestDownloader::DidFail(const blink::WebURLError& error) {
   // TODO(teravest): Find a place to share this code with PepperURLLoaderHost.
   pp_nacl_error_ = PP_NACL_ERROR_MANIFEST_LOAD_URL;
-  if (error.domain.equals(blink::WebString::fromUTF8(net::kErrorDomain))) {
-    switch (error.reason) {
-      case net::ERR_ACCESS_DENIED:
-      case net::ERR_NETWORK_ACCESS_DENIED:
-        pp_nacl_error_ = PP_NACL_ERROR_MANIFEST_NOACCESS_URL;
-        break;
-    }
-  } else {
-    // It's a WebKit error.
-    pp_nacl_error_ = PP_NACL_ERROR_MANIFEST_NOACCESS_URL;
+  switch (error.reason()) {
+    case net::ERR_ACCESS_DENIED:
+    case net::ERR_NETWORK_ACCESS_DENIED:
+      pp_nacl_error_ = PP_NACL_ERROR_MANIFEST_NOACCESS_URL;
+      break;
   }
+
+  if (error.is_web_security_violation())
+    pp_nacl_error_ = PP_NACL_ERROR_MANIFEST_NOACCESS_URL;
 
   Close();
 }

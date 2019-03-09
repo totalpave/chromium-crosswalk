@@ -26,22 +26,23 @@ are described by their code comments or by their code structure).
     * UI-thread object
 
 * SaveFileManager class
-    * coordinates between FILE and UI threads
+    * coordinates between the download sequence and the UI thread
         * Gets requests from `SavePackage` and communicates results back to
           `SavePackage` on the UI thread.
         * Shephards data (received from the network OR from DOM) into
-          FILE thread - via `SaveFileManager::UpdateSaveProgress`
-    * created and owned by `ResourceDispatchedHostImpl`
+          the download sequence - via `SaveFileManager::UpdateSaveProgress`
+    * created and owned by `BrowserMainLoop`
       (ref-counted today, but it is unnecessary - see https://crbug.com/596953)
+    * The global instance can be retrieved by the Get method.
 
 * SaveFile class
     * tracks saving a single file
     * created and owned by `SaveFileManager`
-    * FILE-thread object
+    * download sequence object
 
 * SaveFileResourceHandler class
     * tracks network downloads + forwards their status into `SaveFileManager`
-      (onto FILE-thread)
+      (onto download sequence)
     * created by `ResourceDispatcherHostImpl::BeginSaveFile`
     * IO-thread object
 
@@ -100,7 +101,7 @@ Very high-level flow of saving a page as MHTML:
           `SavePackage::OnMHTMLGenerated`.
 
 Note: MHTML format is by default disabled in Save-Page-As UI on Windows, MacOS
-and Linux (it is the default on ChromeOS), but for testing this can be easily
+and Linux (it is the default on Chrome OS), but for testing this can be easily
 changed using `--save-page-as-mhtml` command line switch.
 
 
@@ -129,11 +130,11 @@ Pointers to related code outside of `//content/browser/download`:
     * `//content/renderer/savable_resources...`
 
 * Blink:
-    * `//third_party/WebKit/public/web/WebFrameSerializer...`
-    * `//third_party/WebKit/Source/web/WebFrameSerializerImpl...`
+    * `//third_party/blink/public/web/web_frame_serializer...`
+    * `//third_party/blink/renderere/core/frame/web_frame_serializer_impl...`
       (used for Complete HTML today;  should use `FrameSerializer` instead in
       the long-term - see https://crbug.com/328354).
-    * `//third_party/WebKit/Source/core/frame/FrameSerializer...`
+    * `//third_party/blink/renderer/core/frame/frame_serializer...`
       (used for MHTML today)
-    * `//third_party/WebKit/Source/platform/mhtml/MHTMLArchive...`
+    * `//third_party/blink/renderer/platform/mhtml/mhtml_archive...`
 

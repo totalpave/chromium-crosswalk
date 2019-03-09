@@ -8,7 +8,7 @@
 #include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos.h"
 #include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos_factory.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chromeos/login/login_state.h"
+#include "chromeos/login/login_state/login_state.h"
 #include "components/ownership/owner_key_util.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_thread.h"
@@ -19,11 +19,9 @@ namespace chromeos {
 
 ChromeCryptohomeAuthenticator::ChromeCryptohomeAuthenticator(
     AuthStatusConsumer* consumer)
-    : CryptohomeAuthenticator(base::ThreadTaskRunnerHandle::Get(), consumer) {
-}
+    : CryptohomeAuthenticator(base::ThreadTaskRunnerHandle::Get(), consumer) {}
 
-ChromeCryptohomeAuthenticator::~ChromeCryptohomeAuthenticator() {
-}
+ChromeCryptohomeAuthenticator::~ChromeCryptohomeAuthenticator() {}
 
 bool ChromeCryptohomeAuthenticator::IsKnownUser(const UserContext& context) {
   return user_manager::UserManager::Get()->IsKnownUser(context.GetAccountId());

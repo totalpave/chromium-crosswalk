@@ -7,9 +7,8 @@
 
 #include <string>
 
+#include "base/run_loop.h"
 #include "base/time/time.h"
-
-class ProfileSyncServiceHarness;
 
 // Interface for a helper class that can pump the message loop while waiting
 // for a certain state transition to take place.
@@ -21,17 +20,25 @@ class ProfileSyncServiceHarness;
 // sense to call StartBlockingWait() more than once.
 class StatusChangeChecker {
  public:
-  explicit StatusChangeChecker();
+  StatusChangeChecker();
 
   // Returns a string representing this current StatusChangeChecker, and
   // possibly some small part of its state.  For example: "AwaitPassphraseError"
   // or "AwaitMigrationDone(BOOKMARKS)".
   virtual std::string GetDebugMessage() const = 0;
 
+  // Returns whether the state the checker is currently in is its desired
+  // configuration.
+  virtual bool IsExitConditionSatisfied() = 0;
+
+  // Block if IsExitConditionSatisfied() is currently false until TimedOut()
+  // becomes true. Checkers should call CheckExitCondition upon changes, which
+  // can cause Wait() to immediately return true if IsExitConditionSatisfied(),
+  // and continue to block if not. Returns false if and only if timeout occurs.
+  virtual bool Wait();
+
   // Returns true if the blocking wait was exited because of a timeout.
   bool TimedOut() const;
-
-  virtual bool IsExitConditionSatisfied() = 0;
 
  protected:
   virtual ~StatusChangeChecker();
@@ -39,7 +46,15 @@ class StatusChangeChecker {
   // Timeout length when blocking.
   virtual base::TimeDelta GetTimeoutDuration();
 
-  // Helper function to start running the nested message loop.
+  // Stop the nested running of the message loop started in StartBlockingWait().
+  void StopWaiting();
+
+  // Checks IsExitConditionSatisfied() and calls StopWaiting() if it returns
+  // true.
+  virtual void CheckExitCondition();
+
+ private:
+  // Helper function to start running the nested run loop (run_loop_).
   //
   // Will exit if IsExitConditionSatisfied() returns true when called from
   // CheckExitCondition(), if a timeout occurs, or if StopWaiting() is called.
@@ -47,16 +62,10 @@ class StatusChangeChecker {
   // The timeout length is specified with GetTimeoutDuration().
   void StartBlockingWait();
 
-  // Stop the nested running of the message loop started in StartBlockingWait().
-  void StopWaiting();
-
-  // Checks IsExitConditionSatisfied() and calls StopWaiting() if it returns
-  // true.
-  void CheckExitCondition();
-
   // Called when the blocking wait timeout is exceeded.
   void OnTimeout();
 
+  base::RunLoop run_loop_;
   bool timed_out_;
 };
 

@@ -6,18 +6,18 @@
 #define GPU_COMMAND_BUFFER_SERVICE_GL_CONTEXT_MOCK_H_
 
 #include "testing/gmock/include/gmock/gmock.h"
-#include "ui/gl/gl_context_stub_with_extensions.h"
+#include "ui/gl/gl_context_stub.h"
 
 namespace gpu {
 
-class GLContextMock : public gl::GLContextStubWithExtensions {
+class GLContextMock : public gl::GLContextStub {
  public:
   GLContextMock();
 
   MOCK_METHOD1(MakeCurrent, bool(gl::GLSurface* surface));
 
  protected:
-  virtual ~GLContextMock();
+  ~GLContextMock() override;
 };
 
 }  // namespace gpu

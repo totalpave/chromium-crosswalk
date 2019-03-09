@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/common/shell_window_ids.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/window_factory.h"
 #include "ash/wm/window_properties.h"
 #include "ash/wm/window_util.h"
 #include "ui/aura/client/aura_constants.h"
@@ -16,15 +17,16 @@ using aura::Window;
 
 namespace ash {
 
-class StackingControllerTest : public test::AshTestBase {
+class StackingControllerTest : public AshTestBase {
  public:
-  StackingControllerTest() {}
-  ~StackingControllerTest() override {}
+  StackingControllerTest() = default;
+  ~StackingControllerTest() override = default;
 
   aura::Window* CreateTestWindow() {
-    aura::Window* window = new aura::Window(NULL);
+    aura::Window* window =
+        window_factory::NewWindow(nullptr, aura::client::WINDOW_TYPE_NORMAL)
+            .release();
     window->SetProperty(aura::client::kShowStateKey, ui::SHOW_STATE_NORMAL);
-    window->SetType(ui::wm::WINDOW_TYPE_NORMAL);
     window->Init(ui::LAYER_TEXTURED);
     return window;
   }

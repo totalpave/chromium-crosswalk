@@ -9,20 +9,23 @@
 
 #include "base/bind.h"
 #include "base/file_version_info.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/nacl/common/nacl_process_type.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/browser_child_process_host_iterator.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -30,13 +33,16 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/bindings_policy.h"
 #include "content/public/common/content_constants.h"
+#include "extensions/buildflags/buildflags.h"
+#include "services/resource_coordinator/public/cpp/memory_instrumentation/global_memory_dump.h"
+#include "services/resource_coordinator/public/cpp/memory_instrumentation/memory_instrumentation.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
-#include "content/public/browser/zygote_host_linux.h"
+#include "services/service_manager/zygote/zygote_host_linux.h"
 #endif
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_map.h"
@@ -51,7 +57,7 @@ using content::NavigationEntry;
 using content::RenderViewHost;
 using content::RenderWidgetHost;
 using content::WebContents;
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 using extensions::Extension;
 #endif
 
@@ -91,8 +97,10 @@ ProcessMemoryInformation::ProcessMemoryInformation()
     : pid(0),
       num_processes(0),
       process_type(content::PROCESS_TYPE_UNKNOWN),
-      renderer_type(RENDERER_UNKNOWN) {
-}
+      num_open_fds(-1),
+      open_fds_soft_limit(-1),
+      renderer_type(RENDERER_UNKNOWN),
+      private_memory_footprint_kb(0) {}
 
 ProcessMemoryInformation::ProcessMemoryInformation(
     const ProcessMemoryInformation& other) = default;
@@ -101,7 +109,7 @@ ProcessMemoryInformation::~ProcessMemoryInformation() {}
 
 bool ProcessMemoryInformation::operator<(
     const ProcessMemoryInformation& rhs) const {
-  return working_set.priv < rhs.working_set.priv;
+  return private_memory_footprint_kb < rhs.private_memory_footprint_kb;
 }
 
 ProcessData::ProcessData() {}
@@ -140,9 +148,9 @@ void MemoryDetails::StartFetch() {
 
   // In order to process this request, we need to use the plugin information.
   // However, plugin process information is only available from the IO thread.
-  BrowserThread::PostTask(
-      BrowserThread::IO, FROM_HERE,
-      base::Bind(&MemoryDetails::CollectChildInfoOnIOThread, this));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::IO},
+      base::BindOnce(&MemoryDetails::CollectChildInfoOnIOThread, this));
 }
 
 MemoryDetails::~MemoryDetails() {}
@@ -154,10 +162,7 @@ std::string MemoryDetails::ToLogString() {
   // Sort by memory consumption, low to high.
   std::sort(processes.begin(), processes.end());
   // Print from high to low.
-  for (ProcessMemoryInformationList::reverse_iterator iter1 =
-          processes.rbegin();
-       iter1 != processes.rend();
-       ++iter1) {
+  for (auto iter1 = processes.rbegin(); iter1 != processes.rend(); ++iter1) {
     log += ProcessMemoryInformation::GetFullTypeNameInEnglish(
             iter1->process_type, iter1->renderer_type);
     if (!iter1->titles.empty()) {
@@ -171,13 +176,12 @@ std::string MemoryDetails::ToLogString() {
       }
       log += "]";
     }
-    log += StringPrintf(" %d MB private, %d MB shared",
-                        static_cast<int>(iter1->working_set.priv) / 1024,
-                        static_cast<int>(iter1->working_set.shared) / 1024);
-#if defined(OS_CHROMEOS)
-    log += StringPrintf(", %d MB swapped",
-                        static_cast<int>(iter1->working_set.swapped) / 1024);
-#endif
+    log += StringPrintf(
+        " %d MB", static_cast<int>(iter1->private_memory_footprint_kb) / 1024);
+    if (iter1->num_open_fds != -1 || iter1->open_fds_soft_limit != -1) {
+      log += StringPrintf(", %d FDs open of %d", iter1->num_open_fds,
+                          iter1->open_fds_soft_limit);
+    }
     log += "\n";
   }
   return log;
@@ -192,9 +196,9 @@ void MemoryDetails::CollectChildInfoOnIOThread() {
   // the process is being launched, so we skip it.
   for (BrowserChildProcessHostIterator iter; !iter.Done(); ++iter) {
     ProcessMemoryInformation info;
-    if (!iter.GetData().handle)
+    if (!iter.GetData().GetProcess().IsValid())
       continue;
-    info.pid = base::GetProcId(iter.GetData().handle);
+    info.pid = iter.GetData().GetProcess().Pid();
     if (!info.pid)
       continue;
 
@@ -204,11 +208,12 @@ void MemoryDetails::CollectChildInfoOnIOThread() {
     child_info.push_back(info);
   }
 
-  // Now go do expensive memory lookups on the blocking pool.
-  BrowserThread::GetBlockingPool()->PostWorkerTaskWithShutdownBehavior(
+  // Now go do expensive memory lookups in a thread pool.
+  base::PostTaskWithTraits(
       FROM_HERE,
-      base::Bind(&MemoryDetails::CollectProcessData, this, child_info),
-      base::SequencedWorkerPool::CONTINUE_ON_SHUTDOWN);
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(&MemoryDetails::CollectProcessData, this, child_info));
 }
 
 void MemoryDetails::CollectChildInfoOnUIThread() {
@@ -220,10 +225,11 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
   std::unique_ptr<content::RenderWidgetHostIterator> widget_it(
       RenderWidgetHost::GetRenderWidgetHosts());
   while (content::RenderWidgetHost* widget = widget_it->GetNextHost()) {
-    // Ignore processes that don't have a connection, such as crashed tabs.
-    if (!widget->GetProcess()->HasConnection())
+    // Ignore processes that don't have a connection, such as crashed tabs,
+    // or processes that are still launching.
+    if (!widget->GetProcess()->IsReady())
       continue;
-    base::ProcessId pid = base::GetProcId(widget->GetProcess()->GetHandle());
+    base::ProcessId pid = widget->GetProcess()->GetProcess().Pid();
     widgets_by_pid[pid].push_back(widget);
   }
 
@@ -241,7 +247,7 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
       render_process_host = widgets_by_pid[process.pid].front()->GetProcess();
     }
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
     // Determine if this is an extension process.
     bool process_is_for_extensions = false;
     if (render_process_host) {
@@ -292,18 +298,14 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
 
       // The rest of this block will happen only once per WebContents.
       GURL page_url = contents->GetLastCommittedURL();
-      SiteData& site_data =
-          chrome_browser->site_data[contents->GetBrowserContext()];
-      SiteDetails::CollectSiteInfo(contents, &site_data);
-
-      bool is_webui =
-          rvh->GetEnabledBindings() & content::BINDINGS_POLICY_WEB_UI;
+      bool is_webui = rvh->GetMainFrame()->GetEnabledBindings() &
+                      content::BINDINGS_POLICY_WEB_UI;
 
       if (is_webui) {
         process.renderer_type = ProcessMemoryInformation::RENDERER_CHROME;
       }
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
       if (!is_webui && process_is_for_extensions) {
         const Extension* extension =
             extensions::ExtensionRegistry::Get(
@@ -335,7 +337,7 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
     }
 
 #if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
-    if (content::ZygoteHost::GetInstance()->IsZygotePid(process.pid)) {
+    if (service_manager::ZygoteHost::GetInstance()->IsZygotePid(process.pid)) {
       process.process_type = content::PROCESS_TYPE_ZYGOTE;
     }
 #endif
@@ -346,8 +348,34 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
     return process.process_type == content::PROCESS_TYPE_UNKNOWN;
   };
   auto& vector = chrome_browser->processes;
-  vector.erase(std::remove_if(vector.begin(), vector.end(), is_unknown),
-               vector.end());
+  base::EraseIf(vector, is_unknown);
+
+  // Grab a memory dump for all processes.
+  // Using AdaptCallbackForRepeating allows for an easier transition to
+  // OnceCallbacks for https://crbug.com/714018.
+  memory_instrumentation::MemoryInstrumentation::GetInstance()
+      ->RequestPrivateMemoryFootprint(
+          base::kNullProcessId,
+          base::AdaptCallbackForRepeating(
+              base::BindOnce(&MemoryDetails::DidReceiveMemoryDump, this)));
+}
+
+void MemoryDetails::DidReceiveMemoryDump(
+    bool success,
+    std::unique_ptr<memory_instrumentation::GlobalMemoryDump> global_dump) {
+  ProcessData* const chrome_browser = ChromeBrowser();
+  if (success) {
+    for (const memory_instrumentation::GlobalMemoryDump::ProcessDump& dump :
+         global_dump->process_dumps()) {
+      base::ProcessId dump_pid = dump.pid();
+      for (ProcessMemoryInformation& pmi : chrome_browser->processes) {
+        if (pmi.pid == dump_pid) {
+          pmi.private_memory_footprint_kb = dump.os_dump().private_footprint_kb;
+          break;
+        }
+      }
+    }
+  }
 
   OnDetailsAvailable();
 }

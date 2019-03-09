@@ -8,15 +8,11 @@
 #include <GLES3/gl3.h>
 #include <stdint.h>
 
-#include "base/command_line.h"
-#include "base/strings/string_number_conversions.h"
-#include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/command_buffer/tests/gl_manager.h"
 #include "gpu/command_buffer/tests/gl_test_utils.h"
 #include "gpu/config/gpu_test_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gl/gl_switches.h"
 
 #define SHADER(Src) #Src
 #define BFE_SHADER(Src) "#extension GL_EXT_blend_func_extended : require\n" #Src
@@ -187,8 +183,9 @@ class EXTBlendFuncExtendedDrawTest : public testing::TestWithParam<bool> {
                          GL_ONE_MINUS_SRC1_ALPHA_EXT>(kDst, kSrc, kSrc1, color);
 
     EXPECT_TRUE(GLTestHelper::CheckPixels(kWidth / 4, (3 * kHeight) / 4, 1, 1,
-                                          1, color));
-    EXPECT_TRUE(GLTestHelper::CheckPixels(kWidth - 1, 0, 1, 1, 1, color));
+                                          1, color, nullptr));
+    EXPECT_TRUE(
+        GLTestHelper::CheckPixels(kWidth - 1, 0, 1, 1, 1, color, nullptr));
   }
 
  protected:
@@ -202,6 +199,14 @@ class EXTBlendFuncExtendedDrawTest : public testing::TestWithParam<bool> {
 TEST_P(EXTBlendFuncExtendedDrawTest, ESSL1FragColor) {
   if (!IsApplicable())
     return;
+
+  // Fails on AMDGPU-PRO driver crbug.com/786219
+  gpu::GPUTestBotConfig bot_config;
+  if (bot_config.LoadCurrentConfig(nullptr) &&
+      bot_config.Matches("linux amd")) {
+    return;
+  }
+
   // clang-format off
   static const char* kFragColorShader =
       BFE_SHADER(
@@ -251,11 +256,9 @@ class EXTBlendFuncExtendedES3DrawTest : public EXTBlendFuncExtendedDrawTest {
   void SetUp() override {
     GLManager::Options options;
     options.size = gfx::Size(kWidth, kHeight);
-    options.context_type = gles2::CONTEXT_TYPE_OPENGLES3;
+    options.context_type = CONTEXT_TYPE_OPENGLES3;
     options.force_shader_name_hashing = GetParam();
-    base::CommandLine command_line(*base::CommandLine::ForCurrentProcess());
-    command_line.AppendSwitch(switches::kEnableUnsafeES3APIs);
-    gl_.InitializeWithCommandLine(options, command_line);
+    gl_.Initialize(options);
   }
   bool IsApplicable() const {
     return gl_.IsInitialized() && EXTBlendFuncExtendedDrawTest::IsApplicable();
@@ -300,6 +303,15 @@ TEST_P(EXTBlendFuncExtendedES3DrawTest, ESSL3Var) {
 TEST_P(EXTBlendFuncExtendedES3DrawTest, ESSL3BindArrayWithSimpleName) {
   if (!IsApplicable())
     return;
+
+  // Fails on the Intel Mesa driver, see
+  // https://bugs.freedesktop.org/show_bug.cgi?id=96765
+  gpu::GPUTestBotConfig bot_config;
+  if (bot_config.LoadCurrentConfig(nullptr) &&
+      bot_config.Matches("linux intel")) {
+    return;
+  }
+
   // clang-format off
   static const char* kFragDataShader =
       "#version 300 es\n"
@@ -359,6 +371,15 @@ TEST_P(EXTBlendFuncExtendedES3DrawTest, ESSL3BindSimpleVarAsArrayNoBind) {
 TEST_P(EXTBlendFuncExtendedES3DrawTest, ESSL3BindArrayAsArray) {
   if (!IsApplicable())
     return;
+
+  // Fails on the Intel Mesa driver, see
+  // https://bugs.freedesktop.org/show_bug.cgi?id=96765
+  gpu::GPUTestBotConfig bot_config;
+  if (bot_config.LoadCurrentConfig(nullptr) &&
+      bot_config.Matches("linux intel")) {
+    return;
+  }
+
   // clang-format off
   static const char* kFragDataShader =
       "#version 300 es\n"
@@ -479,9 +500,12 @@ TEST_P(EXTBlendFuncExtendedES3DrawTest, ES3GettersArray) {
     return;
 
   // TODO(zmo): Figure out why this fails on AMD. crbug.com/585132.
+  // Also fails on the Intel Mesa driver, see
+  // https://bugs.freedesktop.org/show_bug.cgi?id=96765
   gpu::GPUTestBotConfig bot_config;
   if (bot_config.LoadCurrentConfig(nullptr) &&
-      bot_config.Matches("linux amd")) {
+      (bot_config.Matches("linux amd") ||
+      bot_config.Matches("linux intel"))) {
     return;
   }
 
@@ -660,12 +684,12 @@ TEST_P(EXTBlendFuncExtendedES3DrawTest, ES3ConflictsArray) {
   EXPECT_TRUE(LinkProgram());
 }
 
-INSTANTIATE_TEST_CASE_P(TranslatorVariants,
-                        EXTBlendFuncExtendedDrawTest,
-                        ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(TranslatorVariants,
+                         EXTBlendFuncExtendedDrawTest,
+                         ::testing::Bool());
 
-INSTANTIATE_TEST_CASE_P(TranslatorVariants,
-                        EXTBlendFuncExtendedES3DrawTest,
-                        ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(TranslatorVariants,
+                         EXTBlendFuncExtendedES3DrawTest,
+                         ::testing::Bool());
 
 }  // namespace gpu

@@ -5,13 +5,15 @@
 #ifndef CONTENT_RENDERER_MEDIA_WEBRTC_MEDIA_STREAM_REMOTE_VIDEO_SOURCE_H_
 #define CONTENT_RENDERER_MEDIA_WEBRTC_MEDIA_STREAM_REMOTE_VIDEO_SOURCE_H_
 
+#include <memory>
+
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
 #include "content/common/content_export.h"
-#include "content/renderer/media/media_stream_video_source.h"
-#include "third_party/WebKit/public/platform/WebMediaStreamSource.h"
-#include "third_party/webrtc/api/mediastreaminterface.h"
+#include "content/renderer/media/stream/media_stream_video_source.h"
+#include "third_party/blink/public/platform/web_media_stream_source.h"
+#include "third_party/webrtc/api/media_stream_interface.h"
 
 namespace content {
 
@@ -22,9 +24,10 @@ class TrackObserver;
 // to make sure there is no difference between a video track where the source is
 // a local source and a video track where the source is a remote video track.
 class CONTENT_EXPORT MediaStreamRemoteVideoSource
-     : public MediaStreamVideoSource {
+    : public MediaStreamVideoSource {
  public:
-  MediaStreamRemoteVideoSource(std::unique_ptr<TrackObserver> observer);
+  explicit MediaStreamRemoteVideoSource(
+      std::unique_ptr<TrackObserver> observer);
   ~MediaStreamRemoteVideoSource() override;
 
   // Should be called when the remote video track this source originates from is
@@ -34,22 +37,14 @@ class CONTENT_EXPORT MediaStreamRemoteVideoSource
 
  protected:
   // Implements MediaStreamVideoSource.
-  void GetCurrentSupportedFormats(
-      int max_requested_width,
-      int max_requested_height,
-      double max_requested_frame_rate,
-      const VideoCaptureDeviceFormatsCB& callback) override;
-
   void StartSourceImpl(
-      const media::VideoCaptureFormat& format,
-      const blink::WebMediaConstraints& constraints,
-      const VideoCaptureDeliverFrameCB& frame_callback) override;
+      const blink::VideoCaptureDeliverFrameCB& frame_callback) override;
 
   void StopSourceImpl() override;
 
   // Used by tests to test that a frame can be received and that the
   // MediaStreamRemoteVideoSource behaves as expected.
-  rtc::VideoSinkInterface<cricket::VideoFrame>* SinkInterfaceForTest();
+  rtc::VideoSinkInterface<webrtc::VideoFrame>* SinkInterfaceForTesting();
 
  private:
   void OnChanged(webrtc::MediaStreamTrackInterface::TrackState state);

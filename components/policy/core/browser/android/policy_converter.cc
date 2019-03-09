@@ -12,7 +12,6 @@
 #include "base/android/jni_string.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
@@ -39,7 +38,7 @@ PolicyConverter::PolicyConverter(const Schema* policy_schema)
 
 PolicyConverter::~PolicyConverter() {
   Java_PolicyConverter_onNativeDestroyed(base::android::AttachCurrentThread(),
-                                         java_obj_.obj());
+                                         java_obj_);
 }
 
 std::unique_ptr<PolicyBundle> PolicyConverter::GetPolicyBundle() {
@@ -56,27 +55,25 @@ void PolicyConverter::SetPolicyBoolean(JNIEnv* env,
                                        const JavaRef<jobject>& obj,
                                        const JavaRef<jstring>& policyKey,
                                        jboolean value) {
-  SetPolicyValue(
-      ConvertJavaStringToUTF8(env, policyKey),
-      base::WrapUnique(new base::FundamentalValue(static_cast<bool>(value))));
+  SetPolicyValue(ConvertJavaStringToUTF8(env, policyKey),
+                 std::make_unique<base::Value>(static_cast<bool>(value)));
 }
 
 void PolicyConverter::SetPolicyInteger(JNIEnv* env,
                                        const JavaRef<jobject>& obj,
                                        const JavaRef<jstring>& policyKey,
                                        jint value) {
-  SetPolicyValue(
-      ConvertJavaStringToUTF8(env, policyKey),
-      base::WrapUnique(new base::FundamentalValue(static_cast<int>(value))));
+  SetPolicyValue(ConvertJavaStringToUTF8(env, policyKey),
+                 std::make_unique<base::Value>(static_cast<int>(value)));
 }
 
 void PolicyConverter::SetPolicyString(JNIEnv* env,
                                       const JavaRef<jobject>& obj,
                                       const JavaRef<jstring>& policyKey,
                                       const JavaRef<jstring>& value) {
-  SetPolicyValue(ConvertJavaStringToUTF8(env, policyKey),
-                 base::WrapUnique(new base::StringValue(
-                     ConvertJavaStringToUTF8(env, value))));
+  SetPolicyValue(
+      ConvertJavaStringToUTF8(env, policyKey),
+      std::make_unique<base::Value>(ConvertJavaStringToUTF8(env, value)));
 }
 
 void PolicyConverter::SetPolicyStringArray(JNIEnv* env,
@@ -98,9 +95,9 @@ PolicyConverter::ConvertJavaStringArrayToListValue(
 
   std::unique_ptr<base::ListValue> list_value(new base::ListValue());
   for (int i = 0; i < length; ++i) {
-    jstring str =
-        static_cast<jstring>(env->GetObjectArrayElement(array.obj(), i));
-    list_value->AppendString(ConvertJavaStringToUTF8(env, str));
+    base::android::ScopedJavaLocalRef<jstring> j_str(
+        env, static_cast<jstring>(env->GetObjectArrayElement(array.obj(), i)));
+    list_value->AppendString(ConvertJavaStringToUTF8(env, j_str));
   }
 
   return list_value;
@@ -114,65 +111,65 @@ std::unique_ptr<base::Value> PolicyConverter::ConvertValueToSchema(
     return value;
 
   switch (schema.type()) {
-    case base::Value::TYPE_NULL:
-      return base::Value::CreateNullValue();
+    case base::Value::Type::NONE:
+      return std::make_unique<base::Value>();
 
-    case base::Value::TYPE_BOOLEAN: {
+    case base::Value::Type::BOOLEAN: {
       std::string string_value;
       if (value->GetAsString(&string_value)) {
         if (string_value.compare("true") == 0)
-          return base::WrapUnique(new base::FundamentalValue(true));
+          return std::make_unique<base::Value>(true);
 
         if (string_value.compare("false") == 0)
-          return base::WrapUnique(new base::FundamentalValue(false));
+          return std::make_unique<base::Value>(false);
 
         return value;
       }
       int int_value = 0;
       if (value->GetAsInteger(&int_value))
-        return base::WrapUnique(new base::FundamentalValue(int_value != 0));
+        return std::make_unique<base::Value>(int_value != 0);
 
       return value;
     }
 
-    case base::Value::TYPE_INTEGER: {
+    case base::Value::Type::INTEGER: {
       std::string string_value;
       if (value->GetAsString(&string_value)) {
         int int_value = 0;
         if (base::StringToInt(string_value, &int_value))
-          return base::WrapUnique(new base::FundamentalValue(int_value));
+          return std::make_unique<base::Value>(int_value);
       }
       return value;
     }
 
-    case base::Value::TYPE_DOUBLE: {
+    case base::Value::Type::DOUBLE: {
       std::string string_value;
       if (value->GetAsString(&string_value)) {
         double double_value = 0;
         if (base::StringToDouble(string_value, &double_value))
-          return base::WrapUnique(new base::FundamentalValue(double_value));
+          return std::make_unique<base::Value>(double_value);
       }
       return value;
     }
 
     // String can't be converted from other types.
-    case base::Value::TYPE_STRING: {
+    case base::Value::Type::STRING: {
       return value;
     }
 
     // Binary is not a valid schema type.
-    case base::Value::TYPE_BINARY: {
+    case base::Value::Type::BINARY: {
       NOTREACHED();
       return std::unique_ptr<base::Value>();
     }
 
     // Complex types have to be deserialized from JSON.
-    case base::Value::TYPE_DICTIONARY:
-    case base::Value::TYPE_LIST: {
+    case base::Value::Type::DICTIONARY:
+    case base::Value::Type::LIST: {
       std::string string_value;
       if (value->GetAsString(&string_value)) {
         std::unique_ptr<base::Value> decoded_value =
-            base::JSONReader::Read(string_value);
+            base::JSONReader::ReadDeprecated(string_value);
         if (decoded_value)
           return decoded_value;
       }
@@ -182,11 +179,6 @@ std::unique_ptr<base::Value> PolicyConverter::ConvertValueToSchema(
 
   NOTREACHED();
   return std::unique_ptr<base::Value>();
-}
-
-// static
-bool PolicyConverter::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 void PolicyConverter::SetPolicyValue(const std::string& key,

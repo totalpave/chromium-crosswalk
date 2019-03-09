@@ -5,42 +5,51 @@
 #ifndef CC_TEST_PIXEL_TEST_OUTPUT_SURFACE_H_
 #define CC_TEST_PIXEL_TEST_OUTPUT_SURFACE_H_
 
-#include "cc/output/output_surface.h"
+#include "base/memory/weak_ptr.h"
+#include "components/viz/service/display/output_surface.h"
 
 namespace cc {
 
-class PixelTestOutputSurface : public OutputSurface {
+class PixelTestOutputSurface : public viz::OutputSurface {
  public:
   explicit PixelTestOutputSurface(
-      scoped_refptr<ContextProvider> context_provider,
-      scoped_refptr<ContextProvider> worker_context_provider,
+      scoped_refptr<viz::ContextProvider> context_provider,
       bool flipped_output_surface);
   explicit PixelTestOutputSurface(
-      scoped_refptr<ContextProvider> context_provider,
-      bool flipped_output_surface);
-  explicit PixelTestOutputSurface(
-      std::unique_ptr<SoftwareOutputDevice> software_device);
+      std::unique_ptr<viz::SoftwareOutputDevice> software_device);
   ~PixelTestOutputSurface() override;
 
   // OutputSurface implementation.
+  void BindToClient(viz::OutputSurfaceClient* client) override;
+  void EnsureBackbuffer() override;
+  void DiscardBackbuffer() override;
+  void BindFramebuffer() override;
+  void SetDrawRectangle(const gfx::Rect& rect) override;
   void Reshape(const gfx::Size& size,
-               float scale_factor,
+               float device_scale_factor,
                const gfx::ColorSpace& color_space,
-               bool alpha) override;
+               bool has_alpha,
+               bool use_stencil) override;
   bool HasExternalStencilTest() const override;
-  void SwapBuffers(CompositorFrame frame) override;
+  void ApplyExternalStencil() override;
+  void SwapBuffers(viz::OutputSurfaceFrame frame) override;
+  viz::OverlayCandidateValidator* GetOverlayCandidateValidator() const override;
+  bool IsDisplayedAsOverlayPlane() const override;
+  unsigned GetOverlayTextureId() const override;
+  gfx::BufferFormat GetOverlayBufferFormat() const override;
   uint32_t GetFramebufferCopyTextureFormat() override;
+  unsigned UpdateGpuFence() override;
 
-  void set_surface_expansion_size(const gfx::Size& surface_expansion_size) {
-    surface_expansion_size_ = surface_expansion_size;
-  }
   void set_has_external_stencil_test(bool has_test) {
     external_stencil_test_ = has_test;
   }
 
  private:
-  gfx::Size surface_expansion_size_;
-  bool external_stencil_test_;
+  void SwapBuffersCallback();
+
+  bool external_stencil_test_ = false;
+  viz::OutputSurfaceClient* client_ = nullptr;
+  base::WeakPtrFactory<PixelTestOutputSurface> weak_ptr_factory_;
 };
 
 }  // namespace cc

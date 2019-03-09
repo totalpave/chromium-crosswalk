@@ -6,14 +6,17 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <memory>
 
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
+#include "media/base/audio_codecs.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/channel_layout.h"
+#include "media/base/video_codecs.h"
 #include "media/base/video_frame.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -33,17 +36,19 @@ using ::testing::WithArgs;
 
 namespace media {
 
-struct kTestParams {
-  VideoCodec codec;
+struct TestParams {
+  VideoCodec video_codec;
+  AudioCodec audio_codec;
   size_t num_video_tracks;
   size_t num_audio_tracks;
 };
 
-class WebmMuxerTest : public TestWithParam<kTestParams> {
+class WebmMuxerTest : public TestWithParam<TestParams> {
  public:
   WebmMuxerTest()
       : webm_muxer_(
-            GetParam().codec,
+            GetParam().video_codec,
+            GetParam().audio_codec,
             GetParam().num_video_tracks,
             GetParam().num_audio_tracks,
             base::Bind(&WebmMuxerTest::WriteCallback, base::Unretained(this))),
@@ -109,9 +114,10 @@ TEST_P(WebmMuxerTest, OnEncodedVideoTwoFrames) {
       .Times(AtLeast(1))
       .WillRepeatedly(
           WithArgs<0>(Invoke(this, &WebmMuxerTest::SaveEncodedDataLen)));
-  webm_muxer_.OnEncodedVideo(video_frame,
-                             base::WrapUnique(new std::string(encoded_data)),
-                             base::TimeTicks::Now(), false /* keyframe */);
+  EXPECT_TRUE(webm_muxer_.OnEncodedVideo(
+      WebmMuxer::VideoParameters(video_frame),
+      base::WrapUnique(new std::string(encoded_data)), nullptr,
+      base::TimeTicks::Now(), false /* keyframe */));
 
   // First time around WriteCallback() is pinged a number of times to write the
   // Matroska header, but at the end it dumps |encoded_data|.
@@ -125,9 +131,9 @@ TEST_P(WebmMuxerTest, OnEncodedVideoTwoFrames) {
       .Times(AtLeast(1))
       .WillRepeatedly(
           WithArgs<0>(Invoke(this, &WebmMuxerTest::SaveEncodedDataLen)));
-  webm_muxer_.OnEncodedVideo(video_frame,
-                             base::WrapUnique(new std::string(encoded_data)),
-                             base::TimeTicks::Now(), false /* keyframe */);
+  EXPECT_TRUE(webm_muxer_.OnEncodedVideo(
+      video_frame, base::WrapUnique(new std::string(encoded_data)), nullptr,
+      base::TimeTicks::Now(), false /* keyframe */));
 
   // The second time around the callbacks should include a SimpleBlock header,
   // namely the track index, a timestamp and a flags byte, for a total of 6B.
@@ -137,6 +143,69 @@ TEST_P(WebmMuxerTest, OnEncodedVideoTwoFrames) {
   EXPECT_EQ(static_cast<int64_t>(begin_of_second_block + kSimpleBlockSize +
                                  encoded_data.size()),
             accumulated_position_);
+
+  // Force an error in libwebm and expect OnEncodedVideo to fail.
+  webm_muxer_.ForceOneLibWebmErrorForTesting();
+  EXPECT_FALSE(webm_muxer_.OnEncodedVideo(
+      WebmMuxer::VideoParameters(video_frame),
+      std::make_unique<std::string>(encoded_data), nullptr,
+      base::TimeTicks::Now(), true /* keyframe */));
+}
+
+// This test sends two transparent frames and checks that the WriteCallback is
+// called with appropriate params in both cases.
+TEST_P(WebmMuxerTest, OnEncodedVideoTwoAlphaFrames) {
+  if (GetParam().num_audio_tracks > 0)
+    return;
+
+  const gfx::Size frame_size(160, 80);
+  const scoped_refptr<VideoFrame> video_frame =
+      VideoFrame::CreateTransparentFrame(frame_size);
+  const std::string encoded_data("abcdefghijklmnopqrstuvwxyz");
+  const std::string alpha_encoded_data("ijklmnopqrstuvwxyz");
+
+  InSequence s;
+  EXPECT_CALL(*this, WriteCallback(_))
+      .Times(AtLeast(1))
+      .WillRepeatedly(
+          WithArgs<0>(Invoke(this, &WebmMuxerTest::SaveEncodedDataLen)));
+  EXPECT_TRUE(webm_muxer_.OnEncodedVideo(
+      WebmMuxer::VideoParameters(video_frame),
+      base::WrapUnique(new std::string(encoded_data)),
+      base::WrapUnique(new std::string(alpha_encoded_data)),
+      base::TimeTicks::Now(), true /* keyframe */));
+
+  EXPECT_EQ(GetWebmMuxerPosition(), accumulated_position_);
+  EXPECT_GE(GetWebmMuxerPosition(), static_cast<int64_t>(last_encoded_length_));
+  EXPECT_EQ(GetWebmSegmentMode(), mkvmuxer::Segment::kLive);
+
+  const int64_t begin_of_second_block = accumulated_position_;
+  EXPECT_CALL(*this, WriteCallback(_))
+      .Times(AtLeast(1))
+      .WillRepeatedly(
+          WithArgs<0>(Invoke(this, &WebmMuxerTest::SaveEncodedDataLen)));
+  EXPECT_TRUE(webm_muxer_.OnEncodedVideo(
+      video_frame, base::WrapUnique(new std::string(encoded_data)),
+      base::WrapUnique(new std::string(alpha_encoded_data)),
+      base::TimeTicks::Now(), false /* keyframe */));
+
+  EXPECT_EQ(GetWebmMuxerPosition(), accumulated_position_);
+  // Alpha introduces additional elements to be written, see
+  // mkvmuxer::WriteBlock().
+  const uint32_t kBlockGroupSize = 2u;
+  const uint32_t kSimpleBlockSize = 6u;
+  const uint32_t kAdditionsSize = 13u;
+  EXPECT_EQ(static_cast<int64_t>(begin_of_second_block + kBlockGroupSize +
+                                 kSimpleBlockSize + encoded_data.size() +
+                                 kAdditionsSize + alpha_encoded_data.size()),
+            accumulated_position_);
+
+  // Force an error in libwebm and expect OnEncodedVideo to fail.
+  webm_muxer_.ForceOneLibWebmErrorForTesting();
+  EXPECT_FALSE(webm_muxer_.OnEncodedVideo(
+      WebmMuxer::VideoParameters(video_frame),
+      std::make_unique<std::string>(encoded_data), nullptr,
+      base::TimeTicks::Now(), true /* keyframe */));
 }
 
 TEST_P(WebmMuxerTest, OnEncodedAudioTwoFrames) {
@@ -144,12 +213,10 @@ TEST_P(WebmMuxerTest, OnEncodedAudioTwoFrames) {
     return;
 
   const int sample_rate = 48000;
-  const int bits_per_sample = 16;
   const int frames_per_buffer = 480;
   media::AudioParameters audio_params(
       media::AudioParameters::Format::AUDIO_PCM_LOW_LATENCY,
-      media::CHANNEL_LAYOUT_MONO, sample_rate, bits_per_sample,
-      frames_per_buffer);
+      media::CHANNEL_LAYOUT_MONO, sample_rate, frames_per_buffer);
 
   const std::string encoded_data("abcdefghijklmnopqrstuvwxyz");
 
@@ -157,9 +224,9 @@ TEST_P(WebmMuxerTest, OnEncodedAudioTwoFrames) {
       .Times(AtLeast(1))
       .WillRepeatedly(
           WithArgs<0>(Invoke(this, &WebmMuxerTest::SaveEncodedDataLen)));
-  webm_muxer_.OnEncodedAudio(audio_params,
-                             base::WrapUnique(new std::string(encoded_data)),
-                             base::TimeTicks::Now());
+  EXPECT_TRUE(webm_muxer_.OnEncodedAudio(
+      audio_params, std::make_unique<std::string>(encoded_data),
+      base::TimeTicks::Now()));
 
   // First time around WriteCallback() is pinged a number of times to write the
   // Matroska header, but at the end it dumps |encoded_data|.
@@ -173,9 +240,9 @@ TEST_P(WebmMuxerTest, OnEncodedAudioTwoFrames) {
       .Times(AtLeast(1))
       .WillRepeatedly(
           WithArgs<0>(Invoke(this, &WebmMuxerTest::SaveEncodedDataLen)));
-  webm_muxer_.OnEncodedAudio(audio_params,
-                             base::WrapUnique(new std::string(encoded_data)),
-                             base::TimeTicks::Now());
+  EXPECT_TRUE(webm_muxer_.OnEncodedAudio(
+      audio_params, std::make_unique<std::string>(encoded_data),
+      base::TimeTicks::Now()));
 
   // The second time around the callbacks should include a SimpleBlock header,
   // namely the track index, a timestamp and a flags byte, for a total of 6B.
@@ -185,6 +252,12 @@ TEST_P(WebmMuxerTest, OnEncodedAudioTwoFrames) {
   EXPECT_EQ(static_cast<int64_t>(begin_of_second_block + kSimpleBlockSize +
                                  encoded_data.size()),
             accumulated_position_);
+
+  // Force an error in libwebm and expect OnEncodedAudio to fail.
+  webm_muxer_.ForceOneLibWebmErrorForTesting();
+  EXPECT_FALSE(webm_muxer_.OnEncodedAudio(
+      audio_params, std::make_unique<std::string>(encoded_data),
+      base::TimeTicks::Now()));
 }
 
 // This test verifies that when video data comes before audio data, we save the
@@ -194,34 +267,38 @@ TEST_P(WebmMuxerTest, VideoIsStoredWhileWaitingForAudio) {
   if (GetParam().num_video_tracks == 0 || GetParam().num_audio_tracks == 0)
     return;
 
-  // First send a video keyframe
+  // First send a video keyframe.
   const gfx::Size frame_size(160, 80);
   const scoped_refptr<VideoFrame> video_frame =
       VideoFrame::CreateBlackFrame(frame_size);
   const std::string encoded_video("thisisanencodedvideopacket");
-  webm_muxer_.OnEncodedVideo(video_frame,
-                             base::WrapUnique(new std::string(encoded_video)),
-                             base::TimeTicks::Now(), true /* keyframe */);
+  EXPECT_TRUE(webm_muxer_.OnEncodedVideo(
+      WebmMuxer::VideoParameters(video_frame),
+      base::WrapUnique(new std::string(encoded_video)), nullptr,
+      base::TimeTicks::Now(), true /* keyframe */));
   // A few encoded non key frames.
   const int kNumNonKeyFrames = 2;
   for (int i = 0; i < kNumNonKeyFrames; ++i) {
-    webm_muxer_.OnEncodedVideo(video_frame,
-                               base::WrapUnique(new std::string(encoded_video)),
-                               base::TimeTicks::Now(), false /* keyframe */);
+    EXPECT_TRUE(webm_muxer_.OnEncodedVideo(
+        WebmMuxer::VideoParameters(video_frame),
+        base::WrapUnique(new std::string(encoded_video)), nullptr,
+        base::TimeTicks::Now(), false /* keyframe */));
   }
 
-  // Send some audio. The header will be written and muxing will proceed
-  // normally.
   const int sample_rate = 48000;
-  const int bits_per_sample = 16;
   const int frames_per_buffer = 480;
   media::AudioParameters audio_params(
       media::AudioParameters::Format::AUDIO_PCM_LOW_LATENCY,
-      media::CHANNEL_LAYOUT_MONO, sample_rate, bits_per_sample,
-      frames_per_buffer);
+      media::CHANNEL_LAYOUT_MONO, sample_rate, frames_per_buffer);
   const std::string encoded_audio("thisisanencodedaudiopacket");
 
-  // We should first get the encoded video frames, then the encoded audio frame.
+  // Force one libwebm error and verify OnEncodedAudio() fails.
+  webm_muxer_.ForceOneLibWebmErrorForTesting();
+  EXPECT_FALSE(webm_muxer_.OnEncodedAudio(
+      audio_params, base::WrapUnique(new std::string(encoded_audio)),
+      base::TimeTicks::Now()));
+
+  // We should get the queued encoded video frames, then an encoded audio frame.
   Sequence s;
   EXPECT_CALL(*this, WriteCallback(Eq(encoded_video)))
       .Times(1 + kNumNonKeyFrames)
@@ -231,23 +308,25 @@ TEST_P(WebmMuxerTest, VideoIsStoredWhileWaitingForAudio) {
   EXPECT_CALL(*this, WriteCallback(
                          AllOf(Not(Eq(encoded_video)), Not(Eq(encoded_audio)))))
       .Times(AnyNumber());
-  webm_muxer_.OnEncodedAudio(audio_params,
-                             base::WrapUnique(new std::string(encoded_audio)),
-                             base::TimeTicks::Now());
+  EXPECT_TRUE(webm_muxer_.OnEncodedAudio(
+      audio_params, base::WrapUnique(new std::string(encoded_audio)),
+      base::TimeTicks::Now()));
 }
 
-const kTestParams kTestCases[] = {
-    {kCodecVP8, 1 /* num_video_tracks */, 0 /*num_audio_tracks*/},
-    {kCodecVP8, 0, 1},
-    {kCodecVP8, 1, 1},
-    {kCodecVP9, 1, 0},
-    {kCodecVP9, 0, 1},
-    {kCodecVP9, 1, 1},
-    {kCodecH264, 1, 0},
-    {kCodecH264, 0, 1},
-    {kCodecH264, 1, 1},
+const TestParams kTestCases[] = {
+    {kCodecVP8, kCodecOpus, 1 /* num_video_tracks */, 0 /*num_audio_tracks*/},
+    {kCodecVP8, kCodecOpus, 0, 1},
+    {kCodecVP8, kCodecOpus, 1, 1},
+    {kCodecVP9, kCodecOpus, 1, 0},
+    {kCodecVP9, kCodecOpus, 0, 1},
+    {kCodecVP9, kCodecOpus, 1, 1},
+    {kCodecH264, kCodecOpus, 1, 0},
+    {kCodecH264, kCodecOpus, 0, 1},
+    {kCodecH264, kCodecOpus, 1, 1},
+    {kCodecVP8, kCodecPCM, 0, 1},
+    {kCodecVP8, kCodecPCM, 1, 1},
 };
 
-INSTANTIATE_TEST_CASE_P(, WebmMuxerTest, ValuesIn(kTestCases));
+INSTANTIATE_TEST_SUITE_P(, WebmMuxerTest, ValuesIn(kTestCases));
 
 }  // namespace media

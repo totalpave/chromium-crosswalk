@@ -16,10 +16,16 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "ipc/ipc_listener.h"
-#include "ipc/ipc_platform_file.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 #include "remoting/host/client_session_control.h"
+#include "remoting/host/current_process_stats_agent.h"
+#include "remoting/host/desktop_display_info.h"
+#include "remoting/host/desktop_environment_options.h"
+#include "remoting/host/file_transfer/session_file_operations_handler.h"
 #include "remoting/protocol/clipboard_stub.h"
+#include "remoting/protocol/process_stats_stub.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/mouse_cursor_monitor.h"
@@ -31,17 +37,20 @@ class Message;
 
 namespace remoting {
 
+class ActionExecutor;
 class AudioCapturer;
 class AudioPacket;
 class AutoThreadTaskRunner;
 class DesktopEnvironment;
 class DesktopEnvironmentFactory;
 class InputInjector;
+class ProcessStatsSender;
 class RemoteInputFilter;
 class ScreenControls;
 class ScreenResolution;
 
 namespace protocol {
+class ActionRequest;
 class InputEventTracker;
 }  // namespace protocol
 
@@ -52,7 +61,9 @@ class DesktopSessionAgent
       public IPC::Listener,
       public webrtc::DesktopCapturer::Callback,
       public webrtc::MouseCursorMonitor::Callback,
-      public ClientSessionControl {
+      public ClientSessionControl,
+      public protocol::ProcessStatsStub,
+      public IpcFileOperations::ResultHandler {
  public:
   class Delegate {
    public:
@@ -93,11 +104,16 @@ class DesktopSessionAgent
   // Forwards an audio packet though the IPC channel to the network process.
   void ProcessAudioPacket(std::unique_ptr<AudioPacket> packet);
 
+  // IpcFileOperations::ResultHandler implementation.
+  void OnResult(std::uint64_t file_id, ResultHandler::Result result) override;
+  void OnInfoResult(std::uint64_t file_id,
+                    ResultHandler::InfoResult result) override;
+  void OnDataResult(std::uint64_t file_id,
+                    ResultHandler::DataResult result) override;
+
   // Creates desktop integration components and a connected IPC channel to be
-  // used to access them. The client end of the channel is returned in
-  // the variable pointed by |desktop_pipe_out|.
-  bool Start(const base::WeakPtr<Delegate>& delegate,
-             IPC::PlatformFileForTransit* desktop_pipe_out);
+  // used to access them. The client end of the channel is returned.
+  mojo::ScopedMessagePipeHandle Start(const base::WeakPtr<Delegate>& delegate);
 
   // Stops the agent asynchronously.
   void Stop();
@@ -112,14 +128,23 @@ class DesktopSessionAgent
   void DisconnectSession(protocol::ErrorCode error) override;
   void OnLocalMouseMoved(const webrtc::DesktopVector& position) override;
   void SetDisableInputs(bool disable_inputs) override;
+  void OnDesktopDisplayChanged(
+      std::unique_ptr<protocol::VideoLayout> layout) override;
+
+  // ProcessStatsStub interface.
+  void OnProcessStats(
+      const protocol::AggregatedProcessResourceUsage& usage) override;
 
   // Handles StartSessionAgent request from the client.
   void OnStartSessionAgent(const std::string& authenticated_jid,
                            const ScreenResolution& resolution,
-                           bool virtual_terminal);
+                           const DesktopEnvironmentOptions& options);
 
   // Handles CaptureFrame requests from the client.
   void OnCaptureFrame();
+
+  // Handles desktop display selection requests from the client.
+  void OnSelectSource(int id);
 
   // Handles event executor requests from the client.
   void OnInjectClipboardEvent(const std::string& serialized_event);
@@ -127,6 +152,7 @@ class DesktopSessionAgent
   void OnInjectTextEvent(const std::string& serialized_event);
   void OnInjectMouseEvent(const std::string& serialized_event);
   void OnInjectTouchEvent(const std::string& serialized_event);
+  void OnExecuteActionRequestEvent(const protocol::ActionRequest& request);
 
   // Handles ChromotingNetworkDesktopMsg_SetScreenResolution request from
   // the client.
@@ -140,6 +166,14 @@ class DesktopSessionAgent
 
   // Posted to |audio_capture_task_runner_| to stop the audio capturer.
   void StopAudioCapturer();
+
+  // Starts to report process statistic data to network process. If
+  // |interval| is less than or equal to 0, a default non-zero value will be
+  // used.
+  void StartProcessStatsReport(base::TimeDelta interval);
+
+  // Stops sending process statistic data to network process.
+  void StopProcessStatsReport();
 
  private:
   // Task runner dedicated to running methods of |audio_capturer_|.
@@ -164,6 +198,9 @@ class DesktopSessionAgent
   // The DesktopEnvironment instance used by this agent.
   std::unique_ptr<DesktopEnvironment> desktop_environment_;
 
+  // Executes action request events.
+  std::unique_ptr<ActionExecutor> action_executor_;
+
   // Executes keyboard, mouse and clipboard events.
   std::unique_ptr<InputInjector> input_injector_;
 
@@ -179,10 +216,6 @@ class DesktopSessionAgent
   // IPC channel connecting the desktop process with the network process.
   std::unique_ptr<IPC::ChannelProxy> network_channel_;
 
-  // The client end of the network-to-desktop pipe. It is kept alive until
-  // the network process connects to the pipe.
-  base::File desktop_pipe_;
-
   // True if the desktop session agent has been started.
   bool started_ = false;
 
@@ -195,6 +228,15 @@ class DesktopSessionAgent
   // Keep reference to the last frame sent to make sure shared buffer is alive
   // before it's received.
   std::unique_ptr<webrtc::DesktopFrame> last_frame_;
+
+  // Routes file-transfer messages to the corresponding reader/writer to be
+  // executed.
+  base::Optional<SessionFileOperationsHandler> session_file_operations_handler_;
+
+  // Reports process statistic data to network process.
+  std::unique_ptr<ProcessStatsSender> stats_sender_;
+
+  CurrentProcessStatsAgent current_process_stats_;
 
   // Used to disable callbacks to |this|.
   base::WeakPtrFactory<DesktopSessionAgent> weak_factory_;

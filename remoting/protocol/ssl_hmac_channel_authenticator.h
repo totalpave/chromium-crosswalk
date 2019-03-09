@@ -11,7 +11,7 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "remoting/protocol/channel_authenticator.h"
 
 namespace net {
@@ -34,8 +34,9 @@ namespace protocol {
 // SslHmacChannelAuthenticator implements ChannelAuthenticator that
 // secures channels using SSL and authenticates them with a shared
 // secret HMAC.
-class SslHmacChannelAuthenticator : public ChannelAuthenticator,
-                                    public base::NonThreadSafe {
+// Please update network traffic annotation in the .cc file if this class is
+// used for any new purposes.
+class SslHmacChannelAuthenticator : public ChannelAuthenticator {
  public:
   enum LegacyMode {
     NONE,
@@ -103,6 +104,8 @@ class SslHmacChannelAuthenticator : public ChannelAuthenticator,
 
   scoped_refptr<net::DrainableIOBuffer> auth_write_buf_;
   scoped_refptr<net::GrowableIOBuffer> auth_read_buf_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(SslHmacChannelAuthenticator);
 };

@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/android/metrics/variations_session.h"
-
 #include "base/android/jni_string.h"
 #include "chrome/browser/browser_process.h"
 #include "components/variations/service/variations_service.h"
 #include "jni/VariationsSession_jni.h"
+
+using base::android::JavaParamRef;
 
 namespace {
 
@@ -17,7 +17,7 @@ bool g_on_app_enter_foreground_called = false;
 
 }  // namespace
 
-static void StartVariationsSession(
+static void JNI_VariationsSession_StartVariationsSession(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj,
     const JavaParamRef<jstring>& jrestrict_mode) {
@@ -37,11 +37,17 @@ static void StartVariationsSession(
   }
 }
 
-namespace chrome {
-namespace android {
+static base::android::ScopedJavaLocalRef<jstring>
+JNI_VariationsSession_GetLatestCountry(JNIEnv* env,
+                                       const JavaParamRef<jobject>& obj) {
+  variations::VariationsService* variations_service =
+      g_browser_process->variations_service();
+  if (!variations_service)
+    return nullptr;
 
-// Register native methods
-bool RegisterVariationsSession(JNIEnv* env) { return RegisterNativesImpl(env); }
+  std::string latest_country = variations_service->GetLatestCountry();
+  if (latest_country.empty())
+    return nullptr;
 
-}  // namespace android
-}  // namespace chrome
+  return base::android::ConvertUTF8ToJavaString(env, latest_country);
+}

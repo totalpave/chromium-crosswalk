@@ -10,14 +10,15 @@
 #include <climits>
 #include <cstdarg>
 #include <cstdio>
-#include <deque>
 #include <map>
 #include <memory>
 #include <string>
 #include <utility>
 
 #include "base/at_exit.h"
+#include "base/bind.h"
 #include "base/command_line.h"
+#include "base/containers/circular_deque.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_loop.h"
@@ -25,11 +26,14 @@
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/time/default_tick_clock.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/audio_manager.h"
 #include "media/audio/fake_audio_log_factory.h"
+#include "media/audio/test_audio_thread.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/channel_layout.h"
@@ -38,7 +42,6 @@
 #include "media/cast/cast_environment.h"
 #include "media/cast/cast_receiver.h"
 #include "media/cast/logging/logging_defines.h"
-#include "media/cast/net/udp_transport.h"
 #include "media/cast/test/utility/audio_utility.h"
 #include "media/cast/test/utility/barcode.h"
 #include "media/cast/test/utility/default_config.h"
@@ -60,10 +63,8 @@ namespace cast {
 #define DEFAULT_SEND_IP "0.0.0.0"
 #define DEFAULT_AUDIO_FEEDBACK_SSRC "2"
 #define DEFAULT_AUDIO_INCOMING_SSRC "1"
-#define DEFAULT_AUDIO_PAYLOAD_TYPE "127"
 #define DEFAULT_VIDEO_FEEDBACK_SSRC "12"
 #define DEFAULT_VIDEO_INCOMING_SSRC "11"
-#define DEFAULT_VIDEO_PAYLOAD_TYPE "96"
 
 #if defined(USE_X11)
 const char* kVideoWindowWidth = "1280";
@@ -125,11 +126,13 @@ void GetWindowSize(int* width, int* height) {
 #endif  // defined(USE_X11)
 
 void GetAudioPayloadtype(FrameReceiverConfig* audio_config) {
-  test::InputBuilder input("Choose audio receiver payload type.",
-                           DEFAULT_AUDIO_PAYLOAD_TYPE,
-                           kDefaultRtpVideoPayloadType  /* low_range */,
-                           kDefaultRtpAudioPayloadType  /* high_range */);
-  audio_config->rtp_payload_type = input.GetIntInput();
+  test::InputBuilder input(
+      "Choose audio receiver payload type.",
+      std::to_string(static_cast<int>(RtpPayloadType::AUDIO_OPUS)),
+      static_cast<int>(RtpPayloadType::AUDIO_OPUS) /* low_range */,
+      static_cast<int>(RtpPayloadType::AUDIO_LAST) /* high_range */);
+  audio_config->rtp_payload_type =
+      static_cast<RtpPayloadType>(input.GetIntInput());
 }
 
 FrameReceiverConfig GetAudioReceiverConfig() {
@@ -141,11 +144,13 @@ FrameReceiverConfig GetAudioReceiverConfig() {
 }
 
 void GetVideoPayloadtype(FrameReceiverConfig* video_config) {
-  test::InputBuilder input("Choose video receiver payload type.",
-                           DEFAULT_VIDEO_PAYLOAD_TYPE,
-                           kDefaultRtpVideoPayloadType  /* low_range */,
-                           kDefaultRtpAudioPayloadType  /* high_range */);
-  video_config->rtp_payload_type = input.GetIntInput();
+  test::InputBuilder input(
+      "Choose video receiver payload type.",
+      std::to_string(static_cast<int>(RtpPayloadType::VIDEO_VP8)),
+      static_cast<int>(RtpPayloadType::VIDEO_VP8) /* low_range */,
+      static_cast<int>(RtpPayloadType::LAST) /* high_range */);
+  video_config->rtp_payload_type =
+      static_cast<RtpPayloadType>(input.GetIntInput());
 }
 
 FrameReceiverConfig GetVideoReceiverConfig() {
@@ -160,7 +165,7 @@ AudioParameters ToAudioParameters(const FrameReceiverConfig& config) {
   const int samples_in_10ms = config.rtp_timebase / 100;
   return AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
                          GuessChannelLayout(config.channels),
-                         config.rtp_timebase, 32, samples_in_10ms);
+                         config.rtp_timebase, samples_in_10ms);
 }
 
 // An InProcessReceiver that renders video frames to a LinuxOutputWindow and
@@ -212,8 +217,8 @@ class NaivePlayer : public InProcessReceiver,
   void Start() final {
     AudioManager::Get()->GetTaskRunner()->PostTask(
         FROM_HERE,
-        base::Bind(&NaivePlayer::StartAudioOutputOnAudioManagerThread,
-                   base::Unretained(this)));
+        base::BindOnce(&NaivePlayer::StartAudioOutputOnAudioManagerThread,
+                       base::Unretained(this)));
     // Note: No need to wait for audio polling to start since the push-and-pull
     // mechanism is synchronized via the |audio_playout_queue_|.
     InProcessReceiver::Start();
@@ -226,9 +231,8 @@ class NaivePlayer : public InProcessReceiver,
     DCHECK(!AudioManager::Get()->GetTaskRunner()->BelongsToCurrentThread());
     AudioManager::Get()->GetTaskRunner()->PostTask(
         FROM_HERE,
-        base::Bind(&NaivePlayer::StopAudioOutputOnAudioManagerThread,
-                   base::Unretained(this),
-                   &done));
+        base::BindOnce(&NaivePlayer::StopAudioOutputOnAudioManagerThread,
+                       base::Unretained(this), &done));
     done.Wait();
 
     // Now, stop receiving new frames.
@@ -322,9 +326,10 @@ class NaivePlayer : public InProcessReceiver,
   ////////////////////////////////////////////////////////////////////
   // AudioSourceCallback implementation.
 
-  int OnMoreData(AudioBus* dest,
-                 uint32_t total_bytes_delay,
-                 uint32_t frames_skipped) final {
+  int OnMoreData(base::TimeDelta /* delay */,
+                 base::TimeTicks /* delay_timestamp */,
+                 int /* prior_frames_skipped */,
+                 AudioBus* dest) final {
     // Note: This method is being invoked by a separate thread unknown to us
     // (i.e., outside of CastEnvironment).
 
@@ -384,7 +389,7 @@ class NaivePlayer : public InProcessReceiver,
     return dest->frames();
   }
 
-  void OnError(AudioOutputStream* stream) final {
+  void OnError() final {
     LOG(ERROR) << "AudioOutputStream reports an error.  "
                << "Playback is unlikely to continue.";
   }
@@ -521,7 +526,7 @@ class NaivePlayer : public InProcessReceiver,
   // Video playout queue.
   typedef std::pair<base::TimeTicks, scoped_refptr<VideoFrame> >
       VideoQueueEntry;
-  std::deque<VideoQueueEntry> video_playout_queue_;
+  base::circular_deque<VideoQueueEntry> video_playout_queue_;
   base::TimeTicks last_popped_video_playout_time_;
   int64_t num_video_frames_processed_;
 
@@ -530,7 +535,7 @@ class NaivePlayer : public InProcessReceiver,
   // Audio playout queue, synchronized by |audio_lock_|.
   base::Lock audio_lock_;
   typedef std::pair<base::TimeTicks, AudioBus*> AudioQueueEntry;
-  std::deque<AudioQueueEntry> audio_playout_queue_;
+  base::circular_deque<AudioQueueEntry> audio_playout_queue_;
   base::TimeTicks last_popped_audio_playout_time_;
   int64_t num_audio_frames_processed_;
 
@@ -556,9 +561,8 @@ int main(int argc, char** argv) {
       new media::cast::StandaloneCastEnvironment);
 
   // Start up Chromium audio system.
-  const media::ScopedAudioManagerPtr audio_manager(
-      media::AudioManager::CreateForTesting(
-          base::ThreadTaskRunnerHandle::Get()));
+  auto audio_manager = media::AudioManager::CreateForTesting(
+      std::make_unique<media::TestAudioThread>());
   CHECK(media::AudioManager::Get());
 
   media::cast::FrameReceiverConfig audio_config =

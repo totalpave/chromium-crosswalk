@@ -4,6 +4,8 @@
 
 #include "media/cast/test/skewed_single_thread_task_runner.h"
 
+#include <utility>
+
 #include "base/logging.h"
 #include "base/time/tick_clock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -18,33 +20,31 @@ SkewedSingleThreadTaskRunner::SkewedSingleThreadTaskRunner(
     task_runner_(task_runner) {
 }
 
-SkewedSingleThreadTaskRunner::~SkewedSingleThreadTaskRunner() {}
+SkewedSingleThreadTaskRunner::~SkewedSingleThreadTaskRunner() = default;
 
 void SkewedSingleThreadTaskRunner::SetSkew(double skew) {
   skew_ = skew;
 }
 
 bool SkewedSingleThreadTaskRunner::PostDelayedTask(
-    const tracked_objects::Location& from_here,
-    const base::Closure& task,
+    const base::Location& from_here,
+    base::OnceClosure task,
     base::TimeDelta delay) {
   return task_runner_->PostDelayedTask(
-      from_here,
-      task,
+      from_here, std::move(task),
       base::TimeDelta::FromMicroseconds(delay.InMicroseconds() * skew_));
 }
 
-bool SkewedSingleThreadTaskRunner::RunsTasksOnCurrentThread() const {
-  return task_runner_->RunsTasksOnCurrentThread();
+bool SkewedSingleThreadTaskRunner::RunsTasksInCurrentSequence() const {
+  return task_runner_->RunsTasksInCurrentSequence();
 }
 
 bool SkewedSingleThreadTaskRunner::PostNonNestableDelayedTask(
-    const tracked_objects::Location& from_here,
-    const base::Closure& task,
+    const base::Location& from_here,
+    base::OnceClosure task,
     base::TimeDelta delay) {
   return task_runner_->PostNonNestableDelayedTask(
-      from_here,
-      task,
+      from_here, std::move(task),
       base::TimeDelta::FromMicroseconds(delay.InMicroseconds() * skew_));
 }
 

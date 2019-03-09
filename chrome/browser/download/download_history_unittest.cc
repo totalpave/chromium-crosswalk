@@ -9,22 +9,28 @@
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/guid.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/rand_util.h"
 #include "base/stl_util.h"
-#include "components/history/content/browser/download_constants_utils.h"
+#include "base/task/post_task.h"
+#include "base/test/scoped_feature_list.h"
+#include "components/download/public/common/download_features.h"
+#include "components/download/public/common/mock_download_item.h"
+#include "components/history/content/browser/download_conversions.h"
 #include "components/history/core/browser/download_constants.h"
 #include "components/history/core/browser/download_row.h"
 #include "components/history/core/browser/history_service.h"
-#include "content/public/test/mock_download_item.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/test/mock_download_manager.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/api/downloads/downloads_api.h"
 #endif
 
@@ -38,26 +44,21 @@ using testing::_;
 
 namespace {
 
-typedef DownloadHistory::IdSet IdSet;
-typedef std::vector<history::DownloadRow> InfoVector;
-typedef testing::StrictMock<content::MockDownloadItem> StrictMockDownloadItem;
+using IdSet = DownloadHistory::IdSet;
+using InfoVector = std::vector<history::DownloadRow>;
+using StrictMockDownloadItem = testing::StrictMock<download::MockDownloadItem>;
 
 class FakeHistoryAdapter : public DownloadHistory::HistoryAdapter {
  public:
-  FakeHistoryAdapter()
-    : DownloadHistory::HistoryAdapter(NULL),
-      slow_create_download_(false),
-      fail_create_download_(false) {
-  }
-
-  ~FakeHistoryAdapter() override {}
+  FakeHistoryAdapter() : DownloadHistory::HistoryAdapter(nullptr) {}
 
   void QueryDownloads(
       const history::HistoryService::DownloadQueryCallback& callback) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-        base::Bind(&FakeHistoryAdapter::QueryDownloadsDone,
-            base::Unretained(this), callback));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::UI},
+        base::BindOnce(&FakeHistoryAdapter::QueryDownloadsDone,
+                       base::Unretained(this), callback));
   }
 
   void QueryDownloadsDone(
@@ -88,15 +89,16 @@ class FakeHistoryAdapter : public DownloadHistory::HistoryAdapter {
     create_download_callback_.Reset();
   }
 
-  void UpdateDownload(const history::DownloadRow& info) override {
+  void UpdateDownload(const history::DownloadRow& info,
+                      bool should_commit_immediately) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     update_download_ = info;
+    should_commit_immediately_ = should_commit_immediately;
   }
 
   void RemoveDownloads(const IdSet& ids) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    for (IdSet::const_iterator it = ids.begin();
-         it != ids.end(); ++it) {
+    for (auto it = ids.begin(); it != ids.end(); ++it) {
       remove_downloads_.insert(*it);
     }
   }
@@ -130,11 +132,14 @@ class FakeHistoryAdapter : public DownloadHistory::HistoryAdapter {
     EXPECT_EQ(history::DownloadRow(), create_download_info_);
   }
 
-  void ExpectDownloadUpdated(const history::DownloadRow& info) {
+  void ExpectDownloadUpdated(const history::DownloadRow& info,
+                             bool should_commit_immediately) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     content::RunAllPendingInMessageLoop(content::BrowserThread::UI);
     EXPECT_EQ(update_download_, info);
+    EXPECT_EQ(should_commit_immediately_, should_commit_immediately);
     update_download_ = history::DownloadRow();
+    should_commit_immediately_ = false;
   }
 
   void ExpectNoDownloadUpdated() {
@@ -153,16 +158,17 @@ class FakeHistoryAdapter : public DownloadHistory::HistoryAdapter {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     content::RunAllPendingInMessageLoop(content::BrowserThread::UI);
     IdSet differences = base::STLSetDifference<IdSet>(ids, remove_downloads_);
-    for (IdSet::const_iterator different = differences.begin();
-         different != differences.end(); ++different) {
+    for (auto different = differences.begin(); different != differences.end();
+         ++different) {
       EXPECT_TRUE(false) << *different;
     }
     remove_downloads_.clear();
   }
 
  private:
-  bool slow_create_download_;
-  bool fail_create_download_;
+  bool slow_create_download_ = false;
+  bool fail_create_download_ = false;
+  bool should_commit_immediately_ = false;
   base::Closure create_download_callback_;
   history::DownloadRow update_download_;
   std::unique_ptr<InfoVector> expect_query_downloads_;
@@ -183,21 +189,17 @@ class TestDownloadHistoryObserver : public DownloadHistory::Observer {
 class DownloadHistoryTest : public testing::Test {
  public:
   // Generic callback that receives a pointer to a StrictMockDownloadItem.
-  typedef base::Callback<void(content::MockDownloadItem*)> DownloadItemCallback;
+  using DownloadItemCallback =
+      base::Callback<void(download::MockDownloadItem*)>;
 
   DownloadHistoryTest()
-      : ui_thread_(content::BrowserThread::UI, &loop_),
-        manager_(new content::MockDownloadManager()),
-        history_(NULL),
-        manager_observer_(NULL),
-        download_created_index_(0) {}
-  ~DownloadHistoryTest() override { STLDeleteElements(&items_); }
+      : manager_(std::make_unique<content::MockDownloadManager>()) {}
 
  protected:
   void TearDown() override { download_history_.reset(); }
 
   content::MockDownloadManager& manager() { return *manager_.get(); }
-  content::MockDownloadItem& item(size_t index) { return *items_[index]; }
+  download::MockDownloadItem& item(size_t index) { return *items_[index]; }
   DownloadHistory* download_history() { return download_history_.get(); }
 
   void SetManagerObserver(
@@ -208,7 +210,10 @@ class DownloadHistoryTest : public testing::Test {
     return manager_observer_;
   }
 
-  void CreateDownloadHistory(std::unique_ptr<InfoVector> infos) {
+  // Creates the DownloadHistory. If |return_null_item| is true, |manager_|
+  // will return nullptr on CreateDownloadItem() call,
+  void CreateDownloadHistory(std::unique_ptr<InfoVector> infos,
+                             bool return_null_item = false) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     CHECK(infos.get());
     EXPECT_CALL(manager(), AddObserver(_)).WillOnce(WithArg<0>(Invoke(
@@ -226,17 +231,22 @@ class DownloadHistoryTest : public testing::Test {
           history::ToContentDownloadState(row.state),
           history::ToContentDownloadDangerType(row.danger_type),
           history::ToContentDownloadInterruptReason(row.interrupt_reason),
-          row.opened);
-      EXPECT_CALL(manager(), MockCreateDownloadItem(adapter))
-        .WillOnce(DoAll(
-            InvokeWithoutArgs(
-                this, &DownloadHistoryTest::CallOnDownloadCreatedInOrder),
-            Return(&item(index))));
+          row.opened, row.last_access_time, row.transient,
+          history::ToContentReceivedSlices(row.download_slice_info));
+      if (return_null_item) {
+        EXPECT_CALL(manager(), MockCreateDownloadItem(adapter))
+            .WillOnce(Return(nullptr));
+      } else {
+        EXPECT_CALL(manager(), MockCreateDownloadItem(adapter))
+            .WillOnce(DoAll(
+                InvokeWithoutArgs(
+                    this, &DownloadHistoryTest::CallOnDownloadCreatedInOrder),
+                Return(&item(index))));
+      }
     }
-    EXPECT_CALL(manager(), CheckForHistoryFilesRemoval());
     history_ = new FakeHistoryAdapter();
     history_->ExpectWillQueryDownloads(std::move(infos));
-    EXPECT_CALL(*manager_.get(), GetAllDownloads(_)).WillRepeatedly(Return());
+    EXPECT_CALL(manager(), GetAllDownloads(_)).WillRepeatedly(Return());
     download_history_.reset(new DownloadHistory(
         &manager(),
         std::unique_ptr<DownloadHistory::HistoryAdapter>(history_)));
@@ -246,11 +256,7 @@ class DownloadHistoryTest : public testing::Test {
 
   void CallOnDownloadCreated(size_t index) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    if (!pre_on_create_handler_.is_null())
-      pre_on_create_handler_.Run(&item(index));
     manager_observer()->OnDownloadCreated(&manager(), &item(index));
-    if (!post_on_create_handler_.is_null())
-      post_on_create_handler_.Run(&item(index));
   }
 
   void CallOnDownloadCreatedInOrder() {
@@ -286,9 +292,10 @@ class DownloadHistoryTest : public testing::Test {
     history_->ExpectNoDownloadCreated();
   }
 
-  void ExpectDownloadUpdated(const history::DownloadRow& info) {
+  void ExpectDownloadUpdated(const history::DownloadRow& info,
+                             bool should_commit_immediately) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    history_->ExpectDownloadUpdated(info);
+    history_->ExpectDownloadUpdated(info, should_commit_immediately);
   }
 
   void ExpectNoDownloadUpdated() {
@@ -306,143 +313,123 @@ class DownloadHistoryTest : public testing::Test {
     history_->ExpectDownloadsRemoved(ids);
   }
 
-  void ExpectDownloadsRestoredFromHistory(bool expected_value) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    pre_on_create_handler_ =
-        base::Bind(&DownloadHistoryTest::CheckDownloadWasRestoredFromHistory,
-                   base::Unretained(this),
-                   expected_value);
-    post_on_create_handler_ =
-        base::Bind(&DownloadHistoryTest::CheckDownloadWasRestoredFromHistory,
-                   base::Unretained(this),
-                   expected_value);
+  void AddAllDownloads(
+      content::DownloadManager::DownloadVector* download_vector) {
+    for (size_t i = 0; i < items_.size(); ++i)
+      download_vector->push_back(&item(i));
   }
 
   void InitBasicItem(const base::FilePath::CharType* path,
                      const char* url_string,
                      const char* referrer_string,
+                     download::DownloadItem::DownloadState state,
                      history::DownloadRow* info) {
-    GURL url(url_string);
-    GURL referrer(referrer_string);
-    std::vector<GURL> url_chain;
-    url_chain.push_back(url);
-    InitItem(base::GenerateGUID(), static_cast<uint32_t>(items_.size() + 1),
-             base::FilePath(path), base::FilePath(path), url_chain, referrer,
-             GURL("http://example.com"), GURL("http://example.com/tab-url"),
-             GURL("http://example.com/tab-referrer-url"),
-             "application/octet-stream", "application/octet-stream",
-             (base::Time::Now() - base::TimeDelta::FromMinutes(10)),
-             (base::Time::Now() - base::TimeDelta::FromMinutes(1)), "Etag",
-             "abc", 100, 100, content::DownloadItem::COMPLETE,
-             content::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
-             content::DOWNLOAD_INTERRUPT_REASON_NONE, false, std::string(),
-             std::string(), info);
-  }
-
-  void InitItem(const std::string& guid,
-                uint32_t id,
-                const base::FilePath& current_path,
-                const base::FilePath& target_path,
-                const std::vector<GURL>& url_chain,
-                const GURL& referrer,
-                const GURL& site_url,
-                const GURL& tab_url,
-                const GURL& tab_referrer_url,
-                const std::string& mime_type,
-                const std::string& original_mime_type,
-                const base::Time& start_time,
-                const base::Time& end_time,
-                const std::string& etag,
-                const std::string& last_modified,
-                int64_t received_bytes,
-                int64_t total_bytes,
-                content::DownloadItem::DownloadState state,
-                content::DownloadDangerType danger_type,
-                content::DownloadInterruptReason interrupt_reason,
-                bool opened,
-                const std::string& by_extension_id,
-                const std::string& by_extension_name,
-                history::DownloadRow* info) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
     size_t index = items_.size();
-    StrictMockDownloadItem* mock_item = new StrictMockDownloadItem();
-    items_.push_back(mock_item);
+    items_.push_back(std::make_unique<StrictMockDownloadItem>());
 
-    info->current_path = current_path;
-    info->target_path = target_path;
-    info->url_chain = url_chain;
-    info->referrer_url = referrer;
-    info->site_url = site_url;
-    info->tab_url = tab_url;
-    info->tab_referrer_url = tab_referrer_url;
-    info->mime_type = mime_type;
-    info->original_mime_type = original_mime_type;
-    info->start_time = start_time;
-    info->end_time = end_time;
-    info->etag = etag;
-    info->last_modified = last_modified;
-    info->received_bytes = received_bytes;
-    info->total_bytes = total_bytes;
+    base::Time now = base::Time::Now();
+
+    info->current_path = base::FilePath(path);
+    info->target_path = base::FilePath(path);
+    info->url_chain.push_back(GURL(url_string));
+    info->referrer_url = GURL(referrer_string);
+    info->site_url = GURL("http://example.com");
+    info->tab_url = GURL("http://example.com/tab-url");
+    info->tab_referrer_url = GURL("http://example.com/tab-referrer-url");
+    info->mime_type = "application/octet-stream";
+    info->original_mime_type = "application/octet-stream";
+    info->start_time = now - base::TimeDelta::FromMinutes(10);
+    info->end_time = now - base::TimeDelta::FromMinutes(1);
+    info->etag = "Etag";
+    info->last_modified = "abc";
+    info->received_bytes = 100;
+    info->total_bytes = 100;
     info->state = history::ToHistoryDownloadState(state);
-    info->danger_type = history::ToHistoryDownloadDangerType(danger_type);
-    info->interrupt_reason =
-        history::ToHistoryDownloadInterruptReason(interrupt_reason);
-    info->id = history::ToHistoryDownloadId(id);
-    info->guid = guid;
-    info->opened = opened;
-    info->by_ext_id = by_extension_id;
-    info->by_ext_name = by_extension_name;
+    info->danger_type = history::ToHistoryDownloadDangerType(
+        download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+    info->interrupt_reason = history::ToHistoryDownloadInterruptReason(
+        download::DOWNLOAD_INTERRUPT_REASON_NONE);
+    info->id =
+        history::ToHistoryDownloadId(static_cast<uint32_t>(items_.size() + 1));
+    info->guid = base::GenerateGUID();
+    info->opened = false;
+    info->last_access_time = now;
+    info->transient = false;
 
-    EXPECT_CALL(item(index), GetId()).WillRepeatedly(Return(id));
-    EXPECT_CALL(item(index), GetGuid()).WillRepeatedly(ReturnRefOfCopy(guid));
+    EXPECT_CALL(item(index), GetId()).WillRepeatedly(Return(info->id));
+    EXPECT_CALL(item(index), GetGuid())
+        .WillRepeatedly(ReturnRefOfCopy(info->guid));
     EXPECT_CALL(item(index), GetFullPath())
-        .WillRepeatedly(ReturnRefOfCopy(current_path));
+        .WillRepeatedly(ReturnRefOfCopy(info->current_path));
     EXPECT_CALL(item(index), GetTargetFilePath())
-        .WillRepeatedly(ReturnRefOfCopy(target_path));
-    DCHECK_LE(1u, url_chain.size());
+        .WillRepeatedly(ReturnRefOfCopy(info->target_path));
+    DCHECK_LE(1u, info->url_chain.size());
     EXPECT_CALL(item(index), GetURL())
-        .WillRepeatedly(ReturnRefOfCopy(url_chain[0]));
+        .WillRepeatedly(ReturnRefOfCopy(info->url_chain[0]));
     EXPECT_CALL(item(index), GetUrlChain())
-        .WillRepeatedly(ReturnRefOfCopy(url_chain));
-    EXPECT_CALL(item(index), GetMimeType()).WillRepeatedly(Return(mime_type));
-    EXPECT_CALL(item(index), GetOriginalMimeType()).WillRepeatedly(Return(
-        original_mime_type));
+        .WillRepeatedly(ReturnRefOfCopy(info->url_chain));
+    EXPECT_CALL(item(index), GetMimeType())
+        .WillRepeatedly(Return(info->mime_type));
+    EXPECT_CALL(item(index), GetOriginalMimeType())
+        .WillRepeatedly(Return(info->original_mime_type));
     EXPECT_CALL(item(index), GetReferrerUrl())
-        .WillRepeatedly(ReturnRefOfCopy(referrer));
+        .WillRepeatedly(ReturnRefOfCopy(info->referrer_url));
     EXPECT_CALL(item(index), GetSiteUrl())
-        .WillRepeatedly(ReturnRefOfCopy(site_url));
+        .WillRepeatedly(ReturnRefOfCopy(info->site_url));
     EXPECT_CALL(item(index), GetTabUrl())
-        .WillRepeatedly(ReturnRefOfCopy(tab_url));
+        .WillRepeatedly(ReturnRefOfCopy(info->tab_url));
     EXPECT_CALL(item(index), GetTabReferrerUrl())
-        .WillRepeatedly(ReturnRefOfCopy(tab_referrer_url));
-    EXPECT_CALL(item(index), GetStartTime()).WillRepeatedly(Return(start_time));
-    EXPECT_CALL(item(index), GetEndTime()).WillRepeatedly(Return(end_time));
-    EXPECT_CALL(item(index), GetETag()).WillRepeatedly(ReturnRefOfCopy(etag));
+        .WillRepeatedly(ReturnRefOfCopy(info->tab_referrer_url));
+    EXPECT_CALL(item(index), GetStartTime())
+        .WillRepeatedly(Return(info->start_time));
+    EXPECT_CALL(item(index), GetEndTime())
+        .WillRepeatedly(Return(info->end_time));
+    EXPECT_CALL(item(index), GetETag())
+        .WillRepeatedly(ReturnRefOfCopy(info->etag));
     EXPECT_CALL(item(index), GetLastModifiedTime())
-        .WillRepeatedly(ReturnRefOfCopy(last_modified));
+        .WillRepeatedly(ReturnRefOfCopy(info->last_modified));
     EXPECT_CALL(item(index), GetReceivedBytes())
-        .WillRepeatedly(Return(received_bytes));
+        .WillRepeatedly(Return(info->received_bytes));
+    EXPECT_CALL(item(index), GetReceivedSlices())
+        .WillRepeatedly(ReturnRefOfCopy(
+            std::vector<download::DownloadItem::ReceivedSlice>()));
     EXPECT_CALL(item(index), GetTotalBytes())
-        .WillRepeatedly(Return(total_bytes));
+        .WillRepeatedly(Return(info->total_bytes));
     EXPECT_CALL(item(index), GetState()).WillRepeatedly(Return(state));
     EXPECT_CALL(item(index), GetDangerType())
-        .WillRepeatedly(Return(danger_type));
+        .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS));
     EXPECT_CALL(item(index), GetLastReason())
-        .WillRepeatedly(Return(interrupt_reason));
-    EXPECT_CALL(item(index), GetOpened()).WillRepeatedly(Return(opened));
+        .WillRepeatedly(Return(download::DOWNLOAD_INTERRUPT_REASON_NONE));
+    EXPECT_CALL(item(index), GetOpened()).WillRepeatedly(Return(info->opened));
+    EXPECT_CALL(item(index), GetLastAccessTime())
+        .WillRepeatedly(Return(info->last_access_time));
+    EXPECT_CALL(item(index), IsTransient())
+        .WillRepeatedly(Return(info->transient));
     EXPECT_CALL(item(index), GetTargetDisposition())
         .WillRepeatedly(
-            Return(content::DownloadItem::TARGET_DISPOSITION_OVERWRITE));
-    EXPECT_CALL(manager(), GetDownload(id))
+            Return(download::DownloadItem::TARGET_DISPOSITION_OVERWRITE));
+    EXPECT_CALL(item(index), IsSavePackageDownload())
+        .WillRepeatedly(Return(false));
+    EXPECT_CALL(item(index), IsDone()).WillRepeatedly(Return(false));
+    EXPECT_CALL(item(index), GetDownloadCreationType())
+        .WillRepeatedly(
+            Return(state == download::DownloadItem::IN_PROGRESS
+                       ? download::DownloadItem::TYPE_ACTIVE_DOWNLOAD
+                       : download::DownloadItem::TYPE_HISTORY_IMPORT));
+    EXPECT_CALL(manager(), GetDownload(info->id))
         .WillRepeatedly(Return(&item(index)));
     EXPECT_CALL(item(index), IsTemporary()).WillRepeatedly(Return(false));
-#if defined(ENABLE_EXTENSIONS)
-    new extensions::DownloadedByExtension(
-        &item(index), by_extension_id, by_extension_name);
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+    new extensions::DownloadedByExtension(&item(index), info->by_ext_id,
+                                          info->by_ext_name);
 #endif
 
-    std::vector<content::DownloadItem*> items;
+    info->download_slice_info = history::GetHistoryDownloadSliceInfos(
+        item(index));
+
+    std::vector<download::DownloadItem*> items;
     for (size_t i = 0; i < items_.size(); ++i) {
       items.push_back(&item(i));
     }
@@ -451,22 +438,13 @@ class DownloadHistoryTest : public testing::Test {
   }
 
  private:
-  void CheckDownloadWasRestoredFromHistory(bool expected_value,
-                                           content::MockDownloadItem* item) {
-    ASSERT_TRUE(download_history_.get());
-    EXPECT_EQ(expected_value, download_history_->WasRestoredFromHistory(item));
-  }
-
-  base::MessageLoopForUI loop_;
-  content::TestBrowserThread ui_thread_;
-  std::vector<StrictMockDownloadItem*> items_;
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+  std::vector<std::unique_ptr<StrictMockDownloadItem>> items_;
   std::unique_ptr<content::MockDownloadManager> manager_;
-  FakeHistoryAdapter* history_;
+  FakeHistoryAdapter* history_ = nullptr;
   std::unique_ptr<DownloadHistory> download_history_;
-  content::DownloadManager::Observer* manager_observer_;
-  size_t download_created_index_;
-  DownloadItemCallback pre_on_create_handler_;
-  DownloadItemCallback post_on_create_handler_;
+  content::DownloadManager::Observer* manager_observer_ = nullptr;
+  size_t download_created_index_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(DownloadHistoryTest);
 };
@@ -477,10 +455,9 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Load) {
   // Load a download from history, create the item, OnDownloadCreated,
   // OnDownloadUpdated, OnDownloadRemoved.
   history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info);
+                download::DownloadItem::IN_PROGRESS, &info);
   {
     std::unique_ptr<InfoVector> infos(new InfoVector());
     infos->push_back(info);
@@ -493,7 +470,7 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Load) {
   EXPECT_CALL(item(0), GetOpened()).WillRepeatedly(Return(true));
   item(0).NotifyObserversDownloadUpdated();
   info.opened = true;
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // Pretend that the user removed the item.
   IdSet ids;
@@ -551,56 +528,6 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_OnHistoryQueryComplete_Post) {
   download_history()->RemoveObserver(&observer);
 }
 
-// Test that WasRestoredFromHistory accurately identifies downloads that were
-// created from history, even during an OnDownloadCreated() handler.
-TEST_F(DownloadHistoryTest, DownloadHistoryTest_WasRestoredFromHistory_True) {
-  // This sets DownloadHistoryTest to call DH::WasRestoredFromHistory() both
-  // before and after DH::OnDownloadCreated() is called. At each call, the
-  // expected return value is |true| since the download was restored from
-  // history.
-  ExpectDownloadsRestoredFromHistory(true);
-
-  // Construct a DownloadHistory with a single history download. This results in
-  // DownloadManager::CreateDownload() being called for the restored download.
-  // The above test expectation should verify that the value of
-  // WasRestoredFromHistory is correct for this download.
-  history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
-                "http://example.com/referrer.html",
-                &info);
-  std::unique_ptr<InfoVector> infos(new InfoVector());
-  infos->push_back(info);
-  CreateDownloadHistory(std::move(infos));
-
-  EXPECT_TRUE(DownloadHistory::IsPersisted(&item(0)));
-}
-
-// Test that WasRestoredFromHistory accurately identifies downloads that were
-// not created from history.
-TEST_F(DownloadHistoryTest, DownloadHistoryTest_WasRestoredFromHistory_False) {
-  // This sets DownloadHistoryTest to call DH::WasRestoredFromHistory() both
-  // before and after DH::OnDownloadCreated() is called. At each call, the
-  // expected return value is |true| since the download was restored from
-  // history.
-  ExpectDownloadsRestoredFromHistory(false);
-
-  // Create a DownloadHistory with no history downloads. No
-  // DownloadManager::CreateDownload() calls are expected.
-  CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
-
-  // Notify DownloadHistory that a new download was created. The above test
-  // expecation should verify that WasRestoredFromHistory is correct for this
-  // download.
-  history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
-                "http://example.com/referrer.html",
-                &info);
-  CallOnDownloadCreated(0);
-  ExpectDownloadCreated(info);
-}
-
 // Test creating an item, saving it to the database, changing it, saving it
 // back, removing it.
 TEST_F(DownloadHistoryTest, DownloadHistoryTest_Create) {
@@ -609,10 +536,9 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Create) {
   CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
 
   history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info);
+                download::DownloadItem::IN_PROGRESS, &info);
 
   // Pretend the manager just created |item|.
   CallOnDownloadCreated(0);
@@ -623,7 +549,7 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Create) {
   EXPECT_CALL(item(0), GetOpened()).WillRepeatedly(Return(true));
   item(0).NotifyObserversDownloadUpdated();
   info.opened = true;
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // Pretend that the user removed the item.
   IdSet ids;
@@ -638,10 +564,10 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Update) {
   CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
 
   history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info);
+                download::DownloadItem::IN_PROGRESS, &info);
+
   CallOnDownloadCreated(0);
   ExpectDownloadCreated(info);
   EXPECT_TRUE(DownloadHistory::IsPersisted(&item(0)));
@@ -655,73 +581,92 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Update) {
   EXPECT_CALL(item(0), GetFullPath()).WillRepeatedly(ReturnRefOfCopy(new_path));
   info.current_path = new_path;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, true);
 
   // target_path
   EXPECT_CALL(item(0), GetTargetFilePath())
       .WillRepeatedly(ReturnRefOfCopy(new_path));
   info.target_path = new_path;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // end_time
   EXPECT_CALL(item(0), GetEndTime()).WillRepeatedly(Return(new_time));
   info.end_time = new_time;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // received_bytes
   EXPECT_CALL(item(0), GetReceivedBytes()).WillRepeatedly(Return(101));
   info.received_bytes = 101;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
+
+  // received slices
+  std::vector<download::DownloadItem::ReceivedSlice> slices;
+  slices.push_back(download::DownloadItem::ReceivedSlice(0, 100));
+  slices.push_back(download::DownloadItem::ReceivedSlice(1000, 500));
+  EXPECT_CALL(item(0), GetReceivedSlices()).WillRepeatedly(
+      ReturnRefOfCopy(slices));
+  info.download_slice_info = history::GetHistoryDownloadSliceInfos(item(0));
+  item(0).NotifyObserversDownloadUpdated();
+  ExpectDownloadUpdated(info, false);
 
   // total_bytes
   EXPECT_CALL(item(0), GetTotalBytes()).WillRepeatedly(Return(102));
   info.total_bytes = 102;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // etag
   EXPECT_CALL(item(0), GetETag()).WillRepeatedly(ReturnRefOfCopy(new_etag));
   info.etag = new_etag;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // last_modified
   EXPECT_CALL(item(0), GetLastModifiedTime())
       .WillRepeatedly(ReturnRefOfCopy(new_last_modifed));
   info.last_modified = new_last_modifed;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // state
+  // Changing the state to INTERRUPTED will remove its stored state.
   EXPECT_CALL(item(0), GetState())
-      .WillRepeatedly(Return(content::DownloadItem::INTERRUPTED));
+      .WillRepeatedly(Return(download::DownloadItem::INTERRUPTED));
   info.state = history::DownloadState::INTERRUPTED;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
+
+  // Changing the state back to IN_PROGRESS to reset its stored state.
+  EXPECT_CALL(item(0), GetState())
+      .WillRepeatedly(Return(download::DownloadItem::IN_PROGRESS));
+  info.state = history::DownloadState::IN_PROGRESS;
+  item(0).NotifyObserversDownloadUpdated();
+  ExpectDownloadUpdated(info, true);
 
   // danger_type
   EXPECT_CALL(item(0), GetDangerType())
-      .WillRepeatedly(Return(content::DOWNLOAD_DANGER_TYPE_DANGEROUS_CONTENT));
+      .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_DANGEROUS_CONTENT));
   info.danger_type = history::DownloadDangerType::DANGEROUS_CONTENT;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // interrupt_reason
   EXPECT_CALL(item(0), GetLastReason())
-      .WillRepeatedly(Return(content::DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED));
+      .WillRepeatedly(
+          Return(download::DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED));
   info.interrupt_reason = history::ToHistoryDownloadInterruptReason(
-      content::DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED);
+      download::DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED);
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 
   // opened
   EXPECT_CALL(item(0), GetOpened()).WillRepeatedly(Return(true));
   info.opened = true;
   item(0).NotifyObserversDownloadUpdated();
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
 }
 
 // Test creating a new item, saving it, removing it by setting it Temporary,
@@ -734,10 +679,9 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Temporary) {
   CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
 
   history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info);
+                download::DownloadItem::COMPLETE, &info);
 
   // Pretend the manager just created |item|.
   CallOnDownloadCreated(0);
@@ -769,7 +713,7 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Temporary) {
   EXPECT_CALL(item(0), GetReceivedBytes()).WillRepeatedly(Return(100));
   item(0).NotifyObserversDownloadUpdated();
   info.received_bytes = 100;
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, true);
 }
 
 // Test removing downloads while they're still being added.
@@ -777,10 +721,9 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_RemoveWhileAdding) {
   CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
 
   history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info);
+                download::DownloadItem::COMPLETE, &info);
 
   // Instruct CreateDownload() to not callback to DownloadHistory immediately,
   // but to wait for FinishCreateDownload().
@@ -797,7 +740,7 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_RemoveWhileAdding) {
   // immediately remove the item's record from history.
   item(0).NotifyObserversDownloadRemoved();
   EXPECT_CALL(manager(), GetDownload(item(0).GetId()))
-    .WillRepeatedly(Return(static_cast<content::DownloadItem*>(NULL)));
+      .WillRepeatedly(Return(static_cast<download::DownloadItem*>(NULL)));
   ExpectNoDownloadsRemoved();
   EXPECT_FALSE(DownloadHistory::IsPersisted(&item(0)));
 
@@ -815,14 +758,12 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_Multiple) {
   // Load a download from history, create the item, OnDownloadCreated,
   // OnDownloadUpdated, OnDownloadRemoved.
   history::DownloadRow info0, info1;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info0);
-  InitBasicItem(FILE_PATH_LITERAL("/foo/qux.pdf"),
-                "http://example.com/qux.pdf",
+                download::DownloadItem::COMPLETE, &info0);
+  InitBasicItem(FILE_PATH_LITERAL("/foo/qux.pdf"), "http://example.com/qux.pdf",
                 "http://example.com/referrer1.html",
-                &info1);
+                download::DownloadItem::COMPLETE, &info1);
   {
     std::unique_ptr<InfoVector> infos(new InfoVector());
     infos->push_back(info0);
@@ -850,10 +791,9 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_CreateFailed) {
   CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
 
   history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info);
+                download::DownloadItem::COMPLETE, &info);
 
   FailCreateDownload();
   // Pretend the manager just created |item|.
@@ -874,10 +814,9 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_UpdateWhileAdding) {
   CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
 
   history::DownloadRow info;
-  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"),
-                "http://example.com/bar.pdf",
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
                 "http://example.com/referrer.html",
-                &info);
+                download::DownloadItem::IN_PROGRESS, &info);
 
   // Instruct CreateDownload() to not callback to DownloadHistory immediately,
   // but to wait for FinishCreateDownload().
@@ -898,7 +837,124 @@ TEST_F(DownloadHistoryTest, DownloadHistoryTest_UpdateWhileAdding) {
   // ItemAdded should call OnDownloadUpdated, which should detect that the item
   // changed while it was being added and call UpdateDownload immediately.
   info.opened = true;
-  ExpectDownloadUpdated(info);
+  ExpectDownloadUpdated(info, false);
+}
+
+// Test creating and updating an item with DownloadDB enabled.
+TEST_F(DownloadHistoryTest, CreateWithDownloadDB) {
+  // Enable download DB.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      download::features::kDownloadDBForNewDownloads);
+
+  // Create a fresh item not from download DB
+  CreateDownloadHistory(std::unique_ptr<InfoVector>(new InfoVector()));
+
+  history::DownloadRow info;
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
+                "http://example.com/referrer.html",
+                download::DownloadItem::IN_PROGRESS, &info);
+
+  // Incomplete download will not be inserted into history.
+  CallOnDownloadCreated(0);
+  ExpectNoDownloadCreated();
+
+  // Completed download should be inserted.
+  EXPECT_CALL(item(0), IsDone()).WillRepeatedly(Return(true));
+  EXPECT_CALL(item(0), GetState())
+      .WillRepeatedly(Return(download::DownloadItem::COMPLETE));
+  info.state = history::DownloadState::COMPLETE;
+  item(0).NotifyObserversDownloadUpdated();
+  ExpectDownloadCreated(info);
+}
+
+// Test creating history download item that exists in DownloadDB.
+TEST_F(DownloadHistoryTest, CreateHistoryItemInDownloadDB) {
+  // Enable download DB.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      download::features::kDownloadDBForNewDownloads);
+
+  history::DownloadRow info;
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
+                "http://example.com/referrer.html",
+                download::DownloadItem::IN_PROGRESS, &info);
+
+  // Modify the item so it doesn't match the history record.
+  EXPECT_CALL(item(0), GetReceivedBytes()).WillRepeatedly(Return(50));
+  std::unique_ptr<InfoVector> infos(new InfoVector());
+  infos->push_back(info);
+  CreateDownloadHistory(std::move(infos));
+  EXPECT_TRUE(DownloadHistory::IsPersisted(&item(0)));
+
+  // Modify the item, it should not trigger any updates.
+  EXPECT_CALL(item(0), GetOpened()).WillRepeatedly(Return(true));
+  item(0).NotifyObserversDownloadUpdated();
+  ExpectNoDownloadUpdated();
+
+  // Completes the item, it should trigger an update.
+  EXPECT_CALL(item(0), GetState())
+      .WillRepeatedly(Return(download::DownloadItem::COMPLETE));
+  EXPECT_CALL(item(0), IsDone()).WillRepeatedly(Return(true));
+  info.opened = true;
+  info.received_bytes = 50;
+  info.state = history::DownloadState::COMPLETE;
+  item(0).NotifyObserversDownloadUpdated();
+  ExpectDownloadUpdated(info, false);
+}
+
+// Test creating a in-progress history download item that is non-resumable in
+// DownloadDB.
+TEST_F(DownloadHistoryTest,
+       CreateInProgressHistoryItemNonResumableInDownloadDB) {
+  // Enable download DB.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      download::features::kDownloadDBForNewDownloads);
+
+  history::DownloadRow info;
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
+                "http://example.com/referrer.html",
+                download::DownloadItem::IN_PROGRESS, &info);
+
+  // Modify the item so it doesn't match the history record.
+  EXPECT_CALL(item(0), GetLastReason())
+      .WillRepeatedly(
+          Return(download::DOWNLOAD_INTERRUPT_REASON_SERVER_FORBIDDEN));
+  EXPECT_CALL(item(0), GetState())
+      .WillRepeatedly(Return(download::DownloadItem::INTERRUPTED));
+  EXPECT_CALL(item(0), IsDone()).WillRepeatedly(Return(true));
+  std::unique_ptr<InfoVector> infos(new InfoVector());
+  infos->push_back(info);
+
+  // Create the history and a db update should be triggered.
+  CreateDownloadHistory(std::move(infos));
+  EXPECT_TRUE(DownloadHistory::IsPersisted(&item(0)));
+  info.interrupt_reason = download::DOWNLOAD_INTERRUPT_REASON_SERVER_FORBIDDEN;
+  info.state = history::DownloadState::INTERRUPTED;
+  ExpectDownloadUpdated(info, true);
+}
+
+// Test loading history download item that will be cleared by |manager_|
+TEST_F(DownloadHistoryTest, RemoveClearedItemFromHistory) {
+  // Enable download DB.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      download::features::kDownloadDBForNewDownloads);
+
+  history::DownloadRow info;
+  InitBasicItem(FILE_PATH_LITERAL("/foo/bar.pdf"), "http://example.com/bar.pdf",
+                "http://example.com/referrer.html",
+                download::DownloadItem::IN_PROGRESS, &info);
+
+  std::unique_ptr<InfoVector> infos(new InfoVector());
+  infos->push_back(info);
+  CreateDownloadHistory(std::move(infos), true);
+
+  // The download should be removed from history afterwards.
+  IdSet ids;
+  ids.insert(info.id);
+  ExpectDownloadsRemoved(ids);
 }
 
 }  // anonymous namespace

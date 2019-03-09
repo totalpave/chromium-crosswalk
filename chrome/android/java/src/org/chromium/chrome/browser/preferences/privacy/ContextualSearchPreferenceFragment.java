@@ -12,8 +12,8 @@ import android.preference.PreferenceFragment;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchUma;
 import org.chromium.chrome.browser.preferences.ChromeSwitchPreference;
-import org.chromium.chrome.browser.preferences.ManagedPreferenceDelegate;
 import org.chromium.chrome.browser.preferences.PrefServiceBridge;
+import org.chromium.chrome.browser.preferences.PreferenceUtils;
 
 /**
  * Fragment to manage the Contextual Search preference and to explain to the user what it does.
@@ -25,7 +25,7 @@ public class ContextualSearchPreferenceFragment extends PreferenceFragment {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        addPreferencesFromResource(R.xml.contextual_search_preferences);
+        PreferenceUtils.addPreferencesFromResource(this, R.xml.contextual_search_preferences);
         getActivity().setTitle(R.string.contextual_search_title);
         setHasOptionsMenu(true);
         initContextualSearchSwitch();
@@ -47,12 +47,8 @@ public class ContextualSearchPreferenceFragment extends PreferenceFragment {
                 return true;
             }
         });
-        contextualSearchSwitch.setManagedPreferenceDelegate(new ManagedPreferenceDelegate() {
-            @Override
-            public boolean isPreferenceControlledByPolicy(Preference preference) {
-                return PrefServiceBridge.getInstance().isContextualSearchDisabledByPolicy();
-            }
-        });
+        contextualSearchSwitch.setManagedPreferenceDelegate(
+                preference -> PrefServiceBridge.getInstance().isContextualSearchDisabledByPolicy());
     }
 
 }

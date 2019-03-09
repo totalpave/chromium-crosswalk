@@ -11,12 +11,17 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "components/sessions/core/live_tab_context.h"
+#include "ui/base/ui_base_types.h"
 
 class Browser;
 class Profile;
 
 namespace content {
 class WebContents;
+}
+
+namespace gfx {
+class Rect;
 }
 
 // Implementation of LiveTabContext which uses an instance of
@@ -28,13 +33,17 @@ class BrowserLiveTabContext : public sessions::LiveTabContext {
 
   // Overridden from LiveTabContext:
   void ShowBrowserWindow() override;
-  const SessionID& GetSessionID() const override;
+  SessionID GetSessionID() const override;
   int GetTabCount() const override;
   int GetSelectedIndex() const override;
   std::string GetAppName() const override;
   sessions::LiveTab* GetLiveTabAt(int index) const override;
   sessions::LiveTab* GetActiveLiveTab() const override;
   bool IsTabPinned(int index) const override;
+  const gfx::Rect GetRestoredBounds() const override;
+  ui::WindowShowState GetRestoredState() const override;
+  std::string GetWorkspace() const override;
+
   sessions::LiveTab* AddRestoredTab(
       const std::vector<sessions::SerializedNavigationEntry>& navigations,
       int tab_index,
@@ -55,9 +64,11 @@ class BrowserLiveTabContext : public sessions::LiveTabContext {
   void CloseTab() override;
 
   // see Browser::Create
-  static sessions::LiveTabContext* Create(
-      Profile* profile,
-      const std::string& app_name);
+  static sessions::LiveTabContext* Create(Profile* profile,
+                                          const std::string& app_name,
+                                          const gfx::Rect& bounds,
+                                          ui::WindowShowState show_state,
+                                          const std::string& workspace);
 
   // see browser::FindBrowserForWebContents
   static sessions::LiveTabContext* FindContextForWebContents(
@@ -66,11 +77,10 @@ class BrowserLiveTabContext : public sessions::LiveTabContext {
   // see chrome::FindBrowserWithID
   // Returns the LiveTabContext of the Browser with |desired_id| if
   // such a Browser exists.
-  static sessions::LiveTabContext* FindContextWithID(
-      SessionID::id_type desired_id);
+  static sessions::LiveTabContext* FindContextWithID(SessionID desired_id);
 
  private:
-  Browser* browser_;
+  Browser* const browser_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserLiveTabContext);
 };

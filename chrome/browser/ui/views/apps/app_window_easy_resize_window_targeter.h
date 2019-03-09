@@ -16,17 +16,16 @@ class BaseWindow;
 // window.
 class AppWindowEasyResizeWindowTargeter : public wm::EasyResizeWindowTargeter {
  public:
-  // |aura_window| is the owner of this targeter.
-  AppWindowEasyResizeWindowTargeter(aura::Window* aura_window,
-                                    const gfx::Insets& insets,
+  AppWindowEasyResizeWindowTargeter(const gfx::Insets& insets,
                                     ui::BaseWindow* native_app_window);
 
   ~AppWindowEasyResizeWindowTargeter() override;
 
  protected:
   // aura::WindowTargeter:
-  bool EventLocationInsideBounds(aura::Window* window,
-                                 const ui::LocatedEvent& event) const override;
+  bool GetHitTestRects(aura::Window* window,
+                       gfx::Rect* rect_mouse,
+                       gfx::Rect* rect_touch) const override;
 
  private:
   ui::BaseWindow* native_app_window_;

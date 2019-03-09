@@ -11,11 +11,13 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
-#include "ipc/ipc_channel_handle.h"
-#include "ipc/ipc_listener.h"
-#include "ipc/ipc_sender.h"
-#include "ipc/ipc_sync_channel.h"
+#include "base/single_thread_task_runner.h"
+#include "chrome/common/service_process.mojom.h"
+#include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/binding_set.h"
+#include "mojo/public/cpp/system/message_pipe.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
+#include "services/service_manager/public/mojom/interface_provider.mojom.h"
 
 namespace base {
 
@@ -25,15 +27,9 @@ class WaitableEvent;
 }  // namespace base
 
 // This class handles IPC commands for the service process.
-class ServiceIPCServer : public IPC::Listener, public IPC::Sender {
+class ServiceIPCServer : public service_manager::mojom::InterfaceProvider,
+                         public chrome::mojom::ServiceProcess {
  public:
-  class MessageHandler {
-   public:
-    virtual ~MessageHandler() {}
-    // Must return true if the message is handled.
-    virtual bool HandleMessage(const IPC::Message& message) = 0;
-  };
-
   class Client {
    public:
     virtual ~Client() {}
@@ -47,25 +43,22 @@ class ServiceIPCServer : public IPC::Listener, public IPC::Sender {
     // Called when the IPC channel is closed. A return value of true indicates
     // that the IPC server should continue listening for new connections.
     virtual bool OnIPCClientDisconnect() = 0;
+
+    // Called to create a message pipe to use for an IPC Channel connection.
+    virtual mojo::ScopedMessagePipeHandle CreateChannelMessagePipe() = 0;
   };
 
   ServiceIPCServer(
       Client* client,
       const scoped_refptr<base::SingleThreadTaskRunner>& io_task_runner,
-      const IPC::ChannelHandle& handle,
       base::WaitableEvent* shutdown_event);
   ~ServiceIPCServer() override;
 
   bool Init();
 
-  // IPC::Sender implementation.
-  bool Send(IPC::Message* msg) override;
-
-  // Registers a MessageHandler with the ServiceIPCServer. When an IPC message
-  // is received that is not handled by the ServiceIPCServer itself, the
-  // handlers will be called to handle the message in first-add first-call order
-  // until it is handled or there are no more handlers.
-  void AddMessageHandler(std::unique_ptr<MessageHandler> handler);
+  service_manager::BinderRegistry& binder_registry() {
+    return binder_registry_;
+  }
 
   bool is_ipc_client_connected() const { return ipc_client_connected_; }
 
@@ -73,32 +66,39 @@ class ServiceIPCServer : public IPC::Listener, public IPC::Sender {
   friend class ServiceIPCServerTest;
   friend class MockServiceIPCServer;
 
-  // IPC::Listener implementation.
-  bool OnMessageReceived(const IPC::Message& msg) override;
-  void OnChannelConnected(int32_t peer_pid) override;
-  void OnChannelError() override;
-
-  // IPC message handlers.
-  void OnGetHistograms();
-  void OnShutdown();
-  void OnUpdateAvailable();
-
   // Helper method to create the sync channel.
   void CreateChannel();
 
+  void OnChannelError();
+
+  // chrome::mojom::ServiceProcess:
+  void Hello(HelloCallback callback) override;
+  void GetHistograms(GetHistogramsCallback callback) override;
+  void UpdateAvailable() override;
+  void ShutDown() override;
+
+  // service_manager::mojom::InterfaceProvider:
+  void GetInterface(const std::string& interface_name,
+                    mojo::ScopedMessagePipeHandle pipe) override;
+
+  void HandleServiceProcessConnection(
+      chrome::mojom::ServiceProcessRequest request);
+
   Client* client_;
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
-  IPC::ChannelHandle channel_handle_;
-  std::unique_ptr<IPC::SyncChannel> channel_;
   base::WaitableEvent* shutdown_event_;
-  ScopedVector<MessageHandler> message_handlers_;
 
   // Indicates whether an IPC client is currently connected to the channel.
-  bool ipc_client_connected_;
+  bool ipc_client_connected_ = false;
 
   // Calculates histograms deltas.
   std::unique_ptr<base::HistogramDeltaSerialization>
       histogram_delta_serializer_;
+
+  mojo::Binding<service_manager::mojom::InterfaceProvider> binding_;
+  mojo::BindingSet<chrome::mojom::ServiceProcess> service_process_bindings_;
+
+  service_manager::BinderRegistry binder_registry_;
 
   DISALLOW_COPY_AND_ASSIGN(ServiceIPCServer);
 };

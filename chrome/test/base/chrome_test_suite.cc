@@ -14,10 +14,11 @@
 #include "base/path_service.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "chrome/app/chrome_main_delegate.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/signin/account_consistency_mode_manager.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/features.h"
 #include "chrome/common/url_constants.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "content/public/test/test_launcher.h"
@@ -25,14 +26,9 @@
 #include "media/base/media.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if BUILDFLAG(ANDROID_JAVA_UI)
-#include "base/android/jni_android.h"
-#include "chrome/browser/android/chrome_jni_registrar.h"
-#endif
-
 #if defined(OS_CHROMEOS)
 #include "base/process/process_metrics.h"
-#include "chromeos/chromeos_paths.h"
+#include "chromeos/constants/chromeos_paths.h"
 #endif
 
 #if defined(OS_MACOSX)
@@ -73,14 +69,9 @@ void ChromeTestSuite::Initialize() {
 #endif
 
   if (!browser_dir_.empty()) {
-    PathService::Override(base::DIR_EXE, browser_dir_);
-    PathService::Override(base::DIR_MODULE, browser_dir_);
+    base::PathService::Override(base::DIR_EXE, browser_dir_);
+    base::PathService::Override(base::DIR_MODULE, browser_dir_);
   }
-
-#if BUILDFLAG(ANDROID_JAVA_UI)
-  ASSERT_TRUE(chrome::android::RegisterBrowserJNI(
-      base::android::AttachCurrentThread()));
-#endif
 
   // Disable external libraries load if we are under python process in
   // ChromeOS.  That means we are autotest and, if ASAN is used,
@@ -92,13 +83,20 @@ void ChromeTestSuite::Initialize() {
   // values for DIR_EXE and DIR_MODULE.
   content::ContentTestSuiteBase::Initialize();
 
-  ContentSettingsPattern::SetNonWildcardDomainNonPortScheme(
-      extensions::kExtensionScheme);
+  ContentSettingsPattern::SetNonWildcardDomainNonPortSchemes(
+      ChromeMainDelegate::kNonWildcardDomainNonPortSchemes,
+      ChromeMainDelegate::kNonWildcardDomainNonPortSchemesSize);
+
+  // Desktop Identity Consistency (a.k.a. DICE) requires OAuth client to be
+  // configured as it is needed for regular web sign-in flows to Google.
+  // Ignore this requiement for unit and browser tests to make sure that the
+  // DICE feature gets the right test coverage.
+  AccountConsistencyModeManager::SetIgnoreMissingOAuthClientForTesting();
 
 #if defined(OS_MACOSX)
   // Look in the framework bundle for resources.
   base::FilePath path;
-  PathService::Get(base::DIR_EXE, &path);
+  base::PathService::Get(base::DIR_EXE, &path);
   path = path.Append(chrome::kFrameworkName);
   base::mac::SetOverrideFrameworkBundlePath(path);
 #endif

@@ -6,41 +6,73 @@
 #define CONTENT_RENDERER_WEBGRAPHICSCONTEXT3D_PROVIDER_IMPL_H_
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/memory/ref_counted.h"
+#include "components/viz/common/gpu/context_provider.h"
 #include "content/common/content_export.h"
-#include "third_party/WebKit/public/platform/WebGraphicsContext3DProvider.h"
+#include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
+
+namespace cc {
+class ImageDecodeCache;
+}  // namespace cc
 
 namespace gpu {
 namespace gles2 {
 class GLES2Interface;
-}
-}
+}  // namespace gles2
+}  // namespace gpu
+
+namespace viz {
+class GLHelper;
+}  // namespace viz
+
+namespace ws {
+class ContextProviderCommandBuffer;
+}  // namespace ws
 
 namespace content {
-class ContextProviderCommandBuffer;
 
 class CONTENT_EXPORT WebGraphicsContext3DProviderImpl
-    : public NON_EXPORTED_BASE(blink::WebGraphicsContext3DProvider) {
+    : public blink::WebGraphicsContext3DProvider,
+      public viz::ContextLostObserver {
  public:
-  explicit WebGraphicsContext3DProviderImpl(
-      scoped_refptr<ContextProviderCommandBuffer> provider);
+  WebGraphicsContext3DProviderImpl(
+      scoped_refptr<ws::ContextProviderCommandBuffer> provider);
   ~WebGraphicsContext3DProviderImpl() override;
 
   // WebGraphicsContext3DProvider implementation.
-  bool bindToCurrentThread() override;
-  gpu::gles2::GLES2Interface* contextGL() override;
-  GrContext* grContext() override;
-  gpu::Capabilities getCapabilities() override;
-  void setLostContextCallback(blink::WebClosure) override;
-  void setErrorMessageCallback(
-      blink::WebFunction<void(const char*, int32_t)>) override;
+  bool BindToCurrentThread() override;
+  gpu::gles2::GLES2Interface* ContextGL() override;
+  gpu::webgpu::WebGPUInterface* WebGPUInterface() override;
+  GrContext* GetGrContext() override;
+  gpu::SharedImageInterface* GetSharedImageInterface() const override;
+  const gpu::Capabilities& GetCapabilities() const override;
+  const gpu::GpuFeatureInfo& GetGpuFeatureInfo() const override;
+  viz::GLHelper* GetGLHelper() override;
+  void SetLostContextCallback(base::RepeatingClosure) override;
+  void SetErrorMessageCallback(
+      base::RepeatingCallback<void(const char*, int32_t)>) override;
+  cc::ImageDecodeCache* ImageDecodeCache(
+      SkColorType color_type,
+      sk_sp<SkColorSpace> color_space) override;
+  gpu::SharedImageInterface* SharedImageInterface() override;
 
-  ContextProviderCommandBuffer* context_provider() const {
+  ws::ContextProviderCommandBuffer* context_provider() const {
     return provider_.get();
   }
 
  private:
-  scoped_refptr<ContextProviderCommandBuffer> provider_;
+  // viz::ContextLostObserver implementation.
+  void OnContextLost() override;
+
+  scoped_refptr<ws::ContextProviderCommandBuffer> provider_;
+  std::unique_ptr<viz::GLHelper> gl_helper_;
+  base::RepeatingClosure context_lost_callback_;
+  base::flat_map<std::pair<SkColorType, uint64_t>,
+                 std::unique_ptr<cc::ImageDecodeCache>>
+      image_decode_cache_map_;
+
+  DISALLOW_COPY_AND_ASSIGN(WebGraphicsContext3DProviderImpl);
 };
 
 }  // namespace content

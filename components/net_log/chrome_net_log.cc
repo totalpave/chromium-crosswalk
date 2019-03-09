@@ -4,109 +4,108 @@
 
 #include "components/net_log/chrome_net_log.h"
 
-#include <stdio.h>
+#include <memory>
 #include <utility>
 
+#include "base/callback.h"
 #include "base/command_line.h"
-#include "base/files/scoped_file.h"
-#include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "components/data_reduction_proxy/core/common/data_reduction_proxy_event_store.h"
-#include "components/net_log/net_log_temp_file.h"
-#include "components/net_log/net_log_temp_file.h"
 #include "components/version_info/version_info.h"
+#include "net/log/file_net_log_observer.h"
 #include "net/log/net_log_util.h"
-#include "net/log/trace_net_log_observer.h"
-#include "net/log/write_to_file_net_log_observer.h"
 
 namespace net_log {
 
-ChromeNetLog::ChromeNetLog(
-    const base::FilePath& log_file,
-    net::NetLogCaptureMode log_file_mode,
-    const base::CommandLine::StringType& command_line_string,
-    const std::string& channel_string)
-    : net_log_temp_file_(
-          new NetLogTempFile(this, command_line_string, channel_string)) {
-  if (!log_file.empty()) {
-    // Much like logging.h, bypass threading restrictions by using fopen
-    // directly.  Have to write on a thread that's shutdown to handle events on
-    // shutdown properly, and posting events to another thread as they occur
-    // would result in an unbounded buffer size, so not much can be gained by
-    // doing this on another thread.  It's only used when debugging Chrome, so
-    // performance is not a big concern.
-    base::ScopedFILE file;
-#if defined(OS_WIN)
-    file.reset(_wfopen(log_file.value().c_str(), L"w"));
-#elif defined(OS_POSIX)
-    file.reset(fopen(log_file.value().c_str(), "w"));
-#endif
-
-    if (!file) {
-      LOG(ERROR) << "Could not open file " << log_file.value()
-                 << " for net logging";
-    } else {
-      std::unique_ptr<base::Value> constants(
-          GetConstants(command_line_string, channel_string));
-      write_to_file_observer_.reset(new net::WriteToFileNetLogObserver());
-
-      write_to_file_observer_->set_capture_mode(log_file_mode);
-
-      write_to_file_observer_->StartObserving(this, std::move(file),
-                                              constants.get(), nullptr);
-    }
-  }
-
-  trace_net_log_observer_.reset(new net::TraceNetLogObserver());
-  trace_net_log_observer_->WatchForTraceStart(this);
-}
+ChromeNetLog::ChromeNetLog() {}
 
 ChromeNetLog::~ChromeNetLog() {
-  net_log_temp_file_.reset();
-  // Remove the observers we own before we're destroyed.
-  if (write_to_file_observer_)
-    write_to_file_observer_->StopObserving(nullptr);
-  if (trace_net_log_observer_)
-    trace_net_log_observer_->StopWatchForTraceStart();
+  ClearFileNetLogObserver();
+}
+
+void ChromeNetLog::StartWritingToFile(
+    const base::FilePath& path,
+    net::NetLogCaptureMode capture_mode,
+    const base::CommandLine::StringType& command_line_string,
+    const std::string& channel_string) {
+  DCHECK(!path.empty());
+
+  // TODO(739485): The log file does not contain about:flags data.
+  file_net_log_observer_ = net::FileNetLogObserver::CreateUnbounded(
+      path, GetConstants(command_line_string, channel_string));
+
+  file_net_log_observer_->StartObserving(this, capture_mode);
 }
 
 // static
-base::Value* ChromeNetLog::GetConstants(
+std::unique_ptr<base::Value> ChromeNetLog::GetConstants(
     const base::CommandLine::StringType& command_line_string,
     const std::string& channel_string) {
   std::unique_ptr<base::DictionaryValue> constants_dict =
       net::GetNetConstants();
   DCHECK(constants_dict);
 
+  auto platform_dict =
+      GetPlatformConstants(command_line_string, channel_string);
+  if (platform_dict)
+    constants_dict->MergeDictionary(platform_dict.get());
+  return constants_dict;
+}
+
+std::unique_ptr<base::DictionaryValue> ChromeNetLog::GetPlatformConstants(
+    const base::CommandLine::StringType& command_line_string,
+    const std::string& channel_string) {
+  auto constants_dict = std::make_unique<base::DictionaryValue>();
+
   // Add a dictionary with the version of the client and its command line
   // arguments.
-  {
-    base::DictionaryValue* dict = new base::DictionaryValue();
+  auto dict = std::make_unique<base::DictionaryValue>();
 
-    // We have everything we need to send the right values.
-    dict->SetString("name", version_info::GetProductName());
-    dict->SetString("version", version_info::GetVersionNumber());
-    dict->SetString("cl", version_info::GetLastChange());
-    dict->SetString("version_mod", channel_string);
-    dict->SetString("official", version_info::IsOfficialBuild() ? "official"
-                                                                : "unofficial");
-    std::string os_type = base::StringPrintf(
-        "%s: %s (%s)", base::SysInfo::OperatingSystemName().c_str(),
-        base::SysInfo::OperatingSystemVersion().c_str(),
-        base::SysInfo::OperatingSystemArchitecture().c_str());
-    dict->SetString("os_type", os_type);
-    dict->SetString("command_line", command_line_string);
+  // We have everything we need to send the right values.
+  dict->SetString("name", version_info::GetProductName());
+  dict->SetString("version", version_info::GetVersionNumber());
+  dict->SetString("cl", version_info::GetLastChange());
+  dict->SetString("version_mod", channel_string);
+  dict->SetString("official",
+                  version_info::IsOfficialBuild() ? "official" : "unofficial");
+  std::string os_type = base::StringPrintf(
+      "%s: %s (%s)", base::SysInfo::OperatingSystemName().c_str(),
+      base::SysInfo::OperatingSystemVersion().c_str(),
+      base::SysInfo::OperatingSystemArchitecture().c_str());
+  dict->SetString("os_type", os_type);
+  dict->SetString("command_line", command_line_string);
 
-    constants_dict->Set("clientInfo", dict);
+  constants_dict->Set("clientInfo", std::move(dict));
 
-    data_reduction_proxy::DataReductionProxyEventStore::AddConstants(
-        constants_dict.get());
-  }
+  return constants_dict;
+}
 
-  return constants_dict.release();
+void ChromeNetLog::ShutDownBeforeTaskScheduler() {
+  // TODO(eroman): Stop in-progress net_export_file_writer_ or delete its files?
+
+  ClearFileNetLogObserver();
+}
+
+void ChromeNetLog::ClearFileNetLogObserver() {
+  if (!file_net_log_observer_)
+    return;
+
+  // TODO(739487): The log file does not contain any polled data.
+  //
+  // TODO(eroman): FileNetLogObserver::StopObserving() posts to the file task
+  // runner to finish writing the log file. Despite that sequenced task runner
+  // being marked BLOCK_SHUTDOWN, those tasks are not actually running.
+  //
+  // This isn't a big deal when using the unbounded logger since the log
+  // loading code can handle such truncated logs. But this will need fixing
+  // if switching to log formats that are not so versatile (also if adding
+  // polled data).
+  file_net_log_observer_->StopObserving(nullptr /*polled_data*/,
+                                        base::Closure());
+  file_net_log_observer_.reset();
 }
 
 }  // namespace net_log

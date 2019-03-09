@@ -3,10 +3,10 @@
  * found in the LICENSE file. */
 
 body {
-  -webkit-user-select: none;
   background-color: black;
   font-size: 84%;
   margin: 0;
+  user-select: none;
 }
 
 button {
@@ -40,13 +40,19 @@ button:focus {
   width: 17px;
 }
 
+html[dir='rtl'] .bubble .pointer {
+  left: auto;
+  margin: 0 -5px 0 0;
+  right: 24px;
+}
+
 .bubble .pointer:not(.bottom) {
   top: -11px;
 }
 
 .bubble .pointer.bottom {
-  transform: rotate(180deg);
   bottom: -11px;
+  transform: rotate(180deg);
 }
 
 .bubble .close-x {
@@ -61,17 +67,17 @@ button:focus {
   width: 21px;
 }
 
+html[dir='rtl'] .bubble .close-x {
+  left: 3px;
+  right: auto;
+}
+
 .bubble .close-x:hover {
   opacity: 0.7;
 }
 
-paper-ripple,
-paper-button::shadow paper-ripple {
+paper-ripple {
   color: black;
-}
-
-files-toggle-ripple::shadow .ripple.activated {
-  opacity: 0.4;
 }
 
 .gallery,
@@ -96,6 +102,17 @@ files-toggle-ripple::shadow .ripple.activated {
   height: 100%;
   position: absolute;
   width: 100%;
+}
+
+.gallery .video-container {
+  /*
+   * Videos don't use transforms (so the controls do not morph). Use flex to
+   * center within the container. Note that this makes transitions janky, but
+   * transitions with video controls look silly, so they're disabled.
+   */
+  align-items: center;
+  display: flex;
+  justify-content: center;
 }
 
 .gallery[tools] .image-container[cursor='default'] {
@@ -151,6 +168,21 @@ files-toggle-ripple::shadow .ripple.activated {
 
 .gallery .image-container > .image[fade] {
   opacity: 0;
+}
+
+.gallery .video-container > .video {
+  max-height: 100%;
+  max-width: 100%;
+}
+
+/*
+ * Move the video element away from the top and bottom edges when the ribbon is
+ * visible so that it doesn't overlap the scrubber when a video is sufficiently
+ * tall.
+ */
+.gallery[tools] .video-container > .video {
+  box-sizing: border-box;
+  padding: 48px 0;
 }
 
 @media print {
@@ -334,20 +366,8 @@ files-toggle-ripple::shadow .ripple.activated {
 /* Filename */
 
 .filename-spacer {
-  -webkit-margin-start: 16px;
   flex: 1 0 auto;
-}
-
-#rename-input {
-  margin: 8px 0;
-  min-width: 160px;
-  padding: 4px 0;
-  text-overflow: ellipsis;
-  width: -webkit-fit-content;
-}
-
-#rename-input > input {
-  color: white;
+  margin-inline-start: 16px;
 }
 
 /* Bubble */
@@ -358,6 +378,11 @@ files-toggle-ripple::shadow .ripple.activated {
   left: 20px;
   position: absolute;
   width: 220px;
+}
+
+html[dir='rtl'] .gallery .toolbar .bubble {
+  left: auto;
+  right: 20px;
 }
 
 .gallery:not([editing]) .toolbar .bubble {
@@ -453,10 +478,10 @@ files-toggle-ripple::shadow .ripple.activated {
 }
 
 .gallery .image-wrapper > img:not(.cached) {
-  -webkit-animation: fadeIn 500ms ease-in;
+  animation: fadeIn 500ms ease-in;
 }
 
-@-webkit-keyframes fadeIn {
+@keyframes fadeIn {
   from {
     opacity: 0;
   }
@@ -466,7 +491,6 @@ files-toggle-ripple::shadow .ripple.activated {
 }
 
 .gallery .ribbon-image > .indicator {
-  -webkit-transition: opacity 500ms ease-in;
   background-image: -webkit-image-set(
       url(../images/100/slide_view.png) 1x,
       url(../images/200/slide_view.png) 2x);
@@ -475,6 +499,7 @@ files-toggle-ripple::shadow .ripple.activated {
   height: 100%;
   opacity: 0;
   position: absolute;
+  transition: opacity 500ms ease-in;
   width: 100%;
 }
 
@@ -506,8 +531,8 @@ files-toggle-ripple::shadow .ripple.activated {
   width: 100%;
 }
 
-.gallery .edit-mode-toolbar .options > *,
-.gallery .edit-mode-toolbar .exit-button-spacer > * {
+.gallery .edit-mode-toolbar .options > :not([disabled]),
+.gallery .edit-mode-toolbar .exit-button-spacer > :not([disabled]) {
   pointer-events: auto;
 }
 
@@ -516,9 +541,9 @@ files-toggle-ripple::shadow .ripple.activated {
 }
 
 .gallery .edit-mode-toolbar .exit-button-spacer paper-button {
-  -webkit-margin-end: 8px;
   color: white;
   font-weight: bold;
+  margin-inline-end: 8px;
   text-transform: uppercase;
 }
 
@@ -537,17 +562,16 @@ files-toggle-ripple::shadow .ripple.activated {
 }
 
 .edit-mode-toolbar .overwrite-original {
-  -webkit-margin-start: 16px;
+  margin-inline-start: 16px;
 }
 
-.edit-mode-toolbar .overwrite-original[disabled]::shadow #checkbox,
-.edit-mode-toolbar .overwrite-original[disabled]::shadow #checkboxLabel {
+.edit-mode-toolbar .overwrite-original[disabled] {
   opacity: 0.2;
 }
 
 .gallery .edit-mode-toolbar .saved {
-  -webkit-margin-start: 14px;
   cursor: inherit;
+  margin-inline-start: 14px;
   opacity: 0;
   pointer-events: none;
   transition-duration: 120ms;
@@ -561,8 +585,8 @@ files-toggle-ripple::shadow .ripple.activated {
 }
 
 .gallery .edit-mode-toolbar .saved[highlighted] {
-  transform: scaleX(1.1) scaleY(1.1) rotate(0);
   opacity: 1;
+  transform: scaleX(1.1) scaleY(1.1) rotate(0);
 }
 
 /* Editor buttons. */
@@ -610,7 +634,7 @@ files-toggle-ripple::shadow .ripple.activated {
 
 .gallery > .toolbar paper-button:focus,
 .gallery > .toolbar button:focus {
-  background-color: rgba(0, 0, 0, 0.3);
+  background-color: rgba(255, 255, 255, 0.2);
 }
 
 .gallery > .toolbar button:focus {
@@ -736,6 +760,12 @@ button[disabled] {
       url(../images/200/crop.png) 2x);
 }
 
+.edit-main button.resize .icon {
+  background-image:  -webkit-image-set(
+      url(../images/100/resize.png) 1x,
+      url(../images/200/resize.png) 2x);
+}
+
 .edit-main button.exposure .icon {
   background-image: -webkit-image-set(
       url(../images/100/brightness.png) 1x,
@@ -778,6 +808,10 @@ button[disabled] {
   width: 100%;
 }
 
+.gallery[editor-mode='resize'] .edit-modal {
+  height: 56px;
+}
+
 .edit-modal-wrapper[hidden] {
   display: none;
 }
@@ -801,24 +835,29 @@ button[disabled] {
 
 .edit-modal-wrapper .container {
   justify-content: center;
+  left: 0;
+  position: absolute;
+  top: 0;
 }
 
 .edit-modal-wrapper .action-buttons {
   justify-content: flex-end;
-  left: 0;
-  position: absolute;
-  top: 0;
 }
 
 .edit-modal button.edit-toolbar {
   background: transparent;
   border: 0 none;
   border-image: none;
+  border-radius: 2px;
   box-sizing: border-box;
   color: white;
   min-width: 0;
   padding: 0;
   position: relative;
+}
+
+.edit-modal button.edit-toolbar:focus {
+  background-color: rgba(255, 255, 255, 0.12);
 }
 
 .edit-modal button.edit-toolbar .icon {
@@ -831,11 +870,11 @@ button[disabled] {
 
 /* Action buttons */
 .edit-modal-wrapper .action-buttons button {
-  -webkit-margin-end: 8px;
   align-items: center;
   display: flex;
   height: 32px;
   justify-content: center;
+  margin-inline-end: 8px;
   outline: none;
   width: 70px;
 }
@@ -885,22 +924,18 @@ button[disabled] {
 }
 
 .edit-modal .range:not(:last-child) {
-  -webkit-margin-end: 16px;
+  margin-inline-end: 16px;
 }
 
 .edit-modal .range > .icon {
-  -webkit-margin-end: 8px;
   display: block;
   height: 16px;
+  margin-inline-end: 8px;
   width: 16px;
 }
 
-paper-slider {
+cr-slider {
   width: 172px;
-}
-
-paper-slider::shadow paper-progress::shadow #progressContainer {
-  background-color: rgba(255, 255, 255, 0.2);
 }
 
 .edit-modal .range.brightness > .icon {
@@ -996,6 +1031,44 @@ paper-slider::shadow paper-progress::shadow #progressContainer {
 
 .gallery .crop-frame .corner.bottom {
   bottom: -6px;
+}
+
+/* Input UI */
+.edit-modal .input {
+  align-items: flex-end;
+  display: flex;
+  width: 90px;
+}
+
+.edit-modal .input > .unit_label {
+  color: rgba(255, 255, 255, 0.54);
+  margin-bottom: 2px;
+}
+
+.edit-modal .lockicon {
+  background-repeat: no-repeat;
+  background-size: contain;
+  height: 16px;
+  margin: 16px;
+  margin-top: auto;
+  width: 16px;
+}
+
+.edit-modal .lockicon:focus {
+  outline: none;
+}
+
+.edit-modal .lockicon[locked] {
+  background-image: -webkit-image-set(
+      url(../images/100/ratio_locked.png) 1x,
+      url(../images/200/ratio_locked.png) 2x);
+}
+
+.edit-modal .lockicon:not([locked]) {
+  background-image: -webkit-image-set(
+      url(../images/100/ratio_unlocked.png) 1x,
+      url(../images/200/ratio_unlocked.png) 2x);
+  opacity: 0.54;
 }
 
 /* Prompt/notification panel */
@@ -1211,6 +1284,7 @@ files-toast {
 .slideshow-toolbar > div {
   background-position: center;
   background-repeat: no-repeat;
+  cursor: pointer;
   height: 48px;
   opacity: 0.8;
   pointer-events: auto;
@@ -1234,10 +1308,10 @@ files-toast {
 }
 
 .slideshow-toolbar > .slideshow-end {
-  -webkit-margin-start: 4px;
   background-image: -webkit-image-set(
       url(../images/100/slideshow_close.png) 1x,
       url(../images/200/slideshow_close.png) 2x);
+  margin-inline-start: 4px;
 }
 
 .debug-me .load-target-content-metadata::before,
@@ -1271,21 +1345,22 @@ files-toast {
 .thumbnail-view {
   display: block;
   height: 100%;
+  outline: none;
   overflow-y: scroll;
 }
 
 .thumbnail-view ul {
-  -webkit-padding-end: 4px;
-  -webkit-padding-start: 0;
   margin: 0;
-  padding-top: 52px; /* Toolbar height (48px) + Margin (4px) */
   padding-bottom: 0;
+  padding-inline-end: 4px;
+  padding-inline-start: 0;
+  padding-top: 52px; /* Toolbar height (48px) + Margin (4px) */
 }
 
 .thumbnail-view .thumbnail {
-  -webkit-margin-start: 4px;
   display: block;
   margin-bottom: 4px;
+  margin-inline-start: 4px;
   position: relative;
 }
 
@@ -1328,9 +1403,9 @@ html[dir='rtl'] .thumbnail-view .scrollbar {
 }
 
 .thumbnail-view .scrollbar .thumb {
-  -webkit-margin-end: 4px;
   background-color: white;
   border-radius: 2px;
+  margin-inline-end: 4px;
   opacity: 0.4;
   width: 4px;
 }
@@ -1341,6 +1416,21 @@ html[dir='rtl'] .thumbnail-view .scrollbar {
   position: absolute;
   right: 0;
   top: 0;
+}
+
+/*
+ * Overlay a play icon over video. The video thumbnail is already hosted using
+ * background-image, so this puts the overlay in the selection div.
+ */
+.thumbnail-view .thumbnail > .video + .frame.selection {
+  background-image: -webkit-image-set(url(../images/play_arrow.svg) 1x);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 48px 48px;
+}
+
+.thumbnail-view .thumbnail > .video + .frame.selection:hover {
+  background-image: -webkit-image-set(url(../images/play_arrow_hover.svg) 1x);
 }
 
 .thumbnail-view .thumbnail > .frame.image {

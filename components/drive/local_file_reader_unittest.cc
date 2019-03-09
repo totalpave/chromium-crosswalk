@@ -9,12 +9,13 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
 #include "base/rand_util.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread.h"
 #include "components/drive/chromeos/drive_test_util.h"
 #include "google_apis/drive/test_util.h"
@@ -32,8 +33,8 @@ class LocalFileReaderAdapter {
   explicit LocalFileReaderAdapter(LocalFileReader* reader) : reader_(reader) {}
   int Read(net::IOBuffer* buffer,
            int buffer_length,
-           const net::CompletionCallback& callback) {
-    reader_->Read(buffer, buffer_length, callback);
+           net::CompletionOnceCallback callback) {
+    reader_->Read(buffer, buffer_length, std::move(callback));
     // As LocalFileReader::Read always works asynchronously,
     // return ERR_IO_PENDING.
     return net::ERR_IO_PENDING;
@@ -49,13 +50,13 @@ class LocalFileReaderTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    worker_thread_.reset(new base::Thread("LocalFileReaderTest"));
+    worker_thread_ = std::make_unique<base::Thread>("LocalFileReaderTest");
     ASSERT_TRUE(worker_thread_->Start());
-    file_reader_.reset(
-        new LocalFileReader(worker_thread_->task_runner().get()));
+    file_reader_ =
+        std::make_unique<LocalFileReader>(worker_thread_->task_runner().get());
   }
 
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<base::Thread> worker_thread_;
   std::unique_ptr<LocalFileReader> file_reader_;
@@ -63,7 +64,7 @@ class LocalFileReaderTest : public ::testing::Test {
 
 TEST_F(LocalFileReaderTest, NonExistingFile) {
   const base::FilePath kTestFile =
-      temp_dir_.path().AppendASCII("non-existing");
+      temp_dir_.GetPath().AppendASCII("non-existing");
 
   net::TestCompletionCallback callback;
   file_reader_->Open(kTestFile, 0, callback.callback());
@@ -74,7 +75,7 @@ TEST_F(LocalFileReaderTest, FullRead) {
   base::FilePath test_file;
   std::string expected_content;
   ASSERT_TRUE(google_apis::test_util::CreateFileOfSpecifiedSize(
-      temp_dir_.path(), 1024, &test_file, &expected_content));
+      temp_dir_.GetPath(), 1024, &test_file, &expected_content));
 
   net::TestCompletionCallback callback;
   file_reader_->Open(test_file, 0, callback.callback());
@@ -90,7 +91,7 @@ TEST_F(LocalFileReaderTest, OpenWithOffset) {
   base::FilePath test_file;
   std::string expected_content;
   ASSERT_TRUE(google_apis::test_util::CreateFileOfSpecifiedSize(
-      temp_dir_.path(), 1024, &test_file, &expected_content));
+      temp_dir_.GetPath(), 1024, &test_file, &expected_content));
 
   size_t offset = expected_content.size() / 2;
   expected_content.erase(0, offset);

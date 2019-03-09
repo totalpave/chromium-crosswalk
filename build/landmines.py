@@ -11,11 +11,20 @@ directory.
 A landmine is tripped when a builder checks out a different revision, and the
 diff between the new landmines and the old ones is non-null. At this point, the
 build is clobbered.
+
+Before adding or changing a landmine consider the consequences of doing so.
+Doing so will wipe out every output directory on every Chrome developer's
+machine. This can be particularly problematic on Windows where the directory
+deletion may well fail (locked files, command prompt in the directory, etc.),
+and generated .sln and .vcxproj files will be deleted.
+
+This output directory deletion will be repated when going back and forth across
+the change that added the landmine, adding to the cost. There are usually less
+troublesome alternatives.
 """
 
 import difflib
 import errno
-import gyp_environment
 import logging
 import optparse
 import os
@@ -27,35 +36,28 @@ import clobber
 import landmine_utils
 
 
-def get_build_dir(build_tool, src_dir, is_iphone=False):
+def get_build_dir(src_dir):
   """
   Returns output directory absolute path dependent on build and targets.
   Examples:
     r'c:\b\build\slave\win\build\src\out'
     '/mnt/data/b/build/slave/linux/build/src/out'
-    '/b/build/slave/ios_rel_device/build/src/xcodebuild'
+    '/b/build/slave/ios_rel_device/build/src/out'
 
   Keep this function in sync with tools/build/scripts/slave/compile.py
   """
-  ret = None
-  if build_tool == 'xcode':
-    ret = os.path.join(src_dir, 'xcodebuild')
-  elif build_tool in ['make', 'ninja', 'ninja-ios']:  # TODO: Remove ninja-ios.
-    if 'CHROMIUM_OUT_DIR' in os.environ:
-      output_dir = os.environ.get('CHROMIUM_OUT_DIR').strip()
-      if not output_dir:
-        raise Error('CHROMIUM_OUT_DIR environment variable is set but blank!')
-    else:
-      output_dir = landmine_utils.gyp_generator_flags().get('output_dir', 'out')
-    ret = os.path.join(src_dir, output_dir)
+  if 'CHROMIUM_OUT_DIR' in os.environ:
+    output_dir = os.environ.get('CHROMIUM_OUT_DIR').strip()
+    if not output_dir:
+      raise Error('CHROMIUM_OUT_DIR environment variable is set but blank!')
   else:
-    raise NotImplementedError('Unexpected GYP_GENERATORS (%s)' % build_tool)
-  return os.path.abspath(ret)
+    output_dir = 'out'
+  return os.path.abspath(os.path.join(src_dir, output_dir))
 
 
 def clobber_if_necessary(new_landmines, src_dir):
   """Does the work of setting, planting, and triggering landmines."""
-  out_dir = get_build_dir(landmine_utils.builder(), src_dir)
+  out_dir = get_build_dir(src_dir)
   landmines_path = os.path.normpath(os.path.join(src_dir, '.landmines'))
   try:
     os.makedirs(out_dir)
@@ -128,11 +130,6 @@ def process_options():
 
 def main():
   options = process_options()
-
-  if landmine_utils.builder() in ('dump_dependency_json', 'eclipse'):
-    return 0
-
-  gyp_environment.SetEnvironment()
 
   landmines = []
   for s in options.landmine_scripts:

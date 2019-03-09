@@ -9,13 +9,14 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string16.h"
 #include "base/time/time.h"
 #include "chrome/browser/supervised_user/supervised_users.h"
-#include "sync/api/syncable_service.h"
+#include "components/sync/model/syncable_service.h"
 
 class PrefService;
 class SupervisedUserSiteList;
@@ -85,7 +86,7 @@ class SupervisedUserWhitelistService : public syncer::SyncableService {
   void StopSyncing(syncer::ModelType type) override;
   syncer::SyncDataList GetAllSyncData(syncer::ModelType type) const override;
   syncer::SyncError ProcessSyncChanges(
-      const tracked_objects::Location& from_here,
+      const base::Location& from_here,
       const syncer::SyncChangeList& change_list) override;
 
  private:

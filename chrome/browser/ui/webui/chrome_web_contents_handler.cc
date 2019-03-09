@@ -39,26 +39,31 @@ WebContents* ChromeWebContentsHandler::OpenURLFromTab(
 
   Browser* browser = chrome::FindTabbedBrowser(profile, false);
   const bool browser_created = !browser;
-  if (!browser)
-    browser = new Browser(Browser::CreateParams(Browser::TYPE_TABBED, profile));
-  chrome::NavigateParams nav_params(browser, params.url, params.transition);
+  if (!browser) {
+    // TODO(erg): OpenURLParams should pass a user_gesture flag, pass it to
+    // CreateParams, and pass the real value to nav_params below.
+    browser =
+        new Browser(Browser::CreateParams(Browser::TYPE_TABBED, profile, true));
+  }
+  NavigateParams nav_params(browser, params.url, params.transition);
   nav_params.referrer = params.referrer;
-  if (source && source->IsCrashed() && params.disposition == CURRENT_TAB &&
+  if (source && source->IsCrashed() &&
+      params.disposition == WindowOpenDisposition::CURRENT_TAB &&
       ui::PageTransitionCoreTypeIs(params.transition,
                                    ui::PAGE_TRANSITION_LINK)) {
-    nav_params.disposition = NEW_FOREGROUND_TAB;
+    nav_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
   } else {
     nav_params.disposition = params.disposition;
   }
-  nav_params.window_action = chrome::NavigateParams::SHOW_WINDOW;
+  nav_params.window_action = NavigateParams::SHOW_WINDOW;
   nav_params.user_gesture = true;
-  chrome::Navigate(&nav_params);
+  Navigate(&nav_params);
 
   // Close the browser if chrome::Navigate created a new one.
   if (browser_created && (browser != nav_params.browser))
     browser->window()->Close();
 
-  return nav_params.target_contents;
+  return nav_params.navigated_or_inserted_contents;
 }
 
 // Creates a new tab with |new_contents|. |context| is the browser context that
@@ -70,7 +75,7 @@ WebContents* ChromeWebContentsHandler::OpenURLFromTab(
 void ChromeWebContentsHandler::AddNewContents(
     content::BrowserContext* context,
     WebContents* source,
-    WebContents* new_contents,
+    std::unique_ptr<WebContents> new_contents,
     WindowOpenDisposition disposition,
     const gfx::Rect& initial_rect,
     bool user_gesture) {
@@ -81,15 +86,17 @@ void ChromeWebContentsHandler::AddNewContents(
 
   Browser* browser = chrome::FindTabbedBrowser(profile, false);
   const bool browser_created = !browser;
-  if (!browser)
-    browser = new Browser(Browser::CreateParams(Browser::TYPE_TABBED, profile));
-  chrome::NavigateParams params(browser, new_contents);
+  if (!browser) {
+    browser = new Browser(
+        Browser::CreateParams(Browser::TYPE_TABBED, profile, user_gesture));
+  }
+  NavigateParams params(browser, std::move(new_contents));
   params.source_contents = source;
   params.disposition = disposition;
   params.window_bounds = initial_rect;
-  params.window_action = chrome::NavigateParams::SHOW_WINDOW;
-  params.user_gesture = true;
-  chrome::Navigate(&params);
+  params.window_action = NavigateParams::SHOW_WINDOW;
+  params.user_gesture = user_gesture;
+  Navigate(&params);
 
   // Close the browser if chrome::Navigate created a new one.
   if (browser_created && (browser != params.browser))

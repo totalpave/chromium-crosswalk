@@ -8,7 +8,7 @@
 #include "components/webcrypto/algorithms/rsa.h"
 #include "components/webcrypto/algorithms/rsa_sign.h"
 #include "components/webcrypto/status.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithmParams.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
 
 namespace webcrypto {
 
@@ -17,22 +17,22 @@ namespace {
 class RsaPssImplementation : public RsaHashedAlgorithm {
  public:
   RsaPssImplementation()
-      : RsaHashedAlgorithm(blink::WebCryptoKeyUsageVerify,
-                           blink::WebCryptoKeyUsageSign) {}
+      : RsaHashedAlgorithm(blink::kWebCryptoKeyUsageVerify,
+                           blink::kWebCryptoKeyUsageSign) {}
 
   const char* GetJwkAlgorithm(
       const blink::WebCryptoAlgorithmId hash) const override {
     switch (hash) {
-      case blink::WebCryptoAlgorithmIdSha1:
+      case blink::kWebCryptoAlgorithmIdSha1:
         return "PS1";
-      case blink::WebCryptoAlgorithmIdSha256:
+      case blink::kWebCryptoAlgorithmIdSha256:
         return "PS256";
-      case blink::WebCryptoAlgorithmIdSha384:
+      case blink::kWebCryptoAlgorithmIdSha384:
         return "PS384";
-      case blink::WebCryptoAlgorithmIdSha512:
+      case blink::kWebCryptoAlgorithmIdSha512:
         return "PS512";
       default:
-        return NULL;
+        return nullptr;
     }
   }
 
@@ -40,7 +40,7 @@ class RsaPssImplementation : public RsaHashedAlgorithm {
               const blink::WebCryptoKey& key,
               const CryptoData& data,
               std::vector<uint8_t>* buffer) const override {
-    return RsaSign(key, algorithm.rsaPssParams()->saltLengthBytes(), data,
+    return RsaSign(key, algorithm.RsaPssParams()->SaltLengthBytes(), data,
                    buffer);
   }
 
@@ -49,7 +49,7 @@ class RsaPssImplementation : public RsaHashedAlgorithm {
                 const CryptoData& signature,
                 const CryptoData& data,
                 bool* signature_match) const override {
-    return RsaVerify(key, algorithm.rsaPssParams()->saltLengthBytes(),
+    return RsaVerify(key, algorithm.RsaPssParams()->SaltLengthBytes(),
                      signature, data, signature_match);
   }
 };

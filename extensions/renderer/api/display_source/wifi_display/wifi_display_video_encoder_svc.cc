@@ -6,6 +6,7 @@
 
 #include "base/bind.h"
 #include "base/task_runner_util.h"
+#include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_video_encoder.h"
 #include "third_party/openh264/src/codec/api/svc/codec_api.h"
@@ -69,7 +70,7 @@ void WiFiDisplayVideoEncoderSVC::Create(
       media_thread->task_runner().get(), FROM_HERE,
       base::Bind(
           &WiFiDisplayVideoEncoderSVC::InitOnMediaThread,
-          make_scoped_refptr(new WiFiDisplayVideoEncoderSVC(
+          base::WrapRefCounted(new WiFiDisplayVideoEncoderSVC(
               base::ThreadTaskRunnerHandle::Get(), std::move(media_thread))),
           params),
       encoder_callback);

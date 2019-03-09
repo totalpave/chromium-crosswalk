@@ -13,47 +13,19 @@ don’t mind erasing all data, rooting, and installing a userdebug build on.
 
 ## Get and build `content_shell_apk` for Android
 
-(These instructions have been carefully distilled from the
-[Android Build Instructions](android_build_instructions.md).)
+More detailed insturctions in [android_build_instructions.md](android_build_instructions.md).
 
-1.  Get the code! You’ll want a second checkout as this will be
-    android-specific. You know the drill:
-    https://www.chromium.org/developers/how-tos/get-the-code
-1.  Append this to your `.gclient` file: `target_os = ['android']`
-1.  Create `chromium.gyp_env` next to your `.gclient` file:
-    `echo "{ 'GYP_DEFINES': 'OS=android', }" > chromium.gyp_env`
-1.  (Note: All these scripts assume you’re using "bash" (default) as your
-    shell.)
-1.  Sync and runhooks (be careful not to run hooks on the first sync):
-
-    ```
-    gclient sync --nohooks
-    . build/android/envsetup.sh
-    gclient runhooks
-    ```
-
-1.  No need to install any API Keys.
-1.  Install Oracle’s Java: http://goo.gl/uPRSq. Grab the appropriate x64 .bin
-    file, `chmod +x`, and then execute to extract. You then move that extracted
-    tree into /usr/lib/jvm/, rename it java-6-sun and set:
-
-    ```
-    export JAVA_HOME=/usr/lib/jvm/java-6-sun
-    export ANDROID_JAVA_HOME=/usr/lib/jvm/java-6-sun
-    ```
-
-1.  Type ‘`java -version`’ and make sure it says java version `1.6.0_35` without
-    any mention of openjdk before proceeding.
-1.  `sudo build/install-build-deps-android.sh`
-1.  Time to build!
-
-    ```
-    ninja -C out/Release content_shell_apk
-    ```
+```shell
+ninja -C out/Release content_shell_apk
+```
 
 ## Setup the physical device
 
-Plug in your device. Make sure you can talk to your device, try "`adb shell ls`"
+Plug in your device. Make sure you can talk to your device, try:
+
+```shell
+third_party/android_tools/sdk/platform-tools/adb shell ls
+```
 
 ## Root your device and install a userdebug build
 
@@ -77,12 +49,6 @@ http://androidmuscle.com/how-to-enable-usb-debugging-developer-options-on-nexus-
 
 Rebuild `content_shell_apk` with profiling enabled.
 
-With GYP (deprecated):
-
-    export GYP_DEFINES="$GYP_DEFINES profiling=1"
-    build/gyp_chromium
-    ninja -C out/Release content_shell_apk
-
 With GN:
 
     gn args out/Profiling
@@ -100,7 +66,7 @@ You can run any Telemetry benchmark with `--profiler=perf`, and it will:
 4.  Setup symlinks to work with the `--symfs` parameter
 
 You can also run "manual" tests with Telemetry, more information here:
-http://www.chromium.org/developers/telemetry/profiling#TOC-Manual-Profiling---Android
+https://www.chromium.org/developers/telemetry/profiling#TOC-Manual-Profiling---Android
 
 The following steps describe building `perf`, which is no longer necessary if
 you use Telemetry.
@@ -118,29 +84,19 @@ Telemetry" steps below).
 
 ## Install `/system/bin/perf` on your device (not needed for Telemetry)
 
-    # From inside the android source tree (not inside Chromium)
+    # From inside the Android source tree (not inside Chromium)
     mmm external/linux-tools-perf/
     adb remount # (allows you to write to the system image)
     adb sync
     adb shell perf top # check that perf can get samples (don’t expect symbols)
 
-## Install ContentShell
+## Install and Run ContentShell
 
 Install with the following:
 
-    build/android/adb_install_apk.py \
-        --apk out/Release/apks/ContentShell.apk \
-        --apk_package org.chromium.content_shell
+    out/Release/bin/content_shell_apk run
 
-## Run ContentShell
-
-Run with the following:
-
-    ./build/android/adb_run_content_shell
-
-If `content_shell` “stopped unexpectedly” use `adb logcat` to debug. If you see
-ResourceExtractor exceptions, a clean build is your solution.
-https://crbug.com/164220
+If `content_shell` “stopped unexpectedly” use `adb logcat` to debug.
 
 ## Setup a `symbols` directory with symbols from your build (not needed for Telemetry)
 
@@ -183,7 +139,7 @@ from the device.
 
 Run the following:
 
-    adb shell ps | grep content (look for the pid of the sandboxed_process)
+    out/Release/content_shell_apk ps (look for the pid of the sandboxed_process)
     adb shell perf record -g -p 12345 sleep 5
     adb pull /data/perf.data
 
@@ -197,8 +153,6 @@ Run the following:
 
 1.  If you don’t see chromium/webkit symbols, make sure that you built/pushed
     Release, and that the symlink you created to the .so is valid!
-1.  If you have symbols, but your callstacks are nonsense, make sure you ran
-    `build/gyp_chromium` after setting `profiling=1`, and rebuilt.
 
 ## Add symbols for the kernel
 

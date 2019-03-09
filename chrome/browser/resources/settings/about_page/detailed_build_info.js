@@ -23,27 +23,31 @@ Polymer({
     showChannelSwitcherDialog_: Boolean,
 
     /** @private */
-    canChangeChannel_: {
-      type: Boolean,
-      value: function() {
-        return loadTimeData.getBoolean('aboutCanChangeChannel');
-      },
-    },
+    canChangeChannel_: Boolean,
   },
 
   /** @override */
   ready: function() {
-    var browserProxy = settings.AboutPageBrowserProxyImpl.getInstance();
+    const browserProxy = settings.AboutPageBrowserProxyImpl.getInstance();
     browserProxy.pageReady();
 
-    browserProxy.getVersionInfo().then(function(versionInfo) {
+    browserProxy.getVersionInfo().then(versionInfo => {
       this.versionInfo_ = versionInfo;
-    }.bind(this));
-    browserProxy.getCurrentChannel().then(function(channel) {
+    });
+
+    this.updateChannelInfo_();
+  },
+
+  /** @private */
+  updateChannelInfo_: function() {
+    const browserProxy = settings.AboutPageBrowserProxyImpl.getInstance();
+    browserProxy.getChannelInfo().then(info => {
+      // Display the target channel for the 'Currently on' message.
       this.currentlyOnChannelText_ = this.i18n(
           'aboutCurrentlyOnChannel',
-          this.i18n(settings.browserChannelToI18nId(channel)));
-    }.bind(this));
+          this.i18n(settings.browserChannelToI18nId(info.targetChannel)));
+      this.canChangeChannel_ = info.canChangeChannel;
+    });
   },
 
   /**
@@ -55,18 +59,44 @@ Polymer({
     return version.length > 0;
   },
 
-  /** @private */
-  onChangeChannelTap_: function() {
+  /**
+   * @param {boolean} canChangeChannel
+   * @return {string}
+   * @private
+   */
+  getChangeChannelIndicatorSourceName_: function(canChangeChannel) {
+    return loadTimeData.getBoolean('aboutEnterpriseManaged') ?
+        '' :
+        loadTimeData.getString('ownerEmail');
+  },
+
+  /**
+   * @param {boolean} canChangeChannel
+   * @return {CrPolicyIndicatorType}
+   * @private
+   */
+  getChangeChannelIndicatorType_: function(canChangeChannel) {
+    if (canChangeChannel) {
+      return CrPolicyIndicatorType.NONE;
+    }
+    return loadTimeData.getBoolean('aboutEnterpriseManaged') ?
+        CrPolicyIndicatorType.DEVICE_POLICY :
+        CrPolicyIndicatorType.OWNER;
+  },
+
+  /**
+   * @param {!Event} e
+   * @private
+   */
+  onChangeChannelTap_: function(e) {
+    e.preventDefault();
     this.showChannelSwitcherDialog_ = true;
-    // Async to wait for dialog to appear in the DOM.
-    this.async(function() {
-      var dialog = this.$$('settings-channel-switcher-dialog');
-      // Register listener to detect when the dialog is closed. Flip the boolean
-      // once closed to force a restamp next time it is shown such that the
-      // previous dialog's contents are cleared.
-      dialog.addEventListener('iron-overlay-closed', function() {
-        this.showChannelSwitcherDialog_ = false;
-      }.bind(this));
-    }.bind(this));
+  },
+
+  /** @private */
+  onChannelSwitcherDialogClosed_: function() {
+    this.showChannelSwitcherDialog_ = false;
+    cr.ui.focusWithoutInk(assert(this.$$('paper-button')));
+    this.updateChannelInfo_();
   },
 });

@@ -11,7 +11,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/apps/app_window_easy_resize_window_targeter.h"
 #include "chrome/browser/ui/views/apps/shaped_app_window_targeter.h"
-#include "chrome/browser/web_applications/web_app.h"
+#include "chrome/browser/web_applications/components/web_app_helpers.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
@@ -19,7 +19,7 @@
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/widget/widget.h"
 
-#if defined(OS_LINUX)
+#if defined(USE_X11)
 #include "chrome/browser/shell_integration_linux.h"
 #endif
 
@@ -45,7 +45,6 @@ ChromeNativeAppWindowViewsAura::GetRestorableState(
     case ui::SHOW_STATE_DEFAULT:
     case ui::SHOW_STATE_MINIMIZED:
     case ui::SHOW_STATE_INACTIVE:
-    case ui::SHOW_STATE_DOCKED:
     case ui::SHOW_STATE_END:
       return ui::SHOW_STATE_NORMAL;
   }
@@ -57,13 +56,14 @@ void ChromeNativeAppWindowViewsAura::OnBeforeWidgetInit(
     const AppWindow::CreateParams& create_params,
     views::Widget::InitParams* init_params,
     views::Widget* widget) {
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
-  std::string app_name = web_app::GenerateApplicationNameFromExtensionId(
-      app_window()->extension_id());
+#if defined(USE_X11)
+  std::string app_name =
+      web_app::GenerateApplicationNameFromAppId(app_window()->extension_id());
   // Set up a custom WM_CLASS for app windows. This allows task switchers in
   // X11 environments to distinguish them from main browser windows.
-  init_params->wm_class_name = web_app::GetWMClassFromAppName(app_name);
-  init_params->wm_class_class = shell_integration_linux::GetProgramClassName();
+  init_params->wm_class_name =
+      shell_integration_linux::GetWMClassFromAppName(app_name);
+  init_params->wm_class_class = shell_integration_linux::GetProgramClassClass();
   const char kX11WindowRoleApp[] = "app";
   init_params->wm_role_name = std::string(kX11WindowRoleApp);
 #endif
@@ -85,18 +85,13 @@ ChromeNativeAppWindowViewsAura::CreateNonStandardAppFrame() {
   // Add the AppWindowEasyResizeWindowTargeter on the window, not its root
   // window. The root window does not have a delegate, which is needed to
   // handle the event in Linux.
-  window->SetEventTargeter(
-      std::unique_ptr<ui::EventTargeter>(new AppWindowEasyResizeWindowTargeter(
-          window, gfx::Insets(frame->resize_inside_bounds_size()), this)));
+  window->SetEventTargeter(std::make_unique<AppWindowEasyResizeWindowTargeter>(
+      gfx::Insets(frame->resize_inside_bounds_size()), this));
 
   return frame;
 }
 
 ui::WindowShowState ChromeNativeAppWindowViewsAura::GetRestoredState() const {
-  // Use kRestoreShowStateKey in case a window is minimized/hidden.
-  ui::WindowShowState restore_state = widget()->GetNativeWindow()->GetProperty(
-      aura::client::kRestoreShowStateKey);
-
   // First normal states are checked.
   if (IsMaximized())
     return ui::SHOW_STATE_MAXIMIZED;
@@ -104,13 +99,9 @@ ui::WindowShowState ChromeNativeAppWindowViewsAura::GetRestoredState() const {
     return ui::SHOW_STATE_FULLSCREEN;
   }
 
-  if (widget()->GetNativeWindow()->GetProperty(
-          aura::client::kShowStateKey) == ui::SHOW_STATE_DOCKED ||
-      widget()->GetNativeWindow()->GetProperty(
-          aura::client::kRestoreShowStateKey) == ui::SHOW_STATE_DOCKED) {
-    return ui::SHOW_STATE_DOCKED;
-  }
-
+  // Use kPreMinimizedShowStateKey in case a window is minimized/hidden.
+  ui::WindowShowState restore_state = widget()->GetNativeWindow()->GetProperty(
+      aura::client::kPreMinimizedShowStateKey);
   return GetRestorableState(restore_state);
 }
 
@@ -119,16 +110,16 @@ bool ChromeNativeAppWindowViewsAura::IsAlwaysOnTop() const {
 }
 
 void ChromeNativeAppWindowViewsAura::UpdateShape(
-    std::unique_ptr<SkRegion> region) {
+    std::unique_ptr<ShapeRects> rects) {
   bool had_shape = !!shape();
 
-  ChromeNativeAppWindowViews::UpdateShape(std::move(region));
+  ChromeNativeAppWindowViews::UpdateShape(std::move(rects));
 
   aura::Window* native_window = widget()->GetNativeWindow();
   if (shape() && !had_shape) {
-    native_window->SetEventTargeter(std::unique_ptr<ui::EventTargeter>(
-        new ShapedAppWindowTargeter(native_window, this)));
+    native_window->SetEventTargeter(
+        std::make_unique<ShapedAppWindowTargeter>(this));
   } else if (!shape() && had_shape) {
-    native_window->SetEventTargeter(std::unique_ptr<ui::EventTargeter>());
+    native_window->SetEventTargeter(nullptr);
   }
 }

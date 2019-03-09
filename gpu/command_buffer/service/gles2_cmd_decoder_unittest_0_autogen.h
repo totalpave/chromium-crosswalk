@@ -22,10 +22,10 @@ void GLES2DecoderTestBase::SetupInitCapabilitiesExpectations(bool es3_capable) {
   ExpectEnableDisable(GL_SAMPLE_COVERAGE, false);
   ExpectEnableDisable(GL_SCISSOR_TEST, false);
   ExpectEnableDisable(GL_STENCIL_TEST, false);
-  if (group_->feature_info()->feature_flags().ext_multisample_compatibility) {
+  if (feature_info()->feature_flags().ext_multisample_compatibility) {
     ExpectEnableDisable(GL_MULTISAMPLE_EXT, true);
   }
-  if (group_->feature_info()->feature_flags().ext_multisample_compatibility) {
+  if (feature_info()->feature_flags().ext_multisample_compatibility) {
     ExpectEnableDisable(GL_SAMPLE_ALPHA_TO_ONE_EXT, false);
   }
   if (es3_capable) {
@@ -35,7 +35,7 @@ void GLES2DecoderTestBase::SetupInitCapabilitiesExpectations(bool es3_capable) {
 }
 
 void GLES2DecoderTestBase::SetupInitStateExpectations(bool es3_capable) {
-  const auto& feature_info_ = group_->feature_info();
+  auto* feature_info_ = feature_info();
   EXPECT_CALL(*gl_, BlendColor(0.0f, 0.0f, 0.0f, 0.0f))
       .Times(1)
       .RetiresOnSaturation();
@@ -53,9 +53,7 @@ void GLES2DecoderTestBase::SetupInitStateExpectations(bool es3_capable) {
   EXPECT_CALL(*gl_, ColorMask(true, true, true, true))
       .Times(1)
       .RetiresOnSaturation();
-  if (group_->feature_info()
-          ->feature_flags()
-          .chromium_framebuffer_mixed_samples) {
+  if (feature_info()->feature_flags().chromium_framebuffer_mixed_samples) {
     EXPECT_CALL(*gl_, CoverageModulationNV(GL_NONE))
         .Times(1)
         .RetiresOnSaturation();
@@ -76,7 +74,12 @@ void GLES2DecoderTestBase::SetupInitStateExpectations(bool es3_capable) {
         .Times(1)
         .RetiresOnSaturation();
   }
-  EXPECT_CALL(*gl_, LineWidth(1.0f)).Times(1).RetiresOnSaturation();
+  if (feature_info_->feature_flags().chromium_texture_filtering_hint) {
+    EXPECT_CALL(*gl_, Hint(GL_TEXTURE_FILTERING_HINT_CHROMIUM, GL_NICEST))
+        .Times(1)
+        .RetiresOnSaturation();
+  }
+  SetupInitStateManualExpectationsForDoLineWidth(1.0f);
   if (feature_info_->feature_flags().chromium_path_rendering) {
     EXPECT_CALL(*gl_, MatrixLoadfEXT(GL_PATH_MODELVIEW_CHROMIUM, _))
         .Times(1)
@@ -87,7 +90,7 @@ void GLES2DecoderTestBase::SetupInitStateExpectations(bool es3_capable) {
         .Times(1)
         .RetiresOnSaturation();
   }
-  if (group_->feature_info()->feature_flags().chromium_path_rendering) {
+  if (feature_info()->feature_flags().chromium_path_rendering) {
     EXPECT_CALL(*gl_, PathStencilFuncNV(GL_ALWAYS, 0, 0xFFFFFFFFU))
         .Times(1)
         .RetiresOnSaturation();

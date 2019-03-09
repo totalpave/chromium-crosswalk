@@ -8,7 +8,10 @@ import android.content.Context;
 import android.graphics.drawable.ClipDrawable;
 import android.text.TextUtils;
 import android.util.AttributeSet;
+import android.view.ActionMode;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
@@ -20,15 +23,17 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.TextView.OnEditorActionListener;
 
+import org.chromium.base.Callback;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.content.browser.ContentView;
-import org.chromium.content.browser.ContentViewClient;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.ContentViewRenderView;
+import org.chromium.components.embedder_support.view.ContentView;
+import org.chromium.components.embedder_support.view.ContentViewRenderView;
+import org.chromium.content_public.browser.ActionModeCallbackHelper;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationController;
+import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
 
 /**
@@ -46,10 +51,8 @@ public class Shell extends LinearLayout {
         }
     };
 
-    private ContentViewCore mContentViewCore;
     private WebContents mWebContents;
     private NavigationController mNavigationController;
-    private ContentViewClient mContentViewClient;
     private EditText mUrlTextView;
     private ImageButton mPrevButton;
     private ImageButton mNextButton;
@@ -60,9 +63,12 @@ public class Shell extends LinearLayout {
     private long mNativeShell;
     private ContentViewRenderView mContentViewRenderView;
     private WindowAndroid mWindow;
+    private ShellViewAndroidDelegate mViewAndroidDelegate;
 
-    private boolean mLoading = false;
-    private boolean mIsFullscreen = false;
+    private boolean mLoading;
+    private boolean mIsFullscreen;
+
+    private Callback<Boolean> mOverlayModeChangedCallbackForTesting;
 
     /**
      * Constructor for inflating via XML.
@@ -94,13 +100,10 @@ public class Shell extends LinearLayout {
      *
      * @param nativeShell The pointer to the native Shell object.
      * @param window The owning window for this shell.
-     * @param client The {@link ContentViewClient} to be bound to any current or new
-     *               {@link ContentViewCore}s associated with this shell.
      */
-    public void initialize(long nativeShell, WindowAndroid window, ContentViewClient client) {
+    public void initialize(long nativeShell, WindowAndroid window) {
         mNativeShell = nativeShell;
         mWindow = window;
-        mContentViewClient = client;
     }
 
     /**
@@ -116,7 +119,7 @@ public class Shell extends LinearLayout {
     private void onNativeDestroyed() {
         mWindow = null;
         mNativeShell = 0;
-        mContentViewCore.destroy();
+        mWebContents = null;
     }
 
     /**
@@ -138,7 +141,8 @@ public class Shell extends LinearLayout {
     protected void onFinishInflate() {
         super.onFinishInflate();
 
-        mProgressDrawable = (ClipDrawable) findViewById(R.id.toolbar).getBackground();
+        View toolbar = findViewById(R.id.toolbar);
+        mProgressDrawable = (ClipDrawable) toolbar.getBackground();
         initializeUrlField();
         initializeNavigationButtons();
     }
@@ -155,7 +159,7 @@ public class Shell extends LinearLayout {
                 }
                 loadUrl(mUrlTextView.getText().toString());
                 setKeyboardVisibilityForUrl(false);
-                mContentViewCore.getContainerView().requestFocus();
+                getContentView().requestFocus();
                 return true;
             }
         });
@@ -167,7 +171,7 @@ public class Shell extends LinearLayout {
                 mPrevButton.setVisibility(hasFocus ? GONE : VISIBLE);
                 mStopReloadButton.setVisibility(hasFocus ? GONE : VISIBLE);
                 if (!hasFocus) {
-                    mUrlTextView.setText(mWebContents.getUrl());
+                    mUrlTextView.setText(mWebContents.getVisibleUrl());
                 }
             }
         });
@@ -175,7 +179,7 @@ public class Shell extends LinearLayout {
             @Override
             public boolean onKey(View v, int keyCode, KeyEvent event) {
                 if (keyCode == KeyEvent.KEYCODE_BACK) {
-                    mContentViewCore.getContainerView().requestFocus();
+                    getContentView().requestFocus();
                     return true;
                 }
                 return false;
@@ -192,15 +196,15 @@ public class Shell extends LinearLayout {
     public void loadUrl(String url) {
         if (url == null) return;
 
-        if (TextUtils.equals(url, mWebContents.getUrl())) {
+        if (TextUtils.equals(url, mWebContents.getLastCommittedUrl())) {
             mNavigationController.reload(true);
         } else {
             mNavigationController.loadUrl(new LoadUrlParams(sanitizeUrl(url)));
         }
         mUrlTextView.clearFocus();
         // TODO(aurimas): Remove this when crbug.com/174541 is fixed.
-        mContentViewCore.getContainerView().clearFocus();
-        mContentViewCore.getContainerView().requestFocus();
+        getContentView().clearFocus();
+        getContentView().requestFocus();
     }
 
     /**
@@ -278,6 +282,10 @@ public class Shell extends LinearLayout {
         }
     }
 
+    public ShellViewAndroidDelegate getViewAndroidDelegate() {
+        return mViewAndroidDelegate;
+    }
+
     /**
      * Initializes the ContentView based on the native tab contents pointer passed in.
      * @param webContents A {@link WebContents} object.
@@ -286,22 +294,74 @@ public class Shell extends LinearLayout {
     @CalledByNative
     private void initFromNativeTabContents(WebContents webContents) {
         Context context = getContext();
-        mContentViewCore = new ContentViewCore(context);
-        ContentView cv = ContentView.createContentView(context, mContentViewCore);
-        mContentViewCore.initialize(cv, cv, webContents, mWindow);
-        mContentViewCore.setContentViewClient(mContentViewClient);
-        mWebContents = mContentViewCore.getWebContents();
+        ContentView cv = ContentView.createContentView(context, webContents);
+        mViewAndroidDelegate = new ShellViewAndroidDelegate(cv);
+        webContents.initialize(
+                "", mViewAndroidDelegate, cv, mWindow, WebContents.createDefaultInternalsHolder());
+        mWebContents = webContents;
+        SelectionPopupController.fromWebContents(webContents)
+                .setActionModeCallback(defaultActionCallback());
         mNavigationController = mWebContents.getNavigationController();
-        if (getParent() != null) mContentViewCore.onShow();
-        if (mWebContents.getUrl() != null) {
-            mUrlTextView.setText(mWebContents.getUrl());
+        if (getParent() != null) mWebContents.onShow();
+        if (mWebContents.getVisibleUrl() != null) {
+            mUrlTextView.setText(mWebContents.getVisibleUrl());
         }
         ((FrameLayout) findViewById(R.id.contentview_holder)).addView(cv,
                 new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT));
         cv.requestFocus();
-        mContentViewRenderView.setCurrentContentViewCore(mContentViewCore);
+        mContentViewRenderView.setCurrentWebContents(mWebContents);
+    }
+
+    /**
+     * {link @ActionMode.Callback} that uses the default implementation in
+     * {@link SelectionPopupController}.
+     */
+    private ActionMode.Callback defaultActionCallback() {
+        final ActionModeCallbackHelper helper =
+                SelectionPopupController.fromWebContents(mWebContents)
+                        .getActionModeCallbackHelper();
+
+        return new ActionMode.Callback() {
+            @Override
+            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                helper.onCreateActionMode(mode, menu);
+                return true;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                return helper.onPrepareActionMode(mode, menu);
+            }
+
+            @Override
+            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                return helper.onActionItemClicked(mode, item);
+            }
+
+            @Override
+            public void onDestroyActionMode(ActionMode mode) {
+                helper.onDestroyActionMode();
+            }
+        };
+    }
+
+    @CalledByNative
+    public void setOverlayMode(boolean useOverlayMode) {
+        mContentViewRenderView.setOverlayVideoMode(useOverlayMode);
+        if (mOverlayModeChangedCallbackForTesting != null) {
+            mOverlayModeChangedCallbackForTesting.onResult(useOverlayMode);
+        }
+    }
+
+    @CalledByNative
+    public void sizeTo(int width, int height) {
+        mWebContents.setSize(width, height);
+    }
+
+    public void setOverayModeChangedCallbackForTesting(Callback<Boolean> callback) {
+        mOverlayModeChangedCallbackForTesting = callback;
     }
 
     /**
@@ -323,14 +383,8 @@ public class Shell extends LinearLayout {
      * @return The {@link ViewGroup} currently shown by this Shell.
      */
     public ViewGroup getContentView() {
-        return mContentViewCore.getContainerView();
-    }
-
-    /**
-     * @return The {@link ContentViewCore} currently managing the view shown by this Shell.
-     */
-    public ContentViewCore getContentViewCore() {
-        return mContentViewCore;
+        ViewAndroidDelegate viewDelegate = mWebContents.getViewAndroidDelegate();
+        return viewDelegate != null ? viewDelegate.getContainerView() : null;
     }
 
      /**

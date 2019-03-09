@@ -183,6 +183,7 @@ class Type(object):
     self.simple_name = _StripNamespace(self.name, namespace)
     self.unix_name = UnixName(self.name)
     self.description = json.get('description', None)
+    self.jsexterns = json.get('jsexterns', None)
     self.origin = origin
     self.parent = parent
     self.instance_of = json.get('isInstanceOf', None)
@@ -317,8 +318,9 @@ class Function(object):
     self.filters = [GeneratePropertyFromParam(filter_instance)
                     for filter_instance in json.get('filters', [])]
     callback_param = None
-    for param in json.get('parameters', []):
-      if param.get('type') == 'function':
+    params = json.get('parameters', [])
+    for i, param in enumerate(params):
+      if param.get('type') == 'function' and i == len(params) - 1:
         if callback_param:
           # No ParseException because the webstore has this.
           # Instead, pretend all intermediate callbacks are properties.
@@ -373,6 +375,7 @@ class Property(object):
     is_allowed_value = (
         '$ref' not in json and
         ('type' not in json or json['type'] == 'integer'
+                            or json['type'] == 'number'
                             or json['type'] == 'string'))
 
     self.value = None
@@ -383,6 +386,8 @@ class Property(object):
         # it out for ourselves.
         if isinstance(self.value, int):
           json['type'] = 'integer'
+        elif isinstance(self.value, float):
+          json['type'] = 'double'
         elif isinstance(self.value, basestring):
           json['type'] = 'string'
         else:

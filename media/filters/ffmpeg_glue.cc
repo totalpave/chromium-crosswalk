@@ -4,11 +4,9 @@
 
 #include "media/filters/ffmpeg_glue.h"
 
-#include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/metrics/sparse_histogram.h"
-#include "base/synchronization/lock.h"
+#include "base/metrics/histogram_functions.h"
 #include "media/base/container_names.h"
 #include "media/ffmpeg/ffmpeg_common.h"
 
@@ -65,68 +63,14 @@ static int64_t AVIOSeekOperation(void* opaque, int64_t offset, int whence) {
   return new_offset;
 }
 
-static int LockManagerOperation(void** lock, enum AVLockOp op) {
-  switch (op) {
-    case AV_LOCK_CREATE:
-      *lock = new base::Lock();
-      return 0;
-
-    case AV_LOCK_OBTAIN:
-      static_cast<base::Lock*>(*lock)->Acquire();
-      return 0;
-
-    case AV_LOCK_RELEASE:
-      static_cast<base::Lock*>(*lock)->Release();
-      return 0;
-
-    case AV_LOCK_DESTROY:
-      delete static_cast<base::Lock*>(*lock);
-      *lock = nullptr;
-      return 0;
-  }
-  return 1;
+static void LogContainer(bool is_local_file,
+                         container_names::MediaContainerName container) {
+  base::UmaHistogramSparse("Media.DetectedContainer", container);
+  if (is_local_file)
+    base::UmaHistogramSparse("Media.DetectedContainer.Local", container);
 }
 
-// FFmpeg must only be initialized once, so use a LazyInstance to ensure this.
-class FFmpegInitializer {
- public:
-  bool initialized() { return initialized_; }
-
- private:
-  friend struct base::DefaultLazyInstanceTraits<FFmpegInitializer>;
-
-  FFmpegInitializer()
-      : initialized_(false) {
-    // Register our protocol glue code with FFmpeg.
-    if (av_lockmgr_register(&LockManagerOperation) != 0)
-      return;
-
-    // Now register the rest of FFmpeg.
-    av_register_all();
-
-    initialized_ = true;
-  }
-
-  ~FFmpegInitializer() {
-    NOTREACHED() << "FFmpegInitializer should be leaky!";
-  }
-
-  bool initialized_;
-
-  DISALLOW_COPY_AND_ASSIGN(FFmpegInitializer);
-};
-
-static base::LazyInstance<FFmpegInitializer>::Leaky g_lazy_instance =
-    LAZY_INSTANCE_INITIALIZER;
-void FFmpegGlue::InitializeFFmpeg() {
-  // Get() will invoke the FFmpegInitializer constructor once.
-  CHECK(g_lazy_instance.Get().initialized());
-}
-
-FFmpegGlue::FFmpegGlue(FFmpegURLProtocol* protocol)
-    : open_called_(false) {
-  InitializeFFmpeg();
-
+FFmpegGlue::FFmpegGlue(FFmpegURLProtocol* protocol) {
   // Initialize an AVIOContext using our custom read and seek operations.  Don't
   // keep pointers to the buffer since FFmpeg may reallocate it on the fly.  It
   // will be cleaned up
@@ -150,35 +94,77 @@ FFmpegGlue::FFmpegGlue(FFmpegURLProtocol* protocol)
   // Enable fast, but inaccurate seeks for MP3.
   format_context_->flags |= AVFMT_FLAG_FAST_SEEK;
 
+  // Ensures we can read out various metadata bits like vp8 alpha.
+  format_context_->flags |= AVFMT_FLAG_KEEP_SIDE_DATA;
+
+  // Ensures format parsing errors will bail out. From an audit on 11/2017, all
+  // instances were real failures. Solves bugs like http://crbug.com/710791.
+  format_context_->error_recognition |= AV_EF_EXPLODE;
+
   format_context_->pb = avio_context_.get();
 }
 
-bool FFmpegGlue::OpenContext() {
+bool FFmpegGlue::OpenContext(bool is_local_file) {
   DCHECK(!open_called_) << "OpenContext() shouldn't be called twice.";
 
   // If avformat_open_input() is called we have to take a slightly different
   // destruction path to avoid double frees.
   open_called_ = true;
 
-  // Attempt to recognize the container by looking at the first few bytes of the
-  // stream. The stream position is left unchanged.
-  std::unique_ptr<std::vector<uint8_t>> buffer(new std::vector<uint8_t>(8192));
-
-  int64_t pos = AVIOSeekOperation(avio_context_.get()->opaque, 0, SEEK_CUR);
-  AVIOSeekOperation(avio_context_.get()->opaque, 0, SEEK_SET);
-  int numRead = AVIOReadOperation(
-      avio_context_.get()->opaque, buffer.get()->data(), buffer.get()->size());
-  AVIOSeekOperation(avio_context_.get()->opaque, pos, SEEK_SET);
-  if (numRead > 0) {
-    // < 0 means Read failed
-    container_names::MediaContainerName container =
-        container_names::DetermineContainer(buffer.get()->data(), numRead);
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Media.DetectedContainer", container);
-  }
-
   // By passing nullptr for the filename (second parameter) we are telling
   // FFmpeg to use the AVIO context we setup from the AVFormatContext structure.
-  return avformat_open_input(&format_context_, nullptr, nullptr, nullptr) == 0;
+  const int ret =
+      avformat_open_input(&format_context_, nullptr, nullptr, nullptr);
+
+  // If FFmpeg can't identify the file, read the first 8k and attempt to guess
+  // at the container type ourselves. This way we can track emergent formats.
+  // Only try on AVERROR_INVALIDDATA to avoid running after I/O errors.
+  if (ret == AVERROR_INVALIDDATA) {
+    std::vector<uint8_t> buffer(8192);
+
+    const int64_t pos = AVIOSeekOperation(avio_context_->opaque, 0, SEEK_SET);
+    if (pos < 0)
+      return false;
+
+    const int num_read =
+        AVIOReadOperation(avio_context_->opaque, buffer.data(), buffer.size());
+    if (num_read < container_names::kMinimumContainerSize)
+      return false;
+
+    container_ = container_names::DetermineContainer(buffer.data(), num_read);
+    LogContainer(is_local_file, container_);
+
+    detected_hls_ =
+        container_ == container_names::MediaContainerName::CONTAINER_HLS;
+    return false;
+  } else if (ret < 0) {
+    return false;
+  }
+
+  // Rely on ffmpeg's parsing if we're able to succesfully open the file.
+  if (strcmp(format_context_->iformat->name, "mov,mp4,m4a,3gp,3g2,mj2") == 0)
+    container_ = container_names::CONTAINER_MOV;
+  else if (strcmp(format_context_->iformat->name, "flac") == 0)
+    container_ = container_names::CONTAINER_FLAC;
+  else if (strcmp(format_context_->iformat->name, "matroska,webm") == 0)
+    container_ = container_names::CONTAINER_WEBM;
+  else if (strcmp(format_context_->iformat->name, "ogg") == 0)
+    container_ = container_names::CONTAINER_OGG;
+  else if (strcmp(format_context_->iformat->name, "wav") == 0)
+    container_ = container_names::CONTAINER_WAV;
+  else if (strcmp(format_context_->iformat->name, "aac") == 0)
+    container_ = container_names::CONTAINER_AAC;
+  else if (strcmp(format_context_->iformat->name, "mp3") == 0)
+    container_ = container_names::CONTAINER_MP3;
+  else if (strcmp(format_context_->iformat->name, "amr") == 0)
+    container_ = container_names::CONTAINER_AMR;
+  else if (strcmp(format_context_->iformat->name, "avi") == 0)
+    container_ = container_names::CONTAINER_AVI;
+
+  DCHECK_NE(container_, container_names::CONTAINER_UNKNOWN);
+  LogContainer(is_local_file, container_);
+
+  return true;
 }
 
 FFmpegGlue::~FFmpegGlue() {
@@ -196,26 +182,6 @@ FFmpegGlue::~FFmpegGlue() {
     avformat_free_context(format_context_);
     av_free(avio_context_->buffer);
     return;
-  }
-
-  // If avformat_open_input() has been called with this context, we need to
-  // close out any codecs/streams before closing the context.
-  if (format_context_->streams) {
-    for (int i = format_context_->nb_streams - 1; i >= 0; --i) {
-      AVStream* stream = format_context_->streams[i];
-
-      // The conditions for calling avcodec_close():
-      // 1. AVStream is alive.
-      // 2. AVCodecContext in AVStream is alive.
-      // 3. AVCodec in AVCodecContext is alive.
-      //
-      // Closing a codec context without prior avcodec_open2() will result in
-      // a crash in FFmpeg.
-      if (stream && stream->codec && stream->codec->codec) {
-        stream->discard = AVDISCARD_ALL;
-        avcodec_close(stream->codec);
-      }
-    }
   }
 
   avformat_close_input(&format_context_);

@@ -63,6 +63,7 @@ DownloadDangerType IntToDownloadDangerType(int danger_type) {
     case DownloadDangerType::USER_VALIDATED:
     case DownloadDangerType::DANGEROUS_HOST:
     case DownloadDangerType::POTENTIALLY_UNWANTED:
+    case DownloadDangerType::WHITELISTED_BY_POLICY:
       return static_cast<DownloadDangerType>(danger_type);
 
     case DownloadDangerType::INVALID:
@@ -100,6 +101,8 @@ std::ostream& operator<<(std::ostream& stream, DownloadDangerType danger_type) {
       return stream << "history::DownloadDangerType::DANGEROUS_HOST";
     case DownloadDangerType::POTENTIALLY_UNWANTED:
       return stream << "history::DownloadDangerType::POTENTIALLY_UNWANTED";
+    case DownloadDangerType::WHITELISTED_BY_POLICY:
+      return stream << "history::DownloadDangerType::WHITELISTED_BY_POLICY";
   }
   NOTREACHED();
   return stream;
@@ -115,10 +118,11 @@ int DownloadInterruptReasonToInt(DownloadInterruptReason interrupt_reason) {
 
 const DownloadId kInvalidDownloadId = 0;
 
-DownloadId IntToDownloadId(int64_t id) {
-  DCHECK_GE(id, static_cast<int64_t>(0));
-  DCHECK_NE(id, static_cast<int64_t>(kInvalidDownloadId));
-  return static_cast<DownloadId>(id);
+bool ConvertIntToDownloadId(int64_t id, DownloadId* out) {
+  if (id <= static_cast<int64_t>(kInvalidDownloadId))
+    return false;
+  *out = static_cast<DownloadId>(id);
+  return true;
 }
 
 int64_t DownloadIdToInt(DownloadId id) {

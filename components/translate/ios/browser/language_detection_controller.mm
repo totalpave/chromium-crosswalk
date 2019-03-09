@@ -8,15 +8,23 @@
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
+#include "components/language/ios/browser/ios_language_detection_tab_helper.h"
 #include "components/prefs/pref_member.h"
-#include "components/translate/core/common/translate_pref_names.h"
+#include "components/translate/core/browser/translate_pref_names.h"
+#include "components/translate/core/common/language_detection_details.h"
 #include "components/translate/core/language_detection/language_detection_util.h"
 #import "components/translate/ios/browser/js_language_detection_manager.h"
-#include "ios/web/public/string_util.h"
+#include "components/translate/ios/browser/string_clipping_util.h"
 #import "ios/web/public/url_scheme_util.h"
+#import "ios/web/public/web_state/navigation_context.h"
 #include "ios/web/public/web_state/web_state.h"
+#include "net/http/http_response_headers.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace translate {
 
@@ -32,33 +40,32 @@ LanguageDetectionController::LanguageDetectionController(
     web::WebState* web_state,
     JsLanguageDetectionManager* manager,
     PrefService* prefs)
-    : web::WebStateObserver(web_state),
-      js_manager_([manager retain]),
-      weak_method_factory_(this) {
-  DCHECK(web::WebStateObserver::web_state());
+    : web_state_(web_state), js_manager_(manager), weak_method_factory_(this) {
+  DCHECK(web_state_);
   DCHECK(js_manager_);
-  translate_enabled_.Init(prefs::kEnableTranslate, prefs);
-  web_state->AddScriptCommandCallback(
+
+  translate_enabled_.Init(prefs::kOfferTranslateEnabled, prefs);
+  web_state_->AddObserver(this);
+  web_state_->AddScriptCommandCallback(
       base::Bind(&LanguageDetectionController::OnTextCaptured,
                  base::Unretained(this)),
       kCommandPrefix);
 }
 
 LanguageDetectionController::~LanguageDetectionController() {
-}
-
-std::unique_ptr<LanguageDetectionController::CallbackList::Subscription>
-LanguageDetectionController::RegisterLanguageDetectionCallback(
-    const Callback& callback) {
-  return language_detection_callbacks_.Add(callback);
+  if (web_state_) {
+    web_state_->RemoveScriptCommandCallback(kCommandPrefix);
+    web_state_->RemoveObserver(this);
+    web_state_ = nullptr;
+  }
 }
 
 void LanguageDetectionController::StartLanguageDetection() {
   if (!translate_enabled_.GetValue())
     return;  // Translate disabled in preferences.
-  DCHECK(web_state());
-  const GURL& url = web_state()->GetVisibleURL();
-  if (!web::UrlHasWebScheme(url) || !web_state()->ContentIsHTML())
+  DCHECK(web_state_);
+  const GURL& url = web_state_->GetVisibleURL();
+  if (!web::UrlHasWebScheme(url) || !web_state_->ContentIsHTML())
     return;
   [js_manager_ inject];
   [js_manager_ startLanguageDetection];
@@ -67,7 +74,13 @@ void LanguageDetectionController::StartLanguageDetection() {
 bool LanguageDetectionController::OnTextCaptured(
     const base::DictionaryValue& command,
     const GURL& url,
-    bool interacting) {
+    bool interacting,
+    bool is_main_frame,
+    web::WebFrame* sender_frame) {
+  if (!is_main_frame) {
+    // Translate is only supported on main frame.
+    return false;
+  }
   std::string textCapturedCommand;
   if (!command.GetString("command", &textCapturedCommand) ||
       textCapturedCommand != "languageDetection.textCaptured" ||
@@ -87,8 +100,8 @@ bool LanguageDetectionController::OnTextCaptured(
     return false;
   }
 
-  int capture_text_time = 0;
-  command.GetInteger("captureTextTime", &capture_text_time);
+  double capture_text_time = 0;
+  command.GetDouble("captureTextTime", &capture_text_time);
   UMA_HISTOGRAM_TIMES(kTranslateCaptureText,
                       base::TimeDelta::FromMillisecondsD(capture_text_time));
   std::string html_lang;
@@ -97,52 +110,86 @@ bool LanguageDetectionController::OnTextCaptured(
   command.GetString("httpContentLanguage", &http_content_language);
   // If there is no language defined in httpEquiv, use the HTTP header.
   if (http_content_language.empty())
-    http_content_language = web_state()->GetContentLanguageHeader();
+    http_content_language = content_language_header_;
 
   [js_manager_ retrieveBufferedTextContent:
                    base::Bind(&LanguageDetectionController::OnTextRetrieved,
                               weak_method_factory_.GetWeakPtr(),
-                              http_content_language, html_lang)];
+                              http_content_language, html_lang, url)];
   return true;
 }
 
 void LanguageDetectionController::OnTextRetrieved(
     const std::string& http_content_language,
     const std::string& html_lang,
+    const GURL& url,
     const base::string16& text_content) {
+  std::string cld_language;
+  bool is_cld_reliable;
   std::string language = translate::DeterminePageLanguage(
       http_content_language, html_lang,
-      web::GetStringByClippingLastWord(text_content,
-                                       language_detection::kMaxIndexChars),
-      nullptr /* cld_language */, nullptr /* is_cld_reliable */);
+      GetStringByClippingLastWord(text_content,
+                                  language_detection::kMaxIndexChars),
+      &cld_language, &is_cld_reliable);
   if (language.empty())
     return;  // No language detected.
 
-  DetectionDetails details;
+  // Avoid an unnecessary copy of the full text content (which can be
+  // ~64kB) until we need it on iOS (e.g. for the translate internals
+  // page).
+  LanguageDetectionDetails details;
+  details.time = base::Time::Now();
+  details.url = url;
   details.content_language = http_content_language;
+  details.cld_language = cld_language;
+  details.is_cld_reliable = is_cld_reliable;
   details.html_root_language = html_lang;
   details.adopted_language = language;
-  language_detection_callbacks_.Notify(details);
+
+  language::IOSLanguageDetectionTabHelper::FromWebState(web_state_)
+      ->OnLanguageDetermined(details);
+}
+
+void LanguageDetectionController::ExtractContentLanguageHeader(
+    net::HttpResponseHeaders* headers) {
+  if (!headers) {
+    content_language_header_.clear();
+    return;
+  }
+
+  headers->GetNormalizedHeader("content-language", &content_language_header_);
+  // Remove everything after the comma ',' if any.
+  size_t comma_index = content_language_header_.find_first_of(',');
+  if (comma_index != std::string::npos)
+    content_language_header_.resize(comma_index);
 }
 
 // web::WebStateObserver implementation:
 
 void LanguageDetectionController::PageLoaded(
+    web::WebState* web_state,
     web::PageLoadCompletionStatus load_completion_status) {
+  DCHECK_EQ(web_state_, web_state);
   if (load_completion_status == web::PageLoadCompletionStatus::SUCCESS)
     StartLanguageDetection();
 }
 
-void LanguageDetectionController::UrlHashChanged() {
-  StartLanguageDetection();
+void LanguageDetectionController::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  DCHECK_EQ(web_state_, web_state);
+  if (navigation_context->IsSameDocument()) {
+    StartLanguageDetection();
+  } else {
+    ExtractContentLanguageHeader(navigation_context->GetResponseHeaders());
+  }
 }
 
-void LanguageDetectionController::HistoryStateChanged() {
-  StartLanguageDetection();
-}
-
-void LanguageDetectionController::WebStateDestroyed() {
-  web_state()->RemoveScriptCommandCallback(kCommandPrefix);
+void LanguageDetectionController::WebStateDestroyed(web::WebState* web_state) {
+  DCHECK_EQ(web_state_, web_state);
+  web_state_->RemoveScriptCommandCallback(kCommandPrefix);
+  web_state_->RemoveObserver(this);
+  web_state_ = nullptr;
 }
 
 }  // namespace translate

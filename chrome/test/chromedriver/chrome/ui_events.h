@@ -5,15 +5,18 @@
 #ifndef CHROME_TEST_CHROMEDRIVER_CHROME_UI_EVENTS_H_
 #define CHROME_TEST_CHROMEDRIVER_CHROME_UI_EVENTS_H_
 
+#include <list>
 #include <string>
 
+#include "base/macros.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 // Specifies the type of the mouse event.
 enum MouseEventType {
   kPressedMouseEventType = 0,
   kReleasedMouseEventType,
-  kMovedMouseEventType
+  kMovedMouseEventType,
+  kPauseMouseEventType
 };
 
 // Specifies the mouse buttons.
@@ -21,8 +24,16 @@ enum MouseButton {
   kLeftMouseButton = 0,
   kMiddleMouseButton,
   kRightMouseButton,
+  kBackMouseButton,
+  kForwardMouseButton,
   kNoneMouseButton
 };
+
+// Specifies the event's pointer type.
+enum PointerType { kMouse = 0, kPen };
+
+// Specifies the origin of pointer location.
+enum OriginType { kViewPort, kPointer, kElement };
 
 struct MouseEvent {
   MouseEvent(MouseEventType type,
@@ -30,7 +41,9 @@ struct MouseEvent {
              int x,
              int y,
              int modifiers,
+             int buttons,
              int click_count);
+  MouseEvent(const MouseEvent& other);
   ~MouseEvent();
 
   MouseEventType type;
@@ -38,8 +51,12 @@ struct MouseEvent {
   int x;
   int y;
   int modifiers;
+  int buttons;
   // |click_count| should not be negative.
   int click_count;
+  OriginType origin;
+  std::string element_id;
+  PointerType pointer_type;
 };
 
 // Specifies the type of the touch event.
@@ -47,17 +64,28 @@ enum TouchEventType {
   kTouchStart = 0,
   kTouchEnd,
   kTouchMove,
+  kTouchCancel,
+  kPause
 };
 
 struct TouchEvent {
   TouchEvent(TouchEventType type,
              int x,
              int y);
+  TouchEvent(const TouchEvent& other);
   ~TouchEvent();
 
   TouchEventType type;
   int x;
   int y;
+  OriginType origin;
+  double radiusX;
+  double radiusY;
+  double rotationAngle;
+  double force;
+  int id;
+  std::string element_id;
+  bool dispatch;
 };
 
 // Specifies the type of the keyboard event.
@@ -65,7 +93,9 @@ enum KeyEventType {
   kKeyDownEventType = 0,
   kKeyUpEventType,
   kRawKeyDownEventType,
-  kCharEventType
+  kCharEventType,
+  kPauseEventType,
+  kInvalidEventType  // used by KeyEventBuilder
 };
 
 // Specifies modifier keys as stated in
@@ -81,18 +111,45 @@ enum KeyModifierMask {
 };
 
 struct KeyEvent {
-  KeyEvent(KeyEventType type,
-           int modifiers,
-           const std::string& modified_text,
-           const std::string& unmodified_text,
-           ui::KeyboardCode key_code);
+  KeyEvent();
+  KeyEvent(const KeyEvent& that);
   ~KeyEvent();
 
   KeyEventType type;
   int modifiers;
   std::string modified_text;
   std::string unmodified_text;
+  std::string key;
   ui::KeyboardCode key_code;
+  int location;
+  std::string code;
+  bool is_from_action;
+};
+
+class KeyEventBuilder {
+ public:
+  KeyEventBuilder();
+  virtual ~KeyEventBuilder();
+
+  KeyEventBuilder* SetType(KeyEventType type);
+  KeyEventBuilder* AddModifiers(int modifiers);
+  KeyEventBuilder* SetModifiers(int modifiers);
+  KeyEventBuilder* SetText(const std::string& unmodified_text,
+                           const std::string& modified_text);
+  KeyEventBuilder* SetKeyCode(ui::KeyboardCode key_code);
+  KeyEventBuilder* SetLocation(int location);
+  KeyEventBuilder* SetDefaultKey(const std::string& key);
+  KeyEventBuilder* SetCode(const std::string& key);
+  KeyEventBuilder* SetIsFromAction();
+  KeyEvent Build();
+  void Generate(std::list<KeyEvent>* key_events);
+
+ private:
+  void UpdateKeyString();
+
+  KeyEvent key_event_;
+
+  DISALLOW_COPY_AND_ASSIGN(KeyEventBuilder);
 };
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CHROME_UI_EVENTS_H_

@@ -12,6 +12,24 @@ testRunner.notifyDone = function() {
   this.isDone = true;
 };
 
+testRunner.telemetryIsRunning = true;
+
+// If this is true, blink_perf tests are paused waiting for telemetry to set up
+// measurements (tracing, profiling, etc.). After this setup, the test driver
+// should invoke |scheduleTestRun| to start the actual test procedure.
+testRunner.isWaitingForTelemetry = false;
+
+testRunner.waitForTelemetry = function(tracingCategories, scheduleTestRun) {
+  this.tracingCategories = tracingCategories;
+  this.scheduleTestRun = scheduleTestRun;
+  this.isWaitingForTelemetry = true;
+}
+
+testRunner.stopTracingAndMeasure = function(traceEventsToMeasure, callback) {
+  testRunner.traceEventsToMeasure = traceEventsToMeasure;
+  callback();
+}
+
 window.GCController = {};
 
 GCController.collect = function() {

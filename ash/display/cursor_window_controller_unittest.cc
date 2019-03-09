@@ -4,34 +4,46 @@
 
 #include "ash/display/cursor_window_controller.h"
 
+#include "ash/accessibility/accessibility_controller.h"
 #include "ash/display/display_util.h"
 #include "ash/display/window_tree_host_manager.h"
-#include "ash/screen_util.h"
+#include "ash/public/cpp/ash_pref_names.h"
+#include "ash/session/session_controller.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/test/display_manager_test_api.h"
+#include "base/command_line.h"
+#include "components/prefs/pref_service.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+#include "ui/display/test/display_manager_test_api.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/wm/core/coordinate_conversion.h"
 
 namespace ash {
 
-class CursorWindowControllerTest : public test::AshTestBase {
+class CursorWindowControllerTest : public AshTestBase {
  public:
-  CursorWindowControllerTest() {}
-  ~CursorWindowControllerTest() override {}
+  CursorWindowControllerTest() = default;
+  ~CursorWindowControllerTest() override = default;
 
-  // test::AshTestBase:
+  // AshTestBase:
   void SetUp() override {
     AshTestBase::SetUp();
+
+    // Shell hides the cursor by default; show it for these tests.
+    Shell::Get()->cursor_manager()->ShowCursor();
+
+    cursor_window_controller_ =
+        Shell::Get()->window_tree_host_manager()->cursor_window_controller();
     SetCursorCompositionEnabled(true);
   }
 
-  int GetCursorType() const { return cursor_window_controller_->cursor_type_; }
+  ui::CursorType GetCursorType() const {
+    return cursor_window_controller_->cursor_.native_type();
+  }
 
   const gfx::Point& GetCursorHotPoint() const {
     return cursor_window_controller_->hot_point_;
@@ -50,10 +62,15 @@ class CursorWindowControllerTest : public test::AshTestBase {
   }
 
   void SetCursorCompositionEnabled(bool enabled) {
-    cursor_window_controller_ = Shell::GetInstance()
-                                    ->window_tree_host_manager()
-                                    ->cursor_window_controller();
-    cursor_window_controller_->SetCursorCompositingEnabled(enabled);
+    // Cursor compositing will be enabled when high contrast mode is turned on.
+    // Cursor compositing will be disabled when high contrast mode is the only
+    // feature using it and is turned off.
+    Shell::Get()->accessibility_controller()->SetHighContrastEnabled(enabled);
+    Shell::Get()->UpdateCursorCompositingEnabled();
+  }
+
+  CursorWindowController* cursor_window_controller() {
+    return cursor_window_controller_;
   }
 
  private:
@@ -66,15 +83,12 @@ class CursorWindowControllerTest : public test::AshTestBase {
 // Test that the composited cursor moves to another display when the real cursor
 // moves to another display.
 TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
-  if (!SupportsMultipleDisplays())
-    return;
-
   UpdateDisplay("200x200,200x200*2/r");
 
   WindowTreeHostManager* window_tree_host_manager =
-      Shell::GetInstance()->window_tree_host_manager();
+      Shell::Get()->window_tree_host_manager();
   int64_t primary_display_id = window_tree_host_manager->GetPrimaryDisplayId();
-  int64_t secondary_display_id = ScreenUtil::GetSecondaryDisplay().id();
+  int64_t secondary_display_id = display_manager()->GetSecondaryDisplay().id();
   aura::Window* primary_root =
       window_tree_host_manager->GetRootWindowForDisplayId(primary_display_id);
   aura::Window* secondary_root =
@@ -85,7 +99,7 @@ TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
 
   EXPECT_TRUE(primary_root->Contains(GetCursorWindow()));
   EXPECT_EQ(primary_display_id, GetCursorDisplayId());
-  EXPECT_EQ(ui::kCursorNull, GetCursorType());
+  EXPECT_EQ(ui::CursorType::kNull, GetCursorType());
   gfx::Point hot_point = GetCursorHotPoint();
   EXPECT_EQ("4,4", hot_point.ToString());
   gfx::Rect cursor_bounds = GetCursorWindow()->GetBoundsInScreen();
@@ -103,13 +117,13 @@ TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
   // asynchronously. This is implemented in a platform specific way. Generate a
   // fake mouse move instead of waiting.
   gfx::Point new_cursor_position_in_host(20, 50);
-  secondary_root->GetHost()->ConvertPointToHost(&new_cursor_position_in_host);
+  secondary_root->GetHost()->ConvertDIPToPixels(&new_cursor_position_in_host);
   ui::test::EventGenerator secondary_generator(secondary_root);
   secondary_generator.MoveMouseToInHost(new_cursor_position_in_host);
 
   EXPECT_TRUE(secondary_root->Contains(GetCursorWindow()));
   EXPECT_EQ(secondary_display_id, GetCursorDisplayId());
-  EXPECT_EQ(ui::kCursorNull, GetCursorType());
+  EXPECT_EQ(ui::CursorType::kNull, GetCursorType());
   hot_point = GetCursorHotPoint();
   EXPECT_EQ("3,3", hot_point.ToString());
   cursor_bounds = GetCursorWindow()->GetBoundsInScreen();
@@ -117,13 +131,11 @@ TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
   EXPECT_EQ(50, cursor_bounds.y() + hot_point.y());
 }
 
-// Windows doesn't support compositor based cursor.
-#if !defined(OS_WIN)
 // Make sure that composition cursor inherits the visibility state.
 TEST_F(CursorWindowControllerTest, VisibilityTest) {
   ASSERT_TRUE(GetCursorWindow());
   EXPECT_TRUE(GetCursorWindow()->IsVisible());
-  aura::client::CursorClient* client = Shell::GetInstance()->cursor_manager();
+  aura::client::CursorClient* client = Shell::Get()->cursor_manager();
   client->HideCursor();
   ASSERT_TRUE(GetCursorWindow());
   EXPECT_FALSE(GetCursorWindow()->IsVisible());
@@ -157,19 +169,40 @@ TEST_F(CursorWindowControllerTest, DSF) {
   UpdateDisplay("1000x500*2");
   int64_t primary_id = display::Screen::GetScreen()->GetPrimaryDisplay().id();
 
-  test::ScopedSetInternalDisplayId set_internal(primary_id);
+  display::test::ScopedSetInternalDisplayId set_internal(display_manager(),
+                                                         primary_id);
   SetCursorCompositionEnabled(true);
   ASSERT_EQ(
       2.0f,
       display::Screen::GetScreen()->GetPrimaryDisplay().device_scale_factor());
   EXPECT_TRUE(GetCursorImage().HasRepresentation(2.0f));
 
-  ASSERT_TRUE(SetDisplayUIScale(primary_id, 2.0f));
+  display_manager()->UpdateZoomFactor(primary_id, 0.5f);
   ASSERT_EQ(
       1.0f,
       display::Screen::GetScreen()->GetPrimaryDisplay().device_scale_factor());
   EXPECT_TRUE(GetCursorImage().HasRepresentation(2.0f));
 }
-#endif
+
+// Test that cursor compositing is enabled if at least one of the features that
+// use it is enabled.
+TEST_F(CursorWindowControllerTest, ShouldEnableCursorCompositing) {
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetActivePrefService();
+
+  // Cursor compositing is disabled by default.
+  SetCursorCompositionEnabled(false);
+  EXPECT_FALSE(cursor_window_controller()->is_cursor_compositing_enabled());
+
+  // Enable large cursor, cursor compositing should be enabled.
+  prefs->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
+  Shell::Get()->UpdateCursorCompositingEnabled();
+  EXPECT_TRUE(cursor_window_controller()->is_cursor_compositing_enabled());
+
+  // Disable large cursor, cursor compositing should be disabled.
+  prefs->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, false);
+  Shell::Get()->UpdateCursorCompositingEnabled();
+  EXPECT_FALSE(cursor_window_controller()->is_cursor_compositing_enabled());
+}
 
 }  // namespace ash

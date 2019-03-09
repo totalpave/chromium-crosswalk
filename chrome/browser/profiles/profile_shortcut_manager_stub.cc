@@ -4,13 +4,15 @@
 
 #include "chrome/browser/profiles/profile_shortcut_manager.h"
 
+void ProfileShortcutManager::DisableForUnitTests() {}
+
 // static
 bool ProfileShortcutManager::IsFeatureEnabled() {
   return false;
 }
 
 // static
-ProfileShortcutManager* ProfileShortcutManager::Create(
+std::unique_ptr<ProfileShortcutManager> ProfileShortcutManager::Create(
     ProfileManager* manager) {
-  return NULL;
+  return nullptr;
 }

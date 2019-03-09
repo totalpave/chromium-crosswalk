@@ -7,11 +7,11 @@
 
 #include "ui/base/ui_base_export.h"
 
-// A Java counterpart will be generated for this enum.
-// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.ui
-enum WindowOpenDisposition {
+// DEPRECATED: Instead of introducing new references to this enum, use
+// the generated ui::mojom::WindowOpenDisposition in
+// ui/base/mojo/window_open_disposition.mojom.h.
+enum class WindowOpenDisposition {
   UNKNOWN,
-  SUPPRESS_OPEN,
   CURRENT_TAB,
   // Indicates that only one tab with the url should exist in the same window.
   SINGLETON_TAB,
@@ -22,8 +22,15 @@ enum WindowOpenDisposition {
   SAVE_TO_DISK,
   OFF_THE_RECORD,
   IGNORE_ACTION,
+  // Activates an existing tab containing the url, rather than navigating.
+  // This is similar to SINGLETON_TAB, but searches across all windows from
+  // the current profile and anonymity (instead of just the current one);
+  // closes the current tab on switching if the current tab was the NTP with
+  // no session history; and behaves like CURRENT_TAB instead of
+  // NEW_FOREGROUND_TAB when no existing tab is found.
+  SWITCH_TO_TAB,
   // Update when adding a new disposition.
-  WINDOW_OPEN_DISPOSITION_LAST = IGNORE_ACTION
+  MAX_VALUE = SWITCH_TO_TAB
 };
 
 namespace ui {

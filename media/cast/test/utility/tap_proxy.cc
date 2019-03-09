@@ -17,24 +17,29 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <deque>
+
 #include <map>
+#include <memory>
 #include <utility>
 
 #include "base/at_exit.h"
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/containers/circular_deque.h"
+#include "base/files/file_descriptor_watcher_posix.h"
 #include "base/logging.h"
 #include "base/rand_util.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/default_tick_clock.h"
 #include "media/cast/test/utility/udp_proxy.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
-#include "net/udp/udp_socket.h"
+#include "net/socket/udp_socket.h"
 
 namespace media {
 namespace cast {
@@ -68,13 +73,13 @@ class SendToFDPipe : public PacketPipe {
   int fd_;
 };
 
-class QueueManager : public base::MessageLoopForIO::Watcher {
+class QueueManager {
  public:
   QueueManager(int input_fd, int output_fd, std::unique_ptr<PacketPipe> pipe)
       : input_fd_(input_fd), packet_pipe_(std::move(pipe)) {
-    CHECK(base::MessageLoopForIO::current()->WatchFileDescriptor(
-        input_fd_, true, base::MessageLoopForIO::WATCH_READ,
-        &read_socket_watcher_, this));
+    read_socket_watch_controller_ = base::FileDescriptorWatcher::WatchReadable(
+        input_fd_, base::Bind(&QueueManager::OnFileCanReadWithoutBlocking,
+                              base::Unretained(this)));
 
     std::unique_ptr<PacketPipe> tmp(new SendToFDPipe(output_fd));
     if (packet_pipe_) {
@@ -83,13 +88,11 @@ class QueueManager : public base::MessageLoopForIO::Watcher {
       packet_pipe_ = std::move(tmp);
     }
     packet_pipe_->InitOnIOThread(base::ThreadTaskRunnerHandle::Get(),
-                                 &tick_clock_);
+                                 base::DefaultTickClock::GetInstance());
   }
 
-  ~QueueManager() final {}
-
-  // MessageLoopForIO::Watcher methods
-  void OnFileCanReadWithoutBlocking(int fd) final {
+ private:
+  void OnFileCanReadWithoutBlocking() {
     std::unique_ptr<Packet> packet(new Packet(kMaxPacketSize));
     int nread = read(input_fd_,
                      reinterpret_cast<char*>(&packet->front()),
@@ -103,13 +106,11 @@ class QueueManager : public base::MessageLoopForIO::Watcher {
     packet->resize(nread);
     packet_pipe_->Send(std::move(packet));
   }
-  void OnFileCanWriteWithoutBlocking(int fd) final { NOTREACHED(); }
 
- private:
   int input_fd_;
   std::unique_ptr<PacketPipe> packet_pipe_;
-  base::MessageLoopForIO::FileDescriptorWatcher read_socket_watcher_;
-  base::DefaultTickClock tick_clock_;
+  std::unique_ptr<base::FileDescriptorWatcher::Controller>
+      read_socket_watch_controller_;
 };
 
 }  // namespace test
@@ -157,9 +158,9 @@ class ByteCounter {
  private:
   uint64_t bytes_;
   uint64_t packets_;
-  std::deque<uint64_t> byte_data_;
-  std::deque<uint64_t> packet_data_;
-  std::deque<base::TimeTicks> time_data_;
+  base::circular_deque<uint64_t> byte_data_;
+  base::circular_deque<uint64_t> packet_data_;
+  base::circular_deque<base::TimeTicks> time_data_;
 };
 
 ByteCounter in_pipe_input_counter;
@@ -210,8 +211,7 @@ void CheckByteCounters() {
     last_printout = now;
   }
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE,
-      base::Bind(&CheckByteCounters),
+      FROM_HERE, base::BindOnce(&CheckByteCounters),
       base::TimeDelta::FromMilliseconds(100));
 }
 
@@ -304,11 +304,12 @@ int main(int argc, char **argv) {
   int fd1 = tun_alloc(argv[1], IFF_TAP);
   int fd2 = tun_alloc(argv[2], IFF_TAP);
 
-  base::MessageLoopForIO message_loop;
+  base::test::ScopedTaskEnvironment task_environment(
+      base::test::ScopedTaskEnvironment::MainThreadType::IO);
   last_printout = base::TimeTicks::Now();
   media::cast::test::QueueManager qm1(fd1, fd2, std::move(in_pipe));
   media::cast::test::QueueManager qm2(fd2, fd1, std::move(out_pipe));
   CheckByteCounters();
   printf("Press Ctrl-C when done.\n");
-  message_loop.Run();
+  base::RunLoop().Run();
 }

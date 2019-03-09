@@ -5,11 +5,15 @@
 #include "components/drive/chromeos/change_list_processor.h"
 
 #include <stddef.h>
-#include <utility>
 
-#include "base/metrics/histogram.h"
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/cancellation_flag.h"
+#include "components/drive/chromeos/drive_file_util.h"
 #include "components/drive/chromeos/resource_metadata.h"
 #include "components/drive/drive.pb.h"
 #include "components/drive/drive_api_util.h"
@@ -23,12 +27,85 @@ namespace internal {
 
 namespace {
 
-class ChangeListToEntryMapUMAStats {
+// Returns true if it's OK to overwrite the local entry with the remote one.
+bool ShouldApplyChange(const ResourceEntry& local_entry,
+                       const ResourceEntry& remote_entry) {
+  if (local_entry.metadata_edit_state() == ResourceEntry::CLEAN)
+    return true;
+  return base::Time::FromInternalValue(remote_entry.modification_date()) >
+         base::Time::FromInternalValue(local_entry.modification_date());
+}
+
+}  // namespace
+
+DirectoryFetchInfo::DirectoryFetchInfo() = default;
+
+DirectoryFetchInfo::~DirectoryFetchInfo() = default;
+
+DirectoryFetchInfo::DirectoryFetchInfo(const std::string& local_id,
+                                       const std::string& resource_id,
+                                       const std::string& start_page_token,
+                                       const base::FilePath& root_entry_path,
+                                       const base::FilePath& directory_path)
+    : local_id_(local_id),
+      resource_id_(resource_id),
+      start_page_token_(start_page_token),
+      root_entry_path_(root_entry_path),
+      directory_path_(directory_path) {}
+
+DirectoryFetchInfo::DirectoryFetchInfo(const DirectoryFetchInfo& other) =
+    default;
+
+std::string DirectoryFetchInfo::ToString() const {
+  return ("local_id: " + local_id_ + ", resource_id: " + resource_id_ +
+          ", start_page_token: " + start_page_token_ +
+          ", root_entry_path: " + root_entry_path_.value() +
+          ", directory_path: " + directory_path_.value());
+}
+
+ChangeList::ChangeList() = default;
+
+ChangeList::ChangeList(const google_apis::TeamDriveList& team_drive_list) {
+  const std::vector<std::unique_ptr<google_apis::TeamDriveResource>>& items =
+      team_drive_list.items();
+  entries_.resize(items.size());
+  parent_resource_ids_.resize(items.size(), "");
+  for (size_t i = 0; i < items.size(); ++i) {
+    ConvertTeamDriveResourceToResourceEntry(*items[i], &entries_[i]);
+  }
+}
+
+ChangeList::ChangeList(const google_apis::ChangeList& change_list)
+    : next_url_(change_list.next_link()),
+      new_start_page_token_(change_list.new_start_page_token()) {
+  const std::vector<std::unique_ptr<google_apis::ChangeResource>>& items =
+      change_list.items();
+  entries_.resize(items.size());
+  parent_resource_ids_.resize(items.size());
+  for (size_t i = 0; i < items.size(); ++i) {
+    ConvertChangeResourceToResourceEntry(*items[i], &entries_[i],
+                                         &parent_resource_ids_[i]);
+  }
+}
+
+ChangeList::ChangeList(const google_apis::FileList& file_list)
+    : next_url_(file_list.next_link()) {
+  const std::vector<std::unique_ptr<google_apis::FileResource>>& items =
+      file_list.items();
+  entries_.resize(items.size());
+  parent_resource_ids_.resize(items.size());
+  for (size_t i = 0; i < items.size(); ++i) {
+    ConvertFileResourceToResourceEntry(*items[i], &entries_[i],
+                                       &parent_resource_ids_[i]);
+  }
+}
+
+ChangeList::~ChangeList() = default;
+
+class ChangeListProcessor::ChangeListToEntryMapUMAStats {
  public:
   ChangeListToEntryMapUMAStats()
-    : num_regular_files_(0),
-      num_hosted_documents_(0) {
-  }
+      : num_regular_files_(0), num_hosted_documents_(0) {}
 
   // Increments number of files.
   void IncrementNumFiles(bool is_hosted_document) {
@@ -38,10 +115,10 @@ class ChangeListToEntryMapUMAStats {
   // Updates UMA histograms with file counts.
   void UpdateFileCountUmaHistograms() {
     const int num_total_files = num_hosted_documents_ + num_regular_files_;
-    UMA_HISTOGRAM_COUNTS("Drive.NumberOfRegularFiles", num_regular_files_);
-    UMA_HISTOGRAM_COUNTS("Drive.NumberOfHostedDocuments",
-                         num_hosted_documents_);
-    UMA_HISTOGRAM_COUNTS("Drive.NumberOfTotalFiles", num_total_files);
+    UMA_HISTOGRAM_COUNTS_1M("Drive.NumberOfRegularFiles", num_regular_files_);
+    UMA_HISTOGRAM_COUNTS_1M("Drive.NumberOfHostedDocuments",
+                            num_hosted_documents_);
+    UMA_HISTOGRAM_COUNTS_1M("Drive.NumberOfTotalFiles", num_total_files);
   }
 
  private:
@@ -49,138 +126,83 @@ class ChangeListToEntryMapUMAStats {
   int num_hosted_documents_;
 };
 
-// Returns true if it's OK to overwrite the local entry with the remote one.
-bool ShouldApplyChange(const ResourceEntry& local_entry,
-                       const ResourceEntry& remote_entry) {
-  if (local_entry.metadata_edit_state() == ResourceEntry::CLEAN)
-    return true;
-  return base::Time::FromInternalValue(remote_entry.modification_date()) >
-      base::Time::FromInternalValue(local_entry.modification_date());
-}
-
-}  // namespace
-
-std::string DirectoryFetchInfo::ToString() const {
-  return ("local_id: " + local_id_ +
-          ", resource_id: " + resource_id_ +
-          ", changestamp: " + base::Int64ToString(changestamp_));
-}
-
-ChangeList::ChangeList() {}
-
-ChangeList::ChangeList(const google_apis::ChangeList& change_list)
-    : next_url_(change_list.next_link()),
-      largest_changestamp_(change_list.largest_change_id()) {
-  const ScopedVector<google_apis::ChangeResource>& items = change_list.items();
-  entries_.resize(items.size());
-  parent_resource_ids_.resize(items.size());
-  size_t entries_index = 0;
-  for (size_t i = 0; i < items.size(); ++i) {
-    if (ConvertChangeResourceToResourceEntry(
-            *items[i],
-            &entries_[entries_index],
-            &parent_resource_ids_[entries_index])) {
-      ++entries_index;
-    }
-  }
-  entries_.resize(entries_index);
-  parent_resource_ids_.resize(entries_index);
-}
-
-ChangeList::ChangeList(const google_apis::FileList& file_list)
-    : next_url_(file_list.next_link()),
-      largest_changestamp_(0) {
-  const ScopedVector<google_apis::FileResource>& items = file_list.items();
-  entries_.resize(items.size());
-  parent_resource_ids_.resize(items.size());
-  size_t entries_index = 0;
-  for (size_t i = 0; i < items.size(); ++i) {
-    if (ConvertFileResourceToResourceEntry(
-            *items[i],
-            &entries_[entries_index],
-            &parent_resource_ids_[entries_index])) {
-      ++entries_index;
-    }
-  }
-  entries_.resize(entries_index);
-  parent_resource_ids_.resize(entries_index);
-}
-
-ChangeList::~ChangeList() {}
-
-ChangeListProcessor::ChangeListProcessor(ResourceMetadata* resource_metadata,
+ChangeListProcessor::ChangeListProcessor(const std::string& team_drive_id,
+                                         const base::FilePath& root_entry_path,
+                                         ResourceMetadata* resource_metadata,
                                          base::CancellationFlag* in_shutdown)
     : resource_metadata_(resource_metadata),
       in_shutdown_(in_shutdown),
-      changed_files_(new FileChange) {
-}
+      changed_files_(new FileChange),
+      changed_team_drives_(new FileChange),
+      team_drive_id_(team_drive_id),
+      root_entry_path_(root_entry_path) {}
 
-ChangeListProcessor::~ChangeListProcessor() {
-}
+ChangeListProcessor::~ChangeListProcessor() = default;
 
-FileError ChangeListProcessor::Apply(
-    std::unique_ptr<google_apis::AboutResource> about_resource,
-    ScopedVector<ChangeList> change_lists,
+FileError ChangeListProcessor::ApplyUserChangeList(
+    const std::string& start_page_token,
+    const std::string& root_resource_id,
+    std::vector<std::unique_ptr<ChangeList>> change_lists,
     bool is_delta_update) {
-  DCHECK(about_resource);
-
-  int64_t largest_changestamp = 0;
+  std::string new_start_page_token = start_page_token;
   if (is_delta_update) {
     if (!change_lists.empty()) {
-      // The changestamp appears in the first page of the change list.
-      // The changestamp does not appear in the full resource list.
-      largest_changestamp = change_lists[0]->largest_changestamp();
-      DCHECK_GE(change_lists[0]->largest_changestamp(), 0);
+      // The start_page_token appears in the first page of the change list.
+      // The start_page_token does not appear in the full resource list.
+      new_start_page_token = change_lists[0]->new_start_page_token();
+      DCHECK(!new_start_page_token.empty());
+    }
+  }
+
+  // Update the resource ID of the entry, if required.
+
+  // Multiple team drives can have the same root_entry_path_, so try looking up
+  // via the team_drive_id first.
+  ResourceEntry root;
+  FileError error = FILE_ERROR_OK;
+  if (!team_drive_id_.empty()) {
+    std::string local_id;
+    error = resource_metadata_->GetIdByResourceId(team_drive_id_, &local_id);
+    if (error != FILE_ERROR_OK) {
+      LOG(ERROR) << "Failed to get team drive local id: "
+                 << FileErrorToString(error);
+      return error;
+    }
+    error = resource_metadata_->GetResourceEntryById(local_id, &root);
+    if (error != FILE_ERROR_OK) {
+      LOG(ERROR) << "Failed to get team drive root entry: "
+                 << FileErrorToString(error);
+      return error;
     }
   } else {
-    largest_changestamp = about_resource->largest_change_id();
-
-    DVLOG(1) << "Root folder ID is " << about_resource->root_folder_id();
-    DCHECK(!about_resource->root_folder_id().empty());
+    error = resource_metadata_->GetResourceEntryByPath(root_entry_path_, &root);
+    if (error != FILE_ERROR_OK) {
+      LOG(ERROR) << "Failed to get root entry: " << FileErrorToString(error);
+      return error;
+    }
+  }
+  // Only update if the root resource id has changed. This will happen for the
+  // default corpus on the first load, as we obtain the resource id lazily.
+  if (root_resource_id != root.resource_id()) {
+    root.set_resource_id(root_resource_id);
+    error = resource_metadata_->RefreshEntry(root);
+    if (error != FILE_ERROR_OK) {
+      LOG(ERROR) << "Failed to update root entry: " << FileErrorToString(error);
+      return error;
+    }
   }
 
-  // Convert ChangeList to map.
   ChangeListToEntryMapUMAStats uma_stats;
-  for (size_t i = 0; i < change_lists.size(); ++i) {
-    ChangeList* change_list = change_lists[i];
-
-    std::vector<ResourceEntry>* entries = change_list->mutable_entries();
-    for (size_t i = 0; i < entries->size(); ++i) {
-      ResourceEntry* entry = &(*entries)[i];
-
-      // Count the number of files.
-      if (!entry->file_info().is_directory()) {
-        uma_stats.IncrementNumFiles(
-            entry->file_specific_info().is_hosted_document());
-      }
-      parent_resource_id_map_[entry->resource_id()] =
-          change_list->parent_resource_ids()[i];
-      entry_map_[entry->resource_id()].Swap(entry);
-      LOG_IF(WARNING, !entry->resource_id().empty())
-          << "Found duplicated file: " << entry->base_name();
-    }
-  }
-
-  // Add the largest changestamp for directories.
-  for (ResourceEntryMap::iterator it = entry_map_.begin();
-       it != entry_map_.end(); ++it) {
-    if (it->second.file_info().is_directory()) {
-      it->second.mutable_directory_specific_info()->set_changestamp(
-          largest_changestamp);
-    }
-  }
-
-  FileError error =
-      ApplyEntryMap(largest_changestamp, std::move(about_resource));
-  if (error != FILE_ERROR_OK) {
-    DLOG(ERROR) << "ApplyEntryMap failed: " << FileErrorToString(error);
+  error = ApplyChangeListInternal(std::move(change_lists), new_start_page_token,
+                                  &root, &uma_stats);
+  if (error != FILE_ERROR_OK)
     return error;
-  }
 
-  // Update changestamp.
-  error = resource_metadata_->SetLargestChangestamp(largest_changestamp);
+  // Update start_page_token in the metadata header.
+  error = SetStartPageToken(resource_metadata_, team_drive_id_,
+                            new_start_page_token);
   if (error != FILE_ERROR_OK) {
-    DLOG(ERROR) << "SetLargestChangeStamp failed: " << FileErrorToString(error);
+    DLOG(ERROR) << "SetStartPageToken failed: " << FileErrorToString(error);
     return error;
   }
 
@@ -191,28 +213,62 @@ FileError ChangeListProcessor::Apply(
   return FILE_ERROR_OK;
 }
 
+FileError ChangeListProcessor::ApplyChangeListInternal(
+    std::vector<std::unique_ptr<ChangeList>> change_lists,
+    const std::string& start_page_token,
+    ResourceEntry* root,
+    ChangeListToEntryMapUMAStats* uma_stats) {
+  ConvertChangeListsToMap(std::move(change_lists), start_page_token, uma_stats);
+  FileError error = ApplyEntryMap(root->resource_id());
+  if (error != FILE_ERROR_OK) {
+    DLOG(ERROR) << "ApplyEntryMap failed: " << FileErrorToString(error);
+    return error;
+  }
+  // Update start_page_token of the root entry.
+  root->mutable_directory_specific_info()->set_start_page_token(
+      start_page_token);
+  error = resource_metadata_->RefreshEntry(*root);
+  if (error != FILE_ERROR_OK)
+    DLOG(ERROR) << "RefreshEntry failed: " << FileErrorToString(error);
+  return error;
+}
+
+void ChangeListProcessor::ConvertChangeListsToMap(
+    std::vector<std::unique_ptr<ChangeList>> change_lists,
+    const std::string& start_page_token,
+    ChangeListToEntryMapUMAStats* uma_stats) {
+  for (size_t i = 0; i < change_lists.size(); ++i) {
+    ChangeList* change_list = change_lists[i].get();
+
+    std::vector<ResourceEntry>* entries = change_list->mutable_entries();
+    for (size_t i = 0; i < entries->size(); ++i) {
+      ResourceEntry* entry = &(*entries)[i];
+
+      // Count the number of files.
+      if (!entry->file_info().is_directory()) {
+        uma_stats->IncrementNumFiles(
+            entry->file_specific_info().is_hosted_document());
+      }
+      parent_resource_id_map_[entry->resource_id()] =
+          change_list->parent_resource_ids()[i];
+      entry_map_[entry->resource_id()].Swap(entry);
+      LOG_IF(WARNING, !entry->resource_id().empty())
+          << "Found duplicated file: " << entry->base_name();
+    }
+  }
+
+  // Add the largest start_page_token for directories.
+  for (ResourceEntryMap::iterator it = entry_map_.begin();
+       it != entry_map_.end(); ++it) {
+    if (it->second.file_info().is_directory()) {
+      it->second.mutable_directory_specific_info()->set_start_page_token(
+          start_page_token);
+    }
+  }
+}
+
 FileError ChangeListProcessor::ApplyEntryMap(
-    int64_t changestamp,
-    std::unique_ptr<google_apis::AboutResource> about_resource) {
-  DCHECK(about_resource);
-
-  // Create the entry for "My Drive" directory with the latest changestamp.
-  ResourceEntry root;
-  FileError error = resource_metadata_->GetResourceEntryByPath(
-      util::GetDriveMyDriveRootPath(), &root);
-  if (error != FILE_ERROR_OK) {
-    LOG(ERROR) << "Failed to get root entry: " << FileErrorToString(error);
-    return error;
-  }
-
-  root.mutable_directory_specific_info()->set_changestamp(changestamp);
-  root.set_resource_id(about_resource->root_folder_id());
-  error = resource_metadata_->RefreshEntry(root);
-  if (error != FILE_ERROR_OK) {
-    LOG(ERROR) << "Failed to update root entry: " << FileErrorToString(error);
-    return error;
-  }
-
+    const std::string& root_resource_id) {
   // Gather the set of changes in the old path.
   // Note that we want to notify the change in both old and new paths (suppose
   // /a/b/c is moved to /x/y/c. We want to notify both "/a/b" and "/x/y".)
@@ -304,7 +360,7 @@ FileError ChangeListProcessor::ApplyEntryMap(
       // Skip root entry in the change list. We don't expect servers to send
       // root entry, but we should better be defensive (see crbug.com/297259).
       ResourceEntryMap::iterator it = entries[i];
-      if (it->first != root.resource_id()) {
+      if (it->first != root_resource_id) {
         FileError error = ApplyEntry(it->second);
         if (error != FILE_ERROR_OK) {
           LOG(ERROR) << "ApplyEntry failed: " << FileErrorToString(error)
@@ -343,6 +399,7 @@ FileError ChangeListProcessor::ApplyEntryMap(
 
 FileError ChangeListProcessor::ApplyEntry(const ResourceEntry& entry) {
   DCHECK(!entry.deleted());
+  DCHECK(!entry.resource_id().empty());
   DCHECK(parent_resource_id_map_.count(entry.resource_id()));
   const std::string& parent_resource_id =
       parent_resource_id_map_[entry.resource_id()];
@@ -372,10 +429,10 @@ FileError ChangeListProcessor::ApplyEntry(const ResourceEntry& entry) {
         error = resource_metadata_->RefreshEntry(new_entry);
       } else {
         if (entry.file_info().is_directory()) {
-          // No need to refresh, but update the changestamp.
+          // No need to refresh, but update the start_page_token.
           new_entry = existing_entry;
-          new_entry.mutable_directory_specific_info()->set_changestamp(
-              new_entry.directory_specific_info().changestamp());
+          new_entry.mutable_directory_specific_info()->set_start_page_token(
+              new_entry.directory_specific_info().start_page_token());
           error = resource_metadata_->RefreshEntry(new_entry);
         }
         DVLOG(1) << "Change was discarded for: " << entry.resource_id();
@@ -460,6 +517,11 @@ FileError ChangeListProcessor::SetParentLocalIdOfEntry(
     ResourceMetadata* resource_metadata,
     ResourceEntry* entry,
     const std::string& parent_resource_id) {
+  if (entry->parent_local_id() == util::kDriveTeamDrivesDirLocalId) {
+    // When |entry| is a root directory of a Team Drive, the parent directory
+    // of it is "/team_drives", which doesn't have resource ID.
+    return FILE_ERROR_OK;
+  }
   std::string parent_local_id;
   if (parent_resource_id.empty()) {
     // Entries without parents should go under "other" directory.
@@ -488,6 +550,10 @@ void ChangeListProcessor::UpdateChangedDirs(const ResourceEntry& entry) {
                                       ? FileChange::CHANGE_TYPE_DELETE
                                       : FileChange::CHANGE_TYPE_ADD_OR_UPDATE;
     changed_files_->Update(file_path, entry, type);
+
+    if (entry.file_info().is_team_drive_root()) {
+      changed_team_drives_->Update(file_path, entry, type);
+    }
   }
 }
 

@@ -4,15 +4,20 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.Pair;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ObserverList;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.chrome.browser.partnerbookmarks.PartnerBookmarksShim;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkType;
+import org.chromium.components.url_formatter.UrlFormatter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -192,6 +197,11 @@ public class BookmarkBridge {
             return mUrl;
         }
 
+        /** @return The string to display for the item's url. */
+        public String getUrlForDisplay() {
+            return UrlFormatter.formatUrlForSecurityDisplayOmitScheme(getUrl());
+        }
+
         /** @return Id of the bookmark item. */
         public BookmarkId getId() {
             return mId;
@@ -285,24 +295,33 @@ public class BookmarkBridge {
 
     /**
      * Schedules a runnable to run after the bookmark model is loaded. If the
-     * model is already loaded, executes the runnable immediately.
+     * model is already loaded, executes the runnable immediately. If not, also
+     * kick off partner bookmark reading.
      * @return Whether the given runnable is executed synchronously.
      */
-    public boolean runAfterBookmarkModelLoaded(final Runnable runnable) {
+    public boolean finishLoadingBookmarkModel(final Runnable runAfterModelLoaded) {
         if (isBookmarkModelLoaded()) {
-            runnable.run();
+            runAfterModelLoaded.run();
             return true;
         }
+
+        long startTime = SystemClock.elapsedRealtime();
         addObserver(new BookmarkModelObserver() {
             @Override
             public void bookmarkModelLoaded() {
                 removeObserver(this);
-                runnable.run();
+                RecordHistogram.recordTimesHistogram(
+                        "PartnerBookmark.LoadingTime", SystemClock.elapsedRealtime() - startTime);
+                runAfterModelLoaded.run();
             }
             @Override
             public void bookmarkModelChanged() {
             }
         });
+
+        // Start reading as a fail-safe measure to avoid waiting forever if the caller forgets to
+        // call kickOffReading().
+        PartnerBookmarksShim.kickOffReading(ContextUtils.getApplicationContext());
         return false;
     }
 
@@ -430,7 +449,7 @@ public class BookmarkBridge {
     }
 
     /**
-     * @return BokmarkId representing special "desktop" folder, namely "bookmark bar".
+     * @return BookmarkId representing special "desktop" folder, namely "bookmark bar".
      */
     public BookmarkId getDesktopFolderId() {
         assert mIsNativeBookmarkModelLoaded;
@@ -478,24 +497,23 @@ public class BookmarkBridge {
     }
 
     /**
-     * @return All bookmark IDs ordered by descending creation date. Partner/managed bookmarks are
-     *         not included.
+     * Get the total number of bookmarks in the sub tree of the specified folder.
+     * @param id The {@link BookmarkId} of the folder to be queried.
+     * @return The total number of bookmarks in the folder.
      */
-    public List<BookmarkId> getAllBookmarkIDsOrderedByCreationDate() {
+    public int getTotalBookmarkCount(BookmarkId id) {
         assert mIsNativeBookmarkModelLoaded;
-        List<BookmarkId> result = new ArrayList<BookmarkId>();
-        nativeGetAllBookmarkIDsOrderedByCreationDate(mNativeBookmarkBridge, result);
-        return result;
+        return nativeGetTotalBookmarkCount(mNativeBookmarkBridge, id.getId(), id.getType());
     }
 
     /**
      * Synchronously gets a list of bookmarks that match the specified search query.
      * @param query Keyword used for searching bookmarks.
      * @param maxNumberOfResult Maximum number of result to fetch.
-     * @return List of bookmarks that are related to the given query.
+     * @return List of bookmark IDs that are related to the given query.
      */
-    public List<BookmarkMatch> searchBookmarks(String query, int maxNumberOfResult) {
-        List<BookmarkMatch> bookmarkMatches = new ArrayList<BookmarkMatch>();
+    public List<BookmarkId> searchBookmarks(String query, int maxNumberOfResult) {
+        List<BookmarkId> bookmarkMatches = new ArrayList<BookmarkId>();
         nativeSearchBookmarks(mNativeBookmarkBridge, bookmarkMatches, query,
                 maxNumberOfResult);
         return bookmarkMatches;
@@ -821,16 +839,6 @@ public class BookmarkBridge {
         depthList.add(depth);
     }
 
-    @CalledByNative
-    private static void addToBookmarkMatchList(List<BookmarkMatch> bookmarkMatchList,
-            long id, int type, int[] titleMatchStartPositions,
-            int[] titleMatchEndPositions, int[] urlMatchStartPositions,
-            int[] urlMatchEndPositions) {
-        bookmarkMatchList.add(new BookmarkMatch(new BookmarkId(id, type),
-                createPairsList(titleMatchStartPositions, titleMatchEndPositions),
-                createPairsList(urlMatchStartPositions, urlMatchEndPositions)));
-    }
-
     private static List<Pair<Integer, Integer>> createPairsList(int[] left, int[] right) {
         List<Pair<Integer, Integer>> pairList = new ArrayList<Pair<Integer, Integer>>();
         for (int i = 0; i < left.length; i++) {
@@ -897,8 +905,7 @@ public class BookmarkBridge {
             boolean getFolders, boolean getBookmarks, List<BookmarkId> bookmarksList);
     private native BookmarkId nativeGetChildAt(long nativeBookmarkBridge, long id, int type,
             int index);
-    private native void nativeGetAllBookmarkIDsOrderedByCreationDate(long nativeBookmarkBridge,
-            List<BookmarkId> result);
+    private native int nativeGetTotalBookmarkCount(long nativeBookmarkBridge, long id, int type);
     private native void nativeSetBookmarkTitle(long nativeBookmarkBridge, long id, int type,
             String title);
     private native void nativeSetBookmarkUrl(long nativeBookmarkBridge, long id, int type,
@@ -924,7 +931,7 @@ public class BookmarkBridge {
     private native void nativeEndGroupingUndos(long nativeBookmarkBridge);
     private native void nativeLoadEmptyPartnerBookmarkShimForTesting(long nativeBookmarkBridge);
     private native void nativeSearchBookmarks(long nativeBookmarkBridge,
-            List<BookmarkMatch> bookmarkMatches, String query, int maxNumber);
+            List<BookmarkId> bookmarkMatches, String query, int maxNumber);
     private native long nativeInit(Profile profile);
     private native boolean nativeIsDoingExtensiveChanges(long nativeBookmarkBridge);
     private native void nativeDestroy(long nativeBookmarkBridge);

@@ -9,7 +9,7 @@
 #include "chrome/browser/extensions/install_verifier_factory.h"
 #include "chrome/browser/policy/profile_policy_connector_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "extensions/browser/declarative_user_script_manager_factory.h"
@@ -44,7 +44,7 @@ ExtensionSystemSharedFactory::ExtensionSystemSharedFactory()
         BrowserContextDependencyManager::GetInstance()) {
   DependsOn(ExtensionPrefsFactory::GetInstance());
   DependsOn(ExtensionManagementFactory::GetInstance());
-  // This depends on ExtensionService which depends on ExtensionRegistry.
+  // This depends on ExtensionService, which depends on ExtensionRegistry.
   DependsOn(ExtensionRegistryFactory::GetInstance());
   DependsOn(GlobalErrorServiceFactory::GetInstance());
   DependsOn(InstallVerifierFactory::GetInstance());
@@ -54,9 +54,9 @@ ExtensionSystemSharedFactory::ExtensionSystemSharedFactory()
   DependsOn(BlacklistFactory::GetInstance());
   DependsOn(DeclarativeUserScriptManagerFactory::GetInstance());
   DependsOn(EventRouterFactory::GetInstance());
-  // This depends on ExtensionDownloader which depends on
-  // ProfileIdentityProvider which depends on SigninManager.
-  DependsOn(SigninManagerFactory::GetInstance());
+  // This depends on ExtensionDownloader, which depends on
+  // IdentityManager for webstore authentication.
+  DependsOn(IdentityManagerFactory::GetInstance());
 }
 
 ExtensionSystemSharedFactory::~ExtensionSystemSharedFactory() {

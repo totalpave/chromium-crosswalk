@@ -43,7 +43,7 @@ BluetoothGattDescriptorClient::Properties::Properties(
   RegisterProperty(kValueProperty, &value);
 }
 
-BluetoothGattDescriptorClient::Properties::~Properties() {}
+BluetoothGattDescriptorClient::Properties::~Properties() = default;
 
 // The BluetoothGattDescriptorClient implementation used in production.
 class BluetoothGattDescriptorClientImpl
@@ -108,10 +108,10 @@ class BluetoothGattDescriptorClientImpl
 
     object_proxy->CallMethodWithErrorCallback(
         &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::Bind(&BluetoothGattDescriptorClientImpl::OnValueSuccess,
-                   weak_ptr_factory_.GetWeakPtr(), callback),
-        base::Bind(&BluetoothGattDescriptorClientImpl::OnError,
-                   weak_ptr_factory_.GetWeakPtr(), error_callback));
+        base::BindOnce(&BluetoothGattDescriptorClientImpl::OnValueSuccess,
+                       weak_ptr_factory_.GetWeakPtr(), callback),
+        base::BindOnce(&BluetoothGattDescriptorClientImpl::OnError,
+                       weak_ptr_factory_.GetWeakPtr(), error_callback));
   }
 
   // BluetoothGattDescriptorClientImpl override.
@@ -138,10 +138,10 @@ class BluetoothGattDescriptorClientImpl
 
     object_proxy->CallMethodWithErrorCallback(
         &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::Bind(&BluetoothGattDescriptorClientImpl::OnSuccess,
-                   weak_ptr_factory_.GetWeakPtr(), callback),
-        base::Bind(&BluetoothGattDescriptorClientImpl::OnError,
-                   weak_ptr_factory_.GetWeakPtr(), error_callback));
+        base::BindOnce(&BluetoothGattDescriptorClientImpl::OnSuccess,
+                       weak_ptr_factory_.GetWeakPtr(), callback),
+        base::BindOnce(&BluetoothGattDescriptorClientImpl::OnError,
+                       weak_ptr_factory_.GetWeakPtr(), error_callback));
   }
 
   // dbus::ObjectManager::Interface override.
@@ -160,23 +160,24 @@ class BluetoothGattDescriptorClientImpl
   void ObjectAdded(const dbus::ObjectPath& object_path,
                    const std::string& interface_name) override {
     VLOG(2) << "Remote GATT descriptor added: " << object_path.value();
-    FOR_EACH_OBSERVER(BluetoothGattDescriptorClient::Observer, observers_,
-                      GattDescriptorAdded(object_path));
+    for (auto& observer : observers_)
+      observer.GattDescriptorAdded(object_path);
   }
 
   // dbus::ObjectManager::Interface override.
   void ObjectRemoved(const dbus::ObjectPath& object_path,
                      const std::string& interface_name) override {
     VLOG(2) << "Remote GATT descriptor removed: " << object_path.value();
-    FOR_EACH_OBSERVER(BluetoothGattDescriptorClient::Observer, observers_,
-                      GattDescriptorRemoved(object_path));
+    for (auto& observer : observers_)
+      observer.GattDescriptorRemoved(object_path);
   }
 
  protected:
   // bluez::DBusClient override.
-  void Init(dbus::Bus* bus) override {
+  void Init(dbus::Bus* bus,
+            const std::string& bluetooth_service_name) override {
     object_manager_ = bus->GetObjectManager(
-        bluetooth_object_manager::kBluetoothObjectManagerServiceName,
+        bluetooth_service_name,
         dbus::ObjectPath(
             bluetooth_object_manager::kBluetoothObjectManagerServicePath));
     object_manager_->RegisterInterface(
@@ -191,9 +192,8 @@ class BluetoothGattDescriptorClientImpl
                                  const std::string& property_name) {
     VLOG(2) << "Remote GATT descriptor property changed: "
             << object_path.value() << ": " << property_name;
-    FOR_EACH_OBSERVER(
-        BluetoothGattDescriptorClient::Observer, observers_,
-        GattDescriptorPropertyChanged(object_path, property_name));
+    for (auto& observer : observers_)
+      observer.GattDescriptorPropertyChanged(object_path, property_name);
   }
 
   // Called when a response for a successful method call is received.
@@ -242,7 +242,8 @@ class BluetoothGattDescriptorClientImpl
   dbus::ObjectManager* object_manager_;
 
   // List of observers interested in event notifications from us.
-  base::ObserverList<BluetoothGattDescriptorClient::Observer> observers_;
+  base::ObserverList<BluetoothGattDescriptorClient::Observer>::Unchecked
+      observers_;
 
   // Weak pointer factory for generating 'this' pointers that might live longer
   // than we do.
@@ -253,9 +254,9 @@ class BluetoothGattDescriptorClientImpl
   DISALLOW_COPY_AND_ASSIGN(BluetoothGattDescriptorClientImpl);
 };
 
-BluetoothGattDescriptorClient::BluetoothGattDescriptorClient() {}
+BluetoothGattDescriptorClient::BluetoothGattDescriptorClient() = default;
 
-BluetoothGattDescriptorClient::~BluetoothGattDescriptorClient() {}
+BluetoothGattDescriptorClient::~BluetoothGattDescriptorClient() = default;
 
 // static
 BluetoothGattDescriptorClient* BluetoothGattDescriptorClient::Create() {

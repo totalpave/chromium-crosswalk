@@ -13,20 +13,21 @@
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/observer_list_threadsafe.h"
+#include "base/sequence_checker.h"
 #include "base/strings/string16.h"
 #include "base/synchronization/lock.h"
-#include "base/threading/thread_checker.h"
 #include "build/build_config.h"
 #include "components/storage_monitor/storage_info.h"
+#include "services/service_manager/public/cpp/connector.h"
+
+#if defined(OS_CHROMEOS)
+#include "services/device/public/mojom/mtp_manager.mojom-forward.h"
+#endif
 
 class MediaFileSystemRegistryTest;
 class MediaGalleriesPlatformAppBrowserTest;
 class SystemStorageApiTest;
 class SystemStorageEjectApiTest;
-
-namespace device {
-class MediaTransferProtocolManager;
-}
 
 namespace storage_monitor {
 
@@ -71,7 +72,7 @@ class StorageMonitor {
   // Instantiates the StorageMonitor singleton. This function does not
   // guarantee the complete initialization of the object. For that, see
   // |EnsureInitialized|.
-  static void Create();
+  static void Create(std::unique_ptr<service_manager::Connector> connector);
 
   // Destroys the StorageMonitor singleton.
   static void Destroy();
@@ -93,7 +94,7 @@ class StorageMonitor {
   // stack. Before the callback is run, calls to |GetAllAvailableStorages| and
   // |GetStorageInfoForPath| may not return the correct results. In addition,
   // registered observers will not be notified on device attachment/detachment.
-  // Should be invoked on the UI thread; callbacks will be run on the UI thread.
+  // Callbacks will run on the same sequence as the rest of the class.
   void EnsureInitialized(base::Closure callback);
 
   // Return true if the storage monitor has already been initialized.
@@ -120,9 +121,8 @@ class StorageMonitor {
       base::string16* storage_object_id) const = 0;
 #endif
 
-#if defined(OS_LINUX)
-  virtual device::MediaTransferProtocolManager*
-      media_transfer_protocol_manager() = 0;
+#if defined(OS_CHROMEOS)
+  virtual device::mojom::MtpManager* media_transfer_protocol_manager() = 0;
 #endif
 
   // Returns information for all known storages on the system,
@@ -147,13 +147,15 @@ class StorageMonitor {
 
   StorageMonitor();
 
+  // Provides the connector for service access.
+  service_manager::Connector* GetConnector();
+
   virtual Receiver* receiver() const;
 
   // Called to initialize the storage monitor.
   virtual void Init() = 0;
 
-  // Called by subclasses to mark the storage monitor as
-  // fully initialized. Must be called on the UI thread.
+  // Called by subclasses to mark the storage monitor as fully initialized.
   void MarkInitialized();
 
  private:
@@ -174,8 +176,8 @@ class StorageMonitor {
   scoped_refptr<base::ObserverListThreadSafe<RemovableStorageObserver>>
       observer_list_;
 
-  // Used to make sure we call initialize from the same thread as creation.
-  base::ThreadChecker thread_checker_;
+  // Used to make sure we call initialize from the same sequence as creation.
+  SEQUENCE_CHECKER(sequence_checker_);
 
   bool initializing_;
   bool initialized_;
@@ -186,6 +188,8 @@ class StorageMonitor {
 
   // Map of all known storage devices,including fixed and removable storages.
   StorageMap storage_map_;
+
+  std::unique_ptr<service_manager::Connector> connector_;
 
   std::unique_ptr<TransientDeviceIds> transient_device_ids_;
 };

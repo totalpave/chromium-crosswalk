@@ -6,33 +6,36 @@
 
 #include <utility>
 
-#include "base/bind.h"
-#include "base/callback.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
+#include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/common/chrome_constants.h"
-#include "components/pref_registry/pref_registry_syncable.h"
+#include "chrome/common/chrome_features.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/persistent_pref_store.h"
 #include "components/prefs/pref_registry_simple.h"
-#include "components/user_prefs/tracked/pref_hash_store_impl.h"
-#include "components/user_prefs/tracked/pref_service_hash_store_contents.h"
-#include "components/user_prefs/tracked/segregated_pref_store.h"
-#include "components/user_prefs/tracked/tracked_preferences_migration.h"
+#include "services/preferences/public/cpp/persistent_pref_store_client.h"
+#include "services/preferences/public/mojom/preferences.mojom.h"
+#include "services/preferences/tracked/pref_hash_filter.h"
+#include "services/preferences/tracked/tracked_persistent_pref_store_factory.h"
+#include "services/service_manager/public/cpp/connector.h"
+
+#if defined(OS_WIN)
+#include "chrome/install_static/install_util.h"
+#endif
 
 namespace {
 
-void RemoveValueSilently(const base::WeakPtr<JsonPrefStore> pref_store,
-                         const std::string& key) {
-  if (pref_store) {
-    pref_store->RemoveValueSilently(
-        key, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
-  }
-}
+#if defined(OS_WIN)
+// Forces a different registry key to be used for storing preference validation
+// MACs. See |SetPreferenceValidationRegistryPathForTesting|.
+const base::string16* g_preference_validation_registry_path_for_testing =
+    nullptr;
+#endif  // OS_WIN
 
 }  // namespace
 
@@ -47,35 +50,18 @@ const bool ProfilePrefStoreManager::kPlatformSupportsPreferenceTracking =
 
 ProfilePrefStoreManager::ProfilePrefStoreManager(
     const base::FilePath& profile_path,
-    const std::vector<PrefHashFilter::TrackedPreferenceMetadata>&
-        tracking_configuration,
-    size_t reporting_ids_count,
     const std::string& seed,
-    const std::string& device_id,
-    PrefService* local_state)
+    const std::string& legacy_device_id)
     : profile_path_(profile_path),
-      tracking_configuration_(tracking_configuration),
-      reporting_ids_count_(reporting_ids_count),
       seed_(seed),
-      device_id_(device_id),
-      local_state_(local_state) {}
+      legacy_device_id_(legacy_device_id) {}
 
 ProfilePrefStoreManager::~ProfilePrefStoreManager() {}
-
-// static
-void ProfilePrefStoreManager::RegisterPrefs(PrefRegistrySimple* registry) {
-  PrefServiceHashStoreContents::RegisterPrefs(registry);
-}
 
 // static
 void ProfilePrefStoreManager::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   PrefHashFilter::RegisterProfilePrefs(registry);
-}
-
-// static
-void ProfilePrefStoreManager::ResetAllPrefHashStores(PrefService* local_state) {
-  PrefServiceHashStoreContents::ResetAllPrefHashStores(local_state);
 }
 
 //  static
@@ -88,95 +74,48 @@ void ProfilePrefStoreManager::ClearResetTime(PrefService* pref_service) {
   PrefHashFilter::ClearResetTime(pref_service);
 }
 
+#if defined(OS_WIN)
+// static
+void ProfilePrefStoreManager::SetPreferenceValidationRegistryPathForTesting(
+    const base::string16* path) {
+  DCHECK(!path->empty());
+  g_preference_validation_registry_path_for_testing = path;
+}
+#endif  // OS_WIN
+
 PersistentPrefStore* ProfilePrefStoreManager::CreateProfilePrefStore(
-    const scoped_refptr<base::SequencedTaskRunner>& io_task_runner,
-    const base::Closure& on_reset_on_load,
-    TrackedPreferenceValidationDelegate* validation_delegate) {
-  std::unique_ptr<PrefFilter> pref_filter;
+    std::vector<prefs::mojom::TrackedPreferenceMetadataPtr>
+        tracking_configuration,
+    size_t reporting_ids_count,
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
+    prefs::mojom::ResetOnLoadObserverPtr reset_on_load_observer,
+    prefs::mojom::TrackedPreferenceValidationDelegatePtr validation_delegate) {
   if (!kPlatformSupportsPreferenceTracking) {
     return new JsonPrefStore(profile_path_.Append(chrome::kPreferencesFilename),
-                             io_task_runner.get(),
-                             std::unique_ptr<PrefFilter>());
+                             nullptr, io_task_runner);
   }
-
-  std::vector<PrefHashFilter::TrackedPreferenceMetadata>
-      unprotected_configuration;
-  std::vector<PrefHashFilter::TrackedPreferenceMetadata>
-      protected_configuration;
-  std::set<std::string> protected_pref_names;
-  std::set<std::string> unprotected_pref_names;
-  for (std::vector<PrefHashFilter::TrackedPreferenceMetadata>::const_iterator
-           it = tracking_configuration_.begin();
-       it != tracking_configuration_.end();
-       ++it) {
-    if (it->enforcement_level > PrefHashFilter::NO_ENFORCEMENT) {
-      protected_configuration.push_back(*it);
-      protected_pref_names.insert(it->name);
-    } else {
-      unprotected_configuration.push_back(*it);
-      unprotected_pref_names.insert(it->name);
-    }
-  }
-
-  std::unique_ptr<PrefHashFilter> unprotected_pref_hash_filter(
-      new PrefHashFilter(GetPrefHashStore(false), unprotected_configuration,
-                         base::Closure(), validation_delegate,
-                         reporting_ids_count_, false));
-  std::unique_ptr<PrefHashFilter> protected_pref_hash_filter(new PrefHashFilter(
-      GetPrefHashStore(true), protected_configuration, on_reset_on_load,
-      validation_delegate, reporting_ids_count_, true));
-
-  PrefHashFilter* raw_unprotected_pref_hash_filter =
-      unprotected_pref_hash_filter.get();
-  PrefHashFilter* raw_protected_pref_hash_filter =
-      protected_pref_hash_filter.get();
-
-  scoped_refptr<JsonPrefStore> unprotected_pref_store(new JsonPrefStore(
-      profile_path_.Append(chrome::kPreferencesFilename), io_task_runner.get(),
-      std::move(unprotected_pref_hash_filter)));
-  // TODO(gab): Remove kDeprecatedProtectedPreferencesFilename as an alternate
-  // file in M40+.
-  scoped_refptr<JsonPrefStore> protected_pref_store(new JsonPrefStore(
-      profile_path_.Append(chrome::kSecurePreferencesFilename),
-      profile_path_.Append(chrome::kProtectedPreferencesFilenameDeprecated),
-      io_task_runner.get(), std::move(protected_pref_hash_filter)));
-
-  SetupTrackedPreferencesMigration(
-      unprotected_pref_names, protected_pref_names,
-      base::Bind(&RemoveValueSilently, unprotected_pref_store->AsWeakPtr()),
-      base::Bind(&RemoveValueSilently, protected_pref_store->AsWeakPtr()),
-      base::Bind(&JsonPrefStore::RegisterOnNextSuccessfulWriteCallback,
-                 unprotected_pref_store->AsWeakPtr()),
-      base::Bind(&JsonPrefStore::RegisterOnNextSuccessfulWriteCallback,
-                 protected_pref_store->AsWeakPtr()),
-      GetPrefHashStore(false), GetPrefHashStore(true),
-      std::unique_ptr<HashStoreContents>(new PrefServiceHashStoreContents(
-          profile_path_.AsUTF8Unsafe(), local_state_)),
-      raw_unprotected_pref_hash_filter, raw_protected_pref_hash_filter);
-
-  return new SegregatedPrefStore(unprotected_pref_store, protected_pref_store,
-                                 protected_pref_names);
+  return CreateTrackedPersistentPrefStore(
+      CreateTrackedPrefStoreConfiguration(
+          std::move(tracking_configuration), reporting_ids_count,
+          std::move(reset_on_load_observer), std::move(validation_delegate)),
+      io_task_runner);
 }
 
 bool ProfilePrefStoreManager::InitializePrefsFromMasterPrefs(
-    const base::DictionaryValue& master_prefs) {
+    std::vector<prefs::mojom::TrackedPreferenceMetadataPtr>
+        tracking_configuration,
+    size_t reporting_ids_count,
+    std::unique_ptr<base::DictionaryValue> master_prefs) {
   // Create the profile directory if it doesn't exist yet (very possible on
   // first run).
   if (!base::CreateDirectory(profile_path_))
     return false;
 
-  const base::DictionaryValue* to_serialize = &master_prefs;
-  std::unique_ptr<base::DictionaryValue> copy;
-
   if (kPlatformSupportsPreferenceTracking) {
-    copy.reset(master_prefs.DeepCopy());
-    to_serialize = copy.get();
-    PrefHashFilter(GetPrefHashStore(false),
-                   tracking_configuration_,
-                   base::Closure(),
-                   NULL,
-                   reporting_ids_count_,
-                   false).Initialize(copy.get());
+    InitializeMasterPrefsTracking(
+        CreateTrackedPrefStoreConfiguration(std::move(tracking_configuration),
+                                            reporting_ids_count, {}, nullptr),
+        master_prefs.get());
   }
 
   // This will write out to a single combined file which will be immediately
@@ -189,34 +128,31 @@ bool ProfilePrefStoreManager::InitializePrefsFromMasterPrefs(
   // complete before Chrome can start (as master preferences seed the Local
   // State and Preferences files). This won't trip ThreadIORestrictions as they
   // won't have kicked in yet on the main thread.
-  bool success = serializer.Serialize(*to_serialize);
+  bool success = serializer.Serialize(*master_prefs);
 
   UMA_HISTOGRAM_BOOLEAN("Settings.InitializedFromMasterPrefs", success);
   return success;
 }
 
-PersistentPrefStore*
-ProfilePrefStoreManager::CreateDeprecatedCombinedProfilePrefStore(
-    const scoped_refptr<base::SequencedTaskRunner>& io_task_runner) {
-  std::unique_ptr<PrefFilter> pref_filter;
-  if (kPlatformSupportsPreferenceTracking) {
-    std::unique_ptr<PrefHashStoreImpl> pref_hash_store_impl(
-        new PrefHashStoreImpl(seed_, device_id_, true));
-    pref_hash_store_impl->set_legacy_hash_store_contents(
-        std::unique_ptr<HashStoreContents>(new PrefServiceHashStoreContents(
-            profile_path_.AsUTF8Unsafe(), local_state_)));
-    pref_filter.reset(new PrefHashFilter(
-        std::move(pref_hash_store_impl), tracking_configuration_,
-        base::Closure(), NULL, reporting_ids_count_, false));
-  }
-  return new JsonPrefStore(profile_path_.Append(chrome::kPreferencesFilename),
-                           io_task_runner.get(), std::move(pref_filter));
-}
-
-std::unique_ptr<PrefHashStore> ProfilePrefStoreManager::GetPrefHashStore(
-    bool use_super_mac) {
-  DCHECK(kPlatformSupportsPreferenceTracking);
-
-  return std::unique_ptr<PrefHashStore>(
-      new PrefHashStoreImpl(seed_, device_id_, use_super_mac));
+prefs::mojom::TrackedPersistentPrefStoreConfigurationPtr
+ProfilePrefStoreManager::CreateTrackedPrefStoreConfiguration(
+    std::vector<prefs::mojom::TrackedPreferenceMetadataPtr>
+        tracking_configuration,
+    size_t reporting_ids_count,
+    prefs::mojom::ResetOnLoadObserverPtr reset_on_load_observer,
+    prefs::mojom::TrackedPreferenceValidationDelegatePtr validation_delegate) {
+  return prefs::mojom::TrackedPersistentPrefStoreConfiguration::New(
+      profile_path_.Append(chrome::kPreferencesFilename),
+      profile_path_.Append(chrome::kSecurePreferencesFilename),
+      std::move(tracking_configuration), reporting_ids_count, seed_,
+      legacy_device_id_, "ChromeRegistryHashStoreValidationSeed",
+#if defined(OS_WIN)
+      g_preference_validation_registry_path_for_testing
+          ? *g_preference_validation_registry_path_for_testing
+          : install_static::GetRegistryPath(),
+#else
+      base::string16(),
+#endif
+      validation_delegate.PassInterface(),
+      reset_on_load_observer.PassInterface());
 }

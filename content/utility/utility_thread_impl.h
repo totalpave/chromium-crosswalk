@@ -6,26 +6,18 @@
 #define CONTENT_UTILITY_UTILITY_THREAD_IMPL_H_
 
 #include <memory>
-#include <string>
-#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "content/child/child_thread_impl.h"
-#include "content/common/content_export.h"
-#include "content/common/process_control.mojom.h"
 #include "content/public/utility/utility_thread.h"
 #include "mojo/public/cpp/bindings/binding_set.h"
-
-namespace base {
-class FilePath;
-}
+#include "services/service_manager/public/mojom/service_factory.mojom.h"
+#include "third_party/blink/public/platform/platform.h"
 
 namespace content {
-class BlinkPlatformImpl;
-class UtilityBlinkPlatformImpl;
-class UtilityProcessControlImpl;
+class UtilityServiceFactory;
 
 #if defined(COMPILER_MSVC)
 // See explanation for other RenderViewHostImpl which is the same issue.
@@ -37,38 +29,40 @@ class UtilityProcessControlImpl;
 class UtilityThreadImpl : public UtilityThread,
                           public ChildThreadImpl {
  public:
-  UtilityThreadImpl();
-  // Constructor that's used when running in single process mode.
+  explicit UtilityThreadImpl(base::RepeatingClosure quit_closure);
+  // Constructor used when running in single process mode.
   explicit UtilityThreadImpl(const InProcessChildThreadParams& params);
   ~UtilityThreadImpl() override;
   void Shutdown() override;
 
-  void ReleaseProcessIfNeeded() override;
+  // UtilityThread:
+  void ReleaseProcess() override;
   void EnsureBlinkInitialized() override;
+#if defined(OS_POSIX) && !defined(OS_ANDROID)
+  void EnsureBlinkInitializedWithSandboxSupport() override;
+#endif
 
  private:
+  void EnsureBlinkInitializedInternal(bool sandbox_support);
   void Init();
 
-  // ChildThread implementation.
+  // ChildThreadImpl:
   bool OnControlMessageReceived(const IPC::Message& msg) override;
 
-  // IPC message handlers.
-  void OnBatchModeStarted();
-  void OnBatchModeFinished();
+  // Binds requests to our |service factory_|.
+  void BindServiceFactoryRequest(
+      service_manager::mojom::ServiceFactoryRequest request);
 
-  void BindProcessControlRequest(
-      mojo::InterfaceRequest<content::mojom::ProcessControl> request);
+  // blink::Platform implementation if needed.
+  std::unique_ptr<blink::Platform> blink_platform_impl_;
 
-  // True when we're running in batch mode.
-  bool batch_mode_;
+  // service_manager::mojom::ServiceFactory for service_manager::Service
+  // hosting.
+  std::unique_ptr<UtilityServiceFactory> service_factory_;
 
-  std::unique_ptr<UtilityBlinkPlatformImpl> blink_platform_impl_;
-
-  // Process control for Mojo application hosting.
-  std::unique_ptr<UtilityProcessControlImpl> process_control_;
-
-  // Bindings to the mojom::ProcessControl impl.
-  mojo::BindingSet<mojom::ProcessControl> process_control_bindings_;
+  // Bindings to the service_manager::mojom::ServiceFactory impl.
+  mojo::BindingSet<service_manager::mojom::ServiceFactory>
+      service_factory_bindings_;
 
   DISALLOW_COPY_AND_ASSIGN(UtilityThreadImpl);
 };

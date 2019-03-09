@@ -8,16 +8,15 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/ref_counted.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/chromeos/login/users/scoped_user_manager_enabler.h"
-#include "chrome/browser/chromeos/policy/stub_enterprise_install_attributes.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chrome/browser/chromeos/settings/device_oauth2_token_service_factory.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
-#include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
+#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
+#include "chrome/browser/invalidation/deprecated_profile_invalidation_provider_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -31,10 +30,13 @@
 #include "components/invalidation/public/invalidator_state.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/user_manager/scoped_user_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/test_browser_thread_bundle.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace policy {
@@ -51,8 +53,8 @@ std::unique_ptr<KeyedService> BuildProfileInvalidationProvider(
       new invalidation::FakeInvalidationService);
   invalidation_service->SetInvalidatorState(
       syncer::TRANSIENT_INVALIDATION_ERROR);
-  return base::WrapUnique(new invalidation::ProfileInvalidationProvider(
-      std::move(invalidation_service)));
+  return std::make_unique<invalidation::ProfileInvalidationProvider>(
+      std::move(invalidation_service), nullptr);
 }
 
 }  // namespace
@@ -132,11 +134,9 @@ class AffiliatedInvalidationServiceProviderImplTest : public testing::Test {
  private:
   content::TestBrowserThreadBundle thread_bundle_;
   chromeos::FakeChromeUserManager* fake_user_manager_;
-  chromeos::ScopedUserManagerEnabler user_manager_enabler_;
-  ScopedStubEnterpriseInstallAttributes install_attributes_;
-  std::unique_ptr<chromeos::ScopedTestDeviceSettingsService>
-      test_device_settings_service_;
-  std::unique_ptr<chromeos::ScopedTestCrosSettings> test_cros_settings_;
+  user_manager::ScopedUserManager user_manager_enabler_;
+  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
   TestingProfileManager profile_manager_;
 };
 
@@ -182,22 +182,20 @@ int FakeConsumer::GetAndClearInvalidationServiceSetCount() {
   return invalidation_service_set_count;
 }
 
-const invalidation::InvalidationService*
-FakeConsumer::GetInvalidationService() const {
+const invalidation::InvalidationService* FakeConsumer::GetInvalidationService()
+    const {
   return invalidation_service_;
 }
 
 AffiliatedInvalidationServiceProviderImplTest::
-AffiliatedInvalidationServiceProviderImplTest()
+    AffiliatedInvalidationServiceProviderImplTest()
     : device_invalidation_service_(nullptr),
       profile_invalidation_service_(nullptr),
       fake_user_manager_(new chromeos::FakeChromeUserManager),
-      user_manager_enabler_(fake_user_manager_),
-      install_attributes_("example.com",
-                          "user@example.com",
-                          "device_id",
-                          DEVICE_MODE_ENTERPRISE),
+      user_manager_enabler_(base::WrapUnique(fake_user_manager_)),
       profile_manager_(TestingBrowserProcess::GetGlobal()) {
+  cros_settings_test_helper_.InstallAttributes()->SetCloudManaged("example.com",
+                                                                  "device_id");
 }
 
 void AffiliatedInvalidationServiceProviderImplTest::SetUp() {
@@ -205,15 +203,15 @@ void AffiliatedInvalidationServiceProviderImplTest::SetUp() {
   chromeos::DBusThreadManager::Initialize();
   ASSERT_TRUE(profile_manager_.SetUp());
 
-  test_device_settings_service_.reset(new
-      chromeos::ScopedTestDeviceSettingsService);
-  test_cros_settings_.reset(new chromeos::ScopedTestCrosSettings);
-  chromeos::DeviceOAuth2TokenServiceFactory::Initialize();
+  chromeos::DeviceOAuth2TokenServiceFactory::Initialize(
+      test_url_loader_factory_.GetSafeWeakWrapper(),
+      TestingBrowserProcess::GetGlobal()->local_state());
 
-  invalidation::ProfileInvalidationProviderFactory::GetInstance()->
-      RegisterTestingFactory(BuildProfileInvalidationProvider);
+  invalidation::DeprecatedProfileInvalidationProviderFactory::GetInstance()
+      ->RegisterTestingFactory(
+          base::BindRepeating(&BuildProfileInvalidationProvider));
 
-  provider_.reset(new AffiliatedInvalidationServiceProviderImpl);
+  provider_ = std::make_unique<AffiliatedInvalidationServiceProviderImpl>();
 }
 
 void AffiliatedInvalidationServiceProviderImplTest::TearDown() {
@@ -221,8 +219,9 @@ void AffiliatedInvalidationServiceProviderImplTest::TearDown() {
   provider_->Shutdown();
   provider_.reset();
 
-  invalidation::ProfileInvalidationProviderFactory::GetInstance()->
-      RegisterTestingFactory(nullptr);
+  invalidation::DeprecatedProfileInvalidationProviderFactory::GetInstance()
+      ->RegisterTestingFactory(
+          BrowserContextKeyedServiceFactory::TestingFactory());
   chromeos::DeviceOAuth2TokenServiceFactory::Shutdown();
   chromeos::DBusThreadManager::Shutdown();
   chromeos::SystemSaltGetter::Shutdown();
@@ -339,8 +338,9 @@ AffiliatedInvalidationServiceProviderImplTest::GetProfileInvalidationService(
     Profile* profile, bool create) {
   invalidation::ProfileInvalidationProvider* invalidation_provider =
       static_cast<invalidation::ProfileInvalidationProvider*>(
-          invalidation::ProfileInvalidationProviderFactory::GetInstance()->
-              GetServiceForBrowserContext(profile, create));
+          invalidation::DeprecatedProfileInvalidationProviderFactory::
+              GetInstance()
+                  ->GetServiceForBrowserContext(profile, create));
   if (!invalidation_provider)
     return nullptr;
   return static_cast<invalidation::FakeInvalidationService*>(

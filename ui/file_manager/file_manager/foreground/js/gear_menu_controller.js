@@ -3,16 +3,19 @@
 // found in the LICENSE file.
 
 /**
- * @param {!cr.ui.MenuButton} gearButton
+ * @param {!cr.ui.MultiMenuButton} gearButton
  * @param {!FilesToggleRipple} toggleRipple
  * @param {!GearMenu} gearMenu
+ * @param {!ProvidersMenu} providersMenu
  * @param {!DirectoryModel} directoryModel
  * @param {!CommandHandler} commandHandler
+ * @param {!ProvidersModel} providersModel
  * @constructor
  * @struct
  */
 function GearMenuController(
-    gearButton, toggleRipple, gearMenu, directoryModel, commandHandler) {
+    gearButton, toggleRipple, gearMenu, providersMenu, directoryModel,
+    commandHandler, providersModel) {
   /**
    * @type {!FilesToggleRipple}
    * @const
@@ -28,6 +31,13 @@ function GearMenuController(
   this.gearMenu_ = gearMenu;
 
   /**
+   * @type {!ProvidersMenu}
+   * @const
+   * @private
+   */
+  this.providersMenu_ = providersMenu;
+
+  /**
    * @type {!DirectoryModel}
    * @const
    * @private
@@ -40,6 +50,13 @@ function GearMenuController(
    * @private
    */
   this.commandHandler_ = commandHandler;
+
+  /**
+   * @type {!ProvidersModel}
+   * @const
+   * @private
+   */
+  this.providersModel_ = providersModel;
 
   gearButton.addEventListener('menushow', this.onShowGearMenu_.bind(this));
   gearButton.addEventListener('menuhide', this.onHideGearMenu_.bind(this));
@@ -59,6 +76,36 @@ GearMenuController.prototype.onShowGearMenu_ = function() {
 
   // Update view of drive-related settings.
   this.commandHandler_.updateAvailability();
+
+  this.updateNewServiceItem();
+};
+
+/**
+ * Update "New service" menu item to either directly show the Webstore dialog
+ * when there isn't any service/FSP extension installed, or display the
+ * providers menu with the currently installed extensions and also install new
+ * service.
+ *
+ * @private
+ */
+GearMenuController.prototype.updateNewServiceItem = function() {
+  this.providersModel_.getMountableProviders().then(providers => {
+    // Go straight to webstore to install the first provider.
+    let desiredMenu = '#install-new-extension';
+    let label = str('INSTALL_NEW_EXTENSION_LABEL');
+
+    const shouldDisplayProvidersMenu = providers.length > 0;
+    if (shouldDisplayProvidersMenu) {
+      // Open the providers menu with an installed provider and an install new
+      // provider option.
+      desiredMenu = '#new-service';
+      label = str('ADD_NEW_SERVICES_BUTTON_LABEL');
+      // Trigger an update of the providers submenu.
+      this.providersMenu_.updateSubMenu();
+    }
+
+    this.gearMenu_.setNewServiceCommand(desiredMenu, label);
+  });
 };
 
 /**
@@ -74,8 +121,9 @@ GearMenuController.prototype.onHideGearMenu_ = function() {
  */
 GearMenuController.prototype.onDirectoryChanged_ = function(event) {
   event = /** @type {DirectoryChangeEvent} */ (event);
-  if (event.volumeChanged)
-    this.refreshRemainingSpace_(true);  // Show loading caption.
+  if (event.volumeChanged) {
+    this.refreshRemainingSpace_(true);
+  }  // Show loading caption.
 };
 
 /**
@@ -83,20 +131,30 @@ GearMenuController.prototype.onDirectoryChanged_ = function(event) {
  * @param {boolean} showLoadingCaption Whether show loading caption or not.
  * @private
  */
-GearMenuController.prototype.refreshRemainingSpace_ =
-    function(showLoadingCaption) {
-  var currentVolumeInfo = this.directoryModel_.getCurrentVolumeInfo();
-  if (!currentVolumeInfo)
-    return;
-
-  // TODO(mtomasz): Add support for remaining space indication for provided
-  // file systems.
-  if (currentVolumeInfo.volumeType == VolumeManagerCommon.VolumeType.PROVIDED) {
+GearMenuController.prototype.refreshRemainingSpace_ = function(
+    showLoadingCaption) {
+  const currentDirectory = this.directoryModel_.getCurrentDirEntry();
+  if (!currentDirectory || util.isRecentRoot(currentDirectory)) {
     this.gearMenu_.setSpaceInfo(null, false);
     return;
   }
 
-  this.gearMenu_.setSpaceInfo(new Promise(function(fulfill) {
+  const currentVolumeInfo = this.directoryModel_.getCurrentVolumeInfo();
+  if (!currentVolumeInfo) {
+    return;
+  }
+
+  // TODO(mtomasz): Add support for remaining space indication for provided
+  // file systems.
+  if (currentVolumeInfo.volumeType == VolumeManagerCommon.VolumeType.PROVIDED ||
+      currentVolumeInfo.volumeType ==
+          VolumeManagerCommon.VolumeType.MEDIA_VIEW ||
+      currentVolumeInfo.volumeType == VolumeManagerCommon.VolumeType.ARCHIVE) {
+    this.gearMenu_.setSpaceInfo(null, false);
+    return;
+  }
+
+  this.gearMenu_.setSpaceInfo(new Promise(fulfill => {
     chrome.fileManagerPrivate.getSizeStats(currentVolumeInfo.volumeId, fulfill);
   }), true);
 };
@@ -106,18 +164,15 @@ GearMenuController.prototype.refreshRemainingSpace_ =
  * @private
  */
 GearMenuController.prototype.onPreferencesChanged_ = function() {
-  chrome.fileManagerPrivate.getPreferences(function(prefs) {
-    if (chrome.runtime.lastError)
+  chrome.fileManagerPrivate.getPreferences(prefs => {
+    if (chrome.runtime.lastError) {
       return;
+    }
 
-    if (prefs.cellularDisabled)
+    if (prefs.cellularDisabled) {
       this.gearMenu_.syncButton.setAttribute('checked', '');
-    else
+    } else {
       this.gearMenu_.syncButton.removeAttribute('checked');
-
-    if (!prefs.hostedFilesDisabled)
-      this.gearMenu_.hostedButton.setAttribute('checked', '');
-    else
-      this.gearMenu_.hostedButton.removeAttribute('checked');
-  }.bind(this));
+    }
+  });
 };

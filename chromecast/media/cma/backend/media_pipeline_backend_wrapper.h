@@ -12,44 +12,51 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
-#include "chromecast/media/cma/backend/audio_decoder_wrapper.h"
-#include "chromecast/public/media/media_pipeline_backend.h"
+#include "chromecast/media/cma/backend/cma_backend.h"
 #include "chromecast/public/media/media_pipeline_device_params.h"
 
 namespace chromecast {
 namespace media {
 
+enum class AudioContentType;
+class AudioDecoderWrapper;
+class VideoDecoderWrapper;
+class MediaPipelineBackend;
 class MediaPipelineBackendManager;
+class DecoderCreatorCmaBackend;
 
-class MediaPipelineBackendWrapper : public MediaPipelineBackend {
+class MediaPipelineBackendWrapper : public CmaBackend {
  public:
-  MediaPipelineBackendWrapper(std::unique_ptr<MediaPipelineBackend> backend,
-                              int stream_type,
-                              float stream_type_volume,
+  MediaPipelineBackendWrapper(const media::MediaPipelineDeviceParams& params,
                               MediaPipelineBackendManager* backend_manager);
   ~MediaPipelineBackendWrapper() override;
 
-  // MediaPipelineBackend implementation:
+  // After revocation, this class releases the media resource on the device,
+  // so the next MediaPipelineBackend can be created for the next application.
+  // See b/69180616.
+  void Revoke();
+
+  // CmaBackend implementation:
   AudioDecoder* CreateAudioDecoder() override;
   VideoDecoder* CreateVideoDecoder() override;
   bool Initialize() override;
   bool Start(int64_t start_pts) override;
-  bool Stop() override;
+  void Stop() override;
   bool Pause() override;
   bool Resume() override;
   int64_t GetCurrentPts() override;
   bool SetPlaybackRate(float rate) override;
-
-  int GetStreamType() const;
-  void SetStreamTypeVolume(float stream_type_volume);
+  void LogicalPause() override;
+  void LogicalResume() override;
 
  private:
-  std::unique_ptr<MediaPipelineBackend> backend_;
-  const int stream_type_;
-  std::unique_ptr<AudioDecoderWrapper> audio_decoder_wrapper_;
-  float stream_type_volume_;
-  bool is_initialized_;
+  std::unique_ptr<AudioDecoderWrapper> audio_decoder_;
+  std::unique_ptr<VideoDecoderWrapper> video_decoder_;
+
+  bool revoked_;
+  std::unique_ptr<DecoderCreatorCmaBackend> backend_;
   MediaPipelineBackendManager* const backend_manager_;
+  const AudioContentType content_type_;
 
   DISALLOW_COPY_AND_ASSIGN(MediaPipelineBackendWrapper);
 };

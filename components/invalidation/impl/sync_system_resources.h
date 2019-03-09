@@ -17,13 +17,17 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
-#include "base/threading/non_thread_safe.h"
 #include "base/values.h"
 #include "components/invalidation/impl/state_writer.h"
 #include "components/invalidation/public/invalidation_export.h"
 #include "components/invalidation/public/invalidator_state.h"
 #include "google/cacheinvalidation/include/system-resources.h"
 #include "jingle/notifier/base/notifier_options.h"
+
+namespace network {
+class NetworkConnectionTracker;
+class SharedURLLoaderFactoryInfo;
+}  // namespace network
 
 namespace syncer {
 
@@ -70,7 +74,7 @@ class SyncInvalidationScheduler : public invalidation::Scheduler {
   void RunPostedTask(invalidation::Closure* task);
 
   // Holds all posted tasks that have not yet been run.
-  std::set<invalidation::Closure*> posted_tasks_;
+  std::set<std::unique_ptr<invalidation::Closure>> posted_tasks_;
 
   scoped_refptr<base::SingleThreadTaskRunner> const created_on_task_runner_;
   bool is_started_;
@@ -86,7 +90,7 @@ class SyncInvalidationScheduler : public invalidation::Scheduler {
 // Implementation of particular network protocol should implement
 // SendMessage and call NotifyStateChange and DeliverIncomingMessage.
 class INVALIDATION_EXPORT SyncNetworkChannel
-    : public NON_EXPORTED_BASE(invalidation::NetworkChannel) {
+    : public invalidation::NetworkChannel {
  public:
   class Observer {
    public:
@@ -136,7 +140,9 @@ class INVALIDATION_EXPORT SyncNetworkChannel
   static std::unique_ptr<SyncNetworkChannel> CreatePushClientChannel(
       const notifier::NotifierOptions& notifier_options);
   static std::unique_ptr<SyncNetworkChannel> CreateGCMNetworkChannel(
-      scoped_refptr<net::URLRequestContextGetter> request_context_getter,
+      std::unique_ptr<network::SharedURLLoaderFactoryInfo>
+          url_loader_factory_info,
+      network::NetworkConnectionTracker* network_connection_tracker,
       std::unique_ptr<GCMNetworkChannelDelegate> delegate);
 
   // Get the count of how many valid received messages were received.
@@ -159,19 +165,17 @@ class INVALIDATION_EXPORT SyncNetworkChannel
   bool DeliverIncomingMessage(const std::string& message);
 
  private:
-  typedef std::vector<invalidation::NetworkStatusCallback*>
-      NetworkStatusReceiverList;
-
   // Callbacks into invalidation library
   std::unique_ptr<invalidation::MessageCallback> incoming_receiver_;
-  NetworkStatusReceiverList network_status_receivers_;
+  std::vector<std::unique_ptr<invalidation::NetworkStatusCallback>>
+      network_status_receivers_;
 
   // Last network status for new network status receivers.
   bool last_network_status_;
 
   int received_messages_count_;
 
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 };
 
 class SyncStorage : public invalidation::Storage {
@@ -214,7 +218,7 @@ class SyncStorage : public invalidation::Storage {
 };
 
 class INVALIDATION_EXPORT SyncSystemResources
-    : public NON_EXPORTED_BASE(invalidation::SystemResources) {
+    : public invalidation::SystemResources {
  public:
   SyncSystemResources(SyncNetworkChannel* sync_network_channel,
                       StateWriter* state_writer);

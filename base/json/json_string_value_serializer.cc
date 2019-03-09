@@ -15,7 +15,7 @@ JSONStringValueSerializer::JSONStringValueSerializer(std::string* json_string)
       pretty_print_(false) {
 }
 
-JSONStringValueSerializer::~JSONStringValueSerializer() {}
+JSONStringValueSerializer::~JSONStringValueSerializer() = default;
 
 bool JSONStringValueSerializer::Serialize(const Value& root) {
   return SerializeInternal(root, false);
@@ -41,18 +41,15 @@ bool JSONStringValueSerializer::SerializeInternal(const Value& root,
 }
 
 JSONStringValueDeserializer::JSONStringValueDeserializer(
-    const base::StringPiece& json_string)
-    : json_string_(json_string),
-      allow_trailing_comma_(false) {
-}
+    const base::StringPiece& json_string,
+    int options)
+    : json_string_(json_string), options_(options) {}
 
-JSONStringValueDeserializer::~JSONStringValueDeserializer() {}
+JSONStringValueDeserializer::~JSONStringValueDeserializer() = default;
 
 std::unique_ptr<Value> JSONStringValueDeserializer::Deserialize(
     int* error_code,
     std::string* error_str) {
-  return base::JSONReader::ReadAndReturnError(
-      json_string_, allow_trailing_comma_ ? base::JSON_ALLOW_TRAILING_COMMAS
-                                          : base::JSON_PARSE_RFC,
-      error_code, error_str);
+  return base::JSONReader::ReadAndReturnErrorDeprecated(json_string_, options_,
+                                                        error_code, error_str);
 }

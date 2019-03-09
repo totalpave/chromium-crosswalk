@@ -7,12 +7,11 @@
 
 #include <stddef.h>
 
-#include <deque>
 #include <memory>
 #include <utility>
 
 #include "base/callback.h"
-#include "base/memory/linked_ptr.h"
+#include "base/containers/circular_deque.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "net/base/backoff_entry.h"
@@ -85,8 +84,8 @@ class RequestQueue {
   struct Request {
     Request(net::BackoffEntry* backoff_entry, T* request)
         : backoff_entry(backoff_entry), request(request) {}
-    linked_ptr<net::BackoffEntry> backoff_entry;
-    linked_ptr<T> request;
+    std::unique_ptr<net::BackoffEntry> backoff_entry;
+    std::unique_ptr<T> request;
   };
 
   // Compares the release time of two pending requests.
@@ -104,7 +103,7 @@ class RequestQueue {
 
   // Priority queue of pending requests. Not using std::priority_queue since
   // the code needs to be able to iterate over all pending requests.
-  std::deque<Request> pending_requests_;
+  base::circular_deque<Request> pending_requests_;
 
   // Active request and its associated backoff entry.
   std::unique_ptr<T> active_request_;
@@ -112,11 +111,11 @@ class RequestQueue {
 
   // Timer to schedule calls to StartNextRequest, if the first pending request
   // hasn't passed its release time yet.
-  base::Timer timer_;
+  base::OneShotTimer timer_;
 };
 
-// Iterator class that wraps a std::deque<> iterator, only giving access to the
-// actual request part of each item.
+// Iterator class that wraps a base::circular_deque<> iterator, only giving
+// access to the actual request part of each item.
 template <typename T>
 class RequestQueue<T>::iterator {
  public:
@@ -132,7 +131,7 @@ class RequestQueue<T>::iterator {
 
  private:
   friend class RequestQueue<T>;
-  typedef std::deque<typename RequestQueue<T>::Request> Container;
+  typedef base::circular_deque<typename RequestQueue<T>::Request> Container;
 
   explicit iterator(const typename Container::iterator& it) : it_(it) {}
 

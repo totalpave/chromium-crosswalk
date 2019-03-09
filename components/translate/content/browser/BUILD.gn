@@ -4,20 +4,23 @@
 
 import("//build/config/features.gni")
 
-source_set("browser") {
+static_library("browser") {
   sources = [
     "content_translate_driver.cc",
     "content_translate_driver.h",
   ]
 
-  deps = [
+  public_deps = [
     "//base",
     "//components/translate/content/common",
     "//components/translate/core/browser",
     "//components/translate/core/common",
+  ]
+  deps = [
+    "//components/language/core/browser",
+    "//components/search_engines:search_engines",
     "//content/public/browser",
     "//content/public/common",
-    "//ipc",
     "//net",
   ]
 }

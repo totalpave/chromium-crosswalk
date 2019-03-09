@@ -4,22 +4,19 @@
 
 #include "net/cert/internal/verify_signed_data.h"
 
-#include <openssl/bytestring.h>
-#include <openssl/digest.h>
-#include <openssl/ec.h>
-#include <openssl/ec_key.h>
-#include <openssl/evp.h>
-#include <openssl/rsa.h>
-
 #include "base/compiler_specific.h"
 #include "base/logging.h"
+#include "base/numerics/safe_math.h"
 #include "crypto/openssl_util.h"
-#include "crypto/scoped_openssl_types.h"
+#include "net/cert/internal/cert_errors.h"
 #include "net/cert/internal/signature_algorithm.h"
-#include "net/cert/internal/signature_policy.h"
 #include "net/der/input.h"
 #include "net/der/parse_values.h"
 #include "net/der/parser.h"
+#include "third_party/boringssl/src/include/openssl/bytestring.h"
+#include "third_party/boringssl/src/include/openssl/digest.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
+#include "third_party/boringssl/src/include/openssl/rsa.h"
 
 namespace net {
 
@@ -30,6 +27,11 @@ WARN_UNUSED_RESULT bool GetDigest(DigestAlgorithm digest, const EVP_MD** out) {
   *out = nullptr;
 
   switch (digest) {
+    case DigestAlgorithm::Md2:
+    case DigestAlgorithm::Md4:
+    case DigestAlgorithm::Md5:
+      // Unsupported.
+      break;
     case DigestAlgorithm::Sha1:
       *out = EVP_sha1();
       break;
@@ -66,29 +68,10 @@ WARN_UNUSED_RESULT bool ApplyRsaPssOptions(const RsaPssParameters* params,
                                           salt_length_bytes_int.ValueOrDie());
 }
 
-// TODO(eroman): This function is not strict enough. It accepts BER, other RSA
-// OIDs, and does not check id-rsaEncryption parameters.
-// See https://crbug.com/522228 and https://crbug.com/522232
-WARN_UNUSED_RESULT bool ImportPkeyFromSpki(const der::Input& spki,
-                                           int expected_pkey_id,
-                                           crypto::ScopedEVP_PKEY* pkey) {
-  crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
+}  // namespace
 
-  CBS cbs;
-  CBS_init(&cbs, spki.UnsafeData(), spki.Length());
-  pkey->reset(EVP_parse_public_key(&cbs));
-  if (!*pkey || CBS_len(&cbs) != 0 ||
-      EVP_PKEY_id(pkey->get()) != expected_pkey_id) {
-    pkey->reset();
-    return false;
-  }
-
-  return true;
-}
-
-// Parses an RSA public key from SPKI to an EVP_PKEY.
-//
-// Returns true on success.
+// Parses an RSA public key or EC public key from SPKI to an EVP_PKEY. Returns
+// true on success.
 //
 // There are two flavors of RSA public key that this function should recognize
 // from RFC 5912 (however note that pk-rsaSSA-PSS is not supported in the
@@ -142,70 +125,9 @@ WARN_UNUSED_RESULT bool ImportPkeyFromSpki(const der::Input& spki,
 //     have ASN.1 type NULL for this algorithm identifier.
 //
 // Following RFC 3279 in this case.
-WARN_UNUSED_RESULT bool ParseRsaKeyFromSpki(const der::Input& public_key_spki,
-                                            crypto::ScopedEVP_PKEY* pkey,
-                                            const SignaturePolicy* policy) {
-  if (!ImportPkeyFromSpki(public_key_spki, EVP_PKEY_RSA, pkey))
-    return false;
-
-  // Extract the modulus length from the key.
-  crypto::ScopedRSA rsa(EVP_PKEY_get1_RSA(pkey->get()));
-  if (!rsa)
-    return false;
-  unsigned int modulus_length_bits = BN_num_bits(rsa->n);
-
-  return policy->IsAcceptableModulusLengthForRsa(modulus_length_bits);
-}
-
-// Does signature verification using either RSA or ECDSA.
-WARN_UNUSED_RESULT bool DoVerify(const SignatureAlgorithm& algorithm,
-                                 const der::Input& signed_data,
-                                 const der::BitString& signature_value,
-                                 EVP_PKEY* public_key) {
-  DCHECK(algorithm.algorithm() == SignatureAlgorithmId::RsaPkcs1 ||
-         algorithm.algorithm() == SignatureAlgorithmId::RsaPss ||
-         algorithm.algorithm() == SignatureAlgorithmId::Ecdsa);
-
-  // For the supported algorithms the signature value must be a whole
-  // number of bytes.
-  if (signature_value.unused_bits() != 0)
-    return false;
-  const der::Input& signature_value_bytes = signature_value.bytes();
-
-  crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
-
-  crypto::ScopedEVP_MD_CTX ctx(EVP_MD_CTX_create());
-  EVP_PKEY_CTX* pctx = nullptr;  // Owned by |ctx|.
-
-  const EVP_MD* digest;
-  if (!GetDigest(algorithm.digest(), &digest))
-    return false;
-
-  if (!EVP_DigestVerifyInit(ctx.get(), &pctx, digest, nullptr, public_key))
-    return false;
-
-  // Set the RSASSA-PSS specific options.
-  if (algorithm.algorithm() == SignatureAlgorithmId::RsaPss &&
-      !ApplyRsaPssOptions(algorithm.ParamsForRsaPss(), pctx)) {
-    return false;
-  }
-
-  if (!EVP_DigestVerifyUpdate(ctx.get(), signed_data.UnsafeData(),
-                              signed_data.Length())) {
-    return false;
-  }
-
-  return 1 == EVP_DigestVerifyFinal(ctx.get(),
-                                    signature_value_bytes.UnsafeData(),
-                                    signature_value_bytes.Length());
-}
-
-// Parses an EC public key from SPKI to an EVP_PKEY.
 //
-// Returns true on success.
-//
-// RFC 5912 describes all the ECDSA signature algorithms as requiring a public
-// key of type "pk-ec":
+// In the case of parsing EC keys, RFC 5912 describes all the ECDSA
+// signature algorithms as requiring a public key of type "pk-ec":
 //
 //     pk-ec PUBLIC-KEY ::= {
 //      IDENTIFIER id-ecPublicKey
@@ -244,48 +166,89 @@ WARN_UNUSED_RESULT bool DoVerify(const SignatureAlgorithm& algorithm,
 //     { ID secp521r1 } | { ID sect571k1 } | { ID sect571r1 },
 //     ... -- Extensible
 //     }
-WARN_UNUSED_RESULT bool ParseEcKeyFromSpki(const der::Input& public_key_spki,
-                                           crypto::ScopedEVP_PKEY* pkey,
-                                           const SignaturePolicy* policy) {
-  if (!ImportPkeyFromSpki(public_key_spki, EVP_PKEY_EC, pkey))
+bool ParsePublicKey(const der::Input& public_key_spki,
+                    bssl::UniquePtr<EVP_PKEY>* public_key) {
+  // Parse the SPKI to an EVP_PKEY.
+  crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
+
+  // TODO(eroman): This is not strict enough. It accepts BER, other RSA
+  // OIDs, and does not check id-rsaEncryption parameters.
+  // See https://crbug.com/522228 and https://crbug.com/522232
+  CBS cbs;
+  CBS_init(&cbs, public_key_spki.UnsafeData(), public_key_spki.Length());
+  public_key->reset(EVP_parse_public_key(&cbs));
+  if (!*public_key || CBS_len(&cbs) != 0) {
+    public_key->reset();
     return false;
-
-  // Extract the curve name.
-  crypto::ScopedEC_KEY ec(EVP_PKEY_get1_EC_KEY(pkey->get()));
-  if (!ec.get())
-    return false;  // Unexpected.
-  int curve_nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec.get()));
-
-  return policy->IsAcceptableCurveForEcdsa(curve_nid);
+  }
+  return true;
 }
 
-}  // namespace
-
-bool VerifySignedData(const SignatureAlgorithm& signature_algorithm,
+bool VerifySignedData(const SignatureAlgorithm& algorithm,
                       const der::Input& signed_data,
                       const der::BitString& signature_value,
-                      const der::Input& public_key_spki,
-                      const SignaturePolicy* policy) {
-  if (!policy->IsAcceptableSignatureAlgorithm(signature_algorithm))
-    return false;
-
-  crypto::ScopedEVP_PKEY public_key;
-
-  // Parse the SPKI to an EVP_PKEY appropriate for the signature algorithm.
-  switch (signature_algorithm.algorithm()) {
+                      EVP_PKEY* public_key) {
+  // Check that the key type matches the signature algorithm.
+  int expected_pkey_id = -1;
+  switch (algorithm.algorithm()) {
+    case SignatureAlgorithmId::Dsa:
+      // DSA is not supported.
+      return false;
     case SignatureAlgorithmId::RsaPkcs1:
     case SignatureAlgorithmId::RsaPss:
-      if (!ParseRsaKeyFromSpki(public_key_spki, &public_key, policy))
-        return false;
+      expected_pkey_id = EVP_PKEY_RSA;
       break;
     case SignatureAlgorithmId::Ecdsa:
-      if (!ParseEcKeyFromSpki(public_key_spki, &public_key, policy))
-        return false;
+      expected_pkey_id = EVP_PKEY_EC;
       break;
   }
 
-  return DoVerify(signature_algorithm, signed_data, signature_value,
-                  public_key.get());
+  if (expected_pkey_id != EVP_PKEY_id(public_key))
+    return false;
+
+  // For the supported algorithms the signature value must be a whole
+  // number of bytes.
+  if (signature_value.unused_bits() != 0)
+    return false;
+  const der::Input& signature_value_bytes = signature_value.bytes();
+
+  crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
+
+  bssl::ScopedEVP_MD_CTX ctx;
+  EVP_PKEY_CTX* pctx = nullptr;  // Owned by |ctx|.
+
+  const EVP_MD* digest;
+  if (!GetDigest(algorithm.digest(), &digest))
+    return false;
+
+  if (!EVP_DigestVerifyInit(ctx.get(), &pctx, digest, nullptr, public_key))
+    return false;
+
+  // Set the RSASSA-PSS specific options.
+  if (algorithm.algorithm() == SignatureAlgorithmId::RsaPss &&
+      !ApplyRsaPssOptions(algorithm.ParamsForRsaPss(), pctx)) {
+    return false;
+  }
+
+  if (!EVP_DigestVerifyUpdate(ctx.get(), signed_data.UnsafeData(),
+                              signed_data.Length())) {
+    return false;
+  }
+
+  return 1 == EVP_DigestVerifyFinal(ctx.get(),
+                                    signature_value_bytes.UnsafeData(),
+                                    signature_value_bytes.Length());
+}
+
+bool VerifySignedData(const SignatureAlgorithm& algorithm,
+                      const der::Input& signed_data,
+                      const der::BitString& signature_value,
+                      const der::Input& public_key_spki) {
+  bssl::UniquePtr<EVP_PKEY> public_key;
+  if (!ParsePublicKey(public_key_spki, &public_key))
+    return false;
+  return VerifySignedData(algorithm, signed_data, signature_value,
+                          public_key.get());
 }
 
 }  // namespace net

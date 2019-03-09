@@ -14,7 +14,6 @@ goog.require('cvox.NavigationManager');
 goog.require('cvox.NavigationShifter');
 goog.require('cvox.QueueMode');
 goog.require('cvox.TestHost');
-goog.require('cvox.TestMathJax');
 goog.require('cvox.TestTts');
 
 
@@ -30,7 +29,6 @@ goog.require('cvox.TestTts');
  * @param {!Document} doc The DOM document to add event listeners to.
  */
 cvox.ChromeVoxTester.setUp = function(doc) {
-  cvox.ChromeVox.mathJax = new cvox.TestMathJax();
 
   cvox.ChromeVox.navigationManager = new cvox.NavigationManager();
   cvox.ChromeVoxTester.testTts_ = new cvox.TestTts();
@@ -38,7 +36,7 @@ cvox.ChromeVoxTester.setUp = function(doc) {
 
   // TODO(deboer): Factor this out as 'TestEarcons'
   cvox.ChromeVox.earcons = new cvox.AbstractEarcons();
-  cvox.ChromeVox.earcons.playEarcon = function(earcon) { };
+  cvox.ChromeVox.earcons.playEarcon = function(earcon) {};
 
   cvox.ChromeVox.braille = new cvox.BrailleInterface();
   cvox.ChromeVox.braille.write = function(params) {};
@@ -108,15 +106,14 @@ cvox.ChromeVoxTester.STRATEGY_MAP = {
 cvox.ChromeVoxTester.setStrategy = function(strategy) {
   cvox.ChromeVox.navigationManager.ensureNotSubnavigating();
   cvox.ChromeVox.navigationManager.setGranularity(
-         cvox.ChromeVoxTester.STRATEGY_MAP[strategy]);
+      cvox.ChromeVoxTester.STRATEGY_MAP[strategy]);
 };
 
 /**
  * Starts reading the page from the current node.
  */
 cvox.ChromeVoxTester.readFromHere = function() {
-  cvox.ChromeVox.navigationManager.startReading(
-         cvox.QueueMode.FLUSH);
+  cvox.ChromeVox.navigationManager.startReading(cvox.QueueMode.FLUSH);
 };
 
 /**
@@ -124,8 +121,8 @@ cvox.ChromeVoxTester.readFromHere = function() {
  * @param {Node} node The node to sync to.
  */
 cvox.ChromeVoxTester.syncToNode = function(node) {
-  cvox.ChromeVox.navigationManager
-      .updateSel(cvox.CursorSelection.fromNode(node));
+  cvox.ChromeVox.navigationManager.updateSel(
+      cvox.CursorSelection.fromNode(node));
   cvox.ChromeVox.navigationManager.sync();
 };
 

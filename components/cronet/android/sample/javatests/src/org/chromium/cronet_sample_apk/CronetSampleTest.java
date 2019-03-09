@@ -8,50 +8,37 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.ConditionVariable;
-import android.test.ActivityInstrumentationTestCase2;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.SmallTest;
+import android.support.test.rule.ActivityTestRule;
+import android.support.test.runner.AndroidJUnit4;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.TextView;
 
-import org.chromium.base.test.util.FlakyTest;
-import org.chromium.net.test.EmbeddedTestServer;
+import org.junit.Assert;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * Base test class for all CronetSample based tests.
  */
-public class CronetSampleTest extends
-        ActivityInstrumentationTestCase2<CronetSampleActivity> {
-    private EmbeddedTestServer mTestServer;
-    private String mUrl;
+@RunWith(AndroidJUnit4.class)
+public class CronetSampleTest {
+    private final String mUrl = "http://localhost";
 
-    public CronetSampleTest() {
-        super(CronetSampleActivity.class);
-    }
+    @Rule
+    public ActivityTestRule<CronetSampleActivity> mActivityTestRule =
+            new ActivityTestRule<>(CronetSampleActivity.class, false, false);
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        mTestServer =
-                EmbeddedTestServer.createAndStartDefaultServer(getInstrumentation().getContext());
-        mUrl = mTestServer.getURL("/echo?status=200");
-    }
-
-    @Override
-    protected void tearDown() throws Exception {
-        mTestServer.stopAndDestroyServer();
-        super.tearDown();
-    }
-
-    /*
+    @Test
     @SmallTest
-    @Feature({"Cronet"})
-    */
-    @FlakyTest(message = "https://crbug.com/592444")
     public void testLoadUrl() throws Exception {
         CronetSampleActivity activity = launchCronetSampleWithUrl(mUrl);
 
         // Make sure the activity was created as expected.
-        assertNotNull(activity);
+        Assert.assertNotNull(activity);
 
         // Verify successful fetch.
         final TextView textView = (TextView) activity.findViewById(R.id.resultView);
@@ -65,7 +52,8 @@ public class CronetSampleTest extends
 
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
-                if (s.equals("Completed " + mUrl + " (200)")) {
+                if (s.toString().startsWith("Failed " + mUrl
+                            + " (Exception in CronetUrlRequest: net::ERR_CONNECTION_REFUSED")) {
                     done.open();
                 }
             }
@@ -85,9 +73,7 @@ public class CronetSampleTest extends
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.setData(Uri.parse(url));
         intent.setComponent(new ComponentName(
-                getInstrumentation().getTargetContext(),
-                CronetSampleActivity.class));
-        setActivityIntent(intent);
-        return getActivity();
+                InstrumentationRegistry.getTargetContext(), CronetSampleActivity.class));
+        return mActivityTestRule.launchActivity(intent);
     }
 }

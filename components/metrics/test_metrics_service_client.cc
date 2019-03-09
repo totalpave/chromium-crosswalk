@@ -4,9 +4,11 @@
 
 #include "components/metrics/test_metrics_service_client.h"
 
+#include <memory>
+
 #include "base/callback.h"
 #include "components/metrics/metrics_log_uploader.h"
-#include "components/metrics/proto/chrome_user_metrics_extension.pb.h"
+#include "third_party/metrics_proto/chrome_user_metrics_extension.pb.h"
 
 namespace metrics {
 
@@ -31,13 +33,6 @@ void TestMetricsServiceClient::SetMetricsClientId(
   client_id_ = client_id;
 }
 
-void TestMetricsServiceClient::OnRecordingDisabled() {
-}
-
-bool TestMetricsServiceClient::IsOffTheRecordSessionActive() {
-  return false;
-}
-
 int32_t TestMetricsServiceClient::GetProduct() {
   return product_;
 }
@@ -59,22 +54,19 @@ std::string TestMetricsServiceClient::GetVersionString() {
   return version_string_;
 }
 
-void TestMetricsServiceClient::OnLogUploadComplete() {
-}
-
-void TestMetricsServiceClient::InitializeSystemProfileMetrics(
-    const base::Closure& done_callback) {
-  done_callback.Run();
-}
-
 void TestMetricsServiceClient::CollectFinalMetricsForLog(
     const base::Closure& done_callback) {
   done_callback.Run();
 }
 
 std::unique_ptr<MetricsLogUploader> TestMetricsServiceClient::CreateUploader(
-    const base::Callback<void(int)>& on_upload_complete) {
-  return std::unique_ptr<MetricsLogUploader>();
+    const GURL& server_url,
+    const GURL& insecure_server_url,
+    base::StringPiece mime_type,
+    MetricsLogUploader::MetricServiceType service_type,
+    const MetricsLogUploader::UploadCallback& on_upload_complete) {
+  uploader_ = new TestMetricsLogUploader(on_upload_complete);
+  return std::unique_ptr<MetricsLogUploader>(uploader_);
 }
 
 base::TimeDelta TestMetricsServiceClient::GetStandardUploadInterval() {
@@ -88,6 +80,10 @@ bool TestMetricsServiceClient::IsReportingPolicyManaged() {
 EnableMetricsDefault
 TestMetricsServiceClient::GetMetricsReportingDefaultState() {
   return enable_default_;
+}
+
+std::string TestMetricsServiceClient::GetAppPackageName() {
+  return "test app";
 }
 
 }  // namespace metrics

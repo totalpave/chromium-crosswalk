@@ -19,20 +19,24 @@ class WebStateTopSitesObserver
     : public web::WebStateObserver,
       public web::WebStateUserData<WebStateTopSitesObserver> {
  public:
+  ~WebStateTopSitesObserver() override;
+
   static void CreateForWebState(web::WebState* web_state, TopSites* top_sites);
 
  private:
   friend class web::WebStateUserData<WebStateTopSitesObserver>;
 
   WebStateTopSitesObserver(web::WebState* web_state, TopSites* top_sites);
-  ~WebStateTopSitesObserver() override;
 
   // web::WebStateObserver implementation.
-  void NavigationItemCommitted(
-      const web::LoadCommittedDetails& load_details) override;
+  void DidFinishNavigation(web::WebState* web_state,
+                           web::NavigationContext* navigation_context) override;
+  void WebStateDestroyed(web::WebState* web_state) override;
 
   // Underlying TopSites instance, may be null during testing.
   TopSites* top_sites_;
+
+  WEB_STATE_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(WebStateTopSitesObserver);
 };

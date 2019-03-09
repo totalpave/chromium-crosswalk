@@ -24,6 +24,7 @@
   F(PPB_AudioConfig_API)                \
   F(PPB_AudioEncoder_API)               \
   F(PPB_AudioInput_API)                 \
+  F(PPB_AudioOutput_API)                \
   F(PPB_AudioTrusted_API)               \
   F(PPB_Broker_API)                     \
   F(PPB_Broker_Instance_API)            \
@@ -32,8 +33,6 @@
   F(PPB_Buffer_API)                     \
   F(PPB_CameraCapabilities_API)         \
   F(PPB_CameraDevice_API)               \
-  F(PPB_Compositor_API)                 \
-  F(PPB_CompositorLayer_API)            \
   F(PPB_DeviceRef_API)                  \
   F(PPB_Ext_CrxFileSystem_Private_API)  \
   F(PPB_FileChooser_API)                \
@@ -64,9 +63,7 @@
   F(PPB_NetworkList_API)                \
   F(PPB_NetworkMonitor_API)             \
   F(PPB_NetworkProxy_API)               \
-  F(PPB_OutputProtection_API)           \
   F(PPB_PDF_API)                        \
-  F(PPB_PlatformVerification_API)       \
   F(PPB_Printing_API)                   \
   F(PPB_Scrollbar_API)                  \
   F(PPB_TrueTypeFont_API)               \
@@ -83,11 +80,9 @@
   F(PPB_VideoCapture_API)               \
   F(PPB_VideoDecoder_API)               \
   F(PPB_VideoDecoder_Dev_API)           \
-  F(PPB_VideoDestination_Private_API)   \
   F(PPB_VideoEncoder_API)               \
   F(PPB_VideoFrame_API)                 \
   F(PPB_VideoLayer_API)                 \
-  F(PPB_VideoSource_Private_API)        \
   F(PPB_View_API)                       \
   F(PPB_VpnProvider_API)                \
   F(PPB_WebSocket_API)                  \
@@ -119,7 +114,8 @@ FOR_ALL_PPAPI_RESOURCE_APIS(DECLARE_RESOURCE_CLASS)
 // cases.
 enum ResourceObjectType { OBJECT_IS_IMPL, OBJECT_IS_PROXY };
 
-class PPAPI_SHARED_EXPORT Resource : public base::RefCounted<Resource> {
+class PPAPI_SHARED_EXPORT Resource
+    : public base::RefCountedThreadSafe<Resource> {
  public:
   // Constructor for impl and non-proxied, instance-only objects.
   //

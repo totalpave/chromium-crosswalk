@@ -7,6 +7,8 @@ package org.chromium.chrome.browser.partnerbookmarks;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 
+import org.chromium.chrome.browser.ChromeVersionInfo;
+
 /**
  * The Java counterpart for the C++ partner bookmarks shim.
  * Responsible for:
@@ -16,6 +18,8 @@ import android.content.pm.ApplicationInfo;
  * - reporting that all partner bookmarks were read to the C++ side.
  */
 public class PartnerBookmarksShim {
+    private static final String TAG = "PartnerBookmarksShim";
+
     private static boolean sIsReadingAttempted;
 
     /**
@@ -27,10 +31,16 @@ public class PartnerBookmarksShim {
         sIsReadingAttempted = true;
 
         PartnerBookmarksReader reader = new PartnerBookmarksReader(context);
-        if ((context.getApplicationInfo().flags & ApplicationInfo.FLAG_SYSTEM) == 0) {
+
+        boolean systemOrPreStable =
+                (context.getApplicationInfo().flags & ApplicationInfo.FLAG_SYSTEM) == 1
+                || !ChromeVersionInfo.isStableBuild();
+        if (!systemOrPreStable) {
             reader.onBookmarksRead();
             return;
         }
+
         reader.readBookmarks();
     }
+
 }

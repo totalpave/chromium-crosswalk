@@ -10,24 +10,19 @@
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
 #include "net/base/net_export.h"
+#include "net/cert/internal/trust_store_in_memory.h"
 
 #if defined(USE_NSS_CERTS)
-#include <list>
-#elif defined(USE_OPENSSL_CERTS) && !defined(OS_ANDROID)
+#include <cert.h>
 #include <vector>
+#include "net/cert/scoped_nss_types.h"
 #elif defined(OS_WIN)
 #include <windows.h>
-#include "crypto/wincrypt_shim.h"
+#include "base/win/wincrypt_shim.h"
 #elif defined(OS_MACOSX)
 #include <CoreFoundation/CFArray.h>
 #include <Security/SecTrust.h>
 #include "base/mac/scoped_cftyperef.h"
-#endif
-
-#if defined(USE_NSS_CERTS)
-typedef struct CERTCertificateStr CERTCertificate;
-#elif defined(USE_OPENSSL_CERTS) && !defined(OS_ANDROID)
-typedef struct x509_st X509;
 #endif
 
 namespace base {
@@ -49,8 +44,9 @@ class NET_EXPORT TestRootCerts {
   // Returns true if an instance exists, without forcing an initialization.
   static bool HasInstance();
 
-  // Marks |certificate| as trusted for X509Certificate::Verify(). Returns
-  // false if the certificate could not be marked trusted.
+  // Marks |certificate| as trusted in the effective trust store
+  // used by CertVerifier::Verify(). Returns false if the
+  // certificate could not be marked trusted.
   bool Add(X509Certificate* certificate);
 
   // Reads a single certificate from |file| and marks it as trusted. Returns
@@ -67,7 +63,7 @@ class NET_EXPORT TestRootCerts {
 
 #if defined(USE_NSS_CERTS)
   bool Contains(CERTCertificate* cert) const;
-#elif defined(OS_MACOSX) && !defined(USE_NSS_CERTS)
+#elif defined(OS_MACOSX)
   CFArrayRef temporary_roots() const { return temporary_roots_; }
 
   // Modifies the root certificates of |trust_ref| to include the
@@ -75,14 +71,7 @@ class NET_EXPORT TestRootCerts {
   // does not modify |trust_ref|.
   OSStatus FixupSecTrustRef(SecTrustRef trust_ref) const;
 
-  // Configures whether or not the default/system root store should also
-  // be trusted. By default, this is true, indicating that the TestRootCerts
-  // are used in addition to OS trust store.
-  void SetAllowSystemTrust(bool allow_system_trust);
-#elif defined(USE_OPENSSL_CERTS) && !defined(OS_ANDROID)
-  const std::vector<scoped_refptr<X509Certificate> >&
-      temporary_roots() const { return temporary_roots_; }
-  bool Contains(X509* cert) const;
+  TrustStore* test_trust_store() { return &test_trust_store_; }
 #elif defined(OS_WIN)
   HCERTSTORE temporary_roots() const { return temporary_roots_; }
 
@@ -91,10 +80,12 @@ class NET_EXPORT TestRootCerts {
   // engine is appropriate. The caller is responsible for freeing the
   // returned HCERTCHAINENGINE.
   HCERTCHAINENGINE GetChainEngine() const;
+#elif defined(OS_FUCHSIA)
+  TrustStore* test_trust_store() { return &test_trust_store_; }
 #endif
 
  private:
-  friend struct base::DefaultLazyInstanceTraits<TestRootCerts>;
+  friend struct base::LazyInstanceTraitsBase<TestRootCerts>;
 
   TestRootCerts();
   ~TestRootCerts();
@@ -103,22 +94,45 @@ class NET_EXPORT TestRootCerts {
   void Init();
 
 #if defined(USE_NSS_CERTS)
+  // TrustEntry is used to store the original CERTCertificate and CERTCertTrust
+  // for a certificate whose trust status has been changed by the
+  // TestRootCerts.
+  class TrustEntry {
+   public:
+    // Creates a new TrustEntry by incrementing the reference to |certificate|
+    // and copying |trust|.
+    TrustEntry(ScopedCERTCertificate certificate, const CERTCertTrust& trust);
+    ~TrustEntry();
+
+    CERTCertificate* certificate() const { return certificate_.get(); }
+    const CERTCertTrust& trust() const { return trust_; }
+
+   private:
+    // The temporary root certificate.
+    ScopedCERTCertificate certificate_;
+
+    // The original trust settings, before |certificate_| was manipulated to
+    // be a temporarily trusted root.
+    CERTCertTrust trust_;
+
+    DISALLOW_COPY_AND_ASSIGN(TrustEntry);
+  };
+
   // It is necessary to maintain a cache of the original certificate trust
   // settings, in order to restore them when Clear() is called.
-  class TrustEntry;
-  std::list<TrustEntry*> trust_cache_;
-#elif defined(USE_OPENSSL_CERTS) && !defined(OS_ANDROID)
-  std::vector<scoped_refptr<X509Certificate> > temporary_roots_;
+  std::vector<std::unique_ptr<TrustEntry>> trust_cache_;
 #elif defined(OS_WIN)
   HCERTSTORE temporary_roots_;
 #elif defined(OS_MACOSX)
   base::ScopedCFTypeRef<CFMutableArrayRef> temporary_roots_;
-  bool allow_system_trust_;
+  TrustStoreInMemory test_trust_store_;
+#elif defined(OS_FUCHSIA)
+  TrustStoreInMemory test_trust_store_;
 #endif
 
-#if defined(OS_WIN) || defined(OS_ANDROID)
+#if defined(OS_WIN) || defined(OS_ANDROID) || defined(OS_FUCHSIA)
   // True if there are no temporarily trusted root certificates.
-  bool empty_;
+  bool empty_ = true;
 #endif
 
   DISALLOW_COPY_AND_ASSIGN(TestRootCerts);
@@ -128,7 +142,9 @@ class NET_EXPORT TestRootCerts {
 class NET_EXPORT_PRIVATE ScopedTestRoot {
  public:
   ScopedTestRoot();
-  // Creates a ScopedTestRoot that will adds|cert| to the TestRootCerts store.
+  // Creates a ScopedTestRoot that sets |cert| as the single root in the
+  // TestRootCerts store (if there were existing roots they are
+  // cleared).
   explicit ScopedTestRoot(X509Certificate* cert);
   ~ScopedTestRoot();
 

@@ -11,8 +11,12 @@
 
 class Profile;
 
+namespace base {
+class SequencedTaskRunner;
+}
+
 namespace sql {
-class Connection;
+class Database;
 }
 
 namespace predictors {
@@ -23,14 +27,15 @@ class ResourcePrefetchPredictorTables;
 
 class PredictorDatabase : public KeyedService {
  public:
-  explicit PredictorDatabase(Profile* profile);
+  PredictorDatabase(Profile* profile,
+                    scoped_refptr<base::SequencedTaskRunner> db_task_runner);
   ~PredictorDatabase() override;
 
   scoped_refptr<AutocompleteActionPredictorTable> autocomplete_table();
   scoped_refptr<ResourcePrefetchPredictorTables> resource_prefetch_tables();
 
   // Used for testing.
-  sql::Connection* GetDatabase();
+  sql::Database* GetDatabase();
 
  private:
   // KeyedService

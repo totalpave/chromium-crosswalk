@@ -6,7 +6,7 @@
 #define CC_INPUT_SCROLL_ELASTICITY_HELPER_H_
 
 #include "base/time/time.h"
-#include "cc/base/cc_export.h"
+#include "cc/cc_export.h"
 #include "ui/gfx/geometry/scroll_offset.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
@@ -48,7 +48,7 @@ class LayerTreeHostImpl;
 class CC_EXPORT ScrollElasticityHelper {
  public:
   static ScrollElasticityHelper* CreateForLayerTreeHostImpl(
-      LayerTreeHostImpl* layer_tree_host_impl);
+      LayerTreeHostImpl* host_impl);
 
   virtual ~ScrollElasticityHelper() {}
 

@@ -8,7 +8,8 @@
 
 #include <algorithm>
 #include <vector>
-#include "testing/gmock/include/gmock/gmock.h"
+
+#include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace cc {
@@ -17,7 +18,7 @@ namespace {
 // Element class having derived classes.
 class DerivedElement {
  public:
-  virtual ~DerivedElement() {}
+  virtual ~DerivedElement() = default;
 
  protected:
   bool bool_values[1];
@@ -51,23 +52,26 @@ class DerivedElement3 : public DerivedElement {
 };
 
 const size_t kLargestDerivedElementSize = sizeof(DerivedElement3);
+const size_t kLargestDerivedElementAlign = alignof(DerivedElement3);
 
-size_t LargestDerivedElementSize() {
-  static_assert(sizeof(DerivedElement1) <= kLargestDerivedElementSize,
-                "Largest Derived Element size needs update. DerivedElement1 is "
-                "currently largest.");
-  static_assert(sizeof(DerivedElement2) <= kLargestDerivedElementSize,
-                "Largest Derived Element size needs update. DerivedElement2 is "
-                "currently largest.");
-
-  return kLargestDerivedElementSize;
-}
+static_assert(sizeof(DerivedElement1) <= kLargestDerivedElementSize,
+              "Largest Derived Element size needs update. DerivedElement1 is "
+              "currently largest.");
+static_assert(sizeof(DerivedElement2) <= kLargestDerivedElementSize,
+              "Largest Derived Element size needs update. DerivedElement2 is "
+              "currently largest.");
+static_assert(alignof(DerivedElement1) <= kLargestDerivedElementSize,
+              "Largest Derived Element align needs update. DerivedElement1 is "
+              "currently largest.");
+static_assert(alignof(DerivedElement2) <= kLargestDerivedElementSize,
+              "Largest Derived Element align needs update. DerivedElement2 is "
+              "currently largest.");
 
 // Element class having no derived classes.
 class NonDerivedElement {
  public:
-  NonDerivedElement() {}
-  ~NonDerivedElement() {}
+  NonDerivedElement() = default;
+  ~NonDerivedElement() = default;
 
   int int_values[1];
 };
@@ -86,7 +90,7 @@ const int kMagicNumberToUseForSimpleDerivedElementThree = 1618;
 
 class SimpleDerivedElement : public DerivedElement {
  public:
-  ~SimpleDerivedElement() override {}
+  ~SimpleDerivedElement() override = default;
   void set_value(int val) { value = val; }
   int get_value() { return value; }
 
@@ -100,6 +104,7 @@ class SimpleDerivedElementConstructMagicNumberOne
   SimpleDerivedElementConstructMagicNumberOne() {
     set_value(kMagicNumberToUseForSimpleDerivedElementOne);
   }
+  ~SimpleDerivedElementConstructMagicNumberOne() override = default;
 };
 
 class SimpleDerivedElementConstructMagicNumberTwo
@@ -108,6 +113,7 @@ class SimpleDerivedElementConstructMagicNumberTwo
   SimpleDerivedElementConstructMagicNumberTwo() {
     set_value(kMagicNumberToUseForSimpleDerivedElementTwo);
   }
+  ~SimpleDerivedElementConstructMagicNumberTwo() override = default;
 };
 
 class SimpleDerivedElementConstructMagicNumberThree
@@ -116,12 +122,40 @@ class SimpleDerivedElementConstructMagicNumberThree
   SimpleDerivedElementConstructMagicNumberThree() {
     set_value(kMagicNumberToUseForSimpleDerivedElementThree);
   }
+  ~SimpleDerivedElementConstructMagicNumberThree() override = default;
 };
 
+// This class' instances are moved by ListContainer via memcpy(). This behavior
+// is not supported by gmock's FunctionMocker, so this class must roll its own
+// mocking code.
 class MockDerivedElement : public SimpleDerivedElementConstructMagicNumberOne {
  public:
-  ~MockDerivedElement() override { Destruct(); }
-  MOCK_METHOD0(Destruct, void());
+  ~MockDerivedElement() override {
+    DestructorCalled();
+    CheckDestructExpectation();
+  }
+
+  void SetExpectedDestructorCalls(size_t expected_calls) {
+    expected_destructor_calls_ = expected_calls;
+    has_expected_destructor_calls_ = true;
+  }
+
+ private:
+  void DestructorCalled() { ++destructor_calls_; }
+
+  void CheckDestructExpectation() {
+    if (!has_expected_destructor_calls_)
+      return;
+    EXPECT_EQ(expected_destructor_calls_, destructor_calls_)
+        << "element destructor called the wrong number of times";
+  }
+
+  // Not using base::Optional<size_t> here in order to get a precise destructor
+  // behavior. The tests below need the ability to catch multiple destructor
+  // calls, and base::Optional's destructor might make has_value() return false.
+  size_t expected_destructor_calls_;
+  bool has_expected_destructor_calls_ = false;
+  size_t destructor_calls_ = 0;
 };
 
 class MockDerivedElementSubclass : public MockDerivedElement {
@@ -132,10 +166,13 @@ class MockDerivedElementSubclass : public MockDerivedElement {
 };
 
 const size_t kCurrentLargestDerivedElementSize =
-    std::max(LargestDerivedElementSize(), sizeof(MockDerivedElementSubclass));
+    std::max(kLargestDerivedElementSize, sizeof(MockDerivedElementSubclass));
+const size_t kCurrentLargestDerivedElementAlign =
+    std::max(kLargestDerivedElementAlign, alignof(MockDerivedElementSubclass));
 
 TEST(ListContainerTest, ConstructorCalledInAllocateAndConstruct) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
 
   size_t size = 2;
   SimpleDerivedElementConstructMagicNumberOne* de_1 =
@@ -152,41 +189,36 @@ TEST(ListContainerTest, ConstructorCalledInAllocateAndConstruct) {
 }
 
 TEST(ListContainerTest, DestructorCalled) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
 
   size_t size = 1;
   MockDerivedElement* de_1 = list.AllocateAndConstruct<MockDerivedElement>();
 
-  EXPECT_CALL(*de_1, Destruct());
+  de_1->SetExpectedDestructorCalls(1);
   EXPECT_EQ(size, list.size());
   EXPECT_EQ(de_1, list.front());
 }
 
 TEST(ListContainerTest, DestructorCalledOnceWhenClear) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   size_t size = 1;
   MockDerivedElement* de_1 = list.AllocateAndConstruct<MockDerivedElement>();
 
   EXPECT_EQ(size, list.size());
   EXPECT_EQ(de_1, list.front());
 
-  // Make sure destructor is called once during clear, and won't be called
-  // again.
-  testing::MockFunction<void()> separator;
-  {
-    testing::InSequence s;
-    EXPECT_CALL(*de_1, Destruct());
-    EXPECT_CALL(separator, Call());
-    EXPECT_CALL(*de_1, Destruct()).Times(0);
-  }
+  // Make sure destructor is called exactly once during clear.
+  de_1->SetExpectedDestructorCalls(1);
 
   list.clear();
-  separator.Call();
 }
 
 TEST(ListContainerTest, ClearDoesNotMalloc) {
   const size_t reserve = 10;
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize,
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize,
                                      reserve);
 
   // Memory from the initial inner list that should be re-used after clear().
@@ -218,55 +250,41 @@ TEST(ListContainerTest, ClearDoesNotMalloc) {
 }
 
 TEST(ListContainerTest, ReplaceExistingElement) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   size_t size = 1;
   MockDerivedElement* de_1 = list.AllocateAndConstruct<MockDerivedElement>();
 
   EXPECT_EQ(size, list.size());
   EXPECT_EQ(de_1, list.front());
 
-  // Make sure destructor is called once during clear, and won't be called
-  // again.
-  testing::MockFunction<void()> separator;
-  {
-    testing::InSequence s;
-    EXPECT_CALL(*de_1, Destruct());
-    EXPECT_CALL(separator, Call());
-    EXPECT_CALL(*de_1, Destruct()).Times(0);
-  }
+  // Make sure destructor is called exactly once during clear.
+  de_1->SetExpectedDestructorCalls(1);
 
   list.ReplaceExistingElement<MockDerivedElementSubclass>(list.begin());
   EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementTwo, de_1->get_value());
-  separator.Call();
 
-  EXPECT_CALL(*de_1, Destruct());
   list.clear();
 }
 
 TEST(ListContainerTest, DestructorCalledOnceWhenErase) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   size_t size = 1;
   MockDerivedElement* de_1 = list.AllocateAndConstruct<MockDerivedElement>();
 
   EXPECT_EQ(size, list.size());
   EXPECT_EQ(de_1, list.front());
 
-  // Make sure destructor is called once during clear, and won't be called
-  // again.
-  testing::MockFunction<void()> separator;
-  {
-    testing::InSequence s;
-    EXPECT_CALL(*de_1, Destruct());
-    EXPECT_CALL(separator, Call());
-    EXPECT_CALL(*de_1, Destruct()).Times(0);
-  }
+  // Make sure destructor is called exactly once during clear.
+  de_1->SetExpectedDestructorCalls(1);
 
   list.EraseAndInvalidateAllPointers(list.begin());
-  separator.Call();
 }
 
 TEST(ListContainerTest, SimpleIndexAccessNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
 
   size_t size = 3;
   NonDerivedElement* nde_1 = list.AllocateAndConstruct<NonDerivedElement>();
@@ -282,7 +300,8 @@ TEST(ListContainerTest, SimpleIndexAccessNonDerivedElement) {
 }
 
 TEST(ListContainerTest, SimpleInsertionNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
 
   size_t size = 3;
   NonDerivedElement* nde_1 = list.AllocateAndConstruct<NonDerivedElement>();
@@ -295,7 +314,8 @@ TEST(ListContainerTest, SimpleInsertionNonDerivedElement) {
 }
 
 TEST(ListContainerTest, SimpleInsertionAndClearNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
   EXPECT_TRUE(list.empty());
   EXPECT_EQ(0u, list.size());
 
@@ -315,7 +335,8 @@ TEST(ListContainerTest, SimpleInsertionAndClearNonDerivedElement) {
 }
 
 TEST(ListContainerTest, SimpleInsertionClearAndInsertAgainNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
   EXPECT_TRUE(list.empty());
   EXPECT_EQ(0u, list.size());
 
@@ -347,7 +368,8 @@ TEST(ListContainerTest, SimpleInsertionClearAndInsertAgainNonDerivedElement) {
 // for, ListContainer can still perform like normal vector.
 TEST(ListContainerTest,
      SimpleInsertionTriggerMoreThanOneAllocationNonDerivedElement) {
-  ListContainer<NonDerivedElement> list(sizeof(NonDerivedElement), 2);
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 2);
   std::vector<NonDerivedElement*> nde_list;
   size_t size = 10;
   for (size_t i = 0; i < size; ++i) {
@@ -369,7 +391,8 @@ TEST(ListContainerTest,
   // Constructor sets the allocation size to 2. Every time ListContainer needs
   // to allocate again, it doubles allocation size. In this test, 10 elements is
   // needed, thus ListContainerShould allocate spaces 2, 4 and 8 elements.
-  ListContainer<NonDerivedElement> list(sizeof(NonDerivedElement), 2);
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 2);
   std::vector<NonDerivedElement*> nde_list;
   size_t size = 10;
   for (size_t i = 0; i < size; ++i) {
@@ -449,7 +472,8 @@ TEST(ListContainerTest,
 }
 
 TEST(ListContainerTest, SimpleIterationNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
   std::vector<NonDerivedElement*> nde_list;
   size_t size = 10;
   for (size_t i = 0; i < size; ++i) {
@@ -484,7 +508,8 @@ TEST(ListContainerTest, SimpleIterationNonDerivedElement) {
 }
 
 TEST(ListContainerTest, SimpleConstIteratorIterationNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
   std::vector<const NonDerivedElement*> nde_list;
   size_t size = 10;
   for (size_t i = 0; i < size; ++i) {
@@ -526,7 +551,8 @@ TEST(ListContainerTest, SimpleConstIteratorIterationNonDerivedElement) {
 }
 
 TEST(ListContainerTest, SimpleReverseInsertionNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
   std::vector<NonDerivedElement*> nde_list;
   size_t size = 10;
   for (size_t i = 0; i < size; ++i) {
@@ -546,9 +572,8 @@ TEST(ListContainerTest, SimpleReverseInsertionNonDerivedElement) {
 
   {
     ListContainer<NonDerivedElement>::ReverseIterator iter = list.rbegin();
-    for (std::vector<NonDerivedElement*>::reverse_iterator nde_iter =
-             nde_list.rbegin();
-         nde_iter != nde_list.rend(); ++nde_iter) {
+    for (auto nde_iter = nde_list.rbegin(); nde_iter != nde_list.rend();
+         ++nde_iter) {
       EXPECT_EQ(*nde_iter, *iter);
       ++iter;
     }
@@ -556,7 +581,8 @@ TEST(ListContainerTest, SimpleReverseInsertionNonDerivedElement) {
 }
 
 TEST(ListContainerTest, SimpleDeletion) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   std::vector<SimpleDerivedElement*> sde_list;
   int size = 10;
   for (int i = 0; i < size; ++i) {
@@ -578,7 +604,8 @@ TEST(ListContainerTest, SimpleDeletion) {
 
 TEST(ListContainerTest, DeletionAllInAllocation) {
   const size_t kReserve = 10;
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize,
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize,
                                      kReserve);
   std::vector<SimpleDerivedElement*> sde_list;
   // Add enough elements to cause another allocation.
@@ -604,7 +631,8 @@ TEST(ListContainerTest, DeletionAllInAllocation) {
 
 TEST(ListContainerTest, DeletionAllInAllocationReversed) {
   const size_t kReserve = 10;
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize,
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize,
                                      kReserve);
   std::vector<SimpleDerivedElement*> sde_list;
   // Add enough elements to cause another allocation.
@@ -660,7 +688,8 @@ TEST(ListContainerTest, DeletionAllInAllocationReversed) {
 }
 
 TEST(ListContainerTest, DeletionWhileIterating) {
-  ListContainer<SimpleDerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<SimpleDerivedElement> list(
+      kCurrentLargestDerivedElementAlign, kCurrentLargestDerivedElementSize, 0);
   for (int i = 0; i < 4; ++i)
     list.AllocateAndConstruct<SimpleDerivedElement>()->set_value(i);
 
@@ -684,19 +713,19 @@ TEST(ListContainerTest, DeletionWhileIterating) {
 }
 
 TEST(ListContainerTest, InsertBeforeBegin) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
-  std::vector<SimpleDerivedElement*> sde_list;
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   const int size = 4;
   for (int i = 0; i < size; ++i) {
-    sde_list.push_back(list.AllocateAndConstruct<SimpleDerivedElement>());
-    sde_list.back()->set_value(i);
+    SimpleDerivedElement* element =
+        list.AllocateAndConstruct<SimpleDerivedElement>();
+    element->set_value(i);
   }
   EXPECT_EQ(static_cast<size_t>(size), list.size());
 
   const int count = 2;
-  ListContainer<DerivedElement>::Iterator iter =
-      list.InsertBeforeAndInvalidateAllPointers<SimpleDerivedElement>(
-          list.begin(), count);
+  auto iter = list.InsertBeforeAndInvalidateAllPointers<SimpleDerivedElement>(
+      list.begin(), count);
   for (int i = 0; i < count; ++i) {
     static_cast<SimpleDerivedElement*>(*iter)->set_value(100 + i);
     ++iter;
@@ -713,19 +742,19 @@ TEST(ListContainerTest, InsertBeforeBegin) {
 }
 
 TEST(ListContainerTest, InsertBeforeEnd) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
-  std::vector<SimpleDerivedElement*> sde_list;
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   const int size = 4;
   for (int i = 0; i < size; ++i) {
-    sde_list.push_back(list.AllocateAndConstruct<SimpleDerivedElement>());
-    sde_list.back()->set_value(i);
+    SimpleDerivedElement* element =
+        list.AllocateAndConstruct<SimpleDerivedElement>();
+    element->set_value(i);
   }
   EXPECT_EQ(static_cast<size_t>(size), list.size());
 
   const int count = 3;
-  ListContainer<DerivedElement>::Iterator iter =
-      list.InsertBeforeAndInvalidateAllPointers<SimpleDerivedElement>(
-          list.end(), count);
+  auto iter = list.InsertBeforeAndInvalidateAllPointers<SimpleDerivedElement>(
+      list.end(), count);
   for (int i = 0; i < count; ++i) {
     static_cast<SimpleDerivedElement*>(*iter)->set_value(100 + i);
     ++iter;
@@ -742,12 +771,12 @@ TEST(ListContainerTest, InsertBeforeEnd) {
 }
 
 TEST(ListContainerTest, InsertBeforeEmpty) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
 
   const int count = 3;
-  ListContainer<DerivedElement>::Iterator iter =
-      list.InsertBeforeAndInvalidateAllPointers<SimpleDerivedElement>(
-          list.end(), count);
+  auto iter = list.InsertBeforeAndInvalidateAllPointers<SimpleDerivedElement>(
+      list.end(), count);
   for (int i = 0; i < count; ++i) {
     static_cast<SimpleDerivedElement*>(*iter)->set_value(100 + i);
     ++iter;
@@ -764,25 +793,26 @@ TEST(ListContainerTest, InsertBeforeEmpty) {
 }
 
 TEST(ListContainerTest, InsertBeforeMany) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
-  std::vector<SimpleDerivedElement*> sde_list;
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   // Create a partial list of 1,...,99.
   int initial_list[] = {
       0,  1,  4,  5,  6,  7,  8,  9,  11, 12, 17, 18, 19, 20, 21, 22,
       23, 24, 25, 26, 27, 28, 29, 30, 32, 34, 36, 37, 51, 52, 54, 56,
       60, 64, 65, 70, 75, 76, 80, 81, 83, 86, 87, 90, 93, 95, 97, 98,
   };
-  const size_t size = sizeof(initial_list) / sizeof(initial_list[0]);
+  const size_t size = base::size(initial_list);
   for (size_t i = 0; i < size; ++i) {
-    sde_list.push_back(list.AllocateAndConstruct<SimpleDerivedElement>());
-    sde_list.back()->set_value(initial_list[i]);
+    SimpleDerivedElement* element =
+        list.AllocateAndConstruct<SimpleDerivedElement>();
+    element->set_value(initial_list[i]);
   }
   EXPECT_EQ(static_cast<size_t>(size), list.size());
 
   // Insert the missing elements.
-  ListContainer<DerivedElement>::Iterator iter = list.begin();
+  auto iter = list.begin();
   while (iter != list.end()) {
-    ListContainer<DerivedElement>::Iterator iter_next = iter;
+    auto iter_next = iter;
     ++iter_next;
 
     int value = static_cast<SimpleDerivedElement*>(*iter)->get_value();
@@ -809,8 +839,136 @@ TEST(ListContainerTest, InsertBeforeMany) {
   EXPECT_EQ(100, iter_index);
 }
 
+TEST(ListContainerTest, InsertAfterBegin) {
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
+  const int size = 4;
+  for (int i = 0; i < size; ++i) {
+    SimpleDerivedElement* element =
+        list.AllocateAndConstruct<SimpleDerivedElement>();
+    element->set_value(i);
+  }
+  EXPECT_EQ(static_cast<size_t>(size), list.size());
+
+  const int count = 2;
+  auto iter = list.InsertAfterAndInvalidateAllPointers<SimpleDerivedElement>(
+      list.begin(), count);
+  for (int i = 0; i < count; ++i) {
+    static_cast<SimpleDerivedElement*>(*iter)->set_value(100 + i);
+    ++iter;
+  }
+
+  const int expected_result[] = {0, 100, 101, 1, 2, 3};
+  int iter_index = 0;
+  for (iter = list.begin(); iter != list.end(); ++iter) {
+    EXPECT_EQ(expected_result[iter_index],
+              static_cast<SimpleDerivedElement*>(*iter)->get_value());
+    ++iter_index;
+  }
+  EXPECT_EQ(size + count, iter_index);
+}
+
+TEST(ListContainerTest, InsertAfterEnd) {
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
+  const int size = 4;
+  for (int i = 0; i < size; ++i) {
+    SimpleDerivedElement* element =
+        list.AllocateAndConstruct<SimpleDerivedElement>();
+    element->set_value(i);
+  }
+  EXPECT_EQ(static_cast<size_t>(size), list.size());
+
+  const int count = 3;
+  auto iter = list.InsertAfterAndInvalidateAllPointers<SimpleDerivedElement>(
+      list.end(), count);
+  for (int i = 0; i < count; ++i) {
+    static_cast<SimpleDerivedElement*>(*iter)->set_value(100 + i);
+    ++iter;
+  }
+
+  const int expected_result[] = {0, 1, 2, 3, 100, 101, 102};
+  int iter_index = 0;
+  for (iter = list.begin(); iter != list.end(); ++iter) {
+    EXPECT_EQ(expected_result[iter_index],
+              static_cast<SimpleDerivedElement*>(*iter)->get_value());
+    ++iter_index;
+  }
+  EXPECT_EQ(size + count, iter_index);
+}
+
+TEST(ListContainerTest, InsertAfterEmpty) {
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
+
+  const int count = 3;
+  auto iter = list.InsertAfterAndInvalidateAllPointers<SimpleDerivedElement>(
+      list.end(), count);
+  for (int i = 0; i < count; ++i) {
+    static_cast<SimpleDerivedElement*>(*iter)->set_value(100 + i);
+    ++iter;
+  }
+
+  const int expected_result[] = {100, 101, 102};
+  int iter_index = 0;
+  for (iter = list.begin(); iter != list.end(); ++iter) {
+    EXPECT_EQ(expected_result[iter_index],
+              static_cast<SimpleDerivedElement*>(*iter)->get_value());
+    ++iter_index;
+  }
+  EXPECT_EQ(count, iter_index);
+}
+
+TEST(ListContainerTest, InsertAfterMany) {
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
+  // Create a partial list of 1,...,99.
+  int initial_list[] = {
+      0,  1,  4,  5,  6,  7,  8,  9,  11, 12, 17, 18, 19, 20, 21, 22,
+      23, 24, 25, 26, 27, 28, 29, 30, 32, 34, 36, 37, 51, 52, 54, 56,
+      60, 64, 65, 70, 75, 76, 80, 81, 83, 86, 87, 90, 93, 95, 97, 98,
+  };
+  const size_t size = base::size(initial_list);
+  for (size_t i = 0; i < size; ++i) {
+    SimpleDerivedElement* element =
+        list.AllocateAndConstruct<SimpleDerivedElement>();
+    element->set_value(initial_list[i]);
+  }
+  EXPECT_EQ(static_cast<size_t>(size), list.size());
+
+  // Insert the missing elements.
+  auto iter = list.begin();
+  while (iter != list.end()) {
+    auto iter_next = iter;
+    ++iter_next;
+
+    int value = static_cast<SimpleDerivedElement*>(*iter)->get_value();
+    int value_next =
+        iter_next != list.end()
+            ? static_cast<SimpleDerivedElement*>(*iter_next)->get_value()
+            : 100;
+    int count = value_next - value - 1;
+
+    iter = list.InsertAfterAndInvalidateAllPointers<SimpleDerivedElement>(
+        iter, count);
+    for (int i = value + 1; i < value_next; ++i) {
+      static_cast<SimpleDerivedElement*>(*iter)->set_value(i);
+      ++iter;
+    }
+  }
+
+  int iter_index = 0;
+  for (iter = list.begin(); iter != list.end(); ++iter) {
+    EXPECT_EQ(iter_index,
+              static_cast<SimpleDerivedElement*>(*iter)->get_value());
+    ++iter_index;
+  }
+  EXPECT_EQ(100, iter_index);
+}
+
 TEST(ListContainerTest, SimpleManipulationWithIndexSimpleDerivedElement) {
-  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementSize);
+  ListContainer<DerivedElement> list(kCurrentLargestDerivedElementAlign,
+                                     kCurrentLargestDerivedElementSize, 0);
   std::vector<SimpleDerivedElement*> de_list;
   int size = 10;
   for (int i = 0; i < size; ++i) {
@@ -832,7 +990,8 @@ TEST(ListContainerTest, SimpleManipulationWithIndexSimpleDerivedElement) {
 
 TEST(ListContainerTest,
      SimpleManipulationWithIndexMoreThanOneAllocationSimpleDerivedElement) {
-  ListContainer<DerivedElement> list(LargestDerivedElementSize(), 2);
+  ListContainer<DerivedElement> list(kLargestDerivedElementAlign,
+                                     kLargestDerivedElementSize, 2);
   std::vector<SimpleDerivedElement*> de_list;
   int size = 10;
   for (int i = 0; i < size; ++i) {
@@ -854,7 +1013,8 @@ TEST(ListContainerTest,
 
 TEST(ListContainerTest,
      SimpleIterationAndReverseIterationWithIndexNonDerivedElement) {
-  ListContainer<NonDerivedElement> list;
+  ListContainer<NonDerivedElement> list(alignof(NonDerivedElement),
+                                        sizeof(NonDerivedElement), 0);
   std::vector<NonDerivedElement*> nde_list;
   size_t size = 10;
   for (size_t i = 0; i < size; ++i) {
@@ -900,7 +1060,8 @@ TEST(ListContainerTest, RemoveLastDestruction) {
   // We keep an explicit instance count to make sure that the destructors are
   // indeed getting called.
   int counter = 0;
-  ListContainer<InstanceCounter> list(sizeof(InstanceCounter), 1);
+  ListContainer<InstanceCounter> list(alignof(InstanceCounter),
+                                      sizeof(InstanceCounter), 1);
   EXPECT_EQ(0, counter);
   EXPECT_EQ(0u, list.size());
 
@@ -944,7 +1105,7 @@ TEST(ListContainerTest, RemoveLastIteration) {
   struct SmallStruct {
     char dummy[16];
   };
-  ListContainer<SmallStruct> list(sizeof(SmallStruct), 1);
+  ListContainer<SmallStruct> list(alignof(SmallStruct), sizeof(SmallStruct), 1);
   std::vector<SmallStruct*> pointers;
 
   // Utilities which keep these two lists in sync and check that their iteration
@@ -989,156 +1150,12 @@ TEST(ListContainerTest, RemoveLastIteration) {
   check_equal();  // Empty.
 }
 
-TEST(ListContainerTest, AppendByMovingSameList) {
-  ListContainer<SimpleDerivedElement> list(kCurrentLargestDerivedElementSize);
-  list.AllocateAndConstruct<SimpleDerivedElementConstructMagicNumberOne>();
-
-  list.AppendByMoving(list.front());
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            list.back()->get_value());
-  EXPECT_EQ(2u, list.size());
-
-  list.front()->set_value(kMagicNumberToUseForSimpleDerivedElementTwo);
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementTwo,
-            list.front()->get_value());
-  list.AppendByMoving(list.front());
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementTwo,
-            list.back()->get_value());
-  EXPECT_EQ(3u, list.size());
-}
-
-TEST(ListContainerTest, AppendByMovingDoesNotDestruct) {
-  ListContainer<DerivedElement> list_1(kCurrentLargestDerivedElementSize);
-  ListContainer<DerivedElement> list_2(kCurrentLargestDerivedElementSize);
-  MockDerivedElement* mde_1 = list_1.AllocateAndConstruct<MockDerivedElement>();
-
-  // Make sure destructor isn't called during AppendByMoving.
-  list_2.AppendByMoving(mde_1);
-  EXPECT_CALL(*mde_1, Destruct()).Times(0);
-  testing::Mock::VerifyAndClearExpectations(mde_1);
-  mde_1 = static_cast<MockDerivedElement*>(list_2.back());
-  EXPECT_CALL(*mde_1, Destruct());
-}
-
-TEST(ListContainerTest, AppendByMovingReturnsMovedPointer) {
-  ListContainer<SimpleDerivedElement> list_1(kCurrentLargestDerivedElementSize);
-  ListContainer<SimpleDerivedElement> list_2(kCurrentLargestDerivedElementSize);
-  SimpleDerivedElement* simple_element =
-      list_1.AllocateAndConstruct<SimpleDerivedElement>();
-
-  SimpleDerivedElement* moved_1 = list_2.AppendByMoving(simple_element);
-  EXPECT_EQ(list_2.back(), moved_1);
-
-  SimpleDerivedElement* moved_2 = list_1.AppendByMoving(moved_1);
-  EXPECT_EQ(list_1.back(), moved_2);
-  EXPECT_NE(moved_1, moved_2);
-}
-
-TEST(ListContainerTest, AppendByMovingReplacesSourceWithNewDerivedElement) {
-  ListContainer<SimpleDerivedElementConstructMagicNumberOne> list_1(
-      kCurrentLargestDerivedElementSize);
-  ListContainer<SimpleDerivedElementConstructMagicNumberTwo> list_2(
-      kCurrentLargestDerivedElementSize);
-
-  list_1.AllocateAndConstruct<SimpleDerivedElementConstructMagicNumberOne>();
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            list_1.front()->get_value());
-
-  list_2.AppendByMoving(list_1.front());
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            list_1.front()->get_value());
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            list_2.front()->get_value());
-
-  // Change the value of list_2.front() to ensure the value is actually moved.
-  list_2.back()->set_value(kMagicNumberToUseForSimpleDerivedElementThree);
-
-  list_1.AppendByMoving(list_2.back());
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            list_1.front()->get_value());
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementThree,
-            list_1.back()->get_value());
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementTwo,
-            list_2.back()->get_value());
-
-  // AppendByMoving replaces the source element with a new derived element so
-  // we do not expect sizes to shrink after AppendByMoving is called.
-  EXPECT_EQ(2u, list_1.size());  // One direct allocation, one AppendByMoving.
-  EXPECT_EQ(1u, list_2.size());  // One AppendByMoving.
-}
-
-const size_t kLongCountForLongSimpleDerivedElement = 5;
-
-class LongSimpleDerivedElement : public SimpleDerivedElement {
- public:
-  ~LongSimpleDerivedElement() override {}
-  void SetAllValues(unsigned long value) {
-    for (size_t i = 0; i < kLongCountForLongSimpleDerivedElement; i++)
-      values[i] = value;
-  }
-  bool AreAllValuesEqualTo(size_t value) const {
-    for (size_t i = 1; i < kLongCountForLongSimpleDerivedElement; i++) {
-      if (values[i] != values[0])
-        return false;
-    }
-    return true;
-  }
-
- private:
-  unsigned long values[kLongCountForLongSimpleDerivedElement];
-};
-
-const unsigned long kMagicNumberToUseForLongSimpleDerivedElement = 2718ul;
-
-class LongSimpleDerivedElementConstructMagicNumber
-    : public LongSimpleDerivedElement {
- public:
-  LongSimpleDerivedElementConstructMagicNumber() {
-    SetAllValues(kMagicNumberToUseForLongSimpleDerivedElement);
-  }
-};
-
-TEST(ListContainerTest, AppendByMovingLongAndSimpleDerivedElements) {
-  static_assert(sizeof(LongSimpleDerivedElement) > sizeof(SimpleDerivedElement),
-                "LongSimpleDerivedElement should be larger than "
-                "SimpleDerivedElement's size.");
-  static_assert(sizeof(LongSimpleDerivedElement) <= kLargestDerivedElementSize,
-                "LongSimpleDerivedElement should be smaller than the maximum "
-                "DerivedElement size.");
-
-  ListContainer<SimpleDerivedElement> list(kCurrentLargestDerivedElementSize);
-  list.AllocateAndConstruct<LongSimpleDerivedElementConstructMagicNumber>();
-  list.AllocateAndConstruct<SimpleDerivedElementConstructMagicNumberOne>();
-
-  EXPECT_TRUE(
-      static_cast<LongSimpleDerivedElement*>(list.front())
-          ->AreAllValuesEqualTo(kMagicNumberToUseForLongSimpleDerivedElement));
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            list.back()->get_value());
-
-  // Test that moving a simple derived element actually moves enough data so
-  // that the LongSimpleDerivedElement at this location is entirely moved.
-  SimpleDerivedElement* simple_element = list.back();
-  list.AppendByMoving(list.front());
-  EXPECT_TRUE(
-      static_cast<LongSimpleDerivedElement*>(list.back())
-          ->AreAllValuesEqualTo(kMagicNumberToUseForLongSimpleDerivedElement));
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            simple_element->get_value());
-
-  LongSimpleDerivedElement* long_element =
-      static_cast<LongSimpleDerivedElement*>(list.back());
-  list.AppendByMoving(simple_element);
-  EXPECT_TRUE(long_element->AreAllValuesEqualTo(
-      kMagicNumberToUseForLongSimpleDerivedElement));
-  EXPECT_EQ(kMagicNumberToUseForSimpleDerivedElementOne,
-            list.back()->get_value());
-}
-
 TEST(ListContainerTest, Swap) {
-  ListContainer<SimpleDerivedElement> list_1(kCurrentLargestDerivedElementSize);
+  ListContainer<SimpleDerivedElement> list_1(
+      kCurrentLargestDerivedElementAlign, kCurrentLargestDerivedElementSize, 0);
   list_1.AllocateAndConstruct<SimpleDerivedElementConstructMagicNumberOne>();
-  ListContainer<SimpleDerivedElement> list_2(kCurrentLargestDerivedElementSize);
+  ListContainer<SimpleDerivedElement> list_2(
+      kCurrentLargestDerivedElementAlign, kCurrentLargestDerivedElementSize, 0);
   list_2.AllocateAndConstruct<SimpleDerivedElementConstructMagicNumberTwo>();
   list_2.AllocateAndConstruct<SimpleDerivedElementConstructMagicNumberThree>();
 
@@ -1181,24 +1198,25 @@ TEST(ListContainerTest, GetCapacityInBytes) {
   // memory, due to the exponential growth strategy).
   const size_t max_waste_factor = 8;
 
-  ListContainer<DerivedElement> list(LargestDerivedElementSize(),
+  ListContainer<DerivedElement> list(kLargestDerivedElementAlign,
+                                     kLargestDerivedElementSize,
                                      initial_capacity);
 
   // The capacity should grow with the list.
   for (int i = 0; i < iterations; i++) {
     size_t capacity = list.GetCapacityInBytes();
-    ASSERT_GE(capacity, list.size() * LargestDerivedElementSize());
+    ASSERT_GE(capacity, list.size() * kLargestDerivedElementSize);
     ASSERT_LE(capacity, std::max(list.size(), upper_bound_on_min_capacity) *
-                            max_waste_factor * LargestDerivedElementSize());
+                            max_waste_factor * kLargestDerivedElementSize);
     list.AllocateAndConstruct<DerivedElement1>();
   }
 
   // The capacity should shrink with the list.
   for (int i = 0; i < iterations; i++) {
     size_t capacity = list.GetCapacityInBytes();
-    ASSERT_GE(capacity, list.size() * LargestDerivedElementSize());
+    ASSERT_GE(capacity, list.size() * kLargestDerivedElementSize);
     ASSERT_LE(capacity, std::max(list.size(), upper_bound_on_min_capacity) *
-                            max_waste_factor * LargestDerivedElementSize());
+                            max_waste_factor * kLargestDerivedElementSize);
     list.RemoveLast();
   }
 }

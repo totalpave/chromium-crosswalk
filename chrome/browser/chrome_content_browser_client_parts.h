@@ -8,12 +8,16 @@
 #include <string>
 #include <vector>
 
-#include "base/memory/scoped_vector.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
 #include "storage/browser/fileapi/file_system_context.h"
 
 namespace base {
 class CommandLine;
 class FilePath;
+}
+
+namespace blink {
+class AssociatedInterfaceRegistry;
 }
 
 namespace content {
@@ -29,7 +33,6 @@ namespace storage {
 class FileSystemBackend;
 }
 
-class GURL;
 class Profile;
 
 // Implements a platform or feature specific part of ChromeContentBrowserClient.
@@ -52,7 +55,8 @@ class ChromeContentBrowserClientParts {
   virtual void GetAdditionalFileSystemBackends(
       content::BrowserContext* browser_context,
       const base::FilePath& storage_partition_path,
-      ScopedVector<storage::FileSystemBackend>* additional_backends) {}
+      std::vector<std::unique_ptr<storage::FileSystemBackend>>*
+          additional_backends) {}
 
   // Append extra switches to |command_line| for |process|. If |process| is not
   // NULL, then neither is |profile|.
@@ -60,6 +64,18 @@ class ChromeContentBrowserClientParts {
       base::CommandLine* command_line,
       content::RenderProcessHost* process,
       Profile* profile) {}
+
+  // Called when the ResourceDispatcherHost is created.
+  virtual void ResourceDispatcherHostCreated() {}
+
+  // Allows to register browser interfaces exposed through the
+  // RenderProcessHost. Note that interface factory callbacks added to
+  // |registry| will by default be run immediately on the IO thread, unless a
+  // task runner is provided.
+  virtual void ExposeInterfacesToRenderer(
+      service_manager::BinderRegistry* registry,
+      blink::AssociatedInterfaceRegistry* associated_registry,
+      content::RenderProcessHost* render_process_host) {}
 };
 
 #endif  // CHROME_BROWSER_CHROME_CONTENT_BROWSER_CLIENT_PARTS_H_

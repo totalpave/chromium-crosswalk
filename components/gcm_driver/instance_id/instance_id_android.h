@@ -13,7 +13,7 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "base/macros.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
@@ -37,9 +37,6 @@ class InstanceIDAndroid : public InstanceID {
     DISALLOW_COPY_AND_ASSIGN(ScopedBlockOnAsyncTasksForTesting);
   };
 
-  // Register JNI methods.
-  static bool RegisterJni(JNIEnv* env);
-
   InstanceIDAndroid(const std::string& app_id, gcm::GCMDriver* gcm_driver);
   ~InstanceIDAndroid() override;
 
@@ -49,7 +46,12 @@ class InstanceIDAndroid : public InstanceID {
   void GetToken(const std::string& audience,
                 const std::string& scope,
                 const std::map<std::string, std::string>& options,
+                bool is_lazy,
                 const GetTokenCallback& callback) override;
+  void ValidateToken(const std::string& authorized_entity,
+                     const std::string& scope,
+                     const std::string& token,
+                     const ValidateTokenCallback& callback) override;
   void DeleteTokenImpl(const std::string& audience,
                        const std::string& scope,
                        const DeleteTokenCallback& callback) override;
@@ -80,11 +82,12 @@ class InstanceIDAndroid : public InstanceID {
  private:
   base::android::ScopedJavaGlobalRef<jobject> java_ref_;
 
-  IDMap<GetIDCallback, IDMapOwnPointer> get_id_callbacks_;
-  IDMap<GetCreationTimeCallback, IDMapOwnPointer> get_creation_time_callbacks_;
-  IDMap<GetTokenCallback, IDMapOwnPointer> get_token_callbacks_;
-  IDMap<DeleteTokenCallback, IDMapOwnPointer> delete_token_callbacks_;
-  IDMap<DeleteIDCallback, IDMapOwnPointer> delete_id_callbacks_;
+  base::IDMap<std::unique_ptr<GetIDCallback>> get_id_callbacks_;
+  base::IDMap<std::unique_ptr<GetCreationTimeCallback>>
+      get_creation_time_callbacks_;
+  base::IDMap<std::unique_ptr<GetTokenCallback>> get_token_callbacks_;
+  base::IDMap<std::unique_ptr<DeleteTokenCallback>> delete_token_callbacks_;
+  base::IDMap<std::unique_ptr<DeleteIDCallback>> delete_id_callbacks_;
 
   base::ThreadChecker thread_checker_;
 

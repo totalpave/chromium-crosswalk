@@ -3,17 +3,35 @@
 # found in the LICENSE file.
 from page_sets.login_helpers import login_utils
 
+# Selectors for the email, password, and next buttons for google login flow.
+# Use multiple selectors to allow for different versions of the site.
+_EMAIL_SELECTOR = ','.join([
+    'input[type=email]:not([aria-hidden=true])',
+    '#Email:not(.hidden)'])
+_EMAIL_NEXT_SELECTOR = ','.join([
+    '#identifierNext',
+    '#gaia_firstform #next'])
+_PASSWORD_SELECTOR = ','.join([
+    'input[type=password]:not([aria-hidden=true])',
+    '#Passwd:not(.hidden)'])
+_SIGNIN_SELECTOR = ','.join([
+    '#passwordNext',
+    '#signIn'])
+
 
 # JavaScript conditions which are true when the email and password inputs on
 # the Google Login page are visible respectively.
 _EMAIL_INPUT_VISIBLE_CONDITION = (
-    'document.querySelector("#Email:not(.hidden)") !== null')
+    'document.querySelector("%s") !== null' % (_EMAIL_SELECTOR))
+_EMAIL_NEXT_VISIBLE_CONDITION = (
+    'document.querySelector("%s") !== null' % (_EMAIL_NEXT_SELECTOR))
 _PASSWORD_INPUT_VISIBLE_CONDITION = (
-    'document.querySelector("#Passwd:not(.hidden)") !== null')
+    'document.querySelector("%s") !== null' % (_PASSWORD_SELECTOR))
 
 
-def LoginGoogleAccount(action_runner, credential,
-                       credentials_path=login_utils.DEFAULT_CREDENTIAL_PATH):
+def BaseLoginGoogle(action_runner,
+                    credential='googletest',  # Recommended credential.
+                    credentials_path=login_utils.DEFAULT_CREDENTIAL_PATH):
   """Logs in into Google account.
 
   This function navigates the tab into Google's login page and logs in a user
@@ -42,17 +60,32 @@ def LoginGoogleAccount(action_runner, credential,
        'https%3A%2F%2Faccounts.google.com%2FManageAccount')
 
   # Wait until either the email or password input is visible.
-  action_runner.WaitForJavaScriptCondition('%s || %s' % (
-      _EMAIL_INPUT_VISIBLE_CONDITION, _PASSWORD_INPUT_VISIBLE_CONDITION))
+  action_runner.WaitForJavaScriptCondition('{{ @a }} || {{ @b }}',
+      a=_EMAIL_INPUT_VISIBLE_CONDITION, b=_PASSWORD_INPUT_VISIBLE_CONDITION)
 
   # If the email input is visible, this is the first Google login within the
   # browser session, so we must enter both email and password. Otherwise, only
   # password is required.
   if action_runner.EvaluateJavaScript(_EMAIL_INPUT_VISIBLE_CONDITION):
-    login_utils.InputForm(action_runner, account_name, input_id='Email',
-                          form_id='gaia_firstform')
-    action_runner.ClickElement(selector='#gaia_firstform #next')
+    login_utils.InputWithSelector(action_runner, account_name, _EMAIL_SELECTOR)
+    if action_runner.EvaluateJavaScript(_EMAIL_NEXT_VISIBLE_CONDITION):
+      action_runner.ClickElement(selector=_EMAIL_NEXT_SELECTOR)
 
-  login_utils.InputForm(action_runner, password, input_id='Passwd')
-  action_runner.ClickElement(selector='#signIn')
+  login_utils.InputWithSelector(action_runner, password, _PASSWORD_SELECTOR)
+  action_runner.ClickElement(selector=_SIGNIN_SELECTOR)
+
+
+def LoginGoogleAccount(action_runner,
+                       credential='googletest',  # Recommended credential.
+                       credentials_path=login_utils.DEFAULT_CREDENTIAL_PATH):
+  """ Login for old UI """
+  BaseLoginGoogle(action_runner, credential, credentials_path)
   action_runner.WaitForElement(text='My Account')
+
+
+def NewLoginGoogleAccount(action_runner,
+                          credential='googletest',  # Recommended credential.
+                          credentials_path=login_utils.DEFAULT_CREDENTIAL_PATH):
+  """ Login for new UI """
+  BaseLoginGoogle(action_runner, credential, credentials_path)
+  action_runner.WaitForElement(text='Google Account')

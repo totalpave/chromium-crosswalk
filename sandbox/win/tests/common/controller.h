@@ -102,7 +102,7 @@ class TestRunner {
   // Sets TestRunner to return without waiting for the process to exit.
   void SetAsynchronous(bool is_async) { is_async_ = is_async; }
 
-  // Sets TestRunner to return without waiting for the process to exit.
+  // Sets whether TestRunner sandboxes the child process. ("--no-sandbox")
   void SetUnsandboxed(bool is_no_sandbox) { no_sandbox_ = is_no_sandbox; }
 
   // Sets whether TestRunner should disable CSRSS or not (default true).
@@ -115,6 +115,10 @@ class TestRunner {
   // Sets a flag whether the process should be killed when the TestRunner is
   // destroyed.
   void SetKillOnDestruction(bool value) { kill_on_destruction_ = value; }
+
+  // Sets whether the TargetPolicy should be released after the child process
+  // is launched while the test is running.
+  void SetReleasePolicyInRun(bool value) { release_policy_in_run_ = value; }
 
   // Returns the pointers to the policy object. It can be used to modify
   // the policy manually.
@@ -129,17 +133,12 @@ class TestRunner {
   DWORD process_id() { return target_process_id_; }
 
  private:
-  // Initializes the data in the object. Sets is_init_ to tree if the
-  // function succeeds. This is meant to be called from the constructor.
-  void Init(JobLevel job_level,
-            TokenLevel startup_token,
-            TokenLevel main_token);
 
   // The actual runner.
   int InternalRunTest(const wchar_t* command);
 
   BrokerServices* broker_;
-  TargetPolicy* policy_;
+  scoped_refptr<TargetPolicy> policy_;
   DWORD timeout_;
   SboxTestsState state_;
   bool is_init_;
@@ -147,6 +146,7 @@ class TestRunner {
   bool no_sandbox_;
   bool disable_csrss_;
   bool kill_on_destruction_;
+  bool release_policy_in_run_ = false;
   base::win::ScopedHandle target_process_;
   DWORD target_process_id_;
 };

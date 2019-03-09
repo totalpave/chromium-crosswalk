@@ -2,43 +2,45 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#define _USE_MATH_DEFINES  // For VC++ to get M_PI. This has to be first.
-
 #include "chrome/browser/download/download_shelf.h"
-
-#include <cmath>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/location.h"
+#include "base/numerics/math_constants.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
+#include "cc/paint/paint_flags.h"
+#include "chrome/browser/download/download_core_service.h"
+#include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/download/download_item_model.h"
-#include "chrome/browser/download/download_service.h"
-#include "chrome/browser/download/download_service_factory.h"
 #include "chrome/browser/download/download_started_animation.h"
+#include "chrome/browser/download/offline_item_model.h"
+#include "chrome/browser/download/offline_item_model_manager.h"
+#include "chrome/browser/download/offline_item_model_manager_factory.h"
+#include "chrome/browser/download/offline_item_utils.h"
+#include "chrome/browser/offline_items_collection/offline_content_aggregator_factory.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/grit/locale_settings.h"
+#include "components/download/public/common/download_item.h"
+#include "components/offline_items_collection/core/offline_content_aggregator.h"
+#include "components/offline_items_collection/core/offline_item.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/download_item.h"
+#include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/web_contents.h"
-#include "grit/theme_resources.h"
-#include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkPath.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/theme_provider.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/canvas.h"
 
-using content::DownloadItem;
+using download::DownloadItem;
 
 namespace {
 
@@ -53,9 +55,51 @@ int GetOpacity(double animation_progress) {
   // How many times to cycle the complete animation. This should be an odd
   // number so that the animation ends faded out.
   static const int kCompleteAnimationCycles = 5;
-  double temp = animation_progress * kCompleteAnimationCycles * M_PI + M_PI_2;
+  double temp =
+      ((animation_progress * kCompleteAnimationCycles) + 0.5) * base::kPiDouble;
   temp = sin(temp) / 2 + 0.5;
   return static_cast<int>(255.0 * temp);
+}
+
+void OnGetDownloadDoneForOfflineItem(
+    Profile* profile,
+    base::OnceCallback<void(DownloadUIModelPtr)> callback,
+    const base::Optional<OfflineItem>& offline_item) {
+  if (!offline_item.has_value())
+    return;
+
+  OfflineItemModelManager* manager =
+      OfflineItemModelManagerFactory::GetForBrowserContext(profile);
+  DownloadUIModelPtr model =
+      OfflineItemModel::Wrap(manager, offline_item.value());
+
+  std::move(callback).Run(std::move(model));
+}
+
+void GetDownload(Profile* profile,
+                 ContentId id,
+                 base::OnceCallback<void(DownloadUIModelPtr)> callback) {
+  if (OfflineItemUtils::IsDownload(id)) {
+    content::DownloadManager* download_manager =
+        content::BrowserContext::GetDownloadManager(profile);
+    if (!download_manager)
+      return;
+
+    DownloadItem* download = download_manager->GetDownloadByGuid(id.id);
+    if (!download)
+      return;
+
+    DownloadUIModelPtr model = DownloadItemModel::Wrap(download);
+    std::move(callback).Run(std::move(model));
+  } else {
+    offline_items_collection::OfflineContentAggregator* aggregator =
+        OfflineContentAggregatorFactory::GetForBrowserContext(profile);
+    if (!aggregator)
+      return;
+
+    aggregator->GetItemById(id, base::BindOnce(&OnGetDownloadDoneForOfflineItem,
+                                               profile, std::move(callback)));
+  }
 }
 
 } // namespace
@@ -77,16 +121,16 @@ void DownloadShelf::PaintDownloadProgress(
     const base::TimeDelta& progress_time,
     int percent_done) {
   // Draw background (light blue circle).
-  SkPaint bg_paint;
-  bg_paint.setStyle(SkPaint::kFill_Style);
+  cc::PaintFlags bg_flags;
+  bg_flags.setStyle(cc::PaintFlags::kFill_Style);
   SkColor indicator_color =
       theme_provider.GetColor(ThemeProperties::COLOR_TAB_THROBBER_SPINNING);
-  bg_paint.setColor(SkColorSetA(indicator_color, 0x33));
-  bg_paint.setAntiAlias(true);
+  bg_flags.setColor(SkColorSetA(indicator_color, 0x33));
+  bg_flags.setAntiAlias(true);
   const SkScalar kCenterPoint = kProgressIndicatorSize / 2.f;
   SkPath bg;
   bg.addCircle(kCenterPoint, kCenterPoint, kCenterPoint);
-  canvas->DrawPath(bg, bg_paint);
+  canvas->DrawPath(bg, bg_flags);
 
   // Calculate progress.
   SkScalar sweep_angle = 0.f;
@@ -106,12 +150,12 @@ void DownloadShelf::PaintDownloadProgress(
   progress.addArc(
       SkRect::MakeLTRB(0, 0, kProgressIndicatorSize, kProgressIndicatorSize),
       start_pos, sweep_angle);
-  SkPaint progress_paint;
-  progress_paint.setColor(indicator_color);
-  progress_paint.setStyle(SkPaint::kStroke_Style);
-  progress_paint.setStrokeWidth(1.7f);
-  progress_paint.setAntiAlias(true);
-  canvas->DrawPath(progress, progress_paint);
+  cc::PaintFlags progress_flags;
+  progress_flags.setColor(indicator_color);
+  progress_flags.setStyle(cc::PaintFlags::kStroke_Style);
+  progress_flags.setStrokeWidth(1.7f);
+  progress_flags.setAntiAlias(true);
+  canvas->DrawPath(progress, progress_flags);
 }
 
 // static
@@ -136,28 +180,28 @@ void DownloadShelf::PaintDownloadInterrupted(
   PaintDownloadComplete(canvas, theme_provider, 1.0 - animation_progress);
 }
 
-void DownloadShelf::AddDownload(DownloadItem* download) {
-  DCHECK(download);
-  if (DownloadItemModel(download).ShouldRemoveFromShelfWhenComplete()) {
+void DownloadShelf::AddDownload(DownloadUIModelPtr model) {
+  DCHECK(model);
+  if (model->ShouldRemoveFromShelfWhenComplete()) {
     // If we are going to remove the download from the shelf upon completion,
     // wait a few seconds to see if it completes quickly. If it's a small
     // download, then the user won't have time to interact with it.
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&DownloadShelf::ShowDownloadById,
-                   weak_ptr_factory_.GetWeakPtr(), download->GetId()),
+        base::BindOnce(&DownloadShelf::ShowDownloadById,
+                       weak_ptr_factory_.GetWeakPtr(), model->GetContentId()),
         GetTransientDownloadShowDelay());
   } else {
-    ShowDownload(download);
+    ShowDownload(std::move(model));
   }
 }
 
-void DownloadShelf::Show() {
+void DownloadShelf::Open() {
   if (is_hidden_) {
     should_show_on_unhide_ = true;
     return;
   }
-  DoShow();
+  DoOpen();
 }
 
 void DownloadShelf::Close(CloseReason reason) {
@@ -174,7 +218,7 @@ void DownloadShelf::Hide() {
   is_hidden_ = true;
   if (IsShowing()) {
     should_show_on_unhide_ = true;
-    DoClose(AUTOMATIC);
+    DoHide();
   }
 }
 
@@ -184,7 +228,7 @@ void DownloadShelf::Unhide() {
   is_hidden_ = false;
   if (should_show_on_unhide_) {
     should_show_on_unhide_ = false;
-    DoShow();
+    DoUnhide();
   }
 }
 
@@ -192,22 +236,26 @@ base::TimeDelta DownloadShelf::GetTransientDownloadShowDelay() {
   return base::TimeDelta::FromSeconds(kDownloadShowDelayInSeconds);
 }
 
-content::DownloadManager* DownloadShelf::GetDownloadManager() {
-  return content::BrowserContext::GetDownloadManager(browser()->profile());
+Profile* DownloadShelf::profile() const {
+  return browser() ? browser()->profile() : nullptr;
 }
 
-void DownloadShelf::ShowDownload(DownloadItem* download) {
+void DownloadShelf::ShowDownload(DownloadUIModelPtr download) {
   if (download->GetState() == DownloadItem::COMPLETE &&
-      DownloadItemModel(download).ShouldRemoveFromShelfWhenComplete())
+      download->ShouldRemoveFromShelfWhenComplete())
     return;
-  if (!DownloadServiceFactory::GetForBrowserContext(
-        download->GetBrowserContext())->IsShelfEnabled())
+
+  if (!DownloadCoreServiceFactory::GetForBrowserContext(download->profile())
+           ->IsShelfEnabled())
     return;
+
+  bool should_show_download_started_animation =
+      download->ShouldShowDownloadStartedAnimation();
 
   if (is_hidden_)
     Unhide();
-  Show();
-  DoAddDownload(download);
+  Open();
+  DoAddDownload(std::move(download));
 
   // browser() can be NULL for tests.
   if (!browser())
@@ -221,22 +269,15 @@ void DownloadShelf::ShowDownload(DownloadItem* download) {
   // - Rich animations are enabled.
   content::WebContents* shelf_tab =
       browser()->tab_strip_model()->GetActiveWebContents();
-  if (DownloadItemModel(download).ShouldShowDownloadStartedAnimation() &&
-      shelf_tab &&
+  if (should_show_download_started_animation && shelf_tab &&
       platform_util::IsVisible(shelf_tab->GetNativeView()) &&
       gfx::Animation::ShouldRenderRichAnimation()) {
     DownloadStartedAnimation::Show(shelf_tab);
   }
 }
 
-void DownloadShelf::ShowDownloadById(int32_t download_id) {
-  content::DownloadManager* download_manager = GetDownloadManager();
-  if (!download_manager)
-    return;
-
-  DownloadItem* download = download_manager->GetDownload(download_id);
-  if (!download)
-    return;
-
-  ShowDownload(download);
+void DownloadShelf::ShowDownloadById(ContentId id) {
+  GetDownload(profile(), id,
+              base::BindOnce(&DownloadShelf::ShowDownload,
+                             weak_ptr_factory_.GetWeakPtr()));
 }

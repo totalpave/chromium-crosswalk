@@ -5,10 +5,16 @@
 #ifndef MOJO_PUBLIC_CPP_BINDINGS_STRUCT_TRAITS_H_
 #define MOJO_PUBLIC_CPP_BINDINGS_STRUCT_TRAITS_H_
 
+#include "mojo/public/cpp/bindings/lib/template_util.h"
+
 namespace mojo {
 
 // This must be specialized for any type |T| to be serialized/deserialized as
-// a mojom struct of type |MojomType|.
+// a mojom struct. |DataViewType| is the corresponding data view type of the
+// mojom struct. For example, if the mojom struct is example.Foo,
+// |DataViewType| will be example::FooDataView, which can also be referred to by
+// example::Foo::DataView (in chromium) and example::blink::Foo::DataView (in
+// blink).
 //
 // Each specialization needs to implement a few things:
 //   1. Static getters for each field in the Mojom type. These should be
@@ -20,19 +26,21 @@ namespace mojo {
 //      from |input|.
 //
 //      Serializable form of a field:
-//        Value or reference of the same type used in |MojomType|, or the
-//        following alternatives:
+//        Value or reference of the same type used in the generated stuct
+//        wrapper type, or the following alternatives:
 //        - string:
 //          Value or reference of any type that has a StringTraits defined.
-//          Supported by default: base::StringPiece, std::string.
+//          Supported by default: base::StringPiece, std::string,
+//          WTF::String (in blink).
 //
 //        - array:
 //          Value or reference of any type that has an ArrayTraits defined.
-//          Supported by default: std::vector, WTF::Vector (in blink), CArray.
+//          Supported by default: std::vector, CArray, WTF::Vector (in blink)
 //
 //        - map:
 //          Value or reference of any type that has a MapTraits defined.
-//          Supported by default: std::map.
+//          Supported by default: std::map, std::unordered_map, base::flat_map,
+//          WTF::HashMap (in blink).
 //
 //        - struct:
 //          Value or reference of any type that has a StructTraits defined.
@@ -40,22 +48,23 @@ namespace mojo {
 //        - enum:
 //          Value of any type that has an EnumTraits defined.
 //
-//      During serialization, getters for string/struct/array/map/union fields
-//      are called twice (one for size calculation and one for actual
-//      serialization). If you want to return a value (as opposed to a
-//      reference) from these getters, you have to be sure that constructing and
-//      copying the returned object is really cheap.
+//      For any nullable string/struct/array/map/union field you could also
+//      return value or reference of base::Optional<T>, if T has the right
+//      *Traits defined.
 //
-//      Getters for fields of other types are called once.
+//      During serialization, getters for all fields are called exactly once. It
+//      is therefore reasonably effecient for a getter to construct and return
+//      temporary value in the event that it cannot return a readily
+//      serializable reference to some existing object.
 //
 //   2. A static Read() method to set the contents of a |T| instance from a
-//      |MojomType|DataView (e.g., if |MojomType| is test::Example, the data
-//      view will be test::ExampleDataView).
+//      DataViewType.
 //
-//        static bool Read(|MojomType|DataView data, T* output);
+//        static bool Read(DataViewType data, T* output);
 //
-//      The generated |MojomType|DataView type provides a convenient,
-//      inexpensive view of a serialized struct's field data.
+//      The generated DataViewType provides a convenient, inexpensive view of a
+//      serialized struct's field data. The caller guarantees that
+//      |!data.is_null()|.
 //
 //      Returning false indicates invalid incoming data and causes the message
 //      pipe receiving it to be disconnected. Therefore, you can do custom
@@ -66,9 +75,10 @@ namespace mojo {
 //
 //        static bool IsNull(const T& input);
 //
-//      If this method returns true, it is guaranteed that none of the getters
-//      (described in section 1) will be called for the same |input|. So you
-//      don't have to check whether |input| is null in those getters.
+//      This method is called exactly once during serialization, and if it
+//      returns |true|, it is guaranteed that none of the getters (described in
+//      section 1) will be called for the same |input|. So you don't have to
+//      check whether |input| is null in those getters.
 //
 //      If it is not defined, |T| instances are always considered non-null.
 //
@@ -111,9 +121,12 @@ namespace mojo {
 // reference/value to the Mojo bindings for serialization:
 //    - if T is used in the "type_mappings" section of a typemap config file,
 //      you need to declare it as pass-by-value:
-//        type_mappings = [ "MojomType=T(pass_by_value)" ]
-//    - if another type U's StructTraits has a getter for T, it needs to return
-//      non-const reference/value.
+//        type_mappings = [ "MojomType=T[move_only]" ]
+//      or
+//        type_mappings = [ "MojomType=T[copyable_pass_by_value]" ]
+//
+//    - if another type U's StructTraits/UnionTraits has a getter for T, it
+//      needs to return non-const reference/value.
 //
 // EXAMPLE:
 //
@@ -128,7 +141,7 @@ namespace mojo {
 //
 // StructTraits for Foo:
 //   template <>
-//   struct StructTraits<Foo, CustomFoo> {
+//   struct StructTraits<FooDataView, CustomFoo> {
 //     // Optional methods dealing with null:
 //     static bool IsNull(const CustomFoo& input);
 //     static void SetToNull(CustomFoo* output);
@@ -144,8 +157,12 @@ namespace mojo {
 //     static bool Read(FooDataView data, CustomFoo* output);
 //   };
 //
-template <typename MojomType, typename T>
-struct StructTraits;
+template <typename DataViewType, typename T>
+struct StructTraits {
+  static_assert(internal::AlwaysFalse<T>::value,
+                "Cannot find the mojo::StructTraits specialization. Did you "
+                "forget to include the corresponding header file?");
+};
 
 }  // namespace mojo
 

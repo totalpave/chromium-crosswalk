@@ -6,54 +6,43 @@
 
 #include <stdint.h>
 
+#include "base/bind_helpers.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 
 namespace ui {
 
-InputMethodMinimal::InputMethodMinimal(
-    internal::InputMethodDelegate* delegate) {
-  SetDelegate(delegate);
-}
+InputMethodMinimal::InputMethodMinimal(internal::InputMethodDelegate* delegate)
+    : InputMethodBase(delegate) {}
 
 InputMethodMinimal::~InputMethodMinimal() {}
 
-bool InputMethodMinimal::OnUntranslatedIMEMessage(
-    const base::NativeEvent& event,
-    NativeEventResult* result) {
-  return false;
-}
-
-void InputMethodMinimal::DispatchKeyEvent(ui::KeyEvent* event) {
+ui::EventDispatchDetails InputMethodMinimal::DispatchKeyEvent(
+    ui::KeyEvent* event) {
   DCHECK(event->type() == ET_KEY_PRESSED || event->type() == ET_KEY_RELEASED);
 
   // If no text input client, do nothing.
-  if (!GetTextInputClient()) {
-    ignore_result(DispatchKeyEventPostIME(event));
-    return;
-  }
+  if (!GetTextInputClient())
+    return DispatchKeyEventPostIME(event, base::NullCallback());
 
   // Insert the character.
-  ignore_result(DispatchKeyEventPostIME(event));
-  if (event->type() == ET_KEY_PRESSED && GetTextInputClient()) {
+  ui::EventDispatchDetails dispatch_details =
+      DispatchKeyEventPostIME(event, base::NullCallback());
+  if (!event->stopped_propagation() && !dispatch_details.dispatcher_destroyed &&
+      event->type() == ET_KEY_PRESSED && GetTextInputClient()) {
     const uint16_t ch = event->GetCharacter();
     if (ch) {
       GetTextInputClient()->InsertChar(*event);
       event->StopPropagation();
     }
   }
+  return dispatch_details;
 }
 
 void InputMethodMinimal::OnCaretBoundsChanged(const TextInputClient* client) {}
 
 void InputMethodMinimal::CancelComposition(const TextInputClient* client) {}
-
-void InputMethodMinimal::OnInputLocaleChanged() {}
-
-std::string InputMethodMinimal::GetInputLocale() {
-  return std::string();
-}
 
 bool InputMethodMinimal::IsCandidatePopupOpen() const {
   return false;

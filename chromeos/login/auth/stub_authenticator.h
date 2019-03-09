@@ -7,9 +7,9 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/single_thread_task_runner.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/login/auth/authenticator.h"
 #include "chromeos/login/auth/user_context.h"
 
@@ -23,7 +23,8 @@ namespace chromeos {
 
 class AuthStatusConsumer;
 
-class CHROMEOS_EXPORT StubAuthenticator : public Authenticator {
+class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) StubAuthenticator
+    : public Authenticator {
  public:
   StubAuthenticator(AuthStatusConsumer* consumer,
                     const UserContext& expected_user_context);
@@ -39,6 +40,7 @@ class CHROMEOS_EXPORT StubAuthenticator : public Authenticator {
   void LoginAsPublicSession(const UserContext& user_context) override;
   void LoginAsKioskAccount(const AccountId& app_account_id,
                            bool use_guest_mount) override;
+  void LoginAsArcKioskAccount(const AccountId& app_account_id) override;
   void OnAuthSuccess() override;
   void OnAuthFailure(const AuthFailure& failure) override;
   void RecoverEncryptedData(const std::string& old_password) override;

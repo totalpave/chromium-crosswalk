@@ -18,9 +18,11 @@
 #include "net/base/request_priority.h"
 #include "net/base/test_completion_callback.h"
 #include "net/http/http_response_headers.h"
-#include "net/proxy/proxy_config_service.h"
-#include "net/proxy/proxy_info.h"
-#include "net/proxy/proxy_retry_info.h"
+#include "net/proxy_resolution/proxy_config_service.h"
+#include "net/proxy_resolution/proxy_info.h"
+#include "net/proxy_resolution/proxy_retry_info.h"
+#include "net/test/test_with_scoped_task_environment.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -36,18 +38,18 @@ class TestNetworkDelegateImpl : public NetworkDelegateImpl {
   TestNetworkDelegateImpl(CountersMap* layered_network_delegate_counters)
       : layered_network_delegate_counters_(layered_network_delegate_counters) {}
 
-  ~TestNetworkDelegateImpl() override {}
+  ~TestNetworkDelegateImpl() override = default;
 
   // NetworkDelegateImpl implementation:
   int OnBeforeURLRequest(URLRequest* request,
-                         const CompletionCallback& callback,
+                         CompletionOnceCallback callback,
                          GURL* new_url) override {
     IncrementAndCompareCounter("on_before_url_request_count");
     return OK;
   }
 
   int OnBeforeStartTransaction(URLRequest* request,
-                               const CompletionCallback& callback,
+                               CompletionOnceCallback callback,
                                HttpRequestHeaders* headers) override {
     IncrementAndCompareCounter("on_before_start_transaction_count");
     return OK;
@@ -67,7 +69,7 @@ class TestNetworkDelegateImpl : public NetworkDelegateImpl {
 
   int OnHeadersReceived(
       URLRequest* request,
-      const CompletionCallback& callback,
+      CompletionOnceCallback callback,
       const HttpResponseHeaders* original_response_headers,
       scoped_refptr<HttpResponseHeaders>* override_response_headers,
       GURL* allowed_unsafe_redirect_url) override {
@@ -80,7 +82,7 @@ class TestNetworkDelegateImpl : public NetworkDelegateImpl {
     IncrementAndCompareCounter("on_before_redirect_count");
   }
 
-  void OnResponseStarted(URLRequest* request) override {
+  void OnResponseStarted(URLRequest* request, int net_error) override {
     IncrementAndCompareCounter("on_response_started_count");
   }
 
@@ -93,7 +95,7 @@ class TestNetworkDelegateImpl : public NetworkDelegateImpl {
     IncrementAndCompareCounter("on_network_bytes_sent_count");
   }
 
-  void OnCompleted(URLRequest* request, bool started) override {
+  void OnCompleted(URLRequest* request, bool started, int net_error) override {
     IncrementAndCompareCounter("on_completed_count");
   }
 
@@ -107,35 +109,37 @@ class TestNetworkDelegateImpl : public NetworkDelegateImpl {
 
   AuthRequiredResponse OnAuthRequired(URLRequest* request,
                                       const AuthChallengeInfo& auth_info,
-                                      const AuthCallback& callback,
+                                      AuthCallback callback,
                                       AuthCredentials* credentials) override {
     IncrementAndCompareCounter("on_auth_required_count");
     return NetworkDelegate::AUTH_REQUIRED_RESPONSE_NO_ACTION;
   }
 
   bool OnCanGetCookies(const URLRequest& request,
-                       const CookieList& cookie_list) override {
+                       const CookieList& cookie_list,
+                       bool allowed_from_caller) override {
     IncrementAndCompareCounter("on_can_get_cookies_count");
     return false;
   }
 
   bool OnCanSetCookie(const URLRequest& request,
-                      const std::string& cookie_line,
-                      CookieOptions* options) override {
+                      const net::CanonicalCookie& cookie,
+                      CookieOptions* options,
+                      bool allowed_from_caller) override {
     IncrementAndCompareCounter("on_can_set_cookie_count");
     return false;
   }
 
   bool OnCanAccessFile(const URLRequest& request,
-                       const base::FilePath& path) const override {
+                       const base::FilePath& original_path,
+                       const base::FilePath& absolute_path) const override {
     IncrementAndCompareCounter("on_can_access_file_count");
     return false;
   }
 
-  bool OnCanEnablePrivacyMode(
-      const GURL& url,
-      const GURL& first_party_for_cookies) const override {
-    IncrementAndCompareCounter("on_can_enable_privacy_mode_count");
+  bool OnForcePrivacyMode(const GURL& url,
+                          const GURL& site_for_cookies) const override {
+    IncrementAndCompareCounter("on_force_privacy_mode_count");
     return false;
   }
 
@@ -171,12 +175,12 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
     context_.Init();
   }
 
-  ~TestLayeredNetworkDelegate() override {}
+  ~TestLayeredNetworkDelegate() override = default;
 
   void CallAndVerify() {
     scoped_refptr<AuthChallengeInfo> auth_challenge(new AuthChallengeInfo());
-    std::unique_ptr<URLRequest> request =
-        context_.CreateRequest(GURL(), IDLE, &delegate_);
+    std::unique_ptr<URLRequest> request = context_.CreateRequest(
+        GURL(), IDLE, &delegate_, TRAFFIC_ANNOTATION_FOR_TESTS);
     std::unique_ptr<HttpRequestHeaders> request_headers(
         new HttpRequestHeaders());
     scoped_refptr<HttpResponseHeaders> response_headers(
@@ -194,32 +198,30 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
     OnNetworkBytesSent(request.get(), 42);
     EXPECT_EQ(OK, OnHeadersReceived(NULL, completion_callback.callback(),
                                     response_headers.get(), NULL, NULL));
-    OnResponseStarted(request.get());
+    OnResponseStarted(request.get(), net::OK);
     OnNetworkBytesReceived(request.get(), 42);
-    OnCompleted(request.get(), false);
+    OnCompleted(request.get(), false, net::OK);
     OnURLRequestDestroyed(request.get());
     OnPACScriptError(0, base::string16());
     EXPECT_EQ(
         NetworkDelegate::AUTH_REQUIRED_RESPONSE_NO_ACTION,
         OnAuthRequired(request.get(), *auth_challenge, AuthCallback(), NULL));
-    EXPECT_FALSE(OnCanGetCookies(*request, CookieList()));
-    EXPECT_FALSE(OnCanSetCookie(*request, std::string(), NULL));
-    EXPECT_FALSE(OnCanAccessFile(*request, base::FilePath()));
-    EXPECT_FALSE(OnCanEnablePrivacyMode(GURL(), GURL()));
+    EXPECT_FALSE(OnCanGetCookies(*request, CookieList(), true));
+    EXPECT_FALSE(OnCanSetCookie(*request, net::CanonicalCookie(), NULL, true));
+    EXPECT_FALSE(OnCanAccessFile(*request, base::FilePath(), base::FilePath()));
+    EXPECT_FALSE(OnForcePrivacyMode(GURL(), GURL()));
     EXPECT_FALSE(OnCancelURLRequestWithPolicyViolatingReferrerHeader(
         *request, GURL(), GURL()));
   }
 
  protected:
   void OnBeforeURLRequestInternal(URLRequest* request,
-                                  const CompletionCallback& callback,
                                   GURL* new_url) override {
     ++(*counters_)["on_before_url_request_count"];
     EXPECT_EQ(1, (*counters_)["on_before_url_request_count"]);
   }
 
   void OnBeforeStartTransactionInternal(URLRequest* request,
-                                        const CompletionCallback& callback,
                                         HttpRequestHeaders* headers) override {
     ++(*counters_)["on_before_start_transaction_count"];
     EXPECT_EQ(1, (*counters_)["on_before_start_transaction_count"]);
@@ -241,7 +243,6 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
 
   void OnHeadersReceivedInternal(
       URLRequest* request,
-      const CompletionCallback& callback,
       const HttpResponseHeaders* original_response_headers,
       scoped_refptr<HttpResponseHeaders>* override_response_headers,
       GURL* allowed_unsafe_redirect_url) override {
@@ -255,7 +256,7 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
     EXPECT_EQ(1, (*counters_)["on_before_redirect_count"]);
   }
 
-  void OnResponseStartedInternal(URLRequest* request) override {
+  void OnResponseStartedInternal(URLRequest* request, int net_error) override {
     ++(*counters_)["on_response_started_count"];
     EXPECT_EQ(1, (*counters_)["on_response_started_count"]);
   }
@@ -272,7 +273,9 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
     EXPECT_EQ(1, (*counters_)["on_network_bytes_sent_count"]);
   }
 
-  void OnCompletedInternal(URLRequest* request, bool started) override {
+  void OnCompletedInternal(URLRequest* request,
+                           bool started,
+                           int net_error) override {
     ++(*counters_)["on_completed_count"];
     EXPECT_EQ(1, (*counters_)["on_completed_count"]);
   }
@@ -290,39 +293,44 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
 
   void OnAuthRequiredInternal(URLRequest* request,
                               const AuthChallengeInfo& auth_info,
-                              const AuthCallback& callback,
                               AuthCredentials* credentials) override {
     ++(*counters_)["on_auth_required_count"];
     EXPECT_EQ(1, (*counters_)["on_auth_required_count"]);
   }
 
-  void OnCanGetCookiesInternal(const URLRequest& request,
-                               const CookieList& cookie_list) override {
+  bool OnCanGetCookiesInternal(const URLRequest& request,
+                               const CookieList& cookie_list,
+                               bool allowed_from_caller) override {
     ++(*counters_)["on_can_get_cookies_count"];
     EXPECT_EQ(1, (*counters_)["on_can_get_cookies_count"]);
+    return allowed_from_caller;
   }
 
-  void OnCanSetCookieInternal(const URLRequest& request,
-                              const std::string& cookie_line,
-                              CookieOptions* options) override {
+  bool OnCanSetCookieInternal(const URLRequest& request,
+                              const net::CanonicalCookie& cookie,
+                              CookieOptions* options,
+                              bool allowed_from_caller) override {
     ++(*counters_)["on_can_set_cookie_count"];
     EXPECT_EQ(1, (*counters_)["on_can_set_cookie_count"]);
+    return allowed_from_caller;
   }
 
-  void OnCanAccessFileInternal(const URLRequest& request,
-                               const base::FilePath& path) const override {
+  void OnCanAccessFileInternal(
+      const URLRequest& request,
+      const base::FilePath& original_path,
+      const base::FilePath& absolute_path) const override {
     ++(*counters_)["on_can_access_file_count"];
     EXPECT_EQ(1, (*counters_)["on_can_access_file_count"]);
   }
 
-  void OnCanEnablePrivacyModeInternal(
-      const GURL& url,
-      const GURL& first_party_for_cookies) const override {
-    ++(*counters_)["on_can_enable_privacy_mode_count"];
-    EXPECT_EQ(1, (*counters_)["on_can_enable_privacy_mode_count"]);
+  bool OnForcePrivacyModeInternal(const GURL& url,
+                                  const GURL& site_for_cookies) const override {
+    ++(*counters_)["on_force_privacy_mode_count"];
+    EXPECT_EQ(1, (*counters_)["on_force_privacy_mode_count"]);
+    return false;
   }
 
-  void OnCancelURLRequestWithPolicyViolatingReferrerHeaderInternal(
+  bool OnCancelURLRequestWithPolicyViolatingReferrerHeaderInternal(
       const URLRequest& request,
       const GURL& target_url,
       const GURL& referrer_url) const override {
@@ -332,6 +340,31 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
     EXPECT_EQ(1, (*counters_)
                      ["on_cancel_url_request_with_policy_"
                       "violating_referrer_header_count"]);
+    return false;
+  }
+
+  void OnCanQueueReportingReportInternal(
+      const url::Origin& origin) const override {
+    ++(*counters_)["on_can_queue_reporting_report_count"];
+    EXPECT_EQ(1, (*counters_)["on_can_queue_reporting_report_count"]);
+  }
+
+  void OnCanSendReportingReportsInternal(
+      const std::set<url::Origin>& origins) const override {
+    ++(*counters_)["on_can_send_reporting_report_count"];
+    EXPECT_EQ(1, (*counters_)["on_can_send_reporting_report_count"]);
+  }
+
+  void OnCanSetReportingClientInternal(const url::Origin& origin,
+                                       const GURL& endpoint) const override {
+    ++(*counters_)["on_can_set_reporting_client_count"];
+    EXPECT_EQ(1, (*counters_)["on_can_set_reporting_client_count"]);
+  }
+
+  void OnCanUseReportingClientInternal(const url::Origin& origin,
+                                       const GURL& endpoint) const override {
+    ++(*counters_)["on_can_use_reporting_client_count"];
+    EXPECT_EQ(1, (*counters_)["on_can_use_reporting_client_count"]);
   }
 
  private:
@@ -344,7 +377,7 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
 
 }  // namespace
 
-class LayeredNetworkDelegateTest : public testing::Test {
+class LayeredNetworkDelegateTest : public TestWithScopedTaskEnvironment {
  public:
   LayeredNetworkDelegateTest() {
     std::unique_ptr<TestNetworkDelegateImpl> test_network_delegate(

@@ -6,23 +6,23 @@
 
 #include <string>
 
-#include "ash/common/shell_window_ids.h"
-#include "ash/shell.h"
-#include "ash/shell_delegate.h"
-#include "ash/wm/window_animations.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "base/macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/ui/ash/ash_util.h"
 #include "chrome/grit/generated_resources.h"
 #include "extensions/common/extension.h"
-#include "ui/accessibility/ax_view_state.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/aura/window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/text_utils.h"
@@ -53,30 +53,25 @@ const SkColor kWindowBackgroundColor = SK_ColorWHITE;
 const int kWindowCornerRadius = 4;
 
 // Creates and shows the message widget for |view| with |animation_time_ms|.
-void CreateAndShowWidgetWithContent(views::WidgetDelegate* delegate,
-                                    views::View* view,
-                                    int animation_time_ms) {
-  aura::Window* root_window = ash::Shell::GetTargetRootWindow();
-  gfx::Size rs = root_window->bounds().size();
-  gfx::Size ps = view->GetPreferredSize();
-  gfx::Rect bounds((rs.width() - ps.width()) / 2,
-                   -ps.height(),
-                   ps.width(),
-                   ps.height());
+void CreateAndShowWidget(views::WidgetDelegateView* delegate,
+                         int animation_time_ms) {
+  gfx::Size display_size =
+      display::Screen::GetScreen()->GetPrimaryDisplay().size();
+  gfx::Size view_size = delegate->GetPreferredSize();
+  gfx::Rect bounds((display_size.width() - view_size.width()) / 2,
+                   -view_size.height(), view_size.width(), view_size.height());
   views::Widget::InitParams params;
   params.type = views::Widget::InitParams::TYPE_POPUP;
   params.opacity = views::Widget::InitParams::TRANSLUCENT_WINDOW;
   params.ownership = views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET;
   params.accept_events = false;
   params.keep_on_top = true;
-  params.remove_standard_frame = true;
   params.delegate = delegate;
   params.bounds = bounds;
-  params.parent = ash::Shell::GetContainer(
-      root_window, ash::kShellWindowId_SettingBubbleContainer);
+  ash_util::SetupWidgetInitParamsForContainer(
+      &params, ash::kShellWindowId_SettingBubbleContainer);
   views::Widget* widget = new views::Widget;
   widget->Init(params);
-  widget->SetContentsView(view);
   gfx::NativeView native_view = widget->GetNativeView();
   native_view->SetName("KioskIdleAppNameNotification");
 
@@ -90,11 +85,11 @@ void CreateAndShowWidgetWithContent(views::WidgetDelegate* delegate,
   // We don't care about the show animation since it is off screen, so stop the
   // started animation and move the message into view.
   animator->StopAnimating();
-  bounds.set_y((rs.height() - ps.height()) / 20);
+  bounds.set_y((display_size.height() - view_size.height()) / 20);
   widget->SetBounds(bounds);
 
   // Allow to use the message for spoken feedback.
-  view->NotifyAccessibilityEvent(ui::AX_EVENT_ALERT, true);
+  delegate->NotifyAccessibilityEvent(ax::mojom::Event::kAlert, true);
 }
 
 }  // namespace
@@ -121,7 +116,7 @@ class IdleAppNameNotificationDelegateView
     AddLabel(app_name, rb->GetFontList(ui::ResourceBundle::BoldFont),
              error ? kErrorTextColor : kTextColor);
     spoken_text_ = app_name;
-    SetLayoutManager(new views::FillLayout);
+    SetLayoutManager(std::make_unique<views::FillLayout>());
 
     // Set a timer which will trigger to remove the message after the given
     // time.
@@ -169,16 +164,16 @@ class IdleAppNameNotificationDelegateView
   }
 
   void OnPaint(gfx::Canvas* canvas) override {
-    SkPaint paint;
-    paint.setStyle(SkPaint::kFill_Style);
-    paint.setColor(kWindowBackgroundColor);
-    canvas->DrawRoundRect(GetLocalBounds(), kWindowCornerRadius, paint);
+    cc::PaintFlags flags;
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(kWindowBackgroundColor);
+    canvas->DrawRoundRect(GetLocalBounds(), kWindowCornerRadius, flags);
     views::WidgetDelegateView::OnPaint(canvas);
   }
 
-  void GetAccessibleState(ui::AXViewState* state) override {
-    state->name = spoken_text_;
-    state->role = ui::AX_ROLE_ALERT;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override {
+    node_data->SetName(spoken_text_);
+    node_data->role = ax::mojom::Role::kAlert;
   }
 
   // ImplicitAnimationObserver overrides
@@ -194,7 +189,6 @@ class IdleAppNameNotificationDelegateView
     label->SetHorizontalAlignment(gfx::ALIGN_CENTER);
     label->SetFontList(font);
     label->SetEnabledColor(text_color);
-    label->SetDisabledColor(text_color);
     label->SetAutoColorReadabilityEnabled(false);
     AddChildView(label);
   }
@@ -240,10 +234,10 @@ bool IdleAppNameNotificationView::IsVisible() {
 }
 
 base::string16 IdleAppNameNotificationView::GetShownTextForTest() {
-  ui::AXViewState state;
+  ui::AXNodeData node_data;
   DCHECK(view_);
-  view_->GetAccessibleState(&state);
-  return state.name;
+  view_->GetAccessibleNodeData(&node_data);
+  return node_data.GetString16Attribute(ax::mojom::StringAttribute::kName);
 }
 
 void IdleAppNameNotificationView::ShowMessage(
@@ -268,7 +262,7 @@ void IdleAppNameNotificationView::ShowMessage(
       app_name,
       error,
       message_visibility_time_in_ms + animation_time_ms);
-  CreateAndShowWidgetWithContent(view_, view_, animation_time_ms);
+  CreateAndShowWidget(view_, animation_time_ms);
 }
 
 }  // namespace chromeos

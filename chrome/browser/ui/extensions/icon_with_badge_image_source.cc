@@ -8,99 +8,39 @@
 #include <cmath>
 #include <utility>
 
-#include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "cc/paint/paint_flags.h"
 #include "chrome/browser/extensions/extension_action.h"
-#include "grit/theme_resources.h"
-#include "third_party/skia/include/core/SkPaint.h"
-#include "third_party/skia/include/core/SkRefCnt.h"
-#include "third_party/skia/include/core/SkTypeface.h"
-#include "ui/base/material_design/material_design_controller.h"
+#include "chrome/browser/ui/toolbar/toolbar_actions_bar.h"
+#include "chrome/grit/theme_resources.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia_operations.h"
-#include "ui/resources/grit/ui_resources.h"
+#include "ui/gfx/shadow_value.h"
+#include "ui/gfx/skia_paint_util.h"
 
 namespace {
-
-// Different platforms need slightly different constants to look good.
-// TODO(devlin): Comb through these and see if they are all still needed/
-// appropriate.
-#if defined(OS_WIN)
-const float kTextSize = 10;
-// The padding between the top of the badge and the top of the text.
-const int kTopTextPadding = -1;
-#elif defined(OS_MACOSX)
-const float kTextSize = 9.0;
-const int kTopTextPadding = 0;
-#elif defined(OS_CHROMEOS)
-const float kTextSize = 8.0;
-const int kTopTextPadding = 1;
-#elif defined(OS_POSIX)
-const float kTextSize = 9.0;
-const int kTopTextPadding = 0;
-#endif
-
-const int kPadding = 2;
-const int kBadgeHeight = 11;
-const int kMaxTextWidth = 23;
-
-// The minimum width for center-aligning the badge.
-const int kCenterAlignThreshold = 20;
-
-// Helper routine that returns a singleton SkPaint object configured for
-// rendering badge overlay text (correct font, typeface, etc).
-SkPaint* GetBadgeTextPaintSingleton() {
-#if defined(OS_MACOSX)
-  const char kPreferredTypeface[] = "Helvetica Bold";
-#else
-  const char kPreferredTypeface[] = "Arial";
-#endif
-
-  static SkPaint* text_paint = NULL;
-  if (!text_paint) {
-    text_paint = new SkPaint;
-    text_paint->setAntiAlias(true);
-    text_paint->setTextAlign(SkPaint::kLeft_Align);
-
-    sk_sp<SkTypeface> typeface(
-        SkTypeface::MakeFromName(kPreferredTypeface,
-                                 SkFontStyle::FromOldStyle(SkTypeface::kBold)));
-    // Skia doesn't do any font fallback---if the user is missing the font then
-    // typeface will be NULL. If we don't do manual fallback then we'll crash.
-    if (typeface) {
-      text_paint->setFakeBoldText(true);
-    } else {
-      // Fall back to the system font. We don't bold it because we aren't sure
-      // how it will look.
-      // For the most part this code path will only be hit on Linux systems
-      // that don't have Arial.
-      ResourceBundle& rb = ResourceBundle::GetSharedInstance();
-      const gfx::Font& base_font = rb.GetFont(ResourceBundle::BaseFont);
-      typeface = SkTypeface::MakeFromName(base_font.GetFontName().c_str(),
-                                          SkFontStyle());
-      DCHECK(typeface);
-    }
-
-    text_paint->setTypeface(std::move(typeface));
-  }
-  return text_paint;
-}
 
 gfx::ImageSkiaRep ScaleImageSkiaRep(const gfx::ImageSkiaRep& rep,
                                     int target_width_dp,
                                     float target_scale) {
   int width_px = target_width_dp * target_scale;
   return gfx::ImageSkiaRep(
-      skia::ImageOperations::Resize(rep.sk_bitmap(),
+      skia::ImageOperations::Resize(rep.GetBitmap(),
                                     skia::ImageOperations::RESIZE_BEST,
                                     width_px, width_px),
       target_scale);
+}
+
+float GetBlockedActionBadgeRadius() {
+  return 12.0f;
 }
 
 }  // namespace
@@ -113,10 +53,7 @@ IconWithBadgeImageSource::Badge::Badge(const std::string& text,
 IconWithBadgeImageSource::Badge::~Badge() {}
 
 IconWithBadgeImageSource::IconWithBadgeImageSource(const gfx::Size& size)
-    : gfx::CanvasImageSource(size, false),
-      grayscale_(false),
-      paint_page_action_decoration_(false),
-      paint_blocked_actions_decoration_(false) {}
+    : gfx::CanvasImageSource(size, false) {}
 
 IconWithBadgeImageSource::~IconWithBadgeImageSource() {}
 
@@ -129,8 +66,14 @@ void IconWithBadgeImageSource::SetBadge(std::unique_ptr<Badge> badge) {
 }
 
 void IconWithBadgeImageSource::Draw(gfx::Canvas* canvas) {
+  // TODO(https://crbug.com/842856): There should be a cleaner delineation
+  // between what is drawn here and what is handled by the button itself.
+
   if (icon_.IsEmpty())
     return;
+
+  if (paint_blocked_actions_decoration_)
+    PaintBlockedActionDecoration(canvas);
 
   gfx::ImageSkia skia = icon_.AsImageSkia();
   gfx::ImageSkiaRep rep = skia.GetRepresentation(canvas->image_scale());
@@ -139,7 +82,7 @@ void IconWithBadgeImageSource::Draw(gfx::Canvas* canvas) {
         rep, ExtensionAction::ActionIconSize(), canvas->image_scale()));
   }
   if (grayscale_)
-    skia = gfx::ImageSkiaOperations::CreateHSLShiftedImage(skia, {-1, 0, 0.75});
+    skia = gfx::ImageSkiaOperations::CreateHSLShiftedImage(skia, {-1, 0, 0.6});
 
   int x_offset =
       std::floor((size().width() - ExtensionAction::ActionIconSize()) / 2.0);
@@ -152,9 +95,6 @@ void IconWithBadgeImageSource::Draw(gfx::Canvas* canvas) {
 
   if (paint_page_action_decoration_)
     PaintPageActionDecoration(canvas);
-
-  if (paint_blocked_actions_decoration_)
-    PaintBlockedActionDecoration(canvas);
 }
 
 // Paints badge with specified parameters to |canvas|.
@@ -166,32 +106,25 @@ void IconWithBadgeImageSource::PaintBadge(gfx::Canvas* canvas) {
                            ? SK_ColorWHITE
                            : badge_->text_color;
 
-  SkColor background_color = ui::MaterialDesignController::IsModeMaterial()
-                                 ? gfx::kGoogleBlue500
-                                 : SkColorSetRGB(218, 0, 24);
-  if (SkColorGetA(badge_->background_color) != SK_AlphaTRANSPARENT)
-    background_color = badge_->background_color;
   // Make sure the background color is opaque. See http://crbug.com/619499
-  if (ui::MaterialDesignController::IsModeMaterial())
-    background_color = SkColorSetA(background_color, SK_AlphaOPAQUE);
+  SkColor background_color =
+      SkColorGetA(badge_->background_color) == SK_AlphaTRANSPARENT
+          ? gfx::kGoogleBlue500
+          : SkColorSetA(badge_->background_color, SK_AlphaOPAQUE);
 
-  canvas->Save();
-
-  SkPaint* text_paint = nullptr;
-  int text_width = 0;
-  ResourceBundle* rb = &ResourceBundle::GetSharedInstance();
-  gfx::FontList base_font = rb->GetFontList(ResourceBundle::BaseFont)
+  constexpr int kBadgeHeight = 12;
+  ui::ResourceBundle* rb = &ui::ResourceBundle::GetSharedInstance();
+  gfx::FontList base_font = rb->GetFontList(ui::ResourceBundle::BaseFont)
                                 .DeriveWithHeightUpperBound(kBadgeHeight);
   base::string16 utf16_text = base::UTF8ToUTF16(badge_->text);
 
   // See if we can squeeze a slightly larger font into the badge given the
   // actual string that is to be displayed.
-  const int kMaxIncrementAttempts = 5;
+  constexpr int kMaxIncrementAttempts = 5;
   for (size_t i = 0; i < kMaxIncrementAttempts; ++i) {
     int w = 0;
     int h = 0;
-    gfx::FontList bigger_font =
-        base_font.Derive(1, 0, gfx::Font::Weight::NORMAL);
+    gfx::FontList bigger_font = base_font.Derive(1, 0, gfx::Font::Weight::BOLD);
     gfx::Canvas::SizeStringInt(utf16_text, bigger_font, &w, &h, 0,
                                gfx::Canvas::NO_ELLIPSIS);
     if (h > kBadgeHeight)
@@ -199,120 +132,109 @@ void IconWithBadgeImageSource::PaintBadge(gfx::Canvas* canvas) {
     base_font = bigger_font;
   }
 
-  if (ui::MaterialDesignController::IsModeMaterial()) {
-    text_width =
+  constexpr int kMaxTextWidth = 23;
+  const int text_width =
         std::min(kMaxTextWidth, canvas->GetStringWidth(utf16_text, base_font));
-  } else {
-    text_paint = GetBadgeTextPaintSingleton();
-    text_paint->setColor(text_color);
-    float scale = canvas->image_scale();
-
-    // Calculate text width. Font width may not be linear with respect to the
-    // scale factor (e.g. when hinting is applied), so we need to use the font
-    // size that canvas actually uses when drawing a text.
-    text_paint->setTextSize(SkFloatToScalar(kTextSize) * scale);
-    SkScalar sk_text_width_in_pixel =
-        text_paint->measureText(badge_->text.c_str(), badge_->text.size());
-    text_paint->setTextSize(SkFloatToScalar(kTextSize));
-
-    // We clamp the width to a max size. SkPaint::measureText returns the width
-    // in pixel (as a result of scale multiplier), so convert
-    // sk_text_width_in_pixel back to DIP (density independent pixel) first.
-    text_width = std::min(
-        kMaxTextWidth, static_cast<int>(std::ceil(
-                           SkScalarToFloat(sk_text_width_in_pixel) / scale)));
-  }
-
   // Calculate badge size. It is clamped to a min width just because it looks
   // silly if it is too skinny.
+  constexpr int kPadding = 2;
   int badge_width = text_width + kPadding * 2;
+
+  const gfx::Rect icon_area = GetIconAreaRect();
+
   // Force the pixel width of badge to be either odd (if the icon width is odd)
   // or even otherwise. If there is a mismatch you get http://crbug.com/26400.
-  if (size().width() != 0 && (badge_width % 2 != size().width() % 2))
+  if (icon_area.width() != 0 && (badge_width % 2 != icon_area.width() % 2))
     badge_width += 1;
   badge_width = std::max(kBadgeHeight, badge_width);
 
+  // The minimum width for center-aligning the badge.
+  constexpr int kCenterAlignThreshold = 20;
   // Calculate the badge background rect. It is usually right-aligned, but it
   // can also be center-aligned if it is large.
-  gfx::Rect rect(badge_width >= kCenterAlignThreshold
-                     ? (size().width() - badge_width) / 2
-                     : size().width() - badge_width,
-                 size().height() - kBadgeHeight, badge_width, kBadgeHeight);
-  SkPaint rect_paint;
-  rect_paint.setStyle(SkPaint::kFill_Style);
-  rect_paint.setAntiAlias(true);
-  rect_paint.setColor(background_color);
+  const int badge_offset_x = badge_width >= kCenterAlignThreshold
+                                 ? (icon_area.width() - badge_width) / 2
+                                 : icon_area.width() - badge_width;
+  const int badge_offset_y = icon_area.height() - kBadgeHeight;
+  gfx::Rect rect(icon_area.x() + badge_offset_x, icon_area.y() + badge_offset_y,
+                 badge_width, kBadgeHeight);
+  cc::PaintFlags rect_flags;
+  rect_flags.setStyle(cc::PaintFlags::kFill_Style);
+  rect_flags.setAntiAlias(true);
+  rect_flags.setColor(background_color);
 
-  if (ui::MaterialDesignController::IsModeMaterial()) {
-    // Clear part of the background icon.
-    gfx::Rect cutout_rect(rect);
-    cutout_rect.Inset(-1, -1);
-    SkPaint cutout_paint = rect_paint;
-    cutout_paint.setXfermodeMode(SkXfermode::kClear_Mode);
-    canvas->DrawRoundRect(cutout_rect, 2, cutout_paint);
+  // Clear part of the background icon.
+  gfx::Rect cutout_rect(rect);
+  cutout_rect.Inset(-1, -1);
+  cc::PaintFlags cutout_flags = rect_flags;
+  cutout_flags.setBlendMode(SkBlendMode::kClear);
+  constexpr int kOuterCornerRadius = 3;
+  canvas->DrawRoundRect(cutout_rect, kOuterCornerRadius, cutout_flags);
 
-    // Paint the backdrop.
-    canvas->DrawRoundRect(rect, 1, rect_paint);
+  // Paint the backdrop.
+  canvas->DrawRoundRect(rect, kOuterCornerRadius - 1, rect_flags);
 
-    // Paint the text.
-    rect.Inset(std::max(kPadding, (rect.width() - text_width) / 2),
-               kBadgeHeight - base_font.GetHeight(), kPadding, 0);
-    canvas->DrawStringRect(utf16_text, base_font, text_color, rect);
-  } else {
-    // Paint the backdrop.
-    canvas->DrawRoundRect(rect, 2, rect_paint);
-
-    // Overlay the gradient. It is stretchy, so we do this in three parts.
-    ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-    gfx::ImageSkia* gradient_left =
-        rb.GetImageSkiaNamed(IDR_BROWSER_ACTION_BADGE_LEFT);
-    gfx::ImageSkia* gradient_right =
-        rb.GetImageSkiaNamed(IDR_BROWSER_ACTION_BADGE_RIGHT);
-    gfx::ImageSkia* gradient_center =
-        rb.GetImageSkiaNamed(IDR_BROWSER_ACTION_BADGE_CENTER);
-
-    canvas->DrawImageInt(*gradient_left, rect.x(), rect.y());
-    canvas->TileImageInt(
-        *gradient_center, rect.x() + gradient_left->width(), rect.y(),
-        rect.width() - gradient_left->width() - gradient_right->width(),
-        rect.height());
-    canvas->DrawImageInt(*gradient_right,
-                         rect.right() - gradient_right->width(), rect.y());
-
-    // Finally, draw the text centered within the badge. We set a clip in case
-    // the text was too large.
-    rect.Inset(kPadding, 0);
-    canvas->ClipRect(rect);
-    canvas->sk_canvas()->drawText(
-        badge_->text.c_str(), badge_->text.size(),
-        SkFloatToScalar(rect.x() +
-                        static_cast<float>(rect.width() - text_width) / 2),
-        SkFloatToScalar(rect.y() + kTextSize + kTopTextPadding), *text_paint);
-  }
-  canvas->Restore();
+  // Paint the text.
+  rect.Inset(std::max(kPadding, (rect.width() - text_width) / 2),
+             kBadgeHeight - base_font.GetHeight(), kPadding, 0);
+  canvas->DrawStringRect(utf16_text, base_font, text_color, rect);
 }
 
 void IconWithBadgeImageSource::PaintPageActionDecoration(gfx::Canvas* canvas) {
-  static const SkColor decoration_color = SkColorSetARGB(255, 70, 142, 226);
-
-  int major_radius = std::ceil(size().width() / 5.0);
-  int minor_radius = std::ceil(major_radius / 2.0);
-  gfx::Point center_point(major_radius + 1, size().height() - (major_radius)-1);
-  SkPaint paint;
-  paint.setAntiAlias(true);
-  paint.setStyle(SkPaint::kFill_Style);
-  paint.setColor(SK_ColorTRANSPARENT);
-  paint.setXfermodeMode(SkXfermode::kSrc_Mode);
-  canvas->DrawCircle(center_point, major_radius, paint);
-  paint.setColor(decoration_color);
-  canvas->DrawCircle(center_point, minor_radius, paint);
+  const gfx::Rect icon_area = GetIconAreaRect();
+  constexpr float kMajorRadius = 4.5;
+  constexpr float kMinorRadius = 3;
+  // This decoration is positioned at the bottom left corner of the icon area.
+  gfx::PointF center_point = gfx::PointF(icon_area.bottom_left());
+  center_point.Offset(kMajorRadius + 1, -kMajorRadius - 1);
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setStyle(cc::PaintFlags::kFill_Style);
+  flags.setColor(SK_ColorTRANSPARENT);
+  flags.setBlendMode(SkBlendMode::kSrc);
+  canvas->DrawCircle(center_point, kMajorRadius, flags);
+  constexpr SkColor decoration_color = SkColorSetARGB(255, 70, 142, 226);
+  flags.setColor(decoration_color);
+  canvas->DrawCircle(center_point, kMinorRadius, flags);
 }
 
 void IconWithBadgeImageSource::PaintBlockedActionDecoration(
     gfx::Canvas* canvas) {
-  canvas->Save();
-  gfx::ImageSkia img = *ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-      IDR_BLOCKED_EXTENSION_SCRIPT);
-  canvas->DrawImageInt(img, size().width() - img.width(), 0);
-  canvas->Restore();
+  // To match the CSS notion of blur (spread outside the bounding box) to the
+  // Skia notion of blur (spread outside and inside the bounding box), we have
+  // to double the CSS-based blur values.
+  constexpr int kBlurCorrection = 2;
+
+  constexpr int kKeyShadowOpacity = 0x4D;  // 30%
+  const gfx::ShadowValue key_shadow(
+      gfx::Vector2d(0, 1), kBlurCorrection * 2 /*blur*/,
+      SkColorSetA(gfx::kGoogleGrey800, kKeyShadowOpacity));
+
+  constexpr int kAmbientShadowOpacity = 0x26;  // 15%
+  const gfx::ShadowValue ambient_shadow(
+      gfx::Vector2d(0, 2), kBlurCorrection * 6 /*blur*/,
+      SkColorSetA(gfx::kGoogleGrey800, kAmbientShadowOpacity));
+
+  const float blocked_action_badge_radius = GetBlockedActionBadgeRadius();
+
+  // Sanity checking.
+  const gfx::Rect icon_rect = GetIconAreaRect();
+  DCHECK_LE(2 * blocked_action_badge_radius, icon_rect.width());
+  DCHECK_EQ(icon_rect.width(), icon_rect.height());
+
+  cc::PaintFlags paint_flags;
+  paint_flags.setStyle(cc::PaintFlags::kFill_Style);
+  paint_flags.setAntiAlias(true);
+  paint_flags.setColor(SK_ColorWHITE);
+  paint_flags.setLooper(
+      gfx::CreateShadowDrawLooper({key_shadow, ambient_shadow}));
+
+  canvas->DrawCircle(gfx::PointF(icon_rect.CenterPoint()),
+                     blocked_action_badge_radius, paint_flags);
+}
+
+gfx::Rect IconWithBadgeImageSource::GetIconAreaRect() const {
+  gfx::Rect icon_area(size());
+  icon_area.ClampToCenteredSize(ToolbarActionsBar::GetIconAreaSize());
+  return icon_area;
 }

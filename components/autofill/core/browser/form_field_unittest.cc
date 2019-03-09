@@ -2,14 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/memory/scoped_vector.h"
+#include <memory>
+#include <vector>
+
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/form_field.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using base::ASCIIToUTF16;
+using autofill::features::kAutofillEnforceMinRequiredFieldsForHeuristics;
 
 namespace autofill {
 
@@ -124,71 +129,69 @@ TEST(FormFieldTest, Match) {
 
 // Test that we ignore checkable elements.
 TEST(FormFieldTest, ParseFormFields) {
-  ScopedVector<AutofillField> fields;
+  std::vector<std::unique_ptr<AutofillField>> fields;
   FormFieldData field_data;
   field_data.form_control_type = "text";
 
-  field_data.label = ASCIIToUTF16("Address line1");
-  fields.push_back(new AutofillField(field_data, field_data.label));
-
   field_data.check_status = FormFieldData::CHECKABLE_BUT_UNCHECKED;
   field_data.label = ASCIIToUTF16("Is PO Box");
-  fields.push_back(new AutofillField(field_data, field_data.label));
+  fields.push_back(
+      std::make_unique<AutofillField>(field_data, field_data.label));
+
+  // Does not parse since there are only field and it's checkable.
+  EXPECT_TRUE(FormField::ParseFormFields(fields, true).empty());
 
   // reset |is_checkable| to false.
   field_data.check_status = FormFieldData::NOT_CHECKABLE;
 
+  field_data.label = ASCIIToUTF16("Address line1");
+  fields.push_back(
+      std::make_unique<AutofillField>(field_data, field_data.label));
+
+  // Parse a single address line 1 field.
+  {
+    base::test::ScopedFeatureList enforce_min_fields;
+    enforce_min_fields.InitAndEnableFeature(
+        kAutofillEnforceMinRequiredFieldsForHeuristics);
+    ASSERT_EQ(0u, FormField::ParseFormFields(fields, true).size());
+  }
+  {
+    base::test::ScopedFeatureList do_not_enforce_min_fields;
+    do_not_enforce_min_fields.InitAndDisableFeature(
+        kAutofillEnforceMinRequiredFieldsForHeuristics);
+    const FieldCandidatesMap field_candidates_map =
+        FormField::ParseFormFields(fields, true);
+    ASSERT_EQ(1u, field_candidates_map.size());
+    EXPECT_EQ(ADDRESS_HOME_LINE1,
+              field_candidates_map.find(ASCIIToUTF16("Address line1"))
+                  ->second.BestHeuristicType());
+  }
+
+  // Parses address line 1 and 2.
   field_data.label = ASCIIToUTF16("Address line2");
-  fields.push_back(new AutofillField(field_data, field_data.label));
+  fields.push_back(
+      std::make_unique<AutofillField>(field_data, field_data.label));
 
-  // Does not parse since there are only 2 recognized fields.
-  ASSERT_TRUE(FormField::ParseFormFields(fields.get(), true).empty());
-
-  field_data.label = ASCIIToUTF16("City");
-  fields.push_back(new AutofillField(field_data, field_data.label));
-
-  // Checkable element shouldn't interfere with inference of Address line2.
-  const FieldCandidatesMap field_candidates_map =
-      FormField::ParseFormFields(fields.get(), true);
-  ASSERT_EQ(3U, field_candidates_map.size());
-
-  EXPECT_EQ(ADDRESS_HOME_LINE1,
-            field_candidates_map.find(ASCIIToUTF16("Address line1"))
-                ->second.BestHeuristicType());
-  EXPECT_EQ(ADDRESS_HOME_LINE2,
-            field_candidates_map.find(ASCIIToUTF16("Address line2"))
-                ->second.BestHeuristicType());
-}
-
-// All parsers see the same form and should not modify it.
-// Furthermore, all parsers are allowed to cast their votes on what the
-// ServerFieldType for a given type should be, so for an ambiguous input more
-// than one candidate is expected.
-TEST(FormFieldTest, ParseFormFieldsImmutableForm) {
-  const base::string16 unique_name = ASCIIToUTF16("blah");
-  FormFieldData field_data;
-  field_data.form_control_type = "text";
-  field_data.name = ASCIIToUTF16("business_email_address");
-
-  ScopedVector<AutofillField> fields;
-  fields.push_back(new AutofillField(field_data, unique_name));
-
-  const FieldCandidatesMap field_candidates_map =
-      FormField::ParseFormFields(fields.get(), true);
-
-  // The input form should not be modified.
-  EXPECT_EQ(1U, fields.size());
-
-  // The output should contain detected information for the sole field in the
-  // input.
-  EXPECT_EQ(1U, field_candidates_map.size());
-  EXPECT_TRUE(field_candidates_map.find(unique_name) !=
-              field_candidates_map.end());
-
-  // Because we use a handcrafted field name, we can expect it to match more
-  // than just one parser (at least email, but probably some more from the other
-  // parsers).
-  EXPECT_LT(1U, field_candidates_map.at(unique_name).field_candidates().size());
+  {
+    base::test::ScopedFeatureList enforce_min_fields;
+    enforce_min_fields.InitAndEnableFeature(
+        kAutofillEnforceMinRequiredFieldsForHeuristics);
+    ASSERT_EQ(0u, FormField::ParseFormFields(fields, true).size());
+  }
+  {
+    base::test::ScopedFeatureList do_not_enforce_min_fields;
+    do_not_enforce_min_fields.InitAndDisableFeature(
+        kAutofillEnforceMinRequiredFieldsForHeuristics);
+    const FieldCandidatesMap field_candidates_map =
+        FormField::ParseFormFields(fields, true);
+    ASSERT_EQ(2u, field_candidates_map.size());
+    EXPECT_EQ(ADDRESS_HOME_LINE1,
+              field_candidates_map.find(ASCIIToUTF16("Address line1"))
+                  ->second.BestHeuristicType());
+    EXPECT_EQ(ADDRESS_HOME_LINE2,
+              field_candidates_map.find(ASCIIToUTF16("Address line2"))
+                  ->second.BestHeuristicType());
+  }
 }
 
 }  // namespace autofill

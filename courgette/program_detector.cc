@@ -4,9 +4,6 @@
 
 #include "courgette/program_detector.h"
 
-#include <utility>
-
-#include "courgette/assembly_program.h"
 #include "courgette/disassembler.h"
 #include "courgette/disassembler_elf_32_arm.h"
 #include "courgette/disassembler_elf_32_x86.h"
@@ -15,36 +12,34 @@
 
 namespace courgette {
 
-namespace {
-
-// Returns a new instance of Disassembler subclass if binary data given in
-// |buffer| and |length| matches a known binary format, otherwise null.
-std::unique_ptr<Disassembler> DetectDisassembler(const void* buffer,
+std::unique_ptr<Disassembler> DetectDisassembler(const uint8_t* buffer,
                                                  size_t length) {
   std::unique_ptr<Disassembler> disassembler;
 
-  disassembler.reset(new DisassemblerWin32X86(buffer, length));
-  if (disassembler->ParseHeader())
-    return disassembler;
-
-  disassembler.reset(new DisassemblerWin32X64(buffer, length));
-  if (disassembler->ParseHeader())
-    return disassembler;
-
-  disassembler.reset(new DisassemblerElf32X86(buffer, length));
-  if (disassembler->ParseHeader())
-    return disassembler;
-
-  disassembler.reset(new DisassemblerElf32ARM(buffer, length));
-  if (disassembler->ParseHeader())
-    return disassembler;
-
+  if (DisassemblerWin32X86::QuickDetect(buffer, length)) {
+    disassembler.reset(new DisassemblerWin32X86(buffer, length));
+    if (disassembler->ParseHeader())
+      return disassembler;
+  }
+  if (DisassemblerWin32X64::QuickDetect(buffer, length)) {
+    disassembler.reset(new DisassemblerWin32X64(buffer, length));
+    if (disassembler->ParseHeader())
+      return disassembler;
+  }
+  if (DisassemblerElf32X86::QuickDetect(buffer, length)) {
+    disassembler.reset(new DisassemblerElf32X86(buffer, length));
+    if (disassembler->ParseHeader())
+      return disassembler;
+  }
+  if (DisassemblerElf32ARM::QuickDetect(buffer, length)) {
+    disassembler.reset(new DisassemblerElf32ARM(buffer, length));
+    if (disassembler->ParseHeader())
+      return disassembler;
+  }
   return nullptr;
 }
 
-}  // namespace
-
-Status DetectExecutableType(const void* buffer,
+Status DetectExecutableType(const uint8_t* buffer,
                             size_t length,
                             ExecutableType* type,
                             size_t* detected_length) {
@@ -59,26 +54,6 @@ Status DetectExecutableType(const void* buffer,
 
   *type = disassembler->kind();
   *detected_length = disassembler->length();
-  return C_OK;
-}
-
-Status ParseDetectedExecutable(const void* buffer,
-                               size_t length,
-                               std::unique_ptr<AssemblyProgram>* output) {
-  output->reset();
-
-  std::unique_ptr<Disassembler> disassembler(
-      DetectDisassembler(buffer, length));
-  if (!disassembler)
-    return C_INPUT_NOT_RECOGNIZED;
-
-  std::unique_ptr<AssemblyProgram> program(
-      new AssemblyProgram(disassembler->kind()));
-
-  if (!disassembler->Disassemble(program.get()))
-    return C_DISASSEMBLY_FAILED;
-
-  *output = std::move(program);
   return C_OK;
 }
 

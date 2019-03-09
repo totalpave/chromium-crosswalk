@@ -18,6 +18,7 @@
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "components/signin/core/browser/webdata/token_service_table.h"
 #include "components/webdata/common/web_data_results.h"
 #include "components/webdata/common/web_data_service_base.h"
 #include "components/webdata/common/web_data_service_consumer.h"
@@ -31,17 +32,27 @@ class TokenWebDataBackend;
 class WebDatabaseService;
 class WebDataServiceConsumer;
 
+// The result of a get tokens operation.
+struct TokenResult {
+  TokenResult();
+  TokenResult(const TokenResult& other);
+  ~TokenResult();
+
+  TokenServiceTable::Result db_result;
+  std::map<std::string, std::string> tokens;
+};
+
 // TokenWebData is a data repository for storage of authentication tokens.
 
 class TokenWebData : public WebDataServiceBase {
  public:
   TokenWebData(scoped_refptr<WebDatabaseService> wdbs,
-               scoped_refptr<base::SingleThreadTaskRunner> ui_thread,
-               scoped_refptr<base::SingleThreadTaskRunner> db_thread,
+               scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+               scoped_refptr<base::SingleThreadTaskRunner> db_task_runner,
                const ProfileErrorCallback& callback);
 
-  TokenWebData(scoped_refptr<base::SingleThreadTaskRunner> ui_thread,
-               scoped_refptr<base::SingleThreadTaskRunner> db_thread);
+  TokenWebData(scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
+               scoped_refptr<base::SingleThreadTaskRunner> db_task_runner);
 
   // Set a token to use for a specified service.
   void SetTokenForService(const std::string& service,

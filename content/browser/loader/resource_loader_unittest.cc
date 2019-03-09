@@ -9,46 +9,48 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
-#include "base/files/file.h"
-#include "base/files/file_util.h"
+#include "base/bind.h"
+#include "base/containers/circular_deque.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/statistics_recorder.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "content/browser/browser_thread_impl.h"
-#include "content/browser/loader/redirect_to_file_resource_handler.h"
 #include "content/browser/loader/resource_loader_delegate.h"
-#include "content/common/ssl_status_serialization.h"
-#include "content/public/browser/cert_store.h"
+#include "content/browser/loader/test_resource_handler.h"
 #include "content/public/browser/client_certificate_delegate.h"
+#include "content/public/browser/login_delegate.h"
 #include "content/public/browser/resource_request_info.h"
 #include "content/public/common/content_paths.h"
-#include "content/public/common/resource_response.h"
-#include "content/public/test/mock_resource_context.h"
+#include "content/public/common/resource_type.h"
 #include "content/public/test/test_browser_context.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/test/test_content_browser_client.h"
 #include "content/test/test_web_contents.h"
-#include "ipc/ipc_message.h"
 #include "net/base/chunked_upload_data_stream.h"
 #include "net/base/io_buffer.h"
-#include "net/base/mock_file_stream.h"
 #include "net/base/net_errors.h"
 #include "net/base/request_priority.h"
 #include "net/base/upload_bytes_element_reader.h"
 #include "net/cert/x509_certificate.h"
-#include "net/nqe/network_quality_estimator.h"
+#include "net/nqe/effective_connection_type.h"
+#include "net/nqe/network_quality_estimator_test_util.h"
+#include "net/ssl/client_cert_identity_test_util.h"
 #include "net/ssl/client_cert_store.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/ssl/ssl_private_key.h"
 #include "net/test/cert_test_util.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/test_data_directory.h"
+#include "net/test/url_request/url_request_failed_job.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_filter.h"
 #include "net/url_request/url_request_interceptor.h"
@@ -56,13 +58,15 @@
 #include "net/url_request/url_request_job_factory_impl.h"
 #include "net/url_request/url_request_test_job.h"
 #include "net/url_request/url_request_test_util.h"
-#include "storage/browser/blob/shareable_file_reference.h"
+#include "services/network/public/cpp/resource_response.h"
+#include "services/network/throttling/scoped_throttling_token.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-using storage::ShareableFileReference;
 
 namespace content {
 namespace {
+
+constexpr char kBodyReadFromNetBeforePausedHistogram[] =
+    "Network.URLLoader.BodyReadFromNetBeforePaused";
 
 // Stub client certificate store that returns a preset list of certificates for
 // each request and records the arguments of the most recent request for later
@@ -81,7 +85,7 @@ class ClientCertStoreStub : public net::ClientCertStore {
   ClientCertStoreStub(const net::CertificateList& response,
                       int* request_count,
                       std::vector<std::string>* requested_authorities)
-      : response_(response),
+      : response_(std::move(response)),
         requested_authorities_(requested_authorities),
         request_count_(request_count) {
     requested_authorities_->clear();
@@ -92,13 +96,11 @@ class ClientCertStoreStub : public net::ClientCertStore {
 
   // net::ClientCertStore:
   void GetClientCerts(const net::SSLCertRequestInfo& cert_request_info,
-                      net::CertificateList* selected_certs,
-                      const base::Closure& callback) override {
+                      const ClientCertListCallback& callback) override {
     *requested_authorities_ = cert_request_info.cert_authorities;
     ++(*request_count_);
 
-    *selected_certs = response_;
-    callback.Run();
+    callback.Run(net::FakeClientCertIdentityListFromCertificateList(response_));
   }
 
  private:
@@ -120,15 +122,15 @@ class LoaderDestroyingCertStore : public net::ClientCertStore {
         on_loader_deleted_callback_(on_loader_deleted_callback) {}
 
   // net::ClientCertStore:
-  void GetClientCerts(const net::SSLCertRequestInfo& cert_request_info,
-                      net::CertificateList* selected_certs,
-                      const base::Closure& cert_selected_callback) override {
+  void GetClientCerts(
+      const net::SSLCertRequestInfo& cert_request_info,
+      const ClientCertListCallback& cert_selected_callback) override {
     // Don't destroy |loader_| while it's on the stack.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&LoaderDestroyingCertStore::DoCallback,
-                              base::Unretained(loader_),
-                              cert_selected_callback,
-                              on_loader_deleted_callback_));
+        FROM_HERE,
+        base::BindOnce(&LoaderDestroyingCertStore::DoCallback,
+                       base::Unretained(loader_), cert_selected_callback,
+                       on_loader_deleted_callback_));
   }
 
  private:
@@ -136,10 +138,10 @@ class LoaderDestroyingCertStore : public net::ClientCertStore {
   // LoaderDestroyingCertStore (ClientCertStores are actually handles, and not
   // global cert stores).
   static void DoCallback(std::unique_ptr<ResourceLoader>* loader,
-                         const base::Closure& cert_selected_callback,
+                         const ClientCertListCallback& cert_selected_callback,
                          const base::Closure& on_loader_deleted_callback) {
     loader->reset();
-    cert_selected_callback.Run();
+    cert_selected_callback.Run(net::ClientCertIdentityList());
     on_loader_deleted_callback.Run();
   }
 
@@ -168,13 +170,14 @@ class MockClientCertURLRequestJob : public net::URLRequestTestJob {
     cert_request_info->cert_authorities = test_authorities();
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&MockClientCertURLRequestJob::NotifyCertificateRequested,
-                   weak_factory_.GetWeakPtr(),
-                   base::RetainedRef(cert_request_info)));
+        base::BindOnce(&MockClientCertURLRequestJob::NotifyCertificateRequested,
+                       weak_factory_.GetWeakPtr(),
+                       base::RetainedRef(cert_request_info)));
   }
 
-  void ContinueWithCertificate(net::X509Certificate* cert,
-                               net::SSLPrivateKey* private_key) override {
+  void ContinueWithCertificate(
+      scoped_refptr<net::X509Certificate> cert,
+      scoped_refptr<net::SSLPrivateKey> private_key) override {
     net::URLRequestTestJob::Start();
   }
 
@@ -199,13 +202,7 @@ class MockClientCertJobProtocolHandler
 
 // Set up dummy values to use in test HTTPS requests.
 
-scoped_refptr<net::X509Certificate> GetTestCert() {
-  return net::ImportCertFromFile(net::GetTestCertsDirectory(),
-                                 "test_mail_google_com.pem");
-}
-
 const net::CertStatus kTestCertError = net::CERT_STATUS_DATE_INVALID;
-const int kTestSecurityBits = 256;
 // SSL3 TLS_DHE_RSA_WITH_AES_256_CBC_SHA
 const int kTestConnectionStatus = 0x300039;
 
@@ -227,9 +224,9 @@ class MockHTTPSURLRequestJob : public net::URLRequestTestJob {
   void GetResponseInfo(net::HttpResponseInfo* info) override {
     // Get the original response info, but override the SSL info.
     net::URLRequestJob::GetResponseInfo(info);
-    info->ssl_info.cert = GetTestCert();
+    info->ssl_info.cert =
+        net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem");
     info->ssl_info.cert_status = kTestCertError;
-    info->ssl_info.security_bits = kTestSecurityBits;
     info->ssl_info.connection_status = kTestConnectionStatus;
   }
 
@@ -246,7 +243,8 @@ const char kRedirectHeaders[] =
 
 class MockHTTPSJobURLRequestInterceptor : public net::URLRequestInterceptor {
  public:
-  MockHTTPSJobURLRequestInterceptor(bool redirect) : redirect_(redirect) {}
+  explicit MockHTTPSJobURLRequestInterceptor(bool redirect)
+      : redirect_(redirect) {}
   ~MockHTTPSJobURLRequestInterceptor() override {}
 
   // net::URLRequestInterceptor:
@@ -254,7 +252,7 @@ class MockHTTPSJobURLRequestInterceptor : public net::URLRequestInterceptor {
       net::URLRequest* request,
       net::NetworkDelegate* network_delegate) const override {
     std::string headers =
-        redirect_ ? std::string(kRedirectHeaders, arraysize(kRedirectHeaders))
+        redirect_ ? std::string(kRedirectHeaders, base::size(kRedirectHeaders))
                   : net::URLRequestTestJob::test_headers();
     return new MockHTTPSURLRequestJob(request, network_delegate, headers,
                                       "dummy response", true);
@@ -262,185 +260,6 @@ class MockHTTPSJobURLRequestInterceptor : public net::URLRequestInterceptor {
 
  private:
   bool redirect_;
-};
-
-// Arbitrary read buffer size.
-const int kReadBufSize = 1024;
-
-// Dummy implementation of ResourceHandler, instance of which is needed to
-// initialize ResourceLoader.
-class ResourceHandlerStub : public ResourceHandler {
- public:
-  explicit ResourceHandlerStub(net::URLRequest* request)
-      : ResourceHandler(request),
-        read_buffer_(new net::IOBuffer(kReadBufSize)),
-        defer_request_on_will_start_(false),
-        expect_reads_(true),
-        cancel_on_read_completed_(false),
-        defer_eof_(false),
-        received_on_will_read_(false),
-        received_eof_(false),
-        received_response_completed_(false),
-        received_request_redirected_(false),
-        total_bytes_downloaded_(0),
-        observed_effective_connection_type_(
-            net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_UNKNOWN) {}
-
-  // If true, defers the resource load in OnWillStart.
-  void set_defer_request_on_will_start(bool defer_request_on_will_start) {
-    defer_request_on_will_start_ = defer_request_on_will_start;
-  }
-
-  // If true, expect OnWillRead / OnReadCompleted pairs for handling
-  // data. Otherwise, expect OnDataDownloaded.
-  void set_expect_reads(bool expect_reads) { expect_reads_ = expect_reads; }
-
-  // If true, cancel the request in OnReadCompleted by returning false.
-  void set_cancel_on_read_completed(bool cancel_on_read_completed) {
-    cancel_on_read_completed_ = cancel_on_read_completed;
-  }
-
-  // If true, cancel the request in OnReadCompleted by returning false.
-  void set_defer_eof(bool defer_eof) { defer_eof_ = defer_eof; }
-
-  const GURL& start_url() const { return start_url_; }
-  ResourceResponse* response() const { return response_.get(); }
-  ResourceResponse* redirect_response() const {
-    return redirect_response_.get();
-  }
-  bool received_response_completed() const {
-    return received_response_completed_;
-  }
-  bool received_request_redirected() const {
-    return received_request_redirected_;
-  }
-  const net::URLRequestStatus& status() const { return status_; }
-  int total_bytes_downloaded() const { return total_bytes_downloaded_; }
-
-  net::NetworkQualityEstimator::EffectiveConnectionType
-  observed_effective_connection_type() const {
-    return observed_effective_connection_type_;
-  }
-
-  void Resume() {
-    controller()->Resume();
-  }
-
-  bool OnRequestRedirected(const net::RedirectInfo& redirect_info,
-                           ResourceResponse* response,
-                           bool* defer) override {
-    redirect_response_ = response;
-    received_request_redirected_ = true;
-    return true;
-  }
-
-  bool OnResponseStarted(ResourceResponse* response, bool* defer) override {
-    EXPECT_FALSE(response_.get());
-    response_ = response;
-    observed_effective_connection_type_ =
-        response->head.effective_connection_type;
-    return true;
-  }
-
-  bool OnWillStart(const GURL& url, bool* defer) override {
-    EXPECT_TRUE(start_url_.is_empty());
-    start_url_ = url;
-    if (defer_request_on_will_start_) {
-      *defer = true;
-      deferred_run_loop_.Quit();
-    }
-    return true;
-  }
-
-  bool OnBeforeNetworkStart(const GURL& url, bool* defer) override {
-    return true;
-  }
-
-  bool OnWillRead(scoped_refptr<net::IOBuffer>* buf,
-                  int* buf_size,
-                  int min_size) override {
-    EXPECT_TRUE(expect_reads_);
-    EXPECT_FALSE(received_on_will_read_);
-    EXPECT_FALSE(received_eof_);
-    EXPECT_FALSE(received_response_completed_);
-
-    *buf = read_buffer_;
-    *buf_size = kReadBufSize;
-    received_on_will_read_ = true;
-    return true;
-  }
-
-  bool OnReadCompleted(int bytes_read, bool* defer) override {
-    EXPECT_TRUE(received_on_will_read_);
-    EXPECT_TRUE(expect_reads_);
-    EXPECT_FALSE(received_response_completed_);
-
-    if (bytes_read == 0) {
-      received_eof_ = true;
-      if (defer_eof_) {
-        defer_eof_ = false;
-        *defer = true;
-        deferred_run_loop_.Quit();
-      }
-    }
-
-    // Need another OnWillRead() call before seeing an OnReadCompleted().
-    received_on_will_read_ = false;
-
-    return !cancel_on_read_completed_;
-  }
-
-  void OnResponseCompleted(const net::URLRequestStatus& status,
-                           const std::string& security_info,
-                           bool* defer) override {
-    EXPECT_FALSE(received_response_completed_);
-    if (status.is_success() && expect_reads_)
-      EXPECT_TRUE(received_eof_);
-
-    received_response_completed_ = true;
-    status_ = status;
-    response_completed_run_loop_.Quit();
-  }
-
-  void OnDataDownloaded(int bytes_downloaded) override {
-    EXPECT_FALSE(expect_reads_);
-    total_bytes_downloaded_ += bytes_downloaded;
-  }
-
-  // Waits for the the first deferred step to run, if there is one.
-  void WaitForDeferredStep() {
-    DCHECK(defer_request_on_will_start_ || defer_eof_);
-    deferred_run_loop_.Run();
-  }
-
-  // Waits until the response has completed.
-  void WaitForResponseComplete() {
-    response_completed_run_loop_.Run();
-    EXPECT_TRUE(received_response_completed_);
-  }
-
- private:
-  scoped_refptr<net::IOBuffer> read_buffer_;
-
-  bool defer_request_on_will_start_;
-  bool expect_reads_;
-  bool cancel_on_read_completed_;
-  bool defer_eof_;
-
-  GURL start_url_;
-  scoped_refptr<ResourceResponse> response_;
-  scoped_refptr<ResourceResponse> redirect_response_;
-  bool received_on_will_read_;
-  bool received_eof_;
-  bool received_response_completed_;
-  bool received_request_redirected_;
-  net::URLRequestStatus status_;
-  int total_bytes_downloaded_;
-  base::RunLoop deferred_run_loop_;
-  base::RunLoop response_completed_run_loop_;
-  std::unique_ptr<base::RunLoop> wait_for_progress_run_loop_;
-  net::NetworkQualityEstimator::EffectiveConnectionType
-      observed_effective_connection_type_;
 };
 
 // Test browser client that captures calls to SelectClientCertificates and
@@ -460,29 +279,43 @@ class SelectCertificateBrowserClient : public TestContentBrowserClient {
   void SelectClientCertificate(
       WebContents* web_contents,
       net::SSLCertRequestInfo* cert_request_info,
+      net::ClientCertIdentityList client_certs,
       std::unique_ptr<ClientCertificateDelegate> delegate) override {
     EXPECT_FALSE(delegate_.get());
 
     ++call_count_;
-    passed_certs_ = cert_request_info->client_certs;
+    passed_identities_ = std::move(client_certs);
     delegate_ = std::move(delegate);
     select_certificate_run_loop_.Quit();
   }
 
-  int call_count() { return call_count_; }
-  net::CertificateList passed_certs() { return passed_certs_; }
+  std::unique_ptr<net::ClientCertStore> CreateClientCertStore(
+      ResourceContext* resource_context) override {
+    return std::move(dummy_cert_store_);
+  }
 
-  void ContinueWithCertificate(net::X509Certificate* cert) {
-    delegate_->ContinueWithCertificate(cert);
+  void SetClientCertStore(std::unique_ptr<net::ClientCertStore> store) {
+    dummy_cert_store_ = std::move(store);
+  }
+
+  int call_count() { return call_count_; }
+  const net::ClientCertIdentityList& passed_identities() {
+    return passed_identities_;
+  }
+
+  void ContinueWithCertificate(scoped_refptr<net::X509Certificate> cert,
+                               scoped_refptr<net::SSLPrivateKey> private_key) {
+    delegate_->ContinueWithCertificate(std::move(cert), std::move(private_key));
     delegate_.reset();
   }
 
   void CancelCertificateSelection() { delegate_.reset(); }
 
  private:
-  net::CertificateList passed_certs_;
+  net::ClientCertIdentityList passed_identities_;
   int call_count_;
   std::unique_ptr<ClientCertificateDelegate> delegate_;
+  std::unique_ptr<net::ClientCertStore> dummy_cert_store_;
 
   base::RunLoop select_certificate_run_loop_;
 
@@ -501,17 +334,19 @@ class NonChunkedUploadDataStream : public net::UploadDataStream {
   }
 
  private:
-  int InitInternal() override {
+  int InitInternal(const net::NetLogWithSource& net_log) override {
     SetSize(size_);
-    stream_.Init(base::Bind(&NonChunkedUploadDataStream::OnInitCompleted,
-                            base::Unretained(this)));
+    stream_.Init(base::BindOnce(&NonChunkedUploadDataStream::OnInitCompleted,
+                                base::Unretained(this)),
+                 net_log);
     return net::OK;
   }
 
   int ReadInternal(net::IOBuffer* buf, int buf_len) override {
-    return stream_.Read(buf, buf_len,
-                        base::Bind(&NonChunkedUploadDataStream::OnReadCompleted,
-                                   base::Unretained(this)));
+    return stream_.Read(
+        buf, buf_len,
+        base::BindOnce(&NonChunkedUploadDataStream::OnReadCompleted,
+                       base::Unretained(this)));
   }
 
   void ResetInternal() override { stream_.Reset(); }
@@ -522,42 +357,27 @@ class NonChunkedUploadDataStream : public net::UploadDataStream {
   DISALLOW_COPY_AND_ASSIGN(NonChunkedUploadDataStream);
 };
 
-// Fails to create a temporary file with the given error.
-void CreateTemporaryError(
-    base::File::Error error,
-    const CreateTemporaryFileStreamCallback& callback) {
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(callback, error,
-                 base::Passed(std::unique_ptr<net::FileStream>()), nullptr));
+// Returns whether monitoring was successfully set up. If yes,
+// StopMonitorBodyReadFromNetBeforePausedHistogram() needs to be called later to
+// stop monitoring.
+//
+// |*output_sample| needs to stay valid until monitoring is stopped.
+WARN_UNUSED_RESULT bool StartMonitorBodyReadFromNetBeforePausedHistogram(
+    base::HistogramBase::Sample* output_sample) {
+  return base::StatisticsRecorder::SetCallback(
+      kBodyReadFromNetBeforePausedHistogram,
+      base::BindRepeating(
+          [](base::HistogramBase::Sample* output,
+             base::HistogramBase::Sample sample) { *output = sample; },
+          output_sample));
+}
+
+void StopMonitorBodyReadFromNetBeforePausedHistogram() {
+  base::StatisticsRecorder::ClearCallback(
+      kBodyReadFromNetBeforePausedHistogram);
 }
 
 }  // namespace
-
-class TestNetworkQualityEstimator : public net::NetworkQualityEstimator {
- public:
-  TestNetworkQualityEstimator()
-      : net::NetworkQualityEstimator(nullptr,
-                                     std::map<std::string, std::string>()),
-        type_(net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_UNKNOWN) {
-  }
-  ~TestNetworkQualityEstimator() override {}
-
-  net::NetworkQualityEstimator::EffectiveConnectionType
-  GetEffectiveConnectionType() const override {
-    return type_;
-  }
-
-  void set_effective_connection_type(
-      net::NetworkQualityEstimator::EffectiveConnectionType type) {
-    type_ = type;
-  }
-
- private:
-  net::NetworkQualityEstimator::EffectiveConnectionType type_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestNetworkQualityEstimator);
-};
 
 class ResourceLoaderTest : public testing::Test,
                            public ResourceLoaderDelegate {
@@ -565,23 +385,35 @@ class ResourceLoaderTest : public testing::Test,
   ResourceLoaderTest()
       : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP),
         test_url_request_context_(true),
-        resource_context_(&test_url_request_context_),
-        raw_ptr_resource_handler_(NULL),
-        raw_ptr_to_request_(NULL) {
+        raw_ptr_resource_handler_(nullptr),
+        raw_ptr_to_request_(nullptr) {
     test_url_request_context_.set_job_factory(&job_factory_);
     test_url_request_context_.set_network_quality_estimator(
         &network_quality_estimator_);
     test_url_request_context_.Init();
   }
 
-  GURL test_url() const { return net::URLRequestTestJob::test_url_1(); }
+  // URL with a response body of test_data() where reads complete synchronously.
+  GURL test_sync_url() const { return net::URLRequestTestJob::test_url_1(); }
 
-  TestNetworkQualityEstimator* network_quality_estimator() {
-    return &network_quality_estimator_;
+  // URL with a response body of test_data() where reads complete
+  // asynchronously.
+  GURL test_async_url() const {
+    return net::URLRequestTestJob::test_url_auto_advance_async_reads_1();
+  }
+
+  // URL that redirects to test_sync_url(). The ResourceLoader is set up to
+  // use this URL by default.
+  GURL test_redirect_url() const {
+    return net::URLRequestTestJob::test_url_redirect_to_url_1();
   }
 
   std::string test_data() const {
     return net::URLRequestTestJob::test_data_1();
+  }
+
+  net::TestNetworkQualityEstimator* network_quality_estimator() {
+    return &network_quality_estimator_;
   }
 
   virtual std::unique_ptr<net::URLRequestJobFactory::ProtocolHandler>
@@ -590,48 +422,56 @@ class ResourceLoaderTest : public testing::Test,
   }
 
   virtual std::unique_ptr<ResourceHandler> WrapResourceHandler(
-      std::unique_ptr<ResourceHandlerStub> leaf_handler,
+      std::unique_ptr<TestResourceHandler> leaf_handler,
       net::URLRequest* request) {
     return std::move(leaf_handler);
   }
 
   // Replaces loader_ with a new one for |request|.
   void SetUpResourceLoader(std::unique_ptr<net::URLRequest> request,
-                           bool is_main_frame) {
+                           ResourceType resource_type,
+                           bool belongs_to_main_frame) {
     raw_ptr_to_request_ = request.get();
 
-    ResourceType resource_type =
-        is_main_frame ? RESOURCE_TYPE_MAIN_FRAME : RESOURCE_TYPE_SUB_FRAME;
+    // A request marked as a main frame request must also belong to a main
+    // frame.
+    ASSERT_TRUE((resource_type != RESOURCE_TYPE_MAIN_FRAME) ||
+                belongs_to_main_frame);
 
     RenderFrameHost* rfh = web_contents_->GetMainFrame();
     ResourceRequestInfo::AllocateForTesting(
-        request.get(), resource_type, &resource_context_,
+        request.get(), resource_type, nullptr /* resource_context */,
         rfh->GetProcess()->GetID(), rfh->GetRenderViewHost()->GetRoutingID(),
-        rfh->GetRoutingID(), is_main_frame, false /* parent_is_main_frame */,
-        true /* allow_download */, false /* is_async */,
-        false /* is_using_lofi_ */);
-    std::unique_ptr<ResourceHandlerStub> resource_handler(
-        new ResourceHandlerStub(request.get()));
+        rfh->GetRoutingID(), belongs_to_main_frame,
+        ResourceInterceptPolicy::kAllowAll, false /* is_async */,
+        PREVIEWS_OFF /* previews_state */, nullptr /* navigation_ui_data */);
+    std::unique_ptr<TestResourceHandler> resource_handler(
+        new TestResourceHandler(nullptr, nullptr));
     raw_ptr_resource_handler_ = resource_handler.get();
     loader_.reset(new ResourceLoader(
         std::move(request),
         WrapResourceHandler(std::move(resource_handler), raw_ptr_to_request_),
-        CertStore::GetInstance(), this));
+        this, nullptr /* resource_context */, nullptr /* throttling_token */));
+  }
+
+  void SetUpResourceLoaderForUrl(const GURL& test_url) {
+    std::unique_ptr<net::URLRequest> request(
+        test_url_request_context_.CreateRequest(
+            test_url, net::DEFAULT_PRIORITY, nullptr /* delegate */,
+            TRAFFIC_ANNOTATION_FOR_TESTS));
+    SetUpResourceLoader(std::move(request), RESOURCE_TYPE_MAIN_FRAME, true);
   }
 
   void SetUp() override {
     job_factory_.SetProtocolHandler("test", CreateProtocolHandler());
+    net::URLRequestFailedJob::AddUrlHandler();
 
     browser_context_.reset(new TestBrowserContext());
     scoped_refptr<SiteInstance> site_instance =
         SiteInstance::Create(browser_context_.get());
-    web_contents_.reset(
-        TestWebContents::Create(browser_context_.get(), site_instance.get()));
-
-    std::unique_ptr<net::URLRequest> request(
-        resource_context_.GetRequestContext()->CreateRequest(
-            test_url(), net::DEFAULT_PRIORITY, nullptr /* delegate */));
-    SetUpResourceLoader(std::move(request), true);
+    web_contents_ =
+        TestWebContents::Create(browser_context_.get(), site_instance.get());
+    SetUpResourceLoaderForUrl(test_redirect_url());
   }
 
   void TearDown() override {
@@ -639,46 +479,92 @@ class ResourceLoaderTest : public testing::Test,
     // |rvh_test_enabler_| and |thread_bundle_|. This lets asynchronous cleanup
     // tasks complete.
     web_contents_.reset();
+
+    // Clean up handlers.
+    net::URLRequestFilter::GetInstance()->ClearHandlers();
+
     base::RunLoop().RunUntilIdle();
   }
 
-  void SetClientCertStore(std::unique_ptr<net::ClientCertStore> store) {
-    dummy_cert_store_ = std::move(store);
-  }
-
   // ResourceLoaderDelegate:
-  ResourceDispatcherHostLoginDelegate* CreateLoginDelegate(
+  std::unique_ptr<LoginDelegate> CreateLoginDelegate(
       ResourceLoader* loader,
       net::AuthChallengeInfo* auth_info) override {
-    return NULL;
+    return nullptr;
   }
   bool HandleExternalProtocol(ResourceLoader* loader,
                               const GURL& url) override {
-    return false;
+    EXPECT_EQ(loader, loader_.get());
+    ++handle_external_protocol_;
+
+    // Check that calls to HandleExternalProtocol always happen after the calls
+    // to the ResourceHandler's OnWillStart and OnRequestRedirected.
+    EXPECT_EQ(handle_external_protocol_,
+              raw_ptr_resource_handler_->on_will_start_called() +
+                  raw_ptr_resource_handler_->on_request_redirected_called());
+
+    bool return_value = handle_external_protocol_results_.front();
+    if (handle_external_protocol_results_.size() > 1)
+      handle_external_protocol_results_.pop_front();
+    return return_value;
   }
-  void DidStartRequest(ResourceLoader* loader) override {}
+  void DidStartRequest(ResourceLoader* loader) override {
+    EXPECT_EQ(loader, loader_.get());
+    EXPECT_EQ(0, did_finish_loading_);
+    EXPECT_EQ(0, did_start_request_);
+    ++did_start_request_;
+  }
   void DidReceiveRedirect(ResourceLoader* loader,
-                          const GURL& new_url) override {}
-  void DidReceiveResponse(ResourceLoader* loader) override {}
-  void DidFinishLoading(ResourceLoader* loader) override {}
-  std::unique_ptr<net::ClientCertStore> CreateClientCertStore(
-      ResourceLoader* loader) override {
-    return std::move(dummy_cert_store_);
+                          const GURL& new_url,
+                          network::ResourceResponse* response) override {
+    EXPECT_EQ(loader, loader_.get());
+    EXPECT_EQ(0, did_finish_loading_);
+    EXPECT_EQ(0, did_receive_response_);
+    EXPECT_EQ(1, did_start_request_);
+    ++did_received_redirect_;
+  }
+  void DidReceiveResponse(ResourceLoader* loader,
+                          network::ResourceResponse* response) override {
+    EXPECT_EQ(loader, loader_.get());
+    EXPECT_EQ(0, did_finish_loading_);
+    EXPECT_EQ(0, did_receive_response_);
+    EXPECT_EQ(1, did_start_request_);
+    ++did_receive_response_;
+  }
+  void DidFinishLoading(ResourceLoader* loader) override {
+    EXPECT_EQ(loader, loader_.get());
+    EXPECT_EQ(0, did_finish_loading_);
+
+    // Shouldn't be in a recursive ResourceHandler call - this is normally where
+    // the ResourceLoader (And thus the ResourceHandler chain) is destroyed.
+    EXPECT_EQ(0, raw_ptr_resource_handler_->call_depth());
+
+    ++did_finish_loading_;
   }
 
   TestBrowserThreadBundle thread_bundle_;
   RenderViewHostTestEnabler rvh_test_enabler_;
 
+  // Record which ResourceDispatcherHostDelegate methods have been invoked.
+  int did_start_request_ = 0;
+  int did_received_redirect_ = 0;
+  int did_receive_response_ = 0;
+  int did_finish_loading_ = 0;
+  int handle_external_protocol_ = 0;
+
+  // Allows controlling the return values of sequential calls to
+  // HandleExternalProtocol. Values are removed by the measure they are used
+  // but the last one which is used for all following calls.
+  base::circular_deque<bool> handle_external_protocol_results_{false};
+
   net::URLRequestJobFactoryImpl job_factory_;
-  TestNetworkQualityEstimator network_quality_estimator_;
+  net::TestNetworkQualityEstimator network_quality_estimator_;
   net::TestURLRequestContext test_url_request_context_;
-  MockResourceContext resource_context_;
   std::unique_ptr<TestBrowserContext> browser_context_;
   std::unique_ptr<TestWebContents> web_contents_;
-  std::unique_ptr<net::ClientCertStore> dummy_cert_store_;
 
   // The ResourceLoader owns the URLRequest and the ResourceHandler.
-  ResourceHandlerStub* raw_ptr_resource_handler_;
+  TestResourceHandler* raw_ptr_resource_handler_;
   net::URLRequest* raw_ptr_to_request_;
   std::unique_ptr<ResourceLoader> loader_;
 };
@@ -688,6 +574,12 @@ class ClientCertResourceLoaderTest : public ResourceLoaderTest {
   std::unique_ptr<net::URLRequestJobFactory::ProtocolHandler>
   CreateProtocolHandler() override {
     return base::WrapUnique(new MockClientCertJobProtocolHandler);
+  }
+
+  void SetUp() override {
+    ResourceLoaderTest::SetUp();
+    // These tests don't expect any redirects.
+    SetUpResourceLoaderForUrl(test_sync_url());
   }
 };
 
@@ -727,25 +619,37 @@ class HTTPSSecurityInfoResourceLoaderTest : public ResourceLoaderTest {
   const GURL test_https_redirect_url_;
 };
 
+TEST_F(HTTPSSecurityInfoResourceLoaderTest, CertStatusOnResponse) {
+  SetUpResourceLoaderForUrl(test_https_url());
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(kTestCertError,
+            raw_ptr_resource_handler_->resource_response()->head.cert_status);
+}
+
 // Tests that client certificates are requested with ClientCertStore lookup.
 TEST_F(ClientCertResourceLoaderTest, WithStoreLookup) {
   // Set up the test client cert store.
   int store_request_count;
   std::vector<std::string> store_requested_authorities;
-  net::CertificateList dummy_certs(1, GetTestCert());
+  scoped_refptr<net::X509Certificate> test_cert =
+      net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem");
+  ASSERT_TRUE(test_cert);
+  net::CertificateList dummy_certs(1, test_cert);
   std::unique_ptr<ClientCertStoreStub> test_store(new ClientCertStoreStub(
       dummy_certs, &store_request_count, &store_requested_authorities));
-  SetClientCertStore(std::move(test_store));
 
   // Plug in test content browser client.
   SelectCertificateBrowserClient test_client;
+  test_client.SetClientCertStore(std::move(test_store));
   ContentBrowserClient* old_client = SetBrowserClientForTesting(&test_client);
 
   // Start the request and wait for it to pause.
   loader_->StartRequest();
   test_client.WaitForSelectCertificate();
 
-  EXPECT_FALSE(raw_ptr_resource_handler_->received_response_completed());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
 
   // Check if the test store was queried against correct |cert_authorities|.
   EXPECT_EQ(1, store_request_count);
@@ -755,12 +659,13 @@ TEST_F(ClientCertResourceLoaderTest, WithStoreLookup) {
   // Check if the retrieved certificates were passed to the content browser
   // client.
   EXPECT_EQ(1, test_client.call_count());
-  EXPECT_EQ(dummy_certs, test_client.passed_certs());
+  EXPECT_EQ(1U, test_client.passed_identities().size());
+  EXPECT_EQ(test_cert.get(), test_client.passed_identities()[0]->certificate());
 
   // Continue the request.
-  test_client.ContinueWithCertificate(nullptr);
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->status().error());
+  test_client.ContinueWithCertificate(nullptr, nullptr);
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
 
   // Restore the original content browser client.
   SetBrowserClientForTesting(old_client);
@@ -780,12 +685,12 @@ TEST_F(ClientCertResourceLoaderTest, WithNullStore) {
   // Check if the SelectClientCertificate was called on the content browser
   // client.
   EXPECT_EQ(1, test_client.call_count());
-  EXPECT_EQ(net::CertificateList(), test_client.passed_certs());
+  EXPECT_EQ(net::ClientCertIdentityList(), test_client.passed_identities());
 
   // Continue the request.
-  test_client.ContinueWithCertificate(nullptr);
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->status().error());
+  test_client.ContinueWithCertificate(nullptr, nullptr);
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
 
   // Restore the original content browser client.
   SetBrowserClientForTesting(old_client);
@@ -804,13 +709,13 @@ TEST_F(ClientCertResourceLoaderTest, CancelSelection) {
   // Check if the SelectClientCertificate was called on the content browser
   // client.
   EXPECT_EQ(1, test_client.call_count());
-  EXPECT_EQ(net::CertificateList(), test_client.passed_certs());
+  EXPECT_EQ(net::ClientCertIdentityList(), test_client.passed_identities());
 
   // Cancel the request.
   test_client.CancelCertificateSelection();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
   EXPECT_EQ(net::ERR_SSL_CLIENT_AUTH_CERT_NEEDED,
-            raw_ptr_resource_handler_->status().error());
+            raw_ptr_resource_handler_->final_status().error());
 
   // Restore the original content browser client.
   SetBrowserClientForTesting(old_client);
@@ -827,12 +732,12 @@ TEST_F(ClientCertResourceLoaderTest, NoWebContents) {
 
   // Start the request and wait for it to complete.
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
 
   // Check that SelectClientCertificate wasn't called and the request aborted.
   EXPECT_EQ(0, test_client.call_count());
   EXPECT_EQ(net::ERR_SSL_CLIENT_AUTH_CERT_NEEDED,
-            raw_ptr_resource_handler_->status().error());
+            raw_ptr_resource_handler_->final_status().error());
 
   // Restore the original content browser client.
   SetBrowserClientForTesting(old_client);
@@ -845,7 +750,11 @@ TEST_F(ClientCertResourceLoaderTest, StoreAsyncCancel) {
   LoaderDestroyingCertStore* test_store =
       new LoaderDestroyingCertStore(&loader_,
                                     loader_destroyed_run_loop.QuitClosure());
-  SetClientCertStore(base::WrapUnique(test_store));
+
+  // Plug in test content browser client.
+  SelectCertificateBrowserClient test_client;
+  test_client.SetClientCertStore(base::WrapUnique(test_store));
+  ContentBrowserClient* old_client = SetBrowserClientForTesting(&test_client);
 
   loader_->StartRequest();
   loader_destroyed_run_loop.Run();
@@ -853,391 +762,1015 @@ TEST_F(ClientCertResourceLoaderTest, StoreAsyncCancel) {
 
   // Pump the event loop to ensure nothing asynchronous crashes either.
   base::RunLoop().RunUntilIdle();
+
+  // Restore the original content browser client.
+  SetBrowserClientForTesting(old_client);
 }
 
-TEST_F(ResourceLoaderTest, ResumeCancelledRequest) {
-  raw_ptr_resource_handler_->set_defer_request_on_will_start(true);
+// Tests that a RESOURCE_TYPE_PREFETCH request sets the LOAD_PREFETCH flag.
+TEST_F(ResourceLoaderTest, PrefetchFlag) {
+  std::unique_ptr<net::URLRequest> request(
+      test_url_request_context_.CreateRequest(
+          test_async_url(), net::DEFAULT_PRIORITY, nullptr /* delegate */,
+          TRAFFIC_ANNOTATION_FOR_TESTS));
+  SetUpResourceLoader(std::move(request), RESOURCE_TYPE_PREFETCH, true);
 
   loader_->StartRequest();
-  loader_->CancelRequest(true);
-  static_cast<ResourceController*>(loader_.get())->Resume();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
 }
 
-// Tests that no invariants are broken if a ResourceHandler cancels during
-// OnReadCompleted.
-TEST_F(ResourceLoaderTest, CancelOnReadCompleted) {
-  raw_ptr_resource_handler_->set_cancel_on_read_completed(true);
-
+// Test the case the ResourceHandler defers nothing.
+TEST_F(ResourceLoaderTest, SyncResourceHandler) {
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_EQ(net::URLRequestStatus::CANCELED,
-            raw_ptr_resource_handler_->status().status());
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(1, did_start_request_);
+  EXPECT_EQ(1, did_received_redirect_);
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(2, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
 }
 
-// Tests that no invariants are broken if a ResourceHandler defers EOF.
-TEST_F(ResourceLoaderTest, DeferEOF) {
-  raw_ptr_resource_handler_->set_defer_eof(true);
+// Same as above, except reads complete asynchronously, and there's no redirect.
+TEST_F(ResourceLoaderTest, SyncResourceHandlerAsyncReads) {
+  SetUpResourceLoaderForUrl(test_async_url());
 
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForDeferredStep();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(1, did_start_request_);
+  EXPECT_EQ(0, did_received_redirect_);
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+}
 
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_FALSE(raw_ptr_resource_handler_->received_response_completed());
+// Test the case where ResourceHandler defers nothing and the request is handled
+// as an external protocol on start.
+TEST_F(ResourceLoaderTest, SyncExternalProtocolHandlingOnStart) {
+  handle_external_protocol_results_ = {true};
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(0, did_start_request_);
+  EXPECT_EQ(0, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_TRUE(raw_ptr_resource_handler_->body().empty());
+}
+
+// Test the case where ResourceHandler defers nothing and the request is handled
+// as an external protocol on redirect.
+TEST_F(ResourceLoaderTest, SyncExternalProtocolHandlingOnRedirect) {
+  handle_external_protocol_results_ = {false, true};
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(1, did_start_request_);
+  EXPECT_EQ(1, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(2, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_TRUE(raw_ptr_resource_handler_->body().empty());
+}
+
+// Test the case the ResourceHandler defers everything.
+TEST_F(ResourceLoaderTest, AsyncResourceHandler) {
+  raw_ptr_resource_handler_->set_defer_on_will_start(true);
+  raw_ptr_resource_handler_->set_defer_on_request_redirected(true);
+  raw_ptr_resource_handler_->set_defer_on_response_started(true);
+  raw_ptr_resource_handler_->set_defer_on_will_read(true);
+  raw_ptr_resource_handler_->set_defer_on_read_completed(true);
+  raw_ptr_resource_handler_->set_defer_on_read_eof(true);
+  raw_ptr_resource_handler_->set_defer_on_response_completed(true);
+
+  // Start and run until OnWillStart.
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, did_start_request_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(0, handle_external_protocol_);
+
+  // Resume and run until OnRequestRedirected.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, handle_external_protocol_);
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(1, handle_external_protocol_);
+
+  // Resume and run until OnResponseStarted.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(2, handle_external_protocol_);
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(0, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Resume and run until OnWillRead.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Resume and run until OnReadCompleted.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Defer on the next OnWillRead call, for the EOF.
+  raw_ptr_resource_handler_->set_defer_on_will_read(true);
+
+  // Resume and run until the next OnWillRead call.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(2, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Resume and run until the final 0-byte read, signaling EOF.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+
+  // Resume and run until OnResponseCompleted is called, which again defers the
+  // request.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(0, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+
+  // Resume and run until all pending tasks. Note that OnResponseCompleted was
+  // invoked in the previous section, so can't use RunUntilCompleted().
+  raw_ptr_resource_handler_->Resume();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+  EXPECT_EQ(2, handle_external_protocol_);
+}
+
+// Same as above, except reads complete asynchronously and there's no redirect.
+TEST_F(ResourceLoaderTest, AsyncResourceHandlerAsyncReads) {
+  SetUpResourceLoaderForUrl(test_async_url());
+
+  raw_ptr_resource_handler_->set_defer_on_will_start(true);
+  raw_ptr_resource_handler_->set_defer_on_response_started(true);
+  raw_ptr_resource_handler_->set_defer_on_will_read(true);
+  raw_ptr_resource_handler_->set_defer_on_read_completed(true);
+  raw_ptr_resource_handler_->set_defer_on_read_eof(true);
+  raw_ptr_resource_handler_->set_defer_on_response_completed(true);
+
+  // Start and run until OnWillStart.
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, did_start_request_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(0, handle_external_protocol_);
+
+  // Resume and run until OnResponseStarted.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(1, handle_external_protocol_);
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(0, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Resume and run until OnWillRead.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Resume and run until OnReadCompleted.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Defer on the next OnWillRead call, for the EOF.
+  raw_ptr_resource_handler_->set_defer_on_will_read(true);
+
+  // Resume and run until the next OnWillRead.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(2, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+
+  // Resume and run until the final 0-byte read, signalling EOF.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+
+  // Spinning the message loop should not advance the state further.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+
+  // Resume and run until OnResponseCompleted is called, which again defers the
+  // request.
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(0, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+
+  // Resume and run until all pending tasks. Note that OnResponseCompleted was
+  // invoked in the previous section, so can't use RunUntilCompleted().
+  raw_ptr_resource_handler_->Resume();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::OK, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+  EXPECT_EQ(1, handle_external_protocol_);
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnWillStart) {
+  raw_ptr_resource_handler_->set_on_will_start_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, did_start_request_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(0, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnRequestRedirected) {
+  raw_ptr_resource_handler_->set_on_request_redirected_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnResponseStarted) {
+  raw_ptr_resource_handler_->set_on_response_started_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnWillRead) {
+  raw_ptr_resource_handler_->set_on_will_read_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnReadCompleted) {
+  raw_ptr_resource_handler_->set_on_read_completed_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_LT(0u, raw_ptr_resource_handler_->body().size());
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnReceivedEof) {
+  raw_ptr_resource_handler_->set_on_read_eof_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnAsyncReadCompleted) {
+  SetUpResourceLoaderForUrl(test_async_url());
+  raw_ptr_resource_handler_->set_on_read_completed_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_LT(0u, raw_ptr_resource_handler_->body().size());
+}
+
+TEST_F(ResourceLoaderTest, SyncCancelOnAsyncReceivedEof) {
+  SetUpResourceLoaderForUrl(test_async_url());
+  raw_ptr_resource_handler_->set_on_read_eof_result(false);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnWillStart) {
+  raw_ptr_resource_handler_->set_defer_on_will_start(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, did_start_request_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(0, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnRequestRedirected) {
+  raw_ptr_resource_handler_->set_defer_on_request_redirected(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnResponseStarted) {
+  raw_ptr_resource_handler_->set_defer_on_response_started(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnWillRead) {
+  raw_ptr_resource_handler_->set_defer_on_will_read(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_read_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnReadCompleted) {
+  raw_ptr_resource_handler_->set_defer_on_read_completed(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_LT(0u, raw_ptr_resource_handler_->body().size());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnReceivedEof) {
+  raw_ptr_resource_handler_->set_defer_on_read_eof(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnAsyncReadCompleted) {
+  SetUpResourceLoaderForUrl(test_async_url());
+  raw_ptr_resource_handler_->set_defer_on_read_completed(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_LT(0u, raw_ptr_resource_handler_->body().size());
+}
+
+TEST_F(ResourceLoaderTest, AsyncCancelOnAsyncReceivedEof) {
+  SetUpResourceLoaderForUrl(test_async_url());
+  raw_ptr_resource_handler_->set_defer_on_read_eof(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  raw_ptr_resource_handler_->CancelWithError(net::ERR_FAILED);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_read_eof_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ(test_data(), raw_ptr_resource_handler_->body());
+}
+
+// Tests the request being deferred and then being handled as an external
+// protocol, both on start.
+TEST_F(ResourceLoaderTest, AsyncExternalProtocolHandlingOnStart) {
+  handle_external_protocol_results_ = {true};
+  raw_ptr_resource_handler_->set_defer_on_will_start(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(0, did_finish_loading_);
+  EXPECT_EQ(0, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
 
   raw_ptr_resource_handler_->Resume();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-  EXPECT_EQ(net::URLRequestStatus::SUCCESS,
-            raw_ptr_resource_handler_->status().status());
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(0, did_start_request_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
 }
 
-class ResourceLoaderRedirectToFileTest : public ResourceLoaderTest {
- public:
-  ResourceLoaderRedirectToFileTest()
-      : file_stream_(NULL),
-        redirect_to_file_resource_handler_(NULL) {
-  }
+// Tests the request being deferred and then being handled as an external
+// protocol, both on redirect.
+TEST_F(ResourceLoaderTest, AsyncExternalProtocolHandlingOnRedirect) {
+  handle_external_protocol_results_ = {false, true};
+  raw_ptr_resource_handler_->set_defer_on_request_redirected(true);
 
-  ~ResourceLoaderRedirectToFileTest() override {
-    // Releasing the loader should result in destroying the file asynchronously.
-    file_stream_ = nullptr;
-    deletable_file_ = nullptr;
-    loader_.reset();
-
-    // Wait for the task to delete the file to run, and make sure the file is
-    // cleaned up.
-    base::RunLoop().RunUntilIdle();
-    EXPECT_FALSE(base::PathExists(temp_path()));
-  }
-
-  base::FilePath temp_path() const { return temp_path_; }
-  ShareableFileReference* deletable_file() const {
-    return deletable_file_.get();
-  }
-  net::testing::MockFileStream* file_stream() const { return file_stream_; }
-  RedirectToFileResourceHandler* redirect_to_file_resource_handler() const {
-    return redirect_to_file_resource_handler_;
-  }
-
-  std::unique_ptr<ResourceHandler> WrapResourceHandler(
-      std::unique_ptr<ResourceHandlerStub> leaf_handler,
-      net::URLRequest* request) override {
-    leaf_handler->set_expect_reads(false);
-
-    // Make a temporary file.
-    CHECK(base::CreateTemporaryFile(&temp_path_));
-    int flags = base::File::FLAG_WRITE | base::File::FLAG_TEMPORARY |
-                base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_ASYNC;
-    base::File file(temp_path_, flags);
-    CHECK(file.IsValid());
-
-    // Create mock file streams and a ShareableFileReference.
-    std::unique_ptr<net::testing::MockFileStream> file_stream(
-        new net::testing::MockFileStream(std::move(file),
-                                         base::ThreadTaskRunnerHandle::Get()));
-    file_stream_ = file_stream.get();
-    deletable_file_ = ShareableFileReference::GetOrCreate(
-        temp_path_,
-        ShareableFileReference::DELETE_ON_FINAL_RELEASE,
-        BrowserThread::GetMessageLoopProxyForThread(
-            BrowserThread::FILE).get());
-
-    // Inject them into the handler.
-    std::unique_ptr<RedirectToFileResourceHandler> handler(
-        new RedirectToFileResourceHandler(std::move(leaf_handler), request));
-    redirect_to_file_resource_handler_ = handler.get();
-    handler->SetCreateTemporaryFileStreamFunctionForTesting(
-        base::Bind(&ResourceLoaderRedirectToFileTest::PostCallback,
-                   base::Unretained(this),
-                   base::Passed(&file_stream)));
-    return std::move(handler);
-  }
-
- private:
-  void PostCallback(std::unique_ptr<net::FileStream> file_stream,
-                    const CreateTemporaryFileStreamCallback& callback) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(callback, base::File::FILE_OK, base::Passed(&file_stream),
-                   base::RetainedRef(deletable_file_)));
-  }
-
-  base::FilePath temp_path_;
-  scoped_refptr<ShareableFileReference> deletable_file_;
-  // These are owned by the ResourceLoader.
-  net::testing::MockFileStream* file_stream_;
-  RedirectToFileResourceHandler* redirect_to_file_resource_handler_;
-};
-
-// Tests that a RedirectToFileResourceHandler works and forwards everything
-// downstream.
-TEST_F(ResourceLoaderRedirectToFileTest, Basic) {
-  // Run it to completion.
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  EXPECT_EQ(1, did_start_request_);
+  EXPECT_EQ(1, did_received_redirect_);
+  EXPECT_EQ(0, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
 
-  // Check that the handler forwarded all information to the downstream handler.
-  EXPECT_EQ(temp_path(),
-            raw_ptr_resource_handler_->response()->head.download_file_path);
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_EQ(net::URLRequestStatus::SUCCESS,
-            raw_ptr_resource_handler_->status().status());
-  EXPECT_EQ(test_data().size(), static_cast<size_t>(
-      raw_ptr_resource_handler_->total_bytes_downloaded()));
+  raw_ptr_resource_handler_->Resume();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(1, did_start_request_);
+  EXPECT_EQ(1, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(2, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
 
-  // Check that the data was written to the file.
-  std::string contents;
-  ASSERT_TRUE(base::ReadFileToString(temp_path(), &contents));
-  EXPECT_EQ(test_data(), contents);
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
 }
 
-// Tests that RedirectToFileResourceHandler handles errors in creating the
-// temporary file.
-TEST_F(ResourceLoaderRedirectToFileTest, CreateTemporaryError) {
-  // Swap out the create temporary function.
-  redirect_to_file_resource_handler()->
-      SetCreateTemporaryFileStreamFunctionForTesting(
-          base::Bind(&CreateTemporaryError, base::File::FILE_ERROR_FAILED));
+TEST_F(ResourceLoaderTest, RequestFailsOnStart) {
+  SetUpResourceLoaderForUrl(
+      net::URLRequestFailedJob::GetMockHttpUrlWithFailurePhase(
+          net::URLRequestFailedJob::START, net::ERR_FAILED));
 
-  // Run it to completion.
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-
-  // To downstream, the request was canceled.
-  EXPECT_EQ(net::URLRequestStatus::CANCELED,
-            raw_ptr_resource_handler_->status().status());
-  EXPECT_EQ(0, raw_ptr_resource_handler_->total_bytes_downloaded());
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
 }
 
-// Tests that RedirectToFileResourceHandler handles synchronous write errors.
-TEST_F(ResourceLoaderRedirectToFileTest, WriteError) {
-  file_stream()->set_forced_error(net::ERR_FAILED);
+TEST_F(ResourceLoaderTest, RequestFailsOnReadSync) {
+  SetUpResourceLoaderForUrl(
+      net::URLRequestFailedJob::GetMockHttpUrlWithFailurePhase(
+          net::URLRequestFailedJob::READ_SYNC, net::ERR_FAILED));
 
-  // Run it to completion.
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-
-  // To downstream, the request was canceled sometime after it started, but
-  // before any data was written.
-  EXPECT_EQ(temp_path(),
-            raw_ptr_resource_handler_->response()->head.download_file_path);
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_EQ(net::URLRequestStatus::CANCELED,
-            raw_ptr_resource_handler_->status().status());
-  EXPECT_EQ(0, raw_ptr_resource_handler_->total_bytes_downloaded());
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, did_received_redirect_);
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
 }
 
-// Tests that RedirectToFileResourceHandler handles asynchronous write errors.
-TEST_F(ResourceLoaderRedirectToFileTest, WriteErrorAsync) {
-  file_stream()->set_forced_error_async(net::ERR_FAILED);
+TEST_F(ResourceLoaderTest, RequestFailsOnReadAsync) {
+  SetUpResourceLoaderForUrl(
+      net::URLRequestFailedJob::GetMockHttpUrlWithFailurePhase(
+          net::URLRequestFailedJob::READ_ASYNC, net::ERR_FAILED));
 
-  // Run it to completion.
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-
-  // To downstream, the request was canceled sometime after it started, but
-  // before any data was written.
-  EXPECT_EQ(temp_path(),
-            raw_ptr_resource_handler_->response()->head.download_file_path);
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_EQ(net::URLRequestStatus::CANCELED,
-            raw_ptr_resource_handler_->status().status());
-  EXPECT_EQ(0, raw_ptr_resource_handler_->total_bytes_downloaded());
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, did_received_redirect_);
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::ERR_FAILED, raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
 }
 
-// Tests that RedirectToFileHandler defers completion if there are outstanding
-// writes and accounts for errors which occur in that time.
-TEST_F(ResourceLoaderRedirectToFileTest, DeferCompletion) {
-  // Program the MockFileStream to error asynchronously, but throttle the
-  // callback.
-  file_stream()->set_forced_error_async(net::ERR_FAILED);
-  file_stream()->ThrottleCallbacks();
+TEST_F(ResourceLoaderTest, OutOfBandCancelDuringStart) {
+  SetUpResourceLoaderForUrl(
+      net::URLRequestFailedJob::GetMockHttpUrlWithFailurePhase(
+          net::URLRequestFailedJob::START, net::ERR_IO_PENDING));
 
-  // Run it as far as it will go.
   loader_->StartRequest();
   base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(1, handle_external_protocol_);
 
-  // At this point, the request should have completed.
-  EXPECT_EQ(net::URLRequestStatus::SUCCESS,
-            raw_ptr_to_request_->status().status());
+  // Can't cancel through the ResourceHandler, since that depends on
+  // ResourceDispatachHost, which these tests don't use.
+  loader_->CancelRequest(false);
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
 
-  // However, the resource loader stack is stuck somewhere after receiving the
-  // response.
-  EXPECT_EQ(temp_path(),
-            raw_ptr_resource_handler_->response()->head.download_file_path);
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_FALSE(raw_ptr_resource_handler_->received_response_completed());
-  EXPECT_EQ(0, raw_ptr_resource_handler_->total_bytes_downloaded());
-
-  // Now, release the floodgates.
-  file_stream()->ReleaseCallbacks();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-
-  // Although the URLRequest was successful, the leaf handler sees a failure
-  // because the write never completed.
-  EXPECT_EQ(net::URLRequestStatus::CANCELED,
-            raw_ptr_resource_handler_->status().status());
+  EXPECT_EQ(0, did_received_redirect_);
+  EXPECT_EQ(0, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
 }
 
-// Tests that a RedirectToFileResourceHandler behaves properly when the
-// downstream handler defers OnWillStart.
-TEST_F(ResourceLoaderRedirectToFileTest, DownstreamDeferStart) {
-  // Defer OnWillStart.
-  raw_ptr_resource_handler_->set_defer_request_on_will_start(true);
+TEST_F(ResourceLoaderTest, OutOfBandCancelDuringRead) {
+  SetUpResourceLoaderForUrl(
+      net::URLRequestFailedJob::GetMockHttpUrlWithFailurePhase(
+          net::URLRequestFailedJob::READ_SYNC, net::ERR_IO_PENDING));
 
-  // Run as far as we'll go.
   loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForDeferredStep();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(1, handle_external_protocol_);
 
-  // The request should have stopped at OnWillStart.
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_FALSE(raw_ptr_resource_handler_->response());
-  EXPECT_FALSE(raw_ptr_resource_handler_->received_response_completed());
-  EXPECT_EQ(0, raw_ptr_resource_handler_->total_bytes_downloaded());
+  // Can't cancel through the ResourceHandler, since that depends on
+  // ResourceDispatachHost, which these tests don't use.
+  loader_->CancelRequest(false);
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+  EXPECT_EQ(0, did_received_redirect_);
+  EXPECT_EQ(1, did_receive_response_);
+  EXPECT_EQ(1, did_finish_loading_);
+  EXPECT_EQ(1, handle_external_protocol_);
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_will_start_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_request_redirected_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_completed_called());
+  EXPECT_EQ(net::ERR_ABORTED,
+            raw_ptr_resource_handler_->final_status().error());
+  EXPECT_EQ("", raw_ptr_resource_handler_->body());
+}
 
-  // Now resume the request. Now we complete.
+TEST_F(ResourceLoaderTest, ResumeCanceledRequest) {
+  raw_ptr_resource_handler_->set_defer_on_will_start(true);
+
+  loader_->StartRequest();
+  raw_ptr_resource_handler_->WaitUntilDeferred();
+  loader_->CancelRequest(true);
   raw_ptr_resource_handler_->Resume();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-
-  // Check that the handler forwarded all information to the downstream handler.
-  EXPECT_EQ(temp_path(),
-            raw_ptr_resource_handler_->response()->head.download_file_path);
-  EXPECT_EQ(test_url(), raw_ptr_resource_handler_->start_url());
-  EXPECT_EQ(net::URLRequestStatus::SUCCESS,
-            raw_ptr_resource_handler_->status().status());
-  EXPECT_EQ(test_data().size(), static_cast<size_t>(
-      raw_ptr_resource_handler_->total_bytes_downloaded()));
-
-  // Check that the data was written to the file.
-  std::string contents;
-  ASSERT_TRUE(base::ReadFileToString(temp_path(), &contents));
-  EXPECT_EQ(test_data(), contents);
-}
-
-// Test that an HTTPS resource has the expected security info attached
-// to it.
-TEST_F(HTTPSSecurityInfoResourceLoaderTest, SecurityInfoOnHTTPSResource) {
-  // Start the request and wait for it to finish.
-  std::unique_ptr<net::URLRequest> request(
-      resource_context_.GetRequestContext()->CreateRequest(
-          test_https_url(), net::DEFAULT_PRIORITY, nullptr /* delegate */));
-  SetUpResourceLoader(std::move(request), true);
-
-  // Send the request and wait until it completes.
-  loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-  ASSERT_EQ(net::URLRequestStatus::SUCCESS,
-            raw_ptr_to_request_->status().status());
-
-  ResourceResponse* response = raw_ptr_resource_handler_->response();
-  ASSERT_TRUE(response);
-
-  // Deserialize the security info from the response and check that it
-  // is as expected.
-  SSLStatus deserialized;
-  ASSERT_TRUE(
-      DeserializeSecurityInfo(response->head.security_info, &deserialized));
-
-  // Expect a BROKEN security style because the cert status has errors.
-  EXPECT_EQ(content::SECURITY_STYLE_AUTHENTICATION_BROKEN,
-            deserialized.security_style);
-  scoped_refptr<net::X509Certificate> cert;
-  ASSERT_TRUE(
-      CertStore::GetInstance()->RetrieveCert(deserialized.cert_id, &cert));
-  EXPECT_TRUE(cert->Equals(GetTestCert().get()));
-
-  EXPECT_EQ(kTestCertError, deserialized.cert_status);
-  EXPECT_EQ(kTestConnectionStatus, deserialized.connection_status);
-  EXPECT_EQ(kTestSecurityBits, deserialized.security_bits);
-}
-
-// Test that an HTTPS redirect response has the expected security info
-// attached to it.
-TEST_F(HTTPSSecurityInfoResourceLoaderTest,
-       SecurityInfoOnHTTPSRedirectResource) {
-  // Start the request and wait for it to finish.
-  std::unique_ptr<net::URLRequest> request(
-      resource_context_.GetRequestContext()->CreateRequest(
-          test_https_redirect_url(), net::DEFAULT_PRIORITY,
-          nullptr /* delegate */));
-  SetUpResourceLoader(std::move(request), true);
-
-  // Send the request and wait until it completes.
-  loader_->StartRequest();
-  raw_ptr_resource_handler_->WaitForResponseComplete();
-  ASSERT_EQ(net::URLRequestStatus::SUCCESS,
-            raw_ptr_to_request_->status().status());
-  ASSERT_TRUE(raw_ptr_resource_handler_->received_request_redirected());
-
-  ResourceResponse* redirect_response =
-      raw_ptr_resource_handler_->redirect_response();
-  ASSERT_TRUE(redirect_response);
-
-  // Deserialize the security info from the redirect response and check
-  // that it is as expected.
-  SSLStatus deserialized;
-  ASSERT_TRUE(DeserializeSecurityInfo(redirect_response->head.security_info,
-                                      &deserialized));
-
-  // Expect a BROKEN security style because the cert status has errors.
-  EXPECT_EQ(content::SECURITY_STYLE_AUTHENTICATION_BROKEN,
-            deserialized.security_style);
-  scoped_refptr<net::X509Certificate> cert;
-  ASSERT_TRUE(
-      CertStore::GetInstance()->RetrieveCert(deserialized.cert_id, &cert));
-  EXPECT_TRUE(cert->Equals(GetTestCert().get()));
-
-  EXPECT_EQ(kTestCertError, deserialized.cert_status);
-  EXPECT_EQ(kTestConnectionStatus, deserialized.connection_status);
-  EXPECT_EQ(kTestSecurityBits, deserialized.security_bits);
 }
 
 class EffectiveConnectionTypeResourceLoaderTest : public ResourceLoaderTest {
  public:
   void VerifyEffectiveConnectionType(
-      bool is_main_frame,
-      net::NetworkQualityEstimator::EffectiveConnectionType set_type,
-      net::NetworkQualityEstimator::EffectiveConnectionType expected_type) {
+      ResourceType resource_type,
+      bool belongs_to_main_frame,
+      net::EffectiveConnectionType set_type,
+      net::EffectiveConnectionType expected_type) {
     network_quality_estimator()->set_effective_connection_type(set_type);
 
     // Start the request and wait for it to finish.
     std::unique_ptr<net::URLRequest> request(
-        resource_context_.GetRequestContext()->CreateRequest(
-            test_url(), net::DEFAULT_PRIORITY, nullptr /* delegate */));
-    SetUpResourceLoader(std::move(request), is_main_frame);
+        test_url_request_context_.CreateRequest(
+            test_redirect_url(), net::DEFAULT_PRIORITY, nullptr /* delegate */,
+            TRAFFIC_ANNOTATION_FOR_TESTS));
+    SetUpResourceLoader(std::move(request), resource_type,
+                        belongs_to_main_frame);
 
     // Send the request and wait until it completes.
     loader_->StartRequest();
-    raw_ptr_resource_handler_->WaitForResponseComplete();
+    raw_ptr_resource_handler_->WaitUntilResponseComplete();
     ASSERT_EQ(net::URLRequestStatus::SUCCESS,
               raw_ptr_to_request_->status().status());
 
-    EXPECT_EQ(expected_type,
-              raw_ptr_resource_handler_->observed_effective_connection_type());
+    EXPECT_EQ(expected_type, raw_ptr_resource_handler_->resource_response()
+                                 ->head.effective_connection_type);
   }
 };
 
 // Tests that the effective connection type is set on main frame requests.
 TEST_F(EffectiveConnectionTypeResourceLoaderTest, Slow2G) {
-  VerifyEffectiveConnectionType(
-      true, net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_SLOW_2G,
-      net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_SLOW_2G);
+  VerifyEffectiveConnectionType(RESOURCE_TYPE_MAIN_FRAME, true,
+                                net::EFFECTIVE_CONNECTION_TYPE_SLOW_2G,
+                                net::EFFECTIVE_CONNECTION_TYPE_SLOW_2G);
 }
 
 // Tests that the effective connection type is set on main frame requests.
 TEST_F(EffectiveConnectionTypeResourceLoaderTest, 3G) {
-  VerifyEffectiveConnectionType(
-      true, net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_3G,
-      net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_3G);
+  VerifyEffectiveConnectionType(RESOURCE_TYPE_MAIN_FRAME, true,
+                                net::EFFECTIVE_CONNECTION_TYPE_3G,
+                                net::EFFECTIVE_CONNECTION_TYPE_3G);
+}
+
+// Tests that the effective connection type is not set on requests that belong
+// to main frame.
+TEST_F(EffectiveConnectionTypeResourceLoaderTest, BelongsToMainFrame) {
+  VerifyEffectiveConnectionType(RESOURCE_TYPE_OBJECT, true,
+                                net::EFFECTIVE_CONNECTION_TYPE_3G,
+                                net::EFFECTIVE_CONNECTION_TYPE_UNKNOWN);
 }
 
 // Tests that the effective connection type is not set on non-main frame
 // requests.
-TEST_F(EffectiveConnectionTypeResourceLoaderTest, NotAMainFrame) {
-  VerifyEffectiveConnectionType(
-      false, net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_3G,
-      net::NetworkQualityEstimator::EFFECTIVE_CONNECTION_TYPE_UNKNOWN);
+TEST_F(EffectiveConnectionTypeResourceLoaderTest, DoesNotBelongToMainFrame) {
+  VerifyEffectiveConnectionType(RESOURCE_TYPE_OBJECT, false,
+                                net::EFFECTIVE_CONNECTION_TYPE_3G,
+                                net::EFFECTIVE_CONNECTION_TYPE_UNKNOWN);
+}
+
+TEST_F(ResourceLoaderTest, PauseReadingBodyFromNetBeforeRespnoseHeaders) {
+  static constexpr char kPath[] = "/hello.html";
+  static constexpr char kBodyContents[] = "This is the data as you requested.";
+
+  base::HistogramBase::Sample output_sample = -1;
+  EXPECT_TRUE(StartMonitorBodyReadFromNetBeforePausedHistogram(&output_sample));
+
+  net::EmbeddedTestServer server;
+  net::test_server::ControllableHttpResponse response_controller(&server,
+                                                                 kPath);
+  ASSERT_TRUE(server.Start());
+
+  SetUpResourceLoaderForUrl(server.GetURL(kPath));
+  loader_->StartRequest();
+
+  // Pausing reading response body from network stops future reads from the
+  // underlying URLRequest. So no data should be sent using the response body
+  // data pipe.
+  loader_->PauseReadingBodyFromNet();
+
+  response_controller.WaitForRequest();
+  response_controller.Send(
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/plain\r\n\r\n" +
+      std::string(kBodyContents));
+  response_controller.Done();
+
+  // We will still receive the response header, although there won't be any data
+  // available until ResumeReadBodyFromNet() is called.
+  raw_ptr_resource_handler_->WaitUntilResponseStarted();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+  EXPECT_EQ(0, raw_ptr_resource_handler_->on_read_completed_called());
+
+  // Wait for a little amount of time so that if the loader mistakenly reads
+  // response body from the underlying URLRequest, it is easier to find out.
+  base::RunLoop run_loop;
+  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+      FROM_HERE, run_loop.QuitClosure(),
+      base::TimeDelta::FromMilliseconds(100));
+  run_loop.Run();
+
+  EXPECT_TRUE(raw_ptr_resource_handler_->body().empty());
+
+  loader_->ResumeReadingBodyFromNet();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+
+  EXPECT_EQ(kBodyContents, raw_ptr_resource_handler_->body());
+
+  loader_.reset();
+  EXPECT_EQ(0, output_sample);
+  StopMonitorBodyReadFromNetBeforePausedHistogram();
+}
+
+TEST_F(ResourceLoaderTest, PauseReadingBodyFromNetWhenReadIsPending) {
+  static constexpr char kPath[] = "/hello.html";
+  static constexpr char kBodyContentsFirstHalf[] = "This is the first half.";
+  static constexpr char kBodyContentsSecondHalf[] = "This is the second half.";
+
+  base::HistogramBase::Sample output_sample = -1;
+  EXPECT_TRUE(StartMonitorBodyReadFromNetBeforePausedHistogram(&output_sample));
+
+  net::EmbeddedTestServer server;
+  net::test_server::ControllableHttpResponse response_controller(&server,
+                                                                 kPath);
+  ASSERT_TRUE(server.Start());
+
+  SetUpResourceLoaderForUrl(server.GetURL(kPath));
+  loader_->StartRequest();
+
+  response_controller.WaitForRequest();
+  response_controller.Send(
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/plain\r\n\r\n" +
+      std::string(kBodyContentsFirstHalf));
+
+  raw_ptr_resource_handler_->WaitUntilResponseStarted();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+
+  loader_->PauseReadingBodyFromNet();
+
+  response_controller.Send(kBodyContentsSecondHalf);
+  response_controller.Done();
+
+  // It is uncertain how much data has been read before reading is actually
+  // paused, because if there is a pending read when PauseReadingBodyFromNet()
+  // arrives, the pending read won't be cancelled. Therefore, this test only
+  // checks that after ResumeReadingBodyFromNet() we should be able to get the
+  // whole response body.
+  loader_->ResumeReadingBodyFromNet();
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+
+  EXPECT_EQ(std::string(kBodyContentsFirstHalf) +
+                std::string(kBodyContentsSecondHalf),
+            raw_ptr_resource_handler_->body());
+
+  loader_.reset();
+  EXPECT_LE(0, output_sample);
+  StopMonitorBodyReadFromNetBeforePausedHistogram();
+}
+
+TEST_F(ResourceLoaderTest, MultiplePauseResumeReadingBodyFromNet) {
+  static constexpr char kPath[] = "/hello.html";
+  static constexpr char kBodyContentsFirstHalf[] = "This is the first half.";
+  static constexpr char kBodyContentsSecondHalf[] = "This is the second half.";
+
+  base::HistogramBase::Sample output_sample = -1;
+  EXPECT_TRUE(StartMonitorBodyReadFromNetBeforePausedHistogram(&output_sample));
+
+  net::EmbeddedTestServer server;
+  net::test_server::ControllableHttpResponse response_controller(&server,
+                                                                 kPath);
+  ASSERT_TRUE(server.Start());
+
+  SetUpResourceLoaderForUrl(server.GetURL(kPath));
+  loader_->StartRequest();
+
+  // It is okay to call ResumeReadingBodyFromNet() even if there is no prior
+  // PauseReadingBodyFromNet().
+  loader_->ResumeReadingBodyFromNet();
+
+  response_controller.WaitForRequest();
+  response_controller.Send(
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/plain\r\n\r\n" +
+      std::string(kBodyContentsFirstHalf));
+
+  loader_->PauseReadingBodyFromNet();
+
+  raw_ptr_resource_handler_->WaitUntilResponseStarted();
+  EXPECT_EQ(1, raw_ptr_resource_handler_->on_response_started_called());
+
+  loader_->PauseReadingBodyFromNet();
+  loader_->PauseReadingBodyFromNet();
+
+  response_controller.Send(kBodyContentsSecondHalf);
+  response_controller.Done();
+
+  // One ResumeReadingBodyFromNet() call will resume reading even if there are
+  // multiple PauseReadingBodyFromNet() calls before it.
+  loader_->ResumeReadingBodyFromNet();
+
+  raw_ptr_resource_handler_->WaitUntilResponseComplete();
+
+  EXPECT_EQ(std::string(kBodyContentsFirstHalf) +
+                std::string(kBodyContentsSecondHalf),
+            raw_ptr_resource_handler_->body());
+
+  loader_.reset();
+  EXPECT_LE(0, output_sample);
+  StopMonitorBodyReadFromNetBeforePausedHistogram();
 }
 
 }  // namespace content

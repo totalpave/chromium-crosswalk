@@ -6,6 +6,8 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/logging.h"
 #include "base/values.h"
 #include "chromeos/network/device_state.h"
@@ -38,15 +40,15 @@ ManagedState::ManagedState(ManagedType type, const std::string& path)
       update_requested_(false) {
 }
 
-ManagedState::~ManagedState() {
-}
+ManagedState::~ManagedState() = default;
 
-ManagedState* ManagedState::Create(ManagedType type, const std::string& path) {
+std::unique_ptr<ManagedState> ManagedState::Create(ManagedType type,
+                                                   const std::string& path) {
   switch (type) {
     case MANAGED_TYPE_NETWORK:
-      return new NetworkState(path);
+      return std::make_unique<NetworkState>(path);
     case MANAGED_TYPE_DEVICE:
-      return new DeviceState(path);
+      return std::make_unique<DeviceState>(path);
   }
   return NULL;
 }
@@ -63,14 +65,13 @@ DeviceState* ManagedState::AsDeviceState() {
   return NULL;
 }
 
-bool ManagedState::InitialPropertiesReceived(
-    const base::DictionaryValue& properties) {
+bool ManagedState::InitialPropertiesReceived(const base::Value& properties) {
   return false;
 }
 
-void ManagedState::GetStateProperties(base::DictionaryValue* dictionary) const {
-  dictionary->SetStringWithoutPathExpansion(shill::kNameProperty, name());
-  dictionary->SetStringWithoutPathExpansion(shill::kTypeProperty, type());
+void ManagedState::GetStateProperties(base::Value* dictionary) const {
+  dictionary->SetKey(shill::kNameProperty, base::Value(name()));
+  dictionary->SetKey(shill::kTypeProperty, base::Value(type()));
 }
 
 bool ManagedState::ManagedStatePropertyChanged(const std::string& key,

@@ -7,6 +7,10 @@
 
 #import <Foundation/Foundation.h>
 
+#include "base/macros.h"
+#include "net/base/load_timing_info.h"
+#include "net/http/http_response_info.h"
+
 namespace net {
 class URLRequestContextGetter;
 
@@ -31,6 +35,39 @@ class HTTPProtocolHandlerDelegate {
   virtual URLRequestContextGetter* GetDefaultURLRequestContext() = 0;
 };
 
+// Delegate class which supplies a metrics callback that is invoked when a net
+// request is stopped.
+class MetricsDelegate {
+ public:
+  // Simple struct collecting all of the metrics data that is passed through to
+  // the MetricsDelegate callback.
+  struct Metrics {
+    Metrics();
+    ~Metrics();
+
+    NSURLSessionTask* task;
+    LoadTimingInfo load_timing_info;
+    HttpResponseInfo response_info;
+    base::Time response_end_time;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(Metrics);
+  };
+
+  // Set the global instance of the MetricsDelegate.
+  static void SetInstance(MetricsDelegate* delegate);
+
+  virtual ~MetricsDelegate() = default;
+
+  // This is invoked once when the request begins, in order to set up things
+  // which may be needed by OnStopNetRequest.
+  virtual void OnStartNetRequest(NSURLSessionTask* task) = 0;
+
+  // This is invoked once the request is finally stopped, with metrics data
+  // collect by net passed in as an argument.
+  virtual void OnStopNetRequest(std::unique_ptr<Metrics> metrics) = 0;
+};
+
 }  // namespace net
 
 // Custom NSURLProtocol handling HTTP and HTTPS requests.
@@ -38,15 +75,6 @@ class HTTPProtocolHandlerDelegate {
 // This protocol is called for each NSURLRequest. This allows handling the
 // requests issued by UIWebView using our own network stack.
 @interface CRNHTTPProtocolHandler : NSURLProtocol
-@end
-
-// Custom NSURLProtocol handling HTTP and HTTPS requests.
-// The HttpProtocolHandler is registered as a NSURLProtocol in the iOS system.
-// This protocol is called for each NSURLRequest. This allows handling the
-// requests issued by UIWebView using our own network stack. This protocol
-// handler implements iOS 8 NSURLProtocol pause/resume semantics, in which
-// |startLoading| means "start or resume" and |stopLoading| means "pause".
-@interface CRNPauseableHTTPProtocolHandler : CRNHTTPProtocolHandler
 @end
 
 #endif  // IOS_NET_CRN_HTTP_PROTOCOL_HANDLER_H_

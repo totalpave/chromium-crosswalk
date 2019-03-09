@@ -4,15 +4,26 @@
 
 #include "chrome/browser/sync/test/integration/status_change_checker.h"
 
+#include "base/bind.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/timer/timer.h"
 
-StatusChangeChecker::StatusChangeChecker() : timed_out_(false) {
-}
+StatusChangeChecker::StatusChangeChecker()
+    : run_loop_(base::RunLoop::Type::kNestableTasksAllowed),
+      timed_out_(false) {}
 
 StatusChangeChecker::~StatusChangeChecker() {}
+
+bool StatusChangeChecker::Wait() {
+  if (IsExitConditionSatisfied()) {
+    DVLOG(1) << "Already satisfied: " << GetDebugMessage();
+  } else {
+    DVLOG(1) << "Blocking: " << GetDebugMessage();
+    StartBlockingWait();
+  }
+  return !TimedOut();
+}
 
 bool StatusChangeChecker::TimedOut() const {
   return timed_out_;
@@ -22,22 +33,9 @@ base::TimeDelta StatusChangeChecker::GetTimeoutDuration() {
   return base::TimeDelta::FromSeconds(45);
 }
 
-void StatusChangeChecker::StartBlockingWait() {
-  base::OneShotTimer timer;
-  timer.Start(FROM_HERE,
-              GetTimeoutDuration(),
-              base::Bind(&StatusChangeChecker::OnTimeout,
-                         base::Unretained(this)));
-
-  {
-    base::MessageLoop* loop = base::MessageLoop::current();
-    base::MessageLoop::ScopedNestableTaskAllower allow(loop);
-    base::RunLoop().Run();
-  }
-}
-
 void StatusChangeChecker::StopWaiting() {
-  base::MessageLoop::current()->QuitWhenIdle();
+  if (run_loop_.running())
+    run_loop_.Quit();
 }
 
 void StatusChangeChecker::CheckExitCondition() {
@@ -46,6 +44,17 @@ void StatusChangeChecker::CheckExitCondition() {
     DVLOG(1) << "Await -> Condition met: " << GetDebugMessage();
     StopWaiting();
   }
+}
+
+void StatusChangeChecker::StartBlockingWait() {
+  DCHECK(!run_loop_.running());
+
+  base::OneShotTimer timer;
+  timer.Start(FROM_HERE, GetTimeoutDuration(),
+              base::BindRepeating(&StatusChangeChecker::OnTimeout,
+                                  base::Unretained(this)));
+
+  run_loop_.Run();
 }
 
 void StatusChangeChecker::OnTimeout() {

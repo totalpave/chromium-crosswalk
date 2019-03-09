@@ -6,10 +6,11 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -21,6 +22,7 @@
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/grit/component_extension_resources_map.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/image_loader.h"
@@ -28,7 +30,6 @@
 #include "extensions/common/extension_resource.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/grit/extensions_browser_resources.h"
-#include "grit/component_extension_resources_map.h"
 #include "skia/ext/image_operations.h"
 #include "ui/base/layout.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -78,13 +79,7 @@ struct ExtensionIconSource::ExtensionIconRequest {
 GURL ExtensionIconSource::GetIconURL(const Extension* extension,
                                      int icon_size,
                                      ExtensionIconSet::MatchType match,
-                                     bool grayscale,
-                                     bool* exists) {
-  if (exists) {
-    *exists =
-        IconsInfo::GetIconURL(extension, icon_size, match) != GURL::EmptyGURL();
-  }
-
+                                     bool grayscale) {
   GURL icon_url(base::StringPrintf("%s%s/%d/%d%s",
                                    chrome::kChromeUIExtensionIconURL,
                                    extension->id().c_str(),
@@ -97,9 +92,9 @@ GURL ExtensionIconSource::GetIconURL(const Extension* extension,
 
 // static
 SkBitmap* ExtensionIconSource::LoadImageByResourceId(int resource_id) {
-  std::string contents = ResourceBundle::GetSharedInstance()
-      .GetRawDataResourceForScale(resource_id,
-                                  ui::SCALE_FACTOR_100P).as_string();
+  base::StringPiece contents =
+      ui::ResourceBundle::GetSharedInstance().GetRawDataResourceForScale(
+          resource_id, ui::SCALE_FACTOR_100P);
 
   // Convert and return it.
   const unsigned char* data =
@@ -119,8 +114,7 @@ std::string ExtensionIconSource::GetMimeType(const std::string&) const {
 
 void ExtensionIconSource::StartDataRequest(
     const std::string& path,
-    int render_process_id,
-    int render_frame_id,
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
     const content::URLDataSource::GotDataCallback& callback) {
   // This is where everything gets started. First, parse the request and make
   // the request data available for later.
@@ -145,9 +139,13 @@ void ExtensionIconSource::StartDataRequest(
   }
 }
 
+bool ExtensionIconSource::AllowCaching() const {
+  // Should not be cached to reflect the latest contents that may be updated by
+  // Extensions.
+  return false;
+}
+
 ExtensionIconSource::~ExtensionIconSource() {
-  // Clean up all the temporary data we're holding for requests.
-  STLDeleteValues(&request_map_);
 }
 
 const SkBitmap* ExtensionIconSource::GetDefaultAppImage() {
@@ -205,10 +203,9 @@ void ExtensionIconSource::LoadExtensionImage(const ExtensionResource& icon,
                                              int request_id) {
   ExtensionIconRequest* request = GetData(request_id);
   ImageLoader::Get(profile_)->LoadImageAsync(
-      request->extension.get(),
-      icon,
-      gfx::Size(request->size, request->size),
-      base::Bind(&ExtensionIconSource::OnImageLoaded, AsWeakPtr(), request_id));
+      request->extension.get(), icon, gfx::Size(request->size, request->size),
+      base::BindOnce(&ExtensionIconSource::OnImageLoaded, AsWeakPtr(),
+                     request_id));
 }
 
 void ExtensionIconSource::LoadFaviconImage(int request_id) {
@@ -224,12 +221,10 @@ void ExtensionIconSource::LoadFaviconImage(int request_id) {
   GURL favicon_url =
       AppLaunchInfo::GetFullLaunchURL(GetData(request_id)->extension.get());
   favicon_service->GetRawFaviconForPageURL(
-      favicon_url,
-      favicon_base::FAVICON,
-      gfx::kFaviconSize,
+      favicon_url, {favicon_base::IconType::kFavicon}, gfx::kFaviconSize,
+      /*fallback_to_host=*/false,
       base::Bind(&ExtensionIconSource::OnFaviconDataAvailable,
-                 base::Unretained(this),
-                 request_id),
+                 base::Unretained(this), request_id),
       &cancelable_task_tracker_);
 }
 
@@ -325,28 +320,23 @@ void ExtensionIconSource::SetData(
     bool grayscale,
     int size,
     ExtensionIconSet::MatchType match) {
-  ExtensionIconRequest* request = new ExtensionIconRequest();
+  std::unique_ptr<ExtensionIconRequest> request =
+      std::make_unique<ExtensionIconRequest>();
   request->callback = callback;
   request->extension = extension;
   request->grayscale = grayscale;
   request->size = size;
   request->match = match;
-  request_map_[request_id] = request;
+  request_map_[request_id] = std::move(request);
 }
 
 ExtensionIconSource::ExtensionIconRequest* ExtensionIconSource::GetData(
     int request_id) {
-  return request_map_[request_id];
+  return request_map_[request_id].get();
 }
 
 void ExtensionIconSource::ClearData(int request_id) {
-  std::map<int, ExtensionIconRequest*>::iterator i =
-      request_map_.find(request_id);
-  if (i == request_map_.end())
-    return;
-
-  delete i->second;
-  request_map_.erase(i);
+  request_map_.erase(request_id);
 }
 
 }  // namespace extensions

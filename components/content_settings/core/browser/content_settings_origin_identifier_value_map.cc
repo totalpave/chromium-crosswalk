@@ -37,11 +37,10 @@ class RuleIteratorImpl : public RuleIterator {
   bool HasNext() const override { return (current_rule_ != rule_end_); }
 
   Rule Next() override {
-    DCHECK(current_rule_ != rule_end_);
-    DCHECK(current_rule_->second.get());
+    DCHECK(HasNext());
     Rule to_return(current_rule_->first.primary_pattern,
                    current_rule_->first.secondary_pattern,
-                   current_rule_->second.get()->DeepCopy());
+                   current_rule_->second.value.Clone());
     ++current_rule_;
     return to_return;
   }
@@ -83,6 +82,10 @@ bool OriginIdentifierValueMap::PatternPair::operator<(
          std::tie(other.primary_pattern, other.secondary_pattern);
 }
 
+OriginIdentifierValueMap::ValueEntry::ValueEntry() {}
+
+OriginIdentifierValueMap::ValueEntry::~ValueEntry() {}
+
 std::unique_ptr<RuleIterator> OriginIdentifierValueMap::GetRuleIterator(
     ContentSettingsType content_type,
     const ResourceIdentifier& resource_identifier,
@@ -95,18 +98,17 @@ std::unique_ptr<RuleIterator> OriginIdentifierValueMap::GetRuleIterator(
   std::unique_ptr<base::AutoLock> auto_lock;
   if (lock)
     auto_lock.reset(new base::AutoLock(*lock));
-  EntryMap::const_iterator it = entries_.find(key);
+  auto it = entries_.find(key);
   if (it == entries_.end())
-    return std::unique_ptr<RuleIterator>(new EmptyRuleIterator());
+    return nullptr;
   return std::unique_ptr<RuleIterator>(new RuleIteratorImpl(
       it->second.begin(), it->second.end(), auto_lock.release()));
 }
 
 size_t OriginIdentifierValueMap::size() const {
   size_t size = 0;
-  EntryMap::const_iterator it;
-  for (it = entries_.begin(); it != entries_.end(); ++it)
-    size += it->second.size();
+  for (const auto& entry : entries_)
+    size += entry.second.size();
   return size;
 }
 
@@ -114,27 +116,45 @@ OriginIdentifierValueMap::OriginIdentifierValueMap() {}
 
 OriginIdentifierValueMap::~OriginIdentifierValueMap() {}
 
-base::Value* OriginIdentifierValueMap::GetValue(
+const base::Value* OriginIdentifierValueMap::GetValue(
     const GURL& primary_url,
     const GURL& secondary_url,
     ContentSettingsType content_type,
     const ResourceIdentifier& resource_identifier) const {
   EntryMapKey key(content_type, resource_identifier);
-  EntryMap::const_iterator it = entries_.find(key);
+  auto it = entries_.find(key);
   if (it == entries_.end())
-      return NULL;
+    return nullptr;
 
   // Iterate the entries in until a match is found. Since the rules are stored
   // in the order of decreasing precedence, the most specific match is found
   // first.
-  Rules::const_iterator entry;
-  for (entry = it->second.begin(); entry != it->second.end(); ++entry) {
-    if (entry->first.primary_pattern.Matches(primary_url) &&
-        entry->first.secondary_pattern.Matches(secondary_url)) {
-      return entry->second.get();
+  for (const auto& entry : it->second) {
+    if (entry.first.primary_pattern.Matches(primary_url) &&
+        entry.first.secondary_pattern.Matches(secondary_url)) {
+      return &entry.second.value;
     }
   }
-  return NULL;
+  return nullptr;
+}
+
+base::Time OriginIdentifierValueMap::GetLastModified(
+    const ContentSettingsPattern& primary_pattern,
+    const ContentSettingsPattern& secondary_pattern,
+    ContentSettingsType content_type,
+    const ResourceIdentifier& resource_identifier) const {
+  DCHECK(primary_pattern.IsValid());
+  DCHECK(secondary_pattern.IsValid());
+
+  EntryMapKey key(content_type, resource_identifier);
+  PatternPair patterns(primary_pattern, secondary_pattern);
+  auto it = entries_.find(key);
+  if (it == entries_.end())
+    return base::Time();
+  auto r = it->second.find(patterns);
+  if (r == it->second.end())
+    return base::Time();
+  return r->second.last_modified;
 }
 
 void OriginIdentifierValueMap::SetValue(
@@ -142,17 +162,18 @@ void OriginIdentifierValueMap::SetValue(
     const ContentSettingsPattern& secondary_pattern,
     ContentSettingsType content_type,
     const ResourceIdentifier& resource_identifier,
-    base::Value* value) {
+    base::Time last_modified,
+    base::Value value) {
   DCHECK(primary_pattern.IsValid());
   DCHECK(secondary_pattern.IsValid());
-  DCHECK(value);
   // TODO(raymes): Remove this after we track down the cause of
   // crbug.com/531548.
   CHECK_NE(CONTENT_SETTINGS_TYPE_DEFAULT, content_type);
   EntryMapKey key(content_type, resource_identifier);
   PatternPair patterns(primary_pattern, secondary_pattern);
-  // This will create the entry and the linked_ptr if needed.
-  entries_[key][patterns].reset(value);
+  ValueEntry* entry = &entries_[key][patterns];
+  entry->value = std::move(value);
+  entry->last_modified = last_modified;
 }
 
 void OriginIdentifierValueMap::DeleteValue(
@@ -162,7 +183,7 @@ void OriginIdentifierValueMap::DeleteValue(
       const ResourceIdentifier& resource_identifier) {
   EntryMapKey key(content_type, resource_identifier);
   PatternPair patterns(primary_pattern, secondary_pattern);
-  EntryMap::iterator it = entries_.find(key);
+  auto it = entries_.find(key);
   if (it == entries_.end())
     return;
   it->second.erase(patterns);

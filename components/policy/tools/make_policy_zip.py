@@ -2,79 +2,63 @@
 # Copyright (c) 2011 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-
-"""Creates a zip archive with policy template files. The list of input files is
-extracted from a grd file with grit. This is to keep the length of input
-arguments below the limit on Windows.
+"""Creates a zip archive with policy template files.
 """
 
 import optparse
-import os
 import sys
 import zipfile
 
 
 def add_files_to_zip(zip_file, base_dir, file_list):
-  """Pack a list of files into a zip archive, that is already
-  opened for writing.
+  """Pack a list of files into a zip archive, that is already opened for
+  writing.
 
   Args:
     zip_file: An object representing the zip archive.
     base_dir: Base path of all the files in the real file system.
-    files: List of file paths to add, all relative to base_dir.
-        The zip entries will only contain this componenet of the path.
+    file_list: List of absolute file paths to add. Must start with base_dir.
+        The base_dir is stripped in the zip file entries.
   """
+  if (base_dir[-1] != '/'):
+    base_dir += '/'
   for file_path in file_list:
-    zip_file.write(base_dir + file_path, file_path)
+    assert file_path.startswith(base_dir)
+    zip_file.write(file_path, file_path[len(base_dir):])
   return 0
-
-
-def get_grd_outputs(grit_cmd, grit_defines, grd_file, grd_strip_path_prefix):
-  grit_path = os.path.join(os.getcwd(), os.path.dirname(grit_cmd))
-  sys.path.append(grit_path)
-  import grit_info
-  outputs = grit_info.Outputs(grd_file, grit_defines,
-                              'GRIT_DIR/../gritsettings/resource_ids')
-  result = []
-  for item in outputs:
-    assert item.startswith(grd_strip_path_prefix)
-    result.append(item[len(grd_strip_path_prefix):])
-  return result
 
 
 def main(argv):
   """Pack a list of files into a zip archive.
 
   Args:
-    zip_path: The file name of the zip archive.
+    output: The file path of the zip archive.
     base_dir: Base path of input files.
-    locales: The list of locales that are used to generate the list of file
-        names using INPUT_FILES.
+    languages: Comma-separated list of languages, e.g. en-US,de.
+    add: List of files to include in the archive. The language placeholder
+         ${lang} is expanded into one file for each language.
   """
   parser = optparse.OptionParser()
   parser.add_option("--output", dest="output")
-  parser.add_option("--basedir", dest="basedir")
-  parser.add_option("--grit_info", dest="grit_info")
-  parser.add_option("--grd_input", dest="grd_input")
-  parser.add_option("--grd_strip_path_prefix", dest="grd_strip_path_prefix")
-  parser.add_option("--extra_input", action="append", dest="extra_input",
-                    default=[])
-  parser.add_option("-D", action="append", dest="grit_defines", default=[])
-  parser.add_option("-E", action="append", dest="grit_build_env", default=[])
+  parser.add_option("--base_dir", dest="base_dir")
+  parser.add_option("--languages", dest="languages")
+  parser.add_option("--add", action="append", dest="files", default=[])
   options, args = parser.parse_args(argv[1:])
 
-  if (options.basedir[-1] != '/'):
-    options.basedir += '/'
-  grit_defines = {}
-  for define in options.grit_defines:
-    grit_defines[define] = 1
+  # Process file list, possibly expanding language placeholders.
+  _LANG_PLACEHOLDER = "${lang}"
+  languages = filter(bool, options.languages.split(','))
+  file_list = []
+  for file_to_add in options.files:
+    if (_LANG_PLACEHOLDER in file_to_add):
+      for lang in languages:
+        file_list.append(file_to_add.replace(_LANG_PLACEHOLDER, lang))
+    else:
+      file_list.append(file_to_add)
 
-  file_list = options.extra_input
-  file_list += get_grd_outputs(options.grit_info, grit_defines,
-                               options.grd_input, options.grd_strip_path_prefix)
   zip_file = zipfile.ZipFile(options.output, 'w', zipfile.ZIP_DEFLATED)
   try:
-    return add_files_to_zip(zip_file, options.basedir, file_list)
+    return add_files_to_zip(zip_file, options.base_dir, file_list)
   finally:
     zip_file.close()
 

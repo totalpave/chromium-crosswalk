@@ -8,11 +8,13 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <string>
+
 #include "gpu/gpu_export.h"
 
 // From gl2/gl2ext.h.
 #ifndef GL_MAILBOX_SIZE_CHROMIUM
-#define GL_MAILBOX_SIZE_CHROMIUM 64
+#define GL_MAILBOX_SIZE_CHROMIUM 16
 #endif
 
 namespace gpu {
@@ -28,17 +30,32 @@ struct GPU_EXPORT Mailbox {
   using Name = int8_t[GL_MAILBOX_SIZE_CHROMIUM];
 
   Mailbox();
+
+  static Mailbox FromVolatile(const volatile Mailbox& other) {
+    // Because the copy constructor is trivial, const_cast is safe.
+    return const_cast<const Mailbox&>(other);
+  }
+
   bool IsZero() const;
   void SetZero();
   void SetName(const int8_t* name);
 
+  // Indicates whether this mailbox is used with the SharedImage system.
+  bool IsSharedImage() const;
+
   // Generate a unique unguessable mailbox name.
   static Mailbox Generate();
+
+  // Generate a unique unguessable mailbox name for use with the SharedImage
+  // system.
+  static Mailbox GenerateForSharedImage();
 
   // Verify that the mailbox was created through Mailbox::Generate. This only
   // works in Debug (always returns true in Release). This is not a secure
   // check, only to catch bugs where clients forgot to call Mailbox::Generate.
   bool Verify() const;
+
+  std::string ToDebugString() const;
 
   Name name;
 

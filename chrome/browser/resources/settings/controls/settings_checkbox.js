@@ -5,105 +5,54 @@
 /**
  * @fileoverview
  * `settings-checkbox` is a checkbox that controls a supplied preference.
- *
- * Example:
- *      <settings-checkbox pref="{{prefs.settings.enableFoo}}"
- *          label="Enable foo setting." subLabel="(bar also)">
- *      </settings-checkbox>
  */
 Polymer({
   is: 'settings-checkbox',
 
-  behaviors: [CrPolicyPrefBehavior, PrefControlBehavior],
+  behaviors: [SettingsBooleanControlBehavior],
 
   properties: {
-    /** Whether the checkbox should represent the inverted value. */
-    inverted: {
-      type: Boolean,
-      value: false,
-    },
-
-    /** Whether the checkbox is checked. */
-    checked: {
-      type: Boolean,
-      value: false,
-      notify: true,
-      observer: 'checkedChanged_',
-      reflectToAttribute: true
-    },
-
-    /** Disabled property for the element. */
-    disabled: {
-      type: Boolean,
-      value: false,
-      notify: true,
-      reflectToAttribute: true
-    },
-
-    /** Checkbox label. */
-    label: {
-      type: String,
-      value: '',
-    },
-
-    /** Additional sub-label for the checkbox. */
-    subLabel: {
+    /**
+     * Alternative source for the sub-label that can contain html markup.
+     * Only use with trusted input.
+     */
+    subLabelHtml: {
       type: String,
       value: '',
     },
   },
 
   observers: [
-    'prefValueChanged_(pref.value)'
+    'subLabelHtmlChanged_(subLabelHtml)',
   ],
 
-  /** @override */
-  ready: function() {
-    this.$.events.forward(this.$.checkbox, ['change']);
+  /**
+   * Don't let clicks on a link inside the secondary label reach the checkbox.
+   * @private
+   */
+  subLabelHtmlChanged_: function() {
+    const links = this.root.querySelectorAll('.secondary.label a');
+    links.forEach((link) => {
+      link.addEventListener('click', this.stopPropagation);
+    });
   },
 
   /**
-   * Polymer observer for pref.value.
-   * @param {*} prefValue
+   * @param {!Event} event
    * @private
    */
-  prefValueChanged_: function(prefValue) {
-    this.checked = this.getNewValue_(prefValue);
+  stopPropagation: function(event) {
+    event.stopPropagation();
   },
 
   /**
-   * Polymer observer for checked.
+   * @param {string} subLabel
+   * @param {string} subLabelHtml
+   * @return {boolean} Whether there is a subLabel
    * @private
    */
-  checkedChanged_: function() {
-    if (!this.pref)
-      return;
-    /** @type {boolean} */ var newValue = this.getNewValue_(this.checked);
-    // Ensure that newValue is the correct type for the pref type, either
-    // a boolean or a number.
-    if (this.pref.type == chrome.settingsPrivate.PrefType.NUMBER) {
-      this.set('pref.value', newValue ? 1 : 0);
-      return;
-    }
-    this.set('pref.value', newValue);
+  hasSubLabel_: function(subLabel, subLabelHtml) {
+    return !!subLabel || !!subLabelHtml;
   },
 
-  /**
-   * @param {*} value
-   * @return {boolean} The value as a boolean, inverted if |inverted| is true.
-   * @private
-   */
-  getNewValue_: function(value) {
-    return this.inverted ? !value : !!value;
-  },
-
-  /**
-   * @param {boolean} disabled
-   * @param {!chrome.settingsPrivate.PrefObject} pref
-   * @return {boolean} Whether the checkbox should be disabled.
-   * @private
-   */
-  checkboxDisabled_: function(disabled, pref) {
-    return disabled || this.isPrefPolicyControlled(pref);
-  },
 });

@@ -10,15 +10,15 @@
 #include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlbuilder.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlparser.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlbuilder.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlparser.h"
 
 namespace remoting {
 
-class XmppStreamParser::Core : public buzz::XmlParseHandler {
+class XmppStreamParser::Core : public jingle_xmpp::XmlParseHandler {
  public:
-  typedef base::Callback<void(std::unique_ptr<buzz::XmlElement> stanza)>
+  typedef base::Callback<void(std::unique_ptr<jingle_xmpp::XmlElement> stanza)>
       OnStanzaCallback;
 
   Core();
@@ -30,24 +30,24 @@ class XmppStreamParser::Core : public buzz::XmlParseHandler {
   void AppendData(const std::string& data);
 
  private:
-  // buzz::XmlParseHandler interface.
-  void StartElement(buzz::XmlParseContext* context,
+  // jingle_xmpp::XmlParseHandler interface.
+  void StartElement(jingle_xmpp::XmlParseContext* context,
                     const char* name,
                     const char** atts) override;
-  void EndElement(buzz::XmlParseContext* context, const char* name) override;
-  void CharacterData(buzz::XmlParseContext* context,
+  void EndElement(jingle_xmpp::XmlParseContext* context, const char* name) override;
+  void CharacterData(jingle_xmpp::XmlParseContext* context,
                      const char* text,
                      int len) override;
-  void Error(buzz::XmlParseContext* context, XML_Error error_code) override;
+  void Error(jingle_xmpp::XmlParseContext* context, XML_Error error_code) override;
 
   void ProcessError();
 
   OnStanzaCallback on_stanza_callback_;
   base::Closure on_error_callback_;
 
-  buzz::XmlParser parser_;
+  jingle_xmpp::XmlParser parser_;
   int depth_;
-  buzz::XmlBuilder builder_;
+  jingle_xmpp::XmlBuilder builder_;
 
   bool error_;
 
@@ -60,8 +60,7 @@ XmppStreamParser::Core::Core()
       error_(false) {
 }
 
-XmppStreamParser::Core::~Core() {
-}
+XmppStreamParser::Core::~Core() = default;
 
 void XmppStreamParser::Core::SetCallbacks(
     const OnStanzaCallback& on_stanza_callback,
@@ -76,15 +75,15 @@ void XmppStreamParser::Core::AppendData(const std::string& data) {
   parser_.Parse(data.data(), data.size(), false);
 }
 
-void XmppStreamParser::Core::StartElement(buzz::XmlParseContext* context,
+void XmppStreamParser::Core::StartElement(jingle_xmpp::XmlParseContext* context,
                                     const char* name,
                                     const char** atts) {
   DCHECK(!error_);
 
   ++depth_;
   if (depth_ == 1) {
-    std::unique_ptr<buzz::XmlElement> header(
-        buzz::XmlBuilder::BuildElement(context, name, atts));
+    std::unique_ptr<jingle_xmpp::XmlElement> header(
+        jingle_xmpp::XmlBuilder::BuildElement(context, name, atts));
     if (!header) {
       LOG(ERROR) << "Failed to parse XMPP stream header.";
       ProcessError();
@@ -95,7 +94,7 @@ void XmppStreamParser::Core::StartElement(buzz::XmlParseContext* context,
   builder_.StartElement(context, name, atts);
 }
 
-void XmppStreamParser::Core::EndElement(buzz::XmlParseContext* context,
+void XmppStreamParser::Core::EndElement(jingle_xmpp::XmlParseContext* context,
                                         const char* name) {
   DCHECK(!error_);
 
@@ -114,7 +113,7 @@ void XmppStreamParser::Core::EndElement(buzz::XmlParseContext* context,
   }
 }
 
-void XmppStreamParser::Core::CharacterData(buzz::XmlParseContext* context,
+void XmppStreamParser::Core::CharacterData(jingle_xmpp::XmlParseContext* context,
                                            const char* text,
                                            int len) {
   DCHECK(!error_);
@@ -139,7 +138,7 @@ void XmppStreamParser::Core::CharacterData(buzz::XmlParseContext* context,
   }
 }
 
-void XmppStreamParser::Core::Error(buzz::XmlParseContext* context,
+void XmppStreamParser::Core::Error(jingle_xmpp::XmlParseContext* context,
                                    XML_Error error_code) {
   LOG(ERROR) << "XMPP parser error: " << error_code;
   ProcessError();

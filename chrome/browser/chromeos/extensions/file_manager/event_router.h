@@ -15,8 +15,10 @@
 #include "base/compiler_specific.h"
 #include "base/files/file_path_watcher.h"
 #include "base/macros.h"
+#include "chrome/browser/chromeos/crostini/crostini_share_path.h"
 #include "chrome/browser/chromeos/drive/drive_integration_service.h"
 #include "chrome/browser/chromeos/extensions/file_manager/device_event_router.h"
+#include "chrome/browser/chromeos/extensions/file_manager/drivefs_event_router.h"
 #include "chrome/browser/chromeos/extensions/file_manager/job_event_router.h"
 #include "chrome/browser/chromeos/file_manager/file_watcher.h"
 #include "chrome/browser/chromeos/file_manager/fileapi_util.h"
@@ -24,26 +26,20 @@
 #include "chrome/browser/chromeos/file_manager/volume_manager_observer.h"
 #include "chrome/common/extensions/api/file_manager_private.h"
 #include "chromeos/disks/disk_mount_manager.h"
-#include "chromeos/network/network_state_handler_observer.h"
 #include "chromeos/settings/timezone_settings.h"
+#include "components/arc/arc_service_manager.h"
+#include "components/arc/intent_helper/arc_intent_helper_observer.h"
 #include "components/drive/chromeos/file_system_observer.h"
 #include "components/drive/chromeos/sync_client.h"
 #include "components/drive/service/drive_service_interface.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "services/network/public/cpp/network_connection_tracker.h"
 #include "storage/browser/fileapi/file_system_operation.h"
 
 class PrefChangeRegistrar;
 class Profile;
 
 using file_manager::util::EntryDefinition;
-
-namespace base {
-class ListValue;
-}
-
-namespace chromeos {
-class NetworkState;
-}
 
 namespace drive {
 class FileChange;
@@ -53,12 +49,16 @@ namespace file_manager {
 
 // Monitors changes in disk mounts, network connection state and preferences
 // affecting File Manager. Dispatches appropriate File Browser events.
-class EventRouter : public KeyedService,
-                    public chromeos::NetworkStateHandlerObserver,
-                    public chromeos::system::TimezoneSettings::Observer,
-                    public drive::FileSystemObserver,
-                    public drive::DriveServiceObserver,
-                    public VolumeManagerObserver {
+class EventRouter
+    : public KeyedService,
+      public network::NetworkConnectionTracker::NetworkConnectionObserver,
+      public chromeos::system::TimezoneSettings::Observer,
+      public drive::FileSystemObserver,
+      public drive::DriveServiceObserver,
+      public VolumeManagerObserver,
+      public arc::ArcIntentHelperObserver,
+      public drive::DriveIntegrationServiceObserver,
+      public crostini::CrostiniSharePath::Observer {
  public:
   typedef base::Callback<void(const base::FilePath& virtual_path,
                               const drive::FileChange* list,
@@ -68,6 +68,9 @@ class EventRouter : public KeyedService,
 
   explicit EventRouter(Profile* profile);
   ~EventRouter() override;
+
+  // arc::ArcIntentHelperObserver overrides.
+  void OnIntentFiltersUpdated() override;
 
   // KeyedService overrides.
   void Shutdown() override;
@@ -112,8 +115,8 @@ class EventRouter : public KeyedService,
       const std::string& extension_id,
       storage::WatcherManager::ChangeType change_type);
 
-  // chromeos::NetworkStateHandlerObserver overrides.
-  void DefaultNetworkChanged(const chromeos::NetworkState* network) override;
+  // network::NetworkConnectionTracker::NetworkConnectionObserver overrides.
+  void OnConnectionChanged(network::mojom::ConnectionType type) override;
 
   // chromeos::system::TimezoneSettings::Observer overrides.
   void TimezoneChanged(const icu::TimeZone& timezone) override;
@@ -129,10 +132,8 @@ class EventRouter : public KeyedService,
                         const base::FilePath& drive_path) override;
 
   // VolumeManagerObserver overrides.
-  void OnDiskAdded(const chromeos::disks::DiskMountManager::Disk& disk,
-                   bool mounting) override;
-  void OnDiskRemoved(
-      const chromeos::disks::DiskMountManager::Disk& disk) override;
+  void OnDiskAdded(const chromeos::disks::Disk& disk, bool mounting) override;
+  void OnDiskRemoved(const chromeos::disks::Disk& disk) override;
   void OnDeviceAdded(const std::string& device_path) override;
   void OnDeviceRemoved(const std::string& device_path) override;
   void OnVolumeMounted(chromeos::MountError error_code,
@@ -141,16 +142,23 @@ class EventRouter : public KeyedService,
                          const Volume& volume) override;
   void OnFormatStarted(const std::string& device_path, bool success) override;
   void OnFormatCompleted(const std::string& device_path, bool success) override;
-
+  void OnRenameStarted(const std::string& device_path, bool success) override;
+  void OnRenameCompleted(const std::string& device_path, bool success) override;
   // Set custom dispatch directory change event implementation for testing.
   void SetDispatchDirectoryChangeEventImplForTesting(
       const DispatchDirectoryChangeEventImplCallback& callback);
+
+  // DriveIntegrationServiceObserver override.
+  void OnFileSystemMountFailed() override;
+
+  // crostini::CrostiniSharePath::Observer overrides
+  void OnUnshare(const base::FilePath& path) override;
 
   // Returns a weak pointer for the event router.
   base::WeakPtr<EventRouter> GetWeakPtr();
 
  private:
-  typedef std::map<base::FilePath, FileWatcher*> WatcherMap;
+  FRIEND_TEST_ALL_PREFIXES(EventRouterTest, PopulateCrostiniUnshareEvent);
 
   // Starts observing file system change events.
   void ObserveEvents();
@@ -180,7 +188,7 @@ class EventRouter : public KeyedService,
   // Sends directory change event, after converting the file definition to entry
   // definition.
   void DispatchDirectoryChangeEventWithEntryDefinition(
-      const linked_ptr<drive::FileChange> list,
+      std::unique_ptr<drive::FileChange> list,
       const std::string* extension_id,
       bool watcher_error,
       const EntryDefinition& entry_definition);
@@ -191,35 +199,26 @@ class EventRouter : public KeyedService,
       chromeos::MountError error,
       const Volume& volume);
 
-  // If needed, opens a file manager window for the removable device mounted at
-  // |mount_path|. Disk.mount_path() is empty, since it is being filled out
-  // after calling notifying observers by DiskMountManager.
-  void ShowRemovableDeviceInFileManager(VolumeType type,
-                                        const base::FilePath& mount_path);
+  // Populate the path unshared event.
+  static void PopulateCrostiniUnshareEvent(
+      extensions::api::file_manager_private::CrostiniEvent& event,
+      const std::string& extension_id,
+      const std::string& mount_name,
+      const std::string& file_system_name,
+      const std::string& full_path);
 
-  // Sends onFileTransferUpdate event right now if |immediate| is set. Otherwise
-  // it refrains from sending for a short while, and after that it sends the
-  // most recently scheduled event once.
-  // The delay is for waiting subsequent 'added' events to come after the first
-  // one when multiple tasks are added. This way, we can avoid frequent UI
-  // update caused by differences between singular and plural cases.
-  void ScheduleDriveFileTransferEvent(const drive::JobInfo& job_info,
-                                      const std::string& status,
-                                      bool immediate);
-
-  // Sends the most recently scheduled onFileTransferUpdated event to
-  // extensions.
-  // This is used for implementing ScheduledDriveFileTransferEvent().
-  void SendDriveFileTransferEvent();
+  // Called when crostini is enabled/disabled.
+  void OnCrostiniEnabledChanged();
 
   base::Time last_copy_progress_event_;
 
-  WatcherMap file_watchers_;
+  std::map<base::FilePath, std::unique_ptr<FileWatcher>> file_watchers_;
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
   Profile* profile_;
 
   std::unique_ptr<DeviceEventRouter> device_event_router_;
   std::unique_ptr<JobEventRouter> job_event_router_;
+  std::unique_ptr<DriveFsEventRouter> drivefs_event_router_;
 
   DispatchDirectoryChangeEventImplCallback
       dispatch_directory_change_event_impl_;

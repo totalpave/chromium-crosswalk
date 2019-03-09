@@ -5,9 +5,11 @@
 #include "content/test/test_navigation_url_loader_delegate.h"
 
 #include "base/run_loop.h"
+#include "content/common/navigation_params.h"
+#include "content/common/navigation_subresource_loader_params.h"
+#include "content/public/browser/global_request_id.h"
 #include "content/public/browser/navigation_data.h"
-#include "content/public/browser/stream_handle.h"
-#include "content/public/common/resource_response.h"
+#include "services/network/public/cpp/resource_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
@@ -41,13 +43,13 @@ void TestNavigationURLLoaderDelegate::WaitForRequestStarted() {
   request_started_.reset();
 }
 
-void TestNavigationURLLoaderDelegate::ReleaseBody() {
-  body_.reset();
+void TestNavigationURLLoaderDelegate::ReleaseURLLoaderClientEndpoints() {
+  url_loader_client_endpoints_ = nullptr;
 }
 
 void TestNavigationURLLoaderDelegate::OnRequestRedirected(
     const net::RedirectInfo& redirect_info,
-    const scoped_refptr<ResourceResponse>& response) {
+    const scoped_refptr<network::ResourceResponse>& response) {
   redirect_info_ = redirect_info;
   redirect_response_ = response;
   ASSERT_TRUE(request_redirected_);
@@ -55,18 +57,28 @@ void TestNavigationURLLoaderDelegate::OnRequestRedirected(
 }
 
 void TestNavigationURLLoaderDelegate::OnResponseStarted(
-    const scoped_refptr<ResourceResponse>& response,
-    std::unique_ptr<StreamHandle> body,
-    std::unique_ptr<NavigationData> navigation_data) {
+    const scoped_refptr<network::ResourceResponse>& response,
+    network::mojom::URLLoaderClientEndpointsPtr url_loader_client_endpoints,
+    std::unique_ptr<NavigationData> navigation_data,
+    const GlobalRequestID& request_id,
+    bool is_download,
+    NavigationDownloadPolicy download_policy,
+    bool is_stream,
+    base::Optional<SubresourceLoaderParams> subresource_loader_params) {
   response_ = response;
-  body_ = std::move(body);
-  ASSERT_TRUE(response_started_);
-  response_started_->Quit();
+  url_loader_client_endpoints_ = std::move(url_loader_client_endpoints);
+  if (response->head.ssl_info.has_value())
+    ssl_info_ = *response->head.ssl_info;
+  is_download_ = is_download && IsNavigationDownloadAllowed(download_policy);
+  if (response_started_)
+    response_started_->Quit();
 }
 
-void TestNavigationURLLoaderDelegate::OnRequestFailed(bool in_cache,
-                                                      int net_error) {
-  net_error_ = net_error;
+void TestNavigationURLLoaderDelegate::OnRequestFailed(
+    const network::URLLoaderCompletionStatus& status) {
+  net_error_ = status.error_code;
+  if (status.ssl_info.has_value())
+    ssl_info_ = status.ssl_info.value();
   if (request_failed_)
     request_failed_->Quit();
 }
@@ -78,7 +90,5 @@ void TestNavigationURLLoaderDelegate::OnRequestStarted(
   if (request_started_)
     request_started_->Quit();
 }
-
-void TestNavigationURLLoaderDelegate::OnServiceWorkerEncountered() {}
 
 }  // namespace content

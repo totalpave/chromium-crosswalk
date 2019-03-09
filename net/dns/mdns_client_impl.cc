@@ -5,14 +5,11 @@
 #include "net/dns/mdns_client_impl.h"
 
 #include <algorithm>
-#include <queue>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/clock.h"
 #include "base/time/default_clock.h"
@@ -20,11 +17,11 @@
 #include "base/timer/timer.h"
 #include "net/base/net_errors.h"
 #include "net/base/rand_callback.h"
-#include "net/dns/dns_protocol.h"
 #include "net/dns/dns_util.h"
+#include "net/dns/public/dns_protocol.h"
+#include "net/dns/public/util.h"
 #include "net/dns/record_rdata.h"
-#include "net/log/net_log.h"
-#include "net/udp/datagram_socket.h"
+#include "net/socket/datagram_socket.h"
 
 // TODO(gene): Remove this temporary method of disabling NSEC support once it
 // becomes clear whether this feature should be
@@ -35,7 +32,6 @@ namespace net {
 
 namespace {
 
-const unsigned MDnsTransactionTimeoutSeconds = 3;
 // The fractions of the record's original TTL after which an active listener
 // (one that had |SetActiveRefresh(true)| called) will send a query to refresh
 // its cache. This happens both at 85% of the original TTL and again at 95% of
@@ -51,8 +47,8 @@ void MDnsSocketFactoryImpl::CreateSockets(
   for (size_t i = 0; i < interfaces.size(); ++i) {
     DCHECK(interfaces[i].second == ADDRESS_FAMILY_IPV4 ||
            interfaces[i].second == ADDRESS_FAMILY_IPV6);
-    std::unique_ptr<DatagramServerSocket> socket(
-        CreateAndBindMDnsSocket(interfaces[i].second, interfaces[i].first));
+    std::unique_ptr<DatagramServerSocket> socket(CreateAndBindMDnsSocket(
+        interfaces[i].second, interfaces[i].first, net_log_));
     if (socket)
       sockets->push_back(std::move(socket));
   }
@@ -66,8 +62,7 @@ MDnsConnection::SocketHandler::SocketHandler(
       response_(dns_protocol::kMaxMulticastSize),
       send_in_progress_(false) {}
 
-MDnsConnection::SocketHandler::~SocketHandler() {
-}
+MDnsConnection::SocketHandler::~SocketHandler() = default;
 
 int MDnsConnection::SocketHandler::Start() {
   IPEndPoint end_point;
@@ -76,7 +71,7 @@ int MDnsConnection::SocketHandler::Start() {
     return rv;
   DCHECK(end_point.GetFamily() == ADDRESS_FAMILY_IPV4 ||
          end_point.GetFamily() == ADDRESS_FAMILY_IPV6);
-  multicast_addr_ = GetMDnsIPEndPoint(end_point.GetFamily());
+  multicast_addr_ = dns_util::GetMdnsGroupEndPoint(end_point.GetFamily());
   return DoLoop(0);
 }
 
@@ -86,7 +81,7 @@ int MDnsConnection::SocketHandler::DoLoop(int rv) {
       connection_->OnDatagramReceived(&response_, recv_addr_, rv);
 
     rv = socket_->RecvFrom(
-        response_.io_buffer(), response_.io_buffer()->size(), &recv_addr_,
+        response_.io_buffer(), response_.io_buffer_size(), &recv_addr_,
         base::Bind(&MDnsConnection::SocketHandler::OnDatagramReceived,
                    base::Unretained(this)));
   } while (rv > 0);
@@ -139,16 +134,15 @@ MDnsConnection::MDnsConnection(MDnsConnection::Delegate* delegate)
     : delegate_(delegate), weak_ptr_factory_(this) {
 }
 
-MDnsConnection::~MDnsConnection() {
-}
+MDnsConnection::~MDnsConnection() = default;
 
 bool MDnsConnection::Init(MDnsSocketFactory* socket_factory) {
   std::vector<std::unique_ptr<DatagramServerSocket>> sockets;
   socket_factory->CreateSockets(&sockets);
 
   for (std::unique_ptr<DatagramServerSocket>& socket : sockets) {
-    socket_handlers_.push_back(base::WrapUnique(
-        new MDnsConnection::SocketHandler(std::move(socket), this)));
+    socket_handlers_.push_back(std::make_unique<MDnsConnection::SocketHandler>(
+        std::move(socket), this));
   }
 
   // All unbound sockets need to be bound before processing untrusted input.
@@ -183,8 +177,8 @@ void MDnsConnection::PostOnError(SocketHandler* loop, int rv) {
   VLOG(1) << "Socket error. id=" << id << ", error=" << rv;
   // Post to allow deletion of this object by delegate.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&MDnsConnection::OnError, weak_ptr_factory_.GetWeakPtr(), rv));
+      FROM_HERE, base::BindOnce(&MDnsConnection::OnError,
+                                weak_ptr_factory_.GetWeakPtr(), rv));
 }
 
 void MDnsConnection::OnError(int rv) {
@@ -202,15 +196,12 @@ void MDnsConnection::OnDatagramReceived(
   delegate_->HandlePacket(response, bytes_read);
 }
 
-MDnsClientImpl::Core::Core(base::Clock* clock, base::Timer* timer)
+MDnsClientImpl::Core::Core(base::Clock* clock, base::OneShotTimer* timer)
     : clock_(clock),
       cleanup_timer_(timer),
-      connection_(new MDnsConnection(this)) {
-}
+      connection_(new MDnsConnection(this)) {}
 
-MDnsClientImpl::Core::~Core() {
-  STLDeleteValues(&listeners_);
-}
+MDnsClientImpl::Core::~Core() = default;
 
 bool MDnsClientImpl::Core::Init(MDnsSocketFactory* socket_factory) {
   return connection_->Init(socket_factory);
@@ -235,7 +226,7 @@ void MDnsClientImpl::Core::HandlePacket(DnsResponse* response,
   // erroneous behavior in case a packet contains multiple exclusive
   // records with the same type and name.
   std::map<MDnsCache::Key, MDnsCache::UpdateType> update_keys;
-
+  DCHECK_GT(bytes_read, 0);
   if (!response->InitParseWithoutQuery(bytes_read)) {
     DVLOG(1) << "Could not understand an mDNS packet.";
     return;  // Message is unreadable.
@@ -280,8 +271,7 @@ void MDnsClientImpl::Core::HandlePacket(DnsResponse* response,
     update_keys.insert(std::make_pair(update_key, update));
   }
 
-  for (std::map<MDnsCache::Key, MDnsCache::UpdateType>::iterator i =
-           update_keys.begin(); i != update_keys.end(); i++) {
+  for (auto i = update_keys.begin(); i != update_keys.end(); i++) {
     const RecordParsed* record = cache_.LookupKey(i->first);
     if (!record)
       continue;
@@ -307,8 +297,7 @@ void MDnsClientImpl::Core::NotifyNsecRecord(const RecordParsed* record) {
 
   cache_.FindDnsRecords(0, record->name(), &records_to_remove, clock_->Now());
 
-  for (std::vector<const RecordParsed*>::iterator i = records_to_remove.begin();
-       i != records_to_remove.end(); i++) {
+  for (auto i = records_to_remove.begin(); i != records_to_remove.end(); i++) {
     if ((*i)->type() == dns_protocol::kTypeNSEC)
       continue;
     if (!rdata->GetBit((*i)->type())) {
@@ -320,11 +309,11 @@ void MDnsClientImpl::Core::NotifyNsecRecord(const RecordParsed* record) {
   }
 
   // Alert all listeners waiting for the nonexistent RR types.
-  ListenerMap::iterator i =
-      listeners_.upper_bound(ListenerKey(record->name(), 0));
+  auto i = listeners_.upper_bound(ListenerKey(record->name(), 0));
   for (; i != listeners_.end() && i->first.first == record->name(); i++) {
     if (!rdata->GetBit(i->first.second)) {
-      FOR_EACH_OBSERVER(MDnsListenerImpl, *i->second, AlertNsecRecord());
+      for (auto& observer : *i->second)
+        observer.AlertNsecRecord();
     }
   }
 }
@@ -338,34 +327,27 @@ void MDnsClientImpl::Core::AlertListeners(
     MDnsCache::UpdateType update_type,
     const ListenerKey& key,
     const RecordParsed* record) {
-  ListenerMap::iterator listener_map_iterator = listeners_.find(key);
+  auto listener_map_iterator = listeners_.find(key);
   if (listener_map_iterator == listeners_.end()) return;
 
-  FOR_EACH_OBSERVER(MDnsListenerImpl, *listener_map_iterator->second,
-                    HandleRecordUpdate(update_type, record));
+  for (auto& observer : *listener_map_iterator->second)
+    observer.HandleRecordUpdate(update_type, record);
 }
 
 void MDnsClientImpl::Core::AddListener(
     MDnsListenerImpl* listener) {
   ListenerKey key(listener->GetName(), listener->GetType());
-  std::pair<ListenerMap::iterator, bool> observer_insert_result =
-      listeners_.insert(make_pair(
-          key, static_cast<base::ObserverList<MDnsListenerImpl>*>(NULL)));
 
-  // If an equivalent key does not exist, actually create the observer list.
-  if (observer_insert_result.second)
-    observer_insert_result.first->second =
-        new base::ObserverList<MDnsListenerImpl>();
-
-  base::ObserverList<MDnsListenerImpl>* observer_list =
-      observer_insert_result.first->second;
+  auto& observer_list = listeners_[key];
+  if (!observer_list)
+    observer_list = std::make_unique<ObserverListType>();
 
   observer_list->AddObserver(listener);
 }
 
 void MDnsClientImpl::Core::RemoveListener(MDnsListenerImpl* listener) {
   ListenerKey key(listener->GetName(), listener->GetType());
-  ListenerMap::iterator observer_list_iterator = listeners_.find(key);
+  auto observer_list_iterator = listeners_.find(key);
 
   DCHECK(observer_list_iterator != listeners_.end());
   DCHECK(observer_list_iterator->second->HasObserver(listener));
@@ -377,15 +359,14 @@ void MDnsClientImpl::Core::RemoveListener(MDnsListenerImpl* listener) {
     // Schedule the actual removal for later in case the listener removal
     // happens while iterating over the observer list.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&MDnsClientImpl::Core::CleanupObserverList,
-                              AsWeakPtr(), key));
+        FROM_HERE, base::BindOnce(&MDnsClientImpl::Core::CleanupObserverList,
+                                  AsWeakPtr(), key));
   }
 }
 
 void MDnsClientImpl::Core::CleanupObserverList(const ListenerKey& key) {
-  ListenerMap::iterator found = listeners_.find(key);
+  auto found = listeners_.find(key);
   if (found != listeners_.end() && !found->second->might_have_observers()) {
-    delete found->second;
     listeners_.erase(found);
   }
 }
@@ -430,20 +411,18 @@ void MDnsClientImpl::Core::QueryCache(
 }
 
 MDnsClientImpl::MDnsClientImpl()
-    : clock_(new base::DefaultClock),
-      cleanup_timer_(new base::Timer(false, false)) {
-}
+    : clock_(base::DefaultClock::GetInstance()),
+      cleanup_timer_(new base::OneShotTimer()) {}
 
-MDnsClientImpl::MDnsClientImpl(std::unique_ptr<base::Clock> clock,
-                               std::unique_ptr<base::Timer> timer)
-    : clock_(std::move(clock)), cleanup_timer_(std::move(timer)) {}
+MDnsClientImpl::MDnsClientImpl(base::Clock* clock,
+                               std::unique_ptr<base::OneShotTimer> timer)
+    : clock_(clock), cleanup_timer_(std::move(timer)) {}
 
-MDnsClientImpl::~MDnsClientImpl() {
-}
+MDnsClientImpl::~MDnsClientImpl() = default;
 
 bool MDnsClientImpl::StartListening(MDnsSocketFactory* socket_factory) {
   DCHECK(!core_.get());
-  core_.reset(new Core(clock_.get(), cleanup_timer_.get()));
+  core_.reset(new Core(clock_, cleanup_timer_.get()));
   if (!core_->Init(socket_factory)) {
     core_.reset();
     return false;
@@ -464,7 +443,7 @@ std::unique_ptr<MDnsListener> MDnsClientImpl::CreateListener(
     const std::string& name,
     MDnsListener::Delegate* delegate) {
   return std::unique_ptr<MDnsListener>(
-      new MDnsListenerImpl(rrtype, name, clock_.get(), delegate, this));
+      new MDnsListenerImpl(rrtype, name, clock_, delegate, this));
 }
 
 std::unique_ptr<MDnsTransaction> MDnsClientImpl::CreateTransaction(
@@ -708,8 +687,7 @@ void MDnsTransactionImpl::ServeRecordsFromCache() {
 
   if (client_->core()) {
     client_->core()->QueryCache(rrtype_, name_, &records);
-    for (std::vector<const RecordParsed*>::iterator i = records.begin();
-         i != records.end() && weak_this; ++i) {
+    for (auto i = records.begin(); i != records.end() && weak_this; ++i) {
       weak_this->TriggerCallback(MDnsTransaction::RESULT_RECORD, *i);
     }
 
@@ -741,8 +719,7 @@ bool MDnsTransactionImpl::QueryAndListen() {
   timeout_.Reset(base::Bind(&MDnsTransactionImpl::SignalTransactionOver,
                             AsWeakPtr()));
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, timeout_.callback(),
-      base::TimeDelta::FromSeconds(MDnsTransactionTimeoutSeconds));
+      FROM_HERE, timeout_.callback(), kTransactionTimeout);
 
   return true;
 }

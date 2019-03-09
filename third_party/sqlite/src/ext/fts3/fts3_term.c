@@ -11,8 +11,8 @@
 ******************************************************************************
 **
 ** This file is not part of the production FTS code. It is only used for
-** testing. It contains a virtual table implementation that provides direct 
-** access to the full-text index of an FTS table. 
+** testing. It contains a virtual table implementation that provides direct
+** access to the full-text index of an FTS table.
 */
 
 #include "fts3Int.h"
@@ -68,9 +68,9 @@ static int fts3termConnectMethod(
   char const *zFts3;              /* Name of fts3 table */
   int nDb;                        /* Result of strlen(zDb) */
   int nFts3;                      /* Result of strlen(zFts3) */
-  int nByte;                      /* Bytes of space to allocate here */
+  sqlite3_int64 nByte;            /* Bytes of space to allocate here */
   int rc;                         /* value returned by declare_vtab() */
-  Fts3termTable *p;                /* Virtual table object to return */
+  Fts3termTable *p;               /* Virtual table object to return */
   int iIndex = 0;
 
   UNUSED_PARAMETER(pCtx);
@@ -87,7 +87,7 @@ static int fts3termConnectMethod(
     return SQLITE_ERROR;
   }
 
-  zDb = argv[1]; 
+  zDb = argv[1];
   nDb = (int)strlen(zDb);
   zFts3 = argv[3];
   nFts3 = (int)strlen(zFts3);
@@ -96,7 +96,7 @@ static int fts3termConnectMethod(
   if( rc!=SQLITE_OK ) return rc;
 
   nByte = sizeof(Fts3termTable) + sizeof(Fts3Table) + nDb + nFts3 + 2;
-  p = (Fts3termTable *)sqlite3_malloc(nByte);
+  p = (Fts3termTable *)sqlite3_malloc64(nByte);
   if( !p ) return SQLITE_NOMEM;
   memset(p, 0, nByte);
 
@@ -142,7 +142,7 @@ static int fts3termDisconnectMethod(sqlite3_vtab *pVtab){
 ** xBestIndex - Analyze a WHERE and ORDER BY clause.
 */
 static int fts3termBestIndexMethod(
-  sqlite3_vtab *pVTab, 
+  sqlite3_vtab *pVTab,
   sqlite3_index_info *pInfo
 ){
   UNUSED_PARAMETER(pVTab);
@@ -203,7 +203,7 @@ static int fts3termNextMethod(sqlite3_vtab_cursor *pCursor){
   pCsr->iRowid++;
 
   /* Advance to the next term in the full-text index. */
-  if( pCsr->csr.aDoclist==0 
+  if( pCsr->csr.aDoclist==0
    || pCsr->pNext>=&pCsr->csr.aDoclist[pCsr->csr.nDoclist-1]
   ){
     rc = sqlite3Fts3SegReaderStep(pFts3, &pCsr->csr);
@@ -361,7 +361,8 @@ int sqlite3Fts3InitTerm(sqlite3 *db){
      0,                           /* xRename       */
      0,                           /* xSavepoint    */
      0,                           /* xRelease      */
-     0                            /* xRollbackTo   */
+     0,                           /* xRollbackTo   */
+     0                            /* xShadowName   */
   };
   int rc;                         /* Return code */
 

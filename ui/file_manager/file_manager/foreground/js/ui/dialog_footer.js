@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 /**
- * Footer shown when the Files.app is opened as a file/folder selecting dialog.
+ * Footer shown when the Files app is opened as a file/folder selecting dialog.
  * @param {DialogType} dialogType Dialog type.
  * @param {!Element} container Container of the dialog footer.
  * @param {!Element} filenameInput Filename input element.
@@ -67,9 +67,9 @@ function DialogFooter(dialogType, container, filenameInput) {
 
   /**
    * @const
-   * @type {!Element}
+   * @type {!CrInputElement}
    */
-  this.filenameInput = filenameInput;
+  this.filenameInput = /** @type {!CrInputElement} */ (filenameInput);
 
   // Initialize the element styles.
   container.classList.add('button-panel');
@@ -102,11 +102,10 @@ DialogFooter.prototype = {
  * @param {!Document} document Document.
  * @return {!DialogFooter} Dialog footer created with the found element.
  */
-DialogFooter.findDialogFooter = function(dialogType, document) {
+DialogFooter.findDialogFooter = (dialogType, document) => {
   return new DialogFooter(
-      dialogType,
-      queryRequiredElement('.dialog-footer'),
-      queryRequiredElement('#filename-input-box input'));
+      dialogType, queryRequiredElement('.dialog-footer'),
+      queryRequiredElement('#filename-input-box cr-input'));
 };
 
 /**
@@ -115,7 +114,7 @@ DialogFooter.findDialogFooter = function(dialogType, document) {
  * @return {string} OK button label.
  * @private
  */
-DialogFooter.getOKButtonLabel_ = function(dialogType) {
+DialogFooter.getOKButtonLabel_ = dialogType => {
   switch (dialogType) {
     case DialogType.SELECT_UPLOAD_FOLDER:
       return str('UPLOAD_LABEL');
@@ -143,16 +142,16 @@ DialogFooter.getOKButtonLabel_ = function(dialogType) {
  */
 DialogFooter.prototype.initFileTypeFilter = function(
     fileTypes, includeAllFiles) {
-  for (var i = 0; i < fileTypes.length; i++) {
-    var fileType = fileTypes[i];
-    var option = document.createElement('option');
-    var description = fileType.description;
+  for (let i = 0; i < fileTypes.length; i++) {
+    const fileType = fileTypes[i];
+    const option = document.createElement('option');
+    let description = fileType.description;
     if (!description) {
       // See if all the extensions in the group have the same description.
-      for (var j = 0; j !== fileType.extensions.length; j++) {
-        var currentDescription = FileListModel.getFileTypeString(
+      for (let j = 0; j !== fileType.extensions.length; j++) {
+        const currentDescription = FileListModel.getFileTypeString(
             FileType.getTypeForName('.' + fileType.extensions[j]));
-        if (!description)  {
+        if (!description) {
           // Set the first time.
           description = currentDescription;
         } else if (description != currentDescription) {
@@ -164,7 +163,7 @@ DialogFooter.prototype.initFileTypeFilter = function(
 
       if (!description) {
         // Convert ['jpg', 'png'] to '*.jpg, *.png'.
-        description = fileType.extensions.map(function(s) {
+        description = fileType.extensions.map(s => {
           return '*.' + s;
         }).join(', ');
       }
@@ -172,20 +171,21 @@ DialogFooter.prototype.initFileTypeFilter = function(
     option.innerText = description;
     option.value = i + 1;
 
-    if (fileType.selected)
+    if (fileType.selected) {
       option.selected = true;
+    }
 
     this.fileTypeSelector.appendChild(option);
   }
 
   if (includeAllFiles) {
-    var option = document.createElement('option');
+    const option = document.createElement('option');
     option.innerText = str('ALL_FILES_FILTER');
     option.value = 0;
     this.fileTypeSelector.appendChild(option);
   }
 
-  var options = this.fileTypeSelector.querySelectorAll('option');
+  const options = this.fileTypeSelector.querySelectorAll('option');
   if (options.length >= 2) {
     // There is in fact no choice, show the selector.
     this.fileTypeSelector.hidden = false;
@@ -200,9 +200,9 @@ DialogFooter.prototype.onFilenameInputFocus_ = function(event) {
   // On focus we want to select everything but the extension, but
   // Chrome will select-all after the focus event completes.  We
   // schedule a timeout to alter the focus after that happens.
-  setTimeout(function() {
+  setTimeout(() => {
     this.selectTargetNameInFilenameInput();
-  }.bind(this), 0);
+  }, 0);
 };
 
 /**
@@ -210,17 +210,16 @@ DialogFooter.prototype.onFilenameInputFocus_ = function(event) {
  * @private
  */
 DialogFooter.prototype.onFilenameInputKeyDown_ = function(event) {
-  if ((util.getKeyModifiers(event) + event.keyCode) === '13' /* Enter */)
+  if ((util.getKeyModifiers(event) + event.keyCode) === '13' /* Enter */) {
     this.okButton.click();
+  }
 };
 
 DialogFooter.prototype.selectTargetNameInFilenameInput = function() {
-  this.filenameInput.focus();
-  var selectionEnd = this.filenameInput.value.lastIndexOf('.');
+  const selectionEnd = this.filenameInput.value.lastIndexOf('.');
   if (selectionEnd == -1) {
     this.filenameInput.select();
   } else {
-    this.filenameInput.selectionStart = 0;
-    this.filenameInput.selectionEnd = selectionEnd;
+    this.filenameInput.select(0, selectionEnd);
   }
 };

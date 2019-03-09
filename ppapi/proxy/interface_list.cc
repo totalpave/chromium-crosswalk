@@ -4,6 +4,7 @@
 
 #include "ppapi/proxy/interface_list.h"
 
+#include <memory>
 #include <stdint.h>
 
 #include "base/hash.h"
@@ -11,6 +12,7 @@
 #include "base/memory/singleton.h"
 #include "build/build_config.h"
 #include "ppapi/c/dev/ppb_audio_input_dev.h"
+#include "ppapi/c/dev/ppb_audio_output_dev.h"
 #include "ppapi/c/dev/ppb_buffer_dev.h"
 #include "ppapi/c/dev/ppb_char_set_dev.h"
 #include "ppapi/c/dev/ppb_crypto_dev.h"
@@ -33,8 +35,6 @@
 #include "ppapi/c/ppb_audio_buffer.h"
 #include "ppapi/c/ppb_audio_config.h"
 #include "ppapi/c/ppb_audio_encoder.h"
-#include "ppapi/c/ppb_compositor.h"
-#include "ppapi/c/ppb_compositor_layer.h"
 #include "ppapi/c/ppb_console.h"
 #include "ppapi/c/ppb_core.h"
 #include "ppapi/c/ppb_file_io.h"
@@ -74,14 +74,12 @@
 #include "ppapi/c/ppp_instance.h"
 #include "ppapi/c/private/ppb_camera_capabilities_private.h"
 #include "ppapi/c/private/ppb_camera_device_private.h"
-#include "ppapi/c/private/ppb_content_decryptor_private.h"
 #include "ppapi/c/private/ppb_ext_crx_file_system_private.h"
 #include "ppapi/c/private/ppb_file_io_private.h"
 #include "ppapi/c/private/ppb_file_ref_private.h"
 #include "ppapi/c/private/ppb_find_private.h"
 #include "ppapi/c/private/ppb_flash.h"
 #include "ppapi/c/private/ppb_flash_clipboard.h"
-#include "ppapi/c/private/ppb_flash_device_id.h"
 #include "ppapi/c/private/ppb_flash_drm.h"
 #include "ppapi/c/private/ppb_flash_file.h"
 #include "ppapi/c/private/ppb_flash_font_file.h"
@@ -92,18 +90,13 @@
 #include "ppapi/c/private/ppb_host_resolver_private.h"
 #include "ppapi/c/private/ppb_isolated_file_system_private.h"
 #include "ppapi/c/private/ppb_net_address_private.h"
-#include "ppapi/c/private/ppb_output_protection_private.h"
 #include "ppapi/c/private/ppb_pdf.h"
-#include "ppapi/c/private/ppb_platform_verification_private.h"
 #include "ppapi/c/private/ppb_tcp_server_socket_private.h"
 #include "ppapi/c/private/ppb_tcp_socket_private.h"
 #include "ppapi/c/private/ppb_testing_private.h"
 #include "ppapi/c/private/ppb_udp_socket_private.h"
 #include "ppapi/c/private/ppb_uma_private.h"
-#include "ppapi/c/private/ppb_video_destination_private.h"
-#include "ppapi/c/private/ppb_video_source_private.h"
 #include "ppapi/c/private/ppb_x509_certificate_private.h"
-#include "ppapi/c/private/ppp_content_decryptor_private.h"
 #include "ppapi/c/trusted/ppb_broker_trusted.h"
 #include "ppapi/c/trusted/ppb_browser_font_trusted.h"
 #include "ppapi/c/trusted/ppb_char_set_trusted.h"
@@ -126,7 +119,6 @@
 #include "ppapi/proxy/ppb_video_decoder_proxy.h"
 #include "ppapi/proxy/ppb_x509_certificate_private_proxy.h"
 #include "ppapi/proxy/ppp_class_proxy.h"
-#include "ppapi/proxy/ppp_content_decryptor_private_proxy.h"
 #include "ppapi/proxy/ppp_find_proxy.h"
 #include "ppapi/proxy/ppp_graphics_3d_proxy.h"
 #include "ppapi/proxy/ppp_input_event_proxy.h"
@@ -167,7 +159,8 @@ InterfaceProxy* ProxyFactory(Dispatcher* dispatcher) {
   return new ProxyClass(dispatcher);
 }
 
-base::LazyInstance<PpapiPermissions> g_process_global_permissions;
+base::LazyInstance<PpapiPermissions>::DestructorAtExit
+    g_process_global_permissions;
 
 }  // namespace
 
@@ -200,12 +193,16 @@ InterfaceList::InterfaceList() {
     Permission current_required_permission = PERMISSION_PRIVATE;
     #include "ppapi/thunk/interfaces_ppb_private.h"
   }
-  {
 #if !defined(OS_NACL)
+  {
     Permission current_required_permission = PERMISSION_FLASH;
     #include "ppapi/thunk/interfaces_ppb_private_flash.h"
-#endif  // !defined(OS_NACL)
   }
+  {
+    Permission current_required_permission = PERMISSION_PDF;
+    #include "ppapi/thunk/interfaces_ppb_private_pdf.h"
+  }
+#endif  // !defined(OS_NACL)
   {
     Permission current_required_permission = PERMISSION_DEV_CHANNEL;
     #include "ppapi/thunk/interfaces_ppb_public_dev_channel.h"
@@ -264,19 +261,11 @@ InterfaceList::InterfaceList() {
   // TODO(brettw) remove these.
   AddProxy(API_ID_PPB_INSTANCE_PRIVATE, &ProxyFactory<PPB_Instance_Proxy>);
   AddPPB(PPB_INSTANCE_PRIVATE_INTERFACE_0_1,
-         thunk::GetPPB_Instance_Private_0_1_Thunk(),
-         PERMISSION_PRIVATE);
+         thunk::GetPPB_Instance_Private_0_1_Thunk(), PERMISSION_PRIVATE);
 
   AddProxy(API_ID_PPB_VAR_DEPRECATED, &ProxyFactory<PPB_Var_Deprecated_Proxy>);
   AddPPB(PPB_VAR_DEPRECATED_INTERFACE,
-         PPB_Var_Deprecated_Proxy::GetProxyInterface(), PERMISSION_DEV);
-
-  // TODO(tomfinegan): Figure out where to put these once we refactor things
-  // to load the PPP interface struct from the PPB interface.
-  AddProxy(API_ID_PPP_CONTENT_DECRYPTOR_PRIVATE,
-           &ProxyFactory<PPP_ContentDecryptor_Private_Proxy>);
-  AddPPP(PPP_CONTENTDECRYPTOR_PRIVATE_INTERFACE,
-         PPP_ContentDecryptor_Private_Proxy::GetProxyInterface());
+         PPB_Var_Deprecated_Proxy::GetProxyInterface(), PERMISSION_FLASH);
 #endif
   AddProxy(API_ID_PPB_TESTING, &ProxyFactory<PPB_Testing_Proxy>);
   AddPPB(PPB_TESTING_PRIVATE_INTERFACE,
@@ -335,17 +324,16 @@ InterfaceProxy::Factory InterfaceList::GetFactoryForID(ApiID id) const {
   int index = static_cast<int>(id);
   static_assert(API_ID_NONE == 0, "none must be zero");
   if (id <= 0 || id >= API_ID_COUNT)
-    return NULL;
+    return nullptr;
   return id_to_factory_[index];
 }
 
 const void* InterfaceList::GetInterfaceForPPB(const std::string& name) {
   // CAUTION: This function is called without the ProxyLock to avoid excessive
   // excessive locking from C++ wrappers. (See also GetBrowserInterface.)
-  NameToInterfaceInfoMap::iterator found =
-      name_to_browser_info_.find(name);
+  auto found = name_to_browser_info_.find(name);
   if (found == name_to_browser_info_.end())
-    return NULL;
+    return nullptr;
 
   if (g_process_global_permissions.Get().HasPermission(
           found->second->required_permission())) {
@@ -354,14 +342,13 @@ const void* InterfaceList::GetInterfaceForPPB(const std::string& name) {
         PluginGlobals::Get()->GetBrowserSender(), name);
     return found->second->iface();
   }
-  return NULL;
+  return nullptr;
 }
 
 const void* InterfaceList::GetInterfaceForPPP(const std::string& name) const {
-  NameToInterfaceInfoMap::const_iterator found =
-      name_to_plugin_info_.find(name);
+  auto found = name_to_plugin_info_.find(name);
   if (found == name_to_plugin_info_.end())
-    return NULL;
+    return nullptr;
   return found->second->iface();
 }
 
@@ -398,20 +385,18 @@ void InterfaceList::AddPPB(const char* name,
                            const void* iface,
                            Permission perm) {
   DCHECK(name_to_browser_info_.find(name) == name_to_browser_info_.end());
-  name_to_browser_info_.add(
-      name, std::unique_ptr<InterfaceInfo>(new InterfaceInfo(iface, perm)));
+  name_to_browser_info_[name] = std::make_unique<InterfaceInfo>(iface, perm);
 }
 
 void InterfaceList::AddPPP(const char* name,
                            const void* iface) {
   DCHECK(name_to_plugin_info_.find(name) == name_to_plugin_info_.end());
-  name_to_plugin_info_.add(name,
-                           std::unique_ptr<InterfaceInfo>(
-                               new InterfaceInfo(iface, PERMISSION_NONE)));
+  name_to_plugin_info_[name] =
+      std::make_unique<InterfaceInfo>(iface, PERMISSION_NONE);
 }
 
 int InterfaceList::HashInterfaceName(const std::string& name) {
-  uint32_t data = base::Hash(name.c_str(), name.size());
+  uint32_t data = base::Hash(name);
   // Strip off the signed bit because UMA doesn't support negative values,
   // but takes a signed int as input.
   return static_cast<int>(data & 0x7fffffff);

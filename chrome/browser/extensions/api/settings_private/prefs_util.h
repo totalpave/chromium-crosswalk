@@ -11,25 +11,18 @@
 
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/api/settings_private/prefs_util_enums.h"
 #include "chrome/common/extensions/api/settings_private.h"
 
 class PrefService;
 class Profile;
 
 namespace extensions {
+class Extension;
 
 class PrefsUtil {
 
  public:
-  // Success or error statuses from calling SetPref.
-  enum SetPrefResult {
-    SUCCESS,
-    PREF_NOT_MODIFIABLE,
-    PREF_NOT_FOUND,
-    PREF_TYPE_MISMATCH,
-    PREF_TYPE_UNSUPPORTED
-  };
-
   // TODO(dbeam): why is the key a std::string rather than const char*?
   using TypedPrefMap = std::map<std::string, api::settings_private::PrefType>;
 
@@ -41,14 +34,19 @@ class PrefsUtil {
   // manipulate.
   const TypedPrefMap& GetWhitelistedKeys();
 
+  // Returns the pref type for |pref_name| or PREF_TYPE_NONE if not in the
+  // whitelist.
+  api::settings_private::PrefType GetWhitelistedPrefType(
+      const std::string& pref_name);
+
   // Gets the value of the pref with the given |name|. Returns a pointer to an
   // empty PrefObject if no pref is found for |name|.
   virtual std::unique_ptr<api::settings_private::PrefObject> GetPref(
       const std::string& name);
 
   // Sets the pref with the given name and value in the proper PrefService.
-  virtual SetPrefResult SetPref(const std::string& name,
-                                const base::Value* value);
+  virtual settings_private::SetPrefResult SetPref(const std::string& name,
+                                                  const base::Value* value);
 
   // Appends the given |value| to the list setting specified by the path in
   // |pref_name|.
@@ -99,8 +97,12 @@ class PrefsUtil {
   std::unique_ptr<api::settings_private::PrefObject> GetCrosSettingsPref(
       const std::string& name);
 
-  SetPrefResult SetCrosSettingsPref(const std::string& name,
-                                    const base::Value* value);
+  settings_private::SetPrefResult SetCrosSettingsPref(const std::string& name,
+                                                      const base::Value* value);
+
+ private:
+  const Extension* GetExtensionControllingPref(
+      const api::settings_private::PrefObject& pref_object);
 
   Profile* profile_;  // weak
 };

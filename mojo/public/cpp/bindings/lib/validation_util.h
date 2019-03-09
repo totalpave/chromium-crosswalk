@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include "base/component_export.h"
 #include "mojo/public/cpp/bindings/lib/bindings_internal.h"
 #include "mojo/public/cpp/bindings/lib/serialization_util.h"
 #include "mojo/public/cpp/bindings/lib/validate_params.h"
@@ -17,9 +18,33 @@
 namespace mojo {
 namespace internal {
 
+// Calls ReportValidationError() with a constructed error string.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+void ReportNonNullableValidationError(ValidationContext* validation_context,
+                                      ValidationError error,
+                                      int field_index);
+
 // Checks whether decoding the pointer will overflow and produce a pointer
 // smaller than |offset|.
-bool ValidateEncodedPointer(const uint64_t* offset);
+inline bool ValidateEncodedPointer(const uint64_t* offset) {
+  // - Make sure |*offset| is no more than 32-bits.
+  // - Cast |offset| to uintptr_t so overflow behavior is well defined across
+  //   32-bit and 64-bit systems.
+  return *offset <= std::numeric_limits<uint32_t>::max() &&
+         (reinterpret_cast<uintptr_t>(offset) +
+              static_cast<uint32_t>(*offset) >=
+          reinterpret_cast<uintptr_t>(offset));
+}
+
+template <typename T>
+bool ValidatePointer(const Pointer<T>& input,
+                     ValidationContext* validation_context) {
+  bool result = ValidateEncodedPointer(&input.offset);
+  if (!result)
+    ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_POINTER);
+
+  return result;
+}
 
 // Validates that |data| contains a valid struct header, in terms of alignment
 // and size (i.e., the |num_bytes| field of the header is sufficient for storing
@@ -28,28 +53,33 @@ bool ValidateEncodedPointer(const uint64_t* offset);
 // |validation_context|. On success, the memory range is marked as occupied.
 // Note: Does not verify |version| or that |num_bytes| is correct for the
 // claimed version.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateStructHeaderAndClaimMemory(const void* data,
                                         ValidationContext* validation_context);
 
 // Validates that |data| contains a valid union header, in terms of alignment
-// and size. If not inlined, it checks that the memory range
-// [data, data + num_bytes) is not marked as occupied by other objects in
-// |validation_context|. On success, the memory range is marked as occupied.
-bool ValidateUnionHeaderAndClaimMemory(const void* data,
-                                       bool inlined,
-                                       ValidationContext* validation_context);
+// and size. It checks that the memory range [data, data + kUnionDataSize) is
+// not marked as occupied by other objects in |validation_context|. On success,
+// the memory range is marked as occupied.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+bool ValidateNonInlinedUnionHeaderAndClaimMemory(
+    const void* data,
+    ValidationContext* validation_context);
 
 // Validates that the message is a request which doesn't expect a response.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateMessageIsRequestWithoutResponse(
     const Message* message,
     ValidationContext* validation_context);
 
 // Validates that the message is a request expecting a response.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateMessageIsRequestExpectingResponse(
     const Message* message,
     ValidationContext* validation_context);
 
 // Validates that the message is a response.
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateMessageIsResponse(const Message* message,
                                ValidationContext* validation_context);
 
@@ -60,124 +90,124 @@ bool ValidateMessagePayload(const Message* message,
   return ParamsType::Validate(message->payload(), validation_context);
 }
 
-// The following methods validate control messages defined in
-// interface_control_messages.mojom.
-bool ValidateControlRequest(const Message* message,
-                            ValidationContext* validation_context);
-bool ValidateControlResponse(const Message* message,
-                             ValidationContext* validation_context);
-
 // The following Validate.*NonNullable() functions validate that the given
 // |input| is not null/invalid.
 template <typename T>
 bool ValidatePointerNonNullable(const T& input,
-                                const char* error_message,
+                                int field_index,
                                 ValidationContext* validation_context) {
   if (input.offset)
     return true;
-
-  ReportValidationError(validation_context,
-                        VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
-                        error_message);
+  ReportNonNullableValidationError(validation_context,
+                                   VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
+                                   field_index);
   return false;
 }
 
 template <typename T>
 bool ValidateInlinedUnionNonNullable(const T& input,
-                                     const char* error_message,
+                                     int field_index,
                                      ValidationContext* validation_context) {
   if (!input.is_null())
     return true;
-
-  ReportValidationError(validation_context,
-                        VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
-                        error_message);
+  ReportNonNullableValidationError(validation_context,
+                                   VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
+                                   field_index);
   return false;
 }
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool IsHandleOrInterfaceValid(const AssociatedInterface_Data& input);
-bool IsHandleOrInterfaceValid(const AssociatedInterfaceRequest_Data& input);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+bool IsHandleOrInterfaceValid(const AssociatedEndpointHandle_Data& input);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool IsHandleOrInterfaceValid(const Interface_Data& input);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool IsHandleOrInterfaceValid(const Handle_Data& input);
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateHandleOrInterfaceNonNullable(
     const AssociatedInterface_Data& input,
-    const char* error_message,
+    int field_index,
     ValidationContext* validation_context);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateHandleOrInterfaceNonNullable(
-    const AssociatedInterfaceRequest_Data& input,
-    const char* error_message,
+    const AssociatedEndpointHandle_Data& input,
+    int field_index,
     ValidationContext* validation_context);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateHandleOrInterfaceNonNullable(
     const Interface_Data& input,
-    const char* error_message,
+    int field_index,
     ValidationContext* validation_context);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateHandleOrInterfaceNonNullable(
     const Handle_Data& input,
-    const char* error_message,
+    int field_index,
     ValidationContext* validation_context);
 
 template <typename T>
-bool ValidateArray(const Pointer<Array_Data<T>>& input,
-                   ValidationContext* validation_context,
-                   const ContainerValidateParams* validate_params) {
-  if (!ValidateEncodedPointer(&input.offset)) {
-    ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_POINTER);
+bool ValidateContainer(const Pointer<T>& input,
+                       ValidationContext* validation_context,
+                       const ContainerValidateParams* validate_params) {
+  ValidationContext::ScopedDepthTracker depth_tracker(validation_context);
+  if (validation_context->ExceedsMaxDepth()) {
+    ReportValidationError(validation_context,
+                          VALIDATION_ERROR_MAX_RECURSION_DEPTH);
     return false;
   }
-
-  return Array_Data<T>::Validate(DecodePointerRaw(&input.offset),
-                                 validation_context, validate_params);
-}
-
-template <typename T>
-bool ValidateMap(const Pointer<T>& input,
-                 ValidationContext* validation_context,
-                 const ContainerValidateParams* validate_params) {
-  if (!ValidateEncodedPointer(&input.offset)) {
-    ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_POINTER);
-    return false;
-  }
-
-  return T::Validate(DecodePointerRaw(&input.offset), validation_context,
-                     validate_params);
+  return ValidatePointer(input, validation_context) &&
+         T::Validate(input.Get(), validation_context, validate_params);
 }
 
 template <typename T>
 bool ValidateStruct(const Pointer<T>& input,
                     ValidationContext* validation_context) {
-  if (!ValidateEncodedPointer(&input.offset)) {
-    ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_POINTER);
+  ValidationContext::ScopedDepthTracker depth_tracker(validation_context);
+  if (validation_context->ExceedsMaxDepth()) {
+    ReportValidationError(validation_context,
+                          VALIDATION_ERROR_MAX_RECURSION_DEPTH);
     return false;
   }
-
-  return T::Validate(DecodePointerRaw(&input.offset), validation_context);
+  return ValidatePointer(input, validation_context) &&
+         T::Validate(input.Get(), validation_context);
 }
 
 template <typename T>
 bool ValidateInlinedUnion(const T& input,
                           ValidationContext* validation_context) {
+  ValidationContext::ScopedDepthTracker depth_tracker(validation_context);
+  if (validation_context->ExceedsMaxDepth()) {
+    ReportValidationError(validation_context,
+                          VALIDATION_ERROR_MAX_RECURSION_DEPTH);
+    return false;
+  }
   return T::Validate(&input, validation_context, true);
 }
 
 template <typename T>
 bool ValidateNonInlinedUnion(const Pointer<T>& input,
                              ValidationContext* validation_context) {
-  if (!ValidateEncodedPointer(&input.offset)) {
-    ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_POINTER);
+  ValidationContext::ScopedDepthTracker depth_tracker(validation_context);
+  if (validation_context->ExceedsMaxDepth()) {
+    ReportValidationError(validation_context,
+                          VALIDATION_ERROR_MAX_RECURSION_DEPTH);
     return false;
   }
-
-  return T::Validate(DecodePointerRaw(&input.offset), validation_context,
-                     false);
+  return ValidatePointer(input, validation_context) &&
+         T::Validate(input.Get(), validation_context, false);
 }
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateHandleOrInterface(const AssociatedInterface_Data& input,
                                ValidationContext* validation_context);
-bool ValidateHandleOrInterface(const AssociatedInterfaceRequest_Data& input,
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
+bool ValidateHandleOrInterface(const AssociatedEndpointHandle_Data& input,
                                ValidationContext* validation_context);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateHandleOrInterface(const Interface_Data& input,
                                ValidationContext* validation_context);
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 bool ValidateHandleOrInterface(const Handle_Data& input,
                                ValidationContext* validation_context);
 

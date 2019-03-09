@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_ANDROID_SIGNIN_SIGNIN_MANAGER_ANDROID_H_
 #define CHROME_BROWSER_ANDROID_SIGNIN_SIGNIN_MANAGER_ANDROID_H_
 
-#include <jni.h>
-
 #include <memory>
 #include <string>
 
@@ -15,28 +13,21 @@
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "components/signin/core/browser/signin_manager_base.h"
+#include "services/identity/public/cpp/identity_manager.h"
 
 class Profile;
 
-namespace policy {
-class CloudPolicyClient;
-}
-
-// Android wrapper of the SigninManager which provides access from the Java
-// layer. Note that on Android, there's only a single profile, and therefore
-// a single instance of this wrapper. The name of the Java class is
-// SigninManager.
-// This class should only be accessed from the UI thread.
+// Android wrapper of Chrome's C++ identity management code which provides
+// access from the Java layer. Note that on Android, there's only a single
+// profile, and therefore a single instance of this wrapper. The name of the
+// Java class is SigninManager. This class should only be accessed from the UI
+// thread.
 //
 // This class implements parts of the sign-in flow, to make sure that policy
 // is available before sign-in completes.
-class SigninManagerAndroid : public SigninManagerBase::Observer {
+class SigninManagerAndroid : public identity::IdentityManager::Observer {
  public:
   SigninManagerAndroid(JNIEnv* env, jobject obj);
-
-  // Registers the SigninManagerAndroid's native methods through JNI.
-  static bool Register(JNIEnv* env);
 
   void CheckPolicyBeforeSignIn(
       JNIEnv* env,
@@ -55,15 +46,22 @@ class SigninManagerAndroid : public SigninManagerBase::Observer {
                          const base::android::JavaParamRef<jobject>& obj,
                          const base::android::JavaParamRef<jstring>& username);
 
-  void SignOut(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void SignOut(JNIEnv* env,
+               const base::android::JavaParamRef<jobject>& obj,
+               jint signoutReason);
 
   base::android::ScopedJavaLocalRef<jstring> GetManagementDomain(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
 
+  // Delete all data for this profile.
   void WipeProfileData(JNIEnv* env,
-                       const base::android::JavaParamRef<jobject>& obj,
-                       const base::android::JavaParamRef<jobject>& hooks);
+                       const base::android::JavaParamRef<jobject>& obj);
+
+  // Delete service worker caches for google.<eTLD>.
+  void WipeGoogleServiceWorkerCaches(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
 
   void LogInSignedInUser(JNIEnv* env,
                          const base::android::JavaParamRef<jobject>& obj);
@@ -75,30 +73,35 @@ class SigninManagerAndroid : public SigninManagerBase::Observer {
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
 
+  jboolean IsForceSigninEnabled(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj);
+
   jboolean IsSignedInOnNative(JNIEnv* env,
                               const base::android::JavaParamRef<jobject>& obj);
 
-  // SigninManagerBase::Observer implementation.
-  void GoogleSigninFailed(const GoogleServiceAuthError& error) override;
-  void GoogleSigninSucceeded(const std::string& account_id,
-                             const std::string& username,
-                             const std::string& password) override;
-  void GoogleSignedOut(const std::string& account_id,
-                       const std::string& username) override;
+  // identity::IdentityManager::Observer implementation.
+  void OnPrimaryAccountCleared(
+      const CoreAccountInfo& previous_primary_account_info) override;
 
  private:
+  friend class SigninManagerAndroidTest;
+  FRIEND_TEST_ALL_PREFIXES(SigninManagerAndroidTest,
+                           DeleteGoogleServiceWorkerCaches);
+
   ~SigninManagerAndroid() override;
 
   void OnPolicyRegisterDone(const std::string& dm_token,
                             const std::string& client_id);
   void OnPolicyFetchDone(bool success);
 
-  void OnBrowsingDataRemoverDone(
-      const base::android::ScopedJavaGlobalRef<jobject>& callback);
-
-  void ClearLastSignedInUser();
+  void OnBrowsingDataRemoverDone();
 
   void OnSigninAllowedPrefChanged();
+
+  static void WipeData(Profile* profile,
+                       bool all_data,
+                       base::OnceClosure callback);
 
   Profile* profile_;
 

@@ -8,69 +8,30 @@ import android.util.Base64;
 import android.util.Log;
 import android.util.Pair;
 
-import org.apache.http.HttpException;
-import org.apache.http.HttpRequest;
-import org.apache.http.HttpResponse;
-import org.apache.http.HttpStatus;
-import org.apache.http.HttpVersion;
-import org.apache.http.RequestLine;
-import org.apache.http.StatusLine;
-import org.apache.http.entity.ByteArrayEntity;
-import org.apache.http.impl.DefaultHttpServerConnection;
-import org.apache.http.impl.cookie.DateUtils;
-import org.apache.http.message.BasicHttpResponse;
-import org.apache.http.params.BasicHttpParams;
-import org.apache.http.params.CoreProtocolPNames;
-import org.apache.http.params.HttpParams;
+import org.chromium.base.ApiCompatibilityUtils;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.MalformedURLException;
-import java.net.ServerSocket;
-import java.net.Socket;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.net.URI;
-import java.net.URL;
-import java.net.URLConnection;
-import java.security.KeyManagementException;
-import java.security.KeyStore;
+import java.nio.charset.Charset;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.cert.X509Certificate;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.Hashtable;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.KeyManager;
-import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSession;
-import javax.net.ssl.X509TrustManager;
 
 /**
  * Simple http test server for testing.
  *
- * This server runs in a thread in the current process, so it is convenient
- * for loopback testing without the need to setup tcp forwarding to the
- * host computer.
- *
- * Based heavily on the CTSWebServer in Android.
+ * Extends WebServer with the ability to map requests to prepared responses.
  */
-public class TestWebServer {
+public class TestWebServer extends WebServer {
     private static final String TAG = "TestWebServer";
-
-    private static TestWebServer sInstance;
-    private static TestWebServer sSecureInstance;
-    private static Hashtable<Integer, String> sReasons;
-
-    private final ServerThread mServerThread;
-    private String mServerUri;
-    private final boolean mSsl;
-    private final int mPort;
 
     private static class Response {
         final byte[] mResponseData;
@@ -79,16 +40,20 @@ public class TestWebServer {
         final Runnable mResponseAction;
         final boolean mIsNotFound;
         final boolean mIsNoContent;
+        final boolean mForWebSocket;
+        final boolean mIsEmptyResponse;
 
         Response(byte[] responseData, List<Pair<String, String>> responseHeaders,
-                boolean isRedirect, boolean isNotFound, boolean isNoContent,
-                Runnable responseAction) {
+                boolean isRedirect, boolean isNotFound, boolean isNoContent, boolean forWebSocket,
+                boolean isEmptyResponse, Runnable responseAction) {
             mIsRedirect = isRedirect;
             mIsNotFound = isNotFound;
             mIsNoContent = isNoContent;
+            mForWebSocket = forWebSocket;
+            mIsEmptyResponse = isEmptyResponse;
             mResponseData = responseData;
-            mResponseHeaders = responseHeaders == null
-                    ? new ArrayList<Pair<String, String>>() : responseHeaders;
+            mResponseHeaders = responseHeaders == null ? new ArrayList<Pair<String, String>>()
+                                                       : responseHeaders;
             mResponseAction = responseAction;
         }
     }
@@ -98,131 +63,132 @@ public class TestWebServer {
     private final Object mLock = new Object();
     private final Map<String, Response> mResponseMap = new HashMap<String, Response>();
     private final Map<String, Integer> mResponseCountMap = new HashMap<String, Integer>();
-    private final Map<String, HttpRequest> mLastRequestMap = new HashMap<String, HttpRequest>();
+    private final Map<String, HTTPRequest> mLastRequestMap = new HashMap<String, HTTPRequest>();
 
     /**
      * Create and start a local HTTP server instance.
      * @param port Port number the server must use, or 0 to automatically choose a free port.
      * @param ssl True if the server should be using secure sockets.
+     * @param additional True if creating an additional server instance.
      * @throws Exception
      */
-    private TestWebServer(int port, boolean ssl) throws Exception {
-        mPort = port;
-
-        mSsl = ssl;
-        if (mSsl) {
-            mServerUri = "https:";
-            if (sSecureInstance != null) {
-                sSecureInstance.shutdown();
-            }
-        } else {
-            mServerUri = "http:";
-            if (sInstance != null) {
-                sInstance.shutdown();
-            }
-        }
-
-        mServerThread = new ServerThread(this, mPort, mSsl);
-        mServerUri += "//localhost:" + mServerThread.mSocket.getLocalPort();
+    private TestWebServer(int port, boolean ssl, boolean additional) throws Exception {
+        super(port, ssl, additional);
+        setRequestHandler(new Handler());
     }
 
+    private class Handler implements WebServer.RequestHandler {
+        @Override
+        public void handleRequest(WebServer.HTTPRequest request, OutputStream stream) {
+            WebServerPrintStream printStream = new WebServerPrintStream(stream);
+            try {
+                outputResponse(request, printStream);
+            } catch (NoSuchAlgorithmException ignore) {
+            } catch (IOException e) {
+                Log.w(TAG, e);
+            } finally {
+                printStream.close();
+            }
+        }
+    }
+
+    /**
+     * Create and start a local HTTP server instance. This function must only
+     * be called if no other instances were created. You are responsible for
+     * calling shutdown() on each instance you create.
+     *
+     * @param port Port number the server must use, or 0 to automatically choose a free port.
+     */
     public static TestWebServer start(int port) throws Exception {
-        if (sInstance != null) {
-            throw new IllegalStateException("Tried to start multiple TestWebServers");
-        }
-
-        TestWebServer server = new TestWebServer(port, false);
-        server.mServerThread.start();
-        setInstance(server);
-        return server;
+        return new TestWebServer(port, false, false);
     }
 
+    /**
+     * Same as start(int) but chooses a free port.
+     */
     public static TestWebServer start() throws Exception {
         return start(0);
     }
 
-    public static TestWebServer startSsl(int port) throws Exception {
-        if (sSecureInstance != null) {
-            throw new IllegalStateException("Tried to start multiple SSL TestWebServers");
-        }
-
-        TestWebServer server = new TestWebServer(port, true);
-        server.mServerThread.start();
-        setSecureInstance(server);
-        return server;
+    /**
+     * Create and start a local HTTP server instance. This function must only
+     * be called if you need more than one server instance and the first one
+     * was already created using start() or start(int). You are responsible for
+     * calling shutdown() on each instance you create.
+     *
+     * @param port Port number the server must use, or 0 to automatically choose a free port.
+     */
+    public static TestWebServer startAdditional(int port) throws Exception {
+        return new TestWebServer(port, false, true);
     }
 
+    /**
+     * Same as startAdditional(int) but chooses a free port.
+     */
+    public static TestWebServer startAdditional() throws Exception {
+        return startAdditional(0);
+    }
+
+    /**
+     * Create and start a local secure HTTP server instance. This function must
+     * only be called if no other secure instances were created. You are
+     * responsible for calling shutdown() on each instance you create.
+     *
+     * @param port Port number the server must use, or 0 to automatically choose a free port.
+     */
+    public static TestWebServer startSsl(int port) throws Exception {
+        return new TestWebServer(port, true, false);
+    }
+
+    /**
+     * Same as startSsl(int) but chooses a free port.
+     */
     public static TestWebServer startSsl() throws Exception {
         return startSsl(0);
     }
 
     /**
-     * Terminate the http server.
+     * Create and start a local secure HTTP server instance. This function must
+     * only be called if you need more than one secure server instance and the
+     * first one was already created using startSsl() or startSsl(int). You are
+     * responsible for calling shutdown() on each instance you create.
+     *
+     * @param port Port number the server must use, or 0 to automatically choose a free port.
      */
-    public void shutdown() {
-        if (mSsl) {
-            setSecureInstance(null);
-        } else {
-            setInstance(null);
-        }
-
-        try {
-            mServerThread.cancelAllRequests();
-            // Block until the server thread is done shutting down.
-            mServerThread.join();
-        } catch (MalformedURLException e) {
-            throw new IllegalStateException(e);
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+    public static TestWebServer startAdditionalSsl(int port) throws Exception {
+        return new TestWebServer(port, true, true);
     }
 
-    // Setting static variables from instance methods causes findbugs warnings. Calling static
-    // methods which set static variables from instance methods isn't any better, but it silences
-    // the warnings.
-    private static void setInstance(TestWebServer instance) {
-        sInstance = instance;
-    }
-
-    private static void setSecureInstance(TestWebServer instance) {
-        sSecureInstance = instance;
+    /**
+     * Same as startAdditionalSsl(int) but chooses a free port.
+     */
+    public static TestWebServer startAdditionalSsl() throws Exception {
+        return startAdditionalSsl(0);
     }
 
     private static final int RESPONSE_STATUS_NORMAL = 0;
     private static final int RESPONSE_STATUS_MOVED_TEMPORARILY = 1;
     private static final int RESPONSE_STATUS_NOT_FOUND = 2;
     private static final int RESPONSE_STATUS_NO_CONTENT = 3;
+    private static final int RESPONSE_STATUS_FOR_WEBSOCKET = 4;
+    private static final int RESPONSE_STATUS_EMPTY_RESPONSE = 5;
 
-    private String setResponseInternal(
-            String requestPath, byte[] responseData,
-            List<Pair<String, String>> responseHeaders, Runnable responseAction,
-            int status) {
+    private String setResponseInternal(String requestPath, byte[] responseData,
+            List<Pair<String, String>> responseHeaders, Runnable responseAction, int status) {
         final boolean isRedirect = (status == RESPONSE_STATUS_MOVED_TEMPORARILY);
         final boolean isNotFound = (status == RESPONSE_STATUS_NOT_FOUND);
         final boolean isNoContent = (status == RESPONSE_STATUS_NO_CONTENT);
+        final boolean forWebSocket = (status == RESPONSE_STATUS_FOR_WEBSOCKET);
+        final boolean isEmptyResponse = (status == RESPONSE_STATUS_EMPTY_RESPONSE);
 
         synchronized (mLock) {
-            mResponseMap.put(requestPath, new Response(
-                    responseData, responseHeaders, isRedirect, isNotFound, isNoContent,
-                    responseAction));
+            mResponseMap.put(requestPath,
+                    new Response(responseData, responseHeaders, isRedirect, isNotFound, isNoContent,
+                            forWebSocket, isEmptyResponse, responseAction));
             mResponseCountMap.put(requestPath, Integer.valueOf(0));
             mLastRequestMap.put(requestPath, null);
         }
         return getResponseUrl(requestPath);
-    }
-
-    /**
-     * Gets the URL on the server under which a particular request path will be accessible.
-     *
-     * This only gets the URL, you still need to set the response if you intend to access it.
-     *
-     * @param requestPath The path to respond to.
-     * @return The full URL including the requestPath.
-     */
-    public String getResponseUrl(String requestPath) {
-        return mServerUri + requestPath;
     }
 
     /**
@@ -232,8 +198,7 @@ public class TestWebServer {
      * @return The full URL including the path that should be requested to get the expected
      *         response.
      */
-    public String setResponseWithNotFoundStatus(
-            String requestPath) {
+    public String setResponseWithNotFoundStatus(String requestPath) {
         return setResponseWithNotFoundStatus(requestPath, null);
     }
 
@@ -248,8 +213,8 @@ public class TestWebServer {
      */
     public String setResponseWithNotFoundStatus(
             String requestPath, List<Pair<String, String>> responseHeaders) {
-        return setResponseInternal(
-                requestPath, "".getBytes(), responseHeaders, null, RESPONSE_STATUS_NOT_FOUND);
+        return setResponseInternal(requestPath, ApiCompatibilityUtils.getBytesUtf8(""),
+                responseHeaders, null, RESPONSE_STATUS_NOT_FOUND);
     }
 
     /**
@@ -260,8 +225,20 @@ public class TestWebServer {
      *         response.
      */
     public String setResponseWithNoContentStatus(String requestPath) {
-        return setResponseInternal(
-                requestPath, "".getBytes(), null, null, RESPONSE_STATUS_NO_CONTENT);
+        return setResponseInternal(requestPath, ApiCompatibilityUtils.getBytesUtf8(""), null, null,
+                RESPONSE_STATUS_NO_CONTENT);
+    }
+
+    /**
+     * Sets an empty response to be returned when a particular request path is passed in.
+     *
+     * @param requestPath The path to respond to.
+     * @return The full URL including the path that should be requested to get the expected
+     *         response.
+     */
+    public String setEmptyResponse(String requestPath) {
+        return setResponseInternal(requestPath, ApiCompatibilityUtils.getBytesUtf8(""), null, null,
+                RESPONSE_STATUS_EMPTY_RESPONSE);
     }
 
     /**
@@ -276,10 +253,9 @@ public class TestWebServer {
      *         response.
      */
     public String setResponse(
-            String requestPath, String responseString,
-            List<Pair<String, String>> responseHeaders) {
-        return setResponseInternal(requestPath, responseString.getBytes(), responseHeaders, null,
-                RESPONSE_STATUS_NORMAL);
+            String requestPath, String responseString, List<Pair<String, String>> responseHeaders) {
+        return setResponseInternal(requestPath, ApiCompatibilityUtils.getBytesUtf8(responseString),
+                responseHeaders, null, RESPONSE_STATUS_NORMAL);
     }
 
     /**
@@ -297,12 +273,10 @@ public class TestWebServer {
      * @return The full URL including the path that should be requested to get the expected
      *         response.
      */
-    public String setResponseWithRunnableAction(
-            String requestPath, String responseString, List<Pair<String, String>> responseHeaders,
-            Runnable responseAction) {
-        return setResponseInternal(
-                requestPath, responseString.getBytes(), responseHeaders, responseAction,
-                RESPONSE_STATUS_NORMAL);
+    public String setResponseWithRunnableAction(String requestPath, String responseString,
+            List<Pair<String, String>> responseHeaders, Runnable responseAction) {
+        return setResponseInternal(requestPath, ApiCompatibilityUtils.getBytesUtf8(responseString),
+                responseHeaders, responseAction, RESPONSE_STATUS_NORMAL);
     }
 
     /**
@@ -313,13 +287,12 @@ public class TestWebServer {
      * @return The full URL including the path that should be requested to get the expected
      *         response.
      */
-    public String setRedirect(
-            String requestPath, String targetPath) {
+    public String setRedirect(String requestPath, String targetPath) {
         List<Pair<String, String>> responseHeaders = new ArrayList<Pair<String, String>>();
         responseHeaders.add(Pair.create("Location", targetPath));
 
-        return setResponseInternal(requestPath, targetPath.getBytes(), responseHeaders, null,
-                RESPONSE_STATUS_MOVED_TEMPORARILY);
+        return setResponseInternal(requestPath, ApiCompatibilityUtils.getBytesUtf8(targetPath),
+                responseHeaders, null, RESPONSE_STATUS_MOVED_TEMPORARILY);
     }
 
     /**
@@ -334,12 +307,33 @@ public class TestWebServer {
      * @return The full URL including the path that should be requested to get the expected
      *         response.
      */
-    public String setResponseBase64(
-            String requestPath, String base64EncodedResponse,
+    public String setResponseBase64(String requestPath, String base64EncodedResponse,
             List<Pair<String, String>> responseHeaders) {
-        return setResponseInternal(
-                requestPath, Base64.decode(base64EncodedResponse, Base64.DEFAULT),
-                responseHeaders, null, RESPONSE_STATUS_NORMAL);
+        return setResponseInternal(requestPath,
+                Base64.decode(base64EncodedResponse, Base64.DEFAULT), responseHeaders, null,
+                RESPONSE_STATUS_NORMAL);
+    }
+
+    /**
+     * Sets a response to a WebSocket handshake request.
+     *
+     * @param requestPath The path to respond to.
+     * @param responseHeaders Any additional headers that should be returned along with the
+     *                        response (null is acceptable).
+     * @return The full URL including the path that should be requested to get the expected
+     *         response.
+     */
+    public String setResponseForWebSocket(
+            String requestPath, List<Pair<String, String>> responseHeaders) {
+        if (responseHeaders == null) {
+            responseHeaders = new ArrayList<Pair<String, String>>();
+        } else {
+            responseHeaders = new ArrayList<Pair<String, String>>(responseHeaders);
+        }
+        responseHeaders.add(Pair.create("Connection", "Upgrade"));
+        responseHeaders.add(Pair.create("Upgrade", "websocket"));
+        return setResponseInternal(requestPath, ApiCompatibilityUtils.getBytesUtf8(""),
+                responseHeaders, null, RESPONSE_STATUS_FOR_WEBSOCKET);
     }
 
     /**
@@ -357,7 +351,7 @@ public class TestWebServer {
     /**
      * Returns the last HttpRequest at this path. Can return null if it is never requested.
      */
-    public HttpRequest getLastRequest(String requestPath) {
+    public HTTPRequest getLastRequest(String requestPath) {
         synchronized (mLock) {
             if (!mLastRequestMap.containsKey(requestPath))
                 throw new IllegalArgumentException("Path not set: " + requestPath);
@@ -365,71 +359,15 @@ public class TestWebServer {
         }
     }
 
-    public String getBaseUrl() {
-        return mServerUri + "/";
-    }
-
-    private URLConnection openConnection(URL url)
-            throws IOException, NoSuchAlgorithmException, KeyManagementException {
-        if (mSsl) {
-            // Install hostname verifiers and trust managers that don't do
-            // anything in order to get around the client not trusting
-            // the test server due to a lack of certificates.
-
-            HttpsURLConnection connection = (HttpsURLConnection) url.openConnection();
-            connection.setHostnameVerifier(new TestHostnameVerifier());
-
-            SSLContext context = SSLContext.getInstance("TLS");
-            TestTrustManager trustManager = new TestTrustManager();
-            context.init(null, new TestTrustManager[] {trustManager}, null);
-            connection.setSSLSocketFactory(context.getSocketFactory());
-
-            return connection;
-        } else {
-            return url.openConnection();
-        }
-    }
-
-    /**
-     * {@link X509TrustManager} that trusts everybody. This is used so that
-     * the client calling {@link TestWebServer#shutdown()} can issue a request
-     * for shutdown by blindly trusting the {@link TestWebServer}'s
-     * credentials.
-     */
-    private static class TestTrustManager implements X509TrustManager {
-        @Override
-        public void checkClientTrusted(X509Certificate[] chain, String authType) {
-            // Trust the TestWebServer...
+    private static class WebServerPrintStream extends PrintStream {
+        WebServerPrintStream(OutputStream out) {
+            super(out);
         }
 
         @Override
-        public void checkServerTrusted(X509Certificate[] chain, String authType) {
-            // Trust the TestWebServer...
-        }
-
-        @Override
-        public X509Certificate[] getAcceptedIssuers() {
-            return null;
-        }
-    }
-
-    /**
-     * {@link HostnameVerifier} that verifies everybody. This permits
-     * the client to trust the web server and call
-     * {@link TestWebServer#shutdown()}.
-     */
-    private static class TestHostnameVerifier implements HostnameVerifier {
-        @Override
-        public boolean verify(String hostname, SSLSession session) {
-            return true;
-        }
-    }
-
-    private void servedResponseFor(String path, HttpRequest request) {
-        synchronized (mLock) {
-            mResponseCountMap.put(path, Integer.valueOf(
-                    mResponseCountMap.get(path).intValue() + 1));
-            mLastRequestMap.put(path, request);
+        public void println(String s) {
+            Log.w(TAG, s);
+            super.println(s);
         }
     }
 
@@ -441,273 +379,118 @@ public class TestWebServer {
      * <p>If there is an action associated with the response, it will be executed inside of
      * this function.
      *
-     * @throws InterruptedException
+     * @throws NoSuchAlgorithmException, IOException
      */
-    private HttpResponse getResponse(HttpRequest request) throws InterruptedException {
-        assert Thread.currentThread() == mServerThread
-                : "getResponse called from non-server thread";
+    private void outputResponse(HTTPRequest request, WebServerPrintStream stream)
+            throws NoSuchAlgorithmException, IOException {
+        // Don't dump headers to decrease log.
+        Log.w(TAG, request.requestLine());
 
-        RequestLine requestLine = request.getRequestLine();
-        HttpResponse httpResponse = null;
-        Log.i(TAG, requestLine.getMethod() + ": " + requestLine.getUri());
-        String uriString = requestLine.getUri();
-        URI uri = URI.create(uriString);
-        String path = uri.getPath();
+        final String bodyTemplate = "<html><head><title>%s</title></head>"
+                + "<body>%s</body></html>";
 
-        Response response = null;
+        boolean copyHeadersToResponse = true;
+        boolean copyBinaryBodyToResponse = false;
+        boolean contentLengthAlreadyIncluded = false;
+        boolean contentTypeAlreadyIncluded = false;
+        String path = URI.create(request.getURI()).getPath();
+        StringBuilder textBody = new StringBuilder();
+
+        Response response;
         synchronized (mLock) {
             response = mResponseMap.get(path);
         }
-        if (response == null) {
-            httpResponse = createResponse(HttpStatus.SC_NOT_FOUND);
-        } else if (response.mIsNotFound) {
-            httpResponse = createResponse(HttpStatus.SC_NOT_FOUND);
-            for (Pair<String, String> header : response.mResponseHeaders) {
-                httpResponse.addHeader(header.first, header.second);
+
+        if (response == null || response.mIsNotFound) {
+            stream.println("HTTP/1.0 404 Not Found");
+            textBody.append(String.format(bodyTemplate, "Not Found", "Not Found"));
+        } else if (response.mForWebSocket) {
+            String keyHeader = request.headerValue("Sec-WebSocket-Key");
+            if (!keyHeader.isEmpty()) {
+                stream.println("HTTP/1.0 101 Switching Protocols");
+                stream.println("Sec-WebSocket-Accept: " + computeWebSocketAccept(keyHeader));
+            } else {
+                stream.println("HTTP/1.0 404 Not Found");
+                textBody.append(String.format(bodyTemplate, "Not Found", "Not Found"));
+                copyHeadersToResponse = false;
             }
-            servedResponseFor(path, request);
         } else if (response.mIsNoContent) {
-            httpResponse = createResponse(HttpStatus.SC_NO_CONTENT);
-            httpResponse.setHeader("Content-Length", "0");
-            servedResponseFor(path, request);
+            stream.println("HTTP/1.0 200 OK");
+            copyHeadersToResponse = false;
         } else if (response.mIsRedirect) {
-            httpResponse = createResponse(HttpStatus.SC_MOVED_TEMPORARILY);
-            for (Pair<String, String> header : response.mResponseHeaders) {
-                httpResponse.addHeader(header.first, header.second);
-            }
-            servedResponseFor(path, request);
+            stream.println("HTTP/1.0 302 Found");
+            textBody.append(String.format(bodyTemplate, "Found", "Found"));
+        } else if (response.mIsEmptyResponse) {
+            stream.println("HTTP/1.0 403 Forbidden");
+            copyHeadersToResponse = false;
         } else {
             if (response.mResponseAction != null) response.mResponseAction.run();
 
-            httpResponse = createResponse(HttpStatus.SC_OK);
-            ByteArrayEntity entity = createEntity(response.mResponseData);
-            httpResponse.setEntity(entity);
-            httpResponse.setHeader("Content-Length", "" + entity.getContentLength());
-            for (Pair<String, String> header : response.mResponseHeaders) {
-                httpResponse.addHeader(header.first, header.second);
+            stream.println("HTTP/1.0 200 OK");
+            copyBinaryBodyToResponse = true;
+        }
+
+        if (response != null) {
+            if (copyHeadersToResponse) {
+                for (Pair<String, String> header : response.mResponseHeaders) {
+                    stream.println(header.first + ": " + header.second);
+                    if (header.first.toLowerCase(Locale.ENGLISH).equals("content-length")) {
+                        contentLengthAlreadyIncluded = true;
+                    } else if (header.first.toLowerCase(Locale.ENGLISH).equals("content-type")) {
+                        contentTypeAlreadyIncluded = true;
+                    }
+                }
             }
-            servedResponseFor(path, request);
-        }
-        StatusLine sl = httpResponse.getStatusLine();
-        Log.i(TAG, sl.getStatusCode() + "(" + sl.getReasonPhrase() + ")");
-
-        if (path.endsWith(".js")) {
-            httpResponse.addHeader("Content-Type", "application/javascript");
+            synchronized (mLock) {
+                mResponseCountMap.put(
+                        path, Integer.valueOf(mResponseCountMap.get(path).intValue() + 1));
+                mLastRequestMap.put(path, request);
+            }
         }
 
-        setDateHeaders(httpResponse);
-        return httpResponse;
-    }
+        // RFC 1123
+        final SimpleDateFormat dateFormat =
+                new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US);
 
-    private void setDateHeaders(HttpResponse response) {
-        response.addHeader("Date", DateUtils.formatDate(new Date(), DateUtils.PATTERN_RFC1123));
+        // Using print and println() because we don't want to dump it into log.
+        stream.print("Date: " + dateFormat.format(new Date()));
+        stream.println();
+
+        if (textBody.length() != 0) {
+            if (!contentTypeAlreadyIncluded && (path.endsWith(".html") || path.endsWith(".htm"))) {
+                stream.println("Content-Type: text/html");
+            }
+            stream.println("Content-Length: " + textBody.length());
+            stream.println();
+            stream.print(textBody.toString());
+        } else if (copyBinaryBodyToResponse) {
+            if (!contentTypeAlreadyIncluded && path.endsWith(".js")) {
+                stream.println("Content-Type: application/javascript");
+            } else if (!contentTypeAlreadyIncluded
+                    && (path.endsWith(".html") || path.endsWith(".htm"))) {
+                stream.println("Content-Type: text/html");
+            }
+            if (!contentLengthAlreadyIncluded) {
+                stream.println("Content-Length: " + response.mResponseData.length);
+            }
+            stream.println();
+            stream.write(response.mResponseData);
+        } else {
+            stream.println();
+        }
     }
 
     /**
-     * Create an empty response with the given status.
+     * Return a response for WebSocket handshake challenge.
      */
-    private HttpResponse createResponse(int status) {
-        HttpResponse response = new BasicHttpResponse(HttpVersion.HTTP_1_0, status, null);
-        String reason = null;
+    private static String computeWebSocketAccept(String keyString) throws NoSuchAlgorithmException {
+        byte[] key = keyString.getBytes(Charset.forName("US-ASCII"));
+        byte[] guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11".getBytes(Charset.forName("US-ASCII"));
 
-        // This synchronized silences findbugs.
-        synchronized (TestWebServer.class) {
-            if (sReasons == null) {
-                sReasons = new Hashtable<Integer, String>();
-                sReasons.put(HttpStatus.SC_UNAUTHORIZED, "Unauthorized");
-                sReasons.put(HttpStatus.SC_NOT_FOUND, "Not Found");
-                sReasons.put(HttpStatus.SC_FORBIDDEN, "Forbidden");
-                sReasons.put(HttpStatus.SC_MOVED_TEMPORARILY, "Moved Temporarily");
-            }
-            // Fill in error reason. Avoid use of the ReasonPhraseCatalog, which is
-            // Locale-dependent.
-            reason = sReasons.get(status);
-        }
-
-        if (reason != null) {
-            StringBuilder buf = new StringBuilder("<html><head><title>");
-            buf.append(reason);
-            buf.append("</title></head><body>");
-            buf.append(reason);
-            buf.append("</body></html>");
-            ByteArrayEntity entity = createEntity(buf.toString().getBytes());
-            response.setEntity(entity);
-            response.setHeader("Content-Length", "" + entity.getContentLength());
-            response.setReasonPhrase(reason);
-        }
-        return response;
-    }
-
-    /**
-     * Create a string entity for the given content.
-     */
-    private ByteArrayEntity createEntity(byte[] data) {
-        ByteArrayEntity entity = new ByteArrayEntity(data);
-        entity.setContentType("text/html");
-        return entity;
-    }
-
-    private static class ServerThread extends Thread {
-        private TestWebServer mServer;
-        private ServerSocket mSocket;
-        private boolean mIsSsl;
-        private SSLContext mSslContext;
-
-        private final Object mLock = new Object();
-        private boolean mIsCancelled;
-        private Socket mCurrentRequestSocket;
-
-        /**
-         * Defines the keystore contents for the server, BKS version. Holds just a
-         * single self-generated key. The subject name is "Test Server".
-         */
-        private static final String SERVER_KEYS_BKS =
-                "AAAAAQAAABQDkebzoP1XwqyWKRCJEpn/t8dqIQAABDkEAAVteWtleQAAARpYl20nAAAAAQAFWC41"
-                + "MDkAAAJNMIICSTCCAbKgAwIBAgIESEfU1jANBgkqhkiG9w0BAQUFADBpMQswCQYDVQQGEwJVUzET"
-                + "MBEGA1UECBMKQ2FsaWZvcm5pYTEMMAoGA1UEBxMDTVRWMQ8wDQYDVQQKEwZHb29nbGUxEDAOBgNV"
-                + "BAsTB0FuZHJvaWQxFDASBgNVBAMTC1Rlc3QgU2VydmVyMB4XDTA4MDYwNTExNTgxNFoXDTA4MDkw"
-                + "MzExNTgxNFowaTELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExDDAKBgNVBAcTA01U"
-                + "VjEPMA0GA1UEChMGR29vZ2xlMRAwDgYDVQQLEwdBbmRyb2lkMRQwEgYDVQQDEwtUZXN0IFNlcnZl"
-                + "cjCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEA0LIdKaIr9/vsTq8BZlA3R+NFWRaH4lGsTAQy"
-                + "DPMF9ZqEDOaL6DJuu0colSBBBQ85hQTPa9m9nyJoN3pEi1hgamqOvQIWcXBk+SOpUGRZZFXwniJV"
-                + "zDKU5nE9MYgn2B9AoiH3CSuMz6HRqgVaqtppIe1jhukMc/kHVJvlKRNy9XMCAwEAATANBgkqhkiG"
-                + "9w0BAQUFAAOBgQC7yBmJ9O/eWDGtSH9BH0R3dh2NdST3W9hNZ8hIa8U8klhNHbUCSSktZmZkvbPU"
-                + "hse5LI3dh6RyNDuqDrbYwcqzKbFJaq/jX9kCoeb3vgbQElMRX8D2ID1vRjxwlALFISrtaN4VpWzV"
-                + "yeoHPW4xldeZmoVtjn8zXNzQhLuBqX2MmAAAAqwAAAAUvkUScfw9yCSmALruURNmtBai7kQAAAZx"
-                + "4Jmijxs/l8EBaleaUru6EOPioWkUAEVWCxjM/TxbGHOi2VMsQWqRr/DZ3wsDmtQgw3QTrUK666sR"
-                + "MBnbqdnyCyvM1J2V1xxLXPUeRBmR2CXorYGF9Dye7NkgVdfA+9g9L/0Au6Ugn+2Cj5leoIgkgApN"
-                + "vuEcZegFlNOUPVEs3SlBgUF1BY6OBM0UBHTPwGGxFBBcetcuMRbUnu65vyDG0pslT59qpaR0TMVs"
-                + "P+tcheEzhyjbfM32/vwhnL9dBEgM8qMt0sqF6itNOQU/F4WGkK2Cm2v4CYEyKYw325fEhzTXosck"
-                + "MhbqmcyLab8EPceWF3dweoUT76+jEZx8lV2dapR+CmczQI43tV9btsd1xiBbBHAKvymm9Ep9bPzM"
-                + "J0MQi+OtURL9Lxke/70/MRueqbPeUlOaGvANTmXQD2OnW7PISwJ9lpeLfTG0LcqkoqkbtLKQLYHI"
-                + "rQfV5j0j+wmvmpMxzjN3uvNajLa4zQ8l0Eok9SFaRr2RL0gN8Q2JegfOL4pUiHPsh64WWya2NB7f"
-                + "V+1s65eA5ospXYsShRjo046QhGTmymwXXzdzuxu8IlnTEont6P4+J+GsWk6cldGbl20hctuUKzyx"
-                + "OptjEPOKejV60iDCYGmHbCWAzQ8h5MILV82IclzNViZmzAapeeCnexhpXhWTs+xDEYSKEiG/camt"
-                + "bhmZc3BcyVJrW23PktSfpBQ6D8ZxoMfF0L7V2GQMaUg+3r7ucrx82kpqotjv0xHghNIm95aBr1Qw"
-                + "1gaEjsC/0wGmmBDg1dTDH+F1p9TInzr3EFuYD0YiQ7YlAHq3cPuyGoLXJ5dXYuSBfhDXJSeddUkl"
-                + "k1ufZyOOcskeInQge7jzaRfmKg3U94r+spMEvb0AzDQVOKvjjo1ivxMSgFRZaDb/4qw=";
-
-        private static final String PASSWORD = "android";
-
-        /**
-         * Loads a keystore from a base64-encoded String. Returns the KeyManager[]
-         * for the result.
-         */
-        private KeyManager[] getKeyManagers() throws Exception {
-            byte[] bytes = Base64.decode(SERVER_KEYS_BKS, Base64.DEFAULT);
-            InputStream inputStream = new ByteArrayInputStream(bytes);
-
-            KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            keyStore.load(inputStream, PASSWORD.toCharArray());
-            inputStream.close();
-
-            String algorithm = KeyManagerFactory.getDefaultAlgorithm();
-            KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(algorithm);
-            keyManagerFactory.init(keyStore, PASSWORD.toCharArray());
-
-            return keyManagerFactory.getKeyManagers();
-        }
-
-        private void setCurrentRequestSocket(Socket socket) {
-            synchronized (mLock) {
-                mCurrentRequestSocket = socket;
-            }
-        }
-
-        private boolean getIsCancelled() {
-            synchronized (mLock) {
-                return mIsCancelled;
-            }
-        }
-
-        // Called from non-server thread.
-        public void cancelAllRequests() throws IOException {
-            synchronized (mLock) {
-                mIsCancelled = true;
-                if (mCurrentRequestSocket != null) {
-                    try {
-                        mCurrentRequestSocket.close();
-                    } catch (IOException ignored) {
-                        // Catching this to ensure the server socket is closed as well.
-                    }
-                }
-            }
-            // Any current and subsequent accept call will throw instead of block.
-            mSocket.close();
-        }
-
-        public ServerThread(TestWebServer server, int port, boolean ssl) throws Exception {
-            super("ServerThread");
-            mServer = server;
-            mIsSsl = ssl;
-            int retry = 3;
-            while (true) {
-                try {
-                    if (mIsSsl) {
-                        mSslContext = SSLContext.getInstance("TLS");
-                        mSslContext.init(getKeyManagers(), null, null);
-                        mSocket = mSslContext.getServerSocketFactory().createServerSocket(port);
-                    } else {
-                        mSocket = new ServerSocket(port);
-                    }
-                    return;
-                } catch (IOException e) {
-                    Log.w(TAG, e);
-                    if (--retry == 0) {
-                        throw e;
-                    }
-                    // sleep in case server socket is still being closed
-                    Thread.sleep(1000);
-                }
-            }
-        }
-
-        @Override
-        public void run() {
-            HttpParams params = new BasicHttpParams();
-            params.setParameter(CoreProtocolPNames.PROTOCOL_VERSION, HttpVersion.HTTP_1_0);
-            while (!getIsCancelled()) {
-                Socket socket = null;
-                try {
-                    socket = mSocket.accept();
-                    setCurrentRequestSocket(socket);
-
-                    DefaultHttpServerConnection conn = new DefaultHttpServerConnection();
-                    conn.bind(socket, params);
-
-                    if (getIsCancelled()) continue;
-                    HttpRequest request = conn.receiveRequestHeader();
-                    HttpResponse response = mServer.getResponse(request);
-                    conn.sendResponseHeader(response);
-                    conn.sendResponseEntity(response);
-
-                    conn.close();
-                    socket = null;
-                } catch (IOException e) {
-                    // normal during shutdown, ignore
-                    Log.w(TAG, e);
-                } catch (HttpException e) {
-                    Log.w(TAG, e);
-                } catch (InterruptedException e) {
-                    Log.w(TAG, e);
-                } catch (UnsupportedOperationException e) {
-                    // DefaultHttpServerConnection's close() throws an
-                    // UnsupportedOperationException.
-                    Log.w(TAG, e);
-                } finally {
-                    // Since DefaultHttpServerConnection can raise an exception
-                    // during conn.close() (in the case of SSL), we always force
-                    // the socket to close, since it may be left open. This will
-                    // be a no-op if the connection managed to close the socket.
-                    if (socket != null) {
-                        try {
-                            socket.close();
-                        } catch (IOException ignored) {
-                            // safe to ignore
-                        }
-                    }
-                }
-            }
-        }
+        MessageDigest md = MessageDigest.getInstance("SHA");
+        md.update(key);
+        md.update(guid);
+        byte[] output = md.digest();
+        return Base64.encodeToString(output, Base64.NO_WRAP);
     }
 }

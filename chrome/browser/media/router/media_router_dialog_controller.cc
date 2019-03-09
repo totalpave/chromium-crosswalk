@@ -7,15 +7,17 @@
 #include <utility>
 
 #include "chrome/browser/media/router/media_router_metrics.h"
-#include "chrome/common/features.h"
+#include "chrome/common/media_router/media_route.h"
+#include "chrome/common/media_router/route_request_result.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "third_party/blink/public/mojom/presentation/presentation.mojom.h"
 
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
 #include "chrome/browser/media/android/router/media_router_dialog_controller_android.h"
 #else
-#include "chrome/browser/ui/webui/media_router/media_router_dialog_controller_impl.h"
+#include "chrome/browser/ui/media_router/media_router_dialog_controller_impl_base.h"
 #endif
 
 namespace media_router {
@@ -24,20 +26,20 @@ namespace media_router {
 MediaRouterDialogController*
 MediaRouterDialogController::GetOrCreateForWebContents(
     content::WebContents* contents) {
-#if BUILDFLAG(ANDROID_JAVA_UI)
+#if defined(OS_ANDROID)
   return MediaRouterDialogControllerAndroid::GetOrCreateForWebContents(
       contents);
 #else
-  return MediaRouterDialogControllerImpl::GetOrCreateForWebContents(contents);
+  return MediaRouterDialogControllerImplBase::GetOrCreateForWebContents(
+      contents);
 #endif
 }
 
 class MediaRouterDialogController::InitiatorWebContentsObserver
     : public content::WebContentsObserver {
  public:
-  InitiatorWebContentsObserver(
-      content::WebContents* web_contents,
-      MediaRouterDialogController* dialog_controller)
+  InitiatorWebContentsObserver(content::WebContents* web_contents,
+                               MediaRouterDialogController* dialog_controller)
       : content::WebContentsObserver(web_contents),
         dialog_controller_(dialog_controller) {
     DCHECK(dialog_controller_);
@@ -71,63 +73,58 @@ MediaRouterDialogController::MediaRouterDialogController(
 }
 
 MediaRouterDialogController::~MediaRouterDialogController() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 }
 
 bool MediaRouterDialogController::ShowMediaRouterDialogForPresentation(
-    std::unique_ptr<CreatePresentationConnectionRequest> request) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+    std::unique_ptr<StartPresentationContext> context) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  // Check if the media router dialog exists for |initiator| and return if so.
-  if (IsShowingMediaRouterDialog())
+  if (IsShowingMediaRouterDialog()) {
+    context->InvokeErrorCallback(blink::mojom::PresentationError(
+        blink::mojom::PresentationErrorType::UNKNOWN,
+        "Unable to create dialog: dialog already shown"));
     return false;
+  }
 
-  create_connection_request_ = std::move(request);
-  initiator_observer_.reset(new InitiatorWebContentsObserver(initiator_, this));
-  CreateMediaRouterDialog();
-
-  // Show the initiator holding the existing media router dialog.
-  ActivateInitiatorWebContents();
-
-  media_router::MediaRouterMetrics::RecordMediaRouterDialogOrigin(
+  start_presentation_context_ = std::move(context);
+  MediaRouterMetrics::RecordMediaRouterDialogOrigin(
       MediaRouterDialogOpenOrigin::PAGE);
-
+  FocusOnMediaRouterDialog(true);
   return true;
 }
 
 bool MediaRouterDialogController::ShowMediaRouterDialog() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  // Don't create dialog if it already exists.
   bool dialog_needs_creation = !IsShowingMediaRouterDialog();
-  if (dialog_needs_creation) {
-    initiator_observer_.reset(
-        new InitiatorWebContentsObserver(initiator_, this));
-    CreateMediaRouterDialog();
-  }
-
-  ActivateInitiatorWebContents();
+  FocusOnMediaRouterDialog(dialog_needs_creation);
   return dialog_needs_creation;
 }
 
 void MediaRouterDialogController::HideMediaRouterDialog() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CloseMediaRouterDialog();
   Reset();
 }
 
-void MediaRouterDialogController::ActivateInitiatorWebContents() {
+void MediaRouterDialogController::FocusOnMediaRouterDialog(
+    bool dialog_needs_creation) {
+  // Show the WebContents requesting a dialog.
+  // TODO(takumif): In the case of Views dialog, if the dialog is already shown,
+  // activating the WebContents makes the dialog lose focus and disappear. The
+  // dialog needs to be created again in that case.
   initiator_->GetDelegate()->ActivateContents(initiator_);
-}
-
-std::unique_ptr<CreatePresentationConnectionRequest>
-MediaRouterDialogController::TakeCreateConnectionRequest() {
-  return std::move(create_connection_request_);
+  if (dialog_needs_creation) {
+    initiator_observer_ =
+        std::make_unique<InitiatorWebContentsObserver>(initiator_, this);
+    CreateMediaRouterDialog();
+  }
 }
 
 void MediaRouterDialogController::Reset() {
   initiator_observer_.reset();
-  create_connection_request_.reset();
+  start_presentation_context_.reset();
 }
 
 }  // namespace media_router

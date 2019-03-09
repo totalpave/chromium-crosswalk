@@ -6,13 +6,12 @@
 
 #include "base/macros.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "cc/debug/lap_timer.h"
+#include "base/timer/lap_timer.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
+#include "cc/test/fake_layer_tree_frame_sink.h"
 #include "cc/test/fake_layer_tree_host_impl.h"
-#include "cc/test/fake_output_surface.h"
 #include "cc/test/fake_picture_layer_impl.h"
 #include "cc/test/fake_raster_source.h"
-#include "cc/test/test_shared_bitmap_manager.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/tiles/tiling_set_raster_queue_all.h"
 #include "cc/trees/layer_tree_impl.h"
@@ -29,7 +28,8 @@ static const int kTimeCheckInterval = 10;
 void AddTiling(float scale,
                FakePictureLayerImpl* layer,
                std::vector<Tile*>* all_tiles) {
-  PictureLayerTiling* tiling = layer->AddTiling(scale);
+  PictureLayerTiling* tiling =
+      layer->AddTiling(gfx::AxisTransform2d(scale, gfx::Vector2dF()));
 
   tiling->set_resolution(HIGH_RESOLUTION);
   tiling->CreateAllTilesForTesting();
@@ -42,10 +42,9 @@ class PictureLayerImplPerfTest : public testing::Test {
  public:
   PictureLayerImplPerfTest()
       : task_runner_provider_(base::ThreadTaskRunnerHandle::Get()),
-        output_surface_(FakeOutputSurface::Create3d()),
+        layer_tree_frame_sink_(FakeLayerTreeFrameSink::Create3d()),
         host_impl_(LayerTreeSettings(),
                    &task_runner_provider_,
-                   &shared_bitmap_manager_,
                    &task_graph_runner_),
         timer_(kWarmupRuns,
                base::TimeDelta::FromMilliseconds(kTimeLimitMillis),
@@ -53,7 +52,7 @@ class PictureLayerImplPerfTest : public testing::Test {
 
   void SetUp() override {
     host_impl_.SetVisible(true);
-    host_impl_.InitializeRenderer(output_surface_.get());
+    host_impl_.InitializeFrameSink(layer_tree_frame_sink_.get());
   }
 
   void SetupPendingTree(const gfx::Size& layer_bounds) {
@@ -78,16 +77,15 @@ class PictureLayerImplPerfTest : public testing::Test {
   void RunRasterQueueConstructAndIterateTest(const std::string& test_name,
                                              int num_tiles,
                                              const gfx::Size& viewport_size) {
-    host_impl_.SetViewportSize(viewport_size);
-    bool update_lcd_text = false;
-    host_impl_.pending_tree()->UpdateDrawProperties(update_lcd_text);
+    host_impl_.active_tree()->SetDeviceViewportSize(viewport_size);
+    host_impl_.pending_tree()->UpdateDrawProperties();
 
     timer_.Reset();
     do {
       int count = num_tiles;
       std::unique_ptr<TilingSetRasterQueueAll> queue(
           new TilingSetRasterQueueAll(
-              pending_layer_->picture_layer_tiling_set(), false));
+              pending_layer_->picture_layer_tiling_set(), false, true));
       while (count--) {
         ASSERT_TRUE(!queue->IsEmpty()) << "count: " << count;
         ASSERT_TRUE(queue->Top().tile()) << "count: " << count;
@@ -102,20 +100,19 @@ class PictureLayerImplPerfTest : public testing::Test {
 
   void RunRasterQueueConstructTest(const std::string& test_name,
                                    const gfx::Rect& viewport) {
-    host_impl_.SetViewportSize(viewport.size());
+    host_impl_.active_tree()->SetDeviceViewportSize(viewport.size());
     host_impl_.pending_tree()
         ->property_trees()
         ->scroll_tree.UpdateScrollOffsetBaseForTesting(
-            pending_layer_->id(),
+            pending_layer_->element_id(),
             gfx::ScrollOffset(viewport.x(), viewport.y()));
-    bool update_lcd_text = false;
-    host_impl_.pending_tree()->UpdateDrawProperties(update_lcd_text);
+    host_impl_.pending_tree()->UpdateDrawProperties();
 
     timer_.Reset();
     do {
       std::unique_ptr<TilingSetRasterQueueAll> queue(
           new TilingSetRasterQueueAll(
-              pending_layer_->picture_layer_tiling_set(), false));
+              pending_layer_->picture_layer_tiling_set(), false, true));
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
@@ -127,15 +124,15 @@ class PictureLayerImplPerfTest : public testing::Test {
       const std::string& test_name,
       int num_tiles,
       const gfx::Size& viewport_size) {
-    host_impl_.SetViewportSize(viewport_size);
-    bool update_lcd_text = false;
-    host_impl_.pending_tree()->UpdateDrawProperties(update_lcd_text);
+    host_impl_.active_tree()->SetDeviceViewportSize(viewport_size);
+    host_impl_.pending_tree()->UpdateDrawProperties();
 
     timer_.Reset();
     do {
       int count = num_tiles;
       std::unique_ptr<TilingSetEvictionQueue> queue(new TilingSetEvictionQueue(
-          pending_layer_->picture_layer_tiling_set()));
+          pending_layer_->picture_layer_tiling_set(),
+          pending_layer_->contributes_to_drawn_render_surface()));
       while (count--) {
         ASSERT_TRUE(!queue->IsEmpty()) << "count: " << count;
         ASSERT_TRUE(queue->Top().tile()) << "count: " << count;
@@ -151,19 +148,19 @@ class PictureLayerImplPerfTest : public testing::Test {
 
   void RunEvictionQueueConstructTest(const std::string& test_name,
                                      const gfx::Rect& viewport) {
-    host_impl_.SetViewportSize(viewport.size());
+    host_impl_.active_tree()->SetDeviceViewportSize(viewport.size());
     host_impl_.pending_tree()
         ->property_trees()
         ->scroll_tree.UpdateScrollOffsetBaseForTesting(
-            pending_layer_->id(),
+            pending_layer_->element_id(),
             gfx::ScrollOffset(viewport.x(), viewport.y()));
-    bool update_lcd_text = false;
-    host_impl_.pending_tree()->UpdateDrawProperties(update_lcd_text);
+    host_impl_.pending_tree()->UpdateDrawProperties();
 
     timer_.Reset();
     do {
       std::unique_ptr<TilingSetEvictionQueue> queue(new TilingSetEvictionQueue(
-          pending_layer_->picture_layer_tiling_set()));
+          pending_layer_->picture_layer_tiling_set(),
+          pending_layer_->contributes_to_drawn_render_surface()));
       timer_.NextLap();
     } while (!timer_.HasTimeLimitExpired());
 
@@ -172,13 +169,12 @@ class PictureLayerImplPerfTest : public testing::Test {
   }
 
  protected:
-  TestSharedBitmapManager shared_bitmap_manager_;
   TestTaskGraphRunner task_graph_runner_;
   FakeImplTaskRunnerProvider task_runner_provider_;
-  std::unique_ptr<OutputSurface> output_surface_;
+  std::unique_ptr<LayerTreeFrameSink> layer_tree_frame_sink_;
   FakeLayerTreeHostImpl host_impl_;
   FakePictureLayerImpl* pending_layer_;
-  LapTimer timer_;
+  base::LapTimer timer_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(PictureLayerImplPerfTest);
@@ -189,11 +185,12 @@ TEST_F(PictureLayerImplPerfTest, TilingSetRasterQueueConstructAndIterate) {
 
   float low_res_factor = host_impl_.settings().low_res_contents_scale_factor;
 
-  pending_layer_->AddTiling(low_res_factor);
-  pending_layer_->AddTiling(0.3f);
-  pending_layer_->AddTiling(0.7f);
-  pending_layer_->AddTiling(1.0f);
-  pending_layer_->AddTiling(2.0f);
+  pending_layer_->AddTiling(
+      gfx::AxisTransform2d(low_res_factor, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(0.3f, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(0.7f, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(1.0f, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(2.0f, gfx::Vector2dF()));
 
   RunRasterQueueConstructAndIterateTest("32_100x100", 32, gfx::Size(100, 100));
   RunRasterQueueConstructAndIterateTest("32_500x500", 32, gfx::Size(500, 500));
@@ -206,11 +203,12 @@ TEST_F(PictureLayerImplPerfTest, TilingSetRasterQueueConstruct) {
 
   float low_res_factor = host_impl_.settings().low_res_contents_scale_factor;
 
-  pending_layer_->AddTiling(low_res_factor);
-  pending_layer_->AddTiling(0.3f);
-  pending_layer_->AddTiling(0.7f);
-  pending_layer_->AddTiling(1.0f);
-  pending_layer_->AddTiling(2.0f);
+  pending_layer_->AddTiling(
+      gfx::AxisTransform2d(low_res_factor, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(0.3f, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(0.7f, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(1.0f, gfx::Vector2dF()));
+  pending_layer_->AddTiling(gfx::AxisTransform2d(2.0f, gfx::Vector2dF()));
 
   RunRasterQueueConstructTest("0_0_100x100", gfx::Rect(0, 0, 100, 100));
   RunRasterQueueConstructTest("5000_0_100x100", gfx::Rect(5000, 0, 100, 100));

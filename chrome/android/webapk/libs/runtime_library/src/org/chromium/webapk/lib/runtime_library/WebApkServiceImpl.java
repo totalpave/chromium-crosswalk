@@ -5,18 +5,16 @@
 package org.chromium.webapk.lib.runtime_library;
 
 import android.app.Notification;
+import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
-import android.content.pm.PackageManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.RemoteException;
+import android.support.v4.app.NotificationManagerCompat;
 import android.util.Log;
-
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
 
 /**
  * Implements services offered by the WebAPK to Chrome.
@@ -24,9 +22,9 @@ import java.util.Set;
 public class WebApkServiceImpl extends IWebApkApi.Stub {
 
     public static final String KEY_SMALL_ICON_ID = "small_icon_id";
-    public static final String KEY_HOST_BROWSER_PACKAGE = "host_browser_package";
+    public static final String KEY_HOST_BROWSER_UID = "host_browser_uid";
 
-    private static final String TAG = "WebApkServiceImpl";
+    private static final String TAG = "cr_WebApkServiceImpl";
 
     private final Context mContext;
 
@@ -36,15 +34,10 @@ public class WebApkServiceImpl extends IWebApkApi.Stub {
     private final int mSmallIconId;
 
     /**
-     * Package name of only process allowed to call the service's methods. If a process with a
-     * different package name calls the service, the service throws a RemoteException.
+     * Uid of only application allowed to call the service's methods. If an application with a
+     * different uid calls the service, the service throws a RemoteException.
      */
-    private final String mHostPackage;
-
-    /**
-     * Uids of processes which are allowed to call the service.
-     */
-    private final Set<Integer> mAuthorizedUids = new HashSet<>();
+    private final int mHostUid;
 
     /**
      * Creates an instance of WebApkServiceImpl.
@@ -54,38 +47,16 @@ public class WebApkServiceImpl extends IWebApkApi.Stub {
     public WebApkServiceImpl(Context context, Bundle bundle) {
         mContext = context;
         mSmallIconId = bundle.getInt(KEY_SMALL_ICON_ID);
-        mHostPackage = bundle.getString(KEY_HOST_BROWSER_PACKAGE);
-        assert mHostPackage != null;
-    }
-
-    boolean checkHasAccess(int uid, PackageManager packageManager) {
-        String[] callingPackageNames = packageManager.getPackagesForUid(uid);
-        Log.d(TAG, "Verifying bind request from: " + Arrays.toString(callingPackageNames) + " "
-                        + mHostPackage);
-        if (callingPackageNames == null) {
-            return false;
-        }
-
-        for (String packageName : callingPackageNames) {
-            if (packageName.equals(mHostPackage)) {
-                return true;
-            }
-        }
-
-        Log.e(TAG, "Unauthorized request from uid: " + uid);
-        return false;
+        mHostUid = bundle.getInt(KEY_HOST_BROWSER_UID);
+        assert mHostUid >= 0;
     }
 
     @Override
     public boolean onTransact(int arg0, Parcel arg1, Parcel arg2, int arg3) throws RemoteException {
         int callingUid = Binder.getCallingUid();
-        if (!mAuthorizedUids.contains(callingUid)) {
-            if (checkHasAccess(callingUid, mContext.getPackageManager())) {
-                mAuthorizedUids.add(callingUid);
-            } else {
-                throw new RemoteException("Unauthorized caller " + callingUid
-                        + " does not match expected host=" + mHostPackage);
-            }
+        if (mHostUid != callingUid) {
+            throw new RemoteException("Unauthorized caller " + callingUid
+                    + " does not match expected host=" + mHostUid);
         }
         return super.onTransact(arg0, arg1, arg2, arg3);
     }
@@ -97,12 +68,33 @@ public class WebApkServiceImpl extends IWebApkApi.Stub {
 
     @Override
     public void notifyNotification(String platformTag, int platformID, Notification notification) {
-        getNotificationManager().notify(platformTag, platformID, notification);
+        Log.w(TAG,
+                "Should NOT reach WebApkServiceImpl#notifyNotification(String, int,"
+                        + " Notification).");
     }
 
     @Override
     public void cancelNotification(String platformTag, int platformID) {
         getNotificationManager().cancel(platformTag, platformID);
+    }
+
+    @Override
+    public boolean notificationPermissionEnabled() {
+        return NotificationManagerCompat.from(mContext).areNotificationsEnabled();
+    }
+
+    @SuppressWarnings("NewApi")
+    @Override
+    public void notifyNotificationWithChannel(
+            String platformTag, int platformID, Notification notification, String channelName) {
+        NotificationManager notificationManager = getNotificationManager();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && notification.getChannelId() != null) {
+            NotificationChannel channel = new NotificationChannel(notification.getChannelId(),
+                    channelName, NotificationManager.IMPORTANCE_DEFAULT);
+            notificationManager.createNotificationChannel(channel);
+        }
+
+        notificationManager.notify(platformTag, platformID, notification);
     }
 
     private NotificationManager getNotificationManager() {

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env vpython
 # Copyright 2015 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -14,9 +14,18 @@ argument:
 json is written to that file in the format produced by
 common.parse_common_test_results.
 
+Optional argument:
+
+  --isolated-script-test-filter=[TEST_NAMES]
+
+is a double-colon-separated ("::") list of test names, to run just that subset
+of tests. This list is parsed by this harness and remapped to multiple arguments
+passed to the target script.
+
 This script is intended to be the base command invoked by the isolate,
 followed by a subsequent Python script. It could be generalized to
 invoke an arbitrary executable.
+
 """
 
 import argparse
@@ -24,67 +33,34 @@ import json
 import os
 import sys
 
-
 import common
 
-# Add src/testing/ into sys.path for importing xvfb.
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-import xvfb
+
+class TelemetryUnittestAdapter(common.BaseIsolatedScriptArgsAdapter):
+
+  def generate_test_output_args(self, output):
+    return ['--write-full-results-to', output]
+
+  def generate_test_also_run_disabled_tests_args(self):
+    return ['--also-run-disabled-tests']
+
+  def generate_test_filter_args(self, test_filter_str):
+    return ['--test-filter', test_filter_str]
+
+  def generate_sharding_args(self, total_shards, shard_index):
+    return ['--total-shards=%d' % total_shards,
+            '--shard-index=%d' % shard_index]
+
+  def generate_test_launcher_retry_limit_args(self, retry_limit):
+    return ['--retry-limit=%d' % retry_limit]
+
+  def generate_test_repeat_args(self, repeat_count):
+    return ['--repeat=%d' % repeat_count]
 
 
 def main():
-  parser = argparse.ArgumentParser()
-  parser.add_argument(
-      '--isolated-script-test-output', type=argparse.FileType('w'),
-      required=True)
-  parser.add_argument('--xvfb', help='Start xvfb.', action='store_true')
-  args, rest_args = parser.parse_known_args()
-  xvfb_proc = None
-  openbox_proc = None
-  xcompmgr_proc = None
-  env = os.environ.copy()
-  if args.xvfb and xvfb.should_start_xvfb(env):
-    xvfb_proc, openbox_proc, xcompmgr_proc = xvfb.start_xvfb(env=env,
-                                                             build_dir='.')
-    assert xvfb_proc and openbox_proc and xcompmgr_proc, 'Failed to start xvfb'
-  # Compatibility with gtest-based sharding.
-  total_shards = None
-  shard_index = None
-  if 'GTEST_TOTAL_SHARDS' in env:
-    total_shards = int(env['GTEST_TOTAL_SHARDS'])
-    del env['GTEST_TOTAL_SHARDS']
-  if 'GTEST_SHARD_INDEX' in env:
-    shard_index = int(env['GTEST_SHARD_INDEX'])
-    del env['GTEST_SHARD_INDEX']
-  sharding_args = []
-  if total_shards is not None and shard_index is not None:
-    sharding_args = [
-      '--total-shards=%d' % total_shards,
-      '--shard-index=%d' % shard_index
-    ]
-  try:
-    with common.temporary_file() as tempfile_path:
-      rc = common.run_command([sys.executable] + rest_args + sharding_args + [
-        '--write-full-results-to', tempfile_path,
-      ], env=env)
-      with open(tempfile_path) as f:
-        results = json.load(f)
-      parsed_results = common.parse_common_test_results(results,
-                                                        test_separator='.')
-      failures = parsed_results['unexpected_failures']
-
-      json.dump({
-          'valid': bool(rc <= common.MAX_FAILURES_EXIT_STATUS and
-                        ((rc == 0) or failures)),
-          'failures': failures.keys(),
-      }, args.isolated_script_test_output)
-
-    return rc
-  finally:
-    xvfb.kill(xvfb_proc)
-    xvfb.kill(openbox_proc)
-    xvfb.kill(xcompmgr_proc)
-
+  adapter = TelemetryUnittestAdapter()
+  return adapter.run_test()
 
 
 # This is not really a "script test" so does not need to manually add

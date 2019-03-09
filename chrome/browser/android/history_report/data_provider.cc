@@ -6,10 +6,12 @@
 
 #include <stddef.h>
 
+#include <map>
+
 #include "base/bind.h"
-#include "base/containers/hash_tables.h"
 #include "base/logging.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/android/history_report/delta_file_commons.h"
 #include "chrome/browser/android/history_report/delta_file_service.h"
 #include "chrome/browser/android/history_report/get_all_urls_from_history_task.h"
@@ -18,16 +20,20 @@
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/browser/model_loader.h"
+#include "components/bookmarks/browser/url_and_title.h"
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_service.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
 using bookmarks::BookmarkModel;
+using bookmarks::UrlAndTitle;
 
 namespace {
 static bool g_is_debug = false;
 
-typedef base::hash_map<std::string, BookmarkModel::URLAndTitle*> BookmarkMap;
+using BookmarkMap = std::map<std::string, UrlAndTitle*>;
 
 struct Context {
   history::HistoryService* history_service;
@@ -88,6 +94,7 @@ void StartVisitMigrationToUsageBufferUiThread(
     base::WaitableEvent* finished,
     base::CancelableTaskTracker* task_tracker) {
   history_service->ScheduleDBTask(
+      FROM_HERE,
       std::unique_ptr<history::HistoryDBTask>(
           new history_report::HistoricVisitsMigrationTask(finished,
                                                           buffer_service)),
@@ -121,14 +128,12 @@ std::unique_ptr<std::vector<DeltaFileEntryWithData>> DataProvider::Query(
     if (!entries->empty()) {
       Context context(history_service_,
                       &history_task_tracker_);
-      content::BrowserThread::PostTask(
-          content::BrowserThread::UI,
-          FROM_HERE,
-          base::Bind(&QueryUrlsHistoryInUiThread,
-                     base::Unretained(&context),
-                     base::Unretained(entries.get())));
-      std::vector<BookmarkModel::URLAndTitle> bookmarks;
-      bookmark_model_->BlockTillLoaded();
+      base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                               base::BindOnce(&QueryUrlsHistoryInUiThread,
+                                              base::Unretained(&context),
+                                              base::Unretained(entries.get())));
+      std::vector<UrlAndTitle> bookmarks;
+      bookmark_model_->model_loader()->BlockTillLoaded();
       bookmark_model_->GetBookmarks(&bookmarks);
       BookmarkMap bookmark_map;
       for (size_t i = 0; i < bookmarks.size(); ++i) {
@@ -160,14 +165,12 @@ void DataProvider::StartVisitMigrationToUsageBuffer(
   base::WaitableEvent finished(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                                base::WaitableEvent::InitialState::NOT_SIGNALED);
   buffer_service->Clear();
-  content::BrowserThread::PostTask(
-      content::BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&StartVisitMigrationToUsageBufferUiThread,
-                 base::Unretained(history_service_),
-                 buffer_service,
-                 base::Unretained(&finished),
-                 base::Unretained(&history_task_tracker_)));
+  base::PostTaskWithTraits(
+      FROM_HERE, {content::BrowserThread::UI},
+      base::BindOnce(&StartVisitMigrationToUsageBufferUiThread,
+                     base::Unretained(history_service_), buffer_service,
+                     base::Unretained(&finished),
+                     base::Unretained(&history_task_tracker_)));
   finished.Wait();
 }
 
@@ -181,16 +184,17 @@ void DataProvider::RecreateLog() {
     std::unique_ptr<history::HistoryDBTask> task =
         std::unique_ptr<history::HistoryDBTask>(
             new GetAllUrlsFromHistoryTask(&finished, &urls));
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI, FROM_HERE,
-        base::Bind(base::IgnoreResult(&history::HistoryService::ScheduleDBTask),
-                   base::Unretained(history_service_), base::Passed(&task),
-                   base::Unretained(&history_task_tracker_)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::UI},
+        base::BindOnce(
+            base::IgnoreResult(&history::HistoryService::ScheduleDBTask),
+            base::Unretained(history_service_), FROM_HERE, std::move(task),
+            base::Unretained(&history_task_tracker_)));
     finished.Wait();
   }
 
-  std::vector<BookmarkModel::URLAndTitle> bookmarks;
-  bookmark_model_->BlockTillLoaded();
+  std::vector<UrlAndTitle> bookmarks;
+  bookmark_model_->model_loader()->BlockTillLoaded();
   bookmark_model_->GetBookmarks(&bookmarks);
   urls.reserve(urls.size() + bookmarks.size());
   for (size_t i = 0; i < bookmarks.size(); i++) {

@@ -7,14 +7,14 @@
 #include <string>
 #include <vector>
 
+#include "base/threading/thread_task_runner_handle.h"
 #include "device/usb/usb_device.h"
 
 namespace device {
 
-MockUsbService::MockUsbService() : UsbService(nullptr, nullptr) {}
+MockUsbService::MockUsbService() : UsbService() {}
 
-MockUsbService::~MockUsbService() {
-}
+MockUsbService::~MockUsbService() = default;
 
 void MockUsbService::AddDevice(scoped_refptr<UsbDevice> device) {
   devices()[device->guid()] = device;

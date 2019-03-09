@@ -6,10 +6,9 @@
  * @fileoverview A simple message box screen implementation.
  */
 
-login.createScreen('FatalErrorScreen', 'fatal-error', function() { return {
-    EXTERNAL_API: [
-      'show'
-    ],
+login.createScreen('FatalErrorScreen', 'fatal-error', function() {
+  return {
+    EXTERNAL_API: ['show'],
 
     /**
      * Callback to run when the screen is dismissed.
@@ -25,8 +24,8 @@ login.createScreen('FatalErrorScreen', 'fatal-error', function() { return {
 
     /** @override */
     decorate: function() {
-      $('fatal-error-card').addEventListener(
-          'buttonclick', this.onDismiss_.bind(this));
+      $('fatal-error-card')
+          .addEventListener('buttonclick', this.onDismiss_.bind(this));
     },
 
     /** @override */
@@ -36,16 +35,12 @@ login.createScreen('FatalErrorScreen', 'fatal-error', function() { return {
 
     /** @override */
     onBeforeShow: function() {
-      this.savedUIStates_.progressDotHidden = $('progress-dots').hidden;
-      $('progress-dots').hidden = true;
-
       this.savedUIStates_.headerHidden = Oobe.getInstance().headerHidden;
       Oobe.getInstance().headerHidden = true;
     },
 
     /** @override */
     onBeforeHide: function() {
-      $('progress-dots').hidden = this.savedUIStates_.progressDotHidden;
       Oobe.getInstance().headerHidden = this.savedUIStates_.headerHidden;
     },
 

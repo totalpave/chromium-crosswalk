@@ -10,6 +10,7 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "base/threading/thread_checker.h"
 #include "media/base/video_decoder.h"
 #include "media/base/video_decoder_config.h"
@@ -19,19 +20,17 @@
 struct AVCodecContext;
 struct AVFrame;
 
-namespace base {
-class SingleThreadTaskRunner;
-}
-
 namespace media {
 
 class DecoderBuffer;
+class FFmpegDecodingLoop;
+class MediaLog;
 
 class MEDIA_EXPORT FFmpegVideoDecoder : public VideoDecoder {
  public:
   static bool IsCodecSupported(VideoCodec codec);
 
-  FFmpegVideoDecoder();
+  explicit FFmpegVideoDecoder(MediaLog* media_log);
   ~FFmpegVideoDecoder() override;
 
   // Allow decoding of individual NALU. Entire frames are required by default.
@@ -44,8 +43,9 @@ class MEDIA_EXPORT FFmpegVideoDecoder : public VideoDecoder {
                   bool low_delay,
                   CdmContext* cdm_context,
                   const InitCB& init_cb,
-                  const OutputCB& output_cb) override;
-  void Decode(const scoped_refptr<DecoderBuffer>& buffer,
+                  const OutputCB& output_cb,
+                  const WaitingCB& waiting_cb) override;
+  void Decode(scoped_refptr<DecoderBuffer> buffer,
               const DecodeCB& decode_cb) override;
   void Reset(const base::Closure& closure) override;
 
@@ -64,19 +64,20 @@ class MEDIA_EXPORT FFmpegVideoDecoder : public VideoDecoder {
     kError
   };
 
-  // Handles decoding an unencrypted encoded buffer.
-  bool FFmpegDecode(const scoped_refptr<DecoderBuffer>& buffer,
-                    bool* has_produced_frame);
+  // Handles decoding of an unencrypted encoded buffer. A return value of false
+  // indicates that an error has occurred.
+  bool FFmpegDecode(const DecoderBuffer& buffer);
+  bool OnNewFrame(AVFrame* frame);
 
   // Handles (re-)initializing the decoder with a (new) config.
   // Returns true if initialization was successful.
-  bool ConfigureDecoder(bool low_delay);
+  bool ConfigureDecoder(const VideoDecoderConfig& config, bool low_delay);
 
-  // Releases resources associated with |codec_context_| and |av_frame_|
-  // and resets them to NULL.
+  // Releases resources associated with |codec_context_|.
   void ReleaseFFmpegResources();
 
   base::ThreadChecker thread_checker_;
+  MediaLog* media_log_;
 
   DecoderState state_;
 
@@ -84,13 +85,14 @@ class MEDIA_EXPORT FFmpegVideoDecoder : public VideoDecoder {
 
   // FFmpeg structures owned by this object.
   std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext> codec_context_;
-  std::unique_ptr<AVFrame, ScopedPtrAVFreeFrame> av_frame_;
 
   VideoDecoderConfig config_;
 
   VideoFramePool frame_pool_;
 
   bool decode_nalus_;
+
+  std::unique_ptr<FFmpegDecodingLoop> decoding_loop_;
 
   DISALLOW_COPY_AND_ASSIGN(FFmpegVideoDecoder);
 };

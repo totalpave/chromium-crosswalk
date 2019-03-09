@@ -7,24 +7,34 @@
 #include <algorithm>
 
 #include "base/i18n/rtl.h"
-#include "base/message_loop/message_loop.h"
-#include "ui/accessibility/ax_view_state.h"
+#include "build/build_config.h"
+#include "components/vector_icons/vector_icons.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/ime/input_method.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/color_palette.h"
+#include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia_operations.h"
+#include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/skia_util.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/resources/grit/ui_resources.h"
+#include "ui/views/border.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/prefix_selector.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/tree/tree_view_controller.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/resources/grit/views_resources.h"
+#include "ui/views/style/platform_style.h"
+#include "ui/views/vector_icons.h"
 
 using ui::TreeModel;
 using ui::TreeModelNode;
@@ -33,7 +43,6 @@ namespace views {
 
 // Insets around the view.
 static const int kHorizontalInset = 2;
-static const int kVerticalInset = 2;
 // Padding before/after the image.
 static const int kImagePadding = 4;
 // Size of the arrow region.
@@ -49,27 +58,13 @@ const char TreeView::kViewClassName[] = "TreeView";
 
 namespace {
 
-// Returns the color id for the background of selected text. |has_focus|
-// indicates if the tree has focus.
-ui::NativeTheme::ColorId text_background_color_id(bool has_focus) {
-  return has_focus ?
-      ui::NativeTheme::kColorId_TreeSelectionBackgroundFocused :
-      ui::NativeTheme::kColorId_TreeSelectionBackgroundUnfocused;
-}
-
-// Returns the color id for text. |has_focus| indicates if the tree has focus
-// and |is_selected| is true if the item is selected.
-ui::NativeTheme::ColorId text_color_id(bool has_focus, bool is_selected) {
-  if (is_selected) {
-    if (has_focus)
-      return ui::NativeTheme::kColorId_TreeSelectedText;
-    return ui::NativeTheme::kColorId_TreeSelectedTextUnfocused;
-  }
-  return ui::NativeTheme::kColorId_TreeText;
+bool EventIsDoubleTapOrClick(const ui::LocatedEvent& event) {
+  if (event.type() == ui::ET_GESTURE_TAP)
+    return event.AsGestureEvent()->details().tap_count() == 2;
+  return !!(event.flags() & ui::EF_IS_DOUBLE_CLICK);
 }
 
 }  // namespace
-
 TreeView::TreeView()
     : model_(NULL),
       selected_node_(NULL),
@@ -80,15 +75,31 @@ TreeView::TreeView()
       editable_(true),
       controller_(NULL),
       root_shown_(true),
-      row_height_(font_list_.GetHeight() + kTextVerticalPadding * 2) {
+      row_height_(font_list_.GetHeight() + kTextVerticalPadding * 2),
+      drawing_provider_(std::make_unique<TreeViewDrawingProvider>()) {
   // Always focusable, even on Mac (consistent with NSOutlineView).
   SetFocusBehavior(FocusBehavior::ALWAYS);
-  closed_icon_ = *ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-      (base::i18n::IsRTL() ? IDR_FOLDER_CLOSED_RTL
-                           : IDR_FOLDER_CLOSED)).ToImageSkia();
-  open_icon_ = *ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-      (base::i18n::IsRTL() ? IDR_FOLDER_OPEN_RTL
-                           : IDR_FOLDER_OPEN)).ToImageSkia();
+#if defined(OS_MACOSX)
+  constexpr bool kUseMdIcons = true;
+#else
+  constexpr bool kUseMdIcons = false;
+#endif
+  if (kUseMdIcons) {
+    closed_icon_ = open_icon_ =
+        gfx::CreateVectorIcon(vector_icons::kFolderIcon, gfx::kChromeIconGrey);
+  } else {
+    // TODO(ellyjones): if the pre-Harmony codepath goes away, merge
+    // closed_icon_ and open_icon_.
+    closed_icon_ =
+        *ui::ResourceBundle::GetSharedInstance()
+             .GetImageNamed((base::i18n::IsRTL() ? IDR_FOLDER_CLOSED_RTL
+                                                 : IDR_FOLDER_CLOSED))
+             .ToImageSkia();
+    open_icon_ = *ui::ResourceBundle::GetSharedInstance()
+                      .GetImageNamed((base::i18n::IsRTL() ? IDR_FOLDER_OPEN_RTL
+                                                          : IDR_FOLDER_OPEN))
+                      .ToImageSkia();
+  }
   text_offset_ = closed_icon_.width() + kImagePadding + kImagePadding +
       kArrowRegionSize;
 }
@@ -129,7 +140,7 @@ void TreeView::SetModel(TreeModel* model) {
     model_->AddObserver(this);
     model_->GetIcons(&icons_);
 
-    root_.RemoveAll();
+    root_.DeleteAll();
     ConfigureInternalNode(model_->GetRoot(), &root_);
     LoadChildren(&root_);
     root_.set_is_expanded(true);
@@ -162,7 +173,14 @@ void TreeView::StartEditing(TreeModelNode* node) {
   DCHECK(!editing_);
   editing_ = true;
   if (!editor_) {
+    LayoutProvider* provider = LayoutProvider::Get();
+    gfx::Insets text_insets(
+        provider->GetDistanceMetric(DISTANCE_CONTROL_VERTICAL_TEXT_PADDING),
+        provider->GetDistanceMetric(
+            DISTANCE_TEXTFIELD_HORIZONTAL_TEXT_PADDING));
     editor_ = new Textfield;
+    editor_->SetBorder(views::CreatePaddedBorder(
+        views::CreateSolidBorder(1, gfx::kGoogleBlue700), text_insets));
     // Add the editor immediately as GetPreferredSize returns the wrong thing if
     // not parented.
     AddChildView(editor_);
@@ -242,8 +260,13 @@ void TreeView::SetSelectedNode(TreeModelNode* model_node) {
     SchedulePaintForNode(selected_node_);
   }
 
-  if (selected_node_)
-    ScrollRectToVisible(GetBoundsForNode(selected_node_));
+  if (selected_node_) {
+    // GetForegroundBoundsForNode() returns RTL-flipped coordinates for paint.
+    // Un-flip before passing to ScrollRectToVisible(), which uses layout
+    // coordinates.
+    ScrollRectToVisible(
+        GetMirroredRect(GetForegroundBoundsForNode(selected_node_)));
+  }
 
   // Notify controller if the old selection was empty to handle the case of
   // remove explicitly resetting selected_node_ before invoking this.
@@ -251,8 +274,8 @@ void TreeView::SetSelectedNode(TreeModelNode* model_node) {
     controller_->OnTreeViewSelectionChanged(this);
 
   if (changed) {
-    NotifyAccessibilityEvent(ui::AX_EVENT_TEXT_CHANGED, true);
-    NotifyAccessibilityEvent(ui::AX_EVENT_SELECTION, true);
+    NotifyAccessibilityEvent(ax::mojom::Event::kTextChanged, true);
+    NotifyAccessibilityEvent(ax::mojom::Event::kSelection, true);
   }
 }
 
@@ -346,6 +369,11 @@ int TreeView::GetRowForNode(ui::TreeModelNode* node) {
   return GetRowForInternalNode(internal_node, &depth);
 }
 
+void TreeView::SetDrawingProvider(
+    std::unique_ptr<TreeViewDrawingProvider> provider) {
+  drawing_provider_ = std::move(provider);
+}
+
 void TreeView::Layout() {
   int width = preferred_size_.width();
   int height = preferred_size_.height();
@@ -357,7 +385,7 @@ void TreeView::Layout() {
   LayoutEditor();
 }
 
-gfx::Size TreeView::GetPreferredSize() const {
+gfx::Size TreeView::CalculatePreferredSize() const {
   return preferred_size_;
 }
 
@@ -392,27 +420,29 @@ void TreeView::ShowContextMenu(const gfx::Point& p,
     // ContextMenuController) if over a node.
     gfx::Point local_point(p);
     ConvertPointFromScreen(this, &local_point);
-    int row = (local_point.y() - kVerticalInset) / row_height_;
-    int depth = 0;
-    InternalNode* node = GetNodeByRow(row, &depth);
-    if (!node)
-      return;
-    gfx::Rect bounds(GetBoundsForNodeImpl(node, row, depth));
-    if (!bounds.Contains(local_point))
+    if (!GetNodeAtPoint(local_point))
       return;
   }
   View::ShowContextMenu(p, source_type);
 }
 
-void TreeView::GetAccessibleState(ui::AXViewState* state) {
-  state->role = ui::AX_ROLE_TREE;
-  state->AddStateFlag(ui::AX_STATE_READ_ONLY);
-  if (!selected_node_)
+void TreeView::GetAccessibleNodeData(ui::AXNodeData* node_data) {
+  node_data->role = ax::mojom::Role::kTree;
+  node_data->SetRestriction(ax::mojom::Restriction::kReadOnly);
+  // TODO(aleventhal): The tree view accessibility implementation is misusing
+  // the name field. It should really be using selection events for the
+  // currently selected item. The name field should be for for the label
+  // if there is one, otherwise something that would work in place of a label.
+  // See http://crbug.com/811277.
+
+  if (!selected_node_) {
+    node_data->SetNameExplicitlyEmpty();
     return;
+  }
 
   // Get selected item info.
-  state->role = ui::AX_ROLE_TREE_ITEM;
-  state->name = selected_node_->model_node()->GetTitle();
+  node_data->role = ax::mojom::Role::kTreeItem;
+  node_data->SetName(selected_node_->model_node()->GetTitle());
 }
 
 const char* TreeView::GetClassName() const {
@@ -428,9 +458,9 @@ void TreeView::TreeNodesAdded(TreeModel* model,
   if (!parent_node || !parent_node->loaded_children())
     return;
   for (int i = 0; i < count; ++i) {
-    InternalNode* child = new InternalNode;
-    ConfigureInternalNode(model_->GetChild(parent, start + i), child);
-    parent_node->Add(child, start + i);
+    std::unique_ptr<InternalNode> child = std::make_unique<InternalNode>();
+    ConfigureInternalNode(model_->GetChild(parent, start + i), child.get());
+    parent_node->Add(std::move(child), start + i);
   }
   if (IsExpanded(parent))
     DrawnNodesChanged();
@@ -449,7 +479,7 @@ void TreeView::TreeNodesRemoved(TreeModel* model,
     InternalNode* child_removing = parent_node->GetChild(start);
     if (selected_node_ && selected_node_->HasAncestor(child_removing))
       reset_selection = true;
-    delete parent_node->Remove(child_removing);
+    parent_node->Remove(start);
   }
   if (reset_selection) {
     // selected_node_ is no longer valid (at the time we enter this function
@@ -536,7 +566,7 @@ base::string16 TreeView::GetTextForRow(int row) {
 gfx::Point TreeView::GetKeyboardContextMenuLocation() {
   int y = height() / 2;
   if (selected_node_) {
-    gfx::Rect node_bounds(GetBoundsForNode(selected_node_));
+    gfx::Rect node_bounds(GetForegroundBoundsForNode(selected_node_));
     gfx::Rect vis_bounds(GetVisibleBounds());
     if (node_bounds.y() >= vis_bounds.y() &&
         node_bounds.y() < vis_bounds.bottom()) {
@@ -599,7 +629,7 @@ void TreeView::OnPaint(gfx::Canvas* canvas) {
   int min_y, max_y;
   {
     SkRect sk_clip_rect;
-    if (canvas->sk_canvas()->getClipBounds(&sk_clip_rect)) {
+    if (canvas->sk_canvas()->getLocalClipBounds(&sk_clip_rect)) {
       // Pixels partially inside the clip rect should be included.
       gfx::Rect clip_rect = gfx::ToEnclosingRect(
           gfx::SkRectToRectF(sk_clip_rect));
@@ -612,9 +642,9 @@ void TreeView::OnPaint(gfx::Canvas* canvas) {
     }
   }
 
-  int min_row = std::max(0, (min_y - kVerticalInset) / row_height_);
-  int max_row = (max_y - kVerticalInset) / row_height_;
-  if ((max_y - kVerticalInset) % row_height_ != 0)
+  int min_row = std::max(0, min_y / row_height_);
+  int max_row = max_y / row_height_;
+  if (max_y % row_height_ != 0)
     max_row++;
   int current_row = root_row();
   PaintRows(canvas, min_row, max_row, &root_, root_depth(), &current_row);
@@ -629,6 +659,8 @@ void TreeView::OnFocus() {
   // Notify the InputMethod so that it knows to query the TextInputClient.
   if (GetInputMethod())
     GetInputMethod()->OnCaretBoundsChanged(GetPrefixSelector());
+
+  SetHasFocusIndicator(true);
 }
 
 void TreeView::OnBlur() {
@@ -637,45 +669,26 @@ void TreeView::OnBlur() {
   SchedulePaintForNode(selected_node_);
   if (selector_)
     selector_->OnViewBlur();
+  SetHasFocusIndicator(false);
 }
 
 bool TreeView::OnClickOrTap(const ui::LocatedEvent& event) {
   CommitEdit();
   RequestFocus();
 
-  int row = (event.y() - kVerticalInset) / row_height_;
-  int depth = 0;
-  InternalNode* node = GetNodeByRow(row, &depth);
-  if (node) {
-    gfx::Rect bounds(GetBoundsForNodeImpl(node, row, depth));
-    if (bounds.Contains(event.location())) {
-      int relative_x = event.x() - bounds.x();
-      if (base::i18n::IsRTL())
-        relative_x = bounds.width() - relative_x;
-      if (relative_x < kArrowRegionSize &&
-          model_->GetChildCount(node->model_node())) {
-        if (node->is_expanded())
-          Collapse(node->model_node());
-        else
-          Expand(node->model_node());
-      } else if (relative_x > kArrowRegionSize) {
-        SetSelectedNode(node->model_node());
-        bool should_toggle = false;
-        if (event.type() == ui::ET_GESTURE_TAP) {
-          const ui::GestureEvent& gesture =
-              static_cast<const ui::GestureEvent&>(event);
-          should_toggle = gesture.details().tap_count() == 2;
-        } else {
-          should_toggle = (event.flags() & ui::EF_IS_DOUBLE_CLICK) != 0;
-        }
-        if (should_toggle) {
-          if (node->is_expanded())
-            Collapse(node->model_node());
-          else
-            Expand(node->model_node());
-        }
-      }
-    }
+  InternalNode* node = GetNodeAtPoint(event.location());
+  if (!node)
+    return true;
+
+  bool hits_arrow = IsPointInExpandControl(node, event.location());
+  if (!hits_arrow)
+    SetSelectedNode(node->model_node());
+
+  if (hits_arrow || EventIsDoubleTapOrClick(event)) {
+    if (node->is_expanded())
+      Collapse(node->model_node());
+    else
+      Expand(node->model_node());
   }
   return true;
 }
@@ -686,9 +699,9 @@ void TreeView::LoadChildren(InternalNode* node) {
   node->set_loaded_children(true);
   for (int i = 0, child_count = model_->GetChildCount(node->model_node());
        i < child_count; ++i) {
-    InternalNode* child = new InternalNode;
-    ConfigureInternalNode(model_->GetChild(node->model_node(), i), child);
-    node->Add(child, node->child_count());
+    std::unique_ptr<InternalNode> child = std::make_unique<InternalNode>();
+    ConfigureInternalNode(model_->GetChild(node->model_node(), i), child.get());
+    node->Add(std::move(child), node->child_count());
   }
 }
 
@@ -717,9 +730,9 @@ void TreeView::UpdatePreferredSize() {
     return;
 
   preferred_size_.SetSize(
-      root_.GetMaxWidth(text_offset_, root_shown_ ? 1 : 0) +
-      kTextHorizontalPadding * 2,
-      row_height_ * GetRowCount() + kVerticalInset * 2);
+      root_.GetMaxWidth(this, text_offset_, root_shown_ ? 1 : 0) +
+          kTextHorizontalPadding * 2,
+      row_height_ * GetRowCount());
 }
 
 void TreeView::LayoutEditor() {
@@ -728,7 +741,10 @@ void TreeView::LayoutEditor() {
 
   DCHECK(selected_node_);
   // Position the editor so that its text aligns with the text we drew.
-  gfx::Rect row_bounds = GetBoundsForNode(selected_node_);
+  gfx::Rect row_bounds = GetForegroundBoundsForNode(selected_node_);
+
+  // GetForegroundBoundsForNode() returns a "flipped" x for painting. First, un-
+  // flip it for the following calculations and ScrollRectToVisible().
   row_bounds.set_x(
       GetMirroredXWithWidthInView(row_bounds.x(), row_bounds.width()));
   row_bounds.set_x(row_bounds.x() + text_offset_);
@@ -738,6 +754,8 @@ void TreeView::LayoutEditor() {
                    -(empty_editor_size_.height() - font_list_.GetHeight()) / 2);
   // Give a little extra space for editing.
   row_bounds.set_width(row_bounds.width() + 50);
+  // Scroll as necessary to ensure that the editor is visible.
+  ScrollRectToVisible(row_bounds);
   editor_->SetBoundsRect(row_bounds);
   editor_->Layout();
 }
@@ -771,17 +789,94 @@ void TreeView::PaintRow(gfx::Canvas* canvas,
                         InternalNode* node,
                         int row,
                         int depth) {
-  gfx::Rect bounds(GetBoundsForNodeImpl(node, row, depth));
+  gfx::Rect bounds(GetForegroundBoundsForNodeImpl(node, row, depth));
+  const SkColor selected_row_bg_color =
+      drawing_provider()->GetBackgroundColorForNode(this, node->model_node());
+
+  // Paint the row background.
+  if (PlatformStyle::kTreeViewSelectionPaintsEntireRow &&
+      selected_node_ == node) {
+    canvas->FillRect(GetBackgroundBoundsForNode(node), selected_row_bg_color);
+  }
 
   if (model_->GetChildCount(node->model_node()))
     PaintExpandControl(canvas, bounds, node->is_expanded());
 
-  // Paint the icon.
+  if (drawing_provider()->ShouldDrawIconForNode(this, node->model_node()))
+    PaintNodeIcon(canvas, node, bounds);
+
+  // Paint the text background and text. In edit mode, the selected node is a
+  // separate editing control, so it does not need to be painted here.
+  if (editing_ && selected_node_ == node)
+    return;
+
+  gfx::Rect text_bounds(GetTextBoundsForNode(node));
+  if (base::i18n::IsRTL())
+    text_bounds.set_x(bounds.x());
+
+  // Paint the background on the selected row.
+  if (!PlatformStyle::kTreeViewSelectionPaintsEntireRow &&
+      node == selected_node_) {
+    canvas->FillRect(text_bounds, selected_row_bg_color);
+  }
+
+  // Paint the auxiliary text.
+  base::string16 aux_text =
+      drawing_provider()->GetAuxiliaryTextForNode(this, node->model_node());
+  if (!aux_text.empty()) {
+    gfx::Rect aux_text_bounds = GetAuxiliaryTextBoundsForNode(node);
+    // Only draw if there's actually some space left for the auxiliary text.
+    if (!aux_text_bounds.IsEmpty()) {
+      int align = base::i18n::IsRTL() ? gfx::Canvas::TEXT_ALIGN_LEFT
+                                      : gfx::Canvas::TEXT_ALIGN_RIGHT;
+      canvas->DrawStringRectWithFlags(
+          aux_text, font_list_,
+          drawing_provider()->GetTextColorForNode(this, node->model_node()),
+          aux_text_bounds, align);
+    }
+  }
+
+  // Paint the text.
+  const gfx::Rect internal_bounds(
+      text_bounds.x() + kTextHorizontalPadding,
+      text_bounds.y() + kTextVerticalPadding,
+      text_bounds.width() - kTextHorizontalPadding * 2,
+      text_bounds.height() - kTextVerticalPadding * 2);
+  canvas->DrawStringRect(
+      node->model_node()->GetTitle(), font_list_,
+      drawing_provider()->GetTextColorForNode(this, node->model_node()),
+      internal_bounds);
+}
+
+void TreeView::PaintExpandControl(gfx::Canvas* canvas,
+                                  const gfx::Rect& node_bounds,
+                                  bool expanded) {
+  gfx::ImageSkia arrow = gfx::CreateVectorIcon(
+      kSubmenuArrowIcon,
+      color_utils::DeriveDefaultIconColor(
+          drawing_provider()->GetTextColorForNode(this, nullptr)));
+  if (expanded) {
+    arrow = gfx::ImageSkiaOperations::CreateRotatedImage(
+        arrow, base::i18n::IsRTL() ? SkBitmapOperations::ROTATION_270_CW
+                                   : SkBitmapOperations::ROTATION_90_CW);
+  }
+  gfx::Rect arrow_bounds = node_bounds;
+  arrow_bounds.Inset(gfx::Insets((node_bounds.height() - arrow.height()) / 2,
+                                 (kArrowRegionSize - arrow.width()) / 2));
+  canvas->DrawImageInt(arrow, base::i18n::IsRTL()
+                                  ? arrow_bounds.right() - arrow.width()
+                                  : arrow_bounds.x(),
+                       arrow_bounds.y());
+}
+
+void TreeView::PaintNodeIcon(gfx::Canvas* canvas,
+                             InternalNode* node,
+                             const gfx::Rect& bounds) {
   gfx::ImageSkia icon;
   int icon_index = model_->GetIconIndex(node->model_node());
   if (icon_index != -1)
     icon = icons_[icon_index];
-  else if (node == selected_node_)
+  else if (node->is_expanded())
     icon = open_icon_;
   else
     icon = closed_icon_;
@@ -791,63 +886,8 @@ void TreeView::PaintRow(gfx::Canvas* canvas,
     icon_x = bounds.right() - icon_x - open_icon_.width();
   else
     icon_x += bounds.x();
-  canvas->DrawImageInt(
-      icon, icon_x,
-      bounds.y() + (bounds.height() - icon.height()) / 2);
-
-  if (!editing_ || node != selected_node_) {
-    gfx::Rect text_bounds(bounds.x() + text_offset_, bounds.y(),
-                          bounds.width() - text_offset_, bounds.height());
-    if (base::i18n::IsRTL())
-      text_bounds.set_x(bounds.x());
-    if (node == selected_node_) {
-      const SkColor bg_color = GetNativeTheme()->GetSystemColor(
-          text_background_color_id(HasFocus()));
-      canvas->FillRect(text_bounds, bg_color);
-      if (HasFocus())
-        canvas->DrawFocusRect(text_bounds);
-    }
-    const ui::NativeTheme::ColorId color_id =
-        text_color_id(HasFocus(), node == selected_node_);
-    const gfx::Rect internal_bounds(
-        text_bounds.x() + kTextHorizontalPadding,
-        text_bounds.y() + kTextVerticalPadding,
-        text_bounds.width() - kTextHorizontalPadding * 2,
-        text_bounds.height() - kTextVerticalPadding * 2);
-    canvas->DrawStringRect(node->model_node()->GetTitle(), font_list_,
-                           GetNativeTheme()->GetSystemColor(color_id),
-                           internal_bounds);
-  }
-}
-
-void TreeView::PaintExpandControl(gfx::Canvas* canvas,
-                                  const gfx::Rect& node_bounds,
-                                  bool expanded) {
-  int center_x;
-  if (base::i18n::IsRTL()) {
-    center_x = node_bounds.right() - kArrowRegionSize +
-               (kArrowRegionSize - 4) / 2;
-  } else {
-    center_x = node_bounds.x() + (kArrowRegionSize - 4) / 2;
-  }
-  int center_y = node_bounds.y() + node_bounds.height() / 2;
-  const SkColor arrow_color = GetNativeTheme()->GetSystemColor(
-      ui::NativeTheme::kColorId_TreeArrow);
-  // TODO: this should come from an image.
-  if (!expanded) {
-    int delta = base::i18n::IsRTL() ? 1 : -1;
-    for (int i = 0; i < 4; ++i) {
-      canvas->FillRect(gfx::Rect(center_x + delta * (2 - i),
-                                 center_y - (3 - i), 1, (3 - i) * 2 + 1),
-                       arrow_color);
-    }
-  } else {
-    center_y -= 2;
-    for (int i = 0; i < 4; ++i) {
-      canvas->FillRect(gfx::Rect(center_x - (3 - i), center_y + i,
-                                 (3 - i) * 2 + 1, 1), arrow_color);
-    }
-  }
+  canvas->DrawImageInt(icon, icon_x,
+                       bounds.y() + (bounds.height() - icon.height()) / 2);
 }
 
 TreeView::InternalNode* TreeView::GetInternalNodeForModelNode(
@@ -869,18 +909,58 @@ TreeView::InternalNode* TreeView::GetInternalNodeForModelNode(
 }
 
 gfx::Rect TreeView::GetBoundsForNode(InternalNode* node) {
-  int row, depth;
-  row = GetRowForInternalNode(node, &depth);
-  return GetBoundsForNodeImpl(node, row, depth);
+  int row, ignored_depth;
+  row = GetRowForInternalNode(node, &ignored_depth);
+  return gfx::Rect(0, row * row_height_, width(), row_height_);
 }
 
-gfx::Rect TreeView::GetBoundsForNodeImpl(InternalNode* node,
-                                         int row,
-                                         int depth) {
-  gfx::Rect rect(depth * kIndent + kHorizontalInset,
-                 row * row_height_ + kVerticalInset,
-                 text_offset_ + node->text_width() +
-                 kTextHorizontalPadding * 2,
+gfx::Rect TreeView::GetBackgroundBoundsForNode(InternalNode* node) {
+  return PlatformStyle::kTreeViewSelectionPaintsEntireRow
+             ? GetBoundsForNode(node)
+             : GetForegroundBoundsForNode(node);
+}
+
+gfx::Rect TreeView::GetForegroundBoundsForNode(InternalNode* node) {
+  int row, depth;
+  row = GetRowForInternalNode(node, &depth);
+  return GetForegroundBoundsForNodeImpl(node, row, depth);
+}
+
+gfx::Rect TreeView::GetTextBoundsForNode(InternalNode* node) {
+  gfx::Rect bounds(GetForegroundBoundsForNode(node));
+  if (drawing_provider()->ShouldDrawIconForNode(this, node->model_node()))
+    bounds.Inset(text_offset_, 0, 0, 0);
+  else
+    bounds.Inset(kArrowRegionSize, 0, 0, 0);
+  return bounds;
+}
+
+// The auxiliary text for a node can use all the parts of the row's bounds that
+// are logical-after the row's text, and is aligned opposite to the row's text -
+// that is, in LTR locales it is trailing aligned, and in RTL locales it is
+// leading aligned.
+gfx::Rect TreeView::GetAuxiliaryTextBoundsForNode(InternalNode* node) {
+  gfx::Rect text_bounds = GetTextBoundsForNode(node);
+  int width = base::i18n::IsRTL() ? text_bounds.x() - kTextHorizontalPadding * 2
+                                  : bounds().width() - text_bounds.right() -
+                                        2 * kTextHorizontalPadding;
+  if (width < 0)
+    return gfx::Rect();
+  int x = base::i18n::IsRTL()
+              ? kTextHorizontalPadding
+              : bounds().right() - width - kTextHorizontalPadding;
+  return gfx::Rect(x, text_bounds.y(), width, text_bounds.height());
+}
+
+gfx::Rect TreeView::GetForegroundBoundsForNodeImpl(InternalNode* node,
+                                                   int row,
+                                                   int depth) {
+  int width =
+      drawing_provider()->ShouldDrawIconForNode(this, node->model_node())
+          ? text_offset_ + node->text_width() + kTextHorizontalPadding * 2
+          : kArrowRegionSize + node->text_width() + kTextHorizontalPadding * 2;
+
+  gfx::Rect rect(depth * kIndent + kHorizontalInset, row * row_height_, width,
                  row_height_);
   rect.set_x(GetMirroredXWithWidthInView(rect.x(), rect.width()));
   return rect;
@@ -904,6 +984,21 @@ int TreeView::GetRowForInternalNode(InternalNode* node, int* depth) {
     row++;
   }
   return row;
+}
+
+TreeView::InternalNode* TreeView::GetNodeAtPoint(const gfx::Point& point) {
+  int row = point.y() / row_height_;
+  int depth = -1;
+  InternalNode* node = GetNodeByRow(row, &depth);
+  if (!node)
+    return nullptr;
+
+  // If the entire row gets a selected background, clicking anywhere in the row
+  // serves to hit this node.
+  if (PlatformStyle::kTreeViewSelectionPaintsEntireRow)
+    return node;
+  gfx::Rect bounds(GetForegroundBoundsForNodeImpl(node, row, depth));
+  return bounds.Contains(point) ? node : nullptr;
 }
 
 TreeView::InternalNode* TreeView::GetNodeByRow(int row, int* depth) {
@@ -1010,8 +1105,33 @@ bool TreeView::ExpandImpl(TreeModelNode* model_node) {
 
 PrefixSelector* TreeView::GetPrefixSelector() {
   if (!selector_)
-    selector_.reset(new PrefixSelector(this));
+    selector_.reset(new PrefixSelector(this, this));
   return selector_.get();
+}
+
+bool TreeView::IsPointInExpandControl(InternalNode* node,
+                                      const gfx::Point& point) {
+  if (!model_->GetChildCount(node->model_node()))
+    return false;
+
+  int depth = -1;
+  int row = GetRowForInternalNode(node, &depth);
+
+  int arrow_dx = depth * kIndent + kHorizontalInset;
+  gfx::Rect arrow_bounds(arrow_dx, row * row_height_, kArrowRegionSize,
+                         row_height_);
+  if (base::i18n::IsRTL())
+    arrow_bounds.set_x(width() - arrow_dx - kArrowRegionSize);
+  return arrow_bounds.Contains(point);
+}
+
+void TreeView::SetHasFocusIndicator(bool shows) {
+  // If this View is the grandchild of a ScrollView, use the grandparent
+  // ScrollView for the focus ring instead of this View so that the focus ring
+  // won't be scrolled.
+  ScrollView* scroll_view = ScrollView::GetScrollViewForContents(this);
+  if (scroll_view)
+    scroll_view->SetHasFocusIndicator(shows);
 }
 
 // InternalNode ----------------------------------------------------------------
@@ -1042,13 +1162,15 @@ int TreeView::InternalNode::NumExpandedNodes() const {
   return result;
 }
 
-int TreeView::InternalNode::GetMaxWidth(int indent, int depth) {
-  int max_width = text_width_ + indent * depth;
+int TreeView::InternalNode::GetMaxWidth(TreeView* tree, int indent, int depth) {
+  bool has_icon =
+      tree->drawing_provider()->ShouldDrawIconForNode(tree, model_node());
+  int max_width = (has_icon ? text_width_ : kArrowRegionSize) + indent * depth;
   if (!is_expanded_)
     return max_width;
   for (int i = 0; i < child_count(); ++i) {
-    max_width = std::max(max_width,
-                         GetChild(i)->GetMaxWidth(indent, depth + 1));
+    max_width =
+        std::max(max_width, GetChild(i)->GetMaxWidth(tree, indent, depth + 1));
   }
   return max_width;
 }

@@ -10,110 +10,166 @@
 #include <map>
 #include <memory>
 
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
+#include "components/viz/common/display/renderer_settings.h"
+#include "components/viz/common/gpu/context_lost_observer.h"
+#include "components/viz/common/surfaces/frame_sink_id_allocator.h"
+#include "components/viz/host/host_frame_sink_manager.h"
 #include "content/browser/compositor/image_transport_factory.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
+#include "services/ws/public/cpp/gpu/command_buffer_metrics.h"
+#include "services/ws/public/cpp/gpu/shared_worker_context_provider_factory.h"
 #include "ui/compositor/compositor.h"
 
 namespace base {
-class SimpleThread;
-class Thread;
+class SingleThreadTaskRunner;
 }
 
 namespace cc {
 class SingleThreadTaskGraphRunner;
-class SoftwareOutputDevice;
 class SurfaceManager;
-class VulkanInProcessContextProvider;
+}
+
+namespace gpu {
+class GpuChannelEstablishFactory;
+}
+
+namespace viz {
+class CompositingModeReporterImpl;
+class OutputDeviceBacking;
+class RasterContextProvider;
+class ServerSharedBitmapManager;
+class SoftwareOutputDevice;
+}
+
+namespace ws {
+class ContextProviderCommandBuffer;
 }
 
 namespace content {
-class BrowserCompositorOutputSurface;
-class CompositorSwapClient;
-class ContextProviderCommandBuffer;
-class OutputDeviceBacking;
-class ReflectorImpl;
-class WebGraphicsContext3DCommandBufferImpl;
 
-class GpuProcessTransportFactory
-    : public ui::ContextFactory,
-      public ImageTransportFactory {
+class GpuProcessTransportFactory : public ui::ContextFactory,
+                                   public ui::ContextFactoryPrivate,
+                                   public ImageTransportFactory,
+                                   public viz::ContextLostObserver {
  public:
-  GpuProcessTransportFactory();
+  GpuProcessTransportFactory(
+      gpu::GpuChannelEstablishFactory* gpu_channel_factory,
+      viz::CompositingModeReporterImpl* compositing_mode_reporter,
+      viz::ServerSharedBitmapManager* server_shared_bitmap_manager,
+      scoped_refptr<base::SingleThreadTaskRunner> resize_task_runner);
 
   ~GpuProcessTransportFactory() override;
 
   // ui::ContextFactory implementation.
-  void CreateOutputSurface(base::WeakPtr<ui::Compositor> compositor) override;
+  void CreateLayerTreeFrameSink(
+      base::WeakPtr<ui::Compositor> compositor) override;
+  scoped_refptr<viz::ContextProvider> SharedMainThreadContextProvider()
+      override;
+  gpu::GpuMemoryBufferManager* GetGpuMemoryBufferManager() override;
+  cc::TaskGraphRunner* GetTaskGraphRunner() override;
+  void AddObserver(ui::ContextFactoryObserver* observer) override;
+  void RemoveObserver(ui::ContextFactoryObserver* observer) override;
+  bool SyncTokensRequiredForDisplayCompositor() override;
+
+  // ui::ContextFactoryPrivate implementation.
   std::unique_ptr<ui::Reflector> CreateReflector(ui::Compositor* source,
                                                  ui::Layer* target) override;
   void RemoveReflector(ui::Reflector* reflector) override;
   void RemoveCompositor(ui::Compositor* compositor) override;
-  scoped_refptr<cc::ContextProvider> SharedMainThreadContextProvider() override;
-  bool DoesCreateTestContexts() override;
-  uint32_t GetImageTextureTarget(gfx::BufferFormat format,
-                                 gfx::BufferUsage usage) override;
-  cc::SharedBitmapManager* GetSharedBitmapManager() override;
-  gpu::GpuMemoryBufferManager* GetGpuMemoryBufferManager() override;
-  cc::TaskGraphRunner* GetTaskGraphRunner() override;
-  std::unique_ptr<cc::SurfaceIdAllocator> CreateSurfaceIdAllocator() override;
+  viz::FrameSinkId AllocateFrameSinkId() override;
+  viz::HostFrameSinkManager* GetHostFrameSinkManager() override;
+  void SetDisplayVisible(ui::Compositor* compositor, bool visible) override;
   void ResizeDisplay(ui::Compositor* compositor,
                      const gfx::Size& size) override;
+  void DisableSwapUntilResize(ui::Compositor* compositor) override;
+  void SetDisplayColorMatrix(ui::Compositor* compositor,
+                             const SkMatrix44& matrix) override;
   void SetDisplayColorSpace(ui::Compositor* compositor,
-                            const gfx::ColorSpace& color_space) override;
-  void SetAuthoritativeVSyncInterval(ui::Compositor* compositor,
-                                     base::TimeDelta interval) override;
+                            const gfx::ColorSpace& blending_color_space,
+                            const gfx::ColorSpace& output_color_space) override;
+  void SetDisplayVSyncParameters(ui::Compositor* compositor,
+                                 base::TimeTicks timebase,
+                                 base::TimeDelta interval) override;
+  void IssueExternalBeginFrame(ui::Compositor* compositor,
+                               const viz::BeginFrameArgs& args) override;
   void SetOutputIsSecure(ui::Compositor* compositor, bool secure) override;
-  void AddObserver(ui::ContextFactoryObserver* observer) override;
-  void RemoveObserver(ui::ContextFactoryObserver* observer) override;
 
   // ImageTransportFactory implementation.
+  void DisableGpuCompositing() override;
+  bool IsGpuCompositingDisabled() override;
   ui::ContextFactory* GetContextFactory() override;
-  cc::SurfaceManager* GetSurfaceManager() override;
-  display_compositor::GLHelper* GetGLHelper() override;
-#if defined(OS_MACOSX)
-  void SetCompositorSuspendedForRecycle(ui::Compositor* compositor,
-                                        bool suspended) override;
-#endif
+  ui::ContextFactoryPrivate* GetContextFactoryPrivate() override;
+  viz::FrameSinkManagerImpl* GetFrameSinkManager() override;
 
  private:
   struct PerCompositorData;
 
-  PerCompositorData* CreatePerCompositorData(ui::Compositor* compositor);
-  std::unique_ptr<cc::SoftwareOutputDevice> CreateSoftwareOutputDevice(
-      ui::Compositor* compositor);
-  void EstablishedGpuChannel(base::WeakPtr<ui::Compositor> compositor,
-                             bool create_gpu_output_surface,
-                             int num_attempts);
+  scoped_refptr<viz::RasterContextProvider> shared_worker_context_provider();
 
-  void OnLostMainThreadSharedContextInsideCallback();
+  PerCompositorData* CreatePerCompositorData(ui::Compositor* compositor);
+  std::unique_ptr<viz::SoftwareOutputDevice> CreateSoftwareOutputDevice(
+      gfx::AcceleratedWidget widget,
+      scoped_refptr<base::SequencedTaskRunner> task_runner);
+  void EstablishedGpuChannel(
+      base::WeakPtr<ui::Compositor> compositor,
+      bool use_gpu_compositing,
+      scoped_refptr<gpu::GpuChannelHost> established_channel_host);
+
+  void DisableGpuCompositing(ui::Compositor* guilty_compositor);
+
   void OnLostMainThreadSharedContext();
 
-  scoped_refptr<cc::VulkanInProcessContextProvider>
-  SharedVulkanContextProvider();
+  // viz::ContextLostObserver implementation.
+  void OnContextLost() override;
 
-  typedef std::map<ui::Compositor*, PerCompositorData*> PerCompositorDataMap;
-  PerCompositorDataMap per_compositor_data_;
-  scoped_refptr<ContextProviderCommandBuffer> shared_main_thread_contexts_;
-  std::unique_ptr<display_compositor::GLHelper> gl_helper_;
-  base::ObserverList<ui::ContextFactoryObserver> observer_list_;
-  std::unique_ptr<cc::SurfaceManager> surface_manager_;
-  uint32_t next_surface_id_namespace_;
-  std::unique_ptr<cc::SingleThreadTaskGraphRunner> task_graph_runner_;
-  scoped_refptr<ContextProviderCommandBuffer> shared_worker_context_provider_;
+  scoped_refptr<ws::ContextProviderCommandBuffer> CreateContextCommon(
+      scoped_refptr<gpu::GpuChannelHost> gpu_channel_host,
+      gpu::SurfaceHandle surface_handle,
+      bool need_alpha_channel,
+      bool need_stencil_bits,
+      bool support_locking,
+      bool support_gles2_interface,
+      bool support_raster_interface,
+      bool support_grcontext,
+      ws::command_buffer_metrics::ContextType type);
 
-  bool shared_vulkan_context_provider_initialized_ = false;
-  scoped_refptr<cc::VulkanInProcessContextProvider>
-      shared_vulkan_context_provider_;
+  viz::FrameSinkIdAllocator frame_sink_id_allocator_;
 
 #if defined(OS_WIN)
-  std::unique_ptr<OutputDeviceBacking> software_backing_;
+  // Used by output surface, stored in PerCompositorData.
+  std::unique_ptr<viz::OutputDeviceBacking> software_backing_;
 #endif
+
+  // Depends on SurfaceManager.
+  typedef std::map<ui::Compositor*, std::unique_ptr<PerCompositorData>>
+      PerCompositorDataMap;
+  PerCompositorDataMap per_compositor_data_;
+
+  const viz::RendererSettings renderer_settings_;
+  scoped_refptr<ws::ContextProviderCommandBuffer> shared_main_thread_contexts_;
+  base::ObserverList<ui::ContextFactoryObserver>::Unchecked observer_list_;
+  scoped_refptr<base::SingleThreadTaskRunner> resize_task_runner_;
+  std::unique_ptr<cc::SingleThreadTaskGraphRunner> task_graph_runner_;
+  ws::SharedWorkerContextProviderFactory
+      shared_worker_context_provider_factory_;
+
+  bool is_gpu_compositing_disabled_ = false;
+  bool disable_frame_rate_limit_ = false;
+  bool wait_for_all_pipeline_stages_before_draw_ = false;
+
+  gpu::GpuChannelEstablishFactory* const gpu_channel_factory_;
+  // Service-side impl that controls the compositing mode based on what mode the
+  // display compositors are using.
+  viz::CompositingModeReporterImpl* const compositing_mode_reporter_;
+  // Manages a mapping of SharedBitmapId to shared memory objects.
+  viz::ServerSharedBitmapManager* const server_shared_bitmap_manager_;
+
   base::WeakPtrFactory<GpuProcessTransportFactory> callback_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(GpuProcessTransportFactory);

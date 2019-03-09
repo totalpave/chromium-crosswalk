@@ -13,6 +13,13 @@
 
 namespace ui {
 
+// We support dead keys beyond those with predefined keysym names,
+// expressed as numeric constants with |kDeadKeyFlag| set.
+// Xkbcommon accepts and does not use any bits in 0x0E000000.
+//
+constexpr xkb_keysym_t kDeadKeyFlag = 0x08000000;
+constexpr int32_t kUnicodeMax = 0x10FFFF;
+
 DomKey NonPrintableXKeySymToDomKey(xkb_keysym_t keysym) {
   switch (keysym) {
     case XKB_KEY_BackSpace:
@@ -62,7 +69,7 @@ DomKey NonPrintableXKeySymToDomKey(xkb_keysym_t keysym) {
       return DomKey::KANA_MODE;
     case XKB_KEY_Eisu_Shift:
     case XKB_KEY_Eisu_toggle:
-      return DomKey::EISU;
+      return DomKey::ALPHANUMERIC;
     case XKB_KEY_Hangul:
       return DomKey::HANGUL_MODE;
     case XKB_KEY_Hangul_Hanja:
@@ -103,8 +110,10 @@ DomKey NonPrintableXKeySymToDomKey(xkb_keysym_t keysym) {
       return DomKey::END;
     case XKB_KEY_Select:
       return DomKey::SELECT;
+    // Treat Print/PrintScreen as PrintScreen https://crbug.com/683097.
     case XKB_KEY_Print:
-      return DomKey::PRINT;
+    case XKB_KEY_3270_PrintScreen:
+      return DomKey::PRINT_SCREEN;
     case XKB_KEY_Execute:
       return DomKey::EXECUTE;
     case XKB_KEY_Insert:
@@ -238,7 +247,7 @@ DomKey NonPrintableXKeySymToDomKey(xkb_keysym_t keysym) {
     case XKB_KEY_XF86AudioRaiseVolume:
       return DomKey::AUDIO_VOLUME_UP;
     case XKB_KEY_XF86AudioPlay:
-      return DomKey::MEDIA_PLAY;
+      return DomKey::MEDIA_PLAY_PAUSE;
     case XKB_KEY_XF86AudioStop:
       return DomKey::MEDIA_STOP;
     case XKB_KEY_XF86AudioPrev:
@@ -350,8 +359,6 @@ DomKey NonPrintableXKeySymToDomKey(xkb_keysym_t keysym) {
       return DomKey::EX_SEL;
     case XKB_KEY_3270_CursorSelect:
       return DomKey::CR_SEL;
-    case XKB_KEY_3270_PrintScreen:
-      return DomKey::PRINT_SCREEN;
     case XKB_KEY_ISO_Level3_Shift:
       return DomKey::ALT_GRAPH;
     case XKB_KEY_ISO_Level3_Latch:
@@ -466,10 +473,15 @@ DomKey NonPrintableXKeySymToDomKey(xkb_keysym_t keysym) {
       // greek question mark
       return DomKey::DeadKeyFromCombiningCharacter(0x037E);
     default:
+      if (keysym & kDeadKeyFlag) {
+        int32_t character = keysym & ~kDeadKeyFlag;
+        if ((character >= 0) && (character <= kUnicodeMax)) {
+          return DomKey::DeadKeyFromCombiningCharacter(character);
+        }
+      }
       return DomKey::NONE;
   }
 }
-
 DomKey XKeySymToDomKey(xkb_keysym_t keysym, base::char16 character) {
   DomKey dom_key = NonPrintableXKeySymToDomKey(keysym);
   if (dom_key != DomKey::NONE)

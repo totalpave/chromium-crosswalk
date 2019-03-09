@@ -2,29 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-extern "C" {
-#include <X11/Xlib.h>
-}
-
 #include <memory>
 
 #include "base/logging.h"
+#include "ui/gfx/x/x11.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_image_glx.h"
 #include "ui/gl/gl_surface_glx.h"
 
 namespace gl {
 namespace {
-
-bool ValidFormat(unsigned internalformat) {
-  switch (internalformat) {
-    case GL_RGB:
-    case GL_RGBA:
-      return true;
-    default:
-      return false;
-  }
-}
 
 int TextureFormat(unsigned internalformat) {
   switch (internalformat) {
@@ -104,7 +91,8 @@ GLImageGLX::GLImageGLX(const gfx::Size& size, unsigned internalformat)
     : glx_pixmap_(0), size_(size), internalformat_(internalformat) {}
 
 GLImageGLX::~GLImageGLX() {
-  DCHECK_EQ(0u, glx_pixmap_);
+  if (glx_pixmap_)
+    glXDestroyGLXPixmap(gfx::GetXDisplay(), glx_pixmap_);
 }
 
 bool GLImageGLX::Initialize(XID pixmap) {
@@ -123,7 +111,7 @@ bool GLImageGLX::Initialize(XID pixmap) {
 
   int config_attribs[] = {
       GLX_DRAWABLE_TYPE,                    GLX_PIXMAP_BIT,
-      GLX_BIND_TO_TEXTURE_TARGETS_EXT,      GLX_TEXTURE_2D_EXT,
+      GLX_BIND_TO_TEXTURE_TARGETS_EXT,      GLX_TEXTURE_2D_BIT_EXT,
       BindToTextureFormat(internalformat_), GL_TRUE,
       0};
   int num_elements = 0;
@@ -152,18 +140,15 @@ bool GLImageGLX::Initialize(XID pixmap) {
   return true;
 }
 
-void GLImageGLX::Destroy(bool have_context) {
-  if (glx_pixmap_) {
-    glXDestroyGLXPixmap(gfx::GetXDisplay(), glx_pixmap_);
-    glx_pixmap_ = 0;
-  }
-}
-
 gfx::Size GLImageGLX::GetSize() {
   return size_;
 }
 
 unsigned GLImageGLX::GetInternalFormat() { return internalformat_; }
+
+GLImageGLX::BindOrCopy GLImageGLX::ShouldBindOrCopy() {
+  return BIND;
+}
 
 bool GLImageGLX::BindTexImage(unsigned target) {
   if (!glx_pixmap_)
@@ -185,6 +170,7 @@ void GLImageGLX::ReleaseTexImage(unsigned target) {
 }
 
 bool GLImageGLX::CopyTexImage(unsigned target) {
+  NOTREACHED();
   return false;
 }
 
@@ -194,11 +180,14 @@ bool GLImageGLX::CopyTexSubImage(unsigned target,
   return false;
 }
 
-bool GLImageGLX::ScheduleOverlayPlane(gfx::AcceleratedWidget widget,
-                                      int z_order,
-                                      gfx::OverlayTransform transform,
-                                      const gfx::Rect& bounds_rect,
-                                      const gfx::RectF& crop_rect) {
+bool GLImageGLX::ScheduleOverlayPlane(
+    gfx::AcceleratedWidget widget,
+    int z_order,
+    gfx::OverlayTransform transform,
+    const gfx::Rect& bounds_rect,
+    const gfx::RectF& crop_rect,
+    bool enable_blend,
+    std::unique_ptr<gfx::GpuFence> gpu_fence) {
   return false;
 }
 
@@ -206,6 +195,16 @@ void GLImageGLX::OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
                               uint64_t process_tracing_id,
                               const std::string& dump_name) {
   // TODO(ericrk): Implement GLImage OnMemoryDump. crbug.com/514914
+}
+
+bool GLImageGLX::ValidFormat(unsigned internalformat) {
+  switch (internalformat) {
+    case GL_RGB:
+    case GL_RGBA:
+      return true;
+    default:
+      return false;
+  }
 }
 
 }  // namespace gl

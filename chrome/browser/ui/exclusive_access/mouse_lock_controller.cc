@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/exclusive_access/mouse_lock_controller.h"
 
+#include "base/bind.h"
 #include "base/metrics/histogram_macros.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -24,7 +25,7 @@ using content::WebContents;
 
 namespace {
 
-const char kBubbleReshowsHistogramName[] =
+const char kMouseLockBubbleReshowsHistogramName[] =
     "ExclusiveAccess.BubbleReshowsPerSession.MouseLock";
 
 }  // namespace
@@ -32,7 +33,9 @@ const char kBubbleReshowsHistogramName[] =
 MouseLockController::MouseLockController(ExclusiveAccessManager* manager)
     : ExclusiveAccessControllerBase(manager),
       mouse_lock_state_(MOUSELOCK_UNLOCKED),
-      fake_mouse_lock_for_test_(false) {}
+      fake_mouse_lock_for_test_(false),
+      bubble_hide_callback_for_test_(),
+      weak_ptr_factory_(this) {}
 
 MouseLockController::~MouseLockController() {
 }
@@ -68,7 +71,8 @@ void MouseLockController::RequestToLockMouse(WebContents* web_contents,
   // Lock mouse.
   if (fake_mouse_lock_for_test_ ||
       web_contents->GotResponseToLockMouseRequest(true)) {
-    if (last_unlocked_by_target) {
+    if (last_unlocked_by_target &&
+        web_contents_granted_silent_mouse_lock_permission_ == web_contents) {
       mouse_lock_state_ = MOUSELOCK_LOCKED_SILENTLY;
     } else {
       mouse_lock_state_ = MOUSELOCK_LOCKED;
@@ -77,7 +81,10 @@ void MouseLockController::RequestToLockMouse(WebContents* web_contents,
     SetTabWithExclusiveAccess(nullptr);
     mouse_lock_state_ = MOUSELOCK_UNLOCKED;
   }
-  exclusive_access_manager()->UpdateExclusiveAccessExitBubbleContent();
+
+  exclusive_access_manager()->UpdateExclusiveAccessExitBubbleContent(
+      base::BindOnce(&MouseLockController::OnBubbleHidden,
+                     weak_ptr_factory_.GetWeakPtr(), web_contents));
 }
 
 void MouseLockController::ExitExclusiveAccessIfNecessary() {
@@ -90,13 +97,15 @@ void MouseLockController::NotifyTabExclusiveAccessLost() {
     UnlockMouse();
     SetTabWithExclusiveAccess(nullptr);
     mouse_lock_state_ = MOUSELOCK_UNLOCKED;
-    exclusive_access_manager()->UpdateExclusiveAccessExitBubbleContent();
+    exclusive_access_manager()->UpdateExclusiveAccessExitBubbleContent(
+        ExclusiveAccessBubbleHideCallback());
   }
 }
 
 void MouseLockController::RecordBubbleReshowsHistogram(
     int bubble_reshow_count) {
-  UMA_HISTOGRAM_COUNTS_100(kBubbleReshowsHistogramName, bubble_reshow_count);
+  UMA_HISTOGRAM_COUNTS_100(kMouseLockBubbleReshowsHistogramName,
+                           bubble_reshow_count);
 }
 
 bool MouseLockController::HandleUserPressedEscape() {
@@ -117,7 +126,8 @@ void MouseLockController::LostMouseLock() {
   mouse_lock_state_ = MOUSELOCK_UNLOCKED;
   SetTabWithExclusiveAccess(nullptr);
   NotifyMouseLockChange();
-  exclusive_access_manager()->UpdateExclusiveAccessExitBubbleContent();
+  exclusive_access_manager()->UpdateExclusiveAccessExitBubbleContent(
+      ExclusiveAccessBubbleHideCallback());
 }
 
 void MouseLockController::NotifyMouseLockChange() {
@@ -150,4 +160,16 @@ void MouseLockController::UnlockMouse() {
 
   if (mouse_lock_view)
     mouse_lock_view->UnlockMouse();
+}
+
+void MouseLockController::OnBubbleHidden(
+    WebContents* web_contents,
+    ExclusiveAccessBubbleHideReason reason) {
+  if (bubble_hide_callback_for_test_)
+    bubble_hide_callback_for_test_.Run(reason);
+
+  // Allow silent mouse lock if the bubble has been display for a period of
+  // time and dismissed due to timeout.
+  if (reason == ExclusiveAccessBubbleHideReason::kTimeout)
+    web_contents_granted_silent_mouse_lock_permission_ = web_contents;
 }

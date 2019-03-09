@@ -20,7 +20,7 @@
 #include "ios/chrome/browser/chrome_url_constants.h"
 #include "ios/web/public/url_data_source_ios.h"
 #include "net/base/escape.h"
-#include "third_party/brotli/dec/decode.h"
+#include "third_party/brotli/include/brotli/decode.h"
 #include "ui/base/device_form_factor.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "url/gurl.h"
@@ -33,7 +33,7 @@ const char kStringsJsPath[] = "strings.js";
 class AboutUIHTMLSource : public web::URLDataSourceIOS {
  public:
   // Construct a data source for the specified |source_name|.
-  AboutUIHTMLSource(const std::string& source_name);
+  explicit AboutUIHTMLSource(const std::string& source_name);
 
   // web::URLDataSourceIOS implementation.
   std::string GetSource() const override;
@@ -68,7 +68,7 @@ void AppendHeader(std::string* output,
   output->append("<meta charset='utf-8'>\n");
   if (refresh > 0) {
     output->append("<meta http-equiv='refresh' content='");
-    output->append(base::IntToString(refresh));
+    output->append(base::NumberToString(refresh));
     output->append("'/>\n");
   }
 }
@@ -88,16 +88,11 @@ std::string ChromeURLs() {
   html += "<h2>List of Chrome URLs</h2>\n<ul>\n";
   std::vector<std::string> hosts(kChromeHostURLs,
                                  kChromeHostURLs + kNumberOfChromeHostURLs);
-  // Remove chrome://bookmarks from list of hosts for iPhone because it is not
-  // possible to open bookmarks via URL on the iPhone form factor.
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE) {
-    hosts.erase(
-        std::remove(hosts.begin(), hosts.end(), kChromeUIBookmarksHost));
-  }
   std::sort(hosts.begin(), hosts.end());
   for (std::vector<std::string>::const_iterator i = hosts.begin();
        i != hosts.end(); ++i)
-    html += "<li><a href='chrome://" + *i + "/'>chrome://" + *i + "</a></li>\n";
+    html += "<li><a href='chrome://" + *i + "/' id='" + *i + "'>chrome://" +
+            *i + "</a></li>\n";
   html += "</ul>\n";
   AppendFooter(&html);
   return html;
@@ -128,20 +123,28 @@ void AboutUIHTMLSource::StartDataRequest(
     if (path == kCreditsJsPath)
       idr = IDR_ABOUT_UI_CREDITS_JS;
     base::StringPiece raw_response =
-        ResourceBundle::GetSharedInstance().GetRawDataResource(idr);
+        ui::ResourceBundle::GetSharedInstance().GetRawDataResource(idr);
     if (idr == IDR_ABOUT_UI_CREDITS_HTML) {
-      size_t decoded_size;
-      const uint8_t* encoded_response_buffer =
+      const uint8_t* next_encoded_byte =
           reinterpret_cast<const uint8_t*>(raw_response.data());
-      CHECK(BrotliDecompressedSize(raw_response.size(), encoded_response_buffer,
-                                   &decoded_size));
-      // Resizing the response and using it as the buffer Brotli decompresses
-      // into.
-      response.resize(decoded_size);
-      CHECK(BrotliDecompressBuffer(raw_response.size(), encoded_response_buffer,
-                                   &decoded_size,
-                                   reinterpret_cast<uint8_t*>(&response[0])) ==
-            BROTLI_RESULT_SUCCESS);
+      size_t input_size_remaining = raw_response.size();
+      BrotliDecoderState* decoder =
+          BrotliDecoderCreateInstance(nullptr /* no custom allocator */,
+                                      nullptr /* no custom deallocator */,
+                                      nullptr /* no custom memory handle */);
+      CHECK(!!decoder);
+      while (!BrotliDecoderIsFinished(decoder)) {
+        size_t output_size_remaining = 0;
+        CHECK(BrotliDecoderDecompressStream(
+                  decoder, &input_size_remaining, &next_encoded_byte,
+                  &output_size_remaining, nullptr,
+                  nullptr) != BROTLI_DECODER_RESULT_ERROR);
+        const uint8_t* output_buffer =
+            BrotliDecoderTakeOutput(decoder, &output_size_remaining);
+        response.insert(response.end(), output_buffer,
+                        output_buffer + output_size_remaining);
+      }
+      BrotliDecoderDestroyInstance(decoder);
     } else {
       response = raw_response.as_string();
     }

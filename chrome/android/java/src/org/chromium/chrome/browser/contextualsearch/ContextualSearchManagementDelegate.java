@@ -50,17 +50,16 @@ public interface ContextualSearchManagementDelegate {
     void dismissContextualSearchBar();
 
     /**
+     * Hides the Contextual Search UX by changing into the IDLE state.
+     * @param reason The {@link StateChangeReason} for hiding Contextual Search.
+     */
+    void hideContextualSearch(@StateChangeReason int reason);
+
+    /**
      * Notifies that the Contextual Search Panel did get closed.
      * @param reason The reason the panel is closing.
      */
-    void onCloseContextualSearch(StateChangeReason reason);
-
-    /**
-     * This is called on navigation of the contextual search pane This is called on navigation
-     * of the contextual search panel.
-     * @param isFailure If the request resulted in an error page.
-     */
-    void onContextualSearchRequestNavigation(boolean isFailure);
+    void onCloseContextualSearch(@StateChangeReason int reason);
 
     /**
      * @return An OverlayContentDelegate to watch events on the panel's content.
@@ -71,4 +70,14 @@ public interface ContextualSearchManagementDelegate {
      * Log the current state of Contextual Search.
      */
     void logCurrentState();
+
+    /**
+     * Called when the Contextual Search panel's animation is finished and it's shown.
+     */
+    void onPanelFinishedShowing();
+
+    /**
+     * Called when the Contextual Search panel is resized.
+     */
+    void onPanelResized();
 }

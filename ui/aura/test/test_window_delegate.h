@@ -55,12 +55,13 @@ class TestWindowDelegate : public WindowDelegate {
   bool CanFocus() override;
   void OnCaptureLost() override;
   void OnPaint(const ui::PaintContext& context) override;
-  void OnDeviceScaleFactorChanged(float device_scale_factor) override;
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override;
   void OnWindowDestroying(Window* window) override;
   void OnWindowDestroyed(Window* window) override;
   void OnWindowTargetVisibilityChanged(bool visible) override;
   bool HasHitTestMask() const override;
-  void GetHitTestMask(gfx::Path* mask) const override;
+  void GetHitTestMask(SkPath* mask) const override;
 
  private:
   int window_component_;
@@ -103,7 +104,7 @@ class MaskedWindowDelegate : public TestWindowDelegate {
 
   // Overridden from TestWindowDelegate:
   bool HasHitTestMask() const override;
-  void GetHitTestMask(gfx::Path* mask) const override;
+  void GetHitTestMask(SkPath* mask) const override;
 
  private:
   gfx::Rect mask_rect_;

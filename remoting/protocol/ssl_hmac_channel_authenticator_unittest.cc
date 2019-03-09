@@ -17,6 +17,7 @@
 #include "base/timer/timer.h"
 #include "crypto/rsa_private_key.h"
 #include "net/base/net_errors.h"
+#include "net/cert/x509_util.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/test_data_directory.h"
 #include "remoting/base/rsa_key_pair.h"
@@ -25,7 +26,7 @@
 #include "remoting/protocol/p2p_stream_socket.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using testing::_;
 using testing::NotNull;
@@ -48,15 +49,15 @@ ACTION_P(QuitThreadOnCounter, counter) {
   --(*counter);
   EXPECT_GE(*counter, 0);
   if (*counter == 0)
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 }  // namespace
 
 class SslHmacChannelAuthenticatorTest : public testing::Test {
  public:
-  SslHmacChannelAuthenticatorTest() {}
-  ~SslHmacChannelAuthenticatorTest() override {}
+  SslHmacChannelAuthenticatorTest() = default;
+  ~SslHmacChannelAuthenticatorTest() override = default;
 
  protected:
   void SetUp() override {
@@ -111,9 +112,9 @@ class SslHmacChannelAuthenticatorTest : public testing::Test {
 
     // Ensure that .Run() does not run unbounded if the callbacks are never
     // called.
-    base::Timer shutdown_timer(false, false);
+    base::OneShotTimer shutdown_timer;
     shutdown_timer.Start(FROM_HERE, TestTimeouts::action_timeout(),
-                         base::MessageLoop::QuitWhenIdleClosure());
+                         base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
     base::RunLoop().Run();
   }
 
@@ -188,16 +189,20 @@ TEST_F(SslHmacChannelAuthenticatorTest, InvalidCertificate) {
   // Import a second certificate for the client to expect.
   scoped_refptr<net::X509Certificate> host_cert2(
       net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem"));
-  std::string host_cert2_der;
-  ASSERT_TRUE(net::X509Certificate::GetDEREncoded(host_cert2->os_cert_handle(),
-                                                  &host_cert2_der));
 
   client_auth_ = SslHmacChannelAuthenticator::CreateForClient(
-      host_cert2_der, kTestSharedSecret);
+      std::string(
+          net::x509_util::CryptoBufferAsStringPiece(host_cert2->cert_buffer())),
+      kTestSharedSecret);
   host_auth_ = SslHmacChannelAuthenticator::CreateForHost(
       host_cert_, key_pair_, kTestSharedSecret);
 
-  RunChannelAuth(net::ERR_CERT_INVALID, net::ERR_CONNECTION_CLOSED);
+  // TODO(https://crbug.com/912383): The server sees
+  // ERR_BAD_SSL_CLIENT_AUTH_CERT because its peer (the client) alerts it with
+  // bad_certificate. The alert-mapping code assumes it is running on a client,
+  // so it translates bad_certificate to ERR_BAD_SSL_CLIENT_AUTH_CERT, which
+  // shouldn't be the error for a bad server certificate.
+  RunChannelAuth(net::ERR_CERT_INVALID, net::ERR_BAD_SSL_CLIENT_AUTH_CERT);
 
   ASSERT_TRUE(host_socket_.get() == nullptr);
 }

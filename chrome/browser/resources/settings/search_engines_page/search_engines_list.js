@@ -11,9 +11,27 @@ Polymer({
 
   properties: {
     /** @type {!Array<!SearchEngine>} */
-    engines: {
-      type: Array,
-      value: function() { return []; }
-    }
+    engines: Array,
+
+    /**
+     * The scroll target that this list should use.
+     * @type {?HTMLElement}
+     */
+    scrollTarget: Object,
+
+    /** Used to fix scrolling glitch when list is not top most element. */
+    scrollOffset: Number,
+
+    /** @private {Object}*/
+    lastFocused_: Object,
+
+    /** @private */
+    listBlurred_: Boolean,
+
+    fixedHeight: {
+      type: Boolean,
+      value: false,
+      reflectToAttribute: true,
+    },
   },
 });

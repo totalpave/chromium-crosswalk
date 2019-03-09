@@ -15,16 +15,14 @@
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/core/common/cloud/component_cloud_policy_service.h"
 #include "components/policy/core/common/configuration_policy_provider.h"
+#include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_export.h"
 #include "components/prefs/pref_member.h"
+#include "services/network/public/cpp/network_connection_tracker.h"
 
 namespace base {
 class FilePath;
 class SequencedTaskRunner;
-}
-
-namespace net {
-class URLRequestContextGetter;
 }
 
 namespace policy {
@@ -44,23 +42,20 @@ class POLICY_EXPORT CloudPolicyManager
       public ComponentCloudPolicyService::Delegate {
  public:
   // |task_runner| is the runner for policy refresh tasks.
-  // |file_task_runner| is used for file operations. Currently this must be the
-  // FILE BrowserThread.
-  // |io_task_runner| is used for network IO. Currently this must be the IO
-  // BrowserThread.
   CloudPolicyManager(
       const std::string& policy_type,
       const std::string& settings_entity_id,
       CloudPolicyStore* cloud_policy_store,
       const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& file_task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& io_task_runner);
+      network::NetworkConnectionTrackerGetter
+          network_connection_tracker_getter);
   ~CloudPolicyManager() override;
 
   CloudPolicyCore* core() { return &core_; }
   const CloudPolicyCore* core() const { return &core_; }
 
   // ConfigurationPolicyProvider:
+  void Init(SchemaRegistry* registry) override;
   void Shutdown() override;
   bool IsInitializationComplete(PolicyDomain domain) const override;
   void RefreshPolicies() override;
@@ -83,9 +78,11 @@ class POLICY_EXPORT CloudPolicyManager
   virtual void GetChromePolicy(PolicyMap* policy_map);
 
   void CreateComponentCloudPolicyService(
+      const std::string& policy_type,
       const base::FilePath& policy_cache_path,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context,
-      CloudPolicyClient* client);
+      PolicySource policy_source,
+      CloudPolicyClient* client,
+      SchemaRegistry* schema_registry);
 
   void ClearAndDestroyComponentCloudPolicyService();
 
@@ -111,7 +108,6 @@ class POLICY_EXPORT CloudPolicyManager
   // policy update notifications are deferred until after it completes.
   bool waiting_for_policy_refresh_;
 
-  scoped_refptr<base::SequencedTaskRunner> file_task_runner_;
   scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(CloudPolicyManager);

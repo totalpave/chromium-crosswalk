@@ -7,11 +7,10 @@
 #include <algorithm>
 #include <cstring>
 
-#include "base/macros.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "content/public/common/content_constants.h"
-#include "third_party/widevine/cdm/widevine_cdm_common.h"
 
 namespace {
 
@@ -126,25 +125,25 @@ PluginUMAReporter::PluginType PluginUMAReporter::SrcToPluginType(
   std::string file_extension;
   ExtractFileExtension(src, &file_extension);
   if (CStringArrayContainsCString(kWindowsMediaPlayerExtensions,
-                                  arraysize(kWindowsMediaPlayerExtensions),
+                                  base::size(kWindowsMediaPlayerExtensions),
                                   file_extension.c_str())) {
     return WINDOWS_MEDIA_PLAYER;
   }
 
   if (CStringArrayContainsCString(kQuickTimeExtensions,
-                                  arraysize(kQuickTimeExtensions),
+                                  base::size(kQuickTimeExtensions),
                                   file_extension.c_str())) {
     return QUICKTIME;
   }
 
   if (CStringArrayContainsCString(kRealPlayerExtensions,
-                                  arraysize(kRealPlayerExtensions),
+                                  base::size(kRealPlayerExtensions),
                                   file_extension.c_str())) {
     return REALPLAYER;
   }
 
   if (CStringArrayContainsCString(kShockwaveFlashExtensions,
-                                  arraysize(kShockwaveFlashExtensions),
+                                  base::size(kShockwaveFlashExtensions),
                                   file_extension.c_str())) {
     return SHOCKWAVE_FLASH;
   }
@@ -178,11 +177,6 @@ PluginUMAReporter::PluginType PluginUMAReporter::MimeTypeToPluginType(
       mime_type == content::kFlashPluginSplMimeType) {
     return SHOCKWAVE_FLASH;
   }
-
-#if defined(ENABLE_PEPPER_CDMS)
-  if (mime_type == kWidevineCdmPluginMimeType)
-    return WIDEVINE_CDM;
-#endif
 
   return UNSUPPORTED_MIMETYPE;
 }

@@ -8,7 +8,9 @@
 namespace policy {
 
 // The scope of a policy flags whether it is meant to be applied to the current
-// user or to the machine.
+// user or to the machine.  Note that this property pertains to the source of
+// the policy and has no direct correspondence to the distinction between User
+// Policy and Device Policy.
 enum PolicyScope {
   // USER policies apply to sessions of the current user.
   POLICY_SCOPE_USER,
@@ -37,12 +39,18 @@ enum PolicySource {
   // The policy was set by a cloud source.
   POLICY_SOURCE_CLOUD,
 
+  // The policy was set by an Active Directory source.
+  POLICY_SOURCE_ACTIVE_DIRECTORY,
+
   // Any non-platform policy was overridden because we are running in a
   // public session.
   POLICY_SOURCE_PUBLIC_SESSION_OVERRIDE,
 
   // The policy was set by a platform source.
   POLICY_SOURCE_PLATFORM,
+
+  // The policy was set by a cloud source that has higher priroity.
+  POLICY_SOURCE_PRIORITY_CLOUD,
 
   // Number of source types. Has to be the last element.
   POLICY_SOURCE_COUNT

@@ -9,14 +9,11 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/audio_source_diverter.h"
 #include "media/base/audio_converter.h"
 #include "media/base/audio_shifter.h"
-
-namespace base {
-class SingleThreadTaskRunner;
-}
 
 namespace media {
 
@@ -51,7 +48,7 @@ class MEDIA_EXPORT VirtualAudioSink : public AudioPushSink,
 
   const AudioParameters params_;
   VirtualAudioInputStream* const target_;
-  AudioShifter shifter_;
+  AudioShifter shifter_ GUARDED_BY(shifter_lock_);
   base::Lock shifter_lock_;
   AfterCloseCallback after_close_callback_;
 

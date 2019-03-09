@@ -14,7 +14,8 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
@@ -25,6 +26,7 @@
 #include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
 namespace {
@@ -36,28 +38,29 @@ const int kSilenceDurationDays = 100;
 // silent period starts.
 const int kMaxWarnings = 2;
 
-// Implementation of chrome::BrowserListObserver used to wait for a browser
+// Implementation of BrowserListObserver used to wait for a browser
 // window.
-class BrowserListObserver : public chrome::BrowserListObserver {
+class NetworkProfileBubbleBrowserListObserver : public BrowserListObserver {
  private:
-  ~BrowserListObserver() override;
+  ~NetworkProfileBubbleBrowserListObserver() override;
 
-  // Overridden from chrome::BrowserListObserver:
+  // Overridden from ::BrowserListObserver:
   void OnBrowserAdded(Browser* browser) override;
   void OnBrowserRemoved(Browser* browser) override;
   void OnBrowserSetLastActive(Browser* browser) override;
 };
 
-BrowserListObserver::~BrowserListObserver() {
+NetworkProfileBubbleBrowserListObserver::
+    ~NetworkProfileBubbleBrowserListObserver() {}
+
+void NetworkProfileBubbleBrowserListObserver::OnBrowserAdded(Browser* browser) {
 }
 
-void BrowserListObserver::OnBrowserAdded(Browser* browser) {
-}
+void NetworkProfileBubbleBrowserListObserver::OnBrowserRemoved(
+    Browser* browser) {}
 
-void BrowserListObserver::OnBrowserRemoved(Browser* browser) {
-}
-
-void BrowserListObserver::OnBrowserSetLastActive(Browser* browser) {
+void NetworkProfileBubbleBrowserListObserver::OnBrowserSetLastActive(
+    Browser* browser) {
   NetworkProfileBubble::ShowNotification(browser);
   // No need to observe anymore.
   BrowserList::RemoveObserver(this);
@@ -90,7 +93,6 @@ bool NetworkProfileBubble::ShouldCheckNetworkProfile(Profile* profile) {
 // static
 void NetworkProfileBubble::CheckNetworkProfile(
     const base::FilePath& profile_folder) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::FILE);
   // On Windows notify the users if their profiles are located on a network
   // share as we don't officially support this setup yet.
   // However we don't want to bother users on Cytrix setups as those have no
@@ -138,8 +140,8 @@ void NetworkProfileBubble::CheckNetworkProfile(
     }
     if (profile_on_network) {
       RecordUmaEvent(METRIC_PROFILE_ON_NETWORK);
-      content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-          base::Bind(&NotifyNetworkProfileDetected));
+      base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                               base::BindOnce(&NotifyNetworkProfileDetected));
     } else {
       RecordUmaEvent(METRIC_PROFILE_NOT_ON_NETWORK);
     }
@@ -177,5 +179,5 @@ void NetworkProfileBubble::NotifyNetworkProfileDetected() {
   if (browser)
     ShowNotification(browser);
   else
-    BrowserList::AddObserver(new BrowserListObserver());
+    BrowserList::AddObserver(new NetworkProfileBubbleBrowserListObserver());
 }

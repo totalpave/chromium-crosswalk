@@ -5,31 +5,29 @@
 #include "ui/gl/gl_image_shared_memory.h"
 
 #include "base/logging.h"
-#include "base/memory/shared_memory.h"
 #include "base/numerics/safe_math.h"
 #include "base/process/process_handle.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/trace_event/memory_allocator_dump.h"
-#include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/process_memory_dump.h"
 #include "ui/gfx/buffer_format_util.h"
 
 namespace gl {
 
-GLImageSharedMemory::GLImageSharedMemory(const gfx::Size& size,
-                                         unsigned internalformat)
-    : GLImageMemory(size, internalformat) {}
+GLImageSharedMemory::GLImageSharedMemory(const gfx::Size& size)
+    : GLImageMemory(size) {}
 
-GLImageSharedMemory::~GLImageSharedMemory() {
-  DCHECK(!shared_memory_);
-}
+GLImageSharedMemory::~GLImageSharedMemory() {}
 
 bool GLImageSharedMemory::Initialize(
-    const base::SharedMemoryHandle& handle,
+    const base::UnsafeSharedMemoryRegion& region,
     gfx::GenericSharedMemoryId shared_memory_id,
     gfx::BufferFormat format,
     size_t offset,
     size_t stride) {
+  if (!region.IsValid())
+    return false;
+
   if (NumberOfPlanesForBufferFormat(format) != 1)
     return false;
 
@@ -37,19 +35,6 @@ bool GLImageSharedMemory::Initialize(
   checked_size *= GetSize().height();
   if (!checked_size.IsValid())
     return false;
-
-  if (!base::SharedMemory::IsHandleValid(handle))
-    return false;
-
-  base::SharedMemory shared_memory(handle, true);
-
-  // Duplicate the handle.
-  base::SharedMemoryHandle duped_shared_memory_handle;
-  if (!shared_memory.ShareToProcess(base::GetCurrentProcessHandle(),
-                                    &duped_shared_memory_handle)) {
-    DVLOG(0) << "Failed to duplicate shared memory handle.";
-    return false;
-  }
 
   // Minimize the amount of adress space we use but make sure offset is a
   // multiple of page size as required by MapAt().
@@ -61,39 +46,30 @@ bool GLImageSharedMemory::Initialize(
   if (!checked_size.IsValid())
     return false;
 
-  std::unique_ptr<base::SharedMemory> duped_shared_memory(
-      new base::SharedMemory(duped_shared_memory_handle, true));
-  if (!duped_shared_memory->MapAt(static_cast<off_t>(map_offset),
-                                  checked_size.ValueOrDie())) {
+  auto shared_memory_mapping =
+      region.MapAt(static_cast<off_t>(map_offset), checked_size.ValueOrDie());
+  if (!shared_memory_mapping.IsValid()) {
     DVLOG(0) << "Failed to map shared memory.";
     return false;
   }
 
   if (!GLImageMemory::Initialize(
-          static_cast<uint8_t*>(duped_shared_memory->memory()) + memory_offset,
+          static_cast<uint8_t*>(shared_memory_mapping.memory()) + memory_offset,
           format, stride)) {
     return false;
   }
 
-  DCHECK(!shared_memory_);
-  shared_memory_ = std::move(duped_shared_memory);
+  DCHECK(!shared_memory_mapping_.IsValid());
+  shared_memory_mapping_ = std::move(shared_memory_mapping);
   shared_memory_id_ = shared_memory_id;
   return true;
-}
-
-void GLImageSharedMemory::Destroy(bool have_context) {
-  GLImageMemory::Destroy(have_context);
-  shared_memory_.reset();
 }
 
 void GLImageSharedMemory::OnMemoryDump(
     base::trace_event::ProcessMemoryDump* pmd,
     uint64_t process_tracing_id,
     const std::string& dump_name) {
-  size_t size_in_bytes = 0;
-
-  if (shared_memory_)
-    size_in_bytes = stride() * GetSize().height();
+  const size_t size_in_bytes = stride() * GetSize().height();
 
   // Dump under "/shared_memory", as the base class may also dump to
   // "/texture_memory".
@@ -103,10 +79,11 @@ void GLImageSharedMemory::OnMemoryDump(
                   base::trace_event::MemoryAllocatorDump::kUnitsBytes,
                   static_cast<uint64_t>(size_in_bytes));
 
-  auto guid = GetGenericSharedMemoryGUIDForTracing(process_tracing_id,
-                                                   shared_memory_id_);
-  pmd->CreateSharedGlobalAllocatorDump(guid);
-  pmd->AddOwnershipEdge(dump->guid(), guid);
+  auto shared_memory_guid = shared_memory_mapping_.guid();
+  if (!shared_memory_guid.is_empty()) {
+    pmd->CreateSharedMemoryOwnershipEdge(dump->guid(), shared_memory_guid,
+                                         0 /* importance */);
+  }
 }
 
 }  // namespace gl

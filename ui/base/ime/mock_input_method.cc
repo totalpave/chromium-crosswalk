@@ -4,6 +4,9 @@
 
 #include "ui/base/ime/mock_input_method.h"
 
+#include "base/bind_helpers.h"
+#include "base/callback.h"
+#include "build/build_config.h"
 #include "ui/base/ime/input_method_delegate.h"
 #include "ui/events/event.h"
 
@@ -14,8 +17,8 @@ MockInputMethod::MockInputMethod(internal::InputMethodDelegate* delegate)
 }
 
 MockInputMethod::~MockInputMethod() {
-  FOR_EACH_OBSERVER(InputMethodObserver, observer_list_,
-                    OnInputMethodDestroyed(this));
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnInputMethodDestroyed(this);
 }
 
 void MockInputMethod::SetDelegate(internal::InputMethodDelegate* delegate) {
@@ -40,38 +43,38 @@ TextInputClient* MockInputMethod::GetTextInputClient() const {
   return text_input_client_;
 }
 
-void MockInputMethod::DispatchKeyEvent(ui::KeyEvent* event) {
-  ignore_result(delegate_->DispatchKeyEventPostIME(event));
+ui::EventDispatchDetails MockInputMethod::DispatchKeyEvent(
+    ui::KeyEvent* event) {
+  return delegate_->DispatchKeyEventPostIME(event, base::NullCallback());
 }
 
 void MockInputMethod::OnFocus() {
-  FOR_EACH_OBSERVER(InputMethodObserver, observer_list_, OnFocus());
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnFocus();
 }
 
 void MockInputMethod::OnBlur() {
-  FOR_EACH_OBSERVER(InputMethodObserver, observer_list_, OnBlur());
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnBlur();
 }
 
-bool MockInputMethod::OnUntranslatedIMEMessage(const base::NativeEvent& event,
+#if defined(OS_WIN)
+bool MockInputMethod::OnUntranslatedIMEMessage(const MSG event,
                                                NativeEventResult* result) {
   if (result)
     *result = NativeEventResult();
   return false;
 }
+#endif
 
 void MockInputMethod::OnTextInputTypeChanged(const TextInputClient* client) {
-  FOR_EACH_OBSERVER(InputMethodObserver,
-                    observer_list_,
-                    OnTextInputTypeChanged(client));
-  FOR_EACH_OBSERVER(InputMethodObserver,
-                    observer_list_,
-                    OnTextInputStateChanged(client));
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnTextInputStateChanged(client);
 }
 
 void MockInputMethod::OnCaretBoundsChanged(const TextInputClient* client) {
-  FOR_EACH_OBSERVER(InputMethodObserver,
-                    observer_list_,
-                    OnCaretBoundsChanged(client));
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnCaretBoundsChanged(client);
 }
 
 void MockInputMethod::CancelComposition(const TextInputClient* client) {
@@ -80,8 +83,8 @@ void MockInputMethod::CancelComposition(const TextInputClient* client) {
 void MockInputMethod::OnInputLocaleChanged() {
 }
 
-std::string MockInputMethod::GetInputLocale() {
-  return "";
+bool MockInputMethod::IsInputLocaleCJK() const {
+  return false;
 }
 
 TextInputType MockInputMethod::GetTextInputType() const {
@@ -104,8 +107,13 @@ bool MockInputMethod::IsCandidatePopupOpen() const {
   return false;
 }
 
-void MockInputMethod::ShowImeIfNeeded() {
-  FOR_EACH_OBSERVER(InputMethodObserver, observer_list_, OnShowImeIfNeeded());
+bool MockInputMethod::GetClientShouldDoLearning() {
+  return false;
+}
+
+void MockInputMethod::ShowVirtualKeyboardIfEnabled() {
+  for (InputMethodObserver& observer : observer_list_)
+    observer.OnShowVirtualKeyboardIfEnabled();
 }
 
 void MockInputMethod::AddObserver(InputMethodObserver* observer) {
@@ -114,6 +122,11 @@ void MockInputMethod::AddObserver(InputMethodObserver* observer) {
 
 void MockInputMethod::RemoveObserver(InputMethodObserver* observer) {
   observer_list_.RemoveObserver(observer);
+}
+
+InputMethodKeyboardController*
+MockInputMethod::GetInputMethodKeyboardController() {
+  return &keyboard_controller_;
 }
 
 const std::vector<std::unique_ptr<ui::KeyEvent>>&

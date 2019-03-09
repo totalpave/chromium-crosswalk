@@ -16,7 +16,7 @@ namespace {
 aura::Window* GetFocusedWindow(aura::Window* context) {
   aura::client::FocusClient* focus_client =
       aura::client::GetFocusClient(context);
-  return focus_client ? focus_client->GetFocusedWindow() : NULL;
+  return focus_client ? focus_client->GetFocusedWindow() : nullptr;
 }
 
 }  // namespace
@@ -24,21 +24,19 @@ aura::Window* GetFocusedWindow(aura::Window* context) {
 ////////////////////////////////////////////////////////////////////////////////
 // BaseFocusRules, protected:
 
-BaseFocusRules::BaseFocusRules() {
-}
+BaseFocusRules::BaseFocusRules() = default;
 
-BaseFocusRules::~BaseFocusRules() {
-}
+BaseFocusRules::~BaseFocusRules() = default;
 
 bool BaseFocusRules::IsWindowConsideredVisibleForActivation(
-    aura::Window* window) const {
+    const aura::Window* window) const {
   return window->IsVisible();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // BaseFocusRules, FocusRules implementation:
 
-bool BaseFocusRules::IsToplevelWindow(aura::Window* window) const {
+bool BaseFocusRules::IsToplevelWindow(const aura::Window* window) const {
   // The window must in a valid hierarchy.
   if (!window->GetRootWindow())
     return false;
@@ -48,7 +46,7 @@ bool BaseFocusRules::IsToplevelWindow(aura::Window* window) const {
   return SupportsChildActivation(window->parent());
 }
 
-bool BaseFocusRules::CanActivateWindow(aura::Window* window) const {
+bool BaseFocusRules::CanActivateWindow(const aura::Window* window) const {
   // It is possible to activate a NULL window, it is equivalent to clearing
   // activation.
   if (!window)
@@ -63,8 +61,8 @@ bool BaseFocusRules::CanActivateWindow(aura::Window* window) const {
     return false;
 
   // The window's activation delegate must allow this window to be activated.
-  if (aura::client::GetActivationDelegate(window) &&
-      !aura::client::GetActivationDelegate(window)->ShouldActivate()) {
+  if (GetActivationDelegate(window) &&
+      !GetActivationDelegate(window)->ShouldActivate()) {
     return false;
   }
 
@@ -78,22 +76,24 @@ bool BaseFocusRules::CanActivateWindow(aura::Window* window) const {
   return !GetModalTransient(window);
 }
 
-bool BaseFocusRules::CanFocusWindow(aura::Window* window) const {
+bool BaseFocusRules::CanFocusWindow(const aura::Window* window,
+                                    const ui::Event* event) const {
   // It is possible to focus a NULL window, it is equivalent to clearing focus.
   if (!window)
     return true;
 
   // The focused window is always inside the active window, so windows that
   // aren't activatable can't contain the focused window.
-  aura::Window* activatable = GetActivatableWindow(window);
+  const aura::Window* activatable = GetActivatableWindow(window);
   if (!activatable || !activatable->Contains(window))
     return false;
   return window->CanFocus();
 }
 
-aura::Window* BaseFocusRules::GetToplevelWindow(aura::Window* window) const {
-  aura::Window* parent = window->parent();
-  aura::Window* child = window;
+const aura::Window* BaseFocusRules::GetToplevelWindow(
+    const aura::Window* window) const {
+  const aura::Window* parent = window->parent();
+  const aura::Window* child = window;
   while (parent) {
     if (IsToplevelWindow(child))
       return child;
@@ -101,43 +101,16 @@ aura::Window* BaseFocusRules::GetToplevelWindow(aura::Window* window) const {
     parent = parent->parent();
     child = child->parent();
   }
-  return NULL;
+  return nullptr;
 }
 
 aura::Window* BaseFocusRules::GetActivatableWindow(aura::Window* window) const {
-  aura::Window* parent = window->parent();
-  aura::Window* child = window;
-  while (parent) {
-    if (CanActivateWindow(child))
-      return child;
-
-    // CanActivateWindow() above will return false if |child| is blocked by a
-    // modal transient. In this case the modal is or contains the activatable
-    // window. We recurse because the modal may itself be blocked by a modal
-    // transient.
-    aura::Window* modal_transient = GetModalTransient(child);
-    if (modal_transient)
-      return GetActivatableWindow(modal_transient);
-
-    if (wm::GetTransientParent(child)) {
-      // To avoid infinite recursion, if |child| has a transient parent
-      // whose own modal transient is |child| itself, just return |child|.
-      aura::Window* parent_modal_transient =
-          GetModalTransient(wm::GetTransientParent(child));
-      if (parent_modal_transient == child)
-        return child;
-
-      return GetActivatableWindow(wm::GetTransientParent(child));
-    }
-
-    parent = parent->parent();
-    child = child->parent();
-  }
-  return NULL;
+  return const_cast<aura::Window*>(
+      GetActivatableWindow(const_cast<const aura::Window*>(window)));
 }
 
 aura::Window* BaseFocusRules::GetFocusableWindow(aura::Window* window) const {
-  if (CanFocusWindow(window))
+  if (CanFocusWindow(window, nullptr))
     return window;
 
   // |window| may be in a hierarchy that is non-activatable, in which case we
@@ -150,7 +123,7 @@ aura::Window* BaseFocusRules::GetFocusableWindow(aura::Window* window) const {
     if (toplevel)
       activatable = GetNextActivatableWindow(toplevel);
     if (!activatable)
-      return NULL;
+      return nullptr;
   }
 
   if (!activatable->Contains(window)) {
@@ -161,7 +134,7 @@ aura::Window* BaseFocusRules::GetFocusableWindow(aura::Window* window) const {
     return activatable->Contains(focused) ? focused : activatable;
   }
 
-  while (window && !CanFocusWindow(window))
+  while (window && !CanFocusWindow(window, nullptr))
     window = window->parent();
   return window;
 }
@@ -172,23 +145,54 @@ aura::Window* BaseFocusRules::GetNextActivatableWindow(
 
   // Can be called from the RootWindow's destruction, which has a NULL parent.
   if (!ignore->parent())
-    return NULL;
+    return nullptr;
 
   // In the basic scenarios handled by BasicFocusRules, the pool of activatable
   // windows is limited to the |ignore|'s siblings.
   const aura::Window::Windows& siblings = ignore->parent()->children();
   DCHECK(!siblings.empty());
 
-  for (aura::Window::Windows::const_reverse_iterator rit = siblings.rbegin();
-       rit != siblings.rend();
-       ++rit) {
+  for (auto rit = siblings.rbegin(); rit != siblings.rend(); ++rit) {
     aura::Window* cur = *rit;
     if (cur == ignore)
       continue;
     if (CanActivateWindow(cur))
       return cur;
   }
-  return NULL;
+  return nullptr;
+}
+
+const aura::Window* BaseFocusRules::GetActivatableWindow(
+    const aura::Window* window) const {
+  const aura::Window* parent = window->parent();
+  const aura::Window* child = window;
+  while (parent) {
+    if (CanActivateWindow(child))
+      return child;
+
+    // CanActivateWindow() above will return false if |child| is blocked by a
+    // modal transient. In this case the modal is or contains the activatable
+    // window. We recurse because the modal may itself be blocked by a modal
+    // transient.
+    const aura::Window* modal_transient = GetModalTransient(child);
+    if (modal_transient)
+      return GetActivatableWindow(modal_transient);
+
+    if (wm::GetTransientParent(child)) {
+      // To avoid infinite recursion, if |child| has a transient parent
+      // whose own modal transient is |child| itself, just return |child|.
+      const aura::Window* parent_modal_transient =
+          GetModalTransient(wm::GetTransientParent(child));
+      if (parent_modal_transient == child)
+        return child;
+
+      return GetActivatableWindow(wm::GetTransientParent(child));
+    }
+
+    parent = parent->parent();
+    child = child->parent();
+  }
+  return nullptr;
 }
 
 }  // namespace wm

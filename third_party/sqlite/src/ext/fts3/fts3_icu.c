@@ -60,7 +60,7 @@ static int icuCreate(
   if( argc>0 ){
     n = strlen(argv[0])+1;
   }
-  p = (IcuTokenizer *)sqlite3_malloc(sizeof(IcuTokenizer)+n);
+  p = (IcuTokenizer *)sqlite3_malloc64(sizeof(IcuTokenizer)+n);
   if( !p ){
     return SQLITE_NOMEM;
   }
@@ -88,7 +88,7 @@ static int icuDestroy(sqlite3_tokenizer *pTokenizer){
 /*
 ** Prepare to begin tokenizing a particular string.  The input
 ** string to be tokenized is pInput[0..nBytes-1].  A cursor
-** used to incrementally tokenize this string is returned in 
+** used to incrementally tokenize this string is returned in
 ** *ppCursor.
 */
 static int icuOpen(
@@ -117,7 +117,7 @@ static int icuOpen(
     nInput = strlen(zInput);
   }
   nChar = nInput+1;
-  pCsr = (IcuCursor *)sqlite3_malloc(
+  pCsr = (IcuCursor *)sqlite3_malloc64(
       sizeof(IcuCursor) +                /* IcuCursor */
       ((nChar+3)&~3) * sizeof(UChar) +   /* IcuCursor.aChar[] */
       (nChar+1) * sizeof(int)            /* IcuCursor.aOffset[] */
@@ -130,7 +130,7 @@ static int icuOpen(
   pCsr->aOffset = (int *)&pCsr->aChar[(nChar+3)&~3];
 
   pCsr->aOffset[iOut] = iInput;
-  U8_NEXT(zInput, iInput, nInput, c); 
+  U8_NEXT(zInput, iInput, nInput, c);
   while( c>0 ){
     int isError = 0;
     c = u_foldCase(c, opt);

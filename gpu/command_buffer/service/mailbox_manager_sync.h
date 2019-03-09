@@ -15,35 +15,30 @@
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/service/mailbox_manager.h"
 #include "gpu/command_buffer/service/texture_definition.h"
-#include "gpu/gpu_export.h"
+#include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/gpu_gles2_export.h"
 
 namespace gpu {
 namespace gles2 {
 
-class Texture;
-class TextureManager;
-
 // Manages resources scoped beyond the context or context group level
 // and across threads and driver level share groups by synchronizing
 // texture state.
-class GPU_EXPORT MailboxManagerSync : public MailboxManager {
+class GPU_GLES2_EXPORT MailboxManagerSync : public MailboxManager {
  public:
   MailboxManagerSync();
+  ~MailboxManagerSync() override;
 
   // MailboxManager implementation:
   Texture* ConsumeTexture(const Mailbox& mailbox) override;
-  void ProduceTexture(const Mailbox& mailbox, Texture* texture) override;
+  void ProduceTexture(const Mailbox& mailbox, TextureBase* texture) override;
   bool UsesSync() override;
   void PushTextureUpdates(const SyncToken& token) override;
   void PullTextureUpdates(const SyncToken& token) override;
-  void TextureDeleted(Texture* texture) override;
+  void TextureDeleted(TextureBase* texture) override;
 
  private:
-  friend class base::RefCounted<MailboxManager>;
-
   static bool SkipTextureWorkarounds(const Texture* texture);
-
-  ~MailboxManagerSync() override;
 
   class TextureGroup : public base::RefCounted<TextureGroup> {
    public:
@@ -74,7 +69,8 @@ class GPU_EXPORT MailboxManagerSync : public MailboxManager {
 
     typedef std::map<Mailbox, scoped_refptr<TextureGroup>>
         MailboxToGroupMap;
-    static base::LazyInstance<MailboxToGroupMap> mailbox_to_group_;
+    static base::LazyInstance<MailboxToGroupMap>::DestructorAtExit
+        mailbox_to_group_;
   };
 
   struct TextureGroupRef {
@@ -84,7 +80,7 @@ class GPU_EXPORT MailboxManagerSync : public MailboxManager {
     unsigned version;
     scoped_refptr<TextureGroup> group;
   };
-  static void UpdateDefinitionLocked(Texture* texture,
+  static void UpdateDefinitionLocked(TextureBase* texture,
                                      TextureGroupRef* group_ref);
 
   typedef std::map<Texture*, TextureGroupRef> TextureToGroupMap;
@@ -97,4 +93,3 @@ class GPU_EXPORT MailboxManagerSync : public MailboxManager {
 }  // namespace gpu
 
 #endif  // GPU_COMMAND_BUFFER_SERVICE_MAILBOX_MANAGER_SYNC_H_
-

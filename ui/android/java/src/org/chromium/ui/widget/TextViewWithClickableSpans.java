@@ -7,6 +7,7 @@ package org.chromium.ui.widget;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.os.Bundle;
+import android.support.annotation.CallSuper;
 import android.text.Layout;
 import android.text.SpannableString;
 import android.text.style.ClickableSpan;
@@ -18,7 +19,6 @@ import android.view.View;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.PopupMenu;
-import android.widget.TextView;
 
 import org.chromium.base.VisibleForTesting;
 
@@ -30,8 +30,10 @@ import org.chromium.base.VisibleForTesting;
  * ClickableSpan, we activate it. If there's more than one, we pop up a
  * PopupMenu to disambiguate.
  */
-public class TextViewWithClickableSpans extends TextView {
+public class TextViewWithClickableSpans
+        extends TextViewWithLeading implements View.OnLongClickListener {
     private AccessibilityManager mAccessibilityManager;
+    private PopupMenu mDisambiguationMenu;
 
     public TextViewWithClickableSpans(Context context) {
         super(context);
@@ -43,9 +45,19 @@ public class TextViewWithClickableSpans extends TextView {
         init();
     }
 
-    public TextViewWithClickableSpans(Context context, AttributeSet attrs, int defStyleAttr) {
-        super(context, attrs, defStyleAttr);
-        init();
+    @CallSuper
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        ensureValidLongClickListenerState();
+    }
+
+    @CallSuper
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (visibility == View.GONE) return;
+        ensureValidLongClickListenerState();
     }
 
     private void init() {
@@ -55,16 +67,31 @@ public class TextViewWithClickableSpans extends TextView {
         setSaveEnabled(false);
         mAccessibilityManager = (AccessibilityManager)
                 getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
-        setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                if (!mAccessibilityManager.isTouchExplorationEnabled()) {
-                    return false;
-                }
-                openDisambiguationMenu();
-                return true;
-            }
-        });
+        ensureValidLongClickListenerState();
+    }
+
+    @Override
+    public boolean onLongClick(View v) {
+        assert v == this;
+        if (!mAccessibilityManager.isTouchExplorationEnabled()) {
+            assert false : "Long click listener should have been removed if not in"
+                           + " accessibility mode.";
+            return false;
+        }
+        openDisambiguationMenu();
+        return true;
+    }
+
+    @Override
+    public final void setOnLongClickListener(View.OnLongClickListener listener) {
+        // Ensure that no one changes the long click listener to anything but this view.
+        assert listener == this || listener == null;
+        super.setOnLongClickListener(listener);
+    }
+
+    private void ensureValidLongClickListenerState() {
+        if (mAccessibilityManager == null) return;
+        setOnLongClickListener(mAccessibilityManager.isTouchExplorationEnabled() ? this : null);
     }
 
     @Override
@@ -93,7 +120,14 @@ public class TextViewWithClickableSpans extends TextView {
         return superResult;
     }
 
-    private boolean touchIntersectsAnyClickableSpans(MotionEvent event) {
+    /**
+     * Determines whether the motion event intersects with any of the ClickableSpan(s) within the
+     * text.
+     *
+     * @param event The motion event to compare the spans against.
+     * @return Whether the motion event intersected any clickable spans.
+     */
+    protected boolean touchIntersectsAnyClickableSpans(MotionEvent event) {
         // This logic is borrowed from android.text.method.LinkMovementMethod.
         //
         // ClickableSpan doesn't stop propagation of the event in its click handler,
@@ -147,11 +181,13 @@ public class TextViewWithClickableSpans extends TextView {
 
     private void openDisambiguationMenu() {
         ClickableSpan[] clickableSpans = getClickableSpans();
-        if (clickableSpans == null || clickableSpans.length == 0) return;
+        if (clickableSpans == null || clickableSpans.length == 0 || mDisambiguationMenu != null) {
+            return;
+        }
 
         SpannableString spannable = (SpannableString) getText();
-        PopupMenu popup = new PopupMenu(getContext(), this);
-        Menu menu = popup.getMenu();
+        mDisambiguationMenu = new PopupMenu(getContext(), this);
+        Menu menu = mDisambiguationMenu.getMenu();
         for (final ClickableSpan clickableSpan : clickableSpans) {
             CharSequence itemText = spannable.subSequence(
                     spannable.getSpanStart(clickableSpan),
@@ -166,6 +202,12 @@ public class TextViewWithClickableSpans extends TextView {
             });
         }
 
-        popup.show();
+        mDisambiguationMenu.setOnDismissListener(new PopupMenu.OnDismissListener() {
+            @Override
+            public void onDismiss(PopupMenu menu) {
+                mDisambiguationMenu = null;
+            }
+        });
+        mDisambiguationMenu.show();
     }
 }

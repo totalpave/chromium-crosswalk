@@ -4,6 +4,8 @@
 
 #include "chrome/browser/chromeos/login/users/mock_user_manager.h"
 
+#include <utility>
+
 #include "base/task_runner.h"
 #include "chrome/browser/chromeos/login/users/fake_supervised_user_manager.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
@@ -12,13 +14,13 @@ namespace {
 
 class FakeTaskRunner : public base::TaskRunner {
  public:
-  bool PostDelayedTask(const tracked_objects::Location& from_here,
-                       const base::Closure& task,
+  bool PostDelayedTask(const base::Location& from_here,
+                       base::OnceClosure task,
                        base::TimeDelta delay) override {
-    task.Run();
+    std::move(task).Run();
     return true;
   }
-  bool RunsTasksOnCurrentThread() const override { return true; }
+  bool RunsTasksInCurrentSequence() const override { return true; }
 
  protected:
   ~FakeTaskRunner() override {}
@@ -44,50 +46,44 @@ const user_manager::UserList& MockUserManager::GetUsers() const {
   return user_list_;
 }
 
-const user_manager::User* MockUserManager::GetLoggedInUser() const {
-  return user_list_.empty() ? NULL : user_list_.front();
-}
-
-user_manager::User* MockUserManager::GetLoggedInUser() {
-  return user_list_.empty() ? NULL : user_list_.front();
-}
-
 user_manager::UserList MockUserManager::GetUnlockUsers() const {
   return user_list_;
 }
 
 const AccountId& MockUserManager::GetOwnerAccountId() const {
-  temporary_owner_account_id_ = GetLoggedInUser()->GetAccountId();
-  return temporary_owner_account_id_;
+  return GetActiveUser()->GetAccountId();
 }
 
 const user_manager::User* MockUserManager::GetActiveUser() const {
-  return GetLoggedInUser();
+  return user_list_.empty() ? nullptr : user_list_.front();
 }
 
 user_manager::User* MockUserManager::GetActiveUser() {
-  return GetLoggedInUser();
+  return user_list_.empty() ? nullptr : user_list_.front();
 }
 
 const user_manager::User* MockUserManager::GetPrimaryUser() const {
-  return GetLoggedInUser();
-}
-
-BootstrapManager* MockUserManager::GetBootstrapManager() {
-  return NULL;
+  return GetActiveUser();
 }
 
 MultiProfileUserController* MockUserManager::GetMultiProfileUserController() {
-  return NULL;
+  return nullptr;
 }
 
 UserImageManager* MockUserManager::GetUserImageManager(
     const AccountId& account_id) {
-  return NULL;
+  return nullptr;
 }
 
 SupervisedUserManager* MockUserManager::GetSupervisedUserManager() {
   return supervised_user_manager_.get();
+}
+
+void MockUserManager::ScheduleResolveLocale(
+    const std::string& locale,
+    base::OnceClosure on_resolved_callback,
+    std::string* out_resolved_locale) const {
+  DoScheduleResolveLocale(locale, &on_resolved_callback, out_resolved_locale);
 }
 
 // Creates a new User instance.
@@ -123,12 +119,16 @@ user_manager::User* MockUserManager::CreateKioskAppUser(
 }
 
 void MockUserManager::AddUser(const AccountId& account_id) {
-  AddUserWithAffiliation(account_id, false);
+  AddUserWithAffiliationAndType(account_id, false,
+                                user_manager::USER_TYPE_REGULAR);
 }
 
-void MockUserManager::AddUserWithAffiliation(const AccountId& account_id,
-                                             bool is_affiliated) {
-  user_manager::User* user = user_manager::User::CreateRegularUser(account_id);
+void MockUserManager::AddUserWithAffiliationAndType(
+    const AccountId& account_id,
+    bool is_affiliated,
+    user_manager::UserType user_type) {
+  user_manager::User* user =
+      user_manager::User::CreateRegularUser(account_id, user_type);
   user->SetAffiliation(is_affiliated);
   user_list_.push_back(user);
   ProfileHelper::Get()->SetProfileToUserMappingForTesting(user);
@@ -143,8 +143,8 @@ void MockUserManager::ClearUserList() {
 }
 
 bool MockUserManager::ShouldReportUser(const std::string& user_id) const {
-  for (const auto& user : user_list_) {
-    if (user->email() == user_id)
+  for (auto* user : user_list_) {
+    if (user->GetAccountId().GetUserEmail() == user_id)
       return user->IsAffiliated();
   }
   NOTREACHED();

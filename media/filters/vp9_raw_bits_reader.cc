@@ -13,7 +13,7 @@ namespace media {
 
 Vp9RawBitsReader::Vp9RawBitsReader() : valid_(true) {}
 
-Vp9RawBitsReader::~Vp9RawBitsReader() {}
+Vp9RawBitsReader::~Vp9RawBitsReader() = default;
 
 void Vp9RawBitsReader::Initialize(const uint8_t* data, size_t size) {
   DCHECK(data);
@@ -50,6 +50,12 @@ int Vp9RawBitsReader::ReadSignedLiteral(int bits) {
 size_t Vp9RawBitsReader::GetBytesRead() const {
   DCHECK(reader_);
   return (reader_->bits_read() + 7) / 8;
+}
+
+bool Vp9RawBitsReader::ConsumeTrailingBits() {
+  DCHECK(reader_);
+  int bits_left = GetBytesRead() * 8 - reader_->bits_read();
+  return ReadLiteral(bits_left) == 0;
 }
 
 }  // namespace media

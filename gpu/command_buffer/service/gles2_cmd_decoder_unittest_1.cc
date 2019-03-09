@@ -4,10 +4,10 @@
 
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
 
+#include "base/command_line.h"
 #include "gpu/command_buffer/common/gles2_cmd_format.h"
 #include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder_unittest_base.h"
-#include "gpu/command_buffer/service/cmd_buffer_engine.h"
 #include "gpu/command_buffer/service/context_group.h"
 #include "gpu/command_buffer/service/program_manager.h"
 #include "gpu/command_buffer/service/test_helper.h"
@@ -22,7 +22,7 @@ using ::testing::MatcherCast;
 using ::testing::Pointee;
 using ::testing::Return;
 using ::testing::SetArrayArgument;
-using ::testing::SetArgumentPointee;
+using ::testing::SetArgPointee;
 using ::testing::StrEq;
 
 namespace gpu {
@@ -30,25 +30,38 @@ namespace gles2 {
 
 class GLES2DecoderTest1 : public GLES2DecoderTestBase {
  public:
-  GLES2DecoderTest1() { }
+  GLES2DecoderTest1() = default;
 };
 
-INSTANTIATE_TEST_CASE_P(Service, GLES2DecoderTest1, ::testing::Bool());
+class GLES3DecoderTest1 : public GLES2DecoderTest1 {
+ public:
+  GLES3DecoderTest1() { shader_language_version_ = 300; }
+ protected:
+  void SetUp() override {
+    InitState init;
+    init.gl_version = "OpenGL ES 3.0";
+    init.bind_generates_resource = true;
+    init.context_type = CONTEXT_TYPE_OPENGLES3;
+    InitDecoder(init);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(Service, GLES2DecoderTest1, ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(Service, GLES3DecoderTest1, ::testing::Bool());
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::GenerateMipmap, 0>(
     bool valid) {
   DoBindTexture(GL_TEXTURE_2D, client_texture_id_, kServiceTextureId);
-  DoTexImage2D(
-      GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-      kSharedMemoryId, kSharedMemoryOffset);
+  DoTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+               shared_memory_id_, kSharedMemoryOffset);
   if (valid) {
     EXPECT_CALL(*gl_, GetError())
         .WillOnce(Return(GL_NO_ERROR))
         .WillOnce(Return(GL_NO_ERROR))
         .RetiresOnSaturation();
   }
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::CheckFramebufferStatus, 0>(
@@ -63,14 +76,14 @@ void GLES2DecoderTestBase::SpecializedSetup<cmds::CheckFramebufferStatus, 0>(
   DoFramebufferRenderbuffer(
       GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
       client_renderbuffer_id_, kServiceRenderbufferId, GL_NO_ERROR);
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::Clear, 0>(bool valid) {
   if (valid) {
     SetupExpectationsForApplyingDefaultDirtyState();
   }
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::ColorMask, 0>(
@@ -79,7 +92,7 @@ void GLES2DecoderTestBase::SpecializedSetup<cmds::ColorMask, 0>(
   // will be considered RGB.
   DoBindFramebuffer(GL_FRAMEBUFFER, client_framebuffer_id_,
                     kServiceFramebufferId);
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::CopyTexImage2D, 0>(
@@ -90,18 +103,17 @@ void GLES2DecoderTestBase::SpecializedSetup<cmds::CopyTexImage2D, 0>(
         .WillOnce(Return(GL_NO_ERROR))
         .RetiresOnSaturation();
   }
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::CopyTexSubImage2D, 0>(
     bool valid) {
   if (valid) {
     DoBindTexture(GL_TEXTURE_2D, client_texture_id_, kServiceTextureId);
-    DoTexImage2D(
-        GL_TEXTURE_2D, 2, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-        kSharedMemoryId, kSharedMemoryOffset);
+    DoTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA, 16, 16, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, shared_memory_id_, kSharedMemoryOffset);
   }
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::DetachShader, 0>(bool valid) {
@@ -114,20 +126,22 @@ void GLES2DecoderTestBase::SpecializedSetup<cmds::DetachShader, 0>(bool valid) {
     attach_cmd.Init(client_program_id_, client_shader_id_);
     EXPECT_EQ(error::kNoError, ExecuteCmd(attach_cmd));
   }
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::FramebufferRenderbuffer, 0>(
     bool valid) {
   DoBindFramebuffer(GL_FRAMEBUFFER, client_framebuffer_id_,
                     kServiceFramebufferId);
+  DoBindRenderbuffer(GL_RENDERBUFFER, client_renderbuffer_id_,
+                     kServiceRenderbufferId);
   if (valid) {
     EXPECT_CALL(*gl_, GetError())
         .WillOnce(Return(GL_NO_ERROR))
         .WillOnce(Return(GL_NO_ERROR))
         .RetiresOnSaturation();
   }
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::FramebufferTextureLayer, 0>(
@@ -140,26 +154,26 @@ void GLES2DecoderTestBase::SpecializedSetup<cmds::FramebufferTextureLayer, 0>(
         .WillOnce(Return(GL_NO_ERROR))
         .RetiresOnSaturation();
   }
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<
     cmds::GetBufferParameteri64v, 0>(bool /* valid */) {
   DoBindBuffer(GL_ARRAY_BUFFER, client_buffer_id_, kServiceBufferId);
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<
     cmds::GetBufferParameteriv, 0>(bool /* valid */) {
   DoBindBuffer(GL_ARRAY_BUFFER, client_buffer_id_, kServiceBufferId);
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<
     cmds::GetFramebufferAttachmentParameteriv, 0>(bool /* valid */) {
   DoBindFramebuffer(GL_FRAMEBUFFER, client_framebuffer_id_,
                     kServiceFramebufferId);
-};
+}
 
 template <>
 void GLES2DecoderTestBase::SpecializedSetup<cmds::GetProgramiv, 0>(

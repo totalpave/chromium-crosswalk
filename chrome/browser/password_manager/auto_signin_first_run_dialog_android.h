@@ -10,7 +10,6 @@
 #include "base/android/jni_android.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "chrome/browser/ui/passwords/manage_passwords_state.h"
 #include "content/public/browser/web_contents_observer.h"
 
@@ -42,7 +41,7 @@ class AutoSigninFirstRunDialogAndroid : public content::WebContentsObserver {
 
   // content::WebContentsObserver overrides:
   void WebContentsDestroyed() override;
-  void WasHidden() override;
+  void OnVisibilityChanged(content::Visibility visibility) override;
 
  private:
   ~AutoSigninFirstRunDialogAndroid() override;
@@ -53,8 +52,5 @@ class AutoSigninFirstRunDialogAndroid : public content::WebContentsObserver {
 
   DISALLOW_COPY_AND_ASSIGN(AutoSigninFirstRunDialogAndroid);
 };
-
-// Native JNI methods
-bool RegisterAutoSigninFirstRunDialogAndroid(JNIEnv* env);
 
 #endif  // CHROME_BROWSER_PASSWORD_MANAGER_AUTO_SIGNIN_FIRST_RUN_DIALOG_ANDROID_H_

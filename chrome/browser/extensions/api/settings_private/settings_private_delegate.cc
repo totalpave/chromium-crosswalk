@@ -21,8 +21,6 @@
 
 namespace extensions {
 
-namespace settings_private = api::settings_private;
-
 SettingsPrivateDelegate::SettingsPrivateDelegate(Profile* profile)
     : profile_(profile) {
   prefs_util_.reset(new PrefsUtil(profile));
@@ -36,7 +34,7 @@ std::unique_ptr<base::Value> SettingsPrivateDelegate::GetPref(
   std::unique_ptr<api::settings_private::PrefObject> pref =
       prefs_util_->GetPref(name);
   if (!pref)
-    return base::Value::CreateNullValue();
+    return std::make_unique<base::Value>();
   return pref->ToValue();
 }
 
@@ -46,30 +44,31 @@ std::unique_ptr<base::Value> SettingsPrivateDelegate::GetAllPrefs() {
   const TypedPrefMap& keys = prefs_util_->GetWhitelistedKeys();
   for (const auto& it : keys) {
     std::unique_ptr<base::Value> pref = GetPref(it.first);
-    if (!pref->IsType(base::Value::TYPE_NULL))
+    if (!pref->is_none())
       prefs->Append(std::move(pref));
   }
 
   return std::move(prefs);
 }
 
-PrefsUtil::SetPrefResult SettingsPrivateDelegate::SetPref(
-    const std::string& pref_name, const base::Value* value) {
+settings_private::SetPrefResult SettingsPrivateDelegate::SetPref(
+    const std::string& pref_name,
+    const base::Value* value) {
   return prefs_util_->SetPref(pref_name, value);
 }
 
-std::unique_ptr<base::Value> SettingsPrivateDelegate::GetDefaultZoomPercent() {
+std::unique_ptr<base::Value> SettingsPrivateDelegate::GetDefaultZoom() {
   double zoom = content::ZoomLevelToZoomFactor(
-      profile_->GetZoomLevelPrefs()->GetDefaultZoomLevelPref()) * 100;
-  std::unique_ptr<base::Value> value(new base::FundamentalValue(zoom));
+      profile_->GetZoomLevelPrefs()->GetDefaultZoomLevelPref());
+  std::unique_ptr<base::Value> value(new base::Value(zoom));
   return value;
 }
 
-PrefsUtil::SetPrefResult SettingsPrivateDelegate::SetDefaultZoomPercent(
-    int percent) {
-  double zoom_factor = content::ZoomFactorToZoomLevel(percent * 0.01);
+settings_private::SetPrefResult SettingsPrivateDelegate::SetDefaultZoom(
+    double zoom) {
+  double zoom_factor = content::ZoomFactorToZoomLevel(zoom);
   profile_->GetZoomLevelPrefs()->SetDefaultZoomLevelPref(zoom_factor);
-  return PrefsUtil::SetPrefResult::SUCCESS;
+  return settings_private::SetPrefResult::SUCCESS;
 }
 
 }  // namespace extensions

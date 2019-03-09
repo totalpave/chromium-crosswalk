@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <dbghelp.h>
+#include "minidump/minidump_crashpad_info_writer.h"
+
 #include <windows.h>
+#include <dbghelp.h>
 
 #include <map>
 #include <string>
 #include <utility>
 
-#include "base/memory/ptr_util.h"
 #include "gtest/gtest.h"
-#include "minidump/minidump_crashpad_info_writer.h"
 #include "minidump/minidump_extensions.h"
 #include "minidump/minidump_file_writer.h"
 #include "minidump/minidump_module_crashpad_info_writer.h"
@@ -48,7 +48,7 @@ void GetCrashpadInfoStream(
   ASSERT_NO_FATAL_FAILURE(VerifyMinidumpHeader(header, 1, 0));
   ASSERT_TRUE(directory);
 
-  ASSERT_EQ(kMinidumpStreamTypeCrashpadInfo, directory[0].StreamType);
+  ASSERT_EQ(directory[0].StreamType, kMinidumpStreamTypeCrashpadInfo);
 
   *crashpad_info = MinidumpWritableAtLocationDescriptor<MinidumpCrashpadInfo>(
       file_contents, directory[0].Location);
@@ -65,11 +65,10 @@ void GetCrashpadInfoStream(
 
 TEST(MinidumpCrashpadInfoWriter, Empty) {
   MinidumpFileWriter minidump_file_writer;
-  auto crashpad_info_writer =
-      base::WrapUnique(new MinidumpCrashpadInfoWriter());
+  auto crashpad_info_writer = std::make_unique<MinidumpCrashpadInfoWriter>();
   EXPECT_FALSE(crashpad_info_writer->IsUseful());
 
-  minidump_file_writer.AddStream(std::move(crashpad_info_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(crashpad_info_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -81,17 +80,16 @@ TEST(MinidumpCrashpadInfoWriter, Empty) {
   ASSERT_NO_FATAL_FAILURE(GetCrashpadInfoStream(
       string_file.string(), &crashpad_info, &simple_annotations, &module_list));
 
-  EXPECT_EQ(MinidumpCrashpadInfo::kVersion, crashpad_info->version);
-  EXPECT_EQ(UUID(), crashpad_info->report_id);
-  EXPECT_EQ(UUID(), crashpad_info->client_id);
+  EXPECT_EQ(crashpad_info->version, MinidumpCrashpadInfo::kVersion);
+  EXPECT_EQ(crashpad_info->report_id, UUID());
+  EXPECT_EQ(crashpad_info->client_id, UUID());
   EXPECT_FALSE(simple_annotations);
   EXPECT_FALSE(module_list);
 }
 
 TEST(MinidumpCrashpadInfoWriter, ReportAndClientID) {
   MinidumpFileWriter minidump_file_writer;
-  auto crashpad_info_writer =
-      base::WrapUnique(new MinidumpCrashpadInfoWriter());
+  auto crashpad_info_writer = std::make_unique<MinidumpCrashpadInfoWriter>();
 
   UUID report_id;
   ASSERT_TRUE(
@@ -105,7 +103,7 @@ TEST(MinidumpCrashpadInfoWriter, ReportAndClientID) {
 
   EXPECT_TRUE(crashpad_info_writer->IsUseful());
 
-  minidump_file_writer.AddStream(std::move(crashpad_info_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(crashpad_info_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -117,28 +115,27 @@ TEST(MinidumpCrashpadInfoWriter, ReportAndClientID) {
   ASSERT_NO_FATAL_FAILURE(GetCrashpadInfoStream(
       string_file.string(), &crashpad_info, &simple_annotations, &module_list));
 
-  EXPECT_EQ(MinidumpCrashpadInfo::kVersion, crashpad_info->version);
-  EXPECT_EQ(report_id, crashpad_info->report_id);
-  EXPECT_EQ(client_id, crashpad_info->client_id);
+  EXPECT_EQ(crashpad_info->version, MinidumpCrashpadInfo::kVersion);
+  EXPECT_EQ(crashpad_info->report_id, report_id);
+  EXPECT_EQ(crashpad_info->client_id, client_id);
   EXPECT_FALSE(simple_annotations);
   EXPECT_FALSE(module_list);
 }
 
 TEST(MinidumpCrashpadInfoWriter, SimpleAnnotations) {
   MinidumpFileWriter minidump_file_writer;
-  auto crashpad_info_writer =
-      base::WrapUnique(new MinidumpCrashpadInfoWriter());
+  auto crashpad_info_writer = std::make_unique<MinidumpCrashpadInfoWriter>();
 
-  const char kKey[] =
+  static constexpr char kKey[] =
       "a thing that provides a means of gaining access to or understanding "
       "something";
-  const char kValue[] =
+  static constexpr char kValue[] =
       "the numerical amount denoted by an algebraic term; a magnitude, "
       "quantity, or number";
   auto simple_string_dictionary_writer =
-      base::WrapUnique(new MinidumpSimpleStringDictionaryWriter());
+      std::make_unique<MinidumpSimpleStringDictionaryWriter>();
   auto simple_string_dictionary_entry_writer =
-      base::WrapUnique(new MinidumpSimpleStringDictionaryEntryWriter());
+      std::make_unique<MinidumpSimpleStringDictionaryEntryWriter>();
   simple_string_dictionary_entry_writer->SetKeyValue(kKey, kValue);
   simple_string_dictionary_writer->AddEntry(
       std::move(simple_string_dictionary_entry_writer));
@@ -147,7 +144,7 @@ TEST(MinidumpCrashpadInfoWriter, SimpleAnnotations) {
 
   EXPECT_TRUE(crashpad_info_writer->IsUseful());
 
-  minidump_file_writer.AddStream(std::move(crashpad_info_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(crashpad_info_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -159,36 +156,35 @@ TEST(MinidumpCrashpadInfoWriter, SimpleAnnotations) {
   ASSERT_NO_FATAL_FAILURE(GetCrashpadInfoStream(
       string_file.string(), &crashpad_info, &simple_annotations, &module_list));
 
-  EXPECT_EQ(MinidumpCrashpadInfo::kVersion, crashpad_info->version);
+  EXPECT_EQ(crashpad_info->version, MinidumpCrashpadInfo::kVersion);
   EXPECT_FALSE(module_list);
 
   ASSERT_TRUE(simple_annotations);
-  ASSERT_EQ(1u, simple_annotations->count);
-  EXPECT_EQ(kKey,
-            MinidumpUTF8StringAtRVAAsString(
-                string_file.string(), simple_annotations->entries[0].key));
-  EXPECT_EQ(kValue,
-            MinidumpUTF8StringAtRVAAsString(
-                string_file.string(), simple_annotations->entries[0].value));
+  ASSERT_EQ(simple_annotations->count, 1u);
+  EXPECT_EQ(MinidumpUTF8StringAtRVAAsString(string_file.string(),
+                                            simple_annotations->entries[0].key),
+            kKey);
+  EXPECT_EQ(MinidumpUTF8StringAtRVAAsString(
+                string_file.string(), simple_annotations->entries[0].value),
+            kValue);
 }
 
 TEST(MinidumpCrashpadInfoWriter, CrashpadModuleList) {
-  const uint32_t kMinidumpModuleListIndex = 3;
+  constexpr uint32_t kMinidumpModuleListIndex = 3;
 
   MinidumpFileWriter minidump_file_writer;
-  auto crashpad_info_writer =
-      base::WrapUnique(new MinidumpCrashpadInfoWriter());
+  auto crashpad_info_writer = std::make_unique<MinidumpCrashpadInfoWriter>();
 
   auto module_list_writer =
-      base::WrapUnique(new MinidumpModuleCrashpadInfoListWriter());
-  auto module_writer = base::WrapUnique(new MinidumpModuleCrashpadInfoWriter());
+      std::make_unique<MinidumpModuleCrashpadInfoListWriter>();
+  auto module_writer = std::make_unique<MinidumpModuleCrashpadInfoWriter>();
   module_list_writer->AddModule(std::move(module_writer),
                                 kMinidumpModuleListIndex);
   crashpad_info_writer->SetModuleList(std::move(module_list_writer));
 
   EXPECT_TRUE(crashpad_info_writer->IsUseful());
 
-  minidump_file_writer.AddStream(std::move(crashpad_info_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(crashpad_info_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -200,24 +196,24 @@ TEST(MinidumpCrashpadInfoWriter, CrashpadModuleList) {
   ASSERT_NO_FATAL_FAILURE(GetCrashpadInfoStream(
       string_file.string(), &crashpad_info, &simple_annotations, &module_list));
 
-  EXPECT_EQ(MinidumpCrashpadInfo::kVersion, crashpad_info->version);
+  EXPECT_EQ(crashpad_info->version, MinidumpCrashpadInfo::kVersion);
   EXPECT_FALSE(simple_annotations);
 
   ASSERT_TRUE(module_list);
-  ASSERT_EQ(1u, module_list->count);
+  ASSERT_EQ(module_list->count, 1u);
 
-  EXPECT_EQ(kMinidumpModuleListIndex,
-            module_list->modules[0].minidump_module_list_index);
+  EXPECT_EQ(module_list->modules[0].minidump_module_list_index,
+            kMinidumpModuleListIndex);
   const MinidumpModuleCrashpadInfo* module =
       MinidumpWritableAtLocationDescriptor<MinidumpModuleCrashpadInfo>(
           string_file.string(), module_list->modules[0].location);
   ASSERT_TRUE(module);
 
-  EXPECT_EQ(MinidumpModuleCrashpadInfo::kVersion, module->version);
-  EXPECT_EQ(0u, module->list_annotations.DataSize);
-  EXPECT_EQ(0u, module->list_annotations.Rva);
-  EXPECT_EQ(0u, module->simple_annotations.DataSize);
-  EXPECT_EQ(0u, module->simple_annotations.Rva);
+  EXPECT_EQ(module->version, MinidumpModuleCrashpadInfo::kVersion);
+  EXPECT_EQ(module->list_annotations.DataSize, 0u);
+  EXPECT_EQ(module->list_annotations.Rva, 0u);
+  EXPECT_EQ(module->simple_annotations.DataSize, 0u);
+  EXPECT_EQ(module->simple_annotations.Rva, 0u);
 }
 
 TEST(MinidumpCrashpadInfoWriter, InitializeFromSnapshot) {
@@ -229,18 +225,18 @@ TEST(MinidumpCrashpadInfoWriter, InitializeFromSnapshot) {
   ASSERT_TRUE(
       client_id.InitializeFromString("fedcba98-7654-3210-0123-456789abcdef"));
 
-  const char kKey[] = "version";
-  const char kValue[] = "40.0.2214.111";
-  const char kEntry[] = "This is a simple annotation in a list.";
+  static constexpr char kKey[] = "version";
+  static constexpr char kValue[] = "40.0.2214.111";
+  static constexpr char kEntry[] = "This is a simple annotation in a list.";
 
   // Test with a useless module, one that doesn’t carry anything that would
   // require MinidumpCrashpadInfo or any child object.
-  auto process_snapshot = base::WrapUnique(new TestProcessSnapshot());
+  auto process_snapshot = std::make_unique<TestProcessSnapshot>();
 
-  auto module_snapshot = base::WrapUnique(new TestModuleSnapshot());
+  auto module_snapshot = std::make_unique<TestModuleSnapshot>();
   process_snapshot->AddModule(std::move(module_snapshot));
 
-  auto info_writer = base::WrapUnique(new MinidumpCrashpadInfoWriter());
+  auto info_writer = std::make_unique<MinidumpCrashpadInfoWriter>();
   info_writer->InitializeFromSnapshot(process_snapshot.get());
   EXPECT_FALSE(info_writer->IsUseful());
 
@@ -264,7 +260,7 @@ TEST(MinidumpCrashpadInfoWriter, InitializeFromSnapshot) {
   EXPECT_TRUE(info_writer->IsUseful());
 
   MinidumpFileWriter minidump_file_writer;
-  minidump_file_writer.AddStream(std::move(info_writer));
+  ASSERT_TRUE(minidump_file_writer.AddStream(std::move(info_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -275,40 +271,40 @@ TEST(MinidumpCrashpadInfoWriter, InitializeFromSnapshot) {
   ASSERT_NO_FATAL_FAILURE(GetCrashpadInfoStream(
       string_file.string(), &info, &simple_annotations, &module_list));
 
-  EXPECT_EQ(MinidumpCrashpadInfo::kVersion, info->version);
+  EXPECT_EQ(info->version, MinidumpCrashpadInfo::kVersion);
 
-  EXPECT_EQ(report_id, info->report_id);
-  EXPECT_EQ(client_id, info->client_id);
+  EXPECT_EQ(info->report_id, report_id);
+  EXPECT_EQ(info->client_id, client_id);
 
   ASSERT_TRUE(simple_annotations);
-  ASSERT_EQ(1u, simple_annotations->count);
-  EXPECT_EQ(kKey,
-            MinidumpUTF8StringAtRVAAsString(
-                string_file.string(), simple_annotations->entries[0].key));
-  EXPECT_EQ(kValue,
-            MinidumpUTF8StringAtRVAAsString(
-                string_file.string(), simple_annotations->entries[0].value));
+  ASSERT_EQ(simple_annotations->count, 1u);
+  EXPECT_EQ(MinidumpUTF8StringAtRVAAsString(string_file.string(),
+                                            simple_annotations->entries[0].key),
+            kKey);
+  EXPECT_EQ(MinidumpUTF8StringAtRVAAsString(
+                string_file.string(), simple_annotations->entries[0].value),
+            kValue);
 
   ASSERT_TRUE(module_list);
-  ASSERT_EQ(1u, module_list->count);
+  ASSERT_EQ(module_list->count, 1u);
 
-  EXPECT_EQ(0u, module_list->modules[0].minidump_module_list_index);
+  EXPECT_EQ(module_list->modules[0].minidump_module_list_index, 0u);
   const MinidumpModuleCrashpadInfo* module =
       MinidumpWritableAtLocationDescriptor<MinidumpModuleCrashpadInfo>(
           string_file.string(), module_list->modules[0].location);
   ASSERT_TRUE(module);
 
-  EXPECT_EQ(MinidumpModuleCrashpadInfo::kVersion, module->version);
+  EXPECT_EQ(module->version, MinidumpModuleCrashpadInfo::kVersion);
 
   const MinidumpRVAList* list_annotations =
       MinidumpWritableAtLocationDescriptor<MinidumpRVAList>(
           string_file.string(), module->list_annotations);
   ASSERT_TRUE(list_annotations);
 
-  ASSERT_EQ(1u, list_annotations->count);
-  EXPECT_EQ(kEntry,
-            MinidumpUTF8StringAtRVAAsString(string_file.string(),
-                                            list_annotations->children[0]));
+  ASSERT_EQ(list_annotations->count, 1u);
+  EXPECT_EQ(MinidumpUTF8StringAtRVAAsString(string_file.string(),
+                                            list_annotations->children[0]),
+            kEntry);
 
   const MinidumpSimpleStringDictionary* module_simple_annotations =
       MinidumpWritableAtLocationDescriptor<MinidumpSimpleStringDictionary>(

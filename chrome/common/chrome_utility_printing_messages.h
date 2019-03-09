@@ -2,24 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Multiply-included message file, so no include guard.
+#ifndef CHROME_COMMON_CHROME_UTILITY_PRINTING_MESSAGES_H_
+#define CHROME_COMMON_CHROME_UTILITY_PRINTING_MESSAGES_H_
 
 #include <string>
-#include <vector>
 
 #include "build/build_config.h"
 #include "components/printing/common/printing_param_traits_macros.h"
 #include "ipc/ipc_message_macros.h"
-#include "ipc/ipc_platform_file.h"
+#include "ipc/ipc_param_traits.h"
 #include "printing/backend/print_backend.h"
-#include "printing/page_range.h"
-#include "printing/pdf_render_settings.h"
-#include "printing/pwg_raster_settings.h"
+#include "printing/buildflags/buildflags.h"
 
 #define IPC_MESSAGE_START ChromeUtilityPrintingMsgStart
 
+#if defined(OS_WIN) && BUILDFLAG(ENABLE_PRINT_PREVIEW)
 // Preview and Cloud Print messages.
-#if defined(ENABLE_PRINT_PREVIEW)
 IPC_STRUCT_TRAITS_BEGIN(printing::PrinterCapsAndDefaults)
   IPC_STRUCT_TRAITS_MEMBER(printer_capabilities)
   IPC_STRUCT_TRAITS_MEMBER(caps_mime_type)
@@ -39,7 +37,7 @@ IPC_STRUCT_TRAITS_BEGIN(printing::PrinterSemanticCapsAndDefaults)
   IPC_STRUCT_TRAITS_MEMBER(collate_capable)
   IPC_STRUCT_TRAITS_MEMBER(collate_default)
   IPC_STRUCT_TRAITS_MEMBER(copies_capable)
-  IPC_STRUCT_TRAITS_MEMBER(duplex_capable)
+  IPC_STRUCT_TRAITS_MEMBER(duplex_modes)
   IPC_STRUCT_TRAITS_MEMBER(duplex_default)
   IPC_STRUCT_TRAITS_MEMBER(color_changeable)
   IPC_STRUCT_TRAITS_MEMBER(color_default)
@@ -51,26 +49,9 @@ IPC_STRUCT_TRAITS_BEGIN(printing::PrinterSemanticCapsAndDefaults)
   IPC_STRUCT_TRAITS_MEMBER(default_dpi)
 IPC_STRUCT_TRAITS_END()
 
-IPC_ENUM_TRAITS_MAX_VALUE(printing::PwgRasterTransformType,
-                          printing::TRANSFORM_TYPE_LAST)
-
-IPC_STRUCT_TRAITS_BEGIN(printing::PwgRasterSettings)
-  IPC_STRUCT_TRAITS_MEMBER(odd_page_transform)
-  IPC_STRUCT_TRAITS_MEMBER(rotate_all_pages)
-  IPC_STRUCT_TRAITS_MEMBER(reverse_page_order)
-IPC_STRUCT_TRAITS_END()
-
 //------------------------------------------------------------------------------
 // Utility process messages:
 // These are messages from the browser to the utility process.
-
-// Tell the utility process to render the given PDF into a PWGRaster.
-IPC_MESSAGE_CONTROL4(ChromeUtilityMsg_RenderPDFPagesToPWGRaster,
-                     IPC::PlatformFileForTransit, /* Input PDF file */
-                     printing::PdfRenderSettings, /* PDF render settings */
-                     // PWG transform settings.
-                     printing::PwgRasterSettings,
-                     IPC::PlatformFileForTransit /* Output PWG file */)
 
 // Tells the utility process to get capabilities and defaults for the specified
 // printer. Used on Windows to isolate the service process from printer driver
@@ -85,37 +66,10 @@ IPC_MESSAGE_CONTROL1(ChromeUtilityMsg_GetPrinterCapsAndDefaults,
 // sandbox. Returns result as printing::PrinterSemanticCapsAndDefaults.
 IPC_MESSAGE_CONTROL1(ChromeUtilityMsg_GetPrinterSemanticCapsAndDefaults,
                      std::string /* printer name */)
-#endif  // ENABLE_PRINT_PREVIEW
-
-// Windows uses messages for printing even without preview. crbug.com/170859
-// Primary user of Windows without preview is CEF. crbug.com/417967
-#if defined(ENABLE_PRINTING) && defined(OS_WIN)
-// Tell the utility process to start rendering the given PDF into a metafile.
-// Utility process would be alive until
-// ChromeUtilityMsg_RenderPDFPagesToMetafiles_Stop message.
-IPC_MESSAGE_CONTROL2(ChromeUtilityMsg_RenderPDFPagesToMetafiles,
-                     IPC::PlatformFileForTransit, /* input_file */
-                     printing::PdfRenderSettings /* settings */)
-
-// Requests conversion of the next page.
-IPC_MESSAGE_CONTROL2(ChromeUtilityMsg_RenderPDFPagesToMetafiles_GetPage,
-                     int /* page_number */,
-                     IPC::PlatformFileForTransit /* output_file */)
-
-// Requests utility process to stop conversion and exit.
-IPC_MESSAGE_CONTROL0(ChromeUtilityMsg_RenderPDFPagesToMetafiles_Stop)
-#endif  // ENABLE_PRINTING && OS_WIN
 
 //------------------------------------------------------------------------------
 // Utility process host messages:
 // These are messages from the utility process to the browser.
-
-#if defined(ENABLE_PRINT_PREVIEW)
-// Reply when the utility process has succeeded in rendering the PDF to PWG.
-IPC_MESSAGE_CONTROL0(ChromeUtilityHostMsg_RenderPDFPagesToPWGRaster_Succeeded)
-
-// Reply when an error occurred rendering the PDF to PWG.
-IPC_MESSAGE_CONTROL0(ChromeUtilityHostMsg_RenderPDFPagesToPWGRaster_Failed)
 
 // Reply when the utility process has succeeded in obtaining the printer
 // capabilities and defaults.
@@ -140,16 +94,6 @@ IPC_MESSAGE_CONTROL1(ChromeUtilityHostMsg_GetPrinterCapsAndDefaults_Failed,
 IPC_MESSAGE_CONTROL1(
   ChromeUtilityHostMsg_GetPrinterSemanticCapsAndDefaults_Failed,
   std::string /* printer name */)
-#endif  // ENABLE_PRINT_PREVIEW
+#endif  // defined(OS_WIN) && BUILDFLAG(ENABLE_PRINT_PREVIEW)
 
-#if defined(ENABLE_PRINTING) && defined(OS_WIN)
-// Reply when the utility process loaded PDF. |page_count| is 0, if loading
-// failed.
-IPC_MESSAGE_CONTROL1(ChromeUtilityHostMsg_RenderPDFPagesToMetafiles_PageCount,
-                     int /* page_count */)
-
-// Reply when the utility process rendered the PDF page.
-IPC_MESSAGE_CONTROL2(ChromeUtilityHostMsg_RenderPDFPagesToMetafiles_PageDone,
-                     bool /* success */,
-                     float /* scale_factor */)
-#endif  // ENABLE_PRINTING && OS_WIN
+#endif  // CHROME_COMMON_CHROME_UTILITY_PRINTING_MESSAGES_H_

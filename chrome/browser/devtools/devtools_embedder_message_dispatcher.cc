@@ -4,6 +4,8 @@
 
 #include "chrome/browser/devtools/devtools_embedder_message_dispatcher.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/values.h"
 
@@ -67,8 +69,7 @@ template <typename T, typename... Ts>
 struct ParamTuple<T, Ts...> {
   bool Parse(const base::ListValue& list,
              const base::ListValue::const_iterator& it) {
-    return it != list.end() && GetValue(**it, &head) &&
-           tail.Parse(list, it + 1);
+    return it != list.end() && GetValue(*it, &head) && tail.Parse(list, it + 1);
   }
 
   template <typename H, typename... As>
@@ -103,7 +104,7 @@ bool ParseAndHandleWithCallback(
   return true;
 }
 
-} // namespace
+}  // namespace
 
 /**
  * Dispatcher for messages sent from the frontend running in an
@@ -120,7 +121,7 @@ class DispatcherImpl : public DevToolsEmbedderMessageDispatcher {
   bool Dispatch(const DispatchCallback& callback,
                 const std::string& method,
                 const base::ListValue* params) override {
-    HandlerMap::iterator it = handlers_.find(method);
+    auto it = handlers_.find(method);
     return it != handlers_.end() && it->second.Run(callback, *params);
   }
 
@@ -152,10 +153,10 @@ class DispatcherImpl : public DevToolsEmbedderMessageDispatcher {
 };
 
 // static
-DevToolsEmbedderMessageDispatcher*
+std::unique_ptr<DevToolsEmbedderMessageDispatcher>
 DevToolsEmbedderMessageDispatcher::CreateForDevToolsFrontend(
     Delegate* delegate) {
-  DispatcherImpl* d = new DispatcherImpl();
+  auto d = std::make_unique<DispatcherImpl>();
 
   d->RegisterHandler("bringToFront", &Delegate::ActivateWindow, delegate);
   d->RegisterHandler("closeWindow", &Delegate::CloseWindow, delegate);
@@ -169,6 +170,7 @@ DevToolsEmbedderMessageDispatcher::CreateForDevToolsFrontend(
   d->RegisterHandlerWithCallback("setIsDocked",
                                  &Delegate::SetIsDocked, delegate);
   d->RegisterHandler("openInNewTab", &Delegate::OpenInNewTab, delegate);
+  d->RegisterHandler("showItemInFolder", &Delegate::ShowItemInFolder, delegate);
   d->RegisterHandler("save", &Delegate::SaveToFile, delegate);
   d->RegisterHandler("append", &Delegate::AppendToFile, delegate);
   d->RegisterHandler("requestFileSystems",
@@ -184,6 +186,10 @@ DevToolsEmbedderMessageDispatcher::CreateForDevToolsFrontend(
   d->RegisterHandler("searchInPath", &Delegate::SearchInPath, delegate);
   d->RegisterHandler("setWhitelistedShortcuts",
                      &Delegate::SetWhitelistedShortcuts, delegate);
+  d->RegisterHandler("setEyeDropperActive", &Delegate::SetEyeDropperActive,
+                     delegate);
+  d->RegisterHandler("showCertificateViewer",
+                     &Delegate::ShowCertificateViewer, delegate);
   d->RegisterHandler("zoomIn", &Delegate::ZoomIn, delegate);
   d->RegisterHandler("zoomOut", &Delegate::ZoomOut, delegate);
   d->RegisterHandler("resetZoom", &Delegate::ResetZoom, delegate);
@@ -194,6 +200,7 @@ DevToolsEmbedderMessageDispatcher::CreateForDevToolsFrontend(
   d->RegisterHandler("performActionOnRemotePage",
                      &Delegate::PerformActionOnRemotePage, delegate);
   d->RegisterHandler("openRemotePage", &Delegate::OpenRemotePage, delegate);
+  d->RegisterHandler("openNodeFrontend", &Delegate::OpenNodeFrontend, delegate);
   d->RegisterHandler("dispatchProtocolMessage",
                      &Delegate::DispatchProtocolMessageFromDevToolsFrontend,
                      delegate);
@@ -209,7 +216,14 @@ DevToolsEmbedderMessageDispatcher::CreateForDevToolsFrontend(
                      &Delegate::RemovePreference, delegate);
   d->RegisterHandler("clearPreferences",
                      &Delegate::ClearPreferences, delegate);
+  d->RegisterHandlerWithCallback("reattach",
+                                 &Delegate::Reattach, delegate);
   d->RegisterHandler("readyForTest",
                      &Delegate::ReadyForTest, delegate);
+  d->RegisterHandler("connectionReady", &Delegate::ConnectionReady, delegate);
+  d->RegisterHandler("setOpenNewWindowForPopups",
+                     &Delegate::SetOpenNewWindowForPopups, delegate);
+  d->RegisterHandler("registerExtensionsAPI", &Delegate::RegisterExtensionsAPI,
+                     delegate);
   return d;
 }

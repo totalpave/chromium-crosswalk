@@ -18,39 +18,39 @@ namespace policy {
 TEST(PolicyMacUtilTest, PropertyToValue) {
   base::DictionaryValue root;
 
-  // base::Value::TYPE_NULL
-  root.Set("null", base::Value::CreateNullValue());
+  // base::Value::Type::NONE
+  root.Set("null", std::make_unique<base::Value>());
 
-  // base::Value::TYPE_BOOLEAN
+  // base::Value::Type::BOOLEAN
   root.SetBoolean("false", false);
   root.SetBoolean("true", true);
 
-  // base::Value::TYPE_INTEGER
+  // base::Value::Type::INTEGER
   root.SetInteger("int", 123);
   root.SetInteger("zero", 0);
 
-  // base::Value::TYPE_DOUBLE
+  // base::Value::Type::DOUBLE
   root.SetDouble("double", 123.456);
   root.SetDouble("zerod", 0.0);
 
-  // base::Value::TYPE_STRING
+  // base::Value::Type::STRING
   root.SetString("string", "the fox jumps over something");
   root.SetString("empty", "");
 
-  // base::Value::TYPE_LIST
+  // base::Value::Type::LIST
+  root.Set("emptyl", std::make_unique<base::Value>(base::Value::Type::LIST));
   base::ListValue list;
-  root.Set("emptyl", list.DeepCopy());
   for (base::DictionaryValue::Iterator it(root); !it.IsAtEnd(); it.Advance())
-    list.Append(it.value().DeepCopy());
+    list.Append(std::make_unique<base::Value>(it.value().Clone()));
   EXPECT_EQ(root.size(), list.GetSize());
-  list.Append(root.DeepCopy());
-  root.Set("list", list.DeepCopy());
+  list.Append(std::make_unique<base::Value>(root.Clone()));
+  root.SetKey("list", list.Clone());
 
-  // base::Value::TYPE_DICTIONARY
-  base::DictionaryValue dict;
-  root.Set("emptyd", dict.DeepCopy());
+  // base::Value::Type::DICTIONARY
+  root.Set("emptyd",
+           std::make_unique<base::Value>(base::Value::Type::DICTIONARY));
   // Very meta.
-  root.Set("dict", root.DeepCopy());
+  root.SetKey("dict", root.Clone());
 
   base::ScopedCFTypeRef<CFPropertyListRef> property(ValueToProperty(root));
   ASSERT_TRUE(property);

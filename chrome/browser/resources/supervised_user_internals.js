@@ -29,13 +29,13 @@ cr.define('chrome.supervised_user_internals', function() {
       this.removeAttribute('highlighted');
     }
 
-    var oldStr = oldVal.toString();
-    var newStr = newVal.toString();
+    const oldStr = oldVal.toString();
+    const newStr = newVal.toString();
     if (oldStr != '' && oldStr != newStr) {
       // Note the addListener function does not end up creating duplicate
       // listeners.  There can be only one listener per event at a time.
       // See https://developer.mozilla.org/en/DOM/element.addEventListener
-      node.addEventListener('webkitAnimationEnd', clearHighlight, false);
+      node.addEventListener('animationend', clearHighlight, false);
       node.setAttribute('highlighted', '');
     }
   }
@@ -46,7 +46,9 @@ cr.define('chrome.supervised_user_internals', function() {
     // Hack: Schedule another refresh after a while.
     // TODO(treib): Get rid of this once we're properly notified of all
     // relevant changes.
-    setTimeout(function() { chrome.send('getBasicInfo'); }, 5000);
+    setTimeout(function() {
+      chrome.send('getBasicInfo');
+    }, 5000);
   }
 
   function receiveUserSettings(settings) {
@@ -61,11 +63,8 @@ cr.define('chrome.supervised_user_internals', function() {
     // list of key/value pairs for easier consumption by the HTML template.
     // This is not done recursively, values are passed as their JSON
     // representation.
-    var kvpairs = Object.keys(settings).map(function(key) {
-      return {
-        key: key,
-        value: JSON.stringify(settings[key], null, 2)
-      };
+    const kvpairs = Object.keys(settings).map(function(key) {
+      return {key: key, value: JSON.stringify(settings[key], null, 2)};
     });
 
     jstProcess(new JsEvalContext({settings: kvpairs}), $('user-settings'));
@@ -95,7 +94,7 @@ cr.define('chrome.supervised_user_internals', function() {
   }
 
   /** Container for accumulated filtering results. */
-  var filteringResults = [];
+  const filteringResults = [];
 
   /**
    * Callback for incoming filtering results.
@@ -104,16 +103,17 @@ cr.define('chrome.supervised_user_internals', function() {
   function receiveFilteringResult(result) {
     filteringResults.push(result);
 
-    var container = $('filtering-results-container');
+    const container = $('filtering-results-container');
 
     // Scroll to the bottom if we were already at the bottom.  Otherwise, leave
     // the scrollbar alone.
-    var shouldScrollDown = isScrolledToBottom(container);
+    const shouldScrollDown = isScrolledToBottom(container);
 
-    jstProcess(new JsEvalContext({ results: filteringResults }), container);
+    jstProcess(new JsEvalContext({results: filteringResults}), container);
 
-    if (shouldScrollDown)
+    if (shouldScrollDown) {
       scrollToBottom(container);
+    }
   }
 
   // Return an object with all of the exports.
@@ -127,5 +127,5 @@ cr.define('chrome.supervised_user_internals', function() {
   };
 });
 
-document.addEventListener('DOMContentLoaded',
-                          chrome.supervised_user_internals.initialize);
+document.addEventListener(
+    'DOMContentLoaded', chrome.supervised_user_internals.initialize);

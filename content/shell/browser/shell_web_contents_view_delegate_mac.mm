@@ -13,6 +13,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/context_menu_params.h"
+#include "content/shell/browser/renderer_host/shell_render_widget_host_view_mac_delegate.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_browser_context.h"
 #include "content/shell/browser/shell_browser_main_parts.h"
@@ -20,7 +21,7 @@
 #include "content/shell/browser/shell_devtools_frontend.h"
 #include "content/shell/browser/shell_web_contents_view_delegate_creator.h"
 #include "content/shell/common/shell_switches.h"
-#include "third_party/WebKit/public/web/WebContextMenuData.h"
+#include "third_party/blink/public/web/web_context_menu_data.h"
 
 using blink::WebContextMenuData;
 
@@ -95,7 +96,7 @@ ShellWebContentsViewDelegate::~ShellWebContentsViewDelegate() {
 void ShellWebContentsViewDelegate::ShowContextMenu(
     RenderFrameHost* render_frame_host,
     const ContextMenuParams& params) {
-  if (switches::IsRunLayoutTestSwitchPresent())
+  if (switches::IsRunWebTestsSwitchPresent())
     return;
 
   params_ = params;
@@ -108,10 +109,8 @@ void ShellWebContentsViewDelegate::ShowContextMenu(
   [menu setDelegate:delegate];
   [menu setAutoenablesItems:NO];
 
-  if (params.media_type == WebContextMenuData::MediaTypeNone &&
-      !has_link &&
-      !has_selection &&
-      !params_.is_editable) {
+  if (params.media_type == WebContextMenuData::kMediaTypeNone && !has_link &&
+      !has_selection && !params_.is_editable) {
     BOOL back_menu_enabled =
         web_contents_->GetController().CanGoBack() ? YES : NO;
     MakeContextMenuItem(@"Back",
@@ -151,7 +150,7 @@ void ShellWebContentsViewDelegate::ShowContextMenu(
 
   if (params_.is_editable) {
     BOOL cut_menu_enabled =
-        (params_.edit_flags & WebContextMenuData::CanCut) ? YES : NO;
+        (params_.edit_flags & WebContextMenuData::kCanCut) ? YES : NO;
     MakeContextMenuItem(@"Cut",
                         ShellContextMenuItemCutTag,
                         menu,
@@ -159,7 +158,7 @@ void ShellWebContentsViewDelegate::ShowContextMenu(
                         delegate);
 
     BOOL copy_menu_enabled =
-        (params_.edit_flags & WebContextMenuData::CanCopy) ? YES : NO;
+        (params_.edit_flags & WebContextMenuData::kCanCopy) ? YES : NO;
     MakeContextMenuItem(@"Copy",
                         ShellContextMenuItemCopyTag,
                         menu,
@@ -167,7 +166,7 @@ void ShellWebContentsViewDelegate::ShowContextMenu(
                         delegate);
 
     BOOL paste_menu_enabled =
-        (params_.edit_flags & WebContextMenuData::CanPaste) ? YES : NO;
+        (params_.edit_flags & WebContextMenuData::kCanPaste) ? YES : NO;
     MakeContextMenuItem(@"Paste",
                         ShellContextMenuItemPasteTag,
                         menu,
@@ -175,7 +174,7 @@ void ShellWebContentsViewDelegate::ShowContextMenu(
                         delegate);
 
     BOOL delete_menu_enabled =
-        (params_.edit_flags & WebContextMenuData::CanDelete) ? YES : NO;
+        (params_.edit_flags & WebContextMenuData::kCanDelete) ? YES : NO;
     MakeContextMenuItem(@"Delete",
                         ShellContextMenuItemDeleteTag,
                         menu,
@@ -201,7 +200,7 @@ void ShellWebContentsViewDelegate::ShowContextMenu(
                       YES,
                       delegate);
 
-  NSView* parent_view = web_contents_->GetContentNativeView();
+  NSView* parent_view = web_contents_->GetContentNativeView().GetNativeNSView();
   NSEvent* currentEvent = [NSApp currentEvent];
   NSWindow* window = [parent_view window];
   NSPoint position = [window mouseLocationOutsideOfEventStream];
@@ -253,7 +252,7 @@ void ShellWebContentsViewDelegate::ActionPerformed(int tag) {
       web_contents_->Focus();
       break;
     case ShellContextMenuItemReloadTag: {
-      web_contents_->GetController().Reload(false);
+      web_contents_->GetController().Reload(ReloadType::NORMAL, false);
       web_contents_->Focus();
       break;
     }
@@ -262,6 +261,13 @@ void ShellWebContentsViewDelegate::ActionPerformed(int tag) {
       break;
     }
   }
+}
+
+NSObject<RenderWidgetHostViewMacDelegate>*
+ShellWebContentsViewDelegate::CreateRenderWidgetHostViewDelegate(
+    content::RenderWidgetHost* render_widget_host,
+    bool is_popup) {
+  return [[ShellRenderWidgetHostViewMacDelegate alloc] init];
 }
 
 }  // namespace content

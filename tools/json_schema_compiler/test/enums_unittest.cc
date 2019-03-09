@@ -4,6 +4,7 @@
 
 #include "tools/json_schema_compiler/test/enums.h"
 
+#include "base/values.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "tools/json_schema_compiler/test/test_util.h"
 
@@ -14,7 +15,7 @@ TEST(JsonSchemaCompilerEnumsTest, EnumTypePopulate) {
   {
     EnumType enum_type;
     base::DictionaryValue value;
-    value.Set("type", new base::StringValue("one"));
+    value.SetString("type", "one");
     EXPECT_TRUE(EnumType::Populate(value, &enum_type));
     EXPECT_EQ(ENUMERATION_ONE, enum_type.type);
     EXPECT_TRUE(value.Equals(enum_type.ToValue().get()));
@@ -22,7 +23,7 @@ TEST(JsonSchemaCompilerEnumsTest, EnumTypePopulate) {
   {
     EnumType enum_type;
     base::DictionaryValue value;
-    value.Set("type", new base::StringValue("invalid"));
+    value.SetString("type", "invalid");
     EXPECT_FALSE(EnumType::Populate(value, &enum_type));
   }
 }
@@ -50,11 +51,11 @@ TEST(JsonSchemaCompilerEnumsTest, EnumsAsTypes) {
     base::DictionaryValue value;
     ASSERT_FALSE(HasEnumeration::Populate(value, &enumeration));
 
-    value.Set("enumeration", new base::StringValue("one"));
+    value.SetString("enumeration", "one");
     ASSERT_TRUE(HasEnumeration::Populate(value, &enumeration));
     EXPECT_TRUE(value.Equals(enumeration.ToValue().get()));
 
-    value.Set("optional_enumeration", new base::StringValue("two"));
+    value.SetString("optional_enumeration", "two");
     ASSERT_TRUE(HasEnumeration::Populate(value, &enumeration));
     EXPECT_TRUE(value.Equals(enumeration.ToValue().get()));
   }
@@ -63,7 +64,7 @@ TEST(JsonSchemaCompilerEnumsTest, EnumsAsTypes) {
     base::DictionaryValue value;
     ASSERT_FALSE(ReferenceEnum::Populate(value, &enumeration));
 
-    value.Set("reference_enum", new base::StringValue("one"));
+    value.SetString("reference_enum", "one");
     ASSERT_TRUE(ReferenceEnum::Populate(value, &enumeration));
     EXPECT_TRUE(value.Equals(enumeration.ToValue().get()));
   }
@@ -72,8 +73,8 @@ TEST(JsonSchemaCompilerEnumsTest, EnumsAsTypes) {
 TEST(JsonSchemaCompilerEnumsTest, EnumsArrayAsType) {
   {
     base::ListValue params_value;
-    params_value.Append(
-        List(new base::StringValue("one"), new base::StringValue("two")));
+    params_value.Append(List(std::make_unique<base::Value>("one"),
+                             std::make_unique<base::Value>("two")));
     std::unique_ptr<TakesEnumArrayAsType::Params> params(
         TakesEnumArrayAsType::Params::Create(params_value));
     ASSERT_TRUE(params);
@@ -83,7 +84,7 @@ TEST(JsonSchemaCompilerEnumsTest, EnumsArrayAsType) {
   }
   {
     base::ListValue params_value;
-    params_value.Append(List(new base::StringValue("invalid")));
+    params_value.Append(List(std::make_unique<base::Value>("invalid")));
     std::unique_ptr<TakesEnumArrayAsType::Params> params(
         TakesEnumArrayAsType::Params::Create(params_value));
     EXPECT_FALSE(params);
@@ -93,8 +94,8 @@ TEST(JsonSchemaCompilerEnumsTest, EnumsArrayAsType) {
 TEST(JsonSchemaCompilerEnumsTest, ReturnsEnumCreate) {
   {
     Enumeration state = ENUMERATION_ONE;
-    std::unique_ptr<base::Value> result(new base::StringValue(ToString(state)));
-    std::unique_ptr<base::Value> expected(new base::StringValue("one"));
+    std::unique_ptr<base::Value> result(new base::Value(ToString(state)));
+    std::unique_ptr<base::Value> expected(new base::Value("one"));
     EXPECT_TRUE(result->Equals(expected.get()));
   }
   {
@@ -122,7 +123,7 @@ TEST(JsonSchemaCompilerEnumsTest, OptionalEnumTypePopulate) {
   {
     OptionalEnumType enum_type;
     base::DictionaryValue value;
-    value.Set("type", new base::StringValue("two"));
+    value.SetString("type", "two");
     EXPECT_TRUE(OptionalEnumType::Populate(value, &enum_type));
     EXPECT_EQ(ENUMERATION_TWO, enum_type.type);
     EXPECT_TRUE(value.Equals(enum_type.ToValue().get()));
@@ -137,7 +138,7 @@ TEST(JsonSchemaCompilerEnumsTest, OptionalEnumTypePopulate) {
   {
     OptionalEnumType enum_type;
     base::DictionaryValue value;
-    value.Set("type", new base::StringValue("invalid"));
+    value.SetString("type", "invalid");
     EXPECT_FALSE(OptionalEnumType::Populate(value, &enum_type));
   }
 }
@@ -163,8 +164,8 @@ TEST(JsonSchemaCompilerEnumsTest, TakesEnumParamsCreate) {
 TEST(JsonSchemaCompilerEnumsTest, TakesEnumArrayParamsCreate) {
   {
     base::ListValue params_value;
-    params_value.Append(
-        List(new base::StringValue("one"), new base::StringValue("two")));
+    params_value.Append(List(std::make_unique<base::Value>("one"),
+                             std::make_unique<base::Value>("two")));
     std::unique_ptr<TakesEnumArray::Params> params(
         TakesEnumArray::Params::Create(params_value));
     ASSERT_TRUE(params);
@@ -174,7 +175,7 @@ TEST(JsonSchemaCompilerEnumsTest, TakesEnumArrayParamsCreate) {
   }
   {
     base::ListValue params_value;
-    params_value.Append(List(new base::StringValue("invalid")));
+    params_value.Append(List(std::make_unique<base::Value>("invalid")));
     std::unique_ptr<TakesEnumArray::Params> params(
         TakesEnumArray::Params::Create(params_value));
     EXPECT_FALSE(params);
@@ -247,9 +248,8 @@ TEST(JsonSchemaCompilerEnumsTest, TakesMultipleOptionalEnumsParamsCreate) {
 TEST(JsonSchemaCompilerEnumsTest, OnEnumFiredCreate) {
   {
     Enumeration some_enum = ENUMERATION_ONE;
-    std::unique_ptr<base::Value> result(
-        new base::StringValue(ToString(some_enum)));
-    std::unique_ptr<base::Value> expected(new base::StringValue("one"));
+    std::unique_ptr<base::Value> result(new base::Value(ToString(some_enum)));
+    std::unique_ptr<base::Value> expected(new base::Value("one"));
     EXPECT_TRUE(result->Equals(expected.get()));
   }
   {

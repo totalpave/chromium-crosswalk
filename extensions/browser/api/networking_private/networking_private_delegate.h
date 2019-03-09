@@ -11,7 +11,6 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/values.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/common/api/networking_private.h"
@@ -19,13 +18,6 @@
 namespace extensions {
 
 class NetworkingPrivateDelegateObserver;
-
-namespace api {
-namespace networking_private {
-struct DeviceStateProperties;
-struct VerificationProperties;
-}  // networking_private
-}  // api
 
 // Base class for platform dependent networkingPrivate API implementations.
 // All inputs and results for this class use ONC values. See
@@ -42,41 +34,6 @@ class NetworkingPrivateDelegate : public KeyedService {
   using FailureCallback = base::Callback<void(const std::string&)>;
   using DeviceStateList = std::vector<
       std::unique_ptr<api::networking_private::DeviceStateProperties>>;
-  using VerificationProperties =
-      api::networking_private::VerificationProperties;
-
-  // The Verify* methods will be forwarded to a delegate implementation if
-  // provided, otherwise they will fail. A separate delegate it used so that the
-  // current Verify* implementations are not exposed outside of src/chrome.
-  class VerifyDelegate {
-   public:
-    typedef NetworkingPrivateDelegate::VerificationProperties
-        VerificationProperties;
-    typedef NetworkingPrivateDelegate::BoolCallback BoolCallback;
-    typedef NetworkingPrivateDelegate::StringCallback StringCallback;
-    typedef NetworkingPrivateDelegate::FailureCallback FailureCallback;
-
-    VerifyDelegate();
-    virtual ~VerifyDelegate();
-
-    virtual void VerifyDestination(
-        const VerificationProperties& verification_properties,
-        const BoolCallback& success_callback,
-        const FailureCallback& failure_callback) = 0;
-    virtual void VerifyAndEncryptCredentials(
-        const std::string& guid,
-        const VerificationProperties& verification_properties,
-        const StringCallback& success_callback,
-        const FailureCallback& failure_callback) = 0;
-    virtual void VerifyAndEncryptData(
-        const VerificationProperties& verification_properties,
-        const std::string& data,
-        const StringCallback& success_callback,
-        const FailureCallback& failure_callback) = 0;
-
-   private:
-    DISALLOW_COPY_AND_ASSIGN(VerifyDelegate);
-  };
 
   // Delegate for forwarding UI requests, e.g. for showing the account UI.
   class UIDelegate {
@@ -88,23 +45,15 @@ class NetworkingPrivateDelegate : public KeyedService {
     // with |guid|.
     virtual void ShowAccountDetails(const std::string& guid) const = 0;
 
-    // Possibly handle a connection failure, e.g. by showing the configuration
-    // UI. Returns true if the error was handled, i.e. the UI was shown.
-    virtual bool HandleConnectFailed(const std::string& guid,
-                                     const std::string error) const = 0;
-
    private:
     DISALLOW_COPY_AND_ASSIGN(UIDelegate);
   };
 
-  // If |verify_delegate| is not NULL, the Verify* methods will be forwarded
-  // to the delegate. Otherwise they will fail with a NotSupported error.
-  explicit NetworkingPrivateDelegate(
-      std::unique_ptr<VerifyDelegate> verify_delegate);
+  NetworkingPrivateDelegate();
   ~NetworkingPrivateDelegate() override;
 
   void set_ui_delegate(std::unique_ptr<UIDelegate> ui_delegate) {
-    ui_delegate_.reset(ui_delegate.release());
+    ui_delegate_ = std::move(ui_delegate);
   }
 
   const UIDelegate* ui_delegate() { return ui_delegate_.get(); }
@@ -122,6 +71,7 @@ class NetworkingPrivateDelegate : public KeyedService {
                         const FailureCallback& failure_callback) = 0;
   virtual void SetProperties(const std::string& guid,
                              std::unique_ptr<base::DictionaryValue> properties,
+                             bool allow_set_shared_config,
                              const VoidCallback& success_callback,
                              const FailureCallback& failure_callback) = 0;
   virtual void CreateNetwork(bool shared,
@@ -129,6 +79,7 @@ class NetworkingPrivateDelegate : public KeyedService {
                              const StringCallback& success_callback,
                              const FailureCallback& failure_callback) = 0;
   virtual void ForgetNetwork(const std::string& guid,
+                             bool allow_forget_shared_config,
                              const VoidCallback& success_callback,
                              const FailureCallback& failure_callback) = 0;
   virtual void GetNetworks(const std::string& network_type,
@@ -164,13 +115,17 @@ class NetworkingPrivateDelegate : public KeyedService {
                                  const std::string& puk,
                                  const VoidCallback& success_callback,
                                  const FailureCallback& failure_callback) = 0;
-
   virtual void SetCellularSimState(const std::string& guid,
                                    bool require_pin,
                                    const std::string& current_pin,
                                    const std::string& new_pin,
                                    const VoidCallback& success_callback,
                                    const FailureCallback& failure_callback) = 0;
+  virtual void SelectCellularMobileNetwork(
+      const std::string& guid,
+      const std::string& network_id,
+      const VoidCallback& success_callback,
+      const FailureCallback& failure_callback) = 0;
 
   // Synchronous methods
 
@@ -180,6 +135,15 @@ class NetworkingPrivateDelegate : public KeyedService {
   // Returns a list of DeviceStateProperties.
   virtual std::unique_ptr<DeviceStateList> GetDeviceStateList() = 0;
 
+  // Returns a dictionary of global policy values (may be empty). Note: the
+  // dictionary is expected to be a superset of the networkingPrivate
+  // GlobalPolicy dictionary. Any properties not in GlobalPolicy will be
+  // ignored.
+  virtual std::unique_ptr<base::DictionaryValue> GetGlobalPolicy() = 0;
+
+  // Returns a dictionary of certificate lists.
+  virtual std::unique_ptr<base::DictionaryValue> GetCertificateLists() = 0;
+
   // Returns true if the ONC network type |type| is enabled.
   virtual bool EnableNetworkType(const std::string& type) = 0;
 
@@ -188,32 +152,17 @@ class NetworkingPrivateDelegate : public KeyedService {
 
   // Returns true if a scan was requested. It may take many seconds for a scan
   // to complete. The scan may or may not trigger API events when complete.
-  virtual bool RequestScan() = 0;
+  // |type| is the type of network to request a scan for; if empty, scans for
+  // all supported network types except Cellular, which must be requested
+  // explicitly.
+  virtual bool RequestScan(const std::string& type) = 0;
 
   // Optional methods for adding a NetworkingPrivateDelegateObserver for
   // implementations that require it (non-chromeos).
   virtual void AddObserver(NetworkingPrivateDelegateObserver* observer);
   virtual void RemoveObserver(NetworkingPrivateDelegateObserver* observer);
 
-  // Verify* methods are forwarded to |verify_delegate_| if not NULL.
-  void VerifyDestination(const VerificationProperties& verification_properties,
-                         const BoolCallback& success_callback,
-                         const FailureCallback& failure_callback);
-  void VerifyAndEncryptCredentials(
-      const std::string& guid,
-      const VerificationProperties& verification_properties,
-      const StringCallback& success_callback,
-      const FailureCallback& failure_callback);
-  void VerifyAndEncryptData(
-      const VerificationProperties& verification_properties,
-      const std::string& data,
-      const StringCallback& success_callback,
-      const FailureCallback& failure_callback);
-
  private:
-  // Interface for Verify* methods. May be null.
-  std::unique_ptr<VerifyDelegate> verify_delegate_;
-
   // Interface for UI methods. May be null.
   std::unique_ptr<UIDelegate> ui_delegate_;
 

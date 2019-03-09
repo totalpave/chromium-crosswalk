@@ -20,9 +20,6 @@
 
 namespace {
 
-#if !defined(OS_IOS)
-const base::FilePath* g_override_versioned_directory = NULL;
-
 // Return a retained (NOT autoreleased) NSBundle* as the internal
 // implementation of chrome::OuterAppBundle(), which should be the only
 // caller.
@@ -47,19 +44,14 @@ NSBundle* OuterAppBundleInternal() {
 
   return [[NSBundle bundleWithPath:outer_app_dir_ns] retain];
 }
-#endif  // !defined(OS_IOS)
 
 char* ProductDirNameForBundle(NSBundle* chrome_bundle) {
   const char* product_dir_name = NULL;
-#if !defined(OS_IOS)
   base::mac::ScopedNSAutoreleasePool pool;
 
   NSString* product_dir_name_ns =
       [chrome_bundle objectForInfoDictionaryKey:@"CrProductDirName"];
   product_dir_name = [product_dir_name_ns fileSystemRepresentation];
-#else
-  DCHECK(!chrome_bundle);
-#endif
 
   if (!product_dir_name) {
 #if defined(GOOGLE_CHROME_BUILD)
@@ -82,9 +74,6 @@ char* ProductDirNameForBundle(NSBundle* chrome_bundle) {
 // official canary channel, the Info.plist will have CrProductDirName set
 // to "Google/Chrome Canary".
 std::string ProductDirName() {
-#if defined(OS_IOS)
-  static const char* product_dir_name = ProductDirNameForBundle(nil);
-#else
   // Use OuterAppBundle() to get the main app's bundle. This key needs to live
   // in the main app's bundle because it will be set differently on the canary
   // channel, and the autoupdate system dictates that there can be no
@@ -96,14 +85,13 @@ std::string ProductDirName() {
   // browser .app's Info.plist for the CrProductDirName key.
   static const char* product_dir_name =
       ProductDirNameForBundle(chrome::OuterAppBundle());
-#endif
   return std::string(product_dir_name);
 }
 
 bool GetDefaultUserDataDirectoryForProduct(const std::string& product_dir,
                                            base::FilePath* result) {
   bool success = false;
-  if (result && PathService::Get(base::DIR_APP_DATA, result)) {
+  if (result && base::PathService::Get(base::DIR_APP_DATA, result)) {
     *result = result->Append(product_dir);
     success = true;
   }
@@ -134,10 +122,10 @@ void GetUserCacheDirectory(const base::FilePath& profile_dir,
   *result = profile_dir;
 
   base::FilePath app_data_dir;
-  if (!PathService::Get(base::DIR_APP_DATA, &app_data_dir))
+  if (!base::PathService::Get(base::DIR_APP_DATA, &app_data_dir))
     return;
   base::FilePath cache_dir;
-  if (!PathService::Get(base::DIR_CACHE, &cache_dir))
+  if (!base::PathService::Get(base::DIR_CACHE, &cache_dir))
     return;
   if (!app_data_dir.AppendRelativePath(profile_dir, &cache_dir))
     return;
@@ -161,15 +149,10 @@ bool GetUserVideosDirectory(base::FilePath* result) {
   return base::mac::GetUserDirectory(NSMoviesDirectory, result);
 }
 
-#if !defined(OS_IOS)
-
 base::FilePath GetVersionedDirectory() {
-  if (g_override_versioned_directory)
-    return *g_override_versioned_directory;
-
   // Start out with the path to the running executable.
   base::FilePath path;
-  PathService::Get(base::FILE_EXE, &path);
+  base::PathService::Get(base::FILE_EXE, &path);
 
   // One step up to MacOS, another to Contents.
   path = path.DirName().DirName();
@@ -187,13 +170,6 @@ base::FilePath GetVersionedDirectory() {
   }
 
   return path;
-}
-
-void SetOverrideVersionedDirectory(const base::FilePath* path) {
-  if (path != g_override_versioned_directory) {
-    delete g_override_versioned_directory;
-    g_override_versioned_directory = path;
-  }
 }
 
 base::FilePath GetFrameworkBundlePath() {
@@ -233,8 +209,6 @@ bool GetUserDataDirectoryForBrowserBundle(NSBundle* bundle,
       ProductDirNameForBundle(bundle));
   return GetDefaultUserDataDirectoryForProduct(product_dir_name.get(), result);
 }
-
-#endif  // !defined(OS_IOS)
 
 bool ProcessNeedsProfileDir(const std::string& process_type) {
   // For now we have no reason to forbid this on other MacOS as we don't

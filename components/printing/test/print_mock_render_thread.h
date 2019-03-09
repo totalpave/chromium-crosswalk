@@ -15,15 +15,17 @@
 #include "base/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "content/public/test/mock_render_thread.h"
+#include "printing/buildflags/buildflags.h"
 
 namespace base {
 class DictionaryValue;
 }
 
 class MockPrinter;
-struct PrintHostMsg_DidGetPreviewPageCount_Params;
+struct PrintHostMsg_DidStartPreview_Params;
 struct PrintHostMsg_DidPreviewPage_Params;
-struct PrintHostMsg_DidPrintPage_Params;
+struct PrintHostMsg_DidPrintDocument_Params;
+struct PrintHostMsg_PreviewIds;
 struct PrintHostMsg_ScriptedPrint_Params;
 struct PrintMsg_PrintPages_Params;
 struct PrintMsg_Print_Params;
@@ -35,16 +37,15 @@ class PrintMockRenderThread : public content::MockRenderThread {
   ~PrintMockRenderThread() override;
 
   // content::RenderThread overrides.
-  scoped_refptr<base::SingleThreadTaskRunner> GetIOMessageLoopProxy() override;
+  scoped_refptr<base::SingleThreadTaskRunner> GetIOTaskRunner() override;
 
   //////////////////////////////////////////////////////////////////////////
   // The following functions are called by the test itself.
 
-  // Set IO message loop proxy.
-  void set_io_message_loop_proxy(
+  void set_io_task_runner(
       const scoped_refptr<base::SingleThreadTaskRunner>& task_runner);
 
-#if defined(ENABLE_PRINTING)
+#if BUILDFLAG(ENABLE_PRINTING)
   // Returns the pseudo-printer instance.
   MockPrinter* printer();
 
@@ -57,39 +58,34 @@ class PrintMockRenderThread : public content::MockRenderThread {
 
   // Get the number of pages to generate for print preview.
   int print_preview_pages_remaining() const;
+
+  // Get a vector of print preview pages.
+  const std::vector<std::pair<int, uint32_t>>& print_preview_pages() const;
 #endif
 
  private:
   // Overrides base class implementation to add custom handling for print
   bool OnMessageReceived(const IPC::Message& msg) override;
 
-#if defined(ENABLE_PRINTING)
-#if defined(OS_CHROMEOS) || defined(OS_ANDROID)
-  void OnAllocateTempFileForPrinting(int render_view_id,
-                                     base::FileDescriptor* renderer_fd,
-                                     int* browser_fd);
-  void OnTempFileForPrintingWritten(int render_view_id, int browser_fd);
-#endif
-
-  // PrintWebViewHelper expects default print settings.
+#if BUILDFLAG(ENABLE_PRINTING)
+  // PrintRenderFrameHelper expects default print settings.
   void OnGetDefaultPrintSettings(PrintMsg_Print_Params* setting);
 
-  // PrintWebViewHelper expects final print settings from the user.
+  // PrintRenderFrameHelper expects final print settings from the user.
   void OnScriptedPrint(const PrintHostMsg_ScriptedPrint_Params& params,
                        PrintMsg_PrintPages_Params* settings);
 
   void OnDidGetPrintedPagesCount(int cookie, int number_pages);
-  void OnDidPrintPage(const PrintHostMsg_DidPrintPage_Params& params);
-#if defined(ENABLE_PRINT_PREVIEW)
-  void OnDidGetPreviewPageCount(
-      const PrintHostMsg_DidGetPreviewPageCount_Params& params);
-  void OnDidPreviewPage(const PrintHostMsg_DidPreviewPage_Params& params);
-  void OnCheckForCancel(int32_t preview_ui_id,
-                        int preview_request_id,
-                        bool* cancel);
+  void OnDidPrintDocument(const PrintHostMsg_DidPrintDocument_Params& params);
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+  void OnDidStartPreview(const PrintHostMsg_DidStartPreview_Params& params,
+                         const PrintHostMsg_PreviewIds& ids);
+  void OnDidPreviewPage(const PrintHostMsg_DidPreviewPage_Params& params,
+                        const PrintHostMsg_PreviewIds& ids);
+  void OnCheckForCancel(const PrintHostMsg_PreviewIds& ids, bool* cancel);
 #endif
 
-  // For print preview, PrintWebViewHelper will update settings.
+  // For print preview, PrintRenderFrameHelper will update settings.
   void OnUpdatePrintSettings(int document_cookie,
                              const base::DictionaryValue& job_settings,
                              PrintMsg_PrintPages_Params* params,
@@ -107,6 +103,9 @@ class PrintMockRenderThread : public content::MockRenderThread {
 
   // Number of pages to generate for print preview.
   int print_preview_pages_remaining_;
+
+  // Vector of <page_number, content_data_size> that were previewed.
+  std::vector<std::pair<int, uint32_t>> print_preview_pages_;
 #endif
 
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;

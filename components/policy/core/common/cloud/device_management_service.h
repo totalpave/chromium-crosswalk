@@ -7,7 +7,6 @@
 
 #include <stdint.h>
 
-#include <deque>
 #include <map>
 #include <memory>
 #include <string>
@@ -15,46 +14,62 @@
 
 #include "base/callback.h"
 #include "base/compiler_specific.h"
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "base/strings/string_split.h"
 #include "base/threading/thread_checker.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/policy_export.h"
-#include "net/url_request/url_fetcher_delegate.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
-
-namespace net {
-class URLRequestContextGetter;
+namespace base {
+class SequencedTaskRunner;
 }
+
+namespace network {
+class SharedURLLoaderFactory;
+class SimpleURLLoader;
+}  // namespace network
 
 namespace policy {
 
 class DeviceManagementRequestJobImpl;
 class DeviceManagementService;
+class DMAuth;
 
 // DeviceManagementRequestJob describes a request to send to the device
 // management service. Jobs are created by DeviceManagementService. They can be
 // canceled by deleting the object.
 class POLICY_EXPORT DeviceManagementRequestJob {
  public:
-  // Describes the job type.
+  // Describes the job type.  (Integer values are stated explicitly to
+  // facilitate reading of logs.)
   enum JobType {
-    TYPE_AUTO_ENROLLMENT,
-    TYPE_REGISTRATION,
-    TYPE_API_AUTH_CODE_FETCH,
-    TYPE_POLICY_FETCH,
-    TYPE_UNREGISTRATION,
-    TYPE_UPLOAD_CERTIFICATE,
-    TYPE_DEVICE_STATE_RETRIEVAL,
-    TYPE_UPLOAD_STATUS,
-    TYPE_REMOTE_COMMANDS,
-    TYPE_ATTRIBUTE_UPDATE_PERMISSION,
-    TYPE_ATTRIBUTE_UPDATE,
-    TYPE_GCM_ID_UPDATE,
-    TYPE_ANDROID_MANAGEMENT_CHECK,
+    TYPE_AUTO_ENROLLMENT = 0,
+    TYPE_REGISTRATION = 1,
+    TYPE_API_AUTH_CODE_FETCH = 2,
+    TYPE_POLICY_FETCH = 3,
+    TYPE_UNREGISTRATION = 4,
+    TYPE_UPLOAD_CERTIFICATE = 5,
+    TYPE_DEVICE_STATE_RETRIEVAL = 6,
+    TYPE_UPLOAD_STATUS = 7,
+    TYPE_REMOTE_COMMANDS = 8,
+    TYPE_ATTRIBUTE_UPDATE_PERMISSION = 9,
+    TYPE_ATTRIBUTE_UPDATE = 10,
+    TYPE_GCM_ID_UPDATE = 11,
+    TYPE_ANDROID_MANAGEMENT_CHECK = 12,
+    TYPE_CERT_BASED_REGISTRATION = 13,
+    TYPE_ACTIVE_DIRECTORY_ENROLL_PLAY_USER = 14,
+    TYPE_ACTIVE_DIRECTORY_PLAY_ACTIVITY = 15,
+    TYPE_REQUEST_LICENSE_TYPES = 16,
+    TYPE_UPLOAD_APP_INSTALL_REPORT = 17,
+    TYPE_TOKEN_ENROLLMENT = 18,
+    TYPE_CHROME_DESKTOP_REPORT = 19,
+    TYPE_INITIAL_ENROLLMENT_STATE_RETRIEVAL = 20,
+    TYPE_UPLOAD_POLICY_VALIDATION_REPORT = 21,
   };
 
   typedef base::Callback<
@@ -67,10 +82,22 @@ class POLICY_EXPORT DeviceManagementRequestJob {
 
   // Functions for configuring the job. These should only be called before
   // Start()ing the job, but never afterwards.
-  void SetGaiaToken(const std::string& gaia_token);
-  void SetOAuthToken(const std::string& oauth_token);
-  void SetDMToken(const std::string& dm_token);
   void SetClientID(const std::string& client_id);
+
+  // Sets authorization data that will be passed in 'Authorization' header of
+  // the request. This method does not accept OAuth token. Use
+  // SetOAuthTokenParameter() to pass OAuth token.
+  void SetAuthData(std::unique_ptr<DMAuth> auth);
+
+  // Sets OAuth token that will be passed as a request query parameter.
+  void SetOAuthTokenParameter(const std::string& oauth_token);
+
+  // Sets the critical request parameter, which is used to differentiate regular
+  // DMServer requests (like scheduled policy fetches) from time-sensitive ones
+  // (like policy fetch during device enrollment). Should only be called before
+  // Start()ing the job, at most once.
+  void SetCritical(bool critical);
+
   enterprise_management::DeviceManagementRequest* GetRequest();
 
   // A job may automatically retry if it fails due to a temporary condition, or
@@ -98,8 +125,15 @@ class POLICY_EXPORT DeviceManagementRequestJob {
 
   JobType type_;
   ParameterMap query_params_;
-  std::string gaia_token_;
-  std::string dm_token_;
+
+  // Auth data that will be passed as 'Authorization' header. Both |auth_data_|
+  // and |oauth_token_| can be specified for one request.
+  std::unique_ptr<DMAuth> auth_data_;
+
+  // OAuth token that will be passed as a query parameter. Both |auth_data_|
+  // and |oauth_token_| can be specified for one request.
+  base::Optional<std::string> oauth_token_;
+
   enterprise_management::DeviceManagementRequest request_;
   RetryCallback retry_callback_;
 
@@ -113,7 +147,7 @@ class POLICY_EXPORT DeviceManagementRequestJob {
 // communication with the device management server. It creates the backends
 // objects that the device management policy provider and friends use to issue
 // requests.
-class POLICY_EXPORT DeviceManagementService : public net::URLFetcherDelegate {
+class POLICY_EXPORT DeviceManagementService {
  public:
   // Obtains the parameters used to contact the server.
   // This allows creating the DeviceManagementService early and getting these
@@ -135,18 +169,13 @@ class POLICY_EXPORT DeviceManagementService : public net::URLFetcherDelegate {
 
   explicit DeviceManagementService(
       std::unique_ptr<Configuration> configuration);
-  ~DeviceManagementService() override;
-
-  // The ID of URLFetchers created by the DeviceManagementService. This can be
-  // used by tests that use a TestURLFetcherFactory to get the pending fetchers
-  // created by the DeviceManagementService.
-  static const int kURLFetcherID;
+  virtual ~DeviceManagementService();
 
   // Creates a new device management request job. Ownership is transferred to
   // the caller.
   virtual DeviceManagementRequestJob* CreateJob(
       DeviceManagementRequestJob::JobType type,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
 
   // Schedules a task to run |Initialize| after |delay_milliseconds| had passed.
   void ScheduleInitialization(int64_t delay_milliseconds);
@@ -157,19 +186,32 @@ class POLICY_EXPORT DeviceManagementService : public net::URLFetcherDelegate {
   // Gets the URL that the DMServer requests are sent to.
   std::string GetServerUrl();
 
+  // Called by SimpleURLLoader.
+  void OnURLLoaderComplete(network::SimpleURLLoader* url_loader,
+                           std::unique_ptr<std::string> response_body);
+
+  // Called by OnURLLoaderComplete, exposed publicly to ease unit testing.
+  void OnURLLoaderCompleteInternal(network::SimpleURLLoader* url_loader,
+                                   const std::string& response_body,
+                                   const std::string& mime_type,
+                                   int net_error,
+                                   int response_code,
+                                   bool was_fetched_via_proxy);
+
+  // Returns the SimpleURLLoader for testing. Expects that there's only one.
+  network::SimpleURLLoader* GetSimpleURLLoaderForTesting();
+
   // Sets the retry delay to a shorter time to prevent browser tests from
   // timing out.
   static void SetRetryDelayForTesting(long retryDelayMs);
 
  private:
-  typedef std::map<const net::URLFetcher*,
-                   DeviceManagementRequestJobImpl*> JobFetcherMap;
-  typedef std::deque<DeviceManagementRequestJobImpl*> JobQueue;
+  typedef std::map<const network::SimpleURLLoader*,
+                   DeviceManagementRequestJobImpl*>
+      JobFetcherMap;
+  typedef base::circular_deque<DeviceManagementRequestJobImpl*> JobQueue;
 
   friend class DeviceManagementRequestJobImpl;
-
-  // net::URLFetcherDelegate override.
-  void OnURLFetchComplete(const net::URLFetcher* source) override;
 
   // Starts processing any queued jobs.
   void Initialize();

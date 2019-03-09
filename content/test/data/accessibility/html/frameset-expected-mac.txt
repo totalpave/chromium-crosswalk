@@ -1,15 +1,18 @@
-#<skip -- Flaky failure crbug.com/414157>
 AXWebArea
-++AXUnknown
+++AXGroup
 ++++AXWebArea
 ++++++AXGroup
-++++++++AXStaticText AXValue='My favorite browser is'
-++++++++AXStaticText AXValue='ABC'
-++++++++AXStaticText AXValue='Chrome'
+++++++++AXStaticText AXValue='My favorite browser is '
+++++++++AXGroup
+++++++++++AXStaticText AXValue='ABC'
+++++++++AXStaticText AXValue=' '
+++++++++AXGroup
+++++++++++AXStaticText AXValue='Chrome'
 ++++++++AXStaticText AXValue='!'
-++AXUnknown
+++AXGroup
 ++++AXWebArea
 ++++++AXGroup
 ++++++++AXStaticText AXValue='This test is to check '
-++++++++AXStaticText AXValue='mark tag'
+++++++++AXGroup
+++++++++++AXStaticText AXValue='mark tag'
 ++++++++AXStaticText AXValue='.'

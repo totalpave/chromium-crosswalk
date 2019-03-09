@@ -52,26 +52,30 @@ class ExtensionServiceTestWithInstall : public ExtensionServiceTestBase,
   const Extension* PackAndInstallCRX(const base::FilePath& dir_path,
                                      const base::FilePath& pem_path,
                                      InstallState install_state,
-                                     int creation_flags);
+                                     int creation_flags,
+                                     Manifest::Location install_location);
   const Extension* PackAndInstallCRX(const base::FilePath& dir_path,
                                      const base::FilePath& pem_path,
                                      InstallState install_state);
   const Extension* PackAndInstallCRX(const base::FilePath& dir_path,
                                      InstallState install_state);
-
+  const Extension* PackAndInstallCRX(const base::FilePath& dir_path,
+                                     Manifest::Location install_location,
+                                     InstallState install_state);
   const Extension* InstallCRX(const base::FilePath& path,
                               InstallState install_state,
                               int creation_flags,
                               const std::string& expected_old_name);
+  const Extension* InstallCRX(const base::FilePath& path,
+                              Manifest::Location install_location,
+                              InstallState install_state,
+                              int creation_flags);
   const Extension* InstallCRX(const base::FilePath& path,
                               InstallState install_state,
                               int creation_flags);
   const Extension* InstallCRX(const base::FilePath& path,
                               InstallState install_state);
   const Extension* InstallCRXFromWebStore(const base::FilePath& path,
-                                          InstallState install_state);
-  const Extension* InstallCRXWithLocation(const base::FilePath& crx_path,
-                                          Manifest::Location install_location,
                                           InstallState install_state);
 
   // Verifies the result of a CRX installation. Used by InstallCRX. Set the
@@ -108,10 +112,7 @@ class ExtensionServiceTestWithInstall : public ExtensionServiceTestBase,
                        const base::FilePath& in_path,
                        UpdateState expected_state);
 
-  void UninstallExtension(const std::string& id, bool use_helper);
-  void UninstallExtension(const std::string& id,
-                          bool use_helper,
-                          Extension::State expected_state);
+  void UninstallExtension(const std::string& id);
 
   void TerminateExtension(const std::string& id);
 
@@ -120,7 +121,7 @@ class ExtensionServiceTestWithInstall : public ExtensionServiceTestBase,
                          const Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
   void OnExtensionWillBeInstalled(content::BrowserContext* browser_context,
                                   const Extension* extension,
                                   bool is_update,
@@ -132,10 +133,13 @@ class ExtensionServiceTestWithInstall : public ExtensionServiceTestBase,
   bool was_update_;
   std::string old_name_;
   std::string unloaded_id_;
-  UnloadedExtensionInfo::Reason unloaded_reason_;
+  UnloadedExtensionReason unloaded_reason_;
 
  private:
-  void InstallCRXInternal(const base::FilePath& crx_path, int creation_flags);
+  void InstallCRXInternal(const base::FilePath& crx_path,
+                          Manifest::Location install_location,
+                          InstallState install_state,
+                          int creation_flags);
 
   size_t expected_extensions_count_;
 

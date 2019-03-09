@@ -9,22 +9,11 @@ mojom("interfaces") {
     "event.mojom",
     "event_constants.mojom",
     "keyboard_codes.mojom",
-    "latency_info.mojom",
   ]
 
   public_deps = [
-    "//mojo/common:common_custom_types",
+    "//mojo/public/mojom/base",
     "//ui/gfx/geometry/mojo",
-  ]
-}
-
-mojom("test_interfaces") {
-  testonly = true
-  sources = [
-    "traits_test_service.mojom",
-  ]
-
-  public_deps = [
-    ":interfaces",
+    "//ui/latency/mojo:interfaces",
   ]
 }

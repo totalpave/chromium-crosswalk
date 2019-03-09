@@ -10,10 +10,10 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/lazy_instance.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/threading/thread_local.h"
 #include "base/trace_event/trace_event.h"
-#include "third_party/webrtc/base/nullsocketserver.h"
+#include "third_party/webrtc/rtc_base/null_socket_server.h"
 
 namespace jingle_glue {
 
@@ -31,13 +31,13 @@ struct JingleThreadWrapper::PendingSend {
   base::WaitableEvent done_event;
 };
 
-base::LazyInstance<base::ThreadLocalPointer<JingleThreadWrapper> >
-    g_jingle_thread_wrapper = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::ThreadLocalPointer<JingleThreadWrapper>>::
+    DestructorAtExit g_jingle_thread_wrapper = LAZY_INSTANCE_INITIALIZER;
 
 // static
 void JingleThreadWrapper::EnsureForCurrentMessageLoop() {
   if (JingleThreadWrapper::current() == nullptr) {
-    base::MessageLoop* message_loop = base::MessageLoop::current();
+    base::MessageLoopCurrent message_loop = base::MessageLoopCurrent::Get();
     std::unique_ptr<JingleThreadWrapper> wrapper =
         JingleThreadWrapper::WrapTaskRunner(message_loop->task_runner());
     message_loop->AddDestructionObserver(wrapper.release());
@@ -161,9 +161,6 @@ void JingleThreadWrapper::Send(const rtc::Location& posted_from,
                                rtc::MessageHandler* handler,
                                uint32_t id,
                                rtc::MessageData* data) {
-  if (fStop_)
-    return;
-
   JingleThreadWrapper* current_thread = JingleThreadWrapper::current();
   DCHECK(current_thread != nullptr) << "Send() can be called only from a "
       "thread that has JingleThreadWrapper.";
@@ -195,15 +192,14 @@ void JingleThreadWrapper::Send(const rtc::Location& posted_from,
   // Need to signal |pending_send_event_| here in case the thread is
   // sending message to another thread.
   pending_send_event_.Signal();
-  task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&JingleThreadWrapper::ProcessPendingSends,
-                                    weak_ptr_));
-
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&JingleThreadWrapper::ProcessPendingSends, weak_ptr_));
 
   while (!pending_send.done_event.IsSignaled()) {
     base::WaitableEvent* events[] = {&pending_send.done_event,
                                      &current_thread->pending_send_event_};
-    size_t event = base::WaitableEvent::WaitMany(events, arraysize(events));
+    size_t event = base::WaitableEvent::WaitMany(events, base::size(events));
     DCHECK(event == 0 || event == 1);
 
     if (event == 1)
@@ -250,14 +246,14 @@ void JingleThreadWrapper::PostTaskInternal(const rtc::Location& posted_from,
   }
 
   if (delay_ms <= 0) {
-    task_runner_->PostTask(FROM_HERE,
-                           base::Bind(&JingleThreadWrapper::RunTask,
-                                      weak_ptr_, task_id));
+    task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&JingleThreadWrapper::RunTask, weak_ptr_, task_id));
   } else {
-    task_runner_->PostDelayedTask(FROM_HERE,
-                                  base::Bind(&JingleThreadWrapper::RunTask,
-                                             weak_ptr_, task_id),
-                                  base::TimeDelta::FromMilliseconds(delay_ms));
+    task_runner_->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&JingleThreadWrapper::RunTask, weak_ptr_, task_id),
+        base::TimeDelta::FromMilliseconds(delay_ms));
   }
 }
 
@@ -284,15 +280,15 @@ void JingleThreadWrapper::RunTask(int task_id) {
   }
 }
 
+bool JingleThreadWrapper::IsQuitting() {
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
+}
+
 // All methods below are marked as not reached. See comments in the
 // header for more details.
 void JingleThreadWrapper::Quit() {
   NOTREACHED();
-}
-
-bool JingleThreadWrapper::IsQuitting() {
-  NOTREACHED();
-  return false;
 }
 
 void JingleThreadWrapper::Restart() {

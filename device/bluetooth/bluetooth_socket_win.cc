@@ -10,13 +10,14 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/threading/thread_restrictions.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "device/bluetooth/bluetooth_device_win.h"
 #include "device/bluetooth/bluetooth_init_win.h"
 #include "device/bluetooth/bluetooth_service_record_win.h"
@@ -26,6 +27,7 @@
 #include "net/base/net_errors.h"
 #include "net/base/winsock_init.h"
 #include "net/base/winsock_util.h"
+#include "net/log/net_log_source.h"
 
 namespace {
 
@@ -77,9 +79,9 @@ scoped_refptr<BluetoothSocketWin>
 BluetoothSocketWin::CreateBluetoothSocket(
     scoped_refptr<base::SequencedTaskRunner> ui_task_runner,
     scoped_refptr<device::BluetoothSocketThread> socket_thread) {
-  DCHECK(ui_task_runner->RunsTasksOnCurrentThread());
+  DCHECK(ui_task_runner->RunsTasksInCurrentSequence());
 
-  return make_scoped_refptr(
+  return base::WrapRefCounted(
       new BluetoothSocketWin(ui_task_runner, socket_thread));
 }
 
@@ -100,7 +102,7 @@ void BluetoothSocketWin::Connect(
     const BluetoothUUID& uuid,
     const base::Closure& success_callback,
     const ErrorCompletionCallback& error_callback) {
-  DCHECK(ui_task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(ui_task_runner()->RunsTasksInCurrentSequence());
   DCHECK(device);
 
   if (!uuid.IsValid()) {
@@ -124,12 +126,11 @@ void BluetoothSocketWin::Connect(
 
   socket_thread()->task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(
-          &BluetoothSocketWin::DoConnect,
-          this,
+      base::BindOnce(
+          &BluetoothSocketWin::DoConnect, this,
           base::Bind(&BluetoothSocketWin::PostSuccess, this, success_callback),
-          base::Bind(
-              &BluetoothSocketWin::PostErrorCompletion, this, error_callback)));
+          base::Bind(&BluetoothSocketWin::PostErrorCompletion, this,
+                     error_callback)));
 }
 
 void BluetoothSocketWin::Listen(scoped_refptr<BluetoothAdapter> adapter,
@@ -137,7 +138,7 @@ void BluetoothSocketWin::Listen(scoped_refptr<BluetoothAdapter> adapter,
                                 const BluetoothAdapter::ServiceOptions& options,
                                 const base::Closure& success_callback,
                                 const ErrorCompletionCallback& error_callback) {
-  DCHECK(ui_task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(ui_task_runner()->RunsTasksInCurrentSequence());
 
   adapter_ = adapter;
   int rfcomm_channel = options.channel ? *options.channel : 0;
@@ -145,12 +146,8 @@ void BluetoothSocketWin::Listen(scoped_refptr<BluetoothAdapter> adapter,
   // TODO(xiyuan): Use |options.name|.
   socket_thread()->task_runner()->PostTask(
       FROM_HERE,
-      base::Bind(&BluetoothSocketWin::DoListen,
-                 this,
-                 uuid,
-                 rfcomm_channel,
-                 success_callback,
-                 error_callback));
+      base::BindOnce(&BluetoothSocketWin::DoListen, this, uuid, rfcomm_channel,
+                     success_callback, error_callback));
 }
 
 void BluetoothSocketWin::ResetData() {
@@ -166,21 +163,19 @@ void BluetoothSocketWin::ResetData() {
 void BluetoothSocketWin::Accept(
     const AcceptCompletionCallback& success_callback,
     const ErrorCompletionCallback& error_callback) {
-  DCHECK(ui_task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(ui_task_runner()->RunsTasksInCurrentSequence());
 
   socket_thread()->task_runner()->PostTask(
-      FROM_HERE,
-      base::Bind(&BluetoothSocketWin::DoAccept,
-                 this,
-                 success_callback,
-                 error_callback));
+      FROM_HERE, base::BindOnce(&BluetoothSocketWin::DoAccept, this,
+                                success_callback, error_callback));
 }
 
 void BluetoothSocketWin::DoConnect(
     const base::Closure& success_callback,
     const ErrorCompletionCallback& error_callback) {
-  DCHECK(socket_thread()->task_runner()->RunsTasksOnCurrentThread());
-  base::ThreadRestrictions::AssertIOAllowed();
+  DCHECK(socket_thread()->task_runner()->RunsTasksInCurrentSequence());
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
 
   if (tcp_socket()) {
     error_callback.Run(kSocketAlreadyConnected);
@@ -194,7 +189,7 @@ void BluetoothSocketWin::DoConnect(
   }
 
   std::unique_ptr<net::TCPSocket> scoped_socket(
-      new net::TCPSocket(NULL, NULL, net::NetLog::Source()));
+      new net::TCPSocket(NULL, NULL, net::NetLogSource()));
   net::EnsureWinsockInit();
   SOCKET socket_fd = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
   SOCKADDR_BTH sa;
@@ -236,7 +231,7 @@ void BluetoothSocketWin::DoListen(
     int rfcomm_channel,
     const base::Closure& success_callback,
     const ErrorCompletionCallback& error_callback) {
-  DCHECK(socket_thread()->task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(socket_thread()->task_runner()->RunsTasksInCurrentSequence());
   DCHECK(!tcp_socket() && !service_reg_data_);
 
   // The valid range is 0-30. 0 means BT_PORT_ANY and 1-30 are the
@@ -261,8 +256,8 @@ void BluetoothSocketWin::DoListen(
   // TCPSocket methods that involve address could not be called. So bind()
   // is called on |socket_fd| directly.
   std::unique_ptr<net::TCPSocket> scoped_socket(
-      new net::TCPSocket(NULL, NULL, net::NetLog::Source()));
-  scoped_socket->AdoptListenSocket(socket_fd);
+      new net::TCPSocket(NULL, NULL, net::NetLogSource()));
+  scoped_socket->AdoptUnconnectedSocket(socket_fd);
 
   SOCKADDR_BTH sa;
   struct sockaddr* sock_addr = reinterpret_cast<struct sockaddr*>(&sa);
@@ -336,7 +331,7 @@ void BluetoothSocketWin::DoListen(
 void BluetoothSocketWin::DoAccept(
     const AcceptCompletionCallback& success_callback,
     const ErrorCompletionCallback& error_callback) {
-  DCHECK(socket_thread()->task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(socket_thread()->task_runner()->RunsTasksInCurrentSequence());
   int result = tcp_socket()->Accept(
       &accept_socket_,
       &accept_address_,
@@ -354,7 +349,7 @@ void BluetoothSocketWin::OnAcceptOnSocketThread(
     const AcceptCompletionCallback& success_callback,
     const ErrorCompletionCallback& error_callback,
     int accept_result) {
-  DCHECK(socket_thread()->task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(socket_thread()->task_runner()->RunsTasksInCurrentSequence());
   if (accept_result != net::OK) {
     LOG(WARNING) << "OnAccept error, net err=" << accept_result;
     PostErrorCompletion(error_callback, kFailedToAccept);
@@ -362,13 +357,9 @@ void BluetoothSocketWin::OnAcceptOnSocketThread(
   }
 
   ui_task_runner()->PostTask(
-    FROM_HERE,
-    base::Bind(&BluetoothSocketWin::OnAcceptOnUI,
-               this,
-               base::Passed(&accept_socket_),
-               accept_address_,
-               success_callback,
-               error_callback));
+      FROM_HERE, base::BindOnce(&BluetoothSocketWin::OnAcceptOnUI, this,
+                                std::move(accept_socket_), accept_address_,
+                                success_callback, error_callback));
 }
 
 void BluetoothSocketWin::OnAcceptOnUI(
@@ -376,7 +367,7 @@ void BluetoothSocketWin::OnAcceptOnUI(
     const net::IPEndPoint& peer_address,
     const AcceptCompletionCallback& success_callback,
     const ErrorCompletionCallback& error_callback) {
-  DCHECK(ui_task_runner()->RunsTasksOnCurrentThread());
+  DCHECK(ui_task_runner()->RunsTasksInCurrentSequence());
 
   const std::string peer_device_address =
       IPEndPointToBluetoothAddress(peer_address);

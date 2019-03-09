@@ -5,6 +5,7 @@
 #include "media/base/fake_demuxer_stream.h"
 
 #include <stdint.h>
+#include <memory>
 
 #include <vector>
 
@@ -12,12 +13,12 @@
 #include "base/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "media/base/bind_to_current_loop.h"
 #include "media/base/decoder_buffer.h"
+#include "media/base/decrypt_config.h"
 #include "media/base/media_util.h"
 #include "media/base/test_helpers.h"
 #include "media/base/timestamp_constants.h"
@@ -52,7 +53,7 @@ FakeDemuxerStream::FakeDemuxerStream(int num_configs,
   UpdateVideoDecoderConfig();
 }
 
-FakeDemuxerStream::~FakeDemuxerStream() {}
+FakeDemuxerStream::~FakeDemuxerStream() = default;
 
 void FakeDemuxerStream::Initialize() {
   DCHECK_EQ(-1, read_to_hold_);
@@ -61,14 +62,13 @@ void FakeDemuxerStream::Initialize() {
   num_buffers_returned_ = 0;
   current_timestamp_ = base::TimeDelta::FromMilliseconds(kStartTimestampMs);
   duration_ = base::TimeDelta::FromMilliseconds(kDurationMs);
-  splice_timestamp_ = kNoTimestamp();
   next_coded_size_ = gfx::Size(kStartWidth, kStartHeight);
   next_read_num_ = 0;
 }
 
 void FakeDemuxerStream::Read(const ReadCB& read_cb) {
   DCHECK(task_runner_->BelongsToCurrentThread());
-  DCHECK(read_cb_.is_null());
+  DCHECK(!read_cb_);
 
   read_cb_ = BindToCurrentLoop(read_cb);
 
@@ -100,10 +100,6 @@ bool FakeDemuxerStream::SupportsConfigChanges() {
   return config_changes_;
 }
 
-VideoRotation FakeDemuxerStream::video_rotation() {
-  return VIDEO_ROTATION_0;
-}
-
 void FakeDemuxerStream::HoldNextRead() {
   DCHECK(task_runner_->BelongsToCurrentThread());
   read_to_hold_ = next_read_num_;
@@ -119,7 +115,7 @@ void FakeDemuxerStream::HoldNextConfigChangeRead() {
 void FakeDemuxerStream::SatisfyRead() {
   DCHECK(task_runner_->BelongsToCurrentThread());
   DCHECK_EQ(read_to_hold_, next_read_num_);
-  DCHECK(!read_cb_.is_null());
+  DCHECK(read_cb_);
 
   read_to_hold_ = -1;
   DoRead();
@@ -128,7 +124,7 @@ void FakeDemuxerStream::SatisfyRead() {
 void FakeDemuxerStream::SatisfyReadAndHoldNext() {
   DCHECK(task_runner_->BelongsToCurrentThread());
   DCHECK_EQ(read_to_hold_, next_read_num_);
-  DCHECK(!read_cb_.is_null());
+  DCHECK(read_cb_);
 
   ++read_to_hold_;
   DoRead();
@@ -137,8 +133,15 @@ void FakeDemuxerStream::SatisfyReadAndHoldNext() {
 void FakeDemuxerStream::Reset() {
   read_to_hold_ = -1;
 
-  if (!read_cb_.is_null())
-    base::ResetAndReturn(&read_cb_).Run(kAborted, NULL);
+  if (read_cb_)
+    std::move(read_cb_).Run(kAborted, NULL);
+}
+
+void FakeDemuxerStream::Error() {
+  read_to_hold_ = -1;
+
+  if (read_cb_)
+    std::move(read_cb_).Run(kError, nullptr);
 }
 
 void FakeDemuxerStream::SeekToStart() {
@@ -154,31 +157,30 @@ void FakeDemuxerStream::SeekToEndOfStream() {
 void FakeDemuxerStream::UpdateVideoDecoderConfig() {
   const gfx::Rect kVisibleRect(kStartWidth, kStartHeight);
   video_decoder_config_.Initialize(
-      kCodecVP8, VIDEO_CODEC_PROFILE_UNKNOWN, PIXEL_FORMAT_YV12,
-      COLOR_SPACE_UNSPECIFIED, next_coded_size_, kVisibleRect, next_coded_size_,
-      EmptyExtraData(),
+      kCodecVP8, VIDEO_CODEC_PROFILE_UNKNOWN, PIXEL_FORMAT_I420,
+      VideoColorSpace(), VIDEO_ROTATION_0, next_coded_size_, kVisibleRect,
+      next_coded_size_, EmptyExtraData(),
       is_encrypted_ ? AesCtrEncryptionScheme() : Unencrypted());
   next_coded_size_.Enlarge(kWidthDelta, kHeightDelta);
 }
 
 void FakeDemuxerStream::DoRead() {
   DCHECK(task_runner_->BelongsToCurrentThread());
-  DCHECK(!read_cb_.is_null());
+  DCHECK(read_cb_);
 
   next_read_num_++;
 
   if (num_buffers_left_in_current_config_ == 0) {
     // End of stream.
     if (num_configs_left_ == 0) {
-      base::ResetAndReturn(&read_cb_).Run(kOk,
-                                          DecoderBuffer::CreateEOSBuffer());
+      std::move(read_cb_).Run(kOk, DecoderBuffer::CreateEOSBuffer());
       return;
     }
 
     // Config change.
     num_buffers_left_in_current_config_ = num_buffers_in_one_config_;
     UpdateVideoDecoderConfig();
-    base::ResetAndReturn(&read_cb_).Run(kConfigChanged, NULL);
+    std::move(read_cb_).Run(kConfigChanged, NULL);
     return;
   }
 
@@ -187,14 +189,13 @@ void FakeDemuxerStream::DoRead() {
 
   // TODO(xhwang): Output out-of-order buffers if needed.
   if (is_encrypted_) {
-    buffer->set_decrypt_config(base::WrapUnique(
-        new DecryptConfig(std::string(kKeyId, kKeyId + arraysize(kKeyId)),
-                          std::string(kIv, kIv + arraysize(kIv)),
-                          std::vector<SubsampleEntry>())));
+    buffer->set_decrypt_config(DecryptConfig::CreateCencConfig(
+        std::string(kKeyId, kKeyId + base::size(kKeyId)),
+        std::string(kIv, kIv + base::size(kIv)),
+        std::vector<SubsampleEntry>()));
   }
   buffer->set_timestamp(current_timestamp_);
   buffer->set_duration(duration_);
-  buffer->set_splice_timestamp(splice_timestamp_);
   current_timestamp_ += duration_;
 
   num_buffers_left_in_current_config_--;
@@ -202,25 +203,22 @@ void FakeDemuxerStream::DoRead() {
     num_configs_left_--;
 
   num_buffers_returned_++;
-  base::ResetAndReturn(&read_cb_).Run(kOk, buffer);
+  std::move(read_cb_).Run(kOk, buffer);
 }
 
-FakeDemuxerStreamProvider::FakeDemuxerStreamProvider(
-    int num_video_configs,
-    int num_video_buffers_in_one_config,
-    bool is_video_encrypted)
+FakeMediaResource::FakeMediaResource(int num_video_configs,
+                                     int num_video_buffers_in_one_config,
+                                     bool is_video_encrypted)
     : fake_video_stream_(num_video_configs,
                          num_video_buffers_in_one_config,
-                         is_video_encrypted) {
-}
+                         is_video_encrypted) {}
 
-FakeDemuxerStreamProvider::~FakeDemuxerStreamProvider() {
-}
+FakeMediaResource::~FakeMediaResource() = default;
 
-DemuxerStream* FakeDemuxerStreamProvider::GetStream(DemuxerStream::Type type) {
-  if (type == DemuxerStream::Type::AUDIO)
-    return nullptr;
-  return &fake_video_stream_;
-};
+std::vector<DemuxerStream*> FakeMediaResource::GetAllStreams() {
+  std::vector<DemuxerStream*> result;
+  result.push_back(&fake_video_stream_);
+  return result;
+}
 
 }  // namespace media

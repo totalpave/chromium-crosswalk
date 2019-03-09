@@ -6,30 +6,23 @@
 
 #include <utility>
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/tab_contents/tab_util.h"
+#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/external_protocol_dialog_delegate.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/chrome_typography.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/text_elider.h"
-#include "ui/views/controls/message_box_view.h"
+#include "ui/views/controls/button/checkbox.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/layout/fill_layout.h"
 #include "ui/views/widget/widget.h"
 
 using content::WebContents;
-
-namespace {
-
-const int kMessageWidth = 400;
-
-}  // namespace
-
-///////////////////////////////////////////////////////////////////////////////
-// ExternalProtocolHandler
 
 // static
 void ExternalProtocolHandler::RunExternalProtocolDialog(
@@ -48,14 +41,16 @@ void ExternalProtocolHandler::RunExternalProtocolDialog(
                              routing_id);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// ExternalProtocolDialog
+ExternalProtocolDialog::~ExternalProtocolDialog() {}
 
-ExternalProtocolDialog::~ExternalProtocolDialog() {
+gfx::Size ExternalProtocolDialog::CalculatePreferredSize() const {
+  constexpr int kDialogContentWidth = 400;
+  return gfx::Size(kDialogContentWidth, GetHeightForWidth(kDialogContentWidth));
 }
 
-//////////////////////////////////////////////////////////////////////////////
-// ExternalProtocolDialog, views::DialogDelegate implementation:
+bool ExternalProtocolDialog::ShouldShowCloseButton() const {
+  return false;
+}
 
 int ExternalProtocolDialog::GetDefaultDialogButton() const {
   return ui::DIALOG_BUTTON_CANCEL;
@@ -63,27 +58,16 @@ int ExternalProtocolDialog::GetDefaultDialogButton() const {
 
 base::string16 ExternalProtocolDialog::GetDialogButtonLabel(
     ui::DialogButton button) const {
-  if (button == ui::DIALOG_BUTTON_OK)
-    return l10n_util::GetStringUTF16(IDS_EXTERNAL_PROTOCOL_OK_BUTTON_TEXT);
-  else
-    return l10n_util::GetStringUTF16(IDS_EXTERNAL_PROTOCOL_CANCEL_BUTTON_TEXT);
+  return delegate_->GetDialogButtonLabel(button);
 }
 
 base::string16 ExternalProtocolDialog::GetWindowTitle() const {
   return delegate_->GetTitleText();
 }
 
-void ExternalProtocolDialog::DeleteDelegate() {
-  delete this;
-}
-
 bool ExternalProtocolDialog::Cancel() {
-  // We also get called back here if the user closes the dialog or presses
-  // escape. In these cases it would be preferable to ignore the state of the
-  // check box but MessageBox doesn't distinguish this from pressing the cancel
-  // button.
-  delegate_->DoCancel(delegate_->url(),
-                      message_box_view_->IsCheckBoxSelected());
+  ExternalProtocolHandler::RecordHandleStateMetrics(
+      false /* checkbox_selected */, ExternalProtocolHandler::BLOCK);
 
   // Returning true closes the dialog.
   return true;
@@ -96,31 +80,19 @@ bool ExternalProtocolDialog::Accept() {
   UMA_HISTOGRAM_LONG_TIMES("clickjacking.launch_url",
                            base::TimeTicks::Now() - creation_time_);
 
-  delegate_->DoAccept(delegate_->url(),
-                      message_box_view_->IsCheckBoxSelected());
+  const bool remember = remember_decision_checkbox_->checked();
+  ExternalProtocolHandler::RecordHandleStateMetrics(
+      remember, ExternalProtocolHandler::DONT_BLOCK);
+
+  delegate_->DoAccept(delegate_->url(), remember);
 
   // Returning true closes the dialog.
   return true;
 }
 
-views::View* ExternalProtocolDialog::GetContentsView() {
-  return message_box_view_;
-}
-
-views::Widget* ExternalProtocolDialog::GetWidget() {
-  return message_box_view_->GetWidget();
-}
-
-const views::Widget* ExternalProtocolDialog::GetWidget() const {
-  return message_box_view_->GetWidget();
-}
-
 ui::ModalType ExternalProtocolDialog::GetModalType() const {
   return ui::MODAL_TYPE_CHILD;
 }
-
-///////////////////////////////////////////////////////////////////////////////
-// ExternalProtocolDialog, private:
 
 ExternalProtocolDialog::ExternalProtocolDialog(
     std::unique_ptr<const ProtocolDialogDelegate> delegate,
@@ -130,10 +102,16 @@ ExternalProtocolDialog::ExternalProtocolDialog(
       render_process_host_id_(render_process_host_id),
       routing_id_(routing_id),
       creation_time_(base::TimeTicks::Now()) {
-  views::MessageBoxView::InitParams params(delegate_->GetMessageText());
-  params.message_width = kMessageWidth;
-  message_box_view_ = new views::MessageBoxView(params);
-  message_box_view_->SetCheckBoxLabel(delegate_->GetCheckboxText());
+  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
+  set_margins(
+      provider->GetDialogInsetsForContentType(views::TEXT, views::TEXT));
+
+  SetLayoutManager(std::make_unique<views::FillLayout>());
+
+  DCHECK(delegate_->GetMessageText().empty());
+  remember_decision_checkbox_ =
+      new views::Checkbox(delegate_->GetCheckboxText());
+  AddChildView(remember_decision_checkbox_);
 
   WebContents* web_contents = tab_util::GetWebContentsByID(
       render_process_host_id_, routing_id_);
@@ -141,4 +119,5 @@ ExternalProtocolDialog::ExternalProtocolDialog(
   // request.
   if (web_contents)
     constrained_window::ShowWebModalDialogViews(this, web_contents);
+  chrome::RecordDialogCreation(chrome::DialogIdentifier::EXTERNAL_PROTOCOL);
 }

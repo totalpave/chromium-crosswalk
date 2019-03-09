@@ -6,11 +6,11 @@
 
 #include <algorithm>
 
+#include "ui/gfx/color_palette.h"
+#include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/paint_vector_icon.h"
+
 namespace message_center {
-
-// Within a notification ///////////////////////////////////////////////////////
-
-// Limits.
 
 gfx::Size GetImageSizeForContainerSize(const gfx::Size& container_size,
                                        const gfx::Size& image_size) {

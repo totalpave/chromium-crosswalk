@@ -6,10 +6,9 @@
 
 #include "base/logging.h"
 #include "base/memory/singleton.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "ui/base/resource/resource_bundle.h"
 
 namespace safe_browsing {
@@ -40,7 +39,7 @@ FileTypePolicies::FileTypePolicies() {
   // This should normally never be used.
   last_resort_default_.set_uma_value(-1l);
   last_resort_default_.set_ping_setting(DownloadFileType::NO_PING);
-  auto settings = last_resort_default_.add_platform_settings();
+  auto* settings = last_resort_default_.add_platform_settings();
   settings->set_danger_level(DownloadFileType::ALLOW_ON_USER_GESTURE);
   settings->set_auto_open_hint(DownloadFileType::DISALLOW_AUTO_OPEN);
 }
@@ -58,15 +57,14 @@ void FileTypePolicies::RecordUpdateMetrics(UpdateResult result,
                                            const std::string& src_name) {
   lock_.AssertAcquired();
   // src_name should be "ResourceBundle" or "DynamicUpdate".
-  UMA_HISTOGRAM_SPARSE_SLOWLY(
-      "SafeBrowsing.FileTypeUpdate." + src_name + "Result",
-      static_cast<unsigned int>(result));
+  base::UmaHistogramSparse("SafeBrowsing.FileTypeUpdate." + src_name + "Result",
+                           static_cast<unsigned int>(result));
 
   if (result == UpdateResult::SUCCESS) {
-    UMA_HISTOGRAM_SPARSE_SLOWLY(
+    base::UmaHistogramSparse(
         "SafeBrowsing.FileTypeUpdate." + src_name + "Version",
         config_->version_id());
-    UMA_HISTOGRAM_SPARSE_SLOWLY(
+    base::UmaHistogramSparse(
         "SafeBrowsing.FileTypeUpdate." + src_name + "TypeCount",
         config_->file_types().size());
   }
@@ -252,6 +250,24 @@ DownloadFileType::DangerLevel FileTypePolicies::GetFileDangerLevel(
   const std::string ext = CanonicalizedExtension(file);
   AutoLock lock(lock_);
   return PolicyForExtension(ext).platform_settings(0).danger_level();
+}
+
+uint64_t FileTypePolicies::GetMaxFileSizeToAnalyze(
+    const std::string& ascii_ext) const {
+  AutoLock lock(lock_);
+  return PolicyForExtension(ascii_ext)
+      .platform_settings(0)
+      .max_file_size_to_analyze();
+}
+
+uint64_t FileTypePolicies::GetMaxArchivedBinariesToReport() const {
+  AutoLock lock(lock_);
+  if (!config_ || !config_->has_max_archived_binaries_to_report()) {
+    // The resource bundle may be corrupted.
+    DCHECK(false);
+    return 10;  // reasonable default
+  }
+  return config_->max_archived_binaries_to_report();
 }
 
 }  // namespace safe_browsing

@@ -5,26 +5,24 @@
 #include "chrome/browser/icon_loader.h"
 
 #include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "base/nix/mime_util_xdg.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "ui/views/linux_ui/linux_ui.h"
 
 // static
-IconGroupID IconLoader::ReadGroupIDFromFilepath(
-    const base::FilePath& filepath) {
-  return base::nix::GetFileMimeType(filepath);
+IconLoader::IconGroup IconLoader::GroupForFilepath(
+    const base::FilePath& file_path) {
+  return base::nix::GetFileMimeType(file_path);
 }
 
 // static
-bool IconLoader::IsIconMutableFromFilepath(const base::FilePath&) {
-  return false;
-}
-
-// static
-content::BrowserThread::ID IconLoader::ReadIconThreadID() {
-  // ReadIcon() calls into views::LinuxUI and GTK2 code, so it must be on the UI
+scoped_refptr<base::TaskRunner> IconLoader::GetReadIconTaskRunner() {
+  // ReadIcon() calls into views::LinuxUI and GTK code, so it must be on the UI
   // thread.
-  return content::BrowserThread::UI;
+  return base::CreateSingleThreadTaskRunnerWithTraits(
+      {content::BrowserThread::UI});
 }
 
 void IconLoader::ReadIcon() {
@@ -43,13 +41,17 @@ void IconLoader::ReadIcon() {
       NOTREACHED();
   }
 
+  std::unique_ptr<gfx::Image> image;
   views::LinuxUI* ui = views::LinuxUI::instance();
   if (ui) {
-    gfx::Image image = ui->GetIconForContentType(group_, size_pixels);
-    if (!image.IsEmpty())
-      image_.reset(new gfx::Image(image));
+    image = std::make_unique<gfx::Image>(
+        ui->GetIconForContentType(group_, size_pixels));
+    if (image->IsEmpty())
+      image = nullptr;
   }
 
   target_task_runner_->PostTask(
-      FROM_HERE, base::Bind(&IconLoader::NotifyDelegate, this));
+      FROM_HERE,
+      base::BindOnce(std::move(callback_), std::move(image), group_));
+  delete this;
 }

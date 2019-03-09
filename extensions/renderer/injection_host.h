@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef EXTENSIONS_RENDERER_INJECTION_HOST_H
-#define EXTENSIONS_RENDERER_INJECTION_HOST_H
+#ifndef EXTENSIONS_RENDERER_INJECTION_HOST_H_
+#define EXTENSIONS_RENDERER_INJECTION_HOST_H_
 
 #include "base/macros.h"
 #include "extensions/common/host_id.h"
@@ -20,7 +20,10 @@ class InjectionHost {
   InjectionHost(const HostID& host_id);
   virtual ~InjectionHost();
 
-  virtual std::string GetContentSecurityPolicy() const = 0;
+  // Returns the CSP to be used for the isolated world. Currently this only
+  // bypasses the main world CSP. If null is returned, the main world CSP is not
+  // bypassed.
+  virtual const std::string* GetContentSecurityPolicy() const = 0;
 
   // The base url for the host.
   virtual const GURL& url() const = 0;
@@ -29,7 +32,7 @@ class InjectionHost {
   virtual const std::string& name() const = 0;
 
   // Returns true if the script should execute.
-  virtual extensions::PermissionsData::AccessType CanExecuteOnFrame(
+  virtual extensions::PermissionsData::PageAccess CanExecuteOnFrame(
       const GURL& document_url,
       content::RenderFrame* render_frame,
       int tab_id,
@@ -44,4 +47,4 @@ class InjectionHost {
   DISALLOW_COPY_AND_ASSIGN(InjectionHost);
 };
 
-#endif  // EXTENSIONS_RENDERER_INJECTION_HOST_H
+#endif  // EXTENSIONS_RENDERER_INJECTION_HOST_H_

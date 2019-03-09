@@ -4,38 +4,43 @@
 
 package org.chromium.chrome.browser.customtabs;
 
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
-import android.net.Uri;
-import android.os.AsyncTask;
+import android.graphics.drawable.Drawable;
+import android.support.v4.graphics.drawable.DrawableCompat;
+import android.support.v7.content.res.AppCompatResources;
+import android.text.TextUtils;
 import android.view.Menu;
 import android.view.MenuItem;
 
-import org.chromium.base.BuildInfo;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.DefaultBrowserInfo;
+import org.chromium.chrome.browser.UrlConstants;
 import org.chromium.chrome.browser.appmenu.AppMenuPropertiesDelegate;
+import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider.CustomTabsUiType;
+import org.chromium.chrome.browser.download.DownloadUtils;
+import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.share.ShareHelper;
 import org.chromium.chrome.browser.tab.Tab;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
 
 /**
  * App menu properties delegate for {@link CustomTabActivity}.
  */
 public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegate {
-    private static final String SAMPLE_URL = "https://www.google.com";
-
+    private final @CustomTabsUiType int mUiType;
     private final boolean mShowShare;
+    private final boolean mShowStar;
+    private final boolean mShowDownload;
+    private final boolean mIsOpenedByChrome;
+    private final boolean mIsIncognito;
+
     private final List<String> mMenuEntries;
     private final Map<MenuItem, Integer> mItemToIndexMap = new HashMap<MenuItem, Integer>();
-    private final AsyncTask<Void, Void, String> mDefaultBrowserFetcher;
 
     private boolean mIsCustomEntryAdded;
 
@@ -43,33 +48,16 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
      * Creates an {@link CustomTabAppMenuPropertiesDelegate} instance.
      */
     public CustomTabAppMenuPropertiesDelegate(final ChromeActivity activity,
-            List<String> menuEntries, boolean showShare, final boolean isOpenedByChrome) {
+            @CustomTabsUiType final int uiType, List<String> menuEntries, boolean isOpenedByChrome,
+            boolean showShare, boolean showStar, boolean showDownload, boolean isIncognito) {
         super(activity);
+        mUiType = uiType;
         mMenuEntries = menuEntries;
+        mIsOpenedByChrome = isOpenedByChrome;
         mShowShare = showShare;
-
-        mDefaultBrowserFetcher = new AsyncTask<Void, Void, String>() {
-            @Override
-            protected String doInBackground(Void... params) {
-                String packageLabel = null;
-                if (isOpenedByChrome) {
-                    // If the Custom Tab was created by Chrome, Chrome should open it.
-                    packageLabel = BuildInfo.getPackageLabel(activity);
-                } else {
-                    // Check if there is a default handler for the Intent.  If so, grab its label.
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(SAMPLE_URL));
-                    PackageManager pm = activity.getPackageManager();
-                    ResolveInfo info = pm.resolveActivity(intent, 0);
-                    if (info != null && info.match != 0) {
-                        packageLabel = info.loadLabel(pm).toString();
-                    }
-                }
-
-                return packageLabel == null
-                        ? activity.getString(R.string.menu_open_in_product_default)
-                        : activity.getString(R.string.menu_open_in_product, packageLabel);
-            }
-        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        mShowStar = showStar;
+        mShowDownload = showDownload;
+        mIsIncognito = isIncognito;
     }
 
     @Override
@@ -80,7 +68,10 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
             forwardMenuItem.setEnabled(currentTab.canGoForward());
 
             mReloadMenuItem = menu.findItem(R.id.reload_menu_id);
-            mReloadMenuItem.setIcon(R.drawable.btn_reload_stop);
+            Drawable icon = AppCompatResources.getDrawable(mActivity, R.drawable.btn_reload_stop);
+            DrawableCompat.setTintList(icon,
+                    AppCompatResources.getColorStateList(mActivity, R.color.standard_mode_tint));
+            mReloadMenuItem.setIcon(icon);
             loadingStateChanged(currentTab.isLoading());
 
             MenuItem shareItem = menu.findItem(R.id.share_row_menu_id);
@@ -91,19 +82,94 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
                         mActivity, menu.findItem(R.id.direct_share_menu_id));
             }
 
-            MenuItem openInChromeItem = menu.findItem(R.id.open_in_browser_id);
-            MenuItem readItLaterItem = menu.findItem(R.id.read_it_later_id);
-            if (ChromeFeatureList.isEnabled("ReadItLaterInMenu")) {
-                // In the read-it-later experiment, Chrome will be the only browser to open the link
-                openInChromeItem.setTitle(R.string.menu_open_in_chrome);
+            boolean openInChromeItemVisible = true;
+            boolean bookmarkItemVisible = mShowStar;
+            boolean downloadItemVisible = mShowDownload;
+            boolean addToHomeScreenVisible = true;
+            boolean requestDesktopSiteVisible = true;
+
+            if (mUiType == CustomTabsUiType.MEDIA_VIEWER) {
+                // Most of the menu items don't make sense when viewing media.
+                menu.findItem(R.id.icon_row_menu_id).setVisible(false);
+                menu.findItem(R.id.find_in_page_id).setVisible(false);
+                bookmarkItemVisible = false; // Set to skip initialization.
+                downloadItemVisible = false; // Set to skip initialization.
+                openInChromeItemVisible = false;
+                requestDesktopSiteVisible = false;
+                addToHomeScreenVisible = false;
+            } else if (mUiType == CustomTabsUiType.PAYMENT_REQUEST) {
+                // Only the icon row and 'find in page' are shown for opening payment request UI
+                // from Chrome.
+                openInChromeItemVisible = false;
+                requestDesktopSiteVisible = false;
+                addToHomeScreenVisible = false;
+                downloadItemVisible = false;
+                bookmarkItemVisible = false;
+            } else if (mUiType == CustomTabsUiType.READER_MODE) {
+                // Only 'find in page' and the reader mode preference are shown for Reader Mode UI.
+                menu.findItem(R.id.icon_row_menu_id).setVisible(false);
+                bookmarkItemVisible = false; // Set to skip initialization.
+                downloadItemVisible = false; // Set to skip initialization.
+                openInChromeItemVisible = false;
+                requestDesktopSiteVisible = false;
+                addToHomeScreenVisible = false;
+
+                menu.findItem(R.id.reader_mode_prefs_id).setVisible(true);
+            } else if (mUiType == CustomTabsUiType.MINIMAL_UI_WEBAPP) {
+                requestDesktopSiteVisible = false;
+                addToHomeScreenVisible = false;
+                downloadItemVisible = false;
+                bookmarkItemVisible = false;
+            } else if (mUiType == CustomTabsUiType.OFFLINE_PAGE) {
+                openInChromeItemVisible = false;
+                bookmarkItemVisible = true;
+                downloadItemVisible = false;
+                addToHomeScreenVisible = false;
+                requestDesktopSiteVisible = true;
+            }
+
+            if (!FirstRunStatus.getFirstRunFlowComplete()) {
+                openInChromeItemVisible = false;
+                bookmarkItemVisible = false;
+                downloadItemVisible = false;
+                addToHomeScreenVisible = false;
+            }
+
+            if (mIsIncognito) {
+                addToHomeScreenVisible = false;
+            }
+
+            String url = currentTab.getUrl();
+            boolean isChromeScheme = url.startsWith(UrlConstants.CHROME_URL_PREFIX)
+                    || url.startsWith(UrlConstants.CHROME_NATIVE_URL_PREFIX);
+            if (isChromeScheme || TextUtils.isEmpty(url)) {
+                addToHomeScreenVisible = false;
+            }
+
+            MenuItem downloadItem = menu.findItem(R.id.offline_page_id);
+            if (downloadItemVisible) {
+                downloadItem.setEnabled(DownloadUtils.isAllowedToDownloadPage(currentTab));
             } else {
-                readItLaterItem.setVisible(false);
-                try {
-                    openInChromeItem.setTitle(mDefaultBrowserFetcher.get());
-                } catch (InterruptedException | ExecutionException e) {
-                    openInChromeItem.setTitle(
-                            mActivity.getString(R.string.menu_open_in_product_default));
-                }
+                downloadItem.setVisible(false);
+            }
+
+            MenuItem bookmarkItem = menu.findItem(R.id.bookmark_this_page_id);
+            if (bookmarkItemVisible) {
+                updateBookmarkMenuItem(bookmarkItem, currentTab);
+            } else {
+                bookmarkItem.setVisible(false);
+            }
+
+            MenuItem openInChromeItem = menu.findItem(R.id.open_in_browser_id);
+            if (openInChromeItemVisible) {
+                String title = mIsIncognito ?
+                        ContextUtils.getApplicationContext()
+                                .getString(R.string.menu_open_in_incognito_chrome) :
+                        DefaultBrowserInfo.getTitleOpenInDefaultBrowser(mIsOpenedByChrome);
+
+                openInChromeItem.setTitle(title);
+            } else {
+                openInChromeItem.setVisible(false);
             }
 
             // Add custom menu items. Make sure they are only added once.
@@ -114,6 +180,9 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
                     mItemToIndexMap.put(item, i);
                 }
             }
+
+            updateRequestDesktopSiteMenuItem(menu, currentTab, requestDesktopSiteVisible);
+            prepareAddToHomescreenMenuItem(menu, currentTab, addToHomeScreenVisible);
         }
     }
 
@@ -130,6 +199,10 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
 
     @Override
     public int getFooterResourceId() {
+        // Avoid showing the branded menu footer for media and offline pages.
+        if (mUiType == CustomTabsUiType.MEDIA_VIEWER || mUiType == CustomTabsUiType.OFFLINE_PAGE) {
+            return 0;
+        }
         return R.layout.powered_by_chrome_footer;
     }
 

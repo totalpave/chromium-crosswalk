@@ -11,11 +11,14 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
+#include "base/single_thread_task_runner.h"
 #include "gpu/ipc/client/command_buffer_proxy_impl.h"
 #include "ipc/ipc_listener.h"
 #include "media/video/video_decode_accelerator.h"
 #include "ui/gfx/geometry/size.h"
+
+struct AcceleratedVideoDecoderHostMsg_PictureReady_Params;
 
 namespace gpu {
 class GpuChannelHost;
@@ -28,8 +31,7 @@ namespace media {
 class GpuVideoDecodeAcceleratorHost
     : public IPC::Listener,
       public VideoDecodeAccelerator,
-      public gpu::CommandBufferProxyImpl::DeletionObserver,
-      public base::NonThreadSafe {
+      public gpu::CommandBufferProxyImpl::DeletionObserver {
  public:
   // |this| is guaranteed not to outlive |impl|.  (See comments for |impl_|.)
   explicit GpuVideoDecodeAcceleratorHost(gpu::CommandBufferProxyImpl* impl);
@@ -45,6 +47,7 @@ class GpuVideoDecodeAcceleratorHost
   void ReusePictureBuffer(int32_t picture_buffer_id) override;
   void Flush() override;
   void Reset() override;
+  void SetOverlayInfo(const OverlayInfo&) override;
   void Destroy() override;
 
   // gpu::CommandBufferProxyImpl::DeletionObserver implemetnation.
@@ -63,17 +66,14 @@ class GpuVideoDecodeAcceleratorHost
   // process.  Should not be called directly.
   void OnInitializationComplete(bool success);
   void OnBitstreamBufferProcessed(int32_t bitstream_buffer_id);
-  void OnProvidePictureBuffer(uint32_t num_requested_buffers,
-                              VideoPixelFormat format,
-                              uint32_t textures_per_buffer,
-                              const gfx::Size& dimensions,
-                              uint32_t texture_target);
+  void OnProvidePictureBuffers(uint32_t num_requested_buffers,
+                               VideoPixelFormat format,
+                               uint32_t textures_per_buffer,
+                               const gfx::Size& dimensions,
+                               uint32_t texture_target);
   void OnDismissPictureBuffer(int32_t picture_buffer_id);
-  void OnPictureReady(int32_t picture_buffer_id,
-                      int32_t bitstream_buffer_id,
-                      const gfx::Rect& visible_rect,
-                      bool allow_overlay,
-                      bool size_changed);
+  void OnPictureReady(
+      const AcceleratedVideoDecoderHostMsg_PictureReady_Params& params);
   void OnFlushDone();
   void OnResetDone();
   void OnNotifyError(uint32_t error);
@@ -86,6 +86,10 @@ class GpuVideoDecodeAcceleratorHost
   // The client that will receive callbacks from the decoder.
   Client* client_;
 
+  // Protect |impl_|. |impl_| is used on media thread, but it can be invalidated
+  // on main thread.
+  base::Lock impl_lock_;
+
   // Unowned reference to the gpu::CommandBufferProxyImpl that created us.
   // |this| registers as a DeletionObserver of |impl_|, the so reference is
   // always valid as long as it is not NULL.
@@ -94,7 +98,15 @@ class GpuVideoDecodeAcceleratorHost
   // Requested dimensions of the buffer, from ProvidePictureBuffers().
   gfx::Size picture_buffer_dimensions_;
 
-  // WeakPtr factory for posting tasks back to itself.
+  // Task runner for tasks that should run on the thread this class is
+  // constructed.
+  scoped_refptr<base::SingleThreadTaskRunner> media_task_runner_;
+
+  // WeakPtr for posting tasks to ourself.
+  base::WeakPtr<GpuVideoDecodeAcceleratorHost> weak_this_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
   base::WeakPtrFactory<GpuVideoDecodeAcceleratorHost> weak_this_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(GpuVideoDecodeAcceleratorHost);

@@ -21,6 +21,7 @@
 #include "nacl_io/devfs/dev_fs.h"
 #include "nacl_io/filesystem.h"
 #include "nacl_io/fusefs/fuse_fs_factory.h"
+#include "nacl_io/googledrivefs/googledrivefs.h"
 #include "nacl_io/host_resolver.h"
 #include "nacl_io/html5fs/html5_fs.h"
 #include "nacl_io/httpfs/http_fs.h"
@@ -79,6 +80,7 @@ Error KernelProxy::Init(PepperInterface* ppapi) {
 
   factories_["memfs"] = new TypedFsFactory<MemFs>;
   factories_["dev"] = new TypedFsFactory<DevFs>;
+  factories_["googledrivefs"] = new TypedFsFactory<GoogleDriveFs>;
   factories_["html5fs"] = new TypedFsFactory<Html5Fs>;
   factories_["httpfs"] = new TypedFsFactory<HttpFs>;
   factories_["passthroughfs"] = new TypedFsFactory<PassthroughFs>;
@@ -856,7 +858,7 @@ int KernelProxy::rename(const char* path, const char* newpath) {
   }
 
   if (newfs.get() != fs.get()) {
-    // Renaming accross mountpoints is not allowed
+    // Renaming across mountpoints is not allowed
     errno = EXDEV;
     return -1;
   }
@@ -1297,7 +1299,7 @@ int KernelProxy::select(int nfds,
 }
 
 struct PollInfo {
-  PollInfo() : index(-1) {};
+  PollInfo() : index(-1) {}
 
   std::vector<struct pollfd*> fds;
   int index;

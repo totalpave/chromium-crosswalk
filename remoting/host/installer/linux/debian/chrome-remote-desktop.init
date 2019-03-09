@@ -46,47 +46,38 @@ run_with_timeout() {
   return 1
 }
 
-# Usage: run_and_ignore_error [--login] user program [args...]
-#   --login:
-#     Run program in a clean login shell. This requires backgrounding, since
-#     the user's .profile or .login script might be run, which might contain
-#     blocking commands.
+# Usage: run_and_ignore_error user action
+# Carries out the specified action, ignoring any errors.
 run_and_ignore_error() {
-  login_options=""
-  if [ "$1" = "--login" ]; then
-    login_options="-b -i"
-    shift
-  fi
-
-  user=$1
-  shift
+  user="$1"
+  action="$2"
 
   set +e
-  sudo -u "$user" $login_options "$@"
+  sudo -u "$user" "$HOST_PATH" "$action"
 }
 
 do_start() {
   log_begin_msg "Starting Chrome Remote Desktop host for $1..."
-  run_and_ignore_error --login $1 "$HOST_PATH" --start
+  run_and_ignore_error $1 --start
   log_end_msg $?
 }
 
 do_stop() {
   log_begin_msg "Stopping Chrome Remote Desktop host for $1..."
-  run_with_timeout run_and_ignore_error $1 "$HOST_PATH" --stop
+  run_with_timeout run_and_ignore_error $1 --stop
   log_end_msg $?
 }
 
 do_reload() {
   log_begin_msg "Reloading Chrome Remote Desktop host configuration for $1..."
-  run_and_ignore_error $1 "$HOST_PATH" --reload
+  run_and_ignore_error $1 --reload
   log_end_msg $?
 }
 
 do_restart() {
   log_begin_msg "Restarting Chrome Remote Desktop host for $1..."
-  run_and_ignore_error $1 "$HOST_PATH" --stop
-  run_and_ignore_error --login $1 "$HOST_PATH" --start
+  run_and_ignore_error $1 --stop
+  run_and_ignore_error $1 --start
   log_end_msg $?
 }
 

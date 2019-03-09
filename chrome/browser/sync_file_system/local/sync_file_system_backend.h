@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "base/macros.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync_file_system/sync_callbacks.h"
@@ -28,14 +30,14 @@ class SyncFileSystemBackend : public storage::FileSystemBackend {
   explicit SyncFileSystemBackend(Profile* profile);
   ~SyncFileSystemBackend() override;
 
-  static SyncFileSystemBackend* CreateForTesting();
+  static std::unique_ptr<SyncFileSystemBackend> CreateForTesting();
 
   // FileSystemBackend overrides.
   bool CanHandleType(storage::FileSystemType type) const override;
   void Initialize(storage::FileSystemContext* context) override;
   void ResolveURL(const storage::FileSystemURL& url,
                   storage::OpenFileSystemMode mode,
-                  const OpenFileSystemCallback& callback) override;
+                  OpenFileSystemCallback callback) override;
   storage::AsyncFileUtil* GetAsyncFileUtil(
       storage::FileSystemType type) override;
   storage::WatcherManager* GetWatcherManager(
@@ -113,13 +115,12 @@ class SyncFileSystemBackend : public storage::FileSystemBackend {
   void InitializeSyncFileSystemService(
       const GURL& origin_url,
       const SyncStatusCallback& callback);
-  void DidInitializeSyncFileSystemService(
-      storage::FileSystemContext* context,
-      const GURL& origin_url,
-      storage::FileSystemType type,
-      storage::OpenFileSystemMode mode,
-      const OpenFileSystemCallback& callback,
-      SyncStatusCode status);
+  void DidInitializeSyncFileSystemService(storage::FileSystemContext* context,
+                                          const GURL& origin_url,
+                                          storage::FileSystemType type,
+                                          storage::OpenFileSystemMode mode,
+                                          OpenFileSystemCallback callback,
+                                          SyncStatusCode status);
 
   DISALLOW_COPY_AND_ASSIGN(SyncFileSystemBackend);
 };

@@ -4,15 +4,17 @@
 
 #include "chrome/browser/ui/webui/theme_handler.h"
 
+#include <memory>
+
 #include "base/values.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/webui/theme_source.h"
+#include "chrome/grit/theme_resources.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/web_ui.h"
-#include "grit/theme_resources.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 // ThemeHandler
@@ -41,6 +43,7 @@ void ThemeHandler::Observe(int type,
   InitializeCSSCaches();
   bool has_custom_bg = ThemeService::GetThemeProviderForProfile(GetProfile())
                            .HasCustomImage(IDR_THEME_NTP_BACKGROUND);
+  // TODO(dbeam): why does this need to be a dictionary?
   base::DictionaryValue dictionary;
   dictionary.SetBoolean("hasCustomBackground", has_custom_bg);
   web_ui()->CallJavascriptFunctionUnsafe("ntp.themeChanged", dictionary);
@@ -48,8 +51,7 @@ void ThemeHandler::Observe(int type,
 
 void ThemeHandler::InitializeCSSCaches() {
   Profile* profile = GetProfile();
-  ThemeSource* theme = new ThemeSource(profile);
-  content::URLDataSource::Add(profile, theme);
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 }
 
 Profile* ThemeHandler::GetProfile() const {

@@ -17,8 +17,7 @@
 namespace policy {
 
 RemoteCommandsQueue::RemoteCommandsQueue()
-    : clock_(new base::DefaultTickClock()) {
-}
+    : clock_(base::DefaultTickClock::GetInstance()) {}
 
 RemoteCommandsQueue::~RemoteCommandsQueue() {
   while (!incoming_commands_.empty())
@@ -36,15 +35,14 @@ void RemoteCommandsQueue::RemoveObserver(Observer* observer) {
 }
 
 void RemoteCommandsQueue::AddJob(std::unique_ptr<RemoteCommandJob> job) {
-  incoming_commands_.push(linked_ptr<RemoteCommandJob>(job.release()));
+  incoming_commands_.emplace(std::move(job));
 
   if (!running_command_)
     ScheduleNextJob();
 }
 
-void RemoteCommandsQueue::SetClockForTesting(
-    std::unique_ptr<base::TickClock> clock) {
-  clock_ = std::move(clock);
+void RemoteCommandsQueue::SetClockForTesting(const base::TickClock* clock) {
+  clock_ = clock;
 }
 
 base::TimeTicks RemoteCommandsQueue::GetNowTicks() {
@@ -63,8 +61,8 @@ void RemoteCommandsQueue::CurrentJobFinished() {
 
   execution_timeout_timer_.Stop();
 
-  FOR_EACH_OBSERVER(Observer, observer_list_,
-                    OnJobFinished(running_command_.get()));
+  for (auto& observer : observer_list_)
+    observer.OnJobFinished(running_command_.get());
   running_command_.reset();
 
   ScheduleNextJob();
@@ -76,18 +74,19 @@ void RemoteCommandsQueue::ScheduleNextJob() {
     return;
   DCHECK(!execution_timeout_timer_.IsRunning());
 
-  running_command_.reset(incoming_commands_.front().release());
+  running_command_ = std::move(incoming_commands_.front());
   incoming_commands_.pop();
 
   execution_timeout_timer_.Start(FROM_HERE,
-                                 running_command_->GetCommmandTimeout(), this,
+                                 running_command_->GetCommandTimeout(), this,
                                  &RemoteCommandsQueue::OnCommandTimeout);
 
-  if (running_command_->Run(clock_->NowTicks(),
-                            base::Bind(&RemoteCommandsQueue::CurrentJobFinished,
-                                       base::Unretained(this)))) {
-    FOR_EACH_OBSERVER(Observer, observer_list_,
-                      OnJobStarted(running_command_.get()));
+  if (running_command_->Run(
+          clock_->NowTicks(),
+          base::BindOnce(&RemoteCommandsQueue::CurrentJobFinished,
+                         base::Unretained(this)))) {
+    for (auto& observer : observer_list_)
+      observer.OnJobStarted(running_command_.get());
   } else {
     CurrentJobFinished();
   }

@@ -6,13 +6,19 @@
 
 #include "base/strings/stringize_macros.h"
 #include "base/strings/stringprintf.h"
+#include "ui/gfx/color_transform.h"
 #include "ui/gl/gl_helper.h"
-#include "ui/gl/gl_implementation.h"
-#include "ui/gl/scoped_api.h"
+#include "ui/gl/gl_version_info.h"
 #include "ui/gl/scoped_binders.h"
 
 namespace gl {
 namespace {
+
+const char kVertexHeaderES3[] =
+    "#version 300 es\n"
+    "precision mediump float;\n"
+    "#define ATTRIBUTE in\n"
+    "#define VARYING out\n";
 
 const char kVertexHeaderCompatiblityProfile[] =
     "#version 110\n"
@@ -23,6 +29,14 @@ const char kVertexHeaderCoreProfile[] =
     "#version 150\n"
     "#define ATTRIBUTE in\n"
     "#define VARYING out\n";
+
+const char kFragmentHeaderES3[] =
+    "#version 300 es\n"
+    "precision mediump float;\n"
+    "#define VARYING in\n"
+    "#define TEX texture\n"
+    "#define FRAGCOLOR frag_color\n"
+    "out vec4 FRAGCOLOR;\n";
 
 const char kFragmentHeaderCompatiblityProfile[] =
     "#version 110\n"
@@ -45,7 +59,7 @@ STRINGIZE(
   uniform vec2 a_texScale;
   VARYING vec2 v_texCoord;
   void main() {
-    gl_Position = vec4(a_position.x, a_position.y, 0.0, 1.0);
+    gl_Position = vec4(a_position, 0.0, 1.0);
     v_texCoord = (a_position + vec2(1.0, 1.0)) * 0.5 * a_texScale;
   }
 );
@@ -56,39 +70,46 @@ STRINGIZE(
   uniform sampler2DRect a_uv_texture;
   VARYING vec2 v_texCoord;
   void main() {
-    vec3 yuv_adj = vec3(-0.0625, -0.5, -0.5);
-    mat3 yuv_matrix = mat3(vec3(1.164, 1.164, 1.164),
-                           vec3(0.0, -.391, 2.018),
-                           vec3(1.596, -.813, 0.0));
     vec3 yuv = vec3(
         TEX(a_y_texture, v_texCoord).r,
         TEX(a_uv_texture, v_texCoord * 0.5).rg);
-    FRAGCOLOR = vec4(yuv_matrix * (yuv + yuv_adj), 1.0);
+    FRAGCOLOR = vec4(DoColorConversion(yuv), 1.0);
   }
 );
 // clang-format on
 
 }  // namespace
 
-YUVToRGBConverter::YUVToRGBConverter() {
-  bool use_core_profile =
-      GetGLImplementation() == kGLImplementationDesktopGLCoreProfile;
-  ScopedSetGLToRealGLApi scoped_set_gl_api;
+YUVToRGBConverter::YUVToRGBConverter(const GLVersionInfo& gl_version_info,
+                                     const gfx::ColorSpace color_space) {
+  std::unique_ptr<gfx::ColorTransform> color_transform =
+      gfx::ColorTransform::NewColorTransform(
+          color_space, color_space.GetAsFullRangeRGB(),
+          gfx::ColorTransform::Intent::INTENT_PERCEPTUAL);
+  DCHECK(color_transform->CanGetShaderSource());
+  std::string do_color_conversion = color_transform->GetShaderSource();
+
+  bool use_es3 = gl_version_info.is_es3;
+  bool use_core_profile = gl_version_info.is_desktop_core_profile;
   glGenFramebuffersEXT(1, &framebuffer_);
   vertex_buffer_ = GLHelper::SetupQuadVertexBuffer();
   vertex_shader_ = GLHelper::LoadShader(
       GL_VERTEX_SHADER,
-      base::StringPrintf("%s\n%s",
-                         use_core_profile ? kVertexHeaderCoreProfile
-                                          : kVertexHeaderCompatiblityProfile,
-                         kVertexShader)
+      base::StringPrintf(
+          "%s\n%s",
+          use_es3 ? kVertexHeaderES3
+                  : (use_core_profile ? kVertexHeaderCoreProfile
+                                      : kVertexHeaderCompatiblityProfile),
+          kVertexShader)
           .c_str());
   fragment_shader_ = GLHelper::LoadShader(
       GL_FRAGMENT_SHADER,
-      base::StringPrintf("%s\n%s",
-                         use_core_profile ? kFragmentHeaderCoreProfile
-                                          : kFragmentHeaderCompatiblityProfile,
-                         kFragmentShader)
+      base::StringPrintf(
+          "%s\n%s\n%s",
+          use_es3 ? kFragmentHeaderES3
+                  : (use_core_profile ? kFragmentHeaderCoreProfile
+                                      : kFragmentHeaderCompatiblityProfile),
+          do_color_conversion.c_str(), kFragmentShader)
           .c_str());
   program_ = GLHelper::SetupProgram(vertex_shader_, fragment_shader_);
 
@@ -105,10 +126,13 @@ YUVToRGBConverter::YUVToRGBConverter() {
 
   glUniform1i(y_sampler_location, 0);
   glUniform1i(uv_sampler_location, 1);
+
+  if (use_es3 || use_core_profile) {
+    glGenVertexArraysOES(1, &vertex_array_object_);
+  }
 }
 
 YUVToRGBConverter::~YUVToRGBConverter() {
-  ScopedSetGLToRealGLApi scoped_set_gl_api;
   glDeleteTextures(1, &y_texture_);
   glDeleteTextures(1, &uv_texture_);
   glDeleteProgram(program_);
@@ -116,15 +140,14 @@ YUVToRGBConverter::~YUVToRGBConverter() {
   glDeleteShader(fragment_shader_);
   glDeleteBuffersARB(1, &vertex_buffer_);
   glDeleteFramebuffersEXT(1, &framebuffer_);
+  if (vertex_array_object_) {
+    glDeleteVertexArraysOES(1, &vertex_array_object_);
+  }
 }
 
 void YUVToRGBConverter::CopyYUV420ToRGB(unsigned target,
                                         const gfx::Size& size,
                                         unsigned rgb_texture) {
-  // Only support for rectangle targets exists so far.
-  DCHECK_EQ(static_cast<GLenum>(GL_TEXTURE_RECTANGLE_ARB), target);
-  ScopedSetGLToRealGLApi scoped_set_gl_api;
-
   // Note that state restoration is done explicitly instead of scoped binders to
   // avoid https://crbug.com/601729.
   GLint old_active_texture = -1;
@@ -137,8 +160,9 @@ void YUVToRGBConverter::CopyYUV420ToRGB(unsigned target,
   glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &old_texture1_binding);
 
   // Allocate the rgb texture.
-  glBindTexture(GL_TEXTURE_RECTANGLE_ARB, rgb_texture);
-  glTexImage2D(GL_TEXTURE_RECTANGLE_ARB, 0, GL_RGB, size.width(), size.height(),
+  glActiveTexture(old_active_texture);
+  glBindTexture(target, rgb_texture);
+  glTexImage2D(target, 0, GL_RGB, size.width(), size.height(),
                0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
 
   // Set up and issue the draw call.
@@ -146,19 +170,32 @@ void YUVToRGBConverter::CopyYUV420ToRGB(unsigned target,
   glBindTexture(GL_TEXTURE_RECTANGLE_ARB, y_texture_);
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_RECTANGLE_ARB, uv_texture_);
-  ScopedFrameBufferBinder framebuffer_binder(framebuffer_);
+  ScopedFramebufferBinder framebuffer_binder(framebuffer_);
   ScopedViewport viewport(0, 0, size.width(), size.height());
   glFramebufferTexture2DEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                            GL_TEXTURE_RECTANGLE_ARB, rgb_texture, 0);
+                            target, rgb_texture, 0);
   DCHECK_EQ(static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE),
             glCheckFramebufferStatusEXT(GL_FRAMEBUFFER));
   ScopedUseProgram use_program(program_);
   glUniform2f(size_location_, size.width(), size.height());
+  // User code may have set up the other vertex attributes in the
+  // context in unexpected ways, including setting vertex attribute
+  // divisors which may otherwise cause GL_INVALID_OPERATION during
+  // glDrawArrays. Avoid interference by binding our own VAO during
+  // the draw call. crbug.com/930479
+  GLint old_vertex_array_object_ = 0;
+  if (vertex_array_object_) {
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &old_vertex_array_object_);
+    glBindVertexArrayOES(vertex_array_object_);
+  }
   GLHelper::DrawQuad(vertex_buffer_);
+  if (vertex_array_object_) {
+    glBindVertexArrayOES(old_vertex_array_object_);
+  }
 
   // Restore previous state.
   glFramebufferTexture2DEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                            GL_TEXTURE_RECTANGLE_ARB, 0, 0);
+                            target, 0, 0);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_RECTANGLE_ARB, old_texture0_binding);
   glActiveTexture(GL_TEXTURE1);

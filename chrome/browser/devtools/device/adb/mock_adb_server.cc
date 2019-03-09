@@ -7,17 +7,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
+#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
+#include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
@@ -25,8 +29,10 @@
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/log/net_log_source.h"
 #include "net/socket/stream_socket.h"
 #include "net/socket/tcp_server_socket.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 
 using content::BrowserThread;
 
@@ -154,7 +160,6 @@ char kSampleWebViewPages[] = "[ {\n"
     "/devtools/page/3E962D4D-B676-182D-3BE8-FAE7CE224DE7\",\n"
     "   \"faviconUrl\": \"http://chromium.org/favicon.ico\",\n"
     "   \"id\": \"3E962D4D-B676-182D-3BE8-FAE7CE224DE7\",\n"
-    "   \"thumbnailUrl\": \"/thumb/3E962D4D-B676-182D-3BE8-FAE7CE224DE7\",\n"
     "   \"title\": \"Blink - The Chromium Projects\",\n"
     "   \"type\": \"page\",\n"
     "   \"url\": \"http://www.chromium.org/blink\",\n"
@@ -168,7 +173,6 @@ char kSampleWebViewPages[] = "[ {\n"
     "/devtools/page/44681551-ADFD-2411-076B-3AB14C1C60E2\",\n"
     "   \"faviconUrl\": \"\",\n"
     "   \"id\": \"44681551-ADFD-2411-076B-3AB14C1C60E2\",\n"
-    "   \"thumbnailUrl\": \"/thumb/44681551-ADFD-2411-076B-3AB14C1C60E2\",\n"
     "   \"title\": \"More Activity\",\n"
     "   \"type\": \"page\",\n"
     "   \"url\": \"about:blank\",\n"
@@ -181,7 +185,7 @@ static const uint16_t kAdbPort = 5037;
 
 static const int kAdbMessageHeaderSize = 4;
 
-class SimpleHttpServer : base::NonThreadSafe {
+class SimpleHttpServer {
  public:
   class Parser {
    public:
@@ -196,7 +200,7 @@ class SimpleHttpServer : base::NonThreadSafe {
   virtual ~SimpleHttpServer();
 
  private:
-  class Connection : base::NonThreadSafe {
+  class Connection {
    public:
     Connection(net::StreamSocket* socket, const ParserFactory& factory);
     virtual ~Connection();
@@ -214,17 +218,23 @@ class SimpleHttpServer : base::NonThreadSafe {
     scoped_refptr<net::GrowableIOBuffer> output_buffer_;
     int bytes_to_write_;
     bool read_closed_;
+
+    SEQUENCE_CHECKER(sequence_checker_);
+
     base::WeakPtrFactory<Connection> weak_factory_;
 
     DISALLOW_COPY_AND_ASSIGN(Connection);
   };
 
-  void AcceptConnection();
+  void OnConnect();
   void OnAccepted(int result);
 
   ParserFactory factory_;
   std::unique_ptr<net::TCPServerSocket> socket_;
   std::unique_ptr<net::StreamSocket> client_socket_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
   base::WeakPtrFactory<SimpleHttpServer> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(SimpleHttpServer);
@@ -233,22 +243,23 @@ class SimpleHttpServer : base::NonThreadSafe {
 SimpleHttpServer::SimpleHttpServer(const ParserFactory& factory,
                                    net::IPEndPoint endpoint)
     : factory_(factory),
-      socket_(new net::TCPServerSocket(nullptr, net::NetLog::Source())),
+      socket_(new net::TCPServerSocket(nullptr, net::NetLogSource())),
       weak_factory_(this) {
   socket_->Listen(endpoint, 5);
-  AcceptConnection();
+  OnConnect();
 }
 
 SimpleHttpServer::~SimpleHttpServer() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 SimpleHttpServer::Connection::Connection(net::StreamSocket* socket,
                                          const ParserFactory& factory)
     : socket_(socket),
-      parser_(factory.Run(base::Bind(&Connection::Send,
-                                     base::Unretained(this)))),
-      input_buffer_(new net::GrowableIOBuffer()),
-      output_buffer_(new net::GrowableIOBuffer()),
+      parser_(
+          factory.Run(base::Bind(&Connection::Send, base::Unretained(this)))),
+      input_buffer_(base::MakeRefCounted<net::GrowableIOBuffer>()),
+      output_buffer_(base::MakeRefCounted<net::GrowableIOBuffer>()),
       bytes_to_write_(0),
       read_closed_(false),
       weak_factory_(this) {
@@ -257,10 +268,11 @@ SimpleHttpServer::Connection::Connection(net::StreamSocket* socket,
 }
 
 SimpleHttpServer::Connection::~Connection() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 void SimpleHttpServer::Connection::Send(const std::string& message) {
-  CHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   const char* data = message.c_str();
   int size = message.size();
 
@@ -287,7 +299,7 @@ void SimpleHttpServer::Connection::Send(const std::string& message) {
 }
 
 void SimpleHttpServer::Connection::ReadData() {
-  CHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (input_buffer_->RemainingCapacity() == 0)
     input_buffer_->SetCapacity(input_buffer_->capacity() * 2);
@@ -302,7 +314,7 @@ void SimpleHttpServer::Connection::ReadData() {
 }
 
 void SimpleHttpServer::Connection::OnDataRead(int count) {
-  CHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (count <= 0) {
     if (bytes_to_write_ == 0)
       delete this;
@@ -325,25 +337,26 @@ void SimpleHttpServer::Connection::OnDataRead(int count) {
   } while (bytes_processed);
   // Posting to avoid deep recursion in case of synchronous IO
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&Connection::ReadData, weak_factory_.GetWeakPtr()));
+      FROM_HERE,
+      base::BindOnce(&Connection::ReadData, weak_factory_.GetWeakPtr()));
 }
 
 void SimpleHttpServer::Connection::WriteData() {
-  CHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK_GE(output_buffer_->capacity(),
            output_buffer_->offset() + bytes_to_write_) << "Overflow";
 
   int write_result = socket_->Write(
-      output_buffer_.get(),
-      bytes_to_write_,
-      base::Bind(&Connection::OnDataWritten, base::Unretained(this)));
+      output_buffer_.get(), bytes_to_write_,
+      base::Bind(&Connection::OnDataWritten, base::Unretained(this)),
+      TRAFFIC_ANNOTATION_FOR_TESTS);
 
   if (write_result != net::ERR_IO_PENDING)
     OnDataWritten(write_result);
 }
 
 void SimpleHttpServer::Connection::OnDataWritten(int count) {
-  CHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (count < 0) {
     delete this;
     return;
@@ -359,32 +372,31 @@ void SimpleHttpServer::Connection::OnDataWritten(int count) {
     // Posting to avoid deep recursion in case of synchronous IO
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&Connection::WriteData, weak_factory_.GetWeakPtr()));
+        base::BindOnce(&Connection::WriteData, weak_factory_.GetWeakPtr()));
   else if (read_closed_)
     delete this;
 }
 
-void SimpleHttpServer::AcceptConnection() {
-  CHECK(CalledOnValidThread());
+void SimpleHttpServer::OnConnect() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   int accept_result = socket_->Accept(&client_socket_,
       base::Bind(&SimpleHttpServer::OnAccepted, base::Unretained(this)));
 
   if (accept_result != net::ERR_IO_PENDING)
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&SimpleHttpServer::OnAccepted,
-                              weak_factory_.GetWeakPtr(), accept_result));
+        FROM_HERE, base::BindOnce(&SimpleHttpServer::OnAccepted,
+                                  weak_factory_.GetWeakPtr(), accept_result));
 }
 
 void SimpleHttpServer::OnAccepted(int result) {
-  CHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ASSERT_EQ(result, 0);  // Fails if the socket is already in use.
   new Connection(client_socket_.release(), factory_);
-  AcceptConnection();
+  OnConnect();
 }
 
 class AdbParser : public SimpleHttpServer::Parser,
-                  public base::NonThreadSafe,
                   public MockAndroidConnection::Delegate {
  public:
   static Parser* Create(FlushMode flush_mode,
@@ -392,7 +404,8 @@ class AdbParser : public SimpleHttpServer::Parser,
     return new AdbParser(flush_mode, callback);
   }
 
-  ~AdbParser() override {}
+  ~AdbParser() override { DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_); }
+
  private:
   explicit AdbParser(FlushMode flush_mode,
                      const SimpleHttpServer::SendCallback& callback)
@@ -401,7 +414,7 @@ class AdbParser : public SimpleHttpServer::Parser,
   }
 
   int Consume(const char* data, int size) override {
-    CHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (mock_connection_) {
       mock_connection_->Receive(std::string(data, size));
       return size;
@@ -422,19 +435,20 @@ class AdbParser : public SimpleHttpServer::Parser,
   }
 
   void ProcessCommand(const std::string& command) {
-    CHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (command == "host:devices") {
       SendSuccess(base::StringPrintf("%s\tdevice\n%s\toffline",
                                      kSerialOnline,
                                      kSerialOffline));
-    } else if (command.find(kHostTransportPrefix) == 0) {
-      serial_ = command.substr(strlen(kHostTransportPrefix));
+    } else if (base::StartsWith(command, kHostTransportPrefix,
+                                base::CompareCase::SENSITIVE)) {
+      serial_ = command.substr(sizeof(kHostTransportPrefix) - 1);
       SendSuccess(std::string());
     } else if (serial_ != kSerialOnline) {
       Send("FAIL", "device offline (x)");
     } else {
       mock_connection_ =
-          base::WrapUnique(new MockAndroidConnection(this, serial_, command));
+          std::make_unique<MockAndroidConnection>(this, serial_, command);
     }
   }
 
@@ -447,7 +461,7 @@ class AdbParser : public SimpleHttpServer::Parser,
   }
 
   void Send(const std::string& status, const std::string& response) {
-    CHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     CHECK_EQ(4U, status.size());
     std::string buffer = status;
     if (flush_mode_ == FlushWithoutSize) {
@@ -475,6 +489,8 @@ class AdbParser : public SimpleHttpServer::Parser,
   SimpleHttpServer::SendCallback callback_;
   std::string serial_;
   std::unique_ptr<MockAndroidConnection> mock_connection_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 };
 
 static SimpleHttpServer* mock_adb_server_ = NULL;
@@ -515,12 +531,15 @@ void MockAndroidConnection::Receive(const std::string& data) {
     return;
 
   std::string request(request_.substr(0, request_end_pos));
-  std::vector<std::string> tokens =
-      base::SplitString(request, " ", base::KEEP_WHITESPACE,
-                        base::SPLIT_WANT_NONEMPTY);
+  std::vector<base::StringPiece> lines = base::SplitStringPieceUsingSubstr(
+      request, "\r\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  CHECK_GE(2U, lines.size());
+  std::vector<std::string> tokens = base::SplitString(
+      lines[0], " ", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
   CHECK_EQ(3U, tokens.size());
   CHECK_EQ("GET", tokens[0]);
   CHECK_EQ("HTTP/1.1", tokens[2]);
+  CHECK_EQ("Host: 0.0.0.0:0", lines[1]);
 
   std::string path(tokens[1]);
   if (path == kJsonPath)
@@ -540,7 +559,8 @@ void MockAndroidConnection::Receive(const std::string& data) {
       SendHTTPResponse(kSampleChromeBetaPages);
     else
       NOTREACHED() << "Unknown command " << request;
-  } else if (socket_name_.find("noprocess_devtools_remote") == 0) {
+  } else if (base::StartsWith(socket_name_, "noprocess_devtools_remote",
+                              base::CompareCase::SENSITIVE)) {
     if (path == kJsonVersionPath)
       SendHTTPResponse("{}");
     else if (path == kJsonListPath)
@@ -560,40 +580,42 @@ void MockAndroidConnection::Receive(const std::string& data) {
 }
 
 void MockAndroidConnection::ProcessCommand(const std::string& command) {
-  if (command.find(kLocalAbstractPrefix) == 0) {
-    socket_name_ = command.substr(strlen(kLocalAbstractPrefix));
+  if (base::StartsWith(command, kLocalAbstractPrefix,
+                       base::CompareCase::SENSITIVE)) {
+    socket_name_ = command.substr(sizeof(kLocalAbstractPrefix) - 1);
     delegate_->SendSuccess(std::string());
-  } else {
-    if (command.find(kShellPrefix) == 0) {
-      std::string result;
-      for (const auto& line :
-           base::SplitString(command.substr(strlen(kShellPrefix)), "\n",
-                             base::KEEP_WHITESPACE,
-                             base::SPLIT_WANT_NONEMPTY)) {
-        if (line == kDeviceModelCommand) {
-          result += kDeviceModel;
-          result += "\r\n";
-        } else if (line == kOpenedUnixSocketsCommand) {
-          result += kSampleOpenedUnixSockets;
-        } else if (line == kDumpsysCommand) {
-          result += kSampleDumpsys;
-        } else if (line == kListProcessesCommand) {
-          result += kSampleListProcesses;
-        } else if (line == kListUsersCommand) {
-          result += kSampleListUsers;
-        } else if (line.find(kEchoCommandPrefix) == 0) {
-          result += line.substr(strlen(kEchoCommandPrefix));
-          result += "\r\n";
-        } else {
-          NOTREACHED() << "Unknown shell command - " << command;
-        }
-      }
-      delegate_->SendSuccess(result);
-    } else {
-      NOTREACHED() << "Unknown command - " << command;
-    }
-    delegate_->Close();
+    return;
   }
+
+  if (base::StartsWith(command, kShellPrefix, base::CompareCase::SENSITIVE)) {
+    std::string result;
+    for (const auto& line :
+         base::SplitString(command.substr(sizeof(kShellPrefix) - 1), "\n",
+                           base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+      if (line == kDeviceModelCommand) {
+        result += kDeviceModel;
+        result += "\r\n";
+      } else if (line == kOpenedUnixSocketsCommand) {
+        result += kSampleOpenedUnixSockets;
+      } else if (line == kDumpsysCommand) {
+        result += kSampleDumpsys;
+      } else if (line == kListProcessesCommand) {
+        result += kSampleListProcesses;
+      } else if (line == kListUsersCommand) {
+        result += kSampleListUsers;
+      } else if (base::StartsWith(line, kEchoCommandPrefix,
+                                  base::CompareCase::SENSITIVE)) {
+        result += line.substr(sizeof(kEchoCommandPrefix) - 1);
+        result += "\r\n";
+      } else {
+        NOTREACHED() << "Unknown shell command - " << command;
+      }
+    }
+    delegate_->SendSuccess(result);
+  } else {
+    NOTREACHED() << "Unknown command - " << command;
+  }
+  delegate_->Close();
 }
 
 void MockAndroidConnection::SendHTTPResponse(const std::string& body) {
@@ -604,17 +626,18 @@ void MockAndroidConnection::SendHTTPResponse(const std::string& body) {
 }
 
 void StartMockAdbServer(FlushMode flush_mode) {
-  BrowserThread::PostTaskAndReply(
-      BrowserThread::IO, FROM_HERE,
-      base::Bind(&StartMockAdbServerOnIOThread, flush_mode),
-      base::MessageLoop::QuitWhenIdleClosure());
-  content::RunMessageLoop();
+  base::RunLoop run_loop;
+  base::PostTaskWithTraitsAndReply(
+      FROM_HERE, {BrowserThread::IO},
+      base::BindOnce(&StartMockAdbServerOnIOThread, flush_mode),
+      run_loop.QuitClosure());
+  run_loop.Run();
 }
 
 void StopMockAdbServer() {
-  BrowserThread::PostTaskAndReply(BrowserThread::IO, FROM_HERE,
-                                  base::Bind(&StopMockAdbServerOnIOThread),
-                                  base::MessageLoop::QuitWhenIdleClosure());
-  content::RunMessageLoop();
+  base::RunLoop run_loop;
+  base::PostTaskWithTraitsAndReply(FROM_HERE, {BrowserThread::IO},
+                                   base::BindOnce(&StopMockAdbServerOnIOThread),
+                                   run_loop.QuitClosure());
+  run_loop.Run();
 }
-

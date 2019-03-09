@@ -9,7 +9,6 @@
 
 #include "base/base64.h"
 #include "base/json/json_reader.h"
-#include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/cert/ct_serialization.h"
@@ -24,7 +23,7 @@ namespace ct {
 namespace {
 std::unique_ptr<base::Value> ParseJson(const std::string& json) {
   base::JSONReader json_reader;
-  return json_reader.Read(json);
+  return json_reader.ReadDeprecated(json);
 }
 }
 

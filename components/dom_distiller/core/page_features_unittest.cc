@@ -24,7 +24,7 @@ namespace dom_distiller {
 // done in Chromium matches that in the training pipeline.
 TEST(DomDistillerPageFeaturesTest, TestCalculateDerivedFeatures) {
   base::FilePath dir_source_root;
-  EXPECT_TRUE(PathService::Get(base::DIR_SOURCE_ROOT, &dir_source_root));
+  EXPECT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &dir_source_root));
   std::string input_data;
   ASSERT_TRUE(base::ReadFileToString(
       dir_source_root.AppendASCII(
@@ -38,11 +38,12 @@ TEST(DomDistillerPageFeaturesTest, TestCalculateDerivedFeatures) {
           "components/test/data/dom_distiller/derived_features.json"),
       &expected_output_data));
 
-  std::unique_ptr<base::Value> input_json = base::JSONReader::Read(input_data);
+  std::unique_ptr<base::Value> input_json =
+      base::JSONReader::ReadDeprecated(input_data);
   ASSERT_TRUE(input_json);
 
   std::unique_ptr<base::Value> expected_output_json =
-      base::JSONReader::Read(expected_output_data);
+      base::JSONReader::ReadDeprecated(expected_output_data);
   ASSERT_TRUE(expected_output_json);
 
   base::ListValue* input_entries;
@@ -75,7 +76,7 @@ TEST(DomDistillerPageFeaturesTest, TestCalculateDerivedFeatures) {
     std::string stringified_json;
     ASSERT_TRUE(base::JSONWriter::Write(*core_features, &stringified_json));
     std::unique_ptr<base::Value> stringified_value(
-        new base::StringValue(stringified_json));
+        new base::Value(stringified_json));
     std::vector<double> derived(
         CalculateDerivedFeaturesFromJSON(stringified_value.get()));
 

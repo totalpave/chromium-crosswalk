@@ -6,8 +6,8 @@ package org.chromium.chrome.test.util;
 
 import org.chromium.chrome.browser.compositor.layouts.OverviewModeBehavior;
 import org.chromium.chrome.browser.compositor.layouts.OverviewModeBehavior.OverviewModeObserver;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 
 /**
  * Checks and waits for certain overview mode events to happen.  Can be used to block test threads
@@ -71,9 +71,8 @@ public class OverviewModeBehaviorWatcher implements OverviewModeObserver {
     /**
      * Blocks until all of the expected events have occurred.  Once the events of this class
      * are met it will always return immediately from {@link #waitForBehavior()}.
-     * @throws InterruptedException
      */
-    public void waitForBehavior() throws InterruptedException {
+    public void waitForBehavior() {
         try {
             CriteriaHelper.pollUiThread(mCriteria);
         } finally {

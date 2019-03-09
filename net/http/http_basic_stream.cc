@@ -4,53 +4,78 @@
 
 #include "net/http/http_basic_stream.h"
 
-#include <memory>
+#include <utility>
 
+#include "net/http/http_raw_request_headers.h"
 #include "net/http/http_request_info.h"
 #include "net/http/http_response_body_drainer.h"
 #include "net/http/http_stream_parser.h"
 #include "net/socket/client_socket_handle.h"
+#include "net/ssl/ssl_cert_request_info.h"
+#include "net/ssl/ssl_info.h"
 
 namespace net {
 
-HttpBasicStream::HttpBasicStream(ClientSocketHandle* connection,
-                                 bool using_proxy)
-    : state_(connection, using_proxy) {}
+HttpBasicStream::HttpBasicStream(std::unique_ptr<ClientSocketHandle> connection,
+                                 bool using_proxy,
+                                 bool http_09_on_non_default_ports_enabled)
+    : state_(std::move(connection),
+             using_proxy,
+             http_09_on_non_default_ports_enabled) {}
 
-HttpBasicStream::~HttpBasicStream() {}
+HttpBasicStream::~HttpBasicStream() = default;
 
 int HttpBasicStream::InitializeStream(const HttpRequestInfo* request_info,
+                                      bool can_send_early,
                                       RequestPriority priority,
-                                      const BoundNetLog& net_log,
-                                      const CompletionCallback& callback) {
-  state_.Initialize(request_info, priority, net_log, callback);
+                                      const NetLogWithSource& net_log,
+                                      CompletionOnceCallback callback) {
+  DCHECK(request_info->traffic_annotation.is_valid());
+  state_.Initialize(request_info, can_send_early, priority, net_log);
   return OK;
 }
 
 int HttpBasicStream::SendRequest(const HttpRequestHeaders& headers,
                                  HttpResponseInfo* response,
-                                 const CompletionCallback& callback) {
+                                 CompletionOnceCallback callback) {
   DCHECK(parser());
+  if (request_headers_callback_) {
+    HttpRawRequestHeaders raw_headers;
+    raw_headers.set_request_line(state_.GenerateRequestLine());
+    for (net::HttpRequestHeaders::Iterator it(headers); it.GetNext();)
+      raw_headers.Add(it.name(), it.value());
+    request_headers_callback_.Run(std::move(raw_headers));
+  }
   return parser()->SendRequest(
-      state_.GenerateRequestLine(), headers, response, callback);
+      state_.GenerateRequestLine(), headers,
+      NetworkTrafficAnnotationTag(state_.traffic_annotation()), response,
+      std::move(callback));
 }
 
-UploadProgress HttpBasicStream::GetUploadProgress() const {
-  return parser()->GetUploadProgress();
-}
-
-int HttpBasicStream::ReadResponseHeaders(const CompletionCallback& callback) {
-  return parser()->ReadResponseHeaders(callback);
+int HttpBasicStream::ReadResponseHeaders(CompletionOnceCallback callback) {
+  return parser()->ReadResponseHeaders(std::move(callback));
 }
 
 int HttpBasicStream::ReadResponseBody(IOBuffer* buf,
                                       int buf_len,
-                                      const CompletionCallback& callback) {
-  return parser()->ReadResponseBody(buf, buf_len, callback);
+                                      CompletionOnceCallback callback) {
+  return parser()->ReadResponseBody(buf, buf_len, std::move(callback));
 }
 
 void HttpBasicStream::Close(bool not_reusable) {
-  parser()->Close(not_reusable);
+  // parser() is null if |this| is created by an orphaned HttpStreamFactory::Job
+  // in which case InitializeStream() will not have been called. This also
+  // protects against null dereference in the case where
+  // state_.ReleaseConnection() has been called.
+  //
+  // TODO(mmenke):  Can these cases be handled a bit more cleanly?
+  // WebSocketHandshakeStream will need to be updated as well.
+  if (!parser())
+    return;
+  StreamSocket* socket = state_.connection()->socket();
+  if (not_reusable && socket)
+    socket->Disconnect();
+  state_.connection()->Reset();
 }
 
 HttpStream* HttpBasicStream::RenewStreamForAuth() {
@@ -60,8 +85,8 @@ HttpStream* HttpBasicStream::RenewStreamForAuth() {
   // be extra-sure it doesn't touch the connection again, delete it here rather
   // than leaving it until the destructor is called.
   state_.DeleteParser();
-  return new HttpBasicStream(state_.ReleaseConnection().release(),
-                             state_.using_proxy());
+  return new HttpBasicStream(state_.ReleaseConnection(), state_.using_proxy(),
+                             state_.http_09_on_non_default_ports_enabled());
 }
 
 bool HttpBasicStream::IsResponseBodyComplete() const {
@@ -69,13 +94,15 @@ bool HttpBasicStream::IsResponseBodyComplete() const {
 }
 
 bool HttpBasicStream::IsConnectionReused() const {
-  return parser()->IsConnectionReused();
+  return state_.IsConnectionReused();
 }
 
-void HttpBasicStream::SetConnectionReused() { parser()->SetConnectionReused(); }
+void HttpBasicStream::SetConnectionReused() {
+  state_.connection()->set_reuse_type(ClientSocketHandle::REUSED_IDLE);
+}
 
 bool HttpBasicStream::CanReuseConnection() const {
-  return parser()->CanReuseConnection();
+  return state_.connection()->socket() && parser()->CanReuseConnection();
 }
 
 int64_t HttpBasicStream::GetTotalReceivedBytes() const {
@@ -92,16 +119,35 @@ int64_t HttpBasicStream::GetTotalSentBytes() const {
 
 bool HttpBasicStream::GetLoadTimingInfo(
     LoadTimingInfo* load_timing_info) const {
-  return state_.connection()->GetLoadTimingInfo(IsConnectionReused(),
-                                                load_timing_info);
+  if (!state_.connection()->GetLoadTimingInfo(IsConnectionReused(),
+                                              load_timing_info) ||
+      !parser()) {
+    return false;
+  }
+
+  load_timing_info->receive_headers_start = parser()->response_start_time();
+  return true;
+}
+
+bool HttpBasicStream::GetAlternativeService(
+    AlternativeService* alternative_service) const {
+  return false;
 }
 
 void HttpBasicStream::GetSSLInfo(SSLInfo* ssl_info) {
+  if (!state_.connection()->socket()) {
+    ssl_info->Reset();
+    return;
+  }
   parser()->GetSSLInfo(ssl_info);
 }
 
 void HttpBasicStream::GetSSLCertRequestInfo(
     SSLCertRequestInfo* cert_request_info) {
+  if (!state_.connection()->socket()) {
+    cert_request_info->Reset();
+    return;
+  }
   parser()->GetSSLCertRequestInfo(cert_request_info);
 }
 
@@ -110,11 +156,6 @@ bool HttpBasicStream::GetRemoteEndpoint(IPEndPoint* endpoint) {
     return false;
 
   return state_.connection()->socket()->GetPeerAddress(endpoint) == OK;
-}
-
-Error HttpBasicStream::GetSignedEKMForTokenBinding(crypto::ECPrivateKey* key,
-                                                   std::vector<uint8_t>* out) {
-  return parser()->GetSignedEKMForTokenBinding(key, out);
 }
 
 void HttpBasicStream::Drain(HttpNetworkSession* session) {
@@ -132,6 +173,11 @@ void HttpBasicStream::PopulateNetErrorDetails(NetErrorDetails* details) {
 
 void HttpBasicStream::SetPriority(RequestPriority priority) {
   // TODO(akalin): Plumb this through to |connection_|.
+}
+
+void HttpBasicStream::SetRequestHeadersCallback(
+    RequestHeadersCallback callback) {
+  request_headers_callback_ = std::move(callback);
 }
 
 }  // namespace net

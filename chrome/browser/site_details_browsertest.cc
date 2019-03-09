@@ -7,27 +7,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "base/bind_helpers.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/histogram_tester.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
-#include "chrome/browser/extensions/test_extension_dir.h"
 #include "chrome/browser/metrics/metrics_memory_details.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/extensions/extension_process_policy.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/metrics/metrics_service.h"
-#include "components/variations/metrics_util.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_switches.h"
@@ -35,6 +34,7 @@
 #include "content/public/test/test_utils.h"
 #include "extensions/common/switches.h"
 #include "extensions/common/value_builder.h"
+#include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -53,8 +53,7 @@ namespace {
 
 class TestMemoryDetails : public MetricsMemoryDetails {
  public:
-  TestMemoryDetails()
-      : MetricsMemoryDetails(base::Bind(&base::DoNothing), nullptr) {}
+  TestMemoryDetails() : MetricsMemoryDetails(base::DoNothing()) {}
 
   void StartFetchAndWait() {
     uma_.reset(new base::HistogramTester());
@@ -89,7 +88,7 @@ class TestMemoryDetails : public MetricsMemoryDetails {
   void OnDetailsAvailable() override {
     MetricsMemoryDetails::OnDetailsAvailable();
     // Exit the loop initiated by StartFetchAndWait().
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
   std::unique_ptr<base::HistogramTester> uma_;
@@ -100,9 +99,11 @@ class TestMemoryDetails : public MetricsMemoryDetails {
 IsolationScenarioType GetCurrentPolicy() {
   if (content::AreAllSitesIsolatedForTesting())
     return ISOLATE_ALL_SITES;
-  if (extensions::IsIsolateExtensionsEnabled())
-    return ISOLATE_EXTENSIONS;
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  return ISOLATE_EXTENSIONS;
+#else
   return ISOLATE_NOTHING;
+#endif
 }
 
 // This matcher takes three other matchers as arguments, and applies one of them
@@ -165,17 +166,18 @@ void PrintTo(const SampleMatcherP2<P1, P2>& matcher, std::ostream* os) {
 
 }  // namespace
 
-class SiteDetailsBrowserTest : public ExtensionBrowserTest {
+class SiteDetailsBrowserTest : public extensions::ExtensionBrowserTest {
  public:
   SiteDetailsBrowserTest() {}
   ~SiteDetailsBrowserTest() override {}
 
   void SetUpOnMainThread() override {
+    extensions::ExtensionBrowserTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
 
     // Add content/test/data so we can use cross_site_iframe_factory.html
     base::FilePath test_data_dir;
-    ASSERT_TRUE(PathService::Get(base::DIR_SOURCE_ROOT, &test_data_dir));
+    ASSERT_TRUE(base::PathService::Get(base::DIR_SOURCE_ROOT, &test_data_dir));
     embedded_test_server()->ServeFilesFromDirectory(
         test_data_dir.AppendASCII("content/test/data/"));
     ASSERT_TRUE(embedded_test_server()->Start());
@@ -235,53 +237,10 @@ class SiteDetailsBrowserTest : public ExtensionBrowserTest {
                        name.c_str(), iframe_url.c_str(), iframe_url2.c_str()));
     dir->WriteManifest(manifest.ToJSON());
 
-    const Extension* extension = LoadExtension(dir->unpacked_path());
+    const Extension* extension = LoadExtension(dir->UnpackedPath());
     EXPECT_TRUE(extension);
-    temp_dirs_.push_back(dir.release());
+    temp_dirs_.push_back(std::move(dir));
     return extension;
-  }
-
-  // Creates a V2 platform app that loads a web iframe in the app's sandbox
-  // page.
-  // TODO(lazyboy): Deprecate this behavior in https://crbug.com/615585.
-  void CreateAppWithSandboxPage(const std::string& name) {
-    std::unique_ptr<TestExtensionDir> dir(new TestExtensionDir);
-
-    DictionaryBuilder manifest;
-    manifest.Set("name", name)
-        .Set("version", "1.0")
-        .Set("manifest_version", 2)
-        .Set("sandbox",
-             DictionaryBuilder()
-                 .Set("pages", ListBuilder().Append("sandbox.html").Build())
-                 .Build())
-        .Set("app",
-             DictionaryBuilder()
-                 .Set("background",
-                      DictionaryBuilder()
-                          .Set("scripts",
-                               ListBuilder().Append("background.js").Build())
-                          .Build())
-                 .Build());
-
-    dir->WriteFile(FILE_PATH_LITERAL("background.js"),
-                   "var sandboxFrame = document.createElement('iframe');"
-                   "sandboxFrame.src = 'sandbox.html';"
-                   "document.body.appendChild(sandboxFrame);");
-
-    std::string iframe_url =
-        embedded_test_server()->GetURL("/title1.html").spec();
-    dir->WriteFile(
-        FILE_PATH_LITERAL("sandbox.html"),
-        base::StringPrintf("<html><body>%s, web iframe:"
-                           "  <iframe width=80 height=80 src=%s></iframe>"
-                           "</body></html>",
-                           name.c_str(), iframe_url.c_str()));
-    dir->WriteManifest(manifest.ToJSON());
-
-    const Extension* extension = LoadExtension(dir->unpacked_path());
-    EXPECT_TRUE(extension);
-    temp_dirs_.push_back(dir.release());
   }
 
   const Extension* CreateHostedApp(const std::string& name,
@@ -301,66 +260,27 @@ class SiteDetailsBrowserTest : public ExtensionBrowserTest {
                 .Build());
     dir->WriteManifest(manifest.ToJSON());
 
-    const Extension* extension = LoadExtension(dir->unpacked_path());
+    const Extension* extension = LoadExtension(dir->UnpackedPath());
     EXPECT_TRUE(extension);
-    temp_dirs_.push_back(dir.release());
+    temp_dirs_.push_back(std::move(dir));
     return extension;
   }
 
   int GetRenderProcessCount() {
-    int count = 0;
-    for (content::RenderProcessHost::iterator it(
-             content::RenderProcessHost::AllHostsIterator());
-         !it.IsAtEnd(); it.Advance()) {
-      count++;
-    }
-    return count;
-  }
-
-  // Checks whether the test run is part of a field trial with |trial_name|.
-  bool IsInTrial(const std::string& trial_name) {
-    uint32_t trial = metrics::HashName(trial_name);
-
-    std::vector<variations::ActiveGroupId> synthetic_trials;
-    g_browser_process->metrics_service()
-        ->GetCurrentSyntheticFieldTrialsForTesting(&synthetic_trials);
-
-    for (const auto& entry : synthetic_trials) {
-      if (trial == entry.name)
-        return true;
-    }
-
-    return false;
-  }
-
-  // Similar to IsInTrial but checks that the correct group is present as well.
-  bool IsInTrialGroup(const std::string& trial_name,
-                      const std::string& group_name) {
-    uint32_t trial = metrics::HashName(trial_name);
-    uint32_t group = metrics::HashName(group_name);
-
-    std::vector<variations::ActiveGroupId> synthetic_trials;
-    g_browser_process->metrics_service()
-        ->GetCurrentSyntheticFieldTrialsForTesting(&synthetic_trials);
-
-    for (const auto& entry : synthetic_trials) {
-      if (trial == entry.name && group == entry.group)
-        return true;
-    }
-
-    return false;
+    return content::RenderProcessHost::GetCurrentRenderProcessCountForTesting();
   }
 
  private:
-  ScopedVector<TestExtensionDir> temp_dirs_;
+  std::vector<std::unique_ptr<TestExtensionDir>> temp_dirs_;
   DISALLOW_COPY_AND_ASSIGN(SiteDetailsBrowserTest);
 };
-
 
 // Test the accuracy of SiteDetails process estimation, in the presence of
 // multiple iframes, navigation, multiple BrowsingInstances, and multiple tabs
 // in the same BrowsingInstance.
-IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, ManyIframes) {
+//
+// Disabled since it's flaky: https://crbug.com/830318.
+IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, DISABLED_ManyIframes) {
   // Page with 14 nested oopifs across 9 sites (a.com through i.com).
   // None of these are https.
   GURL abcdefghi_url = embedded_test_server()->GetURL(
@@ -572,7 +492,15 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, ManyIframes) {
   EXPECT_THAT(details->uma()->GetAllSamples(
                   "SiteIsolation.IsolateExtensionsProcessCountNoLimit"),
               HasOneSample(3));
-  EXPECT_THAT(GetRenderProcessCount(), DependingOnPolicy(3, 3, 15));
+
+  // For --site-per-process, the total process count will be 12 instead of 15,
+  // because the third tab's subframes (b, c, d) will reuse matching subframe
+  // processes from the second tab (across BrowsingInstances).  This subframe
+  // process consolidation was added as part of https://crbug.com/512560.  Note
+  // that the a.com main frame in tab 3 won't reuse tab 2's main frame process,
+  // so this is still one process higher than the lower bound.
+  EXPECT_THAT(GetRenderProcessCount(), DependingOnPolicy(3, 3, 12));
+
   EXPECT_THAT(details->GetOutOfProcessIframeCount(),
               DependingOnPolicy(0, 0, 17));
   EXPECT_THAT(details->uma()->GetAllSamples("SiteIsolation.ProxyCount"),
@@ -639,7 +567,7 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, ManyIframes) {
   EXPECT_THAT(details->uma()->GetAllSamples(
                   "SiteIsolation.IsolateExtensionsProcessCountNoLimit"),
               HasOneSample(3));
-  EXPECT_THAT(GetRenderProcessCount(), DependingOnPolicy(3, 3, 16));
+  EXPECT_THAT(GetRenderProcessCount(), DependingOnPolicy(3, 3, 13));
   EXPECT_THAT(details->GetOutOfProcessIframeCount(),
               DependingOnPolicy(0, 0, 21));
   EXPECT_THAT(details->uma()->GetAllSamples("SiteIsolation.ProxyCount"),
@@ -649,13 +577,10 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, ManyIframes) {
               DependingOnPolicy(
                   ElementsAre(Bucket(0, 3)), ElementsAre(Bucket(0, 3)),
                   ElementsAre(Bucket(12, 1), Bucket(29, 1), Bucket(68, 1))));
-
-  // This test doesn't navigate to any extensions URLs, so it should not be
-  // in any of the field trial groups.
-  EXPECT_FALSE(IsInTrial("SiteIsolationExtensionsActive"));
 }
 
-IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, IsolateExtensions) {
+// TODO(crbug.com/671891): This test is flaky.
+IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, DISABLED_IsolateExtensions) {
   // We start on "about:blank", which should be credited with a process in this
   // case.
   scoped_refptr<TestMemoryDetails> details = new TestMemoryDetails();
@@ -880,7 +805,8 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, IsolateExtensions) {
   // Navigate tab1 to an extension3 page with an extension3 iframe. There should
   // be three processes estimated by IsolateExtensions: one for extension3, one
   // for extension1's background page, and one for the web iframe in tab2.
-  browser()->tab_strip_model()->ActivateTabAt(0, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      0, {TabStripModel::GestureType::kOther});
   ui_test_utils::NavigateToURL(browser(),
                                extension3->GetResourceURL("blank_iframe.html"));
   details = new TestMemoryDetails();
@@ -926,24 +852,16 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, IsolateExtensions) {
   EXPECT_THAT(details->uma()->GetAllSamples(
                   "SiteIsolation.IsolateExtensionsProcessCountNoLimit"),
               HasOneSample(4));
+
+  // There should be four total renderer processes: one for each of the two web
+  // iframes, one for extension3, and one for extension 1's background page.
+  // Note that the optimization in https://crbug.com/512560, where subframes
+  // that require a dedicated process reuse existing processes where possible,
+  // does not apply to web iframes in extensions anymore -- see
+  // https://crbug.com/899418.
   EXPECT_THAT(GetRenderProcessCount(), DependingOnPolicy(2, 4, 4));
   EXPECT_THAT(details->GetOutOfProcessIframeCount(),
               DependingOnPolicy(0, 2, 2));
-
-  EXPECT_TRUE(IsInTrial("SiteIsolationExtensionsActive"));
-}
-
-// Due to http://crbug.com/612711, we are not isolating iframes from platform
-// apps with --isolate-extenions.
-IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, PlatformAppsNotIsolated) {
-  // --site-per-process will still isolate iframes from platform apps, so skip
-  // the test in that case.
-  if (content::AreAllSitesIsolatedForTesting())
-    return;
-  CreateAppWithSandboxPage("Extension One");
-  scoped_refptr<TestMemoryDetails> details = new TestMemoryDetails();
-  details->StartFetchAndWait();
-  EXPECT_EQ(0, details->GetOutOfProcessIframeCount());
 }
 
 // Exercises accounting in the case where an extension has two different-site
@@ -981,12 +899,13 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, ExtensionWithTwoWebIframes) {
   EXPECT_THAT(GetRenderProcessCount(), DependingOnPolicy(1, 3, 3));
   EXPECT_THAT(details->GetOutOfProcessIframeCount(),
               DependingOnPolicy(0, 2, 2));
-
-  EXPECT_TRUE(IsInTrial("SiteIsolationExtensionsActive"));
 }
 
 // Verifies that --isolate-extensions doesn't isolate hosted apps.
-IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, IsolateExtensionsHostedApps) {
+//
+// Disabled since it's flaky: https://crbug.com/830318.
+IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest,
+                       DISABLED_IsolateExtensionsHostedApps) {
   GURL app_with_web_iframe_url = embedded_test_server()->GetURL(
       "app.org", "/cross_site_iframe_factory.html?app.org(b.com)");
   GURL app_in_web_iframe_url = embedded_test_server()->GetURL(
@@ -1125,49 +1044,14 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, IsolateExtensionsHostedApps) {
   EXPECT_THAT(GetRenderProcessCount(), DependingOnPolicy(1, 1, 2));
   EXPECT_THAT(details->GetOutOfProcessIframeCount(),
               DependingOnPolicy(0, 0, 1));
-
-  // Since hosted apps are excluded from isolation, this test should not be
-  // in any of the field trial groups.
-  EXPECT_FALSE(IsInTrial("SiteIsolationExtensionsActive"));
-}
-
-// Verifies that the client is put in the appropriate field trial group.
-IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, VerifyFieldTrialGroup) {
-  const Extension* extension = CreateExtension("Extension", false);
-  GURL tab1_url = embedded_test_server()->GetURL(
-      "a.com", "/cross_site_iframe_factory.html?a(b,c)");
-  ui_test_utils::NavigateToURL(browser(), tab1_url);
-  WebContents* tab = browser()->tab_strip_model()->GetWebContentsAt(0);
-
-  // Tab navigates its second iframe to a page of the extension.
-  content::NavigateIframeToURL(tab, "child-1",
-                               extension->GetResourceURL("/blank_iframe.html"));
-
-  std::string group;
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kSitePerProcess)) {
-    group = "SitePerProcessFlag";
-  } else if (extensions::IsIsolateExtensionsEnabled()) {
-    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-            extensions::switches::kIsolateExtensions)) {
-      group = "IsolateExtensionsFlag";
-    } else {
-      group = "FieldTrial";
-    }
-  } else {
-    if (base::FieldTrialList::FindFullName("SiteIsolationExtensions").empty())
-      group = "Default";
-    else
-      group = "Control";
-  }
-
-  EXPECT_TRUE(IsInTrialGroup("SiteIsolationExtensionsActive", group));
 }
 
 // Verifies that the UMA counter for SiteInstances in a BrowsingInstance is
 // correct when using tabs with web pages.
+//
+// Disabled since it's flaky. https://crbug.com/934900
 IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest,
-                       VerifySiteInstanceCountInBrowsingInstance) {
+                       DISABLED_VerifySiteInstanceCountInBrowsingInstance) {
   // Page with 14 nested oopifs across 9 sites (a.com through i.com).
   GURL abcdefghi_url = embedded_test_server()->GetURL(
       "a.com",
@@ -1236,9 +1120,11 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest,
 
 // Verifies that the UMA counter for SiteInstances in a BrowsingInstance is
 // correct when extensions and web pages are mixed together.
+//
+// Disabled since it's flaky: https://crbug.com/830318.
 IN_PROC_BROWSER_TEST_F(
     SiteDetailsBrowserTest,
-    VerifySiteInstanceCountInBrowsingInstanceWithExtensions) {
+    DISABLED_VerifySiteInstanceCountInBrowsingInstanceWithExtensions) {
   // Open two a.com tabs (with cross site http iframes). IsolateExtensions mode
   // should have no effect so far, since there are no frames straddling the
   // extension/web boundary.

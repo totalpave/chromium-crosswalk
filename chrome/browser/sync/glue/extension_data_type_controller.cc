@@ -4,25 +4,25 @@
 
 #include "chrome/browser/sync/glue/extension_data_type_controller.h"
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/profiles/profile.h"
-#include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_system.h"
-
-using content::BrowserThread;
 
 namespace browser_sync {
 
 ExtensionDataTypeController::ExtensionDataTypeController(
     syncer::ModelType type,
-    const base::Closure& error_callback,
-    sync_driver::SyncClient* sync_client,
+    const base::Closure& dump_stack,
+    syncer::SyncService* sync_service,
+    syncer::SyncClient* sync_client,
     Profile* profile)
-    : UIDataTypeController(
-          BrowserThread::GetMessageLoopProxyForThread(BrowserThread::UI),
-          error_callback,
-          type,
-          sync_client),
+    : AsyncDirectoryTypeController(type,
+                                   dump_stack,
+                                   sync_service,
+                                   sync_client,
+                                   syncer::GROUP_UI,
+                                   base::ThreadTaskRunnerHandle::Get()),
       profile_(profile) {
   DCHECK(type == syncer::EXTENSIONS || type == syncer::APPS);
 }
@@ -30,7 +30,9 @@ ExtensionDataTypeController::ExtensionDataTypeController(
 ExtensionDataTypeController::~ExtensionDataTypeController() {}
 
 bool ExtensionDataTypeController::StartModels() {
-  extensions::ExtensionSystem::Get(profile_)->InitForRegularProfile(true);
+  DCHECK(CalledOnValidThread());
+  extensions::ExtensionSystem::Get(profile_)->InitForRegularProfile(
+      true /* extensions_enabled */);
   return true;
 }
 

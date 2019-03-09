@@ -7,10 +7,12 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "components/dom_distiller/content/browser/distillable_page_utils.h"
 #include "components/dom_distiller/content/common/distillability_service.mojom.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "mojo/public/cpp/bindings/strong_binding.h"
+#include "services/service_manager/public/cpp/binder_registry.h"
 
 namespace dom_distiller {
 
@@ -20,36 +22,34 @@ class DistillabilityDriver
       public content::WebContentsUserData<DistillabilityDriver> {
  public:
   ~DistillabilityDriver() override;
-  void CreateDistillabilityService(
-      mojo::InterfaceRequest<mojom::DistillabilityService> request);
+  void CreateDistillabilityService(mojom::DistillabilityServiceRequest request);
 
-  void SetDelegate(const base::Callback<void(bool, bool)>& delegate);
+  void SetDelegate(const DistillabilityDelegate& delegate);
 
   // content::WebContentsObserver implementation.
-  void DidStartProvisionalLoadForFrame(
+  void OnInterfaceRequestFromFrame(
       content::RenderFrameHost* render_frame_host,
-      const GURL& validated_url,
-      bool is_error_page,
-      bool is_iframe_srcdoc) override;
-  void RenderFrameHostChanged(
-      content::RenderFrameHost* old_host,
-      content::RenderFrameHost* new_host) override;
+      const std::string& interface_name,
+      mojo::ScopedMessagePipeHandle* interface_pipe) override;
 
  private:
   explicit DistillabilityDriver(content::WebContents* web_contents);
   friend class content::WebContentsUserData<DistillabilityDriver>;
   friend class DistillabilityServiceImpl;
 
-  void SetupMojoService(content::RenderFrameHost* frame_host);
-  void OnDistillability(bool distillable, bool is_last);
+  void OnDistillability(bool distillable,
+                        bool is_last,
+                        bool is_mobile_friendly);
 
-  void SetNeedsMojoSetup();
+  DistillabilityDelegate m_delegate_;
 
-  base::Callback<void(bool, bool)> m_delegate_;
+  service_manager::BinderRegistry frame_interfaces_;
 
   bool mojo_needs_setup_;
 
   base::WeakPtrFactory<DistillabilityDriver> weak_factory_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(DistillabilityDriver);
 };

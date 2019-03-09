@@ -8,15 +8,69 @@
 #include <cstdlib>
 
 #include "base/logging.h"
+#include "base/stl_util.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "net/base/url_util.h"
+#include "net/http/http_util.h"
 #include "url/gurl.h"
 
 namespace net {
 namespace cookie_util {
+
+namespace {
+
+base::Time MinNonNullTime() {
+  return base::Time::FromInternalValue(1);
+}
+
+// Tries to assemble a base::Time given a base::Time::Exploded representing a
+// UTC calendar date.
+//
+// If the date falls outside of the range supported internally by
+// FromUTCExploded() on the current platform, then the result is:
+//
+// * Time(1) if it's below the range FromUTCExploded() supports.
+// * Time::Max() if it's above the range FromUTCExploded() supports.
+bool SaturatedTimeFromUTCExploded(const base::Time::Exploded& exploded,
+                                  base::Time* out) {
+  // Try to calculate the base::Time in the normal fashion.
+  if (base::Time::FromUTCExploded(exploded, out)) {
+    // Don't return Time(0) on success.
+    if (out->is_null())
+      *out = MinNonNullTime();
+    return true;
+  }
+
+  // base::Time::FromUTCExploded() has platform-specific limits:
+  //
+  // * Windows: Years 1601 - 30827
+  // * 32-bit POSIX: Years 1970 - 2038
+  //
+  // Work around this by returning min/max valid times for times outside those
+  // ranges when imploding the time is doomed to fail.
+  //
+  // Note that the following implementation is NOT perfect. It will accept
+  // some invalid calendar dates in the out-of-range case.
+  if (!exploded.HasValidValues())
+    return false;
+
+  if (exploded.year > base::Time::kExplodedMaxYear) {
+    *out = base::Time::Max();
+    return true;
+  }
+  if (exploded.year < base::Time::kExplodedMinYear) {
+    *out = MinNonNullTime();
+    return true;
+  }
+
+  return false;
+}
+
+}  // namespace
 
 bool DomainIsHostOnly(const std::string& domain_string) {
   return (domain_string.empty() || domain_string[0] != '.');
@@ -49,6 +103,12 @@ bool GetCookieDomainWithString(const GURL& url,
     *result = url_host;
     DCHECK(DomainIsHostOnly(*result));
     return true;
+  }
+
+  // Disallow domain names with %-escaped characters.
+  for (char c : domain_string) {
+    if (c == '%')
+      return false;
   }
 
   // Get the normalized domain specified in cookie line.
@@ -103,11 +163,10 @@ bool GetCookieDomainWithString(const GURL& url,
 //  - The time must be of the format hh:mm:ss.
 // An average cookie expiration will look something like this:
 //   Sat, 15-Apr-17 21:01:22 GMT
-base::Time ParseCookieTime(const std::string& time_string) {
+base::Time ParseCookieExpirationTime(const std::string& time_string) {
   static const char* const kMonths[] = {
     "jan", "feb", "mar", "apr", "may", "jun",
     "jul", "aug", "sep", "oct", "nov", "dec" };
-  static const int kMonthsLen = arraysize(kMonths);
   // We want to be pretty liberal, and support most non-ascii and non-digit
   // characters as a delimiter.  We can't treat : as a delimiter, because it
   // is the delimiter for hh:mm:ss, and we want to keep this field together.
@@ -134,11 +193,11 @@ base::Time ParseCookieTime(const std::string& time_string) {
     // String field
     if (!numerical) {
       if (!found_month) {
-        for (int i = 0; i < kMonthsLen; ++i) {
+        for (size_t i = 0; i < base::size(kMonths); ++i) {
           // Match prefix, so we could match January, etc
           if (base::StartsWith(token, base::StringPiece(kMonths[i], 3),
                                base::CompareCase::INSENSITIVE_ASCII)) {
-            exploded.month = i + 1;
+            exploded.month = static_cast<int>(i) + 1;
             found_month = true;
             break;
           }
@@ -200,13 +259,11 @@ base::Time ParseCookieTime(const std::string& time_string) {
   if (exploded.year >= 0 && exploded.year <= 68)
     exploded.year += 2000;
 
-  // If our values are within their correct ranges, we got our time.
-  if (exploded.day_of_month >= 1 && exploded.day_of_month <= 31 &&
-      exploded.month >= 1 && exploded.month <= 12 &&
-      exploded.year >= 1601 && exploded.year <= 30827 &&
-      exploded.hour <= 23 && exploded.minute <= 59 && exploded.second <= 59) {
-    return base::Time::FromUTCExploded(exploded);
-  }
+  // Note that clipping the date if it is outside of a platform-specific range
+  // is permitted by: https://tools.ietf.org/html/rfc6265#section-5.2.1
+  base::Time result;
+  if (SaturatedTimeFromUTCExploded(exploded, &result))
+    return result;
 
   // One of our values was out of expected range.  For well-formed input,
   // the following check would be reasonable:
@@ -222,6 +279,39 @@ GURL CookieOriginToURL(const std::string& domain, bool is_https) {
   const std::string scheme = is_https ? "https" : "http";
   const std::string host = domain[0] == '.' ? domain.substr(1) : domain;
   return GURL(scheme + "://" + host);
+}
+
+bool IsDomainMatch(const std::string& domain, const std::string& host) {
+  // Can domain match in two ways; as a domain cookie (where the cookie
+  // domain begins with ".") or as a host cookie (where it doesn't).
+
+  // Some consumers of the CookieMonster expect to set cookies on
+  // URLs like http://.strange.url.  To retrieve cookies in this instance,
+  // we allow matching as a host cookie even when the domain_ starts with
+  // a period.
+  if (host == domain)
+    return true;
+
+  // Domain cookie must have an initial ".".  To match, it must be
+  // equal to url's host with initial period removed, or a suffix of
+  // it.
+
+  // Arguably this should only apply to "http" or "https" cookies, but
+  // extension cookie tests currently use the funtionality, and if we
+  // ever decide to implement that it should be done by preventing
+  // such cookies from being set.
+  if (domain.empty() || domain[0] != '.')
+    return false;
+
+  // The host with a "." prefixed.
+  if (domain.compare(1, std::string::npos, host) == 0)
+    return true;
+
+  // A pure suffix of the host (ok since we know the domain already
+  // starts with a ".")
+  return (host.length() > domain.length() &&
+          host.compare(host.length() - domain.length(), domain.length(),
+                       domain) == 0);
 }
 
 void ParseRequestCookieLine(const std::string& header_value,
@@ -258,7 +348,8 @@ void ParseRequestCookieLine(const std::string& header_value,
         // i points to ';' or end of string.
       }
     }
-    parsed_cookies->push_back(std::make_pair(cookie_name, cookie_value));
+    parsed_cookies->emplace_back(cookie_name.as_string(),
+                                 cookie_value.as_string());
     // Eat ';'.
     if (i != header_value.end()) ++i;
   }
@@ -267,8 +358,7 @@ void ParseRequestCookieLine(const std::string& header_value,
 std::string SerializeRequestCookieLine(
     const ParsedRequestCookies& parsed_cookies) {
   std::string buffer;
-  for (ParsedRequestCookies::const_iterator i = parsed_cookies.begin();
-       i != parsed_cookies.end(); ++i) {
+  for (auto i = parsed_cookies.begin(); i != parsed_cookies.end(); ++i) {
     if (!buffer.empty())
       buffer.append("; ");
     buffer.append(i->first.begin(), i->first.end());
@@ -276,6 +366,69 @@ std::string SerializeRequestCookieLine(
     buffer.append(i->second.begin(), i->second.end());
   }
   return buffer;
+}
+
+CookieOptions::SameSiteCookieContext ComputeSameSiteContext(
+    const GURL& url,
+    const GURL& site_for_cookies,
+    const base::Optional<url::Origin>& initiator) {
+  if (registry_controlled_domains::SameDomainOrHost(
+          url, site_for_cookies,
+          registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES)) {
+    if (!initiator ||
+        registry_controlled_domains::SameDomainOrHost(
+            url, initiator.value(),
+            registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES)) {
+      return CookieOptions::SameSiteCookieContext::SAME_SITE_STRICT;
+    } else {
+      return CookieOptions::SameSiteCookieContext::SAME_SITE_LAX;
+    }
+  }
+  return CookieOptions::SameSiteCookieContext::CROSS_SITE;
+}
+
+CookieOptions::SameSiteCookieContext ComputeSameSiteContextForRequest(
+    const std::string& http_method,
+    const GURL& url,
+    const GURL& site_for_cookies,
+    const base::Optional<url::Origin>& initiator,
+    bool attach_same_site_cookies) {
+  // Set SameSiteCookieMode according to the rules laid out in
+  // https://tools.ietf.org/html/draft-ietf-httpbis-rfc6265bis-02:
+  //
+  // * Include both "strict" and "lax" same-site cookies if the request's
+  //   |url|, |initiator|, and |site_for_cookies| all have the same
+  //   registrable domain. Note: this also covers the case of a request
+  //   without an initiator (only happens for browser-initiated main frame
+  //   navigations).
+  //
+  // * Include only "lax" same-site cookies if the request's |URL| and
+  //   |site_for_cookies| have the same registrable domain, _and_ the
+  //   request's |http_method| is "safe" ("GET" or "HEAD").
+  //
+  //   This case should generally occur only for cross-site requests which
+  //   target a top-level browsing context.
+  //
+  // * Include both "strict" and "lax" same-site cookies if the request is
+  //   tagged with a flag allowing it and "lax" would have been allowed had
+  //   |http_method| been safe.
+  //
+  //   Note that this can be the case for requests initiated by extensions,
+  //   which need to behave as though they are made by the document itself,
+  //   but appear like cross-site ones.
+  //
+  // * Otherwise, do not include same-site cookies.
+  CookieOptions::SameSiteCookieContext same_site_context =
+      ComputeSameSiteContext(url, site_for_cookies, initiator);
+  if (same_site_context ==
+      CookieOptions::SameSiteCookieContext::SAME_SITE_LAX) {
+    if (attach_same_site_cookies)
+      same_site_context =
+          CookieOptions::SameSiteCookieContext::SAME_SITE_STRICT;
+    else if (!net::HttpUtil::IsMethodSafe(http_method))
+      same_site_context = CookieOptions::SameSiteCookieContext::CROSS_SITE;
+  }
+  return same_site_context;
 }
 
 }  // namespace cookie_util

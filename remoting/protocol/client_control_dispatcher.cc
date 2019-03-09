@@ -62,7 +62,7 @@ bool CursorShapeIsValid(const CursorShapeInfo& cursor_shape) {
 
 ClientControlDispatcher::ClientControlDispatcher()
     : ChannelDispatcherBase(kControlChannelName) {}
-ClientControlDispatcher::~ClientControlDispatcher() {}
+ClientControlDispatcher::~ClientControlDispatcher() = default;
 
 void ClientControlDispatcher::InjectClipboardEvent(
     const ClipboardEvent& event) {
@@ -109,6 +109,13 @@ void ClientControlDispatcher::DeliverClientMessage(
   ControlMessage control_message;
   control_message.mutable_extension_message()->CopyFrom(message);
   message_pipe()->Send(&control_message, base::Closure());
+}
+
+void ClientControlDispatcher::SelectDesktopDisplay(
+    const SelectDesktopDisplayRequest& select_display) {
+  ControlMessage message;
+  message.mutable_select_display()->CopyFrom(select_display);
+  message_pipe()->Send(&message, base::Closure());
 }
 
 void ClientControlDispatcher::OnIncomingMessage(

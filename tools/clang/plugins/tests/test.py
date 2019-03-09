@@ -19,8 +19,6 @@ class ChromeStylePluginTest(plugin_testing.ClangPluginTest):
   """Test harness for the Chrome style plugin."""
 
   def AdjustClangArguments(self, clang_cmd):
-    self.AddPluginArg(clang_cmd, 'check-implicit-copy-ctors')
-    self.AddPluginArg(clang_cmd, 'follow-macro-expansion')
     clang_cmd.extend([
         # Skip code generation
         '-fsyntax-only',
@@ -37,15 +35,11 @@ def main():
       action='store_true',
       help='If specified, overwrites the expected results in place.')
   parser.add_argument('clang_path', help='The path to the clang binary.')
-  parser.add_argument('plugin_path',
-                      nargs='?',
-                      help='The path to the plugin library, if any.')
   args = parser.parse_args()
 
   return ChromeStylePluginTest(
       os.path.dirname(os.path.realpath(__file__)),
       args.clang_path,
-      args.plugin_path,
       'find-bad-constructs',
       args.reset_results).Run()
 

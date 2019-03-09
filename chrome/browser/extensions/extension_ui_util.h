@@ -5,10 +5,13 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_EXTENSION_UI_UTIL_H_
 #define CHROME_BROWSER_EXTENSIONS_EXTENSION_UI_UTIL_H_
 
+#include "url/gurl.h"
+
 namespace content {
 class BrowserContext;
-class WebContents;
 }
+
+class SkBitmap;
 
 namespace extensions {
 
@@ -40,12 +43,17 @@ bool ShouldDisplayInNewTabPage(const Extension* extension,
 bool ShouldDisplayInExtensionSettings(const Extension* extension,
                                       content::BrowserContext* context);
 
-// Returns true if the extension should not be shown anywhere. This is
-// mostly the same as the extension being a component extension, but also
-// includes non-component apps that are hidden from the app launcher and NTP,
-// as well as ephemeral apps.
-bool ShouldNotBeVisible(const Extension* extension,
-                        content::BrowserContext* context);
+// If |url| is an extension URL, returns the name of the associated extension,
+// with whitespace collapsed. Otherwise, returns empty string. |context| is used
+// to get at the extension registry.
+base::string16 GetEnabledExtensionNameForUrl(const GURL& url,
+                                             content::BrowserContext* context);
+
+// Returns true if the icon, rendered in the toolbar of the current context,
+// would be sufficiently visible to the user.
+bool IsRenderedIconSufficientlyVisibleForBrowserContext(
+    const SkBitmap& bitmap,
+    content::BrowserContext* browser_context);
 
 }  // namespace ui_util
 }  // namespace extensions

@@ -44,7 +44,6 @@
 #include "net/http/transport_security_state.h"
 
 namespace base {
-class DictionaryValue;
 class SequencedTaskRunner;
 }
 
@@ -62,38 +61,40 @@ class NET_EXPORT TransportSecurityPersister
   TransportSecurityPersister(
       TransportSecurityState* state,
       const base::FilePath& profile_path,
-      const scoped_refptr<base::SequencedTaskRunner>& background_runner,
-      bool readonly);
+      const scoped_refptr<base::SequencedTaskRunner>& background_runner);
   ~TransportSecurityPersister() override;
 
   // Called by the TransportSecurityState when it changes its state.
   void StateIsDirty(TransportSecurityState*) override;
+  // Called when the TransportSecurityState should be written immediately.
+  void WriteNow(TransportSecurityState* state,
+                base::OnceClosure callback) override;
 
   // ImportantFileWriter::DataSerializer:
   //
   // Serializes |transport_security_state_| into |*output|. Returns true if
-  // all STS and PKP states were serialized correctly.
+  // all STS and Expect_CT states were serialized correctly.
   //
   // The serialization format is JSON; the JSON represents a dictionary of
   // host:DomainState pairs (host is a string). The DomainState contains
-  // the STS and PKP states and is represented as a dictionary containing
+  // the STS and Expect-CT states and is represented as a dictionary containing
   // the following keys and value types (not all keys will always be
   // present):
   //
   //     "sts_include_subdomains": true|false
-  //     "pkp_include_subdomains": true|false
   //     "created": double
   //     "expiry": double
-  //     "dynamic_spki_hashes_expiry": double
   //     "mode": "default"|"force-https"
   //             legacy value synonyms "strict" = "force-https"
   //                                   "pinning-only" = "default"
   //             legacy value "spdy-only" is unused and ignored
-  //     "static_spki_hashes": list of strings
-  //         legacy key synonym "preloaded_spki_hashes"
-  //     "bad_static_spki_hashes": list of strings
-  //         legacy key synonym "bad_preloaded_spki_hashes"
-  //     "dynamic_spki_hashes": list of strings
+  //     "report-uri": string
+  //     "sts_observed": double
+  //     "expect_ct": dictionary with keys:
+  //         "expect_ct_expiry": double
+  //         "expect_ct_observed": double
+  //         "expect_ct_enforce": true|false
+  //         "expect_ct_report_uri": string
   //
   // The JSON dictionary keys are strings containing
   // Base64(SHA256(TransportSecurityState::CanonicalizeHost(domain))).
@@ -119,15 +120,8 @@ class NET_EXPORT TransportSecurityPersister
                           bool* dirty,
                           TransportSecurityState* state);
 
-  // Populates |host| with default values for the STS and PKP states.
-  // These default values represent "null" states and are only useful to keep
-  // the entries in the resulting JSON consistent. The deserializer will ignore
-  // "null" states.
-  // TODO(davidben): This can be removed when the STS and PKP states are stored
-  // independently on disk. https://crbug.com/470295
-  void PopulateEntryWithDefaults(base::DictionaryValue* host);
-
   void CompleteLoad(const std::string& state);
+  void OnWriteFinished(base::OnceClosure callback, bool result);
 
   TransportSecurityState* transport_security_state_;
 
@@ -136,9 +130,6 @@ class NET_EXPORT TransportSecurityPersister
 
   scoped_refptr<base::SequencedTaskRunner> foreground_runner_;
   scoped_refptr<base::SequencedTaskRunner> background_runner_;
-
-  // Whether or not we're in read-only mode.
-  const bool readonly_;
 
   base::WeakPtrFactory<TransportSecurityPersister> weak_ptr_factory_;
 

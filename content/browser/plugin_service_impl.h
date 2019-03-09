@@ -8,21 +8,23 @@
 #ifndef CONTENT_BROWSER_PLUGIN_SERVICE_IMPL_H_
 #define CONTENT_BROWSER_PLUGIN_SERVICE_IMPL_H_
 
-#if !defined(ENABLE_PLUGINS)
+#include "ppapi/buildflags/buildflags.h"
+
+#if !BUILDFLAG(ENABLE_PLUGINS)
 #error "Plugins should be enabled"
 #endif
 
 #include <map>
-#include <memory>
-#include <set>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
+#include "base/optional.h"
+#include "base/sequence_checker.h"
+#include "base/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event_watcher.h"
-#include "base/threading/sequenced_worker_pool.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "content/browser/ppapi_plugin_process_host.h"
@@ -31,28 +33,15 @@
 #include "content/public/common/pepper_plugin_info.h"
 #include "ipc/ipc_channel_handle.h"
 #include "url/gurl.h"
-
-#if defined(OS_WIN)
-#include "base/win/registry.h"
-#endif
-
-#if defined(OS_POSIX) && !defined(OS_OPENBSD) && !defined(OS_ANDROID)
-#include "base/files/file_path_watcher.h"
-#endif
-
-namespace base {
-class SingleThreadTaskRunner;
-}
+#include "url/origin.h"
 
 namespace content {
 class BrowserContext;
-class PluginDirWatcherDelegate;
 class PluginServiceFilter;
 class ResourceContext;
 struct PepperPluginInfo;
 
-class CONTENT_EXPORT PluginServiceImpl
-    : NON_EXPORTED_BASE(public PluginService) {
+class CONTENT_EXPORT PluginServiceImpl : public PluginService {
  public:
   // Returns the PluginServiceImpl singleton.
   static PluginServiceImpl* GetInstance();
@@ -68,7 +57,7 @@ class CONTENT_EXPORT PluginServiceImpl
                      int render_frame_id,
                      ResourceContext* context,
                      const GURL& url,
-                     const GURL& page_url,
+                     const url::Origin& main_frame_origin,
                      const std::string& mime_type,
                      bool allow_wildcard,
                      bool* is_stale,
@@ -78,8 +67,8 @@ class CONTENT_EXPORT PluginServiceImpl
                            WebPluginInfo* info) override;
   base::string16 GetPluginDisplayNameByPath(
       const base::FilePath& path) override;
-  void GetPlugins(const GetPluginsCallback& callback) override;
-  PepperPluginInfo* GetRegisteredPpapiPluginInfo(
+  void GetPlugins(GetPluginsCallback callback) override;
+  const PepperPluginInfo* GetRegisteredPpapiPluginInfo(
       const base::FilePath& plugin_path) override;
   void SetFilter(PluginServiceFilter* filter) override;
   PluginServiceFilter* GetFilter() override;
@@ -91,6 +80,9 @@ class CONTENT_EXPORT PluginServiceImpl
   void GetInternalPlugins(std::vector<WebPluginInfo>* plugins) override;
   bool PpapiDevChannelSupported(BrowserContext* browser_context,
                                 const GURL& document_url) override;
+  int CountPpapiPluginProcessesForProfile(
+      const base::FilePath& plugin_path,
+      const base::FilePath& profile_data_directory) override;
 
   // Returns the plugin process host corresponding to the plugin process that
   // has been started by this service. This will start a process to host the
@@ -99,7 +91,8 @@ class CONTENT_EXPORT PluginServiceImpl
   PpapiPluginProcessHost* FindOrStartPpapiPluginProcess(
       int render_process_id,
       const base::FilePath& plugin_path,
-      const base::FilePath& profile_data_directory);
+      const base::FilePath& profile_data_directory,
+      const base::Optional<url::Origin>& origin_lock);
   PpapiPluginProcessHost* FindOrStartPpapiBrokerProcess(
       int render_process_id, const base::FilePath& plugin_path);
 
@@ -109,48 +102,59 @@ class CONTENT_EXPORT PluginServiceImpl
   void OpenChannelToPpapiPlugin(int render_process_id,
                                 const base::FilePath& plugin_path,
                                 const base::FilePath& profile_data_directory,
+                                const base::Optional<url::Origin>& origin_lock,
                                 PpapiPluginProcessHost::PluginClient* client);
   void OpenChannelToPpapiBroker(int render_process_id,
+                                int render_frame_id,
                                 const base::FilePath& path,
                                 PpapiPluginProcessHost::BrokerClient* client);
 
   // Used to monitor plugin stability.
   void RegisterPluginCrash(const base::FilePath& plugin_path);
 
+  // For testing without creating many, many processes.
+  void SetMaxPpapiProcessesPerProfileForTesting(int number) {
+    max_ppapi_processes_per_profile_ = number;
+  }
+
  private:
   friend struct base::DefaultSingletonTraits<PluginServiceImpl>;
+
+  // Pulled out of the air, seems reasonable.
+  static constexpr int kDefaultMaxPpapiProcessesPerProfile = 15;
+
+  // Helper for recording URLs to UKM.
+  static void RecordBrokerUsage(int render_process_id, int render_frame_id);
 
   // Creates the PluginServiceImpl object, but doesn't actually build the plugin
   // list yet.  It's generated lazily.
   PluginServiceImpl();
   ~PluginServiceImpl() override;
 
-#if defined(OS_WIN)
-  void OnKeyChanged(base::win::RegKey* key);
-#endif
-
   // Returns the plugin process host corresponding to the plugin process that
   // has been started by this service. Returns NULL if no process has been
   // started.
   PpapiPluginProcessHost* FindPpapiPluginProcess(
       const base::FilePath& plugin_path,
-      const base::FilePath& profile_data_directory);
+      const base::FilePath& profile_data_directory,
+      const base::Optional<url::Origin>& origin_lock);
   PpapiPluginProcessHost* FindPpapiBrokerProcess(
       const base::FilePath& broker_path);
 
   void RegisterPepperPlugins();
 
-  // Run on the blocking pool to load the plugins synchronously.
-  void GetPluginsInternal(base::SingleThreadTaskRunner* target_task_runner,
-                          const GetPluginsCallback& callback);
-
   std::vector<PepperPluginInfo> ppapi_plugins_;
+
+  int max_ppapi_processes_per_profile_ = kDefaultMaxPpapiProcessesPerProfile;
 
   // Weak pointer; outlives us.
   PluginServiceFilter* filter_;
 
-  // Used to sequentialize loading plugins from disk.
-  base::SequencedWorkerPool::SequenceToken plugin_list_token_;
+  // Used to load plugins from disk.
+  scoped_refptr<base::SequencedTaskRunner> plugin_list_task_runner_;
+
+  // Used to verify that loading plugins from disk is done sequentially.
+  base::SequenceChecker plugin_list_sequence_checker_;
 
   // Used to detect if a given plugin is crashing over and over.
   std::map<base::FilePath, std::vector<base::Time> > crash_times_;

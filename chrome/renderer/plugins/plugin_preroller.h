@@ -9,13 +9,8 @@
 #include "content/public/common/webplugininfo.h"
 #include "content/public/renderer/plugin_instance_throttler.h"
 #include "content/public/renderer/render_frame_observer.h"
-#include "third_party/WebKit/public/web/WebPluginParams.h"
+#include "third_party/blink/public/web/web_plugin_params.h"
 #include "url/gurl.h"
-
-namespace blink {
-class WebLocalFrame;
-class WebPlugin;
-}
 
 class SkBitmap;
 
@@ -26,9 +21,8 @@ class SkBitmap;
 class PluginPreroller : public content::PluginInstanceThrottler::Observer,
                         public content::RenderFrameObserver {
  public:
-  // Does not take ownership of either |plugin| or |throttler|.
+  // Does not take ownership of |render_frame|, |plugin|, or |throttler|.
   PluginPreroller(content::RenderFrame* render_frame,
-                  blink::WebLocalFrame* frame,
                   const blink::WebPluginParams& params,
                   const content::WebPluginInfo& info,
                   const std::string& identifier,
@@ -47,7 +41,6 @@ class PluginPreroller : public content::PluginInstanceThrottler::Observer,
   // content::RenderFrameObserver implementation.
   void OnDestruct() override;
 
-  blink::WebLocalFrame* frame_;
   blink::WebPluginParams params_;
   content::WebPluginInfo info_;
   std::string identifier_;

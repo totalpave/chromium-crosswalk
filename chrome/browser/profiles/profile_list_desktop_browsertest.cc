@@ -4,8 +4,10 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/macros.h"
+#include "base/run_loop.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/avatar_menu.h"
@@ -20,6 +22,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "content/public/browser/notification_service.h"
 #include "content/public/test/test_utils.h"
 
 namespace {
@@ -29,7 +32,7 @@ namespace {
 void OnUnblockOnProfileCreation(Profile* profile,
                                 Profile::CreateStatus status) {
   if (status == Profile::CREATE_STATUS_INITIALIZED)
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 }  // namespace
@@ -50,12 +53,16 @@ class ProfileListDesktopBrowserTest : public InProcessBrowserTest {
   DISALLOW_COPY_AND_ASSIGN(ProfileListDesktopBrowserTest);
 };
 
-#if defined(OS_WIN)
-// SignOut is flaky. So far only observed on Windows. crbug.com/357329.
+#if defined(OS_WIN) || (defined(OS_MACOSX) && defined(ADDRESS_SANITIZER))
+// SignOut is flaky on Windows, crbug.com/357329,
+// and Mac with ASAN, crbug.com/674497.
 #define MAYBE_SignOut DISABLED_SignOut
 #elif defined(OS_CHROMEOS)
 // This test doesn't make sense for Chrome OS since it has a different
 // multi-profiles menu in the system tray instead.
+#define MAYBE_SignOut DISABLED_SignOut
+#elif defined(OS_LINUX)
+// Flaky on Linux debug builds with libc++ (https://crbug.com/734875)
 #define MAYBE_SignOut DISABLED_SignOut
 #else
 #define MAYBE_SignOut SignOut
@@ -81,6 +88,10 @@ IN_PROC_BROWSER_TEST_F(ProfileListDesktopBrowserTest, MAYBE_SignOut) {
       chrome::NOTIFICATION_BROWSER_CLOSED,
       content::Source<Browser>(browser()));
 
+  content::WindowedNotificationObserver system_profile_created_observer(
+      chrome::NOTIFICATION_PROFILE_CREATED,
+      content::NotificationService::AllSources());
+
   EXPECT_FALSE(entry->IsSigninRequired());
   profiles::LockProfile(current_profile);
   window_close_observer.Wait();  // rely on test time-out for failure indication
@@ -89,6 +100,9 @@ IN_PROC_BROWSER_TEST_F(ProfileListDesktopBrowserTest, MAYBE_SignOut) {
   EXPECT_EQ(0u, browser_list->size());
 
   // Signing out brings up the User Manager which we should close before exit.
+  // But the User Manager is shown only when the system profile is created,
+  // which happens asynchronously.
+  system_profile_created_observer.Wait();
   UserManager::Hide();
 }
 
@@ -113,8 +127,7 @@ IN_PROC_BROWSER_TEST_F(ProfileListDesktopBrowserTest, MAYBE_SwitchToProfile) {
       FILE_PATH_LITERAL("New Profile 2"));
   profile_manager->CreateProfileAsync(path_profile2,
                                       base::Bind(&OnUnblockOnProfileCreation),
-                                      base::string16(), std::string(),
-                                      std::string());
+                                      base::string16(), std::string());
 
   // Spin to allow profile creation to take place, loop is terminated
   // by OnUnblockOnProfileCreation when the profile is created.

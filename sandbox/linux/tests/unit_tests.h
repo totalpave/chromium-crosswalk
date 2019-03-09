@@ -5,6 +5,8 @@
 #ifndef SANDBOX_LINUX_TESTS_UNIT_TESTS_H_
 #define SANDBOX_LINUX_TESTS_UNIT_TESTS_H_
 
+#include <sys/syscall.h>
+
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "sandbox/linux/tests/sandbox_test_runner_function_pointer.h"
@@ -12,13 +14,18 @@
 
 namespace sandbox {
 
+// Different platforms use different symbols for the six-argument version
+// of the mmap() system call. Test for the correct symbol at compile time.
+#ifdef __NR_mmap2
+const int kMMapNr = __NR_mmap2;
+#else
+const int kMMapNr = __NR_mmap;
+#endif
+
 // Has this been compiled to run on Android?
 bool IsAndroid();
 
 bool IsArchitectureArm();
-
-// Is Valgrind currently being used?
-bool IsRunningOnValgrind();
 
 #if defined(ADDRESS_SANITIZER)
 #define DISABLE_ON_ASAN(test_name) DISABLED_##test_name
@@ -148,12 +155,12 @@ class UnitTests {
   // to stderr.
   static void IgnoreThisTest();
 
-  // A DeathCheck method that verifies that the test completed succcessfully.
+  // A DeathCheck method that verifies that the test completed successfully.
   // This is the default test mode for SANDBOX_TEST(). The "aux" parameter
   // of this DeathCheck is unused (and thus unnamed)
   static void DeathSuccess(int status, const std::string& msg, const void*);
 
-  // A DeathCheck method that verifies that the test completed succcessfully
+  // A DeathCheck method that verifies that the test completed successfully
   // allowing for log error messages.
   static void DeathSuccessAllowNoise(int status,
                                      const std::string& msg,

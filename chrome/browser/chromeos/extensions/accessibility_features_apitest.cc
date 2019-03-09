@@ -7,11 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "ash/public/cpp/ash_pref_names.h"
 #include "base/json/json_writer.h"
-#include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_apitest.h"
-#include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "extensions/test/result_catcher.h"
 
@@ -71,19 +70,19 @@ class AccessibilityFeaturesApiTest : public ExtensionApiTest,
   // Returns preference path for accessibility features as defined by the API.
   const char* GetPrefForFeature(const std::string& feature) {
     if (feature == "spokenFeedback")
-      return prefs::kAccessibilitySpokenFeedbackEnabled;
+      return ash::prefs::kAccessibilitySpokenFeedbackEnabled;
     if (feature == "largeCursor")
-      return prefs::kAccessibilityLargeCursorEnabled;
+      return ash::prefs::kAccessibilityLargeCursorEnabled;
     if (feature == "stickyKeys")
-      return prefs::kAccessibilityStickyKeysEnabled;
+      return ash::prefs::kAccessibilityStickyKeysEnabled;
     if (feature == "highContrast")
-      return prefs::kAccessibilityHighContrastEnabled;
+      return ash::prefs::kAccessibilityHighContrastEnabled;
     if (feature == "screenMagnifier")
-      return prefs::kAccessibilityScreenMagnifierEnabled;
+      return ash::prefs::kAccessibilityScreenMagnifierEnabled;
     if (feature == "autoclick")
-      return prefs::kAccessibilityAutoclickEnabled;
+      return ash::prefs::kAccessibilityAutoclickEnabled;
     if (feature == "virtualKeyboard")
-      return prefs::kAccessibilityVirtualKeyboardEnabled;
+      return ash::prefs::kAccessibilityVirtualKeyboardEnabled;
     return NULL;
   }
 
@@ -153,20 +152,20 @@ class AccessibilityFeaturesApiTest : public ExtensionApiTest,
     std::unique_ptr<base::ListValue> enabled_list(new base::ListValue);
     for (size_t i = 0; i < enabled_features.size(); ++i)
       enabled_list->AppendString(enabled_features[i]);
-    test_arg.Set(kEnabledFeaturesKey, enabled_list.release());
+    test_arg.Set(kEnabledFeaturesKey, std::move(enabled_list));
 
     std::unique_ptr<base::ListValue> disabled_list(new base::ListValue);
     for (size_t i = 0; i < disabled_features.size(); ++i)
       disabled_list->AppendString(disabled_features[i]);
-    test_arg.Set(kDisabledFeaturesKey, disabled_list.release());
+    test_arg.Set(kDisabledFeaturesKey, std::move(disabled_list));
 
     return base::JSONWriter::Write(test_arg, result);
   }
 };
 
-INSTANTIATE_TEST_CASE_P(AccessibilityFeatureaApiTestInstantiatePermission,
-                        AccessibilityFeaturesApiTest,
-                        testing::Bool());
+INSTANTIATE_TEST_SUITE_P(AccessibilityFeatureaApiTestInstantiatePermission,
+                         AccessibilityFeaturesApiTest,
+                         testing::Bool());
 
 // Tests that an extension with read permission can read accessibility features
 // state, while an extension that doesn't have the permission cannot.
@@ -192,6 +191,36 @@ IN_PROC_BROWSER_TEST_P(AccessibilityFeaturesApiTest, Get) {
       "getterTest", enabled_features, disabled_features, &test_arg));
   EXPECT_TRUE(
       RunPlatformAppTestWithArg(GetTestExtensionPath(), test_arg.c_str()))
+      << message_;
+}
+
+IN_PROC_BROWSER_TEST_P(AccessibilityFeaturesApiTest, PRE_Get_ComponentApp) {
+  EXPECT_FALSE(RunPlatformAppTestWithFlags(GetTestExtensionPath(), "{}",
+                                           kFlagLoadAsComponent))
+      << message_;
+}
+
+// A regression test for https://crbug.com/454513. Ensure that loading a
+// component extension with the same version as has previously loaded, correctly
+// sets up access to accessibility prefs. Otherwise,this is the same as the
+// |Get| test.
+IN_PROC_BROWSER_TEST_P(AccessibilityFeaturesApiTest, Get_ComponentApp) {
+  // WARNING: Make sure that spoken feedback is not among enabled_features
+  // (see |AccessibilityFeaturesApiTest.Set| test for the reason).
+  std::vector<std::string> enabled_features = {"largeCursor", "stickyKeys",
+                                               "highContrast"};
+
+  std::vector<std::string> disabled_features = {
+      "spokenFeedback", "screenMagnifier", "autoclick", "virtualKeyboard"};
+
+  ASSERT_TRUE(
+      InitPrefServiceForTest(GetPrefs(), enabled_features, disabled_features));
+
+  std::string test_arg;
+  ASSERT_TRUE(GenerateTestArg("getterTest", enabled_features, disabled_features,
+                              &test_arg));
+  EXPECT_TRUE(RunPlatformAppTestWithFlags(
+      GetTestExtensionPath(), test_arg.c_str(), kFlagLoadAsComponent))
       << message_;
 }
 

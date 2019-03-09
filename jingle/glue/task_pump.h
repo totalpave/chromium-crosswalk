@@ -10,13 +10,13 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
-#include "third_party/webrtc/base/taskrunner.h"
+#include "base/sequence_checker.h"
+#include "third_party/libjingle_xmpp/task_runner/taskrunner.h"
 
 namespace jingle_glue {
 
 // rtc::TaskRunner implementation that works on chromium threads.
-class TaskPump : public rtc::TaskRunner, public base::NonThreadSafe {
+class TaskPump : public jingle_xmpp::TaskRunner {
  public:
   TaskPump();
 
@@ -24,7 +24,6 @@ class TaskPump : public rtc::TaskRunner, public base::NonThreadSafe {
 
   // rtc::TaskRunner implementation.
   void WakeTasks() override;
-  int64_t CurrentTime() override;
 
   // No tasks will be processed after this is called, even if
   // WakeTasks() is called.
@@ -35,6 +34,8 @@ class TaskPump : public rtc::TaskRunner, public base::NonThreadSafe {
 
   bool posted_wake_;
   bool stopped_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   base::WeakPtrFactory<TaskPump> weak_factory_;
 

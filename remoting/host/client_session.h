@@ -12,18 +12,23 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/sequenced_task_runner_helpers.h"
-#include "base/threading/non_thread_safe.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "remoting/host/client_session_control.h"
 #include "remoting/host/client_session_details.h"
+#include "remoting/host/desktop_display_info.h"
+#include "remoting/host/desktop_environment_options.h"
+#include "remoting/host/host_experiment_session_plugin.h"
 #include "remoting/host/host_extension_session_manager.h"
 #include "remoting/host/remote_input_filter.h"
+#include "remoting/proto/action.pb.h"
 #include "remoting/protocol/clipboard_echo_filter.h"
 #include "remoting/protocol/clipboard_filter.h"
 #include "remoting/protocol/clipboard_stub.h"
 #include "remoting/protocol/connection_to_client.h"
+#include "remoting/protocol/data_channel_manager.h"
 #include "remoting/protocol/host_stub.h"
 #include "remoting/protocol/input_event_tracker.h"
 #include "remoting/protocol/input_filter.h"
@@ -31,15 +36,12 @@
 #include "remoting/protocol/mouse_input_filter.h"
 #include "remoting/protocol/pairing_registry.h"
 #include "remoting/protocol/video_stream.h"
+#include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
-
-namespace base {
-class SingleThreadTaskRunner;
-}  // namespace base
 
 namespace remoting {
 
-class AudioPump;
+class AudioStream;
 class DesktopEnvironment;
 class DesktopEnvironmentFactory;
 class InputInjector;
@@ -52,8 +54,7 @@ class VideoLayout;
 
 // A ClientSession keeps a reference to a connection to a client, and maintains
 // per-client state.
-class ClientSession : public base::NonThreadSafe,
-                      public protocol::HostStub,
+class ClientSession : public protocol::HostStub,
                       public protocol::ConnectionToClient::EventHandler,
                       public protocol::VideoStream::Observer,
                       public ClientSessionControl,
@@ -92,13 +93,14 @@ class ClientSession : public base::NonThreadSafe,
 
   // |event_handler| and |desktop_environment_factory| must outlive |this|.
   // All |HostExtension|s in |extensions| must outlive |this|.
-  ClientSession(EventHandler* event_handler,
-                scoped_refptr<base::SingleThreadTaskRunner> audio_task_runner,
-                std::unique_ptr<protocol::ConnectionToClient> connection,
-                DesktopEnvironmentFactory* desktop_environment_factory,
-                const base::TimeDelta& max_duration,
-                scoped_refptr<protocol::PairingRegistry> pairing_registry,
-                const std::vector<HostExtension*>& extensions);
+  ClientSession(
+      EventHandler* event_handler,
+      std::unique_ptr<protocol::ConnectionToClient> connection,
+      DesktopEnvironmentFactory* desktop_environment_factory,
+      const DesktopEnvironmentOptions& desktop_environment_options,
+      const base::TimeDelta& max_duration,
+      scoped_refptr<protocol::PairingRegistry> pairing_registry,
+      const std::vector<HostExtension*>& extensions);
   ~ClientSession() override;
 
   // Returns the set of capabilities negotiated between client and host.
@@ -113,28 +115,28 @@ class ClientSession : public base::NonThreadSafe,
   void RequestPairing(
       const remoting::protocol::PairingRequest& pairing_request) override;
   void DeliverClientMessage(const protocol::ExtensionMessage& message) override;
+  void SelectDesktopDisplay(
+      const protocol::SelectDesktopDisplayRequest& select_display) override;
 
   // protocol::ConnectionToClient::EventHandler interface.
-  void OnConnectionAuthenticating(
-      protocol::ConnectionToClient* connection) override;
-  void OnConnectionAuthenticated(
-      protocol::ConnectionToClient* connection) override;
-  void CreateVideoStreams(protocol::ConnectionToClient* connection) override;
-  void OnConnectionChannelsConnected(
-      protocol::ConnectionToClient* connection) override;
-  void OnConnectionClosed(protocol::ConnectionToClient* connection,
-                          protocol::ErrorCode error) override;
-  void OnInputEventReceived(protocol::ConnectionToClient* connection,
-                            int64_t timestamp) override;
-  void OnRouteChange(protocol::ConnectionToClient* connection,
-                     const std::string& channel_name,
+  void OnConnectionAuthenticating() override;
+  void OnConnectionAuthenticated() override;
+  void CreateMediaStreams() override;
+  void OnConnectionChannelsConnected() override;
+  void OnConnectionClosed(protocol::ErrorCode error) override;
+  void OnRouteChange(const std::string& channel_name,
                      const protocol::TransportRoute& route) override;
+  void OnIncomingDataChannel(
+      const std::string& channel_name,
+      std::unique_ptr<protocol::MessagePipe> pipe) override;
 
   // ClientSessionControl interface.
   const std::string& client_jid() const override;
   void DisconnectSession(protocol::ErrorCode error) override;
   void OnLocalMouseMoved(const webrtc::DesktopVector& position) override;
   void SetDisableInputs(bool disable_inputs) override;
+  void OnDesktopDisplayChanged(
+      std::unique_ptr<protocol::VideoLayout> layout) override;
 
   // ClientSessionDetails interface.
   uint32_t desktop_session_id() const override;
@@ -148,6 +150,15 @@ class ClientSession : public base::NonThreadSafe,
     return client_capabilities_.get();
   }
 
+  // Registers a DataChannelManager callback for testing.
+  void RegisterCreateHandlerCallbackForTesting(
+      const std::string& prefix,
+      protocol::DataChannelManager::CreateHandlerCallback constructor);
+
+  void SetEventTimestampsSourceForTests(
+      scoped_refptr<protocol::InputEventTimestampsSource>
+          event_timestamp_source);
+
  private:
   // Creates a proxy for sending clipboard events to the client.
   std::unique_ptr<protocol::ClipboardStub> CreateClipboardProxy();
@@ -156,9 +167,15 @@ class ClientSession : public base::NonThreadSafe,
   void OnVideoSizeChanged(protocol::VideoStream* stream,
                           const webrtc::DesktopSize& size,
                           const webrtc::DesktopVector& dpi) override;
-  void OnVideoFrameSent(protocol::VideoStream* stream,
-                        uint32_t frame_id,
-                        int64_t input_event_timestamp) override;
+
+  void CreateActionMessageHandler(
+      std::vector<protocol::ActionRequest::Action> capabilities,
+      const std::string& channel_name,
+      std::unique_ptr<protocol::MessagePipe> pipe);
+
+  void CreateFileTransferMessageHandler(
+      const std::string& channel_name,
+      std::unique_ptr<protocol::MessagePipe> pipe);
 
   EventHandler* event_handler_;
 
@@ -169,6 +186,9 @@ class ClientSession : public base::NonThreadSafe,
 
   // Used to create a DesktopEnvironment instance for this session.
   DesktopEnvironmentFactory* desktop_environment_factory_;
+
+  // The DesktopEnvironmentOptions used to initialize DesktopEnvironment.
+  DesktopEnvironmentOptions desktop_environment_options_;
 
   // The DesktopEnvironment instance for this session.
   std::unique_ptr<DesktopEnvironment> desktop_environment_;
@@ -207,11 +227,9 @@ class ClientSession : public base::NonThreadSafe,
   // is reached.
   base::OneShotTimer max_duration_timer_;
 
-  scoped_refptr<base::SingleThreadTaskRunner> audio_task_runner_;
-
   // Objects responsible for sending video, audio and mouse shape.
-  std::unique_ptr<AudioPump> audio_pump_;
   std::unique_ptr<protocol::VideoStream> video_stream_;
+  std::unique_ptr<protocol::AudioStream> audio_stream_;
   std::unique_ptr<MouseShapePump> mouse_shape_pump_;
 
   // The set of all capabilities supported by the client.
@@ -229,11 +247,21 @@ class ClientSession : public base::NonThreadSafe,
   // Used to apply client-requested changes in screen resolution.
   std::unique_ptr<ScreenControls> screen_controls_;
 
+  // Contains the most recently gathered info about the desktop displays;
+  DesktopDisplayInfo desktop_display_info_;
+
+  // The id of the desktop display to show to the user.
+  // Default is webrtc::kFullDesktopScreenId which shows all displays.
+  webrtc::ScreenId show_display_id_ = webrtc::kFullDesktopScreenId;
+
   // The pairing registry for PIN-less authentication.
   scoped_refptr<protocol::PairingRegistry> pairing_registry_;
 
   // Used to manage extension functionality.
   std::unique_ptr<HostExtensionSessionManager> extension_manager_;
+
+  // Used to dispatch new data channels to factory methods.
+  protocol::DataChannelManager data_channel_manager_;
 
   // Set to true if the client was authenticated successfully.
   bool is_authenticated_ = false;
@@ -249,6 +277,13 @@ class ClientSession : public base::NonThreadSafe,
   // VideoLayout is sent only after the control channel is connected. Until
   // then it's stored in |pending_video_layout_message_|.
   std::unique_ptr<protocol::VideoLayout> pending_video_layout_message_;
+
+  scoped_refptr<protocol::InputEventTimestampsSource>
+      event_timestamp_source_for_tests_;
+
+  HostExperimentSessionPlugin host_experiment_session_plugin_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   // Used to disable callbacks to |this| once DisconnectSession() has been
   // called.

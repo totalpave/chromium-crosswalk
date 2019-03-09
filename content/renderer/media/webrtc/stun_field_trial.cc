@@ -9,20 +9,20 @@
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/macros.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "third_party/webrtc/base/asyncpacketsocket.h"
-#include "third_party/webrtc/base/asyncresolverinterface.h"
-#include "third_party/webrtc/base/ipaddress.h"
-#include "third_party/webrtc/base/network.h"
-#include "third_party/webrtc/base/socketaddress.h"
-#include "third_party/webrtc/base/thread.h"
-#include "third_party/webrtc/p2p/base/packetsocketfactory.h"
+#include "third_party/webrtc/p2p/base/packet_socket_factory.h"
+#include "third_party/webrtc/rtc_base/async_packet_socket.h"
+#include "third_party/webrtc/rtc_base/async_resolver_interface.h"
+#include "third_party/webrtc/rtc_base/ip_address.h"
+#include "third_party/webrtc/rtc_base/network.h"
+#include "third_party/webrtc/rtc_base/socket_address.h"
+#include "third_party/webrtc/rtc_base/thread.h"
 
 using stunprober::StunProber;
 
@@ -42,7 +42,7 @@ enum NatType {
 // This needs to match "NatType" in histograms.xml.
 const char* const NatTypeNames[] =
     {"NoNAT", "UnknownNAT", "SymNAT", "NonSymNAT"};
-static_assert(arraysize(NatTypeNames) == NAT_TYPE_MAX,
+static_assert(base::size(NatTypeNames) == NAT_TYPE_MAX,
               "NatType enums must match names");
 
 NatType GetNatType(stunprober::NatType nat_type) {
@@ -97,7 +97,7 @@ void StunProberTrial::SaveHistogramData() {
   int count = 0;
   int total_requests_sent = 0;
   int total_responses_received = 0;
-  for (auto& prober : probers_) {
+  for (auto* prober : probers_) {
     ++count;
 
     // Get the stats.

@@ -4,11 +4,12 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import android.support.annotation.Nullable;
+
 import org.chromium.base.TraceEvent;
-import org.chromium.chrome.browser.TabState;
 import org.chromium.chrome.browser.UrlConstants;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 
@@ -33,10 +34,11 @@ public interface TabCreatorManager {
          * @param loadUrlParams parameters of the url load.
          * @param type Information about how the tab was launched.
          * @param parent the parent tab, if present.
-         * @return The new tab.
+         * @return The new tab or null if no tab was created.
          */
+        @Nullable
         public abstract Tab createNewTab(
-                LoadUrlParams loadUrlParams, TabModel.TabLaunchType type, Tab parent);
+                LoadUrlParams loadUrlParams, @TabLaunchType int type, Tab parent);
 
         /**
          * On restore, allows us to create a frozen version of a tab using saved tab state we read
@@ -54,9 +56,10 @@ public interface TabCreatorManager {
          * @param url the URL to open.
          * @param type the type of action that triggered that launch. Determines how the tab is
          *             opened (for example, in the foreground or background).
-         * @return the created tab.
+         * @return The new tab or null if no tab was created.
          */
-        public abstract Tab launchUrl(String url, TabModel.TabLaunchType type);
+        @Nullable
+        public abstract Tab launchUrl(String url, @TabLaunchType int type);
 
         /**
          * Creates a Tab to host the given WebContents.
@@ -68,7 +71,7 @@ public interface TabCreatorManager {
          * @return            Whether a Tab was created successfully.
          */
         public abstract boolean createTabWithWebContents(Tab parent, WebContents webContents,
-                int parentId, TabLaunchType type, String url);
+                int parentId, @TabLaunchType int type, String url);
 
         /**
          * Creates a tab around the native web contents pointer.
@@ -78,10 +81,10 @@ public interface TabCreatorManager {
          * @param type        The TabLaunchType describing how this tab was created.
          * @return            Whether a Tab was created successfully.
          */
-        public final boolean createTabWithWebContents(Tab parent,
-                WebContents webContents, int parentId, TabLaunchType type) {
-            return createTabWithWebContents(parent, webContents, parentId, type,
-                    webContents.getUrl());
+        public final boolean createTabWithWebContents(
+                Tab parent, WebContents webContents, int parentId, @TabLaunchType int type) {
+            return createTabWithWebContents(
+                    parent, webContents, parentId, type, webContents.getVisibleUrl());
         }
 
         /**
@@ -90,7 +93,7 @@ public interface TabCreatorManager {
         public final void launchNTP() {
             try {
                 TraceEvent.begin("TabCreator.launchNTP");
-                launchUrl(UrlConstants.NTP_URL, TabModel.TabLaunchType.FROM_CHROME_UI);
+                launchUrl(UrlConstants.NTP_URL, TabLaunchType.FROM_CHROME_UI);
             } finally {
                 TraceEvent.end("TabCreator.launchNTP");
             }

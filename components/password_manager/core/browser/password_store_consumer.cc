@@ -15,6 +15,11 @@ PasswordStoreConsumer::~PasswordStoreConsumer() {
 }
 
 void PasswordStoreConsumer::OnGetSiteStatistics(
-    std::unique_ptr<std::vector<std::unique_ptr<InteractionsStats>>> stats) {}
+    std::vector<InteractionsStats> stats) {}
+
+void PasswordStoreConsumer::CancelAllRequests() {
+  cancelable_task_tracker_.TryCancelAll();
+  weak_ptr_factory_.InvalidateWeakPtrs();
+}
 
 }  // namespace password_manager

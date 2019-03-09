@@ -8,7 +8,9 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "extensions/renderer/bindings/api_binding_util.h"
 #include "extensions/renderer/script_context.h"
+#include "gin/converter.h"
 
 namespace extensions {
 
@@ -26,40 +28,55 @@ ProcessInfoNativeHandler::ProcessInfoNativeHandler(
       is_incognito_context_(is_incognito_context),
       is_component_extension_(is_component_extension),
       manifest_version_(manifest_version),
-      send_request_disabled_(send_request_disabled) {
-  RouteFunction("GetExtensionId",
-                base::Bind(&ProcessInfoNativeHandler::GetExtensionId,
-                           base::Unretained(this)));
-  RouteFunction("GetContextType",
-                base::Bind(&ProcessInfoNativeHandler::GetContextType,
-                           base::Unretained(this)));
-  RouteFunction("InIncognitoContext",
-                base::Bind(&ProcessInfoNativeHandler::InIncognitoContext,
-                           base::Unretained(this)));
-  RouteFunction("IsComponentExtension",
-                base::Bind(&ProcessInfoNativeHandler::IsComponentExtension,
-                           base::Unretained(this)));
-  RouteFunction("GetManifestVersion",
-                base::Bind(&ProcessInfoNativeHandler::GetManifestVersion,
-                           base::Unretained(this)));
-  RouteFunction("IsSendRequestDisabled",
-                base::Bind(&ProcessInfoNativeHandler::IsSendRequestDisabled,
-                           base::Unretained(this)));
-  RouteFunction(
-      "HasSwitch",
-      base::Bind(&ProcessInfoNativeHandler::HasSwitch, base::Unretained(this)));
+      send_request_disabled_(send_request_disabled) {}
+
+void ProcessInfoNativeHandler::AddRoutes() {
+  RouteHandlerFunction(
+      "GetExtensionId",
+      base::BindRepeating(&ProcessInfoNativeHandler::GetExtensionId,
+                          base::Unretained(this)));
+  RouteHandlerFunction(
+      "GetContextType",
+      base::BindRepeating(&ProcessInfoNativeHandler::GetContextType,
+                          base::Unretained(this)));
+  RouteHandlerFunction(
+      "InIncognitoContext",
+      base::BindRepeating(&ProcessInfoNativeHandler::InIncognitoContext,
+                          base::Unretained(this)));
+  RouteHandlerFunction(
+      "IsComponentExtension",
+      base::BindRepeating(&ProcessInfoNativeHandler::IsComponentExtension,
+                          base::Unretained(this)));
+  RouteHandlerFunction(
+      "GetManifestVersion",
+      base::BindRepeating(&ProcessInfoNativeHandler::GetManifestVersion,
+                          base::Unretained(this)));
+  RouteHandlerFunction(
+      "IsSendRequestDisabled",
+      base::BindRepeating(&ProcessInfoNativeHandler::IsSendRequestDisabled,
+                          base::Unretained(this)));
+  RouteHandlerFunction("HasSwitch",
+                       base::BindRepeating(&ProcessInfoNativeHandler::HasSwitch,
+                                           base::Unretained(this)));
+  RouteHandlerFunction(
+      "GetPlatform", base::BindRepeating(&ProcessInfoNativeHandler::GetPlatform,
+                                         base::Unretained(this)));
 }
 
 void ProcessInfoNativeHandler::GetExtensionId(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
-  args.GetReturnValue().Set(
-      v8::String::NewFromUtf8(args.GetIsolate(), extension_id_.c_str()));
+  args.GetReturnValue().Set(v8::String::NewFromUtf8(args.GetIsolate(),
+                                                    extension_id_.c_str(),
+                                                    v8::NewStringType::kNormal)
+                                .ToLocalChecked());
 }
 
 void ProcessInfoNativeHandler::GetContextType(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(
-      v8::String::NewFromUtf8(args.GetIsolate(), context_type_.c_str()));
+      v8::String::NewFromUtf8(args.GetIsolate(), context_type_.c_str(),
+                              v8::NewStringType::kInternalized)
+          .ToLocalChecked());
 }
 
 void ProcessInfoNativeHandler::InIncognitoContext(
@@ -80,10 +97,13 @@ void ProcessInfoNativeHandler::GetManifestVersion(
 void ProcessInfoNativeHandler::IsSendRequestDisabled(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   if (send_request_disabled_) {
-    args.GetReturnValue().Set(v8::String::NewFromUtf8(
-        args.GetIsolate(),
-        "sendRequest and onRequest are obsolete."
-        " Please use sendMessage and onMessage instead."));
+    args.GetReturnValue().Set(
+        v8::String::NewFromUtf8(
+            args.GetIsolate(),
+            "sendRequest and onRequest are obsolete."
+            " Please use sendMessage and onMessage instead.",
+            v8::NewStringType::kNormal)
+            .ToLocalChecked());
   }
 }
 
@@ -91,8 +111,15 @@ void ProcessInfoNativeHandler::HasSwitch(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   CHECK(args.Length() == 1 && args[0]->IsString());
   bool has_switch = base::CommandLine::ForCurrentProcess()->HasSwitch(
-      *v8::String::Utf8Value(args[0]));
+      *v8::String::Utf8Value(args.GetIsolate(), args[0]));
   args.GetReturnValue().Set(v8::Boolean::New(args.GetIsolate(), has_switch));
+}
+
+void ProcessInfoNativeHandler::GetPlatform(
+    const v8::FunctionCallbackInfo<v8::Value>& args) {
+  CHECK_EQ(0, args.Length());
+  args.GetReturnValue().Set(
+      gin::StringToSymbol(args.GetIsolate(), binding::GetPlatformString()));
 }
 
 }  // namespace extensions

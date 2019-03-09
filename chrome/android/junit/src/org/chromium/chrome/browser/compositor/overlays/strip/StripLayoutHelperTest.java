@@ -5,21 +5,21 @@
 package org.chromium.chrome.browser.compositor.overlays.strip;
 
 import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyFloat;
-import static org.mockito.Matchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import android.content.Context;
-import android.content.res.Configuration;
-import android.content.res.Resources;
-import android.content.res.TypedArray;
+import android.app.Activity;
 import android.text.TextUtils;
-import android.util.AttributeSet;
-import android.util.DisplayMetrics;
 
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.robolectric.Robolectric;
+import org.robolectric.annotation.Config;
+
+import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.layouts.LayoutRenderHost;
@@ -27,34 +27,23 @@ import org.chromium.chrome.browser.compositor.layouts.LayoutUpdateHost;
 import org.chromium.chrome.browser.compositor.layouts.components.VirtualView;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.EmptyTabModel;
-import org.chromium.testing.local.LocalRobolectricTestRunner;
 import org.chromium.ui.base.LocalizationUtils;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.robolectric.annotation.Config;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /** Tests for {@link StripLayoutHelper}. */
-@RunWith(LocalRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
+@RunWith(BaseRobolectricTestRunner.class)
+@Config(manifest = Config.NONE, sdk = 21)
 public class StripLayoutHelperTest {
-
-    @Mock private Context mContext;
-    @Mock private Resources mResources;
     @Mock private LayoutUpdateHost mUpdateHost;
     @Mock private LayoutRenderHost mRenderHost;
+    private Activity mActivity;
     private TestTabModel mModel = new TestTabModel();
     private StripLayoutHelper mStripLayoutHelper;
     private boolean mIncognito;
     private static final String[] TEST_TAB_TITLES = {"Tab 1", "Tab 2", "Tab 3", "", null};
-    private static final String CLOSE_TAB = "Close tab test string";
-    private static final String NEW_TAB = "New tab test string";
-    private static final String NEW_INCOGNITO_TAB = "New incognito tab test string";
+    private static final String CLOSE_TAB = "Close %1$s tab";
     private static final String IDENTIFIER = "Tab";
     private static final String IDENTIFIER_SELECTED = "Selected Tab";
     private static final String INCOGNITO_IDENTIFIER = "Incognito Tab";
@@ -64,37 +53,11 @@ public class StripLayoutHelperTest {
     @Before
     public void beforeTest() {
         MockitoAnnotations.initMocks(this);
-        when(mContext.getResources()).thenReturn(mResources);
-        when(mResources.getString(R.string.accessibility_tabstrip_btn_close_tab)).thenReturn(
-                CLOSE_TAB);
-        when(mResources.getString(R.string.accessibility_toolbar_btn_new_tab)).thenReturn(NEW_TAB);
-        when(mResources.getString(R.string.accessibility_toolbar_btn_new_incognito_tab))
-                .thenReturn(NEW_INCOGNITO_TAB);
-        when(mResources.getString(R.string.accessibility_tabstrip_identifier))
-                .thenReturn(IDENTIFIER);
-        when(mResources.getString(R.string.accessibility_tabstrip_identifier_selected))
-                .thenReturn(IDENTIFIER_SELECTED);
-        when(mResources.getString(R.string.accessibility_tabstrip_incognito_identifier))
-                .thenReturn(INCOGNITO_IDENTIFIER);
-        when(mResources.getString(R.string.accessibility_tabstrip_incognito_identifier_selected))
-                .thenReturn(INCOGNITO_IDENTIFIER_SELECTED);
-
-        // CompositorButton
-        when(mResources.getDisplayMetrics()).thenReturn(new DisplayMetrics());
-        when(mResources.getDimension(anyInt())).thenReturn(100.0f);
-
-        // ListPopupWindow
-        final TypedArray mockTypedArray = mock(TypedArray.class);
-        when(mockTypedArray.getDimension(anyInt(), anyFloat())).thenReturn(0f);
-        when(mockTypedArray.getBoolean(anyInt(), anyBoolean())).thenReturn(false);
-        when(mContext.obtainStyledAttributes(any(AttributeSet.class), any(int[].class), anyInt(),
-                anyInt())).thenReturn(mockTypedArray);
-        final Configuration mockConfiguration = mock(Configuration.class);
-        when(mResources.getConfiguration()).thenReturn(mockConfiguration);
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
     }
 
     /**
-     * Test method for {@link stripLayoutHelper#getVirtualViews(List<VirtualView>)}.
+     * Test method for {@link StripLayoutHelper#getVirtualViews(List<VirtualView>)}.
      *
      * Checks that it returns the correct order of tabs, including correct content.
      */
@@ -107,7 +70,7 @@ public class StripLayoutHelperTest {
     }
 
     /**
-     * Test method for {@link stripLayoutHelper#getVirtualViews(List<VirtualView>)}.
+     * Test method for {@link StripLayoutHelper#getVirtualViews(List<VirtualView>)}.
      *
      * Checks that it returns the correct order of tabs, even when a tab except the first one is
      * selected.
@@ -122,7 +85,7 @@ public class StripLayoutHelperTest {
     }
 
     /**
-     * Test method for {@link stripLayoutHelper#getVirtualViews(List<VirtualView>)}.
+     * Test method for {@link StripLayoutHelper#getVirtualViews(List<VirtualView>)}.
      *
      * Checks that it returns the correct order of tabs, even in RTL mode.
      */
@@ -137,7 +100,7 @@ public class StripLayoutHelperTest {
     }
 
     /**
-     * Test method for {@link stripLayoutHelper#getVirtualViews(List<VirtualView>)}.
+     * Test method for {@link StripLayoutHelper#getVirtualViews(List<VirtualView>)}.
      *
      * Checks that it returns the correct order of tabs, even in incognito mode.
      */
@@ -166,41 +129,42 @@ public class StripLayoutHelperTest {
         // Each tab has a "close button", and there is one additional "new tab" button
         final int expectedNumberOfViews = 2 * expectedAccessibilityDescriptions.length + 1;
 
-        final List<VirtualView> views = new ArrayList<VirtualView>();
+        final List<VirtualView> views = new ArrayList<>();
         mStripLayoutHelper.getVirtualViews(views);
         assertEquals(expectedNumberOfViews, views.size());
 
         // Tab titles
         for (int i = 0; i < expectedNumberOfViews - 1; i++) {
             final String expectedDescription = i % 2 == 0
-                    ? expectedAccessibilityDescriptions[i / 2] : CLOSE_TAB;
+                    ? expectedAccessibilityDescriptions[i / 2]
+                    : String.format(CLOSE_TAB, TEST_TAB_TITLES[i / 2]);
             assertEquals(expectedDescription, views.get(i).getAccessibilityDescription());
         }
 
-        assertEquals(mIncognito ? NEW_INCOGNITO_TAB : NEW_TAB,
-                     views.get(views.size() - 1).getAccessibilityDescription());
+        assertEquals(mActivity.getResources().getString(mIncognito
+                                     ? R.string.accessibility_toolbar_btn_new_incognito_tab
+                                     : R.string.accessibility_toolbar_btn_new_tab),
+                views.get(views.size() - 1).getAccessibilityDescription());
     }
 
     private StripLayoutHelper createStripLayoutHelper(boolean rtl, boolean incognito) {
         LocalizationUtils.setRtlForTesting(rtl);
         final StripLayoutHelper stripLayoutHelper =
-                new StripLayoutHelper(mContext, mUpdateHost, mRenderHost, incognito);
+                new StripLayoutHelper(mActivity, mUpdateHost, mRenderHost, incognito);
         // Initialize StackScroller
-        stripLayoutHelper.onContextChanged(mContext);
+        stripLayoutHelper.onContextChanged(mActivity);
         return stripLayoutHelper;
     }
 
     private String[] getExpectedAccessibilityDescriptions(int tabIndex) {
-        String[] expectedAccessibilityDescriptions = new String[TEST_TAB_TITLES.length];
+        final String[] expectedAccessibilityDescriptions = new String[TEST_TAB_TITLES.length];
         for (int i = 0; i < TEST_TAB_TITLES.length; i++) {
-            boolean isHidden = (i != tabIndex);
-            String suffix = IDENTIFIER;
-            if (!isHidden && !mIncognito) {
-                suffix = IDENTIFIER_SELECTED;
-            } else if (!isHidden && mIncognito) {
-                suffix = INCOGNITO_IDENTIFIER_SELECTED;
-            } else if (isHidden && mIncognito) {
-                suffix = INCOGNITO_IDENTIFIER;
+            final boolean isHidden = (i != tabIndex);
+            String suffix;
+            if (mIncognito) {
+                suffix = isHidden ? INCOGNITO_IDENTIFIER : INCOGNITO_IDENTIFIER_SELECTED;
+            } else {
+                suffix = isHidden ? IDENTIFIER : IDENTIFIER_SELECTED;
             }
             String expectedDescription = "";
             if (!TextUtils.isEmpty(TEST_TAB_TITLES[i])) {
@@ -211,10 +175,10 @@ public class StripLayoutHelperTest {
         return expectedAccessibilityDescriptions;
     }
 
-    private class TestTabModel extends EmptyTabModel {
-        private List<Tab> mMockTabs = new ArrayList<Tab>();
+    private static class TestTabModel extends EmptyTabModel {
+        private final List<Tab> mMockTabs = new ArrayList<>();
         private int mMaxId = -1;
-        private int mIndex = 0;
+        private int mIndex;
 
         public void addTab(final String title) {
             mMaxId++;

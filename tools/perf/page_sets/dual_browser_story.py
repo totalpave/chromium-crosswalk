@@ -5,10 +5,8 @@
 import collections
 import logging
 import re
-import sys
 import urllib
 
-from telemetry import decorators
 from telemetry import story as story_module
 # TODO(perezju): Remove references to telementry.internal when
 # https://github.com/catapult-project/catapult/issues/2102 is resolved.
@@ -19,7 +17,7 @@ from telemetry.util import wpr_modes
 from page_sets.top_10_mobile import URL_LIST
 
 
-GOOGLE_SEARCH = 'https://www.google.com/search?'
+GOOGLE_SEARCH = 'https://www.google.co.uk/search?'
 
 SEARCH_QUERIES = [
   'science',
@@ -47,6 +45,13 @@ def _OptionsForBrowser(browser_type, finder_options):
   finder_options.browser_type = browser_type
   finder_options.browser_executable = None
   finder_options.browser_options.browser_type = browser_type
+
+  # TODO(crbug.com/881469): remove this once Webview support surface
+  # synchronization and viz.
+  if browser_type and 'android-webview' in browser_type:
+    finder_options.browser_options.AppendExtraBrowserArgs(
+        '--disable-features=SurfaceSynchronization,VizDisplayCompositor')
+
   return finder_options
 
 
@@ -78,18 +83,17 @@ class MultiBrowserSharedState(story_module.SharedState):
       raise browser_finder_exceptions.BrowserFinderException(
           'No browser found.\n\nAvailable browsers:\n%s\n' %
           '\n'.join(browser_finder.GetAllAvailableBrowserTypes(finder_options)))
-    if not finder_options.run_disabled_tests:
-      self._CheckTestEnabled(test, possible_browser)
 
     extra_browser_types = set(story.browser_type for story in story_set)
     extra_browser_types.remove('default')  # Must include 'default' browser.
     for browser_type in extra_browser_types:
-      options = _OptionsForBrowser(browser_type, finder_options)
-      if not self._PrepareBrowser(browser_type, options):
-        logging.warning('Skipping %s (%s) because %s browser is not available',
-                        test.__name__, str(test), browser_type)
+      finder_options_copy = _OptionsForBrowser(browser_type, finder_options)
+      if not self._PrepareBrowser(browser_type, finder_options_copy):
+        logging.warning(
+          'Cannot run %s (%s) because %s browser is not available',
+          test.__name__, str(test), browser_type)
         logging.warning('Install %s to be able to run the test.', browser_type)
-        sys.exit(0)
+        raise Exception("Browser not available, unable to run benchmark.")
 
     # TODO(crbug/404771): Move network controller options out of
     # browser_options and into finder_options.
@@ -100,9 +104,9 @@ class MultiBrowserSharedState(story_module.SharedState):
       wpr_mode = wpr_modes.WPR_RECORD
     else:
       wpr_mode = wpr_modes.WPR_REPLAY
+    self._extra_wpr_args = browser_options.extra_wpr_args
 
-    self.platform.network_controller.Open(wpr_mode,
-                                          browser_options.extra_wpr_args)
+    self.platform.network_controller.Open(wpr_mode)
 
   @property
   def current_tab(self):
@@ -112,16 +116,7 @@ class MultiBrowserSharedState(story_module.SharedState):
   def platform(self):
     return self._platform
 
-  def _CheckTestEnabled(self, test, possible_browser):
-    should_skip, msg = decorators.ShouldSkip(test, possible_browser)
-    if should_skip:
-      logging.warning(msg)
-      logging.warning('You are trying to run a disabled test.')
-      logging.warning(
-          'Pass --also-run-disabled-tests to squelch this message.')
-      sys.exit(0)
-
-  def _PrepareBrowser(self, browser_type, options):
+  def _PrepareBrowser(self, browser_type, finder_options):
     """Add a browser to the dict of possible browsers.
 
     TODO(perezju): When available, use the GetBrowserForPlatform API instead.
@@ -130,7 +125,7 @@ class MultiBrowserSharedState(story_module.SharedState):
     Returns:
       The possible browser if found, or None otherwise.
     """
-    possible_browser = browser_finder.FindBrowser(options)
+    possible_browser = browser_finder.FindBrowser(finder_options)
     if possible_browser is None:
       return None
 
@@ -138,7 +133,8 @@ class MultiBrowserSharedState(story_module.SharedState):
       self._platform = possible_browser.platform
     else:
       assert self._platform is possible_browser.platform
-    self._possible_browsers[browser_type] = (possible_browser, options)
+    self._possible_browsers[browser_type] = (
+        possible_browser, finder_options.browser_options)
     return possible_browser
 
   def _CreateAllBrowsersIfNeeeded(self):
@@ -150,21 +146,29 @@ class MultiBrowserSharedState(story_module.SharedState):
     """
     if self._browsers_created:
       return
+    self.platform.FlushDnsCache()
     for browser_type in self._browsers:
-      possible_browser, options = self._possible_browsers[browser_type]
-      self._browsers[browser_type] = possible_browser.Create(options)
+      possible_browser, browser_options = self._possible_browsers[browser_type]
+      possible_browser.SetUpEnvironment(browser_options)
+      possible_browser.FlushOsPageCaches()
+      self._browsers[browser_type] = possible_browser.Create()
     self._browsers_created = True
 
   def _CloseAllBrowsers(self):
     """Close all of the browsers that were launched for this benchmark."""
-    if not self._browsers_created:
-      return
-    for browser_type, browser in self._browsers.iteritems():
+    for browser_type, browser in list(self._browsers.iteritems()):
+      if browser is not None:
+        try:
+          browser.Close()
+        except Exception:
+          logging.exception('Error while closing %s browser', browser_type)
+        self._browsers[browser_type] = None
+      possible_browser, _ = self._possible_browsers[browser_type]
       try:
-        browser.Close()
+        possible_browser.CleanUpEnvironment()
       except Exception:
-        logging.exception('Error while closing %s browser', browser_type)
-      self._browsers[browser_type] = None
+        logging.exception(
+            'Error while cleaning up environment for %s', browser_type)
     self._browsers_created = False
 
   def CanRunStory(self, _):
@@ -175,7 +179,8 @@ class MultiBrowserSharedState(story_module.SharedState):
 
     self.platform.network_controller.StartReplay(
         self._story_set.WprFilePathForStory(story),
-        story.make_javascript_deterministic)
+        story.make_javascript_deterministic,
+        self._extra_wpr_args)
 
     # Note: browsers need to be created after replay has been started.
     self._CreateAllBrowsersIfNeeeded()
@@ -187,6 +192,11 @@ class MultiBrowserSharedState(story_module.SharedState):
     self._current_story.Run(self)
 
   def DidRunStory(self, _):
+    if (not self._story_set.long_running and
+        self._story_set[-1] == self._current_story):
+      # In long_running mode we never close the browsers; otherwise we close
+      # them only after the last story in the set runs.
+      self._CloseAllBrowsers()
     self._current_story = None
 
   def TakeMemoryMeasurement(self):
@@ -205,8 +215,11 @@ class MultiBrowserSharedState(story_module.SharedState):
   def DumpStateUponFailure(self, unused_story, unused_results):
     if self._browsers:
       for browser_type, browser in self._browsers.iteritems():
-        logging.info('vvvvv BROWSER STATE BELOW FOR \'%s\' vvvvv', browser_type)
-        browser.DumpStateUponFailure()
+        if browser is not None:
+          logging.info("vvvvv BROWSER STATE BELOW FOR '%s' vvvvv", browser_type)
+          browser.DumpStateUponFailure()
+        else:
+          logging.info("browser '%s' not yet created", browser_type)
     else:
       logging.warning('Cannot dump browser states: No browsers.')
 
@@ -246,22 +259,23 @@ class SinglePage(story_module.Story):
 class DualBrowserStorySet(story_module.StorySet):
   """A story set that switches back and forth between two browsers."""
 
-  def __init__(self):
+  def __init__(self, long_running=False):
     super(DualBrowserStorySet, self).__init__(
         archive_data_file='data/dual_browser_story.json',
         cloud_storage_bucket=story_module.PARTNER_BUCKET)
+    self.long_running = long_running
 
     for query, url in zip(SEARCH_QUERIES, URL_LIST):
       # Stories that run on the android-webview browser.
       self.AddStory(SinglePage(
-          name='google_%s' % re.sub('\W+', '_', query.lower()),
+          name='google_%s' % re.sub(r'\W+', '_', query.lower()),
           url=GOOGLE_SEARCH + urllib.urlencode({'q': query}),
           browser_type='android-webview',
           phase='on_webview'))
 
       # Stories that run on the browser selected by command line options.
       self.AddStory(SinglePage(
-          name=re.sub('\W+', '_', url),
+          name=re.sub(r'\W+', '_', url),
           url=url,
           browser_type='default',
           phase='on_chrome'))

@@ -5,9 +5,9 @@
 #include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "chrome/browser/browser_process.h"
@@ -18,9 +18,11 @@
 #include "chrome/browser/chromeos/file_system_provider/request_manager.h"
 #include "chrome/browser/chromeos/file_system_provider/request_value.h"
 #include "chrome/browser/chromeos/file_system_provider/service.h"
+#include "chrome/browser/chromeos/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/extensions/extension_apitest.h"
-#include "ui/base/ui_base_types.h"
-#include "ui/message_center/message_center.h"
+#include "chrome/browser/notifications/notification_display_service_tester.h"
+#include "ui/message_center/public/cpp/notification.h"
+#include "ui/message_center/public/cpp/notification_delegate.h"
 
 namespace extensions {
 namespace {
@@ -57,17 +59,21 @@ class NotificationButtonClicker : public RequestManager::Observer {
   void OnRequestTimeouted(int request_id) override {
     // Call asynchronously so the notification is setup is completed.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&NotificationButtonClicker::ClickButton,
-                              base::Unretained(this)));
+        FROM_HERE, base::BindOnce(&NotificationButtonClicker::ClickButton,
+                                  base::Unretained(this)));
   }
 
  private:
   void ClickButton() {
-    g_browser_process->message_center()->ClickOnNotificationButton(
-        file_system_info_.mount_path().value(), ui::DIALOG_BUTTON_OK);
+    base::Optional<message_center::Notification> notification =
+        NotificationDisplayServiceTester::Get()->GetNotification(
+            file_system_info_.mount_path().value());
+    if (notification)
+      notification->delegate()->Click(0, base::nullopt);
   }
 
   ProvidedFileSystemInfo file_system_info_;
+
   DISALLOW_COPY_AND_ASSIGN(NotificationButtonClicker);
 };
 
@@ -92,7 +98,7 @@ class AbortOnUnresponsivePerformer : public Observer {
       return;
 
     ProvidedFileSystemInterface* const file_system =
-        service_->GetProvidedFileSystem(file_system_info.extension_id(),
+        service_->GetProvidedFileSystem(file_system_info.provider_id(),
                                         file_system_info.file_system_id());
     DCHECK(file_system);
     file_system->GetRequestManager()->SetTimeoutForTesting(base::TimeDelta());
@@ -110,7 +116,8 @@ class AbortOnUnresponsivePerformer : public Observer {
 
  private:
   Service* service_;  // Not owned.
-  ScopedVector<NotificationButtonClicker> clickers_;
+  std::vector<std::unique_ptr<NotificationButtonClicker>> clickers_;
+
   DISALLOW_COPY_AND_ASSIGN(AbortOnUnresponsivePerformer);
 };
 
@@ -127,7 +134,19 @@ class FileSystemProviderApiTest : public ExtensionApiTest {
         test_data_dir_.AppendASCII("file_system_provider/test_util"),
         kFlagEnableIncognito);
     ASSERT_TRUE(extension);
+
+    display_service_ = std::make_unique<NotificationDisplayServiceTester>(
+        browser()->profile());
+
+    user_manager_.AddUser(AccountId::FromUserEmailGaiaId(
+        browser()->profile()->GetProfileUserName(), "12345"));
   }
+
+  std::unique_ptr<NotificationDisplayServiceTester> display_service_;
+
+ private:
+  chromeos::FakeChromeUserManager user_manager_;
+  DISALLOW_COPY_AND_ASSIGN(FileSystemProviderApiTest);
 };
 
 IN_PROC_BROWSER_TEST_F(FileSystemProviderApiTest, Mount) {

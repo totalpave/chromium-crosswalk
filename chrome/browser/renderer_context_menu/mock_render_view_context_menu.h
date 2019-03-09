@@ -49,10 +49,6 @@ class MockRenderViewContextMenu : public ui::SimpleMenuModel::Delegate,
   bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
   void ExecuteCommand(int command_id, int event_flags) override;
-  void MenuWillShow(ui::SimpleMenuModel* source) override;
-  void MenuClosed(ui::SimpleMenuModel* source) override;
-  bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override;
 
   // RenderViewContextMenuProxy implementation.
   void AddMenuItem(int command_id, const base::string16& title) override;
@@ -66,7 +62,10 @@ class MockRenderViewContextMenu : public ui::SimpleMenuModel::Delegate,
                       bool hidden,
                       const base::string16& title) override;
   void UpdateMenuIcon(int command_id, const gfx::Image& image) override;
+  void RemoveMenuItem(int command_id) override;
+  void RemoveAdjacentSeparators() override;
   void AddSpellCheckServiceItem(bool is_checked) override;
+  void AddAccessibilityLabelsServiceItem(bool is_checked) override;
   content::RenderViewHost* GetRenderViewHost() const override;
   content::BrowserContext* GetBrowserContext() const override;
   content::WebContents* GetWebContents() const override;

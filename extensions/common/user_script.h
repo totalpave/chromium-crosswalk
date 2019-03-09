@@ -5,6 +5,7 @@
 #ifndef EXTENSIONS_COMMON_USER_SCRIPT_H_
 #define EXTENSIONS_COMMON_USER_SCRIPT_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -39,7 +40,7 @@ class UserScript {
   // canExecuteScriptEverywhere is true, this will return ALL_SCHEMES.
   static int ValidUserScriptSchemes(bool canExecuteScriptEverywhere = false);
 
-  // TODO(rdevlin.cronin) This and RunLocataion don't really belong here, since
+  // TODO(rdevlin.cronin) This and RunLocation don't really belong here, since
   // they are used for more than UserScripts (e.g., tabs.executeScript()).
   // The type of injected script.
   enum InjectionType {
@@ -73,7 +74,7 @@ class UserScript {
     RUN_LOCATION_LAST  // Leave this as the last item.
   };
 
-  // Holds actual script file info.
+  // Holds script file info.
   class File {
    public:
     File(const base::FilePath& extension_root,
@@ -115,7 +116,7 @@ class UserScript {
     base::FilePath extension_root_;
     base::FilePath relative_path_;
 
-    // The url to this scipt file.
+    // The url to this script file.
     GURL url_;
 
     // The script content. It can be set to either loaded_content_ or
@@ -126,7 +127,7 @@ class UserScript {
     std::string content_;
   };
 
-  typedef std::vector<File> FileList;
+  using FileList = std::vector<std::unique_ptr<File>>;
 
   // Type of a API consumer instance that user scripts will be injected on.
   enum ConsumerInstanceType { TAB, WEBVIEW };
@@ -134,8 +135,10 @@ class UserScript {
   // Constructor. Default the run location to document end, which is like
   // Greasemonkey and probably more useful for typical scripts.
   UserScript();
-  UserScript(const UserScript& other);
   ~UserScript();
+
+  // Performs a copy of all fields except file contents.
+  static std::unique_ptr<UserScript> CopyMetadataFrom(const UserScript& other);
 
   const std::string& name_space() const { return name_space_; }
   void set_name_space(const std::string& name_space) {
@@ -217,6 +220,9 @@ class UserScript {
   int id() const { return user_script_id_; }
   void set_id(int id) { user_script_id_ = id; }
 
+  // TODO(lazyboy): Incognito information is extension specific, it doesn't
+  // belong here. We should be able to determine this in the renderer/ where it
+  // is used.
   bool is_incognito_enabled() const { return incognito_enabled_; }
   void set_incognito_enabled(bool enabled) { incognito_enabled_ = enabled; }
 
@@ -224,11 +230,18 @@ class UserScript {
   // otherwise.
   bool MatchesURL(const GURL& url) const;
 
-  // Serialize the UserScript into a pickle. The content of the scripts and
+  // Returns true if the script should be applied to the given
+  // |effective_document_url| (calculated by the caller based on
+  // match_about_blank()| while also taking into account whether the document's
+  // frame |is_subframe| and what the |top_level_origin| is.
+  bool MatchesDocument(const GURL& effective_document_url,
+                       bool is_subframe) const;
+
+  // Serializes the UserScript into a pickle. The content of the scripts and
   // paths to UserScript::Files will not be serialized!
   void Pickle(base::Pickle* pickle) const;
 
-  // Deserialize the script from a pickle. Note that this always succeeds
+  // Deserializes the script from a pickle. Note that this always succeeds
   // because presumably we were the one that pickled it, and we did it
   // correctly.
   void Unpickle(const base::Pickle& pickle, base::PickleIterator* iter);
@@ -315,12 +328,22 @@ class UserScript {
 
   // True if the script should be injected into an incognito tab.
   bool incognito_enabled_;
+
+  DISALLOW_COPY_AND_ASSIGN(UserScript);
 };
 
-// For storing UserScripts with unique IDs in sets.
-bool operator<(const UserScript& script1, const UserScript& script2);
+// Information we need while removing scripts from a UserScriptLoader.
+struct UserScriptIDPair {
+  UserScriptIDPair(int id, const HostID& host_id);
+  explicit UserScriptIDPair(int id);
 
-typedef std::vector<UserScript> UserScriptList;
+  int id;
+  HostID host_id;
+};
+
+bool operator<(const UserScriptIDPair& a, const UserScriptIDPair& b);
+
+using UserScriptList = std::vector<std::unique_ptr<UserScript>>;
 
 }  // namespace extensions
 

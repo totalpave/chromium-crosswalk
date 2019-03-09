@@ -33,9 +33,8 @@
 //    o Construction and destruction must take place from the same thread.
 //    o All APIs must be called from the creating thread as well.
 // - It is required to first acquire the native audio parameters of the default
-//   output device and then use the same rate when creating this object. Use
-//   e.g. WASAPIAudioOutputStream::HardwareSampleRate() to retrieve the sample
-//   rate. Open() will fail unless "perfect" audio parameters are utilized.
+//   output device and then use the same rate when creating this object.
+//   Open() will fail unless "perfect" audio parameters are utilized.
 // - Calling Close() also leads to self destruction.
 // - Support for 8-bit audio has not yet been verified and tested.
 //
@@ -87,7 +86,8 @@
 //   the lowest possible latencies we can achieve on this machine are:
 //     o ~3.3333ms @ 48kHz <=> 160 audio frames per buffer.
 //     o ~3.6281ms @ 44.1kHz <=> 160 audio frames per buffer.
-// - See http://msdn.microsoft.com/en-us/library/windows/desktop/dd370844(v=vs.85).aspx
+// - See
+// http://msdn.microsoft.com/en-us/library/windows/desktop/dd370844(v=vs.85).aspx
 //   for more details.
 
 #ifndef MEDIA_AUDIO_WIN_AUDIO_LOW_LATENCY_OUTPUT_WIN_H_
@@ -97,6 +97,7 @@
 #include <MMDeviceAPI.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <wrl/client.h>
 
 #include <memory>
 #include <string>
@@ -107,7 +108,6 @@
 #include "base/threading/simple_thread.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/scoped_com_initializer.h"
-#include "base/win/scoped_comptr.h"
 #include "base/win/scoped_handle.h"
 #include "media/audio/audio_io.h"
 #include "media/base/audio_parameters.h"
@@ -140,11 +140,6 @@ class MEDIA_EXPORT WASAPIAudioOutputStream :
   void Close() override;
   void SetVolume(double volume) override;
   void GetVolume(double* volume) override;
-
-  // Retrieves the sample rate the audio engine uses for its internal
-  // processing/mixing of shared-mode streams.  To fetch the settings for the
-  // default device, pass an empty string as the |device_id|.
-  static int HardwareSampleRate(const std::string& device_id);
 
   // Returns AUDCLNT_SHAREMODE_EXCLUSIVE if --enable-exclusive-mode is used
   // as command-line flag and AUDCLNT_SHAREMODE_SHARED otherwise (default).
@@ -201,6 +196,10 @@ class MEDIA_EXPORT WASAPIAudioOutputStream :
   // in each OnMoreData() callback.
   size_t packet_size_frames_;
 
+  // If requesting an explicitly-lower frame size using the IAudioClient3
+  // interface this is the requested size.
+  size_t requested_iaudioclient3_buffer_size_;
+
   // Size in bytes of each audio packet.
   size_t packet_size_bytes_;
 
@@ -226,11 +225,11 @@ class MEDIA_EXPORT WASAPIAudioOutputStream :
 
   // An IAudioClient interface which enables a client to create and initialize
   // an audio stream between an audio application and the audio engine.
-  base::win::ScopedComPtr<IAudioClient> audio_client_;
+  Microsoft::WRL::ComPtr<IAudioClient> audio_client_;
 
   // The IAudioRenderClient interface enables a client to write output
   // data to a rendering endpoint buffer.
-  base::win::ScopedComPtr<IAudioRenderClient> audio_render_client_;
+  Microsoft::WRL::ComPtr<IAudioRenderClient> audio_render_client_;
 
   // The audio engine will signal this event each time a buffer becomes
   // ready to be filled by the client.
@@ -242,7 +241,7 @@ class MEDIA_EXPORT WASAPIAudioOutputStream :
   // Container for retrieving data from AudioSourceCallback::OnMoreData().
   std::unique_ptr<AudioBus> audio_bus_;
 
-  base::win::ScopedComPtr<IAudioClock> audio_clock_;
+  Microsoft::WRL::ComPtr<IAudioClock> audio_clock_;
 
   DISALLOW_COPY_AND_ASSIGN(WASAPIAudioOutputStream);
 };

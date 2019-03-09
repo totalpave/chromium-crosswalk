@@ -6,55 +6,97 @@
 
 #include <utility>
 
-#include "cc/output/compositor_frame.h"
-#include "cc/output/output_surface_client.h"
+#include "base/bind.h"
+#include "base/threading/thread_task_runner_handle.h"
+#include "components/viz/service/display/output_surface_client.h"
+#include "components/viz/service/display/output_surface_frame.h"
+#include "gpu/command_buffer/client/gles2_interface.h"
 #include "third_party/khronos/GLES2/gl2.h"
+#include "ui/gfx/presentation_feedback.h"
 #include "ui/gfx/transform.h"
+#include "ui/gl/gl_utils.h"
 
 namespace cc {
 
 PixelTestOutputSurface::PixelTestOutputSurface(
-    scoped_refptr<ContextProvider> context_provider,
-    scoped_refptr<ContextProvider> worker_context_provider,
+    scoped_refptr<viz::ContextProvider> context_provider,
     bool flipped_output_surface)
-    : OutputSurface(std::move(context_provider),
-                    std::move(worker_context_provider),
-                    nullptr),
-      external_stencil_test_(false) {
-  capabilities_.adjust_deadline_for_parent = false;
+    : OutputSurface(std::move(context_provider)), weak_ptr_factory_(this) {
   capabilities_.flipped_output_surface = flipped_output_surface;
+  capabilities_.supports_stencil = true;
 }
 
 PixelTestOutputSurface::PixelTestOutputSurface(
-    scoped_refptr<ContextProvider> context_provider,
-    bool flipped_output_surface)
-    : PixelTestOutputSurface(std::move(context_provider),
-                             nullptr,
-                             flipped_output_surface) {}
+    std::unique_ptr<viz::SoftwareOutputDevice> software_device)
+    : OutputSurface(std::move(software_device)), weak_ptr_factory_(this) {
+  capabilities_.supports_stencil = true;
+}
 
-PixelTestOutputSurface::PixelTestOutputSurface(
-    std::unique_ptr<SoftwareOutputDevice> software_device)
-    : OutputSurface(nullptr, nullptr, std::move(software_device)),
-      external_stencil_test_(false) {}
+PixelTestOutputSurface::~PixelTestOutputSurface() = default;
 
-PixelTestOutputSurface::~PixelTestOutputSurface() {}
+void PixelTestOutputSurface::BindToClient(viz::OutputSurfaceClient* client) {
+  client_ = client;
+}
+
+void PixelTestOutputSurface::EnsureBackbuffer() {}
+
+void PixelTestOutputSurface::DiscardBackbuffer() {}
+
+void PixelTestOutputSurface::BindFramebuffer() {
+  context_provider()->ContextGL()->BindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void PixelTestOutputSurface::SetDrawRectangle(const gfx::Rect& rect) {}
 
 void PixelTestOutputSurface::Reshape(const gfx::Size& size,
-                                     float scale_factor,
+                                     float device_scale_factor,
                                      const gfx::ColorSpace& color_space,
-                                     bool has_alpha) {
-  gfx::Size expanded_size(size.width() + surface_expansion_size_.width(),
-                          size.height() + surface_expansion_size_.height());
-  OutputSurface::Reshape(expanded_size, scale_factor, color_space, has_alpha);
+                                     bool has_alpha,
+                                     bool use_stencil) {
+  // External stencil test cannot be tested at the same time as |use_stencil|.
+  DCHECK(!use_stencil || !external_stencil_test_);
+  if (context_provider()) {
+    context_provider()->ContextGL()->ResizeCHROMIUM(
+        size.width(), size.height(), device_scale_factor,
+        gl::GetGLColorSpace(color_space), has_alpha);
+  } else {
+    software_device()->Resize(size, device_scale_factor);
+  }
 }
 
 bool PixelTestOutputSurface::HasExternalStencilTest() const {
   return external_stencil_test_;
 }
 
-void PixelTestOutputSurface::SwapBuffers(CompositorFrame frame) {
-  PostSwapBuffersComplete();
-  client_->DidSwapBuffers();
+void PixelTestOutputSurface::ApplyExternalStencil() {}
+
+void PixelTestOutputSurface::SwapBuffers(viz::OutputSurfaceFrame frame) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&PixelTestOutputSurface::SwapBuffersCallback,
+                                weak_ptr_factory_.GetWeakPtr()));
+}
+
+void PixelTestOutputSurface::SwapBuffersCallback() {
+  client_->DidReceiveSwapBuffersAck();
+  client_->DidReceivePresentationFeedback(
+      gfx::PresentationFeedback(base::TimeTicks::Now(), base::TimeDelta(), 0));
+}
+
+viz::OverlayCandidateValidator*
+PixelTestOutputSurface::GetOverlayCandidateValidator() const {
+  return nullptr;
+}
+
+bool PixelTestOutputSurface::IsDisplayedAsOverlayPlane() const {
+  return false;
+}
+
+unsigned PixelTestOutputSurface::GetOverlayTextureId() const {
+  return 0;
+}
+
+gfx::BufferFormat PixelTestOutputSurface::GetOverlayBufferFormat() const {
+  return gfx::BufferFormat::RGBX_8888;
 }
 
 uint32_t PixelTestOutputSurface::GetFramebufferCopyTextureFormat() {
@@ -62,6 +104,10 @@ uint32_t PixelTestOutputSurface::GetFramebufferCopyTextureFormat() {
   // framebuffer. For now assume tests do not want/care about alpha in
   // the root render pass.
   return GL_RGB;
+}
+
+unsigned PixelTestOutputSurface::UpdateGpuFence() {
+  return 0;
 }
 
 }  // namespace cc

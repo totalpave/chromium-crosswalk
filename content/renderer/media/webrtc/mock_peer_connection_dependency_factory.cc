@@ -8,12 +8,10 @@
 
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
-#include "content/renderer/media/mock_peer_connection_impl.h"
-#include "content/renderer/media/webrtc/webrtc_video_capturer_adapter.h"
-#include "third_party/WebKit/public/platform/WebMediaStreamTrack.h"
-#include "third_party/webrtc/api/mediastreaminterface.h"
-#include "third_party/webrtc/base/scoped_ref_ptr.h"
-#include "third_party/webrtc/media/base/videocapturer.h"
+#include "content/renderer/media/webrtc/mock_peer_connection_impl.h"
+#include "third_party/blink/public/platform/web_media_stream_track.h"
+#include "third_party/webrtc/api/media_stream_interface.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
 
 using webrtc::AudioSourceInterface;
 using webrtc::AudioTrackInterface;
@@ -32,16 +30,29 @@ namespace content {
 template <class V>
 static typename V::iterator FindTrack(V* vector,
                                       const std::string& track_id) {
-  typename V::iterator it = vector->begin();
+  auto it = vector->begin();
   for (; it != vector->end(); ++it) {
     if ((*it)->id() == track_id) {
       break;
     }
   }
   return it;
-};
+}
 
-MockMediaStream::MockMediaStream(const std::string& label) : label_(label) {}
+MockWebRtcAudioSource::MockWebRtcAudioSource(bool is_remote)
+    : is_remote_(is_remote) {}
+void MockWebRtcAudioSource::RegisterObserver(ObserverInterface* observer) {}
+void MockWebRtcAudioSource::UnregisterObserver(ObserverInterface* observer) {}
+
+MockWebRtcAudioSource::SourceState MockWebRtcAudioSource::state() const {
+  return SourceState::kLive;
+}
+
+bool MockWebRtcAudioSource::remote() const {
+  return is_remote_;
+}
+
+MockMediaStream::MockMediaStream(const std::string& id) : id_(id) {}
 
 bool MockMediaStream::AddTrack(AudioTrackInterface* track) {
   audio_track_vector_.push_back(track);
@@ -56,8 +67,7 @@ bool MockMediaStream::AddTrack(VideoTrackInterface* track) {
 }
 
 bool MockMediaStream::RemoveTrack(AudioTrackInterface* track) {
-  AudioTrackVector::iterator it = FindTrack(&audio_track_vector_,
-                                            track->id());
+  auto it = FindTrack(&audio_track_vector_, track->id());
   if (it == audio_track_vector_.end())
     return false;
   audio_track_vector_.erase(it);
@@ -66,8 +76,7 @@ bool MockMediaStream::RemoveTrack(AudioTrackInterface* track) {
 }
 
 bool MockMediaStream::RemoveTrack(VideoTrackInterface* track) {
-  VideoTrackVector::iterator it = FindTrack(&video_track_vector_,
-                                            track->id());
+  auto it = FindTrack(&video_track_vector_, track->id());
   if (it == video_track_vector_.end())
     return false;
   video_track_vector_.erase(it);
@@ -75,8 +84,8 @@ bool MockMediaStream::RemoveTrack(VideoTrackInterface* track) {
   return true;
 }
 
-std::string MockMediaStream::label() const {
-  return label_;
+std::string MockMediaStream::id() const {
+  return id_;
 }
 
 AudioTrackVector MockMediaStream::GetAudioTracks() {
@@ -89,14 +98,14 @@ VideoTrackVector MockMediaStream::GetVideoTracks() {
 
 rtc::scoped_refptr<AudioTrackInterface> MockMediaStream::FindAudioTrack(
     const std::string& track_id) {
-  AudioTrackVector::iterator it = FindTrack(&audio_track_vector_, track_id);
-  return it == audio_track_vector_.end() ? NULL : *it;
+  auto it = FindTrack(&audio_track_vector_, track_id);
+  return it == audio_track_vector_.end() ? nullptr : *it;
 }
 
 rtc::scoped_refptr<VideoTrackInterface> MockMediaStream::FindVideoTrack(
     const std::string& track_id) {
-  VideoTrackVector::iterator it = FindTrack(&video_track_vector_, track_id);
-  return it == video_track_vector_.end() ? NULL : *it;
+  auto it = FindTrack(&video_track_vector_, track_id);
+  return it == video_track_vector_.end() ? nullptr : *it;
 }
 
 void MockMediaStream::RegisterObserver(ObserverInterface* observer) {
@@ -105,52 +114,18 @@ void MockMediaStream::RegisterObserver(ObserverInterface* observer) {
 }
 
 void MockMediaStream::UnregisterObserver(ObserverInterface* observer) {
-  ObserverSet::iterator it = observers_.find(observer);
+  auto it = observers_.find(observer);
   DCHECK(it != observers_.end());
   observers_.erase(it);
 }
 
 void MockMediaStream::NotifyObservers() {
-  for (ObserverSet::iterator it = observers_.begin(); it != observers_.end();
-       ++it) {
+  for (auto it = observers_.begin(); it != observers_.end(); ++it) {
     (*it)->OnChanged();
   }
 }
 
 MockMediaStream::~MockMediaStream() {}
-
-class MockRtcVideoCapturer : public WebRtcVideoCapturerAdapter {
- public:
-  explicit MockRtcVideoCapturer(bool is_screencast)
-      : WebRtcVideoCapturerAdapter(is_screencast),
-        number_of_capturered_frames_(0),
-        width_(0),
-        height_(0) {
-  }
-
-  void OnFrameCaptured(const scoped_refptr<media::VideoFrame>& frame) override {
-    ++number_of_capturered_frames_;
-    width_ = frame->visible_rect().width();
-    height_ = frame->visible_rect().height();
-  }
-
-  int GetLastFrameWidth() const {
-    return width_;
-  }
-
-  int GetLastFrameHeight() const {
-    return height_;
-  }
-
-  int GetFrameNum() const {
-    return number_of_capturered_frames_;
-  }
-
- private:
-  int number_of_capturered_frames_;
-  int width_;
-  int height_;
-};
 
 scoped_refptr<MockWebRtcAudioTrack> MockWebRtcAudioTrack::Create(
     const std::string& id) {
@@ -159,6 +134,7 @@ scoped_refptr<MockWebRtcAudioTrack> MockWebRtcAudioTrack::Create(
 
 MockWebRtcAudioTrack::MockWebRtcAudioTrack(const std::string& id)
     : id_(id),
+      source_(new rtc::RefCountedObject<MockWebRtcAudioSource>(true)),
       enabled_(true),
       state_(webrtc::MediaStreamTrackInterface::kLive) {}
 
@@ -169,8 +145,7 @@ std::string MockWebRtcAudioTrack::kind() const {
 }
 
 webrtc::AudioSourceInterface* MockWebRtcAudioTrack::GetSource() const {
-  NOTREACHED();
-  return nullptr;
+  return source_.get();
 }
 
 std::string MockWebRtcAudioTrack::id() const {
@@ -203,7 +178,7 @@ void MockWebRtcAudioTrack::UnregisterObserver(ObserverInterface* observer) {
 void MockWebRtcAudioTrack::SetEnded() {
   DCHECK_EQ(webrtc::MediaStreamTrackInterface::kLive, state_);
   state_ = webrtc::MediaStreamTrackInterface::kEnded;
-  for (auto& o : observers_)
+  for (auto* o : observers_)
     o->OnChanged();
 }
 
@@ -214,7 +189,7 @@ MockWebRtcVideoTrack::MockWebRtcVideoTrack(
       source_(source),
       enabled_(true),
       state_(webrtc::MediaStreamTrackInterface::kLive),
-      sink_(NULL) {}
+      sink_(nullptr) {}
 
 MockWebRtcVideoTrack::~MockWebRtcVideoTrack() {}
 
@@ -224,16 +199,16 @@ scoped_refptr<MockWebRtcVideoTrack> MockWebRtcVideoTrack::Create(
 }
 
 void MockWebRtcVideoTrack::AddOrUpdateSink(
-    rtc::VideoSinkInterface<cricket::VideoFrame>* sink,
+    rtc::VideoSinkInterface<webrtc::VideoFrame>* sink,
     const rtc::VideoSinkWants& wants) {
   DCHECK(!sink_);
   sink_ = sink;
 }
 
 void MockWebRtcVideoTrack::RemoveSink(
-    rtc::VideoSinkInterface<cricket::VideoFrame>* sink) {
+    rtc::VideoSinkInterface<webrtc::VideoFrame>* sink) {
   DCHECK(sink_ == sink);
-  sink_ = NULL;
+  sink_ = nullptr;
 }
 
 VideoTrackSourceInterface* MockWebRtcVideoTrack::GetSource() const {
@@ -270,7 +245,7 @@ void MockWebRtcVideoTrack::UnregisterObserver(ObserverInterface* observer) {
 void MockWebRtcVideoTrack::SetEnded() {
   DCHECK_EQ(webrtc::MediaStreamTrackInterface::kLive, state_);
   state_ = webrtc::MediaStreamTrackInterface::kEnded;
-  for (auto& o : observers_)
+  for (auto* o : observers_)
     o->OnChanged();
 }
 
@@ -284,11 +259,11 @@ class MockSessionDescription : public SessionDescriptionInterface {
   ~MockSessionDescription() override {}
   cricket::SessionDescription* description() override {
     NOTIMPLEMENTED();
-    return NULL;
+    return nullptr;
   }
   const cricket::SessionDescription* description() const override {
     NOTIMPLEMENTED();
-    return NULL;
+    return nullptr;
   }
   std::string session_id() const override {
     NOTIMPLEMENTED();
@@ -310,7 +285,7 @@ class MockSessionDescription : public SessionDescriptionInterface {
   const IceCandidateCollection* candidates(
       size_t mediasection_index) const override {
     NOTIMPLEMENTED();
-    return NULL;
+    return nullptr;
   }
 
   bool ToString(std::string* out) const override {
@@ -351,7 +326,7 @@ class MockIceCandidate : public IceCandidateInterface {
 };
 
 MockPeerConnectionDependencyFactory::MockPeerConnectionDependencyFactory()
-    : PeerConnectionDependencyFactory(NULL),
+    : PeerConnectionDependencyFactory(nullptr),
       signaling_thread_("MockPCFactory WebRtc Signaling Thread") {
   EnsureWebRtcAudioDeviceImpl();
   CHECK(signaling_thread_.Start());
@@ -362,26 +337,16 @@ MockPeerConnectionDependencyFactory::~MockPeerConnectionDependencyFactory() {}
 scoped_refptr<webrtc::PeerConnectionInterface>
 MockPeerConnectionDependencyFactory::CreatePeerConnection(
     const webrtc::PeerConnectionInterface::RTCConfiguration& config,
-    blink::WebFrame* frame,
+    blink::WebLocalFrame* frame,
     webrtc::PeerConnectionObserver* observer) {
   return new rtc::RefCountedObject<MockPeerConnectionImpl>(this, observer);
 }
 
-WebRtcVideoCapturerAdapter*
-MockPeerConnectionDependencyFactory::CreateVideoCapturer(
-    bool is_screen_capture) {
-  return new MockRtcVideoCapturer(is_screen_capture);
-}
-
 scoped_refptr<webrtc::VideoTrackSourceInterface>
-MockPeerConnectionDependencyFactory::CreateVideoSource(
-    cricket::VideoCapturer* capturer) {
-  // Video source normally take ownership of |capturer|.
-  delete capturer;
-  NOTIMPLEMENTED();
+MockPeerConnectionDependencyFactory::CreateVideoTrackSourceProxy(
+    webrtc::VideoTrackSourceInterface* source) {
   return nullptr;
 }
-
 scoped_refptr<webrtc::MediaStreamInterface>
 MockPeerConnectionDependencyFactory::CreateLocalMediaStream(
     const std::string& label) {
@@ -398,18 +363,13 @@ MockPeerConnectionDependencyFactory::CreateLocalVideoTrack(
   return track;
 }
 
-scoped_refptr<webrtc::VideoTrackInterface>
-MockPeerConnectionDependencyFactory::CreateLocalVideoTrack(
-    const std::string& id,
-    cricket::VideoCapturer* capturer) {
-  return new rtc::RefCountedObject<MockWebRtcVideoTrack>(id, nullptr);
-}
-
 SessionDescriptionInterface*
 MockPeerConnectionDependencyFactory::CreateSessionDescription(
     const std::string& type,
     const std::string& sdp,
     webrtc::SdpParseError* error) {
+  if (fail_to_create_session_description_)
+    return nullptr;
   return new MockSessionDescription(type, sdp);
 }
 
@@ -424,6 +384,11 @@ MockPeerConnectionDependencyFactory::CreateIceCandidate(
 scoped_refptr<base::SingleThreadTaskRunner>
 MockPeerConnectionDependencyFactory::GetWebRtcSignalingThread() const {
   return signaling_thread_.task_runner();
+}
+
+void MockPeerConnectionDependencyFactory::SetFailToCreateSessionDescription(
+    bool fail) {
+  fail_to_create_session_description_ = fail;
 }
 
 }  // namespace content

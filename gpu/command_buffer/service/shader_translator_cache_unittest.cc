@@ -2,10 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <GLES2/gl2.h>
-
 #include "gpu/command_buffer/service/shader_translator_cache.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gl/gl_bindings.h"
 
 namespace gpu {
 namespace gles2 {
@@ -16,11 +15,11 @@ TEST(ShaderTranslatorCacheTest, InitParamComparable) {
 
   ShBuiltInResources a_resources;
   memset(&a_resources, 88, sizeof(a_resources));
-  ShInitBuiltInResources(&a_resources);
+  sh::InitBuiltInResources(&a_resources);
 
   ShBuiltInResources b_resources;
   memset(&b_resources, 77, sizeof(b_resources));
-  ShInitBuiltInResources(&b_resources);
+  sh::InitBuiltInResources(&b_resources);
 
   EXPECT_TRUE(memcmp(&a_resources, &b_resources, sizeof(a_resources)) == 0);
 

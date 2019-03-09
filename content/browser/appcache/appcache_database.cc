@@ -9,11 +9,11 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "content/browser/appcache/appcache_entry.h"
 #include "content/browser/appcache/appcache_histograms.h"
-#include "sql/connection.h"
+#include "sql/database.h"
 #include "sql/error_delegate_util.h"
 #include "sql/meta_table.h"
 #include "sql/statement.h"
@@ -24,6 +24,20 @@ namespace content {
 // Schema -------------------------------------------------------------------
 namespace {
 
+// Version number of the database.
+//
+// We support migrating the database schema from versions that are at most 2
+// years old. Older versions are unsupported, and will cause the database to get
+// nuked.
+//
+// Version 0 - 2009-12-28 - https://crrev.com/501033 (unsupported)
+// Version 1 - 2010-01-20 - https://crrev.com/554008 (unsupported)
+// Version 2 - 2010-02-23 - https://crrev.com/630009 (unsupported)
+// Version 3 - 2010-03-17 - https://crrev.com/886003 (unsupported)
+// Version 4 - 2011-12-12 - https://crrev.com/8396013 (unsupported)
+// Version 5 - 2013-03-29 - https://crrev.com/12628006 (unsupported)
+// Version 6 - 2013-09-20 - https://crrev.com/23503069 (unsupported)
+// Version 7 - 2015-07-09 - https://crrev.com/879393002
 const int kCurrentVersion = 7;
 const int kCompatibleVersion = 7;
 const bool kCreateIfNeeded = true;
@@ -153,17 +167,17 @@ const IndexInfo kIndexes[] = {
     true },
 };
 
-const int kTableCount = arraysize(kTables);
-const int kIndexCount = arraysize(kIndexes);
+const int kTableCount = base::size(kTables);
+const int kIndexCount = base::size(kIndexes);
 
-bool CreateTable(sql::Connection* db, const TableInfo& info) {
+bool CreateTable(sql::Database* db, const TableInfo& info) {
   std::string sql("CREATE TABLE ");
   sql += info.table_name;
   sql += info.columns;
   return db->Execute(sql.c_str());
 }
 
-bool CreateIndex(sql::Connection* db, const IndexInfo& info) {
+bool CreateIndex(sql::Database* db, const IndexInfo& info) {
   std::string sql;
   if (info.unique)
     sql += "CREATE UNIQUE INDEX ";
@@ -177,10 +191,13 @@ bool CreateIndex(sql::Connection* db, const IndexInfo& info) {
 }
 
 std::string GetActiveExperimentFlags() {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kEnableExecutableHandlers))
-    return std::string("executableHandlersEnabled");
   return std::string();
+}
+
+// GetURL().spec() is used instead of Serialize() to ensure
+// backwards compatibility with older data.
+std::string SerializeOrigin(const url::Origin& origin) {
+  return origin.GetURL().spec();
 }
 
 }  // anon namespace
@@ -221,43 +238,38 @@ void AppCacheDatabase::Disable() {
   ResetConnectionAndTables();
 }
 
-int64_t AppCacheDatabase::GetOriginUsage(const GURL& origin) {
+int64_t AppCacheDatabase::GetOriginUsage(const url::Origin& origin) {
   std::vector<CacheRecord> records;
   if (!FindCachesForOrigin(origin, &records))
     return 0;
 
   int64_t origin_usage = 0;
-  std::vector<CacheRecord>::const_iterator iter = records.begin();
-  while (iter != records.end()) {
-    origin_usage += iter->cache_size;
-    ++iter;
-  }
+  for (const auto& record : records)
+    origin_usage += record.cache_size;
   return origin_usage;
 }
 
-bool AppCacheDatabase::GetAllOriginUsage(std::map<GURL, int64_t>* usage_map) {
-  std::set<GURL> origins;
+bool AppCacheDatabase::GetAllOriginUsage(
+    std::map<url::Origin, int64_t>* usage_map) {
+  std::set<url::Origin> origins;
   if (!FindOriginsWithGroups(&origins))
     return false;
-  for (std::set<GURL>::const_iterator origin = origins.begin();
-       origin != origins.end(); ++origin) {
-    (*usage_map)[*origin] = GetOriginUsage(*origin);
-  }
+  for (const auto& origin : origins)
+    (*usage_map)[origin] = GetOriginUsage(origin);
   return true;
 }
 
-bool AppCacheDatabase::FindOriginsWithGroups(std::set<GURL>* origins) {
+bool AppCacheDatabase::FindOriginsWithGroups(std::set<url::Origin>* origins) {
   DCHECK(origins && origins->empty());
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
-      "SELECT DISTINCT(origin) FROM Groups";
+  static const char kSql[] = "SELECT DISTINCT(origin) FROM Groups";
 
   sql::Statement statement(db_->GetUniqueStatement(kSql));
 
   while (statement.Step())
-    origins->insert(GURL(statement.ColumnString(0)));
+    origins->insert(url::Origin::Create(GURL(statement.ColumnString(0))));
 
   return statement.Succeeded();
 }
@@ -278,13 +290,13 @@ bool AppCacheDatabase::FindLastStorageIds(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kMaxGroupIdSql[] = "SELECT MAX(group_id) FROM Groups";
-  const char kMaxCacheIdSql[] = "SELECT MAX(cache_id) FROM Caches";
-  const char kMaxResponseIdFromEntriesSql[] =
+  static const char kMaxGroupIdSql[] = "SELECT MAX(group_id) FROM Groups";
+  static const char kMaxCacheIdSql[] = "SELECT MAX(cache_id) FROM Caches";
+  static const char kMaxResponseIdFromEntriesSql[] =
       "SELECT MAX(response_id) FROM Entries";
-  const char kMaxResponseIdFromDeletablesSql[] =
+  static const char kMaxResponseIdFromDeletablesSql[] =
       "SELECT MAX(response_id) FROM DeletableResponseIds";
-  const char kMaxDeletableResponseRowIdSql[] =
+  static const char kMaxDeletableResponseRowIdSql[] =
       "SELECT MAX(rowid) FROM DeletableResponseIds";
   int64_t max_group_id;
   int64_t max_cache_id;
@@ -315,7 +327,7 @@ bool AppCacheDatabase::FindGroup(int64_t group_id, GroupRecord* record) {
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT group_id, origin, manifest_url,"
       "       creation_time, last_access_time,"
       "       last_full_update_check_time,"
@@ -339,7 +351,7 @@ bool AppCacheDatabase::FindGroupForManifestUrl(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT group_id, origin, manifest_url,"
       "       creation_time, last_access_time,"
       "       last_full_update_check_time,"
@@ -357,13 +369,13 @@ bool AppCacheDatabase::FindGroupForManifestUrl(
   return true;
 }
 
-bool AppCacheDatabase::FindGroupsForOrigin(
-    const GURL& origin, std::vector<GroupRecord>* records) {
+bool AppCacheDatabase::FindGroupsForOrigin(const url::Origin& origin,
+                                           std::vector<GroupRecord>* records) {
   DCHECK(records && records->empty());
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT group_id, origin, manifest_url,"
       "       creation_time, last_access_time,"
       "       last_full_update_check_time,"
@@ -371,7 +383,7 @@ bool AppCacheDatabase::FindGroupsForOrigin(
       "   FROM Groups WHERE origin = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
-  statement.BindString(0, origin.spec());
+  statement.BindString(0, SerializeOrigin(origin));
 
   while (statement.Step()) {
     records->push_back(GroupRecord());
@@ -388,7 +400,7 @@ bool AppCacheDatabase::FindGroupForCache(int64_t cache_id,
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT g.group_id, g.origin, g.manifest_url,"
       "       g.creation_time, g.last_access_time,"
       "       g.last_full_update_check_time,"
@@ -410,14 +422,14 @@ bool AppCacheDatabase::InsertGroup(const GroupRecord* record) {
   if (!LazyOpen(kCreateIfNeeded))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "INSERT INTO Groups"
       "  (group_id, origin, manifest_url, creation_time, last_access_time,"
       "   last_full_update_check_time, first_evictable_error_time)"
       "  VALUES(?, ?, ?, ?, ?, ?, ?)";
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
   statement.BindInt64(0, record->group_id);
-  statement.BindString(1, record->origin.spec());
+  statement.BindString(1, SerializeOrigin(record->origin));
   statement.BindString(2, record->manifest_url.spec());
   statement.BindInt64(3, record->creation_time.ToInternalValue());
   statement.BindInt64(4, record->last_access_time.ToInternalValue());
@@ -430,8 +442,7 @@ bool AppCacheDatabase::DeleteGroup(int64_t group_id) {
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
-      "DELETE FROM Groups WHERE group_id = ?";
+  static const char kSql[] = "DELETE FROM Groups WHERE group_id = ?";
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
   statement.BindInt64(0, group_id);
   return statement.Run();
@@ -461,7 +472,7 @@ bool AppCacheDatabase::CommitLazyLastAccessTimes() {
   if (!transaction.Begin())
     return false;
   for (const auto& pair : lazy_last_access_times_) {
-    const char kSql[] =
+    static const char kSql[] =
         "UPDATE Groups SET last_access_time = ? WHERE group_id = ?";
     sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
     statement.BindInt64(0, pair.second.ToInternalValue());  // time
@@ -479,7 +490,7 @@ bool AppCacheDatabase::UpdateEvictionTimes(
   if (!LazyOpen(kCreateIfNeeded))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "UPDATE Groups"
       " SET last_full_update_check_time = ?, first_evictable_error_time = ?"
       " WHERE group_id = ?";
@@ -495,7 +506,7 @@ bool AppCacheDatabase::FindCache(int64_t cache_id, CacheRecord* record) {
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, group_id, online_wildcard, update_time, cache_size"
       " FROM Caches WHERE cache_id = ?";
 
@@ -515,7 +526,7 @@ bool AppCacheDatabase::FindCacheForGroup(int64_t group_id,
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, group_id, online_wildcard, update_time, cache_size"
       "  FROM Caches WHERE group_id = ?";
 
@@ -529,19 +540,17 @@ bool AppCacheDatabase::FindCacheForGroup(int64_t group_id,
   return true;
 }
 
-bool AppCacheDatabase::FindCachesForOrigin(
-    const GURL& origin, std::vector<CacheRecord>* records) {
+bool AppCacheDatabase::FindCachesForOrigin(const url::Origin& origin,
+                                           std::vector<CacheRecord>* records) {
   DCHECK(records);
   std::vector<GroupRecord> group_records;
   if (!FindGroupsForOrigin(origin, &group_records))
     return false;
 
   CacheRecord cache_record;
-  std::vector<GroupRecord>::const_iterator iter = group_records.begin();
-  while (iter != group_records.end()) {
-    if (FindCacheForGroup(iter->group_id, &cache_record))
+  for (const auto& record : group_records) {
+    if (FindCacheForGroup(record.group_id, &cache_record))
       records->push_back(cache_record);
-    ++iter;
   }
   return true;
 }
@@ -550,7 +559,7 @@ bool AppCacheDatabase::InsertCache(const CacheRecord* record) {
   if (!LazyOpen(kCreateIfNeeded))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "INSERT INTO Caches (cache_id, group_id, online_wildcard,"
       "                    update_time, cache_size)"
       "  VALUES(?, ?, ?, ?, ?)";
@@ -569,8 +578,7 @@ bool AppCacheDatabase::DeleteCache(int64_t cache_id) {
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
-      "DELETE FROM Caches WHERE cache_id = ?";
+  static const char kSql[] = "DELETE FROM Caches WHERE cache_id = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
   statement.BindInt64(0, cache_id);
@@ -584,7 +592,7 @@ bool AppCacheDatabase::FindEntriesForCache(int64_t cache_id,
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, url, flags, response_id, response_size FROM Entries"
       "  WHERE cache_id = ?";
 
@@ -606,7 +614,7 @@ bool AppCacheDatabase::FindEntriesForUrl(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, url, flags, response_id, response_size FROM Entries"
       "  WHERE url = ?";
 
@@ -629,7 +637,7 @@ bool AppCacheDatabase::FindEntry(int64_t cache_id,
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, url, flags, response_id, response_size FROM Entries"
       "  WHERE cache_id = ? AND url = ?";
 
@@ -650,7 +658,7 @@ bool AppCacheDatabase::InsertEntry(const EntryRecord* record) {
   if (!LazyOpen(kCreateIfNeeded))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "INSERT INTO Entries (cache_id, url, flags, response_id, response_size)"
       "  VALUES(?, ?, ?, ?, ?)";
 
@@ -671,11 +679,9 @@ bool AppCacheDatabase::InsertEntryRecords(
   sql::Transaction transaction(db_.get());
   if (!transaction.Begin())
     return false;
-  std::vector<EntryRecord>::const_iterator iter = records.begin();
-  while (iter != records.end()) {
-    if (!InsertEntry(&(*iter)))
+  for (const auto& record : records) {
+    if (!InsertEntry(&record))
       return false;
-    ++iter;
   }
   return transaction.Commit();
 }
@@ -684,8 +690,7 @@ bool AppCacheDatabase::DeleteEntriesForCache(int64_t cache_id) {
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
-      "DELETE FROM Entries WHERE cache_id = ?";
+  static const char kSql[] = "DELETE FROM Entries WHERE cache_id = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
   statement.BindInt64(0, cache_id);
@@ -699,7 +704,7 @@ bool AppCacheDatabase::AddEntryFlags(const GURL& entry_url,
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "UPDATE Entries SET flags = flags | ? WHERE cache_id = ? AND url = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
@@ -711,7 +716,7 @@ bool AppCacheDatabase::AddEntryFlags(const GURL& entry_url,
 }
 
 bool AppCacheDatabase::FindNamespacesForOrigin(
-    const GURL& origin,
+    const url::Origin& origin,
     std::vector<NamespaceRecord>* intercepts,
     std::vector<NamespaceRecord>* fallbacks) {
   DCHECK(intercepts && intercepts->empty());
@@ -719,12 +724,12 @@ bool AppCacheDatabase::FindNamespacesForOrigin(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, origin, type, namespace_url, target_url, is_pattern"
       "  FROM Namespaces WHERE origin = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
-  statement.BindString(0, origin.spec());
+  statement.BindString(0, SerializeOrigin(origin));
 
   ReadNamespaceRecords(&statement, intercepts, fallbacks);
 
@@ -740,7 +745,7 @@ bool AppCacheDatabase::FindNamespacesForCache(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, origin, type, namespace_url, target_url, is_pattern"
       "  FROM Namespaces WHERE cache_id = ?";
 
@@ -757,24 +762,15 @@ bool AppCacheDatabase::InsertNamespace(
   if (!LazyOpen(kCreateIfNeeded))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "INSERT INTO Namespaces"
       "  (cache_id, origin, type, namespace_url, target_url, is_pattern)"
       "  VALUES (?, ?, ?, ?, ?, ?)";
 
-  // Note: quick and dirty storage for the 'executable' bit w/o changing
-  // schemas, we use the high bit of 'type' field.
-  int type_with_executable_bit = record->namespace_.type;
-  if (record->namespace_.is_executable) {
-    type_with_executable_bit |= 0x8000000;
-    DCHECK(base::CommandLine::ForCurrentProcess()->HasSwitch(
-        kEnableExecutableHandlers));
-  }
-
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
   statement.BindInt64(0, record->cache_id);
-  statement.BindString(1, record->origin.spec());
-  statement.BindInt(2, type_with_executable_bit);
+  statement.BindString(1, SerializeOrigin(record->origin));
+  statement.BindInt(2, record->namespace_.type);
   statement.BindString(3, record->namespace_.namespace_url.spec());
   statement.BindString(4, record->namespace_.target_url.spec());
   statement.BindBool(5, record->namespace_.is_pattern);
@@ -788,11 +784,9 @@ bool AppCacheDatabase::InsertNamespaceRecords(
   sql::Transaction transaction(db_.get());
   if (!transaction.Begin())
     return false;
-  std::vector<NamespaceRecord>::const_iterator iter = records.begin();
-  while (iter != records.end()) {
-    if (!InsertNamespace(&(*iter)))
+  for (const auto& record : records) {
+    if (!InsertNamespace(&record))
       return false;
-    ++iter;
   }
   return transaction.Commit();
 }
@@ -801,8 +795,7 @@ bool AppCacheDatabase::DeleteNamespacesForCache(int64_t cache_id) {
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
-      "DELETE FROM Namespaces WHERE cache_id = ?";
+  static const char kSql[] = "DELETE FROM Namespaces WHERE cache_id = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
   statement.BindInt64(0, cache_id);
@@ -817,7 +810,7 @@ bool AppCacheDatabase::FindOnlineWhiteListForCache(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT cache_id, namespace_url, is_pattern FROM OnlineWhiteLists"
       "  WHERE cache_id = ?";
 
@@ -837,7 +830,7 @@ bool AppCacheDatabase::InsertOnlineWhiteList(
   if (!LazyOpen(kCreateIfNeeded))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "INSERT INTO OnlineWhiteLists (cache_id, namespace_url, is_pattern)"
       "  VALUES (?, ?, ?)";
 
@@ -856,11 +849,9 @@ bool AppCacheDatabase::InsertOnlineWhiteListRecords(
   sql::Transaction transaction(db_.get());
   if (!transaction.Begin())
     return false;
-  std::vector<OnlineWhiteListRecord>::const_iterator iter = records.begin();
-  while (iter != records.end()) {
-    if (!InsertOnlineWhiteList(&(*iter)))
+  for (const auto& record : records) {
+    if (!InsertOnlineWhiteList(&record))
       return false;
-    ++iter;
   }
   return transaction.Commit();
 }
@@ -869,8 +860,7 @@ bool AppCacheDatabase::DeleteOnlineWhiteListForCache(int64_t cache_id) {
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
-      "DELETE FROM OnlineWhiteLists WHERE cache_id = ?";
+  static const char kSql[] = "DELETE FROM OnlineWhiteLists WHERE cache_id = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
   statement.BindInt64(0, cache_id);
@@ -885,7 +875,7 @@ bool AppCacheDatabase::GetDeletableResponseIds(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT response_id FROM DeletableResponseIds "
       "  WHERE rowid <= ?"
       "  LIMIT ?";
@@ -901,20 +891,20 @@ bool AppCacheDatabase::GetDeletableResponseIds(
 
 bool AppCacheDatabase::InsertDeletableResponseIds(
     const std::vector<int64_t>& response_ids) {
-  const char kSql[] =
+  static const char kSql[] =
       "INSERT INTO DeletableResponseIds (response_id) VALUES (?)";
   return RunCachedStatementWithIds(SQL_FROM_HERE, kSql, response_ids);
 }
 
 bool AppCacheDatabase::DeleteDeletableResponseIds(
     const std::vector<int64_t>& response_ids) {
-  const char kSql[] =
+  static const char kSql[] =
       "DELETE FROM DeletableResponseIds WHERE response_id = ?";
   return RunCachedStatementWithIds(SQL_FROM_HERE, kSql, response_ids);
 }
 
 bool AppCacheDatabase::RunCachedStatementWithIds(
-    const sql::StatementID& statement_id,
+    sql::StatementID statement_id,
     const char* sql,
     const std::vector<int64_t>& ids) {
   DCHECK(sql);
@@ -927,13 +917,11 @@ bool AppCacheDatabase::RunCachedStatementWithIds(
 
   sql::Statement statement(db_->GetCachedStatement(statement_id, sql));
 
-  std::vector<int64_t>::const_iterator iter = ids.begin();
-  while (iter != ids.end()) {
-    statement.BindInt64(0, *iter);
+  for (const auto& id : ids) {
+    statement.BindInt64(0, id);
     if (!statement.Run())
       return false;
     statement.Reset(true);
-    ++iter;
   }
 
   return transaction.Commit();
@@ -959,7 +947,7 @@ bool AppCacheDatabase::FindResponseIdsForCacheHelper(
   if (!LazyOpen(kDontCreate))
     return false;
 
-  const char kSql[] =
+  static const char kSql[] =
       "SELECT response_id FROM Entries WHERE cache_id = ?";
 
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
@@ -979,7 +967,7 @@ bool AppCacheDatabase::FindResponseIdsForCacheHelper(
 void AppCacheDatabase::ReadGroupRecord(
     const sql::Statement& statement, GroupRecord* record) {
   record->group_id = statement.ColumnInt64(0);
-  record->origin = GURL(statement.ColumnString(1));
+  record->origin = url::Origin::Create(GURL(statement.ColumnString(1)));
   record->manifest_url = GURL(statement.ColumnString(2));
   record->creation_time =
       base::Time::FromInternalValue(statement.ColumnInt64(3));
@@ -1034,21 +1022,15 @@ void AppCacheDatabase::ReadNamespaceRecords(
 void AppCacheDatabase::ReadNamespaceRecord(
     const sql::Statement* statement, NamespaceRecord* record) {
   record->cache_id = statement->ColumnInt64(0);
-  record->origin = GURL(statement->ColumnString(1));
-  int type_with_executable_bit = statement->ColumnInt(2);
+  record->origin = url::Origin::Create(GURL(statement->ColumnString(1)));
+  record->namespace_.type =
+      static_cast<AppCacheNamespaceType>(statement->ColumnInt(2));
   record->namespace_.namespace_url = GURL(statement->ColumnString(3));
   record->namespace_.target_url = GURL(statement->ColumnString(4));
   record->namespace_.is_pattern = statement->ColumnBool(5);
-
-  // Note: quick and dirty storage for the 'executable' bit w/o changing
-  // schemas, we use the high bit of 'type' field.
-  record->namespace_.type = static_cast<AppCacheNamespaceType>
-      (type_with_executable_bit & 0x7ffffff);
-  record->namespace_.is_executable =
-      (type_with_executable_bit & 0x80000000) != 0;
-  DCHECK(!record->namespace_.is_executable ||
-      base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kEnableExecutableHandlers));
+  DCHECK(record->namespace_.type == APPCACHE_FALLBACK_NAMESPACE ||
+         record->namespace_.type == APPCACHE_INTERCEPT_NAMESPACE);
+  // The APPCACHE_NETWORK_NAMESPACE are stored as OnlineWhiteListRecords.
 }
 
 void AppCacheDatabase::ReadOnlineWhiteListRecord(
@@ -1074,7 +1056,7 @@ bool AppCacheDatabase::LazyOpen(bool create_if_needed) {
     return false;
   }
 
-  db_.reset(new sql::Connection);
+  db_.reset(new sql::Database);
   meta_table_.reset(new sql::MetaTable);
 
   db_->set_histogram_tag("AppCache");
@@ -1108,8 +1090,8 @@ bool AppCacheDatabase::LazyOpen(bool create_if_needed) {
 
   AppCacheHistograms::CountInitResult(AppCacheHistograms::INIT_OK);
   was_corruption_detected_ = false;
-  db_->set_error_callback(
-      base::Bind(&AppCacheDatabase::OnDatabaseError, base::Unretained(this)));
+  db_->set_error_callback(base::BindRepeating(
+      &AppCacheDatabase::OnDatabaseError, base::Unretained(this)));
   return true;
 }
 
@@ -1173,117 +1155,7 @@ bool AppCacheDatabase::CreateSchema() {
 }
 
 bool AppCacheDatabase::UpgradeSchema() {
-#if defined(APPCACHE_USE_SIMPLE_CACHE)
-  if (meta_table_->GetVersionNumber() < 6)
-    return DeleteExistingAndCreateNewDatabase();
-#endif
-  if (meta_table_->GetVersionNumber() == 3) {
-    // version 3 was pre 12/17/2011
-    DCHECK_EQ(strcmp(kNamespacesTable, kTables[3].table_name), 0);
-    DCHECK_EQ(strcmp(kNamespacesTable, kIndexes[6].table_name), 0);
-    DCHECK_EQ(strcmp(kNamespacesTable, kIndexes[7].table_name), 0);
-    DCHECK_EQ(strcmp(kNamespacesTable, kIndexes[8].table_name), 0);
-
-    const TableInfo kNamespaceTable_v4 = {
-        kNamespacesTable,
-        "(cache_id INTEGER,"
-        " origin TEXT,"  // intentionally not normalized
-        " type INTEGER,"
-        " namespace_url TEXT,"
-        " target_url TEXT)"
-    };
-
-    // Migrate from the old FallbackNameSpaces to the newer Namespaces table,
-    // but without the is_pattern column added in v5.
-    sql::Transaction transaction(db_.get());
-    if (!transaction.Begin() ||
-        !CreateTable(db_.get(), kNamespaceTable_v4)) {
-      return false;
-    }
-
-    // Move data from the old table to the new table, setting the
-    // 'type' for all current records to the value for
-    // APPCACHE_FALLBACK_NAMESPACE.
-    DCHECK_EQ(0, static_cast<int>(APPCACHE_FALLBACK_NAMESPACE));
-    if (!db_->Execute(
-            "INSERT INTO Namespaces"
-            "  SELECT cache_id, origin, 0, namespace_url, fallback_entry_url"
-            "  FROM FallbackNameSpaces")) {
-      return false;
-    }
-
-    // Drop the old table, indexes on that table are also removed by this.
-    if (!db_->Execute("DROP TABLE FallbackNameSpaces"))
-      return false;
-
-    // Create new indexes.
-    if (!CreateIndex(db_.get(), kIndexes[6]) ||
-        !CreateIndex(db_.get(), kIndexes[7]) ||
-        !CreateIndex(db_.get(), kIndexes[8])) {
-      return false;
-    }
-
-    meta_table_->SetVersionNumber(4);
-    meta_table_->SetCompatibleVersionNumber(4);
-    if (!transaction.Commit())
-      return false;
-  }
-
-  if (meta_table_->GetVersionNumber() == 4) {
-    // version 4 pre 3/30/2013
-    // Add the is_pattern column to the Namespaces and OnlineWhitelists tables.
-    DCHECK_EQ(strcmp(kNamespacesTable, "Namespaces"), 0);
-    sql::Transaction transaction(db_.get());
-    if (!transaction.Begin())
-      return false;
-    if (!db_->Execute(
-            "ALTER TABLE Namespaces ADD COLUMN"
-            "  is_pattern INTEGER CHECK(is_pattern IN (0, 1))")) {
-      return false;
-    }
-    if (!db_->Execute(
-            "ALTER TABLE OnlineWhitelists ADD COLUMN"
-            "  is_pattern INTEGER CHECK(is_pattern IN (0, 1))")) {
-      return false;
-    }
-    meta_table_->SetVersionNumber(5);
-    meta_table_->SetCompatibleVersionNumber(5);
-    if (!transaction.Commit())
-      return false;
-  }
-
-#if defined(APPCACHE_USE_SIMPLE_CACHE)
-  // The schema version number was increased to 6 when we switched to the
-  // SimpleCache for Android, but the SQL part of the schema is identical
-  // to v5 on desktop chrome.
-  if (meta_table_->GetVersionNumber() == 6) {
-#else
-  if (meta_table_->GetVersionNumber() == 5) {
-#endif
-    // Versions 5 and 6 were pre-July 2015.
-    // Version 7 adds support for expiring caches that are failing to update.
-    sql::Transaction transaction(db_.get());
-    if (!transaction.Begin() ||
-        !db_->Execute(
-            "ALTER TABLE Groups ADD COLUMN"
-            " last_full_update_check_time INTEGER") ||
-        !db_->Execute(
-            "ALTER TABLE Groups ADD COLUMN"
-            " first_evictable_error_time INTEGER") ||
-        !db_->Execute(
-            "UPDATE Groups"
-            " SET last_full_update_check_time ="
-            "   (SELECT update_time FROM Caches"
-            "    WHERE Caches.group_id = Groups.group_id)")) {
-      return false;
-    }
-    meta_table_->SetVersionNumber(7);
-    meta_table_->SetCompatibleVersionNumber(7);
-    return transaction.Commit();
-  }
-
-  // If there is no upgrade path for the version on disk to the current
-  // version, nuke everything and start over.
+  // The version on disk is deprecated.
   return DeleteExistingAndCreateNewDatabase();
 }
 

@@ -14,6 +14,8 @@ namespace base {
 class Value;
 }
 
+typedef bool (*IsVLogOnFunc)(int vlog_level);
+
 // Abstract class for logging entries with a level, timestamp, string message.
 class Log {
  public:
@@ -27,6 +29,9 @@ class Log {
     kOff
   };
 
+  static bool truncate_logged_params;
+  static IsVLogOnFunc is_vlog_on_func;
+
   virtual ~Log() {}
 
   // Adds an entry to the log.
@@ -34,6 +39,8 @@ class Log {
                                    Level level,
                                    const std::string& source,
                                    const std::string& message) = 0;
+
+  virtual bool Emptied() const = 0;
 
   // Adds an entry to the log, timestamped with the current time.
   void AddEntry(Level level,
@@ -44,11 +51,9 @@ class Log {
   void AddEntry(Level level, const std::string& message);
 };
 
-typedef bool (*IsVLogOnFunc)(int vlog_level);
-void InitLogging(IsVLogOnFunc is_vlog_on_func);
-
 // Returns whether the given VLOG level is on.
 bool IsVLogOn(int vlog_level);
+bool TruncateLoggedParams();
 
 std::string PrettyPrintValue(const base::Value& value);
 

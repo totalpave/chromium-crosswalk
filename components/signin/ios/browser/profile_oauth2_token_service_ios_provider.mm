@@ -4,6 +4,10 @@
 
 #include "components/signin/ios/browser/profile_oauth2_token_service_ios_provider.h"
 
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
 std::vector<ProfileOAuth2TokenServiceIOSProvider::AccountInfo>
 ProfileOAuth2TokenServiceIOSProvider::GetAllAccounts() const {
   return std::vector<ProfileOAuth2TokenServiceIOSProvider::AccountInfo>();
@@ -12,7 +16,6 @@ ProfileOAuth2TokenServiceIOSProvider::GetAllAccounts() const {
 void ProfileOAuth2TokenServiceIOSProvider::GetAccessToken(
     const std::string& gaia_id,
     const std::string& client_id,
-    const std::string& client_secret,
     const std::set<std::string>& scopes,
     const AccessTokenCallback& callback) {}
 

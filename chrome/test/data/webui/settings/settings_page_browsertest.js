@@ -5,6 +5,7 @@
 /** @fileoverview Prototype for Settings page tests. */
 
 /** @const {string} Path to root from chrome/test/data/webui/settings/. */
+// eslint-disable-next-line no-var
 var ROOT_PATH = '../../../../../';
 
 // Polymer BrowserTest fixture.
@@ -14,14 +15,14 @@ GEN_INCLUDE(
 /**
  * @constructor
  * @extends {PolymerTest}
-*/
+ */
 function SettingsPageBrowserTest() {}
 
 SettingsPageBrowserTest.prototype = {
   __proto__: PolymerTest.prototype,
 
   /** @override */
-  browsePreload: 'chrome://md-settings/',
+  browsePreload: 'chrome://settings/',
 
   /** @override */
   extraLibraries: PolymerTest.getLibraries(ROOT_PATH).concat([
@@ -29,8 +30,8 @@ SettingsPageBrowserTest.prototype = {
     'fake_settings_private.js',
   ]),
 
-  /** @override */
-  runAccessibilityChecks: false,
+  /** @type {?SettingsBasicPageElement} */
+  basicPage: null,
 
   /** @override */
   setUp: function() {
@@ -38,23 +39,46 @@ SettingsPageBrowserTest.prototype = {
     suiteSetup(function() {
       return CrSettingsPrefs.initialized;
     });
+
+    suiteSetup(function() {
+      return this.getPage('basic').then(function(basicPage) {
+        this.basicPage = basicPage;
+      }.bind(this));
+    }.bind(this));
   },
 
   /**
-   * @param {string} type The settings page type, e.g. 'advanced' or 'basic'.
+   * Toggles the Advanced sections.
+   */
+  toggleAdvanced: function() {
+    const settingsMain =
+        document.querySelector('settings-ui').$$('settings-main');
+    assert(!!settingsMain);
+    settingsMain.advancedToggleExpanded = !settingsMain.advancedToggleExpanded;
+    Polymer.dom.flush();
+  },
+
+  /**
+   * @param {string} type The settings page type, e.g. 'about' or 'basic'.
    * @return {!PolymerElement} The PolymerElement for the page.
    */
   getPage: function(type) {
-    var settings = document.querySelector('cr-settings');
-    assertTrue(!!settings);
-    var settingsUi = settings.$$('settings-ui');
+    const settingsUi = document.querySelector('settings-ui');
     assertTrue(!!settingsUi);
-    var settingsMain = settingsUi.$$('settings-main');
+    const settingsMain = settingsUi.$$('settings-main');
     assertTrue(!!settingsMain);
-    var pageType = 'settings-' + type + '-page';
-    var page = settingsMain.$$(pageType);
-    assertTrue(!!page);
-    return page;
+    const pageType = 'settings-' + type + '-page';
+    const page = settingsMain.$$(pageType);
+
+    const idleRender = page && page.$$('settings-idle-load');
+    if (!idleRender) {
+      return Promise.resolve(page);
+    }
+
+    return idleRender.get().then(function() {
+      Polymer.dom.flush();
+      return page;
+    });
   },
 
   /**
@@ -64,41 +88,15 @@ SettingsPageBrowserTest.prototype = {
    * @return {Node|undefined} The DOM node for the section.
    */
   getSection: function(page, section) {
-    var sections = page.shadowRoot.querySelectorAll('settings-section');
+    const sections = page.shadowRoot.querySelectorAll('settings-section');
     assertTrue(!!sections);
-    for (var i = 0; i < sections.length; ++i) {
-      var s = sections[i];
-      if (s.section == section)
+    for (let i = 0; i < sections.length; ++i) {
+      const s = sections[i];
+      if (s.section == section) {
         return s;
+      }
     }
     return undefined;
-  },
-
-  /** @return {!SettingsRouterElement} The <settings-router> for the page. */
-  getRouter: function() {
-    var router = document.querySelector('cr-settings').$$('settings-ui')
-        .$$('settings-router');
-    assert(!!router);
-    return router;
-  },
-
-  /**
-   * @return {boolean} True if the router's state is a root page, e.g. Basic.
-   */
-  isAtRoot: function() {
-    var router = this.getRouter();
-    return router.section == '' && router.subpage.length == 0;
-  },
-
-  /** Navigates to the current root page, e.g. Basic. */
-  backToRoot: function() {
-    var router = document.querySelector('cr-settings').$$('settings-ui')
-        .$$('settings-router');
-    router.currentRoute = {
-      page: router.currentRoute.page,
-      section: '',
-      subpage: [],
-    };
   },
 
   /**
@@ -108,30 +106,35 @@ SettingsPageBrowserTest.prototype = {
    */
   verifySubpagesHidden: function(section) {
     // Check if there are sub-pages to verify.
-    var pages = section.querySelector('* /deep/ settings-animated-pages');
-    if (!pages)
+    const pages = section.firstElementChild.shadowRoot.querySelector(
+        'settings-animated-pages');
+    if (!pages) {
       return;
+    }
 
-    var children = pages.getContentChildren();
-    var stampedChildren = children.filter(function(element) {
+    const children = pages.getContentChildren();
+    const stampedChildren = children.filter(function(element) {
       return element.tagName != 'TEMPLATE';
     });
 
     // The section's main child should be stamped and visible.
-    var main = stampedChildren.filter(function(element) {
-      return element.id == 'main';
+    const main = stampedChildren.filter(function(element) {
+      return element.getAttribute('route-path') == 'default';
     });
-    assertEquals(main.length, 1, '#main not found for section ' +
-        section.section);
+    assertEquals(
+        main.length, 1,
+        'default card not found for section ' + section.section);
     assertGT(main[0].offsetHeight, 0);
 
     // Any other stamped subpages should not be visible.
-    var subpages = stampedChildren.filter(function(element) {
-      return element.id != 'main';
+    const subpages = stampedChildren.filter(function(element) {
+      return element.getAttribute('route-path') != 'default';
     });
-    for (var subpage of subpages) {
-      assertEquals(subpage.offsetHeight, 0, 'Expected subpage #' + subpage.id +
-          ' in ' + section.section + ' not to be visible.');
+    for (const subpage of subpages) {
+      assertEquals(
+          subpage.offsetHeight, 0,
+          'Expected subpage #' + subpage.id + ' in ' + section.section +
+              ' not to be visible.');
     }
   },
 };

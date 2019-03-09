@@ -13,16 +13,24 @@
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
-#include "net/dns/mock_host_resolver.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source.h"
+#include "net/log/net_log_with_source.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_entry.h"
 #include "net/log/test_net_log_util.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/tcp_client_socket.h"
 #include "net/socket/tcp_server_socket.h"
+#include "net/test/gtest_util.h"
+#include "net/test/test_with_scoped_task_environment.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
+
+using net::test::IsError;
+using net::test::IsOk;
 
 namespace net {
 
@@ -35,14 +43,15 @@ enum ClientSocketTestTypes { TCP, SCTP };
 }  // namespace
 
 class TransportClientSocketTest
-    : public ::testing::TestWithParam<ClientSocketTestTypes> {
+    : public ::testing::TestWithParam<ClientSocketTestTypes>,
+      public WithScopedTaskEnvironment {
  public:
   TransportClientSocketTest()
       : listen_port_(0),
         socket_factory_(ClientSocketFactory::GetDefaultFactory()),
         close_server_socket_on_next_send_(false) {}
 
-  virtual ~TransportClientSocketTest() {}
+  virtual ~TransportClientSocketTest() = default;
 
   // Testcase hooks
   void SetUp() override;
@@ -53,7 +62,7 @@ class TransportClientSocketTest
   }
 
   void AcceptCallback(int res) {
-    ASSERT_EQ(OK, res);
+    ASSERT_THAT(res, IsOk());
     connect_loop_.Quit();
   }
 
@@ -97,28 +106,20 @@ void TransportClientSocketTest::SetUp() {
   ::testing::TestWithParam<ClientSocketTestTypes>::SetUp();
 
   // Open a server socket on an ephemeral port.
-  listen_sock_.reset(new TCPServerSocket(NULL, NetLog::Source()));
+  listen_sock_.reset(new TCPServerSocket(NULL, NetLogSource()));
   IPEndPoint local_address(IPAddress::IPv4Localhost(), 0);
-  ASSERT_EQ(OK, listen_sock_->Listen(local_address, 1));
+  ASSERT_THAT(listen_sock_->Listen(local_address, 1), IsOk());
   // Get the server's address (including the actual port number).
-  ASSERT_EQ(OK, listen_sock_->GetLocalAddress(&local_address));
+  ASSERT_THAT(listen_sock_->GetLocalAddress(&local_address), IsOk());
   listen_port_ = local_address.port();
   listen_sock_->Accept(&connected_sock_,
                        base::Bind(&TransportClientSocketTest::AcceptCallback,
                                   base::Unretained(this)));
 
-  AddressList addr;
-  // MockHostResolver resolves everything to 127.0.0.1.
-  std::unique_ptr<HostResolver> resolver(new MockHostResolver());
-  HostResolver::RequestInfo info(HostPortPair("localhost", listen_port_));
-  TestCompletionCallback callback;
-  int rv = resolver->Resolve(info, DEFAULT_PRIORITY, &addr, callback.callback(),
-                             NULL, BoundNetLog());
-  CHECK_EQ(ERR_IO_PENDING, rv);
-  rv = callback.WaitForResult();
-  CHECK_EQ(rv, OK);
+  AddressList addr = AddressList::CreateFromIPAddress(
+      IPAddress::IPv4Localhost(), listen_port_);
   sock_ = socket_factory_->CreateTransportClientSocket(addr, NULL, &net_log_,
-                                                       NetLog::Source());
+                                                       NetLogSource());
 }
 
 int TransportClientSocketTest::DrainClientSocket(
@@ -146,15 +147,16 @@ void TransportClientSocketTest::EstablishConnection(
   // Wait for |listen_sock_| to accept a connection.
   connect_loop_.Run();
   // Now wait for the client socket to accept the connection.
-  EXPECT_EQ(OK, callback->GetResult(rv));
+  EXPECT_THAT(callback->GetResult(rv), IsOk());
 }
 
 void TransportClientSocketTest::SendRequestAndResponse() {
   // Send client request.
   const char request_text[] = "GET / HTTP/1.0\r\n\r\n";
   int request_len = strlen(request_text);
-  scoped_refptr<DrainableIOBuffer> request_buffer(
-      new DrainableIOBuffer(new IOBuffer(request_len), request_len));
+  scoped_refptr<DrainableIOBuffer> request_buffer =
+      base::MakeRefCounted<DrainableIOBuffer>(
+          base::MakeRefCounted<IOBuffer>(request_len), request_len);
   memcpy(request_buffer->data(), request_text, request_len);
 
   int bytes_written = 0;
@@ -162,7 +164,7 @@ void TransportClientSocketTest::SendRequestAndResponse() {
     TestCompletionCallback write_callback;
     int write_result =
         sock_->Write(request_buffer.get(), request_buffer->BytesRemaining(),
-                     write_callback.callback());
+                     write_callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS);
     write_result = write_callback.GetResult(write_result);
     ASSERT_GT(write_result, 0);
     ASSERT_LE(bytes_written + write_result, request_len);
@@ -183,15 +185,16 @@ void TransportClientSocketTest::SendRequestAndResponse() {
 void TransportClientSocketTest::SendServerResponse() {
   // TODO(dkegel): this might not be long enough to tickle some bugs.
   int reply_len = strlen(kServerReply);
-  scoped_refptr<DrainableIOBuffer> write_buffer(
-      new DrainableIOBuffer(new IOBuffer(reply_len), reply_len));
+  scoped_refptr<DrainableIOBuffer> write_buffer =
+      base::MakeRefCounted<DrainableIOBuffer>(
+          base::MakeRefCounted<IOBuffer>(reply_len), reply_len);
   memcpy(write_buffer->data(), kServerReply, reply_len);
   int bytes_written = 0;
   while (write_buffer->BytesRemaining() > 0) {
     TestCompletionCallback write_callback;
-    int write_result = connected_sock_->Write(write_buffer.get(),
-                                              write_buffer->BytesRemaining(),
-                                              write_callback.callback());
+    int write_result = connected_sock_->Write(
+        write_buffer.get(), write_buffer->BytesRemaining(),
+        write_callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS);
     write_result = write_callback.GetResult(write_result);
     ASSERT_GE(write_result, 0);
     ASSERT_LE(bytes_written + write_result, reply_len);
@@ -204,8 +207,8 @@ void TransportClientSocketTest::SendServerResponse() {
 
 std::string TransportClientSocketTest::ReadServerData(int expected_bytes_read) {
   int bytes_read = 0;
-  scoped_refptr<IOBufferWithSize> read_buffer(
-      new IOBufferWithSize(expected_bytes_read));
+  scoped_refptr<IOBufferWithSize> read_buffer =
+      base::MakeRefCounted<IOBufferWithSize>(expected_bytes_read);
   while (bytes_read < expected_bytes_read) {
     TestCompletionCallback read_callback;
     int rv = connected_sock_->Read(read_buffer.get(),
@@ -221,9 +224,9 @@ std::string TransportClientSocketTest::ReadServerData(int expected_bytes_read) {
 }
 
 // TODO(leighton):  Add SCTP to this list when it is ready.
-INSTANTIATE_TEST_CASE_P(StreamSocket,
-                        TransportClientSocketTest,
-                        ::testing::Values(TCP));
+INSTANTIATE_TEST_SUITE_P(StreamSocket,
+                         TransportClientSocketTest,
+                         ::testing::Values(TCP));
 
 TEST_P(TransportClientSocketTest, Connect) {
   TestCompletionCallback callback;
@@ -236,9 +239,9 @@ TEST_P(TransportClientSocketTest, Connect) {
   TestNetLogEntry::List net_log_entries;
   net_log_.GetEntries(&net_log_entries);
   EXPECT_TRUE(
-      LogContainsBeginEvent(net_log_entries, 0, NetLog::TYPE_SOCKET_ALIVE));
+      LogContainsBeginEvent(net_log_entries, 0, NetLogEventType::SOCKET_ALIVE));
   EXPECT_TRUE(
-      LogContainsBeginEvent(net_log_entries, 1, NetLog::TYPE_TCP_CONNECT));
+      LogContainsBeginEvent(net_log_entries, 1, NetLogEventType::TCP_CONNECT));
   // Now wait for the client socket to accept the connection.
   if (rv != OK) {
     ASSERT_EQ(rv, ERR_IO_PENDING);
@@ -249,14 +252,14 @@ TEST_P(TransportClientSocketTest, Connect) {
   EXPECT_TRUE(sock_->IsConnected());
   net_log_.GetEntries(&net_log_entries);
   EXPECT_TRUE(
-      LogContainsEndEvent(net_log_entries, -1, NetLog::TYPE_TCP_CONNECT));
+      LogContainsEndEvent(net_log_entries, -1, NetLogEventType::TCP_CONNECT));
 
   sock_->Disconnect();
   EXPECT_FALSE(sock_->IsConnected());
 }
 
 TEST_P(TransportClientSocketTest, IsConnected) {
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   TestCompletionCallback callback;
   uint32_t bytes_read;
 
@@ -322,7 +325,7 @@ TEST_P(TransportClientSocketTest, Read) {
 
   SendRequestAndResponse();
 
-  scoped_refptr<IOBuffer> buf(new IOBuffer(4096));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(4096);
   uint32_t bytes_read =
       DrainClientSocket(buf.get(), 4096, strlen(kServerReply), &callback);
   ASSERT_EQ(bytes_read, strlen(kServerReply));
@@ -332,7 +335,7 @@ TEST_P(TransportClientSocketTest, Read) {
   // then close the server socket, and note the close.
 
   int rv = sock_->Read(buf.get(), 4096, callback.callback());
-  ASSERT_EQ(ERR_IO_PENDING, rv);
+  ASSERT_THAT(rv, IsError(ERR_IO_PENDING));
   CloseServerSocket();
   EXPECT_EQ(0, callback.WaitForResult());
 }
@@ -343,7 +346,7 @@ TEST_P(TransportClientSocketTest, Read_SmallChunks) {
 
   SendRequestAndResponse();
 
-  scoped_refptr<IOBuffer> buf(new IOBuffer(1));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(1);
   uint32_t bytes_read = 0;
   while (bytes_read < strlen(kServerReply)) {
     int rv = sock_->Read(buf.get(), 1, callback.callback());
@@ -359,7 +362,7 @@ TEST_P(TransportClientSocketTest, Read_SmallChunks) {
   // then close the server socket, and note the close.
 
   int rv = sock_->Read(buf.get(), 1, callback.callback());
-  ASSERT_EQ(ERR_IO_PENDING, rv);
+  ASSERT_THAT(rv, IsError(ERR_IO_PENDING));
   CloseServerSocket();
   EXPECT_EQ(0, callback.WaitForResult());
 }
@@ -371,7 +374,7 @@ TEST_P(TransportClientSocketTest, Read_Interrupted) {
   SendRequestAndResponse();
 
   // Do a partial read and then exit.  This test should not crash!
-  scoped_refptr<IOBuffer> buf(new IOBuffer(16));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(16);
   int rv = sock_->Read(buf.get(), 16, callback.callback());
   EXPECT_TRUE(rv >= 0 || rv == ERR_IO_PENDING);
 
@@ -386,12 +389,13 @@ TEST_P(TransportClientSocketTest, FullDuplex_ReadFirst) {
 
   // Read first.  There's no data, so it should return ERR_IO_PENDING.
   const int kBufLen = 4096;
-  scoped_refptr<IOBuffer> buf(new IOBuffer(kBufLen));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(kBufLen);
   int rv = sock_->Read(buf.get(), kBufLen, callback.callback());
-  EXPECT_EQ(ERR_IO_PENDING, rv);
+  EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
 
   const int kWriteBufLen = 64 * 1024;
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kWriteBufLen));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kWriteBufLen);
   char* request_data = request_buffer->data();
   memset(request_data, 'A', kWriteBufLen);
   TestCompletionCallback write_callback;
@@ -399,7 +403,7 @@ TEST_P(TransportClientSocketTest, FullDuplex_ReadFirst) {
   int bytes_written = 0;
   while (true) {
     rv = sock_->Write(request_buffer.get(), kWriteBufLen,
-                      write_callback.callback());
+                      write_callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS);
     ASSERT_TRUE(rv >= 0 || rv == ERR_IO_PENDING);
     if (rv == ERR_IO_PENDING) {
       ReadServerData(bytes_written);
@@ -424,15 +428,17 @@ TEST_P(TransportClientSocketTest, DISABLED_FullDuplex_WriteFirst) {
   EstablishConnection(&callback);
 
   const int kWriteBufLen = 64 * 1024;
-  scoped_refptr<IOBuffer> request_buffer(new IOBuffer(kWriteBufLen));
+  scoped_refptr<IOBuffer> request_buffer =
+      base::MakeRefCounted<IOBuffer>(kWriteBufLen);
   char* request_data = request_buffer->data();
   memset(request_data, 'A', kWriteBufLen);
   TestCompletionCallback write_callback;
 
   int bytes_written = 0;
   while (true) {
-    int rv = sock_->Write(request_buffer.get(), kWriteBufLen,
-                          write_callback.callback());
+    int rv =
+        sock_->Write(request_buffer.get(), kWriteBufLen,
+                     write_callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS);
     ASSERT_TRUE(rv >= 0 || rv == ERR_IO_PENDING);
 
     if (rv == ERR_IO_PENDING)
@@ -444,7 +450,7 @@ TEST_P(TransportClientSocketTest, DISABLED_FullDuplex_WriteFirst) {
   // Read() to block on ERR_IO_PENDING too.
 
   const int kBufLen = 4096;
-  scoped_refptr<IOBuffer> buf(new IOBuffer(kBufLen));
+  scoped_refptr<IOBuffer> buf = base::MakeRefCounted<IOBuffer>(kBufLen);
   while (true) {
     int rv = sock_->Read(buf.get(), kBufLen, callback.callback());
     ASSERT_TRUE(rv >= 0 || rv == ERR_IO_PENDING);
@@ -461,12 +467,8 @@ TEST_P(TransportClientSocketTest, DISABLED_FullDuplex_WriteFirst) {
   int rv = write_callback.WaitForResult();
   EXPECT_GE(rv, 0);
 
-  // It's possible the read is blocked because it's already read all the data.
-  // Close the server socket, so there will at least be a 0-byte read.
-  CloseServerSocket();
-
   rv = callback.WaitForResult();
-  EXPECT_GE(rv, 0);
+  EXPECT_GT(rv, 0);
 }
 
 }  // namespace net

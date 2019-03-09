@@ -11,66 +11,18 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/time/time.h"
 #include "cc/scheduler/compositor_timing_history.h"
 #include "cc/scheduler/scheduler.h"
-#include "cc/test/ordered_simple_task_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+namespace base {
+class TickClock;
+}
 
 namespace cc {
 
 class RenderingStatsInstrumentation;
-
-class FakeDelayBasedTimeSourceClient : public DelayBasedTimeSourceClient {
- public:
-  FakeDelayBasedTimeSourceClient() : tick_called_(false) {}
-  void Reset() { tick_called_ = false; }
-  bool TickCalled() const { return tick_called_; }
-
-  // DelayBasedTimeSourceClient implementation.
-  void OnTimerTick() override;
-
- protected:
-  bool tick_called_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(FakeDelayBasedTimeSourceClient);
-};
-
-class FakeDelayBasedTimeSource : public DelayBasedTimeSource {
- public:
-  explicit FakeDelayBasedTimeSource(base::SingleThreadTaskRunner* task_runner)
-      : DelayBasedTimeSource(task_runner) {}
-  ~FakeDelayBasedTimeSource() override {}
-
-  void SetNow(base::TimeTicks time) { now_ = time; }
-  base::TimeTicks Now() const override;
-
- protected:
-  base::TimeTicks now_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(FakeDelayBasedTimeSource);
-};
-
-class TestDelayBasedTimeSource : public DelayBasedTimeSource {
- public:
-  TestDelayBasedTimeSource(base::SimpleTestTickClock* now_src,
-                           OrderedSimpleTaskRunner* task_runner);
-  ~TestDelayBasedTimeSource() override;
-
- protected:
-  // Overridden from DelayBasedTimeSource
-  base::TimeTicks Now() const override;
-  std::string TypeString() const override;
-
-  // Not owned.
-  base::SimpleTestTickClock* now_src_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(TestDelayBasedTimeSource);
-};
 
 class FakeCompositorTimingHistory : public CompositorTimingHistory {
  public:
@@ -83,8 +35,10 @@ class FakeCompositorTimingHistory : public CompositorTimingHistory {
   void SetBeginMainFrameQueueDurationCriticalEstimate(base::TimeDelta duration);
   void SetBeginMainFrameQueueDurationNotCriticalEstimate(
       base::TimeDelta duration);
-  void SetBeginMainFrameStartToCommitDurationEstimate(base::TimeDelta duration);
+  void SetBeginMainFrameStartToReadyToCommitDurationEstimate(
+      base::TimeDelta duration);
   void SetCommitToReadyToActivateDurationEstimate(base::TimeDelta duration);
+  void SetCommitDurationEstimate(base::TimeDelta duration);
   void SetPrepareTilesDurationEstimate(base::TimeDelta duration);
   void SetActivateDurationEstimate(base::TimeDelta duration);
   void SetDrawDurationEstimate(base::TimeDelta duration);
@@ -92,7 +46,9 @@ class FakeCompositorTimingHistory : public CompositorTimingHistory {
   base::TimeDelta BeginMainFrameQueueDurationCriticalEstimate() const override;
   base::TimeDelta BeginMainFrameQueueDurationNotCriticalEstimate()
       const override;
-  base::TimeDelta BeginMainFrameStartToCommitDurationEstimate() const override;
+  base::TimeDelta BeginMainFrameStartToReadyToCommitDurationEstimate()
+      const override;
+  base::TimeDelta CommitDurationEstimate() const override;
   base::TimeDelta CommitToReadyToActivateDurationEstimate() const override;
   base::TimeDelta PrepareTilesDurationEstimate() const override;
   base::TimeDelta ActivateDurationEstimate() const override;
@@ -108,7 +64,8 @@ class FakeCompositorTimingHistory : public CompositorTimingHistory {
 
   base::TimeDelta begin_main_frame_queue_duration_critical_;
   base::TimeDelta begin_main_frame_queue_duration_not_critical_;
-  base::TimeDelta begin_main_frame_start_to_commit_duration_;
+  base::TimeDelta begin_main_frame_start_to_ready_to_commit_duration_;
+  base::TimeDelta commit_duration_;
   base::TimeDelta commit_to_ready_to_activate_duration_;
   base::TimeDelta prepare_tiles_duration_;
   base::TimeDelta activate_duration_;
@@ -121,26 +78,20 @@ class FakeCompositorTimingHistory : public CompositorTimingHistory {
 class TestScheduler : public Scheduler {
  public:
   TestScheduler(
-      base::SimpleTestTickClock* now_src,
+      const base::TickClock* now_src,
       SchedulerClient* client,
       const SchedulerSettings& scheduler_settings,
       int layer_tree_host_id,
-      OrderedSimpleTaskRunner* task_runner,
-      BeginFrameSource* begin_frame_source,
+      base::SingleThreadTaskRunner* task_runner,
       std::unique_ptr<CompositorTimingHistory> compositor_timing_history);
 
-  // Extra test helper functionality
-  bool IsBeginRetroFrameArgsEmpty() const {
-    return begin_retro_frame_args_.empty();
-  }
-
-  bool SwapThrottled() const { return state_machine_.SwapThrottled(); }
+  bool IsDrawThrottled() const { return state_machine_.IsDrawThrottled(); }
 
   bool NeedsBeginMainFrame() const {
     return state_machine_.needs_begin_main_frame();
   }
 
-  BeginFrameSource& frame_source() { return *begin_frame_source_; }
+  viz::BeginFrameSource& frame_source() { return *begin_frame_source_; }
 
   bool MainThreadMissedLastDeadline() const {
     return state_machine_.main_thread_missed_last_deadline();
@@ -148,6 +99,16 @@ class TestScheduler : public Scheduler {
 
   bool begin_frames_expected() const {
     return begin_frame_source_ && observing_begin_frame_source_;
+  }
+
+  bool BeginFrameNeeded() const { return state_machine_.BeginFrameNeeded(); }
+
+  int current_frame_number() const {
+    return state_machine_.current_frame_number();
+  }
+
+  bool needs_impl_side_invalidation() const {
+    return state_machine_.needs_impl_side_invalidation();
   }
 
   ~TestScheduler() override;
@@ -164,12 +125,18 @@ class TestScheduler : public Scheduler {
     state_machine_.SetCriticalBeginMainFrameToActivateIsFast(is_fast);
   }
 
+  bool ImplLatencyTakesPriority() const {
+    return state_machine_.ImplLatencyTakesPriority();
+  }
+
+  const SchedulerStateMachine& state_machine() const { return state_machine_; }
+
  protected:
   // Overridden from Scheduler.
   base::TimeTicks Now() const override;
 
  private:
-  base::SimpleTestTickClock* now_src_;
+  const base::TickClock* now_src_;
 
   DISALLOW_COPY_AND_ASSIGN(TestScheduler);
 };

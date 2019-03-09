@@ -4,6 +4,7 @@
 
 #include "components/policy/core/common/cloud/user_info_fetcher.h"
 
+#include "base/bind.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
@@ -13,14 +14,14 @@
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_status_code.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_status.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 #include "url/gurl.h"
 
 namespace {
 
-static const char kAuthorizationHeaderFormat[] =
-    "Authorization: Bearer %s";
+static const char kAuthorizationHeaderFormat[] = "Bearer %s";
 
 static std::string MakeAuthorizationHeader(const std::string& auth_token) {
   return base::StringPrintf(kAuthorizationHeaderFormat, auth_token.c_str());
@@ -30,43 +31,74 @@ static std::string MakeAuthorizationHeader(const std::string& auth_token) {
 
 namespace policy {
 
-UserInfoFetcher::UserInfoFetcher(Delegate* delegate,
-                                 net::URLRequestContextGetter* context)
-    : delegate_(delegate),
-      context_(context) {
-  DCHECK(delegate);
+UserInfoFetcher::UserInfoFetcher(
+    Delegate* delegate,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    : delegate_(delegate), url_loader_factory_(std::move(url_loader_factory)) {
+  DCHECK(delegate_);
 }
 
 UserInfoFetcher::~UserInfoFetcher() {
 }
 
 void UserInfoFetcher::Start(const std::string& access_token) {
-  // Create a URLFetcher and start it.
-  url_fetcher_ =
-      net::URLFetcher::Create(0, GaiaUrls::GetInstance()->oauth_user_info_url(),
-                              net::URLFetcher::GET, this);
-  data_use_measurement::DataUseUserData::AttachToFetcher(
-      url_fetcher_.get(), data_use_measurement::DataUseUserData::POLICY);
-  url_fetcher_->SetRequestContext(context_);
-  url_fetcher_->SetLoadFlags(net::LOAD_DO_NOT_SEND_COOKIES |
-                             net::LOAD_DO_NOT_SAVE_COOKIES);
-  url_fetcher_->AddExtraRequestHeader(MakeAuthorizationHeader(access_token));
-  url_fetcher_->Start();  // Results in a call to OnURLFetchComplete().
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("user_info_fetcher", R"(
+        semantics {
+          sender: "Cloud Policy"
+          description:
+            "Calls to the Google Account service to check if the signed-in "
+            "user is managed."
+          trigger: "User signing in to Chrome."
+          data: "OAuth2 token."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "This feature cannot be controlled by Chrome settings, but users "
+            "can sign out of Chrome to disable it."
+          chrome_policy {
+            SigninAllowed {
+              policy_options {mode: MANDATORY}
+              SigninAllowed: false
+            }
+          }
+        })");
+
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = GaiaUrls::GetInstance()->oauth_user_info_url();
+  resource_request->headers.SetHeader(net::HttpRequestHeaders::kAuthorization,
+                                      MakeAuthorizationHeader(access_token));
+  resource_request->load_flags =
+      net::LOAD_DO_NOT_SEND_COOKIES | net::LOAD_DO_NOT_SAVE_COOKIES;
+
+  url_loader_ = network::SimpleURLLoader::Create(std::move(resource_request),
+                                                 traffic_annotation);
+  url_loader_->DownloadToString(
+      url_loader_factory_.get(),
+      base::BindOnce(&UserInfoFetcher::OnFetchComplete, base::Unretained(this)),
+      1024 * 1024 /* 1 MiB */);
+
+  // TODO(https://crbug.com/808498): Use ServiceURLLoader to flag data usage as
+  // data_use_measurement::DataUseUserData::POLICY.
 }
 
-void UserInfoFetcher::OnURLFetchComplete(const net::URLFetcher* source) {
-  net::URLRequestStatus status = source->GetStatus();
+void UserInfoFetcher::OnFetchComplete(
+    std::unique_ptr<std::string> unparsed_data) {
+  std::unique_ptr<network::SimpleURLLoader> url_loader = std::move(url_loader_);
+
   GoogleServiceAuthError error = GoogleServiceAuthError::AuthErrorNone();
-  if (!status.is_success()) {
-    if (status.status() == net::URLRequestStatus::CANCELED)
-      error = GoogleServiceAuthError(GoogleServiceAuthError::REQUEST_CANCELED);
-    else
-      error = GoogleServiceAuthError::FromConnectionError(status.error());
-  } else if (source->GetResponseCode() != net::HTTP_OK) {
-    DLOG(WARNING) << "UserInfo request failed with HTTP code: "
-                  << source->GetResponseCode();
-    error = GoogleServiceAuthError(
-        GoogleServiceAuthError::CONNECTION_FAILED);
+  if (url_loader->NetError() != net::OK) {
+    if (url_loader->ResponseInfo() && url_loader->ResponseInfo()->headers) {
+      int response_code = url_loader->ResponseInfo()->headers->response_code();
+      DLOG(WARNING) << "UserInfo request failed with HTTP code: "
+                    << response_code;
+      error = GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED);
+    } else {
+      error =
+          GoogleServiceAuthError::FromConnectionError(url_loader->NetError());
+    }
   }
   if (error.state() != GoogleServiceAuthError::NONE) {
     delegate_->OnGetUserInfoFailure(error);
@@ -75,11 +107,10 @@ void UserInfoFetcher::OnURLFetchComplete(const net::URLFetcher* source) {
 
   // Successfully fetched userinfo from the server - parse it and hand it off
   // to the delegate.
-  std::string unparsed_data;
-  source->GetResponseAsString(&unparsed_data);
-  DVLOG(1) << "Received UserInfo response: " << unparsed_data;
+  DCHECK(unparsed_data);
+  DVLOG(1) << "Received UserInfo response: " << *unparsed_data;
   std::unique_ptr<base::Value> parsed_value =
-      base::JSONReader::Read(unparsed_data);
+      base::JSONReader::ReadDeprecated(*unparsed_data);
   base::DictionaryValue* dict;
   if (parsed_value.get() && parsed_value->GetAsDictionary(&dict)) {
     delegate_->OnGetUserInfoSuccess(dict);
@@ -90,4 +121,4 @@ void UserInfoFetcher::OnURLFetchComplete(const net::URLFetcher* source) {
   }
 }
 
-};  // namespace policy
+}  // namespace policy

@@ -5,6 +5,7 @@
 
 """Test harness for chromium clang tools."""
 
+import argparse
 import difflib
 import glob
 import json
@@ -31,10 +32,10 @@ def _GenerateCompileCommands(files, include_paths):
   files = [f.replace('\\', '/') for f in files]
   include_path_flags = ' '.join('-I %s' % include_path.replace('\\', '/')
                                 for include_path in include_paths)
-  return json.dumps([{'directory': '.',
-                      'command': 'clang++ -std=c++11 -fsyntax-only %s -c %s' % (
-                          include_path_flags, f),
-                      'file': f} for f in files], indent=2)
+  return json.dumps([{'directory': os.path.dirname(f),
+                      'command': 'clang++ -std=c++14 -fsyntax-only %s -c %s' % (
+                          include_path_flags, os.path.basename(f)),
+                      'file': os.path.basename(f)} for f in files], indent=2)
 
 
 def _NumberOfTestsToString(tests):
@@ -42,13 +43,106 @@ def _NumberOfTestsToString(tests):
   return '%d test%s' % (tests, 's' if tests != 1 else '')
 
 
-def main(argv):
-  if len(argv) < 1:
-    print 'Usage: test_tool.py <clang tool>'
-    print '  <clang tool> is the clang tool to be tested.'
-    sys.exit(1)
+def _ApplyTool(tools_clang_scripts_directory,
+               tool_to_test,
+               tool_path,
+               tool_args,
+               test_directory_for_tool,
+               actual_files,
+               apply_edits):
+  try:
+    # Stage the test files in the git index. If they aren't staged, then
+    # run_tool.py will skip them when applying replacements.
+    args = ['add']
+    args.extend(actual_files)
+    _RunGit(args)
 
-  tool_to_test = argv[0]
+    # Launch the following pipeline if |apply_edits| is True:
+    #     run_tool.py ... | extract_edits.py | apply_edits.py ...
+    # Otherwise just the first step is done and the result is written to
+    #   actual_files[0].
+    processes = []
+    args = ['python',
+            os.path.join(tools_clang_scripts_directory, 'run_tool.py')]
+    extra_run_tool_args_path = os.path.join(test_directory_for_tool,
+                                            'run_tool.args')
+    if os.path.exists(extra_run_tool_args_path):
+      with open(extra_run_tool_args_path, 'r') as extra_run_tool_args_file:
+        extra_run_tool_args = extra_run_tool_args_file.readlines()
+        args.extend([arg.strip() for arg in extra_run_tool_args])
+    args.extend(['--tool', tool_to_test, '-p', test_directory_for_tool])
+
+    if tool_path:
+      args.extend(['--tool-path', tool_path])
+    if tool_args:
+      for arg in tool_args:
+        args.append('--tool-arg=%s' % arg)
+
+    args.extend(actual_files)
+    processes.append(subprocess.Popen(args, stdout=subprocess.PIPE))
+
+    if apply_edits:
+      args = [
+          'python',
+          os.path.join(tools_clang_scripts_directory, 'extract_edits.py')
+      ]
+      processes.append(subprocess.Popen(
+          args, stdin=processes[-1].stdout, stdout=subprocess.PIPE))
+
+      args = [
+          'python',
+          os.path.join(tools_clang_scripts_directory, 'apply_edits.py'), '-p',
+          test_directory_for_tool
+      ]
+      processes.append(subprocess.Popen(
+          args, stdin=processes[-1].stdout, stdout=subprocess.PIPE))
+
+    # Wait for the pipeline to finish running + check exit codes.
+    stdout, _ = processes[-1].communicate()
+    for process in processes:
+      process.wait()
+      if process.returncode != 0:
+        print 'Failure while running the tool.'
+        return process.returncode
+
+    if apply_edits:
+      # Reformat the resulting edits via: git cl format.
+      args = ['cl', 'format']
+      args.extend(actual_files)
+      _RunGit(args)
+    else:
+      with open(actual_files[0], 'w') as output_file:
+        output_file.write(stdout)
+
+    return 0
+
+  finally:
+    # No matter what, unstage the git changes we made earlier to avoid polluting
+    # the index.
+    args = ['reset', '--quiet', 'HEAD']
+    args.extend(actual_files)
+    _RunGit(args)
+
+
+def main(argv):
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+      '--apply-edits',
+      action='store_true',
+      help='Applies the edits to the original test files and compares the '
+           'reformatted new files with the expected files.')
+  parser.add_argument(
+      '--tool-arg', nargs='?', action='append',
+      help='optional arguments passed to the tool')
+  parser.add_argument(
+      '--tool-path', nargs='?',
+      help='optional path to the tool directory')
+  parser.add_argument('tool_name',
+                      nargs=1,
+                      help='Clang tool to be tested.')
+  args = parser.parse_args(argv)
+  tool_to_test = args.tool_name[0]
+  print '\nTesting %s\n' % tool_to_test
   tools_clang_scripts_directory = os.path.dirname(os.path.realpath(__file__))
   tools_clang_directory = os.path.dirname(tools_clang_scripts_directory)
   test_directory_for_tool = os.path.join(
@@ -57,85 +151,82 @@ def main(argv):
                                   'compile_commands.json')
   source_files = glob.glob(os.path.join(test_directory_for_tool,
                                         '*-original.cc'))
+  ext = 'cc' if args.apply_edits else 'txt'
   actual_files = ['-'.join([source_file.rsplit('-', 1)[0], 'actual.cc'])
                   for source_file in source_files]
-  expected_files = ['-'.join([source_file.rsplit('-', 1)[0], 'expected.cc'])
+  expected_files = ['-'.join([source_file.rsplit('-', 1)[0], 'expected.' + ext])
                     for source_file in source_files]
+  if not args.apply_edits and len(actual_files) != 1:
+    print 'Only one test file is expected for testing without apply-edits.'
+    return 1
+
   include_paths = []
   include_paths.append(
       os.path.realpath(os.path.join(tools_clang_directory, '../..')))
-  # Many gtest headers expect to have testing/gtest/include in the include
-  # search path.
+  # Many gtest and gmock headers expect to have testing/gtest/include and/or
+  # testing/gmock/include in the include search path.
   include_paths.append(
       os.path.realpath(os.path.join(tools_clang_directory,
                                     '../..',
                                     'testing/gtest/include')))
+  include_paths.append(
+      os.path.realpath(os.path.join(tools_clang_directory,
+                                    '../..',
+                                    'testing/gmock/include')))
 
-  try:
-    # Set up the test environment.
-    for source, actual in zip(source_files, actual_files):
-      shutil.copyfile(source, actual)
-    # Stage the test files in the git index. If they aren't staged, then
-    # run_tools.py will skip them when applying replacements.
-    args = ['add']
-    args.extend(actual_files)
-    _RunGit(args)
-    # Generate a temporary compilation database to run the tool over.
-    with open(compile_database, 'w') as f:
-      f.write(_GenerateCompileCommands(actual_files, include_paths))
+  if len(actual_files) == 0:
+    print 'Tool "%s" does not have compatible test files.' % tool_to_test
+    return 1
 
-    args = ['python',
-            os.path.join(tools_clang_scripts_directory, 'run_tool.py'),
-            tool_to_test,
-            test_directory_for_tool]
-    args.extend(actual_files)
-    run_tool = subprocess.Popen(args, stdout=subprocess.PIPE)
-    stdout, _ = run_tool.communicate()
-    if run_tool.returncode != 0:
-      print 'run_tool failed:\n%s' % stdout
-      sys.exit(1)
+  # Set up the test environment.
+  for source, actual in zip(source_files, actual_files):
+    shutil.copyfile(source, actual)
+  # Generate a temporary compilation database to run the tool over.
+  with open(compile_database, 'w') as f:
+    f.write(_GenerateCompileCommands(actual_files, include_paths))
 
-    args = ['cl', 'format']
-    args.extend(actual_files)
-    _RunGit(args)
+  # Run the tool.
+  os.chdir(test_directory_for_tool)
+  exitcode = _ApplyTool(tools_clang_scripts_directory, tool_to_test,
+                        args.tool_path, args.tool_arg,
+                        test_directory_for_tool, actual_files,
+                        args.apply_edits)
+  if (exitcode != 0):
+    return exitcode
 
-    passed = 0
-    failed = 0
-    for expected, actual in zip(expected_files, actual_files):
-      print '[ RUN      ] %s' % os.path.relpath(actual)
-      expected_output = actual_output = None
-      with open(expected, 'r') as f:
-        expected_output = f.readlines()
-      with open(actual, 'r') as f:
-        actual_output = f.readlines()
-      if actual_output != expected_output:
-        failed += 1
-        for line in difflib.unified_diff(expected_output, actual_output,
-                                         fromfile=os.path.relpath(expected),
-                                         tofile=os.path.relpath(actual)):
-          sys.stdout.write(line)
-        print '[  FAILED  ] %s' % os.path.relpath(actual)
-        # Don't clean up the file on failure, so the results can be referenced
-        # more easily.
-        continue
-      print '[       OK ] %s' % os.path.relpath(actual)
-      passed += 1
-      os.remove(actual)
+  # Compare actual-vs-expected results.
+  passed = 0
+  failed = 0
+  for expected, actual in zip(expected_files, actual_files):
+    print '[ RUN      ] %s' % os.path.relpath(actual)
+    expected_output = actual_output = None
+    with open(expected, 'r') as f:
+      expected_output = f.read().splitlines()
+    with open(actual, 'r') as f:
+      actual_output =  f.read().splitlines()
+    if actual_output != expected_output:
+      failed += 1
+      for line in difflib.unified_diff(expected_output, actual_output,
+                                       fromfile=os.path.relpath(expected),
+                                       tofile=os.path.relpath(actual)):
+        sys.stdout.write(line)
+      print '[  FAILED  ] %s' % os.path.relpath(actual)
+      # Don't clean up the file on failure, so the results can be referenced
+      # more easily.
+      continue
+    print '[       OK ] %s' % os.path.relpath(actual)
+    passed += 1
+    os.remove(actual)
 
-    if failed == 0:
-      os.remove(compile_database)
+  if failed == 0:
+    os.remove(compile_database)
 
-    print '[==========] %s ran.' % _NumberOfTestsToString(len(source_files))
-    if passed > 0:
-      print '[  PASSED  ] %s.' % _NumberOfTestsToString(passed)
-    if failed > 0:
-      print '[  FAILED  ] %s.' % _NumberOfTestsToString(failed)
-  finally:
-    # No matter what, unstage the git changes we made earlier to avoid polluting
-    # the index.
-    args = ['reset', '--quiet', 'HEAD']
-    args.extend(actual_files)
-    _RunGit(args)
+  print '[==========] %s ran.' % _NumberOfTestsToString(len(source_files))
+  if passed > 0:
+    print '[  PASSED  ] %s.' % _NumberOfTestsToString(passed)
+  if failed > 0:
+    print '[  FAILED  ] %s.' % _NumberOfTestsToString(failed)
+    return 1
 
 
 if __name__ == '__main__':

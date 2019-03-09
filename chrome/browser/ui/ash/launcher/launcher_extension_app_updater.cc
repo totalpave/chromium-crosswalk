@@ -16,11 +16,6 @@ LauncherExtensionAppUpdater::LauncherExtensionAppUpdater(
     : LauncherAppUpdater(delegate, browser_context) {
   StartObservingExtensionRegistry();
 
-  arc::ArcAuthService* arc_auth_service = arc::ArcAuthService::Get();
-  // ArcAuthService may not be available for some unit tests.
-  if (arc_auth_service)
-    arc_auth_service->AddObserver(this);
-
   ArcAppListPrefs* prefs = ArcAppListPrefs::Get(browser_context);
   if (prefs)
     prefs->AddObserver(this);
@@ -28,10 +23,6 @@ LauncherExtensionAppUpdater::LauncherExtensionAppUpdater(
 
 LauncherExtensionAppUpdater::~LauncherExtensionAppUpdater() {
   StopObservingExtensionRegistry();
-
-  arc::ArcAuthService* arc_auth_service = arc::ArcAuthService::Get();
-  if (arc_auth_service)
-    arc_auth_service->RemoveObserver(this);
 
   ArcAppListPrefs* prefs = ArcAppListPrefs::Get(browser_context());
   if (prefs)
@@ -47,8 +38,8 @@ void LauncherExtensionAppUpdater::OnExtensionLoaded(
 void LauncherExtensionAppUpdater::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const extensions::Extension* extension,
-    extensions::UnloadedExtensionInfo::Reason reason) {
-  if (reason == extensions::UnloadedExtensionInfo::REASON_UNINSTALL)
+    extensions::UnloadedExtensionReason reason) {
+  if (reason == extensions::UnloadedExtensionReason::UNINSTALL)
     delegate()->OnAppUninstalledPrepared(browser_context, extension->id());
   else
     delegate()->OnAppUpdated(browser_context, extension->id());
@@ -67,13 +58,22 @@ void LauncherExtensionAppUpdater::OnShutdown(
   StopObservingExtensionRegistry();
 }
 
-void LauncherExtensionAppUpdater::OnOptInChanged(
-    arc::ArcAuthService::State state) {
-  if (!chromeos::ProfileHelper::IsPrimaryProfile(
-          Profile::FromBrowserContext(browser_context()))) {
-    return;
-  }
-  UpdateHostedApps();
+void LauncherExtensionAppUpdater::OnPackageListInitialRefreshed() {
+  const ArcAppListPrefs* prefs = ArcAppListPrefs::Get(browser_context());
+  const std::vector<std::string> package_names = prefs->GetPackagesFromPrefs();
+  for (const auto& package_name : package_names)
+    UpdateEquivalentApp(package_name);
+}
+
+void LauncherExtensionAppUpdater::OnPackageInstalled(
+    const arc::mojom::ArcPackageInfo& package_info) {
+  UpdateEquivalentApp(package_info.package_name);
+}
+
+void LauncherExtensionAppUpdater::OnPackageRemoved(
+    const std::string& package_name,
+    bool uninstalled) {
+  UpdateEquivalentApp(package_name);
 }
 
 void LauncherExtensionAppUpdater::OnPackageInstalled(
@@ -99,27 +99,17 @@ void LauncherExtensionAppUpdater::StopObservingExtensionRegistry() {
   extension_registry_ = nullptr;
 }
 
-void LauncherExtensionAppUpdater::UpdateHostedApps() {
-  if (!extension_registry_)
-    return;
-
-  UpdateHostedApps(extension_registry_->enabled_extensions());
-  UpdateHostedApps(extension_registry_->disabled_extensions());
-  UpdateHostedApps(extension_registry_->terminated_extensions());
-}
-
-void LauncherExtensionAppUpdater::UpdateHostedApps(
-    const extensions::ExtensionSet& extensions) {
-  content::BrowserContext* context = browser_context();
-  extensions::ExtensionSet::const_iterator it;
-  for (it = extensions.begin(); it != extensions.end(); ++it) {
-    if ((*it)->is_hosted_app())
-      delegate()->OnAppUpdated(context, (*it)->id());
-  }
-}
-
-void LauncherExtensionAppUpdater::UpdateHostedApp(const std::string& app_id) {
+void LauncherExtensionAppUpdater::UpdateApp(const std::string& app_id) {
   delegate()->OnAppUpdated(browser_context(), app_id);
+}
+
+void LauncherExtensionAppUpdater::UpdateEquivalentApp(
+    const std::string& arc_package_name) {
+  const std::vector<std::string> extension_ids =
+      extensions::util::GetEquivalentInstalledExtensions(browser_context(),
+                                                         arc_package_name);
+  for (const auto& iter : extension_ids)
+    UpdateApp(iter);
 }
 
 void LauncherExtensionAppUpdater::UpdateEquivalentHostedApp(

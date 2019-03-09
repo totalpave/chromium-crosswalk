@@ -9,15 +9,12 @@
 
 #include <string>
 
-#include "sandbox/win/src/policy_low_level.h"
-
 #include "base/strings/string16.h"
 #include "sandbox/win/src/crosscall_server.h"
+#include "sandbox/win/src/policy_low_level.h"
 #include "sandbox/win/src/sandbox_policy.h"
 
 namespace sandbox {
-
-enum EvalResult;
 
 // This class centralizes most of the knowledge related to process execution.
 class ProcessPolicy {
@@ -50,7 +47,7 @@ class ProcessPolicy {
                                     HANDLE* handle);
 
   // Opens the token associated with the process and returns the duplicated
-  // handle to the child. We only allow the child processes to open his own
+  // handle to the child. We only allow the child processes to open its own
   // token (using ::GetCurrentProcess()).
   static NTSTATUS OpenProcessTokenAction(const ClientInfo& client_info,
                                          HANDLE process,
@@ -58,7 +55,7 @@ class ProcessPolicy {
                                          HANDLE* handle);
 
   // Opens the token associated with the process and returns the duplicated
-  // handle to the child. We only allow the child processes to open his own
+  // handle to the child. We only allow the child processes to open its own
   // token (using ::GetCurrentProcess()).
   static NTSTATUS OpenProcessTokenExAction(const ClientInfo& client_info,
                                            HANDLE process,
@@ -74,9 +71,9 @@ class ProcessPolicy {
   // 'current_dir' : The CWD with which to spawn the child process.
   static DWORD CreateProcessWAction(EvalResult eval_result,
                                     const ClientInfo& client_info,
-                                    const base::string16 &app_name,
-                                    const base::string16 &command_line,
-                                    const base::string16 &current_dir,
+                                    const base::string16& app_name,
+                                    const base::string16& command_line,
+                                    const base::string16& current_dir,
                                     PROCESS_INFORMATION* process_info);
 
   // Processes a 'CreateThread()' request from the target.
@@ -91,6 +88,5 @@ class ProcessPolicy {
 };
 
 }  // namespace sandbox
-
 
 #endif  // SANDBOX_SRC_PROCESS_THREAD_POLICY_H_

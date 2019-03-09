@@ -33,7 +33,7 @@ typedef NS_ENUM(NSUInteger, Curve) {
 // Per material spec, a motion curve with "follow through".
 CAMediaTimingFunction* TransformCurve2();
 
-// Returns a timing funtion related to the given |curve|.
+// Returns a timing function related to the given |curve|.
 CAMediaTimingFunction* TimingFunction(Curve curve);
 
 }  // material
@@ -51,19 +51,6 @@ CAMediaTimingFunction* TimingFunction(Curve curve);
                        options:(UIViewAnimationOptions)options
                     animations:(void (^)(void))animations
                     completion:(void (^)(BOOL finished))completion;
-
-// Performs a standard UIView transition animation using a material timing
-// |curve|.
-// Note: any curve option specified in |options| will be ignored in favor of the
-// specified curve value.
-// See also:
-// +[UIView transitionWithView:duration:options:animations:completion].
-+ (void)cr_transitionWithView:(UIView*)view
-                     duration:(NSTimeInterval)duration
-                        curve:(ios::material::Curve)curve
-                      options:(UIViewAnimationOptions)options
-                   animations:(void (^)(void))animations
-                   completion:(void (^)(BOOL finished))completion;
 
 @end
 

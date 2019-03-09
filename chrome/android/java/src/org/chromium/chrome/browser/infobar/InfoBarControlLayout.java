@@ -7,12 +7,14 @@ package org.chromium.chrome.browser.infobar;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Paint;
+import android.support.annotation.Nullable;
 import android.support.v7.widget.SwitchCompat;
 import android.text.method.LinkMovementMethod;
+import android.util.AttributeSet;
+import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewGroup.LayoutParams;
 import android.widget.ArrayAdapter;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -24,6 +26,9 @@ import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.widget.DualControlLayout;
+import org.chromium.chrome.browser.widget.RadioButtonLayout;
+
+import java.util.List;
 
 /**
  * Lays out a group of controls (e.g. switches, spinners, or additional text) for InfoBars that need
@@ -46,6 +51,7 @@ public final class InfoBarControlLayout extends ViewGroup {
     /**
      * ArrayAdapter that automatically determines what size make its Views to accommodate all of
      * its potential values.
+     * @param <T> Type of object that the ArrayAdapter stores.
      */
     public static final class InfoBarArrayAdapter<T> extends ArrayAdapter<T> {
         private final String mLabel;
@@ -54,6 +60,11 @@ public final class InfoBarControlLayout extends ViewGroup {
         public InfoBarArrayAdapter(Context context, String label) {
             super(context, R.layout.infobar_control_spinner_drop_down);
             mLabel = label;
+        }
+
+        public InfoBarArrayAdapter(Context context, T[] objects) {
+            super(context, R.layout.infobar_control_spinner_drop_down, objects);
+            mLabel = null;
         }
 
         @Override
@@ -148,8 +159,12 @@ public final class InfoBarControlLayout extends ViewGroup {
     /**
      * Do not call this method directly; use {@link InfoBarLayout#addControlLayout()}.
      */
-    InfoBarControlLayout(Context context) {
-        super(context);
+    public InfoBarControlLayout(Context context) {
+        this(context, null);
+    }
+
+    public InfoBarControlLayout(Context context, AttributeSet attrs) {
+        super(context, attrs);
 
         Resources resources = context.getResources();
         mMarginBetweenRows =
@@ -160,9 +175,6 @@ public final class InfoBarControlLayout extends ViewGroup {
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        assert getLayoutParams().height == LayoutParams.WRAP_CONTENT
-                : "Height of this layout cannot be constrained.";
-
         int fullWidth = MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED
                 ? Integer.MAX_VALUE : MeasureSpec.getSize(widthMeasureSpec);
         int columnWidth = Math.max(0, (fullWidth - mMarginBetweenColumns) / 2);
@@ -249,7 +261,7 @@ public final class InfoBarControlLayout extends ViewGroup {
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         int width = right - left;
-        boolean isRtl = ApiCompatibilityUtils.isLayoutRtl(this);
+        boolean isRtl = getLayoutDirection() == LAYOUT_DIRECTION_RTL;
 
         // Child positions were already determined during the measurement pass.
         for (int childIndex = 0; childIndex < getChildCount(); childIndex++) {
@@ -262,6 +274,49 @@ public final class InfoBarControlLayout extends ViewGroup {
             int childBottom = childTop + child.getMeasuredHeight();
             child.layout(childLeft, childTop, childRight, childBottom);
         }
+    }
+
+    @Override
+    protected LayoutParams generateDefaultLayoutParams() {
+        return new ControlLayoutParams();
+    }
+
+    @Override
+    public LayoutParams generateLayoutParams(AttributeSet attrs) {
+        return generateDefaultLayoutParams();
+    }
+
+    @Override
+    protected LayoutParams generateLayoutParams(LayoutParams p) {
+        return generateDefaultLayoutParams();
+    }
+
+    /**
+     * Adds an icon with a descriptive message to the Title.
+     *
+     * -----------------------------------------------------
+     * | ICON | TITLE MESSAGE                              |
+     * -----------------------------------------------------
+     * If an icon is not provided, the ImageView that would normally show it is hidden.
+     *
+     * @param iconResourceId   ID of the drawable to use for the icon.
+     * @param titleMessage     Message to display on Infobar title.
+     */
+    public View addIconTitle(int iconResourceId, CharSequence titleMessage) {
+        LinearLayout layout =
+                (LinearLayout) LayoutInflater.from(getContext())
+                        .inflate(R.layout.infobar_control_icon_with_description, this, false);
+        addView(layout, new ControlLayoutParams());
+
+        ImageView iconView = (ImageView) layout.findViewById(R.id.control_icon);
+        iconView.setImageResource(iconResourceId);
+
+        TextView titleView = (TextView) layout.findViewById(R.id.control_message);
+        titleView.setText(titleMessage);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX,
+                getContext().getResources().getDimension(R.dimen.infobar_text_size));
+
+        return layout;
     }
 
     /**
@@ -279,6 +334,27 @@ public final class InfoBarControlLayout extends ViewGroup {
      */
     public View addIcon(int iconResourceId, int iconColorId, CharSequence primaryMessage,
             CharSequence secondaryMessage) {
+        return addIcon(iconResourceId, iconColorId, primaryMessage, secondaryMessage,
+                R.dimen.infobar_text_size);
+    }
+
+    /**
+     * Adds an icon with a descriptive message to the layout.
+     *
+     * -----------------------------------------------------
+     * | ICON | PRIMARY MESSAGE SECONDARY MESSAGE          |
+     * -----------------------------------------------------
+     * If an icon is not provided, the ImageView that would normally show it is hidden.
+     *
+     * @param iconResourceId   ID of the drawable to use for the icon.
+     * @param iconColorId      ID of the tint color for the icon, or 0 for default.
+     * @param primaryMessage   Message to display for the toggle.
+     * @param secondaryMessage Additional descriptive text for the toggle.  May be null.
+     * @param resourceId       Size of resource id to be applied to primaryMessage
+     *                         and secondaryMessage.
+     */
+    public View addIcon(int iconResourceId, int iconColorId, CharSequence primaryMessage,
+            CharSequence secondaryMessage, int resourceId) {
         LinearLayout layout = (LinearLayout) LayoutInflater.from(getContext()).inflate(
                 R.layout.infobar_control_icon_with_description, this, false);
         addView(layout, new ControlLayoutParams());
@@ -292,6 +368,8 @@ public final class InfoBarControlLayout extends ViewGroup {
         // The primary message text is always displayed.
         TextView primaryView = (TextView) layout.findViewById(R.id.control_message);
         primaryView.setText(primaryMessage);
+        primaryView.setTextSize(
+                TypedValue.COMPLEX_UNIT_PX, getContext().getResources().getDimension(resourceId));
 
         // The secondary message text is optional.
         TextView secondaryView =
@@ -300,6 +378,8 @@ public final class InfoBarControlLayout extends ViewGroup {
             layout.removeView(secondaryView);
         } else {
             secondaryView.setText(secondaryMessage);
+            secondaryView.setTextSize(TypedValue.COMPLEX_UNIT_PX,
+                    getContext().getResources().getDimension(resourceId));
         }
 
         return layout;
@@ -345,6 +425,23 @@ public final class InfoBarControlLayout extends ViewGroup {
         switchView.setChecked(isChecked);
 
         return switchLayout;
+    }
+
+    /**
+     * Creates a set of standard radio buttons and adds it to the layout.
+     *
+     * @param messages      Messages to display for the options.
+     * @param tags          Optional list of tags to attach to the buttons.
+     */
+    public RadioButtonLayout addRadioButtons(List<CharSequence> messages, @Nullable List<?> tags) {
+        ControlLayoutParams params = new ControlLayoutParams();
+        params.mMustBeFullWidth = true;
+
+        RadioButtonLayout radioLayout = new RadioButtonLayout(getContext());
+        radioLayout.addOptions(messages, tags);
+
+        addView(radioLayout, params);
+        return radioLayout;
     }
 
     /**

@@ -4,11 +4,6 @@
 
 _JS_FLAGS_SWITCH = '--js-flags='
 
-
-def EnableIgnition(options):
-  AppendJSFlags(options, '--ignition')
-
-
 def AppendJSFlags(options, js_flags):
   existing_js_flags = ''
   # There should be only one occurence of --js-flags in the browser flags. When

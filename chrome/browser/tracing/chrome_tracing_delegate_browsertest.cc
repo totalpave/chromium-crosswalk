@@ -4,22 +4,24 @@
 
 #include <utility>
 
-#include "base/base_switches.h"
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/run_loop.h"
+#include "base/task/post_task.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/tracing/background_tracing_field_trial.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_list.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "components/variations/variations_params_manager.h"
 #include "content/public/browser/background_tracing_config.h"
 #include "content/public/browser/background_tracing_manager.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/test_utils.h"
 
@@ -65,11 +67,11 @@ class ChromeTracingDelegateBrowserTest : public InProcessBrowserTest {
 
     DCHECK(config);
     content::BackgroundTracingManager::ReceiveCallback receive_callback =
-        base::Bind(&ChromeTracingDelegateBrowserTest::OnUpload,
-                   base::Unretained(this));
+        base::BindRepeating(&ChromeTracingDelegateBrowserTest::OnUpload,
+                            base::Unretained(this));
 
     return content::BackgroundTracingManager::GetInstance()->SetActiveScenario(
-        std::move(config), receive_callback, data_filtering);
+        std::move(config), std::move(receive_callback), data_filtering);
   }
 
   void TriggerPreemptiveScenario(
@@ -98,13 +100,14 @@ class ChromeTracingDelegateBrowserTest : public InProcessBrowserTest {
  private:
   void OnUpload(const scoped_refptr<base::RefCountedString>& file_contents,
                 std::unique_ptr<const base::DictionaryValue> metadata,
-                base::Callback<void()> done_callback) {
+                content::BackgroundTracingManager::FinishedProcessingCallback
+                    done_callback) {
     receive_count_ += 1;
 
-    content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-                                     base::Bind(done_callback));
-    content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-                                     base::Bind(on_upload_callback_));
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                             base::BindOnce(std::move(done_callback), true));
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                             on_upload_callback_);
   }
 
   void OnStartedFinalizing(bool success) {
@@ -112,9 +115,8 @@ class ChromeTracingDelegateBrowserTest : public InProcessBrowserTest {
     last_on_started_finalizing_success_ = success;
 
     if (!on_started_finalization_callback_.is_null()) {
-      content::BrowserThread::PostTask(
-          content::BrowserThread::UI, FROM_HERE,
-          base::Bind(on_started_finalization_callback_));
+      base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                               on_started_finalization_callback_);
     }
   }
 
@@ -152,8 +154,16 @@ IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTest,
       base::Closure(), content::BackgroundTracingManager::NO_DATA_FILTERING));
 }
 
+// Flaky on Linux and Windows. See https://crbug.com/723933.
+#if defined(OS_LINUX) || defined(OS_WIN)
+#define MAYBE_BackgroundTracingThrottleTimeElapsed \
+  DISABLED_BackgroundTracingThrottleTimeElapsed
+#else
+#define MAYBE_BackgroundTracingThrottleTimeElapsed \
+  BackgroundTracingThrottleTimeElapsed
+#endif
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTest,
-                       BackgroundTracingThrottleTimeElapsed) {
+                       MAYBE_BackgroundTracingThrottleTimeElapsed) {
   base::RunLoop wait_for_upload;
 
   EXPECT_TRUE(StartPreemptiveScenario(
@@ -181,25 +191,41 @@ IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTest,
       base::Closure(), content::BackgroundTracingManager::NO_DATA_FILTERING));
 }
 
+#if defined(OS_MACOSX) && defined(ADDRESS_SANITIZER)
+// Flaky on ASAN on Mac. See https://crbug.com/674497.
+#define MAYBE_ExistingIncognitoSessionBlockingTraceStart \
+  DISABLED_ExistingIncognitoSessionBlockingTraceStart
+#else
+#define MAYBE_ExistingIncognitoSessionBlockingTraceStart \
+  ExistingIncognitoSessionBlockingTraceStart
+#endif
 // If we need a PII-stripped trace, any existing OTR session should block the
 // trace.
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTest,
-                       ExistingIncognitoSessionBlockingTraceStart) {
+                       MAYBE_ExistingIncognitoSessionBlockingTraceStart) {
   EXPECT_TRUE(chrome::ExecuteCommand(browser(), IDC_NEW_INCOGNITO_WINDOW));
-  EXPECT_TRUE(BrowserList::IsOffTheRecordSessionActive());
+  EXPECT_TRUE(BrowserList::IsIncognitoSessionActive());
   EXPECT_FALSE(StartPreemptiveScenario(
       base::Closure(), content::BackgroundTracingManager::ANONYMIZE_DATA));
 }
 
+#if defined(OS_MACOSX) && defined(ADDRESS_SANITIZER)
+// Flaky on ASAN on Mac. See https://crbug.com/674497.
+#define MAYBE_NewIncognitoSessionBlockingTraceFinalization \
+  DISABLED_NewIncognitoSessionBlockingTraceFinalization
+#else
+#define MAYBE_NewIncognitoSessionBlockingTraceFinalization \
+  NewIncognitoSessionBlockingTraceFinalization
+#endif
 // If we need a PII-stripped trace, any new OTR session during tracing should
 // block the finalization of the trace.
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTest,
-                       NewIncognitoSessionBlockingTraceFinalization) {
+                       MAYBE_NewIncognitoSessionBlockingTraceFinalization) {
   EXPECT_TRUE(StartPreemptiveScenario(
       base::Closure(), content::BackgroundTracingManager::ANONYMIZE_DATA));
 
   EXPECT_TRUE(chrome::ExecuteCommand(browser(), IDC_NEW_INCOGNITO_WINDOW));
-  EXPECT_TRUE(BrowserList::IsOffTheRecordSessionActive());
+  EXPECT_TRUE(BrowserList::IsIncognitoSessionActive());
 
   base::RunLoop wait_for_finalization_start;
   TriggerPreemptiveScenario(wait_for_finalization_start.QuitClosure());
@@ -228,24 +254,21 @@ class ChromeTracingDelegateBrowserTestOnStartup
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kForceFieldTrials, "BackgroundTracing/TestGroup/");
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kForceFieldTrialParams,
-        "BackgroundTracing.TestGroup:config/default_config_for_testing");
+    variations::testing::VariationParamsManager::AppendVariationParams(
+        "BackgroundTracing", "TestGroup",
+        {{"config", "default_config_for_testing"}}, command_line);
 
     tracing::SetConfigTextFilterForTesting(&FieldTrialConfigTextFilter);
   }
 };
 
-#if !defined(OS_CHROMEOS) && defined(OFFICIAL_BUILD)
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTestOnStartup,
                        PRE_ScenarioSetFromFieldtrial) {
-  // At this point the metrics pref is not set.
-  EXPECT_FALSE(
-      content::BackgroundTracingManager::GetInstance()->HasActiveScenario());
+  // This test exists just to make sure the browser is created at least once and
+  // so a default profile is created. Then, the next time the browser is
+  // created, kMetricsReportingEnabled is explicitly read from the profile and
+  // the startup scenario can be activated.
 }
-#endif // !OS_CHROMEOS && !OFFICIAL_BUILD
 
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTestOnStartup,
                        ScenarioSetFromFieldtrial) {
@@ -254,14 +277,13 @@ IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTestOnStartup,
       content::BackgroundTracingManager::GetInstance()->HasActiveScenario());
 }
 
-#if !defined(OS_CHROMEOS) && defined(OFFICIAL_BUILD)
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTestOnStartup,
                        PRE_PRE_StartupTracingThrottle) {
-  // At this point the metrics pref is not set.
-  EXPECT_FALSE(
-      content::BackgroundTracingManager::GetInstance()->HasActiveScenario());
+  // This test exists just to make sure the browser is created at least once and
+  // so a default profile is created. Then, the next time the browser is
+  // created, kMetricsReportingEnabled is explicitly read from the profile and
+  // the startup scenario can be activated.
 }
-#endif // !OS_CHROMEOS && !OFFICIAL_BUILD
 
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTestOnStartup,
                        PRE_StartupTracingThrottle) {
@@ -275,8 +297,9 @@ IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTestOnStartup,
                         base::Time::Now().ToInternalValue());
 }
 
+// https://crbug.com/832981
 IN_PROC_BROWSER_TEST_F(ChromeTracingDelegateBrowserTestOnStartup,
-                       StartupTracingThrottle) {
+                       DISABLED_StartupTracingThrottle) {
   // The startup scenario should *not* be started, since not enough
   // time has elapsed since the last upload (set in the PRE_ above).
   EXPECT_FALSE(

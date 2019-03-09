@@ -4,105 +4,101 @@
 
 #include "content/public/browser/message_port_provider.h"
 
-#include "content/browser/browser_thread_impl.h"
-#include "content/browser/message_port_message_filter.h"
-#include "content/browser/message_port_service.h"
+#include <utility>
+
+#include "build/build_config.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/frame_messages.h"
-#include "content/public/browser/message_port_delegate.h"
+#include "content/public/browser/browser_thread.h"
+#include "third_party/blink/public/common/messaging/string_message_codec.h"
+
+#if defined(OS_ANDROID)
+#include "base/android/jni_string.h"
+#include "content/browser/android/app_web_message_port.h"
+#endif
+
+using blink::MessagePortChannel;
 
 namespace content {
+namespace {
+
+void PostMessageToFrameInternal(
+    WebContents* web_contents,
+    const base::string16& source_origin,
+    const base::Optional<base::string16>& target_origin,
+    const base::string16& data,
+    std::vector<MessagePortChannel> channels) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+
+  FrameMsg_PostMessage_Params params;
+  params.message = new base::RefCountedData<blink::TransferableMessage>();
+  params.message->data.owned_encoded_message = blink::EncodeStringMessage(data);
+  params.message->data.encoded_message =
+      params.message->data.owned_encoded_message;
+  params.message->data.ports = std::move(channels);
+  params.source_routing_id = MSG_ROUTING_NONE;
+  params.source_origin = source_origin;
+  if (target_origin)
+    params.target_origin = *target_origin;
+
+  RenderFrameHost* rfh = web_contents->GetMainFrame();
+  rfh->Send(new FrameMsg_PostMessageEvent(rfh->GetRoutingID(), params));
+}
+
+#if defined(OS_ANDROID)
+base::string16 ToString16(JNIEnv* env,
+                          const base::android::JavaParamRef<jstring>& s) {
+  if (s.is_null())
+    return base::string16();
+  return base::android::ConvertJavaStringToUTF16(env, s);
+}
+#endif
+
+}  // namespace
 
 // static
 void MessagePortProvider::PostMessageToFrame(
     WebContents* web_contents,
     const base::string16& source_origin,
     const base::string16& target_origin,
+    const base::string16& data) {
+  PostMessageToFrameInternal(web_contents, source_origin, target_origin, data,
+                             std::vector<MessagePortChannel>());
+}
+
+#if defined(OS_ANDROID)
+void MessagePortProvider::PostMessageToFrame(
+    WebContents* web_contents,
+    JNIEnv* env,
+    const base::android::JavaParamRef<jstring>& source_origin,
+    const base::android::JavaParamRef<jstring>& target_origin,
+    const base::android::JavaParamRef<jstring>& data,
+    const base::android::JavaParamRef<jobjectArray>& ports) {
+  PostMessageToFrameInternal(web_contents, ToString16(env, source_origin),
+                             ToString16(env, target_origin),
+                             ToString16(env, data),
+                             AppWebMessagePort::UnwrapJavaArray(env, ports));
+}
+#endif
+
+#if defined(OS_FUCHSIA)
+// static
+void MessagePortProvider::PostMessageToFrame(
+    WebContents* web_contents,
+    const base::string16& source_origin,
+    const base::Optional<base::string16>& target_origin,
     const base::string16& data,
-    const std::vector<int>& ports) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    std::vector<mojo::ScopedMessagePipeHandle> channels) {
+  std::vector<MessagePortChannel> channels_wrapped;
+  for (mojo::ScopedMessagePipeHandle& handle : channels) {
+    channels_wrapped.emplace_back(std::move(handle));
+  }
 
-  FrameMsg_PostMessage_Params params;
-  params.is_data_raw_string = true;
-  params.data = data;
-  params.source_routing_id = MSG_ROUTING_NONE;
-  params.source_origin = source_origin;
-  params.target_origin = target_origin;
-  params.message_ports = ports;
-
-  RenderProcessHostImpl* rph =
-      static_cast<RenderProcessHostImpl*>(web_contents->GetRenderProcessHost());
-  BrowserThread::PostTask(
-      BrowserThread::IO, FROM_HERE,
-      base::Bind(&MessagePortMessageFilter::RouteMessageEventWithMessagePorts,
-                 rph->message_port_message_filter(),
-                 web_contents->GetMainFrame()->GetRoutingID(), params));
+  PostMessageToFrameInternal(web_contents, source_origin, target_origin, data,
+                             channels_wrapped);
 }
+#endif
 
-// static
-void MessagePortProvider::CreateMessageChannel(MessagePortDelegate* delegate,
-                                               int* port1,
-                                               int* port2) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  *port1 = 0;
-  *port2 = 0;
-  MessagePortService* msp = MessagePortService::GetInstance();
-  msp->Create(MSG_ROUTING_NONE, delegate, port1);
-  msp->Create(MSG_ROUTING_NONE, delegate, port2);
-  // Update the routing number of the message ports to be equal to the message
-  // port numbers.
-  msp->UpdateMessagePort(*port1, delegate, *port1);
-  msp->UpdateMessagePort(*port2, delegate, *port2);
-  msp->Entangle(*port1, *port2);
-  msp->Entangle(*port2, *port1);
-}
-
-// static
-void MessagePortProvider::PostMessageToPort(
-    int sender_port_id,
-    const base::string16& message,
-    const std::vector<int>& sent_ports) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  MessagePortService* msp = MessagePortService::GetInstance();
-  msp->PostMessage(sender_port_id, message, sent_ports);
-}
-
-// static
-void MessagePortProvider::ClosePort(int message_port_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  MessagePortService* msp = MessagePortService::GetInstance();
-  msp->ClosePort(message_port_id);
-}
-
-// static
-void MessagePortProvider::HoldMessages(int message_port_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  MessagePortService* msp = MessagePortService::GetInstance();
-  msp->HoldMessages(message_port_id);
-}
-
-// static
-void MessagePortProvider::ReleaseMessages(int message_port_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  MessagePortService* msp = MessagePortService::GetInstance();
-  msp->ReleaseMessages(message_port_id);
-}
-
-// static
-void MessagePortProvider::OnMessagePortDelegateClosing(
-    MessagePortDelegate* delegate) {
-  MessagePortService::GetInstance()->OnMessagePortDelegateClosing(delegate);
-}
-
-// static
-void MessagePortProvider::UpdateMessagePort(int message_port_id,
-                                            MessagePortDelegate* delegate) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  MessagePortService::GetInstance()->UpdateMessagePort(message_port_id,
-                                                       delegate,
-                                                       message_port_id);
-}
-
-} // namespace content
+}  // namespace content

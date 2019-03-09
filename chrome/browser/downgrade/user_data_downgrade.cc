@@ -9,21 +9,17 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_enumerator.h"
-#include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/time/time.h"
-#include "base/version.h"
-#include "base/win/registry.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/policy/policy_path_parser.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/chrome_version.h"
-#include "chrome/installer/util/google_update_constants.h"
 #include "chrome/installer/util/install_util.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -102,18 +98,6 @@ void DeleteMovedUserData(const base::FilePath& user_data_dir,
   DeleteAllRenamedUserDirectories(disk_cache_dir);
 }
 
-enum InstallLevel { SYSTEM_INSTALL, USER_INSTALL, UNKNOWN };
-
-InstallLevel GetInstallLevel() {
-  base::FilePath cur_chrome_exe;
-  if (!PathService::Get(base::FILE_EXE, &cur_chrome_exe))
-    return UNKNOWN;
-  if (InstallUtil::IsPerUserInstall(cur_chrome_exe))
-    return USER_INSTALL;
-  else
-    return SYSTEM_INSTALL;
-}
-
 }  // namespace
 
 const base::FilePath::CharType kDowngradeLastVersionFile[] =
@@ -123,14 +107,10 @@ const base::FilePath::CharType kDowngradeDeleteSuffix[] =
 
 void MoveUserDataForFirstRunAfterDowngrade() {
   base::FilePath user_data_dir;
-  if (!PathService::Get(chrome::DIR_USER_DATA, &user_data_dir))
+  if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir))
     return;
-  InstallLevel install_level = GetInstallLevel();
-  if (install_level == UNKNOWN)
-    return;
-  base::Version current_version(chrome::kChromeVersion);
-  base::Version downgrade_version = InstallUtil::GetDowngradeVersion(
-      install_level == SYSTEM_INSTALL, BrowserDistribution::GetDistribution());
+  const base::Version current_version(chrome::kChromeVersion);
+  const base::Version downgrade_version = InstallUtil::GetDowngradeVersion();
   if (downgrade_version.IsValid() && downgrade_version > current_version) {
     base::FilePath disk_cache_dir(GetDiskCacheDir());
     // Without the browser process singleton protection, the directory may be
@@ -169,26 +149,13 @@ base::Version GetLastVersion(const base::FilePath& user_data_dir) {
 
 void DeleteMovedUserDataSoon() {
   base::FilePath user_data_dir;
-  PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
+  base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
   content::BrowserThread::PostAfterStartupTask(
-      FROM_HERE, content::BrowserThread::GetBlockingPool()
-                     ->GetTaskRunnerWithShutdownBehavior(
-                         base::SequencedWorkerPool::CONTINUE_ON_SHUTDOWN),
+      FROM_HERE,
+      base::CreateTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+           base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN}),
       base::Bind(&DeleteMovedUserData, user_data_dir, GetDiskCacheDir()));
-}
-
-bool IsMSIInstall() {
-  InstallLevel install_level = GetInstallLevel();
-  base::win::RegKey key;
-  DWORD is_msi = 3;
-  return install_level != UNKNOWN &&
-         key.Open((install_level == SYSTEM_INSTALL) ? HKEY_LOCAL_MACHINE
-                                                    : HKEY_CURRENT_USER,
-                  BrowserDistribution::GetDistribution()->GetStateKey().c_str(),
-                  KEY_QUERY_VALUE | KEY_WOW64_32KEY) == ERROR_SUCCESS &&
-         key.ReadValueDW(google_update::kRegMSIField, &is_msi) ==
-             ERROR_SUCCESS &&
-         is_msi != 0;
 }
 
 }  // namespace downgrade

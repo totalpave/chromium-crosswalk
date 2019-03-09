@@ -13,10 +13,6 @@
 #include "base/single_thread_task_runner.h"
 #include "chrome/renderer/media/cast_receiver_session_delegate.h"
 
-namespace blink {
-class WebMediaStream;
-}
-
 namespace media {
 class AudioCapturerSource;
 struct VideoCaptureFormat;
@@ -64,7 +60,7 @@ class CastReceiverSession : public base::RefCounted<CastReceiverSession> {
   virtual ~CastReceiverSession();
   void StartAudio(scoped_refptr<CastReceiverAudioValve> audio_valve);
 
-  void StartVideo(content::VideoCaptureDeliverFrameCB frame_callback);
+  void StartVideo(blink::VideoCaptureDeliverFrameCB frame_callback);
   // Stop Video callbacks.
   // Note that this returns immediately, but callbacks do not stop immediately.
   void StopVideo();

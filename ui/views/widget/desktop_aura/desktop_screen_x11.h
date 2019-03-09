@@ -9,12 +9,12 @@
 
 #include <memory>
 
+#include "base/cancelable_callback.h"
 #include "base/macros.h"
-#include "base/timer/timer.h"
 #include "ui/display/display_change_notifier.h"
 #include "ui/display/screen.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
-#include "ui/gfx/x/x11_atom_cache.h"
+#include "ui/views/linux_ui/device_scale_factor_observer.h"
 #include "ui/views/views_export.h"
 
 typedef unsigned long XID;
@@ -30,7 +30,8 @@ class DesktopScreenX11TestApi;
 
 // Our singleton screen implementation that talks to xrandr.
 class VIEWS_EXPORT DesktopScreenX11 : public display::Screen,
-                                      public ui::PlatformEventDispatcher {
+                                      public ui::PlatformEventDispatcher,
+                                      public views::DeviceScaleFactorObserver {
  public:
   DesktopScreenX11();
 
@@ -41,7 +42,7 @@ class VIEWS_EXPORT DesktopScreenX11 : public display::Screen,
   bool IsWindowUnderCursor(gfx::NativeWindow window) override;
   gfx::NativeWindow GetWindowAtScreenPoint(const gfx::Point& point) override;
   int GetNumDisplays() const override;
-  std::vector<display::Display> GetAllDisplays() const override;
+  const std::vector<display::Display>& GetAllDisplays() const override;
   display::Display GetDisplayNearestWindow(
       gfx::NativeView window) const override;
   display::Display GetDisplayNearestPoint(
@@ -56,6 +57,9 @@ class VIEWS_EXPORT DesktopScreenX11 : public display::Screen,
   bool CanDispatchEvent(const ui::PlatformEvent& event) override;
   uint32_t DispatchEvent(const ui::PlatformEvent& event) override;
 
+  // views::DeviceScaleFactorObserver:
+  void OnDeviceScaleFactorChanged() override;
+
   static void UpdateDeviceScaleFactorForTest();
 
  private:
@@ -65,39 +69,40 @@ class VIEWS_EXPORT DesktopScreenX11 : public display::Screen,
   // Constructor used in tests.
   DesktopScreenX11(const std::vector<display::Display>& test_displays);
 
-  // Builds a list of displays from the current screen information offered by
-  // the X server.
-  std::vector<display::Display> BuildDisplaysFromXRandRInfo();
+  // Removes |delayed_configuration_task_| from the task queue (if
+  // it's in the queue) and adds it back at the end of the queue.
+  void RestartDelayedConfigurationTask();
 
-  // We delay updating the display so we can coalesce events.
-  void ConfigureTimerFired();
+  // Updates |displays_| with the latest XRandR info.
+  void UpdateDisplays();
 
-  // Updates |displays_| and sets FontRenderParams's scale factor.
+  // Updates |displays_| from |displays| and sets FontRenderParams's scale
+  // factor.
   void SetDisplaysInternal(const std::vector<display::Display>& displays);
 
-  Display* xdisplay_;
+  ::Display* xdisplay_;
   ::Window x_root_window_;
 
-  // Whether the x server supports the XRandR extension.
-  bool has_xrandr_;
+  // XRandR version. MAJOR * 100 + MINOR. Zero if no xrandr is present.
+  const int xrandr_version_;
 
   // The base of the event numbers used to represent XRandr events used in
   // decoding events regarding output add/remove.
-  int xrandr_event_base_;
+  int xrandr_event_base_ = 0;
 
   // The display objects we present to chrome.
   std::vector<display::Display> displays_;
 
   // The index into displays_ that represents the primary display.
-  size_t primary_display_index_;
+  int64_t primary_display_index_ = 0;
 
-  // The timer to delay configuring outputs. See also the comments in
-  // Dispatch().
-  std::unique_ptr<base::OneShotTimer> configure_timer_;
+  // The task to delay configuring outputs.  We delay updating the
+  // display so we can coalesce events.
+  base::CancelableCallback<void()> delayed_configuration_task_;
 
   display::DisplayChangeNotifier change_notifier_;
 
-  ui::X11AtomCache atom_cache_;
+  base::WeakPtrFactory<DesktopScreenX11> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(DesktopScreenX11);
 };

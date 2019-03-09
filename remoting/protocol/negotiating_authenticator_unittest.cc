@@ -2,9 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/run_loop.h"
 #include "net/base/net_errors.h"
 #include "remoting/base/rsa_key_pair.h"
 #include "remoting/protocol/auth_util.h"
@@ -18,7 +20,7 @@
 #include "remoting/protocol/protocol_mock_objects.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using testing::_;
 using testing::DeleteArg;
@@ -50,8 +52,8 @@ const char kTestPinBad[] = "654321";
 
 class NegotiatingAuthenticatorTest : public AuthenticatorTestBase {
  public:
-  NegotiatingAuthenticatorTest() {}
-  ~NegotiatingAuthenticatorTest() override {}
+  NegotiatingAuthenticatorTest() = default;
+  ~NegotiatingAuthenticatorTest() override = default;
 
  protected:
   virtual void InitAuthenticators(const std::string& client_id,
@@ -96,7 +98,7 @@ class NegotiatingAuthenticatorTest : public AuthenticatorTestBase {
 
   void CreatePairingRegistry(bool with_paired_client) {
     pairing_registry_ = new SynchronousPairingRegistry(
-        base::WrapUnique(new MockPairingRegistryDelegate()));
+        std::make_unique<MockPairingRegistryDelegate>());
     if (with_paired_client) {
       PairingRegistry::Pairing pairing(
           base::Time(), kTestClientName, kTestClientId, kTestPairedSecret);
@@ -141,7 +143,7 @@ class NegotiatingAuthenticatorTest : public AuthenticatorTestBase {
                                   kMessageSize, kMessages);
 
     tester.Start();
-    message_loop_.Run();
+    base::RunLoop().Run();
     tester.CheckResults();
   }
 
@@ -206,7 +208,7 @@ public:
  }
 };
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     PairingParams,
     NegotiatingPairingAuthenticatorTest,
     testing::Values(

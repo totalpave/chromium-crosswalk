@@ -6,9 +6,11 @@
 
 #include <vector>
 
+#include "base/bind.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/run_loop.h"
 #include "content/public/test/test_browser_thread_bundle.h"
+#include "mojo/public/cpp/bindings/interface_request.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
@@ -17,14 +19,15 @@ namespace {
 
 class TestSerialConnection : public SerialConnection {
  public:
-  TestSerialConnection() : SerialConnection("dummy_path", "dummy_id") {}
+  explicit TestSerialConnection(device::mojom::SerialPortPtrInfo port_ptr_info)
+      : SerialConnection("dummy_id", std::move(port_ptr_info)) {}
   ~TestSerialConnection() override {}
 
-  void SetReceiveBuffer(const std::vector<char>& receive_buffer) {
+  void SetReceiveBuffer(const std::vector<uint8_t>& receive_buffer) {
     receive_buffer_ = receive_buffer;
   }
 
-  void CheckSendBufferAndClear(const std::vector<char>& expectations) {
+  void CheckSendBufferAndClear(const std::vector<uint8_t>& expectations) {
     EXPECT_EQ(send_buffer_, expectations);
     send_buffer_.clear();
   }
@@ -32,25 +35,25 @@ class TestSerialConnection : public SerialConnection {
  private:
   // SerialConnection:
   void Open(const api::serial::ConnectionOptions& options,
-            const OpenCompleteCallback& callback) override {
+            OpenCompleteCallback callback) override {
     NOTREACHED();
   }
 
-  bool Receive(const ReceiveCompleteCallback& callback) override {
-    callback.Run(receive_buffer_, api::serial::RECEIVE_ERROR_NONE);
+  void StartPolling(const ReceiveEventCallback& callback) override {
+    set_paused(false);
+    callback.Run(std::move(receive_buffer_), api::serial::RECEIVE_ERROR_NONE);
     receive_buffer_.clear();
-    return true;
   }
 
-  bool Send(const std::vector<char>& data,
-            const SendCompleteCallback& callback) override {
+  bool Send(const std::vector<uint8_t>& data,
+            SendCompleteCallback callback) override {
     send_buffer_.insert(send_buffer_.end(), data.begin(), data.end());
-    callback.Run(data.size(), api::serial::SEND_ERROR_NONE);
+    std::move(callback).Run(data.size(), api::serial::SEND_ERROR_NONE);
     return true;
   }
 
-  std::vector<char> receive_buffer_;
-  std::vector<char> send_buffer_;
+  std::vector<uint8_t> receive_buffer_;
+  std::vector<uint8_t> send_buffer_;
 
   DISALLOW_COPY_AND_ASSIGN(TestSerialConnection);
 };
@@ -60,9 +63,14 @@ class GetPTZExpectations {
   GetPTZExpectations(bool expected_success, int expected_value)
       : expected_success_(expected_success), expected_value_(expected_value) {}
 
-  void OnCallback(bool success, int value) {
+  void OnCallback(bool success, int value, int min_value, int max_value) {
     EXPECT_EQ(expected_success_, success);
     EXPECT_EQ(expected_value_, value);
+
+    // TODO(pbos): min/max values aren't currently supported. These expectations
+    // should be updated when we do.
+    EXPECT_EQ(0, min_value);
+    EXPECT_EQ(0, max_value);
   }
 
  private:
@@ -85,16 +93,21 @@ class SetPTZExpectations {
   DISALLOW_COPY_AND_ASSIGN(SetPTZExpectations);
 };
 
-#define CHAR_VECTOR_FROM_ARRAY(array) \
-  std::vector<char>(array, array + arraysize(array))
+template <size_t N>
+std::vector<uint8_t> ToByteVector(const char (&array)[N]) {
+  return std::vector<uint8_t>(array, array + N);
+}
 
 }  // namespace
 
 class ViscaWebcamTest : public testing::Test {
  protected:
   ViscaWebcamTest() {
+    device::mojom::SerialPortPtrInfo port_ptr_info;
+    mojo::MakeRequest(&port_ptr_info);
     webcam_ = new ViscaWebcam;
-    webcam_->OpenForTesting(base::WrapUnique(new TestSerialConnection));
+    webcam_->OpenForTesting(
+        std::make_unique<TestSerialConnection>(std::move(port_ptr_info)));
   }
   ~ViscaWebcamTest() override {}
 
@@ -114,30 +127,27 @@ TEST_F(ViscaWebcamTest, Zoom) {
   // Check getting the zoom.
   const char kGetZoomCommand[] = {0x81, 0x09, 0x04, 0x47, 0xFF};
   const char kGetZoomResponse[] = {0x00, 0x50, 0x01, 0x02, 0x03, 0x04, 0xFF};
-  serial_connection()->SetReceiveBuffer(
-      CHAR_VECTOR_FROM_ARRAY(kGetZoomResponse));
+  serial_connection()->SetReceiveBuffer(ToByteVector(kGetZoomResponse));
   Webcam::GetPTZCompleteCallback receive_callback =
       base::Bind(&GetPTZExpectations::OnCallback,
                  base::Owned(new GetPTZExpectations(true, 0x1234)));
   webcam()->GetZoom(receive_callback);
-  serial_connection()->CheckSendBufferAndClear(
-      CHAR_VECTOR_FROM_ARRAY(kGetZoomCommand));
+  base::RunLoop().RunUntilIdle();
+  serial_connection()->CheckSendBufferAndClear(ToByteVector(kGetZoomCommand));
 
   // Check setting the zoom.
   const char kSetZoomCommand[] = {0x81, 0x01, 0x04, 0x47, 0x06,
                                   0x02, 0x05, 0x03, 0xFF};
   // Note: this is a valid, but empty value because nothing is checking it.
   const char kSetZoomResponse[] = {0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0xFF};
-  serial_connection()->SetReceiveBuffer(
-      CHAR_VECTOR_FROM_ARRAY(kSetZoomResponse));
+  serial_connection()->SetReceiveBuffer(ToByteVector(kSetZoomResponse));
   Webcam::SetPTZCompleteCallback send_callback =
       base::Bind(&SetPTZExpectations::OnCallback,
                  base::Owned(new SetPTZExpectations(true)));
-  serial_connection()->SetReceiveBuffer(
-      CHAR_VECTOR_FROM_ARRAY(kSetZoomResponse));
+  serial_connection()->SetReceiveBuffer(ToByteVector(kSetZoomResponse));
   webcam()->SetZoom(0x6253, send_callback);
-  serial_connection()->CheckSendBufferAndClear(
-      CHAR_VECTOR_FROM_ARRAY(kSetZoomCommand));
+  base::RunLoop().RunUntilIdle();
+  serial_connection()->CheckSendBufferAndClear(ToByteVector(kSetZoomCommand));
 }
 
 }  // namespace extensions

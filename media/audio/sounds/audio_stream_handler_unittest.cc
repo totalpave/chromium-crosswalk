@@ -10,15 +10,16 @@
 #include "base/bind_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/test/test_message_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/audio_manager.h"
 #include "media/audio/simple_sources.h"
 #include "media/audio/sounds/test_data.h"
+#include "media/audio/test_audio_thread.h"
 #include "media/base/channel_layout.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -26,20 +27,21 @@ namespace media {
 
 class AudioStreamHandlerTest : public testing::Test {
  public:
-  AudioStreamHandlerTest() {}
-  ~AudioStreamHandlerTest() override {}
+  AudioStreamHandlerTest() = default;
+  ~AudioStreamHandlerTest() override = default;
 
   void SetUp() override {
     audio_manager_ =
-        AudioManager::CreateForTesting(base::ThreadTaskRunnerHandle::Get());
+        AudioManager::CreateForTesting(std::make_unique<TestAudioThread>());
     base::RunLoop().RunUntilIdle();
 
-    base::StringPiece data(kTestAudioData, arraysize(kTestAudioData));
+    base::StringPiece data(kTestAudioData, base::size(kTestAudioData));
     audio_stream_handler_.reset(new AudioStreamHandler(data));
   }
 
   void TearDown() override {
     audio_stream_handler_.reset();
+    audio_manager_->Shutdown();
     base::RunLoop().RunUntilIdle();
   }
 
@@ -58,7 +60,7 @@ class AudioStreamHandlerTest : public testing::Test {
 
  private:
   base::TestMessageLoop message_loop_;
-  ScopedAudioManagerPtr audio_manager_;
+  std::unique_ptr<AudioManager> audio_manager_;
   std::unique_ptr<AudioStreamHandler> audio_stream_handler_;
 };
 
@@ -97,12 +99,14 @@ TEST_F(AudioStreamHandlerTest, ConsecutivePlayRequests) {
 
   ASSERT_TRUE(audio_stream_handler()->Play());
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(base::IgnoreResult(&AudioStreamHandler::Play),
-                            base::Unretained(audio_stream_handler())),
+      FROM_HERE,
+      base::BindOnce(base::IgnoreResult(&AudioStreamHandler::Play),
+                     base::Unretained(audio_stream_handler())),
       base::TimeDelta::FromSeconds(1));
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&AudioStreamHandler::Stop,
-                            base::Unretained(audio_stream_handler())),
+      FROM_HERE,
+      base::BindOnce(&AudioStreamHandler::Stop,
+                     base::Unretained(audio_stream_handler())),
       base::TimeDelta::FromSeconds(2));
 
   run_loop.Run();

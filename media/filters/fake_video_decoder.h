@@ -25,10 +25,6 @@
 
 using base::ResetAndReturn;
 
-namespace base {
-class SingleThreadTaskRunner;
-}
-
 namespace media {
 
 typedef base::Callback<void(int)> BytesDecodedCB;
@@ -38,10 +34,14 @@ class FakeVideoDecoder : public VideoDecoder {
   // Constructs an object with a decoding delay of |decoding_delay| frames.
   // |bytes_decoded_cb| is called after each decode. The sum of the byte
   // count over all calls will be equal to total_bytes_decoded().
-  FakeVideoDecoder(int decoding_delay,
+  FakeVideoDecoder(const std::string& decoder_name,
+                   int decoding_delay,
                    int max_parallel_decoding_requests,
                    const BytesDecodedCB& bytes_decoded_cb);
   ~FakeVideoDecoder() override;
+
+  // Enables encrypted config supported. Must be called before Initialize().
+  void EnableEncryptedConfigSupport();
 
   // VideoDecoder implementation.
   std::string GetDisplayName() const override;
@@ -49,11 +49,14 @@ class FakeVideoDecoder : public VideoDecoder {
                   bool low_delay,
                   CdmContext* cdm_context,
                   const InitCB& init_cb,
-                  const OutputCB& output_cb) override;
-  void Decode(const scoped_refptr<DecoderBuffer>& buffer,
+                  const OutputCB& output_cb,
+                  const WaitingCB& waiting_cb) override;
+  void Decode(scoped_refptr<DecoderBuffer> buffer,
               const DecodeCB& decode_cb) override;
   void Reset(const base::Closure& closure) override;
   int GetMaxDecodeRequests() const override;
+
+  base::WeakPtr<FakeVideoDecoder> GetWeakPtr();
 
   // Holds the next init/decode/reset callback from firing.
   void HoldNextInit();
@@ -99,9 +102,12 @@ class FakeVideoDecoder : public VideoDecoder {
 
   base::ThreadChecker thread_checker_;
 
+  const std::string decoder_name_;
   const size_t decoding_delay_;
   const int max_parallel_decoding_requests_;
   BytesDecodedCB bytes_decoded_cb_;
+
+  bool supports_encrypted_config_ = false;
 
   State state_;
 

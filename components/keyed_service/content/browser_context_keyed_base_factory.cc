@@ -18,22 +18,14 @@ BrowserContextKeyedBaseFactory::~BrowserContextKeyedBaseFactory() {
 
 content::BrowserContext* BrowserContextKeyedBaseFactory::GetBrowserContextToUse(
     content::BrowserContext* context) const {
-  DCHECK(CalledOnValidThread());
-
-#ifndef NDEBUG
-  AssertContextWasntDestroyed(context);
-#endif
+  // TODO(crbug.com/701326): This DCHECK should be moved to GetContextToUse().
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Safe default for the Incognito mode: no service.
   if (context->IsOffTheRecord())
-    return NULL;
+    return nullptr;
 
   return context;
-}
-
-void BrowserContextKeyedBaseFactory::RegisterUserPrefsOnBrowserContextForTest(
-    content::BrowserContext* context) {
-  KeyedServiceBaseFactory::RegisterUserPrefsOnContextForTest(context);
 }
 
 bool BrowserContextKeyedBaseFactory::ServiceIsCreatedWithBrowserContext()
@@ -50,8 +42,8 @@ void BrowserContextKeyedBaseFactory::BrowserContextDestroyed(
   KeyedServiceBaseFactory::ContextDestroyed(context);
 }
 
-base::SupportsUserData* BrowserContextKeyedBaseFactory::GetContextToUse(
-    base::SupportsUserData* context) const {
+void* BrowserContextKeyedBaseFactory::GetContextToUse(void* context) const {
+  AssertContextWasntDestroyed(context);
   return GetBrowserContextToUse(static_cast<content::BrowserContext*>(context));
 }
 
@@ -59,13 +51,11 @@ bool BrowserContextKeyedBaseFactory::ServiceIsCreatedWithContext() const {
   return ServiceIsCreatedWithBrowserContext();
 }
 
-void BrowserContextKeyedBaseFactory::ContextShutdown(
-    base::SupportsUserData* context) {
+void BrowserContextKeyedBaseFactory::ContextShutdown(void* context) {
   BrowserContextShutdown(static_cast<content::BrowserContext*>(context));
 }
 
-void BrowserContextKeyedBaseFactory::ContextDestroyed(
-    base::SupportsUserData* context) {
+void BrowserContextKeyedBaseFactory::ContextDestroyed(void* context) {
   BrowserContextDestroyed(static_cast<content::BrowserContext*>(context));
 }
 
@@ -74,17 +64,14 @@ void BrowserContextKeyedBaseFactory::RegisterPrefs(
   RegisterProfilePrefs(registry);
 }
 
-void BrowserContextKeyedBaseFactory::SetEmptyTestingFactory(
-    base::SupportsUserData* context) {
+void BrowserContextKeyedBaseFactory::SetEmptyTestingFactory(void* context) {
   SetEmptyTestingFactory(static_cast<content::BrowserContext*>(context));
 }
 
-bool BrowserContextKeyedBaseFactory::HasTestingFactory(
-    base::SupportsUserData* context) {
+bool BrowserContextKeyedBaseFactory::HasTestingFactory(void* context) {
   return HasTestingFactory(static_cast<content::BrowserContext*>(context));
 }
 
-void BrowserContextKeyedBaseFactory::CreateServiceNow(
-    base::SupportsUserData* context) {
+void BrowserContextKeyedBaseFactory::CreateServiceNow(void* context) {
   CreateServiceNow(static_cast<content::BrowserContext*>(context));
 }

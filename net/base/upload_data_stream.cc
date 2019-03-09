@@ -4,12 +4,40 @@
 
 #include "net/base/upload_data_stream.h"
 
-#include "base/callback_helpers.h"
+#include "base/bind.h"
 #include "base/logging.h"
+#include "base/values.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
+#include "net/log/net_log_event_type.h"
 
 namespace net {
+
+namespace {
+
+std::unique_ptr<base::Value> NetLogInitEndInfoCallback(
+    int result,
+    int total_size,
+    bool is_chunked,
+    NetLogCaptureMode /* capture_mode */) {
+  std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
+
+  dict->SetInteger("net_error", result);
+  dict->SetInteger("total_size", total_size);
+  dict->SetBoolean("is_chunked", is_chunked);
+  return std::move(dict);
+}
+
+std::unique_ptr<base::Value> NetLogReadInfoCallback(
+    int current_position,
+    NetLogCaptureMode /* capture_mode */) {
+  std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
+
+  dict->SetInteger("current_position", current_position);
+  return std::move(dict);
+}
+
+}  // namespace
 
 UploadDataStream::UploadDataStream(bool is_chunked, int64_t identifier)
     : total_size_(0),
@@ -20,39 +48,49 @@ UploadDataStream::UploadDataStream(bool is_chunked, int64_t identifier)
       is_eof_(false) {
 }
 
-UploadDataStream::~UploadDataStream() {
-}
+UploadDataStream::~UploadDataStream() = default;
 
-int UploadDataStream::Init(const CompletionCallback& callback) {
+int UploadDataStream::Init(CompletionOnceCallback callback,
+                           const NetLogWithSource& net_log) {
   Reset();
   DCHECK(!initialized_successfully_);
   DCHECK(callback_.is_null());
   DCHECK(!callback.is_null() || IsInMemory());
-  int result = InitInternal();
+  net_log_ = net_log;
+  net_log_.BeginEvent(NetLogEventType::UPLOAD_DATA_STREAM_INIT);
+
+  int result = InitInternal(net_log_);
   if (result == ERR_IO_PENDING) {
     DCHECK(!IsInMemory());
-    callback_ = callback;
+    callback_ = std::move(callback);
   } else {
     OnInitCompleted(result);
   }
+
   return result;
 }
 
 int UploadDataStream::Read(IOBuffer* buf,
                            int buf_len,
-                           const CompletionCallback& callback) {
+                           CompletionOnceCallback callback) {
   DCHECK(!callback.is_null() || IsInMemory());
   DCHECK(initialized_successfully_);
   DCHECK_GT(buf_len, 0);
-  if (is_eof_)
-    return 0;
-  int result = ReadInternal(buf, buf_len);
+
+  net_log_.BeginEvent(NetLogEventType::UPLOAD_DATA_STREAM_READ,
+                      base::Bind(&NetLogReadInfoCallback, current_position_));
+
+  int result = 0;
+  if (!is_eof_)
+    result = ReadInternal(buf, buf_len);
+
   if (result == ERR_IO_PENDING) {
     DCHECK(!IsInMemory());
-    callback_ = callback;
+    callback_ = std::move(callback);
   } else {
     OnReadCompleted(result);
   }
+
   return result;
 }
 
@@ -63,6 +101,21 @@ bool UploadDataStream::IsEOF() const {
 }
 
 void UploadDataStream::Reset() {
+  // If there's a pending callback, there's a pending init or read call that is
+  // being canceled.
+  if (!callback_.is_null()) {
+    if (!initialized_successfully_) {
+      // If initialization has not yet succeeded, this call is aborting
+      // initialization.
+      net_log_.EndEventWithNetErrorCode(
+          NetLogEventType::UPLOAD_DATA_STREAM_INIT, ERR_ABORTED);
+    } else {
+      // Otherwise, a read is being aborted.
+      net_log_.EndEventWithNetErrorCode(
+          NetLogEventType::UPLOAD_DATA_STREAM_READ, ERR_ABORTED);
+    }
+  }
+
   current_position_ = 0;
   initialized_successfully_ = false;
   is_eof_ = false;
@@ -104,8 +157,13 @@ void UploadDataStream::OnInitCompleted(int result) {
     if (!is_chunked_ && total_size_ == 0)
       is_eof_ = true;
   }
+
+  net_log_.EndEvent(
+      NetLogEventType::UPLOAD_DATA_STREAM_INIT,
+      base::Bind(&NetLogInitEndInfoCallback, result, total_size_, is_chunked_));
+
   if (!callback_.is_null())
-    base::ResetAndReturn(&callback_).Run(result);
+    std::move(callback_).Run(result);
 }
 
 void UploadDataStream::OnReadCompleted(int result) {
@@ -122,8 +180,19 @@ void UploadDataStream::OnReadCompleted(int result) {
     }
   }
 
+  net_log_.EndEventWithNetErrorCode(NetLogEventType::UPLOAD_DATA_STREAM_READ,
+                                    result);
+
   if (!callback_.is_null())
-    base::ResetAndReturn(&callback_).Run(result);
+    std::move(callback_).Run(result);
+}
+
+UploadProgress UploadDataStream::GetUploadProgress() const {
+  // While initialization / rewinding is in progress, return nothing.
+  if (!initialized_successfully_)
+    return UploadProgress();
+
+  return UploadProgress(current_position_, total_size_);
 }
 
 }  // namespace net

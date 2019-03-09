@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -16,6 +15,7 @@
 
 namespace views {
 class FocusSearch;
+class ViewTracker;
 
 // This class provides keyboard access to any view that extends it, typically
 // a toolbar.  The user sets focus to a control in this view by pressing
@@ -45,7 +45,7 @@ class VIEWS_EXPORT AccessiblePaneView : public View,
   FocusTraversable* GetPaneFocusTraversable() override;
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
   void SetVisible(bool flag) override;
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   void RequestFocus() override;
 
   // Overridden from FocusChangeListener:
@@ -116,8 +116,8 @@ class VIEWS_EXPORT AccessiblePaneView : public View,
   ui::Accelerator left_key_;
   ui::Accelerator right_key_;
 
-  // View storage id for the last focused view that's not within this pane.
-  int last_focused_view_storage_id_;
+  // Holds the last focused view that's not within this pane.
+  std::unique_ptr<ViewTracker> last_focused_view_tracker_;
 
   friend class AccessiblePaneViewFocusSearch;
 

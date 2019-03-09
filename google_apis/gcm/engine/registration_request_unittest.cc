@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_tokenizer.h"
 #include "google_apis/gcm/engine/gcm_registration_request_handler.h"
@@ -18,12 +19,14 @@
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
 #include "net/url_request/url_request_status.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace gcm {
 
 namespace {
 const uint64_t kAndroidId = 42UL;
 const char kAppId[] = "TestAppId";
+const char kProductCategoryForSubtypes[] = "com.chrome.macosx";
 const char kDeveloperId[] = "Project1";
 const char kLoginHeader[] = "AidLogin";
 const char kRegistrationURL[] = "http://foo.bar/register";
@@ -42,7 +45,7 @@ class RegistrationRequestTest : public GCMRequestTestBase {
   void RegistrationCallback(RegistrationRequest::Status status,
                             const std::string& registration_id);
 
-  void CompleteFetch() override;
+  void OnAboutToCompleteFetch() override;
 
   void set_max_retry_count(int max_retry_count) {
     max_retry_count_ = max_retry_count;
@@ -73,12 +76,10 @@ void RegistrationRequestTest::RegistrationCallback(
   callback_called_ = true;
 }
 
-void RegistrationRequestTest::CompleteFetch() {
+void RegistrationRequestTest::OnAboutToCompleteFetch() {
   registration_id_.clear();
   status_ = RegistrationRequest::SUCCESS;
   callback_called_ = false;
-
-  GCMRequestTestBase::CompleteFetch();
 }
 
 class GCMRegistrationRequestTest : public RegistrationRequestTest {
@@ -96,8 +97,9 @@ GCMRegistrationRequestTest::~GCMRegistrationRequestTest() {
 }
 
 void GCMRegistrationRequestTest::CreateRequest(const std::string& sender_ids) {
-  RegistrationRequest::RequestInfo request_info(
-      kAndroidId, kSecurityToken, kAppId);
+  RegistrationRequest::RequestInfo request_info(kAndroidId, kSecurityToken,
+                                                kAppId /* category */,
+                                                std::string() /* subtype */);
   std::unique_ptr<GCMRegistrationRequestHandler> request_handler(
       new GCMRegistrationRequestHandler(sender_ids));
   request_.reset(new RegistrationRequest(
@@ -105,7 +107,7 @@ void GCMRegistrationRequestTest::CreateRequest(const std::string& sender_ids) {
       GetBackoffPolicy(),
       base::Bind(&RegistrationRequestTest::RegistrationCallback,
                  base::Unretained(this)),
-      max_retry_count_, url_request_context_getter(), &recorder_, sender_ids));
+      max_retry_count_, url_loader_factory(), &recorder_, sender_ids));
 }
 
 TEST_F(GCMRegistrationRequestTest, RequestSuccessful) {
@@ -113,9 +115,7 @@ TEST_F(GCMRegistrationRequestTest, RequestSuccessful) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);
@@ -125,55 +125,38 @@ TEST_F(GCMRegistrationRequestTest, RequestDataAndURL) {
   CreateRequest(kDeveloperId);
   request_->Start();
 
-  // Get data sent by request.
-  net::TestURLFetcher* fetcher = GetFetcher();
-  ASSERT_TRUE(fetcher);
-
-  EXPECT_EQ(GURL(kRegistrationURL), fetcher->GetOriginalURL());
-
-  // Verify that authorization header was put together properly.
-  net::HttpRequestHeaders headers;
-  fetcher->GetExtraRequestHeaders(&headers);
+  // Get data sent by request and verify that authorization header was put
+  // together properly.
+  const net::HttpRequestHeaders* headers =
+      GetExtraHeadersForURL(kRegistrationURL);
+  ASSERT_TRUE(headers != nullptr);
   std::string auth_header;
-  headers.GetHeader(net::HttpRequestHeaders::kAuthorization, &auth_header);
+  headers->GetHeader(net::HttpRequestHeaders::kAuthorization, &auth_header);
   base::StringTokenizer auth_tokenizer(auth_header, " :");
   ASSERT_TRUE(auth_tokenizer.GetNext());
   EXPECT_EQ(kLoginHeader, auth_tokenizer.token());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::Uint64ToString(kAndroidId), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kAndroidId), auth_tokenizer.token());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::Uint64ToString(kSecurityToken), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kSecurityToken), auth_tokenizer.token());
 
   std::map<std::string, std::string> expected_pairs;
   expected_pairs["app"] = kAppId;
   expected_pairs["sender"] = kDeveloperId;
-  expected_pairs["device"] = base::Uint64ToString(kAndroidId);
+  expected_pairs["device"] = base::NumberToString(kAndroidId);
 
-  // Verify data was formatted properly.
-  std::string upload_data = fetcher->upload_data();
-  base::StringTokenizer data_tokenizer(upload_data, "&=");
-  while (data_tokenizer.GetNext()) {
-    std::map<std::string, std::string>::iterator iter =
-        expected_pairs.find(data_tokenizer.token());
-    ASSERT_TRUE(iter != expected_pairs.end());
-    ASSERT_TRUE(data_tokenizer.GetNext());
-    EXPECT_EQ(iter->second, data_tokenizer.token());
-    // Ensure that none of the keys appears twice.
-    expected_pairs.erase(iter);
-  }
-
-  EXPECT_EQ(0UL, expected_pairs.size());
+  ASSERT_NO_FATAL_FAILURE(
+      VerifyFetcherUploadDataForURL(kRegistrationURL, &expected_pairs));
 }
 
 TEST_F(GCMRegistrationRequestTest, RequestRegistrationWithMultipleSenderIds) {
   CreateRequest("sender1,sender2@gmail.com");
   request_->Start();
 
-  net::TestURLFetcher* fetcher = GetFetcher();
-  ASSERT_TRUE(fetcher);
 
   // Verify data was formatted properly.
-  std::string upload_data = fetcher->upload_data();
+  std::string upload_data;
+  ASSERT_TRUE(GetUploadDataForURL(kRegistrationURL, &upload_data));
   base::StringTokenizer data_tokenizer(upload_data, "&=");
 
   // Skip all tokens until you hit entry for senders.
@@ -196,9 +179,22 @@ TEST_F(GCMRegistrationRequestTest, ResponseParsing) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
+  EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
+  EXPECT_EQ("2501", registration_id_);
+}
 
+TEST_F(GCMRegistrationRequestTest, ResponseParsingFailed) {
+  CreateRequest("sender1,sender2");
+  request_->Start();
+
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK,
+                               "tok");  // Simulate truncated message.
+  EXPECT_FALSE(callback_called_);
+
+  // Ensuring a retry happened and succeeds.
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);
@@ -208,14 +204,11 @@ TEST_F(GCMRegistrationRequestTest, ResponseHttpStatusNotOK) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_UNAUTHORIZED, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_UNAUTHORIZED,
+                               "token=2501");
   EXPECT_FALSE(callback_called_);
 
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);
@@ -225,20 +218,15 @@ TEST_F(GCMRegistrationRequestTest, ResponseMissingRegistrationId) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "");
   EXPECT_FALSE(callback_called_);
 
-  SetResponse(net::HTTP_OK, "some error in response");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK,
+                               "some error in response");
   EXPECT_FALSE(callback_called_);
 
   // Ensuring a retry happened and succeeds.
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);
@@ -248,15 +236,12 @@ TEST_F(GCMRegistrationRequestTest, ResponseDeviceRegistrationError) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "Error=PHONE_REGISTRATION_ERROR");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK,
+                               "Error=PHONE_REGISTRATION_ERROR");
   EXPECT_FALSE(callback_called_);
 
   // Ensuring a retry happened and succeeds.
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);
@@ -266,16 +251,28 @@ TEST_F(GCMRegistrationRequestTest, ResponseAuthenticationError) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_UNAUTHORIZED,
-                             "Error=AUTHENTICATION_FAILED");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_UNAUTHORIZED,
+                               "Error=AUTHENTICATION_FAILED");
   EXPECT_FALSE(callback_called_);
 
   // Ensuring a retry happened and succeeds.
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
+  EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
+  EXPECT_EQ("2501", registration_id_);
+}
 
+TEST_F(GCMRegistrationRequestTest, ResponseInternalServerError) {
+  CreateRequest("sender1,sender2");
+  request_->Start();
+
+  SetResponseForURLAndComplete(kRegistrationURL,
+                               net::HTTP_INTERNAL_SERVER_ERROR,
+                               "Error=InternalServerError");
+  EXPECT_FALSE(callback_called_);
+
+  // Ensuring a retry happened and succeeds.
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);
@@ -285,9 +282,8 @@ TEST_F(GCMRegistrationRequestTest, ResponseInvalidParameters) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "Error=INVALID_PARAMETERS");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK,
+                               "Error=INVALID_PARAMETERS");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::INVALID_PARAMETERS, status_);
   EXPECT_EQ(std::string(), registration_id_);
@@ -297,9 +293,8 @@ TEST_F(GCMRegistrationRequestTest, ResponseInvalidSender) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "Error=INVALID_SENDER");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK,
+                               "Error=INVALID_SENDER");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::INVALID_SENDER, status_);
   EXPECT_EQ(std::string(), registration_id_);
@@ -309,11 +304,32 @@ TEST_F(GCMRegistrationRequestTest, ResponseInvalidSenderBadRequest) {
   CreateRequest("sender1");
   request_->Start();
 
-  SetResponse(net::HTTP_BAD_REQUEST, "Error=INVALID_SENDER");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_BAD_REQUEST,
+                               "Error=INVALID_SENDER");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::INVALID_SENDER, status_);
+  EXPECT_EQ(std::string(), registration_id_);
+}
+
+TEST_F(GCMRegistrationRequestTest, ResponseQuotaExceeded) {
+  CreateRequest("sender1");
+  request_->Start();
+
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_SERVICE_UNAVAILABLE,
+                               "Error=QUOTA_EXCEEDED");
+  EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(RegistrationRequest::QUOTA_EXCEEDED, status_);
+  EXPECT_EQ(std::string(), registration_id_);
+}
+
+TEST_F(GCMRegistrationRequestTest, ResponseTooManyRegistrations) {
+  CreateRequest("sender1");
+  request_->Start();
+
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK,
+                               "Error=TOO_MANY_REGISTRATIONS");
+  EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(RegistrationRequest::TOO_MANY_REGISTRATIONS, status_);
   EXPECT_EQ(std::string(), registration_id_);
 }
 
@@ -321,19 +337,12 @@ TEST_F(GCMRegistrationRequestTest, RequestNotSuccessful) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "token=2501");
-
-  net::TestURLFetcher* fetcher = GetFetcher();
-  ASSERT_TRUE(fetcher);
-  GetFetcher()->set_status(net::URLRequestStatus::FromError(net::ERR_FAILED));
-
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501",
+                               net::ERR_FAILED);
   EXPECT_FALSE(callback_called_);
 
   // Ensuring a retry happened and succeeded.
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
 
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
@@ -344,14 +353,12 @@ TEST_F(GCMRegistrationRequestTest, ResponseHttpNotOk) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_GATEWAY_TIMEOUT, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_GATEWAY_TIMEOUT,
+                               "token=2501");
   EXPECT_FALSE(callback_called_);
 
   // Ensuring a retry happened and succeeded.
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
 
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
@@ -363,8 +370,8 @@ TEST_F(GCMRegistrationRequestTest, MaximumAttemptsReachedWithZeroRetries) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_GATEWAY_TIMEOUT, "token=2501");
-  CompleteFetch();
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_GATEWAY_TIMEOUT,
+                               "token=2501");
 
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::REACHED_MAX_RETRIES, status_);
@@ -375,19 +382,16 @@ TEST_F(GCMRegistrationRequestTest, MaximumAttemptsReached) {
   CreateRequest("sender1,sender2");
   request_->Start();
 
-  SetResponse(net::HTTP_GATEWAY_TIMEOUT, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_GATEWAY_TIMEOUT,
+                               "token=2501");
   EXPECT_FALSE(callback_called_);
 
-  SetResponse(net::HTTP_GATEWAY_TIMEOUT, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_GATEWAY_TIMEOUT,
+                               "token=2501");
   EXPECT_FALSE(callback_called_);
 
-  SetResponse(net::HTTP_GATEWAY_TIMEOUT, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_GATEWAY_TIMEOUT,
+                               "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::REACHED_MAX_RETRIES, status_);
   EXPECT_EQ(std::string(), registration_id_);
@@ -398,7 +402,8 @@ class InstanceIDGetTokenRequestTest : public RegistrationRequestTest {
   InstanceIDGetTokenRequestTest();
   ~InstanceIDGetTokenRequestTest() override;
 
-  void CreateRequest(const std::string& instance_id,
+  void CreateRequest(bool use_subtype,
+                     const std::string& instance_id,
                      const std::string& authorized_entity,
                      const std::string& scope,
                      const std::map<std::string, std::string>& options);
@@ -411,12 +416,15 @@ InstanceIDGetTokenRequestTest::~InstanceIDGetTokenRequestTest() {
 }
 
 void InstanceIDGetTokenRequestTest::CreateRequest(
+    bool use_subtype,
     const std::string& instance_id,
     const std::string& authorized_entity,
     const std::string& scope,
     const std::map<std::string, std::string>& options) {
-  RegistrationRequest::RequestInfo request_info(
-      kAndroidId, kSecurityToken, kAppId);
+  std::string category = use_subtype ? kProductCategoryForSubtypes : kAppId;
+  std::string subtype = use_subtype ? kAppId : std::string();
+  RegistrationRequest::RequestInfo request_info(kAndroidId, kSecurityToken,
+                                                category, subtype);
   std::unique_ptr<InstanceIDGetTokenRequestHandler> request_handler(
       new InstanceIDGetTokenRequestHandler(instance_id, authorized_entity,
                                            scope, kGCMVersion, options));
@@ -425,8 +433,7 @@ void InstanceIDGetTokenRequestTest::CreateRequest(
       GetBackoffPolicy(),
       base::Bind(&RegistrationRequestTest::RegistrationCallback,
                  base::Unretained(this)),
-      max_retry_count_, url_request_context_getter(), &recorder_,
-      authorized_entity));
+      max_retry_count_, url_loader_factory(), &recorder_, authorized_entity));
 }
 
 TEST_F(InstanceIDGetTokenRequestTest, RequestSuccessful) {
@@ -434,12 +441,11 @@ TEST_F(InstanceIDGetTokenRequestTest, RequestSuccessful) {
   options["Foo"] = "Bar";
 
   set_max_retry_count(0);
-  CreateRequest(kInstanceId, kDeveloperId, kScope, options);
+  CreateRequest(false /* use_subtype */, kInstanceId, kDeveloperId, kScope,
+                options);
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);
@@ -448,50 +454,69 @@ TEST_F(InstanceIDGetTokenRequestTest, RequestSuccessful) {
 TEST_F(InstanceIDGetTokenRequestTest, RequestDataAndURL) {
   std::map<std::string, std::string> options;
   options["Foo"] = "Bar";
-  CreateRequest(kInstanceId, kDeveloperId, kScope, options);
+  CreateRequest(false /* use_subtype */, kInstanceId, kDeveloperId, kScope,
+                options);
   request_->Start();
 
-  // Get data sent by request.
-  net::TestURLFetcher* fetcher = GetFetcher();
-  ASSERT_TRUE(fetcher);
-
-  EXPECT_EQ(GURL(kRegistrationURL), fetcher->GetOriginalURL());
-
   // Verify that the no-cookie flag is set.
-  int flags = fetcher->GetLoadFlags();
+  int flags = 0;
+  ASSERT_TRUE(test_url_loader_factory()->IsPending(kRegistrationURL, &flags));
   EXPECT_TRUE(flags & net::LOAD_DO_NOT_SEND_COOKIES);
   EXPECT_TRUE(flags & net::LOAD_DO_NOT_SAVE_COOKIES);
 
   // Verify that authorization header was put together properly.
-  net::HttpRequestHeaders headers;
-  fetcher->GetExtraRequestHeaders(&headers);
+  const net::HttpRequestHeaders* headers =
+      GetExtraHeadersForURL(kRegistrationURL);
+  ASSERT_TRUE(headers != nullptr);
   std::string auth_header;
-  headers.GetHeader(net::HttpRequestHeaders::kAuthorization, &auth_header);
+  headers->GetHeader(net::HttpRequestHeaders::kAuthorization, &auth_header);
   base::StringTokenizer auth_tokenizer(auth_header, " :");
   ASSERT_TRUE(auth_tokenizer.GetNext());
   EXPECT_EQ(kLoginHeader, auth_tokenizer.token());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::Uint64ToString(kAndroidId), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kAndroidId), auth_tokenizer.token());
   ASSERT_TRUE(auth_tokenizer.GetNext());
-  EXPECT_EQ(base::Uint64ToString(kSecurityToken), auth_tokenizer.token());
+  EXPECT_EQ(base::NumberToString(kSecurityToken), auth_tokenizer.token());
 
   std::map<std::string, std::string> expected_pairs;
-  expected_pairs["gmsv"] = base::IntToString(kGCMVersion);
+  expected_pairs["gmsv"] = base::NumberToString(kGCMVersion);
   expected_pairs["app"] = kAppId;
   expected_pairs["sender"] = kDeveloperId;
-  expected_pairs["X-subtype"] = kDeveloperId;
-  expected_pairs["device"] = base::Uint64ToString(kAndroidId);
+  expected_pairs["device"] = base::NumberToString(kAndroidId);
+  expected_pairs["appid"] = kInstanceId;
+  expected_pairs["scope"] = kScope;
+  expected_pairs["X-scope"] = kScope;
+  expected_pairs["X-Foo"] = "Bar";
+
+  ASSERT_NO_FATAL_FAILURE(
+      VerifyFetcherUploadDataForURL(kRegistrationURL, &expected_pairs));
+}
+
+TEST_F(InstanceIDGetTokenRequestTest, RequestDataWithSubtype) {
+  std::map<std::string, std::string> options;
+  options["Foo"] = "Bar";
+  CreateRequest(true /* use_subtype */, kInstanceId, kDeveloperId, kScope,
+                options);
+  request_->Start();
+
+  // Same as RequestDataAndURL except "app" and "X-subtype".
+  std::map<std::string, std::string> expected_pairs;
+  expected_pairs["gmsv"] = base::NumberToString(kGCMVersion);
+  expected_pairs["app"] = kProductCategoryForSubtypes;
+  expected_pairs["X-subtype"] = kAppId;
+  expected_pairs["sender"] = kDeveloperId;
+  expected_pairs["device"] = base::NumberToString(kAndroidId);
   expected_pairs["appid"] = kInstanceId;
   expected_pairs["scope"] = kScope;
   expected_pairs["X-scope"] = kScope;
   expected_pairs["X-Foo"] = "Bar";
 
   // Verify data was formatted properly.
-  std::string upload_data = fetcher->upload_data();
+  std::string upload_data;
+  ASSERT_TRUE(GetUploadDataForURL(kRegistrationURL, &upload_data));
   base::StringTokenizer data_tokenizer(upload_data, "&=");
   while (data_tokenizer.GetNext()) {
-    std::map<std::string, std::string>::iterator iter =
-        expected_pairs.find(data_tokenizer.token());
+    auto iter = expected_pairs.find(data_tokenizer.token());
     ASSERT_TRUE(iter != expected_pairs.end());
     ASSERT_TRUE(data_tokenizer.GetNext());
     EXPECT_EQ(iter->second, data_tokenizer.token());
@@ -504,17 +529,15 @@ TEST_F(InstanceIDGetTokenRequestTest, RequestDataAndURL) {
 
 TEST_F(InstanceIDGetTokenRequestTest, ResponseHttpStatusNotOK) {
   std::map<std::string, std::string> options;
-  CreateRequest(kInstanceId, kDeveloperId, kScope, options);
+  CreateRequest(false /* use_subtype */, kInstanceId, kDeveloperId, kScope,
+                options);
   request_->Start();
 
-  SetResponse(net::HTTP_UNAUTHORIZED, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_UNAUTHORIZED,
+                               "token=2501");
   EXPECT_FALSE(callback_called_);
 
-  SetResponse(net::HTTP_OK, "token=2501");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kRegistrationURL, net::HTTP_OK, "token=2501");
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(RegistrationRequest::SUCCESS, status_);
   EXPECT_EQ("2501", registration_id_);

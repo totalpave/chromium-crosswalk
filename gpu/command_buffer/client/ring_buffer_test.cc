@@ -12,13 +12,11 @@
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "gpu/command_buffer/client/cmd_buffer_helper.h"
-#include "gpu/command_buffer/service/cmd_buffer_engine.h"
-#include "gpu/command_buffer/service/command_buffer_service.h"
-#include "gpu/command_buffer/service/command_executor.h"
+#include "gpu/command_buffer/service/command_buffer_direct.h"
 #include "gpu/command_buffer/service/mocks.h"
-#include "gpu/command_buffer/service/transfer_buffer_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace gpu {
@@ -38,9 +36,9 @@ class BaseRingBufferTest : public testing::Test {
   static const unsigned int kAlignment = 4;
 
   void RunPendingSetToken() {
-    for (std::vector<const void*>::iterator it = set_token_arguments_.begin();
-         it != set_token_arguments_.end();
-         ++it) {
+    for (std::vector<const volatile void*>::iterator it =
+             set_token_arguments_.begin();
+         it != set_token_arguments_.end(); ++it) {
       api_mock_->SetToken(cmd::kSetToken, 1, *it);
     }
     set_token_arguments_.clear();
@@ -49,7 +47,7 @@ class BaseRingBufferTest : public testing::Test {
 
   void SetToken(unsigned int command,
                 unsigned int arg_count,
-                const void* _args) {
+                const volatile void* _args) {
     EXPECT_EQ(static_cast<unsigned int>(cmd::kSetToken), command);
     EXPECT_EQ(1u, arg_count);
     if (delay_set_token_)
@@ -60,7 +58,10 @@ class BaseRingBufferTest : public testing::Test {
 
   void SetUp() override {
     delay_set_token_ = false;
-    api_mock_.reset(new AsyncAPIMock(true));
+    command_buffer_.reset(new CommandBufferDirect());
+    api_mock_.reset(new AsyncAPIMock(true, command_buffer_->service()));
+    command_buffer_->set_handler(api_mock_.get());
+
     // ignore noops in the mock - we don't want to inspect the internals of the
     // helper.
     EXPECT_CALL(*api_mock_, DoCommand(cmd::kNoop, 0, _))
@@ -70,35 +71,16 @@ class BaseRingBufferTest : public testing::Test {
         .WillRepeatedly(DoAll(Invoke(this, &BaseRingBufferTest::SetToken),
                               Return(error::kNoError)));
 
-    {
-      TransferBufferManager* manager = new TransferBufferManager(nullptr);
-      transfer_buffer_manager_ = manager;
-      EXPECT_TRUE(manager->Initialize());
-    }
-    command_buffer_.reset(
-        new CommandBufferService(transfer_buffer_manager_.get()));
-
-    executor_.reset(
-        new CommandExecutor(command_buffer_.get(), api_mock_.get(), NULL));
-    command_buffer_->SetPutOffsetChangeCallback(base::Bind(
-        &CommandExecutor::PutChanged, base::Unretained(executor_.get())));
-    command_buffer_->SetGetBufferChangeCallback(base::Bind(
-        &CommandExecutor::SetGetBuffer, base::Unretained(executor_.get())));
-
-    api_mock_->set_engine(executor_.get());
-
     helper_.reset(new CommandBufferHelper(command_buffer_.get()));
     helper_->Initialize(kBufferSize);
   }
 
   int32_t GetToken() { return command_buffer_->GetLastState().token; }
 
+  std::unique_ptr<CommandBufferDirect> command_buffer_;
   std::unique_ptr<AsyncAPIMock> api_mock_;
-  scoped_refptr<TransferBufferManagerInterface> transfer_buffer_manager_;
-  std::unique_ptr<CommandBufferService> command_buffer_;
-  std::unique_ptr<CommandExecutor> executor_;
   std::unique_ptr<CommandBufferHelper> helper_;
-  std::vector<const void*> set_token_arguments_;
+  std::vector<const volatile void*> set_token_arguments_;
   bool delay_set_token_;
 
   std::unique_ptr<int8_t[]> buffer_;
@@ -141,12 +123,29 @@ TEST_F(RingBufferTest, TestBasic) {
   const unsigned int kSize = 16;
   EXPECT_EQ(kBufferSize, allocator_->GetLargestFreeOrPendingSize());
   EXPECT_EQ(kBufferSize, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
   void* pointer = allocator_->Alloc(kSize);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
   EXPECT_GE(kBufferSize, allocator_->GetOffset(pointer) - kBaseOffset + kSize);
   EXPECT_EQ(kBufferSize, allocator_->GetLargestFreeOrPendingSize());
   EXPECT_EQ(kBufferSize - kSize, allocator_->GetLargestFreeSizeNoWaiting());
   int32_t token = helper_->InsertToken();
   allocator_->FreePendingToken(pointer, token);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
+}
+
+// Checks that the value returned by GetLargestFreeOrPendingSize can actually be
+// allocated. This is a regression test for https://crbug.com/834444, where an
+// unaligned buffer could cause an alloc using the value returned by
+// GetLargestFreeOrPendingSize to try to allocate more memory than was allowed.
+TEST_F(RingBufferTest, TestCanAllocGetLargestFreeOrPendingSize) {
+  // Make sure we aren't actually aligned
+  buffer_.reset(new int8_t[kBufferSize + 2 + kBaseOffset]);
+  buffer_start_ = buffer_.get() + kBaseOffset;
+  allocator_.reset(new RingBuffer(kAlignment, kBaseOffset, kBufferSize + 2,
+                                  helper_.get(), buffer_start_));
+  void* pointer = allocator_->Alloc(allocator_->GetLargestFreeOrPendingSize());
+  allocator_->FreePendingToken(pointer, helper_->InsertToken());
 }
 
 // Checks the free-pending-token mechanism.
@@ -212,8 +211,10 @@ TEST_F(RingBufferTest, DiscardTest) {
   const unsigned int kAlloc1 = 3*kAlignment;
   void* ptr = allocator_->Alloc(kAlloc1);
   EXPECT_EQ(kBufferSize - kAlloc1, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
   allocator_->DiscardBlock(ptr);
   EXPECT_EQ(kBufferSize, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 }
 
 // Test that discarding front of the buffer effectively frees the block.
@@ -224,6 +225,7 @@ TEST_F(RingBufferTest, DiscardFrontTest) {
   void* ptr1 = allocator_->Alloc(kAlloc1);
   EXPECT_EQ(kBufferSize - kAlloc1, allocator_->GetLargestFreeSizeNoWaiting());
   allocator_->FreePendingToken(ptr1, helper_.get()->InsertToken());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 
   void* ptr2 = allocator_->Alloc(kAlloc2);
   EXPECT_EQ(static_cast<uint8_t*>(ptr1) + kAlloc1,
@@ -231,16 +233,20 @@ TEST_F(RingBufferTest, DiscardFrontTest) {
   EXPECT_EQ(kBufferSize - kAlloc1 - kAlloc2,
             allocator_->GetLargestFreeSizeNoWaiting());
   allocator_->FreePendingToken(ptr2, helper_.get()->InsertToken());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 
   void* ptr3 = allocator_->Alloc(kAlloc3);
   EXPECT_EQ(static_cast<uint8_t*>(ptr2) + kAlloc2,
             static_cast<uint8_t*>(ptr3));
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
 
   // Discard first block should free it up upon GetLargestFreeSizeNoWaiting().
   allocator_->DiscardBlock(ptr1);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
   EXPECT_EQ(kAlloc1, allocator_->GetLargestFreeSizeNoWaiting());
   allocator_->FreePendingToken(ptr3, helper_.get()->InsertToken());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 }
 
 // Test that discarding middle of the buffer merely marks it as padding.
@@ -263,11 +269,14 @@ TEST_F(RingBufferTest, DiscardMiddleTest) {
   EXPECT_EQ(static_cast<uint8_t*>(ptr2) + kAlloc2,
             static_cast<uint8_t*>(ptr3));
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
 
   // Discard middle block should just set it as padding.
   allocator_->DiscardBlock(ptr2);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
   allocator_->FreePendingToken(ptr3, helper_.get()->InsertToken());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 }
 
 // Test that discarding end of the buffer frees it for no waiting.
@@ -290,9 +299,11 @@ TEST_F(RingBufferTest, DiscardEndTest) {
   EXPECT_EQ(static_cast<uint8_t*>(ptr2) + kAlloc2,
             static_cast<uint8_t*>(ptr3));
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
 
   // Discard end block should discard it.
   allocator_->DiscardBlock(ptr3);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
   EXPECT_EQ(kAlloc3, allocator_->GetLargestFreeSizeNoWaiting());
 }
 
@@ -326,10 +337,12 @@ TEST_F(RingBufferTest, DiscardLoopedEndTest) {
   void* ptr4 = allocator_->Alloc(kAlloc1);
   EXPECT_EQ(ptr1, ptr4);
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
 
   // Discard end block should work properly still.
   allocator_->DiscardBlock(ptr4);
   EXPECT_EQ(kAlloc1, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 }
 
 // Test discard end of the buffer that has looped around with padding.
@@ -357,18 +370,22 @@ TEST_F(RingBufferTest, DiscardEndWithPaddingTest) {
 
   // Cause it to loop around with padding at the end of ptr3.
   allocator_->DiscardBlock(ptr1);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
   void* ptr4 = allocator_->Alloc(kAlloc1);
   EXPECT_EQ(ptr1, ptr4);
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
 
   // Discard end block should also discard the padding.
   allocator_->DiscardBlock(ptr4);
   EXPECT_EQ(kAlloc1, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 
   // We can test that there is padding by attempting to allocate the padding.
   void* padding = allocator_->Alloc(kPadding);
   EXPECT_EQ(kAlloc1, allocator_->GetLargestFreeSizeNoWaiting());
   allocator_->FreePendingToken(padding, helper_.get()->InsertToken());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 }
 
 // Test that discard will effectively remove all padding at the end.
@@ -394,10 +411,12 @@ TEST_F(RingBufferTest, DiscardAllPaddingFromEndTest) {
 
   // Discarding the middle allocation should turn it into padding.
   allocator_->DiscardBlock(ptr2);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 1u);
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
 
   // Discarding the last allocation should discard the middle padding as well.
   allocator_->DiscardBlock(ptr3);
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
   EXPECT_EQ(kAlloc2 + kAlloc3, allocator_->GetLargestFreeSizeNoWaiting());
 }
 
@@ -422,6 +441,7 @@ TEST_F(RingBufferTest, DiscardAllPaddingFromBeginningTest) {
             static_cast<uint8_t*>(ptr3));
   EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
   allocator_->FreePendingToken(ptr3, helper_.get()->InsertToken());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
 
   // Discarding the middle allocation should turn it into padding.
   allocator_->DiscardBlock(ptr2);
@@ -430,6 +450,16 @@ TEST_F(RingBufferTest, DiscardAllPaddingFromBeginningTest) {
   // Discarding the first allocation should discard the middle padding as well.
   allocator_->DiscardBlock(ptr1);
   EXPECT_EQ(kAlloc1 + kAlloc2, allocator_->GetLargestFreeSizeNoWaiting());
+  EXPECT_EQ(allocator_->NumUsedBlocks(), 0u);
+}
+
+TEST_F(RingBufferTest, LargestFreeSizeNoWaiting) {
+  // GetLargestFreeSizeNoWaiting should return the largest free aligned size.
+  void* ptr = allocator_->Alloc(kBufferSize);
+  EXPECT_EQ(0u, allocator_->GetLargestFreeSizeNoWaiting());
+  allocator_->ShrinkLastBlock(kBufferSize - 2 * kAlignment - 1);
+  EXPECT_EQ(2 * kAlignment, allocator_->GetLargestFreeSizeNoWaiting());
+  allocator_->FreePendingToken(ptr, helper_.get()->InsertToken());
 }
 
 }  // namespace gpu

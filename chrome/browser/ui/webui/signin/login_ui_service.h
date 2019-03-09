@@ -6,6 +6,8 @@
 #define CHROME_BROWSER_UI_WEBUI_SIGNIN_LOGIN_UI_SERVICE_H_
 
 #include <list>
+#include <memory>
+#include <string>
 
 #include "base/macros.h"
 #include "base/observer_list.h"
@@ -74,16 +76,31 @@ class LoginUIService : public KeyedService {
   // option chosen by the user in the confirmation UI.
   void SyncConfirmationUIClosed(SyncConfirmationUIClosedResult result);
 
-  // Delegate to an existing login dialog if one exists.
-  // If not, we make a new popup dialog window, and set it to
-  // chrome://signin to ask the user to sign in to chrome.
-  void ShowLoginPopup();
+  // Delegate to an existing login tab if one exists. If not, a new sigin tab is
+  // created.
+  void ShowExtensionLoginPrompt(bool enable_sync,
+                                const std::string& email_hint);
 
-  // Displays login results.
-  void DisplayLoginResult(Browser* browser, const base::string16& message);
+  // Displays login results. This is either the Modal Signin Error dialog if
+  // |error_message| is a non-empty string, or the User Menu with a blue header
+  // toast otherwise.
+  virtual void DisplayLoginResult(Browser* browser,
+                                  const base::string16& error_message,
+                                  const base::string16& email);
+
+  // Set the profile blocking modal error dialog message.
+  virtual void SetProfileBlockingErrorMessage();
+
+  // Gets whether the Modal Signin Error dialog should display profile blocking
+  // error message.
+  bool IsDisplayingProfileBlockedErrorMessage() const;
 
   // Gets the last login result set through |DisplayLoginResult|.
-  const base::string16& GetLastLoginResult();
+  const base::string16& GetLastLoginResult() const;
+
+  // Gets the last email used for signing in when a signin error occured; set
+  // through |DisplayLoginResult|.
+  const base::string16& GetLastLoginErrorEmail() const;
 
  private:
   // Weak pointers to the recently opened UIs, with the most recent in front.
@@ -93,9 +110,11 @@ class LoginUIService : public KeyedService {
 #endif
 
   // List of observers.
-  base::ObserverList<Observer> observer_list_;
+  base::ObserverList<Observer>::Unchecked observer_list_;
 
   base::string16 last_login_result_;
+  base::string16 last_login_error_email_;
+  bool is_displaying_profile_blocking_error_message_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(LoginUIService);
 };

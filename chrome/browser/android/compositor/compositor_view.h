@@ -9,7 +9,6 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "cc/layers/layer_collections.h"
@@ -18,21 +17,10 @@
 #include "content/public/browser/browser_child_process_observer.h"
 #include "third_party/skia/include/core/SkColor.h"
 
-class DecorationBackground;
-class DecorationCounter;
-class SkBitmap;
-class TabLayerContainer;
-
 namespace cc {
 class Layer;
 class SolidColorLayer;
-class TextureLayer;
-class UIResourceBitmap;
-}
-
-namespace gfx {
-class JavaBitmap;
-}
+}  // namespace cc
 
 namespace content {
 class Compositor;
@@ -42,15 +30,12 @@ namespace ui {
 class WindowAndroid;
 class ResourceManager;
 class UIResourceProvider;
-}
+}  // namespace ui
 
-namespace chrome {
 namespace android {
 
-class LayerTitleCache;
 class SceneLayer;
 class TabContentManager;
-class ToolbarLayer;
 
 class CompositorView : public content::CompositorClient,
                        public content::BrowserChildProcessObserver {
@@ -71,15 +56,8 @@ class CompositorView : public content::CompositorClient,
                          const base::android::JavaParamRef<jobject>& object);
   void FinalizeLayers(JNIEnv* env,
                       const base::android::JavaParamRef<jobject>& jobj);
-  void SetLayoutViewport(JNIEnv* env,
-                         const base::android::JavaParamRef<jobject>& object,
-                         jfloat x,
-                         jfloat y,
-                         jfloat width,
-                         jfloat height,
-                         jfloat visible_x_offset,
-                         jfloat visible_y_offset,
-                         jfloat dp_to_pixel);
+  void SetLayoutBounds(JNIEnv* env,
+                       const base::android::JavaParamRef<jobject>& object);
   void SurfaceCreated(JNIEnv* env,
                       const base::android::JavaParamRef<jobject>& object);
   void SurfaceDestroyed(JNIEnv* env,
@@ -90,6 +68,12 @@ class CompositorView : public content::CompositorClient,
                       jint width,
                       jint height,
                       const base::android::JavaParamRef<jobject>& surface);
+  void OnPhysicalBackingSizeChanged(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& obj,
+      const base::android::JavaParamRef<jobject>& jweb_contents,
+      jint width,
+      jint height);
 
   void SetOverlayVideoMode(JNIEnv* env,
                            const base::android::JavaParamRef<jobject>& object,
@@ -97,20 +81,25 @@ class CompositorView : public content::CompositorClient,
   void SetSceneLayer(JNIEnv* env,
                      const base::android::JavaParamRef<jobject>& object,
                      const base::android::JavaParamRef<jobject>& jscene_layer);
+  void SetCompositorWindow(
+      JNIEnv* env,
+      const base::android::JavaParamRef<jobject>& object,
+      const base::android::JavaParamRef<jobject>& window_android);
 
   // CompositorClient implementation:
+  void RecreateSurface() override;
   void UpdateLayerTreeHost() override;
-  void OnSwapBuffersCompleted(int pending_swap_buffers) override;
+  void DidSwapFrame(int pending_frames) override;
+  void DidSwapBuffers(const gfx::Size& swap_size) override;
   ui::UIResourceProvider* GetUIResourceProvider();
 
  private:
   ~CompositorView() override;
 
   // content::BrowserChildProcessObserver implementation:
-  void BrowserChildProcessHostDisconnected(
-      const content::ChildProcessData& data) override;
-  void BrowserChildProcessCrashed(const content::ChildProcessData& data,
-                                  int exit_code) override;
+  void BrowserChildProcessKilled(
+      const content::ChildProcessData& data,
+      const content::ChildProcessTerminationInfo& info) override;
 
   void SetBackground(bool visible, SkColor color);
 
@@ -132,9 +121,6 @@ class CompositorView : public content::CompositorClient,
   DISALLOW_COPY_AND_ASSIGN(CompositorView);
 };
 
-bool RegisterCompositorView(JNIEnv* env);
-
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_COMPOSITOR_VIEW_H_

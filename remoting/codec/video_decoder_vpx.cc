@@ -11,16 +11,13 @@
 #include "base/memory/ptr_util.h"
 #include "remoting/base/util.h"
 #include "remoting/proto/video.pb.h"
+#include "third_party/libvpx/source/libvpx/vpx/vp8dx.h"
+#include "third_party/libvpx/source/libvpx/vpx/vpx_decoder.h"
 #include "third_party/libyuv/include/libyuv/convert_argb.h"
+#include "third_party/libyuv/include/libyuv/convert_from.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_region.h"
-
-extern "C" {
-#define VPX_CODEC_DISABLE_COMPAT 1
-#include "third_party/libvpx/source/libvpx/vpx/vp8dx.h"
-#include "third_party/libvpx/source/libvpx/vpx/vpx_decoder.h"
-}
 
 namespace remoting {
 
@@ -83,7 +80,7 @@ std::unique_ptr<VideoDecoderVpx> VideoDecoderVpx::CreateForVP9() {
   return base::WrapUnique(new VideoDecoderVpx(vpx_codec_vp9_dx()));
 }
 
-VideoDecoderVpx::~VideoDecoderVpx() {}
+VideoDecoderVpx::~VideoDecoderVpx() = default;
 
 void VideoDecoderVpx::SetPixelFormat(PixelFormat pixel_format) {
   pixel_format_ = pixel_format;

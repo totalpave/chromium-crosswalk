@@ -32,8 +32,9 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "media/audio/audio_io.h"
 #include "media/base/audio_parameters.h"
@@ -45,8 +46,7 @@ class AudioManagerBase;
 class ChannelMixer;
 class SeekableBuffer;
 
-class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream,
-                                         public base::NonThreadSafe {
+class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream {
  public:
   // String for the generic "default" ALSA device that has the highest
   // compatibility and chance of working.
@@ -83,6 +83,8 @@ class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream,
   void Stop() override;
   void SetVolume(double volume) override;
   void GetVolume(double* volume) override;
+
+  void SetTickClockForTesting(const base::TickClock* tick_clock);
 
  private:
   friend class AlsaPcmOutputStreamTest;
@@ -129,7 +131,6 @@ class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream,
   void ScheduleNextWrite(bool source_exhausted);
 
   // Utility functions for talking with the ALSA API.
-  static base::TimeDelta FramesToTimeDelta(int frames, double sample_rate);
   std::string FindDeviceForChannels(uint32_t channels);
   snd_pcm_sframes_t GetAvailableFrames();
   snd_pcm_sframes_t GetCurrentDelay();
@@ -152,7 +153,9 @@ class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream,
   // is passed into the output stream, but ownership is not transfered which
   // requires a synchronization on access of the |source_callback_| to avoid
   // using a deleted callback.
-  int RunDataCallback(AudioBus* audio_bus, uint32_t total_bytes_delay);
+  int RunDataCallback(base::TimeDelta delay,
+                      base::TimeTicks delay_timestamp,
+                      AudioBus* audio_bus);
   void RunErrorCallback(int code);
 
   // Changes the AudioSourceCallback to proxy calls to.  Pass in NULL to
@@ -193,7 +196,7 @@ class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream,
   // Handle to the actual PCM playback device.
   snd_pcm_t* playback_handle_;
 
-  std::unique_ptr<media::SeekableBuffer> buffer_;
+  std::unique_ptr<SeekableBuffer> buffer_;
   uint32_t frames_per_packet_;
 
   InternalState state_;
@@ -208,6 +211,10 @@ class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream,
   std::unique_ptr<ChannelMixer> channel_mixer_;
   std::unique_ptr<AudioBus> mixed_audio_bus_;
 
+  const base::TickClock* tick_clock_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
   // Allows us to run tasks on the AlsaPcmOutputStream instance which are
   // bound by its lifetime.
   // NOTE: Weak pointers must be invalidated before all other member variables.
@@ -219,6 +226,6 @@ class MEDIA_EXPORT AlsaPcmOutputStream : public AudioOutputStream,
 MEDIA_EXPORT std::ostream& operator<<(std::ostream& os,
                                       AlsaPcmOutputStream::InternalState);
 
-};  // namespace media
+}  // namespace media
 
 #endif  // MEDIA_AUDIO_ALSA_ALSA_OUTPUT_H_

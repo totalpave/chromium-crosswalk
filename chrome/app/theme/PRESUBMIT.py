@@ -6,8 +6,8 @@
 
 See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details about the presubmit API built into depot_tools, and see
-http://www.chromium.org/developers/web-development-style-guide for the rules
-we're checking against here.
+https://chromium.googlesource.com/chromium/src/+/master/styleguide/web/web.md
+for the rules we're checking against here.
 """
 
 
@@ -36,11 +36,13 @@ def _CommonChecks(input_api, output_api):
 
   try:
     sys.path = [resources] + old_path
-    from resource_check import resource_scale_factors
+    from resource_check import resource_scale_factors, ico_files
 
     for paths in path_scales:
       results.extend(resource_scale_factors.ResourceScaleFactors(
           input_api, output_api, paths).RunChecks())
+
+    results.extend(ico_files.IcoFiles(input_api, output_api).RunChecks())
   finally:
     sys.path = old_path
 

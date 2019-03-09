@@ -6,42 +6,53 @@ package org.chromium.chrome.browser.tab;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
-import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Resources;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.media.AudioManager;
 import android.os.Build;
 import android.os.Handler;
-import android.util.Pair;
+import android.support.v4.util.ArrayMap;
 import android.view.KeyEvent;
 import android.view.View;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.BuildInfo;
 import org.chromium.base.Log;
 import org.chromium.base.ObserverList.RewindableIterator;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.blink_public.platform.WebDisplayMode;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeApplication;
-import org.chromium.chrome.browser.RepostFormWarningDialog;
-import org.chromium.chrome.browser.document.DocumentUtils;
+import org.chromium.chrome.browser.AppHooks;
+import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.SwipeRefreshHandler;
 import org.chromium.chrome.browser.document.DocumentWebContentsDelegate;
 import org.chromium.chrome.browser.findinpage.FindMatchRectsDetails;
 import org.chromium.chrome.browser.findinpage.FindNotificationDetails;
+import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
+import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.media.MediaCaptureNotificationService;
 import org.chromium.chrome.browser.policy.PolicyAuditor;
 import org.chromium.chrome.browser.policy.PolicyAuditor.AuditEvent;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager.TabCreator;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
-import org.chromium.chrome.browser.util.FeatureUtilities;
-import org.chromium.components.web_contents_delegate_android.WebContentsDelegateAndroid;
+import org.chromium.chrome.browser.tabmodel.TabWindowManager;
+import org.chromium.chrome.browser.util.IntentUtils;
+import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
+import org.chromium.content_public.browser.GestureListenerManager;
 import org.chromium.content_public.browser.InvalidateTypes;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.ResourceRequestBody;
-import org.chromium.ui.WindowOpenDisposition;
+import org.chromium.ui.modaldialog.DialogDismissalCause;
+import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.modaldialog.ModalDialogProperties;
+import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.mojom.WindowOpenDisposition;
 
 /**
  * A basic {@link TabWebContentsDelegateAndroid} that forwards some calls to the registered
@@ -65,62 +76,36 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
     /** Used for logging. */
     private static final String TAG = "WebContentsDelegate";
 
+    private final Runnable mCloseContentsRunnable;
     protected final Tab mTab;
 
-    private FindResultListener mFindResultListener;
-
-    private FindMatchRectsListener mFindMatchRectsListener = null;
-
-    private int mDisplayMode = WebDisplayMode.Browser;
+    private final ArrayMap<WebContents, String> mWebContentsUrlMapping = new ArrayMap<>();
 
     protected Handler mHandler;
-    private final Runnable mCloseContentsRunnable = new Runnable() {
-        @Override
-        public void run() {
-            boolean isSelected = mTab.getTabModelSelector().getCurrentTab() == mTab;
-            mTab.getTabModelSelector().closeTab(mTab);
-
-            // If the parent Tab belongs to another Activity, fire the Intent to bring it back.
-            if (isSelected && mTab.getParentIntent() != null
-                    && mTab.getActivity().getIntent() != mTab.getParentIntent()) {
-                boolean mayLaunch = FeatureUtilities.isDocumentMode(mTab.getApplicationContext())
-                        ? isParentInAndroidOverview() : true;
-                if (mayLaunch) {
-                    mTab.getActivity().startActivity(mTab.getParentIntent());
-                }
-            }
-        }
-
-        /** If the API allows it, returns whether a Task still exists for the parent Activity. */
-        @TargetApi(Build.VERSION_CODES.LOLLIPOP)
-        private boolean isParentInAndroidOverview() {
-            ActivityManager activityManager = (ActivityManager) mTab.getApplicationContext()
-                    .getSystemService(Context.ACTIVITY_SERVICE);
-            for (ActivityManager.AppTask task : activityManager.getAppTasks()) {
-                Intent taskIntent = DocumentUtils.getBaseIntentFromTask(task);
-                if (taskIntent != null && taskIntent.filterEquals(mTab.getParentIntent())) {
-                    return true;
-                }
-            }
-            return false;
-        }
-    };
+    private FindResultListener mFindResultListener;
+    private FindMatchRectsListener mFindMatchRectsListener;
+    private @WebDisplayMode int mDisplayMode = WebDisplayMode.BROWSER;
 
     public TabWebContentsDelegateAndroid(Tab tab) {
         mTab = tab;
         mHandler = new Handler();
+        mCloseContentsRunnable = () -> {
+            // TODO(jinsukkim): Move |closeTab| to TabModelSelector by making it observe its tabs.
+            mTab.getTabModelSelector().closeTab(mTab);
+            RewindableIterator<TabObserver> observers = mTab.getTabObservers();
+            while (observers.hasNext()) observers.next().onCloseContents(mTab);
+        };
     }
 
     /**
      * Sets the current display mode which can be queried using media queries.
-     * @param displayMode A value from {@link org.chromium.blink_public.platform.WebDisplayMode}.
      */
-    public void setDisplayMode(int displayMode) {
+    public void setDisplayMode(@WebDisplayMode int displayMode) {
         mDisplayMode = displayMode;
     }
 
     @CalledByNative
-    private int getDisplayMode() {
+    private @WebDisplayMode int getDisplayMode() {
         return mDisplayMode;
     }
 
@@ -129,6 +114,12 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
         if (mFindResultListener != null) {
             mFindResultListener.onFindResult(result);
         }
+    }
+
+    @Override
+    public boolean addMessageToConsole(int level, String message, int lineNumber, String sourceId) {
+        // Only output console.log messages on debug variants of Android OS. crbug/869804
+        return !BuildInfo.isDebugAndroid();
     }
 
     @CalledByNative
@@ -186,13 +177,13 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
     }
 
     @Override
-    public void onLoadStarted(boolean toDifferentDocument) {
-        mTab.onLoadStarted(toDifferentDocument);
-    }
-
-    @Override
-    public void onLoadStopped() {
-        mTab.onLoadStopped();
+    public void loadingStateChanged(boolean toDifferentDocument) {
+        boolean isLoading = mTab.getWebContents() != null && mTab.getWebContents().isLoading();
+        if (isLoading) {
+            mTab.onLoadStarted(toDifferentDocument);
+        } else {
+            mTab.onLoadStopped();
+        }
     }
 
     @Override
@@ -205,30 +196,32 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
 
     @Override
     public void showRepostFormWarningDialog() {
-        mTab.resetSwipeRefreshHandler();
-        if (mTab.getActivity() == null) return;
-        RepostFormWarningDialog warningDialog = new RepostFormWarningDialog(mTab);
-        warningDialog.show(mTab.getActivity().getFragmentManager(), null);
+        // When the dialog is visible, keeping the refresh animation active
+        // in the background is distracting and unnecessary (and likely to
+        // jank when the dialog is shown).
+        SwipeRefreshHandler handler = SwipeRefreshHandler.get(mTab);
+        if (handler != null) handler.reset();
+
+        new RepostFormWarningHelper().show();
     }
 
     @Override
-    public void toggleFullscreenModeForTab(boolean enableFullscreen) {
-        if (mTab.getFullscreenManager() != null) {
-            mTab.getFullscreenManager().setPersistentFullscreenMode(enableFullscreen);
-        }
+    public void enterFullscreenModeForTab(boolean prefersNavigationBar) {
+        mTab.enterFullscreenMode(new FullscreenOptions(prefersNavigationBar));
+    }
 
-        RewindableIterator<TabObserver> observers = mTab.getTabObservers();
-        while (observers.hasNext()) {
-            observers.next().onToggleFullscreenMode(mTab, enableFullscreen);
-        }
+    @Override
+    public void exitFullscreenModeForTab() {
+        mTab.exitFullscreenMode();
     }
 
     @Override
     public void navigationStateChanged(int flags) {
         if ((flags & InvalidateTypes.TAB) != 0) {
+            int mediaType = MediaCaptureNotificationService.getMediaType(
+                    isCapturingAudio(), isCapturingVideo(), isCapturingScreen());
             MediaCaptureNotificationService.updateMediaNotificationForTab(
-                    mTab.getApplicationContext(), mTab.getId(), isCapturingAudio(),
-                    isCapturingVideo(), mTab.getUrl());
+                    mTab.getApplicationContext(), mTab.getId(), mediaType, mTab.getUrl());
         }
         if ((flags & InvalidateTypes.TITLE) != 0) {
             // Update cached title then notify observers.
@@ -244,6 +237,10 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
 
     @Override
     public void visibleSSLStateChanged() {
+        PolicyAuditor auditor = AppHooks.get().getPolicyAuditor();
+        auditor.notifyCertificateFailure(
+                PolicyAuditor.nativeGetCertificateFailure(mTab.getWebContents()),
+                mTab.getApplicationContext());
         RewindableIterator<TabObserver> observers = mTab.getTabObservers();
         while (observers.hasNext()) {
             observers.next().onSSLStateUpdated(mTab);
@@ -251,16 +248,21 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
     }
 
     @Override
-    public void webContentsCreated(WebContents sourceWebContents, long openerRenderFrameId,
-            String frameName, String targetUrl, WebContents newWebContents) {
+    public void webContentsCreated(WebContents sourceWebContents, long openerRenderProcessId,
+            long openerRenderFrameId, String frameName, String targetUrl,
+            WebContents newWebContents) {
         RewindableIterator<TabObserver> observers = mTab.getTabObservers();
         while (observers.hasNext()) {
-            observers.next().webContentsCreated(mTab, sourceWebContents, openerRenderFrameId,
-                    frameName, targetUrl, newWebContents);
+            observers.next().webContentsCreated(mTab, sourceWebContents, openerRenderProcessId,
+                    openerRenderFrameId, frameName, targetUrl, newWebContents);
         }
         // The URL can't be taken from the WebContents if it's paused.  Save it for later.
-        assert mWebContentsUrlMapping == null;
-        mWebContentsUrlMapping = Pair.create(newWebContents, targetUrl);
+        // TODO(crbug.com/758186): Remove after debugging.
+        if (mWebContentsUrlMapping.containsKey(newWebContents)) {
+            Log.e(TAG, "Duplicate mWebContentsUrlMapping key");
+        }
+        assert !mWebContentsUrlMapping.containsKey(newWebContents);
+        mWebContentsUrlMapping.put(newWebContents, targetUrl);
 
         // TODO(dfalcantara): Re-remove this once crbug.com/508366 is fixed.
         TabCreator tabCreator = mTab.getActivity().getTabCreator(mTab.isIncognito());
@@ -274,14 +276,14 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
     public void rendererUnresponsive() {
         super.rendererUnresponsive();
         if (mTab.getWebContents() != null) nativeOnRendererUnresponsive(mTab.getWebContents());
-        mTab.handleRendererUnresponsive();
+        mTab.handleRendererResponsiveStateChanged(false);
     }
 
     @Override
     public void rendererResponsive() {
         super.rendererResponsive();
         if (mTab.getWebContents() != null) nativeOnRendererResponsive(mTab.getWebContents());
-        mTab.handleRendererResponsive();
+        mTab.handleRendererResponsiveStateChanged(true);
     }
 
     @Override
@@ -293,10 +295,8 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
     @Override
     public void openNewTab(String url, String extraHeaders, ResourceRequestBody postData,
             int disposition, boolean isRendererInitiated) {
-        mTab.openNewTab(url, extraHeaders, postData, disposition, true, isRendererInitiated);
+        mTab.openNewTab(url, null, extraHeaders, postData, disposition, true, isRendererInitiated);
     }
-
-    private Pair<WebContents, String> mWebContentsUrlMapping;
 
     protected TabModel getTabModel() {
         // TODO(dfalcantara): Remove this when DocumentActivity.getTabModelSelector()
@@ -315,14 +315,17 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
     @CalledByNative
     public boolean addNewContents(WebContents sourceWebContents, WebContents webContents,
             int disposition, Rect initialPosition, boolean userGesture) {
-        assert mWebContentsUrlMapping.first == webContents;
+        // TODO(crbug.com/758186): Remove after debugging.
+        if (!mWebContentsUrlMapping.containsKey(webContents)) {
+            Log.e(TAG, "Missing mWebContentsUrlMapping key");
+        }
+        assert mWebContentsUrlMapping.containsKey(webContents);
 
         TabCreator tabCreator = mTab.getActivity().getTabCreator(mTab.isIncognito());
         assert tabCreator != null;
 
         // Grab the URL, which might not be available via the Tab.
-        String url = mWebContentsUrlMapping.second;
-        mWebContentsUrlMapping = null;
+        String url = mWebContentsUrlMapping.remove(webContents);
 
         // Skip opening a new Tab if it doesn't make sense.
         if (mTab.isClosing()) return false;
@@ -334,8 +337,7 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
                 webContents, mTab.getId(), TabLaunchType.FROM_LONGPRESS_FOREGROUND, url);
         boolean success = tabCreator.createsTabsAsynchronously() || createdSuccessfully;
         if (success && disposition == WindowOpenDisposition.NEW_POPUP) {
-            PolicyAuditor auditor =
-                    ((ChromeApplication) mTab.getApplicationContext()).getPolicyAuditor();
+            PolicyAuditor auditor = AppHooks.get().getPolicyAuditor();
             auditor.notifyAuditEvent(mTab.getApplicationContext(),
                     AuditEvent.OPEN_POPUP_URL_SUCCESS, url, "");
         }
@@ -343,27 +345,35 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
         return success;
     }
 
-    @CalledByNative
-    private boolean requestAppBanner() {
-        return mTab.requestAppBanner();
-    }
-
     @Override
     public void activateContents() {
-        boolean activityIsDestroyed = false;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
-            activityIsDestroyed = mTab.getActivity().isDestroyed();
+        ChromeActivity activity = mTab.getActivity();
+        if (activity == null) {
+            Log.e(TAG, "Activity not set activateContents().  Bailing out.");
+            return;
         }
-        if (activityIsDestroyed || !mTab.isInitialized()) {
+        if (activity.isActivityFinishingOrDestroyed()) {
             Log.e(TAG, "Activity destroyed before calling activateContents().  Bailing out.");
             return;
         }
+        if (!mTab.isInitialized()) {
+            Log.e(TAG, "Tab not initialized before calling activateContents().  Bailing out.");
+            return;
+        }
+
+        // Do nothing if the tab can currently be interacted with by the user.
+        if (mTab.isUserInteractable()) return;
 
         TabModel model = getTabModel();
         int index = model.indexOf(mTab);
         if (index == TabModel.INVALID_TAB_INDEX) return;
         TabModelUtils.setIndex(model, index);
-        bringActivityToForeground();
+
+        // Do nothing if the activity is visible (STOPPED is the only valid invisible state as we
+        // explicitly check isActivityDestroyed above).
+        if (ApplicationStatus.getStateForActivity(activity) == ActivityState.STOPPED) {
+            bringActivityToForeground();
+        }
     }
 
     /**
@@ -380,7 +390,7 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
         // Note that calling only the intent in order to activate the tab is slightly slower
         // because it will change the tab when the intent is handled, which happens after
         // Chrome gets back to the foreground.
-        Intent newIntent = Tab.createBringTabToFrontIntent(mTab.getId());
+        Intent newIntent = IntentUtils.createBringTabToFrontIntent(mTab.getId());
         if (newIntent != null) {
             newIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             mTab.getApplicationContext().startActivity(newIntent);
@@ -401,9 +411,6 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
         if (activity == null) return false;
         if (reverse) {
             View menuButton = activity.findViewById(R.id.menu_button);
-            if (menuButton == null || !menuButton.isShown()) {
-                menuButton = activity.findViewById(R.id.document_menu_button);
-            }
             if (menuButton != null && menuButton.isShown()) {
                 return menuButton.requestFocus();
             }
@@ -441,7 +448,7 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
      */
     @TargetApi(19)
     private void handleMediaKey(KeyEvent e) {
-        if (Build.VERSION.SDK_INT < 19) return;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) return;
         switch (e.getKeyCode()) {
             case KeyEvent.KEYCODE_MUTE:
             case KeyEvent.KEYCODE_HEADSETHOOK:
@@ -480,8 +487,147 @@ public class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
         return !mTab.isClosing() && nativeIsCapturingVideo(mTab.getWebContents());
     }
 
+    /**
+     * @return Whether screen is being captured.
+     */
+    private boolean isCapturingScreen() {
+        return !mTab.isClosing() && nativeIsCapturingScreen(mTab.getWebContents());
+    }
+
+    /**
+     * When STOP button in the media capture notification is clicked, pass the event to native
+     * to stop the media capture.
+     */
+    public static void notifyStopped(int tabId) {
+        final Tab tab = TabWindowManager.getInstance().getTabById(tabId);
+        if (tab != null) nativeNotifyStopped(tab.getWebContents());
+    }
+
+    @CalledByNative
+    private void setOverlayMode(boolean useOverlayMode) {
+        mTab.getActivity().setOverlayMode(useOverlayMode);
+    }
+
+    private ChromeFullscreenManager getFullscreenManager() {
+        // Following get* methods use this method instead of |Tab.getFullscreenManager|
+        // because the latter can return null if invoked while the tab is in detached state.
+        ChromeActivity activity = mTab.getActivity();
+        return activity != null ? activity.getFullscreenManager() : null;
+    }
+
+    @Override
+    public int getTopControlsHeight() {
+        ChromeFullscreenManager manager = getFullscreenManager();
+        return manager != null ? manager.getTopControlsHeight() : 0;
+    }
+
+    @Override
+    public int getBottomControlsHeight() {
+        ChromeFullscreenManager manager = getFullscreenManager();
+        return manager != null ? manager.getBottomControlsHeight() : 0;
+    }
+
+    @Override
+    public boolean controlsResizeView() {
+        ChromeFullscreenManager manager = getFullscreenManager();
+        return manager != null ? manager.controlsResizeView() : false;
+    }
+
+    /**
+     *  This is currently called when committing a pre-rendered page or activating a portal.
+     */
+    @CalledByNative
+    private void swapWebContents(
+            WebContents webContents, boolean didStartLoad, boolean didFinishLoad) {
+        mTab.swapWebContents(webContents, didStartLoad, didFinishLoad);
+    }
+
+    private float getDipScale() {
+        return mTab.getWindowAndroid().getDisplay().getDipScale();
+    }
+
+    private void enableDoubleTap(boolean enable) {
+        WebContents wc = mTab.getWebContents();
+        GestureListenerManager gestureManager =
+                wc != null ? GestureListenerManager.fromWebContents(wc) : null;
+        if (gestureManager != null) gestureManager.updateDoubleTapSupport(enable);
+    }
+
+    public void showFramebustBlockInfobarForTesting(String url) {
+        nativeShowFramebustBlockInfoBar(mTab.getWebContents(), url);
+    }
+
+    private class RepostFormWarningHelper extends EmptyTabObserver {
+        private ModalDialogManager mModalDialogManager;
+        private PropertyModel mDialogModel;
+
+        void show() {
+            if (mTab.getActivity() == null) return;
+            mTab.addObserver(this);
+            mModalDialogManager = mTab.getActivity().getModalDialogManager();
+
+            ModalDialogProperties
+                    .Controller dialogController = new ModalDialogProperties.Controller() {
+                @Override
+                public void onClick(PropertyModel model, int buttonType) {
+                    if (buttonType == ModalDialogProperties.ButtonType.POSITIVE) {
+                        mModalDialogManager.dismissDialog(
+                                model, DialogDismissalCause.POSITIVE_BUTTON_CLICKED);
+                    } else if (buttonType == ModalDialogProperties.ButtonType.NEGATIVE) {
+                        mModalDialogManager.dismissDialog(
+                                model, DialogDismissalCause.NEGATIVE_BUTTON_CLICKED);
+                    }
+                }
+
+                @Override
+                public void onDismiss(PropertyModel model, int dismissalCause) {
+                    mTab.removeObserver(RepostFormWarningHelper.this);
+                    if (!mTab.isInitialized()) return;
+                    switch (dismissalCause) {
+                        case DialogDismissalCause.POSITIVE_BUTTON_CLICKED:
+                            mTab.getWebContents().getNavigationController().continuePendingReload();
+                            break;
+                        case DialogDismissalCause.ACTIVITY_DESTROYED:
+                        case DialogDismissalCause.TAB_DESTROYED:
+                            // Intentionally ignored as the tab object is gone.
+                            break;
+                        default:
+                            mTab.getWebContents().getNavigationController().cancelPendingReload();
+                            break;
+                    }
+                }
+            };
+
+            Resources resources = mTab.getActivity().getResources();
+            mDialogModel = new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
+                                   .with(ModalDialogProperties.CONTROLLER, dialogController)
+                                   .with(ModalDialogProperties.TITLE, resources,
+                                           R.string.http_post_warning_title)
+                                   .with(ModalDialogProperties.MESSAGE, resources,
+                                           R.string.http_post_warning)
+                                   .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, resources,
+                                           R.string.http_post_warning_resend)
+                                   .with(ModalDialogProperties.NEGATIVE_BUTTON_TEXT, resources,
+                                           R.string.cancel)
+                                   .with(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE, true)
+                                   .build();
+
+            mModalDialogManager.showDialog(
+                    mDialogModel, ModalDialogManager.ModalDialogType.TAB, true);
+        }
+
+        @Override
+        public void onDestroyed(Tab tab) {
+            super.onDestroyed(tab);
+            mModalDialogManager.dismissDialog(mDialogModel, DialogDismissalCause.TAB_DESTROYED);
+        }
+    }
+
     private static native void nativeOnRendererUnresponsive(WebContents webContents);
     private static native void nativeOnRendererResponsive(WebContents webContents);
     private static native boolean nativeIsCapturingAudio(WebContents webContents);
     private static native boolean nativeIsCapturingVideo(WebContents webContents);
+    private static native boolean nativeIsCapturingScreen(WebContents webContents);
+    private static native void nativeNotifyStopped(WebContents webContents);
+    private static native void nativeShowFramebustBlockInfoBar(WebContents webContents, String url);
 }

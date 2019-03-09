@@ -21,10 +21,7 @@ class ChromeBrowserState;
 namespace net {
 class CookieStore;
 class HttpNetworkSession;
-class HttpServerPropertiesManager;
 class HttpTransactionFactory;
-class SdchManager;
-class SdchOwner;
 }  // namespace net
 
 class ChromeBrowserStateImplIOData : public ChromeBrowserStateIOData {
@@ -37,7 +34,6 @@ class ChromeBrowserStateImplIOData : public ChromeBrowserStateIOData {
     // Init() must be called before ~Handle(). It records most of the
     // parameters needed to construct a ChromeURLRequestContextGetter.
     void Init(const base::FilePath& cookie_path,
-              const base::FilePath& channel_id_path,
               const base::FilePath& cache_path,
               int cache_max_size,
               const base::FilePath& profile_path);
@@ -105,7 +101,6 @@ class ChromeBrowserStateImplIOData : public ChromeBrowserStateIOData {
 
     // All of these parameters are intended to be read on the IO thread.
     base::FilePath cookie_path;
-    base::FilePath channel_id_path;
     base::FilePath cache_path;
     int cache_max_size;
   };
@@ -139,16 +134,9 @@ class ChromeBrowserStateImplIOData : public ChromeBrowserStateIOData {
   mutable std::unique_ptr<net::HttpNetworkSession> http_network_session_;
   mutable std::unique_ptr<net::HttpTransactionFactory> main_http_factory_;
 
-  // Same as |ChromeBrowserState::http_server_properties_|, owned there to
-  // maintain destruction ordering.
-  mutable net::HttpServerPropertiesManager* http_server_properties_manager_;
-
   mutable std::unique_ptr<net::CookieStore> main_cookie_store_;
 
   mutable std::unique_ptr<net::URLRequestJobFactory> main_job_factory_;
-
-  mutable std::unique_ptr<net::SdchManager> sdch_manager_;
-  mutable std::unique_ptr<net::SdchOwner> sdch_policy_;
 
   // Parameters needed for isolated apps.
   base::FilePath profile_path_;

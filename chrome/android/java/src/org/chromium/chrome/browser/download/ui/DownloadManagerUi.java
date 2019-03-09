@@ -5,209 +5,291 @@
 package org.chromium.chrome.browser.download.ui;
 
 import android.app.Activity;
-import android.content.Context;
-import android.content.res.Resources;
-import android.graphics.drawable.Drawable;
-import android.os.AsyncTask;
-import android.os.Environment;
-import android.os.StatFs;
-import android.support.v4.widget.DrawerLayout;
-import android.support.v7.app.ActionBarDrawerToggle;
-import android.support.v7.widget.Toolbar;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.os.Handler;
+import android.support.graphics.drawable.VectorDrawableCompat;
+import android.support.v7.widget.LinearLayoutManager;
+import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.Toolbar.OnMenuItemClickListener;
-import android.text.format.Formatter;
-import android.util.AttributeSet;
-import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
-import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.BaseAdapter;
-import android.widget.ListView;
-import android.widget.ProgressBar;
-import android.widget.TextView;
 
-import org.chromium.base.ApiCompatibilityUtils;
-import org.chromium.base.Log;
-import org.chromium.chrome.R;
-import org.chromium.chrome.browser.widget.FadingShadow;
-import org.chromium.chrome.browser.widget.FadingShadowView;
-import org.chromium.chrome.browser.widget.TintedDrawable;
-import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.base.CollectionUtil;
+import org.chromium.base.DiscardableReferencePool;
+import org.chromium.base.FileUtils;
+import org.chromium.base.ObserverList;
+import org.chromium.base.TraceEvent;
+import org.chromium.base.VisibleForTesting;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
+import org.chromium.chrome.browser.ChromeApplication;
+import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.download.DownloadManagerService;
+import org.chromium.chrome.browser.download.DownloadUtils;
+import org.chromium.chrome.browser.download.home.DownloadManagerCoordinator;
+import org.chromium.chrome.browser.download.home.metrics.UmaUtils;
+import org.chromium.chrome.browser.download.home.metrics.UmaUtils.MenuAction;
+import org.chromium.chrome.browser.download.home.toolbar.ToolbarUtils;
+import org.chromium.chrome.browser.download.items.OfflineContentAggregatorFactory;
+import org.chromium.chrome.browser.native_page.BasicNativePage;
+import org.chromium.chrome.browser.preferences.PreferencesLauncher;
+import org.chromium.chrome.browser.preferences.download.DownloadPreferences;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.snackbar.Snackbar;
+import org.chromium.chrome.browser.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.snackbar.SnackbarManager.SnackbarController;
+import org.chromium.chrome.browser.widget.ThumbnailProvider;
+import org.chromium.chrome.browser.widget.ThumbnailProviderImpl;
+import org.chromium.chrome.browser.widget.selection.SelectableListLayout;
+import org.chromium.chrome.browser.widget.selection.SelectableListToolbar.SearchDelegate;
+import org.chromium.chrome.browser.widget.selection.SelectionDelegate;
+import org.chromium.chrome.download.R;
+import org.chromium.components.offline_items_collection.OfflineContentProvider;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Displays and manages the UI for the download manager.
  */
-public class DownloadManagerUi extends DrawerLayout implements OnMenuItemClickListener {
-    private static final String TAG = "download_ui";
 
-    /** Responds to events occurring in the DownloadManagerUi. */
-    public interface DownloadManagerUiDelegate {
-        /** Called when the close button is clicked. */
-        void onCloseButtonClicked(DownloadManagerUi ui);
-    }
+public class DownloadManagerUi implements OnMenuItemClickListener, SearchDelegate,
+                                          BackendProvider.UIDelegate, DownloadManagerCoordinator {
+    private static class DownloadBackendProvider implements BackendProvider {
+        private final SelectionDelegate<DownloadHistoryItemWrapper> mSelectionDelegate;
+        private final UIDelegate mUIDelegate;
+        private ThumbnailProvider mThumbnailProvider;
 
-    /** Manages the display of space used by the downloads. */
-    private static final class SpaceDisplay {
-        private final AsyncTask<Void, Void, Long> mFileSystemBytesTask;
-
-        private TextView mSpaceUsedTextView;
-        private TextView mSpaceTotalTextView;
-        private ProgressBar mSpaceBar;
-        private long mFileSystemBytes = Long.MAX_VALUE;
-
-        SpaceDisplay(final ViewGroup parent) {
-            mSpaceUsedTextView = (TextView) parent.findViewById(R.id.space_used_display);
-            mSpaceTotalTextView = (TextView) parent.findViewById(R.id.space_total_display);
-            mSpaceBar = (ProgressBar) parent.findViewById(R.id.space_bar);
-
-            mFileSystemBytesTask = new AsyncTask<Void, Void, Long>() {
-                @Override
-                protected Long doInBackground(Void... params) {
-                    StatFs statFs = new StatFs(Environment.getExternalStoragePublicDirectory(
-                            Environment.DIRECTORY_DOWNLOADS).getPath());
-                    long totalBlocks = ApiCompatibilityUtils.getBlockCount(statFs);
-                    long blockSize = ApiCompatibilityUtils.getBlockSize(statFs);
-                    long fileSystemBytes = totalBlocks * blockSize;
-                    return fileSystemBytes;
-                }
-            };
-            mFileSystemBytesTask.execute();
+        DownloadBackendProvider(DiscardableReferencePool referencePool, UIDelegate uiDelegate) {
+            mSelectionDelegate = new DownloadItemSelectionDelegate();
+            mThumbnailProvider = new ThumbnailProviderImpl(
+                    referencePool, ThumbnailProviderImpl.ClientType.DOWNLOAD_HOME);
+            mUIDelegate = uiDelegate;
         }
 
-        private void update(long usedBytes) {
-            Context context = mSpaceUsedTextView.getContext();
+        // BackendProvider implementation.
+        @Override
+        public DownloadDelegate getDownloadDelegate() {
+            return DownloadManagerService.getDownloadManagerService();
+        }
 
-            if (mFileSystemBytes == Long.MAX_VALUE) {
-                try {
-                    mFileSystemBytes = mFileSystemBytesTask.get();
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to get file system size.");
-                }
+        @Override
+        public OfflineContentProvider getOfflineContentProvider() {
+            return OfflineContentAggregatorFactory.forProfile(
+                    Profile.getLastUsedProfile().getOriginalProfile());
+        }
 
-                // Display how big the storage is.
-                String fileSystemReadable = Formatter.formatFileSize(context, mFileSystemBytes);
-                mSpaceTotalTextView.setText(context.getString(
-                        R.string.download_manager_ui_space_used, fileSystemReadable));
-            }
+        @Override
+        public ThumbnailProvider getThumbnailProvider() {
+            return mThumbnailProvider;
+        }
 
-            // Indicate how much space has been used by downloads.
-            int percentage =
-                    mFileSystemBytes == 0 ? 0 : (int) (100.0 * usedBytes / mFileSystemBytes);
-            mSpaceBar.setProgress(percentage);
-            mSpaceUsedTextView.setText(Formatter.formatFileSize(context, usedBytes));
+        @Override
+        public SelectionDelegate<DownloadHistoryItemWrapper> getSelectionDelegate() {
+            return mSelectionDelegate;
+        }
+
+        @Override
+        public UIDelegate getUIDelegate() {
+            return mUIDelegate;
+        }
+
+        @Override
+        public void destroy() {
+            mThumbnailProvider.destroy();
+            mThumbnailProvider = null;
         }
     }
 
-    /** Allows selecting an item from a list displayed in the drawer. */
-    private static final class FilterAdapter
-            extends BaseAdapter implements AdapterView.OnItemClickListener {
+    private class UndoDeletionSnackbarController implements SnackbarController {
+        @Override
+        public void onAction(Object actionData) {
+            @SuppressWarnings("unchecked")
+            List<DownloadHistoryItemWrapper> items = (List<DownloadHistoryItemWrapper>) actionData;
 
-        /** Icons and labels for each filter in the menu. */
-        private static final int[][] FILTER_LIST = new int[][] {
-            {R.drawable.ic_get_app_white_24dp, R.string.download_manager_ui_all_downloads},
-            {R.drawable.ic_drive_site_white_24dp, R.string.download_manager_ui_pages},
-            {R.drawable.ic_music_video_white_24dp, R.string.download_manager_ui_video},
-            {R.drawable.ic_music_note_white_24dp, R.string.download_manager_ui_audio},
-            {R.drawable.ic_image_white_24dp, R.string.download_manager_ui_images},
-            {R.drawable.ic_drive_file_white_24dp, R.string.download_manager_ui_documents},
-            {R.drawable.ic_folder_white_24dp, R.string.download_manager_ui_other}
-        };
+            // Deletion was undone. Add items back to the adapter.
+            mHistoryAdapter.unmarkItemsForDeletion(items);
 
-        private final DrawerLayout mRootLayout;
-        private final int mSelectedBackgroundColor;
-        private int mSelectedIndex;
-
-        public FilterAdapter(DrawerLayout parent) {
-            mRootLayout = parent;
-            mSelectedBackgroundColor = ApiCompatibilityUtils.getColor(
-                    parent.getContext().getResources(), R.color.default_primary_color);
+            RecordUserAction.record("Android.DownloadManager.UndoDelete");
         }
 
         @Override
-        public int getCount() {
-            return FILTER_LIST.length;
-        }
+        public void onDismissNoAction(Object actionData) {
+            @SuppressWarnings("unchecked")
+            List<DownloadHistoryItemWrapper> items = (List<DownloadHistoryItemWrapper>) actionData;
 
-        @Override
-        public Object getItem(int position) {
-            return FILTER_LIST[position];
-        }
+            // Deletion was not undone. Remove downloads from backend.
+            final ArrayList<String> filesToDelete = new ArrayList<>();
 
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
-
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            Context context = mRootLayout.getContext();
-            Resources resources = context.getResources();
-
-            TextView labelView = null;
-            if (convertView instanceof TextView) {
-                labelView = (TextView) convertView;
-            } else {
-                labelView = (TextView) LayoutInflater.from(context).inflate(
-                        R.layout.download_manager_ui_drawer_filter, null);
+            // Some types of DownloadHistoryItemWrappers delete their own files when #remove()
+            // is called. Determine which files are not deleted by the #remove() call.
+            // TODO(qinmin): handle the case wrappedItem.getFilePath() returns a content Uri.
+            for (int i = 0; i < items.size(); i++) {
+                DownloadHistoryItemWrapper wrappedItem  = items.get(i);
+                if (!wrappedItem.removePermanently()) filesToDelete.add(wrappedItem.getFilePath());
             }
 
-            int iconId = FILTER_LIST[position][0];
-            labelView.setText(FILTER_LIST[position][1]);
-
-            Drawable iconDrawable = null;
-            if (position == mSelectedIndex) {
-                // Highlight the selected item by changing the foreground and background colors.
-                labelView.setBackgroundColor(mSelectedBackgroundColor);
-                iconDrawable = TintedDrawable.constructTintedDrawable(
-                        resources, iconId, R.color.light_active_color);
-                labelView.setTextColor(
-                        ApiCompatibilityUtils.getColor(resources, R.color.light_active_color));
-            } else {
-                // Draw the item normally.
-                labelView.setBackground(null);
-                iconDrawable = TintedDrawable.constructTintedDrawable(
-                        resources, iconId, R.color.descriptive_text_color);
-                labelView.setTextColor(
-                        ApiCompatibilityUtils.getColor(resources, R.color.default_text_color));
+            // Delete the files associated with the download items (if necessary) using a single
+            // task that batch deletes all of the files. The thread pool has a finite
+            // number of tasks that can be queued at once. If too many tasks are queued an
+            // exception is thrown. See crbug.com/643811.
+            // On Android M, Android DownloadManager may not delete the actual file, so we need to
+            // delete the files here.
+            if (filesToDelete.size() != 0) {
+                PostTask.postTask(TaskTraits.BEST_EFFORT_MAY_BLOCK,
+                        () -> { FileUtils.batchDeleteFiles(filesToDelete); });
             }
-
-            labelView.setCompoundDrawablesWithIntrinsicBounds(iconDrawable, null, null, null);
-            return labelView;
-        }
-
-        @Override
-        public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-            mSelectedIndex = position;
-            notifyDataSetChanged();
-            mRootLayout.closeDrawer(Gravity.START);
+            RecordUserAction.record("Android.DownloadManager.Delete");
         }
     }
 
+    private static final int PREFETCH_BUNDLE_OPEN_DELAY_MS = 500;
+
+    private static BackendProvider sProviderForTests;
+
+    private final DownloadHistoryAdapter mHistoryAdapter;
     private final FilterAdapter mFilterAdapter;
-    private DownloadManagerUiDelegate mDelegate;
-    private ActionBarDrawerToggle mActionBarDrawerToggle;
-    private DownloadManagerToolbar mToolbar;
-    private SpaceDisplay mSpaceDisplay;
-    private ListView mFilterView;
+    private final ObserverList<Observer> mObservers = new ObserverList<>();
+    private final BackendProvider mBackendProvider;
+    private final SnackbarManager mSnackbarManager;
 
-    public DownloadManagerUi(Context context, AttributeSet attrs) {
-        super(context, attrs);
-        mFilterAdapter = new FilterAdapter(this);
+    private final UndoDeletionSnackbarController mUndoDeletionSnackbarController;
+    private final RecyclerView mRecyclerView;
+
+    private BasicNativePage mNativePage;
+    private Activity mActivity;
+    private ViewGroup mMainView;
+    private DownloadManagerToolbar mToolbar;
+    private SelectableListLayout<DownloadHistoryItemWrapper> mSelectableListLayout;
+    private boolean mIsSeparateActivity;
+
+    private int mSearchMenuId;
+    private int mInfoMenuId;
+
+    /**
+     * Constructs a new DownloadManagerUi.
+     * @param activity The {@link Activity} associated with the download manager.
+     * @param isOffTheRecord Whether an off-the-record tab is currently being displayed.
+     * @param parentComponent The {@link ComponentName} of the parent activity.
+     * @param isSeparateActivity Whether the download manager UI will be shown in a separate
+     *                           activity than the main Chrome activity.
+     * @param snackbarManager The {@link SnackbarManager} used to display snackbars.
+     */
+    @SuppressWarnings({"unchecked"}) // mSelectableListLayout
+    public DownloadManagerUi(Activity activity, boolean isOffTheRecord,
+            ComponentName parentComponent, boolean isSeparateActivity,
+            SnackbarManager snackbarManager) {
+        TraceEvent.startAsync("DownloadManagerUi shown", hashCode());
+        mActivity = activity;
+        ChromeApplication application = (ChromeApplication) activity.getApplication();
+        mBackendProvider = sProviderForTests == null
+                ? new DownloadBackendProvider(application.getReferencePool(), this)
+                : sProviderForTests;
+        mSnackbarManager = snackbarManager;
+
+        mMainView = (ViewGroup) LayoutInflater.from(activity).inflate(R.layout.download_main, null);
+
+        mSelectableListLayout = (SelectableListLayout<DownloadHistoryItemWrapper>)
+                mMainView.findViewById(R.id.selectable_list);
+
+        mSelectableListLayout.initializeEmptyView(
+                VectorDrawableCompat.create(
+                        mActivity.getResources(), R.drawable.downloads_big, mActivity.getTheme()),
+                R.string.download_manager_ui_empty, R.string.download_manager_no_results);
+
+        mHistoryAdapter = new DownloadHistoryAdapter(isOffTheRecord, parentComponent);
+        mRecyclerView = mSelectableListLayout.initializeRecyclerView(mHistoryAdapter);
+
+        // Prevent every progress update from causing a transition animation.
+        mRecyclerView.getItemAnimator().setChangeDuration(0);
+
+        mRecyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
+                updateInfoButtonVisibility();
+            }
+        });
+
+        mFilterAdapter = new FilterAdapter(mActivity.getResources());
+        mFilterAdapter.initialize(this);
+
+        boolean isLocationEnabled =
+                ChromeFeatureList.isEnabled(ChromeFeatureList.DOWNLOADS_LOCATION_CHANGE);
+        int normalGroupId =
+                isLocationEnabled ? R.id.with_settings_normal_menu_group : R.id.normal_menu_group;
+        mSearchMenuId = isLocationEnabled ? R.id.with_settings_search_menu_id : R.id.search_menu_id;
+        mInfoMenuId = isLocationEnabled ? 0 : R.id.info_menu_id;
+        final int closeMenuId =
+                isLocationEnabled ? R.id.with_settings_close_menu_id : R.id.close_menu_id;
+
+        mToolbar = (DownloadManagerToolbar) mSelectableListLayout.initializeToolbar(
+                R.layout.download_manager_toolbar, mBackendProvider.getSelectionDelegate(), 0, null,
+                normalGroupId, R.id.selection_mode_menu_group, this, true, isSeparateActivity);
+        mToolbar.getMenu().setGroupVisible(normalGroupId, true);
+        mToolbar.setManager(this);
+        mToolbar.initialize(mFilterAdapter);
+
+        mToolbar.initializeSearchView(this, R.string.download_manager_search, mSearchMenuId);
+
+        mToolbar.setInfoMenuItem(mInfoMenuId);
+
+        if (isLocationEnabled) {
+            ToolbarUtils.setupTrackerForDownloadSettingsIPH(mToolbar, Profile.getLastUsedProfile());
+        }
+
+        mSelectableListLayout.configureWideDisplayStyle();
+        mHistoryAdapter.initialize(mBackendProvider, mSelectableListLayout.getUiConfig());
+
+        mUndoDeletionSnackbarController = new UndoDeletionSnackbarController();
+        enableStorageInfoHeader(mHistoryAdapter.shouldShowStorageInfoHeader());
+
+        mIsSeparateActivity = isSeparateActivity;
+        if (!mIsSeparateActivity) mToolbar.removeMenuItem(closeMenuId);
+
+        RecordUserAction.record("Android.DownloadManager.Open");
+    }
+
+    /**
+     * Sets the {@link BasicNativePage} that holds this manager.
+     */
+    public void setBasicNativePage(BasicNativePage delegate) {
+        mNativePage = delegate;
+    }
+
+    // BackendProvider.UIDelegate implementation.
+    @Override
+    public void deleteItem(DownloadHistoryItemWrapper item) {
+        deleteItems(CollectionUtil.newArrayList(item));
     }
 
     @Override
-    protected void onFinishInflate() {
-        super.onFinishInflate();
+    public void shareItem(DownloadHistoryItemWrapper item) {
+        shareItems(CollectionUtil.newArrayList(item));
+    }
 
-        mToolbar = (DownloadManagerToolbar) findViewById(R.id.action_bar);
-        mToolbar.setOnMenuItemClickListener(this);
+    /**
+     * Called when the activity/native page is destroyed.
+     */
+    @Override
+    public void destroy() {
+        mObservers.clear();
 
-        mSpaceDisplay = new SpaceDisplay(this);
-        mFilterView = (ListView) findViewById(R.id.section_list);
-        mFilterView.setAdapter(mFilterAdapter);
-        mFilterView.setOnItemClickListener(mFilterAdapter);
+        mFilterAdapter.destroy();
+        mHistoryAdapter.destroy();
+
+        dismissUndoDeletionSnackbars();
+
+        mBackendProvider.destroy();
+
+        mSelectableListLayout.onDestroyed();
+        TraceEvent.finishAsync("DownloadManagerUi shown", hashCode());
     }
 
     /**
@@ -215,49 +297,238 @@ public class DownloadManagerUi extends DrawerLayout implements OnMenuItemClickLi
      *
      * @return Whether the back button was handled.
      */
+    @Override
     public boolean onBackPressed() {
-        if (isDrawerOpen(Gravity.START)) {
-            closeDrawer(Gravity.START);
+        return mSelectableListLayout.onBackPressed();
+    }
+
+    /**
+     * @return The view that shows the main download UI.
+     */
+    @Override
+    public ViewGroup getView() {
+        return mMainView;
+    }
+
+    /**
+     * Sets the download manager to the state that the url represents.
+     */
+    @Override
+    public void updateForUrl(String url) {
+        int filter = DownloadFilter.getFilterFromUrl(url);
+        onFilterChanged(filter);
+    }
+
+    /**
+     * Performs an animated expansion of the prefetch section.
+     */
+    @Override
+    public void showPrefetchSection() {
+        new Handler().postDelayed(() -> {
+            mHistoryAdapter.setPrefetchSectionExpanded(true);
+        }, PREFETCH_BUNDLE_OPEN_DELAY_MS);
+    }
+
+    @Override
+    public void addObserver(Observer observer) {
+        mObservers.addObserver(observer);
+    }
+
+    @Override
+    public void removeObserver(Observer observer) {
+        mObservers.removeObserver(observer);
+    }
+
+    @Override
+    public boolean onMenuItemClick(MenuItem item) {
+        UmaUtils.recordTopMenuAction(item.getItemId());
+
+        if ((item.getItemId() == R.id.close_menu_id
+                    || item.getItemId() == R.id.with_settings_close_menu_id)
+                && mIsSeparateActivity) {
+            mActivity.finish();
+            return true;
+        } else if (item.getItemId() == R.id.selection_mode_delete_menu_id) {
+            List<DownloadHistoryItemWrapper> items =
+                    mBackendProvider.getSelectionDelegate().getSelectedItemsAsList();
+            mBackendProvider.getSelectionDelegate().clearSelection();
+
+            UmaUtils.recordTopMenuDeleteCount(items.size());
+            deleteItems(items);
+            return true;
+        } else if (item.getItemId() == R.id.selection_mode_share_menu_id) {
+            List<DownloadHistoryItemWrapper> items =
+                    mBackendProvider.getSelectionDelegate().getSelectedItemsAsList();
+            // TODO(twellington): ideally the intent chooser would be started with
+            //                    startActivityForResult() and the selection would only be cleared
+            //                    after receiving an OK response. See crbug.com/638916.
+            mBackendProvider.getSelectionDelegate().clearSelection();
+            UmaUtils.recordTopMenuShareCount(items.size());
+            shareItems(items);
+            return true;
+        } else if (item.getItemId() == mInfoMenuId) {
+            boolean showInfo = !mHistoryAdapter.shouldShowStorageInfoHeader();
+            RecordHistogram.recordEnumeratedHistogram("Android.DownloadManager.Menu.Action",
+                    showInfo ? UmaUtils.MenuAction.SHOW_INFO : UmaUtils.MenuAction.HIDE_INFO,
+                    MenuAction.NUM_ENTRIES);
+            enableStorageInfoHeader(showInfo);
+            return true;
+        } else if (item.getItemId() == mSearchMenuId) {
+            // The header should be removed as soon as a search is started. It will be added back in
+            // DownloadHistoryAdatper#filter() when the search is ended.
+            mHistoryAdapter.removeHeader();
+            mSelectableListLayout.onStartSearch();
+            mToolbar.showSearchView();
+            return true;
+        } else if (item.getItemId() == R.id.settings_menu_id) {
+            PreferencesLauncher.launchSettingsPage(mActivity, DownloadPreferences.class);
             return true;
         }
         return false;
     }
 
     /**
-     * Initializes the UI for the given Activity.
-     *
-     * @param activity Activity that is showing the UI.
+     * @return The activity that holds the download UI.
      */
-    public void initialize(DownloadManagerUiDelegate delegate, Activity activity) {
-        mDelegate = delegate;
+    Activity getActivity() {
+        return mActivity;
+    }
 
-        mActionBarDrawerToggle = new ActionBarDrawerToggle(activity,
-                this, (Toolbar) findViewById(R.id.action_bar),
-                R.string.accessibility_bookmark_drawer_toggle_btn_open,
-                R.string.accessibility_bookmark_drawer_toggle_btn_close);
-        addDrawerListener(mActionBarDrawerToggle);
-        mActionBarDrawerToggle.syncState();
+    /**
+     * @return The BackendProvider associated with the download UI.
+     */
+    public BackendProvider getBackendProvider() {
+        return mBackendProvider;
+    }
 
-        FadingShadowView shadow = (FadingShadowView) findViewById(R.id.shadow);
-        if (DeviceFormFactor.isLargeTablet(getContext())) {
-            shadow.setVisibility(View.GONE);
-        } else {
-            shadow.init(ApiCompatibilityUtils.getColor(getResources(),
-                    R.color.toolbar_shadow_color), FadingShadow.POSITION_TOP);
+    /** Called when the filter has been changed by the user. */
+    void onFilterChanged(@DownloadFilter.Type int filter) {
+        mBackendProvider.getSelectionDelegate().clearSelection();
+        mToolbar.hideSearchView();
+        mToolbar.onFilterChanged(filter);
+        mHistoryAdapter.onFilterChanged(filter);
+
+        String url = DownloadFilter.getUrlForFilter(filter);
+        for (Observer observer : mObservers) observer.onUrlChanged(url);
+
+        if (mNativePage != null) {
+            mNativePage.onStateChange(DownloadFilter.getUrlForFilter(filter), true);
         }
 
-        mSpaceDisplay.update(0);
-
-        ((Toolbar) findViewById(R.id.action_bar)).setTitle(R.string.menu_downloads);
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.DownloadManager.Filter", filter, DownloadFilter.Type.NUM_ENTRIES);
     }
 
     @Override
-    public boolean onMenuItemClick(MenuItem item) {
-        if (item.getItemId() == R.id.close_menu_id && mDelegate != null) {
-            mDelegate.onCloseButtonClicked(DownloadManagerUi.this);
-            return true;
-        }
-        return false;
+    public void onSearchTextChanged(String query) {
+        mHistoryAdapter.search(query);
     }
 
+    @Override
+    public void onEndSearch() {
+        mSelectableListLayout.onEndSearch();
+        mHistoryAdapter.onEndSearch();
+    }
+
+    private void enableStorageInfoHeader(boolean show) {
+        // Finish any running or pending animations right away.
+        if (mRecyclerView.getItemAnimator() != null) {
+            mRecyclerView.getItemAnimator().endAnimations();
+        }
+
+        mHistoryAdapter.setShowStorageInfoHeader(show);
+        mToolbar.updateInfoMenuItem(true, show);
+    }
+
+    private void startShareIntent(Intent intent) {
+        mActivity.startActivity(Intent.createChooser(
+                intent, mActivity.getString(R.string.share_link_chooser_title)));
+    }
+
+    private void deleteItems(List<DownloadHistoryItemWrapper> items) {
+        // Build a full list of items to remove for the selected items.
+        List<DownloadHistoryItemWrapper> itemsToDelete = new ArrayList<>();
+
+        Set<String> filePathsToRemove = new HashSet<>();
+        CollectionUtil.forEach(items, item -> {
+            if (!filePathsToRemove.contains(item.getFilePath())) {
+                Set<DownloadHistoryItemWrapper> itemsForFilePath =
+                        mHistoryAdapter.getItemsForFilePath(item.getFilePath());
+                if (itemsForFilePath != null) itemsToDelete.addAll(itemsForFilePath);
+                filePathsToRemove.add(item.getFilePath());
+            }
+        });
+
+        if (itemsToDelete.isEmpty()) return;
+
+        mHistoryAdapter.markItemsForDeletion(itemsToDelete);
+
+        boolean singleItemDeleted = items.size() == 1;
+        String snackbarText = singleItemDeleted
+                ? items.get(0).getDisplayFileName()
+                : String.format(Locale.getDefault(), "%d", items.size());
+        int snackbarTemplateId = singleItemDeleted
+                ? R.string.delete_message
+                : R.string.undo_bar_multiple_downloads_delete_message;
+
+        Snackbar snackbar = Snackbar.make(snackbarText, mUndoDeletionSnackbarController,
+                Snackbar.TYPE_ACTION, Snackbar.UMA_DOWNLOAD_DELETE_UNDO);
+        snackbar.setAction(mActivity.getString(R.string.undo), itemsToDelete);
+        snackbar.setTemplateText(mActivity.getString(snackbarTemplateId));
+
+        mSnackbarManager.showSnackbar(snackbar);
+    }
+
+    private void dismissUndoDeletionSnackbars() {
+        mSnackbarManager.dismissSnackbars(mUndoDeletionSnackbarController);
+    }
+
+    /**
+     * @return True if info menu item should be shown on download toolbar, false otherwise.
+     */
+    private boolean shouldShowInfoButton() {
+        return mHistoryAdapter.getItemCount() > 0 && !mToolbar.isSearching()
+                && !mBackendProvider.getSelectionDelegate().isSelectionEnabled();
+    }
+
+    /**
+     * Update info button visibility based on whether info header is visible on download page.
+     */
+    void updateInfoButtonVisibility() {
+        LinearLayoutManager layoutManager = (LinearLayoutManager) mRecyclerView.getLayoutManager();
+        boolean infoHeaderIsVisible = layoutManager.findFirstVisibleItemPosition() == 0;
+        mToolbar.updateInfoMenuItem(infoHeaderIsVisible && shouldShowInfoButton(),
+                mHistoryAdapter.shouldShowStorageInfoHeader());
+    }
+
+    @VisibleForTesting
+    public SnackbarManager getSnackbarManagerForTesting() {
+        return mSnackbarManager;
+    }
+
+    /** Returns the {@link DownloadManagerToolbar}. */
+    @VisibleForTesting
+    public DownloadManagerToolbar getDownloadManagerToolbarForTests() {
+        return mToolbar;
+    }
+
+    /** Returns the {@link DownloadHistoryAdapter}. */
+    @VisibleForTesting
+    public DownloadHistoryAdapter getDownloadHistoryAdapterForTests() {
+        return mHistoryAdapter;
+    }
+
+    /** Sets a BackendProvider that is used in place of a real one. */
+    @VisibleForTesting
+    public static void setProviderForTests(BackendProvider provider) {
+        sProviderForTests = provider;
+    }
+
+    private void shareItems(final List<DownloadHistoryItemWrapper> items) {
+        boolean done = DownloadUtils.prepareForSharing(items, (newFilePathMap) -> {
+            startShareIntent(DownloadUtils.createShareIntent(items, newFilePathMap));
+        });
+
+        if (done) startShareIntent(DownloadUtils.createShareIntent(items, null));
+    }
 }

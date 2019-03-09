@@ -10,33 +10,23 @@
 
 namespace base {
 
-class Time;
-
-// Vends information about the current process.
-class BASE_EXPORT CurrentProcessInfo {
- public:
-  // Returns the time at which the process was launched. May be empty if an
-  // error occurred retrieving the information.
-  static const Time CreationTime();
-};
-
 #if defined(OS_WIN)
-
 enum IntegrityLevel {
   INTEGRITY_UNKNOWN,
+  UNTRUSTED_INTEGRITY,
   LOW_INTEGRITY,
   MEDIUM_INTEGRITY,
   HIGH_INTEGRITY,
 };
 
-// Returns the integrity level of the process. Returns INTEGRITY_UNKNOWN if the
-// system does not support integrity levels (pre-Vista) or in the case of an
-// underlying system failure.
+// Returns the integrity level of the process. Returns INTEGRITY_UNKNOWN in the
+// case of an underlying system failure.
 BASE_EXPORT IntegrityLevel GetCurrentProcessIntegrityLevel();
 
+// Determines whether the current process is elevated.
+BASE_EXPORT bool IsCurrentProcessElevated();
+
 #endif  // defined(OS_WIN)
-
-
 
 }  // namespace base
 

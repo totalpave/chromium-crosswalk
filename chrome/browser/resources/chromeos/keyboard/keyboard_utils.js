@@ -12,14 +12,14 @@ var keyboard = {};
  * saves the host window.
  * @private
  */
-var keyboardHostWindow_;
+var keyboardHostWindow;
 
 /**
  * keyboard_utils may be injected as content script. This variable gets and
  * saves the host origin.
  * @private
  */
-var keyboardHostOrigin_;
+var keyboardHostOrigin;
 
 /**
  * Handles the initial messaging posted from webview, where this script is
@@ -28,10 +28,9 @@ var keyboardHostOrigin_;
  * @private
  */
 keyboard.onInitMessage_ = function(event) {
-  if (event.data == 'initialMessage' &&
-      event.origin == 'chrome://oobe') {
-    keyboardHostWindow_ = event.source;
-    keyboardHostOrigin_ = event.origin;
+  if (event.data == 'initialMessage' && event.origin == 'chrome://oobe') {
+    keyboardHostWindow = event.source;
+    keyboardHostOrigin = event.origin;
   }
 };
 
@@ -46,19 +45,17 @@ keyboard.onAdvanceFocus = function(reverse) {
 
 /**
  * Swallows keypress and keyup events of arrow keys.
- * @param {Event} event Raised event.
+ * @param {!Event} event Raised event.
  * @private
  */
 keyboard.onKeyIgnore_ = function(event) {
-  event = /** @type {KeyboardEvent} */(event);
+  event = /** @type {!KeyboardEvent} */ (event);
 
   if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey)
     return;
 
-  if (event.key == 'ArrowLeft' ||
-      event.key == 'ArrowRight' ||
-      event.key == 'ArrowUp' ||
-      event.key == 'ArrowDown') {
+  if (event.key == 'ArrowLeft' || event.key == 'ArrowRight' ||
+      event.key == 'ArrowUp' || event.key == 'ArrowDown') {
     event.stopPropagation();
     event.preventDefault();
   }
@@ -66,11 +63,11 @@ keyboard.onKeyIgnore_ = function(event) {
 
 /**
  * Handles arrow key events, depending on if self is a content script.
- * @param {Event} event Raised event.
+ * @param {!Event} event Raised event.
  * @private
  */
 keyboard.onKeyDown_ = function(event) {
-  event = /** @type {KeyboardEvent} */(event);
+  event = /** @type {!KeyboardEvent} */ (event);
 
   if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey)
     return;
@@ -85,13 +82,10 @@ keyboard.onKeyDown_ = function(event) {
   //
   // See crbug.com/543865.
   if (document.activeElement ===
-      document.getElementById('oauth-enroll-auth-view'))
+      // eslint-disable-next-line no-restricted-properties
+      document.getElementById('oauth-enroll-auth-view')) {
     return;
-
-  // If we are in networks list dropdown container, let network_dropdown.js
-  // handle keyboard events.
-  if (document.activeElement.classList.contains('dropdown-container'))
-    return;
+  }
 
   // Do not map arrow key events to tab events if the user is currently
   // focusing an input element and hits the left or right.
@@ -104,16 +98,16 @@ keyboard.onKeyDown_ = function(event) {
     // (since it is not available) we send an event to the host script
     // which will make the chrome.send call on our behalf.
     if (event.key == 'ArrowLeft' || event.key == 'ArrowUp') {
-      if (!keyboardHostWindow_)
+      if (!keyboardHostWindow)
         keyboard.onAdvanceFocus(true);
       else
-        keyboardHostWindow_.postMessage('backwardFocus', keyboardHostOrigin_);
+        keyboardHostWindow.postMessage('backwardFocus', keyboardHostOrigin);
       event.preventDefault();
     } else if (event.key == 'ArrowRight' || event.key == 'ArrowDown') {
-      if (!keyboardHostWindow_)
+      if (!keyboardHostWindow)
         keyboard.onAdvanceFocus(false);
       else
-        keyboardHostWindow_.postMessage('forwardFocus', keyboardHostOrigin_);
+        keyboardHostWindow.postMessage('forwardFocus', keyboardHostOrigin);
       event.preventDefault();
     }
   }
@@ -128,12 +122,9 @@ keyboard.onKeyDown_ = function(event) {
  * @param {boolean} injected true if script runs as an injected content script.
  */
 keyboard.initializeKeyboardFlow = function(injected) {
-  document.addEventListener('keydown',
-      keyboard.onKeyDown_, true);
-  document.addEventListener('keypress',
-      keyboard.onKeyIgnore_, true);
-  document.addEventListener('keyup',
-      keyboard.onKeyIgnore_, true);
+  document.addEventListener('keydown', keyboard.onKeyDown_, true);
+  document.addEventListener('keypress', keyboard.onKeyIgnore_, true);
+  document.addEventListener('keyup', keyboard.onKeyIgnore_, true);
   if (injected)
     window.addEventListener('message', keyboard.onInitMessage_);
 };

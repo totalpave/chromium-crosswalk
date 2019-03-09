@@ -12,7 +12,8 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/memory/ref_counted.h"
+#include "base/sequenced_task_runner.h"
 
 namespace base {
 class FilePath;
@@ -28,14 +29,16 @@ class UsageReportsBufferBackend;
 class UsageReportsBufferService {
  public:
   explicit UsageReportsBufferService(const base::FilePath& dir);
-  ~UsageReportsBufferService();
+  virtual ~UsageReportsBufferService();
 
   // Init buffer. All calls to buffer before it's initialized are ignored. It's
   // asynchronous.
   void Init();
 
   // Add report about page visit to the buffer. It's asynchronous.
-  void AddVisit(const std::string& id, int64_t timestamp_ms, bool typed_visit);
+  virtual void AddVisit(const std::string& id,
+                        int64_t timestamp_ms,
+                        bool typed_visit);
 
   // Get a batch of usage reports of size up to |batch_size|. It's synchronous.
   std::unique_ptr<std::vector<UsageReport>> GetUsageReportsBatch(
@@ -51,8 +54,7 @@ class UsageReportsBufferService {
   std::string Dump();
 
  private:
-  // Token used to serialize buffer operations.
-  base::SequencedWorkerPool::SequenceToken worker_pool_token_;
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
   // Non thread safe backend.
   std::unique_ptr<UsageReportsBufferBackend> backend_;
 

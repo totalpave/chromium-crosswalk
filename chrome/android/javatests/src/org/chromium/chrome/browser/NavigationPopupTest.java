@@ -5,48 +5,59 @@
 package org.chromium.chrome.browser;
 
 import android.graphics.Bitmap;
-import android.test.suitebuilder.annotation.MediumTest;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.filters.MediumTest;
+import android.support.test.filters.SmallTest;
+import android.view.KeyEvent;
+import android.view.View;
+import android.widget.ListPopupWindow;
+import android.widget.ListView;
+import android.widget.TextView;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Restriction;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.UrlUtils;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationEntry;
 import org.chromium.content_public.browser.NavigationHistory;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.ui.test.util.UiRestriction;
+
+import java.util.concurrent.ExecutionException;
 
 /**
  * Tests for the navigation popup.
  */
-public class NavigationPopupTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@RetryOnFailure
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class NavigationPopupTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeTabbedActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeTabbedActivity.class);
 
     private static final int INVALID_NAVIGATION_INDEX = -1;
 
     private Profile mProfile;
 
-    public NavigationPopupTest() {
-        super(ChromeActivity.class);
-    }
-
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                mProfile = Profile.getLastUsedProfile();
-            }
-        });
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityOnBlankPage();
+    @Before
+    public void setUp() throws Exception {
+        mActivityTestRule.startMainActivityOnBlankPage();
+        ThreadUtils.runOnUiThreadBlocking((Runnable) () -> mProfile = Profile.getLastUsedProfile());
     }
 
     // Exists solely to expose protected methods to this test.
@@ -61,7 +72,8 @@ public class NavigationPopupTest extends ChromeActivityTestCaseBase<ChromeActivi
     private static class TestNavigationEntry extends NavigationEntry {
         public TestNavigationEntry(int index, String url, String virtualUrl, String originalUrl,
                 String title, Bitmap favicon, int transition) {
-            super(index, url, virtualUrl, originalUrl, title, favicon, transition);
+            super(index, url, virtualUrl, originalUrl, /*referrerUrl=*/null, title, favicon,
+                    transition);
         }
     }
 
@@ -114,23 +126,19 @@ public class NavigationPopupTest extends ChromeActivityTestCaseBase<ChromeActivi
         }
 
         @Override
-        public void requestRestoreLoad() {
+        public boolean needsReload() {
+            return false;
         }
+
+        @Override
+        public void setNeedsReload() {}
 
         @Override
         public void reload(boolean checkForRepost) {
         }
 
         @Override
-        public void reloadToRefreshContent(boolean checkForRepost) {
-        }
-
-        @Override
         public void reloadBypassingCache(boolean checkForRepost) {
-        }
-
-        @Override
-        public void reloadDisableLoFi(boolean checkForRepost) {
         }
 
         @Override
@@ -151,11 +159,6 @@ public class NavigationPopupTest extends ChromeActivityTestCaseBase<ChromeActivi
 
         @Override
         public NavigationHistory getNavigationHistory() {
-            return null;
-        }
-
-        @Override
-        public String getOriginalUrlForVisibleNavigationEntry() {
             return null;
         }
 
@@ -203,39 +206,25 @@ public class NavigationPopupTest extends ChromeActivityTestCaseBase<ChromeActivi
         }
 
         @Override
-        public boolean canCopyStateOver() {
+        public String getEntryExtraData(int index, String key) {
+            return null;
+        }
+
+        @Override
+        public void setEntryExtraData(int index, String key, String value) {}
+
+        @Override
+        public boolean isEntryMarkedToBeSkipped(int index) {
             return false;
-        }
-
-        @Override
-        public boolean canPruneAllButLastCommitted() {
-            return false;
-        }
-
-        @Override
-        public void copyStateFrom(NavigationController source) {
-        }
-
-        @Override
-        public void copyStateFromAndPrune(NavigationController source, boolean replaceEntry) {
         }
     }
 
+    @Test
     @MediumTest
     @Feature({"Navigation"})
-    public void testFaviconFetching() throws InterruptedException {
+    public void testFaviconFetching() throws ExecutionException {
         final TestNavigationController controller = new TestNavigationController();
-        final NavigationPopup popup = new NavigationPopup(
-                mProfile, getActivity(), controller, true);
-        popup.setWidth(300);
-        popup.setHeight(300);
-        popup.setAnchorView(getActivity().getCurrentContentViewCore().getContainerView());
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                popup.show();
-            }
-        });
+        final ListPopupWindow popup = showPopup(controller);
 
         CriteriaHelper.pollUiThread(new Criteria("All favicons did not get updated.") {
             @Override
@@ -250,40 +239,88 @@ public class NavigationPopupTest extends ChromeActivityTestCaseBase<ChromeActivi
             }
         });
 
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                popup.dismiss();
-            }
+        ThreadUtils.runOnUiThreadBlocking(() -> popup.dismiss());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Navigation"})
+    public void testItemSelection() throws ExecutionException {
+        final TestNavigationController controller = new TestNavigationController();
+        final ListPopupWindow popup = showPopup(controller);
+
+        ThreadUtils.runOnUiThreadBlocking((Runnable) () -> popup.performItemClick(1));
+
+        Assert.assertFalse("Popup did not hide as expected.", popup.isShowing());
+        Assert.assertEquals(
+                "Popup attempted to navigate to the wrong index", 5, controller.mNavigatedIndex);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Navigation"})
+    public void testShowAllHistory() throws ExecutionException {
+        final TestNavigationController controller = new TestNavigationController();
+        final ListPopupWindow popup = showPopup(controller);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> {
+            ListView list = popup.getListView();
+            View view = list.getAdapter().getView(list.getAdapter().getCount() - 1, null, list);
+            TextView text = (TextView) view.findViewById(R.id.entry_title);
+            Assert.assertNotNull(text);
+            Assert.assertEquals(text.getResources().getString(R.string.show_full_history),
+                    text.getText().toString());
         });
     }
 
-    @SmallTest
+    @Test
+    @MediumTest
+    @Restriction(UiRestriction.RESTRICTION_TYPE_PHONE)
     @Feature({"Navigation"})
-    public void testItemSelection() {
-        final TestNavigationController controller = new TestNavigationController();
-        final NavigationPopup popup =
-                new NavigationPopup(mProfile, getActivity(), controller, true);
-        popup.setWidth(300);
-        popup.setHeight(300);
-        popup.setAnchorView(getActivity().getCurrentContentViewCore().getContainerView());
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                popup.show();
-            }
-        });
+    public void testLongPressBackTriggering() throws ExecutionException {
+        KeyEvent event = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> { mActivityTestRule.getActivity().onKeyDown(KeyEvent.KEYCODE_BACK, event); });
+        CriteriaHelper.pollUiThread(
+                () -> mActivityTestRule.getActivity().hasPendingNavigationPopupForTesting());
 
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                popup.performItemClick(1);
-            }
-        });
+        // Wait for the long press timeout to trigger and show the navigation popup.
+        CriteriaHelper.pollUiThread(
+                () -> mActivityTestRule.getActivity().getNavigationPopupForTesting() != null);
+    }
 
-        assertFalse("Popup did not hide as expected.", popup.isShowing());
-        assertEquals("Popup attempted to navigate to the wrong index", 5,
-                controller.mNavigatedIndex);
+    @Test
+    @SmallTest
+    @Restriction(UiRestriction.RESTRICTION_TYPE_PHONE)
+    @Feature({"Navigation"})
+    public void testLongPressBackTriggering_Cancellation() throws ExecutionException {
+        ThreadUtils.runOnUiThreadBlocking(() -> {
+            KeyEvent event = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK);
+            mActivityTestRule.getActivity().onKeyDown(KeyEvent.KEYCODE_BACK, event);
+        });
+        CriteriaHelper.pollUiThread(
+                () -> mActivityTestRule.getActivity().hasPendingNavigationPopupForTesting());
+        ThreadUtils.runOnUiThreadBlocking(() -> {
+            KeyEvent event = new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK);
+            mActivityTestRule.getActivity().onKeyUp(KeyEvent.KEYCODE_BACK, event);
+        });
+        CriteriaHelper.pollUiThread(
+                () -> !mActivityTestRule.getActivity().hasPendingNavigationPopupForTesting());
+
+        // Ensure no navigation popup is showing.
+        Assert.assertNull(ThreadUtils.runOnUiThreadBlocking(
+                () -> mActivityTestRule.getActivity().getNavigationPopupForTesting()));
+    }
+
+    private ListPopupWindow showPopup(NavigationController controller) throws ExecutionException {
+        return ThreadUtils.runOnUiThreadBlocking(() -> {
+            NavigationPopup popup = new NavigationPopup(mProfile, mActivityTestRule.getActivity(),
+                    controller, NavigationPopup.Type.TABLET_FORWARD);
+            popup.show(mActivityTestRule.getActivity()
+                               .getToolbarManager()
+                               .getToolbarLayoutForTesting());
+            return popup.getPopupForTesting();
+        });
     }
 
 }

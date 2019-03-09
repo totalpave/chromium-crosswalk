@@ -7,14 +7,14 @@
 
 #include <memory>
 
-#include "base/memory/ptr_util.h"
+#include "headless/lib/browser/protocol/base_string_adapter.h"
 #include "headless/public/util/error_reporter.h"
 
 namespace headless {
 namespace internal {
 
-// Generic conversion from a type to a base::Value. Implemented in
-// type_conversions.h after all type-specific ToValueImpls have been defined.
+// Generic conversion from a type to a base::Value. Implemented below
+// (for composite and low level types) and and in types_DOMAIN.cc.
 template <typename T>
 std::unique_ptr<base::Value> ToValue(const T& value);
 
@@ -27,87 +27,99 @@ struct FromValue {
                                   ErrorReporter* errors);
 };
 
-// ToValueImpl is a helper used by the ToValue template for dispatching into
-// type-specific serializers. It uses a dummy |T*| argument as a way to
-// partially specialize vector types.
-template <typename T>
-std::unique_ptr<base::Value> ToValueImpl(int value, T*) {
-  return base::WrapUnique(new base::FundamentalValue(value));
+template <>
+inline std::unique_ptr<base::Value> ToValue(const int& value) {
+  return std::make_unique<base::Value>(value);
 }
 
-template <typename T>
-std::unique_ptr<base::Value> ToValueImpl(double value, T*) {
-  return base::WrapUnique(new base::FundamentalValue(value));
+template <>
+inline std::unique_ptr<base::Value> ToValue(const double& value) {
+  return std::make_unique<base::Value>(value);
 }
 
-template <typename T>
-std::unique_ptr<base::Value> ToValueImpl(bool value, T*) {
-  return base::WrapUnique(new base::FundamentalValue(value));
+template <>
+inline std::unique_ptr<base::Value> ToValue(const bool& value) {
+  return std::make_unique<base::Value>(value);
 }
 
-template <typename T>
-std::unique_ptr<base::Value> ToValueImpl(const std::string& value, T*) {
-  return base::WrapUnique(new base::StringValue(value));
+template <>
+inline std::unique_ptr<base::Value> ToValue(const std::string& value) {
+  return std::make_unique<base::Value>(value);
 }
 
-template <typename T>
-std::unique_ptr<base::Value> ToValueImpl(const base::Value& value, T*) {
+template <>
+inline std::unique_ptr<base::Value> ToValue(const base::Value& value) {
   return value.CreateDeepCopy();
 }
 
+template <>
+inline std::unique_ptr<base::Value> ToValue(
+    const base::DictionaryValue& value) {
+  return ToValue(static_cast<const base::Value&>(value));
+}
+
+// Note: Order of the two templates below is important to handle
+// vectors of unique_ptr.
 template <typename T>
-std::unique_ptr<base::Value> ToValueImpl(const std::vector<T>& vector,
-                                         const std::vector<T>*) {
-  std::unique_ptr<base::ListValue> result(new base::ListValue());
-  for (const auto& it : vector)
-    result->Append(ToValue(it));
-  return std::move(result);
+std::unique_ptr<base::Value> ToValue(const std::unique_ptr<T>& value) {
+  return ToValue(*value);
 }
 
 template <typename T>
-std::unique_ptr<base::Value> ToValueImpl(const std::unique_ptr<T>& value,
-                                         std::unique_ptr<T>*) {
-  return ToValue(value.get());
+std::unique_ptr<base::Value> ToValue(const std::vector<T>& vector_of_values) {
+  std::unique_ptr<base::ListValue> result(new base::ListValue());
+  for (const T& value : vector_of_values)
+    result->Append(ToValue(value));
+  return std::move(result);
+}
+
+template <>
+inline std::unique_ptr<base::Value> ToValue(const protocol::Binary& value) {
+  return ToValue(value.toBase64());
 }
 
 // FromValue specializations for basic types.
 template <>
 struct FromValue<bool> {
   static bool Parse(const base::Value& value, ErrorReporter* errors) {
-    bool result = false;
-    if (!value.GetAsBoolean(&result))
+    if (!value.is_bool()) {
       errors->AddError("boolean value expected");
-    return result;
+      return false;
+    }
+    return value.GetBool();
   }
 };
 
 template <>
 struct FromValue<int> {
   static int Parse(const base::Value& value, ErrorReporter* errors) {
-    int result = 0;
-    if (!value.GetAsInteger(&result))
+    if (!value.is_int()) {
       errors->AddError("integer value expected");
-    return result;
+      return 0;
+    }
+    return value.GetInt();
   }
 };
 
 template <>
 struct FromValue<double> {
   static double Parse(const base::Value& value, ErrorReporter* errors) {
-    double result = 0;
-    if (!value.GetAsDouble(&result))
+    if (!value.is_double() && !value.is_int()) {
       errors->AddError("double value expected");
-    return result;
+      return 0;
+    }
+    return value.GetDouble();
   }
 };
 
 template <>
 struct FromValue<std::string> {
   static std::string Parse(const base::Value& value, ErrorReporter* errors) {
-    std::string result;
-    if (!value.GetAsString(&result))
+    if (!value.is_string()) {
       errors->AddError("string value expected");
-    return result;
+      return "";
+    }
+    return value.GetString();
   }
 };
 
@@ -140,18 +152,34 @@ struct FromValue<std::unique_ptr<T>> {
   }
 };
 
+template <>
+struct FromValue<protocol::Binary> {
+  static protocol::Binary Parse(const base::Value& value,
+                                ErrorReporter* errors) {
+    if (!value.is_string()) {
+      errors->AddError("string value expected");
+      return protocol::Binary();
+    }
+    bool success = false;
+    protocol::Binary out =
+        protocol::Binary::fromBase64(value.GetString(), &success);
+    if (!success)
+      errors->AddError("base64 decoding error");
+    return out;
+  }
+};
+
 template <typename T>
 struct FromValue<std::vector<T>> {
   static std::vector<T> Parse(const base::Value& value, ErrorReporter* errors) {
     std::vector<T> result;
-    const base::ListValue* list;
-    if (!value.GetAsList(&list)) {
+    if (!value.is_list()) {
       errors->AddError("list value expected");
       return result;
     }
     errors->Push();
-    for (const auto& item : *list)
-      result.push_back(FromValue<T>::Parse(*item, errors));
+    for (const auto& item : value.GetList())
+      result.push_back(FromValue<T>::Parse(item, errors));
     errors->Pop();
     return result;
   }

@@ -2,8 +2,12 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  *
- * This contains common styling for all the OOBE screens.
- */
+ * This contains common styling for all the OOBE screens. */
+
+:root {
+  --oobe-text-button-focused-border-color:
+      rgba(66, 133, 244, 0.4); /* #4284f4 */
+}
 
 .step {
   box-sizing: border-box;
@@ -11,9 +15,9 @@
 }
 
 .step.animated:not(.faded) {
-  -webkit-transition: -webkit-transform 200ms ease-in-out,
-                      opacity 200ms ease-in-out,
-                      visibility 200ms ease-in-out;
+  transition: transform 200ms ease-in-out,
+              opacity 200ms ease-in-out,
+              visibility 200ms ease-in-out;
 }
 
 .step.hidden {
@@ -27,11 +31,11 @@
 }
 
 .step.right {
-  -webkit-transform: translateX(50px);
+  transform: translateX(50px);
 }
 
 .step.left {
-  -webkit-transform: translateX(-50px)
+  transform: translateX(-50px)
 }
 
 .step.fullscreen {
@@ -48,13 +52,14 @@
   display: flex;
   height: 28px;
   justify-content: flex-end;
+  min-height: 0;
   padding-right: 34px;  /* Double the padding of .step */
   position: absolute;
   width: 100%;
 }
 
 html[dir=rtl] .step-controls {
-  /* Hack as -webkit-padding-end doesn't catch direction. crbug.com/363836 */
+  /* Hack as padding-inline-end doesn't catch direction. crbug.com/363836 */
   padding-left: 34px;
 }
 
@@ -83,12 +88,13 @@ html[dir=rtl] .step-controls {
   display: flex;
   justify-content: center;
   left: 0;
+  min-height: 0;
   position: absolute;
   right: 0;
   top: 0;
 }
 
-/* Fixes perfomance problem caused by http://crbug.com/229405 . */
+/* Fixes performance problem caused by http://crbug.com/229405 . */
 .step.hidden .throbber,
 .step.hidden .spinner,
 .step.hidden .inline-spinner {
@@ -118,9 +124,9 @@ html[dir=rtl] .step-controls {
 #security-info a:focus,
 #eula a:focus,
 .step-extra-controls a:focus {
-  -webkit-transition: outline-color 200ms;
   /* Note: May use 1px solid here. */
   outline-color: rgb(77, 144, 254);
+  transition: outline-color 200ms;
 }
 
 .step-extra-controls > *:not(:first-child) {
@@ -149,7 +155,7 @@ html[dir=rtl] .step-extra-controls {
 #reset-button,
 #password-changed-back-button,
 #tos-back-button {
-  -webkit-margin-end: 8px;
+  margin-inline-end: 8px;
 }
 
 .menu-area {

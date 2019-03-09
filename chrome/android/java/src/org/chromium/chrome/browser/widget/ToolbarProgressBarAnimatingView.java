@@ -59,7 +59,7 @@ public class ToolbarProgressBarAnimatingView extends ImageView {
     private final BakedBezierInterpolator mBezier = BakedBezierInterpolator.FADE_OUT_CURVE;
 
     /** The current width of the progress bar. */
-    private float mProgressWidth = 0;
+    private float mProgressWidth;
 
     /** The set of individual animators that constitute the whole animation sequence. */
     private final AnimatorSet mAnimatorSet;
@@ -107,6 +107,7 @@ public class ToolbarProgressBarAnimatingView extends ImageView {
     public ToolbarProgressBarAnimatingView(Context context, LayoutParams layoutParams) {
         super(context);
         setLayoutParams(layoutParams);
+        mIsCanceled = true;
         mIsRtl = LocalizationUtils.isLayoutRtl();
         mDpToPx = getResources().getDisplayMetrics().density;
 
@@ -241,7 +242,7 @@ public class ToolbarProgressBarAnimatingView extends ImageView {
      * @return True if the animation is running.
      */
     public boolean isRunning() {
-        return mAnimatorSet.isStarted();
+        return !mIsCanceled;
     }
 
     /**
@@ -249,6 +250,7 @@ public class ToolbarProgressBarAnimatingView extends ImageView {
      */
     public void cancelAnimation() {
         mIsCanceled = true;
+        mAnimatorSet.cancel();
         // Reset position and alpha.
         setScaleX(0.0f);
         setTranslationX(0.0f);

@@ -29,26 +29,28 @@ namespace media {
 
 namespace {
 
-const AudioParameters kParams(
-    AudioParameters::AUDIO_PCM_LOW_LATENCY, CHANNEL_LAYOUT_STEREO, 8000, 8, 10);
+const AudioParameters kParams(AudioParameters::AUDIO_PCM_LOW_LATENCY,
+                              CHANNEL_LAYOUT_STEREO,
+                              8000,
+                              10);
 
 class MockInputCallback : public AudioInputStream::AudioInputCallback {
  public:
   MockInputCallback()
       : data_pushed_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                      base::WaitableEvent::InitialState::NOT_SIGNALED) {
-    ON_CALL(*this, OnData(_, _, _, _)).WillByDefault(
-        InvokeWithoutArgs(&data_pushed_, &base::WaitableEvent::Signal));
+    ON_CALL(*this, OnData(_, _, _))
+        .WillByDefault(
+            InvokeWithoutArgs(&data_pushed_, &base::WaitableEvent::Signal));
   }
 
-  virtual ~MockInputCallback() {}
+  ~MockInputCallback() override = default;
 
-  MOCK_METHOD4(OnData,
-               void(AudioInputStream* stream,
-                    const AudioBus* source,
-                    uint32_t hardware_delay_bytes,
+  MOCK_METHOD3(OnData,
+               void(const AudioBus* source,
+                    base::TimeTicks capture_time,
                     double volume));
-  MOCK_METHOD1(OnError, void(AudioInputStream* stream));
+  MOCK_METHOD0(OnError, void());
 
   void WaitForDataPushes() {
     for (int i = 0; i < 3; ++i) {
@@ -71,13 +73,14 @@ class TestAudioSource : public SineWaveAudioSource {
         data_pulled_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                      base::WaitableEvent::InitialState::NOT_SIGNALED) {}
 
-  ~TestAudioSource() override {}
+  ~TestAudioSource() override = default;
 
-  int OnMoreData(AudioBus* audio_bus,
-                 uint32_t total_bytes_delay,
-                 uint32_t frames_skipped) override {
-    const int ret = SineWaveAudioSource::OnMoreData(
-        audio_bus, total_bytes_delay, frames_skipped);
+  int OnMoreData(base::TimeDelta delay,
+                 base::TimeTicks delay_timestamp,
+                 int prior_frames_skipped,
+                 AudioBus* dest) override {
+    const int ret = SineWaveAudioSource::OnMoreData(delay, delay_timestamp,
+                                                    prior_frames_skipped, dest);
     data_pulled_.Signal();
     return ret;
   }
@@ -124,7 +127,7 @@ class VirtualAudioInputStreamTest : public testing::TestWithParam<bool> {
   }
 
   void Start() {
-    EXPECT_CALL(input_callback_, OnData(_, NotNull(), _, _)).Times(AtLeast(1));
+    EXPECT_CALL(input_callback_, OnData(NotNull(), _, _)).Times(AtLeast(1));
 
     ASSERT_TRUE(stream_);
     stream_->Start(&input_callback_);
@@ -230,7 +233,7 @@ class VirtualAudioInputStreamTest : public testing::TestWithParam<bool> {
                              base::WaitableEvent::InitialState::NOT_SIGNALED);
     audio_task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(&base::WaitableEvent::Signal, base::Unretained(&done)));
+        base::BindOnce(&base::WaitableEvent::Signal, base::Unretained(&done)));
     done.Wait();
   }
 
@@ -250,10 +253,10 @@ class VirtualAudioInputStreamTest : public testing::TestWithParam<bool> {
   DISALLOW_COPY_AND_ASSIGN(VirtualAudioInputStreamTest);
 };
 
-#define RUN_ON_AUDIO_THREAD(method)  \
-  audio_task_runner()->PostTask(  \
-      FROM_HERE, base::Bind(&VirtualAudioInputStreamTest::method,  \
-                            base::Unretained(this)))
+#define RUN_ON_AUDIO_THREAD(method)                                   \
+  audio_task_runner()->PostTask(                                      \
+      FROM_HERE, base::BindOnce(&VirtualAudioInputStreamTest::method, \
+                                base::Unretained(this)))
 
 TEST_P(VirtualAudioInputStreamTest, CreateAndClose) {
   RUN_ON_AUDIO_THREAD(Create);
@@ -350,8 +353,8 @@ TEST_P(VirtualAudioInputStreamTest, ComprehensiveTest) {
   WaitUntilClosed();
 }
 
-INSTANTIATE_TEST_CASE_P(SingleVersusMultithreaded,
-                        VirtualAudioInputStreamTest,
-                        ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(SingleVersusMultithreaded,
+                         VirtualAudioInputStreamTest,
+                         ::testing::Values(false, true));
 
 }  // namespace media

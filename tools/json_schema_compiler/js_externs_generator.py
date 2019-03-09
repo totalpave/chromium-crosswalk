@@ -30,13 +30,22 @@ class JsExternsGenerator(object):
 class _Generator(object):
   def __init__(self, namespace):
     self._namespace = namespace
+    self._class_name = None
     self._js_util = JsUtil()
 
   def Generate(self):
     """Generates a Code object with the schema for the entire namespace.
     """
     c = Code()
-    (c.Append(self._GetHeader(sys.argv[0], self._namespace.name))
+    # /abs/path/src/tools/json_schema_compiler/
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # /abs/path/src/
+    src_root = os.path.normpath(os.path.join(script_dir, '..', '..'))
+    # tools/json_schema_compiler/
+    src_to_script = os.path.relpath(script_dir, src_root)
+    # tools/json_schema_compiler/compiler.py
+    compiler_path = os.path.join(src_to_script, 'compiler.py')
+    (c.Append(self._GetHeader(compiler_path, self._namespace.name))
       .Append())
 
     self._AppendNamespaceObject(c)
@@ -74,12 +83,12 @@ class _Generator(object):
   def _AppendEnumJsDoc(self, c, js_type):
     """ Given an Enum Type object, generates the Code for the enum's definition.
     """
-    (c.Sblock(line='/**', line_prefix=' * ')
-      .Append('@enum {string}')
-      .Append(self._js_util.GetSeeLink(self._namespace.name, 'type',
-                                       js_type.simple_name))
-      .Eblock(' */'))
-    c.Append('chrome.%s.%s = {' % (self._namespace.name, js_type.name))
+    c.Sblock(line='/**', line_prefix=' * ')
+    c.Append('@enum {string}')
+    self._js_util.AppendSeeLink(c, self._namespace.name, 'type',
+                                js_type.simple_name)
+    c.Eblock(' */')
+    c.Append('%s.%s = {' % (self._GetNamespace(), js_type.name))
 
     def get_property_name(e):
       # Enum properties are normified to be in ALL_CAPS_STYLE.
@@ -105,7 +114,7 @@ class _Generator(object):
     return any(prop.type_.property_type is PropertyType.FUNCTION
                for prop in js_type.properties.values())
 
-  def _AppendTypeJsDoc(self, c, js_type):
+  def _AppendTypeJsDoc(self, c, js_type, optional=False):
     """Appends the documentation for a type as a Code.
     """
     c.Sblock(line='/**', line_prefix=' * ')
@@ -114,29 +123,49 @@ class _Generator(object):
       for line in js_type.description.splitlines():
         c.Append(line)
 
+    if js_type.jsexterns:
+      for line in js_type.jsexterns.splitlines():
+        c.Append(line)
+
     is_constructor = self._IsTypeConstructor(js_type)
-    if is_constructor:
-      c.Comment('@constructor', comment_prefix = ' * ', wrap_indent=4)
-    else:
+    if js_type.property_type is not PropertyType.OBJECT:
+      self._js_util.AppendTypeJsDoc(c, self._namespace.name, js_type, optional)
+    elif is_constructor:
+      c.Comment('@constructor', comment_prefix = '', wrap_indent=4)
+      c.Comment('@private', comment_prefix = '', wrap_indent=4)
+    elif js_type.jsexterns is None:
       self._AppendTypedef(c, js_type.properties)
 
-    c.Append(self._js_util.GetSeeLink(self._namespace.name, 'type',
-                                      js_type.simple_name))
+    self._js_util.AppendSeeLink(c, self._namespace.name, 'type',
+                                js_type.simple_name)
     c.Eblock(' */')
 
-    var = 'chrome.%s.%s' % (js_type.namespace.name, js_type.simple_name)
+    var = '%s.%s' % (self._GetNamespace(), js_type.simple_name)
     if is_constructor: var += ' = function() {}'
     var += ';'
     c.Append(var)
 
+    if is_constructor:
+      c.Append()
+      self._class_name = js_type.name
+      for prop in js_type.properties.values():
+        if prop.type_.property_type is PropertyType.FUNCTION:
+          self._AppendFunction(c, prop.type_.function)
+        else:
+          self._AppendTypeJsDoc(c, prop.type_, prop.optional)
+          c.Append()
+      self._class_name = None
+
   def _AppendTypedef(self, c, properties):
     """Given an OrderedDict of properties, Appends code containing a @typedef.
     """
-    if not properties: return
 
     c.Append('@typedef {')
-    self._js_util.AppendObjectDefinition(c, self._namespace.name, properties,
-                                         new_line=False)
+    if properties:
+        self._js_util.AppendObjectDefinition(
+                c, self._namespace.name, properties, new_line=False)
+    else:
+        c.Append('Object', new_line=False)
     c.Append('}', new_line=False)
 
   def _AppendFunction(self, c, function):
@@ -150,8 +179,8 @@ class _Generator(object):
     """
     self._js_util.AppendFunctionJsDoc(c, self._namespace.name, function)
     params = self._GetFunctionParams(function)
-    c.Append('chrome.%s.%s = function(%s) {};' % (self._namespace.name,
-                                                  function.name, params))
+    c.Append('%s.%s = function(%s) {};' % (self._GetNamespace(),
+                                           function.name, params))
     c.Append()
 
   def _AppendEvent(self, c, event):
@@ -165,10 +194,9 @@ class _Generator(object):
     if (event.description):
       c.Comment(event.description, comment_prefix='')
     c.Append('@type {!ChromeEvent}')
-    c.Append(self._js_util.GetSeeLink(self._namespace.name, 'event',
-                                      event.name))
+    self._js_util.AppendSeeLink(c, self._namespace.name, 'event', event.name)
     c.Eblock(' */')
-    c.Append('chrome.%s.%s;' % (self._namespace.name, event.name))
+    c.Append('%s.%s;' % (self._GetNamespace(), event.name))
     c.Append()
 
   def _AppendNamespaceObject(self, c):
@@ -193,3 +221,17 @@ class _Generator(object):
     if function.callback:
       params.append(function.callback)
     return ', '.join(param.name for param in params)
+
+  def _GetNamespace(self):
+    """Returns the namespace to be prepended to a top-level typedef.
+
+       For example, it might return "chrome.namespace".
+
+       Also optionally includes the class name if this is in the context
+       of outputting the members of a class.
+
+       For example, "chrome.namespace.ClassName.prototype"
+    """
+    if self._class_name:
+      return 'chrome.%s.%s.prototype' % (self._namespace.name, self._class_name)
+    return 'chrome.%s' % self._namespace.name

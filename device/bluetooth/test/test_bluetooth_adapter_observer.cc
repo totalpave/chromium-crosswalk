@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "device/bluetooth/bluetooth_remote_gatt_characteristic.h"
 #include "device/bluetooth/bluetooth_remote_gatt_descriptor.h"
 #include "device/bluetooth/bluetooth_remote_gatt_service.h"
@@ -37,9 +37,20 @@ void TestBluetoothAdapterObserver::Reset() {
   device_added_count_ = 0;
   device_changed_count_ = 0;
   device_address_changed_count_ = 0;
+  device_advertisement_raw_received_count_ = 0;
+  last_device_name_ = "";
+  last_advertisement_name_ = "";
+  last_rssi_ = 128;
+  last_tx_power_ = 128;
+  last_appearance_ = 128;
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
   device_paired_changed_count_ = 0;
   device_new_paired_status_ = false;
+  device_mtu_changed_count_ = 0;
+  device_mtu_ = 0;
+  device_advertisement_received_count_ = 0;
+  device_eir_.clear();
+  device_connected_state_changed_values_.clear();
 #endif
   device_removed_count_ = 0;
   last_device_ = NULL;
@@ -60,6 +71,7 @@ void TestBluetoothAdapterObserver::Reset() {
   last_gatt_characteristic_id_.clear();
   last_gatt_characteristic_uuid_ = BluetoothUUID();
   last_changed_characteristic_value_.clear();
+  previous_characteristic_value_changed_values_.clear();
   last_gatt_descriptor_id_.clear();
   last_gatt_descriptor_uuid_ = BluetoothUUID();
   last_changed_descriptor_value_.clear();
@@ -133,6 +145,27 @@ void TestBluetoothAdapterObserver::DeviceAddressChanged(
   QuitMessageLoop();
 }
 
+void TestBluetoothAdapterObserver::DeviceAdvertisementReceived(
+    const std::string& device_address,
+    const base::Optional<std::string>& device_name,
+    const base::Optional<std::string>& advertisement_name,
+    base::Optional<int8_t> rssi,
+    base::Optional<int8_t> tx_power,
+    base::Optional<uint16_t> appearance,
+    const device::BluetoothDevice::UUIDList& advertised_uuids,
+    const device::BluetoothDevice::ServiceDataMap& service_data_map,
+    const device::BluetoothDevice::ManufacturerDataMap& manufacturer_data_map) {
+  ++device_advertisement_raw_received_count_;
+  last_device_name_ = device_address;
+  last_advertisement_name_ = device_name;
+  last_rssi_ = rssi;
+  last_tx_power_ = tx_power;
+  last_appearance_ = appearance;
+  // TODO(dougt): Test advertised_uuids, service_data_map, manufacturer_data_map
+
+  QuitMessageLoop();
+}
+
 #if defined(OS_CHROMEOS) || defined(OS_LINUX)
 void TestBluetoothAdapterObserver::DevicePairedChanged(
     device::BluetoothAdapter* adapter,
@@ -141,6 +174,39 @@ void TestBluetoothAdapterObserver::DevicePairedChanged(
   ++device_paired_changed_count_;
   last_device_ = device;
   device_new_paired_status_ = new_paired_status;
+
+  QuitMessageLoop();
+}
+
+void TestBluetoothAdapterObserver::DeviceMTUChanged(
+    device::BluetoothAdapter* adapter,
+    device::BluetoothDevice* device,
+    uint16_t mtu) {
+  ++device_mtu_changed_count_;
+  last_device_ = device;
+  device_mtu_ = mtu;
+
+  QuitMessageLoop();
+}
+
+void TestBluetoothAdapterObserver::DeviceAdvertisementReceived(
+    device::BluetoothAdapter* adapter,
+    device::BluetoothDevice* device,
+    int16_t rssi,
+    const std::vector<uint8_t>& eir) {
+  ++device_advertisement_received_count_;
+  last_device_ = device;
+  device_eir_ = eir;
+
+  QuitMessageLoop();
+}
+
+void TestBluetoothAdapterObserver::DeviceConnectedStateChanged(
+    device::BluetoothAdapter* adapter,
+    device::BluetoothDevice* device,
+    bool is_now_connected) {
+  last_device_ = device;
+  device_connected_state_changed_values_.push_back(is_now_connected);
 
   QuitMessageLoop();
 }
@@ -302,6 +368,7 @@ void TestBluetoothAdapterObserver::GattCharacteristicValueChanged(
   last_gatt_characteristic_id_ = characteristic->GetIdentifier();
   last_gatt_characteristic_uuid_ = characteristic->GetUUID();
   last_changed_characteristic_value_ = value;
+  previous_characteristic_value_changed_values_.push_back(value);
 
   ASSERT_TRUE(characteristic->GetService());
   EXPECT_EQ(characteristic->GetService()->GetCharacteristic(
@@ -331,9 +398,8 @@ void TestBluetoothAdapterObserver::GattDescriptorValueChanged(
 }
 
 void TestBluetoothAdapterObserver::QuitMessageLoop() {
-  if (base::MessageLoop::current() &&
-      base::MessageLoop::current()->is_running())
-    base::MessageLoop::current()->QuitWhenIdle();
+  if (base::RunLoop::IsRunningOnCurrentThread())
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 }  // namespace device

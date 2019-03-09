@@ -13,7 +13,6 @@
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
-#include "base/files/file_util_proxy.h"
 #include "base/format_macros.h"
 #include "base/location.h"
 #include "base/numerics/safe_conversions.h"
@@ -37,29 +36,22 @@
 #include "storage/browser/blob/blob_data_handle.h"
 #include "storage/browser/blob/blob_reader.h"
 #include "storage/browser/fileapi/file_stream_reader.h"
-#include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/file_system_url.h"
-#include "storage/common/data_element.h"
 
 namespace storage {
 
-BlobURLRequestJob::BlobURLRequestJob(
-    net::URLRequest* request,
-    net::NetworkDelegate* network_delegate,
-    BlobDataHandle* blob_handle,
-    FileSystemContext* file_system_context,
-    base::SingleThreadTaskRunner* file_task_runner)
+BlobURLRequestJob::BlobURLRequestJob(net::URLRequest* request,
+                                     net::NetworkDelegate* network_delegate,
+                                     BlobDataHandle* blob_handle)
     : net::URLRequestJob(request, network_delegate),
       error_(false),
       byte_range_set_(false),
       weak_factory_(this) {
   TRACE_EVENT_ASYNC_BEGIN1("Blob", "BlobRequest", this, "uuid",
                            blob_handle ? blob_handle->uuid() : "NotFound");
-  DCHECK(file_task_runner);
   if (blob_handle) {
     blob_handle_.reset(new BlobDataHandle(*blob_handle));
-    blob_reader_ =
-        blob_handle_->CreateReader(file_system_context, file_task_runner);
+    blob_reader_ = blob_handle_->CreateReader();
   }
 }
 
@@ -67,7 +59,7 @@ void BlobURLRequestJob::Start() {
   // Continue asynchronously.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&BlobURLRequestJob::DidStart, weak_factory_.GetWeakPtr()));
+      base::BindOnce(&BlobURLRequestJob::DidStart, weak_factory_.GetWeakPtr()));
 }
 
 void BlobURLRequestJob::Kill() {
@@ -92,8 +84,8 @@ int BlobURLRequestJob::ReadRawData(net::IOBuffer* dest, int dest_size) {
   int bytes_read = 0;
   BlobReader::Status read_status =
       blob_reader_->Read(dest, dest_size, &bytes_read,
-                         base::Bind(&BlobURLRequestJob::DidReadRawData,
-                                    weak_factory_.GetWeakPtr()));
+                         base::BindOnce(&BlobURLRequestJob::DidReadRawData,
+                                        weak_factory_.GetWeakPtr()));
 
   switch (read_status) {
     case BlobReader::Status::NET_ERROR:
@@ -123,13 +115,6 @@ void BlobURLRequestJob::GetResponseInfo(net::HttpResponseInfo* info) {
     *info = *response_info_;
 }
 
-int BlobURLRequestJob::GetResponseCode() const {
-  if (!response_info_)
-    return -1;
-
-  return response_info_->headers->response_code();
-}
-
 void BlobURLRequestJob::SetExtraRequestHeaders(
     const net::HttpRequestHeaders& headers) {
   std::string range_header;
@@ -148,6 +133,52 @@ void BlobURLRequestJob::SetExtraRequestHeaders(
       }
     }
   }
+}
+
+scoped_refptr<net::HttpResponseHeaders> BlobURLRequestJob::GenerateHeaders(
+    net::HttpStatusCode status_code,
+    BlobDataHandle* blob_handle,
+    net::HttpByteRange* byte_range,
+    uint64_t total_size,
+    uint64_t content_size) {
+  std::string status("HTTP/1.1 ");
+  status.append(base::NumberToString(status_code));
+  status.append(" ");
+  status.append(net::GetHttpReasonPhrase(status_code));
+  status.append("\0\0", 2);
+  scoped_refptr<net::HttpResponseHeaders> headers =
+      new net::HttpResponseHeaders(status);
+
+  if (status_code == net::HTTP_OK || status_code == net::HTTP_PARTIAL_CONTENT) {
+    std::string content_length_header(net::HttpRequestHeaders::kContentLength);
+    content_length_header.append(": ");
+    content_length_header.append(base::NumberToString(content_size));
+    headers->AddHeader(content_length_header);
+    if (status_code == net::HTTP_PARTIAL_CONTENT) {
+      DCHECK(byte_range->IsValid());
+      std::string content_range_header(net::HttpResponseHeaders::kContentRange);
+      content_range_header.append(": bytes ");
+      content_range_header.append(base::StringPrintf(
+          "%" PRId64 "-%" PRId64, byte_range->first_byte_position(),
+          byte_range->last_byte_position()));
+      content_range_header.append("/");
+      content_range_header.append(base::StringPrintf("%" PRId64, total_size));
+      headers->AddHeader(content_range_header);
+    }
+    if (!blob_handle->content_type().empty()) {
+      std::string content_type_header(net::HttpRequestHeaders::kContentType);
+      content_type_header.append(": ");
+      content_type_header.append(blob_handle->content_type());
+      headers->AddHeader(content_type_header);
+    }
+    if (!blob_handle->content_disposition().empty()) {
+      std::string content_disposition_header("Content-Disposition: ");
+      content_disposition_header.append(blob_handle->content_disposition());
+      headers->AddHeader(content_disposition_header);
+    }
+  }
+
+  return headers;
 }
 
 BlobURLRequestJob::~BlobURLRequestJob() {
@@ -169,10 +200,14 @@ void BlobURLRequestJob::DidStart() {
     NotifyFailure(net::ERR_FILE_NOT_FOUND);
     return;
   }
+  if (blob_reader_->net_error()) {
+    NotifyFailure(blob_reader_->net_error());
+    return;
+  }
 
   TRACE_EVENT_ASYNC_BEGIN1("Blob", "BlobRequest::CountSize", this, "uuid",
                            blob_handle_->uuid());
-  BlobReader::Status size_status = blob_reader_->CalculateSize(base::Bind(
+  BlobReader::Status size_status = blob_reader_->CalculateSize(base::BindOnce(
       &BlobURLRequestJob::DidCalculateSize, weak_factory_.GetWeakPtr()));
   switch (size_status) {
     case BlobReader::Status::NET_ERROR:
@@ -216,7 +251,7 @@ void BlobURLRequestJob::DidCalculateSize(int result) {
     // TODO(horo): When the requester doesn't need the side data (ex:FileReader)
     // we should skip reading the side data.
     if (blob_reader_->has_side_data() &&
-        blob_reader_->ReadSideData(base::Bind(
+        blob_reader_->ReadSideData(base::BindOnce(
             &BlobURLRequestJob::DidReadMetadata, weak_factory_.GetWeakPtr())) ==
             BlobReader::Status::IO_PENDING) {
       return;
@@ -247,74 +282,20 @@ void BlobURLRequestJob::NotifyFailure(int error_code) {
   // now. Instead, we just error out.
   DCHECK(!response_info_) << "Cannot NotifyFailure after headers.";
 
-  net::HttpStatusCode status_code = net::HTTP_INTERNAL_SERVER_ERROR;
-  switch (error_code) {
-    case net::ERR_ACCESS_DENIED:
-      status_code = net::HTTP_FORBIDDEN;
-      break;
-    case net::ERR_FILE_NOT_FOUND:
-      status_code = net::HTTP_NOT_FOUND;
-      break;
-    case net::ERR_METHOD_NOT_SUPPORTED:
-      status_code = net::HTTP_METHOD_NOT_ALLOWED;
-      break;
-    case net::ERR_REQUEST_RANGE_NOT_SATISFIABLE:
-      status_code = net::HTTP_REQUESTED_RANGE_NOT_SATISFIABLE;
-      break;
-    case net::ERR_FAILED:
-      break;
-    default:
-      DCHECK(false);
-      break;
-  }
-  HeadersCompleted(status_code);
+  NotifyStartError(net::URLRequestStatus::FromError(error_code));
 }
 
 void BlobURLRequestJob::HeadersCompleted(net::HttpStatusCode status_code) {
-  std::string status("HTTP/1.1 ");
-  status.append(base::IntToString(status_code));
-  status.append(" ");
-  status.append(net::GetHttpReasonPhrase(status_code));
-  status.append("\0\0", 2);
-  net::HttpResponseHeaders* headers = new net::HttpResponseHeaders(status);
-
-  set_expected_content_size(0);
-
+  uint64_t content_size = 0;
+  uint64_t total_size = 0;
   if (status_code == net::HTTP_OK || status_code == net::HTTP_PARTIAL_CONTENT) {
-    set_expected_content_size(blob_reader_->remaining_bytes());
-    std::string content_length_header(net::HttpRequestHeaders::kContentLength);
-    content_length_header.append(": ");
-    content_length_header.append(
-        base::Int64ToString(blob_reader_->remaining_bytes()));
-    headers->AddHeader(content_length_header);
-    if (status_code == net::HTTP_PARTIAL_CONTENT) {
-      DCHECK(byte_range_set_);
-      DCHECK(byte_range_.IsValid());
-      std::string content_range_header(net::HttpResponseHeaders::kContentRange);
-      content_range_header.append(": bytes ");
-      content_range_header.append(base::StringPrintf(
-          "%" PRId64 "-%" PRId64, byte_range_.first_byte_position(),
-          byte_range_.last_byte_position()));
-      content_range_header.append("/");
-      content_range_header.append(
-          base::StringPrintf("%" PRId64, blob_reader_->total_size()));
-      headers->AddHeader(content_range_header);
-    }
-    if (!blob_handle_->content_type().empty()) {
-      std::string content_type_header(net::HttpRequestHeaders::kContentType);
-      content_type_header.append(": ");
-      content_type_header.append(blob_handle_->content_type());
-      headers->AddHeader(content_type_header);
-    }
-    if (!blob_handle_->content_disposition().empty()) {
-      std::string content_disposition_header("Content-Disposition: ");
-      content_disposition_header.append(blob_handle_->content_disposition());
-      headers->AddHeader(content_disposition_header);
-    }
+    content_size = blob_reader_->remaining_bytes();
+    set_expected_content_size(content_size);
+    total_size = blob_reader_->total_size();
   }
-
   response_info_.reset(new net::HttpResponseInfo());
-  response_info_->headers = headers;
+  response_info_->headers = GenerateHeaders(
+      status_code, blob_handle_.get(), &byte_range_, total_size, content_size);
   if (blob_reader_)
     response_info_->metadata = blob_reader_->side_data();
 

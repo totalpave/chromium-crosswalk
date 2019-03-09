@@ -16,8 +16,10 @@
 #include <string.h>
 #define STRSAFE_NO_DEPRECATE
 #include <windows.h>
+#include <objbase.h>
 #include <strsafe.h>
 #include <tlhelp32.h>
+#include <wrl/client.h>
 
 #include <cstdlib>
 #include <iterator>
@@ -27,40 +29,32 @@
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/macros.h"
 #include "base/process/launch.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_com_initializer.h"
-#include "base/win/scoped_comptr.h"
 #include "base/win/scoped_handle.h"
+#include "base/win/wmi.h"
 #include "chrome/installer/gcapi/gcapi_omaha_experiment.h"
 #include "chrome/installer/gcapi/gcapi_reactivation.h"
+#include "chrome/installer/gcapi/google_update_util.h"
 #include "chrome/installer/launcher_support/chrome_launcher_support.h"
 #include "chrome/installer/util/google_update_constants.h"
-#include "chrome/installer/util/google_update_settings.h"
 #include "chrome/installer/util/util_constants.h"
-#include "chrome/installer/util/wmi.h"
 #include "google_update/google_update_idl.h"
 
+using Microsoft::WRL::ComPtr;
 using base::Time;
 using base::TimeDelta;
 using base::win::RegKey;
 using base::win::ScopedCOMInitializer;
-using base::win::ScopedComPtr;
 using base::win::ScopedHandle;
 
 namespace {
-
-const wchar_t kChromeRegClientsKey[] =
-    L"Software\\Google\\Update\\Clients\\"
-    L"{8A69D345-D564-463c-AFF1-A69D9E530F96}";
-const wchar_t kChromeRegClientStateKey[] =
-    L"Software\\Google\\Update\\ClientState\\"
-    L"{8A69D345-D564-463c-AFF1-A69D9E530F96}";
 
 const wchar_t kGCAPITempKey[] = L"Software\\Google\\GCAPITemp";
 
@@ -201,8 +195,7 @@ bool CanReOfferChrome(BOOL set_flag) {
 
 bool IsChromeInstalled(HKEY root_key) {
   RegKey key;
-  return key.Open(root_key,
-                  kChromeRegClientsKey,
+  return key.Open(root_key, gcapi_internals::kChromeRegClientsKey,
                   KEY_READ | KEY_WOW64_32KEY) == ERROR_SUCCESS &&
          key.HasValue(kChromeRegVersion);
 }
@@ -352,7 +345,7 @@ BOOL CALLBACK ChromeWindowEnumProc(HWND hwnd, LPARAM lparam) {
   SetWindowPosParams* params = reinterpret_cast<SetWindowPosParams*>(lparam);
 
   if (!params->shunted_hwnds.count(hwnd) &&
-      ::GetClassName(hwnd, window_class, arraysize(window_class)) &&
+      ::GetClassName(hwnd, window_class, base::size(window_class)) &&
       base::StartsWith(window_class, kChromeWindowClassPrefix,
                        base::CompareCase::INSENSITIVE_ASCII) &&
       ::SetWindowPos(hwnd, params->window_insert_after, params->x, params->y,
@@ -494,14 +487,13 @@ BOOL __stdcall LaunchGoogleChrome() {
   base::CommandLine chrome_command(chrome_exe_path);
 
   bool ret = false;
-  ScopedComPtr<IProcessLauncher> ipl;
-  if (SUCCEEDED(ipl.CreateInstance(__uuidof(ProcessLauncherClass),
-                                   NULL,
-                                   CLSCTX_LOCAL_SERVER))) {
+  ComPtr<IProcessLauncher> ipl;
+  if (SUCCEEDED(::CoCreateInstance(__uuidof(ProcessLauncherClass), NULL,
+                                   CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&ipl)))) {
     if (SUCCEEDED(ipl->LaunchCmdLine(
             chrome_command.GetCommandLineString().c_str())))
       ret = true;
-    ipl.Release();
+    ipl.Reset();
   } else {
     // Couldn't get Omaha's process launcher, Omaha may not be installed at
     // system level. Try just running Chrome instead.
@@ -530,8 +522,8 @@ BOOL __stdcall LaunchGoogleChromeWithDimensions(int x,
     base::CommandLine chrome_command(chrome_exe_path);
 
     ScopedCOMInitializer com_initializer;
-    if (!installer::WMIProcess::Launch(chrome_command.GetCommandLineString(),
-                                       NULL)) {
+    if (!base::win::WmiLaunchProcess(chrome_command.GetCommandLineString(),
+                                     NULL)) {
       // For some reason WMI failed. Try and launch the old fashioned way,
       // knowing that visual glitches will occur when the window pops up.
       if (!LaunchGoogleChrome())
@@ -589,7 +581,7 @@ int __stdcall GoogleChromeDaysSinceLastRun() {
   if (IsChromeInstalled(HKEY_LOCAL_MACHINE) ||
       IsChromeInstalled(HKEY_CURRENT_USER)) {
     RegKey client_state(HKEY_CURRENT_USER,
-                        kChromeRegClientStateKey,
+                        gcapi_internals::kChromeRegClientStateKey,
                         KEY_QUERY_VALUE | KEY_WOW64_32KEY);
     if (client_state.Valid()) {
       base::string16 last_run;
@@ -707,7 +699,7 @@ BOOL __stdcall CanOfferRelaunch(const wchar_t** partner_brandcode_list,
   // brandcode_list);
   base::string16 installed_brandcode;
   bool valid_brandcode = false;
-  if (GoogleUpdateSettings::GetBrand(&installed_brandcode)) {
+  if (gcapi_internals::GetBrand(&installed_brandcode)) {
     for (int i = 0; i < partner_brandcode_list_length; ++i) {
       if (!_wcsicmp(installed_brandcode.c_str(), partner_brandcode_list[i])) {
         valid_brandcode = true;
@@ -742,11 +734,10 @@ BOOL __stdcall CanOfferRelaunch(const wchar_t** partner_brandcode_list,
   // relaunch offer for the current user;
   RegKey key;
   DWORD min_relaunch_date;
-  if (key.Open(HKEY_CURRENT_USER,
-               kChromeRegClientStateKey,
+  if (key.Open(HKEY_CURRENT_USER, gcapi_internals::kChromeRegClientStateKey,
                KEY_QUERY_VALUE | KEY_WOW64_32KEY) == ERROR_SUCCESS &&
-      key.ReadValueDW(kRelaunchAllowedAfterValue,
-                      &min_relaunch_date) == ERROR_SUCCESS &&
+      key.ReadValueDW(kRelaunchAllowedAfterValue, &min_relaunch_date) ==
+          ERROR_SUCCESS &&
       FormatDateOffsetByMonths(0) < min_relaunch_date) {
     if (error_code)
       *error_code = RELAUNCH_ERROR_ALREADY_RELAUNCHED;
@@ -768,13 +759,12 @@ BOOL __stdcall SetRelaunchOffered(const wchar_t** partner_brandcode_list,
   // Store the relaunched brand code and the minimum date for relaunch (6 months
   // from now), and set the Omaha experiment label.
   RegKey key;
-  if (key.Create(HKEY_CURRENT_USER,
-                 kChromeRegClientStateKey,
+  if (key.Create(HKEY_CURRENT_USER, gcapi_internals::kChromeRegClientStateKey,
                  KEY_SET_VALUE | KEY_WOW64_32KEY) != ERROR_SUCCESS ||
-      key.WriteValue(kRelaunchBrandcodeValue,
-                     relaunch_brandcode) != ERROR_SUCCESS ||
-      key.WriteValue(kRelaunchAllowedAfterValue,
-                     FormatDateOffsetByMonths(6)) != ERROR_SUCCESS ||
+      key.WriteValue(kRelaunchBrandcodeValue, relaunch_brandcode) !=
+          ERROR_SUCCESS ||
+      key.WriteValue(kRelaunchAllowedAfterValue, FormatDateOffsetByMonths(6)) !=
+          ERROR_SUCCESS ||
       !SetRelaunchExperimentLabels(relaunch_brandcode, shell_mode)) {
     if (error_code)
       *error_code = RELAUNCH_ERROR_RELAUNCH_FAILED;

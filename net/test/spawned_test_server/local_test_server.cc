@@ -9,6 +9,7 @@
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
@@ -23,18 +24,19 @@ bool AppendArgumentFromJSONValue(const std::string& key,
                                  const base::Value& value_node,
                                  base::CommandLine* command_line) {
   std::string argument_name = "--" + key;
-  switch (value_node.GetType()) {
-    case base::Value::TYPE_NULL:
+  switch (value_node.type()) {
+    case base::Value::Type::NONE:
       command_line->AppendArg(argument_name);
       break;
-    case base::Value::TYPE_INTEGER: {
+    case base::Value::Type::INTEGER: {
       int value;
       bool result = value_node.GetAsInteger(&value);
       DCHECK(result);
-      command_line->AppendArg(argument_name + "=" + base::IntToString(value));
+      command_line->AppendArg(argument_name + "=" +
+                              base::NumberToString(value));
       break;
     }
-    case base::Value::TYPE_STRING: {
+    case base::Value::Type::STRING: {
       std::string value;
       bool result = value_node.GetAsString(&value);
       if (!result || value.empty())
@@ -42,11 +44,11 @@ bool AppendArgumentFromJSONValue(const std::string& key,
       command_line->AppendArg(argument_name + "=" + value);
       break;
     }
-    case base::Value::TYPE_BOOLEAN:
-    case base::Value::TYPE_DOUBLE:
-    case base::Value::TYPE_LIST:
-    case base::Value::TYPE_DICTIONARY:
-    case base::Value::TYPE_BINARY:
+    case base::Value::Type::BOOLEAN:
+    case base::Value::Type::DOUBLE:
+    case base::Value::Type::LIST:
+    case base::Value::Type::DICTIONARY:
+    case base::Value::Type::BINARY:
     default:
       NOTREACHED() << "improper json type";
       return false;
@@ -56,10 +58,8 @@ bool AppendArgumentFromJSONValue(const std::string& key,
 
 }  // namespace
 
-LocalTestServer::LocalTestServer(Type type,
-                                 const std::string& host,
-                                 const base::FilePath& document_root)
-    : BaseTestServer(type, host) {
+LocalTestServer::LocalTestServer(Type type, const base::FilePath& document_root)
+    : BaseTestServer(type) {
   if (!Init(document_root))
     NOTREACHED();
 }
@@ -78,7 +78,7 @@ LocalTestServer::~LocalTestServer() {
 
 bool LocalTestServer::GetTestServerPath(base::FilePath* testserver_path) const {
   base::FilePath testserver_dir;
-  if (!PathService::Get(base::DIR_SOURCE_ROOT, &testserver_dir)) {
+  if (!base::PathService::Get(base::DIR_SOURCE_ROOT, &testserver_dir)) {
     LOG(ERROR) << "Failed to get DIR_SOURCE_ROOT";
     return false;
   }
@@ -89,21 +89,27 @@ bool LocalTestServer::GetTestServerPath(base::FilePath* testserver_path) const {
   return true;
 }
 
-bool LocalTestServer::Start() {
-  return StartInBackground() && BlockUntilStarted();
-}
-
 bool LocalTestServer::StartInBackground() {
+  DCHECK(!started());
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
   // Get path to Python server script.
   base::FilePath testserver_path;
-  if (!GetTestServerPath(&testserver_path))
+  if (!GetTestServerPath(&testserver_path)) {
+    LOG(ERROR) << "Could not get test server path.";
     return false;
+  }
 
-  if (!SetPythonPath())
+  if (!SetPythonPath()) {
+    LOG(ERROR) << "Could not set Python path.";
     return false;
+  }
 
-  if (!LaunchPython(testserver_path))
+  if (!LaunchPython(testserver_path)) {
+    LOG(ERROR) << "Could not launch Python with path " << testserver_path;
     return false;
+  }
 
   return true;
 }
@@ -124,10 +130,11 @@ bool LocalTestServer::Stop() {
     return true;
 
   // First check if the process has already terminated.
-  int exit_code;
-  bool ret = process_.WaitForExitWithTimeout(base::TimeDelta(), &exit_code);
-  if (!ret)
+  bool ret = process_.WaitForExitWithTimeout(base::TimeDelta(), nullptr);
+  if (!ret) {
+    base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait_process;
     ret = process_.Terminate(1, true);
+  }
 
   if (ret)
     process_.Close();
@@ -148,7 +155,7 @@ bool LocalTestServer::Init(const base::FilePath& document_root) {
   DCHECK(!GetPort());
 
   base::FilePath src_dir;
-  if (!PathService::Get(base::DIR_SOURCE_ROOT, &src_dir))
+  if (!base::PathService::Get(base::DIR_SOURCE_ROOT, &src_dir))
     return false;
   SetResourcePath(src_dir.Append(document_root),
                   src_dir.AppendASCII("net")
@@ -159,21 +166,16 @@ bool LocalTestServer::Init(const base::FilePath& document_root) {
 }
 
 bool LocalTestServer::SetPythonPath() const {
+  ClearPythonPath();
+
   base::FilePath third_party_dir;
-  if (!PathService::Get(base::DIR_SOURCE_ROOT, &third_party_dir)) {
+  if (!base::PathService::Get(base::DIR_SOURCE_ROOT, &third_party_dir)) {
     LOG(ERROR) << "Failed to get DIR_SOURCE_ROOT";
     return false;
   }
   third_party_dir = third_party_dir.AppendASCII("third_party");
 
-  // For simplejson. (simplejson, unlike all the other Python modules
-  // we include, doesn't have an extra 'simplejson' directory, so we
-  // need to include its parent directory, i.e. third_party_dir).
-  AppendToPythonPath(third_party_dir);
-
   AppendToPythonPath(third_party_dir.AppendASCII("tlslite"));
-  AppendToPythonPath(
-      third_party_dir.AppendASCII("pyftpdlib").AppendASCII("src"));
   AppendToPythonPath(
       third_party_dir.AppendASCII("pywebsocket").AppendASCII("src"));
 
@@ -202,13 +204,12 @@ bool LocalTestServer::AddCommandLineArguments(
     const std::string& key = it.key();
 
     // Add arguments from a list.
-    if (value.IsType(base::Value::TYPE_LIST)) {
+    if (value.is_list()) {
       const base::ListValue* list = NULL;
       if (!value.GetAsList(&list) || !list || list->empty())
         return false;
-      for (base::ListValue::const_iterator list_it = list->begin();
-           list_it != list->end(); ++list_it) {
-        if (!AppendArgumentFromJSONValue(key, *(*list_it), command_line))
+      for (auto list_it = list->begin(); list_it != list->end(); ++list_it) {
+        if (!AppendArgumentFromJSONValue(key, *list_it, command_line))
           return false;
       }
     } else if (!AppendArgumentFromJSONValue(key, value, command_line)) {
@@ -238,6 +239,9 @@ bool LocalTestServer::AddCommandLineArguments(
       break;
     case TYPE_BASIC_AUTH_PROXY:
       command_line->AppendArg("--basic-auth-proxy");
+      break;
+    case TYPE_PROXY:
+      command_line->AppendArg("--proxy");
       break;
     default:
       NOTREACHED();

@@ -40,6 +40,26 @@ Status StubWebView::Reload(const Timeout* timeout) {
   return Status(kOk);
 }
 
+Status StubWebView::Freeze(const Timeout* timeout) {
+  return Status(kOk);
+}
+
+Status StubWebView::Resume(const Timeout* timeout) {
+  return Status(kOk);
+}
+
+Status StubWebView::SendCommand(const std::string& cmd,
+                                const base::DictionaryValue& params) {
+  return Status(kOk);
+}
+
+Status StubWebView::SendCommandAndGetResult(
+        const std::string& cmd,
+        const base::DictionaryValue& params,
+        std::unique_ptr<base::Value>* value) {
+  return Status(kOk);
+}
+
 Status StubWebView::TraverseHistory(int delta, const Timeout* timeout) {
   return Status(kOk);
 }
@@ -98,12 +118,26 @@ Status StubWebView::DispatchKeyEvents(const std::list<KeyEvent>& events) {
   return Status(kOk);
 }
 
-Status StubWebView::GetCookies(std::unique_ptr<base::ListValue>* cookies) {
+Status StubWebView::GetCookies(std::unique_ptr<base::ListValue>* cookies,
+                               const std::string& current_page_url) {
   return Status(kOk);
 }
 
 Status StubWebView::DeleteCookie(const std::string& name,
-                                 const std::string& url) {
+                                 const std::string& url,
+                                 const std::string& domain,
+                                 const std::string& path) {
+  return Status(kOk);
+}
+
+Status StubWebView::AddCookie(const std::string& name,
+                              const std::string& url,
+                              const std::string& value,
+                              const std::string& domain,
+                              const std::string& path,
+                              bool secure,
+                              bool httpOnly,
+                              double expiry) {
   return Status(kOk);
 }
 
@@ -132,7 +166,9 @@ Status StubWebView::OverrideNetworkConditions(
   return Status(kOk);
 }
 
-Status StubWebView::CaptureScreenshot(std::string* screenshot) {
+Status StubWebView::CaptureScreenshot(
+    std::string* screenshot,
+    const base::DictionaryValue& params) {
   return Status(kOk);
 }
 
@@ -171,4 +207,32 @@ Status StubWebView::SynthesizeScrollGesture(int x,
 
 Status StubWebView::SynthesizePinchGesture(int x, int y, double scale_factor) {
   return Status(kOk);
+}
+
+Status StubWebView::GetScreenOrientation(std::string* orientation) {
+  return Status(kOk);
+}
+
+Status StubWebView::SetScreenOrientation(std::string orientation) {
+  return Status(kOk);
+}
+
+Status StubWebView::DeleteScreenOrientation() {
+  return Status(kOk);
+}
+
+bool StubWebView::IsOOPIF(const std::string& frame_id) {
+  return false;
+}
+
+FrameTracker* StubWebView::GetFrameTracker() const {
+  return nullptr;
+}
+
+std::unique_ptr<base::Value> StubWebView::GetCastSinks() {
+  return std::make_unique<base::Value>();
+}
+
+std::unique_ptr<base::Value> StubWebView::GetCastIssueMessage() {
+  return std::make_unique<base::Value>();
 }

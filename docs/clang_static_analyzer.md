@@ -1,73 +1,121 @@
 # The Clang Static Analyzer
 
-See the [official clang static analyzer page](http://clang-analyzer.llvm.org/)
-for background.
+The Clang C/C++ compiler comes with a static analyzer which can be used to find
+bugs using path sensitive analysis. Path sensitive analysis is
+a technique that explores all the possible branches in code and
+records the codepaths that might lead to bad or undefined behavior,
+like an uninitialized reads, use after frees, pointer leaks, and so on.
 
-We don't run this regularly (because the analyzer's
-[support for C++ isn't great yet](http://clang-analyzer.llvm.org/dev_cxx.html)),
-so everything on this page is likely broken. The last time I checked, the
-analyzer reported mostly uninteresting things. This assumes you're
-[building chromium with clang](clang.md).
+You can now use these static analysis capabilities to find potential bugs in
+Chromium code! Note that this capability is quite new, and as of this writing,
+there are still a large number of warnings to be fixed in Chromium and especially
+in its third_party dependencies. Some of the warnings might be false positives,
+see the section on "Addressing false positives" for more information on
+resolving them.
 
-You need an llvm checkout to get `scan-build` and `scan-view`; the easiest way
-to get that is to run
+We're still evaluating this tool, please let us know if you find it useful.
 
-```shell
-tools/clang/scripts/update.py --force-local-build --without-android
+See the [official Clang static analyzer page](http://clang-analyzer.llvm.org/)
+for more background information.
+
+## Save some time, look at the buildbot logs!
+
+We run static analysis builds continously, all day long on FYI buildbots.
+You can save yourself some time by first inspecting their build logs for errors
+before running your own analysis builds. You will probably need to Ctrl-F the
+logs to find any issues for the specific files you're interested in.
+
+You can find the analysis logs in the `compile stdout` step.
+* [Linux buildbot logs](https://ci.chromium.org/p/chromium/builders/luci.chromium.ci/Linux%20Clang%20Analyzer)
+
+## Enabling static analysis
+
+*Warning:* `use_clang_static_analyzer` is deprecated, but the static analyzer can
+still be invoked with [clang-tidy](clang_tidy.md).
+
+To get static analysis running for your build, add the following flag to your GN
+args.
+
+```
+use_clang_static_analyzer = true
 ```
 
-## With make
+The next time you run your build, you should see static analysis warnings appear
+inline with the usual Clang build warnings and errors. Expect some slowdown on
+your build; anywhere from a 10% increase on local builds, to well over 100% under Goma
+([crbug](https://crbug.com/733363)).
 
-To build base, if you use the make build:
+## Supported checks
+Clang's static analyzer comes with a wide variety of checkers. Some of the checks
+aren't useful because they are intended for different languages, platforms, or
+coding conventions than the ones used for Chromium development.
 
-```
-builddir_name=out_analyze \
-PATH=$PWD/third_party/llvm-build/Release+Asserts/bin:$PATH  \
-third_party/llvm/tools/clang/tools/scan-build/scan-build  \
-    --keep-going --use-cc clang --use-c++ clang++ \
-    make -j8 base
-```
+The checkers that we are interested in running for Chromium are in the
+`analyzer_option_flags` variable in
+[clang_static_analyzer_wrapper.py](../build/toolchain/clang_static_analyzer_wrapper.py).
 
-(`builddir_name` is set to force a clobber build.)
+As of this writing, the checker suites we support are
+[core](https://clang-analyzer.llvm.org/available_checks.html#core_checkers),
+[cplusplus](https://clang-analyzer.llvm.org/available_checks.html#cplusplus_checkers), and
+[deadcode](https://clang-analyzer.llvm.org/available_checks.html#deadcode_checkers).
 
-Once that's done, run `third_party/llvm/tools/clang/tools/scan-view/scan-view`
-to see the results; pass in the pass that `scan-build` outputs.
+To add or remove checkers, simply modify the `-analyzer-checker=` flags.
+Remember that checkers aren't free; additional checkers will add to the
+analysis time.
 
-## With ninja
+## Addressing false positives
 
-scan-build does its stuff by mucking with $CC/$CXX, which ninja ignores. gyp
-does look at $CC/$CXX however, so you need to first run gyp\_chromium under
-scan-build:
+Some of the errors you encounter might be false positives, which occurs when the
+static analyzer naively follows codepaths which are practically impossible to hit
+at runtime. Fortunately, we have a tool at our disposal for guiding the analyzer
+away from impossible codepaths: assertion handlers like DCHECK/CHECK/LOG(FATAL).
+The analyzer won't check the codepaths which we assert are unreachable.
 
-```shell
-time GYP_GENERATORS=ninja \
-GYP_DEFINES='component=shared_library clang_use_chrome_plugins=0 \
-    mac_strip_release=0 dcheck_always_on=1' \
-third_party/llvm/tools/clang/tools/scan-build/scan-build \
-    --use-analyzer $PWD/third_party/llvm-build/Release+Asserts/bin/clang \
-    build/gyp_chromium -Goutput_dir=out_analyze
-```
+An example would be that if the analyzer detected the function argument `*my_ptr`
+might be null and dereferencing it would potentially segfault, you would see the
+error `warning: Dereference of null pointer (loaded from variable 'my_ptr')`.
+If you know for a fact that my_ptr will not be null in practice, then you can
+place an assert at the top of the function: `DCHECK(my_ptr)`. The analyzer will
+no longer generate the warning.
 
-You then need to run the build under scan-build too, to get a HTML report:
+Be mindful about only specifying assertions which are factually correct! Don't
+DCHECK recklessly just to quiet down the analyzer. :)
 
-```shell
-time third_party/llvm/tools/clang/tools/scan-build/scan-build \
-    --use-analyzer $PWD/third_party/llvm-build/Release+Asserts/bin/clang \
-    ninja -C out_analyze/Release/ base
-```
+Other types of false positives and their suppressions:
+* Unreachable code paths. To suppress, add the `ANALYZER_SKIP_THIS_PATH();`
+  directive to the relevant code block.
+* Dead stores. To suppress, use the macro
+  `ANALYZER_ALLOW_UNUSED(my_var)`. This also suppresses dead store warnings
+  on conventional builds without static analysis enabled!
 
-Then run `scan-view` as described above.
+See the definitions of the ANALYZER_* macros in base/logging.h for more
+detailed information about how the annotations are implemented.
 
-## Known False Positives
+## Logging bugs
 
-* http://llvm.org/bugs/show_bug.cgi?id=11425
+If you find any issues with the static analyzer, or find Chromium code behaving
+badly with the analyzer, please check the `Infra>CodeAnalysis` CrBug component
+to look for known issues, or file a bug if it is a new problem.
 
-## Stuff found by the static analyzer
+***
 
-*   https://code.google.com/p/skia/issues/detail?id=399
-*   https://code.google.com/p/skia/issues/detail?id=400
-*   https://codereview.chromium.org/8308008/
-*   https://codereview.chromium.org/8313008/
-*   https://codereview.chromium.org/8308009/
-*   https://codereview.chromium.org/10031018/
-*   https://codereview.chromium.org/12390058/
+## Technical details
+### GN hooks
+The platform toolchain .gni/BUILD.gn files check for the
+`use_clang_static_analyzer` flag and modify the compiler command line so as to
+call the analysis wrapper script rather than call the compiler directly.
+The flag has no effect on assembler invocations, linker invocations, or
+NaCl toolchain builds.
+
+### Analysis wrapper script
+The entry point for running analysis is the Python script
+`//build/toolchain/clang_static_analyzer_wrapper.py` which invokes Clang
+with the parameters for running static analysis.
+
+**Alternatives considered**
+A script-less, GN-based solution is not possible because GN's control flows
+are very limited in how they may be extended.
+
+The `scan-build` wrapper script included with Clang does not
+work with Goma, so it couldn't be used.
+

@@ -1,7 +1,6 @@
 /* Copyright 2015 The Chromium Authors. All rights reserved.
  * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
- */
+ * found in the LICENSE file. */
 
 #container {
   padding: 40px;
@@ -16,11 +15,11 @@
   width: 28px;
 }
 
-iron-icon[icon=warning] {
+iron-icon[icon='cr:warning'] {
   color: var(--google-yellow-500);
 }
 
-iron-icon[icon=done] {
+iron-icon[icon='notification-card:done'] {
   color: var(--google-green-500);
 }
 

@@ -22,7 +22,7 @@
 #include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/cocoa/last_active_browser_cocoa.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/signin/core/common/profile_management_switches.h"
+#include "components/signin/core/browser/account_consistency_method.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 #include "ui/gfx/image/image.h"
 
@@ -46,8 +46,7 @@ enum ValidateMenuItemSelector {
 
 namespace ProfileMenuControllerInternal {
 
-class Observer : public chrome::BrowserListObserver,
-                 public AvatarMenuObserver {
+class Observer : public BrowserListObserver, public AvatarMenuObserver {
  public:
   Observer(ProfileMenuController* controller) : controller_(controller) {
     BrowserList::AddObserver(this);
@@ -55,7 +54,7 @@ class Observer : public chrome::BrowserListObserver,
 
   ~Observer() override { BrowserList::RemoveObserver(this); }
 
-  // chrome::BrowserListObserver:
+  // BrowserListObserver:
   void OnBrowserAdded(Browser* browser) override {}
   void OnBrowserRemoved(Browser* browser) override {
     [controller_ activeBrowserChangedTo:chrome::GetLastActiveBrowser()];
@@ -121,7 +120,7 @@ class Observer : public chrome::BrowserListObserver,
 - (BOOL)insertItemsIntoMenu:(NSMenu*)menu
                    atOffset:(NSInteger)offset
                    fromDock:(BOOL)dock {
-  if (!avatarMenu_ || !avatarMenu_->ShouldShowAvatarMenu())
+  if (!avatarMenu_)
     return NO;
 
   // Don't show the list of profiles in the dock if only one profile exists.
@@ -156,12 +155,10 @@ class Observer : public chrome::BrowserListObserver,
 
       // The image might be too large and need to be resized (i.e. if this is
       // a signed-in user using the GAIA profile photo).
-      if (itemIcon.Width() > profiles::kAvatarIconWidth ||
-          itemIcon.Height() > profiles::kAvatarIconHeight) {
+      if (itemIcon.Width() > profiles::kAvatarIconSize ||
+          itemIcon.Height() > profiles::kAvatarIconSize) {
         itemIcon = profiles::GetAvatarIconForWebUI(itemIcon, true);
       }
-      DCHECK(itemIcon.Width() <= profiles::kAvatarIconWidth);
-      DCHECK(itemIcon.Height() <= profiles::kAvatarIconHeight);
       [item setImage:itemIcon.ToNSImage()];
       [item setState:itemData.active ? NSOnState : NSOffState];
     }

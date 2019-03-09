@@ -4,27 +4,22 @@
 
 #include "ui/views/mus/screen_mus.h"
 
-#include "services/shell/public/cpp/connection.h"
-#include "services/shell/public/cpp/connector.h"
+#include "base/stl_util.h"
+#include "ui/aura/env.h"
+#include "ui/aura/mus/window_tree_host_mus.h"
 #include "ui/aura/window.h"
-#include "ui/display/display_finder.h"
-#include "ui/display/display_observer.h"
-#include "ui/display/mojo/display_type_converters.h"
+#include "ui/aura/window_tree_host.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/views/mus/screen_mus_delegate.h"
 #include "ui/views/mus/window_manager_frame_values.h"
-
-#ifdef NOTIMPLEMENTED
-#undef NOTIMPLEMENTED
-#define NOTIMPLEMENTED() DVLOG(1) << "notimplemented"
-#endif
 
 namespace mojo {
 
 template <>
 struct TypeConverter<views::WindowManagerFrameValues,
-                     mus::mojom::FrameDecorationValuesPtr> {
+                     ws::mojom::FrameDecorationValuesPtr> {
   static views::WindowManagerFrameValues Convert(
-      const mus::mojom::FrameDecorationValuesPtr& input) {
+      const ws::mojom::FrameDecorationValuesPtr& input) {
     views::WindowManagerFrameValues result;
     result.normal_insets = input->normal_client_area_insets;
     result.maximized_insets = input->maximized_client_area_insets;
@@ -37,161 +32,96 @@ struct TypeConverter<views::WindowManagerFrameValues,
 
 namespace views {
 
-ScreenMus::ScreenMus(ScreenMusDelegate* delegate)
-    : delegate_(delegate),
-      display_manager_observer_binding_(this) {
+using Type = display::DisplayList::Type;
+
+ScreenMus::ScreenMus(ScreenMusDelegate* delegate) : delegate_(delegate) {
+  DCHECK(delegate);
 }
 
-ScreenMus::~ScreenMus() {
-  DCHECK_EQ(this, display::Screen::GetScreen());
-  display::Screen::SetScreenInstance(nullptr);
-}
+ScreenMus::~ScreenMus() = default;
 
-void ScreenMus::Init(shell::Connector* connector) {
-  display::Screen::SetScreenInstance(this);
+void ScreenMus::OnDisplaysChanged(
+    std::vector<ws::mojom::WsDisplayPtr> ws_displays,
+    int64_t primary_display_id,
+    int64_t internal_display_id,
+    int64_t display_id_for_new_windows) {
+  const bool primary_changed = primary_display_id != GetPrimaryDisplay().id();
+  int64_t handled_display_id = display::kInvalidDisplayId;
+  const WindowManagerFrameValues initial_frame_values =
+      WindowManagerFrameValues::instance();
 
-  connector->ConnectToInterface("mojo:mus", &display_manager_);
+  if (internal_display_id != display::kInvalidDisplayId)
+    display::Display::SetInternalDisplayId(internal_display_id);
 
-  display_manager_->AddObserver(
-      display_manager_observer_binding_.CreateInterfacePtrAndBind());
+  if (primary_changed) {
+    handled_display_id = primary_display_id;
+    for (auto& ws_display_ptr : ws_displays) {
+      if (ws_display_ptr->display.id() == primary_display_id) {
+        WindowManagerFrameValues frame_values =
+            ws_display_ptr->frame_decoration_values
+                .To<WindowManagerFrameValues>();
+        WindowManagerFrameValues::SetInstance(frame_values);
 
-  // We need the set of displays before we can continue. Wait for it.
-  //
-  // TODO(rockot): Do something better here. This should not have to block tasks
-  // from running on the calling thread. http://crbug.com/594852.
-  bool success = display_manager_observer_binding_.WaitForIncomingMethodCall();
-
-  // The WaitForIncomingMethodCall() should have supplied the set of Displays,
-  // unless mus is going down, in which case encountered_error() is true, or the
-  // call to WaitForIncomingMethodCall() failed.
-  if (display_list_.displays().empty()) {
-    DCHECK(display_manager_.encountered_error() || !success);
-    // In this case we install a default display and assume the process is
-    // going to exit shortly so that the real value doesn't matter.
-    display_list_.AddDisplay(
-        display::Display(0xFFFFFFFF, gfx::Rect(0, 0, 801, 802)),
-        DisplayList::Type::PRIMARY);
-  }
-}
-
-void ScreenMus::ProcessDisplayChanged(const display::Display& changed_display,
-                                      bool is_primary) {
-  if (display_list_.FindDisplayById(changed_display.id()) ==
-      display_list_.displays().end()) {
-    display_list_.AddDisplay(changed_display,
-                             is_primary ? DisplayList::Type::PRIMARY
-                                        : DisplayList::Type::NOT_PRIMARY);
-    return;
-  }
-  display_list_.UpdateDisplay(
-      changed_display,
-      is_primary ? DisplayList::Type::PRIMARY : DisplayList::Type::NOT_PRIMARY);
-}
-
-gfx::Point ScreenMus::GetCursorScreenPoint() {
-  if (!delegate_) {
-    // TODO(erg): If we need the cursor point in the window manager, we'll need
-    // to make |delegate_| required. It only recently changed to be optional.
-    NOTIMPLEMENTED();
-    return gfx::Point();
+        const bool is_primary = true;
+        ProcessDisplayChanged(ws_display_ptr->display, is_primary);
+        break;
+      }
+    }
   }
 
-  return delegate_->GetCursorScreenPoint();
-}
+  // Add new displays and update existing ones.
+  std::set<int64_t> display_ids;
+  for (auto& ws_display_ptr : ws_displays) {
+    display_ids.insert(ws_display_ptr->display.id());
+    if (handled_display_id == ws_display_ptr->display.id())
+      continue;
 
-bool ScreenMus::IsWindowUnderCursor(gfx::NativeWindow window) {
-  if (!window)
-    return false;
+    const bool is_primary = false;
+    ProcessDisplayChanged(ws_display_ptr->display, is_primary);
+  }
 
-  return window->IsVisible() &&
-      window->GetBoundsInScreen().Contains(GetCursorScreenPoint());
-}
+  // Remove any displays no longer in |ws_displays|.
+  std::set<int64_t> existing_display_ids;
+  for (const auto& display : display_list().displays())
+    existing_display_ids.insert(display.id());
+  std::set<int64_t> removed_display_ids =
+      base::STLSetDifference<std::set<int64_t>>(existing_display_ids,
+                                                display_ids);
+  for (int64_t display_id : removed_display_ids) {
+    // TODO(kylechar): DisplayList would need to change to handle having no
+    // primary display.
+    if (display_id != GetPrimaryDisplay().id())
+      display_list().RemoveDisplay(display_id);
+  }
 
-gfx::NativeWindow ScreenMus::GetWindowAtScreenPoint(const gfx::Point& point) {
-  NOTIMPLEMENTED();
-  return nullptr;
-}
+  if (primary_changed &&
+      initial_frame_values != WindowManagerFrameValues::instance()) {
+    delegate_->OnWindowManagerFrameValuesChanged();
+  }
 
-display::Display ScreenMus::GetPrimaryDisplay() const {
-  return *display_list_.GetPrimaryDisplayIterator();
+  SetDisplayForNewWindows(display_id_for_new_windows);
 }
 
 display::Display ScreenMus::GetDisplayNearestWindow(
-    gfx::NativeView view) const {
-  NOTIMPLEMENTED();
-  return *display_list_.GetPrimaryDisplayIterator();
+    gfx::NativeWindow window) const {
+  aura::WindowTreeHostMus* window_tree_host_mus =
+      aura::WindowTreeHostMus::ForWindow(window);
+  if (!window_tree_host_mus)
+    return GetPrimaryDisplay();
+  return window_tree_host_mus->GetDisplay();
 }
 
-display::Display ScreenMus::GetDisplayNearestPoint(
-    const gfx::Point& point) const {
-  return *display::FindDisplayNearestPoint(display_list_.displays(), point);
+gfx::Point ScreenMus::GetCursorScreenPoint() {
+  return aura::Env::GetInstance()->last_mouse_location();
 }
 
-int ScreenMus::GetNumDisplays() const {
-  return static_cast<int>(display_list_.displays().size());
+bool ScreenMus::IsWindowUnderCursor(gfx::NativeWindow window) {
+  return window && window->IsVisible() &&
+         window->GetBoundsInScreen().Contains(GetCursorScreenPoint());
 }
 
-std::vector<display::Display> ScreenMus::GetAllDisplays() const {
-  return display_list_.displays();
-}
-
-display::Display ScreenMus::GetDisplayMatching(
-    const gfx::Rect& match_rect) const {
-  const display::Display* match = display::FindDisplayWithBiggestIntersection(
-      display_list_.displays(), match_rect);
-  return match ? *match : GetPrimaryDisplay();
-}
-
-void ScreenMus::AddObserver(display::DisplayObserver* observer) {
-  display_list_.AddObserver(observer);
-}
-
-void ScreenMus::RemoveObserver(display::DisplayObserver* observer) {
-  display_list_.RemoveObserver(observer);
-}
-
-void ScreenMus::OnDisplays(
-    mojo::Array<mus::mojom::DisplayPtr> transport_displays) {
-  // This should only be called once from Init() before any observers have been
-  // added.
-  DCHECK(display_list_.displays().empty());
-  std::vector<display::Display> displays =
-      transport_displays.To<std::vector<display::Display>>();
-  for (size_t i = 0; i < displays.size(); ++i) {
-    const bool is_primary = transport_displays[i]->is_primary;
-    display_list_.AddDisplay(displays[i], is_primary
-                                              ? DisplayList::Type::PRIMARY
-                                              : DisplayList::Type::NOT_PRIMARY);
-    if (is_primary) {
-      // TODO(sky): Make WindowManagerFrameValues per display.
-      WindowManagerFrameValues frame_values =
-          transport_displays[i]
-              ->frame_decoration_values.To<WindowManagerFrameValues>();
-      WindowManagerFrameValues::SetInstance(frame_values);
-    }
-  }
-  DCHECK(!display_list_.displays().empty());
-}
-
-void ScreenMus::OnDisplaysChanged(
-    mojo::Array<mus::mojom::DisplayPtr> transport_displays) {
-  for (size_t i = 0; i < transport_displays.size(); ++i) {
-    const bool is_primary = transport_displays[i]->is_primary;
-    ProcessDisplayChanged(transport_displays[i].To<display::Display>(),
-                          is_primary);
-    if (is_primary) {
-      WindowManagerFrameValues frame_values =
-          transport_displays[i]
-              ->frame_decoration_values.To<WindowManagerFrameValues>();
-      WindowManagerFrameValues::SetInstance(frame_values);
-      if (delegate_)
-        delegate_->OnWindowManagerFrameValuesChanged();
-    }
-  }
-}
-
-void ScreenMus::OnDisplayRemoved(int64_t id) {
-  display_list_.RemoveDisplay(id);
+aura::Window* ScreenMus::GetWindowAtScreenPoint(const gfx::Point& point) {
+  return delegate_->GetWindowAtScreenPoint(point);
 }
 
 }  // namespace views

@@ -4,6 +4,11 @@
 
 #include "chrome/browser/sync/test/integration/sync_app_helper.h"
 
+#include <list>
+#include <map>
+#include <memory>
+
+#include "chrome/browser/extensions/convert_web_app.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
@@ -11,7 +16,9 @@
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
 #include "chrome/browser/sync/test/integration/sync_extension_helper.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chrome/common/extensions/manifest_handlers/app_icon_color_info.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
+#include "chrome/common/extensions/manifest_handlers/app_theme_color_info.h"
 #include "chrome/common/extensions/sync_helper.h"
 #include "components/crx_file/id_util.h"
 #include "extensions/browser/app_sorting.h"
@@ -36,12 +43,15 @@ struct AppState {
   syncer::StringOrdinal page_ordinal;
   extensions::LaunchType launch_type;
   GURL launch_web_url;
+  GURL bookmark_app_scope;
+  std::string icon_color;
+  base::Optional<SkColor> theme_color;
   std::string description;
   std::string name;
   bool from_bookmark;
 };
 
-typedef std::map<std::string, AppState> AppStateMap;
+using AppStateMap = std::map<std::string, AppState>;
 
 AppState::AppState()
     : launch_type(extensions::LAUNCH_TYPE_INVALID), from_bookmark(false) {}
@@ -56,6 +66,8 @@ bool AppState::Equals(const AppState& other) const {
   return app_launch_ordinal.Equals(other.app_launch_ordinal) &&
          page_ordinal.Equals(other.page_ordinal) &&
          launch_type == other.launch_type &&
+         bookmark_app_scope == other.bookmark_app_scope &&
+         icon_color == other.icon_color && theme_color == other.theme_color &&
          launch_web_url == other.launch_web_url &&
          description == other.description && name == other.name &&
          from_bookmark == other.from_bookmark;
@@ -70,15 +82,23 @@ void LoadApp(content::BrowserContext* context,
   app_state->app_launch_ordinal = app_sorting->GetAppLaunchOrdinal(id);
   app_state->page_ordinal = app_sorting->GetPageOrdinal(id);
   app_state->launch_type = extensions::GetLaunchTypePrefValue(prefs, id);
-  ExtensionService* service =
+  extensions::ExtensionService* service =
       extensions::ExtensionSystem::Get(context)->extension_service();
   const extensions::Extension* extension = service->GetInstalledExtension(id);
   // GetInstalledExtension(id) returns null if |id| is for a pending extension.
   // In case of running tests against real backend servers, pending apps won't
   // be installed.
   if (extension) {
+    if (extension->from_bookmark()) {
+      app_state->bookmark_app_scope =
+          extensions::GetScopeURLFromBookmarkApp(extension);
+    }
     app_state->launch_web_url =
         extensions::AppLaunchInfo::GetLaunchWebURL(extension);
+    app_state->icon_color =
+        extensions::AppIconColorInfo::GetIconColorString(extension);
+    app_state->theme_color =
+        extensions::AppThemeColorInfo::GetThemeColor(extension);
     app_state->description = extension->description();
     app_state->name = extension->name();
     app_state->from_bookmark = extension->from_bookmark();
@@ -129,12 +149,12 @@ void SyncAppHelper::SetupIfNecessary(SyncTest* test) {
     return;
 
   for (int i = 0; i < test->num_clients(); ++i) {
-    extensions::ExtensionSystem::Get(
-        test->GetProfile(i))->InitForRegularProfile(true);
+    extensions::ExtensionSystem::Get(test->GetProfile(i))
+        ->InitForRegularProfile(true /* extensions_enabled */);
   }
   if (test->use_verifier()) {
     extensions::ExtensionSystem::Get(test->verifier())
-        ->InitForRegularProfile(true);
+        ->InitForRegularProfile(true /* extensions_enabled */);
   }
 
   setup_completed_ = true;
@@ -153,8 +173,8 @@ bool SyncAppHelper::AppStatesMatch(Profile* profile1, Profile* profile2) {
     return false;
   }
 
-  AppStateMap::const_iterator it1 = state_map1.begin();
-  AppStateMap::const_iterator it2 = state_map2.begin();
+  auto it1 = state_map1.begin();
+  auto it2 = state_map2.begin();
   while (it1 != state_map1.end()) {
     if (it1->first != it2->first) {
       DVLOG(2) << "Apps for profile " << profile1->GetDebugName()

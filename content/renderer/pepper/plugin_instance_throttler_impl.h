@@ -18,7 +18,6 @@
 
 namespace blink {
 class WebInputEvent;
-struct WebRect;
 }
 
 namespace url {
@@ -33,19 +32,20 @@ class RenderFrameImpl;
 class CONTENT_EXPORT PluginInstanceThrottlerImpl
     : public PluginInstanceThrottler {
  public:
-  PluginInstanceThrottlerImpl();
+  explicit PluginInstanceThrottlerImpl(
+      RenderFrame::RecordPeripheralDecision record_decision);
 
   ~PluginInstanceThrottlerImpl() override;
 
   // PluginInstanceThrottler implementation:
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
-  bool IsThrottled() const override;
-  bool IsHiddenForPlaceholder() const override;
+  bool IsThrottled() override;
+  bool IsHiddenForPlaceholder() override;
   void MarkPluginEssential(PowerSaverUnthrottleMethod method) override;
   void SetHiddenForPlaceholder(bool hidden) override;
-  PepperWebPluginImpl* GetWebPlugin() const override;
-  const gfx::Size& GetSize() const override;
+  PepperWebPluginImpl* GetWebPlugin() override;
+  const gfx::Size& GetSize() override;
   void NotifyAudioThrottled() override;
 
   void SetWebPlugin(PepperWebPluginImpl* web_plugin);
@@ -65,7 +65,7 @@ class CONTENT_EXPORT PluginInstanceThrottlerImpl
 
   // Called when the plugin flushes it's graphics context. Supplies the
   // throttler with a candidate to use as the representative keyframe.
-  void OnImageFlush(const SkBitmap* bitmap);
+  void OnImageFlush(const SkBitmap& bitmap);
 
   // Returns true if |event| was handled and shouldn't be further processed.
   bool ConsumeInputEvent(const blink::WebInputEvent& event);
@@ -90,6 +90,8 @@ class CONTENT_EXPORT PluginInstanceThrottlerImpl
   void AudioThrottledFrameTimeout();
   void EngageThrottle();
 
+  RenderFrame::RecordPeripheralDecision record_decision_;
+
   ThrottlerState state_;
 
   bool is_hidden_for_placeholder_;
@@ -111,7 +113,7 @@ class CONTENT_EXPORT PluginInstanceThrottlerImpl
   bool audio_throttled_;
   base::DelayTimer audio_throttled_frame_timeout_;
 
-  base::ObserverList<Observer> observer_list_;
+  base::ObserverList<Observer>::Unchecked observer_list_;
 
   base::WeakPtrFactory<PluginInstanceThrottlerImpl> weak_factory_;
 

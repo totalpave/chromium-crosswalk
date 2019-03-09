@@ -6,15 +6,15 @@
 #define CHROME_BROWSER_CHROMEOS_SYSTEM_LOGS_DEBUG_DAEMON_LOG_SOURCE_H_
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/feedback/system_logs/system_logs_fetcher_base.h"
-
-class Profile;
+#include "base/optional.h"
+#include "components/feedback/system_logs/system_logs_source.h"
 
 namespace system_logs {
 
@@ -28,33 +28,36 @@ class DebugDaemonLogSource : public SystemLogsSource {
   // Fetches logs from the daemon over dbus. After the fetch is complete, the
   // results will be forwarded to the request supplied to the constructor and
   // this instance will free itself.
-  void Fetch(const SysLogsSourceCallback& callback) override;
+  void Fetch(SysLogsSourceCallback callback) override;
 
  private:
   typedef std::map<std::string, std::string> KeyValueMap;
 
   // Callbacks for the 5 different dbus calls to debugd.
-  void OnGetRoutes(bool succeeded, const std::vector<std::string>& routes);
-  void OnGetNetworkStatus(bool succeeded, const std::string& status);
-  void OnGetModemStatus(bool succeeded, const std::string& status);
-  void OnGetWiMaxStatus(bool succeeded, const std::string& status);
+  void OnGetRoutes(base::Optional<std::vector<std::string>> routes);
+  void OnGetNetworkStatus(base::Optional<std::string> status);
+  void OnGetModemStatus(base::Optional<std::string> status);
+  void OnGetWiMaxStatus(base::Optional<std::string> status);
   void OnGetLogs(bool succeeded,
                  const KeyValueMap& logs);
+
+  // Reads the logged-in users' log files that have to be read by Chrome as
+  // debugd has no access to them. The contents of these logs are appended to
+  // |response_|. This is called at the end when all debugd logs are collected
+  // so that we can see any debugd related errors surface in feedback reports.
+  void GetLoggedInUsersLogFiles();
+
   void OnGetUserLogFiles(bool succeeded,
                          const KeyValueMap& logs);
 
-  // Read the contents of the specified user logs files and adds it to
-  // the response parameter.
-  static void ReadUserLogFiles(
-      const KeyValueMap& user_log_files,
-      const std::vector<base::FilePath>& profile_dirs,
-      SystemLogsResponse* response);
-
   // Merge the responses from ReadUserLogFiles into the main response dict and
-  // call RequestComplete to indicate that the user log files read is complete.
-  void MergeResponse(SystemLogsResponse* response);
+  // invoke the callback_.Run method with the assumption that all other logs
+  // have already been collected.
+  void MergeUserLogFilesResponse(std::unique_ptr<SystemLogsResponse> response);
 
-  // Sends the data to the callback_ when all the requests are completed
+  // When all the requests are completed, send one last request to collect the
+  // user logs and complete the collection by invoking the callback's Run
+  // method.
   void RequestCompleted();
 
   std::unique_ptr<SystemLogsResponse> response_;

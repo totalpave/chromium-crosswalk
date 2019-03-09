@@ -7,55 +7,32 @@
  * by type: Ethernet, WiFi, Cellular, WiMAX, and VPN.
  */
 
-/** @typedef {chrome.networkingPrivate.DeviceStateProperties} */
-var DeviceStateProperties;
+/**
+ * @typedef {{
+ *   Ethernet: (!CrOnc.DeviceStateProperties|undefined),
+ *   WiFi: (!CrOnc.DeviceStateProperties|undefined),
+ *   Cellular: (!CrOnc.DeviceStateProperties|undefined),
+ *   WiMAX: (!CrOnc.DeviceStateProperties|undefined),
+ *   VPN: (!CrOnc.DeviceStateProperties|undefined)
+ * }}
+ */
+let DeviceStateObject;
 
 /**
  * @typedef {{
- *   Ethernet: (DeviceStateProperties|undefined),
- *   WiFi: (DeviceStateProperties|undefined),
- *   Cellular: (DeviceStateProperties|undefined),
- *   WiMAX: (DeviceStateProperties|undefined),
- *   VPN: (DeviceStateProperties|undefined)
+ *   Ethernet: (Array<!CrOnc.NetworkStateProperties>|undefined),
+ *   WiFi: (Array<!CrOnc.NetworkStateProperties>|undefined),
+ *   Cellular: (Array<!CrOnc.NetworkStateProperties>|undefined),
+ *   WiMAX: (Array<!CrOnc.NetworkStateProperties>|undefined),
+ *   VPN: (Array<!CrOnc.NetworkStateProperties>|undefined)
  * }}
  */
-var DeviceStateObject;
-
-/**
- * @typedef {{
- *   Ethernet: (!CrOnc.NetworkStateProperties|undefined),
- *   WiFi: (!CrOnc.NetworkStateProperties|undefined),
- *   Cellular: (!CrOnc.NetworkStateProperties|undefined),
- *   WiMAX: (!CrOnc.NetworkStateProperties|undefined),
- *   VPN: (!CrOnc.NetworkStateProperties|undefined)
- * }}
- */
-var NetworkStateObject;
-
-/**
- * @typedef {{
- *   Ethernet: (Array<CrOnc.NetworkStateProperties>|undefined),
- *   WiFi: (Array<CrOnc.NetworkStateProperties>|undefined),
- *   Cellular: (Array<CrOnc.NetworkStateProperties>|undefined),
- *   WiMAX: (Array<CrOnc.NetworkStateProperties>|undefined),
- *   VPN: (Array<CrOnc.NetworkStateProperties>|undefined)
- * }}
- */
-var NetworkStateListObject;
-
-(function() {
-
-/** @const {!Array<chrome.networkingPrivate.NetworkType>} */
-var NETWORK_TYPES = [
-  CrOnc.Type.ETHERNET,
-  CrOnc.Type.WI_FI,
-  CrOnc.Type.CELLULAR,
-  CrOnc.Type.WI_MAX,
-  CrOnc.Type.VPN
-];
+let NetworkStateListObject;
 
 Polymer({
   is: 'network-summary',
+
+  behaviors: [CrPolicyNetworkBehavior],
 
   properties: {
     /**
@@ -65,353 +42,288 @@ Polymer({
     defaultNetwork: {
       type: Object,
       value: null,
-      notify: true
-    },
-
-    /**
-     * The device state for each network device type.
-     * @type {DeviceStateObject}
-     */
-    deviceStates: {
-      type: Object,
-      value: function() { return {}; },
-    },
-
-    /**
-     * Network state data for each network type.
-     * @type {NetworkStateObject}
-     */
-    networkStates: {
-      type: Object,
-      value: function() { return {}; },
-    },
-
-    /**
-     * List of network state data for each network type.
-     * @type {NetworkStateListObject}
-     */
-    networkStateLists: {
-      type: Object,
-      value: function() { return {}; },
+      notify: true,
     },
 
     /**
      * Interface for networkingPrivate calls, passed from internet_page.
-     * @type {NetworkingPrivate}
+     * @type {!NetworkingPrivate}
      */
-    networkingPrivate: {
+    networkingPrivate: Object,
+
+    /**
+     * The device state for each network device type. We initialize this to
+     * include a disabled WiFi type since WiFi is always present. This reduces
+     * the amount of visual change on first load.
+     * @private {!DeviceStateObject}
+     */
+    deviceStates: {
       type: Object,
-    }
+      value: function() {
+        return {
+          WiFi: {Type: CrOnc.Type.WI_FI, State: CrOnc.DeviceState.DISABLED},
+        };
+      },
+      notify: true,
+    },
+
+    /**
+     * Array of active network states, one per device type. Initialized to
+     * include a default WiFi state (see deviceStates comment).
+     * @private {!Array<!CrOnc.NetworkStateProperties>}
+     */
+    activeNetworkStates_: {
+      type: Array,
+      value: function() {
+        return [{GUID: '', Type: CrOnc.Type.WI_FI}];
+      },
+    },
+
+    /**
+     * List of network state data for each network type.
+     * @private {!NetworkStateListObject}
+     */
+    networkStateLists_: {
+      type: Object,
+      value: function() {
+        return {WiFi: []};
+      },
+    },
   },
 
-  /**
-   * Listener function for chrome.networkingPrivate.onNetworkListChanged event.
-   * @type {function(!Array<string>)}
-   * @private
-   */
-  networkListChangedListener_: function() {},
+  listeners: {
+    'network-list-changed': 'getNetworkLists_',
+    'networks-changed': 'updateActiveNetworks_',
+  },
 
   /**
    * Listener function for chrome.networkingPrivate.onDeviceStateListChanged
    * event.
-   * @type {function(!Array<string>)}
-   * @private
+   * @private {?function(!Array<string>)}
    */
-  deviceStateListChangedListener_: function() {},
+  deviceStateListChangedListener_: null,
 
   /**
-   * Listener function for chrome.networkingPrivate.onNetworksChanged event.
-   * @type {function(!Array<string>)}
-   * @private
+   * Set of GUIDs identifying active networks, one for each type.
+   * @private {?Set<string>}
    */
-  networksChangedListener_: function() {},
-
-  /**
-   * Dictionary of GUIDs identifying primary (active) networks for each type.
-   * @type {?Object}
-   * @private
-   */
-  networkIds_: null,
+  activeNetworkIds_: null,
 
   /** @override */
   attached: function() {
-    this.networkIds_ = {};
-
     this.getNetworkLists_();
 
-    this.networkListChangedListener_ =
-        this.onNetworkListChangedEvent_.bind(this);
-    this.networkingPrivate.onNetworkListChanged.addListener(
-        this.networkListChangedListener_);
-
     this.deviceStateListChangedListener_ =
+        this.deviceStateListChangedListener_ ||
         this.onDeviceStateListChangedEvent_.bind(this);
     this.networkingPrivate.onDeviceStateListChanged.addListener(
         this.deviceStateListChangedListener_);
-
-    this.networksChangedListener_ = this.onNetworksChangedEvent_.bind(this);
-    this.networkingPrivate.onNetworksChanged.addListener(
-        this.networksChangedListener_);
   },
 
   /** @override */
   detached: function() {
-    this.networkingPrivate.onNetworkListChanged.removeListener(
-        this.networkListChangedListener_);
-
     this.networkingPrivate.onDeviceStateListChanged.removeListener(
-        this.deviceStateListChangedListener_);
-
-    this.networkingPrivate.onNetworksChanged.removeListener(
-        this.networksChangedListener_);
+        assert(this.deviceStateListChangedListener_));
   },
-
-  /**
-   * Event triggered when the WiFi network-summary-item is expanded.
-   * @param {!{detail: {expanded: boolean, type: string}}} event
-   * @private
-   */
-  onWiFiExpanded_: function(event) {
-    if (!event.detail.expanded)
-      return;
-    // Get the latest network states (only).
-    this.getNetworkStates_();
-    this.networkingPrivate.requestNetworkScan();
-  },
-
-  /**
-   * Event triggered when a network-summary-item is selected.
-   * @param {!{detail: !CrOnc.NetworkStateProperties}} event
-   * @private
-   */
-  onSelected_: function(event) {
-    var state = event.detail;
-    if (this.canConnect_(state)) {
-      this.connectToNetwork_(state);
-      return;
-    }
-    this.fire('show-detail', state);
-  },
-
-  /**
-   * Event triggered when the enabled state of a network-summary-item is
-   * toggled.
-   * @param {!{detail: {enabled: boolean,
-   *                    type: chrome.networkingPrivate.NetworkType}}} event
-   * @private
-   */
-  onDeviceEnabledToggled_: function(event) {
-    if (event.detail.enabled)
-      this.networkingPrivate.enableNetworkType(event.detail.type);
-    else
-      this.networkingPrivate.disableNetworkType(event.detail.type);
-  },
-
-  /**
-   * networkingPrivate.onNetworkListChanged event callback.
-   * @private
-   */
-  onNetworkListChangedEvent_: function() { this.getNetworkLists_(); },
 
   /**
    * networkingPrivate.onDeviceStateListChanged event callback.
    * @private
    */
-  onDeviceStateListChangedEvent_: function() { this.getNetworkLists_(); },
+  onDeviceStateListChangedEvent_: function() {
+    this.getNetworkLists_();
+  },
 
   /**
-   * networkingPrivate.onNetworksChanged event callback.
-   * @param {!Array<string>} networkIds The list of changed network GUIDs.
+   * @param {!CustomEvent<!Array<string>>} event
    * @private
    */
-  onNetworksChangedEvent_: function(networkIds) {
+  updateActiveNetworks_: function(event) {
+    if (!this.activeNetworkIds_) {
+      return;
+    }  // Initial list of networks not received yet.
+    const networkIds = event.detail;
     networkIds.forEach(function(id) {
-      if (id in this.networkIds_) {
+      if (this.activeNetworkIds_.has(id)) {
         this.networkingPrivate.getState(
-            id, this.getStateCallback_.bind(this, id));
+            id, this.getActiveStateCallback_.bind(this, id));
       }
     }, this);
   },
 
   /**
-   * Determines whether or not a network state can be connected to.
-   * @param {!CrOnc.NetworkStateProperties} state The network state.
-   * @private
-   */
-  canConnect_: function(state) {
-    if (state.Type == CrOnc.Type.ETHERNET ||
-        state.Type == CrOnc.Type.VPN && !this.defaultNetwork) {
-      return false;
-    }
-    return state.ConnectionState == CrOnc.ConnectionState.NOT_CONNECTED;
-  },
-
-  /**
-   * networkingPrivate.getState event callback.
+   * networkingPrivate.getState event callback for an active state.
    * @param {string} id The id of the requested state.
-   * @param {!chrome.networkingPrivate.NetworkStateProperties} state
+   * @param {!CrOnc.NetworkStateProperties} state
    * @private
    */
-  getStateCallback_: function(id, state) {
+  getActiveStateCallback_: function(id, state) {
     if (chrome.runtime.lastError) {
-      var message = chrome.runtime.lastError.message;
-      if (message != 'Error.NetworkUnavailable') {
+      const message = chrome.runtime.lastError.message;
+      if (message != 'Error.NetworkUnavailable' &&
+          message != 'Error.InvalidNetworkGuid') {
         console.error(
             'Unexpected networkingPrivate.getState error: ' + message +
             ' For: ' + id);
+        return;
       }
-      return;
     }
     // Async call, ensure id still exists.
-    if (!this.networkIds_[id])
-      return;
-    if (!state) {
-      this.networkIds_[id] = undefined;
+    if (!this.activeNetworkIds_.has(id)) {
       return;
     }
-    this.updateNetworkState_(state.Type, state);
-  },
-
-  /**
-   * Handles UI requests to connect to a network.
-   * TODO(stevenjb): Handle Cellular activation, etc.
-   * @param {!CrOnc.NetworkStateProperties} state The network state.
-   * @private
-   */
-  connectToNetwork_: function(state) {
-    this.networkingPrivate.startConnect(state.GUID, function() {
-      if (chrome.runtime.lastError) {
-        var message = chrome.runtime.lastError.message;
-        if (message != 'connecting') {
-          console.error(
-              'Unexpected networkingPrivate.startConnect error: ' + message +
-              'For: ' + state.GUID);
-        }
-      }
-    });
+    if (!state) {
+      this.activeNetworkIds_.delete(id);
+      return;
+    }
+    // Find the active state for the type and update it.
+    const idx =
+        this.activeNetworkStates_.findIndex((s) => s.Type == state.Type);
+    if (idx == -1) {
+      console.error('Active state not found: ' + state.Name);
+      return;
+    }
+    this.set(['activeNetworkStates_', idx], state);
   },
 
   /**
    * Requests the list of device states and network states from Chrome.
-   * Updates deviceStates, networkStates, and networkStateLists once the
+   * Updates deviceStates, activeNetworkStates, and networkStateLists once the
    * results are returned from Chrome.
    * @private
    */
   getNetworkLists_: function() {
     // First get the device states.
-    this.networkingPrivate.getDeviceStates(
-      function(deviceStates) {
-        // Second get the network states.
-        this.getNetworkStates_(deviceStates);
-      }.bind(this));
+    this.networkingPrivate.getDeviceStates(deviceStates => {
+      // Second get the network states.
+      this.getNetworkStates_(deviceStates);
+    });
   },
 
   /**
-   * Requests the list of network states from Chrome. Updates networkStates and
-   * networkStateLists once the results are returned from Chrome.
-   * @param {!Array<!DeviceStateProperties>=} opt_deviceStates
-   *     Optional list of state properties for all available devices.
+   * Requests the list of network states from Chrome. Updates
+   * activeNetworkStates and networkStateLists once the results are returned
+   * from Chrome.
+   * @param {!Array<!CrOnc.DeviceStateProperties>} deviceStates
    * @private
    */
-  getNetworkStates_: function(opt_deviceStates) {
-    var filter = {
-      networkType: chrome.networkingPrivate.NetworkType.ALL,
+  getNetworkStates_: function(deviceStates) {
+    const filter = {
+      networkType: CrOnc.Type.ALL,
       visible: true,
       configured: false
     };
-    this.networkingPrivate.getNetworks(filter, function(networkStates) {
-      this.updateNetworkStates_(networkStates, opt_deviceStates);
-    }.bind(this));
+    this.networkingPrivate.getNetworks(filter, networkStates => {
+      this.updateNetworkStates_(networkStates, deviceStates);
+    });
   },
 
   /**
    * Called after network states are received from getNetworks.
    * @param {!Array<!CrOnc.NetworkStateProperties>} networkStates The state
    *     properties for all visible networks.
-   * @param {!Array<!DeviceStateProperties>=} opt_deviceStates
-   *     Optional list of state properties for all available devices. If not
-   *     defined the existing list of device states will be used.
+   * @param {!Array<!CrOnc.DeviceStateProperties>} deviceStates
    * @private
    */
-  updateNetworkStates_: function(networkStates, opt_deviceStates) {
-    var newDeviceStates;
-    if (opt_deviceStates) {
-      newDeviceStates = /** @type {!DeviceStateObject} */({});
-      opt_deviceStates.forEach(function(state) {
-        newDeviceStates[state.Type] = state;
-      });
-    } else {
-      newDeviceStates = this.deviceStates;
+  updateNetworkStates_: function(networkStates, deviceStates) {
+    const newDeviceStates = /** @type {!DeviceStateObject} */ ({});
+    for (const state of deviceStates) {
+      newDeviceStates[state.Type] = state;
     }
 
     // Clear any current networks.
-    this.networkIds_ = {};
-
-    // Track the first (active) state for each type.
-    var foundTypes = {};
+    const activeNetworkStatesByType =
+        /** @type {!Map<string, !CrOnc.NetworkStateProperties>} */ (new Map);
 
     // Complete list of states by type.
-    /** @type {!NetworkStateListObject} */ var networkStateLists = {
+    /** @type {!NetworkStateListObject} */ const newNetworkStateLists = {
       Ethernet: [],
+      Tether: [],
       WiFi: [],
       Cellular: [],
       WiMAX: [],
-      VPN: []
+      VPN: [],
     };
 
-    var firstConnectedNetwork = null;
-    networkStates.forEach(function(state) {
-      var type = state.Type;
-      if (!foundTypes[type]) {
-        foundTypes[type] = true;
-        this.updateNetworkState_(type, state);
-        if (!firstConnectedNetwork && state.Type != CrOnc.Type.VPN &&
-            state.ConnectionState == CrOnc.ConnectionState.CONNECTED) {
-          firstConnectedNetwork = state;
+    let firstConnectedNetwork = null;
+    networkStates.forEach(function(networkState) {
+      const type = networkState.Type;
+      if (!activeNetworkStatesByType.has(type)) {
+        activeNetworkStatesByType.set(type, networkState);
+        if (!firstConnectedNetwork && networkState.Type != CrOnc.Type.VPN &&
+            networkState.ConnectionState == CrOnc.ConnectionState.CONNECTED) {
+          firstConnectedNetwork = networkState;
         }
       }
-      networkStateLists[type].push(state);
+      newNetworkStateLists[type].push(networkState);
     }, this);
 
     this.defaultNetwork = firstConnectedNetwork;
 
-    // Set any types with a deviceState and no network to a default state,
-    // and any types not found to undefined.
-    NETWORK_TYPES.forEach(function(type) {
-      if (!foundTypes[type]) {
-        var defaultState = undefined;
-        if (newDeviceStates[type])
-          defaultState = {GUID: '', Type: type};
-        this.updateNetworkState_(type, defaultState);
-      }
-    }, this);
-
-    this.networkStateLists = networkStateLists;
-
     // Create a VPN entry in deviceStates if there are any VPN networks.
-    if (networkStateLists.VPN && networkStateLists.VPN.length > 0) {
-      newDeviceStates.VPN = /** @type {DeviceStateProperties} */ ({
+    if (newNetworkStateLists.VPN && newNetworkStateLists.VPN.length > 0) {
+      newDeviceStates.VPN = {
         Type: CrOnc.Type.VPN,
-        State: chrome.networkingPrivate.DeviceStateType.ENABLED
-      });
+        State: CrOnc.DeviceState.ENABLED
+      };
+    }
+
+    // Push the active networks onto newActiveNetworkStates in order based on
+    // device priority, creating an empty state for devices with no networks.
+    const newActiveNetworkStates = [];
+    this.activeNetworkIds_ = new Set;
+    const orderedDeviceTypes = [
+      CrOnc.Type.ETHERNET, CrOnc.Type.WI_FI, CrOnc.Type.CELLULAR,
+      CrOnc.Type.TETHER, CrOnc.Type.WI_MAX, CrOnc.Type.VPN
+    ];
+    for (const type of orderedDeviceTypes) {
+      const device = newDeviceStates[type];
+      if (!device) {
+        continue;
+      }  // The technology for this device type is unavailable.
+
+      // If both 'Tether' and 'Cellular' technologies exist, merge the network
+      // lists and do not add an active network for 'Tether' so that there is
+      // only one 'Mobile data' section / subpage.
+      if (type == CrOnc.Type.TETHER && newDeviceStates[CrOnc.Type.CELLULAR]) {
+        newNetworkStateLists[CrOnc.Type.CELLULAR] =
+            newNetworkStateLists[CrOnc.Type.CELLULAR].concat(
+                newNetworkStateLists[CrOnc.Type.TETHER]);
+        continue;
+      }
+
+      // Note: The active state for 'Cellular' may be a Tether network if both
+      // types are enabled but no Cellular network exists (edge case).
+      const state =
+          this.getActiveStateForType_(activeNetworkStatesByType, type);
+      if (state.Source === undefined &&
+          device.State == CrOnc.DeviceState.PROHIBITED) {
+        // Prohibited technologies are enforced by the device policy.
+        state.Source = CrOnc.Source.DEVICE_POLICY;
+      }
+      newActiveNetworkStates.push(state);
+      this.activeNetworkIds_.add(state.GUID);
     }
 
     this.deviceStates = newDeviceStates;
+    this.networkStateLists_ = newNetworkStateLists;
+    // Set activeNetworkStates last to rebuild the dom-repeat.
+    this.activeNetworkStates_ = newActiveNetworkStates;
   },
 
   /**
-   * Sets 'networkStates[type]' which will update the
-   * cr-network-list-network-item associated with 'type'.
-   * @param {string} type The network type.
-   * @param {!CrOnc.NetworkStateProperties|undefined} state The state properties
-   *     for the network to associate with |type|. May be undefined if there are
-   *     no networks matching |type|.
-   * @private
+   * Returns the active network state for |type| or a default network state.
+   * If there is no 'Cellular' network, return the active 'Tether' network if
+   * any since the two types are represented by the same section / subpage.
+   * @param {!Map<string, !CrOnc.NetworkStateProperties>} activeStatesByType
+   * @param {string} type
+   * @return {!CrOnc.NetworkStateProperties|undefined}
    */
-  updateNetworkState_: function(type, state) {
-    this.set('networkStates.' + type, state);
-    if (state)
-      this.networkIds_[state.GUID] = true;
+  getActiveStateForType_: function(activeStatesByType, type) {
+    let activeState = activeStatesByType.get(type);
+    if (!activeState && type == CrOnc.Type.CELLULAR) {
+      activeState = activeStatesByType.get(CrOnc.Type.TETHER);
+    }
+    return activeState || {GUID: '', Type: type};
   },
 });
-})();

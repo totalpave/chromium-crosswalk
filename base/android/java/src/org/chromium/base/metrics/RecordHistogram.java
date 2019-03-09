@@ -4,13 +4,15 @@
 
 package org.chromium.base.metrics;
 
+import android.text.format.DateUtils;
+
 import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.annotations.MainDex;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Java API for recording UMA histograms.
@@ -24,17 +26,25 @@ import java.util.concurrent.TimeUnit;
  * code.
  */
 @JNINamespace("base::android")
+@MainDex
 public class RecordHistogram {
-    private static boolean sIsDisabledForTests = false;
+    private static Throwable sDisabledBy;
     private static Map<String, Long> sCache =
             Collections.synchronizedMap(new HashMap<String, Long>());
 
     /**
-     * Tests may not have native initialized, so they may need to disable metrics.
+     * Tests may not have native initialized, so they may need to disable metrics. The value should
+     * be reset after the test done, to avoid carrying over state to unrelated tests.
+     *
+     * In JUnit tests this can be done automatically using
+     * {@link org.chromium.chrome.browser.DisableHistogramsRule}
      */
     @VisibleForTesting
-    public static void disableForTests() {
-        sIsDisabledForTests = true;
+    public static void setDisabledForTests(boolean disabled) {
+        if (disabled && sDisabledBy != null) {
+            throw new IllegalStateException("Histograms are already disabled.", sDisabledBy);
+        }
+        sDisabledBy = disabled ? new Throwable() : null;
     }
 
     private static long getCachedHistogramKey(String name) {
@@ -54,7 +64,7 @@ public class RecordHistogram {
      * @param sample sample to be recorded, either true or false
      */
     public static void recordBooleanHistogram(String name, boolean sample) {
-        if (sIsDisabledForTests) return;
+        if (sDisabledBy != null) return;
         long key = getCachedHistogramKey(name);
         long result = nativeRecordBooleanHistogram(name, key, sample);
         if (result != key) sCache.put(name, result);
@@ -70,7 +80,7 @@ public class RecordHistogram {
      *        lower than |boundary|
      */
     public static void recordEnumeratedHistogram(String name, int sample, int boundary) {
-        if (sIsDisabledForTests) return;
+        if (sDisabledBy != null) return;
         long key = getCachedHistogramKey(name);
         long result = nativeRecordEnumeratedHistogram(name, key, sample, boundary);
         if (result != key) sCache.put(name, result);
@@ -78,7 +88,7 @@ public class RecordHistogram {
 
     /**
      * Records a sample in a count histogram. This is the Java equivalent of the
-     * UMA_HISTOGRAM_COUNTS C++ macro.
+     * UMA_HISTOGRAM_COUNTS_1M C++ macro.
      * @param name name of the histogram
      * @param sample sample to be recorded, at least 1 and at most 999999
      */
@@ -111,13 +121,13 @@ public class RecordHistogram {
      * UMA_HISTOGRAM_CUSTOM_COUNTS C++ macro.
      * @param name name of the histogram
      * @param sample sample to be recorded, at least |min| and at most |max| - 1
-     * @param min lower bound for expected sample values
+     * @param min lower bound for expected sample values. It must be >= 1
      * @param max upper bounds for expected sample values
      * @param numBuckets the number of buckets
      */
     public static void recordCustomCountHistogram(
             String name, int sample, int min, int max, int numBuckets) {
-        if (sIsDisabledForTests) return;
+        if (sDisabledBy != null) return;
         long key = getCachedHistogramKey(name);
         long result = nativeRecordCustomCountHistogram(name, key, sample, min, max, numBuckets);
         if (result != key) sCache.put(name, result);
@@ -134,7 +144,7 @@ public class RecordHistogram {
      */
     public static void recordLinearCountHistogram(
             String name, int sample, int min, int max, int numBuckets) {
-        if (sIsDisabledForTests) return;
+        if (sDisabledBy != null) return;
         long key = getCachedHistogramKey(name);
         long result = nativeRecordLinearCountHistogram(name, key, sample, min, max, numBuckets);
         if (result != key) sCache.put(name, result);
@@ -147,20 +157,20 @@ public class RecordHistogram {
      * @param sample sample to be recorded, at least 0 and at most 100.
      */
     public static void recordPercentageHistogram(String name, int sample) {
-        if (sIsDisabledForTests) return;
+        if (sDisabledBy != null) return;
         long key = getCachedHistogramKey(name);
         long result = nativeRecordEnumeratedHistogram(name, key, sample, 101);
         if (result != key) sCache.put(name, result);
     }
 
     /**
-    * Records a sparse histogram. This is the Java equivalent of UMA_HISTOGRAM_SPARSE_SLOWLY.
-    * @param name name of the histogram
-    * @param sample sample to be recorded. All values of |sample| are valid, including negative
-    *        values.
-    */
-    public static void recordSparseSlowlyHistogram(String name, int sample) {
-        if (sIsDisabledForTests) return;
+     * Records a sparse histogram. This is the Java equivalent of UmaHistogramSparse.
+     * @param name name of the histogram
+     * @param sample sample to be recorded. All values of |sample| are valid, including negative
+     *        values.
+     */
+    public static void recordSparseHistogram(String name, int sample) {
+        if (sDisabledBy != null) return;
         long key = getCachedHistogramKey(name);
         long result = nativeRecordSparseHistogram(name, key, sample);
         if (result != key) sCache.put(name, result);
@@ -169,53 +179,75 @@ public class RecordHistogram {
     /**
      * Records a sample in a histogram of times. Useful for recording short durations. This is the
      * Java equivalent of the UMA_HISTOGRAM_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
-     * @param duration duration to be recorded
-     * @param timeUnit the unit of the duration argument
+     * @param durationMs duration to be recorded in milliseconds
      */
-    public static void recordTimesHistogram(String name, long duration, TimeUnit timeUnit) {
+    public static void recordTimesHistogram(String name, long durationMs) {
         recordCustomTimesHistogramMilliseconds(
-                name, timeUnit.toMillis(duration), 1, TimeUnit.SECONDS.toMillis(10), 50);
+                name, durationMs, 1, DateUtils.SECOND_IN_MILLIS * 10, 50);
     }
 
     /**
      * Records a sample in a histogram of times. Useful for recording medium durations. This is the
      * Java equivalent of the UMA_HISTOGRAM_MEDIUM_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
-     * @param duration duration to be recorded
-     * @param timeUnit the unit of the duration argument
+     * @param durationMs duration to be recorded in milliseconds
      */
-    public static void recordMediumTimesHistogram(String name, long duration, TimeUnit timeUnit) {
+    public static void recordMediumTimesHistogram(String name, long durationMs) {
         recordCustomTimesHistogramMilliseconds(
-                name, timeUnit.toMillis(duration), 10, TimeUnit.MINUTES.toMillis(3), 50);
+                name, durationMs, 10, DateUtils.MINUTE_IN_MILLIS * 3, 50);
     }
 
     /**
      * Records a sample in a histogram of times. Useful for recording long durations. This is the
      * Java equivalent of the UMA_HISTOGRAM_LONG_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
-     * @param duration duration to be recorded
-     * @param timeUnit the unit of the duration argument
+     * @param durationMs duration to be recorded in milliseconds
      */
-    public static void recordLongTimesHistogram(String name, long duration, TimeUnit timeUnit) {
-        recordCustomTimesHistogramMilliseconds(
-                name, timeUnit.toMillis(duration), 1, TimeUnit.HOURS.toMillis(1), 50);
+    public static void recordLongTimesHistogram(String name, long durationMs) {
+        recordCustomTimesHistogramMilliseconds(name, durationMs, 1, DateUtils.HOUR_IN_MILLIS, 50);
+    }
+
+    /**
+     * Records a sample in a histogram of times. Useful for recording long durations. This is the
+     * Java equivalent of the UMA_HISTOGRAM_LONG_TIMES_100 C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
+     * @param name name of the histogram
+     * @param durationMs duration to be recorded in milliseconds
+     */
+    public static void recordLongTimesHistogram100(String name, long durationMs) {
+        recordCustomTimesHistogramMilliseconds(name, durationMs, 1, DateUtils.HOUR_IN_MILLIS, 100);
     }
 
     /**
      * Records a sample in a histogram of times with custom buckets. This is the Java equivalent of
      * the UMA_HISTOGRAM_CUSTOM_TIMES C++ macro.
+     * Note that histogram samples will always be converted to milliseconds when logged.
      * @param name name of the histogram
-     * @param duration duration to be recorded
+     * @param durationMs duration to be recorded in milliseconds
      * @param min the minimum bucket value
      * @param max the maximum bucket value
-     * @param timeUnit the unit of the duration, min, and max arguments
      * @param numBuckets the number of buckets
      */
     public static void recordCustomTimesHistogram(
-            String name, long duration, long min, long max, TimeUnit timeUnit, int numBuckets) {
-        recordCustomTimesHistogramMilliseconds(name, timeUnit.toMillis(duration),
-                timeUnit.toMillis(min), timeUnit.toMillis(max), numBuckets);
+            String name, long durationMs, long min, long max, int numBuckets) {
+        recordCustomTimesHistogramMilliseconds(name, durationMs, min, max, numBuckets);
+    }
+
+    /**
+     * Records a sample in a histogram of sizes in KB. This is the Java equivalent of the
+     * UMA_HISTOGRAM_MEMORY_KB C++ macro.
+     *
+     * Good for sizes up to about 500MB.
+     *
+     * @param name name of the histogram.
+     * @param sizeInkB Sample to record in KB.
+     */
+    public static void recordMemoryKBHistogram(String name, int sizeInKB) {
+        recordCustomCountHistogram(name, sizeInKB, 1000, 500000, 50);
     }
 
     private static int clampToInt(long value) {
@@ -228,12 +260,13 @@ public class RecordHistogram {
 
     private static void recordCustomTimesHistogramMilliseconds(
             String name, long duration, long min, long max, int numBuckets) {
-        if (sIsDisabledForTests) return;
+        if (sDisabledBy != null) return;
         long key = getCachedHistogramKey(name);
         // Note: Duration, min and max are clamped to int here because that's what's expected by
         // the native histograms API. Callers of these functions still pass longs because that's
         // the types returned by TimeUnit and System.currentTimeMillis() APIs, from which these
         // values come.
+        assert max == clampToInt(max);
         long result = nativeRecordCustomTimesHistogramMilliseconds(
                 name, key, clampToInt(duration), clampToInt(min), clampToInt(max), numBuckets);
         if (result != key) sCache.put(name, result);
@@ -250,11 +283,12 @@ public class RecordHistogram {
     }
 
     /**
-     * Initializes the metrics system.
+     * Returns the number of samples recorded for the given histogram.
+     * @param name name of the histogram to look up.
      */
-    public static void initialize() {
-        if (sIsDisabledForTests) return;
-        nativeInitialize();
+    @VisibleForTesting
+    public static int getHistogramTotalCountForTesting(String name) {
+        return nativeGetHistogramTotalCountForTesting(name);
     }
 
     private static native long nativeRecordCustomTimesHistogramMilliseconds(
@@ -270,5 +304,5 @@ public class RecordHistogram {
     private static native long nativeRecordSparseHistogram(String name, long key, int sample);
 
     private static native int nativeGetHistogramValueCountForTesting(String name, int sample);
-    private static native void nativeInitialize();
+    private static native int nativeGetHistogramTotalCountForTesting(String name);
 }

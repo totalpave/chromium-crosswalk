@@ -11,7 +11,6 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/storage_monitor/storage_info.h"
-#include "content/public/browser/browser_thread.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace storage_monitor {
@@ -21,7 +20,7 @@ namespace {
 base::FilePath GetTempRoot() {
   base::ScopedTempDir temp_dir;
   EXPECT_TRUE(temp_dir.CreateUniqueTempDir());
-  base::FilePath temp_root = temp_dir.path();
+  base::FilePath temp_root = temp_dir.GetPath();
   while (temp_root.DirName() != temp_root)
     temp_root = temp_root.DirName();
   return temp_root;
@@ -109,14 +108,10 @@ void TestVolumeMountWatcherWin::SetAttachedDevicesFake() {
   attached_devices_fake_ = true;
 }
 
-void TestVolumeMountWatcherWin::FlushWorkerPoolForTesting() {
-  content::BrowserThread::GetBlockingPool()->FlushForTesting();
-}
-
 void TestVolumeMountWatcherWin::DeviceCheckComplete(
     const base::FilePath& device_path) {
   devices_checked_.push_back(device_path);
-  if (device_check_complete_event_.get())
+  if (device_check_complete_event_)
     device_check_complete_event_->Wait();
   VolumeMountWatcherWin::DeviceCheckComplete(device_path);
 }

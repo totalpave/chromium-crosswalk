@@ -40,15 +40,17 @@ void AttemptRelaunch();
 // unload handler, and the browser may or may not exit.
 void AttemptExit();
 
-#if defined(OS_CHROMEOS)
-// Shutdown chrome cleanly without blocking. This is called
-// when SIGTERM is received on Chrome OS, and always sets
+// Shutdown chrome cleanly without blocking. This always sets
 // exit-cleanly bit and exits the browser, even if there is
 // ongoing downloads or a page with onbeforeunload handler.
 //
 // If you need to exit or restart in your code on ChromeOS,
 // use AttemptExit or AttemptRestart respectively.
-void ExitCleanly();
+void ExitIgnoreUnloadHandlers();
+
+#if defined(OS_CHROMEOS)
+// Returns true if any of the above Attempt calls have been called.
+bool IsAttemptingShutdown();
 #endif
 
 #if !defined(OS_ANDROID)
@@ -68,17 +70,6 @@ void ShutdownIfNeeded();
 // Begins shutdown of the application when the desktop session is ending.
 void SessionEnding();
 
-#endif  // !defined(OS_ANDROID)
-
-// Emits APP_TERMINATING notification. It is guaranteed that the
-// notification is sent only once.
-void NotifyAppTerminating();
-
-// Send out notifications.
-// For ChromeOS, also request session manager to end the session.
-void NotifyAndTerminate(bool fast_path);
-
-#if !defined(OS_ANDROID)
 // Called once the application is exiting.
 void OnAppExiting();
 

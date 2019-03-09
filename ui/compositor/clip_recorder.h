@@ -9,14 +9,10 @@
 #include "ui/compositor/compositor_export.h"
 #include "ui/gfx/geometry/rect.h"
 
-namespace cc {
-class DisplayItem;
-class DisplayItemList;
-}
+class SkPath;
 
-namespace gfx {
-class Path;
-class Size;
+namespace cc {
+class DisplayItemList;
 }
 
 namespace ui {
@@ -32,24 +28,12 @@ class COMPOSITOR_EXPORT ClipRecorder {
   ~ClipRecorder();
 
   void ClipRect(const gfx::Rect& clip_rect);
-  void ClipPath(const gfx::Path& clip_path);
-  void ClipPathWithAntiAliasing(const gfx::Path& clip_path);
+  void ClipPath(const SkPath& clip_path);
+  void ClipPathWithAntiAliasing(const SkPath& clip_path);
 
  private:
-  enum Closer {
-    CLIP_RECT,
-    CLIP_PATH,
-  };
-
-  void RecordCloser(const gfx::Rect& bounds_in_layer, Closer);
-
   const PaintContext& context_;
-  // If someone needs to do more than this many operations with a single
-  // ClipRecorder then we'll increase this.
-  enum : int { kMaxOpCount = 4 };
-  Closer closers_[kMaxOpCount];
-  gfx::Rect bounds_in_layer_[kMaxOpCount];
-  int num_closers_;
+  int num_closers_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(ClipRecorder);
 };

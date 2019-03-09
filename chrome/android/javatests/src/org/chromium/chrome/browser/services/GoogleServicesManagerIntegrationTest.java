@@ -4,34 +4,44 @@
 
 package org.chromium.chrome.browser.services;
 
-import android.test.UiThreadTest;
+import android.support.test.annotation.UiThreadTest;
 
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
+import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
-public class GoogleServicesManagerIntegrationTest
-        extends ChromeActivityTestCaseBase<ChromeActivity> {
-
-    public GoogleServicesManagerIntegrationTest() {
-        super(ChromeActivity.class);
-    }
+/**
+ * Google Services Manager tests
+ */
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class GoogleServicesManagerIntegrationTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
 
     /**
      * Test changing the state of auto login
-     * Bug: crbug.com/413289
-     * @Smoke
      * @SmallTest
      * @Feature({"Sync", "Main"})
      */
-    @DisabledTest
+    @Test
+    @DisabledTest(message = "crbug.com/413289")
     @UiThreadTest
     public void testSetAutologinState() {
         // TODO(acleung): Add back some sort of test for the GSM.
     }
 
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityOnBlankPage();
+    @Before
+    public void setUp() throws InterruptedException {
+        mActivityTestRule.startMainActivityOnBlankPage();
     }
 }

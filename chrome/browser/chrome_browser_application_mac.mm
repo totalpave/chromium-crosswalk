@@ -4,122 +4,34 @@
 
 #import "chrome/browser/chrome_browser_application_mac.h"
 
-#include <objc/objc-exception.h>
-
-#import "base/auto_reset.h"
 #include "base/command_line.h"
-#include "base/debug/crash_logging.h"
-#include "base/debug/stack_trace.h"
-#import "base/logging.h"
+#include "base/logging.h"
 #include "base/mac/call_with_eh_frame.h"
-#import "base/mac/scoped_nsobject.h"
-#import "base/mac/scoped_objc_class_swizzler.h"
-#include "base/macros.h"
-#import "base/metrics/histogram.h"
+#include "base/mac/sdk_forward_declarations.h"
+#include "base/observer_list.h"
 #include "base/strings/stringprintf.h"
-#import "base/strings/sys_string_conversions.h"
+#include "base/strings/sys_string_conversions.h"
+#include "base/trace_event/trace_event.h"
 #import "chrome/browser/app_controller_mac.h"
-#include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
+#import "chrome/browser/mac/exception_processor.h"
+#include "chrome/browser/ui/cocoa/l10n_util.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/crash_keys.h"
+#include "components/crash/core/common/crash_key.h"
 #import "components/crash/core/common/objc_zombie.h"
 #include "content/public/browser/browser_accessibility_state.h"
-#include "content/public/browser/render_view_host.h"
-#include "content/public/browser/web_contents.h"
+#include "content/public/browser/native_event_processor_mac.h"
+#include "content/public/browser/native_event_processor_observer_mac.h"
 
 namespace chrome_browser_application_mac {
 
-// Maximum number of known named exceptions we'll support.  There is
-// no central registration, but I only find about 75 possibilities in
-// the system frameworks, and many of them are probably not
-// interesting to track in aggregate (those relating to distributed
-// objects, for instance).
-const size_t kKnownNSExceptionCount = 25;
-
-const size_t kUnknownNSException = kKnownNSExceptionCount;
-
-size_t BinForException(NSException* exception) {
-  // A list of common known exceptions.  The list position will
-  // determine where they live in the histogram, so never move them
-  // around, only add to the end.
-  static NSString* const kKnownNSExceptionNames[] = {
-    // Grab-bag exception, not very common.  CFArray (or other
-    // container) mutated while being enumerated is one case seen in
-    // production.
-    NSGenericException,
-
-    // Out-of-range on NSString or NSArray.  Quite common.
-    NSRangeException,
-
-    // Invalid arg to method, unrecognized selector.  Quite common.
-    NSInvalidArgumentException,
-
-    // malloc() returned null in object creation, I think.  Turns out
-    // to be very uncommon in production, because of the OOM killer.
-    NSMallocException,
-
-    // This contains things like windowserver errors, trying to draw
-    // views which aren't in windows, unable to read nib files.  By
-    // far the most common exception seen on the crash server.
-    NSInternalInconsistencyException,
-
-    nil
-  };
-
-  // Make sure our array hasn't outgrown our abilities to track it.
-  DCHECK_LE(arraysize(kKnownNSExceptionNames), kKnownNSExceptionCount);
-
-  NSString* name = [exception name];
-  for (int i = 0; kKnownNSExceptionNames[i]; ++i) {
-    if (name == kKnownNSExceptionNames[i]) {
-      return i;
-    }
-  }
-  return kUnknownNSException;
-}
-
-void RecordExceptionWithUma(NSException* exception) {
-  UMA_HISTOGRAM_ENUMERATION("OSX.NSException",
-      BinForException(exception), kUnknownNSException);
-}
-
-namespace {
-
-objc_exception_preprocessor g_next_preprocessor = nullptr;
-
-id ExceptionPreprocessor(id exception) {
-  static bool seen_first_exception = false;
-
-  RecordExceptionWithUma(exception);
-
-  const char* const kExceptionKey =
-      seen_first_exception ? crash_keys::mac::kLastNSException
-                           : crash_keys::mac::kFirstNSException;
-  NSString* value = [NSString stringWithFormat:@"%@ reason %@",
-      [exception name], [exception reason]];
-  base::debug::SetCrashKeyValue(kExceptionKey, [value UTF8String]);
-
-  const char* const kExceptionTraceKey =
-      seen_first_exception ? crash_keys::mac::kLastNSExceptionTrace
-                           : crash_keys::mac::kFirstNSExceptionTrace;
-  // This exception preprocessor runs prior to the one in libobjc, which sets
-  // the -[NSException callStackReturnAddresses].
-  base::debug::SetCrashKeyToStackTrace(kExceptionTraceKey,
-                                       base::debug::StackTrace());
-
-  seen_first_exception = true;
-
-  // Forward to the original version.
-  if (g_next_preprocessor)
-    return g_next_preprocessor(exception);
-  return exception;
-}
-
-}  // namespace
-
 void RegisterBrowserCrApp() {
   [BrowserCrApplication sharedApplication];
-};
+
+  // If there was an invocation to NSApp prior to this method, then the NSApp
+  // will not be a BrowserCrApplication, but will instead be an NSApplication.
+  // This is undesirable and we must enforce that this doesn't happen.
+  CHECK([NSApp isKindOfClass:[BrowserCrApplication class]]);
+}
 
 void Terminate() {
   [NSApp terminate:nil];
@@ -131,10 +43,66 @@ void CancelTerminate() {
 
 }  // namespace chrome_browser_application_mac
 
-// Method exposed for the purposes of overriding.
-// Used to determine when a Panel window can become the key window.
-@interface NSApplication (PanelsCanBecomeKey)
-- (void)_cycleWindowsReversed:(BOOL)arg1;
+namespace {
+
+// Calling -[NSEvent description] is rather slow to build up the event
+// description. The description is stored in a crash key to aid debugging, so
+// this helper function constructs a shorter, but still useful, description.
+// See <https://crbug.com/770405>.
+std::string DescriptionForNSEvent(NSEvent* event) {
+  std::string desc = base::StringPrintf(
+      "NSEvent type=%ld modifierFlags=0x%lx locationInWindow=(%g,%g)",
+      event.type, event.modifierFlags, event.locationInWindow.x,
+      event.locationInWindow.y);
+  switch (event.type) {
+    case NSEventTypeKeyDown:
+    case NSEventTypeKeyUp: {
+      // Some NSEvents return a string with NUL in event.characters, see
+      // <https://crbug.com/826908>.
+      std::string characters = base::SysNSStringToUTF8([event.characters
+          stringByReplacingOccurrencesOfString:@"\0"
+                                    withString:@"\\x00"]);
+      std::string unmodified_characters =
+          base::SysNSStringToUTF8([event.charactersIgnoringModifiers
+              stringByReplacingOccurrencesOfString:@"\0"
+                                        withString:@"\\x00"]);
+      desc += base::StringPrintf(
+          " keyCode=0x%d ARepeat=%d characters='%s' unmodifiedCharacters='%s'",
+          event.keyCode, event.ARepeat, characters.c_str(),
+          unmodified_characters.c_str());
+      break;
+    }
+    case NSEventTypeLeftMouseDown:
+    case NSEventTypeLeftMouseDragged:
+    case NSEventTypeLeftMouseUp:
+    case NSEventTypeOtherMouseDown:
+    case NSEventTypeOtherMouseDragged:
+    case NSEventTypeOtherMouseUp:
+    case NSEventTypeRightMouseDown:
+    case NSEventTypeRightMouseDragged:
+    case NSEventTypeRightMouseUp:
+      desc += base::StringPrintf(" buttonNumber=%ld clickCount=%ld",
+                                 event.buttonNumber, event.clickCount);
+      break;
+    case NSAppKitDefined:
+    case NSSystemDefined:
+    case NSApplicationDefined:
+    case NSPeriodic:
+      desc += base::StringPrintf(" subtype=%d data1=%ld data2=%ld",
+                                 event.subtype, event.data1, event.data2);
+      break;
+    default:
+      break;
+  }
+  return desc;
+}
+
+}  // namespace
+
+@interface BrowserCrApplication ()<NativeEventProcessor> {
+  base::ObserverList<content::NativeEventProcessorObserver>::Unchecked
+      observers_;
+}
 @end
 
 @implementation BrowserCrApplication
@@ -144,25 +112,9 @@ void CancelTerminate() {
   // the most recent 10,000 of them on the treadmill.
   ObjcEvilDoers::ZombieEnable(true, 10000);
 
-  if (!chrome_browser_application_mac::g_next_preprocessor) {
-    chrome_browser_application_mac::g_next_preprocessor =
-        objc_setExceptionPreprocessor(
-            &chrome_browser_application_mac::ExceptionPreprocessor);
-  }
-}
+  chrome::InstallObjcExceptionPreprocessor();
 
-- (id)init {
-  self = [super init];
-
-  // Sanity check to alert if overridden methods are not supported.
-  DCHECK([NSApplication
-      instancesRespondToSelector:@selector(_cycleWindowsReversed:)]);
-  DCHECK([NSApplication
-      instancesRespondToSelector:@selector(_removeWindow:)]);
-  DCHECK([NSApplication
-      instancesRespondToSelector:@selector(_setKeyWindow:)]);
-
-  return self;
+  cocoa_l10n_util::ApplyForcedRTL();
 }
 
 // Initialize NSApplication using the custom subclass.  Check whether NSApp
@@ -266,6 +218,20 @@ void CancelTerminate() {
   [appController stopTryingToTerminateApplication:self];
 }
 
+- (NSEvent*)nextEventMatchingMask:(NSEventMask)mask
+                        untilDate:(NSDate*)expiration
+                           inMode:(NSString*)mode
+                          dequeue:(BOOL)dequeue {
+  __block NSEvent* event = nil;
+  base::mac::CallWithEHFrame(^{
+      event = [super nextEventMatchingMask:mask
+                                 untilDate:expiration
+                                    inMode:mode
+                                   dequeue:dequeue];
+  });
+  return event;
+}
+
 - (BOOL)sendAction:(SEL)anAction to:(id)aTarget from:(id)sender {
   // The Dock menu contains an automagic section where you can select
   // amongst open windows.  If a window is closed via JavaScript while
@@ -310,9 +276,15 @@ void CancelTerminate() {
       static_cast<long>(tag),
       [actionString UTF8String],
       aTarget);
-  base::debug::ScopedCrashKey key(crash_keys::mac::kSendAction, value);
 
-  return [super sendAction:anAction to:aTarget from:sender];
+  static crash_reporter::CrashKeyString<256> sendActionKey("sendaction");
+  crash_reporter::ScopedCrashKeyString scopedKey(&sendActionKey, value);
+
+  __block BOOL rv;
+  base::mac::CallWithEHFrame(^{
+    rv = [super sendAction:anAction to:aTarget from:sender];
+  });
+  return rv;
 }
 
 - (BOOL)isHandlingSendEvent {
@@ -324,6 +296,12 @@ void CancelTerminate() {
 }
 
 - (void)sendEvent:(NSEvent*)event {
+  TRACE_EVENT0("toplevel", "BrowserCrApplication::sendEvent");
+
+  static crash_reporter::CrashKeyString<256> nseventKey("nsevent");
+  crash_reporter::ScopedCrashKeyString scopedKey(&nseventKey,
+                                                 DescriptionForNSEvent(event));
+
   base::mac::CallWithEHFrame(^{
     switch (event.type) {
       case NSLeftMouseDown:
@@ -336,10 +314,13 @@ void CancelTerminate() {
         bool ctrlDown = [event modifierFlags] & NSControlKeyMask;
         if (kioskMode && ([event type] == NSRightMouseDown || ctrlDown))
           break;
+        FALLTHROUGH;  // Not menu-generating, so pass on the event.
       }
 
       default: {
         base::mac::ScopedSendingEvent sendingEventScoper;
+        content::ScopedNotifyNativeEventProcessorObserver
+            scopedObserverNotifier(&observers_, event);
         [super sendEvent:event];
       }
     }
@@ -359,13 +340,14 @@ void CancelTerminate() {
   return [super accessibilitySetValue:value forAttribute:attribute];
 }
 
-- (void)_cycleWindowsReversed:(BOOL)arg1 {
-  base::AutoReset<BOOL> pin(&cyclingWindows_, YES);
-  [super _cycleWindowsReversed:arg1];
+- (void)addNativeEventProcessorObserver:
+    (content::NativeEventProcessorObserver*)observer {
+  observers_.AddObserver(observer);
 }
 
-- (BOOL)isCyclingWindows {
-  return cyclingWindows_;
+- (void)removeNativeEventProcessorObserver:
+    (content::NativeEventProcessorObserver*)observer {
+  observers_.RemoveObserver(observer);
 }
 
 @end

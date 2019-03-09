@@ -23,25 +23,23 @@ class ManagePasswordsUIControllerMock : public ManagePasswordsUIController {
   MOCK_CONST_METHOD0(GetState, password_manager::ui::State());
   MOCK_CONST_METHOD0(GetPendingPassword, const autofill::PasswordForm&());
   MOCK_CONST_METHOD0(IsPasswordOverridden, bool());
-  MOCK_CONST_METHOD0(GetCurrentForms,
-                     const std::vector<const autofill::PasswordForm*>&());
-  MOCK_CONST_METHOD0(GetFederatedForms,
-                     const std::vector<const autofill::PasswordForm*>&());
+  MOCK_CONST_METHOD0(
+      GetCurrentForms,
+      const std::vector<std::unique_ptr<autofill::PasswordForm>>&());
   MOCK_CONST_METHOD0(GetCurrentInteractionStats,
                      password_manager::InteractionsStats*());
   MOCK_METHOD0(OnBubbleShown, void());
   MOCK_METHOD0(OnBubbleHidden, void());
-  MOCK_METHOD0(OnNoInteractionOnUpdate, void());
+  MOCK_METHOD0(OnNoInteraction, void());
   MOCK_METHOD0(OnNopeUpdateClicked, void());
   MOCK_METHOD0(NeverSavePassword, void());
-  MOCK_METHOD0(SavePassword, void());
   MOCK_METHOD1(UpdatePassword, void(const autofill::PasswordForm&));
-  MOCK_METHOD2(ChooseCredential,
-               void(autofill::PasswordForm, password_manager::CredentialType));
-  MOCK_METHOD0(NavigateToExternalPasswordManager, void());
-  MOCK_METHOD0(NavigateToSmartLockPage, void());
-  MOCK_METHOD0(NavigateToSmartLockHelpPage, void());
-  MOCK_METHOD0(NavigateToPasswordManagerSettingsPage, void());
+  MOCK_METHOD2(SavePassword,
+               void(const base::string16&, const base::string16&));
+  MOCK_METHOD2(ChooseCredential, void(const autofill::PasswordForm&,
+                                      password_manager::CredentialType));
+  MOCK_METHOD1(NavigateToPasswordManagerSettingsPage,
+               void(password_manager::ManagePasswordsReferrer));
   MOCK_METHOD0(NavigateToChromeSignIn, void());
   MOCK_METHOD0(OnDialogHidden, void());
 

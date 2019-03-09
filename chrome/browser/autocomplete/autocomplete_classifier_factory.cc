@@ -4,9 +4,11 @@
 
 #include "chrome/browser/autocomplete/autocomplete_classifier_factory.h"
 
-#include "base/memory/ptr_util.h"
+#include <memory>
+
 #include "chrome/browser/autocomplete/chrome_autocomplete_provider_client.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
+#include "chrome/browser/autocomplete/contextual_suggestions_service_factory.h"
 #include "chrome/browser/autocomplete/in_memory_url_index_factory.h"
 #include "chrome/browser/autocomplete/shortcuts_backend_factory.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
@@ -15,8 +17,9 @@
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
+#include "extensions/buildflags/buildflags.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "extensions/browser/extension_system_provider.h"
 #include "extensions/browser/extensions_browser_client.h"
 #endif
@@ -37,19 +40,18 @@ AutocompleteClassifierFactory* AutocompleteClassifierFactory::GetInstance() {
 std::unique_ptr<KeyedService> AutocompleteClassifierFactory::BuildInstanceFor(
     content::BrowserContext* context) {
   Profile* profile = static_cast<Profile*>(context);
-  return base::WrapUnique(new AutocompleteClassifier(
-      base::WrapUnique(new AutocompleteController(
-          base::WrapUnique(new ChromeAutocompleteProviderClient(profile)), NULL,
-          AutocompleteClassifier::kDefaultOmniboxProviders)),
-      std::unique_ptr<AutocompleteSchemeClassifier>(
-          new ChromeAutocompleteSchemeClassifier(profile))));
+  return std::make_unique<AutocompleteClassifier>(
+      std::make_unique<AutocompleteController>(
+          std::make_unique<ChromeAutocompleteProviderClient>(profile), nullptr,
+          AutocompleteClassifier::DefaultOmniboxProviders()),
+      std::make_unique<ChromeAutocompleteSchemeClassifier>(profile));
 }
 
 AutocompleteClassifierFactory::AutocompleteClassifierFactory()
     : BrowserContextKeyedServiceFactory(
         "AutocompleteClassifier",
         BrowserContextDependencyManager::GetInstance()) {
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   DependsOn(
       extensions::ExtensionsBrowserClient::Get()->GetExtensionSystemFactory());
 #endif
@@ -58,6 +60,7 @@ AutocompleteClassifierFactory::AutocompleteClassifierFactory()
   //   DependsOn(PrefServiceFactory::GetInstance());
   DependsOn(ShortcutsBackendFactory::GetInstance());
   DependsOn(InMemoryURLIndexFactory::GetInstance());
+  DependsOn(ContextualSuggestionsServiceFactory::GetInstance());
 }
 
 AutocompleteClassifierFactory::~AutocompleteClassifierFactory() {

@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/global_error/global_error_bubble_view_base.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/button.h"
 
 class Browser;
@@ -16,10 +16,12 @@ class ElevationIconSetter;
 class GlobalErrorWithStandardBubble;
 
 class GlobalErrorBubbleView : public views::BubbleDialogDelegateView,
-                              public GlobalErrorBubbleViewBase {
+                              public GlobalErrorBubbleViewBase,
+                              public views::ButtonListener {
  public:
   GlobalErrorBubbleView(
       views::View* anchor_view,
+      const gfx::Rect& anchor_rect,
       views::BubbleBorder::Arrow arrow,
       Browser* browser,
       const base::WeakPtr<GlobalErrorWithStandardBubble>& error);
@@ -35,9 +37,10 @@ class GlobalErrorBubbleView : public views::BubbleDialogDelegateView,
   void Init() override;
   bool ShouldShowCloseButton() const override;
   void UpdateButton(views::LabelButton* button, ui::DialogButton type) override;
-  bool ShouldDefaultButtonBeBlue() const override;
   base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
   int GetDialogButtons() const override;
+  int GetDefaultDialogButton() const override;
+  views::View* CreateExtraView() override;
   bool Cancel() override;
   bool Accept() override;
   bool Close() override;
@@ -45,8 +48,11 @@ class GlobalErrorBubbleView : public views::BubbleDialogDelegateView,
   // GlobalErrorBubbleViewBase implementation.
   void CloseBubbleView() override;
 
+  // ButtonListener implementation.
+  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
+
  private:
-  Browser* browser_;
+  Browser* const browser_;
   base::WeakPtr<GlobalErrorWithStandardBubble> error_;
 
   std::unique_ptr<ElevationIconSetter> elevation_icon_setter_;

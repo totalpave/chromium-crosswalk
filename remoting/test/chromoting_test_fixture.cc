@@ -20,8 +20,7 @@ ChromotingTestFixture::ChromotingTestFixture()
     : test_chromoting_client_(new TestChromotingClient()) {
 }
 
-ChromotingTestFixture::~ChromotingTestFixture() {
-}
+ChromotingTestFixture::~ChromotingTestFixture() = default;
 
 void ChromotingTestFixture::Disconnect() {
   test_chromoting_client_->EndConnection();
@@ -61,13 +60,14 @@ bool ChromotingTestFixture::ConnectToHost(
 
   CreateObserver();
 
-  base::Timer timer(true, false);
+  base::OneShotTimer timer;
   timer.Start(FROM_HERE, max_time_to_connect, run_loop.QuitClosure());
 
   connection_time_observer_->ConnectionStateChanged(
       protocol::ConnectionToHost::State::INITIALIZING,
       protocol::ErrorCode::OK);
   test_chromoting_client_->StartConnection(
+      g_chromoting_shared_data->use_test_environment(),
       g_chromoting_shared_data->host_info().GenerateConnectionSetupInfo(
           g_chromoting_shared_data->access_token(),
           g_chromoting_shared_data->user_name(),

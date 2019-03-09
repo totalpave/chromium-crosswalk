@@ -5,23 +5,30 @@
 #include "chrome/service/service_process.h"
 
 #include <algorithm>
+#include <utility>
+#include <vector>
 
 #include "base/base_switches.h"
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/command_line.h"
 #include "base/environment.h"
 #include "base/i18n/rtl.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/singleton.h"
+#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/threading/sequenced_worker_pool.h"
+#include "base/task/post_task.h"
+#include "base/task/task_scheduler/scheduler_worker_pool_params.h"
+#include "base/task/task_scheduler/task_scheduler.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_constants.h"
@@ -36,12 +43,15 @@
 #include "chrome/service/cloud_print/cloud_print_proxy.h"
 #include "chrome/service/net/service_url_request_context_getter.h"
 #include "chrome/service/service_process_prefs.h"
-#include "components/network_session_configurator/switches.h"
+#include "components/language/core/browser/pref_names.h"
+#include "components/language/core/common/locale_util.h"
+#include "components/network_session_configurator/common/network_switches.h"
 #include "components/prefs/json_pref_store.h"
-#include "mojo/edk/embedder/embedder.h"
-#include "mojo/edk/embedder/scoped_ipc_support.h"
+#include "mojo/core/embedder/embedder.h"
+#include "mojo/core/embedder/scoped_ipc_support.h"
 #include "net/base/network_change_notifier.h"
 #include "net/url_request/url_fetcher.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -124,69 +134,87 @@ void PrepareRestartOnCrashEnviroment(
 ServiceProcess::ServiceProcess()
     : shutdown_event_(base::WaitableEvent::ResetPolicy::MANUAL,
                       base::WaitableEvent::InitialState::NOT_SIGNALED),
-      main_message_loop_(NULL),
       enabled_services_(0),
       update_available_(false) {
   DCHECK(!g_service_process);
   g_service_process = this;
 }
 
-bool ServiceProcess::Initialize(base::MessageLoopForUI* message_loop,
+bool ServiceProcess::Initialize(base::OnceClosure quit_closure,
                                 const base::CommandLine& command_line,
-                                ServiceProcessState* state) {
+                                std::unique_ptr<ServiceProcessState> state) {
 #if defined(USE_GLIB)
   // g_type_init has been deprecated since version 2.35.
 #if !GLIB_CHECK_VERSION(2, 35, 0)
-  // GLib type system initialization is needed for gconf.
+  // Unclear if still needed, but harmless so keeping.
   g_type_init();
 #endif
-#endif // defined(OS_LINUX) || defined(OS_OPENBSD)
-  main_message_loop_ = message_loop;
-  service_process_state_.reset(state);
+#endif  // defined(USE_GLIB)
+  quit_closure_ = std::move(quit_closure);
+  service_process_state_ = std::move(state);
+
+  // Initialize TaskScheduler.
+  constexpr int kMaxBackgroundThreads = 2;
+  constexpr int kMaxForegroundThreads = 6;
+  constexpr base::TimeDelta kSuggestedReclaimTime =
+      base::TimeDelta::FromSeconds(30);
+
+  base::TaskScheduler::Create("CloudPrintServiceProcess");
+  base::TaskScheduler::GetInstance()->Start(
+      {{kMaxBackgroundThreads, kSuggestedReclaimTime},
+       {kMaxForegroundThreads, kSuggestedReclaimTime,
+        base::SchedulerBackwardCompatibility::INIT_COM_STA}});
+
+  // The NetworkChangeNotifier must be created after TaskScheduler because it
+  // posts tasks to it.
   network_change_notifier_.reset(net::NetworkChangeNotifier::Create());
+  network_connection_tracker_ =
+      std::make_unique<InProcessNetworkConnectionTracker>();
+
+  // Initialize the IO and FILE threads.
   base::Thread::Options options;
   options.message_loop_type = base::MessageLoop::TYPE_IO;
   io_thread_.reset(new ServiceIOThread("ServiceProcess_IO"));
-  file_thread_.reset(new base::Thread("ServiceProcess_File"));
-  if (!io_thread_->StartWithOptions(options) ||
-      !file_thread_->StartWithOptions(options)) {
+  if (!io_thread_->StartWithOptions(options)) {
     NOTREACHED();
     Teardown();
     return false;
   }
-  blocking_pool_ = new base::SequencedWorkerPool(3, "ServiceBlocking");
 
   // Initialize Mojo early so things can use it.
-  mojo::edk::Init();
-  mojo_ipc_support_.reset(
-      new mojo::edk::ScopedIPCSupport(io_thread_->task_runner()));
+  mojo::core::Init();
+  mojo_ipc_support_.reset(new mojo::core::ScopedIPCSupport(
+      io_thread_->task_runner(),
+      mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST));
 
   request_context_getter_ = new ServiceURLRequestContextGetter();
 
   base::FilePath user_data_dir;
-  PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
+  base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
   base::FilePath pref_path =
       user_data_dir.Append(chrome::kServiceStateFileName);
-  service_prefs_.reset(new ServiceProcessPrefs(
+  service_prefs_ = std::make_unique<ServiceProcessPrefs>(
       pref_path,
-      JsonPrefStore::GetTaskRunnerForFile(pref_path, blocking_pool_.get())
-          .get()));
+      base::CreateSequencedTaskRunnerWithTraits(
+          {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN})
+          .get());
   service_prefs_->ReadPrefs();
 
   // This switch it required to run connector with test gaia.
-  if (command_line.HasSwitch(switches::kIgnoreUrlFetcherCertRequests))
+  if (command_line.HasSwitch(network::switches::kIgnoreUrlFetcherCertRequests))
     net::URLFetcher::SetIgnoreCertificateRequests(true);
 
   // Check if a locale override has been specified on the command-line.
   std::string locale = command_line.GetSwitchValueASCII(switches::kLang);
   if (!locale.empty()) {
-    service_prefs_->SetString(prefs::kApplicationLocale, locale);
+    service_prefs_->SetString(language::prefs::kApplicationLocale, locale);
     service_prefs_->WritePrefs();
   } else {
     // If no command-line value was specified, read the last used locale from
     // the prefs.
-    locale =
-        service_prefs_->GetString(prefs::kApplicationLocale, std::string());
+    locale = service_prefs_->GetString(language::prefs::kApplicationLocale,
+                                       std::string());
+    language::ConvertToActualUILocale(&locale);
     // If no locale was specified anywhere, use the default one.
     if (locale.empty())
       locale = kDefaultServiceProcessLocale;
@@ -205,13 +233,11 @@ bool ServiceProcess::Initialize(base::MessageLoopForUI* message_loop,
   }
 
   VLOG(1) << "Starting Service Process IPC Server";
-  ipc_server_.reset(new ServiceIPCServer(
-      this /* client */,
-      io_task_runner(),
-      service_process_state_->GetServiceProcessChannel(),
-      &shutdown_event_));
-  ipc_server_->AddMessageHandler(base::WrapUnique(
-      new cloud_print::CloudPrintMessageHandler(ipc_server_.get(), this)));
+
+  ipc_server_.reset(new ServiceIPCServer(this /* client */, io_task_runner(),
+                                         &shutdown_event_));
+  ipc_server_->binder_registry().AddInterface(
+      base::Bind(&cloud_print::CloudPrintMessageHandler::Create, this));
   ipc_server_->Init();
 
   // After the IPC server has started we signal that the service process is
@@ -234,27 +260,23 @@ bool ServiceProcess::Teardown() {
 
   mojo_ipc_support_.reset();
   ipc_server_.reset();
+
+  // On POSIX, this must be called before joining |io_thread_| because it posts
+  // a DeleteSoon() task to that thread.
+  service_process_state_->SignalStopped();
+
   // Signal this event before shutting down the service process. That way all
   // background threads can cleanup.
   shutdown_event_.Signal();
   io_thread_.reset();
-  file_thread_.reset();
 
-  if (blocking_pool_.get()) {
-    // The goal is to make it impossible for chrome to 'infinite loop' during
-    // shutdown, but to reasonably expect that all BLOCKING_SHUTDOWN tasks
-    // queued during shutdown get run. There's nothing particularly scientific
-    // about the number chosen.
-    const int kMaxNewShutdownBlockingTasks = 1000;
-    blocking_pool_->Shutdown(kMaxNewShutdownBlockingTasks);
-    blocking_pool_ = NULL;
-  }
+  if (base::TaskScheduler::GetInstance())
+    base::TaskScheduler::GetInstance()->Shutdown();
 
   // The NetworkChangeNotifier must be destroyed after all other threads that
   // might use it have been shut down.
   network_change_notifier_.reset();
 
-  service_process_state_->SignalStopped();
   return true;
 }
 
@@ -278,8 +300,7 @@ void ServiceProcess::Shutdown() {
 }
 
 void ServiceProcess::Terminate() {
-  main_message_loop_->task_runner()->PostTask(
-      FROM_HERE, base::MessageLoop::QuitWhenIdleClosure());
+  std::move(quit_closure_).Run();
 }
 
 void ServiceProcess::OnShutdown() {
@@ -301,10 +322,49 @@ bool ServiceProcess::OnIPCClientDisconnect() {
   return true;
 }
 
+mojo::ScopedMessagePipeHandle ServiceProcess::CreateChannelMessagePipe() {
+#if defined(OS_MACOSX)
+  if (!server_endpoint_.is_valid()) {
+    server_endpoint_ =
+        service_process_state_->GetServiceProcessServerEndpoint();
+    DCHECK(server_endpoint_.is_valid());
+  }
+#elif defined(OS_POSIX)
+  if (!server_endpoint_.is_valid()) {
+    mojo::NamedPlatformChannel::Options options;
+    options.server_name = service_process_state_->GetServiceProcessServerName();
+    mojo::NamedPlatformChannel server_channel(options);
+    server_endpoint_ = server_channel.TakeServerEndpoint();
+    DCHECK(server_endpoint_.is_valid());
+  }
+#elif defined(OS_WIN)
+  if (server_name_.empty()) {
+    server_name_ = service_process_state_->GetServiceProcessServerName();
+    DCHECK(!server_name_.empty());
+  }
+#endif
+
+  mojo::PlatformChannelServerEndpoint server_endpoint;
+#if defined(OS_POSIX)
+  server_endpoint = server_endpoint_.Clone();
+#elif defined(OS_WIN)
+  mojo::NamedPlatformChannel::Options options;
+  options.server_name = server_name_;
+  options.enforce_uniqueness = false;
+  mojo::NamedPlatformChannel server_channel(options);
+  server_endpoint = server_channel.TakeServerEndpoint();
+#endif
+  CHECK(server_endpoint.is_valid());
+
+  mojo_connection_ = std::make_unique<mojo::IsolatedConnection>();
+  return mojo_connection_->Connect(std::move(server_endpoint));
+}
+
 cloud_print::CloudPrintProxy* ServiceProcess::GetCloudPrintProxy() {
   if (!cloud_print_proxy_.get()) {
     cloud_print_proxy_.reset(new cloud_print::CloudPrintProxy());
-    cloud_print_proxy_->Initialize(service_prefs_.get(), this);
+    cloud_print_proxy_->Initialize(service_prefs_.get(), this,
+                                   network_connection_tracker_.get());
   }
   return cloud_print_proxy_.get();
 }
@@ -361,7 +421,7 @@ void ServiceProcess::OnServiceDisabled() {
 void ServiceProcess::ScheduleShutdownCheck() {
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&ServiceProcess::ShutdownIfNeeded, base::Unretained(this)),
+      base::BindOnce(&ServiceProcess::ShutdownIfNeeded, base::Unretained(this)),
       base::TimeDelta::FromSeconds(kShutdownDelaySeconds));
 }
 

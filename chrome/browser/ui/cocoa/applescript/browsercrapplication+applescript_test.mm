@@ -4,14 +4,16 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include "base/mac/foundation_util.h"
 #include "base/mac/scoped_nsobject.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/cocoa/applescript/bookmark_folder_applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/browsercrapplication+applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/constants_applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/window_applescript.h"
-#include "chrome/browser/ui/cocoa/run_loop_testing.h"
+#include "chrome/browser/ui/cocoa/test/run_loop_testing.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -25,9 +27,9 @@ IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest, Creation) {
   // Create additional |Browser*| objects of different type.
   Profile* profile = browser()->profile();
   Browser* b1 =
-      new Browser(Browser::CreateParams(Browser::TYPE_POPUP, profile));
+      new Browser(Browser::CreateParams(Browser::TYPE_POPUP, profile, true));
   Browser* b2 = new Browser(Browser::CreateParams::CreateForApp(
-      "Test", true /* trusted_source */, gfx::Rect(), profile));
+      "Test", true /* trusted_source */, gfx::Rect(), profile, true));
 
   EXPECT_EQ(3U, [[NSApp appleScriptWindows] count]);
   for (WindowAppleScript* window in [NSApp appleScriptWindows]) {
@@ -42,7 +44,8 @@ IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest, Creation) {
 }
 
 // Insert a new window.
-IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest, InsertWindow) {
+IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest,
+                       FLAKY_InsertWindow) {
   // Emulate what applescript would do when creating a new window.
   // Emulate a script like |set var to make new window with properties
   // {visible:false}|.
@@ -97,9 +100,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest, ObjectSpecifier) {
 }
 
 // Bookmark folders at the root level.
-// http://code.google.com/p/chromium/issues/detail?id=84299
-IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest,
-                       DISABLED_BookmarkFolders) {
+IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest, BookmarkFolders) {
   NSArray* bookmarkFolders = [NSApp bookmarkFolders];
   EXPECT_EQ(2U, [bookmarkFolders count]);
 
@@ -110,6 +111,10 @@ IN_PROC_BROWSER_TEST_F(BrowserCrApplicationAppleScriptTest,
                 [bookmarkFolder containerProperty]);
   }
 
-  EXPECT_NSEQ(@"Other Bookmarks", [[NSApp otherBookmarks] title]);
-  EXPECT_NSEQ(@"Bookmarks Bar", [[NSApp bookmarksBar] title]);
+  BookmarkFolderAppleScript* otherBookmarks =
+      base::mac::ObjCCast<BookmarkFolderAppleScript>([NSApp otherBookmarks]);
+  EXPECT_NSEQ(@"Other Bookmarks", [otherBookmarks title]);
+  BookmarkFolderAppleScript* bookmarksBar =
+      base::mac::ObjCCast<BookmarkFolderAppleScript>([NSApp bookmarksBar]);
+  EXPECT_NSEQ(@"Bookmarks Bar", [bookmarksBar title]);
 }

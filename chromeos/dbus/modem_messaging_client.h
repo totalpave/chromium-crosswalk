@@ -9,9 +9,10 @@
 #include <vector>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/dbus_client.h"
+#include "chromeos/dbus/dbus_method_call_status.h"
 
 namespace dbus {
 class ObjectPath;
@@ -23,13 +24,10 @@ namespace chromeos {
 // org.freedesktop.ModemManager1.Modem.Messaging service.  All methods
 // should be called from the origin thread (UI thread) which
 // initializes the DBusThreadManager instance.
-class CHROMEOS_EXPORT ModemMessagingClient : public DBusClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) ModemMessagingClient : public DBusClient {
  public:
-  typedef base::Callback<void()> DeleteCallback;
   typedef base::Callback<void(const dbus::ObjectPath& message_path,
                               bool complete)> SmsReceivedHandler;
-  typedef base::Callback<void(const std::vector<dbus::ObjectPath>& paths)>
-      ListCallback;
 
   ~ModemMessagingClient() override;
 
@@ -46,16 +44,17 @@ class CHROMEOS_EXPORT ModemMessagingClient : public DBusClient {
   virtual void ResetSmsReceivedHandler(const std::string& service_name,
                                        const dbus::ObjectPath& object_path) = 0;
 
-  // Calls Delete method.  |callback| is called after the method call succeeds.
+  // Calls Delete method.  |callback| is called on method completion.
   virtual void Delete(const std::string& service_name,
                       const dbus::ObjectPath& object_path,
                       const dbus::ObjectPath& sms_path,
-                      const DeleteCallback& callback) = 0;
+                      VoidDBusMethodCallback callback) = 0;
 
-  // Calls List method.  |callback| is called after the method call succeeds.
+  // Calls List method.  |callback| is called on method completion.
+  using ListCallback = DBusMethodCallback<std::vector<dbus::ObjectPath>>;
   virtual void List(const std::string& service_name,
                     const dbus::ObjectPath& object_path,
-                    const ListCallback& callback) = 0;
+                    ListCallback callback) = 0;
 
  protected:
   friend class ModemMessagingClientTest;

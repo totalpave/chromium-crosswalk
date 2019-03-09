@@ -5,8 +5,11 @@
 package org.chromium.chrome.test.util.browser.tabmodel;
 
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tabmodel.EmptyTabModel;
+import org.chromium.chrome.browser.tabmodel.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
 
 import java.util.ArrayList;
 
@@ -39,14 +42,15 @@ public class MockTabModel extends EmptyTabModel {
         mDelegate = delegate;
     }
 
-    public void addTab(int id) {
-        Tab tab = mDelegate == null
-                ? new Tab(id, isIncognito(), null) : mDelegate.createTab(id, isIncognito());
+    public Tab addTab(int id) {
+        Tab tab = mDelegate == null ? new TabBuilder().setId(id).setIncognito(isIncognito()).build()
+                                    : mDelegate.createTab(id, isIncognito());
         mTabs.add(tab);
+        return tab;
     }
 
     @Override
-    public void addTab(Tab tab, int index, TabLaunchType type) {
+    public void addTab(Tab tab, int index, @TabLaunchType int type) {
         if (index == -1) {
             mTabs.add(tab);
         } else {
@@ -83,7 +87,7 @@ public class MockTabModel extends EmptyTabModel {
     }
 
     @Override
-    public void setIndex(int i, TabSelectionType type) {
+    public void setIndex(int i, @TabSelectionType int type) {
         mIndex = i;
     }
 }

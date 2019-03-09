@@ -4,12 +4,12 @@
 
 #include "remoting/protocol/ice_transport.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
@@ -25,7 +25,7 @@
 #include "remoting/protocol/transport_context.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using testing::_;
 
@@ -39,10 +39,6 @@ namespace {
 const int kMessageSize = 1024;
 const int kMessages = 100;
 const char kChannelName[] = "test_channel";
-
-ACTION_P(QuitRunLoop, run_loop) {
-  run_loop->Quit();
-}
 
 ACTION_P2(QuitRunLoopOnCounter, run_loop, counter) {
   --(*counter);
@@ -60,8 +56,8 @@ class TestTransportEventHandler : public IceTransport::EventHandler {
  public:
   typedef base::Callback<void(ErrorCode error)> ErrorCallback;
 
-  TestTransportEventHandler() {}
-  ~TestTransportEventHandler() {}
+  TestTransportEventHandler() = default;
+  ~TestTransportEventHandler() = default;
 
   void set_error_callback(const ErrorCallback& callback) {
     error_callback_ = callback;
@@ -95,20 +91,21 @@ class IceTransportTest : public testing::Test {
     host_message_pipe_.reset();
     client_transport_.reset();
     host_transport_.reset();
-    message_loop_.RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
 
   void ProcessTransportInfo(std::unique_ptr<IceTransport>* target_transport,
-                            std::unique_ptr<buzz::XmlElement> transport_info) {
+                            std::unique_ptr<jingle_xmpp::XmlElement> transport_info) {
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&IceTransportTest::DeliverTransportInfo,
-                              base::Unretained(this), target_transport,
-                              base::Passed(&transport_info)),
+        FROM_HERE,
+        base::BindOnce(&IceTransportTest::DeliverTransportInfo,
+                       base::Unretained(this), target_transport,
+                       std::move(transport_info)),
         transport_info_delay_);
   }
 
   void DeliverTransportInfo(std::unique_ptr<IceTransport>* target_transport,
-                            std::unique_ptr<buzz::XmlElement> transport_info) {
+                            std::unique_ptr<jingle_xmpp::XmlElement> transport_info) {
     ASSERT_TRUE(target_transport);
     EXPECT_TRUE(
         (*target_transport)->ProcessTransportInfo(transport_info.get()));
@@ -118,23 +115,23 @@ class IceTransportTest : public testing::Test {
     jingle_glue::JingleThreadWrapper::EnsureForCurrentMessageLoop();
 
     host_transport_.reset(new IceTransport(
-        new TransportContext(
-            nullptr, base::WrapUnique(new ChromiumPortAllocatorFactory()),
-            nullptr, network_settings_, TransportRole::SERVER),
+        new TransportContext(nullptr,
+                             std::make_unique<ChromiumPortAllocatorFactory>(),
+                             nullptr, network_settings_, TransportRole::SERVER),
         &host_event_handler_));
     if (!host_authenticator_) {
-      host_authenticator_.reset(new FakeAuthenticator(
-          FakeAuthenticator::HOST, 0, FakeAuthenticator::ACCEPT, true));
+      host_authenticator_.reset(
+          new FakeAuthenticator(FakeAuthenticator::ACCEPT));
     }
 
     client_transport_.reset(new IceTransport(
-        new TransportContext(
-            nullptr, base::WrapUnique(new ChromiumPortAllocatorFactory()),
-            nullptr, network_settings_, TransportRole::CLIENT),
+        new TransportContext(nullptr,
+                             std::make_unique<ChromiumPortAllocatorFactory>(),
+                             nullptr, network_settings_, TransportRole::CLIENT),
         &client_event_handler_));
     if (!client_authenticator_) {
-      client_authenticator_.reset(new FakeAuthenticator(
-          FakeAuthenticator::CLIENT, 0, FakeAuthenticator::ACCEPT, true));
+      client_authenticator_.reset(
+          new FakeAuthenticator(FakeAuthenticator::ACCEPT));
     }
 
     host_event_handler_.set_error_callback(base::Bind(
@@ -247,8 +244,8 @@ TEST_F(IceTransportTest, MuxDataStream) {
 
 TEST_F(IceTransportTest, FailedChannelAuth) {
   // Use host authenticator with one that rejects channel authentication.
-  host_authenticator_.reset(new FakeAuthenticator(
-      FakeAuthenticator::HOST, 0, FakeAuthenticator::REJECT_CHANNEL, true));
+  host_authenticator_.reset(
+      new FakeAuthenticator(FakeAuthenticator::REJECT_CHANNEL));
 
   InitializeConnection();
 

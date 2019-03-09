@@ -4,10 +4,11 @@
 
 package org.chromium.chrome.browser.prerender;
 
-import android.app.Application;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Point;
+import android.graphics.Rect;
+import android.util.Pair;
 import android.view.WindowManager;
 
 import org.chromium.base.VisibleForTesting;
@@ -38,20 +39,24 @@ public class ExternalPrerenderHandler {
      * @param profile The profile to use for the prerender.
      * @param url The url to prerender.
      * @param referrer The referrer for the prerender request.
-     * @param width The width for the content view (render widget host view) for the prerender.
-     * @param height The height for the content view (render widget host view) for the prerender.
+     * @param bounds The bounds for the content view (render widget host view) for the prerender.
      * @param prerenderOnCellular Whether the prerender should happen if the device has a cellular
      *                            connection.
-     * @return The {@link WebContents} that is linked to this prerender. {@code null} if
-     *         unsuccessful.
+     * @return A Pair containing the dummy {@link WebContents} that is linked to this prerender
+     *         through session storage namespace id and will be replaced soon and the prerendering
+     *         {@link WebContents} that owned by the prerender manager.
+     *         {@code null} if unsuccessful.
      */
-    public WebContents addPrerender(Profile profile, String url, String referrer, int width,
-            int height, boolean prerenderOnCellular) {
-        WebContents webContents = WebContentsFactory.createWebContents(false, false);
-        if (addPrerender(profile, webContents, url, referrer, width, height, prerenderOnCellular)) {
-            return webContents;
+    public Pair<WebContents, WebContents> addPrerender(Profile profile, String url, String referrer,
+            Rect bounds, boolean prerenderOnCellular) {
+        WebContents dummyWebContents = WebContentsFactory.createWebContents(false, false);
+        WebContents prerenderingWebContents =
+                addPrerender(profile, dummyWebContents, url, referrer, bounds, prerenderOnCellular);
+        if (dummyWebContents == null) return null;
+        if (prerenderingWebContents != null) {
+            return Pair.create(dummyWebContents, prerenderingWebContents);
         }
-        if (webContents != null) webContents.destroy();
+        dummyWebContents.destroy();
         return null;
     }
 
@@ -63,16 +68,16 @@ public class ExternalPrerenderHandler {
      * @param webContents The WebContents to add the prerender to.
      * @param url The url to prerender.
      * @param referrer The referrer for the prerender request.
-     * @param width The width for the content view (render widget host view) for the prerender.
-     * @param height The height for the content view (render widget host view) for the prerender.
+     * @param bounds The bounds for the content view (render widget host view) for the prerender.
      * @param prerenderOnCellular Whether the prerender should happen if the device has a cellular
      *                            connection.
-     * @return Whether the prerender was successful.
+     * @return The prerendering {@link WebContents} owned by PrerenderManager.
      */
-    public boolean addPrerender(Profile profile, WebContents webContents, String url,
-            String referrer, int width, int height, boolean prerenderOnCellular) {
-        return nativeAddPrerender(mNativeExternalPrerenderHandler, profile, webContents,
-                url, referrer, width, height, prerenderOnCellular);
+    public WebContents addPrerender(Profile profile, WebContents webContents, String url,
+            String referrer, Rect bounds, boolean prerenderOnCellular) {
+        return nativeAddPrerender(mNativeExternalPrerenderHandler, profile, webContents, url,
+                referrer, bounds.top, bounds.left, bounds.bottom, bounds.right,
+                prerenderOnCellular);
     }
 
     /**
@@ -96,17 +101,53 @@ public class ExternalPrerenderHandler {
     }
 
     /**
-     * Check whether a given url has been prerendering for the given profile and session id for the
-     * given web contents, and has finished loading.
-     * @param profile The profile to check for prerendering.
-     * @param url The url to check for prerender.
-     * @param webContents The {@link WebContents} for which to compare the session info.
-     * @return Whether the given url was prerendered and has finished loading.
+     * Provides an estimate of the contents size.
+     *
+     * The estimate is likely to be incorrect. This is not a problem, as the aim
+     * is to avoid getting a different layout and resources than needed at
+     * render time.
+     * @param context The application context.
+     * @param convertToDp Whether the value should be converted to dp from pixels.
+     * @return The estimated prerender size in pixels or dp.
      */
+    public static Rect estimateContentSize(Context context, boolean convertToDp) {
+        // The size is estimated as:
+        // X = screenSizeX
+        // Y = screenSizeY - top bar - bottom bar - custom tabs bar
+        // The bounds rectangle includes the bottom bar and the custom tabs bar as well.
+        Rect screenBounds = new Rect();
+        Point screenSize = new Point();
+        WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        wm.getDefaultDisplay().getSize(screenSize);
+        Resources resources = context.getResources();
+        int statusBarId = resources.getIdentifier("status_bar_height", "dimen", "android");
+        try {
+            screenSize.y -= resources.getDimensionPixelSize(statusBarId);
+        } catch (Resources.NotFoundException e) {
+            // Nothing, this is just a best effort estimate.
+        }
+        screenBounds.set(0,
+                resources.getDimensionPixelSize(R.dimen.custom_tabs_control_container_height),
+                screenSize.x, screenSize.y);
+
+        if (convertToDp) {
+            float density = resources.getDisplayMetrics().density;
+            screenBounds.top = (int) Math.ceil(screenBounds.top / density);
+            screenBounds.left = (int) Math.ceil(screenBounds.left / density);
+            screenBounds.right = (int) Math.ceil(screenBounds.right / density);
+            screenBounds.bottom = (int) Math.ceil(screenBounds.bottom / density);
+        }
+        return screenBounds;
+    }
+
     @VisibleForTesting
-    public static boolean hasPrerenderedAndFinishedLoadingUrl(
-            Profile profile, String url, WebContents webContents) {
-        return nativeHasPrerenderedAndFinishedLoadingUrl(profile, url, webContents);
+    public static boolean hasRecentlyPrefetchedUrlForTesting(Profile profile, String url) {
+        return nativeHasRecentlyPrefetchedUrlForTesting(profile, url);
+    }
+
+    @VisibleForTesting
+    public static void clearPrefetchInformationForTesting(Profile profile) {
+        nativeClearPrefetchInformationForTesting(profile);
     }
 
     /**
@@ -145,14 +186,15 @@ public class ExternalPrerenderHandler {
     }
 
     private static native long nativeInit();
-    private static native boolean nativeAddPrerender(
+    private static native WebContents nativeAddPrerender(
             long nativeExternalPrerenderHandlerAndroid, Profile profile,
             WebContents webContents, String url, String referrer,
-            int width, int height, boolean prerenderOnCellular);
+            int top, int left, int bottom, int right, boolean prerenderOnCellular);
     private static native boolean nativeHasPrerenderedUrl(
-            Profile profile, String url, WebContents webContents);
-    private static native boolean nativeHasPrerenderedAndFinishedLoadingUrl(
             Profile profile, String url, WebContents webContents);
     private static native void nativeCancelCurrentPrerender(
             long nativeExternalPrerenderHandlerAndroid);
+    private static native boolean nativeHasRecentlyPrefetchedUrlForTesting(
+            Profile profile, String url);
+    private static native void nativeClearPrefetchInformationForTesting(Profile profile);
 }

@@ -64,10 +64,10 @@ enum {
 
 Cluster::Cluster(std::unique_ptr<uint8_t[]> data, int size)
     : data_(std::move(data)), size_(size) {}
-Cluster::~Cluster() {}
+Cluster::~Cluster() = default;
 
 ClusterBuilder::ClusterBuilder() { Reset(); }
-ClusterBuilder::~ClusterBuilder() {}
+ClusterBuilder::~ClusterBuilder() = default;
 
 void ClusterBuilder::SetClusterTimecode(int64_t cluster_timecode) {
   DCHECK_EQ(cluster_timecode_, -1);
@@ -191,7 +191,7 @@ void ClusterBuilder::WriteBlock(uint8_t* buf,
   DCHECK_GE(flags, 0);
   DCHECK_LE(flags, 0xff);
   DCHECK(data);
-  DCHECK_GT(size, 0);
+  DCHECK_GE(size, 0);  // For testing, allow 0-byte coded frames.
   DCHECK_NE(cluster_timecode_, -1);
 
   int64_t timecode_delta = timecode - cluster_timecode_;
@@ -242,7 +242,7 @@ void ClusterBuilder::ExtendBuffer(int bytes_needed) {
   std::unique_ptr<uint8_t[]> new_buffer(new uint8_t[new_buffer_size]);
 
   memcpy(new_buffer.get(), buffer_.get(), bytes_used_);
-  buffer_.reset(new_buffer.release());
+  buffer_ = std::move(new_buffer);
   buffer_size_ = new_buffer_size;
 }
 

@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,16 +15,15 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "cc/base/region.h"
 #include "cc/layers/content_layer_client.h"
 #include "cc/layers/layer_client.h"
 #include "cc/layers/surface_layer.h"
 #include "cc/layers/texture_layer_client.h"
-#include "cc/resources/texture_mailbox.h"
-#include "cc/surfaces/surface_id.h"
+#include "components/viz/common/resources/transferable_resource.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "third_party/skia/include/core/SkRegion.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer_animation_delegate.h"
 #include "ui/compositor/layer_delegate.h"
@@ -32,25 +32,24 @@
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/transform.h"
 
-class SkCanvas;
-
 namespace cc {
-class ContentLayer;
-class CopyOutputRequest;
 class Layer;
 class NinePatchLayer;
-class ResourceUpdateQueue;
 class SolidColorLayer;
 class SurfaceLayer;
 class TextureLayer;
-struct ReturnedResource;
-typedef std::vector<ReturnedResource> ReturnedResourceArray;
+}
+
+namespace viz {
+class CopyOutputRequest;
+struct TransferableResource;
 }
 
 namespace ui {
 
 class Compositor;
 class LayerAnimator;
+class LayerObserver;
 class LayerOwner;
 class LayerThreadedAnimationDelegate;
 
@@ -64,15 +63,25 @@ class LayerThreadedAnimationDelegate;
 // NOTE: Unlike Views, each Layer does *not* own its child Layers. If you
 // delete a Layer and it has children, the parent of each child Layer is set to
 // NULL, but the children are not deleted.
-class COMPOSITOR_EXPORT Layer
-    : public LayerAnimationDelegate,
-      NON_EXPORTED_BASE(public cc::ContentLayerClient),
-      NON_EXPORTED_BASE(public cc::TextureLayerClient),
-      NON_EXPORTED_BASE(public cc::LayerClient) {
+class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
+                                public cc::ContentLayerClient,
+                                public cc::TextureLayerClient,
+                                public cc::LayerClient {
  public:
+  using ShapeRects = std::vector<gfx::Rect>;
   Layer();
   explicit Layer(LayerType type);
   ~Layer() override;
+
+  // Note that only solid color and surface content is copied.
+  std::unique_ptr<Layer> Clone() const;
+
+  // Returns a new layer that mirrors this layer and is optionally synchronized
+  // with the bounds thereof. Note that children are not mirrored, and that the
+  // content is only mirrored if painted by a delegate or backed by a surface.
+  std::unique_ptr<Layer> Mirror();
+
+  void set_sync_bounds(bool sync_bounds) { sync_bounds_ = sync_bounds; }
 
   // Retrieves the Layer's compositor. The Layer will walk up its parent chain
   // to locate it. Returns NULL if the Layer is not attached to a compositor.
@@ -92,6 +101,9 @@ class COMPOSITOR_EXPORT Layer
   void set_delegate(LayerDelegate* delegate) { delegate_ = delegate; }
 
   LayerOwner* owner() { return owner_; }
+
+  void AddObserver(LayerObserver* observer);
+  void RemoveObserver(LayerObserver* observer);
 
   // Adds a new Layer to this Layer.
   void Add(Layer* child);
@@ -137,7 +149,7 @@ class COMPOSITOR_EXPORT Layer
 
   // The transform, relative to the parent.
   void SetTransform(const gfx::Transform& transform);
-  gfx::Transform transform() const;
+  const gfx::Transform& transform() const { return cc_layer_->transform(); }
 
   gfx::PointF position() const { return cc_layer_->position(); }
 
@@ -161,8 +173,8 @@ class COMPOSITOR_EXPORT Layer
   // otherwise.
   gfx::Rect GetTargetBounds() const;
 
-  // Sets/gets whether or not drawing of child layers should be clipped to the
-  // bounds of this layer.
+  // Sets/gets whether or not drawing of child layers, including drawing in
+  // this layer, should be clipped to the bounds of this layer.
   void SetMasksToBounds(bool masks_to_bounds);
   bool GetMasksToBounds() const;
 
@@ -175,10 +187,18 @@ class COMPOSITOR_EXPORT Layer
   // the combined opacity of the parent.
   float GetCombinedOpacity() const;
 
-  // Blur pixels by this amount in anything below the layer and visible through
-  // the layer.
-  int background_blur() const { return background_blur_radius_; }
-  void SetBackgroundBlur(int blur_radius);
+  // Returns the target color temperature if animator is running, or the current
+  // temperature otherwise.
+  float GetTargetTemperature() const;
+
+  // Blur pixels by 3 * this amount in anything below the layer and visible
+  // through the layer.
+  float background_blur() const { return background_blur_sigma_; }
+  void SetBackgroundBlur(float blur_sigma);
+
+  // Blur pixels of this layer by 3 * this amount.
+  float layer_blur() const { return layer_blur_sigma_; }
+  void SetLayerBlur(float blur_sigma);
 
   // Saturate all pixels of this layer by this amount.
   // This effect will get "combined" with the inverted,
@@ -211,8 +231,8 @@ class COMPOSITOR_EXPORT Layer
   void SetBackgroundZoom(float zoom, int inset);
 
   // Set the shape of this layer.
-  SkRegion* alpha_shape() const { return alpha_shape_.get(); }
-  void SetAlphaShape(std::unique_ptr<SkRegion> region);
+  const ShapeRects* alpha_shape() const { return alpha_shape_.get(); }
+  void SetAlphaShape(std::unique_ptr<ShapeRects> shape);
 
   // Invert the layer.
   bool layer_inverted() const { return layer_inverted_; }
@@ -230,8 +250,10 @@ class COMPOSITOR_EXPORT Layer
   void SetMaskLayer(Layer* layer_mask);
   Layer* layer_mask_layer() { return layer_mask_; }
 
-  // Sets the visibility of the Layer. A Layer may be visible but not
-  // drawn. This happens if any ancestor of a Layer is not visible.
+  // Sets the visibility of the Layer. A Layer may be visible but not drawn.
+  // This happens if any ancestor of a Layer is not visible.
+  // Any changes made to this in the source layer will override the visibility
+  // of its mirror layer.
   void SetVisible(bool visible);
   bool visible() const { return visible_; }
 
@@ -247,12 +269,20 @@ class COMPOSITOR_EXPORT Layer
   // and is not completely obscured by a child.
   bool ShouldDraw() const;
 
+  // Sets a rounded corner clip radius on the layer. This will clip the layer to
+  // bounds. The ordering for the array is:
+  //    top left, top right, bottom right, bottom left
+  void SetRoundedCornerRadius(const std::array<uint32_t, 4>& corner_radii);
+  const std::array<uint32_t, 4>& rounded_corner_radii() const {
+    return cc_layer_->corner_radii();
+  }
+
   // Converts a point from the coordinates of |source| to the coordinates of
   // |target|. Necessarily, |source| and |target| must inhabit the same Layer
   // tree.
   static void ConvertPointToLayer(const Layer* source,
                                   const Layer* target,
-                                  gfx::Point* point);
+                                  gfx::PointF* point);
 
   // Converts a transform to be relative to the given |ancestor|. Returns
   // whether success (that is, whether the given ancestor was really an
@@ -260,7 +290,9 @@ class COMPOSITOR_EXPORT Layer
   bool GetTargetTransformRelativeTo(const Layer* ancestor,
                                     gfx::Transform* transform) const;
 
-  // See description in View for details
+  // Note: Setting a layer non-opaque has significant performance impact,
+  // especially on low-end Chrome OS devices. Please ensure you are not
+  // adding unnecessary overdraw. When in doubt, talk to the graphics team.
   void SetFillsBoundsOpaquely(bool fills_bounds_opaquely);
   bool fills_bounds_opaquely() const { return fills_bounds_opaquely_; }
 
@@ -271,40 +303,40 @@ class COMPOSITOR_EXPORT Layer
   const std::string& name() const { return name_; }
   void set_name(const std::string& name) { name_ = name; }
 
-  // Set new TextureMailbox for this layer. Note that |mailbox| may hold a
-  // shared memory resource or an actual mailbox for a texture.
-  void SetTextureMailbox(
-      const cc::TextureMailbox& mailbox,
-      std::unique_ptr<cc::SingleReleaseCallback> release_callback,
+  // Set new TransferableResource for this layer. This method only supports
+  // a gpu-backed |resource|.
+  void SetTransferableResource(
+      const viz::TransferableResource& resource,
+      std::unique_ptr<viz::SingleReleaseCallback> release_callback,
       gfx::Size texture_size_in_dip);
   void SetTextureSize(gfx::Size texture_size_in_dip);
   void SetTextureFlipped(bool flipped);
   bool TextureFlipped() const;
 
-  // The alpha value applied to the whole texture. The effective value of each
-  // pixel is computed as:
-  // pixel.a = pixel.a * alpha.
-  // Note: This is different from SetOpacity() as it only applies to the
-  // texture and child layers are unaffected.
-  // TODO(reveman): Remove once components/exo code is using SetShowSurface.
-  // crbug.com/610086
-  void SetTextureAlpha(float alpha);
+  // TODO(fsamuel): Update this comment.
+  // Begins showing content from a surface with a particular ID.
+  void SetShowSurface(const viz::SurfaceId& surface_id,
+                      const gfx::Size& frame_size_in_dip,
+                      SkColor default_background_color,
+                      const cc::DeadlinePolicy& deadline_policy,
+                      bool stretch_content_to_fill_bounds);
 
-  // The texture crop rectangle to be used. Empty rectangle means no cropping.
-  void SetTextureCrop(const gfx::RectF& crop);
+  // In the event that the primary surface is not yet available in the
+  // display compositor, the fallback surface will be used.
+  void SetOldestAcceptableFallback(const viz::SurfaceId& surface_id);
 
-  // The texture scale to be used. Defaults to no scaling.
-  void SetTextureScale(float x_scale, float y_scale);
+  // Begins mirroring content from a reflected surface, e.g. a software mirrored
+  // display. |surface_id| should be the root surface for a display.
+  void SetShowReflectedSurface(const viz::SurfaceId& surface_id,
+                               const gfx::Size& frame_size_in_pixels);
 
-  // Begins showing content from a surface with a particular id.
-  void SetShowSurface(cc::SurfaceId surface_id,
-                      const cc::SurfaceLayer::SatisfyCallback& satisfy_callback,
-                      const cc::SurfaceLayer::RequireCallback& require_callback,
-                      gfx::Size surface_size,
-                      float scale,
-                      gfx::Size frame_size_in_dip);
+  // Returns the primary SurfaceId set by SetShowSurface.
+  const viz::SurfaceId* GetSurfaceId() const;
 
-  bool has_external_content() {
+  // Returns the fallback SurfaceId set by SetOldestAcceptableFallback.
+  const viz::SurfaceId* GetOldestAcceptableFallback() const;
+
+  bool has_external_content() const {
     return texture_layer_.get() || surface_layer_.get();
   }
 
@@ -313,7 +345,7 @@ class COMPOSITOR_EXPORT Layer
 
   // Sets the layer's fill color.  May only be called for LAYER_SOLID_COLOR.
   void SetColor(SkColor color);
-  SkColor GetTargetColor();
+  SkColor GetTargetColor() const;
   SkColor background_color() const;
 
   // Updates the nine patch layer's image, aperture and border. May only be
@@ -321,6 +353,9 @@ class COMPOSITOR_EXPORT Layer
   void UpdateNinePatchLayerImage(const gfx::ImageSkia& image);
   void UpdateNinePatchLayerAperture(const gfx::Rect& aperture_in_dip);
   void UpdateNinePatchLayerBorder(const gfx::Rect& border);
+  // Updates the area completely occluded by another layer, this can be an
+  // empty rectangle if nothing is occluded.
+  void UpdateNinePatchOcclusion(const gfx::Rect& occlusion);
 
   // Adds |invalid_rect| to the Layer's pending invalid rect and calls
   // ScheduleDraw(). Returns false if the paint request is ignored.
@@ -345,14 +380,27 @@ class COMPOSITOR_EXPORT Layer
   // Notifies the layer that the device scale factor has changed.
   void OnDeviceScaleFactorChanged(float device_scale_factor);
 
-  // Notifies the layer that one of its children has received a new
-  // delegated frame.
-  void OnDelegatedFrameDamage(const gfx::Rect& damage_rect_in_dip);
-
   // Requets a copy of the layer's output as a texture or bitmap.
-  void RequestCopyOfOutput(std::unique_ptr<cc::CopyOutputRequest> request);
+  void RequestCopyOfOutput(std::unique_ptr<viz::CopyOutputRequest> request);
 
-  // ContentLayerClient
+  // Invoked when scrolling performed by the cc::InputHandler is committed. This
+  // will only occur if the Layer has set scroll container bounds.
+  void SetDidScrollCallback(
+      base::Callback<void(const gfx::ScrollOffset&, const cc::ElementId&)>
+          callback);
+
+  cc::ElementId element_id() const { return cc_layer_->element_id(); }
+
+  // Marks this layer as scrollable inside the provided bounds. This size only
+  // affects scrolling so if clipping is desired, a separate clipping layer
+  // needs to be created.
+  void SetScrollable(const gfx::Size& container_bounds);
+
+  // Gets and sets the current scroll offset of the layer.
+  gfx::ScrollOffset CurrentScrollOffset() const;
+  void SetScrollOffset(const gfx::ScrollOffset& offset);
+
+  // ContentLayerClient implementation.
   gfx::Rect PaintableRegion() override;
   scoped_refptr<cc::DisplayItemList> PaintContentsToDisplayList(
       ContentLayerClient::PaintingControlSetting painting_control) override;
@@ -361,20 +409,18 @@ class COMPOSITOR_EXPORT Layer
 
   cc::Layer* cc_layer_for_testing() { return cc_layer_; }
 
-  // TextureLayerClient
-  bool PrepareTextureMailbox(
-      cc::TextureMailbox* mailbox,
-      std::unique_ptr<cc::SingleReleaseCallback>* release_callback,
-      bool use_shared_memory) override;
+  // TextureLayerClient implementation.
+  bool PrepareTransferableResource(
+      cc::SharedBitmapIdRegistrar* bitmap_registar,
+      viz::TransferableResource* resource,
+      std::unique_ptr<viz::SingleReleaseCallback>* release_callback) override;
 
   float device_scale_factor() const { return device_scale_factor_; }
 
-  // LayerClient
-  std::unique_ptr<base::trace_event::ConvertableToTraceFormat> TakeDebugInfo(
+  // LayerClient implementation.
+  std::unique_ptr<base::trace_event::TracedValue> TakeDebugInfo(
       cc::Layer* layer) override;
-
-  // Whether this layer has animations waiting to get sent to its cc::Layer.
-  bool HasPendingThreadedAnimationsForTesting() const;
+  void DidChangeScrollbarsHiddenIfOverlay(bool) override;
 
   // Triggers a call to SwitchToLayer.
   void SwitchCCLayerForTest();
@@ -383,8 +429,52 @@ class COMPOSITOR_EXPORT Layer
     return damaged_region_;
   }
 
+  const gfx::Size& frame_size_in_dip_for_testing() const {
+    return frame_size_in_dip_;
+  }
+
+  // Force use of and cache render surface. Note that this also disables
+  // occlusion culling in favor of efficient caching. This should
+  // only be used when paying the cost of creating a render
+  // surface even if layer is invisible is not a problem.
+  void AddCacheRenderSurfaceRequest();
+  void RemoveCacheRenderSurfaceRequest();
+
+  // Request deferring painting for layer.
+  void AddDeferredPaintRequest();
+  void RemoveDeferredPaintRequest();
+
+  // |quality| is used as a multiplier to scale the temporary surface
+  // that might be created by the compositor to apply the backdrop filters.
+  // The filter will be applied on a surface |quality|^2 times the area of the
+  // original background.
+  // |quality| lower than one will decrease memory usage and increase
+  // performance.
+  void SetBackdropFilterQuality(const float quality);
+
+  bool IsPaintDeferredForTesting() const { return deferred_paint_requests_; }
+
+  // Request trilinear filtering for layer.
+  void AddTrilinearFilteringRequest();
+  void RemoveTrilinearFilteringRequest();
+
+  // The back link from the mask layer to it's associated masked layer.
+  // We keep this reference for the case that if the mask layer gets deleted
+  // while attached to the main layer before the main layer is deleted.
+  const Layer* layer_mask_back_link() const { return layer_mask_back_link_; }
+
+  // If |surface_layer_| exists, return whether the contents should stretch to
+  // fill the bounds of |this|. Defaults to false.
+  bool StretchContentToFillBounds() const;
+
+  // If |surface_layer_| exists, update the size. The updated size is necessary
+  // for proper scaling if the embedder is resized and the |surface_layer_| is
+  // set to stretch to fill bounds.
+  void SetSurfaceSize(gfx::Size surface_size_in_dip);
+
  private:
   friend class LayerOwner;
+  class LayerMirror;
 
   void CollectAnimators(std::vector<scoped_refptr<LayerAnimator> >* animators);
 
@@ -392,17 +482,25 @@ class COMPOSITOR_EXPORT Layer
   // StackBelow().
   void StackRelativeTo(Layer* child, Layer* other, bool above);
 
-  bool ConvertPointForAncestor(const Layer* ancestor, gfx::Point* point) const;
-  bool ConvertPointFromAncestor(const Layer* ancestor, gfx::Point* point) const;
+  bool ConvertPointForAncestor(const Layer* ancestor, gfx::PointF* point) const;
+  bool ConvertPointFromAncestor(const Layer* ancestor,
+                                gfx::PointF* point) const;
 
   // Implementation of LayerAnimatorDelegate
-  void SetBoundsFromAnimation(const gfx::Rect& bounds) override;
-  void SetTransformFromAnimation(const gfx::Transform& transform) override;
-  void SetOpacityFromAnimation(float opacity) override;
-  void SetVisibilityFromAnimation(bool visibility) override;
-  void SetBrightnessFromAnimation(float brightness) override;
-  void SetGrayscaleFromAnimation(float grayscale) override;
-  void SetColorFromAnimation(SkColor color) override;
+  void SetBoundsFromAnimation(const gfx::Rect& bounds,
+                              PropertyChangeReason reason) override;
+  void SetTransformFromAnimation(const gfx::Transform& transform,
+                                 PropertyChangeReason reason) override;
+  void SetOpacityFromAnimation(float opacity,
+                               PropertyChangeReason reason) override;
+  void SetVisibilityFromAnimation(bool visibility,
+                                  PropertyChangeReason reason) override;
+  void SetBrightnessFromAnimation(float brightness,
+                                  PropertyChangeReason reason) override;
+  void SetGrayscaleFromAnimation(float grayscale,
+                                 PropertyChangeReason reason) override;
+  void SetColorFromAnimation(SkColor color,
+                             PropertyChangeReason reason) override;
   void ScheduleDrawForAnimation() override;
   const gfx::Rect& GetBoundsForAnimation() const override;
   gfx::Transform GetTransformForAnimation() const override;
@@ -412,9 +510,12 @@ class COMPOSITOR_EXPORT Layer
   float GetGrayscaleForAnimation() const override;
   SkColor GetColorForAnimation() const override;
   float GetDeviceScaleFactor() const override;
+  ui::Layer* GetLayer() override;
   cc::Layer* GetCcLayer() const override;
   LayerThreadedAnimationDelegate* GetThreadedAnimationDelegate() override;
   LayerAnimatorCollection* GetLayerAnimatorCollection() override;
+  int GetFrameNumber() const override;
+  float GetRefreshRate() const override;
 
   // Creates a corresponding composited layer for |type_|.
   void CreateCcLayer();
@@ -435,6 +536,10 @@ class COMPOSITOR_EXPORT Layer
   void SetCompositorForAnimatorsInTree(Compositor* compositor);
   void ResetCompositorForAnimatorsInTree(Compositor* compositor);
 
+  void OnMirrorDestroyed(LayerMirror* mirror);
+
+  void CreateSurfaceLayerIfNecessary();
+
   const LayerType type_;
 
   Compositor* compositor_;
@@ -444,13 +549,20 @@ class COMPOSITOR_EXPORT Layer
   // This layer's children, in bottom-to-top stacking order.
   std::vector<Layer*> children_;
 
+  std::vector<std::unique_ptr<LayerMirror>> mirrors_;
+
+  // If true, changes to the bounds of this layer are propagated to mirrors.
+  bool sync_bounds_ = false;
+
   gfx::Rect bounds_;
   gfx::Vector2dF subpixel_position_offset_;
 
   // Visibility of this layer. See SetVisible/IsDrawn for more details.
   bool visible_;
 
+  // See SetFillsBoundsOpaquely(). Defaults to true.
   bool fills_bounds_opaquely_;
+
   bool fills_bounds_completely_;
 
   // Union of damaged rects, in layer space, that SetNeedsDisplayRect should
@@ -461,7 +573,7 @@ class COMPOSITOR_EXPORT Layer
   // to paint the content.
   cc::Region paint_region_;
 
-  int background_blur_radius_;
+  float background_blur_sigma_;
 
   // Several variables which will change the visible representation of
   // the layer.
@@ -469,6 +581,7 @@ class COMPOSITOR_EXPORT Layer
   float layer_brightness_;
   float layer_grayscale_;
   bool layer_inverted_;
+  float layer_blur_sigma_;
 
   // The associated mask layer with this layer.
   Layer* layer_mask_;
@@ -485,11 +598,13 @@ class COMPOSITOR_EXPORT Layer
   int zoom_inset_;
 
   // Shape of the window.
-  std::unique_ptr<SkRegion> alpha_shape_;
+  std::unique_ptr<ShapeRects> alpha_shape_;
 
   std::string name_;
 
   LayerDelegate* delegate_;
+
+  base::ObserverList<LayerObserver>::Unchecked observer_list_;
 
   LayerOwner* owner_;
 
@@ -497,7 +612,7 @@ class COMPOSITOR_EXPORT Layer
 
   // Ownership of the layer is held through one of the strongly typed layer
   // pointers, depending on which sort of layer this is.
-  scoped_refptr<cc::Layer> content_layer_;
+  scoped_refptr<cc::PictureLayer> content_layer_;
   scoped_refptr<cc::NinePatchLayer> nine_patch_layer_;
   scoped_refptr<cc::TextureLayer> texture_layer_;
   scoped_refptr<cc::SolidColorLayer> solid_color_layer_;
@@ -512,23 +627,36 @@ class COMPOSITOR_EXPORT Layer
   gfx::ImageSkia nine_patch_layer_image_;
   gfx::Rect nine_patch_layer_aperture_;
 
-  // The mailbox used by texture_layer_.
-  cc::TextureMailbox mailbox_;
+  // The external resource used by texture_layer_.
+  viz::TransferableResource transfer_resource_;
 
   // The callback to release the mailbox. This is only set after
-  // SetTextureMailbox is called, before we give it to the TextureLayer.
-  std::unique_ptr<cc::SingleReleaseCallback> mailbox_release_callback_;
+  // SetTransferableResource() is called, before we give it to the TextureLayer.
+  std::unique_ptr<viz::SingleReleaseCallback> transfer_release_callback_;
 
   // The size of the frame or texture in DIP, set when SetShowDelegatedContent
-  // or SetTextureMailbox was called.
+  // or SetTransferableResource() was called.
   gfx::Size frame_size_in_dip_;
 
-  // The texture crop rectangle.
-  gfx::RectF texture_crop_;
+  // The counter to maintain how many cache render surface requests we have. If
+  // the value > 0, means we need to cache the render surface. If the value
+  // == 0, means we should not cache the render surface.
+  unsigned cache_render_surface_requests_;
 
-  // The texture scale.
-  float texture_x_scale_;
-  float texture_y_scale_;
+  // The counter to maintain how many deferred paint requests we have. If the
+  // value > 0, means we need to defer painting the layer. If the value == 0,
+  // means we should paint the layer.
+  unsigned deferred_paint_requests_;
+
+  float backdrop_filter_quality_;
+
+  // The counter to maintain how many trilinear filtering requests we have. If
+  // the value > 0, means we need to perform trilinear filtering on the layer.
+  // If the value == 0, means we should not perform trilinear filtering on the
+  // layer.
+  unsigned trilinear_filtering_request_;
+
+  base::WeakPtrFactory<Layer> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(Layer);
 };

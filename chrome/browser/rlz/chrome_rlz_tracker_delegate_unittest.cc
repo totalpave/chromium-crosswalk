@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/test/scoped_task_environment.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
@@ -29,6 +30,7 @@ class ChromeRLZTrackerDelegateTest : public testing::Test {
   }
 
  private:
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   std::unique_ptr<ChromeRLZTrackerDelegate> delegate_;
 };
 
@@ -38,7 +40,6 @@ TEST_F(ChromeRLZTrackerDelegateTest, ObserveHandlesBadArgs) {
   std::unique_ptr<content::NavigationEntry> entry(
       content::NavigationEntry::Create());
   details->entry = entry.get();
-  details->entry->SetPageID(0);
   details->entry->SetTransitionType(ui::PAGE_TRANSITION_LINK);
   SendNotification(content::NOTIFICATION_NAV_ENTRY_COMMITTED,
                    content::NotificationService::AllSources(),

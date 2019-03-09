@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "net/base/net_export.h"
 #include "net/der/input.h"
 
 namespace net {
@@ -21,6 +22,11 @@ NET_EXPORT const der::Input CodeSigning();
 NET_EXPORT const der::Input EmailProtection();
 NET_EXPORT const der::Input TimeStamping();
 NET_EXPORT const der::Input OCSPSigning();
+
+// Netscape Server Gated Crypto (2.16.840.1.113730.4.1) is a deprecated OID
+// which in some situations is considered equivalent to the serverAuth key
+// purpose.
+NET_EXPORT const der::Input NetscapeServerGatedCrypto();
 
 // Parses |extension_value|, which contains the extnValue field of an X.509v3
 // Extended Key Usage extension, and populates |eku_oids| with the list of

@@ -14,11 +14,9 @@
 
 #include "minidump/minidump_unloaded_module_writer.h"
 
-#include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "gtest/gtest.h"
 #include "minidump/minidump_file_writer.h"
-#include "minidump/minidump_unloaded_module_writer.h"
 #include "minidump/test/minidump_file_writer_test_util.h"
 #include "minidump/test/minidump_string_writer_test_util.h"
 #include "minidump/test/minidump_writable_test_util.h"
@@ -32,25 +30,25 @@ void ExpectUnloadedModule(const MINIDUMP_UNLOADED_MODULE* expected,
                           const MINIDUMP_UNLOADED_MODULE* observed,
                           const std::string& file_contents,
                           const std::string& expected_module_name) {
-  EXPECT_EQ(expected->BaseOfImage, observed->BaseOfImage);
-  EXPECT_EQ(expected->SizeOfImage, observed->SizeOfImage);
-  EXPECT_EQ(expected->CheckSum, observed->CheckSum);
-  EXPECT_EQ(expected->TimeDateStamp, observed->TimeDateStamp);
-  EXPECT_NE(0u, observed->ModuleNameRva);
+  EXPECT_EQ(observed->BaseOfImage, expected->BaseOfImage);
+  EXPECT_EQ(observed->SizeOfImage, expected->SizeOfImage);
+  EXPECT_EQ(observed->CheckSum, expected->CheckSum);
+  EXPECT_EQ(observed->TimeDateStamp, expected->TimeDateStamp);
+  EXPECT_NE(observed->ModuleNameRva, 0u);
   base::string16 observed_module_name_utf16 =
       MinidumpStringAtRVAAsString(file_contents, observed->ModuleNameRva);
   base::string16 expected_module_name_utf16 =
       base::UTF8ToUTF16(expected_module_name);
-  EXPECT_EQ(expected_module_name_utf16, observed_module_name_utf16);
+  EXPECT_EQ(observed_module_name_utf16, expected_module_name_utf16);
 }
 
 void GetUnloadedModuleListStream(
     const std::string& file_contents,
     const MINIDUMP_UNLOADED_MODULE_LIST** unloaded_module_list) {
-  const size_t kDirectoryOffset = sizeof(MINIDUMP_HEADER);
-  const size_t kUnloadedModuleListStreamOffset =
+  constexpr size_t kDirectoryOffset = sizeof(MINIDUMP_HEADER);
+  constexpr size_t kUnloadedModuleListStreamOffset =
       kDirectoryOffset + sizeof(MINIDUMP_DIRECTORY);
-  const size_t kUnloadedModulesOffset =
+  constexpr size_t kUnloadedModulesOffset =
       kUnloadedModuleListStreamOffset + sizeof(MINIDUMP_UNLOADED_MODULE_LIST);
 
   ASSERT_GE(file_contents.size(), kUnloadedModulesOffset);
@@ -61,8 +59,8 @@ void GetUnloadedModuleListStream(
   ASSERT_NO_FATAL_FAILURE(VerifyMinidumpHeader(header, 1, 0));
   ASSERT_TRUE(directory);
 
-  ASSERT_EQ(kMinidumpStreamTypeUnloadedModuleList, directory[0].StreamType);
-  EXPECT_EQ(kUnloadedModuleListStreamOffset, directory[0].Location.Rva);
+  ASSERT_EQ(directory[0].StreamType, kMinidumpStreamTypeUnloadedModuleList);
+  EXPECT_EQ(directory[0].Location.Rva, kUnloadedModuleListStreamOffset);
 
   *unloaded_module_list =
       MinidumpWritableAtLocationDescriptor<MINIDUMP_UNLOADED_MODULE_LIST>(
@@ -73,17 +71,18 @@ void GetUnloadedModuleListStream(
 TEST(MinidumpUnloadedModuleWriter, EmptyModule) {
   MinidumpFileWriter minidump_file_writer;
   auto unloaded_module_list_writer =
-      base::WrapUnique(new MinidumpUnloadedModuleListWriter());
+      std::make_unique<MinidumpUnloadedModuleListWriter>();
 
-  const char kModuleName[] = "test_dll";
+  static constexpr char kModuleName[] = "test_dll";
 
   auto unloaded_module_writer =
-      base::WrapUnique(new MinidumpUnloadedModuleWriter());
+      std::make_unique<MinidumpUnloadedModuleWriter>();
   unloaded_module_writer->SetName(kModuleName);
 
   unloaded_module_list_writer->AddUnloadedModule(
       std::move(unloaded_module_writer));
-  minidump_file_writer.AddStream(std::move(unloaded_module_list_writer));
+  ASSERT_TRUE(
+      minidump_file_writer.AddStream(std::move(unloaded_module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -97,7 +96,7 @@ TEST(MinidumpUnloadedModuleWriter, EmptyModule) {
   ASSERT_NO_FATAL_FAILURE(
       GetUnloadedModuleListStream(string_file.string(), &unloaded_module_list));
 
-  EXPECT_EQ(1u, unloaded_module_list->NumberOfEntries);
+  EXPECT_EQ(unloaded_module_list->NumberOfEntries, 1u);
 
   MINIDUMP_UNLOADED_MODULE expected = {};
   ASSERT_NO_FATAL_FAILURE(
@@ -111,16 +110,16 @@ TEST(MinidumpUnloadedModuleWriter, EmptyModule) {
 TEST(MinidumpUnloadedModuleWriter, OneModule) {
   MinidumpFileWriter minidump_file_writer;
   auto unloaded_module_list_writer =
-      base::WrapUnique(new MinidumpUnloadedModuleListWriter());
+      std::make_unique<MinidumpUnloadedModuleListWriter>();
 
-  const char kModuleName[] = "statically_linked";
-  const uint64_t kModuleBase = 0x10da69000;
-  const uint32_t kModuleSize = 0x1000;
-  const uint32_t kChecksum = 0x76543210;
-  const time_t kTimestamp = 0x386d4380;
+  static constexpr char kModuleName[] = "statically_linked";
+  constexpr uint64_t kModuleBase = 0x10da69000;
+  constexpr uint32_t kModuleSize = 0x1000;
+  constexpr uint32_t kChecksum = 0x76543210;
+  constexpr time_t kTimestamp = 0x386d4380;
 
   auto unloaded_module_writer =
-      base::WrapUnique(new MinidumpUnloadedModuleWriter());
+      std::make_unique<MinidumpUnloadedModuleWriter>();
   unloaded_module_writer->SetName(kModuleName);
   unloaded_module_writer->SetImageBaseAddress(kModuleBase);
   unloaded_module_writer->SetImageSize(kModuleSize);
@@ -129,7 +128,8 @@ TEST(MinidumpUnloadedModuleWriter, OneModule) {
 
   unloaded_module_list_writer->AddUnloadedModule(
       std::move(unloaded_module_writer));
-  minidump_file_writer.AddStream(std::move(unloaded_module_list_writer));
+  ASSERT_TRUE(
+      minidump_file_writer.AddStream(std::move(unloaded_module_list_writer)));
 
   StringFile string_file;
   ASSERT_TRUE(minidump_file_writer.WriteEverything(&string_file));
@@ -143,7 +143,7 @@ TEST(MinidumpUnloadedModuleWriter, OneModule) {
   ASSERT_NO_FATAL_FAILURE(
       GetUnloadedModuleListStream(string_file.string(), &unloaded_module_list));
 
-  EXPECT_EQ(1u, unloaded_module_list->NumberOfEntries);
+  EXPECT_EQ(unloaded_module_list->NumberOfEntries, 1u);
 
   MINIDUMP_UNLOADED_MODULE expected = {};
   expected.BaseOfImage = kModuleBase;

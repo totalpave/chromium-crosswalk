@@ -12,9 +12,8 @@
 #if defined(OS_ANDROID)
 #include "chrome/browser/media/android/router/media_router_android.h"
 #else
-#include "chrome/browser/media/router/mojo/media_router_mojo_impl.h"
-#include "extensions/browser/process_manager.h"
-#include "extensions/browser/process_manager_factory.h"
+#include "chrome/browser/media/router/event_page_request_manager_factory.h"
+#include "chrome/browser/media/router/mojo/media_router_desktop.h"
 #endif
 
 using content::BrowserContext;
@@ -23,7 +22,7 @@ namespace media_router {
 
 namespace {
 
-base::LazyInstance<MediaRouterFactory> service_factory =
+base::LazyInstance<MediaRouterFactory>::DestructorAtExit service_factory =
     LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
@@ -38,13 +37,18 @@ MediaRouter* MediaRouterFactory::GetApiForBrowserContext(
       service_factory.Get().GetServiceForBrowserContext(context, true));
 }
 
+// static
+MediaRouterFactory* MediaRouterFactory::GetInstance() {
+  return &service_factory.Get();
+}
+
 void MediaRouterFactory::BrowserContextShutdown(
     content::BrowserContext* context) {
   if (context->IsOffTheRecord()) {
     MediaRouter* router =
         static_cast<MediaRouter*>(GetServiceForBrowserContext(context, false));
     if (router)
-      router->OnOffTheRecordProfileShutdown();
+      router->OnIncognitoProfileShutdown();
   }
   BrowserContextKeyedServiceFactory::BrowserContextShutdown(context);
 }
@@ -54,17 +58,11 @@ MediaRouterFactory::MediaRouterFactory()
           "MediaRouter",
           BrowserContextDependencyManager::GetInstance()) {
 #if !defined(OS_ANDROID)
-  // On desktop platforms, MediaRouter depends on ProcessManager.
-  DependsOn(extensions::ProcessManagerFactory::GetInstance());
+  DependsOn(EventPageRequestManagerFactory::GetInstance());
 #endif
 }
 
 MediaRouterFactory::~MediaRouterFactory() {
-}
-
-// static
-MediaRouterFactory* MediaRouterFactory::GetMediaRouterFactoryForTest() {
-  return &service_factory.Get();
 }
 
 content::BrowserContext* MediaRouterFactory::GetBrowserContextToUse(
@@ -78,8 +76,7 @@ KeyedService* MediaRouterFactory::BuildServiceInstanceFor(
 #if defined(OS_ANDROID)
   media_router = new MediaRouterAndroid(context);
 #else
-  media_router =
-      new MediaRouterMojoImpl(extensions::ProcessManager::Get(context));
+  media_router = new MediaRouterDesktop(context);
 #endif
   media_router->Initialize();
   return media_router;

@@ -5,9 +5,8 @@
 #ifndef COMPONENTS_BOOKMARKS_BROWSER_BOOKMARK_CLIENT_H_
 #define COMPONENTS_BOOKMARKS_BROWSER_BOOKMARK_CLIENT_H_
 
-#include <set>
+#include <map>
 #include <utility>
-#include <vector>
 
 #include "base/callback_forward.h"
 #include "base/task/cancelable_task_tracker.h"
@@ -32,12 +31,9 @@ class BookmarkPermanentNode;
 // e.g. Chrome.
 class BookmarkClient {
  public:
-  // Types representing a set of BookmarkNode and a mapping from BookmarkNode
-  // to the number of time the corresponding URL has been typed by the user in
-  // the Omnibox.
-  typedef std::set<const BookmarkNode*> NodeSet;
-  typedef std::pair<const BookmarkNode*, int> NodeTypedCountPair;
-  typedef std::vector<NodeTypedCountPair> NodeTypedCountPairs;
+  // Type representing a mapping from URLs to the number of times the URL has
+  // been typed by the user in the Omnibox.
+  using UrlTypedCountMap = std::unordered_map<const GURL*, int>;
 
   virtual ~BookmarkClient() {}
 
@@ -49,12 +45,12 @@ class BookmarkClient {
 
   // Requests a favicon from the history cache for the web page at |page_url|.
   // |callback| is run when the favicon has been fetched. If |type| is:
-  // - favicon_base::FAVICON, the returned gfx::Image is a multi-resolution
-  //   image of gfx::kFaviconSize DIP width and height. The data from the
-  //   history cache is resized if need be.
-  // - not favicon_base::FAVICON, the returned gfx::Image is a single-resolution
-  //   image with the largest bitmap in the history cache for |page_url| and
-  //   |type|.
+  // - favicon_base::IconType::kFavicon, the returned gfx::Image is a
+  //   multi-resolution image of gfx::kFaviconSize DIP width and height. The
+  //   data from the history cache is resized if need be.
+  // - not favicon_base::IconType::kFavicon, the returned gfx::Image is a
+  //   single-resolution image with the largest bitmap in the history cache for
+  //   |page_url| and |type|.
   virtual base::CancelableTaskTracker::TaskId GetFaviconImageForPageURL(
       const GURL& page_url,
       favicon_base::IconType type,
@@ -62,13 +58,13 @@ class BookmarkClient {
       base::CancelableTaskTracker* tracker);
 
   // Returns true if the embedder supports typed count for URL.
-  virtual bool SupportsTypedCountForNodes();
+  virtual bool SupportsTypedCountForUrls();
 
-  // Retrieves the number of time each BookmarkNode URL has been typed in
-  // the Omnibox by the user.
-  virtual void GetTypedCountForNodes(
-      const NodeSet& nodes,
-      NodeTypedCountPairs* node_typed_count_pairs);
+  // Retrieves the number of times each bookmark URL has been typed in
+  // the Omnibox by the user. For each key (URL) in |url_typed_count_map|,
+  // the corresponding value will be updated with the typed count of that URL.
+  // |url_typed_count_map| must not be null.
+  virtual void GetTypedCountForUrls(UrlTypedCountMap* url_typed_count_map);
 
   // Returns whether the embedder wants permanent node |node|
   // to always be visible or to only show them when not empty.
@@ -93,6 +89,19 @@ class BookmarkClient {
   // should give the client a means to temporarily disable those checks.
   // http://crbug.com/49598
   virtual bool CanBeEditedByUser(const BookmarkNode* node) = 0;
+
+  // Encodes the bookmark sync data into a string blob. It's used by the
+  // bookmark model to persist the sync metadata together with the bookmark
+  // model.
+  virtual std::string EncodeBookmarkSyncMetadata() = 0;
+
+  // Decodes a string represeting the sync metadata stored in |metadata_str|.
+  // The model calls this method after it has loaded the model data.
+  // |schedule_save_closure| is a repeating call back to trigger a model and
+  // metadata persistence process.
+  virtual void DecodeBookmarkSyncMetadata(
+      const std::string& metadata_str,
+      const base::RepeatingClosure& schedule_save_closure) = 0;
 };
 
 }  // namespace bookmarks

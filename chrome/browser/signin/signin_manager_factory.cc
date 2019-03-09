@@ -7,6 +7,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/account_consistency_mode_manager.h"
 #include "chrome/browser/signin/account_fetcher_service_factory.h"
 #include "chrome/browser/signin/account_tracker_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
@@ -14,17 +15,17 @@
 #include "chrome/browser/signin/local_auth.h"
 #include "chrome/browser/signin/profile_oauth2_token_service_factory.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
-#include "components/prefs/pref_registry_simple.h"
+#include "components/pref_registry/pref_registry_syncable.h"
 #include "components/signin/core/browser/signin_manager.h"
 
 SigninManagerFactory::SigninManagerFactory()
     : BrowserContextKeyedServiceFactory(
         "SigninManager",
         BrowserContextDependencyManager::GetInstance()) {
+  DependsOn(AccountTrackerServiceFactory::GetInstance());
   DependsOn(ChromeSigninClientFactory::GetInstance());
   DependsOn(GaiaCookieManagerServiceFactory::GetInstance());
   DependsOn(ProfileOAuth2TokenServiceFactory::GetInstance());
-  DependsOn(AccountTrackerServiceFactory::GetInstance());
 }
 
 SigninManagerFactory::~SigninManagerFactory() {
@@ -82,25 +83,6 @@ SigninManagerFactory* SigninManagerFactory::GetInstance() {
 void SigninManagerFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   SigninManagerBase::RegisterProfilePrefs(registry);
-  LocalAuth::RegisterLocalAuthPrefs(registry);
-}
-
-// static
-void SigninManagerFactory::RegisterPrefs(PrefRegistrySimple* registry) {
-  SigninManagerBase::RegisterPrefs(registry);
-}
-
-void SigninManagerFactory::AddObserver(Observer* observer) {
-  observer_list_.AddObserver(observer);
-}
-
-void SigninManagerFactory::RemoveObserver(Observer* observer) {
-  observer_list_.RemoveObserver(observer);
-}
-
-void SigninManagerFactory::NotifyObserversOfSigninManagerCreationForTesting(
-    SigninManagerBase* manager) {
-  FOR_EACH_OBSERVER(Observer, observer_list_, SigninManagerCreated(manager));
 }
 
 KeyedService* SigninManagerFactory::BuildServiceInstanceFor(
@@ -111,26 +93,16 @@ KeyedService* SigninManagerFactory::BuildServiceInstanceFor(
       ChromeSigninClientFactory::GetInstance()->GetForProfile(profile);
 #if defined(OS_CHROMEOS)
   service = new SigninManagerBase(
-      client,
+      client, ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
       AccountTrackerServiceFactory::GetForProfile(profile));
 #else
   service = new SigninManager(
-      client,
-      ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
+      client, ProfileOAuth2TokenServiceFactory::GetForProfile(profile),
       AccountTrackerServiceFactory::GetForProfile(profile),
-      GaiaCookieManagerServiceFactory::GetForProfile(profile));
-  AccountFetcherServiceFactory::GetForProfile(profile);
+      GaiaCookieManagerServiceFactory::GetForProfile(profile),
+      AccountConsistencyModeManager::GetMethodForProfile(profile));
 #endif
+  AccountFetcherServiceFactory::GetForProfile(profile);
   service->Initialize(g_browser_process->local_state());
-  FOR_EACH_OBSERVER(Observer, observer_list_, SigninManagerCreated(service));
   return service;
-}
-
-void SigninManagerFactory::BrowserContextShutdown(
-    content::BrowserContext* context) {
-  SigninManagerBase* manager = static_cast<SigninManagerBase*>(
-      GetServiceForBrowserContext(context, false));
-  if (manager)
-    FOR_EACH_OBSERVER(Observer, observer_list_, SigninManagerShutdown(manager));
-  BrowserContextKeyedServiceFactory::BrowserContextShutdown(context);
 }

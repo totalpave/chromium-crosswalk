@@ -36,12 +36,7 @@ class CanvasTest : public testing::Test {
   FontList font_list_;
 };
 
-#if defined(OS_ANDROID)
-#define MAYBE_StringWidth DISABLED_StringWidth
-#else
-#define MAYBE_StringWidth StringWidth
-#endif
-TEST_F(CanvasTest, MAYBE_StringWidth) {
+TEST_F(CanvasTest, StringWidth) {
   EXPECT_GT(GetStringWidth("Test"), 0);
 }
 
@@ -49,12 +44,7 @@ TEST_F(CanvasTest, StringWidthEmptyString) {
   EXPECT_EQ(0, GetStringWidth(""));
 }
 
-#if defined(OS_ANDROID)
-#define MAYBE_StringSizeEmptyString DISABLED_StringSizeEmptyString
-#else
-#define MAYBE_StringSizeEmptyString StringSizeEmptyString
-#endif
-TEST_F(CanvasTest, MAYBE_StringSizeEmptyString) {
+TEST_F(CanvasTest, StringSizeEmptyString) {
   gfx::Size size = SizeStringInt("", 0, 0);
   EXPECT_EQ(0, size.width());
   EXPECT_GT(size.height(), 0);
@@ -63,7 +53,7 @@ TEST_F(CanvasTest, MAYBE_StringSizeEmptyString) {
 // Verifies GetClipBounds() returns the correct value.
 TEST_F(CanvasTest, ClipRectWithScaling) {
   Canvas canvas(gfx::Size(200, 100), 2.25, true);
-  canvas.sk_canvas()->clipRect(RectFToSkRect(gfx::RectF(100, 0, 20, 1.7f)));
+  canvas.ClipRect(gfx::RectF(100, 0, 20, 1.7f));
   gfx::Rect clip_rect;
   ASSERT_TRUE(canvas.GetClipBounds(&clip_rect));
   // Use Contains() rather than Equals() as skia may extend the rect in certain
@@ -71,14 +61,7 @@ TEST_F(CanvasTest, ClipRectWithScaling) {
   EXPECT_TRUE(clip_rect.Contains(gfx::Rect(100, 0, 20, 2)));
 }
 
-// Line height is only supported on Skia.
-#if defined(OS_MACOSX) || defined(OS_ANDROID)
-#define MAYBE_StringSizeWithLineHeight DISABLED_StringSizeWithLineHeight
-#else
-#define MAYBE_StringSizeWithLineHeight StringSizeWithLineHeight
-#endif
-
-TEST_F(CanvasTest, MAYBE_StringSizeWithLineHeight) {
+TEST_F(CanvasTest, StringSizeWithLineHeight) {
   gfx::Size one_line_size = SizeStringInt("Q", 0, 0);
   gfx::Size four_line_size = SizeStringInt("Q\nQ\nQ\nQ", 1000000, 1000);
   EXPECT_EQ(one_line_size.width(), four_line_size.width());

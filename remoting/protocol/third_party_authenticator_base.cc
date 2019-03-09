@@ -11,17 +11,17 @@
 #include "remoting/base/constants.h"
 #include "remoting/base/rsa_key_pair.h"
 #include "remoting/protocol/channel_authenticator.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting {
 namespace protocol {
 
 // static
-const buzz::StaticQName ThirdPartyAuthenticatorBase::kTokenUrlTag =
+const jingle_xmpp::StaticQName ThirdPartyAuthenticatorBase::kTokenUrlTag =
     { remoting::kChromotingXmlNamespace, "third-party-token-url" };
-const buzz::StaticQName ThirdPartyAuthenticatorBase::kTokenScopeTag =
+const jingle_xmpp::StaticQName ThirdPartyAuthenticatorBase::kTokenScopeTag =
     { remoting::kChromotingXmlNamespace, "third-party-token-scope" };
-const buzz::StaticQName ThirdPartyAuthenticatorBase::kTokenTag =
+const jingle_xmpp::StaticQName ThirdPartyAuthenticatorBase::kTokenTag =
     { remoting::kChromotingXmlNamespace, "third-party-token" };
 
 ThirdPartyAuthenticatorBase::ThirdPartyAuthenticatorBase(
@@ -31,8 +31,7 @@ ThirdPartyAuthenticatorBase::ThirdPartyAuthenticatorBase(
       rejection_reason_(INVALID_CREDENTIALS) {
 }
 
-ThirdPartyAuthenticatorBase::~ThirdPartyAuthenticatorBase() {
-}
+ThirdPartyAuthenticatorBase::~ThirdPartyAuthenticatorBase() = default;
 
 bool ThirdPartyAuthenticatorBase::started() const {
   return started_;
@@ -54,7 +53,7 @@ ThirdPartyAuthenticatorBase::rejection_reason() const {
 }
 
 void ThirdPartyAuthenticatorBase::ProcessMessage(
-    const buzz::XmlElement* message,
+    const jingle_xmpp::XmlElement* message,
     const base::Closure& resume_callback) {
   DCHECK_EQ(state(), WAITING_MESSAGE);
 
@@ -68,11 +67,11 @@ void ThirdPartyAuthenticatorBase::ProcessMessage(
   }
 }
 
-std::unique_ptr<buzz::XmlElement>
+std::unique_ptr<jingle_xmpp::XmlElement>
 ThirdPartyAuthenticatorBase::GetNextMessage() {
   DCHECK_EQ(state(), MESSAGE_READY);
 
-  std::unique_ptr<buzz::XmlElement> message;
+  std::unique_ptr<jingle_xmpp::XmlElement> message;
   if (underlying_ && underlying_->state() == MESSAGE_READY) {
     message = underlying_->GetNextMessage();
   } else {

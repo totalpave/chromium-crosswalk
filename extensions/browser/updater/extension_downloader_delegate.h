@@ -15,10 +15,6 @@
 
 class GURL;
 
-namespace base {
-class FilePath;
-}
-
 namespace extensions {
 
 class ExtensionDownloaderDelegate {
@@ -105,6 +101,11 @@ class ExtensionDownloaderDelegate {
                                            const PingResult& ping_result,
                                            const std::set<int>& request_ids,
                                            const InstallCallback& callback) = 0;
+
+  // Invoked when an extension fails to load, but a retry is triggered.
+  // It allows unittests to easily set up and verify resourse request and
+  // load results between a failure / retry sequence.
+  virtual void OnExtensionDownloadRetryForTests();
 
   // The remaining methods are used by the ExtensionDownloader to retrieve
   // information about extensions from the delegate.

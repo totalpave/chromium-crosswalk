@@ -10,8 +10,9 @@
 #include <string>
 #include <utility>
 
-#include "base/memory/ptr_util.h"
+#include "base/bind.h"
 #include "base/version.h"
+#include "build/build_config.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
@@ -27,6 +28,18 @@ using content::BrowserContext;
 namespace extensions {
 
 namespace {
+
+#if DCHECK_IS_ON()
+bool AreScriptsUnique(const UserScriptList& scripts) {
+  std::set<int> script_ids;
+  for (const std::unique_ptr<UserScript>& script : scripts) {
+    if (script_ids.count(script->id()))
+      return false;
+    script_ids.insert(script->id());
+  }
+  return true;
+}
+#endif  // DCHECK_IS_ON()
 
 // Helper function to parse greasesmonkey headers
 bool GetDeclarationValue(const base::StringPiece& line,
@@ -103,19 +116,19 @@ bool UserScriptLoader::ParseMetadataHeader(const base::StringPiece& script_text,
       } else if (GetDeclarationValue(line, kNameDeclaration, &value)) {
         script->set_name(value);
       } else if (GetDeclarationValue(line, kVersionDeclaration, &value)) {
-        Version version(value);
+        base::Version version(value);
         if (version.IsValid())
           script->set_version(version.GetString());
       } else if (GetDeclarationValue(line, kDescriptionDeclaration, &value)) {
         script->set_description(value);
       } else if (GetDeclarationValue(line, kMatchDeclaration, &value)) {
         URLPattern pattern(UserScript::ValidUserScriptSchemes());
-        if (URLPattern::PARSE_SUCCESS != pattern.Parse(value))
+        if (URLPattern::ParseResult::kSuccess != pattern.Parse(value))
           return false;
         script->add_url_pattern(pattern);
       } else if (GetDeclarationValue(line, kExcludeMatchDeclaration, &value)) {
         URLPattern exclude(UserScript::ValidUserScriptSchemes());
-        if (URLPattern::PARSE_SUCCESS != exclude.Parse(value))
+        if (URLPattern::ParseResult::kSuccess != exclude.Parse(value))
           return false;
         script->add_exclude_url_pattern(exclude);
       } else if (GetDeclarationValue(line, kRunAtDeclaration, &value)) {
@@ -145,10 +158,10 @@ bool UserScriptLoader::ParseMetadataHeader(const base::StringPiece& script_text,
 
 UserScriptLoader::UserScriptLoader(BrowserContext* browser_context,
                                    const HostID& host_id)
-    : user_scripts_(new UserScriptList()),
+    : loaded_scripts_(new UserScriptList()),
       clear_scripts_(false),
       ready_(false),
-      pending_load_(false),
+      queued_load_(false),
       browser_context_(browser_context),
       host_id_(host_id),
       weak_factory_(this) {
@@ -158,39 +171,48 @@ UserScriptLoader::UserScriptLoader(BrowserContext* browser_context,
 }
 
 UserScriptLoader::~UserScriptLoader() {
-  FOR_EACH_OBSERVER(Observer, observers_, OnUserScriptLoaderDestroyed(this));
+  for (auto& observer : observers_)
+    observer.OnUserScriptLoaderDestroyed(this);
 }
 
-void UserScriptLoader::AddScripts(const std::set<UserScript>& scripts) {
-  for (std::set<UserScript>::const_iterator it = scripts.begin();
-       it != scripts.end();
-       ++it) {
-    removed_scripts_.erase(*it);
-    added_scripts_.insert(*it);
+void UserScriptLoader::AddScripts(std::unique_ptr<UserScriptList> scripts) {
+#if DCHECK_IS_ON()
+  // |scripts| with non-unique IDs will work, but that would indicate we are
+  // doing something wrong somewhere, so DCHECK that.
+  DCHECK(AreScriptsUnique(*scripts))
+      << "AddScripts() expects scripts with unique IDs.";
+#endif  // DCHECK_IS_ON()
+  for (std::unique_ptr<UserScript>& user_script : *scripts) {
+    int id = user_script->id();
+    removed_script_hosts_.erase(UserScriptIDPair(id));
+    if (added_scripts_map_.count(id) == 0)
+      added_scripts_map_[id] = std::move(user_script);
   }
   AttemptLoad();
 }
 
-void UserScriptLoader::AddScripts(const std::set<UserScript>& scripts,
+void UserScriptLoader::AddScripts(std::unique_ptr<UserScriptList> scripts,
                                   int render_process_id,
-                                  int render_view_id) {
-  AddScripts(scripts);
+                                  int render_frame_id) {
+  AddScripts(std::move(scripts));
 }
 
-void UserScriptLoader::RemoveScripts(const std::set<UserScript>& scripts) {
-  for (std::set<UserScript>::const_iterator it = scripts.begin();
-       it != scripts.end();
-       ++it) {
-    added_scripts_.erase(*it);
-    removed_scripts_.insert(*it);
+void UserScriptLoader::RemoveScripts(
+    const std::set<UserScriptIDPair>& scripts) {
+  for (const UserScriptIDPair& id_pair : scripts) {
+    removed_script_hosts_.insert(UserScriptIDPair(id_pair.id, id_pair.host_id));
+    // TODO(lazyboy): We shouldn't be trying to remove scripts that were never
+    // a) added to |added_scripts_map_| or b) being loaded or has done loading
+    // through |loaded_scripts_|. This would reduce sending redundant IPC.
+    added_scripts_map_.erase(id_pair.id);
   }
   AttemptLoad();
 }
 
 void UserScriptLoader::ClearScripts() {
   clear_scripts_ = true;
-  added_scripts_.clear();
-  removed_scripts_.clear();
+  added_scripts_map_.clear();
+  removed_script_hosts_.clear();
   AttemptLoad();
 }
 
@@ -203,7 +225,7 @@ void UserScriptLoader::Observe(int type,
   if (!ExtensionsBrowserClient::Get()->IsSameContext(
           browser_context_, process->GetBrowserContext()))
     return;
-  if (scripts_ready()) {
+  if (initial_load_complete()) {
     SendUpdate(process, shared_memory_.get(),
                std::set<HostID>());  // Include all hosts.
   }
@@ -215,16 +237,14 @@ bool UserScriptLoader::ScriptsMayHaveChanged() const {
   // (1) A load is in progress (which may result in a non-zero number of
   //     scripts that need to be cleared), or
   // (2) The current set of scripts is non-empty (so they need to be cleared).
-  return (added_scripts_.size() ||
-          removed_scripts_.size() ||
-          (clear_scripts_ &&
-           (is_loading() || user_scripts_->size())));
+  return (added_scripts_map_.size() || removed_script_hosts_.size() ||
+          (clear_scripts_ && (is_loading() || loaded_scripts_->size())));
 }
 
 void UserScriptLoader::AttemptLoad() {
   if (ready_ && ScriptsMayHaveChanged()) {
     if (is_loading())
-      pending_load_ = true;
+      queued_load_ = true;
     else
       StartLoad();
   }
@@ -234,46 +254,80 @@ void UserScriptLoader::StartLoad() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(!is_loading());
 
-  // If scripts were marked for clearing before adding and removing, then clear
-  // them.
+  // Reload any loaded scripts, and clear out |loaded_scripts_| to indicate that
+  // the scripts aren't currently ready.
+  std::unique_ptr<UserScriptList> scripts_to_load = std::move(loaded_scripts_);
+
   if (clear_scripts_) {
-    user_scripts_->clear();
+    // If scripts were marked for clearing before adding and removing, then
+    // clear them...
+    scripts_to_load->clear();
   } else {
-    for (UserScriptList::iterator it = user_scripts_->begin();
-         it != user_scripts_->end();) {
-      if (removed_scripts_.count(*it))
-        it = user_scripts_->erase(it);
+    // ... otherwise, filter out any scripts that are queued for removal.
+    for (auto it = scripts_to_load->begin(); it != scripts_to_load->end();) {
+      UserScriptIDPair id_pair(it->get()->id());
+      if (removed_script_hosts_.count(id_pair) > 0u)
+        it = scripts_to_load->erase(it);
       else
         ++it;
     }
   }
 
-  user_scripts_->insert(
-      user_scripts_->end(), added_scripts_.begin(), added_scripts_.end());
-
   std::set<int> added_script_ids;
-  for (std::set<UserScript>::const_iterator it = added_scripts_.begin();
-       it != added_scripts_.end();
-       ++it) {
-    added_script_ids.insert(it->id());
+  scripts_to_load->reserve(scripts_to_load->size() + added_scripts_map_.size());
+  for (auto& id_and_script : added_scripts_map_) {
+    std::unique_ptr<UserScript>& script = id_and_script.second;
+    added_script_ids.insert(script->id());
+    // Expand |changed_hosts_| for OnScriptsLoaded, which will use it in
+    // its IPC message. This must be done before we clear |added_scripts_map_|
+    // and |removed_script_hosts_| below.
+    changed_hosts_.insert(script->host_id());
+    // Move script from |added_scripts_map_| into |scripts_to_load|.
+    scripts_to_load->push_back(std::move(script));
   }
+  for (const UserScriptIDPair& id_pair : removed_script_hosts_)
+    changed_hosts_.insert(id_pair.host_id);
 
-  // Expand |changed_hosts_| for OnScriptsLoaded, which will use it in
-  // its IPC message. This must be done before we clear |added_scripts_| and
-  // |removed_scripts_| below.
-  std::set<UserScript> changed_scripts(added_scripts_);
-  changed_scripts.insert(removed_scripts_.begin(), removed_scripts_.end());
-  for (const UserScript& script : changed_scripts)
-    changed_hosts_.insert(script.host_id());
-
-  LoadScripts(std::move(user_scripts_), changed_hosts_, added_script_ids,
+  LoadScripts(std::move(scripts_to_load), changed_hosts_, added_script_ids,
               base::Bind(&UserScriptLoader::OnScriptsLoaded,
                          weak_factory_.GetWeakPtr()));
 
   clear_scripts_ = false;
-  added_scripts_.clear();
-  removed_scripts_.clear();
-  user_scripts_.reset();
+  added_scripts_map_.clear();
+  removed_script_hosts_.clear();
+}
+
+bool UserScriptLoader::HasLoadedScripts(const HostID& host_id) const {
+  // If there are no loaded scripts (which can happen if either the initial
+  // load hasn't completed or if the loader is currently re-fetching scripts),
+  // then the scripts have not been loaded.
+  if (!loaded_scripts_)
+    return false;
+
+  // If there is a pending change for scripts associated with the |host_id|
+  // (either addition or removal of a script), the scripts haven't finished
+  // loading.
+  for (const auto& key_value : added_scripts_map_) {
+    if (key_value.second->host_id() == host_id)
+      return false;
+  }
+  for (const UserScriptIDPair& id_pair : removed_script_hosts_) {
+    if (id_pair.host_id == host_id)
+      return false;
+  }
+
+  // Find if we have any scripts associated with the |host_id|.
+  bool has_loaded_script = false;
+  for (const auto& script : *loaded_scripts_) {
+    if (script->host_id() == host_id) {
+      has_loaded_script = true;
+      break;
+    }
+  }
+
+  // Assume that if any script associated with |host_id| is present (and there
+  // aren't any pending changes), then the scripts have successfully loaded.
+  return has_loaded_script;
 }
 
 // static
@@ -281,19 +335,21 @@ std::unique_ptr<base::SharedMemory> UserScriptLoader::Serialize(
     const UserScriptList& scripts) {
   base::Pickle pickle;
   pickle.WriteUInt32(scripts.size());
-  for (const UserScript& script : scripts) {
+  for (const std::unique_ptr<UserScript>& script : scripts) {
     // TODO(aa): This can be replaced by sending content script metadata to
     // renderers along with other extension data in ExtensionMsg_Loaded.
     // See crbug.com/70516.
-    script.Pickle(&pickle);
+    script->Pickle(&pickle);
     // Write scripts as 'data' so that we can read it out in the slave without
     // allocating a new string.
-    for (const UserScript::File& script_file : script.js_scripts()) {
-      base::StringPiece contents = script_file.GetContent();
+    for (const std::unique_ptr<UserScript::File>& js_file :
+         script->js_scripts()) {
+      base::StringPiece contents = js_file->GetContent();
       pickle.WriteData(contents.data(), contents.length());
     }
-    for (const UserScript::File& script_file : script.css_scripts()) {
-      base::StringPiece contents = script_file.GetContent();
+    for (const std::unique_ptr<UserScript::File>& css_file :
+         script->css_scripts()) {
+      base::StringPiece contents = css_file->GetContent();
       pickle.WriteData(contents.data(), contents.length());
     }
   }
@@ -313,13 +369,17 @@ std::unique_ptr<base::SharedMemory> UserScriptLoader::Serialize(
   // Copy the pickle to shared memory.
   memcpy(shared_memory.memory(), pickle.data(), pickle.size());
 
-  base::SharedMemoryHandle readonly_handle;
-  if (!shared_memory.ShareReadOnlyToProcess(base::GetCurrentProcessHandle(),
-                                            &readonly_handle))
+  base::SharedMemoryHandle readonly_handle = shared_memory.GetReadOnlyHandle();
+  if (!readonly_handle.IsValid())
     return std::unique_ptr<base::SharedMemory>();
 
-  return base::WrapUnique(new base::SharedMemory(readonly_handle,
-                                                 /*read_only=*/true));
+#if defined(OS_ANDROID)
+  // Seal the region read-only now. http://crbug.com/789959
+  readonly_handle.SetRegionReadOnly();
+#endif
+
+  return std::make_unique<base::SharedMemory>(readonly_handle,
+                                              /*read_only=*/true);
 }
 
 void UserScriptLoader::AddObserver(Observer* observer) {
@@ -340,11 +400,11 @@ void UserScriptLoader::SetReady(bool ready) {
 void UserScriptLoader::OnScriptsLoaded(
     std::unique_ptr<UserScriptList> user_scripts,
     std::unique_ptr<base::SharedMemory> shared_memory) {
-  user_scripts_.reset(user_scripts.release());
-  if (pending_load_) {
+  loaded_scripts_ = std::move(user_scripts);
+  if (queued_load_) {
     // While we were loading, there were further changes. Don't bother
     // notifying about these scripts and instead just immediately reload.
-    pending_load_ = false;
+    queued_load_ = false;
     StartLoad();
     return;
   }
@@ -362,7 +422,7 @@ void UserScriptLoader::OnScriptsLoaded(
   }
 
   // We've got scripts ready to go.
-  shared_memory_.reset(shared_memory.release());
+  shared_memory_ = std::move(shared_memory);
 
   for (content::RenderProcessHost::iterator i(
            content::RenderProcessHost::AllHostsIterator());
@@ -376,7 +436,8 @@ void UserScriptLoader::OnScriptsLoaded(
       extensions::NOTIFICATION_USER_SCRIPTS_UPDATED,
       content::Source<BrowserContext>(browser_context_),
       content::Details<base::SharedMemory>(shared_memory_.get()));
-  FOR_EACH_OBSERVER(Observer, observers_, OnScriptsLoaded(this));
+  for (auto& observer : observers_)
+    observer.OnScriptsLoaded(this);
 }
 
 void UserScriptLoader::SendUpdate(content::RenderProcessHost* process,
@@ -393,18 +454,17 @@ void UserScriptLoader::SendUpdate(content::RenderProcessHost* process,
 
   // If the process is being started asynchronously, early return.  We'll end up
   // calling InitUserScripts when it's created which will call this again.
-  base::ProcessHandle handle = process->GetHandle();
+  base::ProcessHandle handle = process->GetProcess().Handle();
   if (!handle)
     return;
 
-  base::SharedMemoryHandle handle_for_process;
-  if (!shared_memory->ShareToProcess(handle, &handle_for_process))
-    return;  // This can legitimately fail if the renderer asserts at startup.
+  base::SharedMemoryHandle handle_for_process =
+      shared_memory->handle().Duplicate();
+  if (!handle_for_process.IsValid())
+    return;
 
-  if (base::SharedMemory::IsHandleValid(handle_for_process)) {
-    process->Send(new ExtensionMsg_UpdateUserScripts(
-        handle_for_process, host_id(), changed_hosts, whitelisted_only));
-  }
+  process->Send(new ExtensionMsg_UpdateUserScripts(
+      handle_for_process, host_id(), changed_hosts, whitelisted_only));
 }
 
 }  // namespace extensions

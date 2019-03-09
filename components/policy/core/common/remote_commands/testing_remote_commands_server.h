@@ -18,7 +18,7 @@
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace base {
 class TickClock;
@@ -80,7 +80,7 @@ class TestingRemoteCommandsServer {
 
   // Set alternative clock for obtaining the command issue time. The default
   // clock uses the system clock.
-  void SetClock(std::unique_ptr<base::TickClock> clock);
+  void SetClock(const base::TickClock* clock);
 
   // Get the number of commands for which no results have been reported yet.
   // This number also includes commands which have not been fetched yet.
@@ -104,7 +104,7 @@ class TestingRemoteCommandsServer {
   RemoteCommandJob::UniqueIDType last_generated_unique_id_ = 0;
 
   // Clock used to generate command issue time when IssueCommand() is called.
-  std::unique_ptr<base::TickClock> clock_;
+  const base::TickClock* clock_;
 
   // A lock protecting the command queues, as well as generated and acknowledged
   // IDs.

@@ -4,27 +4,28 @@
 
 #include "printing/printing_context_system_dialog_win.h"
 
+#include <utility>
+
 #include "base/auto_reset.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
+#include "base/stl_util.h"
 #include "printing/backend/win_helper.h"
 #include "printing/print_settings_initializer_win.h"
 #include "skia/ext/skia_utils_win.h"
 
 namespace printing {
 
-PrintingContextSytemDialogWin::PrintingContextSytemDialogWin(Delegate* delegate)
-    : PrintingContextWin(delegate) {
-}
+PrintingContextSystemDialogWin::PrintingContextSystemDialogWin(
+    Delegate* delegate)
+    : PrintingContextWin(delegate) {}
 
-PrintingContextSytemDialogWin::~PrintingContextSytemDialogWin() {
-}
+PrintingContextSystemDialogWin::~PrintingContextSystemDialogWin() {}
 
-void PrintingContextSytemDialogWin::AskUserForSettings(
+void PrintingContextSystemDialogWin::AskUserForSettings(
     int max_pages,
     bool has_selection,
     bool is_scripted,
-    const PrintSettingsCallback& callback) {
+    PrintSettingsCallback callback) {
   DCHECK(!in_print_job_);
 
   HWND window = GetRootWindow(delegate_->GetParentView());
@@ -32,11 +33,9 @@ void PrintingContextSytemDialogWin::AskUserForSettings(
 
   // Show the OS-dependent dialog box.
   // If the user press
-  // - OK, the settings are reset and reinitialized with the new settings. OK
-  // is
+  // - OK, the settings are reset and reinitialized with the new settings. OK is
   //   returned.
-  // - Apply then Cancel, the settings are reset and reinitialized with the
-  // new
+  // - Apply then Cancel, the settings are reset and reinitialized with the new
   //   settings. CANCEL is returned.
   // - Cancel, the settings are not changed, the previous setting, if it was
   //   initialized before, are kept. CANCEL is returned.
@@ -58,7 +57,7 @@ void PrintingContextSytemDialogWin::AskUserForSettings(
     ranges[0].nFromPage = 1;
     ranges[0].nToPage = max_pages;
     dialog_options.nPageRanges = 1;
-    dialog_options.nMaxPageRanges = arraysize(ranges);
+    dialog_options.nMaxPageRanges = base::size(ranges);
     dialog_options.nMinPage = 1;
     dialog_options.nMaxPage = max_pages;
     dialog_options.lpPageRanges = ranges;
@@ -69,15 +68,15 @@ void PrintingContextSytemDialogWin::AskUserForSettings(
 
   if (ShowPrintDialog(&dialog_options) != S_OK) {
     ResetSettings();
-    callback.Run(FAILED);
+    std::move(callback).Run(FAILED);
     return;
   }
 
   // TODO(maruel):  Support PD_PRINTTOFILE.
-  callback.Run(ParseDialogResultEx(dialog_options));
+  std::move(callback).Run(ParseDialogResultEx(dialog_options));
 }
 
-HRESULT PrintingContextSytemDialogWin::ShowPrintDialog(PRINTDLGEX* options) {
+HRESULT PrintingContextSystemDialogWin::ShowPrintDialog(PRINTDLGEX* options) {
   // Runs always on the UI thread.
   static bool is_dialog_shown = false;
   if (is_dialog_shown)
@@ -91,13 +90,12 @@ HRESULT PrintingContextSytemDialogWin::ShowPrintDialog(PRINTDLGEX* options) {
   // browser frame (but still being modal) so neither the browser frame nor
   // the print dialog will get any input. See http://crbug.com/342697
   // http://crbug.com/180997 for details.
-  base::MessageLoop::ScopedNestableTaskAllower allow(
-      base::MessageLoop::current());
+  base::MessageLoopCurrent::ScopedNestableTaskAllower allow;
 
   return PrintDlgEx(options);
 }
 
-bool PrintingContextSytemDialogWin::InitializeSettingsWithRanges(
+bool PrintingContextSystemDialogWin::InitializeSettingsWithRanges(
     const DEVMODE& dev_mode,
     const std::wstring& new_device_name,
     const PRINTPAGERANGE* ranges,
@@ -143,12 +141,16 @@ bool PrintingContextSytemDialogWin::InitializeSettingsWithRanges(
   return true;
 }
 
-PrintingContext::Result PrintingContextSytemDialogWin::ParseDialogResultEx(
+PrintingContext::Result PrintingContextSystemDialogWin::ParseDialogResultEx(
     const PRINTDLGEX& dialog_options) {
   // If the user clicked OK or Apply then Cancel, but not only Cancel.
   if (dialog_options.dwResultAction != PD_RESULT_CANCEL) {
-    // Start fresh.
+    // Start fresh, but preserve is_modifiable and GDI print setting.
+    bool is_modifiable = settings_.is_modifiable();
+    bool print_text_with_gdi = settings_.print_text_with_gdi();
     ResetSettings();
+    settings_.set_is_modifiable(is_modifiable);
+    settings_.set_print_text_with_gdi(print_text_with_gdi);
 
     DEVMODE* dev_mode = NULL;
     if (dialog_options.hDevMode) {
@@ -216,55 +218,6 @@ PrintingContext::Result PrintingContextSytemDialogWin::ParseDialogResultEx(
     default:
       return FAILED;
   }
-}
-
-PrintingContext::Result PrintingContextSytemDialogWin::ParseDialogResult(
-    const PRINTDLG& dialog_options) {
-  // If the user clicked OK or Apply then Cancel, but not only Cancel.
-  // Start fresh.
-  ResetSettings();
-
-  DEVMODE* dev_mode = NULL;
-  if (dialog_options.hDevMode) {
-    dev_mode = reinterpret_cast<DEVMODE*>(GlobalLock(dialog_options.hDevMode));
-    DCHECK(dev_mode);
-  }
-
-  std::wstring device_name;
-  if (dialog_options.hDevNames) {
-    DEVNAMES* dev_names =
-        reinterpret_cast<DEVNAMES*>(GlobalLock(dialog_options.hDevNames));
-    DCHECK(dev_names);
-    if (dev_names) {
-      device_name = reinterpret_cast<const wchar_t*>(
-          reinterpret_cast<const wchar_t*>(dev_names) +
-          dev_names->wDeviceOffset);
-      GlobalUnlock(dialog_options.hDevNames);
-    }
-  }
-
-  bool success = false;
-  if (dev_mode && !device_name.empty()) {
-    set_context(dialog_options.hDC);
-    success =
-        InitializeSettingsWithRanges(*dev_mode, device_name, NULL, 0, false);
-  }
-
-  if (!success && dialog_options.hDC) {
-    DeleteDC(dialog_options.hDC);
-    set_context(NULL);
-  }
-
-  if (dev_mode) {
-    GlobalUnlock(dialog_options.hDevMode);
-  }
-
-  if (dialog_options.hDevMode != NULL)
-    GlobalFree(dialog_options.hDevMode);
-  if (dialog_options.hDevNames != NULL)
-    GlobalFree(dialog_options.hDevNames);
-
-  return context() ? OK : FAILED;
 }
 
 }  // namespace printing

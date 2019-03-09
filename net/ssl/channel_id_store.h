@@ -10,7 +10,7 @@
 #include <string>
 
 #include "base/callback.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "crypto/ec_private_key.h"
 #include "net/base/net_export.h"
@@ -22,8 +22,7 @@ namespace net {
 
 // Owned only by a single ChannelIDService object, which is responsible
 // for deleting it.
-class NET_EXPORT ChannelIDStore
-    : NON_EXPORTED_BASE(public base::NonThreadSafe) {
+class NET_EXPORT ChannelIDStore {
  public:
   // The ChannelID class contains a keypair, along with the corresponding
   // hostname (server identifier) and creation time.
@@ -54,12 +53,13 @@ class NET_EXPORT ChannelIDStore
 
   typedef std::list<ChannelID> ChannelIDList;
 
-  typedef base::Callback<
+  typedef base::OnceCallback<
       void(int, const std::string&, std::unique_ptr<crypto::ECPrivateKey>)>
       GetChannelIDCallback;
-  typedef base::Callback<void(const ChannelIDList&)> GetChannelIDListCallback;
+  typedef base::OnceCallback<void(const ChannelIDList&)>
+      GetChannelIDListCallback;
 
-  virtual ~ChannelIDStore() {}
+  virtual ~ChannelIDStore();
 
   // GetChannelID may return the result synchronously through the
   // output parameters, in which case it will return either OK if a keypair is
@@ -69,15 +69,14 @@ class NET_EXPORT ChannelIDStore
   // asynchronously.
   virtual int GetChannelID(const std::string& server_identifier,
                            std::unique_ptr<crypto::ECPrivateKey>* key_result,
-                           const GetChannelIDCallback& callback) = 0;
+                           GetChannelIDCallback callback) = 0;
 
   // Adds the keypair for a hostname to the store.
   virtual void SetChannelID(std::unique_ptr<ChannelID> channel_id) = 0;
 
   // Removes a keypair from the store.
-  virtual void DeleteChannelID(
-      const std::string& server_identifier,
-      const base::Closure& completion_callback) = 0;
+  virtual void DeleteChannelID(const std::string& server_identifier,
+                               base::OnceClosure completion_callback) = 0;
 
   // Deletes the channel ID keypairs that have a creation_date greater than
   // or equal to |delete_begin| and less than |delete_end| and whose server
@@ -87,21 +86,21 @@ class NET_EXPORT ChannelIDStore
       const base::Callback<bool(const std::string&)>& domain_predicate,
       base::Time delete_begin,
       base::Time delete_end,
-      const base::Closure& completion_callback) = 0;
+      base::OnceClosure completion_callback) = 0;
 
   // Removes all channel ID keypairs from the store.
-  virtual void DeleteAll(const base::Closure& completion_callback) = 0;
+  virtual void DeleteAll(base::OnceClosure completion_callback) = 0;
 
   // Returns all channel ID keypairs.
-  virtual void GetAllChannelIDs(const GetChannelIDListCallback& callback) = 0;
+  virtual void GetAllChannelIDs(GetChannelIDListCallback callback) = 0;
 
-  // Helper function that adds all keypairs from |list| into this instance.
-  void InitializeFrom(const ChannelIDList& list);
+  // Signals to the backing store that any pending writes should be flushed.
+  virtual void Flush() = 0;
 
   // Returns the number of keypairs in the store.  May return 0 if the backing
   // store is not loaded yet.
   // Public only for unit testing.
-  virtual int GetChannelIDCount() = 0;
+  virtual size_t GetChannelIDCount() = 0;
 
   // When invoked, instructs the store to keep session related data on
   // destruction.
@@ -110,6 +109,9 @@ class NET_EXPORT ChannelIDStore
   // Returns true if this ChannelIDStore is ephemeral, and false if it is
   // persistent.
   virtual bool IsEphemeral() = 0;
+
+ protected:
+  THREAD_CHECKER(thread_checker_);
 };
 
 }  // namespace net

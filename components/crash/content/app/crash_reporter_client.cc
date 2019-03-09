@@ -20,7 +20,7 @@ namespace crash_reporter {
 
 namespace {
 
-CrashReporterClient* g_client = NULL;
+CrashReporterClient* g_client = nullptr;
 
 }  // namespace
 
@@ -36,7 +36,7 @@ CrashReporterClient* GetCrashReporterClient() {
 CrashReporterClient::CrashReporterClient() {}
 CrashReporterClient::~CrashReporterClient() {}
 
-#if !defined(OS_MACOSX) && !defined(OS_WIN)
+#if !defined(OS_MACOSX) && !defined(OS_WIN) && !defined(OS_ANDROID)
 void CrashReporterClient::SetCrashReporterClientIdFromGUID(
     const std::string& client_guid) {}
 #endif
@@ -75,11 +75,11 @@ bool CrashReporterClient::GetDeferredUploadsSupported(
   return false;
 }
 
-bool CrashReporterClient::GetIsPerUserInstall(const base::string16& exe_path) {
+bool CrashReporterClient::GetIsPerUserInstall() {
   return true;
 }
 
-bool CrashReporterClient::GetShouldDumpLargerDumps(bool is_per_user_install) {
+bool CrashReporterClient::GetShouldDumpLargerDumps() {
   return false;
 }
 
@@ -92,6 +92,10 @@ int CrashReporterClient::GetResultCodeRespawnFailed() {
 void CrashReporterClient::GetProductNameAndVersion(const char** product_name,
                                                    const char** version) {
 }
+
+void CrashReporterClient::GetProductNameAndVersion(std::string* product_name,
+                                                   std::string* version,
+                                                   std::string* channel) {}
 
 base::FilePath CrashReporterClient::GetReporterLogFilename() {
   return base::FilePath();
@@ -110,8 +114,20 @@ bool CrashReporterClient::GetCrashDumpLocation(base::FilePath* crash_dir) {
   return false;
 }
 
-size_t CrashReporterClient::RegisterCrashKeys() {
-  return 0;
+#if defined(OS_WIN)
+bool CrashReporterClient::GetCrashMetricsLocation(base::string16* crash_dir) {
+#else
+bool CrashReporterClient::GetCrashMetricsLocation(base::FilePath* crash_dir) {
+#endif
+  return false;
+}
+
+bool CrashReporterClient::UseCrashKeysWhiteList() {
+  return false;
+}
+
+const char* const* CrashReporterClient::GetCrashKeyWhiteList() {
+  return nullptr;
 }
 
 bool CrashReporterClient::IsRunningUnattended() {
@@ -122,15 +138,30 @@ bool CrashReporterClient::GetCollectStatsConsent() {
   return false;
 }
 
-#if defined(OS_WIN) || defined(OS_MACOSX)
+bool CrashReporterClient::GetCollectStatsInSample() {
+  // By default, clients don't do sampling, so everything will be "in-sample".
+  return true;
+}
+
 bool CrashReporterClient::ReportingIsEnforcedByPolicy(bool* breakpad_enabled) {
   return false;
 }
-#endif
 
 #if defined(OS_ANDROID)
+unsigned int CrashReporterClient::GetCrashDumpPercentage() {
+  return 100;
+}
+
+bool CrashReporterClient::GetBrowserProcessType(std::string* ptype) {
+  return false;
+}
+
 int CrashReporterClient::GetAndroidMinidumpDescriptor() {
   return 0;
+}
+
+int CrashReporterClient::GetAndroidCrashSignalFD() {
+  return -1;
 }
 
 bool CrashReporterClient::ShouldEnableBreakpadMicrodumps() {
@@ -147,6 +178,21 @@ bool CrashReporterClient::ShouldEnableBreakpadMicrodumps() {
 #endif
 }
 #endif
+
+#if defined(OS_ANDROID) || defined(OS_LINUX)
+void CrashReporterClient::GetSanitizationInformation(
+    const char* const** annotations_whitelist,
+    void** target_module,
+    bool* sanitize_stacks) {
+  *annotations_whitelist = nullptr;
+  *target_module = nullptr;
+  *sanitize_stacks = false;
+}
+#endif
+
+bool CrashReporterClient::ShouldMonitorCrashHandlerExpensively() {
+  return false;
+}
 
 bool CrashReporterClient::EnableBreakpadForProcess(
     const std::string& process_type) {

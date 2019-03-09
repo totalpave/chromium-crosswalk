@@ -12,6 +12,8 @@ function TestConfig() {
   this.useMSE = false;
   this.runFPS = false;
   this.playTwice = false;
+  this.configChangeType = CONFIG_CHANGE_TYPE.CLEAR_TO_CLEAR;
+  this.policyCheck = false;
 }
 
 TestConfig.prototype.loadQueryParams = function() {
@@ -27,6 +29,7 @@ TestConfig.prototype.loadQueryParams = function() {
     this[decodeURI(match[1])] = decodeURI(match[2]);
   this.useMSE = this.useMSE == '1' || this.useMSE == 'true';
   this.playTwice = this.playTwice == '1' || this.playTwice == 'true';
+  this.policyCheck = this.policyCheck == '1' || this.policyCheck == 'true';
 };
 
 TestConfig.updateDocument = function() {

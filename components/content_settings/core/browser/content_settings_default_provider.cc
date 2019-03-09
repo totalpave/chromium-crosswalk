@@ -4,20 +4,23 @@
 
 #include "components/content_settings/core/browser/content_settings_default_provider.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/auto_reset.h"
 #include "base/bind.h"
-#include "base/command_line.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
+#include "components/content_settings/core/browser/content_settings_info.h"
+#include "components/content_settings/core/browser/content_settings_registry.h"
 #include "components/content_settings/core/browser/content_settings_rule.h"
 #include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/browser/website_settings_info.h"
 #include "components/content_settings/core/browser/website_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry.h"
@@ -29,14 +32,15 @@ namespace content_settings {
 
 namespace {
 
-// Obsolete prefs to be removed from the pref file.
-// TODO(msramek): Remove this cleanup code after two releases (i.e. in M50).
-const char kObsoleteMetroSwitchToDesktopSetting[] =
-    "profile.default_content_setting_values.metro_switch_to_desktop";
-
-// TODO(msramek): Remove this cleanup code after two releases (i.e. in M51).
-const char kObsoleteMediaStreamSetting[] =
-    "profile.default_content_setting_values.media_stream";
+// These settings are no longer used, and should be deleted on profile startup.
+#if !defined(OS_IOS)
+const char kObsoleteFullscreenDefaultPref[] =
+    "profile.default_content_setting_values.fullscreen";
+#if !defined(OS_ANDROID)
+const char kObsoleteMouseLockDefaultPref[] =
+    "profile.default_content_setting_values.mouselock";
+#endif  // !defined(OS_ANDROID)
+#endif  // !defined(OS_IOS)
 
 ContentSetting GetDefaultValue(const WebsiteSettingsInfo* info) {
   const base::Value* initial_default = info->initial_default_value();
@@ -62,20 +66,25 @@ class DefaultRuleIterator : public RuleIterator {
  public:
   explicit DefaultRuleIterator(const base::Value* value) {
     if (value)
-      value_.reset(value->DeepCopy());
+      value_ = value->Clone();
+    else
+      is_done_ = true;
   }
 
-  bool HasNext() const override { return value_.get() != NULL; }
+  bool HasNext() const override { return !is_done_; }
 
   Rule Next() override {
-    DCHECK(value_.get());
+    DCHECK(HasNext());
+    is_done_ = true;
     return Rule(ContentSettingsPattern::Wildcard(),
-                ContentSettingsPattern::Wildcard(),
-                value_.release());
+                ContentSettingsPattern::Wildcard(), std::move(value_));
   }
 
  private:
-  std::unique_ptr<base::Value> value_;
+  bool is_done_ = false;
+  base::Value value_;
+
+  DISALLOW_COPY_AND_ASSIGN(DefaultRuleIterator);
 };
 
 }  // namespace
@@ -94,14 +103,18 @@ void DefaultProvider::RegisterProfilePrefs(
 
   // Obsolete prefs -------------------------------------------------------
 
-  // The removed content settings type METRO_SWITCH_TO_DESKTOP.
+  // These prefs have been removed, but need to be registered so they can
+  // be deleted on startup.
+#if !defined(OS_IOS)
   registry->RegisterIntegerPref(
-      kObsoleteMetroSwitchToDesktopSetting,
-      0,
+      kObsoleteFullscreenDefaultPref, 0,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-
-  // The removed content settings type MEDIASTREAM.
-  registry->RegisterIntegerPref(kObsoleteMediaStreamSetting, 0);
+#if !defined(OS_ANDROID)
+  registry->RegisterIntegerPref(
+      kObsoleteMouseLockDefaultPref, 0,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+#endif  // !defined(OS_ANDROID)
+#endif  // !defined(OS_IOS)
 }
 
 DefaultProvider::DefaultProvider(PrefService* prefs, bool incognito)
@@ -136,11 +149,6 @@ DefaultProvider::DefaultProvider(PrefService* prefs, bool incognito)
       "ContentSettings.DefaultPluginsSetting",
       IntToContentSetting(prefs_->GetInteger(
           GetPrefName(CONTENT_SETTINGS_TYPE_PLUGINS))),
-      CONTENT_SETTING_NUM_SETTINGS);
-  UMA_HISTOGRAM_ENUMERATION(
-      "ContentSettings.DefaultMouseCursorSetting",
-      IntToContentSetting(prefs_->GetInteger(
-          GetPrefName(CONTENT_SETTINGS_TYPE_MOUSELOCK))),
       CONTENT_SETTING_NUM_SETTINGS);
 #endif
 
@@ -178,16 +186,6 @@ DefaultProvider::DefaultProvider(PrefService* prefs, bool incognito)
           GetPrefName(CONTENT_SETTINGS_TYPE_MIDI_SYSEX))),
       CONTENT_SETTING_NUM_SETTINGS);
   UMA_HISTOGRAM_ENUMERATION(
-      "ContentSettings.DefaultPushMessagingSetting",
-      IntToContentSetting(prefs_->GetInteger(
-          GetPrefName(CONTENT_SETTINGS_TYPE_PUSH_MESSAGING))),
-      CONTENT_SETTING_NUM_SETTINGS);
-  UMA_HISTOGRAM_ENUMERATION(
-      "ContentSettings.DefaultKeygenSetting",
-      IntToContentSetting(prefs_->GetInteger(
-          GetPrefName(CONTENT_SETTINGS_TYPE_KEYGEN))),
-      CONTENT_SETTING_NUM_SETTINGS);
-  UMA_HISTOGRAM_ENUMERATION(
       "ContentSettings.DefaultWebBluetoothGuardSetting",
       IntToContentSetting(prefs_->GetInteger(
           GetPrefName(CONTENT_SETTINGS_TYPE_BLUETOOTH_GUARD))),
@@ -197,6 +195,18 @@ DefaultProvider::DefaultProvider(PrefService* prefs, bool incognito)
       IntToContentSetting(prefs_->GetInteger(
           GetPrefName(CONTENT_SETTINGS_TYPE_AUTOPLAY))),
       CONTENT_SETTING_NUM_SETTINGS);
+  UMA_HISTOGRAM_ENUMERATION("ContentSettings.DefaultSubresourceFilterSetting",
+                            IntToContentSetting(prefs_->GetInteger(
+                                GetPrefName(CONTENT_SETTINGS_TYPE_ADS))),
+                            CONTENT_SETTING_NUM_SETTINGS);
+  UMA_HISTOGRAM_ENUMERATION("ContentSettings.DefaultSoundSetting",
+                            IntToContentSetting(prefs_->GetInteger(
+                                GetPrefName(CONTENT_SETTINGS_TYPE_SOUND))),
+                            CONTENT_SETTING_NUM_SETTINGS);
+  UMA_HISTOGRAM_ENUMERATION("ContentSettings.DefaultUsbGuardSetting",
+                            IntToContentSetting(prefs_->GetInteger(
+                                GetPrefName(CONTENT_SETTINGS_TYPE_USB_GUARD))),
+                            CONTENT_SETTING_NUM_SETTINGS);
 #endif
   pref_change_registrar_.Init(prefs_);
   PrefChangeRegistrar::NamedChangeCallback callback = base::Bind(
@@ -261,17 +271,18 @@ std::unique_ptr<RuleIterator> DefaultProvider::GetRuleIterator(
     bool incognito) const {
   // The default provider never has incognito-specific settings.
   if (incognito)
-    return std::unique_ptr<RuleIterator>(new EmptyRuleIterator());
+    return nullptr;
 
   base::AutoLock lock(lock_);
-  if (resource_identifier.empty()) {
-    auto it(default_settings_.find(content_type));
-    if (it != default_settings_.end())
-      return std::unique_ptr<RuleIterator>(
-          new DefaultRuleIterator(it->second.get()));
+  if (!resource_identifier.empty())
+    return nullptr;
+
+  auto it = default_settings_.find(content_type);
+  if (it == default_settings_.end()) {
     NOTREACHED();
+    return nullptr;
   }
-  return std::unique_ptr<RuleIterator>(new EmptyRuleIterator());
+  return std::make_unique<DefaultRuleIterator>(it->second.get());
 }
 
 void DefaultProvider::ClearAllContentSettingsRules(
@@ -287,7 +298,7 @@ void DefaultProvider::ShutdownOnUIThread() {
   DCHECK(prefs_);
   RemoveAllObservers();
   pref_change_registrar_.RemoveAll();
-  prefs_ = NULL;
+  prefs_ = nullptr;
 }
 
 void DefaultProvider::ReadDefaultSettings() {
@@ -300,12 +311,16 @@ void DefaultProvider::ReadDefaultSettings() {
 
 bool DefaultProvider::IsValueEmptyOrDefault(ContentSettingsType content_type,
                                             base::Value* value) {
-  if (!value) return true;
-  return ValueToContentSetting(value) == GetDefaultValue(content_type);
+  return !value ||
+         ValueToContentSetting(value) == GetDefaultValue(content_type);
 }
 
 void DefaultProvider::ChangeSetting(ContentSettingsType content_type,
                                     base::Value* value) {
+  const ContentSettingsInfo* info =
+      ContentSettingsRegistry::GetInstance()->Get(content_type);
+  DCHECK(!info || !value ||
+         info->IsDefaultSettingValid(ValueToContentSetting(value)));
   default_settings_[content_type] =
       value ? base::WrapUnique(value->DeepCopy())
             : ContentSettingToValue(GetDefaultValue(content_type));
@@ -373,8 +388,24 @@ std::unique_ptr<base::Value> DefaultProvider::ReadFromPref(
 }
 
 void DefaultProvider::DiscardObsoletePreferences() {
-  prefs_->ClearPref(kObsoleteMetroSwitchToDesktopSetting);
-  prefs_->ClearPref(kObsoleteMediaStreamSetting);
+  if (is_incognito_)
+    return;
+  // These prefs were never stored on iOS/Android so they don't need to be
+  // deleted.
+#if !defined(OS_IOS)
+  prefs_->ClearPref(kObsoleteFullscreenDefaultPref);
+#if !defined(OS_ANDROID)
+  prefs_->ClearPref(kObsoleteMouseLockDefaultPref);
+
+  // ALLOW-by-default is an obsolete pref value for plugins (Flash). Erase that
+  // pref and fall back to the default behavior - but preserve other values.
+  const std::string& plugins_pref = GetPrefName(CONTENT_SETTINGS_TYPE_PLUGINS);
+  if (IntToContentSetting(prefs_->GetInteger(plugins_pref)) ==
+      ContentSetting::CONTENT_SETTING_ALLOW) {
+    prefs_->ClearPref(plugins_pref);
+  }
+#endif  // !defined(OS_ANDROID)
+#endif  // !defined(OS_IOS)
 }
 
 }  // namespace content_settings

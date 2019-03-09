@@ -6,7 +6,9 @@
 
 #include <utility>
 
+#include "ash/shell.h"
 #include "base/logging.h"
+#include "ui/aura/env.h"
 #include "ui/events/event.h"
 #include "ui/keyboard/keyboard_util.h"
 #include "ui/wm/core/cursor_manager.h"
@@ -18,11 +20,20 @@ CursorManager::CursorManager(
     std::unique_ptr<::wm::NativeCursorManager> delegate)
     : ::wm::CursorManager(std::move(delegate)) {}
 
-CursorManager::~CursorManager() {}
+CursorManager::~CursorManager() = default;
 
 bool CursorManager::ShouldHideCursorOnKeyEvent(
     const ui::KeyEvent& event) const {
   if (event.type() != ui::ET_KEY_PRESSED)
+    return false;
+
+  // Pressing one key repeatedly will not hide the cursor.
+  // To deal with the issue 855163 (http://crbug.com/855163).
+  if (event.is_repeat())
+    return false;
+
+  // Do not hide cursor when clicking the key with mouse button pressed.
+  if (Shell::Get()->aura_env()->IsMouseButtonDown())
     return false;
 
   // Clicking on a key when the accessibility virtual keyboard is enabled should

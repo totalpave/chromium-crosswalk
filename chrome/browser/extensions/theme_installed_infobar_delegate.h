@@ -11,14 +11,13 @@
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/common/extension_id.h"
 
-class ExtensionService;
 class InfoBarService;
-class Profile;
 class ThemeService;
 
 namespace extensions {
-class Extension;
+class ExtensionService;
 }
 
 // When a user installs a theme, we display it immediately, but provide an
@@ -26,26 +25,28 @@ class Extension;
 class ThemeInstalledInfoBarDelegate : public ConfirmInfoBarDelegate,
                                       public content::NotificationObserver {
  public:
-  // Creates a theme installed infobar and delegate and adds the infobar to the
-  // last active tab on |profile|.
-  static void Create(const extensions::Extension* new_theme,
-                     Profile* profile,
+  // Creates a theme installed infobar and delegate and adds the infobar to
+  // |infobar_service|, replacing any previous theme infobar.
+  static void Create(InfoBarService* infobar_service,
+                     extensions::ExtensionService* extension_service,
+                     ThemeService* theme_service,
+                     const std::string& theme_name,
+                     const std::string& theme_id,
                      const std::string& previous_theme_id,
                      bool previous_using_system_theme);
 
  private:
-  ThemeInstalledInfoBarDelegate(ExtensionService* extension_service,
+  ThemeInstalledInfoBarDelegate(extensions::ExtensionService* extension_service,
                                 ThemeService* theme_service,
-                                const extensions::Extension* new_theme,
+                                const std::string& theme_name,
+                                const std::string& theme_id,
                                 const std::string& previous_theme_id,
                                 bool previous_using_system_theme);
   ~ThemeInstalledInfoBarDelegate() override;
 
   // ConfirmInfoBarDelegate:
-  Type GetInfoBarType() const override;
   infobars::InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
-  int GetIconId() const override;
-  gfx::VectorIconId GetVectorIconId() const override;
+  const gfx::VectorIcon& GetVectorIcon() const override;
   ThemeInstalledInfoBarDelegate* AsThemePreviewInfobarDelegate() override;
   base::string16 GetMessageText() const override;
   int GetButtons() const override;
@@ -57,11 +58,11 @@ class ThemeInstalledInfoBarDelegate : public ConfirmInfoBarDelegate,
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
-  ExtensionService* extension_service_;
+  extensions::ExtensionService* extension_service_;
   ThemeService* theme_service_;
 
   // Name of theme that's just been installed.
-  std::string name_;
+  std::string theme_name_;
 
   // ID of theme that's just been installed.
   std::string theme_id_;

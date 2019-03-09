@@ -4,31 +4,41 @@
 
 #include "extensions/browser/process_manager.h"
 
+#include <memory>
+#include <unordered_set>
 #include <vector>
 
 #include "base/bind.h"
+#include "base/guid.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
+#include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/site_instance.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extensions_browser_client.h"
-#include "extensions/browser/lazy_background_task_queue.h"
+#include "extensions/browser/lazy_context_id.h"
+#include "extensions/browser/lazy_context_task_queue.h"
 #include "extensions/browser/notification_types.h"
 #include "extensions/browser/process_manager_delegate.h"
 #include "extensions/browser/process_manager_factory.h"
@@ -49,8 +59,6 @@ namespace {
 
 // The time to delay between an extension becoming idle and
 // sending a ShouldSuspend message.
-// Note: Must be sufficiently larger (e.g. 2x) than
-// kKeepaliveThrottleIntervalInSeconds in ppapi/proxy/plugin_globals.
 unsigned g_event_page_idle_time_msec = 10000;
 
 // The time to delay between sending a ShouldSuspend message and
@@ -107,61 +115,67 @@ class IncognitoProcessManager : public ProcessManager {
 
 static void CreateBackgroundHostForExtensionLoad(
     ProcessManager* manager, const Extension* extension) {
-  DVLOG(1) << "CreateBackgroundHostForExtensionLoad";
   if (BackgroundInfo::HasPersistentBackgroundPage(extension))
     manager->CreateBackgroundHost(extension,
                                   BackgroundInfo::GetBackgroundURL(extension));
 }
 
-void PropagateExtensionWakeResult(const base::Callback<void(bool)>& callback,
-                                  extensions::ExtensionHost* host) {
-  callback.Run(host != nullptr);
+void PropagateExtensionWakeResult(
+    base::OnceCallback<void(bool)> callback,
+    std::unique_ptr<LazyContextTaskQueue::ContextInfo> context_info) {
+  std::move(callback).Run(context_info != nullptr);
+}
+
+void StartServiceWorkerExternalRequest(content::ServiceWorkerContext* context,
+                                       int64_t service_worker_version_id,
+                                       const std::string& request_uuid) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  context->StartingExternalRequest(service_worker_version_id, request_uuid);
+}
+
+void FinishServiceWorkerExternalRequest(content::ServiceWorkerContext* context,
+                                        int64_t service_worker_version_id,
+                                        const std::string& request_uuid) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  bool status =
+      context->FinishedExternalRequest(service_worker_version_id, request_uuid);
+  DCHECK(status);
 }
 
 }  // namespace
 
 struct ProcessManager::BackgroundPageData {
   // The count of things keeping the lazy background page alive.
-  int lazy_keepalive_count;
-
-  // Tracks if an impulse event has occured since the last polling check.
-  bool keepalive_impulse;
-  bool previous_keepalive_impulse;
+  // TODO(crbug.com://695711): Work on a plan to remove this and rely
+  // on activities.size() instead.
+  int lazy_keepalive_count = 0;
 
   // True if the page responded to the ShouldSuspend message and is currently
   // dispatching the suspend event. During this time any events that arrive will
   // cancel the suspend process and an onSuspendCanceled event will be
   // dispatched to the page.
-  bool is_closing;
+  bool is_closing = false;
 
   // Stores the value of the incremented
   // ProcessManager::last_background_close_sequence_id_ whenever the extension
   // is active. A copy of the ID is also passed in the callbacks and IPC
   // messages leading up to CloseLazyBackgroundPageNow. The process is aborted
   // if the IDs ever differ due to new activity.
-  uint64_t close_sequence_id;
+  uint64_t close_sequence_id = 0ull;
 
   // Keeps track of when this page was last suspended. Used for perf metrics.
-  linked_ptr<base::ElapsedTimer> since_suspended;
+  std::unique_ptr<base::ElapsedTimer> since_suspended;
 
-  BackgroundPageData()
-      : lazy_keepalive_count(0),
-        keepalive_impulse(false),
-        previous_keepalive_impulse(false),
-        is_closing(false),
-        close_sequence_id(0) {}
+  ActivitiesMultiset activities;
 };
 
 // Data of a RenderFrameHost associated with an extension.
 struct ProcessManager::ExtensionRenderFrameData {
   // The type of the view.
-  extensions::ViewType view_type;
+  extensions::ViewType view_type = VIEW_TYPE_INVALID;
 
   // Whether the view is keeping the lazy background page alive or not.
-  bool has_keepalive;
-
-  ExtensionRenderFrameData()
-      : view_type(VIEW_TYPE_INVALID), has_keepalive(false) {}
+  bool has_keepalive = false;
 
   // Returns whether the view can keep the lazy background page alive or not.
   bool CanKeepalive() const {
@@ -172,8 +186,6 @@ struct ProcessManager::ExtensionRenderFrameData {
       case VIEW_TYPE_EXTENSION_DIALOG:
       case VIEW_TYPE_EXTENSION_GUEST:
       case VIEW_TYPE_EXTENSION_POPUP:
-      case VIEW_TYPE_LAUNCHER_PAGE:
-      case VIEW_TYPE_PANEL:
       case VIEW_TYPE_TAB_CONTENTS:
         return true;
 
@@ -243,8 +255,11 @@ ProcessManager::ProcessManager(BrowserContext* context,
     : extension_registry_(extension_registry),
       site_instance_(content::SiteInstance::Create(context)),
       browser_context_(context),
+      worker_task_runner_(base::CreateSingleThreadTaskRunnerWithTraits(
+          {content::BrowserThread::IO})),
       startup_background_hosts_created_(false),
       last_background_close_sequence_id_(0),
+      process_observer_(this),
       weak_ptr_factory_(this) {
   // ExtensionRegistry is shared between incognito and regular contexts.
   DCHECK_EQ(original_context, extension_registry_->browser_context());
@@ -263,24 +278,26 @@ ProcessManager::ProcessManager(BrowserContext* context,
   registrar_.Add(this,
                  extensions::NOTIFICATION_EXTENSION_HOST_VIEW_SHOULD_CLOSE,
                  content::Source<BrowserContext>(context));
-  devtools_callback_ = base::Bind(&ProcessManager::OnDevToolsStateChanged,
-                                  weak_ptr_factory_.GetWeakPtr());
-  content::DevToolsAgentHost::AddAgentStateCallback(devtools_callback_);
-
-  OnKeepaliveImpulseCheck();
+  content::DevToolsAgentHost::AddObserver(this);
 }
 
 ProcessManager::~ProcessManager() {
+  content::DevToolsAgentHost::RemoveObserver(this);
+}
+
+void ProcessManager::Shutdown() {
   extension_registry_->RemoveObserver(this);
   CloseBackgroundHosts();
   DCHECK(background_hosts_.empty());
-  content::DevToolsAgentHost::RemoveAgentStateCallback(devtools_callback_);
+  content::DevToolsAgentHost::RemoveObserver(this);
+  site_instance_ = nullptr;
 }
 
 void ProcessManager::RegisterRenderFrameHost(
     content::WebContents* web_contents,
     content::RenderFrameHost* render_frame_host,
     const Extension* extension) {
+  DCHECK(render_frame_host->IsRenderFrameLive());
   ExtensionRenderFrameData* data = &all_extension_frames_[render_frame_host];
   data->view_type = GetViewType(web_contents);
 
@@ -289,16 +306,13 @@ void ProcessManager::RegisterRenderFrameHost(
   // UnregisterRenderFrame.
   AcquireLazyKeepaliveCountForFrame(render_frame_host);
 
-  FOR_EACH_OBSERVER(ProcessManagerObserver,
-                    observer_list_,
-                    OnExtensionFrameRegistered(extension->id(),
-                                               render_frame_host));
+  for (auto& observer : observer_list_)
+    observer.OnExtensionFrameRegistered(extension->id(), render_frame_host);
 }
 
 void ProcessManager::UnregisterRenderFrameHost(
     content::RenderFrameHost* render_frame_host) {
-  ExtensionRenderFrames::iterator frame =
-      all_extension_frames_.find(render_frame_host);
+  auto frame = all_extension_frames_.find(render_frame_host);
 
   if (frame != all_extension_frames_.end()) {
     std::string extension_id = GetExtensionID(render_frame_host);
@@ -306,25 +320,8 @@ void ProcessManager::UnregisterRenderFrameHost(
     ReleaseLazyKeepaliveCountForFrame(render_frame_host);
     all_extension_frames_.erase(frame);
 
-    FOR_EACH_OBSERVER(ProcessManagerObserver,
-                      observer_list_,
-                      OnExtensionFrameUnregistered(extension_id,
-                                                   render_frame_host));
-  }
-}
-
-void ProcessManager::DidNavigateRenderFrameHost(
-    content::RenderFrameHost* render_frame_host) {
-  ExtensionRenderFrames::iterator frame =
-      all_extension_frames_.find(render_frame_host);
-
-  if (frame != all_extension_frames_.end()) {
-    std::string extension_id = GetExtensionID(render_frame_host);
-
-    FOR_EACH_OBSERVER(ProcessManagerObserver,
-                      observer_list_,
-                      OnExtensionFrameNavigated(extension_id,
-                                                render_frame_host));
+    for (auto& observer : observer_list_)
+      observer.OnExtensionFrameUnregistered(extension_id, render_frame_host);
   }
 }
 
@@ -366,6 +363,9 @@ void ProcessManager::RemoveObserver(ProcessManagerObserver* observer) {
 
 bool ProcessManager::CreateBackgroundHost(const Extension* extension,
                                           const GURL& url) {
+  DCHECK(!BackgroundInfo::IsServiceWorkerBased(extension))
+      << "CreateBackgroundHostForExtensionLoad called for service worker based"
+         "background page";
   // Hosted apps are taken care of from BackgroundContentsService. Ignore them
   // here.
   if (extension->is_hosted_app())
@@ -374,13 +374,15 @@ bool ProcessManager::CreateBackgroundHost(const Extension* extension,
   // Don't create hosts if the embedder doesn't allow it.
   ProcessManagerDelegate* delegate =
       ExtensionsBrowserClient::Get()->GetProcessManagerDelegate();
-  if (delegate && !delegate->IsBackgroundPageAllowed(browser_context_))
+  if (delegate &&
+      !delegate->IsExtensionBackgroundPageAllowed(browser_context_, *extension))
     return false;
 
   // Don't create multiple background hosts for an extension.
   if (GetBackgroundHostForExtension(extension->id()))
     return true;  // TODO(kalman): return false here? It might break things...
 
+  DVLOG(1) << "CreateBackgroundHost " << extension->id();
   ExtensionHost* host =
       new ExtensionHost(extension, GetSiteInstanceForURL(url).get(), url,
                         VIEW_TYPE_EXTENSION_BACKGROUND_PAGE);
@@ -396,7 +398,8 @@ void ProcessManager::MaybeCreateStartupBackgroundHosts() {
   // The embedder might disallow background pages entirely.
   ProcessManagerDelegate* delegate =
       ExtensionsBrowserClient::Get()->GetProcessManagerDelegate();
-  if (delegate && !delegate->IsBackgroundPageAllowed(browser_context_))
+  if (delegate &&
+      !delegate->AreBackgroundPagesAllowedForContext(browser_context_))
     return;
 
   // The embedder might want to defer background page loading. For example,
@@ -448,15 +451,15 @@ bool ProcessManager::IsEventPageSuspended(const std::string& extension_id) {
 }
 
 bool ProcessManager::WakeEventPage(const std::string& extension_id,
-                                   const base::Callback<void(bool)>& callback) {
+                                   base::OnceCallback<void(bool)> callback) {
   if (GetBackgroundHostForExtension(extension_id)) {
-    // Run the callback immediately if the extension is already awake.
+    // The extension is already awake.
     return false;
   }
-  LazyBackgroundTaskQueue* queue =
-      LazyBackgroundTaskQueue::Get(browser_context_);
-  queue->AddPendingTask(browser_context_, extension_id,
-                        base::Bind(&PropagateExtensionWakeResult, callback));
+  const LazyContextId context_id(browser_context_, extension_id);
+  context_id.GetTaskQueue()->AddPendingTask(
+      context_id,
+      base::BindOnce(&PropagateExtensionWakeResult, std::move(callback)));
   return true;
 }
 
@@ -472,77 +475,67 @@ const Extension* ProcessManager::GetExtensionForRenderFrameHost(
 }
 
 const Extension* ProcessManager::GetExtensionForWebContents(
-    const content::WebContents* web_contents) {
+    content::WebContents* web_contents) {
   if (!web_contents->GetSiteInstance())
     return nullptr;
-  return extension_registry_->enabled_extensions().GetByID(
-      GetExtensionIdForSiteInstance(web_contents->GetSiteInstance()));
+  const Extension* extension =
+      extension_registry_->enabled_extensions().GetByID(
+          GetExtensionIdForSiteInstance(web_contents->GetSiteInstance()));
+  if (extension && extension->is_hosted_app()) {
+    // For hosted apps, be sure to exclude URLs outside of the app that might
+    // be loaded in the same SiteInstance (extensions guarantee that only
+    // extension urls are loaded in that SiteInstance).
+    content::NavigationController& controller = web_contents->GetController();
+    content::NavigationEntry* entry = controller.GetLastCommittedEntry();
+    // If there is no last committed entry, check the pending entry. This can
+    // happen in cases where we query this before any entry is fully committed,
+    // such as when attributing a WebContents for the TaskManager. If there is
+    // a committed navigation, use that instead.
+    if (!entry)
+      entry = controller.GetPendingEntry();
+    if (!entry ||
+        extension_registry_->enabled_extensions().GetExtensionOrAppByURL(
+            entry->GetURL()) != extension) {
+      return nullptr;
+    }
+  }
+
+  return extension;
 }
 
 int ProcessManager::GetLazyKeepaliveCount(const Extension* extension) {
   if (!BackgroundInfo::HasLazyBackgroundPage(extension))
-    return 0;
+    return -1;
 
   return background_page_data_[extension->id()].lazy_keepalive_count;
 }
 
-void ProcessManager::IncrementLazyKeepaliveCount(const Extension* extension) {
+void ProcessManager::IncrementLazyKeepaliveCount(
+    const Extension* extension,
+    Activity::Type activity_type,
+    const std::string& extra_data) {
   if (BackgroundInfo::HasLazyBackgroundPage(extension)) {
-    int& count = background_page_data_[extension->id()].lazy_keepalive_count;
-    if (++count == 1)
+    BackgroundPageData& data = background_page_data_[extension->id()];
+    if (++data.lazy_keepalive_count == 1)
       OnLazyBackgroundPageActive(extension->id());
+    data.activities.insert(std::make_pair(activity_type, extra_data));
   }
 }
 
-void ProcessManager::DecrementLazyKeepaliveCount(const Extension* extension) {
+void ProcessManager::DecrementLazyKeepaliveCount(
+    const Extension* extension,
+    Activity::Type activity_type,
+    const std::string& extra_data) {
   if (BackgroundInfo::HasLazyBackgroundPage(extension))
-    DecrementLazyKeepaliveCount(extension->id());
+    DecrementLazyKeepaliveCount(extension->id(), activity_type, extra_data);
 }
 
-// This implementation layers on top of the keepalive count. An impulse sets
-// a per extension flag. On a regular interval that flag is checked. Changes
-// from the flag not being set to set cause an IncrementLazyKeepaliveCount.
-void ProcessManager::KeepaliveImpulse(const Extension* extension) {
-  if (!BackgroundInfo::HasLazyBackgroundPage(extension))
-    return;
-
-  BackgroundPageData& bd = background_page_data_[extension->id()];
-
-  if (!bd.keepalive_impulse) {
-    bd.keepalive_impulse = true;
-    if (!bd.previous_keepalive_impulse) {
-      IncrementLazyKeepaliveCount(extension);
-    }
-  }
-
-  if (!keepalive_impulse_callback_for_testing_.is_null()) {
-    ImpulseCallbackForTesting callback_may_clear_callbacks_reentrantly =
-      keepalive_impulse_callback_for_testing_;
-    callback_may_clear_callbacks_reentrantly.Run(extension->id());
-  }
-}
-
-// static
-void ProcessManager::OnKeepaliveFromPlugin(int render_process_id,
-                                           int render_frame_id,
-                                           const std::string& extension_id) {
-  content::RenderFrameHost* render_frame_host =
-      content::RenderFrameHost::FromID(render_process_id, render_frame_id);
-  if (!render_frame_host)
-    return;
-
-  content::SiteInstance* site_instance = render_frame_host->GetSiteInstance();
-  if (!site_instance)
-    return;
-
-  BrowserContext* browser_context = site_instance->GetBrowserContext();
-  const Extension* extension =
-      ExtensionRegistry::Get(browser_context)->enabled_extensions().GetByID(
-          extension_id);
-  if (!extension)
-    return;
-
-  ProcessManager::Get(browser_context)->KeepaliveImpulse(extension);
+ProcessManager::ActivitiesMultiset ProcessManager::GetLazyKeepaliveActivities(
+    const Extension* extension) {
+  ProcessManager::ActivitiesMultiset result;
+  if (BackgroundInfo::HasLazyBackgroundPage(extension))
+    result = background_page_data_[extension->id()].activities;
+  return result;
 }
 
 void ProcessManager::OnShouldSuspendAck(const std::string& extension_id,
@@ -559,8 +552,8 @@ void ProcessManager::OnSuspendAck(const std::string& extension_id) {
   uint64_t sequence_id = background_page_data_[extension_id].close_sequence_id;
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&ProcessManager::CloseLazyBackgroundPageNow,
-                 weak_ptr_factory_.GetWeakPtr(), extension_id, sequence_id),
+      base::BindOnce(&ProcessManager::CloseLazyBackgroundPageNow,
+                     weak_ptr_factory_.GetWeakPtr(), extension_id, sequence_id),
       base::TimeDelta::FromMilliseconds(g_event_page_suspending_time_msec));
 }
 
@@ -576,7 +569,8 @@ void ProcessManager::OnNetworkRequestStarted(
       pending_network_requests_.insert(std::make_pair(request_id, host));
   DCHECK(result.second) << "Duplicate network request IDs.";
 
-  IncrementLazyKeepaliveCount(host->extension());
+  IncrementLazyKeepaliveCount(host->extension(), Activity::NETWORK,
+                              base::NumberToString(request_id));
   host->OnNetworkRequestStarted(request_id);
 }
 
@@ -599,7 +593,8 @@ void ProcessManager::OnNetworkRequestDone(
   DCHECK(IsFrameInExtensionHost(host, render_frame_host));
 
   host->OnNetworkRequestDone(request_id);
-  DecrementLazyKeepaliveCount(host->extension());
+  DecrementLazyKeepaliveCount(host->extension(), Activity::NETWORK,
+                              base::NumberToString(request_id));
 }
 
 void ProcessManager::CancelSuspend(const Extension* extension) {
@@ -613,28 +608,32 @@ void ProcessManager::CancelSuspend(const Extension* extension) {
     // has the effect of invalidating close_sequence_id, preventing any in
     // progress closes from completing and starting a new close process if
     // necessary.
-    IncrementLazyKeepaliveCount(extension);
-    DecrementLazyKeepaliveCount(extension);
+    IncrementLazyKeepaliveCount(extension, Activity::PROCESS_MANAGER,
+                                Activity::kCancelSuspend);
+    DecrementLazyKeepaliveCount(extension, Activity::PROCESS_MANAGER,
+                                Activity::kCancelSuspend);
   }
 }
 
 void ProcessManager::CloseBackgroundHosts() {
-  STLDeleteElements(&background_hosts_);
-}
+  // Delete from a copy because deletion of the ExtensionHosts will trigger
+  // callbacks to modify the |background_hosts_| set.
+  ExtensionHostSet hosts_copy = background_hosts_;
+  for (auto* host : hosts_copy) {
+    // Deleting the host will cause a NOTIFICATION_EXTENSION_HOST_DESTROYED
+    // which will cause the removal of the host from the |background_hosts_| set
+    // in the Observe() method below.
+    delete host;
+    DCHECK_EQ(0u, background_hosts_.count(host));
+  }
 
-void ProcessManager::SetKeepaliveImpulseCallbackForTesting(
-    const ImpulseCallbackForTesting& callback) {
-  keepalive_impulse_callback_for_testing_ = callback;
-}
-
-void ProcessManager::SetKeepaliveImpulseDecrementCallbackForTesting(
-    const ImpulseCallbackForTesting& callback) {
-  keepalive_impulse_decrement_callback_for_testing_ = callback;
+  // At this point there should be nothing left in |background_hosts_|.
+  DCHECK(background_hosts_.empty());
 }
 
 // static
 void ProcessManager::SetEventPageIdleTimeForTesting(unsigned idle_time_msec) {
-  CHECK_GT(idle_time_msec, 0u);  // OnKeepaliveImpulseCheck requires non zero.
+  CHECK_GT(idle_time_msec, 0u);
   g_event_page_idle_time_msec = idle_time_msec;
 }
 
@@ -662,8 +661,9 @@ void ProcessManager::Observe(int type,
     case extensions::NOTIFICATION_EXTENSION_HOST_DESTROYED: {
       ExtensionHost* host = content::Details<ExtensionHost>(details).ptr();
       if (background_hosts_.erase(host)) {
-        ClearBackgroundPageData(host->extension()->id());
-        background_page_data_[host->extension()->id()].since_suspended.reset(
+        // Note: |host->extension()| may be null at this point.
+        ClearBackgroundPageData(host->extension_id());
+        background_page_data_[host->extension_id()].since_suspended.reset(
             new base::ElapsedTimer());
       }
       break;
@@ -688,10 +688,9 @@ void ProcessManager::OnExtensionLoaded(BrowserContext* browser_context,
   }
 }
 
-void ProcessManager::OnExtensionUnloaded(
-    BrowserContext* browser_context,
-    const Extension* extension,
-    UnloadedExtensionInfo::Reason reason) {
+void ProcessManager::OnExtensionUnloaded(BrowserContext* browser_context,
+                                         const Extension* extension,
+                                         UnloadedExtensionReason reason) {
   ExtensionHost* host = GetBackgroundHostForExtension(extension->id());
   if (host != nullptr)
     CloseBackgroundHost(host);
@@ -703,9 +702,8 @@ void ProcessManager::CreateStartupBackgroundHosts() {
   for (const scoped_refptr<const Extension>& extension :
            extension_registry_->enabled_extensions()) {
     CreateBackgroundHostForExtensionLoad(this, extension.get());
-    FOR_EACH_OBSERVER(ProcessManagerObserver,
-                      observer_list_,
-                      OnBackgroundHostStartup(extension.get()));
+    for (auto& observer : observer_list_)
+      observer.OnBackgroundHostStartup(extension.get());
   }
 }
 
@@ -714,16 +712,15 @@ void ProcessManager::OnBackgroundHostCreated(ExtensionHost* host) {
   background_hosts_.insert(host);
 
   if (BackgroundInfo::HasLazyBackgroundPage(host->extension())) {
-    linked_ptr<base::ElapsedTimer> since_suspended(
-        background_page_data_[host->extension()->id()].
-            since_suspended.release());
+    std::unique_ptr<base::ElapsedTimer> since_suspended = std::move(
+        background_page_data_[host->extension()->id()].since_suspended);
     if (since_suspended.get()) {
       UMA_HISTOGRAM_LONG_TIMES("Extensions.EventPageIdleTime",
                                since_suspended->Elapsed());
     }
   }
-  FOR_EACH_OBSERVER(ProcessManagerObserver, observer_list_,
-                    OnBackgroundHostCreated(host));
+  for (auto& observer : observer_list_)
+    observer.OnBackgroundHostCreated(host);
 }
 
 void ProcessManager::CloseBackgroundHost(ExtensionHost* host) {
@@ -733,15 +730,13 @@ void ProcessManager::CloseBackgroundHost(ExtensionHost* host) {
   // |host| should deregister itself from our structures.
   CHECK(background_hosts_.find(host) == background_hosts_.end());
 
-  FOR_EACH_OBSERVER(ProcessManagerObserver,
-                    observer_list_,
-                    OnBackgroundHostClose(extension_id));
+  for (auto& observer : observer_list_)
+    observer.OnBackgroundHostClose(extension_id);
 }
 
 void ProcessManager::AcquireLazyKeepaliveCountForFrame(
     content::RenderFrameHost* render_frame_host) {
-  ExtensionRenderFrames::iterator it =
-      all_extension_frames_.find(render_frame_host);
+  auto it = all_extension_frames_.find(render_frame_host);
   if (it == all_extension_frames_.end())
     return;
 
@@ -750,7 +745,8 @@ void ProcessManager::AcquireLazyKeepaliveCountForFrame(
     const Extension* extension =
         GetExtensionForRenderFrameHost(render_frame_host);
     if (extension) {
-      IncrementLazyKeepaliveCount(extension);
+      IncrementLazyKeepaliveCount(extension, Activity::PROCESS_MANAGER,
+                                  Activity::kRenderFrame);
       data.has_keepalive = true;
     }
   }
@@ -758,8 +754,7 @@ void ProcessManager::AcquireLazyKeepaliveCountForFrame(
 
 void ProcessManager::ReleaseLazyKeepaliveCountForFrame(
     content::RenderFrameHost* render_frame_host) {
-  ExtensionRenderFrames::iterator iter =
-      all_extension_frames_.find(render_frame_host);
+  auto iter = all_extension_frames_.find(render_frame_host);
   if (iter == all_extension_frames_.end())
     return;
 
@@ -768,66 +763,97 @@ void ProcessManager::ReleaseLazyKeepaliveCountForFrame(
     const Extension* extension =
         GetExtensionForRenderFrameHost(render_frame_host);
     if (extension) {
-      DecrementLazyKeepaliveCount(extension);
+      DecrementLazyKeepaliveCount(extension, Activity::PROCESS_MANAGER,
+                                  Activity::kRenderFrame);
       data.has_keepalive = false;
     }
   }
 }
 
+std::string ProcessManager::IncrementServiceWorkerKeepaliveCount(
+    const WorkerId& worker_id,
+    Activity::Type activity_type,
+    const std::string& extra_data) {
+  // TODO(lazyboy): Use |activity_type| and |extra_data|.
+  int64_t service_worker_version_id = worker_id.version_id;
+  DCHECK(!worker_id.extension_id.empty());
+  const Extension* extension =
+      extension_registry_->enabled_extensions().GetByID(worker_id.extension_id);
+
+  DCHECK(extension);
+  DCHECK(BackgroundInfo::IsServiceWorkerBased(extension));
+
+  std::string request_uuid = base::GenerateGUID();
+  content::ServiceWorkerContext* service_worker_context =
+      content::BrowserContext::GetStoragePartitionForSite(browser_context_,
+                                                          extension->url())
+          ->GetServiceWorkerContext();
+
+  content::ServiceWorkerContext::RunTask(
+      worker_task_runner_, FROM_HERE, service_worker_context,
+      base::BindOnce(&StartServiceWorkerExternalRequest, service_worker_context,
+                     service_worker_version_id, request_uuid));
+  return request_uuid;
+}
+
 void ProcessManager::DecrementLazyKeepaliveCount(
-    const std::string& extension_id) {
-  int& count = background_page_data_[extension_id].lazy_keepalive_count;
-  DCHECK(count > 0 ||
+    const std::string& extension_id,
+    Activity::Type activity_type,
+    const std::string& extra_data) {
+  BackgroundPageData& data = background_page_data_[extension_id];
+
+  DCHECK(data.lazy_keepalive_count > 0 ||
          !extension_registry_->enabled_extensions().Contains(extension_id));
+  --data.lazy_keepalive_count;
+  const auto it =
+      data.activities.find(std::make_pair(activity_type, extra_data));
+  if (it != data.activities.end()) {
+    data.activities.erase(it);
+  }
 
   // If we reach a zero keepalive count when the lazy background page is about
   // to be closed, incrementing close_sequence_id will cancel the close
   // sequence and cause the background page to linger. So check is_closing
   // before initiating another close sequence.
-  if (--count == 0 && !background_page_data_[extension_id].is_closing) {
-    background_page_data_[extension_id].close_sequence_id =
-        ++last_background_close_sequence_id_;
-    base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&ProcessManager::OnLazyBackgroundPageIdle,
-                              weak_ptr_factory_.GetWeakPtr(), extension_id,
-                              last_background_close_sequence_id_),
-        base::TimeDelta::FromMilliseconds(g_event_page_idle_time_msec));
+  if (data.lazy_keepalive_count == 0) {
+    // Clear any leftover activities.
+    data.activities.clear();
+    if (!background_page_data_[extension_id].is_closing) {
+      data.close_sequence_id = ++last_background_close_sequence_id_;
+      base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&ProcessManager::OnLazyBackgroundPageIdle,
+                         weak_ptr_factory_.GetWeakPtr(), extension_id,
+                         last_background_close_sequence_id_),
+          base::TimeDelta::FromMilliseconds(g_event_page_idle_time_msec));
+    }
   }
 }
 
-// DecrementLazyKeepaliveCount is called when no calls to KeepaliveImpulse
-// have been made for at least g_event_page_idle_time_msec. In the best case an
-// impulse was made just before being cleared, and the decrement will occur
-// g_event_page_idle_time_msec later, causing a 2 * g_event_page_idle_time_msec
-// total time for extension to be shut down based on impulses. Worst case is
-// an impulse just after a clear, adding one check cycle and resulting in 3x
-// total time.
-void ProcessManager::OnKeepaliveImpulseCheck() {
-  for (BackgroundPageDataMap::iterator i = background_page_data_.begin();
-       i != background_page_data_.end();
-       ++i) {
-    if (i->second.previous_keepalive_impulse && !i->second.keepalive_impulse) {
-      DecrementLazyKeepaliveCount(i->first);
-      if (!keepalive_impulse_decrement_callback_for_testing_.is_null()) {
-        ImpulseCallbackForTesting callback_may_clear_callbacks_reentrantly =
-            keepalive_impulse_decrement_callback_for_testing_;
-        callback_may_clear_callbacks_reentrantly.Run(i->first);
-      }
-    }
+void ProcessManager::DecrementServiceWorkerKeepaliveCount(
+    const WorkerId& worker_id,
+    const std::string& request_uuid,
+    Activity::Type activity_type,
+    const std::string& extra_data) {
+  DCHECK(!worker_id.extension_id.empty());
+  const Extension* extension =
+      extension_registry_->enabled_extensions().GetByID(worker_id.extension_id);
+  if (!extension)
+    return;
 
-    i->second.previous_keepalive_impulse = i->second.keepalive_impulse;
-    i->second.keepalive_impulse = false;
-  }
+  DCHECK(BackgroundInfo::IsServiceWorkerBased(extension));
 
-  // OnKeepaliveImpulseCheck() is always called in constructor, but in unit
-  // tests there will be no thread task runner handle. In that event don't
-  // schedule tasks.
-  if (base::ThreadTaskRunnerHandle::IsSet()) {
-    base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&ProcessManager::OnKeepaliveImpulseCheck,
-                              weak_ptr_factory_.GetWeakPtr()),
-        base::TimeDelta::FromMilliseconds(g_event_page_idle_time_msec));
-  }
+  int64_t service_worker_version_id = worker_id.version_id;
+  content::ServiceWorkerContext* service_worker_context =
+      content::BrowserContext::GetStoragePartitionForSite(browser_context_,
+                                                          extension->url())
+          ->GetServiceWorkerContext();
+
+  content::ServiceWorkerContext::RunTask(
+      worker_task_runner_, FROM_HERE, service_worker_context,
+      base::BindOnce(&FinishServiceWorkerExternalRequest,
+                     service_worker_context, service_worker_version_id,
+                     request_uuid));
 }
 
 void ProcessManager::OnLazyBackgroundPageIdle(const std::string& extension_id,
@@ -880,8 +906,8 @@ void ProcessManager::CloseLazyBackgroundPageNow(const std::string& extension_id,
     for (content::RenderFrameHost* frame : frames_to_close) {
       content::WebContents::FromRenderFrameHost(frame)->ClosePage();
       // WebContents::ClosePage() may result in calling
-      // UnregisterRenderViewHost() asynchronously and may cause race conditions
-      // when the background page is reloaded.
+      // UnregisterRenderFrameHost() asynchronously and may cause race
+      // conditions when the background page is reloaded.
       // To avoid this, unregister the view now.
       UnregisterRenderFrameHost(frame);
     }
@@ -892,27 +918,30 @@ void ProcessManager::CloseLazyBackgroundPageNow(const std::string& extension_id,
   }
 }
 
-void ProcessManager::OnDevToolsStateChanged(
-    content::DevToolsAgentHost* agent_host,
-    bool attached) {
+const Extension* ProcessManager::GetExtensionForAgentHost(
+    content::DevToolsAgentHost* agent_host) {
   content::WebContents* web_contents = agent_host->GetWebContents();
   // Ignore unrelated notifications.
   if (!web_contents || web_contents->GetBrowserContext() != browser_context_)
-    return;
+    return nullptr;
   if (GetViewType(web_contents) != VIEW_TYPE_EXTENSION_BACKGROUND_PAGE)
-    return;
-  const Extension* extension =
-      extension_registry_->enabled_extensions().GetByID(
-          GetExtensionIdForSiteInstance(web_contents->GetSiteInstance()));
-  if (!extension)
-    return;
-  if (attached) {
+    return nullptr;
+  return GetExtensionForWebContents(web_contents);
+}
+
+void ProcessManager::DevToolsAgentHostAttached(
+    content::DevToolsAgentHost* agent_host) {
+  if (const Extension* extension = GetExtensionForAgentHost(agent_host)) {
     // Keep the lazy background page alive while it's being inspected.
     CancelSuspend(extension);
-    IncrementLazyKeepaliveCount(extension);
-  } else {
-    DecrementLazyKeepaliveCount(extension);
+    IncrementLazyKeepaliveCount(extension, Activity::DEV_TOOLS, std::string());
   }
+}
+
+void ProcessManager::DevToolsAgentHostDetached(
+    content::DevToolsAgentHost* agent_host) {
+  if (const Extension* extension = GetExtensionForAgentHost(agent_host))
+    DecrementLazyKeepaliveCount(extension, Activity::DEV_TOOLS, "");
 }
 
 void ProcessManager::UnregisterExtension(const std::string& extension_id) {
@@ -921,26 +950,90 @@ void ProcessManager::UnregisterExtension(const std::string& extension_id) {
   // decrement the lazy_keepalive_count to negative for the new extension
   // instance when they are destroyed. Since we are erasing the background page
   // data for the unloaded extension, unregister the RenderFrameHosts too.
-  for (ExtensionRenderFrames::iterator it = all_extension_frames_.begin();
-       it != all_extension_frames_.end(); ) {
+  for (auto it = all_extension_frames_.begin();
+       it != all_extension_frames_.end();) {
     content::RenderFrameHost* host = it->first;
     if (GetExtensionID(host) == extension_id) {
       all_extension_frames_.erase(it++);
-      FOR_EACH_OBSERVER(ProcessManagerObserver,
-                        observer_list_,
-                        OnExtensionFrameUnregistered(extension_id, host));
+      for (auto& observer : observer_list_)
+        observer.OnExtensionFrameUnregistered(extension_id, host);
     } else {
       ++it;
     }
   }
 
   background_page_data_.erase(extension_id);
+
+  all_extension_workers_.RemoveAllForExtension(extension_id);
+}
+
+void ProcessManager::RegisterServiceWorker(const WorkerId& worker_id) {
+  all_extension_workers_.Add(worker_id);
+
+  // Observe the RenderProcessHost for cleaning up on process shutdown.
+  int render_process_id = worker_id.render_process_id;
+  bool inserted = worker_process_to_extension_ids_[render_process_id]
+                      .insert(worker_id.extension_id)
+                      .second;
+  if (inserted) {
+    content::RenderProcessHost* render_process_host =
+        content::RenderProcessHost::FromID(render_process_id);
+    DCHECK(render_process_host);
+    if (!process_observer_.IsObserving(render_process_host)) {
+      // These will be cleaned up in RenderProcessExited().
+      process_observer_.Add(render_process_host);
+    }
+  }
+}
+
+void ProcessManager::RenderProcessExited(
+    content::RenderProcessHost* host,
+    const content::ChildProcessTerminationInfo& info) {
+  DCHECK(process_observer_.IsObserving(host));
+  process_observer_.Remove(host);
+  const int render_process_id = host->GetID();
+  // Look up and then clean up the entries that are affected by
+  // |render_process_id| destruction.
+  //
+  // TODO(lazyboy): Revisit this once incognito is tested for extension SWs, as
+  // the cleanup below only works because regular and OTR ProcessManagers are
+  // separate. The conclusive approach would be to have a
+  // all_extension_workers_.RemoveAllForProcess(render_process_id) method:
+  //   Pros: We won't need worker_process_to_extension_ids_ anymore.
+  //   Cons: We would require traversing all workers within
+  //         |all_extension_workers_| (slow) as things stand right now.
+  auto iter = worker_process_to_extension_ids_.find(render_process_id);
+  if (iter == worker_process_to_extension_ids_.end())
+    return;
+  for (const ExtensionId& extension_id : iter->second)
+    all_extension_workers_.RemoveAllForExtension(extension_id);
+  worker_process_to_extension_ids_.erase(iter);
+}
+
+void ProcessManager::UnregisterServiceWorker(const WorkerId& worker_id) {
+  // TODO(lazyboy): DCHECK that |worker_id| exists in |all_extension_workers_|.
+  all_extension_workers_.Remove(worker_id);
+}
+
+bool ProcessManager::HasServiceWorker(const WorkerId& worker_id) const {
+  return all_extension_workers_.Contains(worker_id);
+}
+
+std::vector<WorkerId> ProcessManager::GetServiceWorkers(
+    const ExtensionId& extension_id,
+    int render_process_id) const {
+  return all_extension_workers_.GetAllForExtension(extension_id,
+                                                   render_process_id);
+}
+
+std::vector<WorkerId> ProcessManager::GetAllWorkersIdsForTesting() {
+  return all_extension_workers_.GetAllForTesting();
 }
 
 void ProcessManager::ClearBackgroundPageData(const std::string& extension_id) {
   background_page_data_.erase(extension_id);
 
-  // Re-register all RenderViews for this extension. We do this to restore
+  // Re-register all RenderFrames for this extension. We do this to restore
   // the lazy_keepalive_count (if any) to properly reflect the number of open
   // views.
   for (const auto& key_value : all_extension_frames_) {
@@ -951,7 +1044,8 @@ void ProcessManager::ClearBackgroundPageData(const std::string& extension_id) {
       const Extension* extension =
           GetExtensionForRenderFrameHost(key_value.first);
       if (extension)
-        IncrementLazyKeepaliveCount(extension);
+        IncrementLazyKeepaliveCount(extension, Activity::PROCESS_MANAGER,
+                                    Activity::kRenderFrame);
     }
   }
 }

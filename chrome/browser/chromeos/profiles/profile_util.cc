@@ -7,7 +7,7 @@
 #include "base/files/file_path.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chromeos/login/login_state.h"
+#include "chromeos/login/login_state/login_state.h"
 
 namespace chromeos {
 
@@ -24,6 +24,8 @@ bool IsProfileAssociatedWithGaiaAccount(Profile* profile) {
   // itself. Using ProfileHelper::GetSigninProfileDir() is safe because it does
   // not try to access the sign-in profile.
   if (profile->GetPath() == ProfileHelper::GetSigninProfileDir())
+    return false;
+  if (profile->GetPath() == ProfileHelper::GetLockScreenAppProfilePath())
     return false;
   return true;
 }

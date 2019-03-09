@@ -19,16 +19,16 @@ BackoffEntry::BackoffEntry(const BackoffEntry::Policy* policy)
     : BackoffEntry(policy, nullptr) {}
 
 BackoffEntry::BackoffEntry(const BackoffEntry::Policy* policy,
-                           base::TickClock* clock)
+                           const base::TickClock* clock)
     : policy_(policy), clock_(clock) {
   DCHECK(policy_);
   Reset();
 }
 
 BackoffEntry::~BackoffEntry() {
-  // TODO(joi): Remove this once our clients (e.g. URLRequestThrottlerManager)
+  // TODO(joi): Enable this once our clients (e.g. URLRequestThrottlerManager)
   // always destroy from the I/O thread.
-  DetachFromThread();
+  // DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 }
 
 void BackoffEntry::InformOfRequest(bool succeeded) {
@@ -114,6 +114,10 @@ void BackoffEntry::Reset() {
   exponential_backoff_release_time_ = base::TimeTicks();
 }
 
+base::TimeTicks BackoffEntry::GetTimeTicksNow() const {
+  return clock_ ? clock_->NowTicks() : base::TimeTicks::Now();
+}
+
 base::TimeTicks BackoffEntry::CalculateReleaseTime() const {
   int effective_failure_count =
       std::max(0, failure_count_ - policy_->num_errors_to_ignore);
@@ -177,10 +181,6 @@ base::TimeTicks BackoffEntry::BackoffDurationToReleaseTime(
                                          std::numeric_limits<int64_t>::max()));
 
   return base::TimeTicks() + base::TimeDelta::FromMicroseconds(release_time_us);
-}
-
-base::TimeTicks BackoffEntry::GetTimeTicksNow() const {
-  return clock_ ? clock_->NowTicks() : base::TimeTicks::Now();
 }
 
 }  // namespace net

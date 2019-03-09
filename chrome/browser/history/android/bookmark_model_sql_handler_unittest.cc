@@ -13,17 +13,19 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/browser/url_and_title.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/history/core/browser/history_constants.h"
 #include "components/history/core/browser/history_database.h"
 #include "components/history/core/test/test_history_database.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
+using bookmarks::UrlAndTitle;
 using content::BrowserThread;
 
 namespace history {
@@ -32,9 +34,7 @@ class BookmarkModelSQLHandlerTest : public testing::Test {
  public:
   BookmarkModelSQLHandlerTest()
       : profile_manager_(TestingBrowserProcess::GetGlobal()),
-        bookmark_model_(NULL),
-        ui_thread_(BrowserThread::UI, &message_loop_),
-        file_thread_(BrowserThread::FILE, &message_loop_) {}
+        bookmark_model_(NULL) {}
   ~BookmarkModelSQLHandlerTest() override {}
 
  protected:
@@ -48,7 +48,8 @@ class BookmarkModelSQLHandlerTest : public testing::Test {
         chrome::kInitialProfile);
     // Create the BookmarkModel that doesn't need to invoke load().
     testing_profile->CreateBookmarkModel(true);
-    bookmark_model_ = BookmarkModelFactory::GetForProfile(testing_profile);
+    bookmark_model_ =
+        BookmarkModelFactory::GetForBrowserContext(testing_profile);
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model_);
     ASSERT_TRUE(bookmark_model_);
     // Get the BookmarkModel from LastUsedProfile, this is the same way that
@@ -59,7 +60,7 @@ class BookmarkModelSQLHandlerTest : public testing::Test {
     // Create the directory for history database.
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     base::FilePath history_db_name =
-        temp_dir_.path().AppendASCII(kHistoryFilename);
+        temp_dir_.GetPath().AppendASCII(kHistoryFilename);
     history_db_.Init(history_db_name);
   }
 
@@ -69,11 +70,10 @@ class BookmarkModelSQLHandlerTest : public testing::Test {
     content::RunAllPendingInMessageLoop();
   }
 
+  content::TestBrowserThreadBundle thread_bundle_;
+
   TestingProfileManager profile_manager_;
   BookmarkModel* bookmark_model_;
-  base::MessageLoopForUI message_loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread file_thread_;
   base::ScopedTempDir temp_dir_;
   TestHistoryDatabase history_db_;
 };
@@ -140,7 +140,7 @@ TEST_F(BookmarkModelSQLHandlerTest, UpdateHistoryToBookmark) {
   ASSERT_TRUE(handler.Update(row, id_rows));
   RunMessageLoopForUI();
   // Get all bookmarks and verify there is only one.
-  std::vector<BookmarkModel::URLAndTitle> bookmarks;
+  std::vector<UrlAndTitle> bookmarks;
   bookmark_model_->GetBookmarks(&bookmarks);
   ASSERT_EQ(1u, bookmarks.size());
   EXPECT_EQ(url_row.url(), bookmarks[0].url);

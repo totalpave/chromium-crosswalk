@@ -24,26 +24,31 @@ cr.define('cr.ui', function() {
    * @constructor
    */
   function KeyboardShortcut(shortcut) {
-    var mods = {};
-    var ident = '';
-    shortcut.split('-').forEach(function(part) {
-      var partLc = part.toLowerCase();
+    this.useKeyCode_ = false;
+    this.mods_ = {};
+    shortcut.split('|').forEach((part) => {
+      const partLc = part.toLowerCase();
       switch (partLc) {
         case 'alt':
         case 'ctrl':
         case 'meta':
         case 'shift':
-          mods[partLc + 'Key'] = true;
+          this.mods_[partLc + 'Key'] = true;
           break;
         default:
-          if (ident)
+          if (this.key_) {
             throw Error('Invalid shortcut');
-          ident = part;
+          }
+          this.key_ = part;
+          // For single key alpha shortcuts use event.keyCode rather than
+          // event.key to match how chrome handles shortcuts and allow
+          // non-english language input to work.
+          if (part.match(/^[a-z]$/)) {
+            this.useKeyCode_ = true;
+            this.keyCode_ = part.toUpperCase().charCodeAt(0);
+          }
       }
     });
-
-    this.ident_ = ident;
-    this.mods_ = mods;
   }
 
   KeyboardShortcut.prototype = {
@@ -53,9 +58,10 @@ cr.define('cr.ui', function() {
      * @return {boolean} Whether we found a match or not.
      */
     matchesEvent: function(e) {
-      if (e.keyIdentifier == this.ident_) {
-        // All keyboard modifiers needs to match.
-        var mods = this.mods_;
+      if ((this.useKeyCode_ && e.keyCode == this.keyCode_) ||
+          e.key == this.key_) {
+        // All keyboard modifiers need to match.
+        const mods = this.mods_;
         return ['altKey', 'ctrlKey', 'metaKey', 'shiftKey'].every(function(k) {
           return e[k] == !!mods[k];
         });
@@ -65,11 +71,37 @@ cr.define('cr.ui', function() {
   };
 
   /**
+   * A list of keyboard shortcuts which all perform one command.
+   * @param {string} shortcuts Text-based representation of one or more keyboard
+   *     shortcuts, separated by spaces.
+   * @constructor
+   */
+  function KeyboardShortcutList(shortcuts) {
+    this.shortcuts_ = shortcuts.split(/\s+/).map(function(shortcut) {
+      return new KeyboardShortcut(shortcut);
+    });
+  }
+
+  KeyboardShortcutList.prototype = {
+    /**
+     * Returns true if any of the keyboard shortcuts in the list matches a
+     * keyboard event.
+     * @param {!Event} e
+     * @return {boolean}
+     */
+    matchesEvent: function(e) {
+      return this.shortcuts_.some(function(keyboardShortcut) {
+        return keyboardShortcut.matchesEvent(e);
+      });
+    },
+  };
+
+  /**
    * Creates a new command element.
    * @constructor
    * @extends {HTMLElement}
    */
-  var Command = cr.ui.define('command');
+  const Command = cr.ui.define('command');
 
   Command.prototype = {
     __proto__: HTMLElement.prototype,
@@ -80,8 +112,9 @@ cr.define('cr.ui', function() {
     decorate: function() {
       CommandManager.init(assert(this.ownerDocument));
 
-      if (this.hasAttribute('shortcut'))
+      if (this.hasAttribute('shortcut')) {
         this.shortcut = this.getAttribute('shortcut');
+      }
     },
 
     /**
@@ -91,11 +124,12 @@ cr.define('cr.ui', function() {
      * @param {HTMLElement=} opt_element Optional element to dispatch event on.
      */
     execute: function(opt_element) {
-      if (this.disabled)
+      if (this.disabled) {
         return;
-      var doc = this.ownerDocument;
+      }
+      const doc = this.ownerDocument;
       if (doc.activeElement) {
-        var e = new Event('command', {bubbles: true});
+        const e = new Event('command', {bubbles: true});
         e.command = this;
 
         (opt_element || doc.activeElement).dispatchEvent(e);
@@ -108,23 +142,23 @@ cr.define('cr.ui', function() {
      * @param {Node=} opt_node Node for which to actuate command state.
      */
     canExecuteChange: function(opt_node) {
-      dispatchCanExecuteEvent(this,
-                              opt_node || this.ownerDocument.activeElement);
+      dispatchCanExecuteEvent(
+          this, opt_node || this.ownerDocument.activeElement);
     },
 
     /**
      * The keyboard shortcut that triggers the command. This is a string
-     * consisting of a keyIdentifier (as reported by WebKit in keydown) as
-     * well as optional key modifiers joinded with a '-'.
+     * consisting of a key (as reported by WebKit in keydown) as
+     * well as optional key modifiers joinded with a '|'.
      *
      * Multiple keyboard shortcuts can be provided by separating them by
      * whitespace.
      *
      * For example:
      *   "F1"
-     *   "U+0008-Meta" for Apple command backspace.
-     *   "U+0041-Ctrl" for Control A
-     *   "U+007F U+0008-Meta" for Delete and Command Backspace
+     *   "Backspace|Meta" for Apple command backspace.
+     *   "a|Ctrl" for Control A
+     *   "Delete Backspace|Meta" for Delete and Command Backspace
      *
      * @type {string}
      */
@@ -133,16 +167,14 @@ cr.define('cr.ui', function() {
       return this.shortcut_;
     },
     set shortcut(shortcut) {
-      var oldShortcut = this.shortcut_;
+      const oldShortcut = this.shortcut_;
       if (shortcut !== oldShortcut) {
-        this.keyboardShortcuts_ = shortcut.split(/\s+/).map(function(shortcut) {
-          return new KeyboardShortcut(shortcut);
-        });
+        this.keyboardShortcuts_ = new KeyboardShortcutList(shortcut);
 
         // Set this after the keyboardShortcuts_ since that might throw.
         this.shortcut_ = shortcut;
-        cr.dispatchPropertyChange(this, 'shortcut', this.shortcut_,
-                                  oldShortcut);
+        cr.dispatchPropertyChange(
+            this, 'shortcut', this.shortcut_, oldShortcut);
       }
     },
 
@@ -152,12 +184,10 @@ cr.define('cr.ui', function() {
      * @return {boolean} Whether it matched or not.
      */
     matchesEvent: function(e) {
-      if (!this.keyboardShortcuts_)
+      if (!this.keyboardShortcuts_) {
         return false;
-
-      return this.keyboardShortcuts_.some(function(keyboardShortcut) {
-        return keyboardShortcut.matchesEvent(e);
-      });
+      }
+      return this.keyboardShortcuts_.matchesEvent(e);
     },
   };
 
@@ -185,7 +215,7 @@ cr.define('cr.ui', function() {
    * The flag that prevents the shortcut text from being displayed on menu.
    *
    * If false, the keyboard shortcut text (eg. "Ctrl+X" for the cut command)
-   * is displayed in menu when the command is assosiated with a menu item.
+   * is displayed in menu when the command is associated with a menu item.
    * Otherwise, no text is displayed.
    */
   cr.defineProperty(Command, 'hideShortcutText', cr.PropertyKind.BOOL_ATTR);
@@ -196,7 +226,7 @@ cr.define('cr.ui', function() {
    * @param {EventTarget} target The target element to dispatch the event on.
    */
   function dispatchCanExecuteEvent(command, target) {
-    var e = new CanExecuteEvent(command);
+    const e = new CanExecuteEvent(command);
     target.dispatchEvent(e);
     command.disabled = !e.canExecute;
   }
@@ -204,7 +234,7 @@ cr.define('cr.ui', function() {
   /**
    * The command managers for different documents.
    */
-  var commandManagers = {};
+  const commandManagers = {};
 
   /**
    * Keeps track of the focused element and updates the commands when the focus
@@ -224,7 +254,7 @@ cr.define('cr.ui', function() {
    * @param {!Document} doc The document to manage the commands for.
    */
   CommandManager.init = function(doc) {
-    var uid = cr.getUid(doc);
+    const uid = cr.getUid(doc);
     if (!(uid in commandManagers)) {
       commandManagers[uid] = new CommandManager(doc);
     }
@@ -240,13 +270,14 @@ cr.define('cr.ui', function() {
      * TODO(vitalyp): remove the suppression.
      */
     handleFocus_: function(e) {
-      var target = e.target;
+      const target = e.target;
 
       // Ignore focus on a menu button or command item.
-      if (target.menu || target.command)
+      if (target.menu || target.command) {
         return;
+      }
 
-      var commands = Array.prototype.slice.call(
+      const commands = Array.prototype.slice.call(
           target.ownerDocument.querySelectorAll('command'));
 
       commands.forEach(function(command) {
@@ -259,11 +290,11 @@ cr.define('cr.ui', function() {
      * @param {!Event} e The keydown event.
      */
     handleKeyDown_: function(e) {
-      var target = e.target;
-      var commands = Array.prototype.slice.call(
+      const target = e.target;
+      const commands = Array.prototype.slice.call(
           target.ownerDocument.querySelectorAll('command'));
 
-      for (var i = 0, command; command = commands[i]; i++) {
+      for (let i = 0, command; command = commands[i]; i++) {
         if (command.matchesEvent(e)) {
           // When invoking a command via a shortcut, we have to manually check
           // if it can be executed, since focus might not have been changed
@@ -290,7 +321,7 @@ cr.define('cr.ui', function() {
    * @class
    */
   function CanExecuteEvent(command) {
-    var e = new Event('canExecute', {bubbles: true, cancelable: true});
+    const e = new Event('canExecute', {bubbles: true, cancelable: true});
     e.__proto__ = CanExecuteEvent.prototype;
     e.command = command;
     return e;
@@ -325,6 +356,7 @@ cr.define('cr.ui', function() {
   // Export
   return {
     Command: Command,
-    CanExecuteEvent: CanExecuteEvent
+    CanExecuteEvent: CanExecuteEvent,
+    KeyboardShortcutList: KeyboardShortcutList,
   };
 });

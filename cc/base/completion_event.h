@@ -39,16 +39,24 @@ class CompletionEvent {
     DCHECK(!waited_);
     waited_ = true;
 #endif
-    base::ThreadRestrictions::ScopedAllowWait allow_wait;
+    // http://crbug.com/902653
+    base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_wait;
     event_.Wait();
   }
 
-  void TimedWait(const base::TimeDelta& max_time) {
+  bool TimedWait(const base::TimeDelta& max_time) {
 #if DCHECK_IS_ON()
     DCHECK(!waited_);
     waited_ = true;
 #endif
-    event_.TimedWait(max_time);
+    // http://crbug.com/902653
+    base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_wait;
+    if (event_.TimedWait(max_time))
+      return true;
+#if DCHECK_IS_ON()
+    waited_ = false;
+#endif
+    return false;
   }
 
   bool IsSignaled() { return event_.IsSignaled(); }

@@ -34,9 +34,9 @@ window.queue_ = [];
 window.CLOSURE_IMPORT_SCRIPT = function(src) {
   // Only run our version of the import script
   // when trying to inject ChromeVox scripts.
-  if (src.indexOf('chrome-extension://') == 0) {
-    if (!goog.inHtmlDocument_() ||
-        goog.dependencies_.written[src]) {
+  // TODO(lazyboy): Use URL instead.
+  if (src.startsWith('chrome-extension://')) {
+    if (!goog.inHtmlDocument_() || goog.dependencies_.written[src]) {
       return false;
     }
     goog.dependencies_.written[src] = true;
@@ -49,8 +49,7 @@ window.CLOSURE_IMPORT_SCRIPT = function(src) {
       if (window.CLOSURE_USE_EXT_MESSAGES) {
         var relativeSrc = src.substr(src.indexOf('closure/..') + 11);
         chrome.extension.sendMessage(
-            {'srcFile': relativeSrc},
-            function(response) {
+            {'srcFile': relativeSrc}, function(response) {
               try {
                 eval(response['code']);
               } catch (e) {

@@ -11,26 +11,12 @@ class Typical10MobilePage(page_module.Page):
   def __init__(self, url, page_set, name=''):
     super(Typical10MobilePage, self).__init__(
         url=url, page_set=page_set, name=name,
-        credentials_path = 'data/credentials.json',
         shared_page_state_class=shared_page_state.SharedMobilePageState)
-    self.archive_data_file = 'data/typical_10_mobile.json'
 
   def RunPageInteractions(self, action_runner):
     action_runner.Wait(20)
     action_runner.ScrollPage()
     action_runner.Wait(20)
-
-class Typical10MobileReloadPage(Typical10MobilePage):
-
-  def __init__(self, url, page_set, name=''):
-    super(Typical10MobileReloadPage, self).__init__(
-        url=url, page_set=page_set, name=name,)
-
-  def RunPageInteractions(self, action_runner):
-    for _ in range(0, 5):
-      action_runner.ReloadPage()
-      action_runner.WaitForJavaScriptCondition(
-          'document.readyState === "complete"')
 
 
 urls_list = [
@@ -54,6 +40,8 @@ urls_list = [
     'http://siriuslymeg.tumblr.com/',
     # Why: Popular Chinese language site.
     'http://wapbaike.baidu.com/',
+    # Why: Simple page with an animated GIF
+    'https://en.wikipedia.org/wiki/File:Rotating_earth_(large).gif',
 ]
 
 
@@ -66,15 +54,4 @@ class Typical10MobilePageSet(story.StorySet):
         cloud_storage_bucket=story.PARTNER_BUCKET)
 
     for url in urls_list:
-      self.AddStory(Typical10MobilePage(url, self))
-
-class Typical10MobileReloadPageSet(story.StorySet):
-  """10 typical mobile pages, used for reloading power testing."""
-
-  def __init__(self):
-    super(Typical10MobileReloadPageSet, self).__init__(
-        archive_data_file='data/typical_10_mobile.json',
-        cloud_storage_bucket=story.PARTNER_BUCKET)
-
-    for url in urls_list:
-      self.AddStory(Typical10MobileReloadPage(url, self))
+      self.AddStory(Typical10MobilePage(url, self, name=url))

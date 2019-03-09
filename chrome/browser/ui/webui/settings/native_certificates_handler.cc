@@ -6,8 +6,8 @@
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/metrics/user_metrics.h"
 #include "chrome/browser/ui/webui/settings_utils.h"
-#include "content/public/browser/user_metrics.h"
 #include "content/public/browser/web_ui.h"
 
 namespace settings {
@@ -19,14 +19,14 @@ NativeCertificatesHandler::~NativeCertificatesHandler() {}
 void NativeCertificatesHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       "showManageSSLCertificates",
-      base::Bind(&NativeCertificatesHandler::HandleShowManageSSLCertificates,
-                 base::Unretained(this)));
+      base::BindRepeating(
+          &NativeCertificatesHandler::HandleShowManageSSLCertificates,
+          base::Unretained(this)));
 }
 
 void NativeCertificatesHandler::HandleShowManageSSLCertificates(
     const base::ListValue* args) {
-  content::RecordAction(
-      base::UserMetricsAction("Options_ManageSSLCertificates"));
+  base::RecordAction(base::UserMetricsAction("Options_ManageSSLCertificates"));
   settings_utils::ShowManageSSLCertificates(web_ui()->GetWebContents());
 }
 

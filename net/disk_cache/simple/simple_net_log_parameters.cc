@@ -14,6 +14,7 @@
 #include "base/values.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/simple/simple_entry_impl.h"
+#include "net/log/net_log_capture_mode.h"
 
 namespace {
 
@@ -41,17 +42,19 @@ std::unique_ptr<base::Value> NetLogSimpleEntryCreationCallback(
 
 namespace disk_cache {
 
-net::NetLog::ParametersCallback CreateNetLogSimpleEntryConstructionCallback(
+net::NetLogParametersCallback CreateNetLogSimpleEntryConstructionCallback(
     const SimpleEntryImpl* entry) {
   DCHECK(entry);
-  return base::Bind(&NetLogSimpleEntryConstructionCallback, entry);
+  return base::Bind(&NetLogSimpleEntryConstructionCallback,
+                    base::Unretained(entry));
 }
 
-net::NetLog::ParametersCallback CreateNetLogSimpleEntryCreationCallback(
+net::NetLogParametersCallback CreateNetLogSimpleEntryCreationCallback(
     const SimpleEntryImpl* entry,
     int net_error) {
   DCHECK(entry);
-  return base::Bind(&NetLogSimpleEntryCreationCallback, entry, net_error);
+  return base::Bind(&NetLogSimpleEntryCreationCallback, base::Unretained(entry),
+                    net_error);
 }
 
 }  // namespace disk_cache

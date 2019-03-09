@@ -4,13 +4,14 @@
 
 #include "chrome/browser/extensions/api/management/chrome_management_api_delegate.h"
 
+#include <memory>
+
+#include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/bookmark_app_helper.h"
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
-#include "chrome/browser/extensions/chrome_requirements_checker.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/launch_util.h"
@@ -22,23 +23,25 @@
 #include "chrome/browser/ui/extensions/app_launch_params.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
-#include "chrome/common/extensions/chrome_utility_extensions_messages.h"
 #include "chrome/common/extensions/extension_metrics.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
 #include "chrome/common/web_application_info.h"
 #include "components/favicon/core/favicon_service.h"
-#include "components/safe_json/safe_json_parser.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/utility_process_host.h"
-#include "content/public/browser/utility_process_host_client.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/service_manager_connection.h"
 #include "extensions/browser/api/management/management_api.h"
 #include "extensions/browser/api/management/management_api_constants.h"
+#include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
-#include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "services/data_decoder/public/cpp/safe_json_parser.h"
+
+#if defined(OS_CHROMEOS)
+#include "chrome/browser/chromeos/login/demo_mode/demo_session.h"
+#endif
 
 namespace {
 
@@ -61,7 +64,7 @@ class ManagementSetEnabledFunctionInstallPromptDelegate
                        OnInstallPromptDone,
                    weak_factory_.GetWeakPtr()),
         extension, nullptr,
-        base::WrapUnique(new ExtensionInstallPrompt::Prompt(type)),
+        std::make_unique<ExtensionInstallPrompt::Prompt>(type),
         ExtensionInstallPrompt::GetDefaultShowDialogCallback());
   }
   ~ManagementSetEnabledFunctionInstallPromptDelegate() override {}
@@ -93,23 +96,35 @@ class ManagementUninstallFunctionUninstallDialogDelegate
       bool show_programmatic_uninstall_ui)
       : function_(function) {
     ChromeExtensionFunctionDetails details(function);
-    extension_uninstall_dialog_.reset(
-        extensions::ExtensionUninstallDialog::Create(
-            details.GetProfile(), details.GetNativeWindowForUI(), this));
-    extensions::UninstallSource source =
-        function->source_context_type() == extensions::Feature::WEBUI_CONTEXT
-            ? extensions::UNINSTALL_SOURCE_CHROME_EXTENSIONS_PAGE
-            : extensions::UNINSTALL_SOURCE_EXTENSION;
+    extension_uninstall_dialog_ = extensions::ExtensionUninstallDialog::Create(
+        details.GetProfile(), details.GetNativeWindowForUI(), this);
+    bool uninstall_from_webstore =
+        function->extension() &&
+        function->extension()->id() == extensions::kWebStoreAppId;
+    extensions::UninstallSource source;
+    extensions::UninstallReason reason;
+    if (uninstall_from_webstore) {
+      source = extensions::UNINSTALL_SOURCE_CHROME_WEBSTORE;
+      reason = extensions::UNINSTALL_REASON_CHROME_WEBSTORE;
+    } else if (function->source_context_type() ==
+               extensions::Feature::WEBUI_CONTEXT) {
+      source = extensions::UNINSTALL_SOURCE_CHROME_EXTENSIONS_PAGE;
+      // TODO: Update this to a new reason; it shouldn't be lumped in with
+      // other uninstalls if it's from the chrome://extensions page.
+      reason = extensions::UNINSTALL_REASON_MANAGEMENT_API;
+    } else {
+      source = extensions::UNINSTALL_SOURCE_EXTENSION;
+      reason = extensions::UNINSTALL_REASON_MANAGEMENT_API;
+    }
     if (show_programmatic_uninstall_ui) {
       extension_uninstall_dialog_->ConfirmUninstallByExtension(
-          target_extension, function->extension(),
-          extensions::UNINSTALL_REASON_MANAGEMENT_API, source);
+          target_extension, function->extension(), reason, source);
     } else {
-      extension_uninstall_dialog_->ConfirmUninstall(
-          target_extension, extensions::UNINSTALL_REASON_MANAGEMENT_API,
-          source);
+      extension_uninstall_dialog_->ConfirmUninstall(target_extension, reason,
+                                                    source);
     }
   }
+
   ~ManagementUninstallFunctionUninstallDialogDelegate() override {}
 
   // ExtensionUninstallDialog::Delegate implementation.
@@ -150,7 +165,8 @@ class ChromeAppForLinkDelegate : public extensions::AppForLinkDelegate {
     }
 
     bookmark_app_helper_.reset(new extensions::BookmarkAppHelper(
-        Profile::FromBrowserContext(context), web_app, NULL));
+        Profile::FromBrowserContext(context), web_app, nullptr,
+        WebappInstallSource::MANAGEMENT_API));
     bookmark_app_helper_->Create(
         base::Bind(&extensions::ManagementGenerateAppForLinkFunction::
                        FinishCreateBookmarkApp,
@@ -171,7 +187,7 @@ ChromeManagementAPIDelegate::ChromeManagementAPIDelegate() {
 ChromeManagementAPIDelegate::~ChromeManagementAPIDelegate() {
 }
 
-bool ChromeManagementAPIDelegate::LaunchAppFunctionDelegate(
+void ChromeManagementAPIDelegate::LaunchAppFunctionDelegate(
     const extensions::Extension* extension,
     content::BrowserContext* context) const {
   // Look at prefs to find the right launch container.
@@ -179,13 +195,18 @@ bool ChromeManagementAPIDelegate::LaunchAppFunctionDelegate(
   // returned.
   extensions::LaunchContainer launch_container =
       GetLaunchContainer(extensions::ExtensionPrefs::Get(context), extension);
-  OpenApplication(AppLaunchParams(
-      Profile::FromBrowserContext(context), extension, launch_container,
-      NEW_FOREGROUND_TAB, extensions::SOURCE_MANAGEMENT_API));
+  OpenApplication(AppLaunchParams(Profile::FromBrowserContext(context),
+                                  extension, launch_container,
+                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                                  extensions::SOURCE_MANAGEMENT_API));
+
+#if defined(OS_CHROMEOS)
+  chromeos::DemoSession::RecordAppLaunchSourceIfInDemoMode(
+      chromeos::DemoSession::AppLaunchSource::kExtensionApi);
+#endif
+
   extensions::RecordAppLaunchType(extension_misc::APP_LAUNCH_EXTENSION_API,
                                   extension->GetType());
-
-  return true;
 }
 
 GURL ChromeManagementAPIDelegate::GetFullLaunchURL(
@@ -203,7 +224,8 @@ void ChromeManagementAPIDelegate::
     GetPermissionWarningsByManifestFunctionDelegate(
         extensions::ManagementGetPermissionWarningsByManifestFunction* function,
         const std::string& manifest_str) const {
-  safe_json::SafeJsonParser::Parse(
+  data_decoder::SafeJsonParser::Parse(
+      content::ServiceManagerConnection::GetForProcess()->GetConnector(),
       manifest_str,
       base::Bind(
           &extensions::ManagementGetPermissionWarningsByManifestFunction::
@@ -226,11 +248,6 @@ ChromeManagementAPIDelegate::SetEnabledFunctionDelegate(
           web_contents, browser_context, extension, callback));
 }
 
-std::unique_ptr<extensions::RequirementsChecker>
-ChromeManagementAPIDelegate::CreateRequirementsChecker() const {
-  return base::WrapUnique(new extensions::ChromeRequirementsChecker());
-}
-
 std::unique_ptr<extensions::UninstallDialogDelegate>
 ChromeManagementAPIDelegate::UninstallFunctionDelegate(
     extensions::ManagementUninstallFunctionBase* function,
@@ -243,13 +260,13 @@ ChromeManagementAPIDelegate::UninstallFunctionDelegate(
 
 bool ChromeManagementAPIDelegate::CreateAppShortcutFunctionDelegate(
     extensions::ManagementCreateAppShortcutFunction* function,
-    const extensions::Extension* extension) const {
+    const extensions::Extension* extension,
+    std::string* error) const {
   Browser* browser = chrome::FindBrowserWithProfile(
       Profile::FromBrowserContext(function->browser_context()));
   if (!browser) {
     // Shouldn't happen if we have user gesture.
-    function->SetError(
-        extension_management_api_constants::kNoBrowserToCreateShortcut);
+    *error = extension_management_api_constants::kNoBrowserToCreateShortcut;
     return false;
   }
 
@@ -309,23 +326,23 @@ void ChromeManagementAPIDelegate::EnableExtension(
 
 void ChromeManagementAPIDelegate::DisableExtension(
     content::BrowserContext* context,
+    const extensions::Extension* source_extension,
     const std::string& extension_id,
-    extensions::Extension::DisableReason disable_reason) const {
+    extensions::disable_reason::DisableReason disable_reason) const {
   extensions::ExtensionSystem::Get(context)
       ->extension_service()
-      ->DisableExtension(extension_id, disable_reason);
+      ->DisableExtensionWithSource(source_extension, extension_id,
+                                   disable_reason);
 }
 
 bool ChromeManagementAPIDelegate::UninstallExtension(
     content::BrowserContext* context,
     const std::string& transient_extension_id,
     extensions::UninstallReason reason,
-    const base::Closure& deletion_done_callback,
     base::string16* error) const {
   return extensions::ExtensionSystem::Get(context)
       ->extension_service()
-      ->UninstallExtension(transient_extension_id, reason,
-                           deletion_done_callback, error);
+      ->UninstallExtension(transient_extension_id, reason, error);
 }
 
 void ChromeManagementAPIDelegate::SetLaunchType(
@@ -339,8 +356,7 @@ GURL ChromeManagementAPIDelegate::GetIconURL(
     const extensions::Extension* extension,
     int icon_size,
     ExtensionIconSet::MatchType match,
-    bool grayscale,
-    bool* exists) const {
+    bool grayscale) const {
   return extensions::ExtensionIconSource::GetIconURL(extension, icon_size,
-                                                     match, grayscale, exists);
+                                                     match, grayscale);
 }

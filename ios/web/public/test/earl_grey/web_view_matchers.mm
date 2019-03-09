@@ -4,72 +4,89 @@
 
 #import "ios/web/public/test/earl_grey/web_view_matchers.h"
 
+#import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
 
-#include "base/mac/bind_objc_block.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/ios/wait_util.h"
 #include "base/values.h"
-#include "ios/testing/earl_grey/wait_util.h"
+#import "ios/web/interstitials/web_interstitial_impl.h"
+#import "ios/web/public/test/earl_grey/js_test_util.h"
+#import "ios/web/public/test/web_view_interaction_test_util.h"
+#import "net/base/mac/url_conversions.h"
 
-namespace {
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
-// Script that returns document.body as a string.
-char kGetDocumentBodyJavaScript[] =
-    "document.body ? document.body.textContent : null";
-}
+// TODO(crbug.com/757982): Remove this class, after LoadImage() is removed.
+// A helper delegate class that allows downloading responses with invalid
+// SSL certs.
+@interface TestURLSessionDelegateDeprecated : NSObject<NSURLSessionDelegate>
+@end
 
-namespace web {
+@implementation TestURLSessionDelegateDeprecated
 
-id<GREYMatcher> webViewContainingText(const std::string& text,
-                                      web::WebState* webState) {
-  return
-      [GREYMatchers matcherForWebViewContainingText:text inWebState:webState];
-}
-
-}  // namespace web
-
-@implementation GREYMatchers (WebViewAdditions)
-
-+ (id<GREYMatcher>)matcherForWebViewContainingText:(const std::string&)text
-                                        inWebState:(web::WebState*)webState {
-  MatchesBlock matches = ^BOOL(UIView* view) {
-    if (![view isKindOfClass:[WKWebView class]]) {
-      return NO;
-    }
-    if (![view isDescendantOfView:webState->GetView()]) {
-      return NO;
-    }
-
-    __block BOOL didSucceed = NO;
-    NSDate* deadline =
-        [NSDate dateWithTimeIntervalSinceNow:testing::kWaitForUIElementTimeout];
-    while (([[NSDate date] compare:deadline] != NSOrderedDescending) &&
-           !didSucceed) {
-      webState->ExecuteJavaScript(
-          base::UTF8ToUTF16(kGetDocumentBodyJavaScript),
-          base::BindBlock(^(const base::Value* value) {
-            std::string response;
-            if (value && value->IsType(base::Value::TYPE_STRING) &&
-                value->GetAsString(&response)) {
-              didSucceed = response.find(text) != std::string::npos;
-            }
-          }));
-      base::test::ios::SpinRunLoopWithMaxDelay(
-          base::TimeDelta::FromSecondsD(testing::kSpinDelaySeconds));
-    }
-    return didSucceed;
-  };
-
-  DescribeToBlock describe = ^(id<GREYDescription> description) {
-    [description appendText:@"web view containing "];
-    [description appendText:base::SysUTF8ToNSString(text)];
-  };
-
-  return [[[GREYElementMatcherBlock alloc] initWithMatchesBlock:matches
-                                               descriptionBlock:describe]
-      autorelease];
+- (void)URLSession:(NSURLSession*)session
+    didReceiveChallenge:(NSURLAuthenticationChallenge*)challenge
+      completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition,
+                                  NSURLCredential*))completionHandler {
+  SecTrustRef serverTrust = challenge.protectionSpace.serverTrust;
+  completionHandler(NSURLSessionAuthChallengeUseCredential,
+                    [NSURLCredential credentialForTrust:serverTrust]);
 }
 
 @end
+
+namespace web {
+
+id<GREYMatcher> WebViewInWebState(WebState* web_state) {
+  MatchesBlock matches = ^BOOL(UIView* view) {
+    return [view isKindOfClass:[WKWebView class]] &&
+           [view isDescendantOfView:web_state->GetView()];
+  };
+
+  DescribeToBlock describe = ^(id<GREYDescription> description) {
+    [description appendText:@"web view in web state"];
+  };
+
+  return [[GREYElementMatcherBlock alloc] initWithMatchesBlock:matches
+                                              descriptionBlock:describe];
+}
+
+id<GREYMatcher> WebViewScrollView(WebState* web_state) {
+  MatchesBlock matches = ^BOOL(UIView* view) {
+    return [view isKindOfClass:[UIScrollView class]] &&
+           [view.superview isKindOfClass:[WKWebView class]] &&
+           [view isDescendantOfView:web_state->GetView()];
+  };
+
+  DescribeToBlock describe = ^(id<GREYDescription> description) {
+    [description appendText:@"web view scroll view"];
+  };
+
+  return [[GREYElementMatcherBlock alloc] initWithMatchesBlock:matches
+                                              descriptionBlock:describe];
+}
+
+id<GREYMatcher> Interstitial(WebState* web_state) {
+  MatchesBlock matches = ^BOOL(WKWebView* view) {
+    web::WebInterstitialImpl* interstitial =
+        static_cast<web::WebInterstitialImpl*>(web_state->GetWebInterstitial());
+    return interstitial &&
+           [view isDescendantOfView:interstitial->GetContentView()];
+  };
+
+  DescribeToBlock describe = ^(id<GREYDescription> description) {
+    [description appendText:@"interstitial displayed"];
+  };
+
+  return grey_allOf(
+      WebViewInWebState(web_state),
+      [[GREYElementMatcherBlock alloc] initWithMatchesBlock:matches
+                                           descriptionBlock:describe],
+      nil);
+}
+
+}  // namespace web

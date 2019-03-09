@@ -8,15 +8,16 @@
 
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "base/test/user_action_tester.h"
+#include "ash/window_factory.h"
+#include "base/test/metrics/user_action_tester.h"
+#include "ui/aura/client/window_types.h"
 #include "ui/aura/test/test_window_delegate.h"
 #include "ui/aura/window.h"
 #include "ui/compositor/layer_type.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/wm/public/activation_client.h"
-#include "ui/wm/public/window_types.h"
 
-using aura::client::ActivationChangeObserver;
+using wm::ActivationChangeObserver;
 
 namespace ash {
 namespace {
@@ -25,15 +26,15 @@ const char kDesktopTaskSwitchUserAction[] = "Desktop_SwitchTask";
 
 // Test fixture for the DesktopTaskSwitchMetricsRecorder class. NOTE: This
 // fixture extends AshTestBase so that the UserMetricsRecorder instance required
-// by the test target can be obtained through Shell::GetInstance()->metrics()
-// and the test target is not the same instance as the one owned by the
+// by the test target can be obtained through Shell::Get()->metrics() and the
+// test target is not the same instance as the one owned by the
 // UserMetricsRecorder instance.
-class DesktopTaskSwitchMetricRecorderTest : public test::AshTestBase {
+class DesktopTaskSwitchMetricRecorderTest : public AshTestBase {
  public:
   DesktopTaskSwitchMetricRecorderTest();
   ~DesktopTaskSwitchMetricRecorderTest() override;
 
-  // test::AshTestBase:
+  // AshTestBase:
   void SetUp() override;
   void TearDown() override;
 
@@ -67,12 +68,14 @@ class DesktopTaskSwitchMetricRecorderTest : public test::AshTestBase {
   DISALLOW_COPY_AND_ASSIGN(DesktopTaskSwitchMetricRecorderTest);
 };
 
-DesktopTaskSwitchMetricRecorderTest::DesktopTaskSwitchMetricRecorderTest() {}
+DesktopTaskSwitchMetricRecorderTest::DesktopTaskSwitchMetricRecorderTest() =
+    default;
 
-DesktopTaskSwitchMetricRecorderTest::~DesktopTaskSwitchMetricRecorderTest() {}
+DesktopTaskSwitchMetricRecorderTest::~DesktopTaskSwitchMetricRecorderTest() =
+    default;
 
 void DesktopTaskSwitchMetricRecorderTest::SetUp() {
-  test::AshTestBase::SetUp();
+  AshTestBase::SetUp();
   metrics_recorder_.reset(new DesktopTaskSwitchMetricRecorder);
   user_action_tester_.reset(new base::UserActionTester);
 }
@@ -80,7 +83,7 @@ void DesktopTaskSwitchMetricRecorderTest::SetUp() {
 void DesktopTaskSwitchMetricRecorderTest::TearDown() {
   user_action_tester_.reset();
   metrics_recorder_.reset();
-  test::AshTestBase::TearDown();
+  AshTestBase::TearDown();
 }
 
 void DesktopTaskSwitchMetricRecorderTest::ActiveTaskWindowWithUserInput(
@@ -99,18 +102,18 @@ int DesktopTaskSwitchMetricRecorderTest::GetActionCount() const {
 
 std::unique_ptr<aura::Window>
 DesktopTaskSwitchMetricRecorderTest::CreatePositionableWindow() const {
-  std::unique_ptr<aura::Window> window(new aura::Window(
-      aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate()));
-  window->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+  std::unique_ptr<aura::Window> window = window_factory::NewWindow(
+      aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate());
+  window->SetType(aura::client::WINDOW_TYPE_NORMAL);
   window->Init(ui::LAYER_NOT_DRAWN);
   return window;
 }
 
 std::unique_ptr<aura::Window>
 DesktopTaskSwitchMetricRecorderTest::CreateNonPositionableWindow() const {
-  std::unique_ptr<aura::Window> window(new aura::Window(
-      aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate()));
-  window->SetType(ui::wm::WINDOW_TYPE_UNKNOWN);
+  std::unique_ptr<aura::Window> window = window_factory::NewWindow(
+      aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate());
+  window->SetType(aura::client::WINDOW_TYPE_UNKNOWN);
   window->Init(ui::LAYER_NOT_DRAWN);
   return window;
 }
@@ -246,12 +249,12 @@ TEST_F(DesktopTaskSwitchMetricRecorderTest,
 // Test fixture to test the integration of the DesktopTaskSwitchMetricsRecorder
 // class with ash::Shell environment.
 class DesktopTaskSwitchMetricRecorderWithShellIntegrationTest
-    : public test::AshTestBase {
+    : public AshTestBase {
  public:
   DesktopTaskSwitchMetricRecorderWithShellIntegrationTest();
   ~DesktopTaskSwitchMetricRecorderWithShellIntegrationTest() override;
 
-  // test::AshTestBase:
+  // AshTestBase:
   void SetUp() override;
   void TearDown() override;
 
@@ -278,19 +281,19 @@ class DesktopTaskSwitchMetricRecorderWithShellIntegrationTest
 };
 
 DesktopTaskSwitchMetricRecorderWithShellIntegrationTest::
-    DesktopTaskSwitchMetricRecorderWithShellIntegrationTest() {}
+    DesktopTaskSwitchMetricRecorderWithShellIntegrationTest() = default;
 
 DesktopTaskSwitchMetricRecorderWithShellIntegrationTest::
-    ~DesktopTaskSwitchMetricRecorderWithShellIntegrationTest() {}
+    ~DesktopTaskSwitchMetricRecorderWithShellIntegrationTest() = default;
 
 void DesktopTaskSwitchMetricRecorderWithShellIntegrationTest::SetUp() {
-  test::AshTestBase::SetUp();
+  AshTestBase::SetUp();
   user_action_tester_.reset(new base::UserActionTester);
 }
 
 void DesktopTaskSwitchMetricRecorderWithShellIntegrationTest::TearDown() {
   user_action_tester_.reset();
-  test::AshTestBase::TearDown();
+  AshTestBase::TearDown();
 }
 
 int DesktopTaskSwitchMetricRecorderWithShellIntegrationTest::GetActionCount()
@@ -325,8 +328,7 @@ TEST_F(DesktopTaskSwitchMetricRecorderWithShellIntegrationTest,
   aura::Window* positionable_window =
       CreatePositionableWindowInShellWithBounds(gfx::Rect(0, 0, 10, 10));
 
-  Shell::GetInstance()->activation_client()->ActivateWindow(
-      positionable_window);
+  Shell::Get()->activation_client()->ActivateWindow(positionable_window);
 
   EXPECT_EQ(0, GetActionCount());
 }

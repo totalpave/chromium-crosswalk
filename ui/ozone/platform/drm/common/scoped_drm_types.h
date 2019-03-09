@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include "base/memory/free_deleter.h"
+
 typedef struct _drmModeConnector drmModeConnector;
 typedef struct _drmModeCrtc drmModeCrtc;
 typedef struct _drmModeEncoder drmModeEncoder;
@@ -18,6 +20,8 @@ typedef struct _drmModeProperty drmModePropertyRes;
 typedef struct _drmModeAtomicReq drmModeAtomicReq;
 typedef struct _drmModePropertyBlob drmModePropertyBlobRes;
 typedef struct _drmModeRes drmModeRes;
+typedef struct drm_color_lut drm_color_lut;
+typedef struct drm_color_ctm drm_color_ctm;
 
 namespace ui {
 
@@ -45,11 +49,9 @@ struct DrmPlaneResDeleter {
 struct DrmPropertyDeleter {
   void operator()(drmModePropertyRes* property) const;
 };
-#if defined(USE_DRM_ATOMIC)
 struct DrmAtomicReqDeleter {
   void operator()(drmModeAtomicReq* property) const;
 };
-#endif  // defined(USE_DRM_ATOMIC)
 struct DrmPropertyBlobDeleter {
   void operator()(drmModePropertyBlobRes* property) const;
 };
@@ -69,14 +71,15 @@ typedef std::unique_ptr<drmModePlaneRes, DrmPlaneResDeleter>
     ScopedDrmPlaneResPtr;
 typedef std::unique_ptr<drmModePropertyRes, DrmPropertyDeleter>
     ScopedDrmPropertyPtr;
-#if defined(USE_DRM_ATOMIC)
 typedef std::unique_ptr<drmModeAtomicReq, DrmAtomicReqDeleter>
     ScopedDrmAtomicReqPtr;
-#endif  // defined(USE_DRM_ATOMIC)
 typedef std::unique_ptr<drmModePropertyBlobRes, DrmPropertyBlobDeleter>
     ScopedDrmPropertyBlobPtr;
 typedef std::unique_ptr<drmModeFB, DrmFramebufferDeleter>
     ScopedDrmFramebufferPtr;
+
+typedef std::unique_ptr<drm_color_lut, base::FreeDeleter> ScopedDrmColorLutPtr;
+typedef std::unique_ptr<drm_color_ctm, base::FreeDeleter> ScopedDrmColorCtmPtr;
 
 }  // namespace ui
 

@@ -77,29 +77,6 @@ def _CheckForUseOfWrongClock(input_api, output_api):
     return []
 
 
-def _CheckForMessageLoopProxy(input_api, output_api):
-  """Make sure media code only uses MessageLoopProxy for accessing the current
-  loop."""
-
-  message_loop_proxy_re = input_api.re.compile(
-      r'\bMessageLoopProxy(?!::current\(\))')
-
-  problems = []
-  for f in input_api.AffectedSourceFiles(_FilterFile):
-    for line_number, line in f.ChangedContents():
-      if message_loop_proxy_re.search(line):
-        problems.append('%s:%d' % (f.LocalPath(), line_number))
-
-  if problems:
-    return [output_api.PresubmitError(
-      'MessageLoopProxy should only be used for accessing the current loop.\n'
-      'Use the TaskRunner interfaces instead as they are more explicit about\n'
-      'the run-time characteristics. In most cases, SingleThreadTaskRunner\n'
-      'is a drop-in replacement for MessageLoopProxy.', problems)]
-
-  return []
-
-
 def _CheckForHistogramOffByOne(input_api, output_api):
   """Make sure histogram enum maxes are used properly"""
 
@@ -167,7 +144,7 @@ def _CheckForHistogramOffByOne(input_api, output_api):
       ' - The max value (3rd argument) should be an enum value equal to the\n'
       '   last valid value, e.g. FOO_MAX = LAST_VALID_FOO.\n'
       ' - 1 must be added to that max value.\n'
-      'Contact rileya@chromium.org if you have questions.' , problems)]
+      'Contact dalecurtis@chromium.org if you have questions.' , problems)]
 
   return []
 
@@ -190,13 +167,51 @@ def _CheckPassByValue(input_api, output_api):
   return []
 
 
+def _CheckForUseOfLazyInstance(input_api, output_api):
+  """Check that base::LazyInstance is not used."""
+
+  problems = []
+
+  lazy_instance_re = re.compile(r'(^|\W)base::LazyInstance<')
+
+  for f in input_api.AffectedSourceFiles(_FilterFile):
+    for line_number, line in f.ChangedContents():
+      if lazy_instance_re.search(line):
+        problems.append('%s:%d' % (f, line_number))
+
+  if problems:
+    return [output_api.PresubmitError(
+      'base::LazyInstance is deprecated; use a thread safe static.', problems)]
+  return []
+
+def _CheckNoLoggingOverrideInHeaders(input_api, output_api):
+  """Checks to make sure no .h files include logging_override_if_enabled.h."""
+  files = []
+  pattern = input_api.re.compile(
+    r'^#include\s*"media/base/logging_override_if_enabled.h"',
+    input_api.re.MULTILINE)
+  for f in input_api.AffectedSourceFiles(input_api.FilterSourceFile):
+    if not f.LocalPath().endswith('.h'):
+      continue
+    contents = input_api.ReadFile(f)
+    if pattern.search(contents):
+      files.append(f)
+
+  if len(files):
+    return [output_api.PresubmitError(
+        'Do not #include "logging_override_if_enabled.h" in header files, '
+        'since it overrides DVLOG() in every file including the header. '
+        'Instead, only include it in source files.',
+        files) ]
+  return []
+
 def _CheckChange(input_api, output_api):
   results = []
   results.extend(_CheckForUseOfWrongClock(input_api, output_api))
-  results.extend(_CheckForMessageLoopProxy(input_api, output_api))
   results.extend(_CheckPassByValue(input_api, output_api))
   results.extend(_CheckForHistogramOffByOne(input_api, output_api))
-  results += input_api.canned_checks.CheckPatchFormatted(input_api, output_api)
+  results.extend(_CheckForUseOfLazyInstance(input_api, output_api))
+  results.extend(_CheckNoLoggingOverrideInHeaders(input_api, output_api))
   return results
 
 

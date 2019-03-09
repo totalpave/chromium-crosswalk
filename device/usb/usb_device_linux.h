@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef DEVICE_USB_USB_DEVICE_IMPL_H_
-#define DEVICE_USB_USB_DEVICE_IMPL_H_
+#ifndef DEVICE_USB_USB_DEVICE_LINUX_H_
+#define DEVICE_USB_USB_DEVICE_LINUX_H_
 
 #include <stdint.h>
 
@@ -12,40 +12,30 @@
 
 #include "base/files/scoped_file.h"
 #include "base/macros.h"
-#include "base/threading/thread_checker.h"
+#include "base/sequence_checker.h"
 #include "build/build_config.h"
 #include "device/usb/usb_device.h"
-#include "device/usb/webusb_descriptors.h"
 
 namespace base {
 class SequencedTaskRunner;
 }
 
-namespace dbus {
-class FileDescriptor;
-}
-
 namespace device {
 
-struct UsbConfigDescriptor;
 struct UsbDeviceDescriptor;
 
 class UsbDeviceLinux : public UsbDevice {
  public:
 // UsbDevice implementation:
 #if defined(OS_CHROMEOS)
-  void CheckUsbAccess(const ResultCallback& callback) override;
+  void CheckUsbAccess(ResultCallback callback) override;
 #endif  // OS_CHROMEOS
-  void Open(const OpenCallback& callback) override;
+  void Open(OpenCallback callback) override;
 
   const std::string& device_path() const { return device_path_; }
 
   // These functions are used during enumeration only. The values must not
   // change during the object's lifetime.
-  void set_webusb_allowed_origins(
-      std::unique_ptr<WebUsbAllowedOrigins> allowed_origins) {
-    webusb_allowed_origins_ = std::move(allowed_origins);
-  }
   void set_webusb_landing_page(const GURL& url) { webusb_landing_page_ = url; }
 
  protected:
@@ -58,34 +48,33 @@ class UsbDeviceLinux : public UsbDevice {
                  const std::string& product_string,
                  const std::string& serial_number,
                  uint8_t active_configuration,
-                 scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
+                 uint32_t bus_number, uint32_t port_number);
 
   ~UsbDeviceLinux() override;
 
  private:
 #if defined(OS_CHROMEOS)
-  void OnOpenRequestComplete(const OpenCallback& callback,
-                             dbus::FileDescriptor fd);
-  void OnOpenRequestError(const OpenCallback& callback,
+  void OnOpenRequestComplete(OpenCallback callback, base::ScopedFD fd);
+  void OnOpenRequestError(OpenCallback callback,
                           const std::string& error_name,
                           const std::string& error_message);
-  void OpenOnBlockingThreadWithFd(dbus::FileDescriptor fd,
-                                  const OpenCallback& callback);
 #else
-  void OpenOnBlockingThread(const OpenCallback& callback);
+  void OpenOnBlockingThread(
+      OpenCallback callback,
+      scoped_refptr<base::SequencedTaskRunner> task_runner,
+      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
 #endif  // defined(OS_CHROMEOS)
-  void Opened(base::ScopedFD fd, const OpenCallback& callback);
+  void Opened(base::ScopedFD fd,
+              OpenCallback callback,
+              scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
 
-  base::ThreadChecker thread_checker_;
+  SEQUENCE_CHECKER(sequence_checker_);
 
   const std::string device_path_;
-
-  scoped_refptr<base::SequencedTaskRunner> task_runner_;
-  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(UsbDeviceLinux);
 };
 
 }  // namespace device
 
-#endif  // DEVICE_USB_USB_DEVICE_IMPL_H_
+#endif  // DEVICE_USB_USB_DEVICE_LINUX_H_

@@ -5,9 +5,11 @@
 #ifndef CHROMECAST_BASE_PREF_NAMES_H_
 #define CHROMECAST_BASE_PREF_NAMES_H_
 
+namespace chromecast {
 namespace prefs {
 
-extern const char kEnableRemoteDebugging[];
+extern const char kActiveDCSExperiments[];
+extern const char kLatestDCSFeatures[];
 extern const char kMetricsIsNewClientID[];
 extern const char kOptInStats[];
 extern const char kStabilityChildProcessCrashCount[];
@@ -19,5 +21,6 @@ extern const char kStabilityRendererHangCount[];
 extern const char kStabilitySystemUncleanShutdownCount[];
 
 }  // namespace prefs
+}  // namespace chromecast
 
 #endif  // CHROMECAST_BASE_PREF_NAMES_H_

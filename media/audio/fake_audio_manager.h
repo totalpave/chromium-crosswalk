@@ -16,14 +16,14 @@ namespace media {
 
 class MEDIA_EXPORT FakeAudioManager : public AudioManagerBase {
  public:
-  FakeAudioManager(
-      scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-      scoped_refptr<base::SingleThreadTaskRunner> worker_task_runner,
-      AudioLogFactory* audio_log_factory);
+  FakeAudioManager(std::unique_ptr<AudioThread> audio_thread,
+                   AudioLogFactory* audio_log_factory);
+  ~FakeAudioManager() override;
 
   // Implementation of AudioManager.
   bool HasAudioOutputDevices() override;
   bool HasAudioInputDevices() override;
+  const char* GetName() override;
 
   // Implementation of AudioManagerBase.
   AudioOutputStream* MakeLinearOutputStream(
@@ -45,8 +45,6 @@ class MEDIA_EXPORT FakeAudioManager : public AudioManagerBase {
       const std::string& device_id) override;
 
  protected:
-  ~FakeAudioManager() override;
-
   AudioParameters GetPreferredOutputStreamParameters(
       const std::string& output_device_id,
       const AudioParameters& input_params) override;

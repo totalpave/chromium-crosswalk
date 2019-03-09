@@ -5,33 +5,44 @@
 #ifndef NET_SPDY_HEADER_COALESCER_H_
 #define NET_SPDY_HEADER_COALESCER_H_
 
+#include "base/strings/string_piece.h"
 #include "net/base/net_export.h"
-#include "net/spdy/spdy_header_block.h"
-#include "net/spdy/spdy_headers_handler_interface.h"
-#include "net/spdy/spdy_protocol.h"
+#include "net/log/net_log_with_source.h"
+#include "net/third_party/quiche/src/spdy/core/spdy_header_block.h"
+#include "net/third_party/quiche/src/spdy/core/spdy_headers_handler_interface.h"
 
 namespace net {
 
-class NET_EXPORT_PRIVATE HeaderCoalescer : public SpdyHeadersHandlerInterface {
+class NET_EXPORT_PRIVATE HeaderCoalescer
+    : public spdy::SpdyHeadersHandlerInterface {
  public:
-  explicit HeaderCoalescer(const SpdyMajorVersion& protocol_version)
-      : protocol_version_(protocol_version) {}
+  HeaderCoalescer(uint32_t max_header_list_size,
+                  const NetLogWithSource& net_log);
 
   void OnHeaderBlockStart() override {}
 
   void OnHeader(base::StringPiece key, base::StringPiece value) override;
 
-  void OnHeaderBlockEnd(size_t uncompressed_header_bytes) override {}
+  void OnHeaderBlockEnd(size_t uncompressed_header_bytes,
+                        size_t compressed_header_bytes) override {}
 
-  const SpdyHeaderBlock& headers() const { return headers_; }
+  spdy::SpdyHeaderBlock release_headers();
   bool error_seen() const { return error_seen_; }
 
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const;
+
  private:
-  SpdyHeaderBlock headers_;
+  // Helper to add a header. Return true on success.
+  bool AddHeader(base::StringPiece key, base::StringPiece value);
+
+  spdy::SpdyHeaderBlock headers_;
+  bool headers_valid_ = true;
   size_t header_list_size_ = 0;
   bool error_seen_ = false;
   bool regular_header_seen_ = false;
-  SpdyMajorVersion protocol_version_;
+  const uint32_t max_header_list_size_;
+  NetLogWithSource net_log_;
 };
 
 }  // namespace net

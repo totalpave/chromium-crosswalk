@@ -7,9 +7,7 @@
 #include <utility>
 
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "content/public/browser/notification_service.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/browser/process_manager.h"
@@ -19,13 +17,11 @@ namespace extensions {
 
 class KeepAliveTest : public ExtensionsTest {
  public:
-  KeepAliveTest()
-      : notification_service_(content::NotificationService::Create()) {}
+  KeepAliveTest() : mojo_activity_(Activity::MOJO, "") {}
   ~KeepAliveTest() override {}
 
   void SetUp() override {
     ExtensionsTest::SetUp();
-    message_loop_.reset(new base::MessageLoop);
     extension_ =
         ExtensionBuilder()
             .SetManifest(
@@ -47,11 +43,6 @@ class KeepAliveTest : public ExtensionsTest {
             .Build();
   }
 
-  void TearDown() override {
-    message_loop_.reset();
-    ExtensionsTest::TearDown();
-  }
-
   void WaitUntilLazyKeepAliveChanges() {
     int initial_keep_alive_count = GetKeepAliveCount();
     while (GetKeepAliveCount() == initial_keep_alive_count) {
@@ -59,9 +50,9 @@ class KeepAliveTest : public ExtensionsTest {
     }
   }
 
-  void CreateKeepAlive(mojo::InterfaceRequest<KeepAlive> request) {
+  void CreateKeepAlive(KeepAliveRequest request) {
     KeepAliveImpl::Create(browser_context(), extension_.get(),
-                          std::move(request));
+                          std::move(request), nullptr);
   }
 
   const Extension* extension() { return extension_.get(); }
@@ -71,9 +62,16 @@ class KeepAliveTest : public ExtensionsTest {
         ->GetLazyKeepaliveCount(extension());
   }
 
+  using ActivitiesMultiset = ProcessManager::ActivitiesMultiset;
+
+  const std::pair<Activity::Type, std::string> mojo_activity_;
+
+  ActivitiesMultiset GetActivities() {
+    return ProcessManager::Get(browser_context())
+        ->GetLazyKeepaliveActivities(extension());
+  }
+
  private:
-  std::unique_ptr<base::MessageLoop> message_loop_;
-  std::unique_ptr<content::NotificationService> notification_service_;
   scoped_refptr<const Extension> extension_;
 
   DISALLOW_COPY_AND_ASSIGN(KeepAliveTest);
@@ -81,36 +79,43 @@ class KeepAliveTest : public ExtensionsTest {
 
 TEST_F(KeepAliveTest, Basic) {
   mojo::InterfacePtr<KeepAlive> keep_alive;
-  CreateKeepAlive(mojo::GetProxy(&keep_alive));
+  CreateKeepAlive(mojo::MakeRequest(&keep_alive));
   EXPECT_EQ(1, GetKeepAliveCount());
+  EXPECT_EQ(1u, GetActivities().count(mojo_activity_));
 
   keep_alive.reset();
   WaitUntilLazyKeepAliveChanges();
   EXPECT_EQ(0, GetKeepAliveCount());
+  EXPECT_EQ(0u, GetActivities().count(mojo_activity_));
 }
 
 TEST_F(KeepAliveTest, TwoKeepAlives) {
   mojo::InterfacePtr<KeepAlive> keep_alive;
-  CreateKeepAlive(mojo::GetProxy(&keep_alive));
+  CreateKeepAlive(mojo::MakeRequest(&keep_alive));
   EXPECT_EQ(1, GetKeepAliveCount());
+  EXPECT_EQ(1u, GetActivities().count(mojo_activity_));
 
   mojo::InterfacePtr<KeepAlive> other_keep_alive;
-  CreateKeepAlive(mojo::GetProxy(&other_keep_alive));
+  CreateKeepAlive(mojo::MakeRequest(&other_keep_alive));
   EXPECT_EQ(2, GetKeepAliveCount());
+  EXPECT_EQ(2u, GetActivities().count(mojo_activity_));
 
   keep_alive.reset();
   WaitUntilLazyKeepAliveChanges();
   EXPECT_EQ(1, GetKeepAliveCount());
+  EXPECT_EQ(1u, GetActivities().count(mojo_activity_));
 
   other_keep_alive.reset();
   WaitUntilLazyKeepAliveChanges();
   EXPECT_EQ(0, GetKeepAliveCount());
+  EXPECT_EQ(0u, GetActivities().count(mojo_activity_));
 }
 
 TEST_F(KeepAliveTest, UnloadExtension) {
   mojo::InterfacePtr<KeepAlive> keep_alive;
-  CreateKeepAlive(mojo::GetProxy(&keep_alive));
+  CreateKeepAlive(mojo::MakeRequest(&keep_alive));
   EXPECT_EQ(1, GetKeepAliveCount());
+  EXPECT_EQ(1u, GetActivities().count(mojo_activity_));
 
   scoped_refptr<const Extension> other_extension =
       ExtensionBuilder()
@@ -134,15 +139,17 @@ TEST_F(KeepAliveTest, UnloadExtension) {
 
   ExtensionRegistry::Get(browser_context())
       ->TriggerOnUnloaded(other_extension.get(),
-                          UnloadedExtensionInfo::REASON_DISABLE);
+                          UnloadedExtensionReason::DISABLE);
   EXPECT_EQ(1, GetKeepAliveCount());
+  EXPECT_EQ(1u, GetActivities().count(mojo_activity_));
 
   ExtensionRegistry::Get(browser_context())
-      ->TriggerOnUnloaded(extension(), UnloadedExtensionInfo::REASON_DISABLE);
+      ->TriggerOnUnloaded(extension(), UnloadedExtensionReason::DISABLE);
   // When its extension is unloaded, the KeepAliveImpl should not modify the
   // keep-alive count for its extension. However, ProcessManager resets its
   // keep-alive count for an unloaded extension.
   EXPECT_EQ(0, GetKeepAliveCount());
+  EXPECT_EQ(0u, GetActivities().count(mojo_activity_));
 
   // Wait for |keep_alive| to disconnect.
   base::RunLoop run_loop;
@@ -152,13 +159,15 @@ TEST_F(KeepAliveTest, UnloadExtension) {
 
 TEST_F(KeepAliveTest, Shutdown) {
   mojo::InterfacePtr<KeepAlive> keep_alive;
-  CreateKeepAlive(mojo::GetProxy(&keep_alive));
+  CreateKeepAlive(mojo::MakeRequest(&keep_alive));
   EXPECT_EQ(1, GetKeepAliveCount());
+  EXPECT_EQ(1u, GetActivities().count(mojo_activity_));
 
   ExtensionRegistry::Get(browser_context())->Shutdown();
   // After a shutdown event, the KeepAliveImpl should not access its
   // ProcessManager and so the keep-alive count should remain unchanged.
   EXPECT_EQ(1, GetKeepAliveCount());
+  EXPECT_EQ(1u, GetActivities().count(mojo_activity_));
 
   // Wait for |keep_alive| to disconnect.
   base::RunLoop run_loop;

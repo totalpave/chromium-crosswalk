@@ -4,10 +4,7 @@
 
 #include <string>
 
-#include "ash/common/wm/window_positioner.h"
-#include "ash/display/display_manager.h"
 #include "ash/shell.h"
-#include "ash/test/display_manager_test_api.h"
 #include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
@@ -18,11 +15,13 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "components/policy/policy_constants.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/test_utils.h"
-#include "policy/policy_constants.h"
+#include "ui/display/manager/display_manager.h"
+#include "ui/display/test/display_manager_test_api.h"
 
 namespace policy {
 
@@ -36,12 +35,10 @@ class ForceMaximizeOnFirstRunTest : public LoginPolicyTestBase {
 
   void SetUpResolution() {
     // Set a screen resolution for which the first browser window will not be
-    // maximized by default.
-    const int width =
-        ash::WindowPositioner::GetForceMaximizedWidthLimit() + 100;
-    // Set resolution to 1466x300.
-    const std::string resolution = base::IntToString(width) + "x300";
-    ash::test::DisplayManagerTestApi().UpdateDisplay(resolution);
+    // maximized by default. 1466 is greater than kForceMaximizeWidthLimit.
+    const std::string resolution("1466x300");
+    display::test::DisplayManagerTestApi(ash::Shell::Get()->display_manager())
+        .UpdateDisplay(resolution);
   }
 
   const Browser* OpenNewBrowserWindow() {
@@ -59,7 +56,7 @@ class ForceMaximizeOnFirstRunTest : public LoginPolicyTestBase {
 IN_PROC_BROWSER_TEST_F(ForceMaximizeOnFirstRunTest, PRE_TwoRuns) {
   SetUpResolution();
   SkipToLoginScreen();
-  LogIn(kAccountId, kAccountPassword);
+  LogIn(kAccountId, kAccountPassword, kEmptyServices);
 
   // Check that the first browser window is maximized.
   const BrowserList* const browser_list = BrowserList::GetInstance();
@@ -84,7 +81,7 @@ IN_PROC_BROWSER_TEST_F(ForceMaximizeOnFirstRunTest, TwoRuns) {
   content::WindowedNotificationObserver(
       chrome::NOTIFICATION_LOGIN_OR_LOCK_WEBUI_VISIBLE,
       content::NotificationService::AllSources()).Wait();
-  LogIn(kAccountId, kAccountPassword);
+  LogIn(kAccountId, kAccountPassword, kEmptyServices);
 
   const Browser* const browser = OpenNewBrowserWindow();
   ASSERT_TRUE(browser);
@@ -106,7 +103,7 @@ class ForceMaximizePolicyFalseTest : public ForceMaximizeOnFirstRunTest {
 IN_PROC_BROWSER_TEST_F(ForceMaximizePolicyFalseTest, GeneralFirstRun) {
   SetUpResolution();
   SkipToLoginScreen();
-  LogIn(kAccountId, kAccountPassword);
+  LogIn(kAccountId, kAccountPassword, kEmptyServices);
 
   const BrowserList* const browser_list = BrowserList::GetInstance();
   EXPECT_EQ(1U, browser_list->size());

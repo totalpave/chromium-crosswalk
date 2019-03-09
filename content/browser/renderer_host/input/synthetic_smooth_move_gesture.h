@@ -11,11 +11,11 @@
 #include "base/time/time.h"
 #include "content/browser/renderer_host/input/synthetic_gesture.h"
 #include "content/browser/renderer_host/input/synthetic_gesture_target.h"
-#include "content/browser/renderer_host/input/synthetic_pointer.h"
+#include "content/browser/renderer_host/input/synthetic_pointer_driver.h"
 #include "content/common/content_export.h"
 #include "content/common/input/synthetic_smooth_drag_gesture_params.h"
 #include "content/common/input/synthetic_smooth_scroll_gesture_params.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "third_party/blink/public/platform/web_input_event.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
@@ -34,8 +34,12 @@ class CONTENT_EXPORT SyntheticSmoothMoveGestureParams {
   gfx::PointF start_point;
   std::vector<gfx::Vector2dF> distances;
   int speed_in_pixels_s;
+  int fling_velocity_x;
+  int fling_velocity_y;
   bool prevent_fling;
   bool add_slop;
+  bool precise_scrolling_deltas;
+  bool scroll_by_page;
 };
 
 // This class is used as helper class for simulation of scroll and drag.
@@ -74,7 +78,11 @@ class CONTENT_EXPORT SyntheticSmoothMoveGesture : public SyntheticGesture {
 
   void ForwardMouseWheelEvent(SyntheticGestureTarget* target,
                               const gfx::Vector2dF& delta,
+                              const blink::WebMouseWheelEvent::Phase phase,
                               const base::TimeTicks& timestamp) const;
+
+  void ForwardFlingGestureEvent(SyntheticGestureTarget* target,
+                                const blink::WebInputEvent::Type type) const;
 
   void PressPoint(SyntheticGestureTarget* target,
                   const base::TimeTicks& timestamp);
@@ -93,15 +101,17 @@ class CONTENT_EXPORT SyntheticSmoothMoveGesture : public SyntheticGesture {
   bool MoveIsNoOp() const;
 
   SyntheticSmoothMoveGestureParams params_;
-  std::unique_ptr<SyntheticPointer> synthetic_pointer_;
+  std::unique_ptr<SyntheticPointerDriver> synthetic_pointer_driver_;
   // Used for mouse input.
-  gfx::Vector2d current_move_segment_total_delta_discrete_;
+  gfx::Vector2dF current_move_segment_total_delta_;
   // Used for touch input.
   gfx::PointF current_move_segment_start_position_;
   GestureState state_;
   int current_move_segment_;
   base::TimeTicks current_move_segment_start_time_;
   base::TimeTicks current_move_segment_stop_time_;
+  // Used to set phase information for synthetic wheel events.
+  bool needs_scroll_begin_;
 
   DISALLOW_COPY_AND_ASSIGN(SyntheticSmoothMoveGesture);
 };

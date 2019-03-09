@@ -9,66 +9,23 @@
 #include <string>
 
 #include "ash/shell_delegate.h"
-#include "base/compiler_specific.h"
 #include "base/macros.h"
-
-namespace app_list {
-class AppListPresenterDelegateFactory;
-class AppListPresenterImpl;
-}
-
-namespace keyboard {
-class KeyboardUI;
-}
 
 namespace ash {
 namespace shell {
 
-class ShelfDelegateImpl;
-
-class ShellDelegateImpl : public ash::ShellDelegate {
+class ShellDelegateImpl : public ShellDelegate {
  public:
   ShellDelegateImpl();
   ~ShellDelegateImpl() override;
 
-  bool IsFirstRunAfterBoot() const override;
-  bool IsIncognitoAllowed() const override;
-  bool IsMultiProfilesEnabled() const override;
-  bool IsRunningInForcedAppMode() const override;
-  bool CanShowWindowForUser(WmWindow* window) const override;
-  bool IsForceMaximizeOnFirstRun() const override;
-  void PreInit() override;
-  void PreShutdown() override;
-  void Exit() override;
-  keyboard::KeyboardUI* CreateKeyboardUI() override;
-  void VirtualKeyboardActivated(bool activated) override;
-  void AddVirtualKeyboardStateObserver(
-      VirtualKeyboardStateObserver* observer) override;
-  void RemoveVirtualKeyboardStateObserver(
-      VirtualKeyboardStateObserver* observer) override;
-  void OpenUrlFromArc(const GURL& url) override;
-  app_list::AppListPresenter* GetAppListPresenter() override;
-  ShelfDelegate* CreateShelfDelegate(ShelfModel* model) override;
-  ash::SystemTrayDelegate* CreateSystemTrayDelegate() override;
-  ash::UserWallpaperDelegate* CreateUserWallpaperDelegate() override;
-  ash::SessionStateDelegate* CreateSessionStateDelegate() override;
-  ash::AccessibilityDelegate* CreateAccessibilityDelegate() override;
-  ash::NewWindowDelegate* CreateNewWindowDelegate() override;
-  ash::MediaDelegate* CreateMediaDelegate() override;
-  std::unique_ptr<PointerWatcherDelegate> CreatePointerWatcherDelegate()
-      override;
-  ui::MenuModel* CreateContextMenu(WmShelf* wm_shelf,
-                                   const ShelfItem* item) override;
-  GPUSupport* CreateGPUSupport() override;
-  base::string16 GetProductName() const override;
-  gfx::Image GetDeprecatedAcceleratorImage() const override;
+  // ShellDelegate:
+  bool CanShowWindowForUser(const aura::Window* window) const override;
+  std::unique_ptr<ScreenshotDelegate> CreateScreenshotDelegate() override;
+  AccessibilityDelegate* CreateAccessibilityDelegate() override;
+  ws::InputDeviceControllerClient* GetInputDeviceControllerClient() override;
 
  private:
-  ShelfDelegateImpl* shelf_delegate_;
-  std::unique_ptr<app_list::AppListPresenterDelegateFactory>
-      app_list_presenter_delegate_factory_;
-  std::unique_ptr<app_list::AppListPresenterImpl> app_list_presenter_;
-
   DISALLOW_COPY_AND_ASSIGN(ShellDelegateImpl);
 };
 

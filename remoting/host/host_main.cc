@@ -19,7 +19,9 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "mojo/core/embedder/embedder.h"
 #include "remoting/base/breakpad.h"
+#include "remoting/host/evaluate_capability.h"
 #include "remoting/host/host_exit_codes.h"
 #include "remoting/host/logging.h"
 #include "remoting/host/resources.h"
@@ -43,6 +45,7 @@ int HostProcessMain();
 #if defined(OS_WIN)
 int DaemonProcessMain();
 int DesktopProcessMain();
+int FileChooserMain();
 int RdpDesktopSessionMain();
 #endif  // defined(OS_WIN)
 
@@ -59,11 +62,12 @@ const char kUsageMessage[] =
   "  --daemon-pipe=<pipe>     - Specifies the pipe to connect to the daemon.\n"
   "  --elevate=<binary>       - Runs <binary> elevated.\n"
   "  --host-config=<config>   - Specifies the host configuration.\n"
-  "  --help, -?               - Print this message.\n"
+  "  --help, -?               - Prints this message.\n"
   "  --type                   - Specifies process type.\n"
   "  --version                - Prints the host version and exits.\n"
   "  --window-id=<id>         - Specifies a window to remote,"
-                                " instead of the whole desktop.\n";
+                                " instead of the whole desktop.\n"
+  "  --evaluate-type=<type>   - Evaluates the capability of the host.\n";
 
 void Usage(const base::FilePath& program_name) {
   printf(kUsageMessage, program_name.MaybeAsASCII().c_str());
@@ -129,6 +133,8 @@ MainRoutineFn SelectMainRoutine(const std::string& process_type) {
     main_routine = &DaemonProcessMain;
   } else if (process_type == kProcessTypeDesktop) {
     main_routine = &DesktopProcessMain;
+  } else if (process_type == kProcessTypeFileChooser) {
+    main_routine = &FileChooserMain;
   } else if (process_type == kProcessTypeRdpDesktopSession) {
     main_routine = &RdpDesktopSessionMain;
 #endif  // defined(OS_WIN)
@@ -147,30 +153,14 @@ int HostMain(int argc, char** argv) {
 
   base::CommandLine::Init(argc, argv);
 
-  // Initialize Breakpad as early as possible. On Mac the command-line needs to
-  // be initialized first, so that the preference for crash-reporting can be
-  // looked up in the config file.
-#if defined(REMOTING_ENABLE_BREAKPAD)
-  // TODO(nicholss): Commenting out Breakpad. See crbug.com/637884
-  // if (IsUsageStatsAllowed()) {
-  //   InitializeCrashReporting();
-  // }
-#endif  // defined(REMOTING_ENABLE_BREAKPAD)
-
-  // This object instance is required by Chrome code (for example,
-  // LazyInstance, MessageLoop).
-  base::AtExitManager exit_manager;
-
-  // Enable debug logs.
-  InitHostLogging();
-
-  // Register and initialize common controls.
-#if defined(OS_WIN)
-  INITCOMMONCONTROLSEX info;
-  info.dwSize = sizeof(info);
-  info.dwICC = ICC_STANDARD_CLASSES;
-  InitCommonControlsEx(&info);
-#endif  // defined(OS_WIN)
+#if !defined(NDEBUG)
+  // Always enable Webrtc logging for debug builds.
+  // Without this switch, Webrtc errors will still be logged but
+  // RTC_LOG(LS_INFO) lines will not.
+  // See https://webrtc.org/native-code/logging
+  auto* cl = base::CommandLine::ForCurrentProcess();
+  cl->AppendSwitch("vmodule=*/webrtc/*=1");
+#endif
 
   // Parse the command line.
   const base::CommandLine* command_line =
@@ -198,6 +188,39 @@ int HostMain(int argc, char** argv) {
     process_type = command_line->GetSwitchValueASCII(kProcessTypeSwitchName);
   }
 
+  if (process_type == kProcessTypeEvaluateCapability) {
+    if (command_line->HasSwitch(kEvaluateCapabilitySwitchName)) {
+      return EvaluateCapabilityLocally(
+          command_line->GetSwitchValueASCII(kEvaluateCapabilitySwitchName));
+    }
+    Usage(command_line->GetProgram());
+    return kSuccessExitCode;
+  }
+
+  // This object instance is required by Chrome code (for example,
+  // LazyInstance, MessageLoop).
+  base::AtExitManager exit_manager;
+
+  // Enable debug logs.
+  InitHostLogging();
+
+#if defined(REMOTING_ENABLE_BREAKPAD)
+  // Initialize Breakpad as early as possible. On Mac the command-line needs to
+  // be initialized first, so that the preference for crash-reporting can be
+  // looked up in the config file.
+  if (IsUsageStatsAllowed()) {
+    InitializeCrashReporting();
+  }
+#endif  // defined(REMOTING_ENABLE_BREAKPAD)
+
+#if defined(OS_WIN)
+  // Register and initialize common controls.
+  INITCOMMONCONTROLSEX info;
+  info.dwSize = sizeof(info);
+  info.dwICC = ICC_STANDARD_CLASSES;
+  InitCommonControlsEx(&info);
+#endif  // defined(OS_WIN)
+
   MainRoutineFn main_routine = SelectMainRoutine(process_type);
   if (!main_routine) {
     fprintf(stderr, "Unknown process type '%s' specified.",
@@ -210,6 +233,8 @@ int HostMain(int argc, char** argv) {
   base::i18n::InitializeICU();
 
   remoting::LoadResources("");
+
+  mojo::core::Init();
 
   // Invoke the entry point.
   int exit_code = main_routine();

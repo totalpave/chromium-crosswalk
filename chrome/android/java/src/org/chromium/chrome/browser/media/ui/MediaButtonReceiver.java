@@ -7,6 +7,10 @@ package org.chromium.chrome.browser.media.ui;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.view.KeyEvent;
+
+import org.chromium.base.Log;
+import org.chromium.chrome.browser.AppHooks;
 
 /**
  * MediaButtonReceiver is a basic BroadcastReceiver class that receives
@@ -15,11 +19,27 @@ import android.content.Intent;
  * This is there for backward compatibility with JB_MR0 and JB_MR1.
  */
 public abstract class MediaButtonReceiver extends BroadcastReceiver {
-    public abstract String getServiceClassName();
+    public abstract Class<?> getServiceClass();
+
+    private static final String TAG = "MediaButtonReceiver";
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        intent.setClassName(context, getServiceClassName());
-        context.startService(intent);
+        if (intent == null || !Intent.ACTION_MEDIA_BUTTON.equals(intent.getAction())
+                || !intent.hasExtra(Intent.EXTRA_KEY_EVENT)) {
+            return;
+        }
+
+        Log.i(TAG, "Receive broadcast message, starting foreground service");
+
+        KeyEvent event = (KeyEvent) intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+        if (event == null) {
+            Log.i(TAG, "no event");
+        } else {
+            Log.i(TAG, "action: " + event.getAction() + ", keycode: " + event.getKeyCode());
+        }
+
+        intent.setClass(context, getServiceClass());
+        AppHooks.get().startForegroundService(intent);
     }
 }

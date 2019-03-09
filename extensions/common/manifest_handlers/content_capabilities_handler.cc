@@ -18,6 +18,7 @@
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/permissions/permissions_info.h"
 #include "extensions/common/url_pattern.h"
+#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 
 namespace extensions {
 
@@ -32,8 +33,8 @@ ContentCapabilitiesInfo::ContentCapabilitiesInfo() {
 ContentCapabilitiesInfo::~ContentCapabilitiesInfo() {
 }
 
-static base::LazyInstance<ContentCapabilitiesInfo>
-g_empty_content_capabilities_info = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<ContentCapabilitiesInfo>::DestructorAtExit
+    g_empty_content_capabilities_info = LAZY_INSTANCE_INITIALIZER;
 
 // static
 const ContentCapabilitiesInfo& ContentCapabilitiesInfo::Get(
@@ -65,7 +66,8 @@ bool ContentCapabilitiesHandler::Parse(Extension* extension,
     return false;
 
   int supported_schemes = URLPattern::SCHEME_HTTPS;
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kTestType)) {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          ::switches::kTestType)) {
     // We don't have a suitable HTTPS test server, so this will have to do.
     supported_schemes |= URLPattern::SCHEME_HTTP;
   }
@@ -80,10 +82,16 @@ bool ContentCapabilitiesHandler::Parse(Extension* extension,
     return false;
   }
 
-  // Filter wildcard URL patterns and emit warnings for them.
+  // Filter URL patterns that imply all hosts or match every host under an
+  // eTLD and emit warnings for them.
+  // Note: we include private registries because content_capabilities should
+  // only be used for a single entity (though possibly multiple domains), rather
+  // than blanket-granted.
+  const net::registry_controlled_domains::PrivateRegistryFilter private_filter =
+      net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES;
   std::set<URLPattern> valid_url_patterns;
   for (const URLPattern& pattern : potential_url_patterns) {
-    if (pattern.match_subdomains() || pattern.ImpliesAllHosts()) {
+    if (pattern.MatchesEffectiveTld(private_filter)) {
       extension->AddInstallWarning(InstallWarning(
           errors::kInvalidContentCapabilitiesMatchOrigin));
     } else {
@@ -106,13 +114,13 @@ bool ContentCapabilitiesHandler::Parse(Extension* extension,
     }
   }
 
-  extension->SetManifestData(keys::kContentCapabilities, info.release());
+  extension->SetManifestData(keys::kContentCapabilities, std::move(info));
   return true;
 }
 
-const std::vector<std::string> ContentCapabilitiesHandler::Keys()
-    const {
-  return SingleKey(keys::kContentCapabilities);
+base::span<const char* const> ContentCapabilitiesHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kContentCapabilities};
+  return kKeys;
 }
 
 }  // namespace extensions

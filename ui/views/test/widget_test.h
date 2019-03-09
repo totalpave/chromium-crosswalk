@@ -5,22 +5,25 @@
 #ifndef UI_VIEWS_TEST_WIDGET_TEST_H_
 #define UI_VIEWS_TEST_WIDGET_TEST_H_
 
+#include <memory>
+
 #include "base/macros.h"
+#include "base/run_loop.h"
 #include "build/build_config.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/widget/widget_delegate.h"
+#include "ui/views/widget/widget_observer.h"
 
 namespace ui {
 namespace internal {
 class InputMethodDelegate;
 }
-class EventProcessor;
+class EventSink;
 }
 
 namespace views {
 
-class NativeWidget;
 class Widget;
 
 namespace internal {
@@ -33,6 +36,14 @@ namespace test {
 
 class WidgetTest : public ViewsTestBase {
  public:
+  // This class can be used as a deleter for std::unique_ptr<Widget>
+  // to call function Widget::CloseNow automatically.
+  struct WidgetCloser {
+    void operator()(Widget* widget) const;
+  };
+
+  using WidgetAutoclosePtr = std::unique_ptr<Widget, WidgetCloser>;
+
   WidgetTest();
   ~WidgetTest() override;
 
@@ -49,19 +60,11 @@ class WidgetTest : public ViewsTestBase {
   Widget* CreateChildNativeWidgetWithParent(Widget* parent);
   Widget* CreateChildNativeWidget();
 
-  // Create a top-level Widget with |native_widget| in InitParams set to an
-  // instance of the "native desktop" type. This is a PlatformNativeWidget on
-  // ChromeOS, and a PlatformDesktopNativeWidget everywhere else.
-  Widget* CreateNativeDesktopWidget();
-
   View* GetMousePressedHandler(internal::RootView* root_view);
 
   View* GetMouseMoveHandler(internal::RootView* root_view);
 
   View* GetGestureHandler(internal::RootView* root_view);
-
-  // Simulate an OS-level destruction of the native window held by |widget|.
-  static void SimulateNativeDestroy(Widget* widget);
 
   // Simulate an activation of the native window held by |widget|, as if it was
   // clicked by the user. This is a synchronous method for use in
@@ -80,10 +83,10 @@ class WidgetTest : public ViewsTestBase {
   // initiated window resizes.
   gfx::Size GetNativeWidgetMinimumContentSize(Widget* widget);
 
-  // Return the event processor for |widget|. On aura platforms, this is an
+  // Return the event sink for |widget|. On aura platforms, this is an
   // aura::WindowEventDispatcher. Otherwise, it is a bridge to the OS event
-  // processor.
-  static ui::EventProcessor* GetEventProcessor(Widget* widget);
+  // sink.
+  static ui::EventSink* GetEventSink(Widget* widget);
 
   // Get the InputMethodDelegate, for setting on a Mock InputMethod in tests.
   static ui::internal::InputMethodDelegate* GetInputMethodDelegateForWidget(
@@ -92,8 +95,28 @@ class WidgetTest : public ViewsTestBase {
   // Return true if |window| is transparent according to the native platform.
   static bool IsNativeWindowTransparent(gfx::NativeWindow window);
 
+  // Returns whether |widget| has a Window shadow managed in this process. That
+  // is, a shadow that is drawn outside of the Widget bounds, and managed by the
+  // WindowManager.
+  static bool WidgetHasInProcessShadow(Widget* widget);
+
+  // Returns the set of all Widgets that currently have a NativeWindow.
+  static Widget::Widgets GetAllWidgets();
+
  private:
   DISALLOW_COPY_AND_ASSIGN(WidgetTest);
+};
+
+class DesktopWidgetTest : public WidgetTest {
+ public:
+  DesktopWidgetTest();
+  ~DesktopWidgetTest() override;
+
+  // WidgetTest:
+  void SetUp() override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(DesktopWidgetTest);
 };
 
 // A helper WidgetDelegate for tests that require hooks into WidgetDelegate
@@ -102,6 +125,7 @@ class WidgetTest : public ViewsTestBase {
 class TestDesktopWidgetDelegate : public WidgetDelegate {
  public:
   TestDesktopWidgetDelegate();
+  TestDesktopWidgetDelegate(Widget* widget);
   ~TestDesktopWidgetDelegate() override;
 
   // Initialize the Widget, adding some meaningful default InitParams.
@@ -115,9 +139,15 @@ class TestDesktopWidgetDelegate : public WidgetDelegate {
   void set_contents_view(View* contents_view) {
     contents_view_ = contents_view;
   }
+  // Sets the return value for CloseRequested().
+  void set_can_close(bool can_close) { can_close_ = can_close; }
 
   int window_closing_count() const { return window_closing_count_; }
   const gfx::Rect& initial_bounds() { return initial_bounds_; }
+  Widget::ClosedReason last_closed_reason() const {
+    return last_closed_reason_;
+  }
+  bool can_close() const { return can_close_; }
 
   // WidgetDelegate overrides:
   void WindowClosing() override;
@@ -125,12 +155,15 @@ class TestDesktopWidgetDelegate : public WidgetDelegate {
   const Widget* GetWidget() const override;
   View* GetContentsView() override;
   bool ShouldAdvanceFocusToTopLevelWidget() const override;
+  bool OnCloseRequested(Widget::ClosedReason close_reason) override;
 
  private:
   Widget* widget_;
   View* contents_view_ = nullptr;
   int window_closing_count_ = 0;
   gfx::Rect initial_bounds_ = gfx::Rect(100, 100, 200, 200);
+  bool can_close_ = true;
+  Widget::ClosedReason last_closed_reason_ = Widget::ClosedReason::kUnspecified;
 
   DISALLOW_COPY_AND_ASSIGN(TestDesktopWidgetDelegate);
 };
@@ -151,6 +184,72 @@ class TestInitialFocusWidgetDelegate : public TestDesktopWidgetDelegate {
   View* view_;
 
   DISALLOW_COPY_AND_ASSIGN(TestInitialFocusWidgetDelegate);
+};
+
+// Use in tests to wait until a Widget's activation change to a particular
+// value. To use create and call Wait().
+class WidgetActivationWaiter : public WidgetObserver {
+ public:
+  WidgetActivationWaiter(Widget* widget, bool active);
+  ~WidgetActivationWaiter() override;
+
+  // Returns when the active status matches that supplied to the constructor. If
+  // the active status does not match that of the constructor a RunLoop is used
+  // until the active status matches, otherwise this returns immediately.
+  void Wait();
+
+ private:
+  // views::WidgetObserver override:
+  void OnWidgetActivationChanged(Widget* widget, bool active) override;
+
+  base::RunLoop run_loop_;
+  bool observed_;
+  bool active_;
+
+  DISALLOW_COPY_AND_ASSIGN(WidgetActivationWaiter);
+};
+
+// Use in tests to provide functionality to observe the widget passed in the
+// constructor for the widget closing event.
+class WidgetClosingObserver : public WidgetObserver {
+ public:
+  explicit WidgetClosingObserver(Widget* widget);
+  ~WidgetClosingObserver() override;
+
+  // Returns immediately when |widget_| becomes NULL, otherwise a RunLoop is
+  // used until widget closing event is received.
+  void Wait();
+
+  bool widget_closed() const { return !widget_; }
+
+ private:
+  // views::WidgetObserver override:
+  void OnWidgetClosing(Widget* widget) override;
+
+  Widget* widget_;
+  base::RunLoop run_loop_;
+
+  DISALLOW_COPY_AND_ASSIGN(WidgetClosingObserver);
+};
+
+// Use in tests to wait for a widget to be destroyed.
+// TODO(https://crrev.com/c/1086509): This is pretty similar to
+// WidgetClosingObserver. Can the two be combined?
+class WidgetDestroyedWaiter : public WidgetObserver {
+ public:
+  explicit WidgetDestroyedWaiter(Widget* widget);
+
+  // Wait for the widget to be destroyed, or return immediately if it was
+  // already destroyed since this object was created.
+  void Wait();
+
+ private:
+  // views::WidgetObserver
+  void OnWidgetDestroyed(Widget* widget) override;
+
+  base::RunLoop run_loop_;
+
+  DISALLOW_COPY_AND_ASSIGN(WidgetDestroyedWaiter);
 };
 
 }  // namespace test

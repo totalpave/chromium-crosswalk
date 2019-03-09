@@ -12,9 +12,7 @@
 #include <memory>
 #include <string>
 
-#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
@@ -49,11 +47,7 @@ class POLICY_EXPORT URLBlacklist {
     URL_NEUTRAL_STATE,
   };
 
-  // This is meant to be bound to url_formatter::SegmentURL. See that function
-  // for documentation on the parameters and return value.
-  typedef std::string (*SegmentURLCallback)(const std::string&, url::Parsed*);
-
-  explicit URLBlacklist(SegmentURLCallback segment_url);
+  URLBlacklist();
   virtual ~URLBlacklist();
 
   // Allows or blocks URLs matching one of the filters, depending on |allow|.
@@ -89,8 +83,7 @@ class POLICY_EXPORT URLBlacklist {
   // |path| does not include query parameters.
   // |query| contains the query parameters ('?' not included).
   // All arguments are mandatory.
-  static bool FilterToComponents(SegmentURLCallback segment_url,
-                                 const std::string& filter,
+  static bool FilterToComponents(const std::string& filter,
                                  std::string* scheme,
                                  std::string* host,
                                  bool* match_subdomains,
@@ -120,7 +113,6 @@ class POLICY_EXPORT URLBlacklist {
   static bool FilterTakesPrecedence(const FilterComponents& lhs,
                                     const FilterComponents& rhs);
 
-  SegmentURLCallback segment_url_;
   url_matcher::URLMatcherConditionSet::ID id_;
   std::map<url_matcher::URLMatcherConditionSet::ID, FilterComponents> filters_;
   std::unique_ptr<url_matcher::URLMatcher> url_matcher_;
@@ -129,65 +121,18 @@ class POLICY_EXPORT URLBlacklist {
 };
 
 // Tracks the blacklist policies for a given profile, and updates it on changes.
-//
-// This class interacts with both the UI thread, where notifications of pref
-// changes are received from, and the IO thread, which owns it (in the
-// ProfileIOData) and checks for blacklisted URLs (from ChromeNetworkDelegate).
-//
-// It must be constructed on the UI thread, to set up |ui_weak_ptr_factory_| and
-// the prefs listeners.
-//
-// ShutdownOnUIThread must be called from UI before destruction, to release
-// the prefs listeners on the UI thread. This is done from ProfileIOData.
-//
-// Update tasks from the UI thread can post safely to the IO thread, since the
-// destruction order of Profile and ProfileIOData guarantees that if this
-// exists in UI, then a potential destruction on IO will come after any task
-// posted to IO from that method on UI. This is used to go through IO before
-// the actual update starts, and grab a WeakPtr.
 class POLICY_EXPORT URLBlacklistManager {
  public:
-  // Returns true if the blacklist should be overridden for |url| and sets
-  // |block| to true if it should be blocked and false otherwise.
-  // |reason| is set to the exact reason for blocking |url| iff |block| is true.
-  typedef base::Callback<bool(const GURL& url, bool* block, int* reason)>
-      OverrideBlacklistCallback;
-
   // Must be constructed on the UI thread.
-  // |background_task_runner| is used to build the blacklist in a background
-  // thread.
-  // |io_task_runner| must be backed by the IO thread.
-  // |segment_url| is used to break a URL spec into its components.
-  URLBlacklistManager(
-      PrefService* pref_service,
-      const scoped_refptr<base::SequencedTaskRunner>& background_task_runner,
-      const scoped_refptr<base::SequencedTaskRunner>& io_task_runner,
-      URLBlacklist::SegmentURLCallback segment_url,
-      OverrideBlacklistCallback override_blacklist);
+  explicit URLBlacklistManager(PrefService* pref_service);
   virtual ~URLBlacklistManager();
 
-  // Must be called on the UI thread, before destruction.
-  void ShutdownOnUIThread();
-
-  // Returns true if |url| is blocked by the current blacklist. Must be called
-  // from the IO thread.
+  // Returns true if |url| is blocked by the current blacklist.
   bool IsURLBlocked(const GURL& url) const;
 
   URLBlacklist::URLBlacklistState GetURLBlacklistState(const GURL& url) const;
 
-  // Returns true if a request for |url| is blocked by the current blacklist.
-  //
-  // Should only be called for requests for frames (Main frames or subframes).
-  // Other subresources or background downloads (e.g. extensions updates, sync,
-  // etc) should not be filtered. The sync signin page will also not be
-  // filtered.
-  //
-  // |reason| is populated with the exact reason for blocking the url if and
-  // only if the return value is true otherwise it is left untouched.
-  // Must be called from the IO thread.
-  bool ShouldBlockRequestForFrame(const GURL& url, int* reason) const;
-
-  // Replaces the current blacklist. Must be called on the IO thread.
+  // Replaces the current blacklist.
   // Virtual for testing.
   virtual void SetBlacklist(std::unique_ptr<URLBlacklist> blacklist);
 
@@ -203,16 +148,7 @@ class POLICY_EXPORT URLBlacklistManager {
   // Virtual for testing.
   virtual void Update();
 
-  // Starts the blacklist update on the IO thread, using the filters in
-  // |block| and |allow|. Protected for testing.
-  void UpdateOnIO(std::unique_ptr<base::ListValue> block,
-                  std::unique_ptr<base::ListValue> allow);
-
  private:
-  // ---------
-  // UI thread
-  // ---------
-
   // Used to track the policies and update the blacklist on changes.
   PrefChangeRegistrar pref_change_registrar_;
   PrefService* pref_service_;  // Weak.
@@ -220,20 +156,12 @@ class POLICY_EXPORT URLBlacklistManager {
   // Used to post tasks to a background thread.
   scoped_refptr<base::SequencedTaskRunner> background_task_runner_;
 
-  // Used to post tasks to the IO thread.
-  scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
-
-  // Used to break a URL into its components.
-  URLBlacklist::SegmentURLCallback segment_url_;
-
-  // Used to optionally skip blacklisting for some URLs.
-  OverrideBlacklistCallback override_blacklist_;
-
-  // ---------
-  // IO thread
-  // ---------
-
-  // Used to post tasks to the UI thread.
+  // Used to schedule tasks on the main loop to avoid rebuilding the blocklist
+  // multiple times during a message loop process. This can happen if two
+  // preferences that change the blacklist are updated in one message loop
+  // cycle.  In addition, we use this task runner to ensure that the
+  // URLBlocklistManager is only access from the thread call the constructor for
+  // data accesses.
   scoped_refptr<base::SequencedTaskRunner> ui_task_runner_;
 
   // The current blacklist.
@@ -241,9 +169,6 @@ class POLICY_EXPORT URLBlacklistManager {
 
   // Used to post update tasks to the UI thread.
   base::WeakPtrFactory<URLBlacklistManager> ui_weak_ptr_factory_;
-
-  // Used to get |weak_ptr_| to self on the IO thread.
-  base::WeakPtrFactory<URLBlacklistManager> io_weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(URLBlacklistManager);
 };

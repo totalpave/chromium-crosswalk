@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "snapshot/annotation_snapshot.h"
 
 namespace crashpad {
 
@@ -41,8 +42,8 @@ class PEImageAnnotationsReader {
   //! \brief Constructs the object.
   //!
   //! \param[in] process_reader The reader for the remote process.
-  //! \param[in] image_reader The PEImageReader for the PE image file contained
-  //!     within the remote process.
+  //! \param[in] pe_image_reader The PEImageReader for the PE image file
+  //!     contained within the remote process.
   //! \param[in] name The module's name, a string to be used in logged messages.
   //!     This string is for diagnostic purposes only, and may be empty.
   PEImageAnnotationsReader(ProcessReaderWin* process_reader,
@@ -54,11 +55,20 @@ class PEImageAnnotationsReader {
   //!     pairs, where all keys and values are strings.
   std::map<std::string, std::string> SimpleMap() const;
 
+  //! \brief Returns the module's annotations that are organized as a list of
+  //!     typed annotation objects.
+  std::vector<AnnotationSnapshot> AnnotationsList() const;
+
  private:
   // Reads CrashpadInfo::simple_annotations_ on behalf of SimpleMap().
   template <class Traits>
   void ReadCrashpadSimpleAnnotations(
       std::map<std::string, std::string>* simple_map_annotations) const;
+
+  // Reads CrashpadInfo::annotations_list_ on behalf of AnnotationsList().
+  template <class Traits>
+  void ReadCrashpadAnnotationsList(
+      std::vector<AnnotationSnapshot>* vector_annotations) const;
 
   std::wstring name_;
   ProcessReaderWin* process_reader_;  // weak

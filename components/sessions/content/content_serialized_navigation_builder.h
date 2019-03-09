@@ -22,22 +22,35 @@ class SerializedNavigationEntry;
 // classes.
 class SESSIONS_EXPORT ContentSerializedNavigationBuilder {
  public:
+  // Set of options for serializing a navigation. Multiple options can be
+  // combined by bit masking.
+  enum SerializationOptions {
+    // Serialized all available navigation data.
+    DEFAULT = 0x0,
+
+    // Exclude page state data. Serializing page state data can involve heavy
+    // processing on pages with deep iframe trees, so should be avoided if not
+    // necessary.
+    EXCLUDE_PAGE_STATE = 0x1,
+  };
+
   // Construct a SerializedNavigationEntry for a particular index from the given
   // NavigationEntry.
   static SerializedNavigationEntry FromNavigationEntry(
       int index,
-      const content::NavigationEntry& entry);
+      content::NavigationEntry* entry,
+      SerializationOptions serialization_options =
+          SerializationOptions::DEFAULT);
 
   // Convert the given SerializedNavigationEntry into a NavigationEntry with the
-  // given page ID and context.  The NavigationEntry will have a transition type
-  // of PAGE_TRANSITION_RELOAD and a new unique ID.
+  // given context.  The NavigationEntry will have a transition type of
+  // PAGE_TRANSITION_RELOAD and a new unique ID.
   static std::unique_ptr<content::NavigationEntry> ToNavigationEntry(
       const SerializedNavigationEntry* navigation,
-      int page_id,
       content::BrowserContext* browser_context);
 
   // Converts a set of SerializedNavigationEntrys into a list of
-  // NavigationEntrys with sequential page IDs and the given context.
+  // NavigationEntrys with the given context.
   static std::vector<std::unique_ptr<content::NavigationEntry>>
   ToNavigationEntries(const std::vector<SerializedNavigationEntry>& navigations,
                       content::BrowserContext* browser_context);

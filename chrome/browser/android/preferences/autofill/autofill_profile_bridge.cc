@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/android/preferences/autofill/autofill_profile_bridge.h"
-
-#include <jni.h>
-
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
@@ -13,6 +9,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "components/autofill/core/browser/autofill_country.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "jni/AutofillProfileBridge_jni.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_field.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_metadata.h"
@@ -25,6 +22,8 @@ namespace autofill {
 
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
+using base::android::JavaParamRef;
+using base::android::ScopedJavaLocalRef;
 using base::android::ToJavaArrayOfStrings;
 using base::android::ToJavaIntArray;
 using ::i18n::addressinput::AddressField;
@@ -36,18 +35,16 @@ using ::i18n::addressinput::IsFieldRequired;
 using ::i18n::addressinput::Localization;
 using ::i18n::addressinput::RECIPIENT;
 
-static ScopedJavaLocalRef<jstring> GetDefaultCountryCode(
-    JNIEnv* env,
-    const JavaParamRef<jclass>& clazz) {
+static ScopedJavaLocalRef<jstring>
+JNI_AutofillProfileBridge_GetDefaultCountryCode(JNIEnv* env) {
   std::string default_country_code =
       autofill::AutofillCountry::CountryCodeForLocale(
           g_browser_process->GetApplicationLocale());
   return ConvertUTF8ToJavaString(env, default_country_code);
 }
 
-static void GetSupportedCountries(
+static void JNI_AutofillProfileBridge_GetSupportedCountries(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jobject>& j_country_code_list,
     const JavaParamRef<jobject>& j_country_name_list) {
   std::vector<std::string> country_codes = GetRegionCodes();
@@ -65,16 +62,13 @@ static void GetSupportedCountries(
   }
 
   Java_AutofillProfileBridge_stringArrayToList(
-      env, ToJavaArrayOfStrings(env, known_country_codes).obj(),
-      j_country_code_list);
+      env, ToJavaArrayOfStrings(env, known_country_codes), j_country_code_list);
   Java_AutofillProfileBridge_stringArrayToList(
-      env, ToJavaArrayOfStrings(env, known_country_names).obj(),
-      j_country_name_list);
+      env, ToJavaArrayOfStrings(env, known_country_names), j_country_name_list);
 }
 
-static void GetRequiredFields(
+static void JNI_AutofillProfileBridge_GetRequiredFields(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jstring>& j_country_code,
     const JavaParamRef<jobject>& j_required_fields_list) {
   std::string country_code = ConvertJavaStringToUTF8(env, j_country_code);
@@ -89,13 +83,13 @@ static void GetRequiredFields(
     }
   }
 
-  Java_AutofillProfileBridge_intArrayToList(
-      env, ToJavaIntArray(env, required).obj(), j_required_fields_list);
+  Java_AutofillProfileBridge_intArrayToList(env, ToJavaIntArray(env, required),
+                                            j_required_fields_list);
 }
 
-static ScopedJavaLocalRef<jstring> GetAddressUiComponents(
+static ScopedJavaLocalRef<jstring>
+JNI_AutofillProfileBridge_GetAddressUiComponents(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jstring>& j_country_code,
     const JavaParamRef<jstring>& j_language_code,
     const JavaParamRef<jobject>& j_id_list,
@@ -123,6 +117,10 @@ static ScopedJavaLocalRef<jstring> GetAddressUiComponents(
       country_code, localization, language_code, &best_language_tag);
 
   for (const auto& ui_component : ui_components) {
+    if (ui_component.field == AddressField::ORGANIZATION &&
+        !base::FeatureList::IsEnabled(features::kAutofillEnableCompanyName)) {
+      continue;
+    }
     component_labels.push_back(ui_component.name);
     component_required.push_back(
         IsFieldRequired(ui_component.field, country_code));
@@ -132,20 +130,15 @@ static ScopedJavaLocalRef<jstring> GetAddressUiComponents(
   }
 
   Java_AutofillProfileBridge_intArrayToList(
-      env, ToJavaIntArray(env, component_ids).obj(), j_id_list);
+      env, ToJavaIntArray(env, component_ids), j_id_list);
   Java_AutofillProfileBridge_stringArrayToList(
-      env, ToJavaArrayOfStrings(env, component_labels).obj(), j_name_list);
+      env, ToJavaArrayOfStrings(env, component_labels), j_name_list);
   Java_AutofillProfileBridge_intArrayToList(
-      env, ToJavaIntArray(env, component_required).obj(), j_required_list);
+      env, ToJavaIntArray(env, component_required), j_required_list);
   Java_AutofillProfileBridge_intArrayToList(
-      env, ToJavaIntArray(env, component_length).obj(), j_length_list);
+      env, ToJavaIntArray(env, component_length), j_length_list);
 
   return ConvertUTF8ToJavaString(env, best_language_tag);
-}
-
-// static
-bool RegisterAutofillProfileBridge(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 } // namespace autofill

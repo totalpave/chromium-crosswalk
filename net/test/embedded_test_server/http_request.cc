@@ -36,11 +36,11 @@ HttpRequest::HttpRequest() : method(METHOD_UNKNOWN),
 
 HttpRequest::HttpRequest(const HttpRequest& other) = default;
 
-HttpRequest::~HttpRequest() {
-}
+HttpRequest::~HttpRequest() = default;
 
 GURL HttpRequest::GetURL() const {
-  // TODO(svaldez): Use real URL from the EmbeddedTestServer.
+  if (base_url.is_valid())
+    return base_url.Resolve(relative_url);
   return GURL("http://localhost" + relative_url);
 }
 
@@ -51,8 +51,7 @@ HttpRequestParser::HttpRequestParser()
       declared_content_length_(0) {
 }
 
-HttpRequestParser::~HttpRequestParser() {
-}
+HttpRequestParser::~HttpRequestParser() = default;
 
 void HttpRequestParser::ProcessChunk(const base::StringPiece& data) {
   data.AppendToString(&buffer_);
@@ -109,7 +108,7 @@ HttpRequestParser::ParseResult HttpRequestParser::ParseHeaders() {
     // know) anything about the server address.
     GURL url(header_line_tokens[1]);
     if (url.is_valid()) {
-      http_request_->relative_url = url.path();
+      http_request_->relative_url = url.PathForRequest();
     } else if (header_line_tokens[1][0] == '/') {
       http_request_->relative_url = header_line_tokens[1];
     } else {

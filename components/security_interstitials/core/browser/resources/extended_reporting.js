@@ -26,16 +26,27 @@ function setupExtendedReportingCheckbox() {
   $('opt-in-checkbox').checked = loadTimeData.getBoolean(SB_BOX_CHECKED);
   $('extended-reporting-opt-in').classList.remove('hidden');
 
-  var className = interstitialType == 'SAFEBROWSING' ?
-                  'safe-browsing-opt-in' :
-                  'ssl-opt-in';
+  var billing = interstitialType == 'SAFEBROWSING' &&
+                    loadTimeData.getBoolean('billing');
+
+  var className = 'ssl-opt-in';
+  if (interstitialType == 'SAFEBROWSING' && !billing) {
+    className = 'safe-browsing-opt-in';
+  }
+
   $('extended-reporting-opt-in').classList.add(className);
 
   $('body').classList.add('extended-reporting-has-checkbox');
 
+  if ($('whitepaper-link')) {
+    $('whitepaper-link').addEventListener('click', function(event) {
+      sendCommand(SecurityInterstitialCommandId.CMD_OPEN_WHITEPAPER);
+    });
+  }
+
   $('opt-in-checkbox').addEventListener('click', function() {
     sendCommand($('opt-in-checkbox').checked ?
-                CMD_DO_REPORT :
-                CMD_DONT_REPORT);
+                SecurityInterstitialCommandId.CMD_DO_REPORT :
+                SecurityInterstitialCommandId.CMD_DONT_REPORT);
   });
 }

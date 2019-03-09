@@ -16,7 +16,8 @@
 #include "media/base/media_util.h"
 #include "media/base/video_decoder_config.h"
 #include "media/base/video_util.h"
-#include "media/media_features.h"
+#include "media/formats/mp4/box_definitions.h"
+#include "media/media_buildflags.h"
 
 namespace media {
 
@@ -30,10 +31,10 @@ EncryptionScheme GetEncryptionScheme(const AVStream* stream) {
 
 }  // namespace
 
-// Why FF_INPUT_BUFFER_PADDING_SIZE? FFmpeg assumes all input buffers are
+// Why AV_INPUT_BUFFER_PADDING_SIZE? FFmpeg assumes all input buffers are
 // padded. Check here to ensure FFmpeg only receives data padded to its
 // specifications.
-static_assert(DecoderBuffer::kPaddingSize >= FF_INPUT_BUFFER_PADDING_SIZE,
+static_assert(DecoderBuffer::kPaddingSize >= AV_INPUT_BUFFER_PADDING_SIZE,
               "DecoderBuffer padding size does not fit ffmpeg requirement");
 
 // Alignment requirement by FFmpeg for input and output buffers. This need to
@@ -189,6 +190,8 @@ VideoCodec CodecIDToVideoCodec(AVCodecID codec_id) {
       return kCodecVP8;
     case AV_CODEC_ID_VP9:
       return kCodecVP9;
+    case AV_CODEC_ID_AV1:
+      return kCodecAV1;
     default:
       DVLOG(1) << "Unknown video CodecID: " << codec_id;
   }
@@ -211,6 +214,8 @@ AVCodecID VideoCodecToCodecID(VideoCodec video_codec) {
       return AV_CODEC_ID_VP8;
     case kCodecVP9:
       return AV_CODEC_ID_VP9;
+    case kCodecAV1:
+      return AV_CODEC_ID_AV1;
     default:
       DVLOG(1) << "Unknown VideoCodec: " << video_codec;
   }
@@ -324,26 +329,14 @@ bool AVCodecContextToAudioDecoderConfig(
   SampleFormat sample_format = AVSampleFormatToSampleFormat(
       codec_context->sample_fmt, codec_context->codec_id);
 
-  ChannelLayout channel_layout = ChannelLayoutToChromeChannelLayout(
-      codec_context->channel_layout, codec_context->channels);
+  ChannelLayout channel_layout =
+      codec_context->channels > 8
+          ? CHANNEL_LAYOUT_DISCRETE
+          : ChannelLayoutToChromeChannelLayout(codec_context->channel_layout,
+                                               codec_context->channels);
 
   int sample_rate = codec_context->sample_rate;
   switch (codec) {
-    case kCodecOpus:
-      // |codec_context->sample_fmt| is not set by FFmpeg because Opus decoding
-      // is not enabled in FFmpeg.  It doesn't matter what value is set here, so
-      // long as it's valid, the true sample format is selected inside the
-      // decoder.
-      sample_format = kSampleFormatF32;
-
-      // Always use 48kHz for OPUS.  Technically we should match to the highest
-      // supported hardware sample rate among [8, 12, 16, 24, 48] kHz, but we
-      // don't know the hardware sample rate at this point and those rates are
-      // rarely used for output.  See the "Input Sample Rate" section of the
-      // spec: http://tools.ietf.org/html/draft-terriberry-oggopus-01#page-11
-      sample_rate = 48000;
-      break;
-
     // For AC3/EAC3 we enable only demuxing, but not decoding, so FFmpeg does
     // not fill |sample_fmt|.
     case kCodecAC3:
@@ -370,7 +363,7 @@ bool AVCodecContextToAudioDecoderConfig(
   // AVStream occasionally has invalid extra data. See http://crbug.com/517163
   if ((codec_context->extradata_size == 0) !=
       (codec_context->extradata == nullptr)) {
-    LOG(ERROR) << __FUNCTION__
+    LOG(ERROR) << __func__
                << (codec_context->extradata == nullptr ? " NULL" : " Non-NULL")
                << " extra data cannot have size of "
                << codec_context->extradata_size << ".";
@@ -386,29 +379,44 @@ bool AVCodecContextToAudioDecoderConfig(
   config->Initialize(codec, sample_format, channel_layout, sample_rate,
                      extra_data, encryption_scheme, seek_preroll,
                      codec_context->delay);
+  if (channel_layout == CHANNEL_LAYOUT_DISCRETE)
+    config->SetChannelsForDiscrete(codec_context->channels);
+
+#if BUILDFLAG(ENABLE_AC3_EAC3_AUDIO_DEMUXING)
+  // These are bitstream formats unknown to ffmpeg, so they don't have
+  // a known sample format size.
+  if (codec == kCodecAC3 || codec == kCodecEAC3)
+    return true;
+#endif
 
   // Verify that AudioConfig.bits_per_channel was calculated correctly for
   // codecs that have |sample_fmt| set by FFmpeg.
-  switch (codec) {
-    case kCodecOpus:
-#if BUILDFLAG(ENABLE_AC3_EAC3_AUDIO_DEMUXING)
-    case kCodecAC3:
-    case kCodecEAC3:
-#endif
-      break;
-    default:
-      DCHECK_EQ(av_get_bytes_per_sample(codec_context->sample_fmt) * 8,
-                config->bits_per_channel());
-      break;
+  DCHECK_EQ(av_get_bytes_per_sample(codec_context->sample_fmt) * 8,
+            config->bits_per_channel());
+  return true;
+}
+
+std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext>
+AVStreamToAVCodecContext(const AVStream* stream) {
+  std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext> codec_context(
+      avcodec_alloc_context3(nullptr));
+  if (avcodec_parameters_to_context(codec_context.get(), stream->codecpar) <
+      0) {
+    return nullptr;
   }
 
-  return true;
+  return codec_context;
 }
 
 bool AVStreamToAudioDecoderConfig(const AVStream* stream,
                                   AudioDecoderConfig* config) {
+  std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext> codec_context(
+      AVStreamToAVCodecContext(stream));
+  if (!codec_context)
+    return false;
+
   return AVCodecContextToAudioDecoderConfig(
-      stream->codec, GetEncryptionScheme(stream), config);
+      codec_context.get(), GetEncryptionScheme(stream), config);
 }
 
 void AudioDecoderConfigToAVCodecContext(const AudioDecoderConfig& config,
@@ -421,8 +429,7 @@ void AudioDecoderConfigToAVCodecContext(const AudioDecoderConfig& config,
 
   // TODO(scherkus): should we set |channel_layout|? I'm not sure if FFmpeg uses
   // said information to decode.
-  codec_context->channels =
-      ChannelLayoutToChannelCount(config.channel_layout());
+  codec_context->channels = config.channels();
   codec_context->sample_rate = config.samples_per_second();
 
   if (config.extra_data().empty()) {
@@ -431,109 +438,175 @@ void AudioDecoderConfigToAVCodecContext(const AudioDecoderConfig& config,
   } else {
     codec_context->extradata_size = config.extra_data().size();
     codec_context->extradata = reinterpret_cast<uint8_t*>(
-        av_malloc(config.extra_data().size() + FF_INPUT_BUFFER_PADDING_SIZE));
+        av_malloc(config.extra_data().size() + AV_INPUT_BUFFER_PADDING_SIZE));
     memcpy(codec_context->extradata, &config.extra_data()[0],
            config.extra_data().size());
     memset(codec_context->extradata + config.extra_data().size(), '\0',
-           FF_INPUT_BUFFER_PADDING_SIZE);
+           AV_INPUT_BUFFER_PADDING_SIZE);
   }
 }
 
 bool AVStreamToVideoDecoderConfig(const AVStream* stream,
                                   VideoDecoderConfig* config) {
-  gfx::Size coded_size(stream->codec->coded_width, stream->codec->coded_height);
+  std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext> codec_context(
+      AVStreamToAVCodecContext(stream));
+  if (!codec_context)
+    return false;
 
   // TODO(vrk): This assumes decoded frame data starts at (0, 0), which is true
   // for now, but may not always be true forever. Fix this in the future.
-  gfx::Rect visible_rect(stream->codec->width, stream->codec->height);
+  gfx::Rect visible_rect(codec_context->width, codec_context->height);
+  gfx::Size coded_size = visible_rect.size();
 
-  AVRational aspect_ratio = { 1, 1 };
+  AVRational aspect_ratio = {1, 1};
   if (stream->sample_aspect_ratio.num)
     aspect_ratio = stream->sample_aspect_ratio;
-  else if (stream->codec->sample_aspect_ratio.num)
-    aspect_ratio = stream->codec->sample_aspect_ratio;
+  else if (codec_context->sample_aspect_ratio.num)
+    aspect_ratio = codec_context->sample_aspect_ratio;
 
-  VideoCodec codec = CodecIDToVideoCodec(stream->codec->codec_id);
+  VideoCodec codec = CodecIDToVideoCodec(codec_context->codec_id);
 
-  VideoCodecProfile profile = VIDEO_CODEC_PROFILE_UNKNOWN;
-  if (codec == kCodecVP8)
-    profile = VP8PROFILE_ANY;
-  else if (codec == kCodecVP9)
-    // TODO(servolk): Find a way to obtain actual VP9 profile from FFmpeg.
-    // crbug.com/592074
-    profile = VP9PROFILE_PROFILE0;
-  else
-    profile = ProfileIDToVideoCodecProfile(stream->codec->profile);
-
-  // Without the FFmpeg h264 decoder, AVFormat is unable to get the profile, so
-  // default to baseline and let the VDA fail later if it doesn't support the
-  // real profile. This is alright because if the FFmpeg h264 decoder isn't
-  // enabled, there is no fallback if the VDA fails.
-#if defined(DISABLE_FFMPEG_VIDEO_DECODERS)
-  if (codec == kCodecH264)
-    profile = H264PROFILE_BASELINE;
-#endif
-
-  gfx::Size natural_size = GetNaturalSize(
-      visible_rect.size(), aspect_ratio.num, aspect_ratio.den);
+  gfx::Size natural_size =
+      GetNaturalSize(visible_rect.size(), aspect_ratio.num, aspect_ratio.den);
 
   VideoPixelFormat format =
-      AVPixelFormatToVideoPixelFormat(stream->codec->pix_fmt);
-  // The format and coded size may be unknown if FFmpeg is compiled without
-  // video decoders.
-#if defined(DISABLE_FFMPEG_VIDEO_DECODERS)
-  if (format == PIXEL_FORMAT_UNKNOWN)
-    format = PIXEL_FORMAT_YV12;
-  if (coded_size == gfx::Size(0, 0))
-    coded_size = visible_rect.size();
-#endif
+      AVPixelFormatToVideoPixelFormat(codec_context->pix_fmt);
 
-  if (codec == kCodecVP9) {
-    // TODO(tomfinegan): libavcodec doesn't know about VP9.
-    format = PIXEL_FORMAT_YV12;
-    coded_size = visible_rect.size();
+  // Without the ffmpeg decoder configured, libavformat is unable to get the
+  // profile, format, or coded size. So choose sensible defaults and let
+  // decoders fail later if the configuration is actually unsupported.
+  //
+  // TODO(chcunningham): We need real profiles for all of the codecs below to
+  // actually handle capabilities requests correctly. http://crbug.com/784610
+  VideoCodecProfile profile = VIDEO_CODEC_PROFILE_UNKNOWN;
+  switch (codec) {
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
+    case kCodecH264: {
+      profile = ProfileIDToVideoCodecProfile(codec_context->profile);
+      // if the profile is still unknown, try to extract it from
+      // the extradata using the internal parser
+      if (profile == VIDEO_CODEC_PROFILE_UNKNOWN && codec_context->extradata &&
+          codec_context->extradata_size) {
+        mp4::AVCDecoderConfigurationRecord avc_config;
+        if (avc_config.Parse(codec_context->extradata,
+                             codec_context->extradata_size)) {
+          profile = ProfileIDToVideoCodecProfile(avc_config.profile_indication);
+        }
+      }
+      // All the heuristics failed, let's assign a default profile
+      if (profile == VIDEO_CODEC_PROFILE_UNKNOWN)
+        profile = H264PROFILE_BASELINE;
+
+      format = PIXEL_FORMAT_I420;
+      break;
+    }
+#endif
+    case kCodecVP8:
+#if !BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
+      format = PIXEL_FORMAT_I420;
+#endif
+      profile = VP8PROFILE_ANY;
+      break;
+    case kCodecVP9:
+      format = PIXEL_FORMAT_I420;
+      profile = VP9PROFILE_PROFILE0;
+      break;
+    case kCodecAV1:
+      format = PIXEL_FORMAT_I420;
+      profile = AV1PROFILE_PROFILE_MAIN;
+      break;
+#if BUILDFLAG(ENABLE_HEVC_DEMUXING)
+    case kCodecHEVC:
+      profile = HEVCPROFILE_MAIN;
+      break;
+#endif
+    case kCodecTheora:
+      profile = THEORAPROFILE_ANY;
+      break;
+    default:
+      profile = ProfileIDToVideoCodecProfile(codec_context->profile);
   }
 
   // Pad out |coded_size| for subsampled YUV formats.
-  if (format != PIXEL_FORMAT_YV24) {
+  if (format != PIXEL_FORMAT_I444 && format != PIXEL_FORMAT_UNKNOWN) {
     coded_size.set_width((coded_size.width() + 1) / 2 * 2);
-    if (format != PIXEL_FORMAT_YV16)
+    if (format != PIXEL_FORMAT_I422)
       coded_size.set_height((coded_size.height() + 1) / 2 * 2);
   }
 
   AVDictionaryEntry* webm_alpha =
       av_dict_get(stream->metadata, "alpha_mode", nullptr, 0);
   if (webm_alpha && !strcmp(webm_alpha->value, "1")) {
-    format = PIXEL_FORMAT_YV12A;
+    format = PIXEL_FORMAT_I420A;
+  }
+
+  VideoRotation video_rotation = VIDEO_ROTATION_0;
+  int rotation = 0;
+  AVDictionaryEntry* rotation_entry = NULL;
+  rotation_entry = av_dict_get(stream->metadata, "rotate", nullptr, 0);
+  if (rotation_entry && rotation_entry->value && rotation_entry->value[0])
+    base::StringToInt(rotation_entry->value, &rotation);
+
+  switch (rotation) {
+    case 0:
+      break;
+    case 90:
+      video_rotation = VIDEO_ROTATION_90;
+      break;
+    case 180:
+      video_rotation = VIDEO_ROTATION_180;
+      break;
+    case 270:
+      video_rotation = VIDEO_ROTATION_270;
+      break;
+    default:
+      DLOG(ERROR) << "Unsupported video rotation metadata: " << rotation;
+      break;
   }
 
   // Prefer the color space found by libavcodec if available.
-  ColorSpace color_space = AVColorSpaceToColorSpace(stream->codec->colorspace,
-                                                    stream->codec->color_range);
-  if (color_space == COLOR_SPACE_UNSPECIFIED) {
-    // Otherwise, assume that SD video is usually Rec.601, and HD is usually
-    // Rec.709.
-    color_space = (natural_size.height() < 720) ? COLOR_SPACE_SD_REC601
-                                                : COLOR_SPACE_HD_REC709;
+  VideoColorSpace color_space =
+      VideoColorSpace(codec_context->color_primaries, codec_context->color_trc,
+                      codec_context->colorspace,
+                      codec_context->color_range == AVCOL_RANGE_JPEG
+                          ? gfx::ColorSpace::RangeID::FULL
+                          : gfx::ColorSpace::RangeID::LIMITED);
+  if (!color_space.IsSpecified()) {
+    // VP9 frames may have color information, but that information cannot
+    // express new color spaces, like HDR. For that reason, color space
+    // information from the container should take precedence over color space
+    // information from the VP9 stream. However, if we infer the color space
+    // based on resolution here, it looks as if it came from the container.
+    // Since this inference causes color shifts and is slated to go away
+    // we just skip it for VP9 and leave the color space undefined, which
+    // will make the VP9 decoder behave correctly..
+    // We also ignore the resolution for AV1, since it's new and it's easy
+    // to make it behave correctly from the get-go.
+    // TODO(hubbe): Skip this inference for all codecs.
+    if (codec_context->codec_id != AV_CODEC_ID_VP9 &&
+        codec_context->codec_id != AV_CODEC_ID_AV1) {
+      // Otherwise, assume that SD video is usually Rec.601, and HD is usually
+      // Rec.709.
+      color_space = (natural_size.height() < 720) ? VideoColorSpace::REC601()
+                                                  : VideoColorSpace::REC709();
+    }
   }
 
-  // AVStream occasionally has invalid extra data. See http://crbug.com/517163
-  if ((stream->codec->extradata_size == 0) !=
-      (stream->codec->extradata == nullptr)) {
-    LOG(ERROR) << __FUNCTION__
-               << (stream->codec->extradata == nullptr ? " NULL" : " Non-Null")
-               << " extra data cannot have size of "
-               << stream->codec->extradata_size << ".";
+  // AVCodecContext occasionally has invalid extra data. See
+  // http://crbug.com/517163
+  if (codec_context->extradata != nullptr &&
+      codec_context->extradata_size == 0) {
+    DLOG(ERROR) << __func__ << " Non-Null extra data cannot have size of 0.";
     return false;
   }
 
   std::vector<uint8_t> extra_data;
-  if (stream->codec->extradata_size > 0) {
-    extra_data.assign(stream->codec->extradata,
-                      stream->codec->extradata + stream->codec->extradata_size);
+  if (codec_context->extradata_size > 0) {
+    extra_data.assign(codec_context->extradata,
+                      codec_context->extradata + codec_context->extradata_size);
   }
-  config->Initialize(codec, profile, format, color_space, coded_size,
-                     visible_rect, natural_size, extra_data,
+  config->Initialize(codec, profile, format, color_space, video_rotation,
+                     coded_size, visible_rect, natural_size, extra_data,
                      GetEncryptionScheme(stream));
   return true;
 }
@@ -547,7 +620,7 @@ void VideoDecoderConfigToAVCodecContext(
   codec_context->coded_width = config.coded_size().width();
   codec_context->coded_height = config.coded_size().height();
   codec_context->pix_fmt = VideoPixelFormatToAVPixelFormat(config.format());
-  if (config.color_space() == COLOR_SPACE_JPEG)
+  if (config.color_space_info().range == gfx::ColorSpace::RangeID::FULL)
     codec_context->color_range = AVCOL_RANGE_JPEG;
 
   if (config.extra_data().empty()) {
@@ -556,11 +629,11 @@ void VideoDecoderConfigToAVCodecContext(
   } else {
     codec_context->extradata_size = config.extra_data().size();
     codec_context->extradata = reinterpret_cast<uint8_t*>(
-        av_malloc(config.extra_data().size() + FF_INPUT_BUFFER_PADDING_SIZE));
+        av_malloc(config.extra_data().size() + AV_INPUT_BUFFER_PADDING_SIZE));
     memcpy(codec_context->extradata, &config.extra_data()[0],
            config.extra_data().size());
     memset(codec_context->extradata + config.extra_data().size(), '\0',
-           FF_INPUT_BUFFER_PADDING_SIZE);
+           AV_INPUT_BUFFER_PADDING_SIZE);
   }
 }
 
@@ -637,32 +710,44 @@ VideoPixelFormat AVPixelFormatToVideoPixelFormat(AVPixelFormat pixel_format) {
   // The YUVJ alternatives are FFmpeg's (deprecated, but still in use) way to
   // specify a pixel format and full range color combination.
   switch (pixel_format) {
-    case AV_PIX_FMT_YUV422P:
-    case AV_PIX_FMT_YUVJ422P:
-      return PIXEL_FORMAT_YV16;
     case AV_PIX_FMT_YUV444P:
     case AV_PIX_FMT_YUVJ444P:
-      return PIXEL_FORMAT_YV24;
+      return PIXEL_FORMAT_I444;
+
     case AV_PIX_FMT_YUV420P:
     case AV_PIX_FMT_YUVJ420P:
-      return PIXEL_FORMAT_YV12;
+      return PIXEL_FORMAT_I420;
+
+    case AV_PIX_FMT_YUV422P:
+    case AV_PIX_FMT_YUVJ422P:
+      return PIXEL_FORMAT_I422;
+
     case AV_PIX_FMT_YUVA420P:
-      return PIXEL_FORMAT_YV12A;
+      return PIXEL_FORMAT_I420A;
 
     case AV_PIX_FMT_YUV420P9LE:
       return PIXEL_FORMAT_YUV420P9;
     case AV_PIX_FMT_YUV420P10LE:
       return PIXEL_FORMAT_YUV420P10;
+    case AV_PIX_FMT_YUV420P12LE:
+      return PIXEL_FORMAT_YUV420P12;
 
     case AV_PIX_FMT_YUV422P9LE:
       return PIXEL_FORMAT_YUV422P9;
     case AV_PIX_FMT_YUV422P10LE:
       return PIXEL_FORMAT_YUV422P10;
+    case AV_PIX_FMT_YUV422P12LE:
+      return PIXEL_FORMAT_YUV422P12;
 
     case AV_PIX_FMT_YUV444P9LE:
       return PIXEL_FORMAT_YUV444P9;
     case AV_PIX_FMT_YUV444P10LE:
       return PIXEL_FORMAT_YUV444P10;
+    case AV_PIX_FMT_YUV444P12LE:
+      return PIXEL_FORMAT_YUV444P12;
+
+    case AV_PIX_FMT_P016LE:
+      return PIXEL_FORMAT_P016LE;
 
     default:
       DVLOG(1) << "Unsupported AVPixelFormat: " << pixel_format;
@@ -672,26 +757,34 @@ VideoPixelFormat AVPixelFormatToVideoPixelFormat(AVPixelFormat pixel_format) {
 
 AVPixelFormat VideoPixelFormatToAVPixelFormat(VideoPixelFormat video_format) {
   switch (video_format) {
-    case PIXEL_FORMAT_YV16:
-      return AV_PIX_FMT_YUV422P;
-    case PIXEL_FORMAT_YV12:
+    case PIXEL_FORMAT_I420:
       return AV_PIX_FMT_YUV420P;
-    case PIXEL_FORMAT_YV12A:
+    case PIXEL_FORMAT_I422:
+      return AV_PIX_FMT_YUV422P;
+    case PIXEL_FORMAT_I420A:
       return AV_PIX_FMT_YUVA420P;
-    case PIXEL_FORMAT_YV24:
+    case PIXEL_FORMAT_I444:
       return AV_PIX_FMT_YUV444P;
     case PIXEL_FORMAT_YUV420P9:
       return AV_PIX_FMT_YUV420P9LE;
     case PIXEL_FORMAT_YUV420P10:
       return AV_PIX_FMT_YUV420P10LE;
+    case PIXEL_FORMAT_YUV420P12:
+      return AV_PIX_FMT_YUV420P12LE;
     case PIXEL_FORMAT_YUV422P9:
       return AV_PIX_FMT_YUV422P9LE;
     case PIXEL_FORMAT_YUV422P10:
       return AV_PIX_FMT_YUV422P10LE;
+    case PIXEL_FORMAT_YUV422P12:
+      return AV_PIX_FMT_YUV422P12LE;
     case PIXEL_FORMAT_YUV444P9:
       return AV_PIX_FMT_YUV444P9LE;
     case PIXEL_FORMAT_YUV444P10:
       return AV_PIX_FMT_YUV444P10LE;
+    case PIXEL_FORMAT_YUV444P12:
+      return AV_PIX_FMT_YUV444P12LE;
+    case PIXEL_FORMAT_P016LE:
+      return AV_PIX_FMT_P016LE;
 
     default:
       DVLOG(1) << "Unsupported Format: " << video_format;
@@ -699,59 +792,30 @@ AVPixelFormat VideoPixelFormatToAVPixelFormat(VideoPixelFormat video_format) {
   return AV_PIX_FMT_NONE;
 }
 
-ColorSpace AVColorSpaceToColorSpace(AVColorSpace color_space,
-                                    AVColorRange color_range) {
+VideoColorSpace AVColorSpaceToColorSpace(AVColorSpace color_space,
+                                         AVColorRange color_range) {
+  // TODO(hubbe): make this better
   if (color_range == AVCOL_RANGE_JPEG)
-    return COLOR_SPACE_JPEG;
+    return VideoColorSpace::JPEG();
 
   switch (color_space) {
     case AVCOL_SPC_UNSPECIFIED:
       break;
     case AVCOL_SPC_BT709:
-      return COLOR_SPACE_HD_REC709;
+      return VideoColorSpace::REC709();
     case AVCOL_SPC_SMPTE170M:
     case AVCOL_SPC_BT470BG:
-      return COLOR_SPACE_SD_REC601;
+      return VideoColorSpace::REC601();
     default:
       DVLOG(1) << "Unknown AVColorSpace: " << color_space;
   }
-  return COLOR_SPACE_UNSPECIFIED;
+  return VideoColorSpace();
 }
 
-bool FFmpegUTCDateToTime(const char* date_utc, base::Time* out) {
-  DCHECK(date_utc);
-  DCHECK(out);
-
-  std::vector<base::StringPiece> fields = base::SplitStringPiece(
-      date_utc, " ", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  if (fields.size() != 2)
-    return false;
-
-  std::vector<base::StringPiece> date_fields = base::SplitStringPiece(
-      fields[0], "-", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  if (date_fields.size() != 3)
-    return false;
-
-  // TODO(acolwell): Update this parsing code when FFmpeg returns sub-second
-  // information.
-  std::vector<base::StringPiece> time_fields = base::SplitStringPiece(
-      fields[1], ":", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  if (time_fields.size() != 3)
-    return false;
-
-  base::Time::Exploded exploded;
-  exploded.millisecond = 0;
-  if (base::StringToInt(date_fields[0], &exploded.year) &&
-      base::StringToInt(date_fields[1], &exploded.month) &&
-      base::StringToInt(date_fields[2], &exploded.day_of_month) &&
-      base::StringToInt(time_fields[0], &exploded.hour) &&
-      base::StringToInt(time_fields[1], &exploded.minute) &&
-      base::StringToInt(time_fields[2], &exploded.second)) {
-    if (base::Time::FromUTCExploded(exploded, out))
-      return true;
-  }
-
-  return false;
+std::string AVErrorToString(int errnum) {
+  char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+  av_strerror(errnum, errbuf, AV_ERROR_MAX_STRING_SIZE);
+  return std::string(errbuf);
 }
 
 int32_t HashCodecName(const char* codec_name) {

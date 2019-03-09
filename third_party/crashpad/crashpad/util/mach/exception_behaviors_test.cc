@@ -16,7 +16,7 @@
 
 #include <sys/types.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "gtest/gtest.h"
 #include "util/mach/mach_extensions.h"
@@ -26,14 +26,13 @@ namespace test {
 namespace {
 
 TEST(ExceptionBehaviors, ExceptionBehaviors) {
-  struct TestData {
+  static constexpr struct {
     exception_behavior_t behavior;
     bool state;
     bool identity;
     bool mach_exception_codes;
     exception_behavior_t basic_behavior;
-  };
-  const TestData kTestData[] = {
+  } kTestData[] = {
       {EXCEPTION_DEFAULT, false, true, false, EXCEPTION_DEFAULT},
       {EXCEPTION_STATE, true, false, false, EXCEPTION_STATE},
       {EXCEPTION_STATE_IDENTITY, true, true, false, EXCEPTION_STATE_IDENTITY},
@@ -54,18 +53,18 @@ TEST(ExceptionBehaviors, ExceptionBehaviors) {
        EXCEPTION_STATE_IDENTITY},
   };
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
-    const TestData& test_data = kTestData[index];
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
+    const auto& test_data = kTestData[index];
     SCOPED_TRACE(base::StringPrintf(
         "index %zu, behavior %d", index, test_data.behavior));
 
-    EXPECT_EQ(test_data.state, ExceptionBehaviorHasState(test_data.behavior));
-    EXPECT_EQ(test_data.identity,
-              ExceptionBehaviorHasIdentity(test_data.behavior));
-    EXPECT_EQ(test_data.mach_exception_codes,
-              ExceptionBehaviorHasMachExceptionCodes(test_data.behavior));
-    EXPECT_EQ(test_data.basic_behavior,
-              ExceptionBehaviorBasic(test_data.behavior));
+    EXPECT_EQ(ExceptionBehaviorHasState(test_data.behavior), test_data.state);
+    EXPECT_EQ(ExceptionBehaviorHasIdentity(test_data.behavior),
+              test_data.identity);
+    EXPECT_EQ(ExceptionBehaviorHasMachExceptionCodes(test_data.behavior),
+              test_data.mach_exception_codes);
+    EXPECT_EQ(ExceptionBehaviorBasic(test_data.behavior),
+              test_data.basic_behavior);
   }
 }
 

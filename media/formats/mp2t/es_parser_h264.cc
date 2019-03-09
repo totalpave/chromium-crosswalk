@@ -8,69 +8,209 @@
 
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
-#include "media/base/encryption_scheme.h"
+#include "base/optional.h"
+#include "media/base/decrypt_config.h"
+#include "media/base/encryption_pattern.h"
 #include "media/base/media_util.h"
 #include "media/base/stream_parser_buffer.h"
 #include "media/base/timestamp_constants.h"
 #include "media/base/video_frame.h"
-#include "media/filters/h264_parser.h"
 #include "media/formats/common/offset_byte_queue.h"
 #include "media/formats/mp2t/mp2t_common.h"
+#include "media/video/h264_parser.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace media {
 namespace mp2t {
 
+#if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
 namespace {
 
-VideoCodecProfile ProfileIDCToVideoCodecProfile(int profile_idc) {
-  switch (profile_idc) {
-    case H264SPS::kProfileIDCBaseline:
-      return H264PROFILE_BASELINE;
-    case H264SPS::kProfileIDCMain:
-      return H264PROFILE_MAIN;
-    case H264SPS::kProfileIDCHigh:
-      return H264PROFILE_HIGH;
-    case H264SPS::kProfileIDHigh10:
-      return H264PROFILE_HIGH10PROFILE;
-    case H264SPS::kProfileIDHigh422:
-      return H264PROFILE_HIGH422PROFILE;
-    case H264SPS::kProfileIDHigh444Predictive:
-      return H264PROFILE_HIGH444PREDICTIVEPROFILE;
-    case H264SPS::kProfileIDScalableBaseline:
-      return H264PROFILE_SCALABLEBASELINE;
-    case H264SPS::kProfileIDScalableHigh:
-      return H264PROFILE_SCALABLEHIGH;
-    case H264SPS::kProfileIDStereoHigh:
-      return H264PROFILE_STEREOHIGH;
-    case H264SPS::kProfileIDSMultiviewHigh:
-      return H264PROFILE_MULTIVIEWHIGH;
+const int kSampleAESMaxUnprotectedNALULength = 48;
+const int kSampleAESClearLeaderSize = 32;
+const int kSampleAESEncryptBlocks = 1;
+const int kSampleAESSkipBlocks = 9;
+const int kSampleAESPatternUnit =
+    (kSampleAESEncryptBlocks + kSampleAESSkipBlocks) * 16;
+
+// Attempts to find the first or only EP3B (emulation prevention 3 byte) in
+// the part of the |buffer| between |start_pos| and |end_pos|. Returns the
+// position of the EP3B, or 0 if there are none.
+// Note: the EP3B always follows two zero bytes, so the value 0 can never be a
+// valid position.
+int FindEP3B(const uint8_t* buffer, int start_pos, int end_pos) {
+  const uint8_t* data = buffer + start_pos;
+  int data_size = end_pos - start_pos;
+  DCHECK_GE(data_size, 0);
+  int bytes_left = data_size;
+
+  while (bytes_left >= 4) {
+    if (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x03 &&
+        data[3] <= 0x03) {
+      return (data - buffer) + 2;
+    }
+    ++data;
+    --bytes_left;
   }
-  NOTREACHED() << "unknown video profile: " << profile_idc;
-  return VIDEO_CODEC_PROFILE_UNKNOWN;
+  return 0;
+}
+
+// Remove the byte at |pos| in the |buffer| and close up the gap, moving all the
+// bytes from [pos + 1, end_pos) to [pos, end_pos - 1).
+void RemoveByte(uint8_t* buffer, int pos, int end_pos) {
+  memmove(&buffer[pos], &buffer[pos + 1], end_pos - pos - 1);
+}
+
+// Given an Access Unit pointed to by |au| of size |au_size|, removes emulation
+// prevention 3 bytes (EP3B) from within the |protected_blocks|. Also computes
+// the |subsamples| vector describing the resulting AU.
+// Returns the allocated buffer holding the adjusted copy, or NULL if no size
+// adjustment was necessary.
+std::unique_ptr<uint8_t[]> AdjustAUForSampleAES(
+    const uint8_t* au,
+    int* au_size,
+    const Ranges<int>& protected_blocks,
+    std::vector<SubsampleEntry>* subsamples) {
+  DCHECK(subsamples);
+  DCHECK(au_size);
+  std::unique_ptr<uint8_t[]> result;
+  int& au_end_pos = *au_size;
+
+  // 1. Considering each protected block in turn, find any emulation prevention
+  // 3 bytes (EP3B) within it, keeping track of their positions. While doing so,
+  // produce a revised Ranges<int> reflecting the new protected block positions
+  // that will apply after we have removed the EP3Bs.
+  Ranges<int> adjusted_protected_blocks;
+  std::vector<int> epbs;
+  int adjustment = 0;
+  for (size_t i = 0; i < protected_blocks.size(); i++) {
+    int start_pos = protected_blocks.start(i);
+    int end_pos = protected_blocks.end(i);
+    int search_pos = start_pos;
+    int epb_pos;
+    int block_adjustment = 0;
+    while ((epb_pos = FindEP3B(au, search_pos, end_pos))) {
+      epbs.push_back(epb_pos);
+      block_adjustment++;
+      search_pos = epb_pos + 2;
+    }
+    // adjust the start_pos and end_pos to accommodate the EPBs that will be
+    // removed.
+    start_pos -= adjustment;
+    adjustment += block_adjustment;
+    end_pos -= adjustment;
+    if (end_pos - start_pos > kSampleAESMaxUnprotectedNALULength)
+      adjusted_protected_blocks.Add(start_pos, end_pos);
+    else
+      VLOG(1) << "Ignoring short protected block of length: "
+              << (end_pos - start_pos);
+  }
+
+  // 2. If we actually found any EP3Bs, make a copy of the AU and then remove
+  // the EP3Bs in the copy (we can't modify the original).
+  if (adjustment) {
+    result.reset(new uint8_t[au_end_pos]);
+    uint8_t* temp = result.get();
+    memcpy(temp, au, au_end_pos);
+    for (auto epb_pos = epbs.rbegin(); epb_pos != epbs.rend(); ++epb_pos) {
+      RemoveByte(temp, *epb_pos, au_end_pos);
+      au_end_pos--;
+    }
+    au = temp;
+    VLOG(2) << "Copied AU and removed emulation prevention bytes: "
+            << adjustment;
+  }
+
+  // We now have either the original AU, or a copy with the EP3Bs removed.
+  // We also have an updated Ranges<int> indicating the protected blocks.
+  // Also au_end_pos has been adjusted to indicate the new au_size.
+
+  // 3. Use a new Ranges<int> to collect all the clear ranges. They will
+  // automatically be coalesced to minimize the number of (disjoint) ranges.
+  Ranges<int> clear_ranges;
+  int previous_pos = 0;
+  for (size_t i = 0; i < adjusted_protected_blocks.size(); i++) {
+    int start_pos = adjusted_protected_blocks.start(i);
+    int end_pos = adjusted_protected_blocks.end(i);
+    // Add the clear range prior to this protected block.
+    clear_ranges.Add(previous_pos, start_pos);
+    int block_size = end_pos - start_pos;
+    DCHECK_GT(block_size, kSampleAESMaxUnprotectedNALULength);
+    // Add the clear leader.
+    clear_ranges.Add(start_pos, start_pos + kSampleAESClearLeaderSize);
+    block_size -= kSampleAESClearLeaderSize;
+    // The bytes beyond an integral multiple of AES blocks (16 bytes) are to be
+    // left clear. Also, if the last 16 bytes would be the only block in a
+    // pattern unit (160 bytes), they are also left clear.
+    int residual_bytes = block_size % kSampleAESPatternUnit;
+    if (residual_bytes > 16)
+      residual_bytes = residual_bytes % 16;
+    clear_ranges.Add(end_pos - residual_bytes, end_pos);
+    previous_pos = end_pos;
+  }
+  // Add the trailing bytes, if any, beyond the last protected block.
+  clear_ranges.Add(previous_pos, au_end_pos);
+
+  // 4. Convert the disjoint set of clear ranges into subsample entries. Each
+  // subsample entry is a count of clear bytes followed by a count of protected
+  // bytes.
+  subsamples->clear();
+  for (size_t i = 0; i < clear_ranges.size(); i++) {
+    int start_pos = clear_ranges.start(i);
+    int end_pos = clear_ranges.end(i);
+    int clear_size = end_pos - start_pos;
+    int encrypt_end_pos = au_end_pos;
+
+    if (i + 1 < clear_ranges.size())
+      encrypt_end_pos = clear_ranges.start(i + 1);
+    SubsampleEntry subsample(clear_size, encrypt_end_pos - end_pos);
+    subsamples->push_back(subsample);
+  }
+  return result;
 }
 
 }  // namespace
+#endif  // BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
 
 // An AUD NALU is at least 4 bytes:
 // 3 bytes for the start code + 1 byte for the NALU type.
 const int kMinAUDSize = 4;
 
-EsParserH264::EsParserH264(
-    const NewVideoConfigCB& new_video_config_cb,
-    const EmitBufferCB& emit_buffer_cb)
+EsParserH264::EsParserH264(const NewVideoConfigCB& new_video_config_cb,
+                           const EmitBufferCB& emit_buffer_cb)
     : es_adapter_(new_video_config_cb, emit_buffer_cb),
       h264_parser_(new H264Parser()),
       current_access_unit_pos_(0),
-      next_access_unit_pos_(0) {
+      next_access_unit_pos_(0)
+#if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
+      ,
+      use_hls_sample_aes_(false),
+      get_decrypt_config_cb_()
+#endif
+{
 }
+
+#if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
+EsParserH264::EsParserH264(const NewVideoConfigCB& new_video_config_cb,
+                           const EmitBufferCB& emit_buffer_cb,
+                           bool use_hls_sample_aes,
+                           const GetDecryptConfigCB& get_decrypt_config_cb)
+    : es_adapter_(new_video_config_cb, emit_buffer_cb),
+      h264_parser_(new H264Parser()),
+      current_access_unit_pos_(0),
+      next_access_unit_pos_(0),
+      use_hls_sample_aes_(use_hls_sample_aes),
+      get_decrypt_config_cb_(get_decrypt_config_cb) {
+  DCHECK_EQ(!!get_decrypt_config_cb_, use_hls_sample_aes_);
+}
+#endif
 
 EsParserH264::~EsParserH264() {
 }
 
 void EsParserH264::Flush() {
-  DVLOG(1) << __FUNCTION__;
+  DVLOG(1) << __func__;
   if (!FindAUD(&current_access_unit_pos_))
     return;
 
@@ -84,7 +224,7 @@ void EsParserH264::Flush() {
 }
 
 void EsParserH264::ResetInternal() {
-  DVLOG(1) << __FUNCTION__;
+  DVLOG(1) << __func__;
   h264_parser_.reset(new H264Parser());
   current_access_unit_pos_ = 0;
   next_access_unit_pos_ = 0;
@@ -158,7 +298,7 @@ bool EsParserH264::ParseFromEsQueue() {
   const uint8_t* es;
   int size;
   es_queue_->PeekAt(current_access_unit_pos_, &es, &size);
-  int access_unit_size = base::checked_cast<int, int64_t>(
+  int access_unit_size = base::checked_cast<int>(
       next_access_unit_pos_ - current_access_unit_pos_);
   DCHECK_LE(access_unit_size, size);
   h264_parser_->SetStream(es, access_unit_size);
@@ -194,8 +334,12 @@ bool EsParserH264::ParseFromEsQueue() {
       case H264NALU::kPPS: {
         DVLOG(LOG_LEVEL_ES) << "NALU: PPS";
         int pps_id;
-        if (h264_parser_->ParsePPS(&pps_id) != H264Parser::kOk)
-          return false;
+        if (h264_parser_->ParsePPS(&pps_id) != H264Parser::kOk) {
+          // Allow PPS parsing to fail if SPS have not been parsed yet,
+          // since it is possible to have a PPS before SPS in the stream.
+          if (last_video_decoder_config_.IsValidConfig())
+            return false;
+        }
         break;
       }
       case H264NALU::kIDRSlice:
@@ -213,6 +357,15 @@ bool EsParserH264::ParseFromEsQueue() {
         } else {
           pps_id_for_access_unit = shdr.pic_parameter_set_id;
         }
+#if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
+        // With HLS SampleAES, protected blocks in H.264 consist of IDR and non-
+        // IDR slices that are more than 48 bytes in length.
+        if (use_hls_sample_aes_ &&
+            nalu.size > kSampleAESMaxUnprotectedNALULength) {
+          int64_t nal_begin = nalu.data - es;
+          protected_blocks_.Add(nal_begin, nal_begin + nalu.size);
+        }
+#endif
         break;
       }
       default: {
@@ -235,7 +388,7 @@ bool EsParserH264::EmitFrame(int64_t access_unit_pos,
                              bool is_key_frame,
                              int pps_id) {
   // Get the access unit timing info.
-  // Note: |current_timing_desc.pts| might be |kNoTimestamp()| at this point
+  // Note: |current_timing_desc.pts| might be |kNoTimestamp| at this point
   // if:
   // - the stream is not fully MPEG-2 compliant.
   // - or if the stream relies on H264 VUI parameters to compute the timestamps.
@@ -243,8 +396,7 @@ bool EsParserH264::EmitFrame(int64_t access_unit_pos,
   //   This part is not yet implemented in EsParserH264.
   // |es_adapter_| will take care of the missing timestamps.
   TimingDesc current_timing_desc = GetTimingDescriptor(access_unit_pos);
-  DVLOG_IF(1, current_timing_desc.pts == kNoTimestamp())
-      << "Missing timestamp";
+  DVLOG_IF(1, current_timing_desc.pts == kNoTimestamp) << "Missing timestamp";
 
   // If only the PTS is provided, copy the PTS into the DTS.
   if (current_timing_desc.dts == kNoDecodeTimestamp()) {
@@ -266,7 +418,16 @@ bool EsParserH264::EmitFrame(int64_t access_unit_pos,
     const H264SPS* sps = h264_parser_->GetSPS(pps->seq_parameter_set_id);
     if (!sps)
       return false;
-    RCHECK(UpdateVideoDecoderConfig(sps, Unencrypted()));
+    EncryptionScheme scheme = Unencrypted();
+#if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
+    if (use_hls_sample_aes_) {
+      // Note that for SampleAES the (encrypt,skip) pattern is constant.
+      scheme = EncryptionScheme(
+          EncryptionScheme::CIPHER_MODE_AES_CBC,
+          EncryptionPattern(kSampleAESEncryptBlocks, kSampleAESSkipBlocks));
+    }
+#endif
+    RCHECK(UpdateVideoDecoderConfig(sps, scheme));
   }
 
   // Emit a frame.
@@ -277,17 +438,58 @@ bool EsParserH264::EmitFrame(int64_t access_unit_pos,
   es_queue_->PeekAt(current_access_unit_pos_, &es, &es_size);
   CHECK_GE(es_size, access_unit_size);
 
+#if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
+  const DecryptConfig* base_decrypt_config = nullptr;
+  if (use_hls_sample_aes_) {
+    DCHECK(get_decrypt_config_cb_);
+    base_decrypt_config = get_decrypt_config_cb_.Run();
+  }
+
+  std::unique_ptr<uint8_t[]> adjusted_au;
+  std::vector<SubsampleEntry> subsamples;
+  if (use_hls_sample_aes_ && base_decrypt_config) {
+    adjusted_au = AdjustAUForSampleAES(es, &access_unit_size, protected_blocks_,
+                                       &subsamples);
+    protected_blocks_.clear();
+    if (adjusted_au)
+      es = adjusted_au.get();
+  }
+#endif
+
   // TODO(wolenetz/acolwell): Validate and use a common cross-parser TrackId
   // type and allow multiple video tracks. See https://crbug.com/341581.
   scoped_refptr<StreamParserBuffer> stream_parser_buffer =
-      StreamParserBuffer::CopyFrom(
-          es,
-          access_unit_size,
-          is_key_frame,
-          DemuxerStream::VIDEO,
-          0);
+      StreamParserBuffer::CopyFrom(es, access_unit_size, is_key_frame,
+                                   DemuxerStream::VIDEO, kMp2tVideoTrackId);
   stream_parser_buffer->SetDecodeTimestamp(current_timing_desc.dts);
   stream_parser_buffer->set_timestamp(current_timing_desc.pts);
+#if BUILDFLAG(ENABLE_HLS_SAMPLE_AES)
+  if (use_hls_sample_aes_ && base_decrypt_config) {
+    switch (base_decrypt_config->encryption_mode()) {
+      case EncryptionMode::kUnencrypted:
+        // As |base_decrypt_config| is specified, the stream is encrypted,
+        // so this shouldn't happen.
+        NOTREACHED();
+        break;
+      case EncryptionMode::kCenc:
+        stream_parser_buffer->set_decrypt_config(
+            DecryptConfig::CreateCencConfig(base_decrypt_config->key_id(),
+                                            base_decrypt_config->iv(),
+                                            subsamples));
+        break;
+      case EncryptionMode::kCbcs:
+        // Note that for SampleAES the (encrypt,skip) pattern is constant.
+        // If not specified in |base_decrypt_config|, use default values.
+        stream_parser_buffer->set_decrypt_config(
+            DecryptConfig::CreateCbcsConfig(
+                base_decrypt_config->key_id(), base_decrypt_config->iv(),
+                subsamples,
+                EncryptionPattern(kSampleAESEncryptBlocks,
+                                  kSampleAESSkipBlocks)));
+        break;
+    }
+  }
+#endif
   return es_adapter_.OnNewBuffer(stream_parser_buffer);
 }
 
@@ -297,48 +499,48 @@ bool EsParserH264::UpdateVideoDecoderConfig(const H264SPS* sps,
   int sar_width = (sps->sar_width == 0) ? 1 : sps->sar_width;
   int sar_height = (sps->sar_height == 0) ? 1 : sps->sar_height;
 
-  // TODO(damienv): a MAP unit can be either 16 or 32 pixels.
-  // although it's 16 pixels for progressive non MBAFF frames.
-  int width_mb = sps->pic_width_in_mbs_minus1 + 1;
-  int height_mb = sps->pic_height_in_map_units_minus1 + 1;
-  if (width_mb > std::numeric_limits<int>::max() / 16 ||
-      height_mb > std::numeric_limits<int>::max() / 16) {
-    DVLOG(1) << "Picture size is too big: width_mb=" << width_mb
-             << " height_mb=" << height_mb;
+  base::Optional<gfx::Size> coded_size = sps->GetCodedSize();
+  if (!coded_size)
     return false;
-  }
 
-  gfx::Size coded_size(16 * width_mb, 16 * height_mb);
-  gfx::Rect visible_rect(
-      sps->frame_crop_left_offset,
-      sps->frame_crop_top_offset,
-      (coded_size.width() - sps->frame_crop_right_offset) -
-      sps->frame_crop_left_offset,
-      (coded_size.height() - sps->frame_crop_bottom_offset) -
-      sps->frame_crop_top_offset);
-  if (visible_rect.width() <= 0 || visible_rect.height() <= 0)
+  base::Optional<gfx::Rect> visible_rect = sps->GetVisibleRect();
+  if (!visible_rect)
     return false;
-  if (visible_rect.width() > std::numeric_limits<int>::max() / sar_width) {
+
+  if (visible_rect->width() > std::numeric_limits<int>::max() / sar_width) {
     DVLOG(1) << "Integer overflow detected: visible_rect.width()="
-             << visible_rect.width() << " sar_width=" << sar_width;
+             << visible_rect->width() << " sar_width=" << sar_width;
     return false;
   }
-  gfx::Size natural_size(
-      (visible_rect.width() * sar_width) / sar_height,
-      visible_rect.height());
+  gfx::Size natural_size((visible_rect->width() * sar_width) / sar_height,
+                         visible_rect->height());
   if (natural_size.width() == 0)
     return false;
 
+  VideoCodecProfile profile =
+      H264Parser::ProfileIDCToVideoCodecProfile(sps->profile_idc);
+  if (profile == VIDEO_CODEC_PROFILE_UNKNOWN) {
+    DVLOG(1) << "Unrecognized SPS profile_idc 0x" << std::hex
+             << sps->profile_idc;
+    return false;
+  }
+
   VideoDecoderConfig video_decoder_config(
-      kCodecH264, ProfileIDCToVideoCodecProfile(sps->profile_idc),
-      PIXEL_FORMAT_YV12, COLOR_SPACE_HD_REC709, coded_size, visible_rect,
-      natural_size, EmptyExtraData(), scheme);
+      kCodecH264, profile, PIXEL_FORMAT_I420, VideoColorSpace::REC709(),
+      VIDEO_ROTATION_0, coded_size.value(), visible_rect.value(), natural_size,
+      EmptyExtraData(), scheme);
+
+  if (!video_decoder_config.IsValidConfig()) {
+    DVLOG(1) << "Invalid video config: "
+             << video_decoder_config.AsHumanReadableString();
+    return false;
+  }
 
   if (!video_decoder_config.Matches(last_video_decoder_config_)) {
     DVLOG(1) << "Profile IDC: " << sps->profile_idc;
     DVLOG(1) << "Level IDC: " << sps->level_idc;
-    DVLOG(1) << "Pic width: " << coded_size.width();
-    DVLOG(1) << "Pic height: " << coded_size.height();
+    DVLOG(1) << "Pic width: " << coded_size->width();
+    DVLOG(1) << "Pic height: " << coded_size->height();
     DVLOG(1) << "log2_max_frame_num_minus4: "
              << sps->log2_max_frame_num_minus4;
     DVLOG(1) << "SAR: width=" << sps->sar_width

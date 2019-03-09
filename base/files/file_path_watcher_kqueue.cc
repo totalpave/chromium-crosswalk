@@ -9,10 +9,12 @@
 #include <sys/param.h>
 
 #include "base/bind.h"
+#include "base/file_descriptor_posix.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 
 // On some platforms these are not defined.
 #if !defined(EV_RECEIPT)
@@ -26,7 +28,9 @@ namespace base {
 
 FilePathWatcherKQueue::FilePathWatcherKQueue() : kqueue_(-1) {}
 
-FilePathWatcherKQueue::~FilePathWatcherKQueue() {}
+FilePathWatcherKQueue::~FilePathWatcherKQueue() {
+  DCHECK(!task_runner() || task_runner()->RunsTasksInCurrentSequence());
+}
 
 void FilePathWatcherKQueue::ReleaseEvent(struct kevent& event) {
   CloseFileDescriptor(&event.ident);
@@ -36,7 +40,6 @@ void FilePathWatcherKQueue::ReleaseEvent(struct kevent& event) {
 }
 
 int FilePathWatcherKQueue::EventsForPath(FilePath path, EventVector* events) {
-  DCHECK(MessageLoopForIO::current());
   // Make sure that we are working with a clean slate.
   DCHECK(events->empty());
 
@@ -78,8 +81,9 @@ int FilePathWatcherKQueue::EventsForPath(FilePath path, EventVector* events) {
 }
 
 uintptr_t FilePathWatcherKQueue::FileDescriptorForPath(const FilePath& path) {
+  ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
   int fd = HANDLE_EINTR(open(path.value().c_str(), O_EVTONLY));
-  if (fd == -1)
+  if (fd == kInvalidFd)
     return kNoFileDescriptor;
   return fd;
 }
@@ -208,6 +212,7 @@ bool FilePathWatcherKQueue::UpdateWatches(bool* target_file_affected) {
     }
 
     EventVector updates(valid);
+    ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
     int count = HANDLE_EINTR(kevent(kqueue_, &events_[0], valid, &updates[0],
                                     valid, NULL));
     if (!AreKeventValuesValid(&updates[0], count)) {
@@ -230,9 +235,75 @@ bool FilePathWatcherKQueue::UpdateWatches(bool* target_file_affected) {
   return true;
 }
 
-void FilePathWatcherKQueue::OnFileCanReadWithoutBlocking(int fd) {
-  DCHECK(MessageLoopForIO::current());
-  DCHECK_EQ(fd, kqueue_);
+bool FilePathWatcherKQueue::Watch(const FilePath& path,
+                                  bool recursive,
+                                  const FilePathWatcher::Callback& callback) {
+  DCHECK(target_.value().empty());  // Can only watch one path.
+  DCHECK(!callback.is_null());
+  DCHECK_EQ(kqueue_, -1);
+  // Recursive watch is not supported using kqueue.
+  DCHECK(!recursive);
+
+  callback_ = callback;
+  target_ = path;
+
+  set_task_runner(SequencedTaskRunnerHandle::Get());
+
+  kqueue_ = kqueue();
+  if (kqueue_ == -1) {
+    DPLOG(ERROR) << "kqueue";
+    return false;
+  }
+
+  int last_entry = EventsForPath(target_, &events_);
+  DCHECK_NE(last_entry, 0);
+
+  EventVector responses(last_entry);
+
+  ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+  int count = HANDLE_EINTR(kevent(kqueue_, &events_[0], last_entry,
+                                  &responses[0], last_entry, NULL));
+  if (!AreKeventValuesValid(&responses[0], count)) {
+    // Calling Cancel() here to close any file descriptors that were opened.
+    // This would happen in the destructor anyways, but FilePathWatchers tend to
+    // be long lived, and if an error has occurred, there is no reason to waste
+    // the file descriptors.
+    Cancel();
+    return false;
+  }
+
+  // It's safe to use Unretained() because the watch is cancelled and the
+  // callback cannot be invoked after |kqueue_watch_controller_| (which is a
+  // member of |this|) has been deleted.
+  kqueue_watch_controller_ = FileDescriptorWatcher::WatchReadable(
+      kqueue_,
+      Bind(&FilePathWatcherKQueue::OnKQueueReadable, Unretained(this)));
+
+  return true;
+}
+
+void FilePathWatcherKQueue::Cancel() {
+  if (!task_runner()) {
+    set_cancelled();
+    return;
+  }
+
+  DCHECK(task_runner()->RunsTasksInCurrentSequence());
+  if (!is_cancelled()) {
+    set_cancelled();
+    kqueue_watch_controller_.reset();
+    if (IGNORE_EINTR(close(kqueue_)) != 0) {
+      DPLOG(ERROR) << "close kqueue";
+    }
+    kqueue_ = -1;
+    std::for_each(events_.begin(), events_.end(), ReleaseEvent);
+    events_.clear();
+    callback_.Reset();
+  }
+}
+
+void FilePathWatcherKQueue::OnKQueueReadable() {
+  DCHECK(task_runner()->RunsTasksInCurrentSequence());
   DCHECK(events_.size());
 
   // Request the file system update notifications that have occurred and return
@@ -300,91 +371,6 @@ void FilePathWatcherKQueue::OnFileCanReadWithoutBlocking(int fd) {
 
   if (send_notification) {
     callback_.Run(target_, false);
-  }
-}
-
-void FilePathWatcherKQueue::OnFileCanWriteWithoutBlocking(int fd) {
-  NOTREACHED();
-}
-
-void FilePathWatcherKQueue::WillDestroyCurrentMessageLoop() {
-  CancelOnMessageLoopThread();
-}
-
-bool FilePathWatcherKQueue::Watch(const FilePath& path,
-                                  bool recursive,
-                                  const FilePathWatcher::Callback& callback) {
-  DCHECK(MessageLoopForIO::current());
-  DCHECK(target_.value().empty());  // Can only watch one path.
-  DCHECK(!callback.is_null());
-  DCHECK_EQ(kqueue_, -1);
-
-  if (recursive) {
-    // Recursive watch is not supported using kqueue.
-    NOTIMPLEMENTED();
-    return false;
-  }
-
-  callback_ = callback;
-  target_ = path;
-
-  MessageLoop::current()->AddDestructionObserver(this);
-  io_task_runner_ = ThreadTaskRunnerHandle::Get();
-
-  kqueue_ = kqueue();
-  if (kqueue_ == -1) {
-    DPLOG(ERROR) << "kqueue";
-    return false;
-  }
-
-  int last_entry = EventsForPath(target_, &events_);
-  DCHECK_NE(last_entry, 0);
-
-  EventVector responses(last_entry);
-
-  int count = HANDLE_EINTR(kevent(kqueue_, &events_[0], last_entry,
-                                  &responses[0], last_entry, NULL));
-  if (!AreKeventValuesValid(&responses[0], count)) {
-    // Calling Cancel() here to close any file descriptors that were opened.
-    // This would happen in the destructor anyways, but FilePathWatchers tend to
-    // be long lived, and if an error has occurred, there is no reason to waste
-    // the file descriptors.
-    Cancel();
-    return false;
-  }
-
-  return MessageLoopForIO::current()->WatchFileDescriptor(
-      kqueue_, true, MessageLoopForIO::WATCH_READ, &kqueue_watcher_, this);
-}
-
-void FilePathWatcherKQueue::Cancel() {
-  SingleThreadTaskRunner* task_runner = io_task_runner_.get();
-  if (!task_runner) {
-    set_cancelled();
-    return;
-  }
-  if (!task_runner->BelongsToCurrentThread()) {
-    task_runner->PostTask(FROM_HERE,
-                          base::Bind(&FilePathWatcherKQueue::Cancel, this));
-    return;
-  }
-  CancelOnMessageLoopThread();
-}
-
-void FilePathWatcherKQueue::CancelOnMessageLoopThread() {
-  DCHECK(MessageLoopForIO::current());
-  if (!is_cancelled()) {
-    set_cancelled();
-    kqueue_watcher_.StopWatchingFileDescriptor();
-    if (IGNORE_EINTR(close(kqueue_)) != 0) {
-      DPLOG(ERROR) << "close kqueue";
-    }
-    kqueue_ = -1;
-    std::for_each(events_.begin(), events_.end(), ReleaseEvent);
-    events_.clear();
-    io_task_runner_ = NULL;
-    MessageLoop::current()->RemoveDestructionObserver(this);
-    callback_.Reset();
   }
 }
 

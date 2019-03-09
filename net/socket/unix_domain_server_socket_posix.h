@@ -13,6 +13,8 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "build/build_config.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
 #include "net/socket/server_socket.h"
 #include "net/socket/socket_descriptor.h"
@@ -21,14 +23,14 @@ namespace net {
 
 class SocketPosix;
 
-// Unix Domain Server Socket Implementation. Supports abstract namespaces on
-// Linux and Android.
+// A server socket that uses unix domain socket as the transport layer.
+// Supports abstract namespaces on Linux and Android.
 class NET_EXPORT UnixDomainServerSocket : public ServerSocket {
  public:
   // Credentials of a peer process connected to the socket.
   struct NET_EXPORT Credentials {
-#if defined(OS_LINUX) || defined(OS_ANDROID)
-    // Linux/Android API provides more information about the connected peer
+#if defined(OS_LINUX) || defined(OS_ANDROID) || defined(OS_FUCHSIA)
+    // Linux and Fuchsia provide more information about the connected peer
     // than Windows/OS X. It's useful for permission-based authorization on
     // Android.
     pid_t process_id;
@@ -57,7 +59,7 @@ class NET_EXPORT UnixDomainServerSocket : public ServerSocket {
                                int backlog) override;
   int GetLocalAddress(IPEndPoint* address) const override;
   int Accept(std::unique_ptr<StreamSocket>* socket,
-             const CompletionCallback& callback) override;
+             CompletionOnceCallback callback) override;
 
   // Creates a server socket, binds it to the specified |socket_path| and
   // starts listening for incoming connections with the specified |backlog|.
@@ -66,7 +68,7 @@ class NET_EXPORT UnixDomainServerSocket : public ServerSocket {
   // Accepts an incoming connection on |listen_socket_|, but passes back
   // a raw SocketDescriptor instead of a StreamSocket.
   int AcceptSocketDescriptor(SocketDescriptor* socket_descriptor,
-                             const CompletionCallback& callback);
+                             CompletionOnceCallback callback);
 
  private:
   // A callback to wrap the setting of the out-parameter to Accept().
@@ -74,15 +76,14 @@ class NET_EXPORT UnixDomainServerSocket : public ServerSocket {
   // a manner that's agnostic to the caller's desired output.
   typedef base::Callback<void(std::unique_ptr<SocketPosix>)> SetterCallback;
 
-  int DoAccept(const SetterCallback& setter_callback,
-               const CompletionCallback& callback);
+  int DoAccept(const SetterCallback& setter_callback);
   void AcceptCompleted(const SetterCallback& setter_callback,
-                       const CompletionCallback& callback,
                        int rv);
   bool AuthenticateAndGetStreamSocket(const SetterCallback& setter_callback);
 
   std::unique_ptr<SocketPosix> listen_socket_;
   const AuthCallback auth_callback_;
+  CompletionOnceCallback callback_;
   const bool use_abstract_namespace_;
 
   std::unique_ptr<SocketPosix> accept_socket_;

@@ -4,6 +4,8 @@
 
 #include "chrome/browser/renderer_host/pepper/pepper_flash_browser_host.h"
 
+#include "base/bind.h"
+#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
@@ -11,15 +13,21 @@
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_ppapi_host.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/common/service_manager_connection.h"
 #include "ipc/ipc_message_macros.h"
+#include "mojo/public/cpp/bindings/interface_request.h"
 #include "ppapi/c/pp_errors.h"
 #include "ppapi/c/private/ppb_flash.h"
 #include "ppapi/host/dispatch_host_message.h"
 #include "ppapi/proxy/ppapi_messages.h"
 #include "ppapi/proxy/resource_message_params.h"
 #include "ppapi/shared_impl/time_conversion.h"
+#include "services/device/public/mojom/constants.mojom.h"
+#include "services/device/public/mojom/wake_lock_provider.mojom.h"
+#include "services/service_manager/public/cpp/connector.h"
 #include "url/gurl.h"
 
 #if defined(OS_WIN)
@@ -31,8 +39,7 @@
 using content::BrowserPpapiHost;
 using content::BrowserThread;
 using content::RenderProcessHost;
-
-namespace chrome {
+using content::ServiceManagerConnection;
 
 namespace {
 
@@ -50,6 +57,16 @@ scoped_refptr<content_settings::CookieSettings> GetCookieSettings(
   return NULL;
 }
 
+void PepperBindConnectorRequest(
+    service_manager::mojom::ConnectorRequest connector_request) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  DCHECK(ServiceManagerConnection::GetForProcess());
+
+  ServiceManagerConnection::GetForProcess()
+      ->GetConnector()
+      ->BindConnectorRequest(std::move(connector_request));
+}
+
 }  // namespace
 
 PepperFlashBrowserHost::PepperFlashBrowserHost(BrowserPpapiHost* host,
@@ -57,6 +74,8 @@ PepperFlashBrowserHost::PepperFlashBrowserHost(BrowserPpapiHost* host,
                                                PP_Resource resource)
     : ResourceHost(host->GetPpapiHost(), instance, resource),
       host_(host),
+      delay_timer_(FROM_HERE, base::TimeDelta::FromSeconds(45), this,
+                   &PepperFlashBrowserHost::OnDelayTimerFired),
       weak_factory_(this) {
   int unused;
   host->GetRenderFrameIDsForInstance(instance, &render_process_id_, &unused);
@@ -78,21 +97,18 @@ int32_t PepperFlashBrowserHost::OnResourceMessageReceived(
   return PP_ERROR_FAILED;
 }
 
+void PepperFlashBrowserHost::OnDelayTimerFired() {
+  GetWakeLock()->CancelWakeLock();
+}
+
 int32_t PepperFlashBrowserHost::OnUpdateActivity(
     ppapi::host::HostMessageContext* host_context) {
-#if defined(OS_WIN)
-  // Reading then writing back the same value to the screensaver timeout system
-  // setting resets the countdown which prevents the screensaver from turning
-  // on "for a while". As long as the plugin pings us with this message faster
-  // than the screensaver timeout, it won't go on.
-  int value = 0;
-  if (SystemParametersInfo(SPI_GETSCREENSAVETIMEOUT, 0, &value, 0))
-    SystemParametersInfo(SPI_SETSCREENSAVETIMEOUT, value, NULL, 0);
-#elif defined(OS_MACOSX)
-  UpdateSystemActivity(OverallAct);
-#else
-// TODO(brettw) implement this for other platforms.
-#endif
+  GetWakeLock()->RequestWakeLock();
+  // There is no specification for how long OnUpdateActivity should prevent the
+  // screen from going to sleep. Empirically, twitch.tv calls this method every
+  // 10 seconds. Be conservative and allow 45 seconds (set in |delay_timer_|'s
+  // ctor) before deleting the block.
+  delay_timer_.Reset();
   return PP_OK;
 }
 
@@ -121,14 +137,12 @@ int32_t PepperFlashBrowserHost::OnGetLocalDataRestrictions(
                              plugin_url,
                              cookie_settings_);
   } else {
-    BrowserThread::PostTaskAndReplyWithResult(
-        BrowserThread::UI,
-        FROM_HERE,
+    base::PostTaskWithTraitsAndReplyWithResult(
+        FROM_HERE, {BrowserThread::UI},
         base::Bind(&GetCookieSettings, render_process_id_),
         base::Bind(&PepperFlashBrowserHost::GetLocalDataRestrictions,
                    weak_factory_.GetWeakPtr(),
-                   context->MakeReplyMessageContext(),
-                   document_url,
+                   context->MakeReplyMessageContext(), document_url,
                    plugin_url));
   }
   return PP_OK_COMPLETIONPENDING;
@@ -153,7 +167,7 @@ void PepperFlashBrowserHost::GetLocalDataRestrictions(
   PP_FlashLSORestrictions restrictions = PP_FLASHLSORESTRICTIONS_NONE;
   if (cookie_settings_.get() && document_url.is_valid() &&
       plugin_url.is_valid()) {
-    if (!cookie_settings_->IsReadingCookieAllowed(document_url, plugin_url))
+    if (!cookie_settings_->IsCookieAccessAllowed(document_url, plugin_url))
       restrictions = PP_FLASHLSORESTRICTIONS_BLOCK;
     else if (cookie_settings_->IsCookieSessionOnly(plugin_url))
       restrictions = PP_FLASHLSORESTRICTIONS_IN_MEMORY;
@@ -163,4 +177,34 @@ void PepperFlashBrowserHost::GetLocalDataRestrictions(
                 static_cast<int32_t>(restrictions)));
 }
 
-}  // namespace chrome
+device::mojom::WakeLock* PepperFlashBrowserHost::GetWakeLock() {
+  // Here is a lazy binding, and will not reconnect after connection error.
+  if (wake_lock_)
+    return wake_lock_.get();
+
+  device::mojom::WakeLockRequest request = mojo::MakeRequest(&wake_lock_);
+
+  // Service manager connection might be not initialized in some testing
+  // contexts.
+  if (!ServiceManagerConnection::GetForProcess())
+    return wake_lock_.get();
+
+  service_manager::mojom::ConnectorRequest connector_request;
+  auto connector = service_manager::Connector::Create(&connector_request);
+
+  // The existing connector is bound to the UI thread, the current thread is
+  // IO thread. So bind the ConnectorRequest of IO thread to the connector
+  // in UI thread.
+  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
+                           base::BindOnce(&PepperBindConnectorRequest,
+                                          std::move(connector_request)));
+
+  device::mojom::WakeLockProviderPtr wake_lock_provider;
+  connector->BindInterface(device::mojom::kServiceName,
+                           mojo::MakeRequest(&wake_lock_provider));
+  wake_lock_provider->GetWakeLockWithoutContext(
+      device::mojom::WakeLockType::kPreventDisplaySleep,
+      device::mojom::WakeLockReason::kOther, "Requested By PepperFlash",
+      std::move(request));
+  return wake_lock_.get();
+}

@@ -4,25 +4,29 @@
 
 #include "chrome/browser/media/protected_media_identifier_permission_context.h"
 
+#include "base/bind.h"
 #include "base/command_line.h"
-#include "base/strings/stringprintf.h"
+#include "base/metrics/user_metrics.h"
+#include "base/strings/string_split.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/tab_specific_content_settings.h"
 #include "chrome/browser/permissions/permission_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/permission_type.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/user_metrics.h"
 #include "content/public/browser/web_contents.h"
+#include "media/base/media_switches.h"
+#include "net/base/url_util.h"
 #if defined(OS_CHROMEOS)
 #include <utility>
 
+#include "base/metrics/histogram_macros.h"
 #include "chrome/browser/chromeos/attestation/platform_verification_dialog.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/user_prefs/user_prefs.h"
@@ -38,8 +42,8 @@ using chromeos::attestation::PlatformVerificationDialog;
 ProtectedMediaIdentifierPermissionContext::
     ProtectedMediaIdentifierPermissionContext(Profile* profile)
     : PermissionContextBase(profile,
-                            content::PermissionType::PROTECTED_MEDIA_IDENTIFIER,
-                            CONTENT_SETTINGS_TYPE_PROTECTED_MEDIA_IDENTIFIER)
+                            CONTENT_SETTINGS_TYPE_PROTECTED_MEDIA_IDENTIFIER,
+                            blink::mojom::FeaturePolicyFeature::kEncryptedMedia)
 #if defined(OS_CHROMEOS)
       ,
       weak_factory_(this)
@@ -57,6 +61,7 @@ void ProtectedMediaIdentifierPermissionContext::DecidePermission(
     const PermissionRequestID& id,
     const GURL& requesting_origin,
     const GURL& embedding_origin,
+    bool user_gesture,
     const BrowserPermissionCallback& callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
@@ -78,15 +83,25 @@ void ProtectedMediaIdentifierPermissionContext::DecidePermission(
                      OnPlatformVerificationConsentResponse,
                  weak_factory_.GetWeakPtr(), web_contents, id,
                  requesting_origin, embedding_origin, callback));
+
+  // This could happen when the permission is requested from an extension. See
+  // http://crbug.com/728534
+  if (!widget) {
+    callback.Run(CONTENT_SETTING_ASK);
+    return;
+  }
+
   pending_requests_.insert(
       std::make_pair(web_contents, std::make_pair(widget, id)));
 }
 #endif  // defined(OS_CHROMEOS)
 
-ContentSetting ProtectedMediaIdentifierPermissionContext::GetPermissionStatus(
-      const GURL& requesting_origin,
-      const GURL& embedding_origin) const {
-  DVLOG(1) << __FUNCTION__ << ": (" << requesting_origin.spec() << ", "
+ContentSetting
+ProtectedMediaIdentifierPermissionContext::GetPermissionStatusInternal(
+    content::RenderFrameHost* render_frame_host,
+    const GURL& requesting_origin,
+    const GURL& embedding_origin) const {
+  DVLOG(1) << __func__ << ": (" << requesting_origin.spec() << ", "
            << embedding_origin.spec() << ")";
 
   if (!requesting_origin.is_valid() || !embedding_origin.is_valid() ||
@@ -94,38 +109,40 @@ ContentSetting ProtectedMediaIdentifierPermissionContext::GetPermissionStatus(
     return CONTENT_SETTING_BLOCK;
   }
 
-  ContentSetting content_setting = PermissionContextBase::GetPermissionStatus(
-      requesting_origin, embedding_origin);
+  ContentSetting content_setting =
+      PermissionContextBase::GetPermissionStatusInternal(
+          render_frame_host, requesting_origin, embedding_origin);
   DCHECK(content_setting == CONTENT_SETTING_ALLOW ||
          content_setting == CONTENT_SETTING_BLOCK ||
          content_setting == CONTENT_SETTING_ASK);
 
+  // For automated testing of protected content - having a prompt that
+  // requires user intervention is problematic. If the domain has been
+  // whitelisted as safe - suppress the request and allow.
+  if (content_setting == CONTENT_SETTING_ASK &&
+      IsOriginWhitelisted(requesting_origin)) {
+    content_setting = CONTENT_SETTING_ALLOW;
+  }
+
   return content_setting;
 }
 
-void ProtectedMediaIdentifierPermissionContext::CancelPermissionRequest(
-    content::WebContents* web_contents,
-    const PermissionRequestID& id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+bool ProtectedMediaIdentifierPermissionContext::IsOriginWhitelisted(
+    const GURL& origin) {
+  const base::CommandLine& command_line =
+      *base::CommandLine::ForCurrentProcess();
 
-#if defined(OS_CHROMEOS)
-  PendingRequestMap::iterator request = pending_requests_.find(web_contents);
-  if (request == pending_requests_.end() || (request->second.second != id))
-    return;
+  const std::string whitelist = command_line.GetSwitchValueASCII(
+      switches::kUnsafelyAllowProtectedMediaIdentifierForDomain);
 
-  views::Widget* widget = request->second.first;
-  pending_requests_.erase(request);
+  for (const std::string& domain : base::SplitString(
+           whitelist, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    if (origin.DomainIs(domain)) {
+      return true;
+    }
+  }
 
-  // If |web_contents| is being destroyed, |widget| could be invalid. No need to
-  // manually close it here. Otherwise, close the |widget| here.
-  // OnPlatformVerificationConsentResponse() will be fired during this process,
-  // but since |web_contents| is removed from |pending_requests_|, the callback
-  // will simply be dropped.
-  if (!web_contents->IsBeingDestroyed())
-    widget->Close();
-#else
-  PermissionContextBase::CancelPermissionRequest(web_contents, id);
-#endif
+  return false;
 }
 
 void ProtectedMediaIdentifierPermissionContext::UpdateTabContext(
@@ -144,9 +161,12 @@ void ProtectedMediaIdentifierPermissionContext::UpdateTabContext(
   }
 }
 
-bool
-ProtectedMediaIdentifierPermissionContext::IsRestrictedToSecureOrigins() const {
-  return false;
+bool ProtectedMediaIdentifierPermissionContext::IsRestrictedToSecureOrigins()
+    const {
+  // EME is not supported on insecure origins, see https://goo.gl/Ks5zf7
+  // Note that origins whitelisted by --unsafely-treat-insecure-origin-as-secure
+  // flag will be treated as "secure" so they will not be affected.
+  return true;
 }
 
 // TODO(xhwang): We should consolidate the "protected content" related pref
@@ -185,6 +205,12 @@ bool ProtectedMediaIdentifierPermissionContext::
 }
 
 #if defined(OS_CHROMEOS)
+
+static void ReportPermissionActionUMA(PermissionAction action) {
+  UMA_HISTOGRAM_ENUMERATION("Permissions.Action.ProtectedMedia", action,
+                            PermissionAction::NUM);
+}
+
 void ProtectedMediaIdentifierPermissionContext::
     OnPlatformVerificationConsentResponse(
         content::WebContents* web_contents,
@@ -194,9 +220,13 @@ void ProtectedMediaIdentifierPermissionContext::
         const BrowserPermissionCallback& callback,
         PlatformVerificationDialog::ConsentResponse response) {
   // The request may have been canceled. Drop the callback in that case.
+  // This can happen if the tab is closed.
   PendingRequestMap::iterator request = pending_requests_.find(web_contents);
-  if (request == pending_requests_.end())
+  if (request == pending_requests_.end()) {
+    VLOG(1) << "Platform verification ignored by user.";
+    ReportPermissionActionUMA(PermissionAction::IGNORED);
     return;
+  }
 
   DCHECK(request->second.second == id);
   pending_requests_.erase(request);
@@ -205,20 +235,26 @@ void ProtectedMediaIdentifierPermissionContext::
   bool persist = false; // Whether the ContentSetting should be saved.
   switch (response) {
     case PlatformVerificationDialog::CONSENT_RESPONSE_NONE:
+      // This can happen if user clicked "x", or pressed "Esc", or navigated
+      // away without closing the tab.
+      VLOG(1) << "Platform verification dismissed by user.";
+      ReportPermissionActionUMA(PermissionAction::DISMISSED);
       content_setting = CONTENT_SETTING_ASK;
       persist = false;
       break;
     case PlatformVerificationDialog::CONSENT_RESPONSE_ALLOW:
       VLOG(1) << "Platform verification accepted by user.";
-      content::RecordAction(
+      base::RecordAction(
           base::UserMetricsAction("PlatformVerificationAccepted"));
+      ReportPermissionActionUMA(PermissionAction::GRANTED);
       content_setting = CONTENT_SETTING_ALLOW;
       persist = true;
       break;
     case PlatformVerificationDialog::CONSENT_RESPONSE_DENY:
       VLOG(1) << "Platform verification denied by user.";
-      content::RecordAction(
+      base::RecordAction(
           base::UserMetricsAction("PlatformVerificationRejected"));
+      ReportPermissionActionUMA(PermissionAction::DENIED);
       content_setting = CONTENT_SETTING_BLOCK;
       persist = true;
       break;

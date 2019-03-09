@@ -8,7 +8,7 @@
 #    May you share freely, never taking more than you give.
 #
 #***********************************************************************
-# 
+#
 # Tests to verify that arithmetic operators do not change the type of
 # input operands.  Ticket [a8a0d2996a]
 #
@@ -91,3 +91,5 @@ do_execsql_test 4.5 {
 do_execsql_test 4.6 {
   SELECT '1234x'/'10y';
 } {123.4}
+
+finish_test

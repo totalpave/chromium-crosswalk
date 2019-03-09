@@ -6,28 +6,57 @@
 
 #import <Foundation/Foundation.h>
 
-#import "base/mac/scoped_nsobject.h"
-#include "base/strings/sys_string_conversions.h"
+#include "base/mac/foundation_util.h"
+#import "ios/net/protocol_handler_util.h"
+#include "ios/web/test/test_url_constants.h"
+#import "net/base/mac/url_conversions.h"
 #include "net/base/net_errors.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "testing/gtest_mac.h"
+#import "testing/gtest_mac.h"
 #include "testing/platform_test.h"
+#include "url/gurl.h"
+#include "url/scheme_host_port.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
+namespace web {
 
 // Test fixture for error translation testing.
 typedef PlatformTest ErrorTranslationUtilTest;
 
-namespace {
-// Returns net error domain.
-NSString* GetNetErrorDomain() {
-  return base::SysUTF8ToNSString(net::kErrorDomain);
+// Tests translation of CFNetwork error code to net error code.
+TEST_F(ErrorTranslationUtilTest, ErrorCodeTranslation) {
+  // kCFURLErrorUnknown -> net::ERR_FAILED
+  int net_error_code = 0;
+  EXPECT_TRUE(GetNetErrorFromIOSErrorCode(kCFURLErrorUnknown, &net_error_code,
+                                          /*url=*/nil));
+  EXPECT_EQ(net::ERR_FAILED, net_error_code);
+
+  // kCFURLErrorUnsupportedURL -> net::ERR_INVALID_URL for app specific URLs.
+  GURL web_ui_url(url::SchemeHostPort(kTestWebUIScheme, "foo", 0).Serialize());
+  EXPECT_TRUE(GetNetErrorFromIOSErrorCode(kCFURLErrorUnsupportedURL,
+                                          &net_error_code,
+                                          net::NSURLWithGURL(web_ui_url)));
+  EXPECT_EQ(net::ERR_INVALID_URL, net_error_code);
+
+  // kCFURLErrorUnsupportedURL -> net::ERR_UNKNOWN_URL_SCHEME for app with
+  // scheme that is neither supported by WebState nor app-specific scheme.
+  NSURL* unsupported_url = [NSURL URLWithString:@"fooooo:baaar"];
+  EXPECT_TRUE(GetNetErrorFromIOSErrorCode(kCFURLErrorUnsupportedURL,
+                                          &net_error_code, unsupported_url));
+  EXPECT_EQ(net::ERR_UNKNOWN_URL_SCHEME, net_error_code);
+
+  // kCFSOCKSErrorUnknownClientVersion -> ?
+  EXPECT_FALSE(GetNetErrorFromIOSErrorCode(kCFSOCKSErrorUnknownClientVersion,
+                                           &net_error_code, /*url=*/nil));
 }
-}  // namespcae
 
 // Tests translation of an error with empty domain and no underlying error.
 TEST_F(ErrorTranslationUtilTest, MalformedError) {
-  base::scoped_nsobject<NSError> error(
-      [[NSError alloc] initWithDomain:@"" code:0 userInfo:nil]);
-  NSError* net_error = web::NetErrorFromError(error);
+  NSError* error = [[NSError alloc] initWithDomain:@"" code:0 userInfo:nil];
+  NSError* net_error = NetErrorFromError(error);
 
   // Top level error should be the same as the original error.
   EXPECT_TRUE(net_error);
@@ -37,18 +66,18 @@ TEST_F(ErrorTranslationUtilTest, MalformedError) {
   // Underlying error should have net error doamin and code.
   NSError* net_underlying_error = [net_error userInfo][NSUnderlyingErrorKey];
   EXPECT_TRUE(net_underlying_error);
-  EXPECT_NSEQ(GetNetErrorDomain(), [net_underlying_error domain]);
+  EXPECT_NSEQ(net::kNSErrorDomain, [net_underlying_error domain]);
   EXPECT_EQ(net::ERR_FAILED, [net_underlying_error code]);
 }
 
 // Tests translation of unknown CFNetwork error, which does not have an
 // underlying error.
 TEST_F(ErrorTranslationUtilTest, UnknownCFNetworkError) {
-  base::scoped_nsobject<NSError> error([[NSError alloc]
-      initWithDomain:static_cast<NSString*>(kCFErrorDomainCFNetwork)
+  NSError* error = [[NSError alloc]
+      initWithDomain:base::mac::CFToNSCast(kCFErrorDomainCFNetwork)
                 code:kCFURLErrorUnknown
-            userInfo:nil]);
-  NSError* net_error = web::NetErrorFromError(error);
+            userInfo:nil];
+  NSError* net_error = NetErrorFromError(error);
 
   // Top level error should be the same as the original error.
   EXPECT_TRUE(net_error);
@@ -58,17 +87,17 @@ TEST_F(ErrorTranslationUtilTest, UnknownCFNetworkError) {
   // Underlying error should have net error domain and code.
   NSError* net_underlying_error = [net_error userInfo][NSUnderlyingErrorKey];
   EXPECT_TRUE(net_underlying_error);
-  EXPECT_NSEQ(GetNetErrorDomain(), [net_underlying_error domain]);
+  EXPECT_NSEQ(net::kNSErrorDomain, [net_underlying_error domain]);
   EXPECT_EQ(net::ERR_FAILED, [net_underlying_error code]);
 }
 
 // Tests translation of kCFURLErrorCannotFindHost CFNetwork error, which has an
 // underlying error with NSURLError domain.
 TEST_F(ErrorTranslationUtilTest, CanNotFindHostError) {
-  base::scoped_nsobject<NSError> underlying_error([[NSError alloc]
-      initWithDomain:NSURLErrorDomain
-                code:kCFURLErrorCannotFindHost
-            userInfo:nil]);
+  NSError* underlying_error =
+      [[NSError alloc] initWithDomain:NSURLErrorDomain
+                                 code:kCFURLErrorCannotFindHost
+                             userInfo:nil];
 
   NSError* error =
       [[NSError alloc] initWithDomain:NSURLErrorDomain
@@ -76,7 +105,7 @@ TEST_F(ErrorTranslationUtilTest, CanNotFindHostError) {
                              userInfo:@{
                                NSUnderlyingErrorKey : underlying_error,
                              }];
-  NSError* net_error = web::NetErrorFromError(error);
+  NSError* net_error = NetErrorFromError(error);
 
   // Top level error should be the same as the original error.
   EXPECT_TRUE(net_error);
@@ -93,17 +122,17 @@ TEST_F(ErrorTranslationUtilTest, CanNotFindHostError) {
   NSError* final_net_underlying_error =
       [net_underlying_error userInfo][NSUnderlyingErrorKey];
   EXPECT_TRUE(final_net_underlying_error);
-  EXPECT_NSEQ(GetNetErrorDomain(), [final_net_underlying_error domain]);
+  EXPECT_NSEQ(net::kNSErrorDomain, [final_net_underlying_error domain]);
   EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED, [final_net_underlying_error code]);
 }
 
 // Tests translation of kCFURLErrorSecureConnectionFailed CFNetwork error, by
 // specifying different net error code.
 TEST_F(ErrorTranslationUtilTest, CertError) {
-  base::scoped_nsobject<NSError> underlying_error([[NSError alloc]
-      initWithDomain:NSURLErrorDomain
-                code:kCFURLErrorSecureConnectionFailed
-            userInfo:nil]);
+  NSError* underlying_error =
+      [[NSError alloc] initWithDomain:NSURLErrorDomain
+                                 code:kCFURLErrorSecureConnectionFailed
+                             userInfo:nil];
 
   NSError* error =
       [[NSError alloc] initWithDomain:NSURLErrorDomain
@@ -111,7 +140,7 @@ TEST_F(ErrorTranslationUtilTest, CertError) {
                              userInfo:@{
                                NSUnderlyingErrorKey : underlying_error,
                              }];
-  NSError* net_error = web::NetErrorFromError(error, net::ERR_CONNECTION_RESET);
+  NSError* net_error = NetErrorFromError(error, net::ERR_CONNECTION_RESET);
 
   // Top level error should be the same as the original error.
   EXPECT_TRUE(net_error);
@@ -128,6 +157,8 @@ TEST_F(ErrorTranslationUtilTest, CertError) {
   NSError* final_net_underlying_error =
       [net_underlying_error userInfo][NSUnderlyingErrorKey];
   EXPECT_TRUE(final_net_underlying_error);
-  EXPECT_NSEQ(GetNetErrorDomain(), [final_net_underlying_error domain]);
+  EXPECT_NSEQ(net::kNSErrorDomain, [final_net_underlying_error domain]);
   EXPECT_EQ(net::ERR_CONNECTION_RESET, [final_net_underlying_error code]);
 }
+
+}  // namespace web

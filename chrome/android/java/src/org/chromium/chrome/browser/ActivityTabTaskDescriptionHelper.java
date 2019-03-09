@@ -13,15 +13,16 @@ import org.chromium.chrome.browser.ntp.NewTabPage;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
-import org.chromium.chrome.browser.tabmodel.EmptyTabModelObserver;
+import org.chromium.chrome.browser.tab.TabThemeColorHelper;
 import org.chromium.chrome.browser.tabmodel.EmptyTabModelSelectorObserver;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tabmodel.TabModel.TabSelectionType;
-import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
+import org.chromium.chrome.browser.tabmodel.TabSelectionType;
 import org.chromium.chrome.browser.util.UrlUtilities;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
+import org.chromium.content_public.browser.NavigationHandle;
 
 import java.util.List;
 
@@ -40,7 +41,7 @@ public class ActivityTabTaskDescriptionHelper {
     private final FaviconHelper mFaviconHelper;
 
     private final TabModelSelectorObserver mTabModelSelectorObserver;
-    private final TabModelObserver mTabModelObserver;
+    private final TabModelSelectorTabModelObserver mTabModelObserver;
     private final TabObserver mTabObserver;
 
     private Bitmap mLargestFavicon;
@@ -90,12 +91,12 @@ public class ActivityTabTaskDescriptionHelper {
             }
 
             @Override
-            public void onDidNavigateMainFrame(Tab tab, String url, String baseUrl,
-                    boolean isNavigationToDifferentPage, boolean isFragmentNavigation,
-                    int statusCode) {
-                if (!isNavigationToDifferentPage) return;
-                mLargestFavicon = null;
-                updateTaskDescription();
+            public void onDidFinishNavigation(Tab tab, NavigationHandle navigation) {
+                if (navigation.hasCommitted() && navigation.isInMainFrame()
+                        && !navigation.isSameDocument()) {
+                    mLargestFavicon = null;
+                    updateTaskDescription();
+                }
             }
 
             @Override
@@ -120,9 +121,7 @@ public class ActivityTabTaskDescriptionHelper {
 
             private boolean hasSecurityWarningOrError(Tab tab) {
                 int securityLevel = tab.getSecurityLevel();
-                return securityLevel == ConnectionSecurityLevel.SECURITY_ERROR
-                        || securityLevel == ConnectionSecurityLevel.SECURITY_WARNING
-                        || securityLevel == ConnectionSecurityLevel.SECURITY_POLICY_WARNING;
+                return securityLevel == ConnectionSecurityLevel.DANGEROUS;
             }
         };
 
@@ -133,9 +132,9 @@ public class ActivityTabTaskDescriptionHelper {
             }
         };
 
-        mTabModelObserver = new EmptyTabModelObserver() {
+        mTabModelObserver = new TabModelSelectorTabModelObserver(mTabModelSelector) {
             @Override
-            public void didSelectTab(Tab tab, TabSelectionType type, int lastId) {
+            public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
                 refreshSelectedTab();
             }
 
@@ -160,13 +159,12 @@ public class ActivityTabTaskDescriptionHelper {
             }
 
             @Override
-            public void allTabsPendingClosure(List<Integer> tabIds) {
+            public void allTabsPendingClosure(List<Tab> tabs) {
                 refreshSelectedTab();
             }
         };
 
         mTabModelSelector.addObserver(mTabModelSelectorObserver);
-        for (TabModel model : mTabModelSelector.getModels()) model.addObserver(mTabModelObserver);
         refreshSelectedTab();
     }
 
@@ -226,8 +224,9 @@ public class ActivityTabTaskDescriptionHelper {
      */
     public void updateTaskDescription(String label, Bitmap icon) {
         int color = mDefaultThemeColor;
-        if (mCurrentTab != null && !mCurrentTab.isDefaultThemeColor()) {
-            color = mCurrentTab.getThemeColor();
+        if (mCurrentTab != null) {
+            TabThemeColorHelper tabTheme = TabThemeColorHelper.get(mCurrentTab);
+            if (!tabTheme.isDefaultColor()) color = tabTheme.getColor();
         }
         ApiCompatibilityUtils.setTaskDescription(mActivity, label, icon, color);
     }
@@ -245,16 +244,13 @@ public class ActivityTabTaskDescriptionHelper {
             final String currentUrl = mCurrentTab.getUrl();
             mFaviconHelper.getLocalFaviconImageForURL(
                     mCurrentTab.getProfile(), mCurrentTab.getUrl(), 0,
-                    new FaviconHelper.FaviconImageCallback() {
-                        @Override
-                        public void onFaviconAvailable(Bitmap image, String iconUrl) {
-                            if (mCurrentTab == null
-                                    || !TextUtils.equals(currentUrl, mCurrentTab.getUrl())) {
-                                return;
-                            }
-
-                            updateFavicon(image);
+                    (image, iconUrl) -> {
+                        if (mCurrentTab == null
+                                || !TextUtils.equals(currentUrl, mCurrentTab.getUrl())) {
+                            return;
                         }
+
+                        updateFavicon(image);
                     });
         }
         updateTaskDescription();
@@ -271,8 +267,6 @@ public class ActivityTabTaskDescriptionHelper {
         }
 
         mTabModelSelector.removeObserver(mTabModelSelectorObserver);
-        for (TabModel model : mTabModelSelector.getModels()) {
-            model.removeObserver(mTabModelObserver);
-        }
+        mTabModelObserver.destroy();
     }
 }

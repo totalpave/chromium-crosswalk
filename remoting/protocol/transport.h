@@ -10,25 +10,17 @@
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
 #include "net/base/ip_endpoint.h"
 #include "remoting/protocol/errors.h"
 
-namespace buzz {
+namespace jingle_xmpp {
 class XmlElement;
-}  // namespace buzz
-
-namespace webrtc {
-class PeerConnectionInterface;
-}  // namespace webrtc
+}  // namespace jingle_xmpp
 
 namespace remoting {
 namespace protocol {
 
 class Authenticator;
-class DatagramChannelFactory;
-class P2PDatagramSocket;
-class StreamChannelFactory;
 
 enum class TransportRole {
   SERVER,
@@ -59,7 +51,7 @@ struct TransportRoute {
 // Implementations should provide other methods to send and receive data.
 class Transport {
  public:
-  typedef base::Callback<void(std::unique_ptr<buzz::XmlElement> transport_info)>
+  typedef base::Callback<void(std::unique_ptr<jingle_xmpp::XmlElement> transport_info)>
       SendTransportInfoCallback;
 
   virtual ~Transport() {}
@@ -69,7 +61,7 @@ class Transport {
   virtual void Start(
       Authenticator* authenticator,
       SendTransportInfoCallback send_transport_info_callback) = 0;
-  virtual bool ProcessTransportInfo(buzz::XmlElement* transport_info) = 0;
+  virtual bool ProcessTransportInfo(jingle_xmpp::XmlElement* transport_info) = 0;
 };
 
 }  // namespace protocol

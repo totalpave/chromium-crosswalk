@@ -4,24 +4,25 @@
 
 #include "chromeos/settings/timezone_settings_helper.h"
 
+#include "base/component_export.h"
 #include "base/logging.h"
-#include "chromeos/chromeos_export.h"
 
 namespace chromeos {
 namespace system {
 
-CHROMEOS_EXPORT const icu::TimeZone* GetKnownTimezoneOrNull(
+COMPONENT_EXPORT(CHROMEOS_SETTINGS)
+const icu::TimeZone* GetKnownTimezoneOrNull(
     const icu::TimeZone& timezone,
-    const std::vector<icu::TimeZone*>& timezone_list) {
-  const icu::TimeZone* known_timezone = NULL;
+    const std::vector<std::unique_ptr<icu::TimeZone>>& timezone_list) {
+  const icu::TimeZone* known_timezone = nullptr;
   icu::UnicodeString id, canonical_id;
   timezone.getID(id);
   UErrorCode status = U_ZERO_ERROR;
   icu::TimeZone::getCanonicalID(id, canonical_id, status);
   DCHECK(U_SUCCESS(status));
-  for (const auto* entry : timezone_list) {
-    if (*entry == timezone)
-      return entry;
+  for (const auto& entry : timezone_list) {
+    if (*entry.get() == timezone)
+      return entry.get();
     // Compare the canonical IDs as well.
     // For instance, Asia/Ulan_Bator -> Asia/Ulaanbaatar or
     // Canada/Pacific -> America/Vancouver
@@ -30,14 +31,14 @@ CHROMEOS_EXPORT const icu::TimeZone* GetKnownTimezoneOrNull(
     icu::TimeZone::getCanonicalID(entry_id, entry_canonical_id, status);
     DCHECK(U_SUCCESS(status));
     if (entry_canonical_id == canonical_id)
-      return entry;
+      return entry.get();
     // Last resort: If no match is found, the last timezone in the list
     // with matching rules will be returned.
     if (entry->hasSameRules(timezone))
-      known_timezone = entry;
+      known_timezone = entry.get();
   }
 
-  // May return NULL if we did not find a matching timezone in our list.
+  // May return null if we did not find a matching timezone in our list.
   return known_timezone;
 }
 

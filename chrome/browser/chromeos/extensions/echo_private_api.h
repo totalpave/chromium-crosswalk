@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_CHROMEOS_EXTENSIONS_ECHO_PRIVATE_API_H_
 #define CHROME_BROWSER_CHROMEOS_EXTENSIONS_ECHO_PRIVATE_API_H_
 
+#include <string>
+
 #include "base/compiler_specific.h"
 #include "chrome/browser/chromeos/ui/echo_dialog_listener.h"
 #include "chrome/browser/extensions/chrome_extension_function.h"
@@ -25,16 +27,16 @@ void RegisterPrefs(PrefRegistrySimple* registry);
 }  // namespace chromeos
 
 class EchoPrivateGetRegistrationCodeFunction
-    : public ChromeSyncExtensionFunction {
+    : public UIThreadExtensionFunction {
  public:
   EchoPrivateGetRegistrationCodeFunction();
 
  protected:
   ~EchoPrivateGetRegistrationCodeFunction() override;
-  bool RunSync() override;
+  ResponseAction Run() override;
 
  private:
-  void GetRegistrationCode(const std::string& type);
+  ResponseValue GetRegistrationCode(const std::string& type);
   DECLARE_EXTENSION_FUNCTION("echoPrivate.getRegistrationCode",
                              ECHOPRIVATE_GETREGISTRATIONCODE)
 };
@@ -49,31 +51,31 @@ class EchoPrivateGetOobeTimestampFunction
   bool RunAsync() override;
 
  private:
-  bool GetOobeTimestampOnFileThread();
+  bool GetOobeTimestampOnFileSequence();
   DECLARE_EXTENSION_FUNCTION("echoPrivate.getOobeTimestamp",
                              ECHOPRIVATE_GETOOBETIMESTAMP)
 };
 
-class EchoPrivateSetOfferInfoFunction : public ChromeSyncExtensionFunction {
+class EchoPrivateSetOfferInfoFunction : public UIThreadExtensionFunction {
  public:
   EchoPrivateSetOfferInfoFunction();
 
  protected:
   ~EchoPrivateSetOfferInfoFunction() override;
-  bool RunSync() override;
+  ResponseAction Run() override;
 
  private:
   DECLARE_EXTENSION_FUNCTION("echoPrivate.setOfferInfo",
                              ECHOPRIVATE_SETOFFERINFO)
 };
 
-class EchoPrivateGetOfferInfoFunction : public ChromeSyncExtensionFunction {
+class EchoPrivateGetOfferInfoFunction : public UIThreadExtensionFunction {
  public:
   EchoPrivateGetOfferInfoFunction();
 
  protected:
   ~EchoPrivateGetOfferInfoFunction() override;
-  bool RunSync() override;
+  ResponseAction Run() override;
 
  private:
   DECLARE_EXTENSION_FUNCTION("echoPrivate.getOfferInfo",
@@ -89,8 +91,8 @@ class EchoPrivateGetUserConsentFunction : public ChromeAsyncExtensionFunction,
                                           public chromeos::EchoDialogListener {
  public:
   // Type for the dialog shown callback used in tests.
-  typedef base::Callback<void(chromeos::EchoDialogView* dialog)>
-          DialogShownTestCallback;
+  using DialogShownTestCallback =
+      base::RepeatingCallback<void(chromeos::EchoDialogView* dialog)>;
 
   EchoPrivateGetUserConsentFunction();
 

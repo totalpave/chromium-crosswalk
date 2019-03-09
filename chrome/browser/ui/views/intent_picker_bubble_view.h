@@ -6,25 +6,24 @@
 #define CHROME_BROWSER_UI_VIEWS_INTENT_PICKER_BUBBLE_VIEW_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
-#include "base/callback.h"
 #include "base/macros.h"
-#include "chrome/browser/chromeos/arc/arc_navigation_throttle.h"
-#include "content/public/browser/web_contents_observer.h"
+#include "chrome/browser/chromeos/apps/intent_helper/apps_navigation_types.h"
+#include "chrome/browser/ui/browser_dialogs.h"
+#include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
+#include "chrome/services/app_service/public/mojom/types.mojom.h"
+#include "ui/base/accelerators/accelerator.h"
 #include "ui/gfx/image/image.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
 #include "ui/views/controls/button/button.h"
 
 namespace content {
-class NavigationHandle;
 class WebContents;
 }  // namespace content
 
 namespace views {
-class Label;
-class LabelButton;
-class View;
+class Checkbox;
 class Widget;
 }  // namespace views
 
@@ -32,89 +31,146 @@ namespace ui {
 class Event;
 }  // namespace ui
 
-// A bubble that displays a list of aplications (icons and names), after the
-// list we show a pair of buttons which allow the user to remember the selection
-// or not. This class comunicates the user's selection with a callback used by
-// ArcNavigationThrottle.
+class IntentPickerLabelButton;
+
+// A bubble that displays a list of applications (icons and names), after the
+// list the UI displays a checkbox to allow the user remember the selection and
+// after that a couple of buttons for either using the selected app or just
+// staying in Chrome. The top right close button and clicking somewhere else
+// outside of the bubble allows the user to dismiss the bubble (and stay in
+// Chrome) without remembering any decision.
+//
+// This class communicates the user's selection with a callback supplied by
+// AppsNavigationThrottle.
 //   +--------------------------------+
-//   | Open with                      |
+//   | Open with                  [x] |
 //   |                                |
 //   | Icon1  Name1                   |
 //   | Icon2  Name2                   |
 //   |  ...                           |
 //   | Icon(N) Name(N)                |
 //   |                                |
-//   |           [JUST ONCE] [ALWAYS] |
+//   | [_] Remember my choice         |
+//   |                                |
+//   |     [Use app] [Stay in Chrome] |
 //   +--------------------------------+
 
-class IntentPickerBubbleView : public views::BubbleDialogDelegateView,
-                               public views::ButtonListener,
-                               public content::WebContentsObserver {
+class IntentPickerBubbleView : public LocationBarBubbleDelegateView,
+                               public views::ButtonListener {
  public:
-  using NameAndIcon = arc::ArcNavigationThrottle::NameAndIcon;
-  // This callback informs the index of the app selected by the user, along with
-  // the reason why the Bubble was closed. The size_t param must have a value in
-  // the range [0, app_info.size()-1], except when the CloseReason is ERROR or
-  // DIALOG_DEACTIVATED, for these cases we return a dummy value
-  // |kAppTagNoneSelected| which won't be used at all and has no significance.
-  using ThrottleCallback =
-      base::Callback<void(size_t, arc::ArcNavigationThrottle::CloseReason)>;
+  using AppInfo = chromeos::IntentPickerAppInfo;
 
   ~IntentPickerBubbleView() override;
-  static void ShowBubble(content::NavigationHandle* handle,
-                         const std::vector<NameAndIcon>& app_info,
-                         const ThrottleCallback& throttle_cb);
+  static views::Widget* ShowBubble(views::View* anchor_view,
+                                   content::WebContents* web_contents,
+                                   std::vector<AppInfo> app_info,
+                                   bool disable_stay_in_chrome,
+                                   IntentPickerResponse intent_picker_cb);
   static std::unique_ptr<IntentPickerBubbleView> CreateBubbleView(
-      const std::vector<NameAndIcon>& app_info,
-      const ThrottleCallback& throttle_cb,
+      std::vector<AppInfo> app_info,
+      bool disable_stay_in_chrome,
+      IntentPickerResponse intent_picker_cb,
       content::WebContents* web_contents);
+  static IntentPickerBubbleView* intent_picker_bubble() {
+    return intent_picker_bubble_;
+  }
+  static void CloseCurrentBubble();
+
+  const std::vector<AppInfo>& GetAppInfoForTesting() const { return app_info_; }
+
+  // LocationBarBubbleDelegateView overrides:
+  bool Accept() override;
+  bool Cancel() override;
+  bool Close() override;
+  bool ShouldShowCloseButton() const override;
 
  protected:
-  // views::BubbleDialogDelegateView overrides:
+  // LocationBarBubbleDelegateView overrides:
   void Init() override;
+  base::string16 GetWindowTitle() const override;
+  bool IsDialogButtonEnabled(ui::DialogButton button) const override;
+  base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
+  void CloseBubble() override;
 
  private:
   friend class IntentPickerBubbleViewTest;
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, NullIcons);
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, NonNullIcons);
   FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, LabelsPtrVectorSize);
-  IntentPickerBubbleView(const std::vector<NameAndIcon>& app_info,
-                         ThrottleCallback throttle_cb,
-                         content::WebContents* web_contents);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, VerifyStartingInkDrop);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, InkDropStateTransition);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, PressButtonTwice);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, ChromeNotInCandidates);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, StayInChromeTest);
+  FRIEND_TEST_ALL_PREFIXES(IntentPickerBubbleViewTest, WebContentsTiedToBubble);
+  IntentPickerBubbleView(std::vector<AppInfo> app_info,
+                         IntentPickerResponse intent_picker_cb,
+                         content::WebContents* web_contents,
+                         bool disable_display_in_chrome);
 
   // views::BubbleDialogDelegateView overrides:
   void OnWidgetDestroying(views::Widget* widget) override;
-  int GetDialogButtons() const override;
 
   // views::ButtonListener overrides:
   void ButtonPressed(views::Button* sender, const ui::Event& event) override;
 
-  // views::View overrides:
-  gfx::Size GetPreferredSize() const override;
+  // Similar to ButtonPressed, except this controls the up/down/right/left input
+  // while focusing on the |scroll_view_|.
+  void ArrowButtonPressed(int index);
 
-  // content::WebContentsObserver overrides:
-  void WebContentsDestroyed() override;
+  // ui::EventHandler overrides:
+  void OnKeyEvent(ui::KeyEvent* event) override;
 
-  // Retrieves the LabelButton* contained at position |index| from the internal
-  // ScrollView.
-  views::LabelButton* GetLabelButtonAt(size_t index);
-  void SetLabelButtonBackgroundColor(size_t index, SkColor color);
+  // Retrieves the IntentPickerLabelButton* contained at position |index| from
+  // the internal ScrollView.
+  IntentPickerLabelButton* GetIntentPickerLabelButtonAt(size_t index);
+  void RunCallback(const std::string& launch_name,
+                   apps::mojom::AppType app_type,
+                   chromeos::IntentPickerCloseReason close_reason,
+                   bool should_persist);
 
-  // Flag set to true iff the callback was Run at some previous step, used to
-  // ensure we only use the callback once.
-  bool was_callback_run_;
+  // Returns true if this picker has candidates for the user to choose from, and
+  // false otherwise. For instance, if Chrome was the only app candidate
+  // provided, it will have been erased from |app_infos_| and this method would
+  // return false.
+  bool HasCandidates() const;
 
-  // Callback used to respond to ArcNavigationThrottle.
-  ThrottleCallback throttle_cb_;
+  // Accessory for |scroll_view_|'s contents size.
+  size_t GetScrollViewSize() const;
 
-  // Keeps a invalid value unless the user explicitly makes a decision.
-  size_t selected_app_tag_;
+  // Ensure the selected app is within the visible region of the ScrollView.
+  void AdjustScrollViewVisibleRegion();
 
-  views::LabelButton* always_button_;
-  views::LabelButton* just_once_button_;
+  // Set the new app selection, use the |event| (if provided) to show a more
+  // accurate ripple effect w.r.t. the user's input.
+  void SetSelectedAppIndex(int index, const ui::Event* event);
+
+  // Calculate the next app to select given the current selection and |delta|.
+  size_t CalculateNextAppIndex(int delta);
+
+  // Updates whether the persistence checkbox is enabled or not.
+  void UpdateCheckboxState();
+
+  gfx::ImageSkia GetAppImageForTesting(size_t index);
+  views::InkDropState GetInkDropStateForTesting(size_t);
+  void PressButtonForTesting(size_t index, const ui::Event& event);
+
+  static IntentPickerBubbleView* intent_picker_bubble_;
+
+  // Callback used to respond to AppsNavigationThrottle.
+  IntentPickerResponse intent_picker_cb_;
+
+  // Pre-select the first app on the list.
+  size_t selected_app_tag_ = 0;
+
   views::ScrollView* scroll_view_;
 
-  std::vector<NameAndIcon> app_info_;
+  std::vector<AppInfo> app_info_;
+
+  views::Checkbox* remember_selection_checkbox_;
+
+  // Tells whether or not 'Stay in Chrome' should be enabled as an option.
+  const bool disable_stay_in_chrome_;
 
   DISALLOW_COPY_AND_ASSIGN(IntentPickerBubbleView);
 };

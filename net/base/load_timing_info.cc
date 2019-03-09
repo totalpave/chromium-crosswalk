@@ -4,21 +4,19 @@
 
 #include "net/base/load_timing_info.h"
 
-#include "net/log/net_log.h"
+#include "net/log/net_log_source.h"
 
 namespace net {
 
-LoadTimingInfo::ConnectTiming::ConnectTiming() {}
+LoadTimingInfo::ConnectTiming::ConnectTiming() = default;
 
-LoadTimingInfo::ConnectTiming::~ConnectTiming() {}
+LoadTimingInfo::ConnectTiming::~ConnectTiming() = default;
 
-LoadTimingInfo::LoadTimingInfo() : socket_reused(false),
-                                   socket_log_id(NetLog::Source::kInvalidId) {
-}
+LoadTimingInfo::LoadTimingInfo()
+    : socket_reused(false), socket_log_id(NetLogSource::kInvalidId) {}
 
 LoadTimingInfo::LoadTimingInfo(const LoadTimingInfo& other) = default;
 
-LoadTimingInfo::~LoadTimingInfo() {}
+LoadTimingInfo::~LoadTimingInfo() = default;
 
 }  // namespace net
-

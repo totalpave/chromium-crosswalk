@@ -13,10 +13,10 @@
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
+#include "base/threading/thread_restrictions.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/media_galleries/fileapi/picasa_finder.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_paths.h"
 #include "components/crx_file/id_util.h"
@@ -28,7 +28,6 @@
 #if defined(OS_MACOSX)
 #include "base/mac/foundation_util.h"
 #include "base/strings/sys_string_conversions.h"
-#include "chrome/browser/media_galleries/fileapi/iapps_finder_impl.h"
 #include "components/policy/core/common/preferences_mock_mac.h"
 #endif  // OS_MACOSX
 
@@ -42,24 +41,25 @@ scoped_refptr<extensions::Extension> AddMediaGalleriesApp(
     const std::string& name,
     const std::vector<std::string>& media_galleries_permissions,
     Profile* profile) {
-  std::unique_ptr<base::DictionaryValue> manifest(new base::DictionaryValue);
+  auto manifest = std::make_unique<base::DictionaryValue>();
   manifest->SetString(extensions::manifest_keys::kName, name);
   manifest->SetString(extensions::manifest_keys::kVersion, "0.1");
   manifest->SetInteger(extensions::manifest_keys::kManifestVersion, 2);
-  base::ListValue* background_script_list = new base::ListValue;
+  auto background_script_list = std::make_unique<base::ListValue>();
   background_script_list->AppendString("background.js");
   manifest->Set(extensions::manifest_keys::kPlatformAppBackgroundScripts,
-                background_script_list);
+                std::move(background_script_list));
 
-  base::ListValue* permission_detail_list = new base::ListValue;
+  auto permission_detail_list = std::make_unique<base::ListValue>();
   for (size_t i = 0; i < media_galleries_permissions.size(); i++)
     permission_detail_list->AppendString(media_galleries_permissions[i]);
-  std::unique_ptr<base::DictionaryValue> media_galleries_permission(
-      new base::DictionaryValue());
-  media_galleries_permission->Set("mediaGalleries", permission_detail_list);
-  base::ListValue* permission_list = new base::ListValue;
+  auto media_galleries_permission = std::make_unique<base::DictionaryValue>();
+  media_galleries_permission->Set("mediaGalleries",
+                                  std::move(permission_detail_list));
+  auto permission_list = std::make_unique<base::ListValue>();
   permission_list->Append(std::move(media_galleries_permission));
-  manifest->Set(extensions::manifest_keys::kPermissions, permission_list);
+  manifest->Set(extensions::manifest_keys::kPermissions,
+                std::move(permission_list));
 
   extensions::ExtensionPrefs* extension_prefs =
       extensions::ExtensionPrefs::Get(profile);
@@ -79,7 +79,7 @@ scoped_refptr<extensions::Extension> AddMediaGalleriesApp(
       extensions::Extension::ENABLED,
       syncer::StringOrdinal::CreateInitialOrdinal(),
       std::string());
-  ExtensionService* extension_service =
+  extensions::ExtensionService* extension_service =
       extensions::ExtensionSystem::Get(profile)->extension_service();
   extension_service->AddExtension(extension.get());
   extension_service->EnableExtension(extension->id());
@@ -93,10 +93,8 @@ EnsureMediaDirectoriesExists::EnsureMediaDirectoriesExists()
 }
 
 EnsureMediaDirectoriesExists::~EnsureMediaDirectoriesExists() {
-#if defined(OS_MACOSX)
-  iapps::SetMacPreferencesForTesting(NULL);
-  picasa::SetMacPreferencesForTesting(NULL);
-#endif  // OS_MACOSX
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  ignore_result(fake_dir_.Delete());
 }
 
 void EnsureMediaDirectoriesExists::ChangeMediaPathOverrides() {
@@ -107,24 +105,24 @@ void EnsureMediaDirectoriesExists::ChangeMediaPathOverrides() {
   // a CHECK crash.
   music_override_.reset();
   std::string music_path_string("music");
-  music_path_string.append(base::IntToString(times_overrides_changed_));
+  music_path_string.append(base::NumberToString(times_overrides_changed_));
   music_override_.reset(new base::ScopedPathOverride(
       chrome::DIR_USER_MUSIC,
-      fake_dir_.path().AppendASCII(music_path_string)));
+      fake_dir_.GetPath().AppendASCII(music_path_string)));
 
   pictures_override_.reset();
   std::string pictures_path_string("pictures");
-  pictures_path_string.append(base::IntToString(times_overrides_changed_));
+  pictures_path_string.append(base::NumberToString(times_overrides_changed_));
   pictures_override_.reset(new base::ScopedPathOverride(
       chrome::DIR_USER_PICTURES,
-      fake_dir_.path().AppendASCII(pictures_path_string)));
+      fake_dir_.GetPath().AppendASCII(pictures_path_string)));
 
   video_override_.reset();
   std::string videos_path_string("videos");
-  videos_path_string.append(base::IntToString(times_overrides_changed_));
+  videos_path_string.append(base::NumberToString(times_overrides_changed_));
   video_override_.reset(new base::ScopedPathOverride(
       chrome::DIR_USER_VIDEOS,
-      fake_dir_.path().AppendASCII(videos_path_string)));
+      fake_dir_.GetPath().AppendASCII(videos_path_string)));
 
   times_overrides_changed_++;
 
@@ -132,48 +130,17 @@ void EnsureMediaDirectoriesExists::ChangeMediaPathOverrides() {
 }
 
 base::FilePath EnsureMediaDirectoriesExists::GetFakeAppDataPath() const {
+  base::ScopedAllowBlockingForTesting allow_blocking;
   DCHECK(fake_dir_.IsValid());
-  return fake_dir_.path().AppendASCII("appdata");
+  return fake_dir_.GetPath().AppendASCII("appdata");
 }
 
 #if defined(OS_WIN)
 base::FilePath EnsureMediaDirectoriesExists::GetFakeLocalAppDataPath() const {
   DCHECK(fake_dir_.IsValid());
-  return fake_dir_.path().AppendASCII("localappdata");
-}
-
-void EnsureMediaDirectoriesExists::SetCustomPicasaAppDataPath(
-    const base::FilePath& path) {
-  base::win::RegKey key(HKEY_CURRENT_USER, picasa::kPicasaRegistryPath,
-                        KEY_SET_VALUE);
-  key.WriteValue(picasa::kPicasaRegistryAppDataPathKey, path.value().c_str());
+  return fake_dir_.GetPath().AppendASCII("localappdata");
 }
 #endif  // OS_WIN
-
-#if defined(OS_MACOSX)
-void EnsureMediaDirectoriesExists::SetCustomPicasaAppDataPath(
-    const base::FilePath& path) {
-  mac_preferences_->AddTestItem(
-      base::mac::NSToCFCast(picasa::kPicasaAppDataPathMacPreferencesKey),
-      base::SysUTF8ToNSString(path.value()),
-      false);
-}
-#endif  // OS_MACOSX
-
-#if defined(OS_WIN) || defined(OS_MACOSX)
-base::FilePath
-EnsureMediaDirectoriesExists::GetFakePicasaFoldersRootPath() const {
-  DCHECK(fake_dir_.IsValid());
-  return fake_dir_.path().AppendASCII("picasa_folders");
-}
-#endif  // OS_WIN || OS_MACOSX
-
-#if defined(OS_MACOSX)
-base::FilePath EnsureMediaDirectoriesExists::GetFakeITunesRootPath() const {
-  DCHECK(fake_dir_.IsValid());
-  return fake_dir_.path().AppendASCII("itunes");
-}
-#endif  // OS_MACOSX
 
 void EnsureMediaDirectoriesExists::Init() {
 #if defined(OS_CHROMEOS) || defined(OS_ANDROID)
@@ -182,34 +149,8 @@ void EnsureMediaDirectoriesExists::Init() {
 
   ASSERT_TRUE(fake_dir_.CreateUniqueTempDir());
 
-#if defined(OS_WIN) || defined(OS_MACOSX)
-  // This is to control whether or not tests think iTunes (on Windows) and
-  // Picasa are installed.
-  app_data_override_.reset(new base::ScopedPathOverride(
-      base::DIR_APP_DATA, GetFakeAppDataPath()));
-#endif  // OS_WIN || OS_MACOSX
-
-#if defined(OS_WIN)
-  // Picasa on Windows is by default in the DIR_LOCAL_APP_DATA directory.
-  local_app_data_override_.reset(new base::ScopedPathOverride(
-      base::DIR_LOCAL_APP_DATA, GetFakeLocalAppDataPath()));
-  // Picasa also looks in the registry for an alternate path.
-  registry_override_.OverrideRegistry(HKEY_CURRENT_USER);
-#endif  // OS_WIN
-
 #if defined(OS_MACOSX)
   mac_preferences_.reset(new MockPreferences);
-
-  // iTunes override.
-  base::FilePath itunes_xml =
-      GetFakeITunesRootPath().AppendASCII("iTunes Library.xml");
-  mac_preferences_->AddTestItem(
-      base::mac::NSToCFCast(iapps::kITunesRecentDatabasePathsKey),
-      base::mac::NSToCFCast(iapps::NSArrayFromFilePath(itunes_xml)),
-      false);
-
-  iapps::SetMacPreferencesForTesting(mac_preferences_.get());
-  picasa::SetMacPreferencesForTesting(mac_preferences_.get());
 #endif  // OS_MACOSX
 
   ChangeMediaPathOverrides();

@@ -80,8 +80,8 @@ void GPUTimingFake::ExpectNoDisjointCalls(MockGLInterface& gl) {
 
 void GPUTimingFake::ExpectGPUTimeStampQuery(MockGLInterface& gl,
                                             bool elapsed_query) {
-  EXPECT_CALL(gl, GenQueries(1, NotNull())).Times(Exactly(1))
-      .WillRepeatedly(Invoke(this, &GPUTimingFake::FakeGLGenQueries));
+  EXPECT_CALL(gl, GenQueries(1, NotNull()))
+      .WillOnce(Invoke(this, &GPUTimingFake::FakeGLGenQueries));
 
   EXPECT_CALL(gl, GetQueryiv(GL_TIMESTAMP, GL_QUERY_COUNTER_BITS, NotNull()))
       .WillRepeatedly(DoAll(SetArgPointee<2>(64), Return()));
@@ -113,9 +113,9 @@ void GPUTimingFake::ExpectGPUTimeStampQuery(MockGLInterface& gl,
       .WillRepeatedly(
            Invoke(this, &GPUTimingFake::FakeGLGetQueryObjectui64v));
 
-  EXPECT_CALL(gl, DeleteQueries(1, NotNull())).Times(AtLeast(1))
-      .WillRepeatedly(
-           Invoke(this, &GPUTimingFake::FakeGLDeleteQueries));
+  EXPECT_CALL(gl, DeleteQueries(1, NotNull()))
+      .WillOnce(Invoke(this, &GPUTimingFake::FakeGLDeleteQueries))
+      .RetiresOnSaturation();
 }
 
 void GPUTimingFake::ExpectGPUTimerQuery(
@@ -223,7 +223,7 @@ void GPUTimingFake::FakeGLGetQueryObjectuiv(GLuint id, GLenum pname,
                                             GLuint* params) {
   switch (pname) {
     case GL_QUERY_RESULT_AVAILABLE: {
-      std::map<GLuint, QueryResult>::iterator it = query_results_.find(id);
+      auto it = query_results_.find(id);
       if (it != query_results_.end() && it->second.value_ <= current_gl_time_)
         *params = 1;
       else
@@ -262,7 +262,7 @@ void GPUTimingFake::FakeGLGetQueryObjectui64v(GLuint id, GLenum pname,
                                               GLuint64* params) {
   switch (pname) {
     case GL_QUERY_RESULT: {
-      std::map<GLuint, QueryResult>::iterator it = query_results_.find(id);
+      auto it = query_results_.find(id);
       ASSERT_TRUE(it != query_results_.end());
       switch (it->second.type_) {
         case QueryResult::kQueryResultType_TimeStamp:

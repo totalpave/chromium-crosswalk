@@ -10,19 +10,22 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/files/file_util.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/search_engines/template_url_service_test_util.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -33,9 +36,8 @@ using base::ASCIIToUTF16;
 class TestTemplateUrlFetcher : public TemplateURLFetcher {
  public:
   TestTemplateUrlFetcher(TemplateURLService* template_url_service,
-                         net::URLRequestContextGetter* request_context,
                          const base::Closure& request_completed_callback)
-      : TemplateURLFetcher(template_url_service, request_context),
+      : TemplateURLFetcher(template_url_service),
         callback_(request_completed_callback) {}
   ~TestTemplateUrlFetcher() override {}
 
@@ -58,10 +60,8 @@ class TemplateURLFetcherTest : public testing::Test {
   TemplateURLFetcherTest();
 
   void SetUp() override {
-    TestingProfile* profile = test_util_.profile();
-    ASSERT_TRUE(profile->GetRequestContext());
     template_url_fetcher_.reset(new TestTemplateUrlFetcher(
-        test_util_.model(), profile->GetRequestContext(),
+        test_util_.model(),
         base::Bind(&TemplateURLFetcherTest::RequestCompletedCallback,
                    base::Unretained(this))));
 
@@ -107,7 +107,7 @@ class TemplateURLFetcherTest : public testing::Test {
 };
 
 bool GetTestDataDir(base::FilePath* dir) {
-  if (!PathService::Get(base::DIR_SOURCE_ROOT, dir))
+  if (!base::PathService::Get(base::DIR_SOURCE_ROOT, dir))
     return false;
   *dir = dir->AppendASCII("components")
              .AppendASCII("test")
@@ -128,7 +128,7 @@ TemplateURLFetcherTest::TemplateURLFetcherTest()
 void TemplateURLFetcherTest::RequestCompletedCallback() {
   requests_completed_++;
   if (waiting_for_download_)
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 void TemplateURLFetcherTest::StartDownload(
@@ -146,9 +146,14 @@ void TemplateURLFetcherTest::StartDownload(
   // Start the fetch.
   GURL osdd_url = test_server_.GetURL("/" + osdd_file_name);
   GURL favicon_url;
+
+  TestingProfile* profile = test_util_.profile();
   template_url_fetcher_->ScheduleDownload(
-      keyword, osdd_url, favicon_url,
-      TemplateURLFetcher::URLFetcherCustomizeCallback());
+      keyword, osdd_url, favicon_url, url::Origin::Create(GURL()),
+      content::BrowserContext::GetDefaultStoragePartition(profile)
+          ->GetURLLoaderFactoryForBrowserProcess()
+          .get(),
+      0 /* render_frame_id */, 0 /* resource_type */);
 }
 
 void TemplateURLFetcherTest::WaitForDownloadToFinish() {
@@ -181,6 +186,25 @@ TEST_F(TemplateURLFetcherTest, BasicAutodetectedTest) {
   EXPECT_TRUE(t_url->safe_for_autoreplace());
 }
 
+// This test is similar to the BasicAutodetectedTest except the xml file
+// provided doesn't include a short name for the search engine.  We should
+// fall back to the hostname.
+TEST_F(TemplateURLFetcherTest, InvalidShortName) {
+  base::string16 keyword(ASCIIToUTF16("test"));
+
+  test_util()->ChangeModelToLoadState();
+  ASSERT_FALSE(test_util()->model()->GetTemplateURLForKeyword(keyword));
+
+  std::string osdd_file_name("simple_open_search_no_name.xml");
+  StartDownload(keyword, osdd_file_name, true);
+  WaitForDownloadToFinish();
+
+  const TemplateURL* t_url =
+      test_util()->model()->GetTemplateURLForKeyword(keyword);
+  ASSERT_TRUE(t_url);
+  EXPECT_EQ(ASCIIToUTF16("example.com"), t_url->short_name());
+}
+
 TEST_F(TemplateURLFetcherTest, DuplicatesThrownAway) {
   base::string16 keyword(ASCIIToUTF16("test"));
 
@@ -202,7 +226,7 @@ TEST_F(TemplateURLFetcherTest, DuplicatesThrownAway) {
        keyword},
   };
 
-  for (size_t i = 0; i < arraysize(test_cases); ++i) {
+  for (size_t i = 0; i < base::size(test_cases); ++i) {
     StartDownload(test_cases[i].keyword, test_cases[i].osdd_file_name, false);
     EXPECT_EQ(1, template_url_fetcher()->requests_count())
         << test_cases[i].description;
@@ -229,7 +253,7 @@ TEST_F(TemplateURLFetcherTest, DuplicateKeywordsTest) {
   data.SetShortName(keyword);
   data.SetKeyword(keyword);
   data.SetURL("http://example.com/");
-  test_util()->model()->Add(new TemplateURL(data));
+  test_util()->model()->Add(std::make_unique<TemplateURL>(data));
   test_util()->ChangeModelToLoadState();
 
   EXPECT_TRUE(test_util()->model()->GetTemplateURLForKeyword(keyword));

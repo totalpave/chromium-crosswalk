@@ -7,9 +7,8 @@
 
 #include "base/macros.h"
 #include "chrome/browser/ui/passwords/password_dialog_prompts.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/button.h"
-#include "ui/views/controls/styled_label_listener.h"
-#include "ui/views/window/dialog_delegate.h"
 
 namespace content {
 class WebContents;
@@ -17,8 +16,7 @@ class WebContents;
 
 class PasswordDialogController;
 
-class AccountChooserDialogView : public views::DialogDelegateView,
-                                 public views::StyledLabelListener,
+class AccountChooserDialogView : public views::BubbleDialogDelegateView,
                                  public views::ButtonListener,
                                  public AccountChooserPrompt {
  public:
@@ -34,23 +32,14 @@ class AccountChooserDialogView : public views::DialogDelegateView,
   // WidgetDelegate:
   ui::ModalType GetModalType() const override;
   base::string16 GetWindowTitle() const override;
-  bool ShouldShowWindowTitle() const override;
   bool ShouldShowCloseButton() const override;
   void WindowClosing() override;
 
   // DialogDelegate:
   bool Accept() override;
   int GetDialogButtons() const override;
-  bool ShouldDefaultButtonBeBlue() const override;
   base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
-
-  // views::View
-  gfx::Size GetPreferredSize() const override;
-
-  // StyledLabelListener:
-  void StyledLabelLinkClicked(views::StyledLabel* label,
-                              const gfx::Range& range,
-                              int event_flags) override;
+  views::View* CreateFootnoteView() override;
 
   // ButtonListener:
   void ButtonPressed(views::Button* sender, const ui::Event& event) override;

@@ -16,9 +16,7 @@ namespace media {
 struct MediaLogEvent {
   MediaLogEvent() {}
 
-  MediaLogEvent(const MediaLogEvent& event) {
-    *this = event;
-  }
+  MediaLogEvent(const MediaLogEvent& event) { *this = event; }
 
   MediaLogEvent& operator=(const MediaLogEvent& event) {
     id = event.id;
@@ -53,7 +51,7 @@ struct MediaLogEvent {
     PIPELINE_STATE_CHANGED,
 
     // An error has occurred in the pipeline.
-    // params: "pipeline_error": <string name of the error>.
+    // params: "pipeline_error": <integral PipelineStatus error code>.
     PIPELINE_ERROR,
 
     // The size of the video has been determined.
@@ -65,8 +63,6 @@ struct MediaLogEvent {
     // These take a single parameter based upon the name of the event and of
     // the appropriate type. e.g. DURATION_SET: "duration" of type TimeDelta.
     DURATION_SET,
-    TOTAL_BYTES_SET,
-    NETWORK_ACTIVITY_SET,
 
     // Audio/Video stream playback has ended.
     ENDED,
@@ -74,15 +70,13 @@ struct MediaLogEvent {
     // Text stream playback has ended.
     TEXT_ENDED,
 
-    // The extents of the sliding buffer have changed.
-    // params: "buffer_start": <first buffered byte>.
-    //         "buffer_current": <current offset>.
-    //         "buffer_end": <last buffered byte>.
-    BUFFERED_EXTENTS_CHANGED,
-
     // Error log reported by media code such as reasons of playback error.
     MEDIA_ERROR_LOG_ENTRY,
     // params: "error": Error string describing the error detected.
+
+    // Warning log reported by media code such as playback quality issues.
+    MEDIA_WARNING_LOG_ENTRY,
+    // params: "warning": String describing the warning.
 
     // Informative log reported by media code.
     MEDIA_INFO_LOG_ENTRY,
@@ -95,7 +89,10 @@ struct MediaLogEvent {
     // A property has changed without any special event occurring.
     PROPERTY_CHANGE,
 
-    TYPE_LAST = PROPERTY_CHANGE
+    // Issued when a player is suspended.
+    SUSPENDED,
+
+    TYPE_LAST = SUSPENDED
   };
 
   int32_t id;

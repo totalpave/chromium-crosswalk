@@ -11,6 +11,7 @@
 #include "base/files/file_path.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/startup/startup_tab.h"
 #include "chrome/browser/ui/startup/startup_types.h"
 #include "url/gurl.h"
@@ -18,14 +19,12 @@
 class Browser;
 class Profile;
 class StartupBrowserCreator;
+class StartupTabProvider;
+struct SessionStartupPref;
 
 namespace base {
 class CommandLine;
 class FilePath;
-}
-
-namespace content {
-class WebContents;
 }
 
 namespace internals {
@@ -67,12 +66,50 @@ class StartupBrowserCreatorImpl {
  private:
   FRIEND_TEST_ALL_PREFIXES(BrowserTest, RestorePinnedTabs);
   FRIEND_TEST_ALL_PREFIXES(BrowserTest, AppIdSwitch);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest, DetermineStartupTabs);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineStartupTabs_Incognito);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineStartupTabs_Crash);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineStartupTabs_MasterPrefs);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineStartupTabs_CommandLine);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineStartupTabs_NewTabPage);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineStartupTabs_WelcomeBackPage);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineBrowserOpenBehavior_Startup);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineBrowserOpenBehavior_CmdLineTabs);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineBrowserOpenBehavior_PostCrash);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorImplTest,
+                           DetermineBrowserOpenBehavior_NotStartup);
 
   enum class WelcomeRunType {
     NONE,                // Do not inject the welcome page for this run.
     FIRST_TAB,           // Inject the welcome page as the first tab.
     FIRST_RUN_LAST_TAB,  // Inject the welcome page as the last first-run tab.
   };
+
+  // Window behaviors possible when opening Chrome.
+  enum class BrowserOpenBehavior {
+    NEW,                  // Open in a new browser.
+    SYNCHRONOUS_RESTORE,  // Attempt a synchronous session restore.
+    USE_EXISTING,         // Attempt to add to an existing tabbed browser.
+  };
+
+  // Boolean flags used to indicate state for DetermineBrowserOpenBehavior.
+  enum BehaviorFlags {
+    PROCESS_STARTUP = (1 << 0),
+    IS_POST_CRASH_LAUNCH = (1 << 1),
+    HAS_NEW_WINDOW_SWITCH = (1 << 2),
+    HAS_CMD_LINE_TABS = (1 << 3),
+  };
+
+  using BrowserOpenBehaviorOptions = uint32_t;
 
   // Creates a tab for each of the Tabs in |tabs|. If browser is non-null
   // and a tabbed browser, the tabs are added to it. Otherwise a new tabbed
@@ -97,70 +134,66 @@ class StartupBrowserCreatorImpl {
   // should open in a tab, do so.
   bool OpenApplicationTab(Profile* profile);
 
-  // Invoked from Launch to handle processing of urls. This may do any of the
-  // following:
-  // . Invoke ProcessStartupURLs if |process_startup| is true.
-  // . If |process_startup| is false, restore the last session if necessary,
-  //   or invoke ProcessSpecifiedURLs.
-  // . Open the urls directly.
-  void ProcessLaunchURLs(bool process_startup,
-                         const std::vector<GURL>& urls_to_open);
+  // Determines the URLs to be shown at startup by way of various policies
+  // (onboarding, pinned tabs, etc.), determines whether a session restore
+  // is necessary, and opens the URLs in a new or restored browser accordingly.
+  void DetermineURLsAndLaunch(bool process_startup,
+                              const std::vector<GURL>& cmd_line_urls);
 
-  // Does the following:
-  // . If the user's startup pref is to restore the last session (or the
-  //   command line flag is present to force using last session), it is
-  //   restored.
-  // . Otherwise invoke ProcessSpecifiedURLs
-  // If a browser was created, true is returned.  Otherwise returns false and
-  // the caller must create a new browser.
-  bool ProcessStartupURLs(const std::vector<GURL>& urls_to_open);
+  // Returns the tabs to be shown on startup, based on the policy functions in
+  // the given StartupTabProvider, the given tabs passed by the command line,
+  // and the interactions between those policies.
+  StartupTabs DetermineStartupTabs(const StartupTabProvider& provider,
+                                   const StartupTabs& cmd_line_tabs,
+                                   bool process_startup,
+                                   bool is_ephemeral_profile,
+                                   bool is_post_crash_launch,
+                                   bool has_incompatible_applications,
+                                   bool promotional_tabs_enabled);
 
-  // Invoked from either ProcessLaunchURLs or ProcessStartupURLs to handle
-  // processing of URLs where the behavior is common between process startup
-  // and launch via an existing process (i.e. those explicitly specified by
-  // the user somehow).  Does the following:
-  // . Attempts to restore any pinned tabs from last run of chrome.
-  // . If urls_to_open is non-empty, they are opened.
-  // . If the user's startup pref is to launch a specific set of URLs they
-  //   are opened.
-  //
-  // If any tabs were opened, the Browser which was created is returned.
-  // Otherwise null is returned and the caller must create a new browser.
-  Browser* ProcessSpecifiedURLs(const std::vector<GURL>& urls_to_open);
+  // Begins an asynchronous session restore if current state allows it (e.g.,
+  // this is not process startup) and SessionService indicates that one is
+  // necessary. Returns true if restore was initiated, or false if launch
+  // should continue (either synchronously, or asynchronously without
+  // restoring).
+  bool MaybeAsyncRestore(const StartupTabs& tabs,
+                         bool process_startup,
+                         bool is_post_crash_launch);
 
-  // Adds a Tab to |tabs| for each url in |urls| that doesn't already exist
-  // in |tabs|.
-  void AddUniqueURLs(const std::vector<GURL>& urls, StartupTabs* tabs);
+  // Returns a browser displaying the contents of |tabs|. Based on |behavior|,
+  // this may attempt a session restore or create a new browser. May also allow
+  // DOM Storage to begin cleanup once it's clear it is not needed anymore.
+  Browser* RestoreOrCreateBrowser(
+    const StartupTabs& tabs, BrowserOpenBehavior behavior,
+    SessionRestore::BehaviorBitmask restore_options, bool process_startup,
+    bool is_post_crash_launch);
+
 
   // Adds any startup infobars to the selected tab of the given browser.
   void AddInfoBarsIfNecessary(
       Browser* browser,
       chrome::startup::IsProcessStartup is_process_startup);
 
-  // Adds additional startup URLs to the specified vector.
-  void AddStartupURLs(std::vector<GURL>* startup_urls) const;
-
-  // Adds special URLs to the specified vector. These URLs are triggered by
-  // special-case logic, such as profile reset or presentation of the welcome
-  // page.
-  void AddSpecialURLs(std::vector<GURL>* startup_urls) const;
-
-  // Initializes |welcome_run_type_| for this launch. Also persists state to
-  // suppress injecting the welcome page for future launches.
-  void InitializeWelcomeRunType(const std::vector<GURL>& urls_to_open);
-
-  // Record Rappor metrics on startup URLs.
+  // Records Rappor metrics on startup URLs.
   void RecordRapporOnStartupURLs(const std::vector<GURL>& urls_to_open);
 
-  // Checks whether |profile_| has a reset trigger set.
-  bool ProfileHasResetTrigger() const;
+  // Determines how the launch flow should obtain a Browser.
+  static BrowserOpenBehavior DetermineBrowserOpenBehavior(
+      const SessionStartupPref& pref,
+      BrowserOpenBehaviorOptions options);
+
+  // Returns the relevant bitmask options which must be passed when restoring a
+  // session.
+  static SessionRestore::BehaviorBitmask DetermineSynchronousRestoreOptions(
+      bool has_create_browser_default,
+      bool has_create_browser_switch,
+      bool was_mac_login_or_resume);
 
   const base::FilePath cur_dir_;
   const base::CommandLine& command_line_;
   Profile* profile_;
   StartupBrowserCreator* browser_creator_;
   bool is_first_run_;
-  WelcomeRunType welcome_run_type_;
   DISALLOW_COPY_AND_ASSIGN(StartupBrowserCreatorImpl);
 };
 

@@ -17,17 +17,15 @@
 
 namespace cc {
 class Layer;
-class SolidColorLayer;
 }
 
-namespace chrome {
 namespace android {
 
 class ToolbarLayer;
 
 class ToolbarSceneLayer : public SceneLayer {
  public:
-  ToolbarSceneLayer(JNIEnv* env, jobject jobj);
+  ToolbarSceneLayer(JNIEnv* env, const base::android::JavaRef<jobject>& jobj);
   ~ToolbarSceneLayer() override;
 
   // Update the compositor version of the toolbar.
@@ -39,7 +37,9 @@ class ToolbarSceneLayer : public SceneLayer {
       jint toolbar_background_color,
       jint url_bar_resource_id,
       jfloat url_bar_alpha,
-      jfloat top_offset,
+      jint url_bar_color,
+      jfloat y_offset,
+      jfloat view_height,
       bool visible,
       bool show_shadow);
 
@@ -76,9 +76,6 @@ class ToolbarSceneLayer : public SceneLayer {
   DISALLOW_COPY_AND_ASSIGN(ToolbarSceneLayer);
 };
 
-bool RegisterToolbarSceneLayer(JNIEnv* env);
-
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_SCENE_LAYER_TOOLBAR_SCENE_LAYER_H_

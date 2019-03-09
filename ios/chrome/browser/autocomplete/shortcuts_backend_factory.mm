@@ -4,8 +4,9 @@
 
 #include "ios/chrome/browser/autocomplete/shortcuts_backend_factory.h"
 
-#include "base/memory/ptr_util.h"
-#include "base/memory/singleton.h"
+#include <memory>
+
+#include "base/no_destructor.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/keyed_service/ios/browser_state_dependency_manager.h"
 #include "components/omnibox/browser/shortcuts_backend.h"
@@ -17,7 +18,10 @@
 #include "ios/chrome/browser/search_engines/template_url_service_factory.h"
 #include "ios/chrome/browser/search_engines/ui_thread_search_terms_data.h"
 #include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
-#include "ios/web/public/web_thread.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace ios {
 namespace {
@@ -27,10 +31,9 @@ scoped_refptr<ShortcutsBackend> CreateShortcutsBackend(
     bool suppress_db) {
   scoped_refptr<ShortcutsBackend> shortcuts_backend(new ShortcutsBackend(
       ios::TemplateURLServiceFactory::GetForBrowserState(browser_state),
-      base::WrapUnique(new ios::UIThreadSearchTermsData(browser_state)),
+      std::make_unique<ios::UIThreadSearchTermsData>(browser_state),
       ios::HistoryServiceFactory::GetForBrowserState(
           browser_state, ServiceAccessType::EXPLICIT_ACCESS),
-      web::WebThread::GetTaskRunnerForThread(web::WebThread::DB),
       browser_state->GetStatePath().Append(kShortcutsDatabaseName),
       suppress_db));
   return shortcuts_backend->Init() ? shortcuts_backend : nullptr;
@@ -41,7 +44,7 @@ scoped_refptr<ShortcutsBackend> CreateShortcutsBackend(
 // static
 scoped_refptr<ShortcutsBackend> ShortcutsBackendFactory::GetForBrowserState(
     ios::ChromeBrowserState* browser_state) {
-  return make_scoped_refptr(static_cast<ShortcutsBackend*>(
+  return base::WrapRefCounted(static_cast<ShortcutsBackend*>(
       GetInstance()->GetServiceForBrowserState(browser_state, true).get()));
 }
 
@@ -49,13 +52,14 @@ scoped_refptr<ShortcutsBackend> ShortcutsBackendFactory::GetForBrowserState(
 scoped_refptr<ShortcutsBackend>
 ShortcutsBackendFactory::GetForBrowserStateIfExists(
     ios::ChromeBrowserState* browser_state) {
-  return make_scoped_refptr(static_cast<ShortcutsBackend*>(
+  return base::WrapRefCounted(static_cast<ShortcutsBackend*>(
       GetInstance()->GetServiceForBrowserState(browser_state, false).get()));
 }
 
 // static
 ShortcutsBackendFactory* ShortcutsBackendFactory::GetInstance() {
-  return base::Singleton<ShortcutsBackendFactory>::get();
+  static base::NoDestructor<ShortcutsBackendFactory> instance;
+  return instance.get();
 }
 
 ShortcutsBackendFactory::ShortcutsBackendFactory()

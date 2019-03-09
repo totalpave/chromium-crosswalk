@@ -9,6 +9,9 @@
 
 namespace base {
 
+// Defined in memory_win.cc for Windows.
+#if !defined(OS_WIN)
+
 namespace {
 
 // Breakpad server classifies base::`anonymous namespace'::OnNoMemory as
@@ -25,6 +28,8 @@ void TerminateBecauseOutOfMemory(size_t size) {
   OnNoMemory(size);
 }
 
+#endif
+
 // Defined in memory_mac.mm for Mac.
 #if !defined(OS_MACOSX)
 
@@ -33,7 +38,7 @@ bool UncheckedCalloc(size_t num_items, size_t size, void** result) {
 
   // Overflow check
   if (size && ((alloc_size / size) != num_items)) {
-    *result = NULL;
+    *result = nullptr;
     return false;
   }
 

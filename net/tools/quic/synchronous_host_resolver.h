@@ -7,12 +7,12 @@
 #ifndef NET_TOOLS_QUIC_SYNCHRONOUS_HOST_RESOLVER_H_
 #define NET_TOOLS_QUIC_SYNCHRONOUS_HOST_RESOLVER_H_
 
+#include <string>
+
 #include "net/base/address_list.h"
-#include "net/base/net_export.h"
 #include "net/dns/host_resolver.h"
 
 namespace net {
-
 
 class SynchronousHostResolver {
  public:

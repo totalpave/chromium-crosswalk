@@ -4,25 +4,35 @@
 
 package org.chromium.chrome.browser.autofill;
 
-import android.test.suitebuilder.annotation.MediumTest;
+import android.support.test.filters.MediumTest;
 import android.view.ViewGroup;
 
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.AutofillProfile;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
-import org.chromium.content.browser.ContentViewCore;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.DOMUtils;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.util.browser.Features;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.ui.DropdownPopupWindowInterface;
 import org.chromium.ui.R;
-import org.chromium.ui.UiUtils;
-import org.chromium.ui.autofill.AutofillPopup;
 
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,25 +40,31 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Integration tests for interaction of the AutofillPopup and a keyboard.
  */
-public class AutofillPopupWithKeyboardTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class AutofillPopupWithKeyboardTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
 
-    public AutofillPopupWithKeyboardTest() {
-        super(ChromeActivity.class);
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        // Don't launch activity automatically.
+    @Before
+    public void setUp() throws Exception {
+        // TODO(crbug.com/894428) - fix this suite to use the embedded test server instead of
+        // data urls.
+        Features.getInstance().enable(ChromeFeatureList.AUTOFILL_ALLOW_NON_HTTP_ACTIVATION);
     }
 
     /**
      * Test that showing autofill popup and keyboard will not hide the autofill popup.
      */
+    @Test
     @MediumTest
     @Feature({"autofill-keyboard"})
+    @RetryOnFailure
+    @DisabledTest
     public void testShowAutofillPopupAndKeyboardimultaneously()
             throws InterruptedException, ExecutionException, TimeoutException {
-        startMainActivityWithURL(UrlUtils.encodeHtmlDataUri("<html><head>"
+        mActivityTestRule.startMainActivityWithURL(UrlUtils.encodeHtmlDataUri("<html><head>"
                 + "<meta name=\"viewport\""
                 + "content=\"width=device-width, initial-scale=1.0, maximum-scale=1.0\" /></head>"
                 + "<body><form method=\"POST\">"
@@ -71,31 +87,26 @@ public class AutofillPopupWithKeyboardTest extends ChromeActivityTestCaseBase<Ch
         new AutofillTestHelper().setProfile(new AutofillProfile("", "https://www.example.com",
                 "John Smith", "Acme Inc", "1 Main\nApt A", "CA", "San Francisco", "", "94102", "",
                 "US", "(415) 888-9999", "john@acme.inc", "en"));
-        final AtomicReference<ContentViewCore> viewCoreRef = new AtomicReference<ContentViewCore>();
         final AtomicReference<WebContents> webContentsRef = new AtomicReference<WebContents>();
         final AtomicReference<ViewGroup> viewRef = new AtomicReference<ViewGroup>();
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                viewCoreRef.set(getActivity().getCurrentContentViewCore());
-                webContentsRef.set(viewCoreRef.get().getWebContents());
-                viewRef.set(viewCoreRef.get().getContainerView());
-            }
+        ThreadUtils.runOnUiThreadBlocking(() -> {
+            webContentsRef.set(mActivityTestRule.getActivity().getCurrentWebContents());
+            viewRef.set(mActivityTestRule.getActivity().getActivityTab().getContentView());
         });
         DOMUtils.waitForNonZeroNodeBounds(webContentsRef.get(), "fn");
 
         // Click on the unfocused input element for the first time to focus on it. This brings up
         // the autofill popup and shows the keyboard at the same time. Showing the keyboard should
         // not hide the autofill popup.
-        DOMUtils.clickNode(this, viewCoreRef.get(), "fn");
+        DOMUtils.clickNode(webContentsRef.get(), "fn");
 
         // Wait until the keyboard is showing.
         CriteriaHelper.pollUiThread(new Criteria("Keyboard was never shown.") {
             @Override
             public boolean isSatisfied() {
-                return UiUtils.isKeyboardShowing(
-                        getActivity(),
-                        getActivity().getCurrentContentViewCore().getContainerView());
+                return mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(
+                        mActivityTestRule.getActivity(),
+                        mActivityTestRule.getActivity().getActivityTab().getContentView());
             }
         });
 
@@ -107,14 +118,10 @@ public class AutofillPopupWithKeyboardTest extends ChromeActivityTestCaseBase<Ch
                         return viewRef.get().findViewById(R.id.dropdown_popup_window) != null;
                     }
                 });
-        Object popupObject = ThreadUtils.runOnUiThreadBlocking(new Callable<Object>() {
-            @Override
-            public Object call() {
-                return viewRef.get().findViewById(R.id.dropdown_popup_window).getTag();
-            }
-        });
-        assertTrue(popupObject instanceof AutofillPopup);
-        final AutofillPopup popup = (AutofillPopup) popupObject;
+        Object popupObject = ThreadUtils.runOnUiThreadBlocking(
+                () -> viewRef.get().findViewById(R.id.dropdown_popup_window).getTag());
+        Assert.assertTrue(popupObject instanceof DropdownPopupWindowInterface);
+        final DropdownPopupWindowInterface popup = (DropdownPopupWindowInterface) popupObject;
         CriteriaHelper.pollUiThread(new Criteria("Autofill Popup was never shown.") {
             @Override
             public boolean isSatisfied() {

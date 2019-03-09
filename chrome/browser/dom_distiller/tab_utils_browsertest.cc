@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "base/command_line.h"
+#include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/dom_distiller/dom_distiller_service_factory.h"
@@ -41,7 +42,6 @@ class DomDistillerTabUtilsBrowserTest : public InProcessBrowserTest {
     if (!DistillerJavaScriptWorldIdIsSet()) {
       SetDistillerJavaScriptWorldId(content::ISOLATED_WORLD_ID_CONTENT_END);
     }
-    InProcessBrowserTest::SetUpOnMainThread();
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -70,8 +70,7 @@ class WebContentsMainFrameHelper : public content::WebContentsObserver {
       loaded_distiller_page_ = true;
   }
 
-  void TitleWasSet(content::NavigationEntry* entry,
-                   bool explicit_set) override {
+  void TitleWasSet(content::NavigationEntry* entry) override {
     // The title will be set twice on distilled pages; once for the placeholder
     // and once when the distillation has finished. Watch for the second time
     // as a signal that the JavaScript that sets the content has run.
@@ -87,12 +86,12 @@ class WebContentsMainFrameHelper : public content::WebContentsObserver {
   bool loaded_distiller_page_;
 };
 
-#if (defined(OS_LINUX) && defined(OS_CHROMEOS))
+// https://crbug.com/751730.
+#if defined(OS_CHROMEOS) || defined(OS_LINUX)
 #define MAYBE_TestSwapWebContents DISABLED_TestSwapWebContents
 #else
 #define MAYBE_TestSwapWebContents TestSwapWebContents
 #endif
-
 IN_PROC_BROWSER_TEST_F(DomDistillerTabUtilsBrowserTest,
                        MAYBE_TestSwapWebContents) {
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -141,21 +140,23 @@ IN_PROC_BROWSER_TEST_F(DomDistillerTabUtilsBrowserTest,
   // Create destination WebContents.
   content::WebContents::CreateParams create_params(
       source_web_contents->GetBrowserContext());
-  content::WebContents* destination_web_contents =
+  std::unique_ptr<content::WebContents> destination_web_contents =
       content::WebContents::Create(create_params);
-  DCHECK(destination_web_contents);
+  content::WebContents* raw_destination_web_contents =
+      destination_web_contents.get();
+  DCHECK(raw_destination_web_contents);
 
-  browser()->tab_strip_model()->AppendWebContents(destination_web_contents,
-                                                  true);
-  ASSERT_EQ(destination_web_contents,
+  browser()->tab_strip_model()->AppendWebContents(
+      std::move(destination_web_contents), true);
+  ASSERT_EQ(raw_destination_web_contents,
             browser()->tab_strip_model()->GetWebContentsAt(1));
 
-  DistillAndView(source_web_contents, destination_web_contents);
+  DistillAndView(source_web_contents, raw_destination_web_contents);
 
   // Wait until the destination WebContents has fully navigated.
   base::RunLoop new_url_loaded_runner;
   std::unique_ptr<WebContentsMainFrameHelper> distilled_page_loaded(
-      new WebContentsMainFrameHelper(destination_web_contents,
+      new WebContentsMainFrameHelper(raw_destination_web_contents,
                                      new_url_loaded_runner.QuitClosure()));
   new_url_loaded_runner.Run();
 
@@ -167,14 +168,15 @@ IN_PROC_BROWSER_TEST_F(DomDistillerTabUtilsBrowserTest,
   EXPECT_EQ("Test Page Title", page_title);
 
   // Verify the destination WebContents is showing distilled content.
-  EXPECT_TRUE(destination_web_contents->GetLastCommittedURL().SchemeIs(
+  EXPECT_TRUE(raw_destination_web_contents->GetLastCommittedURL().SchemeIs(
       kDomDistillerScheme));
-  content::ExecuteScriptAndGetValue(destination_web_contents->GetMainFrame(),
-                                    "document.title")->GetAsString(&page_title);
+  content::ExecuteScriptAndGetValue(
+      raw_destination_web_contents->GetMainFrame(), "document.title")
+      ->GetAsString(&page_title);
   EXPECT_EQ("Test Page Title", page_title);
 
   content::WebContentsDestroyedWatcher destroyed_watcher(
-      destination_web_contents);
+      raw_destination_web_contents);
   browser()->tab_strip_model()->CloseWebContentsAt(1, 0);
   destroyed_watcher.Wait();
 }

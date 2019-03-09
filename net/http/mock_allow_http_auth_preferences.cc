@@ -3,27 +3,22 @@
 // found in the LICENSE file.
 
 #include "net/http/mock_allow_http_auth_preferences.h"
+#include "build/build_config.h"
 
 namespace net {
 
-MockAllowHttpAuthPreferences::MockAllowHttpAuthPreferences()
-    : HttpAuthPreferences(std::vector<std::string>()
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-                              ,
-                          std::string()
-#endif
-                              ) {
-}
+MockAllowHttpAuthPreferences::MockAllowHttpAuthPreferences() = default;
 
-MockAllowHttpAuthPreferences::~MockAllowHttpAuthPreferences() {}
+MockAllowHttpAuthPreferences::~MockAllowHttpAuthPreferences() = default;
 
 bool MockAllowHttpAuthPreferences::CanUseDefaultCredentials(
     const GURL& auth_origin) const {
   return true;
 }
 
-bool MockAllowHttpAuthPreferences::CanDelegate(const GURL& auth_origin) const {
-  return true;
+HttpAuth::DelegationType MockAllowHttpAuthPreferences::GetDelegationType(
+    const GURL& auth_origin) const {
+  return HttpAuth::DelegationType::kUnconstrained;
 }
 
 }  // namespace net

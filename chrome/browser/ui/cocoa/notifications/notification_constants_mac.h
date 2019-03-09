@@ -13,9 +13,16 @@ extern NSString* const kNotificationOrigin;
 extern NSString* const kNotificationId;
 extern NSString* const kNotificationProfileId;
 extern NSString* const kNotificationIncognito;
-
+extern NSString* const kNotificationType;
 extern NSString* const kNotificationOperation;
 extern NSString* const kNotificationButtonIndex;
+extern NSString* const kNotificationHasSettingsButton;
+
+extern NSString* const kAlertXPCServiceName;
+
+// Value used to represent the absence of a button index following a user
+// interaction with a notification.
+constexpr int kNotificationInvalidButtonIndex = -1;
 
 }  // notification_constants
 

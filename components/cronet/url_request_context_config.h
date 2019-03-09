@@ -7,16 +7,17 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/memory/scoped_vector.h"
+#include "base/optional.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "net/base/hash_value.h"
-
-namespace base {
-class SequencedTaskRunner;
-}  // namespace base
+#include "net/cert/cert_verifier.h"
+#include "net/http/http_network_session.h"
+#include "net/nqe/effective_connection_type.h"
 
 namespace net {
 class CertVerifier;
@@ -28,9 +29,11 @@ namespace cronet {
 
 // Common configuration parameters used by Cronet to configure
 // URLRequestContext.
+// TODO(mgersh): This shouldn't be a struct, and experimental option parsing
+// should be kept more separate from applying the configuration.
 struct URLRequestContextConfig {
   // Type of HTTP cache.
-  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.net
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.net.impl
   enum HttpCacheType {
     // No HTTP cache.
     DISABLED,
@@ -76,6 +79,21 @@ struct URLRequestContextConfig {
     DISALLOW_COPY_AND_ASSIGN(Pkp);
   };
 
+  // Simulated headers, used to preconfigure the Reporting API and Network Error
+  // Logging before receiving those actual configuration headers from the
+  // origins.
+  struct PreloadedNelAndReportingHeader {
+    PreloadedNelAndReportingHeader(const url::Origin& origin,
+                                   std::string value);
+    ~PreloadedNelAndReportingHeader();
+
+    // Origin that is "sending" this header.
+    const url::Origin origin;
+
+    // Value of the header that is "sent".
+    const std::string value;
+  };
+
   URLRequestContextConfig(
       // Enable QUIC.
       bool enable_quic,
@@ -83,8 +101,8 @@ struct URLRequestContextConfig {
       const std::string& quic_user_agent_id,
       // Enable SPDY.
       bool enable_spdy,
-      // Enable SDCH.
-      bool enable_sdch,
+      // Enable Brotli.
+      bool enable_brotli,
       // Type of http cache.
       HttpCacheType http_cache,
       // Max size of http cache in bytes.
@@ -94,29 +112,29 @@ struct URLRequestContextConfig {
       bool load_disable_cache,
       // Storage path for http cache and cookie storage.
       const std::string& storage_path,
+      // Accept-Language request header field.
+      const std::string& accept_language,
       // User-Agent request header field.
       const std::string& user_agent,
       // JSON encoded experimental options.
       const std::string& experimental_options,
-      // Data reduction proxy key.
-      const std::string& data_reduction_proxy_key,
-      // Data reduction proxy.
-      const std::string& data_reduction_primary_proxy,
-      // Fallback data reduction proxy.
-      const std::string& data_reduction_fallback_proxy,
-      // Data reduction proxy secure proxy check URL.
-      const std::string& data_reduction_secure_proxy_check_url,
       // MockCertVerifier to use for testing purposes.
       std::unique_ptr<net::CertVerifier> mock_cert_verifier,
       // Enable network quality estimator.
-      bool enable_network_quality_estimator);
+      bool enable_network_quality_estimator,
+      // Enable bypassing of public key pinning for local trust anchors
+      bool bypass_public_key_pinning_for_local_trust_anchors,
+      // Optional network thread priority.
+      // On Android, corresponds to android.os.Process.setThreadPriority()
+      // values. On iOS, corresponds to NSThread::setThreadPriority values. Do
+      // not specify for other targets.
+      base::Optional<double> network_thread_priority);
   ~URLRequestContextConfig();
 
-  // Configure |context_builder| based on |this|.
+  // Configures |context_builder| based on |this|.
   void ConfigureURLRequestContextBuilder(
       net::URLRequestContextBuilder* context_builder,
-      net::NetLog* net_log,
-      const scoped_refptr<base::SequencedTaskRunner>& file_task_runner);
+      net::NetLog* net_log);
 
   // Enable QUIC.
   const bool enable_quic;
@@ -124,8 +142,8 @@ struct URLRequestContextConfig {
   const std::string quic_user_agent_id;
   // Enable SPDY.
   const bool enable_spdy;
-  // Enable SDCH.
-  const bool enable_sdch;
+  // Enable Brotli.
+  const bool enable_brotli;
   // Type of http cache.
   const HttpCacheType http_cache;
   // Max size of http cache in bytes.
@@ -135,35 +153,132 @@ struct URLRequestContextConfig {
   const bool load_disable_cache;
   // Storage path for http cache and cookie storage.
   const std::string storage_path;
+  // Accept-Language request header field.
+  const std::string accept_language;
   // User-Agent request header field.
   const std::string user_agent;
+
+  // Certificate verifier for testing.
+  std::unique_ptr<net::CertVerifier> mock_cert_verifier;
+
+  // Enable Network Quality Estimator (NQE).
+  const bool enable_network_quality_estimator;
+
+  // Enable public key pinning bypass for local trust anchors.
+  const bool bypass_public_key_pinning_for_local_trust_anchors;
+
+  // App-provided list of servers that support QUIC.
+  std::vector<std::unique_ptr<QuicHint>> quic_hints;
+
+  // The list of public key pins.
+  std::vector<std::unique_ptr<Pkp>> pkp_list;
+
+  // Enable DNS cache persistence.
+  bool enable_host_cache_persistence = false;
+
+  // Minimum time in milliseconds between writing the HostCache contents to
+  // prefs. Only relevant when |enable_host_cache_persistence| is true.
+  int host_cache_persistence_delay_ms = 60000;
+
+  // Experimental options that are recognized by the config parser.
+  std::unique_ptr<base::DictionaryValue> effective_experimental_options =
+      nullptr;
+
+  // If set, forces NQE to return the set value as the effective connection
+  // type.
+  base::Optional<net::EffectiveConnectionType>
+      nqe_forced_effective_connection_type;
+
+  // Preloaded Report-To headers, to preconfigure the Reporting API.
+  std::vector<PreloadedNelAndReportingHeader> preloaded_report_to_headers;
+
+  // Preloaded NEL headers, to preconfigure Network Error Logging.
+  std::vector<PreloadedNelAndReportingHeader> preloaded_nel_headers;
+
+  // Optional network thread priority.
+  // On Android, corresponds to android.os.Process.setThreadPriority() values.
+  // On iOS, corresponds to NSThread::setThreadPriority values.
+  const base::Optional<double> network_thread_priority;
+
+ private:
+  // Parses experimental options and makes appropriate changes to settings in
+  // the URLRequestContextConfig and URLRequestContextBuilder.
+  void ParseAndSetExperimentalOptions(
+      net::URLRequestContextBuilder* context_builder,
+      net::HttpNetworkSession::Params* session_params,
+      net::NetLog* net_log);
+
+  // Experimental options encoded as a string in a JSON format containing
+  // experiments and their corresponding configuration options. The format
+  // is a JSON object with the name of the experiment as the key, and the
+  // configuration options as the value. An example:
+  //   {"experiment1": {"option1": "option_value1", "option2":
+  //   "option_value2",
+  //    ...}, "experiment2: {"option3", "option_value3", ...}, ...}
+  const std::string experimental_options;
+
+  DISALLOW_COPY_AND_ASSIGN(URLRequestContextConfig);
+};
+
+// Stores intermediate state for URLRequestContextConfig.  Initializes with
+// (mostly) sane defaults, then the appropriate member variables can be
+// modified, and it can be finalized with Build().
+struct URLRequestContextConfigBuilder {
+  URLRequestContextConfigBuilder();
+  ~URLRequestContextConfigBuilder();
+
+  // Finalize state into a URLRequestContextConfig.  Must only be called once,
+  // as once |mock_cert_verifier| is moved into a URLRequestContextConfig, it
+  // cannot be used again.
+  std::unique_ptr<URLRequestContextConfig> Build();
+
+  // Enable QUIC.
+  bool enable_quic = false;
+  // QUIC User Agent ID.
+  std::string quic_user_agent_id = "";
+  // Enable SPDY.
+  bool enable_spdy = true;
+  // Enable Brotli.
+  bool enable_brotli = false;
+  // Type of http cache.
+  URLRequestContextConfig::HttpCacheType http_cache =
+      URLRequestContextConfig::DISABLED;
+  // Max size of http cache in bytes.
+  int http_cache_max_size = 0;
+  // Disable caching for HTTP responses. Other information may be stored in
+  // the cache.
+  bool load_disable_cache = false;
+  // Storage path for http cache and cookie storage.
+  std::string storage_path = "";
+  // Accept-Language request header field.
+  std::string accept_language = "";
+  // User-Agent request header field.
+  std::string user_agent = "";
   // Experimental options encoded as a string in a JSON format containing
   // experiments and their corresponding configuration options. The format
   // is a JSON object with the name of the experiment as the key, and the
   // configuration options as the value. An example:
   //   {"experiment1": {"option1": "option_value1", "option2": "option_value2",
   //    ...}, "experiment2: {"option3", "option_value3", ...}, ...}
-  const std::string experimental_options;
-  // Enable Data Reduction Proxy with authentication key.
-  const std::string data_reduction_proxy_key;
-  const std::string data_reduction_primary_proxy;
-  const std::string data_reduction_fallback_proxy;
-  const std::string data_reduction_secure_proxy_check_url;
+  std::string experimental_options = "{}";
 
   // Certificate verifier for testing.
-  std::unique_ptr<net::CertVerifier> mock_cert_verifier;
+  std::unique_ptr<net::CertVerifier> mock_cert_verifier = nullptr;
 
   // Enable network quality estimator.
-  const bool enable_network_quality_estimator;
+  bool enable_network_quality_estimator = false;
 
-  // App-provided list of servers that support QUIC.
-  ScopedVector<QuicHint> quic_hints;
+  // Enable public key pinning bypass for local trust anchors.
+  bool bypass_public_key_pinning_for_local_trust_anchors = true;
 
-  // The list of public key pins.
-  ScopedVector<Pkp> pkp_list;
+  // Optional network thread priority.
+  // On Android, corresponds to android.os.Process.setThreadPriority() values.
+  // On iOS, corresponds to NSThread::setThreadPriority values.
+  // Do not specify for other targets.
+  base::Optional<double> network_thread_priority;
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(URLRequestContextConfig);
+  DISALLOW_COPY_AND_ASSIGN(URLRequestContextConfigBuilder);
 };
 
 }  // namespace cronet

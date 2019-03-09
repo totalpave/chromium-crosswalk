@@ -10,7 +10,7 @@
   };
 
   window.onkeydown = function(e) {
-    if (e.keyIdentifier == 'Enter' || e.keyIdentifier == 'U+0020') {
+    if (e.key == 'Enter' || e.key == ' ') {
       plugin.load();
       e.preventDefault();
     }
@@ -20,6 +20,7 @@
 <style>
 #outer {
   border: none;
+  flex-direction: row;
   cursor: pointer;
 }
 
@@ -94,10 +95,10 @@
       container.style.width = width;
       container.style.height = height;
 
-      if (plugin.didFinishIconRepositionForTesting) {
+      if (plugin.notifyPlaceholderReadyForTesting) {
         // Defer until reflow complete.
         window.setTimeout(function() {
-          plugin.didFinishIconRepositionForTesting();
+          plugin.notifyPlaceholderReadyForTesting();
         });
       }
     };

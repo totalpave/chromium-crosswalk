@@ -7,14 +7,19 @@
 #include <string.h>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/location.h"
 #include "base/single_thread_task_runner.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/api/image_writer_private/error_messages.h"
+#include "services/service_manager/public/cpp/connector.h"
 
 #if defined(OS_CHROMEOS)
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/fake_image_burner_client.h"
+#include "chromeos/disks/disk.h"
 #endif
 
 namespace extensions {
@@ -40,14 +45,16 @@ class ImageWriterFakeImageBurnerClient
                  const std::string& to_path,
                  const ErrorCallback& error_callback) override {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(burn_progress_update_handler_, to_path, 0, 100));
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(burn_progress_update_handler_, to_path, 50, 100));
+        FROM_HERE,
+        base::BindOnce(burn_progress_update_handler_, to_path, 0, 100));
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(burn_progress_update_handler_, to_path, 100, 100));
+        base::BindOnce(burn_progress_update_handler_, to_path, 50, 100));
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(burn_finished_handler_, to_path, true, ""));
+        FROM_HERE,
+        base::BindOnce(burn_progress_update_handler_, to_path, 100, 100));
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, base::BindOnce(burn_finished_handler_, to_path, true, ""));
   }
 
  private:
@@ -58,7 +65,6 @@ class ImageWriterFakeImageBurnerClient
 } // namespace
 #endif
 
-MockOperationManager::MockOperationManager() : OperationManager(NULL) {}
 MockOperationManager::MockOperationManager(content::BrowserContext* context)
     : OperationManager(context) {}
 MockOperationManager::~MockOperationManager() {}
@@ -69,14 +75,40 @@ FakeDiskMountManager::~FakeDiskMountManager() {}
 
 void FakeDiskMountManager::UnmountDeviceRecursively(
     const std::string& device_path,
-    const UnmountDeviceRecursivelyCallbackType& callback) {
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                base::Bind(callback, true));
+    UnmountDeviceRecursivelyCallbackType callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE,
+      base::BindOnce(std::move(callback), chromeos::MOUNT_ERROR_NONE));
 }
 #endif
 
-FakeImageWriterClient::FakeImageWriterClient() {}
+SimulateProgressInfo::SimulateProgressInfo(
+    const std::vector<int>& progress_list,
+    bool will_succeed)
+    : progress_list(progress_list), will_succeed(will_succeed) {}
+
+SimulateProgressInfo::~SimulateProgressInfo() {}
+SimulateProgressInfo::SimulateProgressInfo(const SimulateProgressInfo&) =
+    default;
+
+FakeImageWriterClient::FakeImageWriterClient()
+    : ImageWriterUtilityClient(
+          base::CreateSequencedTaskRunnerWithTraits(
+              {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+               base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
+          /*connector=*/nullptr) {}
 FakeImageWriterClient::~FakeImageWriterClient() {}
+
+void FakeImageWriterClient::SimulateProgressAndCompletion(
+    const SimulateProgressInfo& info) {
+  for (int progress : info.progress_list)
+    Progress(progress);
+  if (info.will_succeed) {
+    Success();
+  } else {
+    Error(error::kVerificationFailed);
+  }
+}
 
 void FakeImageWriterClient::Write(const ProgressCallback& progress_callback,
                                   const SuccessCallback& success_callback,
@@ -87,8 +119,10 @@ void FakeImageWriterClient::Write(const ProgressCallback& progress_callback,
   success_callback_ = success_callback;
   error_callback_ = error_callback;
 
-  if (!write_callback_.is_null())
-    write_callback_.Run();
+  if (simulate_on_write_) {
+    SimulateProgressAndCompletion(*simulate_on_write_);
+    simulate_on_write_.reset();
+  }
 }
 
 void FakeImageWriterClient::Verify(const ProgressCallback& progress_callback,
@@ -100,8 +134,10 @@ void FakeImageWriterClient::Verify(const ProgressCallback& progress_callback,
   success_callback_ = success_callback;
   error_callback_ = error_callback;
 
-  if (!verify_callback_.is_null())
-    verify_callback_.Run();
+  if (simulate_on_verify_) {
+    SimulateProgressAndCompletion(*simulate_on_verify_);
+    simulate_on_verify_.reset();
+  }
 }
 
 void FakeImageWriterClient::Cancel(const CancelCallback& cancel_callback) {
@@ -115,18 +151,20 @@ void FakeImageWriterClient::Shutdown() {
   error_callback_.Reset();
   cancel_callback_.Reset();
 
-  write_callback_.Reset();
-  verify_callback_.Reset();
+  simulate_on_write_.reset();
+  simulate_on_verify_.reset();
 }
 
-void FakeImageWriterClient::SetWriteCallback(
-    const base::Closure& write_callback) {
-  write_callback_ = write_callback;
+void FakeImageWriterClient::SimulateProgressOnWrite(
+    const std::vector<int>& progress_list,
+    bool will_succeed) {
+  simulate_on_write_ = SimulateProgressInfo(progress_list, will_succeed);
 }
 
-void FakeImageWriterClient::SetVerifyCallback(
-    const base::Closure& verify_callback) {
-  verify_callback_ = verify_callback;
+void FakeImageWriterClient::SimulateProgressOnVerifyWrite(
+    const std::vector<int>& progress_list,
+    bool will_succeed) {
+  simulate_on_verify_ = SimulateProgressInfo(progress_list, will_succeed);
 }
 
 void FakeImageWriterClient::Progress(int64_t progress) {
@@ -149,10 +187,42 @@ void FakeImageWriterClient::Cancel() {
     cancel_callback_.Run();
 }
 
-ImageWriterTestUtils::ImageWriterTestUtils() {
+#if !defined(OS_CHROMEOS)
+scoped_refptr<ImageWriterUtilityClient> CreateFakeImageWriterUtilityClient(
+    ImageWriterTestUtils* utils) {
+  auto* client = new FakeImageWriterClient();
+  utils->OnUtilityClientCreated(client);
+  return base::WrapRefCounted(client);
+}
+#endif  // !defined(OS_CHROMEOS)
+
+ImageWriterTestUtils::ImageWriterTestUtils()
+#if !defined(OS_CHROMEOS)
+    : utility_client_factory_(
+          base::Bind(&CreateFakeImageWriterUtilityClient, this))
+#endif
+{
 }
 ImageWriterTestUtils::~ImageWriterTestUtils() {
 }
+
+#if !defined(OS_CHROMEOS)
+void ImageWriterTestUtils::OnUtilityClientCreated(
+    FakeImageWriterClient* client) {
+  DCHECK(!client_.get())
+      << "Single FakeImageWriterClient instance per test case expected.";
+  client_ = client;
+  if (!client_creation_callback_.is_null())
+    std::move(client_creation_callback_).Run(client);
+}
+#endif
+
+#if !defined(OS_CHROMEOS)
+void ImageWriterTestUtils::RunOnUtilityClientCreation(
+    base::OnceCallback<void(FakeImageWriterClient*)> closure) {
+  client_creation_callback_ = std::move(closure);
+}
+#endif
 
 void ImageWriterTestUtils::SetUp() {
   SetUp(false);
@@ -160,10 +230,10 @@ void ImageWriterTestUtils::SetUp() {
 
 void ImageWriterTestUtils::SetUp(bool is_browser_test) {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(),
-                                             &test_image_path_));
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(),
-                                             &test_device_path_));
+  ASSERT_TRUE(
+      base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &test_image_path_));
+  ASSERT_TRUE(
+      base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &test_device_path_));
 
   ASSERT_TRUE(FillFile(test_image_path_, kImagePattern, kTestFileSize));
   ASSERT_TRUE(FillFile(test_device_path_, kDevicePattern, kTestFileSize));
@@ -183,24 +253,14 @@ void ImageWriterTestUtils::SetUp(bool is_browser_test) {
   // Adds a disk entry for test_device_path_ with the same device and file path.
   disk_manager->CreateDiskEntryForMountDevice(
       chromeos::disks::DiskMountManager::MountPointInfo(
-          test_device_path_.value(),
-          "/dummy/mount",
-          chromeos::MOUNT_TYPE_DEVICE,
-          chromeos::disks::MOUNT_CONDITION_NONE),
-      "device_id",
-      "device_label",
-      "Vendor",
-      "Product",
-      chromeos::DEVICE_TYPE_USB,
-      kTestFileSize,
-      true,
-      true,
-      true,
-      false);
+          test_device_path_.value(), "/dummy/mount",
+          chromeos::MOUNT_TYPE_DEVICE, chromeos::disks::MOUNT_CONDITION_NONE),
+      "device_id", "device_label", "Vendor", "Product",
+      chromeos::DEVICE_TYPE_USB, kTestFileSize, true, true, true, false,
+      kTestFileSystemType);
   disk_manager->SetupDefaultReplies();
 #else
-  client_ = new FakeImageWriterClient();
-  image_writer::Operation::SetUtilityClientForTesting(client_);
+  ImageWriterUtilityClient::SetFactoryForTesting(&utility_client_factory_);
 #endif
 }
 
@@ -211,13 +271,12 @@ void ImageWriterTestUtils::TearDown() {
   }
   chromeos::disks::DiskMountManager::Shutdown();
 #else
-  image_writer::Operation::SetUtilityClientForTesting(NULL);
-  client_->Shutdown();
+  ImageWriterUtilityClient::SetFactoryForTesting(nullptr);
 #endif
 }
 
 const base::FilePath& ImageWriterTestUtils::GetTempDir() {
-  return temp_dir_.path();
+  return temp_dir_.GetPath();
 }
 
 const base::FilePath& ImageWriterTestUtils::GetImagePath() {
@@ -227,12 +286,6 @@ const base::FilePath& ImageWriterTestUtils::GetImagePath() {
 const base::FilePath& ImageWriterTestUtils::GetDevicePath() {
   return test_device_path_;
 }
-
-#if !defined(OS_CHROMEOS)
-FakeImageWriterClient* ImageWriterTestUtils::GetUtilityClient() {
-  return client_.get();
-}
-#endif
 
 bool ImageWriterTestUtils::ImageWrittenToDevice() {
   std::unique_ptr<char[]> image_buffer(new char[kTestFileSize]);
@@ -263,8 +316,7 @@ bool ImageWriterTestUtils::FillFile(const base::FilePath& file,
 }
 
 ImageWriterUnitTestBase::ImageWriterUnitTestBase()
-    : thread_bundle_(content::TestBrowserThreadBundle::IO_MAINLOOP) {
-}
+    : thread_bundle_(content::TestBrowserThreadBundle::REAL_IO_THREAD) {}
 ImageWriterUnitTestBase::~ImageWriterUnitTestBase() {
 }
 

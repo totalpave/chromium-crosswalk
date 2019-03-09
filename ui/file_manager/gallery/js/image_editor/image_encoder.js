@@ -4,11 +4,12 @@
 
 /**
  * A namespace class for image encoding functions. All methods are static.
+ * @constructor
  */
 function ImageEncoder() {}
 
 /**
- * The value 360 px is enough in Files.app grid view for HiDPI devices.
+ * The value 360 px is enough in the Files app grid view for HiDPI devices.
  * @const {number}
  */
 ImageEncoder.MAX_THUMBNAIL_DIMENSION = 360;
@@ -248,8 +249,10 @@ ImageEncoder.MetadataEncoder.prototype.setThumbnailData =
  * @param {string} encodedImage An encoded image.
  * @return {{from:number, to:number}} An object with from and to properties.
  */
-ImageEncoder.MetadataEncoder.prototype.
-    findInsertionRange = function(encodedImage) { return {from: 0, to: 0}; };
+ImageEncoder.MetadataEncoder.prototype.findInsertionRange = function(
+    encodedImage) {
+  return {from: 0, to: 0};
+};
 
 /**
  * Returns serialized metadata ready to write to an image file.

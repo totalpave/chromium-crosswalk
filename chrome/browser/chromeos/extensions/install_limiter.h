@@ -7,10 +7,10 @@
 
 #include <stdint.h>
 
-#include <queue>
 #include <set>
 
 #include "base/compiler_specific.h"
+#include "base/containers/queue.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -32,6 +32,11 @@ class InstallLimiter : public KeyedService,
  public:
   static InstallLimiter* Get(Profile* profile);
 
+  // Install should be deferred if the size is larger than 1MB and the app is
+  // not the screensaver in demo mode (which requires instant installation to
+  // avoid visual delay).
+  static bool ShouldDeferInstall(int64_t app_size, const std::string& app_id);
+
   InstallLimiter();
   ~InstallLimiter() override;
 
@@ -52,8 +57,8 @@ class InstallLimiter : public KeyedService,
     const base::FilePath path;
   };
 
-  typedef std::queue<DeferredInstall> DeferredInstallList;
-  typedef std::set<scoped_refptr<CrxInstaller> > CrxInstallerSet;
+  using DeferredInstallList = base::queue<DeferredInstall>;
+  using CrxInstallerSet = std::set<scoped_refptr<CrxInstaller>>;
 
   // Adds install info with size. If |size| is greater than a certain threshold,
   // it stores the install info into |deferred_installs_| to run it later.

@@ -2,138 +2,143 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "net/ssl/ssl_platform_key.h"
+#include "net/ssl/ssl_platform_key_android.h"
 
-#include <openssl/digest.h>
-#include <openssl/evp.h>
+#include <strings.h>
 
+#include <memory>
 #include <utility>
+#include <vector>
 
+#include "base/android/build_info.h"
+#include "base/android/scoped_java_ref.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "crypto/scoped_openssl_types.h"
+#include "net/android/keystore.h"
 #include "net/base/net_errors.h"
-#include "net/ssl/openssl_client_key_store.h"
-#include "net/ssl/ssl_platform_key_task_runner.h"
-#include "net/ssl/ssl_private_key.h"
+#include "net/ssl/ssl_platform_key_util.h"
 #include "net/ssl/threaded_ssl_private_key.h"
+#include "third_party/boringssl/src/include/openssl/ecdsa.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
+#include "third_party/boringssl/src/include/openssl/mem.h"
+#include "third_party/boringssl/src/include/openssl/nid.h"
+#include "third_party/boringssl/src/include/openssl/rsa.h"
+#include "third_party/boringssl/src/include/openssl/ssl.h"
+
+using base::android::JavaRef;
+using base::android::ScopedJavaGlobalRef;
 
 namespace net {
 
 namespace {
 
+const char* GetJavaAlgorithm(uint16_t algorithm) {
+  switch (algorithm) {
+    case SSL_SIGN_RSA_PKCS1_SHA1:
+      return "SHA1withRSA";
+    case SSL_SIGN_RSA_PKCS1_SHA256:
+      return "SHA256withRSA";
+    case SSL_SIGN_RSA_PKCS1_SHA384:
+      return "SHA384withRSA";
+    case SSL_SIGN_RSA_PKCS1_SHA512:
+      return "SHA512withRSA";
+    case SSL_SIGN_ECDSA_SHA1:
+      return "SHA1withECDSA";
+    case SSL_SIGN_ECDSA_SECP256R1_SHA256:
+      return "SHA256withECDSA";
+    case SSL_SIGN_ECDSA_SECP384R1_SHA384:
+      return "SHA384withECDSA";
+    case SSL_SIGN_ECDSA_SECP521R1_SHA512:
+      return "SHA512withECDSA";
+    case SSL_SIGN_RSA_PSS_SHA256:
+      return "SHA256withRSA/PSS";
+    case SSL_SIGN_RSA_PSS_SHA384:
+      return "SHA384withRSA/PSS";
+    case SSL_SIGN_RSA_PSS_SHA512:
+      return "SHA512withRSA/PSS";
+    default:
+      return nullptr;
+  }
+}
+
 class SSLPlatformKeyAndroid : public ThreadedSSLPrivateKey::Delegate {
  public:
-  SSLPlatformKeyAndroid(crypto::ScopedEVP_PKEY key, SSLPrivateKey::Type type)
-      : key_(std::move(key)), type_(type) {}
+  SSLPlatformKeyAndroid(int type, const JavaRef<jobject>& key)
+      : type_(type), provider_name_(android::GetPrivateKeyClassName(key)) {
+    key_.Reset(key);
+  }
 
   ~SSLPlatformKeyAndroid() override {}
 
-  SSLPrivateKey::Type GetType() override { return type_; }
+  std::string GetProviderName() override { return provider_name_; }
 
-  std::vector<SSLPrivateKey::Hash> GetDigestPreferences() override {
-    static const SSLPrivateKey::Hash kHashes[] = {
-        SSLPrivateKey::Hash::SHA512, SSLPrivateKey::Hash::SHA384,
-        SSLPrivateKey::Hash::SHA256, SSLPrivateKey::Hash::SHA1};
-    return std::vector<SSLPrivateKey::Hash>(kHashes,
-                                            kHashes + arraysize(kHashes));
+  std::vector<uint16_t> GetAlgorithmPreferences() override {
+    bool supports_pss = base::android::BuildInfo::GetInstance()->sdk_int() >=
+                        base::android::SDK_VERSION_NOUGAT;
+    return SSLPrivateKey::DefaultAlgorithmPreferences(type_, supports_pss);
   }
 
-  size_t GetMaxSignatureLengthInBytes() override {
-    return EVP_PKEY_size(key_.get());
-  }
-
-  Error SignDigest(SSLPrivateKey::Hash hash,
-                   const base::StringPiece& input,
-                   std::vector<uint8_t>* signature) override {
-    crypto::ScopedEVP_PKEY_CTX ctx =
-        crypto::ScopedEVP_PKEY_CTX(EVP_PKEY_CTX_new(key_.get(), NULL));
-    if (!ctx)
-      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
-    if (!EVP_PKEY_sign_init(ctx.get()))
-      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
-
-    if (type_ == SSLPrivateKey::Type::RSA) {
-      const EVP_MD* digest = nullptr;
-      switch (hash) {
-        case SSLPrivateKey::Hash::MD5_SHA1:
-          digest = EVP_md5_sha1();
-          break;
-        case SSLPrivateKey::Hash::SHA1:
-          digest = EVP_sha1();
-          break;
-        case SSLPrivateKey::Hash::SHA256:
-          digest = EVP_sha256();
-          break;
-        case SSLPrivateKey::Hash::SHA384:
-          digest = EVP_sha384();
-          break;
-        case SSLPrivateKey::Hash::SHA512:
-          digest = EVP_sha512();
-          break;
-        default:
-          return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
-      }
-      DCHECK(digest);
-      if (!EVP_PKEY_CTX_set_rsa_padding(ctx.get(), RSA_PKCS1_PADDING))
-        return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
-      if (!EVP_PKEY_CTX_set_signature_md(ctx.get(), digest))
-        return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
+  Error Sign(uint16_t algorithm,
+             base::span<const uint8_t> input,
+             std::vector<uint8_t>* signature) override {
+    if (algorithm == SSL_SIGN_RSA_PKCS1_MD5_SHA1) {
+      // SSL_SIGN_RSA_PKCS1_MD5_SHA1 cannot be implemented with the Java
+      // signature API directly.
+      return SignRSAWithMD5SHA1(input, signature);
     }
 
-    const uint8_t* input_ptr = reinterpret_cast<const uint8_t*>(input.data());
-    size_t input_len = input.size();
-    size_t sig_len = 0;
-    if (!EVP_PKEY_sign(ctx.get(), NULL, &sig_len, input_ptr, input_len))
-      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
-    signature->resize(sig_len);
-    if (!EVP_PKEY_sign(ctx.get(), signature->data(), &sig_len, input_ptr,
-                       input_len)) {
+    const char* java_algorithm = GetJavaAlgorithm(algorithm);
+    if (!java_algorithm) {
+      LOG(ERROR) << "Unknown algorithm " << algorithm;
       return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
     }
-
-    signature->resize(sig_len);
-
+    if (!android::SignWithPrivateKey(key_, java_algorithm, input, signature)) {
+      LOG(ERROR) << "Could not sign message with private key!";
+      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
+    }
     return OK;
   }
 
  private:
-  crypto::ScopedEVP_PKEY key_;
-  SSLPrivateKey::Type type_;
+  Error SignRSAWithMD5SHA1(base::span<const uint8_t> input,
+                           std::vector<uint8_t>* signature) {
+    uint8_t digest[EVP_MAX_MD_SIZE];
+    unsigned digest_len;
+    if (!EVP_Digest(input.data(), input.size(), digest, &digest_len,
+                    EVP_md5_sha1(), nullptr)) {
+      LOG(ERROR) << "Could not take digest.";
+      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
+    }
+
+    if (!android::SignWithPrivateKey(key_, "NONEwithRSA",
+                                     base::make_span(digest, digest_len),
+                                     signature)) {
+      LOG(ERROR) << "Could not sign message with private key!";
+      return ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED;
+    }
+    return OK;
+  }
+
+  int type_;
+  ScopedJavaGlobalRef<jobject> key_;
+  std::string provider_name_;
 
   DISALLOW_COPY_AND_ASSIGN(SSLPlatformKeyAndroid);
 };
 
-scoped_refptr<SSLPrivateKey> WrapOpenSSLPrivateKey(crypto::ScopedEVP_PKEY key) {
-  if (!key)
-    return nullptr;
-
-  SSLPrivateKey::Type type;
-  switch (EVP_PKEY_id(key.get())) {
-    case EVP_PKEY_RSA:
-      type = SSLPrivateKey::Type::RSA;
-      break;
-    case EVP_PKEY_EC:
-      type = SSLPrivateKey::Type::ECDSA;
-      break;
-    default:
-      LOG(ERROR) << "Unknown key type: " << EVP_PKEY_id(key.get());
-      return nullptr;
-  }
-  return make_scoped_refptr(new ThreadedSSLPrivateKey(
-      base::WrapUnique(new SSLPlatformKeyAndroid(std::move(key), type)),
-      GetSSLPlatformKeyTaskRunner()));
-}
-
 }  // namespace
 
-scoped_refptr<SSLPrivateKey> FetchClientCertPrivateKey(
-    X509Certificate* certificate) {
-  crypto::ScopedEVP_PKEY key =
-      OpenSSLClientKeyStore::GetInstance()->FetchClientCertPrivateKey(
-          certificate);
-  return WrapOpenSSLPrivateKey(std::move(key));
+scoped_refptr<SSLPrivateKey> WrapJavaPrivateKey(
+    const X509Certificate* certificate,
+    const JavaRef<jobject>& key) {
+  int type;
+  size_t max_length;
+  if (!GetClientCertInfo(certificate, &type, &max_length))
+    return nullptr;
+
+  return base::MakeRefCounted<ThreadedSSLPrivateKey>(
+      std::make_unique<SSLPlatformKeyAndroid>(type, key),
+      GetSSLPlatformKeyTaskRunner());
 }
 
 }  // namespace net

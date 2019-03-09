@@ -17,20 +17,14 @@ namespace cc {
 
 // RenderingStatsInstrumentation is shared among threads and manages conditional
 // recording of rendering stats into a private RenderingStats instance.
-class CC_EXPORT RenderingStatsInstrumentation {
+class CC_DEBUG_EXPORT RenderingStatsInstrumentation {
  public:
   static std::unique_ptr<RenderingStatsInstrumentation> Create();
   virtual ~RenderingStatsInstrumentation();
 
-  // Return copy of current impl thread rendering stats.
-  RenderingStats impl_thread_rendering_stats();
-
-  // Return the accumulated, combined rendering stats.
-  RenderingStats GetRenderingStats();
-
-  // Add current impl thread rendering stats to accumulator and
-  // clear current stats.
-  void AccumulateAndClearImplThreadStats();
+  // Return copy of current impl thread rendering stats, and resets the current
+  // stats.
+  RenderingStats TakeImplThreadRenderingStats();
 
   // Read and write access to the record_rendering_stats_ flag is not locked to
   // improve performance. The flag is commonly turned off and hardly changes
@@ -60,7 +54,6 @@ class CC_EXPORT RenderingStatsInstrumentation {
 
  private:
   RenderingStats impl_thread_rendering_stats_;
-  RenderingStats impl_thread_rendering_stats_accu_;
 
   bool record_rendering_stats_;
 

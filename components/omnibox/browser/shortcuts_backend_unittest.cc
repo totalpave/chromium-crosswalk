@@ -6,14 +6,14 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/threading/thread.h"
+#include "base/test/scoped_task_environment.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/test/history_service_test_util.h"
 #include "components/omnibox/browser/shortcuts_constants.h"
@@ -60,8 +60,7 @@ class ShortcutsBackendTest : public testing::Test,
   TemplateURLService* GetTemplateURLService();
 
  private:
-  base::MessageLoop message_loop_;
-  base::Thread db_thread_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   base::ScopedTempDir profile_dir_;
   std::unique_ptr<TemplateURLService> template_url_service_;
   std::unique_ptr<history::HistoryService> history_service_;
@@ -75,16 +74,14 @@ class ShortcutsBackendTest : public testing::Test,
 };
 
 ShortcutsBackendTest::ShortcutsBackendTest()
-    : db_thread_("Test DB thread"),
-      load_notified_(false),
-      changed_notified_(false) {}
+    : load_notified_(false), changed_notified_(false) {}
 
 ShortcutsDatabase::Shortcut::MatchCore
 ShortcutsBackendTest::MatchCoreForTesting(const std::string& url,
                                           const std::string& contents_class,
                                           const std::string& description_class,
                                           AutocompleteMatch::Type type) {
-  AutocompleteMatch match(NULL, 0, 0, type);
+  AutocompleteMatch match(nullptr, 0, 0, type);
   match.destination_url = GURL(url);
   match.contents = base::ASCIIToUTF16("test");
   match.contents_class =
@@ -104,37 +101,34 @@ void ShortcutsBackendTest::SetSearchProvider() {
   data.SetShortName(base::UTF8ToUTF16("foo"));
   data.SetKeyword(base::UTF8ToUTF16("foo"));
 
-  TemplateURL* template_url = new TemplateURL(data);
-  // Takes ownership of |template_url|.
-  template_url_service_->Add(template_url);
+  TemplateURL* template_url =
+      template_url_service_->Add(std::make_unique<TemplateURL>(data));
   template_url_service_->SetUserSelectedDefaultSearchProvider(template_url);
 }
 
 void ShortcutsBackendTest::SetUp() {
   template_url_service_.reset(new TemplateURLService(nullptr, 0));
   if (profile_dir_.CreateUniqueTempDir())
-    history_service_ = history::CreateHistoryService(profile_dir_.path(), true);
+    history_service_ =
+        history::CreateHistoryService(profile_dir_.GetPath(), true);
   ASSERT_TRUE(history_service_);
 
-  db_thread_.Start();
   base::FilePath shortcuts_database_path =
-      profile_dir_.path().Append(kShortcutsDatabaseName);
+      profile_dir_.GetPath().Append(kShortcutsDatabaseName);
   backend_ = new ShortcutsBackend(
-      template_url_service_.get(), base::WrapUnique(new SearchTermsData()),
-      history_service_.get(), db_thread_.task_runner(), shortcuts_database_path,
-      false);
+      template_url_service_.get(), std::make_unique<SearchTermsData>(),
+      history_service_.get(), shortcuts_database_path, false);
   ASSERT_TRUE(backend_.get());
   backend_->AddObserver(this);
 }
 
 void ShortcutsBackendTest::TearDown() {
   backend_->RemoveObserver(this);
-  db_thread_.Stop();
+  scoped_task_environment_.RunUntilIdle();
 }
 
 void ShortcutsBackendTest::OnShortcutsLoaded() {
   load_notified_ = true;
-  base::MessageLoop::current()->QuitWhenIdle();
 }
 
 void ShortcutsBackendTest::OnShortcutsChanged() {
@@ -146,7 +140,7 @@ void ShortcutsBackendTest::InitBackend() {
   ASSERT_FALSE(load_notified_);
   ASSERT_FALSE(backend_->initialized());
   backend_->Init();
-  base::RunLoop().Run();
+  scoped_task_environment_.RunUntilIdle();
   EXPECT_TRUE(load_notified_);
   EXPECT_TRUE(backend_->initialized());
 }
@@ -206,7 +200,7 @@ TEST_F(ShortcutsBackendTest, SanitizeMatchCore) {
       "",        "",         AutocompleteMatchType::SEARCH_HISTORY },
   };
 
-  for (size_t i = 0; i < arraysize(cases); ++i) {
+  for (size_t i = 0; i < base::size(cases); ++i) {
     ShortcutsDatabase::Shortcut::MatchCore match_core(MatchCoreForTesting(
         std::string(), cases[i].input_contents_class,
         cases[i].input_description_class, cases[i].input_type));
@@ -256,8 +250,7 @@ TEST_F(ShortcutsBackendTest, AddAndUpdateShortcut) {
       MatchCoreForTesting("http://www.google.com"), base::Time::Now(), 100);
   EXPECT_TRUE(AddShortcut(shortcut));
   EXPECT_TRUE(changed_notified());
-  ShortcutsBackend::ShortcutMap::const_iterator shortcut_iter(
-      shortcuts_map().find(shortcut.text));
+  auto shortcut_iter(shortcuts_map().find(shortcut.text));
   ASSERT_TRUE(shortcut_iter != shortcuts_map().end());
   EXPECT_EQ(shortcut.id, shortcut_iter->second.id);
   EXPECT_EQ(shortcut.match_core.contents,

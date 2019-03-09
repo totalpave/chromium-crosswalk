@@ -5,6 +5,7 @@
 #include "components/login/screens/screen_context.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/logging.h"
 
@@ -15,9 +16,7 @@ namespace {
 template <typename StringListType>
 base::ListValue* StringListToListValue(const StringListType& list) {
   base::ListValue* result = new base::ListValue();
-  for (typename StringListType::const_iterator it = list.begin();
-       it != list.end();
-       ++it) {
+  for (auto it = list.begin(); it != list.end(); ++it) {
     result->AppendString(*it);
   }
   return result;
@@ -29,26 +28,27 @@ ScreenContext::ScreenContext() {
 }
 
 ScreenContext::~ScreenContext() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 bool ScreenContext::SetBoolean(const KeyType& key, bool value) {
-  return Set(key, new base::FundamentalValue(value));
+  return Set(key, new base::Value(value));
 }
 
 bool ScreenContext::SetInteger(const KeyType& key, int value) {
-  return Set(key, new base::FundamentalValue(value));
+  return Set(key, new base::Value(value));
 }
 
 bool ScreenContext::SetDouble(const KeyType& key, double value) {
-  return Set(key, new base::FundamentalValue(value));
+  return Set(key, new base::Value(value));
 }
 
 bool ScreenContext::SetString(const KeyType& key, const std::string& value) {
-  return Set(key, new base::StringValue(value));
+  return Set(key, new base::Value(value));
 }
 
 bool ScreenContext::SetString(const KeyType& key, const base::string16& value) {
-  return Set(key, new base::StringValue(value));
+  return Set(key, new base::Value(value));
 }
 
 bool ScreenContext::SetStringList(const KeyType& key, const StringList& value) {
@@ -131,17 +131,17 @@ void ScreenContext::CopyFrom(ScreenContext& context) {
 }
 
 bool ScreenContext::HasKey(const KeyType& key) const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return storage_.HasKey(key);
 }
 
 bool ScreenContext::HasChanges() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return !changes_.empty();
 }
 
 void ScreenContext::GetChangesAndReset(base::DictionaryValue* diff) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(diff);
   changes_.Swap(diff);
   changes_.Clear();
@@ -149,7 +149,7 @@ void ScreenContext::GetChangesAndReset(base::DictionaryValue* diff) {
 
 void ScreenContext::ApplyChanges(const base::DictionaryValue& diff,
                                  std::vector<std::string>* keys) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!HasChanges());
   if (keys) {
     keys->clear();
@@ -165,7 +165,7 @@ void ScreenContext::ApplyChanges(const base::DictionaryValue& diff,
 }
 
 bool ScreenContext::Set(const KeyType& key, base::Value* value) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(value);
   std::unique_ptr<base::Value> new_value(value);
 
@@ -176,8 +176,8 @@ bool ScreenContext::Set(const KeyType& key, base::Value* value) {
   if (in_storage && new_value->Equals(current_value))
     return false;
 
-  changes_.Set(key, new_value->DeepCopy());
-  storage_.Set(key, new_value.release());
+  changes_.Set(key, std::make_unique<base::Value>(new_value->Clone()));
+  storage_.Set(key, std::move(new_value));
   return true;
 }
 

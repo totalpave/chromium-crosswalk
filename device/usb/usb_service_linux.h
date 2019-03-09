@@ -2,17 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef DEVICE_USB_USB_SERVICE_LINUX_H_
+#define DEVICE_USB_USB_SERVICE_LINUX_H_
+
 #include <list>
+#include <memory>
 #include <unordered_map>
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "device/usb/usb_service.h"
-
-namespace base {
-class SequencedTaskRunner;
-class SingleThreadTaskRunner;
-}
 
 namespace device {
 
@@ -21,8 +20,7 @@ class UsbDeviceLinux;
 
 class UsbServiceLinux : public UsbService {
  public:
-  explicit UsbServiceLinux(
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
+  UsbServiceLinux();
   ~UsbServiceLinux() override;
 
   // device::UsbService implementation
@@ -32,14 +30,15 @@ class UsbServiceLinux : public UsbService {
   using DeviceMap =
       std::unordered_map<std::string, scoped_refptr<UsbDeviceLinux>>;
 
-  class FileThreadHelper;
+  class BlockingTaskHelper;
 
   void OnDeviceAdded(const std::string& device_path,
                      const UsbDeviceDescriptor& descriptor,
                      const std::string& manufacturer,
                      const std::string& product,
                      const std::string& serial_number,
-                     uint8_t active_configuration);
+                     uint8_t active_configuration,
+                     uint32_t bus_number, uint32_t port_number);
   void DeviceReady(scoped_refptr<UsbDeviceLinux> device, bool success);
   void OnDeviceRemoved(const std::string& device_path);
   void HelperStarted();
@@ -57,7 +56,8 @@ class UsbServiceLinux : public UsbService {
   uint32_t first_enumeration_countdown_ = 0;
   std::list<GetDevicesCallback> enumeration_callbacks_;
 
-  FileThreadHelper* helper_;
+  scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
+  std::unique_ptr<BlockingTaskHelper> helper_;
   DeviceMap devices_by_path_;
 
   base::WeakPtrFactory<UsbServiceLinux> weak_factory_;
@@ -66,3 +66,5 @@ class UsbServiceLinux : public UsbService {
 };
 
 }  // namespace device
+
+#endif  // DEVICE_USB_USB_SERVICE_LINUX_H_

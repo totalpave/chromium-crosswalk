@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_DESKTOP_CAPTURE_DESKTOP_MEDIA_PICKER_VIEWS_H_
 
 #include "base/macros.h"
-#include "chrome/browser/media/desktop_media_picker.h"
+#include "chrome/browser/media/webrtc/desktop_media_picker.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane_listener.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -24,15 +24,10 @@ class DesktopMediaPickerViews;
 class DesktopMediaPickerDialogView : public views::DialogDelegateView,
                                      public views::TabbedPaneListener {
  public:
-  DesktopMediaPickerDialogView(content::WebContents* parent_web_contents,
-                               gfx::NativeWindow context,
-                               DesktopMediaPickerViews* parent,
-                               const base::string16& app_name,
-                               const base::string16& target_name,
-                               std::unique_ptr<DesktopMediaList> screen_list,
-                               std::unique_ptr<DesktopMediaList> window_list,
-                               std::unique_ptr<DesktopMediaList> tab_list,
-                               bool request_audio);
+  DesktopMediaPickerDialogView(
+      const DesktopMediaPicker::Params& params,
+      DesktopMediaPickerViews* parent,
+      std::vector<std::unique_ptr<DesktopMediaList>> source_lists);
   ~DesktopMediaPickerDialogView() override;
 
   // Called by parent (DesktopMediaPickerViews) when it's destroyed.
@@ -41,22 +36,24 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
   // Called by DesktopMediaListView.
   void OnSelectionChanged();
   void OnDoubleClick();
+  void SelectTab(content::DesktopMediaID::Type source_type);
 
   // views::TabbedPaneListener overrides.
   void TabSelectedAt(int index) override;
 
   // views::View overrides.
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
 
   // views::DialogDelegateView overrides.
   ui::ModalType GetModalType() const override;
   base::string16 GetWindowTitle() const override;
   bool IsDialogButtonEnabled(ui::DialogButton button) const override;
   views::View* GetInitiallyFocusedView() override;
-  bool ShouldDefaultButtonBeBlue() const override;
+  int GetDefaultDialogButton() const override;
   base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
   View* CreateExtraView() override;
   bool Accept() override;
+  bool ShouldShowCloseButton() const override;
   void DeleteDelegate() override;
 
   void OnMediaListRowsChanged();
@@ -69,9 +66,10 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
   views::TabbedPane* GetPaneForTesting() const;
 
  private:
-  void SwitchSourceType(int index);
+  void OnSourceTypeSwitched(int index);
 
   DesktopMediaPickerViews* parent_;
+  ui::ModalType modality_;
 
   views::Label* description_label_;
 
@@ -93,15 +91,8 @@ class DesktopMediaPickerViews : public DesktopMediaPicker {
   void NotifyDialogResult(content::DesktopMediaID source);
 
   // DesktopMediaPicker overrides.
-  void Show(content::WebContents* web_contents,
-            gfx::NativeWindow context,
-            gfx::NativeWindow parent,
-            const base::string16& app_name,
-            const base::string16& target_name,
-            std::unique_ptr<DesktopMediaList> screen_list,
-            std::unique_ptr<DesktopMediaList> window_list,
-            std::unique_ptr<DesktopMediaList> tab_list,
-            bool request_audio,
+  void Show(const DesktopMediaPicker::Params& params,
+            std::vector<std::unique_ptr<DesktopMediaList>> source_lists,
             const DoneCallback& done_callback) override;
 
   DesktopMediaPickerDialogView* GetDialogViewForTesting() const {

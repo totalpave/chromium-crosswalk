@@ -19,25 +19,21 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/sequenced_task_runner.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/single_thread_task_runner.h"
+#include "components/invalidation/impl/deprecated_invalidator_registrar.h"
 #include "components/invalidation/impl/invalidation_state_tracker.h"
 #include "components/invalidation/impl/invalidator.h"
-#include "components/invalidation/impl/invalidator_registrar.h"
 #include "components/invalidation/impl/sync_invalidation_listener.h"
 #include "components/invalidation/public/invalidation_export.h"
-
-namespace notifier {
-class PushClient;
-}  // namespace notifier
 
 namespace syncer {
 
 // This class must live on the IO thread.
 class INVALIDATION_EXPORT InvalidationNotifier
     : public Invalidator,
-      public SyncInvalidationListener::Delegate,
-      public base::NonThreadSafe {
+      public SyncInvalidationListener::Delegate {
  public:
   // |invalidation_state_tracker| must be initialized.
   InvalidationNotifier(
@@ -56,6 +52,8 @@ class INVALIDATION_EXPORT InvalidationNotifier
   void RegisterHandler(InvalidationHandler* handler) override;
   bool UpdateRegisteredIds(InvalidationHandler* handler,
                            const ObjectIdSet& ids) override;
+  bool UpdateRegisteredIds(InvalidationHandler* handler,
+                           const TopicSet& ids) override;
   void UnregisterHandler(InvalidationHandler* handler) override;
   InvalidatorState GetInvalidatorState() const override;
   void UpdateCredentials(const std::string& email,
@@ -79,7 +77,7 @@ class INVALIDATION_EXPORT InvalidationNotifier
   };
   State state_;
 
-  InvalidatorRegistrar registrar_;
+  DeprecatedInvalidatorRegistrar registrar_;
 
   // Passed to |invalidation_listener_|.
   const UnackedInvalidationsMap saved_invalidations_;
@@ -100,6 +98,8 @@ class INVALIDATION_EXPORT InvalidationNotifier
 
   // The invalidation listener.
   SyncInvalidationListener invalidation_listener_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(InvalidationNotifier);
 };

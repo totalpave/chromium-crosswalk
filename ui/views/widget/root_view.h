@@ -83,13 +83,14 @@ class VIEWS_EXPORT RootView : public View,
   // hierarchy.
   void ThemeChanged();
 
-  // Public API for broadcasting locale change notifications to this View
-  // hierarchy.
-  void LocaleChanged();
+  // Used to clear event handlers so events aren't captured by old event
+  // handlers, e.g., when the widget is minimized.
+  void ResetEventHandlers();
 
   // Public API for broadcasting device scale factor change notifications to
   // this View hierarchy.
-  void DeviceScaleFactorChanged(float device_scale_factor);
+  void DeviceScaleFactorChanged(float old_device_scale_factor,
+                                float new_device_scale_factor);
 
   // Overridden from FocusTraversable:
   FocusSearch* GetFocusSearch() override;
@@ -97,7 +98,9 @@ class VIEWS_EXPORT RootView : public View,
   View* GetFocusTraversableParentView() override;
 
   // Overridden from ui::EventProcessor:
-  ui::EventTarget* GetRootTarget() override;
+  ui::EventTarget* GetInitialEventTarget(ui::Event* event) override;
+  ui::EventTarget* GetRootForEvent(ui::Event* event) override;
+  ui::EventTargeter* GetDefaultEventTargeter() override;
   void OnEventProcessingStarted(ui::Event* event) override;
   void OnEventProcessingFinished(ui::Event* event) override;
 
@@ -105,7 +108,6 @@ class VIEWS_EXPORT RootView : public View,
   const Widget* GetWidget() const override;
   Widget* GetWidget() override;
   bool IsDrawn() const override;
-  void Layout() override;
   const char* GetClassName() const override;
   void SchedulePaintInRect(const gfx::Rect& rect) override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
@@ -116,7 +118,7 @@ class VIEWS_EXPORT RootView : public View,
   void OnMouseExited(const ui::MouseEvent& event) override;
   bool OnMouseWheel(const ui::MouseWheelEvent& event) override;
   void SetMouseHandler(View* new_mouse_handler) override;
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   void UpdateParentLayer() override;
 
  protected:
@@ -125,7 +127,7 @@ class VIEWS_EXPORT RootView : public View,
       const ViewHierarchyChangedDetails& details) override;
   void VisibilityChanged(View* starting_from, bool is_visible) override;
   void OnPaint(gfx::Canvas* canvas) override;
-  gfx::Vector2d CalculateOffsetToAncestorWithLayer(
+  View::LayerOffsetData CalculateOffsetToAncestorWithLayer(
       ui::Layer** layer_parent) override;
   View::DragInfo* GetDragInfo() override;
 

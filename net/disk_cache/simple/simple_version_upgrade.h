@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 
+#include "net/base/cache_type.h"
 #include "net/base/net_export.h"
 
 namespace base {
@@ -19,17 +20,38 @@ class FilePath;
 
 namespace disk_cache {
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class SimpleCacheConsistencyResult {
+  kOK = 0,
+  kCreateDirectoryFailed = 1,
+  kBadFakeIndexFile = 2,
+  kBadInitialMagicNumber = 3,
+  kVersionTooOld = 4,
+  kVersionFromTheFuture = 5,
+  kBadZeroCheck = 6,
+  kUpgradeIndexV5V6Failed = 7,
+  kWriteFakeIndexFileFailed = 8,
+  kReplaceFileFailed = 9,
+  kBadFakeIndexReadSize = 10,
+  kMaxValue = kBadFakeIndexReadSize,
+};
+
 // Performs all necessary disk IO to upgrade the cache structure if it is
 // needed.
 //
 // Returns true iff no errors were found during consistency checks and all
 // necessary transitions succeeded. If this function fails, there is nothing
 // left to do other than dropping the whole cache directory.
-NET_EXPORT_PRIVATE bool UpgradeSimpleCacheOnDisk(const base::FilePath& path);
+NET_EXPORT_PRIVATE SimpleCacheConsistencyResult
+UpgradeSimpleCacheOnDisk(const base::FilePath& path);
 
-// The format for the fake index has mistakenly acquired two extra fields that
-// do not contain any useful data. Since they were equal to zero, they are now
-// mandatated to be zero.
+// Check if the cache structure at the given path is empty except for index
+// files.  If so, then delete the index files.  Returns true if any files
+// were deleted.
+NET_EXPORT_PRIVATE bool DeleteIndexFilesIfCacheIsEmpty(
+    const base::FilePath& path);
+
 struct NET_EXPORT_PRIVATE FakeIndexData {
   FakeIndexData();
 
@@ -39,8 +61,10 @@ struct NET_EXPORT_PRIVATE FakeIndexData {
   // Must be equal kSimpleVersion when the cache backend is instantiated.
   uint32_t version;
 
-  uint32_t unused_must_be_zero1;
-  uint32_t unused_must_be_zero2;
+  // These must be zero. The first was used for experiment type (With a max
+  // valid value of 2), and the second was used for an experiment parameter.
+  uint32_t zero;
+  uint32_t zero2;
 };
 
 // Exposed for testing.

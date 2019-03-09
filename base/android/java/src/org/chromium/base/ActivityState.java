@@ -4,37 +4,45 @@
 
 package org.chromium.base;
 
+import android.support.annotation.IntDef;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
 /**
  * A set of states that represent the last state change of an Activity.
  */
-public interface ActivityState {
+@Retention(RetentionPolicy.SOURCE)
+@IntDef({ActivityState.CREATED, ActivityState.STARTED, ActivityState.RESUMED, ActivityState.PAUSED,
+        ActivityState.STOPPED, ActivityState.DESTROYED})
+public @interface ActivityState {
     /**
      * Represents Activity#onCreate().
      */
-    public final int CREATED = 1;
+    int CREATED = 1;
 
     /**
      * Represents Activity#onStart().
      */
-    public final int STARTED = 2;
+    int STARTED = 2;
 
     /**
      * Represents Activity#onResume().
      */
-    public final int RESUMED = 3;
+    int RESUMED = 3;
 
     /**
      * Represents Activity#onPause().
      */
-    public final int PAUSED = 4;
+    int PAUSED = 4;
 
     /**
      * Represents Activity#onStop().
      */
-    public final int STOPPED = 5;
+    int STOPPED = 5;
 
     /**
      * Represents Activity#onDestroy().  This is also used when the state of an Activity is unknown.
      */
-    public final int DESTROYED = 6;
+    int DESTROYED = 6;
 }

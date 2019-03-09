@@ -12,26 +12,28 @@
 #include "base/compiler_specific.h"
 #include "base/lazy_instance.h"
 #include "base/memory/singleton.h"
-#include "base/message_loop/message_loop.h"
-#include "base/profiler/scoped_tracker.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
 #include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "net/base/auth.h"
-#include "net/base/host_port_pair.h"
 #include "net/base/load_flags.h"
 #include "net/base/load_timing_info.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_delegate.h"
 #include "net/base/upload_data_stream.h"
-#include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "net/log/net_log.h"
+#include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source_type.h"
+#include "net/socket/next_proto.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/url_request/redirect_info.h"
+#include "net/url_request/redirect_util.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_error_job.h"
 #include "net/url_request/url_request_job.h"
@@ -48,17 +50,14 @@ namespace net {
 
 namespace {
 
-// Max number of http redirects to follow.  Same number as gecko.
-const int kMaxRedirects = 20;
-
 // TODO(battre): Delete this, see http://crbug.com/89321:
 // This counter keeps track of the identifiers used for URL requests so far.
 // 0 is reserved to represent an invalid ID.
 uint64_t g_next_url_request_identifier = 1;
 
 // This lock protects g_next_url_request_identifier.
-base::LazyInstance<base::Lock>::Leaky
-    g_next_url_request_identifier_lock = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::Lock>::Leaky g_next_url_request_identifier_lock =
+    LAZY_INSTANCE_INITIALIZER;
 
 // Returns an prior unused identifier for URL requests.
 uint64_t GenerateURLRequestIdentifier() {
@@ -103,6 +102,11 @@ void ConvertRealLoadTimesToBlockingTimes(LoadTimingInfo* load_timing_info) {
     block_on_connect = load_timing_info->proxy_resolve_end;
   }
 
+  if (!load_timing_info->receive_headers_start.is_null() &&
+      load_timing_info->receive_headers_start < block_on_connect) {
+    load_timing_info->receive_headers_start = block_on_connect;
+  }
+
   // Make sure connection times are after start and proxy times.
 
   LoadTimingInfo::ConnectTiming* connect_timing =
@@ -139,8 +143,7 @@ void ConvertRealLoadTimesToBlockingTimes(LoadTimingInfo* load_timing_info) {
 
 void URLRequest::Delegate::OnReceivedRedirect(URLRequest* request,
                                               const RedirectInfo& redirect_info,
-                                              bool* defer_redirect) {
-}
+                                              bool* defer_redirect) {}
 
 void URLRequest::Delegate::OnAuthRequired(URLRequest* request,
                                           AuthChallengeInfo* auth_info) {
@@ -159,14 +162,23 @@ void URLRequest::Delegate::OnSSLCertificateError(URLRequest* request,
   request->Cancel();
 }
 
-void URLRequest::Delegate::OnBeforeNetworkStart(URLRequest* request,
-                                                bool* defer) {
+void URLRequest::Delegate::OnResponseStarted(URLRequest* request,
+                                             int net_error) {
+  NOTREACHED();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // URLRequest
 
 URLRequest::~URLRequest() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  // Log the redirect count during destruction, to ensure that it is only
+  // recorded at the end of following all redirect chains.
+  UMA_HISTOGRAM_EXACT_LINEAR("Net.RedirectChainLength",
+                             kMaxRedirects - redirect_limit_,
+                             kMaxRedirects + 1);
+
   Cancel();
 
   if (network_delegate_) {
@@ -175,18 +187,19 @@ URLRequest::~URLRequest() {
       job_->NotifyURLRequestDestroyed();
   }
 
-  if (job_.get())
-    OrphanJob();
+  // Delete job before |this|, since subclasses may do weird things, like depend
+  // on UserData associated with |this| and poke at it during teardown.
+  job_.reset();
 
-  int deleted = context_->url_requests()->erase(this);
-  CHECK_EQ(1, deleted);
+  DCHECK_EQ(1u, context_->url_requests()->count(this));
+  context_->url_requests()->erase(this);
 
   int net_error = OK;
   // Log error only on failure, not cancellation, as even successful requests
   // are "cancelled" on destruction.
   if (status_.status() == URLRequestStatus::FAILED)
     net_error = status_.error();
-  net_log_.EndEventWithNetErrorCode(NetLog::TYPE_REQUEST_ALIVE, net_error);
+  net_log_.EndEventWithNetErrorCode(NetLogEventType::REQUEST_ALIVE, net_error);
 }
 
 void URLRequest::set_upload(std::unique_ptr<UploadDataStream> upload) {
@@ -217,8 +230,7 @@ void URLRequest::RemoveRequestHeaderByName(const string& name) {
   extra_request_headers_.RemoveHeader(name);
 }
 
-void URLRequest::SetExtraRequestHeaders(
-    const HttpRequestHeaders& headers) {
+void URLRequest::SetExtraRequestHeaders(const HttpRequestHeaders& headers) {
   DCHECK(!is_pending_);
   extra_request_headers_ = headers;
 
@@ -258,10 +270,10 @@ LoadStateWithParam URLRequest::GetLoadState() const {
   // The !blocked_by_.empty() check allows |this| to report it's blocked on a
   // delegate before it has been started.
   if (calling_delegate_ || !blocked_by_.empty()) {
-    return LoadStateWithParam(
-        LOAD_STATE_WAITING_FOR_DELEGATE,
-        use_blocked_by_as_load_param_ ? base::UTF8ToUTF16(blocked_by_) :
-                                        base::string16());
+    return LoadStateWithParam(LOAD_STATE_WAITING_FOR_DELEGATE,
+                              use_blocked_by_as_load_param_
+                                  ? base::UTF8ToUTF16(blocked_by_)
+                                  : base::string16());
   }
   return LoadStateWithParam(job_.get() ? job_->GetLoadState() : LOAD_STATE_IDLE,
                             base::string16());
@@ -286,7 +298,7 @@ std::unique_ptr<base::Value> URLRequest::GetStateAsValue() const {
   if (!load_state.param.empty())
     dict->SetString("load_state_param", load_state.param);
   if (!blocked_by_.empty())
-    dict->SetString("delegate_info", blocked_by_);
+    dict->SetString("delegate_blocked_by", blocked_by_);
 
   dict->SetString("method", method_);
   dict->SetBoolean("has_upload", has_upload());
@@ -328,8 +340,8 @@ void URLRequest::LogBlockedBy(const char* blocked_by) {
   use_blocked_by_as_load_param_ = false;
 
   net_log_.BeginEvent(
-      NetLog::TYPE_DELEGATE_INFO,
-      NetLog::StringCallback("delegate_info", &blocked_by_));
+      NetLogEventType::DELEGATE_INFO,
+      NetLog::StringCallback("delegate_blocked_by", &blocked_by_));
 }
 
 void URLRequest::LogAndReportBlockedBy(const char* source) {
@@ -341,7 +353,7 @@ void URLRequest::LogUnblocked() {
   if (blocked_by_.empty())
     return;
 
-  net_log_.EndEvent(NetLog::TYPE_DELEGATE_INFO);
+  net_log_.EndEvent(NetLogEventType::DELEGATE_INFO);
   blocked_by_.clear();
 }
 
@@ -350,13 +362,18 @@ UploadProgress URLRequest::GetUploadProgress() const {
     // We haven't started or the request was cancelled
     return UploadProgress();
   }
+
   if (final_upload_progress_.position()) {
     // The first job completed and none of the subsequent series of
     // GETs when following redirects will upload anything, so we return the
     // cached results from the initial job, the POST.
     return final_upload_progress_;
   }
-  return job_->GetUploadProgress();
+
+  if (upload_data_stream_)
+    return upload_data_stream_->GetUploadProgress();
+
+  return UploadProgress();
 }
 
 void URLRequest::GetResponseHeaderByName(const string& name,
@@ -369,9 +386,9 @@ void URLRequest::GetResponseHeaderByName(const string& name,
   }
 }
 
-HostPortPair URLRequest::GetSocketAddress() const {
+IPEndPoint URLRequest::GetResponseRemoteEndpoint() const {
   DCHECK(job_.get());
-  return job_->GetSocketAddress();
+  return job_->GetResponseRemoteEndpoint();
 }
 
 HttpResponseHeaders* URLRequest::response_headers() const {
@@ -388,11 +405,11 @@ void URLRequest::PopulateNetErrorDetails(NetErrorDetails* details) const {
   return job_->PopulateNetErrorDetails(details);
 }
 
-bool URLRequest::GetRemoteEndpoint(IPEndPoint* endpoint) const {
+bool URLRequest::GetTransactionRemoteEndpoint(IPEndPoint* endpoint) const {
   if (!job_)
     return false;
 
-  return job_->GetRemoteEndpoint(endpoint);
+  return job_->GetTransactionRemoteEndpoint(endpoint);
 }
 
 void URLRequest::GetMimeType(string* mime_type) const {
@@ -445,10 +462,9 @@ bool URLRequest::IsHandledURL(const GURL& url) {
   return IsHandledProtocol(url.scheme());
 }
 
-void URLRequest::set_first_party_for_cookies(
-    const GURL& first_party_for_cookies) {
+void URLRequest::set_site_for_cookies(const GURL& site_for_cookies) {
   DCHECK(!is_pending_);
-  first_party_for_cookies_ = first_party_for_cookies;
+  site_for_cookies_ = site_for_cookies;
 }
 
 void URLRequest::set_first_party_url_policy(
@@ -457,8 +473,10 @@ void URLRequest::set_first_party_url_policy(
   first_party_url_policy_ = first_party_url_policy;
 }
 
-void URLRequest::set_initiator(const url::Origin& initiator) {
+void URLRequest::set_initiator(const base::Optional<url::Origin>& initiator) {
   DCHECK(!is_pending_);
+  DCHECK(!initiator.has_value() || initiator.value().opaque() ||
+         initiator.value().GetURL().is_valid());
   initiator_ = initiator;
 }
 
@@ -466,6 +484,13 @@ void URLRequest::set_method(const std::string& method) {
   DCHECK(!is_pending_);
   method_ = method;
 }
+
+#if BUILDFLAG(ENABLE_REPORTING)
+void URLRequest::set_reporting_upload_depth(int reporting_upload_depth) {
+  DCHECK(!is_pending_);
+  reporting_upload_depth_ = reporting_upload_depth;
+}
+#endif
 
 void URLRequest::SetReferrer(const std::string& referrer) {
   DCHECK(!is_pending_);
@@ -479,15 +504,6 @@ void URLRequest::SetReferrer(const std::string& referrer) {
 
 void URLRequest::set_referrer_policy(ReferrerPolicy referrer_policy) {
   DCHECK(!is_pending_);
-  // External callers shouldn't be setting NO_REFERRER or
-  // ORIGIN. |referrer_policy_| is only applied during server redirects,
-  // so external callers must set the referrer themselves using
-  // SetReferrer() for the initial request. Once the referrer has been
-  // set to an origin or to an empty string, there is no point in
-  // setting the policy to NO_REFERRER or ORIGIN as it would have the
-  // same effect as using NEVER_CLEAR_REFERRER across redirects.
-  DCHECK_NE(referrer_policy, NO_REFERRER);
-  DCHECK_NE(referrer_policy, ORIGIN);
   referrer_policy_ = referrer_policy;
 }
 
@@ -497,12 +513,21 @@ void URLRequest::set_delegate(Delegate* delegate) {
   delegate_ = delegate;
 }
 
+void URLRequest::set_allow_credentials(bool allow_credentials) {
+  if (allow_credentials) {
+    load_flags_ &= ~(LOAD_DO_NOT_SAVE_COOKIES | LOAD_DO_NOT_SEND_COOKIES |
+                     LOAD_DO_NOT_SEND_AUTH_DATA);
+  } else {
+    load_flags_ |= (LOAD_DO_NOT_SAVE_COOKIES | LOAD_DO_NOT_SEND_COOKIES |
+                    LOAD_DO_NOT_SEND_AUTH_DATA);
+  }
+}
+
 void URLRequest::Start() {
   DCHECK(delegate_);
 
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/456327 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("456327 URLRequest::Start"));
+  if (!status_.is_success())
+    return;
 
   // Some values can be NULL, but the job factory must not be.
   DCHECK(context_->job_factory());
@@ -519,26 +544,21 @@ void URLRequest::Start() {
   load_timing_info_.request_start = base::TimeTicks::Now();
 
   if (network_delegate_) {
-    // TODO(mmenke): Remove ScopedTracker below once crbug.com/456327 is fixed.
-    tracked_objects::ScopedTracker tracking_profile25(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION("456327 URLRequest::Start 2.5"));
-
-    OnCallToDelegate();
+    OnCallToDelegate(NetLogEventType::NETWORK_DELEGATE_BEFORE_URL_REQUEST);
     int error = network_delegate_->NotifyBeforeURLRequest(
-        this, before_request_callback_, &delegate_redirect_url_);
+        this,
+        base::BindOnce(&URLRequest::BeforeRequestComplete,
+                       base::Unretained(this)),
+        &delegate_redirect_url_);
     // If ERR_IO_PENDING is returned, the delegate will invoke
-    // |before_request_callback_| later.
+    // |BeforeRequestComplete| later.
     if (error != ERR_IO_PENDING)
       BeforeRequestComplete(error);
     return;
   }
 
-  // TODO(mmenke): Remove ScopedTracker below once crbug.com/456327 is fixed.
-  tracked_objects::ScopedTracker tracking_profile2(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("456327 URLRequest::Start 2"));
-
-  StartJob(URLRequestJobManager::GetInstance()->CreateJob(
-      this, network_delegate_));
+  StartJob(
+      URLRequestJobManager::GetInstance()->CreateJob(this, network_delegate_));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -547,37 +567,48 @@ URLRequest::URLRequest(const GURL& url,
                        RequestPriority priority,
                        Delegate* delegate,
                        const URLRequestContext* context,
-                       NetworkDelegate* network_delegate)
+                       NetworkDelegate* network_delegate,
+                       NetworkTrafficAnnotationTag traffic_annotation)
     : context_(context),
       network_delegate_(network_delegate ? network_delegate
                                          : context->network_delegate()),
-      net_log_(
-          BoundNetLog::Make(context->net_log(), NetLog::SOURCE_URL_REQUEST)),
+      net_log_(NetLogWithSource::Make(context->net_log(),
+                                      NetLogSourceType::URL_REQUEST)),
       url_chain_(1, url),
+      attach_same_site_cookies_(false),
       method_("GET"),
       referrer_policy_(CLEAR_REFERRER_ON_TRANSITION_FROM_SECURE_TO_INSECURE),
       first_party_url_policy_(NEVER_CHANGE_FIRST_PARTY_URL),
       load_flags_(LOAD_NORMAL),
+      privacy_mode_(PRIVACY_MODE_ENABLED),
+#if BUILDFLAG(ENABLE_REPORTING)
+      reporting_upload_depth_(0),
+#endif
       delegate_(delegate),
+      status_(URLRequestStatus::FromError(OK)),
       is_pending_(false),
       is_redirecting_(false),
       redirect_limit_(kMaxRedirects),
       priority_(priority),
       identifier_(GenerateURLRequestIdentifier()),
+      delegate_event_type_(NetLogEventType::FAILED),
       calling_delegate_(false),
       use_blocked_by_as_load_param_(false),
-      before_request_callback_(base::Bind(&URLRequest::BeforeRequestComplete,
-                                          base::Unretained(this))),
       has_notified_completion_(false),
       received_response_content_length_(0),
       creation_time_(base::TimeTicks::Now()),
-      notified_before_network_start_(false) {
+      raw_header_size_(0),
+      is_pac_request_(false),
+      traffic_annotation_(traffic_annotation),
+      upgrade_if_insecure_(false),
+      weak_factory_(this) {
   // Sanity check out environment.
-  DCHECK(base::MessageLoop::current())
-      << "The current base::MessageLoop must exist";
+  DCHECK(base::ThreadTaskRunnerHandle::IsSet());
 
   context->url_requests()->insert(this);
-  net_log_.BeginEvent(NetLog::TYPE_REQUEST_ALIVE);
+  net_log_.BeginEvent(
+      NetLogEventType::REQUEST_ALIVE,
+      base::Bind(&NetLogURLRequestConstructorCallback, &url, priority_));
 }
 
 void URLRequest::BeforeRequestComplete(int error) {
@@ -591,7 +622,7 @@ void URLRequest::BeforeRequestComplete(int error) {
 
   if (error != OK) {
     std::string source("delegate");
-    net_log_.AddEvent(NetLog::TYPE_CANCELLED,
+    net_log_.AddEvent(NetLogEventType::CANCELLED,
                       NetLog::StringCallback("source", &source));
     StartJob(new URLRequestErrorJob(this, network_delegate_, error));
   } else if (!delegate_redirect_url_.is_empty()) {
@@ -604,28 +635,29 @@ void URLRequest::BeforeRequestComplete(int error) {
         URLRequestRedirectJob::REDIRECT_307_TEMPORARY_REDIRECT, "Delegate");
     StartJob(job);
   } else {
-    StartJob(URLRequestJobManager::GetInstance()->CreateJob(
-        this, network_delegate_));
+    StartJob(URLRequestJobManager::GetInstance()->CreateJob(this,
+                                                            network_delegate_));
   }
 }
 
 void URLRequest::StartJob(URLRequestJob* job) {
-  // TODO(mmenke): Remove ScopedTracker below once crbug.com/456327 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("456327 URLRequest::StartJob"));
-
   DCHECK(!is_pending_);
   DCHECK(!job_.get());
 
+  privacy_mode_ = DeterminePrivacyMode();
+
   net_log_.BeginEvent(
-      NetLog::TYPE_URL_REQUEST_START_JOB,
-      base::Bind(&NetLogURLRequestStartCallback,
-                 &url(), &method_, load_flags_, priority_,
-                 upload_data_stream_ ? upload_data_stream_->identifier() : -1));
+      NetLogEventType::URL_REQUEST_START_JOB,
+      base::BindRepeating(
+          &NetLogURLRequestStartCallback, &url(), &method_, load_flags_,
+          privacy_mode_,
+          upload_data_stream_ ? upload_data_stream_->identifier() : -1));
 
   job_.reset(job);
   job_->SetExtraRequestHeaders(extra_request_headers_);
   job_->SetPriority(priority_);
+  job_->SetRequestHeadersCallback(request_headers_callback_);
+  job_->SetResponseHeadersCallback(response_headers_callback_);
 
   if (upload_data_stream_.get())
     job_->SetUpload(upload_data_stream_.get());
@@ -635,21 +667,22 @@ void URLRequest::StartJob(URLRequestJob* job) {
 
   response_info_.was_cached = false;
 
-  if (GURL(referrer_) != URLRequestJob::ComputeReferrerForRedirect(
-                             referrer_policy_, referrer_, url())) {
+  GURL referrer_url(referrer_);
+  if (referrer_url != URLRequestJob::ComputeReferrerForPolicy(
+                          referrer_policy_, referrer_url, url())) {
     if (!network_delegate_ ||
         !network_delegate_->CancelURLRequestWithPolicyViolatingReferrerHeader(
-            *this, url(), GURL(referrer_))) {
+            *this, url(), referrer_url)) {
       referrer_.clear();
     } else {
       // We need to clear the referrer anyway to avoid an infinite recursion
       // when starting the error job.
       referrer_.clear();
       std::string source("delegate");
-      net_log_.AddEvent(NetLog::TYPE_CANCELLED,
+      net_log_.AddEvent(NetLogEventType::CANCELLED,
                         NetLog::StringCallback("source", &source));
-      RestartWithJob(new URLRequestErrorJob(
-          this, network_delegate_, ERR_BLOCKED_BY_CLIENT));
+      RestartWithJob(new URLRequestErrorJob(this, network_delegate_,
+                                            ERR_BLOCKED_BY_CLIENT));
       return;
     }
   }
@@ -671,18 +704,18 @@ void URLRequest::Restart() {
       URLRequestJobManager::GetInstance()->CreateJob(this, network_delegate_));
 }
 
-void URLRequest::RestartWithJob(URLRequestJob *job) {
+void URLRequest::RestartWithJob(URLRequestJob* job) {
   DCHECK(job->request() == this);
   PrepareToRestart();
   StartJob(job);
 }
 
-void URLRequest::Cancel() {
-  DoCancel(ERR_ABORTED, SSLInfo());
+int URLRequest::Cancel() {
+  return DoCancel(ERR_ABORTED, SSLInfo());
 }
 
-void URLRequest::CancelWithError(int error) {
-  DoCancel(error, SSLInfo());
+int URLRequest::CancelWithError(int error) {
+  return DoCancel(error, SSLInfo());
 }
 
 void URLRequest::CancelWithSSLError(int error, const SSLInfo& ssl_info) {
@@ -694,8 +727,8 @@ void URLRequest::CancelWithSSLError(int error, const SSLInfo& ssl_info) {
   DoCancel(error, ssl_info);
 }
 
-void URLRequest::DoCancel(int error, const SSLInfo& ssl_info) {
-  DCHECK(error < 0);
+int URLRequest::DoCancel(int error, const SSLInfo& ssl_info) {
+  DCHECK_LT(error, 0);
   // If cancelled while calling a delegate, clear delegate info.
   if (calling_delegate_) {
     LogUnblocked();
@@ -711,7 +744,7 @@ void URLRequest::DoCancel(int error, const SSLInfo& ssl_info) {
     // If the request hasn't already been completed, log a cancellation event.
     if (!has_notified_completion_) {
       // Don't log an error code on ERR_ABORTED, since that's redundant.
-      net_log_.AddEventWithNetErrorCode(NetLog::TYPE_CANCELLED,
+      net_log_.AddEventWithNetErrorCode(NetLogEventType::CANCELLED,
                                         error == ERR_ABORTED ? OK : error);
     }
   }
@@ -727,41 +760,59 @@ void URLRequest::DoCancel(int error, const SSLInfo& ssl_info) {
   // The Job will call our NotifyDone method asynchronously.  This is done so
   // that the Delegate implementation can call Cancel without having to worry
   // about being called recursively.
+
+  return status_.error();
 }
 
-bool URLRequest::Read(IOBuffer* dest, int dest_size, int* bytes_read) {
+int URLRequest::Read(IOBuffer* dest, int dest_size) {
   DCHECK(job_.get());
-  DCHECK(bytes_read);
-  *bytes_read = 0;
 
   // If this is the first read, end the delegate call that may have started in
   // OnResponseStarted.
   OnCallToDelegateComplete();
 
-  // This handles a cancel that happens while paused.
+  // If the request has failed, Read() will return actual network error code.
+  if (!status_.is_success())
+    return status_.error();
+
+  // This handles reads after the request already completed successfully.
   // TODO(ahendrickson): DCHECK() that it is not done after
   // http://crbug.com/115705 is fixed.
   if (job_->is_done())
-    return false;
+    return status_.error();
 
   if (dest_size == 0) {
     // Caller is not too bright.  I guess we've done what they asked.
-    return true;
+    return OK;
   }
 
-  // Once the request fails or is cancelled, read will just return 0 bytes
-  // to indicate end of stream.
-  if (!status_.is_success()) {
-    return true;
-  }
-
-  bool rv = job_->Read(dest, dest_size, bytes_read);
-  // If rv is false, the status cannot be success.
-  DCHECK(rv || status_.status() != URLRequestStatus::SUCCESS);
-
-  if (rv && *bytes_read <= 0 && status_.is_success())
+  int rv = job_->Read(dest, dest_size);
+  if (rv == ERR_IO_PENDING) {
+    set_status(URLRequestStatus::FromError(ERR_IO_PENDING));
+  } else if (rv <= 0) {
     NotifyRequestCompleted();
+  }
+
+  // If rv is not 0 or actual bytes read, the status cannot be success.
+  DCHECK(rv >= 0 || status_.status() != URLRequestStatus::SUCCESS);
   return rv;
+}
+
+// Deprecated.
+bool URLRequest::Read(IOBuffer* dest, int dest_size, int* bytes_read) {
+  int result = Read(dest, dest_size);
+  if (result >= 0) {
+    *bytes_read = result;
+    return true;
+  }
+
+  if (result == ERR_IO_PENDING) {
+    *bytes_read = 0;
+  } else {
+    *bytes_read = -1;
+  }
+
+  return false;
 }
 
 void URLRequest::StopCaching() {
@@ -773,42 +824,27 @@ void URLRequest::NotifyReceivedRedirect(const RedirectInfo& redirect_info,
                                         bool* defer_redirect) {
   is_redirecting_ = true;
 
-  // TODO(davidben): Pass the full RedirectInfo down to MaybeInterceptRedirect?
   URLRequestJob* job =
       URLRequestJobManager::GetInstance()->MaybeInterceptRedirect(
           this, network_delegate_, redirect_info.new_url);
   if (job) {
     RestartWithJob(job);
   } else {
-    OnCallToDelegate();
+    OnCallToDelegate(NetLogEventType::URL_REQUEST_DELEGATE_RECEIVED_REDIRECT);
     delegate_->OnReceivedRedirect(this, redirect_info, defer_redirect);
     // |this| may be have been destroyed here.
   }
 }
 
-void URLRequest::NotifyBeforeNetworkStart(bool* defer) {
-  if (!notified_before_network_start_) {
-    OnCallToDelegate();
-    delegate_->OnBeforeNetworkStart(this, defer);
-    if (!*defer)
-      OnCallToDelegateComplete();
-    notified_before_network_start_ = true;
-  }
-}
+void URLRequest::NotifyResponseStarted(const URLRequestStatus& status) {
+  // Change status if there was an error.
+  if (status.status() != URLRequestStatus::SUCCESS)
+    set_status(status);
 
-void URLRequest::ResumeNetworkStart() {
-  DCHECK(job_.get());
-  DCHECK(notified_before_network_start_);
-
-  OnCallToDelegateComplete();
-  job_->ResumeNetworkStart();
-}
-
-void URLRequest::NotifyResponseStarted() {
   int net_error = OK;
   if (!status_.is_success())
     net_error = status_.error();
-  net_log_.EndEventWithNetErrorCode(NetLog::TYPE_URL_REQUEST_START_JOB,
+  net_log_.EndEventWithNetErrorCode(NetLogEventType::URL_REQUEST_START_JOB,
                                     net_error);
 
   URLRequestJob* job =
@@ -821,26 +857,28 @@ void URLRequest::NotifyResponseStarted() {
     // completion event and receive a NotifyResponseStarted() later.
     if (!has_notified_completion_ && status_.is_success()) {
       if (network_delegate_)
-        network_delegate_->NotifyResponseStarted(this);
+        network_delegate_->NotifyResponseStarted(this, net_error);
     }
 
     // Notify in case the entire URL Request has been finished.
     if (!has_notified_completion_ && !status_.is_success())
       NotifyRequestCompleted();
 
-    OnCallToDelegate();
-    delegate_->OnResponseStarted(this);
+    OnCallToDelegate(NetLogEventType::URL_REQUEST_DELEGATE_RESPONSE_STARTED);
+    delegate_->OnResponseStarted(this, net_error);
     // Nothing may appear below this line as OnResponseStarted may delete
     // |this|.
   }
 }
 
-void URLRequest::FollowDeferredRedirect() {
+void URLRequest::FollowDeferredRedirect(
+    const base::Optional<std::vector<std::string>>& removed_headers,
+    const base::Optional<net::HttpRequestHeaders>& modified_headers) {
   DCHECK(job_.get());
   DCHECK(status_.is_success());
 
   status_ = URLRequestStatus::FromError(ERR_IO_PENDING);
-  job_->FollowDeferredRedirect();
+  job_->FollowDeferredRedirect(removed_headers, modified_headers);
 }
 
 void URLRequest::SetAuth(const AuthCredentials& credentials) {
@@ -859,15 +897,17 @@ void URLRequest::CancelAuth() {
   job_->CancelAuth();
 }
 
-void URLRequest::ContinueWithCertificate(X509Certificate* client_cert,
-                                         SSLPrivateKey* client_private_key) {
+void URLRequest::ContinueWithCertificate(
+    scoped_refptr<X509Certificate> client_cert,
+    scoped_refptr<SSLPrivateKey> client_private_key) {
   DCHECK(job_.get());
 
   // Matches the call in NotifyCertificateRequested.
   OnCallToDelegateComplete();
 
   status_ = URLRequestStatus::FromError(ERR_IO_PENDING);
-  job_->ContinueWithCertificate(client_cert, client_private_key);
+  job_->ContinueWithCertificate(std::move(client_cert),
+                                std::move(client_private_key));
 }
 
 void URLRequest::ContinueDespiteLastError() {
@@ -885,9 +925,9 @@ void URLRequest::PrepareToRestart() {
 
   // Close the current URL_REQUEST_START_JOB, since we will be starting a new
   // one.
-  net_log_.EndEvent(NetLog::TYPE_URL_REQUEST_START_JOB);
+  net_log_.EndEvent(NetLogEventType::URL_REQUEST_START_JOB);
 
-  OrphanJob();
+  job_.reset();
 
   response_info_ = HttpResponseInfo();
   response_info_.request_time = base::Time::Now();
@@ -898,104 +938,50 @@ void URLRequest::PrepareToRestart() {
 
   status_ = URLRequestStatus();
   is_pending_ = false;
-  proxy_server_ = HostPortPair();
+  proxy_server_ = ProxyServer();
 }
 
-void URLRequest::OrphanJob() {
-  // When calling this function, please check that URLRequestHttpJob is
-  // not in between calling NetworkDelegate::NotifyHeadersReceived receiving
-  // the call back. This is currently guaranteed by the following strategies:
-  // - OrphanJob is called on JobRestart, in this case the URLRequestJob cannot
-  //   be receiving any headers at that time.
-  // - OrphanJob is called in ~URLRequest, in this case
-  //   NetworkDelegate::NotifyURLRequestDestroyed notifies the NetworkDelegate
-  //   that the callback becomes invalid.
-  job_->Kill();
-  job_ = NULL;
-}
-
-int URLRequest::Redirect(const RedirectInfo& redirect_info) {
-  // Matches call in NotifyReceivedRedirect.
+void URLRequest::Redirect(
+    const RedirectInfo& redirect_info,
+    const base::Optional<std::vector<std::string>>& removed_headers,
+    const base::Optional<net::HttpRequestHeaders>& modified_headers) {
+  // This method always succeeds. Whether |job_| is allowed to redirect to
+  // |redirect_info| is checked in URLRequestJob::CanFollowRedirect, before
+  // NotifyReceivedRedirect. This means the delegate can assume that, if it
+  // accepted the redirect, future calls to OnResponseStarted correspond to
+  // |redirect_info.new_url|.
   OnCallToDelegateComplete();
   if (net_log_.IsCapturing()) {
     net_log_.AddEvent(
-        NetLog::TYPE_URL_REQUEST_REDIRECTED,
+        NetLogEventType::URL_REQUEST_REDIRECTED,
         NetLog::StringCallback("location",
                                &redirect_info.new_url.possibly_invalid_spec()));
   }
 
-  // TODO(davidben): Pass the full RedirectInfo to the NetworkDelegate.
   if (network_delegate_)
     network_delegate_->NotifyBeforeRedirect(this, redirect_info.new_url);
 
-  if (redirect_limit_ <= 0) {
-    DVLOG(1) << "disallowing redirect: exceeds limit";
-    return ERR_TOO_MANY_REDIRECTS;
-  }
-
-  if (!redirect_info.new_url.is_valid())
-    return ERR_INVALID_URL;
-
-  if (!job_->IsSafeRedirect(redirect_info.new_url)) {
-    DVLOG(1) << "disallowing redirect: unsafe protocol";
-    return ERR_UNSAFE_REDIRECT;
-  }
-
-  if (!final_upload_progress_.position())
-    final_upload_progress_ = job_->GetUploadProgress();
+  if (!final_upload_progress_.position() && upload_data_stream_)
+    final_upload_progress_ = upload_data_stream_->GetUploadProgress();
   PrepareToRestart();
 
-  if (redirect_info.new_method != method_) {
-    // TODO(davidben): This logic still needs to be replicated at the consumers.
-    if (method_ == "POST") {
-      // If being switched from POST, must remove Origin header.
-      // TODO(jww): This is Origin header removal is probably layering violation
-      // and
-      // should be refactored into //content. See https://crbug.com/471397.
-      extra_request_headers_.RemoveHeader(HttpRequestHeaders::kOrigin);
-    }
-    // The inclusion of a multipart Content-Type header can cause problems with
-    // some
-    // servers:
-    // http://code.google.com/p/chromium/issues/detail?id=843
-    extra_request_headers_.RemoveHeader(HttpRequestHeaders::kContentLength);
-    extra_request_headers_.RemoveHeader(HttpRequestHeaders::kContentType);
+  bool clear_body = false;
+  net::RedirectUtil::UpdateHttpRequest(url(), method_, redirect_info,
+                                       removed_headers, modified_headers,
+                                       &extra_request_headers_, &clear_body);
+  if (clear_body)
     upload_data_stream_.reset();
-    method_ = redirect_info.new_method;
-  }
 
-  // Cross-origin redirects should not result in an Origin header value that is
-  // equal to the original request's Origin header. This is necessary to prevent
-  // a reflection of POST requests to bypass CSRF protections. If the header was
-  // not set to "null", a POST request from origin A to a malicious origin M
-  // could be redirected by M back to A.
-  //
-  // This behavior is specified in step 1 of step 10 of the 301, 302, 303, 307,
-  // 308 block of step 5 of Section 4.2 of Fetch[1] (which supercedes the
-  // behavior outlined in RFC 6454[2].
-  //
-  // [1]: https://fetch.spec.whatwg.org/#concept-http-fetch
-  // [2]: https://tools.ietf.org/html/rfc6454#section-7
-  //
-  // TODO(jww): This is a layering violation and should be refactored somewhere
-  // up into //net's embedder. https://crbug.com/471397
-  if (!url::Origin(redirect_info.new_url)
-           .IsSameOriginWith(url::Origin(url())) &&
-      extra_request_headers_.HasHeader(HttpRequestHeaders::kOrigin)) {
-    extra_request_headers_.SetHeader(HttpRequestHeaders::kOrigin,
-                                     url::Origin().Serialize());
-  }
-
+  method_ = redirect_info.new_method;
   referrer_ = redirect_info.new_referrer;
   referrer_policy_ = redirect_info.new_referrer_policy;
-  first_party_for_cookies_ = redirect_info.new_first_party_for_cookies;
-  token_binding_referrer_ = redirect_info.referred_token_binding_host;
+  site_for_cookies_ = redirect_info.new_site_for_cookies;
+  top_frame_origin_ = redirect_info.new_top_frame_origin;
 
   url_chain_.push_back(redirect_info.new_url);
   --redirect_limit_;
 
   Start();
-  return OK;
 }
 
 const URLRequestContext* URLRequest::context() const {
@@ -1025,12 +1011,11 @@ void URLRequest::SetPriority(RequestPriority priority) {
     return;
 
   priority_ = priority;
-  if (job_.get()) {
-    net_log_.AddEvent(
-        NetLog::TYPE_URL_REQUEST_SET_PRIORITY,
-        NetLog::StringCallback("priority", RequestPriorityToString(priority_)));
+  net_log_.AddEvent(
+      NetLogEventType::URL_REQUEST_SET_PRIORITY,
+      NetLog::StringCallback("priority", RequestPriorityToString(priority_)));
+  if (job_.get())
     job_->SetPriority(priority_);
-  }
 }
 
 void URLRequest::NotifyAuthRequired(AuthChallengeInfo* auth_info) {
@@ -1038,12 +1023,11 @@ void URLRequest::NotifyAuthRequired(AuthChallengeInfo* auth_info) {
       NetworkDelegate::AUTH_REQUIRED_RESPONSE_NO_ACTION;
   auth_info_ = auth_info;
   if (network_delegate_) {
-    OnCallToDelegate();
+    OnCallToDelegate(NetLogEventType::NETWORK_DELEGATE_AUTH_REQUIRED);
     rv = network_delegate_->NotifyAuthRequired(
-        this,
-        *auth_info,
-        base::Bind(&URLRequest::NotifyAuthRequiredComplete,
-                   base::Unretained(this)),
+        this, *auth_info,
+        base::BindOnce(&URLRequest::NotifyAuthRequiredComplete,
+                       base::Unretained(this)),
         &auth_credentials_);
     if (rv == NetworkDelegate::AUTH_REQUIRED_RESPONSE_IO_PENDING)
       return;
@@ -1091,54 +1075,78 @@ void URLRequest::NotifyAuthRequiredComplete(
 void URLRequest::NotifyCertificateRequested(
     SSLCertRequestInfo* cert_request_info) {
   status_ = URLRequestStatus();
-  OnCallToDelegate();
+  OnCallToDelegate(NetLogEventType::URL_REQUEST_DELEGATE_CERTIFICATE_REQUESTED);
   delegate_->OnCertificateRequested(this, cert_request_info);
 }
 
 void URLRequest::NotifySSLCertificateError(const SSLInfo& ssl_info,
                                            bool fatal) {
   status_ = URLRequestStatus();
-  OnCallToDelegate();
+  OnCallToDelegate(NetLogEventType::URL_REQUEST_DELEGATE_SSL_CERTIFICATE_ERROR);
   delegate_->OnSSLCertificateError(this, ssl_info, fatal);
 }
 
 bool URLRequest::CanGetCookies(const CookieList& cookie_list) const {
   DCHECK(!(load_flags_ & LOAD_DO_NOT_SEND_COOKIES));
+  bool can_get_cookies = g_default_can_use_cookies;
   if (network_delegate_) {
-    return network_delegate_->CanGetCookies(*this, cookie_list);
+    can_get_cookies =
+        network_delegate_->CanGetCookies(*this, cookie_list,
+                                         /*allowed_from_caller=*/true);
   }
-  return g_default_can_use_cookies;
+
+  if (!can_get_cookies)
+    net_log_.AddEvent(NetLogEventType::COOKIE_GET_BLOCKED_BY_NETWORK_DELEGATE);
+  return can_get_cookies;
 }
 
-bool URLRequest::CanSetCookie(const std::string& cookie_line,
+bool URLRequest::CanSetCookie(const net::CanonicalCookie& cookie,
                               CookieOptions* options) const {
   DCHECK(!(load_flags_ & LOAD_DO_NOT_SAVE_COOKIES));
+  bool can_set_cookies = g_default_can_use_cookies;
   if (network_delegate_) {
-    return network_delegate_->CanSetCookie(*this, cookie_line, options);
+    can_set_cookies =
+        network_delegate_->CanSetCookie(*this, cookie, options,
+                                        /*allowed_from_caller=*/true);
   }
-  return g_default_can_use_cookies;
+  if (!can_set_cookies)
+    net_log_.AddEvent(NetLogEventType::COOKIE_SET_BLOCKED_BY_NETWORK_DELEGATE);
+  return can_set_cookies;
 }
 
-bool URLRequest::CanEnablePrivacyMode() const {
-  if (network_delegate_) {
-    return network_delegate_->CanEnablePrivacyMode(url(),
-                                                   first_party_for_cookies_);
+net::PrivacyMode URLRequest::DeterminePrivacyMode() const {
+  // Enable privacy mode if flags tell us not send or save cookies.
+  if ((load_flags_ & LOAD_DO_NOT_SEND_COOKIES) ||
+      (load_flags_ & LOAD_DO_NOT_SAVE_COOKIES)) {
+    return PRIVACY_MODE_ENABLED;
   }
-  return !g_default_can_use_cookies;
-}
 
+  // Otherwise, check with the delegate if present, or base it off of
+  // |g_default_can_use_cookies| if not.
+  // TODO(mmenke): Looks like |g_default_can_use_cookies| is not too useful,
+  // with the network service - remove it.
+  bool enable_privacy_mode = !g_default_can_use_cookies;
+  if (network_delegate_) {
+    enable_privacy_mode =
+        network_delegate_->ForcePrivacyMode(url(), site_for_cookies_);
+  }
+  return enable_privacy_mode ? PRIVACY_MODE_ENABLED : PRIVACY_MODE_DISABLED;
+}
 
 void URLRequest::NotifyReadCompleted(int bytes_read) {
+  if (bytes_read > 0)
+    set_status(URLRequestStatus());
   // Notify in case the entire URL Request has been finished.
   if (bytes_read <= 0)
     NotifyRequestCompleted();
 
-  // Notify NetworkChangeNotifier that we just received network data.
-  // This is to identify cases where the NetworkChangeNotifier thinks we
-  // are off-line but we are still receiving network data (crbug.com/124069),
-  // and to get rough network connection measurements.
-  if (bytes_read > 0 && !was_cached())
-    NetworkChangeNotifier::NotifyDataReceived(*this, bytes_read);
+  // When URLRequestJob notices there was an error in URLRequest's |status_|,
+  // it calls this method with |bytes_read| set to -1. Set it to a real error
+  // here.
+  // TODO(maksims): NotifyReadCompleted take the error code as an argument on
+  // failure, rather than -1.
+  if (bytes_read == -1)
+    bytes_read = status_.error();
 
   delegate_->OnReadCompleted(this, bytes_read);
 
@@ -1146,6 +1154,7 @@ void URLRequest::NotifyReadCompleted(int bytes_read) {
 }
 
 void URLRequest::OnHeadersComplete() {
+  set_status(URLRequestStatus());
   // Cache load timing information now, as information will be lost once the
   // socket is closed and the ClientSocketHandle is Reset, which will happen
   // once the body is complete.  The start times should already be populated.
@@ -1161,6 +1170,7 @@ void URLRequest::OnHeadersComplete() {
 
     load_timing_info_.request_start = request_start;
     load_timing_info_.request_start_time = request_start_time;
+    raw_header_size_ = GetTotalReceivedBytes();
 
     ConvertRealLoadTimesToBlockingTimes(&load_timing_info_);
   }
@@ -1176,14 +1186,16 @@ void URLRequest::NotifyRequestCompleted() {
   is_redirecting_ = false;
   has_notified_completion_ = true;
   if (network_delegate_)
-    network_delegate_->NotifyCompleted(this, job_.get() != NULL);
+    network_delegate_->NotifyCompleted(this, job_.get() != NULL,
+                                       status_.error());
 }
 
-void URLRequest::OnCallToDelegate() {
+void URLRequest::OnCallToDelegate(NetLogEventType type) {
   DCHECK(!calling_delegate_);
   DCHECK(blocked_by_.empty());
   calling_delegate_ = true;
-  net_log_.BeginEvent(NetLog::TYPE_URL_REQUEST_DELEGATE);
+  delegate_event_type_ = type;
+  net_log_.BeginEvent(type);
 }
 
 void URLRequest::OnCallToDelegateComplete() {
@@ -1192,7 +1204,8 @@ void URLRequest::OnCallToDelegateComplete() {
   if (!calling_delegate_)
     return;
   calling_delegate_ = false;
-  net_log_.EndEvent(NetLog::TYPE_URL_REQUEST_DELEGATE);
+  net_log_.EndEvent(delegate_event_type_);
+  delegate_event_type_ = NetLogEventType::FAILED;
 }
 
 void URLRequest::GetConnectionAttempts(ConnectionAttempts* out) const {
@@ -1200,6 +1213,34 @@ void URLRequest::GetConnectionAttempts(ConnectionAttempts* out) const {
     job_->GetConnectionAttempts(out);
   else
     out->clear();
+}
+
+void URLRequest::SetRequestHeadersCallback(RequestHeadersCallback callback) {
+  DCHECK(!job_.get());
+  DCHECK(request_headers_callback_.is_null());
+  request_headers_callback_ = std::move(callback);
+}
+
+void URLRequest::SetResponseHeadersCallback(ResponseHeadersCallback callback) {
+  DCHECK(!job_.get());
+  DCHECK(response_headers_callback_.is_null());
+  response_headers_callback_ = std::move(callback);
+}
+
+void URLRequest::set_socket_tag(const SocketTag& socket_tag) {
+  DCHECK(!is_pending_);
+  DCHECK(url().SchemeIsHTTPOrHTTPS());
+  socket_tag_ = socket_tag;
+}
+
+void URLRequest::set_status(URLRequestStatus status) {
+  DCHECK(status_.is_io_pending() || status_.is_success() ||
+         (!status.is_success() && !status.is_io_pending()));
+  status_ = status;
+}
+
+base::WeakPtr<URLRequest> URLRequest::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
 }
 
 }  // namespace net

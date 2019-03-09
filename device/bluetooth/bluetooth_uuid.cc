@@ -7,14 +7,22 @@
 #include <stddef.h>
 
 #include "base/logging.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
+
+#if defined(OS_WIN)
+#include <objbase.h>
+
+#include "base/strings/string16.h"
+#endif  // defined(OS_WIN)
 
 namespace device {
 
 namespace {
 
-const char* kCommonUuidPostfix = "-0000-1000-8000-00805f9b34fb";
-const char* kCommonUuidPrefix = "0000";
+const char kCommonUuidPostfix[] = "-0000-1000-8000-00805f9b34fb";
+const char kCommonUuidPrefix[] = "0000";
 
 // Returns the canonical, 128-bit canonical, and the format of the UUID
 // in |canonical|, |canonical_128|, and |format| based on |uuid|.
@@ -30,8 +38,10 @@ void GetCanonicalUuid(std::string uuid,
   if (uuid.empty())
     return;
 
-  if (uuid.size() < 11 && uuid.find("0x") == 0)
+  if (uuid.size() < 11 &&
+      base::StartsWith(uuid, "0x", base::CompareCase::SENSITIVE)) {
     uuid = uuid.substr(2);
+  }
 
   if (!(uuid.size() == 4 || uuid.size() == 8 || uuid.size() == 36))
     return;
@@ -67,11 +77,37 @@ BluetoothUUID::BluetoothUUID(const std::string& uuid) {
   GetCanonicalUuid(uuid, &value_, &canonical_value_, &format_);
 }
 
+#if defined(OS_WIN)
+BluetoothUUID::BluetoothUUID(GUID uuid) {
+  // 36 chars for UUID + 2 chars for braces + 1 char for null-terminator.
+  constexpr int kBufferSize = 39;
+  wchar_t buffer[kBufferSize];
+  int result = ::StringFromGUID2(uuid, buffer, kBufferSize);
+  DCHECK_EQ(kBufferSize, result);
+  DCHECK_EQ('{', buffer[0]);
+  DCHECK_EQ('}', buffer[37]);
+
+  GetCanonicalUuid(base::WideToUTF8(base::WStringPiece(buffer).substr(1, 36)),
+                   &value_, &canonical_value_, &format_);
+  DCHECK_EQ(kFormat128Bit, format_);
+}
+#endif  // defined(OS_WIN)
+
 BluetoothUUID::BluetoothUUID() : format_(kFormatInvalid) {
 }
 
-BluetoothUUID::~BluetoothUUID() {
+BluetoothUUID::~BluetoothUUID() = default;
+
+#if defined(OS_WIN)
+// static
+GUID BluetoothUUID::GetCanonicalValueAsGUID(base::StringPiece uuid) {
+  DCHECK_EQ(36u, uuid.size());
+  base::string16 braced_uuid = L'{' + base::UTF8ToWide(uuid) + L'}';
+  GUID guid;
+  CHECK_EQ(NOERROR, ::CLSIDFromString(braced_uuid.data(), &guid));
+  return guid;
 }
+#endif  // defined(OS_WIN)
 
 bool BluetoothUUID::IsValid() const {
   return format_ != kFormatInvalid;

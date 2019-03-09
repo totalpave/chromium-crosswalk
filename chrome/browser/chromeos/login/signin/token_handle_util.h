@@ -6,13 +6,13 @@
 #define CHROME_BROWSER_CHROMEOS_LOGIN_SIGNIN_TOKEN_HANDLE_UTIL_H_
 
 #include <string>
+#include <unordered_map>
 
 #include "base/callback.h"
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/account_id/account_id.h"
 #include "google_apis/gaia/gaia_oauth_client.h"
 
 class AccountId;
@@ -82,15 +82,10 @@ class TokenHandleUtil {
   };
 
   void OnValidationComplete(const std::string& token);
-  void OnObtainTokenComplete(const AccountId& account_id);
 
   // Map of pending check operations.
-  base::ScopedPtrHashMap<std::string, std::unique_ptr<TokenDelegate>>
+  std::unordered_map<std::string, std::unique_ptr<TokenDelegate>>
       validation_delegates_;
-
-  // Map of pending obtain operations.
-  base::ScopedPtrHashMap<AccountId, std::unique_ptr<TokenDelegate>>
-      obtain_delegates_;
 
   // Instance of GAIA Client.
   std::unique_ptr<gaia::GaiaOAuthClient> gaia_client_;

@@ -5,11 +5,12 @@
 #ifndef IPC_IPC_SYNC_CHANNEL_H_
 #define IPC_IPC_SYNC_CHANNEL_H_
 
-#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "base/component_export.h"
+#include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
@@ -18,15 +19,21 @@
 #include "ipc/ipc_channel_proxy.h"
 #include "ipc/ipc_sync_message.h"
 #include "ipc/ipc_sync_message_filter.h"
+#include "mojo/public/c/system/types.h"
+#include "mojo/public/cpp/system/simple_watcher.h"
 
 namespace base {
+class RunLoop;
 class WaitableEvent;
-};
+}  // namespace base
+
+namespace mojo {
+class SyncHandleRegistry;
+}
 
 namespace IPC {
 
 class SyncMessage;
-class ChannelFactory;
 
 // This is similar to ChannelProxy, with the added feature of supporting sending
 // synchronous messages.
@@ -62,7 +69,7 @@ class ChannelFactory;
 // is more than this object.  If the message loop goes away while this object
 // is running and it's used to send a message, then it will use the invalid
 // message loop pointer to proxy it to the ipc thread.
-class IPC_EXPORT SyncChannel : public ChannelProxy {
+class COMPONENT_EXPORT(IPC) SyncChannel : public ChannelProxy {
  public:
   enum RestrictDispatchGroup {
     kRestrictDispatchGroup_None = 0,
@@ -76,13 +83,7 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
       IPC::Channel::Mode mode,
       Listener* listener,
       const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
-      bool create_pipe_now,
-      base::WaitableEvent* shutdown_event);
-
-  static std::unique_ptr<SyncChannel> Create(
-      std::unique_ptr<ChannelFactory> factory,
-      Listener* listener,
-      const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+      const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
       bool create_pipe_now,
       base::WaitableEvent* shutdown_event);
 
@@ -92,6 +93,7 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
   static std::unique_ptr<SyncChannel> Create(
       Listener* listener,
       const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+      const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
       base::WaitableEvent* shutdown_event);
 
   ~SyncChannel() override;
@@ -132,22 +134,23 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
     SyncContext(
         Listener* listener,
         const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+        const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
         base::WaitableEvent* shutdown_event);
 
     // Adds information about an outgoing sync message to the context so that
     // we know how to deserialize the reply.
-    void Push(SyncMessage* sync_msg);
+    bool Push(SyncMessage* sync_msg);
 
     // Cleanly remove the top deserializer (and throw it away).  Returns the
     // result of the Send call for that message.
     bool Pop();
 
-    // Returns an event that's set when the send is complete, timed out or the
-    // process shut down.
+    // Returns a Mojo Event that signals when a sync send is complete or timed
+    // out or the process shut down.
     base::WaitableEvent* GetSendDoneEvent();
 
-    // Returns an event that's set when an incoming message that's not the reply
-    // needs to get dispatched (by calling SyncContext::DispatchMessages).
+    // Returns a Mojo Event that signals when an incoming message that's not the
+    // pending reply needs to get dispatched (by calling DispatchMessages.)
     base::WaitableEvent* GetDispatchEvent();
 
     void DispatchMessages();
@@ -171,7 +174,8 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
       return restrict_dispatch_group_;
     }
 
-    base::WaitableEventWatcher::EventCallback MakeWaitableEventCallback();
+    void OnSendDoneEventSignaled(base::RunLoop* nested_loop,
+                                 base::WaitableEvent* event);
 
    private:
     ~SyncContext() override;
@@ -189,10 +193,11 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
     // Cancels all pending Send calls.
     void CancelPendingSends();
 
-    void OnWaitableEventSignaled(base::WaitableEvent* event);
+    void OnShutdownEventSignaled(base::WaitableEvent* event);
 
-    typedef std::deque<PendingSyncMsg> PendingSyncMessageQueue;
+    using PendingSyncMessageQueue = base::circular_deque<PendingSyncMsg>;
     PendingSyncMessageQueue deserializers_;
+    bool reject_new_deserializers_ = false;
     base::Lock deserializers_lock_;
 
     scoped_refptr<ReceivedSyncMsgQueue> received_sync_msgs_;
@@ -207,20 +212,22 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
   SyncChannel(
       Listener* listener,
       const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
+      const scoped_refptr<base::SingleThreadTaskRunner>& listener_task_runner,
       base::WaitableEvent* shutdown_event);
 
-  void OnWaitableEventSignaled(base::WaitableEvent* arg);
+  void OnDispatchEventSignaled(base::WaitableEvent* event);
 
   SyncContext* sync_context() {
     return reinterpret_cast<SyncContext*>(context());
   }
 
   // Both these functions wait for a reply, timeout or process shutdown.  The
-  // latter one also runs a nested message loop in the meantime.
-  static void WaitForReply(
-      SyncContext* context, base::WaitableEvent* pump_messages_event);
+  // latter one also runs a nested run loop in the meantime.
+  static void WaitForReply(mojo::SyncHandleRegistry* registry,
+                           SyncContext* context,
+                           bool pump_messages);
 
-  // Runs a nested message loop until a reply arrives, times out, or the process
+  // Runs a nested run loop until a reply arrives, times out, or the process
   // shuts down.
   static void WaitForReplyWithNestedMessageLoop(SyncContext* context);
 
@@ -229,6 +236,8 @@ class IPC_EXPORT SyncChannel : public ChannelProxy {
 
   // ChannelProxy overrides:
   void OnChannelInit() override;
+
+  scoped_refptr<mojo::SyncHandleRegistry> sync_handle_registry_;
 
   // Used to signal events between the IPC and listener threads.
   base::WaitableEventWatcher dispatch_watcher_;

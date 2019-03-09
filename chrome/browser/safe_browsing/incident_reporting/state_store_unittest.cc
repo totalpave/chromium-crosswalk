@@ -12,19 +12,19 @@
 #include "base/memory/ref_counted.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_simple_task_runner.h"
-#include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/safe_browsing/incident_reporting/incident.h"
 #include "chrome/browser/safe_browsing/incident_reporting/platform_state_store.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/syncable_prefs/pref_service_syncable.h"
-#include "components/syncable_prefs/pref_service_syncable_factory.h"
+#include "components/safe_browsing/common/safe_browsing_prefs.h"
+#include "components/sync_preferences/pref_service_syncable.h"
+#include "components/sync_preferences/pref_service_syncable_factory.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/browser/quota_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -45,7 +45,8 @@ class PlatformStateStoreTestBase : public ::testing::Test {
 
   void SetUp() override {
     ::testing::Test::SetUp();
-    registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER);
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
   }
 
  private:
@@ -73,7 +74,6 @@ class StateStoreTest : public PlatformStateStoreTestBase {
   StateStoreTest()
       : profile_(nullptr),
         task_runner_(new base::TestSimpleTaskRunner()),
-        thread_task_runner_handle_(task_runner_),
         profile_manager_(TestingBrowserProcess::GetGlobal()) {}
 
   void SetUp() override {
@@ -88,6 +88,14 @@ class StateStoreTest : public PlatformStateStoreTestBase {
       profile_ = nullptr;
       profile_manager_.DeleteTestingProfile(kProfileName_);
     }
+  }
+
+  // Commits a pending write (which posts a task to task_runner_) and waits for
+  // it to finish.
+  void CommitWrite() {
+    ASSERT_NE(nullptr, profile_);
+    profile_->GetPrefs()->CommitPendingWrite();
+    task_runner_->RunUntilIdle();
   }
 
   // Removes the safebrowsing.incidents_sent preference from the profile's pref
@@ -106,11 +114,11 @@ class StateStoreTest : public PlatformStateStoreTestBase {
   void CreateProfile() {
     ASSERT_EQ(nullptr, profile_);
     // Create the testing profile with a file-backed user pref store.
-    syncable_prefs::PrefServiceSyncableFactory factory;
+    sync_preferences::PrefServiceSyncableFactory factory;
     factory.SetUserPrefsFile(GetPrefsPath(), task_runner_.get());
     user_prefs::PrefRegistrySyncable* pref_registry =
         new user_prefs::PrefRegistrySyncable();
-    chrome::RegisterUserProfilePrefs(pref_registry);
+    RegisterUserProfilePrefs(pref_registry);
     profile_ = profile_manager_.CreateTestingProfile(
         kProfileName_, factory.CreateSyncable(pref_registry),
         base::UTF8ToUTF16(kProfileName_), 0, std::string(),
@@ -119,18 +127,18 @@ class StateStoreTest : public PlatformStateStoreTestBase {
 
   static const char kProfileName_[];
   static const TestData kTestData_[];
+  content::TestBrowserThreadBundle thread_bundle_;
   TestingProfile* profile_;
   scoped_refptr<base::TestSimpleTaskRunner> task_runner_;
 
  private:
   base::FilePath GetPrefsPath() {
-    return temp_dir_.path().AppendASCII("prefs");
+    return temp_dir_.GetPath().AppendASCII("prefs");
   }
 
   extensions::QuotaService::ScopedDisablePurgeForTesting
       disable_purge_for_testing_;
   base::ScopedTempDir temp_dir_;
-  base::ThreadTaskRunnerHandle thread_task_runner_handle_;
   TestingProfileManager profile_manager_;
 
   DISALLOW_COPY_AND_ASSIGN(StateStoreTest);
@@ -143,7 +151,6 @@ const StateStoreTest::TestData StateStoreTest::kTestData_[] = {
     {IncidentType::TRACKED_PREFERENCE, "tp_two", 2},
     {IncidentType::TRACKED_PREFERENCE, "tp_three", 3},
     {IncidentType::BINARY_INTEGRITY, "bi", 0},
-    {IncidentType::BLACKLIST_LOAD, "bl", 0x47},
 };
 
 TEST_F(StateStoreTest, MarkAsAndHasBeenReported) {
@@ -206,8 +213,8 @@ TEST_F(StateStoreTest, ClearAll) {
     ASSERT_FALSE(state_store.HasBeenReported(data.type, data.key, data.digest));
   }
 
-  // Run tasks to write prefs out to the JsonPrefStore.
-  task_runner_->RunUntilIdle();
+  // Write prefs out to the JsonPrefStore.
+  CommitWrite();
 
   // Delete the profile.
   DeleteProfile();
@@ -232,7 +239,7 @@ TEST_F(StateStoreTest, Persistence) {
   }
 
   // Run tasks to write prefs out to the JsonPrefStore.
-  task_runner_->RunUntilIdle();
+  CommitWrite();
 
   // Delete the profile.
   DeleteProfile();
@@ -255,8 +262,8 @@ TEST_F(StateStoreTest, PersistenceWithStoreDelete) {
       transaction.MarkAsReported(data.type, data.key, data.digest);
   }
 
-  // Run tasks to write prefs out to the JsonPrefStore.
-  task_runner_->RunUntilIdle();
+  // Write prefs out to the JsonPrefStore.
+  CommitWrite();
 
   // Delete the profile.
   DeleteProfile();

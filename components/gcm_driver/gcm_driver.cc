@@ -12,15 +12,10 @@
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "components/gcm_driver/crypto/gcm_decryption_result.h"
 #include "components/gcm_driver/gcm_app_handler.h"
 
 namespace gcm {
-
-namespace {
-
-const size_t kMaxSenders = 100;
-
-}  // namespace
 
 InstanceIDHandler::InstanceIDHandler() {
 }
@@ -75,8 +70,7 @@ void GCMDriver::Register(const std::string& app_id,
   // finishes. We don't want to throw ASYNC_OPERATION_PENDING when the user
   // uninstalls an app (ungistering) and then reinstalls the app again
   // (registering).
-  std::map<std::string, UnregisterCallback>::iterator unregister_iter =
-      unregister_callbacks_.find(app_id);
+  auto unregister_iter = unregister_callbacks_.find(app_id);
   if (unregister_iter != unregister_callbacks_.end()) {
     // Replace the original unregister callback with an intermediate callback
     // that will invoke the original unregister callback and trigger the pending
@@ -177,8 +171,7 @@ void GCMDriver::UnregisterWithSenderIdImpl(const std::string& app_id,
 void GCMDriver::RegisterFinished(const std::string& app_id,
                                  const std::string& registration_id,
                                  GCMClient::Result result) {
-  std::map<std::string, RegisterCallback>::iterator callback_iter =
-      register_callbacks_.find(app_id);
+  auto callback_iter = register_callbacks_.find(app_id);
   if (callback_iter == register_callbacks_.end()) {
     // The callback could have been removed when the app is uninstalled.
     return;
@@ -199,8 +192,7 @@ void GCMDriver::RemoveEncryptionInfoAfterUnregister(const std::string& app_id,
 
 void GCMDriver::UnregisterFinished(const std::string& app_id,
                                    GCMClient::Result result) {
-  std::map<std::string, UnregisterCallback>::iterator callback_iter =
-      unregister_callbacks_.find(app_id);
+  auto callback_iter = unregister_callbacks_.find(app_id);
   if (callback_iter == unregister_callbacks_.end())
     return;
 
@@ -212,9 +204,8 @@ void GCMDriver::UnregisterFinished(const std::string& app_id,
 void GCMDriver::SendFinished(const std::string& app_id,
                              const std::string& message_id,
                              GCMClient::Result result) {
-  std::map<std::pair<std::string, std::string>, SendCallback>::iterator
-      callback_iter = send_callbacks_.find(
-          std::pair<std::string, std::string>(app_id, message_id));
+  auto callback_iter = send_callbacks_.find(
+      std::pair<std::string, std::string>(app_id, message_id));
   if (callback_iter == send_callbacks_.end()) {
     // The callback could have been removed when the app is uninstalled.
     return;
@@ -261,7 +252,7 @@ GCMAppHandler* GCMDriver::GetAppHandler(const std::string& app_id) {
       return iter->second;
   }
 
-  return &default_app_handler_;
+  return nullptr;
 }
 
 GCMEncryptionProvider* GCMDriver::GetEncryptionProviderInternal() {
@@ -285,25 +276,37 @@ void GCMDriver::DispatchMessage(const std::string& app_id,
                                   weak_ptr_factory_.GetWeakPtr(), app_id));
 }
 
-void GCMDriver::DispatchMessageInternal(
-    const std::string& app_id,
-    GCMEncryptionProvider::DecryptionResult result,
-    const IncomingMessage& message) {
+void GCMDriver::DispatchMessageInternal(const std::string& app_id,
+                                        GCMDecryptionResult result,
+                                        const IncomingMessage& message) {
   UMA_HISTOGRAM_ENUMERATION("GCM.Crypto.DecryptMessageResult", result,
-                            GCMEncryptionProvider::DECRYPTION_RESULT_LAST + 1);
+                            GCMDecryptionResult::ENUM_SIZE);
 
   switch (result) {
-    case GCMEncryptionProvider::DECRYPTION_RESULT_UNENCRYPTED:
-    case GCMEncryptionProvider::DECRYPTION_RESULT_DECRYPTED:
-      GetAppHandler(app_id)->OnMessage(app_id, message);
+    case GCMDecryptionResult::UNENCRYPTED:
+    case GCMDecryptionResult::DECRYPTED_DRAFT_03:
+    case GCMDecryptionResult::DECRYPTED_DRAFT_08: {
+      GCMAppHandler* handler = GetAppHandler(app_id);
+      if (handler)
+        handler->OnMessage(app_id, message);
+
+      // TODO(peter/harkness): Surface unavailable app handlers on
+      // chrome://gcm-internals and send a delivery receipt.
       return;
-    case GCMEncryptionProvider::DECRYPTION_RESULT_INVALID_ENCRYPTION_HEADER:
-    case GCMEncryptionProvider::DECRYPTION_RESULT_INVALID_CRYPTO_KEY_HEADER:
-    case GCMEncryptionProvider::DECRYPTION_RESULT_NO_KEYS:
-    case GCMEncryptionProvider::DECRYPTION_RESULT_INVALID_SHARED_SECRET:
-    case GCMEncryptionProvider::DECRYPTION_RESULT_INVALID_PAYLOAD:
+    }
+    case GCMDecryptionResult::INVALID_ENCRYPTION_HEADER:
+    case GCMDecryptionResult::INVALID_CRYPTO_KEY_HEADER:
+    case GCMDecryptionResult::NO_KEYS:
+    case GCMDecryptionResult::INVALID_SHARED_SECRET:
+    case GCMDecryptionResult::INVALID_PAYLOAD:
+    case GCMDecryptionResult::INVALID_BINARY_HEADER_PAYLOAD_LENGTH:
+    case GCMDecryptionResult::INVALID_BINARY_HEADER_RECORD_SIZE:
+    case GCMDecryptionResult::INVALID_BINARY_HEADER_PUBLIC_KEY_LENGTH:
+    case GCMDecryptionResult::INVALID_BINARY_HEADER_PUBLIC_KEY_FORMAT:
       RecordDecryptionFailure(app_id, result);
       return;
+    case GCMDecryptionResult::ENUM_SIZE:
+      break;  // deliberate fall-through
   }
 
   NOTREACHED();

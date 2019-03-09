@@ -4,95 +4,157 @@
 
 #include "ash/system/overview/overview_button_tray.h"
 
-#include "ash/common/material_design/material_design_controller.h"
-#include "ash/common/session/session_state_delegate.h"
-#include "ash/common/shelf/shelf_constants.h"
-#include "ash/common/shelf/shelf_types.h"
-#include "ash/common/shelf/wm_shelf_util.h"
-#include "ash/common/system/tray/system_tray_delegate.h"
-#include "ash/common/system/tray/tray_constants.h"
-#include "ash/common/system/tray/tray_utils.h"
-#include "ash/common/wm/overview/window_selector_controller.h"
-#include "ash/common/wm_shell.h"
+#include "ash/metrics/user_metrics_recorder.h"
+#include "ash/resources/vector_icons/vector_icons.h"
+#include "ash/session/session_controller.h"
+#include "ash/shelf/shelf_constants.h"
 #include "ash/shell.h"
-#include "ash/wm/maximize_mode/maximize_mode_controller.h"
-#include "grit/ash_resources.h"
-#include "grit/ash_strings.h"
+#include "ash/strings/grit/ash_strings.h"
+#include "ash/system/tray/tray_constants.h"
+#include "ash/system/tray/tray_container.h"
+#include "ash/wm/mru_window_tracker.h"
+#include "ash/wm/overview/overview_controller.h"
+#include "ash/wm/overview/overview_session.h"
+#include "ash/wm/splitview/split_view_controller.h"
+#include "ash/wm/tablet_mode/tablet_mode_controller.h"
+#include "ash/wm/window_state.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/paint_vector_icon.h"
-#include "ui/gfx/vector_icons_public.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
-
-namespace {
-
-// Predefined padding for the icon used in this tray. These are to be set to the
-// border of the icon, depending on the current shelf_alignment()
-const int kHorizontalShelfHorizontalPadding = 8;
-const int kHorizontalShelfVerticalPadding = 4;
-const int kVerticalShelfHorizontalPadding = 2;
-const int kVerticalShelfVerticalPadding = 5;
-
-}  // namespace
+#include "ui/wm/core/window_util.h"
 
 namespace ash {
 
-OverviewButtonTray::OverviewButtonTray(WmShelf* wm_shelf)
-    : TrayBackgroundView(wm_shelf), icon_(nullptr) {
-  SetContentsBackground();
+constexpr base::TimeDelta OverviewButtonTray::kDoubleTapThresholdMs;
 
-  icon_ = new views::ImageView();
-  if (MaterialDesignController::IsShelfMaterial()) {
-    gfx::ImageSkia image_md =
-        CreateVectorIcon(gfx::VectorIconId::SHELF_OVERVIEW, kShelfIconColor);
-    icon_->SetImage(image_md);
-  } else {
-    gfx::ImageSkia* image_non_md =
-        ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-            IDR_AURA_UBER_TRAY_OVERVIEW_MODE);
-    icon_->SetImage(image_non_md);
-  }
-  SetIconBorderForShelfAlignment();
+OverviewButtonTray::OverviewButtonTray(Shelf* shelf)
+    : TrayBackgroundView(shelf),
+      icon_(new views::ImageView()),
+      scoped_session_observer_(this) {
+  SetInkDropMode(InkDropMode::ON);
+
+  gfx::ImageSkia image =
+      gfx::CreateVectorIcon(kShelfOverviewIcon, kShelfIconColor);
+  icon_->SetImage(image);
+  const int vertical_padding = (kTrayItemSize - image.height()) / 2;
+  const int horizontal_padding = (kTrayItemSize - image.width()) / 2;
+  icon_->SetBorder(views::CreateEmptyBorder(
+      gfx::Insets(vertical_padding, horizontal_padding)));
   tray_container()->AddChildView(icon_);
 
-  WmShell::Get()->AddShellObserver(this);
-  WmShell::Get()->GetSessionStateDelegate()->AddSessionStateObserver(this);
+  // Since OverviewButtonTray is located on the rightmost position of a
+  // horizontal shelf, no separator is required.
+  set_separator_visibility(false);
+
+  Shell::Get()->overview_controller()->AddObserver(this);
+  Shell::Get()->tablet_mode_controller()->AddObserver(this);
 }
 
 OverviewButtonTray::~OverviewButtonTray() {
-  WmShell::Get()->RemoveShellObserver(this);
-  WmShell::Get()->GetSessionStateDelegate()->RemoveSessionStateObserver(this);
+  if (Shell::Get()->overview_controller())
+    Shell::Get()->overview_controller()->RemoveObserver(this);
+  if (Shell::Get()->tablet_mode_controller())
+    Shell::Get()->tablet_mode_controller()->RemoveObserver(this);
 }
 
 void OverviewButtonTray::UpdateAfterLoginStatusChange(LoginStatus status) {
   UpdateIconVisibility();
 }
 
+void OverviewButtonTray::SnapRippleToActivated() {
+  GetInkDrop()->SnapToActivated();
+}
+
+void OverviewButtonTray::OnGestureEvent(ui::GestureEvent* event) {
+  Button::OnGestureEvent(event);
+  if (event->type() == ui::ET_GESTURE_LONG_PRESS) {
+    Shell::Get()->overview_controller()->OnOverviewButtonTrayLongPressed(
+        event->location());
+  }
+}
+
 bool OverviewButtonTray::PerformAction(const ui::Event& event) {
-  WindowSelectorController* controller =
-      WmShell::Get()->window_selector_controller();
-  controller->ToggleOverview();
-  SetDrawBackgroundAsActive(controller->IsSelecting());
-  WmShell::Get()->RecordUserMetricsAction(UMA_TRAY_OVERVIEW);
-  return true;
+  DCHECK(event.type() == ui::ET_MOUSE_RELEASED ||
+         event.type() == ui::ET_GESTURE_TAP);
+
+  OverviewController* overview_controller = Shell::Get()->overview_controller();
+  // Skip if the second tap happened outside of overview. This can happen if a
+  // window gets activated in between, which cancels overview mode.
+  if (overview_controller->IsSelecting() && last_press_event_time_ &&
+      event.time_stamp() - last_press_event_time_.value() <
+          kDoubleTapThresholdMs) {
+    base::RecordAction(base::UserMetricsAction("Tablet_QuickSwitch"));
+
+    // Build mru window list. Use cycle as it excludes some windows we are not
+    // interested in such as transient children.
+    MruWindowTracker::WindowList mru_window_list =
+        Shell::Get()->mru_window_tracker()->BuildWindowForCycleList();
+
+    // Switch to the second most recently used window (most recent is the
+    // current window) if it exists, unless splitview mode is active. Do not
+    // switch we entered overview mode will all windows minimized.
+    if (mru_window_list.size() > 1u &&
+        overview_controller->overview_session()->enter_exit_overview_type() !=
+            OverviewSession::EnterExitOverviewType::kWindowsMinimized) {
+      aura::Window* new_active_window = mru_window_list[1];
+
+      // In splitview mode, quick switch will only affect the windows on the non
+      // default side. The window which was dragged to either side to begin
+      // splitview will remain untouched. Skip that window if it appears in the
+      // mru list.
+      SplitViewController* split_view_controller =
+          Shell::Get()->split_view_controller();
+      if (split_view_controller->IsSplitViewModeActive() &&
+          mru_window_list.size() > 2u) {
+        if (mru_window_list[0] ==
+                split_view_controller->GetDefaultSnappedWindow() ||
+            mru_window_list[1] ==
+                split_view_controller->GetDefaultSnappedWindow()) {
+          new_active_window = mru_window_list[2];
+        }
+      }
+
+      AnimateInkDrop(views::InkDropState::DEACTIVATED, nullptr);
+      ::wm::ActivateWindow(new_active_window);
+      last_press_event_time_ = base::nullopt;
+      return true;
+    }
+  }
+
+  // If not in overview mode record the time of this tap. A subsequent tap will
+  // be checked against this to see if we should quick switch.
+  last_press_event_time_ = Shell::Get()->overview_controller()->IsSelecting()
+                               ? base::nullopt
+                               : base::make_optional(event.time_stamp());
+
+  OverviewController* controller = Shell::Get()->overview_controller();
+  // Note: Toggling overview mode will fail if there is no window to show, the
+  // screen is locked, a modal dialog is open or is running in kiosk app
+  // session.
+  bool performed = controller->ToggleOverview();
+  Shell::Get()->metrics()->RecordUserMetricsAction(UMA_TRAY_OVERVIEW);
+  return performed;
 }
 
-void OverviewButtonTray::SessionStateChanged(
-    SessionStateDelegate::SessionState state) {
+void OverviewButtonTray::OnSessionStateChanged(
+    session_manager::SessionState state) {
   UpdateIconVisibility();
 }
 
-void OverviewButtonTray::OnMaximizeModeStarted() {
+void OverviewButtonTray::OnTabletModeEventsBlockingChanged() {
   UpdateIconVisibility();
 }
 
-void OverviewButtonTray::OnMaximizeModeEnded() {
-  UpdateIconVisibility();
+void OverviewButtonTray::OnOverviewModeStarting() {
+  SetIsActive(true);
 }
 
 void OverviewButtonTray::OnOverviewModeEnded() {
-  SetDrawBackgroundAsActive(false);
+  SetIsActive(false);
 }
 
 void OverviewButtonTray::ClickedOutsideBubble() {}
@@ -101,57 +163,22 @@ base::string16 OverviewButtonTray::GetAccessibleNameForTray() {
   return l10n_util::GetStringUTF16(IDS_ASH_OVERVIEW_BUTTON_ACCESSIBLE_NAME);
 }
 
-void OverviewButtonTray::HideBubbleWithView(
-    const views::TrayBubbleView* bubble_view) {
+void OverviewButtonTray::HideBubbleWithView(const TrayBubbleView* bubble_view) {
   // This class has no bubbles to hide.
 }
 
-void OverviewButtonTray::SetShelfAlignment(ShelfAlignment alignment) {
-  if (alignment == shelf_alignment())
-    return;
-
-  TrayBackgroundView::SetShelfAlignment(alignment);
-  SetIconBorderForShelfAlignment();
-}
-
-void OverviewButtonTray::SetIconBorderForShelfAlignment() {
-  if (ash::MaterialDesignController::IsShelfMaterial()) {
-    // Pad button size to align with other controls in the system tray.
-    const gfx::ImageSkia image = icon_->GetImage();
-    const int vertical_padding = (kTrayItemSize - image.height()) / 2;
-    const int horizontal_padding = (kTrayItemSize - image.width()) / 2;
-    icon_->SetBorder(views::Border::CreateEmptyBorder(
-        gfx::Insets(vertical_padding, horizontal_padding)));
-  } else {
-    if (IsHorizontalAlignment(shelf_alignment())) {
-      icon_->SetBorder(views::Border::CreateEmptyBorder(
-          kHorizontalShelfVerticalPadding, kHorizontalShelfHorizontalPadding,
-          kHorizontalShelfVerticalPadding, kHorizontalShelfHorizontalPadding));
-    } else {
-      icon_->SetBorder(views::Border::CreateEmptyBorder(
-          kVerticalShelfVerticalPadding, kVerticalShelfHorizontalPadding,
-          kVerticalShelfVerticalPadding, kVerticalShelfHorizontalPadding));
-    }
-  }
-}
-
 void OverviewButtonTray::UpdateIconVisibility() {
-  // The visibility of the OverviewButtonTray has diverge from
-  // WindowSelectorController::CanSelect. The visibility of the button should
+  // The visibility of the OverviewButtonTray has diverged from
+  // OverviewController::CanSelect. The visibility of the button should
   // not change during transient times in which CanSelect is false. Such as when
   // a modal dialog is present.
-  Shell* shell = Shell::GetInstance();
-  SessionStateDelegate* session_state_delegate =
-      WmShell::Get()->GetSessionStateDelegate();
-
-  SetVisible(
-      shell->maximize_mode_controller()->IsMaximizeModeWindowManagerEnabled() &&
-      session_state_delegate->IsActiveUserSessionStarted() &&
-      !session_state_delegate->IsScreenLocked() &&
-      session_state_delegate->GetSessionState() ==
-          SessionStateDelegate::SESSION_STATE_ACTIVE &&
-      WmShell::Get()->system_tray_delegate()->GetUserLoginStatus() !=
-          LoginStatus::KIOSK_APP);
+  SessionController* session_controller = Shell::Get()->session_controller();
+  SetVisible(Shell::Get()
+                 ->tablet_mode_controller()
+                 ->AreInternalInputDeviceEventsBlocked() &&
+             session_controller->GetSessionState() ==
+                 session_manager::SessionState::ACTIVE &&
+             !session_controller->IsRunningInAppMode());
 }
 
 }  // namespace ash

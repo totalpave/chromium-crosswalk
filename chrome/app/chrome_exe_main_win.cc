@@ -4,7 +4,6 @@
 
 #include <windows.h>
 #include <malloc.h>
-#include <shellscalingapi.h>
 #include <stddef.h>
 #include <tchar.h>
 
@@ -14,39 +13,34 @@
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/path_service.h"
+#include "base/stl_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/win/registry.h"
+#include "base/win/win_util.h"
 #include "base/win/windows_version.h"
-#include "chrome/app/chrome_crash_reporter_client_win.h"
 #include "chrome/app/main_dll_loader_win.h"
 #include "chrome/browser/policy/policy_path_parser.h"
 #include "chrome/browser/win/chrome_process_finder.h"
 #include "chrome/common/chrome_paths_internal.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/installer/util/browser_distribution.h"
+#include "chrome/install_static/initialize_from_primary_module.h"
+#include "chrome/install_static/install_util.h"
+#include "chrome/install_static/user_data_dir.h"
 #include "chrome_elf/chrome_elf_main.h"
-#include "components/crash/content/app/crash_reporter_client.h"
 #include "components/crash/content/app/crash_switches.h"
 #include "components/crash/content/app/crashpad.h"
+#include "components/crash/content/app/fallback_crash_handling_win.h"
 #include "components/crash/content/app/run_as_crashpad_handler_win.h"
-#include "components/startup_metric_utils/browser/startup_metric_utils.h"
-#include "components/startup_metric_utils/common/pre_read_field_trial_utils_win.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/result_codes.h"
 
 namespace {
-
-base::LazyInstance<ChromeCrashReporterClient>::Leaky g_chrome_crash_client =
-    LAZY_INSTANCE_INITIALIZER;
-
-base::LazyInstance<std::vector<crash_reporter::Report>>::Leaky g_crash_reports =
-    LAZY_INSTANCE_INITIALIZER;
 
 // List of switches that it's safe to rendezvous early with. Fast start should
 // not be done if a command line contains a switch not in this set.
@@ -59,7 +53,7 @@ const char* const kFastStartSwitches[] = {
 };
 
 bool IsFastStartSwitch(const std::string& command_line_switch) {
-  for (size_t i = 0; i < arraysize(kFastStartSwitches); ++i) {
+  for (size_t i = 0; i < base::size(kFastStartSwitches); ++i) {
     if (command_line_switch == kFastStartSwitches[i])
       return true;
   }
@@ -68,7 +62,7 @@ bool IsFastStartSwitch(const std::string& command_line_switch) {
 
 bool ContainsNonFastStartFlag(const base::CommandLine& command_line) {
   const base::CommandLine::SwitchMap& switches = command_line.GetSwitches();
-  if (switches.size() > arraysize(kFastStartSwitches))
+  if (switches.size() > base::size(kFastStartSwitches))
     return true;
   for (base::CommandLine::SwitchMap::const_iterator it = switches.begin();
        it != switches.end(); ++it) {
@@ -94,55 +88,17 @@ bool AttemptFastNotify(const base::CommandLine& command_line) {
       chrome::NOTIFY_SUCCESS;
 }
 
-// Win8.1 supports monitor-specific DPI scaling.
-bool SetProcessDpiAwarenessWrapper(PROCESS_DPI_AWARENESS value) {
-  typedef HRESULT(WINAPI *SetProcessDpiAwarenessPtr)(PROCESS_DPI_AWARENESS);
-  SetProcessDpiAwarenessPtr set_process_dpi_awareness_func =
-      reinterpret_cast<SetProcessDpiAwarenessPtr>(
-          GetProcAddress(GetModuleHandleA("user32.dll"),
-                         "SetProcessDpiAwarenessInternal"));
-  if (set_process_dpi_awareness_func) {
-    HRESULT hr = set_process_dpi_awareness_func(value);
-    if (SUCCEEDED(hr)) {
-      VLOG(1) << "SetProcessDpiAwareness succeeded.";
-      return true;
-    } else if (hr == E_ACCESSDENIED) {
-      LOG(ERROR) << "Access denied error from SetProcessDpiAwareness. "
-          "Function called twice, or manifest was used.";
-    }
-  }
-  return false;
-}
-
-// This function works for Windows Vista through Win8. Win8.1 must use
-// SetProcessDpiAwareness[Wrapper].
-BOOL SetProcessDPIAwareWrapper() {
-  typedef BOOL(WINAPI *SetProcessDPIAwarePtr)(VOID);
-  SetProcessDPIAwarePtr set_process_dpi_aware_func =
-      reinterpret_cast<SetProcessDPIAwarePtr>(
-      GetProcAddress(GetModuleHandleA("user32.dll"),
-                      "SetProcessDPIAware"));
-  return set_process_dpi_aware_func &&
-    set_process_dpi_aware_func();
-}
-
-void EnableHighDPISupport() {
-  if (!SetProcessDpiAwarenessWrapper(PROCESS_SYSTEM_DPI_AWARE)) {
-    SetProcessDPIAwareWrapper();
-  }
-}
-
 // Returns true if |command_line| contains a /prefetch:# argument where # is in
 // [1, 8].
 bool HasValidWindowsPrefetchArgument(const base::CommandLine& command_line) {
   const base::char16 kPrefetchArgumentPrefix[] = L"/prefetch:";
 
   for (const auto& arg : command_line.argv()) {
-    if (arg.size() == arraysize(kPrefetchArgumentPrefix) &&
+    if (arg.size() == base::size(kPrefetchArgumentPrefix) &&
         base::StartsWith(arg, kPrefetchArgumentPrefix,
                          base::CompareCase::SENSITIVE)) {
-      return arg[arraysize(kPrefetchArgumentPrefix) - 1] >= L'1' &&
-             arg[arraysize(kPrefetchArgumentPrefix) - 1] <= L'8';
+      return arg[base::size(kPrefetchArgumentPrefix) - 1] >= L'1' &&
+             arg[base::size(kPrefetchArgumentPrefix) - 1] <= L'8';
     }
   }
   return false;
@@ -153,7 +109,7 @@ bool HasValidWindowsPrefetchArgument(const base::CommandLine& command_line) {
 // removed.
 bool RemoveAppCompatFlagsEntry() {
   base::FilePath current_exe;
-  if (!PathService::Get(base::FILE_EXE, &current_exe))
+  if (!base::PathService::Get(base::FILE_EXE, &current_exe))
     return false;
   if (!current_exe.IsAbsolute())
     return false;
@@ -173,9 +129,7 @@ bool RemoveAppCompatFlagsEntry() {
           L"WINSRV03SP1", L"WINSRV08SP1", L"WIN8RTM",
       };
       for (const wchar_t* compat_mode_token : kCompatModeTokens) {
-        tokens.erase(
-            std::remove(tokens.begin(), tokens.end(), compat_mode_token),
-            tokens.end());
+        base::Erase(tokens, compat_mode_token);
       }
       LONG result;
       if (tokens.empty()) {
@@ -194,19 +148,25 @@ bool RemoveAppCompatFlagsEntry() {
   return false;
 }
 
-}  // namespace
+int RunFallbackCrashHandler(const base::CommandLine& cmd_line) {
+  // Retrieve the product & version details we need to report the crash
+  // correctly.
+  wchar_t exe_file[MAX_PATH] = {};
+  CHECK(::GetModuleFileName(nullptr, exe_file, base::size(exe_file)));
 
-// This helper is looked up in the browser to retrieve the crash reports. See
-// CrashUploadListCrashpad. Note that we do not pass an std::vector here,
-// because we do not want to allocate/free in different modules. The returned
-// pointer is read-only.
-extern "C" __declspec(dllexport) void GetCrashReportsImpl(
-    const crash_reporter::Report** reports,
-    size_t* report_count) {
-  crash_reporter::GetReports(g_crash_reports.Pointer());
-  *reports = g_crash_reports.Pointer()->data();
-  *report_count = g_crash_reports.Pointer()->size();
+  base::string16 product_name;
+  base::string16 version;
+  base::string16 channel_name;
+  base::string16 special_build;
+  install_static::GetExecutableVersionDetails(exe_file, &product_name, &version,
+                                              &special_build, &channel_name);
+
+  return crash_reporter::RunAsFallbackCrashHandler(
+      cmd_line, base::UTF16ToUTF8(product_name), base::UTF16ToUTF8(version),
+      base::UTF16ToUTF8(channel_name));
 }
+
+}  // namespace
 
 #if !defined(WIN_CONSOLE_APP)
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE prev, wchar_t*, int) {
@@ -214,6 +174,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE prev, wchar_t*, int) {
 int main() {
   HINSTANCE instance = GetModuleHandle(nullptr);
 #endif
+  install_static::InitializeFromPrimaryModule();
+  SignalInitializeCrashReporting();
+
   // Initialize the CommandLine singleton from the environment.
   base::CommandLine::Init(0, nullptr);
   const base::CommandLine* command_line =
@@ -221,9 +184,6 @@ int main() {
 
   const std::string process_type =
       command_line->GetSwitchValueASCII(switches::kProcessType);
-
-  startup_metric_utils::InitializePreReadOptions(
-      BrowserDistribution::GetDistribution()->GetRegistryPath());
 
   // Confirm that an explicit prefetch profile is used for all process types
   // except for the browser process. Any new process type will have to assign
@@ -233,15 +193,22 @@ int main() {
          HasValidWindowsPrefetchArgument(*command_line));
 
   if (process_type == crash_reporter::switches::kCrashpadHandler) {
+    crash_reporter::SetupFallbackCrashHandling(*command_line);
+
+    // The handler process must always be passed the user data dir on the
+    // command line.
+    DCHECK(command_line->HasSwitch(switches::kUserDataDir));
+
+    base::FilePath user_data_dir =
+        command_line->GetSwitchValuePath(switches::kUserDataDir);
     return crash_reporter::RunAsCrashpadHandler(
-        *base::CommandLine::ForCurrentProcess());
+        *base::CommandLine::ForCurrentProcess(), user_data_dir,
+        switches::kProcessType, switches::kUserDataDir);
+  } else if (process_type == crash_reporter::switches::kFallbackCrashHandler) {
+    return RunFallbackCrashHandler(*command_line);
   }
 
-  crash_reporter::SetCrashReporterClient(g_chrome_crash_client.Pointer());
-  crash_reporter::InitializeCrashpadWithEmbeddedHandler(process_type.empty(),
-                                                        process_type);
-
-  startup_metric_utils::RecordExeMainEntryPointTime(base::Time::Now());
+  const base::TimeTicks exe_entry_point_ticks = base::TimeTicks::Now();
 
   // Signal Chrome Elf that Chrome has begun to start.
   SignalChromeElf();
@@ -249,7 +216,7 @@ int main() {
   // The exit manager is in charge of calling the dtors of singletons.
   base::AtExitManager exit_manager;
 
-  EnableHighDPISupport();
+  base::win::EnableHighDPISupport();
 
   if (AttemptFastNotify(*command_line))
     return 0;
@@ -259,7 +226,7 @@ int main() {
   // Load and launch the chrome dll. *Everything* happens inside.
   VLOG(1) << "About to load main DLL.";
   MainDllLoader* loader = MakeMainDllLoader();
-  int rc = loader->Launch(instance);
+  int rc = loader->Launch(instance, exe_entry_point_ticks);
   loader->RelaunchChromeBrowserWithNewCommandLineIfNeeded();
   delete loader;
   return rc;

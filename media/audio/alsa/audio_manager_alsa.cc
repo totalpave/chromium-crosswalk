@@ -7,14 +7,9 @@
 #include <stddef.h>
 
 #include "base/command_line.h"
-#include "base/environment.h"
-#include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/free_deleter.h"
 #include "base/metrics/histogram.h"
-#include "base/nix/xdg_util.h"
-#include "base/process/launch.h"
 #include "base/stl_util.h"
 #include "media/audio/audio_device_description.h"
 #include "media/audio/audio_output_dispatcher.h"
@@ -44,66 +39,25 @@ static const int kDefaultSampleRate = 48000;
 // real devices, we remove them from the list to avoiding duplicate counting.
 // In addition, note that we support no more than 2 channels for recording,
 // hence surround devices are not stored in the list.
-static const char* kInvalidAudioInputDevices[] = {
-  "default",
-  "dmix",
-  "null",
-  "pulse",
-  "surround",
+static const char* const kInvalidAudioInputDevices[] = {
+    "default", "dmix", "null", "pulse", "surround",
 };
 
-// static
-void AudioManagerAlsa::ShowLinuxAudioInputSettings() {
-  std::unique_ptr<base::Environment> env(base::Environment::Create());
-  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-  switch (base::nix::GetDesktopEnvironment(env.get())) {
-    case base::nix::DESKTOP_ENVIRONMENT_GNOME:
-      command_line.SetProgram(base::FilePath("gnome-volume-control"));
-      break;
-    case base::nix::DESKTOP_ENVIRONMENT_KDE3:
-    case base::nix::DESKTOP_ENVIRONMENT_KDE4:
-    case base::nix::DESKTOP_ENVIRONMENT_KDE5:
-      command_line.SetProgram(base::FilePath("kmix"));
-      break;
-    case base::nix::DESKTOP_ENVIRONMENT_UNITY:
-      command_line.SetProgram(base::FilePath("gnome-control-center"));
-      command_line.AppendArg("sound");
-      command_line.AppendArg("input");
-      break;
-    default:
-      LOG(ERROR) << "Failed to show audio input settings: we don't know "
-                 << "what command to use for your desktop environment.";
-      return;
-  }
-  base::LaunchProcess(command_line, base::LaunchOptions());
+AudioManagerAlsa::AudioManagerAlsa(std::unique_ptr<AudioThread> audio_thread,
+                                   AudioLogFactory* audio_log_factory)
+    : AudioManagerBase(std::move(audio_thread), audio_log_factory),
+      wrapper_(new AlsaWrapper()) {
+  SetMaxOutputStreamsAllowed(kMaxOutputStreams);
 }
 
-// Implementation of AudioManager.
+AudioManagerAlsa::~AudioManagerAlsa() = default;
+
 bool AudioManagerAlsa::HasAudioOutputDevices() {
   return HasAnyAlsaAudioDevice(kStreamPlayback);
 }
 
 bool AudioManagerAlsa::HasAudioInputDevices() {
   return HasAnyAlsaAudioDevice(kStreamCapture);
-}
-
-AudioManagerAlsa::AudioManagerAlsa(
-    scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-    scoped_refptr<base::SingleThreadTaskRunner> worker_task_runner,
-    AudioLogFactory* audio_log_factory)
-    : AudioManagerBase(std::move(task_runner),
-                       std::move(worker_task_runner),
-                       audio_log_factory),
-      wrapper_(new AlsaWrapper()) {
-  SetMaxOutputStreamsAllowed(kMaxOutputStreams);
-}
-
-AudioManagerAlsa::~AudioManagerAlsa() {
-  Shutdown();
-}
-
-void AudioManagerAlsa::ShowAudioInputSettings() {
-  ShowLinuxAudioInputSettings();
 }
 
 void AudioManagerAlsa::GetAudioInputDeviceNames(
@@ -122,14 +76,17 @@ AudioParameters AudioManagerAlsa::GetInputStreamParameters(
     const std::string& device_id) {
   static const int kDefaultInputBufferSize = 1024;
 
-  return AudioParameters(
-      AudioParameters::AUDIO_PCM_LOW_LATENCY, CHANNEL_LAYOUT_STEREO,
-      kDefaultSampleRate, 16, kDefaultInputBufferSize);
+  return AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
+                         CHANNEL_LAYOUT_STEREO, kDefaultSampleRate,
+                         kDefaultInputBufferSize);
 }
 
-void AudioManagerAlsa::GetAlsaAudioDevices(
-    StreamType type,
-    media::AudioDeviceNames* device_names) {
+const char* AudioManagerAlsa::GetName() {
+  return "ALSA";
+}
+
+void AudioManagerAlsa::GetAlsaAudioDevices(StreamType type,
+                                           AudioDeviceNames* device_names) {
   // Constants specified by the ALSA API for device hints.
   static const char kPcmInterfaceName[] = "pcm";
   int card = -1;
@@ -150,10 +107,9 @@ void AudioManagerAlsa::GetAlsaAudioDevices(
   }
 }
 
-void AudioManagerAlsa::GetAlsaDevicesInfo(
-    AudioManagerAlsa::StreamType type,
-    void** hints,
-    media::AudioDeviceNames* device_names) {
+void AudioManagerAlsa::GetAlsaDevicesInfo(AudioManagerAlsa::StreamType type,
+                                          void** hints,
+                                          AudioDeviceNames* device_names) {
   static const char kIoHintName[] = "IOID";
   static const char kNameHintName[] = "NAME";
   static const char kDescriptionHintName[] = "DESC";
@@ -174,7 +130,7 @@ void AudioManagerAlsa::GetAlsaDevicesInfo(
     // still empty.  Note, pulse has exclusively opened the default
     // device, so we must open the device via the "default" moniker.
     if (device_names->empty())
-      device_names->push_front(media::AudioDeviceName::CreateDefault());
+      device_names->push_front(AudioDeviceName::CreateDefault());
 
     // Get the unique device name for the device.
     std::unique_ptr<char, base::FreeDeleter> unique_device_name(
@@ -186,7 +142,7 @@ void AudioManagerAlsa::GetAlsaDevicesInfo(
       std::unique_ptr<char, base::FreeDeleter> desc(
           wrapper_->DeviceNameGetHint(*hint_iter, kDescriptionHintName));
 
-      media::AudioDeviceName name;
+      AudioDeviceName name;
       name.unique_id = unique_device_name.get();
       if (desc) {
         // Use the more user friendly description as name.
@@ -218,23 +174,22 @@ bool AudioManagerAlsa::IsAlsaDeviceAvailable(
   // it or not.
   if (type == kStreamCapture) {
     // Check if the device is in the list of invalid devices.
-    for (size_t i = 0; i < arraysize(kInvalidAudioInputDevices); ++i) {
+    for (size_t i = 0; i < base::size(kInvalidAudioInputDevices); ++i) {
       if (strncmp(kInvalidAudioInputDevices[i], device_name,
                   strlen(kInvalidAudioInputDevices[i])) == 0)
         return false;
     }
     return true;
-  } else {
-    DCHECK_EQ(kStreamPlayback, type);
-    // We prefer the device type that maps straight to hardware but
-    // goes through software conversion if needed (e.g. incompatible
-    // sample rate).
-    // TODO(joi): Should we prefer "hw" instead?
-    static const char kDeviceTypeDesired[] = "plughw";
-    return strncmp(kDeviceTypeDesired,
-                   device_name,
-                   arraysize(kDeviceTypeDesired) - 1) == 0;
   }
+
+  DCHECK_EQ(kStreamPlayback, type);
+  // We prefer the device type that maps straight to hardware but
+  // goes through software conversion if needed (e.g. incompatible
+  // sample rate).
+  // TODO(joi): Should we prefer "hw" instead?
+  static const char kDeviceTypeDesired[] = "plughw";
+  return strncmp(kDeviceTypeDesired, device_name,
+                 base::size(kDeviceTypeDesired) - 1) == 0;
 }
 
 // static
@@ -324,7 +279,6 @@ AudioParameters AudioManagerAlsa::GetPreferredOutputStreamParameters(
   ChannelLayout channel_layout = CHANNEL_LAYOUT_STEREO;
   int sample_rate = kDefaultSampleRate;
   int buffer_size = kDefaultOutputBufferSize;
-  int bits_per_sample = 16;
   if (input_params.IsValid()) {
     // Some clients, such as WebRTC, have a more limited use case and work
     // acceptably with a smaller buffer size.  The check below allows clients
@@ -332,7 +286,6 @@ AudioParameters AudioManagerAlsa::GetPreferredOutputStreamParameters(
     // TODO(dalecurtis): This should include bits per channel and channel layout
     // eventually.
     sample_rate = input_params.sample_rate();
-    bits_per_sample = input_params.bits_per_sample();
     channel_layout = input_params.channel_layout();
     buffer_size = std::min(input_params.frames_per_buffer(), buffer_size);
   }
@@ -342,7 +295,7 @@ AudioParameters AudioManagerAlsa::GetPreferredOutputStreamParameters(
     buffer_size = user_buffer_size;
 
   return AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY, channel_layout,
-                         sample_rate, bits_per_sample, buffer_size);
+                         sample_rate, buffer_size);
 }
 
 AudioOutputStream* AudioManagerAlsa::MakeOutputStream(

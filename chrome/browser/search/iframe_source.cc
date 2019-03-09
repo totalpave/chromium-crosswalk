@@ -10,17 +10,13 @@
 #include "chrome/browser/search/instant_io_context.h"
 #include "chrome/common/url_constants.h"
 #include "content/public/browser/navigation_entry.h"
-#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "net/url_request/url_request.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "url/gurl.h"
 
-IframeSource::IframeSource() {
-}
+IframeSource::IframeSource() = default;
 
-IframeSource::~IframeSource() {
-}
+IframeSource::~IframeSource() = default;
 
 std::string IframeSource::GetMimeType(
     const std::string& path_and_query) const {
@@ -33,16 +29,23 @@ std::string IframeSource::GetMimeType(
     return "text/css";
   if (base::EndsWith(path, ".html", base::CompareCase::INSENSITIVE_ASCII))
     return "text/html";
+  if (base::EndsWith(path, ".svg", base::CompareCase::INSENSITIVE_ASCII))
+    return "image/svg+xml";
   return std::string();
 }
 
+bool IframeSource::AllowCaching() const {
+  return false;
+}
+
 bool IframeSource::ShouldServiceRequest(
-    const net::URLRequest* request) const {
-  const std::string& path = request->url().path();
-  return InstantIOContext::ShouldServiceRequest(request) &&
-      request->url().SchemeIs(chrome::kChromeSearchScheme) &&
-      request->url().host() == GetSource() &&
-      ServesPath(path);
+    const GURL& url,
+    content::ResourceContext* resource_context,
+    int render_process_id) const {
+  return InstantIOContext::ShouldServiceRequest(url, resource_context,
+                                                render_process_id) &&
+         url.SchemeIs(chrome::kChromeSearchScheme) &&
+         url.host_piece() == GetSource() && ServesPath(url.path());
 }
 
 bool IframeSource::ShouldDenyXFrameOptions() const {
@@ -50,18 +53,15 @@ bool IframeSource::ShouldDenyXFrameOptions() const {
 }
 
 bool IframeSource::GetOrigin(
-    int render_process_id,
-    int render_frame_id,
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
     std::string* origin) const {
-  content::RenderFrameHost* rfh =
-      content::RenderFrameHost::FromID(render_process_id, render_frame_id);
-  content::WebContents* contents =
-      content::WebContents::FromRenderFrameHost(rfh);
-  if (contents == NULL)
+  if (wc_getter.is_null())
     return false;
-  const content::NavigationEntry* entry =
-      contents->GetController().GetVisibleEntry();
-  if (entry == NULL)
+  content::WebContents* contents = wc_getter.Run();
+  if (!contents)
+    return false;
+  content::NavigationEntry* entry = contents->GetController().GetVisibleEntry();
+  if (!entry)
     return false;
 
   *origin = entry->GetURL().GetOrigin().spec();
@@ -74,23 +74,23 @@ void IframeSource::SendResource(
     int resource_id,
     const content::URLDataSource::GotDataCallback& callback) {
   scoped_refptr<base::RefCountedMemory> response(
-      ResourceBundle::GetSharedInstance().LoadDataResourceBytes(resource_id));
+      ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytes(
+          resource_id));
   callback.Run(response.get());
 }
 
 void IframeSource::SendJSWithOrigin(
     int resource_id,
-    int render_process_id,
-    int render_frame_id,
+    const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
     const content::URLDataSource::GotDataCallback& callback) {
   std::string origin;
-  if (!GetOrigin(render_process_id, render_frame_id, &origin)) {
-    callback.Run(NULL);
+  if (!GetOrigin(wc_getter, &origin)) {
+    callback.Run(nullptr);
     return;
   }
 
   base::StringPiece template_js =
-      ResourceBundle::GetSharedInstance().GetRawDataResource(resource_id);
+      ui::ResourceBundle::GetSharedInstance().GetRawDataResource(resource_id);
   std::string response(template_js.as_string());
   base::ReplaceFirstSubstringAfterOffset(&response, 0, "{{ORIGIN}}", origin);
   callback.Run(base::RefCountedString::TakeString(&response));

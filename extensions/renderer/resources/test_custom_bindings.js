@@ -5,18 +5,32 @@
 // test_custom_bindings.js
 // mini-framework for ExtensionApiTest browser tests
 
-var binding = require('binding').Binding.create('test');
+var binding = apiBridge || require('binding').Binding.create('test');
 
 var environmentSpecificBindings = require('test_environment_specific_bindings');
 var GetExtensionAPIDefinitionsForTest =
     requireNative('apiDefinitions').GetExtensionAPIDefinitionsForTest;
 var GetAPIFeatures = requireNative('test_features').GetAPIFeatures;
 var natives = requireNative('test_native_handler');
-var uncaughtExceptionHandler = require('uncaught_exception_handler');
 var userGestures = requireNative('user_gestures');
 
-var RunWithNativesEnabled = requireNative('v8_context').RunWithNativesEnabled;
 var GetModuleSystem = requireNative('v8_context').GetModuleSystem;
+
+var jsExceptionHandler =
+    bindingUtil ? undefined : require('uncaught_exception_handler');
+function setExceptionHandler(handler) {
+  if (bindingUtil)
+    bindingUtil.setExceptionHandler(handler);
+  else
+    jsExceptionHandler.setHandler(handler);
+}
+
+function handleException(message, error) {
+  if (bindingUtil)
+    bindingUtil.handleException(message || 'Unknown error', error);
+  else
+    jsExceptionHandler.handle(message, error);
+}
 
 binding.registerCustomHook(function(api) {
   var chromeTest = api.compiledApi;
@@ -80,7 +94,7 @@ binding.registerCustomHook(function(api) {
     pendingCallbacks = 0;
 
     lastTest = currentTest;
-    currentTest = chromeTest.tests.shift();
+    currentTest = $Array.shift(chromeTest.tests);
 
     if (!currentTest) {
       allTestsDone();
@@ -89,21 +103,28 @@ binding.registerCustomHook(function(api) {
 
     try {
       chromeTest.log("( RUN      ) " + testName(currentTest));
-      uncaughtExceptionHandler.setHandler(function(message, e) {
+      setExceptionHandler(function(message, e) {
         if (e !== failureException)
           chromeTest.fail('uncaught exception: ' + message);
       });
-      currentTest.call();
+      $Function.call(currentTest);
     } catch (e) {
-      uncaughtExceptionHandler.handle(e.message, e);
+      handleException(e.message, e);
     }
   });
 
-  apiFunctions.setHandleRequest('fail', function(message) {
+  apiFunctions.setHandleRequest('fail', function failHandler(message) {
     chromeTest.log("(  FAILED  ) " + testName(currentTest));
 
     var stack = {};
-    Error.captureStackTrace(stack, chromeTest.fail);
+    // NOTE(devlin): captureStackTrace() populates a stack property of the
+    // passed-in object with the stack trace. The second parameter (failHandler)
+    // represents a function to serve as a relative point, and is removed from
+    // the trace (so that everything doesn't include failHandler in the trace
+    // itself). This (and other APIs) are documented here:
+    // https://github.com/v8/v8/wiki/Stack%20Trace%20API. If we wanted to be
+    // really fancy, there may be more sophisticated ways of doing this.
+    Error.captureStackTrace(stack, failHandler);
 
     if (!message)
       message = "FAIL (no message)";
@@ -121,10 +142,6 @@ binding.registerCustomHook(function(api) {
     console.log("[SUCCESS] " + testName(currentTest));
     chromeTest.log("(  SUCCESS )");
     testDone();
-  });
-
-  apiFunctions.setHandleRequest('runWithNativesEnabled', function(callback) {
-    RunWithNativesEnabled(callback);
   });
 
   apiFunctions.setHandleRequest('getModuleSystem', function(context) {
@@ -161,6 +178,19 @@ binding.registerCustomHook(function(api) {
 
     if (typeof(expected) !== typeof(actual))
       return false;
+
+    if ((actual instanceof ArrayBuffer) && (expected instanceof ArrayBuffer)) {
+      if (actual.byteLength != expected.byteLength)
+        return false;
+      var actualView = new Uint8Array(actual);
+      var expectedView = new Uint8Array(expected);
+      for (var i = 0; i < actualView.length; ++i) {
+        if (actualView[i] != expectedView[i]) {
+          return false;
+        }
+      }
+      return true;
+    }
 
     for (var p in actual) {
       if ($Object.hasOwnProperty(actual, p) &&
@@ -257,8 +287,9 @@ binding.registerCustomHook(function(api) {
       if (func)
         return $Function.apply(func, undefined, args);
     } catch (e) {
-      var msg = "uncaught exception " + e;
-      chromeTest.fail(msg);
+      if (e === failureException)
+        throw e;
+      handleException(e.message, e);
     }
   };
 
@@ -344,14 +375,9 @@ binding.registerCustomHook(function(api) {
     return userGestures.RunWithUserGesture(callback);
   });
 
-  apiFunctions.setHandleRequest('runWithoutUserGesture', function(callback) {
-    chromeTest.assertEq(typeof(callback), 'function');
-    return userGestures.RunWithoutUserGesture(callback);
-  });
-
   apiFunctions.setHandleRequest('setExceptionHandler', function(callback) {
     chromeTest.assertEq(typeof(callback), 'function');
-    uncaughtExceptionHandler.setHandler(callback);
+    setExceptionHandler(callback);
   });
 
   apiFunctions.setHandleRequest('getWakeEventPage', function() {
@@ -361,4 +387,5 @@ binding.registerCustomHook(function(api) {
   environmentSpecificBindings.registerHooks(api);
 });
 
-exports.$set('binding', binding.generate());
+if (!apiBridge)
+  exports.$set('binding', binding.generate());

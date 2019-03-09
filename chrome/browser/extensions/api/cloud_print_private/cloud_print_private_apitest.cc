@@ -5,7 +5,6 @@
 #include "chrome/browser/extensions/api/cloud_print_private/cloud_print_private_api.h"
 
 #include "base/macros.h"
-#include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
@@ -23,17 +22,18 @@ using ::testing::Return;
 using ::testing::_;
 
 // A base class for tests below.
-class ExtensionCloudPrintPrivateApiTest : public ExtensionApiTest {
+class ExtensionCloudPrintPrivateApiTest : public extensions::ExtensionApiTest {
  public:
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    ExtensionApiTest::SetUpCommandLine(command_line);
+    extensions::ExtensionApiTest::SetUpCommandLine(command_line);
     command_line->AppendSwitchASCII(
         switches::kCloudPrintURL,
         "http://www.cloudprintapp.com/extensions/api_test/"
         "cloud_print_private");
   }
 
-  void SetUpInProcessBrowserTestFixture() override {
+  void SetUpOnMainThread() override {
+    extensions::ExtensionApiTest::SetUpOnMainThread();
     // Start up the test server and get us ready for calling the install
     // API functions.
     host_resolver()->AddRule("www.cloudprintapp.com", "127.0.0.1");

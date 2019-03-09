@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "minidump/minidump_thread_writer.h"
+
 #include <utility>
 
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "minidump/minidump_context_writer.h"
 #include "minidump/minidump_memory_writer.h"
-#include "minidump/minidump_thread_writer.h"
 #include "snapshot/memory_snapshot.h"
 #include "snapshot/thread_snapshot.h"
 #include "util/file/file_writer.h"
@@ -50,8 +50,8 @@ void MinidumpThreadWriter::InitializeFromSnapshot(
 
   const MemorySnapshot* stack_snapshot = thread_snapshot->Stack();
   if (stack_snapshot && stack_snapshot->Size() > 0) {
-    std::unique_ptr<MinidumpMemoryWriter> stack =
-        MinidumpMemoryWriter::CreateFromSnapshot(stack_snapshot);
+    std::unique_ptr<SnapshotMinidumpMemoryWriter> stack(
+        new SnapshotMinidumpMemoryWriter(stack_snapshot));
     SetStack(std::move(stack));
   }
 
@@ -67,7 +67,7 @@ const MINIDUMP_THREAD* MinidumpThreadWriter::MinidumpThread() const {
 }
 
 void MinidumpThreadWriter::SetStack(
-    std::unique_ptr<MinidumpMemoryWriter> stack) {
+    std::unique_ptr<SnapshotMinidumpMemoryWriter> stack) {
   DCHECK_EQ(state(), kStateMutable);
 
   stack_ = std::move(stack);
@@ -147,7 +147,7 @@ void MinidumpThreadListWriter::InitializeFromSnapshot(
   BuildMinidumpThreadIDMap(thread_snapshots, thread_id_map);
 
   for (const ThreadSnapshot* thread_snapshot : thread_snapshots) {
-    auto thread = base::WrapUnique(new MinidumpThreadWriter());
+    auto thread = std::make_unique<MinidumpThreadWriter>();
     thread->InitializeFromSnapshot(thread_snapshot, thread_id_map);
     AddThread(std::move(thread));
   }
@@ -171,13 +171,13 @@ void MinidumpThreadListWriter::AddThread(
   DCHECK_EQ(state(), kStateMutable);
 
   if (memory_list_writer_) {
-    MinidumpMemoryWriter* stack = thread->Stack();
+    SnapshotMinidumpMemoryWriter* stack = thread->Stack();
     if (stack) {
-      memory_list_writer_->AddExtraMemory(stack);
+      memory_list_writer_->AddNonOwnedMemory(stack);
     }
   }
 
-  threads_.push_back(thread.release());
+  threads_.push_back(std::move(thread));
 }
 
 bool MinidumpThreadListWriter::Freeze() {
@@ -206,8 +206,8 @@ std::vector<internal::MinidumpWritable*> MinidumpThreadListWriter::Children() {
   DCHECK_GE(state(), kStateFrozen);
 
   std::vector<MinidumpWritable*> children;
-  for (MinidumpThreadWriter* thread : threads_) {
-    children.push_back(thread);
+  for (const auto& thread : threads_) {
+    children.push_back(thread.get());
   }
 
   return children;
@@ -221,7 +221,7 @@ bool MinidumpThreadListWriter::WriteObject(FileWriterInterface* file_writer) {
   iov.iov_len = sizeof(thread_list_base_);
   std::vector<WritableIoVec> iovecs(1, iov);
 
-  for (const MinidumpThreadWriter* thread : threads_) {
+  for (const auto& thread : threads_) {
     iov.iov_base = thread->MinidumpThread();
     iov.iov_len = sizeof(MINIDUMP_THREAD);
     iovecs.push_back(iov);

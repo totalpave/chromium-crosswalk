@@ -5,8 +5,6 @@
 #ifndef UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_DRAG_DROP_CLIENT_AURAX11_H_
 #define UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_DRAG_DROP_CLIENT_AURAX11_H_
 
-#include <X11/Xlib.h>
-
 #include <memory>
 #include <set>
 #include <vector>
@@ -15,18 +13,19 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
+#include "ui/aura/client/drag_drop_client.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/x/x11_atom_cache.h"
+#include "ui/gfx/x/x11.h"
 #include "ui/views/views_export.h"
 #include "ui/views/widget/desktop_aura/x11_move_loop_delegate.h"
-#include "ui/wm/public/drag_drop_client.h"
 
 namespace aura {
 namespace client {
+class DragDropClientObserver;
 class DragDropDelegate;
 }
 }
@@ -37,7 +36,6 @@ class Point;
 }
 
 namespace ui {
-class DragSource;
 class DropTargetEvent;
 class OSExchangeData;
 class OSExchangeDataProviderAuraX11;
@@ -60,7 +58,7 @@ class VIEWS_EXPORT DesktopDragDropClientAuraX11
   DesktopDragDropClientAuraX11(
       aura::Window* root_window,
       views::DesktopNativeCursorManager* cursor_manager,
-      Display* xdisplay,
+      ::Display* xdisplay,
       ::Window xwindow);
   ~DesktopDragDropClientAuraX11() override;
 
@@ -89,10 +87,10 @@ class VIEWS_EXPORT DesktopDragDropClientAuraX11
                        const gfx::Point& screen_location,
                        int operation,
                        ui::DragDropTypes::DragEventSource source) override;
-  void DragUpdate(aura::Window* target, const ui::LocatedEvent& event) override;
-  void Drop(aura::Window* target, const ui::LocatedEvent& event) override;
   void DragCancel() override;
   bool IsDragDropInProgress() override;
+  void AddObserver(aura::client::DragDropClientObserver* observer) override;
+  void RemoveObserver(aura::client::DragDropClientObserver* observer) override;
 
   // Overridden from aura::WindowObserver:
   void OnWindowDestroyed(aura::Window* window) override;
@@ -204,7 +202,7 @@ class VIEWS_EXPORT DesktopDragDropClientAuraX11
   // with alpha > 32).
   bool IsValidDragImage(const gfx::ImageSkia& image);
 
-  // A nested message loop that notifies this object of events through the
+  // A nested run loop that notifies this object of events through the
   // X11MoveLoopDelegate interface.
   std::unique_ptr<X11MoveLoop> move_loop_;
 
@@ -212,10 +210,8 @@ class VIEWS_EXPORT DesktopDragDropClientAuraX11
 
   DesktopNativeCursorManager* cursor_manager_;
 
-  Display* xdisplay_;
+  ::Display* xdisplay_;
   ::Window xwindow_;
-
-  ui::X11AtomCache atom_cache_;
 
   // Target side information.
   class X11DragContext;

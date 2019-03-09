@@ -10,11 +10,10 @@
 #include <memory>
 #include <vector>
 
-#include "third_party/WebKit/public/platform/WebCrypto.h"
+#include "third_party/blink/public/platform/web_crypto.h"
 
 namespace webcrypto {
 
-class AlgorithmImplementation;
 class CryptoData;
 class GenerateKeyResult;
 class Status;

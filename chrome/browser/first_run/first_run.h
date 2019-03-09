@@ -10,7 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/installer/util/master_preferences.h"
 
 class GURL;
 class Profile;
@@ -18,6 +20,10 @@ class Profile;
 namespace base {
 class CommandLine;
 class FilePath;
+}
+
+namespace content {
+class WebContents;
 }
 
 namespace user_prefs {
@@ -42,21 +48,6 @@ enum AutoImportState {
   AUTO_IMPORT_BOOKMARKS_FILE_IMPORTED = 1 << 2,
 };
 
-enum FirstRunBubbleMetric {
-  FIRST_RUN_BUBBLE_SHOWN = 0,       // The search engine bubble was shown.
-  FIRST_RUN_BUBBLE_CHANGE_INVOKED,  // The bubble's "Change" was invoked.
-  NUM_FIRST_RUN_BUBBLE_METRICS
-};
-
-// Options for the first run bubble. The default is FIRST_RUN_BUBBLE_DONT_SHOW.
-// FIRST_RUN_BUBBLE_SUPPRESS is stronger in that FIRST_RUN_BUBBLE_SHOW should
-// never be set once FIRST_RUN_BUBBLE_SUPPRESS is set.
-enum FirstRunBubbleOptions {
-  FIRST_RUN_BUBBLE_DONT_SHOW,
-  FIRST_RUN_BUBBLE_SUPPRESS,
-  FIRST_RUN_BUBBLE_SHOW,
-};
-
 enum ProcessMasterPreferencesResult {
   FIRST_RUN_PROCEED = 0,  // Proceed with first run.
   EULA_EXIT_NOW,          // Should immediately exit due to EULA flow.
@@ -71,23 +62,20 @@ struct MasterPrefs {
   // remove items from here which are being stored temporarily only to be later
   // dumped into local_state. Also see related TODO in chrome_browser_main.cc.
 
-  int ping_delay;
-  bool homepage_defined;
-  int do_import_items;
-  int dont_import_items;
-  bool make_chrome_default_for_user;
-  bool suppress_first_run_default_browser_prompt;
-  bool welcome_page_on_os_upgrade_enabled;
+  bool make_chrome_default_for_user = false;
+  bool suppress_first_run_default_browser_prompt = false;
+  bool welcome_page_on_os_upgrade_enabled = true;
   std::vector<GURL> new_tabs;
   std::vector<GURL> bookmarks;
   std::string import_bookmarks_path;
-  std::string compressed_variations_seed;
-  std::string variations_seed;
-  std::string variations_seed_signature;
   std::string suppress_default_browser_prompt_for_version;
 };
 
-// Returns true if this is the first time chrome is run for this user.
+void RegisterProfilePrefs(
+    user_prefs::PrefRegistrySyncable* registry);
+
+// Returns true if Chrome should behave as if this is the first time Chrome is
+// run for this user.
 bool IsChromeFirstRun();
 
 #if defined(OS_MACOSX)
@@ -111,18 +99,13 @@ bool IsMetricsReportingOptIn();
 // (http://crbug.com/264694).
 void CreateSentinelIfNeeded();
 
-// Get RLZ ping delay pref name.
-std::string GetPingDelayPrefName();
+// Returns the first run sentinel creation time. This only requires I/O
+// permission on the sequence it is first called on.
+base::Time GetFirstRunSentinelCreationTime();
 
-// Register user preferences used by the MasterPrefs structure.
-void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
-
-// Sets the kShowFirstRunBubbleOption local state pref so that the browser
-// shows the bubble once the main message loop gets going (or refrains from
-// showing the bubble, if |show_bubble| is not FIRST_RUN_BUBBLE_SHOW).
-// Once FIRST_RUN_BUBBLE_SUPPRESS is set, no other value can be set.
-// Returns false if the pref service could not be retrieved.
-bool SetShowFirstRunBubblePref(FirstRunBubbleOptions show_bubble_option);
+// Resets the first run status and cached first run sentinel creation time.
+// This is needed for unit tests which are runned in the same process.
+void ResetCachedSentinelDataForTesting();
 
 // Sets a flag that will cause ShouldShowWelcomePage to return true
 // exactly once, so that the browser loads the welcome tab once the
@@ -134,6 +117,13 @@ void SetShouldShowWelcomePage();
 // This will return true only once: The first time it is called after
 // SetShouldShowWelcomePage() is called.
 bool ShouldShowWelcomePage();
+
+// Returns true if |contents| hosts one of the welcome pages.
+bool IsOnWelcomePage(content::WebContents* contents);
+
+// Iterates over the given tabs, replacing "magic words" designated for
+// use in Master Preferences files with corresponding URLs.
+std::vector<GURL> ProcessMasterPrefsTabs(const std::vector<GURL>& tabs);
 
 // Sets a flag that will cause ShouldDoPersonalDataManagerFirstRun()
 // to return true exactly once, so that the browser loads
@@ -147,16 +137,10 @@ void SetShouldDoPersonalDataManagerFirstRun();
 // SetShouldDoPersonalDataManagerFirstRun() is called.
 bool ShouldDoPersonalDataManagerFirstRun();
 
-// Log a metric for the "FirstRun.SearchEngineBubble" histogram.
-void LogFirstRunMetric(FirstRunBubbleMetric metric);
-
-// Automatically import history and home page (and search engine, if
-// ShouldShowSearchEngineDialog is true). Also imports bookmarks from file if
+// Automatically imports items requested by |profile|'s configuration (sum of
+// policies and master prefs). Also imports bookmarks from file if
 // |import_bookmarks_path| is not empty.
 void AutoImport(Profile* profile,
-                bool homepage_defined,
-                int import_items,
-                int dont_import_items,
                 const std::string& import_bookmarks_path);
 
 // Does remaining first run tasks. This can pop the first run consent dialog on
@@ -171,6 +155,11 @@ uint16_t auto_import_state();
 
 // Set a master preferences file path that overrides platform defaults.
 void SetMasterPrefsPathForTesting(const base::FilePath& master_prefs);
+
+// Loads master preferences from the master preference file into the installer
+// master preferences. Returns the pointer to installer::MasterPreferences
+// object if successful; otherwise, returns nullptr.
+std::unique_ptr<installer::MasterPreferences> LoadMasterPrefs();
 
 // The master_preferences is a JSON file with the same entries as the
 // 'Default\Preferences' file. This function locates this file from a standard
@@ -187,6 +176,7 @@ void SetMasterPrefsPathForTesting(const base::FilePath& master_prefs);
 // 'master_preferences' file.
 ProcessMasterPreferencesResult ProcessMasterPreferences(
     const base::FilePath& user_data_dir,
+    std::unique_ptr<installer::MasterPreferences> install_prefs,
     MasterPrefs* out_prefs);
 
 }  // namespace first_run

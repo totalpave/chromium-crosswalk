@@ -7,165 +7,135 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <utility>
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ssl/chrome_security_state_model_client.h"
-#include "chrome/browser/usb/usb_chooser_context.h"
-#include "chrome/browser/usb/usb_chooser_context_factory.h"
-#include "chrome/browser/usb/web_usb_histograms.h"
+#include "chrome/browser/ssl/security_state_tab_helper.h"
+#include "chrome/browser/vr/vr_tab_helper.h"
 #include "chrome/common/url_constants.h"
+#include "components/security_state/core/security_state.h"
 #include "components/url_formatter/elide_url.h"
-#include "content/public/browser/android/content_view_core.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "device/core/device_client.h"
-#include "device/usb/mojo/type_converters.h"
-#include "device/usb/usb_device.h"
-#include "device/usb/usb_device_filter.h"
-#include "device/usb/webusb_descriptors.h"
+#include "device/vr/buildflags/buildflags.h"
 #include "jni/UsbChooserDialog_jni.h"
 #include "ui/android/window_android.h"
 #include "url/gurl.h"
 
-using device::UsbDevice;
-
-namespace {
-
-void OnDevicePermissionRequestComplete(
-    scoped_refptr<UsbDevice> device,
-    const device::usb::ChooserService::GetPermissionCallback& callback,
-    bool granted) {
-  device::usb::DeviceInfoPtr device_info;
-  if (granted)
-    device_info = device::usb::DeviceInfo::From(*device);
-  callback.Run(std::move(device_info));
-}
-
-}  // namespace
-
-UsbChooserDialogAndroid::UsbChooserDialogAndroid(
-    mojo::Array<device::usb::DeviceFilterPtr> device_filters,
+// static
+std::unique_ptr<UsbChooserDialogAndroid> UsbChooserDialogAndroid::Create(
     content::RenderFrameHost* render_frame_host,
-    const device::usb::ChooserService::GetPermissionCallback& callback)
-    : render_frame_host_(render_frame_host),
-      callback_(callback),
-      usb_service_observer_(this),
-      weak_factory_(this) {
-  device::UsbService* usb_service =
-      device::DeviceClient::Get()->GetUsbService();
-  if (!usb_service)
-    return;
+    std::unique_ptr<ChooserController> controller,
+    base::OnceClosure on_close) {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(render_frame_host);
 
-  if (!usb_service_observer_.IsObserving(usb_service))
-    usb_service_observer_.Add(usb_service);
-
-  if (!device_filters.is_null())
-    filters_ = device_filters.To<std::vector<device::UsbDeviceFilter>>();
+  // TODO(asimjour): This should be removed once we have proper
+  // implementation of USB chooser in VR.
+  if (vr::VrTabHelper::IsUiSuppressedInVr(
+          web_contents, vr::UiSuppressedElement::kUsbChooser)) {
+    return nullptr;
+  }
 
   // Create (and show) the UsbChooser dialog.
-  content::WebContents* web_contents =
-      content::WebContents::FromRenderFrameHost(render_frame_host_);
   base::android::ScopedJavaLocalRef<jobject> window_android =
-      content::ContentViewCore::FromWebContents(web_contents)
-          ->GetWindowAndroid()
-          ->GetJavaObject();
+      web_contents->GetNativeView()->GetWindowAndroid()->GetJavaObject();
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jstring> origin_string =
       base::android::ConvertUTF16ToJavaString(
-          env, url_formatter::FormatUrlForSecurityDisplay(GURL(
-                   render_frame_host->GetLastCommittedOrigin().Serialize())));
-  ChromeSecurityStateModelClient* security_model_client =
-      ChromeSecurityStateModelClient::FromWebContents(web_contents);
-  DCHECK(security_model_client);
-  java_dialog_.Reset(Java_UsbChooserDialog_create(
-      env, window_android.obj(), origin_string.obj(),
-      security_model_client->GetSecurityInfo().security_level,
-      reinterpret_cast<intptr_t>(this)));
+          env, url_formatter::FormatOriginForSecurityDisplay(
+                   render_frame_host->GetLastCommittedOrigin()));
+  SecurityStateTabHelper* helper =
+      SecurityStateTabHelper::FromWebContents(web_contents);
+  DCHECK(helper);
+  security_state::SecurityInfo security_info;
+  helper->GetSecurityInfo(&security_info);
 
-  if (!java_dialog_.is_null()) {
-    usb_service->GetDevices(
-        base::Bind(&UsbChooserDialogAndroid::GotUsbDeviceList,
-                   weak_factory_.GetWeakPtr()));
-  }
+  auto dialog = std::make_unique<UsbChooserDialogAndroid>(std::move(controller),
+                                                          std::move(on_close));
+  dialog->java_dialog_.Reset(Java_UsbChooserDialog_create(
+      env, window_android, origin_string, security_info.security_level,
+      reinterpret_cast<intptr_t>(dialog.get())));
+  if (dialog->java_dialog_.is_null())
+    return nullptr;
+
+  return dialog;
+}
+
+UsbChooserDialogAndroid::UsbChooserDialogAndroid(
+    std::unique_ptr<ChooserController> controller,
+    base::OnceClosure on_close)
+    : controller_(std::move(controller)), on_close_(std::move(on_close)) {
+  controller_->set_view(this);
 }
 
 UsbChooserDialogAndroid::~UsbChooserDialogAndroid() {
-  if (!callback_.is_null())
-    callback_.Run(nullptr);
-
   if (!java_dialog_.is_null()) {
     Java_UsbChooserDialog_closeDialog(base::android::AttachCurrentThread(),
-                                      java_dialog_.obj());
+                                      java_dialog_);
   }
+  controller_->set_view(nullptr);
 }
 
-void UsbChooserDialogAndroid::OnDeviceAdded(scoped_refptr<UsbDevice> device) {
-  if (DisplayDevice(device)) {
-    AddDeviceToChooserDialog(device);
-    devices_.push_back(device);
-  }
+void UsbChooserDialogAndroid::OnOptionsInitialized() {
+  for (size_t i = 0; i < controller_->NumOptions(); ++i)
+    OnOptionAdded(i);
+
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_UsbChooserDialog_setIdleState(env, java_dialog_);
 }
 
-void UsbChooserDialogAndroid::OnDeviceRemoved(scoped_refptr<UsbDevice> device) {
-  auto it = std::find(devices_.begin(), devices_.end(), device);
-  if (it != devices_.end()) {
-    RemoveDeviceFromChooserDialog(device);
-    devices_.erase(it);
-  }
+void UsbChooserDialogAndroid::OnOptionAdded(size_t index) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+
+  DCHECK_LE(index, item_id_map_.size());
+  int item_id = next_item_id_++;
+  std::string item_id_str = base::NumberToString(item_id);
+  item_id_map_.insert(item_id_map_.begin() + index, item_id_str);
+
+  base::string16 device_name = controller_->GetOption(index);
+  Java_UsbChooserDialog_addDevice(
+      env, java_dialog_,
+      base::android::ConvertUTF8ToJavaString(env, item_id_str),
+      base::android::ConvertUTF16ToJavaString(env, device_name));
 }
 
-void UsbChooserDialogAndroid::Select(const std::string& guid) {
-  for (size_t i = 0; i < devices_.size(); ++i) {
-    scoped_refptr<UsbDevice>& device = devices_[i];
-    if (device->guid() == guid) {
-      content::WebContents* web_contents =
-          content::WebContents::FromRenderFrameHost(render_frame_host_);
-      GURL embedding_origin =
-          web_contents->GetMainFrame()->GetLastCommittedURL().GetOrigin();
-      Profile* profile =
-          Profile::FromBrowserContext(web_contents->GetBrowserContext());
-      UsbChooserContext* chooser_context =
-          UsbChooserContextFactory::GetForProfile(profile);
-      chooser_context->GrantDevicePermission(
-          render_frame_host_->GetLastCommittedURL().GetOrigin(),
-          embedding_origin, device->guid());
+void UsbChooserDialogAndroid::OnOptionRemoved(size_t index) {
+  JNIEnv* env = base::android::AttachCurrentThread();
 
-      device->RequestPermission(
-          base::Bind(&OnDevicePermissionRequestComplete, device, callback_));
-      callback_.Reset();  // Reset |callback_| so that it is only run once.
+  DCHECK_LT(index, item_id_map_.size());
+  std::string item_id = item_id_map_[index];
+  item_id_map_.erase(item_id_map_.begin() + index);
 
-      Java_UsbChooserDialog_closeDialog(base::android::AttachCurrentThread(),
-                                        java_dialog_.obj());
-      RecordWebUsbChooserClosure(
-          device->serial_number().empty()
-              ? WEBUSB_CHOOSER_CLOSED_EPHEMERAL_PERMISSION_GRANTED
-              : WEBUSB_CHOOSER_CLOSED_PERMISSION_GRANTED);
-      return;
-    }
-  }
+  Java_UsbChooserDialog_removeDevice(
+      env, java_dialog_, base::android::ConvertUTF8ToJavaString(env, item_id));
 }
 
-void UsbChooserDialogAndroid::Cancel() {
-  DCHECK(!callback_.is_null());
-  callback_.Run(nullptr);
-  callback_.Reset();  // Reset |callback_| so that it is only run once.
-  Java_UsbChooserDialog_closeDialog(base::android::AttachCurrentThread(),
-                                    java_dialog_.obj());
+void UsbChooserDialogAndroid::OnOptionUpdated(size_t index) {
+  NOTREACHED();
+}
 
-  RecordWebUsbChooserClosure(devices_.size() == 0
-                                 ? WEBUSB_CHOOSER_CLOSED_CANCELLED_NO_DEVICES
-                                 : WEBUSB_CHOOSER_CLOSED_CANCELLED);
+void UsbChooserDialogAndroid::OnAdapterEnabledChanged(bool enabled) {
+  NOTREACHED();
+}
+
+void UsbChooserDialogAndroid::OnRefreshStateChanged(bool refreshing) {
+  NOTREACHED();
 }
 
 void UsbChooserDialogAndroid::OnItemSelected(
     JNIEnv* env,
     const base::android::JavaParamRef<jobject>& obj,
-    const base::android::JavaParamRef<jstring>& device_id) {
-  Select(base::android::ConvertJavaStringToUTF8(env, device_id));
+    const base::android::JavaParamRef<jstring>& item_id_jstring) {
+  std::string item_id =
+      base::android::ConvertJavaStringToUTF8(env, item_id_jstring);
+  auto it = std::find(item_id_map_.begin(), item_id_map_.end(), item_id);
+  DCHECK(it != item_id_map_.end());
+  controller_->Select({std::distance(item_id_map_.begin(), it)});
+  base::ResetAndReturn(&on_close_).Run();
 }
 
 void UsbChooserDialogAndroid::OnDialogCancelled(
@@ -177,72 +147,11 @@ void UsbChooserDialogAndroid::OnDialogCancelled(
 void UsbChooserDialogAndroid::LoadUsbHelpPage(
     JNIEnv* env,
     const base::android::JavaParamRef<jobject>& obj) {
-  OpenUrl(chrome::kChooserUsbOverviewURL);
+  controller_->OpenHelpCenterUrl();
   Cancel();
 }
 
-// Get a list of devices that can be shown in the chooser bubble UI for
-// user to grant permsssion.
-void UsbChooserDialogAndroid::GotUsbDeviceList(
-    const std::vector<scoped_refptr<UsbDevice>>& devices) {
-  for (const auto& device : devices) {
-    if (DisplayDevice(device)) {
-      AddDeviceToChooserDialog(device);
-      devices_.push_back(device);
-    }
-  }
-
-  JNIEnv* env = base::android::AttachCurrentThread();
-  Java_UsbChooserDialog_setIdleState(env, java_dialog_.obj());
-}
-
-void UsbChooserDialogAndroid::AddDeviceToChooserDialog(
-    scoped_refptr<UsbDevice> device) const {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  base::android::ScopedJavaLocalRef<jstring> device_guid =
-      base::android::ConvertUTF8ToJavaString(env, device->guid());
-  base::android::ScopedJavaLocalRef<jstring> device_name =
-      base::android::ConvertUTF16ToJavaString(env, device->product_string());
-  Java_UsbChooserDialog_addDevice(env, java_dialog_.obj(), device_guid.obj(),
-                                  device_name.obj());
-}
-
-void UsbChooserDialogAndroid::RemoveDeviceFromChooserDialog(
-    scoped_refptr<UsbDevice> device) const {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  base::android::ScopedJavaLocalRef<jstring> device_guid =
-      base::android::ConvertUTF8ToJavaString(env, device->guid());
-  base::android::ScopedJavaLocalRef<jstring> device_name =
-      base::android::ConvertUTF16ToJavaString(env, device->product_string());
-  Java_UsbChooserDialog_removeDevice(env, java_dialog_.obj(), device_guid.obj(),
-                                     device_name.obj());
-}
-
-void UsbChooserDialogAndroid::OpenUrl(const std::string& url) {
-  content::WebContents::FromRenderFrameHost(render_frame_host_)
-      ->OpenURL(content::OpenURLParams(GURL(url), content::Referrer(),
-                                       NEW_FOREGROUND_TAB,
-                                       ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                                       false));  // is_renderer_initiated
-}
-
-bool UsbChooserDialogAndroid::DisplayDevice(
-    scoped_refptr<UsbDevice> device) const {
-  if (!device::UsbDeviceFilter::MatchesAny(device, filters_))
-    return false;
-
-  // On Android it is not possible to read the WebUSB descriptors until Chrome
-  // has been granted permission to open it. Instead we must list all devices
-  // and perform the allowed origins check after the device has been selected.
-  if (!device->permission_granted())
-    return true;
-
-  return device::FindInWebUsbAllowedOrigins(
-      device->webusb_allowed_origins(),
-      render_frame_host_->GetLastCommittedURL().GetOrigin());
-}
-
-// static
-bool UsbChooserDialogAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+void UsbChooserDialogAndroid::Cancel() {
+  controller_->Cancel();
+  base::ResetAndReturn(&on_close_).Run();
 }

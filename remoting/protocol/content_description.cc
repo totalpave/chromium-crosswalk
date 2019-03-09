@@ -11,12 +11,12 @@
 #include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "remoting/base/constants.h"
+#include "remoting/base/name_value_map.h"
 #include "remoting/protocol/authenticator.h"
-#include "remoting/protocol/name_value_map.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
-using buzz::QName;
-using buzz::XmlElement;
+using jingle_xmpp::QName;
+using jingle_xmpp::XmlElement;
 
 namespace remoting {
 namespace protocol {
@@ -35,6 +35,7 @@ const char kEventTag[] = "event";
 const char kVideoTag[] = "video";
 const char kAudioTag[] = "audio";
 const char kVp9ExperimentTag[] = "vp9-experiment";
+const char kH264ExperimentTag[] = "h264-experiment";
 
 const char kTransportAttr[] = "transport";
 const char kVersionAttr[] = "version";
@@ -51,6 +52,7 @@ const NameMapElement<ChannelConfig::Codec> kCodecs[] = {
   { ChannelConfig::CODEC_VERBATIM, "verbatim" },
   { ChannelConfig::CODEC_VP8, "vp8" },
   { ChannelConfig::CODEC_VP9, "vp9" },
+  { ChannelConfig::CODEC_H264, "h264" },
   { ChannelConfig::CODEC_ZIP, "zip" },
   { ChannelConfig::CODEC_OPUS, "opus" },
   { ChannelConfig::CODEC_SPEEX, "speex" },
@@ -69,7 +71,7 @@ XmlElement* FormatChannelConfig(const ChannelConfig& config,
 
   if (config.transport != ChannelConfig::TRANSPORT_NONE) {
     result->AddAttr(QName(kDefaultNs, kVersionAttr),
-                    base::IntToString(config.version));
+                    base::NumberToString(config.version));
 
     if (config.codec != ChannelConfig::CODEC_UNDEFINED) {
       result->AddAttr(QName(kDefaultNs, kCodecAttr),
@@ -117,11 +119,11 @@ bool ParseChannelConfig(const XmlElement* element, bool codec_required,
 
 ContentDescription::ContentDescription(
     std::unique_ptr<CandidateSessionConfig> config,
-    std::unique_ptr<buzz::XmlElement> authenticator_message)
+    std::unique_ptr<jingle_xmpp::XmlElement> authenticator_message)
     : candidate_config_(std::move(config)),
       authenticator_message_(std::move(authenticator_message)) {}
 
-ContentDescription::~ContentDescription() { }
+ContentDescription::~ContentDescription() = default;
 
 // ToXml() creates content description for chromoting session. The
 // description looks as follows:
@@ -142,7 +144,7 @@ XmlElement* ContentDescription::ToXml() const {
 
   if (config()->ice_supported()) {
     root->AddElement(
-        new buzz::XmlElement(QName(kChromotingXmlNamespace, kStandardIceTag)));
+        new jingle_xmpp::XmlElement(QName(kChromotingXmlNamespace, kStandardIceTag)));
 
     for (const auto& channel_config : config()->control_configs()) {
       root->AddElement(FormatChannelConfig(channel_config, kControlTag));
@@ -230,6 +232,11 @@ std::unique_ptr<ContentDescription> ContentDescription::ParseXml(
   // Check if VP9 experiment is enabled.
   if (element->FirstNamed(QName(kChromotingXmlNamespace, kVp9ExperimentTag))) {
     config->set_vp9_experiment_enabled(true);
+  }
+
+  // Check if H264 experiment is enabled.
+  if (element->FirstNamed(QName(kChromotingXmlNamespace, kH264ExperimentTag))) {
+    config->set_h264_experiment_enabled(true);
   }
 
   std::unique_ptr<XmlElement> authenticator_message;

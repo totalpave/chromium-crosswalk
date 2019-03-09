@@ -29,17 +29,25 @@ class InfoBarManager;
 
 namespace translate {
 
-class TranslateClient;
+// Feature flag for "Translate Compact Infobar UI" project.
+extern const base::Feature kTranslateCompactUI;
+
 class TranslateDriver;
 class TranslateManager;
 
 class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
  public:
-  // The types of background color animations.
-  enum BackgroundAnimationType {
-    NONE,
-    NORMAL_TO_ERROR,
-    ERROR_TO_NORMAL
+  // An observer to handle different translate steps' UI changes.
+  class Observer {
+   public:
+    // Handles UI changes on the translate step given.
+    virtual void OnTranslateStepChanged(translate::TranslateStep step,
+                                        TranslateErrors::Type error_type) = 0;
+    // Return whether user declined translate service.
+    virtual bool IsDeclinedByUser() = 0;
+
+   protected:
+    virtual ~Observer() {}
   };
 
   static const size_t kNoIndex;
@@ -69,17 +77,13 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
                      bool triggered_from_menu);
 
   // Returns the number of languages supported.
-  size_t num_languages() const { return ui_delegate_.GetNumberOfLanguages(); }
+  virtual size_t num_languages() const;
 
   // Returns the ISO code for the language at |index|.
-  std::string language_code_at(size_t index) const {
-    return ui_delegate_.GetLanguageCodeAt(index);
-  }
+  virtual std::string language_code_at(size_t index) const;
 
   // Returns the displayable name for the language at |index|.
-  base::string16 language_name_at(size_t index) const {
-    return ui_delegate_.GetLanguageNameAt(index);
-  }
+  virtual base::string16 language_name_at(size_t index) const;
 
   translate::TranslateStep translate_step() const { return step_; }
 
@@ -91,9 +95,7 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
     return ui_delegate_.GetOriginalLanguageCode();
   }
 
-  base::string16 original_language_name() const {
-    return language_name_at(ui_delegate_.GetOriginalLanguageIndex());
-  }
+  virtual base::string16 original_language_name() const;
 
   void UpdateOriginalLanguage(const std::string& language_code);
 
@@ -119,14 +121,9 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
     return triggered_from_menu_;
   }
 
-  // Returns what kind of background fading effect the infobar should use when
-  // its is shown.
-  BackgroundAnimationType background_animation_type() const {
-    return background_animation_;
-  }
-
   virtual void Translate();
   virtual void RevertTranslation();
+  void RevertWithoutClosingInfobar();
   void ReportLanguageDetectionError();
 
   // Called when the user declines to translate a page, by either closing the
@@ -134,11 +131,11 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
   virtual void TranslationDeclined();
 
   // Methods called by the Options menu delegate.
-  virtual bool IsTranslatableLanguageByPrefs();
+  virtual bool IsTranslatableLanguageByPrefs() const;
   virtual void ToggleTranslatableLanguageByPrefs();
-  virtual bool IsSiteBlacklisted();
+  virtual bool IsSiteBlacklisted() const;
   virtual void ToggleSiteBlacklist();
-  virtual bool ShouldAlwaysTranslate();
+  virtual bool ShouldAlwaysTranslate() const;
   virtual void ToggleAlwaysTranslate();
 
   // Methods called by the extra-buttons that can appear on the "before
@@ -147,6 +144,25 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
   void AlwaysTranslatePageLanguage();
   void NeverTranslatePageLanguage();
 
+  int GetTranslationAcceptedCount();
+  int GetTranslationDeniedCount();
+
+  void ResetTranslationAcceptedCount();
+  void ResetTranslationDeniedCount();
+
+  // Returns whether "Always Translate Language" should automatically trigger.
+  // If true, this method has the side effect of mutating some prefs.
+  bool ShouldAutoAlwaysTranslate();
+  // Returns whether "Never Translate Language" should automatically trigger.
+  // If true, this method has the side effect of mutating some prefs.
+  bool ShouldAutoNeverTranslate();
+
+  int GetTranslationAutoAlwaysCount();
+  int GetTranslationAutoNeverCount();
+
+  void IncrementTranslationAutoAlwaysCount();
+  void IncrementTranslationAutoNeverCount();
+
   // The following methods are called by the infobar that displays the status
   // while translating and also the one displaying the error message.
   base::string16 GetMessageInfoBarText();
@@ -154,13 +170,11 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
   void MessageInfoBarButtonPressed();
   bool ShouldShowMessageInfoBarButton();
 
-  // Called by the before translate infobar to figure-out if it should show
-  // an extra shortcut to let the user black-list/white-list that language
-  // (based on how many times the user accepted/declined translation).
-  // The shortcut itself is platform specific, it can be a button or a new bar
-  // for example.
-  bool ShouldShowNeverTranslateShortcut();
+  // Returns true if the infobar should offer a (platform-specific) shortcut to
+  // allow the user to always/never translate the language, when we think the
+  // user wants that functionality.
   bool ShouldShowAlwaysTranslateShortcut();
+  bool ShouldShowNeverTranslateShortcut();
 
 #if defined(OS_IOS)
   // Shows the Infobar offering to never translate the language or the site.
@@ -187,12 +201,20 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
   // May return NULL if the driver has been destroyed.
   TranslateDriver* GetTranslateDriver();
 
+  // Set a observer.
+  virtual void SetObserver(Observer* observer);
+
+  // InfoBarDelegate:
+  infobars::InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
+  int GetIconId() const override;
+  void InfoBarDismissed() override;
+  TranslateInfoBarDelegate* AsTranslateInfoBarDelegate() override;
+
  protected:
   TranslateInfoBarDelegate(
       const base::WeakPtr<TranslateManager>& translate_manager,
       bool is_off_the_record,
       translate::TranslateStep step,
-      TranslateInfoBarDelegate* old_delegate,
       const std::string& original_language,
       const std::string& target_language,
       TranslateErrors::Type error_type,
@@ -202,19 +224,8 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
   friend class TranslationInfoBarTest;
   typedef std::pair<std::string, base::string16> LanguageNamePair;
 
-  // InfoBarDelegate:
-  Type GetInfoBarType() const override;
-  infobars::InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
-  int GetIconId() const override;
-  void InfoBarDismissed() override;
-  TranslateInfoBarDelegate* AsTranslateInfoBarDelegate() override;
-
   bool is_off_the_record_;
   translate::TranslateStep step_;
-
-  // The type of fading animation if any that should be used when showing this
-  // infobar.
-  BackgroundAnimationType background_animation_;
 
   TranslateUIDelegate ui_delegate_;
   base::WeakPtr<TranslateManager> translate_manager_;
@@ -228,6 +239,11 @@ class TranslateInfoBarDelegate : public infobars::InfoBarDelegate {
   // Whether the translation was triggered via a menu click vs automatically
   // (due to language detection, preferences...)
   bool triggered_from_menu_;
+
+  // A observer to handle front-end changes on different steps.
+  // It's only used when we try to reuse the existing UI.
+  Observer* observer_;
+
   DISALLOW_COPY_AND_ASSIGN(TranslateInfoBarDelegate);
 };
 

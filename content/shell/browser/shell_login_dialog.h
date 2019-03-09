@@ -5,10 +5,16 @@
 #ifndef CONTENT_SHELL_BROWSER_SHELL_LOGIN_DIALOG_H_
 #define CONTENT_SHELL_BROWSER_SHELL_LOGIN_DIALOG_H_
 
+#include <memory>
+
+#include "base/callback.h"
 #include "base/compiler_specific.h"
+#include "base/memory/weak_ptr.h"
+#include "base/optional.h"
 #include "base/strings/string16.h"
 #include "build/build_config.h"
-#include "content/public/browser/resource_dispatcher_host_login_delegate.h"
+#include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/login_delegate.h"
 
 #if defined(OS_MACOSX)
 #if __OBJC__
@@ -20,69 +26,55 @@ class ShellLoginDialogHelper;
 
 namespace net {
 class AuthChallengeInfo;
-class URLRequest;
 }
 
 namespace content {
 
 // This class provides a dialog box to ask the user for credentials. Useful in
-// ResourceDispatcherHostDelegate::CreateLoginDelegate.
-class ShellLoginDialog : public ResourceDispatcherHostLoginDelegate {
+// ContentBrowserClient::CreateLoginDelegate.
+class ShellLoginDialog : public LoginDelegate {
  public:
-  // Threading: IO thread.
-  ShellLoginDialog(net::AuthChallengeInfo* auth_info, net::URLRequest* request);
+  static std::unique_ptr<ShellLoginDialog> Create(
+      net::AuthChallengeInfo* auth_info,
+      LoginAuthRequiredCallback auth_required_callback);
 
-  // ResourceDispatcherHostLoginDelegate implementation:
-  // Threading: IO thread.
-  void OnRequestCancelled() override;
+  explicit ShellLoginDialog(LoginAuthRequiredCallback auth_required_callback);
+  ~ShellLoginDialog() override;
 
   // Called by the platform specific code when the user responds. Public because
   // the aforementioned platform specific code may not have access to private
   // members. Not to be called from client code.
-  // Threading: UI thread.
   void UserAcceptedAuth(const base::string16& username,
                         const base::string16& password);
   void UserCancelledAuth();
 
- protected:
-  // Threading: any
-  ~ShellLoginDialog() override;
-
  private:
+  void Init(net::AuthChallengeInfo* auth_info);
+
   // All the methods that begin with Platform need to be implemented by the
   // platform specific LoginDialog implementation.
   // Creates the dialog.
-  // Threading: UI thread.
   void PlatformCreateDialog(const base::string16& message);
   // Called from the destructor to let each platform do any necessary cleanup.
-  // Threading: UI thread.
   void PlatformCleanUp();
   // Called from OnRequestCancelled if the request was cancelled.
-  // Threading: UI thread.
   void PlatformRequestCancelled();
 
   // Sets up dialog creation.
-  // Threading: UI thread.
   void PrepDialog(const base::string16& host, const base::string16& realm);
 
   // Sends the authentication to the requester.
-  // Threading: IO thread.
   void SendAuthToRequester(bool success,
                            const base::string16& username,
                            const base::string16& password);
 
-  // Who/where/what asked for the authentication.
-  // Threading: IO thread.
-  scoped_refptr<net::AuthChallengeInfo> auth_info_;
-
-  // The request that wants login data.
-  // Threading: IO thread.
-  net::URLRequest* request_;
+  LoginAuthRequiredCallback auth_required_callback_;
 
 #if defined(OS_MACOSX)
   // Threading: UI thread.
   ShellLoginDialogHelper* helper_;  // owned
 #endif
+  base::WeakPtrFactory<ShellLoginDialog> weak_factory_;
 };
 
 }  // namespace content

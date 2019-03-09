@@ -5,12 +5,16 @@
 #include "chrome/browser/profiles/profile_android.h"
 
 #include "base/android/jni_android.h"
+#include "base/memory/ptr_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_destroyer.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "jni/Profile_jni.h"
 
 using base::android::AttachCurrentThread;
+using base::android::JavaParamRef;
+using base::android::JavaRef;
+using base::android::ScopedJavaLocalRef;
 
 namespace {
 const char kProfileAndroidKey[] = "profile_android";
@@ -25,14 +29,14 @@ ProfileAndroid* ProfileAndroid::FromProfile(Profile* profile) {
       profile->GetUserData(kProfileAndroidKey));
   if (!profile_android) {
     profile_android = new ProfileAndroid(profile);
-    profile->SetUserData(kProfileAndroidKey, profile_android);
+    profile->SetUserData(kProfileAndroidKey, base::WrapUnique(profile_android));
   }
   return profile_android;
 }
 
 // static
-Profile* ProfileAndroid::FromProfileAndroid(jobject obj) {
-  if (!obj)
+Profile* ProfileAndroid::FromProfileAndroid(const JavaRef<jobject>& obj) {
+  if (obj.is_null())
     return NULL;
 
   ProfileAndroid* profile_android = reinterpret_cast<ProfileAndroid*>(
@@ -43,13 +47,7 @@ Profile* ProfileAndroid::FromProfileAndroid(jobject obj) {
 }
 
 // static
-bool ProfileAndroid::RegisterProfileAndroid(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
-// static
-ScopedJavaLocalRef<jobject> ProfileAndroid::GetLastUsedProfile(JNIEnv* env,
-                                                               jclass clazz) {
+ScopedJavaLocalRef<jobject> ProfileAndroid::GetLastUsedProfile(JNIEnv* env) {
   Profile* profile = ProfileManager::GetLastUsedProfile();
   if (profile == NULL) {
     NOTREACHED() << "Profile not found.";
@@ -101,11 +99,15 @@ jboolean ProfileAndroid::IsOffTheRecord(JNIEnv* env,
   return profile_->IsOffTheRecord();
 }
 
-// static
-ScopedJavaLocalRef<jobject> GetLastUsedProfile(
+jboolean ProfileAndroid::IsChild(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz) {
-  return ProfileAndroid::GetLastUsedProfile(env, clazz);
+    const base::android::JavaParamRef<jobject>& obj) {
+  return profile_->IsChild();
+}
+
+// static
+ScopedJavaLocalRef<jobject> JNI_Profile_GetLastUsedProfile(JNIEnv* env) {
+  return ProfileAndroid::GetLastUsedProfile(env);
 }
 
 ProfileAndroid::ProfileAndroid(Profile* profile)
@@ -117,7 +119,7 @@ ProfileAndroid::ProfileAndroid(Profile* profile)
 }
 
 ProfileAndroid::~ProfileAndroid() {
-  Java_Profile_onNativeDestroyed(AttachCurrentThread(), obj_.obj());
+  Java_Profile_onNativeDestroyed(AttachCurrentThread(), obj_);
 }
 
 base::android::ScopedJavaLocalRef<jobject> ProfileAndroid::GetJavaObject() {

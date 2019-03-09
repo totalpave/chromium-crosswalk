@@ -7,8 +7,10 @@
 
 #include "base/files/file_path.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
-#include "ipc/ipc_channel_handle.h"
+#include "base/message_loop/message_pump_for_io.h"
+#include "mojo/public/cpp/platform/named_platform_channel.h"
+#include "mojo/public/cpp/platform/platform_channel_endpoint.h"
+#include "mojo/public/cpp/platform/platform_channel_server_endpoint.h"
 
 namespace apps {
 
@@ -16,14 +18,14 @@ namespace apps {
 // client connects to the socket, it accept()s the connection and
 // passes the new FD to the delegate. The delegate is then responsible
 // for creating a new IPC::Channel for the FD.
-class UnixDomainSocketAcceptor : public base::MessageLoopForIO::Watcher {
+class UnixDomainSocketAcceptor : public base::MessagePumpForIO::FdWatcher {
  public:
   class Delegate {
    public:
     // Called when a client connects to the factory. It is the delegate's
     // responsibility to create an IPC::Channel for the handle, or else close
     // the file descriptor contained therein.
-    virtual void OnClientConnected(const IPC::ChannelHandle& handle) = 0;
+    virtual void OnClientConnected(mojo::PlatformChannelEndpoint endpoint) = 0;
 
     // Called when an error occurs and the channel is closed.
     virtual void OnListenError() = 0;
@@ -40,15 +42,13 @@ class UnixDomainSocketAcceptor : public base::MessageLoopForIO::Watcher {
   void Close();
 
  private:
-  bool CreateSocket();
   void OnFileCanReadWithoutBlocking(int fd) override;
   void OnFileCanWriteWithoutBlocking(int fd) override;
 
-  base::MessageLoopForIO::FileDescriptorWatcher
-      server_listen_connection_watcher_;
-  base::FilePath path_;
+  base::MessagePumpForIO::FdWatchController server_listen_connection_watcher_;
+  mojo::NamedPlatformChannel::ServerName named_pipe_;
   Delegate* delegate_;
-  int listen_fd_;
+  mojo::PlatformChannelServerEndpoint listen_handle_;
 
   DISALLOW_COPY_AND_ASSIGN(UnixDomainSocketAcceptor);
 };

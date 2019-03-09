@@ -8,60 +8,95 @@
 #include <utility>
 
 #include "base/base_switches.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
-#include "base/macros.h"
+#include "base/no_destructor.h"
 #include "base/path_service.h"
-#include "base/strings/pattern.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "content/public/browser/client_certificate_delegate.h"
-#include "content/public/browser/geolocation_delegate.h"
+#include "content/public/browser/cors_exempt_headers.h"
+#include "content/public/browser/login_delegate.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/resource_dispatcher_host.h"
+#include "content/public/browser/resource_dispatcher_host_delegate.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/service_names.mojom.h"
 #include "content/public/common/url_constants.h"
+#include "content/public/common/user_agent.h"
 #include "content/public/common/web_preferences.h"
-#include "content/public/test/test_mojo_app.h"
+#include "content/public/test/test_service.h"
 #include "content/shell/browser/shell.h"
-#include "content/shell/browser/shell_access_token_store.h"
 #include "content/shell/browser/shell_browser_context.h"
 #include "content/shell/browser/shell_browser_main_parts.h"
 #include "content/shell/browser/shell_devtools_manager_delegate.h"
+#include "content/shell/browser/shell_login_dialog.h"
 #include "content/shell/browser/shell_net_log.h"
 #include "content/shell/browser/shell_quota_permission_context.h"
-#include "content/shell/browser/shell_resource_dispatcher_host_delegate.h"
+#include "content/shell/browser/shell_url_request_context_getter.h"
 #include "content/shell/browser/shell_web_contents_view_delegate_creator.h"
+#include "content/shell/common/power_monitor_test.mojom.h"
 #include "content/shell/common/shell_messages.h"
 #include "content/shell/common/shell_switches.h"
+#include "content/shell/common/web_test.mojom.h"
+#include "content/shell/common/web_test/fake_bluetooth_chooser.mojom.h"
+#include "content/shell/common/web_test/web_test_bluetooth_fake_adapter_setter.mojom.h"
+#include "content/shell/common/web_test/web_test_switches.h"
+#include "content/test/data/mojo_web_test_helper_test.mojom.h"
+#include "device/bluetooth/public/mojom/test/fake_bluetooth.mojom.h"
+#include "media/mojo/buildflags.h"
+#include "net/ssl/client_cert_identity.h"
+#include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context_getter.h"
+#include "services/network/public/cpp/features.h"
+#include "services/network/public/mojom/network_service.mojom.h"
+#include "services/service_manager/public/cpp/manifest.h"
+#include "services/service_manager/public/cpp/manifest_builder.h"
+#include "services/test/echo/public/cpp/manifest.h"
+#include "services/test/echo/public/mojom/echo.mojom.h"
+#include "storage/browser/quota/quota_settings.h"
+#include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+#include "ui/base/ui_base_features.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 #if defined(OS_ANDROID)
 #include "base/android/apk_assets.h"
 #include "base/android/path_utils.h"
-#include "components/crash/content/browser/crash_dump_manager_android.h"
+#include "components/crash/content/app/crashpad.h"
 #include "content/shell/android/shell_descriptors.h"
 #endif
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX)
+#if defined(OS_CHROMEOS)
+// TODO(https://crbug.com/784179): Remove nogncheck.
+#include "content/public/browser/context_factory.h"
+#include "content/public/browser/gpu_interface_provider_factory.h"
+#include "services/ws/public/mojom/constants.mojom.h"         // nogncheck
+#include "services/ws/test_ws/test_manifest.h"                // nogncheck
+#include "services/ws/test_ws/test_window_service_factory.h"  // nogncheck
+#include "services/ws/test_ws/test_ws.mojom.h"                // nogncheck
+#endif
+
+#if defined(OS_LINUX) || defined(OS_ANDROID)
 #include "base/debug/leak_annotations.h"
-#include "components/crash/content/app/breakpad_linux.h"
 #include "components/crash/content/browser/crash_handler_host_linux.h"
 #include "content/public/common/content_descriptors.h"
 #endif
 
 #if defined(OS_WIN)
-#include "content/common/sandbox_win.h"
 #include "sandbox/win/src/sandbox.h"
+#include "services/service_manager/sandbox/win/sandbox_win.h"
 #endif
 
-#if defined(ENABLE_MOJO_MEDIA_IN_BROWSER_PROCESS)
-#include "media/mojo/services/mojo_media_application_factory.h"  // nogncheck
+#if BUILDFLAG(ENABLE_MOJO_MEDIA_IN_BROWSER_PROCESS)
+#include "media/mojo/interfaces/constants.mojom.h"      // nogncheck
+#include "media/mojo/services/media_service_factory.h"  // nogncheck
 #endif
 
 namespace content {
@@ -69,9 +104,12 @@ namespace content {
 namespace {
 
 ShellContentBrowserClient* g_browser_client;
-bool g_swap_processes_for_redirect = false;
 
-#if defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
+#if defined(OS_ANDROID)
+int GetCrashSignalFD(const base::CommandLine& command_line) {
+  return crashpad::CrashHandlerHost::Get()->GetDeathSignalSocket();
+}
+#elif defined(OS_LINUX)
 breakpad::CrashHandlerHostLinux* CreateCrashHandlerHost(
     const std::string& process_type) {
   base::FilePath dumps_path =
@@ -95,21 +133,21 @@ int GetCrashSignalFD(const base::CommandLine& command_line) {
       command_line.GetSwitchValueASCII(switches::kProcessType);
 
   if (process_type == switches::kRendererProcess) {
-    static breakpad::CrashHandlerHostLinux* crash_handler = NULL;
+    static breakpad::CrashHandlerHostLinux* crash_handler = nullptr;
     if (!crash_handler)
       crash_handler = CreateCrashHandlerHost(process_type);
     return crash_handler->GetDeathSignalSocket();
   }
 
   if (process_type == switches::kPpapiPluginProcess) {
-    static breakpad::CrashHandlerHostLinux* crash_handler = NULL;
+    static breakpad::CrashHandlerHostLinux* crash_handler = nullptr;
     if (!crash_handler)
       crash_handler = CreateCrashHandlerHost(process_type);
     return crash_handler->GetDeathSignalSocket();
   }
 
   if (process_type == switches::kGpuProcess) {
-    static breakpad::CrashHandlerHostLinux* crash_handler = NULL;
+    static breakpad::CrashHandlerHostLinux* crash_handler = nullptr;
     if (!crash_handler)
       crash_handler = CreateCrashHandlerHost(process_type);
     return crash_handler->GetDeathSignalSocket();
@@ -117,61 +155,120 @@ int GetCrashSignalFD(const base::CommandLine& command_line) {
 
   return -1;
 }
-#endif  // defined(OS_POSIX) && !defined(OS_MACOSX) && !defined(OS_ANDROID)
+#endif  // defined(OS_ANDROID)
 
-// A provider of services for Geolocation.
-class ShellGeolocationDelegate : public content::GeolocationDelegate {
- public:
-  explicit ShellGeolocationDelegate(ShellBrowserContext* context)
-      : context_(context) {}
+const service_manager::Manifest& GetContentBrowserOverlayManifest() {
+  static base::NoDestructor<service_manager::Manifest> manifest {
+    service_manager::ManifestBuilder()
+        .ExposeCapability(
+            "renderer",
+            service_manager::Manifest::InterfaceList<
+                mojom::MojoWebTestHelper, mojom::FakeBluetoothChooser,
+                mojom::WebTestBluetoothFakeAdapterSetter,
+                bluetooth::mojom::FakeBluetooth>())
+        .RequireCapability(echo::mojom::kServiceName, "echo")
+#if defined(OS_CHROMEOS)
+        .RequireCapability(ws::mojom::kServiceName, "test")
+        .RequireCapability("test_ws", "test")
+#endif
+        .ExposeInterfaceFilterCapability_Deprecated(
+            "navigation:frame", "renderer",
+            service_manager::Manifest::InterfaceList<
+                mojom::MojoWebTestHelper>())
+        .Build()
+  };
+  return *manifest;
+}
 
-  AccessTokenStore* CreateAccessTokenStore() final {
-    return new ShellAccessTokenStore(context_);
-  }
+const service_manager::Manifest& GetContentGpuOverlayManifest() {
+  static base::NoDestructor<service_manager::Manifest> manifest{
+      service_manager::ManifestBuilder()
+          .ExposeCapability("browser", service_manager::Manifest::InterfaceList<
+                                           mojom::PowerMonitorTest>())
+          .Build()};
+  return *manifest;
+}
 
- private:
-  ShellBrowserContext* context_;
+const service_manager::Manifest& GetContentPackagedServicesOverlayManifest() {
+  static base::NoDestructor<service_manager::Manifest> manifest {
+    service_manager::ManifestBuilder()
+        .PackageService(echo::GetManifest())
+#if defined(OS_CHROMEOS)
+        .PackageService(test_ws::GetManifest())
+#endif
+        .Build()
+  };
+  return *manifest;
+}
 
-  DISALLOW_COPY_AND_ASSIGN(ShellGeolocationDelegate);
-};
+const service_manager::Manifest& GetContentRendererOverlayManifest() {
+  static base::NoDestructor<service_manager::Manifest> manifest{
+      service_manager::ManifestBuilder()
+          .ExposeCapability(
+              "browser",
+              service_manager::Manifest::InterfaceList<mojom::PowerMonitorTest,
+                                                       mojom::TestService>())
+          .ExposeInterfaceFilterCapability_Deprecated(
+              "navigation:frame", "browser",
+              service_manager::Manifest::InterfaceList<mojom::WebTestControl>())
+          .Build()};
+  return *manifest;
+}
+
+const service_manager::Manifest& GetContentUtilityOverlayManifest() {
+  static base::NoDestructor<service_manager::Manifest> manifest{
+      service_manager::ManifestBuilder()
+          .ExposeCapability(
+              "browser",
+              service_manager::Manifest::InterfaceList<mojom::PowerMonitorTest,
+                                                       mojom::TestService>())
+          .Build()};
+  return *manifest;
+}
 
 }  // namespace
+
+std::string GetShellUserAgent() {
+  std::string product = "Chrome/" CONTENT_SHELL_VERSION;
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(switches::kUseMobileUserAgent))
+    product += " Mobile";
+  return BuildUserAgentFromProduct(product);
+}
+
+blink::UserAgentMetadata GetShellUserAgentMetadata() {
+  blink::UserAgentMetadata metadata;
+
+  metadata.brand = "content_shell";
+  metadata.full_version = CONTENT_SHELL_VERSION;
+  metadata.major_version = CONTENT_SHELL_MAJOR_VERSION;
+  metadata.platform = BuildOSCpuInfo(false);
+
+  // TODO(mkwst): Split these out from BuildOSCpuInfo().
+  metadata.architecture = "";
+  metadata.model = "";
+
+  return metadata;
+}
 
 ShellContentBrowserClient* ShellContentBrowserClient::Get() {
   return g_browser_client;
 }
 
-void ShellContentBrowserClient::SetSwapProcessesForRedirect(bool swap) {
-  g_swap_processes_for_redirect = swap;
-}
-
 ShellContentBrowserClient::ShellContentBrowserClient()
-    : shell_browser_main_parts_(NULL) {
+    : shell_browser_main_parts_(nullptr) {
   DCHECK(!g_browser_client);
   g_browser_client = this;
 }
 
 ShellContentBrowserClient::~ShellContentBrowserClient() {
-  g_browser_client = NULL;
+  g_browser_client = nullptr;
 }
 
 BrowserMainParts* ShellContentBrowserClient::CreateBrowserMainParts(
     const MainFunctionParams& parameters) {
   shell_browser_main_parts_ = new ShellBrowserMainParts(parameters);
   return shell_browser_main_parts_;
-}
-
-bool ShellContentBrowserClient::DoesSiteRequireDedicatedProcess(
-    BrowserContext* browser_context,
-    const GURL& effective_url) {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  DCHECK(command_line->HasSwitch(switches::kIsolateSitesForTesting));
-  std::string pattern =
-      command_line->GetSwitchValueASCII(switches::kIsolateSitesForTesting);
-  // Practically |origin| is the same as |effective_url.spec()|, except Origin
-  // serialization strips the trailing "/", which makes for cleaner patterns.
-  std::string origin = url::Origin(effective_url).Serialize();
-  return base::MatchPattern(origin, pattern);
 }
 
 bool ShellContentBrowserClient::IsHandledURL(const GURL& url) {
@@ -187,26 +284,83 @@ bool ShellContentBrowserClient::IsHandledURL(const GURL& url) {
       url::kDataScheme,
       url::kFileScheme,
   };
-  for (size_t i = 0; i < arraysize(kProtocolList); ++i) {
+  for (size_t i = 0; i < base::size(kProtocolList); ++i) {
     if (url.scheme() == kProtocolList[i])
       return true;
   }
-  return false;
+  return net::URLRequest::IsHandledProtocol(url.scheme());
 }
 
-void ShellContentBrowserClient::RegisterInProcessMojoApplications(
-    StaticMojoApplicationMap* apps) {
-#if (ENABLE_MOJO_MEDIA_IN_BROWSER_PROCESS)
-  content::MojoApplicationInfo app_info;
-  app_info.application_factory = base::Bind(&media::CreateMojoMediaApplication);
-  apps->insert(std::make_pair("mojo:media", app_info));
+void ShellContentBrowserClient::BindInterfaceRequestFromFrame(
+    RenderFrameHost* render_frame_host,
+    const std::string& interface_name,
+    mojo::ScopedMessagePipeHandle interface_pipe) {
+  if (!frame_interfaces_) {
+    frame_interfaces_ = std::make_unique<
+        service_manager::BinderRegistryWithArgs<content::RenderFrameHost*>>();
+    ExposeInterfacesToFrame(frame_interfaces_.get());
+  }
+
+  frame_interfaces_->TryBindInterface(interface_name, &interface_pipe,
+                                      render_frame_host);
+}
+
+void ShellContentBrowserClient::RegisterOutOfProcessServices(
+    OutOfProcessServiceMap* services) {
+  (*services)[kTestServiceUrl] =
+      base::BindRepeating(&base::ASCIIToUTF16, "Test Service");
+  (*services)[echo::mojom::kServiceName] =
+      base::BindRepeating(&base::ASCIIToUTF16, "Echo Service");
+#if defined(OS_CHROMEOS)
+  if (features::IsMultiProcessMash()) {
+    (*services)[test_ws::mojom::kServiceName] =
+        base::BindRepeating(&base::ASCIIToUTF16, "Test Window Service");
+  }
 #endif
 }
 
-void ShellContentBrowserClient::RegisterOutOfProcessMojoApplications(
-      OutOfProcessMojoApplicationMap* apps) {
-  apps->insert(std::make_pair(kTestMojoAppUrl,
-                              base::UTF8ToUTF16("Test Mojo App")));
+void ShellContentBrowserClient::HandleServiceRequest(
+    const std::string& service_name,
+    service_manager::mojom::ServiceRequest request) {
+#if BUILDFLAG(ENABLE_MOJO_MEDIA_IN_BROWSER_PROCESS)
+  if (service_name == media::mojom::kMediaServiceName) {
+    service_manager::Service::RunAsyncUntilTermination(
+        media::CreateMediaServiceForTesting(std::move(request)));
+  }
+#endif
+
+#if defined(OS_CHROMEOS)
+  if (features::IsSingleProcessMash() &&
+      service_name == test_ws::mojom::kServiceName) {
+    service_manager::Service::RunAsyncUntilTermination(
+        ws::test::CreateInProcessWindowService(
+            GetContextFactory(), GetContextFactoryPrivate(),
+            CreateGpuInterfaceProvider(), std::move(request)));
+  }
+#endif
+}
+
+bool ShellContentBrowserClient::ShouldTerminateOnServiceQuit(
+    const service_manager::Identity& id) {
+  if (should_terminate_on_service_quit_callback_)
+    return should_terminate_on_service_quit_callback_.Run(id);
+  return false;
+}
+
+base::Optional<service_manager::Manifest>
+ShellContentBrowserClient::GetServiceManifestOverlay(base::StringPiece name) {
+  if (name == content::mojom::kBrowserServiceName)
+    return GetContentBrowserOverlayManifest();
+  if (name == content::mojom::kPackagedServicesServiceName)
+    return GetContentPackagedServicesOverlayManifest();
+  if (name == content::mojom::kGpuServiceName)
+    return GetContentGpuOverlayManifest();
+  if (name == content::mojom::kRendererServiceName)
+    return GetContentRendererOverlayManifest();
+  if (name == content::mojom::kUtilityServiceName)
+    return GetContentUtilityOverlayManifest();
+
+  return base::nullopt;
 }
 
 void ShellContentBrowserClient::AppendExtraCommandLineSwitches(
@@ -228,24 +382,40 @@ void ShellContentBrowserClient::AppendExtraCommandLineSwitches(
             switches::kCrashDumpsDir));
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kIsolateSitesForTesting)) {
-    command_line->AppendSwitchASCII(
-        switches::kIsolateSitesForTesting,
-        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-            switches::kIsolateSitesForTesting));
-  }
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kRegisterFontFiles)) {
     command_line->AppendSwitchASCII(
         switches::kRegisterFontFiles,
         base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
             switches::kRegisterFontFiles));
   }
+
+#if defined(OS_MACOSX)
+  // Needed since on Mac, content_browsertests doesn't use
+  // content_test_launcher.cc and instead uses shell_main.cc. So give a signal
+  // to shell_main.cc that it's a browser test.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kBrowserTest)) {
+    command_line->AppendSwitch(switches::kBrowserTest);
+  }
+#endif
+}
+
+void ShellContentBrowserClient::AdjustUtilityServiceProcessCommandLine(
+    const service_manager::Identity& identity,
+    base::CommandLine* command_line) {
+#if defined(OS_CHROMEOS)
+  if (identity.name() == test_ws::mojom::kServiceName)
+    command_line->AppendSwitch(switches::kMessageLoopTypeUi);
+#endif
+}
+
+std::string ShellContentBrowserClient::GetAcceptLangs(BrowserContext* context) {
+  return ShellURLRequestContextGetter::GetAcceptLanguages();
 }
 
 void ShellContentBrowserClient::ResourceDispatcherHostCreated() {
   resource_dispatcher_host_delegate_.reset(
-      new ShellResourceDispatcherHostDelegate);
+      new ResourceDispatcherHostDelegate());
   ResourceDispatcherHost::Get()->SetDelegate(
       resource_dispatcher_host_delegate_.get());
 }
@@ -256,11 +426,7 @@ std::string ShellContentBrowserClient::GetDefaultDownloadName() {
 
 WebContentsViewDelegate* ShellContentBrowserClient::GetWebContentsViewDelegate(
     WebContents* web_contents) {
-#if !defined(USE_AURA)
   return CreateShellWebContentsViewDelegate(web_contents);
-#else
-  return NULL;
-#endif
 }
 
 QuotaPermissionContext*
@@ -268,9 +434,26 @@ ShellContentBrowserClient::CreateQuotaPermissionContext() {
   return new ShellQuotaPermissionContext();
 }
 
+void ShellContentBrowserClient::GetQuotaSettings(
+    BrowserContext* context,
+    StoragePartition* partition,
+    storage::OptionalQuotaSettingsCallback callback) {
+  std::move(callback).Run(storage::GetHardCodedSettings(100 * 1024 * 1024));
+}
+
+GeneratedCodeCacheSettings
+ShellContentBrowserClient::GetGeneratedCodeCacheSettings(
+    content::BrowserContext* context) {
+  // If we pass 0 for size, disk_cache will pick a default size using the
+  // heuristics based on available disk size. These are implemented in
+  // disk_cache::PreferredCacheSize in net/disk_cache/cache_util.cc.
+  return GeneratedCodeCacheSettings(true, 0, context->GetPath());
+}
+
 void ShellContentBrowserClient::SelectClientCertificate(
     WebContents* web_contents,
     net::SSLCertRequestInfo* cert_request_info,
+    net::ClientCertIdentityList client_certs,
     std::unique_ptr<ClientCertificateDelegate> delegate) {
   if (!select_client_certificate_callback_.is_null())
     select_client_certificate_callback_.Run();
@@ -285,64 +468,68 @@ net::NetLog* ShellContentBrowserClient::GetNetLog() {
   return shell_browser_main_parts_->net_log();
 }
 
-bool ShellContentBrowserClient::ShouldSwapProcessesForRedirect(
-    ResourceContext* resource_context,
-    const GURL& current_url,
-    const GURL& new_url) {
-  return g_swap_processes_for_redirect;
-}
-
 DevToolsManagerDelegate*
 ShellContentBrowserClient::GetDevToolsManagerDelegate() {
-  return new ShellDevToolsManagerDelegate();
+  return new ShellDevToolsManagerDelegate(browser_context());
 }
 
 void ShellContentBrowserClient::OpenURL(
-    BrowserContext* browser_context,
+    SiteInstance* site_instance,
     const OpenURLParams& params,
     const base::Callback<void(WebContents*)>& callback) {
-  callback.Run(Shell::CreateNewWindow(browser_context,
-                                      params.url,
-                                      nullptr,
-                                      gfx::Size())->web_contents());
+  callback.Run(Shell::CreateNewWindow(site_instance->GetBrowserContext(),
+                                      params.url, nullptr, gfx::Size())
+                   ->web_contents());
 }
 
-#if defined(OS_ANDROID)
-void ShellContentBrowserClient::GetAdditionalMappedFilesForChildProcess(
-    const base::CommandLine& command_line,
-    int child_process_id,
-    content::FileDescriptorInfo* mappings,
-    std::map<int, base::MemoryMappedFile::Region>* regions) {
-  mappings->Share(
-      kShellPakDescriptor,
-      base::GlobalDescriptors::GetInstance()->Get(kShellPakDescriptor));
-  regions->insert(std::make_pair(
-      kShellPakDescriptor,
-      base::GlobalDescriptors::GetInstance()->GetRegion(kShellPakDescriptor)));
-
-  if (breakpad::IsCrashReporterEnabled()) {
-    base::File f(breakpad::CrashDumpManager::GetInstance()->CreateMinidumpFile(
-        child_process_id));
-    if (!f.IsValid()) {
-      LOG(ERROR) << "Failed to create file for minidump, crash reporting will "
-                 << "be disabled for this process.";
-    } else {
-      mappings->Transfer(kAndroidMinidumpDescriptor,
-                         base::ScopedFD(f.TakePlatformFile()));
-    }
+std::unique_ptr<LoginDelegate> ShellContentBrowserClient::CreateLoginDelegate(
+    net::AuthChallengeInfo* auth_info,
+    content::WebContents* web_contents,
+    const content::GlobalRequestID& request_id,
+    bool is_main_frame,
+    const GURL& url,
+    scoped_refptr<net::HttpResponseHeaders> response_headers,
+    bool first_auth_attempt,
+    LoginAuthRequiredCallback auth_required_callback) {
+  if (!login_request_callback_.is_null()) {
+    std::move(login_request_callback_).Run();
+    return nullptr;
   }
+
+#if !defined(OS_MACOSX)
+  // TODO: implement ShellLoginDialog for other platforms, drop this #if
+  return nullptr;
+#else
+  return ShellLoginDialog::Create(auth_info, std::move(auth_required_callback));
+#endif
 }
-#elif defined(OS_POSIX) && !defined(OS_MACOSX)
+
+std::string ShellContentBrowserClient::GetUserAgent() const {
+  return GetShellUserAgent();
+}
+
+blink::UserAgentMetadata ShellContentBrowserClient::GetUserAgentMetadata()
+    const {
+  return GetShellUserAgentMetadata();
+}
+
+#if defined(OS_LINUX) || defined(OS_ANDROID)
 void ShellContentBrowserClient::GetAdditionalMappedFilesForChildProcess(
     const base::CommandLine& command_line,
     int child_process_id,
-    content::FileDescriptorInfo* mappings) {
+    content::PosixFileDescriptorInfo* mappings) {
+#if defined(OS_ANDROID)
+  mappings->ShareWithRegion(
+      kShellPakDescriptor,
+      base::GlobalDescriptors::GetInstance()->Get(kShellPakDescriptor),
+      base::GlobalDescriptors::GetInstance()->GetRegion(kShellPakDescriptor));
+#endif
   int crash_signal_fd = GetCrashSignalFD(command_line);
   if (crash_signal_fd >= 0) {
-    mappings->Share(kCrashDumpSignal, crash_signal_fd);
+    mappings->Share(service_manager::kCrashDumpSignal, crash_signal_fd);
   }
 }
-#endif  // defined(OS_ANDROID)
+#endif  // defined(OS_LINUX) || defined(OS_ANDROID)
 
 #if defined(OS_WIN)
 bool ShellContentBrowserClient::PreSpawnRenderer(
@@ -361,6 +548,42 @@ bool ShellContentBrowserClient::PreSpawnRenderer(
 }
 #endif  // OS_WIN
 
+network::mojom::NetworkContextPtr
+ShellContentBrowserClient::CreateNetworkContext(
+    BrowserContext* context,
+    bool in_memory,
+    const base::FilePath& relative_partition_path) {
+  DCHECK(context);
+  if (!base::FeatureList::IsEnabled(network::features::kNetworkService))
+    return nullptr;
+
+  network::mojom::NetworkContextPtr network_context;
+  network::mojom::NetworkContextParamsPtr context_params =
+      network::mojom::NetworkContextParams::New();
+  UpdateCorsExemptHeader(context_params.get());
+  context_params->user_agent = GetUserAgent();
+  context_params->accept_language = "en-us,en";
+  context_params->enable_data_url_support = true;
+
+#if BUILDFLAG(ENABLE_REPORTING)
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kRunWebTests)) {
+    // Configure the Reporting service in a manner expected by certain Web
+    // Platform Tests (network-error-logging and reporting-api).
+    //
+    //   (1) Always send reports (irrespective of BACKGROUND_SYNC permission)
+    //   (2) Lower the timeout for sending reports.
+    context_params->reporting_delivery_interval =
+        kReportingDeliveryIntervalTimeForWebTests;
+    context_params->skip_reporting_send_permission_check = true;
+  }
+#endif
+
+  GetNetworkService()->CreateNetworkContext(MakeRequest(&network_context),
+                                            std::move(context_params));
+  return network_context;
+}
+
 ShellBrowserContext* ShellContentBrowserClient::browser_context() {
   return shell_browser_main_parts_->browser_context();
 }
@@ -370,8 +593,8 @@ ShellBrowserContext*
   return shell_browser_main_parts_->off_the_record_browser_context();
 }
 
-GeolocationDelegate* ShellContentBrowserClient::CreateGeolocationDelegate() {
-  return new ShellGeolocationDelegate(browser_context());
-}
+void ShellContentBrowserClient::ExposeInterfacesToFrame(
+    service_manager::BinderRegistryWithArgs<content::RenderFrameHost*>*
+        registry) {}
 
 }  // namespace content

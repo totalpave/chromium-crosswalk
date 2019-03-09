@@ -10,7 +10,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
-#include "base/threading/non_thread_safe.h"
 #include "remoting/host/it2me/it2me_confirmation_dialog.h"
 
 namespace remoting {
@@ -28,7 +27,8 @@ class It2MeConfirmationDialogProxy : public It2MeConfirmationDialog {
   ~It2MeConfirmationDialogProxy() override;
 
   // It2MeConfirmationDialog implementation.
-  void Show(const It2MeConfirmationDialog::ResultCallback& callback) override;
+  void Show(const std::string& remote_user_email,
+            const It2MeConfirmationDialog::ResultCallback& callback) override;
 
  private:
   class Core;

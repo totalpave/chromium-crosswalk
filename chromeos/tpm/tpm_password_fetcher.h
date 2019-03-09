@@ -7,23 +7,23 @@
 
 #include <string>
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chromeos/chromeos_export.h"
-#include "chromeos/dbus/dbus_method_call_status.h"
+#include "base/optional.h"
 
 namespace chromeos {
 
 // Interface which TpmPasswordFetcher uses to notify that password has been
 // fetched.
-class CHROMEOS_EXPORT TpmPasswordFetcherDelegate {
+class COMPONENT_EXPORT(CHROMEOS_TPM) TpmPasswordFetcherDelegate {
  public:
   virtual ~TpmPasswordFetcherDelegate() {}
   virtual void OnPasswordFetched(const std::string& tpm_password) = 0;
 };
 
 // Class for fetching TPM password from the Cryptohome.
-class CHROMEOS_EXPORT TpmPasswordFetcher {
+class COMPONENT_EXPORT(CHROMEOS_TPM) TpmPasswordFetcher {
  public:
   // Creates fetcher with the given delegate to be notified every time fetching
   // is done.
@@ -36,11 +36,10 @@ class CHROMEOS_EXPORT TpmPasswordFetcher {
 
  private:
   // Used to implement Fetch().
-  void OnTpmIsReady(DBusMethodCallStatus call_status, bool tpm_is_ready);
+  void OnTpmIsReady(base::Optional<bool> tpm_is_ready);
 
   // Used to implement Fetch().
-  void OnTpmGetPassword(DBusMethodCallStatus call_status,
-                        const std::string& password);
+  void OnTpmGetPassword(base::Optional<std::string> password);
 
   // Posts a task to call Fetch() later.
   void RescheduleFetch();

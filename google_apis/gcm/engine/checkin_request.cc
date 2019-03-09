@@ -6,14 +6,15 @@
 
 #include "base/bind.h"
 #include "base/location.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "google_apis/gcm/monitoring/gcm_stats_recorder.h"
 #include "google_apis/gcm/protocol/checkin.pb.h"
 #include "net/base/load_flags.h"
-#include "net/http/http_status_code.h"
-#include "net/url_request/url_fetcher.h"
-#include "net/url_request/url_request_status.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 
 namespace gcm {
 
@@ -58,10 +59,11 @@ std::string GetCheckinRequestStatusString(CheckinRequestStatus status) {
       return "RESPONSE_PARSING_FAILED";
     case ZERO_ID_OR_TOKEN:
       return "ZERO_ID_OR_TOKEN";
-    default:
+    case STATUS_COUNT:
       NOTREACHED();
-      return "UNKNOWN_STATUS";
+      break;
   }
+  return "UNKNOWN_STATUS";
 }
 
 // Records checkin status to both stats recorder and reports to UMA.
@@ -100,21 +102,20 @@ CheckinRequest::CheckinRequest(
     const RequestInfo& request_info,
     const net::BackoffEntry::Policy& backoff_policy,
     const CheckinRequestCallback& callback,
-    net::URLRequestContextGetter* request_context_getter,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     GCMStatsRecorder* recorder)
-    : request_context_getter_(request_context_getter),
+    : url_loader_factory_(url_loader_factory),
       callback_(callback),
       backoff_entry_(&backoff_policy),
       checkin_url_(checkin_url),
       request_info_(request_info),
       recorder_(recorder),
-      weak_ptr_factory_(this) {
-}
+      weak_ptr_factory_(this) {}
 
 CheckinRequest::~CheckinRequest() {}
 
 void CheckinRequest::Start() {
-  DCHECK(!url_fetcher_.get());
+  DCHECK(!url_loader_.get());
 
   checkin_proto::AndroidCheckinRequest request;
   request.set_id(request_info_.android_id);
@@ -144,21 +145,59 @@ void CheckinRequest::Start() {
 
   std::string upload_data;
   CHECK(request.SerializeToString(&upload_data));
-
-  url_fetcher_ =
-      net::URLFetcher::Create(checkin_url_, net::URLFetcher::POST, this);
-  url_fetcher_->SetRequestContext(request_context_getter_);
-  url_fetcher_->SetUploadData(kRequestContentType, upload_data);
-  url_fetcher_->SetLoadFlags(net::LOAD_DO_NOT_SEND_COOKIES |
-                             net::LOAD_DO_NOT_SAVE_COOKIES);
+  net::NetworkTrafficAnnotationTag traffic_annotation =
+      net::DefineNetworkTrafficAnnotation("gcm_checkin", R"(
+        semantics {
+          sender: "GCM Driver"
+          description:
+            "Chromium interacts with Google Cloud Messaging to receive push "
+            "messages for various browser features, as well as on behalf of "
+            "websites and extensions. The check-in periodically verifies the "
+            "client's validity with Google servers, and receive updates to "
+            "configuration regarding interacting with Google services."
+          trigger:
+            "Immediately after a feature creates the first Google Cloud "
+            "Messaging registration. By default, Chromium will check in with "
+            "Google Cloud Messaging every two days. Google can adjust this "
+            "interval when it deems necessary."
+          data:
+            "The profile-bound Android ID and associated secret and account "
+            "tokens. A structure containing the Chromium version, channel, and "
+            "platform of the host operating system."
+          destination: GOOGLE_OWNED_SERVICE
+        }
+        policy {
+          cookies_allowed: NO
+          setting:
+            "Support for interacting with Google Cloud Messaging is enabled by "
+            "default, and there is no configuration option to completely "
+            "disable it. Websites wishing to receive push messages must "
+            "acquire express permission from the user for the 'Notification' "
+            "permission."
+          policy_exception_justification:
+            "Not implemented, considered not useful."
+        })");
+  auto resource_request = std::make_unique<network::ResourceRequest>();
+  resource_request->url = checkin_url_;
+  resource_request->method = "POST";
+  resource_request->load_flags =
+      net::LOAD_DO_NOT_SEND_COOKIES | net::LOAD_DO_NOT_SAVE_COOKIES;
+  url_loader_ = network::SimpleURLLoader::Create(std::move(resource_request),
+                                                 traffic_annotation);
+  url_loader_->AttachStringForUpload(upload_data, kRequestContentType);
+  url_loader_->SetAllowHttpErrorResults(true);
   recorder_->RecordCheckinInitiated(request_info_.android_id);
   request_start_time_ = base::TimeTicks::Now();
-  url_fetcher_->Start();
+
+  url_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      url_loader_factory_.get(),
+      base::BindOnce(&CheckinRequest::OnURLLoadComplete, base::Unretained(this),
+                     url_loader_.get()));
 }
 
 void CheckinRequest::RetryWithBackoff() {
   backoff_entry_.InformOfRequest(false);
-  url_fetcher_.reset();
+  url_loader_.reset();
 
   DVLOG(1) << "Delay GCM checkin for: "
            << backoff_entry_.GetTimeUntilRelease().InMilliseconds()
@@ -168,14 +207,15 @@ void CheckinRequest::RetryWithBackoff() {
   DCHECK(!weak_ptr_factory_.HasWeakPtrs());
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&CheckinRequest::Start, weak_ptr_factory_.GetWeakPtr()),
+      base::BindOnce(&CheckinRequest::Start, weak_ptr_factory_.GetWeakPtr()),
       backoff_entry_.GetTimeUntilRelease());
 }
 
-void CheckinRequest::OnURLFetchComplete(const net::URLFetcher* source) {
-  std::string response_string;
+void CheckinRequest::OnURLLoadComplete(const network::SimpleURLLoader* source,
+                                       std::unique_ptr<std::string> body) {
   checkin_proto::AndroidCheckinResponse response_proto;
-  if (!source->GetStatus().is_success()) {
+  if (source->NetError() != net::OK || !source->ResponseInfo() ||
+      !source->ResponseInfo()->headers) {
     LOG(ERROR) << "Failed to get checkin response. Fetcher failed. Retrying.";
     RecordCheckinStatusAndReportUMA(URL_FETCHING_FAILED, recorder_, true);
     RetryWithBackoff();
@@ -183,7 +223,7 @@ void CheckinRequest::OnURLFetchComplete(const net::URLFetcher* source) {
   }
 
   net::HttpStatusCode response_status = static_cast<net::HttpStatusCode>(
-      source->GetResponseCode());
+      source->ResponseInfo()->headers->response_code());
   if (response_status == net::HTTP_BAD_REQUEST ||
       response_status == net::HTTP_UNAUTHORIZED) {
     // BAD_REQUEST indicates that the request was malformed.
@@ -193,13 +233,12 @@ void CheckinRequest::OnURLFetchComplete(const net::URLFetcher* source) {
     CheckinRequestStatus status = response_status == net::HTTP_BAD_REQUEST ?
         HTTP_BAD_REQUEST : HTTP_UNAUTHORIZED;
     RecordCheckinStatusAndReportUMA(status, recorder_, false);
-    callback_.Run(response_proto);
+    callback_.Run(response_status, response_proto);
     return;
   }
 
-  if (response_status != net::HTTP_OK ||
-      !source->GetResponseAsString(&response_string) ||
-      !response_proto.ParseFromString(response_string)) {
+  if (response_status != net::HTTP_OK || !body ||
+      !response_proto.ParseFromString(*body)) {
     LOG(ERROR) << "Failed to get checkin response. HTTP Status: "
                << response_status << ". Retrying.";
     CheckinRequestStatus status = response_status != net::HTTP_OK ?
@@ -220,11 +259,11 @@ void CheckinRequest::OnURLFetchComplete(const net::URLFetcher* source) {
   }
 
   RecordCheckinStatusAndReportUMA(SUCCESS, recorder_, false);
-  UMA_HISTOGRAM_COUNTS("GCM.CheckinRetryCount",
-                       backoff_entry_.failure_count());
+  UMA_HISTOGRAM_COUNTS_1M("GCM.CheckinRetryCount",
+                          backoff_entry_.failure_count());
   UMA_HISTOGRAM_TIMES("GCM.CheckinCompleteTime",
                       base::TimeTicks::Now() - request_start_time_);
-  callback_.Run(response_proto);
+  callback_.Run(response_status, response_proto);
 }
 
 }  // namespace gcm

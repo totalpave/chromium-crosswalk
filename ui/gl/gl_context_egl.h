@@ -5,6 +5,7 @@
 #ifndef UI_GL_GL_CONTEXT_EGL_H_
 #define UI_GL_GL_CONTEXT_EGL_H_
 
+#include <map>
 #include <string>
 
 #include "base/compiler_specific.h"
@@ -27,27 +28,30 @@ class GL_EXPORT GLContextEGL : public GLContextReal {
 
   // Implement GLContext.
   bool Initialize(GLSurface* compatible_surface,
-                  GpuPreference gpu_preference) override;
+                  const GLContextAttribs& attribs) override;
   bool MakeCurrent(GLSurface* surface) override;
   void ReleaseCurrent(GLSurface* surface) override;
   bool IsCurrent(GLSurface* surface) override;
   void* GetHandle() override;
-  void OnSetSwapInterval(int interval) override;
-  std::string GetExtensions() override;
   bool WasAllocatedUsingRobustnessExtension() override;
   void SetUnbindFboOnMakeCurrent() override;
+  YUVToRGBConverter* GetYUVToRGBConverter(
+      const gfx::ColorSpace& color_space) override;
 
  protected:
   ~GLContextEGL() override;
 
  private:
   void Destroy();
+  void ReleaseYUVToRGBConverters();
 
-  EGLContext context_;
-  EGLDisplay display_;
-  EGLConfig config_;
-  bool unbind_fbo_on_makecurrent_;
-  int swap_interval_;
+  EGLContext context_ = nullptr;
+  EGLDisplay display_ = nullptr;
+  EGLConfig config_ = nullptr;
+  bool unbind_fbo_on_makecurrent_ = false;
+  bool lost_ = false;
+  std::map<gfx::ColorSpace, std::unique_ptr<YUVToRGBConverter>>
+      yuv_to_rgb_converters_;
 
   DISALLOW_COPY_AND_ASSIGN(GLContextEGL);
 };

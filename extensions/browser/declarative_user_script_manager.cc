@@ -30,8 +30,7 @@ DeclarativeUserScriptManager* DeclarativeUserScriptManager::Get(
 DeclarativeUserScriptMaster*
 DeclarativeUserScriptManager::GetDeclarativeUserScriptMasterByID(
     const HostID& host_id) {
-  UserScriptMasterMap::iterator it =
-      declarative_user_script_masters_.find(host_id);
+  auto it = declarative_user_script_masters_.find(host_id);
 
   if (it != declarative_user_script_masters_.end())
     return it->second.get();
@@ -42,16 +41,18 @@ DeclarativeUserScriptManager::GetDeclarativeUserScriptMasterByID(
 DeclarativeUserScriptMaster*
 DeclarativeUserScriptManager::CreateDeclarativeUserScriptMaster(
     const HostID& host_id) {
-  linked_ptr<DeclarativeUserScriptMaster> master(
-      new DeclarativeUserScriptMaster(browser_context_, host_id));
-  declarative_user_script_masters_[host_id] = master;
-  return master.get();
+  // Inserts a new DeclarativeUserScriptManager and returns a ptr to it.
+  return declarative_user_script_masters_
+      .insert(
+          std::make_pair(host_id, std::make_unique<DeclarativeUserScriptMaster>(
+                                      browser_context_, host_id)))
+      .first->second.get();
 }
 
 void DeclarativeUserScriptManager::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
-    UnloadedExtensionInfo::Reason reason) {
+    UnloadedExtensionReason reason) {
   for (const auto& val : declarative_user_script_masters_) {
     DeclarativeUserScriptMaster* master = val.second.get();
     if (master->host_id().id() == extension->id())

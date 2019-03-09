@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/app_data_migrator.h"
 
+#include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/profiles/profile.h"
@@ -16,6 +17,7 @@
 #include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/sandbox_file_system_backend_delegate.h"
 #include "storage/common/fileapi/file_system_types.h"
+#include "url/origin.h"
 
 using base::WeakPtr;
 using content::BrowserContext;
@@ -31,7 +33,7 @@ void MigrateOnFileSystemThread(FileSystemContext* old_fs_context,
                                FileSystemContext* fs_context,
                                const extensions::Extension* extension) {
   DCHECK(
-      old_fs_context->default_file_task_runner()->RunsTasksOnCurrentThread());
+      old_fs_context->default_file_task_runner()->RunsTasksInCurrentSequence());
 
   SandboxFileSystemBackendDelegate* old_sandbox_delegate =
       old_fs_context->sandbox_delegate();
@@ -67,12 +69,12 @@ void MigrateOnFileSystemThread(FileSystemContext* old_fs_context,
 void MigrateOnIndexedDBThread(IndexedDBContext* old_indexed_db_context,
                               IndexedDBContext* indexed_db_context,
                               const extensions::Extension* extension) {
-  DCHECK(old_indexed_db_context->TaskRunner()->RunsTasksOnCurrentThread());
+  DCHECK(old_indexed_db_context->TaskRunner()->RunsTasksInCurrentSequence());
 
-  GURL extension_url =
-      extensions::Extension::GetBaseURLFromExtensionId(extension->id());
+  url::Origin extension_origin = url::Origin::Create(
+      extensions::Extension::GetBaseURLFromExtensionId(extension->id()));
 
-  old_indexed_db_context->CopyOriginData(extension_url, indexed_db_context);
+  old_indexed_db_context->CopyOriginData(extension_origin, indexed_db_context);
 }
 
 void MigrateFileSystem(WeakPtr<extensions::AppDataMigrator> migrator,
@@ -97,8 +99,9 @@ void MigrateFileSystem(WeakPtr<extensions::AppDataMigrator> migrator,
   // invoke the original callback passed into DoMigrationAndReply.
   old_fs_context->default_file_task_runner()->PostTaskAndReply(
       FROM_HERE,
-      base::Bind(&MigrateOnFileSystemThread, base::RetainedRef(old_fs_context),
-                 base::RetainedRef(fs_context), base::RetainedRef(extension)),
+      base::BindOnce(
+          &MigrateOnFileSystemThread, base::RetainedRef(old_fs_context),
+          base::RetainedRef(fs_context), base::RetainedRef(extension)),
       reply);
 }
 
@@ -124,7 +127,7 @@ void MigrateLegacyPartition(WeakPtr<extensions::AppDataMigrator> migrator,
   // runner. After completion, it should call MigrateFileSystem.
   old_indexed_db_context->TaskRunner()->PostTaskAndReply(
       FROM_HERE,
-      base::Bind(
+      base::BindOnce(
           &MigrateOnIndexedDBThread, base::RetainedRef(old_indexed_db_context),
           base::RetainedRef(indexed_db_context), base::RetainedRef(extension)),
       migrate_fs);

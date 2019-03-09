@@ -6,17 +6,17 @@
 
 #include <mach/mach_vm.h>
 #include <stddef.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #include "base/mac/mac_util.h"
-#include "base/posix/eintr_wrapper.h"
+#include "base/mac/mach_logging.h"
+#include "base/unguessable_token.h"
 
 namespace base {
 
 SharedMemoryHandle::SharedMemoryHandle() {}
 
-SharedMemoryHandle::SharedMemoryHandle(mach_vm_size_t size) {
+SharedMemoryHandle::SharedMemoryHandle(mach_vm_size_t size,
+                                       const base::UnguessableToken& guid) {
   mach_port_t named_right;
   kern_return_t kr = mach_make_memory_entry_64(
       mach_task_self(),
@@ -32,34 +32,21 @@ SharedMemoryHandle::SharedMemoryHandle(mach_vm_size_t size) {
 
   memory_object_ = named_right;
   size_ = size;
-  pid_ = GetCurrentProcId();
   ownership_passes_to_ipc_ = false;
+  guid_ = guid;
 }
 
 SharedMemoryHandle::SharedMemoryHandle(mach_port_t memory_object,
                                        mach_vm_size_t size,
-                                       base::ProcessId pid)
+                                       const base::UnguessableToken& guid)
     : memory_object_(memory_object),
-      size_(size),
-      pid_(pid),
-      ownership_passes_to_ipc_(false) {}
-
-SharedMemoryHandle::SharedMemoryHandle(const SharedMemoryHandle& handle) {
-  CopyRelevantData(handle);
-}
-
-SharedMemoryHandle& SharedMemoryHandle::operator=(
-    const SharedMemoryHandle& handle) {
-  if (this == &handle)
-    return *this;
-
-  CopyRelevantData(handle);
-  return *this;
-}
+      ownership_passes_to_ipc_(false),
+      guid_(guid),
+      size_(size) {}
 
 SharedMemoryHandle SharedMemoryHandle::Duplicate() const {
   if (!IsValid())
-    return SharedMemoryHandle(MACH_PORT_NULL, 0, 0);
+    return SharedMemoryHandle();
 
   // Increment the ref count.
   kern_return_t kr = mach_port_mod_refs(mach_task_self(), memory_object_,
@@ -70,18 +57,6 @@ SharedMemoryHandle SharedMemoryHandle::Duplicate() const {
   return handle;
 }
 
-bool SharedMemoryHandle::operator==(const SharedMemoryHandle& handle) const {
-  if (!IsValid() && !handle.IsValid())
-    return true;
-
-  return memory_object_ == handle.memory_object_ && size_ == handle.size_ &&
-         pid_ == handle.pid_;
-}
-
-bool SharedMemoryHandle::operator!=(const SharedMemoryHandle& handle) const {
-  return !(*this == handle);
-}
-
 bool SharedMemoryHandle::IsValid() const {
   return memory_object_ != MACH_PORT_NULL;
 }
@@ -90,22 +65,11 @@ mach_port_t SharedMemoryHandle::GetMemoryObject() const {
   return memory_object_;
 }
 
-bool SharedMemoryHandle::GetSize(size_t* size) const {
-  if (!IsValid()) {
-    *size = 0;
-    return true;
-  }
-
-  *size = size_;
-  return true;
-}
-
 bool SharedMemoryHandle::MapAt(off_t offset,
                                size_t bytes,
                                void** memory,
                                bool read_only) {
   DCHECK(IsValid());
-  DCHECK_EQ(pid_, GetCurrentProcId());
   kern_return_t kr = mach_vm_map(
       mach_task_self(),
       reinterpret_cast<mach_vm_address_t*>(memory),  // Output parameter
@@ -124,8 +88,7 @@ void SharedMemoryHandle::Close() const {
     return;
 
   kern_return_t kr = mach_port_deallocate(mach_task_self(), memory_object_);
-  if (kr != KERN_SUCCESS)
-    DPLOG(ERROR) << "Error deallocating mach port: " << kr;
+  MACH_DLOG_IF(ERROR, kr != KERN_SUCCESS, kr) << "Error deallocating mach port";
 }
 
 void SharedMemoryHandle::SetOwnershipPassesToIPC(bool ownership_passes) {
@@ -134,13 +97,6 @@ void SharedMemoryHandle::SetOwnershipPassesToIPC(bool ownership_passes) {
 
 bool SharedMemoryHandle::OwnershipPassesToIPC() const {
   return ownership_passes_to_ipc_;
-}
-
-void SharedMemoryHandle::CopyRelevantData(const SharedMemoryHandle& handle) {
-  memory_object_ = handle.memory_object_;
-  size_ = handle.size_;
-  pid_ = handle.pid_;
-  ownership_passes_to_ipc_ = handle.ownership_passes_to_ipc_;
 }
 
 }  // namespace base

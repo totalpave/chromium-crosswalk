@@ -4,13 +4,13 @@
 
 #include "chrome/browser/ui/webui/chromeos/login/error_screen_handler.h"
 
-#include "ash/common/system/chromeos/devicetype_utils.h"
-#include "base/message_loop/message_loop.h"
 #include "base/time/time.h"
-#include "chrome/browser/chromeos/login/screens/network_error_model.h"
+#include "chrome/browser/chromeos/login/screens/error_screen.h"
+#include "chrome/browser/ui/webui/chromeos/network_element_localized_strings_provider.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/login/localized_values_builder.h"
+#include "ui/chromeos/devicetype_utils.h"
 #include "ui/strings/grit/ui_strings.h"
 
 namespace {
@@ -21,20 +21,15 @@ const char kJsScreenPath[] = "login.ErrorMessageScreen";
 
 namespace chromeos {
 
-ErrorScreenHandler::ErrorScreenHandler()
-    : BaseScreenHandler(kJsScreenPath),
-      model_(nullptr),
-      show_on_init_(false),
-      showing_(false),
+ErrorScreenHandler::ErrorScreenHandler(JSCallsContainer* js_calls_container)
+    : BaseScreenHandler(kScreenId, js_calls_container),
       weak_ptr_factory_(this) {
+  set_call_js_prefix(kJsScreenPath);
 }
 
 ErrorScreenHandler::~ErrorScreenHandler() {
-  if (model_)
-    model_->OnViewDestroyed(this);
-}
-
-void ErrorScreenHandler::PrepareToShow() {
+  if (screen_)
+    screen_->OnViewDestroyed(this);
 }
 
 void ErrorScreenHandler::Show() {
@@ -42,35 +37,30 @@ void ErrorScreenHandler::Show() {
     show_on_init_ = true;
     return;
   }
-  BaseScreenHandler::ShowScreen(OobeScreen::SCREEN_ERROR_MESSAGE);
-  if (model_)
-    model_->OnShow();
+  BaseScreenHandler::ShowScreen(kScreenId);
+  if (screen_)
+    screen_->OnShow();
   showing_ = true;
 }
 
 void ErrorScreenHandler::Hide() {
   showing_ = false;
-  if (model_)
-   model_->OnHide();
+  if (screen_)
+    screen_->OnHide();
 }
 
-void ErrorScreenHandler::Bind(NetworkErrorModel& model) {
-  model_ = &model;
-  BaseScreenHandler::SetBaseScreen(model_);
+void ErrorScreenHandler::Bind(ErrorScreen* screen) {
+  screen_ = screen;
+  BaseScreenHandler::SetBaseScreen(screen_);
 }
 
 void ErrorScreenHandler::Unbind() {
-  model_ = nullptr;
+  screen_ = nullptr;
   BaseScreenHandler::SetBaseScreen(nullptr);
 }
 
 void ErrorScreenHandler::ShowOobeScreen(OobeScreen screen) {
   ShowScreen(screen);
-}
-
-void ErrorScreenHandler::HandleHideCaptivePortal() {
-  if (model_)
-    model_->HideCaptivePortal();
 }
 
 void ErrorScreenHandler::RegisterMessages() {
@@ -81,11 +71,11 @@ void ErrorScreenHandler::RegisterMessages() {
 
 void ErrorScreenHandler::DeclareLocalizedValues(
     ::login::LocalizedValuesBuilder* builder) {
-  builder->Add("deviceType", ash::GetChromeOSDeviceName());
+  builder->Add("deviceType", ui::GetChromeOSDeviceName());
   builder->Add("loginErrorTitle", IDS_LOGIN_ERROR_TITLE);
   builder->Add("rollbackErrorTitle", IDS_RESET_SCREEN_REVERT_ERROR);
   builder->Add("signinOfflineMessageBody",
-               ash::SubstituteChromeOSDeviceType(IDS_LOGIN_OFFLINE_MESSAGE));
+               ui::SubstituteChromeOSDeviceType(IDS_LOGIN_OFFLINE_MESSAGE));
   builder->Add("kioskOfflineMessageBody", IDS_KIOSK_OFFLINE_MESSAGE);
   builder->Add("kioskOnlineTitle", IDS_LOGIN_NETWORK_RESTORED_TITLE);
   builder->Add("kioskOnlineMessageBody", IDS_KIOSK_ONLINE_MESSAGE);
@@ -102,7 +92,7 @@ void ErrorScreenHandler::DeclareLocalizedValues(
                IDS_LOGIN_MAYBE_CAPTIVE_PORTAL_NETWORK_SELECT);
   builder->Add("signinProxyMessageText", IDS_LOGIN_PROXY_ERROR_MESSAGE);
   builder->Add("updateOfflineMessageBody",
-               ash::SubstituteChromeOSDeviceType(IDS_UPDATE_OFFLINE_MESSAGE));
+               ui::SubstituteChromeOSDeviceType(IDS_UPDATE_OFFLINE_MESSAGE));
   builder->Add("updateProxyMessageText", IDS_UPDATE_PROXY_ERROR_MESSAGE);
   builder->AddF("localStateErrorText0", IDS_LOCAL_STATE_ERROR_TEXT_0,
                 IDS_SHORT_PRODUCT_NAME);
@@ -114,8 +104,12 @@ void ErrorScreenHandler::DeclareLocalizedValues(
   builder->Add("rebootButton", IDS_RELAUNCH_BUTTON);
   builder->Add("diagnoseButton", IDS_DIAGNOSE_BUTTON);
   builder->Add("configureCertsButton", IDS_MANAGE_CERTIFICATES);
-  builder->Add("continueButton", IDS_NETWORK_SELECTION_CONTINUE_BUTTON);
+  builder->Add("continueButton", IDS_WELCOME_SELECTION_CONTINUE_BUTTON);
   builder->Add("okButton", IDS_APP_OK);
+  builder->Add("proxySettingsMenuName",
+               IDS_NETWORK_PROXY_SETTINGS_LIST_ITEM_NAME);
+  builder->Add("addWiFiNetworkMenuName", IDS_NETWORK_ADD_WI_FI_LIST_ITEM_NAME);
+  network_element::AddLocalizedValuesToBuilder(builder);
 }
 
 void ErrorScreenHandler::Initialize() {
@@ -129,9 +123,9 @@ void ErrorScreenHandler::Initialize() {
   }
 }
 
-void ErrorScreenHandler::OnConnectToNetworkRequested() {
-  if (showing_ && model_)
-    model_->OnUserAction(NetworkErrorModel::kUserActionConnectRequested);
+void ErrorScreenHandler::HandleHideCaptivePortal() {
+  if (screen_)
+    screen_->HideCaptivePortal();
 }
 
 }  // namespace chromeos

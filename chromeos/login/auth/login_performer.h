@@ -9,9 +9,10 @@
 #include <string>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/login/auth/auth_status_consumer.h"
 #include "chromeos/login/auth/authenticator.h"
 #include "chromeos/login/auth/extended_authenticator.h"
@@ -20,12 +21,12 @@
 
 class AccountId;
 
-namespace net {
-class URLRequestContextGetter;
+namespace base {
+class TaskRunner;
 }
 
-namespace policy {
-class WildcardLoginChecker;
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace content {
@@ -42,7 +43,8 @@ namespace chromeos {
 // If auth is succeeded, cookie fetcher is executed, LP instance deletes itself.
 //
 // If |delegate_| is not NULL it will handle error messages, password input.
-class CHROMEOS_EXPORT LoginPerformer : public AuthStatusConsumer {
+class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) LoginPerformer
+    : public AuthStatusConsumer {
  public:
   typedef enum AuthorizationMode {
     // Authorization performed internally by Chrome.
@@ -83,11 +85,16 @@ class CHROMEOS_EXPORT LoginPerformer : public AuthStatusConsumer {
   void LoginAsKioskAccount(const AccountId& app_account_id,
                            bool use_guest_mount);
 
+  // Performs a login into the ARC kiosk mode account with |arc_app_account_id|.
+  void LoginAsArcKioskAccount(const AccountId& arc_app_account_id);
+
   // AuthStatusConsumer implementation:
   void OnAuthFailure(const AuthFailure& error) override;
   void OnAuthSuccess(const UserContext& user_context) override;
   void OnOffTheRecordAuthSuccess() override;
   void OnPasswordChangeDetected() override;
+  void OnOldEncryptionDetected(const UserContext& user_context,
+                               bool has_incomplete_migration) override;
 
   // Migrates cryptohome using |old_password| specified.
   void RecoverEncryptedData(const std::string& old_password);
@@ -165,8 +172,9 @@ class CHROMEOS_EXPORT LoginPerformer : public AuthStatusConsumer {
   // Look up browser context to use during signin.
   virtual content::BrowserContext* GetSigninContext() = 0;
 
-  // Get RequestContext used for sign in.
-  virtual net::URLRequestContextGetter* GetSigninRequestContext() = 0;
+  // Gets the SharedURLLoaderFactory used for sign in.
+  virtual scoped_refptr<network::SharedURLLoaderFactory>
+  GetSigninURLLoaderFactory() = 0;
 
   // Create authenticator implementation.
   virtual scoped_refptr<Authenticator> CreateAuthenticator() = 0;

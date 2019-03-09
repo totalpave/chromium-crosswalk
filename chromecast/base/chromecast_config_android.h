@@ -5,11 +5,9 @@
 #ifndef CHROMECAST_BASE_CHROMECAST_CONFIG_ANDROID_H_
 #define CHROMECAST_BASE_CHROMECAST_CONFIG_ANDROID_H_
 
-#include <jni.h>
-
 #include "base/callback.h"
-#include "base/lazy_instance.h"
 #include "base/macros.h"
+#include "base/no_destructor.h"
 
 namespace chromecast {
 namespace android {
@@ -17,28 +15,30 @@ namespace android {
 class ChromecastConfigAndroid {
  public:
   static ChromecastConfigAndroid* GetInstance();
-  static bool RegisterJni(JNIEnv* env);
 
   // Returns whether or not the user has allowed sending usage stats and
   // crash reports.
-  bool CanSendUsageStats();
+  // TODO(ziyangch): Remove CanSendUsageStats() and switch to pure callback
+  // style.
+  virtual bool CanSendUsageStats() = 0;
+
+  // Set the the user's sending usage stats.
+  // TODO(ziyangch): Remove SetSendUsageStats() after switching to Crashpad on
+  // Android.(The CL which does this is at https://crrev.com/c/989401.)
+  virtual void SetSendUsageStats(bool enabled) = 0;
 
   // Registers a handler to be notified when SendUsageStats is changed.
-  void SetSendUsageStatsChangedCallback(
-      const base::Callback<void(bool)>& callback);
+  virtual void SetSendUsageStatsChangedCallback(
+      base::RepeatingCallback<void(bool)> callback) = 0;
 
-  const base::Callback<void(bool)>& send_usage_stats_changed_callback() const {
-    return send_usage_stats_changed_callback_;
-  }
+  virtual void RunSendUsageStatsChangedCallback(bool enabled) = 0;
+
+ protected:
+  ChromecastConfigAndroid() {}
+
+  virtual ~ChromecastConfigAndroid() {}
 
  private:
-  friend struct base::DefaultLazyInstanceTraits<ChromecastConfigAndroid>;
-
-  ChromecastConfigAndroid();
-  ~ChromecastConfigAndroid();
-
-  base::Callback<void(bool)> send_usage_stats_changed_callback_;
-
   DISALLOW_COPY_AND_ASSIGN(ChromecastConfigAndroid);
 };
 

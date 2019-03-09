@@ -15,11 +15,13 @@
 
 namespace base {
 class SequencedTaskRunner;
-class SequencedWorkerPool;
 }
 
 namespace content {
 class BrowserContext;
+}
+
+namespace download {
 class DownloadItem;
 }
 
@@ -27,7 +29,6 @@ namespace safe_browsing {
 
 class ClientDownloadRequest;
 class ClientIncidentReport_DownloadDetails;
-class DownloadMetadata;
 
 // A browser-wide object that manages the persistent state of metadata
 // pertaining to a download.
@@ -40,15 +41,7 @@ class DownloadMetadataManager : public content::DownloadManager::Observer {
       std::unique_ptr<ClientIncidentReport_DownloadDetails>)>
       GetDownloadDetailsCallback;
 
-  // Constructs a new instance for which disk IO operations will take place in
-  // |worker_pool|.
-  explicit DownloadMetadataManager(
-      const scoped_refptr<base::SequencedWorkerPool>& worker_pool);
-
-  // Constructor that allows tests to provide a specific runner for
-  // asynchronous tasks.
-  explicit DownloadMetadataManager(
-      const scoped_refptr<base::SequencedTaskRunner>& task_runner);
+  DownloadMetadataManager();
   ~DownloadMetadataManager() override;
 
   // Adds |download_manager| to the set observed by the metadata manager.
@@ -57,7 +50,7 @@ class DownloadMetadataManager : public content::DownloadManager::Observer {
   // Sets |request| as the relevant metadata to persist for |download| upon
   // completion. |request| will be persisted when the download completes, or
   // discarded if the download is cancelled.
-  virtual void SetRequest(content::DownloadItem* download,
+  virtual void SetRequest(download::DownloadItem* download,
                           const ClientDownloadRequest* request);
 
   // Gets the persisted DownloadDetails for |browser_context|. |callback| will
@@ -73,7 +66,7 @@ class DownloadMetadataManager : public content::DownloadManager::Observer {
 
   // content::DownloadManager:Observer methods.
   void OnDownloadCreated(content::DownloadManager* download_manager,
-                         content::DownloadItem* item) override;
+                         download::DownloadItem* item) override;
   void ManagerGoingDown(content::DownloadManager* download_manager) override;
 
  private:
@@ -83,11 +76,8 @@ class DownloadMetadataManager : public content::DownloadManager::Observer {
   typedef std::map<content::DownloadManager*, ManagerContext*>
       ManagerToContextMap;
 
-  // A task runner to which read tasks are posted.
-  scoped_refptr<base::SequencedTaskRunner> read_runner_;
-
-  // A task runner to which write tasks are posted.
-  scoped_refptr<base::SequencedTaskRunner> write_runner_;
+  // A task runner to which IO tasks are posted.
+  const scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
   // Contexts for each DownloadManager that has been added and has not yet
   // "gone down".

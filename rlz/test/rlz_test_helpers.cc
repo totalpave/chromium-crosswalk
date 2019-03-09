@@ -18,9 +18,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_WIN)
-#include <shlwapi.h>
 #include "base/win/registry.h"
-#include "base/win/windows_version.h"
+#include "base/win/shlwapi.h"
 #elif defined(OS_POSIX)
 #include "base/files/file_path.h"
 #include "rlz/lib/rlz_value_store.h"
@@ -100,29 +99,26 @@ void WriteRegistryTree(const RegistryKeyData& data, base::win::RegKey* dest) {
 void InitializeRegistryOverridesForTesting(
     registry_util::RegistryOverrideManager* override_manager) {
   // For the moment, the HKCU hive requires no initialization.
-  const bool do_copy = (base::win::GetVersion() >= base::win::VERSION_WIN7);
   RegistryKeyData data;
 
-  if (do_copy) {
-    // Copy the following HKLM subtrees to the temporary location so that the
-    // win32 APIs used by the tests continue to work:
-    //
-    //    HKLM\System\CurrentControlSet\Control\Lsa\AccessProviders
-    //
-    // This seems to be required since Win7.
-    ReadRegistryTree(base::win::RegKey(HKEY_LOCAL_MACHINE,
-                                       kHKLMAccessProviders,
-                                       KEY_READ), &data);
-  }
+  // Copy the following HKLM subtrees to the temporary location so that the
+  // win32 APIs used by the tests continue to work:
+  //
+  //    HKLM\System\CurrentControlSet\Control\Lsa\AccessProviders
+  //
+  // This seems to be required since Win7.
+  ReadRegistryTree(base::win::RegKey(HKEY_LOCAL_MACHINE,
+                                     kHKLMAccessProviders,
+                                     KEY_READ), &data);
 
-  override_manager->OverrideRegistry(HKEY_LOCAL_MACHINE);
-  override_manager->OverrideRegistry(HKEY_CURRENT_USER);
+  ASSERT_NO_FATAL_FAILURE(
+      override_manager->OverrideRegistry(HKEY_LOCAL_MACHINE));
+  ASSERT_NO_FATAL_FAILURE(
+      override_manager->OverrideRegistry(HKEY_CURRENT_USER));
 
-  if (do_copy) {
-    base::win::RegKey key(
-        HKEY_LOCAL_MACHINE, kHKLMAccessProviders, KEY_ALL_ACCESS);
-    WriteRegistryTree(data, &key);
-  }
+  base::win::RegKey key(
+      HKEY_LOCAL_MACHINE, kHKLMAccessProviders, KEY_ALL_ACCESS);
+  WriteRegistryTree(data, &key);
 }
 
 }  // namespace
@@ -131,19 +127,30 @@ void InitializeRegistryOverridesForTesting(
 
 void RlzLibTestNoMachineStateHelper::SetUp() {
 #if defined(OS_WIN)
-  InitializeRegistryOverridesForTesting(&override_manager_);
+  ASSERT_NO_FATAL_FAILURE(
+      InitializeRegistryOverridesForTesting(&override_manager_));
 #elif defined(OS_MACOSX)
   base::mac::ScopedNSAutoreleasePool pool;
 #endif  // defined(OS_WIN)
 #if defined(OS_POSIX)
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-  rlz_lib::testing::SetRlzStoreDirectory(temp_dir_.path());
+  rlz_lib::testing::SetRlzStoreDirectory(temp_dir_.GetPath());
 #endif  // defined(OS_POSIX)
 }
 
 void RlzLibTestNoMachineStateHelper::TearDown() {
 #if defined(OS_POSIX)
   rlz_lib::testing::SetRlzStoreDirectory(base::FilePath());
+#endif  // defined(OS_POSIX)
+}
+
+void RlzLibTestNoMachineStateHelper::Reset() {
+#if defined(OS_POSIX)
+  ASSERT_TRUE(temp_dir_.Delete());
+  ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+  rlz_lib::testing::SetRlzStoreDirectory(temp_dir_.GetPath());
+#else
+  NOTREACHED();
 #endif  // defined(OS_POSIX)
 }
 
@@ -155,9 +162,33 @@ void RlzLibTestNoMachineState::TearDown() {
   m_rlz_test_helper_.TearDown();
 }
 
+RlzLibTestBase::RlzLibTestBase() = default;
+
+RlzLibTestBase::~RlzLibTestBase() = default;
+
 void RlzLibTestBase::SetUp() {
   RlzLibTestNoMachineState::SetUp();
 #if defined(OS_WIN)
   rlz_lib::CreateMachineState();
 #endif  // defined(OS_WIN)
+
+#if defined(OS_POSIX)
+  // Make sure the values of RLZ strings for access points used in tests start
+  // out not set, since on Chrome OS RLZ string can only be set once.
+  EXPECT_TRUE(rlz_lib::SetAccessPointRlz(rlz_lib::IETB_SEARCH_BOX, ""));
+  EXPECT_TRUE(rlz_lib::SetAccessPointRlz(rlz_lib::IE_HOME_PAGE, ""));
+#endif  // defined(OS_POSIX)
+
+#if defined(OS_CHROMEOS)
+  statistics_provider_ =
+      std::make_unique<chromeos::system::FakeStatisticsProvider>();
+  chromeos::system::StatisticsProvider::SetTestProvider(
+      statistics_provider_.get());
+#endif  // defined(OS_CHROMEOS)
+}
+
+void RlzLibTestBase::TearDown() {
+#if defined(OS_CHROMEOS)
+  chromeos::system::StatisticsProvider::SetTestProvider(nullptr);
+#endif  // defined(OS_CHROMEOS)
 }

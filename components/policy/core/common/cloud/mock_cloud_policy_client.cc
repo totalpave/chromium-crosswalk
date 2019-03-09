@@ -2,22 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <utility>
 
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace em = enterprise_management;
 
 namespace policy {
 
 MockCloudPolicyClient::MockCloudPolicyClient()
-    : CloudPolicyClient(std::string(),
-                        std::string(),
-                        std::string(),
-                        nullptr,
-                        nullptr) {}
+    : MockCloudPolicyClient(nullptr) {}
+
+MockCloudPolicyClient::MockCloudPolicyClient(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    : CloudPolicyClient(std::string() /* machine_id */,
+                        std::string() /* machine_model */,
+                        std::string() /* brand_code */,
+                        nullptr /* service */,
+                        std::move(url_loader_factory),
+                        nullptr /* signing_service */,
+                        CloudPolicyClient::DeviceDMTokenCallback()) {}
 
 MockCloudPolicyClient::~MockCloudPolicyClient() {}
 
@@ -28,10 +35,8 @@ void MockCloudPolicyClient::SetDMToken(const std::string& token) {
 void MockCloudPolicyClient::SetPolicy(const std::string& policy_type,
                                       const std::string& settings_entity_id,
                                       const em::PolicyFetchResponse& policy) {
-  em::PolicyFetchResponse*& response =
-      responses_[std::make_pair(policy_type, settings_entity_id)];
-  delete response;
-  response = new enterprise_management::PolicyFetchResponse(policy);
+  responses_[std::make_pair(policy_type, settings_entity_id)] =
+      std::make_unique<enterprise_management::PolicyFetchResponse>(policy);
 }
 
 void MockCloudPolicyClient::SetFetchedInvalidationVersion(

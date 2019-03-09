@@ -8,6 +8,8 @@
 
 #include <stddef.h>
 
+#include <limits>
+#include <utility>
 #include <vector>
 
 #include "base/logging.h"
@@ -35,8 +37,6 @@ using extensions::api::cookies::CookieStore;
 namespace GetAll = extensions::api::cookies::GetAll;
 
 namespace extensions {
-
-namespace keys = cookies_api_constants;
 
 namespace cookies_helpers {
 
@@ -95,20 +95,25 @@ Cookie CreateCookie(const net::CanonicalCookie& canonical_cookie,
 
   cookie.session = !canonical_cookie.IsPersistent();
   if (canonical_cookie.IsPersistent()) {
-    cookie.expiration_date.reset(
-        new double(canonical_cookie.ExpiryDate().ToDoubleT()));
+    double expiration_date = canonical_cookie.ExpiryDate().ToDoubleT();
+    if (canonical_cookie.ExpiryDate().is_max() ||
+        !std::isfinite(expiration_date)) {
+      expiration_date = std::numeric_limits<double>::max();
+    }
+    cookie.expiration_date = std::make_unique<double>(expiration_date);
   }
   cookie.store_id = store_id;
 
   return cookie;
 }
 
-CookieStore CreateCookieStore(Profile* profile, base::ListValue* tab_ids) {
+CookieStore CreateCookieStore(Profile* profile,
+                              std::unique_ptr<base::ListValue> tab_ids) {
   DCHECK(profile);
   DCHECK(tab_ids);
   base::DictionaryValue dict;
-  dict.SetString(keys::kIdKey, GetStoreIdFromProfile(profile));
-  dict.Set(keys::kTabIdsKey, tab_ids);
+  dict.SetString(cookies_api_constants::kIdKey, GetStoreIdFromProfile(profile));
+  dict.Set(cookies_api_constants::kTabIdsKey, std::move(tab_ids));
 
   CookieStore cookie_store;
   bool rv = CookieStore::Populate(dict, &cookie_store);
@@ -116,16 +121,20 @@ CookieStore CreateCookieStore(Profile* profile, base::ListValue* tab_ids) {
   return cookie_store;
 }
 
-void GetCookieListFromStore(
-    net::CookieStore* cookie_store,
+void GetCookieListFromManager(
+    network::mojom::CookieManager* manager,
     const GURL& url,
-    const net::CookieMonster::GetCookieListCallback& callback) {
-  DCHECK(cookie_store);
-  if (!url.is_empty()) {
-    DCHECK(url.is_valid());
-    cookie_store->GetAllCookiesForURLAsync(url, callback);
+    network::mojom::CookieManager::GetCookieListCallback callback) {
+  if (url.is_empty()) {
+    manager->GetAllCookies(std::move(callback));
   } else {
-    cookie_store->GetAllCookiesAsync(callback);
+    net::CookieOptions options;
+    options.set_include_httponly();
+    options.set_same_site_cookie_context(
+        net::CookieOptions::SameSiteCookieContext::SAME_SITE_STRICT);
+    options.set_do_not_update_access_time();
+
+    manager->GetCookieList(url, options, std::move(callback));
   }
 }
 
@@ -134,7 +143,9 @@ GURL GetURLFromCanonicalCookie(const net::CanonicalCookie& cookie) {
   const std::string scheme =
       cookie.IsSecure() ? url::kHttpsScheme : url::kHttpScheme;
   const std::string host =
-      domain_key.find('.') != 0 ? domain_key : domain_key.substr(1);
+      base::StartsWith(domain_key, ".", base::CompareCase::SENSITIVE)
+          ? domain_key.substr(1)
+          : domain_key;
   return GURL(scheme + url::kStandardSchemeSeparator + host + "/");
 }
 

@@ -7,13 +7,15 @@
 #include <sstream>
 
 #include "base/logging.h"
+#include "base/strings/string_util.h"
 
 namespace headless {
 
-ErrorReporter::ErrorReporter() {}
+ErrorReporter::ErrorReporter() = default;
 
-ErrorReporter::~ErrorReporter() {}
+ErrorReporter::~ErrorReporter() = default;
 
+#if DCHECK_IS_ON()
 void ErrorReporter::Push() {
   path_.push_back(nullptr);
 }
@@ -24,7 +26,7 @@ void ErrorReporter::Pop() {
 
 void ErrorReporter::SetName(const char* name) {
   DCHECK(!path_.empty());
-  path_[path_.size() - 1] = name;
+  path_.back() = name;
 }
 
 void ErrorReporter::AddError(base::StringPiece description) {
@@ -47,5 +49,10 @@ void ErrorReporter::AddError(base::StringPiece description) {
 bool ErrorReporter::HasErrors() const {
   return !errors_.empty();
 }
+
+std::string ErrorReporter::ToString() const {
+  return base::JoinString(errors_, ", ");
+}
+#endif  // DCHECK_IS_ON()
 
 }  // namespace headless

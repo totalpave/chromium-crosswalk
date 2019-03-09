@@ -7,13 +7,13 @@
 #include <memory>
 
 #include "base/bind.h"
+#include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/gcm.h"
-#include "chromeos/dbus/dbus_thread_manager.h"
 #include "content/public/browser/notification_service.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/process_manager.h"
@@ -52,7 +52,8 @@ bool ExtensionEventObserver::TestApi::WillDelaySuspendForExtensionHost(
   if (!parent_)
     return false;
 
-  return parent_->keepalive_sources_.contains(host);
+  return parent_->keepalive_sources_.find(host) !=
+         parent_->keepalive_sources_.end();
 }
 
 struct ExtensionEventObserver::KeepaliveSources {
@@ -70,7 +71,7 @@ ExtensionEventObserver::ExtensionEventObserver()
   registrar_.Add(this, chrome::NOTIFICATION_PROFILE_DESTROYED,
                  content::NotificationService::AllBrowserContextsAndSources());
 
-  DBusThreadManager::Get()->GetPowerManagerClient()->AddObserver(this);
+  PowerManagerClient::Get()->AddObserver(this);
 }
 
 ExtensionEventObserver::~ExtensionEventObserver() {
@@ -83,7 +84,7 @@ ExtensionEventObserver::~ExtensionEventObserver() {
     host->RemoveObserver(this);
   }
 
-  DBusThreadManager::Get()->GetPowerManagerClient()->RemoveObserver(this);
+  PowerManagerClient::Get()->RemoveObserver(this);
 }
 
 std::unique_ptr<ExtensionEventObserver::TestApi>
@@ -131,8 +132,8 @@ void ExtensionEventObserver::OnBackgroundHostCreated(
       !extensions::BackgroundInfo::HasLazyBackgroundPage(host->extension()))
     return;
 
-  auto result =
-      keepalive_sources_.add(host, base::WrapUnique(new KeepaliveSources()));
+  auto result = keepalive_sources_.insert(
+      std::make_pair(host, std::make_unique<KeepaliveSources>()));
 
   if (result.second)
     host->AddObserver(this);
@@ -140,10 +141,11 @@ void ExtensionEventObserver::OnBackgroundHostCreated(
 
 void ExtensionEventObserver::OnExtensionHostDestroyed(
     const extensions::ExtensionHost* host) {
-  DCHECK(keepalive_sources_.contains(host));
+  auto it = keepalive_sources_.find(host);
+  DCHECK(it != keepalive_sources_.end());
 
-  std::unique_ptr<KeepaliveSources> sources =
-      keepalive_sources_.take_and_erase(host);
+  std::unique_ptr<KeepaliveSources> sources = std::move(it->second);
+  keepalive_sources_.erase(it);
 
   suspend_keepalive_count_ -= sources->unacked_push_messages.size();
   suspend_keepalive_count_ -= sources->pending_network_requests.size();
@@ -154,21 +156,21 @@ void ExtensionEventObserver::OnBackgroundEventDispatched(
     const extensions::ExtensionHost* host,
     const std::string& event_name,
     int event_id) {
-  DCHECK(keepalive_sources_.contains(host));
+  DCHECK(keepalive_sources_.find(host) != keepalive_sources_.end());
 
   if (event_name != extensions::api::gcm::OnMessage::kEventName)
     return;
 
-  keepalive_sources_.get(host)->unacked_push_messages.insert(event_id);
+  keepalive_sources_[host]->unacked_push_messages.insert(event_id);
   ++suspend_keepalive_count_;
 }
 
 void ExtensionEventObserver::OnBackgroundEventAcked(
     const extensions::ExtensionHost* host,
     int event_id) {
-  DCHECK(keepalive_sources_.contains(host));
+  DCHECK(keepalive_sources_.find(host) != keepalive_sources_.end());
 
-  if (keepalive_sources_.get(host)->unacked_push_messages.erase(event_id) > 0) {
+  if (keepalive_sources_[host]->unacked_push_messages.erase(event_id) > 0) {
     --suspend_keepalive_count_;
     MaybeReportSuspendReadiness();
   }
@@ -177,9 +179,9 @@ void ExtensionEventObserver::OnBackgroundEventAcked(
 void ExtensionEventObserver::OnNetworkRequestStarted(
     const extensions::ExtensionHost* host,
     uint64_t request_id) {
-  DCHECK(keepalive_sources_.contains(host));
+  DCHECK(keepalive_sources_.find(host) != keepalive_sources_.end());
 
-  KeepaliveSources* sources = keepalive_sources_.get(host);
+  KeepaliveSources* sources = keepalive_sources_[host].get();
 
   // We only care about network requests that were started while a push message
   // is pending.  This is an indication that the network request is related to
@@ -194,16 +196,17 @@ void ExtensionEventObserver::OnNetworkRequestStarted(
 void ExtensionEventObserver::OnNetworkRequestDone(
     const extensions::ExtensionHost* host,
     uint64_t request_id) {
-  DCHECK(keepalive_sources_.contains(host));
+  DCHECK(keepalive_sources_.find(host) != keepalive_sources_.end());
 
-  if (keepalive_sources_.get(host)->pending_network_requests.erase(request_id) >
+  if (keepalive_sources_[host]->pending_network_requests.erase(request_id) >
       0) {
     --suspend_keepalive_count_;
     MaybeReportSuspendReadiness();
   }
 }
 
-void ExtensionEventObserver::SuspendImminent() {
+void ExtensionEventObserver::SuspendImminent(
+    power_manager::SuspendImminent::Reason reason) {
   if (should_delay_suspend_)
     OnSuspendImminent(false);
 }
@@ -240,9 +243,8 @@ void ExtensionEventObserver::OnSuspendImminent(bool dark_suspend) {
   }
 
   suspend_is_pending_ = true;
-  power_manager_callback_ = DBusThreadManager::Get()
-                                ->GetPowerManagerClient()
-                                ->GetSuspendReadinessCallback();
+  power_manager_callback_ =
+      PowerManagerClient::Get()->GetSuspendReadinessCallback(FROM_HERE);
 
   suspend_readiness_callback_.Reset(
       base::Bind(&ExtensionEventObserver::MaybeReportSuspendReadiness,

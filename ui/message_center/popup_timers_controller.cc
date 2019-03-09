@@ -7,17 +7,27 @@
 #include <algorithm>
 
 #include "base/stl_util.h"
-#include "ui/message_center/message_center_style.h"
+#include "ui/message_center/public/cpp/message_center_constants.h"
 
 namespace message_center {
 
 namespace {
 
 base::TimeDelta GetTimeoutForNotification(Notification* notification) {
-  if (notification->priority() > DEFAULT_PRIORITY)
+// Web Notifications are given a longer on-screen time on non-Chrome OS
+// platforms as there is no notification center to dismiss them to.
+#if defined(OS_CHROMEOS)
+  const bool use_high_priority_delay =
+      notification->priority() > DEFAULT_PRIORITY;
+#else
+  const bool use_high_priority_delay =
+      notification->priority() > DEFAULT_PRIORITY ||
+      notification->notifier_id().type == NotifierType::WEB_PAGE;
+#endif
+
+  if (use_high_priority_delay)
     return base::TimeDelta::FromSeconds(kAutocloseHighPriorityDelaySeconds);
-  if (notification->notifier_id().type == NotifierId::WEB_PAGE)
-    return base::TimeDelta::FromSeconds(kAutocloseWebPageDelaySeconds);
+
   return base::TimeDelta::FromSeconds(kAutocloseDefaultDelaySeconds);
 }
 
@@ -52,19 +62,6 @@ void PopupTimersController::StartAll() {
     iter.second->Start();
 }
 
-void PopupTimersController::ResetTimer(const std::string& id,
-                                       const base::TimeDelta& timeout) {
-  CancelTimer(id);
-  StartTimer(id, timeout);
-}
-
-void PopupTimersController::PauseTimer(const std::string& id) {
-  PopupTimerCollection::const_iterator iter = popup_timers_.find(id);
-  if (iter == popup_timers_.end())
-    return;
-  iter->second->Pause();
-}
-
 void PopupTimersController::PauseAll() {
   for (const auto& iter : popup_timers_)
     iter.second->Pause();
@@ -79,7 +76,7 @@ void PopupTimersController::CancelAll() {
 }
 
 void PopupTimersController::TimerFinished(const std::string& id) {
-  if (!ContainsKey(popup_timers_, id))
+  if (!base::ContainsKey(popup_timers_, id))
     return;
 
   CancelTimer(id);
@@ -96,13 +93,12 @@ void PopupTimersController::OnNotificationUpdated(const std::string& id) {
   NotificationList::PopupNotifications popup_notifications =
       message_center_->GetPopupNotifications();
 
-  if (!popup_notifications.size()) {
+  if (popup_notifications.empty()) {
     CancelAll();
     return;
   }
 
-  NotificationList::PopupNotifications::const_iterator iter =
-      popup_notifications.begin();
+  auto iter = popup_notifications.begin();
   for (; iter != popup_notifications.end(); ++iter) {
     if ((*iter)->id() == id)
       break;
@@ -113,9 +109,20 @@ void PopupTimersController::OnNotificationUpdated(const std::string& id) {
     return;
   }
 
-  // Start the timer if not yet.
-  if (popup_timers_.find(id) == popup_timers_.end())
-    StartTimer(id, GetTimeoutForNotification(*iter));
+  auto timer = popup_timers_.find(id);
+  // The timer must already have been started and not be running. Relies on
+  // the invariant that |popup_timers_| only contains timers that have been
+  // started.
+  bool was_paused = timer != popup_timers_.end() && !timer->second->IsRunning();
+  CancelTimer(id);
+  StartTimer(id, GetTimeoutForNotification(*iter));
+
+  // If a timer was paused before, pause it afterwards as well.
+  // See crbug.com/710298
+  if (was_paused) {
+    auto timer = popup_timers_.find(id);
+    timer->second->Pause();
+  }
 }
 
 void PopupTimersController::OnNotificationRemoved(const std::string& id,

@@ -11,7 +11,7 @@ namespace content {
 
 // Keep the global UtilityThread in a TLS slot so it is impossible to access
 // incorrectly from the wrong thread.
-static base::LazyInstance<base::ThreadLocalPointer<UtilityThread> >::Leaky
+static base::LazyInstance<base::ThreadLocalPointer<UtilityThread>>::Leaky
     lazy_tls = LAZY_INSTANCE_INITIALIZER;
 
 UtilityThread* UtilityThread::Get() {
@@ -23,7 +23,7 @@ UtilityThread::UtilityThread() {
 }
 
 UtilityThread::~UtilityThread() {
-  lazy_tls.Pointer()->Set(NULL);
+  lazy_tls.Pointer()->Set(nullptr);
 }
 
 }  // namespace content

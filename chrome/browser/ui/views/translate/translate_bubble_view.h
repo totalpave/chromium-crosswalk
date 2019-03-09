@@ -10,6 +10,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/ui/translate/language_combobox_model.h"
@@ -35,30 +36,20 @@ class LabelButton;
 class View;
 }
 
-namespace ui {
-class SimpleComboboxModel;
-}
-
 class TranslateBubbleView : public LocationBarBubbleDelegateView,
                             public views::ButtonListener,
                             public views::ComboboxListener,
                             public views::LinkListener,
-                            public views::MenuButtonListener,
                             public ui::SimpleMenuModel::Delegate,
-                            public views::StyledLabelListener,
-                            public content::WebContentsObserver {
+                            public views::StyledLabelListener {
  public:
-  // Commands shown in the action-style combobox. The value corresponds to the
-  // position in the combobox menu. Gaps will become separators.
-  enum class DenialComboboxIndex {
-    DONT_TRANSLATE = 0,
-    NEVER_TRANSLATE_LANGUAGE = 1,
-    NEVER_TRANSLATE_SITE = 3,
-    MENU_SIZE = 4,
+  // Item IDs for the option button's menu.
+  enum OptionsMenuItem {
+    ALWAYS_TRANSLATE_LANGUAGE,
+    NEVER_TRANSLATE_LANGUAGE,
+    NEVER_TRANSLATE_SITE,
+    MORE_OPTIONS
   };
-
-  // Item IDs for the denial button's menu.
-  enum DenialMenuItem { NEVER_TRANSLATE_LANGUAGE, NEVER_TRANSLATE_SITE };
 
   ~TranslateBubbleView() override;
 
@@ -69,8 +60,11 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   // |is_user_gesture| is true when the bubble is shown on the user's deliberate
   // action.
   static views::Widget* ShowBubble(views::View* anchor_view,
+                                   views::Button* highlighted_button,
                                    content::WebContents* web_contents,
                                    translate::TranslateStep step,
+                                   const std::string& source_language,
+                                   const std::string& target_language,
                                    translate::TranslateErrors::Type error_type,
                                    DisplayReason reason);
 
@@ -83,16 +77,19 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   TranslateBubbleModel* model() { return model_.get(); }
 
   // views::BubbleDialogDelegateView methods.
+  int GetDialogButtons() const override;
+  base::string16 GetWindowTitle() const override;
   void Init() override;
   void ButtonPressed(views::Button* sender, const ui::Event& event) override;
 
   // views::WidgetDelegate methods.
+  View* GetInitiallyFocusedView() override;
   bool ShouldShowCloseButton() const override;
   void WindowClosing() override;
 
   // views::View methods.
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
 
   // views::ComboboxListener methods.
   void OnPerformAction(views::Combobox* combobox) override;
@@ -100,25 +97,15 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   // views::LinkListener method.
   void LinkClicked(views::Link* source, int event_flags) override;
 
-  // views::MenuButtonListener method.
-  void OnMenuButtonClicked(views::MenuButton* source,
-                           const gfx::Point& point,
-                           const ui::Event* event) override;
-
   // ui::SimpleMenuModel::Delegate methods.
   bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
-  bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override;
   void ExecuteCommand(int command_id, int event_flags) override;
 
   // views::StyledLabelListener method.
   void StyledLabelLinkClicked(views::StyledLabel* label,
                               const gfx::Range& range,
                               int event_flags) override;
-
-  // content::WebContentsObserver method.
-  void WebContentsDestroyed() override;
 
   // Overridden from views::WidgetObserver:
   void OnWidgetClosing(views::Widget* widget) override;
@@ -133,7 +120,6 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
  private:
   enum LinkID {
     LINK_ID_ADVANCED,
-    LINK_ID_LANGUAGE_SETTINGS,
   };
 
   enum ButtonID {
@@ -143,21 +129,23 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
     BUTTON_ID_SHOW_ORIGINAL,
     BUTTON_ID_TRY_AGAIN,
     BUTTON_ID_ALWAYS_TRANSLATE,
+    BUTTON_ID_ADVANCED,
+    BUTTON_ID_OPTIONS_MENU,
   };
 
   enum ComboboxID {
-    COMBOBOX_ID_DENIAL,
     COMBOBOX_ID_SOURCE_LANGUAGE,
     COMBOBOX_ID_TARGET_LANGUAGE,
   };
 
   friend class TranslateBubbleViewTest;
   friend void ::translate::test_utils::PressTranslate(::Browser*);
+  friend void ::translate::test_utils::PressRevert(::Browser*);
+  friend void ::translate::test_utils::SelectTargetLanguageByDisplayName(
+      ::Browser*,
+      const ::base::string16&);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, TranslateButton);
-  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, TranslateButtonIn2016Q2UI);
-  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, CloseButtonIn2016Q2UI);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, AdvancedLink);
-  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, AdvancedLinkIn2016Q2UI);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, ShowOriginalButton);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, TryAgainButton);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
@@ -172,6 +160,17 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
                            CancelButtonReturningAfterTranslate);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, CancelButtonReturningError);
+  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
+                           OptionsMenuNeverTranslateLanguage);
+  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
+                           OptionsMenuRespectsBlacklistSite);
+  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
+                           OptionsMenuNeverTranslateSite);
+  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
+                           AlwaysTranslateLanguageMenuItem);
+  FRIEND_TEST_ALL_PREFIXES(TranslateLanguageBrowserTest, TranslateAndRevert);
+  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewBrowserTest,
+                           CheckNeverTranslateThisSiteBlacklist);
 
   TranslateBubbleView(views::View* anchor_view,
                       std::unique_ptr<TranslateBubbleModel> model,
@@ -181,8 +180,8 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   // Returns the current child view.
   views::View* GetCurrentView() const;
 
-  // Handles the event when the user presses a button.
-  void HandleButtonPressed(ButtonID sender_id);
+  // Triggers options menu.
+  void ShowOptionsMenu(views::Button* source);
 
   // Handles the event when the user clicks a link.
   void HandleLinkClicked(LinkID sender_id);
@@ -223,6 +222,11 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   // Updates the advanced view.
   void UpdateAdvancedView();
 
+  // Actions for button presses shared with accelerators.
+  void Translate();
+  void ShowOriginal();
+  void ConfirmAdvancedOptions();
+
   static TranslateBubbleView* translate_bubble_view_;
 
   views::View* before_translate_view_;
@@ -231,11 +235,9 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   views::View* error_view_;
   views::View* advanced_view_;
 
-  std::unique_ptr<ui::SimpleComboboxModel> denial_combobox_model_;
   std::unique_ptr<LanguageComboboxModel> source_language_combobox_model_;
   std::unique_ptr<LanguageComboboxModel> target_language_combobox_model_;
 
-  views::Combobox* denial_combobox_;
   views::Combobox* source_language_combobox_;
   views::Combobox* target_language_combobox_;
 
@@ -245,9 +247,10 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   views::LabelButton* advanced_cancel_button_;
   views::LabelButton* advanced_done_button_;
 
-  views::MenuButton* denial_menu_button_;
-  std::unique_ptr<ui::SimpleMenuModel> denial_menu_model_;
-  std::unique_ptr<views::MenuRunner> denial_menu_runner_;
+  // Used to trigger the options menu in tests.
+  views::Button* before_translate_options_button_;
+  std::unique_ptr<ui::SimpleMenuModel> options_menu_model_;
+  std::unique_ptr<views::MenuRunner> options_menu_runner_;
 
   std::unique_ptr<TranslateBubbleModel> model_;
 

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <memory>
 
+#include "base/bind.h"
 #include "base/compiler_specific.h"
 #include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
@@ -15,6 +16,7 @@
 #include "jingle/notifier/listener/fake_push_client.h"
 #include "jingle/notifier/listener/fake_push_client_observer.h"
 #include "jingle/notifier/listener/push_client_observer.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -84,7 +86,7 @@ TEST_F(NonBlockingPushClientTest, UpdateCredentials) {
   const char kEmail[] = "foo@bar.com";
   const char kToken[] = "baz";
 
-  push_client_->UpdateCredentials(kEmail, kToken);
+  push_client_->UpdateCredentials(kEmail, kToken, TRAFFIC_ANNOTATION_FOR_TESTS);
   EXPECT_TRUE(fake_push_client_->email().empty());
   EXPECT_TRUE(fake_push_client_->token().empty());
   base::RunLoop().RunUntilIdle();

@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.accessibility;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
 
@@ -38,6 +39,7 @@ public class FontSizePrefs {
     static final String PREF_USER_SET_FORCE_ENABLE_ZOOM = "user_set_force_enable_zoom";
     static final String PREF_USER_FONT_SCALE_FACTOR = "user_font_scale_factor";
 
+    @SuppressLint("StaticFieldLeak")
     private static FontSizePrefs sFontSizePrefs;
 
     private final long mFontSizePrefsAndroidPtr;
@@ -45,7 +47,7 @@ public class FontSizePrefs {
     private final SharedPreferences mSharedPreferences;
     private final ObserverList<FontSizePrefsObserver> mObserverList;
 
-    private Float mSystemFontScaleForTests = null;
+    private Float mSystemFontScaleForTests;
 
     /**
      * Interface for observing changes in font size-related preferences.

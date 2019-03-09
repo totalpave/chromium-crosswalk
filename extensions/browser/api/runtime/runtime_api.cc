@@ -7,10 +7,10 @@
 #include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
@@ -21,25 +21,26 @@
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/child_process_security_policy.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "extensions/browser/api/runtime/runtime_api_delegate.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/events/lazy_event_dispatch_util.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/extensions_browser_client.h"
-#include "extensions/browser/lazy_background_task_queue.h"
-#include "extensions/browser/notification_types.h"
+#include "extensions/browser/lazy_context_id.h"
+#include "extensions/browser/lazy_context_task_queue.h"
 #include "extensions/browser/process_manager_factory.h"
 #include "extensions/common/api/runtime.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/shared_module_info.h"
+#include "extensions/common/one_shot_event.h"
 #include "storage/browser/fileapi/isolated_context.h"
 #include "url/gurl.h"
 
@@ -68,15 +69,6 @@ const char kUpdatesDisabledError[] = "Autoupdate is not enabled.";
 
 // A preference key storing the url loaded when an extension is uninstalled.
 const char kUninstallUrl[] = "uninstall_url";
-
-// A preference key storing the information about an extension that was
-// installed but not loaded. We keep the pending info here so that we can send
-// chrome.runtime.onInstalled event during the extension load.
-const char kPrefPendingOnInstalledEventDispatchInfo[] =
-    "pending_on_installed_event_dispatch_info";
-
-// Previously installed version number.
-const char kPrefPreviousVersion[] = "previous_version";
 
 // The name of the directory to be returned by getPackageDirectoryEntry. This
 // particular value does not matter to user code, but is chosen for consistency
@@ -108,13 +100,14 @@ constexpr int kMinDurationBetweenSuccessiveRestartsHours = 3;
 // API without a kiosk app.
 bool allow_non_kiosk_apps_restart_api_for_test = false;
 
-void DispatchOnStartupEventImpl(BrowserContext* browser_context,
-                                const std::string& extension_id,
-                                bool first_call,
-                                ExtensionHost* host) {
-  // A NULL host from the LazyBackgroundTaskQueue means the page failed to
-  // load. Give up.
-  if (!host && !first_call)
+void DispatchOnStartupEventImpl(
+    BrowserContext* browser_context,
+    const std::string& extension_id,
+    bool first_call,
+    std::unique_ptr<LazyContextTaskQueue::ContextInfo> context_info) {
+  // A NULL ContextInfo from the task callback means the page failed
+  // to load. Give up.
+  if (!context_info && !first_call)
     return;
 
   // Don't send onStartup events to incognito browser contexts.
@@ -135,14 +128,15 @@ void DispatchOnStartupEventImpl(BrowserContext* browser_context,
       ExtensionRegistry::Get(browser_context)->enabled_extensions().GetByID(
           extension_id);
   if (extension && BackgroundInfo::HasPersistentBackgroundPage(extension) &&
-      first_call &&
-      LazyBackgroundTaskQueue::Get(browser_context)
-          ->ShouldEnqueueTask(browser_context, extension)) {
-    LazyBackgroundTaskQueue::Get(browser_context)
-        ->AddPendingTask(browser_context, extension_id,
-                         base::Bind(&DispatchOnStartupEventImpl,
-                                    browser_context, extension_id, false));
-    return;
+      first_call) {
+    const LazyContextId context_id(browser_context, extension_id);
+    LazyContextTaskQueue* task_queue = context_id.GetTaskQueue();
+    if (task_queue->ShouldEnqueueTask(browser_context, extension)) {
+      task_queue->AddPendingTask(
+          context_id, base::BindOnce(&DispatchOnStartupEventImpl,
+                                     browser_context, extension_id, false));
+      return;
+    }
   }
 
   std::unique_ptr<base::ListValue> event_args(new base::ListValue());
@@ -156,8 +150,8 @@ void DispatchOnStartupEventImpl(BrowserContext* browser_context,
 void SetUninstallURL(ExtensionPrefs* prefs,
                      const std::string& extension_id,
                      const std::string& url_string) {
-  prefs->UpdateExtensionPref(
-      extension_id, kUninstallUrl, new base::StringValue(url_string));
+  prefs->UpdateExtensionPref(extension_id, kUninstallUrl,
+                             std::make_unique<base::Value>(url_string));
 }
 
 std::string GetUninstallURL(ExtensionPrefs* prefs,
@@ -171,8 +165,9 @@ std::string GetUninstallURL(ExtensionPrefs* prefs,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-static base::LazyInstance<BrowserContextKeyedAPIFactory<RuntimeAPI> >
-    g_factory = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<
+    BrowserContextKeyedAPIFactory<RuntimeAPI>>::DestructorAtExit g_factory =
+    LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<RuntimeAPI>* RuntimeAPI::GetFactoryInstance() {
@@ -205,9 +200,9 @@ RuntimeAPI::RuntimeAPI(content::BrowserContext* context)
   // incognito.
   DCHECK(!browser_context_->IsOffTheRecord());
 
-  registrar_.Add(this,
-                 extensions::NOTIFICATION_EXTENSIONS_READY_DEPRECATED,
-                 content::Source<BrowserContext>(context));
+  ExtensionSystem::Get(context)->ready().Post(
+      FROM_HERE, base::Bind(&RuntimeAPI::OnExtensionsReady,
+                            weak_ptr_factory_.GetWeakPtr()));
   extension_registry_observer_.Add(ExtensionRegistry::Get(browser_context_));
   process_manager_observer_.Add(ProcessManager::Get(browser_context_));
 
@@ -218,66 +213,40 @@ RuntimeAPI::RuntimeAPI(content::BrowserContext* context)
   // per browser context, since it updates internal state when called.
   dispatch_chrome_updated_event_ =
       ExtensionsBrowserClient::Get()->DidVersionUpdate(browser_context_);
+
+  EventRouter::Get(browser_context_)
+      ->lazy_event_dispatch_util()
+      ->AddObserver(this);
 }
 
 RuntimeAPI::~RuntimeAPI() {
 }
 
-void RuntimeAPI::Observe(int type,
-                         const content::NotificationSource& source,
-                         const content::NotificationDetails& details) {
-  DCHECK_EQ(extensions::NOTIFICATION_EXTENSIONS_READY_DEPRECATED, type);
-  // We're done restarting Chrome after an update.
-  dispatch_chrome_updated_event_ = false;
-
-  delegate_->AddUpdateObserver(this);
-}
-
 void RuntimeAPI::OnExtensionLoaded(content::BrowserContext* browser_context,
                                    const Extension* extension) {
-  base::Version previous_version;
-  if (ReadPendingOnInstallInfoFromPref(extension->id(), &previous_version)) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(&RuntimeEventRouter::DispatchOnInstalledEvent,
-                   browser_context_, extension->id(), previous_version, false));
-    RemovePendingOnInstallInfoFromPref(extension->id());
-  }
-
   if (!dispatch_chrome_updated_event_)
     return;
 
   // Dispatch the onInstalled event with reason "chrome_update".
   base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      base::Bind(&RuntimeEventRouter::DispatchOnInstalledEvent,
-                 browser_context_, extension->id(), Version(), true));
-}
-
-void RuntimeAPI::OnExtensionWillBeInstalled(
-    content::BrowserContext* browser_context,
-    const Extension* extension,
-    bool is_update,
-    const std::string& old_name) {
-  // This extension might be disabled before it has a chance to load, e.g. if
-  // the extension increased its permissions. So instead of trying to send the
-  // onInstalled event here, we remember the fact in prefs and fire the event
-  // when the extension is actually loaded.
-  StorePendingOnInstallInfoToPref(extension);
+      base::BindOnce(&RuntimeEventRouter::DispatchOnInstalledEvent,
+                     browser_context_, extension->id(), base::Version(), true));
 }
 
 void RuntimeAPI::OnExtensionUninstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     UninstallReason reason) {
-  RemovePendingOnInstallInfoFromPref(extension->id());
-
-  RuntimeEventRouter::OnExtensionUninstalled(
-      browser_context_, extension->id(), reason);
+  RuntimeEventRouter::OnExtensionUninstalled(browser_context_, extension->id(),
+                                             reason);
 }
 
 void RuntimeAPI::Shutdown() {
   delegate_->RemoveUpdateObserver(this);
+  EventRouter::Get(browser_context_)
+      ->lazy_event_dispatch_util()
+      ->RemoveObserver(this);
 }
 
 void RuntimeAPI::OnAppUpdateAvailable(const Extension* extension) {
@@ -291,53 +260,6 @@ void RuntimeAPI::OnChromeUpdateAvailable() {
 
 void RuntimeAPI::OnBackgroundHostStartup(const Extension* extension) {
   RuntimeEventRouter::DispatchOnStartupEvent(browser_context_, extension->id());
-}
-
-bool RuntimeAPI::ReadPendingOnInstallInfoFromPref(
-    const ExtensionId& extension_id,
-    base::Version* previous_version) {
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context_);
-  DCHECK(prefs);
-
-  const base::DictionaryValue* info = nullptr;
-  if (!prefs->ReadPrefAsDictionary(
-          extension_id, kPrefPendingOnInstalledEventDispatchInfo, &info)) {
-    return false;
-  }
-
-  std::string previous_version_string;
-  info->GetString(kPrefPreviousVersion, &previous_version_string);
-  // |previous_version_string| can be empty.
-  *previous_version = base::Version(previous_version_string);
-  return true;
-}
-
-void RuntimeAPI::RemovePendingOnInstallInfoFromPref(
-    const ExtensionId& extension_id) {
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context_);
-  DCHECK(prefs);
-
-  prefs->UpdateExtensionPref(extension_id,
-                             kPrefPendingOnInstalledEventDispatchInfo, nullptr);
-}
-
-void RuntimeAPI::StorePendingOnInstallInfoToPref(const Extension* extension) {
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context_);
-  DCHECK(prefs);
-
-  // |pending_on_install_info| currently only contains a version string. Instead
-  // of making the pref hold a plain string, we store it as a dictionary value
-  // so that we can add more stuff to it in the future if necessary.
-  std::unique_ptr<base::DictionaryValue> pending_on_install_info(
-      new base::DictionaryValue());
-  base::Version previous_version =
-      delegate_->GetPreviousExtensionVersion(extension);
-  pending_on_install_info->SetString(
-      kPrefPreviousVersion,
-      previous_version.IsValid() ? previous_version.GetString() : "");
-  prefs->UpdateExtensionPref(extension->id(),
-                             kPrefPendingOnInstalledEventDispatchInfo,
-                             pending_on_install_info.release());
 }
 
 void RuntimeAPI::ReloadExtension(const std::string& extension_id) {
@@ -428,13 +350,20 @@ RuntimeAPI::RestartAfterDelayStatus RuntimeAPI::RestartDeviceAfterDelay(
   return ScheduleDelayedRestart(now, seconds_from_now);
 }
 
-bool RuntimeAPI::OpenOptionsPage(const Extension* extension) {
-  return delegate_->OpenOptionsPage(extension);
+bool RuntimeAPI::OpenOptionsPage(const Extension* extension,
+                                 content::BrowserContext* browser_context) {
+  return delegate_->OpenOptionsPage(extension, browser_context);
 }
 
 void RuntimeAPI::MaybeCancelRunningDelayedRestartTimer() {
   if (restart_after_delay_timer_.IsRunning())
     restart_after_delay_timer_.Stop();
+}
+
+void RuntimeAPI::OnExtensionsReady() {
+  // We're done restarting Chrome after an update.
+  dispatch_chrome_updated_event_ = false;
+  delegate_->AddUpdateObserver(this);
 }
 
 RuntimeAPI::RestartAfterDelayStatus RuntimeAPI::ScheduleDelayedRestart(
@@ -502,14 +431,14 @@ void RuntimeAPI::AllowNonKioskAppsInRestartAfterDelayForTesting() {
 void RuntimeEventRouter::DispatchOnStartupEvent(
     content::BrowserContext* context,
     const std::string& extension_id) {
-  DispatchOnStartupEventImpl(context, extension_id, true, NULL);
+  DispatchOnStartupEventImpl(context, extension_id, true, nullptr);
 }
 
 // static
 void RuntimeEventRouter::DispatchOnInstalledEvent(
     content::BrowserContext* context,
     const std::string& extension_id,
-    const Version& old_version,
+    const base::Version& old_version,
     bool chrome_updated) {
   if (!ExtensionsBrowserClient::Get()->IsValidContext(context))
     return;
@@ -517,9 +446,20 @@ void RuntimeEventRouter::DispatchOnInstalledEvent(
   if (!system)
     return;
 
+  // Only dispatch runtime.onInstalled events if:
+  // 1. the extension has just been installed/updated
+  // 2. chrome has updated and the extension had runtime.onInstalled listener.
+  // TODO(devlin): Having the chrome_update event tied to onInstalled has caused
+  // some issues in the past, see crbug.com/451268. We might want to eventually
+  // decouple the chrome_updated event from onInstalled and/or throttle
+  // dispatching the chrome_updated event.
+  if (chrome_updated && !EventRouter::Get(context)->ExtensionHasEventListener(
+                            extension_id, runtime::OnInstalled::kEventName)) {
+    return;
+  }
+
   std::unique_ptr<base::ListValue> event_args(new base::ListValue());
-  base::DictionaryValue* info = new base::DictionaryValue();
-  event_args->Append(info);
+  std::unique_ptr<base::DictionaryValue> info(new base::DictionaryValue());
   if (old_version.IsValid()) {
     info->SetString(kInstallReason, kInstallReasonUpdate);
     info->SetString(kInstallPreviousVersion, old_version.GetString());
@@ -528,6 +468,7 @@ void RuntimeEventRouter::DispatchOnInstalledEvent(
   } else {
     info->SetString(kInstallReason, kInstallReasonInstall);
   }
+  event_args->Append(std::move(info));
   EventRouter* event_router = EventRouter::Get(context);
   DCHECK(event_router);
   std::unique_ptr<Event> event(new Event(events::RUNTIME_ON_INSTALLED,
@@ -546,11 +487,12 @@ void RuntimeEventRouter::DispatchOnInstalledEvent(
            i != dependents->end();
            i++) {
         std::unique_ptr<base::ListValue> sm_event_args(new base::ListValue());
-        base::DictionaryValue* sm_info = new base::DictionaryValue();
-        sm_event_args->Append(sm_info);
+        std::unique_ptr<base::DictionaryValue> sm_info(
+            new base::DictionaryValue());
         sm_info->SetString(kInstallReason, kInstallReasonSharedModuleUpdate);
         sm_info->SetString(kInstallPreviousVersion, old_version.GetString());
         sm_info->SetString(kInstallId, extension_id);
+        sm_event_args->Append(std::move(sm_info));
         std::unique_ptr<Event> sm_event(new Event(
             events::RUNTIME_ON_INSTALLED, runtime::OnInstalled::kEventName,
             std::move(sm_event_args)));
@@ -571,7 +513,7 @@ void RuntimeEventRouter::DispatchOnUpdateAvailableEvent(
     return;
 
   std::unique_ptr<base::ListValue> args(new base::ListValue);
-  args->Append(manifest->DeepCopy());
+  args->Append(manifest->CreateDeepCopy());
   EventRouter* event_router = EventRouter::Get(context);
   DCHECK(event_router);
   std::unique_ptr<Event> event(new Event(events::RUNTIME_ON_UPDATE_AVAILABLE,
@@ -620,7 +562,8 @@ void RuntimeEventRouter::OnExtensionUninstalled(
     const std::string& extension_id,
     UninstallReason reason) {
   if (!(reason == UNINSTALL_REASON_USER_INITIATED ||
-        reason == UNINSTALL_REASON_MANAGEMENT_API)) {
+        reason == UNINSTALL_REASON_MANAGEMENT_API ||
+        reason == UNINSTALL_REASON_CHROME_WEBSTORE)) {
     return;
   }
 
@@ -633,20 +576,36 @@ void RuntimeEventRouter::OnExtensionUninstalled(
     return;
   }
 
+  // Blacklisted extensions should not open uninstall_url.
+  if (extensions::ExtensionPrefs::Get(context)->IsExtensionBlacklisted(
+          extension_id)) {
+    return;
+  }
+
   RuntimeAPI::GetFactoryInstance()->Get(context)->OpenURL(uninstall_url);
+}
+
+void RuntimeAPI::OnExtensionInstalledAndLoaded(
+    content::BrowserContext* browser_context,
+    const Extension* extension,
+    const base::Version& previous_version) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&RuntimeEventRouter::DispatchOnInstalledEvent,
+                                browser_context_, extension->id(),
+                                previous_version, false));
 }
 
 ExtensionFunction::ResponseAction RuntimeGetBackgroundPageFunction::Run() {
   ExtensionHost* host = ProcessManager::Get(browser_context())
                             ->GetBackgroundHostForExtension(extension_id());
-  if (LazyBackgroundTaskQueue::Get(browser_context())
-          ->ShouldEnqueueTask(browser_context(), extension())) {
-    LazyBackgroundTaskQueue::Get(browser_context())
-        ->AddPendingTask(
-            browser_context(), extension_id(),
-            base::Bind(&RuntimeGetBackgroundPageFunction::OnPageLoaded, this));
+  const LazyContextId context_id(browser_context(), extension_id());
+  LazyContextTaskQueue* task_queue = context_id.GetTaskQueue();
+  if (task_queue->ShouldEnqueueTask(browser_context(), extension())) {
+    task_queue->AddPendingTask(
+        context_id,
+        base::BindOnce(&RuntimeGetBackgroundPageFunction::OnPageLoaded, this));
   } else if (host) {
-    OnPageLoaded(host);
+    OnPageLoaded(std::make_unique<LazyContextTaskQueue::ContextInfo>(host));
   } else {
     return RespondNow(Error(kNoBackgroundPageError));
   }
@@ -654,8 +613,9 @@ ExtensionFunction::ResponseAction RuntimeGetBackgroundPageFunction::Run() {
   return RespondLater();
 }
 
-void RuntimeGetBackgroundPageFunction::OnPageLoaded(ExtensionHost* host) {
-  if (host) {
+void RuntimeGetBackgroundPageFunction::OnPageLoaded(
+    std::unique_ptr<LazyContextTaskQueue::ContextInfo> context_info) {
+  if (context_info) {
     Respond(NoArguments());
   } else {
     Respond(Error(kPageLoadError));
@@ -664,7 +624,7 @@ void RuntimeGetBackgroundPageFunction::OnPageLoaded(ExtensionHost* host) {
 
 ExtensionFunction::ResponseAction RuntimeOpenOptionsPageFunction::Run() {
   RuntimeAPI* api = RuntimeAPI::GetFactoryInstance()->Get(browser_context());
-  return RespondNow(api->OpenOptionsPage(extension())
+  return RespondNow(api->OpenOptionsPage(extension(), browser_context())
                         ? NoArguments()
                         : Error(kFailedToCreateOptionsPage));
 }
@@ -704,11 +664,11 @@ void RuntimeRequestUpdateCheckFunction::CheckComplete(
   if (result.success) {
     std::unique_ptr<base::DictionaryValue> details(new base::DictionaryValue);
     details->SetString("version", result.version);
-    Respond(TwoArguments(base::MakeUnique<base::StringValue>(result.response),
+    Respond(TwoArguments(std::make_unique<base::Value>(result.response),
                          std::move(details)));
   } else {
     // HMM(kalman): Why does !success not imply Error()?
-    Respond(OneArgument(base::MakeUnique<base::StringValue>(result.response)));
+    Respond(OneArgument(std::make_unique<base::Value>(result.response)));
   }
 }
 
@@ -735,7 +695,8 @@ ExtensionFunction::ResponseAction RuntimeRestartAfterDelayFunction::Run() {
   int seconds = params->seconds;
 
   if (seconds <= 0 && seconds != -1)
-    return RespondNow(Error(kErrorInvalidArgument, base::IntToString(seconds)));
+    return RespondNow(
+        Error(kErrorInvalidArgument, base::NumberToString(seconds)));
 
   RuntimeAPI::RestartAfterDelayStatus request_status =
       RuntimeAPI::GetFactoryInstance()

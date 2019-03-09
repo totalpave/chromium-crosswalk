@@ -7,17 +7,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include <X11/keysym.h>
-#include <X11/XKBlib.h>
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
 #include <algorithm>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/test/chromedriver/chrome/ui_events.h"
 #include "ui/base/x/x11_util.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
+#include "ui/gfx/x/x11.h"
 
 namespace {
 
@@ -142,9 +139,9 @@ int KeyboardCodeToXKeyCode(ui::KeyboardCode key_code) {
   KeyCodeAndXKeyCode find;
   find.key_code = key_code;
   const KeyCodeAndXKeyCode* found = std::lower_bound(
-      kKeyCodeToXKeyCode, kKeyCodeToXKeyCode + arraysize(kKeyCodeToXKeyCode),
+      kKeyCodeToXKeyCode, kKeyCodeToXKeyCode + base::size(kKeyCodeToXKeyCode),
       find);
-  if (found >= kKeyCodeToXKeyCode + arraysize(kKeyCodeToXKeyCode) ||
+  if (found >= kKeyCodeToXKeyCode + base::size(kKeyCodeToXKeyCode) ||
       found->key_code != key_code)
     return -1;
   return found->x_key_code;
@@ -184,6 +181,11 @@ bool GetXModifierMask(Display* display, int modifier, int* x_modifier) {
 bool ConvertKeyCodeToText(
     ui::KeyboardCode key_code, int modifiers, std::string* text,
     std::string* error_msg) {
+  XDisplay* display = gfx::GetXDisplay();
+  if (!display) {
+    return ConvertKeyCodeToTextOzone(key_code, modifiers, text, error_msg);
+  }
+
   *error_msg = std::string();
   int x_key_code = KeyboardCodeToXKeyCode(key_code);
   if (x_key_code == -1) {
@@ -194,13 +196,6 @@ bool ConvertKeyCodeToText(
   XEvent event;
   memset(&event, 0, sizeof(XEvent));
   XKeyEvent* key_event = &event.xkey;
-  XDisplay* display = gfx::GetXDisplay();
-  if (!display) {
-    *error_msg =
-        "an X display is required for keycode conversions, consider using Xvfb";
-    *text = std::string();
-    return false;
-  }
   key_event->display = display;
   key_event->keycode = x_key_code;
   if (modifiers & kShiftKeyModifierMask)
@@ -237,13 +232,19 @@ bool ConvertCharToKeyCode(
     ui::KeyboardCode* key_code,
     int* necessary_modifiers,
     std::string* error_msg) {
+  XDisplay* display = gfx::GetXDisplay();
+  if (!display) {
+    return ConvertCharToKeyCodeOzone(key, key_code, necessary_modifiers,
+                                     error_msg);
+  }
+
   std::string key_string(base::UTF16ToUTF8(base::string16(1, key)));
   bool found = false;
   ui::KeyboardCode test_code;
   int test_modifiers;
   *error_msg = std::string();
   std::string conv_string;
-  for (size_t i = 0; i < arraysize(kKeyCodeToXKeyCode); ++i) {
+  for (size_t i = 0; i < base::size(kKeyCodeToXKeyCode); ++i) {
     test_code = kKeyCodeToXKeyCode[i].key_code;
     // Skip the numpad keys.
     if (test_code >= ui::VKEY_NUMPAD0 && test_code <= ui::VKEY_DIVIDE)

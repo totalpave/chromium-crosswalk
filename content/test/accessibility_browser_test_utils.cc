@@ -6,12 +6,12 @@
 
 #include "base/bind.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "content/browser/frame_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/web_contents/web_contents_impl.h"
-#include "content/common/view_message_enums.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/test_utils.h"
@@ -21,7 +21,7 @@ namespace content {
 
 AccessibilityNotificationWaiter::AccessibilityNotificationWaiter(
     WebContents* web_contents)
-    : event_to_wait_for_(ui::AX_EVENT_NONE),
+    : event_to_wait_for_(ax::mojom::Event::kNone),
       loop_runner_(new MessageLoopRunner()),
       event_target_id_(0),
       event_render_frame_host_(nullptr),
@@ -35,8 +35,8 @@ AccessibilityNotificationWaiter::AccessibilityNotificationWaiter(
 
 AccessibilityNotificationWaiter::AccessibilityNotificationWaiter(
     WebContents* web_contents,
-    AccessibilityMode accessibility_mode,
-    ui::AXEvent event_type)
+    ui::AXMode accessibility_mode,
+    ax::mojom::Event event_type)
     : event_to_wait_for_(event_type),
       loop_runner_(new MessageLoopRunner()),
       event_target_id_(0),
@@ -53,7 +53,7 @@ AccessibilityNotificationWaiter::AccessibilityNotificationWaiter(
 
 AccessibilityNotificationWaiter::AccessibilityNotificationWaiter(
     RenderFrameHostImpl* frame_host,
-    ui::AXEvent event_type)
+    ax::mojom::Event event_type)
     : frame_host_(frame_host),
       event_to_wait_for_(event_type),
       loop_runner_(new MessageLoopRunner()),
@@ -83,18 +83,18 @@ void AccessibilityNotificationWaiter::WaitForNotification() {
 }
 
 const ui::AXTree& AccessibilityNotificationWaiter::GetAXTree() const {
-  CR_DEFINE_STATIC_LOCAL(ui::AXTree, empty_tree, ());
+  static base::NoDestructor<ui::AXTree> empty_tree;
   const ui::AXTree* tree = frame_host_->GetAXTreeForTesting();
   if (tree)
     return *tree;
-  return empty_tree;
+  return *empty_tree;
 }
 
 void AccessibilityNotificationWaiter::OnAccessibilityEvent(
     RenderFrameHostImpl* rfhi,
-    ui::AXEvent event_type,
+    ax::mojom::Event event_type,
     int event_target_id) {
-  if (!IsAboutBlank() && (event_to_wait_for_ == ui::AX_EVENT_NONE ||
+  if (!IsAboutBlank() && (event_to_wait_for_ == ax::mojom::Event::kNone ||
                           event_to_wait_for_ == event_type)) {
     event_target_id_ = event_target_id;
     event_render_frame_host_ = rfhi;

@@ -18,6 +18,7 @@
 #include "base/json/json_writer.h"
 #include "base/location.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/singleton.h"
 #include "base/process/process_handle.h"
@@ -29,8 +30,11 @@
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
+#include "base/trace_event/event_name_filter.h"
+#include "base/trace_event/heap_profiler_event_filter.h"
 #include "base/trace_event/trace_buffer.h"
-#include "base/trace_event/trace_event_synthetic_delay.h"
+#include "base/trace_event/trace_event_filter.h"
+#include "base/trace_event/trace_event_filter_test_utils.h"
 #include "base/values.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -59,7 +63,8 @@ const char kAsyncId2Str[] = "0x6";
 const int kFlowId = 7;
 const char kFlowIdStr[] = "0x7";
 
-const  char kRecordAllCategoryFilter[] = "*";
+constexpr const char kRecordAllCategoryFilter[] = "*";
+constexpr const char kAllCategory[] = "all";
 
 class TraceEventTestFixture : public testing::Test {
  public:
@@ -67,9 +72,6 @@ class TraceEventTestFixture : public testing::Test {
       WaitableEvent* flush_complete_event,
       const scoped_refptr<base::RefCountedString>& events_str,
       bool has_more_events);
-  void OnWatchEventMatched() {
-    ++event_watch_notification_;
-  }
   DictionaryValue* FindMatchingTraceEntry(const JsonKeyValue* key_values);
   DictionaryValue* FindNamePhase(const char* name, const char* phase);
   DictionaryValue* FindNamePhaseKeyValue(const char* name,
@@ -91,7 +93,6 @@ class TraceEventTestFixture : public testing::Test {
   }
 
   void BeginSpecificTrace(const std::string& filter) {
-    event_watch_notification_ = 0;
     TraceLog::GetInstance()->SetEnabled(TraceConfig(filter, ""),
                                         TraceLog::RECORDING_MODE);
   }
@@ -122,8 +123,9 @@ class TraceEventTestFixture : public testing::Test {
     Thread flush_thread("flush");
     flush_thread.Start();
     flush_thread.task_runner()->PostTask(
-        FROM_HERE, base::Bind(&TraceEventTestFixture::EndTraceAndFlushAsync,
-                              base::Unretained(this), &flush_complete_event));
+        FROM_HERE,
+        base::BindOnce(&TraceEventTestFixture::EndTraceAndFlushAsync,
+                       base::Unretained(this), &flush_complete_event));
     flush_complete_event.Wait();
   }
 
@@ -135,7 +137,8 @@ class TraceEventTestFixture : public testing::Test {
   }
 
   void EndTraceAndFlushAsync(WaitableEvent* flush_complete_event) {
-    TraceLog::GetInstance()->SetDisabled();
+    TraceLog::GetInstance()->SetDisabled(TraceLog::RECORDING_MODE |
+                                         TraceLog::FILTERING_MODE);
     TraceLog::GetInstance()->Flush(
         base::Bind(&TraceEventTestFixture::OnTraceDataCollected,
                    base::Unretained(static_cast<TraceEventTestFixture*>(this)),
@@ -144,14 +147,13 @@ class TraceEventTestFixture : public testing::Test {
 
   void SetUp() override {
     const char* name = PlatformThread::GetName();
-    old_thread_name_ = name ? strdup(name) : NULL;
+    old_thread_name_ = name ? strdup(name) : nullptr;
 
-    TraceLog::DeleteForTesting();
+    TraceLog::ResetForTesting();
     TraceLog* tracelog = TraceLog::GetInstance();
     ASSERT_TRUE(tracelog);
     ASSERT_FALSE(tracelog->IsEnabled());
     trace_buffer_.SetOutputCallback(json_output_.GetCallback());
-    event_watch_notification_ = 0;
     num_flush_callbacks_ = 0;
   }
   void TearDown() override {
@@ -159,16 +161,15 @@ class TraceEventTestFixture : public testing::Test {
       EXPECT_FALSE(TraceLog::GetInstance()->IsEnabled());
     PlatformThread::SetName(old_thread_name_ ? old_thread_name_ : "");
     free(old_thread_name_);
-    old_thread_name_ = NULL;
+    old_thread_name_ = nullptr;
     // We want our singleton torn down after each test.
-    TraceLog::DeleteForTesting();
+    TraceLog::ResetForTesting();
   }
 
   char* old_thread_name_;
   ListValue trace_parsed_;
   TraceResultBuffer trace_buffer_;
   TraceResultBuffer::SimpleOutput json_output_;
-  int event_watch_notification_;
   size_t num_flush_callbacks_;
 
  private:
@@ -191,14 +192,14 @@ void TraceEventTestFixture::OnTraceDataCollected(
   trace_buffer_.AddFragment(events_str->data());
   trace_buffer_.Finish();
 
-  std::unique_ptr<Value> root = base::JSONReader::Read(
-      json_output_.json_output, JSON_PARSE_RFC | JSON_DETACHABLE_CHILDREN);
+  std::unique_ptr<Value> root = base::JSONReader::ReadDeprecated(
+      json_output_.json_output, JSON_PARSE_RFC);
 
   if (!root.get()) {
     LOG(ERROR) << json_output_.json_output;
   }
 
-  ListValue* root_list = NULL;
+  ListValue* root_list = nullptr;
   ASSERT_TRUE(root.get());
   ASSERT_TRUE(root->GetAsList(&root_list));
 
@@ -229,7 +230,7 @@ static bool CompareJsonValues(const std::string& lhs,
 
 static bool IsKeyValueInDict(const JsonKeyValue* key_value,
                              DictionaryValue* dict) {
-  Value* value = NULL;
+  Value* value = nullptr;
   std::string value_str;
   if (dict->Get(key_value->key, &value) &&
       value->GetAsString(&value_str) &&
@@ -237,7 +238,7 @@ static bool IsKeyValueInDict(const JsonKeyValue* key_value,
     return true;
 
   // Recurse to test arguments
-  DictionaryValue* args_dict = NULL;
+  DictionaryValue* args_dict = nullptr;
   dict->GetDictionary("args", &args_dict);
   if (args_dict)
     return IsKeyValueInDict(key_value, args_dict);
@@ -261,16 +262,16 @@ DictionaryValue* TraceEventTestFixture::FindMatchingTraceEntry(
   // Scan all items
   size_t trace_parsed_count = trace_parsed_.GetSize();
   for (size_t i = 0; i < trace_parsed_count; i++) {
-    Value* value = NULL;
+    Value* value = nullptr;
     trace_parsed_.Get(i, &value);
-    if (!value || value->GetType() != Value::TYPE_DICTIONARY)
+    if (!value || value->type() != Value::Type::DICTIONARY)
       continue;
     DictionaryValue* dict = static_cast<DictionaryValue*>(value);
 
     if (IsAllKeyValueInDict(key_values, dict))
       return dict;
   }
-  return NULL;
+  return nullptr;
 }
 
 void TraceEventTestFixture::DropTracedMetadataRecords() {
@@ -281,7 +282,7 @@ void TraceEventTestFixture::DropTracedMetadataRecords() {
   for (size_t i = 0; i < old_trace_parsed_size; i++) {
     Value* value = nullptr;
     old_trace_parsed->Get(i, &value);
-    if (!value || value->GetType() != Value::TYPE_DICTIONARY) {
+    if (!value || value->type() != Value::Type::DICTIONARY) {
       trace_parsed_.Append(value->CreateDeepCopy());
       continue;
     }
@@ -296,11 +297,9 @@ void TraceEventTestFixture::DropTracedMetadataRecords() {
 
 DictionaryValue* TraceEventTestFixture::FindNamePhase(const char* name,
                                                       const char* phase) {
-  JsonKeyValue key_values[] = {
-    {"name", name, IS_EQUAL},
-    {"ph", phase, IS_EQUAL},
-    {0, 0, IS_EQUAL}
-  };
+  JsonKeyValue key_values[] = {{"name", name, IS_EQUAL},
+                               {"ph", phase, IS_EQUAL},
+                               {nullptr, nullptr, IS_EQUAL}};
   return FindMatchingTraceEntry(key_values);
 }
 
@@ -309,30 +308,24 @@ DictionaryValue* TraceEventTestFixture::FindNamePhaseKeyValue(
     const char* phase,
     const char* key,
     const char* value) {
-  JsonKeyValue key_values[] = {
-    {"name", name, IS_EQUAL},
-    {"ph", phase, IS_EQUAL},
-    {key, value, IS_EQUAL},
-    {0, 0, IS_EQUAL}
-  };
+  JsonKeyValue key_values[] = {{"name", name, IS_EQUAL},
+                               {"ph", phase, IS_EQUAL},
+                               {key, value, IS_EQUAL},
+                               {nullptr, nullptr, IS_EQUAL}};
   return FindMatchingTraceEntry(key_values);
 }
 
 bool TraceEventTestFixture::FindMatchingValue(const char* key,
                                               const char* value) {
-  JsonKeyValue key_values[] = {
-    {key, value, IS_EQUAL},
-    {0, 0, IS_EQUAL}
-  };
+  JsonKeyValue key_values[] = {{key, value, IS_EQUAL},
+                               {nullptr, nullptr, IS_EQUAL}};
   return FindMatchingTraceEntry(key_values);
 }
 
 bool TraceEventTestFixture::FindNonMatchingValue(const char* key,
                                                  const char* value) {
-  JsonKeyValue key_values[] = {
-    {key, value, IS_NOT_EQUAL},
-    {0, 0, IS_EQUAL}
-  };
+  JsonKeyValue key_values[] = {{key, value, IS_NOT_EQUAL},
+                               {nullptr, nullptr, IS_EQUAL}};
   return FindMatchingTraceEntry(key_values);
 }
 
@@ -348,7 +341,7 @@ bool IsStringInDict(const char* string_to_match, const DictionaryValue* dict) {
   }
 
   // Recurse to test arguments
-  const DictionaryValue* args_dict = NULL;
+  const DictionaryValue* args_dict = nullptr;
   dict->GetDictionary("args", &args_dict);
   if (args_dict)
     return IsStringInDict(string_to_match, args_dict);
@@ -359,25 +352,25 @@ bool IsStringInDict(const char* string_to_match, const DictionaryValue* dict) {
 const DictionaryValue* FindTraceEntry(
     const ListValue& trace_parsed,
     const char* string_to_match,
-    const DictionaryValue* match_after_this_item = NULL) {
+    const DictionaryValue* match_after_this_item = nullptr) {
   // Scan all items
   size_t trace_parsed_count = trace_parsed.GetSize();
   for (size_t i = 0; i < trace_parsed_count; i++) {
-    const Value* value = NULL;
+    const Value* value = nullptr;
     trace_parsed.Get(i, &value);
     if (match_after_this_item) {
       if (value == match_after_this_item)
-         match_after_this_item = NULL;
+        match_after_this_item = nullptr;
       continue;
     }
-    if (!value || value->GetType() != Value::TYPE_DICTIONARY)
+    if (!value || value->type() != Value::Type::DICTIONARY)
       continue;
     const DictionaryValue* dict = static_cast<const DictionaryValue*>(value);
 
     if (IsStringInDict(string_to_match, dict))
       return dict;
   }
-  return NULL;
+  return nullptr;
 }
 
 std::vector<const DictionaryValue*> FindTraceEntries(
@@ -386,9 +379,9 @@ std::vector<const DictionaryValue*> FindTraceEntries(
   std::vector<const DictionaryValue*> hits;
   size_t trace_parsed_count = trace_parsed.GetSize();
   for (size_t i = 0; i < trace_parsed_count; i++) {
-    const Value* value = NULL;
+    const Value* value = nullptr;
     trace_parsed.Get(i, &value);
-    if (!value || value->GetType() != Value::TYPE_DICTIONARY)
+    if (!value || value->type() != Value::Type::DICTIONARY)
       continue;
     const DictionaryValue* dict = static_cast<const DictionaryValue*>(value);
 
@@ -398,7 +391,7 @@ std::vector<const DictionaryValue*> FindTraceEntries(
   return hits;
 }
 
-const char kControlCharacters[] = "\001\002\003\n\r";
+constexpr const char kControlCharacters[] = "\001\002\003\n\r";
 
 void TraceWithAllMacroVariants(WaitableEvent* task_complete_event) {
   {
@@ -460,9 +453,10 @@ void TraceWithAllMacroVariants(WaitableEvent* task_complete_event) {
                    "b", 1415);
 
     TRACE_COUNTER_WITH_TIMESTAMP1("all", "TRACE_COUNTER_WITH_TIMESTAMP1 call",
-                                  42, 31415);
+                                  TimeTicks::FromInternalValue(42), 31415);
     TRACE_COUNTER_WITH_TIMESTAMP2("all", "TRACE_COUNTER_WITH_TIMESTAMP2 call",
-                                  42, "a", 30000, "b", 1415);
+                                  TimeTicks::FromInternalValue(42),
+                                  "a", 30000, "b", 1415);
 
     TRACE_COUNTER_ID1("all", "TRACE_COUNTER_ID1 call", 0x319009, 31415);
     TRACE_COUNTER_ID2("all", "TRACE_COUNTER_ID2 call", 0x319009,
@@ -470,14 +464,14 @@ void TraceWithAllMacroVariants(WaitableEvent* task_complete_event) {
 
     TRACE_EVENT_COPY_BEGIN_WITH_ID_TID_AND_TIMESTAMP0("all",
         "TRACE_EVENT_COPY_BEGIN_WITH_ID_TID_AND_TIMESTAMP0 call",
-        kAsyncId, kThreadId, 12345);
+        kAsyncId, kThreadId, TimeTicks::FromInternalValue(12345));
     TRACE_EVENT_COPY_END_WITH_ID_TID_AND_TIMESTAMP0("all",
         "TRACE_EVENT_COPY_END_WITH_ID_TID_AND_TIMESTAMP0 call",
-        kAsyncId, kThreadId, 23456);
+        kAsyncId, kThreadId, TimeTicks::FromInternalValue(23456));
 
     TRACE_EVENT_BEGIN_WITH_ID_TID_AND_TIMESTAMP0("all",
         "TRACE_EVENT_BEGIN_WITH_ID_TID_AND_TIMESTAMP0 call",
-        kAsyncId2, kThreadId, 34567);
+        kAsyncId2, kThreadId, TimeTicks::FromInternalValue(34567));
     TRACE_EVENT_ASYNC_STEP_PAST0("all", "TRACE_EVENT_ASYNC_STEP_PAST0 call",
                                  kAsyncId2, "step_end1");
     TRACE_EVENT_ASYNC_STEP_PAST1("all", "TRACE_EVENT_ASYNC_STEP_PAST1 call",
@@ -485,15 +479,15 @@ void TraceWithAllMacroVariants(WaitableEvent* task_complete_event) {
 
     TRACE_EVENT_END_WITH_ID_TID_AND_TIMESTAMP0("all",
         "TRACE_EVENT_END_WITH_ID_TID_AND_TIMESTAMP0 call",
-        kAsyncId2, kThreadId, 45678);
+        kAsyncId2, kThreadId, TimeTicks::FromInternalValue(45678));
 
     TRACE_EVENT_OBJECT_CREATED_WITH_ID("all", "tracked object 1", 0x42);
     TRACE_EVENT_OBJECT_SNAPSHOT_WITH_ID(
         "all", "tracked object 1", 0x42, "hello");
     TRACE_EVENT_OBJECT_DELETED_WITH_ID("all", "tracked object 1", 0x42);
 
-    TraceScopedTrackableObject<int> trackable("all", "tracked object 2",
-                                              0x2128506);
+    TraceScopedTrackableObject<int, kAllCategory> trackable("tracked object 2",
+                                                            0x2128506);
     trackable.snapshot("world");
 
     TRACE_EVENT_OBJECT_CREATED_WITH_ID(
@@ -512,11 +506,24 @@ void TraceWithAllMacroVariants(WaitableEvent* task_complete_event) {
                               TRACE_ID_WITH_SCOPE("scope", context_id));
     TRACE_EVENT_LEAVE_CONTEXT("all", "TRACE_EVENT_LEAVE_CONTEXT call",
                               TRACE_ID_WITH_SCOPE("scope", context_id));
-    TRACE_EVENT_SCOPED_CONTEXT("disabled-by-default-cat",
-                               "TRACE_EVENT_SCOPED_CONTEXT disabled call",
-                               context_id);
-    TRACE_EVENT_SCOPED_CONTEXT("all", "TRACE_EVENT_SCOPED_CONTEXT call",
-                               context_id);
+
+    TRACE_LINK_IDS("all", "TRACE_LINK_IDS simple call", 0x1000, 0x2000);
+    TRACE_LINK_IDS("all", "TRACE_LINK_IDS scoped call",
+                   TRACE_ID_WITH_SCOPE("scope 1", 0x1000),
+                   TRACE_ID_WITH_SCOPE("scope 2", 0x2000));
+    TRACE_LINK_IDS("all", "TRACE_LINK_IDS to a local ID", 0x1000,
+                   TRACE_ID_LOCAL(0x2000));
+    TRACE_LINK_IDS("all", "TRACE_LINK_IDS to a global ID", 0x1000,
+                   TRACE_ID_GLOBAL(0x2000));
+    TRACE_LINK_IDS("all", "TRACE_LINK_IDS to a composite ID", 0x1000,
+                   TRACE_ID_WITH_SCOPE("scope 1", 0x2000, 0x3000));
+
+    TRACE_EVENT_ASYNC_BEGIN0("all", "async default process scope", 0x1000);
+    TRACE_EVENT_ASYNC_BEGIN0("all", "async local id", TRACE_ID_LOCAL(0x2000));
+    TRACE_EVENT_ASYNC_BEGIN0("all", "async global id", TRACE_ID_GLOBAL(0x3000));
+    TRACE_EVENT_ASYNC_BEGIN0("all", "async global id with scope string",
+                             TRACE_ID_WITH_SCOPE("scope string",
+                                                 TRACE_ID_GLOBAL(0x4000)));
   }  // Scope close causes TRACE_EVENT0 etc to send their END events.
 
   if (task_complete_event)
@@ -524,7 +531,7 @@ void TraceWithAllMacroVariants(WaitableEvent* task_complete_event) {
 }
 
 void ValidateAllTraceMacrosCreatedData(const ListValue& trace_parsed) {
-  const DictionaryValue* item = NULL;
+  const DictionaryValue* item = nullptr;
 
 #define EXPECT_FIND_(string) \
     item = FindTraceEntry(trace_parsed, string); \
@@ -931,31 +938,142 @@ void ValidateAllTraceMacrosCreatedData(const ListValue& trace_parsed) {
     EXPECT_EQ("0x20151021", id);
   }
 
-  std::vector<const DictionaryValue*> scoped_context_calls =
-      FindTraceEntries(trace_parsed, "TRACE_EVENT_SCOPED_CONTEXT call");
-  EXPECT_EQ(2u, scoped_context_calls.size());
+  EXPECT_FIND_("TRACE_LINK_IDS simple call");
   {
-    item = scoped_context_calls[0];
     std::string ph;
     EXPECT_TRUE((item && item->GetString("ph", &ph)));
-    EXPECT_EQ("(", ph);
+    EXPECT_EQ("=", ph);
 
-    std::string id;
     EXPECT_FALSE((item && item->HasKey("scope")));
-    EXPECT_TRUE((item && item->GetString("id", &id)));
-    EXPECT_EQ("0x20151021", id);
+    std::string id1;
+    EXPECT_TRUE((item && item->GetString("id", &id1)));
+    EXPECT_EQ("0x1000", id1);
+
+    EXPECT_FALSE((item && item->HasKey("args.linked_id.scope")));
+    std::string id2;
+    EXPECT_TRUE((item && item->GetString("args.linked_id.id", &id2)));
+    EXPECT_EQ("0x2000", id2);
   }
 
+  EXPECT_FIND_("TRACE_LINK_IDS scoped call");
   {
-    item = scoped_context_calls[1];
     std::string ph;
     EXPECT_TRUE((item && item->GetString("ph", &ph)));
-    EXPECT_EQ(")", ph);
+    EXPECT_EQ("=", ph);
+
+    std::string scope1;
+    EXPECT_TRUE((item && item->GetString("scope", &scope1)));
+    EXPECT_EQ("scope 1", scope1);
+    std::string id1;
+    EXPECT_TRUE((item && item->GetString("id", &id1)));
+    EXPECT_EQ("0x1000", id1);
+
+    std::string scope2;
+    EXPECT_TRUE((item && item->GetString("args.linked_id.scope", &scope2)));
+    EXPECT_EQ("scope 2", scope2);
+    std::string id2;
+    EXPECT_TRUE((item && item->GetString("args.linked_id.id", &id2)));
+    EXPECT_EQ("0x2000", id2);
+  }
+
+  EXPECT_FIND_("TRACE_LINK_IDS to a local ID");
+  {
+    std::string ph;
+    EXPECT_TRUE((item && item->GetString("ph", &ph)));
+    EXPECT_EQ("=", ph);
+
+    EXPECT_FALSE((item && item->HasKey("scope")));
+    std::string id1;
+    EXPECT_TRUE((item && item->GetString("id", &id1)));
+    EXPECT_EQ("0x1000", id1);
+
+    EXPECT_FALSE((item && item->HasKey("args.linked_id.scope")));
+    std::string id2;
+    EXPECT_TRUE((item && item->GetString("args.linked_id.id2.local", &id2)));
+    EXPECT_EQ("0x2000", id2);
+  }
+
+  EXPECT_FIND_("TRACE_LINK_IDS to a global ID");
+  {
+    std::string ph;
+    EXPECT_TRUE((item && item->GetString("ph", &ph)));
+    EXPECT_EQ("=", ph);
+
+    EXPECT_FALSE((item && item->HasKey("scope")));
+    std::string id1;
+    EXPECT_TRUE((item && item->GetString("id", &id1)));
+    EXPECT_EQ("0x1000", id1);
+
+    EXPECT_FALSE((item && item->HasKey("args.linked_id.scope")));
+    std::string id2;
+    EXPECT_TRUE((item && item->GetString("args.linked_id.id2.global", &id2)));
+    EXPECT_EQ("0x2000", id2);
+  }
+
+  EXPECT_FIND_("TRACE_LINK_IDS to a composite ID");
+  {
+    std::string ph;
+    EXPECT_TRUE((item && item->GetString("ph", &ph)));
+    EXPECT_EQ("=", ph);
+
+    EXPECT_FALSE(item->HasKey("scope"));
+    std::string id1;
+    EXPECT_TRUE(item->GetString("id", &id1));
+    EXPECT_EQ("0x1000", id1);
+
+    std::string scope;
+    EXPECT_TRUE(item->GetString("args.linked_id.scope", &scope));
+    EXPECT_EQ("scope 1", scope);
+    std::string id2;
+    EXPECT_TRUE(item->GetString("args.linked_id.id", &id2));
+    EXPECT_EQ(id2, "0x2000/0x3000");
+  }
+
+  EXPECT_FIND_("async default process scope");
+  {
+    std::string ph;
+    EXPECT_TRUE((item && item->GetString("ph", &ph)));
+    EXPECT_EQ("S", ph);
 
     std::string id;
-    EXPECT_FALSE((item && item->HasKey("scope")));
     EXPECT_TRUE((item && item->GetString("id", &id)));
-    EXPECT_EQ("0x20151021", id);
+    EXPECT_EQ("0x1000", id);
+  }
+
+  EXPECT_FIND_("async local id");
+  {
+    std::string ph;
+    EXPECT_TRUE((item && item->GetString("ph", &ph)));
+    EXPECT_EQ("S", ph);
+
+    std::string id;
+    EXPECT_TRUE((item && item->GetString("id2.local", &id)));
+    EXPECT_EQ("0x2000", id);
+  }
+
+  EXPECT_FIND_("async global id");
+  {
+    std::string ph;
+    EXPECT_TRUE((item && item->GetString("ph", &ph)));
+    EXPECT_EQ("S", ph);
+
+    std::string id;
+    EXPECT_TRUE((item && item->GetString("id2.global", &id)));
+    EXPECT_EQ("0x3000", id);
+  }
+
+  EXPECT_FIND_("async global id with scope string");
+  {
+    std::string ph;
+    EXPECT_TRUE((item && item->GetString("ph", &ph)));
+    EXPECT_EQ("S", ph);
+
+    std::string id;
+    EXPECT_TRUE((item && item->GetString("id2.global", &id)));
+    EXPECT_EQ("0x4000", id);
+    std::string scope;
+    EXPECT_TRUE((item && item->GetString("scope", &scope)));
+    EXPECT_EQ("scope string", scope);
   }
 }
 
@@ -979,9 +1097,9 @@ void ValidateInstantEventPresentOnEveryThread(const ListValue& trace_parsed,
 
   size_t trace_parsed_count = trace_parsed.GetSize();
   for (size_t i = 0; i < trace_parsed_count; i++) {
-    const Value* value = NULL;
+    const Value* value = nullptr;
     trace_parsed.Get(i, &value);
-    if (!value || value->GetType() != Value::TYPE_DICTIONARY)
+    if (!value || value->type() != Value::Type::DICTIONARY)
       continue;
     const DictionaryValue* dict = static_cast<const DictionaryValue*>(value);
     std::string name;
@@ -1022,7 +1140,7 @@ TEST_F(TraceEventTestFixture, DataCaptured) {
   TraceLog::GetInstance()->SetEnabled(TraceConfig(kRecordAllCategoryFilter, ""),
                                       TraceLog::RECORDING_MODE);
 
-  TraceWithAllMacroVariants(NULL);
+  TraceWithAllMacroVariants(nullptr);
 
   EndTraceAndFlush();
 
@@ -1035,7 +1153,7 @@ TEST_F(TraceEventTestFixture, DataDiscarded) {
   TraceLog::GetInstance()->SetEnabled(TraceConfig(kRecordAllCategoryFilter, ""),
                                       TraceLog::RECORDING_MODE);
 
-  TraceWithAllMacroVariants(NULL);
+  TraceWithAllMacroVariants(nullptr);
 
   CancelTrace();
 
@@ -1123,12 +1241,27 @@ TEST_F(TraceEventTestFixture, EnabledObserverFiresOnDisable) {
   TraceLog::GetInstance()->RemoveEnabledStateObserver(&observer);
 }
 
+TEST_F(TraceEventTestFixture, EnabledObserverOwnedByTraceLog) {
+  auto observer = std::make_unique<MockEnabledStateChangedObserver>();
+  EXPECT_CALL(*observer, OnTraceLogEnabled()).Times(1);
+  EXPECT_CALL(*observer, OnTraceLogDisabled()).Times(1);
+  TraceLog::GetInstance()->AddOwnedEnabledStateObserver(std::move(observer));
+  TraceLog::GetInstance()->SetEnabled(TraceConfig(kRecordAllCategoryFilter, ""),
+                                      TraceLog::RECORDING_MODE);
+  TraceLog::GetInstance()->SetDisabled();
+  TraceLog::ResetForTesting();
+  // These notifications won't be sent.
+  TraceLog::GetInstance()->SetEnabled(TraceConfig(kRecordAllCategoryFilter, ""),
+                                      TraceLog::RECORDING_MODE);
+  TraceLog::GetInstance()->SetDisabled();
+}
+
 // Tests the IsEnabled() state of TraceLog changes before callbacks.
 class AfterStateChangeEnabledStateObserver
     : public TraceLog::EnabledStateObserver {
  public:
-  AfterStateChangeEnabledStateObserver() {}
-  ~AfterStateChangeEnabledStateObserver() override {}
+  AfterStateChangeEnabledStateObserver() = default;
+  ~AfterStateChangeEnabledStateObserver() override = default;
 
   // TraceLog::EnabledStateObserver overrides:
   void OnTraceLogEnabled() override {
@@ -1158,8 +1291,8 @@ TEST_F(TraceEventTestFixture, ObserversFireAfterStateChange) {
 class SelfRemovingEnabledStateObserver
     : public TraceLog::EnabledStateObserver {
  public:
-  SelfRemovingEnabledStateObserver() {}
-  ~SelfRemovingEnabledStateObserver() override {}
+  SelfRemovingEnabledStateObserver() = default;
+  ~SelfRemovingEnabledStateObserver() override = default;
 
   // TraceLog::EnabledStateObserver overrides:
   void OnTraceLogEnabled() override {}
@@ -1169,7 +1302,9 @@ class SelfRemovingEnabledStateObserver
   }
 };
 
-TEST_F(TraceEventTestFixture, SelfRemovingObserver) {
+// Self removing observers are not supported at the moment.
+// TODO(alph): We could add support once we have recursive locks.
+TEST_F(TraceEventTestFixture, DISABLED_SelfRemovingObserver) {
   ASSERT_EQ(0u, TraceLog::GetInstance()->GetObserverCountForTest());
 
   SelfRemovingEnabledStateObserver observer;
@@ -1256,7 +1391,7 @@ TEST_F(TraceEventTestFixture, AddMetadataEvent) {
   class Convertable : public ConvertableToTraceFormat {
    public:
     explicit Convertable(int* num_calls) : num_calls_(num_calls) {}
-    ~Convertable() override {}
+    ~Convertable() override = default;
     void AppendAsTraceFormat(std::string* out) const override {
       (*num_calls_)++;
       out->append("\"metadata_value\"");
@@ -1295,32 +1430,6 @@ TEST_F(TraceEventTestFixture, AddMetadataEvent) {
 
 // Test that categories work.
 TEST_F(TraceEventTestFixture, Categories) {
-  // Test that categories that are used can be retrieved whether trace was
-  // enabled or disabled when the trace event was encountered.
-  TRACE_EVENT_INSTANT0("c1", "name", TRACE_EVENT_SCOPE_THREAD);
-  TRACE_EVENT_INSTANT0("c2", "name", TRACE_EVENT_SCOPE_THREAD);
-  BeginTrace();
-  TRACE_EVENT_INSTANT0("c3", "name", TRACE_EVENT_SCOPE_THREAD);
-  TRACE_EVENT_INSTANT0("c4", "name", TRACE_EVENT_SCOPE_THREAD);
-  // Category groups containing more than one category.
-  TRACE_EVENT_INSTANT0("c5,c6", "name", TRACE_EVENT_SCOPE_THREAD);
-  TRACE_EVENT_INSTANT0("c7,c8", "name", TRACE_EVENT_SCOPE_THREAD);
-  TRACE_EVENT_INSTANT0(TRACE_DISABLED_BY_DEFAULT("c9"), "name",
-                       TRACE_EVENT_SCOPE_THREAD);
-
-  EndTraceAndFlush();
-  std::vector<std::string> cat_groups;
-  TraceLog::GetInstance()->GetKnownCategoryGroups(&cat_groups);
-  EXPECT_TRUE(ContainsValue(cat_groups, "c1"));
-  EXPECT_TRUE(ContainsValue(cat_groups, "c2"));
-  EXPECT_TRUE(ContainsValue(cat_groups, "c3"));
-  EXPECT_TRUE(ContainsValue(cat_groups, "c4"));
-  EXPECT_TRUE(ContainsValue(cat_groups, "c5,c6"));
-  EXPECT_TRUE(ContainsValue(cat_groups, "c7,c8"));
-  EXPECT_TRUE(ContainsValue(cat_groups, "disabled-by-default-c9"));
-  // Make sure metadata isn't returned.
-  EXPECT_FALSE(ContainsValue(cat_groups, "__metadata"));
-
   const std::vector<std::string> empty_categories;
   std::vector<std::string> included_categories;
   std::vector<std::string> excluded_categories;
@@ -1430,59 +1539,6 @@ TEST_F(TraceEventTestFixture, Categories) {
 }
 
 
-// Test EVENT_WATCH_NOTIFICATION
-TEST_F(TraceEventTestFixture, EventWatchNotification) {
-  // Basic one occurrence.
-  BeginTrace();
-  TraceLog::WatchEventCallback callback =
-      base::Bind(&TraceEventTestFixture::OnWatchEventMatched,
-                 base::Unretained(this));
-  TraceLog::GetInstance()->SetWatchEvent("cat", "event", callback);
-  TRACE_EVENT_INSTANT0("cat", "event", TRACE_EVENT_SCOPE_THREAD);
-  EndTraceAndFlush();
-  EXPECT_EQ(event_watch_notification_, 1);
-
-  // Auto-reset after end trace.
-  BeginTrace();
-  TraceLog::GetInstance()->SetWatchEvent("cat", "event", callback);
-  EndTraceAndFlush();
-  BeginTrace();
-  TRACE_EVENT_INSTANT0("cat", "event", TRACE_EVENT_SCOPE_THREAD);
-  EndTraceAndFlush();
-  EXPECT_EQ(event_watch_notification_, 0);
-
-  // Multiple occurrence.
-  BeginTrace();
-  int num_occurrences = 5;
-  TraceLog::GetInstance()->SetWatchEvent("cat", "event", callback);
-  for (int i = 0; i < num_occurrences; ++i)
-    TRACE_EVENT_INSTANT0("cat", "event", TRACE_EVENT_SCOPE_THREAD);
-  EndTraceAndFlush();
-  EXPECT_EQ(event_watch_notification_, num_occurrences);
-
-  // Wrong category.
-  BeginTrace();
-  TraceLog::GetInstance()->SetWatchEvent("cat", "event", callback);
-  TRACE_EVENT_INSTANT0("wrong_cat", "event", TRACE_EVENT_SCOPE_THREAD);
-  EndTraceAndFlush();
-  EXPECT_EQ(event_watch_notification_, 0);
-
-  // Wrong name.
-  BeginTrace();
-  TraceLog::GetInstance()->SetWatchEvent("cat", "event", callback);
-  TRACE_EVENT_INSTANT0("cat", "wrong_event", TRACE_EVENT_SCOPE_THREAD);
-  EndTraceAndFlush();
-  EXPECT_EQ(event_watch_notification_, 0);
-
-  // Canceled.
-  BeginTrace();
-  TraceLog::GetInstance()->SetWatchEvent("cat", "event", callback);
-  TraceLog::GetInstance()->CancelWatchEvent();
-  TRACE_EVENT_INSTANT0("cat", "event", TRACE_EVENT_SCOPE_THREAD);
-  EndTraceAndFlush();
-  EXPECT_EQ(event_watch_notification_, 0);
-}
-
 // Test ASYNC_BEGIN/END events
 TEST_F(TraceEventTestFixture, AsyncBeginEndEvents) {
   BeginTrace();
@@ -1536,7 +1592,7 @@ TEST_F(TraceEventTestFixture, AsyncBeginEndPointerMangling) {
   EXPECT_TRUE(async_begin2);
   EXPECT_TRUE(async_end);
 
-  Value* value = NULL;
+  Value* value = nullptr;
   std::string async_begin_id_str;
   std::string async_begin2_id_str;
   std::string async_end_id_str;
@@ -1583,10 +1639,10 @@ TEST_F(TraceEventTestFixture, StaticStringVsString) {
     ASSERT_TRUE(event2);
     EXPECT_STREQ("name1", event1->name());
     EXPECT_STREQ("name2", event2->name());
-    EXPECT_TRUE(event1->parameter_copy_storage() != NULL);
-    EXPECT_TRUE(event2->parameter_copy_storage() != NULL);
-    EXPECT_GT(event1->parameter_copy_storage()->size(), 0u);
-    EXPECT_GT(event2->parameter_copy_storage()->size(), 0u);
+    EXPECT_FALSE(event1->parameter_copy_storage().empty());
+    EXPECT_FALSE(event2->parameter_copy_storage().empty());
+    EXPECT_GT(event1->parameter_copy_storage().size(), 0u);
+    EXPECT_GT(event2->parameter_copy_storage().size(), 0u);
     EndTraceAndFlush();
   }
 
@@ -1600,8 +1656,8 @@ TEST_F(TraceEventTestFixture, StaticStringVsString) {
             0, trace_event_internal::kNoId,
             "arg1", "argval", "arg2", "argval");
     // Test that static TRACE_STR_COPY NULL string arguments are not copied.
-    const char* str1 = NULL;
-    const char* str2 = NULL;
+    const char* str1 = nullptr;
+    const char* str2 = nullptr;
     TraceEventHandle handle2 =
         trace_event_internal::AddTraceEvent(
             TRACE_EVENT_PHASE_INSTANT, category_group_enabled, "name2",
@@ -1616,8 +1672,8 @@ TEST_F(TraceEventTestFixture, StaticStringVsString) {
     ASSERT_TRUE(event2);
     EXPECT_STREQ("name1", event1->name());
     EXPECT_STREQ("name2", event2->name());
-    EXPECT_TRUE(event1->parameter_copy_storage() == NULL);
-    EXPECT_TRUE(event2->parameter_copy_storage() == NULL);
+    EXPECT_TRUE(event1->parameter_copy_storage().empty());
+    EXPECT_TRUE(event2->parameter_copy_storage().empty());
     EndTraceAndFlush();
   }
 }
@@ -1632,7 +1688,8 @@ TEST_F(TraceEventTestFixture, DataCapturedOnThread) {
   thread.Start();
 
   thread.task_runner()->PostTask(
-      FROM_HERE, base::Bind(&TraceWithAllMacroVariants, &task_complete_event));
+      FROM_HERE,
+      base::BindOnce(&TraceWithAllMacroVariants, &task_complete_event));
   task_complete_event.Wait();
   thread.Stop();
 
@@ -1655,8 +1712,8 @@ TEST_F(TraceEventTestFixture, DataCapturedManyThreads) {
                           WaitableEvent::InitialState::NOT_SIGNALED);
     threads[i]->Start();
     threads[i]->task_runner()->PostTask(
-        FROM_HERE, base::Bind(&TraceManyInstantEvents, i, num_events,
-                              task_complete_events[i]));
+        FROM_HERE, base::BindOnce(&TraceManyInstantEvents, i, num_events,
+                                  task_complete_events[i]));
   }
 
   for (int i = 0; i < num_threads; i++) {
@@ -1705,8 +1762,8 @@ TEST_F(TraceEventTestFixture, ThreadNames) {
     threads[i]->Start();
     thread_ids[i] = threads[i]->GetThreadId();
     threads[i]->task_runner()->PostTask(
-        FROM_HERE, base::Bind(&TraceManyInstantEvents, i, kNumEvents,
-                              task_complete_events[i]));
+        FROM_HERE, base::BindOnce(&TraceManyInstantEvents, i, kNumEvents,
+                                  task_complete_events[i]));
   }
   for (int i = 0; i < kNumThreads; i++) {
     task_complete_events[i]->Wait();
@@ -1798,7 +1855,7 @@ TEST_F(TraceEventTestFixture, DisabledCategories) {
   TRACE_EVENT_INSTANT0("included", "first", TRACE_EVENT_SCOPE_THREAD);
   EndTraceAndFlush();
   {
-    const DictionaryValue* item = NULL;
+    const DictionaryValue* item = nullptr;
     ListValue& trace_parsed = trace_parsed_;
     EXPECT_NOT_FIND_("disabled-by-default-cc");
     EXPECT_FIND_("included");
@@ -1812,7 +1869,7 @@ TEST_F(TraceEventTestFixture, DisabledCategories) {
   EndTraceAndFlush();
 
   {
-    const DictionaryValue* item = NULL;
+    const DictionaryValue* item = nullptr;
     ListValue& trace_parsed = trace_parsed_;
     EXPECT_FIND_("disabled-by-default-cc");
     EXPECT_FIND_("other_included");
@@ -1828,7 +1885,7 @@ TEST_F(TraceEventTestFixture, DisabledCategories) {
   EndTraceAndFlush();
 
   {
-    const DictionaryValue* item = NULL;
+    const DictionaryValue* item = nullptr;
     ListValue& trace_parsed = trace_parsed_;
     EXPECT_FIND_("disabled-by-default-cc,other_included");
     EXPECT_FIND_("other_included,disabled-by-default-cc");
@@ -2031,7 +2088,13 @@ TEST_F(TraceEventTestFixture, TraceWithDefaultCategoryFilters) {
   trace_log->SetDisabled();
 }
 
-TEST_F(TraceEventTestFixture, TraceWithDisabledByDefaultCategoryFilters) {
+// Flaky on iOS device, see crbug.com/908002
+#if defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+#define MAYBE_TraceWithDisabledByDefaultCategoryFilters DISABLED_TraceWithDisabledByDefaultCategoryFilters
+#else
+#define MAYBE_TraceWithDisabledByDefaultCategoryFilters TraceWithDisabledByDefaultCategoryFilters
+#endif  // defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+TEST_F(TraceEventTestFixture, MAYBE_TraceWithDisabledByDefaultCategoryFilters) {
   TraceLog* trace_log = TraceLog::GetInstance();
 
   trace_log->SetEnabled(TraceConfig("foo,disabled-by-default-foo", ""),
@@ -2053,60 +2116,10 @@ TEST_F(TraceEventTestFixture, TraceWithDisabledByDefaultCategoryFilters) {
   trace_log->SetDisabled();
 }
 
-TEST_F(TraceEventTestFixture, TraceSampling) {
-  TraceLog::GetInstance()->SetEnabled(
-    TraceConfig(kRecordAllCategoryFilter, "record-until-full,enable-sampling"),
-    TraceLog::RECORDING_MODE);
-
-  TRACE_EVENT_SET_SAMPLING_STATE_FOR_BUCKET(1, "cc", "Stuff");
-  TraceLog::GetInstance()->WaitSamplingEventForTesting();
-  TRACE_EVENT_SET_SAMPLING_STATE_FOR_BUCKET(1, "cc", "Things");
-  TraceLog::GetInstance()->WaitSamplingEventForTesting();
-
-  EndTraceAndFlush();
-
-  // Make sure we hit at least once.
-  EXPECT_TRUE(FindNamePhase("Stuff", "P"));
-  EXPECT_TRUE(FindNamePhase("Things", "P"));
-}
-
-TEST_F(TraceEventTestFixture, TraceSamplingScope) {
-  TraceLog::GetInstance()->SetEnabled(
-    TraceConfig(kRecordAllCategoryFilter, "record-until-full,enable-sampling"),
-    TraceLog::RECORDING_MODE);
-
-  TRACE_EVENT_SCOPED_SAMPLING_STATE("AAA", "name");
-  TraceLog::GetInstance()->WaitSamplingEventForTesting();
-  {
-    EXPECT_STREQ(TRACE_EVENT_GET_SAMPLING_STATE(), "AAA");
-    TRACE_EVENT_SCOPED_SAMPLING_STATE("BBB", "name");
-    TraceLog::GetInstance()->WaitSamplingEventForTesting();
-    EXPECT_STREQ(TRACE_EVENT_GET_SAMPLING_STATE(), "BBB");
-  }
-  TraceLog::GetInstance()->WaitSamplingEventForTesting();
-  {
-    EXPECT_STREQ(TRACE_EVENT_GET_SAMPLING_STATE(), "AAA");
-    TRACE_EVENT_SCOPED_SAMPLING_STATE("CCC", "name");
-    TraceLog::GetInstance()->WaitSamplingEventForTesting();
-    EXPECT_STREQ(TRACE_EVENT_GET_SAMPLING_STATE(), "CCC");
-  }
-  TraceLog::GetInstance()->WaitSamplingEventForTesting();
-  {
-    EXPECT_STREQ(TRACE_EVENT_GET_SAMPLING_STATE(), "AAA");
-    TRACE_EVENT_SET_SAMPLING_STATE("DDD", "name");
-    TraceLog::GetInstance()->WaitSamplingEventForTesting();
-    EXPECT_STREQ(TRACE_EVENT_GET_SAMPLING_STATE(), "DDD");
-  }
-  TraceLog::GetInstance()->WaitSamplingEventForTesting();
-  EXPECT_STREQ(TRACE_EVENT_GET_SAMPLING_STATE(), "DDD");
-
-  EndTraceAndFlush();
-}
-
 class MyData : public ConvertableToTraceFormat {
  public:
-  MyData() {}
-  ~MyData() override {}
+  MyData() = default;
+  ~MyData() override = default;
 
   void AppendAsTraceFormat(std::string* out) const override {
     out->append("{\"foo\":1}");
@@ -2146,12 +2159,12 @@ TEST_F(TraceEventTestFixture, ConvertableTypes) {
   DictionaryValue* dict = FindNamePhase("bar", "X");
   ASSERT_TRUE(dict);
 
-  const DictionaryValue* args_dict = NULL;
+  const DictionaryValue* args_dict = nullptr;
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
 
-  const Value* value = NULL;
-  const DictionaryValue* convertable_dict = NULL;
+  const Value* value = nullptr;
+  const DictionaryValue* convertable_dict = nullptr;
   EXPECT_TRUE(args_dict->Get("data", &value));
   ASSERT_TRUE(value->GetAsDictionary(&convertable_dict));
 
@@ -2163,17 +2176,17 @@ TEST_F(TraceEventTestFixture, ConvertableTypes) {
   dict = FindNamePhase("baz", "X");
   ASSERT_TRUE(dict);
 
-  args_dict = NULL;
+  args_dict = nullptr;
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
 
-  value = NULL;
-  convertable_dict = NULL;
+  value = nullptr;
+  convertable_dict = nullptr;
   EXPECT_TRUE(args_dict->Get("data1", &value));
   ASSERT_TRUE(value->GetAsDictionary(&convertable_dict));
 
-  value = NULL;
-  convertable_dict = NULL;
+  value = nullptr;
+  convertable_dict = nullptr;
   EXPECT_TRUE(args_dict->Get("data2", &value));
   ASSERT_TRUE(value->GetAsDictionary(&convertable_dict));
 
@@ -2181,7 +2194,7 @@ TEST_F(TraceEventTestFixture, ConvertableTypes) {
   dict = FindNamePhase("string_first", "X");
   ASSERT_TRUE(dict);
 
-  args_dict = NULL;
+  args_dict = nullptr;
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
 
@@ -2189,8 +2202,8 @@ TEST_F(TraceEventTestFixture, ConvertableTypes) {
   EXPECT_TRUE(args_dict->GetString("str", &str_value));
   EXPECT_STREQ("string value 1", str_value.c_str());
 
-  value = NULL;
-  convertable_dict = NULL;
+  value = nullptr;
+  convertable_dict = nullptr;
   foo_val = 0;
   EXPECT_TRUE(args_dict->Get("convert", &value));
   ASSERT_TRUE(value->GetAsDictionary(&convertable_dict));
@@ -2200,15 +2213,15 @@ TEST_F(TraceEventTestFixture, ConvertableTypes) {
   dict = FindNamePhase("string_second", "X");
   ASSERT_TRUE(dict);
 
-  args_dict = NULL;
+  args_dict = nullptr;
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
 
   EXPECT_TRUE(args_dict->GetString("str", &str_value));
   EXPECT_STREQ("string value 2", str_value.c_str());
 
-  value = NULL;
-  convertable_dict = NULL;
+  value = nullptr;
+  convertable_dict = nullptr;
   foo_val = 0;
   EXPECT_TRUE(args_dict->Get("convert", &value));
   ASSERT_TRUE(value->GetAsDictionary(&convertable_dict));
@@ -2218,12 +2231,12 @@ TEST_F(TraceEventTestFixture, ConvertableTypes) {
   dict = FindNamePhase("both_conv", "X");
   ASSERT_TRUE(dict);
 
-  args_dict = NULL;
+  args_dict = nullptr;
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
 
-  value = NULL;
-  convertable_dict = NULL;
+  value = nullptr;
+  convertable_dict = nullptr;
   foo_val = 0;
   EXPECT_TRUE(args_dict->Get("convert1", &value));
   ASSERT_TRUE(value->GetAsDictionary(&convertable_dict));
@@ -2246,7 +2259,7 @@ TEST_F(TraceEventTestFixture, PrimitiveArgs) {
       -std::numeric_limits<float>::infinity());
   TRACE_EVENT1("foo", "event7", "double_nan",
       std::numeric_limits<double>::quiet_NaN());
-  void* p = 0;
+  void* p = nullptr;
   TRACE_EVENT1("foo", "event8", "pointer_null", p);
   p = reinterpret_cast<void*>(0xbadf00d);
   TRACE_EVENT1("foo", "event9", "pointer_badf00d", p);
@@ -2262,9 +2275,9 @@ TEST_F(TraceEventTestFixture, PrimitiveArgs) {
       base::TimeTicks::FromInternalValue(1));
   EndTraceAndFlush();
 
-  const DictionaryValue* args_dict = NULL;
-  DictionaryValue* dict = NULL;
-  const Value* value = NULL;
+  const DictionaryValue* args_dict = nullptr;
+  DictionaryValue* dict = nullptr;
+  const Value* value = nullptr;
   std::string str_value;
   int int_value;
   double double_value;
@@ -2290,7 +2303,7 @@ TEST_F(TraceEventTestFixture, PrimitiveArgs) {
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
   EXPECT_TRUE(args_dict->Get("float_one", &value));
-  EXPECT_TRUE(value->IsType(Value::TYPE_DOUBLE));
+  EXPECT_TRUE(value->is_double());
   EXPECT_TRUE(value->GetAsDouble(&double_value));
   EXPECT_EQ(1, double_value);
 
@@ -2300,7 +2313,7 @@ TEST_F(TraceEventTestFixture, PrimitiveArgs) {
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
   EXPECT_TRUE(args_dict->Get("float_half", &value));
-  EXPECT_TRUE(value->IsType(Value::TYPE_DOUBLE));
+  EXPECT_TRUE(value->is_double());
   EXPECT_TRUE(value->GetAsDouble(&double_value));
   EXPECT_EQ(0.5, double_value);
 
@@ -2310,7 +2323,7 @@ TEST_F(TraceEventTestFixture, PrimitiveArgs) {
   dict->GetDictionary("args", &args_dict);
   ASSERT_TRUE(args_dict);
   EXPECT_TRUE(args_dict->Get("float_neghalf", &value));
-  EXPECT_TRUE(value->IsType(Value::TYPE_DOUBLE));
+  EXPECT_TRUE(value->is_double());
   EXPECT_TRUE(value->GetAsDouble(&double_value));
   EXPECT_EQ(-0.5, double_value);
 
@@ -2447,8 +2460,8 @@ TEST_F(TraceEventTestFixture, ArgsWhitelisting) {
 
   EndTraceAndFlush();
 
-  const DictionaryValue* args_dict = NULL;
-  DictionaryValue* dict = NULL;
+  const DictionaryValue* args_dict = nullptr;
+  DictionaryValue* dict = nullptr;
   int int_value;
 
   dict = FindNamePhase("event1", "X");
@@ -2480,233 +2493,6 @@ TEST_F(TraceEventTestFixture, ArgsWhitelisting) {
   EXPECT_EQ(args_string, "__stripped__");
 }
 
-class TraceEventCallbackTest : public TraceEventTestFixture {
- public:
-  void SetUp() override {
-    TraceEventTestFixture::SetUp();
-    ASSERT_EQ(NULL, s_instance);
-    s_instance = this;
-  }
-  void TearDown() override {
-    TraceLog::GetInstance()->SetDisabled();
-    ASSERT_TRUE(s_instance);
-    s_instance = NULL;
-    TraceEventTestFixture::TearDown();
-  }
-
- protected:
-  // For TraceEventCallbackAndRecordingX tests.
-  void VerifyCallbackAndRecordedEvents(size_t expected_callback_count,
-                                       size_t expected_recorded_count) {
-    // Callback events.
-    EXPECT_EQ(expected_callback_count, collected_events_names_.size());
-    for (size_t i = 0; i < collected_events_names_.size(); ++i) {
-      EXPECT_EQ("callback", collected_events_categories_[i]);
-      EXPECT_EQ("yes", collected_events_names_[i]);
-    }
-
-    // Recorded events.
-    EXPECT_EQ(expected_recorded_count, trace_parsed_.GetSize());
-    EXPECT_TRUE(FindTraceEntry(trace_parsed_, "recording"));
-    EXPECT_FALSE(FindTraceEntry(trace_parsed_, "callback"));
-    EXPECT_TRUE(FindTraceEntry(trace_parsed_, "yes"));
-    EXPECT_FALSE(FindTraceEntry(trace_parsed_, "no"));
-  }
-
-  void VerifyCollectedEvent(size_t i,
-                            unsigned phase,
-                            const std::string& category,
-                            const std::string& name) {
-    EXPECT_EQ(phase, collected_events_phases_[i]);
-    EXPECT_EQ(category, collected_events_categories_[i]);
-    EXPECT_EQ(name, collected_events_names_[i]);
-  }
-
-  std::vector<std::string> collected_events_categories_;
-  std::vector<std::string> collected_events_names_;
-  std::vector<unsigned char> collected_events_phases_;
-  std::vector<TimeTicks> collected_events_timestamps_;
-
-  static TraceEventCallbackTest* s_instance;
-  static void Callback(TimeTicks timestamp,
-                       char phase,
-                       const unsigned char* category_group_enabled,
-                       const char* name,
-                       const char* scope,
-                       unsigned long long id,
-                       int num_args,
-                       const char* const arg_names[],
-                       const unsigned char arg_types[],
-                       const unsigned long long arg_values[],
-                       unsigned int flags) {
-    s_instance->collected_events_phases_.push_back(phase);
-    s_instance->collected_events_categories_.push_back(
-        TraceLog::GetCategoryGroupName(category_group_enabled));
-    s_instance->collected_events_names_.push_back(name);
-    s_instance->collected_events_timestamps_.push_back(timestamp);
-  }
-};
-
-TraceEventCallbackTest* TraceEventCallbackTest::s_instance;
-
-TEST_F(TraceEventCallbackTest, TraceEventCallback) {
-  TRACE_EVENT_INSTANT0("all", "before enable", TRACE_EVENT_SCOPE_THREAD);
-  TraceLog::GetInstance()->SetEventCallbackEnabled(
-      TraceConfig(kRecordAllCategoryFilter, ""), Callback);
-  TRACE_EVENT_INSTANT0("all", "event1", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("all", "event2", TRACE_EVENT_SCOPE_GLOBAL);
-  {
-    TRACE_EVENT0("all", "duration");
-    TRACE_EVENT_INSTANT0("all", "event3", TRACE_EVENT_SCOPE_GLOBAL);
-  }
-  TraceLog::GetInstance()->SetEventCallbackDisabled();
-  TRACE_EVENT_INSTANT0("all", "after callback removed",
-                       TRACE_EVENT_SCOPE_GLOBAL);
-  ASSERT_EQ(5u, collected_events_names_.size());
-  EXPECT_EQ("event1", collected_events_names_[0]);
-  EXPECT_EQ(TRACE_EVENT_PHASE_INSTANT, collected_events_phases_[0]);
-  EXPECT_EQ("event2", collected_events_names_[1]);
-  EXPECT_EQ(TRACE_EVENT_PHASE_INSTANT, collected_events_phases_[1]);
-  EXPECT_EQ("duration", collected_events_names_[2]);
-  EXPECT_EQ(TRACE_EVENT_PHASE_BEGIN, collected_events_phases_[2]);
-  EXPECT_EQ("event3", collected_events_names_[3]);
-  EXPECT_EQ(TRACE_EVENT_PHASE_INSTANT, collected_events_phases_[3]);
-  EXPECT_EQ("duration", collected_events_names_[4]);
-  EXPECT_EQ(TRACE_EVENT_PHASE_END, collected_events_phases_[4]);
-  for (size_t i = 1; i < collected_events_timestamps_.size(); i++) {
-    EXPECT_LE(collected_events_timestamps_[i - 1],
-              collected_events_timestamps_[i]);
-  }
-}
-
-TEST_F(TraceEventCallbackTest, TraceEventCallbackWhileFull) {
-  TraceLog::GetInstance()->SetEnabled(TraceConfig(kRecordAllCategoryFilter, ""),
-                                      TraceLog::RECORDING_MODE);
-  do {
-    TRACE_EVENT_INSTANT0("all", "badger badger", TRACE_EVENT_SCOPE_GLOBAL);
-  } while (!TraceLog::GetInstance()->BufferIsFull());
-  TraceLog::GetInstance()->SetEventCallbackEnabled(
-      TraceConfig(kRecordAllCategoryFilter, ""), Callback);
-  TRACE_EVENT_INSTANT0("all", "a snake", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackDisabled();
-  ASSERT_EQ(1u, collected_events_names_.size());
-  EXPECT_EQ("a snake", collected_events_names_[0]);
-}
-
-// 1: Enable callback, enable recording, disable callback, disable recording.
-TEST_F(TraceEventCallbackTest, TraceEventCallbackAndRecording1) {
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackEnabled(TraceConfig("callback", ""),
-                                                   Callback);
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEnabled(TraceConfig("recording", ""),
-                                      TraceLog::RECORDING_MODE);
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackDisabled();
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  EndTraceAndFlush();
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-
-  DropTracedMetadataRecords();
-  VerifyCallbackAndRecordedEvents(2, 2);
-}
-
-// 2: Enable callback, enable recording, disable recording, disable callback.
-TEST_F(TraceEventCallbackTest, TraceEventCallbackAndRecording2) {
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackEnabled(TraceConfig("callback", ""),
-                                                   Callback);
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEnabled(TraceConfig("recording", ""),
-                                      TraceLog::RECORDING_MODE);
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  EndTraceAndFlush();
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackDisabled();
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-
-  DropTracedMetadataRecords();
-  VerifyCallbackAndRecordedEvents(3, 1);
-}
-
-// 3: Enable recording, enable callback, disable callback, disable recording.
-TEST_F(TraceEventCallbackTest, TraceEventCallbackAndRecording3) {
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEnabled(TraceConfig("recording", ""),
-                                      TraceLog::RECORDING_MODE);
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackEnabled(TraceConfig("callback", ""),
-                                                   Callback);
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackDisabled();
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  EndTraceAndFlush();
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-
-  DropTracedMetadataRecords();
-  VerifyCallbackAndRecordedEvents(1, 3);
-}
-
-// 4: Enable recording, enable callback, disable recording, disable callback.
-TEST_F(TraceEventCallbackTest, TraceEventCallbackAndRecording4) {
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEnabled(TraceConfig("recording", ""),
-                                      TraceLog::RECORDING_MODE);
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackEnabled(TraceConfig("callback", ""),
-                                                   Callback);
-  TRACE_EVENT_INSTANT0("recording", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  EndTraceAndFlush();
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "yes", TRACE_EVENT_SCOPE_GLOBAL);
-  TraceLog::GetInstance()->SetEventCallbackDisabled();
-  TRACE_EVENT_INSTANT0("recording", "no", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_INSTANT0("callback", "no", TRACE_EVENT_SCOPE_GLOBAL);
-
-  DropTracedMetadataRecords();
-  VerifyCallbackAndRecordedEvents(2, 2);
-}
-
-TEST_F(TraceEventCallbackTest, TraceEventCallbackAndRecordingDuration) {
-  TraceLog::GetInstance()->SetEventCallbackEnabled(
-      TraceConfig(kRecordAllCategoryFilter, ""), Callback);
-  {
-    TRACE_EVENT0("callback", "duration1");
-    TraceLog::GetInstance()->SetEnabled(
-        TraceConfig(kRecordAllCategoryFilter, ""), TraceLog::RECORDING_MODE);
-    TRACE_EVENT0("callback", "duration2");
-    EndTraceAndFlush();
-    TRACE_EVENT0("callback", "duration3");
-  }
-  TraceLog::GetInstance()->SetEventCallbackDisabled();
-
-  ASSERT_EQ(6u, collected_events_names_.size());
-  VerifyCollectedEvent(0, TRACE_EVENT_PHASE_BEGIN, "callback", "duration1");
-  VerifyCollectedEvent(1, TRACE_EVENT_PHASE_BEGIN, "callback", "duration2");
-  VerifyCollectedEvent(2, TRACE_EVENT_PHASE_BEGIN, "callback", "duration3");
-  VerifyCollectedEvent(3, TRACE_EVENT_PHASE_END, "callback", "duration3");
-  VerifyCollectedEvent(4, TRACE_EVENT_PHASE_END, "callback", "duration2");
-  VerifyCollectedEvent(5, TRACE_EVENT_PHASE_END, "callback", "duration1");
-}
-
 TEST_F(TraceEventTestFixture, TraceBufferVectorReportFull) {
   TraceLog* trace_log = TraceLog::GetInstance();
   trace_log->SetEnabled(
@@ -2715,14 +2501,14 @@ TEST_F(TraceEventTestFixture, TraceBufferVectorReportFull) {
       TraceBuffer::CreateTraceBufferVectorOfSize(100));
   do {
     TRACE_EVENT_BEGIN_WITH_ID_TID_AND_TIMESTAMP0(
-        "all", "with_timestamp", 0, 0, TimeTicks::Now().ToInternalValue());
+        "all", "with_timestamp", 0, 0, TimeTicks::Now());
     TRACE_EVENT_END_WITH_ID_TID_AND_TIMESTAMP0(
-        "all", "with_timestamp", 0, 0, TimeTicks::Now().ToInternalValue());
+        "all", "with_timestamp", 0, 0, TimeTicks::Now());
   } while (!trace_log->BufferIsFull());
 
   EndTraceAndFlush();
 
-  const DictionaryValue* trace_full_metadata = NULL;
+  const DictionaryValue* trace_full_metadata = nullptr;
 
   trace_full_metadata = FindTraceEntry(trace_parsed_,
                                        "overflowed_at_ts");
@@ -2742,7 +2528,7 @@ TEST_F(TraceEventTestFixture, TraceBufferVectorReportFull) {
   // Test that buffer_limit_reached_timestamp's value is between the timestamp
   // of the last trace event and current time.
   DropTracedMetadataRecords();
-  const DictionaryValue* last_trace_event = NULL;
+  const DictionaryValue* last_trace_event = nullptr;
   double last_trace_event_timestamp = 0;
   EXPECT_TRUE(trace_parsed_.GetDictionary(trace_parsed_.GetSize() - 1,
                                           &last_trace_event));
@@ -2878,6 +2664,16 @@ TEST_F(TraceEventTestFixture, TraceRecordAsMuchAsPossibleMode) {
   TraceLog::GetInstance()->SetDisabled();
 }
 
+TEST_F(TraceEventTestFixture, ConfigTraceBufferLimit) {
+  const size_t kLimit = 2048;
+  TraceConfig config(kRecordAllCategoryFilter, RECORD_UNTIL_FULL);
+  config.SetTraceBufferSizeInEvents(kLimit);
+  TraceLog::GetInstance()->SetEnabled(config, TraceLog::RECORDING_MODE);
+  TraceBuffer* buffer = TraceLog::GetInstance()->trace_buffer();
+  EXPECT_EQ(kLimit, buffer->Capacity());
+  TraceLog::GetInstance()->SetDisabled();
+}
+
 void BlockUntilStopped(WaitableEvent* task_start_event,
                        WaitableEvent* task_stop_event) {
   task_start_event->Signal();
@@ -2892,11 +2688,11 @@ TEST_F(TraceEventTestFixture, SetCurrentThreadBlocksMessageLoopBeforeTracing) {
                                     WaitableEvent::InitialState::NOT_SIGNALED);
   thread.Start();
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&TraceLog::SetCurrentThreadBlocksMessageLoop,
-                      Unretained(TraceLog::GetInstance())));
+      FROM_HERE, BindOnce(&TraceLog::SetCurrentThreadBlocksMessageLoop,
+                          Unretained(TraceLog::GetInstance())));
 
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&TraceWithAllMacroVariants, &task_complete_event));
+      FROM_HERE, BindOnce(&TraceWithAllMacroVariants, &task_complete_event));
   task_complete_event.Wait();
 
   WaitableEvent task_start_event(WaitableEvent::ResetPolicy::AUTOMATIC,
@@ -2904,7 +2700,8 @@ TEST_F(TraceEventTestFixture, SetCurrentThreadBlocksMessageLoopBeforeTracing) {
   WaitableEvent task_stop_event(WaitableEvent::ResetPolicy::AUTOMATIC,
                                 WaitableEvent::InitialState::NOT_SIGNALED);
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&BlockUntilStopped, &task_start_event, &task_stop_event));
+      FROM_HERE,
+      BindOnce(&BlockUntilStopped, &task_start_event, &task_stop_event));
   task_start_event.Wait();
 
   EndTraceAndFlush();
@@ -2928,29 +2725,9 @@ TEST_F(TraceEventTestFixture, ConvertTraceConfigToInternalOptions) {
             trace_log->GetInternalOptionsFromTraceConfig(
                 TraceConfig(kRecordAllCategoryFilter, ECHO_TO_CONSOLE)));
 
-  EXPECT_EQ(
-      TraceLog::kInternalRecordUntilFull | TraceLog::kInternalEnableSampling,
-      trace_log->GetInternalOptionsFromTraceConfig(
-          TraceConfig(kRecordAllCategoryFilter,
-                      "record-until-full,enable-sampling")));
-
-  EXPECT_EQ(
-      TraceLog::kInternalRecordContinuously | TraceLog::kInternalEnableSampling,
-      trace_log->GetInternalOptionsFromTraceConfig(
-          TraceConfig(kRecordAllCategoryFilter,
-                      "record-continuously,enable-sampling")));
-
-  EXPECT_EQ(
-      TraceLog::kInternalEchoToConsole | TraceLog::kInternalEnableSampling,
-      trace_log->GetInternalOptionsFromTraceConfig(
-          TraceConfig(kRecordAllCategoryFilter,
-                      "trace-to-console,enable-sampling")));
-
-  EXPECT_EQ(
-      TraceLog::kInternalEchoToConsole | TraceLog::kInternalEnableSampling,
-      trace_log->GetInternalOptionsFromTraceConfig(
-          TraceConfig("*",
-                      "trace-to-console,enable-sampling,enable-systrace")));
+  EXPECT_EQ(TraceLog::kInternalEchoToConsole,
+            trace_log->GetInternalOptionsFromTraceConfig(
+                TraceConfig("*", "trace-to-console,enable-systrace")));
 }
 
 void SetBlockingFlagAndBlockUntilStopped(WaitableEvent* task_start_event,
@@ -2968,16 +2745,16 @@ TEST_F(TraceEventTestFixture, SetCurrentThreadBlocksMessageLoopAfterTracing) {
   thread.Start();
 
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&TraceWithAllMacroVariants, &task_complete_event));
+      FROM_HERE, BindOnce(&TraceWithAllMacroVariants, &task_complete_event));
   task_complete_event.Wait();
 
   WaitableEvent task_start_event(WaitableEvent::ResetPolicy::AUTOMATIC,
                                  WaitableEvent::InitialState::NOT_SIGNALED);
   WaitableEvent task_stop_event(WaitableEvent::ResetPolicy::AUTOMATIC,
                                 WaitableEvent::InitialState::NOT_SIGNALED);
-  thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&SetBlockingFlagAndBlockUntilStopped, &task_start_event,
-                      &task_stop_event));
+  thread.task_runner()->PostTask(FROM_HERE,
+                                 BindOnce(&SetBlockingFlagAndBlockUntilStopped,
+                                          &task_start_event, &task_stop_event));
   task_start_event.Wait();
 
   EndTraceAndFlush();
@@ -2996,16 +2773,16 @@ TEST_F(TraceEventTestFixture, ThreadOnceBlocking) {
   thread.Start();
 
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&TraceWithAllMacroVariants, &task_complete_event));
+      FROM_HERE, BindOnce(&TraceWithAllMacroVariants, &task_complete_event));
   task_complete_event.Wait();
-  task_complete_event.Reset();
 
   WaitableEvent task_start_event(WaitableEvent::ResetPolicy::AUTOMATIC,
                                  WaitableEvent::InitialState::NOT_SIGNALED);
   WaitableEvent task_stop_event(WaitableEvent::ResetPolicy::AUTOMATIC,
                                 WaitableEvent::InitialState::NOT_SIGNALED);
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&BlockUntilStopped, &task_start_event, &task_stop_event));
+      FROM_HERE,
+      BindOnce(&BlockUntilStopped, &task_start_event, &task_stop_event));
   task_start_event.Wait();
 
   // The thread will timeout in this flush.
@@ -3017,10 +2794,9 @@ TEST_F(TraceEventTestFixture, ThreadOnceBlocking) {
 
   // The following sequence ensures that the FlushCurrentThread task has been
   // executed in the thread before continuing.
-  task_start_event.Reset();
-  task_stop_event.Reset();
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&BlockUntilStopped, &task_start_event, &task_stop_event));
+      FROM_HERE,
+      BindOnce(&BlockUntilStopped, &task_start_event, &task_stop_event));
   task_start_event.Wait();
   task_stop_event.Signal();
   Clear();
@@ -3029,14 +2805,13 @@ TEST_F(TraceEventTestFixture, ThreadOnceBlocking) {
   // local buffer for the thread without any error.
   BeginTrace();
   thread.task_runner()->PostTask(
-      FROM_HERE, Bind(&TraceWithAllMacroVariants, &task_complete_event));
+      FROM_HERE, BindOnce(&TraceWithAllMacroVariants, &task_complete_event));
   task_complete_event.Wait();
-  task_complete_event.Reset();
   EndTraceAndFlushInThreadWithMessageLoop();
   ValidateAllTraceMacrosCreatedData(trace_parsed_);
 }
 
-std::string* g_log_buffer = NULL;
+std::string* g_log_buffer = nullptr;
 bool MockLogMessageHandler(int, const char*, int, size_t,
                            const std::string& str) {
   if (!g_log_buffer)
@@ -3045,7 +2820,13 @@ bool MockLogMessageHandler(int, const char*, int, size_t,
   return false;
 }
 
-TEST_F(TraceEventTestFixture, EchoToConsole) {
+// Flaky on iOS device, see crbug.com/908002
+#if defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+#define MAYBE_EchoToConsole DISABLED_EchoToConsole
+#else
+#define MAYBE_EchoToConsole EchoToConsole
+#endif  // defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+TEST_F(TraceEventTestFixture, MAYBE_EchoToConsole) {
   logging::LogMessageHandlerFunction old_log_message_handler =
       logging::GetLogMessageHandler();
   logging::SetLogMessageHandler(MockLogMessageHandler);
@@ -3072,7 +2853,7 @@ TEST_F(TraceEventTestFixture, EchoToConsole) {
   EndTraceAndFlush();
   delete g_log_buffer;
   logging::SetLogMessageHandler(old_log_message_handler);
-  g_log_buffer = NULL;
+  g_log_buffer = nullptr;
 }
 
 bool LogMessageHandlerWithTraceEvent(int, const char*, int, size_t,
@@ -3109,9 +2890,9 @@ TEST_F(TraceEventTestFixture, TimeOffset) {
     TRACE_EVENT0("all", "duration2");
   }
   TRACE_EVENT_BEGIN_WITH_ID_TID_AND_TIMESTAMP0(
-      "all", "with_timestamp", 0, 0, TimeTicks::Now().ToInternalValue());
+      "all", "with_timestamp", 0, 0, TimeTicks::Now());
   TRACE_EVENT_END_WITH_ID_TID_AND_TIMESTAMP0(
-      "all", "with_timestamp", 0, 0, TimeTicks::Now().ToInternalValue());
+      "all", "with_timestamp", 0, 0, TimeTicks::Now());
 
   EndTraceAndFlush();
   DropTracedMetadataRecords();
@@ -3130,47 +2911,256 @@ TEST_F(TraceEventTestFixture, TimeOffset) {
   }
 }
 
-TEST_F(TraceEventTestFixture, ConfigureSyntheticDelays) {
-  BeginSpecificTrace("DELAY(test.Delay;0.05)");
+// Flaky on iOS device, see crbug.com/908002
+#if defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+#define MAYBE_TraceFilteringMode DISABLED_TraceFilteringMode
+#else
+#define MAYBE_TraceFilteringMode TraceFilteringMode
+#endif  // defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+TEST_F(TraceEventTestFixture, MAYBE_TraceFilteringMode) {
+  const char config_json[] =
+      "{"
+      "  \"event_filters\": ["
+      "     {"
+      "       \"filter_predicate\": \"testing_predicate\", "
+      "       \"included_categories\": [\"*\"]"
+      "     }"
+      "  ]"
+      "}";
 
-  base::TimeTicks start = base::TimeTicks::Now();
+  // Run RECORDING_MODE within FILTERING_MODE:
+  TestEventFilter::HitsCounter filter_hits_counter;
+  TestEventFilter::set_filter_return_value(true);
+  TraceLog::GetInstance()->SetFilterFactoryForTesting(TestEventFilter::Factory);
+
+  // Only filtering mode is enabled with test filters.
+  TraceLog::GetInstance()->SetEnabled(TraceConfig(config_json),
+                                      TraceLog::FILTERING_MODE);
+  EXPECT_EQ(TraceLog::FILTERING_MODE, TraceLog::GetInstance()->enabled_modes());
   {
-    TRACE_EVENT_SYNTHETIC_DELAY("test.Delay");
+    void* ptr = this;
+    TRACE_EVENT0("c0", "name0");
+    TRACE_EVENT_ASYNC_BEGIN0("c1", "name1", ptr);
+    TRACE_EVENT_INSTANT0("c0", "name0", TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_ASYNC_END0("c1", "name1", ptr);
   }
-  base::TimeDelta duration = base::TimeTicks::Now() - start;
-  EXPECT_GE(duration.InMilliseconds(), 50);
+
+  // Recording mode is enabled when filtering mode is turned on.
+  TraceLog::GetInstance()->SetEnabled(TraceConfig("", ""),
+                                      TraceLog::RECORDING_MODE);
+  EXPECT_EQ(TraceLog::RECORDING_MODE | TraceLog::FILTERING_MODE,
+            TraceLog::GetInstance()->enabled_modes());
+  {
+    TRACE_EVENT0("c2", "name2");
+  }
+  // Only recording mode is disabled and filtering mode will continue to run.
+  TraceLog::GetInstance()->SetDisabled(TraceLog::RECORDING_MODE);
+  EXPECT_EQ(TraceLog::FILTERING_MODE, TraceLog::GetInstance()->enabled_modes());
+
+  {
+    TRACE_EVENT0("c0", "name0");
+  }
+  // Filtering mode is disabled and no tracing mode should be enabled.
+  TraceLog::GetInstance()->SetDisabled(TraceLog::FILTERING_MODE);
+  EXPECT_EQ(0, TraceLog::GetInstance()->enabled_modes());
 
   EndTraceAndFlush();
-}
+  EXPECT_FALSE(FindMatchingValue("cat", "c0"));
+  EXPECT_FALSE(FindMatchingValue("cat", "c1"));
+  EXPECT_FALSE(FindMatchingValue("name", "name0"));
+  EXPECT_FALSE(FindMatchingValue("name", "name1"));
+  EXPECT_TRUE(FindMatchingValue("cat", "c2"));
+  EXPECT_TRUE(FindMatchingValue("name", "name2"));
+  EXPECT_EQ(6u, filter_hits_counter.filter_trace_event_hit_count);
+  EXPECT_EQ(3u, filter_hits_counter.end_event_hit_count);
+  Clear();
+  filter_hits_counter.Reset();
 
-TEST_F(TraceEventTestFixture, BadSyntheticDelayConfigurations) {
-  const char* const filters[] = {
-    "",
-    "DELAY(",
-    "DELAY(;",
-    "DELAY(;)",
-    "DELAY(test.Delay)",
-    "DELAY(test.Delay;)"
-  };
-  for (size_t i = 0; i < arraysize(filters); i++) {
-    BeginSpecificTrace(filters[i]);
-    EndTraceAndFlush();
-    TraceConfig trace_config = TraceLog::GetInstance()->GetCurrentTraceConfig();
-    EXPECT_EQ(0u, trace_config.GetSyntheticDelayValues().size());
+  // Run FILTERING_MODE within RECORDING_MODE:
+  // Only recording mode is enabled and all events must be recorded.
+  TraceLog::GetInstance()->SetEnabled(TraceConfig("", ""),
+                                      TraceLog::RECORDING_MODE);
+  EXPECT_EQ(TraceLog::RECORDING_MODE, TraceLog::GetInstance()->enabled_modes());
+  {
+    TRACE_EVENT0("c0", "name0");
   }
+
+  // Filtering mode is also enabled and all events must be filtered-out.
+  TestEventFilter::set_filter_return_value(false);
+  TraceLog::GetInstance()->SetEnabled(TraceConfig(config_json),
+                                      TraceLog::FILTERING_MODE);
+  EXPECT_EQ(TraceLog::RECORDING_MODE | TraceLog::FILTERING_MODE,
+            TraceLog::GetInstance()->enabled_modes());
+  {
+    TRACE_EVENT0("c1", "name1");
+  }
+  // Only filtering mode is disabled and recording mode should continue to run
+  // with all events being recorded.
+  TraceLog::GetInstance()->SetDisabled(TraceLog::FILTERING_MODE);
+  EXPECT_EQ(TraceLog::RECORDING_MODE, TraceLog::GetInstance()->enabled_modes());
+
+  {
+    TRACE_EVENT0("c2", "name2");
+  }
+  // Recording mode is disabled and no tracing mode should be enabled.
+  TraceLog::GetInstance()->SetDisabled(TraceLog::RECORDING_MODE);
+  EXPECT_EQ(0, TraceLog::GetInstance()->enabled_modes());
+
+  EndTraceAndFlush();
+  EXPECT_TRUE(FindMatchingValue("cat", "c0"));
+  EXPECT_TRUE(FindMatchingValue("cat", "c2"));
+  EXPECT_TRUE(FindMatchingValue("name", "name0"));
+  EXPECT_TRUE(FindMatchingValue("name", "name2"));
+  EXPECT_FALSE(FindMatchingValue("cat", "c1"));
+  EXPECT_FALSE(FindMatchingValue("name", "name1"));
+  EXPECT_EQ(1u, filter_hits_counter.filter_trace_event_hit_count);
+  EXPECT_EQ(1u, filter_hits_counter.end_event_hit_count);
+  Clear();
 }
 
-TEST_F(TraceEventTestFixture, SyntheticDelayConfigurationMerging) {
-  TraceConfig config1("DELAY(test.Delay1;16)", "");
-  TraceConfig config2("DELAY(test.Delay2;32)", "");
-  config1.Merge(config2);
-  EXPECT_EQ(2u, config1.GetSyntheticDelayValues().size());
+// Flaky on iOS device, see crbug.com/908002
+#if defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+#define MAYBE_EventFiltering DISABLED_EventFiltering
+#else
+#define MAYBE_EventFiltering EventFiltering
+#endif  // defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+TEST_F(TraceEventTestFixture, MAYBE_EventFiltering) {
+  const char config_json[] =
+      "{"
+      "  \"included_categories\": ["
+      "    \"filtered_cat\","
+      "    \"unfiltered_cat\","
+      "    \"" TRACE_DISABLED_BY_DEFAULT("filtered_cat") "\","
+      "    \"" TRACE_DISABLED_BY_DEFAULT("unfiltered_cat") "\"],"
+      "  \"event_filters\": ["
+      "     {"
+      "       \"filter_predicate\": \"testing_predicate\", "
+      "       \"included_categories\": ["
+      "         \"filtered_cat\","
+      "         \"" TRACE_DISABLED_BY_DEFAULT("filtered_cat") "\"]"
+      "     }"
+      "    "
+      "  ]"
+      "}";
+
+  TestEventFilter::HitsCounter filter_hits_counter;
+  TestEventFilter::set_filter_return_value(true);
+  TraceLog::GetInstance()->SetFilterFactoryForTesting(TestEventFilter::Factory);
+
+  TraceConfig trace_config(config_json);
+  TraceLog::GetInstance()->SetEnabled(
+      trace_config, TraceLog::RECORDING_MODE | TraceLog::FILTERING_MODE);
+  ASSERT_TRUE(TraceLog::GetInstance()->IsEnabled());
+
+  TRACE_EVENT0("filtered_cat", "a snake");
+  TRACE_EVENT0("filtered_cat", "a mushroom");
+  TRACE_EVENT0("unfiltered_cat", "a horse");
+
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("filtered_cat"), "a dog");
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("unfiltered_cat"), "a pony");
+
+  // This is scoped so we can test the end event being filtered.
+  { TRACE_EVENT0("filtered_cat", "another cat whoa"); }
+
+  EndTraceAndFlush();
+
+  EXPECT_EQ(4u, filter_hits_counter.filter_trace_event_hit_count);
+  EXPECT_EQ(1u, filter_hits_counter.end_event_hit_count);
 }
 
-TEST_F(TraceEventTestFixture, SyntheticDelayConfigurationToString) {
-  const char filter[] = "DELAY(test.Delay;16;oneshot)";
-  TraceConfig config(filter, "");
-  EXPECT_EQ(filter, config.ToCategoryFilterString());
+// Flaky on iOS device, see crbug.com/908002
+#if defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+#define MAYBE_EventWhitelistFiltering DISABLED_EventWhitelistFiltering
+#else
+#define MAYBE_EventWhitelistFiltering EventWhitelistFiltering
+#endif  // defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+TEST_F(TraceEventTestFixture, MAYBE_EventWhitelistFiltering) {
+  std::string config_json = StringPrintf(
+      "{"
+      "  \"included_categories\": ["
+      "    \"filtered_cat\","
+      "    \"unfiltered_cat\","
+      "    \"" TRACE_DISABLED_BY_DEFAULT("filtered_cat") "\"],"
+      "  \"event_filters\": ["
+      "     {"
+      "       \"filter_predicate\": \"%s\", "
+      "       \"included_categories\": ["
+      "         \"filtered_cat\","
+      "         \"" TRACE_DISABLED_BY_DEFAULT("*") "\"], "
+      "       \"filter_args\": {"
+      "           \"event_name_whitelist\": [\"a snake\", \"a dog\"]"
+      "         }"
+      "     }"
+      "    "
+      "  ]"
+      "}",
+      EventNameFilter::kName);
+
+  TraceConfig trace_config(config_json);
+  TraceLog::GetInstance()->SetEnabled(
+      trace_config, TraceLog::RECORDING_MODE | TraceLog::FILTERING_MODE);
+  EXPECT_TRUE(TraceLog::GetInstance()->IsEnabled());
+
+  TRACE_EVENT0("filtered_cat", "a snake");
+  TRACE_EVENT0("filtered_cat", "a mushroom");
+  TRACE_EVENT0("unfiltered_cat", "a cat");
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("filtered_cat"), "a dog");
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("filtered_cat"), "a pony");
+
+  EndTraceAndFlush();
+
+  EXPECT_TRUE(FindMatchingValue("name", "a snake"));
+  EXPECT_FALSE(FindMatchingValue("name", "a mushroom"));
+  EXPECT_TRUE(FindMatchingValue("name", "a cat"));
+  EXPECT_TRUE(FindMatchingValue("name", "a dog"));
+  EXPECT_FALSE(FindMatchingValue("name", "a pony"));
+}
+
+// Flaky on iOS device, see crbug.com/908002
+#if defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+#define MAYBE_HeapProfilerFiltering DISABLED_HeapProfilerFiltering
+#else
+#define MAYBE_HeapProfilerFiltering HeapProfilerFiltering
+#endif  // defined(OS_IOS) && !(TARGET_OS_SIMULATOR)
+TEST_F(TraceEventTestFixture, MAYBE_HeapProfilerFiltering) {
+  std::string config_json = StringPrintf(
+      "{"
+      "  \"included_categories\": ["
+      "    \"filtered_cat\","
+      "    \"unfiltered_cat\","
+      "    \"" TRACE_DISABLED_BY_DEFAULT("filtered_cat") "\","
+      "    \"" TRACE_DISABLED_BY_DEFAULT("unfiltered_cat") "\"],"
+      "  \"excluded_categories\": [\"excluded_cat\"],"
+      "  \"event_filters\": ["
+      "     {"
+      "       \"filter_predicate\": \"%s\", "
+      "       \"included_categories\": ["
+      "         \"*\","
+      "         \"" TRACE_DISABLED_BY_DEFAULT("filtered_cat") "\"]"
+      "     }"
+      "  ]"
+      "}",
+      HeapProfilerEventFilter::kName);
+
+  TraceConfig trace_config(config_json);
+  TraceLog::GetInstance()->SetEnabled(
+      trace_config, TraceLog::RECORDING_MODE | TraceLog::FILTERING_MODE);
+  EXPECT_TRUE(TraceLog::GetInstance()->IsEnabled());
+
+  TRACE_EVENT0("filtered_cat", "a snake");
+  TRACE_EVENT0("excluded_cat", "a mushroom");
+  TRACE_EVENT0("unfiltered_cat", "a cat");
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("filtered_cat"), "a dog");
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("unfiltered_cat"), "a pony");
+
+  EndTraceAndFlush();
+
+  // The predicate should not change behavior of the trace events.
+  EXPECT_TRUE(FindMatchingValue("name", "a snake"));
+  EXPECT_FALSE(FindMatchingValue("name", "a mushroom"));
+  EXPECT_TRUE(FindMatchingValue("name", "a cat"));
+  EXPECT_TRUE(FindMatchingValue("name", "a dog"));
+  EXPECT_TRUE(FindMatchingValue("name", "a pony"));
 }
 
 TEST_F(TraceEventTestFixture, ClockSyncEventsAreAlwaysAddedToTrace) {

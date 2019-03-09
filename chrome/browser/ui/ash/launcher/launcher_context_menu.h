@@ -5,98 +5,66 @@
 #ifndef CHROME_BROWSER_UI_ASH_LAUNCHER_LAUNCHER_CONTEXT_MENU_H_
 #define CHROME_BROWSER_UI_ASH_LAUNCHER_LAUNCHER_CONTEXT_MENU_H_
 
-#include "ash/common/shelf/shelf_alignment_menu.h"
-#include "ash/common/shelf/shelf_item_types.h"
-#include "base/gtest_prod_util.h"
+#include "ash/public/cpp/app_menu_constants.h"
+#include "ash/public/cpp/shelf_item.h"
 #include "base/macros.h"
 #include "ui/base/models/simple_menu_model.h"
+#include "ui/gfx/vector_icon_types.h"
 
-class ChromeLauncherControllerImpl;
+class ChromeLauncherController;
 
-namespace ash {
-class WmShelf;
-}
-
-// Base class for context menu which is shown for a regular extension item in
-// the shelf, or for an Arc app item in the shelf, or shown when right click
-// on desktop shell.
-class LauncherContextMenu : public ui::SimpleMenuModel,
-                            public ui::SimpleMenuModel::Delegate {
+// A base class for browser, extension, and ARC shelf item context menus.
+class LauncherContextMenu : public ui::SimpleMenuModel::Delegate {
  public:
   ~LauncherContextMenu() override;
 
-  // Static function to create contextmenu instance.
-  static LauncherContextMenu* Create(ChromeLauncherControllerImpl* controller,
-                                     const ash::ShelfItem* item,
-                                     ash::WmShelf* wm_shelf);
+  // Static function to create a context menu instance.
+  static std::unique_ptr<LauncherContextMenu> Create(
+      ChromeLauncherController* controller,
+      const ash::ShelfItem* item,
+      int64_t display_id);
+
+  using GetMenuModelCallback =
+      base::OnceCallback<void(std::unique_ptr<ui::MenuModel>)>;
+  virtual void GetMenuModel(GetMenuModelCallback callback) = 0;
 
   // ui::SimpleMenuModel::Delegate overrides:
-  bool IsItemForCommandIdDynamic(int command_id) const override;
-  base::string16 GetLabelForCommandId(int command_id) const override;
   bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
-  bool GetAcceleratorForCommandId(int command_id,
-                                  ui::Accelerator* accelerator) override;
   void ExecuteCommand(int command_id, int event_flags) override;
 
  protected:
-  enum MenuItem {
-    MENU_OPEN_NEW,
-    MENU_CLOSE,
-    MENU_PIN,
-    LAUNCH_TYPE_PINNED_TAB,
-    LAUNCH_TYPE_REGULAR_TAB,
-    LAUNCH_TYPE_FULLSCREEN,
-    LAUNCH_TYPE_WINDOW,
-    MENU_AUTO_HIDE,
-    MENU_NEW_WINDOW,
-    MENU_NEW_INCOGNITO_WINDOW,
-    MENU_ALIGNMENT_MENU,
-    MENU_CHANGE_WALLPAPER,
-    MENU_ITEM_COUNT
-  };
-
-  LauncherContextMenu(ChromeLauncherControllerImpl* controller,
+  LauncherContextMenu(ChromeLauncherController* controller,
                       const ash::ShelfItem* item,
-                      ash::WmShelf* wm_shelf);
-  ChromeLauncherControllerImpl* controller() const { return controller_; }
+                      int64_t display_id);
 
+  ChromeLauncherController* controller() const { return controller_; }
   const ash::ShelfItem& item() const { return item_; }
 
   // Add menu item for pin/unpin.
-  void AddPinMenu();
-
-  // Add common shelf options items, e.g. autohide mode, alignment and
-  // setting wallpaper.
-  void AddShelfOptionsMenu();
+  void AddPinMenu(ui::SimpleMenuModel* menu_model);
 
   // Helper method to execute common commands. Returns true if handled.
   bool ExecuteCommonCommand(int command_id, int event_flags);
 
+  // Helper method to add touchable or normal context menu options.
+  void AddContextMenuOption(ui::SimpleMenuModel* menu_model,
+                            ash::CommandId type,
+                            int string_id);
+
+  // Helper method to get the gfx::VectorIcon for a |type|. Returns an empty
+  // gfx::VectorIcon if there is no icon for this |type|.
+  const gfx::VectorIcon& GetCommandIdVectorIcon(ash::CommandId type,
+                                                int string_id) const;
+
+  int64_t display_id() const { return display_id_; }
+
  private:
-  FRIEND_TEST_ALL_PREFIXES(
-      LauncherContextMenuTest,
-      NewIncognitoWindowMenuIsDisabledWhenIncognitoModeOff);
-  FRIEND_TEST_ALL_PREFIXES(LauncherContextMenuTest,
-                           NewWindowMenuIsDisabledWhenIncognitoModeForced);
-  FRIEND_TEST_ALL_PREFIXES(LauncherContextMenuTest,
-                           AutoHideOptionInMaximizedMode);
-  FRIEND_TEST_ALL_PREFIXES(LauncherContextMenuTest,
-                           DesktopShellLauncherContextMenuItemCheck);
-  FRIEND_TEST_ALL_PREFIXES(LauncherContextMenuTest,
-                           ArcLauncherContextMenuItemCheck);
-  FRIEND_TEST_ALL_PREFIXES(LauncherContextMenuTest,
-                           DesktopShellLauncherContextMenuVerifyCloseItem);
-  FRIEND_TEST_ALL_PREFIXES(ShelfAppBrowserTest,
-                           LauncherContextMenuVerifyCloseItemAppearance);
+  ChromeLauncherController* controller_;
 
-  ChromeLauncherControllerImpl* controller_;
+  const ash::ShelfItem item_;
 
-  ash::ShelfItem item_;
-
-  ash::ShelfAlignmentMenu shelf_alignment_menu_;
-
-  ash::WmShelf* wm_shelf_;
+  const int64_t display_id_;
 
   DISALLOW_COPY_AND_ASSIGN(LauncherContextMenu);
 };

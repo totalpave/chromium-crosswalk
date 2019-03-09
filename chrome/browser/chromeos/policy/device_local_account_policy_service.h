@@ -35,8 +35,8 @@ class DeviceSettingsService;
 class SessionManagerClient;
 }
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace policy {
@@ -58,6 +58,8 @@ class DeviceLocalAccountPolicyBroker
   // |policy_update_callback| will be invoked to notify observers that the
   // policy for |account| has been updated.
   // |task_runner| is the runner for policy refresh tasks.
+  // |resource_cache_task_runner| is the task runner used for file operations,
+  // it must be sequenced together with other tasks running on the same files.
   DeviceLocalAccountPolicyBroker(
       const DeviceLocalAccount& account,
       const base::FilePath& component_policy_cache_path,
@@ -66,11 +68,16 @@ class DeviceLocalAccountPolicyBroker
           external_data_manager,
       const base::Closure& policy_updated_callback,
       const scoped_refptr<base::SequencedTaskRunner>& task_runner,
+      const scoped_refptr<base::SequencedTaskRunner>&
+          resource_cache_task_runner,
       AffiliatedInvalidationServiceProvider* invalidation_service_provider);
   ~DeviceLocalAccountPolicyBroker() override;
 
-  // Initialize the broker, loading its |store_|.
+  // Initialize the broker, start asynchronous load of its |store_|.
   void Initialize();
+
+  // Loads store synchronously.
+  void LoadImmediately();
 
   // For the difference between |account_id| and |user_id|, see the
   // documentation of DeviceLocalAccount.
@@ -100,7 +107,7 @@ class DeviceLocalAccountPolicyBroker
   void ConnectIfPossible(
       chromeos::DeviceSettingsService* device_settings_service,
       DeviceManagementService* device_management_service,
-      scoped_refptr<net::URLRequestContextGetter> request_context);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
 
   // Reads the refresh delay from policy and configures the refresh scheduler.
   void UpdateRefreshDelay();
@@ -117,9 +124,7 @@ class DeviceLocalAccountPolicyBroker
   void OnComponentCloudPolicyUpdated() override;
 
  private:
-  void CreateComponentCloudPolicyService(
-      const scoped_refptr<net::URLRequestContextGetter>& request_context,
-      CloudPolicyClient* client);
+  void CreateComponentCloudPolicyService(CloudPolicyClient* client);
 
   AffiliatedInvalidationServiceProvider* const invalidation_service_provider_;
   const std::string account_id_;
@@ -127,7 +132,7 @@ class DeviceLocalAccountPolicyBroker
   const base::FilePath component_policy_cache_path_;
   SchemaRegistry schema_registry_;
   const std::unique_ptr<DeviceLocalAccountPolicyStore> store_;
-  DeviceLocalAccountExtensionTracker extension_tracker_;
+  std::unique_ptr<DeviceLocalAccountExtensionTracker> extension_tracker_;
   scoped_refptr<DeviceLocalAccountExternalDataManager> external_data_manager_;
   scoped_refptr<chromeos::DeviceLocalAccountExternalPolicyLoader>
       extension_loader_;
@@ -135,6 +140,7 @@ class DeviceLocalAccountPolicyBroker
   std::unique_ptr<ComponentCloudPolicyService> component_policy_service_;
   base::Closure policy_update_callback_;
   std::unique_ptr<AffiliatedCloudPolicyInvalidator> invalidator_;
+  const scoped_refptr<base::SequencedTaskRunner> resource_cache_task_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(DeviceLocalAccountPolicyBroker);
 };
@@ -166,8 +172,7 @@ class DeviceLocalAccountPolicyService {
       scoped_refptr<base::SequencedTaskRunner> extension_cache_task_runner,
       scoped_refptr<base::SequencedTaskRunner>
           external_data_service_backend_task_runner,
-      scoped_refptr<base::SequencedTaskRunner> io_task_runner,
-      scoped_refptr<net::URLRequestContextGetter> request_context);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   virtual ~DeviceLocalAccountPolicyService();
 
   // Shuts down the service and prevents further policy fetches from the cloud.
@@ -225,13 +230,10 @@ class DeviceLocalAccountPolicyService {
   // Deletes brokers in |map| and clears it.
   void DeleteBrokers(PolicyBrokerMap* map);
 
-  // Find the broker for a given |store|. Returns NULL if |store| is unknown.
-  DeviceLocalAccountPolicyBroker* GetBrokerForStore(CloudPolicyStore* store);
-
   // Notifies the |observers_| that the policy for |user_id| has changed.
   void NotifyPolicyUpdated(const std::string& user_id);
 
-  base::ObserverList<Observer, true> observers_;
+  base::ObserverList<Observer, true>::Unchecked observers_;
 
   chromeos::SessionManagerClient* session_manager_client_;
   chromeos::DeviceSettingsService* device_settings_service_;
@@ -263,10 +265,11 @@ class DeviceLocalAccountPolicyService {
 
   const scoped_refptr<base::SequencedTaskRunner> store_background_task_runner_;
   const scoped_refptr<base::SequencedTaskRunner> extension_cache_task_runner_;
+  const scoped_refptr<base::SequencedTaskRunner> resource_cache_task_runner_;
 
   std::unique_ptr<DeviceLocalAccountExternalDataService> external_data_service_;
 
-  scoped_refptr<net::URLRequestContextGetter> request_context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   const std::unique_ptr<chromeos::CrosSettings::ObserverSubscription>
       local_accounts_subscription_;

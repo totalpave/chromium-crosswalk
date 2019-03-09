@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -43,6 +43,12 @@ DeviceStatusCodes.INVALID_DATA_STATUS = 0x6984;
  * @const
  */
 DeviceStatusCodes.WRONG_DATA_STATUS = 0x6a80;
+
+/**
+ * Device operation file not found status.
+ * @const
+ */
+DeviceStatusCodes.FILE_NOT_FOUND_STATUS = 0x6a82;
 
 /**
  * Device operation timeout status.

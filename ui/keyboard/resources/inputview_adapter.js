@@ -74,7 +74,7 @@ function overrideGetMessage() {
    * @return {string} Translated resource.
    */
   chrome.i18n.getMessage = function(key) {
-    if (key.indexOf('@@') == 0)
+    if (key.startsWith('@@'))
       return originalGetMessage(key);
 
     // TODO(kevers): Add support for other locales.
@@ -144,6 +144,15 @@ function overrideGetSpatialData() {
   Controller.prototype.getSpatialData_ = function() {};
 }
 
+/**
+ * Return the most recently used US layout. By default, this will return the
+ * compact layout.
+ */
+function getDefaultUsLayout() {
+  return window.localStorage['vkDefaultLayoutIsFull']
+      ? 'us' : 'us.compact.qwerty';
+}
+
 // Plug in for API calls.
 function registerInputviewApi() {
 
@@ -154,7 +163,8 @@ function registerInputviewApi() {
     NONE: 0,
     ALT: 8,
     CONTROL: 4,
-    SHIFT: 2
+    SHIFT: 2,
+    CAPSLOCK: 256
   };
 
   // Mapping from keyName to keyCode (see ui::KeyEvent).
@@ -170,6 +180,7 @@ function registerInputviewApi() {
     Quote: 0xBF,
     Semicolon: 0xBA,
     Slash: 0xBF,
+    Space: 0x20,
     Tab: 0x09
   };
 
@@ -232,7 +243,6 @@ function registerInputviewApi() {
     callback(0);
   }
 
-
   /**
    * Retrieve the current input method configuration.
    * @param {function} callback The callback function for processing the
@@ -287,8 +297,10 @@ function registerInputviewApi() {
         event.modifiers |= Modifier.ALT;
       if (data.ctrlKey)
         event.modifiers |= Modifier.CONTROL;
-      if (data.shiftKey || data.capsLock)
+      if (data.shiftKey)
         event.modifiers |= Modifier.SHIFT;
+      if (data.capsLock)
+        event.modifiers |= Modifier.CAPSLOCK;
 
       chrome.virtualKeyboardPrivate.sendKeyEvent(event, logIfError_);
     });
@@ -348,9 +360,7 @@ function registerInputviewApi() {
     else
       defaultSendMessage(message);
   });
-
 }
-
 
 registerFunction('chrome.runtime.getBackgroundPage', function() {
   var callback = arguments[0];
@@ -366,7 +376,6 @@ if (!chrome.i18n) {
   }
 }
 
-
 /**
  * Trigger loading the virtual keyboard on completion of page load.
  */
@@ -380,7 +389,7 @@ window.onload = function() {
     });
   }
 
-  var keyset = params['id'] || 'us.compact.qwerty';
+  var keyset = params['id'] || getDefaultUsLayout();
   var languageCode = params['language'] || 'en';
   var passwordLayout = params['passwordLayout'] || 'us';
   var name = params['name'] || 'English';

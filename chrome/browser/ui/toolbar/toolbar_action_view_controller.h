@@ -45,6 +45,8 @@ class ToolbarActionViewController {
   virtual base::string16 GetActionName() const = 0;
 
   // Returns the accessible name to use for the given |web_contents|.
+  // May be passed null, or a |web_contents| that returns -1 for
+  // |SessionTabHelper::IdForTab(..)|.
   virtual base::string16 GetAccessibleName(content::WebContents* web_contents)
       const = 0;
 
@@ -61,6 +63,9 @@ class ToolbarActionViewController {
 
   // Returns true if the action has a popup for the given |web_contents|.
   virtual bool HasPopup(content::WebContents* web_contents) const = 0;
+
+  // Returns whether there is currently a popup visible.
+  virtual bool IsShowingPopup() const = 0;
 
   // Hides the current popup, if one is visible.
   virtual void HidePopup() = 0;

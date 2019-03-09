@@ -9,12 +9,12 @@
 
 #include "base/macros.h"
 #include "base/observer_list.h"
-#include "chrome/browser/extensions/chrome_extension_function.h"
 #include "chrome/browser/extensions/extension_action.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/extension_event_histogram_value.h"
+#include "extensions/browser/extension_function.h"
 #include "third_party/skia/include/core/SkColor.h"
 
 namespace base {
@@ -25,6 +25,8 @@ namespace content {
 class BrowserContext;
 class WebContents;
 }
+
+class Browser;
 
 namespace extensions {
 class ExtensionPrefs;
@@ -93,7 +95,8 @@ class ExtensionActionAPI : public BrowserContextKeyedAPI {
 
   // Dispatches the onClicked event for extension that owns the given action.
   void DispatchExtensionActionClicked(const ExtensionAction& extension_action,
-                                      content::WebContents* web_contents);
+                                      content::WebContents* web_contents,
+                                      const Extension* extension);
 
   // Clears the values for all ExtensionActions for the tab associated with the
   // given |web_contents| (and signals that page actions changed).
@@ -125,7 +128,7 @@ class ExtensionActionAPI : public BrowserContextKeyedAPI {
   static const char* service_name() { return "ExtensionActionAPI"; }
   static const bool kServiceRedirectedInIncognito = true;
 
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   content::BrowserContext* browser_context_;
 
@@ -140,7 +143,7 @@ class ExtensionActionAPI : public BrowserContextKeyedAPI {
 // tabIds while browserAction's are optional, they have different internal
 // browser notification requirements, and not all functions are defined for all
 // APIs).
-class ExtensionActionFunction : public ChromeSyncExtensionFunction {
+class ExtensionActionFunction : public UIThreadExtensionFunction {
  public:
   static bool ParseCSSColorString(const std::string& color_string,
                                   SkColor* result);
@@ -148,12 +151,13 @@ class ExtensionActionFunction : public ChromeSyncExtensionFunction {
  protected:
   ExtensionActionFunction();
   ~ExtensionActionFunction() override;
-  bool RunSync() override;
-  virtual bool RunExtensionAction() = 0;
+  ResponseAction Run() override;
+
+  virtual ResponseAction RunExtensionAction() = 0;
 
   bool ExtractDataFromArguments();
   void NotifyChange();
-  bool SetVisible(bool visible);
+  void SetVisible(bool visible);
 
   // All the extension action APIs take a single argument called details that
   // is a dictionary.
@@ -181,42 +185,45 @@ class ExtensionActionFunction : public ChromeSyncExtensionFunction {
 class ExtensionActionShowFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionShowFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // hide
 class ExtensionActionHideFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionHideFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // setIcon
 class ExtensionActionSetIconFunction : public ExtensionActionFunction {
+ public:
+  static void SetReportErrorForInvisibleIconForTesting(bool value);
+
  protected:
   ~ExtensionActionSetIconFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // setTitle
 class ExtensionActionSetTitleFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionSetTitleFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // setPopup
 class ExtensionActionSetPopupFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionSetPopupFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // setBadgeText
 class ExtensionActionSetBadgeTextFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionSetBadgeTextFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // setBadgeBackgroundColor
@@ -224,28 +231,28 @@ class ExtensionActionSetBadgeBackgroundColorFunction
     : public ExtensionActionFunction {
  protected:
   ~ExtensionActionSetBadgeBackgroundColorFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // getTitle
 class ExtensionActionGetTitleFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionGetTitleFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // getPopup
 class ExtensionActionGetPopupFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionGetPopupFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // getBadgeText
 class ExtensionActionGetBadgeTextFunction : public ExtensionActionFunction {
  protected:
   ~ExtensionActionGetBadgeTextFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 // getBadgeBackgroundColor
@@ -253,7 +260,7 @@ class ExtensionActionGetBadgeBackgroundColorFunction
     : public ExtensionActionFunction {
  protected:
   ~ExtensionActionGetBadgeBackgroundColorFunction() override {}
-  bool RunExtensionAction() override;
+  ResponseAction RunExtensionAction() override;
 };
 
 //
@@ -356,7 +363,7 @@ class BrowserActionDisableFunction : public ExtensionActionHideFunction {
   ~BrowserActionDisableFunction() override {}
 };
 
-class BrowserActionOpenPopupFunction : public ChromeAsyncExtensionFunction,
+class BrowserActionOpenPopupFunction : public UIThreadExtensionFunction,
                                        public content::NotificationObserver {
  public:
   DECLARE_EXTENSION_FUNCTION("browserAction.openPopup",
@@ -367,7 +374,7 @@ class BrowserActionOpenPopupFunction : public ChromeAsyncExtensionFunction,
   ~BrowserActionOpenPopupFunction() override {}
 
   // ExtensionFunction:
-  bool RunAsync() override;
+  ResponseAction Run() override;
 
   void Observe(int type,
                const content::NotificationSource& source,
@@ -375,7 +382,6 @@ class BrowserActionOpenPopupFunction : public ChromeAsyncExtensionFunction,
   void OpenPopupTimedOut();
 
   content::NotificationRegistrar registrar_;
-  bool response_sent_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserActionOpenPopupFunction);
 };

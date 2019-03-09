@@ -6,11 +6,13 @@
 #define EXTENSIONS_RENDERER_WORKER_SCRIPT_CONTEXT_SET_H_
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/threading/thread_local.h"
-#include "content/public/child/worker_thread.h"
+#include "content/public/renderer/worker_thread.h"
+#include "extensions/renderer/script_context_set_iterable.h"
 #include "url/gurl.h"
 #include "v8/include/v8.h"
 
@@ -19,12 +21,18 @@ namespace extensions {
 class ScriptContext;
 
 // A set of ScriptContexts owned by worker threads. Thread safe.
-class WorkerScriptContextSet : public content::WorkerThread::Observer {
+class WorkerScriptContextSet : public ScriptContextSetIterable,
+                               public content::WorkerThread::Observer {
  public:
   WorkerScriptContextSet();
 
   ~WorkerScriptContextSet() override;
 
+  // ScriptContextSetIterable:
+  void ForEach(
+      const std::string& extension_id,
+      content::RenderFrame* render_frame,
+      const base::RepeatingCallback<void(ScriptContext*)>& callback) override;
   // Inserts |context| into the set. Contexts are stored in TLS.
   void Insert(std::unique_ptr<ScriptContext> context);
 
@@ -37,7 +45,8 @@ class WorkerScriptContextSet : public content::WorkerThread::Observer {
   void WillStopCurrentWorkerThread() override;
 
   // Implement thread safety by storing each ScriptContext in TLS.
-  base::ThreadLocalPointer<ScopedVector<ScriptContext>> contexts_tls_;
+  base::ThreadLocalPointer<std::vector<std::unique_ptr<ScriptContext>>>
+      contexts_tls_;
 
   DISALLOW_COPY_AND_ASSIGN(WorkerScriptContextSet);
 };

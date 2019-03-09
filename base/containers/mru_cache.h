@@ -29,6 +29,14 @@
 #include "base/macros.h"
 
 namespace base {
+namespace trace_event {
+namespace internal {
+
+template <class MruCacheType>
+size_t DoEstimateMemoryUsageForMruCache(const MruCacheType&);
+
+}  // namespace internal
+}  // namespace trace_event
 
 // MRUCacheBase ----------------------------------------------------------------
 
@@ -74,7 +82,7 @@ class MRUCacheBase {
   // can pass NO_AUTO_EVICT to not restrict the cache size.
   explicit MRUCacheBase(size_type max_size) : max_size_(max_size) {}
 
-  virtual ~MRUCacheBase() {}
+  virtual ~MRUCacheBase() = default;
 
   size_type max_size() const { return max_size_; }
 
@@ -97,16 +105,14 @@ class MRUCacheBase {
       ShrinkToSize(max_size_ - 1);
     }
 
-    ordering_.push_front(value_type(key, std::forward<Payload>(payload)));
-    index_.insert(std::make_pair(key, ordering_.begin()));
+    ordering_.emplace_front(key, std::forward<Payload>(payload));
+    index_.emplace(key, ordering_.begin());
     return ordering_.begin();
   }
 
   // Retrieves the contents of the given key, or end() if not found. This method
   // has the side effect of moving the requested item to the front of the
   // recency list.
-  //
-  // TODO(brettw) We may want a const version of this function in the future.
   iterator Get(const KeyType& key) {
     typename KeyIndex::iterator index_iter = index_.find(key);
     if (index_iter == index_.end())
@@ -197,6 +203,10 @@ class MRUCacheBase {
   bool empty() const { return ordering_.empty(); }
 
  private:
+  template <class MruCacheType>
+  friend size_t trace_event::internal::DoEstimateMemoryUsageForMruCache(
+      const MruCacheType&);
+
   PayloadList ordering_;
   KeyIndex index_;
 
@@ -209,16 +219,18 @@ class MRUCacheBase {
 
 // A container that does not do anything to free its data. Use this when storing
 // value types (as opposed to pointers) in the list.
-template <class KeyType, class PayloadType>
-class MRUCache : public MRUCacheBase<KeyType, PayloadType, std::less<KeyType>> {
+template <class KeyType,
+          class PayloadType,
+          class CompareType = std::less<KeyType>>
+class MRUCache : public MRUCacheBase<KeyType, PayloadType, CompareType> {
  private:
-  using ParentType = MRUCacheBase<KeyType, PayloadType, std::less<KeyType>>;
+  using ParentType = MRUCacheBase<KeyType, PayloadType, CompareType>;
 
  public:
   // See MRUCacheBase, noting the possibility of using NO_AUTO_EVICT.
   explicit MRUCache(typename ParentType::size_type max_size)
       : ParentType(max_size) {}
-  virtual ~MRUCache() {}
+  virtual ~MRUCache() = default;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MRUCache);
@@ -245,7 +257,7 @@ class HashingMRUCache
   // See MRUCacheBase, noting the possibility of using NO_AUTO_EVICT.
   explicit HashingMRUCache(typename ParentType::size_type max_size)
       : ParentType(max_size) {}
-  virtual ~HashingMRUCache() {}
+  virtual ~HashingMRUCache() = default;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(HashingMRUCache);

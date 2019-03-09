@@ -10,17 +10,14 @@
 #include "base/bind.h"
 #include "base/logging.h"
 #include "content/public/browser/browser_thread.h"
-#include "net/base/crypto_module.h"
-#include "net/cert/x509_certificate.h"
 
 using content::BrowserThread;
 
 namespace {
 
-bool ShouldShowDialog(const net::CryptoModule* module) {
+bool ShouldShowDialog(PK11SlotInfo* slot) {
   // The wincx arg is unused since we don't call PK11_SetIsLoggedInFunc.
-  return (PK11_NeedLogin(module->os_module_handle()) &&
-          !PK11_IsLoggedIn(module->os_module_handle(), NULL /* wincx */));
+  return (PK11_NeedLogin(slot) && !PK11_IsLoggedIn(slot, NULL /* wincx */));
 }
 
 // Basically an asynchronous implementation of NSS's PK11_DoPassword.
@@ -28,11 +25,11 @@ bool ShouldShowDialog(const net::CryptoModule* module) {
 // GotPassword for what is yet unimplemented.
 class SlotUnlocker {
  public:
-  SlotUnlocker(const net::CryptoModuleList& modules,
-               chrome::CryptoModulePasswordReason reason,
+  SlotUnlocker(std::vector<crypto::ScopedPK11Slot> modules,
+               CryptoModulePasswordReason reason,
                const net::HostPortPair& server,
                gfx::NativeWindow parent,
-               const base::Closure& callback);
+               base::OnceClosure callback);
 
   void Start();
 
@@ -41,25 +38,25 @@ class SlotUnlocker {
   void Done();
 
   size_t current_;
-  net::CryptoModuleList modules_;
-  chrome::CryptoModulePasswordReason reason_;
+  std::vector<crypto::ScopedPK11Slot> modules_;
+  CryptoModulePasswordReason reason_;
   net::HostPortPair server_;
   gfx::NativeWindow parent_;
-  base::Closure callback_;
+  base::OnceClosure callback_;
   PRBool retry_;
 };
 
-SlotUnlocker::SlotUnlocker(const net::CryptoModuleList& modules,
-                           chrome::CryptoModulePasswordReason reason,
+SlotUnlocker::SlotUnlocker(std::vector<crypto::ScopedPK11Slot> modules,
+                           CryptoModulePasswordReason reason,
                            const net::HostPortPair& server,
                            gfx::NativeWindow parent,
-                           const base::Closure& callback)
+                           base::OnceClosure callback)
     : current_(0),
-      modules_(modules),
+      modules_(std::move(modules)),
       reason_(reason),
       server_(server),
       parent_(parent),
-      callback_(callback),
+      callback_(std::move(callback)),
       retry_(PR_FALSE) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 }
@@ -70,11 +67,8 @@ void SlotUnlocker::Start() {
   for (; current_ < modules_.size(); ++current_) {
     if (ShouldShowDialog(modules_[current_].get())) {
       ShowCryptoModulePasswordDialog(
-          modules_[current_]->GetTokenName(),
-          retry_,
-          reason_,
-          server_.host(),
-          parent_,
+          PK11_GetTokenName(modules_[current_].get()), retry_, reason_,
+          server_.host(), parent_,
           base::Bind(&SlotUnlocker::GotPassword, base::Unretained(this)));
       return;
     }
@@ -95,8 +89,8 @@ void SlotUnlocker::GotPassword(const std::string& password) {
   }
 
   // TODO(mattm): handle protectedAuthPath
-  SECStatus rv = PK11_CheckUserPassword(modules_[current_]->os_module_handle(),
-                                        password.c_str());
+  SECStatus rv =
+      PK11_CheckUserPassword(modules_[current_].get(), password.c_str());
   if (rv == SECWouldBlock) {
     // Incorrect password.  Try again.
     retry_ = PR_TRUE;
@@ -115,7 +109,7 @@ void SlotUnlocker::GotPassword(const std::string& password) {
 
 void SlotUnlocker::Done() {
   DCHECK_EQ(current_, modules_.size());
-  callback_.Run();
+  std::move(callback_).Run();
   delete this;
 }
 
@@ -123,30 +117,32 @@ void SlotUnlocker::Done() {
 
 namespace chrome {
 
-void UnlockSlotsIfNecessary(const net::CryptoModuleList& modules,
-                            chrome::CryptoModulePasswordReason reason,
+void UnlockSlotsIfNecessary(std::vector<crypto::ScopedPK11Slot> modules,
+                            CryptoModulePasswordReason reason,
                             const net::HostPortPair& server,
                             gfx::NativeWindow parent,
-                            const base::Closure& callback) {
+                            base::OnceClosure callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   for (size_t i = 0; i < modules.size(); ++i) {
     if (ShouldShowDialog(modules[i].get())) {
-      (new SlotUnlocker(modules, reason, server, parent, callback))->Start();
+      (new SlotUnlocker(std::move(modules), reason, server, parent,
+                        std::move(callback)))
+          ->Start();
       return;
     }
   }
-  callback.Run();
+  std::move(callback).Run();
 }
 
-void UnlockCertSlotIfNecessary(net::X509Certificate* cert,
-                               chrome::CryptoModulePasswordReason reason,
+void UnlockCertSlotIfNecessary(CERTCertificate* cert,
+                               CryptoModulePasswordReason reason,
                                const net::HostPortPair& server,
                                gfx::NativeWindow parent,
-                               const base::Closure& callback) {
-  net::CryptoModuleList modules;
-  modules.push_back(net::CryptoModule::CreateFromHandle(
-      cert->os_cert_handle()->slot));
-  UnlockSlotsIfNecessary(modules, reason, server, parent, callback);
+                               base::OnceClosure callback) {
+  std::vector<crypto::ScopedPK11Slot> modules;
+  modules.push_back(crypto::ScopedPK11Slot(PK11_ReferenceSlot(cert->slot)));
+  UnlockSlotsIfNecessary(std::move(modules), reason, server, parent,
+                         std::move(callback));
 }
 
 }  // namespace chrome

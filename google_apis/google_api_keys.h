@@ -25,11 +25,13 @@
 // https://developers.google.com/console/.
 //
 // The keys must either be provided using preprocessor variables (set
-// via e.g. ~/.gyp/include.gypi). Alternatively, they can be
+// via e.g. ~/.gyp/include.gypi). Alternatively, in Chromium builds, they can be
 // overridden at runtime using environment variables of the same name.
+// Environment variable overrides will be ignored for official Google Chrome
+// builds.
 //
 // The names of the preprocessor variables (or environment variables
-// to override them at runtime) are as follows:
+// to override them at runtime in Chromium builds) are as follows:
 // - GOOGLE_API_KEY: The API key, a.k.a. developer key.
 // - GOOGLE_DEFAULT_CLIENT_ID: If set, this is used as the default for
 //   all client IDs not otherwise set.  This is intended only for
@@ -58,8 +60,8 @@ namespace google_apis {
 
 extern const char kAPIKeysDevelopersHowToURL[];
 
-// Returns true if no dummy API keys or OAuth2 tokens are set.
-bool HasKeysConfigured();
+// Returns true if no dummy API key is set.
+bool HasAPIKeyConfigured();
 
 // Retrieves the API key, a.k.a. developer key, or a dummy string
 // if not set.
@@ -71,7 +73,18 @@ std::string GetAPIKey();
 // Non-stable channels may have a different Google API key.
 std::string GetNonStableAPIKey();
 
-std::string GetRemotingAPIKey();
+// Retrieves the Chrome Remote Desktop FTL API key to be used during the
+// signaling process.
+std::string GetRemotingFtlAPIKey();
+
+#if defined(OS_IOS)
+// Sets the API key. This should be called as early as possible before this
+// API key is even accessed.
+void SetAPIKey(const std::string& api_key);
+#endif
+
+// Retrieves the key used to sign metrics (UMA/UKM) uploads.
+std::string GetMetricsKey();
 
 // Represents the different sets of client IDs and secrets in use.
 enum OAuth2Client {
@@ -82,6 +95,9 @@ enum OAuth2Client {
 
   CLIENT_NUM_ITEMS     // Must be last item.
 };
+
+// Returns true if no dummy OAuth2 client ID and secret are set.
+bool HasOAuthClientConfigured();
 
 // Retrieves the OAuth2 client ID for the specified client, or the
 // empty string if not set.
@@ -97,6 +113,16 @@ std::string GetOAuth2ClientID(OAuth2Client client);
 // in, e.g. URL-escaped if you use it in a URL.
 std::string GetOAuth2ClientSecret(OAuth2Client client);
 
+#if defined(OS_IOS)
+// Sets the client id for the specified client. Should be called as early as
+// possible before these ids are accessed.
+void SetOAuth2ClientID(OAuth2Client client, const std::string& client_id);
+
+// Sets the client secret for the specified client. Should be called as early as
+// possible before these secrets are accessed.
+void SetOAuth2ClientSecret(OAuth2Client client,
+                           const std::string& client_secret);
+#endif
 // Returns the auth token for the data reduction proxy.
 std::string GetSpdyProxyAuthValue();
 

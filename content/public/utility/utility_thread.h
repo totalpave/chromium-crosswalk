@@ -5,6 +5,7 @@
 #ifndef CONTENT_PUBLIC_UTILITY_UTILITY_THREAD_H_
 #define CONTENT_PUBLIC_UTILITY_UTILITY_THREAD_H_
 
+#include "build/build_config.h"
 #include "content/public/child/child_thread.h"
 
 namespace content {
@@ -18,11 +19,16 @@ class CONTENT_EXPORT UtilityThread : virtual public ChildThread {
   UtilityThread();
   ~UtilityThread() override;
 
-  // Releases the process if we are not (or no longer) in batch mode.
-  virtual void ReleaseProcessIfNeeded() = 0;
+  // Releases the process.
+  virtual void ReleaseProcess() = 0;
 
   // Initializes blink if it hasn't already been initialized.
   virtual void EnsureBlinkInitialized() = 0;
+
+#if defined(OS_POSIX) && !defined(OS_ANDROID)
+  // Initializes blink with web sandbox support.
+  virtual void EnsureBlinkInitializedWithSandboxSupport() = 0;
+#endif
 };
 
 }  // namespace content

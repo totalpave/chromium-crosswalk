@@ -19,7 +19,7 @@ class TimeDelta;
 class Value;
 }
 
-class DevToolsClient;
+class FrameTracker;
 struct Geoposition;
 class JavaScriptDialogManager;
 struct KeyEvent;
@@ -53,6 +53,22 @@ class WebView {
 
   // Reload the current page.
   virtual Status Reload(const Timeout* timeout) = 0;
+
+  // Freeze the current page.
+  virtual Status Freeze(const Timeout* timeout) = 0;
+
+  // Resume the current page.
+  virtual Status Resume(const Timeout* timeout) = 0;
+
+  // Send a command to the DevTools debugger
+  virtual Status SendCommand(const std::string& cmd,
+                             const base::DictionaryValue& params) = 0;
+
+  // Send a command to the DevTools debugger and wait for the result
+  virtual Status SendCommandAndGetResult(
+          const std::string& cmd,
+          const base::DictionaryValue& params,
+          std::unique_ptr<base::Value>* value) = 0;
 
   // Navigate |delta| steps forward in the browser history. A negative value
   // will navigate back in the history. If the delta exceeds the number of items
@@ -123,11 +139,23 @@ class WebView {
   virtual Status DispatchKeyEvents(const std::list<KeyEvent>& events) = 0;
 
   // Return all the cookies visible to the current page.
-  virtual Status GetCookies(std::unique_ptr<base::ListValue>* cookies) = 0;
+  virtual Status GetCookies(std::unique_ptr<base::ListValue>* cookies,
+                            const std::string& current_page_url) = 0;
 
   // Delete the cookie with the given name.
   virtual Status DeleteCookie(const std::string& name,
-                              const std::string& url) = 0;
+                              const std::string& url,
+                              const std::string& domain,
+                              const std::string& path) = 0;
+
+  virtual Status AddCookie(const std::string& name,
+                           const std::string& url,
+                           const std::string& value,
+                           const std::string& domain,
+                           const std::string& path,
+                           bool secure,
+                           bool httpOnly,
+                           double expiry) = 0;
 
   // Waits until all pending navigations have completed in the given frame.
   // If |frame_id| is "", waits for navigations on the main frame.
@@ -156,7 +184,9 @@ class WebView {
       const NetworkConditions& network_conditions) = 0;
 
   // Captures the visible portions of the web view as a base64-encoded PNG.
-  virtual Status CaptureScreenshot(std::string* screenshot) = 0;
+  virtual Status CaptureScreenshot(
+      std::string* screenshot,
+      const base::DictionaryValue& params) = 0;
 
   // Set files in a file input element.
   // |element| is the WebElement JSON Object of the input element.
@@ -190,6 +220,20 @@ class WebView {
                                          int yoffset) = 0;
 
   virtual Status SynthesizePinchGesture(int x, int y, double scale_factor) = 0;
+
+  virtual Status GetScreenOrientation(std::string* orientation) = 0;
+
+  virtual Status SetScreenOrientation(std::string orientation) = 0;
+
+  virtual Status DeleteScreenOrientation() = 0;
+
+  virtual bool IsOOPIF(const std::string& frame_id) = 0;
+
+  virtual FrameTracker* GetFrameTracker() const = 0;
+
+  virtual std::unique_ptr<base::Value> GetCastSinks() = 0;
+
+  virtual std::unique_ptr<base::Value> GetCastIssueMessage() = 0;
 };
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CHROME_WEB_VIEW_H_

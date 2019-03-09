@@ -19,9 +19,12 @@ ChromeAutocompleteSchemeClassifier::ChromeAutocompleteSchemeClassifier(
 ChromeAutocompleteSchemeClassifier::~ChromeAutocompleteSchemeClassifier() {
 }
 
-metrics::OmniboxInputType::Type
+metrics::OmniboxInputType
 ChromeAutocompleteSchemeClassifier::GetInputTypeForScheme(
     const std::string& scheme) const {
+  if (scheme.empty()) {
+    return metrics::OmniboxInputType::INVALID;
+  }
   if (base::IsStringASCII(scheme) &&
       (ProfileIOData::IsHandledProtocol(scheme) ||
        base::LowerCaseEqualsASCII(scheme, content::kViewSourceScheme) ||
@@ -45,7 +48,7 @@ ChromeAutocompleteSchemeClassifier::GetInputTypeForScheme(
   // external protocol handler because we don't want pages to open them, but
   // users still can.
   const ExternalProtocolHandler::BlockState block_state =
-      ExternalProtocolHandler::GetBlockState(scheme);
+      ExternalProtocolHandler::GetBlockState(scheme, profile_);
   switch (block_state) {
     case ExternalProtocolHandler::DONT_BLOCK:
       return metrics::OmniboxInputType::URL;
@@ -55,7 +58,22 @@ ChromeAutocompleteSchemeClassifier::GetInputTypeForScheme(
       // to at all.
       return metrics::OmniboxInputType::QUERY;
 
-    default:
+    case ExternalProtocolHandler::UNKNOWN: {
+#if defined(OS_LINUX)
+      // Linux impl of GetApplicationNameForProtocol doesn't distinguish
+      // between URL schemes with handers and those without. This will
+      // make the default behaviour be search on Linux.
       return metrics::OmniboxInputType::INVALID;
+#endif // defined(OS_LINUX)
+      // If block state is unknown, check if there is an application registered
+      // for the url scheme.
+      GURL url(scheme + "://");
+      base::string16 application_name =
+          shell_integration::GetApplicationNameForProtocol(url);
+      return application_name.empty() ? metrics::OmniboxInputType::INVALID
+                                      : metrics::OmniboxInputType::URL;
+    }
   }
+  NOTREACHED();
+  return metrics::OmniboxInputType::INVALID;
 }

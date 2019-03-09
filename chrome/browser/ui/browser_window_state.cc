@@ -6,9 +6,10 @@
 
 #include <stddef.h>
 
+#include <utility>
+
 #include "base/command_line.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/defaults.h"
 #include "chrome/browser/profiles/profile.h"
@@ -56,12 +57,13 @@ class WindowPlacementPrefUpdate : public DictionaryPrefUpdate {
 
   base::DictionaryValue* Get() override {
     base::DictionaryValue* all_apps_dict = DictionaryPrefUpdate::Get();
-    base::DictionaryValue* this_app_dict = NULL;
-    if (!all_apps_dict->GetDictionary(window_name_, &this_app_dict)) {
-      this_app_dict = new base::DictionaryValue;
-      all_apps_dict->Set(window_name_, this_app_dict);
+    base::DictionaryValue* this_app_dict_weak = NULL;
+    if (!all_apps_dict->GetDictionary(window_name_, &this_app_dict_weak)) {
+      auto this_app_dict = std::make_unique<base::DictionaryValue>();
+      this_app_dict_weak = this_app_dict.get();
+      all_apps_dict->Set(window_name_, std::move(this_app_dict));
     }
-    return this_app_dict;
+    return this_app_dict_weak;
   }
 
  private:
@@ -85,9 +87,8 @@ std::unique_ptr<DictionaryPrefUpdate> GetWindowPlacementDictionaryReadWrite(
     PrefService* prefs) {
   DCHECK(!window_name.empty());
   // A normal DictionaryPrefUpdate will suffice for non-app windows.
-  if (prefs->FindPreference(window_name.c_str())) {
-    return base::WrapUnique(
-        new DictionaryPrefUpdate(prefs, window_name.c_str()));
+  if (prefs->FindPreference(window_name)) {
+    return std::make_unique<DictionaryPrefUpdate>(prefs, window_name);
   }
   return std::unique_ptr<DictionaryPrefUpdate>(
       new WindowPlacementPrefUpdate(prefs, window_name));
@@ -97,8 +98,8 @@ const base::DictionaryValue* GetWindowPlacementDictionaryReadOnly(
     const std::string& window_name,
     PrefService* prefs) {
   DCHECK(!window_name.empty());
-  if (prefs->FindPreference(window_name.c_str()))
-    return prefs->GetDictionary(window_name.c_str());
+  if (prefs->FindPreference(window_name))
+    return prefs->GetDictionary(window_name);
 
   const base::DictionaryValue* app_windows =
       prefs->GetDictionary(prefs::kAppWindowPlacement);
@@ -159,20 +160,38 @@ void GetSavedWindowBoundsAndShowState(const Browser* browser,
   const base::CommandLine& parsed_command_line =
       *base::CommandLine::ForCurrentProcess();
 
-  if (parsed_command_line.HasSwitch(switches::kWindowSize)) {
-    std::string str =
-        parsed_command_line.GetSwitchValueASCII(switches::kWindowSize);
+  internal::UpdateWindowBoundsAndShowStateFromCommandLine(parsed_command_line,
+                                                          bounds, show_state);
+}
+
+namespace internal {
+
+void UpdateWindowBoundsAndShowStateFromCommandLine(
+    const base::CommandLine& command_line,
+    gfx::Rect* bounds,
+    ui::WindowShowState* show_state) {
+  // Allow command-line flags to override the window size and position. If
+  // either of these is specified then set the show state to NORMAL so that
+  // they are immediately respected.
+  if (command_line.HasSwitch(switches::kWindowSize)) {
+    std::string str = command_line.GetSwitchValueASCII(switches::kWindowSize);
     int width, height;
-    if (ParseCommaSeparatedIntegers(str, &width, &height))
+    if (ParseCommaSeparatedIntegers(str, &width, &height)) {
       bounds->set_size(gfx::Size(width, height));
+      *show_state = ui::SHOW_STATE_NORMAL;
+    }
   }
-  if (parsed_command_line.HasSwitch(switches::kWindowPosition)) {
+  if (command_line.HasSwitch(switches::kWindowPosition)) {
     std::string str =
-        parsed_command_line.GetSwitchValueASCII(switches::kWindowPosition);
+        command_line.GetSwitchValueASCII(switches::kWindowPosition);
     int x, y;
-    if (ParseCommaSeparatedIntegers(str, &x, &y))
+    if (ParseCommaSeparatedIntegers(str, &x, &y)) {
       bounds->set_origin(gfx::Point(x, y));
+      *show_state = ui::SHOW_STATE_NORMAL;
+    }
   }
 }
+
+}  // namespace internal
 
 }  // namespace chrome

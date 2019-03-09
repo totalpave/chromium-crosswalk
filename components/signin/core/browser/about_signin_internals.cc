@@ -6,32 +6,32 @@
 
 #include <stddef.h>
 
-#include <utility>
+#include <algorithm>
+#include <tuple>
 
 #include "base/command_line.h"
 #include "base/hash.h"
 #include "base/i18n/time_formatting.h"
 #include "base/logging.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
-#include "components/pref_registry/pref_registry_syncable.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/account_tracker_service.h"
-#include "components/signin/core/browser/profile_oauth2_token_service.h"
 #include "components/signin/core/browser/signin_client.h"
-#include "components/signin/core/browser/signin_internals_util.h"
-#include "components/signin/core/browser/signin_manager.h"
-#include "components/signin/core/common/profile_management_switches.h"
-#include "components/signin/core/common/signin_switches.h"
+#include "components/signin/core/browser/signin_switches.h"
+#include "google_apis/gaia/oauth2_token_service_delegate.h"
 #include "net/base/backoff_entry.h"
-
-using base::Time;
-using namespace signin_internals_util;
+#include "services/identity/public/cpp/accounts_in_cookie_jar_info.h"
+#include "services/identity/public/cpp/diagnostics_provider.h"
+#include "services/identity/public/cpp/identity_manager.h"
 
 namespace {
+
+// The maximum number of the refresh token events. Only the last
+// |kMaxRefreshTokenListSize| events are kept in memory.
+const size_t kMaxRefreshTokenListSize = 50;
 
 std::string GetTimeStr(base::Time time) {
   return base::UTF16ToUTF8(base::TimeFormatShortDateAndTime(time));
@@ -39,11 +39,11 @@ std::string GetTimeStr(base::Time time) {
 
 base::ListValue* AddSection(base::ListValue* parent_list,
                             const std::string& title) {
-  std::unique_ptr<base::DictionaryValue> section(new base::DictionaryValue());
-  base::ListValue* section_contents = new base::ListValue();
+  auto section = std::make_unique<base::DictionaryValue>();
 
   section->SetString("title", title);
-  section->Set("data", section_contents);
+  base::ListValue* section_contents =
+      section->SetList("data", std::make_unique<base::ListValue>());
   parent_list->Append(std::move(section));
   return section_contents;
 }
@@ -70,15 +70,16 @@ void AddCookieEntry(base::ListValue* accounts_list,
   accounts_list->Append(std::move(entry));
 }
 
-std::string SigninStatusFieldToLabel(UntimedSigninStatusField field) {
+std::string SigninStatusFieldToLabel(
+    signin_internals_util::UntimedSigninStatusField field) {
   switch (field) {
-    case ACCOUNT_ID:
+    case signin_internals_util::ACCOUNT_ID:
       return "Account Id";
-    case GAIA_ID:
+    case signin_internals_util::GAIA_ID:
       return "Gaia Id";
-    case USERNAME:
+    case signin_internals_util::USERNAME:
       return "Username";
-    case UNTIMED_FIELDS_END:
+    case signin_internals_util::UNTIMED_FIELDS_END:
       NOTREACHED();
       return std::string();
   }
@@ -86,28 +87,51 @@ std::string SigninStatusFieldToLabel(UntimedSigninStatusField field) {
   return std::string();
 }
 
+std::string TokenServiceLoadCredentialsStateToLabel(
+    OAuth2TokenServiceDelegate::LoadCredentialsState state) {
+  switch (state) {
+    case OAuth2TokenServiceDelegate::LOAD_CREDENTIALS_NOT_STARTED:
+      return "Load credentials not started";
+    case OAuth2TokenServiceDelegate::LOAD_CREDENTIALS_IN_PROGRESS:
+      return "Load credentials in progress";
+    case OAuth2TokenServiceDelegate::LOAD_CREDENTIALS_FINISHED_WITH_SUCCESS:
+      return "Load credentials finished with success";
+    case OAuth2TokenServiceDelegate::LOAD_CREDENTIALS_FINISHED_WITH_DB_ERRORS:
+      return "Load credentials failed with database errors";
+    case OAuth2TokenServiceDelegate::
+        LOAD_CREDENTIALS_FINISHED_WITH_DECRYPT_ERRORS:
+      return "Load credentials failed with decrypt errors";
+    case OAuth2TokenServiceDelegate::
+        LOAD_CREDENTIALS_FINISHED_WITH_NO_TOKEN_FOR_PRIMARY_ACCOUNT:
+      return "Load credentials failed with no refresh token for signed in "
+             "account";
+    case OAuth2TokenServiceDelegate::
+        LOAD_CREDENTIALS_FINISHED_WITH_UNKNOWN_ERRORS:
+      return "Load credentials failed with unknown errors";
+  }
+  NOTREACHED();
+  return std::string();
+}
+
 #if !defined (OS_CHROMEOS)
-std::string SigninStatusFieldToLabel(TimedSigninStatusField field) {
+std::string SigninStatusFieldToLabel(
+    signin_internals_util::TimedSigninStatusField field) {
   switch (field) {
-    case AUTHENTICATION_RESULT_RECEIVED:
+    case signin_internals_util::AUTHENTICATION_RESULT_RECEIVED:
       return "Gaia Authentication Result";
-    case REFRESH_TOKEN_RECEIVED:
+    case signin_internals_util::REFRESH_TOKEN_RECEIVED:
       return "RefreshToken Received";
-    case SIGNIN_STARTED:
-      return "SigninManager Started";
-    case SIGNIN_COMPLETED:
-      return "SigninManager Completed";
-    case TIMED_FIELDS_END:
+    case signin_internals_util::TIMED_FIELDS_END:
       NOTREACHED();
       return "Error";
   }
   NOTREACHED();
   return "Error";
 }
-#endif // !defined (OS_CHROMEOS)
+#endif  // !defined (OS_CHROMEOS)
 
 void SetPref(PrefService* prefs,
-             TimedSigninStatusField field,
+             signin_internals_util::TimedSigninStatusField field,
              const std::string& time,
              const std::string& value) {
   std::string value_pref = SigninStatusFieldToString(field) + ".value";
@@ -117,7 +141,7 @@ void SetPref(PrefService* prefs,
 }
 
 void GetPref(PrefService* prefs,
-             TimedSigninStatusField field,
+             signin_internals_util::TimedSigninStatusField field,
              std::string* time,
              std::string* value) {
   std::string value_pref = SigninStatusFieldToString(field) + ".value";
@@ -126,53 +150,77 @@ void GetPref(PrefService* prefs,
   *time = prefs->GetString(time_pref);
 }
 
-void ClearPref(PrefService* prefs, TimedSigninStatusField field) {
+void ClearPref(PrefService* prefs,
+               signin_internals_util::TimedSigninStatusField field) {
   std::string value_pref = SigninStatusFieldToString(field) + ".value";
   std::string time_pref = SigninStatusFieldToString(field) + ".time";
   prefs->ClearPref(value_pref);
   prefs->ClearPref(time_pref);
 }
 
+std::string GetAccountConsistencyDescription(
+    signin::AccountConsistencyMethod method) {
+  switch (method) {
+    case signin::AccountConsistencyMethod::kDisabled:
+      return "None";
+    case signin::AccountConsistencyMethod::kMirror:
+      return "Mirror";
+    case signin::AccountConsistencyMethod::kDiceMigration:
+      return "DICE migration";
+    case signin::AccountConsistencyMethod::kDice:
+      return "DICE";
+  }
+  NOTREACHED();
+  return "";
+}
+
 }  // anonymous namespace
 
 AboutSigninInternals::AboutSigninInternals(
-    ProfileOAuth2TokenService* token_service,
-    AccountTrackerService* account_tracker,
-    SigninManagerBase* signin_manager,
+    identity::IdentityManager* identity_manager,
     SigninErrorController* signin_error_controller,
-    GaiaCookieManagerService* cookie_manager_service)
-    : token_service_(token_service),
-      account_tracker_(account_tracker),
-      signin_manager_(signin_manager),
-      client_(NULL),
+    signin::AccountConsistencyMethod account_consistency)
+    : identity_manager_(identity_manager),
+      client_(nullptr),
       signin_error_controller_(signin_error_controller),
-      cookie_manager_service_(cookie_manager_service) {}
+      account_consistency_(account_consistency) {}
 
 AboutSigninInternals::~AboutSigninInternals() {}
 
+signin_internals_util::UntimedSigninStatusField& operator++(
+    signin_internals_util::UntimedSigninStatusField& field) {
+  field =
+      static_cast<signin_internals_util::UntimedSigninStatusField>(field + 1);
+  return field;
+}
+
+signin_internals_util::TimedSigninStatusField& operator++(
+    signin_internals_util::TimedSigninStatusField& field) {
+  field = static_cast<signin_internals_util::TimedSigninStatusField>(field + 1);
+  return field;
+}
+
 // static
-void AboutSigninInternals::RegisterPrefs(
-    user_prefs::PrefRegistrySyncable* user_prefs) {
+void AboutSigninInternals::RegisterPrefs(PrefRegistrySimple* user_prefs) {
   // SigninManager information for about:signin-internals.
 
   // TODO(rogerta): leaving untimed fields here for now because legacy
   // profiles still have these prefs.  In three or four version from M43
   // we can probably remove them.
-  for (int i = UNTIMED_FIELDS_BEGIN; i < UNTIMED_FIELDS_END; ++i) {
-    const std::string pref_path =
-        SigninStatusFieldToString(static_cast<UntimedSigninStatusField>(i));
-    user_prefs->RegisterStringPref(pref_path.c_str(), std::string());
+  for (signin_internals_util::UntimedSigninStatusField i =
+           signin_internals_util::UNTIMED_FIELDS_BEGIN;
+       i < signin_internals_util::UNTIMED_FIELDS_END; ++i) {
+    const std::string pref_path = SigninStatusFieldToString(i);
+    user_prefs->RegisterStringPref(pref_path, std::string());
   }
 
-  for (int i = TIMED_FIELDS_BEGIN; i < TIMED_FIELDS_END; ++i) {
-    const std::string value =
-        SigninStatusFieldToString(static_cast<TimedSigninStatusField>(i)) +
-        ".value";
-    const std::string time =
-        SigninStatusFieldToString(static_cast<TimedSigninStatusField>(i)) +
-        ".time";
-    user_prefs->RegisterStringPref(value.c_str(), std::string());
-    user_prefs->RegisterStringPref(time.c_str(), std::string());
+  for (signin_internals_util::TimedSigninStatusField i =
+           signin_internals_util::TIMED_FIELDS_BEGIN;
+       i < signin_internals_util::TIMED_FIELDS_END; ++i) {
+    const std::string value = SigninStatusFieldToString(i) + ".value";
+    const std::string time = SigninStatusFieldToString(i) + ".time";
+    user_prefs->RegisterStringPref(value, std::string());
+    user_prefs->RegisterStringPref(time, std::string());
   }
 }
 
@@ -186,14 +234,14 @@ void AboutSigninInternals::RemoveSigninObserver(
   signin_observers_.RemoveObserver(observer);
 }
 
-void AboutSigninInternals::NotifySigninValueChanged(
-    const TimedSigninStatusField& field,
+void AboutSigninInternals::NotifyTimedSigninFieldValueChanged(
+    const signin_internals_util::TimedSigninStatusField& field,
     const std::string& value) {
-  unsigned int field_index = field - TIMED_FIELDS_BEGIN;
+  unsigned int field_index = field - signin_internals_util::TIMED_FIELDS_BEGIN;
   DCHECK(field_index >= 0 &&
          field_index < signin_status_.timed_signin_fields.size());
 
-  Time now = Time::NowFromSystemTime();
+  base::Time now = base::Time::NowFromSystemTime();
   std::string time_as_str =
       base::UTF16ToUTF8(base::TimeFormatShortDateAndTime(now));
   TimedSigninStatusValue timed_value(value, time_as_str);
@@ -205,10 +253,9 @@ void AboutSigninInternals::NotifySigninValueChanged(
 
   // If the user is restarting a sign in process, clear the fields that are
   // to come.
-  if (field == AUTHENTICATION_RESULT_RECEIVED) {
-    ClearPref(client_->GetPrefs(), REFRESH_TOKEN_RECEIVED);
-    ClearPref(client_->GetPrefs(), SIGNIN_STARTED);
-    ClearPref(client_->GetPrefs(), SIGNIN_COMPLETED);
+  if (field == signin_internals_util::AUTHENTICATION_RESULT_RECEIVED) {
+    ClearPref(client_->GetPrefs(),
+              signin_internals_util::REFRESH_TOKEN_RECEIVED);
   }
 
   NotifyObservers();
@@ -220,13 +267,16 @@ void AboutSigninInternals::RefreshSigninPrefs() {
     return;
 
   PrefService* pref_service = client_->GetPrefs();
-  for (int i = TIMED_FIELDS_BEGIN; i < TIMED_FIELDS_END; ++i) {
+  for (signin_internals_util::TimedSigninStatusField i =
+           signin_internals_util::TIMED_FIELDS_BEGIN;
+       i < signin_internals_util::TIMED_FIELDS_END; ++i) {
     std::string time_str;
     std::string value_str;
-    GetPref(pref_service, static_cast<TimedSigninStatusField>(i),
-            &time_str, &value_str);
+    GetPref(pref_service, i, &time_str, &value_str);
     TimedSigninStatusValue value(value_str, time_str);
-    signin_status_.timed_signin_fields[i - TIMED_FIELDS_BEGIN] = value;
+    signin_status_
+        .timed_signin_fields[i - signin_internals_util::TIMED_FIELDS_BEGIN] =
+        value;
   }
 
   // TODO(rogerta): Get status and timestamps for oauth2 tokens.
@@ -241,83 +291,52 @@ void AboutSigninInternals::Initialize(SigninClient* client) {
   RefreshSigninPrefs();
 
   signin_error_controller_->AddObserver(this);
-  signin_manager_->AddSigninDiagnosticsObserver(this);
-  token_service_->AddDiagnosticsObserver(this);
-  cookie_manager_service_->AddObserver(this);
+  identity_manager_->AddObserver(this);
+  identity_manager_->AddDiagnosticsObserver(this);
 }
 
 void AboutSigninInternals::Shutdown() {
   signin_error_controller_->RemoveObserver(this);
-  signin_manager_->RemoveSigninDiagnosticsObserver(this);
-  token_service_->RemoveDiagnosticsObserver(this);
-  cookie_manager_service_->RemoveObserver(this);
+  identity_manager_->RemoveObserver(this);
+  identity_manager_->RemoveDiagnosticsObserver(this);
 }
 
 void AboutSigninInternals::NotifyObservers() {
   if (!signin_observers_.might_have_observers())
     return;
 
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::NotifyObservers"));
-
-  const std::string product_version = client_->GetProductVersion();
-
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile05(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::NotifyObservers 0.5"));
-
   std::unique_ptr<base::DictionaryValue> signin_status_value =
-      signin_status_.ToValue(account_tracker_, signin_manager_,
-                             signin_error_controller_, token_service_,
-                             cookie_manager_service_, product_version);
+      signin_status_.ToValue(identity_manager_, signin_error_controller_,
+                             client_, account_consistency_);
 
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile1(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::NotifyObservers1"));
-
-  FOR_EACH_OBSERVER(AboutSigninInternals::Observer,
-                    signin_observers_,
-                    OnSigninStateChanged(signin_status_value.get()));
+  for (auto& observer : signin_observers_)
+    observer.OnSigninStateChanged(signin_status_value.get());
 }
 
 std::unique_ptr<base::DictionaryValue> AboutSigninInternals::GetSigninStatus() {
-  return signin_status_.ToValue(
-      account_tracker_, signin_manager_, signin_error_controller_,
-      token_service_, cookie_manager_service_, client_->GetProductVersion());
+  return signin_status_.ToValue(identity_manager_, signin_error_controller_,
+                                client_, account_consistency_);
 }
 
 void AboutSigninInternals::OnAccessTokenRequested(
     const std::string& account_id,
     const std::string& consumer_id,
-    const OAuth2TokenService::ScopeSet& scopes) {
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::OnAccessTokenRequested"));
-
+    const identity::ScopeSet& scopes) {
   TokenInfo* token = signin_status_.FindToken(account_id, consumer_id, scopes);
   if (token) {
     *token = TokenInfo(consumer_id, scopes);
   } else {
-    token = new TokenInfo(consumer_id, scopes);
-    signin_status_.token_info_map[account_id].push_back(token);
+    signin_status_.token_info_map[account_id].push_back(
+        std::make_unique<TokenInfo>(consumer_id, scopes));
   }
 
   NotifyObservers();
 }
 
-void AboutSigninInternals::OnFetchAccessTokenComplete(
+void AboutSigninInternals::OnAccessTokenRequestCompleted(
     const std::string& account_id,
     const std::string& consumer_id,
-    const OAuth2TokenService::ScopeSet& scopes,
+    const identity::ScopeSet& scopes,
     GoogleServiceAuthError error,
     base::Time expiration_time) {
   TokenInfo* token = signin_status_.FindToken(account_id, consumer_id, scopes);
@@ -333,12 +352,47 @@ void AboutSigninInternals::OnFetchAccessTokenComplete(
   NotifyObservers();
 }
 
-void AboutSigninInternals::OnTokenRemoved(
+void AboutSigninInternals::OnRefreshTokenUpdatedForAccountFromSource(
     const std::string& account_id,
-    const OAuth2TokenService::ScopeSet& scopes) {
-  for (size_t i = 0; i < signin_status_.token_info_map[account_id].size();
-       ++i) {
-    TokenInfo* token = signin_status_.token_info_map[account_id][i];
+    bool is_refresh_token_valid,
+    const std::string& source) {
+  RefreshTokenEvent event;
+  event.account_id = account_id;
+  event.type =
+      is_refresh_token_valid
+          ? AboutSigninInternals::RefreshTokenEventType::kUpdateToRegular
+          : AboutSigninInternals::RefreshTokenEventType::kUpdateToInvalid;
+  event.source = source;
+  signin_status_.AddRefreshTokenEvent(event);
+}
+
+void AboutSigninInternals::OnRefreshTokenRemovedForAccountFromSource(
+    const std::string& account_id,
+    const std::string& source) {
+  RefreshTokenEvent event;
+  event.account_id = account_id;
+  event.type = AboutSigninInternals::RefreshTokenEventType::kRevokeRegular;
+  event.source = source;
+  signin_status_.AddRefreshTokenEvent(event);
+}
+
+void AboutSigninInternals::OnRefreshTokensLoaded() {
+  RefreshTokenEvent event;
+  event.account_id = "All accounts";
+  event.type = AboutSigninInternals::RefreshTokenEventType::kAllTokensLoaded;
+  signin_status_.AddRefreshTokenEvent(event);
+  NotifyObservers();
+}
+
+void AboutSigninInternals::OnEndBatchOfRefreshTokenStateChanges() {
+  NotifyObservers();
+}
+
+void AboutSigninInternals::OnAccessTokenRemovedFromCache(
+    const std::string& account_id,
+    const identity::ScopeSet& scopes) {
+  for (const std::unique_ptr<TokenInfo>& token :
+       signin_status_.token_info_map[account_id]) {
     if (token->scopes == scopes)
       token->Invalidate();
   }
@@ -346,68 +400,64 @@ void AboutSigninInternals::OnTokenRemoved(
 }
 
 void AboutSigninInternals::OnRefreshTokenReceived(const std::string& status) {
-  NotifySigninValueChanged(REFRESH_TOKEN_RECEIVED, status);
+  NotifyTimedSigninFieldValueChanged(
+      signin_internals_util::REFRESH_TOKEN_RECEIVED, status);
 }
 
 void AboutSigninInternals::OnAuthenticationResultReceived(
     const std::string& status) {
-  NotifySigninValueChanged(AUTHENTICATION_RESULT_RECEIVED, status);
+  NotifyTimedSigninFieldValueChanged(
+      signin_internals_util::AUTHENTICATION_RESULT_RECEIVED, status);
 }
 
 void AboutSigninInternals::OnErrorChanged() {
   NotifyObservers();
 }
 
-void AboutSigninInternals::GoogleSigninFailed(
+void AboutSigninInternals::OnPrimaryAccountSigninFailed(
     const GoogleServiceAuthError& error) {
   NotifyObservers();
 }
 
-void AboutSigninInternals::GoogleSigninSucceeded(const std::string& account_id,
-                                                 const std::string& username,
-                                                 const std::string& password) {
+void AboutSigninInternals::OnPrimaryAccountSet(
+    const CoreAccountInfo& primary_account_info) {
   NotifyObservers();
 }
 
-void AboutSigninInternals::GoogleSignedOut(const std::string& account_id,
-                                           const std::string& username) {
+void AboutSigninInternals::OnPrimaryAccountCleared(
+    const CoreAccountInfo& primary_account_info) {
   NotifyObservers();
 }
 
-void AboutSigninInternals::OnGaiaAccountsInCookieUpdated(
-    const std::vector<gaia::ListedAccount>& gaia_accounts,
-    const std::vector<gaia::ListedAccount>& signed_out_account,
+void AboutSigninInternals::OnAccountsInCookieUpdated(
+    const identity::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
     const GoogleServiceAuthError& error) {
   if (error.state() != GoogleServiceAuthError::NONE)
     return;
 
-  base::DictionaryValue cookie_status;
-  base::ListValue* cookie_info = new base::ListValue();
-  cookie_status.Set("cookie_info", cookie_info);
+  auto cookie_info = std::make_unique<base::ListValue>();
 
-  for (size_t i = 0; i < gaia_accounts.size(); ++i) {
-    AddCookieEntry(cookie_info,
-                   gaia_accounts[i].raw_email,
-                   gaia_accounts[i].gaia_id,
-                   gaia_accounts[i].valid ? "Valid" : "Invalid");
+  for (const auto& signed_in_account :
+       accounts_in_cookie_jar_info.signed_in_accounts) {
+    AddCookieEntry(cookie_info.get(), signed_in_account.raw_email,
+                   signed_in_account.gaia_id,
+                   signed_in_account.valid ? "Valid" : "Invalid");
   }
 
-  if (gaia_accounts.size() == 0) {
-    AddCookieEntry(cookie_info,
-                   "No Accounts Present.",
-                   std::string(),
+  if (accounts_in_cookie_jar_info.signed_in_accounts.size() == 0) {
+    AddCookieEntry(cookie_info.get(), "No Accounts Present.", std::string(),
                    std::string());
   }
 
+  base::DictionaryValue cookie_status;
+  cookie_status.Set("cookie_info", std::move(cookie_info));
   // Update the observers that the cookie's accounts are updated.
-  FOR_EACH_OBSERVER(AboutSigninInternals::Observer,
-                    signin_observers_,
-                    OnCookieAccountsFetched(&cookie_status));
+  for (auto& observer : signin_observers_)
+    observer.OnCookieAccountsFetched(&cookie_status);
 }
 
-AboutSigninInternals::TokenInfo::TokenInfo(
-    const std::string& consumer_id,
-    const OAuth2TokenService::ScopeSet& scopes)
+AboutSigninInternals::TokenInfo::TokenInfo(const std::string& consumer_id,
+                                           const identity::ScopeSet& scopes)
     : consumer_id(consumer_id),
       scopes(scopes),
       request_time(base::Time::Now()),
@@ -416,32 +466,27 @@ AboutSigninInternals::TokenInfo::TokenInfo(
 
 AboutSigninInternals::TokenInfo::~TokenInfo() {}
 
-bool AboutSigninInternals::TokenInfo::LessThan(const TokenInfo* a,
-                                               const TokenInfo* b) {
-  if (a->request_time == b->request_time) {
-    if (a->consumer_id == b->consumer_id) {
-      return a->scopes < b->scopes;
-    }
-    return a->consumer_id < b->consumer_id;
-  }
-  return a->request_time < b->request_time;
+bool AboutSigninInternals::TokenInfo::LessThan(
+    const std::unique_ptr<TokenInfo>& a,
+    const std::unique_ptr<TokenInfo>& b) {
+  return std::tie(a->request_time, a->consumer_id, a->scopes) <
+         std::tie(b->request_time, b->consumer_id, b->scopes);
 }
 
 void AboutSigninInternals::TokenInfo::Invalidate() { removed_ = true; }
 
-base::DictionaryValue* AboutSigninInternals::TokenInfo::ToValue() const {
+std::unique_ptr<base::DictionaryValue>
+AboutSigninInternals::TokenInfo::ToValue() const {
   std::unique_ptr<base::DictionaryValue> token_info(
       new base::DictionaryValue());
   token_info->SetString("service", consumer_id);
 
   std::string scopes_str;
-  for (OAuth2TokenService::ScopeSet::const_iterator it = scopes.begin();
-       it != scopes.end();
-       ++it) {
+  for (auto it = scopes.begin(); it != scopes.end(); ++it) {
     scopes_str += *it + "<br/>";
   }
   token_info->SetString("scopes", scopes_str);
-  token_info->SetString("request_time", GetTimeStr(request_time).c_str());
+  token_info->SetString("request_time", GetTimeStr(request_time));
 
   if (removed_) {
     token_info->SetString("status", "Token was revoked.");
@@ -453,7 +498,7 @@ base::DictionaryValue* AboutSigninInternals::TokenInfo::ToValue() const {
         token_expired = false;
         expiration_time_string = "Expiration time not available";
       }
-      std::string status_str = "";
+      std::string status_str;
       if (token_expired)
         status_str = "<p style=\"color: #ffffff; background-color: #ff0000\">";
       base::StringAppendF(&status_str, "Received token at %s. Expire at %s",
@@ -471,86 +516,95 @@ base::DictionaryValue* AboutSigninInternals::TokenInfo::ToValue() const {
     token_info->SetString("status", "Waiting for response");
   }
 
-  return token_info.release();
+  return token_info;
+}
+
+AboutSigninInternals::RefreshTokenEvent::RefreshTokenEvent()
+    : timestamp(base::Time::Now()) {}
+
+std::string AboutSigninInternals::RefreshTokenEvent::GetTypeAsString() const {
+  switch (type) {
+    case AboutSigninInternals::RefreshTokenEventType::kUpdateToRegular:
+      return "Updated";
+    case AboutSigninInternals::RefreshTokenEventType::kUpdateToInvalid:
+      return "Invalidated";
+    case AboutSigninInternals::RefreshTokenEventType::kRevokeRegular:
+      return "Revoked";
+    case AboutSigninInternals::RefreshTokenEventType::kAllTokensLoaded:
+      return "Loaded";
+  }
 }
 
 AboutSigninInternals::SigninStatus::SigninStatus()
-    : timed_signin_fields(TIMED_FIELDS_COUNT) {}
+    : timed_signin_fields(signin_internals_util::TIMED_FIELDS_COUNT) {}
 
-AboutSigninInternals::SigninStatus::~SigninStatus() {
-  for (TokenInfoMap::iterator it = token_info_map.begin();
-       it != token_info_map.end();
-       ++it) {
-    STLDeleteElements(&it->second);
-  }
-}
+AboutSigninInternals::SigninStatus::~SigninStatus() {}
 
 AboutSigninInternals::TokenInfo* AboutSigninInternals::SigninStatus::FindToken(
     const std::string& account_id,
     const std::string& consumer_id,
-    const OAuth2TokenService::ScopeSet& scopes) {
-  for (size_t i = 0; i < token_info_map[account_id].size(); ++i) {
-    TokenInfo* tmp = token_info_map[account_id][i];
-    if (tmp->consumer_id == consumer_id && tmp->scopes == scopes)
-      return tmp;
+    const identity::ScopeSet& scopes) {
+  for (const std::unique_ptr<TokenInfo>& token : token_info_map[account_id]) {
+    if (token->consumer_id == consumer_id && token->scopes == scopes)
+      return token.get();
   }
-  return NULL;
+  return nullptr;
+}
+
+void AboutSigninInternals::SigninStatus::AddRefreshTokenEvent(
+    const AboutSigninInternals::RefreshTokenEvent& event) {
+  if (refresh_token_events.size() > kMaxRefreshTokenListSize)
+    refresh_token_events.pop_front();
+
+  refresh_token_events.push_back(event);
 }
 
 std::unique_ptr<base::DictionaryValue>
 AboutSigninInternals::SigninStatus::ToValue(
-    AccountTrackerService* account_tracker,
-    SigninManagerBase* signin_manager,
+    identity::IdentityManager* identity_manager,
     SigninErrorController* signin_error_controller,
-    ProfileOAuth2TokenService* token_service,
-    GaiaCookieManagerService* cookie_manager_service_,
-    const std::string& product_version) {
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile1(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::SigninStatus::ToValue1"));
-
-  std::unique_ptr<base::DictionaryValue> signin_status(
-      new base::DictionaryValue());
-  base::ListValue* signin_info = new base::ListValue();
-  signin_status->Set("signin_info", signin_info);
+    SigninClient* signin_client,
+    signin::AccountConsistencyMethod account_consistency) {
+  auto signin_status = std::make_unique<base::DictionaryValue>();
+  auto signin_info = std::make_unique<base::ListValue>();
 
   // A summary of signin related info first.
-  base::ListValue* basic_info = AddSection(signin_info, "Basic Information");
-  AddSectionEntry(basic_info, "Chrome Version", product_version);
-  AddSectionEntry(basic_info, "New Profile Management?",
-      switches::IsNewProfileManagement() == true ? "On" : "Off");
-  AddSectionEntry(basic_info, "Account Consistency?",
-      switches::IsEnableAccountConsistency() == true ? "On" : "Off");
-  AddSectionEntry(basic_info, "Signin Status",
-      signin_manager->IsAuthenticated() ? "Signed In" : "Not Signed In");
+  base::ListValue* basic_info =
+      AddSection(signin_info.get(), "Basic Information");
+  AddSectionEntry(basic_info, "Chrome Version",
+                  signin_client->GetProductVersion());
+  AddSectionEntry(basic_info, "Account Consistency",
+                  GetAccountConsistencyDescription(account_consistency));
+  AddSectionEntry(
+      basic_info, "Signin Status",
+      identity_manager->HasPrimaryAccount() ? "Signed In" : "Not Signed In");
+  OAuth2TokenServiceDelegate::LoadCredentialsState load_tokens_state =
+      identity_manager->GetDiagnosticsProvider()
+          ->GetDetailedStateOfLoadingOfRefreshTokens();
+  AddSectionEntry(basic_info, "TokenService Load Status",
+                  TokenServiceLoadCredentialsStateToLabel(load_tokens_state));
 
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile2(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::SigninStatus::ToValue2"));
-
-  if (signin_manager->IsAuthenticated()) {
-    std::string account_id = signin_manager->GetAuthenticatedAccountId();
+  if (identity_manager->HasPrimaryAccount()) {
+    std::string account_id = identity_manager->GetPrimaryAccountId();
     AddSectionEntry(basic_info,
-                    SigninStatusFieldToLabel(
-                        static_cast<UntimedSigninStatusField>(ACCOUNT_ID)),
+                    SigninStatusFieldToLabel(signin_internals_util::ACCOUNT_ID),
                     account_id);
+    AddSectionEntry(
+        basic_info, SigninStatusFieldToLabel(signin_internals_util::GAIA_ID),
+        identity_manager
+            ->FindAccountInfoForAccountWithRefreshTokenByAccountId(account_id)
+            ->gaia);
     AddSectionEntry(basic_info,
-                    SigninStatusFieldToLabel(
-                        static_cast<UntimedSigninStatusField>(GAIA_ID)),
-                    account_tracker->GetAccountInfo(account_id).gaia);
-    AddSectionEntry(basic_info,
-                    SigninStatusFieldToLabel(
-                        static_cast<UntimedSigninStatusField>(USERNAME)),
-                    signin_manager->GetAuthenticatedAccountInfo().email);
+                    SigninStatusFieldToLabel(signin_internals_util::USERNAME),
+                    identity_manager->GetPrimaryAccountInfo().email);
     if (signin_error_controller->HasError()) {
       const std::string error_account_id =
           signin_error_controller->error_account_id();
       const std::string error_username =
-          account_tracker->GetAccountInfo(error_account_id).email;
+          identity_manager
+              ->FindAccountInfoForAccountWithRefreshTokenByAccountId(
+                  error_account_id)
+              ->email;
       AddSectionEntry(basic_info, "Auth Error",
           signin_error_controller->auth_error().ToString());
       AddSectionEntry(basic_info, "Auth Error Account Id", error_account_id);
@@ -561,31 +615,30 @@ AboutSigninInternals::SigninStatus::ToValue(
   }
 
 #if !defined(OS_CHROMEOS)
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile3(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::SigninStatus::ToValue3"));
-
   // Time and status information of the possible sign in types.
   base::ListValue* detailed_info =
-      AddSection(signin_info, "Last Signin Details");
-  for (int i = TIMED_FIELDS_BEGIN; i < TIMED_FIELDS_END; ++i) {
-    const std::string status_field_label =
-        SigninStatusFieldToLabel(static_cast<TimedSigninStatusField>(i));
+      AddSection(signin_info.get(), "Last Signin Details");
+  signin_status->Set("signin_info", std::move(signin_info));
+  for (signin_internals_util::TimedSigninStatusField i =
+           signin_internals_util::TIMED_FIELDS_BEGIN;
+       i < signin_internals_util::TIMED_FIELDS_END; ++i) {
+    const std::string status_field_label = SigninStatusFieldToLabel(i);
 
-    AddSectionEntry(detailed_info,
-                    status_field_label,
-                    timed_signin_fields[i - TIMED_FIELDS_BEGIN].first,
-                    timed_signin_fields[i - TIMED_FIELDS_BEGIN].second);
+    AddSectionEntry(
+        detailed_info, status_field_label,
+        timed_signin_fields[i - signin_internals_util::TIMED_FIELDS_BEGIN]
+            .first,
+        timed_signin_fields[i - signin_internals_util::TIMED_FIELDS_BEGIN]
+            .second);
   }
 
-  const net::BackoffEntry* cookie_manager_backoff_entry =
-      cookie_manager_service_->GetBackoffEntry();
+  base::TimeDelta cookie_requests_delay =
+      identity_manager->GetDiagnosticsProvider()
+          ->GetDelayBeforeMakingCookieRequests();
 
-  if (cookie_manager_backoff_entry->ShouldRejectRequest()) {
-    Time next_retry_time = Time::NowFromSystemTime() +
-        cookie_manager_backoff_entry->GetTimeUntilRelease();
+  if (cookie_requests_delay > base::TimeDelta()) {
+    base::Time next_retry_time =
+        base::Time::NowFromSystemTime() + cookie_requests_delay;
 
     std::string next_retry_time_as_str =
         base::UTF16ToUTF8(
@@ -597,13 +650,13 @@ AboutSigninInternals::SigninStatus::ToValue(
                     "");
   }
 
-  const net::BackoffEntry* token_service_backoff_entry = token_service->
-      GetDelegateBackoffEntry();
+  base::TimeDelta token_requests_delay =
+      identity_manager->GetDiagnosticsProvider()
+          ->GetDelayBeforeMakingAccessTokenRequests();
 
-  if (token_service_backoff_entry &&
-      token_service_backoff_entry->ShouldRejectRequest()) {
-    Time next_retry_time = Time::NowFromSystemTime() +
-        token_service_backoff_entry->GetTimeUntilRelease();
+  if (token_requests_delay > base::TimeDelta()) {
+    base::Time next_retry_time =
+        base::Time::NowFromSystemTime() + token_requests_delay;
 
     std::string next_retry_time_as_str =
         base::UTF16ToUTF8(
@@ -615,66 +668,56 @@ AboutSigninInternals::SigninStatus::ToValue(
                   "");
   }
 
-#endif // !defined(OS_CHROMEOS)
-
-  // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460 is
-  // fixed.
-  tracked_objects::ScopedTracker tracking_profile4(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "422460 AboutSigninInternals::SigninStatus::ToValue4"));
+#endif  // !defined(OS_CHROMEOS)
 
   // Token information for all services.
-  base::ListValue* token_info = new base::ListValue();
-  signin_status->Set("token_info", token_info);
-  for (TokenInfoMap::iterator it = token_info_map.begin();
-       it != token_info_map.end();
-       ++it) {
-    // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460
-    // is fixed.
-    tracked_objects::ScopedTracker tracking_profile41(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "422460 AboutSigninInternals::SigninStatus::ToValue41"));
-
-    base::ListValue* token_details = AddSection(token_info, it->first);
-
-    // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460
-    // is fixed.
-    tracked_objects::ScopedTracker tracking_profile42(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "422460 AboutSigninInternals::SigninStatus::ToValue42"));
-
+  auto token_info = std::make_unique<base::ListValue>();
+  for (auto it = token_info_map.begin(); it != token_info_map.end(); ++it) {
+    base::ListValue* token_details = AddSection(token_info.get(), it->first);
     std::sort(it->second.begin(), it->second.end(), TokenInfo::LessThan);
-    const std::vector<TokenInfo*>& tokens = it->second;
+    for (const std::unique_ptr<TokenInfo>& token : it->second)
+      token_details->Append(token->ToValue());
+  }
+  signin_status->Set("token_info", std::move(token_info));
 
-    // TODO(robliao): Remove ScopedTracker below once https://crbug.com/422460
-    // is fixed.
-    tracked_objects::ScopedTracker tracking_profile43(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "422460 AboutSigninInternals::SigninStatus::ToValue43"));
-
-    for (size_t i = 0; i < tokens.size(); ++i) {
-      base::DictionaryValue* token_info = tokens[i]->ToValue();
-      token_details->Append(token_info);
+  // Account info section
+  auto account_info_section = std::make_unique<base::ListValue>();
+  const std::vector<AccountInfo>& accounts_with_refresh_tokens =
+      identity_manager->GetAccountsWithRefreshTokens();
+  if (accounts_with_refresh_tokens.size() == 0) {
+    auto no_token_entry = std::make_unique<base::DictionaryValue>();
+    no_token_entry->SetString("accountId", "No token in Token Service.");
+    account_info_section->Append(std::move(no_token_entry));
+  } else {
+    for (const AccountInfo account_info : accounts_with_refresh_tokens) {
+      auto entry = std::make_unique<base::DictionaryValue>();
+      entry->SetString("accountId", account_info.account_id);
+      // TODO(https://crbug.com/919793): Remove this field once the token
+      // service is internally consistent on all platforms.
+      entry->SetBoolean("hasRefreshToken",
+                        identity_manager->HasAccountWithRefreshToken(
+                            account_info.account_id));
+      entry->SetBoolean(
+          "hasAuthError",
+          identity_manager->HasAccountWithRefreshTokenInPersistentErrorState(
+              account_info.account_id));
+      account_info_section->Append(std::move(entry));
     }
   }
+  signin_status->Set("accountInfo", std::move(account_info_section));
 
-  base::ListValue* account_info = new base::ListValue();
-  signin_status->Set("accountInfo", account_info);
-  const std::vector<std::string>& accounts_in_token_service =
-      token_service->GetAccounts();
-
-  if(accounts_in_token_service.size() == 0) {
-    std::unique_ptr<base::DictionaryValue> no_token_entry(
-        new base::DictionaryValue());
-    no_token_entry->SetString("accountId", "No token in Token Service.");
-    account_info->Append(std::move(no_token_entry));
+  // Refresh token events section
+  auto refresh_token_events_value = std::make_unique<base::ListValue>();
+  for (const auto& event : refresh_token_events) {
+    auto entry = std::make_unique<base::DictionaryValue>();
+    entry->SetString("accountId", event.account_id);
+    entry->SetString("timestamp", GetTimeStr(event.timestamp));
+    entry->SetString("type", event.GetTypeAsString());
+    entry->SetString("source", event.source);
+    refresh_token_events_value->Append(std::move(entry));
   }
-
-  for(const std::string& account_id : accounts_in_token_service) {
-    std::unique_ptr<base::DictionaryValue> entry(new base::DictionaryValue());
-    entry->SetString("accountId", account_id);
-    account_info->Append(std::move(entry));
-  }
+  signin_status->Set("refreshTokenEvents",
+                     std::move(refresh_token_events_value));
 
   return signin_status;
 }

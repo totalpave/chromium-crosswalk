@@ -8,7 +8,6 @@
 #include "base/base_export.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/observer_list_threadsafe.h"
 #include "base/synchronization/lock.h"
 
 namespace base {
@@ -31,14 +30,19 @@ class BASE_EXPORT PowerMonitorSource {
   // Is the computer currently on battery power. Can be called on any thread.
   bool IsOnBatteryPower();
 
+  // Called by PowerMonitor just before PowerMonitor destroys both itself and
+  // this instance). After return from this call it is no longer safe for
+  // subclasses to call into PowerMonitor (e.g., via PowerMonitor::Get(). Hence,
+  // subclasses should take any necessary actions here to ensure that after
+  // return from this invocation they will no longer make any calls on
+  // PowerMonitor.
+  virtual void Shutdown() = 0;
+
  protected:
   friend class PowerMonitorTest;
 
   // Friend function that is allowed to access the protected ProcessPowerEvent.
   friend void ProcessPowerEventHelper(PowerEvent);
-
-  // Get the process-wide PowerMonitorSource (if not present, returns NULL).
-  static PowerMonitorSource* Get();
 
   // ProcessPowerEvent should only be called from a single thread, most likely
   // the UI thread or, in child processes, the IO thread.
@@ -49,9 +53,14 @@ class BASE_EXPORT PowerMonitorSource {
   // false otherwise.
   virtual bool IsOnBatteryPowerImpl() = 0;
 
+  // Sets the initial state for |on_battery_power_|, which defaults to false
+  // since not all implementations can provide the value at construction. May
+  // only be called before a base::PowerMonitor has been created.
+  void SetInitialOnBatteryPowerState(bool on_battery_power);
+
  private:
-  bool on_battery_power_;
-  bool suspended_;
+  bool on_battery_power_ = false;
+  bool suspended_ = false;
 
   // This lock guards access to on_battery_power_, to ensure that
   // IsOnBatteryPower can be called from any thread.

@@ -19,8 +19,9 @@
 #include "components/omnibox/browser/keyword_provider.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
+#include "extensions/buildflags/buildflags.h"
 
-#if !defined(ENABLE_EXTENSIONS)
+#if !BUILDFLAG(ENABLE_EXTENSIONS)
 #error "Should not be included when extensions are disabled"
 #endif
 
@@ -31,6 +32,10 @@ class KeywordExtensionsDelegateImpl : public KeywordExtensionsDelegate,
  public:
   KeywordExtensionsDelegateImpl(Profile* profile, KeywordProvider* provider);
   ~KeywordExtensionsDelegateImpl() override;
+
+  // KeywordExtensionsDelegate:
+  void DeleteSuggestion(const TemplateURL* template_url,
+                        const base::string16& suggestion_text) override;
 
  private:
   // KeywordExtensionsDelegate:

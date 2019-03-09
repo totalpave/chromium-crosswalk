@@ -9,15 +9,17 @@
 
 #include "base/files/file.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/memory/weak_ptr.h"
+#include "base/message_loop/message_loop_current.h"
+#include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
 #include "content/common/content_export.h"
 #include "content/renderer/media/webrtc/stun_field_trial.h"
 #include "content/renderer/p2p/socket_dispatcher.h"
 #include "ipc/ipc_platform_file.h"
-#include "third_party/webrtc/api/peerconnectioninterface.h"
-#include "third_party/webrtc/p2p/stunprober/stunprober.h"
+#include "third_party/webrtc/api/peer_connection_interface.h"
+#include "third_party/webrtc/p2p/stunprober/stun_prober.h"
 
 namespace base {
 class WaitableEvent;
@@ -28,17 +30,11 @@ class GpuVideoAcceleratorFactories;
 }
 
 namespace rtc {
-class NetworkManager;
-class PacketSocketFactory;
 class Thread;
 }
 
 namespace blink {
-class WebFrame;
-class WebMediaConstraints;
-class WebMediaStream;
-class WebMediaStreamSource;
-class WebMediaStreamTrack;
+class WebLocalFrame;
 class WebRTCPeerConnectionHandler;
 class WebRTCPeerConnectionHandlerClient;
 }
@@ -47,53 +43,53 @@ namespace content {
 
 class IpcNetworkManager;
 class IpcPacketSocketFactory;
+class P2PPortAllocator;
 class WebRtcAudioDeviceImpl;
-class WebRtcLoggingHandlerImpl;
-class WebRtcLoggingMessageFilter;
-class WebRtcVideoCapturerAdapter;
-struct StreamDeviceInfo;
 
 // Object factory for RTC PeerConnections.
 class CONTENT_EXPORT PeerConnectionDependencyFactory
-    : NON_EXPORTED_BASE(base::MessageLoop::DestructionObserver),
-      NON_EXPORTED_BASE(public base::NonThreadSafe) {
+    : base::MessageLoopCurrent::DestructionObserver {
  public:
-  PeerConnectionDependencyFactory(
-      P2PSocketDispatcher* p2p_socket_dispatcher);
+  PeerConnectionDependencyFactory(P2PSocketDispatcher* p2p_socket_dispatcher);
   ~PeerConnectionDependencyFactory() override;
 
   // Create a RTCPeerConnectionHandler object that implements the
   // WebKit WebRTCPeerConnectionHandler interface.
-  blink::WebRTCPeerConnectionHandler* CreateRTCPeerConnectionHandler(
-      blink::WebRTCPeerConnectionHandlerClient* client);
+  std::unique_ptr<blink::WebRTCPeerConnectionHandler>
+  CreateRTCPeerConnectionHandler(
+      blink::WebRTCPeerConnectionHandlerClient* client,
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner);
+
+  // Create a proxy object for a VideoTrackSource that makes sure it's called on
+  // the correct threads.
+  virtual scoped_refptr<webrtc::VideoTrackSourceInterface>
+  CreateVideoTrackSourceProxy(webrtc::VideoTrackSourceInterface* source);
 
   // Asks the PeerConnection factory to create a Local MediaStream object.
   virtual scoped_refptr<webrtc::MediaStreamInterface>
       CreateLocalMediaStream(const std::string& label);
-
-  // Creates an implementation of a cricket::VideoCapturer object that can be
-  // used when creating a libjingle webrtc::VideoTrackSourceInterface object.
-  virtual WebRtcVideoCapturerAdapter* CreateVideoCapturer(
-      bool is_screen_capture);
 
   // Asks the PeerConnection factory to create a Local VideoTrack object.
   virtual scoped_refptr<webrtc::VideoTrackInterface> CreateLocalVideoTrack(
       const std::string& id,
       webrtc::VideoTrackSourceInterface* source);
 
-  // Asks the PeerConnection factory to create a Video Source.
-  // The video source takes ownership of |capturer|.
-  virtual scoped_refptr<webrtc::VideoTrackSourceInterface> CreateVideoSource(
-      cricket::VideoCapturer* capturer);
-
   // Asks the libjingle PeerConnection factory to create a libjingle
   // PeerConnection object.
   // The PeerConnection object is owned by PeerConnectionHandler.
-  virtual scoped_refptr<webrtc::PeerConnectionInterface>
-      CreatePeerConnection(
-          const webrtc::PeerConnectionInterface::RTCConfiguration& config,
-          blink::WebFrame* web_frame,
-          webrtc::PeerConnectionObserver* observer);
+  virtual scoped_refptr<webrtc::PeerConnectionInterface> CreatePeerConnection(
+      const webrtc::PeerConnectionInterface::RTCConfiguration& config,
+      blink::WebLocalFrame* web_frame,
+      webrtc::PeerConnectionObserver* observer);
+
+  // Creates a PortAllocator that uses Chrome IPC sockets and enforces privacy
+  // controls according to the permissions granted on the page.
+  virtual std::unique_ptr<P2PPortAllocator> CreatePortAllocator(
+      blink::WebLocalFrame* web_frame);
+
+  // Creates an AsyncResolverFactory that uses the networking Mojo service.
+  virtual std::unique_ptr<webrtc::AsyncResolverFactory>
+  CreateAsyncResolverFactory();
 
   // Creates a libjingle representation of a Session description. Used by a
   // RTCPeerConnectionHandler instance.
@@ -108,26 +104,23 @@ class CONTENT_EXPORT PeerConnectionDependencyFactory
       int sdp_mline_index,
       const std::string& sdp);
 
-  // Starts recording an RTC event log.
-  virtual bool StartRtcEventLog(base::PlatformFile file);
-
-  // Starts recording an RTC event log.
-  virtual void StopRtcEventLog();
+  // Returns the most optimistic view of the capabilities of the system for
+  // sending or receiving media of the given kind ("audio" or "video").
+  virtual std::unique_ptr<webrtc::RtpCapabilities> GetSenderCapabilities(
+      const std::string& kind);
+  virtual std::unique_ptr<webrtc::RtpCapabilities> GetReceiverCapabilities(
+      const std::string& kind);
 
   WebRtcAudioDeviceImpl* GetWebRtcAudioDevice();
 
   void EnsureInitialized();
   scoped_refptr<base::SingleThreadTaskRunner> GetWebRtcWorkerThread() const;
+  // TODO(bugs.webrtc.org/9419): Remove once WebRTC can be built as a component.
+  rtc::Thread* GetWebRtcWorkerThreadRtcThread() const;
   virtual scoped_refptr<base::SingleThreadTaskRunner> GetWebRtcSignalingThread()
       const;
 
  protected:
-  // Asks the PeerConnection factory to create a Local VideoTrack object with
-  // the video source using |capturer|.
-  virtual scoped_refptr<webrtc::VideoTrackInterface>
-      CreateLocalVideoTrack(const std::string& id,
-                            cricket::VideoCapturer* capturer);
-
   virtual const scoped_refptr<webrtc::PeerConnectionFactoryInterface>&
       GetPcFactory();
   virtual bool PeerConnectionFactoryCreated();
@@ -136,7 +129,7 @@ class CONTENT_EXPORT PeerConnectionDependencyFactory
   void EnsureWebRtcAudioDeviceImpl();
 
  private:
-  // Implement base::MessageLoop::DestructionObserver.
+  // Implement base::MessageLoopCurrent::DestructionObserver.
   // This makes sure the libjingle PeerConnectionFactory is released before
   // the renderer message loop is destroyed.
   void WillDestroyCurrentMessageLoop() override;
@@ -161,9 +154,12 @@ class CONTENT_EXPORT PeerConnectionDependencyFactory
   void DeleteIpcNetworkManager();
   void CleanupPeerConnectionFactory();
 
-  // We own network_manager_, must be deleted on the worker thread.
-  // The network manager uses |p2p_socket_dispatcher_|.
-  IpcNetworkManager* network_manager_;
+  void OnEnumeratePermissionChanged(
+      rtc::NetworkManager::EnumerationPermission new_state);
+
+  // network_manager_ must be deleted on the worker thread. The network manager
+  // uses |p2p_socket_dispatcher_|.
+  std::unique_ptr<IpcNetworkManager> network_manager_;
   std::unique_ptr<IpcPacketSocketFactory> socket_factory_;
 
   scoped_refptr<webrtc::PeerConnectionFactoryInterface> pc_factory_;
@@ -179,6 +175,11 @@ class CONTENT_EXPORT PeerConnectionDependencyFactory
   rtc::Thread* worker_thread_;
   base::Thread chrome_signaling_thread_;
   base::Thread chrome_worker_thread_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  // The weak pointer MUST only be dereferenced on the main thread.
+  base::WeakPtrFactory<PeerConnectionDependencyFactory> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(PeerConnectionDependencyFactory);
 };

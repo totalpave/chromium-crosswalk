@@ -7,23 +7,17 @@
 
 #include <string>
 
+#include "base/strings/string_split.h"
+#include "base/test/scoped_feature_list.h"
 #include "content/public/test/content_browser_test.h"
-#include "media/base/test_data_util.h"
 
 namespace content {
 
 class TitleWatcher;
 
-// Class used to automate running media related browser tests. The functions
-// assume that media files are located under media/ folder known to the test
-// http server.
+// A base class for media related browser tests.
 class MediaBrowserTest : public ContentBrowserTest {
  public:
-  // Common test results.
-  static const char kEnded[];
-  static const char kError[];
-  static const char kFailed[];
-
   // ContentBrowserTest implementation.
   void SetUpCommandLine(base::CommandLine* command_line) override;
 
@@ -33,14 +27,27 @@ class MediaBrowserTest : public ContentBrowserTest {
   // It uses RunTest() to check for expected test output.
   void RunMediaTestPage(const std::string& html_page,
                         const base::StringPairs& query_params,
-                        const std::string& expected,
+                        const std::string& expected_title,
                         bool http);
 
-  // Opens a URL and waits for the document title to match either one of the
-  // default strings or the expected string. Returns the matching title value.
-  std::string RunTest(const GURL& gurl, const std::string& expected);
+  // Opens a URL and waits for the document title to match any of the waited for
+  // titles. Returns the matching title.
+  std::string RunTest(const GURL& gurl, const std::string& expected_title);
 
-  virtual void AddWaitForTitles(content::TitleWatcher* title_watcher);
+  // Encodes |original_message| to be used in a URI query parameter suitable for
+  // decoding and usage with DecodeURIComponent in test pages that verify error
+  // message contents.
+  std::string EncodeErrorMessage(const std::string& original_message);
+
+  // Tears down media playback. Called automatically as part of RunTest(), only
+  // needed for manually setup tests.
+  void CleanupTest();
+
+  // Adds titles that RunTest() should wait for.
+  virtual void AddTitlesToAwait(content::TitleWatcher* title_watcher);
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 }  // namespace content

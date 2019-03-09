@@ -12,6 +12,8 @@
 #include "base/logging.h"
 #include "base/trace_event/trace_event.h"
 #include "net/base/net_errors.h"
+#include "net/base/trace_constants.h"
+#include "net/log/net_log_event_type.h"
 #include "net/socket/client_socket_pool.h"
 
 namespace net {
@@ -21,12 +23,21 @@ ClientSocketHandle::ClientSocketHandle()
       pool_(NULL),
       higher_pool_(NULL),
       reuse_type_(ClientSocketHandle::UNUSED),
-      callback_(base::Bind(&ClientSocketHandle::OnIOComplete,
-                           base::Unretained(this))),
       is_ssl_error_(false) {}
 
 ClientSocketHandle::~ClientSocketHandle() {
   Reset();
+}
+
+void ClientSocketHandle::SetPriority(RequestPriority priority) {
+  if (socket_) {
+    // The priority of the handle is no longer relevant to the socket pool;
+    // just return.
+    return;
+  }
+
+  if (pool_)
+    pool_->SetPriority(group_name_, this, priority);
 }
 
 void ClientSocketHandle::Reset() {
@@ -41,7 +52,7 @@ void ClientSocketHandle::ResetInternal(bool cancel) {
     CHECK(pool_);
     if (is_initialized()) {
       if (socket_) {
-        socket_->NetLog().EndEvent(NetLog::TYPE_SOCKET_IN_USE);
+        socket_->NetLog().EndEvent(NetLogEventType::SOCKET_IN_USE);
         // Release the socket back to the ClientSocketPool so it can be
         // deleted or reused.
         pool_->ReleaseSocket(group_name_, std::move(socket_), pool_id_);
@@ -60,21 +71,25 @@ void ClientSocketHandle::ResetInternal(bool cancel) {
   socket_.reset();
   group_name_.clear();
   reuse_type_ = ClientSocketHandle::UNUSED;
-  user_callback_.Reset();
+  callback_.Reset();
   if (higher_pool_)
     RemoveHigherLayeredPool(higher_pool_);
   pool_ = NULL;
   idle_time_ = base::TimeDelta();
-  init_time_ = base::TimeTicks();
-  setup_time_ = base::TimeDelta();
-  connect_timing_ = LoadTimingInfo::ConnectTiming();
+  // Connection timing is still needed for handling
+  // ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT errors.
+  //
+  // TODO(mmenke): Remove once ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT no
+  // longer results in following a redirect.
+  if (!pending_http_proxy_socket_)
+    connect_timing_ = LoadTimingInfo::ConnectTiming();
   pool_id_ = -1;
 }
 
 void ClientSocketHandle::ResetErrorState() {
   is_ssl_error_ = false;
   ssl_error_response_info_ = HttpResponseInfo();
-  pending_http_proxy_connection_.reset();
+  pending_http_proxy_socket_.reset();
 }
 
 LoadState ClientSocketHandle::GetLoadState() const {
@@ -115,14 +130,27 @@ void ClientSocketHandle::RemoveHigherLayeredPool(
   }
 }
 
+void ClientSocketHandle::CloseIdleSocketsInGroup() {
+  if (pool_)
+    pool_->CloseIdleSocketsInGroup(group_name_);
+}
+
 bool ClientSocketHandle::GetLoadTimingInfo(
     bool is_reused,
     LoadTimingInfo* load_timing_info) const {
-  // Only return load timing information when there's a socket.
-  if (!socket_)
+  if (socket_) {
+    load_timing_info->socket_log_id = socket_->NetLog().source().id;
+  } else if (pending_http_proxy_socket_) {
+    // TODO(mmenke): This case is only needed for timing for redirects in the
+    // case of ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT. Remove this code once
+    // we no longer follow those redirects.
+    load_timing_info->socket_log_id =
+        pending_http_proxy_socket_->NetLog().source().id;
+  } else {
+    // Only return load timing information when there's a socket.
     return false;
+  }
 
-  load_timing_info->socket_log_id = socket_->NetLog().source().id;
   load_timing_info->socket_reused = is_reused;
 
   // No times if the socket is reused.
@@ -133,16 +161,23 @@ bool ClientSocketHandle::GetLoadTimingInfo(
   return true;
 }
 
+void ClientSocketHandle::DumpMemoryStats(
+    StreamSocket::SocketMemoryStats* stats) const {
+  if (!socket_)
+    return;
+  socket_->DumpMemoryStats(stats);
+}
+
 void ClientSocketHandle::SetSocket(std::unique_ptr<StreamSocket> s) {
   socket_ = std::move(s);
 }
 
 void ClientSocketHandle::OnIOComplete(int result) {
-  TRACE_EVENT0("net", "ClientSocketHandle::OnIOComplete");
-  CompletionCallback callback = user_callback_;
-  user_callback_.Reset();
+  TRACE_EVENT0(NetTracingCategory(), "ClientSocketHandle::OnIOComplete");
+  CompletionOnceCallback callback = std::move(callback_);
+  callback_.Reset();
   HandleInitCompletion(result);
-  callback.Run(result);
+  std::move(callback).Run(result);
 }
 
 std::unique_ptr<StreamSocket> ClientSocketHandle::PassSocket() {
@@ -160,16 +195,14 @@ void ClientSocketHandle::HandleInitCompletion(int result) {
   }
   is_initialized_ = true;
   CHECK_NE(-1, pool_id_) << "Pool should have set |pool_id_| to a valid value.";
-  setup_time_ = base::TimeTicks::Now() - init_time_;
 
   // Broadcast that the socket has been acquired.
   // TODO(eroman): This logging is not complete, in particular set_socket() and
   // release() socket. It ends up working though, since those methods are being
   // used to layer sockets (and the destination sources are the same).
   DCHECK(socket_.get());
-  socket_->NetLog().BeginEvent(
-      NetLog::TYPE_SOCKET_IN_USE,
-      requesting_source_.ToEventParametersCallback());
+  socket_->NetLog().BeginEvent(NetLogEventType::SOCKET_IN_USE,
+                               requesting_source_.ToEventParametersCallback());
 }
 
 }  // namespace net

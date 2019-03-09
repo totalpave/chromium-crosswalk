@@ -4,6 +4,7 @@
 
 #include "components/crash/content/app/crashpad.h"
 
+#include <CoreFoundation/CoreFoundation.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -24,59 +25,132 @@
 #include "third_party/crashpad/crashpad/client/crashpad_client.h"
 #include "third_party/crashpad/crashpad/client/crashpad_info.h"
 #include "third_party/crashpad/crashpad/client/settings.h"
-#include "third_party/crashpad/crashpad/client/simple_string_dictionary.h"
 #include "third_party/crashpad/crashpad/client/simulate_crash.h"
+#include "third_party/crashpad/crashpad/minidump/minidump_file_writer.h"
+#include "third_party/crashpad/crashpad/snapshot/mac/process_snapshot_mac.h"
 
 namespace crash_reporter {
+
+namespace {
+
+std::map<std::string, std::string> GetProcessSimpleAnnotations() {
+  static std::map<std::string, std::string> annotations = []() -> auto {
+    std::map<std::string, std::string> process_annotations;
+    @autoreleasepool {
+      NSBundle* outer_bundle = base::mac::OuterBundle();
+      NSString* product = base::mac::ObjCCast<NSString>([outer_bundle
+          objectForInfoDictionaryKey:base::mac::CFToNSCast(kCFBundleNameKey)]);
+      process_annotations["prod"] =
+          base::SysNSStringToUTF8(product).append("_Mac");
+
+#if defined(GOOGLE_CHROME_BUILD)
+      // Empty means stable.
+      const bool allow_empty_channel = true;
+#else
+      const bool allow_empty_channel = false;
+#endif
+      NSString* channel = base::mac::ObjCCast<NSString>(
+          [outer_bundle objectForInfoDictionaryKey:@"KSChannelID"]);
+      if (channel) {
+        process_annotations["channel"] = base::SysNSStringToUTF8(channel);
+      } else if (allow_empty_channel) {
+        process_annotations["channel"] = "";
+      }
+
+      NSString* version =
+          base::mac::ObjCCast<NSString>([base::mac::FrameworkBundle()
+              objectForInfoDictionaryKey:@"CFBundleShortVersionString"]);
+      process_annotations["ver"] = base::SysNSStringToUTF8(version);
+
+      process_annotations["plat"] = std::string("OS X");
+    }  // @autoreleasepool
+    return process_annotations;
+  }();
+  return annotations;
+}
+
+}  // namespace
+
+void DumpProcessWithoutCrashing(task_t task_port) {
+  crashpad::CrashReportDatabase* database = internal::GetCrashReportDatabase();
+  if (!database)
+    return;
+
+  crashpad::ProcessSnapshotMac snapshot;
+  if (!snapshot.Initialize(task_port))
+    return;
+
+  auto process_annotations = GetProcessSimpleAnnotations();
+  process_annotations["is-dump-process-without-crashing"] = "true";
+  snapshot.SetAnnotationsSimpleMap(process_annotations);
+
+  std::unique_ptr<crashpad::CrashReportDatabase::NewReport> new_report;
+  if (database->PrepareNewCrashReport(&new_report) !=
+      crashpad::CrashReportDatabase::kNoError) {
+    return;
+  }
+
+  crashpad::UUID client_id;
+  database->GetSettings()->GetClientID(&client_id);
+
+  snapshot.SetReportID(new_report->ReportID());
+  snapshot.SetClientID(client_id);
+
+  crashpad::MinidumpFileWriter minidump;
+  minidump.InitializeFromSnapshot(&snapshot);
+  if (!minidump.WriteEverything(new_report->Writer()))
+    return;
+
+  crashpad::UUID report_id;
+  database->FinishedWritingCrashReport(std::move(new_report), &report_id);
+}
+
 namespace internal {
 
-base::FilePath PlatformCrashpadInitialization(bool initial_client,
-                                              bool browser_process,
-                                              bool embedded_handler) {
+base::FilePath PlatformCrashpadInitialization(
+    bool initial_client,
+    bool browser_process,
+    bool embedded_handler,
+    const std::string& user_data_dir,
+    const base::FilePath& exe_path,
+    const std::vector<std::string>& initial_arguments) {
   base::FilePath database_path;  // Only valid in the browser process.
+  base::FilePath metrics_path;  // Only valid in the browser process.
   DCHECK(!embedded_handler);  // This is not used on Mac.
+  DCHECK(exe_path.empty());   // This is not used on Mac.
+  DCHECK(initial_arguments.empty());
 
   if (initial_client) {
     @autoreleasepool {
       base::FilePath framework_bundle_path = base::mac::FrameworkBundlePath();
       base::FilePath handler_path =
-          framework_bundle_path.Append("Helpers").Append("crashpad_handler");
+          framework_bundle_path.Append("Helpers").Append(
+              "chrome_crashpad_handler");
 
       // Is there a way to recover if this fails?
       CrashReporterClient* crash_reporter_client = GetCrashReporterClient();
       crash_reporter_client->GetCrashDumpLocation(&database_path);
+      crash_reporter_client->GetCrashMetricsLocation(&metrics_path);
 
-      // TODO(mark): Reading the Breakpad keys is temporary and transitional. At
-      // the very least, they should be renamed to Crashpad. For the time being,
-      // this isn't the worst thing: Crashpad is still uploading to a
-      // Breakpad-type server, after all.
-      NSBundle* framework_bundle = base::mac::FrameworkBundle();
-      NSString* product = base::mac::ObjCCast<NSString>(
-          [framework_bundle objectForInfoDictionaryKey:@"BreakpadProduct"]);
-      NSString* version = base::mac::ObjCCast<NSString>(
-          [framework_bundle objectForInfoDictionaryKey:@"BreakpadVersion"]);
-      NSString* url_ns = base::mac::ObjCCast<NSString>(
-          [framework_bundle objectForInfoDictionaryKey:@"BreakpadURL"]);
-#if defined(GOOGLE_CHROME_BUILD)
-      NSString* channel = base::mac::ObjCCast<NSString>(
-          [base::mac::OuterBundle() objectForInfoDictionaryKey:@"KSChannelID"]);
+#if defined(GOOGLE_CHROME_BUILD) && defined(OFFICIAL_BUILD)
+      // Only allow the possibility of report upload in official builds. This
+      // crash server won't have symbols for any other build types.
+      std::string url = "https://clients2.google.com/cr/report";
 #else
-      NSString* channel = nil;
+      std::string url;
 #endif
 
-      std::string url = base::SysNSStringToUTF8(url_ns);
-
-      std::map<std::string, std::string> process_annotations;
-      process_annotations["prod"] = base::SysNSStringToUTF8(product);
-      process_annotations["ver"] = base::SysNSStringToUTF8(version);
-      if (channel) {
-        process_annotations["channel"] = base::SysNSStringToUTF8(channel);
-      }
-      process_annotations["plat"] = std::string("OS X");
-
-      crashpad::CrashpadClient crashpad_client;
-
       std::vector<std::string> arguments;
+
+      if (crash_reporter_client->ShouldMonitorCrashHandlerExpensively()) {
+        arguments.push_back("--monitor-self");
+      }
+
+      // Set up --monitor-self-annotation even in the absence of --monitor-self
+      // so that minidumps produced by Crashpad's generate_dump tool will
+      // contain these annotations.
+      arguments.push_back("--monitor-self-annotation=ptype=crashpad-handler");
+
       if (!browser_process) {
         // If this is an initial client that's not the browser process, it's
         // important that the new Crashpad handler also not be connected to any
@@ -86,20 +160,14 @@ base::FilePath PlatformCrashpadInitialization(bool initial_client,
             "--reset-own-crash-exception-port-to-system-default");
       }
 
-      bool result = crashpad_client.StartHandler(handler_path,
-                                                 database_path,
-                                                 url,
-                                                 process_annotations,
-                                                 arguments,
-                                                 true);
-      if (result) {
-        result = crashpad_client.UseHandler();
-      }
+      bool result = GetCrashpadClient().StartHandler(
+          handler_path, database_path, metrics_path, url,
+          GetProcessSimpleAnnotations(), arguments, true, false);
 
       // If this is an initial client that's not the browser process, it's
       // important to sever the connection to any existing handler. If
-      // StartHandler() or UseHandler() failed, call UseSystemDefaultHandler()
-      // in that case to drop the link to the existing handler.
+      // StartHandler() failed, call UseSystemDefaultHandler() to drop the link
+      // to the existing handler.
       if (!result && !browser_process) {
         crashpad::CrashpadClient::UseSystemDefaultHandler();
       }

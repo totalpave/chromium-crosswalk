@@ -9,38 +9,31 @@
 
 #include "base/files/file_path.h"
 #include "base/memory/ref_counted.h"
-#include "base/single_thread_task_runner.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/password_manager/core/browser/login_database.h"
 #include "components/password_manager/core/browser/password_store.h"
-#include "components/sync_driver/sync_service.h"
-#include "net/url_request/url_request_context_getter.h"
-#include "sync/api/syncable_service.h"
+#include "components/sync/driver/sync_service.h"
+#include "components/sync/model/syncable_service.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+
+namespace network {
+class NetworkConnectionTracker;
+}  // namespace network
 
 namespace password_manager {
 
 // Activates or deactivates affiliation-based matching for |password_store|,
 // depending on whether or not the |sync_service| is syncing passwords stored
-// therein. The AffiliationService will use |db_thread_runner| as its backend
-// thread, and |request_context_getter| to fetch affiliation information. This
-// function should be called whenever there is a possibility that syncing
-// passwords has just started or ended.
+// therein. The AffiliationService will use |url_loader_factory| to fetch
+// affiliation information. This function should be called whenever there is a
+// possibility that syncing passwords has just started or ended.
 void ToggleAffiliationBasedMatchingBasedOnPasswordSyncedState(
     PasswordStore* password_store,
-    sync_driver::SyncService* sync_service,
-    net::URLRequestContextGetter* request_context_getter,
-    const base::FilePath& profile_path,
-    scoped_refptr<base::SingleThreadTaskRunner> db_thread_runner);
-
-// Trims the affiliation cache (placed in |profile_path|) for |password_store|
-// if affiliation-based matching is enabled, and completely deletes it
-// otherwise. The AffiliationService will use |db_thread_runner| as its backend
-// thread.
-void TrimOrDeleteAffiliationCacheForStoreAndPath(
-    PasswordStore* password_store,
-    const base::FilePath& profile_path,
-    scoped_refptr<base::SingleThreadTaskRunner> db_thread_runner);
+    syncer::SyncService* sync_service,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    network::NetworkConnectionTracker* network_connection_tracker,
+    const base::FilePath& profile_path);
 
 // Creates a LoginDatabase. Looks in |profile_path| for the database file.
 // Does not call LoginDatabase::Init() -- to avoid UI jank, that needs to be

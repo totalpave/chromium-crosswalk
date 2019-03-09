@@ -12,21 +12,13 @@
 
 #include <algorithm>
 
-#include "base/debug/crash_logging.h"
 #include "base/debug/stack_trace.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
 #include "build/build_config.h"
-#include "components/crash/core/common/crash_keys.h"
-
-#if !defined(OS_IOS) && (MAC_OS_X_VERSION_MAX_ALLOWED <= MAC_OS_X_VERSION_10_6)
-// Apparently objc/runtime.h doesn't define this with the 10.6 SDK yet.
-// The docs say it exists since 10.6 however.
-OBJC_EXPORT void *objc_destructInstance(id obj);
-#endif
+#include "components/crash/core/common/crash_key.h"
 
 // Deallocated objects are re-classed as |CrZombie|.  No superclass
 // because then the class would have to override many/most of the
@@ -74,7 +66,10 @@ size_t g_fatZombieSize = 0;
 BOOL g_zombieAllObjects = NO;
 
 // Protects |g_zombieCount|, |g_zombieIndex|, and |g_zombies|.
-base::LazyInstance<base::Lock>::Leaky g_lock = LAZY_INSTANCE_INITIALIZER;
+base::Lock& GetLock() {
+  static auto* lock = new base::Lock();
+  return *lock;
+}
 
 // How many zombies to keep before freeing, and the current head of
 // the circular buffer.
@@ -140,7 +135,7 @@ void ZombieDealloc(id self, SEL _cmd) {
 
   // Don't involve the lock when creating zombies without a treadmill.
   if (g_zombieCount > 0) {
-    base::AutoLock pin(g_lock.Get());
+    base::AutoLock pin(GetLock());
 
     // Check the count again in a thread-safe manner.
     if (g_zombieCount > 0) {
@@ -163,7 +158,7 @@ void ZombieDealloc(id self, SEL _cmd) {
 BOOL GetZombieRecord(id object, ZombieRecord* record) {
   // Holding the lock is reasonable because this should be fast, and
   // the process is going to crash presently anyhow.
-  base::AutoLock pin(g_lock.Get());
+  base::AutoLock pin(GetLock());
   for (size_t i = 0; i < g_zombieCount; ++i) {
     if (g_zombies[i].object == object) {
       *record = g_zombies[i];
@@ -211,12 +206,16 @@ void ZombieObjectCrash(id object, SEL aSelector, SEL viaSelector) {
   }
 
   // Set a value for breakpad to report.
-  base::debug::SetCrashKeyValue(crash_keys::mac::kZombie, aString);
+  static crash_reporter::CrashKeyString<256> zombie_key("zombie");
+  zombie_key.Set(aString);
 
   // Encode trace into a breakpad key.
+  static crash_reporter::CrashKeyString<1024> zombie_trace_key(
+      "zombie_dealloc_bt");
   if (found) {
-    base::debug::SetCrashKeyFromAddresses(
-        crash_keys::mac::kZombieTrace, record.trace, record.traceDepth);
+    crash_reporter::SetCrashKeyStringToStackTrace(
+        &zombie_trace_key,
+        base::debug::StackTrace(record.trace, record.traceDepth));
   }
 
   // Log -dealloc backtrace in debug builds then crash with a useful
@@ -346,7 +345,7 @@ bool ZombieEnable(bool zombieAllObjects,
   ZombieRecord* oldZombies = g_zombies;
 
   {
-    base::AutoLock pin(g_lock.Get());
+    base::AutoLock pin(GetLock());
 
     // Save the old index in case zombies need to be transferred.
     size_t oldIndex = g_zombieIndex;
@@ -417,7 +416,7 @@ void ZombieDisable() {
   ZombieRecord* oldZombies = g_zombies;
 
   {
-    base::AutoLock pin(g_lock.Get());  // In case any -dealloc are in progress.
+    base::AutoLock pin(GetLock());  // In case any -dealloc are in progress.
     g_zombieCount = 0;
     g_zombies = NULL;
   }

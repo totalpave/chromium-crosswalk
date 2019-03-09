@@ -4,12 +4,26 @@
 
 // Event management for GuestViewContainers.
 
-var EventBindings = require('event_bindings');
+var $EventTarget = require('safeMethods').SafeMethods.$EventTarget;
 var GuestViewInternalNatives = requireNative('guest_view_internal');
 var MessagingNatives = requireNative('messaging_natives');
 
+var EventBindings;
 var CreateEvent = function(name) {
-  var eventOpts = {supportsListeners: true, supportsFilters: true};
+  if (bindingUtil) {
+    return bindingUtil.createCustomEvent(name, null,
+                                         true /* supportsFilters */,
+                                         false /* supportsLazyListeners */);
+  }
+  var eventOpts = {
+    __proto__: null,
+    supportsListeners: true,
+    supportsFilters: true,
+    // GuestView-related events never support lazy listeners.
+    supportsLazyListeners: false,
+  };
+  if (!EventBindings)
+    EventBindings = require('event_bindings');
   return new EventBindings.Event(name, undefined, eventOpts);
 };
 
@@ -17,7 +31,7 @@ function GuestViewEvents(view) {
   view.events = this;
 
   this.view = view;
-  this.on = {};
+  this.on = $Object.create(null);
 
   // |setupEventProperty| is normally called automatically, but these events are
   // are registered here because they are dispatched from GuestViewContainer
@@ -26,6 +40,12 @@ function GuestViewEvents(view) {
   this.setupEventProperty('resize');
   this.setupEvents();
 }
+
+// Prevent GuestViewEvents inadvertently inheritng code from the global Object,
+// allowing a pathway for unintended execution of user code.
+// TODO(wjmaclean): Track down other issues of Object inheritance.
+// https://crbug.com/701034
+GuestViewEvents.prototype.__proto__ = null;
 
 // |GuestViewEvents.EVENTS| is a dictionary of extension events to be listened
 //     for, which specifies how each event should be handled. The events are
@@ -50,13 +70,13 @@ function GuestViewEvents(view) {
 //     element. A |handler| should be specified for all internal events, and
 //     |fields| and |cancelable| should be left unspecified (as they are only
 //     meaningful for DOM events).
-GuestViewEvents.EVENTS = {};
+GuestViewEvents.EVENTS = $Object.create(null);
 
 // Attaches |listener| onto the event descriptor object |evt|, and registers it
 // to be removed once this GuestViewEvents object is garbage collected.
 GuestViewEvents.prototype.addScopedListener = function(
     evt, listener, listenerOpts) {
-  this.listenersToBeRemoved.push({ 'evt': evt, 'listener': listener });
+  $Array.push(this.listenersToBeRemoved, { 'evt': evt, 'listener': listener });
   evt.addListener(listener, listenerOpts);
 };
 
@@ -65,13 +85,14 @@ GuestViewEvents.prototype.setupEvents = function() {
   // An array of registerd event listeners that should be removed when this
   // GuestViewEvents is garbage collected.
   this.listenersToBeRemoved = [];
-  MessagingNatives.BindToGC(this, function(listenersToBeRemoved) {
+  MessagingNatives.BindToGC(
+      this, $Function.bind(function(listenersToBeRemoved) {
     for (var i = 0; i != listenersToBeRemoved.length; ++i) {
       listenersToBeRemoved[i].evt.removeListener(
           listenersToBeRemoved[i].listener);
       listenersToBeRemoved[i] = null;
     }
-  }.bind(undefined, this.listenersToBeRemoved), -1 /* portId */);
+  }, undefined, this.listenersToBeRemoved), -1 /* portId */);
 
   // Set up the GuestView events.
   for (var eventName in GuestViewEvents.EVENTS) {
@@ -121,17 +142,18 @@ GuestViewEvents.prototype.makeDomEvent = function(event, eventName) {
     return null;
   }
 
-  var details = { bubbles: true };
+  var details = $Object.create(null);
+  details.bubbles = true;
   if (eventInfo.cancelable) {
     details.cancelable = true;
   }
   var domEvent = new Event(eventName, details);
   if (eventInfo.fields) {
-    $Array.forEach(eventInfo.fields, function(field) {
+    $Array.forEach(eventInfo.fields, $Function.bind(function(field) {
       if (event[field] !== undefined) {
-        domEvent[field] = event[field];
+        $Object.defineProperty(domEvent, field, {value: event[field]});
       }
-    }.bind(this));
+    }, this));
   }
 
   return domEvent;
@@ -140,20 +162,21 @@ GuestViewEvents.prototype.makeDomEvent = function(event, eventName) {
 // Adds an 'on<event>' property on the view, which can be used to set/unset
 // an event handler.
 GuestViewEvents.prototype.setupEventProperty = function(eventName) {
-  var propertyName = 'on' + eventName.toLowerCase();
+  var propertyName = 'on' + $String.toLowerCase(eventName);
   $Object.defineProperty(this.view.element, propertyName, {
-    get: function() {
+    get: $Function.bind(function() {
       return this.on[propertyName];
-    }.bind(this),
-    set: function(value) {
+    }, this),
+    set: $Function.bind(function(value) {
       if (this.on[propertyName]) {
-        this.view.element.removeEventListener(eventName, this.on[propertyName]);
+        $EventTarget.removeEventListener(
+            this.view.element, eventName, this.on[propertyName]);
       }
       this.on[propertyName] = value;
       if (value) {
-        this.view.element.addEventListener(eventName, value);
+        $EventTarget.addEventListener(this.view.element, eventName, value);
       }
-    }.bind(this),
+    }, this),
     enumerable: true
   });
 };

@@ -10,7 +10,10 @@
  * @return {HTMLElement} The found element or null if not found.
  */
 function $(id) {
-  var el = document.getElementById(id);
+  // Disable getElementById restriction here, since we are instructing other
+  // places to re-use the $() that is defined here.
+  // eslint-disable-next-line no-restricted-properties
+  const el = document.getElementById(id);
   return el ? assertInstanceof(el, HTMLElement) : null;
 }
 
@@ -22,8 +25,23 @@ function $(id) {
  * @return {Element} The found element or null if not found.
  */
 function getSVGElement(id) {
-  var el = document.getElementById(id);
+  // Disable getElementById restriction here, since it is not suitable for SVG
+  // elements.
+  // eslint-disable-next-line no-restricted-properties
+  const el = document.getElementById(id);
   return el ? assertInstanceof(el, Element) : null;
+}
+
+/**
+ * @return {?Element} The currently focused element (including elements that are
+ *     behind a shadow root), or null if nothing is focused.
+ */
+function getDeepActiveElement() {
+  let a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) {
+    a = a.shadowRoot.activeElement;
+  }
+  return a;
 }
 
 /**
@@ -33,9 +51,9 @@ function getSVGElement(id) {
  * @param {string} msg The text to be pronounced.
  */
 function announceAccessibleMessage(msg) {
-  var element = document.createElement('div');
+  const element = document.createElement('div');
   element.setAttribute('aria-live', 'polite');
-  element.style.position = 'relative';
+  element.style.position = 'fixed';
   element.style.left = '-9999px';
   element.style.height = '0px';
   element.innerText = msg;
@@ -50,11 +68,11 @@ function announceAccessibleMessage(msg) {
  * @param {string} s The URL to generate the CSS url for.
  * @return {string} The CSS url string.
  */
-function url(s) {
+function getUrlForCss(s) {
   // http://www.w3.org/TR/css3-values/#uris
   // Parentheses, commas, whitespace characters, single quotes (') and double
   // quotes (") appearing in a URI must be escaped with a backslash
-  var s2 = s.replace(/(\(|\)|\,|\s|\'|\"|\\)/g, '\\$1');
+  let s2 = s.replace(/(\(|\)|\,|\s|\'|\"|\\)/g, '\\$1');
   // WebKit has a bug when it comes to URLs that end with \
   // https://bugs.webkit.org/show_bug.cgi?id=28885
   if (/\\\\$/.test(s2)) {
@@ -70,11 +88,11 @@ function url(s) {
  * @return {Object} Dictionary containing name value pairs for URL
  */
 function parseQueryParams(location) {
-  var params = {};
-  var query = unescape(location.search.substring(1));
-  var vars = query.split('&');
-  for (var i = 0; i < vars.length; i++) {
-    var pair = vars[i].split('=');
+  const params = {};
+  const query = unescape(location.search.substring(1));
+  const vars = query.split('&');
+  for (let i = 0; i < vars.length; i++) {
+    const pair = vars[i].split('=');
     params[pair[0]] = pair[1];
   }
   return params;
@@ -89,11 +107,11 @@ function parseQueryParams(location) {
  * @return {string} The constructed new URL.
  */
 function setQueryParam(location, key, value) {
-  var query = parseQueryParams(location);
+  const query = parseQueryParams(location);
   query[encodeURIComponent(key)] = encodeURIComponent(value);
 
-  var newQuery = '';
-  for (var q in query) {
+  let newQuery = '';
+  for (const q in query) {
     newQuery += (newQuery ? '&' : '?') + q + '=' + query[q];
   }
 
@@ -106,7 +124,7 @@ function setQueryParam(location, key, value) {
  * @return {Element} A node with class of |className| or null if none is found.
  */
 function findAncestorByClass(el, className) {
-  return /** @type {Element} */(findAncestor(el, function(el) {
+  return /** @type {Element} */ (findAncestor(el, function(el) {
     return el.classList && el.classList.contains(className);
   }));
 }
@@ -119,7 +137,7 @@ function findAncestorByClass(el, className) {
  * @return {Node} The found ancestor or null if not found.
  */
 function findAncestor(node, predicate) {
-  var last = false;
+  let last = false;
   while (node != null && !(last = predicate(node))) {
     node = node.parentNode;
   }
@@ -127,12 +145,12 @@ function findAncestor(node, predicate) {
 }
 
 function swapDomNodes(a, b) {
-  var afterA = a.nextSibling;
+  const afterA = a.nextSibling;
   if (afterA == b) {
     swapDomNodes(b, a);
     return;
   }
-  var aParent = a.parentNode;
+  const aParent = a.parentNode;
   b.parentNode.replaceChild(a, b);
   aParent.insertBefore(b, afterA);
 }
@@ -148,31 +166,17 @@ function swapDomNodes(a, b) {
 function disableTextSelectAndDrag(opt_allowSelectStart, opt_allowDragStart) {
   // Disable text selection.
   document.onselectstart = function(e) {
-    if (!(opt_allowSelectStart && opt_allowSelectStart.call(this, e)))
+    if (!(opt_allowSelectStart && opt_allowSelectStart.call(this, e))) {
       e.preventDefault();
+    }
   };
 
   // Disable dragging.
   document.ondragstart = function(e) {
-    if (!(opt_allowDragStart && opt_allowDragStart.call(this, e)))
+    if (!(opt_allowDragStart && opt_allowDragStart.call(this, e))) {
       e.preventDefault();
+    }
   };
-}
-
-/**
- * TODO(dbeam): DO NOT USE. THIS IS DEPRECATED. Use an action-link instead.
- * Call this to stop clicks on <a href="#"> links from scrolling to the top of
- * the page (and possibly showing a # in the link).
- */
-function preventDefaultOnPoundLinkClicks() {
-  document.addEventListener('click', function(e) {
-    var anchor = findAncestor(/** @type {Node} */(e.target), function(el) {
-      return el.tagName == 'A';
-    });
-    // Use getAttribute() to prevent URL normalization.
-    if (anchor && anchor.getAttribute('href') == '#')
-      e.preventDefault();
-  });
 }
 
 /**
@@ -191,8 +195,8 @@ function isRTL() {
  * @return {!HTMLElement} the Element.
  */
 function getRequiredElement(id) {
-  return assertInstanceof($(id), HTMLElement,
-                          'Missing required element: ' + id);
+  return assertInstanceof(
+      $(id), HTMLElement, 'Missing required element: ' + id);
 }
 
 /**
@@ -205,38 +209,58 @@ function getRequiredElement(id) {
  * @return {!HTMLElement} the Element.
  */
 function queryRequiredElement(selectors, opt_context) {
-  var element = (opt_context || document).querySelector(selectors);
-  return assertInstanceof(element, HTMLElement,
-                          'Missing required element: ' + selectors);
+  const element = (opt_context || document).querySelector(selectors);
+  return assertInstanceof(
+      element, HTMLElement, 'Missing required element: ' + selectors);
 }
 
 // Handle click on a link. If the link points to a chrome: or file: url, then
 // call into the browser to do the navigation.
-document.addEventListener('click', function(e) {
-  if (e.defaultPrevented)
-    return;
-
-  var el = e.target;
-  if (el.nodeType == Node.ELEMENT_NODE &&
-      el.webkitMatchesSelector('A, A *')) {
-    while (el.tagName != 'A') {
-      el = el.parentElement;
+['click', 'auxclick'].forEach(function(eventName) {
+  document.addEventListener(eventName, function(e) {
+    if (e.button > 1) {
+      return;
+    }  // Ignore buttons other than left and middle.
+    if (e.defaultPrevented) {
+      return;
     }
 
-    if ((el.protocol == 'file:' || el.protocol == 'about:') &&
+    const eventPath = e.path;
+    let anchor = null;
+    if (eventPath) {
+      for (let i = 0; i < eventPath.length; i++) {
+        const element = eventPath[i];
+        if (element.tagName === 'A' && element.href) {
+          anchor = element;
+          break;
+        }
+      }
+    }
+
+    // Fallback if Event.path is not available.
+    let el = e.target;
+    if (!anchor && el.nodeType == Node.ELEMENT_NODE &&
+        el.webkitMatchesSelector('A, A *')) {
+      while (el.tagName != 'A') {
+        el = el.parentElement;
+      }
+      anchor = el;
+    }
+
+    if (!anchor) {
+      return;
+    }
+
+    anchor = /** @type {!HTMLAnchorElement} */ (anchor);
+    if ((anchor.protocol == 'file:' || anchor.protocol == 'about:') &&
         (e.button == 0 || e.button == 1)) {
       chrome.send('navigateToUrl', [
-        el.href,
-        el.target,
-        e.button,
-        e.altKey,
-        e.ctrlKey,
-        e.metaKey,
+        anchor.href, anchor.target, e.button, e.altKey, e.ctrlKey, e.metaKey,
         e.shiftKey
       ]);
       e.preventDefault();
     }
-  }
+  });
 });
 
 /**
@@ -248,10 +272,11 @@ document.addEventListener('click', function(e) {
  * @return {string} The new URL.
  */
 function appendParam(url, key, value) {
-  var param = encodeURIComponent(key) + '=' + encodeURIComponent(value);
+  const param = encodeURIComponent(key) + '=' + encodeURIComponent(value);
 
-  if (url.indexOf('?') == -1)
+  if (url.indexOf('?') == -1) {
     return url + '?' + param;
+  }
   return url + '&' + param;
 }
 
@@ -262,37 +287,38 @@ function appendParam(url, key, value) {
  * @return {Element} The created element.
  */
 function createElementWithClassName(type, className) {
-  var elm = document.createElement(type);
+  const elm = document.createElement(type);
   elm.className = className;
   return elm;
 }
 
 /**
- * webkitTransitionEnd does not always fire (e.g. when animation is aborted
+ * transitionend does not always fire (e.g. when animation is aborted
  * or when no paint happens during the animation). This function sets up
  * a timer and emulate the event if it is not fired when the timer expires.
- * @param {!HTMLElement} el The element to watch for webkitTransitionEnd.
+ * @param {!HTMLElement} el The element to watch for transitionend.
  * @param {number=} opt_timeOut The maximum wait time in milliseconds for the
- *     webkitTransitionEnd to happen. If not specified, it is fetched from |el|
+ *     transitionend to happen. If not specified, it is fetched from |el|
  *     using the transitionDuration style value.
  */
 function ensureTransitionEndEvent(el, opt_timeOut) {
   if (opt_timeOut === undefined) {
-    var style = getComputedStyle(el);
+    const style = getComputedStyle(el);
     opt_timeOut = parseFloat(style.transitionDuration) * 1000;
 
     // Give an additional 50ms buffer for the animation to complete.
     opt_timeOut += 50;
   }
 
-  var fired = false;
-  el.addEventListener('webkitTransitionEnd', function f(e) {
-    el.removeEventListener('webkitTransitionEnd', f);
+  let fired = false;
+  el.addEventListener('transitionend', function f(e) {
+    el.removeEventListener('transitionend', f);
     fired = true;
   });
   window.setTimeout(function() {
-    if (!fired)
-      cr.dispatchSimpleEvent(el, 'webkitTransitionEnd', true);
+    if (!fired) {
+      cr.dispatchSimpleEvent(el, 'transitionend', true);
+    }
   }, opt_timeOut);
 }
 
@@ -343,10 +369,10 @@ function setScrollLeftForDocument(doc, value) {
  */
 function HTMLEscape(original) {
   return original.replace(/&/g, '&amp;')
-                 .replace(/</g, '&lt;')
-                 .replace(/>/g, '&gt;')
-                 .replace(/"/g, '&quot;')
-                 .replace(/'/g, '&#39;');
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
 }
 
 /**
@@ -359,8 +385,9 @@ function HTMLEscape(original) {
  *     appended.
  */
 function elide(original, maxLength) {
-  if (original.length <= maxLength)
+  if (original.length <= maxLength) {
     return original;
+  }
   return original.substring(0, maxLength - 1) + '\u2026';
 }
 
@@ -371,4 +398,150 @@ function elide(original, maxLength) {
  */
 function quoteString(str) {
   return str.replace(/([\\\.\+\*\?\[\^\]\$\(\)\{\}\=\!\<\>\|\:])/g, '\\$1');
+}
+
+/**
+ * Calls |callback| and stops listening the first time any event in |eventNames|
+ * is triggered on |target|.
+ * @param {!EventTarget} target
+ * @param {!Array<string>|string} eventNames Array or space-delimited string of
+ *     event names to listen to (e.g. 'click mousedown').
+ * @param {function(!Event)} callback Called at most once. The
+ *     optional return value is passed on by the listener.
+ */
+function listenOnce(target, eventNames, callback) {
+  if (!Array.isArray(eventNames)) {
+    eventNames = eventNames.split(/ +/);
+  }
+
+  const removeAllAndCallCallback = function(event) {
+    eventNames.forEach(function(eventName) {
+      target.removeEventListener(eventName, removeAllAndCallCallback, false);
+    });
+    return callback(event);
+  };
+
+  eventNames.forEach(function(eventName) {
+    target.addEventListener(eventName, removeAllAndCallCallback, false);
+  });
+}
+
+// <if expr="is_ios">
+// Polyfill 'key' in KeyboardEvent for iOS.
+// This function is not intended to be complete but should
+// be sufficient enough to have iOS work correctly while
+// it does not support key yet.
+if (!('key' in KeyboardEvent.prototype)) {
+  Object.defineProperty(KeyboardEvent.prototype, 'key', {
+    /** @this {KeyboardEvent} */
+    get: function() {
+      // 0-9
+      if (this.keyCode >= 0x30 && this.keyCode <= 0x39) {
+        return String.fromCharCode(this.keyCode);
+      }
+
+      // A-Z
+      if (this.keyCode >= 0x41 && this.keyCode <= 0x5a) {
+        let result = String.fromCharCode(this.keyCode).toLowerCase();
+        if (this.shiftKey) {
+          result = result.toUpperCase();
+        }
+        return result;
+      }
+
+      // Special characters
+      switch (this.keyCode) {
+        case 0x08:
+          return 'Backspace';
+        case 0x09:
+          return 'Tab';
+        case 0x0d:
+          return 'Enter';
+        case 0x10:
+          return 'Shift';
+        case 0x11:
+          return 'Control';
+        case 0x12:
+          return 'Alt';
+        case 0x1b:
+          return 'Escape';
+        case 0x20:
+          return ' ';
+        case 0x21:
+          return 'PageUp';
+        case 0x22:
+          return 'PageDown';
+        case 0x23:
+          return 'End';
+        case 0x24:
+          return 'Home';
+        case 0x25:
+          return 'ArrowLeft';
+        case 0x26:
+          return 'ArrowUp';
+        case 0x27:
+          return 'ArrowRight';
+        case 0x28:
+          return 'ArrowDown';
+        case 0x2d:
+          return 'Insert';
+        case 0x2e:
+          return 'Delete';
+        case 0x5b:
+          return 'Meta';
+        case 0x70:
+          return 'F1';
+        case 0x71:
+          return 'F2';
+        case 0x72:
+          return 'F3';
+        case 0x73:
+          return 'F4';
+        case 0x74:
+          return 'F5';
+        case 0x75:
+          return 'F6';
+        case 0x76:
+          return 'F7';
+        case 0x77:
+          return 'F8';
+        case 0x78:
+          return 'F9';
+        case 0x79:
+          return 'F10';
+        case 0x7a:
+          return 'F11';
+        case 0x7b:
+          return 'F12';
+        case 0xbb:
+          return '=';
+        case 0xbd:
+          return '-';
+        case 0xdb:
+          return '[';
+        case 0xdd:
+          return ']';
+      }
+      return 'Unidentified';
+    }
+  });
+} else {
+  window.console.log('KeyboardEvent.Key polyfill not required');
+}
+// </if>  /* is_ios */
+
+/**
+ * @param {!Event} e
+ * @return {boolean} Whether a modifier key was down when processing |e|.
+ */
+function hasKeyModifiers(e) {
+  return !!(e.altKey || e.ctrlKey || e.metaKey || e.shiftKey);
+}
+
+/**
+ * @param {!Element} el
+ * @return {boolean} Whether the element is interactive via text input.
+ */
+function isTextInputElement(el) {
+  return el.tagName == 'INPUT' || el.tagName == 'TEXTAREA';
 }

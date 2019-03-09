@@ -12,14 +12,16 @@
 #include "chrome/browser/ui/autofill/autofill_popup_view_delegate.h"
 #include "chrome/browser/ui/autofill/popup_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/autofill/core/browser/popup_item_ids.h"
 #include "components/autofill/core/browser/suggestion.h"
+#include "components/grit/components_scaled_resources.h"
 #include "content/public/browser/web_contents.h"
-#include "grit/components_scaled_resources.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace autofill {
@@ -33,12 +35,13 @@ class TestAutofillPopupViewDelegate : public AutofillPopupViewDelegate {
         container_view_(web_contents->GetNativeView()) {}
 
   void Hide() override {}
-  void ViewDestroyed() override{};
+  void ViewDestroyed() override {}
   void SetSelectionAtPoint(const gfx::Point& point) override {}
   bool AcceptSelectedLine() override { return true; }
   void SelectionCleared() override {}
+  bool HasSelection() const override { return false; }
   gfx::Rect popup_bounds() const override { return gfx::Rect(0, 0, 100, 100); }
-  gfx::NativeView container_view() override { return container_view_; }
+  gfx::NativeView container_view() const override { return container_view_; }
   const gfx::RectF& element_bounds() const override { return element_bounds_; }
   bool IsRTL() const override { return false; }
 
@@ -53,8 +56,9 @@ class TestAutofillPopupViewDelegate : public AutofillPopupViewDelegate {
     return suggestions;
   }
 #if !defined(OS_ANDROID)
-  int GetElidedValueWidthForRow(size_t row) override { return 0; }
-  int GetElidedLabelWidthForRow(size_t row) override { return 0; }
+  void SetTypesetter(gfx::Typesetter typesetter) override {}
+  int GetElidedValueWidthForRow(int row) override { return 0; }
+  int GetElidedLabelWidthForRow(int row) override { return 0; }
 #endif
 
  private:
@@ -68,7 +72,8 @@ class AutofillPopupLayoutModelTest : public ChromeRenderViewHostTestHarness {
     ChromeRenderViewHostTestHarness::SetUp();
 
     delegate_.reset(new TestAutofillPopupViewDelegate(web_contents()));
-    layout_model_.reset(new AutofillPopupLayoutModel(delegate_.get()));
+    layout_model_.reset(new AutofillPopupLayoutModel(
+        delegate_.get(), false /* is_credit_card_field */));
   }
 
   AutofillPopupLayoutModel* layout_model() { return layout_model_.get(); }
@@ -88,20 +93,20 @@ TEST_F(AutofillPopupLayoutModelTest, RowWidthWithoutText) {
 
   // Refer to GetSuggestions() in TestAutofillPopupViewDelegate.
   EXPECT_EQ(base_size,
-            layout_model()->RowWidthWithoutText(0, /* with_label= */ false));
+            layout_model()->RowWidthWithoutText(0, /* has_substext= */ false));
   EXPECT_EQ(base_size + subtext_increase,
-            layout_model()->RowWidthWithoutText(1, /* with_label= */ true));
+            layout_model()->RowWidthWithoutText(1, /* has_substext= */ true));
   EXPECT_EQ(base_size + AutofillPopupLayoutModel::kIconPadding +
                 ui::ResourceBundle::GetSharedInstance()
                     .GetImageNamed(IDR_AUTOFILL_CC_AMEX)
                     .Width(),
-            layout_model()->RowWidthWithoutText(2, /* with_label= */ false));
+            layout_model()->RowWidthWithoutText(2, /* has_substext= */ false));
   EXPECT_EQ(base_size + subtext_increase +
                 AutofillPopupLayoutModel::kIconPadding +
                 ui::ResourceBundle::GetSharedInstance()
                     .GetImageNamed(IDR_AUTOFILL_CC_GENERIC)
                     .Width(),
-            layout_model()->RowWidthWithoutText(3, /* with_label= */ true));
+            layout_model()->RowWidthWithoutText(3, /* has_substext= */ true));
 }
 #endif
 

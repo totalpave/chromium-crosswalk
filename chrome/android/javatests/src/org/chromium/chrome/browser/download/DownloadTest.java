@@ -5,33 +5,57 @@
 package org.chromium.chrome.browser.download;
 
 import android.os.Environment;
-import android.test.suitebuilder.annotation.MediumTest;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.MediumTest;
+import android.util.Pair;
 import android.view.View;
 
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
 import org.chromium.base.Log;
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.FlakyTest;
+import org.chromium.base.test.util.RetryOnFailure;
+import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManager;
 import org.chromium.chrome.browser.compositor.layouts.StaticLayout;
+import org.chromium.chrome.browser.download.DownloadTestRule.CustomMainActivityStart;
 import org.chromium.chrome.browser.infobar.InfoBarContainer;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.InfoBarUtil;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.TouchCommon;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.DOMUtils;
+import org.chromium.content_public.browser.test.util.TouchCommon;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.net.test.util.TestWebServer;
 
 import java.io.File;
-import java.util.concurrent.Callable;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Tests Chrome download feature by attempting to download some files.
  */
-public class DownloadTest extends DownloadTestBase {
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class DownloadTest implements CustomMainActivityStart {
+    @Rule
+    public DownloadTestRule mDownloadTestRule = new DownloadTestRule(this);
+
     private static final String TAG = "cr_DownloadTest";
     private static final String SUPERBO_CONTENTS =
             "plain text response from a POST";
@@ -44,304 +68,282 @@ public class DownloadTest extends DownloadTestBase {
     private static final String FILENAME_TEXT = "superbo.txt";
     private static final String FILENAME_TEXT_1 = "superbo (1).txt";
     private static final String FILENAME_TEXT_2 = "superbo (2).txt";
-    private static final String FILENAME_APK = "test.apk";
+    private static final String FILENAME_SWF = "test.swf";
     private static final String FILENAME_GZIP = "test.gzip";
 
     private static final String[] TEST_FILES = new String[] {
-        FILENAME_WALLPAPER, FILENAME_TEXT, FILENAME_TEXT_1, FILENAME_TEXT_2, FILENAME_APK,
+        FILENAME_WALLPAPER, FILENAME_TEXT, FILENAME_TEXT_1, FILENAME_TEXT_2, FILENAME_SWF,
         FILENAME_GZIP
     };
 
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        deleteTestFiles();
-        mTestServer = EmbeddedTestServer.createAndStartFileServer(
-                getInstrumentation().getContext(), Environment.getExternalStorageDirectory());
+    static class DownloadManagerRequestInterceptorForTest
+            implements DownloadManagerService.DownloadManagerRequestInterceptor {
+        public DownloadItem mDownloadItem;
+
+        @Override
+        public void interceptDownloadRequest(DownloadItem item, boolean notifyComplete) {
+            mDownloadItem = item;
+            Assert.assertTrue(notifyComplete);
+        }
     }
 
-    @Override
-    protected void tearDown() throws Exception {
+    @Before
+    public void setUp() throws Exception {
+        deleteTestFiles();
+        mTestServer = EmbeddedTestServer.createAndStartServer(InstrumentationRegistry.getContext());
+    }
+
+    @After
+    public void tearDown() throws Exception {
         mTestServer.stopAndDestroyServer();
         deleteTestFiles();
-        super.tearDown();
     }
 
     @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityOnBlankPage();
+    public void customMainActivityStart() throws InterruptedException {
+        mDownloadTestRule.startMainActivityOnBlankPage();
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
+    @RetryOnFailure
     public void testHttpGetDownload() throws Exception {
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "get.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "get.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
 
-        EnqueueHttpGetDownloadCallbackHelper callbackHelper = getHttpGetDownloadCallbackHelper();
-        int callCount = callbackHelper.getCallCount();
-        singleClickView(currentView);
-        callbackHelper.waitForCallback(callCount);
-
-        assertEquals(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + FILENAME_GZIP),
-                callbackHelper.getDownloadInfo().getUrl());
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
+        Assert.assertTrue(mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
+        Assert.assertTrue(mDownloadTestRule.hasDownload(FILENAME_GZIP, null));
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
+    @RetryOnFailure
     public void testDangerousDownload() throws Exception {
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "dangerous.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "dangerous.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
-        singleClickView(currentView);
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        TouchCommon.singleClickView(currentView);
         assertPollForInfoBarSize(1);
-
-        EnqueueHttpGetDownloadCallbackHelper callbackHelper = getHttpGetDownloadCallbackHelper();
-        int callCount = callbackHelper.getCallCount();
-        assertTrue("OK button wasn't found", InfoBarUtil.clickPrimaryButton(getInfoBars().get(0)));
-        callbackHelper.waitForCallback(callCount);
-        assertEquals(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + FILENAME_APK),
-                callbackHelper.getDownloadInfo().getUrl());
+        Assert.assertTrue("OK button wasn't found",
+                InfoBarUtil.clickPrimaryButton(mDownloadTestRule.getInfoBars().get(0)));
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        Assert.assertTrue(mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
+        Assert.assertTrue(mDownloadTestRule.hasDownload(FILENAME_SWF, null));
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
-    public void testDangerousDownloadCancel() throws Exception {
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "dangerous.html"));
-        waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
-        TouchCommon.longPressView(currentView);
-
-        // Open in new tab so that the "CloseBlankTab" functionality is invoked later.
-        getInstrumentation().invokeContextMenuAction(getActivity(),
-                R.id.contextmenu_open_in_new_tab, 0);
-
-        waitForNewTabToStabilize(2);
-        goToLastTab();
-        assertPollForInfoBarSize(1);
-
-        assertTrue("Cancel button wasn't found",
-                InfoBarUtil.clickSecondaryButton(getInfoBars().get(0)));
-
-        // "Cancel" should close the blank tab opened for this download.
-        CriteriaHelper.pollUiThread(
-                Criteria.equals(1, new Callable<Integer>() {
-                    @Override
-                    public Integer call() {
-                        return getActivity().getCurrentTabModel().getCount();
-                    }
-                }));
-    }
-
-    @MediumTest
-    @Feature({"Downloads"})
+    @RetryOnFailure
     public void testHttpPostDownload() throws Exception {
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
 
-        int callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
-        assertTrue(waitForChromeDownloadToFinish(callCount));
-        assertTrue(hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
+        Assert.assertTrue(mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
+        Assert.assertTrue(mDownloadTestRule.hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
     @DisabledTest(message = "crbug.com/286315")
     public void testCloseEmptyDownloadTab() throws Exception {
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "get.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "get.html"));
         waitForFocus();
-        final int initialTabCount = getActivity().getCurrentTabModel().getCount();
-        View currentView = getActivity().getActivityTab().getView();
+        final int initialTabCount = mDownloadTestRule.getActivity().getCurrentTabModel().getCount();
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
         TouchCommon.longPressView(currentView);
 
-        EnqueueHttpGetDownloadCallbackHelper callbackHelper = getHttpGetDownloadCallbackHelper();
-        int callCount = callbackHelper.getCallCount();
-        getInstrumentation().invokeContextMenuAction(getActivity(),
-                R.id.contextmenu_open_in_new_tab, 0);
-        callbackHelper.waitForCallback(callCount);
-        assertEquals(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + FILENAME_GZIP),
-                callbackHelper.getDownloadInfo().getUrl());
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        InstrumentationRegistry.getInstrumentation().invokeContextMenuAction(
+                mDownloadTestRule.getActivity(), R.id.contextmenu_open_in_new_tab, 0);
+        Assert.assertTrue(mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
+        Assert.assertTrue(mDownloadTestRule.hasDownload(FILENAME_GZIP, null));
 
         CriteriaHelper.pollUiThread(
-                Criteria.equals(initialTabCount, new Callable<Integer>() {
-                    @Override
-                    public Integer call() {
-                        return getActivity().getCurrentTabModel().getCount();
-                    }
-                }));
+                Criteria.equals(initialTabCount,
+                        () -> mDownloadTestRule.getActivity().getCurrentTabModel().getCount()));
     }
 
+    @Test
     @MediumTest
+    @DisabledTest(message = "crbug.com/849876")
     @Feature({"Downloads"})
-    public void testDuplicateHttpPostDownload_Overwrite() throws Exception {
+    @RetryOnFailure
+    public void testDuplicateHttpPostDownload_Download() throws Exception {
         // Snackbar overlaps the infobar which is clicked in this test.
-        getActivity().getSnackbarManager().disableForTesting();
+        mDownloadTestRule.getActivity().getSnackbarManager().disableForTesting();
         // Download a file.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
-        int callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
-        assertTrue("Failed to finish downloading file for the first time.",
-                waitForChromeDownloadToFinish(callCount));
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
+        Assert.assertTrue("Failed to finish downloading file for the first time.",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
 
         // Download a file with the same name.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        currentView = getActivity().getActivityTab().getView();
-        callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
+        currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
         assertPollForInfoBarSize(1);
-        assertTrue("OVERWRITE button wasn't found",
-                InfoBarUtil.clickPrimaryButton(getInfoBars().get(0)));
-        assertTrue("Failed to finish downloading file for the second time.",
-                waitForChromeDownloadToFinish(callCount));
+        Assert.assertTrue("Download button wasn't found",
+                InfoBarUtil.clickPrimaryButton(mDownloadTestRule.getInfoBars().get(0)));
+        Assert.assertTrue("Failed to finish downloading file for the second time.",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
 
-        assertTrue("Missing first download", hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
-        assertFalse("Should not have second download",
-                hasDownload(FILENAME_TEXT_1, SUPERBO_CONTENTS));
+        Assert.assertTrue("Missing first download",
+                mDownloadTestRule.hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
+        Assert.assertTrue("Missing second download",
+                mDownloadTestRule.hasDownload(FILENAME_TEXT_1, SUPERBO_CONTENTS));
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
     @DisabledTest(message = "crbug.com/597230")
-    public void testDuplicateHttpPostDownload_CreateNew() throws Exception {
+    public void testDuplicateHttpPostDownload_Cancel() throws Exception {
         // Download a file.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
-        int callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
-        assertTrue("Failed to finish downloading file for the first time.",
-                waitForChromeDownloadToFinish(callCount));
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
+        Assert.assertTrue("Failed to finish downloading file for the first time.",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
 
         // Download a file with the same name.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        currentView = getActivity().getActivityTab().getView();
-        callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
+        currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
         assertPollForInfoBarSize(1);
-        assertTrue("CREATE NEW button wasn't found",
-                InfoBarUtil.clickSecondaryButton(getInfoBars().get(0)));
-        assertTrue("Failed to finish downloading file for the second time.",
-                waitForChromeDownloadToFinish(callCount));
-
-        assertTrue("Missing first download", hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
-        assertTrue("Missing second download",
-                hasDownload(FILENAME_TEXT_1, SUPERBO_CONTENTS));
+        Assert.assertTrue("CREATE NEW button wasn't found",
+                InfoBarUtil.clickSecondaryButton(mDownloadTestRule.getInfoBars().get(0)));
+        Assert.assertFalse("Download should not happen when clicking cancel button",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
     @FlakyTest(message = "crbug.com/415711")
     public void testDuplicateHttpPostDownload_Dismiss() throws Exception {
         // Download a file.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
-        int callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
-        assertTrue("Failed to finish downloading file for the first time.",
-                waitForChromeDownloadToFinish(callCount));
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
+        Assert.assertTrue("Failed to finish downloading file for the first time.",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
 
         // Download a file with the same name.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        currentView = getActivity().getActivityTab().getView();
-        callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
+        currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
         assertPollForInfoBarSize(1);
-        assertTrue("Close button wasn't found",
-                InfoBarUtil.clickCloseButton(getInfoBars().get(0)));
-        assertFalse("Download should not happen when closing infobar",
-                waitForChromeDownloadToFinish(callCount));
+        Assert.assertTrue("Close button wasn't found",
+                InfoBarUtil.clickCloseButton(mDownloadTestRule.getInfoBars().get(0)));
+        Assert.assertFalse("Download should not happen when closing infobar",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
 
-        assertTrue("Missing first download", hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
-        assertFalse("Should not have second download",
-                hasDownload(FILENAME_TEXT_1, SUPERBO_CONTENTS));
+        Assert.assertTrue("Missing first download",
+                mDownloadTestRule.hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
+        Assert.assertFalse("Should not have second download",
+                mDownloadTestRule.hasDownload(FILENAME_TEXT_1, SUPERBO_CONTENTS));
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
     @DisabledTest(message = "crbug.com/597230")
     public void testDuplicateHttpPostDownload_AllowMultipleInfoBars() throws Exception {
-        assertFalse(hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
+        Assert.assertFalse(mDownloadTestRule.hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
         // Download a file.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
-        int callCount = getChromeDownloadCallCount();
-        singleClickView(currentView);
-        assertTrue("Failed to finish downloading file for the first time.",
-                waitForChromeDownloadToFinish(callCount));
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
+        Assert.assertTrue("Failed to finish downloading file for the first time.",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
 
         // Download the file for the second time.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        currentView = getActivity().getActivityTab().getView();
-        singleClickView(currentView);
+        currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        TouchCommon.singleClickView(currentView);
         assertPollForInfoBarSize(1);
 
         // Download the file for the third time.
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "post.html"));
         waitForFocus();
-        currentView = getActivity().getActivityTab().getView();
-        singleClickView(currentView);
+        currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
+        TouchCommon.singleClickView(currentView);
         assertPollForInfoBarSize(2);
 
         // Now create two new files by clicking on the infobars.
-        callCount = getChromeDownloadCallCount();
-        assertTrue("CREATE NEW button wasn't found",
-                InfoBarUtil.clickSecondaryButton(getInfoBars().get(0)));
-        assertTrue("Failed to finish downloading the second file.",
-                waitForChromeDownloadToFinish(callCount));
+        callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        Assert.assertTrue("CREATE NEW button wasn't found",
+                InfoBarUtil.clickSecondaryButton(mDownloadTestRule.getInfoBars().get(0)));
+        Assert.assertTrue("Failed to finish downloading the second file.",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
         assertPollForInfoBarSize(1);
-        callCount = getChromeDownloadCallCount();
-        assertTrue("CREATE NEW button wasn't found",
-                InfoBarUtil.clickSecondaryButton(getInfoBars().get(0)));
-        assertTrue("Failed to finish downloading the third file.",
-                waitForChromeDownloadToFinish(callCount));
+        callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        Assert.assertTrue("CREATE NEW button wasn't found",
+                InfoBarUtil.clickSecondaryButton(mDownloadTestRule.getInfoBars().get(0)));
+        Assert.assertTrue("Failed to finish downloading the third file.",
+                mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
 
-        assertTrue("Missing first download", hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
-        assertTrue("Missing second download", hasDownload(FILENAME_TEXT_1, SUPERBO_CONTENTS));
-        assertTrue("Missing third download", hasDownload(FILENAME_TEXT_2, SUPERBO_CONTENTS));
+        Assert.assertTrue("Missing first download",
+                mDownloadTestRule.hasDownload(FILENAME_TEXT, SUPERBO_CONTENTS));
+        Assert.assertTrue("Missing second download",
+                mDownloadTestRule.hasDownload(FILENAME_TEXT_1, SUPERBO_CONTENTS));
+        Assert.assertTrue("Missing third download",
+                mDownloadTestRule.hasDownload(FILENAME_TEXT_2, SUPERBO_CONTENTS));
     }
 
     private void goToLastTab() throws Exception {
-        final TabModel model = getActivity().getCurrentTabModel();
+        final TabModel model = mDownloadTestRule.getActivity().getCurrentTabModel();
         final int count = model.getCount();
 
-        getInstrumentation().runOnMainSync(new Runnable() {
-            @Override
-            public void run() {
-                TabModelUtils.setIndex(model, count - 1);
-            }
-        });
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> TabModelUtils.setIndex(model, count - 1));
 
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                return getActivity().getActivityTab() == model.getTabAt(count - 1)
-                        && getActivity().getActivityTab().isReady();
+                return mDownloadTestRule.getActivity().getActivityTab() == model.getTabAt(count - 1)
+                        && mDownloadTestRule.getActivity().getActivityTab().isReady();
             }
         });
     }
 
-    private void waitForNewTabToStabilize(final int numTabsAfterNewTab)
-            throws InterruptedException {
+    private void waitForNewTabToStabilize(final int numTabsAfterNewTab) {
         // Wait until we have a new tab first. This should be called before checking the active
         // layout because the active layout changes StaticLayout --> SimpleAnimationLayout
         // --> (tab added) --> StaticLayout.
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                updateFailureReason(
-                        "Actual tab count: " + getActivity().getCurrentTabModel().getCount());
-                return getActivity().getCurrentTabModel().getCount() >= numTabsAfterNewTab;
+                updateFailureReason("Actual tab count: "
+                        + mDownloadTestRule.getActivity().getCurrentTabModel().getCount());
+                return mDownloadTestRule.getActivity().getCurrentTabModel().getCount()
+                        >= numTabsAfterNewTab;
             }
         });
 
@@ -351,7 +353,7 @@ public class DownloadTest extends DownloadTestBase {
             @Override
             public boolean isSatisfied() {
                 CompositorViewHolder compositorViewHolder =
-                        (CompositorViewHolder) getActivity().findViewById(
+                        mDownloadTestRule.getActivity().findViewById(
                                 R.id.compositor_view_holder);
                 LayoutManager layoutManager = compositorViewHolder.getLayoutManager();
 
@@ -360,6 +362,7 @@ public class DownloadTest extends DownloadTestBase {
         });
     }
 
+    @Test
     @DisabledTest(message = "crbug.com/606798")
     @MediumTest
     @Feature({"Downloads"})
@@ -369,29 +372,29 @@ public class DownloadTest extends DownloadTestBase {
 
         // Create the file in advance so that duplicate download infobar can show up.
         File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        assertTrue(dir.isDirectory());
+        Assert.assertTrue(dir.isDirectory());
         final File file = new File(dir, FILENAME_GZIP);
         try {
             if (!file.exists()) {
-                assertTrue(file.createNewFile());
+                Assert.assertTrue(file.createNewFile());
             }
 
             // Open in a new tab again.
-            loadUrl(url);
+            mDownloadTestRule.loadUrl(url);
             waitForFocus();
 
-            View currentView = getActivity().getActivityTab().getView();
+            View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
             TouchCommon.longPressView(currentView);
-            getInstrumentation().invokeContextMenuAction(
-                    getActivity(), R.id.contextmenu_open_in_new_tab, 0);
+            InstrumentationRegistry.getInstrumentation().invokeContextMenuAction(
+                    mDownloadTestRule.getActivity(), R.id.contextmenu_open_in_new_tab, 0);
             waitForNewTabToStabilize(2);
 
             goToLastTab();
             assertPollForInfoBarSize(1);
 
             // Now create two new files by clicking on the infobars.
-            assertTrue("OVERWRITE button wasn't found",
-                    InfoBarUtil.clickPrimaryButton(getInfoBars().get(0)));
+            Assert.assertTrue("OVERWRITE button wasn't found",
+                    InfoBarUtil.clickPrimaryButton(mDownloadTestRule.getInfoBars().get(0)));
         } finally {
             if (!file.delete()) {
                 Log.d(TAG, "Failed to delete test.gzip");
@@ -399,27 +402,60 @@ public class DownloadTest extends DownloadTestBase {
         }
     }
 
+    @Test
     @MediumTest
     @Feature({"Downloads"})
+    @RetryOnFailure
     public void testUrlEscaping() throws Exception {
-        loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "urlescaping.html"));
+        mDownloadTestRule.loadUrl(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + "urlescaping.html"));
         waitForFocus();
-        View currentView = getActivity().getActivityTab().getView();
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
 
-        EnqueueHttpGetDownloadCallbackHelper callbackHelper = getHttpGetDownloadCallbackHelper();
-        int callCount = callbackHelper.getCallCount();
-        singleClickView(currentView);
-        callbackHelper.waitForCallback(callCount);
-        assertEquals(mTestServer.getURL(TEST_DOWNLOAD_DIRECTORY + FILENAME_WALLPAPER),
-                callbackHelper.getDownloadInfo().getUrl());
+        int callCount = mDownloadTestRule.getChromeDownloadCallCount();
+        TouchCommon.singleClickView(currentView);
+        Assert.assertTrue(mDownloadTestRule.waitForChromeDownloadToFinish(callCount));
+        Assert.assertTrue(mDownloadTestRule.hasDownload(FILENAME_WALLPAPER, null));
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Navigation"})
+    public void testOMADownloadInterception() throws Exception {
+        TestWebServer webServer = TestWebServer.start();
+        try {
+            final DownloadManagerRequestInterceptorForTest interceptor =
+                    new DownloadManagerRequestInterceptorForTest();
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> DownloadManagerService.getDownloadManagerService()
+                            .setDownloadManagerRequestInterceptor(interceptor));
+            List<Pair<String, String>> headers = new ArrayList<Pair<String, String>>();
+            headers.add(Pair.create("Content-Type", "application/vnd.oma.drm.message"));
+            final String url = webServer.setResponse("/test.dm", "testdata", headers);
+            mDownloadTestRule.loadUrl(UrlUtils.encodeHtmlDataUri("<script>"
+                    + "  function download() {"
+                    + "    window.open( '" + url + "')"
+                    + "  }"
+                    + "</script>"
+                    + "<body id='body' onclick='download()'></body>"));
+            DOMUtils.clickNode(mDownloadTestRule.getActivity().getCurrentWebContents(), "body");
+            CriteriaHelper.pollUiThread(new Criteria() {
+                @Override
+                public boolean isSatisfied() {
+                    return interceptor.mDownloadItem != null
+                            && url.equals(interceptor.mDownloadItem.getDownloadInfo().getUrl());
+                }
+            });
+        } finally {
+            webServer.shutdown();
+        }
     }
 
     private void waitForFocus() {
-        View currentView = getActivity().getActivityTab().getView();
+        View currentView = mDownloadTestRule.getActivity().getActivityTab().getView();
         if (!currentView.hasFocus()) {
-            singleClickView(currentView);
+            TouchCommon.singleClickView(currentView);
         }
-        getInstrumentation().waitForIdleSync();
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 
     /**
@@ -427,14 +463,14 @@ public class DownloadTest extends DownloadTestBase {
      * is one more more.
      * @param size The size of info bars to poll for.
      */
-    private void assertPollForInfoBarSize(final int size) throws InterruptedException {
-        final InfoBarContainer container = getActivity().getActivityTab().getInfoBarContainer();
+    private void assertPollForInfoBarSize(final int size) {
+        final InfoBarContainer container = mDownloadTestRule.getInfoBarContainer();
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
                 updateFailureReason("There should be " + size + " infobar but there are "
-                        + getInfoBars().size() + " infobars.");
-                return getInfoBars().size() == size && !container.isAnimating();
+                        + mDownloadTestRule.getInfoBars().size() + " infobars.");
+                return mDownloadTestRule.getInfoBars().size() == size && !container.isAnimating();
             }
         });
     }
@@ -444,6 +480,6 @@ public class DownloadTest extends DownloadTestBase {
      * downloads directory
      */
     private void deleteTestFiles() {
-        deleteFilesInDownloadDirectory(TEST_FILES);
+        mDownloadTestRule.deleteFilesInDownloadDirectory(TEST_FILES);
     }
 }

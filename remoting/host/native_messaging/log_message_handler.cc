@@ -6,10 +6,10 @@
 
 #include "base/bind.h"
 #include "base/lazy_instance.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/tracked_objects.h"
 
 namespace remoting {
 
@@ -89,10 +89,9 @@ void LogMessageHandler::PostLogMessageToCorrectThread(
   // Note that this means that LOG(FATAL) messages will be lost because the
   // process will exit before the message is sent to the client.
   caller_task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&LogMessageHandler::SendLogMessageToClient,
-                 weak_ptr_factory_.GetWeakPtr(),
-                 severity, file, line, message_start, str));
+      FROM_HERE, base::BindOnce(&LogMessageHandler::SendLogMessageToClient,
+                                weak_ptr_factory_.GetWeakPtr(), severity, file,
+                                line, message_start, str));
 }
 
 void LogMessageHandler::SendLogMessageToClient(
@@ -124,9 +123,13 @@ void LogMessageHandler::SendLogMessageToClient(
   dictionary->SetString("file", file);
   dictionary->SetInteger("line", line);
 
+  // Protect against this instance being torn down after the delegate is run.
+  base::WeakPtr<LogMessageHandler> self = weak_ptr_factory_.GetWeakPtr();
   delegate_.Run(std::move(dictionary));
 
-  suppress_logging_ = false;
+  if (self) {
+    suppress_logging_ = false;
+  }
 }
 
 }  // namespace remoting

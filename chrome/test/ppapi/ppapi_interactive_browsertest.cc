@@ -17,30 +17,12 @@
 // Disable tests under ASAN.  http://crbug.com/104832.
 // This is a bit heavy handed, but the majority of these tests fail under ASAN.
 // See bug for history.
-#if !defined(ADDRESS_SANITIZER) && !defined(SYZYASAN)
+#if !defined(ADDRESS_SANITIZER)
 
 // Disabled due to timeouts: http://crbug.com/136548
 IN_PROC_BROWSER_TEST_F(
     OutOfProcessPPAPITest, DISABLED_MouseLock_SucceedWhenAllowed) {
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
-
-  settings_map->SetDefaultContentSetting(CONTENT_SETTINGS_TYPE_MOUSELOCK,
-                                         CONTENT_SETTING_ALLOW);
-
   RunTestViaHTTP("MouseLock_SucceedWhenAllowed");
-}
-
-// Disabled due to flaky timeouts: http://crbug.com/137421
-IN_PROC_BROWSER_TEST_F(
-    OutOfProcessPPAPITest, DISABLED_MouseLock_FailWhenBlocked) {
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
-
-  settings_map->SetDefaultContentSetting(CONTENT_SETTINGS_TYPE_MOUSELOCK,
-                                         CONTENT_SETTING_BLOCK);
-
-  RunTestViaHTTP("MouseLock_FailWhenBlocked");
 }
 
 #endif // ADDRESS_SANITIZER

@@ -5,29 +5,33 @@
 #include "ui/events/devices/input_device_manager.h"
 
 namespace ui {
+namespace {
 
-InputDeviceManager* InputDeviceManager::instance_ = nullptr;
+InputDeviceManager* g_instance = nullptr;
+
+}  // namespace
 
 // static
 InputDeviceManager* InputDeviceManager::GetInstance() {
-  DCHECK(instance_);
-  return instance_;
+  DCHECK(g_instance) << "InputDeviceManager::SetInstance must be called before "
+                        "getting the instance of InputDeviceManager.";
+  return g_instance;
 }
 
 // static
 bool InputDeviceManager::HasInstance() {
-  return instance_ != nullptr;
+  return g_instance;
 }
 
 // static
 void InputDeviceManager::SetInstance(InputDeviceManager* instance) {
-  DCHECK(!instance_);
-  instance_ = instance;
+  DCHECK(!g_instance);
+  g_instance = instance;
 }
 
 // static
 void InputDeviceManager::ClearInstance() {
-  instance_ = nullptr;
+  g_instance = nullptr;
 }
 
 }  // namespace ui

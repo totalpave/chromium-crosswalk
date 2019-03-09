@@ -14,6 +14,7 @@
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
 #include "components/metrics/enabled_state_provider.h"
+#include "components/metrics/metrics_log_uploader.h"
 #include "components/metrics/metrics_service_client.h"
 
 class PrefRegistrySimple;
@@ -21,7 +22,6 @@ class PrefService;
 
 namespace base {
 class SingleThreadTaskRunner;
-class TaskRunner;
 }
 
 namespace metrics {
@@ -30,14 +30,11 @@ class MetricsService;
 class MetricsStateManager;
 }  // namespace metrics
 
-namespace net {
-class URLRequestContextGetter;
-}  // namespace net
+namespace network {
+class SharedURLLoaderFactory;
+}
 
 namespace chromecast {
-
-class CastService;
-
 namespace metrics {
 
 class ExternalMetrics;
@@ -45,12 +42,11 @@ class ExternalMetrics;
 class CastMetricsServiceClient : public ::metrics::MetricsServiceClient,
                                  public ::metrics::EnabledStateProvider {
  public:
+  CastMetricsServiceClient(
+      PrefService* pref_service,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   ~CastMetricsServiceClient() override;
 
-  static std::unique_ptr<CastMetricsServiceClient> Create(
-      base::TaskRunner* io_task_runner,
-      PrefService* pref_service,
-      net::URLRequestContextGetter* request_context);
   static void RegisterPrefs(PrefRegistrySimple* registry);
 
   // Use |client_id| when starting MetricsService instead of generating a new
@@ -63,29 +59,30 @@ class CastMetricsServiceClient : public ::metrics::MetricsServiceClient,
   // thread.
   void ProcessExternalEvents(const base::Closure& cb);
 
-  void Initialize(CastService* cast_service);
+  void Initialize();
   void Finalize();
 
   // ::metrics::MetricsServiceClient:
   ::metrics::MetricsService* GetMetricsService() override;
   void SetMetricsClientId(const std::string& client_id) override;
-  void OnRecordingDisabled() override;
-  bool IsOffTheRecordSessionActive() override;
   int32_t GetProduct() override;
   std::string GetApplicationLocale() override;
   bool GetBrand(std::string* brand_code) override;
   ::metrics::SystemProfileProto::Channel GetChannel() override;
   std::string GetVersionString() override;
-  void OnLogUploadComplete() override;
-  void InitializeSystemProfileMetrics(
-      const base::Closure& done_callback) override;
   void CollectFinalMetricsForLog(const base::Closure& done_callback) override;
+  GURL GetMetricsServerUrl() override;
   std::unique_ptr<::metrics::MetricsLogUploader> CreateUploader(
-      const base::Callback<void(int)>& on_upload_complete) override;
+      const GURL& server_url,
+      const GURL& insecure_server_url,
+      base::StringPiece mime_type,
+      ::metrics::MetricsLogUploader::MetricServiceType service_type,
+      const ::metrics::MetricsLogUploader::UploadCallback& on_upload_complete)
+      override;
   base::TimeDelta GetStandardUploadInterval() override;
 
   // ::metrics::EnabledStateProvider:
-  bool IsConsentGiven() override;
+  bool IsConsentGiven() const override;
 
   // Starts/stops the metrics service.
   void EnableMetricsService(bool enabled);
@@ -93,16 +90,10 @@ class CastMetricsServiceClient : public ::metrics::MetricsServiceClient,
   std::string client_id() const { return client_id_; }
 
  private:
-  CastMetricsServiceClient(base::TaskRunner* io_task_runner,
-                           PrefService* pref_service,
-                           net::URLRequestContextGetter* request_context);
-
   std::unique_ptr<::metrics::ClientInfo> LoadClientInfo();
   void StoreClientInfo(const ::metrics::ClientInfo& client_info);
 
-  base::TaskRunner* const io_task_runner_;
   PrefService* const pref_service_;
-  CastService* cast_service_;
   std::string client_id_;
   std::string force_client_id_;
   bool client_info_loaded_;
@@ -115,7 +106,7 @@ class CastMetricsServiceClient : public ::metrics::MetricsServiceClient,
   std::unique_ptr<::metrics::MetricsStateManager> metrics_state_manager_;
   std::unique_ptr<::metrics::MetricsService> metrics_service_;
   std::unique_ptr<::metrics::EnabledStateProvider> enabled_state_provider_;
-  net::URLRequestContextGetter* const request_context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(CastMetricsServiceClient);
 };

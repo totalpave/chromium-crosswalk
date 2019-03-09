@@ -4,695 +4,732 @@
 
 package org.chromium.chrome.browser.download;
 
+import static org.chromium.chrome.browser.download.DownloadBroadcastManager.getServiceDelegate;
+import static org.chromium.chrome.browser.download.DownloadSnackbarController.INVALID_NOTIFICATION_ID;
+
 import android.app.Notification;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
-import android.app.Service;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.os.Binder;
-import android.os.Build;
-import android.os.IBinder;
-import android.support.v4.app.NotificationCompat;
+import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import android.graphics.drawable.shapes.OvalShape;
+import android.support.annotation.IntDef;
 import android.text.TextUtils;
 
+import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.Log;
+import org.chromium.base.StrictModeContext;
 import org.chromium.base.VisibleForTesting;
-import org.chromium.base.library_loader.ProcessInitException;
+import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.ChromeApplication;
-import org.chromium.chrome.browser.init.BrowserParts;
-import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
-import org.chromium.chrome.browser.init.EmptyBrowserParts;
-import org.chromium.chrome.browser.util.IntentUtils;
+import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.util.FeatureUtilities;
+import org.chromium.components.offline_items_collection.ContentId;
+import org.chromium.components.offline_items_collection.FailState;
+import org.chromium.components.offline_items_collection.LegacyHelpers;
+import org.chromium.components.offline_items_collection.OfflineItem.Progress;
+import org.chromium.components.offline_items_collection.PendingState;
+import org.chromium.content_public.browser.BrowserStartupController;
 
-import java.text.NumberFormat;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
-import java.util.Set;
 
 /**
- * Service responsible for creating and updating download notifications even after
- * Chrome gets killed.
+ * Central director for updates related to downloads and notifications.
+ *  - Receive updates about downloads through SystemDownloadNotifier (notifyDownloadPaused, etc).
+ *  - Create notifications for downloads using DownloadNotificationFactory.
+ *  - Update DownloadForegroundServiceManager about downloads, allowing it to start/stop service.
  */
-public class DownloadNotificationService extends Service {
-    static final String EXTRA_DOWNLOAD_NOTIFICATION_ID = "DownloadNotificationId";
-    static final String EXTRA_DOWNLOAD_GUID = "DownloadGuid";
-    static final String EXTRA_DOWNLOAD_FILE_NAME = "DownloadFileName";
-    static final String EXTRA_NOTIFICATION_DISMISSED = "NotificationDismissed";
-    static final String ACTION_DOWNLOAD_CANCEL =
+public class DownloadNotificationService {
+    @IntDef({DownloadStatus.IN_PROGRESS, DownloadStatus.PAUSED, DownloadStatus.COMPLETED,
+            DownloadStatus.CANCELLED, DownloadStatus.FAILED})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DownloadStatus {
+        int IN_PROGRESS = 0;
+        int PAUSED = 1;
+        int COMPLETED = 2;
+        int CANCELLED = 3;
+        int FAILED = 4;
+    }
+
+    public static final String ACTION_DOWNLOAD_CANCEL =
             "org.chromium.chrome.browser.download.DOWNLOAD_CANCEL";
-    static final String ACTION_DOWNLOAD_PAUSE =
+    public static final String ACTION_DOWNLOAD_PAUSE =
             "org.chromium.chrome.browser.download.DOWNLOAD_PAUSE";
-    static final String ACTION_DOWNLOAD_RESUME =
+    public static final String ACTION_DOWNLOAD_RESUME =
             "org.chromium.chrome.browser.download.DOWNLOAD_RESUME";
-    public static final String ACTION_DOWNLOAD_RESUME_ALL =
-            "org.chromium.chrome.browser.download.DOWNLOAD_RESUME_ALL";
-    static final int INVALID_DOWNLOAD_PERCENTAGE = -1;
-    @VisibleForTesting
-    static final String PENDING_DOWNLOAD_NOTIFICATIONS = "PendingDownloadNotifications";
-    static final String NOTIFICATION_NAMESPACE = "DownloadNotificationService";
-    private static final String TAG = "DownloadNotification";
-    private static final String NEXT_DOWNLOAD_NOTIFICATION_ID = "NextDownloadNotificationId";
-    // Notification Id starting value, to avoid conflicts from IDs used in prior versions.
+    static final String ACTION_DOWNLOAD_OPEN = "org.chromium.chrome.browser.download.DOWNLOAD_OPEN";
+
+    static final String EXTRA_DOWNLOAD_CONTENTID_ID =
+            "org.chromium.chrome.browser.download.DownloadContentId_Id";
+    static final String EXTRA_DOWNLOAD_CONTENTID_NAMESPACE =
+            "org.chromium.chrome.browser.download.DownloadContentId_Namespace";
+    static final String EXTRA_DOWNLOAD_FILE_PATH = "DownloadFilePath";
+    static final String EXTRA_IS_SUPPORTED_MIME_TYPE = "IsSupportedMimeType";
+    static final String EXTRA_IS_OFF_THE_RECORD =
+            "org.chromium.chrome.browser.download.IS_OFF_THE_RECORD";
+    // Used to propagate request state information for OfflineItems.StateAtCancel UMA.
+    static final String EXTRA_DOWNLOAD_STATE_AT_CANCEL =
+            "org.chromium.chrome.browser.download.OfflineItemsStateAtCancel";
+
+    static final String EXTRA_NOTIFICATION_BUNDLE_ICON_ID = "Chrome.NotificationBundleIconIdExtra";
+    /** Notification Id starting value, to avoid conflicts from IDs used in prior versions. */
     private static final int STARTING_NOTIFICATION_ID = 1000000;
-    private static final String AUTO_RESUMPTION_ATTEMPT_LEFT = "ResumptionAttemptLeft";
+
+    private static final String KEY_NEXT_DOWNLOAD_NOTIFICATION_ID = "NextDownloadNotificationId";
+
     private static final int MAX_RESUMPTION_ATTEMPT_LEFT = 5;
-    @VisibleForTesting static final int SECONDS_PER_MINUTE = 60;
-    @VisibleForTesting static final int SECONDS_PER_HOUR = 60 * 60;
-    @VisibleForTesting static final int SECONDS_PER_DAY = 24 * 60 * 60;
-    private final IBinder mBinder = new LocalBinder();
-    private final List<DownloadSharedPreferenceEntry> mDownloadSharedPreferenceEntries =
-            new ArrayList<DownloadSharedPreferenceEntry>();
-    private final List<String> mDownloadsInProgress = new ArrayList<String>();
+    private static final String KEY_AUTO_RESUMPTION_ATTEMPT_LEFT = "ResumptionAttemptLeft";
+
+    @VisibleForTesting
+    final List<ContentId> mDownloadsInProgress = new ArrayList<ContentId>();
+
     private NotificationManager mNotificationManager;
-    private SharedPreferences mSharedPrefs;
-    private Context mContext;
-    private int mNextNotificationId;
-    private int mNumAutoResumptionAttemptLeft;
+    private Bitmap mDownloadSuccessLargeIcon;
+    private DownloadSharedPreferenceHelper mDownloadSharedPreferenceHelper;
+    private DownloadForegroundServiceManager mDownloadForegroundServiceManager;
 
-    /**
-     * Class for clients to access.
-     */
-    public class LocalBinder extends Binder {
-        DownloadNotificationService getService() {
-            return DownloadNotificationService.this;
-        }
-    }
-
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        // This funcion is called when Chrome is swiped away from the recent apps
-        // drawer. So it doesn't catch all scenarios that chrome can get killed.
-        // This will only help Android 4.4.2.
-        onBrowserKilled();
-    }
-
-    @Override
-    public void onCreate() {
-        mContext = getApplicationContext();
-        mNotificationManager = (NotificationManager) mContext.getSystemService(
-                Context.NOTIFICATION_SERVICE);
-        mSharedPrefs = ContextUtils.getAppSharedPreferences();
-        parseDownloadSharedPrefs();
-        // Because this service is a started service and returns START_STICKY in
-        // onStartCommand(), it will be restarted as soon as resources are available
-        // after it is killed. As a result, onCreate() may be called after Chrome
-        // gets killed and before user restarts chrome. In that case,
-        // DownloadManagerService.hasDownloadManagerService() will return false as
-        // there are no calls to initialize DownloadManagerService. Pause all the
-        // download notifications as download will not progress without chrome.
-        if (!DownloadManagerService.hasDownloadManagerService()) {
-            onBrowserKilled();
-        }
-        mNextNotificationId = mSharedPrefs.getInt(
-                NEXT_DOWNLOAD_NOTIFICATION_ID, STARTING_NOTIFICATION_ID);
-
+    private static class LazyHolder {
+        private static final DownloadNotificationService INSTANCE =
+                new DownloadNotificationService();
     }
 
     /**
-     * Called when browser is killed. Schedule a resumption task and pause all the download
-     * notifications.
+     * Creates DownloadNotificationService.
      */
-    private void onBrowserKilled() {
-        pauseAllDownloads();
-        if (!mDownloadSharedPreferenceEntries.isEmpty()) {
-            boolean allowMeteredConnection = false;
-            for (int i = 0; i < mDownloadSharedPreferenceEntries.size(); ++i) {
-                if (mDownloadSharedPreferenceEntries.get(i).canDownloadWhileMetered) {
-                    allowMeteredConnection = true;
-                }
-            }
-            if (mNumAutoResumptionAttemptLeft > 0) {
-                DownloadResumptionScheduler.getDownloadResumptionScheduler(mContext).schedule(
-                        allowMeteredConnection);
-            }
-        }
-        stopSelf();
+    public static DownloadNotificationService getInstance() {
+        return LazyHolder.INSTANCE;
     }
 
-    @Override
-    public int onStartCommand(final Intent intent, int flags, int startId) {
-        if (isDownloadOperationIntent(intent)) {
-            handleDownloadOperation(intent);
-            DownloadResumptionScheduler.getDownloadResumptionScheduler(mContext).cancelTask();
-            // Limit the number of auto resumption attempts in case Chrome falls into a vicious
-            // cycle.
-            if (intent.getAction() == ACTION_DOWNLOAD_RESUME_ALL) {
-                if (mNumAutoResumptionAttemptLeft > 0) {
-                    mNumAutoResumptionAttemptLeft--;
-                    updateResumptionAttemptLeft();
-                }
-            } else {
-                // Reset number of attempts left if the action is triggered by user.
-                mNumAutoResumptionAttemptLeft = MAX_RESUMPTION_ATTEMPT_LEFT;
-                clearResumptionAttemptLeft();
-            }
-        }
-        // This should restart the service after Chrome gets killed. However, this
-        // doesn't work on Android 4.4.2.
-        return START_STICKY;
+    @VisibleForTesting
+    DownloadNotificationService() {
+        mNotificationManager =
+                (NotificationManager) ContextUtils.getApplicationContext().getSystemService(
+                        Context.NOTIFICATION_SERVICE);
+        mDownloadSharedPreferenceHelper = DownloadSharedPreferenceHelper.getInstance();
+        mDownloadForegroundServiceManager = new DownloadForegroundServiceManager();
     }
 
-    @Override
-    public IBinder onBind(Intent intent) {
-        return mBinder;
+    @VisibleForTesting
+    void setDownloadForegroundServiceManager(
+            DownloadForegroundServiceManager downloadForegroundServiceManager) {
+        mDownloadForegroundServiceManager = downloadForegroundServiceManager;
+    }
+
+    /**
+     * @return Whether or not there are any current resumable downloads being tracked.  These
+     *         tracked downloads may not currently be showing notifications.
+     */
+    static boolean isTrackingResumableDownloads(Context context) {
+        List<DownloadSharedPreferenceEntry> entries =
+                DownloadSharedPreferenceHelper.getInstance().getEntries();
+        for (DownloadSharedPreferenceEntry entry : entries) {
+            if (canResumeDownload(context, entry)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Track in-progress downloads here.
+     * @param id The {@link ContentId} of the download that has been started and should be tracked.
+     */
+    private void startTrackingInProgressDownload(ContentId id) {
+        if (!mDownloadsInProgress.contains(id)) mDownloadsInProgress.add(id);
+    }
+
+    /**
+     * Stop tracking the download represented by {@code id}.
+     * @param id                  The {@link ContentId} of the download that has been paused or
+     *                            canceled and shouldn't be tracked.
+     */
+    private void stopTrackingInProgressDownload(ContentId id) {
+        mDownloadsInProgress.remove(id);
+    }
+
+    /**
+     * Adds or updates an in-progress download notification.
+     * @param id                      The {@link ContentId} of the download.
+     * @param fileName                File name of the download.
+     * @param progress                The current download progress.
+     * @param bytesReceived           Total number of bytes received.
+     * @param timeRemainingInMillis   Remaining download time in milliseconds.
+     * @param startTime               Time when download started.
+     * @param isOffTheRecord          Whether the download is off the record.
+     * @param canDownloadWhileMetered Whether the download can happen in metered network.
+     * @param isTransient             Whether or not clicking on the download should launch
+     *                                downloads home.
+     * @param icon                    A {@link Bitmap} to be used as the large icon for display.
+     * @param originalUrl             The original url of the downloaded file.
+     * @param shouldPromoteOrigin     Whether the origin should be displayed in the notification.
+     */
+    @VisibleForTesting
+    public void notifyDownloadProgress(ContentId id, String fileName, Progress progress,
+            long bytesReceived, long timeRemainingInMillis, long startTime, boolean isOffTheRecord,
+            boolean canDownloadWhileMetered, boolean isTransient, Bitmap icon, String originalUrl,
+            boolean shouldPromoteOrigin) {
+        updateActiveDownloadNotification(id, fileName, progress, timeRemainingInMillis, startTime,
+                isOffTheRecord, canDownloadWhileMetered, isTransient, icon, originalUrl,
+                shouldPromoteOrigin, false, PendingState.NOT_PENDING);
+    }
+
+    /**
+     * Adds or updates a pending download notification.
+     * @param id                      The {@link ContentId} of the download.
+     * @param fileName                File name of the download.
+     * @param isOffTheRecord          Whether the download is off the record.
+     * @param canDownloadWhileMetered Whether the download can happen in metered network.
+     * @param isTransient             Whether or not clicking on the download should launch
+     *                                downloads home.
+     * @param icon                    A {@link Bitmap} to be used as the large icon for display.
+     * @param originalUrl             The original url of the downloaded file.
+     * @param shouldPromoteOrigin     Whether the origin should be displayed in the notification.
+     * @param pendingState            Reason download is pending.
+     */
+    void notifyDownloadPending(ContentId id, String fileName, boolean isOffTheRecord,
+            boolean canDownloadWhileMetered, boolean isTransient, Bitmap icon, String originalUrl,
+            boolean shouldPromoteOrigin, boolean hasUserGesture, @PendingState int pendingState) {
+        updateActiveDownloadNotification(id, fileName, Progress.createIndeterminateProgress(), 0, 0,
+                isOffTheRecord, canDownloadWhileMetered, isTransient, icon, originalUrl,
+                shouldPromoteOrigin, hasUserGesture, pendingState);
+    }
+
+    /**
+     * Helper method to update the notification for an active download, the download is either in
+     * progress or pending.
+     * @param id                      The {@link ContentId} of the download.
+     * @param fileName                File name of the download.
+     * @param progress                The current download progress.
+     * @param timeRemainingInMillis   Remaining download time in milliseconds or -1 if it is
+     *                                unknown.
+     * @param startTime               Time when download started.
+     * @param isOffTheRecord          Whether the download is off the record.
+     * @param canDownloadWhileMetered Whether the download can happen in metered network.
+     * @param isTransient             Whether or not clicking on the download should launch
+     *                                downloads home.
+     * @param icon                    A {@link Bitmap} to be used as the large icon for display.
+     * @param originalUrl             The original url of the downloaded file.
+     * @param shouldPromoteOrigin     Whether the origin should be displayed in the notification.
+     * @param pendingState            Reason download is pending.
+     */
+    private void updateActiveDownloadNotification(ContentId id, String fileName, Progress progress,
+            long timeRemainingInMillis, long startTime, boolean isOffTheRecord,
+            boolean canDownloadWhileMetered, boolean isTransient, Bitmap icon, String originalUrl,
+            boolean shouldPromoteOrigin, boolean hasUserGesture, @PendingState int pendingState) {
+        int notificationId = getNotificationId(id);
+        Context context = ContextUtils.getApplicationContext();
+
+        DownloadUpdate downloadUpdate = new DownloadUpdate.Builder()
+                                                .setContentId(id)
+                                                .setFileName(fileName)
+                                                .setProgress(progress)
+                                                .setTimeRemainingInMillis(timeRemainingInMillis)
+                                                .setStartTime(startTime)
+                                                .setIsOffTheRecord(isOffTheRecord)
+                                                .setIsTransient(isTransient)
+                                                .setIcon(icon)
+                                                .setOriginalUrl(originalUrl)
+                                                .setShouldPromoteOrigin(shouldPromoteOrigin)
+                                                .setNotificationId(notificationId)
+                                                .setPendingState(pendingState)
+                                                .build();
+        Notification notification = DownloadNotificationFactory.buildNotification(
+                context, DownloadStatus.IN_PROGRESS, downloadUpdate, notificationId);
+        updateNotification(notificationId, notification, id,
+                new DownloadSharedPreferenceEntry(id, notificationId, isOffTheRecord,
+                        canDownloadWhileMetered, fileName, true, isTransient));
+
+        mDownloadForegroundServiceManager.updateDownloadStatus(
+                context, DownloadStatus.IN_PROGRESS, notificationId, notification);
+
+        startTrackingInProgressDownload(id);
+    }
+
+    public void cancelNotification(int notificationId) {
+        // TODO(b/65052774): Add back NOTIFICATION_NAMESPACE when able to.
+        mNotificationManager.cancel(notificationId);
+    }
+
+    /**
+     * Removes a download notification and all associated tracking.  This method relies on the
+     * caller to provide the notification id, which is useful in the case where the internal
+     * tracking doesn't exist (e.g. in the case of a successful download, where we show the download
+     * completed notification and remove our internal state tracking).
+     * @param notificationId Notification ID of the download
+     * @param id The {@link ContentId} of the download.
+     */
+    public void cancelNotification(int notificationId, ContentId id) {
+        cancelNotification(notificationId);
+        mDownloadSharedPreferenceHelper.removeSharedPreferenceEntry(id);
+
+        stopTrackingInProgressDownload(id);
+    }
+
+    /**
+     * Called when a download is canceled.  This method uses internal tracking to try to find the
+     * notification id to cancel.
+     * @param id The {@link ContentId} of the download.
+     */
+    @VisibleForTesting
+    public void notifyDownloadCanceled(ContentId id, boolean hasUserGesture) {
+        DownloadSharedPreferenceEntry entry =
+                mDownloadSharedPreferenceHelper.getDownloadSharedPreferenceEntry(id);
+        if (entry == null) return;
+
+        cancelNotification(entry.notificationId, id);
+        mDownloadForegroundServiceManager.updateDownloadStatus(ContextUtils.getApplicationContext(),
+                DownloadStatus.CANCELLED, entry.notificationId, null);
+    }
+
+    /**
+     * Change a download notification to paused state.
+     * @param id                  The {@link ContentId} of the download.
+     * @param fileName            File name of the download.
+     * @param isResumable         Whether download can be resumed.
+     * @param isAutoResumable     Whether download is can be resumed automatically.
+     * @param isOffTheRecord      Whether the download is off the record.
+     * @param isTransient         Whether or not clicking on the download should launch downloads
+     * home.
+     * @param icon                A {@link Bitmap} to be used as the large icon for display.
+     * @param originalUrl         The original url of the downloaded file.
+     * @param shouldPromoteOrigin Whether the origin should be displayed in the notification.
+     * @param forceRebuild        Whether the notification was forcibly relaunched.
+     * @param pendingState        Reason download is pending.
+     */
+    @VisibleForTesting
+    void notifyDownloadPaused(ContentId id, String fileName, boolean isResumable,
+            boolean isAutoResumable, boolean isOffTheRecord, boolean isTransient, Bitmap icon,
+            String originalUrl, boolean shouldPromoteOrigin, boolean hasUserGesture,
+            boolean forceRebuild, @PendingState int pendingState) {
+        DownloadSharedPreferenceEntry entry =
+                mDownloadSharedPreferenceHelper.getDownloadSharedPreferenceEntry(id);
+        if (!isResumable) {
+            // TODO(cmsy): Use correct FailState.
+            notifyDownloadFailed(id, fileName, icon, originalUrl, shouldPromoteOrigin,
+                    isOffTheRecord, FailState.CANNOT_DOWNLOAD);
+            return;
+        }
+        // If download is already paused, do nothing.
+        if (entry != null && !entry.isAutoResumable && !forceRebuild) return;
+        boolean canDownloadWhileMetered = entry == null ? false : entry.canDownloadWhileMetered;
+        // If download is interrupted due to network disconnection, show download pending state.
+        if (isAutoResumable || pendingState != PendingState.NOT_PENDING) {
+            notifyDownloadPending(id, fileName, isOffTheRecord, canDownloadWhileMetered,
+                    isTransient, icon, originalUrl, shouldPromoteOrigin, hasUserGesture,
+                    pendingState);
+            stopTrackingInProgressDownload(id);
+            return;
+        }
+        int notificationId = entry == null ? getNotificationId(id) : entry.notificationId;
+        Context context = ContextUtils.getApplicationContext();
+
+        DownloadUpdate downloadUpdate = new DownloadUpdate.Builder()
+                                                .setContentId(id)
+                                                .setFileName(fileName)
+                                                .setIsOffTheRecord(isOffTheRecord)
+                                                .setIsTransient(isTransient)
+                                                .setIcon(icon)
+                                                .setOriginalUrl(originalUrl)
+                                                .setShouldPromoteOrigin(shouldPromoteOrigin)
+                                                .setNotificationId(notificationId)
+                                                .build();
+
+        Notification notification = DownloadNotificationFactory.buildNotification(
+                context, DownloadStatus.PAUSED, downloadUpdate, notificationId);
+        updateNotification(notificationId, notification, id,
+                new DownloadSharedPreferenceEntry(id, notificationId, isOffTheRecord,
+                        canDownloadWhileMetered, fileName, isAutoResumable, isTransient));
+
+        mDownloadForegroundServiceManager.updateDownloadStatus(
+                context, DownloadStatus.PAUSED, notificationId, notification);
+
+        stopTrackingInProgressDownload(id);
+    }
+
+    /**
+     * Add a download successful notification.
+     * @param id                  The {@link ContentId} of the download.
+     * @param filePath            Full path to the download.
+     * @param fileName            Filename of the download.
+     * @param systemDownloadId    Download ID assigned by system DownloadManager.
+     * @param isSupportedMimeType Whether the MIME type can be viewed inside browser.
+     * @param isOpenable          Whether or not this download can be opened.
+     * @param icon                A {@link Bitmap} to be used as the large icon for display.
+     * @param originalUrl         The original url of the downloaded file.
+     * @param shouldPromoteOrigin Whether the origin should be displayed in the notification.
+     * @param referrer            Referrer of the downloaded file.
+     * @param totalBytes          The total number of bytes downloaded (size of file).
+     * @return                    ID of the successful download notification. Used for removing the
+     *                            notification when user click on the snackbar.
+     */
+    @VisibleForTesting
+    public int notifyDownloadSuccessful(ContentId id, String filePath, String fileName,
+            long systemDownloadId, boolean isOffTheRecord, boolean isSupportedMimeType,
+            boolean isOpenable, Bitmap icon, String originalUrl, boolean shouldPromoteOrigin,
+            String referrer, long totalBytes) {
+        Context context = ContextUtils.getApplicationContext();
+        int notificationId = getNotificationId(id);
+        boolean needsDefaultIcon = icon == null || isOffTheRecord;
+        if (mDownloadSuccessLargeIcon == null && needsDefaultIcon) {
+            Bitmap bitmap =
+                    BitmapFactory.decodeResource(context.getResources(), R.drawable.offline_pin);
+            mDownloadSuccessLargeIcon = getLargeNotificationIcon(bitmap);
+        }
+        if (needsDefaultIcon) icon = mDownloadSuccessLargeIcon;
+
+        DownloadUpdate downloadUpdate = new DownloadUpdate.Builder()
+                                                .setContentId(id)
+                                                .setFileName(fileName)
+                                                .setFilePath(filePath)
+                                                .setSystemDownload(systemDownloadId)
+                                                .setIsOffTheRecord(isOffTheRecord)
+                                                .setIsSupportedMimeType(isSupportedMimeType)
+                                                .setIsOpenable(isOpenable)
+                                                .setIcon(icon)
+                                                .setNotificationId(notificationId)
+                                                .setOriginalUrl(originalUrl)
+                                                .setShouldPromoteOrigin(shouldPromoteOrigin)
+                                                .setReferrer(referrer)
+                                                .setTotalBytes(totalBytes)
+                                                .build();
+        Notification notification = DownloadNotificationFactory.buildNotification(
+                context, DownloadStatus.COMPLETED, downloadUpdate, notificationId);
+
+        updateNotification(notificationId, notification, id, null);
+        mDownloadForegroundServiceManager.updateDownloadStatus(
+                context, DownloadStatus.COMPLETED, notificationId, notification);
+        stopTrackingInProgressDownload(id);
+        return notificationId;
+    }
+
+    /**
+     * Add a download failed notification.
+     * @param id                  The {@link ContentId} of the download.
+     * @param fileName            Filename of the download.
+     * @param icon                A {@link Bitmap} to be used as the large icon for display.
+     * @param originalUrl         The original url of the downloaded file.
+     * @param shouldPromoteOrigin Whether the origin should be displayed in the notification.
+     * @param isOffTheRecord      If the profile is off the record.
+     * @param failState           Reason why download failed.
+     */
+    @VisibleForTesting
+    public void notifyDownloadFailed(ContentId id, String fileName, Bitmap icon, String originalUrl,
+            boolean shouldPromoteOrigin, boolean isOffTheRecord, @FailState int failState) {
+        // If the download is not in history db, fileName could be empty. Get it from
+        // SharedPreferences.
+        if (TextUtils.isEmpty(fileName)) {
+            DownloadSharedPreferenceEntry entry =
+                    mDownloadSharedPreferenceHelper.getDownloadSharedPreferenceEntry(id);
+            if (entry == null) return;
+            fileName = entry.fileName;
+        }
+
+        int notificationId = getNotificationId(id);
+        Context context = ContextUtils.getApplicationContext();
+
+        DownloadUpdate downloadUpdate = new DownloadUpdate.Builder()
+                                                .setContentId(id)
+                                                .setFileName(fileName)
+                                                .setIcon(icon)
+                                                .setIsOffTheRecord(isOffTheRecord)
+                                                .setOriginalUrl(originalUrl)
+                                                .setShouldPromoteOrigin(shouldPromoteOrigin)
+                                                .setFailState(failState)
+                                                .build();
+        Notification notification = DownloadNotificationFactory.buildNotification(
+                context, DownloadStatus.FAILED, downloadUpdate, notificationId);
+
+        updateNotification(notificationId, notification, id, null);
+        mDownloadForegroundServiceManager.updateDownloadStatus(
+                context, DownloadStatus.FAILED, notificationId, notification);
+
+        stopTrackingInProgressDownload(id);
+    }
+
+    private Bitmap getLargeNotificationIcon(Bitmap bitmap) {
+        Resources resources = ContextUtils.getApplicationContext().getResources();
+        int height = (int) resources.getDimension(android.R.dimen.notification_large_icon_height);
+        int width = (int) resources.getDimension(android.R.dimen.notification_large_icon_width);
+        final OvalShape circle = new OvalShape();
+        circle.resize(width, height);
+        final Paint paint = new Paint();
+        paint.setColor(ApiCompatibilityUtils.getColor(resources, R.color.google_blue_grey_500));
+
+        final Bitmap result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(result);
+        circle.draw(canvas, paint);
+        float leftOffset = (width - bitmap.getWidth()) / 2f;
+        float topOffset = (height - bitmap.getHeight()) / 2f;
+        if (leftOffset >= 0 && topOffset >= 0) {
+            canvas.drawBitmap(bitmap, leftOffset, topOffset, null);
+        } else {
+            // Scale down the icon into the notification icon dimensions
+            canvas.drawBitmap(bitmap, new Rect(0, 0, bitmap.getWidth(), bitmap.getHeight()),
+                    new Rect(0, 0, width, height), null);
+        }
+        return result;
+    }
+
+    @VisibleForTesting
+    void updateNotification(int id, Notification notification) {
+        // TODO(b/65052774): Add back NOTIFICATION_NAMESPACE when able to.
+        // Disabling StrictMode to avoid violations (crbug.com/789134).
+        try (StrictModeContext unused = StrictModeContext.allowDiskReads()) {
+            mNotificationManager.notify(id, notification);
+        }
+    }
+
+    private void updateNotification(int notificationId, Notification notification, ContentId id,
+            DownloadSharedPreferenceEntry entry) {
+        updateNotification(notificationId, notification);
+        trackNotificationUma(id, notification);
+
+        if (entry != null) {
+            mDownloadSharedPreferenceHelper.addOrReplaceSharedPreferenceEntry(entry);
+        } else {
+            mDownloadSharedPreferenceHelper.removeSharedPreferenceEntry(id);
+        }
+    }
+
+    private void trackNotificationUma(ContentId id, Notification notification) {
+        // Check if we already have an entry in the DownloadSharedPreferenceHelper.  This is a
+        // reasonable indicator for whether or not a notification is already showing (or at least if
+        // we had built one for this download before.
+        if (mDownloadSharedPreferenceHelper.hasEntry(id)) return;
+        NotificationUmaTracker.getInstance().onNotificationShown(
+                LegacyHelpers.isLegacyOfflinePage(id)
+                        ? NotificationUmaTracker.SystemNotificationType.DOWNLOAD_PAGES
+                        : NotificationUmaTracker.SystemNotificationType.DOWNLOAD_FILES,
+                notification);
+
+        // Record the number of other notifications when there's a new notification.
+        DownloadNotificationUmaHelper.recordExistingNotificationsCountHistogram(
+                mDownloadSharedPreferenceHelper.getEntries().size(), true /* withForeground */);
+    }
+
+    private static boolean canResumeDownload(Context context, DownloadSharedPreferenceEntry entry) {
+        if (entry == null) return false;
+        if (!entry.isAutoResumable) return false;
+
+        boolean isNetworkMetered = DownloadManagerService.isActiveNetworkMetered(context);
+        return entry.canDownloadWhileMetered || !isNetworkMetered;
+    }
+
+    /**
+     * Resumes all pending downloads from SharedPreferences. If a download is
+     * already in progress, do nothing.
+     */
+    void resumeAllPendingDownloads() {
+        if (FeatureUtilities.isDownloadAutoResumptionEnabledInNative()) return;
+
+        // Limit the number of auto resumption attempts in case Chrome falls into a vicious cycle.
+        DownloadResumptionScheduler.getDownloadResumptionScheduler().cancel();
+        int numAutoResumptionAtemptLeft = getResumptionAttemptLeft();
+        if (numAutoResumptionAtemptLeft <= 0) return;
+
+        numAutoResumptionAtemptLeft--;
+        updateResumptionAttemptLeft(numAutoResumptionAtemptLeft);
+
+        // Go through and check which downloads to resume.
+        List<DownloadSharedPreferenceEntry> entries = mDownloadSharedPreferenceHelper.getEntries();
+        for (int i = 0; i < entries.size(); ++i) {
+            DownloadSharedPreferenceEntry entry = entries.get(i);
+            if (!canResumeDownload(ContextUtils.getApplicationContext(), entry)) continue;
+            if (mDownloadsInProgress.contains(entry.id)) continue;
+            notifyDownloadPending(entry.id, entry.fileName, entry.isOffTheRecord,
+                    entry.canDownloadWhileMetered, entry.isTransient, null, null, false, false,
+                    PendingState.PENDING_NETWORK);
+
+            Intent intent = new Intent();
+            intent.setAction(ACTION_DOWNLOAD_RESUME);
+            intent.putExtra(EXTRA_DOWNLOAD_CONTENTID_ID, entry.id.id);
+            intent.putExtra(EXTRA_DOWNLOAD_CONTENTID_NAMESPACE, entry.id.namespace);
+
+            resumeDownload(intent);
+        }
+    }
+
+    @VisibleForTesting
+    void resumeDownload(Intent intent) {
+        DownloadBroadcastManager.startDownloadBroadcastManager(
+                ContextUtils.getApplicationContext(), intent);
+    }
+
+    /**
+     * Return the notification ID for the given download {@link ContentId}.
+     * @param id the {@link ContentId} of the download.
+     * @return notification ID to be used.
+     */
+    private int getNotificationId(ContentId id) {
+        DownloadSharedPreferenceEntry entry =
+                mDownloadSharedPreferenceHelper.getDownloadSharedPreferenceEntry(id);
+        if (entry != null) return entry.notificationId;
+        return getNextNotificationId();
+    }
+
+    /**
+     * Get the next notificationId based on stored value and update shared preferences.
+     * @return notificationId that is next based on stored value.
+     */
+    private static int getNextNotificationId() {
+        SharedPreferences sharedPreferences = ContextUtils.getAppSharedPreferences();
+        int nextNotificationId = sharedPreferences.getInt(
+                KEY_NEXT_DOWNLOAD_NOTIFICATION_ID, STARTING_NOTIFICATION_ID);
+        int nextNextNotificationId = nextNotificationId == Integer.MAX_VALUE
+                ? STARTING_NOTIFICATION_ID
+                : nextNotificationId + 1;
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+        editor.putInt(KEY_NEXT_DOWNLOAD_NOTIFICATION_ID, nextNextNotificationId);
+        editor.apply();
+        return nextNotificationId;
+    }
+
+    static int getNewNotificationIdFor(int oldNotificationId) {
+        int newNotificationId = getNextNotificationId();
+        DownloadSharedPreferenceHelper downloadSharedPreferenceHelper =
+                DownloadSharedPreferenceHelper.getInstance();
+        List<DownloadSharedPreferenceEntry> entries = downloadSharedPreferenceHelper.getEntries();
+        for (DownloadSharedPreferenceEntry entry : entries) {
+            if (entry.notificationId == oldNotificationId) {
+                DownloadSharedPreferenceEntry newEntry = new DownloadSharedPreferenceEntry(entry.id,
+                        newNotificationId, entry.isOffTheRecord, entry.canDownloadWhileMetered,
+                        entry.fileName, entry.isAutoResumable, entry.isTransient);
+                downloadSharedPreferenceHelper.addOrReplaceSharedPreferenceEntry(
+                        newEntry, true /* forceCommit */);
+                break;
+            }
+        }
+        return newNotificationId;
     }
 
     /**
      * Helper method to update the remaining number of background resumption attempts left.
-     * @param attamptLeft Number of attempt left.
      */
-    private void updateResumptionAttemptLeft() {
-        SharedPreferences.Editor editor = mSharedPrefs.edit();
-        editor.putInt(AUTO_RESUMPTION_ATTEMPT_LEFT, mNumAutoResumptionAttemptLeft);
-        editor.apply();
+    private static void updateResumptionAttemptLeft(int numAutoResumptionAttemptLeft) {
+        ContextUtils.getAppSharedPreferences()
+                .edit()
+                .putInt(KEY_AUTO_RESUMPTION_ATTEMPT_LEFT, numAutoResumptionAttemptLeft)
+                .apply();
+    }
+
+    /**
+     * Helper method to get the remaining number of background resumption attempts left.
+     */
+    private static int getResumptionAttemptLeft() {
+        SharedPreferences sharedPrefs = ContextUtils.getAppSharedPreferences();
+        return sharedPrefs.getInt(KEY_AUTO_RESUMPTION_ATTEMPT_LEFT, MAX_RESUMPTION_ATTEMPT_LEFT);
     }
 
     /**
      * Helper method to clear the remaining number of background resumption attempts left.
      */
     static void clearResumptionAttemptLeft() {
-        SharedPreferences SharedPrefs = ContextUtils.getAppSharedPreferences();
-        SharedPreferences.Editor editor = SharedPrefs.edit();
-        editor.remove(AUTO_RESUMPTION_ATTEMPT_LEFT);
-        editor.apply();
+        ContextUtils.getAppSharedPreferences()
+                .edit()
+                .remove(KEY_AUTO_RESUMPTION_ATTEMPT_LEFT)
+                .apply();
     }
 
-    /**
-     * Add a in-progress download notification.
-     * @param downloadGuid GUID of the download.
-     * @param fileName File name of the download.
-     * @param percentage Percentage completed. Value should be between 0 to 100 if
-     *        the percentage can be determined, or -1 if it is unknown.
-     * @param timeRemainingInMillis Remaining download time in milliseconds.
-     * @param startTime Time when download started.
-     * @param isResumable Whether the download can be resumed.
-     * @param canDownloadWhileMetered Whether the download can happen in metered network.
-     */
-    public void notifyDownloadProgress(String downloadGuid, String fileName, int percentage,
-            long timeRemainingInMillis, long startTime, boolean isResumable,
-            boolean canDownloadWhileMetered) {
-        boolean indeterminate = percentage == INVALID_DOWNLOAD_PERCENTAGE;
-        NotificationCompat.Builder builder = buildNotification(
-                android.R.drawable.stat_sys_download, fileName, null);
-        builder.setOngoing(true).setProgress(100, percentage, indeterminate);
-        builder.setPriority(Notification.PRIORITY_HIGH);
-        if (!indeterminate) {
-            NumberFormat formatter = NumberFormat.getPercentInstance(Locale.getDefault());
-            String percentText = formatter.format(percentage / 100.0);
-            String duration = formatRemainingTime(mContext, timeRemainingInMillis);
-            builder.setContentText(duration);
-            if (Build.VERSION.CODENAME.equals("N")
-                    || Build.VERSION.SDK_INT > Build.VERSION_CODES.M) {
-                builder.setSubText(percentText);
-            } else {
-                builder.setContentInfo(percentText);
-            }
-        }
-        int notificationId = getNotificationId(downloadGuid);
-        addOrReplaceSharedPreferenceEntry(new DownloadSharedPreferenceEntry(
-                notificationId, isResumable, canDownloadWhileMetered, downloadGuid, fileName));
-        if (startTime > 0) builder.setWhen(startTime);
-        builder.addAction(R.drawable.bookmark_cancel_active,
-                mContext.getResources().getString(R.string.download_notification_cancel_button),
-                buildPendingIntent(ACTION_DOWNLOAD_CANCEL, notificationId, downloadGuid, fileName,
-                        false));
-        if (isResumable) {
-            builder.addAction(R.drawable.ic_vidcontrol_pause,
-                    mContext.getResources().getString(R.string.download_notification_pause_button),
-                    buildPendingIntent(ACTION_DOWNLOAD_PAUSE, notificationId, downloadGuid,
-                            fileName, false));
-        }
-        updateNotification(notificationId, builder.build());
-        if (!mDownloadsInProgress.contains(downloadGuid)) {
-            mDownloadsInProgress.add(downloadGuid);
+    void onForegroundServiceRestarted(int pinnedNotificationId) {
+        // In API < 24, notifications pinned to the foreground will get killed with the service.
+        // Fix this by relaunching the notification that was pinned to the service as the service
+        // dies, if there is one.
+        relaunchPinnedNotification(pinnedNotificationId);
+
+        updateNotificationsForShutdown();
+        resumeAllPendingDownloads();
+    }
+
+    void onForegroundServiceTaskRemoved() {
+        // If we've lost all Activities, cancel the off the record downloads.
+        if (ApplicationStatus.isEveryActivityDestroyed()) {
+            cancelOffTheRecordDownloads();
         }
     }
 
-    /**
-     * Cancel a download notification.
-     * @notificationId Notification ID of the download
-     * @param downloadGuid GUID of the download.
-     */
-    @VisibleForTesting
-    void cancelNotification(int notificaitonId, String downloadGuid) {
-        mNotificationManager.cancel(NOTIFICATION_NAMESPACE, notificaitonId);
-        removeSharedPreferenceEntry(downloadGuid);
-        mDownloadsInProgress.remove(downloadGuid);
+    void onForegroundServiceDestroyed() {
+        updateNotificationsForShutdown();
+        rescheduleDownloads();
     }
 
     /**
-     * Called when a download is canceled.
-     * @param downloadGuid GUID of the download.
+     * Given the id of the notification that was pinned to the service when it died, give the
+     * notification a new id in order to rebuild and relaunch the notification.
+     * @param pinnedNotificationId Id of the notification pinned to the service when it died.
      */
-    public void notifyDownloadCanceled(String downloadGuid) {
-        DownloadSharedPreferenceEntry entry = getDownloadSharedPreferenceEntry(downloadGuid);
-        if (entry == null) return;
-        cancelNotification(entry.notificationId, downloadGuid);
-    }
+    private void relaunchPinnedNotification(int pinnedNotificationId) {
+        // If there was no notification pinned to the service, no correction is necessary.
+        if (pinnedNotificationId == INVALID_NOTIFICATION_ID) return;
 
-    /**
-     * Change a download notification to paused state.
-     * @param downloadGuid GUID of the download.
-     * @param isAutoResumable whether download is can be resumed automatically.
-     */
-    public void notifyDownloadPaused(String downloadGuid, boolean isAutoResumable) {
-        DownloadSharedPreferenceEntry entry = getDownloadSharedPreferenceEntry(downloadGuid);
-        if (entry == null) return;
-        NotificationCompat.Builder builder = buildNotification(
-                android.R.drawable.ic_media_pause, entry.fileName,
-                mContext.getResources().getString(R.string.download_notification_paused));
-        PendingIntent cancelIntent = buildPendingIntent(ACTION_DOWNLOAD_CANCEL,
-                entry.notificationId, entry.downloadGuid, entry.fileName, false);
-        PendingIntent dismissIntent = buildPendingIntent(ACTION_DOWNLOAD_CANCEL,
-                entry.notificationId, entry.downloadGuid, entry.fileName, true);
-        builder.setDeleteIntent(dismissIntent);
-        builder.addAction(R.drawable.bookmark_cancel_active,
-                mContext.getResources().getString(R.string.download_notification_cancel_button),
-                cancelIntent);
-        if (entry.isResumable) {
-            builder.addAction(R.drawable.ic_get_app_white_24dp,
-                    mContext.getResources().getString(
-                            R.string.download_notification_resume_button),
-                    buildPendingIntent(ACTION_DOWNLOAD_RESUME, entry.notificationId,
-                            entry.downloadGuid, entry.fileName, false));
-        }
-        updateNotification(entry.notificationId, builder.build());
-        // If download is not auto resumable, there is no need to keep it in SharedPreferences.
-        if (!entry.isResumable || !isAutoResumable) {
-            removeSharedPreferenceEntry(downloadGuid);
-        }
-        mDownloadsInProgress.remove(downloadGuid);
-    }
+        List<DownloadSharedPreferenceEntry> entries = mDownloadSharedPreferenceHelper.getEntries();
+        List<DownloadSharedPreferenceEntry> copies =
+                new ArrayList<DownloadSharedPreferenceEntry>(entries);
+        for (DownloadSharedPreferenceEntry entry : copies) {
+            if (entry.notificationId == pinnedNotificationId) {
+                // Get new notification id that is not associated with the service.
+                DownloadSharedPreferenceEntry updatedEntry =
+                        new DownloadSharedPreferenceEntry(entry.id, getNextNotificationId(),
+                                entry.isOffTheRecord, entry.canDownloadWhileMetered, entry.fileName,
+                                entry.isAutoResumable, entry.isTransient);
+                mDownloadSharedPreferenceHelper.addOrReplaceSharedPreferenceEntry(updatedEntry);
 
-    /**
-     * Add a download successful notification.
-     * @param downloadGuid GUID of the download.
-     * @param fileName GUID of the download.
-     * @param intent Intent to launch when clicking the notification.
-     * @return ID of the successful download notification. Used for removing the notification when
-     *         user click on the snackbar.
-     */
-    public int notifyDownloadSuccessful(String downloadGuid, String fileName, Intent intent) {
-        int notificationId = getNotificationId(downloadGuid);
-        NotificationCompat.Builder builder = buildNotification(
-                android.R.drawable.stat_sys_download_done, fileName,
-                mContext.getResources().getString(R.string.download_notification_completed));
-        if (intent != null) {
-            builder.setContentIntent(PendingIntent.getActivity(
-                    mContext, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT));
-        }
-        updateNotification(notificationId, builder.build());
-        removeSharedPreferenceEntry(downloadGuid);
-        mDownloadsInProgress.remove(downloadGuid);
-        return notificationId;
-    }
-
-    /**
-     * Add a download failed notification.
-     * @param downloadGuid GUID of the download.
-     * @param fileName GUID of the download.
-     */
-    public void notifyDownloadFailed(String downloadGuid, String fileName) {
-        // If the download is not in history db, fileName could be empty. Get it from
-        // SharedPreferences.
-        if (TextUtils.isEmpty(fileName)) {
-            DownloadSharedPreferenceEntry entry = getDownloadSharedPreferenceEntry(downloadGuid);
-            if (entry == null) return;
-            fileName = entry.fileName;
-        }
-
-        int notificationId = getNotificationId(downloadGuid);
-        NotificationCompat.Builder builder = buildNotification(
-                android.R.drawable.stat_sys_download_done, fileName,
-                mContext.getResources().getString(R.string.download_notification_failed));
-        updateNotification(notificationId, builder.build());
-        removeSharedPreferenceEntry(downloadGuid);
-        mDownloadsInProgress.remove(downloadGuid);
-    }
-
-    /**
-     * Called to pause all the download notifications.
-     */
-    @VisibleForTesting
-    void pauseAllDownloads() {
-        for (int i = 0; i < mDownloadSharedPreferenceEntries.size(); ++i) {
-            DownloadSharedPreferenceEntry entry = mDownloadSharedPreferenceEntries.get(i);
-            notifyDownloadPaused(entry.downloadGuid, true);
-        }
-    }
-
-    /**
-     * Helper method to build a PendingIntent from the provided information.
-     * @param action Download action to perform.
-     * @param notificationId ID of the notification.
-     * @param downloadGuid GUID of the download.
-     * @param fileName Name of the download file.
-     * @param isNotificationDismissed Whether the intent is from dismissing the notification.
-     */
-    private PendingIntent buildPendingIntent(
-            String action, int notificationId, String downloadGuid, String fileName,
-            boolean isNotificationDismissed) {
-        ComponentName component = new ComponentName(
-                mContext.getPackageName(), DownloadBroadcastReceiver.class.getName());
-        Intent intent = new Intent(action);
-        intent.setComponent(component);
-        intent.putExtra(EXTRA_DOWNLOAD_NOTIFICATION_ID, notificationId);
-        intent.putExtra(EXTRA_DOWNLOAD_GUID, downloadGuid);
-        intent.putExtra(EXTRA_DOWNLOAD_FILE_NAME, fileName);
-        intent.putExtra(EXTRA_NOTIFICATION_DISMISSED, isNotificationDismissed);
-        return PendingIntent.getBroadcast(
-                mContext, notificationId, intent, PendingIntent.FLAG_UPDATE_CURRENT);
-    }
-
-    /**
-     * Builds a notification to be displayed.
-     * @param iconId Id of the notification icon.
-     * @param title Title of the notification.
-     * @param contentText Notification content text to be displayed.
-     * @return notification builder that builds the notification to be displayed
-     */
-    private NotificationCompat.Builder buildNotification(
-            int iconId, String title, String contentText) {
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(mContext)
-                .setContentTitle(title)
-                .setSmallIcon(iconId)
-                .setLocalOnly(true)
-                .setAutoCancel(true)
-                .setContentText(contentText);
-        return builder;
-    }
-
-    /**
-     * Retrives DownloadSharedPreferenceEntry from a download action intent.
-     * @param intent Intent that contains the download action.
-     */
-    private DownloadSharedPreferenceEntry getDownloadEntryFromIntent(Intent intent) {
-        if (intent.getAction() == ACTION_DOWNLOAD_RESUME_ALL) return null;
-        String guid = IntentUtils.safeGetStringExtra(
-                intent, DownloadNotificationService.EXTRA_DOWNLOAD_GUID);
-        DownloadSharedPreferenceEntry entry = getDownloadSharedPreferenceEntry(guid);
-        if (entry != null) return entry;
-        int notificationId = IntentUtils.safeGetIntExtra(
-                intent, DownloadNotificationService.EXTRA_DOWNLOAD_NOTIFICATION_ID, -1);
-        String fileName = IntentUtils.safeGetStringExtra(
-                intent, DownloadNotificationService.EXTRA_DOWNLOAD_FILE_NAME);
-        boolean metered = DownloadManagerService.isActiveNetworkMetered(mContext);
-        return new DownloadSharedPreferenceEntry(notificationId, true, metered, guid, fileName);
-    }
-
-    /**
-     * Helper method to launch the browser process and handle a download operation that is included
-     * in the given intent.
-     * @param intent Intent with the download operation.
-     */
-    private void handleDownloadOperation(final Intent intent) {
-        final DownloadSharedPreferenceEntry entry = getDownloadEntryFromIntent(intent);
-        if (intent.getAction() == ACTION_DOWNLOAD_PAUSE) {
-            // If browser process already goes away, the download should have already paused. Do
-            // nothing in that case.
-            if (!DownloadManagerService.hasDownloadManagerService()) {
-                notifyDownloadPaused(entry.downloadGuid, false);
+                // Right now this only happens in the paused case, so re-build and re-launch the
+                // paused notification, with the updated notification id..
+                notifyDownloadPaused(updatedEntry.id, updatedEntry.fileName, true /* isResumable */,
+                        updatedEntry.isAutoResumable, updatedEntry.isOffTheRecord,
+                        updatedEntry.isTransient, null /* icon */, null /* originalUrl */,
+                        false /* shouldPromoteOrigin */, true /* hasUserGesture */,
+                        true /* forceRebuild */, PendingState.NOT_PENDING);
                 return;
             }
-        } else if (intent.getAction() == ACTION_DOWNLOAD_RESUME) {
-            boolean metered = DownloadManagerService.isActiveNetworkMetered(mContext);
-            if (!entry.canDownloadWhileMetered) {
-                // If user manually resumes a download, update the network type if it
-                // is not metered previously.
-                entry.canDownloadWhileMetered = metered;
-            }
-            // Update the SharedPreference entry.
-            addOrReplaceSharedPreferenceEntry(entry);
-        } else if (intent.getAction() == ACTION_DOWNLOAD_RESUME_ALL
-                && (mDownloadSharedPreferenceEntries.isEmpty()
-                        || DownloadManagerService.hasDownloadManagerService())) {
-            return;
-        }
-
-        BrowserParts parts = new EmptyBrowserParts() {
-            @Override
-            public boolean shouldStartGpuProcess() {
-                return false;
-            }
-
-            @Override
-            public void finishNativeInitialization() {
-                DownloadManagerService service =
-                        DownloadManagerService.getDownloadManagerService(getApplicationContext());
-                switch (intent.getAction()) {
-                    case ACTION_DOWNLOAD_CANCEL:
-                        // TODO(qinmin): Alternatively, we can delete the downloaded content on
-                        // SD card, and remove the download ID from the SharedPreferences so we
-                        // don't need to restart the browser process. http://crbug.com/579643.
-                        cancelNotification(entry.notificationId, entry.downloadGuid);
-                        service.cancelDownload(entry.downloadGuid, IntentUtils.safeGetBooleanExtra(
-                                intent, EXTRA_NOTIFICATION_DISMISSED, false));
-                        break;
-                    case ACTION_DOWNLOAD_PAUSE:
-                        service.pauseDownload(entry.downloadGuid);
-                        break;
-                    case ACTION_DOWNLOAD_RESUME:
-                        notifyDownloadProgress(entry.downloadGuid, entry.fileName,
-                                INVALID_DOWNLOAD_PERCENTAGE, 0, 0, true,
-                                entry.canDownloadWhileMetered);
-                        service.resumeDownload(entry.buildDownloadItem(), true);
-                        break;
-                    case ACTION_DOWNLOAD_RESUME_ALL:
-                        assert entry == null;
-                        resumeAllPendingDownloads();
-                        break;
-                    default:
-                        Log.e(TAG, "Unrecognized intent action.", intent);
-                        break;
-                }
-            }
-        };
-        try {
-            ChromeBrowserInitializer.getInstance(mContext).handlePreNativeStartup(parts);
-            ChromeBrowserInitializer.getInstance(mContext).handlePostNativeStartup(true, parts);
-        } catch (ProcessInitException e) {
-            Log.e(TAG, "Unable to load native library.", e);
-            ChromeApplication.reportStartupErrorAndExit(e);
         }
     }
 
-    /**
-     * Update the notification with id.
-     * @param id Id of the notification that has to be updated.
-     * @param notification the notification object that needs to be updated.
-     */
-    @VisibleForTesting
-    void updateNotification(int id, Notification notification) {
-        mNotificationManager.notify(NOTIFICATION_NAMESPACE, id, notification);
-    }
-
-    /**
-     * Checks if an intent requires operations on a download.
-     * @param intent An intent to validate.
-     * @return true if the intent requires actions, or false otherwise.
-     */
-    static boolean isDownloadOperationIntent(Intent intent) {
-        if (intent == null) return false;
-        if (ACTION_DOWNLOAD_RESUME_ALL.equals(intent.getAction())) return true;
-        if (!ACTION_DOWNLOAD_CANCEL.equals(intent.getAction())
-                && !ACTION_DOWNLOAD_RESUME.equals(intent.getAction())
-                && !ACTION_DOWNLOAD_PAUSE.equals(intent.getAction())) {
-            return false;
-        }
-        if (!intent.hasExtra(EXTRA_DOWNLOAD_NOTIFICATION_ID)
-                || !intent.hasExtra(EXTRA_DOWNLOAD_FILE_NAME)
-                || !intent.hasExtra(EXTRA_DOWNLOAD_GUID)) {
-            return false;
-        }
-        final int notificationId =
-                IntentUtils.safeGetIntExtra(intent, EXTRA_DOWNLOAD_NOTIFICATION_ID, -1);
-        if (notificationId == -1) return false;
-        final String fileName = IntentUtils.safeGetStringExtra(intent, EXTRA_DOWNLOAD_FILE_NAME);
-        if (fileName == null) return false;
-        final String guid = IntentUtils.safeGetStringExtra(intent, EXTRA_DOWNLOAD_GUID);
-        if (!DownloadSharedPreferenceEntry.isValidGUID(guid)) return false;
-        return true;
-    }
-
-    /**
-     * Adds a DownloadSharedPreferenceEntry to SharedPrefs. If an entry with the GUID already exists
-     * in SharedPrefs, update it if it has changed.
-     * @param DownloadSharedPreferenceEntry A DownloadSharedPreferenceEntry to be added.
-     */
-    private void addOrReplaceSharedPreferenceEntry(DownloadSharedPreferenceEntry pendingEntry) {
-        Iterator<DownloadSharedPreferenceEntry> iterator =
-                mDownloadSharedPreferenceEntries.iterator();
-        while (iterator.hasNext()) {
-            DownloadSharedPreferenceEntry entry = iterator.next();
-            if (entry.downloadGuid.equals(pendingEntry.downloadGuid)) {
-                if (entry.equals(pendingEntry)) return;
-                iterator.remove();
-                break;
-            }
-        }
-        mDownloadSharedPreferenceEntries.add(pendingEntry);
-        storeDownloadSharedPreferenceEntries();
-    }
-
-    /**
-     * Removes a DownloadSharedPreferenceEntry from SharedPrefs given by the GUID.
-     * @param guid Download GUID to be removed.
-     */
-    private void removeSharedPreferenceEntry(String guid) {
-        Iterator<DownloadSharedPreferenceEntry> iterator =
-                mDownloadSharedPreferenceEntries.iterator();
-        boolean found = false;
-        while (iterator.hasNext()) {
-            DownloadSharedPreferenceEntry entry = iterator.next();
-            if (entry.downloadGuid.equals(guid)) {
-                iterator.remove();
-                found = true;
-                break;
-            }
-        }
-        if (found) {
-            storeDownloadSharedPreferenceEntries();
+    private void updateNotificationsForShutdown() {
+        cancelOffTheRecordDownloads();
+        List<DownloadSharedPreferenceEntry> entries = mDownloadSharedPreferenceHelper.getEntries();
+        for (DownloadSharedPreferenceEntry entry : entries) {
+            if (entry.isOffTheRecord) continue;
+            // Move all regular downloads to pending.  Don't propagate the pause because
+            // if native is still working and it triggers an update, then the service will be
+            // restarted.
+            notifyDownloadPaused(entry.id, entry.fileName, true, true, false, entry.isTransient,
+                    null, null, false, false, false, PendingState.PENDING_NETWORK);
         }
     }
 
-    /**
-     * Resumes all pending downloads from |mDownloadSharedPreferenceEntries|. If a download is
-     * already in progress, do nothing.
-     */
-    public void resumeAllPendingDownloads() {
-        boolean isNetworkMetered = DownloadManagerService.isActiveNetworkMetered(mContext);
-        if (!DownloadManagerService.hasDownloadManagerService()) return;
-        DownloadManagerService service =
-                DownloadManagerService.getDownloadManagerService(getApplicationContext());
-        for (int i = 0; i < mDownloadSharedPreferenceEntries.size(); ++i) {
-            DownloadSharedPreferenceEntry entry = mDownloadSharedPreferenceEntries.get(i);
-            if (!entry.canDownloadWhileMetered && isNetworkMetered) continue;
-            if (mDownloadsInProgress.contains(entry.downloadGuid)) continue;
-            notifyDownloadProgress(entry.downloadGuid, entry.fileName,
-                    INVALID_DOWNLOAD_PERCENTAGE, 0, 0, true, entry.canDownloadWhileMetered);
-            service.resumeDownload(entry.buildDownloadItem(), false);
-        }
-    }
+    private void cancelOffTheRecordDownloads() {
+        boolean cancelActualDownload =
+                BrowserStartupController.get(LibraryProcessType.PROCESS_BROWSER)
+                        .isStartupSuccessfullyCompleted()
+                && Profile.getLastUsedProfile().hasOffTheRecordProfile();
 
-    /**
-     * Parse a list of the DownloadSharedPreferenceEntry and the number of auto resumption attempt
-     * left from the shared preference.
-     */
-    void parseDownloadSharedPrefs() {
-        mNumAutoResumptionAttemptLeft = mSharedPrefs.getInt(AUTO_RESUMPTION_ATTEMPT_LEFT,
-                MAX_RESUMPTION_ATTEMPT_LEFT);
-        if (!mSharedPrefs.contains(PENDING_DOWNLOAD_NOTIFICATIONS)) return;
-        Set<String> entries = DownloadManagerService.getStoredDownloadInfo(
-                mSharedPrefs, PENDING_DOWNLOAD_NOTIFICATIONS);
-        for (String entryString : entries) {
-            DownloadSharedPreferenceEntry entry =
-                    DownloadSharedPreferenceEntry.parseFromString(entryString);
-            if (entry.notificationId > 0) {
-                mDownloadSharedPreferenceEntries.add(
-                        DownloadSharedPreferenceEntry.parseFromString(entryString));
+        List<DownloadSharedPreferenceEntry> entries = mDownloadSharedPreferenceHelper.getEntries();
+        List<DownloadSharedPreferenceEntry> copies =
+                new ArrayList<DownloadSharedPreferenceEntry>(entries);
+        for (DownloadSharedPreferenceEntry entry : copies) {
+            if (!entry.isOffTheRecord) continue;
+            ContentId id = entry.id;
+            notifyDownloadCanceled(id, false);
+            if (cancelActualDownload) {
+                DownloadServiceDelegate delegate = getServiceDelegate(id);
+                delegate.cancelDownload(id, true);
+                delegate.destroyServiceDelegate();
             }
         }
     }
 
-    /**
-     * Gets a DownloadSharedPreferenceEntry that has the given GUID.
-     * @param guid GUID to query.
-     * @return a DownloadSharedPreferenceEntry that has the specified GUID.
-     */
-    private DownloadSharedPreferenceEntry getDownloadSharedPreferenceEntry(String guid) {
-        for (int i = 0; i < mDownloadSharedPreferenceEntries.size(); ++i) {
-            if (mDownloadSharedPreferenceEntries.get(i).downloadGuid.equals(guid)) {
-                return mDownloadSharedPreferenceEntries.get(i);
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Helper method to store all the SharedPreferences entries.
-     */
-    private void storeDownloadSharedPreferenceEntries() {
-        Set<String> entries = new HashSet<String>();
-        for (int i = 0; i < mDownloadSharedPreferenceEntries.size(); ++i) {
-            entries.add(mDownloadSharedPreferenceEntries.get(i).getSharedPreferenceString());
-        }
-        DownloadManagerService.storeDownloadInfo(
-                mSharedPrefs, PENDING_DOWNLOAD_NOTIFICATIONS, entries);
-    }
-
-    /**
-     * Return the notification ID for the given download GUID.
-     * @return notification ID to be used.
-     */
-    private int getNotificationId(String downloadGuid) {
-        DownloadSharedPreferenceEntry entry = getDownloadSharedPreferenceEntry(downloadGuid);
-        if (entry != null) return entry.notificationId;
-        int notificationId = mNextNotificationId;
-        mNextNotificationId = mNextNotificationId == Integer.MAX_VALUE
-                ? STARTING_NOTIFICATION_ID : mNextNotificationId + 1;
-        SharedPreferences.Editor editor = mSharedPrefs.edit();
-        editor.putInt(NEXT_DOWNLOAD_NOTIFICATION_ID, mNextNotificationId);
-        editor.apply();
-        return notificationId;
-    }
-
-    /**
-     * Format remaining time for the given millis, in the following format:
-     * 5 hours; will include 1 unit, can go down to seconds precision.
-     * This is similar to what android.java.text.Formatter.formatShortElapsedTime() does. Don't use
-     * ui::TimeFormat::Simple() as it is very expensive.
-     *
-     * @param context the application context.
-     * @param millis the remaining time in milli seconds.
-     * @return the formatted remaining time.
-     */
-    public static String formatRemainingTime(Context context, long millis) {
-        long secondsLong = millis / 1000;
-
-        int days = 0;
-        int hours = 0;
-        int minutes = 0;
-        if (secondsLong >= SECONDS_PER_DAY) {
-            days = (int) (secondsLong / SECONDS_PER_DAY);
-            secondsLong -= (long) days * SECONDS_PER_DAY;
-        }
-        if (secondsLong >= SECONDS_PER_HOUR) {
-            hours = (int) (secondsLong / SECONDS_PER_HOUR);
-            secondsLong -= (long) hours * SECONDS_PER_HOUR;
-        }
-        if (secondsLong >= SECONDS_PER_MINUTE) {
-            minutes = (int) (secondsLong / SECONDS_PER_MINUTE);
-            secondsLong -= (long) minutes * SECONDS_PER_MINUTE;
-        }
-        int seconds = (int) secondsLong;
-
-        if (days >= 2) {
-            days += (hours + 12) / 24;
-            return context.getString(R.string.remaining_duration_days, days);
-        } else if (days > 0) {
-            return context.getString(R.string.remaining_duration_one_day);
-        } else if (hours >= 2) {
-            hours += (minutes + 30) / 60;
-            return context.getString(R.string.remaining_duration_hours, hours);
-        } else if (hours > 0) {
-            return context.getString(R.string.remaining_duration_one_hour);
-        } else if (minutes >= 2) {
-            minutes += (seconds + 30) / 60;
-            return context.getString(R.string.remaining_duration_minutes, minutes);
-        } else if (minutes > 0) {
-            return context.getString(R.string.remaining_duration_one_minute);
-        } else if (seconds == 1) {
-            return context.getString(R.string.remaining_duration_one_second);
-        } else {
-            return context.getString(R.string.remaining_duration_seconds, seconds);
-        }
+    private void rescheduleDownloads() {
+        if (getResumptionAttemptLeft() <= 0) return;
+        DownloadResumptionScheduler.getDownloadResumptionScheduler().scheduleIfNecessary();
     }
 }

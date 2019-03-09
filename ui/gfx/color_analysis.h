@@ -98,15 +98,51 @@ GFX_EXPORT SkColor
 GFX_EXPORT SkColor CalculateKMeanColorOfPNG(
     scoped_refptr<base::RefCountedMemory> png);
 
-// Returns an SkColor that represents the calculated dominant color in the
-// image. See CalculateKMeanColorOfPNG() for details.
+// Computes a dominant color for the first |height| rows of |bitmap| using the
+// above algorithm and a reasonable default sampler. If |find_closest| is true,
+// the returned color will be the closest color to the true K-mean color that
+// actually appears in the image; if false, the true color is returned
+// regardless of whether it actually appears.
 GFX_EXPORT SkColor CalculateKMeanColorOfBitmap(const SkBitmap& bitmap,
+                                               int height,
                                                const HSL& lower_bound,
                                                const HSL& upper_bound,
-                                               KMeanImageSampler* sampler);
+                                               bool find_closest);
+
 // Computes a dominant color using the above algorithm and reasonable defaults
 // for |lower_bound|, |upper_bound| and |sampler|.
 GFX_EXPORT SkColor CalculateKMeanColorOfBitmap(const SkBitmap& bitmap);
+
+// These enums specify general values to look for when calculating prominent
+// colors from an image. For example, a "light vibrant" prominent color would
+// tend to be brighter and more saturated. The best combination of color
+// attributes depends on how you plan to apply the color.
+enum class LumaRange {
+  LIGHT,
+  NORMAL,
+  DARK,
+};
+
+enum class SaturationRange {
+  VIBRANT,
+  MUTED,
+};
+
+struct ColorProfile {
+  ColorProfile() = default;
+  ColorProfile(LumaRange l, SaturationRange s) : luma(l), saturation(s) {}
+
+  LumaRange luma = LumaRange::DARK;
+  SaturationRange saturation = SaturationRange::MUTED;
+};
+
+// Returns a vector of RGB colors that represents the bitmap based on the
+// |color_profiles| provided. For each value, if a value is succesfully
+// calculated, the calculated value is fully opaque. For failure, the calculated
+// value is transparent.
+GFX_EXPORT std::vector<SkColor> CalculateProminentColorsOfBitmap(
+    const SkBitmap& bitmap,
+    const std::vector<ColorProfile>& color_profiles);
 
 // Compute color covariance matrix for the input bitmap.
 GFX_EXPORT gfx::Matrix3F ComputeColorCovariance(const SkBitmap& bitmap);

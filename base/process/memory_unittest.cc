@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "base/allocator/allocator_check.h"
+#include "base/allocator/buildflags.h"
 #include "base/compiler_specific.h"
 #include "base/debug/alias.h"
 #include "base/memory/aligned_memory.h"
@@ -26,7 +27,8 @@
 #endif
 #if defined(OS_MACOSX)
 #include <malloc/malloc.h>
-#include "base/mac/mac_util.h"
+#include "base/allocator/allocator_interception_mac.h"
+#include "base/allocator/allocator_shim.h"
 #include "base/process/memory_unittest_mac.h"
 #endif
 #if defined(OS_LINUX)
@@ -36,7 +38,7 @@
 
 #if defined(OS_WIN)
 
-#if defined(_MSC_VER)
+#if defined(COMPILER_MSVC)
 // ssize_t needed for OutOfMemoryTest.
 #if defined(_WIN64)
 typedef __int64 ssize_t;
@@ -59,6 +61,9 @@ typedef BOOL (WINAPI* HeapQueryFn)  \
 // will fail.
 
 TEST(ProcessMemoryTest, MacTerminateOnHeapCorruption) {
+#if BUILDFLAG(USE_ALLOCATOR_SHIM)
+  base::allocator::InitializeAllocatorShim();
+#endif
   // Assert that freeing an unallocated pointer will crash the process.
   char buf[9];
   asm("" : "=r" (buf));  // Prevent clang from being too smart.
@@ -74,39 +79,57 @@ TEST(ProcessMemoryTest, MacTerminateOnHeapCorruption) {
 #else
   ADD_FAILURE() << "This test is not supported in this build configuration.";
 #endif
+
+#if BUILDFLAG(USE_ALLOCATOR_SHIM)
+  base::allocator::UninterceptMallocZonesForTesting();
+#endif
 }
 
 #endif  // defined(OS_MACOSX)
 
 TEST(MemoryTest, AllocatorShimWorking) {
+#if defined(OS_MACOSX)
+#if BUILDFLAG(USE_ALLOCATOR_SHIM)
+  base::allocator::InitializeAllocatorShim();
+#endif
+  base::allocator::InterceptAllocationsMac();
+#endif
   ASSERT_TRUE(base::allocator::IsAllocatorInitialized());
+
+#if defined(OS_MACOSX)
+  base::allocator::UninterceptMallocZonesForTesting();
+#endif
 }
 
-// Android doesn't implement set_new_handler, so we can't use the
-// OutOfMemoryTest cases. OpenBSD does not support these tests either.
-// Don't test these on ASan/TSan/MSan configurations: only test the real
-// allocator.
+// OpenBSD does not support these tests. Don't test these on ASan/TSan/MSan
+// configurations: only test the real allocator.
 // Windows only supports these tests with the allocator shim in place.
-#if !defined(OS_ANDROID) && !defined(OS_OPENBSD) &&   \
-    !(defined(OS_WIN) && !defined(ALLOCATOR_SHIM)) && \
+#if !defined(OS_OPENBSD) && BUILDFLAG(USE_ALLOCATOR_SHIM) && \
     !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
 
 namespace {
-const char *kOomRegex = "Out of memory";
+#if defined(OS_WIN)
+// Windows raises an exception rather than using LOG(FATAL) in order to make the
+// exit code unique to OOM.
+const char* kOomRegex = "";
+const int kExitCode = base::win::kOomExceptionCode;
+#else
+const char* kOomRegex = "Out of memory";
+const int kExitCode = 1;
+#endif
 }  // namespace
 
 class OutOfMemoryTest : public testing::Test {
  public:
   OutOfMemoryTest()
-    : value_(NULL),
-    // Make test size as large as possible minus a few pages so
-    // that alignment or other rounding doesn't make it wrap.
-    test_size_(std::numeric_limits<std::size_t>::max() - 12 * 1024),
-    // A test size that is > 2Gb and will cause the allocators to reject
-    // the allocation due to security restrictions. See crbug.com/169327.
-    insecure_test_size_(std::numeric_limits<int>::max()),
-    signed_test_size_(std::numeric_limits<ssize_t>::max()) {
-  }
+      : value_(nullptr),
+        // Make test size as large as possible minus a few pages so
+        // that alignment or other rounding doesn't make it wrap.
+        test_size_(std::numeric_limits<std::size_t>::max() - 12 * 1024),
+        // A test size that is > 2Gb and will cause the allocators to reject
+        // the allocation due to security restrictions. See crbug.com/169327.
+        insecure_test_size_(std::numeric_limits<int>::max()),
+        signed_test_size_(std::numeric_limits<ssize_t>::max()) {}
 
  protected:
   void* value_;
@@ -118,6 +141,10 @@ class OutOfMemoryTest : public testing::Test {
 class OutOfMemoryDeathTest : public OutOfMemoryTest {
  public:
   void SetUpInDeathAssert() {
+#if defined(OS_MACOSX) && BUILDFLAG(USE_ALLOCATOR_SHIM)
+    base::allocator::InitializeAllocatorShim();
+#endif
+
     // Must call EnableTerminationOnOutOfMemory() because that is called from
     // chrome's main function and therefore hasn't been called yet.
     // Since this call may result in another thread being created and death
@@ -125,115 +152,144 @@ class OutOfMemoryDeathTest : public OutOfMemoryTest {
     // should be done inside of the ASSERT_DEATH.
     base::EnableTerminationOnOutOfMemory();
   }
+
+#if defined(OS_MACOSX)
+  void TearDown() override {
+    base::allocator::UninterceptMallocZonesForTesting();
+  }
+#endif
 };
 
 TEST_F(OutOfMemoryDeathTest, New) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = operator new(test_size_);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, NewArray) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = new char[test_size_];
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, Malloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = malloc(test_size_);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, Realloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
-      value_ = realloc(NULL, test_size_);
-    }, kOomRegex);
+      value_ = realloc(nullptr, test_size_);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, Calloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = calloc(1024, test_size_ / 1024L);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, AlignedAlloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = base::AlignedAlloc(test_size_, 8);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 // POSIX does not define an aligned realloc function.
 #if defined(OS_WIN)
 TEST_F(OutOfMemoryDeathTest, AlignedRealloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = _aligned_realloc(NULL, test_size_, 8);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
+}
+
+namespace {
+
+constexpr uint32_t kUnhandledExceptionExitCode = 0xBADA55;
+
+// This unhandled exception filter exits the process with an exit code distinct
+// from the exception code. This is to verify that the out of memory new handler
+// causes an unhandled exception.
+LONG WINAPI ExitingUnhandledExceptionFilter(EXCEPTION_POINTERS* ExceptionInfo) {
+  _exit(kUnhandledExceptionExitCode);
+}
+
+}  // namespace
+
+TEST_F(OutOfMemoryDeathTest, NewHandlerGeneratesUnhandledException) {
+  ASSERT_EXIT(
+      {
+        SetUpInDeathAssert();
+        SetUnhandledExceptionFilter(&ExitingUnhandledExceptionFilter);
+        value_ = new char[test_size_];
+      },
+      testing::ExitedWithCode(kUnhandledExceptionExitCode), kOomRegex);
 }
 #endif  // defined(OS_WIN)
 
-// OS X has no 2Gb allocation limit.
+// OS X and Android have no 2Gb allocation limit.
 // See https://crbug.com/169327.
-#if !defined(OS_MACOSX)
+#if !defined(OS_MACOSX) && !defined(OS_ANDROID)
 TEST_F(OutOfMemoryDeathTest, SecurityNew) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = operator new(insecure_test_size_);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, SecurityNewArray) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = new char[insecure_test_size_];
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, SecurityMalloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = malloc(insecure_test_size_);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, SecurityRealloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
-      value_ = realloc(NULL, insecure_test_size_);
-    }, kOomRegex);
+      value_ = realloc(nullptr, insecure_test_size_);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, SecurityCalloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = calloc(1024, insecure_test_size_ / 1024L);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 TEST_F(OutOfMemoryDeathTest, SecurityAlignedAlloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = base::AlignedAlloc(insecure_test_size_, 8);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 
 // POSIX does not define an aligned realloc function.
 #if defined(OS_WIN)
 TEST_F(OutOfMemoryDeathTest, SecurityAlignedRealloc) {
-  ASSERT_DEATH({
+  ASSERT_EXIT({
       SetUpInDeathAssert();
       value_ = _aligned_realloc(NULL, insecure_test_size_, 8);
-    }, kOomRegex);
+    }, testing::ExitedWithCode(kExitCode), kOomRegex);
 }
 #endif  // defined(OS_WIN)
-#endif  // !defined(OS_MACOSX)
+#endif  // !defined(OS_MACOSX) && !defined(OS_ANDROID)
 
 #if defined(OS_LINUX)
 
@@ -401,39 +457,62 @@ class OutOfMemoryHandledTest : public OutOfMemoryTest {
     // properly by-pass this in order to allow the caller to handle OOM.
     base::EnableTerminationOnOutOfMemory();
   }
+
+  void TearDown() override {
+#if defined(OS_MACOSX)
+    base::allocator::UninterceptMallocZonesForTesting();
+#endif
+  }
 };
+
+#if defined(OS_WIN)
+
+namespace {
+
+DWORD HandleOutOfMemoryException(EXCEPTION_POINTERS* exception_ptrs,
+                                 size_t expected_size) {
+  EXPECT_EQ(base::win::kOomExceptionCode,
+            exception_ptrs->ExceptionRecord->ExceptionCode);
+  EXPECT_LE(1U, exception_ptrs->ExceptionRecord->NumberParameters);
+  EXPECT_EQ(expected_size,
+            exception_ptrs->ExceptionRecord->ExceptionInformation[0]);
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
+}  // namespace
+
+TEST_F(OutOfMemoryTest, TerminateBecauseOutOfMemoryReportsAllocSize) {
+// On Windows, TerminateBecauseOutOfMemory reports the attempted allocation
+// size in the exception raised.
+#if defined(ARCH_CPU_64_BITS)
+  // Test with a size larger than 32 bits on 64 bit machines.
+  const size_t kAttemptedAllocationSize = 0xBADA55F00DULL;
+#else
+  const size_t kAttemptedAllocationSize = 0xBADA55;
+#endif
+
+  __try {
+    base::TerminateBecauseOutOfMemory(kAttemptedAllocationSize);
+  } __except (HandleOutOfMemoryException(GetExceptionInformation(),
+                                         kAttemptedAllocationSize)) {
+  }
+}
+#endif  // OS_WIN
 
 // TODO(b.kelemen): make UncheckedMalloc and UncheckedCalloc work
 // on Windows as well.
-// UncheckedMalloc() and UncheckedCalloc() work as regular malloc()/calloc()
-// under sanitizer tools.
-#if !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
 TEST_F(OutOfMemoryHandledTest, UncheckedMalloc) {
-#if defined(OS_MACOSX) && ARCH_CPU_32_BITS
-  // The Mavericks malloc library changed in a way which breaks the tricks used
-  // to implement EnableTerminationOnOutOfMemory() with UncheckedMalloc() under
-  // 32-bit.  The 64-bit malloc library works as desired without tricks.
-  if (base::mac::IsOSMavericksOrLater())
-    return;
-#endif
   EXPECT_TRUE(base::UncheckedMalloc(kSafeMallocSize, &value_));
-  EXPECT_TRUE(value_ != NULL);
+  EXPECT_TRUE(value_ != nullptr);
   free(value_);
 
   EXPECT_FALSE(base::UncheckedMalloc(test_size_, &value_));
-  EXPECT_TRUE(value_ == NULL);
+  EXPECT_TRUE(value_ == nullptr);
 }
 
 TEST_F(OutOfMemoryHandledTest, UncheckedCalloc) {
-#if defined(OS_MACOSX) && ARCH_CPU_32_BITS
-  // The Mavericks malloc library changed in a way which breaks the tricks used
-  // to implement EnableTerminationOnOutOfMemory() with UncheckedCalloc() under
-  // 32-bit.  The 64-bit malloc library works as desired without tricks.
-  if (base::mac::IsOSMavericksOrLater())
-    return;
-#endif
   EXPECT_TRUE(base::UncheckedCalloc(1, kSafeMallocSize, &value_));
-  EXPECT_TRUE(value_ != NULL);
+  EXPECT_TRUE(value_ != nullptr);
   const char* bytes = static_cast<const char*>(value_);
   for (size_t i = 0; i < kSafeMallocSize; ++i)
     EXPECT_EQ(0, bytes[i]);
@@ -441,15 +520,14 @@ TEST_F(OutOfMemoryHandledTest, UncheckedCalloc) {
 
   EXPECT_TRUE(
       base::UncheckedCalloc(kSafeCallocItems, kSafeCallocSize, &value_));
-  EXPECT_TRUE(value_ != NULL);
+  EXPECT_TRUE(value_ != nullptr);
   bytes = static_cast<const char*>(value_);
   for (size_t i = 0; i < (kSafeCallocItems * kSafeCallocSize); ++i)
     EXPECT_EQ(0, bytes[i]);
   free(value_);
 
   EXPECT_FALSE(base::UncheckedCalloc(1, test_size_, &value_));
-  EXPECT_TRUE(value_ == NULL);
+  EXPECT_TRUE(value_ == nullptr);
 }
-#endif  // !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
-#endif  // !defined(OS_ANDROID) && !defined(OS_OPENBSD) && !(defined(OS_WIN) &&
-        // !defined(ALLOCATOR_SHIM)) && !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#endif  // !defined(OS_OPENBSD) && BUILDFLAG(ENABLE_WIN_ALLOCATOR_SHIM_TESTS) &&
+        // !defined(MEMORY_TOOL_REPLACES_ALLOCATOR)

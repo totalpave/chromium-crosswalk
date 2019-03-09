@@ -8,8 +8,8 @@
 
 #include "base/callback.h"
 #include "base/logging.h"
-#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "base/stl_util.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "net/base/net_errors.h"
@@ -91,7 +91,7 @@ bool GetDomainReliabilityBeaconStatus(
   }
 
   // TODO(juliatuttle): Consider sorting and using binary search?
-  for (size_t i = 0; i < arraysize(net_error_map); i++) {
+  for (size_t i = 0; i < base::size(net_error_map); i++) {
     if (net_error_map[i].net_error == net_error) {
       *beacon_status_out = net_error_map[i].beacon_status;
       return true;
@@ -113,12 +113,29 @@ std::string GetDomainReliabilityProtocol(
     case net::HttpResponseInfo::CONNECTION_INFO_HTTP1_1:
       return ssl_info_populated ? "HTTPS" : "HTTP";
     case net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_SPDY2:
-    case net::HttpResponseInfo::CONNECTION_INFO_SPDY3:
-    case net::HttpResponseInfo::CONNECTION_INFO_HTTP2_14:
-    case net::HttpResponseInfo::CONNECTION_INFO_HTTP2_15:
+    case net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_SPDY3:
+    case net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_HTTP2_14:
+    case net::HttpResponseInfo::CONNECTION_INFO_DEPRECATED_HTTP2_15:
     case net::HttpResponseInfo::CONNECTION_INFO_HTTP2:
       return "SPDY";
-    case net::HttpResponseInfo::CONNECTION_INFO_QUIC1_SPDY3:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_UNKNOWN_VERSION:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_32:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_33:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_34:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_35:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_36:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_37:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_38:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_39:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_40:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_41:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_42:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_43:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_44:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_45:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_46:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_47:
+    case net::HttpResponseInfo::CONNECTION_INFO_QUIC_99:
       return "QUIC";
     case net::HttpResponseInfo::NUM_OF_CONNECTION_INFOS:
       NOTREACHED();
@@ -164,22 +181,23 @@ void GetUploadResultFromResponseDetails(
   return;
 }
 
-// N.B. This uses a ScopedVector because that's what JSONValueConverter uses
-// for repeated fields of any type, and Config uses JSONValueConverter to parse
-// JSON configs.
-GURL SanitizeURLForReport(const GURL& beacon_url,
-                          const GURL& collector_url,
-                          const ScopedVector<std::string>& path_prefixes) {
+// N.B. This uses a std::vector<std::unique_ptr<>> because that's what
+// JSONValueConverter uses for repeated fields of any type, and Config uses
+// JSONValueConverter to parse JSON configs.
+GURL SanitizeURLForReport(
+    const GURL& beacon_url,
+    const GURL& collector_url,
+    const std::vector<std::unique_ptr<std::string>>& path_prefixes) {
   if (CanReportFullBeaconURLToCollector(beacon_url, collector_url))
     return beacon_url.GetAsReferrer();
 
   std::string path = beacon_url.path();
   const std::string empty_path;
   const std::string* longest_path_prefix = &empty_path;
-  for (const std::string* path_prefix : path_prefixes) {
+  for (const auto& path_prefix : path_prefixes) {
     if (path.substr(0, path_prefix->length()) == *path_prefix &&
         path_prefix->length() > longest_path_prefix->length()) {
-      longest_path_prefix = path_prefix;
+      longest_path_prefix = path_prefix.get();
     }
   }
 
@@ -196,13 +214,11 @@ namespace {
 
 class ActualTimer : public MockableTime::Timer {
  public:
-  // Initialize base timer with retain_user_info and is_repeating false.
-  ActualTimer() : base_timer_(false, false) {}
-
+  ActualTimer() {}
   ~ActualTimer() override {}
 
   // MockableTime::Timer implementation:
-  void Start(const tracked_objects::Location& posted_from,
+  void Start(const base::Location& posted_from,
              base::TimeDelta delay,
              const base::Closure& user_task) override {
     base_timer_.Start(posted_from, delay, user_task);
@@ -213,7 +229,7 @@ class ActualTimer : public MockableTime::Timer {
   bool IsRunning() override { return base_timer_.IsRunning(); }
 
  private:
-  base::Timer base_timer_;
+  base::OneShotTimer base_timer_;
 };
 
 }  // namespace
@@ -227,8 +243,12 @@ MockableTime::MockableTime() {}
 ActualTime::ActualTime() {}
 ActualTime::~ActualTime() {}
 
-base::Time ActualTime::Now() { return base::Time::Now(); }
-base::TimeTicks ActualTime::NowTicks() { return base::TimeTicks::Now(); }
+base::Time ActualTime::Now() const {
+  return base::Time::Now();
+}
+base::TimeTicks ActualTime::NowTicks() const {
+  return base::TimeTicks::Now();
+}
 
 std::unique_ptr<MockableTime::Timer> ActualTime::CreateTimer() {
   return std::unique_ptr<MockableTime::Timer>(new ActualTimer());

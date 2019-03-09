@@ -16,11 +16,10 @@ PlatformFileAttachment::PlatformFileAttachment(base::PlatformFile file)
 PlatformFileAttachment::PlatformFileAttachment(base::ScopedFD file)
     : file_(file.get()), owning_(std::move(file)) {}
 
-PlatformFileAttachment::~PlatformFileAttachment() {
-}
+PlatformFileAttachment::~PlatformFileAttachment() = default;
 
 MessageAttachment::Type PlatformFileAttachment::GetType() const {
-  return TYPE_PLATFORM_FILE;
+  return Type::PLATFORM_FILE;
 }
 
 base::PlatformFile PlatformFileAttachment::TakePlatformFile() {
@@ -30,7 +29,7 @@ base::PlatformFile PlatformFileAttachment::TakePlatformFile() {
 
 base::PlatformFile GetPlatformFile(
     scoped_refptr<MessageAttachment> attachment) {
-  DCHECK_EQ(attachment->GetType(), MessageAttachment::TYPE_PLATFORM_FILE);
+  DCHECK_EQ(attachment->GetType(), MessageAttachment::Type::PLATFORM_FILE);
   return static_cast<PlatformFileAttachment*>(attachment.get())->file();
 }
 

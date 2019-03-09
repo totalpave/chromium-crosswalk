@@ -9,7 +9,7 @@
 #include "base/base64.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
@@ -105,12 +105,10 @@ std::string CreateSecurePasswordHash(const std::string& salt,
 
   // Library call to create secure password hash as SymmetricKey (uses PBKDF2).
   std::unique_ptr<crypto::SymmetricKey> password_key(
-      crypto::SymmetricKey::DeriveKeyFromPassword(
+      crypto::SymmetricKey::DeriveKeyFromPasswordUsingPbkdf2(
           crypto::SymmetricKey::AES, password, salt, encoding.iteration_count,
           encoding.hash_bits));
-  std::string password_hash;
-  const bool success = password_key->GetRawKey(&password_hash);
-  DCHECK(success);
+  std::string password_hash = password_key->key();
   DCHECK_EQ(encoding.hash_bytes, password_hash.length());
 
   UMA_HISTOGRAM_TIMES("PasswordHash.CreateTime",
@@ -166,12 +164,6 @@ bool DecodePasswordHashRecord(const std::string& encoded,
 std::string LocalAuth::TruncateStringByBits(const std::string& str,
                                             const size_t len_bits) {
   return ::TruncateStringByBits(str, len_bits);
-}
-
-void LocalAuth::RegisterLocalAuthPrefs(
-    user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterStringPref(prefs::kGoogleServicesPasswordHash,
-                               std::string());
 }
 
 void LocalAuth::SetLocalAuthCredentialsWithEncoding(

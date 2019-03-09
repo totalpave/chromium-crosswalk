@@ -4,31 +4,31 @@
 
 #include "ios/chrome/browser/infobars/infobar_manager_impl.h"
 
-#include <utility>
-
+#include "base/logging.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "components/infobars/core/infobar.h"
-#include "components/infobars/core/infobar_delegate.h"
 #include "ios/chrome/browser/infobars/infobar_utils.h"
-#include "ios/web/public/load_committed_details.h"
 #include "ios/web/public/navigation_item.h"
 #include "ios/web/public/navigation_manager.h"
-#include "ios/web/public/web_state/web_state.h"
-#include "ui/base/page_transition_types.h"
+#import "ios/web/public/web_state/navigation_context.h"
+#import "ios/web/public/web_state/web_state.h"
 
-DEFINE_WEB_STATE_USER_DATA_KEY(InfoBarManagerImpl);
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 
-infobars::InfoBarDelegate::NavigationDetails
-NavigationDetailsFromLoadCommittedDetails(
-    const web::LoadCommittedDetails& load_details) {
+infobars::InfoBarDelegate::NavigationDetails CreateNavigationDetails(
+    web::NavigationItem* navigation_item,
+    bool is_same_document) {
   infobars::InfoBarDelegate::NavigationDetails navigation_details;
-  navigation_details.entry_id = load_details.item->GetUniqueID();
-  const ui::PageTransition transition = load_details.item->GetTransitionType();
+  navigation_details.entry_id = navigation_item->GetUniqueID();
+  const ui::PageTransition transition = navigation_item->GetTransitionType();
   navigation_details.is_navigation_to_different_page =
-      ui::PageTransitionIsMainFrame(transition) && !load_details.is_in_page;
-  // web::LoadCommittedDetails doesn't store this information, default to false.
+      ui::PageTransitionIsMainFrame(transition) && !is_same_document;
+  // Default to false, since iOS callbacks do not specify if navigation was a
+  // repace state navigation .
   navigation_details.did_replace_entry = false;
   navigation_details.is_reload =
       ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_RELOAD);
@@ -39,26 +39,26 @@ NavigationDetailsFromLoadCommittedDetails(
 
 }  // namespace
 
-// static
-web::WebState* InfoBarManagerImpl::WebStateFromInfoBar(
-    infobars::InfoBar* infobar) {
-  if (!infobar || !infobar->owner())
-    return nullptr;
-  return static_cast<InfoBarManagerImpl*>(infobar->owner())->web_state();
-}
-
 InfoBarManagerImpl::InfoBarManagerImpl(web::WebState* web_state)
-    : web::WebStateObserver(web_state) {
-  DCHECK(web_state);
+    : web_state_(web_state) {
+  web_state_->AddObserver(this);
 }
 
 InfoBarManagerImpl::~InfoBarManagerImpl() {
   ShutDown();
+
+  // As the object can commit suicide, it is possible that its destructor
+  // is called before WebStateDestroyed. In that case stop observing the
+  // WebState.
+  if (web_state_) {
+    web_state_->RemoveObserver(this);
+    web_state_ = nullptr;
+  }
 }
 
 int InfoBarManagerImpl::GetActiveEntryID() {
   web::NavigationItem* visible_item =
-      web_state()->GetNavigationManager()->GetVisibleItem();
+      web_state_->GetNavigationManager()->GetVisibleItem();
   return visible_item ? visible_item->GetUniqueID() : 0;
 }
 
@@ -67,21 +67,35 @@ std::unique_ptr<infobars::InfoBar> InfoBarManagerImpl::CreateConfirmInfoBar(
   return ::CreateConfirmInfoBar(std::move(delegate));
 }
 
-void InfoBarManagerImpl::NavigationItemCommitted(
-    const web::LoadCommittedDetails& load_details) {
-  OnNavigation(NavigationDetailsFromLoadCommittedDetails(load_details));
+void InfoBarManagerImpl::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  DCHECK_EQ(web_state_, web_state);
+  // TODO(crbug.com/931841): Remove GetLastCommittedItem nil check once
+  // HasComitted has been fixed.
+  if (navigation_context->HasCommitted() &&
+      web_state->GetNavigationManager()->GetLastCommittedItem()) {
+    OnNavigation(CreateNavigationDetails(
+        web_state->GetNavigationManager()->GetLastCommittedItem(),
+        navigation_context->IsSameDocument()));
+  }
 }
 
-void InfoBarManagerImpl::WebStateDestroyed() {
+void InfoBarManagerImpl::WebStateDestroyed(web::WebState* web_state) {
+  DCHECK_EQ(web_state_, web_state);
   // The WebState is going away; be aggressively paranoid and delete this
   // InfoBarManagerImpl lest other parts of the system attempt to add infobars
-  // or use it otherwise during the destruction.
-  web_state()->RemoveUserData(UserDataKey());
-  // That was the equivalent of "delete this". This object is now destroyed;
-  // returning from this function is the only safe thing to do.
+  // or use it otherwise during the destruction. As this is the equivalent of
+  // "delete this", returning from this function is the only safe thing to do.
+  web_state_->RemoveUserData(UserDataKey());
 }
 
 void InfoBarManagerImpl::OpenURL(const GURL& url,
                                  WindowOpenDisposition disposition) {
-  NOTIMPLEMENTED();
+  web::WebState::OpenURLParams params(url, web::Referrer(), disposition,
+                                      ui::PAGE_TRANSITION_LINK,
+                                      /*is_renderer_initiated=*/false);
+  web_state_->OpenURL(params);
 }
+
+WEB_STATE_USER_DATA_KEY_IMPL(InfoBarManagerImpl)

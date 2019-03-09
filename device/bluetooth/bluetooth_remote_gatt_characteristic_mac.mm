@@ -9,8 +9,10 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "device/bluetooth/bluetooth_adapter_mac.h"
+#include "device/bluetooth/bluetooth_adapter_mac_metrics.h"
 #include "device/bluetooth/bluetooth_device_mac.h"
-#include "device/bluetooth/bluetooth_gatt_notify_session_mac.h"
+#include "device/bluetooth/bluetooth_gatt_notify_session.h"
+#include "device/bluetooth/bluetooth_remote_gatt_descriptor_mac.h"
 #include "device/bluetooth/bluetooth_remote_gatt_service_mac.h"
 
 namespace device {
@@ -68,19 +70,28 @@ static BluetoothGattCharacteristic::Properties ConvertProperties(
 BluetoothRemoteGattCharacteristicMac::BluetoothRemoteGattCharacteristicMac(
     BluetoothRemoteGattServiceMac* gatt_service,
     CBCharacteristic* cb_characteristic)
-    : gatt_service_(gatt_service),
+    : is_discovery_complete_(false),
+      discovery_pending_count_(0),
+      gatt_service_(gatt_service),
       cb_characteristic_(cb_characteristic, base::scoped_policy::RETAIN),
-      characteristic_value_read_or_write_in_progress_(false),
-      start_notifications_in_progress_(false),
       weak_ptr_factory_(this) {
-  uuid_ = BluetoothAdapterMac::BluetoothUUIDWithCBUUID(
-      [cb_characteristic_.get() UUID]);
+  uuid_ =
+      BluetoothAdapterMac::BluetoothUUIDWithCBUUID([cb_characteristic_ UUID]);
   identifier_ = base::SysNSStringToUTF8(
       [NSString stringWithFormat:@"%s-%p", uuid_.canonical_value().c_str(),
-                                 (void*)cb_characteristic_]);
+                                 cb_characteristic_.get()]);
 }
 
-BluetoothRemoteGattCharacteristicMac::~BluetoothRemoteGattCharacteristicMac() {}
+BluetoothRemoteGattCharacteristicMac::~BluetoothRemoteGattCharacteristicMac() {
+  if (HasPendingRead()) {
+    read_characteristic_value_callbacks_.second.Run(
+        BluetoothGattService::GATT_ERROR_FAILED);
+  }
+  if (HasPendingWrite()) {
+    write_characteristic_value_callbacks_.second.Run(
+        BluetoothGattService::GATT_ERROR_FAILED);
+  }
+}
 
 std::string BluetoothRemoteGattCharacteristicMac::GetIdentifier() const {
   return identifier_;
@@ -92,7 +103,7 @@ BluetoothUUID BluetoothRemoteGattCharacteristicMac::GetUUID() const {
 
 BluetoothGattCharacteristic::Properties
 BluetoothRemoteGattCharacteristicMac::GetProperties() const {
-  return ConvertProperties(cb_characteristic_.get().properties);
+  return ConvertProperties([cb_characteristic_ properties]);
 }
 
 BluetoothGattCharacteristic::Permissions
@@ -113,202 +124,277 @@ BluetoothRemoteGattService* BluetoothRemoteGattCharacteristicMac::GetService()
 }
 
 bool BluetoothRemoteGattCharacteristicMac::IsNotifying() const {
-  return cb_characteristic_.get().isNotifying == YES;
-}
-
-std::vector<BluetoothRemoteGattDescriptor*>
-BluetoothRemoteGattCharacteristicMac::GetDescriptors() const {
-  NOTIMPLEMENTED();
-  return std::vector<BluetoothRemoteGattDescriptor*>();
-}
-
-BluetoothRemoteGattDescriptor*
-BluetoothRemoteGattCharacteristicMac::GetDescriptor(
-    const std::string& identifier) const {
-  NOTIMPLEMENTED();
-  return nullptr;
-}
-
-void BluetoothRemoteGattCharacteristicMac::StartNotifySession(
-    const NotifySessionCallback& callback,
-    const ErrorCallback& error_callback) {
-  if (IsNotifying()) {
-    VLOG(2) << "Already notifying. Creating notify session.";
-    std::unique_ptr<BluetoothGattNotifySessionMac> notify_session(
-        new BluetoothGattNotifySessionMac(weak_ptr_factory_.GetWeakPtr()));
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(callback, base::Passed(std::move(notify_session))));
-    return;
-  }
-
-  if (!SupportsNotificationsOrIndications()) {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(error_callback,
-                   BluetoothRemoteGattService::GATT_ERROR_NOT_SUPPORTED));
-    return;
-  }
-
-  start_notify_session_callbacks_.push_back(
-      std::make_pair(callback, error_callback));
-
-  if (start_notifications_in_progress_) {
-    VLOG(2) << "Start Notifications already in progress. "
-            << "Request has been queued.";
-    return;
-  }
-
-  [gatt_service_->GetCBPeripheral() setNotifyValue:YES
-                                 forCharacteristic:cb_characteristic_.get()];
-  start_notifications_in_progress_ = true;
+  return [cb_characteristic_ isNotifying] == YES;
 }
 
 void BluetoothRemoteGattCharacteristicMac::ReadRemoteCharacteristic(
     const ValueCallback& callback,
     const ErrorCallback& error_callback) {
   if (!IsReadable()) {
+    VLOG(1) << *this << ": Characteristic not readable.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(error_callback,
-                   BluetoothRemoteGattService::GATT_ERROR_NOT_SUPPORTED));
+        base::BindOnce(error_callback,
+                       BluetoothRemoteGattService::GATT_ERROR_NOT_SUPPORTED));
     return;
   }
-  if (characteristic_value_read_or_write_in_progress_) {
+  if (HasPendingRead() || HasPendingWrite()) {
+    VLOG(1) << *this << ": Characteristic read already in progress.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(error_callback,
-                   BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS));
+        base::BindOnce(error_callback,
+                       BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS));
     return;
   }
-  characteristic_value_read_or_write_in_progress_ = true;
+  VLOG(1) << *this << ": Read characteristic.";
   read_characteristic_value_callbacks_ =
       std::make_pair(callback, error_callback);
-  [gatt_service_->GetCBPeripheral()
-      readValueForCharacteristic:cb_characteristic_];
+  [GetCBPeripheral() readValueForCharacteristic:cb_characteristic_];
 }
 
 void BluetoothRemoteGattCharacteristicMac::WriteRemoteCharacteristic(
-    const std::vector<uint8_t>& new_value,
+    const std::vector<uint8_t>& value,
     const base::Closure& callback,
     const ErrorCallback& error_callback) {
   if (!IsWritable()) {
+    VLOG(1) << *this << ": Characteristic not writable.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(error_callback,
-                   BluetoothRemoteGattService::GATT_ERROR_NOT_PERMITTED));
+        base::BindOnce(error_callback,
+                       BluetoothRemoteGattService::GATT_ERROR_NOT_PERMITTED));
     return;
   }
-  if (characteristic_value_read_or_write_in_progress_) {
+  if (HasPendingRead() || HasPendingWrite()) {
+    VLOG(1) << *this << ": Characteristic write already in progress.";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(error_callback,
-                   BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS));
+        base::BindOnce(error_callback,
+                       BluetoothRemoteGattService::GATT_ERROR_IN_PROGRESS));
     return;
   }
-  characteristic_value_read_or_write_in_progress_ = true;
+  VLOG(1) << *this << ": Write characteristic.";
   write_characteristic_value_callbacks_ =
       std::make_pair(callback, error_callback);
   base::scoped_nsobject<NSData> nsdata_value(
-      [[NSData alloc] initWithBytes:new_value.data() length:new_value.size()]);
+      [[NSData alloc] initWithBytes:value.data() length:value.size()]);
   CBCharacteristicWriteType write_type = GetCBWriteType();
-  [gatt_service_->GetCBPeripheral() writeValue:nsdata_value
-                             forCharacteristic:cb_characteristic_
-                                          type:write_type];
+  [GetCBPeripheral() writeValue:nsdata_value
+              forCharacteristic:cb_characteristic_
+                           type:write_type];
   if (write_type == CBCharacteristicWriteWithoutResponse) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&BluetoothRemoteGattCharacteristicMac::DidWriteValue,
-                   base::Unretained(this), nil));
+        base::BindOnce(&BluetoothRemoteGattCharacteristicMac::DidWriteValue,
+                       weak_ptr_factory_.GetWeakPtr(), nil));
   }
+}
+
+bool BluetoothRemoteGattCharacteristicMac::WriteWithoutResponse(
+    base::span<const uint8_t> value) {
+  if (!IsWritableWithoutResponse()) {
+    VLOG(1) << *this << ": Characteristic not writable without response.";
+    return false;
+  }
+  if (HasPendingRead() || HasPendingWrite()) {
+    VLOG(1) << *this << ": Characteristic write already in progress.";
+    return false;
+  }
+
+  VLOG(1) << *this << ": Write characteristic without response.";
+  base::scoped_nsobject<NSData> nsdata_value(
+      [[NSData alloc] initWithBytes:value.data() length:value.size()]);
+  [GetCBPeripheral() writeValue:nsdata_value
+              forCharacteristic:cb_characteristic_
+                           type:CBCharacteristicWriteWithoutResponse];
+  return true;
+}
+
+void BluetoothRemoteGattCharacteristicMac::SubscribeToNotifications(
+    BluetoothRemoteGattDescriptor* ccc_descriptor,
+    const base::Closure& callback,
+    const ErrorCallback& error_callback) {
+  VLOG(1) << *this << ": Subscribe to characteristic.";
+  DCHECK(subscribe_to_notification_callbacks_.first.is_null());
+  DCHECK(subscribe_to_notification_callbacks_.second.is_null());
+  DCHECK(unsubscribe_from_notification_callbacks_.first.is_null());
+  DCHECK(unsubscribe_from_notification_callbacks_.second.is_null());
+  subscribe_to_notification_callbacks_ =
+      std::make_pair(callback, error_callback);
+  [GetCBPeripheral() setNotifyValue:YES forCharacteristic:cb_characteristic_];
+}
+
+void BluetoothRemoteGattCharacteristicMac::UnsubscribeFromNotifications(
+    BluetoothRemoteGattDescriptor* ccc_descriptor,
+    const base::Closure& callback,
+    const ErrorCallback& error_callback) {
+  VLOG(1) << *this << ": Unsubscribe from characteristic.";
+  DCHECK(subscribe_to_notification_callbacks_.first.is_null());
+  DCHECK(subscribe_to_notification_callbacks_.second.is_null());
+  DCHECK(unsubscribe_from_notification_callbacks_.first.is_null());
+  DCHECK(unsubscribe_from_notification_callbacks_.second.is_null());
+  unsubscribe_from_notification_callbacks_ =
+      std::make_pair(callback, error_callback);
+  [GetCBPeripheral() setNotifyValue:NO forCharacteristic:cb_characteristic_];
+}
+
+void BluetoothRemoteGattCharacteristicMac::DiscoverDescriptors() {
+  VLOG(1) << *this << ": Discover descriptors.";
+  is_discovery_complete_ = false;
+  ++discovery_pending_count_;
+  [GetCBPeripheral() discoverDescriptorsForCharacteristic:cb_characteristic_];
 }
 
 void BluetoothRemoteGattCharacteristicMac::DidUpdateValue(NSError* error) {
+  CHECK_EQ(GetCBPeripheral().state, CBPeripheralStateConnected);
   // This method is called when the characteristic is read and when a
   // notification is received.
-  if (characteristic_value_read_or_write_in_progress_) {
+  RecordDidUpdateValueResult(error);
+  if (HasPendingRead()) {
     std::pair<ValueCallback, ErrorCallback> callbacks;
     callbacks.swap(read_characteristic_value_callbacks_);
-    characteristic_value_read_or_write_in_progress_ = false;
     if (error) {
-      VLOG(1) << "Bluetooth error while reading for characteristic, domain: "
-              << base::SysNSStringToUTF8(error.domain)
-              << ", error code: " << error.code;
       BluetoothGattService::GattErrorCode error_code =
           BluetoothDeviceMac::GetGattErrorCodeFromNSError(error);
+      VLOG(1) << *this
+              << ": Bluetooth error while reading for characteristic, domain: "
+              << BluetoothAdapterMac::String(error)
+              << ", error code: " << error_code;
       callbacks.second.Run(error_code);
       return;
     }
-    UpdateValueAndNotify();
+    VLOG(1) << *this << ": Read request arrived.";
+    UpdateValue();
     callbacks.first.Run(value_);
   } else if (IsNotifying()) {
-    UpdateValueAndNotify();
+    VLOG(1) << *this << ": Notification arrived.";
+    UpdateValue();
+    gatt_service_->GetMacAdapter()->NotifyGattCharacteristicValueChanged(
+        this, value_);
   } else {
     // In case of buggy device, nothing should be done if receiving extra
     // read confirmation.
-    VLOG(1) << "Characteristic value updated while having no pending read nor "
-               "notification.";
+    VLOG(1)
+        << *this
+        << ": Characteristic value updated while having no pending read nor "
+           "notification.";
   }
 }
 
-void BluetoothRemoteGattCharacteristicMac::UpdateValueAndNotify() {
-  NSData* nsdata_value = cb_characteristic_.get().value;
+void BluetoothRemoteGattCharacteristicMac::UpdateValue() {
+  NSData* nsdata_value = [cb_characteristic_ value];
   const uint8_t* buffer = static_cast<const uint8_t*>(nsdata_value.bytes);
   value_.assign(buffer, buffer + nsdata_value.length);
-  gatt_service_->GetMacAdapter()->NotifyGattCharacteristicValueChanged(this,
-                                                                       value_);
 }
 
 void BluetoothRemoteGattCharacteristicMac::DidWriteValue(NSError* error) {
-  if (!characteristic_value_read_or_write_in_progress_) {
-    // In case of buggy device, nothing should be done if receiving extra
-    // write confirmation.
-    VLOG(1) << "Write notification while no write operation pending.";
+  RecordDidWriteValueResult(error);
+  // We could have called cancelPeripheralConnection, which causes
+  // [CBPeripheral state] to be CBPeripheralStateDisconnected, before or during
+  // a write without response callback so we flush all pending writes.
+  // TODO(crbug.com/726534): Remove once we can avoid calling DidWriteValue
+  // when we disconnect before or during a write without response call.
+  if (HasPendingWrite() &&
+      GetCBPeripheral().state != CBPeripheralStateConnected) {
+    std::pair<base::Closure, ErrorCallback> callbacks;
+    callbacks.swap(write_characteristic_value_callbacks_);
+    callbacks.second.Run(BluetoothGattService::GATT_ERROR_FAILED);
     return;
   }
+
+  CHECK_EQ(GetCBPeripheral().state, CBPeripheralStateConnected);
+  if (!HasPendingWrite()) {
+    // In case of buggy device, nothing should be done if receiving extra
+    // write confirmation.
+    VLOG(1) << *this
+            << ": Write notification while no write operation pending.";
+    return;
+  }
+
   std::pair<base::Closure, ErrorCallback> callbacks;
   callbacks.swap(write_characteristic_value_callbacks_);
-  characteristic_value_read_or_write_in_progress_ = false;
   if (error) {
-    VLOG(1) << "Bluetooth error while writing for characteristic, domain: "
-            << base::SysNSStringToUTF8(error.domain)
-            << ", error code: " << error.code;
     BluetoothGattService::GattErrorCode error_code =
         BluetoothDeviceMac::GetGattErrorCodeFromNSError(error);
+    VLOG(1) << *this
+            << ": Bluetooth error while writing for characteristic, error: "
+            << BluetoothAdapterMac::String(error)
+            << ", error code: " << error_code;
     callbacks.second.Run(error_code);
     return;
   }
-  NSData* nsdata_value = cb_characteristic_.get().value;
-  const uint8_t* buffer = static_cast<const uint8_t*>(nsdata_value.bytes);
-  std::vector<uint8_t> gatt_value(buffer, buffer + nsdata_value.length);
-  gatt_service_->GetMacAdapter()->NotifyGattCharacteristicValueChanged(this,
-                                                                       value_);
+  VLOG(1) << *this << ": Write value succeeded.";
   callbacks.first.Run();
 }
 
 void BluetoothRemoteGattCharacteristicMac::DidUpdateNotificationState(
     NSError* error) {
-  std::vector<std::pair<NotifySessionCallback, ErrorCallback>>
-      reentrant_safe_callbacks;
-  reentrant_safe_callbacks.swap(start_notify_session_callbacks_);
-  start_notifications_in_progress_ = false;
-  if (error) {
-    VLOG(1) << "Bluetooth error while modifying notification state for "
-               "characteristic, domain: "
-            << base::SysNSStringToUTF8(error.domain)
-            << ", error code: " << error.code << ", localized description: "
-            << base::SysNSStringToUTF8(error.localizedDescription);
-    BluetoothGattService::GattErrorCode error_code =
-        BluetoothDeviceMac::GetGattErrorCodeFromNSError(error);
-    for (const auto& callback : reentrant_safe_callbacks) {
-      callback.second.Run(error_code);
-    }
+  PendingNotifyCallbacks reentrant_safe_callbacks;
+  if (!subscribe_to_notification_callbacks_.first.is_null()) {
+    DCHECK([GetCBCharacteristic() isNotifying] || error);
+    reentrant_safe_callbacks.swap(subscribe_to_notification_callbacks_);
+  } else if (!unsubscribe_from_notification_callbacks_.first.is_null()) {
+    DCHECK(![GetCBCharacteristic() isNotifying] || error);
+    reentrant_safe_callbacks.swap(unsubscribe_from_notification_callbacks_);
+  } else {
+    VLOG(1) << *this << ": No pending notification update for characteristic.";
     return;
   }
-  for (const auto& callback : reentrant_safe_callbacks) {
-    callback.first.Run(base::MakeUnique<BluetoothGattNotifySessionMac>(
-        weak_ptr_factory_.GetWeakPtr()));
+  RecordDidUpdateNotificationStateResult(error);
+  if (error) {
+    BluetoothGattService::GattErrorCode error_code =
+        BluetoothDeviceMac::GetGattErrorCodeFromNSError(error);
+    VLOG(1) << *this
+            << ": Bluetooth error while modifying notification state for "
+               "characteristic, error: "
+            << BluetoothAdapterMac::String(error)
+            << ", error code: " << error_code;
+    reentrant_safe_callbacks.second.Run(error_code);
+    return;
   }
+  reentrant_safe_callbacks.first.Run();
+}
+
+void BluetoothRemoteGattCharacteristicMac::DidDiscoverDescriptors() {
+  if (discovery_pending_count_ == 0) {
+    // This should never happen, just in case it happens with a device, this
+    // notification should be ignored.
+    VLOG(1) << *this
+            << ": Unmatch DiscoverDescriptors and DidDiscoverDescriptors.";
+    return;
+  }
+  VLOG(1) << *this << ": Did discover descriptors.";
+  --discovery_pending_count_;
+  std::unordered_set<std::string> descriptor_identifier_to_remove;
+  for (const auto& iter : descriptors_) {
+    descriptor_identifier_to_remove.insert(iter.first);
+  }
+
+  for (CBDescriptor* cb_descriptor in [cb_characteristic_ descriptors]) {
+    BluetoothRemoteGattDescriptorMac* gatt_descriptor_mac =
+        GetBluetoothRemoteGattDescriptorMac(cb_descriptor);
+    if (gatt_descriptor_mac) {
+      VLOG(1) << *gatt_descriptor_mac << ": Known descriptor.";
+      const std::string& identifier = gatt_descriptor_mac->GetIdentifier();
+      descriptor_identifier_to_remove.erase(identifier);
+      continue;
+    }
+    gatt_descriptor_mac =
+        new BluetoothRemoteGattDescriptorMac(this, cb_descriptor);
+    bool result = AddDescriptor(base::WrapUnique(gatt_descriptor_mac));
+    DCHECK(result);
+    GetMacAdapter()->NotifyGattDescriptorAdded(gatt_descriptor_mac);
+    VLOG(1) << *gatt_descriptor_mac << ": New descriptor.";
+  }
+
+  for (const std::string& identifier : descriptor_identifier_to_remove) {
+    auto iter = descriptors_.find(identifier);
+    auto pair = std::move(*iter);
+    VLOG(1) << static_cast<BluetoothRemoteGattDescriptorMac&>(*pair.second)
+            << ": Removed descriptor.";
+    descriptors_.erase(iter);
+    GetMacAdapter()->NotifyGattDescriptorRemoved(pair.second.get());
+  }
+  is_discovery_complete_ = discovery_pending_count_ == 0;
 }
 
 bool BluetoothRemoteGattCharacteristicMac::IsReadable() const {
@@ -319,6 +405,10 @@ bool BluetoothRemoteGattCharacteristicMac::IsWritable() const {
   BluetoothGattCharacteristic::Properties properties = GetProperties();
   return (properties & BluetoothGattCharacteristic::PROPERTY_WRITE) ||
          (properties & PROPERTY_WRITE_WITHOUT_RESPONSE);
+}
+
+bool BluetoothRemoteGattCharacteristicMac::IsWritableWithoutResponse() const {
+  return (GetProperties() & PROPERTY_WRITE_WITHOUT_RESPONSE);
 }
 
 bool BluetoothRemoteGattCharacteristicMac::SupportsNotificationsOrIndications()
@@ -336,6 +426,45 @@ CBCharacteristicWriteType BluetoothRemoteGattCharacteristicMac::GetCBWriteType()
 
 CBCharacteristic* BluetoothRemoteGattCharacteristicMac::GetCBCharacteristic()
     const {
-  return cb_characteristic_.get();
+  return cb_characteristic_;
+}
+
+BluetoothAdapterMac* BluetoothRemoteGattCharacteristicMac::GetMacAdapter()
+    const {
+  return gatt_service_->GetMacAdapter();
+}
+
+CBPeripheral* BluetoothRemoteGattCharacteristicMac::GetCBPeripheral() const {
+  return gatt_service_->GetCBPeripheral();
+}
+
+bool BluetoothRemoteGattCharacteristicMac::IsDiscoveryComplete() const {
+  return is_discovery_complete_;
+}
+
+BluetoothRemoteGattDescriptorMac*
+BluetoothRemoteGattCharacteristicMac::GetBluetoothRemoteGattDescriptorMac(
+    CBDescriptor* cb_descriptor) const {
+  for (const auto& pair : descriptors_) {
+    auto* descriptor_mac =
+        static_cast<BluetoothRemoteGattDescriptorMac*>(pair.second.get());
+    if (descriptor_mac->GetCBDescriptor() == cb_descriptor)
+      return descriptor_mac;
+  }
+
+  return nullptr;
+}
+
+DEVICE_BLUETOOTH_EXPORT std::ostream& operator<<(
+    std::ostream& out,
+    const BluetoothRemoteGattCharacteristicMac& characteristic) {
+  const BluetoothRemoteGattServiceMac* service_mac =
+      static_cast<const BluetoothRemoteGattServiceMac*>(
+          characteristic.GetService());
+  return out << "<BluetoothRemoteGattCharacteristicMac "
+             << characteristic.GetUUID().canonical_value() << "/"
+             << &characteristic
+             << ", service: " << service_mac->GetUUID().canonical_value() << "/"
+             << service_mac << ">";
 }
 }  // namespace device.

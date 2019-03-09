@@ -4,6 +4,7 @@
 
 // Multiply-included message file, hence no include guard here, but see below
 // for a much smaller-than-usual include guard section.
+// no-include-guard-because-multiply-included
 
 #include <stdint.h>
 
@@ -16,6 +17,8 @@
 #include "ui/display/types/gamma_ramp_rgb_entry.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/ipc/buffer_types/gfx_param_traits.h"
+#include "ui/gfx/ipc/color/gfx_param_traits.h"
 #include "ui/gfx/ipc/geometry/gfx_param_traits.h"
 #include "ui/gfx/ipc/gfx_param_traits.h"
 #include "ui/gfx/ipc/skia/gfx_skia_param_traits.h"
@@ -27,12 +30,14 @@
 
 #define IPC_MESSAGE_START OzoneGpuMsgStart
 
-IPC_ENUM_TRAITS_MAX_VALUE(ui::DisplayConnectionType,
-                          ui::DISPLAY_CONNECTION_TYPE_LAST)
+IPC_ENUM_TRAITS_MAX_VALUE(display::DisplayConnectionType,
+                          display::DISPLAY_CONNECTION_TYPE_LAST)
 
-IPC_ENUM_TRAITS_MAX_VALUE(ui::HDCPState, ui::HDCP_STATE_LAST)
+IPC_ENUM_TRAITS_MAX_VALUE(display::HDCPState, display::HDCP_STATE_LAST)
 
 IPC_ENUM_TRAITS_MAX_VALUE(gfx::OverlayTransform, gfx::OVERLAY_TRANSFORM_LAST)
+
+IPC_ENUM_TRAITS_MAX_VALUE(ui::OverlayStatus, ui::OVERLAY_STATUS_LAST)
 
 // clang-format off
 IPC_STRUCT_TRAITS_BEGIN(ui::DisplayMode_Params)
@@ -49,6 +54,8 @@ IPC_STRUCT_TRAITS_BEGIN(ui::DisplaySnapshot_Params)
   IPC_STRUCT_TRAITS_MEMBER(is_aspect_preserving_scaling)
   IPC_STRUCT_TRAITS_MEMBER(has_overscan)
   IPC_STRUCT_TRAITS_MEMBER(has_color_correction_matrix)
+  IPC_STRUCT_TRAITS_MEMBER(color_correction_in_linear_space)
+  IPC_STRUCT_TRAITS_MEMBER(color_space)
   IPC_STRUCT_TRAITS_MEMBER(display_name)
   IPC_STRUCT_TRAITS_MEMBER(sys_path)
   IPC_STRUCT_TRAITS_MEMBER(modes)
@@ -57,12 +64,13 @@ IPC_STRUCT_TRAITS_BEGIN(ui::DisplaySnapshot_Params)
   IPC_STRUCT_TRAITS_MEMBER(current_mode)
   IPC_STRUCT_TRAITS_MEMBER(has_native_mode)
   IPC_STRUCT_TRAITS_MEMBER(native_mode)
-  IPC_STRUCT_TRAITS_MEMBER(product_id)
-  IPC_STRUCT_TRAITS_MEMBER(string_representation)
+  IPC_STRUCT_TRAITS_MEMBER(product_code)
+  IPC_STRUCT_TRAITS_MEMBER(year_of_manufacture)
   IPC_STRUCT_TRAITS_MEMBER(maximum_cursor_size)
+  IPC_STRUCT_TRAITS_MEMBER(has_associated_crtc)
 IPC_STRUCT_TRAITS_END()
 
-IPC_STRUCT_TRAITS_BEGIN(ui::GammaRampRGBEntry)
+IPC_STRUCT_TRAITS_BEGIN(display::GammaRampRGBEntry)
   IPC_STRUCT_TRAITS_MEMBER(r)
   IPC_STRUCT_TRAITS_MEMBER(g)
   IPC_STRUCT_TRAITS_MEMBER(b)
@@ -76,6 +84,10 @@ IPC_STRUCT_TRAITS_BEGIN(ui::OverlayCheck_Params)
   IPC_STRUCT_TRAITS_MEMBER(crop_rect)
   IPC_STRUCT_TRAITS_MEMBER(plane_z_order)
   IPC_STRUCT_TRAITS_MEMBER(is_overlay_candidate)
+IPC_STRUCT_TRAITS_END()
+
+IPC_STRUCT_TRAITS_BEGIN(ui::OverlayCheckReturn_Params)
+  IPC_STRUCT_TRAITS_MEMBER(status)
 IPC_STRUCT_TRAITS_END()
 
 // clang-format on
@@ -141,13 +153,16 @@ IPC_MESSAGE_CONTROL1(OzoneGpuMsg_GetHDCPState, int64_t /* display_id */)
 
 IPC_MESSAGE_CONTROL2(OzoneGpuMsg_SetHDCPState,
                      int64_t /* display_id */,
-                     ui::HDCPState /* state */)
+                     display::HDCPState /* state */)
 
-IPC_MESSAGE_CONTROL4(OzoneGpuMsg_SetColorCorrection,
-                     int64_t,                             // display ID,
-                     std::vector<ui::GammaRampRGBEntry>,  // degamma lut
-                     std::vector<ui::GammaRampRGBEntry>,  // gamma lut
-                     std::vector<float>)                  // transform matrix
+IPC_MESSAGE_CONTROL2(OzoneGpuMsg_SetColorMatrix,
+                     int64_t,             // Display ID
+                     std::vector<float>)  // Color transform matrix
+
+IPC_MESSAGE_CONTROL3(OzoneGpuMsg_SetGammaCorrection,
+                     int64_t,                                  // Display ID
+                     std::vector<display::GammaRampRGBEntry>,  // Degamma lut
+                     std::vector<display::GammaRampRGBEntry>)  // Gamma lut
 
 IPC_MESSAGE_CONTROL2(OzoneGpuMsg_CheckOverlayCapabilities,
                      gfx::AcceleratedWidget /* widget */,
@@ -169,7 +184,7 @@ IPC_MESSAGE_CONTROL2(OzoneHostMsg_DisplayConfigured,
 IPC_MESSAGE_CONTROL3(OzoneHostMsg_HDCPStateReceived,
                      int64_t /* display_id */,
                      bool /* success */,
-                     ui::HDCPState /* state */)
+                     display::HDCPState /* state */)
 
 // Response for OzoneGpuMsg_SetHDCPState.
 IPC_MESSAGE_CONTROL2(OzoneHostMsg_HDCPStateUpdated,
@@ -185,6 +200,7 @@ IPC_MESSAGE_CONTROL1(OzoneHostMsg_DisplayControlRelinquished,
 
 // Response to OzoneGpuMsg_CheckOverlayCapabilities. Returns list of supported
 // params.
-IPC_MESSAGE_CONTROL2(OzoneHostMsg_OverlayCapabilitiesReceived,
+IPC_MESSAGE_CONTROL3(OzoneHostMsg_OverlayCapabilitiesReceived,
                      gfx::AcceleratedWidget /* widget */,
-                     std::vector<ui::OverlayCheck_Params> /* overlays */)
+                     std::vector<ui::OverlayCheck_Params> /* overlays */,
+                     std::vector<ui::OverlayCheckReturn_Params> /* returns */)

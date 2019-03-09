@@ -28,15 +28,16 @@ class MEDIA_EXPORT WebMStreamParser : public StreamParser {
   ~WebMStreamParser() override;
 
   // StreamParser implementation.
-  void Init(const InitCB& init_cb,
+  void Init(InitCB init_cb,
             const NewConfigCB& config_cb,
             const NewBuffersCB& new_buffers_cb,
             bool ignore_text_tracks,
             const EncryptedMediaInitDataCB& encrypted_media_init_data_cb,
             const NewMediaSegmentCB& new_segment_cb,
             const EndMediaSegmentCB& end_of_segment_cb,
-            const scoped_refptr<MediaLog>& media_log) override;
+            MediaLog* media_log) override;
   void Flush() override;
+  bool GetGenerateTimestampsFlag() const override;
   bool Parse(const uint8_t* buf, int size) override;
 
  private:
@@ -80,7 +81,7 @@ class MEDIA_EXPORT WebMStreamParser : public StreamParser {
 
   NewMediaSegmentCB new_segment_cb_;
   EndMediaSegmentCB end_of_segment_cb_;
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
 
   bool unknown_segment_size_;
 

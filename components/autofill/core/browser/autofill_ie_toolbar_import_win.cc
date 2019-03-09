@@ -79,7 +79,7 @@ base::string16 ReadAndDecryptValue(const RegKey& key,
                                    const wchar_t* value_name) {
   DWORD data_type = REG_BINARY;
   DWORD data_size = 0;
-  LONG result = key.ReadValue(value_name, NULL, &data_size, &data_type);
+  LONG result = key.ReadValue(value_name, nullptr, &data_size, &data_type);
   if ((result != ERROR_SUCCESS) || !data_size || data_type != REG_BINARY)
     return base::string16();
   std::string data;
@@ -246,9 +246,9 @@ bool ImportCurrentUserProfiles(const std::string& app_locale,
 
   // Create a map of possible fields for a quick access.
   RegToFieldMap reg_to_field;
-  for (size_t i = 0; i < arraysize(profile_reg_values); ++i) {
-    reg_to_field[std::wstring(profile_reg_values[i].reg_value_name)] =
-        profile_reg_values[i].field_type;
+  for (const auto& profile_reg_value : profile_reg_values) {
+    reg_to_field[std::wstring(profile_reg_value.reg_value_name)] =
+        profile_reg_value.field_type;
   }
 
   base::win::RegistryKeyIterator iterator_profiles(HKEY_CURRENT_USER,
@@ -284,8 +284,8 @@ bool ImportCurrentUserProfiles(const std::string& app_locale,
       RegKey key(HKEY_CURRENT_USER, key_name.c_str(), KEY_READ);
       CreditCard credit_card;
       credit_card.set_origin(kIEToolbarImportOrigin);
-      if (ImportSingleFormGroup(
-              key, reg_to_field, app_locale, &credit_card, NULL)) {
+      if (ImportSingleFormGroup(key, reg_to_field, app_locale, &credit_card,
+                                nullptr)) {
         base::string16 cc_number = credit_card.GetRawInfo(CREDIT_CARD_NUMBER);
         if (!cc_number.empty())
           credit_cards->push_back(credit_card);

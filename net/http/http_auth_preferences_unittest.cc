@@ -11,60 +11,37 @@
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
 
-TEST(HttpAuthPreferencesTest, AuthSchemes) {
-  const char* const expected_schemes[] = {"scheme1", "scheme2"};
-  std::vector<std::string> expected_schemes_vector(
-      expected_schemes, expected_schemes + arraysize(expected_schemes));
-  HttpAuthPreferences http_auth_preferences(expected_schemes_vector
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-                                            ,
-                                            ""
-#endif
-                                            );
-  EXPECT_TRUE(http_auth_preferences.IsSupportedScheme("scheme1"));
-  EXPECT_TRUE(http_auth_preferences.IsSupportedScheme("scheme2"));
-  EXPECT_FALSE(http_auth_preferences.IsSupportedScheme("scheme3"));
-}
-
 TEST(HttpAuthPreferencesTest, DisableCnameLookup) {
-  std::vector<std::string> auth_schemes;
-  HttpAuthPreferences http_auth_preferences(auth_schemes
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-                                            ,
-                                            ""
-#endif
-                                            );
+  HttpAuthPreferences http_auth_preferences;
   EXPECT_FALSE(http_auth_preferences.NegotiateDisableCnameLookup());
   http_auth_preferences.set_negotiate_disable_cname_lookup(true);
   EXPECT_TRUE(http_auth_preferences.NegotiateDisableCnameLookup());
 }
 
 TEST(HttpAuthPreferencesTest, NegotiateEnablePort) {
-  std::vector<std::string> auth_schemes;
-  HttpAuthPreferences http_auth_preferences(auth_schemes
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-                                            ,
-                                            ""
-#endif
-                                            );
+  HttpAuthPreferences http_auth_preferences;
   EXPECT_FALSE(http_auth_preferences.NegotiateEnablePort());
   http_auth_preferences.set_negotiate_enable_port(true);
   EXPECT_TRUE(http_auth_preferences.NegotiateEnablePort());
 }
 
+#if defined(OS_POSIX)
+TEST(HttpAuthPreferencesTest, DisableNtlmV2) {
+  HttpAuthPreferences http_auth_preferences;
+  EXPECT_TRUE(http_auth_preferences.NtlmV2Enabled());
+  http_auth_preferences.set_ntlm_v2_enabled(false);
+  EXPECT_FALSE(http_auth_preferences.NtlmV2Enabled());
+}
+#endif
+
 #if defined(OS_ANDROID)
 TEST(HttpAuthPreferencesTest, AuthAndroidhNegotiateAccountType) {
-  std::vector<std::string> auth_schemes;
-  HttpAuthPreferences http_auth_preferences(auth_schemes
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-                                            ,
-                                            ""
-#endif
-                                            );
+  HttpAuthPreferences http_auth_preferences;
   EXPECT_EQ(std::string(),
             http_auth_preferences.AuthAndroidNegotiateAccountType());
   http_auth_preferences.set_auth_android_negotiate_account_type("foo");
@@ -73,40 +50,32 @@ TEST(HttpAuthPreferencesTest, AuthAndroidhNegotiateAccountType) {
 }
 #endif
 
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-TEST(HttpAuthPreferencesTest, GssApiLibraryName) {
-  std::vector<std::string> AuthSchemes;
-  HttpAuthPreferences http_auth_preferences(AuthSchemes, "bar");
-  EXPECT_EQ(std::string("bar"), http_auth_preferences.GssapiLibraryName());
-}
-#endif
-
 TEST(HttpAuthPreferencesTest, AuthServerWhitelist) {
-  std::vector<std::string> auth_schemes;
-  HttpAuthPreferences http_auth_preferences(auth_schemes
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-                                            ,
-                                            ""
-#endif
-                                            );
+  HttpAuthPreferences http_auth_preferences;
   // Check initial value
   EXPECT_FALSE(http_auth_preferences.CanUseDefaultCredentials(GURL("abc")));
-  http_auth_preferences.set_server_whitelist("*");
+  http_auth_preferences.SetServerWhitelist("*");
   EXPECT_TRUE(http_auth_preferences.CanUseDefaultCredentials(GURL("abc")));
 }
 
-TEST(HttpAuthPreferencesTest, AuthDelegateWhitelist) {
-  std::vector<std::string> auth_schemes;
-  HttpAuthPreferences http_auth_preferences(auth_schemes
-#if defined(OS_POSIX) && !defined(OS_ANDROID)
-                                            ,
-                                            ""
-#endif
-                                            );
+TEST(HttpAuthPreferencesTest, DelegationType) {
+  using DelegationType = HttpAuth::DelegationType;
+  HttpAuthPreferences http_auth_preferences;
   // Check initial value
-  EXPECT_FALSE(http_auth_preferences.CanDelegate(GURL("abc")));
-  http_auth_preferences.set_delegate_whitelist("*");
-  EXPECT_TRUE(http_auth_preferences.CanDelegate(GURL("abc")));
+  EXPECT_EQ(DelegationType::kNone,
+            http_auth_preferences.GetDelegationType(GURL("abc")));
+
+  http_auth_preferences.SetDelegateWhitelist("*");
+  EXPECT_EQ(DelegationType::kUnconstrained,
+            http_auth_preferences.GetDelegationType(GURL("abc")));
+
+  http_auth_preferences.set_delegate_by_kdc_policy(true);
+  EXPECT_EQ(DelegationType::kByKdcPolicy,
+            http_auth_preferences.GetDelegationType(GURL("abc")));
+
+  http_auth_preferences.SetDelegateWhitelist("");
+  EXPECT_EQ(DelegationType::kNone,
+            http_auth_preferences.GetDelegationType(GURL("abc")));
 }
 
 }  // namespace net

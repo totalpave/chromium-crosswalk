@@ -14,9 +14,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
+#include "chromecast/media/cma/backend/cma_backend.h"
 #include "chromecast/media/cma/pipeline/load_type.h"
 #include "chromecast/media/cma/pipeline/media_pipeline_client.h"
-#include "chromecast/public/media/media_pipeline_backend.h"
 
 namespace media {
 class AudioDecoderConfig;
@@ -25,7 +25,6 @@ class VideoDecoderConfig;
 
 namespace chromecast {
 namespace media {
-class AudioDecoderSoftwareWrapper;
 class AudioPipelineImpl;
 class BufferingController;
 class CastCdmContext;
@@ -42,7 +41,7 @@ class MediaPipelineImpl {
   // Initialize the media pipeline: the pipeline is configured based on
   // |load_type|.
   void Initialize(LoadType load_type,
-                  std::unique_ptr<MediaPipelineBackend> media_pipeline_backend);
+                  std::unique_ptr<CmaBackend> media_pipeline_backend);
 
   void SetClient(const MediaPipelineClient& client);
   void SetCdm(int cdm_id);
@@ -57,7 +56,6 @@ class MediaPipelineImpl {
       std::unique_ptr<CodedFrameProvider> frame_provider);
   void StartPlayingFrom(base::TimeDelta time);
   void Flush(const base::Closure& flush_cb);
-  void Stop();
   void SetPlaybackRate(double playback_rate);
   void SetVolume(float volume);
   base::TimeDelta GetMediaTime() const;
@@ -99,16 +97,19 @@ class MediaPipelineImpl {
   // Cached here because CMA pipeline backend does not support rate == 0,
   // which is emulated by pausing the backend.
   float playback_rate_;
-  std::unique_ptr<MediaPipelineBackend> media_pipeline_backend_;
-  std::unique_ptr<AudioDecoderSoftwareWrapper> audio_decoder_;
-  MediaPipelineBackend::VideoDecoder* video_decoder_;
 
+  // Since av pipeline still need to access device components in their
+  // destructor, it's important to delete them first.
+  std::unique_ptr<CmaBackend> media_pipeline_backend_;
+  CmaBackend::AudioDecoder* audio_decoder_;
+  CmaBackend::VideoDecoder* video_decoder_;
   std::unique_ptr<AudioPipelineImpl> audio_pipeline_;
   std::unique_ptr<VideoPipelineImpl> video_pipeline_;
   std::unique_ptr<FlushTask> pending_flush_task_;
 
   // The media time is retrieved at regular intervals.
   bool pending_time_update_task_;
+  base::TimeDelta start_media_time_;
   base::TimeDelta last_media_time_;
 
   // Used to make the statistics update period a multiplier of the time update

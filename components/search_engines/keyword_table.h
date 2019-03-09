@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
@@ -36,7 +37,6 @@ class Statement;
 //   keyword
 //   favicon_url
 //   url
-//   show_in_default_list
 //   safe_for_autoreplace
 //   originating_url
 //   date_created           This column was added after we allowed keywords.
@@ -49,25 +49,18 @@ class Statement;
 //   prepopulate_id         See TemplateURLData::prepopulate_id.
 //   created_by_policy      See TemplateURLData::created_by_policy.  This was
 //                          added in version 26.
-//   instant_url            See TemplateURLData::instant_url.  This was added in
-//                          version 29.
 //   last_modified          See TemplateURLData::last_modified.  This was added
 //                          in version 38.
 //   sync_guid              See TemplateURLData::sync_guid. This was added in
 //                          version 39.
 //   alternate_urls         See TemplateURLData::alternate_urls. This was added
 //                          in version 47.
-//   search_terms_replacement_key
-//                          See TemplateURLData::search_terms_replacement_key.
-//                          This was added in version 49.
 //   image_url              See TemplateURLData::image_url. This was added in
 //                          version 52.
 //   search_url_post_params See TemplateURLData::search_url_post_params. This
 //                          was added in version 52.
 //   suggest_url_post_params See TemplateURLData::suggestions_url_post_params.
 //                          This was added in version 52.
-//   instant_url_post_params See TemplateURLData::instant_url_post_params. This
-//                          was added in version 52.
 //   image_url_post_params  See TemplateURLData::image_url_post_params. This
 //                          was added in version 52.
 //   new_tab_url            See TemplateURLData::new_tab_url. This was added in
@@ -131,10 +124,13 @@ class KeywordTable : public WebDatabaseTable {
   // Table migration functions.
   bool MigrateToVersion53AddNewTabURLColumn();
   bool MigrateToVersion59RemoveExtensionKeywords();
+  bool MigrateToVersion68RemoveShowInDefaultListColumn();
+  bool MigrateToVersion69AddLastVisitedColumn();
+  bool MigrateToVersion76RemoveInstantColumns();
+  bool MigrateToVersion77IncreaseTimePrecision();
 
  private:
   friend class KeywordTableTest;
-  FRIEND_TEST_ALL_PREFIXES(WebDatabaseMigrationTest, MigrateVersion44ToCurrent);
 
   // NOTE: Since the table columns have changed in different versions, many
   // functions below take a |table_version| argument which dictates which
@@ -164,10 +160,6 @@ class KeywordTable : public WebDatabaseTable {
   bool GetKeywordAsString(TemplateURLID id,
                           const std::string& table_name,
                           std::string* result);
-
-  // Migrates table |name| (which should be either "keywords" or
-  // "keywords_backup") from version 44 to version 45.
-  bool MigrateKeywordsTableForVersion45(const std::string& name);
 
   DISALLOW_COPY_AND_ASSIGN(KeywordTable);
 };

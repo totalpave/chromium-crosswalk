@@ -10,12 +10,9 @@
 #include "base/compiler_specific.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/sys_byteorder.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
@@ -30,6 +27,31 @@
 
 namespace net {
 
+namespace {
+
+constexpr NetworkTrafficAnnotationTag
+    kHttpServerErrorResponseTrafficAnnotation =
+        DefineNetworkTrafficAnnotation("http_server_error_response",
+                                       R"(
+      semantics {
+        sender: "HTTP Server"
+        description: "Error response from the built-in HTTP server."
+        trigger: "Sending a request to the HTTP server that it can't handle."
+        data: "A 500 error code."
+        destination: OTHER
+        destination_other: "Any destination the consumer selects."
+      }
+      policy {
+        cookies_allowed: NO
+        setting:
+          "This request cannot be disabled in settings. However it will never "
+          "be made unless user activates an HTTP server."
+        policy_exception_justification:
+          "Not implemented, not used if HTTP Server is not activated."
+      })");
+
+}  // namespace
+
 HttpServer::HttpServer(std::unique_ptr<ServerSocket> server_socket,
                        HttpServer::Delegate* delegate)
     : server_socket_(std::move(server_socket)),
@@ -40,86 +62,98 @@ HttpServer::HttpServer(std::unique_ptr<ServerSocket> server_socket,
   // Start accepting connections in next run loop in case when delegate is not
   // ready to get callbacks.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE,
-      base::Bind(&HttpServer::DoAcceptLoop, weak_ptr_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&HttpServer::DoAcceptLoop,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
-HttpServer::~HttpServer() {
-  STLDeleteContainerPairSecondPointers(
-      id_to_connection_.begin(), id_to_connection_.end());
-}
+HttpServer::~HttpServer() = default;
 
 void HttpServer::AcceptWebSocket(
     int connection_id,
-    const HttpServerRequestInfo& request) {
+    const HttpServerRequestInfo& request,
+    NetworkTrafficAnnotationTag traffic_annotation) {
   HttpConnection* connection = FindConnection(connection_id);
   if (connection == NULL)
     return;
   DCHECK(connection->web_socket());
-  connection->web_socket()->Accept(request);
+  connection->web_socket()->Accept(request, traffic_annotation);
 }
 
-void HttpServer::SendOverWebSocket(int connection_id,
-                                   const std::string& data) {
+void HttpServer::SendOverWebSocket(
+    int connection_id,
+    const std::string& data,
+    NetworkTrafficAnnotationTag traffic_annotation) {
   HttpConnection* connection = FindConnection(connection_id);
   if (connection == NULL)
     return;
   DCHECK(connection->web_socket());
-  connection->web_socket()->Send(data);
+  connection->web_socket()->Send(data, traffic_annotation);
 }
 
-void HttpServer::SendRaw(int connection_id, const std::string& data) {
+void HttpServer::SendRaw(int connection_id,
+                         const std::string& data,
+                         NetworkTrafficAnnotationTag traffic_annotation) {
   HttpConnection* connection = FindConnection(connection_id);
   if (connection == NULL)
     return;
 
   bool writing_in_progress = !connection->write_buf()->IsEmpty();
   if (connection->write_buf()->Append(data) && !writing_in_progress)
-    DoWriteLoop(connection);
+    DoWriteLoop(connection, traffic_annotation);
 }
 
 void HttpServer::SendResponse(int connection_id,
-                              const HttpServerResponseInfo& response) {
-  SendRaw(connection_id, response.Serialize());
+                              const HttpServerResponseInfo& response,
+                              NetworkTrafficAnnotationTag traffic_annotation) {
+  SendRaw(connection_id, response.Serialize(), traffic_annotation);
 }
 
 void HttpServer::Send(int connection_id,
                       HttpStatusCode status_code,
                       const std::string& data,
-                      const std::string& content_type) {
+                      const std::string& content_type,
+                      NetworkTrafficAnnotationTag traffic_annotation) {
   HttpServerResponseInfo response(status_code);
   response.SetContentHeaders(data.size(), content_type);
-  SendResponse(connection_id, response);
-  SendRaw(connection_id, data);
+  SendResponse(connection_id, response, traffic_annotation);
+  SendRaw(connection_id, data, traffic_annotation);
 }
 
 void HttpServer::Send200(int connection_id,
                          const std::string& data,
-                         const std::string& content_type) {
-  Send(connection_id, HTTP_OK, data, content_type);
+                         const std::string& content_type,
+                         NetworkTrafficAnnotationTag traffic_annotation) {
+  Send(connection_id, HTTP_OK, data, content_type, traffic_annotation);
 }
 
-void HttpServer::Send404(int connection_id) {
-  SendResponse(connection_id, HttpServerResponseInfo::CreateFor404());
+void HttpServer::Send404(int connection_id,
+                         NetworkTrafficAnnotationTag traffic_annotation) {
+  SendResponse(connection_id, HttpServerResponseInfo::CreateFor404(),
+               traffic_annotation);
 }
 
-void HttpServer::Send500(int connection_id, const std::string& message) {
-  SendResponse(connection_id, HttpServerResponseInfo::CreateFor500(message));
+void HttpServer::Send500(int connection_id,
+                         const std::string& message,
+                         NetworkTrafficAnnotationTag traffic_annotation) {
+  SendResponse(connection_id, HttpServerResponseInfo::CreateFor500(message),
+               traffic_annotation);
 }
 
 void HttpServer::Close(int connection_id) {
-  HttpConnection* connection = FindConnection(connection_id);
-  if (connection == NULL)
+  auto it = id_to_connection_.find(connection_id);
+  if (it == id_to_connection_.end())
     return;
 
-  id_to_connection_.erase(connection_id);
+  std::unique_ptr<HttpConnection> connection = std::move(it->second);
+  id_to_connection_.erase(it);
   delegate_->OnClose(connection_id);
 
   // The call stack might have callbacks which still have the pointer of
   // connection. Instead of referencing connection with ID all the time,
   // destroys the connection in next run loop to make sure any pending
   // callbacks in the call stack return.
-  base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, connection);
+  base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE,
+                                                  connection.release());
 }
 
 int HttpServer::GetLocalAddress(IPEndPoint* address) {
@@ -161,9 +195,10 @@ int HttpServer::HandleAcceptResult(int rv) {
     return rv;
   }
 
-  HttpConnection* connection =
-      new HttpConnection(++last_id_, std::move(accepted_socket_));
-  id_to_connection_[connection->id()] = connection;
+  std::unique_ptr<HttpConnection> connection_ptr =
+      std::make_unique<HttpConnection>(++last_id_, std::move(accepted_socket_));
+  HttpConnection* connection = connection_ptr.get();
+  id_to_connection_[connection->id()] = std::move(connection_ptr);
   delegate_->OnConnect(connection->id());
   if (!HasClosedConnection(connection))
     DoReadLoop(connection);
@@ -232,6 +267,13 @@ int HttpServer::HandleReadResult(HttpConnection* connection, int rv) {
     size_t pos = 0;
     if (!ParseHeaders(read_buf->StartOfBuffer(), read_buf->GetSize(),
                       &request, &pos)) {
+      // An error has occured. Close the connection.
+      Close(connection->id());
+      return ERR_CONNECTION_CLOSED;
+    } else if (!pos) {
+      // If pos is 0, all the data in read_buf has been consumed, but the
+      // headers have not been fully parsed yet. Continue parsing when more data
+      // rolls in.
       break;
     }
 
@@ -239,8 +281,7 @@ int HttpServer::HandleReadResult(HttpConnection* connection, int rv) {
     connection->socket()->GetPeerAddress(&request.peer);
 
     if (request.HasHeaderValue("connection", "upgrade")) {
-      connection->SetWebSocket(
-          base::WrapUnique(new WebSocket(this, connection)));
+      connection->SetWebSocket(std::make_unique<WebSocket>(this, connection));
       read_buf->DidConsume(pos);
       delegate_->OnWebSocketRequest(connection->id(), request);
       if (HasClosedConnection(connection))
@@ -257,8 +298,8 @@ int HttpServer::HandleReadResult(HttpConnection* connection, int rv) {
           content_length > kMaxBodySize) {
         SendResponse(connection->id(),
                      HttpServerResponseInfo::CreateFor500(
-                         "request content-length too big or unknown: " +
-                         request.GetHeaderValue(kContentLength)));
+                         "request content-length too big or unknown."),
+                     kHttpServerErrorResponseTrafficAnnotation);
         Close(connection->id());
         return ERR_CONNECTION_CLOSED;
       }
@@ -278,28 +319,33 @@ int HttpServer::HandleReadResult(HttpConnection* connection, int rv) {
   return OK;
 }
 
-void HttpServer::DoWriteLoop(HttpConnection* connection) {
+void HttpServer::DoWriteLoop(HttpConnection* connection,
+                             NetworkTrafficAnnotationTag traffic_annotation) {
   int rv = OK;
   HttpConnection::QueuedWriteIOBuffer* write_buf = connection->write_buf();
   while (rv == OK && write_buf->GetSizeToWrite() > 0) {
     rv = connection->socket()->Write(
-        write_buf,
-        write_buf->GetSizeToWrite(),
+        write_buf, write_buf->GetSizeToWrite(),
         base::Bind(&HttpServer::OnWriteCompleted,
-                   weak_ptr_factory_.GetWeakPtr(), connection->id()));
+                   weak_ptr_factory_.GetWeakPtr(), connection->id(),
+                   traffic_annotation),
+        traffic_annotation);
     if (rv == ERR_IO_PENDING || rv == OK)
       return;
     rv = HandleWriteResult(connection, rv);
   }
 }
 
-void HttpServer::OnWriteCompleted(int connection_id, int rv) {
+void HttpServer::OnWriteCompleted(
+    int connection_id,
+    NetworkTrafficAnnotationTag traffic_annotation,
+    int rv) {
   HttpConnection* connection = FindConnection(connection_id);
   if (!connection)  // It might be closed right before by read error.
     return;
 
   if (HandleWriteResult(connection, rv) == OK)
-    DoWriteLoop(connection);
+    DoWriteLoop(connection, traffic_annotation);
 }
 
 int HttpServer::HandleWriteResult(HttpConnection* connection, int rv) {
@@ -362,7 +408,7 @@ const int parser_state[MAX_STATES][MAX_INPUTS] = {
 
 // Convert an input character to the parser's input token.
 int charToInput(char ch) {
-  switch(ch) {
+  switch (ch) {
     case ' ':
     case '\t':
       return INPUT_LWS;
@@ -406,8 +452,10 @@ bool HttpServer::ParseHeaders(const char* data,
           buffer.clear();
           break;
         case ST_PROTO:
-          // TODO(mbelshe): Deal better with parsing protocol.
-          DCHECK(buffer == "HTTP/1.1");
+          if (buffer != "HTTP/1.1") {
+            LOG(ERROR) << "Cannot handle request with protocol: " << buffer;
+            next_state = ST_ERR;
+          }
           buffer.clear();
           break;
         case ST_NAME:
@@ -442,22 +490,24 @@ bool HttpServer::ParseHeaders(const char* data,
           buffer.append(&ch, 1);
           break;
         case ST_DONE:
-          DCHECK(input == INPUT_LF);
-          return true;
+          // We got CR to get this far, also need the LF
+          return (input == INPUT_LF);
         case ST_ERR:
           return false;
       }
     }
   }
-  // No more characters, but we haven't finished parsing yet.
-  return false;
+  // No more characters, but we haven't finished parsing yet. Signal this to
+  // the caller by setting |pos| to zero.
+  pos = 0;
+  return true;
 }
 
 HttpConnection* HttpServer::FindConnection(int connection_id) {
-  IdToConnectionMap::iterator it = id_to_connection_.find(connection_id);
+  auto it = id_to_connection_.find(connection_id);
   if (it == id_to_connection_.end())
-    return NULL;
-  return it->second;
+    return nullptr;
+  return it->second.get();
 }
 
 // This is called after any delegate callbacks are called to check if Close()

@@ -4,6 +4,7 @@
 
 import("//build/config/features.gni")
 import("//build/config/nacl/config.gni")
+import("//sandbox/features.gni")
 import("//testing/test.gni")
 
 if (is_android) {
@@ -36,15 +37,14 @@ group("sandbox") {
   public_deps = [
     ":sandbox_services",
   ]
-
   if (compile_suid_client || is_nacl_nonsfi) {
     public_deps += [ ":suid_sandbox_client" ]
   }
   if (use_seccomp_bpf || is_nacl_nonsfi) {
-    public_deps += [
-      ":seccomp_bpf",
-      ":seccomp_bpf_helpers",
-    ]
+    public_deps += [ ":seccomp_bpf" ]
+  }
+  if (is_android) {
+    public_deps += [ ":seccomp_starter_android" ]
   }
 }
 
@@ -99,6 +99,7 @@ source_set("sandbox_linux_unittests_sources") {
     "services/yama_unittests.cc",
     "syscall_broker/broker_file_permission_unittest.cc",
     "syscall_broker/broker_process_unittest.cc",
+    "syscall_broker/broker_simple_message_unittest.cc",
     "tests/main.cc",
     "tests/scoped_temporary_file.cc",
     "tests/scoped_temporary_file.h",
@@ -111,6 +112,7 @@ source_set("sandbox_linux_unittests_sources") {
     ":sandbox",
     ":sandbox_linux_test_utils",
     "//base",
+    "//base/third_party/dynamic_annotations",
     "//testing/gtest",
   ]
 
@@ -148,6 +150,10 @@ source_set("sandbox_linux_unittests_sources") {
       "seccomp-bpf/trap_unittest.cc",
     ]
     deps += [ ":bpf_dsl_golden" ]
+
+    if (is_android) {
+      sources += [ "seccomp-bpf-helpers/baseline_policy_android_unittest.cc" ]
+    }
   }
   if (compile_credentials) {
     sources += [
@@ -195,7 +201,6 @@ action("bpf_dsl_golden") {
 test("sandbox_linux_unittests") {
   deps = [
     ":sandbox_linux_unittests_sources",
-    "//build/config/sanitizers:deps",
   ]
   if (is_android) {
     use_raw_android_executable = true
@@ -221,6 +226,16 @@ component("seccomp_bpf") {
     "bpf_dsl/syscall_set.cc",
     "bpf_dsl/syscall_set.h",
     "bpf_dsl/trap_registry.h",
+    "seccomp-bpf-helpers/baseline_policy.cc",
+    "seccomp-bpf-helpers/baseline_policy.h",
+    "seccomp-bpf-helpers/baseline_policy_android.cc",
+    "seccomp-bpf-helpers/baseline_policy_android.h",
+    "seccomp-bpf-helpers/sigsys_handlers.cc",
+    "seccomp-bpf-helpers/sigsys_handlers.h",
+    "seccomp-bpf-helpers/syscall_parameters_restrictions.cc",
+    "seccomp-bpf-helpers/syscall_parameters_restrictions.h",
+    "seccomp-bpf-helpers/syscall_sets.cc",
+    "seccomp-bpf-helpers/syscall_sets.h",
     "seccomp-bpf/die.cc",
     "seccomp-bpf/die.h",
     "seccomp-bpf/sandbox_bpf.cc",
@@ -234,10 +249,12 @@ component("seccomp_bpf") {
 
   public_deps = [
     ":sandbox_services_headers",
+    "//sandbox:sandbox_export",
   ]
   deps = [
     ":sandbox_services",
     "//base",
+    "//base/third_party/dynamic_annotations",
   ]
 
   if (is_nacl_nonsfi) {
@@ -250,37 +267,36 @@ component("seccomp_bpf") {
       "bpf_dsl/linux_syscall_ranges.h",
       "bpf_dsl/seccomp_macros.h",
       "bpf_dsl/trap_registry.h",
-    ]
-  }
-}
-
-component("seccomp_bpf_helpers") {
-  sources = [
-    "seccomp-bpf-helpers/baseline_policy.cc",
-    "seccomp-bpf-helpers/baseline_policy.h",
-    "seccomp-bpf-helpers/sigsys_handlers.cc",
-    "seccomp-bpf-helpers/sigsys_handlers.h",
-    "seccomp-bpf-helpers/syscall_parameters_restrictions.cc",
-    "seccomp-bpf-helpers/syscall_parameters_restrictions.h",
-    "seccomp-bpf-helpers/syscall_sets.cc",
-    "seccomp-bpf-helpers/syscall_sets.h",
-  ]
-  defines = [ "SANDBOX_IMPLEMENTATION" ]
-
-  deps = [
-    ":sandbox_services",
-    ":seccomp_bpf",
-    "//base",
-  ]
-
-  if (is_nacl_nonsfi) {
-    sources -= [
       "seccomp-bpf-helpers/baseline_policy.cc",
       "seccomp-bpf-helpers/baseline_policy.h",
       "seccomp-bpf-helpers/syscall_sets.cc",
       "seccomp-bpf-helpers/syscall_sets.h",
     ]
     configs += [ ":nacl_nonsfi_warnings" ]
+  }
+}
+
+if (is_android) {
+  # This target is available even if use_seccomp_bpf is disabled, but it also
+  # works when it is enabled.
+  component("seccomp_starter_android") {
+    sources = [
+      "seccomp-bpf-helpers/seccomp_starter_android.cc",
+      "seccomp-bpf-helpers/seccomp_starter_android.h",
+    ]
+
+    defines = [ "SANDBOX_IMPLEMENTATION" ]
+
+    deps = [
+      "//base",
+      "//sandbox:sandbox_buildflags",
+    ]
+
+    if (use_seccomp_bpf) {
+      deps += [ ":seccomp_bpf" ]
+    }
+
+    visibility = [ ":*" ]
   }
 }
 
@@ -302,23 +318,6 @@ if (is_linux) {
       # These files have a suspicious comparison.
       # TODO fix this and re-enable this warning.
       "-Wno-sign-compare",
-    ]
-
-    import("//build/config/compiler/compiler.gni")
-    import("//build/config/sanitizers/sanitizers.gni")
-    if (is_component_build && !using_sanitizer) {
-      # WARNING! We remove this config so that we don't accidentally
-      # pick up the //build/config:rpath_for_built_shared_libraries
-      # sub-config. However, this means that we need to duplicate any
-      # other flags that executable_config might have.
-      configs -= [ "//build/config:executable_config" ]
-      if (!use_gold) {
-        ldflags = [ "-Wl,--disable-new-dtags" ]
-      }
-    }
-
-    deps = [
-      "//build/config/sanitizers:deps",
     ]
   }
 }
@@ -343,22 +342,28 @@ component("sandbox_services") {
     "syscall_broker/broker_channel.h",
     "syscall_broker/broker_client.cc",
     "syscall_broker/broker_client.h",
-    "syscall_broker/broker_common.h",
+    "syscall_broker/broker_command.cc",
+    "syscall_broker/broker_command.h",
     "syscall_broker/broker_file_permission.cc",
     "syscall_broker/broker_file_permission.h",
     "syscall_broker/broker_host.cc",
     "syscall_broker/broker_host.h",
-    "syscall_broker/broker_policy.cc",
-    "syscall_broker/broker_policy.h",
+    "syscall_broker/broker_permission_list.cc",
+    "syscall_broker/broker_permission_list.h",
     "syscall_broker/broker_process.cc",
     "syscall_broker/broker_process.h",
+    "syscall_broker/broker_simple_message.cc",
+    "syscall_broker/broker_simple_message.h",
   ]
 
   defines = [ "SANDBOX_IMPLEMENTATION" ]
 
-  public_deps = []
+  public_deps = [
+    "//sandbox:sandbox_export",
+  ]
   deps = [
     "//base",
+    "//base/third_party/dynamic_annotations",
   ]
 
   if (compile_credentials || is_nacl_nonsfi) {
@@ -388,15 +393,23 @@ component("sandbox_services") {
       "syscall_broker/broker_channel.h",
       "syscall_broker/broker_client.cc",
       "syscall_broker/broker_client.h",
-      "syscall_broker/broker_common.h",
+      "syscall_broker/broker_command.cc",
+      "syscall_broker/broker_command.h",
       "syscall_broker/broker_file_permission.cc",
       "syscall_broker/broker_file_permission.h",
       "syscall_broker/broker_host.cc",
       "syscall_broker/broker_host.h",
-      "syscall_broker/broker_policy.cc",
-      "syscall_broker/broker_policy.h",
+      "syscall_broker/broker_permission_list.cc",
+      "syscall_broker/broker_permission_list.h",
       "syscall_broker/broker_process.cc",
       "syscall_broker/broker_process.h",
+      "syscall_broker/broker_simple_message.cc",
+      "syscall_broker/broker_simple_message.h",
+    ]
+  } else if (!is_android) {
+    sources += [
+      "services/libc_interceptor.cc",
+      "services/libc_interceptor.h",
     ]
   }
 }
@@ -404,16 +417,18 @@ component("sandbox_services") {
 source_set("sandbox_services_headers") {
   sources = [
     "system_headers/arm64_linux_syscalls.h",
-    "system_headers/arm64_linux_ucontext.h",
     "system_headers/arm_linux_syscalls.h",
     "system_headers/arm_linux_ucontext.h",
     "system_headers/i386_linux_ucontext.h",
+    "system_headers/linux_filter.h",
     "system_headers/linux_futex.h",
     "system_headers/linux_seccomp.h",
     "system_headers/linux_signal.h",
     "system_headers/linux_syscalls.h",
     "system_headers/linux_time.h",
     "system_headers/linux_ucontext.h",
+    "system_headers/mips64_linux_syscalls.h",
+    "system_headers/mips_linux_syscalls.h",
     "system_headers/x86_32_linux_syscalls.h",
     "system_headers/x86_64_linux_syscalls.h",
   ]
@@ -430,10 +445,13 @@ if (compile_suid_client || is_nacl_nonsfi) {
       "suid/common/suid_unsafe_environment_variables.h",
     ]
     defines = [ "SANDBOX_IMPLEMENTATION" ]
-
+    public_deps = [
+      "//sandbox:sandbox_export",
+    ]
     deps = [
       ":sandbox_services",
       "//base",
+      "//base/third_party/dynamic_annotations",
     ]
 
     if (is_nacl_nonsfi) {
@@ -444,15 +462,5 @@ if (compile_suid_client || is_nacl_nonsfi) {
         "suid/common/suid_unsafe_environment_variables.h",
       ]
     }
-  }
-}
-
-if (is_android) {
-  # TODO(GYP_GONE) Delete this after we've converted everything to GN.
-  group("sandbox_linux_unittests_deps") {
-    testonly = true
-    deps = [
-      ":sandbox_linux_unittests",
-    ]
   }
 }

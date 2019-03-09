@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/format_macros.h"
 #include "base/location.h"
@@ -152,15 +153,15 @@ void LocalToRemoteSyncer::RunPreflight(std::unique_ptr<SyncTaskToken> token) {
     if (!active_ancestor_path.AppendRelativePath(path, &missing_entries)) {
       NOTREACHED();
       token->RecordLog(
-          base::StringPrintf("Detected invalid ancestor: %" PRIsFP,
+          base::StringPrintf("Detected invalid ancestor: %" PRFilePath,
                              active_ancestor_path.value().c_str()));
       SyncTaskManager::NotifyTaskDone(std::move(token), SYNC_STATUS_FAILED);
       return;
     }
   }
 
-  std::vector<base::FilePath::StringType> missing_components;
-  storage::VirtualPath::GetComponents(missing_entries, &missing_components);
+  std::vector<base::FilePath::StringType> missing_components =
+      storage::VirtualPath::GetComponents(missing_entries);
 
   if (!missing_components.empty()) {
     if (local_is_missing_) {
@@ -508,7 +509,7 @@ void LocalToRemoteSyncer::UploadExistingFile(
     std::unique_ptr<SyncTaskToken> token) {
   DCHECK(remote_file_tracker_);
   DCHECK(remote_file_tracker_->has_synced_details());
-  DCHECK(sync_context_->GetWorkerTaskRunner()->RunsTasksOnCurrentThread());
+  DCHECK(sync_context_->GetWorkerTaskRunner()->RunsTasksInCurrentSequence());
 
   const std::string local_file_md5 = drive::util::GetMd5Digest(local_path_,
                                                                nullptr);
@@ -611,7 +612,7 @@ void LocalToRemoteSyncer::DidGetRemoteMetadata(
     std::unique_ptr<SyncTaskToken> token,
     google_apis::DriveApiErrorCode error,
     std::unique_ptr<google_apis::FileResource> entry) {
-  DCHECK(sync_context_->GetWorkerTaskRunner()->RunsTasksOnCurrentThread());
+  DCHECK(sync_context_->GetWorkerTaskRunner()->RunsTasksInCurrentSequence());
 
   if (error == google_apis::HTTP_NOT_FOUND) {
     retry_on_success_ = true;

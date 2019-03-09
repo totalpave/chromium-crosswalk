@@ -5,7 +5,10 @@
 #include "chrome/browser/engagement/site_engagement_metrics.h"
 
 #include "base/metrics/histogram_macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "chrome/browser/engagement/site_engagement_details.mojom.h"
+#include "chrome/browser/engagement/site_engagement_score.h"
 
 namespace {
 
@@ -30,17 +33,11 @@ const char SiteEngagementMetrics::kMeanEngagementHistogram[] =
 const char SiteEngagementMetrics::kMedianEngagementHistogram[] =
     "SiteEngagementService.MedianEngagement";
 
-const char SiteEngagementMetrics::kEngagementPercentageForHTTPSHistogram[] =
-    "SiteEngagementService.EngagementPercentageForHTTPS";
-
 const char SiteEngagementMetrics::kEngagementScoreHistogram[] =
     "SiteEngagementService.EngagementScore";
 
-const char SiteEngagementMetrics::kEngagementScoreHistogramHTTP[] =
-    "SiteEngagementService.EngagementScore.HTTP";
-
-const char SiteEngagementMetrics::kEngagementScoreHistogramHTTPS[] =
-    "SiteEngagementService.EngagementScore.HTTPS";
+const char SiteEngagementMetrics::kEngagementScoreHistogramIsZero[] =
+    "SiteEngagementService.EngagementScore.IsZero";
 
 const char SiteEngagementMetrics::kOriginsWithMaxEngagementHistogram[] =
     "SiteEngagementService.OriginsWithMaxEngagement";
@@ -83,29 +80,19 @@ void SiteEngagementMetrics::RecordMedianEngagement(double median_engagement) {
 }
 
 void SiteEngagementMetrics::RecordEngagementScores(
-    const std::map<GURL, double>& score_map) {
-  if (score_map.size() == 0)
+    const std::vector<mojom::SiteEngagementDetails>& details) {
+  if (details.empty())
     return;
 
-  // Total up all HTTP and HTTPS engagement so we can log the percentage of
-  // engagement to HTTPS origins.
-  double total_http_https_engagement = 0;
-  double https_engagement = 0;
   std::map<int, int> score_buckets;
-  for (size_t i = 0; i < arraysize(kEngagementBucketHistogramBuckets); ++i)
+  for (size_t i = 0; i < base::size(kEngagementBucketHistogramBuckets); ++i)
     score_buckets[kEngagementBucketHistogramBuckets[i]] = 0;
 
-  for (const auto& value : score_map) {
-    double score = value.second;
+  const double threshold_0 = std::numeric_limits<double>::epsilon();;
+  for (const auto& detail : details) {
+    double score = detail.total_score;
     UMA_HISTOGRAM_COUNTS_100(kEngagementScoreHistogram, score);
-    if (value.first.SchemeIs(url::kHttpsScheme)) {
-      UMA_HISTOGRAM_COUNTS_100(kEngagementScoreHistogramHTTPS, score);
-      https_engagement += score;
-      total_http_https_engagement += score;
-    } else if (value.first.SchemeIs(url::kHttpScheme)) {
-      UMA_HISTOGRAM_COUNTS_100(kEngagementScoreHistogramHTTP, score);
-      total_http_https_engagement += score;
-    }
+    UMA_HISTOGRAM_BOOLEAN(kEngagementScoreHistogramIsZero, score < threshold_0);
 
     auto bucket = score_buckets.lower_bound(score);
     if (bucket == score_buckets.end())
@@ -116,18 +103,13 @@ void SiteEngagementMetrics::RecordEngagementScores(
 
   for (const auto& b : score_buckets) {
     std::string histogram_name =
-        kEngagementBucketHistogramBase + base::IntToString(b.first);
+        kEngagementBucketHistogramBase + base::NumberToString(b.first);
 
     base::LinearHistogram::FactoryGet(
         histogram_name, 1, 100, 10,
         base::HistogramBase::kUmaTargetedHistogramFlag)
-        ->Add(b.second * 100 / score_map.size());
+        ->Add(b.second * 100 / details.size());
   }
-
-  double percentage = 0;
-  if (total_http_https_engagement > 0)
-    percentage = (https_engagement / total_http_https_engagement) * 100;
-  UMA_HISTOGRAM_PERCENTAGE(kEngagementPercentageForHTTPSHistogram, percentage);
 }
 
 void SiteEngagementMetrics::RecordOriginsWithMaxEngagement(int total_origins) {
@@ -146,8 +128,10 @@ void SiteEngagementMetrics::RecordPercentOriginsWithMaxEngagement(
                            percentage);
 }
 
-void SiteEngagementMetrics::RecordEngagement(EngagementType type) {
-  UMA_HISTOGRAM_ENUMERATION(kEngagementTypeHistogram, type, ENGAGEMENT_LAST);
+void SiteEngagementMetrics::RecordEngagement(
+    SiteEngagementService::EngagementType type) {
+  UMA_HISTOGRAM_ENUMERATION(kEngagementTypeHistogram, type,
+                            SiteEngagementService::ENGAGEMENT_LAST);
 }
 
 void SiteEngagementMetrics::RecordDaysSinceLastShortcutLaunch(int days) {
@@ -166,10 +150,10 @@ void SiteEngagementMetrics::RecordScoreDecayedTo(double score) {
 std::vector<std::string>
 SiteEngagementMetrics::GetEngagementBucketHistogramNames() {
   std::vector<std::string> histogram_names;
-  for (size_t i = 0; i < arraysize(kEngagementBucketHistogramBuckets); ++i) {
+  for (size_t i = 0; i < base::size(kEngagementBucketHistogramBuckets); ++i) {
     histogram_names.push_back(
         kEngagementBucketHistogramBase +
-        base::IntToString(kEngagementBucketHistogramBuckets[i]));
+        base::NumberToString(kEngagementBucketHistogramBuckets[i]));
   }
 
   return histogram_names;

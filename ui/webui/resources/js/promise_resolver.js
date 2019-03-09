@@ -27,23 +27,52 @@ function PromiseResolver() {
   /** @private {function(*=): void} */
   this.reject_;
 
+  /** @private {boolean} */
+  this.isFulfilled_ = false;
+
   /** @private {!Promise<T>} */
   this.promise_ = new Promise(function(resolve, reject) {
-    this.resolve_ = resolve;
-    this.reject_ = reject;
+    this.resolve_ = /** @param {T=} resolution */ function(resolution) {
+      resolve(resolution);
+      this.isFulfilled_ = true;
+    };
+    this.reject_ = /** @param {*=} reason */ function(reason) {
+      reject(reason);
+      this.isFulfilled_ = true;
+    };
   }.bind(this));
 }
 
 PromiseResolver.prototype = {
+  /** @return {boolean} Whether this resolver has been resolved or rejected. */
+  get isFulfilled() {
+    return this.isFulfilled_;
+  },
+  set isFulfilled(i) {
+    assertNotReached();
+  },
+
   /** @return {!Promise<T>} */
-  get promise() { return this.promise_; },
-  set promise(p) { assertNotReached(); },
+  get promise() {
+    return this.promise_;
+  },
+  set promise(p) {
+    assertNotReached();
+  },
 
   /** @return {function(T=): void} */
-  get resolve() { return this.resolve_; },
-  set resolve(r) { assertNotReached(); },
+  get resolve() {
+    return this.resolve_;
+  },
+  set resolve(r) {
+    assertNotReached();
+  },
 
   /** @return {function(*=): void} */
-  get reject() { return this.reject_; },
-  set reject(s) { assertNotReached(); },
+  get reject() {
+    return this.reject_;
+  },
+  set reject(s) {
+    assertNotReached();
+  },
 };

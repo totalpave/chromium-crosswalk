@@ -8,18 +8,7 @@
 #include "jni/Surface_jni.h"
 #include "ui/gl/android/surface_texture.h"
 
-namespace {
-
-bool g_jni_initialized = false;
-
-void RegisterNativesIfNeeded(JNIEnv* env) {
-  if (!g_jni_initialized) {
-    JNI_Surface::RegisterNativesImpl(env);
-    g_jni_initialized = true;
-  }
-}
-
-}  // anonymous namespace
+using base::android::ScopedJavaLocalRef;
 
 namespace gl {
 
@@ -27,23 +16,16 @@ ScopedJavaSurface::ScopedJavaSurface() {
 }
 
 ScopedJavaSurface::ScopedJavaSurface(
-    const base::android::JavaRef<jobject>& surface)
-    : auto_release_(true),
-      is_protected_(false) {
+    const base::android::JavaRef<jobject>& surface) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  RegisterNativesIfNeeded(env);
-  DCHECK(env->IsInstanceOf(surface.obj(), Surface_clazz(env)));
+  DCHECK(env->IsInstanceOf(surface.obj(), android_view_Surface_clazz(env)));
   j_surface_.Reset(surface);
 }
 
-ScopedJavaSurface::ScopedJavaSurface(
-    const SurfaceTexture* surface_texture)
-    : auto_release_(true),
-      is_protected_(false) {
+ScopedJavaSurface::ScopedJavaSurface(const SurfaceTexture* surface_texture) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  RegisterNativesIfNeeded(env);
-  ScopedJavaLocalRef<jobject> tmp(JNI_Surface::Java_Surface_Constructor(
-      env, surface_texture->j_surface_texture().obj()));
+  ScopedJavaLocalRef<jobject> tmp(JNI_Surface::Java_Surface_ConstructorAVS_AGST(
+      env, surface_texture->j_surface_texture()));
   DCHECK(!tmp.is_null());
   j_surface_.Reset(tmp);
 }
@@ -58,13 +40,18 @@ ScopedJavaSurface& ScopedJavaSurface::operator=(ScopedJavaSurface&& rhs) {
 }
 
 ScopedJavaSurface::~ScopedJavaSurface() {
+  ReleaseSurfaceIfNeeded();
+}
+
+void ScopedJavaSurface::ReleaseSurfaceIfNeeded() {
   if (auto_release_ && !j_surface_.is_null()) {
     JNIEnv* env = base::android::AttachCurrentThread();
-    JNI_Surface::Java_Surface_release(env, j_surface_.obj());
+    JNI_Surface::Java_Surface_releaseV(env, j_surface_);
   }
 }
 
 void ScopedJavaSurface::MoveFrom(ScopedJavaSurface& other) {
+  ReleaseSurfaceIfNeeded();
   JNIEnv* env = base::android::AttachCurrentThread();
   j_surface_.Reset(env, other.j_surface_.Release());
   auto_release_ = other.auto_release_;
@@ -73,6 +60,11 @@ void ScopedJavaSurface::MoveFrom(ScopedJavaSurface& other) {
 
 bool ScopedJavaSurface::IsEmpty() const {
   return j_surface_.is_null();
+}
+
+bool ScopedJavaSurface::IsValid() const {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  return !IsEmpty() && JNI_Surface::Java_Surface_isValidZ(env, j_surface_);
 }
 
 // static

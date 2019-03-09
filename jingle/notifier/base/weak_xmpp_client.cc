@@ -8,17 +8,17 @@
 
 namespace notifier {
 
-WeakXmppClient::WeakXmppClient(rtc::TaskParent* parent)
-    : buzz::XmppClient(parent),
+WeakXmppClient::WeakXmppClient(jingle_xmpp::TaskParent* parent)
+    : jingle_xmpp::XmppClient(parent),
       weak_ptr_factory_(this) {}
 
 WeakXmppClient::~WeakXmppClient() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   Invalidate();
 }
 
 void WeakXmppClient::Invalidate() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // We don't want XmppClient raising any signals once its invalidated.
   SignalStateChange.disconnect_all();
   SignalLogInput.disconnect_all();
@@ -27,15 +27,15 @@ void WeakXmppClient::Invalidate() {
 }
 
 base::WeakPtr<WeakXmppClient> WeakXmppClient::AsWeakPtr() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return weak_ptr_factory_.GetWeakPtr();
 }
 
 void WeakXmppClient::Stop() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // We don't want XmppClient used after it has been stopped.
   Invalidate();
-  buzz::XmppClient::Stop();
+  jingle_xmpp::XmppClient::Stop();
 }
 
 }  // namespace notifier

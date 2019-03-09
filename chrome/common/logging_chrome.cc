@@ -8,13 +8,13 @@
 // IPC_MESSAGE_LOG_ENABLED. We need to use it to define
 // IPC_MESSAGE_MACROS_LOG_ENABLED so render_messages.h will generate the
 // ViewMsgLog et al. functions.
-#include "ipc/ipc_message.h"
+#include "ipc/ipc_buildflags.h"
 
 // On Windows, the about:ipc dialog shows IPCs; on POSIX, we hook up a
 // logger in this file.  (We implement about:ipc on Mac but implement
 // the loggers here anyway).  We need to do this real early to be sure
 // IPC_MESSAGE_MACROS_LOG_ENABLED doesn't get undefined.
-#if defined(OS_POSIX) && defined(IPC_MESSAGE_LOG_ENABLED)
+#if defined(OS_POSIX) && BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
 #define IPC_MESSAGE_MACROS_LOG_ENABLED
 #include "content/public/common/content_ipc_logging.h"
 #define IPC_LOG_TABLE_ADD_ENTRY(msg_id, logger) \
@@ -33,6 +33,7 @@
 #include <string>  // NOLINT
 
 #include "base/base_switches.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/debug/debugger.h"
@@ -40,12 +41,12 @@
 #include "base/environment.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/metrics/statistics_recorder.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/threading/thread_restrictions.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
@@ -54,18 +55,23 @@
 #include "ipc/ipc_logging.h"
 
 #if defined(OS_CHROMEOS)
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #endif
 
 #if defined(OS_WIN)
 #include <initguid.h>
 #include "base/logging_win.h"
+#include "base/syslog_logging.h"
+#include "chrome/common/win/eventlog_messages.h"
+#include "chrome/install_static/install_details.h"
 #endif
 
+namespace logging {
 namespace {
 
 // When true, this means that error dialogs should not be shown.
 bool dialogs_are_suppressed_ = false;
+ScopedLogAssertHandler* assert_handler_ = nullptr;
 
 // This should be true for exactly the period between the end of
 // InitChromeLogging() and the beginning of CleanupChromeLogging().
@@ -88,11 +94,12 @@ const GUID kChromeTraceProviderName = {
 // Assertion handler for logging errors that occur when dialogs are
 // silenced.  To record a new error, pass the log string associated
 // with that error in the str parameter.
-MSVC_DISABLE_OPTIMIZE();
-void SilentRuntimeAssertHandler(const std::string& str) {
+NOINLINE void SilentRuntimeAssertHandler(const char* file,
+                                         int line,
+                                         const base::StringPiece message,
+                                         const base::StringPiece stack_trace) {
   base::debug::BreakDebugger();
 }
-MSVC_ENABLE_OPTIMIZE();
 
 // Suppresses error/assertion dialogs and enables the logging of
 // those errors into silenced_errors_.
@@ -100,7 +107,8 @@ void SuppressDialogs() {
   if (dialogs_are_suppressed_)
     return;
 
-  logging::SetLogAssertHandler(SilentRuntimeAssertHandler);
+  assert_handler_ =
+      new ScopedLogAssertHandler(base::Bind(SilentRuntimeAssertHandler));
 
 #if defined(OS_WIN)
   UINT new_flags = SEM_FAILCRITICALERRORS |
@@ -117,64 +125,96 @@ void SuppressDialogs() {
 
 }  // anonymous namespace
 
-namespace logging {
-
-LoggingDestination DetermineLogMode(const base::CommandLine& command_line) {
-  // only use OutputDebugString in debug mode
+LoggingDestination DetermineLoggingDestination(
+    const base::CommandLine& command_line) {
+// only use OutputDebugString in debug mode
 #ifdef NDEBUG
   bool enable_logging = false;
   const char *kInvertLoggingSwitch = switches::kEnableLogging;
-  const logging::LoggingDestination kDefaultLoggingMode = logging::LOG_TO_FILE;
+  const LoggingDestination kDefaultLoggingMode = LOG_TO_FILE;
 #else
   bool enable_logging = true;
   const char *kInvertLoggingSwitch = switches::kDisableLogging;
-  const logging::LoggingDestination kDefaultLoggingMode = logging::LOG_TO_ALL;
+  const LoggingDestination kDefaultLoggingMode = LOG_TO_ALL;
 #endif
 
   if (command_line.HasSwitch(kInvertLoggingSwitch))
     enable_logging = !enable_logging;
 
-  logging::LoggingDestination log_mode;
+  LoggingDestination log_mode;
   if (enable_logging) {
     // Let --enable-logging=stderr force only stderr, particularly useful for
     // non-debug builds where otherwise you can't get logs to stderr at all.
     if (command_line.GetSwitchValueASCII(switches::kEnableLogging) == "stderr")
-      log_mode = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+      log_mode = LOG_TO_SYSTEM_DEBUG_LOG;
     else
       log_mode = kDefaultLoggingMode;
   } else {
-    log_mode = logging::LOG_NONE;
+    log_mode = LOG_NONE;
   }
   return log_mode;
 }
 
 #if defined(OS_CHROMEOS)
-namespace {
 base::FilePath SetUpSymlinkIfNeeded(const base::FilePath& symlink_path,
                                     bool new_log) {
   DCHECK(!symlink_path.empty());
+  // For backward compatibility, set up a .../chrome symlink to
+  // .../chrome.LATEST as needed.  This code needs to run only
+  // after the migration (i.e. the addition of chrome.LATEST).
+  if (symlink_path.Extension() == ".LATEST") {
+    base::FilePath extensionless_path = symlink_path.ReplaceExtension("");
+    base::FilePath target_path;
+    bool extensionless_symlink_exists =
+        base::ReadSymbolicLink(extensionless_path, &target_path);
 
-  // If not starting a new log, then just log through the existing
-  // symlink, but if the symlink doesn't exist, create it.  If
-  // starting a new log, then delete the old symlink and make a new
-  // one to a fresh log file.
+    if (target_path != symlink_path) {
+      // No link, or wrong link.  Clean up.  This should happen only once in
+      // each log directory after the OS version update, but some of those
+      // directories may not be accessed for a long time, so this code needs to
+      // stay in forever :/
+      if (extensionless_symlink_exists &&
+          !base::DeleteFile(extensionless_path, false)) {
+        DPLOG(WARNING) << "Cannot delete " << extensionless_path.value();
+      }
+      // After cleaning up, create the symlink.
+      if (!base::CreateSymbolicLink(symlink_path, extensionless_path)) {
+        DPLOG(ERROR) << "Cannot create " << extensionless_path.value();
+      }
+    }
+  }
+
+  // If not starting a new log, then just log through the existing symlink, but
+  // if the symlink doesn't exist, create it.
+  //
+  // If starting a new log, then rename the old symlink as
+  // symlink_path.PREVIOUS and make a new symlink to a fresh log file.
+
+  // Check for existence of the symlink.
   base::FilePath target_path;
-  bool symlink_exists = base::PathExists(symlink_path);
-  if (new_log || !symlink_exists) {
-    target_path = GenerateTimestampedName(symlink_path, base::Time::Now());
+  bool symlink_exists = base::ReadSymbolicLink(symlink_path, &target_path);
 
-    // We don't care if the unlink fails; we're going to continue anyway.
-    if (::unlink(symlink_path.value().c_str()) == -1) {
-      if (symlink_exists) // only warn if we might expect it to succeed.
-        DPLOG(WARNING) << "Unable to unlink " << symlink_path.value();
+  if (symlink_exists && !new_log)
+    return target_path;
+
+  // Remove any extension before time-stamping.
+  target_path = GenerateTimestampedName(symlink_path.RemoveExtension(),
+                                        base::Time::Now());
+
+  if (symlink_exists) {
+    base::FilePath previous_symlink_path =
+        symlink_path.ReplaceExtension(".PREVIOUS");
+    // Rename symlink to .PREVIOUS.  This nukes an existing symlink just like
+    // the rename(2) syscall does.
+    if (!base::ReplaceFile(symlink_path, previous_symlink_path, nullptr)) {
+      DPLOG(WARNING) << "Cannot rename " << symlink_path.value() << " to "
+                     << previous_symlink_path.value();
     }
-    if (!base::CreateSymbolicLink(target_path, symlink_path)) {
-      DPLOG(ERROR) << "Unable to create symlink " << symlink_path.value()
-                   << " pointing at " << target_path.value();
-    }
-  } else {
-    if (!base::ReadSymbolicLink(symlink_path, &target_path))
-      DPLOG(ERROR) << "Unable to read symlink " << symlink_path.value();
+  }
+  // If all went well, the symlink no longer exists.  Recreate it.
+  if (!base::CreateSymbolicLink(target_path, symlink_path)) {
+    DPLOG(ERROR) << "Unable to create symlink " << symlink_path.value()
+                 << " pointing at " << target_path.value();
   }
   return target_path;
 }
@@ -187,8 +227,6 @@ void RemoveSymlinkAndLog(const base::FilePath& link_path,
     DPLOG(WARNING) << "Unable to unlink log file " << target_path.value();
 }
 
-}  // anonymous namespace
-
 base::FilePath GetSessionLogDir(const base::CommandLine& command_line) {
   base::FilePath log_dir;
   std::string log_dir_str;
@@ -197,7 +235,7 @@ base::FilePath GetSessionLogDir(const base::CommandLine& command_line) {
       !log_dir_str.empty()) {
     log_dir = base::FilePath(log_dir_str);
   } else if (command_line.HasSwitch(chromeos::switches::kLoginProfile)) {
-    PathService::Get(chrome::DIR_USER_DATA, &log_dir);
+    base::PathService::Get(chrome::DIR_USER_DATA, &log_dir);
     base::FilePath profile_dir;
     std::string login_profile_value =
         command_line.GetSwitchValueASCII(chromeos::switches::kLoginProfile);
@@ -216,50 +254,17 @@ base::FilePath GetSessionLogDir(const base::CommandLine& command_line) {
 }
 
 base::FilePath GetSessionLogFile(const base::CommandLine& command_line) {
-  return GetSessionLogDir(command_line).Append(GetLogFileName().BaseName());
+  return GetSessionLogDir(command_line)
+      .Append(GetLogFileName(command_line).BaseName());
 }
 
-void RedirectChromeLogging(const base::CommandLine& command_line) {
-  if (chrome_logging_redirected_) {
-    // TODO(nkostylev): Support multiple active users. http://crbug.com/230345
-    LOG(WARNING) << "NOT redirecting logging for multi-profiles case.";
-    return;
-  }
-
-  DCHECK(!chrome_logging_redirected_) <<
-    "Attempted to redirect logging when it was already initialized.";
-
-  // Redirect logs to the session log directory, if set.  Otherwise
-  // defaults to the profile dir.
-  base::FilePath log_path = GetSessionLogFile(command_line);
-
-  // Creating symlink causes us to do blocking IO on UI thread.
-  // Temporarily allow it until we fix http://crbug.com/61143
-  base::ThreadRestrictions::ScopedAllowIO allow_io;
-  // Always force a new symlink when redirecting.
-  base::FilePath target_path = SetUpSymlinkIfNeeded(log_path, true);
-
-  // ChromeOS always logs through the symlink, so it shouldn't be
-  // deleted if it already exists.
-  logging::LoggingSettings settings;
-  settings.logging_dest = DetermineLogMode(command_line);
-  settings.log_file = log_path.value().c_str();
-  if (!logging::InitLogging(settings)) {
-    DLOG(ERROR) << "Unable to initialize logging to " << log_path.value();
-    RemoveSymlinkAndLog(log_path, target_path);
-  } else {
-    chrome_logging_redirected_ = true;
-  }
-}
-
-#endif  // OS_CHROMEOS
+#endif  // defined(OS_CHROMEOS)
 
 void InitChromeLogging(const base::CommandLine& command_line,
                        OldFileDeletionState delete_old_log_file) {
   DCHECK(!chrome_logging_initialized_) <<
     "Attempted to initialize logging when it was already initialized.";
-
-  LoggingDestination logging_dest = DetermineLogMode(command_line);
+  LoggingDestination logging_dest = DetermineLoggingDestination(command_line);
   LogLockingState log_locking_state = LOCK_LOG_FILE;
   base::FilePath log_path;
 #if defined(OS_CHROMEOS)
@@ -269,7 +274,7 @@ void InitChromeLogging(const base::CommandLine& command_line,
   // Don't resolve the log path unless we need to. Otherwise we leave an open
   // ALPC handle after sandbox lockdown on Windows.
   if ((logging_dest & LOG_TO_FILE) != 0) {
-    log_path = GetLogFileName();
+    log_path = GetLogFileName(command_line);
 
 #if defined(OS_CHROMEOS)
     // For BWSI (Incognito) logins, we want to put the logs in the user
@@ -282,23 +287,23 @@ void InitChromeLogging(const base::CommandLine& command_line,
     // symlink if we've been asked to delete the old log, since that
     // indicates the start of a new session.
     target_path = SetUpSymlinkIfNeeded(
-        log_path, delete_old_log_file == logging::DELETE_OLD_LOG_FILE);
+        log_path, delete_old_log_file == DELETE_OLD_LOG_FILE);
 
     // Because ChromeOS manages the move to a new session by redirecting
     // the link, it shouldn't remove the old file in the logging code,
     // since that will remove the newly created link instead.
-    delete_old_log_file = logging::APPEND_TO_OLD_LOG_FILE;
-#endif
+    delete_old_log_file = APPEND_TO_OLD_LOG_FILE;
+#endif  // defined(OS_CHROMEOS)
   } else {
     log_locking_state = DONT_LOCK_LOG_FILE;
   }
 
-  logging::LoggingSettings settings;
+  LoggingSettings settings;
   settings.logging_dest = logging_dest;
   settings.log_file = log_path.value().c_str();
   settings.lock_log = log_locking_state;
   settings.delete_old = delete_old_log_file;
-  bool success = logging::InitLogging(settings);
+  bool success = InitLogging(settings);
 
 #if defined(OS_CHROMEOS)
   if (!success) {
@@ -308,48 +313,49 @@ void InitChromeLogging(const base::CommandLine& command_line,
     chrome_logging_failed_ = true;
     return;
   }
-#else
+#else   // defined(OS_CHROMEOS)
   if (!success) {
     DPLOG(ERROR) << "Unable to initialize logging to " << log_path.value();
     chrome_logging_failed_ = true;
     return;
   }
-#endif
+#endif  // defined(OS_CHROMEOS)
 
-  // Default to showing error dialogs.
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kNoErrorDialogs))
-    logging::SetShowErrorDialogs(true);
+  // We call running in unattended mode "headless", and allow headless mode to
+  // be configured either by the Environment Variable or by the Command Line
+  // Switch. This is for automated test purposes.
+  std::unique_ptr<base::Environment> env(base::Environment::Create());
+  const bool is_headless = env->HasVar(env_vars::kHeadless) ||
+                           command_line.HasSwitch(switches::kNoErrorDialogs);
+
+  // Show fatal log messages in a dialog in debug builds when not headless.
+  if (!is_headless)
+    SetShowErrorDialogs(true);
 
   // we want process and thread IDs because we have a lot of things running
-  logging::SetLogItems(true,  // enable_process_id
-                       true,  // enable_thread_id
-                       true,  // enable_timestamp
-                       false);  // enable_tickcount
+  SetLogItems(true,    // enable_process_id
+              true,    // enable_thread_id
+              true,    // enable_timestamp
+              false);  // enable_tickcount
 
-  // We call running in unattended mode "headless", and allow
-  // headless mode to be configured either by the Environment
-  // Variable or by the Command Line Switch.  This is for
-  // automated test purposes.
-  std::unique_ptr<base::Environment> env(base::Environment::Create());
-  if (env->HasVar(env_vars::kHeadless) ||
-      command_line.HasSwitch(switches::kNoErrorDialogs))
+  // Suppress system error dialogs when headless.
+  if (is_headless)
     SuppressDialogs();
 
   // Use a minimum log level if the command line asks for one. Ignore this
   // switch if there's vlog level switch present too (as both of these switches
   // refer to the same underlying log level, and the vlog level switch has
-  // already been processed inside logging::InitLogging). If there is neither
+  // already been processed inside InitLogging). If there is neither
   // log level nor vlog level specified, then just leave the default level
   // (INFO).
   if (command_line.HasSwitch(switches::kLoggingLevel) &&
-      logging::GetMinLogLevel() >= 0) {
+      GetMinLogLevel() >= 0) {
     std::string log_level =
         command_line.GetSwitchValueASCII(switches::kLoggingLevel);
     int level = 0;
     if (base::StringToInt(log_level, &level) && level >= 0 &&
         level < LOG_NUM_SEVERITIES) {
-      logging::SetMinLogLevel(level);
+      SetMinLogLevel(level);
     } else {
       DLOG(WARNING) << "Bad log level: " << log_level;
     }
@@ -357,8 +363,15 @@ void InitChromeLogging(const base::CommandLine& command_line,
 
 #if defined(OS_WIN)
   // Enable trace control and transport through event tracing for Windows.
-  logging::LogEventProvider::Initialize(kChromeTraceProviderName);
+  LogEventProvider::Initialize(kChromeTraceProviderName);
+
+  // Enable logging to the Windows Event Log.
+  SetEventSource(base::UTF16ToASCII(
+                     install_static::InstallDetails::Get().install_full_name()),
+                 BROWSER_CATEGORY, MSG_LOG_MESSAGE);
 #endif
+
+  base::StatisticsRecorder::InitLogOnShutdown();
 
   chrome_logging_initialized_ = true;
 }
@@ -378,16 +391,17 @@ void CleanupChromeLogging() {
   chrome_logging_redirected_ = false;
 }
 
-base::FilePath GetLogFileName() {
-  std::string filename;
-  std::unique_ptr<base::Environment> env(base::Environment::Create());
-  if (env->GetVar(env_vars::kLogFileName, &filename) && !filename.empty())
+base::FilePath GetLogFileName(const base::CommandLine& command_line) {
+  std::string filename = command_line.GetSwitchValueASCII(switches::kLogFile);
+  if (filename.empty())
+    base::Environment::Create()->GetVar(env_vars::kLogFileName, &filename);
+  if (!filename.empty())
     return base::FilePath::FromUTF8Unsafe(filename);
 
   const base::FilePath log_filename(FILE_PATH_LITERAL("chrome_debug.log"));
   base::FilePath log_path;
 
-  if (PathService::Get(chrome::DIR_LOGS, &log_path)) {
+  if (base::PathService::Get(chrome::DIR_LOGS, &log_path)) {
     log_path = log_path.Append(log_filename);
     return log_path;
   } else {
@@ -399,6 +413,8 @@ base::FilePath GetLogFileName() {
 bool DialogsAreSuppressed() {
   return dialogs_are_suppressed_;
 }
+
+#if defined(OS_CHROMEOS)
 base::FilePath GenerateTimestampedName(const base::FilePath& base_path,
                                        base::Time timestamp) {
   base::Time::Exploded time_deets;
@@ -412,5 +428,6 @@ base::FilePath GenerateTimestampedName(const base::FilePath& base_path,
                                           time_deets.second);
   return base_path.InsertBeforeExtensionASCII(suffix);
 }
+#endif  // defined(OS_CHROMEOS)
 
 }  // namespace logging

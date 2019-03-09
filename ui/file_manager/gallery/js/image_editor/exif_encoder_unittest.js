@@ -11,53 +11,34 @@ function testExifEncodeAndDecode() {
   var canvas = getSampleCanvas();
   var data = canvas.toDataURL('image/jpeg');
 
-  var metadata = {
+  var metadata = /** @type {!MetadataItem} */ ({
     mediaMimeType: 'image/jpeg',
     modificationTime: new Date(2015, 0, 7, 15, 30, 6),
     ifd: {
       image: {
         // Manufacture
-        271: {
-          id: 0x10f,
-          format: 2,
-          componentCount: 12,
-          value: 'Manufacture\0'
-        },
+        271: {id: 0x10f, format: 2, componentCount: 12, value: 'Manufacture\0'},
         // Device model
-        272: {
-          id: 0x110,
-          format: 2,
-          componentCount: 12,
-          value: 'DeviceModel\0'
-        },
+        272: {id: 0x110, format: 2, componentCount: 12, value: 'DeviceModel\0'},
         // GPS Pointer
         34853: {
           id: 0x8825,
           format: 4,
           componentCount: 1,
-          value: 0 // The value is set by the encoder.
+          value: 0  // The value is set by the encoder.
         }
       },
       exif: {
         // Lens model
-        42036: {
-          id: 0xa434,
-          format: 2,
-          componentCount: 10,
-          value: 'LensModel\0'
-        }
+        42036:
+            {id: 0xa434, format: 2, componentCount: 10, value: 'LensModel\0'}
       },
       gps: {
         // GPS latitude ref
-        1: {
-          id: 0x1,
-          format: 2,
-          componentCount: 2,
-          value: 'N\0'
-        }
+        1: {id: 0x1, format: 2, componentCount: 2, value: 'N\0'}
       }
     }
-  };
+  });
 
   var encoder = ImageEncoder.encodeMetadata(metadata, canvas, 1);
 
@@ -70,8 +51,12 @@ function testExifEncodeAndDecode() {
   var exifParser = new ExifParser(this);
 
   // Redirect .log and .vlog to console.log for debugging.
-  exifParser.log = function(arg) { console.log(arg); };
-  exifParser.vlog = function(arg) { console.log(arg); };
+  exifParser.log = function(arg) {
+    console.log(arg);
+  };
+  exifParser.vlog = function(arg) {
+    console.log(arg);
+  };
 
   var parsedMetadata = {};
   var byteReader = new ByteReader(encodedResult);
@@ -98,7 +83,7 @@ function testExifEncodeAndDecode() {
   // GPS latitude ref
   assertEquals('N\0', parsedMetadata.ifd.gps[0x1].value);
 
-  // Software should be set as Gallery.app
+  // Software should be set as the Gallery app
   assertEquals('Chrome OS Gallery App\0',
       parsedMetadata.ifd.image[0x131].value);
 
@@ -116,14 +101,18 @@ function testExifEncodeAndDecode() {
  */
 function measureExpectedThumbnailSize_() {
   var canvas = getSampleCanvas();
-  var metadata = {
+  var metadata = /** @type {!MetadataItem} */ ({
     mediaMimeType: 'image/jpeg',
     modificationTime: new Date(2015, 0, 7, 15, 30, 6)
-  };
+  });
 
   var encoder = ImageEncoder.encodeMetadata(metadata, canvas, 1);
-  return ImageEncoder.decodeDataURL(encoder.thumbnailDataUrl).length;
-};
+  /** @suppress {accessControls} */
+  function getThumbnailDataUrlForTest() {
+    return encoder.thumbnailDataUrl;
+  }
+  return ImageEncoder.decodeDataURL(getThumbnailDataUrlForTest()).length;
+}
 
 /**
  * Helper function for testing that exif encoder drops thumbnail data if there
@@ -139,7 +128,7 @@ function largeExifDataTestHelper_(largeFieldValueSize, expectThumbnail) {
   var longString = '0'.repeat(largeFieldValueSize - 1);
   longString += '\0';
 
-  var metadata = {
+  var metadata = /** @type{!MetadataItem} */ ({
     mediaMimeType: 'image/jpeg',
     modificationTime: new Date(2015, 0, 7, 15, 30, 6),
     ifd: {
@@ -153,7 +142,7 @@ function largeExifDataTestHelper_(largeFieldValueSize, expectThumbnail) {
         }
       }
     }
-  };
+  });
 
   var encoder = ImageEncoder.encodeMetadata(metadata, canvas, 1);
 
@@ -161,7 +150,8 @@ function largeExifDataTestHelper_(largeFieldValueSize, expectThumbnail) {
   var encodedResult = encoder.encode();
 
   // Decode encoded exif data and check thumbnail is written or not.
-  var exifParser = new ExifParser({verbose: false});
+  var exifParser =
+      new ExifParser(/** @type{MetadataParserLogger} */ ({verbose: false}));
   var parsedMetadata = {};
   var byteReader = new ByteReader(encodedResult);
   byteReader.readString(2 + 2); // Skip marker and size.

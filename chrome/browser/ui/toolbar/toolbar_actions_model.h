@@ -6,15 +6,15 @@
 #define CHROME_BROWSER_UI_TOOLBAR_TOOLBAR_ACTIONS_MODEL_H_
 
 #include <stddef.h>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/observer_list.h"
 #include "base/scoped_observer.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
-#include "chrome/browser/extensions/component_migration_helper.h"
 #include "chrome/browser/extensions/extension_action.h"
+#include "chrome/browser/extensions/load_error_reporter.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "extensions/browser/extension_prefs.h"
@@ -31,8 +31,7 @@ namespace extensions {
 class ExtensionActionManager;
 class ExtensionMessageBubbleController;
 class ExtensionRegistry;
-class ExtensionSet;
-}
+}  // namespace extensions
 
 // Model for the browser actions toolbar. This is a per-profile instance, and
 // manages the user's global preferences.
@@ -41,36 +40,17 @@ class ExtensionSet;
 // overflow menu on a per-window basis. Callers interested in the arrangement of
 // actions in a particular window should check that window's instance of
 // ToolbarActionsBar, which is responsible for the per-window layout.
-class ToolbarActionsModel
-    : public extensions::ExtensionActionAPI::Observer,
-      public extensions::ExtensionRegistryObserver,
-      public KeyedService,
-      public extensions::ComponentMigrationHelper::ComponentActionDelegate {
+class ToolbarActionsModel : public extensions::ExtensionActionAPI::Observer,
+                            public extensions::LoadErrorReporter::Observer,
+                            public extensions::ExtensionRegistryObserver,
+                            public KeyedService {
  public:
+  using ActionId = std::string;
+
   // The different options for highlighting.
   enum HighlightType {
     HIGHLIGHT_NONE,
-    HIGHLIGHT_INFO,
     HIGHLIGHT_WARNING,
-  };
-
-  // The different types of actions.
-  enum ActionType {
-    UNKNOWN_ACTION,
-    COMPONENT_ACTION,
-    EXTENSION_ACTION,
-  };
-
-  // An action id and its corresponding ActionType.
-  struct ToolbarItem {
-    ToolbarItem() : type(UNKNOWN_ACTION) {}
-    ToolbarItem(const std::string& action_id, ActionType action_type)
-        : id(action_id), type(action_type) {}
-
-    bool operator==(const ToolbarItem& other) const { return other.id == id; }
-
-    std::string id;
-    ActionType type;
   };
 
   ToolbarActionsModel(Profile* profile,
@@ -83,21 +63,25 @@ class ToolbarActionsModel
   // delegate.
   class Observer {
    public:
-    // Signals that |item| has been added to the toolbar at |index|. This will
+    // Signals that |id| has been added to the toolbar at |index|. This will
     // *only* be called after the toolbar model has been initialized.
-    virtual void OnToolbarActionAdded(const ToolbarItem& item, int index) = 0;
+    virtual void OnToolbarActionAdded(const ActionId& id, int index) = 0;
 
     // Signals that the given action with |id| has been removed from the
     // toolbar.
-    virtual void OnToolbarActionRemoved(const std::string& id) = 0;
+    virtual void OnToolbarActionRemoved(const ActionId& id) = 0;
 
     // Signals that the given action with |id| has been moved to |index|.
     // |index| is the desired *final* index of the action (that is, in the
     // adjusted order, action should be at |index|).
-    virtual void OnToolbarActionMoved(const std::string& id, int index) = 0;
+    virtual void OnToolbarActionMoved(const ActionId& id, int index) = 0;
+
+    // Signals that the extension, corresponding to the toolbar action, has
+    // failed to load.
+    virtual void OnToolbarActionLoadFailed() = 0;
 
     // Signals that the browser action with |id| has been updated.
-    virtual void OnToolbarActionUpdated(const std::string& id) = 0;
+    virtual void OnToolbarActionUpdated(const ActionId& id) = 0;
 
     // Signals when the container needs to be redrawn because of a size change,
     // and when the model has finished loading.
@@ -129,7 +113,7 @@ class ToolbarActionsModel
   void RemoveObserver(Observer* observer);
 
   // Moves the given action with |id|'s icon to the given |index|.
-  void MoveActionIcon(const std::string& id, size_t index);
+  void MoveActionIcon(const ActionId& id, size_t index);
 
   // Sets the number of action icons that should be visible.
   // If count == size(), this will set the visible icon count to -1, meaning
@@ -144,30 +128,26 @@ class ToolbarActionsModel
     // prefs/sync, and we want to ensure that the icon count returned is within
     // bounds.
     return visible_icon_count_ == -1
-               ? toolbar_items().size()
+               ? action_ids().size()
                : std::min(static_cast<size_t>(visible_icon_count_),
-                          toolbar_items().size());
+                          action_ids().size());
   }
   bool all_icons_visible() const {
-    return visible_icon_count() == toolbar_items().size();
+    return visible_icon_count() == action_ids().size();
   }
 
   bool actions_initialized() const { return actions_initialized_; }
 
-  ScopedVector<ToolbarActionViewController> CreateActions(
+  std::vector<std::unique_ptr<ToolbarActionViewController>> CreateActions(
       Browser* browser,
       ToolbarActionsBar* bar);
-  std::unique_ptr<ToolbarActionViewController> CreateActionForItem(
+  std::unique_ptr<ToolbarActionViewController> CreateActionForId(
       Browser* browser,
       ToolbarActionsBar* bar,
-      const ToolbarItem& item);
+      const ActionId& action_id);
 
-  const std::vector<ToolbarItem>& toolbar_items() const {
-    return is_highlighting() ? highlighted_items_ : toolbar_items_;
-  }
-
-  extensions::ComponentMigrationHelper* component_migration_helper() {
-    return component_migration_helper_.get();
+  const std::vector<ActionId>& action_ids() const {
+    return is_highlighting() ? highlighted_action_ids_ : action_ids_;
   }
 
   bool is_highlighting() const { return highlight_type_ != HIGHLIGHT_NONE; }
@@ -178,21 +158,16 @@ class ToolbarActionsModel
     has_active_bubble_ = has_active_bubble;
   }
 
-  void SetActionVisibility(const std::string& action_id, bool visible);
-
-  // ComponentMigrationHelper::ComponentActionDelegate:
-  void AddComponentAction(const std::string& action_id) override;
-  void RemoveComponentAction(const std::string& action_id) override;
-  bool HasComponentAction(const std::string& action_id) const override;
+  void SetActionVisibility(const ActionId& action_id, bool visible);
 
   void OnActionToolbarPrefChange();
 
   // Highlights the actions specified by |action_ids|. This will cause
-  // the ToolbarModel to only display those actions.
+  // the LocationBarModel to only display those actions.
   // Highlighting mode is only entered if there is at least one action to be
   // shown.
   // Returns true if highlighting mode is entered, false otherwise.
-  bool HighlightActions(const std::vector<std::string>& action_ids,
+  bool HighlightActions(const std::vector<ActionId>& action_ids,
                         HighlightType type);
 
   // Stop highlighting actions. All actions can be shown again, and the
@@ -211,10 +186,9 @@ class ToolbarActionsModel
   // ExtensionRegistryObserver:
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const extensions::Extension* extension) override;
-  void OnExtensionUnloaded(
-      content::BrowserContext* browser_context,
-      const extensions::Extension* extension,
-      extensions::UnloadedExtensionInfo::Reason reason) override;
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const extensions::Extension* extension,
+                           extensions::UnloadedExtensionReason reason) override;
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const extensions::Extension* extension,
                               extensions::UninstallReason reason) override;
@@ -224,15 +198,16 @@ class ToolbarActionsModel
       ExtensionAction* extension_action,
       content::WebContents* web_contents,
       content::BrowserContext* browser_context) override;
-  void OnExtensionActionVisibilityChanged(const std::string& extension_id,
-                                          bool is_now_visible) override;
+
+  // extensions::LoadErrorReporter::Observer:
+  void OnLoadFailure(content::BrowserContext* browser_context,
+                     const base::FilePath& extension_path,
+                     const std::string& error) override;
 
   // To be called after the extension service is ready; gets loaded extensions
   // from the ExtensionRegistry, their saved order from the pref service, and
-  // the initial set of component actions from the
-  // ComponentToolbarActionsFactory, and constructs |toolbar_items_| from these
-  // data. IncognitoPopulate() takes the shortcut - looking at the regular
-  // model's content and modifying it.
+  // constructs |action_ids_| from these data. IncognitoPopulate() takes
+  // the shortcut - looking at the regular model's content and modifying it.
   void InitializeActionList();
   void Populate();
   void IncognitoPopulate();
@@ -240,12 +215,12 @@ class ToolbarActionsModel
   // Save the model to prefs.
   void UpdatePrefs();
 
-  // Removes any preference for |item| and saves the model to prefs.
-  void RemovePref(const ToolbarItem& item);
+  // Removes any preference for |action_id| and saves the model to prefs.
+  void RemovePref(const ActionId& action_id);
 
   // Finds the last known visible position of the icon for |action|. The value
-  // returned is a zero-based index into the vector of visible items.
-  size_t FindNewPositionFromLastKnownGood(const ToolbarItem& action);
+  // returned is a zero-based index into the vector of visible actions.
+  size_t FindNewPositionFromLastKnownGood(const ActionId& action_id);
 
   // Returns true if the given |extension| should be added to the toolbar.
   bool ShouldAddExtension(const extensions::Extension* extension);
@@ -254,27 +229,29 @@ class ToolbarActionsModel
   void AddExtension(const extensions::Extension* extension);
   void RemoveExtension(const extensions::Extension* extension);
 
-  // Returns true if |item| is in the toolbar model.
-  bool HasItem(const ToolbarItem& item) const;
+  // Returns true if |action_id| is in the toolbar model.
+  bool HasAction(const ActionId& action_id) const;
 
-  // Adds |item| to the toolbar.  If the item has an existing preference for
-  // toolbar position, that will be used to determine its location.  If
-  // |is_component| is true, the item will be given a default postion of 0,
-  // otherwise the default is at the end of the visible items. If the toolbar is
-  // in highlighting mode, the item will not be visible until highlighting mode
-  // is exited.
-  void AddItem(const ToolbarItem& item, bool is_component);
+  // Adds |action_id| to the toolbar.  If the action has an existing preference
+  // for toolbar position, that will be used to determine its location.
+  // Otherwise it will be placed at the end of the visible actions. If the
+  // toolbar is in highlighting mode, the action will not be visible until
+  // highlighting mode is exited.
+  void AddAction(const ActionId& action_id);
 
-  // Removes |item| from the toolbar.  If the toolbar is in highlighting mode,
-  // the item is also removed from the highlighted list (if present).
-  void RemoveItem(const ToolbarItem& item);
+  // Removes |action_id| from the toolbar.  If the toolbar is in highlighting
+  // mode, the action is also removed from the highlighted list (if present).
+  void RemoveAction(const ActionId& action_id);
 
   // Looks up and returns the extension with the given |id| in the set of
   // enabled extensions.
-  const extensions::Extension* GetExtensionById(const std::string& id) const;
+  const extensions::Extension* GetExtensionById(const ActionId& id) const;
+
+  // Returns true if the action is visible on the toolbar.
+  bool IsActionVisible(const ActionId& action_id) const;
 
   // Our observers.
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   // The Profile this toolbar model is for.
   Profile* profile_;
@@ -291,21 +268,14 @@ class ToolbarActionsModel
   // The ExtensionActionManager, cached for convenience.
   extensions::ExtensionActionManager* extension_action_manager_;
 
-  // The ComponentMigrationHelper.
-  std::unique_ptr<extensions::ComponentMigrationHelper>
-      component_migration_helper_;
-
   // True if we've handled the initial EXTENSIONS_READY notification.
   bool actions_initialized_;
 
-  // If true, we include all actions in the toolbar model.
-  bool use_redesign_;
+  // Ordered list of browser action IDs.
+  std::vector<ActionId> action_ids_;
 
-  // Ordered list of browser actions.
-  std::vector<ToolbarItem> toolbar_items_;
-
-  // List of browser actions which should be highlighted.
-  std::vector<ToolbarItem> highlighted_items_;
+  // List of browser action IDs which should be highlighted.
+  std::vector<ActionId> highlighted_action_ids_;
 
   // The current type of highlight (with HIGHLIGHT_NONE indicating no current
   // highlight).
@@ -313,7 +283,7 @@ class ToolbarActionsModel
 
   // A list of action ids ordered to correspond with their last known
   // positions.
-  std::vector<std::string> last_known_positions_;
+  std::vector<ActionId> last_known_positions_;
 
   // The number of icons visible (the rest should be hidden in the overflow
   // chevron). A value of -1 indicates that all icons should be visible.
@@ -338,6 +308,10 @@ class ToolbarActionsModel
   // For observing change of toolbar order preference by external entity (sync).
   PrefChangeRegistrar pref_change_registrar_;
   base::Closure pref_change_callback_;
+
+  ScopedObserver<extensions::LoadErrorReporter,
+                 extensions::LoadErrorReporter::Observer>
+      load_error_reporter_observer_;
 
   base::WeakPtrFactory<ToolbarActionsModel> weak_ptr_factory_;
 

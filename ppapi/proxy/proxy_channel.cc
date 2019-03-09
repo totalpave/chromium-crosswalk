@@ -26,18 +26,21 @@ ProxyChannel::~ProxyChannel() {
   DVLOG(1) << "ProxyChannel::~ProxyChannel()";
 }
 
-bool ProxyChannel::InitWithChannel(Delegate* delegate,
-                                   base::ProcessId peer_pid,
-                                   const IPC::ChannelHandle& channel_handle,
-                                   bool is_client) {
+bool ProxyChannel::InitWithChannel(
+    Delegate* delegate,
+    base::ProcessId peer_pid,
+    const IPC::ChannelHandle& channel_handle,
+    bool is_client,
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
   delegate_ = delegate;
   peer_pid_ = peer_pid;
   IPC::Channel::Mode mode = is_client
       ? IPC::Channel::MODE_CLIENT
       : IPC::Channel::MODE_SERVER;
+  DCHECK(task_runner->BelongsToCurrentThread());
   channel_ = IPC::SyncChannel::Create(channel_handle, mode, this,
-                                      delegate->GetIPCTaskRunner(), true,
-                                      delegate->GetShutdownEvent());
+                                      delegate->GetIPCTaskRunner(), task_runner,
+                                      true, delegate->GetShutdownEvent());
   return true;
 }
 
@@ -52,13 +55,6 @@ void ProxyChannel::InitWithTestSink(IPC::TestSink* test_sink) {
 void ProxyChannel::OnChannelError() {
   channel_.reset();
 }
-
-#if defined(OS_POSIX) && !defined(OS_NACL)
-base::ScopedFD ProxyChannel::TakeRendererFD() {
-  DCHECK(channel());
-  return channel()->TakeClientFileDescriptor();
-}
-#endif
 
 IPC::PlatformFileForTransit ProxyChannel::ShareHandleWithRemote(
       base::PlatformFile handle,
@@ -78,10 +74,31 @@ IPC::PlatformFileForTransit ProxyChannel::ShareHandleWithRemote(
 base::SharedMemoryHandle ProxyChannel::ShareSharedMemoryHandleWithRemote(
     const base::SharedMemoryHandle& handle) {
   if (!channel_.get())
-    return base::SharedMemory::NULLHandle();
+    return base::SharedMemoryHandle();
 
   DCHECK(peer_pid_ != base::kNullProcessId);
   return delegate_->ShareSharedMemoryHandleWithRemote(handle, peer_pid_);
+}
+
+base::UnsafeSharedMemoryRegion
+ProxyChannel::ShareUnsafeSharedMemoryRegionWithRemote(
+    const base::UnsafeSharedMemoryRegion& region) {
+  if (!channel_.get())
+    return base::UnsafeSharedMemoryRegion();
+
+  DCHECK(peer_pid_ != base::kNullProcessId);
+  return delegate_->ShareUnsafeSharedMemoryRegionWithRemote(region, peer_pid_);
+}
+
+base::ReadOnlySharedMemoryRegion
+ProxyChannel::ShareReadOnlySharedMemoryRegionWithRemote(
+    const base::ReadOnlySharedMemoryRegion& region) {
+  if (!channel_.get())
+    return base::ReadOnlySharedMemoryRegion();
+
+  DCHECK(peer_pid_ != base::kNullProcessId);
+  return delegate_->ShareReadOnlySharedMemoryRegionWithRemote(region,
+                                                              peer_pid_);
 }
 
 bool ProxyChannel::Send(IPC::Message* msg) {

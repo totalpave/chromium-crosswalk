@@ -7,13 +7,14 @@
 #include <memory>
 
 #include "base/auto_reset.h"
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
-#include "base/threading/platform_thread.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/content_settings/content_settings_mock_observer.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/common/chrome_switches.h"
@@ -34,10 +35,11 @@
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_store.h"
-#include "components/syncable_prefs/pref_service_mock_factory.h"
-#include "components/syncable_prefs/pref_service_syncable.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/sync_preferences/pref_service_mock_factory.h"
+#include "components/sync_preferences/pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/test_browser_thread_bundle.h"
+#include "ppapi/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -68,10 +70,11 @@ class DeadlockCheckerObserver {
       : provider_(provider),
       notification_received_(false) {
     pref_change_registrar_.Init(prefs);
+    WebsiteSettingsRegistry* registry = WebsiteSettingsRegistry::GetInstance();
     for (const auto& pair : provider_->content_settings_prefs_) {
       const ContentSettingsPref* pref = pair.second.get();
       pref_change_registrar_.Add(
-          pref->pref_name_,
+          registry->Get(pair.first)->pref_name(),
           base::Bind(
               &DeadlockCheckerObserver::OnContentSettingsPatternPairsChanged,
               base::Unretained(this), base::Unretained(pref)));
@@ -100,6 +103,29 @@ class DeadlockCheckerObserver {
   DISALLOW_COPY_AND_ASSIGN(DeadlockCheckerObserver);
 };
 
+// Synthesizes a plugin content setting exception into |prefs|. Plugin settings
+// are emphemeral as of Chrome M71; this method is used to simulate the scenario
+// where we inherit these legacy values from Chrome versions M70-, when the
+// exceptions were still stored in preferences.
+bool SetLegacyPersistedPluginSetting(
+    PrefService* prefs,
+    const ContentSettingsPattern& primary_pattern,
+    const ContentSettingsPattern& secondary_pattern,
+    const ResourceIdentifier& resource_identifier,
+    base::Value* in_value) {
+  auto* registry = ContentSettingsRegistry::GetInstance();
+  auto* content_setting_info = registry->Get(CONTENT_SETTINGS_TYPE_PLUGINS);
+  PrefChangeRegistrar pref_change_registrar;
+  pref_change_registrar.Init(prefs);
+  ContentSettingsPref content_settings_pref(
+      CONTENT_SETTINGS_TYPE_PLUGINS, prefs, &pref_change_registrar,
+      content_setting_info->website_settings_info()->pref_name(),
+      false /* is_incognito */, base::DoNothing());
+  return content_settings_pref.SetWebsiteSetting(
+      primary_pattern, secondary_pattern, resource_identifier,
+      base::Time::Now(), in_value);
+}
+
 class PrefProviderTest : public testing::Test {
  public:
   PrefProviderTest() {
@@ -113,7 +139,9 @@ class PrefProviderTest : public testing::Test {
 
 TEST_F(PrefProviderTest, Observer) {
   TestingProfile profile;
-  PrefProvider pref_content_settings_provider(profile.GetPrefs(), false);
+  PrefProvider pref_content_settings_provider(profile.GetPrefs(),
+                                              false /* incognito */,
+                                              true /* store_last_modified */);
 
   ContentSettingsPattern pattern =
       ContentSettingsPattern::FromString("[*.]example.com");
@@ -127,9 +155,55 @@ TEST_F(PrefProviderTest, Observer) {
   pref_content_settings_provider.SetWebsiteSetting(
       pattern, ContentSettingsPattern::Wildcard(),
       CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
-      new base::FundamentalValue(CONTENT_SETTING_ALLOW));
+      new base::Value(CONTENT_SETTING_ALLOW));
 
   pref_content_settings_provider.ShutdownOnUIThread();
+}
+
+// Tests that fullscreen and mouselock content settings are cleared.
+TEST_F(PrefProviderTest, DiscardObsoleteFullscreenAndMouselockPreferences) {
+  static const char kFullscreenPrefPath[] =
+      "profile.content_settings.exceptions.fullscreen";
+#if !defined(OS_ANDROID)
+  static const char kMouselockPrefPath[] =
+      "profile.content_settings.exceptions.mouselock";
+#endif
+  static const char kGeolocationPrefPath[] =
+      "profile.content_settings.exceptions.geolocation";
+  static const char kPattern[] = "[*.]example.com";
+
+  TestingProfile profile;
+  PrefService* prefs = profile.GetPrefs();
+
+  // Set some pref data. Each content setting type has the following value:
+  // {"[*.]example.com": {"setting": 1}}
+  base::DictionaryValue pref_data;
+  auto data_for_pattern = std::make_unique<base::DictionaryValue>();
+  data_for_pattern->SetInteger("setting", CONTENT_SETTING_ALLOW);
+  pref_data.SetWithoutPathExpansion(kPattern, std::move(data_for_pattern));
+  prefs->Set(kFullscreenPrefPath, pref_data);
+#if !defined(OS_ANDROID)
+  prefs->Set(kMouselockPrefPath, pref_data);
+#endif
+  prefs->Set(kGeolocationPrefPath, pref_data);
+
+  // Instantiate a new PrefProvider here, because we want to test the
+  // constructor's behavior after setting the above.
+  PrefProvider provider(prefs, false /* incognito */,
+                        true /* store_last_modified */);
+  provider.ShutdownOnUIThread();
+
+  // Check that fullscreen and mouselock have been deleted.
+  EXPECT_FALSE(prefs->HasPrefPath(kFullscreenPrefPath));
+#if !defined(OS_ANDROID)
+  EXPECT_FALSE(prefs->HasPrefPath(kMouselockPrefPath));
+#endif
+  EXPECT_TRUE(prefs->HasPrefPath(kGeolocationPrefPath));
+  GURL primary_url("http://example.com/");
+  EXPECT_EQ(CONTENT_SETTING_ALLOW,
+            TestUtils::GetContentSetting(&provider, primary_url, primary_url,
+                                         CONTENT_SETTINGS_TYPE_GEOLOCATION,
+                                         std::string(), false));
 }
 
 // Test for regression in which the PrefProvider modified the user pref store
@@ -139,23 +213,23 @@ TEST_F(PrefProviderTest, Incognito) {
   OverlayUserPrefStore* otr_user_prefs =
       new OverlayUserPrefStore(user_prefs);
 
-  syncable_prefs::PrefServiceMockFactory factory;
-  factory.set_user_prefs(make_scoped_refptr(user_prefs));
+  sync_preferences::PrefServiceMockFactory factory;
+  factory.set_user_prefs(base::WrapRefCounted(user_prefs));
   scoped_refptr<user_prefs::PrefRegistrySyncable> registry(
       new user_prefs::PrefRegistrySyncable);
-  syncable_prefs::PrefServiceSyncable* regular_prefs =
+  sync_preferences::PrefServiceSyncable* regular_prefs =
       factory.CreateSyncable(registry.get()).release();
 
-  chrome::RegisterUserProfilePrefs(registry.get());
+  RegisterUserProfilePrefs(registry.get());
 
-  syncable_prefs::PrefServiceMockFactory otr_factory;
-  otr_factory.set_user_prefs(make_scoped_refptr(otr_user_prefs));
+  sync_preferences::PrefServiceMockFactory otr_factory;
+  otr_factory.set_user_prefs(base::WrapRefCounted(otr_user_prefs));
   scoped_refptr<user_prefs::PrefRegistrySyncable> otr_registry(
       new user_prefs::PrefRegistrySyncable);
-  syncable_prefs::PrefServiceSyncable* otr_prefs =
+  sync_preferences::PrefServiceSyncable* otr_prefs =
       otr_factory.CreateSyncable(otr_registry.get()).release();
 
-  chrome::RegisterUserProfilePrefs(otr_registry.get());
+  RegisterUserProfilePrefs(otr_registry.get());
 
   TestingProfile::Builder profile_builder;
   profile_builder.SetPrefService(base::WrapUnique(regular_prefs));
@@ -165,13 +239,15 @@ TEST_F(PrefProviderTest, Incognito) {
   otr_profile_builder.SetPrefService(base::WrapUnique(otr_prefs));
   otr_profile_builder.BuildIncognito(profile.get());
 
-  PrefProvider pref_content_settings_provider(regular_prefs, false);
-  PrefProvider pref_content_settings_provider_incognito(otr_prefs, true);
+  PrefProvider pref_content_settings_provider(
+      regular_prefs, false /* incognito */, true /* store_last_modified */);
+  PrefProvider pref_content_settings_provider_incognito(
+      otr_prefs, true /* incognito */, true /* store_last_modified */);
   ContentSettingsPattern pattern =
       ContentSettingsPattern::FromString("[*.]example.com");
   pref_content_settings_provider.SetWebsiteSetting(
       pattern, pattern, CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
-      new base::FundamentalValue(CONTENT_SETTING_ALLOW));
+      new base::Value(CONTENT_SETTING_ALLOW));
 
   GURL host("http://example.com/");
   // The value should of course be visible in the regular PrefProvider.
@@ -195,7 +271,8 @@ TEST_F(PrefProviderTest, Incognito) {
 
 TEST_F(PrefProviderTest, GetContentSettingsValue) {
   TestingProfile testing_profile;
-  PrefProvider provider(testing_profile.GetPrefs(), false);
+  PrefProvider provider(testing_profile.GetPrefs(), false /* incognito */,
+                        true /* store_last_modified */);
 
   GURL primary_url("http://example.com/");
   ContentSettingsPattern primary_pattern =
@@ -212,7 +289,7 @@ TEST_F(PrefProviderTest, GetContentSettingsValue) {
 
   provider.SetWebsiteSetting(primary_pattern, primary_pattern,
                              CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
-                             new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+                             new base::Value(CONTENT_SETTING_BLOCK));
   EXPECT_EQ(CONTENT_SETTING_BLOCK,
             TestUtils::GetContentSetting(&provider, primary_url, primary_url,
                                          CONTENT_SETTINGS_TYPE_COOKIES,
@@ -236,7 +313,8 @@ TEST_F(PrefProviderTest, GetContentSettingsValue) {
 TEST_F(PrefProviderTest, Patterns) {
   TestingProfile testing_profile;
   PrefProvider pref_content_settings_provider(testing_profile.GetPrefs(),
-                                              false);
+                                              false /* incognito */,
+                                              true /* store_last_modified */);
 
   GURL host1("http://example.com/");
   GURL host2("http://www.example.com/");
@@ -255,7 +333,7 @@ TEST_F(PrefProviderTest, Patterns) {
                                          std::string(), false));
   pref_content_settings_provider.SetWebsiteSetting(
       pattern1, pattern1, CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
-      new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+      new base::Value(CONTENT_SETTING_BLOCK));
   EXPECT_EQ(CONTENT_SETTING_BLOCK,
             TestUtils::GetContentSetting(&pref_content_settings_provider, host1,
                                          host1, CONTENT_SETTINGS_TYPE_COOKIES,
@@ -271,7 +349,7 @@ TEST_F(PrefProviderTest, Patterns) {
                                          std::string(), false));
   pref_content_settings_provider.SetWebsiteSetting(
       pattern2, pattern2, CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
-      new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+      new base::Value(CONTENT_SETTING_BLOCK));
   EXPECT_EQ(CONTENT_SETTING_BLOCK,
             TestUtils::GetContentSetting(&pref_content_settings_provider, host3,
                                          host3, CONTENT_SETTINGS_TYPE_COOKIES,
@@ -283,7 +361,7 @@ TEST_F(PrefProviderTest, Patterns) {
                                          std::string(), false));
   pref_content_settings_provider.SetWebsiteSetting(
       pattern3, pattern3, CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
-      new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+      new base::Value(CONTENT_SETTING_BLOCK));
   EXPECT_EQ(CONTENT_SETTING_BLOCK,
             TestUtils::GetContentSetting(&pref_content_settings_provider, host4,
                                          host4, CONTENT_SETTINGS_TYPE_COOKIES,
@@ -292,11 +370,12 @@ TEST_F(PrefProviderTest, Patterns) {
   pref_content_settings_provider.ShutdownOnUIThread();
 }
 
-#if defined(ENABLE_PLUGINS)
+#if BUILDFLAG(ENABLE_PLUGINS)
 TEST_F(PrefProviderTest, ResourceIdentifier) {
   TestingProfile testing_profile;
   PrefProvider pref_content_settings_provider(testing_profile.GetPrefs(),
-                                              false);
+                                              false /* incognito */,
+                                              true /* store_last_modified */);
 
   GURL host("http://example.com/");
   ContentSettingsPattern pattern =
@@ -308,13 +387,18 @@ TEST_F(PrefProviderTest, ResourceIdentifier) {
             TestUtils::GetContentSetting(&pref_content_settings_provider, host,
                                          host, CONTENT_SETTINGS_TYPE_PLUGINS,
                                          resource1, false));
-  pref_content_settings_provider.SetWebsiteSetting(
-      pattern,
-      pattern,
-      CONTENT_SETTINGS_TYPE_PLUGINS,
-      resource1,
-      new base::FundamentalValue(CONTENT_SETTING_BLOCK));
-  EXPECT_EQ(CONTENT_SETTING_BLOCK,
+  std::unique_ptr<base::Value> value(new base::Value(CONTENT_SETTING_BLOCK));
+  if (pref_content_settings_provider.SetWebsiteSetting(
+          pattern, pattern, CONTENT_SETTINGS_TYPE_PLUGINS, resource1,
+          value.get())) {
+    value.release();
+  }
+
+  ASSERT_EQ(ContentSettingsInfo::EPHEMERAL,
+            ContentSettingsRegistry::GetInstance()
+                ->Get(CONTENT_SETTINGS_TYPE_PLUGINS)
+                ->storage_behavior());
+  EXPECT_EQ(CONTENT_SETTING_DEFAULT,
             TestUtils::GetContentSetting(&pref_content_settings_provider, host,
                                          host, CONTENT_SETTINGS_TYPE_PLUGINS,
                                          resource1, false));
@@ -329,7 +413,7 @@ TEST_F(PrefProviderTest, ResourceIdentifier) {
 
 // http://crosbug.com/17760
 TEST_F(PrefProviderTest, Deadlock) {
-  syncable_prefs::TestingPrefServiceSyncable prefs;
+  sync_preferences::TestingPrefServiceSyncable prefs;
   PrefProvider::RegisterProfilePrefs(prefs.registry());
 
   // Chain of events: a preference changes, |PrefProvider| notices it, and reads
@@ -339,56 +423,22 @@ TEST_F(PrefProviderTest, Deadlock) {
 
   const WebsiteSettingsInfo* info = WebsiteSettingsRegistry::GetInstance()->Get(
       CONTENT_SETTINGS_TYPE_COOKIES);
-  PrefProvider provider(&prefs, false);
+  PrefProvider provider(&prefs, false /* incognito */,
+                        true /* store_last_modified */);
   DeadlockCheckerObserver observer(&prefs, &provider);
   {
     DictionaryPrefUpdate update(&prefs, info->pref_name());
     base::DictionaryValue* mutable_settings = update.Get();
-    mutable_settings->SetWithoutPathExpansion("www.example.com,*",
-                                              new base::DictionaryValue());
+    mutable_settings->SetWithoutPathExpansion(
+        "www.example.com,*", std::make_unique<base::DictionaryValue>());
   }
   EXPECT_TRUE(observer.notification_received());
 
   provider.ShutdownOnUIThread();
 }
 
-TEST_F(PrefProviderTest, LastUsage) {
-  TestingProfile testing_profile;
-  PrefProvider pref_content_settings_provider(testing_profile.GetPrefs(),
-                                              false);
-  base::SimpleTestClock* test_clock = new base::SimpleTestClock;
-  test_clock->SetNow(base::Time::Now());
-
-  pref_content_settings_provider.SetClockForTesting(
-      std::unique_ptr<base::Clock>(test_clock));
-  GURL host("http://example.com/");
-  ContentSettingsPattern pattern =
-      ContentSettingsPattern::FromString("[*.]example.com");
-
-  base::Time no_usage = pref_content_settings_provider.GetLastUsage(
-      pattern, pattern, CONTENT_SETTINGS_TYPE_GEOLOCATION);
-  EXPECT_EQ(no_usage.ToDoubleT(), 0);
-
-  pref_content_settings_provider.UpdateLastUsage(
-      pattern, pattern, CONTENT_SETTINGS_TYPE_GEOLOCATION);
-  base::Time first = pref_content_settings_provider.GetLastUsage(
-      pattern, pattern, CONTENT_SETTINGS_TYPE_GEOLOCATION);
-
-  test_clock->Advance(base::TimeDelta::FromSeconds(10));
-
-  pref_content_settings_provider.UpdateLastUsage(
-      pattern, pattern, CONTENT_SETTINGS_TYPE_GEOLOCATION);
-  base::Time second = pref_content_settings_provider.GetLastUsage(
-      pattern, pattern, CONTENT_SETTINGS_TYPE_GEOLOCATION);
-
-  base::TimeDelta delta = second - first;
-  EXPECT_EQ(delta.InSeconds(), 10);
-
-  pref_content_settings_provider.ShutdownOnUIThread();
-}
-
 TEST_F(PrefProviderTest, IncognitoInheritsValueMap) {
-  syncable_prefs::TestingPrefServiceSyncable prefs;
+  sync_preferences::TestingPrefServiceSyncable prefs;
   PrefProvider::RegisterProfilePrefs(prefs.registry());
 
   ContentSettingsPattern pattern_1 =
@@ -397,11 +447,11 @@ TEST_F(PrefProviderTest, IncognitoInheritsValueMap) {
       ContentSettingsPattern::FromString("www.google.com");
   ContentSettingsPattern wildcard =
       ContentSettingsPattern::FromString("*");
-  std::unique_ptr<base::Value> value(
-      new base::FundamentalValue(CONTENT_SETTING_ALLOW));
+  std::unique_ptr<base::Value> value(new base::Value(CONTENT_SETTING_ALLOW));
 
   // Create a normal provider and set a setting.
-  PrefProvider normal_provider(&prefs, false);
+  PrefProvider normal_provider(&prefs, false /* incognito */,
+                               true /* store_last_modified */);
   normal_provider.SetWebsiteSetting(pattern_1, wildcard,
                                     CONTENT_SETTINGS_TYPE_COOKIES,
                                     std::string(), value->DeepCopy());
@@ -419,11 +469,12 @@ TEST_F(PrefProviderTest, IncognitoInheritsValueMap) {
   {
     std::unique_ptr<RuleIterator> it(normal_provider.GetRuleIterator(
         CONTENT_SETTINGS_TYPE_COOKIES, std::string(), true));
-    EXPECT_FALSE(it->HasNext());
+    EXPECT_FALSE(it);
   }
 
   // Create an incognito provider and set a setting.
-  PrefProvider incognito_provider(&prefs, true);
+  PrefProvider incognito_provider(&prefs, true /* incognito */,
+                                  true /* store_last_modified */);
   incognito_provider.SetWebsiteSetting(pattern_2, wildcard,
                                        CONTENT_SETTINGS_TYPE_COOKIES,
                                        std::string(), value->DeepCopy());
@@ -451,18 +502,17 @@ TEST_F(PrefProviderTest, IncognitoInheritsValueMap) {
 }
 
 TEST_F(PrefProviderTest, ClearAllContentSettingsRules) {
-  syncable_prefs::TestingPrefServiceSyncable prefs;
+  sync_preferences::TestingPrefServiceSyncable prefs;
   PrefProvider::RegisterProfilePrefs(prefs.registry());
 
   ContentSettingsPattern pattern =
       ContentSettingsPattern::FromString("google.com");
   ContentSettingsPattern wildcard =
       ContentSettingsPattern::FromString("*");
-  std::unique_ptr<base::Value> value(
-      new base::FundamentalValue(CONTENT_SETTING_ALLOW));
-  ResourceIdentifier res_id("abcde");
+  std::unique_ptr<base::Value> value(new base::Value(CONTENT_SETTING_ALLOW));
 
-  PrefProvider provider(&prefs, false);
+  PrefProvider provider(&prefs, false /* incognito */,
+                        true /* store_last_modified */);
 
   // Non-empty pattern, syncable, empty resource identifier.
   provider.SetWebsiteSetting(pattern, wildcard,
@@ -473,15 +523,27 @@ TEST_F(PrefProviderTest, ClearAllContentSettingsRules) {
   provider.SetWebsiteSetting(pattern, wildcard,
                              CONTENT_SETTINGS_TYPE_GEOLOCATION,
                              ResourceIdentifier(), value->DeepCopy());
-#if defined(ENABLE_PLUGINS)
-  // Non-empty pattern, plugins, non-empty resource identifier.
-  provider.SetWebsiteSetting(pattern, wildcard, CONTENT_SETTINGS_TYPE_PLUGINS,
-                             res_id, value->DeepCopy());
 
-  // Empty pattern, plugins, non-empty resource identifier.
-  provider.SetWebsiteSetting(wildcard, wildcard, CONTENT_SETTINGS_TYPE_PLUGINS,
-                             res_id, value->DeepCopy());
+#if BUILDFLAG(ENABLE_PLUGINS)
+  // Plugin settings became emphemeral as of Chrome M71 and are no longer
+  // persisted into preferences. Here we simulate the scenario where we inherit
+  // legacy, persisted values coming from Chrome versions M70-, to verify the
+  // ability of PrefProvider to delete the legacy plugin settings although those
+  // are no longer handled by it (as opposed to the first section of the test,
+  // which verifies the deletion of regular settings which are still handled by
+  // PrefProvider).
+
+  // Legacy, persisted exception for CONTENT_SETTINGS_TYPE_PLUGINS with a
+  // non-empty pattern, and non-empty resource identifier.
+  ResourceIdentifier res_id("abcde");
+  ASSERT_TRUE(SetLegacyPersistedPluginSetting(&prefs, pattern, wildcard, res_id,
+                                              value->DeepCopy()));
+
+  // Same with an empty pattern and non-empty resource identifier.
+  ASSERT_TRUE(SetLegacyPersistedPluginSetting(&prefs, wildcard, wildcard,
+                                              res_id, value->DeepCopy()));
 #endif
+
   // Non-empty pattern, syncable, empty resource identifier.
   provider.SetWebsiteSetting(pattern, wildcard, CONTENT_SETTINGS_TYPE_COOKIES,
                              ResourceIdentifier(), value->DeepCopy());
@@ -491,23 +553,31 @@ TEST_F(PrefProviderTest, ClearAllContentSettingsRules) {
                              CONTENT_SETTINGS_TYPE_NOTIFICATIONS,
                              ResourceIdentifier(), value->DeepCopy());
 
-  provider.ClearAllContentSettingsRules(CONTENT_SETTINGS_TYPE_JAVASCRIPT);
-  provider.ClearAllContentSettingsRules(CONTENT_SETTINGS_TYPE_GEOLOCATION);
-#if defined(ENABLE_PLUGINS)
-  provider.ClearAllContentSettingsRules(CONTENT_SETTINGS_TYPE_PLUGINS);
-#endif
-
+  // Test that the preferences for images, geolocation and plugins get cleared.
   WebsiteSettingsRegistry* registry = WebsiteSettingsRegistry::GetInstance();
-  // Test that the preferences for images, geolocation and plugins are empty.
-  const char* empty_prefs[] = {
+  const char* cleared_prefs[] = {
     registry->Get(CONTENT_SETTINGS_TYPE_JAVASCRIPT)->pref_name().c_str(),
     registry->Get(CONTENT_SETTINGS_TYPE_GEOLOCATION)->pref_name().c_str(),
-#if defined(ENABLE_PLUGINS)
+#if BUILDFLAG(ENABLE_PLUGINS)
     registry->Get(CONTENT_SETTINGS_TYPE_PLUGINS)->pref_name().c_str(),
 #endif
   };
 
-  for (const char* pref : empty_prefs) {
+  // Expect the prefs are not empty before we trigger clearing them.
+  for (const char* pref : cleared_prefs) {
+    DictionaryPrefUpdate update(&prefs, pref);
+    const base::DictionaryValue* dictionary = update.Get();
+    ASSERT_FALSE(dictionary->empty());
+  }
+
+  provider.ClearAllContentSettingsRules(CONTENT_SETTINGS_TYPE_JAVASCRIPT);
+  provider.ClearAllContentSettingsRules(CONTENT_SETTINGS_TYPE_GEOLOCATION);
+#if BUILDFLAG(ENABLE_PLUGINS)
+  provider.ClearAllContentSettingsRules(CONTENT_SETTINGS_TYPE_PLUGINS);
+#endif
+
+  // Ensure they become empty afterwards.
+  for (const char* pref : cleared_prefs) {
     DictionaryPrefUpdate update(&prefs, pref);
     const base::DictionaryValue* dictionary = update.Get();
     EXPECT_TRUE(dictionary->empty());
@@ -527,5 +597,102 @@ TEST_F(PrefProviderTest, ClearAllContentSettingsRules) {
 
   provider.ShutdownOnUIThread();
 }
+
+TEST_F(PrefProviderTest, LastModified) {
+  sync_preferences::TestingPrefServiceSyncable prefs;
+  PrefProvider::RegisterProfilePrefs(prefs.registry());
+
+  ContentSettingsPattern pattern_1 =
+      ContentSettingsPattern::FromString("google.com");
+  ContentSettingsPattern pattern_2 =
+      ContentSettingsPattern::FromString("www.google.com");
+  auto value = std::make_unique<base::Value>(CONTENT_SETTING_ALLOW);
+
+  // Create a  provider and set a few settings.
+  PrefProvider provider(&prefs, false /* incognito */,
+                        true /* store_last_modified */);
+  base::SimpleTestClock test_clock;
+  test_clock.SetNow(base::Time::Now());
+  provider.SetClockForTesting(&test_clock);
+
+  base::Time t1 = test_clock.Now();
+
+  provider.SetWebsiteSetting(pattern_1, ContentSettingsPattern::Wildcard(),
+                             CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
+                             value->DeepCopy());
+  provider.SetWebsiteSetting(pattern_2, ContentSettingsPattern::Wildcard(),
+                             CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
+                             value->DeepCopy());
+  // Make sure that the timestamps for pattern_1 and patter_2 are before |t2|.
+  test_clock.Advance(base::TimeDelta::FromSeconds(1));
+  base::Time t2 = test_clock.Now();
+
+  base::Time last_modified = provider.GetWebsiteSettingLastModified(
+      pattern_1, ContentSettingsPattern::Wildcard(),
+      CONTENT_SETTINGS_TYPE_COOKIES, std::string());
+  EXPECT_EQ(last_modified, t1);
+  last_modified = provider.GetWebsiteSettingLastModified(
+      pattern_2, ContentSettingsPattern::Wildcard(),
+      CONTENT_SETTINGS_TYPE_COOKIES, std::string());
+  EXPECT_EQ(last_modified, t1);
+
+  // A change for pattern_1, which will update the last_modified timestamp.
+  auto value2 = std::make_unique<base::Value>(CONTENT_SETTING_BLOCK);
+  provider.SetWebsiteSetting(pattern_1, ContentSettingsPattern::Wildcard(),
+                             CONTENT_SETTINGS_TYPE_COOKIES, std::string(),
+                             value2->DeepCopy());
+
+  last_modified = provider.GetWebsiteSettingLastModified(
+      pattern_1, ContentSettingsPattern::Wildcard(),
+      CONTENT_SETTINGS_TYPE_COOKIES, std::string());
+  EXPECT_EQ(last_modified, t2);
+
+  // The timestamp of pattern_2 shouldn't change.
+  last_modified = provider.GetWebsiteSettingLastModified(
+      pattern_2, ContentSettingsPattern::Wildcard(),
+      CONTENT_SETTINGS_TYPE_COOKIES, std::string());
+  EXPECT_EQ(last_modified, t1);
+
+  provider.ShutdownOnUIThread();
+}
+
+// Tests if PrefProvider rejects storing ephemeral types.
+TEST_F(PrefProviderTest, RejectEphemeralStorage) {
+  // Find an ephemeral type.
+  ContentSettingsType ephemeral_type = CONTENT_SETTINGS_NUM_TYPES;
+  ContentSettingsRegistry* registry = ContentSettingsRegistry::GetInstance();
+  for (const content_settings::ContentSettingsInfo* item : *registry) {
+    if (item->storage_behavior() == ContentSettingsInfo::EPHEMERAL) {
+      ephemeral_type = item->website_settings_info()->type();
+      break;
+    }
+  }
+
+#if BUILDFLAG(ENABLE_PLUGINS)
+  // At the very least, CONTENT_SETTINGS_TYPE_PLUGINS is ephemeral.
+  ASSERT_NE(CONTENT_SETTINGS_NUM_TYPES, ephemeral_type);
+#else
+  // There might be no ephemeral setting if plugins are not supported.
+  if (ephemeral_type == CONTENT_SETTINGS_NUM_TYPES)
+    return;
+#endif
+
+  sync_preferences::TestingPrefServiceSyncable prefs;
+  PrefProvider::RegisterProfilePrefs(prefs.registry());
+  PrefProvider provider(&prefs, false /* regular */,
+                        true /* store_last_modified */);
+  ContentSettingsPattern site_pattern =
+      ContentSettingsPattern::FromString("https://example.com");
+
+  std::unique_ptr<base::Value> value(new base::Value(CONTENT_SETTING_ALLOW));
+  EXPECT_FALSE(provider.SetWebsiteSetting(
+      site_pattern, site_pattern, ephemeral_type, std::string(), value.get()));
+  std::unique_ptr<RuleIterator> rule_iterator =
+      provider.GetRuleIterator(ephemeral_type, std::string(), false);
+  EXPECT_EQ(nullptr, rule_iterator);
+
+  provider.ShutdownOnUIThread();
+}
+
 
 }  // namespace content_settings

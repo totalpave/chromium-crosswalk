@@ -4,22 +4,22 @@
 
 package com.android.webview.chromium;
 
+import android.os.Build;
 import android.webkit.WebSettings.LayoutAlgorithm;
 import android.webkit.WebSettings.PluginState;
 import android.webkit.WebSettings.RenderPriority;
 import android.webkit.WebSettings.ZoomDensity;
 
 import org.chromium.android_webview.AwSettings;
-import org.chromium.base.annotations.SuppressFBWarnings;
 
 /**
  * Type adaptation layer between {@link android.webkit.WebSettings} and
  * {@link org.chromium.android_webview.AwSettings}.
  */
-@SuppressWarnings("deprecation")
-@SuppressFBWarnings("CHROMIUM_SYNCHRONIZED_METHOD")
+@SuppressWarnings({"deprecation", "NoSynchronizedMethodCheck"})
 public class ContentSettingsAdapter extends android.webkit.WebSettings {
     private AwSettings mAwSettings;
+    private PluginState mPluginState = PluginState.OFF;
 
     public ContentSettingsAdapter(AwSettings awSettings) {
         mAwSettings = awSettings;
@@ -103,6 +103,16 @@ public class ContentSettingsAdapter extends android.webkit.WebSettings {
     }
 
     @Override
+    public void setSafeBrowsingEnabled(boolean accept) {
+        mAwSettings.setSafeBrowsingEnabled(accept);
+    }
+
+    @Override
+    public boolean getSafeBrowsingEnabled() {
+        return mAwSettings.getSafeBrowsingEnabled();
+    }
+
+    @Override
     public void setAcceptThirdPartyCookies(boolean accept) {
         mAwSettings.setAcceptThirdPartyCookies(accept);
     }
@@ -136,11 +146,15 @@ public class ContentSettingsAdapter extends android.webkit.WebSettings {
 
     @Override
     public void setSaveFormData(boolean save) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) return;
+
         mAwSettings.setSaveFormData(save);
     }
 
     @Override
     public boolean getSaveFormData() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) return false;
+
         return mAwSettings.getSaveFormData();
     }
 
@@ -167,12 +181,13 @@ public class ContentSettingsAdapter extends android.webkit.WebSettings {
 
     @Override
     public void setDefaultZoom(ZoomDensity zoom) {
-        mAwSettings.setDefaultZoom(zoom);
+        // Intentional no-op
     }
 
     @Override
     public ZoomDensity getDefaultZoom() {
-        return mAwSettings.getDefaultZoom();
+        // Intentional no-op
+        return ZoomDensity.MEDIUM;
     }
 
     @Override
@@ -219,12 +234,39 @@ public class ContentSettingsAdapter extends android.webkit.WebSettings {
 
     @Override
     public synchronized void setLayoutAlgorithm(LayoutAlgorithm l) {
-        mAwSettings.setLayoutAlgorithm(l);
+        switch (l) {
+            case NORMAL:
+                mAwSettings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_NORMAL);
+                return;
+            case SINGLE_COLUMN:
+                mAwSettings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_SINGLE_COLUMN);
+                return;
+            case NARROW_COLUMNS:
+                mAwSettings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_NARROW_COLUMNS);
+                return;
+            case TEXT_AUTOSIZING:
+                mAwSettings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING);
+                return;
+            default:
+                throw new IllegalArgumentException("Unsupported value: " + l);
+        }
     }
 
     @Override
     public synchronized LayoutAlgorithm getLayoutAlgorithm() {
-        return mAwSettings.getLayoutAlgorithm();
+        int value = mAwSettings.getLayoutAlgorithm();
+        switch (value) {
+            case AwSettings.LAYOUT_ALGORITHM_NORMAL:
+                return LayoutAlgorithm.NORMAL;
+            case AwSettings.LAYOUT_ALGORITHM_SINGLE_COLUMN:
+                return LayoutAlgorithm.SINGLE_COLUMN;
+            case AwSettings.LAYOUT_ALGORITHM_NARROW_COLUMNS:
+                return LayoutAlgorithm.NARROW_COLUMNS;
+            case AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING:
+                return LayoutAlgorithm.TEXT_AUTOSIZING;
+            default:
+                throw new IllegalArgumentException("Unsupported value: " + value);
+        }
     }
 
     @Override
@@ -374,12 +416,12 @@ public class ContentSettingsAdapter extends android.webkit.WebSettings {
 
     @Override
     public synchronized void setPluginsEnabled(boolean flag) {
-        mAwSettings.setPluginsEnabled(flag);
+        mPluginState = flag ? PluginState.ON : PluginState.OFF;
     }
 
     @Override
     public synchronized void setPluginState(PluginState state) {
-        mAwSettings.setPluginState(state);
+        mPluginState = state;
     }
 
     @Override
@@ -455,12 +497,12 @@ public class ContentSettingsAdapter extends android.webkit.WebSettings {
 
     @Override
     public synchronized boolean getPluginsEnabled() {
-        return mAwSettings.getPluginsEnabled();
+        return mPluginState == PluginState.ON;
     }
 
     @Override
     public synchronized PluginState getPluginState() {
-        return mAwSettings.getPluginState();
+        return mPluginState;
     }
 
     @Override
@@ -543,21 +585,24 @@ public class ContentSettingsAdapter extends android.webkit.WebSettings {
         return mAwSettings.getOffscreenPreRaster();
     }
 
+    @Override
     public void setDisabledActionModeMenuItems(int menuItems) {
         mAwSettings.setDisabledActionModeMenuItems(menuItems);
     }
 
+    @Override
     public int getDisabledActionModeMenuItems() {
         return mAwSettings.getDisabledActionModeMenuItems();
     }
 
     @Override
     public void setVideoOverlayForEmbeddedEncryptedVideoEnabled(boolean flag) {
-        mAwSettings.setVideoOverlayForEmbeddedVideoEnabled(flag);
+        // No-op, see http://crbug.com/616583
     }
 
     @Override
     public boolean getVideoOverlayForEmbeddedEncryptedVideoEnabled() {
-        return mAwSettings.getVideoOverlayForEmbeddedVideoEnabled();
+        // Always false, see http://crbug.com/616583
+        return false;
     }
 }

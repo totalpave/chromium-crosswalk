@@ -8,7 +8,7 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
 #include "base/process/kill.h"
 #include "base/process/launch.h"
@@ -26,26 +26,26 @@
 
 namespace cloud_print {
 
-CloudPrintProxy::CloudPrintProxy()
-    : service_prefs_(NULL),
-      client_(NULL),
-      enabled_(false) {
-}
+CloudPrintProxy::CloudPrintProxy() = default;
 
 CloudPrintProxy::~CloudPrintProxy() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ShutdownBackend();
 }
 
-void CloudPrintProxy::Initialize(ServiceProcessPrefs* service_prefs,
-                                 Client* client) {
-  DCHECK(CalledOnValidThread());
+void CloudPrintProxy::Initialize(
+    ServiceProcessPrefs* service_prefs,
+    Client* client,
+    network::NetworkConnectionTracker* network_connection_tracker) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  DCHECK(network_connection_tracker);
   service_prefs_ = service_prefs;
   client_ = client;
+  network_connection_tracker_ = network_connection_tracker;
 }
 
 void CloudPrintProxy::EnableForUser() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!CreateBackend())
     return;
   DCHECK(backend_.get());
@@ -73,12 +73,11 @@ void CloudPrintProxy::EnableForUser() {
   }
 }
 
-void CloudPrintProxy::EnableForUserWithRobot(
-    const std::string& robot_auth_code,
-    const std::string& robot_email,
-    const std::string& user_email,
-    const base::DictionaryValue& user_settings) {
-  DCHECK(CalledOnValidThread());
+void CloudPrintProxy::EnableForUserWithRobot(const std::string& robot_auth_code,
+                                             const std::string& robot_email,
+                                             const std::string& user_email,
+                                             base::Value user_settings) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   ShutdownBackend();
   std::string proxy_id(
@@ -103,7 +102,7 @@ void CloudPrintProxy::EnableForUserWithRobot(
 }
 
 bool CloudPrintProxy::CreateBackend() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (backend_.get())
     return false;
 
@@ -121,13 +120,14 @@ bool CloudPrintProxy::CreateBackend() {
   oauth_client_info.client_secret =
     google_apis::GetOAuth2ClientSecret(google_apis::CLIENT_CLOUD_PRINT);
   oauth_client_info.redirect_uri = "oob";
-  backend_.reset(new CloudPrintProxyBackend(
-      this, settings, oauth_client_info, enable_job_poll));
+  backend_ = std::make_unique<CloudPrintProxyBackend>(
+      this, settings, oauth_client_info, enable_job_poll,
+      network_connection_tracker_);
   return true;
 }
 
 void CloudPrintProxy::UnregisterPrintersAndDisableForUser() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (backend_.get()) {
     // Try getting auth and printers info from the backend.
     // We'll get notified in this case.
@@ -139,7 +139,7 @@ void CloudPrintProxy::UnregisterPrintersAndDisableForUser() {
 }
 
 void CloudPrintProxy::DisableForUser() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   user_email_.clear();
   enabled_ = false;
   if (client_) {
@@ -178,7 +178,7 @@ void CloudPrintProxy::OnAuthenticated(
     const std::string& robot_oauth_refresh_token,
     const std::string& robot_email,
     const std::string& user_email) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   service_prefs_->SetString(prefs::kCloudPrintRobotRefreshToken,
                             robot_oauth_refresh_token);
   service_prefs_->SetString(prefs::kCloudPrintRobotEmail,
@@ -203,7 +203,7 @@ void CloudPrintProxy::OnAuthenticated(
 }
 
 void CloudPrintProxy::OnAuthenticationFailed() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Don't disable permanently. Could be just connection issue.
   ShutdownBackend();
   if (client_) {
@@ -228,12 +228,25 @@ void CloudPrintProxy::OnUnregisterPrinters(
   ShutdownBackend();
   ConnectorSettings settings;
   settings.InitFrom(service_prefs_);
-  wipeout_.reset(new CloudPrintWipeout(this, settings.server_url()));
+  net::PartialNetworkTrafficAnnotationTag partial_traffic_annotation =
+      net::DefinePartialNetworkTrafficAnnotation("cloud_print_proxy",
+                                                 "cloud_print", R"(
+          semantics {
+            description:
+              "Sends a request to Cloud Print to unregister one or more "
+              "printers."
+            trigger:
+              "User request of unregistering printers or a change of an admin "
+              "policy regarding Cloud Print."
+            data: "OAuth2 token and list of printer ids to unregister."
+          })");
+  wipeout_.reset(new CloudPrintWipeout(this, settings.server_url(),
+                                       partial_traffic_annotation));
   wipeout_->UnregisterPrinters(auth_token, printer_ids);
 }
 
 void CloudPrintProxy::OnXmppPingUpdated(int ping_timeout) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   service_prefs_->SetInt(prefs::kCloudPrintXmppPingTimeout, ping_timeout);
   service_prefs_->WritePrefs();
 }
@@ -245,7 +258,7 @@ void CloudPrintProxy::OnUnregisterPrintersComplete() {
 }
 
 void CloudPrintProxy::ShutdownBackend() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (backend_.get())
     backend_->Shutdown();
   backend_.reset();

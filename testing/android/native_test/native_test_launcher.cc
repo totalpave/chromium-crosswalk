@@ -10,11 +10,10 @@
 // It installs signal handlers to detect crashes.
 
 #include <android/log.h>
+#include <errno.h>
 #include <signal.h>
+#include <string.h>
 
-#include "base/android/base_jni_registrar.h"
-#include "base/android/context_utils.h"
-#include "base/android/fifo_utils.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/at_exit.h"
@@ -23,11 +22,15 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/test_support_android.h"
 #include "gtest/gtest.h"
 #include "jni/NativeTest_jni.h"
+#include "testing/android/native_test/main_runner.h"
 #include "testing/android/native_test/native_test_util.h"
+
+using base::android::JavaParamRef;
 
 // The main function of the program to be wrapped as a test apk.
 extern int main(int argc, char** argv);
@@ -65,17 +68,17 @@ void AndroidLog(int priority, const char* format, ...) {
 
 }  // namespace
 
-static void RunTests(JNIEnv* env,
-                     const JavaParamRef<jobject>& obj,
-                     const JavaParamRef<jstring>& jcommand_line_flags,
-                     const JavaParamRef<jstring>& jcommand_line_file_path,
-                     const JavaParamRef<jstring>& jstdout_file_path,
-                     jboolean jstdout_fifo,
-                     const JavaParamRef<jobject>& app_context,
-                     const JavaParamRef<jstring>& jtest_data_dir) {
+static void JNI_NativeTest_RunTests(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& obj,
+    const JavaParamRef<jstring>& jcommand_line_flags,
+    const JavaParamRef<jstring>& jcommand_line_file_path,
+    const JavaParamRef<jstring>& jstdout_file_path,
+    const JavaParamRef<jobject>& app_context,
+    const JavaParamRef<jstring>& jtest_data_dir) {
   // Command line initialized basically, will be fully initialized later.
   static const char* const kInitialArgv[] = { "ChromeTestActivity" };
-  base::CommandLine::Init(arraysize(kInitialArgv), kInitialArgv);
+  base::CommandLine::Init(base::size(kInitialArgv), kInitialArgv);
 
   std::vector<std::string> args;
 
@@ -104,26 +107,21 @@ static void RunTests(JNIEnv* env,
 
   // A few options, such "--gtest_list_tests", will just use printf directly
   // Always redirect stdout to a known file.
-  unlink(stdout_file_path.value().c_str());
-  if (jstdout_fifo) {
-    if (!base::android::CreateFIFO(stdout_file_path, 0666)) {
-      AndroidLog(ANDROID_LOG_ERROR, "Failed to create fifo %s: %s\n",
-                 stdout_file_path.value().c_str(), strerror(errno));
-      exit(EXIT_FAILURE);
-    }
-  }
-  if (!base::android::RedirectStream(stdout, stdout_file_path, "w+")) {
+  if (freopen(stdout_file_path.value().c_str(), "a+", stdout) == NULL) {
     AndroidLog(ANDROID_LOG_ERROR, "Failed to redirect stream to file: %s: %s\n",
                stdout_file_path.value().c_str(), strerror(errno));
     exit(EXIT_FAILURE);
   }
+  // TODO(jbudorick): Remove this after resolving crbug.com/726880
+  AndroidLog(ANDROID_LOG_INFO, "Redirecting stdout to file: %s\n",
+             stdout_file_path.value().c_str());
   dup2(STDOUT_FILENO, STDERR_FILENO);
 
   if (command_line.HasSwitch(switches::kWaitForDebugger)) {
     AndroidLog(ANDROID_LOG_VERBOSE,
                "Native test waiting for GDB because flag %s was supplied",
                switches::kWaitForDebugger);
-    base::debug::WaitForDebugger(24 * 60 * 60, false);
+    base::debug::WaitForDebugger(24 * 60 * 60, true);
   }
 
   base::FilePath test_data_dir(
@@ -132,13 +130,6 @@ static void RunTests(JNIEnv* env,
 
   ScopedMainEntryLogger scoped_main_entry_logger;
   main(argc, &argv[0]);
-}
-
-bool RegisterNativeTestJNI(JNIEnv* env) {
-  if (!base::android::RegisterJni(env)) {
-    return false;
-  }
-  return RegisterNativesImpl(env);
 }
 
 // TODO(nileshagrawal): now that we're using FIFO, test scripts can detect EOF.

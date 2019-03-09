@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+GEN('#include "components/sync/driver/sync_driver_switches.h"');
+
 /**
  * Test fixture for sync internals WebUI testing.
  * @constructor
@@ -41,15 +43,18 @@ SyncInternalsWebUITest.prototype = {
    */
   hasInDetails: function(isValid, key, value) {
     var details = chrome.sync.aboutInfo.details;
-    if (!details)
+    if (!details) {
       return false;
+    }
     for (var i = 0; i < details.length; ++i) {
-      if (!details[i].data)
+      if (!details[i].data) {
         continue;
+      }
       for (var j = 0; j < details[i].data.length; ++j) {
         var obj = details[i].data[j];
-        if (obj.stat_name == key)
+        if (obj.stat_name == key) {
           return obj.is_valid == isValid && obj.stat_value == value;
+        }
       }
     }
     return false;
@@ -198,18 +203,22 @@ HARD_CODED_ABOUT_INFO = {
   ],
   'type_status': [
     {
+      'status': 'header',
       'name': 'Model Type',
       'num_entries': 'Total Entries',
       'num_live': 'Live Entries',
-      'status': 'header',
-      'value': 'Group Type'
+      'message': 'Message',
+      'state': 'State',
+      'group_type': 'Group Type',
     },
     {
+      'status': 'ok',
       'name': 'Bookmarks',
       'num_entries': 2793,
       'num_live': 2793,
-      'status': 'ok',
-      'value': 'Active: GROUP_UI'
+      'message': '',
+      'state': 'Running',
+      'group_type': 'Group UI',
     },
   ],
   'unrecoverable_error_detected': false
@@ -230,24 +239,18 @@ NETWORK_EVENT_DETAILS_2 = {
 };
 
 TEST_F('SyncInternalsWebUITest', 'Uninitialized', function() {
-  assertNotEquals(null, chrome.sync.aboutInfo);
-  expectTrue(this.hasInDetails(false, 'Summary', 'Uninitialized'));
+   assertNotEquals(null, chrome.sync.aboutInfo);
 });
 
-// Test that username is set correctly when the user is signed in or not.
-// On chromeos, browser tests are signed in by default.  On other platforms,
-// browser tests are signed out.
-GEN('#if defined(OS_CHROMEOS)');
-TEST_F('SyncInternalsWebUITest', 'SignedIn', function() {
-  assertNotEquals(null, chrome.sync.aboutInfo);
-  expectTrue(this.hasInDetails(true, 'Username', 'stub-user@example.com'));
-});
-GEN('#else');
+// TODO(crbug.com/814787): On ChromeOS, browser tests are signed in by default,
+// so the test expectations below should be different. However, the way the
+// account is set up for tests is broken (it happens much later than in real
+// life), so it doesn't make it to sync-internals.
 TEST_F('SyncInternalsWebUITest', 'SignedOut', function() {
-  assertNotEquals(null, chrome.sync.aboutInfo);
+  expectTrue(this.hasInDetails(true, 'Transport State', 'Disabled'));
+  expectTrue(this.hasInDetails(true, 'Disable Reasons', 'Not signed in'));
   expectTrue(this.hasInDetails(true, 'Username', ''));
 });
-GEN('#endif  // defined(OS_CHROMEOS)');
 
 TEST_F('SyncInternalsWebUITest', 'LoadPastedAboutInfo', function() {
   // Expose the text field.
@@ -263,19 +266,31 @@ TEST_F('SyncInternalsWebUITest', 'LoadPastedAboutInfo', function() {
 });
 
 TEST_F('SyncInternalsWebUITest', 'NetworkEventsTest', function() {
-  networkEvent1 = new Event('onProtocolEvent');
+  let networkEvent1 = new Event('onProtocolEvent');
   networkEvent1.details = NETWORK_EVENT_DETAILS_1;
-  networkEvent2 = new Event('onProtocolEvent');
+  let networkEvent2 = new Event('onProtocolEvent');
   networkEvent2.details = NETWORK_EVENT_DETAILS_2;
 
   chrome.sync.events.dispatchEvent(networkEvent1);
   chrome.sync.events.dispatchEvent(networkEvent2);
 
-  expectEquals(2, $('traffic-event-container').children.length);
+  // Make sure that both events arrived.
+  let eventCount = $('traffic-event-container').children.length;
+  assertGE(eventCount, 2);
+
+  // Check that the event details are displayed.
+  let displayedEvent1 = $('traffic-event-container').children[eventCount - 2];
+  let displayedEvent2 = $('traffic-event-container').children[eventCount - 1];
+  expectTrue(
+      displayedEvent1.innerHTML.includes(NETWORK_EVENT_DETAILS_1.details));
+  expectTrue(displayedEvent1.innerHTML.includes(NETWORK_EVENT_DETAILS_1.type));
+  expectTrue(
+      displayedEvent2.innerHTML.includes(NETWORK_EVENT_DETAILS_2.details));
+  expectTrue(displayedEvent2.innerHTML.includes(NETWORK_EVENT_DETAILS_2.type));
 
   // Test that repeated events are not re-displayed.
   chrome.sync.events.dispatchEvent(networkEvent1);
-  expectEquals(2, $('traffic-event-container').children.length);
+  expectEquals(eventCount, $('traffic-event-container').children.length);
 });
 
 TEST_F('SyncInternalsWebUITest', 'SearchTabDoesntChangeOnItemSelect',
@@ -289,11 +304,15 @@ TEST_F('SyncInternalsWebUITest', 'SearchTabDoesntChangeOnItemSelect',
   $('sync-results-list').dataModel = new cr.ui.ArrayDataModel([
     {
       value: 'value 0',
-      toString: function() { return 'node 0'; },
+      toString: function() {
+        return 'node 0';
+      },
     },
     {
       value: 'value 1',
-      toString: function() { return 'node 1'; },
+      toString: function() {
+        return 'node 1';
+      },
     }
   ]);
 
@@ -369,14 +388,15 @@ TEST_F('SyncInternalsWebUITest', 'EventLogTest', function() {
 
   // Verify that it is displayed in the events log.
   var syncEventsTable = $('sync-events');
-  var firstRow = syncEventsTable.children[0];
+  assertGE(syncEventsTable.children.length, 1);
+  var lastRow = syncEventsTable.children[syncEventsTable.children.length - 1];
 
   // Makes some assumptions about column ordering.  We'll need re-think this if
   // it turns out to be a maintenance burden.
-  assertEquals(4, firstRow.children.length);
-  var detailsText = firstRow.children[0].textContent;
-  var submoduleName = firstRow.children[1].textContent;
-  var eventName = firstRow.children[2].textContent;
+  assertEquals(4, lastRow.children.length);
+  var detailsText = lastRow.children[0].textContent;
+  var submoduleName = lastRow.children[1].textContent;
+  var eventName = lastRow.children[2].textContent;
 
   expectGE(submoduleName.indexOf('manager'), 0,
       'submoduleName=' + submoduleName);

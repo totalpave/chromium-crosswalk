@@ -6,9 +6,9 @@
 
 #include <string.h>
 #include <algorithm>
-#include <deque>
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/logging.h"
 #include "net/base/io_buffer.h"
 #include "third_party/zlib/zlib.h"
@@ -27,15 +27,37 @@ WebSocketDeflater::~WebSocketDeflater() {
 
 bool WebSocketDeflater::Initialize(int window_bits) {
   DCHECK(!stream_);
-  stream_.reset(new z_stream);
+  stream_ = std::make_unique<z_stream>();
 
   DCHECK_LE(8, window_bits);
   DCHECK_GE(15, window_bits);
+
+  // Use a negative value to compress a raw deflate stream.
+  //
+  // Upgrade window_bits = 8 to 9 because zlib is unable to compress at
+  // window_bits = 8. Historically, zlib has silently increased the window size
+  // during compression in this case, although this is no longer done for raw
+  // deflate streams since zlib 1.2.9.
+  //
+  // Because of a zlib deflate quirk, back-references will not use the entire
+  // range of 1 << window_bits, but will instead use a restricted range of (1 <<
+  // window_bits) - 262. With an increased window_bits = 9, back-references will
+  // be within a range of 250. These can still be decompressed with window_bits
+  // = 8 and the 256-byte window used there.
+  //
+  // Both the requirement to do this upgrade and the ability to compress with
+  // window_bits = 9 while expecting a decompressor to function with window_bits
+  // = 8 are quite specific to zlib's particular deflate implementation, but not
+  // specific to any particular inflate implementation.
+  //
+  // See https://crbug.com/691074
+  window_bits = -std::max(window_bits, 9);
+
   memset(stream_.get(), 0, sizeof(*stream_));
   int result = deflateInit2(stream_.get(),
                             Z_DEFAULT_COMPRESSION,
                             Z_DEFLATED,
-                            -window_bits,  // Negative value for raw deflate
+                            window_bits,
                             8,  // default mem level
                             Z_DEFAULT_STRATEGY);
   if (result != Z_OK) {
@@ -98,10 +120,10 @@ void WebSocketDeflater::PushSyncMark() {
 
 scoped_refptr<IOBufferWithSize> WebSocketDeflater::GetOutput(size_t size) {
   size_t length_to_copy = std::min(size, buffer_.size());
-  std::deque<char>::iterator begin = buffer_.begin();
-  std::deque<char>::iterator end = begin + length_to_copy;
+  base::circular_deque<char>::iterator begin = buffer_.begin();
+  base::circular_deque<char>::iterator end = begin + length_to_copy;
 
-  scoped_refptr<IOBufferWithSize> result = new IOBufferWithSize(length_to_copy);
+  auto result = base::MakeRefCounted<IOBufferWithSize>(length_to_copy);
   std::copy(begin, end, result->data());
   buffer_.erase(begin, end);
   return result;

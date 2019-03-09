@@ -1,4 +1,7 @@
 include_rules = [
-  "+device/core",
-  "+device/hid",
+  "+components/device_event_log",
+  "+device/base",
+  "+services/device/public",
+  "+storage/browser/fileapi",
+  "+storage/common/fileapi",
 ]

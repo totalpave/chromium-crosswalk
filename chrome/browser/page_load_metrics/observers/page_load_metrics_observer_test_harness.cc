@@ -4,128 +4,110 @@
 
 #include "chrome/browser/page_load_metrics/observers/page_load_metrics_observer_test_harness.h"
 
-#include <memory>
+#include <string>
 
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "components/page_load_metrics/common/page_load_metrics_messages.h"
-#include "content/public/browser/navigation_entry.h"
+#include "base/bind.h"
+#include "base/bind_helpers.h"
+#include "chrome/test/base/testing_browser_process.h"
+#include "components/ukm/content/source_url_recorder.h"
+#include "content/public/browser/global_request_id.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/web_contents_tester.h"
-#include "third_party/WebKit/public/web/WebInputEvent.h"
+#include "third_party/blink/public/platform/web_input_event.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace page_load_metrics {
-
-namespace {
-
-class TestPageLoadMetricsEmbedderInterface
-    : public PageLoadMetricsEmbedderInterface {
- public:
-  explicit TestPageLoadMetricsEmbedderInterface(
-      PageLoadMetricsObserverTestHarness* test)
-      : test_(test) {}
-
-  bool IsPrerendering(content::WebContents* web_contents) override {
-    return false;
-  }
-
-  // Forward the registration logic to the test class so that derived classes
-  // can override the logic there without depending on the embedder interface.
-  void RegisterObservers(PageLoadTracker* tracker) override {
-    test_->RegisterObservers(tracker);
-  }
-
- private:
-  PageLoadMetricsObserverTestHarness* test_;
-
-  DISALLOW_COPY_AND_ASSIGN(TestPageLoadMetricsEmbedderInterface);
-};
-
-}  // namespace
 
 PageLoadMetricsObserverTestHarness::PageLoadMetricsObserverTestHarness()
     : ChromeRenderViewHostTestHarness() {}
 
 PageLoadMetricsObserverTestHarness::~PageLoadMetricsObserverTestHarness() {}
 
-// static
-void PageLoadMetricsObserverTestHarness::PopulateRequiredTimingFields(
-    PageLoadTiming* inout_timing) {
-  if (!inout_timing->first_contentful_paint.is_zero() &&
-      inout_timing->first_paint.is_zero()) {
-    inout_timing->first_paint = inout_timing->first_contentful_paint;
-  }
-  if (!inout_timing->first_text_paint.is_zero() &&
-      inout_timing->first_paint.is_zero()) {
-    inout_timing->first_paint = inout_timing->first_text_paint;
-  }
-  if (!inout_timing->first_image_paint.is_zero() &&
-      inout_timing->first_paint.is_zero()) {
-    inout_timing->first_paint = inout_timing->first_image_paint;
-  }
-  if (!inout_timing->first_paint.is_zero() &&
-      inout_timing->first_layout.is_zero()) {
-    inout_timing->first_layout = inout_timing->first_paint;
-  }
-  if (!inout_timing->load_event_start.is_zero() &&
-      inout_timing->dom_content_loaded_event_start.is_zero()) {
-    inout_timing->dom_content_loaded_event_start =
-        inout_timing->load_event_start;
-  }
-  if (!inout_timing->first_layout.is_zero() &&
-      inout_timing->dom_loading.is_zero()) {
-    inout_timing->dom_loading = inout_timing->first_layout;
-  }
-  if (!inout_timing->dom_content_loaded_event_start.is_zero() &&
-      inout_timing->dom_loading.is_zero()) {
-    inout_timing->dom_loading = inout_timing->dom_content_loaded_event_start;
-  }
-  if (!inout_timing->parse_stop.is_zero() &&
-      inout_timing->parse_start.is_zero()) {
-    inout_timing->parse_start = inout_timing->parse_stop;
-  }
-  if (!inout_timing->parse_start.is_zero() &&
-      inout_timing->response_start.is_zero()) {
-    inout_timing->response_start = inout_timing->parse_start;
-  }
-  if (!inout_timing->dom_loading.is_zero() &&
-      inout_timing->response_start.is_zero()) {
-    inout_timing->response_start = inout_timing->dom_loading;
-  }
-}
-
 void PageLoadMetricsObserverTestHarness::SetUp() {
   ChromeRenderViewHostTestHarness::SetUp();
   SetContents(CreateTestWebContents());
   NavigateAndCommit(GURL("http://www.google.com"));
-  observer_ = MetricsWebContentsObserver::CreateForWebContents(
+  // Page load metrics depends on UKM source URLs being recorded, so make sure
+  // the SourceUrlRecorderWebContentsObserver is instantiated.
+  ukm::InitializeSourceUrlRecorderForWebContents(web_contents());
+  tester_ = std::make_unique<PageLoadMetricsObserverTester>(
       web_contents(),
-      base::WrapUnique(new TestPageLoadMetricsEmbedderInterface(this)));
+      base::BindRepeating(
+          &PageLoadMetricsObserverTestHarness::RegisterObservers,
+          base::Unretained(this)));
   web_contents()->WasShown();
 }
 
 void PageLoadMetricsObserverTestHarness::StartNavigation(const GURL& gurl) {
-  content::WebContentsTester* web_contents_tester =
-      content::WebContentsTester::For(web_contents());
-  web_contents_tester->StartNavigation(gurl);
+  std::unique_ptr<content::NavigationSimulator> navigation =
+      content::NavigationSimulator::CreateBrowserInitiated(gurl,
+                                                           web_contents());
+  navigation->Start();
 }
 
 void PageLoadMetricsObserverTestHarness::SimulateTimingUpdate(
-    const PageLoadTiming& timing) {
-  SimulateTimingAndMetadataUpdate(timing, PageLoadMetadata());
+    const mojom::PageLoadTiming& timing) {
+  tester_->SimulateTimingUpdate(timing);
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateTimingUpdate(
+    const mojom::PageLoadTiming& timing,
+    content::RenderFrameHost* rfh) {
+  tester_->SimulateTimingUpdate(timing, rfh);
 }
 
 void PageLoadMetricsObserverTestHarness::SimulateTimingAndMetadataUpdate(
-    const PageLoadTiming& timing,
-    const PageLoadMetadata& metadata) {
-  observer_->OnMessageReceived(PageLoadMetricsMsg_TimingUpdated(
-                                   observer_->routing_id(), timing, metadata),
-                               web_contents()->GetMainFrame());
+    const mojom::PageLoadTiming& timing,
+    const mojom::PageLoadMetadata& metadata) {
+  tester_->SimulateTimingAndMetadataUpdate(timing, metadata);
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateResourceDataUseUpdate(
+    const std::vector<mojom::ResourceDataUpdatePtr>& resources) {
+  tester_->SimulateResourceDataUseUpdate(resources);
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateResourceDataUseUpdate(
+    const std::vector<mojom::ResourceDataUpdatePtr>& resources,
+    content::RenderFrameHost* render_frame_host) {
+  tester_->SimulateResourceDataUseUpdate(resources, render_frame_host);
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateFeaturesUpdate(
+    const mojom::PageLoadFeatures& new_features) {
+  tester_->SimulateFeaturesUpdate(new_features);
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateRenderDataUpdate(
+    const mojom::PageRenderData& render_data) {
+  tester_->SimulateRenderDataUpdate(render_data);
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateLoadedResource(
+    const ExtraRequestCompleteInfo& info) {
+  tester_->SimulateLoadedResource(info, content::GlobalRequestID());
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateLoadedResource(
+    const ExtraRequestCompleteInfo& info,
+    const content::GlobalRequestID& request_id) {
+  tester_->SimulateLoadedResource(info, request_id);
 }
 
 void PageLoadMetricsObserverTestHarness::SimulateInputEvent(
     const blink::WebInputEvent& event) {
-  observer_->OnInputEvent(event);
+  tester_->SimulateInputEvent(event);
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateAppEnterBackground() {
+  tester_->SimulateAppEnterBackground();
+}
+
+void PageLoadMetricsObserverTestHarness::SimulateMediaPlayed() {
+  tester_->SimulateMediaPlayed();
 }
 
 const base::HistogramTester&
@@ -133,20 +115,30 @@ PageLoadMetricsObserverTestHarness::histogram_tester() const {
   return histogram_tester_;
 }
 
+MetricsWebContentsObserver* PageLoadMetricsObserverTestHarness::observer()
+    const {
+  return tester_->observer();
+}
+
 const PageLoadExtraInfo
 PageLoadMetricsObserverTestHarness::GetPageLoadExtraInfoForCommittedLoad() {
-  return observer_->GetPageLoadExtraInfoForCommittedLoad();
+  return tester_->GetPageLoadExtraInfoForCommittedLoad();
 }
 
 void PageLoadMetricsObserverTestHarness::NavigateWithPageTransitionAndCommit(
     const GURL& url,
     ui::PageTransition transition) {
-  controller().LoadURL(url, content::Referrer(), transition, std::string());
-  int pending_id = controller().GetPendingEntry()->GetUniqueID();
-  const bool did_create_new_entry = true;
-  content::WebContentsTester::For(web_contents())
-      ->TestDidNavigate(web_contents()->GetMainFrame(), 1, pending_id,
-                        did_create_new_entry, url, transition);
+  auto simulator =
+      content::NavigationSimulator::CreateRendererInitiated(url, main_rfh());
+  simulator->SetTransition(transition);
+  simulator->Commit();
 }
+
+void PageLoadMetricsObserverTestHarness::NavigateToUntrackedUrl() {
+  NavigateAndCommit(GURL(url::kAboutBlankURL));
+}
+
+const char PageLoadMetricsObserverTestHarness::kResourceUrl[] =
+    "https://www.example.com/resource";
 
 }  // namespace page_load_metrics

@@ -4,40 +4,42 @@
 
 package org.chromium.net;
 
-import android.os.ConditionVariable;
-import android.os.StrictMode;
-
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertNotNull;
 import static junit.framework.Assert.assertNull;
 import static junit.framework.Assert.assertTrue;
 
+import static org.chromium.net.CronetTestRule.assertContains;
+
+import android.os.ConditionVariable;
+import android.os.StrictMode;
+
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Callback that tracks information from different callbacks and and has a
  * method to block thread until the request completes on another thread.
  * Allows to cancel, block request or throw an exception from an arbitrary step.
  */
-class TestUrlRequestCallback extends UrlRequest.Callback {
+public class TestUrlRequestCallback extends UrlRequest.Callback {
     public ArrayList<UrlResponseInfo> mRedirectResponseInfoList = new ArrayList<UrlResponseInfo>();
     public ArrayList<String> mRedirectUrlList = new ArrayList<String>();
     public UrlResponseInfo mResponseInfo;
-    public UrlRequestException mError;
+    public CronetException mError;
 
     public ResponseStep mResponseStep = ResponseStep.NOTHING;
 
-    public int mRedirectCount = 0;
-    public boolean mOnErrorCalled = false;
-    public boolean mOnCanceledCalled = false;
+    public int mRedirectCount;
+    public boolean mOnErrorCalled;
+    public boolean mOnCanceledCalled;
 
-    public int mHttpResponseDataLength = 0;
+    public int mHttpResponseDataLength;
     public String mResponseAsString = "";
 
     private static final int READ_BUFFER_SIZE = 32 * 1024;
@@ -45,6 +47,11 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
     // When false, the consumer is responsible for all calls into the request
     // that advance it.
     private boolean mAutoAdvance = true;
+    // Whether an exception is thrown by maybeThrowCancelOrPause().
+    private boolean mCallbackExceptionThrown;
+
+    // Whether to permit calls on the network thread.
+    private boolean mAllowDirectExecutor;
 
     // Conditionally fail on certain steps.
     private FailureType mFailureType = FailureType.NONE;
@@ -57,16 +64,16 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
     private final ConditionVariable mStepBlock = new ConditionVariable();
 
     // Executor Service for Cronet callbacks.
-    private final ExecutorService mExecutorService =
-            Executors.newSingleThreadExecutor(new ExecutorThreadFactory());
+    private final ExecutorService mExecutorService;
     private Thread mExecutorThread;
 
     // position() of ByteBuffer prior to read() call.
     private int mBufferPositionBeforeRead;
 
-    private class ExecutorThreadFactory implements ThreadFactory {
+    private static class ExecutorThreadFactory implements ThreadFactory {
+        @Override
         public Thread newThread(final Runnable r) {
-            mExecutorThread = new Thread(new Runnable() {
+            return new Thread(new Runnable() {
                 @Override
                 public void run() {
                     StrictMode.ThreadPolicy threadPolicy = StrictMode.getThreadPolicy();
@@ -82,7 +89,6 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
                     }
                 }
             });
-            return mExecutorThread;
         }
     }
 
@@ -91,7 +97,9 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
         ON_RECEIVED_REDIRECT,
         ON_RESPONSE_STARTED,
         ON_READ_COMPLETED,
-        ON_SUCCEEDED
+        ON_SUCCEEDED,
+        ON_FAILED,
+        ON_CANCELED,
     }
 
     public enum FailureType {
@@ -104,8 +112,40 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
         THROW_SYNC
     }
 
+    /**
+     * Set {@code mExecutorThread}.
+     */
+    private void fillInExecutorThread() {
+        mExecutorService.execute(new Runnable() {
+            @Override
+            public void run() {
+                mExecutorThread = Thread.currentThread();
+            }
+        });
+    }
+
+    /**
+     * Create a {@link TestUrlRequestCallback} with a new single-threaded executor.
+     */
+    public TestUrlRequestCallback() {
+        this(Executors.newSingleThreadExecutor(new ExecutorThreadFactory()));
+    }
+
+    /**
+     * Create a {@link TestUrlRequestCallback} using a custom single-threaded executor.
+     * NOTE(pauljensen): {@code executorService} should be a new single-threaded executor.
+     */
+    public TestUrlRequestCallback(ExecutorService executorService) {
+        mExecutorService = executorService;
+        fillInExecutorThread();
+    }
+
     public void setAutoAdvance(boolean autoAdvance) {
         mAutoAdvance = autoAdvance;
+    }
+
+    public void setAllowDirectExecutor(boolean allowed) {
+        mAllowDirectExecutor = allowed;
     }
 
     public void setFailure(FailureType failureType, ResponseStep failureStep) {
@@ -122,7 +162,7 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
         mStepBlock.close();
     }
 
-    public Executor getExecutor() {
+    public ExecutorService getExecutor() {
         return mExecutorService;
     }
 
@@ -130,10 +170,25 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
         mExecutorService.shutdown();
     }
 
+    /**
+     * Shuts down the ExecutorService and waits until it executes all posted
+     * tasks.
+     */
+    public void shutdownExecutorAndWait() {
+        mExecutorService.shutdown();
+        try {
+            // Termination shouldn't take long. Use 1 min which should be more than enough.
+            mExecutorService.awaitTermination(1, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            assertTrue("ExecutorService is interrupted while waiting for termination", false);
+        }
+        assertTrue(mExecutorService.isTerminated());
+    }
+
     @Override
     public void onRedirectReceived(
             UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
-        assertEquals(mExecutorThread, Thread.currentThread());
+        checkExecutorThread();
         assertFalse(request.isDone());
         assertTrue(mResponseStep == ResponseStep.NOTHING
                 || mResponseStep == ResponseStep.ON_RECEIVED_REDIRECT);
@@ -151,7 +206,7 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
 
     @Override
     public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
-        assertEquals(mExecutorThread, Thread.currentThread());
+        checkExecutorThread();
         assertFalse(request.isDone());
         assertTrue(mResponseStep == ResponseStep.NOTHING
                 || mResponseStep == ResponseStep.ON_RECEIVED_REDIRECT);
@@ -167,7 +222,7 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
 
     @Override
     public void onReadCompleted(UrlRequest request, UrlResponseInfo info, ByteBuffer byteBuffer) {
-        assertEquals(mExecutorThread, Thread.currentThread());
+        checkExecutorThread();
         assertFalse(request.isDone());
         assertTrue(mResponseStep == ResponseStep.ON_RESPONSE_STARTED
                 || mResponseStep == ResponseStep.ON_READ_COMPLETED);
@@ -194,7 +249,7 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
 
     @Override
     public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
-        assertEquals(mExecutorThread, Thread.currentThread());
+        checkExecutorThread();
         assertTrue(request.isDone());
         assertTrue(mResponseStep == ResponseStep.ON_RESPONSE_STARTED
                 || mResponseStep == ResponseStep.ON_READ_COMPLETED);
@@ -209,8 +264,13 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
     }
 
     @Override
-    public void onFailed(UrlRequest request, UrlResponseInfo info, UrlRequestException error) {
-        assertEquals(mExecutorThread, Thread.currentThread());
+    public void onFailed(UrlRequest request, UrlResponseInfo info, CronetException error) {
+        // If the failure is because of prohibited direct execution, the test shouldn't fail
+        // since the request already did.
+        if (error.getCause() instanceof InlineExecutionProhibitedException) {
+            mAllowDirectExecutor = true;
+        }
+        checkExecutorThread();
         assertTrue(request.isDone());
         // Shouldn't happen after success.
         assertTrue(mResponseStep != ResponseStep.ON_SUCCEEDED);
@@ -218,16 +278,15 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
         assertFalse(mOnErrorCalled);
         assertFalse(mOnCanceledCalled);
         assertNull(mError);
-        if (mFailureType == FailureType.THROW_SYNC) {
-            assertEquals(UrlRequestError.LISTENER_EXCEPTION_THROWN, error.getErrorCode());
-            assertEquals(0, error.getCronetInternalErrorCode());
-            assertEquals("Exception received from UrlRequest.Callback", error.getMessage());
+        if (mCallbackExceptionThrown) {
+            assertTrue(error instanceof CallbackException);
+            assertContains("Exception received from UrlRequest.Callback", error.getMessage());
             assertNotNull(error.getCause());
             assertTrue(error.getCause() instanceof IllegalStateException);
-            assertEquals("Listener Exception.", error.getCause().getMessage());
-            assertFalse(error.immediatelyRetryable());
+            assertContains("Listener Exception.", error.getCause().getMessage());
         }
 
+        mResponseStep = ResponseStep.ON_FAILED;
         mOnErrorCalled = true;
         mError = error;
         openDone();
@@ -236,13 +295,14 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
 
     @Override
     public void onCanceled(UrlRequest request, UrlResponseInfo info) {
-        assertEquals(mExecutorThread, Thread.currentThread());
+        checkExecutorThread();
         assertTrue(request.isDone());
         // Should happen at most once for a single request.
         assertFalse(mOnCanceledCalled);
         assertFalse(mOnErrorCalled);
         assertNull(mError);
 
+        mResponseStep = ResponseStep.ON_CANCELED;
         mOnCanceledCalled = true;
         openDone();
         maybeThrowCancelOrPause(request);
@@ -268,11 +328,18 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
         mDone.open();
     }
 
+    private void checkExecutorThread() {
+        if (!mAllowDirectExecutor) {
+            assertEquals(mExecutorThread, Thread.currentThread());
+        }
+    }
+
     /**
      * Returns {@code false} if the listener should continue to advance the
      * request.
      */
     private boolean maybeThrowCancelOrPause(final UrlRequest request) {
+        checkExecutorThread();
         if (mResponseStep != mFailureStep || mFailureType == FailureType.NONE) {
             if (!mAutoAdvance) {
                 mStepBlock.open();
@@ -282,9 +349,12 @@ class TestUrlRequestCallback extends UrlRequest.Callback {
         }
 
         if (mFailureType == FailureType.THROW_SYNC) {
+            assertFalse(mCallbackExceptionThrown);
+            mCallbackExceptionThrown = true;
             throw new IllegalStateException("Listener Exception.");
         }
         Runnable task = new Runnable() {
+            @Override
             public void run() {
                 request.cancel();
             }

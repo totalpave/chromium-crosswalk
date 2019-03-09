@@ -13,7 +13,6 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
@@ -25,7 +24,7 @@
 
 namespace file_manager {
 
-// Files.app's event router handling job related events.
+// Files app's event router handling job related events.
 class JobEventRouter : public drive::JobListObserver {
  public:
   explicit JobEventRouter(const base::TimeDelta& event_delay);
@@ -82,7 +81,7 @@ class JobEventRouter : public drive::JobListObserver {
   base::TimeDelta event_delay_;
 
   // Set of job that are in the job schedular.
-  std::map<drive::JobID, linked_ptr<drive::JobInfo>> drive_jobs_;
+  std::map<drive::JobID, std::unique_ptr<drive::JobInfo>> drive_jobs_;
 
   // Job info of pending event. |ScheduleDriveFileTransferEvent| registers
   // timeout callback to dispatch this.
@@ -100,7 +99,7 @@ class JobEventRouter : public drive::JobListObserver {
   int64_t num_total_bytes_;
 
   // Thread checker.
-  base::ThreadChecker thread_checker_;
+  THREAD_CHECKER(thread_checker_);
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate the weak pointers before any other members are destroyed.

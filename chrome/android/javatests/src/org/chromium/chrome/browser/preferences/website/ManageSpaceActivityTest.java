@@ -7,62 +7,69 @@ package org.chromium.chrome.browser.preferences.website;
 import android.annotation.TargetApi;
 import android.content.Intent;
 import android.os.Build;
-import android.os.Environment;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.MediumTest;
+import android.support.test.filters.SmallTest;
 import android.support.v7.app.AlertDialog;
-import android.test.suitebuilder.annotation.MediumTest;
-import android.test.suitebuilder.annotation.SmallTest;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.MinAndroidSdkLevel;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.browser.preferences.PrefServiceBridge;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
+import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.chrome.browser.preferences.privacy.BrowsingDataBridge;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
 import org.chromium.net.test.EmbeddedTestServer;
 
 /**
  * Tests for ManageSpaceActivity.
  */
+@RunWith(ChromeJUnit4ClassRunner.class)
 @TargetApi(Build.VERSION_CODES.KITKAT)
-@CommandLineFlags.Add({"enable-site-engagement"})
-public class ManageSpaceActivityTest extends ChromeActivityTestCaseBase<ChromeActivity> {
+@MinAndroidSdkLevel(Build.VERSION_CODES.KITKAT)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+public class ManageSpaceActivityTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
+
     private EmbeddedTestServer mTestServer;
 
-    public ManageSpaceActivityTest() {
-        super(ChromeActivity.class);
-    }
-
-    @Override
-    protected void setUp() throws Exception {
-        super.setUp();
-        mTestServer = EmbeddedTestServer.createAndStartFileServer(
-                getInstrumentation().getContext(), Environment.getExternalStorageDirectory());
-    }
-
-    @Override
-    protected void tearDown() throws Exception {
-        mTestServer.stopAndDestroyServer();
-        super.tearDown();
-    }
-
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        if (getName().equals("testClearUnimporantWithoutChromeStart")) {
-            return;
+    @Before
+    public void setUp() throws Exception {
+        if (!mActivityTestRule.getName().equals("testClearUnimporantWithoutChromeStart")) {
+            mActivityTestRule.startMainActivityOnBlankPage();
         }
-        startMainActivityOnBlankPage();
+        mTestServer = EmbeddedTestServer.createAndStartServer(InstrumentationRegistry.getContext());
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        mTestServer.stopAndDestroyServer();
     }
 
     private ManageSpaceActivity startManageSpaceActivity() {
         Intent intent =
-                new Intent(getInstrumentation().getTargetContext(), ManageSpaceActivity.class);
+                new Intent(InstrumentationRegistry.getTargetContext(), ManageSpaceActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        return (ManageSpaceActivity) getInstrumentation().startActivitySync(intent);
+        return (ManageSpaceActivity) InstrumentationRegistry.getInstrumentation().startActivitySync(
+                intent);
     }
 
-    public void waitForClearButtonEnabled(final ManageSpaceActivity activity) throws Exception {
+    public void waitForClearButtonEnabled(final ManageSpaceActivity activity) {
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
@@ -80,7 +87,7 @@ public class ManageSpaceActivityTest extends ChromeActivityTestCaseBase<ChromeAc
         };
     }
 
-    public void waitForDialogShowing(final ManageSpaceActivity activity) throws Exception {
+    public void waitForDialogShowing(final ManageSpaceActivity activity) {
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
@@ -98,28 +105,35 @@ public class ManageSpaceActivityTest extends ChromeActivityTestCaseBase<ChromeAc
         };
     }
 
+    @Test
     @SmallTest
+    @RetryOnFailure
     public void testLaunchActivity() {
         startManageSpaceActivity();
     }
 
+    @Test
     @MediumTest
+    @RetryOnFailure
+    @Feature({"SiteEngagement"})
     public void testClearUnimportantOnly() throws Exception {
         final String cookiesUrl =
                 mTestServer.getURL("/chrome/test/data/android/storage_persistance.html");
         final String serverOrigin = mTestServer.getURL("/");
 
-        loadUrl(cookiesUrl + "#clear");
-        assertEquals("false", runJavaScriptCodeInCurrentTab("hasAllStorage()"));
-        runJavaScriptCodeInCurrentTab("setStorage()");
-        assertEquals("true", runJavaScriptCodeInCurrentTab("hasAllStorage()"));
-        loadUrl("about:blank");
+        mActivityTestRule.loadUrl(cookiesUrl + "#clear");
+        Assert.assertEquals(
+                "false", mActivityTestRule.runJavaScriptCodeInCurrentTab("hasAllStorage()"));
+        mActivityTestRule.runJavaScriptCodeInCurrentTab("setStorage()");
+        Assert.assertEquals(
+                "true", mActivityTestRule.runJavaScriptCodeInCurrentTab("hasAllStorage()"));
+        mActivityTestRule.loadUrl("about:blank");
 
         // Now we set the origin as important, and check that we don't clear it.
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                PrefServiceBridge.markOriginAsImportantForTesting(serverOrigin);
+                BrowsingDataBridge.markOriginAsImportantForTesting(serverOrigin);
             }
         });
 
@@ -134,11 +148,14 @@ public class ManageSpaceActivityTest extends ChromeActivityTestCaseBase<ChromeAc
         waitForClearButtonEnabled(manageSpaceActivity);
         manageSpaceActivity.finish();
 
-        loadUrl(cookiesUrl);
-        assertEquals("true", runJavaScriptCodeInCurrentTab("hasAllStorage()"));
+        mActivityTestRule.loadUrl(cookiesUrl);
+        Assert.assertEquals(
+                "true", mActivityTestRule.runJavaScriptCodeInCurrentTab("hasAllStorage()"));
     }
 
+    @Test
     @MediumTest
+    @Feature({"SiteEngagement"})
     public void testClearUnimporantWithoutChromeStart() throws Exception {
         ManageSpaceActivity manageSpaceActivity = startManageSpaceActivity();
         // Click 'clear' in the CBD screen.

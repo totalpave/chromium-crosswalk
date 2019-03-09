@@ -4,6 +4,10 @@
 
 #include "ash/system/toast/toast_manager.h"
 
+#include <algorithm>
+
+#include "ash/session/session_controller.h"
+#include "ash/shell.h"
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -17,15 +21,17 @@ const int32_t kMinimumDurationMs = 200;
 
 }  // anonymous namespace
 
-ToastManager::ToastManager() : weak_ptr_factory_(this) {}
+ToastManager::ToastManager()
+    : locked_(Shell::Get()->session_controller()->IsScreenLocked()),
+      weak_ptr_factory_(this) {}
 
-ToastManager::~ToastManager() {}
+ToastManager::~ToastManager() = default;
 
 void ToastManager::Show(const ToastData& data) {
   const std::string& id = data.id;
   DCHECK(!id.empty());
 
-  if (current_toast_id_ == id) {
+  if (current_toast_data_ && current_toast_data_->id == id) {
     // TODO(yoshiki): Replaces the visible toast.
     return;
   }
@@ -45,7 +51,7 @@ void ToastManager::Show(const ToastData& data) {
 }
 
 void ToastManager::Cancel(const std::string& id) {
-  if (id == current_toast_id_) {
+  if (current_toast_data_ && current_toast_data_->id == id) {
     overlay_->Show(false);
     return;
   }
@@ -59,30 +65,44 @@ void ToastManager::Cancel(const std::string& id) {
 
 void ToastManager::OnClosed() {
   overlay_.reset();
-  current_toast_id_.clear();
+  current_toast_data_.reset();
 
   // Show the next toast if available.
+  // Note that don't show during the lock state is changing, since we reshow
+  // manually after the state is changed. See OnLockStateChanged.
   if (!queue_.empty())
     ShowLatest();
 }
 
 void ToastManager::ShowLatest() {
   DCHECK(!overlay_);
+  DCHECK(!current_toast_data_);
 
-  const ToastData data = std::move(queue_.front());
-  queue_.pop_front();
+  auto it = locked_ ? std::find_if(queue_.begin(), queue_.end(),
+                                   [](const auto& data) {
+                                     return data.visible_on_lock_screen;
+                                   })
+                    : queue_.begin();
+  if (it == queue_.end())
+    return;
 
-  current_toast_id_ = data.id;
+  current_toast_data_ = *it;
+  queue_.erase(it);
+
   serial_++;
 
-  overlay_.reset(new ToastOverlay(this, data.text, data.dismiss_text));
+  overlay_ = std::make_unique<ToastOverlay>(
+      this, current_toast_data_->text, current_toast_data_->dismiss_text,
+      current_toast_data_->visible_on_lock_screen && locked_);
   overlay_->Show(true);
 
-  if (data.duration_ms != ToastData::kInfiniteDuration) {
-    int32_t duration_ms = std::max(data.duration_ms, kMinimumDurationMs);
+  if (current_toast_data_->duration_ms != ToastData::kInfiniteDuration) {
+    int32_t duration_ms =
+        std::max(current_toast_data_->duration_ms, kMinimumDurationMs);
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-        FROM_HERE, base::Bind(&ToastManager::OnDurationPassed,
-                              weak_ptr_factory_.GetWeakPtr(), serial_),
+        FROM_HERE,
+        base::BindOnce(&ToastManager::OnDurationPassed,
+                       weak_ptr_factory_.GetWeakPtr(), serial_),
         base::TimeDelta::FromMilliseconds(duration_ms));
   }
 }
@@ -90,6 +110,24 @@ void ToastManager::ShowLatest() {
 void ToastManager::OnDurationPassed(int toast_number) {
   if (overlay_ && serial_ == toast_number)
     overlay_->Show(false);
+}
+
+void ToastManager::OnSessionStateChanged(session_manager::SessionState state) {
+  const bool locked = state != session_manager::SessionState::ACTIVE;
+
+  if ((locked != locked_) && current_toast_data_) {
+    // Re-queue the currently visible toast which is not for lock screen.
+    queue_.push_front(*current_toast_data_);
+    current_toast_data_.reset();
+    // Hide the currently visible toast without any animation.
+    overlay_.reset();
+  }
+
+  locked_ = locked;
+  if (!queue_.empty()) {
+    // Try to reshow a queued toast from a previous OnSessionStateChanged.
+    ShowLatest();
+  }
 }
 
 }  // namespace ash

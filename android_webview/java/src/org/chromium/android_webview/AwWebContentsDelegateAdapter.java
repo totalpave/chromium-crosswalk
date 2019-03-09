@@ -4,13 +4,11 @@
 
 package org.chromium.android_webview;
 
-import android.annotation.TargetApi;
-import android.content.ContentResolver;
+import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.media.AudioManager;
 import android.net.Uri;
-import android.os.AsyncTask;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
 import android.provider.MediaStore;
@@ -18,12 +16,16 @@ import android.text.TextUtils;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
-import android.webkit.ConsoleMessage;
-import android.webkit.ValueCallback;
+import android.webkit.URLUtil;
+import android.widget.FrameLayout;
 
+import org.chromium.base.BuildInfo;
+import org.chromium.base.Callback;
 import org.chromium.base.ContentUriUtils;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.task.AsyncTask;
 import org.chromium.content_public.browser.InvalidateTypes;
+import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.content_public.common.ResourceRequestBody;
 
 /**
@@ -31,27 +33,28 @@ import org.chromium.content_public.common.ResourceRequestBody;
  * This class also serves a secondary function of routing certain callbacks from the content layer
  * to specific listener interfaces.
  */
-@TargetApi(Build.VERSION_CODES.LOLLIPOP)
 class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     private static final String TAG = "AwWebContentsDelegateAdapter";
 
     private final AwContents mAwContents;
     private final AwContentsClient mContentsClient;
-    private final AwContentViewClient mContentViewClient;
+    private final AwSettings mAwSettings;
     private final Context mContext;
     private View mContainerView;
+    private FrameLayout mCustomView;
 
     public AwWebContentsDelegateAdapter(AwContents awContents, AwContentsClient contentsClient,
-            AwContentViewClient contentViewClient, Context context, View containerView) {
+            AwSettings settings, Context context, View containerView) {
         mAwContents = awContents;
         mContentsClient = contentsClient;
-        mContentViewClient = contentViewClient;
+        mAwSettings = settings;
         mContext = context;
         setContainerView(containerView);
     }
 
     public void setContainerView(View containerView) {
         mContainerView = containerView;
+        mContainerView.setClickable(true);
     }
 
     @Override
@@ -120,7 +123,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
                 (reverse == (mContainerView.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL))
                 ? View.FOCUS_RIGHT : View.FOCUS_LEFT;
         if (tryToMoveFocus(direction)) return true;
-        direction = reverse ? View.FOCUS_UP : View.FOCUS_DOWN;
+        direction = reverse ? View.FOCUS_BACKWARD : View.FOCUS_FORWARD;
         return tryToMoveFocus(direction);
     }
 
@@ -132,29 +135,37 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     @Override
     public boolean addMessageToConsole(int level, String message, int lineNumber,
             String sourceId) {
-        ConsoleMessage.MessageLevel messageLevel = ConsoleMessage.MessageLevel.DEBUG;
+        @AwConsoleMessage.MessageLevel
+        int messageLevel = AwConsoleMessage.MESSAGE_LEVEL_DEBUG;
         switch(level) {
             case LOG_LEVEL_TIP:
-                messageLevel = ConsoleMessage.MessageLevel.TIP;
+                messageLevel = AwConsoleMessage.MESSAGE_LEVEL_TIP;
                 break;
             case LOG_LEVEL_LOG:
-                messageLevel = ConsoleMessage.MessageLevel.LOG;
+                messageLevel = AwConsoleMessage.MESSAGE_LEVEL_LOG;
                 break;
             case LOG_LEVEL_WARNING:
-                messageLevel = ConsoleMessage.MessageLevel.WARNING;
+                messageLevel = AwConsoleMessage.MESSAGE_LEVEL_WARNING;
                 break;
             case LOG_LEVEL_ERROR:
-                messageLevel = ConsoleMessage.MessageLevel.ERROR;
+                messageLevel = AwConsoleMessage.MESSAGE_LEVEL_ERROR;
                 break;
             default:
                 Log.w(TAG, "Unknown message level, defaulting to DEBUG");
                 break;
         }
-
+        // Calling onConsoleMessage(...) even that the result is ignored if it's a non-debuggable
+        // app or device as it can be overriden by the user with some custom logic that is expected
+        // to be always run.
         boolean result = mContentsClient.onConsoleMessage(
-                new ConsoleMessage(message, sourceId, lineNumber, messageLevel));
-        if (result && message != null && message.startsWith("[blocked]")) {
-            Log.e(TAG, "Blocked URL: " + message);
+                new AwConsoleMessage(message, sourceId, lineNumber, messageLevel));
+        boolean isAppDebuggable =
+                (mContext.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        boolean isOsDebuggable = BuildInfo.isDebugAndroid();
+        // Always return true if not debuggable so js console messages won't be mirrored to logcat
+        // for privacy.
+        if (!isAppDebuggable && !isOsDebuggable) {
+            return true;
         }
         return result;
     }
@@ -177,9 +188,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     }
 
     @Override
+    @SuppressLint("HandlerLeak")
     public void showRepostFormWarningDialog() {
         // TODO(mkosiba) We should be using something akin to the JsResultReceiver as the
-        // callback parameter (instead of ContentViewCore) and implement a way of converting
+        // callback parameter (instead of WebContents) and implement a way of converting
         // that to a pair of messages.
         final int msgContinuePendingReload = 1;
         final int msgCancelPendingReload = 2;
@@ -218,10 +230,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
         AwContentsClient.FileChooserParamsImpl params = new AwContentsClient.FileChooserParamsImpl(
                 modeFlags, acceptTypes, title, defaultFilename, capture);
 
-        mContentsClient.showFileChooser(new ValueCallback<String[]>() {
-            boolean mCompleted = false;
+        mContentsClient.showFileChooser(new Callback<String[]>() {
+            boolean mCompleted;
             @Override
-            public void onReceiveValue(String[] results) {
+            public void onResult(String[] results) {
                 if (mCompleted) {
                     throw new IllegalStateException("Duplicate showFileChooser result");
                 }
@@ -231,8 +243,8 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
                             processId, renderId, modeFlags, null, null);
                     return;
                 }
-                GetDisplayNameTask task = new GetDisplayNameTask(
-                        mContext.getContentResolver(), processId, renderId, modeFlags, results);
+                GetDisplayNameTask task =
+                        new GetDisplayNameTask(mContext, processId, renderId, modeFlags, results);
                 task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
             }
         }, params);
@@ -256,18 +268,19 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
             // Hint the client to show the last committed url, as it may be unsafe to show
             // the pending entry.
             String url = mAwContents.getLastCommittedUrl();
-            url = TextUtils.isEmpty(url) ? "about:blank" : url;
+            url = TextUtils.isEmpty(url) ? ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL : url;
             mContentsClient.getCallbackHelper().postSynthesizedPageLoadingForUrlBarUpdate(url);
         }
     }
 
     @Override
-    public void toggleFullscreenModeForTab(boolean enterFullscreen) {
-        if (enterFullscreen) {
-            mContentViewClient.enterFullscreen();
-        } else {
-            mContentViewClient.exitFullscreen();
-        }
+    public void enterFullscreenModeForTab(boolean prefersNavigationBar) {
+        enterFullscreen();
+    }
+
+    @Override
+    public void exitFullscreenModeForTab() {
+        exitFullscreen();
     }
 
     @Override
@@ -275,24 +288,70 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
         mContentsClient.updateTitle(mAwContents.getTitle(), false);
     }
 
-    private static class GetDisplayNameTask extends AsyncTask<Void, Void, String[]> {
+    /**
+     * Called to show the web contents in fullscreen mode.
+     *
+     * <p>If entering fullscreen on a video element the web contents will contain just
+     * the html5 video controls. {@link #enterFullscreenVideo(View)} will be called later
+     * once the ContentVideoView, which contains the hardware accelerated fullscreen video,
+     * is ready to be shown.
+     */
+    private void enterFullscreen() {
+        if (mAwContents.isFullScreen()) {
+            return;
+        }
+        View fullscreenView = mAwContents.enterFullScreen();
+        if (fullscreenView == null) {
+            return;
+        }
+        AwContentsClient.CustomViewCallback cb = () -> {
+            if (mCustomView != null) {
+                mAwContents.requestExitFullscreen();
+            }
+        };
+        mCustomView = new FrameLayout(mContext);
+        mCustomView.addView(fullscreenView);
+        mContentsClient.onShowCustomView(mCustomView, cb);
+    }
+
+    /**
+     * Called to show the web contents in embedded mode.
+     */
+    private void exitFullscreen() {
+        if (mCustomView != null) {
+            mCustomView = null;
+            mAwContents.exitFullScreen();
+            mContentsClient.onHideCustomView();
+        }
+    }
+
+    @Override
+    public boolean shouldBlockMediaRequest(String url) {
+        return mAwSettings != null
+                ? mAwSettings.getBlockNetworkLoads() && URLUtil.isNetworkUrl(url) : true;
+    }
+
+    private static class GetDisplayNameTask extends AsyncTask<String[]> {
         final int mProcessId;
         final int mRenderId;
         final int mModeFlags;
         final String[] mFilePaths;
-        final ContentResolver mContentResolver;
 
-        public GetDisplayNameTask(ContentResolver contentResolver, int processId, int renderId,
-                                  int modeFlags, String[] filePaths) {
+        // The task doesn't run long, so we don't gain anything from a weak ref.
+        @SuppressLint("StaticFieldLeak")
+        final Context mContext;
+
+        public GetDisplayNameTask(
+                Context context, int processId, int renderId, int modeFlags, String[] filePaths) {
             mProcessId = processId;
             mRenderId = renderId;
             mModeFlags = modeFlags;
             mFilePaths = filePaths;
-            mContentResolver = contentResolver;
+            mContext = context;
         }
 
         @Override
-        protected String[] doInBackground(Void...voids) {
+        protected String[] doInBackground() {
             String[] displayNames = new String[mFilePaths.length];
             for (int i = 0; i < mFilePaths.length; i++) {
                 displayNames[i] = resolveFileName(mFilePaths[i]);
@@ -310,10 +369,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
          * or an empty string otherwise.
          */
         private String resolveFileName(String filePath) {
-            if (mContentResolver == null || filePath == null) return "";
+            if (filePath == null) return "";
             Uri uri = Uri.parse(filePath);
             return ContentUriUtils.getDisplayName(
-                    uri, mContentResolver, MediaStore.MediaColumns.DISPLAY_NAME);
+                    uri, mContext, MediaStore.MediaColumns.DISPLAY_NAME);
         }
     }
 }

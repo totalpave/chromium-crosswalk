@@ -11,35 +11,35 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
+#include "third_party/blink/public/platform/web_url_request.h"
 #include "url/gurl.h"
 
 class SkBitmap;
 
 namespace blink {
-class WebFrame;
+class WebLocalFrame;
 class WebURLResponse;
-enum class WebCachePolicy;
 }
 
 namespace content {
 
-class ResourceFetcher;
+class AssociatedResourceFetcher;
 
 // A resource fetcher that returns all (differently-sized) frames in
 // an image. Useful for favicons.
 class MultiResolutionImageResourceFetcher {
  public:
-  typedef base::Callback<void(MultiResolutionImageResourceFetcher*,
-                              const std::vector<SkBitmap>&)> Callback;
+  using Callback = base::OnceCallback<void(MultiResolutionImageResourceFetcher*,
+                                           const std::vector<SkBitmap>&)>;
 
   MultiResolutionImageResourceFetcher(
       const GURL& image_url,
-      blink::WebFrame* frame,
+      blink::WebLocalFrame* frame,
       int id,
-      blink::WebURLRequest::RequestContext request_context,
-      blink::WebCachePolicy cache_policy,
-      const Callback& callback);
+      blink::mojom::RequestContextType request_context,
+      blink::mojom::FetchCacheMode cache_mode,
+      Callback callback);
 
   virtual ~MultiResolutionImageResourceFetcher();
 
@@ -51,6 +51,9 @@ class MultiResolutionImageResourceFetcher {
 
   // HTTP status code upon fetch completion.
   int http_status_code() const { return http_status_code_; }
+
+  // Called when associated RenderFrame is destructed.
+  void OnRenderFrameDestruct();
 
  private:
   // ResourceFetcher::Callback. Decodes the image and invokes callback_.
@@ -69,7 +72,7 @@ class MultiResolutionImageResourceFetcher {
   const GURL image_url_;
 
   // Does the actual download.
-  std::unique_ptr<ResourceFetcher> fetcher_;
+  std::unique_ptr<AssociatedResourceFetcher> fetcher_;
 
   DISALLOW_COPY_AND_ASSIGN(MultiResolutionImageResourceFetcher);
 };

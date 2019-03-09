@@ -4,19 +4,25 @@
 
 #include "chrome/browser/ui/translate/translate_bubble_factory.h"
 
+#include <string>
+
 #include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 
 namespace {
 
-void ShowDefault(BrowserWindow* window,
-                 content::WebContents* web_contents,
-                 translate::TranslateStep step,
-                 translate::TranslateErrors::Type error_type) {
+ShowTranslateBubbleResult ShowDefault(
+    BrowserWindow* window,
+    content::WebContents* web_contents,
+    translate::TranslateStep step,
+    const std::string& source_language,
+    const std::string& target_language,
+    translate::TranslateErrors::Type error_type) {
   // |window| might be null when testing.
   if (!window)
-    return;
-  window->ShowTranslateBubble(web_contents, step, error_type, false);
+    return ShowTranslateBubbleResult::BROWSER_WINDOW_NOT_VALID;
+  return window->ShowTranslateBubble(web_contents, step, source_language,
+                                     target_language, error_type, false);
 }
 
 }  // namespace
@@ -25,17 +31,21 @@ TranslateBubbleFactory::~TranslateBubbleFactory() {
 }
 
 // static
-void TranslateBubbleFactory::Show(BrowserWindow* window,
-                                  content::WebContents* web_contents,
-                                  translate::TranslateStep step,
-                                  translate::TranslateErrors::Type error_type) {
+ShowTranslateBubbleResult TranslateBubbleFactory::Show(
+    BrowserWindow* window,
+    content::WebContents* web_contents,
+    translate::TranslateStep step,
+    const std::string& source_language,
+    const std::string& target_language,
+    translate::TranslateErrors::Type error_type) {
   if (current_factory_) {
-    current_factory_->ShowImplementation(
-        window, web_contents, step, error_type);
-    return;
+    return current_factory_->ShowImplementation(window, web_contents, step,
+                                                source_language,
+                                                target_language, error_type);
   }
 
-  ShowDefault(window, web_contents, step, error_type);
+  return ShowDefault(window, web_contents, step, source_language,
+                     target_language, error_type);
 }
 
 // static

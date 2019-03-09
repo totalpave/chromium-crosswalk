@@ -14,6 +14,8 @@
 
 namespace gl {
 
+using GLFunctionPointerType = void (*)();
+
 class MockGLInterface {
  public:
   MockGLInterface();
@@ -24,7 +26,8 @@ class MockGLInterface {
   static void SetGLInterface(MockGLInterface* gl_interface);
 
   // Find an entry point to the mock GL implementation.
-  static void* GL_BINDING_CALL GetGLProcAddress(const char* name);
+  static GLFunctionPointerType GL_BINDING_CALL
+  GetGLProcAddress(const char* name);
 
   // Include the auto-generated parts of this class. We split this because
   // it means we can easily edit the non-auto generated parts right here in
@@ -35,11 +38,91 @@ class MockGLInterface {
 
   // TODO(zmo): crbug.com/456340
   // Functions that cannot be mocked because they have more than 10 args.
-  void CompressedTexSubImage3D(
-      GLenum /*target*/, GLint /*level*/, GLint /*xoffset*/, GLint /*yoffset*/,
-      GLint /*zoffset*/, GLsizei /*width*/, GLsizei /*height*/,
-      GLsizei /*depth*/, GLenum /*format*/, GLsizei /*imageSize*/,
-      const void* /*data*/) {
+  void CompressedTexSubImage3D(GLenum target,
+                               GLint level,
+                               GLint xoffset,
+                               GLint yoffset,
+                               GLint zoffset,
+                               GLsizei width,
+                               GLsizei height,
+                               GLsizei depth,
+                               GLenum format,
+                               GLsizei image_size,
+                               const void* data) {
+    if (data == nullptr) {
+      CompressedTexSubImage3DNoData(target, level, xoffset, yoffset, zoffset,
+                                    width, height, depth, format, image_size);
+    } else {
+      CompressedTexSubImage3DWithData(target, level, xoffset, yoffset, zoffset,
+                                      width, height, depth, format, image_size);
+    }
+  }
+  MOCK_METHOD10(CompressedTexSubImage3DNoData,
+                void(GLenum target,
+                     GLint level,
+                     GLint xoffset,
+                     GLint yoffset,
+                     GLint zoffset,
+                     GLsizei width,
+                     GLsizei height,
+                     GLsizei depth,
+                     GLenum format,
+                     GLsizei image_size));
+  MOCK_METHOD10(CompressedTexSubImage3DWithData,
+                void(GLenum target,
+                     GLint level,
+                     GLint xoffset,
+                     GLint yoffset,
+                     GLint zoffset,
+                     GLsizei width,
+                     GLsizei height,
+                     GLsizei depth,
+                     GLenum format,
+                     GLsizei image_size));
+
+  void CompressedTexSubImage3DRobustANGLE(GLenum /*target*/,
+                                          GLint /*level*/,
+                                          GLint /*xoffset*/,
+                                          GLint /*yoffset*/,
+                                          GLint /*zoffset*/,
+                                          GLsizei /*width*/,
+                                          GLsizei /*height*/,
+                                          GLsizei /*depth*/,
+                                          GLenum /*format*/,
+                                          GLsizei /*imageSize*/,
+                                          GLsizei /*dataSize*/,
+                                          const void* /*data*/) {
+    NOTREACHED();
+  }
+
+  void CopySubTextureCHROMIUM(GLuint /*sourceId*/,
+                              GLint /*sourceLevel*/,
+                              GLenum /*destTarget*/,
+                              GLuint /*destId*/,
+                              GLint /*destLevel*/,
+                              GLint /*xoffset*/,
+                              GLint /*yoffset*/,
+                              GLint /*x*/,
+                              GLint /*y*/,
+                              GLsizei /*width*/,
+                              GLsizei /*height*/,
+                              GLboolean /*unpackFlipY*/,
+                              GLboolean /*unpackPremultiplyAlpha*/,
+                              GLboolean /*unpackUnmultiplyAlpha*/) {
+    NOTREACHED();
+  }
+
+  void TexImage3DRobustANGLE(GLenum target,
+                             GLint level,
+                             GLint internalformat,
+                             GLsizei width,
+                             GLsizei height,
+                             GLsizei depth,
+                             GLint border,
+                             GLenum format,
+                             GLenum type,
+                             GLsizei bufSize,
+                             const void* pixels) {
     NOTREACHED();
   }
 
@@ -51,8 +134,24 @@ class MockGLInterface {
       TexSubImage3DNoData(target, level, xoffset, yoffset, zoffset,
                           width, height, depth, format, type);
     } else {
-      NOTREACHED();
+      TexSubImage3DWithData(target, level, xoffset, yoffset, zoffset, width,
+                            height, depth, format, type);
     }
+  }
+
+  void TexSubImage3DRobustANGLE(GLenum target,
+                                GLint level,
+                                GLint xoffset,
+                                GLint yoffset,
+                                GLint zoffset,
+                                GLsizei width,
+                                GLsizei height,
+                                GLsizei depth,
+                                GLenum format,
+                                GLenum type,
+                                GLsizei bufSize,
+                                const void* pixels) {
+    NOTREACHED();
   }
 
   MOCK_METHOD10(TexSubImage3DNoData,
@@ -66,6 +165,45 @@ class MockGLInterface {
                      GLsizei depth,
                      GLenum format,
                      GLenum type));
+  MOCK_METHOD10(TexSubImage3DWithData,
+                void(GLenum target,
+                     GLint level,
+                     GLint xoffset,
+                     GLint yoffset,
+                     GLint zoffset,
+                     GLsizei width,
+                     GLsizei height,
+                     GLsizei depth,
+                     GLenum format,
+                     GLenum type));
+
+  void ReadPixelsRobustANGLE(GLint /*x*/,
+                             GLint /*y*/,
+                             GLsizei /*width*/,
+                             GLsizei /*height*/,
+                             GLenum /*format*/,
+                             GLenum /*type*/,
+                             GLsizei /*bufSize*/,
+                             GLsizei* /*length*/,
+                             GLsizei* /*columns*/,
+                             GLsizei* /*rows*/,
+                             void* /*pixels*/) {
+    NOTREACHED();
+  }
+
+  void ReadnPixelsRobustANGLE(GLint /*x*/,
+                              GLint /*y*/,
+                              GLsizei /*width*/,
+                              GLsizei /*height*/,
+                              GLenum /*format*/,
+                              GLenum /*type*/,
+                              GLsizei /*bufSize*/,
+                              GLsizei* /*length*/,
+                              GLsizei* /*columns*/,
+                              GLsizei* /*rows*/,
+                              void* /*data*/) {
+    NOTREACHED();
+  }
 
  private:
   static MockGLInterface* interface_;

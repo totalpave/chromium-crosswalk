@@ -4,12 +4,12 @@
 
 #include "components/drive/service/dummy_drive_service.h"
 
+#include <memory>
+
 #include "base/bind.h"
 
 using google_apis::AboutResourceCallback;
-using google_apis::AppListCallback;
 using google_apis::AuthStatusCallback;
-using google_apis::AuthorizeAppCallback;
 using google_apis::CancelCallback;
 using google_apis::ChangeListCallback;
 using google_apis::DownloadActionCallback;
@@ -17,16 +17,16 @@ using google_apis::EntryActionCallback;
 using google_apis::FileListCallback;
 using google_apis::FileResourceCallback;
 using google_apis::GetContentCallback;
-using google_apis::GetShareUrlCallback;
 using google_apis::InitiateUploadCallback;
 using google_apis::ProgressCallback;
+using google_apis::TeamDriveListCallback;
 using google_apis::drive::UploadRangeCallback;
 
 namespace drive {
 
-DummyDriveService::DummyDriveService() {}
+DummyDriveService::DummyDriveService() = default;
 
-DummyDriveService::~DummyDriveService() {}
+DummyDriveService::~DummyDriveService() = default;
 
 void DummyDriveService::Initialize(const std::string& account_id) {}
 
@@ -52,8 +52,16 @@ std::string DummyDriveService::GetRootResourceId() const {
   return "dummy_root";
 }
 
+CancelCallback DummyDriveService::GetAllTeamDriveList(
+    const TeamDriveListCallback& callback) {
+  return CancelCallback();
+}
+
 CancelCallback DummyDriveService::GetAllFileList(
-    const FileListCallback& callback) { return CancelCallback(); }
+    const std::string& team_drive_id,
+    const FileListCallback& callback) {
+  return CancelCallback();
+}
 
 CancelCallback DummyDriveService::GetFileListInDirectory(
     const std::string& directory_resource_id,
@@ -74,9 +82,22 @@ CancelCallback DummyDriveService::GetChangeList(
   return CancelCallback();
 }
 
+CancelCallback DummyDriveService::GetChangeListByToken(
+    const std::string& team_drive_id,
+    const std::string& start_page_token,
+    const ChangeListCallback& callback) {
+  return CancelCallback();
+}
+
 CancelCallback DummyDriveService::GetRemainingChangeList(
     const GURL& next_link,
     const ChangeListCallback& callback) { return CancelCallback(); }
+
+CancelCallback DummyDriveService::GetRemainingTeamDriveList(
+    const std::string& page_token,
+    const TeamDriveListCallback& callback) {
+  return CancelCallback();
+}
 
 CancelCallback DummyDriveService::GetRemainingFileList(
     const GURL& next_link,
@@ -86,16 +107,14 @@ CancelCallback DummyDriveService::GetFileResource(
     const std::string& resource_id,
     const FileResourceCallback& callback) { return CancelCallback(); }
 
-CancelCallback DummyDriveService::GetShareUrl(
-    const std::string& resource_id,
-    const GURL& embed_origin,
-    const GetShareUrlCallback& callback) { return CancelCallback(); }
-
 CancelCallback DummyDriveService::GetAboutResource(
     const AboutResourceCallback& callback) { return CancelCallback(); }
 
-CancelCallback DummyDriveService::GetAppList(
-    const AppListCallback& callback) { return CancelCallback(); }
+CancelCallback DummyDriveService::GetStartPageToken(
+    const std::string& team_drive_id,
+    const google_apis::StartPageTokenCallback& callback) {
+  return CancelCallback();
+}
 
 CancelCallback DummyDriveService::DeleteResource(
     const std::string& resource_id,
@@ -207,15 +226,6 @@ CancelCallback DummyDriveService::MultipartUploadExistingFile(
     const ProgressCallback& progress_callback) {
   return CancelCallback();
 }
-
-CancelCallback DummyDriveService::AuthorizeApp(
-    const std::string& resource_id,
-    const std::string& app_id,
-    const AuthorizeAppCallback& callback) { return CancelCallback(); }
-
-CancelCallback DummyDriveService::UninstallApp(
-    const std::string& app_id,
-    const EntryActionCallback& callback) { return CancelCallback(); }
 
 CancelCallback DummyDriveService::AddPermission(
     const std::string& resource_id,

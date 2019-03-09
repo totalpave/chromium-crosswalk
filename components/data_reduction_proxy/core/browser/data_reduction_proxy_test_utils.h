@@ -21,43 +21,43 @@
 #include "base/time/time.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_bypass_stats.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_config_service_client.h"
+#include "components/data_reduction_proxy/core/browser/data_reduction_proxy_delegate.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_io_data.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_request_options.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_service.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_settings_test_utils.h"
 #include "components/data_reduction_proxy/core/browser/data_store.h"
+#include "components/data_reduction_proxy/core/common/data_reduction_proxy_params.h"
 #include "net/base/backoff_entry.h"
-#include "net/log/test_net_log.h"
-#include "net/proxy/proxy_server.h"
+#include "net/base/proxy_server.h"
 #include "net/url_request/url_request_context_getter.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 class GURL;
 class TestingPrefServiceSimple;
 
-namespace base {
-class MessageLoopForUI;
-}
-
 namespace net {
 class MockClientSocketFactory;
-class NetLog;
 class URLRequestContext;
 class URLRequestContextStorage;
+}
+
+namespace network {
+class SharedURLLoaderFactory;
+class TestNetworkQualityTracker;
+class TestURLLoaderFactory;
 }
 
 namespace data_reduction_proxy {
 
 class ClientConfig;
 class DataReductionProxyConfigurator;
-class DataReductionProxyEventCreator;
 class DataReductionProxyMutableConfigValues;
 class DataReductionProxyRequestOptions;
+class DataReductionProxyServer;
 class DataReductionProxySettings;
-class DataReductionProxyCompressionStats;
 class MockDataReductionProxyConfig;
 class TestDataReductionProxyConfig;
-class TestDataReductionProxyEventStorageDelegate;
 class TestDataReductionProxyParams;
 
 // Test version of |DataReductionProxyRequestOptions|.
@@ -70,14 +70,8 @@ class TestDataReductionProxyRequestOptions
 
   // Overrides of DataReductionProxyRequestOptions.
   std::string GetDefaultKey() const override;
-  base::Time Now() const override;
-  void RandBytes(void* output, size_t length) const override;
 
-  // Time after the unix epoch that Now() reports.
-  void set_offset(const base::TimeDelta& now_offset);
-
- private:
-  base::TimeDelta now_offset_;
+  using DataReductionProxyRequestOptions::GetHeaderValueForTesting;
 };
 
 // Mock version of |DataReductionProxyRequestOptions|.
@@ -87,7 +81,7 @@ class MockDataReductionProxyRequestOptions
   MockDataReductionProxyRequestOptions(Client client,
                                        DataReductionProxyConfig* config);
 
-  ~MockDataReductionProxyRequestOptions();
+  ~MockDataReductionProxyRequestOptions() override;
 
   MOCK_CONST_METHOD1(PopulateConfigResponse, void(ClientConfig* config));
 };
@@ -102,14 +96,13 @@ class TestDataReductionProxyConfigServiceClient
       DataReductionProxyRequestOptions* request_options,
       DataReductionProxyMutableConfigValues* config_values,
       DataReductionProxyConfig* config,
-      DataReductionProxyEventCreator* event_creator,
       DataReductionProxyIOData* io_data,
-      net::NetLog* net_log,
+      network::NetworkConnectionTracker* network_connection_tracker,
       ConfigStorer config_storer);
 
   ~TestDataReductionProxyConfigServiceClient() override;
 
-  using DataReductionProxyConfigServiceClient::OnIPAddressChanged;
+  using DataReductionProxyConfigServiceClient::OnConnectionChanged;
 
   void SetNow(const base::Time& time);
 
@@ -136,6 +129,10 @@ class TestDataReductionProxyConfigServiceClient
   void TriggerApplicationStatusToForeground();
 #endif
 
+  void SetRemoteConfigApplied(bool remote_config_applied);
+
+  bool RemoteConfigApplied() const override;
+
  protected:
   // Overrides of DataReductionProxyConfigServiceClient
   base::Time Now() override;
@@ -148,10 +145,10 @@ class TestDataReductionProxyConfigServiceClient
     TestTickClock(const base::Time& initial_time);
 
     // base::TickClock implementation.
-    base::TimeTicks NowTicks() override;
+    base::TimeTicks NowTicks() const override;
 
     // base::Clock implementation.
-    base::Time Now() override;
+    base::Time Now() const override;
 
     // Sets the current time.
     void SetTime(const base::Time& time);
@@ -166,6 +163,10 @@ class TestDataReductionProxyConfigServiceClient
 
   TestTickClock tick_clock_;
   net::BackoffEntry test_backoff_entry_;
+
+  base::Optional<bool> remote_config_applied_;
+
+  DISALLOW_COPY_AND_ASSIGN(TestDataReductionProxyConfigServiceClient);
 };
 
 // Test version of |DataReductionProxyService|, which permits mocking of various
@@ -174,12 +175,29 @@ class MockDataReductionProxyService : public DataReductionProxyService {
  public:
   MockDataReductionProxyService(
       DataReductionProxySettings* settings,
+      network::TestNetworkQualityTracker* test_network_quality_tracker,
       PrefService* prefs,
       net::URLRequestContextGetter* request_context,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const scoped_refptr<base::SingleThreadTaskRunner>& task_runner);
   ~MockDataReductionProxyService() override;
 
   MOCK_METHOD2(SetProxyPrefs, void(bool enabled, bool at_startup));
+  MOCK_METHOD8(
+      UpdateContentLengths,
+      void(int64_t data_used,
+           int64_t original_size,
+           bool data_reduction_proxy_enabled,
+           data_reduction_proxy::DataReductionProxyRequestType request_type,
+           const std::string& mime_type,
+           bool is_user_traffic,
+           data_use_measurement::DataUseUserData::DataUseContentType
+               content_type,
+           int32_t service_hash_code));
+  MOCK_METHOD3(UpdateDataUseForHost,
+               void(int64_t network_bytes,
+                    int64_t original_bytes,
+                    const std::string& host));
 };
 
 // Test version of |DataReductionProxyIOData|, which bypasses initialization in
@@ -188,12 +206,12 @@ class MockDataReductionProxyService : public DataReductionProxyService {
 class TestDataReductionProxyIOData : public DataReductionProxyIOData {
  public:
   TestDataReductionProxyIOData(
+      PrefService* prefs,
       const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
       std::unique_ptr<DataReductionProxyConfig> config,
-      std::unique_ptr<DataReductionProxyEventCreator> event_creator,
-      std::unique_ptr<DataReductionProxyRequestOptions> request_options,
+      std::unique_ptr<TestDataReductionProxyRequestOptions> request_options,
       std::unique_ptr<DataReductionProxyConfigurator> configurator,
-      net::NetLog* net_log,
+      network::NetworkConnectionTracker* network_connection_tracker,
       bool enabled);
   ~TestDataReductionProxyIOData() override;
 
@@ -212,9 +230,13 @@ class TestDataReductionProxyIOData : public DataReductionProxyIOData {
     return config_client_.get();
   }
 
-  void SetSimpleURLRequestContextGetter(
-      const scoped_refptr<net::URLRequestContextGetter> context_getter) {
-    basic_url_request_context_getter_ = context_getter;
+  TestDataReductionProxyRequestOptions* test_request_options() const {
+    return test_request_options_;
+  }
+
+  void set_proxy_delegate(
+      std::unique_ptr<DataReductionProxyDelegate> proxy_delegate) {
+    proxy_delegate_ = std::move(proxy_delegate);
   }
 
   base::WeakPtr<DataReductionProxyIOData> GetWeakPtr() {
@@ -224,9 +246,15 @@ class TestDataReductionProxyIOData : public DataReductionProxyIOData {
   // Records the reporting fraction that was set by parsing a config.
   void SetPingbackReportingFraction(float pingback_reporting_fraction) override;
 
+  // Records |ignore_long_term_black_list_rules| as |ignore_blacklist_|.
+  void SetIgnoreLongTermBlackListRules(
+      bool ignore_long_term_black_list_rules) override;
+
   float pingback_reporting_fraction() const {
     return pingback_reporting_fraction_;
   }
+
+  bool ignore_blacklist() const { return ignore_blacklist_; }
 
  private:
   // Allowed SetDataReductionProxyService to be re-entrant.
@@ -234,6 +262,11 @@ class TestDataReductionProxyIOData : public DataReductionProxyIOData {
 
   // Reporting fraction last set via SetPingbackReportingFraction.
   float pingback_reporting_fraction_;
+
+  // Whether the long term blacklist rules should be ignored.
+  bool ignore_blacklist_ = false;
+
+  TestDataReductionProxyRequestOptions* test_request_options_;
 };
 
 // Test version of |DataStore|. Uses an in memory hash map to store data.
@@ -250,6 +283,8 @@ class TestDataStore : public data_reduction_proxy::DataStore {
   DataStore::Status Put(const std::map<std::string, std::string>& map) override;
 
   DataStore::Status Delete(base::StringPiece key) override;
+
+  DataStore::Status RecreateDB() override;
 
   std::map<std::string, std::string>* map() { return &map_; }
 
@@ -268,11 +303,7 @@ class DataReductionProxyTestContext {
    public:
     Builder();
 
-    // |DataReductionProxyParams| flags to use.
-    Builder& WithParamsFlags(int params_flags);
-
-    // |TestDataReductionProxyParams| flags to use.
-    Builder& WithParamsDefinitions(unsigned int params_definitions);
+    ~Builder();
 
     // The |Client| enum to use for |DataReductionProxyRequestOptions|.
     Builder& WithClient(Client client);
@@ -280,6 +311,10 @@ class DataReductionProxyTestContext {
     // Specifies a |net::URLRequestContext| to use. The |request_context| is
     // owned by the caller.
     Builder& WithURLRequestContext(net::URLRequestContext* request_context);
+
+    // Specifies a |network::URLLoaderFactory| to use.
+    Builder& WithURLLoaderFactory(
+        scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
 
     // Specifies a |net::MockClientSocketFactory| to use. The
     // |mock_socket_factory| is owned by the caller. If a non-NULL
@@ -312,14 +347,20 @@ class DataReductionProxyTestContext {
     // Construct, but do not initialize the |DataReductionProxySettings| object.
     Builder& SkipSettingsInitialization();
 
+    // Specifies the data reduction proxy servers.
+    Builder& WithProxiesForHttp(
+        const std::vector<DataReductionProxyServer>& proxy_servers);
+
+    // Specifies a settings object to use.
+    Builder& WithSettings(std::unique_ptr<DataReductionProxySettings> settings);
+
     // Creates a |DataReductionProxyTestContext|. Owned by the caller.
     std::unique_ptr<DataReductionProxyTestContext> Build();
 
    private:
-    int params_flags_;
-    unsigned int params_definitions_;
     Client client_;
     net::URLRequestContext* request_context_;
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
     net::MockClientSocketFactory* mock_socket_factory_;
 
     bool use_mock_config_;
@@ -328,6 +369,8 @@ class DataReductionProxyTestContext {
     bool use_config_client_;
     bool use_test_config_client_;
     bool skip_settings_initialization_;
+    std::vector<DataReductionProxyServer> proxy_servers_;
+    std::unique_ptr<DataReductionProxySettings> settings_;
   };
 
   virtual ~DataReductionProxyTestContext();
@@ -373,6 +416,15 @@ class DataReductionProxyTestContext {
   // |net::MockClientSocketFactory| specified.
   void EnableDataReductionProxyWithSecureProxyCheckSuccess();
 
+  // Disables the fetch of the warmup URL. Useful for testing to avoid setting
+  // up the network mock sockets.
+  void DisableWarmupURLFetch();
+
+  // Disables the warmup URL fetcher to callback into DRP to report the result
+  // of the warmup fetch. The callback can result in DRP proxies getting
+  // disabled. This method is useful for testing.
+  void DisableWarmupURLFetchCallback();
+
   // Returns the underlying |MockDataReductionProxyConfig|. This can only be
   // called if built with WithMockConfig.
   MockDataReductionProxyConfig* mock_config() const;
@@ -411,16 +463,16 @@ class DataReductionProxyTestContext {
     return simple_pref_service_.get();
   }
 
-  net::NetLog* net_log() {
-    return net_log_.get();
-  }
-
   net::URLRequestContextGetter* request_context_getter() const {
     return request_context_getter_.get();
   }
 
-  DataReductionProxyEventCreator* event_creator() const {
-    return io_data_->event_creator();
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory() const {
+    return test_shared_url_loader_factory_;
+  }
+
+  DataReductionProxyBypassStats* bypass_stats() const {
+    return io_data_->bypass_stats();
   }
 
   DataReductionProxyConfigurator* configurator() const {
@@ -439,28 +491,17 @@ class DataReductionProxyTestContext {
     return params_;
   }
 
+  network::TestNetworkQualityTracker* test_network_quality_tracker() const {
+    return test_network_quality_tracker_.get();
+  }
+
+  void InitSettingsWithoutCheck();
+
   // Returns the proxies that are currently configured for "http://" requests,
   // excluding any that are invalid or direct.
   std::vector<net::ProxyServer> GetConfiguredProxiesForHttp() const;
 
  private:
-  enum TestContextOptions {
-    // Permits mocking of the underlying |DataReductionProxyConfig|.
-    USE_MOCK_CONFIG = 0x1,
-    // Construct, but do not initialize the |DataReductionProxySettings| object.
-    // Primarily used for testing of the |DataReductionProxySettings| object
-    // itself.
-    SKIP_SETTINGS_INITIALIZATION = 0x2,
-    // Permits mocking of the underlying |DataReductionProxyService|.
-    USE_MOCK_SERVICE = 0x4,
-    // Permits mocking of the underlying |DataReductionProxyRequestOptions|.
-    USE_MOCK_REQUEST_OPTIONS = 0x8,
-    // Specifies the use of the |DataReductionProxyConfigServiceClient|.
-    USE_CONFIG_CLIENT = 0x10,
-    // Specifies the use of the |TESTDataReductionProxyConfigServiceClient|.
-    USE_TEST_CONFIG_CLIENT = 0x20,
-  };
-
   // Used to storage a serialized Data Reduction Proxy config.
   class TestConfigStorer {
    public:
@@ -477,18 +518,14 @@ class DataReductionProxyTestContext {
   DataReductionProxyTestContext(
       const scoped_refptr<base::SingleThreadTaskRunner>& task_runner,
       std::unique_ptr<TestingPrefServiceSimple> simple_pref_service,
-      std::unique_ptr<net::TestNetLog> net_log,
       scoped_refptr<net::URLRequestContextGetter> request_context_getter,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       net::MockClientSocketFactory* mock_socket_factory,
       std::unique_ptr<TestDataReductionProxyIOData> io_data,
       std::unique_ptr<DataReductionProxySettings> settings,
-      std::unique_ptr<TestDataReductionProxyEventStorageDelegate>
-          storage_delegate,
       std::unique_ptr<TestConfigStorer> config_storer,
       TestDataReductionProxyParams* params,
       unsigned int test_context_flags);
-
-  void InitSettingsWithoutCheck();
 
   std::unique_ptr<DataReductionProxyService>
   CreateDataReductionProxyServiceInternal(DataReductionProxySettings* settings);
@@ -497,16 +534,19 @@ class DataReductionProxyTestContext {
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   std::unique_ptr<TestingPrefServiceSimple> simple_pref_service_;
-  std::unique_ptr<net::TestNetLog> net_log_;
   scoped_refptr<net::URLRequestContextGetter> request_context_getter_;
+  scoped_refptr<network::SharedURLLoaderFactory>
+      test_shared_url_loader_factory_;
+  std::unique_ptr<network::TestURLLoaderFactory> test_url_loader_factory_;
   // Non-owned pointer. Will be NULL if |this| was built without specifying a
   // |net::MockClientSocketFactory|.
   net::MockClientSocketFactory* mock_socket_factory_;
 
   std::unique_ptr<TestDataReductionProxyIOData> io_data_;
   std::unique_ptr<DataReductionProxySettings> settings_;
-  std::unique_ptr<TestDataReductionProxyEventStorageDelegate> storage_delegate_;
   std::unique_ptr<TestConfigStorer> config_storer_;
+  std::unique_ptr<network::TestNetworkQualityTracker>
+      test_network_quality_tracker_;
 
   TestDataReductionProxyParams* params_;
 

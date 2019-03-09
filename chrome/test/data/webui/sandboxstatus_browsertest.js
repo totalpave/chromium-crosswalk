@@ -25,9 +25,7 @@ SandboxStatusUITest.prototype = {
 //   sandbox. See:
 //     https://chromium.googlesource.com/chromium/src/+/master/docs/linux_suid_sandbox_development.md
 // - PLEASE DO NOT GLOBALLY DISABLE THIS TEST.
-// SUID sandbox is currently incompatible with AddressSanitizer,
-// see http://crbug.com/137653.
-GEN('#if defined(OS_LINUX) && !defined(ADDRESS_SANITIZER)');
+GEN('#if defined(OS_LINUX)');
 GEN('# define MAYBE_testSUIDorNamespaceSandboxEnabled \\');
 GEN('     testSUIDorNamespaceSandboxEnabled');
 GEN('#else');
@@ -38,35 +36,22 @@ GEN('#endif');
 /**
  * Test if the SUID sandbox is enabled.
  */
-TEST_F('SandboxStatusUITest',
-       'MAYBE_testSUIDorNamespaceSandboxEnabled', function() {
-  var namespaceyesstring = 'Namespace Sandbox\tYes';
-  var namespacenostring = 'Namespace Sandbox\tNo';
-  var suidyesstring = 'SUID Sandbox\tYes';
-  var suidnostring = 'SUID Sandbox\tNo';
+TEST_F(
+    'SandboxStatusUITest', 'MAYBE_testSUIDorNamespaceSandboxEnabled',
+    function() {
+      var sandboxnamespacestring = 'Layer 1 Sandbox\tNamespace';
+      var sandboxsuidstring = 'Layer 1 Sandbox\tSUID';
 
-  var suidyes = document.body.innerText.match(suidyesstring);
-  var suidno = document.body.innerText.match(suidnostring);
-  var namespaceyes = document.body.innerText.match(namespaceyesstring);
-  var namespaceno = document.body.innerText.match(namespacenostring);
+      var namespaceyes = document.body.innerText.match(sandboxnamespacestring);
+      var suidyes = document.body.innerText.match(sandboxsuidstring);
 
-  // Exactly one of the namespace or suid sandbox should be enabled.
-  expectTrue(suidyes !== null || namespaceyes !== null);
-  expectFalse(suidyes !== null && namespaceyes !== null);
-
-  if (namespaceyes !== null) {
-    expectEquals(null, namespaceno);
-    expectEquals(namespaceyesstring, namespaceyes[0]);
-  }
-
-  if (suidyes !== null) {
-    expectEquals(null, suidno);
-    expectEquals(suidyesstring, suidyes[0]);
-  }
-});
+      // Exactly one of the namespace or suid sandbox should be enabled.
+      expectTrue(suidyes !== null || namespaceyes !== null);
+      expectFalse(suidyes !== null && namespaceyes !== null);
+    });
 
 // The seccomp-bpf sandbox is also not compatible with ASAN.
-GEN('#if !defined(OS_LINUX) || defined(ADDRESS_SANITIZER)');
+GEN('#if !defined(OS_LINUX)');
 GEN('# define MAYBE_testBPFSandboxEnabled \\');
 GEN('     DISABLED_testBPFSandboxEnabled');
 GEN('#else');
@@ -133,7 +118,7 @@ TEST_F('GPUSandboxStatusUITest', 'DISABLED_testGPUSandboxEnabled', function() {
           testDone();
         }
       }
-    })
+    });
   });
   observer.observe(document.getElementById('basic-info'), {childList: true});
 });

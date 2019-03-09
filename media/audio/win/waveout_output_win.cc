@@ -6,6 +6,7 @@
 
 #include "base/atomicops.h"
 #include "base/logging.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/win/audio_manager_win.h"
@@ -71,6 +72,8 @@ inline WAVEHDR* PCMWaveOutAudioOutputStream::GetBuffer(int n) const {
   return reinterpret_cast<WAVEHDR*>(&buffers_[n * BufferSize()]);
 }
 
+constexpr SampleFormat kSampleFormat = kSampleFormatS16;
+
 PCMWaveOutAudioOutputStream::PCMWaveOutAudioOutputStream(
     AudioManagerWin* manager,
     const AudioParameters& params,
@@ -80,7 +83,7 @@ PCMWaveOutAudioOutputStream::PCMWaveOutAudioOutputStream(
       manager_(manager),
       callback_(NULL),
       num_buffers_(num_buffers),
-      buffer_size_(params.GetBytesPerBuffer()),
+      buffer_size_(params.GetBytesPerBuffer(kSampleFormat)),
       volume_(1),
       channels_(params.channels()),
       pending_bytes_(0),
@@ -91,7 +94,7 @@ PCMWaveOutAudioOutputStream::PCMWaveOutAudioOutputStream(
   format_.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
   format_.Format.nChannels = params.channels();
   format_.Format.nSamplesPerSec = params.sample_rate();
-  format_.Format.wBitsPerSample = params.bits_per_sample();
+  format_.Format.wBitsPerSample = SampleFormatToBitsPerChannel(kSampleFormat);
   format_.Format.cbSize = sizeof(format_) - sizeof(WAVEFORMATEX);
   // The next are computed from above.
   format_.Format.nBlockAlign = (format_.Format.nChannels *
@@ -104,7 +107,7 @@ PCMWaveOutAudioOutputStream::PCMWaveOutAudioOutputStream(
     format_.dwChannelMask = kChannelsToMask[params.channels()];
   }
   format_.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-  format_.Samples.wValidBitsPerSample = params.bits_per_sample();
+  format_.Samples.wValidBitsPerSample = format_.Format.wBitsPerSample;
 }
 
 PCMWaveOutAudioOutputStream::~PCMWaveOutAudioOutputStream() {
@@ -313,7 +316,7 @@ void PCMWaveOutAudioOutputStream::GetVolume(double* volume) {
 void PCMWaveOutAudioOutputStream::HandleError(MMRESULT error) {
   DLOG(WARNING) << "PCMWaveOutAudio error " << error;
   if (callback_)
-    callback_->OnError(this);
+    callback_->OnError();
 }
 
 void PCMWaveOutAudioOutputStream::QueueNextPacket(WAVEHDR *buffer) {
@@ -322,10 +325,12 @@ void PCMWaveOutAudioOutputStream::QueueNextPacket(WAVEHDR *buffer) {
   // return to us how many bytes were used.
   // TODO(fbarchard): Handle used 0 by queueing more.
 
-  // TODO(sergeyu): Specify correct hardware delay for |total_delay_bytes|.
-  uint32_t total_delay_bytes = pending_bytes_;
+  // TODO(sergeyu): Specify correct hardware delay for |delay|.
+  const base::TimeDelta delay = base::TimeDelta::FromMicroseconds(
+      pending_bytes_ * base::Time::kMicrosecondsPerSecond /
+      format_.Format.nAvgBytesPerSec);
   int frames_filled =
-      callback_->OnMoreData(audio_bus_.get(), total_delay_bytes, 0);
+      callback_->OnMoreData(delay, base::TimeTicks::Now(), 0, audio_bus_.get());
   uint32_t used = frames_filled * audio_bus_->channels() *
                   format_.Format.wBitsPerSample / 8;
 

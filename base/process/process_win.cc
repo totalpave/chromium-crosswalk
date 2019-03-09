@@ -4,10 +4,15 @@
 
 #include "base/process/process.h"
 
+#include "base/clang_coverage_buildflags.h"
+#include "base/debug/activity_tracker.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/process/kill.h"
-#include "base/win/windows_version.h"
+#include "base/test/clang_coverage.h"
+#include "base/threading/thread_restrictions.h"
+
+#include <windows.h>
 
 namespace {
 
@@ -19,14 +24,13 @@ DWORD kBasicProcessAccess =
 namespace base {
 
 Process::Process(ProcessHandle handle)
-    : is_current_process_(false),
-      process_(handle) {
+    : process_(handle), is_current_process_(false) {
   CHECK_NE(handle, ::GetCurrentProcess());
 }
 
 Process::Process(Process&& other)
-    : is_current_process_(other.is_current_process_),
-      process_(other.process_.Take()) {
+    : process_(other.process_.Take()),
+      is_current_process_(other.is_current_process_) {
   other.Close();
 }
 
@@ -81,6 +85,17 @@ bool Process::CanBackgroundProcesses() {
   return true;
 }
 
+// static
+void Process::TerminateCurrentProcessImmediately(int exit_code) {
+#if BUILDFLAG(CLANG_COVERAGE)
+  WriteClangCoverageProfile();
+#endif
+  ::TerminateProcess(GetCurrentProcess(), exit_code);
+  // There is some ambiguity over whether the call above can return. Rather than
+  // hitting confusing crashes later on we should crash right here.
+  IMMEDIATE_CRASH();
+}
+
 bool Process::IsValid() const {
   return process_.IsValid() || is_current();
 }
@@ -111,6 +126,18 @@ ProcessId Process::Pid() const {
   return GetProcId(Handle());
 }
 
+Time Process::CreationTime() const {
+  FILETIME creation_time = {};
+  FILETIME ignore1 = {};
+  FILETIME ignore2 = {};
+  FILETIME ignore3 = {};
+  if (!::GetProcessTimes(Handle(), &creation_time, &ignore1, &ignore2,
+                         &ignore3)) {
+    return Time();
+  }
+  return Time::FromFileTime(creation_time);
+}
+
 bool Process::is_current() const {
   return is_current_process_;
 }
@@ -124,24 +151,46 @@ void Process::Close() {
 }
 
 bool Process::Terminate(int exit_code, bool wait) const {
+  constexpr DWORD kWaitMs = 60 * 1000;
+
+  // exit_code cannot be implemented.
   DCHECK(IsValid());
   bool result = (::TerminateProcess(Handle(), exit_code) != FALSE);
-  if (result && wait) {
+  if (result) {
     // The process may not end immediately due to pending I/O
-    if (::WaitForSingleObject(Handle(), 60 * 1000) != WAIT_OBJECT_0)
+    if (wait && ::WaitForSingleObject(Handle(), kWaitMs) != WAIT_OBJECT_0)
       DPLOG(ERROR) << "Error waiting for process exit";
-  } else if (!result) {
+    Exited(exit_code);
+  } else {
+    // The process can't be terminated, perhaps because it has already
+    // exited or is in the process of exiting. A non-zero timeout is necessary
+    // here for the same reasons as above.
     DPLOG(ERROR) << "Unable to terminate process";
+    if (::WaitForSingleObject(Handle(), kWaitMs) == WAIT_OBJECT_0) {
+      DWORD actual_exit;
+      Exited(::GetExitCodeProcess(Handle(), &actual_exit) ? actual_exit
+                                                          : exit_code);
+      result = true;
+    }
   }
   return result;
 }
 
-bool Process::WaitForExit(int* exit_code) {
+bool Process::WaitForExit(int* exit_code) const {
   return WaitForExitWithTimeout(TimeDelta::FromMilliseconds(INFINITE),
                                 exit_code);
 }
 
-bool Process::WaitForExitWithTimeout(TimeDelta timeout, int* exit_code) {
+bool Process::WaitForExitWithTimeout(TimeDelta timeout, int* exit_code) const {
+  // Intentionally avoid instantiating ScopedBlockingCallWithBaseSyncPrimitives.
+  // In some cases, this function waits on a child Process doing CPU work.
+  // http://crbug.com/905788
+  if (!timeout.is_zero())
+    internal::AssertBaseSyncPrimitivesAllowed();
+
+  // Record the event that this thread is blocking upon (for hang diagnosis).
+  base::debug::ScopedProcessWaitActivity process_activity(this);
+
   // Limit timeout to INFINITE.
   DWORD timeout_ms = saturated_cast<DWORD>(timeout.InMilliseconds());
   if (::WaitForSingleObject(Handle(), timeout_ms) != WAIT_OBJECT_0)
@@ -153,7 +202,14 @@ bool Process::WaitForExitWithTimeout(TimeDelta timeout, int* exit_code) {
 
   if (exit_code)
     *exit_code = temp_code;
+
+  Exited(temp_code);
   return true;
+}
+
+void Process::Exited(int exit_code) const {
+  base::debug::GlobalActivityTracker::RecordProcessExitIfEnabled(Pid(),
+                                                                 exit_code);
 }
 
 bool Process::IsProcessBackgrounded() const {
@@ -171,7 +227,7 @@ bool Process::SetProcessBackgrounded(bool value) {
   // sets the priority class on the threads but also on the IO generated
   // by it. Unfortunately it can only be set for the calling process.
   DWORD priority;
-  if ((base::win::GetVersion() >= base::win::VERSION_VISTA) && (is_current())) {
+  if (is_current()) {
     priority = value ? PROCESS_MODE_BACKGROUND_BEGIN :
                        PROCESS_MODE_BACKGROUND_END;
   } else {

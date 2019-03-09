@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/macros.h"
 #include "base/power_monitor/power_monitor.h"
+#include "base/macros.h"
 #include "base/test/power_monitor_test_base.h"
+#include "base/test/scoped_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
@@ -16,12 +17,13 @@ class PowerMonitorTest : public testing::Test {
     power_monitor_.reset(new PowerMonitor(
         std::unique_ptr<PowerMonitorSource>(power_monitor_source_)));
   }
-  ~PowerMonitorTest() override{};
+  ~PowerMonitorTest() override = default;
 
   PowerMonitorTestSource* source() { return power_monitor_source_; }
   PowerMonitor* monitor() { return power_monitor_.get(); }
 
  private:
+  test::ScopedTaskEnvironment scoped_task_environment_;
   PowerMonitorTestSource* power_monitor_source_;
   std::unique_ptr<PowerMonitor> power_monitor_;
 
@@ -34,8 +36,8 @@ TEST_F(PowerMonitorTest, PowerNotifications) {
   const int kObservers = 5;
 
   PowerMonitorTestObserver observers[kObservers];
-  for (int index = 0; index < kObservers; ++index)
-    monitor()->AddObserver(&observers[index]);
+  for (auto& index : observers)
+    monitor()->AddObserver(&index);
 
   // Sending resume when not suspended should have no effect.
   source()->GenerateResumeEvent();
@@ -44,8 +46,8 @@ TEST_F(PowerMonitorTest, PowerNotifications) {
   // Pretend we suspended.
   source()->GenerateSuspendEvent();
   // Ensure all observers were notified of the event
-  for (int index = 0; index < kObservers; ++index)
-    EXPECT_EQ(observers[index].suspends(), 1);
+  for (const auto& index : observers)
+    EXPECT_EQ(index.suspends(), 1);
 
   // Send a second suspend notification.  This should be suppressed.
   source()->GenerateSuspendEvent();

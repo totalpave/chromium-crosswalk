@@ -9,34 +9,43 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "base/strings/string_piece.h"
 
 namespace metrics {
+
+class ReportingInfo;
 
 // MetricsLogUploader is an abstract base class for uploading UMA logs on behalf
 // of MetricsService.
 class MetricsLogUploader {
  public:
-  // Constructs the uploader that will upload logs to the specified |server_url|
-  // with the given |mime_type|. The |on_upload_complete| callback will be
-  // called with the HTTP response code of the upload or with -1 on an error.
-  MetricsLogUploader(const std::string& server_url,
-                     const std::string& mime_type,
-                     const base::Callback<void(int)>& on_upload_complete);
-  virtual ~MetricsLogUploader();
+  // Type for OnUploadComplete callbacks.  These callbacks will receive three
+  // parameters: A response code, a net error code, and a boolean specifying
+  // if the connection was secure (over HTTPS).
+  typedef base::Callback<void(int, int, bool)> UploadCallback;
 
-  // Uploads a log with the specified |compressed_log_data| and |log_hash|.
-  // |log_hash| is expected to be the hex-encoded SHA1 hash of the log data
-  // before compression.
+  // Possible service types. This should correspond to a type from
+  // DataUseUserData.
+  enum MetricServiceType {
+    UMA,
+    UKM,
+  };
+
+  virtual ~MetricsLogUploader() {}
+
+  // Uploads a log with the specified |compressed_log_data|, a |log_hash| and
+  // |log_signature| for data validation, and |reporting_info|. |log_hash| is
+  // expected to be the hex-encoded SHA1 hash of the log data before compression
+  // and |log_signature| is expected to be a base64-encoded HMAC-SHA256
+  // signature of the log data before compression. When the server receives an
+  // upload it recomputes the hash and signature of the upload and compares it
+  // to the ones inlcuded in the upload. If there is a missmatched, the upload
+  // is flagged. If an Uploader implementation uploads to a server that doesn't
+  // do this validation then |log_hash| and |log_signature| can be ignored.
   virtual void UploadLog(const std::string& compressed_log_data,
-                         const std::string& log_hash) = 0;
-
- protected:
-  const std::string server_url_;
-  const std::string mime_type_;
-  const base::Callback<void(int)> on_upload_complete_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(MetricsLogUploader);
+                         const std::string& log_hash,
+                         const std::string& log_signature,
+                         const ReportingInfo& reporting_info) = 0;
 };
 
 }  // namespace metrics

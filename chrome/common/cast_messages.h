@@ -4,6 +4,9 @@
 
 // IPC messages for the Cast transport API.
 
+#ifndef CHROME_COMMON_CAST_MESSAGES_H_
+#define CHROME_COMMON_CAST_MESSAGES_H_
+
 #include <stdint.h>
 
 #include "ipc/ipc_message_macros.h"
@@ -13,15 +16,14 @@
 #include "media/cast/net/rtcp/rtcp_defines.h"
 #include "net/base/ip_endpoint.h"
 
-#ifndef CHROME_COMMON_CAST_MESSAGES_H_
-#define CHROME_COMMON_CAST_MESSAGES_H_
+#ifndef INTERNAL_CHROME_COMMON_CAST_MESSAGES_H_
+#define INTERNAL_CHROME_COMMON_CAST_MESSAGES_H_
 
 namespace IPC {
 
 template<>
 struct ParamTraits<media::cast::RtpTimeTicks> {
   using param_type = media::cast::RtpTimeTicks;
-  static void GetSize(base::PickleSizer* s, const param_type& p);
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
@@ -32,7 +34,6 @@ struct ParamTraits<media::cast::RtpTimeTicks> {
 template<>
 struct ParamTraits<media::cast::FrameId> {
   using param_type = media::cast::FrameId;
-  static void GetSize(base::PickleSizer* s, const param_type& p);
   static void Write(base::Pickle* m, const param_type& p);
   static bool Read(const base::Pickle* m,
                    base::PickleIterator* iter,
@@ -42,7 +43,7 @@ struct ParamTraits<media::cast::FrameId> {
 
 }  // namespace IPC
 
-#endif  // CHROME_COMMON_CAST_MESSAGES_H_
+#endif  // INTERNAL_CHROME_COMMON_CAST_MESSAGES_H_
 
 // Multiply-included message file, hence no include guard from here.
 
@@ -61,6 +62,9 @@ IPC_ENUM_TRAITS_MAX_VALUE(media::cast::CastLoggingEvent,
                           media::cast::kNumOfLoggingEvents)
 IPC_ENUM_TRAITS_MAX_VALUE(media::cast::EventMediaType,
                           media::cast::EVENT_MEDIA_TYPE_LAST)
+IPC_ENUM_TRAITS_MIN_MAX_VALUE(media::cast::RtpPayloadType,
+                              media::cast::RtpPayloadType::FIRST,
+                              media::cast::RtpPayloadType::LAST)
 
 IPC_STRUCT_TRAITS_BEGIN(media::cast::EncodedFrame)
   IPC_STRUCT_TRAITS_MEMBER(dependency)
@@ -79,6 +83,7 @@ IPC_STRUCT_TRAITS_END()
 
 IPC_STRUCT_TRAITS_BEGIN(media::cast::CastTransportRtpConfig)
   IPC_STRUCT_TRAITS_MEMBER(ssrc)
+  IPC_STRUCT_TRAITS_MEMBER(rtp_stream_id)
   IPC_STRUCT_TRAITS_MEMBER(feedback_ssrc)
   IPC_STRUCT_TRAITS_MEMBER(rtp_payload_type)
   IPC_STRUCT_TRAITS_MEMBER(aes_key)
@@ -175,11 +180,7 @@ IPC_MESSAGE_CONTROL3(CastMsg_RawEvents,
 
 // Cast messages sent from the renderer to the browser.
 
-IPC_MESSAGE_CONTROL2(CastHostMsg_InitializeAudio,
-                     int32_t /*channel_id*/,
-                     media::cast::CastTransportRtpConfig /*config*/)
-
-IPC_MESSAGE_CONTROL2(CastHostMsg_InitializeVideo,
+IPC_MESSAGE_CONTROL2(CastHostMsg_InitializeStream,
                      int32_t /*channel_id*/,
                      media::cast::CastTransportRtpConfig /*config*/)
 
@@ -249,3 +250,5 @@ IPC_MESSAGE_CONTROL2(
 
 IPC_MESSAGE_CONTROL1(CastHostMsg_SendRtcpFromRtpReceiver,
                      int32_t /* channel id */)
+
+#endif  // CHROME_COMMON_CAST_MESSAGES_H_

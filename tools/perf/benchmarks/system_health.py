@@ -4,118 +4,167 @@
 
 import re
 
+from benchmarks import loading_metrics_category
+
 from core import perf_benchmark
+
 from telemetry import benchmark
+from telemetry import story
 from telemetry.timeline import chrome_trace_category_filter
+from telemetry.timeline import chrome_trace_config
 from telemetry.web_perf import timeline_based_measurement
 import page_sets
 
 
-# See tr.v.Numeric.getSummarizedScalarNumericsWithNames()
-# https://github.com/catapult-project/catapult/blob/master/tracing/tracing/value/numeric.html#L323
+# Regex to filter out a few names of statistics supported by
+# Histogram.getStatisticScalar(), see:
+#   https://github.com/catapult-project/catapult/blob/d4179a05/tracing/tracing/value/histogram.html#L645  pylint: disable=line-too-long
 _IGNORED_STATS_RE = re.compile(r'_(std|count|max|min|sum|pct_\d{4}(_\d+)?)$')
 
 
-class _SystemHealthBenchmark(perf_benchmark.PerfBenchmark):
-  TRACING_CATEGORIES = [
-    'benchmark',
-    'navigation',
-    'blink.user_timing',
-  ]
+class _CommonSystemHealthBenchmark(perf_benchmark.PerfBenchmark):
+  """Chrome Common System Health Benchmark.
 
-  def CreateTimelineBasedMeasurementOptions(self):
-    options = timeline_based_measurement.Options()
-    options.config.chrome_trace_config.SetCategoryFilter(
-        chrome_trace_category_filter.ChromeTraceCategoryFilter(','.join(
-            self.TRACING_CATEGORIES)))
-    options.SetTimelineBasedMetric('systemHealthMetrics')
+  This test suite contains system health benchmarks that can be collected
+  together due to the low overhead of the tracing agents required. If a
+  benchmark does have significant overhead, it should either:
+
+    1) Be rearchitected such that it doesn't. This is the most preferred option.
+    2) Be run in a separate test suite (e.g. memory).
+
+  https://goo.gl/Jek2NL.
+  """
+
+  def CreateCoreTimelineBasedMeasurementOptions(self):
+    cat_filter = chrome_trace_category_filter.ChromeTraceCategoryFilter(
+        filter_string='rail,toplevel')
+    cat_filter.AddIncludedCategory('accessibility')
+    # Needed for the console error metric.
+    cat_filter.AddIncludedCategory('v8.console')
+
+    options = timeline_based_measurement.Options(cat_filter)
+    options.config.enable_chrome_trace = True
+    options.config.enable_cpu_trace = True
+    options.SetTimelineBasedMetrics([
+        'accessibilityMetric',
+        'consoleErrorMetric',
+        'cpuTimeMetric',
+        'limitedCpuTimeMetric',
+        'tracingMetric'
+    ])
+    loading_metrics_category.AugmentOptionsForLoadingMetrics(options)
+    # The EQT metric depends on the same categories as the loading metric.
+    options.AddTimelineBasedMetric('expectedQueueingTimeMetric')
     return options
 
-  @classmethod
-  def ShouldDisable(cls, browser):
-    # http://crbug.com/600463
-    galaxy_s5_type_name = 'SM-G900H'
-    return browser.platform.GetDeviceTypeName() == galaxy_s5_type_name
+  def CreateStorySet(self, options):
+    return page_sets.SystemHealthStorySet(platform=self.PLATFORM)
 
 
-@benchmark.Disabled('all')  # crbug.com/613050
-class SystemHealthTop25(_SystemHealthBenchmark):
-  page_set = page_sets.Top25PageSet
-
-  @classmethod
-  def Name(cls):
-    return 'system_health.top25'
-
-
-@benchmark.Disabled('android')  # crbug.com/601953
-@benchmark.Disabled('all')  # crbug.com/613050
-class SystemHealthKeyMobileSites(_SystemHealthBenchmark):
-  page_set = page_sets.KeyMobileSitesPageSet
+@benchmark.Info(emails=['charliea@chromium.org', 'sullivan@chromium.org',
+                        'tdresser@chromium.org',
+                        'chrome-speed-metrics-dev@chromium.org'],
+                component='Speed>Metrics>SystemHealthRegressions',
+                documentation_url='https://bit.ly/system-health-benchmarks')
+class DesktopCommonSystemHealth(_CommonSystemHealthBenchmark):
+  """Desktop Chrome Energy System Health Benchmark."""
+  PLATFORM = 'desktop'
+  SUPPORTED_PLATFORMS = [story.expectations.ALL_DESKTOP]
 
   @classmethod
   def Name(cls):
-    return 'system_health.key_mobile_sites'
+    return 'system_health.common_desktop'
+
+
+@benchmark.Info(emails=['charliea@chromium.org', 'sullivan@chromium.org',
+                        'tdresser@chromium.org', 'perezju@chromium.org',
+                        'chrome-speed-metrics-dev@chromium.org'],
+                component='Speed>Metrics>SystemHealthRegressions',
+                documentation_url='https://bit.ly/system-health-benchmarks')
+class MobileCommonSystemHealth(_CommonSystemHealthBenchmark):
+  """Mobile Chrome Energy System Health Benchmark."""
+  PLATFORM = 'mobile'
+  SUPPORTED_PLATFORMS = [story.expectations.ALL_MOBILE]
+
+  @classmethod
+  def Name(cls):
+    return 'system_health.common_mobile'
 
 
 class _MemorySystemHealthBenchmark(perf_benchmark.PerfBenchmark):
   """Chrome Memory System Health Benchmark.
 
+  This test suite is run separately from the common one due to the high overhead
+  of memory tracing.
+
   https://goo.gl/Jek2NL.
   """
+  options = {'pageset_repeat': 3}
 
-  def SetExtraBrowserOptions(self, options):
-    # TODO(petrcermak): Remove this and switch to log-on-retry
-    # (http://crbug.com/623058).
-    options.logging_verbosity = options.NON_VERBOSE_LOGGING
-    options.AppendExtraBrowserArgs([
-        # TODO(perezju): Temporary workaround to disable periodic memory dumps.
-        # See: http://crbug.com/513692
-        '--enable-memory-benchmarking',
-    ])
-
-  def CreateTimelineBasedMeasurementOptions(self):
-    options = timeline_based_measurement.Options(
-        chrome_trace_category_filter.ChromeTraceCategoryFilter(
-            '-*,disabled-by-default-memory-infra'))
+  def CreateCoreTimelineBasedMeasurementOptions(self):
+    cat_filter = chrome_trace_category_filter.ChromeTraceCategoryFilter(
+        filter_string='-*,disabled-by-default-memory-infra')
+    # Needed for the console error metric.
+    cat_filter.AddIncludedCategory('v8.console')
+    options = timeline_based_measurement.Options(cat_filter)
     options.config.enable_android_graphics_memtrack = True
-    options.SetTimelineBasedMetric('memoryMetric')
+    options.SetTimelineBasedMetrics([
+      'consoleErrorMetric',
+      'memoryMetric'
+    ])
+    # Setting an empty memory dump config disables periodic dumps.
+    options.config.chrome_trace_config.SetMemoryDumpConfig(
+        chrome_trace_config.MemoryDumpConfig())
     return options
+
+  def CreateStorySet(self, options):
+    return page_sets.SystemHealthStorySet(platform=self.PLATFORM,
+                                          take_memory_measurement=True)
+
+  @classmethod
+  def ShouldAddValue(cls, name, from_first_story_run):
+    del from_first_story_run # unused
+    # TODO(crbug.com/610962): Remove this stopgap when the perf dashboard
+    # is able to cope with the data load generated by TBMv2 metrics.
+    return not _IGNORED_STATS_RE.search(name)
+
+
+@benchmark.Info(emails=['perezju@chromium.org'],
+                documentation_url='https://bit.ly/system-health-benchmarks')
+class DesktopMemorySystemHealth(_MemorySystemHealthBenchmark):
+  """Desktop Chrome Memory System Health Benchmark."""
+  PLATFORM = 'desktop'
+  SUPPORTED_PLATFORMS = [story.expectations.ALL_DESKTOP]
 
   @classmethod
   def Name(cls):
-    return 'system_health.memory_%s' % cls.page_set.PLATFORM
-
-  @classmethod
-  def ValueCanBeAddedPredicate(cls, value, is_first_result):
-    # TODO(crbug.com/610962): Remove this stopgap when the perf dashboard
-    # is able to cope with the data load generated by TBMv2 metrics.
-    return not _IGNORED_STATS_RE.search(value.name)
+    return 'system_health.memory_desktop'
 
 
-class DesktopMemorySystemHealth(_MemorySystemHealthBenchmark):
-  """Desktop Chrome Memory System Health Benchmark."""
-  page_set = page_sets.DesktopSystemHealthStorySet
-
-  @classmethod
-  def ShouldDisable(cls, possible_browser):
-    # http://crbug.com/624355 (reference builds).
-    return (possible_browser.platform.GetDeviceTypeName() != 'Desktop' or
-            possible_browser.browser_type == 'reference')
-
-
+@benchmark.Info(emails=['perezju@chromium.org'],
+                documentation_url='https://bit.ly/system-health-benchmarks')
 class MobileMemorySystemHealth(_MemorySystemHealthBenchmark):
   """Mobile Chrome Memory System Health Benchmark."""
-  page_set = page_sets.MobileSystemHealthStorySet
+  PLATFORM = 'mobile'
+  SUPPORTED_PLATFORMS = [story.expectations.ALL_MOBILE]
+
+  def SetExtraBrowserOptions(self, options):
+    # Just before we measure memory we flush the system caches
+    # unfortunately this doesn't immediately take effect, instead
+    # the next story run is effected. Due to this the first story run
+    # has anomalous results. This option causes us to flush caches
+    # each time before Chrome starts so we effect even the first story
+    # - avoiding the bug.
+    options.flush_os_page_caches_on_start = True
 
   @classmethod
-  def ShouldDisable(cls, possible_browser):
-    # http://crbug.com/612144 (reference on Nexus 5X).
-    return possible_browser.platform.GetDeviceTypeName() == 'Desktop' or (
-        possible_browser.browser_type == 'reference' and
-        possible_browser.platform.GetDeviceTypeName() == 'Nexus 5X')
+  def Name(cls):
+    return 'system_health.memory_mobile'
 
 
-@benchmark.Enabled('android-webview')
+@benchmark.Info(emails=['perezju@chromium.org', 'torne@chromium.org',
+                         'changwan@chromium.org'],
+                 component='Mobile>WebView>Perf')
 class WebviewStartupSystemHealthBenchmark(perf_benchmark.PerfBenchmark):
   """Webview startup time benchmark
 
@@ -124,19 +173,19 @@ class WebviewStartupSystemHealthBenchmark(perf_benchmark.PerfBenchmark):
   markers recorded in atrace, Chrome tracing is not enabled for this
   benchmark.
   """
-  page_set = page_sets.BlankPageSet
+  options = {'pageset_repeat': 20}
+  SUPPORTED_PLATFORMS = [story.expectations.ANDROID_WEBVIEW]
 
-  def CreateTimelineBasedMeasurementOptions(self):
+  def CreateStorySet(self, options):
+    return page_sets.SystemHealthBlankStorySet()
+
+  def CreateCoreTimelineBasedMeasurementOptions(self):
     options = timeline_based_measurement.Options()
-    options.SetTimelineBasedMetric('webviewStartupMetric')
+    options.SetTimelineBasedMetrics(['webviewStartupMetric'])
     options.config.enable_atrace_trace = True
     options.config.enable_chrome_trace = False
     options.config.atrace_config.app_name = 'org.chromium.webview_shell'
     return options
-
-  @classmethod
-  def ShouldTearDownStateAfterEachStoryRun(cls):
-    return True
 
   @classmethod
   def Name(cls):

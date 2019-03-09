@@ -7,11 +7,13 @@
 #include "base/memory/ptr_util.h"
 #include "cc/animation/animation_events.h"
 #include "cc/animation/animation_id_provider.h"
-#include "cc/animation/animation_player.h"
 #include "cc/animation/animation_timeline.h"
 #include "cc/animation/element_animations.h"
-#include "cc/output/filter_operation.h"
-#include "cc/output/filter_operations.h"
+#include "cc/animation/keyframe_effect.h"
+#include "cc/animation/single_keyframe_effect_animation.h"
+#include "cc/paint/filter_operation.h"
+#include "cc/paint/filter_operations.h"
+#include "cc/trees/property_tree.h"
 #include "ui/gfx/transform.h"
 
 namespace cc {
@@ -24,18 +26,17 @@ TestLayer::TestLayer() {
   ClearMutatedProperties();
 }
 
+TestLayer::~TestLayer() = default;
+
 void TestLayer::ClearMutatedProperties() {
   transform_ = gfx::Transform();
   opacity_ = 0;
   filters_ = FilterOperations();
   scroll_offset_ = gfx::ScrollOffset();
-  has_potential_transform_animation_ = false;
-  transform_is_currently_animating_ = false;
-  has_potential_opacity_animation_ = false;
-  opacity_is_currently_animating_ = false;
 
-  for (int i = 0; i <= TargetProperty::LAST_TARGET_PROPERTY; ++i)
-    mutated_properties_[i] = false;
+  has_potential_animation_.reset();
+  is_currently_animating_.reset();
+  mutated_properties_.reset();
 }
 
 int TestLayer::transform_x() const {
@@ -124,47 +125,24 @@ void TestHostClient::SetElementScrollOffsetMutated(
     layer->set_scroll_offset(scroll_offset);
 }
 
-void TestHostClient::ElementTransformIsAnimatingChanged(
-    ElementId element_id,
+void TestHostClient::ElementIsAnimatingChanged(
+    const PropertyToElementIdMap& element_id_map,
     ElementListType list_type,
-    AnimationChangeType change_type,
-    bool is_animating) {
-  TestLayer* layer = FindTestLayer(element_id, list_type);
-  if (layer) {
-    switch (change_type) {
-      case AnimationChangeType::POTENTIAL:
-        layer->set_has_potential_transform_animation(is_animating);
-        break;
-      case AnimationChangeType::RUNNING:
-        layer->set_transform_is_currently_animating(is_animating);
-        break;
-      case AnimationChangeType::BOTH:
-        layer->set_has_potential_transform_animation(is_animating);
-        layer->set_transform_is_currently_animating(is_animating);
-        break;
-    }
-  }
-}
+    const PropertyAnimationState& mask,
+    const PropertyAnimationState& state) {
+  for (const auto& it : element_id_map) {
+    TestLayer* layer = FindTestLayer(it.second, list_type);
+    if (!layer)
+      continue;
 
-void TestHostClient::ElementOpacityIsAnimatingChanged(
-    ElementId element_id,
-    ElementListType list_type,
-    AnimationChangeType change_type,
-    bool is_animating) {
-  TestLayer* layer = FindTestLayer(element_id, list_type);
-  if (layer) {
-    switch (change_type) {
-      case AnimationChangeType::POTENTIAL:
-        layer->set_has_potential_opacity_animation(is_animating);
-        break;
-      case AnimationChangeType::RUNNING:
-        layer->set_opacity_is_currently_animating(is_animating);
-        break;
-      case AnimationChangeType::BOTH:
-        layer->set_has_potential_opacity_animation(is_animating);
-        layer->set_opacity_is_currently_animating(is_animating);
-        break;
-    }
+    TargetProperty::Type target_property = it.first;
+    int property = static_cast<int>(target_property);
+    if (mask.potentially_animating[property])
+      layer->set_has_potential_animation(target_property,
+                                         state.potentially_animating[property]);
+    if (mask.currently_running[property])
+      layer->set_is_currently_animating(target_property,
+                                        state.currently_running[property]);
   }
 }
 
@@ -245,7 +223,7 @@ bool TestHostClient::GetTransformIsCurrentlyAnimating(
     ElementListType list_type) const {
   TestLayer* layer = FindTestLayer(element_id, list_type);
   EXPECT_TRUE(layer);
-  return layer->transform_is_currently_animating();
+  return layer->is_currently_animating(TargetProperty::TRANSFORM);
 }
 
 bool TestHostClient::GetHasPotentialTransformAnimation(
@@ -253,7 +231,7 @@ bool TestHostClient::GetHasPotentialTransformAnimation(
     ElementListType list_type) const {
   TestLayer* layer = FindTestLayer(element_id, list_type);
   EXPECT_TRUE(layer);
-  return layer->has_potential_transform_animation();
+  return layer->has_potential_animation(TargetProperty::TRANSFORM);
 }
 
 bool TestHostClient::GetOpacityIsCurrentlyAnimating(
@@ -261,7 +239,7 @@ bool TestHostClient::GetOpacityIsCurrentlyAnimating(
     ElementListType list_type) const {
   TestLayer* layer = FindTestLayer(element_id, list_type);
   EXPECT_TRUE(layer);
-  return layer->opacity_is_currently_animating();
+  return layer->is_currently_animating(TargetProperty::OPACITY);
 }
 
 bool TestHostClient::GetHasPotentialOpacityAnimation(
@@ -269,7 +247,23 @@ bool TestHostClient::GetHasPotentialOpacityAnimation(
     ElementListType list_type) const {
   TestLayer* layer = FindTestLayer(element_id, list_type);
   EXPECT_TRUE(layer);
-  return layer->has_potential_opacity_animation();
+  return layer->has_potential_animation(TargetProperty::OPACITY);
+}
+
+bool TestHostClient::GetFilterIsCurrentlyAnimating(
+    ElementId element_id,
+    ElementListType list_type) const {
+  TestLayer* layer = FindTestLayer(element_id, list_type);
+  EXPECT_TRUE(layer);
+  return layer->is_currently_animating(TargetProperty::FILTER);
+}
+
+bool TestHostClient::GetHasPotentialFilterAnimation(
+    ElementId element_id,
+    ElementListType list_type) const {
+  TestLayer* layer = FindTestLayer(element_id, list_type);
+  EXPECT_TRUE(layer);
+  return layer->has_potential_animation(TargetProperty::FILTER);
 }
 
 void TestHostClient::ExpectFilterPropertyMutated(ElementId element_id,
@@ -323,7 +317,7 @@ TestAnimationDelegate::TestAnimationDelegate()
 
 void TestAnimationDelegate::NotifyAnimationStarted(
     base::TimeTicks monotonic_time,
-    TargetProperty::Type target_property,
+    int target_property,
     int group) {
   started_ = true;
   start_time_ = monotonic_time;
@@ -331,22 +325,22 @@ void TestAnimationDelegate::NotifyAnimationStarted(
 
 void TestAnimationDelegate::NotifyAnimationFinished(
     base::TimeTicks monotonic_time,
-    TargetProperty::Type target_property,
+    int target_property,
     int group) {
   finished_ = true;
 }
 
 void TestAnimationDelegate::NotifyAnimationAborted(
     base::TimeTicks monotonic_time,
-    TargetProperty::Type target_property,
+    int target_property,
     int group) {
   aborted_ = true;
 }
 
 void TestAnimationDelegate::NotifyAnimationTakeover(
     base::TimeTicks monotonic_time,
-    TargetProperty::Type target_property,
-    double animation_start_time,
+    int target_property,
+    base::TimeTicks animation_start_time,
     std::unique_ptr<AnimationCurve> curve) {
   takeover_ = true;
 }
@@ -357,25 +351,23 @@ AnimationTimelinesTest::AnimationTimelinesTest()
       host_(nullptr),
       host_impl_(nullptr),
       timeline_id_(AnimationIdProvider::NextTimelineId()),
-      player_id_(AnimationIdProvider::NextPlayerId()),
+      animation_id_(AnimationIdProvider::NextAnimationId()),
       next_test_layer_id_(0) {
   host_ = client_.host();
   host_impl_ = client_impl_.host();
 
-  element_id_ = ElementId(NextTestLayerId(), 0);
+  element_id_ = ElementId(NextTestLayerId());
 }
 
-AnimationTimelinesTest::~AnimationTimelinesTest() {
-}
+AnimationTimelinesTest::~AnimationTimelinesTest() = default;
 
 void AnimationTimelinesTest::SetUp() {
   timeline_ = AnimationTimeline::Create(timeline_id_);
-  player_ = AnimationPlayer::Create(player_id_);
 }
 
 void AnimationTimelinesTest::TearDown() {
-  host_impl_->ClearTimelines();
-  host_->ClearTimelines();
+  host_impl_->ClearMutators();
+  host_->ClearMutators();
 }
 
 void AnimationTimelinesTest::CreateTestLayer(
@@ -393,83 +385,111 @@ void AnimationTimelinesTest::CreateTestMainLayer() {
   client_.RegisterElement(element_id_, ElementListType::ACTIVE);
 }
 
+void AnimationTimelinesTest::DestroyTestMainLayer() {
+  client_.UnregisterElement(element_id_, ElementListType::ACTIVE);
+}
+
 void AnimationTimelinesTest::CreateTestImplLayer(
     ElementListType element_list_type) {
   client_impl_.RegisterElement(element_id_, element_list_type);
 }
 
-void AnimationTimelinesTest::AttachTimelinePlayerLayer() {
+void AnimationTimelinesTest::AttachTimelineAnimationLayer() {
   host_->AddAnimationTimeline(timeline_);
-  timeline_->AttachPlayer(player_);
-  player_->AttachElement(element_id_);
+  timeline_->AttachAnimation(animation_);
+  animation_->AttachElement(element_id_);
+
+  element_animations_ = animation_->keyframe_effect()->element_animations();
 }
 
-void AnimationTimelinesTest::CreateImplTimelineAndPlayer() {
+void AnimationTimelinesTest::CreateImplTimelineAndAnimation() {
   host_->PushPropertiesTo(host_impl_);
-  GetImplTimelineAndPlayerByID();
+  GetImplTimelineAndAnimationByID();
 }
 
-scoped_refptr<ElementAnimations> AnimationTimelinesTest::element_animations()
-    const {
-  DCHECK(player_);
-  DCHECK(player_->element_animations());
-  return player_->element_animations();
-}
-
-scoped_refptr<ElementAnimations>
-AnimationTimelinesTest::element_animations_impl() const {
-  DCHECK(player_impl_);
-  DCHECK(player_impl_->element_animations());
-  return player_impl_->element_animations();
-}
-
-void AnimationTimelinesTest::GetImplTimelineAndPlayerByID() {
+void AnimationTimelinesTest::GetImplTimelineAndAnimationByID() {
   timeline_impl_ = host_impl_->GetTimelineById(timeline_id_);
   EXPECT_TRUE(timeline_impl_);
-  player_impl_ = timeline_impl_->GetPlayerById(player_id_);
-  EXPECT_TRUE(player_impl_);
+  animation_impl_ = static_cast<SingleKeyframeEffectAnimation*>(
+      timeline_impl_->GetAnimationById(animation_id_));
+  EXPECT_TRUE(animation_impl_);
+
+  element_animations_impl_ =
+      animation_impl_->keyframe_effect()->element_animations();
 }
 
 void AnimationTimelinesTest::ReleaseRefPtrs() {
-  player_ = nullptr;
+  animation_ = nullptr;
   timeline_ = nullptr;
-  player_impl_ = nullptr;
+  animation_impl_ = nullptr;
   timeline_impl_ = nullptr;
 }
 
-void AnimationTimelinesTest::AnimateLayersTransferEvents(
+void AnimationTimelinesTest::TickAnimationsTransferEvents(
     base::TimeTicks time,
     unsigned expect_events) {
-  std::unique_ptr<AnimationEvents> events = host_->CreateEvents();
+  std::unique_ptr<MutatorEvents> events = host_->CreateEvents();
 
-  host_impl_->AnimateLayers(time);
+  // TODO(smcgruer): Construct a proper ScrollTree for the tests.
+  ScrollTree scroll_tree;
+  host_impl_->TickAnimations(time, scroll_tree, true);
   host_impl_->UpdateAnimationState(true, events.get());
-  EXPECT_EQ(expect_events, events->events_.size());
 
-  host_->AnimateLayers(time);
+  auto* animation_events = static_cast<const AnimationEvents*>(events.get());
+  EXPECT_EQ(expect_events, animation_events->events_.size());
+
+  host_->TickAnimations(time, scroll_tree, true);
   host_->UpdateAnimationState(true, nullptr);
   host_->SetAnimationEvents(std::move(events));
 }
 
-AnimationPlayer* AnimationTimelinesTest::GetPlayerForElementId(
+KeyframeEffect* AnimationTimelinesTest::GetKeyframeEffectForElementId(
     ElementId element_id) {
   const scoped_refptr<ElementAnimations> element_animations =
       host_->GetElementAnimationsForElementId(element_id);
-  return element_animations ? element_animations->players_list().head()->value()
-                            : nullptr;
+  return element_animations
+             ? element_animations->FirstKeyframeEffectForTesting()
+             : nullptr;
 }
 
-AnimationPlayer* AnimationTimelinesTest::GetImplPlayerForLayerId(
+KeyframeEffect* AnimationTimelinesTest::GetImplKeyframeEffectForLayerId(
     ElementId element_id) {
   const scoped_refptr<ElementAnimations> element_animations =
       host_impl_->GetElementAnimationsForElementId(element_id);
-  return element_animations ? element_animations->players_list().head()->value()
-                            : nullptr;
+  return element_animations
+             ? element_animations->FirstKeyframeEffectForTesting()
+             : nullptr;
 }
 
 int AnimationTimelinesTest::NextTestLayerId() {
   next_test_layer_id_++;
   return next_test_layer_id_;
+}
+
+bool AnimationTimelinesTest::CheckKeyframeEffectTimelineNeedsPushProperties(
+    bool needs_push_properties) const {
+  DCHECK(animation_);
+  DCHECK(timeline_);
+
+  bool result = true;
+
+  KeyframeEffect* keyframe_effect = animation_->keyframe_effect();
+  if (keyframe_effect->needs_push_properties() != needs_push_properties) {
+    ADD_FAILURE() << "keyframe_effect->needs_push_properties() expected to be "
+                  << needs_push_properties;
+    result = false;
+  }
+  if (timeline_->needs_push_properties() != needs_push_properties) {
+    ADD_FAILURE() << "timeline_->needs_push_properties() expected to be "
+                  << needs_push_properties;
+    result = false;
+  }
+
+  return result;
+}
+
+void AnimationTimelinesTest::PushProperties() {
+  host_->PushPropertiesTo(host_impl_);
 }
 
 }  // namespace cc

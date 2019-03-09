@@ -32,10 +32,7 @@ import sys
 from xml.dom import minidom
 
 import action_utils
-import print_style
-
-sys.path.insert(1, os.path.join(sys.path[0], '..', '..', 'python'))
-from google import path_utils
+import actions_print_style
 
 # Import the metrics/common module for pretty print xml.
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'common'))
@@ -91,7 +88,6 @@ KNOWN_COMPUTED_USERS = (
   'extension_metrics_module.cc', # extensions hook for user metrics
   'language_options_handler_common.cc', # languages and input methods in CrOS
   'cros_language_options_handler.cc', # languages and input methods in CrOS
-  'about_flags.cc', # do not generate a warning; see AddAboutFlagsActions()
   'external_metrics.cc',  # see AddChromeOSActions()
   'core_options_handler.cc',  # see AddWebUIActions()
   'browser_render_process_host.cc',  # see AddRendererActions()
@@ -159,7 +155,7 @@ INPUT_METHOD_IDS = (
 )
 
 # The path to the root of the repository.
-REPOSITORY_ROOT = os.path.join(path_utils.ScriptDir(), '..', '..', '..')
+REPOSITORY_ROOT = os.path.join(os.path.dirname(__file__), '..', '..', '..')
 
 number_of_files_total = 0
 
@@ -196,20 +192,6 @@ def AddComputedActions(actions):
     actions.add('LanguageOptions_UiLanguageChange_%s' % language_code)
     actions.add('LanguageOptions_SpellCheckLanguageChange_%s' % language_code)
 
-def AddWebKitEditorActions(actions):
-  """Add editor actions from editor_client_impl.cc.
-
-  Arguments:
-    actions: set of actions to add to.
-  """
-  action_re = re.compile(r'''\{ [\w']+, +\w+, +"(.*)" +\},''')
-
-  editor_file = os.path.join(REPOSITORY_ROOT, 'webkit', 'api', 'src',
-                             'EditorClientImpl.cc')
-  for line in open(editor_file):
-    match = action_re.search(line)
-    if match:  # Plain call to RecordAction
-      actions.add(match.group(1))
 
 def AddPDFPluginActions(actions):
   """Add actions that are sent by the PDF plugin.
@@ -234,25 +216,6 @@ def AddPDFPluginActions(actions):
   actions.add('PDF_Unsupported_Shared_Review')
   actions.add('PDF_Unsupported_Sound')
   actions.add('PDF_Unsupported_XFA')
-
-def AddAboutFlagsActions(actions):
-  """This parses the experimental feature flags for UMA actions.
-
-  Arguments:
-    actions: set of actions to add to.
-  """
-  about_flags = os.path.join(REPOSITORY_ROOT, 'chrome', 'browser',
-                             'about_flags.cc')
-  flag_name_re = re.compile(r'\s*"([0-9a-zA-Z\-_]+)",\s*// FLAGS:RECORD_UMA')
-  for line in open(about_flags):
-    match = flag_name_re.search(line)
-    if match:
-      actions.add("AboutFlags_" + match.group(1))
-    # If the line contains the marker but was not matched by the regex, put up
-    # an error if the line is not a comment.
-    elif 'FLAGS:RECORD_UMA' in line and line[0:2] != '//':
-      print >>sys.stderr, 'WARNING: This line is marked for recording ' + \
-          'about:flags metrics, but is not in the proper format:\n' + line
 
 def AddBookmarkManagerActions(actions):
   """Add actions that are used by BookmarkManager.
@@ -322,9 +285,6 @@ def AddExtensionActions(actions):
   actions.add('ConnectivityDiagnostics.UA.SettingsShown')
   actions.add('ConnectivityDiagnostics.UA.TestResultExpanded')
   actions.add('ConnectivityDiagnostics.UA.TestSuiteRun')
-
-  # Actions sent by 'Ok Google' Hotwording.
-  actions.add('Hotword.HotwordTrigger')
 
 
 class InvalidStatementException(Exception):
@@ -511,7 +471,7 @@ def AddLiteralActions(actions):
                 GrepForActions)
   webkit_core_root = os.path.normpath(
                      os.path.join(REPOSITORY_ROOT,
-                                  'third_party/WebKit/Source/core'))
+                                  'third_party/blink/renderer/core'))
   WalkDirectory(webkit_core_root, actions, EXTENSIONS, GrepForActions)
 
 def AddWebUIActions(actions):
@@ -600,8 +560,10 @@ def ParseActionFile(file_content):
     file_content: a string containing the action XML file content.
 
   Returns:
-    (actions, actions_dict) actions is a set with all user actions' names.
-    actions_dict is a dict from user action name to Action object.
+    (actions_dict, comment_nodes, suffixes):
+      - actions_dict is a dict from user action name to Action object.
+      - comment_nodes is a list of top-level comment nodes.
+      - suffixes is a list of <action-suffix> DOM elements.
   """
   dom = minidom.parseString(file_content)
 
@@ -626,7 +588,7 @@ def ParseActionFile(file_content):
     # of the returned list.
     description_list = _ExtractText(action_dom, 'description')
     if len(description_list) > 1:
-      logging.error('user actions "%s" has more than one descriptions. Exactly '
+      logging.error('User action "%s" has more than one description. Exactly '
                     'one description is needed for each user action. Please '
                     'fix.', action_name)
       sys.exit(1)
@@ -634,7 +596,7 @@ def ParseActionFile(file_content):
     # There is at most one obsolete tag for each user action.
     obsolete_list = _ExtractText(action_dom, 'obsolete')
     if len(obsolete_list) > 1:
-      logging.error('user actions "%s" has more than one obsolete tag. At most '
+      logging.error('User action "%s" has more than one obsolete tag. At most '
                     'one obsolete tag can be added for each user action. Please'
                     ' fix.', action_name)
       sys.exit(1)
@@ -642,23 +604,20 @@ def ParseActionFile(file_content):
     actions_dict[action_name] = action_utils.Action(action_name, description,
         owners, not_user_triggered, obsolete)
 
-  try:
-    action_utils.CreateActionsFromSuffixes(actions_dict,
-        dom.getElementsByTagName('action-suffix'))
-  except action_utils.Error as e:
-    sys.exit(1)
+  suffixes = dom.getElementsByTagName('action-suffix')
+  action_utils.CreateActionsFromSuffixes(actions_dict, suffixes)
 
-  return set(actions_dict.keys()), actions_dict, comment_nodes
+  return actions_dict, comment_nodes, suffixes
 
 
-def _CreateActionTag(doc, action_name, action_object):
+def _CreateActionTag(doc, action):
   """Create a new action tag.
 
   Format of an action tag:
   <action name="name" not_user_triggered="true">
+    <obsolete>Deprecated.</obsolete>
     <owner>Owner</owner>
     <description>Description.</description>
-    <obsolete>Deprecated.</obsolete>
   </action>
 
   not_user_triggered is an optional attribute. If set, it implies that the
@@ -674,24 +633,33 @@ def _CreateActionTag(doc, action_name, action_object):
 
   Args:
     doc: The document under which the new action tag is created.
-    action_name: The name of an action.
-    action_object: An action object representing the data to be inserted.
+    action: An Action object representing the data to be inserted.
 
   Returns:
-    An action tag Element with proper children elements.
+    An action tag Element with proper children elements, or None if a tag should
+    not be created for this action (e.g. if it comes from a suffix).
   """
+  if action.from_suffix:
+    return None
+
   action_dom = doc.createElement('action')
-  action_dom.setAttribute('name', action_name)
+  action_dom.setAttribute('name', action.name)
 
   # Add not_user_triggered attribute.
-  if action_object and action_object.not_user_triggered:
+  if action.not_user_triggered:
     action_dom.setAttribute('not_user_triggered', 'true')
 
+  # Create obsolete tag.
+  if action.obsolete:
+    obsolete_dom = doc.createElement('obsolete')
+    action_dom.appendChild(obsolete_dom)
+    obsolete_dom.appendChild(doc.createTextNode(action.obsolete))
+
   # Create owner tag.
-  if action_object and action_object.owners:
+  if action.owners:
     # If owners for this action is not None, use the stored value. Otherwise,
     # use the default value.
-    for owner in action_object.owners:
+    for owner in action.owners:
       owner_dom = doc.createElement('owner')
       owner_dom.appendChild(doc.createTextNode(owner))
       action_dom.appendChild(owner_dom)
@@ -704,31 +672,24 @@ def _CreateActionTag(doc, action_name, action_object):
   # Create description tag.
   description_dom = doc.createElement('description')
   action_dom.appendChild(description_dom)
-  if action_object and action_object.description:
+  if action.description:
     # If description for this action is not None, use the store value.
     # Otherwise, use the default value.
-    description_dom.appendChild(doc.createTextNode(
-        action_object.description))
+    description_dom.appendChild(doc.createTextNode(action.description))
   else:
     description_dom.appendChild(doc.createTextNode(
         TAGS.get('description', '')))
 
-  # Create obsolete tag.
-  if action_object and action_object.obsolete:
-    obsolete_dom = doc.createElement('obsolete')
-    action_dom.appendChild(obsolete_dom)
-    obsolete_dom.appendChild(doc.createTextNode(
-        action_object.obsolete))
-
   return action_dom
 
 
-def PrettyPrint(actions, actions_dict, comment_nodes=[]):
-  """Given a list of action data, create a well-printed minidom document.
+def PrettyPrint(actions_dict, comment_nodes, suffixes):
+  """Given a list of actions, create a well-printed minidom document.
 
   Args:
-    actions: A list of action names.
     actions_dict: A mappting from action name to Action object.
+    comment_nodes: A list of top-level comment nodes.
+    suffixes: A list of <action-suffix> tags to be appended as-is.
 
   Returns:
     A well-printed minidom document that represents the input action data.
@@ -742,21 +703,23 @@ def PrettyPrint(actions, actions_dict, comment_nodes=[]):
   actions_element = doc.createElement('actions')
   doc.appendChild(actions_element)
 
-  # Attach action node based on updated |actions|.
-  for action in sorted(actions):
-    actions_element.appendChild(
-        _CreateActionTag(doc, action, actions_dict.get(action, None)))
+  # Attach action node based on updated |actions_dict|.
+  for _, action in sorted(actions_dict.items()):
+    action_tag = _CreateActionTag(doc, action)
+    if action_tag:
+      actions_element.appendChild(action_tag)
 
-  return print_style.GetPrintStyle().PrettyPrintNode(doc)
+  for suffix_tag in suffixes:
+    actions_element.appendChild(suffix_tag)
+
+  return actions_print_style.GetPrintStyle().PrettyPrintXml(doc)
 
 
 def UpdateXml(original_xml):
-  actions, actions_dict, comment_nodes = ParseActionFile(original_xml)
+  actions_dict, comment_nodes, suffixes = ParseActionFile(original_xml)
 
+  actions = set()
   AddComputedActions(actions)
-  # TODO(fmantek): bring back webkit editor actions.
-  # AddWebKitEditorActions(actions)
-  AddAboutFlagsActions(actions)
   AddWebUIActions(actions)
 
   AddLiteralActions(actions)
@@ -771,7 +734,11 @@ def UpdateXml(original_xml):
   AddHistoryPageActions(actions)
   AddPDFPluginActions(actions)
 
-  return PrettyPrint(actions, actions_dict, comment_nodes)
+  for action_name in actions:
+    if action_name not in actions_dict:
+      actions_dict[action_name] = action_utils.Action(action_name, None, [])
+
+  return PrettyPrint(actions_dict, comment_nodes, suffixes)
 
 
 def main(argv):

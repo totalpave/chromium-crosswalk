@@ -19,21 +19,14 @@
 
 class GURL;
 
-namespace content {
-class BrowserContext;
-}
-
 namespace extensions {
 class Extension;
 class IconImage;
 }
 
 namespace gfx {
-class Canvas;
 class Image;
 class ImageSkia;
-class Rect;
-class Size;
 }
 
 // ExtensionAction encapsulates the state of a browser action or page action.
@@ -51,6 +44,10 @@ class ExtensionAction {
 
   static extension_misc::ExtensionIcons ActionIconSize();
 
+  // Returns the default icon to use when no other is available (the puzzle
+  // piece).
+  static gfx::Image FallbackIcon();
+
   // Use this ID to indicate the default state for properties that take a tab_id
   // parameter.
   static const int kDefaultTabId;
@@ -67,10 +64,6 @@ class ExtensionAction {
   extensions::ActionInfo::Type action_type() const {
     return action_type_;
   }
-
-  // action id -- only used with legacy page actions API
-  std::string id() const { return id_; }
-  void set_id(const std::string& id) { id_ = id; }
 
   // Set the url which the popup will load when the user clicks this action's
   // icon.  Setting an empty URL will disable the popup for a given tab.
@@ -168,7 +161,7 @@ class ExtensionAction {
     if (const bool* tab_is_visible = FindOrNull(&is_visible_, tab_id))
       return *tab_is_visible;
 
-    if (ContainsKey(declarative_show_count_, tab_id))
+    if (base::ContainsKey(declarative_show_count_, tab_id))
       return true;
 
     if (const bool* default_is_visible =
@@ -181,15 +174,15 @@ class ExtensionAction {
   // Remove all tab-specific state.
   void ClearAllValuesForTab(int tab_id);
 
-  // Lazily loads and returns the default icon image, if one exists for the
-  // action.
-  extensions::IconImage* LoadDefaultIconImage(
-      const extensions::Extension& extension,
-      content::BrowserContext* browser_context);
+  // Sets the default IconImage for this action.
+  void SetDefaultIconImage(std::unique_ptr<extensions::IconImage> icon_image);
 
   // Returns the image to use as the default icon for the action. Can only be
-  // called after LoadDefaultIconImage().
+  // called after SetDefaultIconImage().
   gfx::Image GetDefaultIconImage() const;
+
+  // Returns the placeholder image for the extension.
+  gfx::Image GetPlaceholderIconImage() const;
 
   // Determine whether or not the ExtensionAction has a value set for the given
   // |tab_id| for each property.
@@ -200,6 +193,10 @@ class ExtensionAction {
   bool HasBadgeTextColor(int tab_id) const;
   bool HasIsVisible(int tab_id) const;
   bool HasIcon(int tab_id) const;
+
+  extensions::IconImage* default_icon_image() {
+    return default_icon_image_.get();
+  }
 
   void SetDefaultIconForTest(std::unique_ptr<ExtensionIconSet> default_icon);
 
@@ -274,7 +271,7 @@ class ExtensionAction {
   // those up to be called in the right order.
 
   // Maps tab_id to the number of active (applied-but-not-reverted)
-  // declarativeContent.ShowPageAction actions.
+  // declarativeContent.ShowAction actions.
   std::map<int, int> declarative_show_count_;
 
   // declarative_icon_[tab_id][declarative_rule_priority] is a vector of icon
@@ -285,8 +282,10 @@ class ExtensionAction {
   // image representations will be selected.
   std::unique_ptr<ExtensionIconSet> default_icon_;
 
-  // The default icon image, if |default_icon_| exists.
-  // Lazily initialized via LoadDefaultIconImage().
+  // The default icon image, if |default_icon_| exists. Set via
+  // SetDefaultIconImage(). Since IconImages depend upon BrowserContexts, we
+  // don't have the ExtensionAction load it directly to keep this class's
+  // knowledge limited.
   std::unique_ptr<extensions::IconImage> default_icon_image_;
 
   // The lazily-initialized image for a placeholder icon, in the event that the

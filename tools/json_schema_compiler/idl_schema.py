@@ -50,13 +50,20 @@ def ProcessComment(comment):
 
   Returns: A tuple that looks like:
     (
-      "The processed comment, minus all |parameter| mentions.",
+      "The processed comment, minus all |parameter| mentions and jsexterns.",
+      "Any block wrapped in <jsexterns></jsexterns>.",
       {
         'parameter_name_1': "The comment that followed |parameter_name_1|:",
         ...
       }
     )
   '''
+  jsexterns = None
+  match = re.search('<jsexterns>(.*)</jsexterns>', comment, re.DOTALL)
+  if match:
+    jsexterns = match.group(1).strip()
+    comment = comment[:match.start()] + comment[match.end():]
+
   def add_paragraphs(content):
     paragraphs = content.split('\n\n')
     if len(paragraphs) < 2:
@@ -85,7 +92,7 @@ def ProcessComment(comment):
         add_paragraphs(comment[param_comment_start:param_comment_end].strip())
         .replace('\n', ''))
 
-  return (parent_comment, params)
+  return (parent_comment, jsexterns, params)
 
 
 class Callspec(object):
@@ -175,12 +182,15 @@ class Member(object):
     name = self.node.GetName()
     if self.node.GetProperty('deprecated'):
       properties['deprecated'] = self.node.GetProperty('deprecated')
-    if self.node.GetProperty('allowAmbiguousOptionalArguments'):
-      properties['allowAmbiguousOptionalArguments'] = True
-    for property_name in ('OPTIONAL', 'nodoc', 'nocompile', 'nodart',
-                          'nodefine'):
+
+    for property_name in ['allowAmbiguousOptionalArguments', 'forIOThread',
+                          'nodoc', 'nocompile', 'nodart', 'nodefine']:
       if self.node.GetProperty(property_name):
-        properties[property_name.lower()] = True
+        properties[property_name] = True
+
+    if self.node.GetProperty('OPTIONAL'):
+      properties['optional'] = True
+
     for option_name, sanitizer in [
         ('maxListeners', int),
         ('supportsFilters', lambda s: s == 'true'),
@@ -195,8 +205,10 @@ class Member(object):
     parameter_comments = OrderedDict()
     for node in self.node.GetChildren():
       if node.cls == 'Comment':
-        (parent_comment, parameter_comments) = ProcessComment(node.GetName())
+        (parent_comment, jsexterns, parameter_comments) = ProcessComment(
+            node.GetName())
         properties['description'] = parent_comment
+        properties['jsexterns'] = jsexterns
       elif node.cls == 'Callspec':
         name, parameters, return_type = (Callspec(node, parameter_comments)
                                          .process(callbacks))
@@ -303,6 +315,10 @@ class Typeref(object):
     elif self.typeref == 'ArrayBuffer':
       properties['type'] = 'binary'
       properties['isInstanceOf'] = 'ArrayBuffer'
+    elif self.typeref == 'ArrayBufferView':
+      properties['type'] = 'binary'
+      # We force the APIs to specify instanceOf since ArrayBufferView isn't an
+      # instantiable type, therefore we don't specify isInstanceOf here.
     elif self.typeref == 'FileEntry':
       properties['type'] = 'object'
       properties['isInstanceOf'] = 'FileEntry'
@@ -500,6 +516,8 @@ class IDLSchema(object):
           compiler_options['implemented_in'] = node.value
         elif node.name == 'camel_case_enum_to_string':
           compiler_options['camel_case_enum_to_string'] = node.value
+        elif node.name == 'generate_error_messages':
+          compiler_options['generate_error_messages'] = True
         elif node.name == 'deprecated':
           deprecated = str(node.value)
         elif node.name == 'documentation_title':

@@ -31,7 +31,6 @@
 #include "media/base/audio_parameters.h"
 
 struct pa_context;
-struct pa_operation;
 struct pa_stream;
 struct pa_threaded_mainloop;
 
@@ -93,6 +92,8 @@ class PulseAudioOutputStream : public AudioOutputStream {
 
   // Container for retrieving data from AudioSourceCallback::OnMoreData().
   std::unique_ptr<AudioBus> audio_bus_;
+
+  const size_t buffer_size_;
 
   base::ThreadChecker thread_checker_;
 

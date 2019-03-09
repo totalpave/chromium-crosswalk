@@ -12,11 +12,10 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "chromecast/base/init_command_line_shlib.h"
 #include "chromecast/base/task_runner_impl.h"
-#include "chromecast/media/cma/backend/alsa/media_pipeline_backend_alsa.h"
-#include "chromecast/media/cma/backend/alsa/stream_mixer_alsa.h"
+#include "chromecast/media/cma/backend/media_pipeline_backend_for_mixer.h"
+#include "chromecast/media/cma/backend/stream_mixer.h"
 #include "chromecast/public/cast_media_shlib.h"
 #include "chromecast/public/graphics_types.h"
-#include "chromecast/public/media_codec_support_shlib.h"
 #include "chromecast/public/video_plane.h"
 #include "media/base/media.h"
 #include "media/base/media_switches.h"
@@ -89,6 +88,8 @@ std::unique_ptr<base::ThreadTaskRunnerHandle> g_thread_task_runner_handle;
 }  // namespace
 
 void CastMediaShlib::Initialize(const std::vector<std::string>& argv) {
+  // Sets logging to display process and thread ID.
+  logging::SetLogItems(true, true, false, false);
   chromecast::InitCommandLineShlib(argv);
 
   g_video_plane = new DefaultVideoPlane();
@@ -132,15 +133,15 @@ MediaPipelineBackend* CastMediaShlib::CreateMediaPipelineBackend(
         new base::ThreadTaskRunnerHandle(task_runner));
   }
 
-  // TODO(cleichner): Implement MediaSyncType in MediaPipelineDeviceAlsa
-  return new MediaPipelineBackendAlsa(params);
+  // TODO(cleichner): Implement MediaSyncType in MediaPipelineDeviceAlsa.
+  return new MediaPipelineBackendForMixer(params);
 }
 
 double CastMediaShlib::GetMediaClockRate() {
   int ppm = 0;
   if (!g_rate_offset_element) {
-    VLOG(1) << "g_rate_offset_element is null, ALSA rate offset control will "
-               "not be possible.";
+    LOG(INFO) << "g_rate_offset_element is null, ALSA rate offset control will "
+                 "not be possible.";
     return kOneMhzReference;
   }
   snd_ctl_elem_value_t* rate_offset_ppm;
@@ -170,8 +171,8 @@ void CastMediaShlib::MediaClockRateRange(double* minimum_rate,
 bool CastMediaShlib::SetMediaClockRate(double new_rate) {
   int new_ppm = new_rate - kOneMhzReference;
   if (!g_rate_offset_element) {
-    VLOG(1) << "g_rate_offset_element is null, ALSA rate offset control will "
-               "not be possible.";
+    LOG(INFO) << "g_rate_offset_element is null, ALSA rate offset control will "
+                 "not be possible.";
     return false;
   }
   snd_ctl_elem_value_t* rate_offset_ppm;
@@ -187,15 +188,6 @@ bool CastMediaShlib::SetMediaClockRate(double new_rate) {
 
 bool CastMediaShlib::SupportsMediaClockRateChange() {
   return g_rate_offset_element != nullptr;
-}
-
-void CastMediaShlib::AddLoopbackAudioObserver(LoopbackAudioObserver* observer) {
-  StreamMixerAlsa::Get()->AddLoopbackAudioObserver(observer);
-}
-
-void CastMediaShlib::RemoveLoopbackAudioObserver(
-    LoopbackAudioObserver* observer) {
-  StreamMixerAlsa::Get()->RemoveLoopbackAudioObserver(observer);
 }
 
 }  // namespace media

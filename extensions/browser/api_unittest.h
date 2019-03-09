@@ -9,7 +9,7 @@
 #include <string>
 
 #include "base/memory/ref_counted.h"
-#include "components/pref_registry/testing_pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "extensions/browser/extensions_test.h"
 
 namespace base {
@@ -19,8 +19,6 @@ class ListValue;
 }
 
 namespace content {
-class NotificationService;
-class TestBrowserThreadBundle;
 class WebContents;
 }
 
@@ -41,8 +39,8 @@ class ApiUnitTest : public ExtensionsTest {
 
   content::WebContents* contents() { return contents_.get(); }
   const Extension* extension() const { return extension_.get(); }
-  scoped_refptr<Extension> extension_ref() { return extension_; }
-  void set_extension(scoped_refptr<Extension> extension) {
+  scoped_refptr<const Extension> extension_ref() { return extension_; }
+  void set_extension(scoped_refptr<const Extension> extension) {
     extension_ = extension;
   }
 
@@ -87,17 +85,14 @@ class ApiUnitTest : public ExtensionsTest {
                    const std::string& args);
 
  private:
-  std::unique_ptr<content::NotificationService> notification_service_;
+  sync_preferences::TestingPrefServiceSyncable testing_pref_service_;
 
-  std::unique_ptr<content::TestBrowserThreadBundle> thread_bundle_;
-  user_prefs::TestingPrefServiceSyncable testing_pref_service_;
-
-  // The WebContents used to associate a RenderViewHost with API function calls,
-  // or null.
+  // The WebContents used to associate a RenderFrameHost with API function
+  // calls, or null.
   std::unique_ptr<content::WebContents> contents_;
 
   // The Extension used when running API function calls.
-  scoped_refptr<Extension> extension_;
+  scoped_refptr<const Extension> extension_;
 };
 
 }  // namespace extensions

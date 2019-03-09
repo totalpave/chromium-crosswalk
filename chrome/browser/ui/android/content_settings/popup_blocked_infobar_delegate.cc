@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <utility>
 
+#include "chrome/browser/android/android_theme_resources.h"
+#include "chrome/browser/content_settings/chrome_content_settings_utils.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/infobars/infobar_service.h"
 #include "chrome/browser/profiles/profile.h"
@@ -17,9 +19,7 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/infobars/core/infobar.h"
 #include "components/prefs/pref_service.h"
-#include "grit/theme_resources.h"
 #include "ui/base/l10n/l10n_util.h"
-
 
 // static
 void PopupBlockedInfoBarDelegate::Create(content::WebContents* web_contents,
@@ -49,6 +49,9 @@ void PopupBlockedInfoBarDelegate::Create(content::WebContents* web_contents,
   }
 
   infobar_service->AddInfoBar(std::move(infobar));
+
+  content_settings::RecordPopupsAction(
+      content_settings::POPUPS_ACTION_DISPLAYED_INFOBAR_ON_MOBILE);
 }
 
 PopupBlockedInfoBarDelegate::~PopupBlockedInfoBarDelegate() {
@@ -56,11 +59,11 @@ PopupBlockedInfoBarDelegate::~PopupBlockedInfoBarDelegate() {
 
 infobars::InfoBarDelegate::InfoBarIdentifier
 PopupBlockedInfoBarDelegate::GetIdentifier() const {
-  return POPUP_BLOCKED_INFOBAR_DELEGATE;
+  return POPUP_BLOCKED_INFOBAR_DELEGATE_MOBILE;
 }
 
 int PopupBlockedInfoBarDelegate::GetIconId() const {
-  return IDR_BLOCKED_POPUPS;
+  return IDR_ANDROID_INFOBAR_BLOCKED_POPUPS;
 }
 
 PopupBlockedInfoBarDelegate*
@@ -114,7 +117,10 @@ bool PopupBlockedInfoBarDelegate::Accept() {
       popup_blocker_helper->GetBlockedPopupRequests();
   for (PopupBlockerTabHelper::PopupIdMap::iterator it = blocked_popups.begin();
       it != blocked_popups.end(); ++it)
-    popup_blocker_helper->ShowBlockedPopup(it->first);
+    popup_blocker_helper->ShowBlockedPopup(it->first,
+                                           WindowOpenDisposition::CURRENT_TAB);
 
+  content_settings::RecordPopupsAction(
+      content_settings::POPUPS_ACTION_CLICKED_ALWAYS_SHOW_ON_MOBILE);
   return true;
 }

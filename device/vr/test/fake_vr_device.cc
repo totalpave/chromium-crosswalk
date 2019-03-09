@@ -6,29 +6,69 @@
 
 namespace device {
 
-FakeVRDevice::FakeVRDevice(VRDeviceProvider* provider) : VRDevice(provider) {
-  device_ = VRDisplay::New();
-  pose_ = VRPose::New();
+FakeVRDevice::FakeVRDevice(mojom::XRDeviceId id)
+    : VRDeviceBase(id), controller_binding_(this) {
+  SetVRDisplayInfo(InitBasicDevice());
 }
 
 FakeVRDevice::~FakeVRDevice() {}
 
-void FakeVRDevice::SetVRDevice(const VRDisplayPtr& device) {
-  device_ = device.Clone();
+mojom::VRDisplayInfoPtr FakeVRDevice::InitBasicDevice() {
+  mojom::VRDisplayInfoPtr display_info = mojom::VRDisplayInfo::New();
+  display_info->id = GetId();
+  display_info->displayName = "FakeVRDevice";
+
+  display_info->capabilities = mojom::VRDisplayCapabilities::New();
+  display_info->capabilities->hasPosition = false;
+  display_info->capabilities->hasExternalDisplay = false;
+  display_info->capabilities->canPresent = false;
+
+  display_info->leftEye = InitEye(45, -0.03f, 1024);
+  display_info->rightEye = InitEye(45, 0.03f, 1024);
+  return display_info;
 }
 
-void FakeVRDevice::SetPose(const VRPosePtr& pose) {
-  pose_ = pose.Clone();
+mojom::VREyeParametersPtr FakeVRDevice::InitEye(float fov,
+                                                float offset,
+                                                uint32_t size) {
+  mojom::VREyeParametersPtr eye = mojom::VREyeParameters::New();
+
+  eye->fieldOfView = mojom::VRFieldOfView::New();
+  eye->fieldOfView->upDegrees = fov;
+  eye->fieldOfView->downDegrees = fov;
+  eye->fieldOfView->leftDegrees = fov;
+  eye->fieldOfView->rightDegrees = fov;
+
+  eye->offset.resize(3);
+  eye->offset[0] = offset;
+  eye->offset[1] = 0.0f;
+  eye->offset[2] = 0.0f;
+
+  eye->renderWidth = size;
+  eye->renderHeight = size;
+
+  return eye;
 }
 
-VRDisplayPtr FakeVRDevice::GetVRDevice() {
-  return device_.Clone();
+void FakeVRDevice::RequestSession(
+    mojom::XRRuntimeSessionOptionsPtr options,
+    mojom::XRRuntime::RequestSessionCallback callback) {
+  OnStartPresenting();
+  // The current tests never use the return values, so it's fine to return
+  // invalid data here.
+  std::move(callback).Run(nullptr, nullptr);
 }
 
-VRPosePtr FakeVRDevice::GetPose() {
-  return pose_.Clone();
+void FakeVRDevice::OnPresentingControllerMojoConnectionError() {
+  OnExitPresent();
+  controller_binding_.Close();
 }
 
-void FakeVRDevice::ResetPose() {}
+void FakeVRDevice::OnGetInlineFrameData(
+    mojom::XRFrameDataProvider::GetFrameDataCallback callback) {
+  mojom::XRFrameDataPtr frame_data = mojom::XRFrameData::New();
+  frame_data->pose = pose_.Clone();
+  std::move(callback).Run(std::move(frame_data));
+}
 
 }  // namespace device

@@ -10,9 +10,20 @@
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
+#include "ui/native_theme/native_theme.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/scrollbar/scroll_bar.h"
 
+namespace gfx {
+class ScrollOffset;
+}
+
 namespace views {
+namespace test {
+class ScrollViewTestApi;
+}
+
+class Separator;
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -39,6 +50,10 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   // Creates a ScrollView with a theme specific border.
   static ScrollView* CreateScrollViewWithBorder();
 
+  // Returns the ScrollView for which |contents| is its contents, or null if
+  // |contents| is not in a ScrollView.
+  static ScrollView* GetScrollViewForContents(View* contents);
+
   // Set the contents. Any previous contents will be deleted. The contents
   // is the view that needs to scroll.
   void SetContents(View* a_view);
@@ -48,11 +63,25 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   // Sets the header, deleting the previous header.
   void SetHeader(View* header);
 
+  // The background color can be configured in two distinct ways:
+  // . By way of SetBackgroundThemeColorId(). This is the default and when
+  //   called the background color comes from the theme (and changes if the
+  //   theme changes).
+  // . By way of setting an explicit color, i.e. SetBackgroundColor(). Use
+  //   SK_ColorTRANSPARENT if you don't want any color, but be warned this
+  //   produces awful results when layers are used with subpixel rendering.
+  void SetBackgroundColor(SkColor color);
+  void SetBackgroundThemeColorId(ui::NativeTheme::ColorId color_id);
+
   // Returns the visible region of the content View.
   gfx::Rect GetVisibleRect() const;
 
   void set_hide_horizontal_scrollbar(bool visible) {
     hide_horizontal_scrollbar_ = visible;
+  }
+
+  void set_draw_overflow_indicator(bool draw_overflow_indicator) {
+    draw_overflow_indicator_ = draw_overflow_indicator;
   }
 
   // Turns this scroll view into a bounded scroll view, with a fixed height.
@@ -62,10 +91,10 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   // Returns whether or not the ScrollView is bounded (as set by ClipHeightTo).
   bool is_bounded() const { return max_height_ >= 0 && min_height_ >= 0; }
 
-  // Retrieves the width/height of scrollbars. These return 0 if the scrollbar
-  // has not yet been created.
-  int GetScrollBarWidth() const;
-  int GetScrollBarHeight() const;
+  // Retrieves the width/height reserved for scrollbars. These return 0 if the
+  // scrollbar has not yet been created or in the case of overlay scrollbars.
+  int GetScrollBarLayoutWidth() const;
+  int GetScrollBarLayoutHeight() const;
 
   // Returns the horizontal/vertical scrollbar. This may return NULL.
   const ScrollBar* horizontal_scroll_bar() const { return horiz_sb_; }
@@ -76,16 +105,19 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   void SetHorizontalScrollBar(ScrollBar* horiz_sb);
   void SetVerticalScrollBar(ScrollBar* vert_sb);
 
+  // Sets whether this ScrollView has a focus indicator or not.
+  void SetHasFocusIndicator(bool has_focus_indicator);
+
   // View overrides:
-  gfx::Size GetPreferredSize() const override;
+  gfx::Size CalculatePreferredSize() const override;
   int GetHeightForWidth(int width) const override;
   void Layout() override;
   bool OnKeyPressed(const ui::KeyEvent& event) override;
   bool OnMouseWheel(const ui::MouseWheelEvent& e) override;
-  void OnMouseEntered(const ui::MouseEvent& event) override;
-  void OnMouseExited(const ui::MouseEvent& event) override;
+  void OnScrollEvent(ui::ScrollEvent* event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
   const char* GetClassName() const override;
+  void OnNativeThemeChanged(const ui::NativeTheme* theme) override;
 
   // ScrollBarController overrides:
   void ScrollToPosition(ScrollBar* source, int position) override;
@@ -94,8 +126,25 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
                          bool is_positive) override;
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(ScrollViewTest, CornerViewVisibility);
+  friend class test::ScrollViewTestApi;
+
   class Viewport;
+
+  union BackgroundColorData {
+    SkColor color;
+    ui::NativeTheme::ColorId color_id;
+  };
+
+  // Forces |contents_viewport_| to have a Layer (assuming it doesn't already).
+  void EnableViewPortLayer();
+
+  // Returns true if this or the viewport has a layer.
+  bool DoesViewportOrScrollViewHaveLayer() const;
+
+  // Updates or destroys the viewport layer as necessary. If any descendants
+  // of the viewport have a layer, then the viewport needs to have a layer,
+  // otherwise it doesn't.
+  void UpdateViewportLayerForClipping();
 
   // Used internally by SetHeader() and SetContents() to reset the view.  Sets
   // |member| to |new_view|. If |new_view| is non-null it is added to |parent|.
@@ -121,6 +170,33 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   // Update the scrollbars positions given viewport and content sizes.
   void UpdateScrollBarPositions();
 
+  // Helpers to get and set the current scroll offset (either from the ui::Layer
+  // or from the |contents_| origin offset).
+  gfx::ScrollOffset CurrentOffset() const;
+  void ScrollToOffset(const gfx::ScrollOffset& offset);
+
+  // Whether the ScrollView scrolls using ui::Layer APIs.
+  bool ScrollsWithLayers() const;
+
+  // Callback entrypoint when hosted Layers are scrolled by the Compositor.
+  void OnLayerScrolled(const gfx::ScrollOffset&, const cc::ElementId&);
+
+  // Horizontally scrolls the header (if any) to match the contents.
+  void ScrollHeader();
+
+  void AddBorder();
+  void UpdateBorder();
+
+  void UpdateBackground();
+  SkColor GetBackgroundColor() const;
+
+  // Positions each overflow indicator against their respective content edge.
+  void PositionOverflowIndicators();
+
+  // Shows/hides the overflow indicators depending on the position of the
+  // scrolling content within the viewport.
+  void UpdateOverflowIndicatorVisibility(const gfx::ScrollOffset& offset);
+
   // The current contents and its viewport. |contents_| is contained in
   // |contents_viewport_|.
   View* contents_;
@@ -140,14 +216,42 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   // Corner view.
   View* corner_view_;
 
+  // Hidden content indicators
+  std::unique_ptr<Separator> more_content_left_;
+  std::unique_ptr<Separator> more_content_top_;
+  std::unique_ptr<Separator> more_content_right_;
+  std::unique_ptr<Separator> more_content_bottom_;
+
   // The min and max height for the bounded scroll view. These are negative
   // values if the view is not bounded.
   int min_height_;
   int max_height_;
 
+  // See description of SetBackgroundColor() for details.
+  BackgroundColorData background_color_data_ = {
+      ui::NativeTheme::kColorId_DialogBackground};
+  bool use_color_id_ = true;
+
   // If true, never show the horizontal scrollbar (even if the contents is wider
   // than the viewport).
   bool hide_horizontal_scrollbar_;
+
+  // In Harmony, the indicator is a focus ring. Pre-Harmony, the indicator is a
+  // different border painter.
+  bool draw_focus_indicator_ = false;
+
+  // Only needed for pre-Harmony. Remove when Harmony is default.
+  bool draw_border_ = false;
+
+  // Whether to draw a white separator on the four sides of the scroll view when
+  // it overflows.
+  bool draw_overflow_indicator_ = true;
+
+  // Set to true if the scroll with layers feature is enabled.
+  const bool scroll_with_layers_enabled_;
+
+  // The focus ring for this ScrollView.
+  std::unique_ptr<FocusRing> focus_ring_;
 
   DISALLOW_COPY_AND_ASSIGN(ScrollView);
 };

@@ -4,77 +4,241 @@
 
 #include "extensions/browser/updater/safe_manifest_parser.h"
 
-#include "base/bind.h"
-#include "base/command_line.h"
-#include "base/location.h"
-#include "base/logging.h"
-#include "content/public/browser/browser_thread.h"
-#include "content/public/browser/utility_process_host.h"
-#include "content/public/common/content_switches.h"
-#include "extensions/common/extension_utility_messages.h"
-#include "ipc/ipc_message_macros.h"
-#include "grit/extensions_strings.h"
-#include "ui/base/l10n/l10n_util.h"
+#include <memory>
 
-using content::BrowserThread;
+#include "base/bind.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/optional.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/values.h"
+#include "base/version.h"
+#include "content/public/browser/browser_thread.h"
+#include "services/data_decoder/public/cpp/safe_xml_parser.h"
 
 namespace extensions {
 
-SafeManifestParser::SafeManifestParser(const std::string& xml,
-                                       const ResultsCallback& results_callback)
-    : xml_(xml), results_callback_(results_callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+using data_decoder::GetXmlElementAttribute;
+using data_decoder::GetXmlElementChildWithTag;
+using data_decoder::GetXmlElementNamespacePrefix;
+using data_decoder::GetXmlQualifiedName;
+using data_decoder::IsXmlElementNamed;
+
+namespace {
+
+constexpr char kExpectedGupdateProtocol[] = "2.0";
+constexpr char kExpectedGupdateXmlns[] =
+    "http://www.google.com/update2/response";
+
+void ReportError(ParseUpdateManifestCallback callback,
+                 const std::string& error) {
+  std::move(callback).Run(/*results=*/nullptr, error);
 }
 
-void SafeManifestParser::Start() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (!BrowserThread::PostTask(
-          BrowserThread::IO,
-          FROM_HERE,
-          base::Bind(&SafeManifestParser::ParseInSandbox, this))) {
-    NOTREACHED();
+// Helper function that reads in values for a single <app> tag. It returns a
+// boolean indicating success or failure. On failure, it writes a error message
+// into |error_detail|.
+bool ParseSingleAppTag(const base::Value& app_element,
+                       const std::string& xml_namespace,
+                       UpdateManifestResult* result,
+                       std::string* error_detail,
+                       int* prodversionmin_count) {
+  // Read the extension id.
+  result->extension_id = GetXmlElementAttribute(app_element, "appid");
+  if (result->extension_id.empty()) {
+    *error_detail = "Missing appid on app node";
+    return false;
   }
+
+  // Get the updatecheck node.
+  std::string updatecheck_name =
+      GetXmlQualifiedName(xml_namespace, "updatecheck");
+  int updatecheck_count =
+      data_decoder::GetXmlElementChildrenCount(app_element, updatecheck_name);
+  if (updatecheck_count != 1) {
+    *error_detail = updatecheck_count == 0
+                        ? "Too many updatecheck tags on app (expecting only 1)."
+                        : "Missing updatecheck on app.";
+    return false;
+  }
+
+  const base::Value* updatecheck =
+      data_decoder::GetXmlElementChildWithTag(app_element, updatecheck_name);
+
+  if (GetXmlElementAttribute(*updatecheck, "status") == "noupdate")
+    return true;
+
+  // Get the optional minimum browser version.
+  result->browser_min_version =
+      GetXmlElementAttribute(*updatecheck, "prodversionmin");
+  if (!result->browser_min_version.empty()) {
+    *prodversionmin_count += 1;
+    base::Version browser_min_version(result->browser_min_version);
+    if (!browser_min_version.IsValid()) {
+      *error_detail = "Invalid prodversionmin: '";
+      *error_detail += result->browser_min_version;
+      *error_detail += "'.";
+      return false;
+    }
+  }
+
+  // Find the url to the crx file.
+  result->crx_url = GURL(GetXmlElementAttribute(*updatecheck, "codebase"));
+  if (!result->crx_url.is_valid()) {
+    *error_detail = "Invalid codebase url: '";
+    *error_detail += result->crx_url.possibly_invalid_spec();
+    *error_detail += "'.";
+    return false;
+  }
+
+  // Get the version.
+  result->version = GetXmlElementAttribute(*updatecheck, "version");
+  if (result->version.empty()) {
+    *error_detail = "Missing version for updatecheck.";
+    return false;
+  }
+  base::Version version(result->version);
+  if (!version.IsValid()) {
+    *error_detail = "Invalid version: '";
+    *error_detail += result->version;
+    *error_detail += "'.";
+    return false;
+  }
+
+  // package_hash is optional. It is a sha256 hash of the package in hex format.
+  result->package_hash = GetXmlElementAttribute(*updatecheck, "hash_sha256");
+
+  int size = 0;
+  if (base::StringToInt(GetXmlElementAttribute(*updatecheck, "size"), &size)) {
+    result->size = size;
+  }
+
+  // package_fingerprint is optional. It identifies the package, preferably
+  // with a modified sha256 hash of the package in hex format.
+  result->package_fingerprint = GetXmlElementAttribute(*updatecheck, "fp");
+
+  // Differential update information is optional.
+  result->diff_crx_url =
+      GURL(GetXmlElementAttribute(*updatecheck, "codebasediff"));
+  result->diff_package_hash = GetXmlElementAttribute(*updatecheck, "hashdiff");
+  int sizediff = 0;
+  if (base::StringToInt(GetXmlElementAttribute(*updatecheck, "sizediff"),
+                        &sizediff)) {
+    result->diff_size = sizediff;
+  }
+
+  return true;
 }
 
-SafeManifestParser::~SafeManifestParser() {
-  // If we're using UtilityProcessHost, we may not be destroyed on
-  // the UI or IO thread.
+void ParseXmlDone(ParseUpdateManifestCallback callback,
+                  std::unique_ptr<base::Value> root,
+                  const base::Optional<std::string>& error) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  if (error) {
+    ReportError(std::move(callback), "Failed to parse XML: " + *error);
+    return;
+  }
+
+  auto results = std::make_unique<UpdateManifestResults>();
+  if (!root) {
+    ReportError(std::move(callback), "Empty XML");
+    return;
+  }
+
+  // Look for the required namespace declaration.
+  std::string gupdate_ns;
+  if (!GetXmlElementNamespacePrefix(*root, kExpectedGupdateXmlns,
+                                    &gupdate_ns)) {
+    ReportError(std::move(callback),
+                "Missing or incorrect xmlns on gupdate tag");
+    return;
+  }
+
+  if (!IsXmlElementNamed(*root, GetXmlQualifiedName(gupdate_ns, "gupdate"))) {
+    ReportError(std::move(callback), "Missing gupdate tag");
+    return;
+  }
+
+  // Check for the gupdate "protocol" attribute.
+  if (GetXmlElementAttribute(*root, "protocol") != kExpectedGupdateProtocol) {
+    ReportError(std::move(callback),
+                std::string("Missing/incorrect protocol on gupdate tag "
+                            "(expected '") +
+                    kExpectedGupdateProtocol + "')");
+    return;
+  }
+
+  // Parse the first <daystart> if it's present.
+  const base::Value* daystart = GetXmlElementChildWithTag(
+      *root, GetXmlQualifiedName(gupdate_ns, "daystart"));
+  if (daystart) {
+    std::string elapsed_seconds =
+        GetXmlElementAttribute(*daystart, "elapsed_seconds");
+    int parsed_elapsed = kNoDaystart;
+    if (base::StringToInt(elapsed_seconds, &parsed_elapsed)) {
+      results->daystart_elapsed_seconds = parsed_elapsed;
+    }
+  }
+
+  // Parse each of the <app> tags.
+  std::vector<const base::Value*> apps;
+  data_decoder::GetAllXmlElementChildrenWithTag(
+      *root, GetXmlQualifiedName(gupdate_ns, "app"), &apps);
+  std::string error_msg;
+  int prodversionmin_count = 0;
+  for (const auto* app : apps) {
+    UpdateManifestResult result;
+    std::string app_error;
+    if (!ParseSingleAppTag(*app, gupdate_ns, &result, &app_error,
+                           &prodversionmin_count)) {
+      if (!error_msg.empty())
+        error_msg += "\r\n";  // Should we have an OS specific EOL?
+      error_msg += app_error;
+    } else {
+      results->list.push_back(result);
+    }
+  }
+
+  UMA_HISTOGRAM_COUNTS_100("Extensions.UpdateManifestHasProdVersionMinCounts",
+                           prodversionmin_count);
+
+  std::move(callback).Run(
+      results->list.empty() ? nullptr : std::move(results),
+      error_msg.empty() ? base::Optional<std::string>() : error_msg);
 }
 
-void SafeManifestParser::ParseInSandbox() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+}  // namespace
 
-  content::UtilityProcessHost* host = content::UtilityProcessHost::Create(
-      this,
-      BrowserThread::GetMessageLoopProxyForThread(BrowserThread::UI).get());
-  host->SetName(
-      l10n_util::GetStringUTF16(IDS_UTILITY_PROCESS_MANIFEST_PARSER_NAME));
-  host->Send(new ExtensionUtilityMsg_ParseUpdateManifest(xml_));
+UpdateManifestResult::UpdateManifestResult() = default;
+
+UpdateManifestResult::UpdateManifestResult(const UpdateManifestResult& other) =
+    default;
+
+UpdateManifestResult::~UpdateManifestResult() = default;
+
+UpdateManifestResults::UpdateManifestResults() = default;
+
+UpdateManifestResults::UpdateManifestResults(
+    const UpdateManifestResults& other) = default;
+
+UpdateManifestResults::~UpdateManifestResults() = default;
+
+std::map<std::string, std::vector<const UpdateManifestResult*>>
+UpdateManifestResults::GroupByID() const {
+  std::map<std::string, std::vector<const UpdateManifestResult*>> groups;
+  for (const UpdateManifestResult& update_result : list) {
+    groups[update_result.extension_id].push_back(&update_result);
+  }
+  return groups;
 }
 
-bool SafeManifestParser::OnMessageReceived(const IPC::Message& message) {
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(SafeManifestParser, message)
-    IPC_MESSAGE_HANDLER(ExtensionUtilityHostMsg_ParseUpdateManifest_Succeeded,
-                        OnParseUpdateManifestSucceeded)
-    IPC_MESSAGE_HANDLER(ExtensionUtilityHostMsg_ParseUpdateManifest_Failed,
-                        OnParseUpdateManifestFailed)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-  return handled;
-}
-
-void SafeManifestParser::OnParseUpdateManifestSucceeded(
-    const UpdateManifest::Results& results) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  results_callback_.Run(&results);
-}
-
-void SafeManifestParser::OnParseUpdateManifestFailed(
-    const std::string& error_message) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  LOG(WARNING) << "Error parsing update manifest:\n" << error_message;
-  results_callback_.Run(NULL);
+void ParseUpdateManifest(service_manager::Connector* connector,
+                         const std::string& xml,
+                         ParseUpdateManifestCallback callback) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  DCHECK(callback);
+  data_decoder::ParseXml(connector, xml,
+                         base::BindOnce(&ParseXmlDone, std::move(callback)));
 }
 
 }  // namespace extensions

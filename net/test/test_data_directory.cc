@@ -6,26 +6,38 @@
 
 #include "base/base_paths.h"
 #include "base/path_service.h"
+#include "base/threading/thread_restrictions.h"
 
 namespace net {
 
 namespace {
-const base::FilePath::CharType kCertificateRelativePath[] =
-    FILE_PATH_LITERAL("net/data/ssl/certificates");
+
+// Net data directory, relative to source root.
+const base::FilePath::CharType kNetDataRelativePath[] =
+    FILE_PATH_LITERAL("net/data");
+
+// Test certificates directory, relative to kNetDataRelativePath.
+const base::FilePath::CharType kCertificateDataSubPath[] =
+    FILE_PATH_LITERAL("ssl/certificates");
+
 }  // namespace
 
-base::FilePath GetTestCertsDirectory() {
+base::FilePath GetTestNetDataDirectory() {
   base::FilePath src_root;
-  PathService::Get(base::DIR_SOURCE_ROOT, &src_root);
-  return src_root.Append(kCertificateRelativePath);
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    base::PathService::Get(base::DIR_SOURCE_ROOT, &src_root);
+  }
+
+  return src_root.Append(kNetDataRelativePath);
+}
+
+base::FilePath GetTestCertsDirectory() {
+  return GetTestNetDataDirectory().Append(kCertificateDataSubPath);
 }
 
 base::FilePath GetTestClientCertsDirectory() {
-#if defined(OS_ANDROID)
-  return base::FilePath(kCertificateRelativePath);
-#else
-  return GetTestCertsDirectory();
-#endif
+  return base::FilePath(kNetDataRelativePath).Append(kCertificateDataSubPath);
 }
 
 base::FilePath GetWebSocketTestDataDirectory() {

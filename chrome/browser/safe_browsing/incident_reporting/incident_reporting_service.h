@@ -16,10 +16,10 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/safe_browsing/download_protection_service.h"
+#include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
+#include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "chrome/browser/safe_browsing/incident_reporting/delayed_analysis_callback.h"
 #include "chrome/browser/safe_browsing/incident_reporting/delayed_callback_runner.h"
 #include "chrome/browser/safe_browsing/incident_reporting/download_metadata_manager.h"
@@ -29,7 +29,6 @@
 #include "content/public/browser/notification_registrar.h"
 
 class Profile;
-class TrackedPreferenceValidationDelegate;
 
 namespace base {
 class TaskRunner;
@@ -41,25 +40,27 @@ class NotificationDetails;
 class NotificationSource;
 }
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
+}
+
+namespace prefs {
+namespace mojom {
+class TrackedPreferenceValidationDelegate;
+}
 }
 
 namespace safe_browsing {
 
-#if !defined(GOOGLE_CHROME_BUILD)
-extern const base::Feature kIncidentReportingDisableUpload;
-#endif
+extern const base::Feature kIncidentReportingEnableUpload;
 
 class ClientDownloadRequest;
 class ClientIncidentReport;
 class ClientIncidentReport_DownloadDetails;
 class ClientIncidentReport_EnvironmentData;
 class ClientIncidentReport_ExtensionData;
-class ClientIncidentReport_IncidentData;
 class Incident;
 class IncidentReceiver;
-class SafeBrowsingDatabaseManager;
 class SafeBrowsingService;
 
 // A class that manages the collection of incidents and submission of incident
@@ -67,13 +68,15 @@ class SafeBrowsingService;
 // begins operation when an incident is reported via the AddIncident method.
 // Incidents reported from a profile that is loading are held until the profile
 // is fully created. Incidents originating from profiles that do not participate
-// in safe browsing are dropped. Process-wide incidents are affiliated with a
-// profile that participates in safe browsing when one becomes available.
+// in safe browsing extended reporting are dropped. Process-wide incidents are
+// affiliated with a profile that participates in safe browsing extended
+// reporting when one becomes available.
 // Following the addition of an incident that is not dropped, the service
 // collects environmental data, finds the most recent binary download, and waits
 // a bit. Additional incidents that arrive during this time are collated with
 // the initial incident. Finally, already-reported incidents are pruned and any
 // remaining are uploaded in an incident report.
+// Lives on the UI thread.
 class IncidentReportingService : public content::NotificationObserver {
  public:
   explicit IncidentReportingService(SafeBrowsingService* safe_browsing_service);
@@ -94,16 +97,11 @@ class IncidentReportingService : public content::NotificationObserver {
   // for validation failures in |profile|. The delegate may outlive the service,
   // but incidents reported by it will no longer have any effect after the
   // service is deleted.
-  std::unique_ptr<TrackedPreferenceValidationDelegate>
+  std::unique_ptr<prefs::mojom::TrackedPreferenceValidationDelegate>
   CreatePreferenceValidationDelegate(Profile* profile);
 
   // Registers |callback| to be run after some delay following process launch.
   void RegisterDelayedAnalysisCallback(const DelayedAnalysisCallback& callback);
-
-  // Registers |callback| to be run after some delay following process launch if
-  // a profile participating in extended reporting is found.
-  void RegisterExtendedReportingOnlyDelayedAnalysisCallback(
-      const DelayedAnalysisCallback& callback);
 
   // Adds |download_manager| to the set monitored for client download request
   // storage.
@@ -118,7 +116,6 @@ class IncidentReportingService : public content::NotificationObserver {
   // be specified.
   IncidentReportingService(
       SafeBrowsingService* safe_browsing_service,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context_getter,
       base::TimeDelta delayed_task_interval,
       const scoped_refptr<base::TaskRunner>& delayed_task_runner);
 
@@ -136,10 +133,10 @@ class IncidentReportingService : public content::NotificationObserver {
 
   // Handles the addition of a new profile to the ProfileManager. Creates a new
   // context for |profile| if one does not exist, drops any received incidents
-  // for the profile if the profile is not participating in safe browsing, and
-  // initiates a new search for the most recent download if a report is being
-  // assembled and the most recent has not been found. Overridden by unit tests
-  // to inject incidents prior to creation.
+  // for the profile if the profile is not participating in safe browsing
+  // extended reporting, and initiates a new search for the most recent download
+  // if a report is being assembled and the most recent has not been found.
+  // Overridden by unit tests to inject incidents prior to creation.
   virtual void OnProfileAdded(Profile* profile);
 
   // Initiates a search for the most recent binary download. Overriden by unit
@@ -150,7 +147,6 @@ class IncidentReportingService : public content::NotificationObserver {
   // Initiates an upload. Overridden by unit tests to provide a fake uploader.
   virtual std::unique_ptr<IncidentReportUploader> StartReportUpload(
       const IncidentReportUploader::OnResultCallback& callback,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context_getter,
       const ClientIncidentReport& report);
 
   // Returns true if a report is currently being processed.
@@ -160,9 +156,6 @@ class IncidentReportingService : public content::NotificationObserver {
   struct ProfileContext;
   class UploadContext;
   class Receiver;
-
-  // A mapping of profiles to contexts holding state about received incidents.
-  typedef std::map<Profile*, ProfileContext*> ProfileContextCollection;
 
   // Returns the context for |profile|, creating it if it does not exist.
   ProfileContext* GetOrCreateProfileContext(Profile* profile);
@@ -174,8 +167,7 @@ class IncidentReportingService : public content::NotificationObserver {
   // but not yet uploaded are dropped.
   void OnProfileDestroyed(Profile* profile);
 
-  // Returns an initialized profile that participates in safe browsing. Profiles
-  // participating in extended safe browsing are preferred.
+  // Returns an initialized profile for which incident reporting is enabled.
   Profile* FindEligibleProfile() const;
 
   // Adds |incident_data| relating to the optional |profile| to the service.
@@ -249,16 +241,16 @@ class IncidentReportingService : public content::NotificationObserver {
 
   // Processes all received incidents once all data collection is
   // complete. Incidents originating from profiles that do not participate in
-  // safe browsing are dropped, incidents that have already been reported are
-  // pruned, and prune state is cleared for incidents that are now clear. Report
-  // upload is started if any incidents remain.
+  // safe browsing extended reporting are dropped, incidents that have already
+  // been reported are pruned, and prune state is cleared for incidents that are
+  // now clear. Report upload is started if any incidents remain.
   void ProcessIncidentsIfCollectionComplete();
 
   // Cancels all uploads, discarding all reports and responses in progress.
   void CancelAllReportUploads();
 
-  // Continues an upload after checking for the CSD whitelist killswitch.
-  void OnKillSwitchResult(UploadContext* context, bool is_killswitch_on);
+  // Continues an upload if uploading is enabled.
+  void UploadReportIfUploadingEnabled(UploadContext* context);
 
   // Performs processing for a report after succesfully receiving a response.
   void HandleResponse(const UploadContext& context);
@@ -269,7 +261,7 @@ class IncidentReportingService : public content::NotificationObserver {
                             std::unique_ptr<ClientIncidentResponse> response);
 
   // DownloadProtectionService::ClientDownloadRequestCallback implementation.
-  void OnClientDownloadRequest(content::DownloadItem* download,
+  void OnClientDownloadRequest(download::DownloadItem* download,
                                const ClientDownloadRequest* request);
 
   // content::NotificationObserver methods.
@@ -277,14 +269,8 @@ class IncidentReportingService : public content::NotificationObserver {
                const content::NotificationSource& source,
                const content::NotificationDetails& details) override;
 
-  base::ThreadChecker thread_checker_;
-
-  // The safe browsing database manager, through which the whitelist killswitch
-  // is checked.
-  scoped_refptr<SafeBrowsingDatabaseManager> database_manager_;
-
-  // Accessor for an URL context with which reports will be sent.
-  scoped_refptr<net::URLRequestContextGetter> url_request_context_getter_;
+  // Accessor for an URLLoaderFactory with which reports will be sent.
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   // A pointer to a function that collects environment data. The function will
   // be run by |environment_collection_task_runner_|. This is ordinarily
@@ -302,8 +288,7 @@ class IncidentReportingService : public content::NotificationObserver {
 
   // A subscription for ClientDownloadRequests, used to persist them for later
   // use.
-  DownloadProtectionService::ClientDownloadRequestSubscription
-      client_download_request_subscription_;
+  ClientDownloadRequestSubscription client_download_request_subscription_;
 
   // True when the asynchronous environment collection task has been fired off
   // but has not yet completed.
@@ -335,15 +320,12 @@ class IncidentReportingService : public content::NotificationObserver {
   base::TimeTicks last_download_begin_;
 
   // Context data for all on-the-record profiles plus the process-wide (NULL)
-  // context.
-  ProfileContextCollection profiles_;
+  // context. A mapping of profiles to contexts holding state about received
+  // incidents.
+  std::map<Profile*, std::unique_ptr<ProfileContext>> profiles_;
 
   // Callbacks registered for performing delayed analysis.
   DelayedCallbackRunner delayed_analysis_callbacks_;
-
-  // Callbacks registered for performing delayed analysis that should only
-  // be executed for safebrowsing extended reporting users.
-  DelayedCallbackRunner extended_reporting_only_delayed_analysis_callbacks_;
 
   DownloadMetadataManager download_metadata_manager_;
 
@@ -354,16 +336,12 @@ class IncidentReportingService : public content::NotificationObserver {
   // Non-NULL while such a search is outstanding.
   std::unique_ptr<LastDownloadFinder> last_download_finder_;
 
-  // True if IncidentReportingService is enabled at the process level, by a
-  // field trial.
-  bool enabled_by_field_trial_;
-
   // A factory for handing out weak pointers for IncidentReceiver objects.
   base::WeakPtrFactory<IncidentReportingService> receiver_weak_ptr_factory_;
 
   // A factory for handing out weak pointers for internal asynchronous tasks
   // that are posted during normal processing (e.g., environment collection,
-  // safe browsing database checks, and report uploads).
+  // and report uploads).
   base::WeakPtrFactory<IncidentReportingService> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(IncidentReportingService);

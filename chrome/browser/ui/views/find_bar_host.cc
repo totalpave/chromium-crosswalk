@@ -12,15 +12,18 @@
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/find_bar_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/views/border.h"
 #include "ui/views/focus/external_focus_tracker.h"
-#include "ui/views/focus/view_storage.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
 
 using content::NativeWebKeyboardEvent;
 
@@ -29,7 +32,8 @@ using content::NativeWebKeyboardEvent;
 
 FindBarHost::FindBarHost(BrowserView* browser_view)
     : DropdownBarHost(browser_view),
-      find_bar_controller_(NULL) {
+      find_bar_controller_(NULL),
+      audible_alerts_(0) {
   FindBarView* find_bar_view = new FindBarView(this);
   Init(browser_view->find_bar_host_view(), find_bar_view, find_bar_view);
 }
@@ -49,7 +53,7 @@ bool FindBarHost::MaybeForwardKeyEventToWebpage(
     case ui::VKEY_END:
       if (key_event.IsControlDown())
         break;
-    // Fall through.
+      FALLTHROUGH;
     default:
       return false;
   }
@@ -58,13 +62,13 @@ bool FindBarHost::MaybeForwardKeyEventToWebpage(
   if (!contents)
     return false;
 
-  content::RenderViewHost* render_view_host = contents->GetRenderViewHost();
-
   // Make sure we don't have a text field element interfering with keyboard
   // input. Otherwise Up and Down arrow key strokes get eaten. "Nom Nom Nom".
-  render_view_host->ClearFocusedElement();
+  contents->ClearFocusedElement();
   NativeWebKeyboardEvent event(key_event);
-  render_view_host->GetWidget()->ForwardKeyboardEvent(event);
+  contents->GetRenderViewHost()
+      ->GetWidget()
+      ->ForwardKeyboardEventWithLatencyInfo(event, *key_event.latency());
   return true;
 }
 
@@ -147,6 +151,7 @@ void FindBarHost::UpdateUIForFindResult(const FindNotificationDetails& result,
 }
 
 void FindBarHost::AudibleAlert() {
+  ++audible_alerts_;
 #if defined(OS_WIN)
   MessageBeep(MB_OK);
 #endif
@@ -166,7 +171,11 @@ void FindBarHost::RestoreSavedFocus() {
 }
 
 bool FindBarHost::HasGlobalFindPasteboard() {
+#if defined(OS_MACOSX)
+  return true;
+#else
   return false;
+#endif
 }
 
 void FindBarHost::UpdateFindBarForChangedWebContents() {
@@ -247,6 +256,10 @@ int FindBarHost::GetWidth() {
   return view()->width();
 }
 
+size_t FindBarHost::GetAudibleAlertCount() {
+  return audible_alerts_;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Overridden from DropdownBarHost:
 
@@ -269,13 +282,14 @@ gfx::Rect FindBarHost::GetDialogPosition(gfx::Rect avoid_overlapping_rect) {
     return gfx::Rect();
 
   // Place the view in the top right corner of the widget boundaries (top left
-  // for RTL languages).
-  gfx::Rect view_location;
-  int x = widget_bounds.x();
+  // for RTL languages). Adjust for the view insets to ensure the border lines
+  // up with the location bar.
+  gfx::Insets insets = view()->border()->GetInsets();
+  int x = widget_bounds.x() - insets.left();
   if (!base::i18n::IsRTL())
-    x += widget_bounds.width() - prefsize.width();
-  int y = widget_bounds.y();
-  view_location.SetRect(x, y, prefsize.width(), prefsize.height());
+    x += widget_bounds.width() - prefsize.width() + insets.width();
+  int y = widget_bounds.y() - insets.top();
+  const gfx::Rect view_location(x, y, prefsize.width(), prefsize.height());
 
   // When we get Find results back, we specify a selection rect, which we
   // should strive to avoid overlapping. But first, we need to offset the
@@ -304,6 +318,8 @@ void FindBarHost::SetDialogPosition(const gfx::Rect& new_pos) {
   // revealed when the mouse is hovered over the find bar.
   browser_view()->immersive_mode_controller()->OnFindBarVisibleBoundsChanged(
       host()->GetWindowBoundsInScreen());
+
+  find_bar_controller_->FindBarVisibilityChanged();
 }
 
 void FindBarHost::GetWidgetBounds(gfx::Rect* bounds) {
@@ -339,6 +355,24 @@ void FindBarHost::OnVisibilityChanged() {
     visible_bounds = host()->GetWindowBoundsInScreen();
   browser_view()->immersive_mode_controller()->OnFindBarVisibleBoundsChanged(
       visible_bounds);
+
+  find_bar_controller_->FindBarVisibilityChanged();
+}
+
+ax::mojom::Role FindBarHost::GetAccessibleWindowRole() const {
+  return ax::mojom::Role::kDialog;
+}
+
+base::string16 FindBarHost::GetAccessibleWindowTitle() const {
+  // This can be called in tests by AccessibilityChecker before the controller
+  // is registered with this object. So to handle that case, we need to bail out
+  // if there is no controller.
+  const FindBarController* const controller = GetFindBarController();
+  if (!controller)
+    return base::string16();
+  return l10n_util::GetStringFUTF16(
+      IDS_FIND_IN_PAGE_ACCESSIBLE_TITLE,
+      controller->browser()->GetWindowTitleForCurrentTab(false));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

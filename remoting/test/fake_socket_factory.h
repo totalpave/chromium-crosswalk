@@ -15,7 +15,7 @@
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "remoting/test/fake_network_dispatcher.h"
-#include "third_party/webrtc/p2p/base/packetsocketfactory.h"
+#include "third_party/webrtc/p2p/base/packet_socket_factory.h"
 
 namespace remoting {
 
@@ -51,6 +51,19 @@ class FakePacketSocketFactory : public rtc::PacketSocketFactory,
 
   void set_out_of_order_rate(double out_of_order_rate) {
     out_of_order_rate_ = out_of_order_rate;
+  }
+
+  void ResetStats();
+
+  base::TimeDelta average_buffer_delay() {
+    return total_packets_received_ > 0
+               ? (total_buffer_delay_ / total_packets_received_)
+               : base::TimeDelta();
+  }
+  base::TimeDelta max_buffer_delay() { return max_buffer_delay_; }
+  double drop_rate() {
+    return static_cast<double>(total_packets_dropped_) /
+           (total_packets_received_ + total_packets_dropped_);
   }
 
   // rtc::PacketSocketFactory interface.
@@ -118,6 +131,11 @@ class FakePacketSocketFactory : public rtc::PacketSocketFactory,
   uint16_t next_port_;
 
   std::list<PendingPacket> pending_packets_;
+
+  int total_packets_received_ = 0;
+  int total_packets_dropped_ = 0;
+  base::TimeDelta total_buffer_delay_;
+  base::TimeDelta max_buffer_delay_;
 
   base::WeakPtrFactory<FakePacketSocketFactory> weak_factory_;
 

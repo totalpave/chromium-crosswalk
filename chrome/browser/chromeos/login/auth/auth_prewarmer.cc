@@ -6,61 +6,44 @@
 
 #include <stddef.h>
 
-#include "chrome/browser/chrome_notification_types.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/chromeos/login/helper.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/network/network_handler.h"
 #include "chromeos/network/network_state.h"
 #include "chromeos/network/network_state_handler.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/notification_source.h"
-#include "content/public/browser/resource_hints.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "net/base/load_flags.h"
+#include "services/network/public/mojom/network_context.mojom.h"
 #include "url/gurl.h"
 
 namespace chromeos {
 
-AuthPrewarmer::AuthPrewarmer()
-    : doing_prewarm_(false) {
-}
+AuthPrewarmer::AuthPrewarmer() : doing_prewarm_(false) {}
 
 AuthPrewarmer::~AuthPrewarmer() {
-  if (registrar_.IsRegistered(
-          this,
-          chrome::NOTIFICATION_PROFILE_URL_REQUEST_CONTEXT_GETTER_INITIALIZED,
-          content::Source<Profile>(ProfileHelper::GetSigninProfile()))) {
-    registrar_.Remove(
-        this,
-        chrome::NOTIFICATION_PROFILE_URL_REQUEST_CONTEXT_GETTER_INITIALIZED,
-        content::Source<Profile>(ProfileHelper::GetSigninProfile()));
-  }
   NetworkHandler::Get()->network_state_handler()->RemoveObserver(this,
                                                                  FROM_HERE);
 }
 
 void AuthPrewarmer::PrewarmAuthentication(
-    const base::Closure& completion_callback) {
+    base::OnceClosure completion_callback) {
   if (doing_prewarm_) {
     LOG(ERROR) << "PrewarmAuthentication called twice.";
     return;
   }
   doing_prewarm_ = true;
-  completion_callback_ = completion_callback;
-  if (GetRequestContext() && IsNetworkConnected()) {
+  completion_callback_ = std::move(completion_callback);
+
+  if (IsNetworkConnected()) {
     DoPrewarm();
-    return;
-  }
-  if (!IsNetworkConnected()) {
+  } else {
     // DefaultNetworkChanged will get called when a network becomes connected.
-    NetworkHandler::Get()->network_state_handler()
-        ->AddObserver(this, FROM_HERE);
-  }
-  if (!GetRequestContext()) {
-    registrar_.Add(
-        this,
-        chrome::NOTIFICATION_PROFILE_URL_REQUEST_CONTEXT_GETTER_INITIALIZED,
-        content::Source<Profile>(ProfileHelper::GetSigninProfile()));
+    NetworkHandler::Get()->network_state_handler()->AddObserver(this,
+                                                                FROM_HERE);
   }
 }
 
@@ -68,46 +51,32 @@ void AuthPrewarmer::DefaultNetworkChanged(const NetworkState* network) {
   if (!network)
     return;  // Still no default (connected) network.
 
-  NetworkHandler::Get()->network_state_handler()
-      ->RemoveObserver(this, FROM_HERE);
-  if (GetRequestContext())
-    DoPrewarm();
-}
-
-void AuthPrewarmer::Observe(int type,
-                            const content::NotificationSource& source,
-                            const content::NotificationDetails& details) {
-  DCHECK_EQ(chrome::NOTIFICATION_PROFILE_URL_REQUEST_CONTEXT_GETTER_INITIALIZED,
-            type);
-  registrar_.Remove(
-      this, chrome::NOTIFICATION_PROFILE_URL_REQUEST_CONTEXT_GETTER_INITIALIZED,
-      content::Source<Profile>(ProfileHelper::GetSigninProfile()));
-  if (IsNetworkConnected())
-    DoPrewarm();
+  NetworkHandler::Get()->network_state_handler()->RemoveObserver(this,
+                                                                 FROM_HERE);
+  DoPrewarm();
 }
 
 void AuthPrewarmer::DoPrewarm() {
   const int kConnectionsNeeded = 1;
+  const int kLoadFlags = net::LOAD_NORMAL;
+  const bool kShouldUsePrivacyMode = false;
   const GURL& url = GaiaUrls::GetInstance()->service_login_url();
-  content::BrowserThread::PostTask(
-      content::BrowserThread::IO, FROM_HERE,
-      base::Bind(&content::PreconnectUrl,
-                 ProfileHelper::GetSigninProfile()->GetResourceContext(), url,
-                 url, kConnectionsNeeded, true,
-                 net::HttpRequestInfo::EARLY_LOAD_MOTIVATED));
+  network::mojom::NetworkContext* network_context =
+      login::GetSigninNetworkContext();
+  if (network_context) {
+    // Do nothing if NetworkContext isn't available.
+    network_context->PreconnectSockets(kConnectionsNeeded, url, kLoadFlags,
+                                       kShouldUsePrivacyMode);
+  }
   if (!completion_callback_.is_null()) {
-    content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-                                     completion_callback_);
+    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::UI},
+                             std::move(completion_callback_));
   }
 }
 
 bool AuthPrewarmer::IsNetworkConnected() const {
   NetworkStateHandler* nsh = NetworkHandler::Get()->network_state_handler();
   return (nsh->ConnectedNetworkByType(NetworkTypePattern::Default()) != NULL);
-}
-
-net::URLRequestContextGetter* AuthPrewarmer::GetRequestContext() const {
-  return login::GetSigninContext();
 }
 
 }  // namespace chromeos

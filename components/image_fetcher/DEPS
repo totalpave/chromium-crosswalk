@@ -1,4 +1,9 @@
 include_rules = [
-  "+url",
+  "+components/data_use_measurement/core",
   "+net",
+  "+services/network/public/cpp",
+  "+services/network/test",
+  "+ui/gfx/geometry",
+  "+ui/gfx/image",
+  "+url",
 ]

@@ -12,6 +12,7 @@
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_job.h"
 #include "net/url_request/url_request_job_factory_impl.h"
@@ -26,15 +27,16 @@ class CancelAfterFirstReadURLRequestDelegate : public net::TestDelegate {
 
   ~CancelAfterFirstReadURLRequestDelegate() override {}
 
-  void OnResponseStarted(net::URLRequest* request) override {
+  void OnResponseStarted(net::URLRequest* request, int net_error) override {
+    DCHECK_NE(net::ERR_IO_PENDING, net_error);
     // net::TestDelegate will start the first read.
-    TestDelegate::OnResponseStarted(request);
+    TestDelegate::OnResponseStarted(request, net_error);
     request->Cancel();
   }
 
   void OnReadCompleted(net::URLRequest* request, int bytes_read) override {
     // Read should have been cancelled.
-    EXPECT_EQ(-1, bytes_read);
+    EXPECT_EQ(net::ERR_ABORTED, bytes_read);
   }
 
  private:
@@ -48,7 +50,7 @@ class UrlDataManagerBackendTest : public testing::Test {
     // URLRequestJobFactory takes ownership of the passed in ProtocolHandler.
     url_request_job_factory_.SetProtocolHandler(
         "chrome", URLDataManagerBackend::CreateProtocolHandler(
-                      &resource_context_, false, nullptr));
+                      &resource_context_, nullptr));
     url_request_context_.set_job_factory(&url_request_job_factory_);
   }
 
@@ -57,9 +59,8 @@ class UrlDataManagerBackendTest : public testing::Test {
       const char* origin) {
     std::unique_ptr<net::URLRequest> request =
         url_request_context_.CreateRequest(
-            GURL(
-                "chrome://resources/polymer/v1_0/polymer/polymer-extracted.js"),
-            net::HIGHEST, delegate);
+            GURL("chrome://resources/css/text_defaults.css"), net::HIGHEST,
+            delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
     request->SetExtraRequestHeaderByName("Origin", origin, true);
     return request;
   }
@@ -118,7 +119,8 @@ TEST_F(UrlDataManagerBackendTest, CancelAfterFirstReadStarted) {
 TEST_F(UrlDataManagerBackendTest, ChromeNetworkErrorPageRequest) {
   std::unique_ptr<net::URLRequest> error_request =
       url_request_context_.CreateRequest(GURL("chrome://network-error/-105"),
-                                         net::HIGHEST, &delegate_);
+                                         net::HIGHEST, &delegate_,
+                                         TRAFFIC_ANNOTATION_FOR_TESTS);
   error_request->Start();
   base::RunLoop().Run();
   EXPECT_EQ(net::URLRequestStatus::FAILED, error_request->status().status());
@@ -129,7 +131,8 @@ TEST_F(UrlDataManagerBackendTest, ChromeNetworkErrorPageRequest) {
 TEST_F(UrlDataManagerBackendTest, ChromeNetworkErrorPageRequestFailed) {
   std::unique_ptr<net::URLRequest> error_request =
       url_request_context_.CreateRequest(
-          GURL("chrome://network-error/-123456789"), net::HIGHEST, &delegate_);
+          GURL("chrome://network-error/-123456789"), net::HIGHEST, &delegate_,
+          TRAFFIC_ANNOTATION_FOR_TESTS);
   error_request->Start();
   base::RunLoop().Run();
   EXPECT_EQ(net::URLRequestStatus::FAILED, error_request->status().status());

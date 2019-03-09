@@ -8,9 +8,9 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "chrome/browser/media/router/media_sink.h"
-#include "chrome/browser/media/router/media_source.h"
-#include "url/gurl.h"
+#include "chrome/common/media_router/media_sink.h"
+#include "chrome/common/media_router/media_source.h"
+#include "url/origin.h"
 
 namespace media_router {
 
@@ -28,7 +28,12 @@ class MediaSinksObserver {
   // with |source|.
   MediaSinksObserver(MediaRouter* router,
                      const MediaSource& source,
-                     const GURL& origin);
+                     const url::Origin& origin);
+  // Constructs an observer for all sinks known to |router|.
+  // NOTE: Not all Media Route Providers support sink queries with an empty
+  // source, so the returned sink list may be incomplete.
+  // TODO(crbug.com/929937): Fix this.
+  explicit MediaSinksObserver(MediaRouter* router);
   virtual ~MediaSinksObserver();
 
   // Registers with MediaRouter to start observing. Must be called before the
@@ -37,14 +42,16 @@ class MediaSinksObserver {
   bool Init();
 
   // This function is invoked when the list of sinks compatible with |source_|
-  // has been updated. The result also contains the list of valid origins.
+  // has been updated, unless |source_| is nullopt, in which case it is invoked
+  // with all sinks. The result also contains the list of valid origins.
   // If |origins| is empty or contains |origin_|, then |OnSinksReceived(sinks)|
   // will be invoked with |sinks|. Otherwise, it will be invoked with an empty
   // list.
-  void OnSinksUpdated(const std::vector<MediaSink>& sinks,
-                      const std::vector<GURL>& origins);
+  // Marked virtual for tests.
+  virtual void OnSinksUpdated(const std::vector<MediaSink>& sinks,
+                              const std::vector<url::Origin>& origins);
 
-  const MediaSource& source() const { return source_; }
+  const base::Optional<const MediaSource>& source() const { return source_; }
 
  protected:
   // This function is invoked from |OnSinksUpdated(sinks, origins)|.
@@ -54,8 +61,8 @@ class MediaSinksObserver {
   virtual void OnSinksReceived(const std::vector<MediaSink>& sinks) = 0;
 
  private:
-  const MediaSource source_;
-  const GURL origin_;
+  const base::Optional<const MediaSource> source_;
+  const url::Origin origin_;
   MediaRouter* const router_;
   bool initialized_;
 

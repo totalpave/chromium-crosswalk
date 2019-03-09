@@ -10,14 +10,14 @@
 #include <set>
 #include <string>
 
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread.h"
-#include "build/build_config.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
+#include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/password_manager/password_store_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -34,11 +34,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
-
-#if defined(OS_WIN)
-#include "chrome/browser/web_data_service_factory.h"
-#include "components/password_manager/core/browser/webdata/password_web_data_service_win.h"
-#endif
 
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
@@ -65,7 +60,7 @@ base::string16 GenerateUniqueFolderName(BookmarkModel* model,
   // Otherwise iterate until we find a unique name.
   for (size_t i = 1; i <= existing_folder_names.size(); ++i) {
     base::string16 name = folder_name + base::ASCIIToUTF16(" (") +
-        base::SizeTToString16(i) + base::ASCIIToUTF16(")");
+                          base::NumberToString16(i) + base::ASCIIToUTF16(")");
     if (existing_folder_names.find(name) == existing_folder_names.end())
       return name;
   }
@@ -84,7 +79,7 @@ void ShowBookmarkBar(Profile* profile) {
 ProfileWriter::ProfileWriter(Profile* profile) : profile_(profile) {}
 
 bool ProfileWriter::BookmarkModelIsLoaded() const {
-  return BookmarkModelFactory::GetForProfile(profile_)->loaded();
+  return BookmarkModelFactory::GetForBrowserContext(profile_)->loaded();
 }
 
 bool ProfileWriter::TemplateURLServiceIsLoaded() const {
@@ -96,18 +91,18 @@ void ProfileWriter::AddPasswordForm(const autofill::PasswordForm& form) {
       profile_, ServiceAccessType::EXPLICIT_ACCESS)->AddLogin(form);
 }
 
-#if defined(OS_WIN)
-void ProfileWriter::AddIE7PasswordInfo(const IE7PasswordInfo& info) {
-  WebDataServiceFactory::GetPasswordWebDataForProfile(
-      profile_, ServiceAccessType::EXPLICIT_ACCESS)->AddIE7Login(info);
-}
-#endif
-
 void ProfileWriter::AddHistoryPage(const history::URLRows& page,
                                    history::VisitSource visit_source) {
-  HistoryServiceFactory::GetForProfile(profile_,
-                                       ServiceAccessType::EXPLICIT_ACCESS)
-      ->AddPagesWithDetails(page, visit_source);
+  if (!page.empty())
+    HistoryServiceFactory::GetForProfile(profile_,
+                                         ServiceAccessType::EXPLICIT_ACCESS)
+        ->AddPagesWithDetails(page, visit_source);
+  // Measure the size of the history page after Auto Import on first run.
+  if (first_run::IsChromeFirstRun() &&
+      visit_source == history::SOURCE_IE_IMPORTED) {
+    UMA_HISTOGRAM_COUNTS_1M("Import.ImportedHistorySize.AutoImportFromIE",
+                            page.size());
+  }
 }
 
 void ProfileWriter::AddHomepage(const GURL& home_page) {
@@ -127,7 +122,7 @@ void ProfileWriter::AddBookmarks(
   if (bookmarks.empty())
     return;
 
-  BookmarkModel* model = BookmarkModelFactory::GetForProfile(profile_);
+  BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile_);
   DCHECK(model->loaded());
 
   // If the bookmark bar is currently empty, we should import directly to it.
@@ -138,9 +133,7 @@ void ProfileWriter::AddBookmarks(
   // Reorder bookmarks so that the toolbar entries come first.
   std::vector<ImportedBookmarkEntry> toolbar_bookmarks;
   std::vector<ImportedBookmarkEntry> reordered_bookmarks;
-  for (std::vector<ImportedBookmarkEntry>::const_iterator it =
-           bookmarks.begin();
-       it != bookmarks.end(); ++it) {
+  for (auto it = bookmarks.begin(); it != bookmarks.end(); ++it) {
     if (it->in_toolbar)
       toolbar_bookmarks.push_back(*it);
     else
@@ -187,8 +180,7 @@ void ProfileWriter::AddBookmarks(
     // Ensure any enclosing folders are present in the model.  The bookmark's
     // enclosing folder structure should be
     //   path[0] > path[1] > ... > path[size() - 1]
-    for (std::vector<base::string16>::const_iterator folder_name =
-             bookmark->path.begin();
+    for (auto folder_name = bookmark->path.begin();
          folder_name != bookmark->path.end(); ++folder_name) {
       if (bookmark->in_toolbar && parent == bookmark_bar &&
           folder_name == bookmark->path.begin()) {
@@ -225,9 +217,7 @@ void ProfileWriter::AddBookmarks(
 
   // In order to keep the imported-to folders from appearing in the 'recently
   // added to' combobox, reset their modified times.
-  for (std::set<const BookmarkNode*>::const_iterator i =
-           folders_added_to.begin();
-       i != folders_added_to.end(); ++i) {
+  for (auto i = folders_added_to.begin(); i != folders_added_to.end(); ++i) {
     model->ResetDateFolderModified(*i);
   }
 
@@ -292,33 +282,33 @@ static void BuildHostPathMap(TemplateURLService* model,
         template_urls[i], model->search_terms_data(), false);
     if (!host_path.empty()) {
       const TemplateURL* existing_turl = (*host_path_map)[host_path];
-      if (!existing_turl ||
-          (template_urls[i]->show_in_default_list() &&
-           !existing_turl->show_in_default_list())) {
+      TemplateURL* t_url = template_urls[i];
+      if (!existing_turl || (model->ShowInDefaultList(t_url) &&
+                             !model->ShowInDefaultList(existing_turl))) {
         // If there are multiple TemplateURLs with the same host+path, favor
         // those shown in the default list.  If there are multiple potential
         // defaults, favor the first one, which should be the more commonly used
         // one.
-        (*host_path_map)[host_path] = template_urls[i];
+        (*host_path_map)[host_path] = t_url;
       }
     }  // else case, TemplateURL doesn't have a search url, doesn't support
        // replacement, or doesn't have valid GURL. Ignore it.
   }
 }
 
-void ProfileWriter::AddKeywords(ScopedVector<TemplateURL> template_urls,
-                                bool unique_on_host_and_path) {
+void ProfileWriter::AddKeywords(
+    TemplateURLService::OwnedTemplateURLVector template_urls,
+    bool unique_on_host_and_path) {
   TemplateURLService* model =
       TemplateURLServiceFactory::GetForProfile(profile_);
   HostPathMap host_path_map;
   if (unique_on_host_and_path)
     BuildHostPathMap(model, &host_path_map);
 
-  for (ScopedVector<TemplateURL>::iterator i = template_urls.begin();
-       i != template_urls.end(); ++i) {
+  for (auto& turl : template_urls) {
     // TemplateURLService requires keywords to be unique. If there is already a
     // TemplateURL with this keyword, don't import it again.
-    if (model->GetTemplateURLForKeyword((*i)->keyword()) != NULL)
+    if (model->GetTemplateURLForKeyword(turl->keyword()) != nullptr)
       continue;
 
     // For search engines if there is already a keyword with the same
@@ -326,16 +316,14 @@ void ProfileWriter::AddKeywords(ScopedVector<TemplateURL> template_urls,
     // search providers (such as two Googles, or two Yahoos) as well as making
     // sure the search engines we provide aren't replaced by those from the
     // imported browser.
-    if (unique_on_host_and_path &&
-        (host_path_map.find(BuildHostPathKey(
-            *i, model->search_terms_data(), true)) != host_path_map.end()))
+    if (unique_on_host_and_path && (host_path_map.find(BuildHostPathKey(
+                                        turl.get(), model->search_terms_data(),
+                                        true)) != host_path_map.end()))
       continue;
 
     // Only add valid TemplateURLs to the model.
-    if ((*i)->url_ref().IsValid(model->search_terms_data())) {
-      model->Add(*i);  // Takes ownership.
-      *i = NULL;  // Prevent the vector from deleting *i later.
-    }
+    if (turl->url_ref().IsValid(model->search_terms_data()))
+      model->Add(std::move(turl));
   }
 }
 

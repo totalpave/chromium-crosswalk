@@ -15,24 +15,26 @@
 #include "base/macros.h"
 #include "base/values.h"
 #include "base/version.h"
-#include "components/component_updater/default_component_installer.h"
+#include "components/component_updater/component_installer.h"
 
 namespace component_updater {
 
 class ComponentUpdateService;
 
-class OriginTrialsComponentInstallerTraits : public ComponentInstallerTraits {
+class OriginTrialsComponentInstallerPolicy : public ComponentInstallerPolicy {
  public:
-  OriginTrialsComponentInstallerTraits() = default;
-  ~OriginTrialsComponentInstallerTraits() override = default;
+  OriginTrialsComponentInstallerPolicy() = default;
+  ~OriginTrialsComponentInstallerPolicy() override = default;
 
  private:
   bool VerifyInstallation(const base::DictionaryValue& manifest,
                           const base::FilePath& install_dir) const override;
-  bool CanAutoUpdate() const override;
+  bool SupportsGroupPolicyEnabledComponentUpdates() const override;
   bool RequiresNetworkEncryption() const override;
-  bool OnCustomInstall(const base::DictionaryValue& manifest,
-                       const base::FilePath& install_dir) override;
+  update_client::CrxInstaller::Result OnCustomInstall(
+      const base::DictionaryValue& manifest,
+      const base::FilePath& install_dir) override;
+  void OnCustomUninstall() override;
   void ComponentReady(const base::Version& version,
                       const base::FilePath& install_dir,
                       std::unique_ptr<base::DictionaryValue> manifest) override;
@@ -40,8 +42,9 @@ class OriginTrialsComponentInstallerTraits : public ComponentInstallerTraits {
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
+  std::vector<std::string> GetMimeTypes() const override;
 
-  DISALLOW_COPY_AND_ASSIGN(OriginTrialsComponentInstallerTraits);
+  DISALLOW_COPY_AND_ASSIGN(OriginTrialsComponentInstallerPolicy);
 };
 
 // Call once during startup to make the component update service aware of

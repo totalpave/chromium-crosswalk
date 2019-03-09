@@ -28,16 +28,12 @@
 // http://crbug.com/572986
 #if defined(OS_WIN)
 #include <direct.h>
-#include "media/ffmpeg/ffmpeg_common.h"
-#include "media/ffmpeg/ffmpeg_deleters.h"
-#include "media/filters/ffmpeg_glue.h"
-#include "media/filters/in_memory_url_protocol.h"
-#else
-#include "media/ffmpeg/ffmpeg_common.h"
-#include "media/ffmpeg/ffmpeg_deleters.h"
-#include "media/filters/ffmpeg_glue.h"
-#include "media/filters/in_memory_url_protocol.h"
 #endif  // defined(OS_WIN)
+#include "media/ffmpeg/ffmpeg_common.h"
+#include "media/ffmpeg/ffmpeg_decoding_loop.h"
+#include "media/ffmpeg/ffmpeg_deleters.h"
+#include "media/filters/ffmpeg_glue.h"
+#include "media/filters/in_memory_url_protocol.h"
 
 namespace {
 
@@ -75,16 +71,15 @@ namespace cast {
 
 FakeMediaSource::FakeMediaSource(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-    base::TickClock* clock,
-    const AudioSenderConfig& audio_config,
-    const VideoSenderConfig& video_config,
+    const base::TickClock* clock,
+    const FrameSenderConfig& audio_config,
+    const FrameSenderConfig& video_config,
     bool keep_frames)
     : task_runner_(task_runner),
       output_audio_params_(AudioParameters::AUDIO_PCM_LINEAR,
                            media::GuessChannelLayout(audio_config.channels),
-                           audio_config.frequency,
-                           32,
-                           audio_config.frequency / kAudioPacketsPerSecond),
+                           audio_config.rtp_timebase,
+                           audio_config.rtp_timebase / kAudioPacketsPerSecond),
       video_config_(video_config),
       keep_frames_(keep_frames),
       variable_frame_size_mode_(false),
@@ -102,14 +97,12 @@ FakeMediaSource::FakeMediaSource(
       video_first_pts_set_(false),
       weak_factory_(this) {
   CHECK(output_audio_params_.IsValid());
-  audio_bus_factory_.reset(new TestAudioBusFactory(audio_config.channels,
-                                                   audio_config.frequency,
-                                                   kSoundFrequency,
-                                                   kSoundVolume));
+  audio_bus_factory_.reset(
+      new TestAudioBusFactory(audio_config.channels, audio_config.rtp_timebase,
+                              kSoundFrequency, kSoundVolume));
 }
 
-FakeMediaSource::~FakeMediaSource() {
-}
+FakeMediaSource::~FakeMediaSource() = default;
 
 void FakeMediaSource::SetSourceFile(const base::FilePath& video_file,
                                     int final_fps) {
@@ -139,7 +132,14 @@ void FakeMediaSource::SetSourceFile(const base::FilePath& video_file,
   // Prepare FFmpeg decoders.
   for (unsigned int i = 0; i < av_format_context_->nb_streams; ++i) {
     AVStream* av_stream = av_format_context_->streams[i];
-    AVCodecContext* av_codec_context = av_stream->codec;
+    std::unique_ptr<AVCodecContext, ScopedPtrAVFreeContext> av_codec_context(
+        AVStreamToAVCodecContext(av_stream));
+    if (!av_codec_context) {
+      LOG(ERROR) << "Cannot get a codec context for the codec: "
+                 << av_stream->codecpar->codec_id;
+      continue;
+    }
+
     AVCodec* av_codec = avcodec_find_decoder(av_codec_context->codec_id);
 
     if (!av_codec) {
@@ -153,7 +153,7 @@ void FakeMediaSource::SetSourceFile(const base::FilePath& video_file,
     av_codec_context->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
     av_codec_context->request_sample_fmt = AV_SAMPLE_FMT_S16;
 
-    if (avcodec_open2(av_codec_context, av_codec, NULL) < 0) {
+    if (avcodec_open2(av_codec_context.get(), av_codec, nullptr) < 0) {
       LOG(ERROR) << "Cannot open AVCodecContext for the codec: "
                  << av_codec_context->codec_id;
       return;
@@ -175,20 +175,21 @@ void FakeMediaSource::SetSourceFile(const base::FilePath& video_file,
         LOG(WARNING) << "Found multiple audio streams.";
       }
       audio_stream_index_ = static_cast<int>(i);
+      av_audio_context_ = std::move(av_codec_context);
       source_audio_params_.Reset(
-          AudioParameters::AUDIO_PCM_LINEAR,
-          layout,
-          av_codec_context->sample_rate,
-          8 * av_get_bytes_per_sample(av_codec_context->sample_fmt),
-          av_codec_context->sample_rate / kAudioPacketsPerSecond);
+          AudioParameters::AUDIO_PCM_LINEAR, layout,
+          av_audio_context_->sample_rate,
+          av_audio_context_->sample_rate / kAudioPacketsPerSecond);
       source_audio_params_.set_channels_for_discrete(
-          av_codec_context->channels);
+          av_audio_context_->channels);
       CHECK(source_audio_params_.IsValid());
       LOG(INFO) << "Source file has audio.";
+      audio_decoding_loop_.reset(
+          new FFmpegDecodingLoop(av_audio_context_.get()));
     } else if (av_codec->type == AVMEDIA_TYPE_VIDEO) {
       VideoPixelFormat format =
           AVPixelFormatToVideoPixelFormat(av_codec_context->pix_fmt);
-      if (format != PIXEL_FORMAT_YV12) {
+      if (format != PIXEL_FORMAT_I420) {
         LOG(ERROR) << "Cannot handle non YV12 video format: " << format;
         continue;
       }
@@ -196,6 +197,9 @@ void FakeMediaSource::SetSourceFile(const base::FilePath& video_file,
         LOG(WARNING) << "Found multiple video streams.";
       }
       video_stream_index_ = static_cast<int>(i);
+      av_video_context_ = std::move(av_codec_context);
+      video_decoding_loop_.reset(
+          new FFmpegDecodingLoop(av_video_context_.get()));
       if (final_fps > 0) {
         // If video is played at a manual speed audio needs to match.
         playback_rate_ = 1.0 * final_fps *
@@ -236,15 +240,15 @@ void FakeMediaSource::Start(scoped_refptr<AudioFrameInput> audio_frame_input,
 
   if (!is_transcoding_audio() && !is_transcoding_video()) {
     // Send fake patterns.
-    task_runner_->PostTask(
-        FROM_HERE,
-        base::Bind(&FakeMediaSource::SendNextFakeFrame,
-                   weak_factory_.GetWeakPtr()));
+    task_runner_->PostTask(FROM_HERE,
+                           base::BindOnce(&FakeMediaSource::SendNextFakeFrame,
+                                          weak_factory_.GetWeakPtr()));
     return;
   }
 
   // Send transcoding streams.
-  audio_algo_.Initialize(source_audio_params_);
+  bool is_encrypted = false;
+  audio_algo_.Initialize(source_audio_params_, is_encrypted);
   audio_algo_.FlushBuffers();
   audio_fifo_input_bus_ = AudioBus::Create(
       source_audio_params_.channels(),
@@ -256,9 +260,9 @@ void FakeMediaSource::Start(scoped_refptr<AudioFrameInput> audio_frame_input,
   audio_converter_.reset(new media::AudioConverter(
       source_audio_params_, output_audio_params_, true));
   audio_converter_->AddInput(this);
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&FakeMediaSource::SendNextFrame, weak_factory_.GetWeakPtr()));
+  task_runner_->PostTask(FROM_HERE,
+                         base::BindOnce(&FakeMediaSource::SendNextFrame,
+                                        weak_factory_.GetWeakPtr()));
 }
 
 void FakeMediaSource::SendNextFakeFrame() {
@@ -307,8 +311,8 @@ void FakeMediaSource::SendNextFakeFrame() {
 
   task_runner_->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&FakeMediaSource::SendNextFakeFrame,
-                 weak_factory_.GetWeakPtr()),
+      base::BindOnce(&FakeMediaSource::SendNextFakeFrame,
+                     weak_factory_.GetWeakPtr()),
       video_time - elapsed_time);
 }
 
@@ -404,7 +408,8 @@ void FakeMediaSource::SendNextFrame() {
   // Send next send.
   task_runner_->PostDelayedTask(
       FROM_HERE,
-      base::Bind(&FakeMediaSource::SendNextFrame, weak_factory_.GetWeakPtr()),
+      base::BindOnce(&FakeMediaSource::SendNextFrame,
+                     weak_factory_.GetWeakPtr()),
       base::TimeDelta::FromMilliseconds(kAudioFrameMs));
 }
 
@@ -448,55 +453,14 @@ ScopedAVPacket FakeMediaSource::DemuxOnePacket(bool* audio) {
 }
 
 void FakeMediaSource::DecodeAudio(ScopedAVPacket packet) {
-  // Audio.
-  AVFrame* avframe = av_frame_alloc();
-
-  // Make a shallow copy of packet so we can slide packet.data as frames are
-  // decoded from the packet; otherwise av_packet_unref() will corrupt memory.
-  AVPacket packet_temp = *packet.get();
-
-  do {
-    int frame_decoded = 0;
-    int result = avcodec_decode_audio4(
-        av_audio_context(), avframe, &frame_decoded, &packet_temp);
-    CHECK(result >= 0) << "Failed to decode audio.";
-    packet_temp.size -= result;
-    packet_temp.data += result;
-    if (!frame_decoded)
-      continue;
-
-    int frames_read = avframe->nb_samples;
-    if (frames_read < 0)
-      break;
-
-    if (!audio_sent_ts_) {
-      // Initialize the base time to the first packet in the file.
-      // This is set to the frequency we send to the receiver.
-      // Not the frequency of the source file. This is because we
-      // increment the frame count by samples we sent.
-      audio_sent_ts_.reset(
-          new AudioTimestampHelper(output_audio_params_.sample_rate()));
-      // For some files this is an invalid value.
-      base::TimeDelta base_ts;
-      audio_sent_ts_->SetBaseTimestamp(base_ts);
-    }
-
-    scoped_refptr<AudioBuffer> buffer = AudioBuffer::CopyFrom(
-        AVSampleFormatToSampleFormat(av_audio_context()->sample_fmt,
-                                     av_audio_context()->codec_id),
-        ChannelLayoutToChromeChannelLayout(av_audio_context()->channel_layout,
-                                           av_audio_context()->channels),
-        av_audio_context()->channels, av_audio_context()->sample_rate,
-        frames_read, &avframe->data[0],
-        PtsToTimeDelta(avframe->pkt_pts, av_audio_stream()->time_base));
-    audio_algo_.EnqueueBuffer(buffer);
-    av_frame_unref(avframe);
-  } while (packet_temp.size > 0);
-  av_frame_free(&avframe);
+  auto result = audio_decoding_loop_->DecodePacket(
+      packet.get(), base::BindRepeating(&FakeMediaSource::OnNewAudioFrame,
+                                        base::Unretained(this)));
+  CHECK_EQ(result, FFmpegDecodingLoop::DecodeStatus::kOkay)
+      << "Failed to decode audio.";
 
   const int frames_needed_to_scale =
-      playback_rate_ * av_audio_context()->sample_rate /
-      kAudioPacketsPerSecond;
+      playback_rate_ * av_audio_context_->sample_rate / kAudioPacketsPerSecond;
   while (frames_needed_to_scale <= audio_algo_.frames_buffered()) {
     if (!audio_algo_.FillBuffer(audio_fifo_input_bus_.get(), 0,
                                 audio_fifo_input_bus_->frames(),
@@ -506,8 +470,8 @@ void FakeMediaSource::DecodeAudio(ScopedAVPacket packet) {
     }
 
     // Prevent overflow of audio data in the FIFO.
-    if (audio_fifo_input_bus_->frames() + audio_fifo_->frames()
-        <= audio_fifo_->max_frames()) {
+    if (audio_fifo_input_bus_->frames() + audio_fifo_->frames() <=
+        audio_fifo_->max_frames()) {
       audio_fifo_->Push(audio_fifo_input_bus_.get());
     } else {
       LOG(WARNING) << "Audio FIFO full; dropping samples.";
@@ -527,46 +491,75 @@ void FakeMediaSource::DecodeAudio(ScopedAVPacket packet) {
   }
 }
 
-void FakeMediaSource::DecodeVideo(ScopedAVPacket packet) {
-  // Video.
-  int got_picture;
-  AVFrame* avframe = av_frame_alloc();
-  CHECK(avcodec_decode_video2(
-      av_video_context(), avframe, &got_picture, packet.get()) >= 0)
-      << "Video decode error.";
-  if (!got_picture) {
-    av_frame_free(&avframe);
-    return;
+bool FakeMediaSource::OnNewAudioFrame(AVFrame* frame) {
+  int frames_read = frame->nb_samples;
+  if (frames_read < 0)
+    return false;
+
+  if (!audio_sent_ts_) {
+    // Initialize the base time to the first packet in the file. This is set to
+    // the frequency we send to the receiver. Not the frequency of the source
+    // file. This is because we increment the frame count by samples we sent.
+    audio_sent_ts_.reset(
+        new AudioTimestampHelper(output_audio_params_.sample_rate()));
+    // For some files this is an invalid value.
+    base::TimeDelta base_ts;
+    audio_sent_ts_->SetBaseTimestamp(base_ts);
   }
-  gfx::Size size(av_video_context()->width, av_video_context()->height);
+
+  scoped_refptr<AudioBuffer> buffer = AudioBuffer::CopyFrom(
+      AVSampleFormatToSampleFormat(av_audio_context_->sample_fmt,
+                                   av_audio_context_->codec_id),
+      ChannelLayoutToChromeChannelLayout(av_audio_context_->channel_layout,
+                                         av_audio_context_->channels),
+      av_audio_context_->channels, av_audio_context_->sample_rate, frames_read,
+      &frame->data[0],
+      PtsToTimeDelta(frame->pts, av_audio_stream()->time_base));
+  audio_algo_.EnqueueBuffer(buffer);
+  return true;
+}
+
+void FakeMediaSource::DecodeVideo(ScopedAVPacket packet) {
+  auto result = video_decoding_loop_->DecodePacket(
+      packet.get(), base::BindRepeating(&FakeMediaSource::OnNewVideoFrame,
+                                        base::Unretained(this)));
+  CHECK_EQ(result, FFmpegDecodingLoop::DecodeStatus::kOkay)
+      << "Failed to decode video.";
+}
+
+bool FakeMediaSource::OnNewVideoFrame(AVFrame* frame) {
+  gfx::Size size(av_video_context_->width, av_video_context_->height);
 
   if (!video_first_pts_set_) {
-    video_first_pts_ = avframe->pkt_pts;
+    video_first_pts_ = frame->pts;
     video_first_pts_set_ = true;
   }
   const AVRational& time_base = av_video_stream()->time_base;
   base::TimeDelta timestamp =
-      PtsToTimeDelta(avframe->pkt_pts - video_first_pts_, time_base);
+      PtsToTimeDelta(frame->pts - video_first_pts_, time_base);
   if (timestamp < last_video_frame_timestamp_) {
     // Stream has rewound.  Rebase |video_first_pts_|.
     const AVRational& frame_rate = av_video_stream()->r_frame_rate;
-    timestamp = last_video_frame_timestamp_ +
-        (base::TimeDelta::FromSeconds(1) * frame_rate.den / frame_rate.num);
+    timestamp = last_video_frame_timestamp_ + (base::TimeDelta::FromSeconds(1) *
+                                               frame_rate.den / frame_rate.num);
     const int64_t adjustment_pts = TimeDeltaToPts(timestamp, time_base);
-    video_first_pts_ = avframe->pkt_pts - adjustment_pts;
+    video_first_pts_ = frame->pts - adjustment_pts;
   }
 
+  AVFrame* shallow_copy = av_frame_clone(frame);
   scoped_refptr<media::VideoFrame> video_frame =
       VideoFrame::WrapExternalYuvData(
-          media::PIXEL_FORMAT_YV12, size, gfx::Rect(size), size,
-          avframe->linesize[0], avframe->linesize[1], avframe->linesize[2],
-          avframe->data[0], avframe->data[1], avframe->data[2], timestamp);
+          media::PIXEL_FORMAT_I420, size, gfx::Rect(size), size,
+          shallow_copy->linesize[0], shallow_copy->linesize[1],
+          shallow_copy->linesize[2], shallow_copy->data[0],
+          shallow_copy->data[1], shallow_copy->data[2], timestamp);
   if (!video_frame)
-    return;
+    return false;
   video_frame_queue_.push(video_frame);
   video_frame_queue_.back()->AddDestructionObserver(
-      base::Bind(&AVFreeFrame, avframe));
+      base::Bind(&AVFreeFrame, shallow_copy));
   last_video_frame_timestamp_ = timestamp;
+  return true;
 }
 
 void FakeMediaSource::Decode(bool decode_audio) {
@@ -618,14 +611,6 @@ AVStream* FakeMediaSource::av_audio_stream() {
 
 AVStream* FakeMediaSource::av_video_stream() {
   return av_format_context_->streams[video_stream_index_];
-}
-
-AVCodecContext* FakeMediaSource::av_audio_context() {
-  return av_audio_stream()->codec;
-}
-
-AVCodecContext* FakeMediaSource::av_video_context() {
-  return av_video_stream()->codec;
 }
 
 }  // namespace cast

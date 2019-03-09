@@ -4,11 +4,11 @@
 
 #include "chrome/browser/chromeos/login/ui/login_web_dialog.h"
 
-#include <deque>
-
+#include "base/containers/circular_deque.h"
 #include "base/lazy_instance.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/chromeos/login/helper.h"
+#include "chrome/browser/ui/ash/ash_util.h"
 #include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_finder.h"
 #include "content/public/browser/browser_context.h"
@@ -32,16 +32,21 @@ const double kDefaultHeightRatio = 0.6;
 const double kMinimumWidthRatio = 0.25;
 const double kMinimumHeightRatio = 0.25;
 
-base::LazyInstance<std::deque<WebContents*>> g_web_contents_stack =
-    LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::circular_deque<WebContents*>>::DestructorAtExit
+    g_web_contents_stack = LAZY_INSTANCE_INITIALIZER;
+
+// Returns the accelerator which is mapped as hangup button on Chrome OS CFM
+// remote controller to close the dialog.
+ui::Accelerator GetCloseAccelerator() {
+  return ui::Accelerator(ui::VKEY_BROWSER_BACK, ui::EF_SHIFT_DOWN);
+}
 
 }  // namespace
 
 ///////////////////////////////////////////////////////////////////////////////
 // LoginWebDialog, public:
 
-void LoginWebDialog::Delegate::OnDialogClosed() {
-}
+void LoginWebDialog::Delegate::OnDialogClosed() {}
 
 LoginWebDialog::LoginWebDialog(content::BrowserContext* browser_context,
                                Delegate* delegate,
@@ -52,8 +57,7 @@ LoginWebDialog::LoginWebDialog(content::BrowserContext* browser_context,
       parent_window_(parent_window),
       delegate_(delegate),
       title_(title),
-      url_(url),
-      is_open_(false) {
+      url_(url) {
   gfx::Rect screen_bounds(CalculateScreenBounds(gfx::Size()));
   width_ = static_cast<int>(kDefaultWidthRatio * screen_bounds.width());
   height_ = static_cast<int>(kDefaultHeightRatio * screen_bounds.height());
@@ -62,8 +66,8 @@ LoginWebDialog::LoginWebDialog(content::BrowserContext* browser_context,
 LoginWebDialog::~LoginWebDialog() {}
 
 void LoginWebDialog::Show() {
-  chrome::ShowWebDialog(parent_window_, browser_context_, this);
-  is_open_ = true;
+  dialog_window_ =
+      chrome::ShowWebDialog(parent_window_, browser_context_, this);
 }
 
 void LoginWebDialog::SetDialogSize(int width, int height) {
@@ -93,8 +97,7 @@ GURL LoginWebDialog::GetDialogContentURL() const {
 }
 
 void LoginWebDialog::GetWebUIMessageHandlers(
-    std::vector<WebUIMessageHandler*>* handlers) const {
-}
+    std::vector<WebUIMessageHandler*>* handlers) const {}
 
 void LoginWebDialog::GetDialogSize(gfx::Size* size) const {
   size->SetSize(width_, height_);
@@ -122,7 +125,7 @@ void LoginWebDialog::OnDialogShown(content::WebUI* webui,
 }
 
 void LoginWebDialog::OnDialogClosed(const std::string& json_retval) {
-  is_open_ = false;
+  dialog_window_ = nullptr;
   if (delegate_)
     delegate_->OnDialogClosed();
   delete this;
@@ -143,6 +146,7 @@ bool LoginWebDialog::ShouldShowDialogTitle() const {
 }
 
 bool LoginWebDialog::HandleContextMenu(
+    content::RenderFrameHost* render_frame_host,
     const content::ContextMenuParams& params) {
   // Disable context menu.
   return true;
@@ -161,6 +165,22 @@ bool LoginWebDialog::HandleOpenURLFromTab(WebContents* source,
 }
 
 bool LoginWebDialog::HandleShouldCreateWebContents() {
+  return false;
+}
+
+std::vector<ui::Accelerator> LoginWebDialog::GetAccelerators() {
+  return {GetCloseAccelerator()};
+}
+
+bool LoginWebDialog::AcceleratorPressed(const ui::Accelerator& accelerator) {
+  if (!dialog_window_)
+    return false;
+
+  if (GetCloseAccelerator() == accelerator) {
+    views::Widget::GetWidgetForNativeWindow(dialog_window_)->Close();
+    return true;
+  }
+
   return false;
 }
 

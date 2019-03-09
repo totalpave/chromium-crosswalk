@@ -4,18 +4,16 @@
 
 /**
  * Controller of metadata box.
+ * This should be initialized with |init| method.
  *
  * @param{!MetadataModel} metadataModel
- * @param{!FilesMetadataBox} metadataBox
- * @param{!FilesQuickView} quickView
  * @param{!QuickViewModel} quickViewModel
  * @param{!FileMetadataFormatter} fileMetadataFormatter
  *
  * @constructor
  */
 function MetadataBoxController(
-    metadataModel, metadataBox, quickView, quickViewModel,
-    fileMetadataFormatter) {
+    metadataModel, quickViewModel, fileMetadataFormatter) {
   /**
    * @type {!MetadataModel}
    * @private
@@ -23,16 +21,22 @@ function MetadataBoxController(
   this.metadataModel_ = metadataModel;
 
   /**
-   * @type {!FilesMetadataBox}
+   * @type {!QuickViewModel}
    * @private
    */
-  this.metadataBox_ = metadataBox;
+  this.quickViewModel_ = quickViewModel;
+
+ /**
+  * @type {FilesMetadataBox} metadataBox
+  * @private
+  */
+  this.metadataBox_ = null;
 
   /**
-   * @type {!FilesQuickView}
+   * @type {FilesQuickView} quickView
    * @private
    */
-  this.quickView_ = quickView;
+  this.quickView_ = null;
 
   /**
    * @type {!FileMetadataFormatter}
@@ -40,23 +44,44 @@ function MetadataBoxController(
    */
   this.fileMetadataFormatter_ = fileMetadataFormatter;
 
-  // TODO(oka): Add storage to persist the value of
-  // quickViewModel_.metadataBoxActive.
   /**
-   * @type {!QuickViewModel}
+   * @type {Entry}
    * @private
    */
-  this.quickViewModel_ = quickViewModel;
+  this.previousEntry_ = null;
 
-  fileMetadataFormatter.addEventListener(
+  /**
+   * @type {boolean}
+   * @private
+   */
+  this.isDirectorySizeLoading_ = false;
+
+  /**
+   * @type {?function(!DirectoryEntry)}
+   * @private
+   */
+  this.onDirectorySizeLoaded_ = null;
+}
+
+/**
+ * Initialize the controller with quick view which will be lazily loaded.
+ * @param{!FilesQuickView} quickView
+ */
+MetadataBoxController.prototype.init = function(quickView) {
+  // TODO(oka): Add storage to persist the value of
+  // quickViewModel_.metadataBoxActive.
+  this.fileMetadataFormatter_.addEventListener(
       'date-time-format-changed', this.updateView_.bind(this));
 
   quickView.addEventListener(
       'metadata-box-active-changed', this.updateView_.bind(this));
 
-  quickViewModel.addEventListener(
+  this.quickViewModel_.addEventListener(
       'selected-entry-changed', this.updateView_.bind(this));
-}
+
+  this.metadataBox_ = quickView.getFilesMetadataBox();
+  this.quickView_ = quickView;
+};
 
 /**
  * @const {!Array<string>}
@@ -75,34 +100,156 @@ MetadataBoxController.prototype.updateView_ = function() {
   if (!this.quickView_.metadataBoxActive) {
     return;
   }
-  var entry = this.quickViewModel_.getSelectedEntry();
-  if (!entry)
+  const entry = this.quickViewModel_.getSelectedEntry();
+  const isSameEntry = util.isSameEntry(entry, this.previousEntry_);
+  this.previousEntry_ = entry;
+  // Do not clear isSizeLoading and size fields when the entry is not changed.
+  this.metadataBox_.clear(isSameEntry);
+  if (!entry) {
     return;
+  }
   this.metadataModel_
-      .get(
-          [entry],
-          MetadataBoxController.GENERAL_METADATA_NAME.concat(['hosted']))
-      .then(this.onGeneralMetadataLoaded_.bind(this, entry));
-
-  // TODO(oka): Add file type specific metadata.
+      .get([entry], MetadataBoxController.GENERAL_METADATA_NAME.concat([
+        'alternateUrl', 'externalFileUrl', 'hosted'
+      ]))
+      .then(this.onGeneralMetadataLoaded_.bind(this, entry, isSameEntry));
 };
 
 /**
  * Update metadata box with general file information.
+ * Then retrieve file specific metadata if any.
  *
- * @param{!FileEntry} entry
- * @param{!Array<!MetadataItem>} items
+ * @param {!Entry} entry
+ * @param {boolean} isSameEntry if the entry is not changed from the last time.
+ * @param {!Array<!MetadataItem>} items
+ *
  * @private
  */
 MetadataBoxController.prototype.onGeneralMetadataLoaded_ = function(
-    entry, items) {
-  var item = items[0];
-  if (item.size) {
+    entry, isSameEntry, items) {
+  const type = FileType.getType(entry).type;
+  const item = items[0];
+
+  this.metadataBox_.type = type;
+  // For directory, item.size is always -1.
+  if (item.size && !entry.isDirectory) {
     this.metadataBox_.size =
         this.fileMetadataFormatter_.formatSize(item.size, item.hosted);
   }
-  if (item.modificationTime) {
+  if (entry.isDirectory) {
+    this.setDirectorySize_(
+        /** @type {!DirectoryEntry} */ (entry), isSameEntry);
+  }
+  if (item.modificationTime && !util.isTeamDriveRoot(entry)) {
     this.metadataBox_.modificationTime =
         this.fileMetadataFormatter_.formatModDate(item.modificationTime);
   }
+
+  if (item.externalFileUrl || item.alternateUrl) {
+    this.metadataModel_.get([entry], ['contentMimeType']).then(items => {
+      const item = items[0];
+      this.metadataBox_.mediaMimeType = item.contentMimeType || '';
+    });
+  } else {
+    this.metadataModel_.get([entry], ['mediaMimeType']).then(items => {
+      const item = items[0];
+      this.metadataBox_.mediaMimeType = item.mediaMimeType || '';
+    });
+  }
+
+  if (['image', 'video', 'audio'].includes(type)) {
+    if (item.externalFileUrl || item.alternateUrl) {
+      this.metadataModel_.get([entry], ['imageHeight', 'imageWidth'])
+          .then(items => {
+            const item = items[0];
+            this.metadataBox_.imageHeight =
+                /** @type {number} */ (item.imageHeight);
+            this.metadataBox_.imageWidth =
+                /** @type {number} */ (item.imageWidth);
+          });
+    } else {
+      this.metadataModel_
+          .get(
+              [entry],
+              [
+                'ifd',
+                'imageHeight',
+                'imageWidth',
+                'mediaAlbum',
+                'mediaArtist',
+                'mediaDuration',
+                'mediaGenre',
+                'mediaTitle',
+                'mediaTrack',
+                'mediaYearRecorded',
+              ])
+          .then(items => {
+            const item = items[0];
+            this.metadataBox_.ifd = item.ifd || null;
+            this.metadataBox_.imageHeight = item.imageHeight || 0;
+            this.metadataBox_.imageWidth = item.imageWidth || 0;
+            this.metadataBox_.mediaAlbum = item.mediaAlbum || '';
+            this.metadataBox_.mediaArtist = item.mediaArtist || '';
+            this.metadataBox_.mediaDuration = item.mediaDuration || 0;
+            this.metadataBox_.mediaGenre = item.mediaGenre || '';
+            this.metadataBox_.mediaTitle = item.mediaTitle || '';
+            this.metadataBox_.mediaTrack = item.mediaTrack || '';
+            this.metadataBox_.mediaYearRecorded = item.mediaYearRecorded || '';
+          });
+    }
+  }
+};
+
+/**
+ * Set a current directory's size in metadata box.
+ * If previous getDirectorySize is still running, next getDirectorySize is not
+ * called at the time. After the previous callback is finished, getDirectorySize
+ * that corresponds to the last setDirectorySize_ is called.
+ *
+ * @param {!DirectoryEntry} entry
+ * @param {boolean} isSameEntry
+ *     if the entry is not changed from the last time.
+ *
+ * @private
+ */
+MetadataBoxController.prototype.setDirectorySize_ = function(
+    entry, isSameEntry) {
+  if (!entry.isDirectory) {
+    return;
+  }
+
+  if (this.isDirectorySizeLoading_) {
+    if (!isSameEntry) {
+      this.metadataBox_.isSizeLoading = true;
+    }
+
+    // Only retain the last setDirectorySize_ request.
+    this.onDirectorySizeLoaded_ = lastEntry => {
+      this.setDirectorySize_(entry, util.isSameEntry(entry, lastEntry));
+    };
+    return;
+  }
+
+  // false if the entry is same. true if the entry is changed.
+  this.metadataBox_.isSizeLoading = !isSameEntry;
+  this.isDirectorySizeLoading_ = true;
+  chrome.fileManagerPrivate.getDirectorySize(entry, size => {
+    this.isDirectorySizeLoading_ = false;
+    if (this.onDirectorySizeLoaded_) {
+      setTimeout(this.onDirectorySizeLoaded_.bind(null, entry));
+      this.onDirectorySizeLoaded_ = null;
+    }
+
+    if (this.quickViewModel_.getSelectedEntry() != entry) {
+      return;
+    }
+
+    if (chrome.runtime.lastError) {
+      this.metadataBox_.isSizeLoading = false;
+      return;
+    }
+
+    this.metadataBox_.isSizeLoading = false;
+    this.metadataBox_.size = this.fileMetadataFormatter_.formatSize(size, true);
+  });
 };

@@ -4,7 +4,7 @@
 
 // Custom binding for the extension API.
 
-var binding = require('binding').Binding.create('extension');
+var binding = apiBridge || require('binding').Binding.create('extension');
 
 var messaging = require('messaging');
 var runtimeNatives = requireNative('runtime');
@@ -14,7 +14,6 @@ var chrome = requireNative('chrome').GetChrome();
 var inIncognitoContext = requireNative('process').InIncognitoContext();
 var sendRequestIsDisabled = requireNative('process').IsSendRequestDisabled();
 var contextType = requireNative('process').GetContextType();
-var manifestVersion = requireNative('process').GetManifestVersion();
 
 // This should match chrome.windows.WINDOW_ID_NONE.
 //
@@ -22,19 +21,17 @@ var manifestVersion = requireNative('process').GetManifestVersion();
 // chrome.windows API won't exist unless this extension has permission for it;
 // which may not be the case.
 var WINDOW_ID_NONE = -1;
+var TAB_ID_NONE = -1;
 
 binding.registerCustomHook(function(bindingsAPI, extensionId) {
   var extension = bindingsAPI.compiledApi;
-  if (manifestVersion < 2) {
-    chrome.self = extension;
-    extension.inIncognitoTab = inIncognitoContext;
-  }
   extension.inIncognitoContext = inIncognitoContext;
 
   var apiFunctions = bindingsAPI.apiFunctions;
 
   apiFunctions.setHandleRequest('getViews', function(properties) {
     var windowId = WINDOW_ID_NONE;
+    var tabId = TAB_ID_NONE;
     var type = 'ALL';
     if (properties) {
       if (properties.type != null) {
@@ -43,18 +40,21 @@ binding.registerCustomHook(function(bindingsAPI, extensionId) {
       if (properties.windowId != null) {
         windowId = properties.windowId;
       }
+      if (properties.tabId != null) {
+        tabId = properties.tabId;
+      }
     }
-    return GetExtensionViews(windowId, type);
+    return GetExtensionViews(windowId, tabId, type);
   });
 
   apiFunctions.setHandleRequest('getBackgroundPage', function() {
-    return GetExtensionViews(-1, 'BACKGROUND')[0] || null;
+    return GetExtensionViews(-1, -1, 'BACKGROUND')[0] || null;
   });
 
   apiFunctions.setHandleRequest('getExtensionTabs', function(windowId) {
     if (windowId == null)
       windowId = WINDOW_ID_NONE;
-    return GetExtensionViews(windowId, 'TAB');
+    return GetExtensionViews(windowId, -1, 'TAB');
   });
 
   apiFunctions.setHandleRequest('getURL', function(path) {
@@ -108,4 +108,5 @@ binding.registerCustomHook(function(bindingsAPI, extensionId) {
   }
 });
 
-exports.$set('binding', binding.generate());
+if (!apiBridge)
+  exports.$set('binding', binding.generate());

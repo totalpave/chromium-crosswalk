@@ -7,16 +7,15 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
+#include "chrome/browser/download/download_confirmation_result.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 
 namespace base {
 class FilePath;
 }
 
-namespace content {
+namespace download {
 class DownloadItem;
-class DownloadManager;
-class WebContents;
 }
 
 // Handles showing a dialog to the user to ask for the filename for a download.
@@ -28,20 +27,21 @@ class DownloadFilePicker : public ui::SelectFileDialog::Listener {
   //    selection, then this parameter will be the empty path. On Chrome OS,
   //    this path may contain virtual mount points if the user chose a virtual
   //    path (e.g. Google Drive).
-  typedef base::Callback<void(const base::FilePath& virtual_path)>
-      FileSelectedCallback;
+  typedef base::Callback<void(DownloadConfirmationResult,
+                              const base::FilePath& virtual_path)>
+      ConfirmationCallback;
 
   // Display a file picker dialog for |item|. The |suggested_path| will be used
   // as the initial path displayed to the user. |callback| will always be
   // invoked even if |item| is destroyed prior to the file picker completing.
-  static void ShowFilePicker(content::DownloadItem* item,
+  static void ShowFilePicker(download::DownloadItem* item,
                              const base::FilePath& suggested_path,
-                             const FileSelectedCallback& callback);
+                             const ConfirmationCallback& callback);
 
  private:
-  DownloadFilePicker(content::DownloadItem* item,
+  DownloadFilePicker(download::DownloadItem* item,
                      const base::FilePath& suggested_path,
-                     const FileSelectedCallback& callback);
+                     const ConfirmationCallback& callback);
   ~DownloadFilePicker() override;
 
   // Runs |file_selected_callback_| with |virtual_path| and then deletes this
@@ -58,14 +58,10 @@ class DownloadFilePicker : public ui::SelectFileDialog::Listener {
   base::FilePath suggested_path_;
 
   // Callback invoked when a file selection is complete.
-  FileSelectedCallback file_selected_callback_;
+  ConfirmationCallback file_selected_callback_;
 
   // For managing select file dialogs.
   scoped_refptr<ui::SelectFileDialog> select_file_dialog_;
-
-  // True if UMA regarding on the result of the file selection should be
-  // recorded.
-  bool should_record_file_picker_result_;
 
   DISALLOW_COPY_AND_ASSIGN(DownloadFilePicker);
 };

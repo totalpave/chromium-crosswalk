@@ -7,7 +7,14 @@
 // up to date when adding a new value to the IPCMessageStart enum in
 // ipc/ipc_message_start.h to ensure the corresponding message file is
 // included here.
+//
+#include "ppapi/buildflags/buildflags.h"
+
 #include "content/common/content_message_generator.h"
-#if defined(ENABLE_PLUGINS)
-#include "ppapi/proxy/ppapi_messages.h"
+#if BUILDFLAG(ENABLE_PLUGINS)
+#undef PPAPI_PROXY_PPAPI_MESSAGES_H_
+#include "ppapi/proxy/ppapi_messages.h"  // nogncheck
+#ifndef PPAPI_PROXY_PPAPI_MESSAGES_H_
+#error "Failed to include ppapi/proxy/ppapi_messages.h"
+#endif
 #endif

@@ -7,11 +7,11 @@
 #include <vector>
 
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "extensions/common/extension.h"
+#include "extensions/browser/disable_reason.h"
 #include "net/base/escape.h"
 
 namespace extensions {
@@ -22,30 +22,71 @@ namespace {
 // request. We want to stay under 2K because of proxies, etc.
 const int kExtensionsManifestMaxURLSize = 2000;
 
+// Strings to report the manifest location in Omaha update pings. Please use
+// strings with no capitalization, spaces or underscorse.
+const char kInternalLocation[] = "internal";
+const char kExternalLocation[] = "external";
+const char kPolicyLocation[] = "policy";
+const char kOtherLocation[] = "other";
+const char kInvalidLocation[] = "invalid";
+
 void AddEnabledStateToPing(std::string* ping_value,
                       const ManifestFetchData::PingData* ping_data) {
   *ping_value += "&e=" + std::string(ping_data->is_enabled ? "1" : "0");
   if (!ping_data->is_enabled) {
     // Add a dr=<number> param for each bit set in disable reasons.
-    for (int enum_value = 1; enum_value < Extension::DISABLE_REASON_LAST;
+    for (int enum_value = 1; enum_value < disable_reason::DISABLE_REASON_LAST;
          enum_value <<= 1) {
       if (ping_data->disable_reasons & enum_value)
-        *ping_value += "&dr=" + base::IntToString(enum_value);
+        *ping_value += "&dr=" + base::NumberToString(enum_value);
     }
   }
 }
 
 }  // namespace
 
+// static
+std::string ManifestFetchData::GetSimpleLocationString(Manifest::Location loc) {
+  std::string result = kInvalidLocation;
+  switch (loc) {
+    case Manifest::INTERNAL:
+      result = kInternalLocation;
+      break;
+    case Manifest::EXTERNAL_PREF:
+    case Manifest::EXTERNAL_PREF_DOWNLOAD:
+    case Manifest::EXTERNAL_REGISTRY:
+      result = kExternalLocation;
+      break;
+    case Manifest::COMPONENT:
+    case Manifest::EXTERNAL_COMPONENT:
+    case Manifest::UNPACKED:
+    case Manifest::COMMAND_LINE:
+      result = kOtherLocation;
+      break;
+    case Manifest::EXTERNAL_POLICY_DOWNLOAD:
+    case Manifest::EXTERNAL_POLICY:
+      result = kPolicyLocation;
+      break;
+    case Manifest::INVALID_LOCATION:
+    case Manifest::NUM_LOCATIONS:
+      NOTREACHED();
+      break;
+  }
+
+  return result;
+}
+
 ManifestFetchData::ManifestFetchData(const GURL& update_url,
                                      int request_id,
                                      const std::string& brand_code,
                                      const std::string& base_query_params,
-                                     PingMode ping_mode)
+                                     PingMode ping_mode,
+                                     FetchPriority fetch_priority)
     : base_url_(update_url),
       full_url_(update_url),
       brand_code_(brand_code),
-      ping_mode_(ping_mode) {
+      ping_mode_(ping_mode),
+      fetch_priority_(fetch_priority) {
   std::string query =
       full_url_.has_query() ? full_url_.query() + "&" : std::string();
   query += base_query_params;
@@ -85,10 +126,16 @@ bool ManifestFetchData::AddExtension(const std::string& id,
                                      const std::string& version,
                                      const PingData* ping_data,
                                      const std::string& update_url_data,
-                                     const std::string& install_source) {
+                                     const std::string& install_source,
+                                     const std::string& install_location,
+                                     FetchPriority fetch_priority) {
   if (extension_ids_.find(id) != extension_ids_.end()) {
     NOTREACHED() << "Duplicate extension id " << id;
     return false;
+  }
+
+  if (fetch_priority_ != FOREGROUND) {
+    fetch_priority_ = fetch_priority;
   }
 
   // Compute the string we'd append onto the full_url_, and see if it fits.
@@ -97,6 +144,8 @@ bool ManifestFetchData::AddExtension(const std::string& id,
   parts.push_back("v=" + version);
   if (!install_source.empty())
     parts.push_back("installsource=" + install_source);
+  if (!install_location.empty())
+    parts.push_back("installedby=" + install_location);
   parts.push_back("uc");
 
   if (!update_url_data.empty()) {
@@ -116,7 +165,7 @@ bool ManifestFetchData::AddExtension(const std::string& id,
     if (ping_data) {
       if (ping_data->rollcall_days == kNeverPinged ||
           ping_data->rollcall_days > 0) {
-        ping_value += "r=" + base::IntToString(ping_data->rollcall_days);
+        ping_value += "r=" + base::NumberToString(ping_data->rollcall_days);
         if (ping_mode_ == PING_WITH_ENABLED_STATE)
           AddEnabledStateToPing(&ping_value, ping_data);
         pings_[id].rollcall_days = ping_data->rollcall_days;
@@ -126,7 +175,7 @@ bool ManifestFetchData::AddExtension(const std::string& id,
           ping_data->active_days > 0) {
         if (!ping_value.empty())
           ping_value += "&";
-        ping_value += "a=" + base::IntToString(ping_data->active_days);
+        ping_value += "a=" + base::NumberToString(ping_data->active_days);
         pings_[id].active_days = ping_data->active_days;
       }
     }
@@ -158,7 +207,7 @@ bool ManifestFetchData::Includes(const std::string& extension_id) const {
 
 bool ManifestFetchData::DidPing(const std::string& extension_id,
                                 PingType type) const {
-  std::map<std::string, PingData>::const_iterator i = pings_.find(extension_id);
+  auto i = pings_.find(extension_id);
   if (i == pings_.end())
     return false;
   int value = 0;
@@ -173,6 +222,9 @@ bool ManifestFetchData::DidPing(const std::string& extension_id,
 
 void ManifestFetchData::Merge(const ManifestFetchData& other) {
   DCHECK(full_url() == other.full_url());
+  if (fetch_priority_ != FOREGROUND) {
+    fetch_priority_ = other.fetch_priority_;
+  }
   request_ids_.insert(other.request_ids_.begin(), other.request_ids_.end());
 }
 

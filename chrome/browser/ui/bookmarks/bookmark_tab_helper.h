@@ -7,10 +7,11 @@
 
 #include "base/macros.h"
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
+#include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 
-class BookmarkTabHelperDelegate;
+class BookmarkTabHelperObserver;
 
 namespace bookmarks {
 struct BookmarkNodeData;
@@ -40,10 +41,6 @@ class BookmarkTabHelper
 
   ~BookmarkTabHelper() override;
 
-  void set_delegate(BookmarkTabHelperDelegate* delegate) {
-    delegate_ = delegate;
-  }
-
   // It is up to callers to call set_bookmark_drag_delegate(NULL) when
   // |bookmark_drag| is deleted since this class does not take ownership of
   // |bookmark_drag|.
@@ -56,6 +53,10 @@ class BookmarkTabHelper
 
   // Returns true if the bookmark bar should be shown detached.
   bool ShouldShowBookmarkBar() const;
+
+  void AddObserver(BookmarkTabHelperObserver* observer);
+  void RemoveObserver(BookmarkTabHelperObserver* observer);
+  bool HasObserver(BookmarkTabHelperObserver* observer) const;
 
  private:
   friend class content::WebContentsUserData<BookmarkTabHelper>;
@@ -84,12 +85,10 @@ class BookmarkTabHelper
                            const bookmarks::BookmarkNode* node) override;
 
   // Overridden from content::WebContentsObserver:
-  void DidNavigateMainFrame(
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
-  void DidStartNavigationToPendingEntry(
-      const GURL& url,
-      content::NavigationController::ReloadType reload_type) override;
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void DidAttachInterstitialPage() override;
   void DidDetachInterstitialPage() override;
 
@@ -98,12 +97,14 @@ class BookmarkTabHelper
 
   bookmarks::BookmarkModel* bookmark_model_;
 
-  // Our delegate, to notify when the url starred changed.
-  BookmarkTabHelperDelegate* delegate_;
+  // A list of observers notified when when the url starred changed.
+  base::ObserverList<BookmarkTabHelperObserver>::Unchecked observers_;
 
   // The BookmarkDrag is used to forward bookmark drag and drop events to
   // extensions.
   BookmarkDrag* bookmark_drag_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(BookmarkTabHelper);
 };

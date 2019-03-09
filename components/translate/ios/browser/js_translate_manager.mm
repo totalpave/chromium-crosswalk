@@ -10,29 +10,21 @@
 
 #include "base/logging.h"
 #include "base/mac/bundle_locations.h"
-#import "base/mac/scoped_nsobject.h"
+#import "ios/web/public/web_state/js/crw_js_injection_receiver.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 @implementation JsTranslateManager {
-  base::scoped_nsobject<NSString> _translationScript;
+  NSString* _translationScript;
 }
 
 - (NSString*)script {
-  return _translationScript.get();
+  return _translationScript;
 }
 
 - (void)setScript:(NSString*)script {
-  // The translation script uses performance.now() for metrics, which is not
-  // supported except on iOS 8.0. To make the translation script work on these
-  // iOS versions, add some JavaScript to |script| that defines an
-  // implementation of performance.now().
-  NSString* const kPerformancePlaceholder =
-      @"var performance = window['performance'] || {};"
-      @"performance.now = performance['now'] ||"
-      @"(function () { return Date.now(); });\n";
-  script = [kPerformancePlaceholder stringByAppendingString:script];
-  // TODO(shreyasv): This leads to some duplicate code from
-  // CRWJSInjectionManager. Consider refactoring this to its own js injection
-  // manager.
   NSString* path =
       [base::mac::FrameworkBundle() pathForResource:@"translate_ios"
                                              ofType:@"js"];
@@ -42,44 +34,54 @@
                                                 encoding:NSUTF8StringEncoding
                                                    error:&error];
   DCHECK(!error && [content length]);
-  script = [script stringByAppendingString:content];
-  _translationScript.reset([script copy]);
-}
+  // Prepend so callbacks defined in translate_ios.js can be installed.
+  script = [content stringByAppendingString:script];
 
-- (void)injectWaitUntilTranslateReadyScript {
-  [self.receiver evaluateJavaScript:@"__gCrWeb.translate.checkTranslateReady()"
-                stringResultHandler:nil];
-}
-
-- (void)injectTranslateStatusScript {
-  [self.receiver evaluateJavaScript:@"__gCrWeb.translate.checkTranslateStatus()"
-                stringResultHandler:nil];
+  _translationScript = [script copy];
 }
 
 - (void)startTranslationFrom:(const std::string&)source
                           to:(const std::string&)target {
-  NSString* js =
+  NSString* script =
       [NSString stringWithFormat:@"cr.googleTranslate.translate('%s','%s')",
                                  source.c_str(), target.c_str()];
-  [self.receiver evaluateJavaScript:js stringResultHandler:nil];
+  [self.receiver executeJavaScript:script completionHandler:nil];
 }
 
 - (void)revertTranslation {
-  DCHECK([self hasBeenInjected]);
-  [self.receiver evaluateJavaScript:@"cr.googleTranslate.revert()"
-                stringResultHandler:nil];
+  if (![self hasBeenInjected])
+    return;
+
+  [self.receiver executeJavaScript:@"cr.googleTranslate.revert()"
+                 completionHandler:nil];
 }
 
 #pragma mark -
 #pragma mark CRWJSInjectionManager methods
 
-- (NSString*)injectionContent {
-  DCHECK(_translationScript);
-  return _translationScript.autorelease();
+- (void)inject {
+  NSString* script = [self injectionContent];
+
+  // Reset any state if previously injected.
+  if ([self hasBeenInjected]) {
+    NSString* resetScript =
+        @"try {"
+         "  cr.googleTranslate.revert();"
+         "} catch (e) {"
+         "}";
+    script = [resetScript stringByAppendingString:script];
+  }
+
+  // The scripts need to be re-injected to ensure that the logic that
+  // initializes translate can be restarted properly.
+  [[self receiver] injectScript:script forClass:[self class]];
 }
 
-- (NSString*)presenceBeacon {
-  return @"cr.googleTranslate";
+- (NSString*)injectionContent {
+  DCHECK(_translationScript);
+  NSString* translationScript = _translationScript;
+  _translationScript = nil;
+  return translationScript;
 }
 
 @end

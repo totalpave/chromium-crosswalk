@@ -7,25 +7,18 @@
 #include <algorithm>
 
 #include "base/bind.h"
-#include "base/chromeos/logging.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/single_thread_task_runner.h"
-#include "base/sys_info.h"
+#include "base/syslog_logging.h"
+#include "base/system/sys_info.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "chromeos/dbus/power_manager_client.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
+#include "third_party/cros_system_api/dbus/service_constants.h"
 
 namespace policy {
-
-namespace {
-
-// Determines the time, measured from the time of issue, after which the command
-// queue will consider this command expired if the command has not been started.
-const int kCommandExpirationTimeInMinutes = 10;
-
-}  // namespace
 
 DeviceCommandRebootJob::DeviceCommandRebootJob(
     chromeos::PowerManagerClient* power_manager_client)
@@ -41,15 +34,9 @@ enterprise_management::RemoteCommand_Type DeviceCommandRebootJob::GetType()
   return enterprise_management::RemoteCommand_Type_DEVICE_REBOOT;
 }
 
-bool DeviceCommandRebootJob::IsExpired(base::TimeTicks now) {
-  return now > issued_time() + base::TimeDelta::FromMinutes(
-                                   kCommandExpirationTimeInMinutes);
-}
-
-void DeviceCommandRebootJob::RunImpl(
-    const CallbackWithResult& succeeded_callback,
-    const CallbackWithResult& failed_callback) {
-  CHROMEOS_SYSLOG(WARNING) << "Running reboot command.";
+void DeviceCommandRebootJob::RunImpl(CallbackWithResult succeeded_callback,
+                                     CallbackWithResult failed_callback) {
+  SYSLOG(INFO) << "Running reboot command.";
 
   // Determines the time delta between the command having been issued and the
   // boot time of the system.
@@ -60,19 +47,16 @@ void DeviceCommandRebootJob::RunImpl(
   // server that the reboot succeeded. Otherwise, the reboot must still be
   // performed and we invoke it.
   if (delta > base::TimeDelta()) {
-    CHROMEOS_SYSLOG(WARNING) << "Ignoring reboot command issued " << delta
-                             << " before current boot time";
+    SYSLOG(WARNING) << "Ignoring reboot command issued " << delta
+                    << " before current boot time";
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(succeeded_callback, nullptr));
+        FROM_HERE, base::BindOnce(std::move(succeeded_callback), nullptr));
     return;
   }
 
-  CHROMEOS_SYSLOG(WARNING) << "Rebooting immediately.";
-  power_manager_client_->RequestRestart();
-}
-
-base::TimeDelta DeviceCommandRebootJob::GetCommmandTimeout() const {
-  return base::TimeDelta::FromMinutes(kCommandExpirationTimeInMinutes);
+  SYSLOG(INFO) << "Rebooting immediately.";
+  power_manager_client_->RequestRestart(power_manager::REQUEST_RESTART_OTHER,
+                                        "policy device command");
 }
 
 }  // namespace policy

@@ -1,8 +1,12 @@
-per-file ios_chrome_io_thread*=cbentzel@chromium.org
 per-file ios_chrome_io_thread*=mmenke@chromium.org
 per-file ios_chrome_io_thread*=rch@chromium.org
 per-file ios_chrome_io_thread*=rsleevi@chromium.org
 
-# These are for the common case of adding or renaming files. If you're doing
-# structural changes, please get a review from an OWNER.
-per-file BUILD.gn=*
+# Only for adding and removing flags.
+per-file about_flags.*=*
+per-file experimental_flags.*=*
+
+per-file ios_chrome_flag_descriptions.*=*
+
+# TEAM: ios-directory-owners@chromium.org
+# OS: iOS

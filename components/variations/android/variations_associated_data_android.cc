@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "components/variations/android/variations_associated_data_android.h"
-
 #include <string>
 
 #include "base/android/jni_string.h"
@@ -13,14 +11,14 @@
 
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
+using base::android::JavaParamRef;
+using base::android::ScopedJavaLocalRef;
 
 namespace variations {
-
 namespace android {
 
-ScopedJavaLocalRef<jstring> GetVariationParamValue(
+ScopedJavaLocalRef<jstring> JNI_VariationsAssociatedData_GetVariationParamValue(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jstring>& jtrial_name,
     const JavaParamRef<jstring>& jparam_name) {
   std::string trial_name(ConvertJavaStringToUTF8(env, jtrial_name));
@@ -30,18 +28,12 @@ ScopedJavaLocalRef<jstring> GetVariationParamValue(
   return ConvertUTF8ToJavaString(env, param_value);
 }
 
-ScopedJavaLocalRef<jstring> GetFeedbackVariations(
-    JNIEnv* env,
-    const JavaParamRef<jclass>& clazz) {
+ScopedJavaLocalRef<jstring> JNI_VariationsAssociatedData_GetFeedbackVariations(
+    JNIEnv* env) {
   const std::string values =
       VariationsHttpHeaderProvider::GetInstance()->GetVariationsString();
   return ConvertUTF8ToJavaString(env, values);
 }
 
-bool RegisterVariationsAssociatedData(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
 }  // namespace android
-
 }  // namespace variations

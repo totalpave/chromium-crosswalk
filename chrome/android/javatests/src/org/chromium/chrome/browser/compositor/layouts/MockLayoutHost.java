@@ -6,11 +6,11 @@ package org.chromium.chrome.browser.compositor.layouts;
 
 import android.content.Context;
 import android.graphics.Rect;
+import android.graphics.RectF;
 
 import org.chromium.chrome.browser.compositor.TitleCache;
 import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.content.browser.ContentViewCore;
 import org.chromium.ui.resources.ResourceManager;
 
 /**
@@ -32,10 +32,10 @@ class MockLayoutHost implements LayoutManagerHost, LayoutRenderHost {
         }
 
         @Override
-        public void remove(int tabId) { }
+        public void remove(int tabId) {}
 
         @Override
-        public void clearExcept(int tabId) { }
+        public void clearExcept(int tabId) {}
     }
 
     private final MockTitleCache mMockTitleCache = new MockTitleCache();
@@ -49,19 +49,19 @@ class MockLayoutHost implements LayoutManagerHost, LayoutRenderHost {
     }
 
     @Override
-    public void requestRender() { }
+    public void requestRender() {}
 
     @Override
-    public void onCompositorLayout() { }
+    public void onCompositorLayout() {}
 
     @Override
-    public void onSwapBuffersCompleted(int pendingSwapBuffersCount) { }
+    public void didSwapFrame(int pendingFrameCount) {}
 
     @Override
-    public void onSurfaceCreated() { }
+    public void onSurfaceCreated() {}
 
     @Override
-    public void onPhysicalBackingSizeChanged(int width, int height) { }
+    public void onSurfaceResized(int width, int height) {}
 
     @Override
     public Context getContext() {
@@ -83,23 +83,48 @@ class MockLayoutHost implements LayoutManagerHost, LayoutRenderHost {
     }
 
     @Override
+    public void getWindowViewport(RectF outRect) {
+        outRect.set(0, 0, getWidth(), getHeight());
+    }
+
+    @Override
+    public void getVisibleViewport(RectF outRect) {
+        outRect.set(0, 0, getWidth(), getHeight());
+    }
+
+    @Override
+    public void getViewportFullControls(RectF outRect) {
+        outRect.set(0, 0, getWidth(), getHeight());
+    }
+
+    @Override
+    public float getHeightMinusBrowserControls() {
+        return getHeight();
+    }
+
+    @Override
+    public int getTopControlsHeightPixels() {
+        return 0;
+    }
+
+    @Override
+    public int getBottomControlsHeightPixels() {
+        return 0;
+    }
+
+    @Override
     public LayoutRenderHost getLayoutRenderHost() {
         return this;
     }
 
     @Override
-    public void pushDebugRect(Rect rect, int color) { }
+    public void pushDebugRect(Rect rect, int color) {}
 
     @Override
-    public void loadPersitentTextureDataIfNeeded() { }
+    public void loadPersitentTextureDataIfNeeded() {}
 
     @Override
-    public int getLayoutTabsDrawnCount() {
-        return 0;
-    }
-
-    @Override
-    public void setContentOverlayVisibility(boolean visible) { }
+    public void setContentOverlayVisibility(boolean visible, boolean canBeFocusable) {}
 
     @Override
     public TitleCache getTitleCache() {
@@ -112,44 +137,19 @@ class MockLayoutHost implements LayoutManagerHost, LayoutRenderHost {
     }
 
     @Override
-    public Rect getVisibleViewport(Rect rect) {
-        if (rect == null) rect = new Rect();
-        rect.set(0, 0, getWidth(), getHeight());
-        return rect;
-    }
-
-    @Override
-    public int getTopControlsHeightPixels() {
-        return 0;
-    }
-
-    @Override
-    public boolean areTopControlsPermanentlyHidden() {
-        return false;
-    }
-
-    @Override
     public ResourceManager getResourceManager() {
         return null;
     }
 
     @Override
-    public void invalidateAccessibilityProvider() { }
+    public void invalidateAccessibilityProvider() {}
 
     @Override
-    public void onContentViewCoreAdded(ContentViewCore content) { }
+    public void onContentChanged() {}
 
     @Override
-    public void onContentChanged() { }
-
-    @Override
-    public int getTopControlsBackgroundColor() {
+    public int getBrowserControlsBackgroundColor() {
         return 0;
-    }
-
-    @Override
-    public float getTopControlsUrlBarAlpha() {
-        return 1f;
     }
 
     @Override

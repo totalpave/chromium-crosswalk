@@ -13,16 +13,15 @@
 
 #include "base/auto_reset.h"
 #include "base/bind.h"
-#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/strings/string_split.h"
-#include "base/time/clock.h"
 #include "base/time/default_clock.h"
+#include "base/trace_event/trace_event.h"
+#include "components/content_settings/core/browser/content_settings_info.h"
 #include "components/content_settings/core/browser/content_settings_pref.h"
+#include "components/content_settings/core/browser/content_settings_registry.h"
 #include "components/content_settings/core/browser/content_settings_rule.h"
 #include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/content_settings/core/browser/website_settings_info.h"
 #include "components/content_settings/core/browser/website_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
@@ -31,20 +30,27 @@
 #include "components/prefs/pref_registry.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "services/preferences/public/cpp/dictionary_value_update.h"
+#include "services/preferences/public/cpp/scoped_pref_update.h"
+
+namespace content_settings {
 
 namespace {
 
-// Obsolete prefs.
-// TODO(msramek): Remove the cleanup code after two releases (i.e. in M50).
-const char kObsoleteMetroSwitchToDesktopExceptions[] =
-    "profile.content_settings.exceptions.metro_switch_to_desktop";
+// These settings are no longer used, and should be deleted on profile startup.
+const char kObsoleteDomainToOriginMigrationStatus[] =
+    "profile.content_settings.domain_to_origin_migration_status";
 
-const char kObsoleteMediaStreamExceptions[] =
-    "profile.content_settings.exceptions.media_stream";
+#if !defined(OS_IOS)
+const char kObsoleteFullscreenExceptionsPref[] =
+    "profile.content_settings.exceptions.fullscreen";
+#if !defined(OS_ANDROID)
+const char kObsoleteMouseLockExceptionsPref[] =
+    "profile.content_settings.exceptions.mouselock";
+#endif  // !defined(OS_ANDROID)
+#endif  // !defined(OS_IOS)
 
 }  // namespace
-
-namespace content_settings {
 
 // ////////////////////////////////////////////////////////////////////////////
 // PrefProvider:
@@ -66,17 +72,29 @@ void PrefProvider::RegisterProfilePrefs(
 
   // Obsolete prefs ----------------------------------------------------------
 
+  // These prefs have been removed, but need to be registered so they can
+  // be deleted on startup.
+  registry->RegisterIntegerPref(kObsoleteDomainToOriginMigrationStatus, 0);
+#if !defined(OS_IOS)
   registry->RegisterDictionaryPref(
-      kObsoleteMetroSwitchToDesktopExceptions,
+      kObsoleteFullscreenExceptionsPref,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-
-  registry->RegisterDictionaryPref(kObsoleteMediaStreamExceptions);
+#if !defined(OS_ANDROID)
+  registry->RegisterDictionaryPref(
+      kObsoleteMouseLockExceptionsPref,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+#endif  // !defined(OS_ANDROID)
+#endif  // !defined(OS_IOS)
 }
 
-PrefProvider::PrefProvider(PrefService* prefs, bool incognito)
+PrefProvider::PrefProvider(PrefService* prefs,
+                           bool incognito,
+                           bool store_last_modified)
     : prefs_(prefs),
-      clock_(new base::DefaultClock()),
-      is_incognito_(incognito) {
+      is_incognito_(incognito),
+      store_last_modified_(store_last_modified),
+      clock_(base::DefaultClock::GetInstance()) {
+  TRACE_EVENT_BEGIN0("startup", "PrefProvider::PrefProvider");
   DCHECK(prefs_);
   // Verify preferences version.
   if (!prefs_->HasPrefPath(prefs::kContentSettingsVersion)) {
@@ -85,32 +103,52 @@ PrefProvider::PrefProvider(PrefService* prefs, bool incognito)
   }
   if (prefs_->GetInteger(prefs::kContentSettingsVersion) >
       ContentSettingsPattern::kContentSettingsPatternVersion) {
+    TRACE_EVENT_END0("startup", "PrefProvider::PrefProvider");
     return;
   }
 
+  DiscardObsoletePreferences();
+
   pref_change_registrar_.Init(prefs_);
 
+  ContentSettingsRegistry* content_settings =
+      ContentSettingsRegistry::GetInstance();
   WebsiteSettingsRegistry* website_settings =
       WebsiteSettingsRegistry::GetInstance();
   for (const WebsiteSettingsInfo* info : *website_settings) {
-    content_settings_prefs_.insert(std::make_pair(
-        info->type(),
-        base::WrapUnique(new ContentSettingsPref(
-            info->type(), prefs_, &pref_change_registrar_, info->pref_name(),
-            is_incognito_,
-            base::Bind(&PrefProvider::Notify, base::Unretained(this))))));
+    const ContentSettingsInfo* content_type_info =
+        content_settings->Get(info->type());
+    // If it's not a content setting, or it's persistent, handle it in this
+    // class.
+    if (!content_type_info || content_type_info->storage_behavior() ==
+                                  ContentSettingsInfo::PERSISTENT) {
+      content_settings_prefs_.insert(std::make_pair(
+          info->type(),
+          std::make_unique<ContentSettingsPref>(
+              info->type(), prefs_, &pref_change_registrar_, info->pref_name(),
+              is_incognito_,
+              base::Bind(&PrefProvider::Notify, base::Unretained(this)))));
+    } else if (info->type() == CONTENT_SETTINGS_TYPE_PLUGINS) {
+      // TODO(https://crbug.com/850062): Remove after M71, two milestones after
+      // migration of the Flash permissions to ephemeral provider.
+      flash_content_settings_pref_ = std::make_unique<ContentSettingsPref>(
+          info->type(), prefs_, &pref_change_registrar_, info->pref_name(),
+          is_incognito_,
+          base::Bind(&PrefProvider::Notify, base::Unretained(this)));
+    }
   }
 
+  size_t num_exceptions = 0;
   if (!is_incognito_) {
-    size_t num_exceptions = 0;
     for (const auto& pref : content_settings_prefs_)
       num_exceptions += pref.second->GetNumExceptions();
 
-    UMA_HISTOGRAM_COUNTS("ContentSettings.NumberOfExceptions",
-                         num_exceptions);
+    UMA_HISTOGRAM_COUNTS_1M("ContentSettings.NumberOfExceptions",
+                            num_exceptions);
   }
 
-  DiscardObsoletePreferences();
+  TRACE_EVENT_END1("startup", "PrefProvider::PrefProvider",
+                   "NumberOfExceptions", num_exceptions);
 }
 
 PrefProvider::~PrefProvider() {
@@ -121,6 +159,9 @@ std::unique_ptr<RuleIterator> PrefProvider::GetRuleIterator(
     ContentSettingsType content_type,
     const ResourceIdentifier& resource_identifier,
     bool incognito) const {
+  if (!supports_type(content_type))
+    return nullptr;
+
   return GetPref(content_type)->GetRuleIterator(resource_identifier, incognito);
 }
 
@@ -133,6 +174,9 @@ bool PrefProvider::SetWebsiteSetting(
   DCHECK(CalledOnValidThread());
   DCHECK(prefs_);
 
+  if (!supports_type(content_type))
+    return false;
+
   // Default settings are set using a wildcard pattern for both
   // |primary_pattern| and |secondary_pattern|. Don't store default settings in
   // the |PrefProvider|. The |PrefProvider| handles settings for specific
@@ -144,9 +188,28 @@ bool PrefProvider::SetWebsiteSetting(
     return false;
   }
 
+  base::Time modified_time =
+      store_last_modified_ ? clock_->Now() : base::Time();
+
   return GetPref(content_type)
       ->SetWebsiteSetting(primary_pattern, secondary_pattern,
-                          resource_identifier, in_value);
+                          resource_identifier, modified_time, in_value);
+}
+
+base::Time PrefProvider::GetWebsiteSettingLastModified(
+    const ContentSettingsPattern& primary_pattern,
+    const ContentSettingsPattern& secondary_pattern,
+    ContentSettingsType content_type,
+    const ResourceIdentifier& resource_identifier) {
+  DCHECK(CalledOnValidThread());
+  DCHECK(prefs_);
+
+  if (!supports_type(content_type))
+    return base::Time();
+
+  return GetPref(content_type)
+      ->GetWebsiteSettingLastModified(primary_pattern, secondary_pattern,
+                                      resource_identifier);
 }
 
 void PrefProvider::ClearAllContentSettingsRules(
@@ -154,7 +217,17 @@ void PrefProvider::ClearAllContentSettingsRules(
   DCHECK(CalledOnValidThread());
   DCHECK(prefs_);
 
-  GetPref(content_type)->ClearAllContentSettingsRules();
+  if (supports_type(content_type))
+    GetPref(content_type)->ClearAllContentSettingsRules();
+
+  // TODO(https://crbug.com/850062): Remove after M71, two milestones after
+  // migration of the Flash permissions to ephemeral provider.
+  // |flash_content_settings_pref_| is not null only if Flash permissions are
+  // ephemeral and handled in EphemeralProvider.
+  if (content_type == CONTENT_SETTINGS_TYPE_PLUGINS &&
+      flash_content_settings_pref_) {
+    flash_content_settings_pref_->ClearAllContentSettingsRules();
+  }
 }
 
 void PrefProvider::ShutdownOnUIThread() {
@@ -162,7 +235,7 @@ void PrefProvider::ShutdownOnUIThread() {
   DCHECK(prefs_);
   RemoveAllObservers();
   pref_change_registrar_.RemoveAll();
-  prefs_ = NULL;
+  prefs_ = nullptr;
 }
 
 void PrefProvider::ClearPrefs() {
@@ -173,30 +246,10 @@ void PrefProvider::ClearPrefs() {
     pref.second->ClearPref();
 }
 
-void PrefProvider::UpdateLastUsage(
-    const ContentSettingsPattern& primary_pattern,
-    const ContentSettingsPattern& secondary_pattern,
-    ContentSettingsType content_type) {
-  GetPref(content_type)
-      ->UpdateLastUsage(primary_pattern, secondary_pattern, clock_.get());
-}
-
-base::Time PrefProvider::GetLastUsage(
-    const ContentSettingsPattern& primary_pattern,
-    const ContentSettingsPattern& secondary_pattern,
-    ContentSettingsType content_type) {
-  return GetPref(content_type)
-      ->GetLastUsage(primary_pattern, secondary_pattern);
-}
-
 ContentSettingsPref* PrefProvider::GetPref(ContentSettingsType type) const {
   auto it = content_settings_prefs_.find(type);
   DCHECK(it != content_settings_prefs_.end());
   return it->second.get();
-}
-
-void PrefProvider::SetClockForTesting(std::unique_ptr<base::Clock> clock) {
-  clock_ = std::move(clock);
 }
 
 void PrefProvider::Notify(
@@ -211,8 +264,23 @@ void PrefProvider::Notify(
 }
 
 void PrefProvider::DiscardObsoletePreferences() {
-  prefs_->ClearPref(kObsoleteMetroSwitchToDesktopExceptions);
-  prefs_->ClearPref(kObsoleteMediaStreamExceptions);
+  if (is_incognito_)
+    return;
+
+  prefs_->ClearPref(kObsoleteDomainToOriginMigrationStatus);
+
+  // These prefs were never stored on iOS/Android so they don't need to be
+  // deleted.
+#if !defined(OS_IOS)
+  prefs_->ClearPref(kObsoleteFullscreenExceptionsPref);
+#if !defined(OS_ANDROID)
+  prefs_->ClearPref(kObsoleteMouseLockExceptionsPref);
+#endif  // !defined(OS_ANDROID)
+#endif  // !defined(OS_IOS)
+}
+
+void PrefProvider::SetClockForTesting(base::Clock* clock) {
+  clock_ = clock;
 }
 
 }  // namespace content_settings

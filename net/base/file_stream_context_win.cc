@@ -7,13 +7,15 @@
 #include <windows.h>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/message_loop/message_loop_current.h"
+#include "base/message_loop/message_pump_for_io.h"
 #include "base/single_thread_task_runner.h"
 #include "base/task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/threading/worker_pool.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 
@@ -66,29 +68,31 @@ FileStream::Context::~Context() {
 
 int FileStream::Context::Read(IOBuffer* buf,
                               int buf_len,
-                              const CompletionCallback& callback) {
-  CHECK(!async_in_progress_);
+                              CompletionOnceCallback callback) {
+  DCHECK(!async_in_progress_);
+
   DCHECK(!async_read_initiated_);
   DCHECK(!async_read_completed_);
   DCHECK(!io_complete_for_read_received_);
 
-  IOCompletionIsPending(callback, buf);
+  IOCompletionIsPending(std::move(callback), buf);
 
   async_read_initiated_ = true;
   result_ = 0;
 
   task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&FileStream::Context::ReadAsync, base::Unretained(this),
-                 file_.GetPlatformFile(), make_scoped_refptr(buf), buf_len,
-                 &io_context_.overlapped, base::ThreadTaskRunnerHandle::Get()));
+      base::BindOnce(&FileStream::Context::ReadAsync, base::Unretained(this),
+                     file_.GetPlatformFile(), base::WrapRefCounted(buf),
+                     buf_len, &io_context_.overlapped,
+                     base::ThreadTaskRunnerHandle::Get()));
   return ERR_IO_PENDING;
 }
 
 int FileStream::Context::Write(IOBuffer* buf,
                                int buf_len,
-                               const CompletionCallback& callback) {
-  CHECK(!async_in_progress_);
+                               CompletionOnceCallback callback) {
+  DCHECK(!async_in_progress_);
 
   result_ = 0;
 
@@ -96,14 +100,15 @@ int FileStream::Context::Write(IOBuffer* buf,
   if (!WriteFile(file_.GetPlatformFile(), buf->data(), buf_len,
                  &bytes_written, &io_context_.overlapped)) {
     IOResult error = IOResult::FromOSError(GetLastError());
-    if (error.os_error == ERROR_IO_PENDING)
-      IOCompletionIsPending(callback, buf);
-    else
+    if (error.os_error == ERROR_IO_PENDING) {
+      IOCompletionIsPending(std::move(callback), buf);
+    } else {
       LOG(WARNING) << "WriteFile failed: " << error.os_error;
+    }
     return static_cast<int>(error.result);
   }
 
-  IOCompletionIsPending(callback, buf);
+  IOCompletionIsPending(std::move(callback), buf);
   return ERR_IO_PENDING;
 }
 
@@ -116,21 +121,22 @@ FileStream::Context::IOResult FileStream::Context::SeekFileImpl(
 }
 
 void FileStream::Context::OnFileOpened() {
-  base::MessageLoopForIO::current()->RegisterIOHandler(file_.GetPlatformFile(),
-                                                       this);
+  HRESULT hr = base::MessageLoopCurrentForIO::Get()->RegisterIOHandler(
+      file_.GetPlatformFile(), this);
+  if (!SUCCEEDED(hr))
+    file_.Close();
 }
 
-void FileStream::Context::IOCompletionIsPending(
-    const CompletionCallback& callback,
-    IOBuffer* buf) {
+void FileStream::Context::IOCompletionIsPending(CompletionOnceCallback callback,
+                                                IOBuffer* buf) {
   DCHECK(callback_.is_null());
-  callback_ = callback;
+  callback_ = std::move(callback);
   in_flight_buf_ = buf;  // Hold until the async operation ends.
   async_in_progress_ = true;
 }
 
 void FileStream::Context::OnIOCompleted(
-    base::MessageLoopForIO::IOContext* context,
+    base::MessagePumpForIO::IOContext* context,
     DWORD bytes_read,
     DWORD error) {
   DCHECK_EQ(&io_context_, context);
@@ -180,11 +186,9 @@ void FileStream::Context::InvokeUserCallback() {
     async_read_completed_ = false;
     async_in_progress_ = false;
   }
-  CompletionCallback temp_callback = callback_;
-  callback_.Reset();
   scoped_refptr<IOBuffer> temp_buf = in_flight_buf_;
   in_flight_buf_ = NULL;
-  temp_callback.Run(result_);
+  std::move(callback_).Run(result_);
 }
 
 void FileStream::Context::DeleteOrphanedContext() {
@@ -205,9 +209,9 @@ void FileStream::Context::ReadAsync(
   DWORD bytes_read = 0;
   BOOL ret = ::ReadFile(file, buf->data(), buf_len, &bytes_read, overlapped);
   origin_thread_task_runner->PostTask(
-      FROM_HERE,
-      base::Bind(&FileStream::Context::ReadAsyncResult,
-                 base::Unretained(context), ret, bytes_read, ::GetLastError()));
+      FROM_HERE, base::BindOnce(&FileStream::Context::ReadAsyncResult,
+                                base::Unretained(context), ret, bytes_read,
+                                ::GetLastError()));
 }
 
 void FileStream::Context::ReadAsyncResult(BOOL read_file_ret,

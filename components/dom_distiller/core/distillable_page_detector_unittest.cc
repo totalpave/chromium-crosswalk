@@ -4,6 +4,8 @@
 
 #include "components/dom_distiller/core/distillable_page_detector.h"
 
+#include <memory>
+
 #include "base/memory/ptr_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -30,8 +32,8 @@ class Builder {
     }
     proto_.set_num_features(num_features);
     proto_.set_num_stumps(proto_.stump_size());
-    return base::WrapUnique(new DistillablePageDetector(
-        base::WrapUnique(new AdaBoostProto(proto_))));
+    return std::make_unique<DistillablePageDetector>(
+        base::WrapUnique(new AdaBoostProto(proto_)));
   }
 
  private:

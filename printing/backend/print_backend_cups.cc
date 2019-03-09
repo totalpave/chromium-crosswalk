@@ -4,16 +4,17 @@
 
 #include "printing/backend/print_backend_cups.h"
 
+#include <cups/ppd.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 
 #include <string>
 
-#include "base/debug/leak_annotations.h"
 #include "base/files/file_util.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/values.h"
@@ -28,7 +29,6 @@ namespace {
 const char kCUPSPrinterInfoOpt[] = "printer-info";
 const char kCUPSPrinterStateOpt[] = "printer-state";
 const char kCUPSPrinterTypeOpt[] = "printer-type";
-const char kCUPSPrinterMakeModelOpt[] = "printer-make-and-model";
 
 bool PrinterBasicInfoFromCUPS(const cups_dest_t& printer,
                               PrinterBasicInfo* printer_info) {
@@ -55,7 +55,7 @@ bool PrinterBasicInfoFromCUPS(const cups_dest_t& printer,
   if (state)
     base::StringToInt(state, &printer_info->printer_status);
 
-  const char* drv_info = cupsGetOption(kCUPSPrinterMakeModelOpt,
+  const char* drv_info = cupsGetOption(kDriverNameTagName,
                                        printer.num_options, printer.options);
   if (drv_info)
     printer_info->options[kDriverInfoTagName] = *drv_info;
@@ -179,7 +179,7 @@ std::string PrintBackendCUPS::GetPrinterDriverInfo(
 
   DCHECK_EQ(printer_name, dest->name);
   const char* info =
-      cupsGetOption(kCUPSPrinterMakeModelOpt, dest->num_options, dest->options);
+      cupsGetOption(kDriverNameTagName, dest->num_options, dest->options);
   if (info)
     result = *info;
   cupsFreeDests(1, dest);
@@ -196,7 +196,7 @@ bool PrintBackendCUPS::IsValidPrinter(const std::string& printer_name) {
 }
 
 #if !defined(OS_CHROMEOS)
-scoped_refptr<PrintBackend> PrintBackend::CreateInstance(
+scoped_refptr<PrintBackend> PrintBackend::CreateInstanceImpl(
     const base::DictionaryValue* print_backend_settings) {
   std::string print_server_url_str, cups_blocking;
   int encryption = HTTP_ENCRYPT_NEVER;
@@ -209,7 +209,7 @@ scoped_refptr<PrintBackend> PrintBackend::CreateInstance(
 
     print_backend_settings->GetInteger(kCUPSEncryption, &encryption);
   }
-  GURL print_server_url(print_server_url_str.c_str());
+  GURL print_server_url(print_server_url_str);
   return new PrintBackendCUPS(print_server_url,
                               static_cast<http_encryption_t>(encryption),
                               cups_blocking == kValueTrue);
@@ -217,26 +217,19 @@ scoped_refptr<PrintBackend> PrintBackend::CreateInstance(
 #endif  // !defined(OS_CHROMEOS)
 
 int PrintBackendCUPS::GetDests(cups_dest_t** dests) {
-  if (print_server_url_.is_empty()) {  // Use default (local) print server.
-    // GnuTLS has a genuine small memory leak that is easier to annotate
-    // than suppress. See http://crbug.com/176888#c7
-    // In theory any CUPS function can trigger this leak, but in
-    // PrintBackendCUPS, this is the most likely spot.
-    // TODO(eugenis): remove this once the leak is fixed.
-    ANNOTATE_SCOPED_MEMORY_LEAK;
+  if (print_server_url_.is_empty())  // Use default (local) print server.
     return cupsGetDests(dests);
-  } else {
-    HttpConnectionCUPS http(print_server_url_, cups_encryption_);
-    http.SetBlocking(blocking_);
-    return cupsGetDests2(http.http(), dests);
-  }
+
+  HttpConnectionCUPS http(print_server_url_, cups_encryption_);
+  http.SetBlocking(blocking_);
+  return cupsGetDests2(http.http(), dests);
 }
 
 base::FilePath PrintBackendCUPS::GetPPD(const char* name) {
   // cupsGetPPD returns a filename stored in a static buffer in CUPS.
   // Protect this code with lock.
-  CR_DEFINE_STATIC_LOCAL(base::Lock, ppd_lock, ());
-  base::AutoLock ppd_autolock(ppd_lock);
+  static base::NoDestructor<base::Lock> ppd_lock;
+  base::AutoLock ppd_autolock(*ppd_lock);
   base::FilePath ppd_path;
   const char* ppd_file_path = nullptr;
   if (print_server_url_.is_empty()) {  // Use default (local) print server.

@@ -6,12 +6,11 @@
 
 #include <memory>
 
-#include "base/memory/ptr_util.h"
 #include "base/sequenced_task_runner.h"
 #include "chrome/browser/chromeos/policy/cloud_external_data_store.h"
 #include "chrome/browser/chromeos/policy/device_local_account_external_data_service.h"
 #include "components/policy/core/common/cloud/resource_cache.h"
-#include "policy/policy_constants.h"
+#include "components/policy/policy_constants.h"
 
 namespace policy {
 
@@ -19,13 +18,10 @@ DeviceLocalAccountExternalDataManager::DeviceLocalAccountExternalDataManager(
     const std::string& account_id,
     const GetChromePolicyDetailsCallback& get_policy_details,
     scoped_refptr<base::SequencedTaskRunner> backend_task_runner,
-    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
     ResourceCache* resource_cache)
-    : CloudExternalDataManagerBase(get_policy_details,
-                                   backend_task_runner,
-                                   io_task_runner) {
-  SetExternalDataStore(base::WrapUnique(new CloudExternalDataStore(
-      account_id, backend_task_runner, resource_cache)));
+    : CloudExternalDataManagerBase(get_policy_details, backend_task_runner) {
+  SetExternalDataStore(std::make_unique<CloudExternalDataStore>(
+      account_id, backend_task_runner, resource_cache));
 }
 
 DeviceLocalAccountExternalDataManager::

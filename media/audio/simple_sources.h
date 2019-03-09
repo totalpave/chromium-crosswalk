@@ -11,6 +11,8 @@
 
 #include "base/files/file_path.h"
 #include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
+#include "base/time/time.h"
 #include "media/audio/audio_io.h"
 #include "media/base/audio_converter.h"
 #include "media/base/seekable_buffer.h"
@@ -35,20 +37,21 @@ class MEDIA_EXPORT SineWaveAudioSource
   void Reset();
 
   // Implementation of AudioSourceCallback.
-  int OnMoreData(AudioBus* audio_bus,
-                 uint32_t total_bytes_delay,
-                 uint32_t frames_skipped) override;
-  void OnError(AudioOutputStream* stream) override;
+  int OnMoreData(base::TimeDelta delay,
+                 base::TimeTicks timestamp,
+                 int prior_frames_skipped,
+                 AudioBus* dest) override;
+  void OnError() override;
 
   // The number of OnMoreData() and OnError() calls respectively.
   int callbacks() { return callbacks_; }
   int errors() { return errors_; }
 
  protected:
-  int channels_;
-  double f_;
-  int time_state_;
-  int cap_;
+  const int channels_;
+  const double f_;
+  int time_state_ GUARDED_BY(time_lock_);
+  int cap_ GUARDED_BY(time_lock_);
   int callbacks_;
   int errors_;
   base::Lock time_lock_;
@@ -63,10 +66,11 @@ class MEDIA_EXPORT FileSource : public AudioOutputStream::AudioSourceCallback,
   ~FileSource() override;
 
   // Implementation of AudioSourceCallback.
-  int OnMoreData(AudioBus* audio_bus,
-                 uint32_t total_bytes_delay,
-                 uint32_t frames_skipped) override;
-  void OnError(AudioOutputStream* stream) override;
+  int OnMoreData(base::TimeDelta delay,
+                 base::TimeTicks delay_timestamp,
+                 int prior_frames_skipped,
+                 AudioBus* dest) override;
+  void OnError() override;
 
  private:
   AudioParameters params_;
@@ -95,14 +99,15 @@ class MEDIA_EXPORT FileSource : public AudioOutputStream::AudioSourceCallback,
 
 class BeepingSource : public AudioOutputStream::AudioSourceCallback {
  public:
-  BeepingSource(const AudioParameters& params);
+  explicit BeepingSource(const AudioParameters& params);
   ~BeepingSource() override;
 
   // Implementation of AudioSourceCallback.
-  int OnMoreData(AudioBus* audio_bus,
-                 uint32_t total_bytes_delay,
-                 uint32_t frames_skipped) override;
-  void OnError(AudioOutputStream* stream) override;
+  int OnMoreData(base::TimeDelta delay,
+                 base::TimeTicks delay_timestamp,
+                 int prior_frames_skipped,
+                 AudioBus* dest) override;
+  void OnError() override;
 
   static void BeepOnce();
  private:

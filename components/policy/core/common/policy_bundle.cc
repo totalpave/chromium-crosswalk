@@ -5,7 +5,6 @@
 #include "components/policy/core/common/policy_bundle.h"
 
 #include "base/logging.h"
-#include "base/stl_util.h"
 
 namespace policy {
 
@@ -17,15 +16,15 @@ PolicyBundle::~PolicyBundle() {
 
 PolicyMap& PolicyBundle::Get(const PolicyNamespace& ns) {
   DCHECK(ns.domain != POLICY_DOMAIN_CHROME || ns.component_id.empty());
-  PolicyMap*& policy = policy_bundle_[ns];
+  std::unique_ptr<PolicyMap>& policy = policy_bundle_[ns];
   if (!policy)
-    policy = new PolicyMap();
+    policy = std::make_unique<PolicyMap>();
   return *policy;
 }
 
 const PolicyMap& PolicyBundle::Get(const PolicyNamespace& ns) const {
   DCHECK(ns.domain != POLICY_DOMAIN_CHROME || ns.component_id.empty());
-  const_iterator it = policy_bundle_.find(ns);
+  auto it = policy_bundle_.find(ns);
   return it == end() ? kEmpty_ : *it->second;
 }
 
@@ -35,19 +34,18 @@ void PolicyBundle::Swap(PolicyBundle* other) {
 
 void PolicyBundle::CopyFrom(const PolicyBundle& other) {
   Clear();
-  for (PolicyBundle::const_iterator it = other.begin();
-       it != other.end(); ++it) {
-    policy_bundle_[it->first] = it->second->DeepCopy().release();
+  for (auto it = other.begin(); it != other.end(); ++it) {
+    policy_bundle_[it->first] = it->second->DeepCopy();
   }
 }
 
 void PolicyBundle::MergeFrom(const PolicyBundle& other) {
   // Iterate over both |this| and |other| in order; skip what's extra in |this|,
   // add what's missing, and merge the namespaces in common.
-  MapType::iterator it_this = policy_bundle_.begin();
-  MapType::iterator end_this = policy_bundle_.end();
-  const_iterator it_other = other.begin();
-  const_iterator end_other = other.end();
+  auto it_this = policy_bundle_.begin();
+  auto end_this = policy_bundle_.end();
+  auto it_other = other.begin();
+  auto end_other = other.end();
 
   while (it_this != end_this && it_other != end_other) {
     if (it_this->first == it_other->first) {
@@ -60,9 +58,7 @@ void PolicyBundle::MergeFrom(const PolicyBundle& other) {
       ++it_this;
     } else if (it_other->first < it_this->first) {
       // |other| has a PolicyMap that |this| doesn't; copy it.
-      PolicyMap*& policy = policy_bundle_[it_other->first];
-      DCHECK(!policy);
-      policy = it_other->second->DeepCopy().release();
+      policy_bundle_[it_other->first] = it_other->second->DeepCopy();
       ++it_other;
     } else {
       NOTREACHED();
@@ -71,19 +67,17 @@ void PolicyBundle::MergeFrom(const PolicyBundle& other) {
 
   // Add extra PolicyMaps at the end.
   while (it_other != end_other) {
-    PolicyMap*& policy = policy_bundle_[it_other->first];
-    DCHECK(!policy);
-    policy = it_other->second->DeepCopy().release();
+    policy_bundle_[it_other->first] = it_other->second->DeepCopy();
     ++it_other;
   }
 }
 
 bool PolicyBundle::Equals(const PolicyBundle& other) const {
   // Equals() has the peculiarity that an entry with an empty PolicyMap equals
-  // an non-existant entry. This handles usage of non-const Get() that doesn't
+  // an non-existent entry. This handles usage of non-const Get() that doesn't
   // insert any policies.
-  const_iterator it_this = begin();
-  const_iterator it_other = other.begin();
+  auto it_this = begin();
+  auto it_other = other.begin();
 
   while (true) {
     // Skip empty PolicyMaps.
@@ -104,7 +98,7 @@ bool PolicyBundle::Equals(const PolicyBundle& other) const {
 }
 
 void PolicyBundle::Clear() {
-  STLDeleteValues(&policy_bundle_);
+  policy_bundle_.clear();
 }
 
 }  // namespace policy

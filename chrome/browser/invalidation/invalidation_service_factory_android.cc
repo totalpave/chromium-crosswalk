@@ -5,55 +5,45 @@
 #include "chrome/browser/invalidation/invalidation_service_factory_android.h"
 
 #include "base/android/jni_android.h"
-#include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
+#include "chrome/browser/invalidation/deprecated_profile_invalidation_provider_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_android.h"
 #include "components/invalidation/impl/invalidation_service_android.h"
 #include "components/invalidation/impl/profile_invalidation_provider.h"
 #include "jni/InvalidationServiceFactory_jni.h"
 
+using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace invalidation {
 
 ScopedJavaLocalRef<jobject> InvalidationServiceFactoryAndroid::GetForProfile(
-    JNIEnv* env,
-    jclass clazz,
-    jobject j_profile) {
+    const JavaRef<jobject>& j_profile) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(j_profile);
   invalidation::ProfileInvalidationProvider* provider =
-      ProfileInvalidationProviderFactory::GetForProfile(profile);
+      DeprecatedProfileInvalidationProviderFactory::GetForProfile(profile);
   InvalidationServiceAndroid* service_android =
       static_cast<InvalidationServiceAndroid*>(
           provider->GetInvalidationService());
   return ScopedJavaLocalRef<jobject>(service_android->java_ref_);
 }
 
-ScopedJavaLocalRef<jobject> InvalidationServiceFactoryAndroid::GetForTest(
-    JNIEnv* env,
-    jclass clazz,
-    jobject j_context) {
+ScopedJavaLocalRef<jobject> InvalidationServiceFactoryAndroid::GetForTest() {
   InvalidationServiceAndroid* service_android =
-      new InvalidationServiceAndroid(j_context);
+      new InvalidationServiceAndroid();
   return ScopedJavaLocalRef<jobject>(service_android->java_ref_);
 }
 
-ScopedJavaLocalRef<jobject> GetForProfile(
+ScopedJavaLocalRef<jobject> JNI_InvalidationServiceFactory_GetForProfile(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jobject>& j_profile) {
-  return InvalidationServiceFactoryAndroid::GetForProfile(env, clazz,
-                                                          j_profile);
+  return InvalidationServiceFactoryAndroid::GetForProfile(j_profile);
 }
 
-ScopedJavaLocalRef<jobject> GetForTest(JNIEnv* env,
-                                       const JavaParamRef<jclass>& clazz,
-                                       const JavaParamRef<jobject>& j_context) {
-  return InvalidationServiceFactoryAndroid::GetForTest(env, clazz, j_context);
-}
-
-bool InvalidationServiceFactoryAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
+ScopedJavaLocalRef<jobject> JNI_InvalidationServiceFactory_GetForTest(
+    JNIEnv* env) {
+  return InvalidationServiceFactoryAndroid::GetForTest();
 }
 
 }  // namespace invalidation

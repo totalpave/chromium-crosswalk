@@ -5,18 +5,18 @@
 #ifndef NET_SOCKET_CLIENT_SOCKET_POOL_H_
 #define NET_SOCKET_CLIENT_SOCKET_POOL_H_
 
-#include <deque>
 #include <memory>
 #include <string>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
-#include "net/base/completion_callback.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/load_states.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
 #include "net/dns/host_resolver.h"
+#include "net/http/http_request_info.h"
 
 namespace base {
 class DictionaryValue;
@@ -25,6 +25,9 @@ class DictionaryValue;
 namespace net {
 
 class ClientSocketHandle;
+class HttpAuthController;
+class HttpResponseInfo;
+class NetLogWithSource;
 class StreamSocket;
 
 // ClientSocketPools are layered. This defines an interface for lower level
@@ -69,6 +72,17 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
   // SocketPool's global and per-group socket limits.
   enum class RespectLimits { DISABLED, ENABLED };
 
+  // ProxyAuthCallback is invoked when there is an auth challenge while
+  // connecting to a tunnel. When |restart_with_auth_callback| is invoked, the
+  // corresponding socket request is guaranteed not to be completed
+  // synchronously, nor will the ProxyAuthCallback be invoked against
+  // synchronously.
+  typedef base::RepeatingCallback<void(
+      const HttpResponseInfo& response,
+      HttpAuthController* auth_controller,
+      base::OnceClosure restart_with_auth_callback)>
+      ProxyAuthCallback;
+
   // Requests a connected socket for a group_name.
   //
   // There are five possible results from calling this function:
@@ -100,13 +114,20 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
   // Profiling information for the request is saved to |net_log| if non-NULL.
   //
   // If |respect_limits| is DISABLED, priority must be HIGHEST.
+  //
+  // |on_proxy_auth_challenge_callback| will be invoked each time an auth
+  // challenge is seen while establishing a tunnel. It will never be invoked
+  // synchronously when RequestSocket is called, and will be invoked once for
+  // each challenge seen.
   virtual int RequestSocket(const std::string& group_name,
                             const void* params,
                             RequestPriority priority,
+                            const SocketTag& socket_tag,
                             RespectLimits respect_limits,
                             ClientSocketHandle* handle,
-                            const CompletionCallback& callback,
-                            const BoundNetLog& net_log) = 0;
+                            CompletionOnceCallback callback,
+                            const ProxyAuthCallback& proxy_auth_challenge,
+                            const NetLogWithSource& net_log) = 0;
 
   // RequestSockets is used to request that |num_sockets| be connected in the
   // connection group for |group_name|.  If the connection group already has
@@ -121,13 +142,22 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
   virtual void RequestSockets(const std::string& group_name,
                               const void* params,
                               int num_sockets,
-                              const BoundNetLog& net_log) = 0;
+                              const NetLogWithSource& net_log) = 0;
+
+  // Called to change the priority of a RequestSocket call that returned
+  // ERR_IO_PENDING and has not yet asynchronously completed.  The same handle
+  // parameter must be passed to this method as was passed to the
+  // RequestSocket call being modified.
+  // This function is a no-op if |priority| is the same as the current
+  // request priority.
+  virtual void SetPriority(const std::string& group_name,
+                           ClientSocketHandle* handle,
+                           RequestPriority priority) = 0;
 
   // Called to cancel a RequestSocket call that returned ERR_IO_PENDING.  The
   // same handle parameter must be passed to this method as was passed to the
-  // RequestSocket call being cancelled.  The associated CompletionCallback is
-  // not run.  However, for performance, we will let one ConnectJob complete
-  // and go idle.
+  // RequestSocket call being cancelled.  The associated callback is not run.
+  // However, for performance, we will let one ConnectJob complete and go idle.
   virtual void CancelRequest(const std::string& group_name,
                              ClientSocketHandle* handle) = 0;
 
@@ -152,11 +182,15 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
   // Called to close any idle connections held by the connection manager.
   virtual void CloseIdleSockets() = 0;
 
+  // Called to close any idle connections held by the connection manager.
+  virtual void CloseIdleSocketsInGroup(const std::string& group_name) = 0;
+
   // The total number of idle sockets in the pool.
   virtual int IdleSocketCount() const = 0;
 
   // The total number of idle sockets in a connection group.
-  virtual int IdleSocketCountInGroup(const std::string& group_name) const = 0;
+  virtual size_t IdleSocketCountInGroup(
+      const std::string& group_name) const = 0;
 
   // Determine the LoadState of a connecting ClientSocketHandle.
   virtual LoadState GetLoadState(const std::string& group_name,
@@ -168,14 +202,10 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
   // ClientSocketPools will be included.
   virtual std::unique_ptr<base::DictionaryValue> GetInfoAsValue(
       const std::string& name,
-      const std::string& type,
-      bool include_nested_pools) const = 0;
+      const std::string& type) const = 0;
 
   // Returns the maximum amount of time to wait before retrying a connect.
   static const int kMaxConnectRetryIntervalMs = 250;
-
-  static base::TimeDelta unused_idle_socket_timeout();
-  static void set_unused_idle_socket_timeout(base::TimeDelta timeout);
 
   static base::TimeDelta used_idle_socket_timeout();
   static void set_used_idle_socket_timeout(base::TimeDelta timeout);
@@ -183,9 +213,6 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
  protected:
   ClientSocketPool();
   ~ClientSocketPool() override;
-
-  // Return the connection timeout for this pool.
-  virtual base::TimeDelta ConnectionTimeout() const = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ClientSocketPool);
@@ -197,7 +224,7 @@ void RequestSocketsForPool(
     const std::string& group_name,
     const scoped_refptr<typename PoolType::SocketParams>& params,
     int num_sockets,
-    const BoundNetLog& net_log) {
+    const NetLogWithSource& net_log) {
   pool->RequestSockets(group_name, &params, num_sockets, net_log);
 }
 

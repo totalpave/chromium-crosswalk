@@ -12,7 +12,10 @@ goog.require('ChromeVoxState');
 
 goog.scope(function() {
 var AutomationNode = chrome.automation.AutomationNode;
+var RoleType = chrome.automation.RoleType;
 var TreeChange = chrome.automation.TreeChange;
+var TreeChangeObserverFilter = chrome.automation.TreeChangeObserverFilter;
+var TreeChangeType = chrome.automation.TreeChangeType;
 
 /**
  * ChromeVox2 live region handler.
@@ -41,8 +44,16 @@ LiveRegions = function(chromeVoxState) {
    * @private
    */
   this.liveRegionNodeSet_ = new WeakSet();
+
+  /**
+   * A list of nodes that have changed as part of one atomic tree update.
+   * @private {!Array}
+   */
+  this.changedNodes_ = [];
+
   chrome.automation.addTreeChangeObserver(
-      'liveRegionTreeChanges', this.onTreeChange.bind(this));
+      TreeChangeObserverFilter.LIVE_REGION_TREE_CHANGES,
+      this.onTreeChange.bind(this));
 };
 
 /**
@@ -51,14 +62,22 @@ LiveRegions = function(chromeVoxState) {
  * @type {number}
  * @const
  */
-LiveRegions.LIVE_REGION_QUEUE_TIME_MS = 500;
+LiveRegions.LIVE_REGION_QUEUE_TIME_MS = 5000;
+
+/**
+ * Live region events received on the same node in fewer than this many
+ * milliseconds will be dropped to avoid a stream of constant chatter.
+ * @type {number}
+ * @const
+ */
+LiveRegions.LIVE_REGION_MIN_SAME_NODE_MS = 20;
 
 /**
  * Whether live regions from background tabs should be announced or not.
  * @type {boolean}
  * @private
  */
-LiveRegions.announceLiveRegionsFromBackgroundTabs_ = true;
+LiveRegions.announceLiveRegionsFromBackgroundTabs_ = false;
 
 LiveRegions.prototype = {
   /**
@@ -66,36 +85,72 @@ LiveRegions.prototype = {
    * @param {TreeChange} treeChange
    */
   onTreeChange: function(treeChange) {
+    var type = treeChange.type;
     var node = treeChange.target;
-    if (!node.containerLiveStatus)
+    if ((!node.containerLiveStatus || node.containerLiveStatus == 'off') &&
+        type != TreeChangeType.SUBTREE_UPDATE_END) {
       return;
+    }
 
-    var mode = this.chromeVoxState_.mode;
     var currentRange = this.chromeVoxState_.currentRange;
 
-    if (mode === ChromeVoxMode.CLASSIC || !cvox.ChromeVox.isActive)
+    if (!cvox.ChromeVox.isActive)
       return;
 
     if (!currentRange)
       return;
 
+    var webView = AutomationUtil.getTopLevelRoot(node);
+    webView = webView ? webView.parent : null;
     if (!LiveRegions.announceLiveRegionsFromBackgroundTabs_ &&
-        !AutomationUtil.isInSameWebpage(node, currentRange.start.node)) {
+        currentRange.start.node.role != RoleType.DESKTOP &&
+        (!webView || !webView.state.focused)) {
       return;
     }
 
-    var type = treeChange.type;
-    var relevant = node.containerLiveRelevant;
-    if (relevant.indexOf('additions') >= 0 &&
-        (type == 'nodeCreated' || type == 'subtreeCreated')) {
-      this.outputLiveRegionChange_(node, null);
+    var relevant = node.containerLiveRelevant || '';
+    var additions = relevant.indexOf('additions') >= 0;
+    var text = relevant.indexOf('text') >= 0;
+    var removals = relevant.indexOf('removals') >= 0;
+    var all = relevant.indexOf('all') >= 0;
+
+    if (all ||
+        (additions &&
+         (type == TreeChangeType.NODE_CREATED ||
+          type == TreeChangeType.SUBTREE_CREATED))) {
+      this.queueLiveRegionChange_(node);
+    } else if (all || (text && type == TreeChangeType.TEXT_CHANGED)) {
+      this.queueLiveRegionChange_(node);
     }
 
-    if (relevant.indexOf('text') >= 0 && type == 'textChanged')
-      this.outputLiveRegionChange_(node, null);
-
-    if (relevant.indexOf('removals') >= 0 && type == 'nodeRemoved')
+    if ((all || removals) && type == TreeChangeType.NODE_REMOVED)
       this.outputLiveRegionChange_(node, '@live_regions_removed');
+
+    if (type == TreeChangeType.SUBTREE_UPDATE_END)
+      this.processQueuedTreeChanges_();
+  },
+
+  /**
+   * @param {!AutomationNode} node
+   * @private
+   */
+  queueLiveRegionChange_: function(node) {
+    this.changedNodes_.push(node);
+  },
+
+  /**
+   * @private
+   */
+  processQueuedTreeChanges_: function() {
+    // Schedule all live regions after all events in the native C++ EventBundle.
+    this.liveRegionNodeSet_ = new WeakSet();
+    setTimeout(function() {
+      for (var i = 0; i < this.changedNodes_.length; i++) {
+        var node = this.changedNodes_[i];
+        this.outputLiveRegionChange_(node, null);
+      }
+      this.changedNodes_ = [];
+    }.bind(this), 0);
   },
 
   /**
@@ -111,14 +166,44 @@ LiveRegions.prototype = {
     if (node.containerLiveBusy)
       return;
 
-    if (node.containerLiveAtomic && !node.liveAtomic) {
-      if (node.parent)
-        this.outputLiveRegionChange_(node.parent, opt_prependFormatStr);
+    while (node.containerLiveAtomic && !node.liveAtomic && node.parent)
+      node = node.parent;
+
+    if (this.liveRegionNodeSet_.has(node)) {
+      this.lastLiveRegionTime_ = new Date();
       return;
     }
 
+    this.outputLiveRegionChangeForNode_(node, opt_prependFormatStr);
+  },
+
+  /**
+   * @param {!AutomationNode} node The changed node.
+   * @param {?string=} opt_prependFormatStr If set, a format string for
+   *     cvox2.Output to prepend to the output.
+   * @private
+   */
+  outputLiveRegionChangeForNode_: function(node, opt_prependFormatStr) {
     var range = cursors.Range.fromNode(node);
     var output = new Output();
+    output.withSpeechCategory(cvox.TtsCategory.LIVE);
+
+    // Queue live regions coming from background tabs.
+    var webView = AutomationUtil.getTopLevelRoot(node);
+    webView = webView ? webView.parent : null;
+    var forceQueue = !webView || !webView.state.focused ||
+        node.containerLiveStatus == 'polite';
+
+    // Enqueue live region updates that were received at approximately
+    // the same time, otherwise flush previous live region updates.
+    var queueTime = LiveRegions.LIVE_REGION_QUEUE_TIME_MS;
+    var currentTime = new Date();
+    var delta = currentTime - this.lastLiveRegionTime_;
+    if (delta > queueTime && !forceQueue)
+      output.withQueueMode(cvox.QueueMode.CATEGORY_FLUSH);
+    else
+      output.withQueueMode(cvox.QueueMode.QUEUE);
+
     if (opt_prependFormatStr)
       output.format(opt_prependFormatStr);
     output.withSpeech(range, range, Output.EventType.NAVIGATE);
@@ -126,32 +211,27 @@ LiveRegions.prototype = {
     if (!output.hasSpeech && node.liveAtomic)
       output.format('$joinedDescendants', node);
 
-    output.withSpeechCategory(cvox.TtsCategory.LIVE);
-
     if (!output.hasSpeech)
       return;
 
-    // Enqueue live region updates that were received at approximately
-    // the same time, otherwise flush previous live region updates.
-    var currentTime = new Date();
-    var queueTime = LiveRegions.LIVE_REGION_QUEUE_TIME_MS;
-    if (currentTime - this.lastLiveRegionTime_ > queueTime) {
-      this.liveRegionNodeSet_ = new WeakSet();
-      output.withQueueMode(cvox.QueueMode.CATEGORY_FLUSH);
-      this.lastLiveRegionTime_ = currentTime;
-    } else {
-      output.withQueueMode(cvox.QueueMode.QUEUE);
-    }
-
-    var parent = node;
-    while (parent) {
-      if (this.liveRegionNodeSet_.has(parent))
-        return;
-      parent = parent.parent;
-    }
-
-    this.liveRegionNodeSet_.add(node);
+    // We also have to add recursively the children of this live region node
+    // since all children could potentially get described and we don't want to
+    // describe their tree changes especially during page load within the
+    // LiveRegions.LIVE_REGION_MIN_SAME_NODE_MS to prevent excessive chatter.
+    this.addNodeToNodeSetRecursive_(node);
+    window.prev = output;
     output.go();
+    this.lastLiveRegionTime_ = currentTime;
+  },
+
+  /**
+   * @param {AutomationNode} root
+   * @private
+   */
+  addNodeToNodeSetRecursive_: function(root) {
+    this.liveRegionNodeSet_.add(root);
+    for (var child = root.firstChild; child; child = child.nextSibling)
+      this.addNodeToNodeSetRecursive_(child);
   },
 };
 

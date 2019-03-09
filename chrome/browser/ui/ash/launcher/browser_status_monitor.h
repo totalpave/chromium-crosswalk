@@ -10,41 +10,29 @@
 #include <map>
 #include <string>
 
-#include "ash/shelf/scoped_observer_with_duplicated_sources.h"
-#include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
 #include "chrome/browser/ui/ash/launcher/chrome_launcher_controller.h"
 #include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/browser_tab_strip_tracker.h"
 #include "chrome/browser/ui/browser_tab_strip_tracker_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-#include "ui/aura/window_observer.h"
-#include "ui/display/display_observer.h"
-#include "ui/wm/public/activation_change_observer.h"
-
-namespace aura {
-class Window;
-
-namespace client {
-class ActivationClient;
-}
-}  // namespace aura
 
 class Browser;
 
 // BrowserStatusMonitor monitors creation/deletion of Browser and its
 // TabStripModel to keep the launcher representation up to date as the
 // active tab changes.
-class BrowserStatusMonitor : public aura::client::ActivationChangeObserver,
-                             public aura::WindowObserver,
-                             public BrowserTabStripTrackerDelegate,
-                             public chrome::BrowserListObserver,
-                             public display::DisplayObserver,
+class BrowserStatusMonitor : public BrowserTabStripTrackerDelegate,
+                             public BrowserListObserver,
                              public TabStripModelObserver {
  public:
   explicit BrowserStatusMonitor(ChromeLauncherController* launcher_controller);
   ~BrowserStatusMonitor() override;
+
+  // Do the initialization work. Note: This function should not be called in the
+  // constructor function because the virtual member function AddV1AppToShelf()
+  // is called inside this function.
+  void Initialize();
 
   // A function which gets called when the current user has changed.
   // Note that this function is called by the ChromeLauncherController to be
@@ -53,50 +41,24 @@ class BrowserStatusMonitor : public aura::client::ActivationChangeObserver,
   virtual void ActiveUserChanged(const std::string& user_email) {}
 
   // A shortcut to call the ChromeLauncherController's UpdateAppState().
-  void UpdateAppItemState(content::WebContents* contents,
-                          ChromeLauncherController::AppState app_state);
+  void UpdateAppItemState(content::WebContents* contents, bool remove);
 
   // A shortcut to call the BrowserShortcutLauncherItemController's
   // UpdateBrowserItemState().
   void UpdateBrowserItemState();
 
-  // aura::client::ActivationChangeObserver overrides:
-  void OnWindowActivated(
-      aura::client::ActivationChangeObserver::ActivationReason reason,
-      aura::Window* gained_active,
-      aura::Window* lost_active) override;
-
-  // aura::WindowObserver overrides:
-  void OnWindowDestroyed(aura::Window* window) override;
-
   // BrowserTabStripTrackerDelegate overrides:
   bool ShouldTrackBrowser(Browser* browser) override;
 
-  // chrome::BrowserListObserver overrides:
+  // BrowserListObserver overrides:
   void OnBrowserAdded(Browser* browser) override;
   void OnBrowserRemoved(Browser* browser) override;
 
-  // display::DisplayObserver overrides:
-  void OnDisplayAdded(const display::Display& new_display) override;
-  void OnDisplayRemoved(const display::Display& old_display) override;
-  void OnDisplayMetricsChanged(const display::Display& display,
-                               uint32_t metrics) override;
-
   // TabStripModelObserver overrides:
-  void ActiveTabChanged(content::WebContents* old_contents,
-                        content::WebContents* new_contents,
-                        int index,
-                        int reason) override;
-  void TabReplacedAt(TabStripModel* tab_strip_model,
-                     content::WebContents* old_contents,
-                     content::WebContents* new_contents,
-                     int index) override;
-  void TabInsertedAt(content::WebContents* contents,
-                     int index,
-                     bool foreground) override;
-  void TabClosingAt(TabStripModel* tab_strip_mode,
-                    content::WebContents* contents,
-                    int index) override;
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override;
 
   // Called from our own |LocalWebContentsObserver| when web contents did go
   // away without any other notification. This might happen in case of
@@ -112,16 +74,21 @@ class BrowserStatusMonitor : public aura::client::ActivationChangeObserver,
   // profile implementations.
   virtual void RemoveV1AppFromShelf(Browser* browser);
 
-  // Check if V1 application is currently in the shelf.
+  // Check if a V1 application is currently in the shelf by browser or app id.
   bool IsV1AppInShelf(Browser* browser);
+  bool IsV1AppInShelfWithAppId(const std::string& app_id);
 
  private:
   class LocalWebContentsObserver;
-  class SettingsWindowObserver;
 
-  typedef std::map<Browser*, std::string> BrowserToAppIDMap;
-  typedef std::map<content::WebContents*, LocalWebContentsObserver*>
-      WebContentsToObserverMap;
+  // Called by TabStripModelChanged()
+  void OnActiveTabChanged(content::WebContents* old_contents,
+                          content::WebContents* new_contents);
+  void OnTabReplaced(TabStripModel* tab_strip_model,
+                     content::WebContents* old_contents,
+                     content::WebContents* new_contents);
+  void OnTabInserted(content::WebContents* contents);
+  void OnTabClosing(content::WebContents* contents);
 
   // Create LocalWebContentsObserver for |contents|.
   void AddWebContentsObserver(content::WebContents* contents);
@@ -129,27 +96,18 @@ class BrowserStatusMonitor : public aura::client::ActivationChangeObserver,
   // Remove LocalWebContentsObserver for |contents|.
   void RemoveWebContentsObserver(content::WebContents* contents);
 
-  // Returns the ShelfID for |contents|.
-  ash::ShelfID GetShelfIDForWebContents(content::WebContents* contents);
-
   // Sets the shelf id for browsers represented by the browser shortcut item.
   void SetShelfIDForBrowserWindowContents(Browser* browser,
                                           content::WebContents* web_contents);
 
   ChromeLauncherController* launcher_controller_;
 
-  // Hold all observed activation clients.
-  ScopedObserverWithDuplicatedSources<aura::client::ActivationClient,
-      aura::client::ActivationChangeObserver> observed_activation_clients_;
-
-  // Hold all observed root windows.
-  ScopedObserver<aura::Window, aura::WindowObserver> observed_root_windows_;
-
-  BrowserToAppIDMap browser_to_app_id_map_;
-  WebContentsToObserverMap webcontents_to_observer_map_;
-  std::unique_ptr<SettingsWindowObserver> settings_window_observer_;
+  std::map<Browser*, std::string> browser_to_app_id_map_;
+  std::map<content::WebContents*, std::unique_ptr<LocalWebContentsObserver>>
+      webcontents_to_observer_map_;
 
   BrowserTabStripTracker browser_tab_strip_tracker_;
+  bool initialized_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserStatusMonitor);
 };

@@ -5,7 +5,7 @@
 #include "content/browser/android/java/java_bridge_thread.h"
 
 #include "base/lazy_instance.h"
-#include "base/message_loop/message_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/task_runner_util.h"
 #include "build/build_config.h"
 
@@ -17,7 +17,7 @@ namespace content {
 
 namespace {
 
-base::LazyInstance<JavaBridgeThread> g_background_thread =
+base::LazyInstance<JavaBridgeThread>::DestructorAtExit g_background_thread =
     LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
@@ -33,8 +33,10 @@ JavaBridgeThread::~JavaBridgeThread() {
 
 // static
 bool JavaBridgeThread::CurrentlyOn() {
-  return base::MessageLoop::current() ==
-         g_background_thread.Get().message_loop();
+  return g_background_thread.Get()
+      .message_loop()
+      ->task_runner()
+      ->BelongsToCurrentThread();
 }
 
 // static

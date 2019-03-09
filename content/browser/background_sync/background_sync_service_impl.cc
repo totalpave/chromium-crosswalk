@@ -6,38 +6,13 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/stl_util.h"
-#include "content/browser/background_sync/background_sync_context.h"
+#include "content/browser/background_sync/background_sync_context_impl.h"
 #include "content/public/browser/browser_thread.h"
 
 namespace content {
-
-namespace {
-
-// TODO(iclelland): Move these converters to mojo::TypeConverter template
-// specializations.
-
-BackgroundSyncRegistrationOptions ToBackgroundSyncRegistrationOptions(
-    const blink::mojom::SyncRegistrationPtr& in) {
-  BackgroundSyncRegistrationOptions out;
-
-  out.tag = in->tag;
-  out.network_state = static_cast<SyncNetworkState>(in->network_state);
-  return out;
-}
-
-blink::mojom::SyncRegistrationPtr ToMojoRegistration(
-    const BackgroundSyncRegistration& in) {
-  blink::mojom::SyncRegistrationPtr out(blink::mojom::SyncRegistration::New());
-  out->id = in.id();
-  out->tag = in.options()->tag;
-  out->network_state = static_cast<blink::mojom::BackgroundSyncNetworkState>(
-      in.options()->network_state);
-  return out;
-}
-
-}  // namespace
 
 #define COMPILE_ASSERT_MATCHING_ENUM(mojo_name, manager_name) \
   static_assert(static_cast<int>(blink::mojo_name) ==         \
@@ -60,22 +35,13 @@ COMPILE_ASSERT_MATCHING_ENUM(mojom::BackgroundSyncError::PERMISSION_DENIED,
 COMPILE_ASSERT_MATCHING_ENUM(mojom::BackgroundSyncError::MAX,
                              BACKGROUND_SYNC_STATUS_PERMISSION_DENIED);
 
-COMPILE_ASSERT_MATCHING_ENUM(mojom::BackgroundSyncNetworkState::ANY,
-                             SyncNetworkState::NETWORK_STATE_ANY);
-COMPILE_ASSERT_MATCHING_ENUM(mojom::BackgroundSyncNetworkState::AVOID_CELLULAR,
-                             SyncNetworkState::NETWORK_STATE_AVOID_CELLULAR);
-COMPILE_ASSERT_MATCHING_ENUM(mojom::BackgroundSyncNetworkState::ONLINE,
-                             SyncNetworkState::NETWORK_STATE_ONLINE);
-COMPILE_ASSERT_MATCHING_ENUM(mojom::BackgroundSyncNetworkState::MAX,
-                             SyncNetworkState::NETWORK_STATE_ONLINE);
-
 BackgroundSyncServiceImpl::~BackgroundSyncServiceImpl() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   DCHECK(background_sync_context_->background_sync_manager());
 }
 
 BackgroundSyncServiceImpl::BackgroundSyncServiceImpl(
-    BackgroundSyncContext* background_sync_context,
+    BackgroundSyncContextImpl* background_sync_context,
     mojo::InterfaceRequest<blink::mojom::BackgroundSyncService> request)
     : background_sync_context_(background_sync_context),
       binding_(this, std::move(request)),
@@ -83,9 +49,9 @@ BackgroundSyncServiceImpl::BackgroundSyncServiceImpl(
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   DCHECK(background_sync_context);
 
-  binding_.set_connection_error_handler(
-      base::Bind(&BackgroundSyncServiceImpl::OnConnectionError,
-                 base::Unretained(this) /* the channel is owned by this */));
+  binding_.set_connection_error_handler(base::BindOnce(
+      &BackgroundSyncServiceImpl::OnConnectionError,
+      base::Unretained(this) /* the channel is owned by this */));
 }
 
 void BackgroundSyncServiceImpl::OnConnectionError() {
@@ -94,69 +60,80 @@ void BackgroundSyncServiceImpl::OnConnectionError() {
 }
 
 void BackgroundSyncServiceImpl::Register(
-    blink::mojom::SyncRegistrationPtr options,
+    blink::mojom::SyncRegistrationOptionsPtr options,
     int64_t sw_registration_id,
-    const RegisterCallback& callback) {
+    RegisterCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  BackgroundSyncRegistrationOptions manager_options =
-      ToBackgroundSyncRegistrationOptions(options);
 
   BackgroundSyncManager* background_sync_manager =
       background_sync_context_->background_sync_manager();
   DCHECK(background_sync_manager);
   background_sync_manager->Register(
-      sw_registration_id, manager_options,
-      base::Bind(&BackgroundSyncServiceImpl::OnRegisterResult,
-                 weak_ptr_factory_.GetWeakPtr(), callback));
+      sw_registration_id, *options,
+      base::BindOnce(&BackgroundSyncServiceImpl::OnRegisterResult,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void BackgroundSyncServiceImpl::DidResolveRegistration(
+    int64_t sw_registration_id,
+    const std::string& tag) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+
+  BackgroundSyncManager* background_sync_manager =
+      background_sync_context_->background_sync_manager();
+  DCHECK(background_sync_manager);
+  background_sync_manager->DidResolveRegistration(sw_registration_id, tag);
 }
 
 void BackgroundSyncServiceImpl::GetRegistrations(
     int64_t sw_registration_id,
-    const GetRegistrationsCallback& callback) {
+    GetRegistrationsCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   BackgroundSyncManager* background_sync_manager =
       background_sync_context_->background_sync_manager();
   DCHECK(background_sync_manager);
   background_sync_manager->GetRegistrations(
       sw_registration_id,
-      base::Bind(&BackgroundSyncServiceImpl::OnGetRegistrationsResult,
-                 weak_ptr_factory_.GetWeakPtr(), callback));
+      base::BindOnce(&BackgroundSyncServiceImpl::OnGetRegistrationsResult,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void BackgroundSyncServiceImpl::OnRegisterResult(
-    const RegisterCallback& callback,
+    RegisterCallback callback,
     BackgroundSyncStatus status,
     std::unique_ptr<BackgroundSyncRegistration> result) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   if (status != BACKGROUND_SYNC_STATUS_OK) {
-    callback.Run(static_cast<blink::mojom::BackgroundSyncError>(status),
-                 blink::mojom::SyncRegistrationPtr(
-                     blink::mojom::SyncRegistration::New()));
+    std::move(callback).Run(
+        static_cast<blink::mojom::BackgroundSyncError>(status),
+        blink::mojom::SyncRegistrationOptions::New());
     return;
   }
 
   DCHECK(result);
-  blink::mojom::SyncRegistrationPtr mojoResult = ToMojoRegistration(*result);
-  callback.Run(static_cast<blink::mojom::BackgroundSyncError>(status),
-               std::move(mojoResult));
+  blink::mojom::SyncRegistrationOptionsPtr mojo_options =
+      blink::mojom::SyncRegistrationOptions::New(result->options()->tag);
+  std::move(callback).Run(
+      static_cast<blink::mojom::BackgroundSyncError>(status),
+      std::move(mojo_options));
 }
 
 void BackgroundSyncServiceImpl::OnGetRegistrationsResult(
-    const GetRegistrationsCallback& callback,
+    GetRegistrationsCallback callback,
     BackgroundSyncStatus status,
-    std::unique_ptr<ScopedVector<BackgroundSyncRegistration>>
+    std::vector<std::unique_ptr<BackgroundSyncRegistration>>
         result_registrations) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(result_registrations);
 
-  mojo::Array<blink::mojom::SyncRegistrationPtr> mojo_registrations;
-  for (const BackgroundSyncRegistration* registration : *result_registrations)
-    mojo_registrations.push_back(ToMojoRegistration(*registration));
+  std::vector<blink::mojom::SyncRegistrationOptionsPtr> mojo_registrations;
+  for (const auto& registration : result_registrations)
+    mojo_registrations.push_back(blink::mojom::SyncRegistrationOptions::New(
+        registration->options()->tag));
 
-  callback.Run(static_cast<blink::mojom::BackgroundSyncError>(status),
-               std::move(mojo_registrations));
+  std::move(callback).Run(
+      static_cast<blink::mojom::BackgroundSyncError>(status),
+      std::move(mojo_registrations));
 }
 
 }  // namespace content

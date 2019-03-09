@@ -4,6 +4,8 @@
 
 #include "components/drive/chromeos/file_system/move_operation.h"
 
+#include <memory>
+
 #include "components/drive/file_change.h"
 #include "components/drive/file_system/operation_test_base.h"
 #include "content/public/test/test_utils.h"
@@ -17,9 +19,8 @@ class MoveOperationTest : public OperationTestBase {
  protected:
   void SetUp() override {
    OperationTestBase::SetUp();
-   operation_.reset(new MoveOperation(blocking_task_runner(),
-                                      delegate(),
-                                      metadata()));
+   operation_ = std::make_unique<MoveOperation>(blocking_task_runner(),
+                                                delegate(), metadata());
   }
 
   std::unique_ptr<MoveOperation> operation_;
@@ -40,7 +41,7 @@ TEST_F(MoveOperationTest, MoveFileInSameDirectory) {
   operation_->Move(src_path,
                    dest_path,
                    google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   EXPECT_EQ(FILE_ERROR_OK, GetLocalResourceEntry(dest_path, &dest_entry));
@@ -70,7 +71,7 @@ TEST_F(MoveOperationTest, MoveFileFromRootToSubDirectory) {
   operation_->Move(src_path,
                    dest_path,
                    google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   EXPECT_EQ(FILE_ERROR_OK, GetLocalResourceEntry(dest_path, &dest_entry));
@@ -94,7 +95,7 @@ TEST_F(MoveOperationTest, MoveNotExistingFile) {
   operation_->Move(src_path,
                    dest_path,
                    google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_NOT_FOUND, error);
 
   ResourceEntry entry;
@@ -110,7 +111,7 @@ TEST_F(MoveOperationTest, MoveFileToNonExistingDirectory) {
   operation_->Move(src_path,
                    dest_path,
                    google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_NOT_FOUND, error);
 
   ResourceEntry entry;
@@ -129,7 +130,7 @@ TEST_F(MoveOperationTest, MoveFileToInvalidPath) {
   operation_->Move(src_path,
                    dest_path,
                    google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_NOT_A_DIRECTORY, error);
 
   ResourceEntry entry;

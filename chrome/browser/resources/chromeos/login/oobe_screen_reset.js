@@ -8,13 +8,13 @@
 
 login.createScreen('ResetScreen', 'reset', function() {
   var USER_ACTION_CANCEL_RESET = 'cancel-reset';
-  var USER_ACTION_RESTART_PRESSED = 'restart-pressed';
-  var USER_ACTION_LEARN_MORE_PRESSED = 'learn-more-link';
-  var USER_ACTION_SHOW_CONFIRMATION = 'show-confirmation';
-  var USER_ACTION_POWERWASH_PRESSED = 'powerwash-pressed';
   var USER_ACTION_RESET_CONFIRM_DISMISSED = 'reset-confirm-dismissed';
   var CONTEXT_KEY_ROLLBACK_AVAILABLE = 'rollback-available';
   var CONTEXT_KEY_ROLLBACK_CHECKED = 'rollback-checked';
+  var CONTEXT_KEY_TPM_FIRMWARE_UPDATE_AVAILABLE =
+      'tpm-firmware-update-available';
+  var CONTEXT_KEY_TPM_FIRMWARE_UPDATE_CHECKED = 'tpm-firmware-update-checked';
+  var CONTEXT_KEY_TPM_FIRMWARE_UPDATE_EDITABLE = 'tpm-firmware-update-editable';
   var CONTEXT_KEY_IS_OFFICIAL_BUILD = 'is-official-build';
   var CONTEXT_KEY_IS_CONFIRMATIONAL_VIEW = 'is-confirmational-view';
   var CONTEXT_KEY_SCREEN_STATE = 'screen-state';
@@ -42,75 +42,67 @@ login.createScreen('ResetScreen', 'reset', function() {
     decorate: function() {
       var self = this;
 
-      this.declareUserAction($('powerwash-help-link'),
-                             { action_id: USER_ACTION_LEARN_MORE_PRESSED,
-                               event: 'click'
-                             });
-      this.declareUserAction($('reset-confirm-dismiss'),
-                             { action_id: USER_ACTION_RESET_CONFIRM_DISMISSED,
-                               event: 'click'
-                             });
-      this.declareUserAction($('reset-confirm-commit'),
-                             { action_id: USER_ACTION_POWERWASH_PRESSED,
-                               event: 'click'
-                             });
+      this.context.addObserver(CONTEXT_KEY_SCREEN_STATE, function(state) {
+        if (Oobe.getInstance().currentScreen != this) {
+          setTimeout(function() {
+            Oobe.resetSigninUI(false);
+            Oobe.showScreen({id: SCREEN_OOBE_RESET});
+          }, 0);
+        }
+        if (state == self.RESET_SCREEN_STATE.RESTART_REQUIRED)
+          self.ui_state = self.RESET_SCREEN_UI_STATE.RESTART_REQUIRED;
+        if (state == self.RESET_SCREEN_STATE.REVERT_PROMISE)
+          self.ui_state = self.RESET_SCREEN_UI_STATE.REVERT_PROMISE;
+        else if (state == self.RESET_SCREEN_STATE.POWERWASH_PROPOSAL)
+          self.ui_state = self.RESET_SCREEN_UI_STATE.POWERWASH_PROPOSAL;
+        self.setDialogView_();
+        if (state == self.RESET_SCREEN_STATE.REVERT_PROMISE) {
+          announceAccessibleMessage(
+              loadTimeData.getString('resetRevertSpinnerMessage'));
+        }
+        self.setTPMFirmwareUpdateView_();
+      });
 
       this.context.addObserver(
-          CONTEXT_KEY_SCREEN_STATE,
-          function(state) {
-            if (Oobe.getInstance().currentScreen != this) {
-              setTimeout(function() {
-                Oobe.resetSigninUI(false);
-                Oobe.showScreen({id: SCREEN_OOBE_RESET});
-              }, 0);
-            }
-            if (state == self.RESET_SCREEN_STATE.RESTART_REQUIRED)
-              self.ui_state = self.RESET_SCREEN_UI_STATE.RESTART_REQUIRED;
-            if (state == self.RESET_SCREEN_STATE.REVERT_PROMISE)
-              self.ui_state = self.RESET_SCREEN_UI_STATE.REVERT_PROMISE;
-            else if (state == self.RESET_SCREEN_STATE.POWERWASH_PROPOSAL)
-              self.ui_state = self.RESET_SCREEN_UI_STATE.POWERWASH_PROPOSAL;
-            self.setDialogView_();
-            if (state == self.RESET_SCREEN_STATE.REVERT_PROMISE) {
-              announceAccessibleMessage(
-                loadTimeData.getString('resetRevertSpinnerMessage'));
-            }
-          }
-      );
-
+          CONTEXT_KEY_IS_OFFICIAL_BUILD, function(isOfficial) {
+            $('oobe-reset-md').isOfficial_ = isOfficial;
+          });
       this.context.addObserver(
-          CONTEXT_KEY_IS_OFFICIAL_BUILD,
-          function(isOfficial) {
-            $('powerwash-help-link').setAttribute('hidden', !isOfficial);
-          }
-      );
-      this.context.addObserver(
-          CONTEXT_KEY_ROLLBACK_CHECKED,
-          function(rollbackChecked) {
+          CONTEXT_KEY_ROLLBACK_CHECKED, function(rollbackChecked) {
             self.setRollbackOptionView();
-          }
-      );
+          });
       this.context.addObserver(
-          CONTEXT_KEY_ROLLBACK_AVAILABLE,
-          function(rollbackAvailable) {
+          CONTEXT_KEY_ROLLBACK_AVAILABLE, function(rollbackAvailable) {
             self.setRollbackOptionView();
-          }
-      );
+          });
       this.context.addObserver(
-          CONTEXT_KEY_IS_CONFIRMATIONAL_VIEW,
-          function(is_confirmational) {
+          CONTEXT_KEY_TPM_FIRMWARE_UPDATE_CHECKED, function() {
+            self.setTPMFirmwareUpdateView_();
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_TPM_FIRMWARE_UPDATE_EDITABLE, function() {
+            self.setTPMFirmwareUpdateView_();
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_TPM_FIRMWARE_UPDATE_AVAILABLE, function() {
+            self.setTPMFirmwareUpdateView_();
+          });
+      this.context.addObserver(
+          CONTEXT_KEY_IS_CONFIRMATIONAL_VIEW, function(is_confirmational) {
             if (is_confirmational) {
-              console.log(self.context.get(CONTEXT_KEY_SCREEN_STATE, 0));
               if (self.context.get(CONTEXT_KEY_SCREEN_STATE, 0) !=
-                  self.RESET_SCREEN_STATE.POWERWASH_PROPOSAL)
-              return;
-              console.log(self);
-              reset.ConfirmResetOverlay.getInstance().initializePage();
+                  self.RESET_SCREEN_STATE.POWERWASH_PROPOSAL) {
+                return;
+              }
+              $('overlay-reset').removeAttribute('hidden');
+              $('reset-confirm-overlay-md').open();
             } else {
               $('overlay-reset').setAttribute('hidden', true);
+              $('reset-confirm-overlay-md').close();
             }
-          }
-      );
+          });
+
+      $('oobe-reset-md').screen = this;
     },
 
     /**
@@ -122,55 +114,10 @@ login.createScreen('ResetScreen', 'reset', function() {
     },
 
     /**
-     * Buttons in oobe wizard's button strip.
-     * @type {array} Array of Buttons.
-     */
-    get buttons() {
-      var buttons = [];
-      var restartButton = this.ownerDocument.createElement('button');
-      restartButton.id = 'reset-restart-button';
-      restartButton.textContent = loadTimeData.getString('resetButtonRestart');
-      this.declareUserAction(restartButton,
-                             { action_id: USER_ACTION_RESTART_PRESSED,
-                               event: 'click'
-                             });
-      buttons.push(restartButton);
-
-      // Button that leads to confirmation pop-up dialog.
-      var toConfirmButton = this.ownerDocument.createElement('button');
-      toConfirmButton.id = 'reset-toconfirm-button';
-      toConfirmButton.textContent =
-          loadTimeData.getString('resetButtonPowerwash');
-      this.declareUserAction(toConfirmButton,
-                             { action_id: USER_ACTION_SHOW_CONFIRMATION,
-                               event: 'click'
-                             });
-      buttons.push(toConfirmButton);
-
-      var cancelButton = this.ownerDocument.createElement('button');
-      cancelButton.id = 'reset-cancel-button';
-      cancelButton.textContent = loadTimeData.getString('cancelButton');
-      this.declareUserAction(cancelButton,
-                             { action_id: USER_ACTION_CANCEL_RESET,
-                               event: 'click'
-                             });
-      buttons.push(cancelButton);
-
-      return buttons;
-    },
-
-    /**
      * Returns a control which should receive an initial focus.
      */
     get defaultControl() {
-      // choose
-      if (this.context.get(CONTEXT_KEY_SCREEN_STATE,
-                           this.RESET_SCREEN_STATE.RESTART_REQUIRED) ==
-          this.RESET_SCREEN_STATE.RESTART_REQUIRED)
-        return $('reset-restart-button');
-      if (this.context.get(CONTEXT_KEY_IS_CONFIRMATIONAL_VIEW, false))
-        return $('reset-confirm-commit');
-      return $('reset-toconfirm-button');
+      return $('oobe-reset-md');
     },
 
     /**
@@ -178,8 +125,9 @@ login.createScreen('ResetScreen', 'reset', function() {
      */
     cancel: function() {
       if (this.context.get(CONTEXT_KEY_IS_CONFIRMATIONAL_VIEW, false)) {
-        $('reset').send(login.Screen.CALLBACK_USER_ACTED,
-                        USER_ACTION_RESET_CONFIRM_DISMISSED);
+        $('reset').send(
+            login.Screen.CALLBACK_USER_ACTED,
+            USER_ACTION_RESET_CONFIRM_DISMISSED);
         return;
       }
       this.send(login.Screen.CALLBACK_USER_ACTED, USER_ACTION_CANCEL_RESET);
@@ -189,16 +137,14 @@ login.createScreen('ResetScreen', 'reset', function() {
      * Event handler that is invoked just before the screen in shown.
      * @param {Object} data Screen init payload.
      */
-    onBeforeShow: function(data) {
-    },
+    onBeforeShow: function(data) {},
 
     /**
-      * Sets css style for corresponding state of the screen.
-      * @private
-      */
+     * Sets css style for corresponding state of the screen.
+     * @private
+     */
     setDialogView_: function(state) {
       state = this.ui_state;
-      var resetOverlay = $('reset-confirm-overlay');
       this.classList.toggle(
           'revert-promise-view',
           state == this.RESET_SCREEN_UI_STATE.REVERT_PROMISE);
@@ -208,15 +154,25 @@ login.createScreen('ResetScreen', 'reset', function() {
       this.classList.toggle(
           'powerwash-proposal-view',
           state == this.RESET_SCREEN_UI_STATE.POWERWASH_PROPOSAL);
-      resetOverlay.classList.toggle(
-          'powerwash-proposal-view',
-          state == this.RESET_SCREEN_UI_STATE.POWERWASH_PROPOSAL);
       this.classList.toggle(
           'rollback-proposal-view',
           state == this.RESET_SCREEN_UI_STATE.ROLLBACK_PROPOSAL);
-      resetOverlay.classList.toggle(
-          'rollback-proposal-view',
-          state == this.RESET_SCREEN_UI_STATE.ROLLBACK_PROPOSAL);
+      var resetMd = $('oobe-reset-md');
+      var resetOverlayMd = $('reset-confirm-overlay-md');
+      if (state == this.RESET_SCREEN_UI_STATE.RESTART_REQUIRED) {
+        resetMd.uiState_ = 'restart-required-view';
+      }
+      if (state == this.RESET_SCREEN_UI_STATE.POWERWASH_PROPOSAL) {
+        resetMd.uiState_ = 'powerwash-proposal-view';
+        resetOverlayMd.isPowerwashView_ = true;
+      }
+      if (state == this.RESET_SCREEN_UI_STATE.ROLLBACK_PROPOSAL) {
+        resetMd.uiState_ = 'rollback-proposal-view';
+        resetOverlayMd.isPowerwashView_ = false;
+      }
+      if (state == this.RESET_SCREEN_UI_STATE.REVERT_PROMISE) {
+        resetMd.uiState_ = 'revert-promise-view';
+      }
     },
 
     setRollbackOptionView: function() {
@@ -228,17 +184,27 @@ login.createScreen('ResetScreen', 'reset', function() {
 
       if (this.context.get(CONTEXT_KEY_ROLLBACK_AVAILABLE, false) &&
           this.context.get(CONTEXT_KEY_ROLLBACK_CHECKED, false)) {
-        // show rollback option
-        $('reset-toconfirm-button').textContent = loadTimeData.getString(
-            'resetButtonPowerwashAndRollback');
         this.ui_state = this.RESET_SCREEN_UI_STATE.ROLLBACK_PROPOSAL;
       } else {
-        // hide rollback option
-        $('reset-toconfirm-button').textContent = loadTimeData.getString(
-            'resetButtonPowerwash');
         this.ui_state = this.RESET_SCREEN_UI_STATE.POWERWASH_PROPOSAL;
       }
       this.setDialogView_();
+      this.setTPMFirmwareUpdateView_();
+    },
+
+    setTPMFirmwareUpdateView_: function() {
+      $('oobe-reset-md').tpmFirmwareUpdateAvailable_ =
+          this.ui_state == this.RESET_SCREEN_UI_STATE.POWERWASH_PROPOSAL &&
+          this.context.get(CONTEXT_KEY_TPM_FIRMWARE_UPDATE_AVAILABLE);
+      $('oobe-reset-md').tpmFirmwareUpdateChecked_ =
+          this.context.get(CONTEXT_KEY_TPM_FIRMWARE_UPDATE_CHECKED);
+      $('oobe-reset-md').tpmFirmwareUpdateEditable_ =
+          this.context.get(CONTEXT_KEY_TPM_FIRMWARE_UPDATE_EDITABLE);
+    },
+
+    onTPMFirmwareUpdateChanged_: function(value) {
+      this.context.set(CONTEXT_KEY_TPM_FIRMWARE_UPDATE_CHECKED, value);
+      this.commitContextChanges();
     }
   };
 });

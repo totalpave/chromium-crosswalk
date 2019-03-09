@@ -4,7 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_linux.h"
 
-#include "chrome/browser/themes/theme_service.h"
+#include <memory>
+
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_layout.h"
 #include "ui/views/linux_ui/linux_ui.h"
@@ -14,11 +15,8 @@
 
 OpaqueBrowserFrameViewLinux::OpaqueBrowserFrameViewLinux(
     OpaqueBrowserFrameView* view,
-    OpaqueBrowserFrameViewLayout* layout,
-    ThemeService* theme_service)
-    : view_(view),
-      layout_(layout),
-      theme_service_(theme_service) {
+    OpaqueBrowserFrameViewLayout* layout)
+    : view_(view), layout_(layout) {
   views::LinuxUI* ui = views::LinuxUI::instance();
   if (ui)
     ui->AddWindowButtonOrderObserver(this);
@@ -28,12 +26,6 @@ OpaqueBrowserFrameViewLinux::~OpaqueBrowserFrameViewLinux() {
   views::LinuxUI* ui = views::LinuxUI::instance();
   if (ui)
     ui->RemoveWindowButtonOrderObserver(this);
-}
-
-bool OpaqueBrowserFrameViewLinux::IsUsingSystemTheme() {
-  // On X11, this does the correct thing. On Windows, UsingSystemTheme() will
-  // return true when using the default blue theme too.
-  return theme_service_->UsingSystemTheme();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -49,8 +41,12 @@ void OpaqueBrowserFrameViewLinux::OnWindowButtonOrderingChange(
   // to a Widget. We need a Widget because layout crashes due to dependencies
   // on a ui::ThemeProvider().
   if (view_->GetWidget()) {
-    view_->Layout();
-    view_->SchedulePaint();
+    // A relayout on |view_| is insufficient because it would neglect
+    // a relayout of the tabstrip.  Do a full relayout to handle the
+    // frame buttons as well as open tabs.
+    views::View* root_view = view_->GetWidget()->GetRootView();
+    root_view->Layout();
+    root_view->SchedulePaint();
   }
 }
 
@@ -58,10 +54,9 @@ void OpaqueBrowserFrameViewLinux::OnWindowButtonOrderingChange(
 // OpaqueBrowserFrameViewObserver:
 
 // static
-OpaqueBrowserFrameViewPlatformSpecific*
+std::unique_ptr<OpaqueBrowserFrameViewPlatformSpecific>
 OpaqueBrowserFrameViewPlatformSpecific::Create(
     OpaqueBrowserFrameView* view,
-    OpaqueBrowserFrameViewLayout* layout,
-    ThemeService* theme_service) {
-  return new OpaqueBrowserFrameViewLinux(view, layout, theme_service);
+    OpaqueBrowserFrameViewLayout* layout) {
+  return std::make_unique<OpaqueBrowserFrameViewLinux>(view, layout);
 }

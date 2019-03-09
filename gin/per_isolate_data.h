@@ -10,17 +10,16 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/single_thread_task_runner.h"
 #include "gin/gin_export.h"
-#include "gin/public/v8_idle_task_runner.h"
+#include "gin/public/isolate_holder.h"
 #include "gin/public/wrapper_info.h"
+#include "gin/v8_foreground_task_runner_base.h"
 #include "v8/include/v8.h"
-
-namespace base {
-class SingleThreadTaskRunner;
-}
 
 namespace gin {
 
+class V8IdleTaskRunner;
 class IndexedPropertyInterceptor;
 class NamedPropertyInterceptor;
 class WrappableBase;
@@ -29,7 +28,10 @@ class WrappableBase;
 // class stores all the Gin-related data that varies per isolate.
 class GIN_EXPORT PerIsolateData {
  public:
-  PerIsolateData(v8::Isolate* isolate, v8::ArrayBuffer::Allocator* allocator);
+  PerIsolateData(v8::Isolate* isolate,
+                 v8::ArrayBuffer::Allocator* allocator,
+                 IsolateHolder::AccessMode access_mode,
+                 scoped_refptr<base::SingleThreadTaskRunner> task_runner);
   ~PerIsolateData();
 
   static PerIsolateData* From(v8::Isolate* isolate);
@@ -69,10 +71,7 @@ class GIN_EXPORT PerIsolateData {
 
   v8::Isolate* isolate() { return isolate_; }
   v8::ArrayBuffer::Allocator* allocator() { return allocator_; }
-  base::SingleThreadTaskRunner* task_runner() { return task_runner_.get(); }
-  V8IdleTaskRunner* idle_task_runner() {
-    return idle_task_runner_.get();
-  }
+  std::shared_ptr<v8::TaskRunner> task_runner() { return task_runner_; }
 
  private:
   typedef std::map<
@@ -92,8 +91,7 @@ class GIN_EXPORT PerIsolateData {
   FunctionTemplateMap function_templates_;
   IndexedPropertyInterceptorMap indexed_interceptors_;
   NamedPropertyInterceptorMap named_interceptors_;
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
-  std::unique_ptr<V8IdleTaskRunner> idle_task_runner_;
+  std::shared_ptr<V8ForegroundTaskRunnerBase> task_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(PerIsolateData);
 };

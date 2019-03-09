@@ -13,9 +13,19 @@
 
 /**
  * @typedef {{
+ *   challengeHash: Array<number>,
+ *   appIdHash: Array<number>,
+ *   keyHandle: Array<number>,
+ *   version: (string|undefined)
+ * }}
+ */
+var DecodedSignHelperChallenge;
+
+/**
+ * @typedef {{
  *   code: number,
  *   gnubby: (Gnubby|undefined),
- *   challenge: (SignHelperChallenge|undefined),
+ *   challenge: (DecodedSignHelperChallenge|undefined),
  *   info: (ArrayBuffer|undefined)
  * }}
  */
@@ -50,8 +60,8 @@ var SingleSignerResult;
  * @param {string=} opt_logMsgUrl A URL to post log messages to.
  * @constructor
  */
-function SingleGnubbySigner(gnubbyId, forEnroll, completeCb, timer,
-    opt_logMsgUrl) {
+function SingleGnubbySigner(
+    gnubbyId, forEnroll, completeCb, timer, opt_logMsgUrl) {
   /** @private {GnubbyDeviceId} */
   this.gnubbyId_ = gnubbyId;
   /** @private {SingleGnubbySigner.State} */
@@ -65,14 +75,14 @@ function SingleGnubbySigner(gnubbyId, forEnroll, completeCb, timer,
   /** @private {string|undefined} */
   this.logMsgUrl_ = opt_logMsgUrl;
 
-  /** @private {!Array<!SignHelperChallenge>} */
+  /** @private {!Array<!DecodedSignHelperChallenge>} */
   this.challenges_ = [];
   /** @private {number} */
   this.challengeIndex_ = 0;
   /** @private {boolean} */
   this.challengesSet_ = false;
 
-  /** @private {!Object<string, number>} */
+  /** @private {!Object<Array<number>, number>} */
   this.cachedError_ = [];
 
   /** @private {(function()|undefined)} */
@@ -111,11 +121,14 @@ SingleGnubbySigner.prototype.getDeviceId = function() {
  */
 SingleGnubbySigner.prototype.close = function() {
   if (this.state_ == SingleGnubbySigner.State.OPENING) {
-    if (this.openCanceller_)
+    if (this.openCanceller_) {
       this.openCanceller_();
+    }
   }
 
-  if (!this.gnubby_) return;
+  if (!this.gnubby_) {
+    return;
+  }
   this.state_ = SingleGnubbySigner.State.CLOSING;
   this.gnubby_.closeWhenIdle(this.closed_.bind(this));
 };
@@ -131,7 +144,7 @@ SingleGnubbySigner.prototype.closed_ = function() {
 
 /**
  * Begins signing the given challenges.
- * @param {Array<SignHelperChallenge>} challenges The challenges to sign.
+ * @param {Array<DecodedSignHelperChallenge>} challenges The challenges to sign.
  * @return {boolean} Whether the challenges were accepted.
  */
 SingleGnubbySigner.prototype.doSign = function(challenges) {
@@ -194,11 +207,8 @@ SingleGnubbySigner.prototype.open_ = function() {
   if (this.state_ == SingleGnubbySigner.State.INIT) {
     this.state_ = SingleGnubbySigner.State.OPENING;
     this.openCanceller_ = DEVICE_FACTORY_REGISTRY.getGnubbyFactory().openGnubby(
-        this.gnubbyId_,
-        this.forEnroll_,
-        this.openCallback_.bind(this),
-        appIdHash,
-        this.logMsgUrl_,
+        this.gnubbyId_, this.forEnroll_, this.openCallback_.bind(this),
+        appIdHash, this.logMsgUrl_,
         'singlesigner.js:SingleGnubbySigner.prototype.open_');
   }
 };
@@ -242,13 +252,11 @@ SingleGnubbySigner.prototype.openCallback_ = function(rc, gnubby) {
         var self = this;
         window.setTimeout(function() {
           if (self.gnubby_) {
-            this.openCanceller_ = DEVICE_FACTORY_REGISTRY
-              .getGnubbyFactory().openGnubby(
-                self.gnubbyId_,
-                self.forEnroll_,
-                self.openCallback_.bind(self),
-                self.logMsgUrl_,
-                'singlesigner.js:SingleGnubbySigner.prototype.openCallback_');
+            this.openCanceller_ =
+                DEVICE_FACTORY_REGISTRY.getGnubbyFactory().openGnubby(
+                    self.gnubbyId_, self.forEnroll_,
+                    self.openCallback_.bind(self), self.logMsgUrl_,
+                    'singlesigner.js:SingleGnubbySigner.prototype.openCallback_');
           }
         }, SingleGnubbySigner.OPEN_DELAY_MILLIS);
       } else {
@@ -336,9 +344,9 @@ SingleGnubbySigner.prototype.doSign_ = function(challengeIndex) {
     this.signCallback_(challengeIndex, DeviceStatusCodes.WRONG_DATA_STATUS);
   } else {
     var nowink = false;
-    this.gnubby_.sign(challengeHash, appIdHash, keyHandle,
-        this.signCallback_.bind(this, challengeIndex),
-        nowink);
+    this.gnubby_.sign(
+        challengeHash, appIdHash, keyHandle,
+        this.signCallback_.bind(this, challengeIndex), nowink);
   }
 };
 
@@ -348,9 +356,12 @@ SingleGnubbySigner.prototype.doSign_ = function(challengeIndex) {
  *     for this gnubby.
  */
 SingleGnubbySigner.signErrorIndicatesInvalidKeyHandle = function(code) {
-  return (code == DeviceStatusCodes.WRONG_DATA_STATUS ||
-      code == DeviceStatusCodes.WRONG_LENGTH_STATUS ||
-      code == DeviceStatusCodes.INVALID_DATA_STATUS);
+  // Negative errors are synthetic, device-level errors, rather than APDU-layer
+  // things. Wait for touch is the only error code defined to be a transient
+  // situation. Unfortunately the spec is ambiguous, and some devices behave
+  // oddly, so we treat all APDU-layer errors as idempotent rather than
+  // transient.
+  return code > 0 && code != DeviceStatusCodes.WAIT_TOUCH_STATUS;
 };
 
 /**
@@ -360,10 +371,11 @@ SingleGnubbySigner.signErrorIndicatesInvalidKeyHandle = function(code) {
  * @param {ArrayBuffer=} opt_info Optional result data
  * @private
  */
-SingleGnubbySigner.prototype.signCallback_ =
-    function(challengeIndex, code, opt_info) {
-  console.log(UTIL_fmt('gnubby ' + JSON.stringify(this.gnubbyId_) +
-      ', challenge ' + challengeIndex + ' yielded ' + code.toString(16)));
+SingleGnubbySigner.prototype.signCallback_ = function(
+    challengeIndex, code, opt_info) {
+  console.log(UTIL_fmt(
+      'gnubby ' + JSON.stringify(this.gnubbyId_) + ', challenge ' +
+      challengeIndex + ' yielded ' + code.toString(16)));
   if (this.state_ != SingleGnubbySigner.State.SIGNING) {
     console.log(UTIL_fmt('already done!'));
     // We're done, the caller's no longer interested.
@@ -383,10 +395,6 @@ SingleGnubbySigner.prototype.signCallback_ =
 
   var self = this;
   switch (code) {
-    case DeviceStatusCodes.GONE_STATUS:
-      this.goToError_(code);
-      break;
-
     case DeviceStatusCodes.TIMEOUT_STATUS:
       this.gnubby_.sync(this.synced_.bind(this));
       break;
@@ -396,12 +404,6 @@ SingleGnubbySigner.prototype.signCallback_ =
       break;
 
     case DeviceStatusCodes.OK_STATUS:
-      // Lower bound on the minimum length, signature length can vary.
-      var MIN_SIGNATURE_LENGTH = 7;
-      if (!opt_info || opt_info.byteLength < MIN_SIGNATURE_LENGTH) {
-        console.error(UTIL_fmt('Got short response to sign request (' +
-            (opt_info ? opt_info.byteLength : 0) + ' bytes), WTF?'));
-      }
       if (this.forEnroll_) {
         this.goToError_(code);
       } else {
@@ -415,25 +417,22 @@ SingleGnubbySigner.prototype.signCallback_ =
       }, SingleGnubbySigner.SIGN_DELAY_MILLIS);
       break;
 
-    case DeviceStatusCodes.WRONG_DATA_STATUS:
-    case DeviceStatusCodes.WRONG_LENGTH_STATUS:
-    case DeviceStatusCodes.INVALID_DATA_STATUS:
+    default:
+      if (code < 0) {
+        // Negative errors are synthetic, device-level errors, rather than
+        // APDU-layer things. Other than the ones explicitly handled above,
+        // these are indicative of unhappy devices, so return them immediately
+        // to the caller.
+        this.goToError_(code);
+        return;
+      }
+
       if (this.challengeIndex_ < this.challenges_.length - 1) {
         this.doSign_(++this.challengeIndex_);
       } else if (this.forEnroll_) {
         this.goToSuccess_(code);
       } else {
         this.goToError_(code);
-      }
-      break;
-
-    default:
-      if (this.forEnroll_) {
-        this.goToError_(code, true);
-      } else if (this.challengeIndex_ < this.challenges_.length - 1) {
-        this.doSign_(++this.challengeIndex_);
-      } else {
-        this.goToError_(code, true);
       }
   }
 };
@@ -462,13 +461,14 @@ SingleGnubbySigner.prototype.goToError_ = function(code, opt_warn) {
   this.state_ = SingleGnubbySigner.State.COMPLETE;
   var logFn = opt_warn ? console.warn.bind(console) : console.log.bind(console);
   logFn(UTIL_fmt('failed (' + code.toString(16) + ')'));
-  var result = { code: code };
-  if (!this.forEnroll_ && code == DeviceStatusCodes.WRONG_DATA_STATUS) {
-    // When a device yields WRONG_DATA to all sign challenges, and this is a
-    // sign request, we don't want to yield to the web page that it's not
-    // enrolled just yet: we want the user to tap the device first. We'll
-    // report the gnubby to the caller and let it close it instead of closing
-    // it here.
+  var result = {code: code};
+  if (!this.forEnroll_ &&
+      SingleGnubbySigner.signErrorIndicatesInvalidKeyHandle(code)) {
+    // When a device yields an idempotent bad key handle error to all sign
+    // challenges, and this is a sign request, we don't want to yield to the
+    // web page that it's not enrolled just yet: we want the user to tap the
+    // device first. We'll report the gnubby to the caller and let it close it
+    // instead of closing it here.
     result.gnubby = this.gnubby_;
   } else {
     // Since this gnubby can no longer produce a useful result, go ahead and
@@ -481,15 +481,15 @@ SingleGnubbySigner.prototype.goToError_ = function(code, opt_warn) {
 /**
  * Switches to the success state, and notifies caller.
  * @param {number} code Status code
- * @param {SignHelperChallenge=} opt_challenge The challenge signed
+ * @param {DecodedSignHelperChallenge=} opt_challenge The challenge signed
  * @param {ArrayBuffer=} opt_info Optional result data
  * @private
  */
-SingleGnubbySigner.prototype.goToSuccess_ =
-    function(code, opt_challenge, opt_info) {
+SingleGnubbySigner.prototype.goToSuccess_ = function(
+    code, opt_challenge, opt_info) {
   this.state_ = SingleGnubbySigner.State.COMPLETE;
   console.log(UTIL_fmt('success (' + code.toString(16) + ')'));
-  var result = { code: code, gnubby: this.gnubby_ };
+  var result = {code: code, gnubby: this.gnubby_};
   if (opt_challenge || opt_info) {
     if (opt_challenge) {
       result['challenge'] = opt_challenge;

@@ -5,50 +5,39 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <vector>
+
+#include "base/test/scoped_task_environment.h"
 #include "content/browser/appcache/appcache.h"
 #include "content/browser/appcache/appcache_host.h"
 #include "content/browser/appcache/mock_appcache_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/appcache/appcache.mojom.h"
+#include "third_party/blink/public/mojom/appcache/appcache_info.mojom.h"
+#include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 
 namespace content {
 
-namespace {
-
-class MockAppCacheFrontend : public AppCacheFrontend {
- public:
-  void OnCacheSelected(int host_id, const AppCacheInfo& info) override {}
-  void OnStatusChanged(const std::vector<int>& host_ids,
-                       AppCacheStatus status) override {}
-  void OnEventRaised(const std::vector<int>& host_ids,
-                     AppCacheEventID event_id) override {}
-  void OnProgressEventRaised(const std::vector<int>& host_ids,
-                             const GURL& url,
-                             int num_total,
-                             int num_complete) override {}
-  void OnErrorEventRaised(const std::vector<int>& host_ids,
-                          const AppCacheErrorDetails& details) override {}
-  void OnLogMessage(int host_id,
-                    AppCacheLogLevel log_level,
-                    const std::string& message) override {}
-  void OnContentBlocked(int host_id, const GURL& manifest_url) override {}
-};
-
-}  // namespace
-
 class AppCacheTest : public testing::Test {
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
 };
 
-TEST(AppCacheTest, CleanupUnusedCache) {
+TEST_F(AppCacheTest, CleanupUnusedCache) {
   MockAppCacheService service;
-  MockAppCacheFrontend frontend;
   scoped_refptr<AppCache> cache(new AppCache(service.storage(), 111));
   cache->set_complete(true);
   scoped_refptr<AppCacheGroup> group(
       new AppCacheGroup(service.storage(), GURL("http://blah/manifest"), 111));
   group->AddCache(cache.get());
 
-  AppCacheHost host1(1, &frontend, &service);
-  AppCacheHost host2(2, &frontend, &service);
+  blink::mojom::AppCacheFrontendPtr frontend1;
+  mojo::MakeRequest(&frontend1);
+  AppCacheHost host1(/*host_id=*/1, /*process_id=*/1, /*render_frame_id=*/1,
+                     std::move(frontend1), &service);
+  blink::mojom::AppCacheFrontendPtr frontend2;
+  mojo::MakeRequest(&frontend2);
+  AppCacheHost host2(/*host_id=*/2, /*process_id=*/2, /*render_frame_id=*/2,
+                     std::move(frontend2), &service);
 
   host1.AssociateCompleteCache(cache.get());
   host2.AssociateCompleteCache(cache.get());
@@ -57,7 +46,7 @@ TEST(AppCacheTest, CleanupUnusedCache) {
   host2.AssociateNoCache(GURL());
 }
 
-TEST(AppCacheTest, AddModifyRemoveEntry) {
+TEST_F(AppCacheTest, AddModifyRemoveEntry) {
   MockAppCacheService service;
   scoped_refptr<AppCache> cache(new AppCache(service.storage(), 111));
 
@@ -101,7 +90,7 @@ TEST(AppCacheTest, AddModifyRemoveEntry) {
   EXPECT_TRUE(cache->entries().empty());
 }
 
-TEST(AppCacheTest, InitializeWithManifest) {
+TEST_F(AppCacheTest, InitializeWithManifest) {
   MockAppCacheService service;
 
   scoped_refptr<AppCache> cache(new AppCache(service.storage(), 1234));
@@ -131,7 +120,7 @@ TEST(AppCacheTest, InitializeWithManifest) {
   EXPECT_EQ(GURL("http://fb1.com"), fallbacks[0].namespace_url);
   EXPECT_EQ(GURL("http://fbone.com"), fallbacks[0].target_url);
   EXPECT_TRUE(fallbacks[0].is_pattern);
-  const AppCacheNamespaceVector& whitelist =
+  const std::vector<AppCacheNamespace>& whitelist =
       cache->online_whitelist_namespaces_;
   expected = 2;
   EXPECT_EQ(expected, whitelist.size());
@@ -145,7 +134,7 @@ TEST(AppCacheTest, InitializeWithManifest) {
   EXPECT_TRUE(manifest.online_whitelist_namespaces.empty());
 }
 
-TEST(AppCacheTest, FindResponseForRequest) {
+TEST_F(AppCacheTest, FindResponseForRequest) {
   MockAppCacheService service;
 
   const GURL kOnlineNamespaceUrl("http://blah/online_namespace");
@@ -357,7 +346,7 @@ TEST(AppCacheTest, FindResponseForRequest) {
   EXPECT_FALSE(network_namespace);
 }
 
-TEST(AppCacheTest, FindInterceptPatternResponseForRequest) {
+TEST_F(AppCacheTest, FindInterceptPatternResponseForRequest) {
   MockAppCacheService service;
 
   // Setup an appcache with an intercept namespace that uses pattern matching.
@@ -428,7 +417,7 @@ TEST(AppCacheTest, FindInterceptPatternResponseForRequest) {
   EXPECT_FALSE(network_namespace);
 }
 
-TEST(AppCacheTest, FindFallbackPatternResponseForRequest) {
+TEST_F(AppCacheTest, FindFallbackPatternResponseForRequest) {
   MockAppCacheService service;
 
   // Setup an appcache with a fallback namespace that uses pattern matching.
@@ -499,8 +488,7 @@ TEST(AppCacheTest, FindFallbackPatternResponseForRequest) {
   EXPECT_FALSE(network_namespace);
 }
 
-
-TEST(AppCacheTest, FindNetworkNamespacePatternResponseForRequest) {
+TEST_F(AppCacheTest, FindNetworkNamespacePatternResponseForRequest) {
   MockAppCacheService service;
 
   // Setup an appcache with a network namespace that uses pattern matching.
@@ -542,7 +530,7 @@ TEST(AppCacheTest, FindNetworkNamespacePatternResponseForRequest) {
   EXPECT_FALSE(fallback_entry.has_response_id());
 }
 
-TEST(AppCacheTest, ToFromDatabaseRecords) {
+TEST_F(AppCacheTest, ToFromDatabaseRecords) {
   // Setup a cache with some entries.
   const int64_t kCacheId = 1234;
   const int64_t kGroupId = 4321;
@@ -565,7 +553,8 @@ TEST(AppCacheTest, ToFromDatabaseRecords) {
   scoped_refptr<AppCache> cache(new AppCache(service.storage(), kCacheId));
   AppCacheManifest manifest;
   EXPECT_TRUE(ParseManifest(kManifestUrl, kData.c_str(), kData.length(),
-                            PARSE_MANIFEST_ALLOWING_INTERCEPTS, manifest));
+                            PARSE_MANIFEST_ALLOWING_DANGEROUS_FEATURES,
+                            manifest));
   cache->InitializeWithManifest(&manifest);
   EXPECT_EQ(APPCACHE_NETWORK_NAMESPACE,
             cache->online_whitelist_namespaces_[0].type);
@@ -602,7 +591,7 @@ TEST(AppCacheTest, ToFromDatabaseRecords) {
   EXPECT_EQ(1u, intercepts.size());
   EXPECT_EQ(1u, fallbacks.size());
   EXPECT_EQ(1u, whitelists.size());
-  cache = NULL;
+  cache = nullptr;
 
   // Create a new AppCache and populate it with those records and verify.
   cache = new AppCache(service.storage(), kCacheId);
@@ -626,7 +615,7 @@ TEST(AppCacheTest, ToFromDatabaseRecords) {
             cache->online_whitelist_namespaces_[0].namespace_url);
 }
 
-TEST(AppCacheTest, IsNamespaceMatch) {
+TEST_F(AppCacheTest, IsNamespaceMatch) {
   AppCacheNamespace prefix;
   prefix.namespace_url = GURL("http://foo.com/prefix");
   prefix.is_pattern = false;

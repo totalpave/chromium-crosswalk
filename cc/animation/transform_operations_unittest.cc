@@ -9,7 +9,7 @@
 #include <limits>
 #include <vector>
 
-#include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "cc/test/geometry_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/animation/tween.h"
@@ -20,27 +20,61 @@
 namespace cc {
 namespace {
 
+void ExpectTransformOperationEqual(const TransformOperation& lhs,
+                                   const TransformOperation& rhs) {
+  EXPECT_EQ(lhs.type, rhs.type);
+  EXPECT_TRANSFORMATION_MATRIX_EQ(lhs.matrix, rhs.matrix);
+  switch (lhs.type) {
+    case TransformOperation::TRANSFORM_OPERATION_TRANSLATE:
+      EXPECT_FLOAT_EQ(lhs.translate.x, rhs.translate.x);
+      EXPECT_FLOAT_EQ(lhs.translate.y, rhs.translate.y);
+      EXPECT_FLOAT_EQ(lhs.translate.z, rhs.translate.z);
+      break;
+    case TransformOperation::TRANSFORM_OPERATION_ROTATE:
+      EXPECT_FLOAT_EQ(lhs.rotate.axis.x, rhs.rotate.axis.x);
+      EXPECT_FLOAT_EQ(lhs.rotate.axis.y, rhs.rotate.axis.y);
+      EXPECT_FLOAT_EQ(lhs.rotate.axis.z, rhs.rotate.axis.z);
+      EXPECT_FLOAT_EQ(lhs.rotate.angle, rhs.rotate.angle);
+      break;
+    case TransformOperation::TRANSFORM_OPERATION_SCALE:
+      EXPECT_FLOAT_EQ(lhs.scale.x, rhs.scale.x);
+      EXPECT_FLOAT_EQ(lhs.scale.y, rhs.scale.y);
+      EXPECT_FLOAT_EQ(lhs.scale.z, rhs.scale.z);
+      break;
+    case TransformOperation::TRANSFORM_OPERATION_SKEW:
+      EXPECT_FLOAT_EQ(lhs.skew.x, rhs.skew.x);
+      EXPECT_FLOAT_EQ(lhs.skew.y, rhs.skew.y);
+      break;
+    case TransformOperation::TRANSFORM_OPERATION_PERSPECTIVE:
+      EXPECT_FLOAT_EQ(lhs.perspective_depth, rhs.perspective_depth);
+      break;
+    case TransformOperation::TRANSFORM_OPERATION_MATRIX:
+    case TransformOperation::TRANSFORM_OPERATION_IDENTITY:
+      break;
+  }
+}
+
 TEST(TransformOperationTest, TransformTypesAreUnique) {
   std::vector<std::unique_ptr<TransformOperations>> transforms;
 
   std::unique_ptr<TransformOperations> to_add(
-      base::WrapUnique(new TransformOperations()));
+      std::make_unique<TransformOperations>());
   to_add->AppendTranslate(1, 0, 0);
   transforms.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendRotate(0, 0, 1, 2);
   transforms.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendScale(2, 2, 2);
   transforms.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendSkew(1, 0);
   transforms.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendPerspective(800);
   transforms.push_back(std::move(to_add));
 
@@ -52,7 +86,7 @@ TEST(TransformOperationTest, TransformTypesAreUnique) {
   }
 }
 
-TEST(TransformOperationTest, MatchTypesSameLength) {
+TEST(TransformOperationTest, MatchingPrefixSameLength) {
   TransformOperations translates;
   translates.AppendTranslate(1, 0, 0);
   translates.AppendTranslate(1, 0, 0);
@@ -67,15 +101,21 @@ TEST(TransformOperationTest, MatchTypesSameLength) {
   translates2.AppendTranslate(0, 2, 0);
   translates2.AppendTranslate(0, 2, 0);
   translates2.AppendTranslate(0, 2, 0);
+
+  TransformOperations mixed;
+  mixed.AppendTranslate(0, 2, 0);
+  mixed.AppendScale(2, 1, 1);
+  mixed.AppendSkew(0, 2);
 
   TransformOperations translates3 = translates2;
 
-  EXPECT_FALSE(translates.MatchesTypes(skews));
-  EXPECT_TRUE(translates.MatchesTypes(translates2));
-  EXPECT_TRUE(translates.MatchesTypes(translates3));
+  EXPECT_EQ(0UL, translates.MatchingPrefixLength(skews));
+  EXPECT_EQ(3UL, translates.MatchingPrefixLength(translates2));
+  EXPECT_EQ(3UL, translates.MatchingPrefixLength(translates3));
+  EXPECT_EQ(1UL, translates.MatchingPrefixLength(mixed));
 }
 
-TEST(TransformOperationTest, MatchTypesDifferentLength) {
+TEST(TransformOperationTest, MatchingPrefixDifferentLength) {
   TransformOperations translates;
   translates.AppendTranslate(1, 0, 0);
   translates.AppendTranslate(1, 0, 0);
@@ -89,57 +129,63 @@ TEST(TransformOperationTest, MatchTypesDifferentLength) {
   translates2.AppendTranslate(0, 2, 0);
   translates2.AppendTranslate(0, 2, 0);
 
-  EXPECT_FALSE(translates.MatchesTypes(skews));
-  EXPECT_FALSE(translates.MatchesTypes(translates2));
+  TransformOperations none;
+
+  EXPECT_EQ(0UL, translates.MatchingPrefixLength(skews));
+  // Pad the length of the shorter list provided all previous operation-
+  // pairs match per spec
+  // (https://drafts.csswg.org/css-transforms/#interpolation-of-transforms).
+  EXPECT_EQ(3UL, translates.MatchingPrefixLength(translates2));
+  EXPECT_EQ(3UL, translates.MatchingPrefixLength(none));
 }
 
 std::vector<std::unique_ptr<TransformOperations>> GetIdentityOperations() {
   std::vector<std::unique_ptr<TransformOperations>> operations;
   std::unique_ptr<TransformOperations> to_add(
-      base::WrapUnique(new TransformOperations()));
+      std::make_unique<TransformOperations>());
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendTranslate(0, 0, 0);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendTranslate(0, 0, 0);
   to_add->AppendTranslate(0, 0, 0);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendScale(1, 1, 1);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendScale(1, 1, 1);
   to_add->AppendScale(1, 1, 1);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendSkew(0, 0);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendSkew(0, 0);
   to_add->AppendSkew(0, 0);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendRotate(0, 0, 1, 0);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendRotate(0, 0, 1, 0);
   to_add->AppendRotate(0, 0, 1, 0);
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendMatrix(gfx::Transform());
   operations.push_back(std::move(to_add));
 
-  to_add = base::WrapUnique(new TransformOperations());
+  to_add = std::make_unique<TransformOperations>();
   to_add->AppendMatrix(gfx::Transform());
   to_add->AppendMatrix(gfx::Transform());
   operations.push_back(std::move(to_add));
@@ -147,7 +193,7 @@ std::vector<std::unique_ptr<TransformOperations>> GetIdentityOperations() {
   return operations;
 }
 
-TEST(TransformOperationTest, MatchTypesOrder) {
+TEST(TransformOperationTest, MatchingPrefixLengthOrder) {
   TransformOperations mix_order_identity;
   mix_order_identity.AppendTranslate(0, 0, 0);
   mix_order_identity.AppendScale(1, 1, 1);
@@ -163,9 +209,9 @@ TEST(TransformOperationTest, MatchTypesOrder) {
   mix_order_two.AppendTranslate(1, 0, 0);
   mix_order_two.AppendScale(2, 1, 3);
 
-  EXPECT_TRUE(mix_order_identity.MatchesTypes(mix_order_one));
-  EXPECT_FALSE(mix_order_identity.MatchesTypes(mix_order_two));
-  EXPECT_FALSE(mix_order_one.MatchesTypes(mix_order_two));
+  EXPECT_EQ(3UL, mix_order_identity.MatchingPrefixLength(mix_order_one));
+  EXPECT_EQ(1UL, mix_order_identity.MatchingPrefixLength(mix_order_two));
+  EXPECT_EQ(1UL, mix_order_one.MatchingPrefixLength(mix_order_two));
 }
 
 TEST(TransformOperationTest, NoneAlwaysMatches) {
@@ -174,7 +220,8 @@ TEST(TransformOperationTest, NoneAlwaysMatches) {
 
   TransformOperations none_operation;
   for (size_t i = 0; i < operations.size(); ++i)
-    EXPECT_TRUE(operations[i]->MatchesTypes(none_operation));
+    EXPECT_EQ(operations[i]->size(),
+              operations[i]->MatchingPrefixLength(none_operation));
 }
 
 TEST(TransformOperationTest, ApplyTranslate) {
@@ -283,6 +330,10 @@ TEST(TransformOperationTest, BlendOrder) {
   SkMScalar dy2 = 20;
   SkMScalar dz2 = 30;
 
+  SkMScalar sx3 = 2;
+  SkMScalar sy3 = 1;
+  SkMScalar sz3 = 1;
+
   TransformOperations operations_from;
   operations_from.AppendScale(sx1, sy1, sz1);
   operations_from.AppendTranslate(dx1, dy1, dz1);
@@ -303,6 +354,17 @@ TEST(TransformOperationTest, BlendOrder) {
 
   SkMScalar progress = 0.25f;
 
+  TransformOperations operations_expected;
+  operations_expected.AppendScale(
+      gfx::Tween::FloatValueBetween(progress, sx1, sx2),
+      gfx::Tween::FloatValueBetween(progress, sy1, sy2),
+      gfx::Tween::FloatValueBetween(progress, sz1, sz2));
+
+  operations_expected.AppendTranslate(
+      gfx::Tween::FloatValueBetween(progress, dx1, dx2),
+      gfx::Tween::FloatValueBetween(progress, dy1, dy2),
+      gfx::Tween::FloatValueBetween(progress, dz1, dz2));
+
   gfx::Transform blended_scale = scale_to;
   blended_scale.Blend(scale_from, progress);
 
@@ -312,8 +374,76 @@ TEST(TransformOperationTest, BlendOrder) {
   gfx::Transform expected = blended_scale;
   expected.PreconcatTransform(blended_translate);
 
-  EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+  TransformOperations blended = operations_to.Blend(operations_from, progress);
+
+  EXPECT_TRANSFORMATION_MATRIX_EQ(expected, blended.Apply());
+  EXPECT_TRANSFORMATION_MATRIX_EQ(operations_expected.Apply(), blended.Apply());
+  EXPECT_EQ(operations_expected.size(), blended.size());
+  for (size_t i = 0; i < operations_expected.size(); ++i) {
+    TransformOperation expected_op = operations_expected.at(i);
+    TransformOperation blended_op = blended.at(i);
+    SCOPED_TRACE(i);
+    ExpectTransformOperationEqual(expected_op, blended_op);
+  }
+
+  TransformOperations base_operations_expected = operations_expected;
+
+  // Create a mismatch in number of operations. Pairwise interpolation is still
+  // used when the operations match up to the length of the shorter list.
+  operations_to.AppendScale(sx3, sy3, sz3);
+
+  gfx::Transform appended_scale;
+  appended_scale.Scale3d(sx3, sy3, sz3);
+
+  gfx::Transform blended_append_scale = appended_scale;
+  blended_append_scale.Blend(gfx::Transform(), progress);
+  expected.PreconcatTransform(blended_append_scale);
+
+  operations_expected.AppendScale(
+      gfx::Tween::FloatValueBetween(progress, 1, sx3),
+      gfx::Tween::FloatValueBetween(progress, 1, sy3),
+      gfx::Tween::FloatValueBetween(progress, 1, sz3));
+
+  blended = operations_to.Blend(operations_from, progress);
+
+  EXPECT_TRANSFORMATION_MATRIX_EQ(expected, blended.Apply());
+  EXPECT_TRANSFORMATION_MATRIX_EQ(operations_expected.Apply(), blended.Apply());
+  EXPECT_EQ(operations_expected.size(), blended.size());
+  for (size_t i = 0; i < operations_expected.size(); ++i) {
+    TransformOperation expected_op = operations_expected.at(i);
+    TransformOperation blended_op = blended.at(i);
+    SCOPED_TRACE(i);
+    ExpectTransformOperationEqual(expected_op, blended_op);
+  }
+
+  // Create a mismatch, forcing matrix interpolation for the last operator pair.
+  operations_from.AppendRotate(0, 0, 1, 90);
+
+  blended = operations_to.Blend(operations_from, progress);
+
+  gfx::Transform transform_from;
+  transform_from.RotateAboutZAxis(90);
+  gfx::Transform transform_to;
+  transform_to.Scale3d(sx3, sy3, sz3);
+  gfx::Transform blended_matrix = transform_to;
+  blended_matrix.Blend(transform_from, progress);
+
+  expected = blended_scale;
+  expected.PreconcatTransform(blended_translate);
+  expected.PreconcatTransform(blended_matrix);
+
+  operations_expected = base_operations_expected;
+  operations_expected.AppendMatrix(blended_matrix);
+
+  EXPECT_TRANSFORMATION_MATRIX_EQ(expected, blended.Apply());
+  EXPECT_TRANSFORMATION_MATRIX_EQ(operations_expected.Apply(), blended.Apply());
+  EXPECT_EQ(operations_expected.size(), blended.size());
+  for (size_t i = 0; i < operations_expected.size(); ++i) {
+    TransformOperation expected_op = operations_expected.at(i);
+    TransformOperation blended_op = blended.at(i);
+    SCOPED_TRACE(i);
+    ExpectTransformOperationEqual(expected_op, blended_op);
+  }
 }
 
 static void CheckProgress(SkMScalar progress,
@@ -324,7 +454,7 @@ static void CheckProgress(SkMScalar progress,
   gfx::Transform expected_matrix = to_matrix;
   expected_matrix.Blend(from_matrix, progress);
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected_matrix, to_transform.Blend(from_transform, progress));
+      expected_matrix, to_transform.Blend(from_transform, progress).Apply());
 }
 
 TEST(TransformOperationTest, BlendProgress) {
@@ -393,7 +523,7 @@ TEST(TransformOperationTest, BlendWhenTypesDoNotMatch) {
   expected.Blend(from, progress);
 
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, LargeRotationsWithSameAxis) {
@@ -409,7 +539,7 @@ TEST(TransformOperationTest, LargeRotationsWithSameAxis) {
   expected.RotateAbout(gfx::Vector3dF(0, 0, 1), 180);
 
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, LargeRotationsWithSameAxisInDifferentDirection) {
@@ -424,7 +554,7 @@ TEST(TransformOperationTest, LargeRotationsWithSameAxisInDifferentDirection) {
   gfx::Transform expected;
 
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, LargeRotationsWithDifferentAxes) {
@@ -445,7 +575,7 @@ TEST(TransformOperationTest, LargeRotationsWithDifferentAxes) {
   expected.Blend(matrix_from, progress);
 
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, RotationFromZeroDegDifferentAxes) {
@@ -459,7 +589,7 @@ TEST(TransformOperationTest, RotationFromZeroDegDifferentAxes) {
   gfx::Transform expected;
   expected.RotateAbout(gfx::Vector3dF(0, 1, 0), 225);
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, RotationFromZeroDegSameAxes) {
@@ -473,7 +603,7 @@ TEST(TransformOperationTest, RotationFromZeroDegSameAxes) {
   gfx::Transform expected;
   expected.RotateAbout(gfx::Vector3dF(0, 0, 1), 225);
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, RotationToZeroDegDifferentAxes) {
@@ -487,7 +617,7 @@ TEST(TransformOperationTest, RotationToZeroDegDifferentAxes) {
   gfx::Transform expected;
   expected.RotateAbout(gfx::Vector3dF(0, 1, 0), 225);
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, RotationToZeroDegSameAxes) {
@@ -501,7 +631,7 @@ TEST(TransformOperationTest, RotationToZeroDegSameAxes) {
   gfx::Transform expected;
   expected.RotateAbout(gfx::Vector3dF(0, 0, 1), 225);
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations_to.Blend(operations_from, progress));
+      expected, operations_to.Blend(operations_from, progress).Apply());
 }
 
 TEST(TransformOperationTest, BlendRotationFromIdentity) {
@@ -518,7 +648,7 @@ TEST(TransformOperationTest, BlendRotationFromIdentity) {
     expected.RotateAbout(gfx::Vector3dF(0, 0, 1), 45);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
 
     progress = -0.5f;
 
@@ -526,7 +656,7 @@ TEST(TransformOperationTest, BlendRotationFromIdentity) {
     expected.RotateAbout(gfx::Vector3dF(0, 0, 1), -45);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
 
     progress = 1.5f;
 
@@ -534,7 +664,7 @@ TEST(TransformOperationTest, BlendRotationFromIdentity) {
     expected.RotateAbout(gfx::Vector3dF(0, 0, 1), 135);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
   }
 }
 
@@ -552,7 +682,7 @@ TEST(TransformOperationTest, BlendTranslationFromIdentity) {
     expected.Translate3d(1, 1, 1);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
 
     progress = -0.5f;
 
@@ -560,7 +690,7 @@ TEST(TransformOperationTest, BlendTranslationFromIdentity) {
     expected.Translate3d(-1, -1, -1);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
 
     progress = 1.5f;
 
@@ -568,7 +698,7 @@ TEST(TransformOperationTest, BlendTranslationFromIdentity) {
     expected.Translate3d(3, 3, 3);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
   }
 }
 
@@ -586,7 +716,7 @@ TEST(TransformOperationTest, BlendScaleFromIdentity) {
     expected.Scale3d(2, 2, 2);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
 
     progress = -0.5f;
 
@@ -594,7 +724,7 @@ TEST(TransformOperationTest, BlendScaleFromIdentity) {
     expected.Scale3d(0, 0, 0);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
 
     progress = 1.5f;
 
@@ -602,7 +732,7 @@ TEST(TransformOperationTest, BlendScaleFromIdentity) {
     expected.Scale3d(4, 4, 4);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
   }
 }
 
@@ -617,24 +747,24 @@ TEST(TransformOperationTest, BlendSkewFromEmpty) {
   gfx::Transform expected;
   expected.Skew(1, 1);
 
-  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
-                                  operations.Blend(empty_operation, progress));
+  EXPECT_TRANSFORMATION_MATRIX_EQ(
+      expected, operations.Blend(empty_operation, progress).Apply());
 
   progress = -0.5f;
 
   expected.MakeIdentity();
   expected.Skew(-1, -1);
 
-  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
-                                  operations.Blend(empty_operation, progress));
+  EXPECT_TRANSFORMATION_MATRIX_EQ(
+      expected, operations.Blend(empty_operation, progress).Apply());
 
   progress = 1.5f;
 
   expected.MakeIdentity();
   expected.Skew(3, 3);
 
-  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
-                                  operations.Blend(empty_operation, progress));
+  EXPECT_TRANSFORMATION_MATRIX_EQ(
+      expected, operations.Blend(empty_operation, progress).Apply());
 }
 
 TEST(TransformOperationTest, BlendPerspectiveFromIdentity) {
@@ -651,7 +781,7 @@ TEST(TransformOperationTest, BlendPerspectiveFromIdentity) {
     expected.ApplyPerspectiveDepth(2000);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, operations.Blend(*identity_operations[i], progress));
+        expected, operations.Blend(*identity_operations[i], progress).Apply());
   }
 }
 
@@ -669,7 +799,7 @@ TEST(TransformOperationTest, BlendRotationToIdentity) {
     expected.RotateAbout(gfx::Vector3dF(0, 0, 1), 45);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, identity_operations[i]->Blend(operations, progress));
+        expected, identity_operations[i]->Blend(operations, progress).Apply());
   }
 }
 
@@ -687,7 +817,7 @@ TEST(TransformOperationTest, BlendTranslationToIdentity) {
     expected.Translate3d(1, 1, 1);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, identity_operations[i]->Blend(operations, progress));
+        expected, identity_operations[i]->Blend(operations, progress).Apply());
   }
 }
 
@@ -705,7 +835,7 @@ TEST(TransformOperationTest, BlendScaleToIdentity) {
     expected.Scale3d(2, 2, 2);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, identity_operations[i]->Blend(operations, progress));
+        expected, identity_operations[i]->Blend(operations, progress).Apply());
   }
 }
 
@@ -720,8 +850,8 @@ TEST(TransformOperationTest, BlendSkewToEmpty) {
   gfx::Transform expected;
   expected.Skew(1, 1);
 
-  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
-                                  empty_operation.Blend(operations, progress));
+  EXPECT_TRANSFORMATION_MATRIX_EQ(
+      expected, empty_operation.Blend(operations, progress).Apply());
 }
 
 TEST(TransformOperationTest, BlendPerspectiveToIdentity) {
@@ -738,7 +868,7 @@ TEST(TransformOperationTest, BlendPerspectiveToIdentity) {
     expected.ApplyPerspectiveDepth(2000);
 
     EXPECT_TRANSFORMATION_MATRIX_EQ(
-        expected, identity_operations[i]->Blend(operations, progress));
+        expected, identity_operations[i]->Blend(operations, progress).Apply());
   }
 }
 
@@ -752,14 +882,14 @@ TEST(TransformOperationTest, ExtrapolatePerspectiveBlending) {
   gfx::Transform expected;
   expected.ApplyPerspectiveDepth(400);
 
-  EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations1.Blend(operations2, -0.5));
+  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
+                                  operations1.Blend(operations2, -0.5).Apply());
 
   expected.MakeIdentity();
   expected.ApplyPerspectiveDepth(2000);
 
-  EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations1.Blend(operations2, 1.5));
+  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
+                                  operations1.Blend(operations2, 1.5).Apply());
 }
 
 TEST(TransformOperationTest, ExtrapolateMatrixBlending) {
@@ -774,12 +904,38 @@ TEST(TransformOperationTest, ExtrapolateMatrixBlending) {
   operations2.AppendMatrix(transform2);
 
   gfx::Transform expected;
-  EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations1.Blend(operations2, 1.5));
+  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
+                                  operations1.Blend(operations2, 1.5).Apply());
 
   expected.Translate3d(4, 4, 4);
+  EXPECT_TRANSFORMATION_MATRIX_EQ(expected,
+                                  operations1.Blend(operations2, -0.5).Apply());
+}
+
+TEST(TransformOperationTest, NonDecomposableBlend) {
+  TransformOperations non_decomposible_transform;
+  gfx::Transform non_decomposible_matrix(0, 0, 0, 0, 0, 0);
+  non_decomposible_transform.AppendMatrix(non_decomposible_matrix);
+
+  TransformOperations identity_transform;
+  gfx::Transform identity_matrix;
+  identity_transform.AppendMatrix(identity_matrix);
+
+  // Before the half-way point, we should return the 'from' matrix.
   EXPECT_TRANSFORMATION_MATRIX_EQ(
-      expected, operations1.Blend(operations2, -0.5));
+      non_decomposible_matrix,
+      identity_transform.Blend(non_decomposible_transform, 0.0f).Apply());
+  EXPECT_TRANSFORMATION_MATRIX_EQ(
+      non_decomposible_matrix,
+      identity_transform.Blend(non_decomposible_transform, 0.49f).Apply());
+
+  // After the half-way point, we should return the 'to' matrix.
+  EXPECT_TRANSFORMATION_MATRIX_EQ(
+      identity_matrix,
+      identity_transform.Blend(non_decomposible_transform, 0.5f).Apply());
+  EXPECT_TRANSFORMATION_MATRIX_EQ(
+      identity_matrix,
+      identity_transform.Blend(non_decomposible_transform, 1.0f).Apply());
 }
 
 TEST(TransformOperationTest, BlendedBoundsWhenTypesDoNotMatch) {
@@ -928,7 +1084,7 @@ TEST(TransformOperationTest, BlendedBoundsForRotationTrivial) {
   // Since we're rotating 360 degrees, any box with dimensions between 0 and
   // 2 * sqrt(2) should give the same result.
   float sizes[] = { 0.f, 0.1f, sqrt_2, 2.f * sqrt_2 };
-  for (size_t i = 0; i < arraysize(sizes); ++i) {
+  for (size_t i = 0; i < base::size(sizes); ++i) {
     box.set_size(sizes[i], sizes[i], 0.f);
     SkMScalar min_progress = 0.f;
     SkMScalar max_progress = 1.f;
@@ -1023,7 +1179,7 @@ TEST(TransformOperationTest, BlendedBoundsForRotationProblematicAxes) {
                {0.f, 1.f, 1.f, gfx::BoxF(-1.f, dim1, dim1, 2.f, dim2, dim2)},
                {1.f, 0.f, 1.f, gfx::BoxF(dim1, -1.f, dim1, dim2, 2.f, dim2)}};
 
-  for (size_t i = 0; i < arraysize(tests); ++i) {
+  for (size_t i = 0; i < base::size(tests); ++i) {
     float x = tests[i].x;
     float y = tests[i].y;
     float z = tests[i].z;
@@ -1067,7 +1223,7 @@ static void EmpiricallyTestBounds(const TransformOperations& from,
   for (size_t step = 0; step < kNumSteps; ++step) {
     float t = step / (kNumSteps - 1.f);
     t = gfx::Tween::FloatValueBetween(t, min_progress, max_progress);
-    gfx::Transform partial_transform = to.Blend(from, t);
+    gfx::Transform partial_transform = to.Blend(from, t).Apply();
     gfx::BoxF transformed = box;
     partial_transform.TransformBox(&transformed);
 
@@ -1162,9 +1318,9 @@ TEST(TransformOperationTest, BlendedBoundsForRotationEmpiricalTests) {
         {0.f, 1.f}, {-.25f, 1.25f},
     };
 
-  for (size_t i = 0; i < arraysize(axes); ++i) {
-    for (size_t j = 0; j < arraysize(angles); ++j) {
-      for (size_t k = 0; k < arraysize(progress); ++k) {
+  for (size_t i = 0; i < base::size(axes); ++i) {
+    for (size_t j = 0; j < base::size(angles); ++j) {
+      for (size_t k = 0; k < base::size(progress); ++k) {
         float x = axes[i].x;
         float y = axes[i].y;
         float z = axes[i].z;
@@ -1202,7 +1358,7 @@ TEST(TransformOperationTest, PerspectiveMatrixAndTransformBlendingEquivalency) {
       EXPECT_TRUE(blended_matrix.Blend(from_transform, progress));
 
       gfx::Transform blended_transform =
-          to_operations.Blend(from_operations, progress);
+          to_operations.Blend(from_operations, progress).Apply();
 
       EXPECT_TRANSFORMATION_MATRIX_EQ(blended_matrix, blended_transform);
     }
@@ -1225,8 +1381,8 @@ TEST(TransformOperationTest, BlendedBoundsForPerspective) {
         {0.f, 1.f}, {-0.1f, 1.1f},
     };
 
-  for (size_t i = 0; i < arraysize(perspective_depths); ++i) {
-    for (size_t j = 0; j < arraysize(progress); ++j) {
+  for (size_t i = 0; i < base::size(perspective_depths); ++i) {
+    for (size_t j = 0; j < base::size(progress); ++j) {
       TransformOperations operations_from;
       operations_from.AppendPerspective(perspective_depths[i].from_depth);
       TransformOperations operations_to;
@@ -1256,8 +1412,8 @@ TEST(TransformOperationTest, BlendedBoundsForSkew) {
         {0.f, 1.f}, {-0.1f, 1.1f},
     };
 
-  for (size_t i = 0; i < arraysize(skews); ++i) {
-    for (size_t j = 0; j < arraysize(progress); ++j) {
+  for (size_t i = 0; i < base::size(skews); ++i) {
+    for (size_t j = 0; j < base::size(progress); ++j) {
       TransformOperations operations_from;
       operations_from.AppendSkew(skews[i].from_x, skews[i].from_y);
       TransformOperations operations_to;
@@ -1286,7 +1442,7 @@ TEST(TransformOperationTest, NonCommutativeRotations) {
   EXPECT_TRUE(operations_to.BlendedBoundsForBox(
       box, operations_from, min_progress, max_progress, &bounds));
   gfx::Transform blended_transform =
-      operations_to.Blend(operations_from, max_progress);
+      operations_to.Blend(operations_from, max_progress).Apply();
   gfx::Point3F blended_point(0.9f, 0.9f, 0.0f);
   blended_transform.TransformPoint(&blended_point);
   gfx::BoxF expanded_bounds = bounds;
@@ -1331,65 +1487,6 @@ TEST(TransformOperationTest, BlendedBoundsForSequence) {
         box, operations_from, min_progress, max_progress, &bounds));
   EXPECT_EQ(gfx::BoxF(-7.f, -3.f, 2.f, 15.f, 23.f, 20.f).ToString(),
             bounds.ToString());
-}
-
-TEST(TransformOperationTest, AffectsScaleWithSingleOperation) {
-  TransformOperations empty_operations;
-  EXPECT_FALSE(empty_operations.AffectsScale());
-
-  TransformOperations identity;
-  identity.AppendIdentity();
-  EXPECT_FALSE(identity.AffectsScale());
-
-  TransformOperations translate;
-  translate.AppendTranslate(1.f, 2.f, 3.f);
-  EXPECT_FALSE(translate.AffectsScale());
-
-  TransformOperations rotate;
-  rotate.AppendRotate(1.f, 2.f, 3.f, 4.f);
-  EXPECT_FALSE(rotate.AffectsScale());
-
-  TransformOperations scale;
-  scale.AppendScale(1.f, 2.f, 3.f);
-  EXPECT_TRUE(scale.AffectsScale());
-
-  TransformOperations skew;
-  skew.AppendSkew(1.f, 2.f);
-  EXPECT_FALSE(skew.AffectsScale());
-
-  TransformOperations perspective;
-  perspective.AppendPerspective(1.f);
-  EXPECT_FALSE(perspective.AffectsScale());
-
-  TransformOperations identity_matrix;
-  identity_matrix.AppendMatrix(gfx::Transform());
-  EXPECT_FALSE(identity_matrix.AffectsScale());
-
-  TransformOperations translation_matrix;
-  gfx::Transform translation_transform;
-  translation_transform.Translate3d(1.f, 2.f, 3.f);
-  translation_matrix.AppendMatrix(translation_transform);
-  EXPECT_FALSE(translation_matrix.AffectsScale());
-
-  TransformOperations scaling_matrix;
-  gfx::Transform scaling_transform;
-  scaling_transform.Scale(2.f, 2.f);
-  scaling_matrix.AppendMatrix(scaling_transform);
-  EXPECT_TRUE(scaling_matrix.AffectsScale());
-}
-
-TEST(TransformOperationTest, AffectsScaleWithMultipleOperations) {
-  TransformOperations operations1;
-  operations1.AppendSkew(1.f, 2.f);
-  operations1.AppendTranslate(1.f, 2.f, 3.f);
-  operations1.AppendIdentity();
-  EXPECT_FALSE(operations1.AffectsScale());
-
-  TransformOperations operations2;
-  operations2.AppendPerspective(2.f);
-  operations2.AppendScale(1.f, 2.f, 3.f);
-  operations2.AppendTranslate(3.f, 2.f, 1.f);
-  EXPECT_TRUE(operations2.AffectsScale());
 }
 
 TEST(TransformOperationTest, IsTranslationWithSingleOperation) {
@@ -1454,83 +1551,246 @@ TEST(TransformOperationTest, IsTranslationWithMultipleOperations) {
 }
 
 TEST(TransformOperationTest, ScaleComponent) {
-  gfx::Vector3dF scale;
+  SkMScalar scale;
 
   // Scale.
   TransformOperations operations1;
   operations1.AppendScale(-3.f, 2.f, 5.f);
   EXPECT_TRUE(operations1.ScaleComponent(&scale));
-  EXPECT_EQ(gfx::Vector3dF(-3.f, 2.f, 5.f), scale);
+  EXPECT_EQ(5.f, scale);
 
-  // Translate + Scale.
-  TransformOperations operations5;
-  operations5.AppendTranslate(1.f, 2.f, 3.f);
-  operations5.AppendScale(2.f, 5.f, 4.f);
-  EXPECT_TRUE(operations5.ScaleComponent(&scale));
-  EXPECT_EQ(gfx::Vector3dF(2.f, 5.f, 4.f), scale);
-
-  // Translate + Scale + Matrix with translate.
-  gfx::Transform translation_transform;
-  translation_transform.Translate3d(1.f, 2.f, 3.f);
-  operations5.AppendMatrix(translation_transform);
-  EXPECT_TRUE(operations5.ScaleComponent(&scale));
-  EXPECT_EQ(gfx::Vector3dF(2.f, 5.f, 4.f), scale);
-}
-
-TEST(TransformOperationTest, ScaleComponentCannotBeComputed) {
-  gfx::Vector3dF scale;
-
-  // Scale can.
-  TransformOperations operations1;
-  operations1.AppendScale(2.f, 2.f, 2.f);
-  EXPECT_TRUE(operations1.ScaleComponent(&scale));
-  EXPECT_EQ(gfx::Vector3dF(2.f, 2.f, 2.f), scale);
-
-  // Translate can.
+  // Translate.
   TransformOperations operations2;
   operations2.AppendTranslate(1.f, 2.f, 3.f);
   EXPECT_TRUE(operations2.ScaleComponent(&scale));
-  EXPECT_EQ(gfx::Vector3dF(1.f, 1.f, 1.f), scale);
+  EXPECT_EQ(1.f, scale);
 
-  // Scale + translate can.
+  // Rotate.
   TransformOperations operations3;
-  operations3.AppendScale(2.f, 3.f, 2.f);
-  operations3.AppendTranslate(1.f, 2.f, 3.f);
+  operations3.AppendRotate(1.f, 2.f, 3.f, 4.f);
   EXPECT_TRUE(operations3.ScaleComponent(&scale));
-  EXPECT_EQ(gfx::Vector3dF(2.f, 3.f, 2.f), scale);
+  EXPECT_EQ(1.f, scale);
 
-  // Two Scales can't.
+  // Matrix that's only a translation.
   TransformOperations operations4;
-  operations4.AppendScale(2.f, 3.f, 2.f);
-  operations4.AppendScale(3.f, 2.f, 3.f);
-  EXPECT_FALSE(operations4.ScaleComponent(&scale));
+  gfx::Transform translation_transform;
+  translation_transform.Translate3d(1.f, 2.f, 3.f);
+  operations4.AppendMatrix(translation_transform);
+  EXPECT_TRUE(operations4.ScaleComponent(&scale));
+  EXPECT_EQ(1.f, scale);
 
-  // Matrix can't.
+  // Matrix that includes scale.
   TransformOperations operations5;
-  operations5.AppendScale(2.f, 2.f, 2.f);
+  gfx::Transform matrix;
+  matrix.RotateAboutZAxis(30.0);
+  matrix.Scale(-7.f, 6.f);
+  matrix.Translate3d(gfx::Vector3dF(3.f, 7.f, 1.f));
+  operations5.AppendMatrix(matrix);
+  EXPECT_TRUE(operations5.ScaleComponent(&scale));
+  EXPECT_EQ(7.f, scale);
+
+  // Matrix with perspective.
+  TransformOperations operations6;
+  matrix.ApplyPerspectiveDepth(2000.f);
+  operations6.AppendMatrix(matrix);
+  EXPECT_FALSE(operations6.ScaleComponent(&scale));
+
+  // Skew.
+  TransformOperations operations7;
+  operations7.AppendSkew(30.f, 60.f);
+  EXPECT_TRUE(operations7.ScaleComponent(&scale));
+  EXPECT_EQ(2.f, scale);
+
+  // Perspective.
+  TransformOperations operations8;
+  operations8.AppendPerspective(500.f);
+  EXPECT_FALSE(operations8.ScaleComponent(&scale));
+
+  // Translate + Scale.
+  TransformOperations operations9;
+  operations9.AppendTranslate(1.f, 2.f, 3.f);
+  operations9.AppendScale(2.f, 5.f, 4.f);
+  EXPECT_TRUE(operations9.ScaleComponent(&scale));
+  EXPECT_EQ(5.f, scale);
+
+  // Translate + Scale + Matrix with translate.
+  operations9.AppendMatrix(translation_transform);
+  EXPECT_TRUE(operations9.ScaleComponent(&scale));
+  EXPECT_EQ(5.f, scale);
+
+  // Scale + translate.
+  TransformOperations operations10;
+  operations10.AppendScale(2.f, 3.f, 2.f);
+  operations10.AppendTranslate(1.f, 2.f, 3.f);
+  EXPECT_TRUE(operations10.ScaleComponent(&scale));
+  EXPECT_EQ(3.f, scale);
+
+  // Two Scales.
+  TransformOperations operations11;
+  operations11.AppendScale(2.f, 3.f, 2.f);
+  operations11.AppendScale(-3.f, -2.f, -3.f);
+  EXPECT_TRUE(operations11.ScaleComponent(&scale));
+  EXPECT_EQ(9.f, scale);
+
+  // Scale + Matrix.
+  TransformOperations operations12;
+  operations12.AppendScale(2.f, 2.f, 2.f);
   gfx::Transform scaling_transform;
   scaling_transform.Scale(2.f, 2.f);
-  operations5.AppendMatrix(scaling_transform);
-  EXPECT_FALSE(operations5.ScaleComponent(&scale));
+  operations12.AppendMatrix(scaling_transform);
+  EXPECT_TRUE(operations12.ScaleComponent(&scale));
+  EXPECT_EQ(4.f, scale);
 
-  // Scale + Rotate can't.
-  TransformOperations operations7;
-  operations7.AppendScale(2.f, 2.f, 2.f);
-  operations7.AppendRotate(1.f, 2.f, 3.f, 4.f);
-  EXPECT_FALSE(operations7.ScaleComponent(&scale));
+  // Scale + Rotate.
+  TransformOperations operations13;
+  operations13.AppendScale(2.f, 2.f, 2.f);
+  operations13.AppendRotate(1.f, 2.f, 3.f, 4.f);
+  EXPECT_TRUE(operations13.ScaleComponent(&scale));
+  EXPECT_EQ(2.f, scale);
 
-  // Scale + Skew can't.
-  TransformOperations operations9;
-  operations9.AppendScale(2.f, 2.f, 2.f);
-  operations9.AppendSkew(1.f, 2.f);
-  EXPECT_FALSE(operations9.ScaleComponent(&scale));
+  // Scale + Skew.
+  TransformOperations operations14;
+  operations14.AppendScale(2.f, 2.f, 2.f);
+  operations14.AppendSkew(60.f, 45.f);
+  EXPECT_TRUE(operations14.ScaleComponent(&scale));
+  EXPECT_EQ(4.f, scale);
 
-  // Scale + Perspective can't.
-  TransformOperations operations11;
-  operations11.AppendScale(2.f, 2.f, 2.f);
-  operations11.AppendPerspective(1.f);
-  EXPECT_FALSE(operations11.ScaleComponent(&scale));
+  // Scale + Perspective.
+  TransformOperations operations15;
+  operations15.AppendScale(2.f, 2.f, 2.f);
+  operations15.AppendPerspective(1.f);
+  EXPECT_FALSE(operations15.ScaleComponent(&scale));
+
+  // Matrix with skew.
+  TransformOperations operations16;
+  gfx::Transform skew_transform;
+  skew_transform.Skew(50.f, 60.f);
+  operations16.AppendMatrix(skew_transform);
+  EXPECT_TRUE(operations16.ScaleComponent(&scale));
+  EXPECT_EQ(2.f, scale);
+}
+
+TEST(TransformOperationsTest, ApproximateEquality) {
+  float noise = 1e-7f;
+  float tolerance = 1e-5f;
+  TransformOperations lhs;
+  TransformOperations rhs;
+
+  // Empty lists of operations are trivially equal.
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  rhs.AppendIdentity();
+  rhs.AppendTranslate(0, 0, 0);
+  rhs.AppendRotate(1, 0, 0, 0);
+  rhs.AppendScale(1, 1, 1);
+  rhs.AppendSkew(0, 0);
+  rhs.AppendMatrix(gfx::Transform());
+
+  // Even though both lists operations are effectively the identity matrix, rhs
+  // has a different number of operations and is therefore different.
+  EXPECT_FALSE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  rhs.AppendPerspective(800);
+
+  // Assignment should produce equal lists of operations.
+  lhs = rhs;
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  // Cannot affect identity operations.
+  lhs.at(0).translate.x = 1;
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  lhs.at(1).translate.x += noise;
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+  lhs.at(1).translate.x += 1;
+  EXPECT_FALSE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  lhs = rhs;
+  lhs.at(2).rotate.angle += noise;
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+  lhs.at(2).rotate.angle = 1;
+  EXPECT_FALSE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  lhs = rhs;
+  lhs.at(3).scale.x += noise;
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+  lhs.at(3).scale.x += 1;
+  EXPECT_FALSE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  lhs = rhs;
+  lhs.at(4).skew.x += noise;
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+  lhs.at(4).skew.x = 2;
+  EXPECT_FALSE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  lhs = rhs;
+  lhs.at(5).matrix.Translate3d(noise, 0, 0);
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+  lhs.at(5).matrix.Translate3d(1, 1, 1);
+  EXPECT_FALSE(lhs.ApproximatelyEqual(rhs, tolerance));
+
+  lhs = rhs;
+  lhs.at(6).perspective_depth += noise;
+  EXPECT_TRUE(lhs.ApproximatelyEqual(rhs, tolerance));
+  lhs.at(6).perspective_depth = 801;
+  EXPECT_FALSE(lhs.ApproximatelyEqual(rhs, tolerance));
 }
 
 }  // namespace
+
+// This test is intentionally outside the anonymous namespace for visibility as
+// it needs to be friend of TransformOperations.
+TEST(TransformOperationsTest, TestDecompositionCache) {
+  TransformOperations transforms;
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+
+  // Reset cache when appending a scale transform.
+  transforms.AppendScale(2.f, 2.f, 2.f);
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(1));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(1));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(2UL, transforms.decomposed_transforms_.size());
+
+  // Reset cache when appending a rotation transform.
+  transforms.AppendRotate(1, 0, 0, 45);
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+
+  // Reset cache when appending a translation transform.
+  transforms.AppendTranslate(1, 1, 1);
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+
+  // Reset cache when appending a skew transform.
+  transforms.AppendSkew(1, 0);
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+
+  // Reset cache when appending a perspective transform.
+  transforms.AppendPerspective(800);
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+
+  // Reset cache when appending a matrix transform.
+  transforms.AppendMatrix(gfx::Transform());
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+
+  // Reset cache when appending a generic transform operation.
+  transforms.Append(TransformOperation());
+  EXPECT_EQ(0UL, transforms.decomposed_transforms_.size());
+  EXPECT_TRUE(transforms.ComputeDecomposedTransform(0));
+  EXPECT_EQ(1UL, transforms.decomposed_transforms_.size());
+}
+
 }  // namespace cc

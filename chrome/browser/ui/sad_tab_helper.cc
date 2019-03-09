@@ -6,26 +6,25 @@
 
 #include "base/logging.h"
 #include "build/build_config.h"
-#include "chrome/browser/browser_shutdown.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/ui/sad_tab.h"
 #include "content/public/browser/web_contents.h"
 
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(SadTabHelper);
-
 namespace {
 
-chrome::SadTabKind SadTabKindFromTerminationStatus(
-    base::TerminationStatus status) {
+SadTabKind SadTabKindFromTerminationStatus(base::TerminationStatus status) {
   switch (status) {
 #if defined(OS_CHROMEOS)
     case base::TERMINATION_STATUS_PROCESS_WAS_KILLED_BY_OOM:
-      return chrome::SAD_TAB_KIND_KILLED_BY_OOM;
+      return SAD_TAB_KIND_KILLED_BY_OOM;
 #endif
     case base::TERMINATION_STATUS_PROCESS_WAS_KILLED:
     case base::TERMINATION_STATUS_LAUNCH_FAILED:
-      return chrome::SAD_TAB_KIND_KILLED;
+      return SAD_TAB_KIND_KILLED;
+    case base::TERMINATION_STATUS_OOM:
+      return SAD_TAB_KIND_OOM;
     default:
-      return chrome::SAD_TAB_KIND_CRASHED;
+      return SAD_TAB_KIND_CRASHED;
   }
 }
 
@@ -38,11 +37,13 @@ SadTabHelper::SadTabHelper(content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents) {
 }
 
+void SadTabHelper::ReinstallInWebView() {
+  if (sad_tab_)
+    sad_tab_->ReinstallInWebView();
+}
+
 void SadTabHelper::RenderViewReady() {
-  if (sad_tab_) {
-    sad_tab_->Close();
-    sad_tab_.reset();
-  }
+  sad_tab_.reset();
 }
 
 void SadTabHelper::RenderProcessGone(base::TerminationStatus status) {
@@ -55,12 +56,13 @@ void SadTabHelper::RenderProcessGone(base::TerminationStatus status) {
   if (sad_tab_)
     return;
 
-  if (chrome::SadTab::ShouldShow(status))
+  if (SadTab::ShouldShow(status))
     InstallSadTab(status);
 }
 
 void SadTabHelper::InstallSadTab(base::TerminationStatus status) {
-  sad_tab_.reset(chrome::SadTab::Create(
-      web_contents(), SadTabKindFromTerminationStatus(status)));
-  sad_tab_->Show();
+  sad_tab_.reset(
+      SadTab::Create(web_contents(), SadTabKindFromTerminationStatus(status)));
 }
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(SadTabHelper)

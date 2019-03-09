@@ -16,7 +16,6 @@
 
 #include "base/compiler_specific.h"
 #include "base/logging.h"
-#include "base/third_party/valgrind/valgrind.h"
 #include "build/build_config.h"
 #include "sandbox/linux/system_headers/capability.h"
 #include "sandbox/linux/system_headers/linux_signal.h"
@@ -30,6 +29,10 @@ pid_t sys_getpid(void) {
 
 pid_t sys_gettid(void) {
   return syscall(__NR_gettid);
+}
+
+ssize_t sys_write(int fd, const char* buffer, size_t buffer_size) {
+  return syscall(__NR_write, fd, buffer, buffer_size);
 }
 
 long sys_clone(unsigned long flags,

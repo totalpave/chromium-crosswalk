@@ -2,56 +2,59 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "content/app/android/content_main.h"
-
 #include <memory>
 
-#include "base/at_exit.h"
-#include "base/base_switches.h"
-#include "base/command_line.h"
 #include "base/lazy_instance.h"
 #include "base/trace_event/trace_event.h"
+#include "content/app/content_service_manager_main_delegate.h"
 #include "content/public/app/content_main.h"
 #include "content/public/app/content_main_delegate.h"
-#include "content/public/app/content_main_runner.h"
-#include "content/public/common/content_switches.h"
 #include "jni/ContentMain_jni.h"
+#include "services/service_manager/embedder/main.h"
 
 using base::LazyInstance;
+using base::android::JavaParamRef;
 
 namespace content {
 
 namespace {
-LazyInstance<std::unique_ptr<ContentMainRunner>> g_content_runner =
-    LAZY_INSTANCE_INITIALIZER;
 
-LazyInstance<std::unique_ptr<ContentMainDelegate>> g_content_main_delegate =
-    LAZY_INSTANCE_INITIALIZER;
+LazyInstance<std::unique_ptr<service_manager::MainDelegate>>::DestructorAtExit
+    g_service_manager_main_delegate = LAZY_INSTANCE_INITIALIZER;
+
+LazyInstance<std::unique_ptr<ContentMainDelegate>>::DestructorAtExit
+    g_content_main_delegate = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
-static jint Start(JNIEnv* env, const JavaParamRef<jclass>& clazz) {
+// TODO(qinmin/hanxi): split this function into 2 separate methods: One to
+// start the ServiceManager and one to start the remainder of the browser
+// process. The first method should always be called upon browser start, and
+// the second method can be deferred. See http://crbug.com/854209.
+static jint JNI_ContentMain_Start(JNIEnv* env,
+                                  jboolean start_service_manager_only) {
   TRACE_EVENT0("startup", "content::Start");
 
-  // On Android we can have multiple requests to start the browser in process
-  // simultaneously. If we get an asynchonous request followed by a synchronous
-  // request then we have to call this a second time to finish starting the
-  // browser synchronously.
-  if (!g_content_runner.Get().get()) {
-    ContentMainParams params(g_content_main_delegate.Get().get());
-    g_content_runner.Get().reset(ContentMainRunner::Create());
-    g_content_runner.Get()->Initialize(params);
+  DCHECK(!g_service_manager_main_delegate.Get() || !start_service_manager_only);
+
+  if (!g_service_manager_main_delegate.Get()) {
+    g_service_manager_main_delegate.Get() =
+        std::make_unique<ContentServiceManagerMainDelegate>(
+            ContentMainParams(g_content_main_delegate.Get().get()));
   }
-  return g_content_runner.Get()->Run();
+
+  static_cast<ContentServiceManagerMainDelegate*>(
+      g_service_manager_main_delegate.Get().get())
+      ->SetStartServiceManagerOnly(start_service_manager_only);
+
+  service_manager::MainParams main_params(
+      g_service_manager_main_delegate.Get().get());
+  return service_manager::Main(main_params);
 }
 
 void SetContentMainDelegate(ContentMainDelegate* delegate) {
   DCHECK(!g_content_main_delegate.Get().get());
   g_content_main_delegate.Get().reset(delegate);
-}
-
-bool RegisterContentMain(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace content

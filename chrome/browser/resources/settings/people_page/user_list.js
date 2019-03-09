@@ -15,14 +15,22 @@
 Polymer({
   is: 'settings-user-list',
 
+  behaviors: [
+    CrScrollableBehavior,
+    I18nBehavior,
+    settings.RouteObserverBehavior,
+  ],
+
   properties: {
     /**
      * Current list of whitelisted users.
-     * @type {!Array<!User>}
+     * @private {!Array<!chrome.usersPrivate.User>}
      */
-    users: {
+    users_: {
       type: Array,
-      value: function() { return []; },
+      value: function() {
+        return [];
+      },
       notify: true
     },
 
@@ -33,30 +41,60 @@ Polymer({
      */
     disabled: {
       type: Boolean,
-      value: false
+      value: false,
     }
   },
 
   /** @override */
   ready: function() {
-    chrome.settingsPrivate.onPrefsChanged.addListener(function(prefs) {
+    chrome.settingsPrivate.onPrefsChanged.addListener(prefs => {
       prefs.forEach(function(pref) {
         if (pref.key == 'cros.accounts.users') {
-          chrome.usersPrivate.getWhitelistedUsers(function(users) {
-            this.users = users;
-          }.bind(this));
+          chrome.usersPrivate.getWhitelistedUsers(users => {
+            this.setUsers_(users);
+          });
         }
       }, this);
-    }.bind(this));
+    });
+  },
 
-    chrome.usersPrivate.getWhitelistedUsers(function(users) {
-      this.users = users;
-    }.bind(this));
+  /** @protected */
+  currentRouteChanged: function() {
+    if (settings.getCurrentRoute() == settings.routes.ACCOUNTS) {
+      chrome.usersPrivate.getWhitelistedUsers(users => {
+        this.setUsers_(users);
+      });
+    }
+  },
+
+  /**
+   * @param {!chrome.usersPrivate.User} user
+   * @return {string}
+   * @private
+   */
+  getUserName_: function(user) {
+    return user.isOwner ? this.i18n('deviceOwnerLabel', user.name) : user.name;
+  },
+
+  /**
+   * Helper function that sorts and sets the given list of whitelisted users.
+   * @param {!Array<!chrome.usersPrivate.User>} users List of whitelisted users.
+   */
+  setUsers_: function(users) {
+    this.users_ = users;
+    this.users_.sort(function(a, b) {
+      if (a.isOwner != b.isOwner) {
+        return b.isOwner ? 1 : -1;
+      } else {
+        return -1;
+      }
+    });
+    this.requestUpdateScroll();
   },
 
   /**
    * @private
-   * @param {!{model: !{item: !User}}} e
+   * @param {!{model: !{item: !chrome.usersPrivate.User}}} e
    */
   removeUser_: function(e) {
     chrome.usersPrivate.removeWhitelistedUser(
@@ -66,5 +104,22 @@ Polymer({
   /** @private */
   shouldHideCloseButton_: function(disabled, isUserOwner) {
     return disabled || isUserOwner;
-  }
+  },
+
+  /**
+   * @param {chrome.usersPrivate.User} user
+   * @private
+   */
+  getProfilePictureUrl_: function(user) {
+    return 'chrome://userimage/' + user.email + '?id=' + Date.now() +
+        '&frame=0';
+  },
+
+  /**
+   * @param {chrome.usersPrivate.User} user
+   * @private
+   */
+  shouldShowEmail_: function(user) {
+    return !user.isSupervised && user.name != user.displayEmail;
+  },
 });

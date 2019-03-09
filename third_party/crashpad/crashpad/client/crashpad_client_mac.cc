@@ -18,15 +18,12 @@
 #include <mach/mach.h>
 #include <pthread.h>
 #include <stdint.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <memory>
 #include <utility>
 
 #include "base/logging.h"
 #include "base/mac/mach_logging.h"
-#include "base/posix/eintr_wrapper.h"
 #include "base/strings/stringprintf.h"
 #include "util/mac/mac_util.h"
 #include "util/mach/child_port_handshake.h"
@@ -36,7 +33,7 @@
 #include "util/mach/notify_server.h"
 #include "util/misc/clock.h"
 #include "util/misc/implicit_cast.h"
-#include "util/posix/close_multiple.h"
+#include "util/posix/double_fork_and_exec.h"
 
 namespace crashpad {
 
@@ -121,6 +118,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
   static base::mac::ScopedMachSendRight InitialStart(
       const base::FilePath& handler,
       const base::FilePath& database,
+      const base::FilePath& metrics_dir,
       const std::string& url,
       const std::map<std::string, std::string>& annotations,
       const std::vector<std::string>& arguments,
@@ -159,6 +157,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
 
     if (!CommonStart(handler,
                      database,
+                     metrics_dir,
                      url,
                      annotations,
                      arguments,
@@ -170,7 +169,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
 
     if (handler_restarter &&
         handler_restarter->StartRestartThread(
-            handler, database, url, annotations, arguments)) {
+            handler, database, metrics_dir, url, annotations, arguments)) {
       // The thread owns the object now.
       ignore_result(handler_restarter.release());
     }
@@ -201,6 +200,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
     // be called again for another try.
     CommonStart(handler_,
                 database_,
+                metrics_dir_,
                 url_,
                 annotations_,
                 arguments_,
@@ -216,6 +216,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
       : NotifyServer::DefaultInterface(),
         handler_(),
         database_(),
+        metrics_dir_(),
         url_(),
         annotations_(),
         arguments_(),
@@ -244,6 +245,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
   //!     rendezvous with it via ChildPortHandshake.
   static bool CommonStart(const base::FilePath& handler,
                           const base::FilePath& database,
+                          const base::FilePath& metrics_dir,
                           const std::string& url,
                           const std::map<std::string, std::string>& annotations,
                           const std::vector<std::string>& arguments,
@@ -279,8 +281,8 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
 
       if (restart) {
         // If the handler was ever started before, don’t restart it too quickly.
-        const uint64_t kNanosecondsPerSecond = 1E9;
-        const uint64_t kMinimumStartInterval = 1 * kNanosecondsPerSecond;
+        constexpr uint64_t kNanosecondsPerSecond = 1E9;
+        constexpr uint64_t kMinimumStartInterval = 1 * kNanosecondsPerSecond;
 
         const uint64_t earliest_next_start_time =
             handler_restarter->last_start_time_ + kMinimumStartInterval;
@@ -300,9 +302,6 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
       handler_restarter->last_start_time_ = ClockMonotonicNanoseconds();
     }
 
-    // Set up the arguments for execve() first. These aren’t needed until
-    // execve() is called, but it’s dangerous to do this in a child process
-    // after fork().
     ChildPortHandshake child_port_handshake;
     base::ScopedFD server_write_fd = child_port_handshake.ServerWriteFD();
 
@@ -320,6 +319,9 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
     if (!database.value().empty()) {
       argv.push_back(FormatArgumentString("database", database.value()));
     }
+    if (!metrics_dir.value().empty()) {
+      argv.push_back(FormatArgumentString("metrics-dir", metrics_dir.value()));
+    }
     if (!url.empty()) {
       argv.push_back(FormatArgumentString("url", url));
     }
@@ -329,109 +331,23 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
     }
     argv.push_back(FormatArgumentInt("handshake-fd", server_write_fd.get()));
 
-    const char* handler_c = handler.value().c_str();
-
-    // argv_c contains const char* pointers and is terminated by nullptr. argv
-    // is required because the pointers in argv_c need to point somewhere, and
-    // they can’t point to temporaries such as those returned by
-    // FormatArgumentString().
-    std::vector<const char*> argv_c;
-    argv_c.reserve(argv.size() + 1);
-    for (const std::string& argument : argv) {
-      argv_c.push_back(argument.c_str());
-    }
-    argv_c.push_back(nullptr);
-
-    // Double-fork(). The three processes involved are parent, child, and
-    // grandchild. The grandchild will become the handler process. The child
-    // exits immediately after spawning the grandchild, so the grandchild
-    // becomes an orphan and its parent process ID becomes 1. This relieves the
-    // parent and child of the responsibility for reaping the grandchild with
-    // waitpid() or similar. The handler process is expected to outlive the
-    // parent process, so the parent shouldn’t be concerned with reaping it.
-    // This approach means that accidental early termination of the handler
-    // process will not result in a zombie process.
-    pid_t pid = fork();
-    if (pid < 0) {
-      PLOG(ERROR) << "fork";
+    // When restarting, reset the system default crash handler first. Otherwise,
+    // the crash exception port in the handler will have been inherited from
+    // this parent process, which was probably using the exception server now
+    // being restarted. The handler can’t monitor itself for its own crashes via
+    // this interface.
+    if (!DoubleForkAndExec(
+            argv,
+            nullptr,
+            server_write_fd.get(),
+            true,
+            restart ? CrashpadClient::UseSystemDefaultHandler : nullptr)) {
       return false;
     }
-
-    if (pid == 0) {
-      // Child process.
-
-      if (restart) {
-        // When restarting, reset the system default crash handler first.
-        // Otherwise, the crash exception port here will have been inherited
-        // from the parent process, which was probably using the exception
-        // server now being restarted. The handler can’t monitor itself for its
-        // own crashes via this interface.
-        CrashpadClient::UseSystemDefaultHandler();
-      }
-
-      // Call setsid(), creating a new process group and a new session, both led
-      // by this process. The new process group has no controlling terminal.
-      // This disconnects it from signals generated by the parent process’
-      // terminal.
-      //
-      // setsid() is done in the child instead of the grandchild so that the
-      // grandchild will not be a session leader. If it were a session leader,
-      // an accidental open() of a terminal device without O_NOCTTY would make
-      // that terminal the controlling terminal.
-      //
-      // It’s not desirable for the handler to have a controlling terminal. The
-      // handler monitors clients on its own and manages its own lifetime,
-      // exiting when it loses all clients and when it deems it appropraite to
-      // do so. It may serve clients in different process groups or sessions
-      // than its original client, and receiving signals intended for its
-      // original client’s process group could be harmful in that case.
-      PCHECK(setsid() != -1) << "setsid";
-
-      pid = fork();
-      if (pid < 0) {
-        PLOG(FATAL) << "fork";
-      }
-
-      if (pid > 0) {
-        // Child process.
-
-        // _exit() instead of exit(), because fork() was called.
-        _exit(EXIT_SUCCESS);
-      }
-
-      // Grandchild process.
-
-      CloseMultipleNowOrOnExec(STDERR_FILENO + 1, server_write_fd.get());
-
-      // &argv_c[0] is a pointer to a pointer to const char data, but because of
-      // how C (not C++) works, execvp() wants a pointer to a const pointer to
-      // char data. It modifies neither the data nor the pointers, so the
-      // const_cast is safe.
-      execvp(handler_c, const_cast<char* const*>(&argv_c[0]));
-      PLOG(FATAL) << "execvp " << handler_c;
-    }
-
-    // Parent process.
 
     // Close the write side of the pipe, so that the handler process is the only
     // process that can write to it.
     server_write_fd.reset();
-
-    // waitpid() for the child, so that it does not become a zombie process. The
-    // child normally exits quickly.
-    int status;
-    pid_t wait_pid = HANDLE_EINTR(waitpid(pid, &status, 0));
-    PCHECK(wait_pid != -1) << "waitpid";
-    DCHECK_EQ(wait_pid, pid);
-
-    if (WIFSIGNALED(status)) {
-      LOG(WARNING) << "intermediate process: signal " << WTERMSIG(status);
-    } else if (!WIFEXITED(status)) {
-      DLOG(WARNING) << "intermediate process: unknown termination " << status;
-    } else if (WEXITSTATUS(status) != EXIT_SUCCESS) {
-      LOG(WARNING) << "intermediate process: exit status "
-                   << WEXITSTATUS(status);
-    }
 
     // Rendezvous with the handler running in the grandchild process.
     if (!child_port_handshake.RunClient(receive_right.get(),
@@ -445,11 +361,13 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
 
   bool StartRestartThread(const base::FilePath& handler,
                           const base::FilePath& database,
+                          const base::FilePath& metrics_dir,
                           const std::string& url,
                           const std::map<std::string, std::string>& annotations,
                           const std::vector<std::string>& arguments) {
     handler_ = handler;
     database_ = database;
+    metrics_dir_ = metrics_dir;
     url_ = url;
     annotations_ = annotations;
     arguments_ = arguments;
@@ -501,6 +419,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
 
   base::FilePath handler_;
   base::FilePath database_;
+  base::FilePath metrics_dir_;
   std::string url_;
   std::map<std::string, std::string> annotations_;
   std::vector<std::string> arguments_;
@@ -512,8 +431,7 @@ class HandlerStarter final : public NotifyServer::DefaultInterface {
 
 }  // namespace
 
-CrashpadClient::CrashpadClient()
-    : exception_port_() {
+CrashpadClient::CrashpadClient() : exception_port_(MACH_PORT_NULL) {
 }
 
 CrashpadClient::~CrashpadClient() {
@@ -522,18 +440,19 @@ CrashpadClient::~CrashpadClient() {
 bool CrashpadClient::StartHandler(
     const base::FilePath& handler,
     const base::FilePath& database,
+    const base::FilePath& metrics_dir,
     const std::string& url,
     const std::map<std::string, std::string>& annotations,
     const std::vector<std::string>& arguments,
-    bool restartable) {
-  DCHECK(!exception_port_.is_valid());
-
+    bool restartable,
+    bool asynchronous_start) {
   // The “restartable” behavior can only be selected on OS X 10.10 and later. In
   // previous OS versions, if the initial client were to crash while attempting
   // to restart the handler, it would become an unkillable process.
   base::mac::ScopedMachSendRight exception_port(
       HandlerStarter::InitialStart(handler,
                                    database,
+                                   metrics_dir,
                                    url,
                                    annotations,
                                    arguments,
@@ -556,16 +475,44 @@ bool CrashpadClient::SetHandlerMachService(const std::string& service_name) {
   return true;
 }
 
-void CrashpadClient::SetHandlerMachPort(
+bool CrashpadClient::SetHandlerMachPort(
     base::mac::ScopedMachSendRight exception_port) {
+  DCHECK(!exception_port_.is_valid());
   DCHECK(exception_port.is_valid());
-  exception_port_ = std::move(exception_port);
+
+  if (!SetCrashExceptionPorts(exception_port.get())) {
+    return false;
+  }
+
+  exception_port_.swap(exception_port);
+  return true;
 }
 
-bool CrashpadClient::UseHandler() {
+base::mac::ScopedMachSendRight CrashpadClient::GetHandlerMachPort() const {
   DCHECK(exception_port_.is_valid());
 
-  return SetCrashExceptionPorts(exception_port_.get());
+  // For the purposes of this method, only return a port set by
+  // SetHandlerMachPort().
+  //
+  // It would be possible to use task_get_exception_ports() to look up the
+  // EXC_CRASH task exception port, but that’s probably not what users of this
+  // interface really want. If CrashpadClient is asked for the handler Mach
+  // port, it should only return a port that it knows about by virtue of having
+  // set it. It shouldn’t return any EXC_CRASH task exception port in effect if
+  // SetHandlerMachPort() was never called, and it shouldn’t return any
+  // EXC_CRASH task exception port that might be set by other code after
+  // SetHandlerMachPort() is called.
+  //
+  // The caller is accepting its own new ScopedMachSendRight, so increment the
+  // reference count of the underlying right.
+  kern_return_t kr = mach_port_mod_refs(
+      mach_task_self(), exception_port_.get(), MACH_PORT_RIGHT_SEND, 1);
+  if (kr != KERN_SUCCESS) {
+    MACH_LOG(ERROR, kr) << "mach_port_mod_refs";
+    return base::mac::ScopedMachSendRight(MACH_PORT_NULL);
+  }
+
+  return base::mac::ScopedMachSendRight(exception_port_.get());
 }
 
 // static

@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "base/callback.h"
-#include "base/containers/hash_tables.h"
 #include "base/macros.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
@@ -69,7 +68,7 @@ struct BrowseInfo {
 
   // If a SafeBrowsing interstitial was shown for the current URL
   // this will contain the UnsafeResource struct for that URL.
-  std::unique_ptr<SafeBrowsingUIManager::UnsafeResource> unsafe_resource;
+  std::unique_ptr<security_interstitials::UnsafeResource> unsafe_resource;
 
   // List of redirects that lead to the first page on the current host and
   // the current url respectively. These may be the same if the current url

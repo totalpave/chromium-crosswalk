@@ -13,15 +13,16 @@
 #include "base/stl_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "chrome/browser/chrome_notification_types.h"
-#include "chrome/browser/chromeos/ownership/owner_settings_service_chromeos.h"
-#include "chrome/browser/chromeos/policy/proto/chrome_device_policy.pb.h"
+#include "chrome/browser/chromeos/policy/off_hours/device_off_hours_controller.h"
+#include "chrome/browser/chromeos/policy/off_hours/off_hours_policy_applier.h"
 #include "chrome/browser/chromeos/settings/session_manager_operation.h"
 #include "components/ownership/owner_key_util.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/policy/proto/chrome_device_policy.pb.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_source.h"
+
 #include "crypto/rsa_private_key.h"
 
 namespace em = enterprise_management;
@@ -29,22 +30,15 @@ namespace em = enterprise_management;
 using ownership::OwnerKeyUtil;
 using ownership::PublicKey;
 
-namespace {
-
-// Delay between load retries when there was a validation error.
-// NOTE: This code is here to mitigate clock loss on some devices where policy
-// loads will fail with a validation error caused by RTC clock being reset when
-// the battery is drained.
-int kLoadRetryDelayMs = 1000 * 5;
-// Maximal number of retries before we give up. Calculated to allow for 10 min
-// of retry time.
-int kMaxLoadRetries = (1000 * 60 * 10) / kLoadRetryDelayMs;
-
-}  // namespace
-
 namespace chromeos {
 
 DeviceSettingsService::Observer::~Observer() {}
+
+void DeviceSettingsService::Observer::OwnershipStatusChanged() {}
+
+void DeviceSettingsService::Observer::DeviceSettingsUpdated() {}
+
+void DeviceSettingsService::Observer::OnDeviceSettingsServiceShutdown() {}
 
 static DeviceSettingsService* g_device_settings_service = NULL;
 
@@ -72,16 +66,34 @@ DeviceSettingsService* DeviceSettingsService::Get() {
   return g_device_settings_service;
 }
 
-DeviceSettingsService::DeviceSettingsService()
-    : session_manager_client_(NULL),
-      store_status_(STORE_SUCCESS),
-      load_retries_left_(kMaxLoadRetries),
-      weak_factory_(this) {
+// static
+const char* DeviceSettingsService::StatusToString(Status status) {
+  switch (status) {
+    case STORE_SUCCESS:
+      return "SUCCESS";
+    case STORE_KEY_UNAVAILABLE:
+      return "KEY_UNAVAILABLE";
+    case STORE_OPERATION_FAILED:
+      return "OPERATION_FAILED";
+    case STORE_NO_POLICY:
+      return "NO_POLICY";
+    case STORE_INVALID_POLICY:
+      return "INVALID_POLICY";
+    case STORE_VALIDATION_ERROR:
+      return "VALIDATION_ERROR";
+  }
+  return "UNKNOWN";
+}
+
+DeviceSettingsService::DeviceSettingsService() {
+  device_off_hours_controller_ =
+      std::make_unique<policy::off_hours::DeviceOffHoursController>();
 }
 
 DeviceSettingsService::~DeviceSettingsService() {
   DCHECK(pending_operations_.empty());
-  FOR_EACH_OBSERVER(Observer, observers_, OnDeviceSettingsServiceShutdown());
+  for (auto& observer : observers_)
+    observer.OnDeviceSettingsServiceShutdown();
 }
 
 void DeviceSettingsService::SetSessionManager(
@@ -109,36 +121,68 @@ void DeviceSettingsService::UnsetSessionManager() {
   owner_key_util_ = NULL;
 }
 
+void DeviceSettingsService::SetDeviceMode(policy::DeviceMode device_mode) {
+  // Device mode can only change once.
+  DCHECK_EQ(policy::DEVICE_MODE_PENDING, device_mode_);
+  device_mode_ = device_mode;
+  if (GetOwnershipStatus() != OWNERSHIP_UNKNOWN) {
+    RunPendingOwnershipStatusCallbacks();
+  }
+}
+
 scoped_refptr<PublicKey> DeviceSettingsService::GetPublicKey() {
   return public_key_;
+}
+
+void DeviceSettingsService::SetDeviceOffHoursControllerForTesting(
+    std::unique_ptr<policy::off_hours::DeviceOffHoursController> controller) {
+  device_off_hours_controller_ = std::move(controller);
 }
 
 void DeviceSettingsService::Load() {
   EnqueueLoad(false);
 }
 
+void DeviceSettingsService::LoadImmediately() {
+  bool request_key_load = true;
+  bool cloud_validations = true;
+  if (device_mode_ == policy::DEVICE_MODE_ENTERPRISE_AD) {
+    request_key_load = false;
+    cloud_validations = false;
+  }
+  std::unique_ptr<SessionManagerOperation> operation(new LoadSettingsOperation(
+      request_key_load, cloud_validations, true /*force_immediate_load*/,
+      base::Bind(&DeviceSettingsService::HandleCompletedOperation,
+                 weak_factory_.GetWeakPtr(), base::Closure())));
+  operation->Start(session_manager_client_, owner_key_util_, public_key_);
+}
+
 void DeviceSettingsService::Store(
     std::unique_ptr<em::PolicyFetchResponse> policy,
     const base::Closure& callback) {
-  Enqueue(linked_ptr<SessionManagerOperation>(new StoreSettingsOperation(
-      base::Bind(&DeviceSettingsService::HandleCompletedOperation,
+  // On Active Directory managed devices policy is written only by authpolicyd.
+  CHECK(device_mode_ != policy::DEVICE_MODE_ENTERPRISE_AD);
+  Enqueue(std::make_unique<StoreSettingsOperation>(
+      base::Bind(&DeviceSettingsService::HandleCompletedAsyncOperation,
                  weak_factory_.GetWeakPtr(), callback),
-      std::move(policy))));
+      std::move(policy)));
 }
 
 DeviceSettingsService::OwnershipStatus
     DeviceSettingsService::GetOwnershipStatus() {
   if (public_key_.get())
     return public_key_->is_loaded() ? OWNERSHIP_TAKEN : OWNERSHIP_NONE;
+  if (device_mode_ == policy::DEVICE_MODE_ENTERPRISE_AD)
+    return OWNERSHIP_TAKEN;
   return OWNERSHIP_UNKNOWN;
 }
 
 void DeviceSettingsService::GetOwnershipStatusAsync(
     const OwnershipStatusCallback& callback) {
-  if (public_key_.get()) {
-    // If there is a key, report status immediately.
+  if (GetOwnershipStatus() != OWNERSHIP_UNKNOWN) {
+    // Report status immediately.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(callback, GetOwnershipStatus()));
+        FROM_HERE, base::BindOnce(callback, GetOwnershipStatus()));
   } else {
     // If the key hasn't been loaded yet, enqueue the callback to be fired when
     // the next SessionManagerOperation completes. If no operation is pending,
@@ -164,6 +208,9 @@ void DeviceSettingsService::InitOwner(
   username_ = username;
   owner_settings_service_ = owner_settings_service;
 
+  // Reset the flag since consumer ownership should be established now.
+  will_establish_consumer_ownership_ = false;
+
   EnsureReload(true);
 }
 
@@ -174,6 +221,10 @@ const std::string& DeviceSettingsService::GetUsername() const {
 ownership::OwnerSettingsService*
 DeviceSettingsService::GetOwnerSettingsService() const {
   return owner_settings_service_.get();
+}
+
+void DeviceSettingsService::MarkWillEstablishConsumerOwnership() {
+  will_establish_consumer_ownership_ = true;
 }
 
 void DeviceSettingsService::AddObserver(Observer* observer) {
@@ -191,7 +242,11 @@ void DeviceSettingsService::OwnerKeySet(bool success) {
   }
 
   public_key_ = NULL;
-  EnsureReload(true);
+
+  if (GetOwnershipStatus() == OWNERSHIP_TAKEN ||
+      !will_establish_consumer_ownership_) {
+    EnsureReload(true);
+  }
 }
 
 void DeviceSettingsService::PropertyChangeComplete(bool success) {
@@ -200,30 +255,37 @@ void DeviceSettingsService::PropertyChangeComplete(bool success) {
     return;
   }
 
-  EnsureReload(false);
+  if (GetOwnershipStatus() == OWNERSHIP_TAKEN ||
+      !will_establish_consumer_ownership_) {
+    EnsureReload(false);
+  }
 }
 
 void DeviceSettingsService::Enqueue(
-    const linked_ptr<SessionManagerOperation>& operation) {
-  pending_operations_.push_back(operation);
-  if (pending_operations_.front().get() == operation.get())
+    std::unique_ptr<SessionManagerOperation> operation) {
+  const bool was_empty = pending_operations_.empty();
+  pending_operations_.push_back(std::move(operation));
+  if (was_empty)
     StartNextOperation();
 }
 
-void DeviceSettingsService::EnqueueLoad(bool force_key_load) {
-  linked_ptr<SessionManagerOperation> operation(new LoadSettingsOperation(
-      base::Bind(&DeviceSettingsService::HandleCompletedOperation,
-                 weak_factory_.GetWeakPtr(),
-                 base::Closure())));
-  operation->set_force_key_load(force_key_load);
-  Enqueue(operation);
+void DeviceSettingsService::EnqueueLoad(bool request_key_load) {
+  bool cloud_validations = true;
+  if (device_mode_ == policy::DEVICE_MODE_ENTERPRISE_AD) {
+    request_key_load = false;
+    cloud_validations = false;
+  }
+  Enqueue(std::make_unique<LoadSettingsOperation>(
+      request_key_load, cloud_validations, false /*force_immediate_load*/,
+      base::Bind(&DeviceSettingsService::HandleCompletedAsyncOperation,
+                 weak_factory_.GetWeakPtr(), base::Closure())));
 }
 
-void DeviceSettingsService::EnsureReload(bool force_key_load) {
+void DeviceSettingsService::EnsureReload(bool request_key_load) {
   if (!pending_operations_.empty())
-    pending_operations_.front()->RestartLoad(force_key_load);
+    pending_operations_.front()->RestartLoad(request_key_load);
   else
-    EnqueueLoad(force_key_load);
+    EnqueueLoad(request_key_load);
 }
 
 void DeviceSettingsService::StartNextOperation() {
@@ -234,93 +296,74 @@ void DeviceSettingsService::StartNextOperation() {
   }
 }
 
-void DeviceSettingsService::HandleCompletedOperation(
+void DeviceSettingsService::HandleCompletedAsyncOperation(
     const base::Closure& callback,
     SessionManagerOperation* operation,
     Status status) {
   DCHECK_EQ(operation, pending_operations_.front().get());
-  store_status_ = status;
-
-  OwnershipStatus ownership_status = OWNERSHIP_UNKNOWN;
-  scoped_refptr<PublicKey> new_key(operation->public_key());
-  if (new_key.get()) {
-    ownership_status = new_key->is_loaded() ? OWNERSHIP_TAKEN : OWNERSHIP_NONE;
-  } else {
-    NOTREACHED() << "Failed to determine key status.";
-  }
-
-  bool new_owner_key = false;
-  if (public_key_.get() != new_key.get()) {
-    public_key_ = new_key;
-    new_owner_key = true;
-  }
-
-  if (status == STORE_SUCCESS) {
-    policy_data_ = std::move(operation->policy_data());
-    device_settings_ = std::move(operation->device_settings());
-    load_retries_left_ = kMaxLoadRetries;
-  } else if (status != STORE_KEY_UNAVAILABLE) {
-    LOG(ERROR) << "Session manager operation failed: " << status;
-    // Validation errors can be temporary if the rtc has gone on holiday for a
-    // short while. So we will retry such loads for up to 10 minutes.
-    if (status == STORE_TEMP_VALIDATION_ERROR) {
-      if (load_retries_left_ > 0) {
-        load_retries_left_--;
-        LOG(ERROR) << "A re-load has been scheduled due to a validation error.";
-        content::BrowserThread::PostDelayedTask(
-            content::BrowserThread::UI,
-            FROM_HERE,
-            base::Bind(&DeviceSettingsService::Load, base::Unretained(this)),
-            base::TimeDelta::FromMilliseconds(kLoadRetryDelayMs));
-      } else {
-        // Once we've given up retrying, the validation error is not temporary
-        // anymore.
-        store_status_ = STORE_VALIDATION_ERROR;
-      }
-    }
-  }
-
-  if (new_owner_key) {
-    FOR_EACH_OBSERVER(Observer, observers_, OwnershipStatusChanged());
-    content::NotificationService::current()->Notify(
-        chrome::NOTIFICATION_OWNERSHIP_STATUS_CHANGED,
-        content::Source<DeviceSettingsService>(this),
-        content::NotificationService::NoDetails());
-  }
-
-  FOR_EACH_OBSERVER(Observer, observers_, DeviceSettingsUpdated());
-
-  std::vector<OwnershipStatusCallback> callbacks;
-  callbacks.swap(pending_ownership_status_callbacks_);
-  for (std::vector<OwnershipStatusCallback>::iterator iter(callbacks.begin());
-       iter != callbacks.end(); ++iter) {
-    iter->Run(ownership_status);
-  }
-
-  // The completion callback happens after the notification so clients can
-  // filter self-triggered updates.
-  if (!callback.is_null())
-    callback.Run();
-
-  // Only remove the pending operation here, so new operations triggered by any
-  // of the callbacks above are queued up properly.
+  HandleCompletedOperation(callback, operation, status);
+  // Only remove the pending operation here, so new operations triggered by
+  // any of the callbacks above are queued up properly.
   pending_operations_.pop_front();
 
   StartNextOperation();
 }
 
-void DeviceSettingsService::HandleError(Status status,
-                                        const base::Closure& callback) {
+void DeviceSettingsService::HandleCompletedOperation(
+    const base::Closure& callback,
+    SessionManagerOperation* operation,
+    Status status) {
   store_status_ = status;
+  if (status == STORE_SUCCESS) {
+    policy_data_ = std::move(operation->policy_data());
+    device_settings_ = std::move(operation->device_settings());
+    // Update "OffHours" policy state and apply "OffHours" policy to current
+    // proto only during "OffHours" mode. When "OffHours" mode begins and ends
+    // DeviceOffHoursController requests DeviceSettingsService to asynchronously
+    // reload device policies. (See |DeviceOffHoursController| class
+    // description)
+    device_off_hours_controller_->UpdateOffHoursPolicy(*device_settings_);
+    if (device_off_hours_controller_->is_off_hours_mode()) {
+      std::unique_ptr<em::ChromeDeviceSettingsProto> off_device_settings =
+          policy::off_hours::ApplyOffHoursPolicyToProto(*device_settings_);
+      if (off_device_settings)
+        device_settings_.swap(off_device_settings);
+    }
+  } else if (status != STORE_KEY_UNAVAILABLE) {
+    LOG(ERROR) << "Session manager operation failed: " << status << " ("
+               << StatusToString(status) << ")";
+  }
 
-  LOG(ERROR) << "Session manager operation failed: " << status;
-
-  FOR_EACH_OBSERVER(Observer, observers_, DeviceSettingsUpdated());
+  public_key_ = scoped_refptr<PublicKey>(operation->public_key());
+  if (GetOwnershipStatus() != previous_ownership_status_) {
+    previous_ownership_status_ = GetOwnershipStatus();
+    NotifyOwnershipStatusChanged();
+  }
+  NotifyDeviceSettingsUpdated();
+  RunPendingOwnershipStatusCallbacks();
 
   // The completion callback happens after the notification so clients can
   // filter self-triggered updates.
   if (!callback.is_null())
     callback.Run();
+}
+
+void DeviceSettingsService::NotifyOwnershipStatusChanged() const {
+  for (auto& observer : observers_)
+    observer.OwnershipStatusChanged();
+}
+
+void DeviceSettingsService::NotifyDeviceSettingsUpdated() const {
+  for (auto& observer : observers_)
+    observer.DeviceSettingsUpdated();
+}
+
+void DeviceSettingsService::RunPendingOwnershipStatusCallbacks() {
+  std::vector<OwnershipStatusCallback> callbacks;
+  callbacks.swap(pending_ownership_status_callbacks_);
+  for (const auto& callback : callbacks) {
+    callback.Run(GetOwnershipStatus());
+  }
 }
 
 ScopedTestDeviceSettingsService::ScopedTestDeviceSettingsService() {

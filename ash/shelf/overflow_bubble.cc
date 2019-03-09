@@ -4,89 +4,99 @@
 
 #include "ash/shelf/overflow_bubble.h"
 
-#include "ash/common/system/tray/tray_background_view.h"
+#include "ash/focus_cycler.h"
 #include "ash/shelf/overflow_bubble_view.h"
+#include "ash/shelf/overflow_button.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_view.h"
 #include "ash/shelf/shelf_widget.h"
 #include "ash/shell.h"
-#include "ui/events/event.h"
+#include "ash/system/tray/tray_background_view.h"
+#include "ui/aura/window.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
 
-OverflowBubble::OverflowBubble()
-    : bubble_(NULL), anchor_(NULL), shelf_view_(NULL) {
-  Shell::GetInstance()->AddPointerWatcher(this);
+OverflowBubble::OverflowBubble(Shelf* shelf)
+    : shelf_(shelf), bubble_(nullptr), overflow_button_(nullptr) {
+  DCHECK(shelf_);
+  Shell::Get()->AddPreTargetHandler(this);
 }
 
 OverflowBubble::~OverflowBubble() {
   Hide();
-  Shell::GetInstance()->RemovePointerWatcher(this);
+  Shell::Get()->RemovePreTargetHandler(this);
 }
 
-void OverflowBubble::Show(views::View* anchor, ShelfView* shelf_view) {
+void OverflowBubble::Show(OverflowButton* overflow_button,
+                          ShelfView* shelf_view) {
+  DCHECK(overflow_button);
+  DCHECK(shelf_view);
+
   Hide();
 
-  bubble_ = new OverflowBubbleView();
-  bubble_->InitOverflowBubble(anchor, shelf_view);
-  shelf_view_ = shelf_view;
-  anchor_ = anchor;
+  bubble_ = new OverflowBubbleView(
+      shelf_view, overflow_button,
+      shelf_view->shelf_widget()->GetShelfBackgroundColor());
+  overflow_button_ = overflow_button;
 
   TrayBackgroundView::InitializeBubbleAnimations(bubble_->GetWidget());
   bubble_->GetWidget()->AddObserver(this);
   bubble_->GetWidget()->Show();
+  Shell::Get()->focus_cycler()->AddWidget(bubble_->GetWidget());
 }
 
 void OverflowBubble::Hide() {
   if (!IsShowing())
     return;
 
+  Shell::Get()->focus_cycler()->RemoveWidget(bubble_->GetWidget());
   bubble_->GetWidget()->RemoveObserver(this);
   bubble_->GetWidget()->Close();
-  bubble_ = NULL;
-  anchor_ = NULL;
-  shelf_view_ = NULL;
+  bubble_ = nullptr;
+  overflow_button_ = nullptr;
 }
 
-void OverflowBubble::HideBubbleAndRefreshButton() {
-  if (!IsShowing())
+void OverflowBubble::ProcessPressedEvent(ui::LocatedEvent* event) {
+  if (!IsShowing() || bubble_->shelf_view()->IsShowingMenu())
     return;
 
-  views::View* anchor = anchor_;
-  Hide();
-  // Update overflow button (|anchor|) status when overflow bubble is hidden
-  // by outside event of overflow button.
-  anchor->SchedulePaint();
-}
-
-void OverflowBubble::ProcessPressedEvent(
-    const gfx::Point& event_location_in_screen) {
-  if (IsShowing() && !shelf_view_->IsShowingMenu() &&
-      !bubble_->GetBoundsInScreen().Contains(event_location_in_screen) &&
-      !anchor_->GetBoundsInScreen().Contains(event_location_in_screen)) {
-    HideBubbleAndRefreshButton();
+  const gfx::Point screen_location = event->target()->GetScreenLocation(*event);
+  if (bubble_->GetBoundsInScreen().Contains(screen_location) ||
+      overflow_button_->GetBoundsInScreen().Contains(screen_location)) {
+    return;
   }
+
+  // Do not hide the shelf if one of the buttons on the main shelf was pressed,
+  // since the user might want to drag an item onto the overflow bubble.
+  // The button itself will close the overflow bubble on the release event.
+  if (bubble_->shelf_view()
+          ->main_shelf()
+          ->GetVisibleItemsBoundsInScreen()
+          .Contains(screen_location)) {
+    return;
+  }
+
+  Hide();
 }
 
-void OverflowBubble::OnMousePressed(const ui::MouseEvent& event,
-                                    const gfx::Point& location_in_screen,
-                                    views::Widget* target) {
-  ProcessPressedEvent(location_in_screen);
+void OverflowBubble::OnMouseEvent(ui::MouseEvent* event) {
+  if (event->type() == ui::ET_MOUSE_PRESSED)
+    ProcessPressedEvent(event);
 }
 
-void OverflowBubble::OnTouchPressed(const ui::TouchEvent& event,
-                                    const gfx::Point& location_in_screen,
-                                    views::Widget* target) {
-  ProcessPressedEvent(location_in_screen);
+void OverflowBubble::OnTouchEvent(ui::TouchEvent* event) {
+  if (event->type() == ui::ET_TOUCH_PRESSED)
+    ProcessPressedEvent(event);
 }
 
 void OverflowBubble::OnWidgetDestroying(views::Widget* widget) {
   DCHECK(widget == bubble_->GetWidget());
-  bubble_ = NULL;
-  anchor_ = NULL;
-  shelf_view_->shelf()->SchedulePaint();
-  shelf_view_ = NULL;
+  // Update the overflow button in the parent ShelfView.
+  overflow_button_->SchedulePaint();
+  bubble_ = nullptr;
+  overflow_button_ = nullptr;
 }
 
 }  // namespace ash

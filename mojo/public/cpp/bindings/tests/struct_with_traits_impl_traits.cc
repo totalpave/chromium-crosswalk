@@ -5,44 +5,16 @@
 #include "mojo/public/cpp/bindings/tests/struct_with_traits_impl_traits.h"
 
 namespace mojo {
-namespace {
-
-struct Context {
-  int32_t value;
-};
-
-}  // namespace
 
 // static
-void* StructTraits<test::NestedStructWithTraits,
-                   test::NestedStructWithTraitsImpl>::
-    SetUpContext(const test::NestedStructWithTraitsImpl& input) {
-  Context* context = new Context;
-  context->value = input.value;
-  return context;
-}
-
-// static
-void StructTraits<test::NestedStructWithTraits,
-                  test::NestedStructWithTraitsImpl>::
-    TearDownContext(const test::NestedStructWithTraitsImpl& input,
-                    void* context) {
-  Context* context_obj = static_cast<Context*>(context);
-  CHECK_EQ(context_obj->value, input.value);
-  delete context_obj;
-}
-
-// static
-int32_t StructTraits<test::NestedStructWithTraits,
+int32_t StructTraits<test::NestedStructWithTraitsDataView,
                      test::NestedStructWithTraitsImpl>::
-    value(const test::NestedStructWithTraitsImpl& input, void* context) {
-  Context* context_obj = static_cast<Context*>(context);
-  CHECK_EQ(context_obj->value, input.value);
+    value(const test::NestedStructWithTraitsImpl& input) {
   return input.value;
 }
 
 // static
-bool StructTraits<test::NestedStructWithTraits,
+bool StructTraits<test::NestedStructWithTraitsDataView,
                   test::NestedStructWithTraitsImpl>::
     Read(test::NestedStructWithTraits::DataView data,
          test::NestedStructWithTraitsImpl* output) {
@@ -80,9 +52,9 @@ bool EnumTraits<test::EnumWithTraits, test::EnumWithTraitsImpl>::FromMojom(
 }
 
 // static
-bool StructTraits<test::StructWithTraits, test::StructWithTraitsImpl>::Read(
-    test::StructWithTraits::DataView data,
-    test::StructWithTraitsImpl* out) {
+bool StructTraits<test::StructWithTraitsDataView, test::StructWithTraitsImpl>::
+    Read(test::StructWithTraits::DataView data,
+         test::StructWithTraitsImpl* out) {
   test::EnumWithTraitsImpl f_enum;
   if (!data.ReadFEnum(&f_enum))
     return false;
@@ -103,6 +75,16 @@ bool StructTraits<test::StructWithTraits, test::StructWithTraitsImpl>::Read(
   if (!data.ReadFStringArray(&out->get_mutable_string_array()))
     return false;
 
+  // We can't deserialize as a std::set, so we have to manually copy from the
+  // data view.
+  ArrayDataView<StringDataView> string_set_data_view;
+  data.GetFStringSetDataView(&string_set_data_view);
+  for (size_t i = 0; i < string_set_data_view.size(); ++i) {
+    std::string value;
+    string_set_data_view.Read(i, &value);
+    out->get_mutable_string_set().insert(value);
+  }
+
   if (!data.ReadFStruct(&out->get_mutable_struct()))
     return false;
 
@@ -116,10 +98,10 @@ bool StructTraits<test::StructWithTraits, test::StructWithTraitsImpl>::Read(
 }
 
 // static
-bool StructTraits<test::PassByValueStructWithTraits,
-                  test::PassByValueStructWithTraitsImpl>::
-    Read(test::PassByValueStructWithTraits::DataView data,
-         test::PassByValueStructWithTraitsImpl* out) {
+bool StructTraits<test::MoveOnlyStructWithTraitsDataView,
+                  test::MoveOnlyStructWithTraitsImpl>::
+    Read(test::MoveOnlyStructWithTraits::DataView data,
+         test::MoveOnlyStructWithTraitsImpl* out) {
   out->get_mutable_handle() = data.TakeFHandle();
   return true;
 }

@@ -17,17 +17,23 @@
 #include "base/feature_list.h"
 #include "base/format_macros.h"
 #include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/mock_entropy_provider.h"
+#include "base/test/scoped_feature_list.h"
+#include "components/variations/client_filterable_state.h"
 #include "components/variations/processed_study.h"
 #include "components/variations/study_filtering.h"
 #include "components/variations/variations_associated_data.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace variations {
+using testing::ElementsAre;
+using testing::IsEmpty;
 
+namespace variations {
 namespace {
 
 // Converts |time| to Study proto format.
@@ -117,8 +123,6 @@ class VariationsSeedProcessorTest : public ::testing::Test {
     // process singletons.
     testing::ClearAllVariationIDs();
     testing::ClearAllVariationParams();
-
-    base::FeatureList::ClearInstanceForTesting();
   }
 
   bool CreateTrialFromStudy(const Study& study) {
@@ -262,7 +266,13 @@ TEST_F(VariationsSeedProcessorTest,
   const base::Time year_ago =
       base::Time::Now() - base::TimeDelta::FromDays(365);
 
-  const base::Version version("20.0.0.0");
+  ClientFilterableState client_state;
+  client_state.locale = "en-CA";
+  client_state.reference_date = base::Time::Now();
+  client_state.version = base::Version("20.0.0.0");
+  client_state.channel = Study::STABLE;
+  client_state.form_factor = Study::DESKTOP;
+  client_state.platform = Study::PLATFORM_ANDROID;
 
   // Check that adding [expired, non-expired] activates the non-expired one.
   ASSERT_EQ(std::string(), base::FieldTrialList::FindFullName(kTrialName));
@@ -270,10 +280,9 @@ TEST_F(VariationsSeedProcessorTest,
     base::FeatureList feature_list;
     base::FieldTrialList field_trial_list(nullptr);
     study1->set_expiry_date(TimeToProtoTime(year_ago));
-    seed_processor.CreateTrialsFromSeed(
-        seed, "en-CA", base::Time::Now(), version, Study_Channel_STABLE,
-        Study_FormFactor_DESKTOP, "", "", "", override_callback_.callback(),
-        nullptr, &feature_list);
+    seed_processor.CreateTrialsFromSeed(seed, client_state,
+                                        override_callback_.callback(), nullptr,
+                                        &feature_list);
     EXPECT_EQ(kGroup1Name, base::FieldTrialList::FindFullName(kTrialName));
   }
 
@@ -284,10 +293,9 @@ TEST_F(VariationsSeedProcessorTest,
     base::FieldTrialList field_trial_list(nullptr);
     study1->clear_expiry_date();
     study2->set_expiry_date(TimeToProtoTime(year_ago));
-    seed_processor.CreateTrialsFromSeed(
-        seed, "en-CA", base::Time::Now(), version, Study_Channel_STABLE,
-        Study_FormFactor_DESKTOP, "", "", "", override_callback_.callback(),
-        nullptr, &feature_list);
+    seed_processor.CreateTrialsFromSeed(seed, client_state,
+                                        override_callback_.callback(), nullptr,
+                                        &feature_list);
     EXPECT_EQ(kGroup1Name, base::FieldTrialList::FindFullName(kTrialName));
   }
 }
@@ -298,7 +306,7 @@ TEST_F(VariationsSeedProcessorTest, OverrideUIStrings) {
   Study study;
   study.set_name("Study1");
   study.set_default_experiment_name("B");
-  study.set_activation_type(Study_ActivationType_ACTIVATION_AUTO);
+  study.set_activation_type(Study_ActivationType_ACTIVATE_ON_STARTUP);
 
   Study_Experiment* experiment1 = AddExperiment("A", 0, &study);
   Study_Experiment_OverrideUIString* override =
@@ -323,8 +331,7 @@ TEST_F(VariationsSeedProcessorTest, OverrideUIStrings) {
   EXPECT_TRUE(CreateTrialFromStudy(study));
 
   EXPECT_EQ(1u, overrides.size());
-  TestOverrideStringCallback::OverrideMap::const_iterator it =
-      overrides.find(1234);
+  auto it = overrides.find(1234);
   EXPECT_EQ(base::ASCIIToUTF16("test"), it->second);
 }
 
@@ -332,7 +339,7 @@ TEST_F(VariationsSeedProcessorTest, OverrideUIStringsWithForcingFlag) {
   Study study = CreateStudyWithFlagGroups(100, 0, 0);
   ASSERT_EQ(kForcingFlag1, study.experiment(1).forcing_flag());
 
-  study.set_activation_type(Study_ActivationType_ACTIVATION_AUTO);
+  study.set_activation_type(Study_ActivationType_ACTIVATE_ON_STARTUP);
   Study_Experiment_OverrideUIString* override =
       study.mutable_experiment(1)->add_override_ui_string();
   override->set_name_hash(1234);
@@ -346,8 +353,7 @@ TEST_F(VariationsSeedProcessorTest, OverrideUIStringsWithForcingFlag) {
   const TestOverrideStringCallback::OverrideMap& overrides =
       override_callback_.overrides();
   EXPECT_EQ(1u, overrides.size());
-  TestOverrideStringCallback::OverrideMap::const_iterator it =
-      overrides.find(1234);
+  auto it = overrides.find(1234);
   EXPECT_EQ(base::ASCIIToUTF16("test"), it->second);
 }
 
@@ -378,8 +384,9 @@ TEST_F(VariationsSeedProcessorTest, ValidateStudy) {
   study.mutable_filter()->set_max_version("2.3.4");
   EXPECT_TRUE(processed_study.Init(&study, false));
 
+  // A blank default study is allowed.
   study.clear_default_experiment_name();
-  EXPECT_FALSE(processed_study.Init(&study, false));
+  EXPECT_TRUE(processed_study.Init(&study, false));
 
   study.set_default_experiment_name("xyz");
   EXPECT_FALSE(processed_study.Init(&study, false));
@@ -396,7 +403,7 @@ TEST_F(VariationsSeedProcessorTest, ValidateStudy) {
   EXPECT_FALSE(processed_study.Init(&study, false));
 }
 
-TEST_F(VariationsSeedProcessorTest, ValidateStudySingleFeature) {
+TEST_F(VariationsSeedProcessorTest, ValidateStudyWithAssociatedFeatures) {
   Study study;
   study.set_default_experiment_name("def");
   Study_Experiment* exp1 = AddExperiment("exp1", 100, &study);
@@ -408,35 +415,45 @@ TEST_F(VariationsSeedProcessorTest, ValidateStudySingleFeature) {
   EXPECT_TRUE(processed_study.Init(&study, false));
   EXPECT_EQ(400, processed_study.total_probability());
 
-  EXPECT_EQ(std::string(), processed_study.single_feature_name());
+  EXPECT_THAT(processed_study.associated_features(), IsEmpty());
 
   const char kFeature1Name[] = "Feature1";
   const char kFeature2Name[] = "Feature2";
 
   exp1->mutable_feature_association()->add_enable_feature(kFeature1Name);
   EXPECT_TRUE(processed_study.Init(&study, false));
-  EXPECT_EQ(kFeature1Name, processed_study.single_feature_name());
+  EXPECT_THAT(processed_study.associated_features(),
+              ElementsAre(kFeature1Name));
 
   exp1->clear_feature_association();
   exp1->mutable_feature_association()->add_enable_feature(kFeature1Name);
   exp1->mutable_feature_association()->add_enable_feature(kFeature2Name);
   EXPECT_TRUE(processed_study.Init(&study, false));
-  // Since there's multiple different features, |single_feature_name| should be
-  // unset.
-  EXPECT_EQ(std::string(), processed_study.single_feature_name());
+  // Since there's multiple different features, |associated_features| should now
+  // contain them all.
+  EXPECT_THAT(processed_study.associated_features(),
+              ElementsAre(kFeature1Name, kFeature2Name));
 
   exp1->clear_feature_association();
   exp1->mutable_feature_association()->add_enable_feature(kFeature1Name);
   exp2->mutable_feature_association()->add_enable_feature(kFeature1Name);
   exp3->mutable_feature_association()->add_disable_feature(kFeature1Name);
   EXPECT_TRUE(processed_study.Init(&study, false));
-  EXPECT_EQ(kFeature1Name, processed_study.single_feature_name());
+  EXPECT_THAT(processed_study.associated_features(),
+              ElementsAre(kFeature1Name));
 
-  // Setting a different feature name on exp2 should cause |single_feature_name|
-  // to be not set.
+  // Setting a different feature name on exp2 should cause |associated_features|
+  // to contain both feature names.
   exp2->mutable_feature_association()->set_enable_feature(0, kFeature2Name);
   EXPECT_TRUE(processed_study.Init(&study, false));
-  EXPECT_EQ(std::string(), processed_study.single_feature_name());
+  EXPECT_THAT(processed_study.associated_features(),
+              ElementsAre(kFeature1Name, kFeature2Name));
+
+  // Setting a different activation type should result in empty
+  // |associated_features|.
+  study.set_activation_type(Study_ActivationType_ACTIVATE_ON_STARTUP);
+  EXPECT_TRUE(processed_study.Init(&study, false));
+  EXPECT_THAT(processed_study.associated_features(), IsEmpty());
 }
 
 TEST_F(VariationsSeedProcessorTest, ProcessedStudyAllAssignmentsToOneGroup) {
@@ -522,23 +539,30 @@ TEST_F(VariationsSeedProcessorTest, StartsActive) {
   study2->set_default_experiment_name("Default");
   AddExperiment("BB", 100, study2);
   AddExperiment("Default", 0, study2);
-  study2->set_activation_type(Study_ActivationType_ACTIVATION_AUTO);
+  study2->set_activation_type(Study_ActivationType_ACTIVATE_ON_STARTUP);
 
   Study* study3 = seed.add_study();
   study3->set_name("C");
   study3->set_default_experiment_name("Default");
   AddExperiment("CC", 100, study3);
   AddExperiment("Default", 0, study3);
-  study3->set_activation_type(Study_ActivationType_ACTIVATION_EXPLICIT);
+  study3->set_activation_type(Study_ActivationType_ACTIVATE_ON_QUERY);
+
+  ClientFilterableState client_state;
+  client_state.locale = "en-CA";
+  client_state.reference_date = base::Time::Now();
+  client_state.version = base::Version("20.0.0.0");
+  client_state.channel = Study::STABLE;
+  client_state.form_factor = Study::DESKTOP;
+  client_state.platform = Study::PLATFORM_ANDROID;
 
   VariationsSeedProcessor seed_processor;
-  seed_processor.CreateTrialsFromSeed(
-      seed, "en-CA", base::Time::Now(), base::Version("20.0.0.0"),
-      Study_Channel_STABLE, Study_FormFactor_DESKTOP, "", "", "",
-      override_callback_.callback(), nullptr, &feature_list_);
+  seed_processor.CreateTrialsFromSeed(seed, client_state,
+                                      override_callback_.callback(), nullptr,
+                                      &feature_list_);
 
-  // Non-specified and ACTIVATION_EXPLICIT should not start active, but
-  // ACTIVATION_AUTO should.
+  // Non-specified and ACTIVATE_ON_QUERY should not start active, but
+  // ACTIVATE_ON_STARTUP should.
   EXPECT_FALSE(base::FieldTrialList::IsTrialActive("A"));
   EXPECT_TRUE(base::FieldTrialList::IsTrialActive("B"));
   EXPECT_FALSE(base::FieldTrialList::IsTrialActive("C"));
@@ -559,7 +583,7 @@ TEST_F(VariationsSeedProcessorTest, StartsActiveWithFlag) {
   base::FieldTrialList field_trial_list(nullptr);
 
   Study study = CreateStudyWithFlagGroups(100, 0, 0);
-  study.set_activation_type(Study_ActivationType_ACTIVATION_AUTO);
+  study.set_activation_type(Study_ActivationType_ACTIVATE_ON_STARTUP);
 
   EXPECT_TRUE(CreateTrialFromStudy(study));
   EXPECT_TRUE(base::FieldTrialList::IsTrialActive(kFlagStudyName));
@@ -616,12 +640,11 @@ TEST_F(VariationsSeedProcessorTest, FeatureEnabledOrDisableByTrial) {
       {nullptr, kFeatureOffByDefault.name, false, true},
   };
 
-  for (size_t i = 0; i < arraysize(test_cases); i++) {
+  for (size_t i = 0; i < base::size(test_cases); i++) {
     const auto& test_case = test_cases[i];
     SCOPED_TRACE(base::StringPrintf("Test[%" PRIuS "]", i));
 
     base::FieldTrialList field_trial_list(nullptr);
-    base::FeatureList::ClearInstanceForTesting();
     std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
 
     Study study;
@@ -638,7 +661,8 @@ TEST_F(VariationsSeedProcessorTest, FeatureEnabledOrDisableByTrial) {
       association->add_disable_feature(test_case.disable_feature);
 
     EXPECT_TRUE(CreateTrialFromStudyWithFeatureList(study, feature_list.get()));
-    base::FeatureList::SetInstance(std::move(feature_list));
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatureList(std::move(feature_list));
 
     // |kUnrelatedFeature| should not be affected.
     EXPECT_FALSE(base::FeatureList::IsEnabled(kUnrelatedFeature));
@@ -735,7 +759,7 @@ TEST_F(VariationsSeedProcessorTest, FeatureAssociationAndForcing) {
        kForcedOffGroup, false, true},
   };
 
-  for (size_t i = 0; i < arraysize(test_cases); i++) {
+  for (size_t i = 0; i < base::size(test_cases); i++) {
     const auto& test_case = test_cases[i];
     const int group = test_case.one_hundred_percent_group;
     SCOPED_TRACE(base::StringPrintf(
@@ -744,7 +768,6 @@ TEST_F(VariationsSeedProcessorTest, FeatureAssociationAndForcing) {
         test_case.disable_features_command_line, static_cast<int>(group)));
 
     base::FieldTrialList field_trial_list(nullptr);
-    base::FeatureList::ClearInstanceForTesting();
     std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
     feature_list->InitializeFromCommandLine(
         test_case.enable_features_command_line,
@@ -773,7 +796,8 @@ TEST_F(VariationsSeedProcessorTest, FeatureAssociationAndForcing) {
         ->set_forcing_feature_off(test_case.feature.name);
 
     EXPECT_TRUE(CreateTrialFromStudyWithFeatureList(study, feature_list.get()));
-    base::FeatureList::SetInstance(std::move(feature_list));
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatureList(std::move(feature_list));
 
     // Trial should not be activated initially, but later might get activated
     // depending on the expected values.
@@ -808,13 +832,12 @@ TEST_F(VariationsSeedProcessorTest, FeaturesInExpiredStudies) {
       {kEnabledFeature, false, year_later, false},
   };
 
-  for (size_t i = 0; i < arraysize(test_cases); i++) {
+  for (size_t i = 0; i < base::size(test_cases); i++) {
     const auto& test_case = test_cases[i];
     SCOPED_TRACE(
         base::StringPrintf("Test[%" PRIuS "]: %s", i, test_case.feature.name));
 
     base::FieldTrialList field_trial_list(nullptr);
-    base::FeatureList::ClearInstanceForTesting();
     std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
     feature_list->InitializeFromCommandLine(std::string(), std::string());
 
@@ -837,12 +860,85 @@ TEST_F(VariationsSeedProcessorTest, FeaturesInExpiredStudies) {
     }
 
     EXPECT_TRUE(CreateTrialFromStudyWithFeatureList(study, feature_list.get()));
-    base::FeatureList::SetInstance(std::move(feature_list));
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatureList(std::move(feature_list));
 
-    // Tthe feature should not be enabled, because the study is expired.
+    // The feature should not be enabled, because the study is expired.
     EXPECT_EQ(test_case.expected_feature_enabled,
               base::FeatureList::IsEnabled(test_case.feature));
   }
+}
+
+TEST_F(VariationsSeedProcessorTest, NoDefaultExperiment) {
+  base::FieldTrialList field_trial_list(nullptr);
+
+  Study study;
+  study.set_name("Study1");
+
+  AddExperiment("A", 1, &study);
+
+  EXPECT_TRUE(CreateTrialFromStudy(study));
+
+  base::FieldTrial* trial = base::FieldTrialList::Find("Study1");
+  trial->Disable();
+
+  EXPECT_EQ(ProcessedStudy::kGenericDefaultExperimentName,
+            base::FieldTrialList::FindFullName("Study1"));
+}
+
+TEST_F(VariationsSeedProcessorTest, ExistingFieldTrial_ExpiredByConfig) {
+  static struct base::Feature kFeature {
+    "FeatureName", base::FEATURE_ENABLED_BY_DEFAULT
+  };
+  base::FieldTrialList field_trial_list(nullptr);
+
+  // In this case, an existing forced trial exists with a different default
+  // group than the study config, which is expired. This tests that we don't
+  // crash in such a case.
+  auto* trial = base::FieldTrialList::FactoryGetFieldTrial(
+      "Study1", 100, "ExistingDefault", base::FieldTrialList::kNoExpirationYear,
+      1, 1, base::FieldTrial::SESSION_RANDOMIZED, nullptr);
+  trial->AppendGroup("A", 100);
+  trial->SetForced();
+
+  Study study;
+  study.set_name("Study1");
+  const base::Time year_ago =
+      base::Time::Now() - base::TimeDelta::FromDays(365);
+  study.set_expiry_date(TimeToProtoTime(year_ago));
+  auto* exp1 = AddExperiment("A", 1, &study);
+  exp1->mutable_feature_association()->add_enable_feature(kFeature.name);
+  AddExperiment("Default", 1, &study);
+  study.set_default_experiment_name("Default");
+
+  EXPECT_TRUE(CreateTrialFromStudy(study));
+
+  // The expected effect is that processing the server config will expire
+  // the existing trial.
+  EXPECT_EQ("ExistingDefault", trial->group_name());
+}
+
+TEST_F(VariationsSeedProcessorTest, ExpiredStudy_NoDefaultGroup) {
+  static struct base::Feature kFeature {
+    "FeatureName", base::FEATURE_ENABLED_BY_DEFAULT
+  };
+  base::FieldTrialList field_trial_list(nullptr);
+
+  // Although it's not expected for the server to provide a study with an expiry
+  // date set, but not default experiment, this tests that we don't crash if
+  // that happens.
+  Study study;
+  study.set_name("Study1");
+  const base::Time year_ago =
+      base::Time::Now() - base::TimeDelta::FromDays(365);
+  study.set_expiry_date(TimeToProtoTime(year_ago));
+  auto* exp1 = AddExperiment("A", 1, &study);
+  exp1->mutable_feature_association()->add_enable_feature(kFeature.name);
+
+  EXPECT_FALSE(study.has_default_experiment_name());
+  EXPECT_TRUE(CreateTrialFromStudy(study));
+  EXPECT_EQ("VariationsDefaultExperiment",
+            base::FieldTrialList::FindFullName("Study1"));
 }
 
 TEST_F(VariationsSeedProcessorTest, LowEntropyStudyTest) {
@@ -854,13 +950,13 @@ TEST_F(VariationsSeedProcessorTest, LowEntropyStudyTest) {
   VariationsSeed seed;
   Study* study1 = seed.add_study();
   study1->set_name(kTrial1Name);
-  study1->set_consistency(variations::Study_Consistency_PERMANENT);
+  study1->set_consistency(Study::PERMANENT);
   study1->set_default_experiment_name(kDefaultName);
   AddExperiment(kGroup1Name, 50, study1);
   AddExperiment(kDefaultName, 50, study1);
   Study* study2 = seed.add_study();
   study2->set_name(kTrial2Name);
-  study2->set_consistency(variations::Study_Consistency_PERMANENT);
+  study2->set_consistency(Study::PERMANENT);
   study2->set_default_experiment_name(kDefaultName);
   AddExperiment(kGroup1Name, 50, study2);
   AddExperiment(kDefaultName, 50, study2);
@@ -868,11 +964,8 @@ TEST_F(VariationsSeedProcessorTest, LowEntropyStudyTest) {
 
   // An entorpy value of 0.1 will cause the AA group to be chosen, since AA is
   // the only non-default group, and has a probability percent above 0.1.
-  base::MockEntropyProvider* mock_high_entropy_provider =
-      new base::MockEntropyProvider(0.1);
-
-  // The field trial list takes ownership of the provider.
-  base::FieldTrialList field_trial_list(mock_high_entropy_provider);
+  base::FieldTrialList field_trial_list(
+      std::make_unique<base::MockEntropyProvider>(0.1));
 
   // Use a stack instance, since nothing takes ownership of this provider.
   // This entropy value will cause the default group to be chosen since it's a

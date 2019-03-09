@@ -6,8 +6,8 @@
 #define PPAPI_PROXY_VPN_PROVIDER_RESOURCE_H_
 
 #include <memory>
-#include <queue>
 
+#include "base/containers/queue.h"
 #include "ppapi/proxy/plugin_resource.h"
 #include "ppapi/shared_impl/tracked_callback.h"
 #include "ppapi/shared_impl/var.h"
@@ -19,7 +19,7 @@ namespace proxy {
 
 class PPAPI_PROXY_EXPORT VpnProviderResource
     : public PluginResource,
-      public NON_EXPORTED_BASE(thunk::PPB_VpnProvider_API) {
+      public thunk::PPB_VpnProvider_API {
  public:
   VpnProviderResource(Connection connection, PP_Instance instance);
   virtual ~VpnProviderResource();
@@ -49,7 +49,7 @@ class PPAPI_PROXY_EXPORT VpnProviderResource
                             uint32_t max_packet_size,
                             int32_t result);
   void OnPluginMsgSendPacketReply(const ResourceMessageReplyParams& params,
-                                  int32_t result);
+                                  uint32_t id);
 
   // Browser callbacks
   void OnPluginMsgOnUnbindReceived(const ResourceMessageReplyParams& params);
@@ -76,10 +76,10 @@ class PPAPI_PROXY_EXPORT VpnProviderResource
   PP_Var* receive_packet_callback_var_;
 
   std::unique_ptr<ppapi::VpnProviderSharedBuffer> send_packet_buffer_;
-  std::unique_ptr<ppapi::VpnProviderSharedBuffer> receive_packet_buffer_;
+  std::unique_ptr<ppapi::VpnProviderSharedBuffer> recv_packet_buffer_;
 
-  std::queue<PP_Var> send_packets_;
-  std::queue<scoped_refptr<Var>> received_packets_;
+  base::queue<PP_Var> send_packets_;
+  base::queue<scoped_refptr<Var>> received_packets_;
 
   // Connection bound state
   bool bound_;

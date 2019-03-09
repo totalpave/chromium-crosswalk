@@ -4,6 +4,8 @@
 
 #include "components/renderer_context_menu/context_menu_delegate.h"
 
+#include <memory>
+
 #include "content/public/browser/web_contents.h"
 
 namespace {
@@ -24,8 +26,9 @@ class ContextMenuDelegateUserData : public base::SupportsUserData::Data {
 }  // namespace
 
 ContextMenuDelegate::ContextMenuDelegate(content::WebContents* web_contents) {
-  web_contents->SetUserData(&kMenuDelegateUserDataKey,
-                            new ContextMenuDelegateUserData(this));
+  web_contents->SetUserData(
+      &kMenuDelegateUserDataKey,
+      std::make_unique<ContextMenuDelegateUserData>(this));
 }
 
 ContextMenuDelegate::~ContextMenuDelegate() {
@@ -37,5 +40,5 @@ ContextMenuDelegate* ContextMenuDelegate::FromWebContents(
   ContextMenuDelegateUserData* user_data =
       static_cast<ContextMenuDelegateUserData*>(
           web_contents->GetUserData(&kMenuDelegateUserDataKey));
-  return user_data ? user_data->menu_delegate() : NULL;
+  return user_data ? user_data->menu_delegate() : nullptr;
 }

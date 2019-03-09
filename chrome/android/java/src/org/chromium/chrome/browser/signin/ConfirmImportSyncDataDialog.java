@@ -5,14 +5,16 @@
 package org.chromium.chrome.browser.signin;
 
 import android.app.Dialog;
-import android.app.DialogFragment;
-import android.app.FragmentManager;
 import android.content.DialogInterface;
 import android.os.Bundle;
+import android.support.annotation.IntDef;
+import android.support.v4.app.DialogFragment;
+import android.support.v4.app.FragmentManager;
+import android.support.v4.app.FragmentTransaction;
 import android.support.v7.app.AlertDialog;
 import android.view.LayoutInflater;
 import android.view.View;
-import android.view.View.OnClickListener;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import org.chromium.base.VisibleForTesting;
@@ -21,6 +23,8 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.preferences.ManagedPreferencesUtils;
 import org.chromium.chrome.browser.widget.RadioButtonWithDescription;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.Arrays;
 import java.util.List;
 
@@ -40,12 +44,12 @@ public class ConfirmImportSyncDataDialog extends DialogFragment
          * The user has completed the dialog using the positive button.
          * @param wipeData Whether the user requested that existing data should be wiped.
          */
-        public void onConfirm(boolean wipeData);
+        void onConfirm(boolean wipeData);
 
         /**
          * The user dismisses the dialog through any means other than the positive button.
          */
-        public void onCancel();
+        void onCancel();
     }
 
     /**
@@ -53,7 +57,12 @@ public class ConfirmImportSyncDataDialog extends DialogFragment
      * been signed into another account, had signed out then signed into a different one, or
      * if they directly switched accounts. This changes the strings displayed.
      */
-    public enum ImportSyncType { SWITCHING_SYNC_ACCOUNTS, PREVIOUS_DATA_FOUND }
+    @IntDef({ImportSyncType.SWITCHING_SYNC_ACCOUNTS, ImportSyncType.PREVIOUS_DATA_FOUND})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ImportSyncType {
+        int SWITCHING_SYNC_ACCOUNTS = 0;
+        int PREVIOUS_DATA_FOUND = 1;
+    }
 
     @VisibleForTesting
     public static final String CONFIRM_IMPORT_SYNC_DATA_DIALOG_TAG =
@@ -70,13 +79,12 @@ public class ConfirmImportSyncDataDialog extends DialogFragment
     private boolean mListenerCalled;
 
     private static ConfirmImportSyncDataDialog newInstance(
-            String oldAccountName, String newAccountName, ImportSyncType importSyncType) {
-
+            String oldAccountName, String newAccountName, @ImportSyncType int importSyncType) {
         ConfirmImportSyncDataDialog fragment = new ConfirmImportSyncDataDialog();
         Bundle args = new Bundle();
         args.putString(KEY_OLD_ACCOUNT_NAME, oldAccountName);
         args.putString(KEY_NEW_ACCOUNT_NAME, newAccountName);
-        args.putSerializable(KEY_IMPORT_SYNC_TYPE, importSyncType);
+        args.putInt(KEY_IMPORT_SYNC_TYPE, importSyncType);
         fragment.setArguments(args);
         return fragment;
     }
@@ -95,12 +103,15 @@ public class ConfirmImportSyncDataDialog extends DialogFragment
      *                        hitting cancel).
      */
     public static void showNewInstance(String oldAccountName, String newAccountName,
-            ImportSyncType importSyncType, FragmentManager fragmentManager, Listener callback) {
+            @ImportSyncType int importSyncType, FragmentManager fragmentManager,
+            Listener callback) {
         ConfirmImportSyncDataDialog confirmSync =
                 newInstance(oldAccountName, newAccountName, importSyncType);
 
         confirmSync.setListener(callback);
-        confirmSync.show(fragmentManager, CONFIRM_IMPORT_SYNC_DATA_DIALOG_TAG);
+        FragmentTransaction transaction = fragmentManager.beginTransaction();
+        transaction.add(confirmSync, CONFIRM_IMPORT_SYNC_DATA_DIALOG_TAG);
+        transaction.commitAllowingStateLoss();
     }
 
     @Override
@@ -112,36 +123,28 @@ public class ConfirmImportSyncDataDialog extends DialogFragment
         }
         String oldAccountName = getArguments().getString(KEY_OLD_ACCOUNT_NAME);
         String newAccountName = getArguments().getString(KEY_NEW_ACCOUNT_NAME);
-        ImportSyncType importSyncType =
-                (ImportSyncType) getArguments().getSerializable(KEY_IMPORT_SYNC_TYPE);
+        @ImportSyncType
+        int importSyncType = getArguments().getInt(KEY_IMPORT_SYNC_TYPE);
 
         LayoutInflater inflater = getActivity().getLayoutInflater();
         View v = inflater.inflate(R.layout.confirm_import_sync_data, null);
 
-        TextView prompt = (TextView) v.findViewById(R.id.sync_import_data_prompt);
+        TextView prompt = v.findViewById(R.id.sync_import_data_prompt);
+        prompt.setText(getActivity().getString(R.string.sync_import_data_prompt, oldAccountName));
 
-        if (importSyncType == ImportSyncType.SWITCHING_SYNC_ACCOUNTS) {
-            prompt.setText(getActivity().getString(
-                    R.string.sync_import_data_prompt_switching_accounts,
-                    newAccountName, oldAccountName));
-        } else {
-            prompt.setText(getActivity().getString(
-                    R.string.sync_import_data_prompt_existing_data,
-                    newAccountName, oldAccountName));
-        }
-
-        mConfirmImportOption = (RadioButtonWithDescription)
-                v.findViewById(R.id.sync_confirm_import_choice);
-        mKeepSeparateOption = (RadioButtonWithDescription)
-                v.findViewById(R.id.sync_keep_separate_choice);
+        mConfirmImportOption = v.findViewById(R.id.sync_confirm_import_choice);
+        mKeepSeparateOption = v.findViewById(R.id.sync_keep_separate_choice);
 
         mConfirmImportOption.setDescriptionText(getActivity().getString(
                 R.string.sync_import_existing_data_subtext, newAccountName));
-        mKeepSeparateOption.setDescriptionText(getActivity().getString(
-                (importSyncType == ImportSyncType.SWITCHING_SYNC_ACCOUNTS
-                        ? R.string.sync_keep_existing_data_separate_subtext_switching_accounts
-                        : R.string.sync_keep_existing_data_separate_subtext_existing_data),
-                newAccountName, oldAccountName));
+        if (importSyncType == ImportSyncType.SWITCHING_SYNC_ACCOUNTS) {
+            mKeepSeparateOption.setDescriptionText(getActivity().getString(
+                    R.string.sync_keep_existing_data_separate_subtext_switching_accounts,
+                    oldAccountName));
+        } else {
+            mKeepSeparateOption.setDescriptionText(getActivity().getString(
+                    R.string.sync_keep_existing_data_separate_subtext_existing_data));
+        }
 
         List<RadioButtonWithDescription> radioGroup =
                 Arrays.asList(mConfirmImportOption, mKeepSeparateOption);
@@ -149,14 +152,10 @@ public class ConfirmImportSyncDataDialog extends DialogFragment
         mKeepSeparateOption.setRadioButtonGroup(radioGroup);
 
         // If the account is managed, disallow merging information.
-        if (SigninManager.get(getActivity()).getManagementDomain() != null) {
+        if (SigninManager.get().getManagementDomain() != null) {
             mKeepSeparateOption.setChecked(true);
-            mConfirmImportOption.setOnClickListener(new OnClickListener(){
-                @Override
-                public void onClick(View v) {
-                    ManagedPreferencesUtils.showManagedByAdministratorToast(getActivity());
-                }
-            });
+            mConfirmImportOption.setOnClickListener(
+                    view -> ManagedPreferencesUtils.showManagedByAdministratorToast(getActivity()));
         } else {
             if (importSyncType == ImportSyncType.SWITCHING_SYNC_ACCOUNTS) {
                 mKeepSeparateOption.setChecked(true);
@@ -165,8 +164,15 @@ public class ConfirmImportSyncDataDialog extends DialogFragment
             }
         }
 
-        return new AlertDialog.Builder(getActivity(), R.style.AlertDialogTheme)
-                .setTitle(R.string.sync_import_data_title)
+        if (importSyncType == ImportSyncType.SWITCHING_SYNC_ACCOUNTS) {
+            // Re-order the buttons so that Import Data is last and Don't Import (the default) is
+            // at the top.
+            LinearLayout layout = v.findViewById(R.id.sync_import_data_content);
+            layout.removeView(mConfirmImportOption);
+            layout.addView(mConfirmImportOption);
+        }
+
+        return new AlertDialog.Builder(getActivity(), R.style.Theme_Chromium_AlertDialog)
                 .setPositiveButton(R.string.continue_button, this)
                 .setNegativeButton(R.string.cancel, this)
                 .setView(v)

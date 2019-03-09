@@ -13,26 +13,30 @@
 #include "components/webcrypto/crypto_data.h"
 #include "components/webcrypto/status.h"
 #include "crypto/openssl_util.h"
-#include "third_party/WebKit/public/platform/WebCryptoAlgorithmParams.h"
-#include "third_party/WebKit/public/platform/WebCryptoKeyAlgorithm.h"
+#include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
+#include "third_party/boringssl/src/include/openssl/evp.h"
 
 namespace webcrypto {
 
 namespace {
 
 const blink::WebCryptoKeyUsageMask kAllKeyUsages =
-    blink::WebCryptoKeyUsageDeriveKey | blink::WebCryptoKeyUsageDeriveBits;
+    blink::kWebCryptoKeyUsageDeriveKey | blink::kWebCryptoKeyUsageDeriveBits;
 
 class Pbkdf2Implementation : public AlgorithmImplementation {
  public:
   Pbkdf2Implementation() {}
 
-  Status VerifyKeyUsagesBeforeImportKey(
-      blink::WebCryptoKeyFormat format,
-      blink::WebCryptoKeyUsageMask usages) const override {
+  Status ImportKey(blink::WebCryptoKeyFormat format,
+                   const CryptoData& key_data,
+                   const blink::WebCryptoAlgorithm& algorithm,
+                   bool extractable,
+                   blink::WebCryptoKeyUsageMask usages,
+                   blink::WebCryptoKey* key) const override {
     switch (format) {
-      case blink::WebCryptoKeyFormatRaw:
-        return CheckSecretKeyCreationUsages(kAllKeyUsages, usages);
+      case blink::kWebCryptoKeyFormatRaw:
+        return ImportKeyRaw(key_data, algorithm, extractable, usages, key);
       default:
         return Status::ErrorUnsupportedImportKeyFormat();
     }
@@ -42,10 +46,17 @@ class Pbkdf2Implementation : public AlgorithmImplementation {
                       const blink::WebCryptoAlgorithm& algorithm,
                       bool extractable,
                       blink::WebCryptoKeyUsageMask usages,
-                      blink::WebCryptoKey* key) const override {
+                      blink::WebCryptoKey* key) const {
+    Status status = CheckKeyCreationUsages(kAllKeyUsages, usages);
+    if (status.IsError())
+      return status;
+
+    if (extractable)
+      return Status::ErrorImportExtractableKdfKey();
+
     const blink::WebCryptoKeyAlgorithm key_algorithm =
-        blink::WebCryptoKeyAlgorithm::createWithoutParams(
-            blink::WebCryptoAlgorithmIdPbkdf2);
+        blink::WebCryptoKeyAlgorithm::CreateWithoutParams(
+            blink::kWebCryptoAlgorithmIdPbkdf2);
 
     return CreateWebCryptoSecretKey(key_data, key_algorithm, extractable,
                                     usages, key);
@@ -64,12 +75,18 @@ class Pbkdf2Implementation : public AlgorithmImplementation {
     if (optional_length_bits % 8)
       return Status::ErrorPbkdf2InvalidLength();
 
-    const blink::WebCryptoPbkdf2Params* params = algorithm.pbkdf2Params();
+    // According to RFC 2898 "dkLength" (derived key length) is
+    // described as being a "positive integer", so it is an error for
+    // it to be 0.
+    if (optional_length_bits == 0)
+      return Status::ErrorPbkdf2DeriveBitsLengthZero();
 
-    if (params->iterations() == 0)
+    const blink::WebCryptoPbkdf2Params* params = algorithm.Pbkdf2Params();
+
+    if (params->Iterations() == 0)
       return Status::ErrorPbkdf2Iterations0();
 
-    const EVP_MD* digest_algorithm = GetDigest(params->hash());
+    const EVP_MD* digest_algorithm = GetDigest(params->GetHash());
     if (!digest_algorithm)
       return Status::ErrorUnsupported();
 
@@ -80,7 +97,7 @@ class Pbkdf2Implementation : public AlgorithmImplementation {
 
     if (!PKCS5_PBKDF2_HMAC(
             reinterpret_cast<const char*>(password.data()), password.size(),
-            params->salt().data(), params->salt().size(), params->iterations(),
+            params->Salt().Data(), params->Salt().size(), params->Iterations(),
             digest_algorithm, keylen_bytes, derived_bytes->data())) {
       return Status::OperationError();
     }
@@ -93,6 +110,14 @@ class Pbkdf2Implementation : public AlgorithmImplementation {
                                 blink::WebCryptoKeyUsageMask usages,
                                 const CryptoData& key_data,
                                 blink::WebCryptoKey* key) const override {
+    if (algorithm.ParamsType() != blink::kWebCryptoKeyAlgorithmParamsTypeNone ||
+        type != blink::kWebCryptoKeyTypeSecret)
+      return Status::ErrorUnexpected();
+
+    // NOTE: Unlike ImportKeyRaw(), this does not enforce extractable==false.
+    // This is intentional. Although keys cannot currently be created with
+    // extractable==true, earlier implementations permitted this, so
+    // de-serialization by structured clone should not reject them.
     return CreateWebCryptoSecretKey(key_data, algorithm, extractable, usages,
                                     key);
   }

@@ -4,24 +4,20 @@
 
 #include "chrome/browser/extensions/api/identity/gaia_web_auth_flow.h"
 
+#include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/chrome_signin_client_factory.h"
-#include "chrome/browser/signin/profile_oauth2_token_service_factory.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
-#include "components/signin/core/browser/profile_oauth2_token_service.h"
-#include "components/signin/core/browser/signin_manager.h"
-#include "content/public/browser/browser_thread.h"
-#include "google_apis/gaia/gaia_constants.h"
+#include "chrome/browser/signin/chrome_device_id_helper.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "components/signin/core/browser/ubertoken_fetcher.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "net/base/escape.h"
-#include "net/ssl/channel_id_service.h"
-#include "net/url_request/url_request_context.h"
-#include "net/url_request/url_request_context_getter.h"
+#include "services/identity/public/cpp/identity_manager.h"
 
 namespace extensions {
 
@@ -42,7 +38,7 @@ GaiaWebAuthFlow::GaiaWebAuthFlow(Delegate* delegate,
                            "account_id",
                            token_key->account_id);
 
-  const char kOAuth2RedirectPathFormat[] = "/%s#";
+  const char kOAuth2RedirectPathFormat[] = "/%s";
   const char kOAuth2AuthorizeFormat[] =
       "?response_type=token&approval_prompt=force&authuser=0&"
       "client_id=%s&"
@@ -55,18 +51,15 @@ GaiaWebAuthFlow::GaiaWebAuthFlow(Delegate* delegate,
       "&device_id=%s&"
       "device_type=chrome";
 
-  std::vector<std::string> scopes(token_key->scopes.begin(),
-                                  token_key->scopes.end());
-  std::vector<std::string> client_id_parts = base::SplitString(
+  std::vector<base::StringPiece> scopes(token_key->scopes.begin(),
+                                        token_key->scopes.end());
+  std::vector<base::StringPiece> client_id_parts = base::SplitStringPiece(
       oauth2_client_id, ".", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   std::reverse(client_id_parts.begin(), client_id_parts.end());
   redirect_scheme_ = base::JoinString(client_id_parts, ".");
   std::string signin_scoped_device_id;
-  // profile_ can be nullptr in unittests.
-  SigninClient* signin_client =
-      profile_ ? ChromeSigninClientFactory::GetForProfile(profile_) : nullptr;
-  if (signin_client)
-    signin_scoped_device_id = signin_client->GetSigninScopedDeviceId();
+  if (profile_)
+    signin_scoped_device_id = GetSigninScopedDeviceIdForProfile(profile_);
 
   redirect_path_prefix_ = base::StringPrintf(kOAuth2RedirectPathFormat,
                                              token_key->extension_id.c_str());
@@ -104,31 +97,30 @@ GaiaWebAuthFlow::~GaiaWebAuthFlow() {
 }
 
 void GaiaWebAuthFlow::Start() {
-  io_helper_.reset(new IOHelper(weak_ptr_factory_.GetWeakPtr(),
-                                profile_->GetRequestContext()));
-  content::BrowserThread::PostTask(
-      content::BrowserThread::IO,
-      FROM_HERE,
-      base::Bind(&GaiaWebAuthFlow::IOHelper::PrepareRequestContext,
-                 base::Unretained(io_helper_.get())));
+  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
+  ubertoken_fetcher_ = identity_manager->CreateUbertokenFetcherForAccount(
+      account_id_,
+      base::BindOnce(&GaiaWebAuthFlow::OnUbertokenFetchComplete,
+                     base::Unretained(this)),
+      gaia::GaiaSource::kChrome, profile_->GetURLLoaderFactory(),
+      /*bound_to_channel_id=*/false);
 }
 
-void GaiaWebAuthFlow::StartUberTokenFetch() {
-  ProfileOAuth2TokenService* token_service =
-      ProfileOAuth2TokenServiceFactory::GetForProfile(profile_);
-  context_getter_ = new net::TrivialURLRequestContextGetter(
-      io_helper_->ubertoken_request_context(),
-      profile_->GetRequestContext()->GetNetworkTaskRunner());
-  ubertoken_fetcher_.reset(new UbertokenFetcher(token_service,
-                                                this,
-                                                GaiaConstants::kChromeSource,
-                                                context_getter_.get()));
-  ubertoken_fetcher_->StartFetchingToken(account_id_);
-}
+void GaiaWebAuthFlow::OnUbertokenFetchComplete(GoogleServiceAuthError error,
+                                               const std::string& token) {
+  if (error != GoogleServiceAuthError::AuthErrorNone()) {
+    TRACE_EVENT_ASYNC_STEP_PAST1("identity", "GaiaWebAuthFlow", this,
+                                 "OnUbertokenFetchComplete", "error",
+                                 error.ToString());
 
-void GaiaWebAuthFlow::OnUbertokenSuccess(const std::string& token) {
-  TRACE_EVENT_ASYNC_STEP_PAST0(
-      "identity", "GaiaWebAuthFlow", this, "OnUbertokenSuccess");
+    DVLOG(1) << "OnUbertokenFetchComplete failure: " << error.error_message();
+    delegate_->OnGaiaFlowFailure(GaiaWebAuthFlow::SERVICE_AUTH_ERROR, error,
+                                 std::string());
+    return;
+  }
+
+  TRACE_EVENT_ASYNC_STEP_PAST0("identity", "GaiaWebAuthFlow", this,
+                               "OnUbertokenFetchComplete");
 
   const char kMergeSessionQueryFormat[] = "?uberauth=%s&"
                                           "continue=%s&"
@@ -143,19 +135,6 @@ void GaiaWebAuthFlow::OnUbertokenSuccess(const std::string& token) {
 
   web_flow_ = CreateWebAuthFlow(merge_url);
   web_flow_->Start();
-}
-
-void GaiaWebAuthFlow::OnUbertokenFailure(const GoogleServiceAuthError& error) {
-  TRACE_EVENT_ASYNC_STEP_PAST1("identity",
-                               "GaiaWebAuthFlow",
-                               this,
-                               "OnUbertokenSuccess",
-                               "error",
-                               error.ToString());
-
-  DVLOG(1) << "OnUbertokenFailure: " << error.error_message();
-  delegate_->OnGaiaFlowFailure(
-      GaiaWebAuthFlow::SERVICE_AUTH_ERROR, error, std::string());
 }
 
 void GaiaWebAuthFlow::OnAuthFlowFailure(WebAuthFlow::Failure failure) {
@@ -200,26 +179,21 @@ void GaiaWebAuthFlow::OnAuthFlowURLChange(const GURL& url) {
 
   // The format of the target URL is:
   //     reversed.oauth.client.id:/extensionid#access_token=TOKEN
-  //
-  // Because there is no double slash, everything after the scheme is
-  // interpreted as a path, including the fragment.
 
   if (url.scheme() == redirect_scheme_ && !url.has_host() && !url.has_port() &&
       base::StartsWith(url.GetContent(), redirect_path_prefix_,
-                       base::CompareCase::SENSITIVE)) {
+                       base::CompareCase::SENSITIVE) &&
+      url.has_ref()) {
     web_flow_.release()->DetachDelegateAndDelete();
 
-    std::string fragment = url.GetContent().substr(
-        redirect_path_prefix_.length(), std::string::npos);
+    std::string fragment = url.ref();
     base::StringPairs pairs;
     base::SplitStringIntoKeyValuePairs(fragment, '=', '&', &pairs);
     std::string access_token;
     std::string error;
     std::string expiration;
 
-    for (base::StringPairs::iterator it = pairs.begin();
-         it != pairs.end();
-         ++it) {
+    for (auto it = pairs.begin(); it != pairs.end(); ++it) {
       if (it->first == kOAuth2RedirectAccessTokenKey)
         access_token = it->second;
       else if (it->first == kOAuth2RedirectErrorKey)

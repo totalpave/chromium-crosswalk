@@ -6,9 +6,11 @@
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/threading/thread_restrictions.h"
 #include "net/cert/ev_root_ca_metadata.h"
 #include "net/cert/x509_certificate.h"
-#include "testing/gtest/include/gtest/gtest.h"
+#include "net/cert/x509_util.h"
+#include "net/test/test_data_directory.h"
 
 namespace net {
 
@@ -25,6 +27,23 @@ CertificateList CreateCertificateListFromFile(
                                                          format);
 }
 
+::testing::AssertionResult LoadCertificateFiles(
+    const std::vector<std::string>& cert_filenames,
+    CertificateList* certs) {
+  certs->clear();
+  for (const std::string& filename : cert_filenames) {
+    scoped_refptr<X509Certificate> cert = CreateCertificateChainFromFile(
+        GetTestCertsDirectory(), filename, X509Certificate::FORMAT_AUTO);
+    if (!cert)
+      return ::testing::AssertionFailure()
+             << "Failed loading certificate from file: " << filename
+             << " (in directory: " << GetTestCertsDirectory().value() << ")";
+    certs->push_back(cert);
+  }
+
+  return ::testing::AssertionSuccess();
+}
+
 scoped_refptr<X509Certificate> CreateCertificateChainFromFile(
     const base::FilePath& certs_dir,
     const std::string& cert_file,
@@ -34,18 +53,19 @@ scoped_refptr<X509Certificate> CreateCertificateChainFromFile(
   if (certs.empty())
     return NULL;
 
-  X509Certificate::OSCertHandles intermediates;
+  std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> intermediates;
   for (size_t i = 1; i < certs.size(); ++i)
-    intermediates.push_back(certs[i]->os_cert_handle());
+    intermediates.push_back(bssl::UpRef(certs[i]->cert_buffer()));
 
-  scoped_refptr<X509Certificate> result(X509Certificate::CreateFromHandle(
-        certs[0]->os_cert_handle(), intermediates));
+  scoped_refptr<X509Certificate> result(X509Certificate::CreateFromBuffer(
+      bssl::UpRef(certs[0]->cert_buffer()), std::move(intermediates)));
   return result;
 }
 
 scoped_refptr<X509Certificate> ImportCertFromFile(
     const base::FilePath& certs_dir,
     const std::string& cert_file) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
   base::FilePath cert_path = certs_dir.AppendASCII(cert_file);
   std::string cert_data;
   if (!base::ReadFileToString(cert_path, &cert_data))
@@ -60,10 +80,9 @@ scoped_refptr<X509Certificate> ImportCertFromFile(
 }
 
 ScopedTestEVPolicy::ScopedTestEVPolicy(EVRootCAMetadata* ev_root_ca_metadata,
-                                       const SHA1HashValue& fingerprint,
+                                       const SHA256HashValue& fingerprint,
                                        const char* policy)
-    : fingerprint_(fingerprint),
-      ev_root_ca_metadata_(ev_root_ca_metadata) {
+    : fingerprint_(fingerprint), ev_root_ca_metadata_(ev_root_ca_metadata) {
   EXPECT_TRUE(ev_root_ca_metadata->AddEVCA(fingerprint, policy));
 }
 

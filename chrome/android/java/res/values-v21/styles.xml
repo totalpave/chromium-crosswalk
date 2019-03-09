@@ -4,28 +4,24 @@
      found in the LICENSE file. -->
 
 <resources>
-    <!-- Preferences -->
-    <style name="PreferencesTheme" parent="ThemeWithActionBar">
-        <item name="android:textColorLink">@color/pref_accent_color</item>
-        <item name="android:alertDialogTheme">@style/PreferencesDialogTheme</item>
-        <item name="android:divider">@null</item>
-        <item name="android:spinnerItemStyle">@style/PreferenceSpinnerItem</item>
-        <item name="floatLabelTextAppearance">@style/PreferenceFloatLabelTextAppearance</item>
-        <item name="floatLabelPaddingLeft">@dimen/pref_autofill_field_horizontal_padding</item>
-        <item name="floatLabelPaddingRight">@dimen/pref_autofill_field_horizontal_padding</item>
-        <item name="floatLabelPaddingTop">@dimen/pref_autofill_field_top_margin</item>
+    <style name="NavigationPopupDialog" parent="Widget.AppCompat.Light.ListPopupWindow">
+        <item name="android:popupElevation">0dp</item>
     </style>
-    <style name="PreferencesDialogTheme" parent="@android:style/Theme.Material.Light.Dialog.Alert">
-        <item name="android:colorAccent">@color/pref_accent_color</item>
+
+    <!-- Preferences -->
+    <style name="Theme.Chromium.Preferences" parent="Base.Theme.Chromium.Preferences">
+        <item name="android:divider">@null</item>
+        <!-- Overriding alertDialogTheme pre-v21 with our custom AlertDialog theme causes bad visual
+             states on ListPreference because we don't use the support library ListPreference. -->
+        <item name="android:alertDialogTheme">@style/Theme.Chromium.AlertDialog</item>
     </style>
     <style name="PreferenceCategoryWithButtonStyle">
         <item name="android:paddingStart">?android:attr/listPreferredItemPaddingStart</item>
         <item name="android:paddingEnd">4dp</item>
     </style>
-    <style name="PreferenceCategoryTextStyle">
-        <item name="android:fontFamily">sans-serif-medium</item>
+    <style name="TextAppearance.PreferenceCategoryText" parent="TextAppearance.RobotoMediumStyle">
         <item name="android:textColor">@color/pref_accent_color</item>
-        <item name="android:textSize">14sp</item>
+        <item name="android:textSize">12sp</item>
     </style>
     <style name="PreferenceTitle">
         <item name="android:ellipsize">end</item>
@@ -33,8 +29,7 @@
         <item name="android:textAppearance">?android:attr/textAppearanceListItem</item>
     </style>
     <style name="PreferenceSummary">
-        <item name="android:textAppearance">?android:attr/textAppearanceListItemSecondary</item>
-        <item name="android:textColor">?android:attr/textColorSecondary</item>
+        <item name="android:textAppearance">@style/TextAppearance.BlackBody</item>
     </style>
     <style name="PreferenceLayoutBase">
         <item name="android:background">?android:attr/activatedBackgroundIndicator</item>
@@ -45,22 +40,6 @@
         <item name="android:paddingEnd">?android:attr/listPreferredItemPaddingEnd</item>
     </style>
     <style name="PreferenceLayout" parent="PreferenceLayoutBase" />
-
-    <!-- Cast and media playback notifications -->
-    <style name="MediaNotificationTitle"
-        parent="@android:style/TextAppearance.Material.Notification.Title">
-    </style>
-    <style name="MediaNotificationText"
-        parent="@android:style/TextAppearance.Material.Notification"/>
-    <style name="RemoteNotificationTitle"
-        parent="@android:style/TextAppearance.Material.Notification.Title">
-        <item name="android:layout_marginBottom">4dp</item>
-    </style>
-    <style name="RemoteNotificationText"
-        parent="@android:style/TextAppearance.Material.Notification.Line2"/>
-    <style name="RemoteNotificationProgressBar" parent="@android:style/Widget.ProgressBar.Horizontal">
-        <item name="android:minHeight">5dp</item>
-    </style>
 
     <!-- Web Notifications -->
     <style name="WebNotificationTitle"
@@ -83,6 +62,10 @@
     <style name="WebNotificationButton"
         parent="@android:style/Widget.DeviceDefault.Light.Button.Borderless.Small">
         <item name="android:background">@drawable/web_notification_button_background</item>
+        <item name="android:textAppearance">@style/TextAppearance.WebNotificationButton</item>
+    </style>
+    <style name="TextAppearance.WebNotificationButton"
+        parent="android:TextAppearance.DeviceDefault.Widget.Button">
         <item name="android:textColor">@color/secondary_text_default_material_light</item>
     </style>
     <style name="WebNotificationSettingsButton"
@@ -101,8 +84,8 @@
         <item name="android:padding">3dp</item>
     </style>
 
-    <style name="IncognitoTheme" parent="MainTheme">
-        <item name="android:colorPrimary">@color/incognito_primary_color</item>
+    <style name="Theme.Chromium.Incognito" parent="Theme.Chromium.WithWindowAnimation">
+        <item name="android:colorPrimary">@color/incognito_modern_primary_color</item>
     </style>
 
     <!-- Theme variation for low-end devices.
@@ -110,23 +93,21 @@
         Since ChromeActivities are not HW accelerated, they don't get fancy
         material shadows for popups. This theme sets drawable with pre-baked
         shadows to those popups to make them look better.
-        'popup_background_shadow' is a copy of 'abc_popup_background_mtrl_mult'
+        'popup_bg_tinted' is a 9-patch similar to 'abc_popup_background_mtrl_mult'
         drawable from Android support library, where it's used to simulate
         material design on earlier Android versions.
     -->
-    <style name="PopupWindow.LowEnd" parent="android:Widget.Material.Light.PopupWindow">
-        <item name="android:popupBackground">@drawable/popup_background_shadow</item>
-    </style>
     <style name="ListPopupWindow.LowEnd" parent="android:Widget.Material.Light.ListPopupWindow">
-        <item name="android:popupBackground">@drawable/popup_background_shadow</item>
+        <item name="android:popupBackground">@drawable/popup_bg_tinted</item>
     </style>
     <style name="Spinner.LowEnd" parent="android:Widget.Material.Light.Spinner">
-        <item name="android:popupBackground">@drawable/popup_background_shadow</item>
+        <item name="android:popupBackground">@drawable/popup_bg_tinted</item>
     </style>
     <style name="AutoCompleteTextView.LowEnd" parent="android:Widget.Material.Light.AutoCompleteTextView">
-        <item name="android:popupBackground">@drawable/popup_background_shadow</item>
+        <item name="android:popupBackground">@drawable/popup_bg_tinted</item>
     </style>
-    <style name="MainTheme.LowEnd" parent="MainTheme">
+    <style name="Theme.Chromium.WithWindowAnimation.LowEnd"
+        parent="Theme.Chromium.WithWindowAnimation">
         <item name="android:popupWindowStyle">@style/ListPopupWindow.LowEnd</item>
         <item name="android:listPopupWindowStyle">@style/ListPopupWindow.LowEnd</item>
         <item name="android:spinnerStyle">@style/Spinner.LowEnd</item>

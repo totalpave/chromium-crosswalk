@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/macros.h"
+#include "base/metrics/field_trial.h"
 #include "base/threading/thread_checker.h"
 
 namespace base {
@@ -17,11 +18,14 @@ class FilePath;
 namespace metrics {
 class MetricsService;
 class MetricsServiceClient;
-class MetricsStateManager;
 }
 
 namespace rappor {
-class RapporService;
+class RapporServiceImpl;
+}
+
+namespace ukm {
+class UkmService;
 }
 
 namespace variations {
@@ -34,7 +38,7 @@ class MetricsServicesManagerClient;
 
 // MetricsServicesManager is a helper class for embedders that use the various
 // metrics-related services in a Chrome-like fashion: MetricsService (via its
-// client), RapporService and VariationsService.
+// client), RapporServiceImpl and VariationsService.
 class MetricsServicesManager {
  public:
   // Creates the MetricsServicesManager with the given client.
@@ -42,12 +46,25 @@ class MetricsServicesManager {
       std::unique_ptr<MetricsServicesManagerClient> client);
   virtual ~MetricsServicesManager();
 
+  // Returns the preferred entropy provider used to seed persistent activities
+  // based on whether or not metrics reporting is permitted on this client.
+  //
+  // If there's consent to report metrics, this method returns an entropy
+  // provider that has a high source of entropy, partially based on the client
+  // ID. Otherwise, it returns an entropy provider that is based on a low
+  // entropy source.
+  std::unique_ptr<const base::FieldTrial::EntropyProvider>
+  CreateEntropyProvider();
+
   // Returns the MetricsService, creating it if it hasn't been created yet (and
   // additionally creating the MetricsServiceClient in that case).
   metrics::MetricsService* GetMetricsService();
 
-  // Returns the RapporService, creating it if it hasn't been created yet.
-  rappor::RapporService* GetRapporService();
+  // Returns the RapporServiceImpl, creating it if it hasn't been created yet.
+  rappor::RapporServiceImpl* GetRapporServiceImpl();
+
+  // Returns the UkmService, creating it if it hasn't been created yet.
+  ukm::UkmService* GetUkmService();
 
   // Returns the VariationsService, creating it if it hasn't been created yet.
   variations::VariationsService* GetVariationsService();
@@ -59,29 +76,35 @@ class MetricsServicesManager {
   // renderer process exits unexpectedly.
   void OnRendererProcessCrash();
 
-  // Update the managed services when permissions for recording/uploading
-  // metrics change.
-  void UpdatePermissions(bool may_record, bool may_upload);
-
   // Update the managed services when permissions for uploading metrics change.
   void UpdateUploadPermissions(bool may_upload);
+
+  // Gets the current state of metric reporting.
+  bool IsMetricsReportingEnabled() const;
 
  private:
   // Update the managed services when permissions for recording/uploading
   // metrics change.
-  void UpdateRapporService();
+  void UpdateRapporServiceImpl();
 
   // Returns the MetricsServiceClient, creating it if it hasn't been
   // created yet (and additionally creating the MetricsService in that case).
   metrics::MetricsServiceClient* GetMetricsServiceClient();
 
-  metrics::MetricsStateManager* GetMetricsStateManager();
-
   // Update which services are running to match current permissions.
   void UpdateRunningServices();
 
+  // Update the state of UkmService to match current permissions.
+  void UpdateUkmService();
+
+  // Update the managed services when permissions for recording/uploading
+  // metrics change.
+  void UpdatePermissions(bool current_may_record,
+                         bool current_consent_given,
+                         bool current_may_upload);
+
   // The client passed in from the embedder.
-  std::unique_ptr<MetricsServicesManagerClient> client_;
+  const std::unique_ptr<MetricsServicesManagerClient> client_;
 
   // Ensures that all functions are called from the same thread.
   base::ThreadChecker thread_checker_;
@@ -92,11 +115,14 @@ class MetricsServicesManager {
   // The current metrics recording setting.
   bool may_record_;
 
+  // The current metrics setting reflecting if consent was given.
+  bool consent_given_;
+
   // The MetricsServiceClient. Owns the MetricsService.
   std::unique_ptr<metrics::MetricsServiceClient> metrics_service_client_;
 
-  // The RapporService, for RAPPOR metric uploads.
-  std::unique_ptr<rappor::RapporService> rappor_service_;
+  // The RapporServiceImpl, for RAPPOR metric uploads.
+  std::unique_ptr<rappor::RapporServiceImpl> rappor_service_;
 
   // The VariationsService, for server-side experiments infrastructure.
   std::unique_ptr<variations::VariationsService> variations_service_;

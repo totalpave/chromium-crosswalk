@@ -4,13 +4,13 @@
 
 package org.chromium.chrome.browser.identity;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.provider.Settings;
+import android.support.annotation.Nullable;
 
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.browser.util.HashUtil;
-
-import javax.annotation.Nullable;
 
 /**
  * Unique identificator implementation that uses the Settings.Secure.ANDROID_ID field and MD5
@@ -39,6 +39,7 @@ public class SettingsSecureBasedIdentificationGenerator implements UniqueIdentif
         return md5Hash == null ? "" : md5Hash;
     }
 
+    @SuppressLint("HardwareIds")
     @VisibleForTesting
     String getAndroidId() {
         return Settings.Secure.getString(mContext.getContentResolver(), Settings.Secure.ANDROID_ID);

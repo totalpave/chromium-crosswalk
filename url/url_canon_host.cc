@@ -67,6 +67,17 @@ const unsigned char kHostCharLookup[0x80] = {
 //   p    q    r    s    t    u    v    w    x    y    z    {    |    }    ~
     'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',kEsc,kEsc,kEsc,  0 ,  0 };
 
+// RFC1034 maximum FQDN length.
+constexpr int kMaxHostLength = 253;
+
+// Generous padding to account for the fact that UTS#46 normalization can cause
+// a long string to actually shrink and fit within the 253 character RFC1034
+// FQDN length limit. Note that this can still be too short for pathological
+// cases: An arbitrary number of characters (e.g. U+00AD SOFT HYPHEN) can be
+// removed from the input by UTS#46 processing. However, this should be
+// sufficient for all normally-encountered, non-abusive hostname strings.
+constexpr int kMaxHostBufferLength = kMaxHostLength*5;
+
 const int kTempHostBufferLen = 1024;
 typedef RawCanonOutputT<char, kTempHostBufferLen> StackBuffer;
 typedef RawCanonOutputT<base::char16, kTempHostBufferLen> StackBufferW;
@@ -159,7 +170,6 @@ bool DoSimpleHost(const INCHAR* host,
       *has_non_ascii = true;
     }
   }
-
   return success;
 }
 
@@ -172,6 +182,10 @@ bool DoIDNHost(const base::char16* src, int src_len, CanonOutput* output) {
   RawCanonOutputW<kTempHostBufferLen> url_escaped_host;
   bool has_non_ascii;
   DoSimpleHost(src, src_len, &url_escaped_host, &has_non_ascii);
+  if (url_escaped_host.length() > kMaxHostBufferLength) {
+    AppendInvalidNarrowString(src, 0, src_len, output);
+    return false;
+  }
 
   StackBufferW wide_output;
   if (!IDNToASCII(url_escaped_host.data(),
@@ -308,7 +322,25 @@ bool DoComplexHost(const base::char16* host, int host_len,
   return DoIDNHost(host, host_len, output);
 }
 
-template<typename CHAR, typename UCHAR>
+template <typename CHAR, typename UCHAR>
+bool DoHostSubstring(const CHAR* spec,
+                     const Component& host,
+                     CanonOutput* output) {
+  bool has_non_ascii, has_escaped;
+  ScanHostname<CHAR, UCHAR>(spec, host, &has_non_ascii, &has_escaped);
+
+  if (has_non_ascii || has_escaped) {
+    return DoComplexHost(&spec[host.begin], host.len, has_non_ascii,
+                         has_escaped, output);
+  }
+
+  const bool success =
+      DoSimpleHost(&spec[host.begin], host.len, output, &has_non_ascii);
+  DCHECK(!has_non_ascii);
+  return success;
+}
+
+template <typename CHAR, typename UCHAR>
 void DoHost(const CHAR* spec,
             const Component& host,
             CanonOutput* output,
@@ -320,26 +352,10 @@ void DoHost(const CHAR* spec,
     return;
   }
 
-  bool has_non_ascii, has_escaped;
-  ScanHostname<CHAR, UCHAR>(spec, host, &has_non_ascii, &has_escaped);
-
   // Keep track of output's initial length, so we can rewind later.
   const int output_begin = output->length();
 
-  bool success;
-  if (!has_non_ascii && !has_escaped) {
-    success = DoSimpleHost(&spec[host.begin], host.len,
-                           output, &has_non_ascii);
-    DCHECK(!has_non_ascii);
-  } else {
-    success = DoComplexHost(&spec[host.begin], host.len,
-                            has_non_ascii, has_escaped, output);
-  }
-
-  if (!success) {
-    // Canonicalization failed. Set BROKEN to notify the caller.
-    host_info->family = CanonHostInfo::BROKEN;
-  } else {
+  if (DoHostSubstring<CHAR, UCHAR>(spec, host, output)) {
     // After all the other canonicalization, check if we ended up with an IP
     // address. IP addresses are small, so writing into this temporary buffer
     // should not cause an allocation.
@@ -355,6 +371,9 @@ void DoHost(const CHAR* spec,
       output->set_length(output_begin);
       output->Append(canon_ip.data(), canon_ip.length());
     }
+  } else {
+    // Canonicalization failed. Set BROKEN to notify the caller.
+    host_info->family = CanonHostInfo::BROKEN;
   }
 
   host_info->out_host = MakeRange(output_begin, output->length());
@@ -394,6 +413,18 @@ void CanonicalizeHostVerbose(const base::char16* spec,
                              CanonOutput* output,
                              CanonHostInfo* host_info) {
   DoHost<base::char16, base::char16>(spec, host, output, host_info);
+}
+
+bool CanonicalizeHostSubstring(const char* spec,
+                               const Component& host,
+                               CanonOutput* output) {
+  return DoHostSubstring<char, unsigned char>(spec, host, output);
+}
+
+bool CanonicalizeHostSubstring(const base::char16* spec,
+                               const Component& host,
+                               CanonOutput* output) {
+  return DoHostSubstring<base::char16, base::char16>(spec, host, output);
 }
 
 }  // namespace url

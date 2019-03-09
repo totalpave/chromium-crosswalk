@@ -4,14 +4,18 @@
 
 package org.chromium.chrome.browser.util;
 
+import android.content.Context;
+import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Color;
+import android.support.annotation.ColorRes;
+import android.support.v7.content.res.AppCompatResources;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ntp.NewTabPage;
-import org.chromium.chrome.browser.ntp.NtpColorUtils;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabThemeColorHelper;
 
 /**
  * Helper functions for working with colors.
@@ -21,6 +25,7 @@ public class ColorUtils {
     private static final float LIGHTNESS_OPAQUE_BOX_THRESHOLD = 0.82f;
     private static final float LOCATION_BAR_TRANSPARENT_BACKGROUND_ALPHA = 0.2f;
     private static final float MAX_LUMINANCE_FOR_VALID_THEME_COLOR = 0.94f;
+    private static final float THEMED_FOREGROUND_BLACK_FRACTION = 0.64f;
 
     /** Percentage to darken a color by when setting the status bar color. */
     private static final float DARKEN_COLOR_FRACTION = 0.6f;
@@ -53,17 +58,100 @@ public class ColorUtils {
     }
 
     /**
-     * @return The base color for the textbox given a toolbar background color.
+     * Determines the default theme color used for toolbar based on the provided parameters.
+     * @param res {@link Resources} used to retrieve colors.
+     * @param isIncognito Whether to retrieve the default theme color for incognito mode.
+     * @return The default theme color.
      */
-    public static int getTextBoxColorForToolbarBackground(Resources res, Tab tab, int color) {
+    public static int getDefaultThemeColor(Resources res, boolean isIncognito) {
+        return isIncognito
+                ? ApiCompatibilityUtils.getColor(res, R.color.toolbar_background_primary_incognito)
+                : ApiCompatibilityUtils.getColor(res, R.color.toolbar_background_primary);
+    }
+
+    /**
+     * Returns the primary background color used as native page background based on the given
+     * parameters.
+     * @param res The {@link Resources} used to retrieve colors.
+     * @param isIncognito Whether or not the color is for incognito mode.
+     * @return The primary background color.
+     */
+    public static int getPrimaryBackgroundColor(Resources res, boolean isIncognito) {
+        return isIncognito
+                ? ApiCompatibilityUtils.getColor(res, R.color.incognito_modern_primary_color)
+                : ApiCompatibilityUtils.getColor(res, R.color.modern_primary_color);
+    }
+
+    /**
+     * Returns the icon tint resource to use based on the current parameters and whether the app is
+     * in night mode.
+     * @param useLight Whether or not the icon tint should be light when not in night mode.
+     * @return The {@link ColorRes} for the icon tint.
+     */
+    public static @ColorRes int getIconTintRes(boolean useLight) {
+        return useLight ? R.color.tint_on_dark_bg : R.color.standard_mode_tint;
+    }
+
+    /**
+     * Returns the icon tint to use based on the current parameters and whether the app is in night
+     * mode.
+     * @param context The {@link Context} used to retrieve colors.
+     * @param useLight Whether or not the icon tint should be light when not in night mode.
+     * @return The {@link ColorStateList} for the icon tint.
+     */
+    public static ColorStateList getIconTint(Context context, boolean useLight) {
+        return AppCompatResources.getColorStateList(context, getIconTintRes(useLight));
+    }
+
+    /**
+     * Returns the icon tint for based on the given parameters. Does not adjust color based on
+     * night mode as this may conflict with toolbar theme colors.
+     * @param useLight Whether or not the icon tint should be light.
+     * @return The {@link ColorRes} for the icon tint of themed toolbar.
+     */
+    public static @ColorRes int getThemedToolbarIconTintRes(boolean useLight) {
+        // Light toolbar theme colors may be used in night mode, so use toolbar_icon_tint_dark which
+        // is not overridden in night- resources.
+        return useLight ? R.color.tint_on_dark_bg : R.color.toolbar_icon_tint_dark;
+    }
+
+    /**
+     * Returns the icon tint for based on the given parameters. Does not adjust color based on
+     * night mode as this may conflict with toolbar theme colors.
+     * @param context The {@link Context} used to retrieve colors.
+     * @param useLight Whether or not the icon tint should be light.
+     * @return The {@link ColorStateList} for the icon tint of themed toolbar.
+     */
+    public static ColorStateList getThemedToolbarIconTint(Context context, boolean useLight) {
+        return AppCompatResources.getColorStateList(context, getThemedToolbarIconTintRes(useLight));
+    }
+
+    /**
+     * Determine the text box color based on the current toolbar background color.
+     * @param res {@link Resources} used to retrieve colors.
+     * @param isLocationBarShownInNtp Whether the location bar is currently shown in an NTP.
+     * @param color The color of the toolbar background.
+     @return The base color for the textbox given a toolbar background color.
+     */
+    public static int getTextBoxColorForToolbarBackground(
+            Resources res, boolean isLocationBarShownInNtp, int color) {
+        // If modern is enabled, it is a special case. It's toolbar is white with a darker text box
+        // background.
+        boolean usingDefaultThemeColor = ColorUtils.isUsingDefaultToolbarColor(res, false, color);
+        if (usingDefaultThemeColor) {
+            // In modern, the default theme color is white, so the text box uses a darker color
+            // which is different from all other cases. In the case of the NTP, the location bar is
+            // not visible by default, so we make it the same color as the background of the NTP.
+            return isLocationBarShownInNtp
+                    ? ApiCompatibilityUtils.getColor(res, R.color.modern_primary_color)
+                    : ApiCompatibilityUtils.getColor(res, R.color.toolbar_text_box_background);
+        }
+
         if (shouldUseOpaqueTextboxBackground(color)) {
             // NTP should have no visible textbox in the toolbar, so just return the toolbar's
             // background color.
-            if (tab.getNativePage() instanceof NewTabPage) {
-                return NtpColorUtils.getToolbarBackgroundColorResource(res);
-            }
-
-            return Color.WHITE;
+            return isLocationBarShownInNtp ? ApiCompatibilityUtils.getColor(res, R.color.ntp_bg)
+                                           : Color.WHITE;
         }
         return getColorWithOverlay(color, Color.WHITE, LOCATION_BAR_TRANSPARENT_BACKGROUND_ALPHA);
     }
@@ -72,10 +160,10 @@ public class ColorUtils {
      * @return Alpha for the textbox given a Tab.
      */
     public static float getTextBoxAlphaForToolbarBackground(Tab tab) {
-        int color = tab.getThemeColor();
         if (tab.getNativePage() instanceof NewTabPage) {
             if (((NewTabPage) tab.getNativePage()).isLocationBarShownInNTP()) return 0f;
         }
+        int color = TabThemeColorHelper.getColor(tab);
         return shouldUseOpaqueTextboxBackground(color)
                 ? 1f : LOCATION_BAR_TRANSPARENT_BACKGROUND_ALPHA;
     }
@@ -150,11 +238,38 @@ public class ColorUtils {
     /**
      * Test if the toolbar is using the default color.
      * @param resources The resources to get the toolbar primary color.
+     * @param isIncognito Whether to retrieve the default theme color for incognito mode.
      * @param color The color that the toolbar is using.
      * @return If the color is the default toolbar color.
      */
-    public static boolean isUsingDefaultToolbarColor(Resources resources, int color) {
-        return color == ApiCompatibilityUtils.getColor(resources, R.color.default_primary_color);
+    public static boolean isUsingDefaultToolbarColor(
+            Resources resources, boolean isIncognito, int color) {
+        return color == getDefaultThemeColor(resources, isIncognito);
+    }
+
+    /**
+     * Determine if a theme color is valid. A theme color is invalid if its luminance is > 0.94.
+     * @param color The color to test.
+     * @return True if the theme color is valid.
+     */
+    public static boolean isValidThemeColor(int color) {
+        return ColorUtils.getLightnessForColor(color) <= MAX_LUMINANCE_FOR_VALID_THEME_COLOR;
+    }
+
+    /**
+     * Compute a color to use for assets that sit on top of a themed background.
+     * @param themeColor The base theme color.
+     * @return A color to use for elements in the foreground (on top of the base theme color).
+     */
+    public static int getThemedAssetColor(int themeColor, boolean isIncognito) {
+        if (ColorUtils.shouldUseLightForegroundOnBackground(themeColor) || isIncognito) {
+            // Dark theme.
+            return Color.WHITE;
+        } else {
+            // Light theme.
+            return ColorUtils.getColorWithOverlay(themeColor, Color.BLACK,
+                    THEMED_FOREGROUND_BLACK_FRACTION);
+        }
     }
 
     /**

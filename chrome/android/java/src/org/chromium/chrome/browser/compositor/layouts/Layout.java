@@ -4,26 +4,19 @@
 
 package org.chromium.chrome.browser.compositor.layouts;
 
-import static org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.AnimatableAnimation.createAnimation;
-
 import android.content.Context;
-import android.graphics.Point;
-import android.graphics.Rect;
+import android.graphics.PointF;
 import android.graphics.RectF;
+import android.support.annotation.IntDef;
 import android.view.MotionEvent;
-import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.Interpolator;
 
 import org.chromium.base.VisibleForTesting;
-import org.chromium.base.annotations.SuppressFBWarnings;
 import org.chromium.chrome.browser.compositor.LayerTitleCache;
-import org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.Animatable;
-import org.chromium.chrome.browser.compositor.layouts.ChromeAnimation.Animation;
+import org.chromium.chrome.browser.compositor.animation.CompositorAnimationHandler;
 import org.chromium.chrome.browser.compositor.layouts.components.LayoutTab;
 import org.chromium.chrome.browser.compositor.layouts.components.VirtualView;
 import org.chromium.chrome.browser.compositor.layouts.content.TabContentManager;
-import org.chromium.chrome.browser.compositor.layouts.eventfilter.EdgeSwipeEventFilter.ScrollDirection;
 import org.chromium.chrome.browser.compositor.layouts.eventfilter.EventFilter;
 import org.chromium.chrome.browser.compositor.overlays.SceneOverlay;
 import org.chromium.chrome.browser.compositor.scene_layer.SceneLayer;
@@ -33,9 +26,10 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
-import org.chromium.content.browser.ContentViewCore;
 import org.chromium.ui.resources.ResourceManager;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -49,61 +43,28 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     /**
      * The orientation of the device.
      */
-    public interface Orientation {
-        public static final int UNSET = 0;
-        public static final int PORTRAIT = 1;
-        public static final int LANDSCAPE = 2;
+    @IntDef({Orientation.UNSET, Orientation.PORTRAIT, Orientation.LANDSCAPE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Orientation {
+        int UNSET = 0;
+        int PORTRAIT = 1;
+        int LANDSCAPE = 2;
     }
 
-    /**
-     * The sizing requirements of each layout.  These flags allow each layout to specify certain
-     * sizing allowances/constraints by combining them.
-     *
-     * TODO(dtrainor): Flesh out support for all of these flag combinations.
-     */
-    public interface SizingFlags {
-        /**
-         * The toolbar is allowed to be hidden.
-         */
-        public static final int ALLOW_TOOLBAR_HIDE = 0x1;
-
-        /**
-         * The toolbar is allowed to be shown.
-         */
-        public static final int ALLOW_TOOLBAR_SHOW = 0x10;
-
-        /**
-         * The toolbar is allowed to animate between the transitions. Note that this flag is not
-         * completely supported in all combinations with the other flags.  As functionality is
-         * added and required this will be improved.
-         */
-        public static final int ALLOW_TOOLBAR_ANIMATE = 0x100;
-
-        /**
-         * The layout requires a fullscreen size regardless of the toolbar position.
-         */
-        public static final int REQUIRE_FULLSCREEN_SIZE = 0x1000;
-
-        /**
-         * The layout does not support fullscreen and it should animate the toolbar away.
-         * A helper flag to make it easier to specify restrictions.
-         */
-        public static final int HELPER_NO_FULLSCREEN_SUPPORT =
-                ALLOW_TOOLBAR_SHOW | ALLOW_TOOLBAR_ANIMATE;
-
-        /**
-         * The layout supports persistent fullscreen and should hide the toolbar immediately.
-         * A helper flag to make it easier to specify restrictions.
-         */
-        public static final int HELPER_HIDE_TOOLBAR_IMMEDIATE = ALLOW_TOOLBAR_HIDE;
-
-        /**
-         * The layout fully supports fullscreen and the toolbar is allowed to show, hide, and
-         * animate.
-         * A helper flag to make it easier to specify restrictions.
-         */
-        public static final int HELPER_SUPPORTS_FULLSCREEN =
-                ALLOW_TOOLBAR_HIDE | ALLOW_TOOLBAR_SHOW | ALLOW_TOOLBAR_ANIMATE;
+    /** The possible variations of the visible viewport that different layouts may need. */
+    @IntDef({ViewportMode.ALWAYS_FULLSCREEN, ViewportMode.ALWAYS_SHOWING_BROWSER_CONTROLS,
+            ViewportMode.DYNAMIC_BROWSER_CONTROLS,
+            ViewportMode.USE_PREVIOUS_BROWSER_CONTROLS_STATE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ViewportMode {
+        /** The viewport is assumed to be always fullscreen. */
+        int ALWAYS_FULLSCREEN = 0;
+        /** The viewport is assuming that browser controls are permenantly shown. */
+        int ALWAYS_SHOWING_BROWSER_CONTROLS = 1;
+        /** The viewport will account for animating browser controls (both shown and hidden). */
+        int DYNAMIC_BROWSER_CONTROLS = 2;
+        /** Use a viewport that accounts for the browser controls state in the previous layout. */
+        int USE_PREVIOUS_BROWSER_CONTROLS_STATE = 3;
     }
 
     // Defines to make the code easier to read.
@@ -116,21 +77,20 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     public static final long UNSTALLED_ANIMATION_DURATION_MS = 500;
 
     // Drawing area properties.
-    private float mWidth;
-    private float mHeight;
-    private float mHeightMinusTopControls;
+    private float mWidthDp;
+    private float mHeightDp;
+    private float mTopBrowserControlsHeightDp;
+    private float mBottomBrowserControlsHeightDp;
 
     /** A {@link Context} instance. */
     private Context mContext;
 
     /** The current {@link Orientation} of the layout. */
-    private int mCurrentOrientation;
+    private @Orientation int mCurrentOrientation;
 
     // Tabs
     protected TabModelSelector mTabModelSelector;
     protected TabContentManager mTabContentManager;
-
-    private ChromeAnimation<Animatable<?>> mLayoutAnimations;
 
     // Tablet tab strip managers.
     private final List<SceneOverlay> mSceneOverlays = new ArrayList<SceneOverlay>();
@@ -138,7 +98,6 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     // Helpers
     private final LayoutUpdateHost mUpdateHost;
     protected final LayoutRenderHost mRenderHost;
-    private EventFilter mEventFilter;
 
     /** The tabs currently being rendered as part of this layout. The tabs are
      * drawn using the same ordering as this array. */
@@ -148,7 +107,10 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     private boolean mIsHiding;
 
     // The next id to show when the layout is hidden, or TabBase#INVALID_TAB_ID if no change.
-    private int mNextTabId = Tab.INVALID_TAB_ID;
+    protected int mNextTabId = Tab.INVALID_TAB_ID;
+
+    // The ratio of dp to px.
+    protected final float mDpToPx;
 
     /**
      * The {@link Layout} is not usable until sizeChanged is called.
@@ -156,21 +118,37 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @param context      The current Android's context.
      * @param updateHost   The parent {@link LayoutUpdateHost}.
      * @param renderHost   The parent {@link LayoutRenderHost}.
-     * @param eventFilter  The {@link EventFilter} this {@link Layout} is listening to.
      */
-    public Layout(Context context, LayoutUpdateHost updateHost, LayoutRenderHost renderHost,
-            EventFilter eventFilter) {
+    public Layout(Context context, LayoutUpdateHost updateHost, LayoutRenderHost renderHost) {
         mContext = context;
         mUpdateHost = updateHost;
         mRenderHost = renderHost;
-        mEventFilter = eventFilter;
 
         // Invalid sizes
-        mWidth = -1;
-        mHeight = -1;
-        mHeightMinusTopControls = -1;
+        mWidthDp = -1;
+        mHeightDp = -1;
+        mTopBrowserControlsHeightDp = -1;
+        mBottomBrowserControlsHeightDp = -1;
 
         mCurrentOrientation = Orientation.UNSET;
+        mDpToPx = context.getResources().getDisplayMetrics().density;
+    }
+
+    /**
+     * @return The handler responsible for running compositor animations.
+     */
+    public CompositorAnimationHandler getAnimationHandler() {
+        return mUpdateHost.getAnimationHandler();
+    }
+
+    /**
+     * Adds a {@link SceneOverlay} that can be shown in this layout to the first position in the
+     * scene overlay list, meaning it will be drawn behind all other overlays.
+     * @param overlay The {@link SceneOverlay} to be added.
+     */
+    void addSceneOverlayToBack(SceneOverlay overlay) {
+        assert !mSceneOverlays.contains(overlay);
+        mSceneOverlays.add(0, overlay);
     }
 
     /**
@@ -206,56 +184,6 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     }
 
     /**
-     * @return A {@link View} that should be the one the user can interact with.  This can be
-     *         {@code null} if there is no {@link View} representing {@link Tab} content that should
-     *         be interacted with at this time.
-     */
-    public View getViewForInteraction() {
-        if (!shouldDisplayContentOverlay()) return null;
-
-        Tab tab = mTabModelSelector.getCurrentTab();
-        if (tab == null) return null;
-
-        return tab.getView();
-    }
-
-    /**
-     * TODO(dtrainor): Remove after method is no longer used downstream.
-     * Used to get a list of Android {@link View}s that represent both the normal content as well as
-     * overlays.
-     * @param views A {@link List} that will be populated with {@link View}s that represent all of
-     *                the content in this {@link Layout}.
-     */
-    public void getAllViews(List<View> views) {
-        getAllContentViews(views);
-    }
-
-    /**
-     * Used to get a list of Android {@link View}s that represent both the normal content as well as
-     * overlays.
-     * @param views A {@link List} that will be populated with {@link View}s that represent all of
-     *                the content in this {@link Layout}.
-     */
-    public void getAllContentViews(List<View> views) {
-        Tab tab = mTabModelSelector.getCurrentTab();
-        if (tab == null) return;
-        tab.getAllContentViews(views);
-    }
-
-    /**
-     * Used to get a list of {@link ContentViewCore}s that represent both the normal content as well
-     * as overlays.  These are all {@link ContentViewCore}s currently showing or rendering content
-     * for this {@link Layout}.
-     * @param contents A {@link List} that will be populated with {@link ContentViewCore}s currently
-     *                 rendering content related to this {@link Layout}.
-     */
-    public void getAllContentViewCores(List<ContentViewCore> contents) {
-        Tab tab = mTabModelSelector.getCurrentTab();
-        if (tab == null) return;
-        tab.getAllContentViewCores(contents);
-    }
-
-    /**
      * Get a list of virtual views for accessibility.
      *
      * @param views A List to populate with virtual views.
@@ -275,8 +203,8 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @param isTitleNeeded   Whether a title will be shown.
      * @return                The newly created {@link LayoutTab}.
      */
-    public LayoutTab createLayoutTab(int id, boolean isIncognito,
-            boolean showCloseButton, boolean isTitleNeeded) {
+    public LayoutTab createLayoutTab(
+            int id, boolean isIncognito, boolean showCloseButton, boolean isTitleNeeded) {
         return createLayoutTab(id, isIncognito, showCloseButton, isTitleNeeded, -1.f, -1.f);
     }
 
@@ -306,6 +234,14 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      */
     public void releaseTabLayout(LayoutTab layoutTab) {
         mUpdateHost.releaseTabLayout(layoutTab.getId());
+    }
+
+    /**
+     * Releases cached title texture resources for the {@link LayoutTab}.
+     * @param layoutTab The {@link LayoutTab} to release resources for.
+     */
+    public void releaseResourcesForTab(LayoutTab layoutTab) {
+        mUpdateHost.releaseResourcesForTab(layoutTab.getId());
     }
 
     /**
@@ -362,33 +298,37 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
 
     /**
      * Called when the size of the viewport has changed.
-     * @param availableViewport      The actual viewport this {@link Layout} should be rendering to.
      * @param visibleViewport        The visible viewport that represents the area on the screen
-     *                               this {@link Layout} gets to draw to (potentially takes into
-     *                               account top controls).
-     * @param screenViewport         The viewport of the screen.
-     * @param heightMinusTopControls The height the {@link Layout} gets excluding the height of the
-     *                               top controls.  TODO(dtrainor): Look at getting rid of this.
+     *                               this {@link Layout} gets to draw to in px (potentially takes
+     *                               into account browser controls).
+     * @param screenViewport         The viewport of the screen in px.
+     * @param heightMinusBrowserControls The height the {@link Layout} gets excluding the height of
+     *                               the browser controls in px. TODO(dtrainor): Look at getting rid
+     *                               of this.
      * @param orientation            The new orientation.  Valid values are defined by
      *                               {@link Orientation}.
      */
-    public final void sizeChanged(RectF availableViewport, RectF visibleViewport,
-            RectF screenViewport, float heightMinusTopControls, int orientation) {
-        // 1. Pull out this Layout's specific width and height properties based on the available
-        // viewport.
-        float width = availableViewport.width();
-        float height = availableViewport.height();
+    public final void sizeChanged(RectF visibleViewportPx, RectF screenViewportPx,
+            float topBrowserControlsHeightPx, float bottomBrowserControlsHeightPx,
+            @Orientation int orientation) {
+        // 1. Pull out this Layout's width and height properties based on the viewport.
+        float width = screenViewportPx.width() / mDpToPx;
+        float height = screenViewportPx.height() / mDpToPx;
+        float topBrowserControlsHeightDp = topBrowserControlsHeightPx / mDpToPx;
+        float bottomBrowserControlsHeightDp = bottomBrowserControlsHeightPx / mDpToPx;
 
         // 2. Check if any Layout-specific properties have changed.
-        boolean layoutPropertiesChanged = mWidth != width
-                || mHeight != height
-                || mHeightMinusTopControls != heightMinusTopControls
+        boolean layoutPropertiesChanged = Float.compare(mWidthDp, width) != 0
+                || Float.compare(mHeightDp, height) != 0
+                || Float.compare(mTopBrowserControlsHeightDp, topBrowserControlsHeightDp) != 0
+                || Float.compare(mBottomBrowserControlsHeightDp, bottomBrowserControlsHeightDp) != 0
                 || mCurrentOrientation != orientation;
 
         // 3. Update the internal sizing properties.
-        mWidth = width;
-        mHeight = height;
-        mHeightMinusTopControls = heightMinusTopControls;
+        mWidthDp = width;
+        mHeightDp = height;
+        mTopBrowserControlsHeightDp = topBrowserControlsHeightDp;
+        mBottomBrowserControlsHeightDp = bottomBrowserControlsHeightDp;
         mCurrentOrientation = orientation;
 
         // 4. Notify the actual Layout if necessary.
@@ -398,7 +338,7 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
 
         // 5. TODO(dtrainor): Notify the overlay objects.
         for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).onSizeChanged(width, height, visibleViewport.top, orientation);
+            mSceneOverlays.get(i).onSizeChanged(width, height, visibleViewportPx.top, orientation);
         }
     }
 
@@ -409,7 +349,7 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @param height      The new height in dp.
      * @param orientation The new orientation.
      */
-    protected void notifySizeChanged(float width, float height, int orientation) { }
+    protected void notifySizeChanged(float width, float height, @Orientation int orientation) {}
 
     /**
      * Notify the a title has changed.
@@ -438,18 +378,26 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     }
 
     /**
-     * @return Information about the sizing requirements of this layout.
+     * @return The sizing mode for the layout.
      */
-    public int getSizingFlags() {
-        return SizingFlags.HELPER_NO_FULLSCREEN_SUPPORT;
+    public @ViewportMode int getViewportMode() {
+        return ViewportMode.ALWAYS_SHOWING_BROWSER_CONTROLS;
     }
 
     /**
-     * Informs this cache of the relevant {@link Tab} {@code id}s that will be used in the
-     * near future.
+     * Informs this cache of the visible {@link Tab} {@code id}s, as well as the
+     * primary screen-filling tab.
      */
-    protected void updateCacheVisibleIds(List<Integer> priority) {
-        if (mTabContentManager != null) mTabContentManager.updateVisibleIds(priority);
+    protected void updateCacheVisibleIdsAndPrimary(List<Integer> visible, int primaryTabId) {
+        if (mTabContentManager != null) mTabContentManager.updateVisibleIds(visible, primaryTabId);
+    }
+
+    /**
+     * Informs this cache of the visible {@link Tab} {@code id}s, in cases where there
+     * is no primary screen-filling tab.
+     */
+    protected void updateCacheVisibleIds(List<Integer> visible) {
+        if (mTabContentManager != null) mTabContentManager.updateVisibleIds(visible, -1);
     }
 
     /**
@@ -503,6 +451,9 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
             mNextTabId = Tab.INVALID_TAB_ID;
         }
         mUpdateHost.doneHiding();
+        if (mRenderHost != null && mRenderHost.getResourceManager() != null) {
+            mRenderHost.getResourceManager().clearTintedResourceCache();
+        }
     }
 
     /**
@@ -536,84 +487,43 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     public void detachViews() { }
 
     /**
-     * Called when the swipe animation get initiated. It gives a chance to initialize everything.
-     * @param time      The current time of the app in ms.
-     * @param direction The direction the swipe is in.
-     * @param x         The horizontal coordinate the swipe started at in dp.
-     * @param y         The vertical coordinate the swipe started at in dp.
-     */
-    public void swipeStarted(long time, ScrollDirection direction, float x, float y) { }
-
-    /**
-     * Updates a swipe gesture.
-     * @param time The current time of the app in ms.
-     * @param x    The horizontal coordinate the swipe is currently at in dp.
-     * @param y    The vertical coordinate the swipe is currently at in dp.
-     * @param dx   The horizontal delta since the last update in dp.
-     * @param dy   The vertical delta since the last update in dp.
-     * @param tx   The horizontal difference between the start and the current position in dp.
-     * @param ty   The vertical difference between the start and the current position in dp.
-     */
-    public void swipeUpdated(long time, float x, float y, float dx, float dy, float tx, float ty) {
-    }
-
-    /**
-     * Called when the swipe ends; most likely on finger up event. It gives a chance to start
-     * an ending animation to exit the mode gracefully.
-     * @param time The current time of the app in ms.
-     */
-    public void swipeFinished(long time) { }
-
-    /**
-     * Called when the user has cancelled a swipe; most likely if they have dragged their finger
-     * back to the starting position.  Some handlers will throw swipeFinished() instead.
-     * @param time The current time of the app in ms.
-     */
-    public void swipeCancelled(long time) { }
-
-    /**
-     * Fling from a swipe gesture.
-     * @param time The current time of the app in ms.
-     * @param x    The horizontal coordinate the swipe is currently at in dp.
-     * @param y    The vertical coordinate the swipe is currently at in dp.
-     * @param tx   The horizontal difference between the start and the current position in dp.
-     * @param ty   The vertical difference between the start and the current position in dp.
-     * @param vx   The horizontal velocity of the fling.
-     * @param vy   The vertical velocity of the fling.
-     */
-    public void swipeFlingOccurred(long time, float x, float y, float tx, float ty, float vx,
-            float vy) { }
-
-    /**
      * Forces the current animation to finish and broadcasts the proper event.
      */
-    protected void forceAnimationToFinish() {
-        if (mLayoutAnimations != null) {
-            mLayoutAnimations.updateAndFinish();
-            mLayoutAnimations = null;
-            onAnimationFinished();
-        }
-    }
+    protected void forceAnimationToFinish() {}
 
     /**
-     * @return The width of the drawing area.
+     * @return The width of the drawing area in dp.
      */
     public float getWidth() {
-        return mWidth;
+        return mWidthDp;
     }
 
     /**
-     * @return The height of the drawing area.
+     * @return The height of the drawing area in dp.
      */
     public float getHeight() {
-        return mHeight;
+        return mHeightDp;
     }
 
     /**
-     * @return The height of the drawing area minus the top controls.
+     * @return The height of the top browser controls in dp.
      */
-    public float getHeightMinusTopControls() {
-        return mHeightMinusTopControls;
+    public float getTopBrowserControlsHeight() {
+        return mTopBrowserControlsHeightDp;
+    }
+
+    /**
+     * @return The height of the bottom browser controls in dp.
+     */
+    public float getBottomBrowserControlsHeight() {
+        return mBottomBrowserControlsHeightDp;
+    }
+
+    /**
+     * @return The height of the drawing area minus the browser controls in dp.
+     */
+    public float getHeightMinusBrowserControls() {
+        return getHeight() - (getTopBrowserControlsHeight() + getBottomBrowserControlsHeight());
     }
 
     /**
@@ -621,19 +531,8 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @return The orientation of the screen (portrait or landscape). Values are defined by
      *         {@link Orientation}.
      */
-    public int getOrientation() {
+    public @Orientation int getOrientation() {
         return mCurrentOrientation;
-    }
-
-    /**
-     * @return Whether or not any tabs in this layer use the toolbar resource.
-     */
-    public boolean usesToolbarLayer() {
-        if (mLayoutTabs == null) return false;
-        for (int i = 0; i < mLayoutTabs.length; i++) {
-            if (mLayoutTabs[i].showToolbar()) return true;
-        }
-        return false;
     }
 
     /**
@@ -652,69 +551,6 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
         }
         return false;
     }
-
-    /**
-     * Called on touch drag event.
-     * @param time      The current time of the app in ms.
-     * @param x         The y coordinate of the end of the drag event.
-     * @param y         The y coordinate of the end of the drag event.
-     * @param deltaX    The number of pixels dragged in the x direction.
-     * @param deltaY    The number of pixels dragged in the y direction.
-     */
-    public void drag(long time, float x, float y, float deltaX, float deltaY) { }
-
-    /**
-     * Called on touch fling event. This is called before the onUpOrCancel event.
-     *
-     * @param time      The current time of the app in ms.
-     * @param x         The y coordinate of the start of the fling event.
-     * @param y         The y coordinate of the start of the fling event.
-     * @param velocityX The amount of velocity in the x direction.
-     * @param velocityY The amount of velocity in the y direction.
-     */
-    public void fling(long time, float x, float y, float velocityX, float velocityY) { }
-
-    /**
-     * Called on onDown event.
-     *
-     * @param time      The time stamp in millisecond of the event.
-     * @param x         The x position of the event.
-     * @param y         The y position of the event.
-     */
-    public void onDown(long time, float x, float y) { }
-
-    /**
-     * Called on long press touch event.
-     * @param time The current time of the app in ms.
-     * @param x    The x coordinate of the position of the press event.
-     * @param y    The y coordinate of the position of the press event.
-     */
-    public void onLongPress(long time, float x, float y) { }
-
-    /**
-     * Called on click. This is called before the onUpOrCancel event.
-     * @param time The current time of the app in ms.
-     * @param x    The x coordinate of the position of the click.
-     * @param y    The y coordinate of the position of the click.
-     */
-    public void click(long time, float x, float y) { }
-
-    /**
-     * Called on up or cancel touch events. This is called after the click and fling event if any.
-     * @param time The current time of the app in ms.
-     */
-    public void onUpOrCancel(long time) { }
-
-    /**
-     * Called when at least 2 touch events are detected.
-     * @param time       The current time of the app in ms.
-     * @param x0         The x coordinate of the first touch event.
-     * @param y0         The y coordinate of the first touch event.
-     * @param x1         The x coordinate of the second touch event.
-     * @param y1         The y coordinate of the second touch event.
-     * @param firstEvent The pinch is the first of a sequence of pinch events.
-     */
-    public void onPinch(long time, float x0, float y0, float x1, float y1, boolean firstEvent) { }
 
     /**
      * Called by the LayoutManager when an animation should be killed.
@@ -748,9 +584,6 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @param incognito Whether or not the affected model was incognito.
      */
     public void onTabSelected(long time, int tabId, int prevId, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabSelected(time, incognito, tabId, prevId);
-        }
     }
 
     /**
@@ -771,9 +604,6 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @param incognito Whether or not the affected model was incognito.
      */
     public void onTabClosed(long time, int tabId, int nextTabId, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabClosed(time, incognito, tabId);
-        }
     }
 
     /**
@@ -813,6 +643,13 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     }
 
     /**
+     * Called when a tab is restored (created FROM_RESTORE).
+     * @param time  The current time of the app in ms.
+     * @param tabId The id of the restored tab.
+     */
+    public void onTabRestored(long time, int tabId) { }
+
+    /**
      * Called when the TabModelSelector has been initialized with an accurate tab count.
      */
     public void onTabStateInitialized() {
@@ -829,76 +666,6 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     public void onTabModelSwitched(boolean incognito) {
         for (int i = 0; i < mSceneOverlays.size(); i++) {
             mSceneOverlays.get(i).tabModelSwitched(incognito);
-        }
-    }
-
-    /**
-     * Called when a tab has been moved in the tabModel.
-     * @param time      The current time of the app in ms.
-     * @param tabId     The id of the Tab.
-     * @param oldIndex  The old index of the tab in the tabModel.
-     * @param newIndex  The new index of the tab in the tabModel.
-     * @param incognito True if the tab is incognito.
-     */
-    public void onTabMoved(long time, int tabId, int oldIndex, int newIndex, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabMoved(time, incognito, tabId, oldIndex, newIndex);
-        }
-    }
-
-    /**
-     * Called when a tab has started loading.
-     * @param id        The id of the Tab.
-     * @param incognito True if the tab is incognito.
-     */
-    public void onTabPageLoadStarted(int id, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabPageLoadStarted(id, incognito);
-        }
-    }
-
-    /**
-     * Called when a tab has finished loading.
-     * @param id        The id of the Tab.
-     * @param incognito True if the tab is incognito.
-     */
-    public void onTabPageLoadFinished(int id, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabPageLoadFinished(id, incognito);
-        }
-    }
-
-    /**
-     * Called when a tab has started loading resources.
-     * @param id        The id of the Tab.
-     * @param incognito True if the tab is incognito.
-     */
-    public void onTabLoadStarted(int id, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabLoadStarted(id, incognito);
-        }
-    }
-
-    /**
-     * Called when a tab has stopped loading resources.
-     * @param id        The id of the Tab.
-     * @param incognito True if the tab is incognito.
-     */
-    public void onTabLoadFinished(int id, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabLoadFinished(id, incognito);
-        }
-    }
-
-    /**
-     * Called when a tab close has been undone and the tab has been restored.
-     * @param time      The current time of the app in ms.
-     * @param id        The id of the Tab.
-     * @param incognito True if the tab is incognito
-     */
-    public void onTabClosureCancelled(long time, int id, boolean incognito) {
-        for (int i = 0; i < mSceneOverlays.size(); i++) {
-            mSceneOverlays.get(i).tabClosureCancelled(time, incognito, id);
         }
     }
 
@@ -922,22 +689,7 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @return          Whether the animation was finished.
      */
     protected boolean onUpdateAnimation(long time, boolean jumpToEnd) {
-        boolean finished = true;
-        if (mLayoutAnimations != null) {
-            if (jumpToEnd) {
-                finished = mLayoutAnimations.finished();
-                mLayoutAnimations.updateAndFinish();
-            } else {
-                finished = mLayoutAnimations.update(time);
-            }
-
-            if (finished || jumpToEnd) {
-                mLayoutAnimations = null;
-                onAnimationFinished();
-            }
-            requestUpdate();
-        }
-        return finished;
+        return true;
     }
 
     /**
@@ -945,101 +697,12 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      */
     @VisibleForTesting
     public boolean isLayoutAnimating() {
-        return mLayoutAnimations != null && !mLayoutAnimations.finished();
-    }
-
-    /**
-     * Called when layout-specific actions are needed after the animation finishes.
-     */
-    protected void onAnimationStarted() {
-    }
-
-    /**
-     * Called when layout-specific actions are needed after the animation finishes.
-     */
-    protected void onAnimationFinished() {
-    }
-
-    /**
-     * Creates an {@link org.chromium.chrome.browser.compositor.layouts.ChromeAnimation
-     * .AnimatableAnimation} and adds it to the animation.
-     * Automatically sets the start value at the beginning of the animation.
-     */
-    protected <T extends Enum<?>> void addToAnimation(Animatable<T> object, T prop, float start,
-            float end, long duration, long startTime) {
-        addToAnimation(object, prop, start, end, duration, startTime, false);
-    }
-
-    /**
-     * Creates an {@link org.chromium.chrome.browser.compositor.layouts.ChromeAnimation
-     * .AnimatableAnimation} and it to the animation. Uses a deceleration interpolator by default.
-     */
-    protected <T extends Enum<?>> void addToAnimation(Animatable<T> object, T prop, float start,
-            float end, long duration, long startTime, boolean setStartValueAfterDelay) {
-        addToAnimation(object, prop, start, end, duration, startTime, setStartValueAfterDelay,
-                ChromeAnimation.getDecelerateInterpolator());
-    }
-
-    /**
-     * Creates an {@link org.chromium.chrome.browser.compositor.layouts.ChromeAnimation
-     * .AnimatableAnimation} and
-     * adds it to the animation.
-     *
-     * @param <T>                     The Enum type of the Property being used
-     * @param object                  The object being animated
-     * @param prop                    The property being animated
-     * @param start                   The starting value of the animation
-     * @param end                     The ending value of the animation
-     * @param duration                The duration of the animation in ms
-     * @param startTime               The start time in ms
-     * @param setStartValueAfterDelay See {@link Animation#setStartValueAfterStartDelay(boolean)}
-     * @param interpolator            The interpolator to use for the animation
-     */
-    protected <T extends Enum<?>> void addToAnimation(Animatable<T> object, T prop, float start,
-            float end, long duration, long startTime, boolean setStartValueAfterDelay,
-            Interpolator interpolator) {
-        ChromeAnimation.Animation<Animatable<?>> component = createAnimation(object, prop, start,
-                end, duration, startTime, setStartValueAfterDelay, interpolator);
-        addToAnimation(component);
-    }
-
-    /**
-     * Appends an Animation to the current animation set and starts it immediately.  If the set is
-     * already finished or doesn't exist, the animation set is also started.
-     */
-    protected void addToAnimation(ChromeAnimation.Animation<Animatable<?>> component) {
-        if (mLayoutAnimations == null || mLayoutAnimations.finished()) {
-            onAnimationStarted();
-            mLayoutAnimations = new ChromeAnimation<Animatable<?>>();
-            mLayoutAnimations.start();
-        }
-        component.start();
-        mLayoutAnimations.add(component);
-        requestUpdate();
-    }
-
-    /**
-     * @return whether or not the animation is currently being run.
-     */
-    protected boolean animationIsRunning() {
-        return mLayoutAnimations != null && !mLayoutAnimations.finished();
-    }
-
-    /**
-     * Cancels any animation for the given object and property.
-     * @param object The object being animated.
-     * @param prop   The property to search for.
-     */
-    protected <T extends Enum<?>> void cancelAnimation(Animatable<T> object, T prop) {
-        if (mLayoutAnimations != null) {
-            mLayoutAnimations.cancel(object, prop);
-        }
+        return false;
     }
 
     /**
      * @return The {@link LayoutTab}s to be drawn.
      */
-    @SuppressFBWarnings("EI_EXPOSE_REP")
     public LayoutTab[] getLayoutTabsToRender() {
         return mLayoutTabs;
     }
@@ -1088,6 +751,14 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     }
 
     /**
+     * Whether or not the toolbar IncognitoToggleButton (if present) should be enabled. E.g., it can
+     * be disabled while animating a tab selection to avoid odd behavior.
+     */
+    public boolean shouldAllowIncognitoSwitching() {
+        return true;
+    }
+
+    /**
      * @return True if the content decoration layer should be shown.
      */
     public boolean shouldDisplayContentOverlay() {
@@ -1095,27 +766,11 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     }
 
     /**
-     * @return True if the currently active content view is shown in the normal interactive mode.
+     * @return True if the host container can set itself as focusable e.g. for accessibility.
+     *         Subclasses can override e.g. to provide a different default focused view.
      */
-    public boolean isTabInteractive() {
-        return false;
-    }
-
-    /**
-     * @return The number of drawn tabs. This does not count the one culled out.
-     */
-    @VisibleForTesting
-    public int getLayoutTabsDrawnCount() {
-        return mRenderHost.getLayoutTabsDrawnCount();
-    }
-
-    /**
-     * Setting this will only take effect the next time this layout is shown.  If it is currently
-     * showing the original filter will still be used.
-     * @param filter
-     */
-    public void setEventFilter(EventFilter filter) {
-        mEventFilter = filter;
+    public boolean canHostBeFocusable() {
+        return true;
     }
 
     /**
@@ -1126,7 +781,7 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @return The {@link EventFilter} the {@link Layout} is listening to.
      */
     public EventFilter findInterceptingEventFilter(
-            MotionEvent e, Point offsets, boolean isKeyboardShowing) {
+            MotionEvent e, PointF offsets, boolean isKeyboardShowing) {
         // The last added overlay will be drawn on top of everything else, therefore the last
         // filter added should have the first chance to intercept any touch events.
         for (int i = mSceneOverlays.size() - 1; i >= 0; i--) {
@@ -1136,9 +791,14 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
             if (eventFilter.onInterceptTouchEvent(e, isKeyboardShowing)) return eventFilter;
         }
 
-        if (mEventFilter != null) {
-            if (offsets != null) mEventFilter.setCurrentMotionEventOffsets(offsets.x, offsets.y);
-            if (mEventFilter.onInterceptTouchEvent(e, isKeyboardShowing)) return mEventFilter;
+        EventFilter layoutEventFilter = getEventFilter();
+        if (layoutEventFilter != null) {
+            if (offsets != null) {
+                layoutEventFilter.setCurrentMotionEventOffsets(offsets.x, offsets.y);
+            }
+            if (layoutEventFilter.onInterceptTouchEvent(e, isKeyboardShowing)) {
+                return layoutEventFilter;
+            }
         }
         return null;
     }
@@ -1146,8 +806,8 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     /**
      * Build a {@link SceneLayer} if it hasn't already been built, and update it and return it.
      *
-     * @param viewport          A viewport in which to display content.
-     * @param contentViewport   The visible section of the viewport.
+     * @param viewport          A viewport in which to display content in px.
+     * @param visibleViewport   The visible section of the viewport in px.
      * @param layerTitleCache   A layer title cache.
      * @param tabContentManager A tab content manager.
      * @param resourceManager   A resource manager.
@@ -1155,13 +815,13 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * @return                  A {@link SceneLayer} that represents the content for this
      *                          {@link Layout}.
      */
-    public final SceneLayer getUpdatedSceneLayer(Rect viewport, Rect contentViewport,
+    public final SceneLayer getUpdatedSceneLayer(RectF viewport, RectF visibleViewport,
             LayerTitleCache layerTitleCache, TabContentManager tabContentManager,
             ResourceManager resourceManager, ChromeFullscreenManager fullscreenManager) {
-        updateSceneLayer(viewport, contentViewport, layerTitleCache, tabContentManager,
+        updateSceneLayer(viewport, visibleViewport, layerTitleCache, tabContentManager,
                 resourceManager, fullscreenManager);
 
-        float offsetPx = fullscreenManager != null ? fullscreenManager.getControlOffset() : 0.f;
+        float offsetPx = fullscreenManager != null ? fullscreenManager.getTopControlOffset() : 0.f;
         float dpToPx = getContext().getResources().getDisplayMetrics().density;
         float offsetDp = offsetPx / dpToPx;
 
@@ -1171,7 +831,7 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
             if (!mSceneOverlays.get(i).isSceneOverlayTreeShowing()) continue;
 
             SceneOverlayLayer overlayLayer = mSceneOverlays.get(i).getUpdatedSceneOverlayTree(
-                    layerTitleCache, resourceManager, offsetDp);
+                    viewport, visibleViewport, layerTitleCache, resourceManager, offsetDp);
 
             overlayLayer.setContentTree(content);
             content = overlayLayer;
@@ -1181,22 +841,27 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
     }
 
     /**
-     * @return Whether or not to force the top controls Android view to hide.
+     * @return Whether or not to force the browser controls Android view to hide.
      */
-    public boolean forceHideTopControlsAndroidView() {
+    public boolean forceHideBrowserControlsAndroidView() {
         for (int i = 0; i < mSceneOverlays.size(); i++) {
-            // If any overlay wants to hide tha Android version of the top controls, hide them.
-            if (mSceneOverlays.get(i).shouldHideAndroidTopControls()) return true;
+            // If any overlay wants to hide tha Android version of the browser controls, hide them.
+            if (mSceneOverlays.get(i).shouldHideAndroidBrowserControls()) return true;
         }
         return false;
     }
 
     /**
-     * @return Whether the tabstrip's event filter is enabled.
+     * @return Whether or not the layout should permanently show the browser controls.
      */
-    public boolean isTabStripEventFilterEnabled() {
-        return true;
+    public boolean forceShowBrowserControlsAndroidView() {
+        return false;
     }
+
+    /**
+     * @return The EventFilter to use for processing events for this Layout.
+     */
+    protected abstract EventFilter getEventFilter();
 
     /**
      * Get an instance of {@link SceneLayer}. Any class inheriting {@link Layout}
@@ -1210,8 +875,18 @@ public abstract class Layout implements TabContentManager.ThumbnailChangeListene
      * Update {@link SceneLayer} instance this layout holds. Any class inheriting {@link Layout}
      * should override this function in order for other functions to work.
      */
-    protected void updateSceneLayer(Rect viewport, Rect contentViewport,
+    protected void updateSceneLayer(RectF viewport, RectF contentViewport,
             LayerTitleCache layerTitleCache, TabContentManager tabContentManager,
-            ResourceManager resourceManager, ChromeFullscreenManager fullscreenManager) {
+            ResourceManager resourceManager, ChromeFullscreenManager fullscreenManager) {}
+
+    /**
+     * Gets the full screen manager.
+     * @return The {@link ChromeFullscreenManager} manager, possibly null
+     */
+    public ChromeFullscreenManager getFullscreenManager() {
+        if (mTabModelSelector == null) return null;
+        if (mTabModelSelector.getCurrentTab() == null) return null;
+        if (mTabModelSelector.getCurrentTab().getActivity() == null) return null;
+        return mTabModelSelector.getCurrentTab().getActivity().getFullscreenManager();
     }
 }

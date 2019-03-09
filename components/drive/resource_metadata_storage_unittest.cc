@@ -8,15 +8,17 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <utility>
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
 #include "base/single_thread_task_runner.h"
+#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/drive/chromeos/drive_test_util.h"
 #include "components/drive/drive.pb.h"
+#include "components/drive/file_system_core_util.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/leveldatabase/src/include/leveldb/db.h"
@@ -27,11 +29,14 @@ namespace internal {
 
 class ResourceMetadataStorageTest : public testing::Test {
  protected:
+  ResourceMetadataStorageTest() = default;
+  ~ResourceMetadataStorageTest() override = default;
+
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
 
     storage_.reset(new ResourceMetadataStorage(
-        temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+        temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
     ASSERT_TRUE(storage_->Initialize());
   }
 
@@ -67,10 +72,16 @@ class ResourceMetadataStorageTest : public testing::Test {
         ResourceMetadataStorage::GetChildEntryKey(parent_id, child_base_name));
   }
 
+  bool UpgradeOldDB() {
+    return ResourceMetadataStorage::UpgradeOldDB(temp_dir_.GetPath());
+  }
+
   content::TestBrowserThreadBundle thread_bundle_;
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<ResourceMetadataStorage, test_util::DestroyHelperForTests>
       storage_;
+
+  DISALLOW_COPY_AND_ASSIGN(ResourceMetadataStorageTest);
 };
 
 TEST_F(ResourceMetadataStorageTest, LargestChangestamp) {
@@ -80,6 +91,14 @@ TEST_F(ResourceMetadataStorageTest, LargestChangestamp) {
   int64_t value = 0;
   EXPECT_EQ(FILE_ERROR_OK, storage_->GetLargestChangestamp(&value));
   EXPECT_EQ(kLargestChangestamp, value);
+}
+
+TEST_F(ResourceMetadataStorageTest, StartPageToken) {
+  constexpr char kStartPageToken[] = "123456";
+  EXPECT_EQ(FILE_ERROR_OK, storage_->SetStartPageToken(kStartPageToken));
+  std::string start_page_token;
+  EXPECT_EQ(FILE_ERROR_OK, storage_->GetStartPageToken(&start_page_token));
+  EXPECT_EQ(kStartPageToken, start_page_token);
 }
 
 TEST_F(ResourceMetadataStorageTest, PutEntry) {
@@ -156,9 +175,9 @@ TEST_F(ResourceMetadataStorageTest, Iterator) {
   keys.push_back("entry3");
   keys.push_back("entry4");
 
-  for (size_t i = 0; i < keys.size(); ++i) {
+  for (const std::string& key : keys) {
     ResourceEntry entry;
-    entry.set_local_id(keys[i]);
+    entry.set_local_id(key);
     EXPECT_EQ(FILE_ERROR_OK, storage_->PutEntry(entry));
   }
 
@@ -174,8 +193,8 @@ TEST_F(ResourceMetadataStorageTest, Iterator) {
   EXPECT_FALSE(it->HasError());
 
   EXPECT_EQ(keys.size(), found_entries.size());
-  for (size_t i = 0; i < keys.size(); ++i)
-    EXPECT_EQ(1U, found_entries.count(keys[i]));
+  for (const std::string& key : keys)
+    EXPECT_TRUE(base::ContainsKey(found_entries, key));
 }
 
 TEST_F(ResourceMetadataStorageTest, GetIdByResourceId) {
@@ -206,7 +225,7 @@ TEST_F(ResourceMetadataStorageTest, GetIdByResourceId) {
 TEST_F(ResourceMetadataStorageTest, GetChildren) {
   const std::string parents_id[] = { "mercury", "venus", "mars", "jupiter",
                                      "saturn" };
-  std::vector<base::StringPairs> children_name_id(arraysize(parents_id));
+  std::vector<base::StringPairs> children_name_id(base::size(parents_id));
   // Skip children_name_id[0/1] here because Mercury and Venus have no moon.
   children_name_id[2].push_back(std::make_pair("phobos", "mars_i"));
   children_name_id[2].push_back(std::make_pair("deimos", "mars_ii"));
@@ -223,19 +242,19 @@ TEST_F(ResourceMetadataStorageTest, GetChildren) {
   children_name_id[4].push_back(std::make_pair("iapetus", "saturn_vii"));
 
   // Put parents.
-  for (size_t i = 0; i < arraysize(parents_id); ++i) {
+  for (const std::string& id : parents_id) {
     ResourceEntry entry;
-    entry.set_local_id(parents_id[i]);
+    entry.set_local_id(id);
     EXPECT_EQ(FILE_ERROR_OK, storage_->PutEntry(entry));
   }
 
   // Put children.
   for (size_t i = 0; i < children_name_id.size(); ++i) {
-    for (size_t j = 0; j < children_name_id[i].size(); ++j) {
+    for (const auto& id : children_name_id[i]) {
       ResourceEntry entry;
-      entry.set_local_id(children_name_id[i][j].second);
+      entry.set_local_id(id.second);
       entry.set_parent_local_id(parents_id[i]);
-      entry.set_base_name(children_name_id[i][j].first);
+      entry.set_base_name(id.first);
       EXPECT_EQ(FILE_ERROR_OK, storage_->PutEntry(entry));
     }
   }
@@ -245,10 +264,8 @@ TEST_F(ResourceMetadataStorageTest, GetChildren) {
     std::vector<std::string> children;
     storage_->GetChildren(parents_id[i], &children);
     EXPECT_EQ(children_name_id[i].size(), children.size());
-    for (size_t j = 0; j < children_name_id[i].size(); ++j) {
-      EXPECT_EQ(1, std::count(children.begin(),
-                              children.end(),
-                              children_name_id[i][j].second));
+    for (const auto& id : children_name_id[i]) {
+      EXPECT_EQ(1, std::count(children.begin(), children.end(), id.second));
     }
   }
 }
@@ -271,7 +288,7 @@ TEST_F(ResourceMetadataStorageTest, OpenExistingDB) {
 
   // Close DB and reopen.
   storage_.reset(new ResourceMetadataStorage(
-      temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
   ASSERT_TRUE(storage_->Initialize());
 
   // Can read data.
@@ -315,9 +332,9 @@ TEST_F(ResourceMetadataStorageTest, IncompatibleDB_M29) {
 
   // Upgrade and reopen.
   storage_.reset();
-  EXPECT_TRUE(ResourceMetadataStorage::UpgradeOldDB(temp_dir_.path()));
+  EXPECT_TRUE(UpgradeOldDB());
   storage_.reset(new ResourceMetadataStorage(
-      temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
   ASSERT_TRUE(storage_->Initialize());
 
   // Resource-ID-to-local-ID mapping is added.
@@ -367,9 +384,9 @@ TEST_F(ResourceMetadataStorageTest, IncompatibleDB_M32) {
 
   // Upgrade and reopen.
   storage_.reset();
-  EXPECT_TRUE(ResourceMetadataStorage::UpgradeOldDB(temp_dir_.path()));
+  EXPECT_TRUE(UpgradeOldDB());
   storage_.reset(new ResourceMetadataStorage(
-      temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
   ASSERT_TRUE(storage_->Initialize());
 
   // Data is erased, except cache and id mapping entries.
@@ -428,17 +445,18 @@ TEST_F(ResourceMetadataStorageTest, IncompatibleDB_M33) {
 
   // Upgrade and reopen.
   storage_.reset();
-  EXPECT_TRUE(ResourceMetadataStorage::UpgradeOldDB(temp_dir_.path()));
+  EXPECT_TRUE(UpgradeOldDB());
   storage_.reset(new ResourceMetadataStorage(
-      temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
   ASSERT_TRUE(storage_->Initialize());
 
-  // No data is lost.
+  // largest_changestamp is cleared.
   int64_t largest_changestamp = 0;
   EXPECT_EQ(FILE_ERROR_OK,
             storage_->GetLargestChangestamp(&largest_changestamp));
-  EXPECT_EQ(kLargestChangestamp, largest_changestamp);
+  EXPECT_EQ(0, largest_changestamp);
 
+  // No other data is lost.
   std::string id;
   EXPECT_EQ(FILE_ERROR_OK, storage_->GetIdByResourceId(resource_id, &id));
   EXPECT_EQ(local_id, id);
@@ -466,9 +484,9 @@ TEST_F(ResourceMetadataStorageTest, IncompatibleDB_Unknown) {
   // Set newer version, upgrade and reopen DB.
   SetDBVersion(ResourceMetadataStorage::kDBVersion + 1);
   storage_.reset();
-  EXPECT_FALSE(ResourceMetadataStorage::UpgradeOldDB(temp_dir_.path()));
+  EXPECT_FALSE(UpgradeOldDB());
   storage_.reset(new ResourceMetadataStorage(
-      temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
   ASSERT_TRUE(storage_->Initialize());
 
   // Data is erased because of the incompatible version.
@@ -479,7 +497,14 @@ TEST_F(ResourceMetadataStorageTest, IncompatibleDB_Unknown) {
   EXPECT_EQ(FILE_ERROR_NOT_FOUND, storage_->GetEntry(key1, &entry));
 }
 
-TEST_F(ResourceMetadataStorageTest, DeleteUnusedIDEntries) {
+TEST_F(ResourceMetadataStorageTest, IncompatibleDB_M37) {
+  const int64_t kLargestChangestamp = 1234567890;
+
+  // Construct v13 DB. It was used from M37 to M62.
+  SetDBVersion(13);
+  EXPECT_EQ(FILE_ERROR_OK,
+            storage_->SetLargestChangestamp(kLargestChangestamp));
+
   leveldb::WriteBatch batch;
 
   // Put an ID entry with a corresponding ResourceEntry.
@@ -499,9 +524,9 @@ TEST_F(ResourceMetadataStorageTest, DeleteUnusedIDEntries) {
 
   // Upgrade and reopen.
   storage_.reset();
-  EXPECT_TRUE(ResourceMetadataStorage::UpgradeOldDB(temp_dir_.path()));
+  EXPECT_TRUE(UpgradeOldDB());
   storage_.reset(new ResourceMetadataStorage(
-      temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
   ASSERT_TRUE(storage_->Initialize());
 
   // Only the unused entry is deleted.
@@ -510,12 +535,18 @@ TEST_F(ResourceMetadataStorageTest, DeleteUnusedIDEntries) {
   EXPECT_EQ("id1", id);
   EXPECT_EQ(FILE_ERROR_NOT_FOUND,
             storage_->GetIdByResourceId("resource_id2", &id));
+
+  // largest_changestamp is cleared.
+  int64_t largest_changestamp = 0;
+  EXPECT_EQ(FILE_ERROR_OK,
+            storage_->GetLargestChangestamp(&largest_changestamp));
+  EXPECT_EQ(0, largest_changestamp);
 }
 
 TEST_F(ResourceMetadataStorageTest, WrongPath) {
   // Create a file.
   base::FilePath path;
-  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.path(), &path));
+  ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &path));
 
   storage_.reset(new ResourceMetadataStorage(
       path, base::ThreadTaskRunnerHandle::Get().get()));
@@ -547,7 +578,7 @@ TEST_F(ResourceMetadataStorageTest, RecoverCacheEntriesFromTrashedResourceMap) {
 
   // Reopen. This should result in trashing the DB.
   storage_.reset(new ResourceMetadataStorage(
-      temp_dir_.path(), base::ThreadTaskRunnerHandle::Get().get()));
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
   ASSERT_TRUE(storage_->Initialize());
 
   // Recover cache entries from the trashed DB.
@@ -632,6 +663,89 @@ TEST_F(ResourceMetadataStorageTest, CheckValidity) {
   // Remove key1.
   EXPECT_EQ(FILE_ERROR_OK, storage_->RemoveEntry(key1));
   EXPECT_TRUE(CheckValidity());
+}
+
+TEST_F(ResourceMetadataStorageTest, UpgradeDBv15) {
+  constexpr int64_t kLargestChangestamp = 54321;
+  constexpr char kStartPageToken[] = "54322";
+  constexpr int64_t kDirectoryChangestamp = 12345;
+  constexpr char kDirectoryStartpageToken[] = "12346";
+
+  // Construct a v15 DB
+  SetDBVersion(15);
+  EXPECT_EQ(FILE_ERROR_OK,
+            storage_->SetLargestChangestamp(kLargestChangestamp));
+
+  // Add a directory with a changestamp
+  ResourceEntry entry;
+  entry.set_local_id("local_id_1");
+  entry.set_base_name("resource_id_1");
+  entry.mutable_directory_specific_info()->set_changestamp(
+      kDirectoryChangestamp);
+  EXPECT_EQ(FILE_ERROR_OK, storage_->PutEntry(entry));
+
+  // Upgrade and reopen
+  storage_.reset();
+  EXPECT_TRUE(UpgradeOldDB());
+  storage_.reset(new ResourceMetadataStorage(
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
+  ASSERT_TRUE(storage_->Initialize());
+
+  int64_t largest_changestamp = 0;
+  EXPECT_EQ(FILE_ERROR_OK,
+            storage_->GetLargestChangestamp(&largest_changestamp));
+  EXPECT_EQ(kLargestChangestamp, largest_changestamp);
+
+  std::string start_page_token;
+  EXPECT_EQ(FILE_ERROR_OK, storage_->GetStartPageToken(&start_page_token));
+  EXPECT_EQ(kStartPageToken, start_page_token);
+
+  EXPECT_EQ(FILE_ERROR_OK, storage_->GetEntry("local_id_1", &entry));
+  EXPECT_EQ(kDirectoryChangestamp,
+            entry.directory_specific_info().changestamp());
+  EXPECT_EQ(kDirectoryStartpageToken,
+            entry.directory_specific_info().start_page_token());
+}
+
+// Test that upgrading from DB version 16 to 17 triggers a full metadata refresh
+// (since this changes alternate_url to be set for directories, which need to
+// be re-fetched).
+TEST_F(ResourceMetadataStorageTest, UpgradeDBv16) {
+  constexpr int64_t kLargestChangestamp = 54321;
+  constexpr char kStartPageToken[] = "54322";
+
+  // Construct a v16 DB.
+  SetDBVersion(16);
+  EXPECT_EQ(FILE_ERROR_OK,
+            storage_->SetLargestChangestamp(kLargestChangestamp));
+  EXPECT_EQ(FILE_ERROR_OK, storage_->SetStartPageToken(kStartPageToken));
+
+  // Add a file.
+  ResourceEntry entry;
+  entry.set_local_id("local_id_1");
+  entry.set_base_name("resource_id_1");
+  EXPECT_EQ(FILE_ERROR_OK, storage_->PutEntry(entry));
+
+  // Upgrade and reopen.
+  storage_.reset();
+  EXPECT_TRUE(UpgradeOldDB());
+  storage_.reset(new ResourceMetadataStorage(
+      temp_dir_.GetPath(), base::ThreadTaskRunnerHandle::Get().get()));
+  ASSERT_TRUE(storage_->Initialize());
+
+  // Changestamps are reset.
+  int64_t largest_changestamp = 0;
+  EXPECT_EQ(FILE_ERROR_OK,
+            storage_->GetLargestChangestamp(&largest_changestamp));
+  EXPECT_EQ(0, largest_changestamp);
+
+  std::string start_page_token;
+  EXPECT_EQ(FILE_ERROR_OK, storage_->GetStartPageToken(&start_page_token));
+  EXPECT_EQ("", start_page_token);
+
+  // The data is retained.
+  EXPECT_EQ(FILE_ERROR_OK, storage_->GetEntry("local_id_1", &entry));
+  EXPECT_EQ("resource_id_1", entry.base_name());
 }
 
 }  // namespace internal

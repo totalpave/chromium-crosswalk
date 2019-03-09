@@ -14,7 +14,7 @@ ContentMetadataProvider.WORKER_SCRIPT = '/js/metadata_worker.js';
  */
 function AudioPlayer(container) {
   this.container_ = container;
-  this.volumeManager_ = new VolumeManagerWrapper(AllowedPaths.ANY_PATH);
+  this.volumeManager_ = new FilteredVolumeManager(AllowedPaths.ANY_PATH, false);
   this.metadataModel_ = MetadataModel.create(this.volumeManager_);
   this.selectedEntry_ = null;
   this.invalidTracks_ = {};
@@ -46,13 +46,23 @@ function AudioPlayer(container) {
   this.player_ =
     /** @type {AudioPlayerElement} */ (document.querySelector('audio-player'));
   this.player_.tracks = [];
+  this.isRtl_ = window.getComputedStyle(this.player_)['direction'] === 'rtl';
+
+  /**
+   * Queue to throttle concurrent reading of audio file metadata.
+   * Here we loads up to 25 songs concurrently to cover the number of songs in
+   * an album in most cases. This number should not be too large so that the
+   * number of open file descriptors will not hit the system limit.
+   * @private {AsyncUtil.ConcurrentQueue}
+   */
+  this.loadMetadataQueue_ = new AsyncUtil.ConcurrentQueue(25);
 
   // Restore the saved state from local storage, and update the local storage
   // if the states are changed.
   var STORAGE_PREFIX = 'audioplayer-';
   var KEYS_TO_SAVE_STATES =
       ['shuffle',
-       'repeat',
+       'repeat-mode',
        'volume',
        'playlist-expanded',
        'track-info-expanded'];
@@ -85,11 +95,15 @@ function AudioPlayer(container) {
     this.onTrackInfoExpandedChanged_(event.detail.value);
   }.bind(this));
 
+  this.player_.addEventListener(
+      'playing-changed', this.updateMediaSessionPlaybackState_.bind(this));
+
   // Run asynchronously after an event of model change is delivered.
   setTimeout(function() {
     this.errorString_ = '';
     this.offlineString_ = '';
     chrome.fileManagerPrivate.getStrings(function(strings) {
+      strings = /** @type {!Object<string>} */ (strings);
       container.ownerDocument.title = strings['AUDIO_PLAYER_TITLE'];
       this.errorString_ = strings['AUDIO_ERROR'];
       this.offlineString_ = strings['AUDIO_OFFLINE'];
@@ -119,8 +133,9 @@ function AudioPlayer(container) {
 
     // Show the window after DOM is processed.
     var currentWindow = chrome.app.window.current();
-    if (currentWindow)
+    if (currentWindow) {
       setTimeout(currentWindow.show.bind(currentWindow), 0);
+    }
   }.bind(this), 0);
 }
 
@@ -128,7 +143,9 @@ function AudioPlayer(container) {
  * Initial load method (static).
  */
 AudioPlayer.load = function() {
-  document.ondragstart = function(e) { e.preventDefault(); };
+  document.ondragstart = function(e) {
+    e.preventDefault();
+  };
 
   AudioPlayer.instance =
       new AudioPlayer(document.querySelector('.audio-player'));
@@ -140,8 +157,9 @@ AudioPlayer.load = function() {
  * Unloads the player.
  */
 function unload() {
-  if (AudioPlayer.instance)
+  if (AudioPlayer.instance) {
     AudioPlayer.instance.onUnload();
+  }
 }
 
 /**
@@ -163,7 +181,7 @@ AudioPlayer.prototype.load = function(playlist) {
   // playlist member is not changed after entries are resolved.
   window.appState = /** @type {Playlist} */ (
       JSON.parse(JSON.stringify(playlist)));  // cloning
-  util.saveAppState();
+  appUtil.saveAppState();
 
   this.isPlaylistExpanded_ = this.player_.playlistExpanded;
   this.isTrackInfoExpanded_ = this.player_.trackInfoExpanded;
@@ -176,8 +194,9 @@ AudioPlayer.prototype.load = function(playlist) {
       var position = playlist.position || 0;
       var time = playlist.time || 0;
 
-      if (this.entries_.length == 0)
+      if (this.entries_.length == 0) {
         return;
+      }
 
       var newTracks = [];
       var currentTracks = this.player_.tracks;
@@ -187,12 +206,14 @@ AudioPlayer.prototype.load = function(playlist) {
         var entry = this.entries_[i];
         newTracks.push(new AudioPlayer.TrackInfo(entry));
 
-        if (unchanged && entry.toURL() !== currentTracks[i].url)
+        if (unchanged && entry.toURL() !== currentTracks[i].url) {
           unchanged = false;
+        }
       }
 
-      if (!unchanged)
+      if (!unchanged) {
         this.player_.tracks = newTracks;
+      }
 
       // Run asynchronously, to makes it sure that the handler of the track list
       // is called, before the handler of the track index.
@@ -202,8 +223,9 @@ AudioPlayer.prototype.load = function(playlist) {
         // Load the selected track metadata first, then load the rest.
         this.loadMetadata_(position);
         for (i = 0; i != this.entries_.length; i++) {
-          if (i != position)
+          if (i != position) {
             this.loadMetadata_(i);
+          }
         }
       }.bind(this), 0);
     }.bind(this));
@@ -216,8 +238,12 @@ AudioPlayer.prototype.load = function(playlist) {
  * @private
  */
 AudioPlayer.prototype.loadMetadata_ = function(track) {
-  this.fetchMetadata_(
-      this.entries_[track], this.displayMetadata_.bind(this, track));
+  this.loadMetadataQueue_.run(function(callback) {
+    this.fetchMetadata_(this.entries_[track], function(metadata) {
+      this.displayMetadata_(track, metadata);
+      callback();
+    }.bind(this));
+  }.bind(this));
 };
 
 /**
@@ -238,23 +264,27 @@ AudioPlayer.prototype.displayMetadata_ = function(track, metadata, opt_error) {
  * @private
  */
 AudioPlayer.prototype.onExternallyUnmounted_ = function(event) {
-  if (!this.selectedEntry_)
+  if (!this.selectedEntry_) {
     return;
+  }
 
   if (this.volumeManager_.getVolumeInfo(this.selectedEntry_) ===
-      event.volumeInfo)
+      event.volumeInfo) {
     window.close();
+  }
 };
 
 /**
  * Called on window is being unloaded.
  */
 AudioPlayer.prototype.onUnload = function() {
-  if (this.player_)
+  if (this.player_) {
     this.player_.onPageUnload();
+  }
 
-  if (this.volumeManager_)
+  if (this.volumeManager_) {
     this.volumeManager_.dispose();
+  }
 };
 
 /**
@@ -271,18 +301,20 @@ AudioPlayer.prototype.select_ = function(newTrack) {
 
   // Run asynchronously after an event of current track change is delivered.
   setTimeout(function() {
-    if (!window.appReopen)
-      this.player_.$.audio.play();
+    if (!window.appReopen) {
+      this.player_.play();
+    }
 
     window.appState.position = this.currentTrackIndex_;
     window.appState.time = 0;
-    util.saveAppState();
+    appUtil.saveAppState();
 
     var entry = this.entries_[this.currentTrackIndex_];
 
     this.fetchMetadata_(entry, function(metadata) {
-      if (this.currentTrackIndex_ != newTrack)
+      if (this.currentTrackIndex_ != newTrack) {
         return;
+      }
 
       this.selectedEntry_ = entry;
     }.bind(this));
@@ -300,8 +332,9 @@ AudioPlayer.prototype.fetchMetadata_ = function(entry, callback) {
       ['mediaTitle', 'mediaArtist', 'present', 'contentThumbnailUrl']).then(
       function(generation, metadata) {
         // Do nothing if another load happened since the metadata request.
-        if (this.playlistGeneration_ == generation)
+        if (this.playlistGeneration_ == generation) {
           callback(metadata[0]);
+        }
       }.bind(this, this.playlistGeneration_));
 };
 
@@ -352,6 +385,7 @@ AudioPlayer.prototype.onResize_ = function(event) {
 AudioPlayer.prototype.onKeyDown_ = function(event) {
   switch (util.getKeyModifiers(event) + event.key) {
     case 'Ctrl-w': // Ctrl+W => Close the player.
+    case 'BrowserBack':
       chrome.app.window.current().close();
       break;
 
@@ -371,17 +405,24 @@ AudioPlayer.prototype.onKeyDown_ = function(event) {
 
     case ' ': // Space
     case 'k':
+    case 'MediaPlayPause':
       this.player_.dispatchEvent(new Event('toggle-pause-event'));
       break;
     case 'ArrowUp':
-    case 'ArrowRight':
-      if (event.target.id !== 'volumeSlider')
-        this.player_.dispatchEvent(new Event('small-forward-skip-event'));
+      this.player_.dispatchEvent(new Event('small-forward-skip-event'));
       break;
     case 'ArrowDown':
+      this.player_.dispatchEvent(new Event('small-backword-skip-event'));
+      break;
+    case 'ArrowRight':
+      var eventName = this.isRtl_ ? 'small-backword-skip-event' :
+                                    'small-forward-skip-event';
+      this.player_.dispatchEvent(new Event(eventName));
+      break;
     case 'ArrowLeft':
-      if (event.target.id !== 'volumeSlider')
-        this.player_.dispatchEvent(new Event('small-backword-skip-event'));
+      var eventName = this.isRtl_ ? 'small-forward-skip-event' :
+                                    'small-backword-skip-event';
+      this.player_.dispatchEvent(new Event(eventName));
       break;
     case 'l':
       this.player_.dispatchEvent(new Event('big-forward-skip-event'));
@@ -389,7 +430,34 @@ AudioPlayer.prototype.onKeyDown_ = function(event) {
     case 'j':
       this.player_.dispatchEvent(new Event('big-backword-skip-event'));
       break;
+    case ']':
+    case 'MediaTrackNext':
+      this.player_.dispatchEvent(new Event('next-track-event'));
+      break;
+    case '[':
+    case 'MediaTrackPrevious':
+      this.player_.dispatchEvent(new Event('previous-track-event'));
+      break;
+    case 'MediaStop':
+      // TODO: Define "Stop" behavior.
+      break;
   }
+};
+
+/**
+ * Updates the Media Session API with the current playback state of the audio
+ * player.
+ * @param {Event} event The playing event.
+ * @private
+ */
+AudioPlayer.prototype.updateMediaSessionPlaybackState_ = function(event) {
+  if (!navigator.mediaSession) {
+    return;
+  }
+
+  navigator.mediaSession.playbackState = event.detail.value ?
+      MediaSessionPlaybackState.PLAYING :
+      MediaSessionPlaybackState.PAUSED;
 };
 
 /* Keep the below constants in sync with the CSS. */
@@ -468,11 +536,13 @@ AudioPlayer.CLOSED_MODE_MIN_HEIGHT = AudioPlayer.TOP_PADDING_HEIGHT +
  */
 AudioPlayer.prototype.onPlaylistExpandedChanged_ = function(newValue) {
   if (this.isPlaylistExpanded_ !== null &&
-      this.isPlaylistExpanded_ === newValue)
+      this.isPlaylistExpanded_ === newValue) {
     return;
+  }
 
-  if (this.isPlaylistExpanded_ && !newValue)
+  if (this.isPlaylistExpanded_ && !newValue) {
     this.lastExpandedInnerHeight_ = window.innerHeight;
+  }
 
   if (this.isPlaylistExpanded_ !== newValue) {
     this.isPlaylistExpanded_ = newValue;
@@ -480,7 +550,7 @@ AudioPlayer.prototype.onPlaylistExpandedChanged_ = function(newValue) {
 
     // Saves new state.
     window.appState.playlistExpanded = newValue;
-    util.saveAppState();
+    appUtil.saveAppState();
   }
 };
 
@@ -491,14 +561,15 @@ AudioPlayer.prototype.onPlaylistExpandedChanged_ = function(newValue) {
  */
 AudioPlayer.prototype.onTrackInfoExpandedChanged_ = function(newValue) {
   if (this.isTrackInfoExpanded_ !== null &&
-      this.isTrackInfoExpanded_ === newValue)
+      this.isTrackInfoExpanded_ === newValue) {
     return;
+  }
 
   this.lastExpandedInnerHeight_ = window.innerHeight;
 
   if (this.isTrackInfoExpanded_ !== newValue) {
     this.isTrackInfoExpanded_ = newValue;
-    var state = chrome.app.window.current()
+    var state = chrome.app.window.current();
     var newHeight = window.outerHeight;
     if (newValue) {
       state.innerBounds.minHeight = AudioPlayer.EXPANDED_MODE_MIN_HEIGHT;
@@ -513,7 +584,7 @@ AudioPlayer.prototype.onTrackInfoExpandedChanged_ = function(newValue) {
 
     // Saves new state.
     window.appState.isTrackInfoExpanded_ = newValue;
-    util.saveAppState();
+    appUtil.saveAppState();
   }
 };
 
@@ -611,7 +682,15 @@ AudioPlayer.TrackInfo.prototype.setMetadata = function(
   this.artworkUrl = metadata.contentThumbnailUrl || "";
 };
 
-// Starts loading the audio player.
-window.addEventListener('DOMContentLoaded', function(e) {
-  AudioPlayer.load();
-});
+/**
+ * initializeAudioPlayer: loads the audio player.
+ */
+function initializeAudioPlayer() {
+  window.HTMLImports.whenReady(AudioPlayer.load);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeAudioPlayer);
+} else {
+  initializeAudioPlayer();
+}

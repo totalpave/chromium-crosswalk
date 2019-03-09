@@ -6,13 +6,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <memory>
 
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
@@ -26,14 +26,22 @@ namespace {
 
 // From the HID Usage Tables specification.
 const USHORT kGenericDesktopPage = 1;
-const USHORT kMouseUsage = 2;
 const USHORT kKeyboardUsage = 6;
+
+std::unique_ptr<RAWINPUTDEVICE> GetRawInputDevices(HWND hwnd, DWORD flags) {
+  std::unique_ptr<RAWINPUTDEVICE> device(new RAWINPUTDEVICE());
+  device->dwFlags = flags;
+  device->usUsagePage = kGenericDesktopPage;
+  device->usUsage = kKeyboardUsage;
+  device->hwndTarget = hwnd;
+  return device;
+}
 
 // This is the actual implementation of event monitoring. It's separated from
 // UserInputMonitorWin since it needs to be deleted on the UI thread.
 class UserInputMonitorWinCore
     : public base::SupportsWeakPtr<UserInputMonitorWinCore>,
-      public base::MessageLoop::DestructionObserver {
+      public base::MessageLoopCurrent::DestructionObserver {
  public:
   enum EventBitMask {
     MOUSE_EVENT_MASK = 1,
@@ -41,17 +49,16 @@ class UserInputMonitorWinCore
   };
 
   explicit UserInputMonitorWinCore(
-      scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-      const scoped_refptr<UserInputMonitor::MouseListenerList>&
-          mouse_listeners);
+      scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner);
   ~UserInputMonitorWinCore() override;
 
   // DestructionObserver overrides.
   void WillDestroyCurrentMessageLoop() override;
 
-  size_t GetKeyPressCount() const;
-  void StartMonitor(EventBitMask type);
-  void StopMonitor(EventBitMask type);
+  uint32_t GetKeyPressCount() const;
+  void StartMonitor();
+  void StartMonitorWithMapping(base::WritableSharedMemoryMapping mapping);
+  void StopMonitor();
 
  private:
   // Handles WM_INPUT messages.
@@ -61,36 +68,35 @@ class UserInputMonitorWinCore
                      WPARAM wparam,
                      LPARAM lparam,
                      LRESULT* result);
-  RAWINPUTDEVICE* GetRawInputDevices(EventBitMask event, DWORD flags);
 
   // Task runner on which |window_| is created.
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
-  scoped_refptr<base::ObserverListThreadSafe<
-      UserInputMonitor::MouseEventListener>> mouse_listeners_;
+
+  // Used for sharing key press count value.
+  std::unique_ptr<base::WritableSharedMemoryMapping> key_press_count_mapping_;
 
   // These members are only accessed on the UI thread.
   std::unique_ptr<base::win::MessageWindow> window_;
-  uint8_t events_monitored_;
   KeyboardEventCounter counter_;
 
   DISALLOW_COPY_AND_ASSIGN(UserInputMonitorWinCore);
 };
 
-class UserInputMonitorWin : public UserInputMonitor {
+class UserInputMonitorWin : public UserInputMonitorBase {
  public:
   explicit UserInputMonitorWin(
       const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner);
   ~UserInputMonitorWin() override;
 
   // Public UserInputMonitor overrides.
-  size_t GetKeyPressCount() const override;
+  uint32_t GetKeyPressCount() const override;
 
  private:
   // Private UserInputMonitor overrides.
   void StartKeyboardMonitoring() override;
+  void StartKeyboardMonitoring(
+      base::WritableSharedMemoryMapping mapping) override;
   void StopKeyboardMonitoring() override;
-  void StartMouseMonitoring() override;
-  void StopMouseMonitoring() override;
 
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
   UserInputMonitorWinCore* core_;
@@ -99,85 +105,77 @@ class UserInputMonitorWin : public UserInputMonitor {
 };
 
 UserInputMonitorWinCore::UserInputMonitorWinCore(
-    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
-    const scoped_refptr<UserInputMonitor::MouseListenerList>& mouse_listeners)
-    : ui_task_runner_(ui_task_runner),
-      mouse_listeners_(mouse_listeners),
-      events_monitored_(0) {}
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner)
+    : ui_task_runner_(ui_task_runner) {}
 
 UserInputMonitorWinCore::~UserInputMonitorWinCore() {
   DCHECK(!window_);
-  DCHECK(!events_monitored_);
 }
 
 void UserInputMonitorWinCore::WillDestroyCurrentMessageLoop() {
   DCHECK(ui_task_runner_->BelongsToCurrentThread());
-  StopMonitor(MOUSE_EVENT_MASK);
-  StopMonitor(KEYBOARD_EVENT_MASK);
+  StopMonitor();
 }
 
-size_t UserInputMonitorWinCore::GetKeyPressCount() const {
+uint32_t UserInputMonitorWinCore::GetKeyPressCount() const {
   return counter_.GetKeyPressCount();
 }
 
-void UserInputMonitorWinCore::StartMonitor(EventBitMask type) {
+void UserInputMonitorWinCore::StartMonitor() {
   DCHECK(ui_task_runner_->BelongsToCurrentThread());
 
-  if (events_monitored_ & type)
+  if (window_)
     return;
 
-  if (type == KEYBOARD_EVENT_MASK)
-    counter_.Reset();
-
-  if (!window_) {
-    window_.reset(new base::win::MessageWindow());
-    if (!window_->Create(base::Bind(&UserInputMonitorWinCore::HandleMessage,
-                                    base::Unretained(this)))) {
-      PLOG(ERROR) << "Failed to create the raw input window";
-      window_.reset();
-      return;
-    }
+  std::unique_ptr<base::win::MessageWindow> window =
+      std::make_unique<base::win::MessageWindow>();
+  if (!window->Create(base::BindRepeating(
+          &UserInputMonitorWinCore::HandleMessage, base::Unretained(this)))) {
+    PLOG(ERROR) << "Failed to create the raw input window";
+    return;
   }
 
-  // Register to receive raw mouse and/or keyboard input.
+  // Register to receive raw keyboard input.
   std::unique_ptr<RAWINPUTDEVICE> device(
-      GetRawInputDevices(type, RIDEV_INPUTSINK));
+      GetRawInputDevices(window->hwnd(), RIDEV_INPUTSINK));
   if (!RegisterRawInputDevices(device.get(), 1, sizeof(*device))) {
     PLOG(ERROR) << "RegisterRawInputDevices() failed for RIDEV_INPUTSINK";
-    window_.reset();
     return;
   }
 
+  window_ = std::move(window);
   // Start observing message loop destruction if we start monitoring the first
   // event.
-  if (!events_monitored_)
-    base::MessageLoop::current()->AddDestructionObserver(this);
-
-  events_monitored_ |= type;
+  base::MessageLoopCurrent::Get()->AddDestructionObserver(this);
 }
 
-void UserInputMonitorWinCore::StopMonitor(EventBitMask type) {
+void UserInputMonitorWinCore::StartMonitorWithMapping(
+    base::WritableSharedMemoryMapping mapping) {
+  StartMonitor();
+  key_press_count_mapping_ =
+      std::make_unique<base::WritableSharedMemoryMapping>(std::move(mapping));
+}
+
+void UserInputMonitorWinCore::StopMonitor() {
   DCHECK(ui_task_runner_->BelongsToCurrentThread());
 
-  if (!(events_monitored_ & type))
+  if (!window_)
     return;
 
   // Stop receiving raw input.
-  DCHECK(window_);
   std::unique_ptr<RAWINPUTDEVICE> device(
-      GetRawInputDevices(type, RIDEV_REMOVE));
+      GetRawInputDevices(window_->hwnd(), RIDEV_REMOVE));
 
   if (!RegisterRawInputDevices(device.get(), 1, sizeof(*device))) {
     PLOG(INFO) << "RegisterRawInputDevices() failed for RIDEV_REMOVE";
   }
 
-  events_monitored_ &= ~type;
-  if (events_monitored_ == 0) {
-    window_.reset();
+  window_ = nullptr;
 
-    // Stop observing message loop destruction if no event is being monitored.
-    base::MessageLoop::current()->RemoveDestructionObserver(this);
-  }
+  key_press_count_mapping_.reset();
+
+  // Stop observing message loop destruction if no event is being monitored.
+  base::MessageLoopCurrent::Get()->RemoveDestructionObserver(this);
 }
 
 LRESULT UserInputMonitorWinCore::OnInput(HRAWINPUT input_handle) {
@@ -205,23 +203,18 @@ LRESULT UserInputMonitorWinCore::OnInput(HRAWINPUT input_handle) {
   DCHECK_EQ(size, result);
 
   // Notify the observer about events generated locally.
-  if (input->header.dwType == RIM_TYPEMOUSE && input->header.hDevice != NULL) {
-    POINT position;
-    if (!GetCursorPos(&position)) {
-      position.x = 0;
-      position.y = 0;
-    }
-    mouse_listeners_->Notify(
-        FROM_HERE, &UserInputMonitor::MouseEventListener::OnMouseMoved,
-        SkIPoint::Make(position.x, position.y));
-  } else if (input->header.dwType == RIM_TYPEKEYBOARD &&
-             input->header.hDevice != NULL) {
+  if (input->header.dwType == RIM_TYPEKEYBOARD &&
+      input->header.hDevice != NULL) {
     ui::EventType event = (input->data.keyboard.Flags & RI_KEY_BREAK)
                               ? ui::ET_KEY_RELEASED
                               : ui::ET_KEY_PRESSED;
     ui::KeyboardCode key_code =
         ui::KeyboardCodeForWindowsKeyCode(input->data.keyboard.VKey);
     counter_.OnKeyboardEvent(event, key_code);
+
+    // Update count value in shared memory.
+    if (key_press_count_mapping_)
+      WriteKeyPressMonitorCount(*key_press_count_mapping_, GetKeyPressCount());
   }
 
   return DefRawInputProc(&input, 1, sizeof(RAWINPUTHEADER));
@@ -243,26 +236,6 @@ bool UserInputMonitorWinCore::HandleMessage(UINT message,
   }
 }
 
-RAWINPUTDEVICE* UserInputMonitorWinCore::GetRawInputDevices(EventBitMask event,
-                                                            DWORD flags) {
-  DCHECK(ui_task_runner_->BelongsToCurrentThread());
-
-  std::unique_ptr<RAWINPUTDEVICE> device(new RAWINPUTDEVICE());
-  if (event == MOUSE_EVENT_MASK) {
-    device->dwFlags = flags;
-    device->usUsagePage = kGenericDesktopPage;
-    device->usUsage = kMouseUsage;
-    device->hwndTarget = window_->hwnd();
-  } else {
-    DCHECK_EQ(KEYBOARD_EVENT_MASK, event);
-    device->dwFlags = flags;
-    device->usUsagePage = kGenericDesktopPage;
-    device->usUsage = kKeyboardUsage;
-    device->hwndTarget = window_->hwnd();
-  }
-  return device.release();
-}
-
 //
 // Implementation of UserInputMonitorWin.
 //
@@ -270,55 +243,43 @@ RAWINPUTDEVICE* UserInputMonitorWinCore::GetRawInputDevices(EventBitMask event,
 UserInputMonitorWin::UserInputMonitorWin(
     const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner)
     : ui_task_runner_(ui_task_runner),
-      core_(new UserInputMonitorWinCore(ui_task_runner, mouse_listeners())) {}
+      core_(new UserInputMonitorWinCore(ui_task_runner)) {}
 
 UserInputMonitorWin::~UserInputMonitorWin() {
   if (!ui_task_runner_->DeleteSoon(FROM_HERE, core_))
     delete core_;
 }
 
-size_t UserInputMonitorWin::GetKeyPressCount() const {
+uint32_t UserInputMonitorWin::GetKeyPressCount() const {
   return core_->GetKeyPressCount();
 }
 
 void UserInputMonitorWin::StartKeyboardMonitoring() {
   ui_task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&UserInputMonitorWinCore::StartMonitor,
+                                core_->AsWeakPtr()));
+}
+
+void UserInputMonitorWin::StartKeyboardMonitoring(
+    base::WritableSharedMemoryMapping mapping) {
+  ui_task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&UserInputMonitorWinCore::StartMonitor,
-                 core_->AsWeakPtr(),
-                 UserInputMonitorWinCore::KEYBOARD_EVENT_MASK));
+      base::BindOnce(&UserInputMonitorWinCore::StartMonitorWithMapping,
+                     core_->AsWeakPtr(), std::move(mapping)));
 }
 
 void UserInputMonitorWin::StopKeyboardMonitoring() {
   ui_task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&UserInputMonitorWinCore::StopMonitor,
-                 core_->AsWeakPtr(),
-                 UserInputMonitorWinCore::KEYBOARD_EVENT_MASK));
-}
-
-void UserInputMonitorWin::StartMouseMonitoring() {
-  ui_task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&UserInputMonitorWinCore::StartMonitor,
-                 core_->AsWeakPtr(),
-                 UserInputMonitorWinCore::MOUSE_EVENT_MASK));
-}
-
-void UserInputMonitorWin::StopMouseMonitoring() {
-  ui_task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&UserInputMonitorWinCore::StopMonitor,
-                 core_->AsWeakPtr(),
-                 UserInputMonitorWinCore::MOUSE_EVENT_MASK));
+      FROM_HERE, base::BindOnce(&UserInputMonitorWinCore::StopMonitor,
+                                core_->AsWeakPtr()));
 }
 
 }  // namespace
 
 std::unique_ptr<UserInputMonitor> UserInputMonitor::Create(
-    const scoped_refptr<base::SingleThreadTaskRunner>& io_task_runner,
-    const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner) {
-  return base::WrapUnique(new UserInputMonitorWin(ui_task_runner));
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
+    scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner) {
+  return std::make_unique<UserInputMonitorWin>(ui_task_runner);
 }
 
 }  // namespace media

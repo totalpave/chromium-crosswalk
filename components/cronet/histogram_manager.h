@@ -16,7 +16,7 @@
 #include "base/metrics/histogram_flattener.h"
 #include "base/metrics/histogram_snapshot_manager.h"
 #include "base/synchronization/lock.h"
-#include "components/metrics/proto/chrome_user_metrics_extension.pb.h"
+#include "third_party/metrics_proto/chrome_user_metrics_extension.pb.h"
 
 namespace cronet {
 
@@ -37,16 +37,11 @@ class HistogramManager : public base::HistogramFlattener {
   static HistogramManager* GetInstance();
 
  private:
-  friend struct base::DefaultLazyInstanceTraits<HistogramManager>;
+  friend struct base::LazyInstanceTraitsBase<HistogramManager>;
 
   // base::HistogramFlattener:
   void RecordDelta(const base::HistogramBase& histogram,
                    const base::HistogramSamples& snapshot) override;
-  void InconsistencyDetected(
-      base::HistogramBase::Inconsistency problem) override;
-  void UniqueInconsistencyDetected(
-      base::HistogramBase::Inconsistency problem) override;
-  void InconsistencyDetectedInLoggedCount(int amount) override;
 
   base::HistogramSnapshotManager histogram_snapshot_manager_;
 

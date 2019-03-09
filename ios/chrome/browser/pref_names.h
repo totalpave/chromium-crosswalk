@@ -9,6 +9,7 @@ namespace prefs {
 
 extern const char kAcceptLanguages[];
 extern const char kApplicationLocale[];
+extern const char kArticlesForYouEnabled[];
 extern const char kBrowserStateInfoCache[];
 extern const char kBrowserStateLastUsed[];
 extern const char kBrowserStatesLastActive[];
@@ -20,11 +21,14 @@ extern const char kDataSaverEnabled[];
 extern const char kDefaultCharset[];
 extern const char kEnableDoNotTrack[];
 extern const char kHttpServerProperties[];
+extern const char kIosBookmarkCachedFolderId[];
+extern const char kIosBookmarkCachedTopMostRow[];
 extern const char kIosBookmarkFolderDefault[];
 extern const char kIosBookmarkPromoAlreadySeen[];
-extern const char kIosHandoffToOtherDevices[];
+extern const char kIosBookmarkSigninPromoDisplayedCount[];
+extern const char kIosSettingsPromoAlreadySeen[];
+extern const char kIosSettingsSigninPromoDisplayedCount[];
 extern const char kLastSessionExitedCleanly[];
-extern const char kLastSessionUsedWKWebViewControlGroup[];
 extern const char kMetricsReportingWifiOnly[];
 extern const char kNtpShownPage[];
 extern const char kSavingBrowserHistoryDisabled[];
@@ -38,20 +42,12 @@ extern const char kNetworkPredictionWifiOnly[];
 extern const char kNtpShownBookmarksFolder[];
 extern const char kShowMemoryDebuggingTools[];
 
-extern const char kVoiceSearchLocale[];
-extern const char kVoiceSearchTTS[];
-
 extern const char kSigninLastAccounts[];
 extern const char kSigninLastAccountsMigrated[];
-extern const char kSigninSharedAuthenticationUserId[];
 extern const char kSigninShouldPromptForSigninAgain[];
 
 extern const char kOmniboxGeolocationAuthorizationState[];
 extern const char kOmniboxGeolocationLastAuthorizationAlertVersion[];
-
-extern const char kRateThisAppDialogLastShownTime[];
-
-extern const char kDroppedSafeBrowsingCookies[];
 
 }  // namespace prefs
 

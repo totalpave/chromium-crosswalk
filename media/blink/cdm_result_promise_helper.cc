@@ -5,64 +5,71 @@
 #include "media/blink/cdm_result_promise_helper.h"
 
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_functions.h"
 
 namespace media {
 
 CdmResultForUMA ConvertCdmExceptionToResultForUMA(
-    MediaKeys::Exception exception_code) {
+    CdmPromise::Exception exception_code) {
   switch (exception_code) {
-    case MediaKeys::NOT_SUPPORTED_ERROR:
+    case CdmPromise::Exception::NOT_SUPPORTED_ERROR:
       return NOT_SUPPORTED_ERROR;
-    case MediaKeys::INVALID_STATE_ERROR:
+    case CdmPromise::Exception::INVALID_STATE_ERROR:
       return INVALID_STATE_ERROR;
-    case MediaKeys::INVALID_ACCESS_ERROR:
-      return INVALID_ACCESS_ERROR;
-    case MediaKeys::QUOTA_EXCEEDED_ERROR:
+    case CdmPromise::Exception::QUOTA_EXCEEDED_ERROR:
       return QUOTA_EXCEEDED_ERROR;
-    case MediaKeys::UNKNOWN_ERROR:
-      return UNKNOWN_ERROR;
-    case MediaKeys::CLIENT_ERROR:
-      return CLIENT_ERROR;
-    case MediaKeys::OUTPUT_ERROR:
-      return OUTPUT_ERROR;
+    case CdmPromise::Exception::TYPE_ERROR:
+      return TYPE_ERROR;
   }
   NOTREACHED();
-  return UNKNOWN_ERROR;
+  return INVALID_STATE_ERROR;
 }
 
 blink::WebContentDecryptionModuleException ConvertCdmException(
-    MediaKeys::Exception exception_code) {
+    CdmPromise::Exception exception_code) {
   switch (exception_code) {
-    case MediaKeys::NOT_SUPPORTED_ERROR:
-      return blink::WebContentDecryptionModuleExceptionNotSupportedError;
-    case MediaKeys::INVALID_STATE_ERROR:
-      return blink::WebContentDecryptionModuleExceptionInvalidStateError;
-    case MediaKeys::INVALID_ACCESS_ERROR:
-      return blink::WebContentDecryptionModuleExceptionInvalidAccessError;
-    case MediaKeys::QUOTA_EXCEEDED_ERROR:
-      return blink::WebContentDecryptionModuleExceptionQuotaExceededError;
-    case MediaKeys::UNKNOWN_ERROR:
-      return blink::WebContentDecryptionModuleExceptionUnknownError;
-    case MediaKeys::CLIENT_ERROR:
-      return blink::WebContentDecryptionModuleExceptionClientError;
-    case MediaKeys::OUTPUT_ERROR:
-      return blink::WebContentDecryptionModuleExceptionOutputError;
+    case CdmPromise::Exception::NOT_SUPPORTED_ERROR:
+      return blink::kWebContentDecryptionModuleExceptionNotSupportedError;
+    case CdmPromise::Exception::INVALID_STATE_ERROR:
+      return blink::kWebContentDecryptionModuleExceptionInvalidStateError;
+    case CdmPromise::Exception::QUOTA_EXCEEDED_ERROR:
+      return blink::kWebContentDecryptionModuleExceptionQuotaExceededError;
+    case CdmPromise::Exception::TYPE_ERROR:
+      return blink::kWebContentDecryptionModuleExceptionTypeError;
   }
   NOTREACHED();
-  return blink::WebContentDecryptionModuleExceptionUnknownError;
+  return blink::kWebContentDecryptionModuleExceptionInvalidStateError;
+}
+
+blink::WebEncryptedMediaKeyInformation::KeyStatus ConvertCdmKeyStatus(
+    media::CdmKeyInformation::KeyStatus key_status) {
+  switch (key_status) {
+    case media::CdmKeyInformation::USABLE:
+      return blink::WebEncryptedMediaKeyInformation::KeyStatus::kUsable;
+    case media::CdmKeyInformation::INTERNAL_ERROR:
+      return blink::WebEncryptedMediaKeyInformation::KeyStatus::kInternalError;
+    case media::CdmKeyInformation::EXPIRED:
+      return blink::WebEncryptedMediaKeyInformation::KeyStatus::kExpired;
+    case media::CdmKeyInformation::OUTPUT_RESTRICTED:
+      return blink::WebEncryptedMediaKeyInformation::KeyStatus::
+          kOutputRestricted;
+    case media::CdmKeyInformation::OUTPUT_DOWNSCALED:
+      return blink::WebEncryptedMediaKeyInformation::KeyStatus::
+          kOutputDownscaled;
+    case media::CdmKeyInformation::KEY_STATUS_PENDING:
+      return blink::WebEncryptedMediaKeyInformation::KeyStatus::kStatusPending;
+    case media::CdmKeyInformation::RELEASED:
+      return blink::WebEncryptedMediaKeyInformation::KeyStatus::kReleased;
+  }
+  NOTREACHED();
+  return blink::WebEncryptedMediaKeyInformation::KeyStatus::kInternalError;
 }
 
 void ReportCdmResultUMA(const std::string& uma_name, CdmResultForUMA result) {
   if (uma_name.empty())
     return;
 
-  base::LinearHistogram::FactoryGet(
-      uma_name,
-      1,
-      NUM_RESULT_CODES,
-      NUM_RESULT_CODES + 1,
-      base::HistogramBase::kUmaTargetedHistogramFlag)->Add(result);
+  base::UmaHistogramEnumeration(uma_name, result, NUM_RESULT_CODES);
 }
 
 }  // namespace media

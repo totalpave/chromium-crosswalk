@@ -6,21 +6,29 @@
 
 #include <memory>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/common/chrome_switches.h"
+#include "chrome/common/extensions/extension_test_util.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/test/test_browser_thread.h"
+#include "components/sync/model/fake_sync_change_processor.h"
+#include "components/sync/model/sync_change_processor_wrapper_for_test.h"
+#include "components/sync/model/sync_error.h"
+#include "components/sync/model/sync_error_factory_mock.h"
+#include "components/sync/protocol/sync.pb.h"
+#include "components/sync/protocol/theme_specifics.pb.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
@@ -28,20 +36,11 @@
 #include "extensions/common/manifest_url_handlers.h"
 #include "extensions/common/permissions/api_permission_set.h"
 #include "extensions/common/permissions/permission_set.h"
-#include "sync/api/attachments/attachment_id.h"
-#include "sync/api/fake_sync_change_processor.h"
-#include "sync/api/sync_change_processor_wrapper_for_test.h"
-#include "sync/api/sync_error.h"
-#include "sync/api/sync_error_factory_mock.h"
-#include "sync/internal_api/public/attachments/attachment_service_proxy_for_test.h"
-#include "sync/protocol/sync.pb.h"
-#include "sync/protocol/theme_specifics.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_CHROMEOS)
 #include "chrome/browser/chromeos/login/users/scoped_test_user_manager.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
-#include "chrome/browser/chromeos/settings/device_settings_service.h"
+#include "chrome/browser/chromeos/settings/scoped_cros_settings_test_helper.h"
 #endif
 
 using std::string;
@@ -60,19 +59,16 @@ const base::FilePath::CharType kExtensionFilePath[] = FILE_PATH_LITERAL("/oo");
 
 class FakeThemeService : public ThemeService {
  public:
-  FakeThemeService() :
-    using_system_theme_(false),
-    using_default_theme_(false),
-    distinct_from_default_theme_(false),
-    theme_extension_(NULL),
-    is_dirty_(false) {}
+  FakeThemeService() {}
 
   // ThemeService implementation
-  void SetTheme(const extensions::Extension* extension) override {
+  void DoSetTheme(const extensions::Extension* extension,
+                  bool suppress_infobar) override {
     is_dirty_ = true;
     theme_extension_ = extension;
     using_system_theme_ = false;
     using_default_theme_ = false;
+    might_show_infobar_ = !suppress_infobar;
   }
 
   void UseDefaultTheme() override {
@@ -112,20 +108,19 @@ class FakeThemeService : public ThemeService {
     return theme_extension_.get();
   }
 
-  bool is_dirty() const {
-    return is_dirty_;
-  }
+  bool is_dirty() const { return is_dirty_; }
 
-  void MarkClean() {
-    is_dirty_ = false;
-  }
+  void MarkClean() { is_dirty_ = false; }
+
+  bool might_show_infobar() const { return might_show_infobar_; }
 
  private:
-  bool using_system_theme_;
-  bool using_default_theme_;
-  bool distinct_from_default_theme_;
+  bool using_system_theme_ = false;
+  bool using_default_theme_ = false;
+  bool distinct_from_default_theme_ = false;
   scoped_refptr<const extensions::Extension> theme_extension_;
-  bool is_dirty_;
+  bool is_dirty_ = false;
+  bool might_show_infobar_ = false;
 };
 
 std::unique_ptr<KeyedService> BuildMockThemeService(
@@ -140,7 +135,8 @@ scoped_refptr<extensions::Extension> MakeThemeExtension(
     const string& update_url) {
   base::DictionaryValue source;
   source.SetString(extensions::manifest_keys::kName, name);
-  source.Set(extensions::manifest_keys::kTheme, new base::DictionaryValue());
+  source.Set(extensions::manifest_keys::kTheme,
+             std::make_unique<base::DictionaryValue>());
   source.SetString(extensions::manifest_keys::kUpdateURL, update_url);
   source.SetString(extensions::manifest_keys::kVersion, "0.0.0.0");
   string error;
@@ -157,18 +153,14 @@ scoped_refptr<extensions::Extension> MakeThemeExtension(
 
 class ThemeSyncableServiceTest : public testing::Test {
  protected:
-  ThemeSyncableServiceTest()
-      : ui_thread_(content::BrowserThread::UI, &loop_),
-        file_thread_(content::BrowserThread::FILE, &loop_),
-        fake_theme_service_(NULL) {}
+  ThemeSyncableServiceTest() : fake_theme_service_(NULL) {}
 
   ~ThemeSyncableServiceTest() override {}
 
   void SetUp() override {
     // Setting a matching update URL is necessary to make the test theme
     // considered syncable.
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kAppsGalleryUpdateURL, kCustomThemeUrl);
+    extension_test_util::SetGalleryUpdateURL(GURL(kCustomThemeUrl));
 
     profile_.reset(new TestingProfile);
     fake_theme_service_ = BuildForProfile(profile_.get());
@@ -188,8 +180,9 @@ class ThemeSyncableServiceTest : public testing::Test {
     extensions::TestExtensionSystem* test_ext_system =
         static_cast<extensions::TestExtensionSystem*>(
                 extensions::ExtensionSystem::Get(profile_.get()));
-    ExtensionService* service = test_ext_system->CreateExtensionService(
-        &command_line, base::FilePath(kExtensionFilePath), false);
+    extensions::ExtensionService* service =
+        test_ext_system->CreateExtensionService(
+            &command_line, base::FilePath(kExtensionFilePath), false);
     EXPECT_TRUE(service->extensions_enabled());
     service->Init();
     base::RunLoop().RunUntilIdle();
@@ -217,7 +210,7 @@ class ThemeSyncableServiceTest : public testing::Test {
   FakeThemeService* BuildForProfile(Profile* profile) {
     return static_cast<FakeThemeService*>(
         ThemeServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-            profile, &BuildMockThemeService));
+            profile, base::BindRepeating(&BuildMockThemeService)));
   }
 
   syncer::SyncDataList MakeThemeDataList(
@@ -233,13 +226,10 @@ class ThemeSyncableServiceTest : public testing::Test {
   }
 
   // Needed for setting up extension service.
-  base::MessageLoop loop_;
-  content::TestBrowserThread ui_thread_;
-  content::TestBrowserThread file_thread_;
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
 
 #if defined OS_CHROMEOS
-  chromeos::ScopedTestDeviceSettingsService test_device_settings_service_;
-  chromeos::ScopedTestCrosSettings test_cros_settings_;
+  chromeos::ScopedCrosSettingsTestHelper cros_settings_test_helper_;
   chromeos::ScopedTestUserManager test_user_manager_;
 #endif
 
@@ -464,18 +454,15 @@ TEST_F(ThemeSyncableServiceTest, ProcessSyncThemeChange) {
   sync_pb::EntitySpecifics entity_specifics;
   entity_specifics.mutable_theme()->CopyFrom(theme_specifics);
   syncer::SyncChangeList change_list;
-  change_list.push_back(
-      syncer::SyncChange(FROM_HERE,
-                         syncer::SyncChange::ACTION_UPDATE,
-                         syncer::SyncData::CreateRemoteData(
-                             1,
-                             entity_specifics,
-                             base::Time(),
-                             syncer::AttachmentIdList(),
-                             syncer::AttachmentServiceProxyForTest::Create())));
+  change_list.push_back(syncer::SyncChange(
+      FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+      syncer::SyncData::CreateRemoteData(1, entity_specifics)));
   error = theme_sync_service_->ProcessSyncChanges(FROM_HERE, change_list);
   EXPECT_FALSE(error.IsSet()) << error.message();
   EXPECT_EQ(fake_theme_service_->theme_extension(), theme_extension_.get());
+  // Don't show an infobar for theme installation. Regression test for
+  // crbug.com/731688
+  EXPECT_FALSE(fake_theme_service_->might_show_infobar());
 }
 
 TEST_F(ThemeSyncableServiceTest, OnThemeChangeByUser) {

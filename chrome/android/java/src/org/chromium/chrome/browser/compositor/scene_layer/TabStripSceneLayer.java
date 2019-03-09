@@ -21,7 +21,7 @@ import org.chromium.ui.resources.ResourceManager;
  * composed of {@link StripLayoutTab}s) to the screen.  This object keeps the layers up to date and
  * removes/creates children as necessary.  This object is built by its native counterpart.
  */
-@JNINamespace("chrome::android")
+@JNINamespace("android")
 public class TabStripSceneLayer extends SceneOverlayLayer {
     private long mNativePtr;
     private final float mDpToPx;
@@ -56,7 +56,7 @@ public class TabStripSceneLayer extends SceneOverlayLayer {
      * @param layerTitleCache A layer title cache.
      * @param resourceManager A resource manager.
      * @param stripLayoutTabsToRender Array of strip layout tabs.
-     * @param yOffset Current top controls offset in dp.
+     * @param yOffset Current browser controls offset in dp.
      */
     public void pushAndUpdateStrip(StripLayoutHelperManager layoutHelper,
             LayerTitleCache layerTitleCache, ResourceManager resourceManager,
@@ -137,8 +137,8 @@ public class TabStripSceneLayer extends SceneOverlayLayer {
                     layoutHelper.getWidth() * mDpToPx, st.getDrawX() * mDpToPx,
                     st.getDrawY() * mDpToPx, st.getWidth() * mDpToPx, st.getHeight() * mDpToPx,
                     st.getContentOffsetX() * mDpToPx, st.getCloseButton().getOpacity(),
-                    st.isLoading(), st.getLoadingSpinnerRotation(), layoutHelper.getBorderOpacity(),
-                    layerTitleCache, resourceManager);
+                    st.isLoading(), st.getLoadingSpinnerRotation(), layerTitleCache,
+                    resourceManager);
         }
     }
 
@@ -167,7 +167,7 @@ public class TabStripSceneLayer extends SceneOverlayLayer {
     private native void nativePutStripTabLayer(long nativeTabStripSceneLayer, int id,
             int closeResourceId, int handleResourceId, boolean foreground, boolean closePressed,
             float toolbarWidth, float x, float y, float width, float height, float contentOffsetX,
-            float closeButtonAlpha, boolean isLoading, float spinnerRotation, float borderOpacity,
+            float closeButtonAlpha, boolean isLoading, float spinnerRotation,
             LayerTitleCache layerTitleCache, ResourceManager resourceManager);
     private native void nativeSetContentTree(long nativeTabStripSceneLayer, SceneLayer contentTree);
 }

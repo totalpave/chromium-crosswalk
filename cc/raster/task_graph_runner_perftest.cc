@@ -11,8 +11,8 @@
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/time/time.h"
+#include "base/timer/lap_timer.h"
 #include "cc/base/completion_event.h"
-#include "cc/debug/lap_timer.h"
 #include "cc/raster/synchronous_task_graph_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/perf/perf_test.h"
@@ -28,7 +28,7 @@ class PerfTaskImpl : public Task {
  public:
   typedef std::vector<scoped_refptr<PerfTaskImpl>> Vector;
 
-  PerfTaskImpl() {}
+  PerfTaskImpl() = default;
 
   // Overridden from Task:
   void RunOnWorkerThread() override {}
@@ -36,7 +36,7 @@ class PerfTaskImpl : public Task {
   void Reset() { state().Reset(); }
 
  private:
-  ~PerfTaskImpl() override {}
+  ~PerfTaskImpl() override = default;
 
   DISALLOW_COPY_AND_ASSIGN(PerfTaskImpl);
 };
@@ -51,7 +51,7 @@ class TaskGraphRunnerPerfTest : public testing::Test {
   // Overridden from testing::Test:
   void SetUp() override {
     task_graph_runner_ = base::WrapUnique(new SynchronousTaskGraphRunner);
-    namespace_token_ = task_graph_runner_->GetNamespaceToken();
+    namespace_token_ = task_graph_runner_->GenerateNamespaceToken();
   }
   void TearDown() override { task_graph_runner_ = nullptr; }
 
@@ -224,7 +224,7 @@ class TaskGraphRunnerPerfTest : public testing::Test {
 
   void CreateTasks(int num_tasks, PerfTaskImpl::Vector* tasks) {
     for (int i = 0; i < num_tasks; ++i)
-      tasks->push_back(make_scoped_refptr(new PerfTaskImpl));
+      tasks->push_back(base::MakeRefCounted<PerfTaskImpl>());
   }
 
   void CancelTasks(const PerfTaskImpl::Vector& tasks) {
@@ -244,36 +244,23 @@ class TaskGraphRunnerPerfTest : public testing::Test {
     DCHECK(graph->nodes.empty());
     DCHECK(graph->edges.empty());
 
-    for (PerfTaskImpl::Vector::const_iterator it = leaf_tasks.begin();
-         it != leaf_tasks.end();
-         ++it) {
-      graph->nodes.push_back(TaskGraph::Node(it->get(), 0u, 0u, 0u));
+    uint32_t leaf_task_count = static_cast<uint32_t>(leaf_tasks.size());
+    for (auto& task : tasks) {
+      for (const auto& leaf_task : leaf_tasks)
+        graph->edges.emplace_back(leaf_task.get(), task.get());
+
+      for (const auto& top_level_task : top_level_tasks)
+        graph->edges.emplace_back(task.get(), top_level_task.get());
+
+      graph->nodes.emplace_back(task, 0u, 0u, leaf_task_count);
     }
 
-    for (PerfTaskImpl::Vector::const_iterator it = tasks.begin();
-         it != tasks.end(); ++it) {
-      graph->nodes.push_back(TaskGraph::Node(
-          it->get(), 0u, 0u, static_cast<uint32_t>(leaf_tasks.size())));
+    for (auto& leaf_task : leaf_tasks)
+      graph->nodes.emplace_back(leaf_task, 0u, 0u, 0u);
 
-      for (PerfTaskImpl::Vector::const_iterator leaf_it = leaf_tasks.begin();
-           leaf_it != leaf_tasks.end();
-           ++leaf_it) {
-        graph->edges.push_back(TaskGraph::Edge(leaf_it->get(), it->get()));
-      }
-
-      for (PerfTaskImpl::Vector::const_iterator top_level_it =
-               top_level_tasks.begin();
-           top_level_it != top_level_tasks.end();
-           ++top_level_it) {
-        graph->edges.push_back(TaskGraph::Edge(it->get(), top_level_it->get()));
-      }
-    }
-
-    for (PerfTaskImpl::Vector::const_iterator it = top_level_tasks.begin();
-         it != top_level_tasks.end(); ++it) {
-      graph->nodes.push_back(TaskGraph::Node(
-          it->get(), 0u, 0u, static_cast<uint32_t>(tasks.size())));
-    }
+    uint32_t task_count = static_cast<uint32_t>(tasks.size());
+    for (auto& top_level_task : top_level_tasks)
+      graph->nodes.emplace_back(top_level_task, 0u, 0u, task_count);
   }
 
   size_t CollectCompletedTasks(Task::Vector* completed_tasks) {
@@ -287,7 +274,7 @@ class TaskGraphRunnerPerfTest : public testing::Test {
   // minimal additional complexity over the TaskGraphWorkQueue helpers.
   std::unique_ptr<SynchronousTaskGraphRunner> task_graph_runner_;
   NamespaceToken namespace_token_;
-  LapTimer timer_;
+  base::LapTimer timer_;
 };
 
 TEST_F(TaskGraphRunnerPerfTest, BuildTaskGraph) {

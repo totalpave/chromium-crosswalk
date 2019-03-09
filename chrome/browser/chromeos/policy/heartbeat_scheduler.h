@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 
 #include "base/cancelable_callback.h"
@@ -30,7 +31,6 @@ class GCMDriver;
 
 namespace policy {
 
-class EnterpriseInstallAttributes;
 class HeartbeatRegistrationHelper;
 
 // Class responsible for periodically sending heartbeats to the policy service
@@ -39,7 +39,7 @@ class HeartbeatScheduler : public gcm::GCMAppHandler,
                            gcm::GCMConnectionObserver {
  public:
   // Default interval for how often we send up a heartbeat.
-  static const int64_t kDefaultHeartbeatIntervalMs;
+  static const base::TimeDelta kDefaultHeartbeatInterval;
 
   // Constructor. |cloud_policy_client| will be used to send registered GCM id
   // to DM server, and can be null. |driver| can be null for tests.
@@ -58,6 +58,7 @@ class HeartbeatScheduler : public gcm::GCMAppHandler,
 
   // GCMAppHandler overrides.
   void ShutdownHandler() override;
+  void OnStoreReset() override;
   void OnMessage(const std::string& app_id,
                  const gcm::IncomingMessage& message) override;
   void OnMessagesDeleted(const std::string& app_id) override;

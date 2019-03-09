@@ -4,16 +4,21 @@
 
 #include "chrome/browser/ui/browser_ui_prefs.h"
 
+#include <memory>
+
+#include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/translate/core/common/translate_pref_names.h"
+#include "components/translate/core/browser/translate_pref_names.h"
 #include "content/public/common/webrtc_ip_handling_policy.h"
+#include "media/media_buildflags.h"
 
 #if defined(OS_WIN)
 #include "base/win/windows_version.h"
@@ -22,7 +27,7 @@
 namespace {
 
 uint32_t GetHomeButtonAndHomePageIsNewTabPageFlags() {
-#if defined(OS_IOS) || defined(OS_ANDROID)
+#if defined(OS_ANDROID)
   return PrefRegistry::NO_REGISTRATION_FLAGS;
 #else
   return user_prefs::PrefRegistrySyncable::SYNCABLE_PREF;
@@ -31,13 +36,17 @@ uint32_t GetHomeButtonAndHomePageIsNewTabPageFlags() {
 
 }  // namespace
 
-namespace chrome {
-
 void RegisterBrowserPrefs(PrefRegistrySimple* registry) {
-  registry->RegisterIntegerPref(prefs::kOptionsWindowLastTabIndex, 0);
   registry->RegisterBooleanPref(prefs::kAllowFileSelectionDialogs, true);
-  registry->RegisterIntegerPref(prefs::kShowFirstRunBubbleOption,
-                             first_run::FIRST_RUN_BUBBLE_DONT_SHOW);
+
+#if !defined(OS_ANDROID)
+  registry->RegisterIntegerPref(prefs::kRelaunchNotification, 0);
+  registry->RegisterIntegerPref(
+      prefs::kRelaunchNotificationPeriod,
+      base::saturated_cast<int>(
+          UpgradeDetector::GetDefaultHighAnnoyanceThreshold()
+              .InMilliseconds()));
+#endif  // !defined(OS_ANDROID)
 }
 
 void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
@@ -47,46 +56,7 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
       GetHomeButtonAndHomePageIsNewTabPageFlags());
   registry->RegisterBooleanPref(prefs::kShowHomeButton, false,
                                 GetHomeButtonAndHomePageIsNewTabPageFlags());
-  registry->RegisterBooleanPref(
-      prefs::kDeleteBrowsingHistory,
-      true,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kDeleteDownloadHistory,
-      true,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kDeleteCache,
-      true,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kDeleteCookies,
-      true,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kDeletePasswords,
-      false,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kDeleteFormData,
-      false,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kDeleteHostedAppsData,
-      false,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kDeleteMediaLicenses,
-      false,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterIntegerPref(
-      prefs::kDeleteTimePeriod,
-      0,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterIntegerPref(
-      prefs::kClearBrowsingDataHistoryNoticeShownTimes, 0);
-  registry->RegisterInt64Pref(prefs::kLastClearBrowsingDataTime, 0);
-  registry->RegisterIntegerPref(prefs::kModuleConflictBubbleShown, 0);
+
   registry->RegisterInt64Pref(prefs::kDefaultBrowserLastDeclined, 0);
   bool reset_check_default = false;
 #if defined(OS_WIN)
@@ -98,33 +68,29 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref(prefs::kWebAppCreateInAppsMenu, true);
   registry->RegisterBooleanPref(prefs::kWebAppCreateInQuickLaunchBar, true);
   registry->RegisterBooleanPref(
-      prefs::kEnableTranslate,
-      true,
+      prefs::kOfferTranslateEnabled, true,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterStringPref(prefs::kCloudPrintEmail, std::string());
   registry->RegisterBooleanPref(prefs::kCloudPrintProxyEnabled, true);
   registry->RegisterBooleanPref(prefs::kCloudPrintSubmitEnabled, true);
-  registry->RegisterBooleanPref(prefs::kDevToolsDisabled, false);
   registry->RegisterDictionaryPref(prefs::kBrowserWindowPlacement);
   registry->RegisterDictionaryPref(prefs::kBrowserWindowPlacementPopup);
   registry->RegisterDictionaryPref(prefs::kAppWindowPlacement);
-  registry->RegisterBooleanPref(prefs::kImportAutofillFormData, true);
-  registry->RegisterBooleanPref(prefs::kImportBookmarks, true);
-  registry->RegisterBooleanPref(prefs::kImportHistory, true);
-  registry->RegisterBooleanPref(prefs::kImportHomepage, true);
-  registry->RegisterBooleanPref(prefs::kImportSavedPasswords, true);
-  registry->RegisterBooleanPref(prefs::kImportSearchEngine, true);
   registry->RegisterBooleanPref(
       prefs::kEnableDoNotTrack,
       false,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-#if defined(ENABLE_WEBRTC)
+#if !defined(OS_CHROMEOS) && !defined(OS_ANDROID)
+  registry->RegisterBooleanPref(prefs::kPrintPreviewUseSystemDefaultPrinter,
+                                false);
+#endif
   // TODO(guoweis): Remove next 2 options at M50.
   registry->RegisterBooleanPref(prefs::kWebRTCMultipleRoutesEnabled, true);
   registry->RegisterBooleanPref(prefs::kWebRTCNonProxiedUdpEnabled, true);
   registry->RegisterStringPref(prefs::kWebRTCIPHandlingPolicy,
                                content::kWebRTCIPHandlingDefault);
-#endif
+  registry->RegisterStringPref(prefs::kWebRTCUDPPortRange, std::string());
+  registry->RegisterBooleanPref(prefs::kWebRtcEventLogCollectionAllowed, false);
 
   // Dictionaries to keep track of default tasks in the file browser.
   registry->RegisterDictionaryPref(
@@ -136,8 +102,6 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
 
   // We need to register the type of these preferences in order to query
   // them even though they're only typically controlled via policy.
-  registry->RegisterBooleanPref(prefs::kPluginsAllowOutdated, false);
-  registry->RegisterBooleanPref(prefs::kPluginsAlwaysAuthorize, false);
   registry->RegisterBooleanPref(prefs::kClearPluginLSODataEnabled, true);
   registry->RegisterBooleanPref(prefs::kHideWebStoreIcon, false);
 #if defined(OS_MACOSX)
@@ -155,12 +119,13 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
       true,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterBooleanPref(
-      prefs::kHideFullscreenToolbar,
-      false,
+      prefs::kAllowJavascriptAppleEvents, false,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 #else
   registry->RegisterBooleanPref(prefs::kFullscreenAllowed, true);
 #endif
-}
 
-}  // namespace chrome
+  registry->RegisterBooleanPref(prefs::kEnterpriseHardwarePlatformAPIEnabled,
+                                false);
+  registry->RegisterBooleanPref(prefs::kAllowPopupsDuringPageUnload, false);
+}

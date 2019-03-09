@@ -11,7 +11,7 @@ cr.define('cr.ui', function() {
    * @type {number}
    * @const
    */
-  var INDENT = 20;
+  const INDENT = 20;
 
   /**
    * Returns the computed style for an element.
@@ -19,7 +19,7 @@ cr.define('cr.ui', function() {
    * @return {!CSSStyleDeclaration} The computed style.
    */
   function getComputedStyle(el) {
-    return el.ownerDocument.defaultView.getComputedStyle(el);
+    return assert(el.ownerDocument.defaultView.getComputedStyle(el));
   }
 
   /**
@@ -40,7 +40,7 @@ cr.define('cr.ui', function() {
    * @constructor
    * @extends {HTMLElement}
    */
-  var Tree = cr.ui.define('tree');
+  const Tree = cr.ui.define('tree');
 
   Tree.prototype = {
     __proto__: HTMLElement.prototype,
@@ -50,13 +50,18 @@ cr.define('cr.ui', function() {
      */
     decorate: function() {
       // Make list focusable
-      if (!this.hasAttribute('tabindex'))
+      if (!this.hasAttribute('tabindex')) {
         this.tabIndex = 0;
+      }
 
       this.addEventListener('click', this.handleClick);
       this.addEventListener('mousedown', this.handleMouseDown);
       this.addEventListener('dblclick', this.handleDblClick);
       this.addEventListener('keydown', this.handleKeyDown);
+
+      if (!this.hasAttribute('role')) {
+        this.setAttribute('role', 'group');
+      }
     },
 
     /**
@@ -93,7 +98,7 @@ cr.define('cr.ui', function() {
      * @param {!cr.ui.TreeItem=} treeItem The tree item to remove.
      */
     remove: function(treeItem) {
-      this.removeChild(/** @type {!cr.ui.TreeItem} */(treeItem));
+      this.removeChild(/** @type {!cr.ui.TreeItem} */ (treeItem));
     },
 
     /**
@@ -110,14 +115,16 @@ cr.define('cr.ui', function() {
      * @param {Event} e The click event object.
      */
     handleClick: function(e) {
-      var treeItem = findTreeItem(/** @type {!Node} */(e.target));
-      if (treeItem)
+      const treeItem = findTreeItem(/** @type {!Node} */ (e.target));
+      if (treeItem) {
         treeItem.handleClick(e);
+      }
     },
 
     handleMouseDown: function(e) {
-      if (e.button == 2) // right
+      if (e.button == 2) {  // right
         this.handleClick(e);
+      }
     },
 
     /**
@@ -125,9 +132,10 @@ cr.define('cr.ui', function() {
      * @param {Event} e The dblclick event object.
      */
     handleDblClick: function(e) {
-      var treeItem = findTreeItem(/** @type {!Node} */(e.target));
-      if (treeItem)
+      const treeItem = findTreeItem(/** @type {!Node} */ (e.target));
+      if (treeItem) {
         treeItem.expanded = !treeItem.expanded;
+      }
     },
 
     /**
@@ -136,42 +144,45 @@ cr.define('cr.ui', function() {
      * @param {Event} e The click event object.
      */
     handleKeyDown: function(e) {
-      var itemToSelect;
-      if (e.ctrlKey)
+      let itemToSelect;
+      if (e.ctrlKey) {
         return;
+      }
 
-      var item = this.selectedItem;
-      if (!item)
+      const item = this.selectedItem;
+      if (!item) {
         return;
+      }
 
-      var rtl = getComputedStyle(item).direction == 'rtl';
+      const rtl = getComputedStyle(item).direction == 'rtl';
 
-      switch (e.keyIdentifier) {
-        case 'Up':
-          itemToSelect = item ? getPrevious(item) :
-              this.items[this.items.length - 1];
+      switch (e.key) {
+        case 'ArrowUp':
+          itemToSelect =
+              item ? getPrevious(item) : this.items[this.items.length - 1];
           break;
-        case 'Down':
-          itemToSelect = item ? getNext(item) :
-              this.items[0];
+        case 'ArrowDown':
+          itemToSelect = item ? getNext(item) : this.items[0];
           break;
-        case 'Left':
-        case 'Right':
+        case 'ArrowLeft':
+        case 'ArrowRight':
           // Don't let back/forward keyboard shortcuts be used.
-          if (!cr.isMac && e.altKey || cr.isMac && e.metaKey)
+          if (!cr.isMac && e.altKey || cr.isMac && e.metaKey) {
             break;
+          }
 
-          if (e.keyIdentifier == 'Left' && !rtl ||
-              e.keyIdentifier == 'Right' && rtl) {
-            if (item.expanded)
+          if (e.key == 'ArrowLeft' && !rtl || e.key == 'ArrowRight' && rtl) {
+            if (item.expanded) {
               item.expanded = false;
-            else
+            } else {
               itemToSelect = findTreeItem(item.parentNode);
+            }
           } else {
-            if (!item.expanded)
+            if (!item.expanded) {
               item.expanded = true;
-            else
+            } else {
               itemToSelect = item.items[0];
+            }
           }
           break;
         case 'Home':
@@ -196,21 +207,23 @@ cr.define('cr.ui', function() {
       return this.selectedItem_ || null;
     },
     set selectedItem(item) {
-      var oldSelectedItem = this.selectedItem_;
+      const oldSelectedItem = this.selectedItem_;
       if (oldSelectedItem != item) {
         // Set the selectedItem_ before deselecting the old item since we only
         // want one change when moving between items.
         this.selectedItem_ = item;
 
-        if (oldSelectedItem)
+        if (oldSelectedItem) {
           oldSelectedItem.selected = false;
+        }
 
         if (item) {
           item.selected = true;
-          if (item.id)
+          if (item.id) {
             this.setAttribute('aria-activedescendant', item.id);
+          }
         } else {
-            this.removeAttribute('aria-activedescendant');
+          this.removeAttribute('aria-activedescendant');
         }
         cr.dispatchSimpleEvent(this, 'change');
       }
@@ -222,8 +235,9 @@ cr.define('cr.ui', function() {
     getRectForContextMenu: function() {
       // TODO(arv): Add trait support so we can share more code between trees
       // and lists.
-      if (this.selectedItem)
+      if (this.selectedItem) {
         return this.selectedItem.rowElement.getBoundingClientRect();
+      }
       return this.getBoundingClientRect();
     }
   };
@@ -244,20 +258,20 @@ cr.define('cr.ui', function() {
    *
    * @type {number}
    */
-  var treeItemAutoGeneratedIdCounter = 0;
+  let treeItemAutoGeneratedIdCounter = 0;
 
   /**
    * This is used as a blueprint for new tree item elements.
    * @type {!HTMLElement}
    */
-  var treeItemProto = (function() {
-    var treeItem = cr.doc.createElement('div');
+  const treeItemProto = (function() {
+    const treeItem = cr.doc.createElement('div');
     treeItem.className = 'tree-item';
-    treeItem.innerHTML = '<div class=tree-row>' +
-        '<span class=expand-icon></span>' +
-        '<span class=tree-label></span>' +
+    treeItem.innerHTML = '<div class="tree-row">' +
+        '<span class="expand-icon"></span>' +
+        '<span class="tree-label"></span>' +
         '</div>' +
-        '<div class=tree-children></div>';
+        '<div class="tree-children" role="group"></div>';
     treeItem.setAttribute('role', 'treeitem');
     return treeItem;
   })();
@@ -268,8 +282,8 @@ cr.define('cr.ui', function() {
    * @constructor
    * @extends {HTMLElement}
    */
-  var TreeItem = cr.ui.define(function() {
-    var treeItem = treeItemProto.cloneNode(true);
+  const TreeItem = cr.ui.define(function() {
+    const treeItem = treeItemProto.cloneNode(true);
     treeItem.id = 'tree-item-autogen-id-' + treeItemAutoGeneratedIdCounter++;
     return treeItem;
   });
@@ -281,7 +295,10 @@ cr.define('cr.ui', function() {
      * Initializes the element.
      */
     decorate: function() {
-
+      const labelId =
+          'tree-item-label-autogen-id-' + treeItemAutoGeneratedIdCounter;
+      this.labelElement.id = labelId;
+      this.setAttribute('aria-labelledby', labelId);
     },
 
     /**
@@ -307,11 +324,11 @@ cr.define('cr.ui', function() {
      */
     setDepth_: function(depth) {
       if (depth != this.depth_) {
-        this.rowElement.style.WebkitPaddingStart = Math.max(0, depth - 1) *
-            INDENT + 'px';
+        this.rowElement.style.paddingInlineStart =
+            Math.max(0, depth - 1) * INDENT + 'px';
         this.depth_ = depth;
-        var items = this.items;
-        for (var i = 0, item; item = items[i]; i++) {
+        const items = this.items;
+        for (let i = 0, item; item = items[i]; i++) {
           item.setDepth_(depth + 1);
         }
       }
@@ -332,8 +349,9 @@ cr.define('cr.ui', function() {
      */
     addAt: function(child, index) {
       this.lastElementChild.insertBefore(child, this.items[index]);
-      if (this.items.length == 1)
+      if (this.items.length == 1) {
         this.hasChildren = true;
+      }
       child.setDepth_(this.depth + 1);
     },
 
@@ -344,14 +362,16 @@ cr.define('cr.ui', function() {
      */
     remove: function(child) {
       // If we removed the selected item we should become selected.
-      var tree = this.tree;
-      var selectedItem = tree.selectedItem;
-      if (selectedItem && child.contains(selectedItem))
+      const tree = this.tree;
+      const selectedItem = tree.selectedItem;
+      if (selectedItem && child.contains(selectedItem)) {
         this.selected = true;
+      }
 
-      this.lastElementChild.removeChild(/** @type {!cr.ui.TreeItem} */(child));
-      if (this.items.length == 0)
+      this.lastElementChild.removeChild(/** @type {!cr.ui.TreeItem} */ (child));
+      if (this.items.length == 0) {
         this.hasChildren = false;
+      }
     },
 
     /**
@@ -359,7 +379,7 @@ cr.define('cr.ui', function() {
      * @type {!cr.ui.Tree|cr.ui.TreeItem}
      */
     get parentItem() {
-      var p = this.parentNode;
+      let p = this.parentNode;
       while (p && !(p instanceof TreeItem) && !(p instanceof Tree)) {
         p = p.parentNode;
       }
@@ -371,7 +391,7 @@ cr.define('cr.ui', function() {
      * @type {cr.ui.Tree}
      */
     get tree() {
-      var t = this.parentItem;
+      let t = this.parentItem;
       while (t && !(t instanceof Tree)) {
         t = t.parentItem;
       }
@@ -386,26 +406,34 @@ cr.define('cr.ui', function() {
       return this.hasAttribute('expanded');
     },
     set expanded(b) {
-      if (this.expanded == b)
+      if (this.expanded == b) {
         return;
+      }
 
-      var treeChildren = this.lastElementChild;
+      const treeChildren = this.lastElementChild;
 
       if (b) {
         if (this.mayHaveChildren_) {
           this.setAttribute('expanded', '');
+          this.setAttribute('aria-expanded', 'true');
           treeChildren.setAttribute('expanded', '');
           cr.dispatchSimpleEvent(this, 'expand', true);
           this.scrollIntoViewIfNeeded(false);
         }
       } else {
-        var tree = this.tree;
+        const tree = this.tree;
         if (tree && !this.selected) {
-          var oldSelected = tree.selectedItem;
-          if (oldSelected && this.contains(oldSelected))
+          const oldSelected = tree.selectedItem;
+          if (oldSelected && this.contains(oldSelected)) {
             this.selected = true;
+          }
         }
         this.removeAttribute('expanded');
+        if (this.mayHaveChildren_) {
+          this.setAttribute('aria-expanded', 'false');
+        } else {
+          this.removeAttribute('aria-expanded');
+        }
         treeChildren.removeAttribute('expanded');
         cr.dispatchSimpleEvent(this, 'collapse', true);
       }
@@ -415,7 +443,7 @@ cr.define('cr.ui', function() {
      * Expands all parent items.
      */
     reveal: function() {
-      var pi = this.parentItem;
+      let pi = this.parentItem;
       while (pi && !(pi instanceof Tree)) {
         pi.expanded = true;
         pi = pi.parentItem;
@@ -457,7 +485,7 @@ cr.define('cr.ui', function() {
       return getComputedStyle(this.labelElement).backgroundImage.slice(4, -1);
     },
     set icon(icon) {
-      return this.labelElement.style.backgroundImage = url(icon);
+      return this.labelElement.style.backgroundImage = getUrlForCss(icon);
     },
 
     /**
@@ -468,22 +496,25 @@ cr.define('cr.ui', function() {
       return this.hasAttribute('selected');
     },
     set selected(b) {
-      if (this.selected == b)
+      if (this.selected == b) {
         return;
-      var rowItem = this.firstElementChild;
-      var tree = this.tree;
+      }
+      const rowItem = this.firstElementChild;
+      const tree = this.tree;
       if (b) {
         this.setAttribute('selected', '');
         rowItem.setAttribute('selected', '');
         this.reveal();
         this.labelElement.scrollIntoViewIfNeeded(false);
-        if (tree)
+        if (tree) {
           tree.selectedItem = this;
+        }
       } else {
         this.removeAttribute('selected');
         rowItem.removeAttribute('selected');
-        if (tree && tree.selectedItem == this)
+        if (tree && tree.selectedItem == this) {
           tree.selectedItem = null;
+        }
       }
     },
 
@@ -495,7 +526,7 @@ cr.define('cr.ui', function() {
       return this.hasAttribute('may-have-children');
     },
     set mayHaveChildren_(b) {
-      var rowItem = this.firstElementChild;
+      const rowItem = this.firstElementChild;
       if (b) {
         this.setAttribute('may-have-children', '');
         rowItem.setAttribute('may-have-children', '');
@@ -518,11 +549,13 @@ cr.define('cr.ui', function() {
      * @type {boolean}
      */
     set hasChildren(b) {
-      var rowItem = this.firstElementChild;
+      const rowItem = this.firstElementChild;
       this.setAttribute('has-children', b);
       rowItem.setAttribute('has-children', b);
-      if (b)
+      if (b) {
         this.mayHaveChildren_ = true;
+        this.setAttribute('aria-expanded', this.expanded);
+      }
     },
 
     /**
@@ -531,10 +564,11 @@ cr.define('cr.ui', function() {
      * @param {Event} e The click event.
      */
     handleClick: function(e) {
-      if (e.target.className == 'expand-icon')
+      if (e.target.className == 'expand-icon') {
         this.expanded = !this.expanded;
-      else
+      } else {
         this.selected = true;
+      }
     },
 
     /**
@@ -543,14 +577,15 @@ cr.define('cr.ui', function() {
      * @type {boolean}
      */
     set editing(editing) {
-      var oldEditing = this.editing;
-      if (editing == oldEditing)
+      const oldEditing = this.editing;
+      if (editing == oldEditing) {
         return;
+      }
 
-      var self = this;
-      var labelEl = this.labelElement;
-      var text = this.label;
-      var input;
+      const self = this;
+      const labelEl = this.labelElement;
+      const text = this.label;
+      let input;
 
       // Handles enter and escape which trigger reset and commit respectively.
       function handleKeydown(e) {
@@ -559,10 +594,10 @@ cr.define('cr.ui', function() {
 
         // Calling tree.focus blurs the input which will make the tree item
         // non editable.
-        switch (e.keyIdentifier) {
-          case 'U+001B':  // Esc
+        switch (e.key) {
+          case 'Escape':
             input.value = text;
-            // fall through
+          // fall through
           case 'Enter':
             self.tree.focus();
         }
@@ -581,26 +616,28 @@ cr.define('cr.ui', function() {
         // the input loses focus we set editing to false again.
         input = this.ownerDocument.createElement('input');
         input.value = text;
-        if (labelEl.firstChild)
+        if (labelEl.firstChild) {
           labelEl.replaceChild(input, labelEl.firstChild);
-        else
+        } else {
           labelEl.appendChild(input);
+        }
 
         input.addEventListener('keydown', handleKeydown);
         input.addEventListener('blur', (function() {
-          this.editing = false;
-        }).bind(this));
+                                         this.editing = false;
+                                       }).bind(this));
 
         // Make sure that double clicks do not expand and collapse the tree
         // item.
-        var eventsToStop = ['mousedown', 'mouseup', 'contextmenu', 'dblclick'];
+        const eventsToStop =
+            ['mousedown', 'mouseup', 'contextmenu', 'dblclick'];
         eventsToStop.forEach(function(type) {
           input.addEventListener(type, stopPropagation);
         });
 
         // Wait for the input element to recieve focus before sizing it.
-        var rowElement = this.rowElement;
-        var onFocus = function() {
+        const rowElement = this.rowElement;
+        const onFocus = function() {
           input.removeEventListener('focus', onFocus);
           // 20 = the padding and border of the tree-row
           cr.ui.limitInputWidth(input, rowElement, 100);
@@ -614,7 +651,7 @@ cr.define('cr.ui', function() {
         this.removeAttribute('editing');
         this.draggable = true;
         input = labelEl.firstChild;
-        var value = input.value;
+        const value = input.value;
         if (/^\s*$/.test(value)) {
           labelEl.textContent = this.oldLabel_;
         } else {
@@ -639,7 +676,7 @@ cr.define('cr.ui', function() {
    */
   function getNext(item) {
     if (item.expanded) {
-      var firstChild = item.items[0];
+      const firstChild = item.items[0];
       if (firstChild) {
         return firstChild;
       }
@@ -654,12 +691,14 @@ cr.define('cr.ui', function() {
    * @return {cr.ui.TreeItem} The found item or null.
    */
   function getNextHelper(item) {
-    if (!item)
+    if (!item) {
       return null;
+    }
 
-    var nextSibling = item.nextElementSibling;
-    if (nextSibling)
+    const nextSibling = item.nextElementSibling;
+    if (nextSibling) {
       return assertInstanceof(nextSibling, cr.ui.TreeItem);
+    }
     return getNextHelper(item.parentItem);
   }
 
@@ -669,9 +708,10 @@ cr.define('cr.ui', function() {
    * @return {cr.ui.TreeItem} The found item or null.
    */
   function getPrevious(item) {
-    var previousSibling = item.previousElementSibling;
-    if (previousSibling)
+    const previousSibling = item.previousElementSibling;
+    if (previousSibling) {
       return getLastHelper(assertInstanceof(previousSibling, cr.ui.TreeItem));
+    }
     return item.parentItem;
   }
 
@@ -681,18 +721,16 @@ cr.define('cr.ui', function() {
    * @return {cr.ui.TreeItem} The found item or null.
    */
   function getLastHelper(item) {
-    if (!item)
+    if (!item) {
       return null;
+    }
     if (item.expanded && item.hasChildren) {
-      var lastChild = item.items[item.items.length - 1];
+      const lastChild = item.items[item.items.length - 1];
       return getLastHelper(lastChild);
     }
     return item;
   }
 
   // Export
-  return {
-    Tree: Tree,
-    TreeItem: TreeItem
-  };
+  return {Tree: Tree, TreeItem: TreeItem};
 });

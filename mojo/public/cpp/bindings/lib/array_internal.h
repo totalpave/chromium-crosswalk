@@ -11,7 +11,9 @@
 #include <limits>
 #include <new>
 
+#include "base/component_export.h"
 #include "base/logging.h"
+#include "base/macros.h"
 #include "mojo/public/c/system/macros.h"
 #include "mojo/public/cpp/bindings/lib/bindings_internal.h"
 #include "mojo/public/cpp/bindings/lib/buffer.h"
@@ -28,10 +30,12 @@ namespace internal {
 template <typename K, typename V>
 class Map_Data;
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 std::string MakeMessageWithArrayIndex(const char* message,
                                       size_t size,
                                       size_t index);
 
+COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE)
 std::string MakeMessageWithExpectedArraySize(const char* message,
                                              size_t size,
                                              size_t expected_size);
@@ -58,28 +62,6 @@ struct ArrayDataTraits {
   }
 };
 
-template <typename P>
-struct ArrayDataTraits<P*> {
-  using StorageType = Pointer<P>;
-  using Ref = P*&;
-  using ConstRef = P* const&;
-
-  static const uint32_t kMaxNumElements =
-      (std::numeric_limits<uint32_t>::max() - sizeof(ArrayHeader)) /
-      sizeof(StorageType);
-
-  static uint32_t GetStorageSize(uint32_t num_elements) {
-    DCHECK(num_elements <= kMaxNumElements);
-    return sizeof(ArrayHeader) + sizeof(StorageType) * num_elements;
-  }
-  static Ref ToRef(StorageType* storage, size_t offset) {
-    return storage[offset].ptr;
-  }
-  static ConstRef ToConstRef(const StorageType* storage, size_t offset) {
-    return storage[offset].ptr;
-  }
-};
-
 // Specialization of Arrays for bools, optimized for space. It has the
 // following differences from a generalized Array:
 // * Each element takes up a single bit of memory.
@@ -89,7 +71,7 @@ template <>
 struct ArrayDataTraits<bool> {
   // Helper class to emulate a reference to a bool, used for direct element
   // access.
-  class BitRef {
+  class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) BitRef {
    public:
     ~BitRef();
     BitRef& operator=(bool value);
@@ -131,7 +113,7 @@ struct ArrayDataTraits<bool> {
 //
 // TODO(yzshen): Validation code should be organzied in a way similar to
 // Serializer<>, or merged into it. It should be templatized with the mojo
-// wrapper type instead of the data type, that way we can use MojomTypeTraits
+// data view type instead of the data type, that way we can use MojomTypeTraits
 // to determine the categories.
 
 template <typename T, bool is_union, bool is_handle_or_interface>
@@ -140,12 +122,6 @@ struct ArraySerializationHelper;
 template <typename T>
 struct ArraySerializationHelper<T, false, false> {
   using ElementType = typename ArrayDataTraits<T>::StorageType;
-
-  static void EncodePointers(const ArrayHeader* header,
-                             ElementType* elements) {}
-
-  static void DecodePointers(const ArrayHeader* header,
-                             ElementType* elements) {}
 
   static bool ValidateElements(const ArrayHeader* header,
                                const ElementType* elements,
@@ -161,7 +137,14 @@ struct ArraySerializationHelper<T, false, false> {
 
     // Enum validation.
     for (uint32_t i = 0; i < header->num_elements; ++i) {
-      if (!validate_params->validate_enum_func(elements[i], validation_context))
+      // Enums are defined by mojo to be 32-bit, but this code is also compiled
+      // for arrays of primitives such as uint64_t (but never called), so it's
+      // safe to do a static_cast here.
+      DCHECK(sizeof(elements[i]) <= sizeof(int32_t))
+          << "Enum validation should never take place on a primitive type of "
+             "width greater than 32-bit";
+      if (!validate_params->validate_enum_func(
+              static_cast<int32_t>(elements[i]), validation_context))
         return false;
     }
     return true;
@@ -171,12 +154,6 @@ struct ArraySerializationHelper<T, false, false> {
 template <typename T>
 struct ArraySerializationHelper<T, false, true> {
   using ElementType = typename ArrayDataTraits<T>::StorageType;
-
-  static void EncodePointers(const ArrayHeader* header,
-                             ElementType* elements) {}
-
-  static void DecodePointers(const ArrayHeader* header,
-                             ElementType* elements) {}
 
   static bool ValidateElements(const ArrayHeader* header,
                                const ElementType* elements,
@@ -209,19 +186,9 @@ struct ArraySerializationHelper<T, false, true> {
   }
 };
 
-template <typename P>
-struct ArraySerializationHelper<P*, false, false> {
-  using ElementType = typename ArrayDataTraits<P*>::StorageType;
-
-  static void EncodePointers(const ArrayHeader* header, ElementType* elements) {
-    for (uint32_t i = 0; i < header->num_elements; ++i)
-      Encode(&elements[i]);
-  }
-
-  static void DecodePointers(const ArrayHeader* header, ElementType* elements) {
-    for (uint32_t i = 0; i < header->num_elements; ++i)
-      Decode(&elements[i]);
-  }
+template <typename T>
+struct ArraySerializationHelper<Pointer<T>, false, false> {
+  using ElementType = typename ArrayDataTraits<Pointer<T>>::StorageType;
 
   static bool ValidateElements(const ArrayHeader* header,
                                const ElementType* elements,
@@ -237,7 +204,7 @@ struct ArraySerializationHelper<P*, false, false> {
                                       i).c_str());
         return false;
       }
-      if (!ValidateCaller<P>::Run(elements[i], validation_context,
+      if (!ValidateCaller<T>::Run(elements[i], validation_context,
                                   validate_params->element_validate_params)) {
         return false;
       }
@@ -246,9 +213,11 @@ struct ArraySerializationHelper<P*, false, false> {
   }
 
  private:
-  template <typename T>
+  template <typename U,
+            bool is_array_or_map = IsSpecializationOf<Array_Data, U>::value ||
+                                   IsSpecializationOf<Map_Data, U>::value>
   struct ValidateCaller {
-    static bool Run(const Pointer<T>& data,
+    static bool Run(const Pointer<U>& data,
                     ValidationContext* validation_context,
                     const ContainerValidateParams* validate_params) {
       DCHECK(!validate_params)
@@ -258,21 +227,12 @@ struct ArraySerializationHelper<P*, false, false> {
     }
   };
 
-  template <typename Key, typename Value>
-  struct ValidateCaller<Map_Data<Key, Value>> {
-    static bool Run(const Pointer<Map_Data<Key, Value>>& data,
+  template <typename U>
+  struct ValidateCaller<U, true> {
+    static bool Run(const Pointer<U>& data,
                     ValidationContext* validation_context,
                     const ContainerValidateParams* validate_params) {
-      return ValidateMap(data, validation_context, validate_params);
-    }
-  };
-
-  template <typename T>
-  struct ValidateCaller<Array_Data<T>> {
-    static bool Run(const Pointer<Array_Data<T>>& data,
-                    ValidationContext* validation_context,
-                    const ContainerValidateParams* validate_params) {
-      return ValidateArray(data, validation_context, validate_params);
+      return ValidateContainer(data, validation_context, validate_params);
     }
   };
 };
@@ -280,16 +240,6 @@ struct ArraySerializationHelper<P*, false, false> {
 template <typename U>
 struct ArraySerializationHelper<U, true, false> {
   using ElementType = typename ArrayDataTraits<U>::StorageType;
-
-  static void EncodePointers(const ArrayHeader* header, ElementType* elements) {
-    for (uint32_t i = 0; i < header->num_elements; ++i)
-      elements[i].EncodePointers();
-  }
-
-  static void DecodePointers(const ArrayHeader* header, ElementType* elements) {
-    for (uint32_t i = 0; i < header->num_elements; ++i)
-      elements[i].DecodePointers();
-  }
 
   static bool ValidateElements(const ArrayHeader* header,
                                const ElementType* elements,
@@ -323,22 +273,40 @@ class Array_Data {
       T,
       IsUnionDataType<T>::value,
       std::is_same<T, AssociatedInterface_Data>::value ||
-          std::is_same<T, AssociatedInterfaceRequest_Data>::value ||
+          std::is_same<T, AssociatedEndpointHandle_Data>::value ||
           std::is_same<T, Interface_Data>::value ||
           std::is_same<T, Handle_Data>::value>;
   using Element = T;
 
-  // Returns null if |num_elements| or the corresponding storage size cannot be
-  // stored in uint32_t.
-  static Array_Data<T>* New(size_t num_elements, Buffer* buf) {
-    if (num_elements > Traits::kMaxNumElements)
-      return nullptr;
+  class BufferWriter {
+   public:
+    BufferWriter() = default;
 
-    uint32_t num_bytes =
-        Traits::GetStorageSize(static_cast<uint32_t>(num_elements));
-    return new (buf->Allocate(num_bytes))
-        Array_Data<T>(num_bytes, static_cast<uint32_t>(num_elements));
-  }
+    void Allocate(size_t num_elements, Buffer* buffer) {
+      if (num_elements > Traits::kMaxNumElements)
+        return;
+
+      uint32_t num_bytes =
+          Traits::GetStorageSize(static_cast<uint32_t>(num_elements));
+      buffer_ = buffer;
+      index_ = buffer_->Allocate(num_bytes);
+      new (data())
+          Array_Data<T>(num_bytes, static_cast<uint32_t>(num_elements));
+    }
+
+    bool is_null() const { return !buffer_; }
+    Array_Data<T>* data() {
+      DCHECK(!is_null());
+      return buffer_->Get<Array_Data<T>>(index_);
+    }
+    Array_Data<T>* operator->() { return data(); }
+
+   private:
+    Buffer* buffer_ = nullptr;
+    size_t index_ = 0;
+
+    DISALLOW_COPY_AND_ASSIGN(BufferWriter);
+  };
 
   static bool Validate(const void* data,
                        ValidationContext* validation_context,
@@ -405,9 +373,6 @@ class Array_Data {
     return reinterpret_cast<const StorageType*>(
         reinterpret_cast<const char*>(this) + sizeof(*this));
   }
-
-  void EncodePointers() { Helper::EncodePointers(&header_, storage()); }
-  void DecodePointers() { Helper::DecodePointers(&header_, storage()); }
 
  private:
   Array_Data(uint32_t num_bytes, uint32_t num_elements) {

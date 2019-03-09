@@ -5,15 +5,15 @@
 #ifndef CHROME_BROWSER_ANDROID_FIND_IN_PAGE_FIND_IN_PAGE_BRIDGE_H_
 #define CHROME_BROWSER_ANDROID_FIND_IN_PAGE_FIND_IN_PAGE_BRIDGE_H_
 
-#include <jni.h>
-
 #include "base/android/jni_weak_ref.h"
 #include "base/macros.h"
 #include "content/public/browser/web_contents.h"
 
 class FindInPageBridge {
  public:
-  FindInPageBridge(JNIEnv* env, jobject obj, jobject j_web_contents);
+  FindInPageBridge(JNIEnv* env,
+                   const base::android::JavaRef<jobject>& obj,
+                   const base::android::JavaRef<jobject>& j_web_contents);
   void Destroy(JNIEnv*, const base::android::JavaParamRef<jobject>&);
 
   void StartFinding(JNIEnv* env,
@@ -43,8 +43,6 @@ class FindInPageBridge {
   void ActivateFindInPageResultForAccessibility(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj);
-
-  static bool RegisterFindInPageBridge(JNIEnv* env);
 
  private:
   content::WebContents* web_contents_;

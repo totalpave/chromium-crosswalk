@@ -11,26 +11,36 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "base/files/file_path.h"
+#include "base/optional.h"
 #include "base/strings/nullable_string16.h"
 #include "content/common/content_export.h"
 #include "ipc/ipc_message.h"
-#include "third_party/WebKit/public/platform/WebReferrerPolicy.h"
+#include "services/network/public/mojom/referrer_policy.mojom.h"
 #include "ui/base/dragdrop/file_info.h"
 #include "url/gurl.h"
 
 namespace content {
 
 struct CONTENT_EXPORT DropData {
-  struct FileSystemFileInfo {
-    FileSystemFileInfo() : size(0) {}
-    ~FileSystemFileInfo() {}
+  struct CONTENT_EXPORT FileSystemFileInfo {
+    // Writes file system files to the pickle.
+    static void WriteFileSystemFilesToPickle(
+        const std::vector<FileSystemFileInfo>& file_system_files,
+        base::Pickle* pickle);
+
+    // Reads file system files from the pickle.
+    static bool ReadFileSystemFilesFromPickle(
+        const base::Pickle& pickle,
+        std::vector<FileSystemFileInfo>* file_system_files);
 
     GURL url;
-    int64_t size;
+    int64_t size = 0;
+    std::string filesystem_id;
   };
 
   enum class Kind {
@@ -59,12 +69,16 @@ struct CONTENT_EXPORT DropData {
   DropData(const DropData& other);
   ~DropData();
 
+  // Returns a sanitized filename to use for the dragged image, or base::nullopt
+  // if no sanitized name could be synthesized.
+  base::Optional<base::FilePath> GetSafeFilenameForImageFileContents() const;
+
   int view_id = MSG_ROUTING_NONE;
 
   // Whether this drag originated from a renderer.
   bool did_originate_from_renderer;
 
-  // User is dragging a link into the webview.
+  // User is dragging a link or image.
   GURL url;
   base::string16 url_title;  // The title associated with |url|.
 
@@ -73,7 +87,7 @@ struct CONTENT_EXPORT DropData {
 
   // Referrer policy to use when dragging a link out of the webview results in
   // a download.
-  blink::WebReferrerPolicy referrer_policy;
+  network::mojom::ReferrerPolicy referrer_policy;
 
   // User is dropping one or more files on the webview. This field is only
   // populated if the drag is not renderer tainted, as this allows File access
@@ -97,11 +111,13 @@ struct CONTENT_EXPORT DropData {
   base::NullableString16 html;
   GURL html_base_url;
 
-  // User is dragging data from the webview (e.g., an image).
-  base::string16 file_description_filename;
+  // User is dragging an image out of the WebView.
   std::string file_contents;
+  GURL file_contents_source_url;
+  base::FilePath::StringType file_contents_filename_extension;
+  std::string file_contents_content_disposition;
 
-  std::map<base::string16, base::string16> custom_data;
+  std::unordered_map<base::string16, base::string16> custom_data;
 
   // The key-modifiers present for this update, included here so BrowserPlugin
   // can forward them to the guest renderer.

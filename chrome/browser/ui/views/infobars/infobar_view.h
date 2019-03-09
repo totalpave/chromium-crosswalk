@@ -13,43 +13,47 @@
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/menu/menu_types.h"
 #include "ui/views/focus/external_focus_tracker.h"
-#include "ui/views/view_targeter_delegate.h"
-
-namespace ui {
-class MenuModel;
-}
 
 namespace views {
 class ImageButton;
 class ImageView;
 class Label;
-class LabelButton;
 class Link;
 class LinkListener;
-class MdTextButton;
-class MenuButton;
 class MenuRunner;
 }  // namespace views
 
 class InfoBarView : public infobars::InfoBar,
                     public views::View,
                     public views::ButtonListener,
-                    public views::ExternalFocusTracker,
-                    public views::ViewTargeterDelegate {
+                    public views::ExternalFocusTracker {
  public:
   explicit InfoBarView(std::unique_ptr<infobars::InfoBarDelegate> delegate);
+  ~InfoBarView() override;
 
-  const infobars::InfoBarContainer::Delegate* container_delegate() const;
-  const SkPath& fill_path() const { return fill_path_; }
-  const SkPath& stroke_path() const { return stroke_path_; }
+  // Requests that the infobar recompute its target height.
+  void RecalculateHeight();
+
+  // views::View:
+  void Layout() override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
+  gfx::Size CalculatePreferredSize() const override;
+  void ViewHierarchyChanged(
+      const ViewHierarchyChangedDetails& details) override;
+  void OnPaint(gfx::Canvas* canvas) override;
+  void OnThemeChanged() override;
+  void OnNativeThemeChanged(const ui::NativeTheme* theme) override;
+
+  // views::ButtonListener:
+  // NOTE: This must not be called if we're unowned.  (Subclasses should ignore
+  // calls to ButtonPressed() in this case.)
+  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
+
+  // views::ExternalFocusTracker:
+  void OnWillChangeFocus(View* focused_before, View* focused_now) override;
 
  protected:
-  typedef std::vector<views::Label*> Labels;
-
-  static const int kButtonButtonSpacing;
-  static const int kEndOfLabelSpacing;
-
-  ~InfoBarView() override;
+  using Labels = std::vector<views::Label*>;
 
   // Creates a label with the appropriate font and color for an infobar.
   views::Label* CreateLabel(const base::string16& text) const;
@@ -59,31 +63,11 @@ class InfoBarView : public infobars::InfoBar,
   views::Link* CreateLink(const base::string16& text,
                           views::LinkListener* listener) const;
 
-  // Creates a focusable button for use on an infobar. The appearance is
-  // customized for infobars. Used for pre-MD only.
-  // NOTE: Subclasses must ignore button presses if we're unowned.
-  static views::LabelButton* CreateTextButton(views::ButtonListener* listener,
-                                              const base::string16& text);
-  // As above, but used for MD.
-  static views::MdTextButton* CreateMdTextButton(
-      views::ButtonListener* listener,
-      const base::string16& text);
-
   // Given |labels| and the total |available_width| to display them in, sets
   // each label's size so that the longest label shrinks until it reaches the
   // length of the next-longest label, then both shrink until reaching the
   // length of the next-longest, and so forth.
   static void AssignWidths(Labels* labels, int available_width);
-
-  // views::View:
-  void Layout() override;
-  void ViewHierarchyChanged(
-      const ViewHierarchyChangedDetails& details) override;
-
-  // views::ButtonListener:
-  // NOTE: This must not be called if we're unowned.  (Subclasses should ignore
-  // calls to ButtonPressed() in this case.)
-  void ButtonPressed(views::Button* sender, const ui::Event& event) override;
 
   // Returns the minimum width the content (that is, everything between the icon
   // and the close button) can be shrunk to.  This is used to prevent the close
@@ -95,58 +79,43 @@ class InfoBarView : public infobars::InfoBar,
   int StartX() const;
   int EndX() const;
 
-  // Given a |view|, returns the centered y position within |child_container_|,
-  // taking into account animation so the control "slides in" (or out) as we
-  // animate open and closed.
+  // Given a |view|, returns the centered y position, taking into account
+  // animation so the control "slides in" (or out) as we animate open and
+  // closed.
   int OffsetY(views::View* view) const;
 
-  // Shows a menu at the specified position.
-  // NOTE: This must not be called if we're unowned.  (Subclasses should ignore
-  // calls to RunMenu() in this case.)
-  void RunMenuAt(ui::MenuModel* menu_model,
-                 views::MenuButton* button,
-                 views::MenuAnchorPosition anchor);
-
- protected:
-  // Adds |view| to the content area, i.e. |child_container_|. The |view| won't
-  // automatically get any layout, so should still be laid out manually.
-  void AddViewToContentArea(views::View* view);
+  // infobars::InfoBar:
+  void PlatformSpecificShow(bool animate) override;
+  void PlatformSpecificHide(bool animate) override;
+  void PlatformSpecificOnHeightRecalculated() override;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(InfoBarViewTest, ShouldDrawSeparator);
+
   // Does the actual work for AssignWidths().  Assumes |labels| is sorted by
   // decreasing preferred width.
   static void AssignWidthsSorted(Labels* labels, int available_width);
 
-  // InfoBar:
-  void PlatformSpecificShow(bool animate) override;
-  void PlatformSpecificHide(bool animate) override;
-  void PlatformSpecificOnHeightsRecalculated() override;
+  // Returns whether this infobar should draw a 1 px separator at its top.
+  bool ShouldDrawSeparator() const;
 
-  // views::View:
-  void GetAccessibleState(ui::AXViewState* state) override;
-  gfx::Size GetPreferredSize() const override;
+  // Returns how many DIPs the container should reserve for a separator between
+  // infobars, in addition to the height of the infobars themselves.
+  int GetSeparatorHeightDip() const;
 
-  // views::ExternalFocusTracker:
-  void OnWillChangeFocus(View* focused_before, View* focused_now) override;
+  // Returns the current color for the theme property |id|.  Will return the
+  // wrong value if no theme provider is available.
+  SkColor GetColor(int id) const;
 
-  // views::ViewTargeterDelegate:
-  bool DoesIntersectRect(const View* target,
-                         const gfx::Rect& rect) const override;
-
-  // This container holds the children and clips their painting during
-  // animation.
-  views::View* child_container_;
+  // Sets various attributes on |label| that are common to all child links and
+  // labels.
+  void SetLabelDetails(views::Label* label) const;
 
   // The optional icon at the left edge of the InfoBar.
-  views::ImageView* icon_;
+  views::ImageView* icon_ = nullptr;
 
   // The close button at the right edge of the InfoBar.
-  views::ImageButton* close_button_;
-
-  // The paths for the InfoBarBackground to draw, sized according to the heights
-  // above. TODO(estade): remove these when MD is default.
-  SkPath fill_path_;
-  SkPath stroke_path_;
+  views::ImageButton* close_button_ = nullptr;
 
   // Used to run the menu.
   std::unique_ptr<views::MenuRunner> menu_runner_;

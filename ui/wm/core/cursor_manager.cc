@@ -22,12 +22,11 @@ namespace internal {
 class CursorState {
  public:
   CursorState()
-      : cursor_(ui::kCursorNone),
+      : cursor_(ui::CursorType::kNone),
         visible_(true),
-        cursor_set_(ui::CURSOR_SET_NORMAL),
+        cursor_size_(ui::CursorSize::kNormal),
         mouse_events_enabled_(true),
-        visible_on_mouse_events_enabled_(true) {
-  }
+        visible_on_mouse_events_enabled_(true) {}
 
   gfx::NativeCursor cursor() const { return cursor_; }
   void set_cursor(gfx::NativeCursor cursor) { cursor_ = cursor; }
@@ -39,9 +38,9 @@ class CursorState {
     // Ignores the call when mouse events disabled.
   }
 
-  ui::CursorSetType cursor_set() const { return cursor_set_; }
-  void set_cursor_set(ui::CursorSetType cursor_set) {
-    cursor_set_ = cursor_set;
+  ui::CursorSize cursor_size() const { return cursor_size_; }
+  void set_cursor_size(ui::CursorSize cursor_size) {
+    cursor_size_ = cursor_size;
   }
 
   bool mouse_events_enabled() const { return mouse_events_enabled_; }
@@ -62,7 +61,7 @@ class CursorState {
  private:
   gfx::NativeCursor cursor_;
   bool visible_;
-  ui::CursorSetType cursor_set_;
+  ui::CursorSize cursor_size_;
   bool mouse_events_enabled_;
 
   // The visibility to set when mouse events are enabled.
@@ -110,8 +109,8 @@ void CursorManager::ShowCursor() {
   if (cursor_lock_count_ == 0 &&
       IsCursorVisible() != state_on_unlock_->visible()) {
     delegate_->SetVisibility(state_on_unlock_->visible(), this);
-    FOR_EACH_OBSERVER(aura::client::CursorClientObserver, observers_,
-                      OnCursorVisibilityChanged(true));
+    for (auto& observer : observers_)
+      observer.OnCursorVisibilityChanged(true);
   }
 }
 
@@ -121,8 +120,8 @@ void CursorManager::HideCursor() {
   if (cursor_lock_count_ == 0 &&
       IsCursorVisible() != state_on_unlock_->visible()) {
     delegate_->SetVisibility(state_on_unlock_->visible(), this);
-    FOR_EACH_OBSERVER(aura::client::CursorClientObserver, observers_,
-                      OnCursorVisibilityChanged(false));
+    for (auto& observer : observers_)
+      observer.OnCursorVisibilityChanged(false);
   }
 }
 
@@ -130,17 +129,17 @@ bool CursorManager::IsCursorVisible() const {
   return current_state_->visible();
 }
 
-void CursorManager::SetCursorSet(ui::CursorSetType cursor_set) {
-  state_on_unlock_->set_cursor_set(cursor_set);
-  if (GetCursorSet() != state_on_unlock_->cursor_set()) {
-    delegate_->SetCursorSet(state_on_unlock_->cursor_set(), this);
-    FOR_EACH_OBSERVER(aura::client::CursorClientObserver, observers_,
-                      OnCursorSetChanged(cursor_set));
+void CursorManager::SetCursorSize(ui::CursorSize cursor_size) {
+  state_on_unlock_->set_cursor_size(cursor_size);
+  if (GetCursorSize() != state_on_unlock_->cursor_size()) {
+    delegate_->SetCursorSize(state_on_unlock_->cursor_size(), this);
+    for (auto& observer : observers_)
+      observer.OnCursorSizeChanged(cursor_size);
   }
 }
 
-ui::CursorSetType CursorManager::GetCursorSet() const {
-  return current_state_->cursor_set();
+ui::CursorSize CursorManager::GetCursorSize() const {
+  return current_state_->cursor_size();
 }
 
 void CursorManager::EnableMouseEvents() {
@@ -166,7 +165,15 @@ bool CursorManager::IsMouseEventsEnabled() const {
 }
 
 void CursorManager::SetDisplay(const display::Display& display) {
+  display_ = display;
+  for (auto& observer : observers_)
+    observer.OnCursorDisplayChanged(display);
+
   delegate_->SetDisplay(display, this);
+}
+
+const display::Display& CursorManager::GetDisplay() const {
+  return display_;
 }
 
 void CursorManager::LockCursor() {
@@ -218,13 +225,13 @@ void CursorManager::CommitCursor(gfx::NativeCursor cursor) {
 void CursorManager::CommitVisibility(bool visible) {
   // TODO(tdanderson): Find a better place for this so we don't
   // notify the observers more than is necessary.
-  FOR_EACH_OBSERVER(aura::client::CursorClientObserver, observers_,
-                    OnCursorVisibilityChanged(visible));
+  for (auto& observer : observers_)
+    observer.OnCursorVisibilityChanged(visible);
   current_state_->SetVisible(visible);
 }
 
-void CursorManager::CommitCursorSet(ui::CursorSetType cursor_set) {
-  current_state_->set_cursor_set(cursor_set);
+void CursorManager::CommitCursorSize(ui::CursorSize cursor_size) {
+  current_state_->set_cursor_size(cursor_size);
 }
 
 void CursorManager::CommitMouseEventsEnabled(bool enabled) {

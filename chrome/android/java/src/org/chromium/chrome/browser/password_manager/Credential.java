@@ -4,7 +4,7 @@
 
 package org.chromium.chrome.browser.password_manager;
 
-import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
 
 import org.chromium.base.annotations.CalledByNative;
 
@@ -15,26 +15,26 @@ import org.chromium.base.annotations.CalledByNative;
 public class Credential {
     private final String mUsername;
     private final String mDisplayName;
+    private final String mOriginUrl;
     private final String mFederation;
-    private final int mType;
     private final int mIndex;
-    private Bitmap mAvatar;
+    private Drawable mAvatar;
 
     /**
      * @param username username which is used to authenticate user.
      *                 The value is PasswordForm::username_value.
      * @param displayName user friendly name to show in the UI. It can be empty.
      *                    The value is PasswordForm::display_name.
+     * @param originUrl The origin URL for this credential, only set for PSL matches.
      * @param federation Identity provider name for this credential (empty for local credentials).
-     * @param type type which should be either local or federated. The value corresponds to a
-     *             C++ enum CredentialType.
      * @param index position in array of credentials.
      */
-    public Credential(String username, String displayName, String federation, int type, int index) {
+    public Credential(String username, String displayName, String originUrl, String federation,
+            int index) {
         mUsername = username;
         mDisplayName = displayName;
+        mOriginUrl = originUrl;
         mFederation = federation;
-        mType = type;
         mIndex = index;
         mAvatar = null;
     }
@@ -47,6 +47,10 @@ public class Credential {
         return mDisplayName;
     }
 
+    public String getOriginUrl() {
+        return mOriginUrl;
+    }
+
     public String getFederation() {
         return mFederation;
     }
@@ -55,22 +59,18 @@ public class Credential {
         return mIndex;
     }
 
-    public int getType() {
-        return mType;
-    }
-
-    public Bitmap getAvatar() {
+    public Drawable getAvatar() {
         return mAvatar;
     }
 
-    public void setBitmap(Bitmap avatar) {
+    public void setAvatar(Drawable avatar) {
         mAvatar = avatar;
     }
 
     @CalledByNative
     private static Credential createCredential(
-            String username, String displayName, String federation, int type, int index) {
-        return new Credential(username, displayName, federation, type, index);
+            String username, String displayName, String originUrl, String federation, int index) {
+        return new Credential(username, displayName, originUrl, federation, index);
     }
 
     @CalledByNative

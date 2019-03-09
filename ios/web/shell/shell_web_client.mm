@@ -2,12 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ios/web/shell/shell_web_client.h"
+#import "ios/web/shell/shell_web_client.h"
 
 #import <UIKit/UIKit.h>
 
+#include "base/bind.h"
+#include "ios/web/public/service_names.mojom.h"
 #include "ios/web/public/user_agent.h"
+#import "ios/web/public/web_state/web_state.h"
 #include "ios/web/shell/shell_web_main_parts.h"
+#import "ios/web/shell/web_usage_controller.mojom.h"
+#include "mojo/public/cpp/bindings/strong_binding.h"
+#include "services/service_manager/public/cpp/manifest_builder.h"
+#include "services/test/echo/echo_service.h"
+#include "services/test/echo/public/cpp/manifest.h"
+#include "services/test/echo/public/mojom/echo.mojom.h"
+#include "services/test/user_id/public/cpp/manifest.h"
+#include "ui/base/resource/resource_bundle.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -15,28 +26,106 @@
 
 namespace web {
 
-ShellWebClient::ShellWebClient() {
-}
+namespace {
+
+// Implementation of mojom::WebUsageController that exposes the ability
+// to set whether a WebState has web usage enabled via Mojo.
+class WebUsageController : public mojom::WebUsageController {
+ public:
+  explicit WebUsageController(WebState* web_state) : web_state_(web_state) {}
+  ~WebUsageController() override {}
+
+  static void Create(mojo::InterfaceRequest<mojom::WebUsageController> request,
+                     WebState* web_state) {
+    mojo::MakeStrongBinding(std::make_unique<WebUsageController>(web_state),
+                            std::move(request));
+  }
+
+ private:
+  void SetWebUsageEnabled(bool enabled,
+                          SetWebUsageEnabledCallback callback) override {
+    web_state_->SetWebUsageEnabled(enabled);
+    std::move(callback).Run();
+  }
+
+  WebState* web_state_;
+};
+
+}  // namespace
+
+ShellWebClient::ShellWebClient() : web_main_parts_(nullptr) {}
 
 ShellWebClient::~ShellWebClient() {
 }
 
-WebMainParts* ShellWebClient::CreateWebMainParts() {
-  web_main_parts_.reset(new ShellWebMainParts);
-  return web_main_parts_.get();
+std::unique_ptr<web::WebMainParts> ShellWebClient::CreateWebMainParts() {
+  auto web_main_parts = std::make_unique<ShellWebMainParts>();
+  web_main_parts_ = web_main_parts.get();
+  return web_main_parts;
 }
 
 ShellBrowserState* ShellWebClient::browser_state() const {
   return web_main_parts_->browser_state();
 }
 
-std::string ShellWebClient::GetProduct() const {
-  return "CriOS/36.77.34.45";
+std::string ShellWebClient::GetUserAgent(UserAgentType type) const {
+  return web::BuildUserAgentFromProduct("CriOS/36.77.34.45");
 }
 
-std::string ShellWebClient::GetUserAgent(bool desktop_user_agent) const {
-  std::string product = GetProduct();
-  return web::BuildUserAgentFromProduct(product);
+base::StringPiece ShellWebClient::GetDataResource(
+    int resource_id,
+    ui::ScaleFactor scale_factor) const {
+  return ui::ResourceBundle::GetSharedInstance().GetRawDataResourceForScale(
+      resource_id, scale_factor);
+}
+
+base::RefCountedMemory* ShellWebClient::GetDataResourceBytes(
+    int resource_id) const {
+  return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytes(
+      resource_id);
+}
+
+std::unique_ptr<service_manager::Service> ShellWebClient::HandleServiceRequest(
+    const std::string& service_name,
+    service_manager::mojom::ServiceRequest request) {
+  if (service_name == echo::mojom::kServiceName)
+    return std::make_unique<echo::EchoService>(std::move(request));
+
+  return nullptr;
+}
+
+base::Optional<service_manager::Manifest>
+ShellWebClient::GetServiceManifestOverlay(base::StringPiece name) {
+  if (name == mojom::kBrowserServiceName) {
+    return service_manager::ManifestBuilder()
+        .RequireCapability(echo::mojom::kServiceName, "echo")
+        .RequireCapability("user_id", "user_id")
+        .PackageService(user_id::GetManifest())
+        .Build();
+  }
+
+  if (name == mojom::kPackagedServicesServiceName) {
+    return service_manager::ManifestBuilder()
+        .PackageService(echo::GetManifest())
+        .Build();
+  }
+
+  return base::nullopt;
+}
+
+void ShellWebClient::BindInterfaceRequestFromMainFrame(
+    WebState* web_state,
+    const std::string& interface_name,
+    mojo::ScopedMessagePipeHandle interface_pipe) {
+  if (!main_frame_interfaces_.get() &&
+      !main_frame_interfaces_parameterized_.get()) {
+    InitMainFrameInterfaces();
+  }
+
+  if (!main_frame_interfaces_parameterized_->TryBindInterface(
+          interface_name, &interface_pipe, web_state)) {
+    main_frame_interfaces_->TryBindInterface(interface_name, &interface_pipe);
+  }
 }
 
 void ShellWebClient::AllowCertificateError(
@@ -68,6 +157,14 @@ void ShellWebClient::AllowCertificateError(
       presentViewController:alert
                    animated:YES
                  completion:nil];
+}
+
+void ShellWebClient::InitMainFrameInterfaces() {
+  main_frame_interfaces_ = std::make_unique<service_manager::BinderRegistry>();
+  main_frame_interfaces_parameterized_ =
+      std::make_unique<service_manager::BinderRegistryWithArgs<WebState*>>();
+  main_frame_interfaces_parameterized_->AddInterface(
+      base::Bind(WebUsageController::Create));
 }
 
 }  // namespace web

@@ -14,11 +14,12 @@
 
 #include "test/multiprocess_exec.h"
 
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "gtest/gtest.h"
-#include "test/paths.h"
+#include "test/test_paths.h"
 #include "util/file/file_io.h"
 
 namespace crashpad {
@@ -39,8 +40,8 @@ class TestMultiprocessExec final : public MultiprocessExec {
     char c = 'z';
     ASSERT_TRUE(LoggingWriteFile(WritePipeHandle(), &c, 1));
 
-    ASSERT_TRUE(LoggingReadFile(ReadPipeHandle(), &c, 1));
-    EXPECT_EQ('Z', c);
+    ASSERT_TRUE(LoggingReadFileExactly(ReadPipeHandle(), &c, 1));
+    EXPECT_EQ(c, 'Z');
   }
 
   DISALLOW_COPY_AND_ASSIGN(TestMultiprocessExec);
@@ -48,20 +49,82 @@ class TestMultiprocessExec final : public MultiprocessExec {
 
 TEST(MultiprocessExec, MultiprocessExec) {
   TestMultiprocessExec multiprocess_exec;
-  base::FilePath test_executable = Paths::Executable();
-#if defined(OS_POSIX)
-  std::string child_test_executable = test_executable.value();
-#elif defined(OS_WIN)
-  std::string child_test_executable =
-      base::UTF16ToUTF8(test_executable.RemoveFinalExtension().value());
-#endif  // OS_POSIX
-  child_test_executable += "_multiprocess_exec_test_child";
-#if defined(OS_WIN)
-  child_test_executable += ".exe";
-#endif
+  base::FilePath child_test_executable = TestPaths::BuildArtifact(
+      FILE_PATH_LITERAL("test"),
+      FILE_PATH_LITERAL("multiprocess_exec_test_child"),
+      TestPaths::FileType::kExecutable);
   multiprocess_exec.SetChildCommand(child_test_executable, nullptr);
   multiprocess_exec.Run();
 }
+
+
+CRASHPAD_CHILD_TEST_MAIN(SimpleMultiprocess) {
+  char c;
+  CheckedReadFileExactly(StdioFileHandle(StdioStream::kStandardInput), &c, 1);
+  LOG_IF(FATAL, c != 'z');
+
+  c = 'Z';
+  CheckedWriteFile(StdioFileHandle(StdioStream::kStandardOutput), &c, 1);
+  return 0;
+}
+
+TEST(MultiprocessExec, MultiprocessExecSimpleChild) {
+  TestMultiprocessExec exec;
+  exec.SetChildTestMainFunction("SimpleMultiprocess");
+  exec.Run();
+}
+
+CRASHPAD_CHILD_TEST_MAIN(SimpleMultiprocessReturnsNonZero) {
+  return 123;
+}
+
+class TestMultiprocessExecEmpty final : public MultiprocessExec {
+ public:
+  TestMultiprocessExecEmpty() = default;
+  ~TestMultiprocessExecEmpty() = default;
+
+ private:
+  void MultiprocessParent() override {}
+
+  DISALLOW_COPY_AND_ASSIGN(TestMultiprocessExecEmpty);
+};
+
+TEST(MultiprocessExec, MultiprocessExecSimpleChildReturnsNonZero) {
+  TestMultiprocessExecEmpty exec;
+  exec.SetChildTestMainFunction("SimpleMultiprocessReturnsNonZero");
+  exec.SetExpectedChildTermination(
+      Multiprocess::TerminationReason::kTerminationNormal, 123);
+  exec.Run();
+}
+
+#if !defined(OS_WIN)
+
+CRASHPAD_CHILD_TEST_MAIN(BuiltinTrapChild) {
+  __builtin_trap();
+  return EXIT_SUCCESS;
+}
+
+class TestBuiltinTrapTermination final : public MultiprocessExec {
+ public:
+  TestBuiltinTrapTermination() {
+    SetChildTestMainFunction("BuiltinTrapChild");
+    SetExpectedChildTerminationBuiltinTrap();
+  }
+
+  ~TestBuiltinTrapTermination() = default;
+
+ private:
+  void MultiprocessParent() override {}
+
+  DISALLOW_COPY_AND_ASSIGN(TestBuiltinTrapTermination);
+};
+
+TEST(MultiprocessExec, BuiltinTrapTermination) {
+  TestBuiltinTrapTermination test;
+  test.Run();
+}
+
+#endif  // !OS_WIN
 
 }  // namespace
 }  // namespace test

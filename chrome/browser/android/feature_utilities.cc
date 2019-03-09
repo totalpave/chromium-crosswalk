@@ -6,19 +6,20 @@
 
 #include "jni/FeatureUtilities_jni.h"
 
+#include "chrome/browser/ntp_snippets/content_suggestions_service_factory.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "components/ntp_snippets/content_suggestions_service.h"
+#include "services/metrics/public/cpp/ukm_source.h"
+
+using base::android::JavaParamRef;
+
 namespace {
-bool document_mode_enabled = false;
 bool custom_tab_visible = false;
 bool is_in_multi_window_mode = false;
 } // namespace
 
 namespace chrome {
 namespace android {
-
-RunningModeHistogram GetDocumentModeValue() {
-  return document_mode_enabled ? RUNNING_MODE_DOCUMENT_MODE :
-      RUNNING_MODE_TABBED_MODE;
-}
 
 CustomTabsVisibilityHistogram GetCustomTabsVisibleValue() {
   return custom_tab_visible ? VISIBLE_CUSTOM_TAB :
@@ -29,27 +30,24 @@ bool GetIsInMultiWindowModeValue() {
   return is_in_multi_window_mode;
 }
 
+bool IsDownloadAutoResumptionEnabledInNative() {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  return Java_FeatureUtilities_isDownloadAutoResumptionEnabledInNative(env);
+}
+
 } // namespace android
 } // namespace chrome
 
-static void SetDocumentModeEnabled(JNIEnv* env,
-                                   const JavaParamRef<jclass>& clazz,
-                                   jboolean enabled) {
-  document_mode_enabled = enabled;
-}
-
-static void SetCustomTabVisible(JNIEnv* env,
-                                const JavaParamRef<jclass>& clazz,
-                                jboolean visible) {
+static void JNI_FeatureUtilities_SetCustomTabVisible(
+    JNIEnv* env,
+    jboolean visible) {
   custom_tab_visible = visible;
+  ukm::UkmSource::SetCustomTabVisible(visible);
 }
 
-static void SetIsInMultiWindowMode(JNIEnv* env,
-                                   const JavaParamRef<jclass>& clazz,
-                                   jboolean j_is_in_multi_window_mode) {
+static void JNI_FeatureUtilities_SetIsInMultiWindowMode(
+    JNIEnv* env,
+    jboolean j_is_in_multi_window_mode) {
   is_in_multi_window_mode = j_is_in_multi_window_mode;
 }
 
-bool RegisterFeatureUtilities(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}

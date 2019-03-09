@@ -4,11 +4,12 @@
 
 #include "chromecast/browser/metrics/cast_metrics_service_client.h"
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/guid.h"
 #include "base/i18n/rtl.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
+#include "base/strings/string16.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
@@ -24,17 +25,20 @@
 #include "components/metrics/client_info.h"
 #include "components/metrics/enabled_state_provider.h"
 #include "components/metrics/gpu/gpu_metrics_provider.h"
+#include "components/metrics/metrics_log_uploader.h"
 #include "components/metrics/metrics_provider.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
 #include "components/metrics/net/net_metrics_log_uploader.h"
 #include "components/metrics/net/network_metrics_provider.h"
-#include "components/metrics/profiler/profiler_metrics_provider.h"
 #include "components/metrics/ui/screen_info_metrics_provider.h"
 #include "components/metrics/url_constants.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/histogram_fetcher.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/common/content_switches.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if defined(OS_LINUX)
 #include "chromecast/browser/metrics/external_metrics.h"
@@ -50,14 +54,18 @@ namespace metrics {
 namespace {
 
 const int kStandardUploadIntervalMinutes = 5;
+const int kMetricsFetchTimeoutSeconds = 60;
 
 const char kMetricsOldClientID[] = "user_experience_metrics.client_id";
 
 #if defined(OS_ANDROID)
 const char kClientIdName[] = "Client ID";
 #else
+
+#if defined(OS_LINUX)
 const char kExternalUmaEventsRelativePath[] = "metrics/uma-events";
 const char kPlatformUmaEventsPath[] = "/data/share/chrome/metrics/uma-events";
+#endif  // defined(OS_LINUX)
 
 const struct ChannelMap {
   const char* chromecast_channel;
@@ -88,15 +96,6 @@ GetReleaseChannelFromUpdateChannelName(const std::string& channel_name) {
 
 }  // namespace
 
-// static
-std::unique_ptr<CastMetricsServiceClient> CastMetricsServiceClient::Create(
-    base::TaskRunner* io_task_runner,
-    PrefService* pref_service,
-    net::URLRequestContextGetter* request_context) {
-  return base::WrapUnique(new CastMetricsServiceClient(
-      io_task_runner, pref_service, request_context));
-}
-
 void CastMetricsServiceClient::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterStringPref(kMetricsOldClientID, std::string());
 }
@@ -116,15 +115,11 @@ void CastMetricsServiceClient::SetMetricsClientId(
 #endif
 }
 
-void CastMetricsServiceClient::OnRecordingDisabled() {
-}
-
 void CastMetricsServiceClient::StoreClientInfo(
     const ::metrics::ClientInfo& client_info) {
-  const std::string& client_id = client_info.client_id;
-  DCHECK(client_id.empty() || base::IsValidGUID(client_id));
-  // backup client_id or reset to empty.
-  SetMetricsClientId(client_id);
+  // TODO(gfhuang): |force_client_id_| logic is super ugly, we should refactor
+  // to align load/save logic of |force_client_id_| with Load/StoreClientInfo.
+  // Currently it's lumped inside SetMetricsClientId(client_id).
 }
 
 std::unique_ptr<::metrics::ClientInfo>
@@ -162,15 +157,9 @@ CastMetricsServiceClient::LoadClientInfo() {
   return std::unique_ptr<::metrics::ClientInfo>();
 }
 
-bool CastMetricsServiceClient::IsOffTheRecordSessionActive() {
-  // Chromecast behaves as "off the record" w/r/t recording browsing state,
-  // but this value is about not disabling metrics because of it.
-  return false;
-}
-
 int32_t CastMetricsServiceClient::GetProduct() {
   // Chromecast currently uses the same product identifier as Chrome.
-  return ::metrics::ChromeUserMetricsExtension::CHROME;
+  return ::metrics::ChromeUserMetricsExtension::CAST;
 }
 
 std::string CastMetricsServiceClient::GetApplicationLocale() {
@@ -213,7 +202,7 @@ std::string CastMetricsServiceClient::GetVersionString() {
   std::string version_string(PRODUCT_VERSION);
 
   version_string.append("-K");
-  version_string.append(base::IntToString(build_number));
+  version_string.append(base::NumberToString(build_number));
 
   const ::metrics::SystemProfileProto::Channel channel = GetChannel();
   CHECK(!CAST_IS_DEBUG_BUILD() ||
@@ -228,48 +217,54 @@ std::string CastMetricsServiceClient::GetVersionString() {
   return version_string;
 }
 
-void CastMetricsServiceClient::OnLogUploadComplete() {
-}
-
-void CastMetricsServiceClient::InitializeSystemProfileMetrics(
-    const base::Closure& done_callback) {
-  done_callback.Run();
-}
-
 void CastMetricsServiceClient::CollectFinalMetricsForLog(
     const base::Closure& done_callback) {
-  done_callback.Run();
+  // Asynchronously fetch metrics data from child processes. Since this method
+  // is called on log upload, metrics that occur between log upload and child
+  // process termination will not be uploaded.
+  content::FetchHistogramsAsynchronously(
+      task_runner_, done_callback,
+      base::TimeDelta::FromSeconds(kMetricsFetchTimeoutSeconds));
+}
+
+GURL CastMetricsServiceClient::GetMetricsServerUrl() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(switches::kOverrideMetricsUploadUrl)) {
+    return GURL(
+        command_line->GetSwitchValueASCII(switches::kOverrideMetricsUploadUrl));
+  }
+  // Note: This uses the old metrics service URL because some server-side
+  // provisioning is needed to support the extra Cast traffic on the new URL.
+  return GURL(::metrics::kOldMetricsServerUrl);
 }
 
 std::unique_ptr<::metrics::MetricsLogUploader>
 CastMetricsServiceClient::CreateUploader(
-    const base::Callback<void(int)>& on_upload_complete) {
-  std::string uma_server_url(::metrics::kDefaultMetricsServerUrl);
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kOverrideMetricsUploadUrl)) {
-    uma_server_url.assign(
-        command_line->GetSwitchValueASCII(switches::kOverrideMetricsUploadUrl));
-  }
-  DCHECK(!uma_server_url.empty());
+    const GURL& server_url,
+    const GURL& insecure_server_url,
+    base::StringPiece mime_type,
+    ::metrics::MetricsLogUploader::MetricServiceType service_type,
+    const ::metrics::MetricsLogUploader::UploadCallback& on_upload_complete) {
   return std::unique_ptr<::metrics::MetricsLogUploader>(
-      new ::metrics::NetMetricsLogUploader(request_context_, uma_server_url,
-                                           ::metrics::kDefaultMetricsMimeType,
-                                           on_upload_complete));
+      new ::metrics::NetMetricsLogUploader(url_loader_factory_, server_url,
+                                           insecure_server_url, mime_type,
+                                           service_type, on_upload_complete));
 }
 
 base::TimeDelta CastMetricsServiceClient::GetStandardUploadInterval() {
   return base::TimeDelta::FromMinutes(kStandardUploadIntervalMinutes);
 }
 
-bool CastMetricsServiceClient::IsConsentGiven() {
+bool CastMetricsServiceClient::IsConsentGiven() const {
   return pref_service_->GetBoolean(prefs::kOptInStats);
 }
 
 void CastMetricsServiceClient::EnableMetricsService(bool enabled) {
   if (!task_runner_->BelongsToCurrentThread()) {
     task_runner_->PostTask(
-        FROM_HERE, base::Bind(&CastMetricsServiceClient::EnableMetricsService,
-                              base::Unretained(this), enabled));
+        FROM_HERE,
+        base::BindOnce(&CastMetricsServiceClient::EnableMetricsService,
+                       base::Unretained(this), enabled));
     return;
   }
 
@@ -281,19 +276,16 @@ void CastMetricsServiceClient::EnableMetricsService(bool enabled) {
 }
 
 CastMetricsServiceClient::CastMetricsServiceClient(
-    base::TaskRunner* io_task_runner,
     PrefService* pref_service,
-    net::URLRequestContextGetter* request_context)
-    : io_task_runner_(io_task_runner),
-      pref_service_(pref_service),
-      cast_service_(nullptr),
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    : pref_service_(pref_service),
       client_info_loaded_(false),
 #if defined(OS_LINUX)
       external_metrics_(nullptr),
       platform_metrics_(nullptr),
 #endif  // defined(OS_LINUX)
       task_runner_(base::ThreadTaskRunnerHandle::Get()),
-      request_context_(request_context) {
+      url_loader_factory_(url_loader_factory) {
 }
 
 CastMetricsServiceClient::~CastMetricsServiceClient() {
@@ -325,13 +317,10 @@ void CastMetricsServiceClient::SetForceClientId(
   force_client_id_ = client_id;
 }
 
-void CastMetricsServiceClient::Initialize(CastService* cast_service) {
-  DCHECK(cast_service);
-  DCHECK(!cast_service_);
-  cast_service_ = cast_service;
-
+void CastMetricsServiceClient::Initialize() {
+  DCHECK(!metrics_state_manager_);
   metrics_state_manager_ = ::metrics::MetricsStateManager::Create(
-      pref_service_, this,
+      pref_service_, this, base::string16(),
       base::Bind(&CastMetricsServiceClient::StoreClientInfo,
                  base::Unretained(this)),
       base::Bind(&CastMetricsServiceClient::LoadClientInfo,
@@ -347,6 +336,8 @@ void CastMetricsServiceClient::Initialize(CastService* cast_service) {
   // report the client-id and expect that setup will handle the current opt-in
   // value.
   metrics_state_manager_->ForceClientIdCreation();
+  // Populate |client_id| to other component parts.
+  SetMetricsClientId(metrics_state_manager_->client_id());
 
   CastStabilityMetricsProvider* stability_provider =
       new CastStabilityMetricsProvider(metrics_service_.get());
@@ -366,11 +357,8 @@ void CastMetricsServiceClient::Initialize(CastService* cast_service) {
             new ::metrics::ScreenInfoMetricsProvider));
   }
   metrics_service_->RegisterMetricsProvider(
-      std::unique_ptr<::metrics::MetricsProvider>(
-          new ::metrics::NetworkMetricsProvider(io_task_runner_)));
-  metrics_service_->RegisterMetricsProvider(
-      std::unique_ptr<::metrics::MetricsProvider>(
-          new ::metrics::ProfilerMetricsProvider));
+      std::make_unique<::metrics::NetworkMetricsProvider>(
+          content::CreateNetworkConnectionTrackerAsyncGetter()));
   shell::CastBrowserProcess::GetInstance()->browser_client()->
       RegisterMetricsProviders(metrics_service_.get());
 

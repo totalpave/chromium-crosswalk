@@ -20,6 +20,7 @@ template <typename Interface>
 class AssociatedInterfacePtrInfo {
  public:
   AssociatedInterfacePtrInfo() : version_(0u) {}
+  AssociatedInterfacePtrInfo(std::nullptr_t) : version_(0u) {}
 
   AssociatedInterfacePtrInfo(AssociatedInterfacePtrInfo&& other)
       : handle_(std::move(other.handle_)), version_(other.version_) {
@@ -43,6 +44,8 @@ class AssociatedInterfacePtrInfo {
   }
 
   bool is_valid() const { return handle_.is_valid(); }
+
+  explicit operator bool() const { return handle_.is_valid(); }
 
   ScopedInterfaceEndpointHandle PassHandle() {
     return std::move(handle_);

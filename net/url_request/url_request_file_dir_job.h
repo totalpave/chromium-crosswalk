@@ -11,7 +11,6 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/worker_pool.h"
 #include "net/base/directory_lister.h"
 #include "net/base/net_errors.h"
 #include "net/base/net_export.h"
@@ -21,18 +20,14 @@ namespace net {
 
 class NET_EXPORT_PRIVATE URLRequestFileDirJob
     : public URLRequestJob,
-      public NON_EXPORTED_BASE(DirectoryLister::DirectoryListerDelegate) {
+      public DirectoryLister::DirectoryListerDelegate {
  public:
   URLRequestFileDirJob(URLRequest* request,
                        NetworkDelegate* network_delegate,
                        const base::FilePath& dir_path);
 
-  URLRequestFileDirJob(URLRequest* request,
-                       NetworkDelegate* network_delegate,
-                       const base::FilePath& dir_path,
-                       const scoped_refptr<base::TaskRunner>& dir_task_runner);
-
   void StartAsync();
+
   // Overridden from URLRequestJob:
   void Start() override;
   void Kill() override;
@@ -48,7 +43,8 @@ class NET_EXPORT_PRIVATE URLRequestFileDirJob
   ~URLRequestFileDirJob() override;
 
  private:
-  void CloseLister();
+  // Called after the target directory path is resolved to an absolute path.
+  void DidMakeAbsolutePath(const base::FilePath& absolute_path);
 
   // When we have data and a read has been pending, this function
   // will fill the response buffer and notify the request
@@ -58,9 +54,7 @@ class NET_EXPORT_PRIVATE URLRequestFileDirJob
   int ReadBuffer(char* buf, int buf_size);
 
   DirectoryLister lister_;
-  base::FilePath dir_path_;
-
-  const scoped_refptr<base::TaskRunner> dir_task_runner_;
+  const base::FilePath dir_path_;
 
   std::string data_;
   bool canceled_;

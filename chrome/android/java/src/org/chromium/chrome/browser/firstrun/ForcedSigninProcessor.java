@@ -4,17 +4,19 @@
 
 package org.chromium.chrome.browser.firstrun;
 
-import android.accounts.Account;
 import android.content.Context;
+import android.support.annotation.Nullable;
 
-import org.chromium.base.Callback;
 import org.chromium.base.Log;
+import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.externalauth.ExternalAuthUtils;
+import org.chromium.chrome.browser.externalauth.UserRecoverableErrorHandler;
 import org.chromium.chrome.browser.services.AndroidEduAndChildAccountHelper;
 import org.chromium.chrome.browser.signin.AccountManagementFragment;
 import org.chromium.chrome.browser.signin.SigninManager;
 import org.chromium.chrome.browser.util.FeatureUtilities;
-import org.chromium.sync.signin.AccountManagerHelper;
-import org.chromium.sync.signin.ChromeSigninController;
+import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.signin.ChildAccountStatus;
 
 /**
  * A helper to perform all necessary steps for forced sign in.
@@ -41,53 +43,71 @@ public final class ForcedSigninProcessor {
      * This is triggered once per Chrome Application lifetime and everytime the Account state
      * changes with early exit if an account has already been signed in.
      */
-    public static void start(final Context appContext) {
-        if (ChromeSigninController.get(appContext).isSignedIn()) return;
+    public static void start(final Context appContext, @Nullable final Runnable onComplete) {
         new AndroidEduAndChildAccountHelper() {
             @Override
             public void onParametersReady() {
                 boolean isAndroidEduDevice = isAndroidEduDevice();
-                boolean hasChildAccount = hasChildAccount();
-                // If neither a child account or and EDU device, we return.
-                if (!isAndroidEduDevice && !hasChildAccount) return;
+                boolean hasChildAccount = ChildAccountStatus.isChild(getChildAccountStatus());
                 // Child account and EDU device at the same time is not supported.
                 assert !(isAndroidEduDevice && hasChildAccount);
-                processForcedSignIn(appContext);
+
+                boolean forceSignin = isAndroidEduDevice || hasChildAccount;
+                AccountManagementFragment.setSignOutAllowedPreferenceValue(!forceSignin);
+                if (forceSignin) {
+                    processForcedSignIn(appContext, onComplete);
+                }
             }
-        }.start(appContext);
+        }.start();
     }
 
     /**
      * Processes the fully automatic non-FRE-related forced sign-in.
      * This is used to enforce the environment for Android EDU and child accounts.
      */
-    private static void processForcedSignIn(final Context appContext) {
-        final SigninManager signinManager = SigninManager.get(appContext);
+    private static void processForcedSignIn(
+            final Context appContext, @Nullable final Runnable onComplete) {
+        final SigninManager signinManager = SigninManager.get();
         // By definition we have finished all the checks for first run.
         signinManager.onFirstRunCheckDone();
         if (!FeatureUtilities.canAllowSync(appContext) || !signinManager.isSignInAllowed()) {
             Log.d(TAG, "Sign in disallowed");
             return;
         }
-        AccountManagerHelper.get(appContext).getGoogleAccounts(new Callback<Account[]>() {
-            @Override
-            public void onResult(Account[] accounts) {
-                if (accounts.length != 1) {
-                    Log.d(TAG, "Incorrect number of accounts (%d)", accounts.length);
-                    return;
-                }
-                signinManager.signIn(accounts[0], null, new SigninManager.SignInCallback() {
-                    @Override
-                    public void onSignInComplete() {
-                        // Since this is a forced signin, signout is not allowed.
-                        AccountManagementFragment.setSignOutAllowedPreferenceValue(
-                                appContext, false);
-                    }
-
-                    @Override
-                    public void onSignInAborted() {}
-                });
+        AccountManagerFacade.get().tryGetGoogleAccounts(accounts -> {
+            if (accounts.size() != 1) {
+                Log.d(TAG, "Incorrect number of accounts (%d)", accounts.size());
+                return;
             }
+            signinManager.signIn(accounts.get(0), null, new SigninManager.SignInCallback() {
+                @Override
+                public void onSignInComplete() {
+                    if (onComplete != null) {
+                        onComplete.run();
+                    }
+                }
+
+                @Override
+                public void onSignInAborted() {
+                    if (onComplete != null) {
+                        onComplete.run();
+                    }
+                }
+            });
         });
+    }
+
+    /**
+     * If forced signin is required by policy, check that Google Play Services is available, and
+     * show a non-cancelable dialog otherwise.
+     * @param activity The activity for which to show the dialog.
+     */
+    // TODO(bauerb): Once external dependencies reliably use policy to force sign-in,
+    // consider removing the child account / EDU checks.
+    public static void checkCanSignIn(final ChromeActivity activity) {
+        if (SigninManager.get().isForceSigninEnabled()) {
+            ExternalAuthUtils.getInstance().canUseGooglePlayServices(
+                    new UserRecoverableErrorHandler.ModalDialog(activity, false));
+        }
     }
 }

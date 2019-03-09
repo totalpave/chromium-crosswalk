@@ -6,8 +6,8 @@
 
 #include <stddef.h>
 
-#include "base/macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/message_loop/message_loop_current.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/events/ozone/device/device_event.h"
@@ -66,7 +66,7 @@ device::ScopedUdevMonitorPtr UdevCreateMonitor(struct udev* udev) {
   struct udev_monitor* monitor =
       device::udev_monitor_new_from_netlink(udev, "udev");
   if (monitor) {
-    for (size_t i = 0; i < arraysize(kSubsystems); ++i)
+    for (size_t i = 0; i < base::size(kSubsystems); ++i)
       device::udev_monitor_filter_add_match_subsystem_devtype(
           monitor, kSubsystems[i], NULL);
 
@@ -81,8 +81,8 @@ device::ScopedUdevMonitorPtr UdevCreateMonitor(struct udev* udev) {
 
 }  // namespace
 
-DeviceManagerUdev::DeviceManagerUdev() : udev_(UdevCreate()) {
-}
+DeviceManagerUdev::DeviceManagerUdev()
+    : udev_(UdevCreate()), controller_(FROM_HERE) {}
 
 DeviceManagerUdev::~DeviceManagerUdev() {
 }
@@ -94,7 +94,7 @@ void DeviceManagerUdev::CreateMonitor() {
   if (monitor_) {
     int fd = device::udev_monitor_get_fd(monitor_.get());
     CHECK_GT(fd, 0);
-    base::MessageLoopForUI::current()->WatchFileDescriptor(
+    base::MessageLoopCurrentForUI::Get()->WatchFileDescriptor(
         fd, true, base::MessagePumpLibevent::WATCH_READ, &controller_, this);
   }
 }
@@ -107,7 +107,7 @@ void DeviceManagerUdev::ScanDevices(DeviceEventObserver* observer) {
   if (!enumerate)
     return;
 
-  for (size_t i = 0; i < arraysize(kSubsystems); ++i)
+  for (size_t i = 0; i < base::size(kSubsystems); ++i)
     device::udev_enumerate_add_match_subsystem(enumerate.get(), kSubsystems[i]);
   device::udev_enumerate_scan_devices(enumerate.get());
 
@@ -147,8 +147,8 @@ void DeviceManagerUdev::OnFileCanReadWithoutBlocking(int fd) {
 
   std::unique_ptr<DeviceEvent> event = ProcessMessage(device.get());
   if (event)
-    FOR_EACH_OBSERVER(
-        DeviceEventObserver, observers_, OnDeviceEvent(*event.get()));
+    for (DeviceEventObserver& observer : observers_)
+      observer.OnDeviceEvent(*event.get());
 }
 
 void DeviceManagerUdev::OnFileCanWriteWithoutBlocking(int fd) {
@@ -186,8 +186,8 @@ std::unique_ptr<DeviceEvent> DeviceManagerUdev::ProcessMessage(
   else
     return nullptr;
 
-  return base::WrapUnique(
-      new DeviceEvent(device_type, action_type, base::FilePath(path)));
+  return std::make_unique<DeviceEvent>(device_type, action_type,
+                                       base::FilePath(path));
 }
 
 }  // namespace ui

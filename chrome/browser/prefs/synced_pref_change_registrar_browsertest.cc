@@ -5,8 +5,10 @@
 #include <memory>
 #include <string>
 
+#include "base/bind.h"
 #include "base/json/json_string_value_serializer.h"
-#include "base/memory/ptr_util.h"
+#include "base/message_loop/message_loop_current.h"
+#include "base/run_loop.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/prefs/pref_service_syncable_util.h"
@@ -18,18 +20,16 @@
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
-#include "components/syncable_prefs/synced_pref_change_registrar.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/policy/policy_constants.h"
+#include "components/sync/model/fake_sync_change_processor.h"
+#include "components/sync/model/sync_change.h"
+#include "components/sync/model/sync_error_factory.h"
+#include "components/sync/model/sync_error_factory_mock.h"
+#include "components/sync/model/syncable_service.h"
+#include "components/sync/protocol/sync.pb.h"
+#include "components/sync_preferences/synced_pref_change_registrar.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/test_utils.h"
-#include "policy/policy_constants.h"
-#include "sync/api/attachments/attachment_id.h"
-#include "sync/api/fake_sync_change_processor.h"
-#include "sync/api/sync_change.h"
-#include "sync/api/sync_error_factory.h"
-#include "sync/api/sync_error_factory_mock.h"
-#include "sync/api/syncable_service.h"
-#include "sync/internal_api/public/attachments/attachment_service_proxy_for_test.h"
-#include "sync/protocol/sync.pb.h"
 
 namespace {
 
@@ -43,7 +43,7 @@ class SyncedPrefChangeRegistrarTest : public InProcessBrowserTest {
 
   void UpdateChromePolicy(const policy::PolicyMap& policies) {
     policy_provider_.UpdateChromePolicy(policies);
-    DCHECK(base::MessageLoop::current());
+    DCHECK(base::MessageLoopCurrent::Get());
     base::RunLoop loop;
     loop.RunUntilIdle();
   }
@@ -51,7 +51,7 @@ class SyncedPrefChangeRegistrarTest : public InProcessBrowserTest {
   void SetBooleanPrefValueFromSync(const std::string& name, bool value) {
     std::string serialized_value;
     JSONStringValueSerializer json(&serialized_value);
-    json.Serialize(base::FundamentalValue(value));
+    json.Serialize(base::Value(value));
 
     sync_pb::EntitySpecifics specifics;
     sync_pb::PreferenceSpecifics* pref_specifics =
@@ -59,12 +59,8 @@ class SyncedPrefChangeRegistrarTest : public InProcessBrowserTest {
     pref_specifics->set_name(name);
     pref_specifics->set_value(serialized_value);
 
-    syncer::SyncData change_data = syncer::SyncData::CreateRemoteData(
-        ++next_sync_data_id_,
-        specifics,
-        base::Time(),
-        syncer::AttachmentIdList(),
-        syncer::AttachmentServiceProxyForTest::Create());
+    syncer::SyncData change_data =
+        syncer::SyncData::CreateRemoteData(++next_sync_data_id_, specifics);
     syncer::SyncChange change(
         FROM_HERE, syncer::SyncChange::ACTION_UPDATE, change_data);
 
@@ -82,11 +78,9 @@ class SyncedPrefChangeRegistrarTest : public InProcessBrowserTest {
     return prefs_->GetBoolean(name.c_str());
   }
 
-  syncable_prefs::PrefServiceSyncable* prefs() const {
-    return prefs_;
-  }
+  sync_preferences::PrefServiceSyncable* prefs() const { return prefs_; }
 
-  syncable_prefs::SyncedPrefChangeRegistrar* registrar() const {
+  sync_preferences::SyncedPrefChangeRegistrar* registrar() const {
     return registrar_.get();
   }
 
@@ -107,16 +101,16 @@ class SyncedPrefChangeRegistrarTest : public InProcessBrowserTest {
             new syncer::FakeSyncChangeProcessor),
         std::unique_ptr<syncer::SyncErrorFactory>(
             new syncer::SyncErrorFactoryMock));
-    registrar_.reset(new syncable_prefs::SyncedPrefChangeRegistrar(prefs_));
+    registrar_.reset(new sync_preferences::SyncedPrefChangeRegistrar(prefs_));
   }
 
   void TearDownOnMainThread() override { registrar_.reset(); }
 
-  syncable_prefs::PrefServiceSyncable* prefs_;
+  sync_preferences::PrefServiceSyncable* prefs_;
   syncer::SyncableService* syncer_;
   int next_sync_data_id_;
 
-  std::unique_ptr<syncable_prefs::SyncedPrefChangeRegistrar> registrar_;
+  std::unique_ptr<sync_preferences::SyncedPrefChangeRegistrar> registrar_;
   policy::MockConfigurationPolicyProvider policy_provider_;
 };
 
@@ -182,7 +176,7 @@ IN_PROC_BROWSER_TEST_F(SyncedPrefChangeRegistrarTest,
   policy::PolicyMap policies;
   policies.Set(policy::key::kShowHomeButton, policy::POLICY_LEVEL_MANDATORY,
                policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_CLOUD,
-               base::WrapUnique(new base::FundamentalValue(true)), nullptr);
+               std::make_unique<base::Value>(true), nullptr);
   UpdateChromePolicy(policies);
 
   EXPECT_TRUE(prefs()->IsManagedPreference(prefs::kShowHomeButton));
@@ -201,7 +195,7 @@ IN_PROC_BROWSER_TEST_F(SyncedPrefChangeRegistrarTest,
   policy::PolicyMap policies;
   policies.Set(policy::key::kShowHomeButton, policy::POLICY_LEVEL_MANDATORY,
                policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_CLOUD,
-               base::WrapUnique(new base::FundamentalValue(true)), nullptr);
+               std::make_unique<base::Value>(true), nullptr);
   UpdateChromePolicy(policies);
 
   EXPECT_TRUE(prefs()->IsManagedPreference(prefs::kShowHomeButton));

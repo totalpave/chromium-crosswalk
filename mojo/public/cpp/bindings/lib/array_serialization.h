@@ -14,12 +14,11 @@
 #include <vector>
 
 #include "base/logging.h"
-#include "mojo/public/cpp/bindings/array.h"
+#include "mojo/public/cpp/bindings/array_data_view.h"
 #include "mojo/public/cpp/bindings/lib/array_internal.h"
 #include "mojo/public/cpp/bindings/lib/serialization_forward.h"
 #include "mojo/public/cpp/bindings/lib/template_util.h"
 #include "mojo/public/cpp/bindings/lib/validation_errors.h"
-#include "mojo/public/cpp/bindings/map.h"
 
 namespace mojo {
 namespace internal {
@@ -46,7 +45,7 @@ class ArrayIterator<Traits, MaybeConstUserType, true> {
   using GetNextResult =
       decltype(Traits::GetValue(std::declval<IteratorType&>()));
   GetNextResult GetNext() {
-    auto& value = Traits::GetValue(iter_);
+    GetNextResult value = Traits::GetValue(iter_);
     Traits::AdvanceIterator(iter_);
     return value;
   }
@@ -113,20 +112,19 @@ struct ArraySerializer<
   using DataElement = typename Data::Element;
   using Element = typename MojomType::Element;
   using Traits = ArrayTraits<UserType>;
+  using BufferWriter = typename Data::BufferWriter;
 
   static_assert(std::is_same<Element, DataElement>::value,
                 "Incorrect array serializer");
-  static_assert(std::is_same<Element, typename Traits::Element>::value,
-                "Incorrect array serializer");
-
-  static size_t GetSerializedSize(UserTypeIterator* input,
-                                  SerializationContext* context) {
-    return sizeof(Data) + Align(input->GetSize() * sizeof(DataElement));
-  }
+  static_assert(
+      std::is_same<
+          Element,
+          typename std::remove_const<typename Traits::Element>::type>::value,
+      "Incorrect array serializer");
 
   static void SerializeElements(UserTypeIterator* input,
                                 Buffer* buf,
-                                Data* output,
+                                BufferWriter* writer,
                                 const ContainerValidateParams* validate_params,
                                 SerializationContext* context) {
     DCHECK(!validate_params->element_is_nullable)
@@ -139,6 +137,7 @@ struct ArraySerializer<
       return;
 
     auto data = input->GetDataIfExists();
+    Data* output = writer->data();
     if (data) {
       memcpy(output->storage(), data, size * sizeof(DataElement));
     } else {
@@ -181,18 +180,14 @@ struct ArraySerializer<
   using DataElement = typename Data::Element;
   using Element = typename MojomType::Element;
   using Traits = ArrayTraits<UserType>;
+  using BufferWriter = typename Data::BufferWriter;
 
   static_assert(sizeof(Element) == sizeof(DataElement),
                 "Incorrect array serializer");
 
-  static size_t GetSerializedSize(UserTypeIterator* input,
-                                  SerializationContext* context) {
-    return sizeof(Data) + Align(input->GetSize() * sizeof(DataElement));
-  }
-
   static void SerializeElements(UserTypeIterator* input,
                                 Buffer* buf,
-                                Data* output,
+                                BufferWriter* writer,
                                 const ContainerValidateParams* validate_params,
                                 SerializationContext* context) {
     DCHECK(!validate_params->element_is_nullable)
@@ -200,6 +195,7 @@ struct ArraySerializer<
     DCHECK(!validate_params->element_validate_params)
         << "Primitive type should not have array validate params";
 
+    Data* output = writer->data();
     size_t size = input->GetSize();
     for (size_t i = 0; i < size; ++i)
       Serialize<Element>(input->GetNext(), output->storage() + i);
@@ -232,18 +228,14 @@ struct ArraySerializer<MojomType,
   using UserType = typename std::remove_const<MaybeConstUserType>::type;
   using Traits = ArrayTraits<UserType>;
   using Data = typename MojomTypeTraits<MojomType>::Data;
+  using BufferWriter = typename Data::BufferWriter;
 
   static_assert(std::is_same<bool, typename Traits::Element>::value,
                 "Incorrect array serializer");
 
-  static size_t GetSerializedSize(UserTypeIterator* input,
-                                  SerializationContext* context) {
-    return sizeof(Data) + Align((input->GetSize() + 7) / 8);
-  }
-
   static void SerializeElements(UserTypeIterator* input,
                                 Buffer* buf,
-                                Data* output,
+                                BufferWriter* writer,
                                 const ContainerValidateParams* validate_params,
                                 SerializationContext* context) {
     DCHECK(!validate_params->element_is_nullable)
@@ -251,6 +243,7 @@ struct ArraySerializer<MojomType,
     DCHECK(!validate_params->element_validate_params)
         << "Primitive type should not have array validate params";
 
+    Data* output = writer->data();
     size_t size = input->GetSize();
     for (size_t i = 0; i < size; ++i)
       output->at(i) = input->GetNext();
@@ -279,34 +272,27 @@ struct ArraySerializer<
         BelongsTo<typename MojomType::Element,
                   MojomTypeCategory::ASSOCIATED_INTERFACE |
                       MojomTypeCategory::ASSOCIATED_INTERFACE_REQUEST |
-                      MojomTypeCategory::HANDLE |
-                      MojomTypeCategory::INTERFACE |
+                      MojomTypeCategory::HANDLE | MojomTypeCategory::INTERFACE |
                       MojomTypeCategory::INTERFACE_REQUEST>::value>::type> {
   using UserType = typename std::remove_const<MaybeConstUserType>::type;
   using Data = typename MojomTypeTraits<MojomType>::Data;
   using Element = typename MojomType::Element;
   using Traits = ArrayTraits<UserType>;
-
-  static_assert(std::is_same<Element, typename Traits::Element>::value,
-                "Incorrect array serializer");
-
-  static size_t GetSerializedSize(UserTypeIterator* input,
-                                  SerializationContext* context) {
-    return sizeof(Data) +
-           Align(input->GetSize() * sizeof(typename Data::Element));
-  }
+  using BufferWriter = typename Data::BufferWriter;
 
   static void SerializeElements(UserTypeIterator* input,
                                 Buffer* buf,
-                                Data* output,
+                                BufferWriter* writer,
                                 const ContainerValidateParams* validate_params,
                                 SerializationContext* context) {
     DCHECK(!validate_params->element_validate_params)
         << "Handle or interface type should not have array validate params";
 
+    Data* output = writer->data();
     size_t size = input->GetSize();
     for (size_t i = 0; i < size; ++i) {
-      Serialize<Element>(input->GetNext(), &output->at(i), context);
+      typename UserTypeIterator::GetNextResult next = input->GetNext();
+      Serialize<Element>(next, &output->at(i), context);
 
       static const ValidationError kError =
           BelongsTo<Element,
@@ -353,36 +339,28 @@ struct ArraySerializer<MojomType,
                                MojomTypeCategory::STRUCT>::value>::type> {
   using UserType = typename std::remove_const<MaybeConstUserType>::type;
   using Data = typename MojomTypeTraits<MojomType>::Data;
-  using DataElement = typename Data::Element;
   using Element = typename MojomType::Element;
+  using DataElementWriter =
+      typename MojomTypeTraits<Element>::Data::BufferWriter;
   using Traits = ArrayTraits<UserType>;
-
-  static size_t GetSerializedSize(UserTypeIterator* input,
-                                  SerializationContext* context) {
-    size_t element_count = input->GetSize();
-    size_t size =
-        sizeof(Data) +
-        element_count *
-            sizeof(Pointer<typename std::remove_pointer<DataElement>::type>);
-    for (size_t i = 0; i < element_count; ++i)
-      size += PrepareToSerialize<Element>(input->GetNext(), context);
-    return size;
-  }
+  using BufferWriter = typename Data::BufferWriter;
 
   static void SerializeElements(UserTypeIterator* input,
                                 Buffer* buf,
-                                Data* output,
+                                BufferWriter* writer,
                                 const ContainerValidateParams* validate_params,
                                 SerializationContext* context) {
     size_t size = input->GetSize();
     for (size_t i = 0; i < size; ++i) {
-      DataElement element;
-      SerializeCaller<Element>::Run(input->GetNext(), buf, &element,
+      DataElementWriter data_writer;
+      typename UserTypeIterator::GetNextResult next = input->GetNext();
+      SerializeCaller<Element>::Run(next, buf, &data_writer,
                                     validate_params->element_validate_params,
                                     context);
-      output->at(i) = element;
+      writer->data()->at(i).Set(data_writer.is_null() ? nullptr
+                                                      : data_writer.data());
       MOJO_INTERNAL_DLOG_SERIALIZATION_WARNING(
-          !validate_params->element_is_nullable && !element,
+          !validate_params->element_is_nullable && data_writer.is_null(),
           VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
           MakeMessageWithArrayIndex("null in array expecting valid pointers",
                                     size, i));
@@ -391,19 +369,15 @@ struct ArraySerializer<MojomType,
   static bool DeserializeElements(Data* input,
                                   UserType* output,
                                   SerializationContext* context) {
-    bool success = true;
     if (!Traits::Resize(*output, input->size()))
       return false;
     ArrayIterator<Traits, UserType> iterator(*output);
     for (size_t i = 0; i < input->size(); ++i) {
-      // Note that we rely on complete deserialization taking place in order to
-      // transfer ownership of all encoded handles. Therefore we don't
-      // short-circuit on failure here.
-      if (!Deserialize<Element>(input->at(i), &iterator.GetNext(), context)) {
-        success = false;
-      }
+      if (!Deserialize<Element>(input->at(i).Get(), &iterator.GetNext(),
+                                context))
+        return false;
     }
-    return success;
+    return true;
   }
 
  private:
@@ -415,10 +389,10 @@ struct ArraySerializer<MojomType,
     template <typename InputElementType>
     static void Run(InputElementType&& input,
                     Buffer* buf,
-                    DataElement* output,
+                    DataElementWriter* writer,
                     const ContainerValidateParams* validate_params,
                     SerializationContext* context) {
-      Serialize<T>(std::forward<InputElementType>(input), buf, output, context);
+      Serialize<T>(std::forward<InputElementType>(input), buf, writer, context);
     }
   };
 
@@ -427,10 +401,10 @@ struct ArraySerializer<MojomType,
     template <typename InputElementType>
     static void Run(InputElementType&& input,
                     Buffer* buf,
-                    DataElement* output,
+                    DataElementWriter* writer,
                     const ContainerValidateParams* validate_params,
                     SerializationContext* context) {
-      Serialize<T>(std::forward<InputElementType>(input), buf, output,
+      Serialize<T>(std::forward<InputElementType>(input), buf, writer,
                    validate_params, context);
     }
   };
@@ -449,35 +423,24 @@ struct ArraySerializer<
   using UserType = typename std::remove_const<MaybeConstUserType>::type;
   using Data = typename MojomTypeTraits<MojomType>::Data;
   using Element = typename MojomType::Element;
+  using ElementWriter = typename Data::Element::BufferWriter;
   using Traits = ArrayTraits<UserType>;
-
-  static_assert(std::is_same<typename MojomType::Element,
-                             typename Traits::Element>::value,
-                "Incorrect array serializer");
-
-  static size_t GetSerializedSize(UserTypeIterator* input,
-                                  SerializationContext* context) {
-    size_t element_count = input->GetSize();
-    size_t size = sizeof(Data);
-    for (size_t i = 0; i < element_count; ++i) {
-      // Call with |inlined| set to false, so that it will account for both the
-      // data in the union and the space in the array used to hold the union.
-      size += PrepareToSerialize<Element>(input->GetNext(), false, context);
-    }
-    return size;
-  }
+  using BufferWriter = typename Data::BufferWriter;
 
   static void SerializeElements(UserTypeIterator* input,
                                 Buffer* buf,
-                                Data* output,
+                                BufferWriter* writer,
                                 const ContainerValidateParams* validate_params,
                                 SerializationContext* context) {
     size_t size = input->GetSize();
     for (size_t i = 0; i < size; ++i) {
-      typename Data::Element* result = output->storage() + i;
-      Serialize<Element>(input->GetNext(), buf, &result, true, context);
+      ElementWriter result;
+      result.AllocateInline(buf, writer->data()->storage() + i);
+      typename UserTypeIterator::GetNextResult next = input->GetNext();
+      Serialize<Element>(next, buf, &result, true, context);
       MOJO_INTERNAL_DLOG_SERIALIZATION_WARNING(
-          !validate_params->element_is_nullable && output->at(i).is_null(),
+          !validate_params->element_is_nullable &&
+              writer->data()->at(i).is_null(),
           VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
           MakeMessageWithArrayIndex("null in array expecting valid unions",
                                     size, i));
@@ -487,62 +450,46 @@ struct ArraySerializer<
   static bool DeserializeElements(Data* input,
                                   UserType* output,
                                   SerializationContext* context) {
-    bool success = true;
     if (!Traits::Resize(*output, input->size()))
       return false;
     ArrayIterator<Traits, UserType> iterator(*output);
     for (size_t i = 0; i < input->size(); ++i) {
-      // Note that we rely on complete deserialization taking place in order to
-      // transfer ownership of all encoded handles. Therefore we don't
-      // short-circuit on failure here.
-      if (!Deserialize<Element>(&input->at(i), &iterator.GetNext(), context)) {
-        success = false;
-      }
+      if (!Deserialize<Element>(&input->at(i), &iterator.GetNext(), context))
+        return false;
     }
-    return success;
+    return true;
   }
 };
 
 template <typename Element, typename MaybeConstUserType>
-struct Serializer<Array<Element>, MaybeConstUserType> {
+struct Serializer<ArrayDataView<Element>, MaybeConstUserType> {
   using UserType = typename std::remove_const<MaybeConstUserType>::type;
   using Traits = ArrayTraits<UserType>;
-  using Impl = ArraySerializer<Array<Element>,
+  using Impl = ArraySerializer<ArrayDataView<Element>,
                                MaybeConstUserType,
                                ArrayIterator<Traits, MaybeConstUserType>>;
-  using Data = typename MojomTypeTraits<Array<Element>>::Data;
-
-  static size_t PrepareToSerialize(MaybeConstUserType& input,
-                                   SerializationContext* context) {
-    if (CallIsNullIfExists<Traits>(input))
-      return 0;
-    ArrayIterator<Traits, MaybeConstUserType> iterator(input);
-    return Impl::GetSerializedSize(&iterator, context);
-  }
+  using Data = typename MojomTypeTraits<ArrayDataView<Element>>::Data;
+  using BufferWriter = typename Data::BufferWriter;
 
   static void Serialize(MaybeConstUserType& input,
                         Buffer* buf,
-                        Data** output,
+                        BufferWriter* writer,
                         const ContainerValidateParams* validate_params,
                         SerializationContext* context) {
-    if (!CallIsNullIfExists<Traits>(input)) {
-      MOJO_INTERNAL_DLOG_SERIALIZATION_WARNING(
-          validate_params->expected_num_elements != 0 &&
-              Traits::GetSize(input) != validate_params->expected_num_elements,
-          internal::VALIDATION_ERROR_UNEXPECTED_ARRAY_HEADER,
-          internal::MakeMessageWithExpectedArraySize(
-              "fixed-size array has wrong number of elements",
-              Traits::GetSize(input), validate_params->expected_num_elements));
-      Data* result = Data::New(Traits::GetSize(input), buf);
-      if (result) {
-        ArrayIterator<Traits, MaybeConstUserType> iterator(input);
-        Impl::SerializeElements(&iterator, buf, result, validate_params,
-                                context);
-      }
-      *output = result;
-    } else {
-      *output = nullptr;
-    }
+    if (CallIsNullIfExists<Traits>(input))
+      return;
+
+    const size_t size = Traits::GetSize(input);
+    MOJO_INTERNAL_DLOG_SERIALIZATION_WARNING(
+        validate_params->expected_num_elements != 0 &&
+            size != validate_params->expected_num_elements,
+        internal::VALIDATION_ERROR_UNEXPECTED_ARRAY_HEADER,
+        internal::MakeMessageWithExpectedArraySize(
+            "fixed-size array has wrong number of elements", size,
+            validate_params->expected_num_elements));
+    writer->Allocate(size, buf);
+    ArrayIterator<Traits, MaybeConstUserType> iterator(input);
+    Impl::SerializeElements(&iterator, buf, writer, validate_params, context);
   }
 
   static bool Deserialize(Data* input,

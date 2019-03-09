@@ -11,8 +11,8 @@
 #include "base/single_thread_task_runner.h"
 #include "media/base/bind_to_current_loop.h"
 #include "media/blink/webinbandtexttrack_impl.h"
-#include "third_party/WebKit/public/platform/WebInbandTextTrackClient.h"
-#include "third_party/WebKit/public/platform/WebMediaPlayerClient.h"
+#include "third_party/blink/public/platform/web_inband_text_track_client.h"
+#include "third_party/blink/public/platform/web_media_player_client.h"
 
 namespace media {
 
@@ -23,50 +23,44 @@ TextTrackImpl::TextTrackImpl(
     : task_runner_(task_runner),
       client_(client),
       text_track_(std::move(text_track)) {
-  client_->addTextTrack(text_track_.get());
+  client_->AddTextTrack(text_track_.get());
 }
 
 TextTrackImpl::~TextTrackImpl() {
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&TextTrackImpl::OnRemoveTrack,
-                 client_,
-                 base::Passed(&text_track_)));
+  task_runner_->PostTask(FROM_HERE,
+                         base::BindOnce(&TextTrackImpl::OnRemoveTrack, client_,
+                                        std::move(text_track_)));
 }
 
-void TextTrackImpl::addWebVTTCue(const base::TimeDelta& start,
-                                 const base::TimeDelta& end,
+void TextTrackImpl::addWebVTTCue(base::TimeDelta start,
+                                 base::TimeDelta end,
                                  const std::string& id,
                                  const std::string& content,
                                  const std::string& settings) {
   task_runner_->PostTask(
-    FROM_HERE,
-    base::Bind(&TextTrackImpl::OnAddCue,
-                text_track_.get(),
-                start, end,
-                id, content, settings));
+      FROM_HERE, base::BindOnce(&TextTrackImpl::OnAddCue, text_track_.get(),
+                                start, end, id, content, settings));
 }
 
 void TextTrackImpl::OnAddCue(WebInbandTextTrackImpl* text_track,
-                             const base::TimeDelta& start,
-                             const base::TimeDelta& end,
+                             base::TimeDelta start,
+                             base::TimeDelta end,
                              const std::string& id,
                              const std::string& content,
                              const std::string& settings) {
-  if (blink::WebInbandTextTrackClient* client = text_track->client()) {
-    client->addWebVTTCue(start.InSecondsF(),
-                         end.InSecondsF(),
-                         blink::WebString::fromUTF8(id),
-                         blink::WebString::fromUTF8(content),
-                         blink::WebString::fromUTF8(settings));
+  if (blink::WebInbandTextTrackClient* client = text_track->Client()) {
+    client->AddWebVTTCue(start.InSecondsF(), end.InSecondsF(),
+                         blink::WebString::FromUTF8(id),
+                         blink::WebString::FromUTF8(content),
+                         blink::WebString::FromUTF8(settings));
   }
 }
 
 void TextTrackImpl::OnRemoveTrack(
     blink::WebMediaPlayerClient* client,
     std::unique_ptr<WebInbandTextTrackImpl> text_track) {
-  if (text_track->client())
-    client->removeTextTrack(text_track.get());
+  if (text_track->Client())
+    client->RemoveTextTrack(text_track.get());
 }
 
 }  // namespace media

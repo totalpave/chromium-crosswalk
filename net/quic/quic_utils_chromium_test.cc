@@ -6,23 +6,35 @@
 
 #include <map>
 
+#include "net/third_party/quic/core/crypto/crypto_protocol.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-using std::map;
 
 namespace net {
 namespace test {
 namespace {
 
+TEST(QuicUtilsChromiumTest, ParseQuicConnectionOptions) {
+  quic::QuicTagVector empty_options = ParseQuicConnectionOptions("");
+  EXPECT_TRUE(empty_options.empty());
+
+  quic::QuicTagVector parsed_options =
+      ParseQuicConnectionOptions("TIMER,TBBR,REJ");
+  quic::QuicTagVector expected_options;
+  expected_options.push_back(quic::kTIME);
+  expected_options.push_back(quic::kTBBR);
+  expected_options.push_back(quic::kREJ);
+  EXPECT_EQ(expected_options, parsed_options);
+}
+
 TEST(QuicUtilsChromiumTest, FindOrNullTest) {
-  map<int, int> m;
+  std::map<int, int> m;
   m[0] = 2;
 
   // Check FindOrNull
   int* p1 = FindOrNull(m, 0);
   CHECK_EQ(*p1, 2);
   ++(*p1);
-  const map<int, int>& const_m = m;
+  const std::map<int, int>& const_m = m;
   const int* p2 = FindOrNull(const_m, 0);
   CHECK_EQ(*p2, 3);
   CHECK(FindOrNull(m, 1) == nullptr);
@@ -41,7 +53,7 @@ TEST(QuicUtilsChromiumTest, FindOrDieTest) {
   EXPECT_EQ(20, FindOrDie(m, 10));
 
   // Make sure we can lookup values in a const map.
-  const map<int, int>& const_m = m;
+  const std::map<int, int>& const_m = m;
   EXPECT_EQ(20, FindOrDie(const_m, 10));
 }
 

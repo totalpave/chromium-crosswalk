@@ -6,14 +6,13 @@
 
 #include "content/renderer/dom_storage/local_storage_area.h"
 #include "content/renderer/dom_storage/local_storage_cached_areas.h"
-#include "third_party/WebKit/public/platform/URLConversion.h"
-#include "third_party/WebKit/public/platform/WebURL.h"
+#include "third_party/blink/public/platform/url_conversion.h"
+#include "third_party/blink/public/platform/web_url.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 using blink::WebStorageArea;
 using blink::WebStorageNamespace;
-using blink::WebString;
 
 namespace content {
 
@@ -25,13 +24,17 @@ LocalStorageNamespace::LocalStorageNamespace(
 LocalStorageNamespace::~LocalStorageNamespace() {
 }
 
-WebStorageArea* LocalStorageNamespace::createStorageArea(
-    const WebString& origin) {
-  return new LocalStorageArea(local_storage_cached_areas_->GetCachedArea(
-      url::Origin(blink::WebStringToGURL(origin))));
+blink::WebString LocalStorageNamespace::GetNamespaceId() const {
+  return blink::WebString();
 }
 
-bool LocalStorageNamespace::isSameNamespace(
+WebStorageArea* LocalStorageNamespace::CreateStorageArea(
+    const blink::WebSecurityOrigin& origin) {
+  return new LocalStorageArea(
+      local_storage_cached_areas_->GetCachedArea(origin));
+}
+
+bool LocalStorageNamespace::IsSameNamespace(
     const WebStorageNamespace& other) const {
   NOTREACHED() << "This method should only be called for session storage.";
   return false;

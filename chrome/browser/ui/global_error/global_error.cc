@@ -7,14 +7,15 @@
 #include "base/logging.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/global_error/global_error_bubble_view_base.h"
-#include "grit/theme_resources.h"
+#include "chrome/grit/theme_resources.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_types.h"
 #include "ui/gfx/image/image.h"
 
-#if !defined(OS_MACOSX) && !defined(OS_ANDROID)
+#if !defined(OS_ANDROID)
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/paint_vector_icon.h"
-#include "ui/gfx/vector_icons_public.h"
 #endif
 
 // GlobalError ---------------------------------------------------------------
@@ -26,12 +27,12 @@ GlobalError::~GlobalError() {}
 GlobalError::Severity GlobalError::GetSeverity() { return SEVERITY_MEDIUM; }
 
 gfx::Image GlobalError::MenuItemIcon() {
-#if defined(OS_MACOSX) || defined(OS_ANDROID)
-  return ResourceBundle::GetSharedInstance().GetNativeImageNamed(
+#if defined(OS_ANDROID)
+  return ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(
       IDR_INPUT_ALERT_MENU);
 #else
-  return gfx::Image(gfx::CreateVectorIcon(gfx::VectorIconId::WARNING, 18,
-                                          gfx::kGoogleYellow700));
+  return gfx::Image(
+      gfx::CreateVectorIcon(kBrowserToolsErrorIcon, gfx::kGoogleYellow700));
 #endif
 }
 
@@ -65,7 +66,7 @@ bool GlobalErrorWithStandardBubble::ShouldCloseOnDeactivate() const {
 gfx::Image GlobalErrorWithStandardBubble::GetBubbleViewIcon() {
   // If you change this make sure to also change the menu icon and the app menu
   // icon color.
-  return ResourceBundle::GetSharedInstance().GetNativeImageNamed(
+  return ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(
       IDR_INPUT_ALERT);
 }
 
@@ -73,8 +74,16 @@ bool GlobalErrorWithStandardBubble::ShouldShowCloseButton() const {
   return false;
 }
 
+bool GlobalErrorWithStandardBubble::ShouldUseExtraView() const {
+  return false;
+}
+
 bool GlobalErrorWithStandardBubble::ShouldAddElevationIconToAcceptButton() {
   return false;
+}
+
+int GlobalErrorWithStandardBubble::GetDefaultDialogButton() const {
+  return ui::DIALOG_BUTTON_OK;
 }
 
 void GlobalErrorWithStandardBubble::BubbleViewDidClose(Browser* browser) {

@@ -33,19 +33,16 @@ class IOSChromeMetricsServicesManagerClient
   class IOSChromeEnabledStateProvider;
 
   // metrics_services_manager::MetricsServicesManagerClient:
-  std::unique_ptr<rappor::RapporService> CreateRapporService() override;
+  std::unique_ptr<rappor::RapporServiceImpl> CreateRapporServiceImpl() override;
   std::unique_ptr<variations::VariationsService> CreateVariationsService()
       override;
   std::unique_ptr<metrics::MetricsServiceClient> CreateMetricsServiceClient()
       override;
-  net::URLRequestContextGetter* GetURLRequestContext() override;
-  bool IsSafeBrowsingEnabled(const base::Closure& on_update_callback) override;
+  metrics::MetricsStateManager* GetMetricsStateManager() override;
+  scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
   bool IsMetricsReportingEnabled() override;
-  bool OnlyDoMetricsRecording() override;
-
-  // Gets the MetricsStateManager, creating it if it has not already been
-  // created.
-  metrics::MetricsStateManager* GetMetricsStateManager();
+  bool IsMetricsConsentGiven() override;
+  bool IsIncognitoSessionActive() override;
 
   // MetricsStateManager which is passed as a parameter to service constructors.
   std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;

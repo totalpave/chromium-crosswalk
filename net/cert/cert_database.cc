@@ -25,20 +25,17 @@ void CertDatabase::RemoveObserver(Observer* observer) {
   observer_list_->RemoveObserver(observer);
 }
 
-void CertDatabase::NotifyObserversOfCertAdded(const X509Certificate* cert) {
-  observer_list_->Notify(FROM_HERE, &Observer::OnCertAdded,
-                         base::RetainedRef(cert));
+void CertDatabase::NotifyObserversCertDBChanged() {
+  observer_list_->Notify(FROM_HERE, &Observer::OnCertDBChanged);
 }
 
-void CertDatabase::NotifyObserversOfCertRemoved(const X509Certificate* cert) {
-  observer_list_->Notify(FROM_HERE, &Observer::OnCertRemoved,
-                         base::RetainedRef(cert));
-}
+CertDatabase::CertDatabase()
+    : observer_list_(new base::ObserverListThreadSafe<Observer>) {}
 
-void CertDatabase::NotifyObserversOfCACertChanged(
-    const X509Certificate* cert) {
-  observer_list_->Notify(FROM_HERE, &Observer::OnCACertChanged,
-                         base::RetainedRef(cert));
+CertDatabase::~CertDatabase() {
+#if defined(OS_MACOSX) && !defined(OS_IOS)
+  ReleaseNotifier();
+#endif
 }
 
 }  // namespace net

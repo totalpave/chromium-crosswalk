@@ -5,12 +5,11 @@
 #ifndef UI_BASE_ACCELERATORS_ACCELERATOR_HISTORY_H_
 #define UI_BASE_ACCELERATORS_ACCELERATOR_HISTORY_H_
 
+#include <set>
+
 #include "base/macros.h"
-#include "base/memory/singleton.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/ui_base_export.h"
-#include "ui/events/event.h"
-#include "ui/events/event_handler.h"
 
 namespace ui {
 
@@ -32,17 +31,25 @@ class UI_BASE_EXPORT AcceleratorHistory {
     return previous_accelerator_;
   }
 
+  const std::set<KeyboardCode>& currently_pressed_keys() const {
+    return currently_pressed_keys_;
+  }
+
   // Stores the given |accelerator| only if it's different than the currently
   // stored one.
   void StoreCurrentAccelerator(const Accelerator& accelerator);
+
+  void InterruptCurrentAccelerator();
 
  private:
   Accelerator current_accelerator_;
   Accelerator previous_accelerator_;
 
+  std::set<KeyboardCode> currently_pressed_keys_;
+
   DISALLOW_COPY_AND_ASSIGN(AcceleratorHistory);
 };
 
-}; // namespace ui
+}  // namespace ui
 
 #endif  // UI_BASE_ACCELERATORS_ACCELERATOR_HISTORY_H_

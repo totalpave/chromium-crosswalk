@@ -6,7 +6,6 @@
 
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/resource_context.h"
-#include "content/public/browser/resource_request_info.h"
 #include "net/url_request/url_request.h"
 #include "url/gurl.h"
 
@@ -18,17 +17,12 @@ namespace {
 InstantIOContext* GetDataForResourceContext(
     content::ResourceContext* context) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+
+  if (!context)
+    return nullptr;
+
   return base::UserDataAdapter<InstantIOContext>::Get(
       context, InstantIOContext::kInstantIOContextKeyName);
-}
-
-InstantIOContext* GetDataForRequest(const net::URLRequest* request) {
-  const content::ResourceRequestInfo* info =
-      content::ResourceRequestInfo::ForRequest(request);
-  if (!info)
-    return NULL;
-
-  return GetDataForResourceContext(info->GetContext());
 }
 
 }  // namespace
@@ -50,7 +44,8 @@ void InstantIOContext::SetUserDataOnIO(
     scoped_refptr<InstantIOContext> instant_io_context) {
   resource_context->SetUserData(
       InstantIOContext::kInstantIOContextKeyName,
-      new base::UserDataAdapter<InstantIOContext>(instant_io_context.get()));
+      std::make_unique<base::UserDataAdapter<InstantIOContext>>(
+          instant_io_context.get()));
 }
 
 // static
@@ -76,22 +71,35 @@ void InstantIOContext::ClearInstantProcessesOnIO(
 }
 
 // static
-bool InstantIOContext::ShouldServiceRequest(const net::URLRequest* request) {
-  const content::ResourceRequestInfo* info =
-      content::ResourceRequestInfo::ForRequest(request);
-  if (!info)
-    return false;
+bool InstantIOContext::ShouldServiceRequest(
+    const GURL& url,
+    content::ResourceContext* resource_context,
+    int render_process_id) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
-  InstantIOContext* instant_io_context = GetDataForRequest(request);
+  InstantIOContext* instant_io_context =
+      GetDataForResourceContext(resource_context);
   if (!instant_io_context)
     return false;
 
-  int process_id = -1;
-  int render_frame_id = -1;
-  if (info->GetAssociatedRenderFrame(&process_id, &render_frame_id) &&
-      instant_io_context->IsInstantProcess(process_id))
-    return true;
-  return false;
+  // For PlzNavigate, the process_id for the navigation request will be -1. If
+  // so, allow this request since it's not going to another renderer.
+  return render_process_id == -1 ||
+         instant_io_context->IsInstantProcess(render_process_id);
+}
+
+// static
+bool InstantIOContext::IsInstantProcess(
+    content::ResourceContext* resource_context,
+    int render_process_id) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+
+  InstantIOContext* instant_io_context =
+      GetDataForResourceContext(resource_context);
+  if (!instant_io_context)
+    return false;
+
+  return instant_io_context->IsInstantProcess(render_process_id);
 }
 
 bool InstantIOContext::IsInstantProcess(int process_id) const {

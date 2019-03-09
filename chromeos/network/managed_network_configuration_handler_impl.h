@@ -11,9 +11,9 @@
 #include <string>
 
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/network/managed_network_configuration_handler.h"
 #include "chromeos/network/network_handler_callbacks.h"
 #include "chromeos/network/network_profile_observer.h"
@@ -21,6 +21,7 @@
 
 namespace base {
 class DictionaryValue;
+class Value;
 }
 
 namespace chromeos {
@@ -30,7 +31,7 @@ struct NetworkProfile;
 class NetworkProfileHandler;
 class NetworkStateHandler;
 
-class CHROMEOS_EXPORT ManagedNetworkConfigurationHandlerImpl
+class COMPONENT_EXPORT(CHROMEOS_NETWORK) ManagedNetworkConfigurationHandlerImpl
     : public ManagedNetworkConfigurationHandler,
       public NetworkProfileObserver,
       public PolicyApplicator::ConfigurationHandler {
@@ -59,6 +60,12 @@ class CHROMEOS_EXPORT ManagedNetworkConfigurationHandlerImpl
       const base::Closure& callback,
       const network_handler::ErrorCallback& error_callback) override;
 
+  void SetManagerProperty(
+      const std::string& property_name,
+      const base::Value& value,
+      const base::Closure& callback,
+      const network_handler::ErrorCallback& error_callback) override;
+
   void CreateConfiguration(
       const std::string& userhash,
       const base::DictionaryValue& properties,
@@ -66,6 +73,11 @@ class CHROMEOS_EXPORT ManagedNetworkConfigurationHandlerImpl
       const network_handler::ErrorCallback& error_callback) const override;
 
   void RemoveConfiguration(
+      const std::string& service_path,
+      const base::Closure& callback,
+      const network_handler::ErrorCallback& error_callback) const override;
+
+  void RemoveConfigurationFromCurrentProfile(
       const std::string& service_path,
       const base::Closure& callback,
       const network_handler::ErrorCallback& error_callback) const override;
@@ -90,7 +102,13 @@ class CHROMEOS_EXPORT ManagedNetworkConfigurationHandlerImpl
 
   const base::DictionaryValue* FindPolicyByGuidAndProfile(
       const std::string& guid,
-      const std::string& profile_path) const override;
+      const std::string& profile_path,
+      onc::ONCSource* onc_source) const override;
+
+  bool AllowOnlyPolicyNetworksToConnect() const override;
+  bool AllowOnlyPolicyNetworksToConnectIfAvailable() const override;
+  bool AllowOnlyPolicyNetworksToAutoconnect() const override;
+  std::vector<std::string> GetBlacklistedHexSSIDs() const override;
 
   // NetworkProfileObserver overrides
   void OnProfileAdded(const NetworkProfile& profile) override;
@@ -110,7 +128,8 @@ class CHROMEOS_EXPORT ManagedNetworkConfigurationHandlerImpl
   friend class AutoConnectHandlerTest;
   friend class ClientCertResolverTest;
   friend class ManagedNetworkConfigurationHandlerTest;
-  friend class NetworkConnectionHandlerTest;
+  friend class ManagedNetworkConfigurationHandlerMockTest;
+  friend class NetworkConnectionHandlerImplTest;
   friend class NetworkHandler;
   friend class ProhibitedTechnologiesHandlerTest;
 
@@ -150,7 +169,11 @@ class CHROMEOS_EXPORT ManagedNetworkConfigurationHandlerImpl
                       const std::string& service_path,
                       std::unique_ptr<base::DictionaryValue> shill_properties);
 
+  // Returns the Policies for the given |userhash|, or the device policies if
+  // |userhash| is empty.
   const Policies* GetPoliciesForUser(const std::string& userhash) const;
+  // Returns the Policies for the given network |profile|. These could be either
+  // user or device policies.
   const Policies* GetPoliciesForProfile(const NetworkProfile& profile) const;
 
   void OnPolicyAppliedToNetwork(const std::string& service_path,
@@ -218,7 +241,10 @@ class CHROMEOS_EXPORT ManagedNetworkConfigurationHandlerImpl
   // associated set of GUIDs is empty.
   UserToModifiedPoliciesMap queued_modified_policies_;
 
-  base::ObserverList<NetworkPolicyObserver, true> observers_;
+  base::ObserverList<NetworkPolicyObserver, true>::Unchecked observers_;
+
+  bool user_policy_applied_;
+  bool device_policy_applied_;
 
   // For Shill client callbacks
   base::WeakPtrFactory<ManagedNetworkConfigurationHandlerImpl>

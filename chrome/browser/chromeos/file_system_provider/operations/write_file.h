@@ -19,10 +19,6 @@
 #include "net/base/io_buffer.h"
 #include "storage/browser/fileapi/async_file_util.h"
 
-namespace base {
-class FilePath;
-}  // namespace base
-
 namespace extensions {
 class EventRouter;
 }  // namespace extensions
@@ -42,7 +38,7 @@ class WriteFile : public Operation {
             scoped_refptr<net::IOBuffer> buffer,
             int64_t offset,
             int length,
-            const storage::AsyncFileUtil::StatusCallback& callback);
+            storage::AsyncFileUtil::StatusCallback callback);
   ~WriteFile() override;
 
   // Operation overrides.
@@ -59,7 +55,7 @@ class WriteFile : public Operation {
   scoped_refptr<net::IOBuffer> buffer_;
   int64_t offset_;
   int length_;
-  const storage::AsyncFileUtil::StatusCallback callback_;
+  storage::AsyncFileUtil::StatusCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(WriteFile);
 };

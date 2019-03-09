@@ -7,7 +7,7 @@
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/single_thread_task_runner.h"
@@ -16,11 +16,10 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/session_manager_client.h"
-#include "chromeos/login/user_names.h"
-#include "chromeos/login_event_recorder.h"
-#include "chromeos/settings/cros_settings_names.h"
+#include "chromeos/login/auth/login_event_recorder.h"
+#include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/user_manager/user_names.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "net/cookies/cookie_monster.h"
 #include "net/cookies/cookie_store.h"
@@ -53,7 +52,7 @@ LoginPerformer::~LoginPerformer() {
 // LoginPerformer, AuthStatusConsumer implementation:
 
 void LoginPerformer::OnAuthFailure(const AuthFailure& failure) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   base::RecordAction(UserMetricsAction("Login_Failure"));
 
   UMA_HISTOGRAM_ENUMERATION("Login.FailureReason",
@@ -77,8 +76,13 @@ void LoginPerformer::OnAuthFailure(const AuthFailure& failure) {
 }
 
 void LoginPerformer::OnAuthSuccess(const UserContext& user_context) {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   base::RecordAction(UserMetricsAction("Login_Success"));
+
+  // Do not distinguish between offline and online success.
+  UMA_HISTOGRAM_ENUMERATION("Login.SuccessReason", OFFLINE_AND_ONLINE,
+                            NUM_SUCCESS_REASONS);
+
   VLOG(1) << "LoginSuccess hash: " << user_context.GetUserIDHash();
   DCHECK(delegate_);
   // After delegate_->OnAuthSuccess(...) is called, delegate_ releases
@@ -88,7 +92,7 @@ void LoginPerformer::OnAuthSuccess(const UserContext& user_context) {
 }
 
 void LoginPerformer::OnOffTheRecordAuthSuccess() {
-  DCHECK(task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
   base::RecordAction(UserMetricsAction("Login_GuestLoginSuccess"));
 
   if (delegate_)
@@ -105,6 +109,16 @@ void LoginPerformer::OnPasswordChangeDetected() {
   } else {
     NOTREACHED();
   }
+}
+
+void LoginPerformer::OnOldEncryptionDetected(const UserContext& user_context,
+                                             bool has_incomplete_migration) {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+
+  if (delegate_)
+    delegate_->OnOldEncryptionDetected(user_context, has_incomplete_migration);
+  else
+    NOTREACHED();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -163,11 +177,14 @@ void LoginPerformer::DoPerformLogin(const UserContext& user_context,
 
 void LoginPerformer::LoginAsSupervisedUser(const UserContext& user_context) {
   DCHECK_EQ(
-      chromeos::login::kSupervisedUserDomain,
+      user_manager::kSupervisedUserDomain,
       gaia::ExtractDomainName(user_context.GetAccountId().GetUserEmail()));
 
   user_context_ = user_context;
-  user_context_.SetUserType(user_manager::USER_TYPE_SUPERVISED);
+  if (user_context_.GetUserType() != user_manager::USER_TYPE_SUPERVISED) {
+    LOG(FATAL) << "Incorrect supervised user type "
+               << user_context_.GetUserType();
+  }
 
   if (RunTrustedCheck(base::Bind(&LoginPerformer::TrustedLoginAsSupervisedUser,
                                  weak_factory_.GetWeakPtr(),
@@ -194,17 +211,15 @@ void LoginPerformer::TrustedLoginAsSupervisedUser(
     // http://crbug.com/351268
     task_runner_->PostTask(
         FROM_HERE,
-        base::Bind(&ExtendedAuthenticator::AuthenticateToMount,
-                   extended_authenticator_.get(),
-                   user_context_copy,
-                   ExtendedAuthenticator::ResultCallback()));
+        base::BindOnce(&ExtendedAuthenticator::AuthenticateToMount,
+                       extended_authenticator_.get(), user_context_copy,
+                       ExtendedAuthenticator::ResultCallback()));
 
   } else {
     EnsureAuthenticator();
-    task_runner_->PostTask(FROM_HERE,
-                           base::Bind(&Authenticator::LoginAsSupervisedUser,
-                                      authenticator_.get(),
-                                      user_context_copy));
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&Authenticator::LoginAsSupervisedUser,
+                                  authenticator_.get(), user_context_copy));
   }
 }
 
@@ -218,16 +233,15 @@ void LoginPerformer::LoginAsPublicSession(const UserContext& user_context) {
 
   EnsureAuthenticator();
   task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&Authenticator::LoginAsPublicSession,
-                                    authenticator_.get(),
-                                    user_context));
+                         base::BindOnce(&Authenticator::LoginAsPublicSession,
+                                        authenticator_.get(), user_context));
 }
 
 void LoginPerformer::LoginOffTheRecord() {
   EnsureAuthenticator();
   task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&Authenticator::LoginOffTheRecord, authenticator_.get()));
+      base::BindOnce(&Authenticator::LoginOffTheRecord, authenticator_.get()));
 }
 
 void LoginPerformer::LoginAsKioskAccount(const AccountId& app_account_id,
@@ -235,21 +249,28 @@ void LoginPerformer::LoginAsKioskAccount(const AccountId& app_account_id,
   EnsureAuthenticator();
   task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&Authenticator::LoginAsKioskAccount, authenticator_.get(),
-                 app_account_id, use_guest_mount));
+      base::BindOnce(&Authenticator::LoginAsKioskAccount, authenticator_.get(),
+                     app_account_id, use_guest_mount));
+}
+
+void LoginPerformer::LoginAsArcKioskAccount(
+    const AccountId& arc_app_account_id) {
+  EnsureAuthenticator();
+  task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&Authenticator::LoginAsArcKioskAccount,
+                                authenticator_.get(), arc_app_account_id));
 }
 
 void LoginPerformer::RecoverEncryptedData(const std::string& old_password) {
   task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&Authenticator::RecoverEncryptedData,
-                                    authenticator_.get(),
-                                    old_password));
+                         base::BindOnce(&Authenticator::RecoverEncryptedData,
+                                        authenticator_.get(), old_password));
 }
 
 void LoginPerformer::ResyncEncryptedData() {
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::Bind(&Authenticator::ResyncEncryptedData, authenticator_.get()));
+  task_runner_->PostTask(FROM_HERE,
+                         base::BindOnce(&Authenticator::ResyncEncryptedData,
+                                        authenticator_.get()));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -266,11 +287,10 @@ void LoginPerformer::StartLoginCompletion() {
   chromeos::LoginEventRecorder::Get()->AddLoginTimeMarker("AuthStarted", false);
   content::BrowserContext* browser_context = GetSigninContext();
   EnsureAuthenticator();
-  task_runner_->PostTask(FROM_HERE,
-                         base::Bind(&chromeos::Authenticator::CompleteLogin,
-                                    authenticator_.get(),
-                                    browser_context,
-                                    user_context_));
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&chromeos::Authenticator::CompleteLogin,
+                     authenticator_.get(), browser_context, user_context_));
   user_context_.ClearSecrets();
 }
 
@@ -280,11 +300,11 @@ void LoginPerformer::StartAuthentication() {
   if (delegate_) {
     EnsureAuthenticator();
     content::BrowserContext* browser_context = GetSigninContext();
-    task_runner_->PostTask(FROM_HERE,
-                           base::Bind(&Authenticator::AuthenticateToLogin,
-                                      authenticator_.get(),
-                                      base::Unretained(browser_context),
-                                      user_context_));
+    task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&Authenticator::AuthenticateToLogin,
+                       authenticator_.get(), base::Unretained(browser_context),
+                       user_context_));
   } else {
     NOTREACHED();
   }

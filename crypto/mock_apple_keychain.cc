@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/logging.h"
-#include "base/macros.h"
-#include "base/metrics/histogram.h"
-#include "base/time/time.h"
 #include "crypto/mock_apple_keychain.h"
+
+#include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/stl_util.h"
+#include "base/time/time.h"
 
 namespace {
 
@@ -24,14 +25,13 @@ void IncrementKeychainAccessHistogram() {
 namespace crypto {
 
 OSStatus MockAppleKeychain::FindGenericPassword(
-    CFTypeRef keychainOrArray,
     UInt32 serviceNameLength,
     const char* serviceName,
     UInt32 accountNameLength,
     const char* accountName,
     UInt32* passwordLength,
     void** passwordData,
-    SecKeychainItemRef* itemRef) const {
+    AppleSecKeychainItemRef* itemRef) const {
   IncrementKeychainAccessHistogram();
 
   // When simulating |noErr|, return canned |passwordData| and
@@ -42,38 +42,33 @@ OSStatus MockAppleKeychain::FindGenericPassword(
     // The function to free this data is mocked so the cast is fine.
     *passwordData = const_cast<char*>(kPassword);
     DCHECK(passwordLength);
-    *passwordLength = arraysize(kPassword);
+    *passwordLength = base::size(kPassword);
     password_data_count_++;
   }
 
   return find_generic_result_;
 }
 
-OSStatus MockAppleKeychain::ItemFreeContent(SecKeychainAttributeList* attrList,
-                                            void* data) const {
+OSStatus MockAppleKeychain::ItemFreeContent(void* data) const {
   // No-op.
   password_data_count_--;
   return noErr;
 }
 
 OSStatus MockAppleKeychain::AddGenericPassword(
-    SecKeychainRef keychain,
     UInt32 serviceNameLength,
     const char* serviceName,
     UInt32 accountNameLength,
     const char* accountName,
     UInt32 passwordLength,
     const void* passwordData,
-    SecKeychainItemRef* itemRef) const {
+    AppleSecKeychainItemRef* itemRef) const {
   IncrementKeychainAccessHistogram();
 
   called_add_generic_ = true;
 
   DCHECK_GT(passwordLength, 0U);
   DCHECK(passwordData);
-  add_generic_password_ =
-      std::string(const_cast<char*>(static_cast<const char*>(passwordData)),
-                  passwordLength);
   return noErr;
 }
 

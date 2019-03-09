@@ -8,11 +8,15 @@
 #include "base/environment.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
-#include "base/win/windows_version.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/ppapi/ppapi_test.h"
 #include "components/nacl/common/nacl_switches.h"
+
+#if defined(OS_WIN)
+#include "base/win/windows_version.h"
+#endif
 
 static const base::FilePath::CharType kMockNaClGdb[] =
 #if defined(OS_WIN)
@@ -30,7 +34,7 @@ class NaClGdbTest : public PPAPINaClNewlibTest {
     PPAPINaClNewlibTest::SetUpCommandLine(command_line);
 
     base::FilePath mock_nacl_gdb;
-    EXPECT_TRUE(PathService::Get(base::DIR_EXE, &mock_nacl_gdb));
+    EXPECT_TRUE(base::PathService::Get(base::DIR_EXE, &mock_nacl_gdb));
     mock_nacl_gdb = mock_nacl_gdb.Append(kMockNaClGdb);
     command_line->AppendSwitchPath(switches::kNaClGdb, mock_nacl_gdb);
     EXPECT_TRUE(base::CreateTemporaryFile(&script_));
@@ -53,6 +57,7 @@ class NaClGdbTest : public PPAPINaClNewlibTest {
         return;
     }
 #endif
+    base::ScopedAllowBlockingForTesting allow_blocking;
     EXPECT_TRUE(base::CreateTemporaryFile(&mock_nacl_gdb_file));
     env->SetVar("MOCK_NACL_GDB", mock_nacl_gdb_file.AsUTF8Unsafe());
     RunTestViaHTTP(test_name);

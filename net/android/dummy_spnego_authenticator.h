@@ -25,8 +25,6 @@ namespace net {
 #define GSS_S_CONTINUE_NEEDED 1
 #define GSS_S_FAILURE 2
 
-class gss_buffer_desc;
-
 typedef struct gss_OID_desc_struct {
   uint32_t length;
   void* elements;
@@ -121,8 +119,6 @@ class DummySpnegoAuthenticator {
                              const std::string& expected_input_token,
                              const std::string& output_token);
 
-  static bool RegisterJni(JNIEnv* env);
-
   static void EnsureTestAccountExists();
   static void RemoveTestAccounts();
 
@@ -143,4 +139,4 @@ class DummySpnegoAuthenticator {
 }  // namespace android
 }  // namespace net
 
-#endif  // NET_ANDROID_DUMMY_SPNEGO_AUTHENTICATOR_DRIVER_H
+#endif  // NET_ANDROID_DUMMY_SPNEGO_AUTHENTICATOR_H_

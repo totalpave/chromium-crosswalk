@@ -23,10 +23,28 @@
 namespace dbus {
 
 ObjectManager::Object::Object()
-  : object_proxy(NULL) {
+  : object_proxy(nullptr) {
 }
 
-ObjectManager::Object::~Object() {
+ObjectManager::Object::~Object() = default;
+
+scoped_refptr<ObjectManager> ObjectManager::Create(
+    Bus* bus,
+    const std::string& service_name,
+    const ObjectPath& object_path) {
+  auto object_manager =
+      base::WrapRefCounted(new ObjectManager(bus, service_name, object_path));
+
+  // Set up a match rule and a filter function to handle PropertiesChanged
+  // signals from the service. This is important to avoid any race conditions
+  // that might cause us to miss PropertiesChanged signals once all objects are
+  // initialized via GetManagedObjects.
+  base::PostTaskAndReplyWithResult(
+      bus->GetDBusTaskRunner(), FROM_HERE,
+      base::BindOnce(&ObjectManager::SetupMatchRuleAndFilter, object_manager),
+      base::BindOnce(&ObjectManager::OnSetupMatchRuleAndFilterComplete,
+                     object_manager));
+  return object_manager;
 }
 
 ObjectManager::ObjectManager(Bus* bus,
@@ -38,6 +56,7 @@ ObjectManager::ObjectManager(Bus* bus,
       setup_success_(false),
       cleanup_called_(false),
       weak_ptr_factory_(this) {
+  LOG_IF(FATAL, !object_path_.IsValid()) << object_path_.value();
   DVLOG(1) << "Creating ObjectManager for " << service_name_
            << " " << object_path_.value();
   DCHECK(bus_);
@@ -46,16 +65,6 @@ ObjectManager::ObjectManager(Bus* bus,
   object_proxy_->SetNameOwnerChangedCallback(
       base::Bind(&ObjectManager::NameOwnerChanged,
                  weak_ptr_factory_.GetWeakPtr()));
-
-  // Set up a match rule and a filter function to handle PropertiesChanged
-  // signals from the service. This is important to avoid any race conditions
-  // that might cause us to miss PropertiesChanged signals once all objects are
-  // initialized via GetManagedObjects.
-  base::PostTaskAndReplyWithResult(
-      bus_->GetDBusTaskRunner(),
-      FROM_HERE,
-      base::Bind(&ObjectManager::SetupMatchRuleAndFilter, this),
-      base::Bind(&ObjectManager::OnSetupMatchRuleAndFilterComplete, this));
 }
 
 ObjectManager::~ObjectManager() {
@@ -115,7 +124,7 @@ std::vector<ObjectPath> ObjectManager::GetObjectsWithInterface(
 ObjectProxy* ObjectManager::GetObjectProxy(const ObjectPath& object_path) {
   ObjectMap::iterator iter = object_map_.find(object_path);
   if (iter == object_map_.end())
-    return NULL;
+    return nullptr;
 
   Object* object = iter->second;
   return object->object_proxy;
@@ -125,13 +134,13 @@ PropertySet* ObjectManager::GetProperties(const ObjectPath& object_path,
                                           const std::string& interface_name) {
   ObjectMap::iterator iter = object_map_.find(object_path);
   if (iter == object_map_.end())
-    return NULL;
+    return nullptr;
 
   Object* object = iter->second;
   Object::PropertiesMap::iterator piter =
       object->properties_map.find(interface_name);
   if (piter == object->properties_map.end())
-    return NULL;
+    return nullptr;
 
   return piter->second;
 }
@@ -165,35 +174,6 @@ void ObjectManager::CleanUp() {
     LOG(ERROR) << "Failed to remove match rule: " << match_rule_;
 
   match_rule_.clear();
-}
-
-void ObjectManager::InitializeObjects() {
-  DCHECK(bus_);
-  DCHECK(object_proxy_);
-  DCHECK(setup_success_);
-
-  // |object_proxy_| is no longer valid if the Bus was shut down before this
-  // call. Don't initiate any other action from the origin thread.
-  if (cleanup_called_)
-    return;
-
-  object_proxy_->ConnectToSignal(
-      kObjectManagerInterface,
-      kObjectManagerInterfacesAdded,
-      base::Bind(&ObjectManager::InterfacesAddedReceived,
-                 weak_ptr_factory_.GetWeakPtr()),
-      base::Bind(&ObjectManager::InterfacesAddedConnected,
-                 weak_ptr_factory_.GetWeakPtr()));
-
-  object_proxy_->ConnectToSignal(
-      kObjectManagerInterface,
-      kObjectManagerInterfacesRemoved,
-      base::Bind(&ObjectManager::InterfacesRemovedReceived,
-                 weak_ptr_factory_.GetWeakPtr()),
-      base::Bind(&ObjectManager::InterfacesRemovedConnected,
-                 weak_ptr_factory_.GetWeakPtr()));
-
-  GetManagedObjects();
 }
 
 bool ObjectManager::SetupMatchRuleAndFilter() {
@@ -235,10 +215,39 @@ bool ObjectManager::SetupMatchRuleAndFilter() {
 }
 
 void ObjectManager::OnSetupMatchRuleAndFilterComplete(bool success) {
-  LOG_IF(WARNING, !success) << service_name_ << " " << object_path_.value()
-                            << ": Failed to set up match rule.";
-  if (success)
-    InitializeObjects();
+  if (!success) {
+    LOG(WARNING) << service_name_ << " " << object_path_.value()
+                 << ": Failed to set up match rule.";
+    return;
+  }
+
+  DCHECK(bus_);
+  DCHECK(object_proxy_);
+  DCHECK(setup_success_);
+
+  // |object_proxy_| is no longer valid if the Bus was shut down before this
+  // call. Don't initiate any other action from the origin thread.
+  if (cleanup_called_)
+    return;
+
+  object_proxy_->ConnectToSignal(
+      kObjectManagerInterface,
+      kObjectManagerInterfacesAdded,
+      base::Bind(&ObjectManager::InterfacesAddedReceived,
+                 weak_ptr_factory_.GetWeakPtr()),
+      base::Bind(&ObjectManager::InterfacesAddedConnected,
+                 weak_ptr_factory_.GetWeakPtr()));
+
+  object_proxy_->ConnectToSignal(
+      kObjectManagerInterface,
+      kObjectManagerInterfacesRemoved,
+      base::Bind(&ObjectManager::InterfacesRemovedReceived,
+                 weak_ptr_factory_.GetWeakPtr()),
+      base::Bind(&ObjectManager::InterfacesRemovedConnected,
+                 weak_ptr_factory_.GetWeakPtr()));
+
+  if (!service_name_owner_.empty())
+    GetManagedObjects();
 }
 
 // static
@@ -299,10 +308,8 @@ DBusHandlerResult ObjectManager::HandleMessage(DBusConnection* connection,
     // |signal| to NotifyPropertiesChanged, which will handle the clean up.
     Signal* released_signal = signal.release();
     bus_->GetOriginTaskRunner()->PostTask(
-        FROM_HERE,
-        base::Bind(&ObjectManager::NotifyPropertiesChanged,
-                   this, path,
-                   released_signal));
+        FROM_HERE, base::BindOnce(&ObjectManager::NotifyPropertiesChanged, this,
+                                  path, released_signal));
   } else {
     // If the D-Bus thread is not used, just call the callback on the
     // current thread. Transfer the ownership of |signal| to
@@ -325,8 +332,7 @@ void ObjectManager::NotifyPropertiesChanged(
 
   // Delete the message on the D-Bus thread. See comments in HandleMessage.
   bus_->GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&base::DeletePointer<Signal>, signal));
+      FROM_HERE, base::BindOnce(&base::DeletePointer<Signal>, signal));
 }
 
 void ObjectManager::NotifyPropertiesChangedHelper(
@@ -349,14 +355,14 @@ void ObjectManager::NotifyPropertiesChangedHelper(
 }
 
 void ObjectManager::OnGetManagedObjects(Response* response) {
-  if (response != NULL) {
+  if (response != nullptr) {
     MessageReader reader(response);
-    MessageReader array_reader(NULL);
+    MessageReader array_reader(nullptr);
     if (!reader.PopArray(&array_reader))
       return;
 
     while (array_reader.HasMoreData()) {
-      MessageReader dict_entry_reader(NULL);
+      MessageReader dict_entry_reader(nullptr);
       ObjectPath object_path;
       if (!array_reader.PopDictEntry(&dict_entry_reader) ||
           !dict_entry_reader.PopObjectPath(&object_path))
@@ -421,12 +427,12 @@ void ObjectManager::InterfacesRemovedConnected(
 void ObjectManager::UpdateObject(const ObjectPath& object_path,
                                  MessageReader* reader) {
   DCHECK(reader);
-  MessageReader array_reader(NULL);
+  MessageReader array_reader(nullptr);
   if (!reader->PopArray(&array_reader))
     return;
 
   while (array_reader.HasMoreData()) {
-    MessageReader dict_entry_reader(NULL);
+    MessageReader dict_entry_reader(nullptr);
     std::string interface_name;
     if (!array_reader.PopDictEntry(&dict_entry_reader) ||
         !dict_entry_reader.PopString(&interface_name))

@@ -5,13 +5,14 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/callback.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "base/win/message_window.h"
 
 namespace browser_watcher {
@@ -60,7 +61,6 @@ WindowHangMonitor::WindowHangMonitor(base::TimeDelta ping_interval,
     : callback_(callback),
       ping_interval_(ping_interval),
       hang_timeout_(timeout),
-      timer_(false /* don't retain user task */, false /* don't repeat */),
       outstanding_ping_(nullptr) {
 }
 
@@ -75,7 +75,7 @@ WindowHangMonitor::~WindowHangMonitor() {
 
 void WindowHangMonitor::Initialize(base::Process process) {
   window_process_ = std::move(process);
-  timer_.SetTaskRunner(base::MessageLoop::current()->task_runner());
+  timer_.SetTaskRunner(base::ThreadTaskRunnerHandle::Get());
 
   ScheduleFindWindow();
 }
@@ -151,8 +151,8 @@ void WindowHangMonitor::OnHangTimeout(HWND hwnd) {
     // The ping is still outstanding, the window is hung or has vanished.
     // Orphan the outstanding ping. If the callback arrives late, it will
     // delete it, or if the callback never arrives it'll leak.
-    outstanding_ping_->monitor = NULL;
-    outstanding_ping_ = NULL;
+    outstanding_ping_->monitor = nullptr;
+    outstanding_ping_ = nullptr;
 
     if (hwnd != FindChromeMessageWindow(window_process_.Pid())) {
       // The window vanished.

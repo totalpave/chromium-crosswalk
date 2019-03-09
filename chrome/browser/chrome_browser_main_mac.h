@@ -7,16 +7,17 @@
 
 #include "base/macros.h"
 #include "chrome/browser/chrome_browser_main_posix.h"
-#include "chrome/browser/resource_delegate_mac.h"
 
 class ChromeBrowserMainPartsMac : public ChromeBrowserMainPartsPosix {
  public:
-  explicit ChromeBrowserMainPartsMac(
-      const content::MainFunctionParams& parameters);
+  ChromeBrowserMainPartsMac(
+      const content::MainFunctionParams& parameters,
+      ChromeFeatureListCreator* chrome_feature_list_creator);
   ~ChromeBrowserMainPartsMac() override;
 
   // BrowserParts overrides.
-  void PreEarlyInitialization() override;
+  int PreEarlyInitialization() override;
+  void PostEarlyInitialization() override;
   void PreMainMessageLoopStart() override;
   void PostMainMessageLoopStart() override;
   void PreProfileInit() override;
@@ -27,8 +28,6 @@ class ChromeBrowserMainPartsMac : public ChromeBrowserMainPartsPosix {
   static void DidEndMainMessageLoop();
 
  private:
-  MacResourceDelegate resource_delegate_;
-
   DISALLOW_COPY_AND_ASSIGN(ChromeBrowserMainPartsMac);
 };
 

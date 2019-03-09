@@ -4,8 +4,7 @@
 
 #include <stddef.h>
 
-#include "base/macros.h"
-#include "base/memory/scoped_vector.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/query_parser/query_parser.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -85,7 +84,7 @@ TEST_F(QueryParserTest, NumWords) {
     { "foo \"bar baz\"  blah", 4 },
   };
 
-  for (size_t i = 0; i < arraysize(data); ++i) {
+  for (size_t i = 0; i < base::size(data); ++i) {
     base::string16 query_string;
     EXPECT_EQ(data[i].expected_word_count,
               query_parser_.ParseQuery(base::UTF8ToUTF16(data[i].input),
@@ -121,17 +120,15 @@ TEST_F(QueryParserTest, ParseQueryNodesAndMatch) {
     { "\"foo blah\"",  "\"foo blah\"",     true,  1, 9, 0, 0 },
     { "foo blah",      "\"foo bar blah\"", true,  1, 4, 9, 13 },
   };
-  for (size_t i = 0; i < arraysize(data); ++i) {
+  for (size_t i = 0; i < base::size(data); ++i) {
     QueryParser parser;
-    ScopedVector<QueryNode> query_nodes;
+    query_parser::QueryNodeVector query_nodes;
     parser.ParseQueryNodes(base::UTF8ToUTF16(data[i].query),
-                           MatchingAlgorithm::DEFAULT,
-                           &query_nodes.get());
+                           MatchingAlgorithm::DEFAULT, &query_nodes);
     Snippet::MatchPositions match_positions;
     ASSERT_EQ(data[i].matches,
               parser.DoesQueryMatch(base::UTF8ToUTF16(data[i].text),
-                                    query_nodes.get(),
-                                    &match_positions));
+                                    query_nodes, &match_positions));
     size_t offset = 0;
     if (data[i].m1_start != 0 || data[i].m1_end != 0) {
       ASSERT_TRUE(match_positions.size() >= 1);
@@ -160,7 +157,7 @@ TEST_F(QueryParserTest, ParseQueryWords) {
     { "\"foo bar\"",   "foo", "bar", "",  2 },
     { "\"foo bar\" a", "foo", "bar", "a", 3 },
   };
-  for (size_t i = 0; i < arraysize(data); ++i) {
+  for (size_t i = 0; i < base::size(data); ++i) {
     std::vector<base::string16> results;
     QueryParser parser;
     parser.ParseQueryWords(base::UTF8ToUTF16(data[i].text),

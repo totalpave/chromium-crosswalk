@@ -11,7 +11,6 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/dom_distiller/dom_distiller_service_factory.h"
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
-#include "chrome/browser/ui/tab_contents/core_tab_helper_delegate.h"
 #include "components/dom_distiller/content/browser/distiller_page_web_contents.h"
 #include "components/dom_distiller/core/distiller_page.h"
 #include "components/dom_distiller/core/dom_distiller_service.h"
@@ -20,6 +19,7 @@
 #include "components/dom_distiller/core/url_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 
@@ -49,9 +49,8 @@ class SelfDeletingRequestDelegate : public ViewRequestDelegate,
   void OnArticleUpdated(ArticleDistillationUpdate article_update) override;
 
   // content::WebContentsObserver implementation.
-  void DidNavigateMainFrame(
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
   void RenderProcessGone(base::TerminationStatus status) override;
   void WebContentsDestroyed() override;
 
@@ -65,9 +64,11 @@ class SelfDeletingRequestDelegate : public ViewRequestDelegate,
   std::unique_ptr<ViewerHandle> viewer_handle_;
 };
 
-void SelfDeletingRequestDelegate::DidNavigateMainFrame(
-    const content::LoadCommittedDetails& details,
-    const content::FrameNavigateParams& params) {
+void SelfDeletingRequestDelegate::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!navigation_handle->IsInMainFrame() || !navigation_handle->HasCommitted())
+    return;
+
   Observe(NULL);
   base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, this);
 }
@@ -145,39 +146,46 @@ void DistillCurrentPageAndView(content::WebContents* old_web_contents) {
   // Create new WebContents.
   content::WebContents::CreateParams create_params(
       old_web_contents->GetBrowserContext());
-  content::WebContents* new_web_contents =
+  std::unique_ptr<content::WebContents> new_web_contents =
       content::WebContents::Create(create_params);
   DCHECK(new_web_contents);
 
   // Copy all navigation state from the old WebContents to the new one.
   new_web_contents->GetController().CopyStateFrom(
-      old_web_contents->GetController());
+      &old_web_contents->GetController(), /* needs_reload */ true);
 
   // StartNavigationToDistillerViewer must come before swapping the tab contents
   // to avoid triggering a reload of the page.  This reloadmakes it very
   // difficult to distinguish between the intermediate reload and a user hitting
   // the back button.
-  StartNavigationToDistillerViewer(new_web_contents,
+  StartNavigationToDistillerViewer(new_web_contents.get(),
                                    old_web_contents->GetLastCommittedURL());
 
-  CoreTabHelper::FromWebContents(old_web_contents)->delegate()->SwapTabContents(
-      old_web_contents, new_web_contents, false, false);
+  std::unique_ptr<content::WebContents> old_web_contents_owned =
+      old_web_contents->GetDelegate()->SwapWebContents(
+          old_web_contents, std::move(new_web_contents), false, false);
 
   std::unique_ptr<SourcePageHandleWebContents> source_page_handle(
-      new SourcePageHandleWebContents(old_web_contents, true));
+      new SourcePageHandleWebContents(old_web_contents_owned.release(), true));
+
+  MaybeStartDistillation(std::move(source_page_handle));
+}
+
+void DistillCurrentPage(content::WebContents* source_web_contents) {
+  DCHECK(source_web_contents);
+
+  std::unique_ptr<SourcePageHandleWebContents> source_page_handle(
+      new SourcePageHandleWebContents(source_web_contents, false));
 
   MaybeStartDistillation(std::move(source_page_handle));
 }
 
 void DistillAndView(content::WebContents* source_web_contents,
                     content::WebContents* destination_web_contents) {
-  DCHECK(source_web_contents);
   DCHECK(destination_web_contents);
 
-  std::unique_ptr<SourcePageHandleWebContents> source_page_handle(
-      new SourcePageHandleWebContents(source_web_contents, false));
+  DistillCurrentPage(source_web_contents);
 
-  MaybeStartDistillation(std::move(source_page_handle));
   StartNavigationToDistillerViewer(destination_web_contents,
                                    source_web_contents->GetLastCommittedURL());
 }

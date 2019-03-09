@@ -7,29 +7,58 @@
 #include <stdlib.h>
 
 #include "base/command_line.h"
-#include "ui/ozone/public/native_pixmap.h"
+#include "gpu/vulkan/buildflags.h"
+#include "ui/gfx/native_pixmap.h"
+#include "ui/ozone/public/overlay_surface.h"
+#include "ui/ozone/public/platform_window_surface.h"
 #include "ui/ozone/public/surface_ozone_canvas.h"
-#include "ui/ozone/public/surface_ozone_egl.h"
+
+#if BUILDFLAG(ENABLE_VULKAN)
+#include "gpu/vulkan/vulkan_instance.h"
+#endif
 
 namespace ui {
 
-SurfaceFactoryOzone::SurfaceFactoryOzone() {
+SurfaceFactoryOzone::SurfaceFactoryOzone() {}
+
+SurfaceFactoryOzone::~SurfaceFactoryOzone() {}
+
+std::vector<gl::GLImplementation>
+SurfaceFactoryOzone::GetAllowedGLImplementations() {
+  return std::vector<gl::GLImplementation>();
 }
 
-SurfaceFactoryOzone::~SurfaceFactoryOzone() {
+GLOzone* SurfaceFactoryOzone::GetGLOzone(gl::GLImplementation implementation) {
+  return nullptr;
 }
 
-intptr_t SurfaceFactoryOzone::GetNativeDisplay() {
-  return 0;
+#if BUILDFLAG(ENABLE_VULKAN)
+std::unique_ptr<gpu::VulkanImplementation>
+SurfaceFactoryOzone::CreateVulkanImplementation() {
+  return nullptr;
 }
 
-std::unique_ptr<SurfaceOzoneEGL> SurfaceFactoryOzone::CreateEGLSurfaceForWidget(
+scoped_refptr<gfx::NativePixmap>
+SurfaceFactoryOzone::CreateNativePixmapForVulkan(
+    gfx::AcceleratedWidget widget,
+    gfx::Size size,
+    gfx::BufferFormat format,
+    gfx::BufferUsage usage,
+    VkDevice vk_device,
+    VkDeviceMemory* vk_device_memory,
+    VkImage* vk_image) {
+  NOTIMPLEMENTED();
+  return nullptr;
+}
+#endif
+
+std::unique_ptr<PlatformWindowSurface>
+SurfaceFactoryOzone::CreatePlatformWindowSurface(
     gfx::AcceleratedWidget widget) {
   return nullptr;
 }
 
-std::unique_ptr<SurfaceOzoneEGL>
-SurfaceFactoryOzone::CreateSurfacelessEGLSurfaceForWidget(
+std::unique_ptr<OverlaySurface> SurfaceFactoryOzone::CreateOverlaySurface(
     gfx::AcceleratedWidget widget) {
   return nullptr;
 }
@@ -39,12 +68,7 @@ std::unique_ptr<SurfaceOzoneCanvas> SurfaceFactoryOzone::CreateCanvasForWidget(
   return nullptr;
 }
 
-std::vector<gfx::BufferFormat> SurfaceFactoryOzone::GetScanoutFormats(
-    gfx::AcceleratedWidget widget) {
-  return std::vector<gfx::BufferFormat>();
-}
-
-scoped_refptr<ui::NativePixmap> SurfaceFactoryOzone::CreateNativePixmap(
+scoped_refptr<gfx::NativePixmap> SurfaceFactoryOzone::CreateNativePixmap(
     gfx::AcceleratedWidget widget,
     gfx::Size size,
     gfx::BufferFormat format,
@@ -52,7 +76,7 @@ scoped_refptr<ui::NativePixmap> SurfaceFactoryOzone::CreateNativePixmap(
   return nullptr;
 }
 
-scoped_refptr<ui::NativePixmap>
+scoped_refptr<gfx::NativePixmap>
 SurfaceFactoryOzone::CreateNativePixmapFromHandle(
     gfx::AcceleratedWidget widget,
     gfx::Size size,
@@ -60,5 +84,18 @@ SurfaceFactoryOzone::CreateNativePixmapFromHandle(
     const gfx::NativePixmapHandle& handle) {
   return nullptr;
 }
+
+scoped_refptr<gfx::NativePixmap>
+SurfaceFactoryOzone::CreateNativePixmapForProtectedBufferHandle(
+    gfx::AcceleratedWidget widget,
+    gfx::Size size,
+    gfx::BufferFormat format,
+    const gfx::NativePixmapHandle& handle) {
+  return nullptr;
+}
+
+void SurfaceFactoryOzone::SetGetProtectedNativePixmapDelegate(
+    const GetProtectedNativePixmapCallback&
+        get_protected_native_pixmap_callback) {}
 
 }  // namespace ui

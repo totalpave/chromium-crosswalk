@@ -6,9 +6,11 @@
 
 #include <stdint.h>
 
+#include <memory>
+
+#include "base/bind.h"
 #include "base/callback_helpers.h"
 #include "base/files/file_util.h"
-#include "base/md5.h"
 #include "base/task_runner_util.h"
 #include "components/drive/chromeos/file_cache.h"
 #include "components/drive/chromeos/file_system/download_operation.h"
@@ -29,12 +31,9 @@ class EntryUpdatePerformerTest : public file_system::OperationTestBase {
  protected:
   void SetUp() override {
     OperationTestBase::SetUp();
-    performer_.reset(new EntryUpdatePerformer(blocking_task_runner(),
-                                              delegate(),
-                                              scheduler(),
-                                              metadata(),
-                                              cache(),
-                                              loader_controller()));
+    performer_ = std::make_unique<EntryUpdatePerformer>(
+        blocking_task_runner(), delegate(), scheduler(), metadata(), cache(),
+        loader_controller());
   }
 
   // Stores |content| to the cache and mark it as dirty.
@@ -55,7 +54,7 @@ class EntryUpdatePerformerTest : public file_system::OperationTestBase {
                    local_id, std::string(), path,
                    FileCache::FILE_OPERATION_COPY),
         google_apis::test_util::CreateCopyResultCallback(&error));
-    content::RunAllBlockingPoolTasksUntilIdle();
+    content::RunAllTasksUntilIdle();
     return error;
   }
 
@@ -94,7 +93,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry) {
                  base::Unretained(metadata()),
                  src_entry),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Perform server side update.
@@ -103,7 +102,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry) {
       src_entry.local_id(),
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Verify the file is updated on the server.
@@ -113,7 +112,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry) {
       src_entry.resource_id(),
       google_apis::test_util::CreateCopyResultCallback(&gdata_error,
                                                        &gdata_entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(google_apis::HTTP_SUCCESS, gdata_error);
   ASSERT_TRUE(gdata_entry);
 
@@ -149,7 +148,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_SetProperties) {
       base::Bind(&ResourceMetadata::RefreshEntry, base::Unretained(metadata()),
                  entry),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Perform server side update.
@@ -175,7 +174,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_SetProperties) {
       google_apis::test_util::CreateCopyResultCallback(&error));
 
   // Wait until the update is fully completed.
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // List of synced properties should be removed from the proto.
@@ -204,7 +203,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_WithNonDirtyCache) {
       google_apis::GetContentCallback(),
       google_apis::test_util::CreateCopyResultCallback(
           &error, &cache_file_path, &src_entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
   ASSERT_TRUE(src_entry);
 
@@ -220,7 +219,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_WithNonDirtyCache) {
                  base::Unretained(metadata()),
                  *src_entry),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Perform server side update. This shouldn't fail. (crbug.com/358590)
@@ -229,7 +228,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_WithNonDirtyCache) {
       src_entry->local_id(),
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Verify the file is updated on the server.
@@ -239,7 +238,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_WithNonDirtyCache) {
       src_entry->resource_id(),
       google_apis::test_util::CreateCopyResultCallback(&gdata_error,
                                                        &gdata_entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(google_apis::HTTP_SUCCESS, gdata_error);
   ASSERT_TRUE(gdata_entry);
   EXPECT_EQ(src_entry->title(), gdata_entry->title());
@@ -251,7 +250,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_NotFound) {
   performer_->UpdateEntry(
       id, ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_NOT_FOUND, error);
 }
 
@@ -265,8 +264,8 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_ContentUpdate) {
   const std::string kTestFileContent = "I'm being uploaded! Yay!";
   EXPECT_EQ(FILE_ERROR_OK, StoreAndMarkDirty(local_id, kTestFileContent));
 
-  int64_t original_changestamp =
-      fake_service()->about_resource().largest_change_id();
+  const std::string original_start_page_token =
+      fake_service()->start_page_token().start_page_token();
 
   // The callback will be called upon completion of UpdateEntry().
   FileError error = FILE_ERROR_FAILED;
@@ -274,12 +273,12 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_ContentUpdate) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Check that the server has received an update.
-  EXPECT_LT(original_changestamp,
-            fake_service()->about_resource().largest_change_id());
+  EXPECT_NE(original_start_page_token,
+            fake_service()->start_page_token().start_page_token());
 
   // Check that the file size is updated to that of the updated content.
   google_apis::DriveApiErrorCode gdata_error = google_apis::DRIVE_OTHER_ERROR;
@@ -288,7 +287,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_ContentUpdate) {
       kResourceId,
       google_apis::test_util::CreateCopyResultCallback(&gdata_error,
                                                        &server_entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(google_apis::HTTP_SUCCESS, gdata_error);
   EXPECT_EQ(static_cast<int64_t>(kTestFileContent.size()),
             server_entry->file_size());
@@ -309,8 +308,8 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_ContentUpdateMd5Check) {
   const std::string kTestFileContent = "I'm being uploaded! Yay!";
   EXPECT_EQ(FILE_ERROR_OK, StoreAndMarkDirty(local_id, kTestFileContent));
 
-  int64_t original_changestamp =
-      fake_service()->about_resource().largest_change_id();
+  std::string original_start_page_token =
+      fake_service()->start_page_token().start_page_token();
 
   // The callback will be called upon completion of UpdateEntry().
   FileError error = FILE_ERROR_FAILED;
@@ -318,12 +317,12 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_ContentUpdateMd5Check) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Check that the server has received an update.
-  EXPECT_LT(original_changestamp,
-            fake_service()->about_resource().largest_change_id());
+  EXPECT_NE(original_start_page_token,
+            fake_service()->start_page_token().start_page_token());
 
   // Check that the file size is updated to that of the updated content.
   google_apis::DriveApiErrorCode gdata_error = google_apis::DRIVE_OTHER_ERROR;
@@ -332,7 +331,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_ContentUpdateMd5Check) {
       kResourceId,
       google_apis::test_util::CreateCopyResultCallback(&gdata_error,
                                                        &server_entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(google_apis::HTTP_SUCCESS, gdata_error);
   EXPECT_EQ(static_cast<int64_t>(kTestFileContent.size()),
             server_entry->file_size());
@@ -353,24 +352,25 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_ContentUpdateMd5Check) {
                  local_id,
                  &file_closer),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
   file_closer.reset();
 
   // And call UpdateEntry again.
   // In this case, although the file is marked as dirty, but the content
   // hasn't been changed. Thus, the actual uploading should be skipped.
-  original_changestamp = fake_service()->about_resource().largest_change_id();
+  original_start_page_token =
+      fake_service()->start_page_token().start_page_token();
   error = FILE_ERROR_FAILED;
   performer_->UpdateEntry(
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
-  EXPECT_EQ(original_changestamp,
-            fake_service()->about_resource().largest_change_id());
+  EXPECT_EQ(original_start_page_token,
+            fake_service()->start_page_token().start_page_token());
 
   // Make sure that the cache is no longer dirty.
   EXPECT_EQ(FILE_ERROR_OK, GetLocalResourceEntry(kFilePath, &entry));
@@ -398,7 +398,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_OpenedForWrite) {
                  local_id,
                  &file_closer),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Update. This should not clear the dirty bit.
@@ -407,7 +407,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_OpenedForWrite) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Make sure that the cache is still dirty.
@@ -424,7 +424,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_OpenedForWrite) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Make sure that the cache is no longer dirty.
@@ -455,7 +455,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_UploadNewFile) {
                  entry,
                  &local_id),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Update. This should result in creating a new file on the server.
@@ -464,7 +464,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_UploadNewFile) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // The entry got a resource ID.
@@ -481,7 +481,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_UploadNewFile) {
   fake_service()->GetFileResource(
       entry.resource_id(),
       google_apis::test_util::CreateCopyResultCallback(&status, &server_entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(google_apis::HTTP_SUCCESS, status);
   ASSERT_TRUE(server_entry);
   EXPECT_FALSE(server_entry->IsDirectory());
@@ -510,7 +510,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_NewFileOpendForWrite) {
                  entry,
                  &local_id),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   const std::string kTestFileContent = "This is a new file.";
@@ -527,7 +527,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_NewFileOpendForWrite) {
                  local_id,
                  &file_closer),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Update, but no update is performed because the file is opened.
@@ -536,7 +536,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_NewFileOpendForWrite) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // The entry hasn't got a resource ID yet.
@@ -552,7 +552,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_NewFileOpendForWrite) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // The entry got a resource ID.
@@ -584,7 +584,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_CreateDirectory) {
                  entry,
                  &local_id),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Update. This should result in creating a new directory on the server.
@@ -593,7 +593,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_CreateDirectory) {
       local_id,
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // The entry got a resource ID.
@@ -607,7 +607,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_CreateDirectory) {
   fake_service()->GetFileResource(
       entry.resource_id(),
       google_apis::test_util::CreateCopyResultCallback(&status, &server_entry));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(google_apis::HTTP_SUCCESS, status);
   ASSERT_TRUE(server_entry);
   EXPECT_TRUE(server_entry->IsDirectory());
@@ -633,7 +633,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_InsufficientPermission) {
                  base::Unretained(metadata()),
                  updated_entry),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // Set user permission to forbid server side update.
@@ -646,7 +646,7 @@ TEST_F(EntryUpdatePerformerTest, UpdateEntry_InsufficientPermission) {
       src_entry.local_id(),
       ClientContext(USER_INITIATED),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   // This should result in reverting the local change.

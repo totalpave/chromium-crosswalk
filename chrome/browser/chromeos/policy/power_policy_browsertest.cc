@@ -15,6 +15,7 @@
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/macros.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
@@ -22,9 +23,8 @@
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/chromeos/policy/device_policy_builder.h"
 #include "chrome/browser/chromeos/policy/device_policy_cros_browser_test.h"
-#include "chrome/browser/chromeos/policy/proto/chrome_device_policy.pb.h"
 #include "chrome/browser/chromeos/policy/user_cloud_policy_manager_chromeos.h"
-#include "chrome/browser/chromeos/policy/user_cloud_policy_manager_factory_chromeos.h"
+#include "chrome/browser/chromeos/policy/user_policy_manager_factory_chromeos.h"
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
@@ -33,29 +33,31 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/testing_profile.h"
-#include "chromeos/chromeos_paths.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "chromeos/cryptohome/cryptohome_parameters.h"
+#include "chromeos/dbus/constants/dbus_paths.h"
 #include "chromeos/dbus/cryptohome_client.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/fake_power_manager_client.h"
 #include "chromeos/dbus/fake_session_manager_client.h"
 #include "chromeos/dbus/power_manager/policy.pb.h"
 #include "chromeos/dbus/power_policy_controller.h"
-#include "chromeos/login/user_names.h"
+#include "components/account_id/account_id.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/core/common/cloud/policy_builder.h"
 #include "components/policy/core/common/external_data_fetcher.h"
 #include "components/policy/core/common/mock_policy_service.h"
 #include "components/policy/core/common/policy_service.h"
-#include "components/signin/core/account_id/account_id.h"
+#include "components/policy/proto/chrome_device_policy.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
+#include "components/user_manager/user_names.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_source.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/api/power/power_api.h"
 #include "extensions/common/api/power.h"
-#include "policy/proto/device_management_backend.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -138,9 +140,11 @@ class PowerPolicyBrowserTestBase : public DevicePolicyCrosBrowserTest {
   // Returns a string describing |policy|.
   std::string GetDebugString(const pm::PowerManagementPolicy& policy);
 
-  UserPolicyBuilder user_policy_;
+  chromeos::FakePowerManagerClient* power_manager_client() {
+    return chromeos::FakePowerManagerClient::Get();
+  }
 
-  chromeos::FakePowerManagerClient* power_manager_client_;
+  UserPolicyBuilder user_policy_;
 
  private:
   // Runs |closure| and waits for |profile|'s user policy to be updated as a
@@ -178,15 +182,10 @@ class PowerPolicyInSessionBrowserTest : public PowerPolicyBrowserTestBase {
   DISALLOW_COPY_AND_ASSIGN(PowerPolicyInSessionBrowserTest);
 };
 
-PowerPolicyBrowserTestBase::PowerPolicyBrowserTestBase()
-    : power_manager_client_(NULL) {
-}
+PowerPolicyBrowserTestBase::PowerPolicyBrowserTestBase() = default;
 
 void PowerPolicyBrowserTestBase::SetUpInProcessBrowserTestFixture() {
   DevicePolicyCrosBrowserTest::SetUpInProcessBrowserTestFixture();
-  power_manager_client_ = new chromeos::FakePowerManagerClient;
-  dbus_setter()->SetPowerManagerClient(
-      std::unique_ptr<chromeos::PowerManagerClient>(power_manager_client_));
 
   // Initialize device policy.
   InstallOwnerKey();
@@ -199,41 +198,43 @@ void PowerPolicyBrowserTestBase::SetUpOnMainThread() {
   // Initialize user policy.
   InstallUserKey();
   user_policy_.policy_data().set_username(
-      chromeos::login::StubAccountId().GetUserEmail());
+      user_manager::StubAccountId().GetUserEmail());
+  user_policy_.policy_data().set_gaia_id(
+      user_manager::StubAccountId().GetGaiaId());
 }
 
 void PowerPolicyBrowserTestBase::InstallUserKey() {
   base::FilePath user_keys_dir;
-  ASSERT_TRUE(PathService::Get(chromeos::DIR_USER_POLICY_KEYS, &user_keys_dir));
+  ASSERT_TRUE(base::PathService::Get(chromeos::dbus_paths::DIR_USER_POLICY_KEYS,
+                                     &user_keys_dir));
   std::string sanitized_username =
       chromeos::CryptohomeClient::GetStubSanitizedUsername(
-          cryptohome::Identification(chromeos::login::StubAccountId()));
+          cryptohome::CreateAccountIdentifierFromAccountId(
+              user_manager::StubAccountId()));
   base::FilePath user_key_file =
       user_keys_dir.AppendASCII(sanitized_username)
                    .AppendASCII("policy.pub");
-  std::vector<uint8_t> user_key_bits;
-  ASSERT_TRUE(user_policy_.GetSigningKey()->ExportPublicKey(&user_key_bits));
+  std::string user_key_bits = user_policy_.GetPublicSigningKeyAsString();
+  ASSERT_FALSE(user_key_bits.empty());
   ASSERT_TRUE(base::CreateDirectory(user_key_file.DirName()));
-  ASSERT_EQ(base::WriteFile(
-                user_key_file,
-                reinterpret_cast<const char*>(user_key_bits.data()),
-                user_key_bits.size()),
-            static_cast<int>(user_key_bits.size()));
+  ASSERT_EQ(base::checked_cast<int>(user_key_bits.length()),
+            base::WriteFile(user_key_file, user_key_bits.data(),
+                            user_key_bits.length()));
 }
 
 void PowerPolicyBrowserTestBase::StoreAndReloadUserPolicy() {
   // Install the new user policy blob in session manager client.
   user_policy_.Build();
   session_manager_client()->set_user_policy(
-      cryptohome::Identification(
+      cryptohome::CreateAccountIdentifierFromAccountId(
           AccountId::FromUserEmail(user_policy_.policy_data().username())),
       user_policy_.GetBlob());
 
   // Reload user policy from session manager client and wait for the update to
   // take effect.
   RunClosureAndWaitForUserPolicyUpdate(
-      base::Bind(&PowerPolicyBrowserTestBase::ReloadUserPolicy, this,
-                 browser()->profile()),
+      base::Bind(&PowerPolicyBrowserTestBase::ReloadUserPolicy,
+                 base::Unretained(this), browser()->profile()),
       browser()->profile());
 }
 
@@ -246,7 +247,8 @@ void PowerPolicyBrowserTestBase::
   // policy from session manager client and wait for a change in the login
   // profile's policy to be observed.
   RunClosureAndWaitForUserPolicyUpdate(
-      base::Bind(&PowerPolicyBrowserTestBase::RefreshDevicePolicy, this),
+      base::Bind(&PowerPolicyBrowserTestBase::RefreshDevicePolicy,
+                 base::Unretained(this)),
       profile);
 }
 
@@ -275,7 +277,8 @@ void PowerPolicyBrowserTestBase::RunClosureAndWaitForUserPolicyUpdate(
 
 void PowerPolicyBrowserTestBase::ReloadUserPolicy(Profile* profile) {
   UserCloudPolicyManagerChromeOS* policy_manager =
-      UserCloudPolicyManagerFactoryChromeOS::GetForProfile(profile);
+      UserPolicyManagerFactoryChromeOS::GetCloudPolicyManagerForProfile(
+          profile);
   ASSERT_TRUE(policy_manager);
   policy_manager->core()->store()->Load();
 }
@@ -301,7 +304,7 @@ void PowerPolicyLoginScreenBrowserTest::SetUpOnMainThread() {
 
 void PowerPolicyLoginScreenBrowserTest::TearDownOnMainThread() {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&chrome::AttemptExit));
+      FROM_HERE, base::BindOnce(&chrome::AttemptExit));
   base::RunLoop().RunUntilIdle();
   PowerPolicyBrowserTestBase::TearDownOnMainThread();
 }
@@ -316,7 +319,7 @@ void PowerPolicyInSessionBrowserTest::SetUpOnMainThread() {
 // Verifies that device policy is applied on the login screen.
 IN_PROC_BROWSER_TEST_F(PowerPolicyLoginScreenBrowserTest, SetDevicePolicy) {
   pm::PowerManagementPolicy power_management_policy =
-      power_manager_client_->policy();
+      power_manager_client()->policy();
   power_management_policy.mutable_ac_delays()->set_screen_dim_ms(5000);
   power_management_policy.mutable_ac_delays()->set_screen_off_ms(7000);
   power_management_policy.mutable_ac_delays()->set_idle_ms(9000);
@@ -329,33 +332,101 @@ IN_PROC_BROWSER_TEST_F(PowerPolicyLoginScreenBrowserTest, SetDevicePolicy) {
       pm::PowerManagementPolicy::DO_NOTHING);
   power_management_policy.set_lid_closed_action(
       pm::PowerManagementPolicy::DO_NOTHING);
-  power_management_policy.set_user_activity_screen_dim_delay_factor(3.0);
+  // Screen-dim scaling factors are disabled by PowerPolicyController when
+  // smart-dimming is enabled. Smart-dim is enabled when PowerSmartDimEnabled is
+  // set to true.
+  power_management_policy.set_user_activity_screen_dim_delay_factor(1.0);
 
   em::ChromeDeviceSettingsProto& proto(device_policy()->payload());
-  proto.mutable_login_screen_power_management()->
-      set_login_screen_power_management(kLoginScreenPowerManagementPolicy);
+  proto.mutable_login_screen_power_management()
+      ->set_login_screen_power_management(kLoginScreenPowerManagementPolicy);
   StoreAndReloadDevicePolicyAndWaitForLoginProfileChange();
+  // Spin the run loop to ensure ash sees pref change.
+  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(GetDebugString(power_management_policy),
-            GetDebugString(power_manager_client_->policy()));
+            GetDebugString(power_manager_client()->policy()));
 }
 
 // Verifies that device policy is ignored during a session.
 IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest, SetDevicePolicy) {
   pm::PowerManagementPolicy power_management_policy =
-      power_manager_client_->policy();
+      power_manager_client()->policy();
 
   em::ChromeDeviceSettingsProto& proto(device_policy()->payload());
   proto.mutable_login_screen_power_management()->
       set_login_screen_power_management(kLoginScreenPowerManagementPolicy);
   StoreAndReloadDevicePolicyAndWaitForLoginProfileChange();
   EXPECT_EQ(GetDebugString(power_management_policy),
-            GetDebugString(power_manager_client_->policy()));
+            GetDebugString(power_manager_client()->policy()));
 }
 
 // Verifies that legacy user policy is applied during a session.
 IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest, SetLegacyUserPolicy) {
   pm::PowerManagementPolicy power_management_policy =
-      power_manager_client_->policy();
+      power_manager_client()->policy();
+  power_management_policy.mutable_ac_delays()->set_screen_dim_ms(5000);
+  power_management_policy.mutable_ac_delays()->set_screen_lock_ms(6000);
+  power_management_policy.mutable_ac_delays()->set_screen_off_ms(7000);
+  power_management_policy.mutable_ac_delays()->set_idle_warning_ms(8000);
+  power_management_policy.mutable_ac_delays()->set_idle_ms(9000);
+  power_management_policy.mutable_battery_delays()->set_screen_dim_ms(1000);
+  power_management_policy.mutable_battery_delays()->set_screen_lock_ms(2000);
+  power_management_policy.mutable_battery_delays()->set_screen_off_ms(3000);
+  power_management_policy.mutable_battery_delays()->set_idle_warning_ms(4000);
+  power_management_policy.mutable_battery_delays()->set_idle_ms(5000);
+  power_management_policy.set_use_audio_activity(false);
+  power_management_policy.set_use_video_activity(false);
+  power_management_policy.set_ac_idle_action(
+      pm::PowerManagementPolicy::STOP_SESSION);
+  power_management_policy.set_battery_idle_action(
+      pm::PowerManagementPolicy::STOP_SESSION);
+  power_management_policy.set_lid_closed_action(
+      pm::PowerManagementPolicy::STOP_SESSION);
+  // Screen-dim scaling factors are disabled by PowerPolicyController when
+  // smart-dimming is enabled. Smart-dim is enabled when PowerSmartDimEnabled is
+  // set to true.
+  power_management_policy.set_presentation_screen_dim_delay_factor(1.0);
+  power_management_policy.set_user_activity_screen_dim_delay_factor(1.0);
+  power_management_policy.set_wait_for_initial_user_activity(true);
+
+  user_policy_.payload().mutable_screendimdelayac()->set_value(5000);
+  user_policy_.payload().mutable_screenlockdelayac()->set_value(6000);
+  user_policy_.payload().mutable_screenoffdelayac()->set_value(7000);
+  user_policy_.payload().mutable_idlewarningdelayac()->set_value(8000);
+  user_policy_.payload().mutable_idledelayac()->set_value(9000);
+  user_policy_.payload().mutable_screendimdelaybattery()->set_value(1000);
+  user_policy_.payload().mutable_screenlockdelaybattery()->set_value(2000);
+  user_policy_.payload().mutable_screenoffdelaybattery()->set_value(3000);
+  user_policy_.payload().mutable_idlewarningdelaybattery()->set_value(4000);
+  user_policy_.payload().mutable_idledelaybattery()->set_value(5000);
+  user_policy_.payload().mutable_powermanagementusesaudioactivity()->set_value(
+      false);
+  user_policy_.payload().mutable_powermanagementusesvideoactivity()->set_value(
+      false);
+  user_policy_.payload().mutable_idleactionac()->set_value(
+      chromeos::PowerPolicyController::ACTION_STOP_SESSION);
+  user_policy_.payload().mutable_idleactionbattery()->set_value(
+      chromeos::PowerPolicyController::ACTION_STOP_SESSION);
+  user_policy_.payload().mutable_lidcloseaction()->set_value(
+      chromeos::PowerPolicyController::ACTION_STOP_SESSION);
+  user_policy_.payload().mutable_presentationscreendimdelayscale()->set_value(
+      300);
+  user_policy_.payload().mutable_useractivityscreendimdelayscale()->set_value(
+      300);
+  user_policy_.payload().mutable_waitforinitialuseractivity()->set_value(true);
+  StoreAndReloadUserPolicy();
+  // Spin the run loop to ensure ash sees pref change.
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(GetDebugString(power_management_policy),
+            GetDebugString(power_manager_client()->policy()));
+}
+
+// Verifies that legacy user policy is applied during a session.
+// Same as SetLegacyUserPolicy above, except that smart-dim is disabled.
+IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest,
+                       SetLegacyUserPolicySmartDimDisabled) {
+  pm::PowerManagementPolicy power_management_policy =
+      power_manager_client()->policy();
   power_management_policy.mutable_ac_delays()->set_screen_dim_ms(5000);
   power_management_policy.mutable_ac_delays()->set_screen_lock_ms(6000);
   power_management_policy.mutable_ac_delays()->set_screen_off_ms(7000);
@@ -403,15 +474,19 @@ IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest, SetLegacyUserPolicy) {
   user_policy_.payload().mutable_useractivityscreendimdelayscale()->set_value(
       300);
   user_policy_.payload().mutable_waitforinitialuseractivity()->set_value(true);
+  // Disable smart-dim.
+  user_policy_.payload().mutable_powersmartdimenabled()->set_value(false);
   StoreAndReloadUserPolicy();
+  // Spin the run loop to ensure ash sees pref change.
+  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(GetDebugString(power_management_policy),
-            GetDebugString(power_manager_client_->policy()));
+            GetDebugString(power_manager_client()->policy()));
 }
 
 // Verifies that user policy is applied during a session.
 IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest, SetUserPolicy) {
   pm::PowerManagementPolicy power_management_policy =
-      power_manager_client_->policy();
+      power_manager_client()->policy();
   power_management_policy.mutable_ac_delays()->set_screen_dim_ms(5000);
   power_management_policy.mutable_ac_delays()->set_screen_lock_ms(6000);
   power_management_policy.mutable_ac_delays()->set_screen_off_ms(7000);
@@ -430,8 +505,11 @@ IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest, SetUserPolicy) {
       pm::PowerManagementPolicy::STOP_SESSION);
   power_management_policy.set_lid_closed_action(
       pm::PowerManagementPolicy::STOP_SESSION);
-  power_management_policy.set_presentation_screen_dim_delay_factor(3.0);
-  power_management_policy.set_user_activity_screen_dim_delay_factor(3.0);
+  // Screen-dim scaling factors are disabled by PowerPolicyController when
+  // smart-dimming is enabled. Smart-dim is enabled when PowerSmartDimEnabled is
+  // set to true.
+  power_management_policy.set_presentation_screen_dim_delay_factor(1.0);
+  power_management_policy.set_user_activity_screen_dim_delay_factor(1.0);
   power_management_policy.set_wait_for_initial_user_activity(true);
 
   // Set legacy policies which are expected to be ignored.
@@ -469,54 +547,58 @@ IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest, SetUserPolicy) {
       kScreenLockDelayPolicy);
 
   StoreAndReloadUserPolicy();
+  // Spin the run loop to ensure ash sees pref change.
+  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(GetDebugString(power_management_policy),
-            GetDebugString(power_manager_client_->policy()));
+            GetDebugString(power_manager_client()->policy()));
 }
 
 // Verifies that screen wake locks can be enabled and disabled by extensions and
 // user policy during a session.
 IN_PROC_BROWSER_TEST_F(PowerPolicyInSessionBrowserTest, AllowScreenWakeLocks) {
-  pm::PowerManagementPolicy baseline_policy =
-      power_manager_client_->policy();
+  pm::PowerManagementPolicy baseline_policy = power_manager_client()->policy();
 
-  // Default settings should have delays.
+  // Default settings should not report any wake locks.
   pm::PowerManagementPolicy power_management_policy = baseline_policy;
-  EXPECT_NE(0, baseline_policy.ac_delays().screen_dim_ms());
-  EXPECT_NE(0, baseline_policy.ac_delays().screen_off_ms());
-  EXPECT_NE(0, baseline_policy.battery_delays().screen_dim_ms());
-  EXPECT_NE(0, baseline_policy.battery_delays().screen_off_ms());
+  EXPECT_FALSE(baseline_policy.screen_wake_lock());
+  EXPECT_FALSE(baseline_policy.dim_wake_lock());
+  EXPECT_FALSE(baseline_policy.system_wake_lock());
 
   // Pretend an extension grabs a screen wake lock.
   const char kExtensionId[] = "abcdefghijklmnopabcdefghijlkmnop";
   extensions::PowerAPI::Get(browser()->profile())
       ->AddRequest(kExtensionId, extensions::api::power::LEVEL_DISPLAY);
-  base::RunLoop().RunUntilIdle();
+
+  // The PowerAPI requests system wake lock asynchronously.
+  base::RunLoop run_loop;
+  power_manager_client()->SetPowerPolicyQuitClosure(run_loop.QuitClosure());
+  run_loop.Run();
 
   // Check that the lock is in effect (ignoring ac_idle_action,
   // battery_idle_action and reason).
   pm::PowerManagementPolicy policy = baseline_policy;
-  policy.mutable_ac_delays()->set_screen_dim_ms(0);
-  policy.mutable_ac_delays()->set_screen_off_ms(0);
-  policy.mutable_battery_delays()->set_screen_dim_ms(0);
-  policy.mutable_battery_delays()->set_screen_off_ms(0);
-  policy.set_ac_idle_action(
-      power_manager_client_->policy().ac_idle_action());
+  policy.set_screen_wake_lock(true);
+  policy.set_ac_idle_action(power_manager_client()->policy().ac_idle_action());
   policy.set_battery_idle_action(
-      power_manager_client_->policy().battery_idle_action());
-  policy.set_reason(power_manager_client_->policy().reason());
+      power_manager_client()->policy().battery_idle_action());
+  policy.set_reason(power_manager_client()->policy().reason());
   EXPECT_EQ(GetDebugString(policy),
-            GetDebugString(power_manager_client_->policy()));
+            GetDebugString(power_manager_client()->policy()));
 
-  // Engage the user policy and verify that the defaults take effect again.
+  // Engage the user policy and verify that the screen wake lock is downgraded
+  // to be a system wake lock.
   user_policy_.payload().mutable_allowscreenwakelocks()->set_value(false);
   StoreAndReloadUserPolicy();
   policy = baseline_policy;
-  policy.set_ac_idle_action(power_manager_client_->policy().ac_idle_action());
+  policy.set_system_wake_lock(true);
+  policy.set_ac_idle_action(power_manager_client()->policy().ac_idle_action());
   policy.set_battery_idle_action(
-      power_manager_client_->policy().battery_idle_action());
-  policy.set_reason(power_manager_client_->policy().reason());
+      power_manager_client()->policy().battery_idle_action());
+  policy.set_reason(power_manager_client()->policy().reason());
+  // Spin the run loop to ensure ash sees pref change.
+  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(GetDebugString(policy),
-            GetDebugString(power_manager_client_->policy()));
+            GetDebugString(power_manager_client()->policy()));
 }
 
 }  // namespace policy

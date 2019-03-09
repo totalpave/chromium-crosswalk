@@ -20,8 +20,10 @@ namespace {
 
 // We rely on the priority enum values being sequential having starting at 0,
 // and increasing for higher priorities.
-static_assert(MINIMUM_PRIORITY == 0u && MINIMUM_PRIORITY == IDLE &&
-                  IDLE < LOWEST && LOWEST < HIGHEST &&
+static_assert(MINIMUM_PRIORITY == 0u && MINIMUM_PRIORITY == THROTTLED &&
+                  THROTTLED < IDLE &&
+                  IDLE < LOWEST &&
+                  LOWEST < HIGHEST &&
                   HIGHEST <= MAXIMUM_PRIORITY,
               "priority indexes incompatible");
 
@@ -175,7 +177,8 @@ TEST_F(PrioritizedDispatcherTest, GetLimits) {
   // Get current limits, make sure the original limits are returned.
   PrioritizedDispatcher::Limits retrieved_limits = dispatcher_->GetLimits();
   ASSERT_EQ(original_limits.total_jobs, retrieved_limits.total_jobs);
-  ASSERT_EQ(NUM_PRIORITIES, retrieved_limits.reserved_slots.size());
+  ASSERT_EQ(static_cast<size_t>(NUM_PRIORITIES),
+            retrieved_limits.reserved_slots.size());
   for (size_t priority = MINIMUM_PRIORITY; priority <= MAXIMUM_PRIORITY;
        ++priority) {
     EXPECT_EQ(original_limits.reserved_slots[priority],
@@ -191,7 +194,8 @@ TEST_F(PrioritizedDispatcherTest, GetLimits) {
   // Get current limits, make sure the new limits are returned.
   retrieved_limits = dispatcher_->GetLimits();
   ASSERT_EQ(new_limits.total_jobs, retrieved_limits.total_jobs);
-  ASSERT_EQ(NUM_PRIORITIES, retrieved_limits.reserved_slots.size());
+  ASSERT_EQ(static_cast<size_t>(NUM_PRIORITIES),
+            retrieved_limits.reserved_slots.size());
   for (size_t priority = MINIMUM_PRIORITY; priority <= MAXIMUM_PRIORITY;
        ++priority) {
     EXPECT_EQ(new_limits.reserved_slots[priority],

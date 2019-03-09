@@ -8,13 +8,12 @@
 
 #include <algorithm>
 
-#include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/command_buffer/service/texture_base.h"
 
 namespace gpu {
 namespace gles2 {
 
-MailboxManagerImpl::MailboxManagerImpl() {
-}
+MailboxManagerImpl::MailboxManagerImpl() = default;
 
 MailboxManagerImpl::~MailboxManagerImpl() {
   DCHECK(mailbox_to_textures_.empty());
@@ -25,30 +24,23 @@ bool MailboxManagerImpl::UsesSync() {
   return false;
 }
 
-Texture* MailboxManagerImpl::ConsumeTexture(const Mailbox& mailbox) {
+TextureBase* MailboxManagerImpl::ConsumeTexture(const Mailbox& mailbox) {
   MailboxToTextureMap::iterator it =
       mailbox_to_textures_.find(mailbox);
   if (it != mailbox_to_textures_.end())
     return it->second->first;
 
-  return NULL;
+  return nullptr;
 }
 
 void MailboxManagerImpl::ProduceTexture(const Mailbox& mailbox,
-                                        Texture* texture) {
+                                        TextureBase* texture) {
+  DCHECK(texture);
   MailboxToTextureMap::iterator it = mailbox_to_textures_.find(mailbox);
   if (it != mailbox_to_textures_.end()) {
-    if (it->second->first == texture)
-      return;
-    TextureToMailboxMap::iterator texture_it = it->second;
-    mailbox_to_textures_.erase(it);
-    textures_to_mailboxes_.erase(texture_it);
+    DLOG(ERROR) << "Ignored attempt to reassign a mailbox";
+    return;
   }
-  InsertTexture(mailbox, texture);
-}
-
-void MailboxManagerImpl::InsertTexture(const Mailbox& mailbox,
-                                       Texture* texture) {
   texture->SetMailboxManager(this);
   TextureToMailboxMap::iterator texture_it =
       textures_to_mailboxes_.insert(std::make_pair(texture, mailbox));
@@ -56,7 +48,7 @@ void MailboxManagerImpl::InsertTexture(const Mailbox& mailbox,
   DCHECK_EQ(mailbox_to_textures_.size(), textures_to_mailboxes_.size());
 }
 
-void MailboxManagerImpl::TextureDeleted(Texture* texture) {
+void MailboxManagerImpl::TextureDeleted(TextureBase* texture) {
   std::pair<TextureToMailboxMap::iterator,
             TextureToMailboxMap::iterator> range =
       textures_to_mailboxes_.equal_range(texture);

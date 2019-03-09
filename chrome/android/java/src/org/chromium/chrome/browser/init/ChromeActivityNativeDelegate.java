@@ -41,20 +41,20 @@ public interface ChromeActivityNativeDelegate {
     void onStopWithNative();
 
     /**
-     * @return Whether the activity linked to the delegate has been destroyed.
+     * @return Whether the activity linked to the delegate has been destroyed or is finishing.
      */
-    boolean isActivityDestroyed();
-
-    /**
-     * Called when the first draw for the UI specific to the linked activity is complete.
-     */
-    void onFirstDrawComplete();
+    boolean isActivityFinishingOrDestroyed();
 
     /**
      * Carry out native code dependent tasks that relate to processing a new intent coming to
      * FragmentActivity.onNewIntent().
      */
     void onNewIntentWithNative(Intent intent);
+
+    /**
+     * @return The Intent that launched the activity.
+     */
+    Intent getInitialIntent();
 
     /**
      * Carry out native code dependent tasks that relate to processing an activity result coming to

@@ -9,13 +9,14 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/sequence_checker.h"
 #include "remoting/protocol/jingle_messages.h"
 #include "remoting/protocol/session_manager.h"
 #include "remoting/signaling/signal_strategy.h"
 
-namespace buzz {
+namespace jingle_xmpp {
 class XmlElement;
-}  // namespace buzz
+}  // namespace jingle_xmpp
 
 namespace remoting {
 
@@ -24,7 +25,6 @@ class IqSender;
 namespace protocol {
 
 class JingleSession;
-class TransportFactory;
 
 // JingleSessionManager and JingleSession implement the subset of the
 // Jingle protocol used in Chromoting. JingleSessionManager provides
@@ -42,7 +42,7 @@ class JingleSessionManager : public SessionManager,
   void set_protocol_config(
       std::unique_ptr<CandidateSessionConfig> config) override;
   std::unique_ptr<Session> Connect(
-      const std::string& host_jid,
+      const SignalingAddress& peer_address,
       std::unique_ptr<Authenticator> authenticator) override;
   void set_authenticator_factory(
       std::unique_ptr<AuthenticatorFactory> authenticator_factory) override;
@@ -52,12 +52,12 @@ class JingleSessionManager : public SessionManager,
 
   // SignalStrategy::Listener interface.
   void OnSignalStrategyStateChange(SignalStrategy::State state) override;
-  bool OnSignalStrategyIncomingStanza(const buzz::XmlElement* stanza) override;
+  bool OnSignalStrategyIncomingStanza(const jingle_xmpp::XmlElement* stanza) override;
 
   typedef std::map<std::string, JingleSession*> SessionsMap;
 
   IqSender* iq_sender() { return iq_sender_.get(); }
-  void SendReply(const buzz::XmlElement* original_stanza,
+  void SendReply(std::unique_ptr<jingle_xmpp::XmlElement> original_stanza,
                  JingleMessageReply::ErrorType error);
 
   // Called by JingleSession when it is being destroyed.
@@ -71,6 +71,8 @@ class JingleSessionManager : public SessionManager,
   std::unique_ptr<IqSender> iq_sender_;
 
   SessionsMap sessions_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(JingleSessionManager);
 };

@@ -1,5 +1,5 @@
 {#--- Constants #}
-{%-  for constant in module.constants %}
+{%- for constant in module.constants %}
   var {{constant.name}} = {{constant.value|expression_to_text}};
 {%- endfor %}
 
@@ -17,7 +17,7 @@
 {#--- Union definitions #}
 {%- from "union_definition.tmpl" import union_def %}
 {%- for union in unions %}
-{{union_def(union)|indent(2)}}
+{{union_def(union, generate_fuzzing)|indent(2)}}
 {%- endfor %}
 
 {#--- Interface definitions #}
@@ -25,8 +25,7 @@
 {%-   include "interface_definition.tmpl" %}
 {%- endfor %}
 
-  var exports = {};
-{%-  for constant in module.constants %}
+{%- for constant in module.constants %}
   exports.{{constant.name}} = {{constant.name}};
 {%- endfor %}
 {%- for enum in enums %}
@@ -40,10 +39,6 @@
 {%- endfor %}
 {%- for interface in interfaces %}
   exports.{{interface.name}} = {{interface.name}};
-{#--- Interface Client #}
-{%-   if interface.client in interfaces|map(attribute='name') %}
-  exports.{{interface.name}}.client = {{interface.client}};
-{%-   elif interface.client in imported_interfaces %}
-  exports.{{interface.name}}.client = {{imported_interfaces[interface.client]}};
-{%-   endif %}
+  exports.{{interface.name}}Ptr = {{interface.name}}Ptr;
+  exports.{{interface.name}}AssociatedPtr = {{interface.name}}AssociatedPtr;
 {%- endfor %}

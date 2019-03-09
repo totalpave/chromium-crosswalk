@@ -11,8 +11,9 @@
 #include "base/macros.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_member.h"
+#include "extensions/buildflags/buildflags.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "base/scoped_observer.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
@@ -28,9 +29,10 @@ namespace user_prefs {
 class PrefRegistrySyncable;
 }
 
-// Tracks whether a given NotifierId can send notifications.
+// Tracks whether a given NotifierId can send notifications. Presently only used
+// for extensions.
 class NotifierStateTracker : public KeyedService
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
                            , public extensions::ExtensionRegistryObserver
 #endif
                                {
@@ -53,7 +55,7 @@ class NotifierStateTracker : public KeyedService
   void OnStringListPrefChanged(
       const char* pref_name, std::set<std::string>* ids_field);
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   // Fires a permission-level change event when an extension notifier has had
   // their notification permission changed.
   void FirePermissionLevelChangedEvent(
@@ -72,16 +74,10 @@ class NotifierStateTracker : public KeyedService
   // Prefs listener for disabled_extension_id.
   StringListPrefMember disabled_extension_id_pref_;
 
-  // Prefs listener for disabled_system_component_id.
-  StringListPrefMember disabled_system_component_id_pref_;
-
   // On-memory data for the availability of extensions.
   std::set<std::string> disabled_extension_ids_;
 
-  // On-memory data for the availability of system_component.
-  std::set<std::string> disabled_system_component_ids_;
-
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   // An observer to listen when extension is uninstalled.
   ScopedObserver<extensions::ExtensionRegistry,
                  extensions::ExtensionRegistryObserver>

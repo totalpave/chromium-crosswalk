@@ -6,50 +6,53 @@
 
 namespace switches {
 
-// Pass a set of GpuDriverBugWorkaroundType ids, seperated by ','.
-const char kGpuDriverBugWorkarounds[] = "gpu-driver-bug-workarounds";
+// Disable workarounds for various GPU driver bugs.
+const char kDisableGpuDriverBugWorkarounds[] =
+    "disable-gpu-driver-bug-workarounds";
 
-// Passes active gpu vendor id from browser process to GPU process.
-const char kGpuActiveVendorID[] = "gpu-active-vendor-id";
+// Disable GPU rasterization, i.e. rasterize on the CPU only.
+// Overrides the kEnableGpuRasterization and kForceGpuRasterization flags.
+const char kDisableGpuRasterization[] = "disable-gpu-rasterization";
 
-// Passes active gpu device id from browser process to GPU process.
-const char kGpuActiveDeviceID[] = "gpu-active-device-id";
+// Allow heuristics to determine when a layer tile should be drawn with the
+// Skia GPU backend. Only valid with GPU accelerated compositing +
+// impl-side painting.
+const char kEnableGpuRasterization[] = "enable-gpu-rasterization";
 
-// Passes secondary gpu vendor ids from browser process to GPU process.
-const char kGpuSecondaryVendorIDs[] = "gpu-secondary-vendor-ids";
+// Select a different set of GPU blacklist entries with the specificed
+// test_group ID.
+const char kGpuBlacklistTestGroup[] = "gpu-blacklist-test-group";
 
-// Passes secondary gpu device ids from browser process to GPU process.
-const char kGpuSecondaryDeviceIDs[] = "gpu-secondary-device-ids";
+// Enable an extra set of GPU driver bug list entries with the specified
+// test_group ID. Note the default test group (group 0) is still active.
+const char kGpuDriverBugListTestGroup[] = "gpu-driver-bug-list-test-group";
 
-// Testing switch to not launch the gpu process for full gpu info collection.
-const char kGpuTestingNoCompleteInfoCollection[] =
-    "gpu-no-complete-info-collection";
+// Passes encoded GpuPreferences to GPU process.
+const char kGpuPreferences[] = "gpu-preferences";
 
-// Override os version from GpuControlList::MakeDecision.
-const char kGpuTestingOsVersion[] = "gpu-testing-os-version";
+// Ignores GPU blacklist.
+const char kIgnoreGpuBlacklist[] = "ignore-gpu-blacklist";
 
-// Override gpu vendor id from the GpuInfoCollector.
-const char kGpuTestingVendorId[] = "gpu-testing-vendor-id";
+// Allows user to override maximum number of active WebGL contexts per
+// renderer process.
+const char kMaxActiveWebGLContexts[] = "max-active-webgl-contexts";
 
-// Override gpu device id from the GpuInfoCollector.
-const char kGpuTestingDeviceId[] = "gpu-testing-device-id";
+// Allows explicitly specifying the shader disk cache size for embedded devices.
+// Default value is 6MB. On Android, 2MB is default and 128KB for low-end
+// devices.
+const char kShaderDiskCacheSizeKB[] = "shader-disk-cache-size-kb";
 
-// Override secondary gpu vendor ids from the GpuInfoCollector.
-const char kGpuTestingSecondaryVendorIDs[] = "gpu-testing-secondary-vendor-ids";
+// Set the antialiasing method used for webgl. (none, explicit, implicit, or
+// screenspace)
+const char kWebglAntialiasingMode[] = "webgl-antialiasing-mode";
 
-// Override secondary gpu device ids from the GpuInfoCollector.
-const char kGpuTestingSecondaryDeviceIDs[] = "gpu-testing-secondary-device-ids";
+// Set a default sample count for webgl if msaa is enabled.
+const char kWebglMSAASampleCount[] = "webgl-msaa-sample-count";
 
-// Override gpu driver date from the GpuInfoCollector.
-const char kGpuTestingDriverDate[] = "gpu-testing-driver-date";
+// Disables the non-sandboxed GPU process for DX12 and Vulkan info collection
+const char kDisableGpuProcessForDX12VulkanInfoCollection[] =
+    "disable-gpu-process-for-dx12-vulkan-info-collection";
 
-// Override gl vendor from the GpuInfoCollector.
-const char kGpuTestingGLVendor[] = "gpu-testing-gl-vendor";
-
-// Override gl renderer from the GpuInfoCollector.
-const char kGpuTestingGLRenderer[] = "gpu-testing-gl-renderer";
-
-// Override gl version from the GpuInfoCollector.
-const char kGpuTestingGLVersion[] = "gpu-testing-gl-version";
+const char kEnableUnsafeWebGPU[] = "enable-unsafe-webgpu";
 
 }  // namespace switches

@@ -29,6 +29,9 @@ class MinimizeButtonMetrics {
   // position cache.
   void OnHWNDActivated();
 
+  // Must be called when WM_DPICHANGED message is received.
+  void OnDpiChanged();
+
  private:
   // Gets the value for GetMinimizeButtonOffsetX(), caching if found.
   int GetAndCacheMinimizeButtonOffsetX() const;
@@ -48,7 +51,7 @@ class MinimizeButtonMetrics {
   // Static cache of |cached_minimize_button_x_delta_|.
   static int last_cached_minimize_button_x_delta_;
 
-  // Static cache of offset value representing the different between
+  // Static cache of offset value representing the difference between
   // DWMWA_CAPTION_BUTTON_BOUNDS and WM_GETTITLEBARINFOEX
   static int button_bounds_position_offset_;
 

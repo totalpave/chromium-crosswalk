@@ -5,24 +5,22 @@
 #include "ui/wm/public/animation_host.h"
 
 #include "ui/aura/window.h"
-#include "ui/aura/window_property.h"
+#include "ui/base/class_property.h"
 
-DECLARE_WINDOW_PROPERTY_TYPE(aura::client::AnimationHost*)
+DEFINE_UI_CLASS_PROPERTY_TYPE(wm::AnimationHost*)
 
-namespace aura {
-namespace client {
+namespace wm {
 
-DEFINE_WINDOW_PROPERTY_KEY(AnimationHost*, kRootWindowAnimationHostKey, NULL);
+DEFINE_UI_CLASS_PROPERTY_KEY(AnimationHost*, kRootWindowAnimationHostKey, NULL)
 
-void SetAnimationHost(Window* window, AnimationHost* animation_host) {
+void SetAnimationHost(aura::Window* window, AnimationHost* animation_host) {
   DCHECK(window);
   window->SetProperty(kRootWindowAnimationHostKey, animation_host);
 }
 
-AnimationHost* GetAnimationHost(Window* window) {
+AnimationHost* GetAnimationHost(aura::Window* window) {
   DCHECK(window);
   return window->GetProperty(kRootWindowAnimationHostKey);
 }
 
-}  // namespace client
-}  // namespace aura
+}  // namespace wm

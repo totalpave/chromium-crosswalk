@@ -6,27 +6,30 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/shared_memory.h"
 #include "base/process/process_handle.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
-#include "ipc/attachment_broker.h"
 #include "ipc/ipc_channel_proxy.h"
 #include "ipc/ipc_message.h"
 #include "ipc/ipc_message_macros.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/base/constants.h"
+#include "remoting/host/action_executor.h"
 #include "remoting/host/audio_capturer.h"
 #include "remoting/host/chromoting_messages.h"
 #include "remoting/host/desktop_environment.h"
 #include "remoting/host/input_injector.h"
-#include "remoting/host/ipc_util.h"
+#include "remoting/host/process_stats_sender.h"
 #include "remoting/host/remote_input_filter.h"
 #include "remoting/host/screen_controls.h"
 #include "remoting/host/screen_resolution.h"
+#include "remoting/proto/action.pb.h"
 #include "remoting/proto/audio.pb.h"
 #include "remoting/proto/control.pb.h"
 #include "remoting/proto/event.pb.h"
@@ -62,7 +65,7 @@ DesktopSessionClipboardStub::DesktopSessionClipboardStub(
     scoped_refptr<DesktopSessionAgent> desktop_session_agent)
     : desktop_session_agent_(desktop_session_agent) {}
 
-DesktopSessionClipboardStub::~DesktopSessionClipboardStub() {}
+DesktopSessionClipboardStub::~DesktopSessionClipboardStub() = default;
 
 void DesktopSessionClipboardStub::InjectClipboardEvent(
     const protocol::ClipboardEvent& event) {
@@ -119,11 +122,11 @@ class SharedMemoryFactoryImpl : public webrtc::SharedMemoryFactory {
 
   std::unique_ptr<webrtc::SharedMemory> CreateSharedMemory(
       size_t size) override {
-    base::Closure release_buffer_callback =
-        base::Bind(send_message_callback_,
-                   base::Passed(base::WrapUnique(
-                       new ChromotingDesktopNetworkMsg_ReleaseSharedBuffer(
-                           next_shared_buffer_id_))));
+    base::Closure release_buffer_callback = base::Bind(
+        send_message_callback_,
+        base::Passed(
+            std::make_unique<ChromotingDesktopNetworkMsg_ReleaseSharedBuffer>(
+                next_shared_buffer_id_)));
     std::unique_ptr<SharedMemoryImpl> buffer = SharedMemoryImpl::Create(
         size, next_shared_buffer_id_, release_buffer_callback);
     if (buffer) {
@@ -138,9 +141,8 @@ class SharedMemoryFactoryImpl : public webrtc::SharedMemoryFactory {
       next_shared_buffer_id_ += 2;
 
       send_message_callback_.Run(
-          base::WrapUnique(new ChromotingDesktopNetworkMsg_CreateSharedBuffer(
-              buffer->id(), buffer->shared_memory()->handle(),
-              buffer->size())));
+          std::make_unique<ChromotingDesktopNetworkMsg_CreateSharedBuffer>(
+              buffer->id(), buffer->shared_memory()->handle(), buffer->size()));
     }
 
     return std::move(buffer);
@@ -155,7 +157,7 @@ class SharedMemoryFactoryImpl : public webrtc::SharedMemoryFactory {
 
 }  // namespace
 
-DesktopSessionAgent::Delegate::~Delegate() {}
+DesktopSessionAgent::Delegate::~Delegate() = default;
 
 DesktopSessionAgent::DesktopSessionAgent(
     scoped_refptr<AutoThreadTaskRunner> audio_capture_task_runner,
@@ -166,6 +168,7 @@ DesktopSessionAgent::DesktopSessionAgent(
       caller_task_runner_(caller_task_runner),
       input_task_runner_(input_task_runner),
       io_task_runner_(io_task_runner),
+      current_process_stats_("DesktopSessionAgent"),
       weak_factory_(this) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 }
@@ -178,6 +181,8 @@ bool DesktopSessionAgent::OnMessageReceived(const IPC::Message& message) {
     IPC_BEGIN_MESSAGE_MAP(DesktopSessionAgent, message)
       IPC_MESSAGE_HANDLER(ChromotingNetworkDesktopMsg_CaptureFrame,
                           OnCaptureFrame)
+      IPC_MESSAGE_HANDLER(ChromotingNetworkDesktopMsg_SelectSource,
+                          OnSelectSource)
       IPC_MESSAGE_HANDLER(ChromotingNetworkDesktopMsg_InjectClipboardEvent,
                           OnInjectClipboardEvent)
       IPC_MESSAGE_HANDLER(ChromotingNetworkDesktopMsg_InjectKeyEvent,
@@ -188,8 +193,32 @@ bool DesktopSessionAgent::OnMessageReceived(const IPC::Message& message) {
                           OnInjectMouseEvent)
       IPC_MESSAGE_HANDLER(ChromotingNetworkDesktopMsg_InjectTouchEvent,
                           OnInjectTouchEvent)
+      IPC_MESSAGE_HANDLER(ChromotingNetworkDesktopMsg_ExecuteActionRequest,
+                          OnExecuteActionRequestEvent)
       IPC_MESSAGE_HANDLER(ChromotingNetworkDesktopMsg_SetScreenResolution,
                           SetScreenResolution)
+      IPC_MESSAGE_FORWARD(ChromotingNetworkDesktopMsg_ReadFile,
+                          &*session_file_operations_handler_,
+                          SessionFileOperationsHandler::ReadFile)
+      IPC_MESSAGE_FORWARD(ChromotingNetworkDesktopMsg_ReadFileChunk,
+                          &*session_file_operations_handler_,
+                          SessionFileOperationsHandler::ReadChunk)
+      IPC_MESSAGE_FORWARD(ChromotingNetworkDesktopMsg_WriteFile,
+                          &*session_file_operations_handler_,
+                          SessionFileOperationsHandler::WriteFile)
+      IPC_MESSAGE_FORWARD(ChromotingNetworkDesktopMsg_WriteFileChunk,
+                          &*session_file_operations_handler_,
+                          SessionFileOperationsHandler::WriteChunk)
+      IPC_MESSAGE_FORWARD(ChromotingNetworkDesktopMsg_CloseFile,
+                          &*session_file_operations_handler_,
+                          SessionFileOperationsHandler::Close)
+      IPC_MESSAGE_FORWARD(ChromotingNetworkDesktopMsg_CancelFile,
+                          &*session_file_operations_handler_,
+                          SessionFileOperationsHandler::Cancel)
+      IPC_MESSAGE_HANDLER(ChromotingNetworkToAnyMsg_StartProcessStatsReport,
+                          StartProcessStatsReport)
+      IPC_MESSAGE_HANDLER(ChromotingNetworkToAnyMsg_StopProcessStatsReport,
+                          StopProcessStatsReport)
       IPC_MESSAGE_UNHANDLED(handled = false)
     IPC_END_MESSAGE_MAP()
   } else {
@@ -208,20 +237,13 @@ void DesktopSessionAgent::OnChannelConnected(int32_t peer_pid) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   VLOG(1) << "IPC: desktop <- network (" << peer_pid << ")";
-
-  desktop_pipe_.Close();
 }
 
 void DesktopSessionAgent::OnChannelError() {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   // Make sure the channel is closed.
-  if (IPC::AttachmentBroker::GetGlobal()) {
-    IPC::AttachmentBroker::GetGlobal()->DeregisterCommunicationChannel(
-        network_channel_.get());
-  }
   network_channel_.reset();
-  desktop_pipe_.Close();
 
   // Notify the caller that the channel has been disconnected.
   if (delegate_.get())
@@ -234,6 +256,8 @@ DesktopSessionAgent::~DesktopSessionAgent() {
   DCHECK(!network_channel_);
   DCHECK(!screen_controls_);
   DCHECK(!video_capturer_);
+  DCHECK(!stats_sender_);
+  DCHECK(!session_file_operations_handler_);
 }
 
 const std::string& DesktopSessionAgent::client_jid() const {
@@ -241,8 +265,8 @@ const std::string& DesktopSessionAgent::client_jid() const {
 }
 
 void DesktopSessionAgent::DisconnectSession(protocol::ErrorCode error) {
-  SendToNetwork(base::WrapUnique(
-      new ChromotingDesktopNetworkMsg_DisconnectSession(error)));
+  SendToNetwork(
+      std::make_unique<ChromotingDesktopNetworkMsg_DisconnectSession>(error));
 }
 
 void DesktopSessionAgent::OnLocalMouseMoved(
@@ -259,10 +283,22 @@ void DesktopSessionAgent::SetDisableInputs(bool disable_inputs) {
   NOTREACHED();
 }
 
+void DesktopSessionAgent::OnDesktopDisplayChanged(
+    std::unique_ptr<protocol::VideoLayout> layout) {
+  SendToNetwork(std::make_unique<ChromotingDesktopNetworkMsg_DisplayChanged>(
+      *layout.get()));
+}
+
+void DesktopSessionAgent::OnProcessStats(
+    const protocol::AggregatedProcessResourceUsage& usage) {
+  SendToNetwork(
+      std::make_unique<ChromotingAnyToNetworkMsg_ReportProcessStats>(usage));
+}
+
 void DesktopSessionAgent::OnStartSessionAgent(
     const std::string& authenticated_jid,
     const ScreenResolution& resolution,
-    bool virtual_terminal) {
+    const remoting::DesktopEnvironmentOptions& options) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
   DCHECK(!started_);
   DCHECK(!audio_capturer_);
@@ -270,17 +306,14 @@ void DesktopSessionAgent::OnStartSessionAgent(
   DCHECK(!input_injector_);
   DCHECK(!screen_controls_);
   DCHECK(!video_capturer_);
+  DCHECK(!session_file_operations_handler_);
 
   started_ = true;
   client_jid_ = authenticated_jid;
 
-  // Enable the curtain mode.
-  delegate_->desktop_environment_factory().SetEnableCurtaining(
-      virtual_terminal);
-
   // Create a desktop environment for the new session.
   desktop_environment_ = delegate_->desktop_environment_factory().Create(
-      weak_factory_.GetWeakPtr());
+      weak_factory_.GetWeakPtr(), options);
 
   // Create the session controller and set the initial screen resolution.
   screen_controls_ = desktop_environment_->CreateScreenControls();
@@ -288,6 +321,8 @@ void DesktopSessionAgent::OnStartSessionAgent(
 
   // Create the input injector.
   input_injector_ = desktop_environment_->CreateInputInjector();
+
+  action_executor_ = desktop_environment_->CreateActionExecutor();
 
   // Hook up the input filter.
   input_tracker_.reset(new protocol::InputEventTracker(input_injector_.get()));
@@ -308,7 +343,8 @@ void DesktopSessionAgent::OnStartSessionAgent(
   if (delegate_->desktop_environment_factory().SupportsAudioCapture()) {
     audio_capturer_ = desktop_environment_->CreateAudioCapturer();
     audio_capture_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&DesktopSessionAgent::StartAudioCapturer, this));
+        FROM_HERE,
+        base::BindOnce(&DesktopSessionAgent::StartAudioCapturer, this));
   }
 
   // Start the video capturer and mouse cursor monitor.
@@ -319,6 +355,10 @@ void DesktopSessionAgent::OnStartSessionAgent(
           base::Bind(&DesktopSessionAgent::SendToNetwork, this))));
   mouse_cursor_monitor_ = desktop_environment_->CreateMouseCursorMonitor();
   mouse_cursor_monitor_->Init(this, webrtc::MouseCursorMonitor::SHAPE_ONLY);
+
+  // Set up the message handler for file transfers.
+  session_file_operations_handler_.emplace(
+      this, desktop_environment_->CreateFileOperations());
 }
 
 void DesktopSessionAgent::OnCaptureResult(
@@ -334,6 +374,7 @@ void DesktopSessionAgent::OnCaptureResult(
     serialized_frame.dimensions = frame->size();
     serialized_frame.capture_time_ms = frame->capture_time_ms();
     serialized_frame.dpi = frame->dpi();
+    serialized_frame.capturer_id = frame->capturer_id();
     for (webrtc::DesktopRegion::Iterator i(frame->updated_region());
          !i.IsAtEnd(); i.Advance()) {
       serialized_frame.dirty_region.push_back(i.rect());
@@ -342,8 +383,8 @@ void DesktopSessionAgent::OnCaptureResult(
 
   last_frame_ = std::move(frame);
 
-  SendToNetwork(base::WrapUnique(
-      new ChromotingDesktopNetworkMsg_CaptureResult(result, serialized_frame)));
+  SendToNetwork(std::make_unique<ChromotingDesktopNetworkMsg_CaptureResult>(
+      result, serialized_frame));
 }
 
 void DesktopSessionAgent::OnMouseCursor(webrtc::MouseCursor* cursor) {
@@ -351,8 +392,8 @@ void DesktopSessionAgent::OnMouseCursor(webrtc::MouseCursor* cursor) {
 
   std::unique_ptr<webrtc::MouseCursor> owned_cursor(cursor);
 
-  SendToNetwork(base::WrapUnique(
-      new ChromotingDesktopNetworkMsg_MouseCursor(*owned_cursor)));
+  SendToNetwork(
+      std::make_unique<ChromotingDesktopNetworkMsg_MouseCursor>(*owned_cursor));
 }
 
 void DesktopSessionAgent::OnMouseCursorPosition(
@@ -372,8 +413,9 @@ void DesktopSessionAgent::InjectClipboardEvent(
     return;
   }
 
-  SendToNetwork(base::WrapUnique(
-      new ChromotingDesktopNetworkMsg_InjectClipboardEvent(serialized_event)));
+  SendToNetwork(
+      std::make_unique<ChromotingDesktopNetworkMsg_InjectClipboardEvent>(
+          serialized_event));
 }
 
 void DesktopSessionAgent::ProcessAudioPacket(
@@ -386,32 +428,47 @@ void DesktopSessionAgent::ProcessAudioPacket(
     return;
   }
 
-  SendToNetwork(base::WrapUnique(
-      new ChromotingDesktopNetworkMsg_AudioPacket(serialized_packet)));
+  SendToNetwork(std::make_unique<ChromotingDesktopNetworkMsg_AudioPacket>(
+      serialized_packet));
 }
 
-bool DesktopSessionAgent::Start(const base::WeakPtr<Delegate>& delegate,
-                                IPC::PlatformFileForTransit* desktop_pipe_out) {
+void DesktopSessionAgent::OnResult(uint64_t file_id,
+                                   ResultHandler::Result result) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
-  DCHECK(delegate_.get() == nullptr);
+
+  SendToNetwork(std::make_unique<ChromotingDesktopNetworkMsg_FileResult>(
+      file_id, std::move(result)));
+}
+
+void DesktopSessionAgent::OnInfoResult(std::uint64_t file_id,
+                                       ResultHandler::InfoResult result) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  SendToNetwork(std::make_unique<ChromotingDesktopNetworkMsg_FileInfoResult>(
+      file_id, std::move(result)));
+}
+
+void DesktopSessionAgent::OnDataResult(std::uint64_t file_id,
+                                       ResultHandler::DataResult result) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  SendToNetwork(std::make_unique<ChromotingDesktopNetworkMsg_FileDataResult>(
+      file_id, std::move(result)));
+}
+
+mojo::ScopedMessagePipeHandle DesktopSessionAgent::Start(
+    const base::WeakPtr<Delegate>& delegate) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  DCHECK(delegate);
+  DCHECK(!delegate_);
 
   delegate_ = delegate;
 
-  // Create an IPC channel to communicate with the network process.
-  bool result = CreateConnectedIpcChannel(io_task_runner_,
-                                          this,
-                                          &desktop_pipe_,
-                                          &network_channel_);
-  base::PlatformFile raw_desktop_pipe = desktop_pipe_.GetPlatformFile();
-#if defined(OS_WIN)
-  *desktop_pipe_out =
-      IPC::PlatformFileForTransit(raw_desktop_pipe, base::GetCurrentProcId());
-#elif defined(OS_POSIX)
-  *desktop_pipe_out = IPC::PlatformFileForTransit(raw_desktop_pipe, false);
-#else
-#error Unsupported platform.
-#endif
-  return result;
+  mojo::MessagePipe pipe;
+  network_channel_ = IPC::ChannelProxy::Create(
+      pipe.handle0.release(), IPC::Channel::MODE_SERVER, this, io_task_runner_,
+      base::ThreadTaskRunnerHandle::Get());
+  return std::move(pipe.handle1);
 }
 
 void DesktopSessionAgent::Stop() {
@@ -419,11 +476,9 @@ void DesktopSessionAgent::Stop() {
 
   delegate_.reset();
 
+  stats_sender_.reset();
+
   // Make sure the channel is closed.
-  if (IPC::AttachmentBroker::GetGlobal()) {
-    IPC::AttachmentBroker::GetGlobal()->DeregisterCommunicationChannel(
-        network_channel_.get());
-  }
   network_channel_.reset();
 
   if (started_) {
@@ -435,17 +490,21 @@ void DesktopSessionAgent::Stop() {
 
     remote_input_filter_.reset();
 
+    session_file_operations_handler_.reset();
+
     // Ensure that any pressed keys or buttons are released.
     input_tracker_->ReleaseAll();
     input_tracker_.reset();
 
     desktop_environment_.reset();
+    action_executor_.reset();
     input_injector_.reset();
     screen_controls_.reset();
 
     // Stop the audio capturer.
     audio_capture_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&DesktopSessionAgent::StopAudioCapturer, this));
+        FROM_HERE,
+        base::BindOnce(&DesktopSessionAgent::StopAudioCapturer, this));
 
     // Stop the video capturer.
     video_capturer_.reset();
@@ -464,7 +523,12 @@ void DesktopSessionAgent::OnCaptureFrame() {
   // |video_capture_task_runner()| task runner. If the client issues more
   // requests, pixel data in captured frames will likely be corrupted but
   // stability of webrtc::DesktopCapturer will not be affected.
-  video_capturer_->Capture(webrtc::DesktopRegion());
+  video_capturer_->CaptureFrame();
+}
+
+void DesktopSessionAgent::OnSelectSource(int id) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  video_capturer_->SelectSource(id);
 }
 
 void DesktopSessionAgent::OnInjectClipboardEvent(
@@ -550,6 +614,13 @@ void DesktopSessionAgent::OnInjectTouchEvent(
   remote_input_filter_->InjectTouchEvent(event);
 }
 
+void DesktopSessionAgent::OnExecuteActionRequestEvent(
+    const protocol::ActionRequest& request) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  action_executor_->ExecuteAction(request);
+}
+
 void DesktopSessionAgent::SetScreenResolution(
     const ScreenResolution& resolution) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
@@ -561,8 +632,8 @@ void DesktopSessionAgent::SetScreenResolution(
 void DesktopSessionAgent::SendToNetwork(std::unique_ptr<IPC::Message> message) {
   if (!caller_task_runner_->BelongsToCurrentThread()) {
     caller_task_runner_->PostTask(
-        FROM_HERE, base::Bind(&DesktopSessionAgent::SendToNetwork, this,
-                              base::Passed(&message)));
+        FROM_HERE, base::BindOnce(&DesktopSessionAgent::SendToNetwork, this,
+                                  std::move(message)));
     return;
   }
 
@@ -584,6 +655,26 @@ void DesktopSessionAgent::StopAudioCapturer() {
   DCHECK(audio_capture_task_runner_->BelongsToCurrentThread());
 
   audio_capturer_.reset();
+}
+
+void DesktopSessionAgent::StartProcessStatsReport(base::TimeDelta interval) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  DCHECK(!stats_sender_);
+
+  if (interval <= base::TimeDelta::FromSeconds(0)) {
+    interval = kDefaultProcessStatsInterval;
+  }
+
+  stats_sender_.reset(new ProcessStatsSender(
+      this,
+      interval,
+      { &current_process_stats_ }));
+}
+
+void DesktopSessionAgent::StopProcessStatsReport() {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  DCHECK(stats_sender_);
+  stats_sender_.reset();
 }
 
 }  // namespace remoting

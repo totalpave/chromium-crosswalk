@@ -11,7 +11,6 @@
 #include "base/macros.h"
 #include "base/strings/string16.h"
 
-class PrefRegistrySimple;
 class Profile;
 class TemplateURL;
 class TemplateURLService;
@@ -49,11 +48,11 @@ class KeywordEditorController {
   void RemoveTemplateURL(int index);
 
   // Returns the default search provider.
-  TemplateURL* GetDefaultSearchProvider();
+  const TemplateURL* GetDefaultSearchProvider();
 
   // Make the TemplateURL at the specified index (into the TableModel) the
-  // default search provider.  Return the new index, or -1 if nothing was done.
-  int MakeDefaultTemplateURL(int index);
+  // default search provider.
+  void MakeDefaultTemplateURL(int index);
 
   // Return true if the |url_model_| data is loaded.
   bool loaded() const;

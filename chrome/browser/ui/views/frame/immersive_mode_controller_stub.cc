@@ -6,8 +6,8 @@
 
 #include "base/logging.h"
 
-ImmersiveModeControllerStub::ImmersiveModeControllerStub() {
-}
+ImmersiveModeControllerStub::ImmersiveModeControllerStub()
+    : ImmersiveModeController(Type::STUB) {}
 
 ImmersiveModeControllerStub::~ImmersiveModeControllerStub() {
 }
@@ -20,10 +20,6 @@ void ImmersiveModeControllerStub::SetEnabled(bool enabled) {
 }
 
 bool ImmersiveModeControllerStub::IsEnabled() const {
-  return false;
-}
-
-bool ImmersiveModeControllerStub::ShouldHideTabIndicators() const {
   return false;
 }
 
@@ -49,5 +45,10 @@ void ImmersiveModeControllerStub::OnFindBarVisibleBoundsChanged(
     const gfx::Rect& new_visible_bounds_in_screen) {
 }
 
-void ImmersiveModeControllerStub::SetupForTest() {
+bool ImmersiveModeControllerStub::ShouldStayImmersiveAfterExitingFullscreen() {
+  return false;
 }
+
+void ImmersiveModeControllerStub::OnWidgetActivationChanged(
+    views::Widget* widget,
+    bool active) {}

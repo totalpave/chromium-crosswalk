@@ -9,36 +9,38 @@
 #include "base/macros.h"
 #include "ui/aura/window_observer.h"
 #include "ui/display/display.h"
-#include "ui/display/screen.h"
+#include "ui/display/screen_base.h"
 
 namespace gfx {
+class ColorSpace;
 class Insets;
 class Rect;
 class Transform;
 }
 
 namespace aura {
+class Env;
 class Window;
+class WindowTreeClient;
 class WindowTreeHost;
 
 // A minimal, testing Aura implementation of display::Screen.
 // TODO(bruthig): Consider extending gfx::test::TestScreen.
-class TestScreen : public display::Screen, public WindowObserver {
+class TestScreen : public display::ScreenBase, public WindowObserver {
  public:
   // Creates a display::Screen of the specified size. If no size is specified,
   // then creates a 800x600 screen. |size| is in physical pixels.
-  static TestScreen* Create(const gfx::Size& size);
+  static TestScreen* Create(const gfx::Size& size,
+                            WindowTreeClient* window_tree_client = nullptr);
   ~TestScreen() override;
 
-  WindowTreeHost* CreateHostForPrimaryDisplay();
+  WindowTreeHost* CreateHostForPrimaryDisplay(Env* env = nullptr);
 
   void SetDeviceScaleFactor(float device_scale_fator);
+  void SetColorSpace(const gfx::ColorSpace& color_space);
   void SetDisplayRotation(display::Display::Rotation rotation);
   void SetUIScale(float ui_scale);
   void SetWorkAreaInsets(const gfx::Insets& insets);
-
-  // display::Screen overrides:
-  display::Display GetPrimaryDisplay() const override;
 
  protected:
   gfx::Transform GetRotationTransform() const;
@@ -47,31 +49,26 @@ class TestScreen : public display::Screen, public WindowObserver {
   // WindowObserver overrides:
   void OnWindowBoundsChanged(Window* window,
                              const gfx::Rect& old_bounds,
-                             const gfx::Rect& new_bounds) override;
+                             const gfx::Rect& new_bounds,
+                             ui::PropertyChangeReason reason) override;
   void OnWindowDestroying(Window* window) override;
 
   // display::Screen overrides:
   gfx::Point GetCursorScreenPoint() override;
   bool IsWindowUnderCursor(gfx::NativeWindow window) override;
   gfx::NativeWindow GetWindowAtScreenPoint(const gfx::Point& point) override;
-  int GetNumDisplays() const override;
-  std::vector<display::Display> GetAllDisplays() const override;
-  display::Display GetDisplayNearestWindow(gfx::NativeView view) const override;
-  display::Display GetDisplayNearestPoint(
-      const gfx::Point& point) const override;
-  display::Display GetDisplayMatching(
-      const gfx::Rect& match_rect) const override;
-  void AddObserver(display::DisplayObserver* observer) override;
-  void RemoveObserver(display::DisplayObserver* observer) override;
+  display::Display GetDisplayNearestWindow(
+      gfx::NativeWindow window) const override;
 
  private:
-  explicit TestScreen(const gfx::Rect& screen_bounds);
+  TestScreen(const gfx::Rect& screen_bounds,
+             WindowTreeClient* window_tree_client);
 
   aura::WindowTreeHost* host_;
 
-  display::Display display_;
-
   float ui_scale_;
+
+  WindowTreeClient* window_tree_client_;
 
   DISALLOW_COPY_AND_ASSIGN(TestScreen);
 };

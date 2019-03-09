@@ -13,7 +13,9 @@
 #include <string>
 
 #include "base/at_exit.h"
+#include "base/logging.h"
 #include "base/macros.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/trace_to_file.h"
 #include "build/build_config.h"
 
@@ -22,6 +24,8 @@ class TestInfo;
 }
 
 namespace base {
+
+class XmlUnitTestResultPrinter;
 
 // Instantiates TestSuite, runs it and returns exit code.
 int RunUnitTestsUsingBaseTestSuite(int argc, char **argv);
@@ -37,24 +41,19 @@ class TestSuite {
 #endif  // defined(OS_WIN)
   virtual ~TestSuite();
 
-  // Returns true if the test is marked as "MAYBE_".
-  // When using different prefixes depending on platform, we use MAYBE_ and
-  // preprocessor directives to replace MAYBE_ with the target prefix.
-  static bool IsMarkedMaybe(const testing::TestInfo& test);
-
-  void CatchMaybeTests();
-
-  void ResetCommandLine();
-
-  void AddTestLauncherResultPrinter();
-
   int Run();
+
+  // Disables checks for certain global objects being leaked across tests.
+  void DisableCheckForLeakedGlobals();
 
  protected:
   // By default fatal log messages (e.g. from DCHECKs) result in error dialogs
   // which gum up buildbots. Use a minimalistic assert handler which just
   // terminates the process.
-  static void UnitTestAssertHandler(const std::string& str);
+  void UnitTestAssertHandler(const char* file,
+                             int line,
+                             const base::StringPiece summary,
+                             const base::StringPiece stack_trace);
 
   // Disable crash dialogs so that it doesn't gum up the buildbot
   virtual void SuppressErrorDialogs();
@@ -70,6 +69,8 @@ class TestSuite {
   std::unique_ptr<base::AtExitManager> at_exit_manager_;
 
  private:
+  void AddTestLauncherResultPrinter();
+
   void InitializeFromCommandLine(int argc, char** argv);
 #if defined(OS_WIN)
   void InitializeFromCommandLine(int argc, wchar_t** argv);
@@ -80,9 +81,17 @@ class TestSuite {
 
   test::TraceToFile trace_to_file_;
 
-  bool initialized_command_line_;
+  bool initialized_command_line_ = false;
 
-  bool created_feature_list_;
+  test::ScopedFeatureList scoped_feature_list_;
+
+  XmlUnitTestResultPrinter* printer_ = nullptr;
+
+  std::unique_ptr<logging::ScopedLogAssertHandler> assert_handler_;
+
+  bool check_for_leaked_globals_ = true;
+
+  bool is_initialized_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(TestSuite);
 };

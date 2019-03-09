@@ -6,23 +6,18 @@
 #define CHROME_BROWSER_RENDERER_HOST_CHROME_EXTENSION_MESSAGE_FILTER_H_
 
 #include <string>
+#include <vector>
 
 #include "base/macros.h"
 #include "base/sequenced_task_runner_helpers.h"
 #include "content/public/browser/browser_message_filter.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 
-class GURL;
 class Profile;
 struct ExtensionHostMsg_APIActionOrEvent_Params;
 struct ExtensionHostMsg_DOMAction_Params;
-struct ExtensionMsg_ExternalConnectionInfo;
-struct ExtensionMsg_TabTargetConnectionInfo;
-
-namespace base {
-class FilePath;
-}
 
 namespace extensions {
 class ActivityLog;
@@ -51,45 +46,14 @@ class ChromeExtensionMessageFilter : public content::BrowserMessageFilter,
 
   // TODO(jamescook): Move these functions into the extensions module. Ideally
   // this would be in extensions::ExtensionMessageFilter but that will require
-  // resolving the MessageService and ActivityLog dependencies on src/chrome.
+  // resolving the ActivityLog dependencies on src/chrome.
   // http://crbug.com/339637
-  void OnOpenChannelToExtension(int routing_id,
-                                const ExtensionMsg_ExternalConnectionInfo& info,
-                                const std::string& channel_name,
-                                bool include_tls_channel_id,
-                                int* port_id);
-  void OpenChannelToExtensionOnUIThread(
-      int source_process_id,
-      int source_routing_id,
-      int receiver_port_id,
-      const ExtensionMsg_ExternalConnectionInfo& info,
-      const std::string& channel_name,
-      bool include_tls_channel_id);
-  void OnOpenChannelToNativeApp(int routing_id,
-                                const std::string& native_app_name,
-                                int* port_id);
-  void OpenChannelToNativeAppOnUIThread(int source_routing_id,
-                                        int receiver_port_id,
-                                        const std::string& native_app_name);
-  void OnOpenChannelToTab(int routing_id,
-                          const ExtensionMsg_TabTargetConnectionInfo& info,
-                          const std::string& extension_id,
-                          const std::string& channel_name,
-                          int* port_id);
-  void OpenChannelToTabOnUIThread(
-      int source_process_id,
-      int source_routing_id,
-      int receiver_port_id,
-      const ExtensionMsg_TabTargetConnectionInfo& info,
-      const std::string& extension_id,
-      const std::string& channel_name);
-  void OnOpenMessagePort(int routing_id, int port_id);
-  void OnCloseMessagePort(int routing_id, int port_id, bool force_close);
-  void OnPostMessage(int port_id, const extensions::Message& message);
   void OnGetExtMessageBundle(const std::string& extension_id,
                              IPC::Message* reply_msg);
-  void OnGetExtMessageBundleOnBlockingPool(
-      const std::string& extension_id,
+  void OnGetExtMessageBundleAsync(
+      const std::vector<base::FilePath>& extension_paths,
+      const std::string& main_extension_id,
+      const std::string& default_locale,
       IPC::Message* reply_msg);
   void OnAddAPIActionToExtensionActivityLog(
       const std::string& extension_id,

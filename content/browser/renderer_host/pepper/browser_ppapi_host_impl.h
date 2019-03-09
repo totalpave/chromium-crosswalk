@@ -7,10 +7,10 @@
 
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "base/compiler_specific.h"
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -18,15 +18,15 @@
 #include "base/observer_list.h"
 #include "base/process/process.h"
 #include "content/browser/renderer_host/pepper/content_browser_pepper_host_factory.h"
-#include "content/browser/renderer_host/pepper/ssl_context_helper.h"
 #include "content/common/content_export.h"
 #include "content/common/pepper_renderer_instance_data.h"
 #include "content/public/browser/browser_ppapi_host.h"
 #include "content/public/common/process_type.h"
 #include "ipc/message_filter.h"
+#include "ppapi/buildflags/buildflags.h"
 #include "ppapi/host/ppapi_host.h"
 
-#if !defined(ENABLE_PLUGINS)
+#if !BUILDFLAG(ENABLE_PLUGINS)
 #error "Plugins should be enabled"
 #endif
 
@@ -70,8 +70,6 @@ class CONTENT_EXPORT BrowserPpapiHostImpl : public BrowserPpapiHost {
   const base::FilePath& GetProfileDataDirectory() override;
   GURL GetDocumentURLForInstance(PP_Instance instance) override;
   GURL GetPluginURLForInstance(PP_Instance instance) override;
-  void SetOnKeepaliveCallback(
-      const BrowserPpapiHost::OnKeepaliveCallback& callback) override;
 
   // Whether the plugin context is secure. That is, it is served from a secure
   // origin and it is embedded within a hierarchy of secure frames. This value
@@ -101,10 +99,6 @@ class CONTENT_EXPORT BrowserPpapiHostImpl : public BrowserPpapiHost {
     return message_filter_;
   }
 
-  const scoped_refptr<SSLContextHelper>& ssl_context_helper() const {
-    return ssl_context_helper_;
-  }
-
  private:
   friend class BrowserPpapiHostTest;
 
@@ -124,7 +118,6 @@ class CONTENT_EXPORT BrowserPpapiHostImpl : public BrowserPpapiHost {
    private:
     ~HostMessageFilter() override;
 
-    void OnKeepalive();
     void OnHostMsgLogInterfaceUsage(int hash) const;
 
     // Non owning pointers cleared in OnHostDestroyed()
@@ -139,11 +132,8 @@ class CONTENT_EXPORT BrowserPpapiHostImpl : public BrowserPpapiHost {
     PepperRendererInstanceData renderer_data;
     bool is_throttled;
 
-    base::ObserverList<InstanceObserver> observer_list;
+    base::ObserverList<InstanceObserver>::Unchecked observer_list;
   };
-
-  // Reports plugin activity to the callback set with SetOnKeepaliveCallback.
-  void OnKeepalive();
 
   std::unique_ptr<ppapi::host::PpapiHost> ppapi_host_;
   base::Process plugin_process_;
@@ -158,15 +148,10 @@ class CONTENT_EXPORT BrowserPpapiHostImpl : public BrowserPpapiHost {
   // BrowserPpapiHost::CreateExternalPluginProcess.
   bool external_plugin_;
 
-  scoped_refptr<SSLContextHelper> ssl_context_helper_;
-
   // Tracks all PP_Instances in this plugin and associated data.
-  base::ScopedPtrHashMap<PP_Instance, std::unique_ptr<InstanceData>>
-      instance_map_;
+  std::unordered_map<PP_Instance, std::unique_ptr<InstanceData>> instance_map_;
 
   scoped_refptr<HostMessageFilter> message_filter_;
-
-  BrowserPpapiHost::OnKeepaliveCallback on_keepalive_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserPpapiHostImpl);
 };

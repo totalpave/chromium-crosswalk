@@ -6,12 +6,14 @@
 
 #include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/stl_util.h"
 #include "base/strings/string_util.h"
+#include "extensions/common/alias.h"
 
 namespace extensions {
 
-static base::LazyInstance<PermissionsInfo> g_permissions_info =
+static base::LazyInstance<PermissionsInfo>::Leaky g_permissions_info =
     LAZY_INSTANCE_INITIALIZER;
 
 // static
@@ -19,32 +21,30 @@ PermissionsInfo* PermissionsInfo::GetInstance() {
   return g_permissions_info.Pointer();
 }
 
-void PermissionsInfo::AddProvider(const PermissionsProvider& provider) {
-  std::vector<APIPermissionInfo*> permissions = provider.GetAllPermissions();
-  std::vector<PermissionsProvider::AliasInfo> aliases =
-      provider.GetAllAliases();
+void PermissionsInfo::RegisterPermissions(
+    base::span<const APIPermissionInfo::InitInfo> infos,
+    base::span<const Alias> aliases) {
+  for (const auto& info : infos)
+    RegisterPermission(base::WrapUnique(new APIPermissionInfo((info))));
 
-  for (size_t i = 0; i < permissions.size(); ++i)
-    RegisterPermission(permissions[i]);
-  for (size_t i = 0; i < aliases.size(); ++i)
-    RegisterAlias(aliases[i].name, aliases[i].alias);
+  for (const auto& alias : aliases)
+    RegisterAlias(alias);
 }
 
-const APIPermissionInfo* PermissionsInfo::GetByID(
-    APIPermission::ID id) const {
-  IDMap::const_iterator i = id_map_.find(id);
-  return (i == id_map_.end()) ? NULL : i->second;
+const APIPermissionInfo* PermissionsInfo::GetByID(APIPermission::ID id) const {
+  auto i = id_map_.find(id);
+  return (i == id_map_.end()) ? nullptr : i->second.get();
 }
 
 const APIPermissionInfo* PermissionsInfo::GetByName(
     const std::string& name) const {
-  NameMap::const_iterator i = name_map_.find(name);
-  return (i == name_map_.end()) ? NULL : i->second;
+  auto i = name_map_.find(name);
+  return (i == name_map_.end()) ? nullptr : i->second;
 }
 
 APIPermissionSet PermissionsInfo::GetAll() const {
   APIPermissionSet permissions;
-  for (IDMap::const_iterator i = id_map_.begin(); i != id_map_.end(); ++i)
+  for (auto i = id_map_.cbegin(); i != id_map_.cend(); ++i)
     permissions.insert(i->second->id());
   return permissions;
 }
@@ -52,8 +52,7 @@ APIPermissionSet PermissionsInfo::GetAll() const {
 APIPermissionSet PermissionsInfo::GetAllByName(
     const std::set<std::string>& permission_names) const {
   APIPermissionSet permissions;
-  for (std::set<std::string>::const_iterator i = permission_names.begin();
-       i != permission_names.end(); ++i) {
+  for (auto i = permission_names.cbegin(); i != permission_names.cend(); ++i) {
     const APIPermissionInfo* permission_info = GetByName(*i);
     if (permission_info)
       permissions.insert(permission_info->id());
@@ -62,7 +61,7 @@ APIPermissionSet PermissionsInfo::GetAllByName(
 }
 
 bool PermissionsInfo::HasChildPermissions(const std::string& name) const {
-  NameMap::const_iterator i = name_map_.lower_bound(name + '.');
+  auto i = name_map_.lower_bound(name + '.');
   if (i == name_map_.end()) return false;
   return base::StartsWith(i->first, name + '.', base::CompareCase::SENSITIVE);
 }
@@ -72,23 +71,21 @@ PermissionsInfo::PermissionsInfo()
 }
 
 PermissionsInfo::~PermissionsInfo() {
-  STLDeleteContainerPairSecondPointers(id_map_.begin(), id_map_.end());
 }
 
-void PermissionsInfo::RegisterAlias(
-    const char* name,
-    const char* alias) {
-  DCHECK(ContainsKey(name_map_, name));
-  DCHECK(!ContainsKey(name_map_, alias));
-  name_map_[alias] = name_map_[name];
+void PermissionsInfo::RegisterAlias(const Alias& alias) {
+  DCHECK(base::ContainsKey(name_map_, alias.real_name));
+  DCHECK(!base::ContainsKey(name_map_, alias.name));
+  name_map_[alias.name] = name_map_[alias.real_name];
 }
 
-void PermissionsInfo::RegisterPermission(APIPermissionInfo* permission) {
-  DCHECK(!ContainsKey(id_map_, permission->id()));
-  DCHECK(!ContainsKey(name_map_, permission->name()));
+void PermissionsInfo::RegisterPermission(
+    std::unique_ptr<APIPermissionInfo> permission) {
+  DCHECK(!base::ContainsKey(id_map_, permission->id()));
+  DCHECK(!base::ContainsKey(name_map_, permission->name()));
 
-  id_map_[permission->id()] = permission;
-  name_map_[permission->name()] = permission;
+  name_map_[permission->name()] = permission.get();
+  id_map_[permission->id()] = std::move(permission);
 
   permission_count_++;
 }

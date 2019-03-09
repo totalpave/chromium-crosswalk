@@ -15,13 +15,12 @@
 #include "snapshot/mac/system_snapshot_mac.h"
 
 #include <sys/time.h>
-#include <time.h>
 
 #include <string>
 
 #include "build/build_config.h"
 #include "gtest/gtest.h"
-#include "snapshot/mac/process_reader.h"
+#include "snapshot/mac/process_reader_mac.h"
 #include "test/errors.h"
 #include "util/mac/mac_util.h"
 
@@ -31,7 +30,7 @@ namespace {
 
 // SystemSnapshotMac objects would be cumbersome to construct in each test that
 // requires one, because of the repetitive and mechanical work necessary to set
-// up a ProcessReader and timeval, along with the checks to verify that these
+// up a ProcessReaderMac and timeval, along with the checks to verify that these
 // operations succeed. This test fixture class handles the initialization work
 // so that individual tests don’t have to.
 class SystemSnapshotMacTest : public testing::Test {
@@ -50,13 +49,13 @@ class SystemSnapshotMacTest : public testing::Test {
   // testing::Test:
   void SetUp() override {
     ASSERT_TRUE(process_reader_.Initialize(mach_task_self()));
-    ASSERT_EQ(0, gettimeofday(&snapshot_time_, nullptr))
+    ASSERT_EQ(gettimeofday(&snapshot_time_, nullptr), 0)
         << ErrnoMessage("gettimeofday");
     system_snapshot_.Initialize(&process_reader_, &snapshot_time_);
   }
 
  private:
-  ProcessReader process_reader_;
+  ProcessReaderMac process_reader_;
   timeval snapshot_time_;
   internal::SystemSnapshotMac system_snapshot_;
 
@@ -67,9 +66,9 @@ TEST_F(SystemSnapshotMacTest, GetCPUArchitecture) {
   CPUArchitecture cpu_architecture = system_snapshot().GetCPUArchitecture();
 
 #if defined(ARCH_CPU_X86)
-  EXPECT_EQ(kCPUArchitectureX86, cpu_architecture);
+  EXPECT_EQ(cpu_architecture, kCPUArchitectureX86);
 #elif defined(ARCH_CPU_X86_64)
-  EXPECT_EQ(kCPUArchitectureX86_64, cpu_architecture);
+  EXPECT_EQ(cpu_architecture, kCPUArchitectureX86_64);
 #else
 #error port to your architecture
 #endif
@@ -103,8 +102,8 @@ TEST_F(SystemSnapshotMacTest, CPUX86SupportsDAZ) {
 #endif
 
 TEST_F(SystemSnapshotMacTest, GetOperatingSystem) {
-  EXPECT_EQ(SystemSnapshot::kOperatingSystemMacOSX,
-            system_snapshot().GetOperatingSystem());
+  EXPECT_EQ(system_snapshot().GetOperatingSystem(),
+            SystemSnapshot::kOperatingSystemMacOSX);
 }
 
 TEST_F(SystemSnapshotMacTest, OSVersion) {
@@ -114,8 +113,8 @@ TEST_F(SystemSnapshotMacTest, OSVersion) {
   std::string build;
   system_snapshot().OSVersion(&major, &minor, &bugfix, &build);
 
-  EXPECT_EQ(10, major);
-  EXPECT_EQ(MacOSXMinorVersion(), minor);
+  EXPECT_EQ(major, 10);
+  EXPECT_EQ(minor, MacOSXMinorVersion());
   EXPECT_FALSE(build.empty());
 }
 
@@ -125,50 +124,6 @@ TEST_F(SystemSnapshotMacTest, OSVersionFull) {
 
 TEST_F(SystemSnapshotMacTest, MachineDescription) {
   EXPECT_FALSE(system_snapshot().MachineDescription().empty());
-}
-
-TEST_F(SystemSnapshotMacTest, TimeZone) {
-  SystemSnapshot::DaylightSavingTimeStatus dst_status;
-  int standard_offset_seconds;
-  int daylight_offset_seconds;
-  std::string standard_name;
-  std::string daylight_name;
-
-  system_snapshot().TimeZone(&dst_status,
-                             &standard_offset_seconds,
-                             &daylight_offset_seconds,
-                             &standard_name,
-                             &daylight_name);
-
-  // |standard_offset_seconds| gives seconds east of UTC, and |timezone| gives
-  // seconds west of UTC.
-  EXPECT_EQ(-timezone, standard_offset_seconds);
-
-  // In contemporary usage, most time zones have an integer hour offset from
-  // UTC, although several are at a half-hour offset, and two are at 15-minute
-  // offsets. Throughout history, other variations existed. See
-  // http://www.timeanddate.com/time/time-zones-interesting.html.
-  EXPECT_EQ(0, standard_offset_seconds % (15 * 60))
-      << "standard_offset_seconds " << standard_offset_seconds;
-
-  if (dst_status == SystemSnapshot::kDoesNotObserveDaylightSavingTime) {
-    EXPECT_EQ(standard_offset_seconds, daylight_offset_seconds);
-    EXPECT_EQ(standard_name, daylight_name);
-  } else {
-    EXPECT_EQ(0, daylight_offset_seconds % (15 * 60))
-        << "daylight_offset_seconds " << daylight_offset_seconds;
-
-    // In contemporary usage, dst_delta_seconds will almost always be one hour,
-    // except for Lord Howe Island, Australia, which uses a 30-minute
-    // delta. Throughout history, other variations existed. See
-    // http://www.timeanddate.com/time/dst/#brief.
-    int dst_delta_seconds = daylight_offset_seconds - standard_offset_seconds;
-    if (dst_delta_seconds != 60 * 60 && dst_delta_seconds != 30 * 60) {
-      FAIL() << "dst_delta_seconds " << dst_delta_seconds;
-    }
-
-    EXPECT_NE(standard_name, daylight_name);
-  }
 }
 
 }  // namespace

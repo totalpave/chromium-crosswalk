@@ -9,11 +9,11 @@
 #include "base/files/file_path.h"
 #include "base/format_macros.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
-#include "sql/connection.h"
+#include "sql/database.h"
 #include "sql/statement.h"
 #include "third_party/sqlite/sqlite3.h"
 #include "third_party/sqlite/src/src/recover.h"
@@ -22,6 +22,9 @@ namespace sql {
 
 namespace {
 
+// This enum must match the numbering for Sqlite.RecoveryEvents in
+// histograms.xml.  Do not reorder or remove items, only add new items before
+// RECOVERY_EVENT_MAX.
 enum RecoveryEventType {
   // Init() completed successfully.
   RECOVERY_SUCCESS_INIT = 0,
@@ -33,7 +36,8 @@ enum RecoveryEventType {
   RECOVERY_FAILED_VIRTUAL_TABLE_INIT,
 
   // System SQLite doesn't support vtable.
-  RECOVERY_FAILED_VIRTUAL_TABLE_SYSTEM_SQLITE,
+  // This is deprecated. Chrome doesn't support using the system SQLite anymore.
+  DEPRECATED_RECOVERY_FAILED_VIRTUAL_TABLE_SYSTEM_SQLITE,
 
   // Failed attempting to enable writable_schema.
   RECOVERY_FAILED_WRITABLE_SCHEMA,
@@ -84,7 +88,49 @@ enum RecoveryEventType {
   // No version key in recovery meta table.
   RECOVERY_FAILED_META_NO_VERSION,
 
-  // Always keep this at the end.
+  // Automatically recovered entire database successfully.
+  RECOVERY_SUCCESS_AUTORECOVERDB,
+
+  // Database was so broken recovery couldn't be entered.
+  RECOVERY_FAILED_AUTORECOVERDB_BEGIN,
+
+  // Failed to schema from corrupt database.
+  RECOVERY_FAILED_AUTORECOVERDB_SCHEMASELECT,
+
+  // Failed to create copy of schema in recovery database.
+  RECOVERY_FAILED_AUTORECOVERDB_SCHEMACREATE,
+
+  // Failed querying tables to recover.  Should be impossible.
+  RECOVERY_FAILED_AUTORECOVERDB_NAMESELECT,
+
+  // Failed to recover an individual table.
+  RECOVERY_FAILED_AUTORECOVERDB_TABLE,
+
+  // Failed to recover [sqlite_sequence] table.
+  RECOVERY_FAILED_AUTORECOVERDB_SEQUENCE,
+
+  // Failed to recover triggers or views or virtual tables.
+  RECOVERY_FAILED_AUTORECOVERDB_AUX,
+
+  // After SQLITE_NOTADB failure setting up for recovery, Delete() failed.
+  RECOVERY_FAILED_AUTORECOVERDB_NOTADB_DELETE,
+
+  // After SQLITE_NOTADB failure setting up for recovery, Delete() succeeded
+  // then Open() failed.
+  RECOVERY_FAILED_AUTORECOVERDB_NOTADB_REOPEN,
+
+  // After SQLITE_NOTADB failure setting up for recovery, Delete() and Open()
+  // succeeded, then querying the database failed.
+  RECOVERY_FAILED_AUTORECOVERDB_NOTADB_QUERY,
+
+  // After SQLITE_NOTADB failure setting up for recovery, the database was
+  // successfully deleted.
+  RECOVERY_SUCCESS_AUTORECOVERDB_NOTADB_DELETE,
+
+  // Failed to find required [meta.version] information.
+  RECOVERY_FAILED_AUTORECOVERDB_META_VERSION,
+
+  // Add new items before this one, always keep this one at the end.
   RECOVERY_EVENT_MAX,
 };
 
@@ -96,32 +142,27 @@ void RecordRecoveryEvent(RecoveryEventType recovery_event) {
 }  // namespace
 
 // static
-bool Recovery::FullRecoverySupported() {
-  // TODO(shess): See comment in Init().
-  return true;
-}
-
-// static
-std::unique_ptr<Recovery> Recovery::Begin(Connection* connection,
+std::unique_ptr<Recovery> Recovery::Begin(Database* database,
                                           const base::FilePath& db_path) {
   // Recovery is likely to be used in error handling.  Since recovery changes
   // the state of the handle, protect against multiple layers attempting the
   // same recovery.
-  if (!connection->is_open()) {
+  if (!database->is_open()) {
     // Warn about API mis-use.
-    DLOG_IF(FATAL, !connection->poisoned_)
-        << "Illegal to recover with closed database";
+    DCHECK(database->poisoned(InternalApiToken()))
+        << "Illegal to recover with closed Database";
     return std::unique_ptr<Recovery>();
   }
 
-  std::unique_ptr<Recovery> r(new Recovery(connection));
-  if (!r->Init(db_path)) {
+  // Using `new` to access a non-public constructor
+  std::unique_ptr<Recovery> recovery(new Recovery(database));
+  if (!recovery->Init(db_path)) {
     // TODO(shess): Should Init() failure result in Raze()?
-    r->Shutdown(POISON);
+    recovery->Shutdown(POISON);
     return std::unique_ptr<Recovery>();
   }
 
-  return r;
+  return recovery;
 }
 
 // static
@@ -142,12 +183,9 @@ void Recovery::Rollback(std::unique_ptr<Recovery> r) {
   r->Shutdown(POISON);
 }
 
-Recovery::Recovery(Connection* connection)
-    : db_(connection),
-      recover_db_() {
+Recovery::Recovery(Database* connection) : db_(connection), recover_db_() {
   // Result should keep the page size specified earlier.
-  if (db_->page_size_)
-    recover_db_.set_page_size(db_->page_size_);
+  recover_db_.set_page_size(db_->page_size());
 
   // Files with I/O errors cannot be safely memory-mapped.
   recover_db_.set_mmap_disabled();
@@ -199,7 +237,7 @@ bool Recovery::Init(const base::FilePath& db_path) {
   }
 
   // Enable the recover virtual table for this connection.
-  int rc = recoverVtableInit(recover_db_.db_);
+  int rc = chrome_sqlite3_recoverVtableInit(recover_db_.db(InternalApiToken()));
   if (rc != SQLITE_OK) {
     RecordRecoveryEvent(RECOVERY_FAILED_VIRTUAL_TABLE_INIT);
     LOG(ERROR) << "Failed to initialize recover module: "
@@ -214,8 +252,10 @@ bool Recovery::Init(const base::FilePath& db_path) {
     return false;
   }
 
-  if (!recover_db_.AttachDatabase(db_path, "corrupt")) {
+  if (!recover_db_.AttachDatabase(db_path, "corrupt", InternalApiToken())) {
     RecordRecoveryEvent(RECOVERY_FAILED_ATTACH);
+    base::UmaHistogramSparse("Sqlite.RecoveryAttachError",
+                             recover_db_.GetErrorCode());
     return false;
   }
 
@@ -259,16 +299,17 @@ bool Recovery::Backup() {
 
   // Backup the original db from the recovered db.
   const char* kMain = "main";
-  sqlite3_backup* backup = sqlite3_backup_init(db_->db_, kMain,
-                                               recover_db_.db_, kMain);
+  sqlite3_backup* backup =
+      sqlite3_backup_init(db_->db(InternalApiToken()), kMain,
+                          recover_db_.db(InternalApiToken()), kMain);
   if (!backup) {
     RecordRecoveryEvent(RECOVERY_FAILED_BACKUP_INIT);
 
     // Error code is in the destination database handle.
-    int err = sqlite3_extended_errcode(db_->db_);
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Sqlite.RecoveryHandle", err);
+    int err = sqlite3_extended_errcode(db_->db(InternalApiToken()));
+    base::UmaHistogramSparse("Sqlite.RecoveryHandle", err);
     LOG(ERROR) << "sqlite3_backup_init() failed: "
-               << sqlite3_errmsg(db_->db_);
+               << sqlite3_errmsg(db_->db(InternalApiToken()));
 
     return false;
   }
@@ -285,9 +326,9 @@ bool Recovery::Backup() {
 
   if (rc != SQLITE_DONE) {
     RecordRecoveryEvent(RECOVERY_FAILED_BACKUP_STEP);
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Sqlite.RecoveryStep", rc);
+    base::UmaHistogramSparse("Sqlite.RecoveryStep", rc);
     LOG(ERROR) << "sqlite3_backup_step() failed: "
-               << sqlite3_errmsg(db_->db_);
+               << sqlite3_errmsg(db_->db(InternalApiToken()));
   }
 
   // The destination database was locked.  Give up, but leave the data
@@ -328,7 +369,7 @@ void Recovery::Shutdown(Recovery::Disposition raze) {
   } else if (raze == POISON) {
     db_->Poison();
   }
-  db_ = NULL;
+  db_ = nullptr;
 }
 
 bool Recovery::AutoRecoverTable(const char* table_name,
@@ -470,7 +511,7 @@ bool Recovery::AutoRecoverTable(const char* table_name,
 }
 
 bool Recovery::SetupMeta() {
-  const char kCreateSql[] =
+  static const char kCreateSql[] =
       "CREATE VIRTUAL TABLE temp.recover_meta USING recover"
       "("
       "corrupt.meta,"
@@ -491,7 +532,7 @@ bool Recovery::GetMetaVersionNumber(int* version) {
   // Unfortunately, DoesTableExist() queries sqlite_master, not
   // sqlite_temp_master.
 
-  const char kVersionSql[] =
+  static const char kVersionSql[] =
       "SELECT value FROM temp.recover_meta WHERE key = 'version'";
   sql::Statement recovery_version(db()->GetUniqueStatement(kVersionSql));
   if (!recovery_version.Step()) {
@@ -506,6 +547,253 @@ bool Recovery::GetMetaVersionNumber(int* version) {
   RecordRecoveryEvent(RECOVERY_SUCCESS_META_VERSION);
   *version = recovery_version.ColumnInt(0);
   return true;
+}
+
+namespace {
+
+// Collect statements from [corrupt.sqlite_master.sql] which start with |prefix|
+// (which should be a valid SQL string ending with the space before a table
+// name), then apply the statements to [main].  Skip any table named
+// 'sqlite_sequence', as that table is created on demand by SQLite if any tables
+// use AUTOINCREMENT.
+//
+// Returns |true| if all of the matching items were created in the main
+// database.  Returns |false| if an item fails on creation, or if the corrupt
+// database schema cannot be queried.
+bool SchemaCopyHelper(Database* db, const char* prefix) {
+  const size_t prefix_len = strlen(prefix);
+  DCHECK_EQ(' ', prefix[prefix_len-1]);
+
+  sql::Statement s(db->GetUniqueStatement(
+      "SELECT DISTINCT sql FROM corrupt.sqlite_master "
+      "WHERE name<>'sqlite_sequence'"));
+  while (s.Step()) {
+    std::string sql = s.ColumnString(0);
+
+    // Skip statements that don't start with |prefix|.
+    if (sql.compare(0, prefix_len, prefix) != 0)
+      continue;
+
+    sql.insert(prefix_len, "main.");
+    if (!db->Execute(sql.c_str())) {
+      RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_SCHEMACREATE);
+      return false;
+    }
+  }
+  if (!s.Succeeded()) {
+    RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_SCHEMASELECT);
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+// This method is derived from SQLite's vacuum.c.  VACUUM operates very
+// similarily, creating a new database, populating the schema, then copying the
+// data.
+//
+// TODO(shess): This conservatively uses Rollback() rather than Unrecoverable().
+// With Rollback(), it is expected that the database will continue to generate
+// errors.  Change the failure cases to Unrecoverable() if/when histogram
+// results indicate that everything is working reasonably.
+//
+// static
+std::unique_ptr<Recovery> Recovery::BeginRecoverDatabase(
+    Database* db,
+    const base::FilePath& db_path) {
+  std::unique_ptr<sql::Recovery> recovery = sql::Recovery::Begin(db, db_path);
+  if (!recovery) {
+    // Close the underlying sqlite* handle.  Windows does not allow deleting
+    // open files, and all platforms block opening a second sqlite3* handle
+    // against a database when exclusive locking is set.
+    db->Poison();
+
+    // Histograms from Recovery::Begin() show all current failures are in
+    // attaching the corrupt database, with 2/3 being SQLITE_NOTADB.  Don't
+    // delete the database except for that specific failure case.
+    {
+      Database probe_db;
+      if (!probe_db.OpenInMemory() ||
+          probe_db.AttachDatabase(db_path, "corrupt", InternalApiToken()) ||
+          probe_db.GetErrorCode() != SQLITE_NOTADB) {
+        RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_BEGIN);
+        return nullptr;
+      }
+    }
+
+    // The database has invalid data in the SQLite header, so it is almost
+    // certainly not recoverable without manual intervention (and likely not
+    // recoverable _with_ manual intervention).  Clear away the broken database.
+    if (!sql::Database::Delete(db_path)) {
+      RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_NOTADB_DELETE);
+      return nullptr;
+    }
+
+    // Windows deletion is complicated by file scanners and malware - sometimes
+    // Delete() appears to succeed, even though the file remains.  The following
+    // attempts to track if this happens often enough to cause concern.
+    {
+      Database probe_db;
+      if (!probe_db.Open(db_path)) {
+        RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_NOTADB_REOPEN);
+        return nullptr;
+      }
+      if (!probe_db.Execute("PRAGMA auto_vacuum")) {
+        RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_NOTADB_QUERY);
+        return nullptr;
+      }
+    }
+
+    // The rest of the recovery code could be run on the re-opened database, but
+    // the database is empty, so there would be no point.
+    RecordRecoveryEvent(RECOVERY_SUCCESS_AUTORECOVERDB_NOTADB_DELETE);
+    return nullptr;
+  }
+
+#if DCHECK_IS_ON()
+  // This code silently fails to recover fts3 virtual tables.  At this time no
+  // browser database contain fts3 tables.  Just to be safe, complain loudly if
+  // the database contains virtual tables.
+  //
+  // fts3 has an [x_segdir] table containing a column [end_block INTEGER].  But
+  // it actually stores either an integer or a text containing a pair of
+  // integers separated by a space.  AutoRecoverTable() trusts the INTEGER tag
+  // when setting up the recover vtable, so those rows get dropped.  Setting
+  // that column to ANY may work.
+  if (db->is_open()) {
+    sql::Statement s(db->GetUniqueStatement(
+        "SELECT 1 FROM sqlite_master WHERE sql LIKE 'CREATE VIRTUAL TABLE %'"));
+    DCHECK(!s.Step()) << "Recovery of virtual tables not supported";
+  }
+#endif
+
+  // TODO(shess): vacuum.c turns off checks and foreign keys.
+
+  // TODO(shess): vacuum.c turns synchronous=OFF for the target.  I do not fully
+  // understand this, as the temporary db should not have a journal file at all.
+  // Perhaps it does in case of cache spill?
+
+  // Copy table schema from [corrupt] to [main].
+  if (!SchemaCopyHelper(recovery->db(), "CREATE TABLE ") ||
+      !SchemaCopyHelper(recovery->db(), "CREATE INDEX ") ||
+      !SchemaCopyHelper(recovery->db(), "CREATE UNIQUE INDEX ")) {
+    // No RecordRecoveryEvent() here because SchemaCopyHelper() already did.
+    Recovery::Rollback(std::move(recovery));
+    return nullptr;
+  }
+
+  // Run auto-recover against each table, skipping the sequence table.  This is
+  // necessary because table recovery can create the sequence table as a side
+  // effect, so recovering that table inline could lead to duplicate data.
+  {
+    sql::Statement s(recovery->db()->GetUniqueStatement(
+        "SELECT name FROM sqlite_master WHERE sql LIKE 'CREATE TABLE %' "
+        "AND name!='sqlite_sequence'"));
+    while (s.Step()) {
+      const std::string name = s.ColumnString(0);
+      size_t rows_recovered;
+      if (!recovery->AutoRecoverTable(name.c_str(), &rows_recovered)) {
+        RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_TABLE);
+        Recovery::Rollback(std::move(recovery));
+        return nullptr;
+      }
+    }
+    if (!s.Succeeded()) {
+      RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_NAMESELECT);
+      Recovery::Rollback(std::move(recovery));
+      return nullptr;
+    }
+  }
+
+  // Overwrite any sequences created.
+  if (recovery->db()->DoesTableExist("corrupt.sqlite_sequence")) {
+    ignore_result(recovery->db()->Execute("DELETE FROM main.sqlite_sequence"));
+    size_t rows_recovered;
+    if (!recovery->AutoRecoverTable("sqlite_sequence", &rows_recovered)) {
+      RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_SEQUENCE);
+      Recovery::Rollback(std::move(recovery));
+      return nullptr;
+    }
+  }
+
+  // Copy triggers and views directly to sqlite_master.  Any tables they refer
+  // to should already exist.
+  static const char kCreateMetaItemsSql[] =
+      "INSERT INTO main.sqlite_master "
+      "SELECT type, name, tbl_name, rootpage, sql "
+      "FROM corrupt.sqlite_master WHERE type='view' OR type='trigger'";
+  if (!recovery->db()->Execute(kCreateMetaItemsSql)) {
+    RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_AUX);
+    Recovery::Rollback(std::move(recovery));
+    return nullptr;
+  }
+
+  RecordRecoveryEvent(RECOVERY_SUCCESS_AUTORECOVERDB);
+  return recovery;
+}
+
+void Recovery::RecoverDatabase(Database* db, const base::FilePath& db_path) {
+  std::unique_ptr<sql::Recovery> recovery = BeginRecoverDatabase(db, db_path);
+
+  // ignore_result() because BeginRecoverDatabase() and Recovered() already
+  // provide suitable histogram coverage.
+  if (recovery)
+    ignore_result(Recovery::Recovered(std::move(recovery)));
+}
+
+void Recovery::RecoverDatabaseWithMetaVersion(Database* db,
+                                              const base::FilePath& db_path) {
+  std::unique_ptr<sql::Recovery> recovery = BeginRecoverDatabase(db, db_path);
+  if (!recovery)
+    return;
+
+  int version = 0;
+  if (!recovery->SetupMeta() || !recovery->GetMetaVersionNumber(&version)) {
+    sql::Recovery::Unrecoverable(std::move(recovery));
+    RecordRecoveryEvent(RECOVERY_FAILED_AUTORECOVERDB_META_VERSION);
+    return;
+  }
+
+  // ignore_result() because BeginRecoverDatabase() and Recovered() already
+  // provide suitable histogram coverage.
+  ignore_result(Recovery::Recovered(std::move(recovery)));
+}
+
+// static
+bool Recovery::ShouldRecover(int extended_error) {
+  // Trim extended error codes.
+  int error = extended_error & 0xFF;
+  switch (error) {
+    case SQLITE_NOTADB:
+      // SQLITE_NOTADB happens if the SQLite header is broken.  Some earlier
+      // versions of SQLite return this where other versions return
+      // SQLITE_CORRUPT, which is a recoverable case.  Later versions only
+      // return this error only in unrecoverable cases, in which case recovery
+      // will fail with no changes to the database, so there's no harm in
+      // attempting recovery in this case.
+      return true;
+
+    case SQLITE_CORRUPT:
+      // SQLITE_CORRUPT generally means that the database is readable as a
+      // SQLite database, but some inconsistency has been detected by SQLite.
+      // In many cases the inconsistency is relatively trivial, such as if an
+      // index refers to a row which was deleted, in which case most or even all
+      // of the data can be recovered.  This can also be reported if parts of
+      // the file have been overwritten with garbage data, in which recovery
+      // should be able to recover partial data.
+      return true;
+
+      // TODO(shess): Possible future options for automated fixing:
+      // - SQLITE_CANTOPEN - delete the broken symlink or directory.
+      // - SQLITE_PERM - permissions could be fixed.
+      // - SQLITE_READONLY - permissions could be fixed.
+      // - SQLITE_IOERR - rewrite using new blocks.
+      // - SQLITE_FULL - recover in memory and rewrite subset of data.
+
+    default:
+      return false;
+  }
 }
 
 }  // namespace sql

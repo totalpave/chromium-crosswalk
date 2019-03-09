@@ -7,8 +7,8 @@
 #import <Foundation/Foundation.h>
 #include <stddef.h>
 
-#include "base/macros.h"
-#include "base/sys_info.h"
+#include "base/stl_util.h"
+#include "base/system/sys_info.h"
 
 namespace {
 
@@ -28,23 +28,25 @@ std::string* g_icudtl_path_override = nullptr;
 namespace base {
 namespace ios {
 
-// When dropping iOS7 support, also address issues listed in crbug.com/502968.
-bool IsRunningOnIOS8OrLater() {
-  return IsRunningOnOrLater(8, 0, 0);
-}
-
-bool IsRunningOnIOS9OrLater() {
-  return IsRunningOnOrLater(9, 0, 0);
-}
-
 bool IsRunningOnIOS10OrLater() {
-  return IsRunningOnOrLater(10, 0, 0);
+  static const bool is_running_on_or_later = IsRunningOnOrLater(10, 0, 0);
+  return is_running_on_or_later;
+}
+
+bool IsRunningOnIOS11OrLater() {
+  static const bool is_running_on_or_later = IsRunningOnOrLater(11, 0, 0);
+  return is_running_on_or_later;
+}
+
+bool IsRunningOnIOS12OrLater() {
+  static const bool is_running_on_or_later = IsRunningOnOrLater(12, 0, 0);
+  return is_running_on_or_later;
 }
 
 bool IsRunningOnOrLater(int32_t major, int32_t minor, int32_t bug_fix) {
   static const int32_t* current_version = OSVersionAsArray();
   int32_t version[] = {major, minor, bug_fix};
-  for (size_t i = 0; i < arraysize(version); i++) {
+  for (size_t i = 0; i < base::size(version); i++) {
     if (current_version[i] != version[i])
       return current_version[i] > version[i];
   }

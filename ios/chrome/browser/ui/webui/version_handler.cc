@@ -9,7 +9,7 @@
 #include "base/values.h"
 #include "components/version_ui/version_handler_helper.h"
 #include "components/version_ui/version_ui_constants.h"
-#include "ios/public/provider/web/web_ui_ios.h"
+#include "ios/web/public/webui/web_ui_ios.h"
 #include "ui/base/l10n/l10n_util.h"
 
 VersionHandler::VersionHandler() {}
@@ -19,12 +19,13 @@ VersionHandler::~VersionHandler() {}
 void VersionHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       version_ui::kRequestVersionInfo,
-      base::Bind(&VersionHandler::HandleRequestVersionInfo,
-                 base::Unretained(this)));
+      base::BindRepeating(&VersionHandler::HandleRequestVersionInfo,
+                          base::Unretained(this)));
 }
 
 void VersionHandler::HandleRequestVersionInfo(const base::ListValue* args) {
   // Respond with the variations info immediately.
-  web_ui()->CallJavascriptFunction(version_ui::kReturnVariationInfo,
-                                   *version_ui::GetVariationsList());
+  base::Value variations_list = version_ui::GetVariationsList()->Clone();
+  std::vector<const base::Value*> params{&variations_list};
+  web_ui()->CallJavascriptFunction(version_ui::kReturnVariationInfo, params);
 }

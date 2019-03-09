@@ -8,8 +8,12 @@
 #include <vector>
 
 #include "base/strings/string_split.h"
+#include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
+#include "components/url_formatter/elide_url.h"
 #include "extensions/common/url_pattern_set.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "url/gurl.h"
 #include "url/url_constants.h"
 
 using extensions::URLPatternSet;
@@ -45,17 +49,26 @@ std::set<std::string> GetDistinctHosts(const URLPatternSet& host_patterns,
       continue;
 
     std::string host = pattern.host();
+    if (!host.empty()) {
+      // Convert the host into a secure format. For example, an IDN domain is
+      // converted to punycode.
+      host = base::UTF16ToUTF8(url_formatter::FormatUrlForSecurityDisplay(
+          GURL(base::StringPrintf("%s%s%s", url::kHttpScheme,
+                                  url::kStandardSchemeSeparator, host.c_str())),
+          url_formatter::SchemeDisplay::OMIT_HTTP_AND_HTTPS));
+    }
 
     // Add the subdomain wildcard back to the host, if necessary.
     if (pattern.match_subdomains())
       host = "*." + host;
 
     // If the host has an RCD, split it off so we can detect duplicates.
+
     std::string rcd;
-    size_t reg_len = net::registry_controlled_domains::GetRegistryLength(
-        host,
-        net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
-        net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
+    size_t reg_len =
+        net::registry_controlled_domains::PermissiveGetHostRegistryLength(
+            host, net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
+            net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
     if (reg_len && reg_len != std::string::npos) {
       if (include_rcd)  // else leave rcd empty
         rcd = host.substr(host.size() - reg_len);
@@ -63,7 +76,7 @@ std::set<std::string> GetDistinctHosts(const URLPatternSet& host_patterns,
     }
 
     // Check if we've already seen this host.
-    HostVector::iterator it = hosts_best_rcd.begin();
+    auto it = hosts_best_rcd.begin();
     for (; it != hosts_best_rcd.end(); ++it) {
       if (it->first == host)
         break;

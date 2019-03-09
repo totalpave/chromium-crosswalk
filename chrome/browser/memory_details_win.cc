@@ -2,11 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/memory_details.h"
+// Windows headers must come first.
+#include <windows.h>
 
 #include <psapi.h>
 #include <stddef.h>
 #include <TlHelp32.h>
+
+#include "chrome/browser/memory_details.h"
 
 #include <memory>
 
@@ -16,25 +19,23 @@
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/windows_version.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/chromium_strings.h"
 #include "components/version_info/version_info.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/process_type.h"
 #include "ui/base/l10n/l10n_util.h"
 
 using content::BrowserThread;
 
-// Known browsers which we collect details for.
-enum BrowserProcess {
-  CHROME_BROWSER = 0,
-};
-
 MemoryDetails::MemoryDetails() {
   base::FilePath browser_process_path;
-  PathService::Get(base::FILE_EXE, &browser_process_path);
+  base::PathService::Get(base::FILE_EXE, &browser_process_path);
 
   ProcessData process;
   process.name = l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
@@ -48,7 +49,8 @@ ProcessData* MemoryDetails::ChromeBrowser() {
 
 void MemoryDetails::CollectProcessData(
     const std::vector<ProcessMemoryInformation>& child_info) {
-  DCHECK(BrowserThread::GetBlockingPool()->RunsTasksOnCurrentThread());
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
 
   // Clear old data.
   process_data_[0].processes.clear();
@@ -57,7 +59,7 @@ void MemoryDetails::CollectProcessData(
       ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
   PROCESSENTRY32 process_entry = {sizeof(PROCESSENTRY32)};
   if (!snapshot.Get()) {
-    LOG(ERROR) << "CreateToolhelp32Snaphot failed: " << GetLastError();
+    LOG(ERROR) << "CreateToolhelp32Snapshot failed: " << GetLastError();
     return;
   }
   if (!::Process32First(snapshot.Get(), &process_entry)) {
@@ -71,32 +73,27 @@ void MemoryDetails::CollectProcessData(
     if (!process_handle.IsValid())
       continue;
     if (_wcsicmp(process_data_[0].process_name.c_str(),
-                 process_entry.szExeFile) != 0)
+                 process_entry.szExeFile) != 0) {
       continue;
+    }
+
     // Get Memory Information.
     ProcessMemoryInformation info;
     info.pid = pid;
-    if (info.pid == GetCurrentProcessId())
-      info.process_type = content::PROCESS_TYPE_BROWSER;
-    else
-      info.process_type = content::PROCESS_TYPE_UNKNOWN;
-
-    std::unique_ptr<base::ProcessMetrics> metrics;
-    metrics.reset(
-        base::ProcessMetrics::CreateProcessMetrics(process_handle.Get()));
-    metrics->GetCommittedKBytes(&info.committed);
-    metrics->GetWorkingSetKBytes(&info.working_set);
+    info.process_type = pid == GetCurrentProcessId()
+                            ? content::PROCESS_TYPE_BROWSER
+                            : content::PROCESS_TYPE_UNKNOWN;
 
     // Get Version Information.
     info.version = base::ASCIIToUTF16(version_info::GetVersionNumber());
     // Check if this is one of the child processes whose data we collected
     // on the IO thread, and if so copy over that data.
-    for (size_t child = 0; child < child_info.size(); child++) {
-      if (child_info[child].pid != info.pid)
-        continue;
-      info.titles = child_info[child].titles;
-      info.process_type = child_info[child].process_type;
-      break;
+    for (const ProcessMemoryInformation& child : child_info) {
+      if (child.pid == info.pid) {
+        info.titles = child.titles;
+        info.process_type = child.process_type;
+        break;
+      }
     }
 
     // Add the process info to our list.
@@ -104,7 +101,7 @@ void MemoryDetails::CollectProcessData(
   } while (::Process32Next(snapshot.Get(), &process_entry));
 
   // Finally return to the browser thread.
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&MemoryDetails::CollectChildInfoOnUIThread, this));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&MemoryDetails::CollectChildInfoOnUIThread, this));
 }

@@ -6,7 +6,6 @@
 
 #include "base/logging.h"
 #include "chrome/browser/ui/android/context_menu_helper.h"
-#include "content/public/browser/android/content_view_core.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "content/public/common/context_menu_params.h"
@@ -30,30 +29,15 @@ ChromeWebContentsViewDelegateAndroid::GetDragDestDelegate() {
 void ChromeWebContentsViewDelegateAndroid::ShowContextMenu(
     content::RenderFrameHost* render_frame_host,
     const content::ContextMenuParams& params) {
-  // Display paste pop-up only when selection is empty and editable.
-  if (params.is_editable && params.selection_text.empty()) {
-    content::ContentViewCore* content_view_core =
-        content::ContentViewCore::FromWebContents(web_contents_);
-    if (content_view_core &&
-        content_view_core->ShowPastePopup(params.selection_start.x(),
-                                          params.selection_start.y()))
-      return;
-  } else {
-    // TODO(dtrainor, kouhei): Give WebView a Populator/delegate so it can use
-    // the same context menu code.
-    ContextMenuHelper* helper =
-        ContextMenuHelper::FromWebContents(web_contents_);
-    if (helper && helper->ShowContextMenu(render_frame_host, params))
-      return;
-  }
-  web_contents_->NotifyContextMenuClosed(content::CustomContextMenuContext());
+  // TODO(dtrainor, kouhei): Give WebView a Populator/delegate so it can use
+  // the same context menu code.
+  ContextMenuHelper* helper =
+      ContextMenuHelper::FromWebContents(web_contents_);
+  if (helper)
+    helper->ShowContextMenu(render_frame_host, params);
 }
-
-namespace chrome {
 
 content::WebContentsViewDelegate* CreateWebContentsViewDelegate(
     content::WebContents* web_contents) {
   return new ChromeWebContentsViewDelegateAndroid(web_contents);
 }
-
-}  // namespace chrome

@@ -15,9 +15,9 @@
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "media/base/stream_parser_buffer.h"
-#include "media/filters/h264_parser.h"
 #include "media/formats/mp2t/es_parser_h264.h"
 #include "media/formats/mp2t/es_parser_test_base.h"
+#include "media/video/h264_parser.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
@@ -139,7 +139,7 @@ void EsParserH264Test::GetPesTimestamps(std::vector<Packet>* pes_packets_ptr) {
 
   // Default: set to a negative timestamp to be able to differentiate from
   // real timestamps.
-  // Note: we don't use kNoTimestamp() here since this one has already
+  // Note: we don't use kNoTimestamp here since this one has already
   // a special meaning in EsParserH264. The negative timestamps should be
   // ultimately discarded by the H264 parser since not relevant.
   for (size_t k = 0; k < pes_packets.size(); k++) {

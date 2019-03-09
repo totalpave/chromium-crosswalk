@@ -28,18 +28,20 @@ class HistoryClientImpl : public history::HistoryClient,
   ~HistoryClientImpl() override;
 
  private:
+  void StopObservingBookmarkModel();
+
   // history::HistoryClient implementation.
   void OnHistoryServiceCreated(
       history::HistoryService* history_service) override;
   void Shutdown() override;
   bool CanAddURL(const GURL& url) override;
-  void NotifyProfileError(sql::InitStatus init_status) override;
+  void NotifyProfileError(sql::InitStatus init_status,
+                          const std::string& diagnostics) override;
   std::unique_ptr<history::HistoryBackendClient> CreateBackendClient() override;
 
   // bookmarks::BaseBookmarkModelObserver implementation.
   void BookmarkModelChanged() override;
-
-  // bookmarks::BookmarkModelObserver implementation.
+  void BookmarkModelBeingDeleted(bookmarks::BookmarkModel* model) override;
   void BookmarkNodeRemoved(bookmarks::BookmarkModel* model,
                            const bookmarks::BookmarkNode* parent,
                            int old_index,
@@ -49,9 +51,8 @@ class HistoryClientImpl : public history::HistoryClient,
                                    const std::set<GURL>& removed_urls) override;
 
   // BookmarkModel instance providing access to bookmarks. May be null during
-  // testing but must outlive HistoryClientImpl if non-null.
+  // testing, and is null while shutting down.
   bookmarks::BookmarkModel* bookmark_model_;
-  bool is_bookmark_model_observer_;
 
   // Callback invoked when URLs are removed from BookmarkModel.
   base::Callback<void(const std::set<GURL>&)> on_bookmarks_removed_;

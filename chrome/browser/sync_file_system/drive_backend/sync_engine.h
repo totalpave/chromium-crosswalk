@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/sync_file_system/drive_backend/callback_tracker.h"
@@ -19,11 +20,10 @@
 #include "chrome/browser/sync_file_system/sync_direction.h"
 #include "components/drive/drive_notification_observer.h"
 #include "components/drive/service/drive_service_interface.h"
-#include "components/signin/core/browser/signin_manager_base.h"
-#include "net/base/network_change_notifier.h"
-
-class ExtensionServiceInterface;
-class OAuth2TokenService;
+#include "components/signin/core/browser/account_info.h"
+#include "services/identity/public/cpp/identity_manager.h"
+#include "services/network/public/cpp/network_connection_tracker.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace base {
 class SequencedTaskRunner;
@@ -35,12 +35,16 @@ class DriveNotificationManager;
 class DriveUploaderInterface;
 }
 
+namespace extensions {
+class ExtensionServiceInterface;
+}
+
 namespace leveldb {
 class Env;
 }
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
 }
 
 namespace sync_file_system {
@@ -52,18 +56,17 @@ namespace drive_backend {
 
 class DriveServiceWrapper;
 class DriveUploaderWrapper;
-class MetadataDatabase;
 class RemoteChangeProcessorOnWorker;
 class RemoteChangeProcessorWrapper;
-class SyncTaskManager;
 class SyncWorkerInterface;
 
-class SyncEngine : public RemoteFileSyncService,
-                   public LocalChangeProcessor,
-                   public drive::DriveNotificationObserver,
-                   public drive::DriveServiceObserver,
-                   public net::NetworkChangeNotifier::NetworkChangeObserver,
-                   public SigninManagerBase::Observer {
+class SyncEngine
+    : public RemoteFileSyncService,
+      public LocalChangeProcessor,
+      public drive::DriveNotificationObserver,
+      public drive::DriveServiceObserver,
+      public identity::IdentityManager::Observer,
+      public network::NetworkConnectionTracker::NetworkConnectionObserver {
  public:
   typedef RemoteFileSyncService::Observer SyncServiceObserver;
 
@@ -72,8 +75,8 @@ class SyncEngine : public RemoteFileSyncService,
     DriveServiceFactory() {}
     virtual ~DriveServiceFactory() {}
     virtual std::unique_ptr<drive::DriveServiceInterface> CreateDriveService(
-        OAuth2TokenService* oauth2_token_service,
-        net::URLRequestContextGetter* url_request_context_getter,
+        identity::IdentityManager* identity_manager,
+        scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
         base::SequencedTaskRunner* blocking_task_runner);
 
    private:
@@ -131,24 +134,25 @@ class SyncEngine : public RemoteFileSyncService,
                         const SyncStatusCallback& callback) override;
 
   // drive::DriveNotificationObserver overrides.
-  void OnNotificationReceived() override;
+  void OnNotificationReceived(
+      const std::map<std::string, int64_t>& invalidations) override;
+  void OnNotificationTimerFired() override;
   void OnPushNotificationEnabled(bool enabled) override;
 
   // drive::DriveServiceObserver overrides.
   void OnReadyToSendRequests() override;
   void OnRefreshTokenInvalid() override;
 
-  // net::NetworkChangeNotifier::NetworkChangeObserver overrides.
-  void OnNetworkChanged(
-      net::NetworkChangeNotifier::ConnectionType type) override;
+  // network::NetworkConnectionTracker::NetworkConnectionObserver overrides.
+  void OnConnectionChanged(network::mojom::ConnectionType type) override;
 
-  // SigninManagerBase::Observer overrides.
-  void GoogleSigninFailed(const GoogleServiceAuthError& error) override;
-  void GoogleSigninSucceeded(const std::string& account_id,
-                             const std::string& username,
-                             const std::string& password) override;
-  void GoogleSignedOut(const std::string& account_id,
-                       const std::string& username) override;
+  // IdentityManager::Observer overrides.
+  void OnPrimaryAccountSet(
+      const CoreAccountInfo& primary_account_info) override;
+  void OnPrimaryAccountCleared(
+      const CoreAccountInfo& previous_primary_account_info) override;
+  void OnPrimaryAccountSigninFailed(
+      const GoogleServiceAuthError& error) override;
 
  private:
   class WorkerObserver;
@@ -160,14 +164,12 @@ class SyncEngine : public RemoteFileSyncService,
   SyncEngine(const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
              const scoped_refptr<base::SequencedTaskRunner>& worker_task_runner,
              const scoped_refptr<base::SequencedTaskRunner>& drive_task_runner,
-             const scoped_refptr<base::SequencedWorkerPool>& worker_pool,
              const base::FilePath& sync_file_system_dir,
              TaskLogger* task_logger,
              drive::DriveNotificationManager* notification_manager,
-             ExtensionServiceInterface* extension_service,
-             SigninManagerBase* signin_manager,
-             OAuth2TokenService* token_service,
-             net::URLRequestContextGetter* request_context,
+             extensions::ExtensionServiceInterface* extension_service,
+             identity::IdentityManager* identity_manager,
+             scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
              std::unique_ptr<DriveServiceFactory> drive_service_factory,
              leveldb::Env* env_override);
 
@@ -186,7 +188,6 @@ class SyncEngine : public RemoteFileSyncService,
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
   scoped_refptr<base::SequencedTaskRunner> worker_task_runner_;
   scoped_refptr<base::SequencedTaskRunner> drive_task_runner_;
-  scoped_refptr<base::SequencedWorkerPool> worker_pool_;
 
   const base::FilePath sync_file_system_dir_;
   TaskLogger* task_logger_;
@@ -196,11 +197,10 @@ class SyncEngine : public RemoteFileSyncService,
   // I.e. the owner should declare the dependency explicitly by calling
   // KeyedService::DependsOn().
   drive::DriveNotificationManager* notification_manager_;
-  ExtensionServiceInterface* extension_service_;
-  SigninManagerBase* signin_manager_;
-  OAuth2TokenService* token_service_;
+  extensions::ExtensionServiceInterface* extension_service_;
+  identity::IdentityManager* identity_manager_;
 
-  scoped_refptr<net::URLRequestContextGetter> request_context_;
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   std::unique_ptr<DriveServiceFactory> drive_service_factory_;
 
@@ -225,8 +225,8 @@ class SyncEngine : public RemoteFileSyncService,
   std::unique_ptr<WorkerObserver> worker_observer_;
   std::unique_ptr<SyncWorkerInterface> sync_worker_;
 
-  base::ObserverList<SyncServiceObserver> service_observers_;
-  base::ObserverList<FileStatusObserver> file_status_observers_;
+  base::ObserverList<SyncServiceObserver>::Unchecked service_observers_;
+  base::ObserverList<FileStatusObserver>::Unchecked file_status_observers_;
   leveldb::Env* env_override_;
 
   CallbackTracker callback_tracker_;

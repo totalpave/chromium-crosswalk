@@ -4,6 +4,8 @@ include_rules = [
   "+components/prefs",
   "+components/variations",
   "+crypto",
+  "+mojo/public/cpp",
   "+net",
+  "+services/network",
   "+third_party/smhasher",
 ]

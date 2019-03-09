@@ -28,6 +28,10 @@ class ChromeAppDelegate : public extensions::AppDelegate,
 
   static void DisableExternalOpenForTesting();
 
+  void set_for_lock_screen_app(bool for_lock_screen_app) {
+    for_lock_screen_app_ = for_lock_screen_app;
+  }
+
  private:
   static void RelinquishKeepAliveAfterTimeout(
       const base::WeakPtr<ChromeAppDelegate>& chrome_app_delegate);
@@ -44,32 +48,37 @@ class ChromeAppDelegate : public extensions::AppDelegate,
       content::WebContents* source,
       const content::OpenURLParams& params) override;
   void AddNewContents(content::BrowserContext* context,
-                      content::WebContents* new_contents,
+                      std::unique_ptr<content::WebContents> new_contents,
                       WindowOpenDisposition disposition,
                       const gfx::Rect& initial_rect,
-                      bool user_gesture,
-                      bool* was_blocked) override;
+                      bool user_gesture) override;
   content::ColorChooser* ShowColorChooser(content::WebContents* web_contents,
                                           SkColor initial_color) override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
-                      const content::FileChooserParams& params) override;
+                      std::unique_ptr<content::FileSelectListener> listener,
+                      const blink::mojom::FileChooserParams& params) override;
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
-      const content::MediaResponseCallback& callback,
+      content::MediaResponseCallback callback,
       const extensions::Extension* extension) override;
   bool CheckMediaAccessPermission(
-      content::WebContents* web_contents,
+      content::RenderFrameHost* render_frame_host,
       const GURL& security_origin,
-      content::MediaStreamType type,
+      blink::MediaStreamType type,
       const extensions::Extension* extension) override;
-  int PreferredIconSize() override;
+  int PreferredIconSize() const override;
   void SetWebContentsBlocked(content::WebContents* web_contents,
                              bool blocked) override;
   bool IsWebContentsVisible(content::WebContents* web_contents) override;
   void SetTerminatingCallback(const base::Closure& callback) override;
   void OnHide() override;
   void OnShow() override;
+  bool TakeFocus(content::WebContents* web_contents, bool reverse) override;
+  gfx::Size EnterPictureInPicture(content::WebContents* web_contents,
+                                  const viz::SurfaceId& surface_id,
+                                  const gfx::Size& natural_size) override;
+  void ExitPictureInPicture() override;
 
   // content::NotificationObserver:
   void Observe(int type,
@@ -78,6 +87,7 @@ class ChromeAppDelegate : public extensions::AppDelegate,
 
   bool has_been_shown_;
   bool is_hidden_;
+  bool for_lock_screen_app_;
   std::unique_ptr<ScopedKeepAlive> keep_alive_;
   std::unique_ptr<NewWindowContentsDelegate> new_window_contents_delegate_;
   base::Closure terminating_callback_;

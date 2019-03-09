@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/command_line.h"
+#include "base/run_loop.h"
 #include "base/test/test_timeouts.h"
-#include "content/browser/wake_lock/wake_lock_service_context.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test_utils.h"
@@ -21,6 +22,11 @@ namespace content {
 namespace {
 
 const char kBlinkWakeLockFeature[] = "WakeLock";
+
+void OnHasWakeLock(bool* out, bool has_wakelock) {
+  *out = has_wakelock;
+  base::RunLoop::QuitCurrentDeprecated();
+}
 
 }  // namespace
 
@@ -62,20 +68,26 @@ class WakeLockTest : public ContentBrowserTest {
     return GetNestedFrameNode()->current_frame_host();
   }
 
-  WakeLockServiceContext* GetWakeLockServiceContext() {
-    return GetWebContentsImpl()->GetWakeLockServiceContext();
+  device::mojom::WakeLock* GetRendererWakeLock() {
+    return GetWebContentsImpl()->GetRendererWakeLock();
   }
 
   bool HasWakeLock() {
-    return GetWakeLockServiceContext()->HasWakeLockForTests();
+    bool has_wakelock = false;
+    base::RunLoop run_loop;
+
+    GetRendererWakeLock()->HasWakeLockForTests(
+        base::BindOnce(&OnHasWakeLock, &has_wakelock));
+    run_loop.Run();
+    return has_wakelock;
   }
 
   void WaitForPossibleUpdate() {
     // As Mojo channels have no common FIFO order in respect to each other and
     // to the Chromium IPC, we cannot assume that when screen.keepAwake state
-    // is changed from within a script, mojom::WakeLockService will receive an
+    // is changed from within a script, mojom::WakeLock will receive an
     // update request before ExecuteScript() returns. Therefore, some time slack
-    // is needed to make sure that mojom::WakeLockService has received any
+    // is needed to make sure that mojom::WakeLock has received any
     // possible update requests before checking the resulting wake lock state.
     base::PlatformThread::Sleep(TestTimeouts::tiny_timeout());
     RunAllPendingInMessageLoop();
@@ -329,6 +341,10 @@ IN_PROC_BROWSER_TEST_F(WakeLockTest, OutOfProcessFrame) {
   WaitForPossibleUpdate();
   EXPECT_TRUE(HasWakeLock());
 
+  // Grab a watcher for the RenderFrameHost of the first site.
+  RenderFrameDeletedObserver frame_observer(
+      GetNestedFrameNode()->current_frame_host());
+
   // Navigate nested frame to a cross-site document.
   NavigateFrameToURL(GetNestedFrameNode(), embedded_test_server()->GetURL(
                                                "b.com", "/simple_page.html"));
@@ -336,6 +352,15 @@ IN_PROC_BROWSER_TEST_F(WakeLockTest, OutOfProcessFrame) {
 
   // Ensure that a new process has been created for the nested frame.
   EXPECT_TRUE(GetNestedFrame()->IsCrossProcessSubframe());
+
+  // While the navigation to the second URL has completed, the teardown of the
+  // host-side objects for the first URL may not have yet. The WakeLock will
+  // only be released once the first renderer is cleaned up since it is held
+  // by that renderer.
+  // TODO(crbug.com/899384): This races with the new renderer then, would it
+  // cause us to release a WakeLock that it requested before the old renderer
+  // was torn down?
+  frame_observer.WaitUntilDeleted();
 
   // Screen wake lock should be released.
   EXPECT_FALSE(HasWakeLock());
@@ -366,7 +391,7 @@ IN_PROC_BROWSER_TEST_F(WakeLockTest, UnlockAfterCrashOutOfProcessFrame) {
   RenderProcessHostWatcher watcher(
       GetNestedFrame()->GetProcess(),
       RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
-  GetNestedFrame()->GetProcess()->Shutdown(0, false);
+  GetNestedFrame()->GetProcess()->Shutdown(0);
   watcher.Wait();
 
   // Screen wake lock should be released.

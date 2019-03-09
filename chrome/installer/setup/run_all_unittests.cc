@@ -7,6 +7,7 @@
 #include "base/test/launcher/unit_test_launcher.h"
 #include "base/test/test_suite.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/install_static/test/scoped_install_details.h"
 #include "chrome/installer/setup/setup_util_unittest.h"
 
 int main(int argc, char** argv) {
@@ -20,8 +21,9 @@ int main(int argc, char** argv) {
   // Register Chrome Path provider so that we can get test data dir.
   chrome::RegisterPathProvider();
 
-  return base::LaunchUnitTests(
-      argc,
-      argv,
+  install_static::ScopedInstallDetails scoped_install_details;
+
+  return base::LaunchUnitTestsSerially(
+      argc, argv,
       base::Bind(&base::TestSuite::Run, base::Unretained(&test_suite)));
 }

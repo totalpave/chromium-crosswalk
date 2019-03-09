@@ -6,9 +6,13 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
+#include <utility>
 
+#include "base/command_line.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/unicodestring.h"
 #include "base/lazy_instance.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -20,10 +24,16 @@
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chrome/browser/chromeos/system/timezone_resolver_manager.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/settings/timezone_settings.h"
 #include "chromeos/timezone/timezone_request.h"
+#include "chromeos/tpm/install_attributes.h"
+#include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/prefs/pref_service.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "third_party/icu/source/common/unicode/ures.h"
 #include "third_party/icu/source/common/unicode/utypes.h"
@@ -39,26 +49,27 @@ struct UResClose {
   }
 };
 
-static base::LazyInstance<base::Lock>::Leaky
-    g_timezone_bundle_lock = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<base::Lock>::Leaky g_timezone_bundle_lock =
+    LAZY_INSTANCE_INITIALIZER;
 
 // Returns an exemplary city in the given timezone.
 base::string16 GetExemplarCity(const icu::TimeZone& zone) {
-  // TODO(jungshik): After upgrading to ICU 4.6, use U_ICUDATA_ZONE
-  static const char* zone_bundle_name = NULL;
-
   // These will be leaked at the end.
-  static UResourceBundle *zone_bundle = NULL;
-  static UResourceBundle *zone_strings = NULL;
+  static UResourceBundle* zone_bundle = nullptr;
+  static UResourceBundle* zone_strings = nullptr;
 
   UErrorCode status = U_ZERO_ERROR;
   {
+    // TODO(jungshik): After upgrading to ICU 4.6, use U_ICUDATA_ZONE in
+    // ures_open().
     base::AutoLock lock(g_timezone_bundle_lock.Get());
-    if (zone_bundle == NULL)
-      zone_bundle = ures_open(zone_bundle_name, uloc_getDefault(), &status);
+    if (!zone_bundle)
+      zone_bundle = ures_open(nullptr, uloc_getDefault(), &status);
 
-    if (zone_strings == NULL)
-      zone_strings = ures_getByKey(zone_bundle, "zone_strings", NULL, &status);
+    if (!zone_strings) {
+      zone_strings =
+          ures_getByKey(zone_bundle, "zone_strings", nullptr, &status);
+    }
   }
 
   icu::UnicodeString zone_id;
@@ -69,12 +80,12 @@ base::string16 GetExemplarCity(const icu::TimeZone& zone) {
   // Resource keys for timezones use ':' in place of '/'.
   base::ReplaceSubstringsAfterOffset(&zone_id_str, 0, "/", ":");
   std::unique_ptr<UResourceBundle, UResClose> zone_item(
-      ures_getByKey(zone_strings, zone_id_str.c_str(), NULL, &status));
+      ures_getByKey(zone_strings, zone_id_str.c_str(), nullptr, &status));
   icu::UnicodeString city;
   if (!U_FAILURE(status)) {
     city = icu::ures_getUnicodeStringByKey(zone_item.get(), "ec", &status);
     if (U_SUCCESS(status))
-      return base::string16(city.getBuffer(), city.length());
+      return base::i18n::UnicodeStringToString16(city);
   }
 
   // Fallback case in case of failure.
@@ -132,11 +143,39 @@ base::string16 GetTimezoneName(const icu::TimeZone& timezone) {
   }
   base::string16 result(l10n_util::GetStringFUTF16(
       IDS_OPTIONS_SETTINGS_TIMEZONE_DISPLAY_TEMPLATE,
-      base::ASCIIToUTF16(offset_str),
-      base::string16(name.getBuffer(), name.length()),
+      base::ASCIIToUTF16(offset_str), base::i18n::UnicodeStringToString16(name),
       GetExemplarCity(timezone)));
   base::i18n::AdjustStringForLocaleDirection(&result);
   return result;
+}
+
+// Returns true if the given user is allowed to set the system timezone - that
+// is, the single timezone at TimezoneSettings::GetInstance()->GetTimezone(),
+// which is also stored in a file at /var/lib/timezone/localtime.
+bool CanSetSystemTimezone(const user_manager::User* user) {
+  if (!user->is_logged_in())
+    return false;
+
+  switch (user->GetType()) {
+    case user_manager::USER_TYPE_REGULAR:
+    case user_manager::USER_TYPE_SUPERVISED:
+    case user_manager::USER_TYPE_KIOSK_APP:
+    case user_manager::USER_TYPE_ARC_KIOSK_APP:
+    case user_manager::USER_TYPE_ACTIVE_DIRECTORY:
+      return true;
+
+    case user_manager::USER_TYPE_GUEST:
+    case user_manager::USER_TYPE_PUBLIC_ACCOUNT:
+    case user_manager::USER_TYPE_CHILD:
+      return false;
+
+    case user_manager::NUM_USER_TYPES:
+      NOTREACHED();
+
+      // No default case means the compiler makes sure we handle new types.
+  }
+  NOTREACHED();
+  return false;
 }
 
 }  // namespace
@@ -144,38 +183,79 @@ base::string16 GetTimezoneName(const icu::TimeZone& timezone) {
 namespace chromeos {
 namespace system {
 
+base::string16 GetCurrentTimezoneName() {
+  return GetTimezoneName(TimezoneSettings::GetInstance()->GetTimezone());
+}
+
 // Creates a list of pairs of each timezone's ID and name.
 std::unique_ptr<base::ListValue> GetTimezoneList() {
-  const std::vector<icu::TimeZone*> &timezones =
-      chromeos::system::TimezoneSettings::GetInstance()->GetTimezoneList();
-  std::unique_ptr<base::ListValue> timezoneList(new base::ListValue());
-  for (std::vector<icu::TimeZone*>::const_iterator iter = timezones.begin();
-       iter != timezones.end(); ++iter) {
-    const icu::TimeZone* timezone = *iter;
-    base::ListValue* option = new base::ListValue();
-    option->Append(new base::StringValue(
-        chromeos::system::TimezoneSettings::GetTimezoneID(*timezone)));
-    option->Append(new base::StringValue(GetTimezoneName(*timezone)));
-    timezoneList->Append(option);
+  const auto& timezones = TimezoneSettings::GetInstance()->GetTimezoneList();
+  auto timezone_list = std::make_unique<base::ListValue>();
+  for (const auto& timezone : timezones) {
+    auto option = std::make_unique<base::ListValue>();
+    option->AppendString(TimezoneSettings::GetTimezoneID(*timezone));
+    option->AppendString(GetTimezoneName(*timezone));
+    timezone_list->Append(std::move(option));
   }
-  return timezoneList;
+  return timezone_list;
 }
 
 bool HasSystemTimezonePolicy() {
-  policy::BrowserPolicyConnectorChromeOS* connector =
-      g_browser_process->platform_part()->browser_policy_connector_chromeos();
-  if (!connector->IsEnterpriseManaged())
+  if (!chromeos::InstallAttributes::Get()->IsEnterpriseManaged())
     return false;
 
   std::string policy_timezone;
-  if (chromeos::CrosSettings::Get()->GetString(chromeos::kSystemTimezonePolicy,
-                                               &policy_timezone) &&
+  if (CrosSettings::Get()->GetString(kSystemTimezonePolicy, &policy_timezone) &&
       !policy_timezone.empty()) {
     VLOG(1) << "Refresh TimeZone: TimeZone settings are overridden"
             << " by DevicePolicy.";
     return true;
   }
   return false;
+}
+
+bool IsTimezonePrefsManaged(const std::string& pref_name) {
+  DCHECK(pref_name == chromeos::kSystemTimezone ||
+         pref_name == prefs::kUserTimezone ||
+         pref_name == prefs::kResolveTimezoneByGeolocationMethod);
+
+  std::string policy_timezone;
+  if (CrosSettings::Get()->GetString(kSystemTimezonePolicy, &policy_timezone) &&
+      !policy_timezone.empty()) {
+    return true;
+  }
+
+  // System time zone preference is managed only if kSystemTimezonePolicy
+  // present, which we checked above.
+  //
+  // kSystemTimezoneAutomaticDetectionPolicy (see below) controls only user
+  // time zone preference, and user time zone resolve preference.
+  if (pref_name == chromeos::kSystemTimezone)
+    return false;
+
+  const PrefService* local_state = g_browser_process->local_state();
+  if (!local_state->IsManagedPreference(
+          prefs::kSystemTimezoneAutomaticDetectionPolicy)) {
+    return false;
+  }
+
+  int resolve_policy_value =
+      local_state->GetInteger(prefs::kSystemTimezoneAutomaticDetectionPolicy);
+
+  switch (resolve_policy_value) {
+    case enterprise_management::SystemTimezoneProto::USERS_DECIDE:
+      return false;
+    case enterprise_management::SystemTimezoneProto::DISABLED:
+      // This only disables resolving.
+      return pref_name == prefs::kResolveTimezoneByGeolocationMethod;
+    case enterprise_management::SystemTimezoneProto::IP_ONLY:
+    case enterprise_management::SystemTimezoneProto::SEND_WIFI_ACCESS_POINTS:
+    case enterprise_management::SystemTimezoneProto::SEND_ALL_LOCATION_INFO:
+      return true;
+  }
+  // Default for unknown policy value.
+  NOTREACHED() << "Unrecognized policy value: " << resolve_policy_value;
+  return true;
 }
 
 void ApplyTimeZone(const TimeZoneResponseData* timezone) {
@@ -185,13 +265,130 @@ void ApplyTimeZone(const TimeZoneResponseData* timezone) {
     return;
   }
 
-  if (!timezone->timeZoneId.empty()) {
-    VLOG(1) << "Refresh TimeZone: setting timezone to '" << timezone->timeZoneId
-            << "'";
+  if (timezone->timeZoneId.empty())
+    return;
 
-    chromeos::system::TimezoneSettings::GetInstance()->SetTimezoneFromID(
+  VLOG(1) << "Refresh TimeZone: setting timezone to '" << timezone->timeZoneId
+          << "'";
+
+  if (PerUserTimezoneEnabled()) {
+    const user_manager::UserManager* user_manager =
+        user_manager::UserManager::Get();
+    const user_manager::User* primary_user = user_manager->GetPrimaryUser();
+
+    if (primary_user) {
+      Profile* profile = ProfileHelper::Get()->GetProfileByUser(primary_user);
+      // profile can be NULL only if user has logged in, but profile has not
+      // been initialized yet. Ignore delayed time zone update until user
+      // preferences are initialized.
+      if (!profile)
+        return;
+
+      profile->GetPrefs()->SetString(prefs::kUserTimezone,
+                                     timezone->timeZoneId);
+      // For non-enterprise device, chromeos::Preferences::ApplyPreferences()
+      // will automatically change system timezone because user is primary.
+      // But it may not happen for enterprise device, as policy may prevent
+      // user from changing device time zone manually.
+      // That is the reason we always update system time zone here.
+      TimezoneSettings::GetInstance()->SetTimezoneFromID(
+          base::UTF8ToUTF16(timezone->timeZoneId));
+    } else {
+      SetSystemAndSigninScreenTimezone(timezone->timeZoneId);
+    }
+  } else {
+    TimezoneSettings::GetInstance()->SetTimezoneFromID(
         base::UTF8ToUTF16(timezone->timeZoneId));
   }
+}
+
+void UpdateSystemTimezone(Profile* profile) {
+  if (IsTimezonePrefsManaged(prefs::kUserTimezone)) {
+    VLOG(1) << "Ignoring user timezone change, because timezone is enterprise "
+               "managed.";
+    return;
+  }
+
+  const user_manager::UserManager* user_manager =
+      user_manager::UserManager::Get();
+  const user_manager::User* user =
+      ProfileHelper::Get()->GetUserByProfile(profile);
+
+  const AccountId owner(user_manager->GetOwnerAccountId());
+  const bool user_is_owner =
+      owner.is_valid() && (owner == user->GetAccountId());
+
+  const std::string value =
+      profile->GetPrefs()->GetString(prefs::kUserTimezone);
+  if (user_is_owner) {
+    g_browser_process->local_state()->SetString(prefs::kSigninScreenTimezone,
+                                                value);
+  }
+
+  if (user_manager->GetPrimaryUser() == user && PerUserTimezoneEnabled())
+    SetSystemTimezone(user, value);
+}
+
+bool SetSystemTimezone(const user_manager::User* user,
+                       const std::string& timezone) {
+  DCHECK(user);
+  if (!CanSetSystemTimezone(user))
+    return false;
+  TimezoneSettings::GetInstance()->SetTimezoneFromID(
+      base::UTF8ToUTF16(timezone));
+  return true;
+}
+
+void SetSystemAndSigninScreenTimezone(const std::string& timezone) {
+  if (timezone.empty())
+    return;
+
+  g_browser_process->local_state()->SetString(prefs::kSigninScreenTimezone,
+                                              timezone);
+
+  std::string current_timezone_id;
+  CrosSettings::Get()->GetString(kSystemTimezone, &current_timezone_id);
+  if (current_timezone_id != timezone) {
+    TimezoneSettings::GetInstance()->SetTimezoneFromID(
+        base::UTF8ToUTF16(timezone));
+  }
+}
+
+bool PerUserTimezoneEnabled() {
+  return !base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kDisablePerUserTimezone);
+}
+
+void SetTimezoneFromUI(Profile* profile, const std::string& timezone_id) {
+  const user_manager::User* user =
+      ProfileHelper::Get()->GetUserByProfile(profile);
+
+  if (!PerUserTimezoneEnabled()) {
+    SetSystemTimezone(user, timezone_id);
+    return;
+  }
+
+  if (ProfileHelper::IsSigninProfile(profile)) {
+    SetSystemAndSigninScreenTimezone(timezone_id);
+    return;
+  }
+
+  if (ProfileHelper::IsEphemeralUserProfile(profile)) {
+    SetSystemTimezone(user, timezone_id);
+    return;
+  }
+
+  Profile* primary_profile = ProfileManager::GetPrimaryUserProfile();
+  if (primary_profile && profile->IsSameProfile(primary_profile)) {
+    profile->GetPrefs()->SetString(prefs::kUserTimezone, timezone_id);
+  }
+  // Time zone UI should be blocked for non-primary users.
+  NOTREACHED();
+}
+
+bool FineGrainedTimeZoneDetectionEnabled() {
+  return !base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kDisableFineGrainedTimeZoneDetection);
 }
 
 }  // namespace system

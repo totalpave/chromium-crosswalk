@@ -4,12 +4,13 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
-#include "chrome/browser/download/download_service.h"
-#include "chrome/browser/download/download_service_factory.h"
+#include "chrome/browser/download/download_core_service.h"
+#include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -18,24 +19,25 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/test_browser_thread_bundle.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-class TestingDownloadService : public DownloadService {
+class TestingDownloadCoreService : public DownloadCoreService {
  public:
-  TestingDownloadService() : download_count_(0) {}
-  ~TestingDownloadService() override {}
+  TestingDownloadCoreService() : download_count_(0) {}
+  ~TestingDownloadCoreService() override {}
 
   // All methods that aren't expected to be called in the execution of
   // this unit test are marked to result in test failure.  Using a simple
   // mock for this class should be re-evaluated if any of these
   // methods are being called; it may mean that a more fully featured
-  // DownloadService implementation is needed.
+  // DownloadCoreService implementation is needed.
 
   void SetDownloadCount(int download_count) {
     download_count_ = download_count;
   }
 
-  // DownloadService
+  // DownloadCoreService
   ChromeDownloadManagerDelegate* GetDownloadManagerDelegate() override {
     ADD_FAILURE();
     return nullptr;
@@ -46,7 +48,7 @@ class TestingDownloadService : public DownloadService {
     return nullptr;
   }
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions::ExtensionDownloadsEventRouter* GetExtensionEventRouter()
       override {
     ADD_FAILURE();
@@ -74,12 +76,12 @@ class TestingDownloadService : public DownloadService {
  private:
   int download_count_;
 
-  DISALLOW_COPY_AND_ASSIGN(TestingDownloadService);
+  DISALLOW_COPY_AND_ASSIGN(TestingDownloadCoreService);
 };
 
-static std::unique_ptr<KeyedService> CreateTestingDownloadService(
+static std::unique_ptr<KeyedService> CreateTestingDownloadCoreService(
     content::BrowserContext* browser_context) {
-  return std::unique_ptr<KeyedService>(new TestingDownloadService());
+  return std::unique_ptr<KeyedService>(new TestingDownloadCoreService());
 }
 
 class BrowserCloseTest : public testing::Test {
@@ -140,12 +142,12 @@ class BrowserCloseTest : public testing::Test {
   void ConfigureCreatedProfile(Profile* profile,
                                int num_windows,
                                int num_downloads) {
-    DownloadServiceFactory::GetInstance()->SetTestingFactory(
-        profile, &CreateTestingDownloadService);
-    DownloadService* download_service(
-        DownloadServiceFactory::GetForBrowserContext(profile));
-    TestingDownloadService* mock_download_service(
-        static_cast<TestingDownloadService*>(download_service));
+    DownloadCoreServiceFactory::GetInstance()->SetTestingFactory(
+        profile, base::BindRepeating(&CreateTestingDownloadCoreService));
+    DownloadCoreService* download_core_service(
+        DownloadCoreServiceFactory::GetForBrowserContext(profile));
+    TestingDownloadCoreService* mock_download_service(
+        static_cast<TestingDownloadCoreService*>(download_core_service));
     mock_download_service->SetDownloadCount(num_downloads);
 
     CHECK(browser_windows_.end() == browser_windows_.find(profile));
@@ -155,7 +157,7 @@ class BrowserCloseTest : public testing::Test {
     std::vector<Browser*> browsers;
     for (int i = 0; i < num_windows; ++i) {
       TestBrowserWindow* window = new TestBrowserWindow();
-      Browser::CreateParams params(profile);
+      Browser::CreateParams params(profile, true);
       params.type = Browser::TYPE_TABBED;
       params.window = window;
       Browser* browser = new Browser(params);

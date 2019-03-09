@@ -18,9 +18,9 @@ class GL_EXPORT GLImageStub : public GLImage {
   GLImageStub();
 
   // Overridden from GLImage:
-  void Destroy(bool have_context) override {}
   gfx::Size GetSize() override;
   unsigned GetInternalFormat() override;
+  BindOrCopy ShouldBindOrCopy() override;
   bool BindTexImage(unsigned target) override;
   void ReleaseTexImage(unsigned target) override {}
   bool CopyTexImage(unsigned target) override;
@@ -31,7 +31,10 @@ class GL_EXPORT GLImageStub : public GLImage {
                             int z_order,
                             gfx::OverlayTransform transform,
                             const gfx::Rect& bounds_rect,
-                            const gfx::RectF& crop_rect) override;
+                            const gfx::RectF& crop_rect,
+                            bool enable_blend,
+                            std::unique_ptr<gfx::GpuFence> gpu_fence) override;
+  void Flush() override {}
   void OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
                     uint64_t process_tracing_id,
                     const std::string& dump_name) override {}

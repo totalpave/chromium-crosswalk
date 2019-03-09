@@ -7,6 +7,12 @@
 
 #include <vector>
 
+#include "build/build_config.h"
+
+#if defined(OS_ANDROID)
+#error "Instant is only used on desktop";
+#endif
+
 struct InstantMostVisitedItem;
 struct ThemeBackgroundInfo;
 
@@ -16,15 +22,11 @@ class InstantServiceObserver {
   // Indicates that the user's custom theme has changed in some way.
   virtual void ThemeInfoChanged(const ThemeBackgroundInfo&);
 
-  // Indicates that the most visited items has changed.
+  // Indicates that the most visited items has changed. |is_custom_links| is
+  // true if the items are custom links.
   virtual void MostVisitedItemsChanged(
-      const std::vector<InstantMostVisitedItem>&);
-
-  // Indicates that the default search provider changed. Parameter indicates
-  // whether the Google base URL changed (such as when the user migrates from
-  // one google.<TLD> to another TLD).
-  virtual void DefaultSearchProviderChanged(
-      bool google_base_url_domain_changed);
+      const std::vector<InstantMostVisitedItem>&,
+      bool is_custom_links);
 
  protected:
   virtual ~InstantServiceObserver() {}

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/run_loop.h"
@@ -20,7 +21,7 @@
 #include "remoting/protocol/fake_stream_socket.h"
 #include "remoting/protocol/p2p_stream_socket.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 using testing::_;
 using testing::SaveArg;
@@ -34,18 +35,20 @@ ACTION_P(QuitThreadOnCounter, counter) {
   --(*counter);
   EXPECT_GE(*counter, 0);
   if (*counter == 0)
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
 
 }  // namespace
 
-AuthenticatorTestBase::MockChannelDoneCallback::MockChannelDoneCallback() {}
+AuthenticatorTestBase::MockChannelDoneCallback::MockChannelDoneCallback() =
+    default;
 
-AuthenticatorTestBase::MockChannelDoneCallback::~MockChannelDoneCallback() {}
+AuthenticatorTestBase::MockChannelDoneCallback::~MockChannelDoneCallback() =
+    default;
 
-AuthenticatorTestBase::AuthenticatorTestBase() {}
+AuthenticatorTestBase::AuthenticatorTestBase() = default;
 
-AuthenticatorTestBase::~AuthenticatorTestBase() {}
+AuthenticatorTestBase::~AuthenticatorTestBase() = default;
 
 void AuthenticatorTestBase::SetUp() {
   base::FilePath certs_dir(net::GetTestCertsDirectory());
@@ -85,7 +88,7 @@ void AuthenticatorTestBase::ContinueAuthExchangeWith(Authenticator* sender,
                                                      Authenticator* receiver,
                                                      bool sender_started,
                                                      bool receiver_started) {
-  std::unique_ptr<buzz::XmlElement> message;
+  std::unique_ptr<jingle_xmpp::XmlElement> message;
   ASSERT_NE(Authenticator::WAITING_MESSAGE, sender->state());
   if (sender->state() == Authenticator::ACCEPTED ||
       sender->state() == Authenticator::REJECTED) {
@@ -145,9 +148,9 @@ void AuthenticatorTestBase::RunChannelAuth(bool expected_fail) {
 
   // Ensure that .Run() does not run unbounded if the callbacks are never
   // called.
-  base::Timer shutdown_timer(false, false);
+  base::OneShotTimer shutdown_timer;
   shutdown_timer.Start(FROM_HERE, TestTimeouts::action_timeout(),
-                       base::MessageLoop::QuitWhenIdleClosure());
+                       base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   base::RunLoop().Run();
   shutdown_timer.Stop();
 

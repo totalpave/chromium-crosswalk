@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
@@ -14,13 +15,17 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/extensions/extension_install_checker.h"
+#include "base/optional.h"
+#include "extensions/browser/preload_check.h"
+#include "extensions/common/manifest.h"
 
-class ExtensionService;
+class Profile;
 
 namespace extensions {
 
 class Extension;
+class ExtensionService;
+class PreloadCheckGroup;
 
 // Installs and loads an unpacked extension. Because internal state needs to be
 // held about the instalation process, only one call to Load*() should be made
@@ -30,16 +35,16 @@ class Extension;
 class UnpackedInstaller
     : public base::RefCountedThreadSafe<UnpackedInstaller> {
  public:
-  using CompletionCallback = base::Callback<void(const Extension* extension,
-                                                 const base::FilePath&,
-                                                 const std::string&)>;
+  using CompletionCallback = base::OnceCallback<void(const Extension* extension,
+                                                     const base::FilePath&,
+                                                     const std::string&)>;
 
   static scoped_refptr<UnpackedInstaller> Create(
       ExtensionService* extension_service);
 
   // Loads the extension from the directory |extension_path|, which is
   // the top directory of a specific extension where its manifest file lives.
-  // Errors are reported through ExtensionErrorReporter. On success,
+  // Errors are reported through LoadErrorReporter. On success,
   // ExtensionService::AddExtension() is called.
   void Load(const base::FilePath& extension_path);
 
@@ -50,12 +55,10 @@ class UnpackedInstaller
   // |extension_path| synchronously.
   // The return value indicates whether the installation has begun successfully.
   // The id of the extension being loaded is returned in |extension_id|.
+  // |only_allow_apps| is used to avoid side-loading of non-app extensions.
   bool LoadFromCommandLine(const base::FilePath& extension_path,
-                           std::string* extension_id);
-
-  // Allows prompting for plugins to be disabled; intended for testing only.
-  bool prompt_for_plugins() { return prompt_for_plugins_; }
-  void set_prompt_for_plugins(bool val) { prompt_for_plugins_ = val; }
+                           std::string* extension_id,
+                           bool only_allow_apps);
 
   // Allows overriding of whether modern manifest versions are required;
   // intended for testing.
@@ -70,8 +73,8 @@ class UnpackedInstaller
     be_noisy_on_failure_ = be_noisy_on_failure;
   }
 
-  void set_completion_callback(const CompletionCallback& callback) {
-    callback_ = callback;
+  void set_completion_callback(CompletionCallback callback) {
+    callback_ = std::move(callback);
   }
 
  private:
@@ -80,14 +83,12 @@ class UnpackedInstaller
   explicit UnpackedInstaller(ExtensionService* extension_service);
   virtual ~UnpackedInstaller();
 
-  // Must be called from the UI thread.
-  void ShowInstallPrompt();
-
-  // Begin management policy and requirements checks.
+  // Must be called from the UI thread. Begin management policy and requirements
+  // checks.
   void StartInstallChecks();
 
-  // Callback from ExtensionInstallChecker.
-  void OnInstallChecksComplete(int failed_checks);
+  // Callback from PreloadCheckGroup.
+  void OnInstallChecksComplete(const PreloadCheck::Errors& errors);
 
   // Verifies if loading unpacked extensions is allowed.
   bool IsLoadingUnpackedAllowed() const;
@@ -115,18 +116,34 @@ class UnpackedInstaller
   // Helper to get the Extension::CreateFlags for the installing extension.
   int GetFlags();
 
-  const Extension* extension() { return install_checker_.extension().get(); }
+  // Helper to load an extension. Should be called on a sequence where file IO
+  // is allowed. Loads the extension, validates extension locales and persists
+  // the ruleset for the Declarative Net Request API, if needed. In case of an
+  // error, returns false and populates |error|.
+  bool LoadExtension(Manifest::Location location,
+                     int flags,
+                     std::string* error);
+
+  // Reads the Declarative Net Request JSON ruleset for the extension, if it
+  // provided one, and persists the indexed ruleset. Returns false and populates
+  // |error| in case of an error. Should be called on a sequence where file IO
+  // is allowed.
+  bool IndexAndPersistRulesIfNeeded(std::string* error);
+
+  const Extension* extension() { return extension_.get(); }
 
   // The service we will report results back to.
   base::WeakPtr<ExtensionService> service_weak_;
+
+  // The Profile the extension is being installed in.
+  Profile* profile_;
 
   // The pathname of the directory to load from, which is an absolute path
   // after GetAbsolutePath has been called.
   base::FilePath extension_path_;
 
-  // If true and the extension contains plugins, we prompt the user before
-  // loading.
-  bool prompt_for_plugins_;
+  // The extension being installed.
+  scoped_refptr<Extension> extension_;
 
   // Whether to require the extension installed to have a modern manifest
   // version.
@@ -135,9 +152,16 @@ class UnpackedInstaller
   // Whether or not to be noisy (show a dialog) on failure. Defaults to true.
   bool be_noisy_on_failure_;
 
-  // Checks management policies and requirements before the extension can be
-  // installed.
-  ExtensionInstallChecker install_checker_;
+  // Checks to run before the extension can be installed.
+  std::unique_ptr<PreloadCheck> policy_check_;
+  std::unique_ptr<PreloadCheck> requirements_check_;
+
+  // Runs the above checks.
+  std::unique_ptr<PreloadCheckGroup> check_group_;
+
+  // The checksum for the indexed ruleset corresponding to the Declarative Net
+  // Request API.
+  base::Optional<int> dnr_ruleset_checksum_;
 
   CompletionCallback callback_;
 

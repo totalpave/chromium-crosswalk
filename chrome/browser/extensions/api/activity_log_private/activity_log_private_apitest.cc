@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/activity_log/activity_log.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -30,7 +31,6 @@ class ActivityLogApiTest : public ExtensionApiTest {
   ActivityLogApiTest() : saved_cmdline_(base::CommandLine::NO_PROGRAM) {}
 
   ~ActivityLogApiTest() override {
-    ExtensionApiTest::SetUpCommandLine(&saved_cmdline_);
     *base::CommandLine::ForCurrentProcess() = saved_cmdline_;
   }
 
@@ -38,6 +38,11 @@ class ActivityLogApiTest : public ExtensionApiTest {
     ExtensionApiTest::SetUpCommandLine(command_line);
     saved_cmdline_ = *base::CommandLine::ForCurrentProcess();
     command_line->AppendSwitch(switches::kEnableExtensionActivityLogging);
+  }
+
+  void SetUpOnMainThread() override {
+    ExtensionApiTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
   }
 
   std::unique_ptr<HttpResponse> HandleRequest(const HttpRequest& request) {
@@ -64,10 +69,9 @@ class ActivityLogApiTest : public ExtensionApiTest {
 IN_PROC_BROWSER_TEST_F(ActivityLogApiTest, MAYBE_TriggerEvent) {
   ActivityLog::GetInstance(profile())->SetWatchdogAppActiveForTesting(true);
 
-  host_resolver()->AddRule("*", "127.0.0.1");
-  ASSERT_TRUE(StartEmbeddedTestServer());
   embedded_test_server()->RegisterRequestHandler(
       base::Bind(&ActivityLogApiTest::HandleRequest, base::Unretained(this)));
+  ASSERT_TRUE(StartEmbeddedTestServer());
 
   const Extension* friend_extension = LoadExtensionIncognito(
       test_data_dir_.AppendASCII("activity_log_private/friend"));

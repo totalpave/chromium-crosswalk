@@ -2,15 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/bind.h"
-#include "base/message_loop/message_loop.h"
 #include "chrome/browser/chromeos/attestation/attestation_ca_client.h"
-#include "content/public/test/test_browser_thread.h"
+
+#include "base/bind.h"
+#include "base/command_line.h"
+#include "base/test/bind_test_util.h"
+#include "chrome/test/base/testing_browser_process.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
-#include "net/url_request/test_url_fetcher_factory.h"
-#include "net/url_request/url_fetcher.h"
 #include "net/url_request/url_request_status.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
+#include "services/network/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
@@ -19,39 +24,71 @@ namespace attestation {
 class AttestationCAClientTest : public ::testing::Test {
  public:
   AttestationCAClientTest()
-      : io_thread_(content::BrowserThread::IO, &message_loop_),
+      : test_shared_url_loader_factory_(
+            base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+                &test_url_loader_factory_)),
         num_invocations_(0),
-        result_(false) {
-  }
+        result_(false) {}
 
   ~AttestationCAClientTest() override {}
 
-  void DataCallback (bool result, const std::string& data) {
+  void SetUp() override {
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(
+        test_shared_url_loader_factory_);
+
+    test_url_loader_factory_.SetInterceptor(base::BindLambdaForTesting(
+        [&](const network::ResourceRequest& request) {
+          last_resource_request_ = request;
+        }));
+  }
+
+  void DataCallback(bool result, const std::string& data) {
     ++num_invocations_;
     result_ = result;
     data_ = data;
   }
 
-  void DeleteClientDataCallback (AttestationCAClient* client,
-                                 bool result,
-                                 const std::string& data) {
+  void DeleteClientDataCallback(AttestationCAClient* client,
+                                bool result,
+                                const std::string& data) {
     delete client;
     DataCallback(result, data);
   }
 
  protected:
-  void SendResponse(net::Error error, int response_code) {
-    net::TestURLFetcher* fetcher = url_fetcher_factory_.GetFetcherByID(0);
-    CHECK(fetcher);
-    fetcher->set_status(net::URLRequestStatus::FromError(error));
-    fetcher->set_response_code(response_code);
-    fetcher->SetResponseString(fetcher->upload_data() + "_response");
-    fetcher->delegate()->OnURLFetchComplete(fetcher);
+  void CheckURLAndSendResponse(GURL expected_url,
+                               net::Error error,
+                               int response_code) {
+    CHECK(test_url_loader_factory_.NumPending() == 1);
+    EXPECT_EQ(expected_url, last_resource_request_.url);
+    std::string response =
+        network::GetUploadData(last_resource_request_) + "_response";
+    test_url_loader_factory_.AddResponse(last_resource_request_.url.spec(),
+                                         response);
+    base::RunLoop().RunUntilIdle();
   }
 
-  base::MessageLoop message_loop_;
-  content::TestBrowserThread io_thread_;
-  net::TestURLFetcherFactory url_fetcher_factory_;
+  void SendResponse(net::Error error, net::HttpStatusCode response_code) {
+    CHECK(test_url_loader_factory_.NumPending() == 1);
+    auto resource_response_head =
+        network::CreateResourceResponseHead(response_code);
+    network::URLLoaderCompletionStatus completion_status(error);
+    std::string response =
+        network::GetUploadData(last_resource_request_) + "_response";
+
+    test_url_loader_factory_.AddResponse(last_resource_request_.url,
+                                         resource_response_head, response,
+                                         completion_status);
+    base::RunLoop().RunUntilIdle();
+  }
+
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
+
+  network::TestURLLoaderFactory test_url_loader_factory_;
+  scoped_refptr<network::SharedURLLoaderFactory>
+      test_shared_url_loader_factory_;
+
+  network::ResourceRequest last_resource_request_;
 
   // For use with DataCallback.
   int num_invocations_;
@@ -65,7 +102,8 @@ TEST_F(AttestationCAClientTest, EnrollRequest) {
       "enroll",
       base::Bind(&AttestationCAClientTest::DataCallback,
                  base::Unretained(this)));
-  SendResponse(net::OK, net::HTTP_OK);
+  CheckURLAndSendResponse(GURL("https://chromeos-ca.gstatic.com/enroll"),
+                          net::OK, net::HTTP_OK);
 
   EXPECT_EQ(1, num_invocations_);
   EXPECT_TRUE(result_);
@@ -78,7 +116,8 @@ TEST_F(AttestationCAClientTest, CertificateRequest) {
       "certificate",
       base::Bind(&AttestationCAClientTest::DataCallback,
                  base::Unretained(this)));
-  SendResponse(net::OK, net::HTTP_OK);
+  CheckURLAndSendResponse(GURL("https://chromeos-ca.gstatic.com/sign"), net::OK,
+                          net::HTTP_OK);
 
   EXPECT_EQ(1, num_invocations_);
   EXPECT_TRUE(result_);
@@ -119,6 +158,69 @@ TEST_F(AttestationCAClientTest, DeleteOnCallback) {
                  base::Unretained(this),
                  client));
   SendResponse(net::OK, net::HTTP_OK);
+
+  EXPECT_EQ(1, num_invocations_);
+  EXPECT_TRUE(result_);
+  EXPECT_EQ("certificate_response", data_);
+}
+
+class AttestationCAClientAttestationServerTest
+    : public AttestationCAClientTest {};
+
+TEST_F(AttestationCAClientAttestationServerTest, DefaultEnrollRequest) {
+  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+      chromeos::switches::kAttestationServer, "default");
+  AttestationCAClient client;
+  client.SendEnrollRequest("enroll",
+                           base::Bind(&AttestationCAClientTest::DataCallback,
+                                      base::Unretained(this)));
+  CheckURLAndSendResponse(GURL("https://chromeos-ca.gstatic.com/enroll"),
+                          net::OK, net::HTTP_OK);
+
+  EXPECT_EQ(1, num_invocations_);
+  EXPECT_TRUE(result_);
+  EXPECT_EQ("enroll_response", data_);
+}
+
+TEST_F(AttestationCAClientAttestationServerTest, DefaultCertificateRequest) {
+  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+      chromeos::switches::kAttestationServer, "default");
+  AttestationCAClient client;
+  client.SendCertificateRequest(
+      "certificate", base::Bind(&AttestationCAClientTest::DataCallback,
+                                base::Unretained(this)));
+  CheckURLAndSendResponse(GURL("https://chromeos-ca.gstatic.com/sign"), net::OK,
+                          net::HTTP_OK);
+
+  EXPECT_EQ(1, num_invocations_);
+  EXPECT_TRUE(result_);
+  EXPECT_EQ("certificate_response", data_);
+}
+
+TEST_F(AttestationCAClientAttestationServerTest, TestEnrollRequest) {
+  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+      chromeos::switches::kAttestationServer, "test");
+  AttestationCAClient client;
+  client.SendEnrollRequest("enroll",
+                           base::Bind(&AttestationCAClientTest::DataCallback,
+                                      base::Unretained(this)));
+  CheckURLAndSendResponse(GURL("https://asbestos-qa.corp.google.com/enroll"),
+                          net::OK, net::HTTP_OK);
+
+  EXPECT_EQ(1, num_invocations_);
+  EXPECT_TRUE(result_);
+  EXPECT_EQ("enroll_response", data_);
+}
+
+TEST_F(AttestationCAClientAttestationServerTest, TestCertificateRequest) {
+  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+      chromeos::switches::kAttestationServer, "test");
+  AttestationCAClient client;
+  client.SendCertificateRequest(
+      "certificate", base::Bind(&AttestationCAClientTest::DataCallback,
+                                base::Unretained(this)));
+  CheckURLAndSendResponse(GURL("https://asbestos-qa.corp.google.com/sign"),
+                          net::OK, net::HTTP_OK);
 
   EXPECT_EQ(1, num_invocations_);
   EXPECT_TRUE(result_);

@@ -12,7 +12,6 @@
 #include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/win/scoped_comptr.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/ime/composition_text.h"
 
@@ -62,10 +61,10 @@ void GetCompositionTargetRange(HIMC imm_context, int* target_start,
 
 // Helper function for IMM32Manager::GetCompositionInfo() method, to get
 // underlines information of the current composition string.
-void GetCompositionUnderlines(HIMC imm_context,
-                              int target_start,
-                              int target_end,
-                              ui::CompositionUnderlines* underlines) {
+void GetImeTextSpans(HIMC imm_context,
+                     int target_start,
+                     int target_end,
+                     ui::ImeTextSpans* ime_text_spans) {
   int clause_size = ::ImmGetCompositionString(imm_context, GCS_COMPCLAUSE,
                                               NULL, 0);
   int clause_length = clause_size / sizeof(uint32_t);
@@ -75,36 +74,21 @@ void GetCompositionUnderlines(HIMC imm_context,
       ::ImmGetCompositionString(imm_context, GCS_COMPCLAUSE,
                                 clause_data.get(), clause_size);
       for (int i = 0; i < clause_length - 1; ++i) {
-        ui::CompositionUnderline underline;
-        underline.start_offset = clause_data[i];
-        underline.end_offset = clause_data[i+1];
-        underline.color = SK_ColorBLACK;
-        underline.thick = false;
-        underline.background_color = SK_ColorTRANSPARENT;
+        ui::ImeTextSpan ime_text_span;
+        ime_text_span.start_offset = clause_data[i];
+        ime_text_span.end_offset = clause_data[i + 1];
+        ime_text_span.underline_color = SK_ColorBLACK;
+        ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThin;
+        ime_text_span.background_color = SK_ColorTRANSPARENT;
 
         // Use thick underline for the target clause.
-        if (underline.start_offset >= static_cast<uint32_t>(target_start) &&
-            underline.end_offset <= static_cast<uint32_t>(target_end)) {
-          underline.thick = true;
+        if (ime_text_span.start_offset >= static_cast<uint32_t>(target_start) &&
+            ime_text_span.end_offset <= static_cast<uint32_t>(target_end)) {
+          ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThick;
         }
-        underlines->push_back(underline);
+        ime_text_spans->push_back(ime_text_span);
       }
     }
-  }
-}
-
-// Checks if a given primary language ID is a RTL language.
-bool IsRTLPrimaryLangID(LANGID lang) {
-  switch (lang) {
-    case LANG_ARABIC:
-    case LANG_HEBREW:
-    case LANG_PERSIAN:
-    case LANG_SYRIAC:
-    case LANG_UIGHUR:
-    case LANG_URDU:
-      return true;
-    default:
-      return false;
   }
 }
 
@@ -124,13 +108,20 @@ IMM32Manager::~IMM32Manager() {
 }
 
 void IMM32Manager::SetInputLanguage() {
-  // Retrieve the current keyboard layout from Windows and determine whether
-  // or not the current input context has IMEs.
-  // Also save its input language for language-specific operations required
-  // while composing a text.
-  HKL keyboard_layout = ::GetKeyboardLayout(0);
-  input_language_id_ =
-      static_cast<LANGID>(reinterpret_cast<uintptr_t>(keyboard_layout));
+  // Retrieve the current input language from the system's keyboard layout.
+  // Using GetKeyboardLayoutName instead of GetKeyboardLayout, because
+  // the language from GetKeyboardLayout is the language under where the
+  // keyboard layout is installed. And the language from GetKeyboardLayoutName
+  // indicates the language of the keyboard layout itself.
+  // See crbug.com/344834.
+  WCHAR keyboard_layout[KL_NAMELENGTH];
+  if (::GetKeyboardLayoutNameW(keyboard_layout)) {
+    input_language_id_ =
+        static_cast<LANGID>(
+            wcstol(&keyboard_layout[KL_NAMELENGTH >> 1], nullptr, 16));
+  } else {
+    input_language_id_ = 0x0409;  // Fallback to en-US.
+  }
 }
 
 void IMM32Manager::CreateImeWindow(HWND window_handle) {
@@ -283,11 +274,12 @@ void IMM32Manager::CompleteComposition(HWND window_handle, HIMC imm_context) {
   }
 }
 
-void IMM32Manager::GetCompositionInfo(HIMC imm_context, LPARAM lparam,
-                                  CompositionText* composition) {
+void IMM32Manager::GetCompositionInfo(HIMC imm_context,
+                                      LPARAM lparam,
+                                      CompositionText* composition) {
   // We only care about GCS_COMPATTR, GCS_COMPCLAUSE and GCS_CURSORPOS, and
-  // convert them into underlines and selection range respectively.
-  composition->underlines.clear();
+  // convert them into composition underlines and selection range respectively.
+  composition->ime_text_spans.clear();
 
   int length = static_cast<int>(composition->text.length());
 
@@ -312,35 +304,36 @@ void IMM32Manager::GetCompositionInfo(HIMC imm_context, LPARAM lparam,
     composition->selection = gfx::Range(0);
   }
 
-  // Retrieve the clause segmentations and convert them to underlines.
+  // Retrieve the clause segmentations and convert them to ime_text_spans.
   if (lparam & GCS_COMPCLAUSE) {
-    GetCompositionUnderlines(imm_context, target_start, target_end,
-                             &composition->underlines);
+    GetImeTextSpans(imm_context, target_start, target_end,
+                    &composition->ime_text_spans);
   }
 
-  // Set default underlines in case there is no clause information.
-  if (!composition->underlines.size()) {
-    CompositionUnderline underline;
-    underline.color = SK_ColorBLACK;
-    underline.background_color = SK_ColorTRANSPARENT;
-    if (target_start > 0) {
-      underline.start_offset = 0U;
-      underline.end_offset = static_cast<uint32_t>(target_start);
-      underline.thick = false;
-      composition->underlines.push_back(underline);
-    }
-    if (target_end > target_start) {
-      underline.start_offset = static_cast<uint32_t>(target_start);
-      underline.end_offset = static_cast<uint32_t>(target_end);
-      underline.thick = true;
-      composition->underlines.push_back(underline);
-    }
-    if (target_end < length) {
-      underline.start_offset = static_cast<uint32_t>(target_end);
-      underline.end_offset = static_cast<uint32_t>(length);
-      underline.thick = false;
-      composition->underlines.push_back(underline);
-    }
+  // Set default composition underlines in case there is no clause information.
+  if (!composition->ime_text_spans.empty())
+    return;
+
+  ImeTextSpan ime_text_span;
+  ime_text_span.underline_color = SK_ColorTRANSPARENT;
+  ime_text_span.background_color = SK_ColorTRANSPARENT;
+  if (target_start > 0) {
+    ime_text_span.start_offset = 0U;
+    ime_text_span.end_offset = static_cast<uint32_t>(target_start);
+    ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThin;
+    composition->ime_text_spans.push_back(ime_text_span);
+  }
+  if (target_end > target_start) {
+    ime_text_span.start_offset = static_cast<uint32_t>(target_start);
+    ime_text_span.end_offset = static_cast<uint32_t>(target_end);
+    ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThick;
+    composition->ime_text_spans.push_back(ime_text_span);
+  }
+  if (target_end < length) {
+    ime_text_span.start_offset = static_cast<uint32_t>(target_end);
+    ime_text_span.end_offset = static_cast<uint32_t>(length);
+    ime_text_span.thickness = ui::ImeTextSpan::Thickness::kThin;
+    composition->ime_text_spans.push_back(ime_text_span);
   }
 }
 
@@ -394,7 +387,7 @@ bool IMM32Manager::GetComposition(HWND window_handle, LPARAM lparam,
         composition->text[0] = 0xFF3F;
       }
 
-      // Retrieve the composition underlines and selection range information.
+      // Retrieve the IME text spans and selection range information.
       GetCompositionInfo(imm_context, lparam, composition);
 
       // Mark that there is an ongoing composition.
@@ -455,31 +448,10 @@ void IMM32Manager::SetUseCompositionWindow(bool use_composition_window) {
   use_composition_window_ = use_composition_window;
 }
 
-std::string IMM32Manager::GetInputLanguageName() const {
-  const LCID locale_id = MAKELCID(input_language_id_, SORT_DEFAULT);
-  // max size for LOCALE_SISO639LANGNAME and LOCALE_SISO3166CTRYNAME is 9.
-  wchar_t buffer[9];
-
-  // Get language id.
-  int length = ::GetLocaleInfo(locale_id, LOCALE_SISO639LANGNAME, &buffer[0],
-                               arraysize(buffer));
-  if (length <= 1)
-    return std::string();
-
-  std::string language;
-  base::WideToUTF8(buffer, length - 1, &language);
-  if (SUBLANGID(input_language_id_) == SUBLANG_NEUTRAL)
-    return language;
-
-  // Get region id.
-  length = ::GetLocaleInfo(locale_id, LOCALE_SISO3166CTRYNAME, &buffer[0],
-                           arraysize(buffer));
-  if (length <= 1)
-    return language;
-
-  std::string region;
-  base::WideToUTF8(buffer, length - 1, &region);
-  return language.append(1, '-').append(region);
+bool IMM32Manager::IsInputLanguageCJK() const {
+  LANGID lang = PRIMARYLANGID(input_language_id_);
+  return lang == LANG_CHINESE || lang == LANG_JAPANESE ||
+      lang == LANG_KOREAN;
 }
 
 void IMM32Manager::SetTextInputMode(HWND window_handle,
@@ -509,115 +481,12 @@ void IMM32Manager::SetTextInputMode(HWND window_handle,
 }
 
 // static
-bool IMM32Manager::IsRTLKeyboardLayoutInstalled() {
-  static enum {
-    RTL_KEYBOARD_LAYOUT_NOT_INITIALIZED,
-    RTL_KEYBOARD_LAYOUT_INSTALLED,
-    RTL_KEYBOARD_LAYOUT_NOT_INSTALLED,
-    RTL_KEYBOARD_LAYOUT_ERROR,
-  } layout = RTL_KEYBOARD_LAYOUT_NOT_INITIALIZED;
-
-  // Cache the result value.
-  if (layout != RTL_KEYBOARD_LAYOUT_NOT_INITIALIZED)
-    return layout == RTL_KEYBOARD_LAYOUT_INSTALLED;
-
-  // Retrieve the number of layouts installed in this system.
-  int size = GetKeyboardLayoutList(0, NULL);
-  if (size <= 0) {
-    layout = RTL_KEYBOARD_LAYOUT_ERROR;
-    return false;
-  }
-
-  // Retrieve the keyboard layouts in an array and check if there is an RTL
-  // layout in it.
-  std::unique_ptr<HKL[]> layouts(new HKL[size]);
-  ::GetKeyboardLayoutList(size, layouts.get());
-  for (int i = 0; i < size; ++i) {
-    if (IsRTLPrimaryLangID(
-            PRIMARYLANGID(reinterpret_cast<uintptr_t>(layouts[i])))) {
-      layout = RTL_KEYBOARD_LAYOUT_INSTALLED;
-      return true;
-    }
-  }
-
-  layout = RTL_KEYBOARD_LAYOUT_NOT_INSTALLED;
-  return false;
-}
-
-bool IMM32Manager::IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
-  uint8_t keystate[256];
-  if (!::GetKeyboardState(&keystate[0]))
-    return false;
-
-  // To check if a user is pressing only a control key and a right-shift key
-  // (or a left-shift key), we use the steps below:
-  // 1. Check if a user is pressing a control key and a right-shift key (or
-  //    a left-shift key).
-  // 2. If the condition 1 is true, we should check if there are any other
-  //    keys pressed at the same time.
-  //    To ignore the keys checked in 1, we set their status to 0 before
-  //    checking the key status.
-  const int kKeyDownMask = 0x80;
-  if ((keystate[VK_CONTROL] & kKeyDownMask) == 0)
-    return false;
-
-  if (keystate[VK_RSHIFT] & kKeyDownMask) {
-    keystate[VK_RSHIFT] = 0;
-    *direction = base::i18n::RIGHT_TO_LEFT;
-  } else if (keystate[VK_LSHIFT] & kKeyDownMask) {
-    keystate[VK_LSHIFT] = 0;
-    *direction = base::i18n::LEFT_TO_RIGHT;
-  } else {
-    return false;
-  }
-
-  // Scan the key status to find pressed keys. We should abandon changing the
-  // text direction when there are other pressed keys.
-  // This code is executed only when a user is pressing a control key and a
-  // right-shift key (or a left-shift key), i.e. we should ignore the status of
-  // the keys: VK_SHIFT, VK_CONTROL, VK_RCONTROL, and VK_LCONTROL.
-  // So, we reset their status to 0 and ignore them.
-  keystate[VK_SHIFT] = 0;
-  keystate[VK_CONTROL] = 0;
-  keystate[VK_RCONTROL] = 0;
-  keystate[VK_LCONTROL] = 0;
-  // Oddly, pressing F10 in another application seemingly breaks all subsequent
-  // calls to GetKeyboardState regarding the state of the F22 key. Perhaps this
-  // defect is limited to my keyboard driver, but ignoring F22 should be okay.
-  keystate[VK_F22] = 0;
-  for (int i = 0; i <= VK_PACKET; ++i) {
-    if (keystate[i] & kKeyDownMask)
-      return false;
-  }
-  return true;
-}
-
 void IMM32Manager::ConvertInputModeToImmFlags(TextInputMode input_mode,
                                               DWORD initial_conversion_mode,
                                               BOOL* open,
                                               DWORD* new_conversion_mode) {
-  *open = TRUE;
+  *open = FALSE;
   *new_conversion_mode = initial_conversion_mode;
-  switch (input_mode) {
-    case ui::TEXT_INPUT_MODE_FULL_WIDTH_LATIN:
-      *new_conversion_mode |= IME_CMODE_FULLSHAPE;
-      *new_conversion_mode &= ~(IME_CMODE_NATIVE
-                              | IME_CMODE_KATAKANA);
-      break;
-    case ui::TEXT_INPUT_MODE_KANA:
-      *new_conversion_mode |= (IME_CMODE_NATIVE
-                             | IME_CMODE_FULLSHAPE);
-      *new_conversion_mode &= ~IME_CMODE_KATAKANA;
-      break;
-    case ui::TEXT_INPUT_MODE_KATAKANA:
-      *new_conversion_mode |= (IME_CMODE_NATIVE
-                             | IME_CMODE_KATAKANA
-                             | IME_CMODE_FULLSHAPE);
-      break;
-    default:
-      *open = FALSE;
-      break;
-  }
 }
 
 }  // namespace ui

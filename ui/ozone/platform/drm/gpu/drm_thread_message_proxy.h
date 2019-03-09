@@ -13,7 +13,9 @@
 #include "ui/display/types/display_constants.h"
 #include "ui/display/types/gamma_ramp_rgb_entry.h"
 #include "ui/gfx/native_widget_types.h"
+#include "ui/ozone/platform/drm/common/display_types.h"
 #include "ui/ozone/platform/drm/gpu/inter_thread_messaging_proxy.h"
+#include "ui/ozone/public/overlay_surface_candidate.h"
 
 namespace base {
 struct FileDescriptor;
@@ -26,10 +28,8 @@ class Rect;
 }
 
 namespace ui {
-
 class DrmThread;
 struct DisplayMode_Params;
-struct DisplaySnapshot_Params;
 struct OverlayCheck_Params;
 
 class DrmThreadMessageProxy : public IPC::MessageFilter,
@@ -41,7 +41,7 @@ class DrmThreadMessageProxy : public IPC::MessageFilter,
   void SetDrmThread(DrmThread* thread) override;
 
   // IPC::MessageFilter:
-  void OnFilterAdded(IPC::Sender* sender) override;
+  void OnFilterAdded(IPC::Channel* channel) override;
   bool OnMessageReceived(const IPC::Message& message) override;
 
  private:
@@ -72,27 +72,29 @@ class DrmThreadMessageProxy : public IPC::MessageFilter,
                            const base::FileDescriptor& fd);
   void OnRemoveGraphicsDevice(const base::FilePath& path);
   void OnGetHDCPState(int64_t display_id);
-  void OnSetHDCPState(int64_t display_id, HDCPState state);
-  void OnSetColorCorrection(int64_t id,
-                            const std::vector<GammaRampRGBEntry>& degamma_lut,
-                            const std::vector<GammaRampRGBEntry>& gamma_lut,
-                            const std::vector<float>& correction_matrix);
+  void OnSetHDCPState(int64_t display_id, display::HDCPState state);
+  void OnSetColorMatrix(int64_t display_id,
+                        const std::vector<float>& color_matrix);
+  void OnSetGammaCorrection(
+      int64_t display_id,
+      const std::vector<display::GammaRampRGBEntry>& degamma_lut,
+      const std::vector<display::GammaRampRGBEntry>& gamma_lut);
 
   void OnCheckOverlayCapabilitiesCallback(
       gfx::AcceleratedWidget widget,
-      const std::vector<OverlayCheck_Params>& overlays) const;
-  void OnRefreshNativeDisplaysCallback(
-      const std::vector<DisplaySnapshot_Params>& displays) const;
+      const OverlaySurfaceCandidateList& overlays,
+      const OverlayStatusList& returns) const;
+  void OnRefreshNativeDisplaysCallback(MovableDisplaySnapshots displays) const;
   void OnConfigureNativeDisplayCallback(int64_t display_id, bool success) const;
   void OnDisableNativeDisplayCallback(int64_t display_id, bool success) const;
   void OnTakeDisplayControlCallback(bool success) const;
   void OnRelinquishDisplayControlCallback(bool success) const;
   void OnGetHDCPStateCallback(int64_t display_id,
                               bool success,
-                              HDCPState state) const;
+                              display::HDCPState state) const;
   void OnSetHDCPStateCallback(int64_t display_id, bool success) const;
 
-  DrmThread* drm_thread_;
+  DrmThread* drm_thread_ = nullptr;
 
   IPC::Sender* sender_ = nullptr;
 

@@ -10,13 +10,17 @@
 #include "base/memory/ptr_util.h"
 #include "chrome/browser/extensions/blacklist.h"
 #include "chrome/browser/extensions/chrome_app_sorting.h"
+#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/shared_module_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/prefs/pref_service.h"
+#include "components/services/unzip/public/interfaces/constants.mojom.h"
+#include "components/services/unzip/unzip_service.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/common/service_manager_connection.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
@@ -28,6 +32,12 @@
 #include "extensions/browser/state_store.h"
 #include "extensions/browser/value_store/test_value_store_factory.h"
 #include "extensions/browser/value_store/testing_value_store.h"
+#include "services/data_decoder/data_decoder_service.h"
+#include "services/data_decoder/public/mojom/constants.mojom.h"
+#include "services/service_manager/public/cpp/test/test_connector_factory.h"
+#if defined(OS_CHROMEOS)
+#include "components/user_manager/user_manager.h"
+#endif
 
 using content::BrowserThread;
 
@@ -38,7 +48,12 @@ TestExtensionSystem::TestExtensionSystem(Profile* profile)
       store_factory_(new TestValueStoreFactory()),
       info_map_(new InfoMap()),
       quota_service_(new QuotaService()),
-      app_sorting_(new ChromeAppSorting(profile_)) {}
+      app_sorting_(new ChromeAppSorting(profile_)) {
+#if defined(OS_CHROMEOS)
+  if (!user_manager::UserManager::IsInitialized())
+    test_user_manager_.reset(new chromeos::ScopedTestUserManager);
+#endif
+}
 
 TestExtensionSystem::~TestExtensionSystem() {
 }
@@ -51,7 +66,8 @@ void TestExtensionSystem::Shutdown() {
 ExtensionService* TestExtensionSystem::CreateExtensionService(
     const base::CommandLine* command_line,
     const base::FilePath& install_directory,
-    bool autoupdate_enabled) {
+    bool autoupdate_enabled,
+    bool extensions_enabled) {
   state_store_.reset(new StateStore(
       profile_, store_factory_, ValueStoreFrontend::BackendType::RULES, false));
   management_policy_.reset(new ManagementPolicy());
@@ -59,14 +75,24 @@ ExtensionService* TestExtensionSystem::CreateExtensionService(
       ExtensionManagementFactory::GetForBrowserContext(profile_)
           ->GetProviders());
   runtime_data_.reset(new RuntimeData(ExtensionRegistry::Get(profile_)));
-  extension_service_.reset(new ExtensionService(profile_,
-                                                command_line,
-                                                install_directory,
-                                                ExtensionPrefs::Get(profile_),
-                                                Blacklist::Get(profile_),
-                                                autoupdate_enabled,
-                                                true,
-                                                &ready_));
+  extension_service_.reset(new ExtensionService(
+      profile_, command_line, install_directory, ExtensionPrefs::Get(profile_),
+      Blacklist::Get(profile_), autoupdate_enabled, extensions_enabled,
+      &ready_));
+
+  if (!connector_factory_) {
+    connector_factory_ =
+        std::make_unique<service_manager::TestConnectorFactory>();
+    connector_factory_->set_ignore_quit_requests(true);
+    data_decoder_ = std::make_unique<data_decoder::DataDecoderService>(
+        connector_factory_->RegisterInstance(
+            data_decoder::mojom::kServiceName));
+    unzip_service_ = std::make_unique<unzip::UnzipService>(
+        connector_factory_->RegisterInstance(unzip::mojom::kServiceName));
+    connector_ = connector_factory_->CreateConnector();
+    CrxInstaller::set_connector_for_test(connector_.get());
+  }
+
   extension_service_->ClearProvidersForTesting();
   return extension_service_.get();
 }
@@ -131,9 +157,20 @@ std::unique_ptr<ExtensionSet> TestExtensionSystem::GetDependentExtensions(
       extension);
 }
 
-void TestExtensionSystem::InstallUpdate(const std::string& extension_id,
-                                        const base::FilePath& temp_dir) {
+void TestExtensionSystem::InstallUpdate(
+    const std::string& extension_id,
+    const std::string& public_key,
+    const base::FilePath& temp_dir,
+    bool install_immediately,
+    InstallUpdateCallback install_update_callback) {
   NOTREACHED();
+}
+
+bool TestExtensionSystem::FinishDelayedInstallationIfReady(
+    const std::string& extension_id,
+    bool install_immediately) {
+  NOTREACHED();
+  return false;
 }
 
 TestingValueStore* TestExtensionSystem::value_store() {

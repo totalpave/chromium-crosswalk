@@ -15,20 +15,22 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/string_piece.h"
+#include "base/time/time.h"
 #include "net/base/net_export.h"
 #include "net/http/http_version.h"
-#include "net/log/net_log.h"
 
 namespace base {
 class Pickle;
 class PickleIterator;
 class Time;
 class TimeDelta;
+class Value;
 }
 
 namespace net {
 
 class HttpByteRange;
+class NetLogCaptureMode;
 
 enum ValidationType {
   VALIDATION_NONE,          // The resource is fresh.
@@ -61,6 +63,8 @@ class NET_EXPORT HttpResponseHeaders
 
   static const char kContentRange[];
 
+  HttpResponseHeaders() = delete;
+
   // Parses the given raw_headers.  raw_headers should be formatted thus:
   // includes the http status response line, each line is \0-terminated, and
   // it's terminated by an empty line (ie, 2 \0s in a row).
@@ -76,6 +80,13 @@ class NET_EXPORT HttpResponseHeaders
   // be passed to the pickle's various Read* methods.
   explicit HttpResponseHeaders(base::PickleIterator* pickle_iter);
 
+  // Takes headers as an ASCII string and tries to parse them as HTTP response
+  // headers. returns nullptr on failure. Unlike the HttpResponseHeaders
+  // constructor that takes a std::string, HttpUtil::AssembleRawHeaders should
+  // not be called on |headers| before calling this method.
+  static scoped_refptr<HttpResponseHeaders> TryToCreate(
+      base::StringPiece headers);
+
   // Appends a representation of this object to the given pickle.
   // The options argument can be a combination of PersistOptions.
   void Persist(base::Pickle* pickle, PersistOptions options);
@@ -85,6 +96,9 @@ class NET_EXPORT HttpResponseHeaders
 
   // Removes all instances of a particular header.
   void RemoveHeader(const std::string& name);
+
+  // Removes all instances of particular headers.
+  void RemoveHeaders(const std::unordered_set<std::string>& header_names);
 
   // Removes a particular header line. The header name is compared
   // case-insensitively.
@@ -113,30 +127,6 @@ class NET_EXPORT HttpResponseHeaders
   void UpdateWithNewRange(const HttpByteRange& byte_range,
                           int64_t resource_size,
                           bool replace_status_line);
-
-  // Creates a normalized header string.  The output will be formatted exactly
-  // like so:
-  //     HTTP/<version> <status_code>[ <status_text>]\n
-  //     [<header-name>: <header-values>\n]*
-  // meaning, each line is \n-terminated, and there is no extra whitespace
-  // beyond the single space separators shown (of course, values can contain
-  // whitespace within them).  If a given header-name appears more than once
-  // in the set of headers, they are combined into a single line like so:
-  //     <header-name>: <header-value1>, <header-value2>, ...<header-valueN>\n
-  //
-  // DANGER: For some headers (e.g., "Set-Cookie"), the normalized form can be
-  // a lossy format.  This is due to the fact that some servers generate
-  // Set-Cookie headers that contain unquoted commas (usually as part of the
-  // value of an "expires" attribute).  So, use this function with caution.  Do
-  // not expect to be able to re-parse Set-Cookie headers from this output.
-  //
-  // NOTE: Do not make any assumptions about the encoding of this output
-  // string.  It may be non-ASCII, and the encoding used by the server is not
-  // necessarily known to us.  Do not assume that this output is UTF-8!
-  //
-  // TODO(darin): remove this method
-  //
-  void GetNormalizedHeaders(std::string* output) const;
 
   // Fetch the "normalized" value of a single header, where all values for the
   // header name are separated by commas.  See the GetNormalizedHeaders for
@@ -290,16 +280,16 @@ class NET_EXPORT HttpResponseHeaders
   // such header in the response.
   int64_t GetInt64HeaderValue(const std::string& header) const;
 
-  // Extracts the values in a Content-Range header and returns true if they are
-  // valid for a 206 response; otherwise returns false.
+  // Extracts the values in a Content-Range header and returns true if all three
+  // values are present and valid for a 206 response; otherwise returns false.
   // The following values will be outputted:
   // |*first_byte_position| = inclusive position of the first byte of the range
   // |*last_byte_position| = inclusive position of the last byte of the range
   // |*instance_length| = size in bytes of the object requested
-  // If any of the above values is unknown, its value will be -1.
-  bool GetContentRange(int64_t* first_byte_position,
-                       int64_t* last_byte_position,
-                       int64_t* instance_length) const;
+  // If this method returns false, then all of the outputs will be -1.
+  bool GetContentRangeFor206(int64_t* first_byte_position,
+                             int64_t* last_byte_position,
+                             int64_t* instance_length) const;
 
   // Returns true if the response is chunk-encoded.
   bool IsChunkEncoded() const;
@@ -308,15 +298,6 @@ class NET_EXPORT HttpResponseHeaders
   std::unique_ptr<base::Value> NetLogCallback(
       NetLogCaptureMode capture_mode) const;
 
-  // Takes in a Value created by the above function, and attempts to create a
-  // copy of the original headers.  Returns true on success.  On failure,
-  // clears |http_response_headers|.
-  // TODO(mmenke):  Long term, we want to remove this, and migrate external
-  //                consumers to be NetworkDelegates.
-  static bool FromNetLogParam(
-      const base::Value* event_param,
-      scoped_refptr<HttpResponseHeaders>* http_response_headers);
-
   // Returns the HTTP response code.  This is 0 if the response code text seems
   // to exist but could not be parsed.  Otherwise, it defaults to 200 if the
   // response code is not found in the raw headers.
@@ -324,6 +305,10 @@ class NET_EXPORT HttpResponseHeaders
 
   // Returns the raw header string.
   const std::string& raw_headers() const { return raw_headers_; }
+
+  // Returns true if |name| is a cookie related header name. This is consistent
+  // with |PERSIST_SANS_COOKIES|.
+  static bool IsCookieResponseHeader(base::StringPiece name);
 
  private:
   friend class base::RefCountedThreadSafe<HttpResponseHeaders>;
@@ -334,7 +319,6 @@ class NET_EXPORT HttpResponseHeaders
   struct ParsedHeader;
   typedef std::vector<ParsedHeader> HeaderList;
 
-  HttpResponseHeaders();
   ~HttpResponseHeaders();
 
   // Initializes from the given raw headers.
@@ -429,6 +413,9 @@ class NET_EXPORT HttpResponseHeaders
 
   DISALLOW_COPY_AND_ASSIGN(HttpResponseHeaders);
 };
+
+using ResponseHeadersCallback =
+    base::Callback<void(scoped_refptr<const HttpResponseHeaders>)>;
 
 }  // namespace net
 

@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_POLICY_CORE_COMMON_CLOUD_ENTERPRISE_METRICS_H_
 #define COMPONENTS_POLICY_CORE_COMMON_CLOUD_ENTERPRISE_METRICS_H_
 
+#include "build/build_config.h"
 #include "components/policy/policy_export.h"
 
 namespace policy {
@@ -16,7 +17,8 @@ namespace policy {
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
-//   (b) new constants should only be appended at the end of the enumeration.
+//   (b) new constants should only be appended at the end of the enumeration
+//       (update tools/metrics/histograms/enums.xml as well).
 enum MetricToken {
   // A cached token was successfully loaded from disk.
   kMetricTokenLoadSucceeded = 0,
@@ -61,7 +63,8 @@ enum MetricToken {
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
-//   (b) new constants should only be appended at the end of the enumeration.
+//   (b) new constants should only be appended at the end of the enumeration
+//       (update tools/metrics/histograms/enums.xml as well).
 enum MetricPolicy {
   // A cached policy was successfully loaded from disk.
   kMetricPolicyLoadSucceeded = 0,
@@ -116,11 +119,12 @@ enum MetricPolicy {
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
-//   (b) new constants should only be appended at the end of the enumeration.
+//   (b) new constants should only be appended at the end of the enumeration
+//       (update tools/metrics/histograms/enums.xml as well).
 enum MetricEnrollment {
   // User pressed 'Cancel' during the enrollment process.
   kMetricEnrollmentCancelled = 0,
-  // User started enrollment process by submitting valid GAIA credentials.
+  // User started enrollment process by submitting valid credentials.
   kMetricEnrollmentStarted = 1,
   // OAuth token fetch failed: network error.
   kMetricEnrollmentNetworkFailed = 2,
@@ -164,11 +168,10 @@ enum MetricEnrollment {
   kMetricEnrollmentRegisterPolicyDomainMismatch = 23,
   // Enrollment has been triggered, the webui login screen has been shown.
   kMetricEnrollmentTriggered = 24,
-  // The user submitted valid GAIA credentials to start the enrollment process
+  // The user submitted valid credentials to start the enrollment process
   // for the second (or further) time.
   kMetricEnrollmentRestarted = 25,
-  // Failed to store DM token and device ID.
-  kMetricEnrollmentStoreTokenAndIdFailed = 26,
+  /* kMetricEnrollmentStoreTokenAndIdFailed = 26 REMOVED */
   // Failed to obtain FRE state keys.
   kMetricEnrollmentNoStateKeys = 27,
   // Failed to validate policy.
@@ -220,13 +223,32 @@ enum MetricEnrollment {
   kMetricEnrollmentAttributeUpdateFailed = 50,
   // Enrollment mode does not match already locked install attributes.
   kMetricEnrollmentLockModeMismatch = 51,
+  // A registration certificate could not be fetched from the PCA.
+  kMetricEnrollmentRegistrationCertificateFetchFailed = 52,
+  // The request to enroll could not be signed.
+  kMetricEnrollmentRegisterCannotSignRequest = 53,
+  // Device model or serial number missing from VPD.
+  kMetricEnrollmentNoDeviceIdentification = 54,
+  // Active Directory policy fetch failed.
+  kMetricEnrollmentActiveDirectoryPolicyFetchFailed = 55,
+  // Failed to store DM token into the local state.
+  kMetricEnrollmentStoreDMTokenFailed = 56,
+  // Failed to get available licenses.
+  kMetricEnrollmentLicenseRequestFailed = 57,
+  // Registration failed: Consumer account with packaged license.
+  kMetricEnrollmentRegisterConsumerAccountWithPackagedLicense = 58,
+  // Device was not pre-provisioned for Zero-Touch.
+  kMetricEnrollmentDeviceNotPreProvisioned = 59,
+  // Max value for use with enumeration histogram UMA functions.
+  kMaxValue = kMetricEnrollmentDeviceNotPreProvisioned
 };
 
 // Events related to policy refresh.
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
-//   (b) new constants should only be appended at the end of the enumeration.
+//   (b) new constants should only be appended at the end of the enumeration
+//       (update tools/metrics/histograms/enums.xml as well).
 enum MetricPolicyRefresh {
   // A refresh occurred while the policy was not invalidated and the policy was
   // changed. Invalidations were enabled.
@@ -251,7 +273,8 @@ enum MetricPolicyRefresh {
 // This enum is used to define the buckets for an enumerated UMA histogram.
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
-//   (b) new constants should only be appended at the end of the enumeration.
+//   (b) new constants should only be appended at the end of the enumeration
+//       (update tools/metrics/histograms/enums.xml as well).
 enum PolicyInvalidationType {
   // The invalidation contained no payload.
   POLICY_INVALIDATION_TYPE_NO_PAYLOAD = 0,
@@ -265,6 +288,31 @@ enum PolicyInvalidationType {
   POLICY_INVALIDATION_TYPE_SIZE  // Must be the last.
 };
 
+#if defined(OS_CHROMEOS)
+// Events related to Chrome OS user policy which cause session abort.
+// This enum is used to define the buckets for an enumerated UMA histogram.
+// Hence,
+//   (a) existing enumerated constants should never be deleted or reordered, and
+//   (b) new constants should only be appended at the end of the enumeration
+//       (update tools/metrics/histograms/enums.xml as well).
+enum class MetricUserPolicyChromeOSSessionAbortType {
+  // Abort of asynchronous user policy initialization when the user is managed
+  // with the Google cloud management.
+  kInitWithGoogleCloudManagement = 0,
+  // Abort of asynchronous user policy initialization when the user is managed
+  // with the Active Directory management.
+  kInitWithActiveDirectoryManagement = 1,
+  // Abort of blocking (synchronous) user policy initialization when the user is
+  // managed with the Google cloud management.
+  kBlockingInitWithGoogleCloudManagement = 2,
+  // Abort of blocking (synchronous) user policy initialization when the user is
+  // managed with the Active Directory management.
+  kBlockingInitWithActiveDirectoryManagement = 3,
+
+  kCount,  // Must be the last.
+};
+#endif  // defined(OS_CHROMEOS)
+
 // Names for the UMA counters. They are shared from here since the events
 // from the same enum above can be triggered in different files, and must use
 // the same UMA histogram name.
@@ -272,6 +320,7 @@ POLICY_EXPORT extern const char kMetricToken[];
 POLICY_EXPORT extern const char kMetricPolicy[];
 POLICY_EXPORT extern const char kMetricUserPolicyRefresh[];
 POLICY_EXPORT extern const char kMetricUserPolicyInvalidations[];
+POLICY_EXPORT extern const char kMetricUserPolicyChromeOSSessionAbort[];
 POLICY_EXPORT extern const char kMetricDevicePolicyRefresh[];
 POLICY_EXPORT extern const char kMetricDevicePolicyInvalidations[];
 

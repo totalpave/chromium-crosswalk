@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "minidump/minidump_rva_list_writer.h"
+
 #include <utility>
 
 #include "base/format_macros.h"
-#include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "gtest/gtest.h"
-#include "minidump/minidump_rva_list_writer.h"
 #include "minidump/test/minidump_rva_list_test_util.h"
 #include "minidump/test/minidump_writable_test_util.h"
 #include "util/file/string_file.h"
@@ -33,7 +34,7 @@ class TestMinidumpRVAListWriter final : public internal::MinidumpRVAListWriter {
   ~TestMinidumpRVAListWriter() override {}
 
   void AddChild(uint32_t value) {
-    auto child = base::WrapUnique(new TestUInt32MinidumpWritable(value));
+    auto child = std::make_unique<TestUInt32MinidumpWritable>(value);
     MinidumpRVAListWriter::AddChild(std::move(child));
   }
 
@@ -47,7 +48,7 @@ TEST(MinidumpRVAListWriter, Empty) {
   StringFile string_file;
 
   ASSERT_TRUE(list_writer.WriteEverything(&string_file));
-  EXPECT_EQ(sizeof(MinidumpRVAList), string_file.string().size());
+  EXPECT_EQ(string_file.string().size(), sizeof(MinidumpRVAList));
 
   const MinidumpRVAList* list = MinidumpRVAListAtStart(string_file.string(), 0);
   ASSERT_TRUE(list);
@@ -56,7 +57,7 @@ TEST(MinidumpRVAListWriter, Empty) {
 TEST(MinidumpRVAListWriter, OneChild) {
   TestMinidumpRVAListWriter list_writer;
 
-  const uint32_t kValue = 0;
+  constexpr uint32_t kValue = 0;
   list_writer.AddChild(kValue);
 
   StringFile string_file;
@@ -69,13 +70,13 @@ TEST(MinidumpRVAListWriter, OneChild) {
   const uint32_t* child = MinidumpWritableAtRVA<uint32_t>(
       string_file.string(), list->children[0]);
   ASSERT_TRUE(child);
-  EXPECT_EQ(kValue, *child);
+  EXPECT_EQ(*child, kValue);
 }
 
 TEST(MinidumpRVAListWriter, ThreeChildren) {
   TestMinidumpRVAListWriter list_writer;
 
-  const uint32_t kValues[] = { 0x80000000, 0x55555555, 0x66006600 };
+  static constexpr uint32_t kValues[] = {0x80000000, 0x55555555, 0x66006600};
 
   list_writer.AddChild(kValues[0]);
   list_writer.AddChild(kValues[1]);
@@ -86,16 +87,16 @@ TEST(MinidumpRVAListWriter, ThreeChildren) {
   ASSERT_TRUE(list_writer.WriteEverything(&string_file));
 
   const MinidumpRVAList* list =
-      MinidumpRVAListAtStart(string_file.string(), arraysize(kValues));
+      MinidumpRVAListAtStart(string_file.string(), base::size(kValues));
   ASSERT_TRUE(list);
 
-  for (size_t index = 0; index < arraysize(kValues); ++index) {
+  for (size_t index = 0; index < base::size(kValues); ++index) {
     SCOPED_TRACE(base::StringPrintf("index %" PRIuS, index));
 
     const uint32_t* child = MinidumpWritableAtRVA<uint32_t>(
         string_file.string(), list->children[index]);
     ASSERT_TRUE(child);
-    EXPECT_EQ(kValues[index], *child);
+    EXPECT_EQ(*child, kValues[index]);
   }
 }
 

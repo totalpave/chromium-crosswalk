@@ -9,13 +9,15 @@
 
 #include <memory>
 
-#include "base/ios/weak_nsobject.h"
 #include "base/logging.h"
-#include "base/mac/scoped_nsobject.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "ios/web/public/web_thread.h"
 #include "net/base/backoff_entry.h"
 #include "url/gurl.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 const net::BackoffEntry::Policy kPollingBackoffPolicy = {
@@ -57,20 +59,17 @@ const net::BackoffEntry::Policy kPollingBackoffPolicy = {
 @interface InstallationNotifier (Testing)
 // Sets the dispatcher.
 - (void)setDispatcher:(id<DispatcherProtocol>)dispatcher;
-// Sets the UIApplication used to determine if a scheme can be opened by an
-// application.
-- (void)setSharedApplication:(UIApplication*)sharedApplication;
 @end
 
 @implementation InstallationNotifier {
   std::unique_ptr<net::BackoffEntry> _backoffEntry;
-  base::scoped_nsprotocol<id<DispatcherProtocol>> _dispatcher;
+  id<DispatcherProtocol> _dispatcher;
   // Dictionary mapping URL schemes to mutable sets of observers.
-  base::scoped_nsobject<NSMutableDictionary> _installedAppObservers;
-  NSNotificationCenter* _notificationCenter;  // Weak.
+  NSMutableDictionary* _installedAppObservers;
+  __weak NSNotificationCenter* _notificationCenter;
 
   // This object can be a fake application in unittests.
-  UIApplication* sharedApplication_;  // Weak.
+  __weak UIApplication* sharedApplication_;
 }
 
 @synthesize lastCreatedBlockId = lastCreatedBlockId_;
@@ -84,10 +83,9 @@ const net::BackoffEntry::Policy kPollingBackoffPolicy = {
   self = [super init];
   if (self) {
     lastCreatedBlockId_ = 0;
-    _dispatcher.reset([[DefaultDispatcher alloc] init]);
-    _installedAppObservers.reset([[NSMutableDictionary alloc] init]);
+    _dispatcher = [[DefaultDispatcher alloc] init];
+    _installedAppObservers = [[NSMutableDictionary alloc] init];
     _notificationCenter = [NSNotificationCenter defaultCenter];
-    sharedApplication_ = [UIApplication sharedApplication];
     _backoffEntry.reset(new net::BackoffEntry([self backOffPolicy]));
   }
   return self;
@@ -117,7 +115,7 @@ const net::BackoffEntry::Policy kPollingBackoffPolicy = {
       [NSValue valueWithNonretainedObject:observer];
   NSMutableSet* observers = [_installedAppObservers objectForKey:scheme];
   if (!observers)
-    observers = [[[NSMutableSet alloc] init] autorelease];
+    observers = [[NSMutableSet alloc] init];
   if ([observers containsObject:weakReferenceToObserver])
     return;
   [observers addObject:weakReferenceToObserver];
@@ -161,12 +159,11 @@ const net::BackoffEntry::Policy kPollingBackoffPolicy = {
   _backoffEntry->InformOfRequest(false);
   int64_t delayInNSec =
       _backoffEntry->GetTimeUntilRelease().InMicroseconds() * NSEC_PER_USEC;
-  base::WeakNSObject<InstallationNotifier> weakSelf(self);
+  __weak InstallationNotifier* weakSelf = self;
   [_dispatcher dispatchAfter:delayInNSec
                    withBlock:^{
                      DCHECK_CURRENTLY_ON(web::WebThread::UI);
-                     base::scoped_nsobject<InstallationNotifier> strongSelf(
-                         [weakSelf retain]);
+                     InstallationNotifier* strongSelf = weakSelf;
                      if (blockId == [strongSelf lastCreatedBlockId]) {
                        [strongSelf pollForTheInstallationOfApps];
                      }
@@ -185,7 +182,7 @@ const net::BackoffEntry::Policy kPollingBackoffPolicy = {
     DCHECK([observers count] > 0);
     NSURL* testSchemeURL =
         [NSURL URLWithString:[NSString stringWithFormat:@"%@:", scheme]];
-    if ([sharedApplication_ canOpenURL:testSchemeURL]) {
+    if ([[UIApplication sharedApplication] canOpenURL:testSchemeURL]) {
       [_notificationCenter postNotificationName:scheme object:self];
       for (id weakReferenceToObserver in observers) {
         id observer = [weakReferenceToObserver nonretainedObjectValue];
@@ -212,14 +209,11 @@ const net::BackoffEntry::Policy kPollingBackoffPolicy = {
 #pragma mark Testing setters
 
 - (void)setDispatcher:(id<DispatcherProtocol>)dispatcher {
-  _dispatcher.reset(dispatcher);
+  _dispatcher = dispatcher;
 }
 
-- (void)setSharedApplication:(id)sharedApplication {
-  // Verify that the test application object responds to all the selectors that
-  // will be called on it.
-  CHECK([sharedApplication respondsToSelector:@selector(canOpenURL:)]);
-  sharedApplication_ = (UIApplication*)sharedApplication;
+- (void)resetDispatcher {
+  _dispatcher = [[DefaultDispatcher alloc] init];
 }
 
 @end

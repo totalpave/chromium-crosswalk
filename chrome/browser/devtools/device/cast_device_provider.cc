@@ -7,12 +7,17 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/bind.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/local_discovery/service_discovery_shared_client.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/ip_address.h"
 
@@ -66,7 +71,7 @@ AndroidDeviceManager::DeviceInfo ServiceDescriptionToDeviceInfo(
     device_info.model = kUnknownCastDevice;
 
   AndroidDeviceManager::BrowserInfo browser_info;
-  browser_info.socket_name = base::IntToString(kCastInspectPort);
+  browser_info.socket_name = base::NumberToString(kCastInspectPort);
   browser_info.display_name =
       base::SplitString(service_description.service_name, ".",
                         base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)[0];
@@ -100,30 +105,33 @@ class CastDeviceProvider::DeviceListerDelegate
     if (device_lister_)
       return;
     service_discovery_client_ = ServiceDiscoverySharedClient::GetInstance();
-    device_lister_.reset(new ServiceDiscoveryDeviceLister(
-        this, service_discovery_client_.get(), kCastServiceType));
+    device_lister_ = ServiceDiscoveryDeviceLister::Create(
+        this, service_discovery_client_.get(), kCastServiceType);
     device_lister_->Start();
-    device_lister_->DiscoverNewDevices(true);
+    device_lister_->DiscoverNewDevices();
   }
 
   // ServiceDiscoveryDeviceLister::Delegate implementation:
-  void OnDeviceChanged(bool added,
+  void OnDeviceChanged(const std::string& service_type,
+                       bool added,
                        const ServiceDescription& service_description) override {
     runner_->PostTask(
-        FROM_HERE, base::Bind(&CastDeviceProvider::OnDeviceChanged, provider_,
-                              added, service_description));
-  }
-
-  void OnDeviceRemoved(const std::string& service_name) override {
-    runner_->PostTask(
-        FROM_HERE, base::Bind(&CastDeviceProvider::OnDeviceRemoved, provider_,
-                              service_name));
-  }
-
-  void OnDeviceCacheFlushed() override {
-    runner_->PostTask(
         FROM_HERE,
-        base::Bind(&CastDeviceProvider::OnDeviceCacheFlushed, provider_));
+        base::BindOnce(&CastDeviceProvider::OnDeviceChanged, provider_,
+                       service_type, added, service_description));
+  }
+
+  void OnDeviceRemoved(const std::string& service_type,
+                       const std::string& service_name) override {
+    runner_->PostTask(FROM_HERE,
+                      base::BindOnce(&CastDeviceProvider::OnDeviceRemoved,
+                                     provider_, service_type, service_name));
+  }
+
+  void OnDeviceCacheFlushed(const std::string& service_type) override {
+    runner_->PostTask(FROM_HERE,
+                      base::BindOnce(&CastDeviceProvider::OnDeviceCacheFlushed,
+                                     provider_, service_type));
   }
 
  private:
@@ -144,10 +152,10 @@ void CastDeviceProvider::QueryDevices(const SerialsCallback& callback) {
   if (!lister_delegate_) {
     lister_delegate_.reset(new DeviceListerDelegate(
         weak_factory_.GetWeakPtr(), base::ThreadTaskRunnerHandle::Get()));
-    content::BrowserThread::PostTask(
-        content::BrowserThread::UI, FROM_HERE,
-        base::Bind(&DeviceListerDelegate::StartDiscovery,
-                   lister_delegate_->AsWeakPtr()));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::UI},
+        base::BindOnce(&DeviceListerDelegate::StartDiscovery,
+                       lister_delegate_->AsWeakPtr()));
   }
   std::set<net::HostPortPair> targets;
   for (const auto& device_entry : device_info_map_)
@@ -171,6 +179,7 @@ void CastDeviceProvider::OpenSocket(const std::string& serial,
 }
 
 void CastDeviceProvider::OnDeviceChanged(
+    const std::string& service_type,
     bool added,
     const ServiceDescription& service_description) {
   VLOG(1) << "Device " << (added ? "added: " : "changed: ")
@@ -188,7 +197,8 @@ void CastDeviceProvider::OnDeviceChanged(
   device_info_map_[host] = ServiceDescriptionToDeviceInfo(service_description);
 }
 
-void CastDeviceProvider::OnDeviceRemoved(const std::string& service_name) {
+void CastDeviceProvider::OnDeviceRemoved(const std::string& service_type,
+                                         const std::string& service_name) {
   VLOG(1) << "Device removed: " << service_name;
   auto it = service_hostname_map_.find(service_name);
   if (it == service_hostname_map_.end())
@@ -198,7 +208,7 @@ void CastDeviceProvider::OnDeviceRemoved(const std::string& service_name) {
   service_hostname_map_.erase(it);
 }
 
-void CastDeviceProvider::OnDeviceCacheFlushed() {
+void CastDeviceProvider::OnDeviceCacheFlushed(const std::string& service_type) {
   VLOG(1) << "Device cache flushed";
   service_hostname_map_.clear();
   device_info_map_.clear();

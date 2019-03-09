@@ -1,8 +1,8 @@
 include_rules = [
-  "+components/keyed_service/core",
+  "+components/safe_browsing/db",
+  "+components/ukm",
   "+content/public/browser",
-  "+content/public/common",
-  "+content/public/test",
-  "+ipc",
-  "+components/safe_browsing_db",
+  "+net/base",
+  "+services/metrics/public/cpp",
+  "+ui/base/page_transition_types.h",
 ]

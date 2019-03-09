@@ -4,30 +4,21 @@
 
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_x11.h"
 
-#include <X11/Xlib.h>
-
 #include <memory>
 
-// Get rid of X11 macros which conflict with gtest.
-#undef Bool
-#undef None
-
 #include "base/macros.h"
-#include "base/path_service.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/ime/input_method.h"
-#include "ui/base/resource/resource_bundle.h"
-#include "ui/base/ui_base_paths.h"
 #include "ui/base/x/x11_util.h"
 #include "ui/events/event_handler.h"
 #include "ui/events/platform/x11/x11_event_source.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/x/x11.h"
 #include "ui/gfx/x/x11_atom_cache.h"
-#include "ui/gl/test/gl_surface_test_support.h"
 #include "ui/views/controls/textfield/textfield.h"
-#include "ui/views/test/views_test_base.h"
+#include "ui/views/test/views_interactive_ui_test_base.h"
 #include "ui/views/test/x11_property_change_waiter.h"
 #include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 
@@ -107,46 +98,38 @@ void DispatchMouseMotionEvent(DesktopWindowTreeHostX11* desktop_host,
   xev.xmotion.window = host->GetAcceleratedWidget();
   xev.xmotion.root = DefaultRootWindow(display);
   xev.xmotion.subwindow = 0;
-  xev.xmotion.time = CurrentTime;
+  xev.xmotion.time = x11::CurrentTime;
   xev.xmotion.x = point_in_screen.x() - bounds_in_screen.x();
   xev.xmotion.y = point_in_screen.y() - bounds_in_screen.y();
   xev.xmotion.x_root = point_in_screen.x();
   xev.xmotion.y_root = point_in_screen.y();
   xev.xmotion.state = 0;
   xev.xmotion.is_hint = NotifyNormal;
-  xev.xmotion.same_screen = True;
+  xev.xmotion.same_screen = x11::True;
 
   static_cast<ui::PlatformEventDispatcher*>(desktop_host)->DispatchEvent(&xev);
 }
 
 }  // namespace
 
-class DesktopWindowTreeHostX11Test : public ViewsTestBase {
+class DesktopWindowTreeHostX11Test : public ViewsInteractiveUITestBase {
  public:
   DesktopWindowTreeHostX11Test() {
   }
   ~DesktopWindowTreeHostX11Test() override {}
 
-  static void SetUpTestCase() {
-    gl::GLSurfaceTestSupport::InitializeOneOff();
-    ui::RegisterPathProvider();
-    base::FilePath ui_test_pak_path;
-    ASSERT_TRUE(PathService::Get(ui::UI_TEST_PAK, &ui_test_pak_path));
-    ui::ResourceBundle::InitSharedInstanceWithPakPath(ui_test_pak_path);
-  }
-
   // testing::Test
   void SetUp() override {
-    ViewsTestBase::SetUp();
+    ViewsInteractiveUITestBase::SetUp();
 
     // Make X11 synchronous for our display connection. This does not force the
     // window manager to behave synchronously.
-    XSynchronize(gfx::GetXDisplay(), True);
+    XSynchronize(gfx::GetXDisplay(), x11::True);
   }
 
   void TearDown() override {
-    XSynchronize(gfx::GetXDisplay(), False);
-    ViewsTestBase::TearDown();
+    XSynchronize(gfx::GetXDisplay(), x11::False);
+    ViewsInteractiveUITestBase::TearDown();
   }
 
  private:
@@ -270,6 +253,9 @@ TEST_F(DesktopWindowTreeHostX11Test, InputMethodFocus) {
   //          widget->GetInputMethod()->GetTextInputType());
 
   widget->Activate();
+  ActivationWaiter waiter(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  waiter.Wait();
 
   EXPECT_TRUE(widget->IsActive());
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_TEXT,

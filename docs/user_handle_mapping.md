@@ -25,6 +25,7 @@ For Chromium contributors that have different nicks on other domains.
 | darin, fishd      | fishd           | darin           |
 | dbeam             | danbeam         | dbeam           |
 | dmurph            | dmurph          | dmurph          |
+| dougt             | dougt           | dft             |
 | eaugusti          | eriq            | eaugustine      |
 | erg               | eglaysher       | erg             |
 | eroman            | eroman          | ericroman       |
@@ -47,12 +48,14 @@ For Chromium contributors that have different nicks on other domains.
 | jeremy            | jeremymos       | playmobil       |
 | jln               | julien\`        | jln             |
 | jochen            | jochen\_\_      | eisinger        |
+| johnchen          |                 | zhanliang       |
 | johnnyg           | johnny\_g       | johnnyg         |
 | joi               | joisig          | joi             |
 | jonross           | jonrossca       | jonross         |
 | jshin             | jshin           | jungshik        |
 | jww               | jww\_\_         | jww             |
 | jyasskin          | jyasskin        | jyasskin        |
+| katie             |                 | katydek         |
 | karen             | kareng          | kareng          |
 | keescook          | kees            | keescook        |
 | koz               |                 | jameskozianski  |
@@ -60,13 +63,14 @@ For Chromium contributors that have different nicks on other domains.
 | levin             | dave\_levin     | levin           |
 | lfg               | lfg\_           | lfg             |
 | littledan         | littledan       | dehrenberg      |
+| loonybear         | loonybear       | lunalu          |
 | luken             | luken_chromium  | luken           |
 | mark              | markmentovai    | mmentovai       |
-| mattm             | mattm\_c, mattm\_g | mattm           |
 | mbarbella         | mbarbella       | mbarbella       |
 | mmeade            | mmeade          | mmeade          |
 | mednik            | mednik          | mednik          |
 | mgaba             | mgaba           | mgaba           |
+| mlamouri          | mounir          | mlamouri        |
 | mlinck            | dullb0yj4ck     | mlinck          |
 | msw               | msw\_           | msw             |
 | nick              | nickcarter      | ncarter         |
@@ -77,9 +81,9 @@ For Chromium contributors that have different nicks on other domains.
 | patrick           | pjohnson        | pjohnson        |
 | peter             | beverloo        | beverloo        |
 | phajdan.jr        | phajdan-jr      | phajdan         |
+| pwnall            | pwnall          | costan          |
 | rch               | RyanHamilton    | rch             |
 | rdevlin.cronin    | rdcronin        | rdcronin        |
-| reillyg           | reillyeon       | reillyg         |
 | rlp               | rpetterson      | rlp             |
 | robliao           | robliao         | robliao         |
 | rsleevi           | sleevi, rsleevi | sleevi          |
@@ -87,6 +91,7 @@ For Chromium contributors that have different nicks on other domains.
 | satish            | satish\_        | satish          |
 | scheglov          |                 | scheglov        |
 | scottbyer         | sbyer           | scottbyer       |
+| sdy               | sdy, sidney, Sidnicious | sdy     |
 | shans             |                 | shanestephens   |
 | shrike            | shrike          | shrike          |
 | smut              | Sana            | smut            |
@@ -105,3 +110,4 @@ For Chromium contributors that have different nicks on other domains.
 | wjmaclean         | seumas, wjmaclean | wjmaclean, wjm, seumas |
 | yoz               | yaws            | yoz             |
 | zmo               | zhenyao         | zmo             |
+| robertma          | Hexcles         | robertma        |

@@ -7,9 +7,14 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "build/build_config.h"
 #include "components/storage_monitor/storage_monitor.h"
+
+#if defined(OS_CHROMEOS)
+#include "services/device/public/mojom/mtp_manager.mojom.h"
+#endif
 
 namespace storage_monitor {
 
@@ -46,9 +51,8 @@ class TestStorageMonitor : public StorageMonitor {
       base::string16* storage_object_id) const override;
 #endif
 
-#if defined(OS_LINUX)
-  device::MediaTransferProtocolManager* media_transfer_protocol_manager()
-      override;
+#if defined(OS_CHROMEOS)
+  device::mojom::MtpManager* media_transfer_protocol_manager() override;
 #endif
 
   Receiver* receiver() const override;
@@ -73,9 +77,8 @@ class TestStorageMonitor : public StorageMonitor {
   // Paths considered for testing purposes to be on removable storage.
   std::vector<base::FilePath> removable_paths_;
 
-#if defined(OS_LINUX)
-  std::unique_ptr<device::MediaTransferProtocolManager>
-      media_transfer_protocol_manager_;
+#if defined(OS_CHROMEOS)
+  device::mojom::MtpManagerPtr media_transfer_protocol_manager_;
 #endif
 };
 

@@ -4,21 +4,24 @@
 
 #include "ui/base/ime/input_method_factory.h"
 
+#include "base/command_line.h"
 #include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "ui/base/ime/mock_input_method.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/gfx/switches.h"
 
 #if defined(OS_CHROMEOS)
 #include "ui/base/ime/input_method_chromeos.h"
 #elif defined(OS_WIN)
-#include "ui/base/ime/input_method_win.h"
+#include "ui/base/ime/input_method_win_imm32.h"
+#include "ui/base/ime/input_method_win_tsf.h"
 #elif defined(OS_MACOSX)
 #include "ui/base/ime/input_method_mac.h"
-#elif defined(USE_AURA) && defined(OS_LINUX) && defined(USE_X11) && \
-      !defined(OS_CHROMEOS)
+#elif defined(OS_FUCHSIA)
+#include "ui/base/ime/input_method_fuchsia.h"
+#elif defined(USE_AURA) && (defined(USE_X11) || defined(USE_OZONE))
 #include "ui/base/ime/input_method_auralinux.h"
-#elif defined(OS_ANDROID)
-#include "ui/base/ime/input_method_android.h"
 #else
 #include "ui/base/ime/input_method_minimal.h"
 #endif
@@ -48,21 +51,25 @@ std::unique_ptr<InputMethod> CreateInputMethod(
   }
 
   if (g_input_method_set_for_testing)
+    return std::make_unique<MockInputMethod>(delegate);
+
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kHeadless))
     return base::WrapUnique(new MockInputMethod(delegate));
 
 #if defined(OS_CHROMEOS)
-  return base::WrapUnique(new InputMethodChromeOS(delegate));
+  return std::make_unique<InputMethodChromeOS>(delegate);
 #elif defined(OS_WIN)
-  return base::WrapUnique(new InputMethodWin(delegate, widget));
+  if (base::FeatureList::IsEnabled(features::kTSFImeSupport))
+    return std::make_unique<InputMethodWinTSF>(delegate, widget);
+  return std::make_unique<InputMethodWinImm32>(delegate, widget);
 #elif defined(OS_MACOSX)
-  return base::WrapUnique(new InputMethodMac(delegate));
-#elif defined(USE_AURA) && defined(OS_LINUX) && defined(USE_X11) && \
-      !defined(OS_CHROMEOS)
-  return base::WrapUnique(new InputMethodAuraLinux(delegate));
-#elif defined(OS_ANDROID)
-  return base::WrapUnique(new InputMethodAndroid(delegate));
+  return std::make_unique<InputMethodMac>(delegate);
+#elif defined(OS_FUCHSIA)
+  return std::make_unique<InputMethodFuchsia>(delegate);
+#elif defined(USE_AURA) && (defined(USE_X11) || defined(USE_OZONE))
+  return std::make_unique<InputMethodAuraLinux>(delegate);
 #else
-  return base::WrapUnique(new InputMethodMinimal(delegate));
+  return std::make_unique<InputMethodMinimal>(delegate);
 #endif
 }
 

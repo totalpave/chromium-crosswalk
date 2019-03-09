@@ -29,10 +29,10 @@ import android.os.HandlerThread;
 import android.os.Process;
 import android.provider.Settings;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.base.annotations.SuppressFBWarnings;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,7 +40,7 @@ import java.util.List;
 import java.util.Map;
 
 @JNINamespace("media")
-class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
+class AudioManagerAndroid {
     private static final String TAG = "cr.media";
 
     // Set to true to enable debug logs. Avoid in production builds.
@@ -98,22 +98,6 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
         }
     }
 
-    // List if device models which have been vetted for good quality platform
-    // echo cancellation.
-    // NOTE: only add new devices to this list if manual tests have been
-    // performed where the AEC performance is evaluated using e.g. a WebRTC
-    // audio client such as https://apprtc.appspot.com/?r=<ROOM NAME>.
-    private static final String[] SUPPORTED_AEC_MODELS = new String[] {
-            "GT-I9300", // Galaxy S3
-            "GT-I9500", // Galaxy S4
-            "GT-N7105", // Galaxy Note 2
-            "Nexus 4", // Nexus 4
-            "Nexus 5", // Nexus 5
-            "Nexus 7", // Nexus 7
-            "SM-N9005", // Galaxy Note 3
-            "SM-T310", // Galaxy Tab 3 8.0 (WiFi)
-    };
-
     // Supported audio device types.
     private static final int DEVICE_DEFAULT = -2;
     private static final int DEVICE_INVALID = -1;
@@ -159,24 +143,21 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
     private static final int DEFAULT_FRAME_PER_BUFFER = 256;
 
     private final AudioManager mAudioManager;
-    private final Context mContext;
     private final long mNativeAudioManagerAndroid;
 
     // Enabled during initialization if MODIFY_AUDIO_SETTINGS permission is
     // granted. Required to shift system-wide audio settings.
-    private boolean mHasModifyAudioSettingsPermission = false;
+    private boolean mHasModifyAudioSettingsPermission;
 
     // Enabled during initialization if BLUETOOTH permission is granted.
-    private boolean mHasBluetoothPermission = false;
-
-    private int mSavedAudioMode = AudioManager.MODE_INVALID;
+    private boolean mHasBluetoothPermission;
 
     // Stores the audio states related to Bluetooth SCO audio, where some
     // states are needed to keep track of intermediate states while the SCO
     // channel is enabled or disabled (switching state can take a few seconds).
     private int mBluetoothScoState = STATE_BLUETOOTH_SCO_INVALID;
 
-    private boolean mIsInitialized = false;
+    private boolean mIsInitialized;
     private boolean mSavedIsSpeakerphoneOn;
     private boolean mSavedIsMicrophoneMute;
 
@@ -197,8 +178,8 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
     private boolean[] mAudioDevices = new boolean[DEVICE_COUNT];
 
     private final ContentResolver mContentResolver;
-    private ContentObserver mSettingsObserver = null;
-    private HandlerThread mSettingsObserverThread = null;
+    private ContentObserver mSettingsObserver;
+    private HandlerThread mSettingsObserverThread;
     private int mCurrentVolume;
 
     // Broadcast receiver for wired headset intent broadcasts.
@@ -221,17 +202,17 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
     /** Construction */
     @CalledByNative
     private static AudioManagerAndroid createAudioManagerAndroid(
-            Context context,
             long nativeAudioManagerAndroid) {
-        return new AudioManagerAndroid(context, nativeAudioManagerAndroid);
+        return new AudioManagerAndroid(nativeAudioManagerAndroid);
     }
 
-    private AudioManagerAndroid(Context context, long nativeAudioManagerAndroid) {
-        mContext = context;
+    private AudioManagerAndroid(long nativeAudioManagerAndroid) {
         mNativeAudioManagerAndroid = nativeAudioManagerAndroid;
-        mAudioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
-        mContentResolver = mContext.getContentResolver();
-        mUsbManager = (UsbManager) mContext.getSystemService(Context.USB_SERVICE);
+        mAudioManager = (AudioManager) ContextUtils.getApplicationContext().getSystemService(
+                Context.AUDIO_SERVICE);
+        mContentResolver = ContextUtils.getApplicationContext().getContentResolver();
+        mUsbManager = (UsbManager) ContextUtils.getApplicationContext().getSystemService(
+                Context.USB_SERVICE);
     }
 
     /**
@@ -296,8 +277,8 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
     }
 
     /**
-     * Requests audio focus for voice call and sets audio mode as COMMUNICATION if input parameter
-     * is true. Abandon audio focus and restore saved audio mode if input parameter is false.
+     * Sets audio mode as COMMUNICATION if input parameter is true.
+     * Restores audio mode to NORMAL if input parameter is false.
      * Required permission: android.Manifest.permission.MODIFY_AUDIO_SETTINGS.
      */
     @CalledByNative
@@ -315,10 +296,6 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
         }
 
         if (on) {
-            // Request audio focus for a voice call of unknown duration.
-            mAudioManager.requestAudioFocus(this, AudioManager.STREAM_VOICE_CALL,
-                    AudioManager.AUDIOFOCUS_GAIN);
-
             // Store microphone mute state and speakerphone state so it can
             // be restored when closing.
             mSavedIsSpeakerphoneOn = mAudioManager.isSpeakerphoneOn();
@@ -331,8 +308,6 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
             // mode but we want to be able to mute it completely.
             startObservingVolumeChanges();
         } else {
-            mAudioManager.abandonAudioFocus(this);
-
             stopObservingVolumeChanges();
             stopBluetoothSco();
             synchronized (mLock) {
@@ -349,27 +324,12 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
 
     /**
      * Sets audio mode to MODE_IN_COMMUNICATION if input parameter is true.
-     * Restores saved audio mode if input parameter is false.
+     * Restores audio mode to MODE_NORMAL if input parameter is false.
      */
     private void setCommunicationAudioModeOnInternal(boolean on) {
         if (DEBUG) logd("setCommunicationAudioModeOn(" + on + ")");
 
         if (on) {
-            if (mSavedAudioMode != AudioManager.MODE_INVALID) {
-                Log.w(TAG, "Audio mode has already been set");
-                return;
-            }
-
-            // Store the current audio mode the first time we try to
-            // switch to communication mode.
-            try {
-                mSavedAudioMode = mAudioManager.getMode();
-            } catch (SecurityException e) {
-                logDeviceInfo();
-                throw e;
-
-            }
-
             try {
                 mAudioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
             } catch (SecurityException e) {
@@ -378,39 +338,14 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
             }
 
         } else {
-            if (mSavedAudioMode == AudioManager.MODE_INVALID) {
-                Log.w(TAG, "Audio mode has not yet been set");
-                return;
-            }
-
             // Restore the mode that was used before we switched to
             // communication mode.
             try {
-                mAudioManager.setMode(mSavedAudioMode);
+                mAudioManager.setMode(AudioManager.MODE_NORMAL);
             } catch (SecurityException e) {
                 logDeviceInfo();
                 throw e;
             }
-            mSavedAudioMode = AudioManager.MODE_INVALID;
-        }
-    }
-
-    /**
-     * Restores saved audio mode when we lose audio focus.
-     * Sets communication audio mode when we gain audio focus again.
-     * See https://crbug.com/525597 for more details.
-     */
-    @Override
-    public void onAudioFocusChange(int focusChange) {
-        if (DEBUG) logd("onAudioFocusChange: " + focusChange);
-
-        switch (focusChange) {
-            case AudioManager.AUDIOFOCUS_GAIN:
-                setCommunicationAudioModeOnInternal(true);
-                break;
-            default:
-                setCommunicationAudioModeOnInternal(false);
-                break;
         }
     }
 
@@ -468,7 +403,6 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
      * Required permissions: android.Manifest.permission.MODIFY_AUDIO_SETTINGS
      * and android.Manifest.permission.RECORD_AUDIO.
      */
-    @SuppressFBWarnings("UC_USELESS_OBJECT")
     @CalledByNative
     private AudioDeviceName[] getAudioInputDeviceNames() {
         if (DEBUG) logd("getAudioInputDeviceNames");
@@ -555,7 +489,7 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
 
     @CalledByNative
     private boolean isAudioLowLatencySupported() {
-        return mContext.getPackageManager().hasSystemFeature(
+        return ContextUtils.getApplicationContext().getPackageManager().hasSystemFeature(
                 PackageManager.FEATURE_AUDIO_LOW_LATENCY);
     }
 
@@ -572,18 +506,7 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
     }
 
     @CalledByNative
-    private static boolean shouldUseAcousticEchoCanceler() {
-        // Verify that this device is among the supported/tested models.
-        List<String> supportedModels = Arrays.asList(SUPPORTED_AEC_MODELS);
-        if (!supportedModels.contains(Build.MODEL)) {
-            return false;
-        }
-        if (DEBUG && AcousticEchoCanceler.isAvailable()) {
-            logd("Approved for use of hardware acoustic echo canceler.");
-        }
-
-        // As a final check, verify that the device supports acoustic echo
-        // cancellation.
+    private static boolean acousticEchoCancelerIsAvailable() {
         return AcousticEchoCanceler.isAvailable();
     }
 
@@ -658,8 +581,8 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
 
     /** Gets the current earpiece state. */
     private boolean hasEarpiece() {
-        return mContext.getPackageManager().hasSystemFeature(
-            PackageManager.FEATURE_TELEPHONY);
+        return ContextUtils.getApplicationContext().getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_TELEPHONY);
     }
 
     /**
@@ -676,10 +599,9 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
 
     /** Checks if the process has as specified permission or not. */
     private boolean hasPermission(String permission) {
-        return mContext.checkPermission(
-                permission,
-                Process.myPid(),
-                Process.myUid()) == PackageManager.PERMISSION_GRANTED;
+        return ContextUtils.getApplicationContext().checkPermission(
+                       permission, Process.myPid(), Process.myUid())
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     /**
@@ -704,7 +626,7 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
             // Use BluetoothManager to get the BluetoothAdapter for
             // Android 4.3 and above.
             BluetoothManager btManager =
-                    (BluetoothManager) mContext.getSystemService(
+                    (BluetoothManager) ContextUtils.getApplicationContext().getSystemService(
                             Context.BLUETOOTH_SERVICE);
             btAdapter = btManager.getAdapter();
         } else {
@@ -832,12 +754,12 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
         // Note: the intent we register for here is sticky, so it'll tell us
         // immediately what the last action was (plugged or unplugged).
         // It will enable us to set the speakerphone correctly.
-        mContext.registerReceiver(mWiredHeadsetReceiver, filter);
+        ContextUtils.getApplicationContext().registerReceiver(mWiredHeadsetReceiver, filter);
     }
 
     /** Unregister receiver for broadcasted ACTION_HEADSET_PLUG intent. */
     private void unregisterForWiredHeadsetIntentBroadcast() {
-        mContext.unregisterReceiver(mWiredHeadsetReceiver);
+        ContextUtils.getApplicationContext().unregisterReceiver(mWiredHeadsetReceiver);
         mWiredHeadsetReceiver = null;
     }
 
@@ -900,11 +822,11 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
             }
         };
 
-        mContext.registerReceiver(mBluetoothHeadsetReceiver, filter);
+        ContextUtils.getApplicationContext().registerReceiver(mBluetoothHeadsetReceiver, filter);
     }
 
     private void unregisterForBluetoothHeadsetIntentBroadcast() {
-        mContext.unregisterReceiver(mBluetoothHeadsetReceiver);
+        ContextUtils.getApplicationContext().unregisterReceiver(mBluetoothHeadsetReceiver);
         mBluetoothHeadsetReceiver = null;
     }
 
@@ -956,11 +878,11 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
             }
         };
 
-        mContext.registerReceiver(mBluetoothScoReceiver, filter);
+        ContextUtils.getApplicationContext().registerReceiver(mBluetoothScoReceiver, filter);
     }
 
     private void unregisterForBluetoothScoIntentBroadcast() {
-        mContext.unregisterReceiver(mBluetoothScoReceiver);
+        ContextUtils.getApplicationContext().unregisterReceiver(mBluetoothScoReceiver);
         mBluetoothScoReceiver = null;
     }
 
@@ -1291,12 +1213,12 @@ class AudioManagerAndroid implements AudioManager.OnAudioFocusChangeListener{
         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
 
-        mContext.registerReceiver(mUsbAudioReceiver, filter);
+        ContextUtils.getApplicationContext().registerReceiver(mUsbAudioReceiver, filter);
     }
 
     /** Unregister receiver for broadcasted ACTION_USB_DEVICE_ATTACHED/DETACHED intent. */
     private void unregisterForUsbAudioIntentBroadcast() {
-        mContext.unregisterReceiver(mUsbAudioReceiver);
+        ContextUtils.getApplicationContext().unregisterReceiver(mUsbAudioReceiver);
         mUsbAudioReceiver = null;
     }
 

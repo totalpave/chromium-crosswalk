@@ -72,7 +72,8 @@ Grammar of the `keys` attribute.
     arrow = "up" | "down" | "left" | "right" ;
     key = "tab" | "esc" | "space" | "*" | "pageup" | "pagedown" |
           "home" | "end" | arrow | ascii | fnkey;
-    keycombo = { modifier, "+" }, key ;
+    event = "keypress" | "keydown" | "keyup";
+    keycombo = { modifier, "+" }, key, [ ":", event ] ;
     keys = keycombo, { " ", keycombo } ;
 
 ### Example
@@ -97,7 +98,7 @@ practices](http://www.w3.org/TR/wai-aria-practices/#slider):
                     on-keys-pressed="increment"></iron-a11y-keys>
     <iron-a11y-keys target="[[target]]" keys="home"
                     on-keys-pressed="setMin"></iron-a11y-keys>
-    <iron-a11y-keys target=""[[target]] keys="end"
+    <iron-a11y-keys target="[[target]]" keys="end"
                     on-keys-pressed="setMax"></iron-a11y-keys>
 
 The `target` properties must evaluate to a node. See the basic usage
@@ -128,6 +129,12 @@ value. `setMax` should move the slider to the maximum value.
         observer: '_targetChanged'
       },
 
+      /**
+       * Space delimited list of keys where each key follows the format:
+       * `[MODIFIER+]*KEY[:EVENT]`.
+       * e.g. `keys="space ctrl+shift+tab enter:keyup"`.
+       * More detail can be found in the "Grammar" section of the documentation
+       */
       keys: {
         type: String,
         reflectToAttribute: true,

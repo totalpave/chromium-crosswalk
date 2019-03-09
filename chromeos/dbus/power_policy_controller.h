@@ -8,8 +8,8 @@
 #include <map>
 #include <string>
 
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/power_manager/policy.pb.h"
 #include "chromeos/dbus/power_manager_client.h"
 
@@ -17,7 +17,7 @@ namespace chromeos {
 
 // PowerPolicyController is responsible for sending Chrome's assorted power
 // management preferences to the Chrome OS power manager.
-class CHROMEOS_EXPORT PowerPolicyController
+class COMPONENT_EXPORT(CHROMEOS_DBUS) PowerPolicyController
     : public PowerManagerClient::Observer {
  public:
   // Sets the global instance. Must be called before any calls to Get().
@@ -33,6 +33,9 @@ class CHROMEOS_EXPORT PowerPolicyController
   static PowerPolicyController* Get();
 
   // Reasons why a wake lock may be added.
+  // TODO(derat): Remove this enum in favor of device::mojom::WakeLockReason
+  // once this class has been moved to the device service:
+  // https://crbug.com/702449
   enum WakeLockReason {
     REASON_AUDIO_PLAYBACK,
     REASON_VIDEO_PLAYBACK,
@@ -68,6 +71,7 @@ class CHROMEOS_EXPORT PowerPolicyController
     bool use_video_activity;
     double ac_brightness_percent;
     double battery_brightness_percent;
+    bool allow_wake_locks;
     bool allow_screen_wake_locks;
     bool enable_auto_screen_lock;
     double presentation_screen_dim_delay_factor;
@@ -89,6 +93,10 @@ class CHROMEOS_EXPORT PowerPolicyController
   // String added to a PowerManagementPolicy |reason| field if the policy has
   // been modified by preferences.
   static const char kPrefsReason[];
+
+  bool honor_screen_wake_locks_for_test() const {
+    return honor_screen_wake_locks_;
+  }
 
   // Updates |prefs_policy_| with |values| and sends an updated policy.
   void ApplyPrefs(const PrefValues& values);
@@ -112,20 +120,38 @@ class CHROMEOS_EXPORT PowerPolicyController
   // down.
   void NotifyChromeIsExiting();
 
+  // Adjusts policy when the migration of a user homedir to a new
+  // encryption format starts or stops. While migration is active,
+  // the lid-closed action is overridden to ensure the system
+  // doesn't shut down.
+  void SetEncryptionMigrationActive(bool active);
+
   // PowerManagerClient::Observer implementation:
   void PowerManagerRestarted() override;
+  void ScreenBrightnessChanged(
+      const power_manager::BacklightBrightnessChange& change) override;
+
+  // Returns the maximum time set by policy for the screen to lock when idle
+  // between AC and battery power sources. Returns zero if screen autolock is
+  // disabled by policy.
+  // If delay is set to zero, Google Chrome OS does not lock the screen when
+  // the user becomes idle.
+  // Note: The actual screen lock delay on the OS may differ as it takes other
+  // factors into account, like wake locks.
+  base::TimeDelta GetMaxPolicyAutoScreenLockDelay();
 
  private:
   explicit PowerPolicyController(PowerManagerClient* client);
   ~PowerPolicyController() override;
-
-  friend class PowerPrefsTest;
 
   // Details about a wake lock added via Add*WakeLock().
   // SCREEN and DIM will keep the screen on and prevent it from locking.
   // SCREEN will also prevent it from dimming. SYSTEM will prevent idle
   // suspends, but the screen will turn off and lock normally.
   struct WakeLock {
+    // TODO(derat): Remove this enum in favor of device::mojom::WakeLockType
+    // once this class has been moved to the device service:
+    // https://crbug.com/702449
     enum Type {
       TYPE_SCREEN,
       TYPE_DIM,
@@ -156,22 +182,36 @@ class CHROMEOS_EXPORT PowerPolicyController
   power_manager::PowerManagementPolicy prefs_policy_;
 
   // Was ApplyPrefs() called?
-  bool prefs_were_set_;
+  bool prefs_were_set_ = false;
 
   // Maps from an ID representing a request to prevent the screen from
   // getting dimmed or turned off or to prevent the system from suspending
   // to details about the request.
   WakeLockMap wake_locks_;
 
-  // Should TYPE_SCREEN or TYPE_DIM entries in |wake_locks_| be honored?
+  // Should |wake_locks_| be honored?
+  bool honor_wake_locks_ = true;
+
+  // If wake locks are honored, should TYPE_SCREEN or TYPE_DIM entries in
+  // |wake_locks_| be honored?
   // If false, screen wake locks are just treated as TYPE_SYSTEM instead.
-  bool honor_screen_wake_locks_;
+  bool honor_screen_wake_locks_ = true;
 
   // Next ID to be used by an Add*WakeLock() request.
-  int next_wake_lock_id_;
+  int next_wake_lock_id_ = 1;
 
   // True if Chrome is in the process of exiting.
-  bool chrome_is_exiting_;
+  bool chrome_is_exiting_ = false;
+
+  // True if a user homedir is in the process of migrating encryption formats.
+  bool encryption_migration_active_ = false;
+
+  // Whether brightness policy value was overridden by a user adjustment in the
+  // current user session.
+  bool per_session_brightness_override_ = false;
+
+  // Indicates if screen autolock is enabled or not by policy.
+  bool auto_screen_lock_enabled_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(PowerPolicyController);
 };

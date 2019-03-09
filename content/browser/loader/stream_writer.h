@@ -5,6 +5,7 @@
 #ifndef CONTENT_BROWSER_LOADER_STREAM_WRITER_H_
 #define CONTENT_BROWSER_LOADER_STREAM_WRITER_H_
 
+#include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "content/browser/streams/stream_write_observer.h"
@@ -13,11 +14,11 @@ class GURL;
 
 namespace net {
 class IOBuffer;
+class HttpResponseInfo;
 }
 
 namespace content {
 
-class ResourceController;
 class Stream;
 class StreamRegistry;
 
@@ -33,10 +34,6 @@ class StreamWriter : public StreamWriteObserver {
 
   Stream* stream() { return stream_.get(); }
 
-  void set_controller(ResourceController* controller) {
-    controller_ = controller;
-  }
-
   // When immediate mode is enabled, the |stream_| is flushed every time new
   // data is made available by calls to OnReadCompleted.
   void set_immediate_mode(bool enabled) { immediate_mode_ = enabled; }
@@ -44,9 +41,19 @@ class StreamWriter : public StreamWriteObserver {
   // Initializes the writer with a new Stream in |registry|. |origin| will be
   // used to construct the URL for the Stream. See WebCore::BlobURL and and
   // WebCore::SecurityOrigin in Blink to understand how origin check is done on
-  // resource loading.
+  // resource loading. |cancel_callback| must be called if the StreamWriter
+  // closes the stream.
   void InitializeStream(StreamRegistry* registry,
-                        const GURL& origin);
+                        const GURL& origin,
+                        const base::Closure& cancel_callback);
+
+  // Passes HTTP response information associated with the response body
+  // transferred through this stream. This should be called before
+  // OnReadCompleted is ever called.
+  void OnResponseStarted(const net::HttpResponseInfo& response_info);
+
+  // Updates actual counts of bytes transferred by the network.
+  void UpdateNetworkStats(int64_t raw_body_bytes, int64_t total_bytes);
 
   // Prepares a buffer to read data from the request. This call will be followed
   // by either OnReadCompleted (on successful read or EOF) or destruction.  The
@@ -60,25 +67,29 @@ class StreamWriter : public StreamWriteObserver {
                   int* buf_size,
                   int min_size);
 
-  // A read was completed, forward the data to the Stream. If |*defer| is set to
-  // true, the implementation must not continue to process the request until
-  // Resume is called on |controller_|.
+  // A read was completed, forward the data to the Stream.
+  // |need_more_data_callback| must be called (synchronously or asynchronously)
+  // once the writer is ready for more data.  Invoking the callback may result
+  // in more data being received recursively.
   //
   // InitializeStream must have been called before calling OnReadCompleted.
-  void OnReadCompleted(int bytes_read, bool* defer);
+  void OnReadCompleted(int bytes_read,
+                       const base::Closure& need_more_data_callback);
 
   // Called when there is no more data to read to the stream.
-  void Finalize();
+  void Finalize(int status);
 
  private:
   // StreamWriteObserver implementation.
   void OnSpaceAvailable(Stream* stream) override;
   void OnClose(Stream* stream) override;
 
-  ResourceController* controller_;
   scoped_refptr<Stream> stream_;
   scoped_refptr<net::IOBuffer> read_buffer_;
   bool immediate_mode_;
+
+  base::Closure cancel_callback_;
+  base::Closure need_more_data_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(StreamWriter);
 };

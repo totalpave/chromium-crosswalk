@@ -13,20 +13,12 @@
 #include "content/public/browser/web_contents_view_delegate.h"
 
 class RenderViewContextMenuBase;
-
-namespace aura {
-class Window;
-}
+class ChromeWebContentsViewFocusHelper;
 
 namespace content {
 class WebContents;
 class WebDragDestDelegate;
 class RenderFrameHost;
-}
-
-namespace views {
-class FocusManager;
-class Widget;
 }
 
 // A chrome specific class that extends WebContentsViewWin with features like
@@ -43,12 +35,12 @@ class ChromeWebContentsViewDelegateViews
   gfx::NativeWindow GetNativeWindow() override;
   content::WebDragDestDelegate* GetDragDestDelegate() override;
   void StoreFocus() override;
-  void RestoreFocus() override;
+  bool RestoreFocus() override;
+  void ResetStoredFocus() override;
   bool Focus() override;
-  void TakeFocus(bool reverse) override;
+  bool TakeFocus(bool reverse) override;
   void ShowContextMenu(content::RenderFrameHost* render_frame_host,
                        const content::ContextMenuParams& params) override;
-  void SizeChanged(const gfx::Size& size) override;
 
   // Overridden from ContextMenuDelegate.
   std::unique_ptr<RenderViewContextMenuBase> BuildMenu(
@@ -57,14 +49,6 @@ class ChromeWebContentsViewDelegateViews
   void ShowMenu(std::unique_ptr<RenderViewContextMenuBase> menu) override;
 
  private:
-  aura::Window* GetActiveNativeView();
-  views::Widget* GetTopLevelWidget();
-  views::FocusManager* GetFocusManager();
-  void SetInitialFocus();
-
-  // The id used in the ViewStorage to store the last focused view.
-  int last_focused_view_storage_id_;
-
   // The context menu is reset every time we show it, but we keep a pointer to
   // between uses so that it won't go out of scope before we're done with it.
   std::unique_ptr<RenderViewContextMenuBase> context_menu_;
@@ -73,6 +57,8 @@ class ChromeWebContentsViewDelegateViews
   std::unique_ptr<content::WebDragDestDelegate> bookmark_handler_;
 
   content::WebContents* web_contents_;
+
+  ChromeWebContentsViewFocusHelper* GetFocusHelper() const;
 
   DISALLOW_COPY_AND_ASSIGN(ChromeWebContentsViewDelegateViews);
 };

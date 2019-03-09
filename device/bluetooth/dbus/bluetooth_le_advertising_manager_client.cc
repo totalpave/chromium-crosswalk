@@ -74,15 +74,8 @@ class BluetoothAdvertisementManagerClientImpl
     writer.OpenArray("{sv}", &array_writer);
     writer.CloseContainer(&array_writer);
 
-    DCHECK(object_manager_);
-    dbus::ObjectProxy* object_proxy =
-        object_manager_->GetObjectProxy(manager_object_path);
-    object_proxy->CallMethodWithErrorCallback(
-        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::Bind(&BluetoothAdvertisementManagerClientImpl::OnSuccess,
-                   weak_ptr_factory_.GetWeakPtr(), callback),
-        base::Bind(&BluetoothAdvertisementManagerClientImpl::OnError,
-                   weak_ptr_factory_.GetWeakPtr(), error_callback));
+    CallObjectProxyMethod(manager_object_path, &method_call, callback,
+                          error_callback);
   }
 
   // BluetoothAdvertisementManagerClient override.
@@ -98,22 +91,44 @@ class BluetoothAdvertisementManagerClientImpl
     dbus::MessageWriter writer(&method_call);
     writer.AppendObjectPath(advertisement_object_path);
 
-    DCHECK(object_manager_);
-    dbus::ObjectProxy* object_proxy =
-        object_manager_->GetObjectProxy(manager_object_path);
-    object_proxy->CallMethodWithErrorCallback(
-        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::Bind(&BluetoothAdvertisementManagerClientImpl::OnSuccess,
-                   weak_ptr_factory_.GetWeakPtr(), callback),
-        base::Bind(&BluetoothAdvertisementManagerClientImpl::OnError,
-                   weak_ptr_factory_.GetWeakPtr(), error_callback));
+    CallObjectProxyMethod(manager_object_path, &method_call, callback,
+                          error_callback);
+  }
+
+  void SetAdvertisingInterval(const dbus::ObjectPath& manager_object_path,
+                              uint16_t min_interval_ms,
+                              uint16_t max_interval_ms,
+                              const base::Closure& callback,
+                              const ErrorCallback& error_callback) override {
+    dbus::MethodCall method_call(
+        bluetooth_advertising_manager::kBluetoothAdvertisingManagerInterface,
+        bluetooth_advertising_manager::kSetAdvertisingIntervals);
+
+    dbus::MessageWriter writer(&method_call);
+    writer.AppendUint16(min_interval_ms);
+    writer.AppendUint16(max_interval_ms);
+
+    CallObjectProxyMethod(manager_object_path, &method_call, callback,
+                          error_callback);
+  }
+
+  void ResetAdvertising(const dbus::ObjectPath& manager_object_path,
+                        const base::Closure& callback,
+                        const ErrorCallback& error_callback) override {
+    dbus::MethodCall method_call(
+        bluetooth_advertising_manager::kBluetoothAdvertisingManagerInterface,
+        bluetooth_advertising_manager::kResetAdvertising);
+
+    CallObjectProxyMethod(manager_object_path, &method_call, callback,
+                          error_callback);
   }
 
  protected:
-  void Init(dbus::Bus* bus) override {
+  void Init(dbus::Bus* bus,
+            const std::string& bluetooth_service_name) override {
     DCHECK(bus);
     object_manager_ = bus->GetObjectManager(
-        bluetooth_object_manager::kBluetoothObjectManagerServiceName,
+        bluetooth_service_name,
         dbus::ObjectPath(
             bluetooth_object_manager::kBluetoothObjectManagerServicePath));
     object_manager_->RegisterInterface(
@@ -122,20 +137,43 @@ class BluetoothAdvertisementManagerClientImpl
   }
 
  private:
+  // Unified function to call object proxy method. This includes checking
+  // if the bluetooth adapter exists and run error callback if it doesn't.
+  void CallObjectProxyMethod(const dbus::ObjectPath& manager_object_path,
+                             dbus::MethodCall* method_call,
+                             const base::Closure& callback,
+                             const ErrorCallback& error_callback) {
+    DCHECK(object_manager_);
+    dbus::ObjectProxy* object_proxy =
+        object_manager_->GetObjectProxy(manager_object_path);
+    if (!object_proxy) {
+      error_callback.Run(bluetooth_advertising_manager::kErrorFailed,
+                         "Adapter does not exist.");
+      return;
+    }
+
+    object_proxy->CallMethodWithErrorCallback(
+        method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
+        base::BindOnce(&BluetoothAdvertisementManagerClientImpl::OnSuccess,
+                       weak_ptr_factory_.GetWeakPtr(), callback),
+        base::BindOnce(&BluetoothAdvertisementManagerClientImpl::OnError,
+                       weak_ptr_factory_.GetWeakPtr(), error_callback));
+  }
+
   // Called by dbus::ObjectManager when an object with the advertising manager
   // interface is created. Informs observers.
   void ObjectAdded(const dbus::ObjectPath& object_path,
                    const std::string& interface_name) override {
-    FOR_EACH_OBSERVER(BluetoothLEAdvertisingManagerClient::Observer, observers_,
-                      AdvertisingManagerAdded(object_path));
+    for (auto& observer : observers_)
+      observer.AdvertisingManagerAdded(object_path);
   }
 
   // Called by dbus::ObjectManager when an object with the advertising manager
   // interface is removed. Informs observers.
   void ObjectRemoved(const dbus::ObjectPath& object_path,
                      const std::string& interface_name) override {
-    FOR_EACH_OBSERVER(BluetoothLEAdvertisingManagerClient::Observer, observers_,
-                      AdvertisingManagerRemoved(object_path));
+    for (auto& observer : observers_)
+      observer.AdvertisingManagerRemoved(object_path);
   }
 
   // Called when a response for successful method call is received.
@@ -164,7 +202,8 @@ class BluetoothAdvertisementManagerClientImpl
   dbus::ObjectManager* object_manager_;
 
   // List of observers interested in event notifications from us.
-  base::ObserverList<BluetoothLEAdvertisingManagerClient::Observer> observers_;
+  base::ObserverList<BluetoothLEAdvertisingManagerClient::Observer>::Unchecked
+      observers_;
 
   // Weak pointer factory for generating 'this' pointers that might live longer
   // than we do.
@@ -176,9 +215,11 @@ class BluetoothAdvertisementManagerClientImpl
   DISALLOW_COPY_AND_ASSIGN(BluetoothAdvertisementManagerClientImpl);
 };
 
-BluetoothLEAdvertisingManagerClient::BluetoothLEAdvertisingManagerClient() {}
+BluetoothLEAdvertisingManagerClient::BluetoothLEAdvertisingManagerClient() =
+    default;
 
-BluetoothLEAdvertisingManagerClient::~BluetoothLEAdvertisingManagerClient() {}
+BluetoothLEAdvertisingManagerClient::~BluetoothLEAdvertisingManagerClient() =
+    default;
 
 BluetoothLEAdvertisingManagerClient*
 BluetoothLEAdvertisingManagerClient::Create() {

@@ -7,16 +7,27 @@
 
 #include "base/macros.h"
 #include "content/common/content_export.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace content {
 
 class CONTENT_EXPORT CompositorClient {
  public:
+  // Compositor is requesting client to create a new surface and call
+  // SetSurface again. The existing surface if any is cleared from the
+  // compositor before this call.
+  virtual void RecreateSurface() {}
+
   // Gives the client a chance to update the layer tree host before compositing.
   virtual void UpdateLayerTreeHost() {}
 
-  // The compositor has completed swapping a frame.
-  virtual void OnSwapBuffersCompleted(int pending_swap_buffers) {}
+  // The compositor has completed swapping a frame. This is a subset of
+  // DidSwapBuffers and corresponds only to frames where Compositor submits a
+  // new frame.
+  virtual void DidSwapFrame(int pending_frames) {}
+
+  // This is called on all swap buffers, regardless of cause.
+  virtual void DidSwapBuffers(const gfx::Size& swap_size) {}
 
  protected:
   CompositorClient() {}

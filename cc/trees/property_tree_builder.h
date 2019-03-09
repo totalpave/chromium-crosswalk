@@ -12,39 +12,34 @@
 
 namespace cc {
 
-class LayerTreeHost;
-
 class PropertyTreeBuilder {
  public:
   static Layer* FindFirstScrollableLayer(Layer* root_layer);
-
-  static void CC_EXPORT PreCalculateMetaInformation(Layer* root_layer);
-  static void CC_EXPORT
-  PreCalculateMetaInformationForTesting(LayerImpl* root_layer);
 
   static void CC_EXPORT
   BuildPropertyTrees(Layer* root_layer,
                      const Layer* page_scale_layer,
                      const Layer* inner_viewport_scroll_layer,
                      const Layer* outer_viewport_scroll_layer,
-                     const Layer* overscroll_elasticity_layer,
+                     const ElementId overscroll_elasticity_element_id,
                      const gfx::Vector2dF& elastic_overscroll,
                      float page_scale_factor,
                      float device_scale_factor,
                      const gfx::Rect& viewport,
                      const gfx::Transform& device_transform,
                      PropertyTrees* property_trees);
-  static void BuildPropertyTrees(LayerImpl* root_layer,
-                                 const LayerImpl* page_scale_layer,
-                                 const LayerImpl* inner_viewport_scroll_layer,
-                                 const LayerImpl* outer_viewport_scroll_layer,
-                                 const LayerImpl* overscroll_elasticity_layer,
-                                 const gfx::Vector2dF& elastic_overscroll,
-                                 float page_scale_factor,
-                                 float device_scale_factor,
-                                 const gfx::Rect& viewport,
-                                 const gfx::Transform& device_transform,
-                                 PropertyTrees* property_trees);
+  static void CC_EXPORT
+  BuildPropertyTrees(LayerImpl* root_layer,
+                     const LayerImpl* page_scale_layer,
+                     const LayerImpl* inner_viewport_scroll_layer,
+                     const LayerImpl* outer_viewport_scroll_layer,
+                     const ElementId overscroll_elasticity_element_id,
+                     const gfx::Vector2dF& elastic_overscroll,
+                     float page_scale_factor,
+                     float device_scale_factor,
+                     const gfx::Rect& viewport,
+                     const gfx::Transform& device_transform,
+                     PropertyTrees* property_trees);
 };
 
 }  // namespace cc

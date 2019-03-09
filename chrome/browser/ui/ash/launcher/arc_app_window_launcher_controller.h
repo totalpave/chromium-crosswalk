@@ -11,24 +11,21 @@
 
 #include "ash/common/shell_observer.h"
 #include "base/macros.h"
+#include "base/scoped_observer.h"
+#include "base/time/time.h"
+#include "chrome/browser/chromeos/arc/arc_session_manager.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ui/ash/launcher/app_window_launcher_controller.h"
+#include "chrome/browser/ui/ash/launcher/arc_app_shelf_id.h"
 #include "mojo/public/cpp/bindings/binding.h"
 #include "ui/aura/env_observer.h"
 #include "ui/aura/window_observer.h"
-
-namespace ash {
-class ShelfDelegate;
-}
 
 namespace aura {
 class Window;
 }
 
-namespace views {
-class Widget;
-}
-
+class ArcAppWindow;
 class ArcAppWindowLauncherItemController;
 class ChromeLauncherController;
 
@@ -37,20 +34,16 @@ class Profile;
 class ArcAppWindowLauncherController : public AppWindowLauncherController,
                                        public aura::EnvObserver,
                                        public aura::WindowObserver,
-                                       public ash::ShellObserver,
-                                       public ArcAppListPrefs::Observer {
+                                       public ArcAppListPrefs::Observer,
+                                       public arc::ArcSessionManager::Observer {
  public:
-  ArcAppWindowLauncherController(ChromeLauncherController* owner,
-                                 ash::ShelfDelegate* shelf_delegate);
+  explicit ArcAppWindowLauncherController(ChromeLauncherController* owner);
   ~ArcAppWindowLauncherController() override;
 
-  // Returns shelf app id. Play Store app is mapped to Arc platform host app.
-  static std::string GetShelfAppIdFromArcAppId(const std::string& arc_app_id);
+  // Returns ARC task id for the window.
+  static int GetWindowTaskId(aura::Window* window);
 
-  // Returns Arc app id. Arc platform host app is mapped to Play Store app.
-  static std::string GetArcAppIdFromShelfAppId(const std::string& shelf_app_id);
-
-  // AppWindowLauncherControllre:
+  // AppWindowLauncherController:
   void ActiveUserChanged(const std::string& user_email) override;
   void AdditionalUserAddedToSession(Profile* profile) override;
 
@@ -58,64 +51,86 @@ class ArcAppWindowLauncherController : public AppWindowLauncherController,
   void OnWindowInitialized(aura::Window* window) override;
 
   // aura::WindowObserver:
-  void OnWindowVisibilityChanging(aura::Window* window, bool visible) override;
+  void OnWindowVisibilityChanged(aura::Window* window, bool visible) override;
   void OnWindowDestroying(aura::Window* window) override;
 
-  // aura::client::ActivationChangeObserver:
-  void OnWindowActivated(
-      aura::client::ActivationChangeObserver::ActivationReason reason,
-      aura::Window* gained_active,
-      aura::Window* lost_active) override;
+  // wm::ActivationChangeObserver:
+  void OnWindowActivated(wm::ActivationChangeObserver::ActivationReason reason,
+                         aura::Window* gained_active,
+                         aura::Window* lost_active) override;
 
   // ash::ShellObserver:
   void OnMaximizeModeStarted() override;
   void OnMaximizeModeEnded() override;
 
   // ArcAppListPrefs::Observer:
-  void OnAppReadyChanged(const std::string& app_id, bool ready) override;
+  void OnAppStatesChanged(const std::string& app_id,
+                          const ArcAppListPrefs::AppInfo& app_info) override;
   void OnAppRemoved(const std::string& app_id) override;
   void OnTaskCreated(int task_id,
                      const std::string& package_name,
-                     const std::string& activity) override;
+                     const std::string& activity,
+                     const std::string& intent) override;
+  void OnTaskDescriptionUpdated(
+      int32_t task_id,
+      const std::string& label,
+      const std::vector<uint8_t>& icon_png_data) override;
   void OnTaskDestroyed(int task_id) override;
   void OnTaskSetActive(int32_t task_id) override;
   void OnTaskOrientationLockRequested(
       int32_t task_id,
       const arc::mojom::OrientationLock orientation_lock) override;
 
- private:
-  class AppWindow;
+  int active_task_id() const { return active_task_id_; }
 
-  using TaskIdToAppWindow = std::map<int, std::unique_ptr<AppWindow>>;
-  using TaskIdToShelfAppIdMap = std::map<int, std::string>;
-  using AppControllerMap =
-      std::map<std::string, ArcAppWindowLauncherItemController*>;
+ private:
+  class AppWindowInfo;
+
+  using TaskIdToAppWindowInfo = std::map<int, std::unique_ptr<AppWindowInfo>>;
+
+  // Maps shelf group id to controller. Shelf group id is optional parameter for
+  // the Android task. If it is not set, app id is used instead.
+  using ShelfGroupToAppControllerMap =
+      std::map<arc::ArcAppShelfId, ArcAppWindowLauncherItemController*>;
 
   void StartObserving(Profile* profile);
   void StopObserving(Profile* profile);
 
-  void RegisterApp(AppWindow* app_window);
-  void UnregisterApp(AppWindow* app_window, bool close_controller);
+  void RegisterApp(AppWindowInfo* app_window_info);
+  void UnregisterApp(AppWindowInfo* app_window_info);
 
-  AppWindow* GetAppWindowForTask(int task_id);
+  AppWindowInfo* GetAppWindowInfoForTask(int task_id);
+  ArcAppWindow* GetAppWindowForTask(int task_id);
 
-  void MayAttachContollerToWindow(aura::Window* window);
+  void AttachControllerToWindowIfNeeded(aura::Window* window);
+  void AttachControllerToWindowsIfNeeded();
+  ArcAppWindowLauncherItemController* AttachControllerToTask(
+      int taskId,
+      const AppWindowInfo& app_window_info);
 
-  void SetOrientationLockForAppWindow(AppWindow* app_window);
+  std::vector<int> GetTaskIdsForApp(const std::string& arc_app_id) const;
 
   // AppWindowLauncherController:
   AppWindowLauncherItemController* ControllerForWindow(
       aura::Window* window) override;
+  void OnItemDelegateDiscarded(ash::ShelfItemDelegate* delegate) override;
 
-  // Not owned
-  ash::ShelfDelegate* shelf_delegate_;
+  // arc::ArcSessionManager::Observer:
+  void OnArcOptInManagementCheckStarted() override;
+  void OnArcSessionStopped(arc::ArcStopReason stop_reason) override;
+
   int active_task_id_ = -1;
-  TaskIdToAppWindow task_id_to_app_window_;
-  TaskIdToShelfAppIdMap task_id_to_shelf_app_id_;
-  AppControllerMap app_controller_map_;
+  TaskIdToAppWindowInfo task_id_to_app_window_info_;
+  ShelfGroupToAppControllerMap app_shelf_group_to_controller_map_;
   std::vector<aura::Window*> observed_windows_;
   Profile* observed_profile_ = nullptr;
   bool observing_shell_ = false;
+
+  // The time when the ARC OptIn management check was started. This happens
+  // right after user agrees the ToS or in some cases for managed user when ARC
+  // starts for the first time. OptIn management check is preceding step before
+  // ARC container is actually started.
+  base::Time opt_in_management_check_start_time_;
 
   DISALLOW_COPY_AND_ASSIGN(ArcAppWindowLauncherController);
 };

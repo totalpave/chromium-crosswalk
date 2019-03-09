@@ -13,54 +13,50 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/debug/leak_annotations.h"
-#include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/memory/singleton.h"
+#include "base/message_loop/message_loop_current.h"
+#include "base/no_destructor.h"
+#include "base/process/process.h"
 #include "base/process/process_metrics.h"
 #include "base/stl_util.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/stringprintf.h"
-#include "base/sys_info.h"
-#include "base/third_party/dynamic_annotations/dynamic_annotations.h"
+#include "base/system/sys_info.h"
+#include "base/task/post_task.h"
 #include "base/threading/platform_thread.h"
+#include "base/threading/sequenced_task_runner_handle.h"
 #include "base/threading/thread_id_name_manager.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/threading/worker_pool.h"
 #include "base/time/time.h"
+#include "base/trace_event/event_name_filter.h"
 #include "base/trace_event/heap_profiler.h"
 #include "base/trace_event/heap_profiler_allocation_context_tracker.h"
+#include "base/trace_event/heap_profiler_event_filter.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/memory_dump_provider.h"
 #include "base/trace_event/process_memory_dump.h"
 #include "base/trace_event/trace_buffer.h"
 #include "base/trace_event/trace_event.h"
-#include "base/trace_event/trace_event_synthetic_delay.h"
-#include "base/trace_event/trace_sampling_thread.h"
 #include "build/build_config.h"
 
 #if defined(OS_WIN)
 #include "base/trace_event/trace_event_etw_export_win.h"
 #endif
 
-// The thread buckets for the sampling profiler.
-BASE_EXPORT TRACE_EVENT_API_ATOMIC_WORD g_trace_state[3];
+#if defined(OS_ANDROID)
+#include "base/debug/elf_reader.h"
+
+// The linker assigns the virtual address of the start of current library to
+// this symbol.
+extern char __executable_start;
+#endif
 
 namespace base {
-namespace internal {
-
-class DeleteTraceLogForTesting {
- public:
-  static void Delete() {
-    Singleton<trace_event::TraceLog,
-              LeakySingletonTraits<trace_event::TraceLog>>::OnExit(0);
-  }
-};
-
-}  // namespace internal
-
 namespace trace_event {
 
 namespace {
@@ -86,38 +82,20 @@ const size_t kEchoToConsoleTraceEventBufferChunks = 256;
 const size_t kTraceEventBufferSizeInBytes = 100 * 1024;
 const int kThreadFlushTimeoutMs = 3000;
 
-#define MAX_CATEGORY_GROUPS 200
+TraceLog* g_trace_log_for_testing = nullptr;
 
-// Parallel arrays g_category_groups and g_category_group_enabled are separate
-// so that a pointer to a member of g_category_group_enabled can be easily
-// converted to an index into g_category_groups. This allows macros to deal
-// only with char enabled pointers from g_category_group_enabled, and we can
-// convert internally to determine the category name from the char enabled
-// pointer.
-const char* g_category_groups[MAX_CATEGORY_GROUPS] = {
-    "toplevel",
-    "tracing already shutdown",
-    "tracing categories exhausted; must increase MAX_CATEGORY_GROUPS",
-    "__metadata"};
+#define MAX_TRACE_EVENT_FILTERS 32
 
-// The enabled flag is char instead of bool so that the API can be used from C.
-unsigned char g_category_group_enabled[MAX_CATEGORY_GROUPS] = {0};
-// Indexes here have to match the g_category_groups array indexes above.
-const int g_category_already_shutdown = 1;
-const int g_category_categories_exhausted = 2;
-const int g_category_metadata = 3;
-const int g_num_builtin_categories = 4;
-// Skip default categories.
-base::subtle::AtomicWord g_category_index = g_num_builtin_categories;
-
-// The name of the current thread. This is used to decide if the current
-// thread name has changed. We combine all the seen thread names into the
-// output name for the thread.
-LazyInstance<ThreadLocalPointer<const char>>::Leaky g_current_thread_name =
-    LAZY_INSTANCE_INITIALIZER;
+// List of TraceEventFilter objects from the most recent tracing session.
+std::vector<std::unique_ptr<TraceEventFilter>>& GetCategoryGroupFilters() {
+  static auto* filters = new std::vector<std::unique_ptr<TraceEventFilter>>();
+  return *filters;
+}
 
 ThreadTicks ThreadNow() {
-  return ThreadTicks::IsSupported() ? ThreadTicks::Now() : ThreadTicks();
+  return ThreadTicks::IsSupported()
+             ? base::subtle::ThreadTicksNowIgnoringOverride()
+             : ThreadTicks();
 }
 
 template <typename T>
@@ -129,26 +107,14 @@ void InitializeMetadataEvent(TraceEvent* trace_event,
   if (!trace_event)
     return;
 
-  int num_args = 1;
-  unsigned char arg_type;
-  unsigned long long arg_value;
-  ::trace_event_internal::SetTraceValue(value, &arg_type, &arg_value);
-  trace_event->Initialize(
-      thread_id,
-      TimeTicks(),
-      ThreadTicks(),
-      TRACE_EVENT_PHASE_METADATA,
-      &g_category_group_enabled[g_category_metadata],
-      metadata_name,
+  TraceArguments args(arg_name, value);
+  trace_event->Reset(
+      thread_id, TimeTicks(), ThreadTicks(), TRACE_EVENT_PHASE_METADATA,
+      CategoryRegistry::kCategoryMetadata->state_ptr(), metadata_name,
       trace_event_internal::kGlobalScope,  // scope
-      trace_event_internal::kNoId,  // id
-      trace_event_internal::kNoId,  // bind_id
-      num_args,
-      &arg_name,
-      &arg_type,
-      &arg_value,
-      nullptr,
-      TRACE_EVENT_FLAG_NONE);
+      trace_event_internal::kNoId,         // id
+      trace_event_internal::kNoId,         // bind_id
+      &args, TRACE_EVENT_FLAG_NONE);
 }
 
 class AutoThreadLocalBoolean {
@@ -174,9 +140,30 @@ void MakeHandle(uint32_t chunk_seq,
   DCHECK(chunk_seq);
   DCHECK(chunk_index <= TraceBufferChunk::kMaxChunkIndex);
   DCHECK(event_index < TraceBufferChunk::kTraceBufferChunkSize);
+  DCHECK(chunk_index <= std::numeric_limits<uint16_t>::max());
   handle->chunk_seq = chunk_seq;
   handle->chunk_index = static_cast<uint16_t>(chunk_index);
   handle->event_index = static_cast<uint16_t>(event_index);
+}
+
+template <typename Function>
+void ForEachCategoryFilter(const unsigned char* category_group_enabled,
+                           Function filter_fn) {
+  const TraceCategory* category =
+      CategoryRegistry::GetCategoryByStatePtr(category_group_enabled);
+  uint32_t filter_bitmap = category->enabled_filters();
+  for (int index = 0; filter_bitmap != 0; filter_bitmap >>= 1, index++) {
+    if (filter_bitmap & 1 && GetCategoryGroupFilters()[index])
+      filter_fn(GetCategoryGroupFilters()[index].get());
+  }
+}
+
+// The fallback arguments filtering function will filter away every argument.
+bool DefaultIsTraceEventArgsWhitelisted(
+    const char* category_group_name,
+    const char* event_name,
+    base::trace_event::ArgumentNameFilterPredicate* arg_name_filter) {
+  return false;
 }
 
 }  // namespace
@@ -206,7 +193,7 @@ class TraceLog::OptionalAutoLock {
 };
 
 class TraceLog::ThreadLocalEventBuffer
-    : public MessageLoop::DestructionObserver,
+    : public MessageLoopCurrent::DestructionObserver,
       public MemoryDumpProvider {
  public:
   explicit ThreadLocalEventBuffer(TraceLog* trace_log);
@@ -226,7 +213,7 @@ class TraceLog::ThreadLocalEventBuffer
   int generation() const { return generation_; }
 
  private:
-  // MessageLoop::DestructionObserver
+  // MessageLoopCurrent::DestructionObserver
   void WillDestroyCurrentMessageLoop() override;
 
   // MemoryDumpProvider implementation.
@@ -255,28 +242,31 @@ TraceLog::ThreadLocalEventBuffer::ThreadLocalEventBuffer(TraceLog* trace_log)
       generation_(trace_log->generation()) {
   // ThreadLocalEventBuffer is created only if the thread has a message loop, so
   // the following message_loop won't be NULL.
-  MessageLoop* message_loop = MessageLoop::current();
-  message_loop->AddDestructionObserver(this);
+  MessageLoopCurrent::Get()->AddDestructionObserver(this);
 
   // This is to report the local memory usage when memory-infra is enabled.
   MemoryDumpManager::GetInstance()->RegisterDumpProvider(
       this, "ThreadLocalEventBuffer", ThreadTaskRunnerHandle::Get());
 
+  int thread_id = static_cast<int>(PlatformThread::CurrentId());
+
   AutoLock lock(trace_log->lock_);
-  trace_log->thread_message_loops_.insert(message_loop);
+  trace_log->thread_task_runners_[thread_id] = ThreadTaskRunnerHandle::Get();
 }
 
 TraceLog::ThreadLocalEventBuffer::~ThreadLocalEventBuffer() {
   CheckThisIsCurrentBuffer();
-  MessageLoop::current()->RemoveDestructionObserver(this);
+  MessageLoopCurrent::Get()->RemoveDestructionObserver(this);
   MemoryDumpManager::GetInstance()->UnregisterDumpProvider(this);
 
   {
     AutoLock lock(trace_log_->lock_);
     FlushWhileLocked();
-    trace_log_->thread_message_loops_.erase(MessageLoop::current());
+
+    int thread_id = static_cast<int>(PlatformThread::CurrentId());
+    trace_log_->thread_task_runners_.erase(thread_id);
   }
-  trace_log_->thread_local_event_buffer_.Set(NULL);
+  trace_log_->thread_local_event_buffer_.Set(nullptr);
 }
 
 TraceEvent* TraceLog::ThreadLocalEventBuffer::AddTraceEvent(
@@ -294,7 +284,7 @@ TraceEvent* TraceLog::ThreadLocalEventBuffer::AddTraceEvent(
     trace_log_->CheckIfBufferIsFullWhileLocked();
   }
   if (!chunk_)
-    return NULL;
+    return nullptr;
 
   size_t event_index;
   TraceEvent* trace_event = chunk_->AddTraceEvent(&event_index);
@@ -333,10 +323,19 @@ void TraceLog::ThreadLocalEventBuffer::FlushWhileLocked() {
   // find the generation mismatch and delete this buffer soon.
 }
 
+void TraceLog::SetAddTraceEventOverrides(
+    const AddTraceEventOverrideCallback& add_event_override,
+    const OnFlushCallback& on_flush_callback,
+    const UpdateDurationCallback& update_duration_callback) {
+  add_trace_event_override_.store(add_event_override);
+  on_flush_callback_.store(on_flush_callback);
+  update_duration_callback_.store(update_duration_callback);
+}
+
 struct TraceLog::RegisteredAsyncObserver {
-  RegisteredAsyncObserver(WeakPtr<AsyncEnabledStateObserver> observer)
+  explicit RegisteredAsyncObserver(WeakPtr<AsyncEnabledStateObserver> observer)
       : observer(observer), task_runner(ThreadTaskRunnerHandle::Get()) {}
-  ~RegisteredAsyncObserver() {}
+  ~RegisteredAsyncObserver() = default;
 
   WeakPtr<AsyncEnabledStateObserver> observer;
   scoped_refptr<SequencedTaskRunner> task_runner;
@@ -344,69 +343,80 @@ struct TraceLog::RegisteredAsyncObserver {
 
 TraceLogStatus::TraceLogStatus() : event_capacity(0), event_count(0) {}
 
-TraceLogStatus::~TraceLogStatus() {}
+TraceLogStatus::~TraceLogStatus() = default;
 
 // static
 TraceLog* TraceLog::GetInstance() {
-  return Singleton<TraceLog, LeakySingletonTraits<TraceLog>>::get();
+  static base::NoDestructor<TraceLog> instance;
+  return instance.get();
+}
+
+// static
+void TraceLog::ResetForTesting() {
+  if (!g_trace_log_for_testing)
+    return;
+  {
+    AutoLock lock(g_trace_log_for_testing->lock_);
+    CategoryRegistry::ResetForTesting();
+  }
+  g_trace_log_for_testing->~TraceLog();
+  new (g_trace_log_for_testing) TraceLog;
 }
 
 TraceLog::TraceLog()
-    : mode_(DISABLED),
+    : enabled_modes_(0),
       num_traces_recorded_(0),
-      event_callback_(0),
-      dispatching_to_observer_list_(false),
       process_sort_index_(0),
       process_id_hash_(0),
       process_id_(0),
-      watch_category_(0),
       trace_options_(kInternalRecordUntilFull),
-      sampling_thread_handle_(0),
       trace_config_(TraceConfig()),
-      event_callback_trace_config_(TraceConfig()),
       thread_shared_chunk_index_(0),
       generation_(0),
-      use_worker_thread_(false) {
-  // Trace is enabled or disabled on one thread while other threads are
-  // accessing the enabled flag. We don't care whether edge-case events are
-  // traced or not, so we allow races on the enabled flag to keep the trace
-  // macros fast.
-  // TODO(jbates): ANNOTATE_BENIGN_RACE_SIZED crashes windows TSAN bots:
-  // ANNOTATE_BENIGN_RACE_SIZED(g_category_group_enabled,
-  //                            sizeof(g_category_group_enabled),
-  //                           "trace_event category enabled");
-  for (int i = 0; i < MAX_CATEGORY_GROUPS; ++i) {
-    ANNOTATE_BENIGN_RACE(&g_category_group_enabled[i],
-                         "trace_event category enabled");
-  }
+      use_worker_thread_(false),
+      filter_factory_for_testing_(nullptr) {
+  CategoryRegistry::Initialize();
+
 #if defined(OS_NACL)  // NaCl shouldn't expose the process id.
   SetProcessID(0);
 #else
   SetProcessID(static_cast<int>(GetCurrentProcId()));
 #endif
 
+// Linux renderer processes and Android O processes are not allowed to read
+// "proc/stat" file, crbug.com/788870.
+#if defined(OS_WIN) || (defined(OS_MACOSX) && !defined(OS_IOS))
+  process_creation_time_ = Process::Current().CreationTime();
+#else
+  // Use approximate time when creation time is not available.
+  process_creation_time_ = TRACE_TIME_NOW();
+#endif
+
   logged_events_.reset(CreateTraceBuffer());
 
   MemoryDumpManager::GetInstance()->RegisterDumpProvider(this, "TraceLog",
                                                          nullptr);
+  g_trace_log_for_testing = this;
 }
 
-TraceLog::~TraceLog() {}
+TraceLog::~TraceLog() = default;
 
 void TraceLog::InitializeThreadLocalEventBufferIfSupported() {
-  // A ThreadLocalEventBuffer needs the message loop
+  // A ThreadLocalEventBuffer needs the message loop with a task runner
   // - to know when the thread exits;
   // - to handle the final flush.
-  // For a thread without a message loop or the message loop may be blocked, the
-  // trace events will be added into the main buffer directly.
-  if (thread_blocks_message_loop_.Get() || !MessageLoop::current())
+  // For a thread without a message loop or if the message loop may be blocked,
+  // the trace events will be added into the main buffer directly.
+  if (thread_blocks_message_loop_.Get() || !MessageLoopCurrent::IsSet() ||
+      !ThreadTaskRunnerHandle::IsSet()) {
     return;
+  }
   HEAP_PROFILER_SCOPED_IGNORE;
   auto* thread_local_event_buffer = thread_local_event_buffer_.Get();
   if (thread_local_event_buffer &&
       !CheckGeneration(thread_local_event_buffer->generation())) {
     delete thread_local_event_buffer;
-    thread_local_event_buffer = NULL;
+    thread_local_event_buffer = nullptr;
   }
   if (!thread_local_event_buffer) {
     thread_local_event_buffer = new ThreadLocalEventBuffer(this);
@@ -419,7 +429,7 @@ bool TraceLog::OnMemoryDump(const MemoryDumpArgs& args,
   // TODO(ssid): Use MemoryDumpArgs to create light dumps when requested
   // (crbug.com/499731).
   TraceEventMemoryOverhead overhead;
-  overhead.Add("TraceLog", sizeof(*this));
+  overhead.Add(TraceEventMemoryOverhead::kOther, sizeof(*this));
   {
     AutoLock lock(lock_);
     if (logged_events_)
@@ -437,250 +447,234 @@ const unsigned char* TraceLog::GetCategoryGroupEnabled(
     const char* category_group) {
   TraceLog* tracelog = GetInstance();
   if (!tracelog) {
-    DCHECK(!g_category_group_enabled[g_category_already_shutdown]);
-    return &g_category_group_enabled[g_category_already_shutdown];
+    DCHECK(!CategoryRegistry::kCategoryAlreadyShutdown->is_enabled());
+    return CategoryRegistry::kCategoryAlreadyShutdown->state_ptr();
   }
-  return tracelog->GetCategoryGroupEnabledInternal(category_group);
+  TraceCategory* category = CategoryRegistry::GetCategoryByName(category_group);
+  if (!category) {
+    // Slow path: in the case of a new category we have to repeat the check
+    // holding the lock, as multiple threads might have reached this point
+    // at the same time.
+    auto category_initializer = [](TraceCategory* category) {
+      TraceLog::GetInstance()->UpdateCategoryState(category);
+    };
+    AutoLock lock(tracelog->lock_);
+    CategoryRegistry::GetOrCreateCategoryLocked(
+        category_group, category_initializer, &category);
+  }
+  DCHECK(category->state_ptr());
+  return category->state_ptr();
 }
 
 const char* TraceLog::GetCategoryGroupName(
     const unsigned char* category_group_enabled) {
-  // Calculate the index of the category group by finding
-  // category_group_enabled in g_category_group_enabled array.
-  uintptr_t category_begin =
-      reinterpret_cast<uintptr_t>(g_category_group_enabled);
-  uintptr_t category_ptr = reinterpret_cast<uintptr_t>(category_group_enabled);
-  DCHECK(category_ptr >= category_begin &&
-         category_ptr < reinterpret_cast<uintptr_t>(g_category_group_enabled +
-                                                    MAX_CATEGORY_GROUPS))
-      << "out of bounds category pointer";
-  uintptr_t category_index =
-      (category_ptr - category_begin) / sizeof(g_category_group_enabled[0]);
-  return g_category_groups[category_index];
+  return CategoryRegistry::GetCategoryByStatePtr(category_group_enabled)
+      ->name();
 }
 
-void TraceLog::UpdateCategoryGroupEnabledFlag(size_t category_index) {
-  unsigned char enabled_flag = 0;
-  const char* category_group = g_category_groups[category_index];
-  if (mode_ == RECORDING_MODE &&
-      trace_config_.IsCategoryGroupEnabled(category_group)) {
-    enabled_flag |= ENABLED_FOR_RECORDING;
+void TraceLog::UpdateCategoryState(TraceCategory* category) {
+  lock_.AssertAcquired();
+  DCHECK(category->is_valid());
+  unsigned char state_flags = 0;
+  if (enabled_modes_ & RECORDING_MODE &&
+      trace_config_.IsCategoryGroupEnabled(category->name())) {
+    state_flags |= TraceCategory::ENABLED_FOR_RECORDING;
   }
-
-  if (event_callback_ &&
-      event_callback_trace_config_.IsCategoryGroupEnabled(category_group)) {
-    enabled_flag |= ENABLED_FOR_EVENT_CALLBACK;
-  }
-
-#if defined(OS_WIN)
-  if (base::trace_event::TraceEventETWExport::IsCategoryGroupEnabled(
-          category_group)) {
-    enabled_flag |= ENABLED_FOR_ETW_EXPORT;
-  }
-#endif
 
   // TODO(primiano): this is a temporary workaround for catapult:#2341,
   // to guarantee that metadata events are always added even if the category
   // filter is "-*". See crbug.com/618054 for more details and long-term fix.
-  if (mode_ == RECORDING_MODE && !strcmp(category_group, "__metadata"))
-    enabled_flag |= ENABLED_FOR_RECORDING;
+  if (enabled_modes_ & RECORDING_MODE &&
+      category == CategoryRegistry::kCategoryMetadata) {
+    state_flags |= TraceCategory::ENABLED_FOR_RECORDING;
+  }
 
-  g_category_group_enabled[category_index] = enabled_flag;
-}
+#if defined(OS_WIN)
+  if (base::trace_event::TraceEventETWExport::IsCategoryGroupEnabled(
+          category->name())) {
+    state_flags |= TraceCategory::ENABLED_FOR_ETW_EXPORT;
+  }
+#endif
 
-void TraceLog::UpdateCategoryGroupEnabledFlags() {
-  size_t category_index = base::subtle::NoBarrier_Load(&g_category_index);
-  for (size_t i = 0; i < category_index; i++)
-    UpdateCategoryGroupEnabledFlag(i);
-}
-
-void TraceLog::UpdateSyntheticDelaysFromTraceConfig() {
-  ResetTraceEventSyntheticDelays();
-  const TraceConfig::StringList& delays =
-      trace_config_.GetSyntheticDelayValues();
-  TraceConfig::StringList::const_iterator ci;
-  for (ci = delays.begin(); ci != delays.end(); ++ci) {
-    StringTokenizer tokens(*ci, ";");
-    if (!tokens.GetNext())
-      continue;
-    TraceEventSyntheticDelay* delay =
-        TraceEventSyntheticDelay::Lookup(tokens.token());
-    while (tokens.GetNext()) {
-      std::string token = tokens.token();
-      char* duration_end;
-      double target_duration = strtod(token.c_str(), &duration_end);
-      if (duration_end != token.c_str()) {
-        delay->SetTargetDuration(TimeDelta::FromMicroseconds(
-            static_cast<int64_t>(target_duration * 1e6)));
-      } else if (token == "static") {
-        delay->SetMode(TraceEventSyntheticDelay::STATIC);
-      } else if (token == "oneshot") {
-        delay->SetMode(TraceEventSyntheticDelay::ONE_SHOT);
-      } else if (token == "alternating") {
-        delay->SetMode(TraceEventSyntheticDelay::ALTERNATING);
-      }
+  uint32_t enabled_filters_bitmap = 0;
+  int index = 0;
+  for (const auto& event_filter : enabled_event_filters_) {
+    if (event_filter.IsCategoryGroupEnabled(category->name())) {
+      state_flags |= TraceCategory::ENABLED_FOR_FILTERING;
+      DCHECK(GetCategoryGroupFilters()[index]);
+      enabled_filters_bitmap |= 1 << index;
     }
+    if (index++ >= MAX_TRACE_EVENT_FILTERS) {
+      NOTREACHED();
+      break;
+    }
+  }
+  category->set_enabled_filters(enabled_filters_bitmap);
+  category->set_state(state_flags);
+}
+
+void TraceLog::UpdateCategoryRegistry() {
+  lock_.AssertAcquired();
+  CreateFiltersForTraceConfig();
+  for (TraceCategory& category : CategoryRegistry::GetAllCategories()) {
+    UpdateCategoryState(&category);
   }
 }
 
-const unsigned char* TraceLog::GetCategoryGroupEnabledInternal(
-    const char* category_group) {
-  DCHECK(!strchr(category_group, '"'))
-      << "Category groups may not contain double quote";
-  // The g_category_groups is append only, avoid using a lock for the fast path.
-  size_t current_category_index = base::subtle::Acquire_Load(&g_category_index);
+void TraceLog::CreateFiltersForTraceConfig() {
+  if (!(enabled_modes_ & FILTERING_MODE))
+    return;
 
-  // Search for pre-existing category group.
-  for (size_t i = 0; i < current_category_index; ++i) {
-    if (strcmp(g_category_groups[i], category_group) == 0) {
-      return &g_category_group_enabled[i];
+  // Filters were already added and tracing could be enabled. Filters list
+  // cannot be changed when trace events are using them.
+  if (GetCategoryGroupFilters().size())
+    return;
+
+  for (auto& filter_config : enabled_event_filters_) {
+    if (GetCategoryGroupFilters().size() >= MAX_TRACE_EVENT_FILTERS) {
+      NOTREACHED()
+          << "Too many trace event filters installed in the current session";
+      break;
     }
-  }
 
-  unsigned char* category_group_enabled = NULL;
-  // This is the slow path: the lock is not held in the case above, so more
-  // than one thread could have reached here trying to add the same category.
-  // Only hold to lock when actually appending a new category, and
-  // check the categories groups again.
+    std::unique_ptr<TraceEventFilter> new_filter;
+    const std::string& predicate_name = filter_config.predicate_name();
+    if (predicate_name == EventNameFilter::kName) {
+      auto whitelist = std::make_unique<std::unordered_set<std::string>>();
+      CHECK(filter_config.GetArgAsSet("event_name_whitelist", &*whitelist));
+      new_filter = std::make_unique<EventNameFilter>(std::move(whitelist));
+    } else if (predicate_name == HeapProfilerEventFilter::kName) {
+      new_filter = std::make_unique<HeapProfilerEventFilter>();
+    } else {
+      if (filter_factory_for_testing_)
+        new_filter = filter_factory_for_testing_(predicate_name);
+      CHECK(new_filter) << "Unknown trace filter " << predicate_name;
+    }
+    GetCategoryGroupFilters().push_back(std::move(new_filter));
+  }
+}
+
+void TraceLog::SetEnabled(const TraceConfig& trace_config,
+                          uint8_t modes_to_enable) {
+  DCHECK(trace_config.process_filter_config().IsEnabled(process_id_));
+
   AutoLock lock(lock_);
-  size_t category_index = base::subtle::Acquire_Load(&g_category_index);
-  for (size_t i = 0; i < category_index; ++i) {
-    if (strcmp(g_category_groups[i], category_group) == 0) {
-      return &g_category_group_enabled[i];
-    }
+
+  // Can't enable tracing when Flush() is in progress.
+  DCHECK(!flush_task_runner_);
+
+  InternalTraceOptions new_options =
+      GetInternalOptionsFromTraceConfig(trace_config);
+
+  InternalTraceOptions old_options = trace_options();
+
+  if (dispatching_to_observers_) {
+    // TODO(ssid): Change to NOTREACHED after fixing crbug.com/625170.
+    DLOG(ERROR)
+        << "Cannot manipulate TraceLog::Enabled state from an observer.";
+    return;
   }
 
-  // Create a new category group.
-  DCHECK(category_index < MAX_CATEGORY_GROUPS)
-      << "must increase MAX_CATEGORY_GROUPS";
-  if (category_index < MAX_CATEGORY_GROUPS) {
-    // Don't hold on to the category_group pointer, so that we can create
-    // category groups with strings not known at compile time (this is
-    // required by SetWatchEvent).
-    const char* new_group = strdup(category_group);
-    ANNOTATE_LEAKING_OBJECT_PTR(new_group);
-    g_category_groups[category_index] = new_group;
-    DCHECK(!g_category_group_enabled[category_index]);
-    // Note that if both included and excluded patterns in the
-    // TraceConfig are empty, we exclude nothing,
-    // thereby enabling this category group.
-    UpdateCategoryGroupEnabledFlag(category_index);
-    category_group_enabled = &g_category_group_enabled[category_index];
-    // Update the max index now.
-    base::subtle::Release_Store(&g_category_index, category_index + 1);
-  } else {
-    category_group_enabled =
-        &g_category_group_enabled[g_category_categories_exhausted];
-  }
-  return category_group_enabled;
-}
+  // Clear all filters from previous tracing session. These filters are not
+  // cleared at the end of tracing because some threads which hit trace event
+  // when disabling, could try to use the filters.
+  if (!enabled_modes_)
+    GetCategoryGroupFilters().clear();
 
-void TraceLog::GetKnownCategoryGroups(
-    std::vector<std::string>* category_groups) {
-  AutoLock lock(lock_);
-  size_t category_index = base::subtle::NoBarrier_Load(&g_category_index);
-  for (size_t i = g_num_builtin_categories; i < category_index; i++)
-    category_groups->push_back(g_category_groups[i]);
-}
-
-void TraceLog::SetEnabled(const TraceConfig& trace_config, Mode mode) {
-  std::vector<EnabledStateObserver*> observer_list;
-  std::map<AsyncEnabledStateObserver*, RegisteredAsyncObserver> observer_map;
-  {
-    AutoLock lock(lock_);
-
-    // Can't enable tracing when Flush() is in progress.
-    DCHECK(!flush_task_runner_);
-
-    InternalTraceOptions new_options =
-        GetInternalOptionsFromTraceConfig(trace_config);
-
-    InternalTraceOptions old_options = trace_options();
-
-    if (IsEnabled()) {
-      if (new_options != old_options) {
-        DLOG(ERROR) << "Attempting to re-enable tracing with a different "
-                    << "set of options.";
-      }
-
-      if (mode != mode_) {
-        DLOG(ERROR) << "Attempting to re-enable tracing with a different mode.";
-      }
-
+  // Update trace config for recording.
+  const bool already_recording = enabled_modes_ & RECORDING_MODE;
+  if (modes_to_enable & RECORDING_MODE) {
+    if (already_recording) {
+      // TODO(ssid): Stop supporting enabling of RECORDING_MODE when already
+      // enabled crbug.com/625170.
+      DCHECK_EQ(new_options, old_options) << "Attempting to re-enable "
+                                             "tracing with a different set "
+                                             "of options.";
       trace_config_.Merge(trace_config);
-      UpdateCategoryGroupEnabledFlags();
-      return;
+    } else {
+      trace_config_ = trace_config;
     }
-
-    if (dispatching_to_observer_list_) {
-      DLOG(ERROR)
-          << "Cannot manipulate TraceLog::Enabled state from an observer.";
-      return;
-    }
-
-    mode_ = mode;
-
-    if (new_options != old_options) {
-      subtle::NoBarrier_Store(&trace_options_, new_options);
-      UseNextTraceBuffer();
-    }
-
-    num_traces_recorded_++;
-
-    trace_config_ = TraceConfig(trace_config);
-    UpdateCategoryGroupEnabledFlags();
-    UpdateSyntheticDelaysFromTraceConfig();
-
-    if (new_options & kInternalEnableSampling) {
-      sampling_thread_.reset(new TraceSamplingThread);
-      sampling_thread_->RegisterSampleBucket(
-          &g_trace_state[0], "bucket0",
-          Bind(&TraceSamplingThread::DefaultSamplingCallback));
-      sampling_thread_->RegisterSampleBucket(
-          &g_trace_state[1], "bucket1",
-          Bind(&TraceSamplingThread::DefaultSamplingCallback));
-      sampling_thread_->RegisterSampleBucket(
-          &g_trace_state[2], "bucket2",
-          Bind(&TraceSamplingThread::DefaultSamplingCallback));
-      if (!PlatformThread::Create(0, sampling_thread_.get(),
-                                  &sampling_thread_handle_)) {
-        DCHECK(false) << "failed to create thread";
-      }
-    }
-
-    dispatching_to_observer_list_ = true;
-    observer_list = enabled_state_observer_list_;
-    observer_map = async_observers_;
-  }
-  // Notify observers outside the lock in case they trigger trace events.
-  for (size_t i = 0; i < observer_list.size(); ++i)
-    observer_list[i]->OnTraceLogEnabled();
-  for (const auto& it : observer_map) {
-    it.second.task_runner->PostTask(
-        FROM_HERE, Bind(&AsyncEnabledStateObserver::OnTraceLogEnabled,
-                        it.second.observer));
   }
 
+  // Update event filters only if filtering was not enabled.
+  if (modes_to_enable & FILTERING_MODE && enabled_event_filters_.empty()) {
+    DCHECK(!trace_config.event_filters().empty());
+    enabled_event_filters_ = trace_config.event_filters();
+  }
+  // Keep the |trace_config_| updated with only enabled filters in case anyone
+  // tries to read it using |GetCurrentTraceConfig| (even if filters are
+  // empty).
+  trace_config_.SetEventFilters(enabled_event_filters_);
+
+  enabled_modes_ |= modes_to_enable;
+  UpdateCategoryRegistry();
+
+  // Do not notify observers or create trace buffer if only enabled for
+  // filtering or if recording was already enabled.
+  if (!(modes_to_enable & RECORDING_MODE) || already_recording)
+    return;
+
+  // Discard events if new trace options are different. Reducing trace buffer
+  // size is not supported while already recording, so only replace trace
+  // buffer if we were not already recording.
+  if (new_options != old_options ||
+      (trace_config_.GetTraceBufferSizeInEvents() && !already_recording)) {
+    subtle::NoBarrier_Store(&trace_options_, new_options);
+    UseNextTraceBuffer();
+  }
+
+  num_traces_recorded_++;
+
+  UpdateCategoryRegistry();
+
+  dispatching_to_observers_ = true;
   {
-    AutoLock lock(lock_);
-    dispatching_to_observer_list_ = false;
+    // Notify observers outside of the thread events lock, so they can trigger
+    // trace events.
+    AutoUnlock unlock(lock_);
+    AutoLock lock2(observers_lock_);
+    for (EnabledStateObserver* observer : enabled_state_observers_)
+      observer->OnTraceLogEnabled();
+    for (const auto& it : async_observers_) {
+      it.second.task_runner->PostTask(
+          FROM_HERE, BindOnce(&AsyncEnabledStateObserver::OnTraceLogEnabled,
+                              it.second.observer));
+    }
   }
+  dispatching_to_observers_ = false;
 }
 
 void TraceLog::SetArgumentFilterPredicate(
     const ArgumentFilterPredicate& argument_filter_predicate) {
   AutoLock lock(lock_);
   DCHECK(!argument_filter_predicate.is_null());
-  DCHECK(argument_filter_predicate_.is_null());
+  // Replace the existing argument filter.
   argument_filter_predicate_ = argument_filter_predicate;
+}
+
+ArgumentFilterPredicate TraceLog::GetArgumentFilterPredicate() const {
+  AutoLock lock(lock_);
+  return argument_filter_predicate_;
+}
+
+void TraceLog::SetMetadataFilterPredicate(
+    const MetadataFilterPredicate& metadata_filter_predicate) {
+  AutoLock lock(lock_);
+  DCHECK(!metadata_filter_predicate.is_null());
+  // Replace the existing argument filter.
+  metadata_filter_predicate_ = metadata_filter_predicate;
+}
+
+MetadataFilterPredicate TraceLog::GetMetadataFilterPredicate() const {
+  AutoLock lock(lock_);
+  return metadata_filter_predicate_;
 }
 
 TraceLog::InternalTraceOptions TraceLog::GetInternalOptionsFromTraceConfig(
     const TraceConfig& config) {
-  InternalTraceOptions ret =
-      config.IsSamplingEnabled() ? kInternalEnableSampling : kInternalNone;
-  if (config.IsArgumentFilterEnabled())
-    ret |= kInternalEnableArgumentFilter;
+  InternalTraceOptions ret = config.IsArgumentFilterEnabled()
+                                 ? kInternalEnableArgumentFilter
+                                 : kInternalNone;
   switch (config.GetTraceRecordMode()) {
     case RECORD_UNTIL_FULL:
       return ret | kInternalRecordUntilFull;
@@ -702,87 +696,111 @@ TraceConfig TraceLog::GetCurrentTraceConfig() const {
 
 void TraceLog::SetDisabled() {
   AutoLock lock(lock_);
-  SetDisabledWhileLocked();
+  SetDisabledWhileLocked(RECORDING_MODE);
 }
 
-void TraceLog::SetDisabledWhileLocked() {
+void TraceLog::SetDisabled(uint8_t modes_to_disable) {
+  AutoLock lock(lock_);
+  SetDisabledWhileLocked(modes_to_disable);
+}
+
+void TraceLog::SetDisabledWhileLocked(uint8_t modes_to_disable) {
   lock_.AssertAcquired();
 
-  if (!IsEnabled())
+  if (!(enabled_modes_ & modes_to_disable))
     return;
 
-  if (dispatching_to_observer_list_) {
+  if (dispatching_to_observers_) {
+    // TODO(ssid): Change to NOTREACHED after fixing crbug.com/625170.
     DLOG(ERROR)
         << "Cannot manipulate TraceLog::Enabled state from an observer.";
     return;
   }
 
-  mode_ = DISABLED;
+  bool is_recording_mode_disabled =
+      (enabled_modes_ & RECORDING_MODE) && (modes_to_disable & RECORDING_MODE);
+  enabled_modes_ &= ~modes_to_disable;
 
-  if (sampling_thread_.get()) {
-    // Stop the sampling thread.
-    sampling_thread_->Stop();
-    lock_.Release();
-    PlatformThread::Join(sampling_thread_handle_);
-    lock_.Acquire();
-    sampling_thread_handle_ = PlatformThreadHandle();
-    sampling_thread_.reset();
-  }
+  if (modes_to_disable & FILTERING_MODE)
+    enabled_event_filters_.clear();
 
-  trace_config_.Clear();
-  subtle::NoBarrier_Store(&watch_category_, 0);
-  watch_event_name_ = "";
-  UpdateCategoryGroupEnabledFlags();
+  if (modes_to_disable & RECORDING_MODE)
+    trace_config_.Clear();
+
+  UpdateCategoryRegistry();
+
+  // Add metadata events and notify observers only if recording mode was
+  // disabled now.
+  if (!is_recording_mode_disabled)
+    return;
+
   AddMetadataEventsWhileLocked();
 
   // Remove metadata events so they will not get added to a subsequent trace.
   metadata_events_.clear();
 
-  dispatching_to_observer_list_ = true;
-  std::vector<EnabledStateObserver*> observer_list =
-      enabled_state_observer_list_;
-  std::map<AsyncEnabledStateObserver*, RegisteredAsyncObserver> observer_map =
-      async_observers_;
-
+  dispatching_to_observers_ = true;
   {
-    // Dispatch to observers outside the lock in case the observer triggers a
-    // trace event.
+    // Release trace events lock, so observers can trigger trace events.
     AutoUnlock unlock(lock_);
-    for (size_t i = 0; i < observer_list.size(); ++i)
-      observer_list[i]->OnTraceLogDisabled();
-    for (const auto& it : observer_map) {
+    AutoLock lock2(observers_lock_);
+    for (auto* it : enabled_state_observers_)
+      it->OnTraceLogDisabled();
+    for (const auto& it : async_observers_) {
       it.second.task_runner->PostTask(
-          FROM_HERE, Bind(&AsyncEnabledStateObserver::OnTraceLogDisabled,
-                          it.second.observer));
+          FROM_HERE, BindOnce(&AsyncEnabledStateObserver::OnTraceLogDisabled,
+                              it.second.observer));
     }
   }
-  dispatching_to_observer_list_ = false;
+  dispatching_to_observers_ = false;
 }
 
 int TraceLog::GetNumTracesRecorded() {
   AutoLock lock(lock_);
-  if (!IsEnabled())
-    return -1;
-  return num_traces_recorded_;
+  return IsEnabled() ? num_traces_recorded_ : -1;
 }
 
 void TraceLog::AddEnabledStateObserver(EnabledStateObserver* listener) {
-  AutoLock lock(lock_);
-  enabled_state_observer_list_.push_back(listener);
+  AutoLock lock(observers_lock_);
+  enabled_state_observers_.push_back(listener);
 }
 
 void TraceLog::RemoveEnabledStateObserver(EnabledStateObserver* listener) {
-  AutoLock lock(lock_);
-  std::vector<EnabledStateObserver*>::iterator it =
-      std::find(enabled_state_observer_list_.begin(),
-                enabled_state_observer_list_.end(), listener);
-  if (it != enabled_state_observer_list_.end())
-    enabled_state_observer_list_.erase(it);
+  AutoLock lock(observers_lock_);
+  enabled_state_observers_.erase(
+      std::remove(enabled_state_observers_.begin(),
+                  enabled_state_observers_.end(), listener),
+      enabled_state_observers_.end());
+}
+
+void TraceLog::AddOwnedEnabledStateObserver(
+    std::unique_ptr<EnabledStateObserver> listener) {
+  AutoLock lock(observers_lock_);
+  enabled_state_observers_.push_back(listener.get());
+  owned_enabled_state_observer_copy_.push_back(std::move(listener));
 }
 
 bool TraceLog::HasEnabledStateObserver(EnabledStateObserver* listener) const {
-  AutoLock lock(lock_);
-  return ContainsValue(enabled_state_observer_list_, listener);
+  AutoLock lock(observers_lock_);
+  return ContainsValue(enabled_state_observers_, listener);
+}
+
+void TraceLog::AddAsyncEnabledStateObserver(
+    WeakPtr<AsyncEnabledStateObserver> listener) {
+  AutoLock lock(observers_lock_);
+  async_observers_.emplace(listener.get(), RegisteredAsyncObserver(listener));
+}
+
+void TraceLog::RemoveAsyncEnabledStateObserver(
+    AsyncEnabledStateObserver* listener) {
+  AutoLock lock(observers_lock_);
+  async_observers_.erase(listener);
+}
+
+bool TraceLog::HasAsyncEnabledStateObserver(
+    AsyncEnabledStateObserver* listener) const {
+  AutoLock lock(observers_lock_);
+  return ContainsKey(async_observers_, listener);
 }
 
 TraceLogStatus TraceLog::GetStatus() const {
@@ -815,7 +833,7 @@ TraceEvent* TraceLog::AddEventToThreadSharedChunkWhileLocked(
       CheckIfBufferIsFullWhileLocked();
   }
   if (!thread_shared_chunk_)
-    return NULL;
+    return nullptr;
 
   size_t event_index;
   TraceEvent* trace_event = thread_shared_chunk_->AddTraceEvent(&event_index);
@@ -832,23 +850,8 @@ void TraceLog::CheckIfBufferIsFullWhileLocked() {
     if (buffer_limit_reached_timestamp_.is_null()) {
       buffer_limit_reached_timestamp_ = OffsetNow();
     }
-    SetDisabledWhileLocked();
+    SetDisabledWhileLocked(RECORDING_MODE);
   }
-}
-
-void TraceLog::SetEventCallbackEnabled(const TraceConfig& trace_config,
-                                       EventCallback cb) {
-  AutoLock lock(lock_);
-  subtle::NoBarrier_Store(&event_callback_,
-                          reinterpret_cast<subtle::AtomicWord>(cb));
-  event_callback_trace_config_ = trace_config;
-  UpdateCategoryGroupEnabledFlags();
-}
-
-void TraceLog::SetEventCallbackDisabled() {
-  AutoLock lock(lock_);
-  subtle::NoBarrier_Store(&event_callback_, 0);
-  UpdateCategoryGroupEnabledFlags();
 }
 
 // Flush() works as the following:
@@ -887,17 +890,16 @@ void TraceLog::FlushInternal(const TraceLog::OutputCallback& cb,
     return;
   }
 
-  int generation = this->generation();
-  // Copy of thread_message_loops_ to be used without locking.
-  std::vector<scoped_refptr<SingleThreadTaskRunner>>
-      thread_message_loop_task_runners;
+  int gen = generation();
+  // Copy of thread_task_runners_ to be used without locking.
+  std::vector<scoped_refptr<SingleThreadTaskRunner>> task_runners;
   {
     AutoLock lock(lock_);
     DCHECK(!flush_task_runner_);
-    flush_task_runner_ = ThreadTaskRunnerHandle::IsSet()
-                             ? ThreadTaskRunnerHandle::Get()
+    flush_task_runner_ = SequencedTaskRunnerHandle::IsSet()
+                             ? SequencedTaskRunnerHandle::Get()
                              : nullptr;
-    DCHECK(!thread_message_loops_.size() || flush_task_runner_);
+    DCHECK(thread_task_runners_.empty() || flush_task_runner_);
     flush_output_callback_ = cb;
 
     if (thread_shared_chunk_) {
@@ -905,29 +907,25 @@ void TraceLog::FlushInternal(const TraceLog::OutputCallback& cb,
                                   std::move(thread_shared_chunk_));
     }
 
-    if (thread_message_loops_.size()) {
-      for (hash_set<MessageLoop*>::const_iterator it =
-               thread_message_loops_.begin();
-           it != thread_message_loops_.end(); ++it) {
-        thread_message_loop_task_runners.push_back((*it)->task_runner());
-      }
-    }
+    for (const auto& it : thread_task_runners_)
+      task_runners.push_back(it.second);
   }
 
-  if (thread_message_loop_task_runners.size()) {
-    for (size_t i = 0; i < thread_message_loop_task_runners.size(); ++i) {
-      thread_message_loop_task_runners[i]->PostTask(
-          FROM_HERE, Bind(&TraceLog::FlushCurrentThread, Unretained(this),
-                          generation, discard_events));
+  if (!task_runners.empty()) {
+    for (auto& task_runner : task_runners) {
+      task_runner->PostTask(
+          FROM_HERE, BindOnce(&TraceLog::FlushCurrentThread, Unretained(this),
+                              gen, discard_events));
     }
     flush_task_runner_->PostDelayedTask(
-        FROM_HERE, Bind(&TraceLog::OnFlushTimeout, Unretained(this), generation,
-                        discard_events),
+        FROM_HERE,
+        BindOnce(&TraceLog::OnFlushTimeout, Unretained(this), gen,
+                 discard_events),
         TimeDelta::FromMilliseconds(kThreadFlushTimeoutMs));
     return;
   }
 
-  FinishFlush(generation, discard_events);
+  FinishFlush(gen, discard_events);
 }
 
 // Usually it runs on a different thread.
@@ -942,12 +940,15 @@ void TraceLog::ConvertTraceEventsToTraceFormat(
   // The callback need to be called at least once even if there is no events
   // to let the caller know the completion of flush.
   scoped_refptr<RefCountedString> json_events_str_ptr = new RefCountedString();
+  const size_t kReserveCapacity = kTraceEventBufferSizeInBytes * 5 / 4;
+  json_events_str_ptr->data().reserve(kReserveCapacity);
   while (const TraceBufferChunk* chunk = logged_events->NextChunk()) {
     for (size_t j = 0; j < chunk->size(); ++j) {
       size_t size = json_events_str_ptr->size();
       if (size > kTraceEventBufferSizeInBytes) {
         flush_output_callback.Run(json_events_str_ptr, true);
         json_events_str_ptr = new RefCountedString();
+        json_events_str_ptr->data().reserve(kReserveCapacity);
       } else if (size) {
         json_events_str_ptr->data().append(",\n");
       }
@@ -971,15 +972,21 @@ void TraceLog::FinishFlush(int generation, bool discard_events) {
 
     previous_logged_events.swap(logged_events_);
     UseNextTraceBuffer();
-    thread_message_loops_.clear();
+    thread_task_runners_.clear();
 
-    flush_task_runner_ = NULL;
+    flush_task_runner_ = nullptr;
     flush_output_callback = flush_output_callback_;
     flush_output_callback_.Reset();
 
     if (trace_options() & kInternalEnableArgumentFilter) {
-      CHECK(!argument_filter_predicate_.is_null());
-      argument_filter_predicate = argument_filter_predicate_;
+      // If argument filtering is activated and there is no filtering predicate,
+      // use the safe default filtering predicate.
+      if (argument_filter_predicate_.is_null()) {
+        argument_filter_predicate =
+            base::BindRepeating(&DefaultIsTraceEventArgsWhitelisted);
+      } else {
+        argument_filter_predicate = argument_filter_predicate_;
+      }
     }
   }
 
@@ -991,12 +998,14 @@ void TraceLog::FinishFlush(int generation, bool discard_events) {
     return;
   }
 
-  if (use_worker_thread_ &&
-      WorkerPool::PostTask(
-          FROM_HERE, Bind(&TraceLog::ConvertTraceEventsToTraceFormat,
-                          Passed(&previous_logged_events),
-                          flush_output_callback, argument_filter_predicate),
-          true)) {
+  if (use_worker_thread_) {
+    base::PostTaskWithTraits(
+        FROM_HERE,
+        {MayBlock(), TaskPriority::BEST_EFFORT,
+         TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+        BindOnce(&TraceLog::ConvertTraceEventsToTraceFormat,
+                 std::move(previous_logged_events), flush_output_callback,
+                 argument_filter_predicate));
     return;
   }
 
@@ -1018,14 +1027,26 @@ void TraceLog::FlushCurrentThread(int generation, bool discard_events) {
   // This will flush the thread local buffer.
   delete thread_local_event_buffer_.Get();
 
-  AutoLock lock(lock_);
-  if (!CheckGeneration(generation) || !flush_task_runner_ ||
-      thread_message_loops_.size())
-    return;
+  auto on_flush_callback = on_flush_callback_.load(std::memory_order_relaxed);
+  if (on_flush_callback) {
+    on_flush_callback();
+  }
 
-  flush_task_runner_->PostTask(
-      FROM_HERE, Bind(&TraceLog::FinishFlush, Unretained(this), generation,
-                      discard_events));
+  // Scheduler uses TRACE_EVENT macros when posting a task, which can lead
+  // to acquiring a tracing lock. Given that posting a task requires grabbing
+  // a scheduler lock, we need to post this task outside tracing lock to avoid
+  // deadlocks.
+  scoped_refptr<SequencedTaskRunner> cached_flush_task_runner;
+  {
+    AutoLock lock(lock_);
+    cached_flush_task_runner = flush_task_runner_;
+    if (!CheckGeneration(generation) || !flush_task_runner_ ||
+        !thread_task_runners_.empty())
+      return;
+  }
+  cached_flush_task_runner->PostTask(
+      FROM_HERE, BindOnce(&TraceLog::FinishFlush, Unretained(this), generation,
+                          discard_events));
 }
 
 void TraceLog::OnFlushTimeout(int generation, bool discard_events) {
@@ -1041,10 +1062,9 @@ void TraceLog::OnFlushTimeout(int generation, bool discard_events) {
            "If this happens stably for some thread, please call "
            "TraceLog::GetInstance()->SetCurrentThreadBlocksMessageLoop() from "
            "the thread to avoid its trace events from being lost.";
-    for (hash_set<MessageLoop*>::const_iterator it =
-             thread_message_loops_.begin();
-         it != thread_message_loops_.end(); ++it) {
-      LOG(WARNING) << "Thread: " << (*it)->GetThreadName();
+    for (const auto& it : thread_task_runners_) {
+      LOG(WARNING) << "Thread: "
+                   << ThreadIdNameManager::GetInstance()->GetName(it.first);
     }
   }
   FinishFlush(generation, discard_events);
@@ -1063,29 +1083,14 @@ TraceEventHandle TraceLog::AddTraceEvent(
     const char* name,
     const char* scope,
     unsigned long long id,
-    int num_args,
-    const char** arg_names,
-    const unsigned char* arg_types,
-    const unsigned long long* arg_values,
-    std::unique_ptr<ConvertableToTraceFormat>* convertable_values,
+    TraceArguments* args,
     unsigned int flags) {
   int thread_id = static_cast<int>(base::PlatformThread::CurrentId());
-  base::TimeTicks now = base::TimeTicks::Now();
+  base::TimeTicks now = TRACE_TIME_TICKS_NOW();
   return AddTraceEventWithThreadIdAndTimestamp(
-      phase,
-      category_group_enabled,
-      name,
-      scope,
-      id,
+      phase, category_group_enabled, name, scope, id,
       trace_event_internal::kNoId,  // bind_id
-      thread_id,
-      now,
-      num_args,
-      arg_names,
-      arg_types,
-      arg_values,
-      convertable_values,
-      flags);
+      thread_id, now, args, flags);
 }
 
 TraceEventHandle TraceLog::AddTraceEventWithBindId(
@@ -1095,29 +1100,13 @@ TraceEventHandle TraceLog::AddTraceEventWithBindId(
     const char* scope,
     unsigned long long id,
     unsigned long long bind_id,
-    int num_args,
-    const char** arg_names,
-    const unsigned char* arg_types,
-    const unsigned long long* arg_values,
-    std::unique_ptr<ConvertableToTraceFormat>* convertable_values,
+    TraceArguments* args,
     unsigned int flags) {
   int thread_id = static_cast<int>(base::PlatformThread::CurrentId());
-  base::TimeTicks now = base::TimeTicks::Now();
+  base::TimeTicks now = TRACE_TIME_TICKS_NOW();
   return AddTraceEventWithThreadIdAndTimestamp(
-      phase,
-      category_group_enabled,
-      name,
-      scope,
-      id,
-      bind_id,
-      thread_id,
-      now,
-      num_args,
-      arg_names,
-      arg_types,
-      arg_values,
-      convertable_values,
-      flags | TRACE_EVENT_FLAG_HAS_CONTEXT_ID);
+      phase, category_group_enabled, name, scope, id, bind_id, thread_id, now,
+      args, flags | TRACE_EVENT_FLAG_HAS_CONTEXT_ID);
 }
 
 TraceEventHandle TraceLog::AddTraceEventWithProcessId(
@@ -1127,28 +1116,13 @@ TraceEventHandle TraceLog::AddTraceEventWithProcessId(
     const char* scope,
     unsigned long long id,
     int process_id,
-    int num_args,
-    const char** arg_names,
-    const unsigned char* arg_types,
-    const unsigned long long* arg_values,
-    std::unique_ptr<ConvertableToTraceFormat>* convertable_values,
+    TraceArguments* args,
     unsigned int flags) {
-  base::TimeTicks now = base::TimeTicks::Now();
+  base::TimeTicks now = TRACE_TIME_TICKS_NOW();
   return AddTraceEventWithThreadIdAndTimestamp(
-      phase,
-      category_group_enabled,
-      name,
-      scope,
-      id,
+      phase, category_group_enabled, name, scope, id,
       trace_event_internal::kNoId,  // bind_id
-      process_id,
-      now,
-      num_args,
-      arg_names,
-      arg_types,
-      arg_values,
-      convertable_values,
-      flags | TRACE_EVENT_FLAG_HAS_PROCESS_ID);
+      process_id, now, args, flags | TRACE_EVENT_FLAG_HAS_PROCESS_ID);
 }
 
 // Handle legacy calls to AddTraceEventWithThreadIdAndTimestamp
@@ -1161,27 +1135,12 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
     unsigned long long id,
     int thread_id,
     const TimeTicks& timestamp,
-    int num_args,
-    const char** arg_names,
-    const unsigned char* arg_types,
-    const unsigned long long* arg_values,
-    std::unique_ptr<ConvertableToTraceFormat>* convertable_values,
+    TraceArguments* args,
     unsigned int flags) {
   return AddTraceEventWithThreadIdAndTimestamp(
-      phase,
-      category_group_enabled,
-      name,
-      scope,
-      id,
+      phase, category_group_enabled, name, scope, id,
       trace_event_internal::kNoId,  // bind_id
-      thread_id,
-      timestamp,
-      num_args,
-      arg_names,
-      arg_types,
-      arg_values,
-      convertable_values,
-      flags);
+      thread_id, timestamp, args, flags);
 }
 
 TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
@@ -1193,11 +1152,7 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
     unsigned long long bind_id,
     int thread_id,
     const TimeTicks& timestamp,
-    int num_args,
-    const char** arg_names,
-    const unsigned char* arg_types,
-    const unsigned long long* arg_values,
-    std::unique_ptr<ConvertableToTraceFormat>* convertable_values,
+    TraceArguments* args,
     unsigned int flags) {
   TraceEventHandle handle = {0, 0, 0};
   if (!*category_group_enabled)
@@ -1224,10 +1179,13 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
   TimeTicks offset_event_timestamp = OffsetTimestamp(timestamp);
   ThreadTicks thread_now = ThreadNow();
 
-  // |thread_local_event_buffer_| can be null if the current thread doesn't have
-  // a message loop or the message loop is blocked.
-  InitializeThreadLocalEventBufferIfSupported();
-  auto* thread_local_event_buffer = thread_local_event_buffer_.Get();
+  ThreadLocalEventBuffer* thread_local_event_buffer = nullptr;
+  if (*category_group_enabled & RECORDING_MODE) {
+    // |thread_local_event_buffer_| can be null if the current thread doesn't
+    // have a message loop or the message loop is blocked.
+    InitializeThreadLocalEventBufferIfSupported();
+    thread_local_event_buffer = thread_local_event_buffer_.Get();
+  }
 
   // Check and update the current thread name only if the event is for the
   // current thread to avoid locks in most cases.
@@ -1238,14 +1196,13 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
     // call (if any), but don't bother if the new name is empty. Note this will
     // not detect a thread name change within the same char* buffer address: we
     // favor common case performance over corner case correctness.
-    if (new_name != g_current_thread_name.Get().Get() && new_name &&
-        *new_name) {
-      g_current_thread_name.Get().Set(new_name);
+    static auto* current_thread_name = new ThreadLocalPointer<const char>();
+    if (new_name != current_thread_name->Get() && new_name && *new_name) {
+      current_thread_name->Set(new_name);
 
       AutoLock thread_info_lock(thread_info_lock_);
 
-      hash_map<int, std::string>::iterator existing_name =
-          thread_names_.find(thread_id);
+      auto existing_name = thread_names_.find(thread_id);
       if (existing_name == thread_names_.end()) {
         // This is a new thread id, and a new name.
         thread_names_[thread_id] = new_name;
@@ -1255,10 +1212,8 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
         std::vector<StringPiece> existing_names = base::SplitStringPiece(
             existing_name->second, ",", base::KEEP_WHITESPACE,
             base::SPLIT_WANT_NONEMPTY);
-        bool found = std::find(existing_names.begin(), existing_names.end(),
-                               new_name) != existing_names.end();
-        if (!found) {
-          if (existing_names.size())
+        if (!ContainsValue(existing_names, new_name)) {
+          if (!existing_names.empty())
             existing_name->second.push_back(',');
           existing_name->second.append(new_name);
         }
@@ -1269,17 +1224,52 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
 #if defined(OS_WIN)
   // This is done sooner rather than later, to avoid creating the event and
   // acquiring the lock, which is not needed for ETW as it's already threadsafe.
-  if (*category_group_enabled & ENABLED_FOR_ETW_EXPORT)
+  if (*category_group_enabled & TraceCategory::ENABLED_FOR_ETW_EXPORT)
     TraceEventETWExport::AddEvent(phase, category_group_enabled, name, id,
-                                  num_args, arg_names, arg_types, arg_values,
-                                  convertable_values);
+                                  args);
 #endif  // OS_WIN
 
+  if (*category_group_enabled & RECORDING_MODE) {
+    auto trace_event_override =
+        add_trace_event_override_.load(std::memory_order_relaxed);
+    if (trace_event_override) {
+      TraceEvent new_trace_event(thread_id, offset_event_timestamp, thread_now,
+                                 phase, category_group_enabled, name, scope, id,
+                                 bind_id, args, flags);
+
+      trace_event_override(
+          &new_trace_event,
+          /*thread_will_flush=*/thread_local_event_buffer != nullptr, &handle);
+      return handle;
+    }
+  }
+
   std::string console_message;
-  if (*category_group_enabled & ENABLED_FOR_RECORDING) {
+  std::unique_ptr<TraceEvent> filtered_trace_event;
+  bool disabled_by_filters = false;
+  if (*category_group_enabled & TraceCategory::ENABLED_FOR_FILTERING) {
+    auto new_trace_event = std::make_unique<TraceEvent>(
+        thread_id, offset_event_timestamp, thread_now, phase,
+        category_group_enabled, name, scope, id, bind_id, args, flags);
+
+    disabled_by_filters = true;
+    ForEachCategoryFilter(
+        category_group_enabled, [&new_trace_event, &disabled_by_filters](
+                                    TraceEventFilter* trace_event_filter) {
+          if (trace_event_filter->FilterTraceEvent(*new_trace_event))
+            disabled_by_filters = false;
+        });
+    if (!disabled_by_filters)
+      filtered_trace_event = std::move(new_trace_event);
+  }
+
+  // If enabled for recording, the event should be added only if one of the
+  // filters indicates or category is not enabled for filtering.
+  if ((*category_group_enabled & TraceCategory::ENABLED_FOR_RECORDING) &&
+      !disabled_by_filters) {
     OptionalAutoLock lock(&lock_);
 
-    TraceEvent* trace_event = NULL;
+    TraceEvent* trace_event = nullptr;
     if (thread_local_event_buffer) {
       trace_event = thread_local_event_buffer->AddTraceEvent(&handle);
     } else {
@@ -1288,21 +1278,13 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
     }
 
     if (trace_event) {
-      trace_event->Initialize(thread_id,
-                              offset_event_timestamp,
-                              thread_now,
-                              phase,
-                              category_group_enabled,
-                              name,
-                              scope,
-                              id,
-                              bind_id,
-                              num_args,
-                              arg_names,
-                              arg_types,
-                              arg_values,
-                              convertable_values,
-                              flags);
+      if (filtered_trace_event) {
+        *trace_event = std::move(*filtered_trace_event);
+      } else {
+        trace_event->Reset(thread_id, offset_event_timestamp, thread_now, phase,
+                           category_group_enabled, name, scope, id, bind_id,
+                           args, flags);
+      }
 
 #if defined(OS_ANDROID)
       trace_event->SendToATrace();
@@ -1316,77 +1298,28 @@ TraceEventHandle TraceLog::AddTraceEventWithThreadIdAndTimestamp(
     }
   }
 
-  if (console_message.size())
+  if (!console_message.empty())
     LOG(ERROR) << console_message;
-
-  if (reinterpret_cast<const unsigned char*>(
-          subtle::NoBarrier_Load(&watch_category_)) == category_group_enabled) {
-    bool event_name_matches;
-    WatchEventCallback watch_event_callback_copy;
-    {
-      AutoLock lock(lock_);
-      event_name_matches = watch_event_name_ == name;
-      watch_event_callback_copy = watch_event_callback_;
-    }
-    if (event_name_matches) {
-      if (!watch_event_callback_copy.is_null())
-        watch_event_callback_copy.Run();
-    }
-  }
-
-  if (*category_group_enabled & ENABLED_FOR_EVENT_CALLBACK) {
-    EventCallback event_callback = reinterpret_cast<EventCallback>(
-        subtle::NoBarrier_Load(&event_callback_));
-    if (event_callback) {
-      event_callback(
-          offset_event_timestamp,
-          phase == TRACE_EVENT_PHASE_COMPLETE ? TRACE_EVENT_PHASE_BEGIN : phase,
-          category_group_enabled, name, scope, id, num_args, arg_names,
-          arg_types, arg_values, flags);
-    }
-  }
-
-  // TODO(primiano): Add support for events with copied name crbug.com/581078
-  if (!(flags & TRACE_EVENT_FLAG_COPY)) {
-    if (AllocationContextTracker::capture_mode() ==
-        AllocationContextTracker::CaptureMode::PSEUDO_STACK) {
-      if (phase == TRACE_EVENT_PHASE_BEGIN ||
-          phase == TRACE_EVENT_PHASE_COMPLETE) {
-        AllocationContextTracker::GetInstanceForCurrentThread()
-            ->PushPseudoStackFrame(name);
-      } else if (phase == TRACE_EVENT_PHASE_END)
-        // The pop for |TRACE_EVENT_PHASE_COMPLETE| events
-        // is in |TraceLog::UpdateTraceEventDuration|.
-        AllocationContextTracker::GetInstanceForCurrentThread()
-            ->PopPseudoStackFrame(name);
-    }
-  }
 
   return handle;
 }
 
-void TraceLog::AddMetadataEvent(
-    const unsigned char* category_group_enabled,
-    const char* name,
-    int num_args,
-    const char** arg_names,
-    const unsigned char* arg_types,
-    const unsigned long long* arg_values,
-    std::unique_ptr<ConvertableToTraceFormat>* convertable_values,
-    unsigned int flags) {
+void TraceLog::AddMetadataEvent(const unsigned char* category_group_enabled,
+                                const char* name,
+                                TraceArguments* args,
+                                unsigned int flags) {
   HEAP_PROFILER_SCOPED_IGNORE;
-  std::unique_ptr<TraceEvent> trace_event(new TraceEvent);
   int thread_id = static_cast<int>(base::PlatformThread::CurrentId());
   ThreadTicks thread_now = ThreadNow();
   TimeTicks now = OffsetNow();
   AutoLock lock(lock_);
-  trace_event->Initialize(
+  auto trace_event = std::make_unique<TraceEvent>(
       thread_id, now, thread_now, TRACE_EVENT_PHASE_METADATA,
       category_group_enabled, name,
       trace_event_internal::kGlobalScope,  // scope
       trace_event_internal::kNoId,         // id
       trace_event_internal::kNoId,         // bind_id
-      num_args, arg_names, arg_types, arg_values, convertable_values, flags);
+      args, flags);
   metadata_events_.push_back(std::move(trace_event));
 }
 
@@ -1411,17 +1344,19 @@ std::string TraceLog::EventToConsoleMessage(unsigned char phase,
   }
 
   std::string thread_name = thread_names_[thread_id];
-  if (thread_colors_.find(thread_name) == thread_colors_.end())
-    thread_colors_[thread_name] = (thread_colors_.size() % 6) + 1;
+  if (thread_colors_.find(thread_name) == thread_colors_.end()) {
+    size_t next_color = (thread_colors_.size() % 6) + 1;
+    thread_colors_[thread_name] = next_color;
+  }
 
   std::ostringstream log;
   log << base::StringPrintf("%s: \x1b[0;3%dm", thread_name.c_str(),
                             thread_colors_[thread_name]);
 
   size_t depth = 0;
-  if (thread_event_start_times_.find(thread_id) !=
-      thread_event_start_times_.end())
-    depth = thread_event_start_times_[thread_id].size();
+  auto it = thread_event_start_times_.find(thread_id);
+  if (it != thread_event_start_times_.end())
+    depth = it->second.size();
 
   for (size_t i = 0; i < depth; ++i)
     log << "| ";
@@ -1439,10 +1374,35 @@ std::string TraceLog::EventToConsoleMessage(unsigned char phase,
   return log.str();
 }
 
+void TraceLog::EndFilteredEvent(const unsigned char* category_group_enabled,
+                                const char* name,
+                                TraceEventHandle handle) {
+  const char* category_name = GetCategoryGroupName(category_group_enabled);
+  ForEachCategoryFilter(
+      category_group_enabled,
+      [name, category_name](TraceEventFilter* trace_event_filter) {
+        trace_event_filter->EndEvent(category_name, name);
+      });
+}
+
 void TraceLog::UpdateTraceEventDuration(
     const unsigned char* category_group_enabled,
     const char* name,
     TraceEventHandle handle) {
+  char category_group_enabled_local = *category_group_enabled;
+  if (!category_group_enabled_local)
+    return;
+
+  UpdateTraceEventDurationExplicit(category_group_enabled, name, handle,
+                                   OffsetNow(), ThreadNow());
+}
+
+void TraceLog::UpdateTraceEventDurationExplicit(
+    const unsigned char* category_group_enabled,
+    const char* name,
+    TraceEventHandle handle,
+    const TimeTicks& now,
+    const ThreadTicks& thread_now) {
   char category_group_enabled_local = *category_group_enabled;
   if (!category_group_enabled_local)
     return;
@@ -1452,25 +1412,31 @@ void TraceLog::UpdateTraceEventDuration(
   // GpuProcessLogMessageHandler -> PostPendingTask -> TRACE_EVENT ...
   if (thread_is_in_trace_event_.Get())
     return;
-
   AutoThreadLocalBoolean thread_is_in_trace_event(&thread_is_in_trace_event_);
-
-  ThreadTicks thread_now = ThreadNow();
-  TimeTicks now = OffsetNow();
 
 #if defined(OS_WIN)
   // Generate an ETW event that marks the end of a complete event.
-  if (category_group_enabled_local & ENABLED_FOR_ETW_EXPORT)
+  if (category_group_enabled_local & TraceCategory::ENABLED_FOR_ETW_EXPORT)
     TraceEventETWExport::AddCompleteEndEvent(name);
 #endif  // OS_WIN
 
+  if (category_group_enabled_local & TraceCategory::ENABLED_FOR_RECORDING) {
+    auto update_duration_callback =
+        update_duration_callback_.load(std::memory_order_relaxed);
+    if (update_duration_callback) {
+      update_duration_callback(handle, now, thread_now);
+      return;
+    }
+  }
+
   std::string console_message;
-  if (category_group_enabled_local & ENABLED_FOR_RECORDING) {
+  if (category_group_enabled_local & TraceCategory::ENABLED_FOR_RECORDING) {
     OptionalAutoLock lock(&lock_);
 
     TraceEvent* trace_event = GetEventByHandleInternal(handle, &lock);
     if (trace_event) {
       DCHECK(trace_event->phase() == TRACE_EVENT_PHASE_COMPLETE);
+
       trace_event->UpdateDuration(now, thread_now);
 #if defined(OS_ANDROID)
       trace_event->SendToATrace();
@@ -1481,141 +1447,137 @@ void TraceLog::UpdateTraceEventDuration(
       console_message =
           EventToConsoleMessage(TRACE_EVENT_PHASE_END, now, trace_event);
     }
-
-    if (AllocationContextTracker::capture_mode() ==
-        AllocationContextTracker::CaptureMode::PSEUDO_STACK) {
-      // The corresponding push is in |AddTraceEventWithThreadIdAndTimestamp|.
-      AllocationContextTracker::GetInstanceForCurrentThread()
-          ->PopPseudoStackFrame(name);
-    }
   }
 
-  if (console_message.size())
+  if (!console_message.empty())
     LOG(ERROR) << console_message;
 
-  if (category_group_enabled_local & ENABLED_FOR_EVENT_CALLBACK) {
-    EventCallback event_callback = reinterpret_cast<EventCallback>(
-        subtle::NoBarrier_Load(&event_callback_));
-    if (event_callback) {
-      event_callback(
-        now, TRACE_EVENT_PHASE_END, category_group_enabled, name,
-        trace_event_internal::kGlobalScope, trace_event_internal::kNoId, 0,
-        nullptr, nullptr, nullptr, TRACE_EVENT_FLAG_NONE);
-    }
-  }
-}
-
-void TraceLog::SetWatchEvent(const std::string& category_name,
-                             const std::string& event_name,
-                             const WatchEventCallback& callback) {
-  const unsigned char* category =
-      GetCategoryGroupEnabled(category_name.c_str());
-  AutoLock lock(lock_);
-  subtle::NoBarrier_Store(&watch_category_,
-                          reinterpret_cast<subtle::AtomicWord>(category));
-  watch_event_name_ = event_name;
-  watch_event_callback_ = callback;
-}
-
-void TraceLog::CancelWatchEvent() {
-  AutoLock lock(lock_);
-  subtle::NoBarrier_Store(&watch_category_, 0);
-  watch_event_name_ = "";
-  watch_event_callback_.Reset();
+  if (category_group_enabled_local & TraceCategory::ENABLED_FOR_FILTERING)
+    EndFilteredEvent(category_group_enabled, name, handle);
 }
 
 uint64_t TraceLog::MangleEventId(uint64_t id) {
   return id ^ process_id_hash_;
 }
 
+template <typename T>
+void TraceLog::AddMetadataEventWhileLocked(int thread_id,
+                                           const char* metadata_name,
+                                           const char* arg_name,
+                                           const T& value) {
+  auto trace_event_override =
+      add_trace_event_override_.load(std::memory_order_relaxed);
+  if (trace_event_override) {
+    TraceEvent trace_event;
+    InitializeMetadataEvent(&trace_event, thread_id, metadata_name, arg_name,
+                            value);
+    trace_event_override(&trace_event, /*thread_will_flush=*/true, nullptr);
+  } else {
+    InitializeMetadataEvent(
+        AddEventToThreadSharedChunkWhileLocked(nullptr, false), thread_id,
+        metadata_name, arg_name, value);
+  }
+}
+
 void TraceLog::AddMetadataEventsWhileLocked() {
   lock_.AssertAcquired();
 
+  auto trace_event_override =
+      add_trace_event_override_.load(std::memory_order_relaxed);
+
   // Move metadata added by |AddMetadataEvent| into the trace log.
-  while (!metadata_events_.empty()) {
-    TraceEvent* event = AddEventToThreadSharedChunkWhileLocked(nullptr, false);
-    event->MoveFrom(std::move(metadata_events_.back()));
-    metadata_events_.pop_back();
+  if (trace_event_override) {
+    while (!metadata_events_.empty()) {
+      trace_event_override(metadata_events_.back().get(),
+                           /*thread_will_flush=*/true, nullptr);
+      metadata_events_.pop_back();
+    }
+  } else {
+    while (!metadata_events_.empty()) {
+      TraceEvent* event =
+          AddEventToThreadSharedChunkWhileLocked(nullptr, false);
+      *event = std::move(*metadata_events_.back());
+      metadata_events_.pop_back();
+    }
   }
 
 #if !defined(OS_NACL)  // NaCl shouldn't expose the process id.
-  InitializeMetadataEvent(AddEventToThreadSharedChunkWhileLocked(NULL, false),
-                          0, "num_cpus", "number",
-                          base::SysInfo::NumberOfProcessors());
+  AddMetadataEventWhileLocked(0, "num_cpus", "number",
+                              base::SysInfo::NumberOfProcessors());
 #endif
 
   int current_thread_id = static_cast<int>(base::PlatformThread::CurrentId());
   if (process_sort_index_ != 0) {
-    InitializeMetadataEvent(AddEventToThreadSharedChunkWhileLocked(NULL, false),
-                            current_thread_id, "process_sort_index",
-                            "sort_index", process_sort_index_);
+    AddMetadataEventWhileLocked(current_thread_id, "process_sort_index",
+                                "sort_index", process_sort_index_);
   }
 
-  if (process_name_.size()) {
-    InitializeMetadataEvent(AddEventToThreadSharedChunkWhileLocked(NULL, false),
-                            current_thread_id, "process_name", "name",
-                            process_name_);
+  if (!process_name_.empty()) {
+    AddMetadataEventWhileLocked(current_thread_id, "process_name", "name",
+                                process_name_);
   }
 
-  if (process_labels_.size() > 0) {
-    std::vector<std::string> labels;
-    for (base::hash_map<int, std::string>::iterator it =
-             process_labels_.begin();
-         it != process_labels_.end(); it++) {
-      labels.push_back(it->second);
-    }
-    InitializeMetadataEvent(AddEventToThreadSharedChunkWhileLocked(NULL, false),
-                            current_thread_id, "process_labels", "labels",
-                            base::JoinString(labels, ","));
+  TimeDelta process_uptime = TRACE_TIME_NOW() - process_creation_time_;
+  AddMetadataEventWhileLocked(current_thread_id, "process_uptime_seconds",
+                              "uptime", process_uptime.InSeconds());
+
+#if defined(OS_ANDROID)
+  AddMetadataEventWhileLocked(current_thread_id, "chrome_library_address",
+                              "start_address",
+                              base::StringPrintf("%p", &__executable_start));
+  base::debug::ElfBuildIdBuffer build_id;
+  size_t build_id_length =
+      base::debug::ReadElfBuildId(&__executable_start, true, build_id);
+  if (build_id_length > 0) {
+    AddMetadataEventWhileLocked(current_thread_id, "chrome_library_module",
+                                "id", build_id);
+  }
+#endif
+
+  if (!process_labels_.empty()) {
+    std::vector<base::StringPiece> labels;
+    for (const auto& it : process_labels_)
+      labels.push_back(it.second);
+    AddMetadataEventWhileLocked(current_thread_id, "process_labels", "labels",
+                                base::JoinString(labels, ","));
   }
 
   // Thread sort indices.
-  for (hash_map<int, int>::iterator it = thread_sort_indices_.begin();
-       it != thread_sort_indices_.end(); it++) {
-    if (it->second == 0)
+  for (const auto& it : thread_sort_indices_) {
+    if (it.second == 0)
       continue;
-    InitializeMetadataEvent(AddEventToThreadSharedChunkWhileLocked(NULL, false),
-                            it->first, "thread_sort_index", "sort_index",
-                            it->second);
+    AddMetadataEventWhileLocked(it.first, "thread_sort_index", "sort_index",
+                                it.second);
   }
 
   // Thread names.
   AutoLock thread_info_lock(thread_info_lock_);
-  for (hash_map<int, std::string>::iterator it = thread_names_.begin();
-       it != thread_names_.end(); it++) {
-    if (it->second.empty())
+  for (const auto& it : thread_names_) {
+    if (it.second.empty())
       continue;
-    InitializeMetadataEvent(AddEventToThreadSharedChunkWhileLocked(NULL, false),
-                            it->first, "thread_name", "name", it->second);
+    AddMetadataEventWhileLocked(it.first, "thread_name", "name", it.second);
   }
 
   // If buffer is full, add a metadata record to report this.
   if (!buffer_limit_reached_timestamp_.is_null()) {
-    InitializeMetadataEvent(AddEventToThreadSharedChunkWhileLocked(NULL, false),
-                            current_thread_id, "trace_buffer_overflowed",
-                            "overflowed_at_ts",
-                            buffer_limit_reached_timestamp_);
+    AddMetadataEventWhileLocked(current_thread_id, "trace_buffer_overflowed",
+                                "overflowed_at_ts",
+                                buffer_limit_reached_timestamp_);
   }
 }
 
-void TraceLog::WaitSamplingEventForTesting() {
-  if (!sampling_thread_)
-    return;
-  sampling_thread_->WaitSamplingEventForTesting();
-}
-
-void TraceLog::DeleteForTesting() {
-  internal::DeleteTraceLogForTesting::Delete();
-}
-
 TraceEvent* TraceLog::GetEventByHandle(TraceEventHandle handle) {
-  return GetEventByHandleInternal(handle, NULL);
+  return GetEventByHandleInternal(handle, nullptr);
 }
 
 TraceEvent* TraceLog::GetEventByHandleInternal(TraceEventHandle handle,
                                                OptionalAutoLock* lock) {
   if (!handle.chunk_seq)
-    return NULL;
+    return nullptr;
+
+  DCHECK(handle.chunk_seq);
+  DCHECK(handle.chunk_index <= TraceBufferChunk::kMaxChunkIndex);
+  DCHECK(handle.event_index <= TraceBufferChunk::kTraceBufferChunkSize - 1);
 
   if (thread_local_event_buffer_.Get()) {
     TraceEvent* trace_event =
@@ -1633,7 +1595,7 @@ TraceEvent* TraceLog::GetEventByHandleInternal(TraceEventHandle handle,
       handle.chunk_index == thread_shared_chunk_index_) {
     return handle.chunk_seq == thread_shared_chunk_->seq()
                ? thread_shared_chunk_->GetEventAt(handle.event_index)
-               : NULL;
+               : nullptr;
   }
 
   return logged_events_->GetEventByHandle(handle);
@@ -1643,20 +1605,15 @@ void TraceLog::SetProcessID(int process_id) {
   process_id_ = process_id;
   // Create a FNV hash from the process ID for XORing.
   // See http://isthe.com/chongo/tech/comp/fnv/ for algorithm details.
-  unsigned long long offset_basis = 14695981039346656037ull;
-  unsigned long long fnv_prime = 1099511628211ull;
-  unsigned long long pid = static_cast<unsigned long long>(process_id_);
-  process_id_hash_ = (offset_basis ^ pid) * fnv_prime;
+  const unsigned long long kOffsetBasis = 14695981039346656037ull;
+  const unsigned long long kFnvPrime = 1099511628211ull;
+  const unsigned long long pid = static_cast<unsigned long long>(process_id_);
+  process_id_hash_ = (kOffsetBasis ^ pid) * kFnvPrime;
 }
 
 void TraceLog::SetProcessSortIndex(int sort_index) {
   AutoLock lock(lock_);
   process_sort_index_ = sort_index;
-}
-
-void TraceLog::SetProcessName(const std::string& process_name) {
-  AutoLock lock(lock_);
-  process_name_ = process_name;
 }
 
 void TraceLog::UpdateProcessLabel(int label_id,
@@ -1670,12 +1627,7 @@ void TraceLog::UpdateProcessLabel(int label_id,
 
 void TraceLog::RemoveProcessLabel(int label_id) {
   AutoLock lock(lock_);
-  base::hash_map<int, std::string>::iterator it =
-      process_labels_.find(label_id);
-  if (it == process_labels_.end())
-    return;
-
-  process_labels_.erase(it);
+  process_labels_.erase(label_id);
 }
 
 void TraceLog::SetThreadSortIndex(PlatformThreadId thread_id, int sort_index) {
@@ -1688,80 +1640,172 @@ void TraceLog::SetTimeOffset(TimeDelta offset) {
 }
 
 size_t TraceLog::GetObserverCountForTest() const {
-  return enabled_state_observer_list_.size();
+  return enabled_state_observers_.size();
 }
 
 void TraceLog::SetCurrentThreadBlocksMessageLoop() {
   thread_blocks_message_loop_.Set(true);
-  if (thread_local_event_buffer_.Get()) {
-    // This will flush the thread local buffer.
-    delete thread_local_event_buffer_.Get();
-  }
+  // This will flush the thread local buffer.
+  delete thread_local_event_buffer_.Get();
 }
 
 TraceBuffer* TraceLog::CreateTraceBuffer() {
   HEAP_PROFILER_SCOPED_IGNORE;
   InternalTraceOptions options = trace_options();
-  if (options & kInternalRecordContinuously)
+  const size_t config_buffer_chunks =
+      trace_config_.GetTraceBufferSizeInEvents() / kTraceBufferChunkSize;
+  if (options & kInternalRecordContinuously) {
     return TraceBuffer::CreateTraceBufferRingBuffer(
-        kTraceEventRingBufferChunks);
-  else if (options & kInternalEchoToConsole)
+        config_buffer_chunks > 0 ? config_buffer_chunks
+                                 : kTraceEventRingBufferChunks);
+  }
+  if (options & kInternalEchoToConsole) {
     return TraceBuffer::CreateTraceBufferRingBuffer(
-        kEchoToConsoleTraceEventBufferChunks);
-  else if (options & kInternalRecordAsMuchAsPossible)
+        config_buffer_chunks > 0 ? config_buffer_chunks
+                                 : kEchoToConsoleTraceEventBufferChunks);
+  }
+  if (options & kInternalRecordAsMuchAsPossible) {
     return TraceBuffer::CreateTraceBufferVectorOfSize(
-        kTraceEventVectorBigBufferChunks);
+        config_buffer_chunks > 0 ? config_buffer_chunks
+                                 : kTraceEventVectorBigBufferChunks);
+  }
   return TraceBuffer::CreateTraceBufferVectorOfSize(
-      kTraceEventVectorBufferChunks);
+      config_buffer_chunks > 0 ? config_buffer_chunks
+                               : kTraceEventVectorBufferChunks);
 }
 
 #if defined(OS_WIN)
 void TraceLog::UpdateETWCategoryGroupEnabledFlags() {
-  AutoLock lock(lock_);
-  size_t category_index = base::subtle::NoBarrier_Load(&g_category_index);
   // Go through each category and set/clear the ETW bit depending on whether the
   // category is enabled.
-  for (size_t i = 0; i < category_index; i++) {
-    const char* category_group = g_category_groups[i];
-    DCHECK(category_group);
+  for (TraceCategory& category : CategoryRegistry::GetAllCategories()) {
     if (base::trace_event::TraceEventETWExport::IsCategoryGroupEnabled(
-            category_group)) {
-      g_category_group_enabled[i] |= ENABLED_FOR_ETW_EXPORT;
+            category.name())) {
+      category.set_state_flag(TraceCategory::ENABLED_FOR_ETW_EXPORT);
     } else {
-      g_category_group_enabled[i] &= ~ENABLED_FOR_ETW_EXPORT;
+      category.clear_state_flag(TraceCategory::ENABLED_FOR_ETW_EXPORT);
     }
   }
 }
 #endif  // defined(OS_WIN)
 
+void TraceLog::SetTraceBufferForTesting(
+    std::unique_ptr<TraceBuffer> trace_buffer) {
+  AutoLock lock(lock_);
+  logged_events_ = std::move(trace_buffer);
+}
+
 void ConvertableToTraceFormat::EstimateTraceMemoryOverhead(
     TraceEventMemoryOverhead* overhead) {
-  overhead->Add("ConvertableToTraceFormat(Unknown)", sizeof(*this));
-}
-
-void TraceLog::AddAsyncEnabledStateObserver(
-    WeakPtr<AsyncEnabledStateObserver> listener) {
-  AutoLock lock(lock_);
-  async_observers_.insert(
-      std::make_pair(listener.get(), RegisteredAsyncObserver(listener)));
-}
-
-void TraceLog::RemoveAsyncEnabledStateObserver(
-    AsyncEnabledStateObserver* listener) {
-  AutoLock lock(lock_);
-  async_observers_.erase(listener);
-}
-
-bool TraceLog::HasAsyncEnabledStateObserver(
-    AsyncEnabledStateObserver* listener) const {
-  AutoLock lock(lock_);
-  return ContainsKey(async_observers_, listener);
+  overhead->Add(TraceEventMemoryOverhead::kConvertableToTraceFormat,
+                sizeof(*this));
 }
 
 }  // namespace trace_event
 }  // namespace base
 
 namespace trace_event_internal {
+
+base::trace_event::TraceEventHandle AddTraceEvent(
+    char phase,
+    const unsigned char* category_group_enabled,
+    const char* name,
+    const char* scope,
+    unsigned long long id,
+    base::trace_event::TraceArguments* args,
+    unsigned int flags) {
+  return base::trace_event::TraceLog::GetInstance()->AddTraceEvent(
+      phase, category_group_enabled, name, scope, id, args, flags);
+}
+
+base::trace_event::TraceEventHandle AddTraceEventWithBindId(
+    char phase,
+    const unsigned char* category_group_enabled,
+    const char* name,
+    const char* scope,
+    unsigned long long id,
+    unsigned long long bind_id,
+    base::trace_event::TraceArguments* args,
+    unsigned int flags) {
+  return base::trace_event::TraceLog::GetInstance()->AddTraceEventWithBindId(
+      phase, category_group_enabled, name, scope, id, bind_id, args, flags);
+}
+
+base::trace_event::TraceEventHandle AddTraceEventWithProcessId(
+    char phase,
+    const unsigned char* category_group_enabled,
+    const char* name,
+    const char* scope,
+    unsigned long long id,
+    int process_id,
+    base::trace_event::TraceArguments* args,
+    unsigned int flags) {
+  return base::trace_event::TraceLog::GetInstance()->AddTraceEventWithProcessId(
+      phase, category_group_enabled, name, scope, id, process_id, args, flags);
+}
+
+base::trace_event::TraceEventHandle AddTraceEventWithThreadIdAndTimestamp(
+    char phase,
+    const unsigned char* category_group_enabled,
+    const char* name,
+    const char* scope,
+    unsigned long long id,
+    int thread_id,
+    const base::TimeTicks& timestamp,
+    base::trace_event::TraceArguments* args,
+    unsigned int flags) {
+  return base::trace_event::TraceLog::GetInstance()
+      ->AddTraceEventWithThreadIdAndTimestamp(phase, category_group_enabled,
+                                              name, scope, id, thread_id,
+                                              timestamp, args, flags);
+}
+
+base::trace_event::TraceEventHandle AddTraceEventWithThreadIdAndTimestamp(
+    char phase,
+    const unsigned char* category_group_enabled,
+    const char* name,
+    const char* scope,
+    unsigned long long id,
+    unsigned long long bind_id,
+    int thread_id,
+    const base::TimeTicks& timestamp,
+    base::trace_event::TraceArguments* args,
+    unsigned int flags) {
+  return base::trace_event::TraceLog::GetInstance()
+      ->AddTraceEventWithThreadIdAndTimestamp(
+          phase, category_group_enabled, name, scope, id, bind_id, thread_id,
+          timestamp, args, flags);
+}
+
+void AddMetadataEvent(const unsigned char* category_group_enabled,
+                      const char* name,
+                      base::trace_event::TraceArguments* args,
+                      unsigned int flags) {
+  return base::trace_event::TraceLog::GetInstance()->AddMetadataEvent(
+      category_group_enabled, name, args, flags);
+}
+
+int GetNumTracesRecorded() {
+  return base::trace_event::TraceLog::GetInstance()->GetNumTracesRecorded();
+}
+
+void UpdateTraceEventDuration(const unsigned char* category_group_enabled,
+                              const char* name,
+                              base::trace_event::TraceEventHandle handle) {
+  return base::trace_event::TraceLog::GetInstance()->UpdateTraceEventDuration(
+      category_group_enabled, name, handle);
+}
+
+void UpdateTraceEventDurationExplicit(
+    const unsigned char* category_group_enabled,
+    const char* name,
+    base::trace_event::TraceEventHandle handle,
+    const base::TimeTicks& now,
+    const base::ThreadTicks& thread_now) {
+  return base::trace_event::TraceLog::GetInstance()
+      ->UpdateTraceEventDurationExplicit(category_group_enabled, name, handle,
+                                         now, thread_now);
+}
 
 ScopedTraceBinaryEfficient::ScopedTraceBinaryEfficient(
     const char* category_group,
@@ -1775,19 +1819,11 @@ ScopedTraceBinaryEfficient::ScopedTraceBinaryEfficient(
   if (*category_group_enabled_) {
     event_handle_ =
         TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_THREAD_ID_AND_TIMESTAMP(
-            TRACE_EVENT_PHASE_COMPLETE,
-            category_group_enabled_,
-            name,
-            trace_event_internal::kGlobalScope,  // scope
-            trace_event_internal::kNoId,  // id
+            TRACE_EVENT_PHASE_COMPLETE, category_group_enabled_, name,
+            trace_event_internal::kGlobalScope,                   // scope
+            trace_event_internal::kNoId,                          // id
             static_cast<int>(base::PlatformThread::CurrentId()),  // thread_id
-            base::TimeTicks::Now(),
-            trace_event_internal::kZeroNumArgs,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            TRACE_EVENT_FLAG_NONE);
+            TRACE_TIME_TICKS_NOW(), nullptr, TRACE_EVENT_FLAG_NONE);
   }
 }
 

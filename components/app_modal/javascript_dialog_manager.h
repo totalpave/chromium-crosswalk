@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/singleton.h"
 #include "base/time/time.h"
@@ -37,33 +38,43 @@ class JavaScriptDialogManager : public content::JavaScriptDialogManager {
   void SetExtensionsClient(
       std::unique_ptr<JavaScriptDialogExtensionsClient> extensions_client);
 
+  // Gets the title for a dialog.
+  base::string16 GetTitle(content::WebContents* web_contents,
+                          const GURL& alerting_frame_url);
+
+  // Displays a dialog asking the user if they want to leave a page. Displays
+  // a different message if the site is in an app window.
+  void RunBeforeUnloadDialogWithOptions(
+      content::WebContents* web_contents,
+      content::RenderFrameHost* render_frame_host,
+      bool is_reload,
+      bool is_app,
+      DialogClosedCallback callback);
+
+  // JavaScriptDialogManager:
+  void RunJavaScriptDialog(content::WebContents* web_contents,
+                           content::RenderFrameHost* render_frame_host,
+                           content::JavaScriptDialogType dialog_type,
+                           const base::string16& message_text,
+                           const base::string16& default_prompt_text,
+                           DialogClosedCallback callback,
+                           bool* did_suppress_message) override;
+  void RunBeforeUnloadDialog(content::WebContents* web_contents,
+                             content::RenderFrameHost* render_frame_host,
+                             bool is_reload,
+                             DialogClosedCallback callback) override;
+  bool HandleJavaScriptDialog(content::WebContents* web_contents,
+                              bool accept,
+                              const base::string16* prompt_override) override;
+  void CancelDialogs(content::WebContents* web_contents,
+                     bool reset_state) override;
+
  private:
+  FRIEND_TEST_ALL_PREFIXES(JavaScriptDialogManagerTest, GetTitle);
   friend struct base::DefaultSingletonTraits<JavaScriptDialogManager>;
 
   JavaScriptDialogManager();
   ~JavaScriptDialogManager() override;
-
-  // JavaScriptDialogManager:
-  void RunJavaScriptDialog(content::WebContents* web_contents,
-                           const GURL& origin_url,
-                           content::JavaScriptMessageType message_type,
-                           const base::string16& message_text,
-                           const base::string16& default_prompt_text,
-                           const DialogClosedCallback& callback,
-                           bool* did_suppress_message) override;
-  void RunBeforeUnloadDialog(content::WebContents* web_contents,
-                             bool is_reload,
-                             const DialogClosedCallback& callback) override;
-  bool HandleJavaScriptDialog(content::WebContents* web_contents,
-                              bool accept,
-                              const base::string16* prompt_override) override;
-  void CancelActiveAndPendingDialogs(
-      content::WebContents* web_contents) override;
-  void ResetDialogState(content::WebContents* web_contents) override;
-
-  base::string16 GetTitle(content::WebContents* web_contents,
-                          const GURL& origin_url,
-                          bool is_alert);
 
   // Wrapper around OnDialogClosed; logs UMA stats before continuing on.
   void OnBeforeUnloadDialogClosed(content::WebContents* web_contents,
@@ -77,6 +88,9 @@ class JavaScriptDialogManager : public content::JavaScriptDialogManager {
                       DialogClosedCallback callback,
                       bool success,
                       const base::string16& user_input);
+
+  static base::string16 GetTitleImpl(const GURL& parent_frame_url,
+                                     const GURL& alerting_frame_url);
 
   // Mapping between the WebContents and their extra data. The key
   // is a void* because the pointer is just a cookie and is never dereferenced.

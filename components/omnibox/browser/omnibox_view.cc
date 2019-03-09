@@ -7,32 +7,57 @@
 
 #include "components/omnibox/browser/omnibox_view.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/strings/string16.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "components/bookmarks/browser/bookmark_model.h"
 #include "components/omnibox/browser/autocomplete_match.h"
-#include "components/omnibox/browser/omnibox_client.h"
+#include "components/omnibox/browser/location_bar_model.h"
 #include "components/omnibox/browser/omnibox_edit_controller.h"
 #include "components/omnibox/browser/omnibox_edit_model.h"
-#include "components/toolbar/toolbar_model.h"
-#include "grit/components_scaled_resources.h"
+#include "components/omnibox/common/omnibox_features.h"
+#include "extensions/common/constants.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/gfx/vector_icons_public.h"
+
+#if !defined(OS_ANDROID) && !defined(OS_IOS)
+#include "ui/gfx/paint_vector_icon.h"
+#endif
 
 // static
 base::string16 OmniboxView::StripJavascriptSchemas(const base::string16& text) {
   const base::string16 kJsPrefix(
       base::ASCIIToUTF16(url::kJavaScriptScheme) + base::ASCIIToUTF16(":"));
-  base::string16 out(text);
-  while (base::StartsWith(out, kJsPrefix,
-                          base::CompareCase::INSENSITIVE_ASCII)) {
-    base::TrimWhitespace(out.substr(kJsPrefix.length()), base::TRIM_LEADING,
-                         &out);
+
+  bool found_JavaScript = false;
+  size_t i = 0;
+  // Find the index of the first character that isn't whitespace, a control
+  // character, or a part of a JavaScript: scheme.
+  while (i < text.size()) {
+    if (base::IsUnicodeWhitespace(text[i]) || (text[i] < 0x20)) {
+      ++i;
+    } else {
+      if (!base::EqualsCaseInsensitiveASCII(text.substr(i, kJsPrefix.length()),
+                                            kJsPrefix))
+        break;
+
+      // We've found a JavaScript scheme. Continue searching to ensure that
+      // strings like "javascript:javascript:alert()" are fully stripped.
+      found_JavaScript = true;
+      i += kJsPrefix.length();
+    }
   }
-  return out;
+
+  // If we found any "JavaScript:" schemes in the text, return the text starting
+  // at the first non-whitespace/control character after the last instance of
+  // the scheme.
+  if (found_JavaScript)
+    return text.substr(i);
+
+  return text;
 }
 
 // static
@@ -63,15 +88,13 @@ void OmniboxView::OpenMatch(const AutocompleteMatch& match,
                             WindowOpenDisposition disposition,
                             const GURL& alternate_nav_url,
                             const base::string16& pasted_text,
-                            size_t selected_line) {
+                            size_t selected_line,
+                            base::TimeTicks match_selection_timestamp) {
   // Invalid URLs such as chrome://history can end up here.
   if (!match.destination_url.is_valid() || !model_)
     return;
-  const AutocompleteMatch::Type match_type = match.type;
-  model_->OpenMatch(
-      match, disposition, alternate_nav_url, pasted_text, selected_line);
-  // WARNING: |match| may refer to a deleted object at this point!
-  OnMatchOpened(match_type);
+  model_->OpenMatch(match, disposition, alternate_nav_url, pasted_text,
+                    selected_line, match_selection_timestamp);
 }
 
 bool OmniboxView::IsEditingOrEmpty() const {
@@ -79,31 +102,83 @@ bool OmniboxView::IsEditingOrEmpty() const {
       (GetOmniboxTextLength() == 0);
 }
 
-int OmniboxView::GetIcon() const {
-  if (!IsEditingOrEmpty())
-    return controller_->GetToolbarModel()->GetIcon();
-  int id = AutocompleteMatch::TypeToIcon(model_.get() ?
-      model_->CurrentTextType() : AutocompleteMatchType::URL_WHAT_YOU_TYPED);
-  return (id == IDR_OMNIBOX_HTTP) ? IDR_LOCATION_BAR_HTTP : id;
-}
-
-gfx::VectorIconId OmniboxView::GetVectorIcon() const {
-#if !defined(OS_ANDROID) && !defined(OS_IOS)
-  if (!IsEditingOrEmpty())
-    return controller_->GetToolbarModel()->GetVectorIcon();
-
-  // Reuse the dropdown icons...
-  gfx::VectorIconId id = AutocompleteMatch::TypeToVectorIcon(
-      model_ ? model_->CurrentTextType()
-             : AutocompleteMatchType::URL_WHAT_YOU_TYPED);
-  // but use a different version for the HTTP icon.
-  return (id == gfx::VectorIconId::OMNIBOX_HTTP)
-             ? gfx::VectorIconId::LOCATION_BAR_HTTP
-             : id;
+// TODO (manukh) OmniboxView::GetIcon is very similar to
+// OmniboxPopupModel::GetMatchIcon. They contain certain inconsistencies
+// concerning what flags are required to display url favicons and bookmark star
+// icons. OmniboxPopupModel::GetMatchIcon also doesn't display default search
+// provider icons. It's possible they have other inconsistencies as well. We may
+// want to consider reusing the same code for both the popup and omnibox icons.
+gfx::ImageSkia OmniboxView::GetIcon(int dip_size,
+                                    SkColor color,
+                                    SkColor search_alternate_color,
+                                    IconFetchedCallback on_icon_fetched) const {
+#if defined(OS_ANDROID) || defined(OS_IOS)
+  // This is used on desktop only.
+  NOTREACHED();
+  return gfx::ImageSkia();
 #else
-  NOTIMPLEMENTED();
-  return gfx::VectorIconId::VECTOR_ICON_NONE;
-#endif
+
+  // For tests, model_ will be null.
+  if (!model_) {
+    AutocompleteMatch fake_match;
+    fake_match.type = AutocompleteMatchType::URL_WHAT_YOU_TYPED;
+    const gfx::VectorIcon& vector_icon = fake_match.GetVectorIcon(false);
+    return gfx::CreateVectorIcon(vector_icon, dip_size, color);
+  }
+
+  if (model_->ShouldShowCurrentPageIcon()) {
+    // Query in Omnibox.
+    LocationBarModel* location_bar_model = controller_->GetLocationBarModel();
+    if (location_bar_model->GetDisplaySearchTerms(nullptr /* search_terms */)) {
+      gfx::Image icon = model_->client()->GetFaviconForDefaultSearchProvider(
+          std::move(on_icon_fetched));
+      if (!icon.IsEmpty())
+        return model_->client()->GetSizedIcon(icon).AsImageSkia();
+    }
+
+    return gfx::CreateVectorIcon(location_bar_model->GetVectorIcon(), dip_size,
+                                 color);
+  }
+
+  gfx::Image favicon;
+  AutocompleteMatch match = model_->CurrentMatch(nullptr);
+  if (AutocompleteMatch::IsSearchType(match.type)) {
+    // For search queries, display default search engine's favicon.
+    favicon = model_->client()->GetFaviconForDefaultSearchProvider(
+        std::move(on_icon_fetched));
+
+  } else if (base::FeatureList::IsEnabled(
+                 omnibox::kUIExperimentShowSuggestionFavicons)) {
+    // For site suggestions, display site's favicon.
+    favicon = model_->client()->GetFaviconForPageUrl(
+        match.destination_url, std::move(on_icon_fetched));
+  }
+
+  if (!favicon.IsEmpty())
+    return model_->client()->GetSizedIcon(favicon).AsImageSkia();
+  // If the client returns an empty favicon, fall through to provide the
+  // generic vector icon. |on_icon_fetched| may or may not be called later.
+  // If it's never called, the vector icon we provide below should remain.
+
+  // For bookmarked suggestions, display bookmark icon.
+  bookmarks::BookmarkModel* bookmark_model =
+      model_->client()->GetBookmarkModel();
+  const bool is_bookmarked =
+      bookmark_model && bookmark_model->IsBookmarked(match.destination_url);
+
+  const gfx::VectorIcon& vector_icon = match.GetVectorIcon(is_bookmarked);
+
+  // When the blue search loop experiment is enabled, the in-omnibox vector
+  // icon for search type matches should be blue as well. This icon is used if
+  // the default search engine favicon has not yet been fetched, or is disabled.
+  if (base::FeatureList::IsEnabled(
+          omnibox::kUIExperimentBlueSearchLoopAndSearchQuery) &&
+      AutocompleteMatch::IsSearchType(match.type)) {
+    return gfx::CreateVectorIcon(vector_icon, dip_size, search_alternate_color);
+  }
+
+  return gfx::CreateVectorIcon(vector_icon, dip_size, color);
+#endif  // defined(OS_ANDROID) || defined(OS_IOS)
 }
 
 void OmniboxView::SetUserText(const base::string16& text) {
@@ -112,39 +187,20 @@ void OmniboxView::SetUserText(const base::string16& text) {
 
 void OmniboxView::SetUserText(const base::string16& text,
                               bool update_popup) {
-  if (model_.get())
+  if (model_)
     model_->SetUserText(text);
   SetWindowTextAndCaretPos(text, text.length(), update_popup, true);
 }
 
-void OmniboxView::ShowURL() {
-  SetFocus();
-  controller_->GetToolbarModel()->set_url_replacement_enabled(false);
-  model_->UpdatePermanentText();
-  RevertWithoutResettingSearchTermReplacement();
-  SelectAll(true);
-}
-
-void OmniboxView::HideURL() {
-  controller_->GetToolbarModel()->set_url_replacement_enabled(true);
-  model_->UpdatePermanentText();
-  RevertWithoutResettingSearchTermReplacement();
-}
-
 void OmniboxView::RevertAll() {
-  controller_->GetToolbarModel()->set_url_replacement_enabled(true);
-  RevertWithoutResettingSearchTermReplacement();
-}
-
-void OmniboxView::RevertWithoutResettingSearchTermReplacement() {
   CloseOmniboxPopup();
-  if (model_.get())
+  if (model_)
     model_->Revert();
   TextChanged();
 }
 
 void OmniboxView::CloseOmniboxPopup() {
-  if (model_.get())
+  if (model_)
     model_->StopAutocomplete();
 }
 
@@ -155,16 +211,14 @@ bool OmniboxView::IsImeShowingPopup() const {
   return false;
 }
 
-void OmniboxView::ShowImeIfNeeded() {
-}
+void OmniboxView::ShowVirtualKeyboardIfEnabled() {}
+
+void OmniboxView::HideImeIfNeeded() {}
 
 bool OmniboxView::IsIndicatingQueryRefinement() const {
   // The default implementation always returns false.  Mobile ports can override
   // this method and implement as needed.
   return false;
-}
-
-void OmniboxView::OnMatchOpened(AutocompleteMatch::Type match_type) {
 }
 
 void OmniboxView::GetState(State* state) {
@@ -219,6 +273,66 @@ OmniboxView::OmniboxView(OmniboxEditController* controller,
 
 void OmniboxView::TextChanged() {
   EmphasizeURLComponents();
-  if (model_.get())
+  if (model_)
     model_->OnChanged();
+}
+
+bool OmniboxView::UpdateTextStyle(
+    const base::string16& display_text,
+    const bool text_is_url,
+    const AutocompleteSchemeClassifier& classifier) {
+  enum DemphasizeComponents {
+    EVERYTHING,
+    ALL_BUT_SCHEME,
+    ALL_BUT_HOST,
+    NOTHING,
+  } deemphasize = NOTHING;
+
+  url::Component scheme, host;
+  AutocompleteInput::ParseForEmphasizeComponents(display_text, classifier,
+                                                 &scheme, &host);
+
+  if (text_is_url) {
+    const base::string16 url_scheme =
+        display_text.substr(scheme.begin, scheme.len);
+    // Extension IDs are not human-readable, so deemphasize everything to draw
+    // attention to the human-readable name in the location icon text.
+    // Data URLs are rarely human-readable and can be used for spoofing, so draw
+    // attention to the scheme to emphasize "this is just a bunch of data".
+    // For normal URLs, the host is the best proxy for "identity".
+    if (url_scheme == base::UTF8ToUTF16(extensions::kExtensionScheme))
+      deemphasize = EVERYTHING;
+    else if (url_scheme == base::UTF8ToUTF16(url::kDataScheme))
+      deemphasize = ALL_BUT_SCHEME;
+    else if (host.is_nonempty())
+      deemphasize = ALL_BUT_HOST;
+  }
+
+  gfx::Range scheme_range = scheme.is_nonempty()
+                                ? gfx::Range(scheme.begin, scheme.end())
+                                : gfx::Range::InvalidRange();
+  switch (deemphasize) {
+    case EVERYTHING:
+      SetEmphasis(false, gfx::Range::InvalidRange());
+      break;
+    case NOTHING:
+      SetEmphasis(true, gfx::Range::InvalidRange());
+      break;
+    case ALL_BUT_SCHEME:
+      DCHECK(scheme_range.IsValid());
+      SetEmphasis(false, gfx::Range::InvalidRange());
+      SetEmphasis(true, scheme_range);
+      break;
+    case ALL_BUT_HOST:
+      SetEmphasis(false, gfx::Range::InvalidRange());
+      SetEmphasis(true, gfx::Range(host.begin, host.end()));
+      break;
+  }
+
+  // Emphasize the scheme for security UI display purposes (if necessary).
+  if (!model()->user_input_in_progress() && scheme_range.IsValid())
+    UpdateSchemeStyle(scheme_range);
+
+  // Path is eligible for fading only when the host is the only emphasized part.
+  return deemphasize == ALL_BUT_HOST;
 }

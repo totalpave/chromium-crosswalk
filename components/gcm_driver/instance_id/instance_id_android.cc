@@ -5,17 +5,15 @@
 #include "components/gcm_driver/instance_id/instance_id_android.h"
 
 #include <stdint.h>
-
 #include <memory>
 
-#include "base/android/context_utils.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "jni/InstanceIDBridge_jni.h"
@@ -40,14 +38,10 @@ InstanceIDAndroid::ScopedBlockOnAsyncTasksForTesting::
 }
 
 // static
-bool InstanceIDAndroid::RegisterJni(JNIEnv* env) {
-  return RegisterNativesImpl(env);
-}
-
-// static
-std::unique_ptr<InstanceID> InstanceID::Create(const std::string& app_id,
-                                               gcm::GCMDriver* gcm_driver) {
-  return base::WrapUnique(new InstanceIDAndroid(app_id, gcm_driver));
+std::unique_ptr<InstanceID> InstanceID::CreateInternal(
+    const std::string& app_id,
+    gcm::GCMDriver* gcm_driver) {
+  return std::make_unique<InstanceIDAndroid>(app_id, gcm_driver);
 }
 
 InstanceIDAndroid::InstanceIDAndroid(const std::string& app_id,
@@ -62,47 +56,51 @@ InstanceIDAndroid::InstanceIDAndroid(const std::string& app_id,
   std::string subtype = app_id;
 
   JNIEnv* env = AttachCurrentThread();
-  java_ref_.Reset(Java_InstanceIDBridge_create(
-      env, reinterpret_cast<intptr_t>(this),
-      base::android::GetApplicationContext(),
-      ConvertUTF8ToJavaString(env, subtype).obj()));
+  java_ref_.Reset(
+      Java_InstanceIDBridge_create(env, reinterpret_cast<intptr_t>(this),
+                                   ConvertUTF8ToJavaString(env, subtype)));
 }
 
 InstanceIDAndroid::~InstanceIDAndroid() {
   DCHECK(thread_checker_.CalledOnValidThread());
 
   JNIEnv* env = AttachCurrentThread();
-  Java_InstanceIDBridge_destroy(env, java_ref_.obj());
+  Java_InstanceIDBridge_destroy(env, java_ref_);
 }
 
 void InstanceIDAndroid::GetID(const GetIDCallback& callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  int32_t request_id = get_id_callbacks_.Add(new GetIDCallback(callback));
+  int32_t request_id =
+      get_id_callbacks_.Add(std::make_unique<GetIDCallback>(callback));
 
   JNIEnv* env = AttachCurrentThread();
-  Java_InstanceIDBridge_getId(env, java_ref_.obj(), request_id);
+  Java_InstanceIDBridge_getId(env, java_ref_, request_id);
 }
 
 void InstanceIDAndroid::GetCreationTime(
     const GetCreationTimeCallback& callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  int32_t request_id =
-      get_creation_time_callbacks_.Add(new GetCreationTimeCallback(callback));
+  int32_t request_id = get_creation_time_callbacks_.Add(
+      std::make_unique<GetCreationTimeCallback>(callback));
 
   JNIEnv* env = AttachCurrentThread();
-  Java_InstanceIDBridge_getCreationTime(env, java_ref_.obj(), request_id);
+  Java_InstanceIDBridge_getCreationTime(env, java_ref_, request_id);
 }
 
 void InstanceIDAndroid::GetToken(
     const std::string& authorized_entity,
     const std::string& scope,
     const std::map<std::string, std::string>& options,
+    bool is_lazy,
     const GetTokenCallback& callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  int32_t request_id = get_token_callbacks_.Add(new GetTokenCallback(callback));
+  UMA_HISTOGRAM_COUNTS_100("InstanceID.GetToken.OptionsCount", options.size());
+
+  int32_t request_id =
+      get_token_callbacks_.Add(std::make_unique<GetTokenCallback>(callback));
 
   std::vector<std::string> options_strings;
   for (const auto& entry : options) {
@@ -112,10 +110,19 @@ void InstanceIDAndroid::GetToken(
 
   JNIEnv* env = AttachCurrentThread();
   Java_InstanceIDBridge_getToken(
-      env, java_ref_.obj(), request_id,
-      ConvertUTF8ToJavaString(env, authorized_entity).obj(),
-      ConvertUTF8ToJavaString(env, scope).obj(),
-      base::android::ToJavaArrayOfStrings(env, options_strings).obj());
+      env, java_ref_, request_id,
+      ConvertUTF8ToJavaString(env, authorized_entity),
+      ConvertUTF8ToJavaString(env, scope),
+      base::android::ToJavaArrayOfStrings(env, options_strings), is_lazy);
+}
+
+void InstanceIDAndroid::ValidateToken(const std::string& authorized_entity,
+                                      const std::string& scope,
+                                      const std::string& token,
+                                      const ValidateTokenCallback& callback) {
+  // gcm_driver doesn't store tokens on Android, so assume it's valid.
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(callback, true /* is_valid */));
 }
 
 void InstanceIDAndroid::DeleteTokenImpl(const std::string& authorized_entity,
@@ -123,23 +130,24 @@ void InstanceIDAndroid::DeleteTokenImpl(const std::string& authorized_entity,
                                         const DeleteTokenCallback& callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  int32_t request_id =
-      delete_token_callbacks_.Add(new DeleteTokenCallback(callback));
+  int32_t request_id = delete_token_callbacks_.Add(
+      std::make_unique<DeleteTokenCallback>(callback));
 
   JNIEnv* env = AttachCurrentThread();
   Java_InstanceIDBridge_deleteToken(
-      env, java_ref_.obj(), request_id,
-      ConvertUTF8ToJavaString(env, authorized_entity).obj(),
-      ConvertUTF8ToJavaString(env, scope).obj());
+      env, java_ref_, request_id,
+      ConvertUTF8ToJavaString(env, authorized_entity),
+      ConvertUTF8ToJavaString(env, scope));
 }
 
 void InstanceIDAndroid::DeleteIDImpl(const DeleteIDCallback& callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  int32_t request_id = delete_id_callbacks_.Add(new DeleteIDCallback(callback));
+  int32_t request_id = delete_id_callbacks_.Add(
+      std::make_unique<DeleteIDCallback>(DeleteIDCallback(callback)));
 
   JNIEnv* env = AttachCurrentThread();
-  Java_InstanceIDBridge_deleteInstanceID(env, java_ref_.obj(), request_id);
+  Java_InstanceIDBridge_deleteInstanceID(env, java_ref_, request_id);
 }
 
 void InstanceIDAndroid::DidGetID(

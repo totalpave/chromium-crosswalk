@@ -11,11 +11,13 @@
 #include <string>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "chrome/browser/chromeos/file_system_provider/fake_extension_provider.h"
 #include "chrome/browser/chromeos/file_system_provider/fake_provided_file_system.h"
 #include "chrome/browser/chromeos/file_system_provider/service.h"
 #include "chrome/browser/chromeos/file_system_provider/service_factory.h"
@@ -23,13 +25,13 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_file_system_context.h"
 #include "extensions/browser/extension_registry.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "storage/browser/fileapi/async_file_util.h"
 #include "storage/browser/fileapi/external_mount_points.h"
 #include "storage/browser/fileapi/file_system_url.h"
+#include "storage/browser/test/test_file_system_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {
@@ -39,6 +41,7 @@ namespace {
 const char kExtensionId[] = "mbflcebpggnecokmikipoihdbecnjfoj";
 const char kFileSystemId[] = "testing-file-system";
 const char kTextToWrite[] = "This is a test of FileStreamWriter.";
+const ProviderId kProviderId = ProviderId::CreateFromExtensionId(kExtensionId);
 
 // Pushes a value to the passed log vector.
 void LogValue(std::vector<int>* log, int value) {
@@ -52,8 +55,7 @@ storage::FileSystemURL CreateFileSystemURL(const std::string& mount_point_name,
   const storage::ExternalMountPoints* const mount_points =
       storage::ExternalMountPoints::GetSystemInstance();
   return mount_points->CreateCrackedFileSystemURL(
-      GURL(origin),
-      storage::kFileSystemTypeExternal,
+      url::Origin::Create(GURL(origin)), storage::kFileSystemTypeExternal,
       base::FilePath::FromUTF8Unsafe(mount_point_name).Append(file_path));
 }
 
@@ -72,14 +74,13 @@ class FileSystemProviderFileStreamWriter : public testing::Test {
     profile_ = profile_manager_->CreateTestingProfile("testing-profile");
 
     Service* service = Service::Get(profile_);  // Owned by its factory.
-    service->SetFileSystemFactoryForTesting(
-        base::Bind(&FakeProvidedFileSystem::Create));
+    service->RegisterProvider(FakeExtensionProvider::Create(kExtensionId));
 
     const base::File::Error result = service->MountFileSystem(
-        kExtensionId, MountOptions(kFileSystemId, "Testing File System"));
+        kProviderId, MountOptions(kFileSystemId, "Testing File System"));
     ASSERT_EQ(base::File::FILE_OK, result);
     provided_file_system_ = static_cast<FakeProvidedFileSystem*>(
-        service->GetProvidedFileSystem(kExtensionId, kFileSystemId));
+        service->GetProvidedFileSystem(kProviderId, kFileSystemId));
     ASSERT_TRUE(provided_file_system_);
     const ProvidedFileSystemInfo& file_system_info =
         provided_file_system_->GetFileSystemInfo();
@@ -108,7 +109,8 @@ TEST_F(FileSystemProviderFileStreamWriter, Write) {
 
   const int64_t initial_offset = 0;
   FileStreamWriter writer(file_url_, initial_offset);
-  scoped_refptr<net::IOBuffer> io_buffer(new net::StringIOBuffer(kTextToWrite));
+  scoped_refptr<net::IOBuffer> io_buffer =
+      base::MakeRefCounted<net::StringIOBuffer>(kTextToWrite);
 
   {
     const int result = writer.Write(io_buffer.get(),
@@ -159,7 +161,8 @@ TEST_F(FileSystemProviderFileStreamWriter, Cancel) {
 
   const int64_t initial_offset = 0;
   FileStreamWriter writer(file_url_, initial_offset);
-  scoped_refptr<net::IOBuffer> io_buffer(new net::StringIOBuffer(kTextToWrite));
+  scoped_refptr<net::IOBuffer> io_buffer =
+      base::MakeRefCounted<net::StringIOBuffer>(kTextToWrite);
 
   const int write_result = writer.Write(io_buffer.get(),
                                         sizeof(kTextToWrite) - 1,
@@ -181,7 +184,8 @@ TEST_F(FileSystemProviderFileStreamWriter, Cancel_NotRunning) {
 
   const int64_t initial_offset = 0;
   FileStreamWriter writer(file_url_, initial_offset);
-  scoped_refptr<net::IOBuffer> io_buffer(new net::StringIOBuffer(kTextToWrite));
+  scoped_refptr<net::IOBuffer> io_buffer =
+      base::MakeRefCounted<net::StringIOBuffer>(kTextToWrite);
 
   std::vector<int> cancel_log;
   const int cancel_result = writer.Cancel(base::Bind(&LogValue, &cancel_log));
@@ -197,7 +201,8 @@ TEST_F(FileSystemProviderFileStreamWriter, Write_WrongFile) {
 
   const int64_t initial_offset = 0;
   FileStreamWriter writer(wrong_file_url_, initial_offset);
-  scoped_refptr<net::IOBuffer> io_buffer(new net::StringIOBuffer(kTextToWrite));
+  scoped_refptr<net::IOBuffer> io_buffer =
+      base::MakeRefCounted<net::StringIOBuffer>(kTextToWrite);
 
   const int result = writer.Write(io_buffer.get(),
                                   sizeof(kTextToWrite) - 1,
@@ -221,7 +226,8 @@ TEST_F(FileSystemProviderFileStreamWriter, Write_Append) {
   ASSERT_LT(0, initial_offset);
 
   FileStreamWriter writer(file_url_, initial_offset);
-  scoped_refptr<net::IOBuffer> io_buffer(new net::StringIOBuffer(kTextToWrite));
+  scoped_refptr<net::IOBuffer> io_buffer =
+      base::MakeRefCounted<net::StringIOBuffer>(kTextToWrite);
 
   const int result = writer.Write(io_buffer.get(),
                                   sizeof(kTextToWrite) - 1,

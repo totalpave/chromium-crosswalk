@@ -11,8 +11,14 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "ui/aura/client/drag_drop_client.h"
 #include "ui/views/views_export.h"
-#include "ui/wm/public/drag_drop_client.h"
+
+namespace aura {
+namespace client {
+class DragDropClientObserver;
+}
+}  // namespace aura
 
 namespace ui {
 class DragSourceWin;
@@ -34,10 +40,10 @@ class VIEWS_EXPORT DesktopDragDropClientWin
                        const gfx::Point& screen_location,
                        int operation,
                        ui::DragDropTypes::DragEventSource source) override;
-  void DragUpdate(aura::Window* target, const ui::LocatedEvent& event) override;
-  void Drop(aura::Window* target, const ui::LocatedEvent& event) override;
   void DragCancel() override;
   bool IsDragDropInProgress() override;
+  void AddObserver(aura::client::DragDropClientObserver* observer) override;
+  void RemoveObserver(aura::client::DragDropClientObserver* observer) override;
 
   void OnNativeWidgetDestroying(HWND window);
 

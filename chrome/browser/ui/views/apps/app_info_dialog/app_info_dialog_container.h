@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_APPS_APP_INFO_DIALOG_APP_INFO_DIALOG_CONTAINER_H_
 
 #include "base/callback_forward.h"
+#include "chrome/common/buildflags.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace views {
@@ -13,14 +14,12 @@ class DialogDelegateView;
 class View;
 }
 
-#if defined(ENABLE_APP_LIST)
+#if BUILDFLAG(ENABLE_APP_LIST)
 
 // Creates a new dialog containing |view| that can be displayed inside the app
 // list, covering the entire app list and adding a close button. Takes ownership
 // of |view|.
-views::DialogDelegateView* CreateAppListContainerForView(
-    views::View* view,
-    const base::Closure& close_callback);
+views::DialogDelegateView* CreateAppListContainerForView(views::View* view);
 
 #endif  // ENABLE_APP_LIST
 

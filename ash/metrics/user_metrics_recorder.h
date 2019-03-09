@@ -8,18 +8,21 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/common/metrics/user_metrics_action.h"
+#include "ash/metrics/login_metrics_recorder.h"
 #include "ash/metrics/task_switch_metrics_recorder.h"
+#include "ash/metrics/user_metrics_action.h"
 #include "base/macros.h"
 #include "base/timer/timer.h"
 
 namespace ash {
 
-class DesktopTaskSwitchMetricRecorder;
+namespace mojom {
+enum class DictationToggleSource;
+}  // namespace mojom
 
-namespace test {
-class UserMetricsRecorderTestAPI;
-}
+class DemoSessionMetricsRecorder;
+class DesktopTaskSwitchMetricRecorder;
+class PointerMetricsRecorder;
 
 // User Metrics Recorder provides a repeating callback (RecordPeriodicMetrics)
 // on a timer to allow recording of state data over time to the UMA records.
@@ -34,8 +37,22 @@ class ASH_EXPORT UserMetricsRecorder {
 
   virtual ~UserMetricsRecorder();
 
+  // Record interesting user clicks on tray on lock and login screens.
+  static void RecordUserClickOnTray(
+      LoginMetricsRecorder::TrayClickTarget target);
+
+  // Record interesting user clicks on shelf buttons on lock and login screens.
+  static void RecordUserClickOnShelfButton(
+      LoginMetricsRecorder::ShelfButtonClickTarget target);
+
+  // Record the method used to activate dictation.
+  static void RecordUserToggleDictation(mojom::DictationToggleSource source);
+
   // Records an Ash owned user action.
   void RecordUserMetricsAction(UserMetricsAction action);
+
+  // Starts recording demo session metrics. Used in Demo Mode.
+  void StartDemoSessionMetricsRecording();
 
   TaskSwitchMetricsRecorder& task_switch_metrics_recorder() {
     return task_switch_metrics_recorder_;
@@ -47,8 +64,12 @@ class ASH_EXPORT UserMetricsRecorder {
   // Informs |this| that the Shell is going to be shut down.
   void OnShellShuttingDown();
 
+  LoginMetricsRecorder* login_metrics_recorder() {
+    return login_metrics_recorder_.get();
+  }
+
  private:
-  friend class test::UserMetricsRecorderTestAPI;
+  friend class UserMetricsRecorderTestAPI;
 
   // Creates a UserMetricsRecorder and will only record periodic metrics if
   // |record_periodic_metrics| is true. This is used by tests that do not want
@@ -77,6 +98,15 @@ class ASH_EXPORT UserMetricsRecorder {
   // clicks or touchscreen taps.
   std::unique_ptr<DesktopTaskSwitchMetricRecorder>
       desktop_task_switch_metric_recorder_;
+
+  // Metric recorder to track pointer down events.
+  std::unique_ptr<PointerMetricsRecorder> pointer_metrics_recorder_;
+
+  // Metric recorder to track login authentication activity.
+  std::unique_ptr<LoginMetricsRecorder> login_metrics_recorder_;
+
+  // Metric recorder to track app use in demo sessions.
+  std::unique_ptr<DemoSessionMetricsRecorder> demo_session_metrics_recorder_;
 
   DISALLOW_COPY_AND_ASSIGN(UserMetricsRecorder);
 };

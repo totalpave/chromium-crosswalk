@@ -13,27 +13,27 @@
 namespace base {
 
 ThreadTestHelper::ThreadTestHelper(
-    scoped_refptr<SingleThreadTaskRunner> target_thread)
+    scoped_refptr<SequencedTaskRunner> target_sequence)
     : test_result_(false),
-      target_thread_(std::move(target_thread)),
+      target_sequence_(std::move(target_sequence)),
       done_event_(WaitableEvent::ResetPolicy::AUTOMATIC,
                   WaitableEvent::InitialState::NOT_SIGNALED) {}
 
 bool ThreadTestHelper::Run() {
-  if (!target_thread_->PostTask(
-          FROM_HERE, base::Bind(&ThreadTestHelper::RunInThread, this))) {
+  if (!target_sequence_->PostTask(
+          FROM_HERE, base::BindOnce(&ThreadTestHelper::RunOnSequence, this))) {
     return false;
   }
-  base::ThreadRestrictions::ScopedAllowWait allow_wait;
+  base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
   done_event_.Wait();
   return test_result_;
 }
 
 void ThreadTestHelper::RunTest() { set_test_result(true); }
 
-ThreadTestHelper::~ThreadTestHelper() {}
+ThreadTestHelper::~ThreadTestHelper() = default;
 
-void ThreadTestHelper::RunInThread() {
+void ThreadTestHelper::RunOnSequence() {
   RunTest();
   done_event_.Signal();
 }

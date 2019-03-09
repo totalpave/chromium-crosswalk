@@ -4,21 +4,16 @@
 
 #include "chrome/browser/sync/test/integration/fake_server_invalidation_service.h"
 
-#include <string>
-
-#include "base/macros.h"
 #include "components/invalidation/impl/invalidation_service_util.h"
 #include "components/invalidation/public/invalidation.h"
 #include "components/invalidation/public/object_id_invalidation_map.h"
-#include "components/sync_driver/invalidation_helper.h"
-#include "sync/internal_api/public/base/model_type.h"
+#include "components/sync/base/invalidation_helper.h"
 
 namespace fake_server {
 
 FakeServerInvalidationService::FakeServerInvalidationService()
     : client_id_(invalidation::GenerateInvalidatorClientId()),
-      self_notify_(true),
-      identity_provider_(&token_service_) {
+      self_notify_(true) {
   invalidator_registrar_.UpdateInvalidatorState(syncer::INVALIDATIONS_ENABLED);
 }
 
@@ -52,17 +47,13 @@ std::string FakeServerInvalidationService::GetInvalidatorClientId() const {
 
 invalidation::InvalidationLogger*
 FakeServerInvalidationService::GetInvalidationLogger() {
-  return NULL;
+  return nullptr;
 }
 
 void FakeServerInvalidationService::RequestDetailedStatus(
     base::Callback<void(const base::DictionaryValue&)> caller) const {
   base::DictionaryValue value;
   caller.Run(value);
-}
-
-IdentityProvider* FakeServerInvalidationService::GetIdentityProvider() {
-  return &identity_provider_;
 }
 
 void FakeServerInvalidationService::EnableSelfNotifications() {
@@ -79,8 +70,7 @@ void FakeServerInvalidationService::OnCommit(
   syncer::ObjectIdSet object_ids = syncer::ModelTypeSetToObjectIdSet(
       committed_model_types);
   syncer::ObjectIdInvalidationMap invalidation_map;
-  for (syncer::ObjectIdSet::const_iterator it = object_ids.begin();
-       it != object_ids.end(); ++it) {
+  for (auto it = object_ids.begin(); it != object_ids.end(); ++it) {
     // TODO(pvalenzuela): Create more refined invalidations instead of
     // invalidating all items of a given type.
 

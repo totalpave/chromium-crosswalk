@@ -8,7 +8,7 @@
 
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/system_monitor/system_monitor.h"
+#include "base/system/system_monitor.h"
 #include "base/time/default_tick_clock.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/windows_version.h"
@@ -32,12 +32,13 @@ static std::string RoleToString(ERole role) {
 }
 
 AudioDeviceListenerWin::AudioDeviceListenerWin(const base::Closure& listener_cb)
-    : listener_cb_(listener_cb), tick_clock_(new base::DefaultTickClock()) {
-  CHECK(CoreAudioUtil::IsSupported());
-
-  ScopedComPtr<IMMDeviceEnumerator> device_enumerator(
+    : listener_cb_(listener_cb),
+      tick_clock_(base::DefaultTickClock::GetInstance()) {
+  // CreateDeviceEnumerator can fail on some installations of Windows such
+  // as "Windows Server 2008 R2" where the desktop experience isn't available.
+  Microsoft::WRL::ComPtr<IMMDeviceEnumerator> device_enumerator(
       CoreAudioUtil::CreateDeviceEnumerator());
-  if (!device_enumerator.get())
+  if (!device_enumerator.Get())
     return;
 
   HRESULT hr = device_enumerator->RegisterEndpointNotificationCallback(this);
@@ -52,7 +53,7 @@ AudioDeviceListenerWin::AudioDeviceListenerWin(const base::Closure& listener_cb)
 
 AudioDeviceListenerWin::~AudioDeviceListenerWin() {
   DCHECK(thread_checker_.CalledOnValidThread());
-  if (device_enumerator_.get()) {
+  if (device_enumerator_.Get()) {
     HRESULT hr =
         device_enumerator_->UnregisterEndpointNotificationCallback(this);
     LOG_IF(ERROR, FAILED(hr)) << "UnregisterEndpointNotificationCallback() "
@@ -100,7 +101,7 @@ STDMETHODIMP AudioDeviceListenerWin::OnDeviceStateChanged(LPCWSTR device_id,
                                                           DWORD new_state) {
   base::SystemMonitor* monitor = base::SystemMonitor::Get();
   if (monitor)
-    monitor->ProcessDevicesChanged(base::SystemMonitor::DEVTYPE_AUDIO_CAPTURE);
+    monitor->ProcessDevicesChanged(base::SystemMonitor::DEVTYPE_AUDIO);
 
   return S_OK;
 }
@@ -135,10 +136,14 @@ STDMETHODIMP AudioDeviceListenerWin::OnDefaultDeviceChanged(
     did_run_listener_cb = true;
   }
 
+  base::SystemMonitor* monitor = base::SystemMonitor::Get();
+  if (monitor)
+    monitor->ProcessDevicesChanged(base::SystemMonitor::DEVTYPE_AUDIO);
+
   DVLOG(1) << "OnDefaultDeviceChanged() "
            << "new_default_device: "
            << (new_default_device_id
-                   ? CoreAudioUtil::GetFriendlyName(new_device_id)
+                   ? CoreAudioUtil::GetFriendlyName(new_device_id, flow, role)
                    : "no device")
            << ", flow: " << FlowToString(flow)
            << ", role: " << RoleToString(role)

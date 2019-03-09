@@ -12,7 +12,9 @@
 
 #include "base/files/file_path.h"
 #include "base/files/file_path_watcher.h"
+#include "base/mac/scoped_dispatch_object.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 
 namespace base {
 
@@ -25,6 +27,7 @@ namespace base {
 class FilePathWatcherFSEvents : public FilePathWatcher::PlatformDelegate {
  public:
   FilePathWatcherFSEvents();
+  ~FilePathWatcherFSEvents() override;
 
   // FilePathWatcher::PlatformDelegate overrides.
   bool Watch(const FilePath& path,
@@ -40,20 +43,15 @@ class FilePathWatcherFSEvents : public FilePathWatcher::PlatformDelegate {
                                const FSEventStreamEventFlags flags[],
                                const FSEventStreamEventId event_ids[]);
 
-  ~FilePathWatcherFSEvents() override;
-
   // Called from FSEventsCallback whenever there is a change to the paths.
   void OnFilePathsChanged(const std::vector<FilePath>& paths);
 
-  // Called on the message_loop() thread to dispatch path events. Can't access
+  // Called on the task_runner() thread to dispatch path events. Can't access
   // target_ and resolved_target_ directly as those are modified on the
   // libdispatch thread.
   void DispatchEvents(const std::vector<FilePath>& paths,
                       const FilePath& target,
                       const FilePath& resolved_target);
-
-  // Cleans up and stops the event stream.
-  void CancelOnMessageLoopThread() override;
 
   // (Re-)Initialize the event stream to start reporting events from
   // |start_event|.
@@ -73,20 +71,25 @@ class FilePathWatcherFSEvents : public FilePathWatcher::PlatformDelegate {
   void StartEventStream(FSEventStreamEventId start_event, const FilePath& path);
 
   // Callback to notify upon changes.
-  // (Only accessed from the message_loop() thread.)
+  // (Only accessed from the task_runner() thread.)
   FilePathWatcher::Callback callback_;
 
+  // The dispatch queue on which the the event stream is scheduled.
+  ScopedDispatchObject<dispatch_queue_t> queue_;
+
   // Target path to watch (passed to callback).
-  // (Only accessed from the libdispatch thread.)
+  // (Only accessed from the libdispatch queue.)
   FilePath target_;
 
   // Target path with all symbolic links resolved.
-  // (Only accessed from the libdispatch thread.)
+  // (Only accessed from the libdispatch queue.)
   FilePath resolved_target_;
 
   // Backend stream we receive event callbacks from (strong reference).
-  // (Only accessed from the libdispatch thread.)
+  // (Only accessed from the libdispatch queue.)
   FSEventStreamRef fsevent_stream_;
+
+  WeakPtrFactory<FilePathWatcherFSEvents> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(FilePathWatcherFSEvents);
 };

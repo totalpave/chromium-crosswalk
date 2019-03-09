@@ -4,6 +4,8 @@
 
 package org.chromium.content_public.browser;
 
+import android.support.annotation.Nullable;
+
 import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.content_public.browser.navigation_controller.LoadURLType;
@@ -23,10 +25,13 @@ import java.util.Map;
 @JNINamespace("content")
 public class LoadUrlParams {
     // Fields with counterparts in NavigationController::LoadURLParams.
-    // Package private so that ContentViewCore.loadUrl can pass them down to
+    // Package private so that NavigationController.loadUrl can pass them down to
     // native code. Should not be accessed directly anywhere else outside of
     // this class.
     String mUrl;
+    // TODO(nasko,tedchoc): Don't use String to store initiator origin, as it
+    // is lossy format.
+    String mInitiatorOrigin;
     int mLoadUrlType;
     int mTransitionType;
     Referrer mReferrer;
@@ -41,7 +46,9 @@ public class LoadUrlParams {
     boolean mIsRendererInitiated;
     boolean mShouldReplaceCurrentEntry;
     long mIntentReceivedTimestamp;
+    long mInputStartTimestamp;
     boolean mHasUserGesture;
+    boolean mShouldClearHistoryList;
 
     /**
      * Creates an instance with default page transition type.
@@ -198,6 +205,20 @@ public class LoadUrlParams {
     }
 
     /**
+     * Sets the initiator origin.
+     */
+    public void setInitiatorOrigin(String initiatorOrigin) {
+        mInitiatorOrigin = initiatorOrigin;
+    }
+
+    /**
+     * Return the initiator origin.
+     */
+    public @Nullable String getInitiatorOrigin() {
+        return mInitiatorOrigin;
+    }
+
+    /**
      * Return the base url for a data url, otherwise null.
      */
     public String getBaseUrl() {
@@ -228,14 +249,14 @@ public class LoadUrlParams {
     }
 
     /**
-     * @return the referrer of this load
+     * Sets the referrer of this load.
      */
     public void setReferrer(Referrer referrer) {
         mReferrer = referrer;
     }
 
     /**
-     * Sets the referrer of this load.
+     * @return the referrer of this load.
      */
     public Referrer getReferrer() {
         return mReferrer;
@@ -453,6 +474,21 @@ public class LoadUrlParams {
     }
 
     /**
+     * @param inputStartTimestamp the timestamp of the event in the location bar that triggered
+     *                            this URL load, as returned by System.currentMillis.
+     */
+    public void setInputStartTimestamp(long inputStartTimestamp) {
+        mInputStartTimestamp = inputStartTimestamp;
+    }
+
+    /**
+     * @return The timestamp of the event in the location bar that triggered this URL load.
+     */
+    public long getInputStartTimestamp() {
+        return mInputStartTimestamp;
+    }
+
+    /**
      * Set whether the load is initiated by a user gesture.
      *
      * @param hasUserGesture True if load is initiated by user gesture, or false otherwise.
@@ -466,6 +502,16 @@ public class LoadUrlParams {
      */
     public boolean getHasUserGesture() {
         return mHasUserGesture;
+    }
+
+    /** Sets whether session history should be cleared once the navigation commits. */
+    public void setShouldClearHistoryList(boolean shouldClearHistoryList) {
+        mShouldClearHistoryList = shouldClearHistoryList;
+    }
+
+    /** Returns whether session history should be cleared once the navigation commits. */
+    public boolean getShouldClearHistoryList() {
+        return mShouldClearHistoryList;
     }
 
     public boolean isBaseUrlDataScheme() {

@@ -11,10 +11,10 @@
 #include "base/logging.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/common/resource_usage_reporter_type_converters.h"
+#include "content/public/common/resource_usage_reporter_type_converters.h"
 
 ProcessResourceUsage::ProcessResourceUsage(
-    mojom::ResourceUsageReporterPtr service)
+    content::mojom::ResourceUsageReporterPtr service)
     : service_(std::move(service)), update_in_progress_(false) {
   service_.set_connection_error_handler(
       base::Bind(&ProcessResourceUsage::RunPendingRefreshCallbacks,
@@ -51,7 +51,8 @@ void ProcessResourceUsage::Refresh(const base::Closure& callback) {
   }
 }
 
-void ProcessResourceUsage::OnRefreshDone(mojom::ResourceUsageDataPtr data) {
+void ProcessResourceUsage::OnRefreshDone(
+    content::mojom::ResourceUsageDataPtr data) {
   DCHECK(thread_checker_.CalledOnValidThread());
   update_in_progress_ = false;
   stats_ = std::move(data);

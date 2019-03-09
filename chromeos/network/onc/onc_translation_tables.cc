@@ -7,6 +7,8 @@
 #include <cstddef>
 
 #include "base/logging.h"
+#include "chromeos/network/network_type_pattern.h"
+#include "chromeos/network/tether_constants.h"
 #include "components/onc/onc_constants.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
@@ -20,24 +22,29 @@ namespace {
 
 const FieldTranslationEntry eap_fields[] = {
     {::onc::eap::kAnonymousIdentity, shill::kEapAnonymousIdentityProperty},
+    // This field is converted during translation, see onc_translator_*.
+    // { ::onc::client_cert::kClientCertPKCS11Id, shill::kEapCertIdProperty },
     {::onc::eap::kIdentity, shill::kEapIdentityProperty},
     // This field is converted during translation, see onc_translator_*.
     // { ::onc::eap::kInner, shill::kEapPhase2AuthProperty },
-
     // This field is converted during translation, see onc_translator_*.
     // { ::onc::eap::kOuter, shill::kEapMethodProperty },
     {::onc::eap::kPassword, shill::kEapPasswordProperty},
     {::onc::eap::kSaveCredentials, shill::kSaveCredentialsProperty},
     {::onc::eap::kServerCAPEMs, shill::kEapCaCertPemProperty},
+    {::onc::eap::kSubjectMatch, shill::kEapSubjectMatchProperty},
+    {::onc::eap::kTLSVersionMax, shill::kEapTLSVersionMaxProperty},
     {::onc::eap::kUseSystemCAs, shill::kEapUseSystemCasProperty},
     {::onc::eap::kUseProactiveKeyCaching,
      shill::kEapUseProactiveKeyCachingProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry ipsec_fields[] = {
     // This field is converted during translation, see onc_translator_*.
     // { ::onc::ipsec::kAuthenticationType, shill::kL2tpIpsecAuthenticationType
     // },
+    // {::onc::client_cert::kClientCertPKCS11Id,
+    //  shill::kL2tpIpsecClientCertIdProperty},
     {::onc::ipsec::kGroup, shill::kL2tpIpsecTunnelGroupProperty},
     // Ignored by Shill, not necessary to synchronize.
     // { ::onc::ipsec::kIKEVersion, shill::kL2tpIpsecIkeVersion },
@@ -45,12 +52,12 @@ const FieldTranslationEntry ipsec_fields[] = {
     // This field is converted during translation, see onc_translator_*.
     // { ::onc::vpn::kSaveCredentials, shill::kSaveCredentialsProperty},
     {::onc::ipsec::kServerCAPEMs, shill::kL2tpIpsecCaCertPemProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry xauth_fields[] = {
     {::onc::vpn::kPassword, shill::kL2tpIpsecXauthPasswordProperty},
     {::onc::vpn::kUsername, shill::kL2tpIpsecXauthUserProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry l2tp_fields[] = {
     {::onc::l2tp::kPassword, shill::kL2tpIpsecPasswordProperty},
@@ -59,15 +66,19 @@ const FieldTranslationEntry l2tp_fields[] = {
     // { ::onc::l2tp::kSaveCredentials, &kBoolSignature },
     {::onc::l2tp::kUsername, shill::kL2tpIpsecUserProperty},
     {::onc::l2tp::kLcpEchoDisabled, shill::kL2tpIpsecLcpEchoDisabledProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry openvpn_fields[] = {
     {::onc::openvpn::kAuth, shill::kOpenVPNAuthProperty},
     {::onc::openvpn::kAuthNoCache, shill::kOpenVPNAuthNoCacheProperty},
     {::onc::openvpn::kAuthRetry, shill::kOpenVPNAuthRetryProperty},
     {::onc::openvpn::kCipher, shill::kOpenVPNCipherProperty},
+    // This field is converted during translation, see onc_translator_*.
+    // {::onc::client_cert::kClientCertPKCS11Id,
+    //  shill::kOpenVPNClientCertIdProperty},
     {::onc::openvpn::kCompLZO, shill::kOpenVPNCompLZOProperty},
     {::onc::openvpn::kCompNoAdapt, shill::kOpenVPNCompNoAdaptProperty},
+    {::onc::openvpn::kExtraHosts, shill::kOpenVPNExtraHostsProperty},
     {::onc::openvpn::kIgnoreDefaultRoute,
      shill::kOpenVPNIgnoreDefaultRouteProperty},
     {::onc::openvpn::kKeyDirection, shill::kOpenVPNKeyDirectionProperty},
@@ -93,21 +104,34 @@ const FieldTranslationEntry openvpn_fields[] = {
     {::onc::openvpn::kStaticChallenge, shill::kOpenVPNStaticChallengeProperty},
     {::onc::openvpn::kTLSAuthContents, shill::kOpenVPNTLSAuthContentsProperty},
     {::onc::openvpn::kTLSRemote, shill::kOpenVPNTLSRemoteProperty},
+    {::onc::openvpn::kTLSVersionMin, shill::kOpenVPNTLSVersionMinProperty},
     {::onc::vpn::kUsername, shill::kOpenVPNUserProperty},
+    {::onc::openvpn::kVerb, shill::kOpenVPNVerbProperty},
     {::onc::openvpn::kVerifyHash, shill::kOpenVPNVerifyHashProperty},
-    {NULL}};
+    {nullptr}};
+
+const FieldTranslationEntry arc_vpn_fields[] = {
+    {::onc::arc_vpn::kTunnelChrome, shill::kArcVpnTunnelChromeProperty},
+    {nullptr}};
 
 const FieldTranslationEntry verify_x509_fields[] = {
     {::onc::verify_x509::kName, shill::kOpenVPNVerifyX509NameProperty},
     {::onc::verify_x509::kType, shill::kOpenVPNVerifyX509TypeProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry vpn_fields[] = {
     {::onc::vpn::kAutoConnect, shill::kAutoConnectProperty},
     // These fields are converted during translation, see onc_translator_*.
     // { ::onc::vpn::kHost, shill::kProviderHostProperty},
     // { ::onc::vpn::kType, shill::kProviderTypeProperty },
-    {NULL}};
+    {nullptr}};
+
+const FieldTranslationEntry tether_fields[] = {
+    {::onc::tether::kBatteryPercentage, kTetherBatteryPercentage},
+    {::onc::tether::kCarrier, kTetherCarrier},
+    {::onc::tether::kHasConnectedToHost, kTetherHasConnectedToHost},
+    {::onc::tether::kSignalStrength, kTetherSignalStrength},
+    {nullptr}};
 
 const FieldTranslationEntry wifi_fields[] = {
     {::onc::wifi::kAutoConnect, shill::kAutoConnectProperty},
@@ -116,6 +140,7 @@ const FieldTranslationEntry wifi_fields[] = {
     // { ::onc::wifi::kEAP, shill::kEap*},
     {::onc::wifi::kFrequency, shill::kWifiFrequency},
     {::onc::wifi::kFrequencyList, shill::kWifiFrequencyListProperty},
+    {::onc::wifi::kFTEnabled, shill::kWifiFTEnabled},
     {::onc::wifi::kHexSSID, shill::kWifiHexSsid},
     {::onc::wifi::kHiddenSSID, shill::kWifiHiddenSsid},
     {::onc::wifi::kPassphrase, shill::kPassphraseProperty},
@@ -123,23 +148,25 @@ const FieldTranslationEntry wifi_fields[] = {
     // This field is converted during translation, see onc_translator_*.
     // { ::onc::wifi::kSecurity, shill::kSecurityClassProperty },
     {::onc::wifi::kSignalStrength, shill::kSignalStrengthProperty},
-    {NULL}};
+    {::onc::wifi::kTetheringState, shill::kTetheringProperty},
+    {nullptr}};
 
 const FieldTranslationEntry wimax_fields[] = {
     {::onc::wimax::kAutoConnect, shill::kAutoConnectProperty},
     // This dictionary is converted during translation, see onc_translator_*.
     // { ::onc::wimax::kEAP, shill::kEap*},
     {::onc::wimax::kSignalStrength, shill::kSignalStrengthProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry cellular_apn_fields[] = {
     {::onc::cellular_apn::kAccessPointName, shill::kApnProperty},
     {::onc::cellular_apn::kName, shill::kApnNameProperty},
     {::onc::cellular_apn::kUsername, shill::kApnUsernameProperty},
     {::onc::cellular_apn::kPassword, shill::kApnPasswordProperty},
+    {::onc::cellular_apn::kAuthentication, shill::kApnAuthenticationProperty},
     {::onc::cellular_apn::kLocalizedName, shill::kApnLocalizedNameProperty},
     {::onc::cellular_apn::kLanguage, shill::kApnLanguageProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry cellular_found_network_fields[] = {
     {::onc::cellular_found_network::kNetworkId, shill::kNetworkIdProperty},
@@ -147,25 +174,25 @@ const FieldTranslationEntry cellular_found_network_fields[] = {
     {::onc::cellular_found_network::kTechnology, shill::kTechnologyProperty},
     {::onc::cellular_found_network::kShortName, shill::kShortNameProperty},
     {::onc::cellular_found_network::kLongName, shill::kLongNameProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry cellular_payment_portal_fields[] = {
     {::onc::cellular_payment_portal::kMethod, shill::kPaymentPortalMethod},
     {::onc::cellular_payment_portal::kPostData, shill::kPaymentPortalPostData},
     {::onc::cellular_payment_portal::kUrl, shill::kPaymentPortalURL},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry cellular_provider_fields[] = {
     {::onc::cellular_provider::kCode, shill::kOperatorCodeKey},
     {::onc::cellular_provider::kCountry, shill::kOperatorCountryKey},
     {::onc::cellular_provider::kName, shill::kOperatorNameKey},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry sim_lock_status_fields[] = {
     {::onc::sim_lock_status::kLockEnabled, shill::kSIMLockEnabledProperty},
     {::onc::sim_lock_status::kLockType, shill::kSIMLockTypeProperty},
     {::onc::sim_lock_status::kRetriesLeft, shill::kSIMLockRetriesLeftProperty},
-    {NULL}};
+    {nullptr}};
 
 // This must only contain Service properties and not Device properties.
 // For Device properties see kCellularDeviceTable.
@@ -182,7 +209,7 @@ const FieldTranslationEntry cellular_fields[] = {
     // This field is converted during translation, see onc_translator_*.
     // { ::onc::cellular::kRoamingState, shill::kRoamingStateProperty},
     {::onc::cellular::kSignalStrength, shill::kSignalStrengthProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry network_fields[] = {
     {::onc::network_config::kGUID, shill::kGuidProperty},
@@ -205,7 +232,7 @@ const FieldTranslationEntry network_fields[] = {
     // {::onc::network_config::kRestrictedConnectivity, shill::kStateProperty },
     // {::onc::network_config::kSource, shill::kProfileProperty },
     // {::onc::network_config::kMacAddress, shill::kAddressProperty },
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry ipconfig_fields[] = {
     {::onc::ipconfig::kIPAddress, shill::kAddressProperty},
@@ -217,14 +244,17 @@ const FieldTranslationEntry ipconfig_fields[] = {
     // { ::onc::ipconfig::kType, shill::kMethodProperty},
     {::onc::ipconfig::kWebProxyAutoDiscoveryUrl,
      shill::kWebProxyAutoDiscoveryUrlProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry static_or_saved_ipconfig_fields[] = {
     {::onc::ipconfig::kIPAddress, shill::kAddressProperty},
     {::onc::ipconfig::kGateway, shill::kGatewayProperty},
     {::onc::ipconfig::kRoutingPrefix, shill::kPrefixlenProperty},
     {::onc::ipconfig::kNameServers, shill::kNameServersProperty},
-    {NULL}};
+    {::onc::ipconfig::kSearchDomains, shill::kSearchDomainsProperty},
+    {::onc::ipconfig::kIncludedRoutes, shill::kIncludedRoutesProperty},
+    {::onc::ipconfig::kExcludedRoutes, shill::kExcludedRoutesProperty},
+    {nullptr}};
 
 struct OncValueTranslationEntry {
   const OncValueSignature* onc_signature;
@@ -237,8 +267,11 @@ const OncValueTranslationEntry onc_value_translation_table[] = {
     {&kL2TPSignature, l2tp_fields},
     {&kXAUTHSignature, xauth_fields},
     {&kOpenVPNSignature, openvpn_fields},
+    {&kARCVPNSignature, arc_vpn_fields},
     {&kVerifyX509Signature, verify_x509_fields},
     {&kVPNSignature, vpn_fields},
+    {&kTetherSignature, tether_fields},
+    {&kTetherWithStateSignature, tether_fields},
     {&kWiFiSignature, wifi_fields},
     {&kWiFiWithStateSignature, wifi_fields},
     {&kWiMAXSignature, wimax_fields},
@@ -255,41 +288,44 @@ const OncValueTranslationEntry onc_value_translation_table[] = {
     {&kIPConfigSignature, ipconfig_fields},
     {&kSavedIPConfigSignature, static_or_saved_ipconfig_fields},
     {&kStaticIPConfigSignature, static_or_saved_ipconfig_fields},
-    {NULL}};
+    {nullptr}};
 
 struct NestedShillDictionaryEntry {
   const OncValueSignature* onc_signature;
-  // NULL terminated list of Shill property keys.
+  // nullptr terminated list of Shill property keys.
   const char* const* shill_property_path;
 };
 
-const char* cellular_apn_path_entries[] = {shill::kCellularApnProperty, NULL};
+const char* cellular_apn_path_entries[] = {shill::kCellularApnProperty,
+                                           nullptr};
 
 const char* static_ip_config_path_entries[] = {shill::kStaticIPConfigProperty,
-                                               NULL};
+                                               nullptr};
 
 const NestedShillDictionaryEntry nested_shill_dictionaries[] = {
     {&kCellularApnSignature, cellular_apn_path_entries},
     {&kStaticIPConfigSignature, static_ip_config_path_entries},
-    {NULL}};
+    {nullptr}};
 
 }  // namespace
 
 const StringTranslationEntry kNetworkTypeTable[] = {
-    // This mapping is ensured in the translation code.
-    //  { network_type::kEthernet, shill::kTypeEthernet },
-    //  { network_type::kEthernet, shill::kTypeEthernetEap },
+    {::onc::network_type::kEthernet, shill::kTypeEthernet},
+    // kTypeEthernetEap is set in onc_translator_onc_to_shill.cc.
+    //  { ::onc::network_type::kEthernet, shill::kTypeEthernetEap },
     {::onc::network_type::kWiFi, shill::kTypeWifi},
     {::onc::network_type::kWimax, shill::kTypeWimax},
     {::onc::network_type::kCellular, shill::kTypeCellular},
     {::onc::network_type::kVPN, shill::kTypeVPN},
-    {NULL}};
+    {::onc::network_type::kTether, kTypeTether},
+    {nullptr}};
 
 const StringTranslationEntry kVPNTypeTable[] = {
     {::onc::vpn::kTypeL2TP_IPsec, shill::kProviderL2tpIpsec},
     {::onc::vpn::kOpenVPN, shill::kProviderOpenVpn},
     {::onc::vpn::kThirdPartyVpn, shill::kProviderThirdPartyVpn},
-    {NULL}};
+    {::onc::vpn::kArcVpn, shill::kProviderArcVpn},
+    {nullptr}};
 
 const StringTranslationEntry kWiFiSecurityTable[] = {
     {::onc::wifi::kSecurityNone, shill::kSecurityNone},
@@ -297,29 +333,30 @@ const StringTranslationEntry kWiFiSecurityTable[] = {
     {::onc::wifi::kWPA_PSK, shill::kSecurityPsk},
     {::onc::wifi::kWPA_EAP, shill::kSecurity8021x},
     {::onc::wifi::kWEP_8021X, shill::kSecurityWep},
-    {NULL}};
+    {nullptr}};
 
 const StringTranslationEntry kEAPOuterTable[] = {
     {::onc::eap::kPEAP, shill::kEapMethodPEAP},
     {::onc::eap::kEAP_TLS, shill::kEapMethodTLS},
     {::onc::eap::kEAP_TTLS, shill::kEapMethodTTLS},
     {::onc::eap::kLEAP, shill::kEapMethodLEAP},
-    {NULL}};
+    {nullptr}};
 
 // Translation of the EAP.Inner field in case of EAP.Outer == PEAP
 const StringTranslationEntry kEAP_PEAP_InnerTable[] = {
+    {::onc::eap::kGTC, shill::kEapPhase2AuthPEAPGTC},
     {::onc::eap::kMD5, shill::kEapPhase2AuthPEAPMD5},
     {::onc::eap::kMSCHAPv2, shill::kEapPhase2AuthPEAPMSCHAPV2},
-    {::onc::eap::kGTC, shill::kEapPhase2AuthPEAPGTC},
-    {NULL}};
+    {nullptr}};
 
 // Translation of the EAP.Inner field in case of EAP.Outer == TTLS
 const StringTranslationEntry kEAP_TTLS_InnerTable[] = {
+    {::onc::eap::kGTC, shill::kEapPhase2AuthTTLSGTC},
     {::onc::eap::kMD5, shill::kEapPhase2AuthTTLSMD5},
+    {::onc::eap::kMSCHAP, shill::kEapPhase2AuthTTLSMSCHAP},
     {::onc::eap::kMSCHAPv2, shill::kEapPhase2AuthTTLSMSCHAPV2},
     {::onc::eap::kPAP, shill::kEapPhase2AuthTTLSPAP},
-    {::onc::eap::kGTC, shill::kEapPhase2AuthTTLSGTC},
-    {NULL}};
+    {nullptr}};
 
 const StringTranslationEntry kActivationStateTable[] = {
     {::onc::cellular::kActivated, shill::kActivationStateActivated},
@@ -327,7 +364,7 @@ const StringTranslationEntry kActivationStateTable[] = {
     {::onc::cellular::kNotActivated, shill::kActivationStateNotActivated},
     {::onc::cellular::kPartiallyActivated,
      shill::kActivationStatePartiallyActivated},
-    {NULL}};
+    {nullptr}};
 
 const StringTranslationEntry kNetworkTechnologyTable[] = {
     {::onc::cellular::kTechnologyCdma1Xrtt, shill::kNetworkTechnology1Xrtt},
@@ -341,12 +378,21 @@ const StringTranslationEntry kNetworkTechnologyTable[] = {
     {::onc::cellular::kTechnologyLteAdvanced,
      shill::kNetworkTechnologyLteAdvanced},
     {::onc::cellular::kTechnologyUmts, shill::kNetworkTechnologyUmts},
-    {NULL}};
+    {nullptr}};
 
 const StringTranslationEntry kRoamingStateTable[] = {
     {::onc::cellular::kRoamingHome, shill::kRoamingStateHome},
     {::onc::cellular::kRoamingRoaming, shill::kRoamingStateRoaming},
-    {NULL}};
+    {nullptr}};
+
+const StringTranslationEntry kTetheringStateTable[] = {
+    {::onc::tethering_state::kTetheringConfirmedState,
+     shill::kTetheringConfirmedState},
+    {::onc::tethering_state::kTetheringNotDetectedState,
+     shill::kTetheringNotDetectedState},
+    {::onc::tethering_state::kTetheringSuspectedState,
+     shill::kTetheringSuspectedState},
+    {nullptr}};
 
 // This must contain only Shill Device properties and no Service properties.
 // For Service properties see cellular_fields.
@@ -370,32 +416,33 @@ const FieldTranslationEntry kCellularDeviceTable[] = {
     {::onc::cellular::kMDN, shill::kMdnProperty},
     {::onc::cellular::kMEID, shill::kMeidProperty},
     {::onc::cellular::kMIN, shill::kMinProperty},
-    {::onc::cellular::kModelID, shill::kModelIDProperty},
+    {::onc::cellular::kModelID, shill::kModelIdProperty},
     {::onc::cellular::kPRLVersion, shill::kPRLVersionProperty},
+    {::onc::cellular::kScanning, shill::kScanningProperty},
     // This field is converted during translation, see onc_translator_*.
     // { ::onc::cellular::kSIMLockStatus, shill::kSIMLockStatusProperty},
     {::onc::cellular::kSIMPresent, shill::kSIMPresentProperty},
     {::onc::cellular::kSupportedCarriers, shill::kSupportedCarriersProperty},
     {::onc::cellular::kSupportNetworkScan, shill::kSupportNetworkScanProperty},
-    {NULL}};
+    {nullptr}};
 
 const FieldTranslationEntry* GetFieldTranslationTable(
     const OncValueSignature& onc_signature) {
   for (const OncValueTranslationEntry* it = onc_value_translation_table;
-       it->onc_signature != NULL; ++it) {
+       it->onc_signature != nullptr; ++it) {
     if (it->onc_signature == &onc_signature)
       return it->field_translation_table;
   }
-  return NULL;
+  return nullptr;
 }
 
 std::vector<std::string> GetPathToNestedShillDictionary(
     const OncValueSignature& onc_signature) {
   std::vector<std::string> shill_property_path;
   for (const NestedShillDictionaryEntry* it = nested_shill_dictionaries;
-       it->onc_signature != NULL; ++it) {
+       it->onc_signature != nullptr; ++it) {
     if (it->onc_signature == &onc_signature) {
-      for (const char* const* key = it->shill_property_path; *key != NULL;
+      for (const char* const* key = it->shill_property_path; *key != nullptr;
            ++key) {
         shill_property_path.push_back(std::string(*key));
       }
@@ -408,7 +455,7 @@ std::vector<std::string> GetPathToNestedShillDictionary(
 bool GetShillPropertyName(const std::string& onc_field_name,
                           const FieldTranslationEntry table[],
                           std::string* shill_property_name) {
-  for (const FieldTranslationEntry* it = table; it->onc_field_name != NULL;
+  for (const FieldTranslationEntry* it = table; it->onc_field_name != nullptr;
        ++it) {
     if (it->onc_field_name != onc_field_name)
       continue;
@@ -421,26 +468,30 @@ bool GetShillPropertyName(const std::string& onc_field_name,
 bool TranslateStringToShill(const StringTranslationEntry table[],
                             const std::string& onc_value,
                             std::string* shill_value) {
-  for (int i = 0; table[i].onc_value != NULL; ++i) {
+  for (int i = 0; table[i].onc_value != nullptr; ++i) {
     if (onc_value != table[i].onc_value)
       continue;
     *shill_value = table[i].shill_value;
     return true;
   }
-  LOG(ERROR) << "Value '" << onc_value << "' cannot be translated to Shill";
+  LOG(ERROR) << "Value '" << onc_value << "' cannot be translated to Shill"
+             << " table[0]: " << table[0].onc_value << " => "
+             << table[0].shill_value;
   return false;
 }
 
 bool TranslateStringToONC(const StringTranslationEntry table[],
                           const std::string& shill_value,
                           std::string* onc_value) {
-  for (int i = 0; table[i].shill_value != NULL; ++i) {
+  for (int i = 0; table[i].shill_value != nullptr; ++i) {
     if (shill_value != table[i].shill_value)
       continue;
     *onc_value = table[i].onc_value;
     return true;
   }
-  LOG(ERROR) << "Value '" << shill_value << "' cannot be translated to ONC";
+  LOG(ERROR) << "Value '" << shill_value << "' cannot be translated to ONC"
+             << " table[0]: " << table[0].shill_value << " => "
+             << table[0].onc_value;
   return false;
 }
 

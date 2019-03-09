@@ -5,21 +5,35 @@
 #ifndef CONTENT_PUBLIC_TEST_CONTENT_BROWSER_TEST_UTILS_H_
 #define CONTENT_PUBLIC_TEST_CONTENT_BROWSER_TEST_UTILS_H_
 
+#include <map>
+#include <string>
+
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/common/page_type.h"
 #include "ui/gfx/native_widget_types.h"
 #include "url/gurl.h"
 
 namespace base {
 class FilePath;
-}
+
+namespace mac {
+class ScopedObjCClassSwizzler;
+}  // namespace mac
+}  // namespace base
 
 namespace gfx {
+class Point;
+class Range;
 class Rect;
-}
+}  // namespace gfx
+
+namespace net {
+namespace test_server {
+class EmbeddedTestServer;
+}  // namespace test_server
+}  // namespace net
 
 // A collections of functions designed for use with content_shell based browser
 // tests.
@@ -30,32 +44,48 @@ namespace content {
 
 class MessageLoopRunner;
 class RenderFrameHost;
+class RenderWidgetHost;
 class Shell;
+class ToRenderFrameHost;
 class WebContents;
 
 // Generate the file path for testing a particular test.
 // The file for the tests is all located in
 // content/test/data/dir/<file>
 // The returned path is FilePath format.
+//
+// A null |dir| indicates the root directory - i.e.
+// content/test/data/<file>
 base::FilePath GetTestFilePath(const char* dir, const char* file);
 
 // Generate the URL for testing a particular test.
 // HTML for the tests is all located in
 // test_root_directory/dir/<file>
 // The returned path is GURL format.
+//
+// A null |dir| indicates the root directory - i.e.
+// content/test/data/<file>
 GURL GetTestUrl(const char* dir, const char* file);
 
-// Navigates |window| to |url|, blocking until the navigation finishes.
-// Returns true if the page was loaded successfully and the last committed
-// URL matches |url|.
+// Navigates |window| to |url|, blocking until the navigation finishes. Returns
+// true if the page was loaded successfully and the last committed URL matches
+// |url|.  This is a browser-initiated navigation that simulates a user typing
+// |url| into the address bar.
+//
 // TODO(alexmos): any tests that use this function and expect successful
 // navigations should do EXPECT_TRUE(NavigateToURL()).
 bool NavigateToURL(Shell* window, const GURL& url);
 
-void LoadDataWithBaseURL(Shell* window,
-                         const GURL& url,
-                         const std::string& data,
-                         const GURL& base_url);
+// Perform a renderer-initiated navigation of |window| to |url|, blocking
+// until the navigation finishes.  The navigation is done by assigning
+// location.href in the frame |adapter|. Returns true if the page was loaded
+// successfully and the last committed URL matches |url|.
+WARN_UNUSED_RESULT bool NavigateToURLFromRenderer(
+    const ToRenderFrameHost& adapter,
+    const GURL& url);
+WARN_UNUSED_RESULT bool NavigateToURLFromRendererWithoutUserGesture(
+    const ToRenderFrameHost& adapter,
+    const GURL& url);
 
 // Navigates |window| to |url|, blocking until the given number of navigations
 // finishes.
@@ -84,6 +114,12 @@ void WaitForAppModalDialog(Shell* window);
 // Extends the ToRenderFrameHost mechanism to content::Shells.
 RenderFrameHost* ConvertToRenderFrameHost(Shell* shell);
 
+// Writes an entry with the name and id of the first camera to the logs or
+// an entry indicating that no camera is available. This must be invoked from
+// the test method body, because at the time of invocation of
+// testing::Test::SetUp() the BrowserMainLoop does not yet exist.
+void LookupAndLogNameAndIdOfFirstCamera();
+
 // Used to wait for a new Shell window to be created. Instantiate this object
 // before the operation that will create the window.
 class ShellAddedObserver {
@@ -104,40 +140,90 @@ class ShellAddedObserver {
   DISALLOW_COPY_AND_ASSIGN(ShellAddedObserver);
 };
 
-// A WebContentsDelegate that catches messages sent to the console.
-class ConsoleObserverDelegate : public WebContentsDelegate {
+#if defined OS_MACOSX
+// An observer of the RenderWidgetHostViewCocoa which is the NSView
+// corresponding to the page.
+class RenderWidgetHostViewCocoaObserver {
  public:
-  ConsoleObserverDelegate(WebContents* web_contents, const std::string& filter);
-  ~ConsoleObserverDelegate() override;
+  // The method name for 'didAddSubview'.
+  static constexpr char kDidAddSubview[] = "didAddSubview:";
+  static constexpr char kShowDefinitionForAttributedString[] =
+      "showDefinitionForAttributedString:atPoint:";
 
-  // WebContentsDelegate method:
-  bool AddMessageToConsole(WebContents* source,
-                           int32_t level,
-                           const base::string16& message,
-                           int32_t line_no,
-                           const base::string16& source_id) override;
+  // Returns the method swizzler for the given |method_name|. This is useful
+  // when the original implementation of the method is needed.
+  static base::mac::ScopedObjCClassSwizzler* GetSwizzler(
+      const std::string& method_name);
 
-  // Returns the most recent message sent to the console.
-  std::string message() { return message_; }
+  // Returns the unique RenderWidgetHostViewCocoaObserver instance (if any) for
+  // the given WebContents. There can be at most one observer per WebContents
+  // and to create a new observer the older one has to be deleted first.
+  static RenderWidgetHostViewCocoaObserver* GetObserver(
+      WebContents* web_contents);
 
-  // Waits for the next message captured by the filter to be sent to the
-  // console.
-  void Wait();
+  explicit RenderWidgetHostViewCocoaObserver(WebContents* web_contents);
+  virtual ~RenderWidgetHostViewCocoaObserver();
+
+  // Called when a new NSView is added as a subview of RWHVCocoa.
+  // |rect_in_root_view| represents the bounds of the NSView in RWHVCocoa
+  // coordinates. The view will be dismissed shortly after this call.
+  virtual void DidAddSubviewWillBeDismissed(
+      const gfx::Rect& rect_in_root_view) {}
+  // Called when RenderWidgeHostViewCocoa is asked to show definition of
+  // |for_word| using Mac's dictionary popup.
+  virtual void OnShowDefinitionForAttributedString(
+      const std::string& for_word) {}
+
+  WebContents* web_contents() const { return web_contents_; }
 
  private:
-  WebContents* web_contents_;
-  std::string filter_;
-  std::string message_;
+  static void SetUpSwizzlers();
 
-  // The MessageLoopRunner used to spin the message loop.
-  scoped_refptr<MessageLoopRunner> message_loop_runner_;
+  static std::map<std::string,
+                  std::unique_ptr<base::mac::ScopedObjCClassSwizzler>>
+      rwhvcocoa_swizzlers_;
+  static std::map<WebContents*, RenderWidgetHostViewCocoaObserver*> observers_;
 
-  DISALLOW_COPY_AND_ASSIGN(ConsoleObserverDelegate);
+  WebContents* const web_contents_;
+
+  DISALLOW_COPY_AND_ASSIGN(RenderWidgetHostViewCocoaObserver);
 };
 
-#if defined OS_MACOSX
 void SetWindowBounds(gfx::NativeWindow window, const gfx::Rect& bounds);
+
+// This method will request the string (word) at |point| inside the |rwh| where
+// |point| is with respect to the |rwh| coordinates. |result_callback| is called
+// with the word as well as |baselinePoint| when the result comes back from the
+// renderer. The baseline point is the position of the pop-up in AppKit
+// coordinate system (inverted y-axis).
+void GetStringAtPointForRenderWidget(
+    RenderWidgetHost* rwh,
+    const gfx::Point& point,
+    base::Callback<void(const std::string&, const gfx::Point&)>
+        result_callback);
+
+// This method will request the string identified by |range| inside the |rwh|.
+// When the result comes back, |result_callback| is invoked with the given text
+// and its position in AppKit coordinates (inverted-y axis).
+void GetStringFromRangeForRenderWidget(
+    RenderWidgetHost* rwh,
+    const gfx::Range& range,
+    base::Callback<void(const std::string&, const gfx::Point&)>
+        result_callback);
+
 #endif
+
+// Adds http://<hostname_to_isolate>/ to the list of origins that require
+// isolation (for each of the hostnames in the |hostnames_to_isolate| vector).
+//
+// To ensure that the isolation applies to subsequent navigations in
+// |web_contents|, this function forces a BrowsingInstance swap by performing
+// one or two browser-initiated navigations in |web_contents| to another,
+// random, guid-based hostname.
+void IsolateOriginsForTesting(
+    net::test_server::EmbeddedTestServer* embedded_test_server,
+    WebContents* web_contents,
+    std::vector<std::string> hostnames_to_isolate);
 
 }  // namespace content
 

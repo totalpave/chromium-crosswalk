@@ -6,8 +6,8 @@
 
 #include <stddef.h>
 
+#include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/gfx/canvas.h"
@@ -22,24 +22,22 @@ namespace views {
 
 namespace {
 
-const int kVerticalPadding = 4;
-
 // The minimum width we allow a column to go down to.
-const int kMinColumnWidth = 10;
+constexpr int kMinColumnWidth = 10;
+
+// Amount that a column is resized when using the keyboard.
+constexpr int kResizeKeyboardAmount = 5;
+
+constexpr int kVerticalPadding = 4;
 
 // Distace from edge columns can be resized by.
-const int kResizePadding = 5;
+constexpr int kResizePadding = 5;
 
 // Amount of space above/below the separator.
-const int kSeparatorPadding = 4;
-
-const SkColor kTextColor = SK_ColorBLACK;
-const SkColor kBackgroundColor1 = SkColorSetRGB(0xF9, 0xF9, 0xF9);
-const SkColor kBackgroundColor2 = SkColorSetRGB(0xE8, 0xE8, 0xE8);
-const SkColor kSeparatorColor = SkColorSetRGB(0xAA, 0xAA, 0xAA);
+constexpr int kSeparatorPadding = 4;
 
 // Size of the sort indicator (doesn't include padding).
-const int kSortIndicatorSize = 8;
+constexpr int kSortIndicatorSize = 8;
 
 }  // namespace
 
@@ -53,26 +51,27 @@ const int TableHeader::kSortIndicatorWidth = kSortIndicatorSize +
 
 typedef std::vector<TableView::VisibleColumn> Columns;
 
-TableHeader::TableHeader(TableView* table) : table_(table) {
-  set_background(Background::CreateVerticalGradientBackground(
-                     kBackgroundColor1, kBackgroundColor2));
-}
+TableHeader::TableHeader(TableView* table) : table_(table) {}
 
-TableHeader::~TableHeader() {
-}
+TableHeader::~TableHeader() {}
 
 void TableHeader::Layout() {
   SetBounds(x(), y(), table_->width(), GetPreferredSize().height());
 }
 
 void TableHeader::OnPaint(gfx::Canvas* canvas) {
+  ui::NativeTheme* theme = GetNativeTheme();
+  const SkColor text_color =
+      theme->GetSystemColor(ui::NativeTheme::kColorId_TableHeaderText);
+  const SkColor separator_color =
+      theme->GetSystemColor(ui::NativeTheme::kColorId_TableHeaderSeparator);
   // Paint the background and a separator at the bottom. The separator color
   // matches that of the border around the scrollview.
   OnPaintBackground(canvas);
-  SkColor border_color = GetNativeTheme()->GetSystemColor(
-      ui::NativeTheme::kColorId_UnfocusedBorderColor);
-  canvas->DrawLine(gfx::Point(0, height() - 1),
-                   gfx::Point(width(), height() - 1), border_color);
+  SkColor border_color =
+      theme->GetSystemColor(ui::NativeTheme::kColorId_UnfocusedBorderColor);
+  canvas->DrawSharpLine(gfx::PointF(0, height() - 1),
+                        gfx::PointF(width(), height() - 1), border_color);
 
   const Columns& columns = table_->visible_columns();
   const int sorted_column_id = table_->sort_descriptors().empty() ? -1 :
@@ -81,9 +80,10 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
     if (columns[i].width >= 2) {
       const int separator_x = GetMirroredXInView(
           columns[i].x + columns[i].width - 1);
-      canvas->DrawLine(gfx::Point(separator_x, kSeparatorPadding),
-                       gfx::Point(separator_x, height() - kSeparatorPadding),
-                       kSeparatorColor);
+      canvas->DrawSharpLine(
+          gfx::PointF(separator_x, kSeparatorPadding),
+          gfx::PointF(separator_x, height() - kSeparatorPadding),
+          separator_color);
     }
 
     const int x = columns[i].x + kHorizontalPadding;
@@ -103,16 +103,16 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
     }
 
     canvas->DrawStringRectWithFlags(
-        columns[i].column.title, font_list_, kTextColor,
+        columns[i].column.title, font_list_, text_color,
         gfx::Rect(GetMirroredXWithWidthInView(x, width), kVerticalPadding,
                   width, height() - kVerticalPadding * 2),
         TableColumnAlignmentToCanvasAlignment(columns[i].column.alignment));
 
     if (paint_sort_indicator) {
-      SkPaint paint;
-      paint.setColor(kTextColor);
-      paint.setStyle(SkPaint::kFill_Style);
-      paint.setAntiAlias(true);
+      cc::PaintFlags flags;
+      flags.setColor(text_color);
+      flags.setStyle(cc::PaintFlags::kFill_Style);
+      flags.setAntiAlias(true);
 
       int indicator_x = 0;
       ui::TableColumn::Alignment alignment = columns[i].column.alignment;
@@ -160,7 +160,7 @@ void TableHeader::OnPaint(gfx::Canvas* canvas) {
             SkIntToScalar(indicator_y + kSortIndicatorSize));
       }
       indicator_path.close();
-      canvas->DrawPath(indicator_path, paint);
+      canvas->DrawPath(indicator_path, flags);
     }
   }
 }
@@ -169,7 +169,7 @@ const char* TableHeader::GetClassName() const {
   return kViewClassName;
 }
 
-gfx::Size TableHeader::GetPreferredSize() const {
+gfx::Size TableHeader::CalculatePreferredSize() const {
   return gfx::Size(1, kVerticalPadding * 2 + font_list_.GetHeight());
 }
 
@@ -229,6 +229,34 @@ void TableHeader::OnGestureEvent(ui::GestureEvent* event) {
   event->SetHandled();
 }
 
+void TableHeader::OnNativeThemeChanged(const ui::NativeTheme* theme) {
+  SetBackground(CreateSolidBackground(
+      theme->GetSystemColor(ui::NativeTheme::kColorId_TableHeaderBackground)));
+}
+
+void TableHeader::ResizeColumnViaKeyboard(
+    int index,
+    TableView::AdvanceDirection direction) {
+  DCHECK_GE(index, 0);
+  const TableView::VisibleColumn& column = table_->GetVisibleColumn(index);
+  const int needed_for_title =
+      gfx::GetStringWidth(column.column.title, font_list_) +
+      2 * kHorizontalPadding;
+
+  int new_width = column.width;
+  switch (direction) {
+    case TableView::ADVANCE_INCREMENT:
+      new_width += kResizeKeyboardAmount;
+      break;
+    case TableView::ADVANCE_DECREMENT:
+      new_width -= kResizeKeyboardAmount;
+      break;
+  }
+
+  table_->SetVisibleColumnWidth(
+      index, std::max({kMinColumnWidth, needed_for_title, new_width}));
+}
+
 bool TableHeader::StartResize(const ui::LocatedEvent& event) {
   if (is_resizing())
     return false;
@@ -240,7 +268,7 @@ bool TableHeader::StartResize(const ui::LocatedEvent& event) {
   resize_details_.reset(new ColumnResizeDetails);
   resize_details_->column_index = index;
   resize_details_->initial_x = event.root_location().x();
-  resize_details_->initial_width = table_->visible_columns()[index].width;
+  resize_details_->initial_width = table_->GetVisibleColumn(index).width;
   return true;
 }
 
@@ -251,9 +279,15 @@ void TableHeader::ContinueResize(const ui::LocatedEvent& event) {
   const int scale = base::i18n::IsRTL() ? -1 : 1;
   const int delta = scale *
       (event.root_location().x() - resize_details_->initial_x);
+  const TableView::VisibleColumn& column =
+      table_->GetVisibleColumn(resize_details_->column_index);
+  const int needed_for_title =
+      gfx::GetStringWidth(column.column.title, font_list_) +
+      2 * kHorizontalPadding;
   table_->SetVisibleColumnWidth(
       resize_details_->column_index,
-      std::max(kMinColumnWidth, resize_details_->initial_width + delta));
+      std::max({kMinColumnWidth, needed_for_title,
+                resize_details_->initial_width + delta}));
 }
 
 void TableHeader::ToggleSortOrder(const ui::LocatedEvent& event) {
@@ -262,7 +296,7 @@ void TableHeader::ToggleSortOrder(const ui::LocatedEvent& event) {
 
   const int x = GetMirroredXInView(event.x());
   const int index = GetClosestVisibleColumnIndex(table_, x);
-  const TableView::VisibleColumn& column(table_->visible_columns()[index]);
+  const TableView::VisibleColumn& column(table_->GetVisibleColumn(index));
   if (x >= column.x && x < column.x + column.width && event.y() >= 0 &&
       event.y() < height())
     table_->ToggleSortOrder(index);
@@ -275,7 +309,7 @@ int TableHeader::GetResizeColumn(int x) const {
 
   const int index = GetClosestVisibleColumnIndex(table_, x);
   DCHECK_NE(-1, index);
-  const TableView::VisibleColumn& column(table_->visible_columns()[index]);
+  const TableView::VisibleColumn& column(table_->GetVisibleColumn(index));
   if (index > 0 && x >= column.x - kResizePadding &&
       x <= column.x + kResizePadding) {
     return index - 1;

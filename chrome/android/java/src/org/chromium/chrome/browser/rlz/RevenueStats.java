@@ -4,15 +4,13 @@
 
 package org.chromium.chrome.browser.rlz;
 
-import android.content.Context;
 import android.content.SharedPreferences;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.chrome.browser.ChromeApplication;
+import org.chromium.chrome.browser.AppHooks;
 import org.chromium.chrome.browser.tab.Tab;
-
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Utility class for managing revenue sharing information.
@@ -21,19 +19,18 @@ import java.util.concurrent.atomic.AtomicReference;
 public class RevenueStats {
     private static final String PREF_RLZ_NOTIFIED = "rlz_first_search_notified";
 
-    // Use an AtomicReference since getInstance() can be called from multiple threads.
-    private static AtomicReference<RevenueStats> sInstance = new AtomicReference<RevenueStats>();
+    private static RevenueStats sInstance;
 
     /**
      * Returns the singleton instance of ExternalAuthUtils, creating it if needed.
      */
     public static RevenueStats getInstance() {
-        if (sInstance.get() == null) {
-            ChromeApplication application =
-                    (ChromeApplication) ContextUtils.getApplicationContext();
-            sInstance.compareAndSet(null, application.createRevenueStatsInstance());
+        assert ThreadUtils.runningOnUiThread();
+        if (sInstance == null) {
+            sInstance = AppHooks.get().createRevenueStatsInstance();
         }
-        return sInstance.get();
+
+        return sInstance;
     }
 
     /**
@@ -44,7 +41,7 @@ public class RevenueStats {
     /**
      * Returns whether the RLZ provider has been notified that the first search has occurred.
      */
-    protected static boolean getRlzNotified(Context context) {
+    protected static boolean getRlzNotified() {
         return ContextUtils.getAppSharedPreferences().getBoolean(
                 PREF_RLZ_NOTIFIED, false);
     }
@@ -53,7 +50,7 @@ public class RevenueStats {
      * Stores whether the RLZ provider has been notified that the first search has occurred as
      * shared preference.
      */
-    protected static void setRlzNotified(Context context, boolean notified) {
+    protected static void setRlzNotified(boolean notified) {
         SharedPreferences.Editor sharedPreferencesEditor =
                 ContextUtils.getAppSharedPreferences().edit();
         sharedPreferencesEditor.putBoolean(PREF_RLZ_NOTIFIED, notified);

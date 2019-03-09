@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_CHROMEOS_PROFILES_PROFILE_HELPER_H_
 #define CHROME_BROWSER_CHROMEOS_PROFILES_PROFILE_HELPER_H_
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -13,33 +14,16 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/browsing_data/browsing_data_remover.h"
 #include "chrome/browser/chromeos/login/signin/oauth2_login_manager.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/browsing_data_remover.h"
 
+class IndependentOTRProfileManagerTest;
 class Profile;
 
 namespace base {
 class FilePath;
 }
-
-namespace extensions {
-class ExtensionGarbageCollectorChromeOSUnitTest;
-}
-
-namespace arc {
-class SyncArcPackageHelper;
-}
-
-namespace ash {
-namespace test {
-class MultiUserWindowManagerChromeOSTest;
-}  // namespace test
-}  // namespace ash
-
-namespace test {
-class BrowserFinderChromeOSTest;
-}  // namespace test
 
 namespace chromeos {
 
@@ -57,7 +41,7 @@ class FileFlusher;
 //    GetActiveUserProfileDir()
 // 3. Get mapping from user_id_hash to Profile instance/profile path etc.
 class ProfileHelper
-    : public BrowsingDataRemover::Observer,
+    : public content::BrowsingDataRemover::Observer,
       public OAuth2LoginManager::Observer,
       public user_manager::UserManager::UserSessionStateObserver {
  public:
@@ -69,8 +53,13 @@ class ProfileHelper
   // knowledge in one place.
   static ProfileHelper* Get();
 
-  // Returns Profile instance that corresponds to |user_id_hash|.
-  static Profile* GetProfileByUserIdHash(const std::string& user_id_hash);
+  // Loads and returns Profile instance that corresponds to |user_id_hash| for
+  // test. It should not be used in production code because it could load a
+  // not-yet-loaded user profile and skip the user profile initialization code
+  // in UserSessionManager.
+  // See http://crbug.com/728683 and http://crbug.com/718734.
+  static Profile* GetProfileByUserIdHashForTest(
+      const std::string& user_id_hash);
 
   // Returns profile path that corresponds to a given |user_id_hash|.
   static base::FilePath GetProfilePathByUserIdHash(
@@ -94,6 +83,19 @@ class ProfileHelper
   // signin Profile.
   static bool IsSigninProfile(const Profile* profile);
 
+  // Returns the path used for the lock screen apps profile - profile used
+  // for launching platform apps that can display windows on top of the lock
+  // screen.
+  static base::FilePath GetLockScreenAppProfilePath();
+
+  // Returns the name used for the lock screen app profile.
+  static std::string GetLockScreenAppProfileName();
+
+  // Returns whether |profile| is the lock screen app profile - the profile used
+  // for launching platform apps that can display a window on top of the lock
+  // screen.
+  static bool IsLockScreenAppProfile(const Profile* profile);
+
   // Returns true when |profile| corresponds to owner's profile.
   static bool IsOwnerProfile(const Profile* profile);
 
@@ -106,7 +108,7 @@ class ProfileHelper
 
   // Initialize a bunch of services that are tied to a browser profile.
   // TODO(dzhioev): Investigate whether or not this method is needed.
-  void ProfileStartup(Profile* profile, bool process_startup);
+  void ProfileStartup(Profile* profile);
 
   // Returns active user profile dir in a format [u-$hash].
   base::FilePath GetActiveUserProfileDir();
@@ -114,13 +116,13 @@ class ProfileHelper
   // Should called once after UserManager instance has been created.
   void Initialize();
 
-  // Returns hash for active user ID which is used to identify that user profile
-  // on Chrome OS.
-  std::string active_user_id_hash() { return active_user_id_hash_; }
-
   // Clears site data (cookies, history, etc) for signin profile.
   // Callback can be empty. Not thread-safe.
   void ClearSigninProfile(const base::Closure& on_clear_callback);
+
+  // Returns profile of the user associated with |account_id| if it is created
+  // and fully initialized. Otherwise, returns NULL.
+  Profile* GetProfileByAccountId(const AccountId& account_id);
 
   // Returns profile of the |user| if it is created and fully initialized.
   // Otherwise, returns NULL.
@@ -143,28 +145,33 @@ class ProfileHelper
   static std::string GetUserIdHashByUserIdForTesting(
       const std::string& user_id);
 
+  void SetActiveUserIdForTesting(const std::string& user_id);
+
   // Flushes all files of |profile|.
   void FlushProfile(Profile* profile);
+
+  // Associates |user| with profile with the same user_id,
+  // for GetUserByProfile() testing.
+  void SetProfileToUserMappingForTesting(user_manager::User* user);
+
+  // Enables/disables testing GetUserByProfile() by always returning
+  // primary user.
+  static void SetAlwaysReturnPrimaryUserForTesting(bool value);
+
+  // Associates |profile| with |user|, for GetProfileByUser() testing.
+  void SetUserToProfileMappingForTesting(const user_manager::User* user,
+                                         Profile* profile);
+
+  // Removes |account_id| user from |user_to_profile_for_testing_| for testing.
+  void RemoveUserFromListForTesting(const AccountId& account_id);
 
  private:
   // TODO(nkostylev): Create a test API class that will be the only one allowed
   // to access private test methods.
-  friend class CryptohomeAuthenticatorTest;
-  friend class DeviceSettingsTestBase;
-  friend class ExistingUserControllerTest;
-  friend class extensions::ExtensionGarbageCollectorChromeOSUnitTest;
   friend class FakeChromeUserManager;
-  friend class KioskTest;
   friend class MockUserManager;
-  friend class MultiProfileUserControllerTest;
-  friend class PrinterDetectorAppSearchEnabledTest;
   friend class ProfileHelperTest;
-  friend class ProfileListChromeOSTest;
-  friend class SessionStateDelegateChromeOSTest;
-  friend class SystemTrayDelegateChromeOSTest;
-  friend class arc::SyncArcPackageHelper;
-  friend class ash::test::MultiUserWindowManagerChromeOSTest;
-  friend class ::test::BrowserFinderChromeOSTest;
+  friend class ::IndependentOTRProfileManagerTest;
 
   // Called when signin profile is cleared.
   void OnSigninProfileCleared();
@@ -180,25 +187,10 @@ class ProfileHelper
   // user_manager::UserManager::UserSessionStateObserver implementation:
   void ActiveUserHashChanged(const std::string& hash) override;
 
-  // Associates |user| with profile with the same user_id,
-  // for GetUserByProfile() testing.
-  void SetProfileToUserMappingForTesting(user_manager::User* user);
-
   // Enables/disables testing code path in GetUserByProfile() like
   // always return primary user (when always_return_primary_user_for_testing is
   // set).
   static void SetProfileToUserForTestingEnabled(bool enabled);
-
-  // Enables/disables testing GetUserByProfile() by always returning
-  // primary user.
-  static void SetAlwaysReturnPrimaryUserForTesting(bool value);
-
-  // Associates |profile| with |user|, for GetProfileByUser() testing.
-  void SetUserToProfileMappingForTesting(const user_manager::User* user,
-                                         Profile* profile);
-
-  // Removes |account_id| user from |user_to_profile_for_testing_| for testing.
-  void RemoveUserFromListForTesting(const AccountId& account_id);
 
   // Identifies path to active user profile on Chrome OS.
   std::string active_user_id_hash_;
@@ -210,7 +202,7 @@ class ProfileHelper
   base::Closure on_clear_profile_stage_finished_;
 
   // A currently running browsing data remover.
-  BrowsingDataRemover* browsing_data_remover_;
+  content::BrowsingDataRemover* browsing_data_remover_;
 
   // Used for testing by unit tests and FakeUserManager/MockUserManager.
   std::map<const user_manager::User*, Profile*> user_to_profile_for_testing_;
@@ -235,6 +227,6 @@ class ProfileHelper
   DISALLOW_COPY_AND_ASSIGN(ProfileHelper);
 };
 
-} // namespace chromeos
+}  // namespace chromeos
 
 #endif  // CHROME_BROWSER_CHROMEOS_PROFILES_PROFILE_HELPER_H_

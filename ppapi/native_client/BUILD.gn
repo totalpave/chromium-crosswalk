@@ -37,7 +37,7 @@ if (is_nacl) {
       # Skia is one of the easiest dependencies to accidentally add since a
       # bunch of graphics and GPU code uses it.
       "//skia/*",
-      "//third_party/WebKit/*",
+      "//third_party/blink/*",
     ]
   }
 
@@ -47,6 +47,8 @@ if (is_nacl) {
     irt_cpu = "x86_32"
   } else if (current_cpu == "x64") {
     irt_cpu = "x86_64"
+  } else if (current_cpu == "mipsel") {
+    irt_cpu = "mips32"
   } else {
     irt_cpu = current_cpu
   }
@@ -93,10 +95,10 @@ if (is_nacl) {
 
     script = "irt_debuglink.py"
     args = [
-      rebase_path(objcopy),
-      rebase_path(irt_debug),
-      rebase_path(irt_stripped),
-      rebase_path(irt_final),
+      rebase_path(objcopy, root_build_dir),
+      rebase_path(irt_debug, root_build_dir),
+      rebase_path(irt_stripped, root_build_dir),
+      rebase_path(irt_final, root_build_dir),
     ]
   }
 }

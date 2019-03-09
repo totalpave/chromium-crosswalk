@@ -10,7 +10,7 @@
 <translation id="1703735871906654364">Tastaturnavigation</translation>
 <translation id="1791496371305830581">Alle animierten Bilder zulassen</translation>
 <translation id="1996252509865389616">Aktivieren?</translation>
-<translation id="2079545284768500474">Rückgängig</translation>
+<translation id="2079545284768500474">Rückgängig machen</translation>
 <translation id="2179565792157161713">Ausführliche Beschreibung in neuem Tab öffnen</translation>
 <translation id="2223143012868735942">Anpassbarer Farbfilter zur Verbesserung der Farbwahrnehmung auf Webseiten</translation>
 <translation id="2394933097471027016">Probieren Sie es aus. Die Tastaturnavigation ist auf dieser Seite immer aktiviert.</translation>
@@ -35,7 +35,7 @@
 <translation id="5041932793799765940">Farbanpassung</translation>
 <translation id="5094574508723441140">Kontrasterhöhung</translation>
 <translation id="5173942593318174089">Cursorposition mit Animation markieren</translation>
-<translation id="5287723860611749454">&lt;p&gt;Mit den Pfeiltasten können Sie durch das Dokument navigieren. &lt;/p&gt;&lt;p&gt;Klicken Sie an einer Stelle, um den Cursor dort zu platzieren. &lt;/p&gt; &lt;p&gt;   Mit &lt;span class='key'&gt;Shift&lt;/span&gt; + Pfeiltaste können Sie Text auswählen.&lt;/p&gt;</translation>
+<translation id="5287723860611749454">&lt;p&gt;Mit den Pfeiltasten können Sie durch das Dokument navigieren. &lt;/p&gt;&lt;p&gt;Klicken Sie an einer Stelle, um den Cursor dort zu platzieren. &lt;/p&gt; &lt;p&gt;   Mit &lt;span class='key'&gt;Umschalttaste&lt;/span&gt; + Pfeiltaste können Sie Text auswählen.&lt;/p&gt;</translation>
 <translation id="5331422999063554397">Farbumkehrung</translation>
 <translation id="5555153510860501336">Hoher Kontrast ist deaktiviert.</translation>
 <translation id="5558600050691192317">Tastaturbefehle</translation>

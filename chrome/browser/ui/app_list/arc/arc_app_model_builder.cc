@@ -4,31 +4,49 @@
 
 #include "chrome/browser/ui/app_list/arc/arc_app_model_builder.h"
 
-#include "base/memory/ptr_util.h"
-#include "chrome/browser/chromeos/arc/arc_auth_service.h"
+#include <vector>
+
+#include "ash/public/cpp/app_list/app_list_config.h"
+#include "chrome/browser/chromeos/arc/arc_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/app_list/arc/arc_app_item.h"
 
 ArcAppModelBuilder::ArcAppModelBuilder(AppListControllerDelegate* controller)
-    : AppListModelBuilder(controller, ArcAppItem::kItemType) {
-}
+    : AppListModelBuilder(controller, ArcAppItem::kItemType) {}
 
 ArcAppModelBuilder::~ArcAppModelBuilder() {
   prefs_->RemoveObserver(this);
 }
 
+void ArcAppModelBuilder::InsertApp(std::unique_ptr<ChromeAppListItem> app) {
+  const std::string app_id = app->id();
+  AppListModelBuilder::InsertApp(std::move(app));
+  icon_loader_->FetchImage(app_id);
+}
+
+void ArcAppModelBuilder::RemoveApp(const std::string& id,
+                                   bool unsynced_change) {
+  AppListModelBuilder::RemoveApp(id, unsynced_change);
+  icon_loader_->ClearImage(id);
+}
+
 void ArcAppModelBuilder::BuildModel() {
+  icon_loader_ = std::make_unique<ArcAppIconLoader>(
+      profile(), app_list::AppListConfig::instance().grid_icon_dimension(),
+      this);
+
   prefs_ = ArcAppListPrefs::Get(profile());
   DCHECK(prefs_);
 
   std::vector<std::string> app_ids = prefs_->GetAppIds();
   for (auto& app_id : app_ids) {
     std::unique_ptr<ArcAppListPrefs::AppInfo> app_info = prefs_->GetApp(app_id);
-    if (!app_info)
+    if (!app_info) {
+      NOTREACHED() << "App " << app_id << " was not found";
       continue;
+    }
 
-    if (app_info->showInLauncher)
-      InsertApp(CreateApp(app_id, *app_info));
+    OnAppRegistered(app_id, *app_info);
   }
 
   prefs_->AddObserver(this);
@@ -41,36 +59,33 @@ ArcAppItem* ArcAppModelBuilder::GetArcAppItem(const std::string& app_id) {
 std::unique_ptr<ArcAppItem> ArcAppModelBuilder::CreateApp(
     const std::string& app_id,
     const ArcAppListPrefs::AppInfo& app_info) {
-  return base::WrapUnique(new ArcAppItem(profile(), GetSyncItem(app_id), app_id,
-                                         app_info.name));
+  return std::make_unique<ArcAppItem>(
+      profile(), model_updater(), GetSyncItem(app_id), app_id, app_info.name);
 }
 
 void ArcAppModelBuilder::OnAppRegistered(
     const std::string& app_id,
     const ArcAppListPrefs::AppInfo& app_info) {
-  if (app_info.showInLauncher)
+  if (app_info.show_in_launcher)
     InsertApp(CreateApp(app_id, app_info));
 }
 
 void ArcAppModelBuilder::OnAppRemoved(const std::string& app_id) {
-  const arc::ArcAuthService* auth_service = arc::ArcAuthService::Get();
-  DCHECK(auth_service);
-  // Don't sync app removal in case it was caused by disabling Arc.
-  const bool unsynced_change = !auth_service->IsArcEnabled();
+  // Don't sync app removal in case it was caused by disabling Google Play
+  // Store.
+  const bool unsynced_change = !arc::IsArcPlayStoreEnabledForProfile(profile());
   RemoveApp(app_id, unsynced_change);
 }
 
-void ArcAppModelBuilder::OnAppIconUpdated(const std::string& app_id,
-                                          ui::ScaleFactor scale_factor) {
+void ArcAppModelBuilder::OnAppImageUpdated(const std::string& app_id,
+                                           const gfx::ImageSkia& image) {
   ArcAppItem* app_item = GetArcAppItem(app_id);
   if (!app_item) {
     VLOG(2) << "Could not update the icon of ARC app(" << app_id
             << ") because it was not found.";
     return;
   }
-
-  // Initiate async icon reloading.
-  app_item->arc_app_icon()->LoadForScaleFactor(scale_factor);
+  app_item->SetIcon(image);
 }
 
 void ArcAppModelBuilder::OnAppNameUpdated(const std::string& app_id,
@@ -83,12 +98,4 @@ void ArcAppModelBuilder::OnAppNameUpdated(const std::string& app_id,
   }
 
   app_item->SetName(name);
-}
-
-void ArcAppModelBuilder::OnListItemMoved(size_t from_index,
-                                         size_t to_index,
-                                         app_list::AppListItem* item) {
-  // On ChromeOS we expect that ArcAppModelBuilder is initialized with
-  // AppListSyncableService and in this case this observer is not used.
-  NOTREACHED();
 }

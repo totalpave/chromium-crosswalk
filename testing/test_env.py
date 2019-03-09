@@ -5,10 +5,13 @@
 
 """Sets environment variables needed to run a chromium unit test."""
 
+import io
 import os
+import signal
 import stat
 import subprocess
 import sys
+import time
 
 # This is hardcoded to be src/ relative to this script.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,7 +55,7 @@ def fix_python_path(cmd):
   return out
 
 
-def get_sanitizer_env(cmd, asan, lsan, msan, tsan):
+def get_sanitizer_env(cmd, asan, lsan, msan, tsan, cfi_diag):
   """Returns the envirnoment flags needed for sanitizer tools."""
 
   extra_env = {}
@@ -73,7 +76,7 @@ def get_sanitizer_env(cmd, asan, lsan, msan, tsan):
     # fact, it needs symbolization to be able to apply suppressions.
     symbolization_options = ['symbolize=1',
                              'external_symbolizer_path=%s' % symbolizer_path]
-  elif (asan or msan) and sys.platform not in ['win32', 'cygwin']:
+  elif (asan or msan or cfi_diag) and sys.platform not in ['win32', 'cygwin']:
     # ASan uses a script for offline symbolization, except on Windows.
     # Important note: when running ASan with leak detection enabled, we must use
     # the LSan symbolization options above.
@@ -120,6 +123,11 @@ def get_sanitizer_env(cmd, asan, lsan, msan, tsan):
     tsan_options = symbolization_options[:]
     extra_env['TSAN_OPTIONS'] = ' '.join(tsan_options)
 
+  # CFI uses the UBSan runtime to provide diagnostics.
+  if cfi_diag:
+    ubsan_options = symbolization_options[:] + ['print_stacktrace=1']
+    extra_env['UBSAN_OPTIONS'] = ' '.join(ubsan_options)
+
   return extra_env
 
 
@@ -165,16 +173,112 @@ def symbolize_snippets_in_json(cmd, env):
     raise subprocess.CalledProcessError(p.returncode, symbolize_command)
 
 
-def run_executable(cmd, env):
+def run_command_with_output(argv, stdoutfile, env=None, cwd=None):
+  """Run command and stream its stdout/stderr to the console & |stdoutfile|.
+
+  Also forward_signals to obey
+  https://chromium.googlesource.com/infra/luci/luci-py/+/master/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
+
+  Returns:
+    integer returncode of the subprocess.
+  """
+  print('Running %r in %r (env: %r)' % (argv, cwd, env))
+  assert stdoutfile
+  with io.open(stdoutfile, 'wb') as writer, \
+      io.open(stdoutfile, 'rb', 1) as reader:
+    process = subprocess.Popen(argv, env=env, cwd=cwd, stdout=writer,
+        stderr=subprocess.STDOUT)
+    forward_signals([process])
+    while process.poll() is None:
+      sys.stdout.write(reader.read())
+      # This sleep is needed for signal propagation. See the
+      # wait_with_signals() docstring.
+      time.sleep(0.1)
+    # Read the remaining.
+    sys.stdout.write(reader.read())
+    print('Command %r returned exit code %d' % (argv, process.returncode))
+    return process.returncode
+
+
+def run_command(argv, env=None, cwd=None, log=True):
+  """Run command and stream its stdout/stderr both to stdout.
+
+  Also forward_signals to obey
+  https://chromium.googlesource.com/infra/luci/luci-py/+/master/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
+
+  Returns:
+    integer returncode of the subprocess.
+  """
+  if log:
+    print('Running %r in %r (env: %r)' % (argv, cwd, env))
+  process = subprocess.Popen(argv, env=env, cwd=cwd, stderr=subprocess.STDOUT)
+  forward_signals([process])
+  return wait_with_signals(process)
+
+
+def wait_with_signals(process):
+  """A version of process.wait() that works cross-platform.
+
+  This version properly surfaces the SIGBREAK signal.
+
+  From reading the subprocess.py source code, it seems we need to explicitly
+  call time.sleep(). The reason is that subprocess.Popen.wait() on Windows
+  directly calls WaitForSingleObject(), but only time.sleep() properly surface
+  the SIGBREAK signal.
+
+  Refs:
+  https://github.com/python/cpython/blob/v2.7.15/Lib/subprocess.py#L692
+  https://github.com/python/cpython/blob/v2.7.15/Modules/timemodule.c#L1084
+
+  Returns:
+    returncode of the process.
+  """
+  while process.poll() is None:
+    time.sleep(0.1)
+  return process.returncode
+
+
+def forward_signals(procs):
+  """Forwards unix's SIGTERM or win's CTRL_BREAK_EVENT to the given processes.
+
+  This plays nicely with swarming's timeout handling. See also
+  https://chromium.googlesource.com/infra/luci/luci-py/+/master/appengine/swarming/doc/Bot.md#graceful-termination_aka-the-sigterm-and-sigkill-dance
+
+  Args:
+      procs: A list of subprocess.Popen objects representing child processes.
+  """
+  assert all(isinstance(p, subprocess.Popen) for p in procs)
+  def _sig_handler(sig, _):
+    for p in procs:
+      # SIGBREAK is defined only for win32.
+      if sys.platform == 'win32' and sig == signal.SIGBREAK:
+        p.send_signal(signal.CTRL_BREAK_EVENT)
+      else:
+        p.send_signal(sig)
+  if sys.platform == 'win32':
+    signal.signal(signal.SIGBREAK, _sig_handler)
+  else:
+    signal.signal(signal.SIGTERM, _sig_handler)
+
+
+def run_executable(cmd, env, stdoutfile=None):
   """Runs an executable with:
+    - CHROME_HEADLESS set to indicate that the test is running on a
+      bot and shouldn't do anything interactive like show modal dialogs.
     - environment variable CR_SOURCE_ROOT set to the root directory.
     - environment variable LANGUAGE to en_US.UTF-8.
     - environment variable CHROME_DEVEL_SANDBOX set
     - Reuses sys.executable automatically.
   """
-  extra_env = {}
-  # Many tests assume a English interface...
-  extra_env['LANG'] = 'en_US.UTF-8'
+  extra_env = {
+      # Set to indicate that the executable is running non-interactively on
+      # a bot.
+      'CHROME_HEADLESS': '1',
+
+       # Many tests assume a English interface...
+      'LANG': 'en_US.UTF-8',
+  }
+
   # Used by base/base_paths_linux.cc as an override. Just make sure the default
   # logic is used.
   env.pop('CR_SOURCE_ROOT', None)
@@ -185,16 +289,17 @@ def run_executable(cmd, env):
   lsan = '--lsan=1' in cmd
   msan = '--msan=1' in cmd
   tsan = '--tsan=1' in cmd
-  if sys.platform in ['win32', 'cygwin']:
+  cfi_diag = '--cfi-diag=1' in cmd
+  if stdoutfile or sys.platform in ['win32', 'cygwin']:
     # Symbolization works in-process on Windows even when sandboxed.
     use_symbolization_script = False
   else:
     # LSan doesn't support sandboxing yet, so we use the in-process symbolizer.
     # Note that ASan and MSan can work together with LSan.
-    use_symbolization_script = (asan or msan) and not lsan
+    use_symbolization_script = (asan or msan or cfi_diag) and not lsan
 
-  if asan or lsan or msan or tsan:
-    extra_env.update(get_sanitizer_env(cmd, asan, lsan, msan, tsan))
+  if asan or lsan or msan or tsan or cfi_diag:
+    extra_env.update(get_sanitizer_env(cmd, asan, lsan, msan, tsan, cfi_diag))
 
   if lsan or tsan:
     # LSan and TSan are not sandbox-friendly.
@@ -211,10 +316,14 @@ def run_executable(cmd, env):
         '\n'.join('    %s=%s' %
             (k, v) for k, v in sorted(extra_env.iteritems())),
         ' '.join(cmd)))
+  sys.stdout.flush()
   env.update(extra_env or {})
   try:
-    # See above comment regarding offline symbolization.
-    if use_symbolization_script:
+    if stdoutfile:
+      # Write to stdoutfile and poll to produce terminal output.
+      return run_command_with_output(cmd, env=env, stdoutfile=stdoutfile)
+    elif use_symbolization_script:
+      # See above comment regarding offline symbolization.
       # Need to pipe to the symbolizer script.
       p1 = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
                             stderr=sys.stdout)
@@ -222,13 +331,14 @@ def run_executable(cmd, env):
           get_sanitizer_symbolize_command(executable_path=cmd[0]),
           env=env, stdin=p1.stdout)
       p1.stdout.close()  # Allow p1 to receive a SIGPIPE if p2 exits.
-      p1.wait()
-      p2.wait()
+      forward_signals([p1, p2])
+      wait_with_signals(p1)
+      wait_with_signals(p2)
       # Also feed the out-of-band JSON output to the symbolizer script.
       symbolize_snippets_in_json(cmd, env)
       return p1.returncode
     else:
-      return subprocess.call(cmd, env=env)
+      return run_command(cmd, env=env, log=False)
   except OSError:
     print >> sys.stderr, 'Failed to start %s' % cmd
     raise

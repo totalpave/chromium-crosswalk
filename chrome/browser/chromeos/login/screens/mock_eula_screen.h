@@ -15,9 +15,14 @@ namespace chromeos {
 class MockEulaScreen : public EulaScreen {
  public:
   MockEulaScreen(BaseScreenDelegate* base_screen_delegate,
-                 Delegate* delegate,
-                 EulaView* view);
+                 EulaView* view,
+                 const ScreenExitCallback& exit_callback);
   ~MockEulaScreen() override;
+
+  MOCK_METHOD0(Show, void());
+  MOCK_METHOD0(Hide, void());
+
+  void ExitScreen(Result result);
 };
 
 class MockEulaView : public EulaView {
@@ -25,21 +30,18 @@ class MockEulaView : public EulaView {
   MockEulaView();
   ~MockEulaView() override;
 
-  void Bind(EulaModel& model) override;
+  void Bind(EulaScreen* screen) override;
   void Unbind() override;
 
-  MOCK_METHOD0(PrepareToShow, void());
   MOCK_METHOD0(Show, void());
   MOCK_METHOD0(Hide, void());
 
-  MOCK_CONST_METHOD0(GetName, std::string());
-
-  MOCK_METHOD1(MockBind, void(EulaModel& model));
+  MOCK_METHOD1(MockBind, void(EulaScreen* screen));
   MOCK_METHOD0(MockUnbind, void());
   MOCK_METHOD1(OnPasswordFetched, void(const std::string& tpm_password));
 
  private:
-  EulaModel* model_;
+  EulaScreen* screen_ = nullptr;
 };
 
 }  // namespace chromeos

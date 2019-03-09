@@ -4,7 +4,9 @@
 
 #include "ui/views/examples/examples_window_with_content.h"
 
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "content/public/browser/browser_context.h"
 #include "ui/views/examples/webview_example.h"
@@ -12,13 +14,13 @@
 namespace views {
 namespace examples {
 
-void ShowExamplesWindowWithContent(Operation operation,
+void ShowExamplesWindowWithContent(base::OnceClosure on_close,
                                    content::BrowserContext* browser_context,
                                    gfx::NativeWindow window_context) {
-  std::unique_ptr<ScopedVector<ExampleBase>> extra_examples(
-      new ScopedVector<ExampleBase>);
-  extra_examples->push_back(new WebViewExample(browser_context));
-  ShowExamplesWindow(operation, window_context, std::move(extra_examples));
+  std::vector<std::unique_ptr<ExampleBase>> extra_examples;
+  extra_examples.push_back(std::make_unique<WebViewExample>(browser_context));
+  ShowExamplesWindow(std::move(on_close), window_context,
+                     std::move(extra_examples));
 }
 
 }  // namespace examples

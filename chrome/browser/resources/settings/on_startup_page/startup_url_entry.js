@@ -4,7 +4,7 @@
 
 /**
  * @fileoverview settings-startup-url-entry represents a UI component that
- * displayes a URL that is loaded during startup. It includes a menu that allows
+ * displays a URL that is loaded during startup. It includes a menu that allows
  * the user to edit/remove the entry.
  */
 
@@ -12,38 +12,50 @@ cr.exportPath('settings');
 
 /**
  * The name of the event fired from this element when the "Edit" option is
- * tapped.
- * @const {string}
+ * clicked.
+ * @type {string}
  */
 settings.EDIT_STARTUP_URL_EVENT = 'edit-startup-url';
 
 Polymer({
   is: 'settings-startup-url-entry',
 
+  behaviors: [cr.ui.FocusRowBehavior],
+
   properties: {
+    editable: {
+      type: Boolean,
+      reflectToAttribute: true,
+    },
+
     /** @type {!StartupPageInfo} */
     model: Object,
   },
 
-  /**
-   * @param {string} url Location of an image to get a set of icons for.
-   * @return {string} A set of icon URLs.
-   * @private
-   */
-  getIconSet_: function(url) {
-    return cr.icon.getFaviconImageSet(url);
-  },
-
   /** @private */
   onRemoveTap_: function() {
-    this.$$('iron-dropdown').close();
+    this.$$('cr-action-menu').close();
     settings.StartupUrlsPageBrowserProxyImpl.getInstance().removeStartupPage(
         this.model.modelIndex);
   },
 
+  /**
+   * @param {!Event} e
+   * @private
+   */
+  onEditTap_: function(e) {
+    e.preventDefault();
+    this.$$('cr-action-menu').close();
+    this.fire(settings.EDIT_STARTUP_URL_EVENT, {
+      model: this.model,
+      anchor: this.$$('#dots'),
+    });
+  },
+
   /** @private */
-  onEditTap_: function() {
-    this.$$('iron-dropdown').close();
-    this.fire(settings.EDIT_STARTUP_URL_EVENT, this.model);
+  onDotsTap_: function() {
+    const actionMenu =
+        /** @type {!CrActionMenuElement} */ (this.$$('#menu').get());
+    actionMenu.showAt(assert(this.$$('#dots')));
   },
 });

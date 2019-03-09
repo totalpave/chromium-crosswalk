@@ -9,6 +9,7 @@
 #include <map>
 
 #include "base/metrics/field_trial.h"
+#include "components/variations/client_filterable_state.h"
 #include "components/variations/processed_study.h"
 #include "components/variations/proto/study.pb.h"
 #include "components/variations/study_filtering.h"
@@ -43,7 +44,7 @@ std::string SimulateGroupAssignment(
   scoped_refptr<base::FieldTrial> trial(
       base::FieldTrial::CreateSimulatedFieldTrial(
           study.name(), processed_study.total_probability(),
-          study.default_experiment_name(), entropy_value));
+          processed_study.GetDefaultExperimentName(), entropy_value));
 
   for (int i = 0; i < study.experiment_size(); ++i) {
     const Study_Experiment& experiment = study.experiment(i);
@@ -68,7 +69,7 @@ const Study_Experiment* FindExperiment(const Study& study,
     if (study.experiment(i).name() == experiment_name)
       return &study.experiment(i);
   }
-  return NULL;
+  return nullptr;
 }
 
 // Checks whether experiment params set for |experiment| on |study| are exactly
@@ -114,19 +115,9 @@ VariationsSeedSimulator::~VariationsSeedSimulator() {
 
 VariationsSeedSimulator::Result VariationsSeedSimulator::SimulateSeedStudies(
     const VariationsSeed& seed,
-    const std::string& locale,
-    const base::Time& reference_date,
-    const base::Version& version,
-    Study_Channel channel,
-    Study_FormFactor form_factor,
-    const std::string& hardware_class,
-    const std::string& session_consistency_country,
-    const std::string& permanent_consistency_country) {
+    const ClientFilterableState& client_state) {
   std::vector<ProcessedStudy> filtered_studies;
-  FilterAndValidateStudies(seed, locale, reference_date, version, channel,
-                           form_factor, hardware_class,
-                           session_consistency_country,
-                           permanent_consistency_country, &filtered_studies);
+  FilterAndValidateStudies(seed, client_state, &filtered_studies);
 
   return ComputeDifferences(filtered_studies);
 }
@@ -218,6 +209,9 @@ VariationsSeedSimulator::PermanentStudyGroupChanged(
 
   const std::string simulated_group =
       SimulateGroupAssignment(entropy_provider, processed_study);
+
+  // Note: The current (i.e. old) group is checked for the type since that group
+  // is the one that should be annotated with the type when killing it.
   const Study_Experiment* experiment = FindExperiment(study, selected_group);
   if (simulated_group != selected_group) {
     if (experiment)
@@ -225,10 +219,12 @@ VariationsSeedSimulator::PermanentStudyGroupChanged(
     return CHANGED;
   }
 
-  // Current group exists in the study - check whether its params changed.
-  DCHECK(experiment);
-  if (!VariationParamsAreEqual(study, *experiment))
+  // If the group is unchanged, check whether its params may have changed.
+  if (experiment && !VariationParamsAreEqual(study, *experiment))
     return ConvertExperimentTypeToChangeType(experiment->type());
+
+  // Since the group name has not changed and params are either equal or the
+  // experiment was not found (and thus there are none), return NO_CHANGE.
   return NO_CHANGE;
 }
 

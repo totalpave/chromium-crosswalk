@@ -4,24 +4,23 @@
 
 #include "ash/test/ash_test_helper.h"
 
+#include "base/test/scoped_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/views/widget/widget.h"
 
-#if defined(OS_WIN)
-#include "base/win/windows_version.h"
-#endif
+namespace ash {
 
 // Tests for AshTestHelper. Who will watch the watchers? And who will test
 // the tests?
 class AshTestHelperTest : public testing::Test {
  public:
-  AshTestHelperTest() {}
-  ~AshTestHelperTest() override {}
+  AshTestHelperTest() = default;
+  ~AshTestHelperTest() override = default;
 
   void SetUp() override {
     testing::Test::SetUp();
-    ash_test_helper_.reset(new ash::test::AshTestHelper(&message_loop_));
+    ash_test_helper_ = std::make_unique<AshTestHelper>();
     ash_test_helper_->SetUp(true);
   }
 
@@ -30,11 +29,13 @@ class AshTestHelperTest : public testing::Test {
     testing::Test::TearDown();
   }
 
-  ash::test::AshTestHelper* ash_test_helper() { return ash_test_helper_.get(); }
+  AshTestHelper* ash_test_helper() { return ash_test_helper_.get(); }
 
  private:
-  base::MessageLoopForUI message_loop_;
-  std::unique_ptr<ash::test::AshTestHelper> ash_test_helper_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_{
+      base::test::ScopedTaskEnvironment::MainThreadType::UI};
+
+  std::unique_ptr<AshTestHelper> ash_test_helper_;
 
   DISALLOW_COPY_AND_ASSIGN(AshTestHelperTest);
 };
@@ -42,7 +43,6 @@ class AshTestHelperTest : public testing::Test {
 // Ensure that we have initialized enough of Ash to create and show a window.
 TEST_F(AshTestHelperTest, AshTestHelper) {
   // Check initial state.
-  EXPECT_TRUE(ash_test_helper()->message_loop());
   EXPECT_TRUE(ash_test_helper()->test_shell_delegate());
   EXPECT_TRUE(ash_test_helper()->CurrentContext());
 
@@ -57,3 +57,5 @@ TEST_F(AshTestHelperTest, AshTestHelper) {
   EXPECT_TRUE(w1->IsActive());
   EXPECT_TRUE(w1->IsVisible());
 }
+
+}  // namespace ash

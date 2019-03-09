@@ -12,10 +12,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "chrome/browser/ui/autofill/autofill_popup_view.h"
-
-namespace gfx {
-class Rect;
-}
+#include "ui/android/view_android.h"
 
 namespace autofill {
 
@@ -24,6 +21,7 @@ class AutofillPopupController;
 class AutofillPopupViewAndroid : public AutofillPopupView {
  public:
   explicit AutofillPopupViewAndroid(AutofillPopupController* controller);
+  ~AutofillPopupViewAndroid() override;
 
   // --------------------------------------------------------------------------
   // Methods called from Java via JNI
@@ -43,17 +41,21 @@ class AutofillPopupViewAndroid : public AutofillPopupView {
   void PopupDismissed(JNIEnv* env,
                       const base::android::JavaParamRef<jobject>& obj);
 
-  static bool RegisterAutofillPopupViewAndroid(JNIEnv* env);
-
  protected:
   // AutofillPopupView implementation.
   void Show() override;
   void Hide() override;
-  void InvalidateRow(size_t row) override;
-  void UpdateBoundsAndRedrawPopup() override;
+  void OnSelectedRowChanged(base::Optional<int> previous_row_selection,
+                            base::Optional<int> current_row_selection) override;
+  void OnSuggestionsChanged() override;
 
  private:
-  ~AutofillPopupViewAndroid() override;
+  friend class AutofillPopupView;
+  // Creates the AutofillPopupBridge Java object.
+  void Init();
+  // Returns whether the dropdown was suppressed (mainly due to not enough
+  // screen space available).
+  bool WasSuppressed();
 
   AutofillPopupController* controller_;  // weak.
 
@@ -63,6 +65,9 @@ class AutofillPopupViewAndroid : public AutofillPopupView {
 
   // The corresponding java object.
   base::android::ScopedJavaGlobalRef<jobject> java_object_;
+
+  // Popup view
+  ui::ViewAndroid::ScopedAnchorView popup_view_;
 
   DISALLOW_COPY_AND_ASSIGN(AutofillPopupViewAndroid);
 };

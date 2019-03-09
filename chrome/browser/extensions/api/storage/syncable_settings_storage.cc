@@ -9,53 +9,50 @@
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/extensions/api/storage/settings_sync_processor.h"
 #include "chrome/browser/extensions/api/storage/settings_sync_util.h"
-#include "content/public/browser/browser_thread.h"
+#include "components/sync/model/sync_data.h"
+#include "components/sync/protocol/extension_setting_specifics.pb.h"
+#include "extensions/browser/api/storage/backend_task_runner.h"
 #include "extensions/browser/api/storage/settings_namespace.h"
-#include "sync/api/sync_data.h"
-#include "sync/protocol/extension_setting_specifics.pb.h"
-
-using content::BrowserThread;
 
 namespace extensions {
 
 SyncableSettingsStorage::SyncableSettingsStorage(
-    const scoped_refptr<base::ObserverListThreadSafe<SettingsObserver>>&
-        observers,
+    scoped_refptr<base::ObserverListThreadSafe<SettingsObserver>> observers,
     const std::string& extension_id,
     ValueStore* delegate,
     syncer::ModelType sync_type,
     const syncer::SyncableService::StartSyncFlare& flare)
-    : observers_(observers),
+    : observers_(std::move(observers)),
       extension_id_(extension_id),
       delegate_(delegate),
       sync_type_(sync_type),
       flare_(flare) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
 }
 
 SyncableSettingsStorage::~SyncableSettingsStorage() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
 }
 
 size_t SyncableSettingsStorage::GetBytesInUse(const std::string& key) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   return delegate_->GetBytesInUse(key);
 }
 
 size_t SyncableSettingsStorage::GetBytesInUse(
     const std::vector<std::string>& keys) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   return delegate_->GetBytesInUse(keys);
 }
 
 size_t SyncableSettingsStorage::GetBytesInUse() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   return delegate_->GetBytesInUse();
 }
 
 template <class T>
 T SyncableSettingsStorage::HandleResult(T result) {
-  if (result->status().restore_status != RESTORE_NONE) {
+  if (result.status().restore_status != RESTORE_NONE) {
     // If we're syncing, stop - we don't want to push the deletion of any data.
     // At next startup, when we start up the sync service, we'll get back any
     // data which was stored intact on Sync.
@@ -69,26 +66,26 @@ T SyncableSettingsStorage::HandleResult(T result) {
 
 ValueStore::ReadResult SyncableSettingsStorage::Get(
     const std::string& key) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   return HandleResult(delegate_->Get(key));
 }
 
 ValueStore::ReadResult SyncableSettingsStorage::Get(
     const std::vector<std::string>& keys) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   return HandleResult(delegate_->Get(keys));
 }
 
 ValueStore::ReadResult SyncableSettingsStorage::Get() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   return HandleResult(delegate_->Get());
 }
 
 ValueStore::WriteResult SyncableSettingsStorage::Set(
     WriteOptions options, const std::string& key, const base::Value& value) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   WriteResult result = HandleResult(delegate_->Set(options, key, value));
-  if (!result->status().ok())
+  if (!result.status().ok())
     return result;
   SyncResultIfEnabled(result);
   return result;
@@ -96,9 +93,9 @@ ValueStore::WriteResult SyncableSettingsStorage::Set(
 
 ValueStore::WriteResult SyncableSettingsStorage::Set(
     WriteOptions options, const base::DictionaryValue& values) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   WriteResult result = HandleResult(delegate_->Set(options, values));
-  if (!result->status().ok())
+  if (!result.status().ok())
     return result;
   SyncResultIfEnabled(result);
   return result;
@@ -106,9 +103,9 @@ ValueStore::WriteResult SyncableSettingsStorage::Set(
 
 ValueStore::WriteResult SyncableSettingsStorage::Remove(
     const std::string& key) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   WriteResult result = HandleResult(delegate_->Remove(key));
-  if (!result->status().ok())
+  if (!result.status().ok())
     return result;
   SyncResultIfEnabled(result);
   return result;
@@ -116,18 +113,18 @@ ValueStore::WriteResult SyncableSettingsStorage::Remove(
 
 ValueStore::WriteResult SyncableSettingsStorage::Remove(
     const std::vector<std::string>& keys) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   WriteResult result = HandleResult(delegate_->Remove(keys));
-  if (!result->status().ok())
+  if (!result.status().ok())
     return result;
   SyncResultIfEnabled(result);
   return result;
 }
 
 ValueStore::WriteResult SyncableSettingsStorage::Clear() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   WriteResult result = HandleResult(delegate_->Clear());
-  if (!result->status().ok())
+  if (!result.status().ok())
     return result;
   SyncResultIfEnabled(result);
   return result;
@@ -135,11 +132,11 @@ ValueStore::WriteResult SyncableSettingsStorage::Clear() {
 
 void SyncableSettingsStorage::SyncResultIfEnabled(
     const ValueStore::WriteResult& result) {
-  if (result->changes().empty())
+  if (result.changes().empty())
     return;
 
   if (sync_processor_.get()) {
-    syncer::SyncError error = sync_processor_->SendChanges(result->changes());
+    syncer::SyncError error = sync_processor_->SendChanges(result.changes());
     if (error.IsSet())
       StopSyncing();
   } else {
@@ -155,7 +152,7 @@ void SyncableSettingsStorage::SyncResultIfEnabled(
 syncer::SyncError SyncableSettingsStorage::StartSyncing(
     std::unique_ptr<base::DictionaryValue> sync_state,
     std::unique_ptr<SettingsSyncProcessor> sync_processor) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   DCHECK(sync_state);
   DCHECK(!sync_processor_.get());
 
@@ -163,16 +160,16 @@ syncer::SyncError SyncableSettingsStorage::StartSyncing(
   sync_processor_->Init(*sync_state);
 
   ReadResult maybe_settings = delegate_->Get();
-  if (!maybe_settings->status().ok()) {
+  if (!maybe_settings.status().ok()) {
     return syncer::SyncError(
         FROM_HERE, syncer::SyncError::DATATYPE_ERROR,
         base::StringPrintf("Failed to get settings: %s",
-                           maybe_settings->status().message.c_str()),
+                           maybe_settings.status().message.c_str()),
         sync_processor_->type());
   }
 
   std::unique_ptr<base::DictionaryValue> current_settings =
-      maybe_settings->PassSettings();
+      maybe_settings.PassSettings();
   return sync_state->empty()
              ? SendLocalSettingsToSync(std::move(current_settings))
              : OverwriteLocalSettingsWithSync(std::move(sync_state),
@@ -181,7 +178,7 @@ syncer::SyncError SyncableSettingsStorage::StartSyncing(
 
 syncer::SyncError SyncableSettingsStorage::SendLocalSettingsToSync(
     std::unique_ptr<base::DictionaryValue> local_state) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
 
   if (local_state->empty())
     return syncer::SyncError();
@@ -206,7 +203,7 @@ syncer::SyncError SyncableSettingsStorage::SendLocalSettingsToSync(
 syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
     std::unique_ptr<base::DictionaryValue> sync_state,
     std::unique_ptr<base::DictionaryValue> local_state) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   // This is implemented by building up a list of sync changes then sending
   // those to ProcessSyncChanges. This generates events like onStorageChanged.
   std::unique_ptr<SettingSyncDataList> changes(new SettingSyncDataList());
@@ -219,13 +216,13 @@ syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
         // Sync and local values are the same, no changes to send.
       } else {
         // Sync value is different, update local setting with new value.
-        changes->push_back(new SettingSyncData(
+        changes->push_back(std::make_unique<SettingSyncData>(
             syncer::SyncChange::ACTION_UPDATE, extension_id_, it.key(),
             std::move(sync_value)));
       }
     } else {
       // Not synced, delete local setting.
-      changes->push_back(new SettingSyncData(
+      changes->push_back(std::make_unique<SettingSyncData>(
           syncer::SyncChange::ACTION_DELETE, extension_id_, it.key(),
           std::unique_ptr<base::Value>(new base::DictionaryValue())));
     }
@@ -238,7 +235,7 @@ syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
     std::string key = base::DictionaryValue::Iterator(*sync_state).key();
     std::unique_ptr<base::Value> value;
     CHECK(sync_state->RemoveWithoutPathExpansion(key, &value));
-    changes->push_back(new SettingSyncData(
+    changes->push_back(std::make_unique<SettingSyncData>(
         syncer::SyncChange::ACTION_ADD, extension_id_, key, std::move(value)));
   }
 
@@ -248,13 +245,13 @@ syncer::SyncError SyncableSettingsStorage::OverwriteLocalSettingsWithSync(
 }
 
 void SyncableSettingsStorage::StopSyncing() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   sync_processor_.reset();
 }
 
 syncer::SyncError SyncableSettingsStorage::ProcessSyncChanges(
     std::unique_ptr<SettingSyncDataList> sync_changes) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(IsOnBackendSequence());
   DCHECK(!sync_changes->empty()) << "No sync changes for " << extension_id_;
 
   if (!sync_processor_.get()) {
@@ -268,31 +265,29 @@ syncer::SyncError SyncableSettingsStorage::ProcessSyncChanges(
   std::vector<syncer::SyncError> errors;
   ValueStoreChangeList changes;
 
-  for (SettingSyncDataList::iterator it = sync_changes->begin();
-       it != sync_changes->end(); ++it) {
-    DCHECK_EQ(extension_id_, (*it)->extension_id());
-    const std::string& key = (*it)->key();
-    std::unique_ptr<base::Value> change_value = (*it)->PassValue();
+  for (const std::unique_ptr<SettingSyncData>& sync_change : *sync_changes) {
+    DCHECK_EQ(extension_id_, sync_change->extension_id());
+    const std::string& key = sync_change->key();
+    std::unique_ptr<base::Value> change_value = sync_change->PassValue();
 
     std::unique_ptr<base::Value> current_value;
     {
       ReadResult maybe_settings = Get(key);
-      if (!maybe_settings->status().ok()) {
+      if (!maybe_settings.status().ok()) {
         errors.push_back(syncer::SyncError(
             FROM_HERE, syncer::SyncError::DATATYPE_ERROR,
             base::StringPrintf("Error getting current sync state for %s/%s: %s",
                                extension_id_.c_str(), key.c_str(),
-                               maybe_settings->status().message.c_str()),
+                               maybe_settings.status().message.c_str()),
             sync_processor_->type()));
         continue;
       }
-      maybe_settings->settings().RemoveWithoutPathExpansion(key,
-                                                            &current_value);
+      maybe_settings.settings().RemoveWithoutPathExpansion(key, &current_value);
     }
 
     syncer::SyncError error;
 
-    switch ((*it)->change_type()) {
+    switch (sync_change->change_type()) {
       case syncer::SyncChange::ACTION_ADD:
         if (!current_value.get()) {
           error = OnSyncAdd(key, std::move(change_value), &changes);
@@ -354,11 +349,11 @@ syncer::SyncError SyncableSettingsStorage::OnSyncAdd(
   DCHECK(new_value);
   WriteResult result =
       HandleResult(delegate_->Set(IGNORE_QUOTA, key, *new_value));
-  if (!result->status().ok()) {
+  if (!result.status().ok()) {
     return syncer::SyncError(
         FROM_HERE, syncer::SyncError::DATATYPE_ERROR,
         base::StringPrintf("Error pushing sync add to local settings: %s",
-                           result->status().message.c_str()),
+                           result.status().message.c_str()),
         sync_processor_->type());
   }
   changes->push_back(ValueStoreChange(key, nullptr, std::move(new_value)));
@@ -374,11 +369,11 @@ syncer::SyncError SyncableSettingsStorage::OnSyncUpdate(
   DCHECK(new_value);
   WriteResult result =
       HandleResult(delegate_->Set(IGNORE_QUOTA, key, *new_value));
-  if (!result->status().ok()) {
+  if (!result.status().ok()) {
     return syncer::SyncError(
         FROM_HERE, syncer::SyncError::DATATYPE_ERROR,
         base::StringPrintf("Error pushing sync update to local settings: %s",
-                           result->status().message.c_str()),
+                           result.status().message.c_str()),
         sync_processor_->type());
   }
   changes->push_back(
@@ -392,11 +387,11 @@ syncer::SyncError SyncableSettingsStorage::OnSyncDelete(
     ValueStoreChangeList* changes) {
   DCHECK(old_value);
   WriteResult result = HandleResult(delegate_->Remove(key));
-  if (!result->status().ok()) {
+  if (!result.status().ok()) {
     return syncer::SyncError(
         FROM_HERE, syncer::SyncError::DATATYPE_ERROR,
         base::StringPrintf("Error pushing sync remove to local settings: %s",
-                           result->status().message.c_str()),
+                           result.status().message.c_str()),
         sync_processor_->type());
   }
   changes->push_back(ValueStoreChange(key, std::move(old_value), nullptr));

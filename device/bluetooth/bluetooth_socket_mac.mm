@@ -16,6 +16,7 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/callback_helpers.h"
+#include "base/containers/queue.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/memory/ref_counted.h"
 #include "base/numerics/safe_conversions.h"
@@ -31,15 +32,6 @@
 #include "device/bluetooth/bluetooth_rfcomm_channel_mac.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
-
-#if !defined(MAC_OS_X_VERSION_10_7) || \
-    MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_7
-
-@interface IOBluetoothDevice (LionSDKDeclarations)
-- (IOReturn)performSDPQuery:(id)target uuids:(NSArray*)uuids;
-@end
-
-#endif  // MAC_OS_X_VERSION_10_7
 
 using device::BluetoothSocket;
 
@@ -217,12 +209,8 @@ using device::BluetoothSocket;
 namespace device {
 namespace {
 
-// It's safe to use 0 to represent an unregistered service, as implied by the
-// documentation at [ http://goo.gl/YRtCkF ].
-const BluetoothSDPServiceRecordHandle kInvalidServiceRecordHandle = 0;
-
-// Likewise, it's safe to use 0 to represent invalid channel or PSM port
-// numbers, as both are required to be non-zero for valid services.
+// It's safe to use 0 to represent invalid channel or PSM port numbers, as both
+// are required to be non-zero for valid services.
 const BluetoothRFCOMMChannelID kInvalidRfcommChannelId = 0;
 const BluetoothL2CAPPSM kInvalidL2capPsm = 0;
 
@@ -236,8 +224,8 @@ const char kSocketNotConnected[] = "The socket is not connected";
 const char kReceivePending[] = "A Receive operation is pending";
 
 template <class T>
-void empty_queue(std::queue<T>& queue) {
-  std::queue<T> empty;
+void empty_queue(base::queue<T>& queue) {
+  base::queue<T> empty;
   std::swap(queue, empty);
 }
 
@@ -342,41 +330,25 @@ NSDictionary* BuildL2capServiceDefinition(
 }
 
 // Registers a Bluetooth service with the specified |service_definition| in the
-// system SDP server. Returns a handle to the registered service on success. If
-// the service could not be registered, or if |verify_service_callback|
-// indicates that the to-be-registered service is not configured correctly,
-// returns |kInvalidServiceRecordHandle|.
-BluetoothSDPServiceRecordHandle RegisterService(
+// system SDP server. Returns the registered service on success. If the service
+// could not be registered, or if |verify_service_callback| indicates that the
+// to-be-registered service was not configured correctly, returns nil.
+IOBluetoothSDPServiceRecord* RegisterService(
     NSDictionary* service_definition,
     const base::Callback<bool(IOBluetoothSDPServiceRecord*)>&
         verify_service_callback) {
   // Attempt to register the service.
-  IOBluetoothSDPServiceRecordRef service_record_ref;
-  IOReturn result =
-      IOBluetoothAddServiceDict((CFDictionaryRef)service_definition,
-                                &service_record_ref);
-  if (result != kIOReturnSuccess)
-    return kInvalidServiceRecordHandle;
-  // Transfer ownership to a scoped object, to simplify memory management.
-  base::ScopedCFTypeRef<IOBluetoothSDPServiceRecordRef>
-      scoped_service_record_ref(service_record_ref);
-
-  // Extract the service record handle.
-  BluetoothSDPServiceRecordHandle service_record_handle;
-  IOBluetoothSDPServiceRecord* service_record =
-      [IOBluetoothSDPServiceRecord withSDPServiceRecordRef:service_record_ref];
-  result = [service_record getServiceRecordHandle:&service_record_handle];
-  if (result != kIOReturnSuccess)
-    return kInvalidServiceRecordHandle;
+  IOBluetoothSDPServiceRecord* service_record = [IOBluetoothSDPServiceRecord
+      publishedServiceRecordWithDictionary:service_definition];
 
   // Verify that the registered service was configured correctly. If not,
   // withdraw the service.
-  if (!verify_service_callback.Run(service_record)) {
-    IOBluetoothRemoveServiceWithRecordHandle(service_record_handle);
-    return kInvalidServiceRecordHandle;
+  if (!service_record || !verify_service_callback.Run(service_record)) {
+    [service_record removeServiceRecord];
+    service_record = nil;
   }
 
-  return service_record_handle;
+  return service_record;
 }
 
 // Returns true iff the |requested_channel_id| was registered in the RFCOMM
@@ -403,9 +375,9 @@ bool VerifyRfcommService(const int* requested_channel_id,
 // and |options.name| in the system SDP server. Automatically allocates a
 // channel if |options.channel_id| is null. Does not specify a name if
 // |options.name| is null. Returns a handle to the registered service and
-// updates |registered_channel_id| to the actual channel id, or returns
-// |kInvalidServiceRecordHandle| if the service could not be registered.
-BluetoothSDPServiceRecordHandle RegisterRfcommService(
+// updates |registered_channel_id| to the actual channel id, or returns nil if
+// the service could not be registered.
+IOBluetoothSDPServiceRecord* RegisterRfcommService(
     const BluetoothUUID& uuid,
     const BluetoothAdapter::ServiceOptions& options,
     BluetoothRFCOMMChannelID* registered_channel_id) {
@@ -439,9 +411,8 @@ bool VerifyL2capService(const int* requested_psm,
 // |options.name| in the system SDP server. Automatically allocates a PSM if
 // |options.psm| is null. Does not register a name if |options.name| is null.
 // Returns a handle to the registered service and updates |registered_psm| to
-// the actual PSM, or returns |kInvalidServiceRecordHandle| if the service could
-// not be registered.
-BluetoothSDPServiceRecordHandle RegisterL2capService(
+// the actual PSM, or returns nil if the service could not be registered.
+IOBluetoothSDPServiceRecord* RegisterL2capService(
     const BluetoothUUID& uuid,
     const BluetoothAdapter::ServiceOptions& options,
     BluetoothL2CAPPSM* registered_psm) {
@@ -454,7 +425,7 @@ BluetoothSDPServiceRecordHandle RegisterL2capService(
 
 // static
 scoped_refptr<BluetoothSocketMac> BluetoothSocketMac::CreateSocket() {
-  return make_scoped_refptr(new BluetoothSocketMac());
+  return base::WrapRefCounted(new BluetoothSocketMac());
 }
 
 void BluetoothSocketMac::Connect(
@@ -493,9 +464,9 @@ void BluetoothSocketMac::ListenUsingRfcomm(
 
   DVLOG(1) << uuid_.canonical_value() << ": Registering RFCOMM service.";
   BluetoothRFCOMMChannelID registered_channel_id;
-  service_record_handle_ =
-      RegisterRfcommService(uuid, options, &registered_channel_id);
-  if (service_record_handle_ == kInvalidServiceRecordHandle) {
+  service_record_.reset(
+      RegisterRfcommService(uuid, options, &registered_channel_id));
+  if (!service_record_.get()) {
     error_callback.Run(kInvalidOrUsedChannel);
     return;
   }
@@ -521,8 +492,8 @@ void BluetoothSocketMac::ListenUsingL2cap(
 
   DVLOG(1) << uuid_.canonical_value() << ": Registering L2CAP service.";
   BluetoothL2CAPPSM registered_psm;
-  service_record_handle_ = RegisterL2capService(uuid, options, &registered_psm);
-  if (service_record_handle_ == kInvalidServiceRecordHandle) {
+  service_record_.reset(RegisterL2capService(uuid, options, &registered_psm));
+  if (!service_record_.get()) {
     error_callback.Run(kInvalidOrUsedPsm);
     return;
   }
@@ -623,7 +594,7 @@ void BluetoothSocketMac::OnChannelOpened(
   DCHECK(thread_checker_.CalledOnValidThread());
   DVLOG(1) << uuid_.canonical_value() << ": Incoming channel pending.";
 
-  accept_queue_.push(linked_ptr<BluetoothChannelMac>(channel.release()));
+  accept_queue_.push(std::move(channel));
   if (accept_request_)
     AcceptConnectionRequest();
 
@@ -664,7 +635,7 @@ void BluetoothSocketMac::Close() {
 
   if (channel_)
     ReleaseChannel();
-  else if (service_record_handle_ != kInvalidServiceRecordHandle)
+  else if (service_record_.get())
     ReleaseListener();
 }
 
@@ -716,8 +687,7 @@ void BluetoothSocketMac::OnChannelDataReceived(void* data, size_t length) {
   DCHECK(!is_connecting());
 
   int data_size = base::checked_cast<int>(length);
-  scoped_refptr<net::IOBufferWithSize> buffer(
-      new net::IOBufferWithSize(data_size));
+  auto buffer = base::MakeRefCounted<net::IOBufferWithSize>(data_size);
   memcpy(buffer->data(), data, buffer->size());
 
   // If there is a pending read callback, call it now.
@@ -748,43 +718,44 @@ void BluetoothSocketMac::Send(scoped_refptr<net::IOBuffer> buffer,
   }
 
   // Create and enqueue request in preparation of async writes.
-  linked_ptr<SendRequest> request(new SendRequest());
+  auto request = std::make_unique<SendRequest>();
+  SendRequest* request_ptr = request.get();
   request->buffer_size = buffer_size;
   request->success_callback = success_callback;
   request->error_callback = error_callback;
-  send_queue_.push(request);
+  send_queue_.push(std::move(request));
 
   // |writeAsync| accepts buffers of max. mtu bytes per call, so we need to emit
   // multiple write operations if buffer_size > mtu.
   uint16_t mtu = channel_->GetOutgoingMTU();
-  scoped_refptr<net::DrainableIOBuffer> send_buffer(
-      new net::DrainableIOBuffer(buffer.get(), buffer_size));
+  auto send_buffer =
+      base::MakeRefCounted<net::DrainableIOBuffer>(buffer.get(), buffer_size);
   while (send_buffer->BytesRemaining() > 0) {
     int byte_count = send_buffer->BytesRemaining();
     if (byte_count > mtu)
       byte_count = mtu;
     IOReturn status =
-        channel_->WriteAsync(send_buffer->data(), byte_count, request.get());
+        channel_->WriteAsync(send_buffer->data(), byte_count, request_ptr);
 
     if (status != kIOReturnSuccess) {
       std::stringstream error;
       error << "Failed to connect bluetooth socket ("
             << channel_->GetDeviceAddress() << "): (" << status << ")";
       // Remember the first error only
-      if (request->status == kIOReturnSuccess)
-        request->status = status;
-      request->error_signaled = true;
-      request->error_callback.Run(error.str());
+      if (request_ptr->status == kIOReturnSuccess)
+        request_ptr->status = status;
+      request_ptr->error_signaled = true;
+      request_ptr->error_callback.Run(error.str());
       // We may have failed to issue any write operation. In that case, there
       // will be no corresponding completion callback for this particular
       // request, so we must forget about it now.
-      if (request->active_async_writes == 0) {
+      if (request_ptr->active_async_writes == 0) {
         send_queue_.pop();
       }
       return;
     }
 
-    request->active_async_writes++;
+    request_ptr->active_async_writes++;
     send_buffer->DidConsume(byte_count);
   }
 }
@@ -792,28 +763,26 @@ void BluetoothSocketMac::Send(scoped_refptr<net::IOBuffer> buffer,
 void BluetoothSocketMac::OnChannelWriteComplete(void* refcon, IOReturn status) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
+  SendRequest* request_ptr = send_queue_.front().get();
   // Note: We use "CHECK" below to ensure we never run into unforeseen
   // occurrences of asynchronous callbacks, which could lead to data
   // corruption.
-  CHECK_EQ(static_cast<SendRequest*>(refcon), send_queue_.front().get());
+  CHECK_EQ(static_cast<SendRequest*>(refcon), request_ptr);
 
-  // Keep a local linked_ptr to avoid releasing the request too early if we end
-  // up removing it from the queue.
-  linked_ptr<SendRequest> request = send_queue_.front();
-
-  // Remember the first error only
+  // Remember the first error only.
   if (status != kIOReturnSuccess) {
-    if (request->status == kIOReturnSuccess)
-      request->status = status;
+    if (request_ptr->status == kIOReturnSuccess)
+      request_ptr->status = status;
   }
 
-  // Figure out if we are done with this async request
-  request->active_async_writes--;
-  if (request->active_async_writes > 0)
+  // Figure out if we are done with this async request.
+  request_ptr->active_async_writes--;
+  if (request_ptr->active_async_writes > 0)
     return;
 
   // If this was the last active async write for this request, remove it from
   // the queue and call the appropriate callback associated to the request.
+  std::unique_ptr<SendRequest> request = std::move(send_queue_.front());
   send_queue_.pop();
   if (request->status != kIOReturnSuccess) {
     if (!request->error_signaled) {
@@ -863,7 +832,8 @@ void BluetoothSocketMac::AcceptConnectionRequest() {
   DCHECK(thread_checker_.CalledOnValidThread());
   DVLOG(1) << uuid_.canonical_value() << ": Accepting pending connection.";
 
-  linked_ptr<BluetoothChannelMac> channel = accept_queue_.front();
+  std::unique_ptr<BluetoothChannelMac> channel =
+      std::move(accept_queue_.front());
   accept_queue_.pop();
 
   adapter_->DeviceConnected(channel->GetDevice());
@@ -874,7 +844,7 @@ void BluetoothSocketMac::AcceptConnectionRequest() {
       BluetoothSocketMac::CreateSocket();
 
   client_socket->uuid_ = uuid_;
-  client_socket->channel_.reset(channel.release());
+  client_socket->channel_ = std::move(channel);
 
   // Associating the socket can synchronously call into OnChannelOpenComplete().
   // Make sure to first set the new socket to be connecting and hook it up to
@@ -909,9 +879,7 @@ BluetoothSocketMac::ConnectCallbacks::ConnectCallbacks() {}
 
 BluetoothSocketMac::ConnectCallbacks::~ConnectCallbacks() {}
 
-BluetoothSocketMac::BluetoothSocketMac()
-    : service_record_handle_(kInvalidServiceRecordHandle) {
-}
+BluetoothSocketMac::BluetoothSocketMac() {}
 
 BluetoothSocketMac::~BluetoothSocketMac() {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -933,9 +901,10 @@ void BluetoothSocketMac::ReleaseChannel() {
 
 void BluetoothSocketMac::ReleaseListener() {
   DCHECK(thread_checker_.CalledOnValidThread());
-  DCHECK_NE(service_record_handle_, kInvalidServiceRecordHandle);
+  DCHECK(service_record_.get());
 
-  IOBluetoothRemoveServiceWithRecordHandle(service_record_handle_);
+  [service_record_ removeServiceRecord];
+  service_record_.reset();
   rfcomm_connection_listener_.reset();
   l2cap_connection_listener_.reset();
 

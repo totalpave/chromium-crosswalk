@@ -10,10 +10,12 @@
 namespace views {
 namespace internal {
 
-MenuRunnerImplAdapter::MenuRunnerImplAdapter(ui::MenuModel* menu_model)
-    : menu_model_adapter_(new MenuModelAdapter(menu_model)),
-      impl_(new MenuRunnerImpl(menu_model_adapter_->CreateMenu())) {
-}
+MenuRunnerImplAdapter::MenuRunnerImplAdapter(
+    ui::MenuModel* menu_model,
+    const base::Closure& on_menu_done_callback)
+    : menu_model_adapter_(
+          new MenuModelAdapter(menu_model, on_menu_done_callback)),
+      impl_(new MenuRunnerImpl(menu_model_adapter_->CreateMenu())) {}
 
 bool MenuRunnerImplAdapter::IsRunning() const {
   return impl_->IsRunning();
@@ -24,13 +26,12 @@ void MenuRunnerImplAdapter::Release() {
   delete this;
 }
 
-MenuRunner::RunResult MenuRunnerImplAdapter::RunMenuAt(
-    Widget* parent,
-    MenuButton* button,
-    const gfx::Rect& bounds,
-    MenuAnchorPosition anchor,
-    int32_t types) {
-  return impl_->RunMenuAt(parent, button, bounds, anchor, types);
+void MenuRunnerImplAdapter::RunMenuAt(Widget* parent,
+                                      MenuButton* button,
+                                      const gfx::Rect& bounds,
+                                      MenuAnchorPosition anchor,
+                                      int32_t types) {
+  impl_->RunMenuAt(parent, button, bounds, anchor, types);
 }
 
 void MenuRunnerImplAdapter::Cancel() {
@@ -41,8 +42,7 @@ base::TimeTicks MenuRunnerImplAdapter::GetClosingEventTime() const {
   return impl_->GetClosingEventTime();
 }
 
-MenuRunnerImplAdapter::~MenuRunnerImplAdapter() {
-}
+MenuRunnerImplAdapter::~MenuRunnerImplAdapter() = default;
 
 }  // namespace internal
 }  // namespace views

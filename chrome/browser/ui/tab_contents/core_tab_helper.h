@@ -8,23 +8,19 @@
 #include <string>
 
 #include "base/callback.h"
-#include "base/id_map.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "chrome/common/chrome_render_frame.mojom.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 
-class CoreTabHelperDelegate;
-
 // Per-tab class to handle functionality that is core to the operation of tabs.
 class CoreTabHelper : public content::WebContentsObserver,
                       public content::WebContentsUserData<CoreTabHelper> {
  public:
-  using ContextNodeThumbnailCallback =
-      base::Callback<void(const std::string&, const gfx::Size&)>;
-
   ~CoreTabHelper() override;
 
   // Initial title assigned to NavigationEntries from Navigate.
@@ -33,22 +29,6 @@ class CoreTabHelper : public content::WebContentsObserver,
   // Returns a human-readable description the tab's loading state.
   base::string16 GetStatusText() const;
 
-  // Notification that tab closing has started.  This can be called multiple
-  // times, subsequent calls are ignored.
-  void OnCloseStarted();
-
-  // Notification that tab closing was cancelled. This can happen when a user
-  // cancels a window close via another tab's beforeunload dialog.
-  void OnCloseCanceled();
-
-  // Set the time during close when unload is started. Normally, this is set
-  // after the beforeunload dialog. However, for a window close, it is set
-  // after all the beforeunload dialogs have finished.
-  void OnUnloadStarted();
-
-  // Set the time during close when the tab is no longer visible.
-  void OnUnloadDetachedStarted();
-
   void UpdateContentRestrictions(int content_restrictions);
 
   // Perform an image search for the image that triggered the context menu.  The
@@ -56,14 +36,6 @@ class CoreTabHelper : public content::WebContentsObserver,
   // the image resources.
   void SearchByImageInNewTab(content::RenderFrameHost* render_frame_host,
                              const GURL& src_url);
-  void RequestThumbnailForContextNode(
-      content::RenderFrameHost* render_frame_host,
-      int minimum_size,
-      gfx::Size maximum_size,
-      const ContextNodeThumbnailCallback& callback);
-
-  CoreTabHelperDelegate* delegate() const { return delegate_; }
-  void set_delegate(CoreTabHelperDelegate* d) { delegate_ = d; }
 
   void set_new_tab_start_time(const base::TimeTicks& time) {
     new_tab_start_time_ = time;
@@ -81,41 +53,26 @@ class CoreTabHelper : public content::WebContentsObserver,
 
   // content::WebContentsObserver overrides:
   void DidStartLoading() override;
-  void WasShown() override;
-  void WebContentsDestroyed() override;
-  void BeforeUnloadFired(const base::TimeTicks& proceed_time) override;
-  void BeforeUnloadDialogCancelled() override;
-  bool OnMessageReceived(const IPC::Message& message,
-                         content::RenderFrameHost* render_frame_host) override;
+  void OnVisibilityChanged(content::Visibility visibility) override;
+  void NavigationEntriesDeleted() override;
 
-  void OnRequestThumbnailForContextNodeACK(const std::string& thumbnail_data,
-                                           const gfx::Size& original_size,
-                                           int callback_id);
-  void DoSearchByImageInNewTab(const GURL& src_url,
-                               const std::string& thumbnail_data,
-                               const gfx::Size& original_size);
-
-  // Delegate for notifying our owner about stuff. Not owned by us.
-  CoreTabHelperDelegate* delegate_;
+  void DoSearchByImageInNewTab(
+      chrome::mojom::ChromeRenderFrameAssociatedPtr chrome_render_frame,
+      const GURL& src_url,
+      const std::vector<uint8_t>& thumbnail_data,
+      const gfx::Size& original_size);
 
   // The time when we started to create the new tab page.  This time is from
   // before we created this WebContents.
   base::TimeTicks new_tab_start_time_;
 
-  // The time that we started to close this WebContents.
-  base::TimeTicks close_start_time_;
-
-  // The time when onbeforeunload ended.
-  base::TimeTicks before_unload_end_time_;
-
-  // The time when the tab was removed from view during close.
-  base::TimeTicks unload_detached_start_time_;
-
   // Content restrictions, used to disable print/copy etc based on content's
   // (full-page plugins for now only) permissions.
   int content_restrictions_;
 
-  IDMap<ContextNodeThumbnailCallback, IDMapOwnPointer> thumbnail_callbacks_;
+  base::WeakPtrFactory<CoreTabHelper> weak_factory_;
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   DISALLOW_COPY_AND_ASSIGN(CoreTabHelper);
 };

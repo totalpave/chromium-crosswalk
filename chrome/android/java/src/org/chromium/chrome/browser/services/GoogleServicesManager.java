@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.services;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.util.Log;
 
@@ -15,8 +16,9 @@ import org.chromium.base.TraceEvent;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.chrome.browser.signin.SigninHelper;
 import org.chromium.chrome.browser.signin.SigninManager;
+import org.chromium.chrome.browser.signin.SignoutReason;
 import org.chromium.chrome.browser.sync.SyncController;
-import org.chromium.sync.signin.ChromeSigninController;
+import org.chromium.components.signin.ChromeSigninController;
 
 /**
  * Starts and monitors various sync and Google services related tasks.
@@ -37,6 +39,7 @@ public class GoogleServicesManager implements ApplicationStateListener {
     @VisibleForTesting
     public static final String SESSION_TAG_PREFIX = "session_sync";
 
+    @SuppressLint("StaticFieldLeak")
     private static GoogleServicesManager sGoogleServicesManager;
 
     @VisibleForTesting
@@ -70,18 +73,19 @@ public class GoogleServicesManager implements ApplicationStateListener {
             // us.
             mContext = context.getApplicationContext();
 
-            mChromeSigninController = ChromeSigninController.get(mContext);
-            mSigninHelper = SigninHelper.get(mContext);
+            mChromeSigninController = ChromeSigninController.get();
+            mSigninHelper = SigninHelper.get();
 
             // The sign out flow starts by clearing the signed in user in the ChromeSigninController
             // on the Java side, and then performs a sign out on the native side. If there is a
             // crash on the native side then the signin state may get out of sync. Make sure that
             // the native side is signed out if the Java side doesn't have a currently signed in
             // user.
-            SigninManager signinManager = SigninManager.get(mContext);
+            SigninManager signinManager = SigninManager.get();
             if (!mChromeSigninController.isSignedIn() && signinManager.isSignedInOnNative()) {
                 Log.w(TAG, "Signed in state got out of sync, forcing native sign out");
-                signinManager.signOut();
+                // TODO(https://crbug.com/873116): Pass the correct reason for the signout.
+                signinManager.signOut(SignoutReason.USER_CLICKED_SIGNOUT_SETTINGS);
             }
 
             // Initialize sync.
@@ -101,7 +105,7 @@ public class GoogleServicesManager implements ApplicationStateListener {
     public void onMainActivityStart() {
         try {
             TraceEvent.begin("GoogleServicesManager.onMainActivityStart");
-            boolean accountsChanged = SigninHelper.checkAndClearAccountsChangedPref(mContext);
+            boolean accountsChanged = SigninHelper.checkAndClearAccountsChangedPref();
             mSigninHelper.validateAccountSettings(accountsChanged);
         } finally {
             TraceEvent.end("GoogleServicesManager.onMainActivityStart");

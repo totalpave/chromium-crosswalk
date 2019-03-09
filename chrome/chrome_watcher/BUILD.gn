@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//chrome/version.gni")
+import("//chrome/process_version_rc_template.gni")
 import("//testing/test.gni")
 
 source_set("client") {
@@ -22,7 +22,6 @@ source_set("hang_util") {
   ]
   deps = [
     "//base",
-    "//components/memory_pressure",
   ]
   libs = [ "pdh.lib" ]  # Used by system_load_estimator.h.
   ldflags = [ "/DELAYLOAD:pdh.dll" ]  # Only used on report capture.
@@ -41,14 +40,7 @@ test("system_load_estimator_unittests") {
   ]
 }
 
-group("kasko_util") {
-  public_deps = [
-    "//third_party/kasko:kasko_features",
-  ]
-}
-
-process_version("chrome_watcher_resources") {
-  template_file = chrome_version_rc_template
+process_version_rc_template("chrome_watcher_resources") {
   sources = [
     "chrome_watcher.ver",
   ]
@@ -57,23 +49,21 @@ process_version("chrome_watcher_resources") {
 
 shared_library("chrome_watcher") {
   sources = [
-    "chrome_watcher_main.cc",
-  ]
-  inputs = [
     "chrome_watcher.def",
+    "chrome_watcher_main.cc",
   ]
   deps = [
     ":chrome_watcher_resources",
     ":client",
-    ":kasko_util",
     "//base",
     "//base:base_static",
-    "//build/config/sanitizers:deps",
-    "//chrome/common:metrics_constants_util_win",
-    "//chrome/installer/util:with_no_strings",
+    "//chrome/common:non_code_constants",
+    "//chrome/common/win:eventlog_messages",
+    "//chrome/install_static:secondary_module",
+    "//chrome_elf",
     "//components/browser_watcher",
+    "//content/public/common:static_switches",
   ]
-  ldflags = [ "/DEF:" + rebase_path("chrome_watcher.def", root_build_dir) ]
   configs -= [ "//build/config/win:console" ]
   configs += [ "//build/config/win:windowed" ]
 }

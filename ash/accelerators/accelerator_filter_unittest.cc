@@ -7,19 +7,16 @@
 #include <memory>
 
 #include "ash/accelerators/accelerator_controller.h"
-#include "ash/accelerators/accelerator_delegate.h"
-#include "ash/common/shell_window_ids.h"
-#include "ash/common/wm/window_state.h"
+#include "ash/accelerators/pre_target_accelerator_handler.h"
+#include "ash/app_list/test/app_list_test_helper.h"
+#include "ash/session/session_controller.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/test/ash_test_helper.h"
-#include "ash/test/test_screenshot_delegate.h"
-#include "ash/test/test_session_state_delegate.h"
-#include "ash/wm/window_state_aura.h"
+#include "ash/test_screenshot_delegate.h"
+#include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/client/aura_constants.h"
-#include "ui/aura/test/aura_test_base.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
 #include "ui/base/accelerators/accelerator_history.h"
@@ -28,9 +25,8 @@
 #include "ui/gfx/geometry/rect.h"
 
 namespace ash {
-namespace test {
 
-typedef AshTestBase AcceleratorFilterTest;
+using AcceleratorFilterTest = AshTestBase;
 
 // Tests if AcceleratorFilter works without a focused window.
 TEST_F(AcceleratorFilterTest, TestFilterWithoutFocus) {
@@ -39,10 +35,11 @@ TEST_F(AcceleratorFilterTest, TestFilterWithoutFocus) {
 
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
   // AcceleratorController calls ScreenshotDelegate::HandleTakeScreenshot() when
-  // VKEY_PRINT is pressed. See kAcceleratorData[] in accelerator_controller.cc.
-  generator.PressKey(ui::VKEY_PRINT, 0);
+  // VKEY_SNAPSHOT is pressed. See kAcceleratorData[] in
+  // accelerator_controller.cc.
+  generator.PressKey(ui::VKEY_SNAPSHOT, 0);
   EXPECT_EQ(1, delegate->handle_take_screenshot_count());
-  generator.ReleaseKey(ui::VKEY_PRINT, 0);
+  generator.ReleaseKey(ui::VKEY_SNAPSHOT, 0);
   EXPECT_EQ(1, delegate->handle_take_screenshot_count());
 }
 
@@ -59,9 +56,9 @@ TEST_F(AcceleratorFilterTest, TestFilterWithFocus) {
   // AcceleratorFilter should ignore the key events since the root window is
   // not focused.
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
-  generator.PressKey(ui::VKEY_PRINT, 0);
+  generator.PressKey(ui::VKEY_SNAPSHOT, 0);
   EXPECT_EQ(0, delegate->handle_take_screenshot_count());
-  generator.ReleaseKey(ui::VKEY_PRINT, 0);
+  generator.ReleaseKey(ui::VKEY_SNAPSHOT, 0);
   EXPECT_EQ(0, delegate->handle_take_screenshot_count());
 
   // Reset window before |test_delegate| gets deleted.
@@ -74,27 +71,26 @@ TEST_F(AcceleratorFilterTest, TestCapsLockMask) {
   EXPECT_EQ(0, delegate->handle_take_screenshot_count());
 
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
-  generator.PressKey(ui::VKEY_PRINT, 0);
+  generator.PressKey(ui::VKEY_SNAPSHOT, 0);
   EXPECT_EQ(1, delegate->handle_take_screenshot_count());
-  generator.ReleaseKey(ui::VKEY_PRINT, 0);
+  generator.ReleaseKey(ui::VKEY_SNAPSHOT, 0);
   EXPECT_EQ(1, delegate->handle_take_screenshot_count());
 
   // Check if AcceleratorFilter ignores the mask for Caps Lock. Note that there
   // is no ui::EF_ mask for Num Lock.
-  generator.PressKey(ui::VKEY_PRINT, ui::EF_CAPS_LOCK_ON);
+  generator.PressKey(ui::VKEY_SNAPSHOT, ui::EF_CAPS_LOCK_ON);
   EXPECT_EQ(2, delegate->handle_take_screenshot_count());
-  generator.ReleaseKey(ui::VKEY_PRINT, ui::EF_CAPS_LOCK_ON);
+  generator.ReleaseKey(ui::VKEY_SNAPSHOT, ui::EF_CAPS_LOCK_ON);
   EXPECT_EQ(2, delegate->handle_take_screenshot_count());
 }
 
-#if defined(OS_CHROMEOS)
 // Tests if special hardware keys like brightness and volume are consumed as
 // expected by the shell.
 TEST_F(AcceleratorFilterTest, CanConsumeSystemKeys) {
   std::unique_ptr<ui::AcceleratorHistory> accelerator_history(
       new ui::AcceleratorHistory());
   ::wm::AcceleratorFilter filter(
-      std::unique_ptr<::wm::AcceleratorDelegate>(new AcceleratorDelegate),
+      std::make_unique<PreTargetAcceleratorHandler>(),
       accelerator_history.get());
   aura::Window* root_window = Shell::GetPrimaryRootWindow();
 
@@ -119,7 +115,7 @@ TEST_F(AcceleratorFilterTest, CanConsumeSystemKeys) {
 
   // Setting a window property on the target allows system keys to pass through.
   std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithId(1));
-  wm::GetWindowState(window.get())->set_can_consume_system_keys(true);
+  wm::GetWindowState(window.get())->SetCanConsumeSystemKeys(true);
   ui::KeyEvent press_volume_up(ui::ET_KEY_PRESSED, ui::VKEY_VOLUME_UP,
                                ui::EF_NONE);
   ui::Event::DispatcherApi dispatch_helper(&press_volume_up);
@@ -137,27 +133,29 @@ TEST_F(AcceleratorFilterTest, CanConsumeSystemKeys) {
 }
 
 TEST_F(AcceleratorFilterTest, SearchKeyShortcutsAreAlwaysHandled) {
-  TestSessionStateDelegate* session_state_delegate =
-      AshTestHelper::GetTestSessionStateDelegate();
-  EXPECT_FALSE(session_state_delegate->IsScreenLocked());
+  SessionController* const session_controller =
+      Shell::Get()->session_controller();
+  EXPECT_FALSE(session_controller->IsScreenLocked());
 
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
 
   // We can lock the screen (Search+L) if a window is not present.
   generator.PressKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
   generator.ReleaseKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
-  EXPECT_TRUE(session_state_delegate->IsScreenLocked());
+  session_controller->FlushMojoForTest();  // LockScreen is an async mojo call.
+  EXPECT_TRUE(session_controller->IsScreenLocked());
   UnblockUserSession();
-  EXPECT_FALSE(session_state_delegate->IsScreenLocked());
+  EXPECT_FALSE(session_controller->IsScreenLocked());
 
   // Search+L is processed when the app_list target visibility is false.
-  Shell::GetInstance()->DismissAppList();
-  EXPECT_FALSE(Shell::GetInstance()->GetAppListTargetVisibility());
+  GetAppListTestHelper()->DismissAndRunLoop();
+  GetAppListTestHelper()->CheckVisibility(false);
   generator.PressKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
   generator.ReleaseKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
-  EXPECT_TRUE(session_state_delegate->IsScreenLocked());
+  session_controller->FlushMojoForTest();  // LockScreen is an async mojo call.
+  EXPECT_TRUE(session_controller->IsScreenLocked());
   UnblockUserSession();
-  EXPECT_FALSE(session_state_delegate->IsScreenLocked());
+  EXPECT_FALSE(session_controller->IsScreenLocked());
 
   // Search+L is also processed when there is a full screen window.
   aura::test::TestWindowDelegate window_delegate;
@@ -166,11 +164,33 @@ TEST_F(AcceleratorFilterTest, SearchKeyShortcutsAreAlwaysHandled) {
   window->SetProperty(aura::client::kShowStateKey, ui::SHOW_STATE_FULLSCREEN);
   generator.PressKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
   generator.ReleaseKey(ui::VKEY_L, ui::EF_COMMAND_DOWN);
-  EXPECT_TRUE(session_state_delegate->IsScreenLocked());
+  session_controller->FlushMojoForTest();  // LockScreen is an async mojo call.
+  EXPECT_TRUE(session_controller->IsScreenLocked());
   UnblockUserSession();
-  EXPECT_FALSE(session_state_delegate->IsScreenLocked());
+  EXPECT_FALSE(session_controller->IsScreenLocked());
 }
-#endif  // defined(OS_CHROMEOS)
 
-}  // namespace test
+TEST_F(AcceleratorFilterTest, ToggleAppListInterruptedByMouseEvent) {
+  ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow());
+  GetAppListTestHelper()->CheckVisibility(false);
+
+  // The AppList should toggle if no mouse event occurs between key press and
+  // key release.
+  generator.PressKey(ui::VKEY_LWIN, ui::EF_NONE);
+  generator.ReleaseKey(ui::VKEY_LWIN, ui::EF_NONE);
+  GetAppListTestHelper()->WaitUntilIdle();
+  GetAppListTestHelper()->CheckVisibility(true);
+
+  // Close the app list.
+  GetAppListTestHelper()->DismissAndRunLoop();
+  GetAppListTestHelper()->CheckVisibility(false);
+
+  // When pressed key is interrupted by mouse, the AppList should not toggle.
+  generator.PressKey(ui::VKEY_LWIN, ui::EF_NONE);
+  generator.ClickLeftButton();
+  generator.ReleaseKey(ui::VKEY_LWIN, ui::EF_NONE);
+  GetAppListTestHelper()->WaitUntilIdle();
+  GetAppListTestHelper()->CheckVisibility(false);
+}
+
 }  // namespace ash

@@ -6,42 +6,33 @@
 #define ASH_SHELF_SHELF_TOOLTIP_MANAGER_H_
 
 #include "ash/ash_export.h"
-#include "ash/shelf/shelf_layout_manager_observer.h"
+#include "ash/shelf/shelf_observer.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
-#include "ui/aura/window_observer.h"
 #include "ui/events/event_handler.h"
-#include "ui/views/pointer_watcher.h"
+
+namespace ui {
+class LocatedEvent;
+}
 
 namespace views {
-class BubbleDialogDelegateView;
 class View;
 }
 
 namespace ash {
-class ShelfLayoutManager;
+class ShelfBubble;
 class ShelfView;
-
-namespace test {
-class ShelfTooltipManagerTest;
-class ShelfViewTest;
-}
 
 // ShelfTooltipManager manages the tooltip bubble that appears for shelf items.
 class ASH_EXPORT ShelfTooltipManager : public ui::EventHandler,
-                                       public aura::WindowObserver,
-                                       public views::PointerWatcher,
-                                       public ShelfLayoutManagerObserver {
+                                       public ShelfObserver {
  public:
   explicit ShelfTooltipManager(ShelfView* shelf_view);
   ~ShelfTooltipManager() override;
 
-  // Initializes the tooltip manager once the shelf is shown.
-  void Init();
-
-  // Closes the tooltip.
-  void Close();
+  // Closes the tooltip; uses an animation if |animate| is true.
+  void Close(bool animate = true);
 
   // Returns true if the tooltip is currently visible.
   bool IsVisible() const;
@@ -58,39 +49,28 @@ class ASH_EXPORT ShelfTooltipManager : public ui::EventHandler,
 
  protected:
   // ui::EventHandler overrides:
-  void OnEvent(ui::Event* event) override;
+  void OnMouseEvent(ui::MouseEvent* event) override;
+  void OnTouchEvent(ui::TouchEvent* event) override;
+  void OnKeyEvent(ui::KeyEvent* event) override;
 
-  // aura::WindowObserver overrides:
-  void OnWindowDestroying(aura::Window* window) override;
-
-  // views::PointerWatcher overrides:
-  void OnMousePressed(const ui::MouseEvent& event,
-                      const gfx::Point& location_in_screen,
-                      views::Widget* target) override;
-  void OnTouchPressed(const ui::TouchEvent& event,
-                      const gfx::Point& location_in_screen,
-                      views::Widget* target) override;
-
-  // ShelfLayoutManagerObserver overrides:
-  void WillDeleteShelfLayoutManager() override;
+  // ShelfObserver overrides:
   void WillChangeVisibilityState(ShelfVisibilityState new_state) override;
   void OnAutoHideStateChanged(ShelfAutoHideState new_state) override;
 
  private:
-  class ShelfTooltipBubble;
-  friend class test::ShelfViewTest;
-  friend class test::ShelfTooltipManagerTest;
+  friend class ShelfViewTest;
+  friend class ShelfTooltipManagerTest;
 
   // A helper function to check for shelf visibility and view validity.
   bool ShouldShowTooltipForView(views::View* view);
 
+  // A helper function to close the tooltip on mouse and touch press events.
+  void ProcessPressedEvent(const ui::LocatedEvent& event);
+
   int timer_delay_;
   base::OneShotTimer timer_;
-
   ShelfView* shelf_view_;
-  aura::Window* root_window_;
-  ShelfLayoutManager* shelf_layout_manager_;
-  views::BubbleDialogDelegateView* bubble_;
+  ShelfBubble* bubble_ = nullptr;
 
   base::WeakPtrFactory<ShelfTooltipManager> weak_factory_;
 

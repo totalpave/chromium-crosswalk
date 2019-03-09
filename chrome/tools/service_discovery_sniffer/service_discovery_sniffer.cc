@@ -10,6 +10,7 @@
 #include "base/at_exit.h"
 #include "base/bind.h"
 #include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "chrome/browser/local_discovery/service_discovery_client_impl.h"
 #include "net/dns/mdns_client.h"
 
@@ -73,7 +74,7 @@ ServiceTypePrinter::ServiceTypePrinter(ServiceDiscoveryClient* client,
 
 void ServiceTypePrinter::Start() {
   watcher_->Start();
-  watcher_->DiscoverNewServices(false);
+  watcher_->DiscoverNewServices();
 }
 
 ServiceTypePrinter::~ServiceTypePrinter() {
@@ -82,7 +83,8 @@ ServiceTypePrinter::~ServiceTypePrinter() {
 void ServiceTypePrinter::OnServiceUpdated(ServiceWatcher::UpdateType update,
                                           const std::string& service_name) {
   if (update == ServiceWatcher::UPDATE_ADDED) {
-    services_[service_name].reset(new ServicePrinter(client_, service_name));
+    services_[service_name] =
+        std::make_unique<ServicePrinter>(client_, service_name);
     services_[service_name]->Added();
   } else if (update == ServiceWatcher::UPDATE_CHANGED) {
     services_[service_name]->Changed();
@@ -119,6 +121,6 @@ int main(int argc, char** argv) {
         std::string(argv[1]) + "._tcp.local");
 
     print_changes.Start();
-    message_loop.Run();
+    base::RunLoop().Run();
   }
 }

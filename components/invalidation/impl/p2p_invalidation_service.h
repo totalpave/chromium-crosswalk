@@ -2,21 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef COMPONENTS_INVALIDATION_IMPL_P2P_INVALIDATION_SERVICE_H_
+#define COMPONENTS_INVALIDATION_IMPL_P2P_INVALIDATION_SERVICE_H_
+
 #include <memory>
 
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "components/invalidation/impl/p2p_invalidator.h"
 #include "components/invalidation/public/invalidation_service.h"
 #include "components/keyed_service/core/keyed_service.h"
 
-#ifndef COMPONENTS_INVALIDATION_IMPL_P2P_INVALIDATION_SERVICE_H_
-#define COMPONENTS_INVALIDATION_IMPL_P2P_INVALIDATION_SERVICE_H_
+namespace jingle_glue {
+class NetworkServiceConfigTestUtil;
+}
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class NetworkConnectionTracker;
 }
 
 namespace syncer {
@@ -30,12 +34,11 @@ class InvalidationLogger;
 // This service is a wrapper around P2PInvalidator.  Unlike other
 // InvalidationServices, it can both send and receive invalidations.  It is used
 // only in tests, where we're unable to connect to a real invalidations server.
-class P2PInvalidationService : public base::NonThreadSafe,
-                               public InvalidationService {
+class P2PInvalidationService : public InvalidationService {
  public:
   P2PInvalidationService(
-      std::unique_ptr<IdentityProvider> identity_provider,
-      const scoped_refptr<net::URLRequestContextGetter>& request_context,
+      std::unique_ptr<jingle_glue::NetworkServiceConfigTestUtil> config_helper,
+      network::NetworkConnectionTracker* network_connection_tracker,
       syncer::P2PNotificationTarget notification_target);
   ~P2PInvalidationService() override;
 
@@ -52,7 +55,6 @@ class P2PInvalidationService : public base::NonThreadSafe,
   InvalidationLogger* GetInvalidationLogger() override;
   void RequestDetailedStatus(
       base::Callback<void(const base::DictionaryValue&)> caller) const override;
-  IdentityProvider* GetIdentityProvider() override;
 
   void UpdateCredentials(const std::string& username,
                          const std::string& password);
@@ -60,9 +62,11 @@ class P2PInvalidationService : public base::NonThreadSafe,
   void SendInvalidation(const syncer::ObjectIdSet& ids);
 
  private:
-  std::unique_ptr<IdentityProvider> identity_provider_;
   std::unique_ptr<syncer::P2PInvalidator> invalidator_;
+  std::unique_ptr<jingle_glue::NetworkServiceConfigTestUtil> config_helper_;
   std::string invalidator_id_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(P2PInvalidationService);
 };

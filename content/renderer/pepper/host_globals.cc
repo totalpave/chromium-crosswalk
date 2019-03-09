@@ -10,6 +10,7 @@
 #include "base/logging.h"
 #include "base/rand_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/post_task.h"
 #include "base/task_runner.h"
 #include "content/public/common/content_switches.h"
 #include "content/renderer/pepper/pepper_plugin_instance_impl.h"
@@ -18,11 +19,11 @@
 #include "ppapi/shared_impl/api_id.h"
 #include "ppapi/shared_impl/id_assignment.h"
 #include "ppapi/shared_impl/proxy_lock.h"
-#include "third_party/WebKit/public/platform/WebString.h"
-#include "third_party/WebKit/public/web/WebConsoleMessage.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebPluginContainer.h"
+#include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/public/web/web_console_message.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_plugin_container.h"
 
 using ppapi::CheckIdType;
 using ppapi::MakeTypedId;
@@ -42,9 +43,7 @@ typedef std::set<WebPluginContainer*> ContainerSet;
 // Adds all WebPluginContainers associated with the given module to the set.
 void GetAllContainersForModule(PluginModule* module, ContainerSet* containers) {
   const PluginModule::PluginInstanceSet& instances = module->GetAllInstances();
-  for (PluginModule::PluginInstanceSet::const_iterator i = instances.begin();
-       i != instances.end();
-       ++i) {
+  for (auto i = instances.begin(); i != instances.end(); ++i) {
     WebPluginContainer* container = (*i)->container();
     // If "Delete" is called on an instance, the instance sets its container to
     // NULL, but the instance may actually outlive its container. Callers of
@@ -54,17 +53,17 @@ void GetAllContainersForModule(PluginModule* module, ContainerSet* containers) {
   }
 }
 
-WebConsoleMessage::Level LogLevelToWebLogLevel(PP_LogLevel level) {
+blink::mojom::ConsoleMessageLevel LogLevelToWebLogLevel(PP_LogLevel level) {
   switch (level) {
     case PP_LOGLEVEL_TIP:
-      return WebConsoleMessage::LevelDebug;
+      return blink::mojom::ConsoleMessageLevel::kVerbose;
     case PP_LOGLEVEL_LOG:
-      return WebConsoleMessage::LevelLog;
+      return blink::mojom::ConsoleMessageLevel::kInfo;
     case PP_LOGLEVEL_WARNING:
-      return WebConsoleMessage::LevelWarning;
+      return blink::mojom::ConsoleMessageLevel::kWarning;
     case PP_LOGLEVEL_ERROR:
     default:
-      return WebConsoleMessage::LevelError;
+      return blink::mojom::ConsoleMessageLevel::kError;
   }
 }
 
@@ -76,12 +75,12 @@ WebConsoleMessage MakeLogMessage(PP_LogLevel level,
     result.append(": ");
   result.append(message);
   return WebConsoleMessage(LogLevelToWebLogLevel(level),
-                           WebString(base::UTF8ToUTF16(result)));
+                           WebString::FromUTF8(result));
 }
 
 }  // namespace
 
-HostGlobals* HostGlobals::host_globals_ = NULL;
+HostGlobals* HostGlobals::host_globals_ = nullptr;
 
 HostGlobals::HostGlobals()
     : ppapi::PpapiGlobals(),
@@ -95,7 +94,7 @@ HostGlobals::HostGlobals()
 
 HostGlobals::~HostGlobals() {
   DCHECK(host_globals_ == this || !host_globals_);
-  host_globals_ = NULL;
+  host_globals_ = nullptr;
 }
 
 ppapi::ResourceTracker* HostGlobals::GetResourceTracker() {
@@ -106,9 +105,9 @@ ppapi::VarTracker* HostGlobals::GetVarTracker() { return &host_var_tracker_; }
 
 ppapi::CallbackTracker* HostGlobals::GetCallbackTrackerForInstance(
     PP_Instance instance) {
-  InstanceMap::iterator found = instance_map_.find(instance);
+  auto found = instance_map_.find(instance);
   if (found == instance_map_.end())
-    return NULL;
+    return nullptr;
   return found->second->module()->GetCallbackTracker().get();
 }
 
@@ -122,7 +121,7 @@ ppapi::thunk::ResourceCreationAPI* HostGlobals::GetResourceCreationAPI(
     PP_Instance pp_instance) {
   PepperPluginInstanceImpl* instance = GetInstance(pp_instance);
   if (!instance)
-    return NULL;
+    return nullptr;
   return &instance->resource_creation();
 }
 
@@ -148,15 +147,13 @@ void HostGlobals::LogWithSource(PP_Instance instance,
                                 const std::string& value) {
   PepperPluginInstanceImpl* instance_object =
       HostGlobals::Get()->GetInstance(instance);
-  // It's possible to process this message in a nested message loop while
+  // It's possible to process this message in a nested run loop while
   // detaching a Document…
   // TODO(dcheng): Make it so this can't happen. https://crbug.com/561683
   if (instance_object &&
-      instance_object->container()->document().frame()) {
-    instance_object->container()
-        ->document()
-        .frame()
-        ->addMessageToConsole(MakeLogMessage(level, source, value));
+      instance_object->container()->GetDocument().GetFrame()) {
+    instance_object->container()->GetDocument().GetFrame()->AddMessageToConsole(
+        MakeLogMessage(level, source, value));
   } else {
     BroadcastLogWithSource(0, level, source, value);
   }
@@ -183,19 +180,22 @@ void HostGlobals::BroadcastLogWithSource(PP_Module pp_module,
   }
 
   WebConsoleMessage message = MakeLogMessage(level, source, value);
-  for (ContainerSet::iterator i = containers.begin(); i != containers.end();
-       ++i) {
-    WebLocalFrame* frame = (*i)->document().frame();
+  for (auto i = containers.begin(); i != containers.end(); ++i) {
+    WebLocalFrame* frame = (*i)->GetDocument().GetFrame();
     if (frame)
-      frame->addMessageToConsole(message);
+      frame->AddMessageToConsole(message);
   }
 }
 
 base::TaskRunner* HostGlobals::GetFileTaskRunner() {
-  return RenderThreadImpl::current()->GetFileThreadMessageLoopProxy().get();
+  if (!file_task_runner_)
+    file_task_runner_ = base::CreateTaskRunnerWithTraits({base::MayBlock()});
+  return file_task_runner_.get();
 }
 
-ppapi::MessageLoopShared* HostGlobals::GetCurrentMessageLoop() { return NULL; }
+ppapi::MessageLoopShared* HostGlobals::GetCurrentMessageLoop() {
+  return nullptr;
+}
 
 PP_Module HostGlobals::AddModule(PluginModule* module) {
 #ifndef NDEBUG
@@ -219,7 +219,7 @@ PP_Module HostGlobals::AddModule(PluginModule* module) {
 void HostGlobals::ModuleDeleted(PP_Module module) {
   DLOG_IF(ERROR, !CheckIdType(module, ppapi::PP_ID_TYPE_MODULE))
       << module << " is not a PP_Module.";
-  ModuleMap::iterator found = module_map_.find(module);
+  auto found = module_map_.find(module);
   if (found == module_map_.end()) {
     NOTREACHED();
     return;
@@ -230,9 +230,9 @@ void HostGlobals::ModuleDeleted(PP_Module module) {
 PluginModule* HostGlobals::GetModule(PP_Module module) {
   DLOG_IF(ERROR, !CheckIdType(module, ppapi::PP_ID_TYPE_MODULE))
       << module << " is not a PP_Module.";
-  ModuleMap::iterator found = module_map_.find(module);
+  auto found = module_map_.find(module);
   if (found == module_map_.end())
-    return NULL;
+    return nullptr;
   return found->second;
 }
 
@@ -271,9 +271,9 @@ void HostGlobals::InstanceCrashed(PP_Instance instance) {
 PepperPluginInstanceImpl* HostGlobals::GetInstance(PP_Instance instance) {
   DLOG_IF(ERROR, !CheckIdType(instance, ppapi::PP_ID_TYPE_INSTANCE))
       << instance << " is not a PP_Instance.";
-  InstanceMap::iterator found = instance_map_.find(instance);
+  auto found = instance_map_.find(instance);
   if (found == instance_map_.end())
-    return NULL;
+    return nullptr;
   return found->second;
 }
 

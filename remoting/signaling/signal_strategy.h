@@ -10,11 +10,13 @@
 
 #include "base/macros.h"
 
-namespace buzz {
+namespace jingle_xmpp {
 class XmlElement;
-}  // namespace buzz
+}  // namespace jingle_xmpp
 
 namespace remoting {
+
+class SignalingAddress;
 
 class SignalStrategy {
  public:
@@ -53,7 +55,7 @@ class SignalStrategy {
     // otherwise. The signal strategy must not be deleted from a
     // handler of this message.
     virtual bool OnSignalStrategyIncomingStanza(
-        const buzz::XmlElement* stanza) = 0;
+        const jingle_xmpp::XmlElement* stanza) = 0;
   };
 
   SignalStrategy() {}
@@ -75,8 +77,8 @@ class SignalStrategy {
   // Returns the last error. Set when state changes to DISCONNECT.
   virtual Error GetError() const = 0;
 
-  // Returns local JID or an empty string when not connected.
-  virtual std::string GetLocalJid() const = 0;
+  // Local address. An empty value is returned when not connected.
+  virtual const SignalingAddress& GetLocalAddress() const = 0;
 
   // Add a |listener| that can listen to all incoming
   // messages. Doesn't take ownership of the |listener|. All listeners
@@ -87,7 +89,7 @@ class SignalStrategy {
   virtual void RemoveListener(Listener* listener) = 0;
 
   // Sends a raw XMPP stanza. Returns false if the stanza couldn't be send.
-  virtual bool SendStanza(std::unique_ptr<buzz::XmlElement> stanza) = 0;
+  virtual bool SendStanza(std::unique_ptr<jingle_xmpp::XmlElement> stanza) = 0;
 
   // Returns new ID that should be used for the next outgoing IQ
   // request.

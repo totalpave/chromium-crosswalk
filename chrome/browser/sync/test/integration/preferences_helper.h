@@ -5,14 +5,25 @@
 #ifndef CHROME_BROWSER_SYNC_TEST_INTEGRATION_PREFERENCES_HELPER_H_
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_PREFERENCES_HELPER_H_
 
-#include "base/files/file_path.h"
-#include "base/values.h"
-
 #include <stdint.h>
 
+#include <memory>
 #include <string>
+#include <vector>
 
+#include "base/files/file_path.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/values.h"
+#include "chrome/browser/sync/test/integration/status_change_checker.h"
+#include "components/prefs/json_pref_store.h"
+
+class PrefChangeRegistrar;
 class PrefService;
+class Profile;
+
+namespace user_prefs {
+class PrefRegistrySyncable;
+}
 
 namespace preferences_helper {
 
@@ -21,6 +32,9 @@ PrefService* GetPrefs(int index);
 
 // Used to access the preferences within the verifier sync profile.
 PrefService* GetVerifierPrefs();
+
+// Provides access to the syncable pref registy of a profile.
+user_prefs::PrefRegistrySyncable* GetRegistry(Profile* profile);
 
 // Inverts the value of the boolean preference with name |pref_name| in the
 // profile with index |index|. Also inverts its value in |verifier| if
@@ -63,6 +77,10 @@ void ChangeListPref(int index,
                     const char* pref_name,
                     const base::ListValue& new_value);
 
+// Reads preferences from a given profile's pref file (after flushing) and loads
+// them into a new created pref store.
+scoped_refptr<PrefStore> BuildPrefStoreFromPrefsFile(Profile* profile);
+
 // Used to verify that the boolean preference with name |pref_name| has the
 // same value across all profiles. Also checks |verifier| if DisableVerifier()
 // hasn't been called.
@@ -98,22 +116,62 @@ bool FilePathPrefMatches(const char* pref_name) WARN_UNUSED_RESULT;
 // hasn't been called.
 bool ListPrefMatches(const char* pref_name) WARN_UNUSED_RESULT;
 
-// This is the version of ListPrefMatches that waits for the preference list
-// to match in all profiles. Returns false if this operation times out.
-bool AwaitListPrefMatches(const char* pref_name) WARN_UNUSED_RESULT;
-
-// Blocks the test until the specified pref matches on all relevant clients or
-// a timeout occurs.  Returns false if it returns because of a timeout.
-bool AwaitBooleanPrefMatches(const char* pref_name) WARN_UNUSED_RESULT;
-
-// Blocks the test until the specified pref matches on all relevant clients or
-// a timeout occurs.  Returns false if it returns because of a timeout.
-bool AwaitIntegerPrefMatches(const char* pref_name) WARN_UNUSED_RESULT;
-
-// Blocks the test until the specified pref matches on all relevant clients or
-// a timeout occurs.  Returns false if it returns because of a timeout.
-bool AwaitStringPrefMatches(const char* pref_name) WARN_UNUSED_RESULT;
-
 }  // namespace preferences_helper
+
+// Abstract checker that takes care of registering for preference changes.
+class PrefMatchChecker : public StatusChangeChecker {
+ public:
+  explicit PrefMatchChecker(const char* path);
+  ~PrefMatchChecker() override;
+
+  // StatusChangeChecker implementation.
+  bool IsExitConditionSatisfied() override = 0;
+  std::string GetDebugMessage() const override;
+
+ protected:
+  const char* GetPath() const;
+
+ private:
+  void RegisterPrefListener(PrefService* pref_service);
+
+  std::vector<std::unique_ptr<PrefChangeRegistrar>> pref_change_registrars_;
+  const char* path_;
+};
+
+// Matcher that blocks until the specified list pref matches on all clients.
+class ListPrefMatchChecker : public PrefMatchChecker {
+ public:
+  explicit ListPrefMatchChecker(const char* path);
+
+  // PrefMatchChecker implementation.
+  bool IsExitConditionSatisfied() override;
+};
+
+// Matcher that blocks until the specified boolean pref matches on all clients.
+class BooleanPrefMatchChecker : public PrefMatchChecker {
+ public:
+  explicit BooleanPrefMatchChecker(const char* path);
+
+  // PrefMatchChecker implementation.
+  bool IsExitConditionSatisfied() override;
+};
+
+// Matcher that blocks until the specified integer pref matches on all clients.
+class IntegerPrefMatchChecker : public PrefMatchChecker {
+ public:
+  explicit IntegerPrefMatchChecker(const char* path);
+
+  // PrefMatchChecker implementation.
+  bool IsExitConditionSatisfied() override;
+};
+
+// Matcher that blocks until the specified string pref matches on all clients.
+class StringPrefMatchChecker : public PrefMatchChecker {
+ public:
+  explicit StringPrefMatchChecker(const char* path);
+
+  // PrefMatchChecker implementation.
+  bool IsExitConditionSatisfied() override;
+};
 
 #endif  // CHROME_BROWSER_SYNC_TEST_INTEGRATION_PREFERENCES_HELPER_H_

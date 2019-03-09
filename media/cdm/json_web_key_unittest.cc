@@ -9,14 +9,15 @@
 
 #include "base/base64.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
+#include "media/base/content_decryption_module.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
 
 class JSONWebKeyTest : public testing::Test {
  public:
-  JSONWebKeyTest() {}
+  JSONWebKeyTest() = default;
 
  protected:
   void ExtractJWKKeysAndExpect(const std::string& jwk,
@@ -24,7 +25,7 @@ class JSONWebKeyTest : public testing::Test {
                                size_t expected_number_of_keys) {
     DCHECK(!jwk.empty());
     KeyIdAndKeyPairs keys;
-    MediaKeys::SessionType session_type;
+    CdmSessionType session_type;
     EXPECT_EQ(expected_result,
               ExtractKeysFromJWKSet(jwk, &keys, &session_type));
     EXPECT_EQ(expected_number_of_keys, keys.size());
@@ -32,10 +33,10 @@ class JSONWebKeyTest : public testing::Test {
 
   void ExtractSessionTypeAndExpect(const std::string& jwk,
                                    bool expected_result,
-                                   MediaKeys::SessionType expected_type) {
+                                   CdmSessionType expected_type) {
     DCHECK(!jwk.empty());
     KeyIdAndKeyPairs keys;
-    MediaKeys::SessionType session_type;
+    CdmSessionType session_type;
     EXPECT_EQ(expected_result,
               ExtractKeysFromJWKSet(jwk, &keys, &session_type));
     if (expected_result) {
@@ -46,7 +47,7 @@ class JSONWebKeyTest : public testing::Test {
 
   void CreateLicenseAndExpect(const uint8_t* key_id,
                               int key_id_length,
-                              MediaKeys::SessionType session_type,
+                              CdmSessionType session_type,
                               const std::string& expected_result) {
     std::vector<uint8_t> result;
     KeyIdList key_ids;
@@ -92,41 +93,41 @@ TEST_F(JSONWebKeyTest, GenerateJWKSet) {
                            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
 
   EXPECT_EQ("{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}]}",
-            GenerateJWKSet(data1, arraysize(data1), data1, arraysize(data1)));
+            GenerateJWKSet(data1, base::size(data1), data1, base::size(data1)));
   EXPECT_EQ(
       "{\"keys\":[{\"k\":\"AQIDBA\",\"kid\":\"AQIDBA\",\"kty\":\"oct\"}]}",
-      GenerateJWKSet(data2, arraysize(data2), data2, arraysize(data2)));
+      GenerateJWKSet(data2, base::size(data2), data2, base::size(data2)));
   EXPECT_EQ("{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQIDBA\",\"kty\":\"oct\"}]}",
-            GenerateJWKSet(data1, arraysize(data1), data2, arraysize(data2)));
+            GenerateJWKSet(data1, base::size(data1), data2, base::size(data2)));
   EXPECT_EQ("{\"keys\":[{\"k\":\"AQIDBA\",\"kid\":\"AQI\",\"kty\":\"oct\"}]}",
-            GenerateJWKSet(data2, arraysize(data2), data1, arraysize(data1)));
+            GenerateJWKSet(data2, base::size(data2), data1, base::size(data1)));
   EXPECT_EQ(
       "{\"keys\":[{\"k\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"kid\":"
       "\"AQIDBAUGBwgJCgsMDQ4PEA\",\"kty\":\"oct\"}]}",
-      GenerateJWKSet(data3, arraysize(data3), data3, arraysize(data3)));
+      GenerateJWKSet(data3, base::size(data3), data3, base::size(data3)));
 
   KeyIdAndKeyPairs keys;
   keys.push_back(
-      MakeKeyIdAndKeyPair(data1, arraysize(data1), data1, arraysize(data1)));
+      MakeKeyIdAndKeyPair(data1, base::size(data1), data1, base::size(data1)));
   EXPECT_EQ(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}],\"type\":"
       "\"temporary\"}",
-      GenerateJWKSet(keys, MediaKeys::TEMPORARY_SESSION));
+      GenerateJWKSet(keys, CdmSessionType::kTemporary));
   keys.push_back(
-      MakeKeyIdAndKeyPair(data2, arraysize(data2), data2, arraysize(data2)));
+      MakeKeyIdAndKeyPair(data2, base::size(data2), data2, base::size(data2)));
   EXPECT_EQ(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"},{\"k\":"
       "\"AQIDBA\",\"kid\":\"AQIDBA\",\"kty\":\"oct\"}],\"type\":\"persistent-"
       "license\"}",
-      GenerateJWKSet(keys, MediaKeys::PERSISTENT_LICENSE_SESSION));
+      GenerateJWKSet(keys, CdmSessionType::kPersistentLicense));
   keys.push_back(
-      MakeKeyIdAndKeyPair(data3, arraysize(data3), data3, arraysize(data3)));
+      MakeKeyIdAndKeyPair(data3, base::size(data3), data3, base::size(data3)));
   EXPECT_EQ(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"},{\"k\":"
       "\"AQIDBA\",\"kid\":\"AQIDBA\",\"kty\":\"oct\"},{\"k\":"
       "\"AQIDBAUGBwgJCgsMDQ4PEA\",\"kid\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"kty\":"
-      "\"oct\"}],\"type\":\"persistent-release-message\"}",
-      GenerateJWKSet(keys, MediaKeys::PERSISTENT_RELEASE_MESSAGE_SESSION));
+      "\"oct\"}],\"type\":\"persistent-usage-record\"}",
+      GenerateJWKSet(keys, CdmSessionType::kPersistentUsageRecord));
 }
 
 TEST_F(JSONWebKeyTest, ExtractValidJWKKeys) {
@@ -394,29 +395,29 @@ TEST_F(JSONWebKeyTest, Alg) {
   ExtractJWKKeysAndExpect(kJwksWithWrongAlg, true, 1);
 }
 
-TEST_F(JSONWebKeyTest, SessionType) {
+TEST_F(JSONWebKeyTest, CdmSessionType) {
   ExtractSessionTypeAndExpect(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}]}", true,
-      MediaKeys::TEMPORARY_SESSION);
+      CdmSessionType::kTemporary);
   ExtractSessionTypeAndExpect(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}],\"type\":"
       "\"temporary\"}",
-      true, MediaKeys::TEMPORARY_SESSION);
+      true, CdmSessionType::kTemporary);
   ExtractSessionTypeAndExpect(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}],\"type\":"
       "\"persistent-license\"}",
-      true, MediaKeys::PERSISTENT_LICENSE_SESSION);
+      true, CdmSessionType::kPersistentLicense);
   ExtractSessionTypeAndExpect(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}],\"type\":"
-      "\"persistent-release-message\"}",
-      true, MediaKeys::PERSISTENT_RELEASE_MESSAGE_SESSION);
+      "\"persistent-usage-record\"}",
+      true, CdmSessionType::kPersistentUsageRecord);
   ExtractSessionTypeAndExpect(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}],\"type\":"
       "\"unknown\"}",
-      false, MediaKeys::TEMPORARY_SESSION);
+      false, CdmSessionType::kTemporary);
   ExtractSessionTypeAndExpect(
       "{\"keys\":[{\"k\":\"AQI\",\"kid\":\"AQI\",\"kty\":\"oct\"}],\"type\":3}",
-      false, MediaKeys::TEMPORARY_SESSION);
+      false, CdmSessionType::kTemporary);
 }
 
 TEST_F(JSONWebKeyTest, CreateLicense) {
@@ -425,22 +426,18 @@ TEST_F(JSONWebKeyTest, CreateLicense) {
   const uint8_t data3[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
                            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
 
-  CreateLicenseAndExpect(data1,
-                         arraysize(data1),
-                         MediaKeys::TEMPORARY_SESSION,
+  CreateLicenseAndExpect(data1, base::size(data1), CdmSessionType::kTemporary,
                          "{\"kids\":[\"AQI\"],\"type\":\"temporary\"}");
   CreateLicenseAndExpect(
-      data1, arraysize(data1), MediaKeys::PERSISTENT_LICENSE_SESSION,
+      data1, base::size(data1), CdmSessionType::kPersistentLicense,
       "{\"kids\":[\"AQI\"],\"type\":\"persistent-license\"}");
   CreateLicenseAndExpect(
-      data1, arraysize(data1), MediaKeys::PERSISTENT_RELEASE_MESSAGE_SESSION,
-      "{\"kids\":[\"AQI\"],\"type\":\"persistent-release-message\"}");
-  CreateLicenseAndExpect(data2,
-                         arraysize(data2),
-                         MediaKeys::TEMPORARY_SESSION,
+      data1, base::size(data1), CdmSessionType::kPersistentUsageRecord,
+      "{\"kids\":[\"AQI\"],\"type\":\"persistent-usage-record\"}");
+  CreateLicenseAndExpect(data2, base::size(data2), CdmSessionType::kTemporary,
                          "{\"kids\":[\"AQIDBA\"],\"type\":\"temporary\"}");
-  CreateLicenseAndExpect(data3, arraysize(data3),
-                         MediaKeys::PERSISTENT_LICENSE_SESSION,
+  CreateLicenseAndExpect(data3, base::size(data3),
+                         CdmSessionType::kPersistentLicense,
                          "{\"kids\":[\"AQIDBAUGBwgJCgsMDQ4PEA\"],\"type\":"
                          "\"persistent-license\"}");
 }
@@ -451,21 +448,14 @@ TEST_F(JSONWebKeyTest, ExtractLicense) {
   const uint8_t data3[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
                            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
 
+  ExtractKeyFromLicenseAndExpect("{\"kids\":[\"AQI\"],\"type\":\"temporary\"}",
+                                 true, data1, base::size(data1));
   ExtractKeyFromLicenseAndExpect(
-      "{\"kids\":[\"AQI\"],\"type\":\"temporary\"}",
-      true,
-      data1,
-      arraysize(data1));
+      "{\"kids\":[\"AQIDBA\"],\"type\":\"temporary\"}", true, data2,
+      base::size(data2));
   ExtractKeyFromLicenseAndExpect(
-      "{\"kids\":[\"AQIDBA\"],\"type\":\"temporary\"}",
-      true,
-      data2,
-      arraysize(data2));
-  ExtractKeyFromLicenseAndExpect(
-      "{\"kids\":[\"AQIDBAUGBwgJCgsMDQ4PEA\"],\"type\":\"persistent\"}",
-      true,
-      data3,
-      arraysize(data3));
+      "{\"kids\":[\"AQIDBAUGBwgJCgsMDQ4PEA\"],\"type\":\"persistent\"}", true,
+      data3, base::size(data3));
 
   // Try some incorrect JSON.
   ExtractKeyFromLicenseAndExpect("", false, NULL, 0);
@@ -495,7 +485,7 @@ TEST_F(JSONWebKeyTest, Base64UrlEncoding) {
   // and is padded with = when converted to base64.
   std::string encoded_text;
   base::Base64Encode(
-      std::string(reinterpret_cast<const char*>(&data1[0]), arraysize(data1)),
+      std::string(reinterpret_cast<const char*>(&data1[0]), base::size(data1)),
       &encoded_text);
   EXPECT_EQ(encoded_text, "+/37/fv9+w==");
   EXPECT_NE(encoded_text.find('+'), std::string::npos);
@@ -506,12 +496,12 @@ TEST_F(JSONWebKeyTest, Base64UrlEncoding) {
   EXPECT_EQ(encoded_text.find('-'), std::string::npos);
   EXPECT_EQ(encoded_text.find('_'), std::string::npos);
 
-  CreateLicenseAndExpect(data1, arraysize(data1), MediaKeys::TEMPORARY_SESSION,
+  CreateLicenseAndExpect(data1, base::size(data1), CdmSessionType::kTemporary,
                          "{\"kids\":[\"-_37_fv9-w\"],\"type\":\"temporary\"}");
 
   ExtractKeyFromLicenseAndExpect(
       "{\"kids\":[\"-_37_fv9-w\"],\"type\":\"temporary\"}", true, data1,
-      arraysize(data1));
+      base::size(data1));
 }
 
 TEST_F(JSONWebKeyTest, MultipleKeys) {
@@ -522,10 +512,10 @@ TEST_F(JSONWebKeyTest, MultipleKeys) {
 
   std::vector<uint8_t> result;
   KeyIdList key_ids;
-  key_ids.push_back(std::vector<uint8_t>(data1, data1 + arraysize(data1)));
-  key_ids.push_back(std::vector<uint8_t>(data2, data2 + arraysize(data2)));
-  key_ids.push_back(std::vector<uint8_t>(data3, data3 + arraysize(data3)));
-  CreateLicenseRequest(key_ids, MediaKeys::TEMPORARY_SESSION, &result);
+  key_ids.push_back(std::vector<uint8_t>(data1, data1 + base::size(data1)));
+  key_ids.push_back(std::vector<uint8_t>(data2, data2 + base::size(data2)));
+  key_ids.push_back(std::vector<uint8_t>(data3, data3 + base::size(data3)));
+  CreateLicenseRequest(key_ids, CdmSessionType::kTemporary, &result);
   std::string s(result.begin(), result.end());
   EXPECT_EQ(
       "{\"kids\":[\"AQI\",\"AQIDBA\",\"AQIDBAUGBwgJCgsMDQ4PEA\"],\"type\":"
@@ -546,16 +536,16 @@ TEST_F(JSONWebKeyTest, ExtractKeyIds) {
                                               &error_message));
   EXPECT_EQ(1u, key_ids.size());
   EXPECT_EQ(0u, error_message.length());
-  VerifyKeyId(key_ids[0], data1, arraysize(data1));
+  VerifyKeyId(key_ids[0], data1, base::size(data1));
 
   EXPECT_TRUE(ExtractKeyIdsFromKeyIdsInitData(
       "{\"kids\":[\"AQI\",\"AQIDBA\",\"AQIDBAUGBwgJCgsMDQ4PEA\"]}", &key_ids,
       &error_message));
   EXPECT_EQ(3u, key_ids.size());
   EXPECT_EQ(0u, error_message.length());
-  VerifyKeyId(key_ids[0], data1, arraysize(data1));
-  VerifyKeyId(key_ids[1], data2, arraysize(data2));
-  VerifyKeyId(key_ids[2], data3, arraysize(data3));
+  VerifyKeyId(key_ids[0], data1, base::size(data1));
+  VerifyKeyId(key_ids[1], data2, base::size(data2));
+  VerifyKeyId(key_ids[2], data3, base::size(data3));
 
   // Expect failure when non-ascii.
   EXPECT_FALSE(ExtractKeyIdsFromKeyIdsInitData(
@@ -620,19 +610,19 @@ TEST_F(JSONWebKeyTest, CreateInitData) {
   KeyIdList key_ids;
   std::string error_message;
 
-  key_ids.push_back(std::vector<uint8_t>(data1, data1 + arraysize(data1)));
+  key_ids.push_back(std::vector<uint8_t>(data1, data1 + base::size(data1)));
   std::vector<uint8_t> init_data1;
   CreateKeyIdsInitData(key_ids, &init_data1);
   std::string result1(init_data1.begin(), init_data1.end());
   EXPECT_EQ(result1, "{\"kids\":[\"AQI\"]}");
 
-  key_ids.push_back(std::vector<uint8_t>(data2, data2 + arraysize(data2)));
+  key_ids.push_back(std::vector<uint8_t>(data2, data2 + base::size(data2)));
   std::vector<uint8_t> init_data2;
   CreateKeyIdsInitData(key_ids, &init_data2);
   std::string result2(init_data2.begin(), init_data2.end());
   EXPECT_EQ(result2, "{\"kids\":[\"AQI\",\"AQIDBA\"]}");
 
-  key_ids.push_back(std::vector<uint8_t>(data3, data3 + arraysize(data3)));
+  key_ids.push_back(std::vector<uint8_t>(data3, data3 + base::size(data3)));
   std::vector<uint8_t> init_data3;
   CreateKeyIdsInitData(key_ids, &init_data3);
   std::string result3(init_data3.begin(), init_data3.end());

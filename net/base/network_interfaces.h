@@ -34,6 +34,18 @@ enum IPAddressAttributes {
   // lifetime is reached. It is still valid but shouldn't be used to
   // create new connections.
   IP_ADDRESS_ATTRIBUTE_DEPRECATED = 1 << 1,
+
+  // Anycast address.
+  IP_ADDRESS_ATTRIBUTE_ANYCAST = 1 << 2,
+
+  // Tentative address.
+  IP_ADDRESS_ATTRIBUTE_TENTATIVE = 1 << 3,
+
+  // DAD detected duplicate.
+  IP_ADDRESS_ATTRIBUTE_DUPLICATED = 1 << 4,
+
+  // May be detached from the link.
+  IP_ADDRESS_ATTRIBUTE_DETACHED = 1 << 5,
 };
 
 // struct that is used by GetNetworkList() to represent a network
@@ -74,8 +86,11 @@ enum HostAddressSelectionPolicy {
 NET_EXPORT bool GetNetworkList(NetworkInterfaceList* networks,
                                int policy);
 
-// Gets the SSID of the currently associated WiFi access point if there is one.
-// Otherwise, returns empty string.
+// Gets the SSID of the currently associated WiFi access point if there is one,
+// and it is available. SSID may not be available if the app does not have
+// permissions to access it. On Android M+, the app accessing SSID needs to have
+// ACCESS_COARSE_LOCATION or ACCESS_FINE_LOCATION. If there is no WiFi access
+// point or its SSID is unavailable, an empty string is returned.
 // Currently only implemented on Linux, ChromeOS, Android and Windows.
 NET_EXPORT std::string GetWifiSSID();
 

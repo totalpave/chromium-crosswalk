@@ -10,9 +10,9 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "chrome/browser/ui/webui/chromeos/login/signin_screen_handler.h"
+#include "chromeos/components/proximity_auth/screenlock_bridge.h"
 #include "chromeos/login/auth/auth_status_consumer.h"
 #include "chromeos/login/auth/authenticator.h"
-#include "components/proximity_auth/screenlock_bridge.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 
@@ -54,34 +54,28 @@ class AppLaunchSigninScreen : public SigninScreenHandlerDelegate,
   const user_manager::UserList& GetUsers() const;
 
   // SigninScreenHandlerDelegate implementation:
-  void CancelPasswordChangedFlow() override;
   void CancelUserAdding() override;
-  void CompleteLogin(const UserContext& user_context) override;
   void Login(const UserContext& user_context,
              const SigninSpecifics& specifics) override;
-  void MigrateUserData(const std::string& old_password) override;
-  void LoadWallpaper(const AccountId& account_id) override;
-  void LoadSigninWallpaper() override;
   void OnSigninScreenReady() override;
   void RemoveUser(const AccountId& account_id) override;
-  void ResyncUserData() override;
   void ShowEnterpriseEnrollmentScreen() override;
   void ShowEnableDebuggingScreen() override;
   void ShowKioskEnableScreen() override;
   void ShowKioskAutolaunchScreen() override;
+  void ShowUpdateRequiredScreen() override;
   void ShowWrongHWIDScreen() override;
   void SetWebUIHandler(LoginDisplayWebUIHandler* webui_handler) override;
-  virtual void ShowSigninScreenForCreds(const std::string& username,
-                                        const std::string& password);
   bool IsShowGuest() const override;
   bool IsShowUsers() const override;
+  bool ShowUsersHasChanged() const override;
+  bool IsAllowNewUser() const override;
+  bool AllowNewUserChanged() const override;
   bool IsSigninInProgress() const override;
   bool IsUserSigninCompleted() const override;
-  void SetDisplayEmail(const std::string& email) override;
   void Signout() override;
   void HandleGetUsers() override;
   void CheckUserStatus(const AccountId& account_id) override;
-  bool IsUserWhitelisted(const AccountId& account_id) override;
 
   // AuthStatusConsumer implementation:
   void OnAuthFailure(const AuthFailure& error) override;

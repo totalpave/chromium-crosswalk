@@ -13,11 +13,10 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/sync_file_system/local/canned_syncable_file_system.h"
 #include "chrome/browser/sync_file_system/local/local_file_change_tracker.h"
@@ -25,16 +24,16 @@
 #include "chrome/browser/sync_file_system/sync_file_metadata.h"
 #include "chrome/browser/sync_file_system/sync_status_code.h"
 #include "chrome/browser/sync_file_system/syncable_file_system_util.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/mock_blob_url_request_context.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "storage/browser/blob/scoped_file.h"
 #include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/file_system_operation_runner.h"
 #include "storage/browser/fileapi/isolated_context.h"
+#include "storage/browser/test/mock_blob_url_request_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 
 #define FPL FILE_PATH_LITERAL
 
@@ -59,9 +58,7 @@ const char kOrigin2[] = "http://chromium.org";
 class LocalFileSyncContextTest : public testing::Test {
  protected:
   LocalFileSyncContextTest()
-      : thread_bundle_(
-            content::TestBrowserThreadBundle::REAL_FILE_THREAD |
-            content::TestBrowserThreadBundle::REAL_IO_THREAD),
+      : thread_bundle_(content::TestBrowserThreadBundle::REAL_IO_THREAD),
         status_(SYNC_FILE_ERROR_FAILED),
         file_error_(base::File::FILE_ERROR_FAILED),
         async_modify_finished_(false),
@@ -70,13 +67,13 @@ class LocalFileSyncContextTest : public testing::Test {
   void SetUp() override {
     RegisterSyncableFileSystem();
     ASSERT_TRUE(dir_.CreateUniqueTempDir());
-    in_memory_env_.reset(leveldb::NewMemEnv(leveldb::Env::Default()));
+    in_memory_env_ = leveldb_chrome::NewMemEnv("LocalFileSyncContextTest");
 
     ui_task_runner_ = base::ThreadTaskRunnerHandle::Get();
-    io_task_runner_ = BrowserThread::GetMessageLoopProxyForThread(
-        BrowserThread::IO);
-    file_task_runner_ = BrowserThread::GetMessageLoopProxyForThread(
-        BrowserThread::IO);
+    io_task_runner_ =
+        base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO});
+    file_task_runner_ =
+        base::CreateSingleThreadTaskRunnerWithTraits({BrowserThread::IO});
   }
 
   void TearDown() override { RevokeSyncableFileSystem(); }
@@ -130,14 +127,14 @@ class LocalFileSyncContextTest : public testing::Test {
                          SyncStatusCode status,
                          const LocalFileSyncInfo& sync_file_info,
                          storage::ScopedFile snapshot) {
-    ASSERT_TRUE(ui_task_runner_->RunsTasksOnCurrentThread());
+    ASSERT_TRUE(ui_task_runner_->RunsTasksInCurrentSequence());
     has_inflight_prepare_for_sync_ = false;
     status_ = status;
     *metadata_out = sync_file_info.metadata;
     *changes_out = sync_file_info.changes;
     if (snapshot_out)
       *snapshot_out = std::move(snapshot);
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
   }
 
   SyncStatusCode ApplyRemoteChange(FileSystemContext* file_system_context,
@@ -174,22 +171,22 @@ class LocalFileSyncContextTest : public testing::Test {
     sync_context_->FinalizeExclusiveSync(
         file_system_context, url,
         status == SYNC_STATUS_OK /* clear_local_changes */,
-        base::MessageLoop::QuitWhenIdleClosure());
+        base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   }
 
   void StartModifyFileOnIOThread(CannedSyncableFileSystem* file_system,
                                  const FileSystemURL& url) {
     ASSERT_TRUE(file_system != nullptr);
-    if (!io_task_runner_->RunsTasksOnCurrentThread()) {
+    if (!io_task_runner_->RunsTasksInCurrentSequence()) {
       async_modify_finished_ = false;
-      ASSERT_TRUE(ui_task_runner_->RunsTasksOnCurrentThread());
+      ASSERT_TRUE(ui_task_runner_->RunsTasksInCurrentSequence());
       io_task_runner_->PostTask(
           FROM_HERE,
-          base::Bind(&LocalFileSyncContextTest::StartModifyFileOnIOThread,
-                     base::Unretained(this), file_system, url));
+          base::BindOnce(&LocalFileSyncContextTest::StartModifyFileOnIOThread,
+                         base::Unretained(this), file_system, url));
       return;
     }
-    ASSERT_TRUE(io_task_runner_->RunsTasksOnCurrentThread());
+    ASSERT_TRUE(io_task_runner_->RunsTasksInCurrentSequence());
     file_error_ = base::File::FILE_ERROR_FAILED;
     file_system->operation_runner()->Truncate(
         url, 1, base::Bind(&LocalFileSyncContextTest::DidModifyFile,
@@ -203,15 +200,14 @@ class LocalFileSyncContextTest : public testing::Test {
   }
 
   void DidModifyFile(base::File::Error error) {
-    if (!ui_task_runner_->RunsTasksOnCurrentThread()) {
-      ASSERT_TRUE(io_task_runner_->RunsTasksOnCurrentThread());
+    if (!ui_task_runner_->RunsTasksInCurrentSequence()) {
+      ASSERT_TRUE(io_task_runner_->RunsTasksInCurrentSequence());
       ui_task_runner_->PostTask(
-          FROM_HERE,
-          base::Bind(&LocalFileSyncContextTest::DidModifyFile,
-                     base::Unretained(this), error));
+          FROM_HERE, base::BindOnce(&LocalFileSyncContextTest::DidModifyFile,
+                                    base::Unretained(this), error));
       return;
     }
-    ASSERT_TRUE(ui_task_runner_->RunsTasksOnCurrentThread());
+    ASSERT_TRUE(ui_task_runner_->RunsTasksInCurrentSequence());
     file_error_ = error;
     async_modify_finished_ = true;
   }
@@ -221,14 +217,13 @@ class LocalFileSyncContextTest : public testing::Test {
                           SyncStatusCode status,
                           LocalFileSyncContext::SyncMode sync_mode) {
     if (sync_mode == LocalFileSyncContext::SYNC_SNAPSHOT) {
-      sync_context_->FinalizeSnapshotSync(
-          file_system_context, url, status,
-          base::Bind(&base::DoNothing));
+      sync_context_->FinalizeSnapshotSync(file_system_context, url, status,
+                                          base::DoNothing());
     } else {
       sync_context_->FinalizeExclusiveSync(
           file_system_context, url,
           status == SYNC_STATUS_OK /* clear_local_changes */,
-          base::Bind(&base::DoNothing));
+          base::DoNothing());
     }
   }
 
@@ -239,9 +234,9 @@ class LocalFileSyncContextTest : public testing::Test {
                                          io_task_runner_.get(),
                                          file_task_runner_.get());
     file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
-    sync_context_ = new LocalFileSyncContext(
-        dir_.path(), in_memory_env_.get(),
-        ui_task_runner_.get(), io_task_runner_.get());
+    sync_context_ =
+        new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                                 ui_task_runner_.get(), io_task_runner_.get());
     ASSERT_EQ(SYNC_STATUS_OK,
               file_system.MaybeInitializeFileSystemContext(
                   sync_context_.get()));
@@ -291,9 +286,9 @@ class LocalFileSyncContextTest : public testing::Test {
                                          io_task_runner_.get(),
                                          file_task_runner_.get());
     file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
-    sync_context_ = new LocalFileSyncContext(
-        dir_.path(), in_memory_env_.get(),
-        ui_task_runner_.get(), io_task_runner_.get());
+    sync_context_ =
+        new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                                 ui_task_runner_.get(), io_task_runner_.get());
     ASSERT_EQ(SYNC_STATUS_OK,
               file_system.MaybeInitializeFileSystemContext(
                   sync_context_.get()));
@@ -369,9 +364,8 @@ class LocalFileSyncContextTest : public testing::Test {
 
 TEST_F(LocalFileSyncContextTest, ConstructAndDestruct) {
   sync_context_ =
-      new LocalFileSyncContext(
-          dir_.path(), in_memory_env_.get(),
-          ui_task_runner_.get(), io_task_runner_.get());
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
   sync_context_->ShutdownOnUIThread();
 }
 
@@ -382,9 +376,9 @@ TEST_F(LocalFileSyncContextTest, InitializeFileSystemContext) {
                                        file_task_runner_.get());
   file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
 
-  sync_context_ = new LocalFileSyncContext(
-      dir_.path(), in_memory_env_.get(),
-      ui_task_runner_.get(), io_task_runner_.get());
+  sync_context_ =
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
 
   // Initializes file_system using |sync_context_|.
   EXPECT_EQ(SYNC_STATUS_OK,
@@ -411,7 +405,7 @@ TEST_F(LocalFileSyncContextTest, InitializeFileSystemContext) {
   FileSystemURLSet urls;
   file_system.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(ContainsKey(urls, kURL));
+  EXPECT_TRUE(base::ContainsKey(urls, kURL));
 
   // Finishing the test.
   sync_context_->ShutdownOnUIThread();
@@ -430,9 +424,9 @@ TEST_F(LocalFileSyncContextTest, MultipleFileSystemContexts) {
   file_system1.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
   file_system2.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
 
-  sync_context_ = new LocalFileSyncContext(
-      dir_.path(), in_memory_env_.get(),
-      ui_task_runner_.get(), io_task_runner_.get());
+  sync_context_ =
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
 
   // Initializes file_system1 and file_system2.
   EXPECT_EQ(SYNC_STATUS_OK,
@@ -453,7 +447,7 @@ TEST_F(LocalFileSyncContextTest, MultipleFileSystemContexts) {
   FileSystemURLSet urls;
   file_system1.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(ContainsKey(urls, kURL1));
+  EXPECT_TRUE(base::ContainsKey(urls, kURL1));
 
   // file_system1's tracker must have no change.
   urls.clear();
@@ -467,13 +461,13 @@ TEST_F(LocalFileSyncContextTest, MultipleFileSystemContexts) {
   urls.clear();
   file_system1.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(ContainsKey(urls, kURL1));
+  EXPECT_TRUE(base::ContainsKey(urls, kURL1));
 
   // file_system2's tracker now must have the change for kURL2.
   urls.clear();
   file_system2.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(ContainsKey(urls, kURL2));
+  EXPECT_TRUE(base::ContainsKey(urls, kURL2));
 
   SyncFileMetadata metadata;
   FileChangeList changes;
@@ -543,9 +537,9 @@ TEST_F(LocalFileSyncContextTest, DISABLED_PrepareSyncWhileWriting) {
                                        io_task_runner_.get(),
                                        file_task_runner_.get());
   file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
-  sync_context_ = new LocalFileSyncContext(
-      dir_.path(), in_memory_env_.get(),
-      ui_task_runner_.get(), io_task_runner_.get());
+  sync_context_ =
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
   EXPECT_EQ(SYNC_STATUS_OK,
             file_system.MaybeInitializeFileSystemContext(sync_context_.get()));
 
@@ -607,9 +601,9 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion) {
                                        file_task_runner_.get());
   file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
 
-  sync_context_ = new LocalFileSyncContext(
-      dir_.path(), in_memory_env_.get(),
-      ui_task_runner_.get(), io_task_runner_.get());
+  sync_context_ =
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
   ASSERT_EQ(SYNC_STATUS_OK,
             file_system.MaybeInitializeFileSystemContext(sync_context_.get()));
   ASSERT_EQ(base::File::FILE_OK, file_system.OpenFileSystem());
@@ -617,7 +611,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion) {
   // Record the initial usage (likely 0).
   int64_t initial_usage = -1;
   int64_t quota = -1;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&initial_usage, &quota));
 
   // Create a file and directory in the file_system.
@@ -633,17 +627,16 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion) {
   FileSystemURLSet urls;
   file_system.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(3U, urls.size());
-  ASSERT_TRUE(ContainsKey(urls, kFile));
-  ASSERT_TRUE(ContainsKey(urls, kDir));
-  ASSERT_TRUE(ContainsKey(urls, kChild));
-  for (FileSystemURLSet::iterator iter = urls.begin();
-       iter != urls.end(); ++iter) {
+  ASSERT_TRUE(base::ContainsKey(urls, kFile));
+  ASSERT_TRUE(base::ContainsKey(urls, kDir));
+  ASSERT_TRUE(base::ContainsKey(urls, kChild));
+  for (auto iter = urls.begin(); iter != urls.end(); ++iter) {
     file_system.ClearChangeForURLInTracker(*iter);
   }
 
   // At this point the usage must be greater than the initial usage.
   int64_t new_usage = -1;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_GT(new_usage, initial_usage);
 
@@ -679,7 +672,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion) {
   EXPECT_TRUE(urls.empty());
 
   // The quota usage data must have reflected the deletion.
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_EQ(new_usage, initial_usage);
 
@@ -695,9 +688,9 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion_ForRoot) {
                                        file_task_runner_.get());
   file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
 
-  sync_context_ = new LocalFileSyncContext(
-      dir_.path(), in_memory_env_.get(),
-      ui_task_runner_.get(), io_task_runner_.get());
+  sync_context_ =
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
   ASSERT_EQ(SYNC_STATUS_OK,
             file_system.MaybeInitializeFileSystemContext(sync_context_.get()));
   ASSERT_EQ(base::File::FILE_OK, file_system.OpenFileSystem());
@@ -705,7 +698,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion_ForRoot) {
   // Record the initial usage (likely 0).
   int64_t initial_usage = -1;
   int64_t quota = -1;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&initial_usage, &quota));
 
   // Create a file and directory in the file_system.
@@ -719,7 +712,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion_ForRoot) {
 
   // At this point the usage must be greater than the initial usage.
   int64_t new_usage = -1;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_GT(new_usage, initial_usage);
 
@@ -746,7 +739,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion_ForRoot) {
   EXPECT_TRUE(urls.empty());
 
   // The quota usage data must have reflected the deletion.
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_EQ(new_usage, initial_usage);
 
@@ -765,9 +758,9 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate) {
                                        file_task_runner_.get());
   file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
 
-  sync_context_ = new LocalFileSyncContext(
-      dir_.path(), in_memory_env_.get(),
-      ui_task_runner_.get(), io_task_runner_.get());
+  sync_context_ =
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
   ASSERT_EQ(SYNC_STATUS_OK,
             file_system.MaybeInitializeFileSystemContext(sync_context_.get()));
   ASSERT_EQ(base::File::FILE_OK, file_system.OpenFileSystem());
@@ -782,7 +775,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate) {
 
   // Create kFile1 and populate it with kTestFileData0.
   EXPECT_EQ(base::File::FILE_OK, file_system.CreateFile(kFile1));
-  EXPECT_EQ(static_cast<int64_t>(arraysize(kTestFileData0) - 1),
+  EXPECT_EQ(static_cast<int64_t>(base::size(kTestFileData0) - 1),
             file_system.WriteString(kFile1, kTestFileData0));
 
   // kFile2 and kDir are not there yet.
@@ -795,24 +788,24 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate) {
   FileSystemURLSet urls;
   file_system.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(ContainsKey(urls, kFile1));
+  EXPECT_TRUE(base::ContainsKey(urls, kFile1));
   file_system.ClearChangeForURLInTracker(*urls.begin());
 
   // Prepare temporary files which represent the remote file data.
-  const base::FilePath kFilePath1(temp_dir.path().Append(FPL("file1")));
-  const base::FilePath kFilePath2(temp_dir.path().Append(FPL("file2")));
+  const base::FilePath kFilePath1(temp_dir.GetPath().Append(FPL("file1")));
+  const base::FilePath kFilePath2(temp_dir.GetPath().Append(FPL("file2")));
 
-  ASSERT_EQ(static_cast<int>(arraysize(kTestFileData1) - 1),
+  ASSERT_EQ(static_cast<int>(base::size(kTestFileData1) - 1),
             base::WriteFile(kFilePath1, kTestFileData1,
-                            arraysize(kTestFileData1) - 1));
-  ASSERT_EQ(static_cast<int>(arraysize(kTestFileData2) - 1),
+                            base::size(kTestFileData1) - 1));
+  ASSERT_EQ(static_cast<int>(base::size(kTestFileData2) - 1),
             base::WriteFile(kFilePath2, kTestFileData2,
-                            arraysize(kTestFileData2) - 1));
+                            base::size(kTestFileData2) - 1));
 
   // Record the usage.
   int64_t usage = -1, new_usage = -1;
   int64_t quota = -1;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&usage, &quota));
 
   // Here in the local filesystem we have:
@@ -838,8 +831,8 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate) {
 
   // Check if the usage has been increased by (kTestFileData1 - kTestFileData0).
   const int updated_size =
-      arraysize(kTestFileData1) - arraysize(kTestFileData0);
-  EXPECT_EQ(storage::kQuotaStatusOk,
+      base::size(kTestFileData1) - base::size(kTestFileData0);
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_EQ(updated_size, new_usage - usage);
 
@@ -886,10 +879,10 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate) {
   // Creating a file/directory must have increased the usage more than
   // the size of kTestFileData2.
   new_usage = usage;
-  EXPECT_EQ(storage::kQuotaStatusOk,
+  EXPECT_EQ(blink::mojom::QuotaStatusCode::kOk,
             file_system.GetUsageAndQuota(&new_usage, &quota));
   EXPECT_GT(new_usage,
-            static_cast<int64_t>(usage + arraysize(kTestFileData2) - 1));
+            static_cast<int64_t>(usage + base::size(kTestFileData2) - 1));
 
   // The changes applied by ApplyRemoteChange should not be recorded in
   // the change tracker.
@@ -916,9 +909,9 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate_NoParent) {
                                        file_task_runner_.get());
   file_system.SetUp(CannedSyncableFileSystem::QUOTA_ENABLED);
 
-  sync_context_ = new LocalFileSyncContext(
-      dir_.path(), in_memory_env_.get(),
-      ui_task_runner_.get(), io_task_runner_.get());
+  sync_context_ =
+      new LocalFileSyncContext(dir_.GetPath(), in_memory_env_.get(),
+                               ui_task_runner_.get(), io_task_runner_.get());
   ASSERT_EQ(SYNC_STATUS_OK,
             file_system.MaybeInitializeFileSystemContext(sync_context_.get()));
   ASSERT_EQ(base::File::FILE_OK, file_system.OpenFileSystem());
@@ -932,10 +925,10 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate_NoParent) {
   EXPECT_EQ(base::File::FILE_ERROR_NOT_FOUND, file_system.FileExists(kFile));
 
   // Prepare a temporary file which represents remote file data.
-  const base::FilePath kFilePath(temp_dir.path().Append(FPL("file")));
-  ASSERT_EQ(static_cast<int>(arraysize(kTestFileData) - 1),
-            base::WriteFile(kFilePath, kTestFileData,
-                            arraysize(kTestFileData) - 1));
+  const base::FilePath kFilePath(temp_dir.GetPath().Append(FPL("file")));
+  ASSERT_EQ(
+      static_cast<int>(base::size(kTestFileData) - 1),
+      base::WriteFile(kFilePath, kTestFileData, base::size(kTestFileData) - 1));
 
   // Calling ApplyChange's with kFilePath should create
   // kFile along with kDir.

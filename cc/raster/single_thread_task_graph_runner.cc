@@ -18,16 +18,18 @@ SingleThreadTaskGraphRunner::SingleThreadTaskGraphRunner()
     : lock_(),
       has_ready_to_run_tasks_cv_(&lock_),
       has_namespaces_with_finished_running_tasks_cv_(&lock_),
-      shutdown_(false) {}
+      shutdown_(false) {
+  has_ready_to_run_tasks_cv_.declare_only_used_while_idle();
+}
 
-SingleThreadTaskGraphRunner::~SingleThreadTaskGraphRunner() {}
+SingleThreadTaskGraphRunner::~SingleThreadTaskGraphRunner() = default;
 
 void SingleThreadTaskGraphRunner::Start(
     const std::string& thread_name,
     const base::SimpleThread::Options& thread_options) {
   thread_.reset(
       new base::DelegateSimpleThread(this, thread_name, thread_options));
-  thread_->Start();
+  thread_->StartAsync();
 }
 
 void SingleThreadTaskGraphRunner::Shutdown() {
@@ -46,9 +48,9 @@ void SingleThreadTaskGraphRunner::Shutdown() {
   thread_->Join();
 }
 
-NamespaceToken SingleThreadTaskGraphRunner::GetNamespaceToken() {
+NamespaceToken SingleThreadTaskGraphRunner::GenerateNamespaceToken() {
   base::AutoLock lock(lock_);
-  return work_queue_.GetNamespaceToken();
+  return work_queue_.GenerateNamespaceToken();
 }
 
 void SingleThreadTaskGraphRunner::ScheduleTasks(NamespaceToken token,
@@ -81,7 +83,8 @@ void SingleThreadTaskGraphRunner::WaitForTasksToFinishRunning(
 
   {
     base::AutoLock lock(lock_);
-    base::ThreadRestrictions::ScopedAllowWait allow_wait;
+    // http://crbug.com/902823
+    base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_wait;
 
     auto* task_namespace = work_queue_.GetNamespaceForToken(token);
 
@@ -148,18 +151,17 @@ bool SingleThreadTaskGraphRunner::RunTaskWithLockAcquired() {
 
   const uint16_t category = found->first;
   auto prioritized_task = work_queue_.GetNextTaskToRun(category);
-  Task* task = prioritized_task.task;
 
   {
     base::AutoUnlock unlock(lock_);
-    task->RunOnWorkerThread();
+    prioritized_task.task->RunOnWorkerThread();
   }
 
-  work_queue_.CompleteTask(prioritized_task);
+  auto* task_namespace = prioritized_task.task_namespace;
+  work_queue_.CompleteTask(std::move(prioritized_task));
 
   // If namespace has finished running all tasks, wake up origin thread.
-  if (work_queue_.HasFinishedRunningTasksInNamespace(
-          prioritized_task.task_namespace))
+  if (work_queue_.HasFinishedRunningTasksInNamespace(task_namespace))
     has_namespaces_with_finished_running_tasks_cv_.Signal();
 
   return true;

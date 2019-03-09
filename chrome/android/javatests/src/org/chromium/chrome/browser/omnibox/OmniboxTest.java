@@ -6,42 +6,66 @@ package org.chromium.chrome.browser.omnibox;
 
 import static org.chromium.chrome.test.util.OmniboxTestUtils.buildSuggestionMap;
 
-import android.os.Environment;
+import android.annotation.SuppressLint;
+import android.os.Build;
 import android.os.SystemClock;
+import android.support.annotation.Nullable;
+import android.support.test.InstrumentationRegistry;
+import android.support.test.filters.MediumTest;
+import android.support.test.filters.SmallTest;
 import android.support.v4.view.ViewCompat;
-import android.test.suitebuilder.annotation.MediumTest;
-import android.test.suitebuilder.annotation.SmallTest;
 import android.text.Selection;
-import android.util.Pair;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ImageButton;
-import android.widget.ImageView;
+import android.widget.ListView;
 import android.widget.TextView;
 
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.EnormousTest;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.FlakyTest;
+import org.chromium.base.test.util.MinAndroidSdkLevel;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.base.test.util.ScalableTimeout;
+import org.chromium.base.test.util.parameter.CommandLineParameter;
+import org.chromium.base.test.util.parameter.SkipCommandLineParameterization;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.browser.omnibox.AutocompleteController.OnSuggestionsReceivedListener;
-import org.chromium.chrome.browser.omnibox.LocationBarLayout.OmniboxSuggestionsList;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
+import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.chrome.browser.omnibox.status.StatusViewCoordinator;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteController.OnSuggestionsReceivedListener;
+import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestion;
+import org.chromium.chrome.browser.omnibox.suggestions.basic.SuggestionView;
+import org.chromium.chrome.browser.tab.EmptyTabObserver;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils.SuggestionsResult;
 import org.chromium.chrome.test.util.OmniboxTestUtils.SuggestionsResultBuilder;
 import org.chromium.chrome.test.util.OmniboxTestUtils.TestAutocompleteController;
 import org.chromium.chrome.test.util.OmniboxTestUtils.TestSuggestionResultsBuilder;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
-import org.chromium.content.browser.test.util.KeyUtils;
-import org.chromium.content.browser.test.util.UiUtils;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.content_public.browser.test.util.KeyUtils;
+import org.chromium.content_public.browser.test.util.TouchCommon;
+import org.chromium.content_public.browser.test.util.UiUtils;
 import org.chromium.net.test.EmbeddedTestServer;
-import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.net.test.ServerCertificate;
 
 import java.util.HashMap;
 import java.util.List;
@@ -53,16 +77,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Tests of the Omnibox.
+ *
+ * TODO(yolandyan): Replace the CommandLineParameter with new JUnit4 parameterized
+ * framework once it supports Test Rule Parameterization
  */
-public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
-
-    public OmniboxTest() {
-        super(ChromeActivity.class);
-    }
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@CommandLineParameter({"", "disable-features=" + ChromeFeatureList.SPANNABLE_INLINE_AUTOCOMPLETE})
+@SuppressLint("SetTextI18n")
+public class OmniboxTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
 
     private void clearUrlBar() {
-        final UrlBar urlBar = (UrlBar) getActivity().findViewById(R.id.url_bar);
-        assertNotNull(urlBar);
+        final UrlBar urlBar = (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
+        Assert.assertNotNull(urlBar);
 
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
@@ -72,42 +102,59 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         });
     }
 
+    private static final OnSuggestionsReceivedListener sEmptySuggestionListener =
+            new OnSuggestionsReceivedListener() {
+                @Override
+                public void onSuggestionsReceived(
+                        List<OmniboxSuggestion> suggestions, String inlineAutocompleteText) {}
+            };
+
     /**
      * Sanity check of Omnibox.  The problem in http://b/5021723 would
      * cause this to fail (hang or crash).
      */
+    @Test
     @EnormousTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testSimpleUse() throws InterruptedException {
-        typeInOmnibox("aaaaaaa", false);
+        mActivityTestRule.typeInOmnibox("aaaaaaa", false);
 
         final LocationBarLayout locationBar =
-                (LocationBarLayout) getActivity().findViewById(R.id.location_bar);
+                (LocationBarLayout) mActivityTestRule.getActivity().findViewById(R.id.location_bar);
         OmniboxTestUtils.waitForOmniboxSuggestions(locationBar);
 
-        ChromeTabUtils.waitForTabPageLoadStart(getActivity().getActivityTab(), new Runnable() {
-            @Override
-            public void run() {
-                final UrlBar urlBar = (UrlBar) getActivity().findViewById(R.id.url_bar);
-                KeyUtils.singleKeyEventView(getInstrumentation(), urlBar, KeyEvent.KEYCODE_ENTER);
-            }
-        }, ScalableTimeout.scaleTimeout(20));
+        ChromeTabUtils.waitForTabPageLoadStart(
+                mActivityTestRule.getActivity().getActivityTab(), new Runnable() {
+                    @Override
+                    public void run() {
+                        final UrlBar urlBar =
+                                (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
+                        KeyUtils.singleKeyEventView(InstrumentationRegistry.getInstrumentation(),
+                                urlBar, KeyEvent.KEYCODE_ENTER);
+                    }
+                }, ScalableTimeout.scaleTimeout(20));
     }
 
     /**
      * Test for checking whether soft input model switches with focus.
      */
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testFocusChangingSoftInputMode() throws InterruptedException {
-        final UrlBar urlBar = (UrlBar) getActivity().findViewById(R.id.url_bar);
+        final UrlBar urlBar = (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
 
         OmniboxTestUtils.toggleUrlBarFocus(urlBar, true);
         CriteriaHelper.pollInstrumentationThread(Criteria.equals(
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN, new Callable<Integer>() {
                     @Override
                     public Integer call() {
-                        return getActivity().getWindow().getAttributes().softInputMode;
+                        return mActivityTestRule.getActivity()
+                                .getWindow()
+                                .getAttributes()
+                                .softInputMode;
                     }
                 }));
 
@@ -116,7 +163,10 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE, new Callable<Integer>() {
                     @Override
                     public Integer call() {
-                        return getActivity().getWindow().getAttributes().softInputMode;
+                        return mActivityTestRule.getActivity()
+                                .getWindow()
+                                .getAttributes()
+                                .softInputMode;
                     }
                 }));
     }
@@ -124,30 +174,32 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
     /**
      * Tests that focusing a url bar starts a zero suggest request.
      */
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testRequestZeroSuggestOnFocus() throws Exception {
         final LocationBarLayout locationBar =
-                (LocationBarLayout) getActivity().findViewById(R.id.location_bar);
-        final UrlBar urlBar = (UrlBar) getActivity().findViewById(R.id.url_bar);
+                (LocationBarLayout) mActivityTestRule.getActivity().findViewById(R.id.location_bar);
+        final UrlBar urlBar = (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
 
         ThreadUtils.runOnUiThreadBlocking(new Runnable(){
             @Override
             public void run() {
-                urlBar.setUrl("http://www.example.com/", null);
+                urlBar.setText("http://www.example.com/");
             }
         });
 
-        final TestAutocompleteController controller = new TestAutocompleteController(
-                locationBar, null, null);
+        final TestAutocompleteController controller = new TestAutocompleteController(locationBar,
+                sEmptySuggestionListener, new HashMap<String, List<SuggestionsResult>>());
 
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                locationBar.setAutocompleteController(controller);
+                locationBar.getAutocompleteCoordinator().setAutocompleteController(controller);
             }
         });
-        assertEquals("Should not have any zero suggest requests yet", 0,
+        Assert.assertEquals("Should not have any zero suggest requests yet", 0,
                 controller.numZeroSuggestRequests());
 
         OmniboxTestUtils.toggleUrlBarFocus(urlBar, true);
@@ -159,40 +211,33 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
             }
         }));
 
-        getInstrumentation().waitForIdleSync();
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
-        assertFalse(controller.isStartAutocompleteCalled());
+        Assert.assertFalse(controller.isStartAutocompleteCalled());
     }
 
     /**
      * Tests that focusing a url bar starts a zero suggest request.
      */
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testRequestZeroSuggestAfterDelete() throws InterruptedException {
         final LocationBarLayout locationBar =
-                (LocationBarLayout) getActivity().findViewById(R.id.location_bar);
-        final UrlBar urlBar = (UrlBar) getActivity().findViewById(R.id.url_bar);
-        final ImageButton deleteButton = (ImageButton) getActivity().findViewById(
-                R.id.delete_button);
+                (LocationBarLayout) mActivityTestRule.getActivity().findViewById(R.id.location_bar);
+        final UrlBar urlBar = (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
+        final ImageButton deleteButton =
+                (ImageButton) mActivityTestRule.getActivity().findViewById(R.id.delete_button);
 
-        final OnSuggestionsReceivedListener emptySuggestionListener =
-                new OnSuggestionsReceivedListener() {
-                    @Override
-                    public void onSuggestionsReceived(
-                            List<OmniboxSuggestion> suggestions, String inlineAutocompleteText) {
-                    }
-                };
-
-        final TestAutocompleteController controller = new TestAutocompleteController(
-                locationBar, emptySuggestionListener,
-                new HashMap<String, List<SuggestionsResult>>());
+        final TestAutocompleteController controller = new TestAutocompleteController(locationBar,
+                sEmptySuggestionListener, new HashMap<String, List<SuggestionsResult>>());
 
         OmniboxTestUtils.toggleUrlBarFocus(urlBar, true);
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                locationBar.setAutocompleteController(controller);
+                locationBar.getAutocompleteCoordinator().setAutocompleteController(controller);
                 urlBar.setText("g");
             }
         });
@@ -208,9 +253,9 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         // The click view below ends up clicking on the menu button underneath the delete button
         // for some time after the delete button appears. Wait for UI to settle down before
         // clicking.
-        UiUtils.settleDownUI(getInstrumentation());
+        UiUtils.settleDownUI(InstrumentationRegistry.getInstrumentation());
 
-        singleClickView(deleteButton);
+        TouchCommon.singleClickView(deleteButton);
 
         CriteriaHelper.pollInstrumentationThread(Criteria.equals(1, new Callable<Integer>() {
             @Override
@@ -220,38 +265,32 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         }));
     }
 
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testRequestZeroSuggestTypeAndBackspace() throws InterruptedException {
         final LocationBarLayout locationBar =
-                (LocationBarLayout) getActivity().findViewById(R.id.location_bar);
-        final UrlBar urlBar = (UrlBar) getActivity().findViewById(R.id.url_bar);
+                (LocationBarLayout) mActivityTestRule.getActivity().findViewById(R.id.location_bar);
+        final UrlBar urlBar = (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
 
-        final OnSuggestionsReceivedListener emptySuggestionListener =
-                new OnSuggestionsReceivedListener() {
-                    @Override
-                    public void onSuggestionsReceived(List<OmniboxSuggestion> suggestions,
-                            String inlineAutocompleteText) {
-                    }
-                };
-
-        final TestAutocompleteController controller = new TestAutocompleteController(
-                locationBar, emptySuggestionListener,
-                new HashMap<String, List<SuggestionsResult>>());
+        final TestAutocompleteController controller = new TestAutocompleteController(locationBar,
+                sEmptySuggestionListener, new HashMap<String, List<SuggestionsResult>>());
 
         OmniboxTestUtils.toggleUrlBarFocus(urlBar, true);
 
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                locationBar.setAutocompleteController(controller);
+                locationBar.getAutocompleteCoordinator().setAutocompleteController(controller);
                 urlBar.setText("g");
                 urlBar.setSelection(1);
             }
         });
 
-        assertEquals("No calls to zero suggest yet", 0, controller.numZeroSuggestRequests());
-        KeyUtils.singleKeyEventView(getInstrumentation(), urlBar, KeyEvent.KEYCODE_DEL);
+        Assert.assertEquals("No calls to zero suggest yet", 0, controller.numZeroSuggestRequests());
+        KeyUtils.singleKeyEventView(
+                InstrumentationRegistry.getInstrumentation(), urlBar, KeyEvent.KEYCODE_DEL);
         CriteriaHelper.pollInstrumentationThread(Criteria.equals(1, new Callable<Integer>() {
             @Override
             public Integer call() {
@@ -262,18 +301,21 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
 
     // Sanity check that no text is displayed in the omnibox when on the NTP page and that the hint
     // text is correct.
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testDefaultText() throws InterruptedException {
-        startMainActivityFromLauncher();
+        mActivityTestRule.startMainActivityFromLauncher();
 
-        final UrlBar urlBar = (UrlBar) getActivity().findViewById(R.id.url_bar);
+        final UrlBar urlBar = (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
 
         // Omnibox on NTP shows the hint text.
-        assertNotNull(urlBar);
-        assertEquals("Location bar has text.", "", urlBar.getText().toString());
-        assertEquals("Location bar has incorrect hint.",
-                getActivity().getResources().getString(R.string.search_or_type_url),
+        Assert.assertNotNull(urlBar);
+        Assert.assertEquals("Location bar has text.", "", urlBar.getText().toString());
+        Assert.assertEquals("Location bar has incorrect hint.",
+                mActivityTestRule.getActivity().getResources().getString(
+                        R.string.search_or_type_web_address),
                 urlBar.getHint().toString());
 
         // Type something in the omnibox.
@@ -286,28 +328,32 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
                 urlBar.setText("G");
             }
         });
-        assertEquals("Location bar should have text.", "G", urlBar.getText().toString());
+        Assert.assertEquals("Location bar should have text.", "G", urlBar.getText().toString());
     }
 
+    @Test
     @MediumTest
     @Feature({"Omnibox", "Main"})
-    public void testAutoCompleteAndCorrectionLandscape() throws ExecutionException,
-            InterruptedException {
+    @RetryOnFailure
+    public void testAutoCompleteAndCorrectionLandscape()
+            throws ExecutionException, InterruptedException {
         // Default orientation for tablets is landscape. Default for phones is portrait.
         int requestedOrientation = 1;
-        if (DeviceFormFactor.isTablet(getActivity())) {
+        if (mActivityTestRule.getActivity().isTablet()) {
             requestedOrientation = 0;
         }
         doTestAutoCompleteAndCorrectionForOrientation(requestedOrientation);
     }
 
+    @Test
     @MediumTest
     @Feature({"Omnibox", "Main"})
-    public void testAutoCompleteAndCorrectionPortrait() throws ExecutionException,
-            InterruptedException {
+    @RetryOnFailure
+    public void testAutoCompleteAndCorrectionPortrait()
+            throws ExecutionException, InterruptedException {
         // Default orientation for tablets is landscape. Default for phones is portrait.
         int requestedOrientation = 0;
-        if (DeviceFormFactor.isTablet(getActivity())) {
+        if (mActivityTestRule.getActivity().isTablet()) {
             requestedOrientation = 1;
         }
         doTestAutoCompleteAndCorrectionForOrientation(requestedOrientation);
@@ -315,8 +361,8 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
 
     private void doTestAutoCompleteAndCorrectionForOrientation(
             int orientation) throws ExecutionException, InterruptedException {
-        getActivity().setRequestedOrientation(orientation);
-        UiUtils.settleDownUI(getInstrumentation());
+        mActivityTestRule.getActivity().setRequestedOrientation(orientation);
+        UiUtils.settleDownUI(InstrumentationRegistry.getInstrumentation());
 
         Map<String, List<SuggestionsResult>> suggestionsMap = buildSuggestionMap(
                 new TestSuggestionResultsBuilder()
@@ -352,8 +398,10 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         checkAutocompleteText(suggestionsMap, "mispellled", "mispellled", 10, 10);
     }
 
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testDuplicateAutocompleteTextResults()
             throws InterruptedException, ExecutionException {
         Map<String, List<SuggestionsResult>> suggestionsMap = buildSuggestionMap(
@@ -380,8 +428,10 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         checkAutocompleteText(suggestionsMap, "test", "testing", 4, 7);
     }
 
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
     public void testGrowingAutocompleteTextResults()
             throws InterruptedException, ExecutionException {
         Map<String, List<SuggestionsResult>> suggestionsMap = buildSuggestionMap(
@@ -408,8 +458,11 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         checkAutocompleteText(suggestionsMap, "test", "testing for the win", 4, 19);
     }
 
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
+    @DisabledTest
     public void testShrinkingAutocompleteTextResults()
             throws InterruptedException, ExecutionException {
         Map<String, List<SuggestionsResult>> suggestionsMap = buildSuggestionMap(
@@ -441,8 +494,8 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
             final String textToType, final String expectedAutocompleteText,
             final int expectedAutocompleteStart, final int expectedAutocompleteEnd)
             throws InterruptedException, ExecutionException {
-
-        final TextView urlBarView = (TextView) getActivity().findViewById(R.id.url_bar);
+        final TextView urlBarView =
+                (TextView) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
@@ -452,7 +505,8 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         });
 
         final LocationBarLayout locationBar =
-                ((LocationBarLayout) getActivity().findViewById(R.id.location_bar));
+                ((LocationBarLayout) mActivityTestRule.getActivity().findViewById(
+                        R.id.location_bar));
 
         final Object suggestionsProcessedSignal = new Object();
         final AtomicInteger suggestionsLeft = new AtomicInteger(
@@ -462,13 +516,15 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
             public void onSuggestionsReceived(
                     List<OmniboxSuggestion> suggestions,
                     String inlineAutocompleteText) {
-                locationBar.onSuggestionsReceived(suggestions, inlineAutocompleteText);
+                locationBar.getAutocompleteCoordinator()
+                        .getSuggestionsReceivedListenerForTest()
+                        .onSuggestionsReceived(suggestions, inlineAutocompleteText);
                 synchronized (suggestionsProcessedSignal) {
                     int remaining = suggestionsLeft.decrementAndGet();
                     if (remaining == 0) {
                         suggestionsProcessedSignal.notifyAll();
                     } else if (remaining < 0) {
-                        fail("Unexpected suggestions received");
+                        Assert.fail("Unexpected suggestions received");
                     }
                 }
             }
@@ -479,11 +535,12 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                locationBar.setAutocompleteController(controller);
+                locationBar.getAutocompleteCoordinator().setAutocompleteController(controller);
             }
         });
 
-        KeyUtils.typeTextIntoView(getInstrumentation(), urlBarView, textToType);
+        KeyUtils.typeTextIntoView(
+                InstrumentationRegistry.getInstrumentation(), urlBarView, textToType);
 
         synchronized (suggestionsProcessedSignal) {
             long endTime = SystemClock.uptimeMillis() + 3000;
@@ -500,10 +557,14 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
                 return urlBarView.getText();
             }
         });
-        assertEquals("URL Bar text not autocompleted as expected.",
-                expectedAutocompleteText, urlText.toString());
-        assertEquals(expectedAutocompleteStart, Selection.getSelectionStart(urlText));
-        assertEquals(expectedAutocompleteEnd, Selection.getSelectionEnd(urlText));
+        Assert.assertEquals("URL Bar text not autocompleted as expected.", expectedAutocompleteText,
+                urlText.toString());
+        Assert.assertEquals(expectedAutocompleteStart, Selection.getSelectionStart(urlText));
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.SPANNABLE_INLINE_AUTOCOMPLETE)) {
+            Assert.assertEquals(expectedAutocompleteEnd, urlText.length());
+        } else {
+            Assert.assertEquals(expectedAutocompleteEnd, Selection.getSelectionEnd(urlText));
+        }
     }
 
     /**
@@ -522,18 +583,18 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
 
         for (int i = 0; i < 2; ++i) {
             boolean instantOn = (i == 1);
-            setNetworkPredictionEnabled(instantOn);
+            mActivityTestRule.setNetworkPredictionEnabled(instantOn);
 
             for (int j = 0; j < 10; ++j) {
                 long before = System.currentTimeMillis();
-                typeInOmnibox(text, true);
+                mActivityTestRule.typeInOmnibox(text, true);
                 if (instantOn) {
                     instantAverage += System.currentTimeMillis() - before;
                 } else {
                     noInstantAverage += System.currentTimeMillis() - before;
                 }
                 clearUrlBar();
-                getInstrumentation().waitForIdleSync();
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync();
             }
         }
         instantAverage /= 10;
@@ -545,105 +606,206 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
     }
 
     /**
-     * Test to verify security-icon "lock or globe" on visiting http and secured Urls.
-     * @EnormousTest
+     * Test to verify that the security icon is present when visiting http:// URLs.
      */
-    @FlakyTest(message = "crbug.com/414353")
-    public void testSecurityIcon() throws InterruptedException {
-        EmbeddedTestServer testServer = EmbeddedTestServer.createAndStartFileServer(
-                getInstrumentation().getContext(), Environment.getExternalStorageDirectory());
+    @Test
+    @MediumTest
+    @SkipCommandLineParameterization
+    public void testSecurityIconOnHTTP() throws InterruptedException {
+        EmbeddedTestServer testServer =
+                EmbeddedTestServer.createAndStartServer(InstrumentationRegistry.getContext());
         try {
             final String testUrl = testServer.getURL("/chrome/test/data/android/omnibox/one.html");
-            final String securedExternalUrl = "https://www.google.com";
 
-            ImageView navigationButton = (ImageView)
-                    getActivity().findViewById(R.id.navigation_button);
-            ImageButton securityButton = (ImageButton)
-                    getActivity().findViewById(R.id.security_button);
-
-            loadUrl(testUrl);
+            mActivityTestRule.loadUrl(testUrl);
             final LocationBarLayout locationBar =
-                    (LocationBarLayout) getActivity().findViewById(R.id.location_bar);
-            boolean securityIcon = locationBar.isSecurityButtonShown();
-            assertFalse("Omnibox should not have a Security icon", securityIcon);
-            assertEquals("navigation_button with wrong resource-id",
-                    R.id.navigation_button, navigationButton.getId());
-            assertTrue(navigationButton.isShown());
-            assertFalse(securityButton.isShown());
-
-            loadUrl(securedExternalUrl);
-            securityIcon = locationBar.isSecurityButtonShown();
-            assertTrue("Omnibox should have a Security icon", securityIcon);
-            assertEquals("security_button with wrong resource-id",
-                    R.id.security_button, securityButton.getId());
-            assertTrue(securityButton.isShown());
-            assertFalse(navigationButton.isShown());
+                    (LocationBarLayout) mActivityTestRule.getActivity().findViewById(
+                            R.id.location_bar);
+            StatusViewCoordinator statusViewCoordinator =
+                    locationBar.getStatusViewCoordinatorForTesting();
+            boolean securityIcon = statusViewCoordinator.isSecurityButtonShown();
+            if (mActivityTestRule.getActivity().isTablet()) {
+                Assert.assertTrue("Omnibox should have a Security icon", securityIcon);
+                Assert.assertEquals(
+                        R.drawable.omnibox_info, statusViewCoordinator.getSecurityIconResourceId());
+            } else {
+                Assert.assertFalse("Omnibox should not have a Security icon", securityIcon);
+            }
         } finally {
             testServer.stopAndDestroyServer();
         }
     }
 
+    /**
+     * Test to verify that the security icon is present when visiting https:// URLs.
+     */
+    @Test
+    @MediumTest
+    @SkipCommandLineParameterization
+    public void testSecurityIconOnHTTPS() throws Exception {
+        EmbeddedTestServer httpsTestServer = EmbeddedTestServer.createAndStartHTTPSServer(
+                InstrumentationRegistry.getContext(),
+                ServerCertificate.CERT_OK);
+        CallbackHelper onSSLStateUpdatedCallbackHelper = new CallbackHelper();
+        TabObserver observer = new EmptyTabObserver() {
+            @Override
+            public void onSSLStateUpdated(Tab tab) {
+                onSSLStateUpdatedCallbackHelper.notifyCalled();
+            }
+        };
+        mActivityTestRule.getActivity().getActivityTab().addObserver(observer);
+
+        try {
+            final String testHttpsUrl =
+                    httpsTestServer.getURL("/chrome/test/data/android/omnibox/one.html");
+
+            ImageButton securityButton = (ImageButton) mActivityTestRule.getActivity().findViewById(
+                    R.id.location_bar_status_icon);
+
+            mActivityTestRule.loadUrl(testHttpsUrl);
+            onSSLStateUpdatedCallbackHelper.waitForCallback(0);
+
+            final LocationBarLayout locationBar =
+                    (LocationBarLayout) mActivityTestRule.getActivity().findViewById(
+                            R.id.location_bar);
+            StatusViewCoordinator statusViewCoordinator =
+                    locationBar.getStatusViewCoordinatorForTesting();
+            boolean securityIcon = statusViewCoordinator.isSecurityButtonShown();
+            Assert.assertTrue("Omnibox should have a Security icon", securityIcon);
+            Assert.assertEquals("location_bar_status_icon with wrong resource-id",
+                    R.id.location_bar_status_icon, securityButton.getId());
+            Assert.assertTrue(securityButton.isShown());
+            Assert.assertEquals(R.drawable.omnibox_https_valid,
+                    statusViewCoordinator.getSecurityIconResourceId());
+        } finally {
+            httpsTestServer.stopAndDestroyServer();
+        }
+    }
+
+    /**
+     * Test whether the color of the Location bar is correct for HTTPS scheme.
+     */
+    @Test
     @SmallTest
-    public void testSplitPathFromUrlDisplayText() {
-        verifySplitUrlAndPath("", null, LocationBarLayout.splitPathFromUrlDisplayText(""));
-        verifySplitUrlAndPath(
-                "https:", null, LocationBarLayout.splitPathFromUrlDisplayText("https:"));
-        verifySplitUrlAndPath("about:blank", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("about:blank"));
+    @SkipCommandLineParameterization
+    public void testHttpsLocationBarColor() throws Exception {
+        EmbeddedTestServer testServer = EmbeddedTestServer.createAndStartHTTPSServer(
+                InstrumentationRegistry.getInstrumentation().getContext(),
+                ServerCertificate.CERT_OK);
+        CallbackHelper didThemeColorChangedCallbackHelper = new CallbackHelper();
+        CallbackHelper onSSLStateUpdatedCallbackHelper = new CallbackHelper();
+        new TabModelSelectorTabObserver(mActivityTestRule.getActivity().getTabModelSelector()) {
+            @Override
+            public void onDidChangeThemeColor(Tab tab, int color) {
+                didThemeColorChangedCallbackHelper.notifyCalled();
+            }
+            @Override
+            public void onSSLStateUpdated(Tab tab) {
+                onSSLStateUpdatedCallbackHelper.notifyCalled();
+            }
+        };
 
-        verifySplitUrlAndPath("chrome://flags", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("chrome://flags"));
-        verifySplitUrlAndPath("chrome://flags", "/?egads",
-                LocationBarLayout.splitPathFromUrlDisplayText("chrome://flags/?egads"));
+        try {
+            final String testHttpsUrl =
+                    testServer.getURL("/chrome/test/data/android/theme_color_test.html");
 
-        verifySplitUrlAndPath("www.google.com", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("www.google.com"));
-        verifySplitUrlAndPath("www.google.com", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("www.google.com/"));
-        verifySplitUrlAndPath("www.google.com", "/?q=blah",
-                LocationBarLayout.splitPathFromUrlDisplayText("www.google.com/?q=blah"));
+            mActivityTestRule.loadUrl(testHttpsUrl);
 
-        verifySplitUrlAndPath("https://www.google.com", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("https://www.google.com"));
-        verifySplitUrlAndPath("https://www.google.com", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("https://www.google.com/"));
-        verifySplitUrlAndPath("https://www.google.com", "/?q=blah",
-                LocationBarLayout.splitPathFromUrlDisplayText("https://www.google.com/?q=blah"));
+            // Tablets don't have website theme colors.
+            if (!mActivityTestRule.getActivity().isTablet()) {
+                didThemeColorChangedCallbackHelper.waitForCallback(0);
+            }
+
+            onSSLStateUpdatedCallbackHelper.waitForCallback(0);
+
+            LocationBarLayout locationBarLayout =
+                    (LocationBarLayout) mActivityTestRule.getActivity().findViewById(
+                            R.id.location_bar);
+            ImageButton securityButton = (ImageButton) mActivityTestRule.getActivity().findViewById(
+                    R.id.location_bar_status_icon);
+
+            boolean securityIcon =
+                    locationBarLayout.getStatusViewCoordinatorForTesting().isSecurityButtonShown();
+            Assert.assertTrue("Omnibox should have a Security icon", securityIcon);
+            Assert.assertEquals("location_bar_status_icon with wrong resource-id",
+                    R.id.location_bar_status_icon, securityButton.getId());
+
+            if (mActivityTestRule.getActivity().isTablet()) {
+                Assert.assertTrue(mActivityTestRule.getActivity()
+                                          .getToolbarManager()
+                                          .getLocationBarModelForTesting()
+                                          .shouldEmphasizeHttpsScheme());
+            } else {
+                Assert.assertFalse(mActivityTestRule.getActivity()
+                                           .getToolbarManager()
+                                           .getLocationBarModelForTesting()
+                                           .shouldEmphasizeHttpsScheme());
+            }
+        } finally {
+            testServer.stopAndDestroyServer();
+        }
+    }
+
+    // TODO(bauerb): Move this to a Robolectric test.
+    @Test
+    @SmallTest
+    @SkipCommandLineParameterization
+    public void testOriginSpan() {
+        verifyOriginSpan("", null, "");
+        verifyOriginSpan("https:", null, "https:");
+        verifyOriginSpan("about:blank", null, "about:blank");
+
+        verifyOriginSpan("chrome://flags", null, "chrome://flags");
+        verifyOriginSpan("chrome://flags", "/?egads", "chrome://flags/?egads");
+
+        verifyOriginSpan("www.google.com", null, "www.google.com");
+        verifyOriginSpan("www.google.com", null, "www.google.com/");
+        verifyOriginSpan("www.google.com", "/?q=blah", "www.google.com/?q=blah");
+
+        verifyOriginSpan("https://www.google.com", null, "https://www.google.com");
+        verifyOriginSpan("https://www.google.com", null, "https://www.google.com/");
+        verifyOriginSpan("https://www.google.com", "/?q=blah", "https://www.google.com/?q=blah");
 
         // crbug.com/414990
         String testUrl = "https://disneyworld.disney.go.com/special-offers/"
                 + "?CMP=KNC-WDW_FY15_DOM_Q1RO_BR_Gold_SpOffer|G|4141300.RR.AM.01.47"
                 + "&keyword_id=s6JyxRifG_dm|walt%20disney%20world|37174067873|e|1540wwa14043";
-        verifySplitUrlAndPath("https://disneyworld.disney.go.com",
+        verifyOriginSpan("https://disneyworld.disney.go.com",
                 "/special-offers/?CMP=KNC-WDW_FY15_DOM_Q1RO_BR_Gold_SpOffer|G|4141300.RR.AM.01.47"
                         + "&keyword_id=s6JyxRifG_dm|walt%20disney%20world|37174067873|e|"
                         + "1540wwa14043",
-                LocationBarLayout.splitPathFromUrlDisplayText(testUrl));
+                testUrl);
 
         // crbug.com/415387
-        verifySplitUrlAndPath("ftp://example.com", "/ftp.html",
-                LocationBarLayout.splitPathFromUrlDisplayText("ftp://example.com/ftp.html"));
+        verifyOriginSpan("ftp://example.com", "/ftp.html", "ftp://example.com/ftp.html");
 
         // crbug.com/447416
-        verifySplitUrlAndPath("file:///dev/blah", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("file:///dev/blah"));
-        verifySplitUrlAndPath("javascript:window.alert('hello');", null,
-                LocationBarLayout.splitPathFromUrlDisplayText("javascript:window.alert('hello');"));
-        verifySplitUrlAndPath("data:text/html;charset=utf-8,Page%201", null,
-                LocationBarLayout.splitPathFromUrlDisplayText(
-                        "data:text/html;charset=utf-8,Page%201"));
+        verifyOriginSpan("file:///dev/blah", null, "file:///dev/blah");
+        verifyOriginSpan(
+                "javascript:window.alert('hello');", null, "javascript:window.alert('hello');");
+        verifyOriginSpan("data:text/html;charset=utf-8,Page%201", null,
+                "data:text/html;charset=utf-8,Page%201");
     }
 
-    private void verifySplitUrlAndPath(
-            String expectedPrePath, String expectedPostPath, Pair<String, String> actualValues) {
-        assertEquals(expectedPrePath, actualValues.first);
-        assertEquals(expectedPostPath, actualValues.second);
+    private void verifyOriginSpan(
+            String expectedOrigin, @Nullable String expectedOriginSuffix, String url) {
+        UrlBarData urlBarData = UrlBarData.forUrl(url);
+        String displayText = urlBarData.displayText.toString();
+        Assert.assertEquals(expectedOriginSuffix == null ? expectedOrigin
+                                                         : expectedOrigin + expectedOriginSuffix,
+                displayText);
+        Assert.assertEquals(expectedOrigin,
+                displayText.substring(urlBarData.originStartIndex, urlBarData.originEndIndex));
     }
 
+    @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @RetryOnFailure
+    @MinAndroidSdkLevel(Build.VERSION_CODES.JELLY_BEAN_MR1)
     public void testSuggestionDirectionSwitching() throws InterruptedException {
-        final TextView urlBarView = (TextView) getActivity().findViewById(R.id.url_bar);
+        final TextView urlBarView =
+                (TextView) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
@@ -653,7 +815,8 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         });
 
         final LocationBarLayout locationBar =
-                ((LocationBarLayout) getActivity().findViewById(R.id.location_bar));
+                ((LocationBarLayout) mActivityTestRule.getActivity().findViewById(
+                        R.id.location_bar));
 
         Map<String, List<SuggestionsResult>> suggestionsMap = buildSuggestionMap(
                 new TestSuggestionResultsBuilder()
@@ -679,13 +842,14 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
                                         "fa", null)
                                 .addGeneratedSuggestion(OmniboxSuggestionType.SEARCH_HISTORY,
                                         "fac", null)));
-        final TestAutocompleteController controller = new TestAutocompleteController(
-                locationBar, locationBar, suggestionsMap);
+        final TestAutocompleteController controller = new TestAutocompleteController(locationBar,
+                locationBar.getAutocompleteCoordinator().getSuggestionsReceivedListenerForTest(),
+                suggestionsMap);
 
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                locationBar.setAutocompleteController(controller);
+                locationBar.getAutocompleteCoordinator().setAutocompleteController(controller);
             }
         });
 
@@ -714,35 +878,32 @@ public class OmniboxTest extends ChromeActivityTestCaseBase<ChromeActivity> {
         verifyOmniboxSuggestionAlignment(locationBar, 3, View.LAYOUT_DIRECTION_LTR);
     }
 
-    private void verifyOmniboxSuggestionAlignment(
-            final LocationBarLayout locationBar, final int expectedSuggestionCount,
-            final int expectedLayoutDirection) throws InterruptedException {
+    private void verifyOmniboxSuggestionAlignment(final LocationBarLayout locationBar,
+            final int expectedSuggestionCount, final int expectedLayoutDirection) {
         OmniboxTestUtils.waitForOmniboxSuggestions(locationBar, expectedSuggestionCount);
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                OmniboxSuggestionsList suggestionsList = locationBar.getSuggestionList();
-                assertEquals(expectedSuggestionCount, suggestionsList.getChildCount());
+                ListView suggestionsList =
+                        locationBar.getAutocompleteCoordinator().getSuggestionList();
+                Assert.assertEquals(expectedSuggestionCount, suggestionsList.getChildCount());
                 for (int i = 0; i < suggestionsList.getChildCount(); i++) {
                     SuggestionView suggestionView = (SuggestionView) suggestionsList.getChildAt(i);
-                    assertEquals(
-                            String.format(
-                                    Locale.getDefault(),
-                                    "Incorrect layout direction of suggestion at index %d",
-                                    i),
-                            expectedLayoutDirection,
-                            ViewCompat.getLayoutDirection(suggestionView));
+                    Assert.assertEquals(
+                            String.format(Locale.getDefault(),
+                                    "Incorrect layout direction of suggestion at index %d", i),
+                            expectedLayoutDirection, ViewCompat.getLayoutDirection(suggestionView));
                 }
             }
         });
     }
 
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        if (getName().equals("testsplitPathFromUrlDisplayText")
-                || getName().equals("testDefaultText")) {
+    @Before
+    public void setUp() throws InterruptedException {
+        if (mActivityTestRule.getName().equals("testsplitPathFromUrlDisplayText")
+                || mActivityTestRule.getName().equals("testDefaultText")) {
             return;
         }
-        startMainActivityOnBlankPage();
+        mActivityTestRule.startMainActivityOnBlankPage();
     }
 }

@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_ANDROID_HISTORY_REPORT_HISTORY_REPORT_JNI_BRIDGE_H_
 #define CHROME_BROWSER_ANDROID_HISTORY_REPORT_HISTORY_REPORT_JNI_BRIDGE_H_
 
-#include <jni.h>
-
 #include <memory>
 #include <string>
 
@@ -25,9 +23,6 @@ class DataProvider;
 class DeltaFileService;
 class UsageReportsBufferService;
 
-bool RegisterHistoryReportJniBridge(JNIEnv* env);
-
-// JNI Bridge which connects native and java parts of Icing integration.
 class HistoryReportJniBridge {
  public:
   HistoryReportJniBridge(JNIEnv* env, jobject obj);
@@ -44,8 +39,8 @@ class HistoryReportJniBridge {
       const base::android::JavaParamRef<jobject>& obj,
       jlong last_seq_no,
       jint limit);
-  // Queries usage reports buffer for a batch of reports to be reported to
-  // Icing.
+  // Queries usage reports buffer for a batch of reports to be reported for
+  // local indexing.
   base::android::ScopedJavaLocalRef<jobjectArray> GetUsageReportsBatch(
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
@@ -55,6 +50,9 @@ class HistoryReportJniBridge {
       JNIEnv* env,
       const base::android::JavaParamRef<jobject>& obj,
       const base::android::JavaParamRef<jobjectArray>& batch);
+  // Clear all entries from the usage reports.
+  void ClearUsageReports(JNIEnv* env,
+                         const base::android::JavaParamRef<jobject>& obj);
   // Populates the usage reports buffer with historic visits.
   // This should happen only once per corpus registration.
   jboolean AddHistoricVisitsToUsageReportsBuffer(

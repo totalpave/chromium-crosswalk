@@ -9,7 +9,7 @@
 
 #include "base/auto_reset.h"
 #include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/content_settings/content_settings_mock_observer.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
@@ -17,10 +17,11 @@
 #include "components/content_settings/core/browser/content_settings_rule.h"
 #include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/content_settings/core/test/content_settings_test_utils.h"
 #include "components/prefs/pref_service.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -37,51 +38,85 @@ class PolicyProviderTest : public testing::Test {
 
 TEST_F(PolicyProviderTest, DefaultGeolocationContentSetting) {
   TestingProfile profile;
-  syncable_prefs::TestingPrefServiceSyncable* prefs =
+  sync_preferences::TestingPrefServiceSyncable* prefs =
       profile.GetTestingPrefService();
   PolicyProvider provider(prefs);
 
-  Rules rules;
-
   std::unique_ptr<RuleIterator> rule_iterator(provider.GetRuleIterator(
       CONTENT_SETTINGS_TYPE_GEOLOCATION, std::string(), false));
-  EXPECT_FALSE(rule_iterator->HasNext());
+  EXPECT_FALSE(rule_iterator);
 
   // Change the managed value of the default geolocation setting
   prefs->SetManagedPref(prefs::kManagedDefaultGeolocationSetting,
-                        new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+                        std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
 
   rule_iterator = provider.GetRuleIterator(CONTENT_SETTINGS_TYPE_GEOLOCATION,
                                            std::string(), false);
+  ASSERT_TRUE(rule_iterator);
   EXPECT_TRUE(rule_iterator->HasNext());
   Rule rule = rule_iterator->Next();
   EXPECT_FALSE(rule_iterator->HasNext());
 
   EXPECT_EQ(ContentSettingsPattern::Wildcard(), rule.primary_pattern);
   EXPECT_EQ(ContentSettingsPattern::Wildcard(), rule.secondary_pattern);
-  EXPECT_EQ(CONTENT_SETTING_BLOCK, ValueToContentSetting(rule.value.get()));
+  EXPECT_EQ(CONTENT_SETTING_BLOCK, ValueToContentSetting(&rule.value));
 
   provider.ShutdownOnUIThread();
 }
 
 TEST_F(PolicyProviderTest, ManagedDefaultContentSettings) {
   TestingProfile profile;
-  syncable_prefs::TestingPrefServiceSyncable* prefs =
+  sync_preferences::TestingPrefServiceSyncable* prefs =
       profile.GetTestingPrefService();
   PolicyProvider provider(prefs);
 
-  prefs->SetManagedPref(prefs::kManagedDefaultPluginsSetting,
-                        new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+  prefs->SetManagedPref(prefs::kManagedDefaultCookiesSetting,
+                        std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
 
   std::unique_ptr<RuleIterator> rule_iterator(provider.GetRuleIterator(
-      CONTENT_SETTINGS_TYPE_PLUGINS, std::string(), false));
+      CONTENT_SETTINGS_TYPE_COOKIES, std::string(), false));
   EXPECT_TRUE(rule_iterator->HasNext());
   Rule rule = rule_iterator->Next();
   EXPECT_FALSE(rule_iterator->HasNext());
 
   EXPECT_EQ(ContentSettingsPattern::Wildcard(), rule.primary_pattern);
   EXPECT_EQ(ContentSettingsPattern::Wildcard(), rule.secondary_pattern);
-  EXPECT_EQ(CONTENT_SETTING_BLOCK, ValueToContentSetting(rule.value.get()));
+  EXPECT_EQ(CONTENT_SETTING_BLOCK, ValueToContentSetting(&rule.value));
+
+  provider.ShutdownOnUIThread();
+}
+
+TEST_F(PolicyProviderTest, ManagedDefaultPluginSettingsExperiment) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitFromCommandLine("IgnoreDefaultPluginsSetting",
+                                          std::string());
+
+  TestingProfile profile;
+  sync_preferences::TestingPrefServiceSyncable* prefs =
+      profile.GetTestingPrefService();
+  PolicyProvider provider(prefs);
+
+  // ForceDefaultPluginsSettingAsk overrides this to ASK.
+  prefs->SetManagedPref(prefs::kManagedDefaultPluginsSetting,
+                        std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
+  prefs->SetManagedPref(prefs::kManagedDefaultJavaScriptSetting,
+                        std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
+
+  std::unique_ptr<RuleIterator> plugin_rule_iterator(provider.GetRuleIterator(
+      CONTENT_SETTINGS_TYPE_PLUGINS, std::string(), false));
+  // Policy should be removed when running under experiment.
+  EXPECT_FALSE(plugin_rule_iterator);
+
+  std::unique_ptr<RuleIterator> js_rule_iterator(provider.GetRuleIterator(
+      CONTENT_SETTINGS_TYPE_JAVASCRIPT, std::string(), false));
+  // Other policies should be left alone.
+  EXPECT_TRUE(js_rule_iterator->HasNext());
+  Rule rule = js_rule_iterator->Next();
+  EXPECT_FALSE(js_rule_iterator->HasNext());
+
+  EXPECT_EQ(ContentSettingsPattern::Wildcard(), rule.primary_pattern);
+  EXPECT_EQ(ContentSettingsPattern::Wildcard(), rule.secondary_pattern);
+  EXPECT_EQ(CONTENT_SETTING_BLOCK, ValueToContentSetting(&rule.value));
 
   provider.ShutdownOnUIThread();
 }
@@ -91,7 +126,7 @@ TEST_F(PolicyProviderTest, ManagedDefaultContentSettings) {
 // if the managed setting is removed.
 TEST_F(PolicyProviderTest, ObserveManagedSettingsChange) {
   TestingProfile profile;
-  syncable_prefs::TestingPrefServiceSyncable* prefs =
+  sync_preferences::TestingPrefServiceSyncable* prefs =
       profile.GetTestingPrefService();
   PolicyProvider provider(prefs);
 
@@ -104,8 +139,8 @@ TEST_F(PolicyProviderTest, ObserveManagedSettingsChange) {
   provider.AddObserver(&mock_observer);
 
   // Set the managed default-content-setting.
-  prefs->SetManagedPref(prefs::kManagedDefaultImagesSetting,
-                        new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+  prefs->SetManagedPref(prefs::kManagedDefaultCookiesSetting,
+                        std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
   ::testing::Mock::VerifyAndClearExpectations(&mock_observer);
   EXPECT_CALL(mock_observer,
               OnContentSettingChanged(_,
@@ -113,19 +148,18 @@ TEST_F(PolicyProviderTest, ObserveManagedSettingsChange) {
                                       CONTENT_SETTINGS_TYPE_DEFAULT,
                                       ""));
   // Remove the managed default-content-setting.
-  prefs->RemoveManagedPref(prefs::kManagedDefaultImagesSetting);
+  prefs->RemoveManagedPref(prefs::kManagedDefaultCookiesSetting);
   provider.ShutdownOnUIThread();
 }
 
 TEST_F(PolicyProviderTest, GettingManagedContentSettings) {
   TestingProfile profile;
-  syncable_prefs::TestingPrefServiceSyncable* prefs =
+  sync_preferences::TestingPrefServiceSyncable* prefs =
       profile.GetTestingPrefService();
 
-  base::ListValue* value = new base::ListValue();
+  auto value = std::make_unique<base::ListValue>();
   value->AppendString("[*.]google.com");
-  prefs->SetManagedPref(prefs::kManagedImagesBlockedForUrls,
-                        value);
+  prefs->SetManagedPref(prefs::kManagedImagesBlockedForUrls, std::move(value));
 
   PolicyProvider provider(prefs);
 
@@ -158,7 +192,7 @@ TEST_F(PolicyProviderTest, GettingManagedContentSettings) {
   // enforced via policies and not set by the user or extension. So a call to
   // SetWebsiteSetting does nothing.
   std::unique_ptr<base::Value> value_block(
-      new base::FundamentalValue(CONTENT_SETTING_BLOCK));
+      new base::Value(CONTENT_SETTING_BLOCK));
   bool owned = provider.SetWebsiteSetting(yt_url_pattern,
                                           yt_url_pattern,
                                           CONTENT_SETTINGS_TYPE_COOKIES,
@@ -175,13 +209,12 @@ TEST_F(PolicyProviderTest, GettingManagedContentSettings) {
 
 TEST_F(PolicyProviderTest, ResourceIdentifier) {
   TestingProfile profile;
-  syncable_prefs::TestingPrefServiceSyncable* prefs =
+  sync_preferences::TestingPrefServiceSyncable* prefs =
       profile.GetTestingPrefService();
 
-  base::ListValue* value = new base::ListValue();
+  auto value = std::make_unique<base::ListValue>();
   value->AppendString("[*.]google.com");
-  prefs->SetManagedPref(prefs::kManagedPluginsAllowedForUrls,
-                        value);
+  prefs->SetManagedPref(prefs::kManagedPluginsAllowedForUrls, std::move(value));
 
   PolicyProvider provider(prefs);
 
@@ -210,7 +243,7 @@ TEST_F(PolicyProviderTest, ResourceIdentifier) {
 
 TEST_F(PolicyProviderTest, AutoSelectCertificateList) {
   TestingProfile profile;
-  syncable_prefs::TestingPrefServiceSyncable* prefs =
+  sync_preferences::TestingPrefServiceSyncable* prefs =
       profile.GetTestingPrefService();
 
   PolicyProvider provider(prefs);
@@ -225,25 +258,49 @@ TEST_F(PolicyProviderTest, AutoSelectCertificateList) {
   // certificates.
   std::string pattern_str("\"pattern\":\"[*.]google.com\"");
   std::string filter_str("\"filter\":{\"ISSUER\":{\"CN\":\"issuer name\"}}");
-  base::ListValue* value = new base::ListValue();
+  auto value = std::make_unique<base::ListValue>();
   value->AppendString("{" + pattern_str + "," + filter_str + "}");
   prefs->SetManagedPref(prefs::kManagedAutoSelectCertificateForUrls,
-                        value);
+                        std::move(value));
   GURL youtube_url("https://www.youtube.com");
   EXPECT_EQ(NULL, TestUtils::GetContentSettingValue(
                       &provider, youtube_url, youtube_url,
                       CONTENT_SETTINGS_TYPE_AUTO_SELECT_CERTIFICATE,
                       std::string(), false));
-  std::unique_ptr<base::Value> cert_filter(TestUtils::GetContentSettingValue(
-      &provider, google_url, google_url,
-      CONTENT_SETTINGS_TYPE_AUTO_SELECT_CERTIFICATE, std::string(), false));
+  std::unique_ptr<base::Value> cert_filter_setting(
+      TestUtils::GetContentSettingValue(
+          &provider, google_url, google_url,
+          CONTENT_SETTINGS_TYPE_AUTO_SELECT_CERTIFICATE, std::string(), false));
 
-  ASSERT_EQ(base::Value::TYPE_DICTIONARY, cert_filter->GetType());
-  base::DictionaryValue* dict_value =
-      static_cast<base::DictionaryValue*>(cert_filter.get());
+  ASSERT_EQ(base::Value::Type::DICTIONARY, cert_filter_setting->type());
+  base::Value* cert_filters =
+      cert_filter_setting->FindKeyOfType("filters", base::Value::Type::LIST);
+  ASSERT_TRUE(cert_filters);
+  ASSERT_FALSE(cert_filters->GetList().empty());
+  base::DictionaryValue* filter;
+  ASSERT_TRUE(cert_filters->GetList().front().GetAsDictionary(&filter));
   std::string actual_common_name;
-  ASSERT_TRUE(dict_value->GetString("ISSUER.CN", &actual_common_name));
+  ASSERT_TRUE(filter->GetString("ISSUER.CN", &actual_common_name));
   EXPECT_EQ("issuer name", actual_common_name);
+  provider.ShutdownOnUIThread();
+}
+
+TEST_F(PolicyProviderTest, InvalidManagedDefaultContentSetting) {
+  TestingProfile profile;
+  sync_preferences::TestingPrefServiceSyncable* prefs =
+      profile.GetTestingPrefService();
+  PolicyProvider provider(prefs);
+
+  prefs->SetManagedPref(
+      prefs::kManagedDefaultCookiesSetting,
+      std::make_unique<base::Value>(CONTENT_SETTING_DETECT_IMPORTANT_CONTENT));
+
+  // The setting provided in the cookies pref is not valid for cookies. It
+  // should be ignored.
+  std::unique_ptr<RuleIterator> rule_iterator(provider.GetRuleIterator(
+      CONTENT_SETTINGS_TYPE_COOKIES, std::string(), false));
+  EXPECT_FALSE(rule_iterator);
+
   provider.ShutdownOnUIThread();
 }
 

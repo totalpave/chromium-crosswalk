@@ -10,18 +10,10 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/scoped_observer.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/external_loader.h"
-#include "components/browser_sync/browser/profile_sync_service.h"
-#include "components/sync_driver/sync_service_observer.h"
-#include "components/syncable_prefs/pref_service_syncable_observer.h"
 
 class Profile;
-
-namespace syncable_prefs {
-class PrefServiceSyncable;
-}
 
 namespace extensions {
 
@@ -29,9 +21,7 @@ namespace extensions {
 // look up which external extensions are registered.
 // Instances of this class are expected to be created and destroyed on the UI
 // thread and they are expecting public method calls from the UI thread.
-class ExternalPrefLoader : public ExternalLoader,
-                           public syncable_prefs::PrefServiceSyncableObserver,
-                           public sync_driver::SyncServiceObserver {
+class ExternalPrefLoader : public ExternalLoader {
  public:
   enum Options {
     NONE = 0,
@@ -44,13 +34,17 @@ class ExternalPrefLoader : public ExternalLoader,
     // Delay external preference load. It delays default apps installation
     // to not overload the system on first time user login.
     DELAY_LOAD_UNTIL_PRIORITY_SYNC = 1 << 1,
+
+    // Use profile user type filter to load extensions.
+    USE_USER_TYPE_PROFILE_FILTER = 1 << 2,
   };
 
   // |base_path_id| is the directory containing the external_extensions.json
   // file or the standalone extension manifest files. Relative file paths to
   // extension files are resolved relative to this path. |profile| is used to
   // wait priority sync if DELAY_LOAD_UNTIL_PRIORITY_SYNC set.
-  ExternalPrefLoader(int base_path_id, Options options, Profile* profile);
+  // |options| is combination of |Options|.
+  ExternalPrefLoader(int base_path_id, int options, Profile* profile);
 
   const base::FilePath GetBaseCrxFilePath() override;
 
@@ -66,16 +60,22 @@ class ExternalPrefLoader : public ExternalLoader,
   // file containing which extensions to load.
   const int base_path_id_;
 
-  const Options options_;
+  const int options_;
 
  private:
   friend class base::RefCountedThreadSafe<ExternalLoader>;
+  friend class ExternalTestingLoader;
+  friend class TestExternalPrefLoader;
 
-  // syncable_prefs::PrefServiceSyncableObserver:
-  void OnIsSyncingChanged() override;
+  class PrioritySyncReadyWaiter;
 
-  // sync_driver::SyncServiceObserver
-  void OnStateChanged() override;
+  // Extracts extension information from a json file serialized by |serializer|.
+  // |path| is only used for informational purposes (outputted when an error
+  // occurs). An empty dictionary is returned in case of failure (e.g. invalid
+  // path or json content).
+  static std::unique_ptr<base::DictionaryValue> ExtractExtensionPrefs(
+      base::ValueDeserializer* deserializer,
+      const base::FilePath& path);
 
   // If priority sync ready posts LoadOnFileThread and return true.
   bool PostLoadIfPrioritySyncReady();
@@ -86,7 +86,8 @@ class ExternalPrefLoader : public ExternalLoader,
   // Actually searches for and loads candidate standalone extension preference
   // files in the path corresponding to |base_path_id|.
   // Must be called on the file thread.
-  void LoadOnFileThread();
+  // Note: Overridden in tests.
+  virtual void LoadOnFileThread();
 
   // Extracts the information contained in an external_extension.json file
   // regarding which extensions to install. |prefs| will be modified to
@@ -101,6 +102,8 @@ class ExternalPrefLoader : public ExternalLoader,
   // Must be called from the File thread.
   void ReadStandaloneExtensionPrefFiles(base::DictionaryValue* prefs);
 
+  void OnPrioritySyncReady(PrioritySyncReadyWaiter* waiter);
+
   // The path (coresponding to |base_path_id_| containing the json files
   // describing which extensions to load.
   base::FilePath base_path_;
@@ -109,35 +112,13 @@ class ExternalPrefLoader : public ExternalLoader,
   // Needed for waiting for waiting priority sync.
   Profile* profile_;
 
-  // Used for registering observer for syncable_prefs::PrefServiceSyncable.
-  ScopedObserver<syncable_prefs::PrefServiceSyncable,
-                 syncable_prefs::PrefServiceSyncableObserver>
-      syncable_pref_observer_;
+  // User type determined by |profile_|. Used to filter extensions. In some unit
+  // tests may not be set.
+  const std::string user_type_;
+
+  std::vector<std::unique_ptr<PrioritySyncReadyWaiter>> pending_waiter_list_;
 
   DISALLOW_COPY_AND_ASSIGN(ExternalPrefLoader);
-};
-
-// A simplified version of ExternalPrefLoader that loads the dictionary
-// from json data specified in a string.
-class ExternalTestingLoader : public ExternalLoader {
- public:
-  ExternalTestingLoader(const std::string& json_data,
-                        const base::FilePath& fake_base_path);
-
-  const base::FilePath GetBaseCrxFilePath() override;
-
- protected:
-  void StartLoading() override;
-
- private:
-  friend class base::RefCountedThreadSafe<ExternalLoader>;
-
-  ~ExternalTestingLoader() override;
-
-  base::FilePath fake_base_path_;
-  std::unique_ptr<base::DictionaryValue> testing_prefs_;
-
-  DISALLOW_COPY_AND_ASSIGN(ExternalTestingLoader);
 };
 
 }  // namespace extensions

@@ -4,8 +4,9 @@
 
 #include "extensions/browser/api/document_scan/document_scan_api.h"
 
-#include <algorithm>
-
+#include "base/bind.h"
+#include "base/stl_util.h"
+#include "base/task/post_task.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_system.h"
 
@@ -24,14 +25,13 @@ namespace extensions {
 namespace api {
 
 DocumentScanScanFunction::DocumentScanScanFunction()
-    : document_scan_interface_(DocumentScanInterface::CreateInstance()) {
-}
+    : document_scan_interface_(DocumentScanInterface::CreateInstance()) {}
 
-DocumentScanScanFunction::~DocumentScanScanFunction() {
-}
+DocumentScanScanFunction::~DocumentScanScanFunction() {}
 
 bool DocumentScanScanFunction::Prepare() {
-  set_work_thread_id(BrowserThread::FILE);
+  set_work_task_runner(base::CreateSequencedTaskRunnerWithTraits(
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT}));
   params_ = document_scan::Scan::Params::Create(*args_);
   EXTENSION_FUNCTION_VALIDATE(params_.get());
   return true;
@@ -57,18 +57,16 @@ void DocumentScanScanFunction::OnScannerListReceived(
     const std::vector<DocumentScanInterface::ScannerDescription>&
         scanner_descriptions,
     const std::string& error) {
-  std::vector<DocumentScanInterface::ScannerDescription>::const_iterator
-      scanner_i = scanner_descriptions.begin();
+  auto scanner_i = scanner_descriptions.cbegin();
 
   // If no |scanner_descriptions| is empty, this is an error.  If no
   // MIME types are specified, the first scanner is chosen.  If MIME
   // types are specified, the first scanner that supports one of these
   // MIME types is selected.
   if (params_->options.mime_types) {
-    std::vector<std::string>& mime_types = *params_->options.mime_types.get();
+    std::vector<std::string>& mime_types = *params_->options.mime_types;
     for (; scanner_i != scanner_descriptions.end(); ++scanner_i) {
-      if (std::find(mime_types.begin(), mime_types.end(),
-                    scanner_i->image_mime_type) != mime_types.end()) {
+      if (base::ContainsValue(mime_types, scanner_i->image_mime_type)) {
         break;
       }
     }

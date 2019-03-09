@@ -8,13 +8,12 @@
 #include <set>
 
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner_helpers.h"
-#include "storage/browser/storage_browser_export.h"
 
 namespace base {
 class SingleThreadTaskRunner;
-class TaskRunner;
 }
 
 namespace storage {
@@ -60,7 +59,7 @@ class QuotaTask {
   bool delete_scheduled_;
 };
 
-class STORAGE_EXPORT QuotaTaskObserver {
+class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaTaskObserver {
  protected:
   friend class QuotaTask;
 
@@ -70,8 +69,7 @@ class STORAGE_EXPORT QuotaTaskObserver {
   void RegisterTask(QuotaTask* task);
   void UnregisterTask(QuotaTask* task);
 
-  typedef std::set<QuotaTask*> TaskSet;
-  TaskSet running_quota_tasks_;
+  std::set<QuotaTask*> running_quota_tasks_;
 };
 }
 

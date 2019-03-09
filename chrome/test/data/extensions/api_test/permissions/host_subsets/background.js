@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-var ERROR = 'Optional permissions must be listed in extension manifest.';
+var ERROR = 'Only permissions specified in the manifest may be requested.';
 var test = chrome.test;
 
 // The URL patterns that we've supposedly been granted access to so far. Use
@@ -65,7 +65,7 @@ function requestHost(host, expectedGranted, expectedError) {
             "Access to " + host + " was not granted, but should have been");
       } else {
         test.assertFalse(
-            granted,
+            !!granted,
             "Access to " + host + " was granted, but should not have been");
       }
       checkGrantedHosts(callback);

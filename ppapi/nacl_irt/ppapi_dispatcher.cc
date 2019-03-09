@@ -9,7 +9,9 @@
 #include <map>
 #include <set>
 
+#include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/memory/ref_counted.h"
 #include "base/single_thread_task_runner.h"
 #include "base/synchronization/waitable_event.h"
@@ -34,21 +36,19 @@ namespace ppapi {
 PpapiDispatcher::PpapiDispatcher(
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     base::WaitableEvent* shutdown_event,
-    int browser_ipc_fd,
-    int renderer_ipc_fd)
+    IPC::ChannelHandle browser_ipc_handle,
+    IPC::ChannelHandle renderer_ipc_handle)
     : next_plugin_dispatcher_id_(0),
       task_runner_(io_task_runner),
       shutdown_event_(shutdown_event),
-      renderer_ipc_fd_(renderer_ipc_fd) {
-  IPC::ChannelHandle channel_handle(
-      "NaCl IPC", base::FileDescriptor(browser_ipc_fd, false));
-
+      renderer_ipc_handle_(renderer_ipc_handle) {
   proxy::PluginGlobals* globals = proxy::PluginGlobals::Get();
   // Delay initializing the SyncChannel until after we add filters. This
   // ensures that the filters won't miss any messages received by
   // the channel.
-  channel_ =
-      IPC::SyncChannel::Create(this, GetIPCTaskRunner(), GetShutdownEvent());
+  channel_ = IPC::SyncChannel::Create(this, GetIPCTaskRunner(),
+                                      base::ThreadTaskRunnerHandle::Get(),
+                                      GetShutdownEvent());
   scoped_refptr<ppapi::proxy::PluginMessageFilter> plugin_filter(
       new ppapi::proxy::PluginMessageFilter(
           NULL, globals->resource_reply_thread_registrar()));
@@ -56,7 +56,7 @@ PpapiDispatcher::PpapiDispatcher(
   globals->RegisterResourceMessageFilters(plugin_filter.get());
 
   channel_->AddFilter(new tracing::ChildTraceMessageFilter(task_runner_.get()));
-  channel_->Init(channel_handle, IPC::Channel::MODE_SERVER, true);
+  channel_->Init(browser_ipc_handle, IPC::Channel::MODE_SERVER, true);
 }
 
 base::SingleThreadTaskRunner* PpapiDispatcher::GetIPCTaskRunner() {
@@ -77,7 +77,21 @@ IPC::PlatformFileForTransit PpapiDispatcher::ShareHandleWithRemote(
 base::SharedMemoryHandle PpapiDispatcher::ShareSharedMemoryHandleWithRemote(
     const base::SharedMemoryHandle& handle,
     base::ProcessId remote_pid) {
-  return base::SharedMemory::NULLHandle();
+  return base::SharedMemoryHandle();
+}
+
+base::UnsafeSharedMemoryRegion
+PpapiDispatcher::ShareUnsafeSharedMemoryRegionWithRemote(
+    const base::UnsafeSharedMemoryRegion& region,
+    base::ProcessId remote_pid) {
+  return base::UnsafeSharedMemoryRegion();
+}
+
+base::ReadOnlySharedMemoryRegion
+PpapiDispatcher::ShareReadOnlySharedMemoryRegionWithRemote(
+    const base::ReadOnlySharedMemoryRegion& region,
+    base::ProcessId remote_pid) {
+  return base::ReadOnlySharedMemoryRegion();
 }
 
 std::set<PP_Instance>* PpapiDispatcher::GetGloballySeenInstanceIDSet() {
@@ -168,8 +182,12 @@ void PpapiDispatcher::OnMsgInitializeNaClDispatcher(
   settings.logging_dest = logging::LOG_TO_SYSTEM_DEBUG_LOG;
   logging::InitLogging(settings);
 
-  proxy::PluginGlobals::Get()->set_keepalive_throttle_interval_milliseconds(
-      args.keepalive_throttle_interval_milliseconds);
+  base::FeatureList::ClearInstanceForTesting();
+  base::FeatureList::InitializeInstance(
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kEnableFeatures),
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kDisableFeatures));
 
   // Tell the process-global GetInterface which interfaces it can return to the
   // plugin.
@@ -184,11 +202,8 @@ void PpapiDispatcher::OnMsgInitializeNaClDispatcher(
   proxy::PluginDispatcher* dispatcher =
       new proxy::PluginDispatcher(::PPP_GetInterface, args.permissions,
                                   args.off_the_record);
-  IPC::ChannelHandle channel_handle(
-      "nacl",
-      base::FileDescriptor(renderer_ipc_fd_, false));
   if (!dispatcher->InitPluginWithChannel(this, base::kNullProcessId,
-                                         channel_handle, false)) {
+                                         renderer_ipc_handle_, false)) {
     delete dispatcher;
     return;
   }

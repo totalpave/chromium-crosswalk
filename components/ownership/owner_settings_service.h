@@ -17,7 +17,7 @@
 #include "base/threading/thread_checker.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/ownership/ownership_export.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace base {
 class TaskRunner;
@@ -70,14 +70,19 @@ class OWNERSHIP_EXPORT OwnerSettingsService : public KeyedService {
 
   void RemoveObserver(Observer* observer);
 
-  // Returns whether current user is owner or not. When this method
-  // is called too early, incorrect result can be returned because
-  // private key loading may be in progress.
-  bool IsOwner();
+  // Returns whether this OwnerSettingsService has finished loading keys, and so
+  // we are able to confirm whether the current user is the owner or not.
+  virtual bool IsReady();
 
-  // Determines whether current user is owner or not, responds via
-  // |callback|.
-  void IsOwnerAsync(const IsOwnerCallback& callback);
+  // Returns whether current user is owner or not - as long as IsReady()
+  // returns true. When IsReady() is false, we don't yet know if the current
+  // user is the owner or not. In that case this method returns false.
+  virtual bool IsOwner();
+
+  // Determines whether current user is owner or not, responds via |callback|.
+  // Reliably returns the correct value, but will not respond on the callback
+  // until IsReady() returns true.
+  virtual void IsOwnerAsync(const IsOwnerCallback& callback);
 
   // Assembles and signs |policy| on the |task_runner|, responds on
   // the original thread via |callback|.
@@ -136,7 +141,7 @@ class OWNERSHIP_EXPORT OwnerSettingsService : public KeyedService {
 
   std::vector<IsOwnerCallback> pending_is_owner_callbacks_;
 
-  base::ObserverList<Observer> observers_;
+  base::ObserverList<Observer>::Unchecked observers_;
 
   base::ThreadChecker thread_checker_;
 

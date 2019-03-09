@@ -6,9 +6,10 @@
 
 #include <utility>
 
-#include "base/memory/ptr_util.h"
+#include "base/bind.h"
 #include "chrome/browser/chromeos/file_system_provider/provided_file_system_info.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/common/extension_id.h"
 
 namespace chromeos {
 namespace file_system_provider {
@@ -18,7 +19,7 @@ namespace {
 // Default implementation for dispatching an event. Can be replaced for unit
 // tests by Operation::SetDispatchEventImplForTest().
 bool DispatchEventImpl(extensions::EventRouter* event_router,
-                       const std::string& extension_id,
+                       const extensions::ExtensionId& extension_id,
                        std::unique_ptr<extensions::Event> event) {
   if (!event_router->ExtensionHasEventListener(extension_id, event->event_name))
     return false;
@@ -32,10 +33,10 @@ bool DispatchEventImpl(extensions::EventRouter* event_router,
 Operation::Operation(extensions::EventRouter* event_router,
                      const ProvidedFileSystemInfo& file_system_info)
     : file_system_info_(file_system_info),
-      dispatch_event_impl_(base::Bind(&DispatchEventImpl,
-                                      event_router,
-                                      file_system_info_.extension_id())) {
-}
+      dispatch_event_impl_(
+          base::Bind(&DispatchEventImpl,
+                     event_router,
+                     file_system_info_.provider_id().GetExtensionId())) {}
 
 Operation::~Operation() {
 }
@@ -49,8 +50,8 @@ bool Operation::SendEvent(int request_id,
                           extensions::events::HistogramValue histogram_value,
                           const std::string& event_name,
                           std::unique_ptr<base::ListValue> event_args) {
-  return dispatch_event_impl_.Run(base::WrapUnique(new extensions::Event(
-      histogram_value, event_name, std::move(event_args))));
+  return dispatch_event_impl_.Run(std::make_unique<extensions::Event>(
+      histogram_value, event_name, std::move(event_args)));
 }
 
 }  // namespace operations

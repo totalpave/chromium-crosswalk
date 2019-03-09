@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "content/renderer/categorized_worker_pool.h"
+#include "base/sequenced_task_runner.h"
 #include "base/test/sequenced_task_runner_test_template.h"
 #include "base/test/task_runner_test_template.h"
 #include "base/threading/simple_thread.h"
 #include "cc/test/task_graph_runner_test_template.h"
-#include "content/renderer/categorized_worker_pool.h"
 
 namespace base {
 namespace {
@@ -33,9 +34,9 @@ class CategorizedWorkerPoolTestDelegate {
   scoped_refptr<content::CategorizedWorkerPool> categorized_worker_pool_;
 };
 
-INSTANTIATE_TYPED_TEST_CASE_P(CategorizedWorkerPool,
-                              TaskRunnerTest,
-                              CategorizedWorkerPoolTestDelegate);
+INSTANTIATE_TYPED_TEST_SUITE_P(CategorizedWorkerPool,
+                               TaskRunnerTest,
+                               CategorizedWorkerPoolTestDelegate);
 
 class CategorizedWorkerPoolSequencedTestDelegate {
  public:
@@ -58,9 +59,9 @@ class CategorizedWorkerPoolSequencedTestDelegate {
   scoped_refptr<content::CategorizedWorkerPool> categorized_worker_pool_;
 };
 
-INSTANTIATE_TYPED_TEST_CASE_P(CategorizedWorkerPool,
-                              SequencedTaskRunnerTest,
-                              CategorizedWorkerPoolSequencedTestDelegate);
+INSTANTIATE_TYPED_TEST_SUITE_P(CategorizedWorkerPool,
+                               SequencedTaskRunnerTest,
+                               CategorizedWorkerPoolSequencedTestDelegate);
 
 }  // namespace
 }  // namespace base
@@ -91,29 +92,29 @@ class CategorizedWorkerPoolTaskGraphRunnerTestDelegate {
 };
 
 // Multithreaded tests.
-INSTANTIATE_TYPED_TEST_CASE_P(
+INSTANTIATE_TYPED_TEST_SUITE_P(
     CategorizedWorkerPool_1_Threads,
     TaskGraphRunnerTest,
     CategorizedWorkerPoolTaskGraphRunnerTestDelegate<1>);
-INSTANTIATE_TYPED_TEST_CASE_P(
+INSTANTIATE_TYPED_TEST_SUITE_P(
     CategorizedWorkerPool_2_Threads,
     TaskGraphRunnerTest,
     CategorizedWorkerPoolTaskGraphRunnerTestDelegate<2>);
-INSTANTIATE_TYPED_TEST_CASE_P(
+INSTANTIATE_TYPED_TEST_SUITE_P(
     CategorizedWorkerPool_3_Threads,
     TaskGraphRunnerTest,
     CategorizedWorkerPoolTaskGraphRunnerTestDelegate<3>);
-INSTANTIATE_TYPED_TEST_CASE_P(
+INSTANTIATE_TYPED_TEST_SUITE_P(
     CategorizedWorkerPool_4_Threads,
     TaskGraphRunnerTest,
     CategorizedWorkerPoolTaskGraphRunnerTestDelegate<4>);
-INSTANTIATE_TYPED_TEST_CASE_P(
+INSTANTIATE_TYPED_TEST_SUITE_P(
     CategorizedWorkerPool_5_Threads,
     TaskGraphRunnerTest,
     CategorizedWorkerPoolTaskGraphRunnerTestDelegate<5>);
 
 // Single threaded tests.
-INSTANTIATE_TYPED_TEST_CASE_P(
+INSTANTIATE_TYPED_TEST_SUITE_P(
     CategorizedWorkerPool,
     SingleThreadTaskGraphRunnerTest,
     CategorizedWorkerPoolTaskGraphRunnerTestDelegate<1>);

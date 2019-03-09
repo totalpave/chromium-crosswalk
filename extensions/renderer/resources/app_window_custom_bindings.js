@@ -6,8 +6,6 @@
 
 var appWindowNatives = requireNative('app_window_natives');
 var runtimeNatives = requireNative('runtime');
-var Binding = require('binding').Binding;
-var Event = require('event_bindings').Event;
 var forEach = require('utils').forEach;
 var renderFrameObserverNatives = requireNative('renderFrameObserverNatives');
 
@@ -17,6 +15,23 @@ var currentWindowInternal = null;
 
 var kSetBoundsFunction = 'setBounds';
 var kSetSizeConstraintsFunction = 'setSizeConstraints';
+
+if (!apiBridge)
+  var binding = require('binding').Binding;
+
+var jsEvent;
+function createAnonymousEvent() {
+  if (bindingUtil) {
+    var supportsFilters = false;
+    var supportsLazyListeners = false;
+    // Native custom events ignore schema.
+    return bindingUtil.createCustomEvent(undefined, undefined, supportsFilters,
+                                         supportsLazyListeners);
+  }
+  if (!jsEvent)
+    jsEvent = require('event_bindings').Event;
+  return new jsEvent();
+}
 
 // Bounds class definition.
 var Bounds = function(boundsKey) {
@@ -109,40 +124,35 @@ Bounds.prototype.setMaximumSize = function(maxWidth, maxHeight) {
                         { maxWidth: maxWidth, maxHeight: maxHeight });
 };
 
-var appWindow = Binding.create('app.window');
+var appWindow = apiBridge || binding.create('app.window');
 appWindow.registerCustomHook(function(bindingsAPI) {
   var apiFunctions = bindingsAPI.apiFunctions;
 
   apiFunctions.setCustomCallback('create',
       function(name, request, callback, windowParams) {
-    var view = null;
+    // |callback| is optional.
+    let maybeCallback = callback || function() {};
 
-    // When window creation fails, |windowParams| will be undefined.
-    if (windowParams && windowParams.frameId) {
-      view = appWindowNatives.GetFrame(
-          windowParams.frameId, true /* notifyBrowser */);
-    }
-
-    if (!view) {
-      // No route to created window. If given a callback, trigger it with an
-      // undefined object.
-      if (callback)
-        callback();
+    // When window creation fails, windowParams is undefined. Return undefined
+    // to the caller.
+    if (!windowParams || !windowParams.frameId) {
+      maybeCallback(undefined);
       return;
     }
+
+    let view = appWindowNatives.GetFrame(windowParams.frameId,
+                                         true /* notifyBrowser */);
 
     if (windowParams.existingWindow) {
       // Not creating a new window, but activating an existing one, so trigger
       // callback with existing window and don't do anything else.
-      if (callback)
-        callback(view.chrome.app.window.current());
+      let windowResult = view ? view.chrome.app.window.current() : undefined;
+      maybeCallback(windowResult);
       return;
     }
 
-    // Initialize appWindowData in the newly created JS context
-    if (view.chrome.app) {
-      view.chrome.app.window.initializeAppWindow(windowParams);
-    } else {
+    // Handle the sandboxed page case.
+    if (!view || !view.chrome.app) {
       var sandbox_window_message = 'Creating sandboxed window, it doesn\'t ' +
           'have access to the chrome.app API.';
       if (callback) {
@@ -151,28 +161,30 @@ appWindow.registerCustomHook(function(bindingsAPI) {
             'there will be no object provided for the sandboxed window.';
       }
       console.warn(sandbox_window_message);
+      maybeCallback(undefined);
+      return;
     }
 
-    if (callback) {
-      if (!view || !view.chrome.app /* sandboxed window */) {
-        callback(undefined);
-        return;
-      }
-
-      var willCallback =
-          renderFrameObserverNatives.OnDocumentElementCreated(
-              windowParams.frameId,
-              function(success) {
-                if (success) {
-                  callback(view.chrome.app.window.current());
-                } else {
-                  callback(undefined);
-                }
-              });
-      if (!willCallback) {
-        callback(undefined);
-      }
+    // Handle error pages.
+    // TODO(arthursonzogni): Figure out why view.chrome.app is defined for error
+    // pages and stop doing it.
+    if (!view.chrome.app.window) {
+      maybeCallback(undefined);
+      return;
     }
+
+    // Initialize appWindowData in the newly created JS context
+    view.chrome.app.window.initializeAppWindow(windowParams);
+
+    var willCallback = renderFrameObserverNatives.OnDocumentElementCreated(
+        windowParams.frameId, function(success) {
+          let windowResult = success ? view.chrome.app.window.current()
+                                     : undefined;
+          maybeCallback(windowResult);
+        });
+    appWindowNatives.ResumeParser(windowParams.frameId);
+    if (!willCallback)
+      maybeCallback(undefined);
   });
 
   apiFunctions.setHandleRequest('current', function() {
@@ -185,7 +197,7 @@ appWindow.registerCustomHook(function(bindingsAPI) {
   });
 
   apiFunctions.setHandleRequest('getAll', function() {
-    var views = runtimeNatives.GetExtensionViews(-1, 'APP_WINDOW');
+    var views = runtimeNatives.GetExtensionViews(-1, -1, 'APP_WINDOW');
     return $Array.map(views, function(win) {
       return win.chrome.app.window.current();
     });
@@ -207,7 +219,9 @@ appWindow.registerCustomHook(function(bindingsAPI) {
   // currentWindowInternal, appWindowData, etc.
   apiFunctions.setHandleRequest('initializeAppWindow', function(params) {
     currentWindowInternal =
-        Binding.create('app.currentWindowInternal').generate();
+        getInternalApi ?
+            getInternalApi('app.currentWindowInternal') :
+            binding.create('app.currentWindowInternal').generate();
     var AppWindow = function() {
       this.innerBounds = new Bounds('innerBounds');
       this.outerBounds = new Bounds('outerBounds');
@@ -221,8 +235,7 @@ appWindow.registerCustomHook(function(bindingsAPI) {
     AppWindow.prototype.moveTo = $Function.bind(window.moveTo, window);
     AppWindow.prototype.resizeTo = $Function.bind(window.resizeTo, window);
     AppWindow.prototype.contentWindow = window;
-    AppWindow.prototype.onClosed = new Event();
-    AppWindow.prototype.onWindowFirstShownForTests = new Event();
+    AppWindow.prototype.onClosed = createAnonymousEvent();
     AppWindow.prototype.close = function() {
       this.contentWindow.close();
     };
@@ -253,15 +266,6 @@ appWindow.registerCustomHook(function(bindingsAPI) {
     AppWindow.prototype.alphaEnabled = function() {
       return appWindowData.alphaEnabled;
     };
-    AppWindow.prototype.handleWindowFirstShownForTests = function(callback) {
-      // This allows test apps to get have their callback run even if they
-      // call this after the first show has happened.
-      if (this.firstShowHasHappened) {
-        callback();
-        return;
-      }
-      this.onWindowFirstShownForTests.addListener(callback);
-    }
 
     Object.defineProperty(AppWindow.prototype, 'id', {get: function() {
       return appWindowData.id;
@@ -366,16 +370,6 @@ function updateAppWindowProperties(update) {
     dispatchEventIfExists(currentWindow, "onAlphaEnabledChanged");
 };
 
-function onAppWindowShownForTests() {
-  if (!currentAppWindow)
-    return;
-
-  if (!currentAppWindow.firstShowHasHappened)
-    dispatchEventIfExists(currentAppWindow, "onWindowFirstShownForTests");
-
-  currentAppWindow.firstShowHasHappened = true;
-}
-
 function onAppWindowClosed() {
   if (!currentAppWindow)
     return;
@@ -404,7 +398,7 @@ function updateSizeConstraints(boundsType, constraints) {
   currentWindowInternal.setSizeConstraints(boundsType, constraints);
 }
 
-exports.$set('binding', appWindow.generate());
+if (!apiBridge)
+  exports.$set('binding', appWindow.generate());
 exports.$set('onAppWindowClosed', onAppWindowClosed);
 exports.$set('updateAppWindowProperties', updateAppWindowProperties);
-exports.$set('appWindowShownForTests', onAppWindowShownForTests);

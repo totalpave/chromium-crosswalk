@@ -6,9 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_OUTDATED_UPGRADE_BUBBLE_VIEW_H_
 
 #include "base/macros.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
-
-class ElevationIconSetter;
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
 namespace content {
 class PageNavigator;
@@ -24,18 +22,13 @@ class OutdatedUpgradeBubbleView : public views::BubbleDialogDelegateView {
                          content::PageNavigator* navigator,
                          bool auto_update_enabled);
 
-  // Identifies if we are running a build that supports the
-  // outdated upgrade bubble view.
-  static bool IsAvailable();
-
-  // views::BubbleDialogDelegateView methods.
+  // views::BubbleDialogDelegateView:
   void WindowClosing() override;
   base::string16 GetWindowTitle() const override;
-  gfx::ImageSkia GetWindowIcon() override;
-  bool ShouldShowWindowIcon() const override;
-  bool Cancel() override;
+  bool ShouldShowCloseButton() const override;
   bool Accept() override;
-  void UpdateButton(views::LabelButton* button, ui::DialogButton type) override;
+  bool Close() override;
+  int GetDialogButtons() const override;
   base::string16 GetDialogButtonLabel(ui::DialogButton button) const override;
   void Init() override;
 
@@ -45,13 +38,15 @@ class OutdatedUpgradeBubbleView : public views::BubbleDialogDelegateView {
                             bool auto_update_enabled);
   ~OutdatedUpgradeBubbleView() override;
 
+  // Since Accept() may synchronously open a URL and deactivate the bubble
+  // (which calls Close()), this prevents Close() recording UMA a second time.
+  bool uma_recorded_ = false;
+
   // Identifies if auto-update is enabled or not.
   bool auto_update_enabled_;
 
   // The PageNavigator to use for opening the Download Chrome URL.
   content::PageNavigator* navigator_;
-
-  std::unique_ptr<ElevationIconSetter> elevation_icon_setter_;
 
   DISALLOW_COPY_AND_ASSIGN(OutdatedUpgradeBubbleView);
 };

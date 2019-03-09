@@ -2,7 +2,13 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-source_set("renderer") {
+# Currently, GuestViews are only used by extensions, so we have this
+# assert to prevent the accidental building of GuestViews on mobile
+# platforms. If you're now using GuestViews on mobile, go ahead and
+# remove this assert.
+assert(!is_android && !is_ios)
+
+static_library("renderer") {
   sources = [
     "guest_view_container.cc",
     "guest_view_container.h",
@@ -21,8 +27,11 @@ source_set("renderer") {
     "//components/guest_view/common",
     "//content/public/common",
     "//content/public/renderer",
-    "//ipc",
-    "//third_party/WebKit/public:blink",
+    "//third_party/blink/public:blink",
     "//v8",
+  ]
+
+  public_deps = [
+    "//ipc",
   ]
 }

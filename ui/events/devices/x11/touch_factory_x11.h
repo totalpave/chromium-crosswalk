@@ -15,7 +15,9 @@
 
 #include "base/macros.h"
 #include "ui/events/devices/x11/events_devices_x11_export.h"
+#include "ui/events/event_constants.h"
 #include "ui/gfx/sequential_id_generator.h"
+#include "ui/gfx/x/x11_types.h"
 
 namespace base {
 
@@ -24,8 +26,6 @@ template <typename T> struct DefaultSingletonTraits;
 
 typedef unsigned long Cursor;
 typedef unsigned long Window;
-typedef struct _XDisplay Display;
-typedef union _XEvent XEvent;
 
 namespace ui {
 
@@ -43,7 +43,7 @@ class EVENTS_DEVICES_X11_EXPORT TouchFactory {
   static void SetTouchDeviceListFromCommandLine();
 
   // Updates the list of devices.
-  void UpdateDeviceList(Display* display);
+  void UpdateDeviceList(XDisplay* display);
 
   // Checks whether an XI2 event should be processed or not (i.e. if the event
   // originated from a device we are interested in).
@@ -55,7 +55,8 @@ class EVENTS_DEVICES_X11_EXPORT TouchFactory {
   // Keeps a list of touch devices so that it is possible to determine if a
   // pointer event is a touch-event or a mouse-event. The list is reset each
   // time this is called.
-  void SetTouchDeviceList(const std::vector<int>& devices);
+  void SetTouchDeviceList(
+      const std::vector<std::pair<int, EventPointerType>>& devices);
 
   // Is the device ID valid?
   bool IsValidDevice(int deviceid) const;
@@ -66,6 +67,9 @@ class EVENTS_DEVICES_X11_EXPORT TouchFactory {
   // Is the device a real multi-touch-device? (see doc. for |touch_device_list_|
   // below for more explanation.)
   bool IsMultiTouchDevice(int deviceid) const;
+
+  // Gets the pointer type for touch-device.
+  EventPointerType GetTouchDevicePointerType(int deviceid) const;
 
   // Tries to find an existing slot ID mapping to tracking ID. Returns true
   // if the slot is found and it is saved in |slot|, false if no such slot
@@ -128,9 +132,13 @@ class EVENTS_DEVICES_X11_EXPORT TouchFactory {
   // The list of touch devices. For testing/debugging purposes, a single-pointer
   // device (mouse or touch screen without sufficient X/driver support for MT)
   // can sometimes be treated as a touch device. The key in the map represents
-  // the device id, and the value represents if the device is multi-touch
-  // capable.
-  std::map<int, bool> touch_device_list_;
+  // the device id, and the value contains the details for device (e.g. if the
+  // device is master and multi-touch capable).
+  struct TouchDeviceDetails {
+    bool is_master = false;
+    EventPointerType pointer_type = EventPointerType::POINTER_TYPE_TOUCH;
+  };
+  std::map<int, TouchDeviceDetails> touch_device_list_;
 
   // Touch screen <vid, pid>s.
   std::set<std::pair<int, int> > touchscreen_ids_;
@@ -142,10 +150,6 @@ class EVENTS_DEVICES_X11_EXPORT TouchFactory {
 
   // Associate each device ID with its master device ID.
   std::map<int, int> device_master_id_list_;
-
-  // Indicates whether touch events are explicitly disabled by the flag
-  // #touch-events.
-  bool touch_events_flag_disabled_;
 
   // The status of the touch screens devices themselves.
   bool touch_screens_enabled_;

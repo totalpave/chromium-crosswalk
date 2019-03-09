@@ -4,11 +4,15 @@
 
 #include "extensions/browser/guest_view/web_view/web_view_content_script_manager.h"
 
+#include "base/bind.h"
+#include "base/memory/ptr_util.h"
+#include "base/task/post_task.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_details.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/browser/render_view_host.h"
 #include "extensions/browser/declarative_user_script_manager.h"
 #include "extensions/browser/declarative_user_script_master.h"
 #include "extensions/browser/extension_system.h"
@@ -36,17 +40,17 @@ WebViewContentScriptManager* WebViewContentScriptManager::Get(
   if (!manager) {
     manager = new WebViewContentScriptManager(browser_context);
     browser_context->SetUserData(webview::kWebViewContentScriptManagerKeyName,
-                                 manager);
+                                 base::WrapUnique(manager));
   }
   return manager;
 }
 
 void WebViewContentScriptManager::AddContentScripts(
     int embedder_process_id,
-    content::RenderViewHost* render_view_host,
+    content::RenderFrameHost* render_frame_host,
     int view_instance_id,
     const HostID& host_id,
-    const std::set<UserScript>& scripts) {
+    std::unique_ptr<UserScriptList> scripts) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   DeclarativeUserScriptMaster* master =
@@ -54,11 +58,11 @@ void WebViewContentScriptManager::AddContentScripts(
           ->GetDeclarativeUserScriptMasterByID(host_id);
   DCHECK(master);
 
-  // We need to update WebViewRenderState in the IO thread if the guest exists.
+  // We need to update WebViewRenderState.
   std::set<int> ids_to_add;
 
   GuestMapKey key = std::pair<int, int>(embedder_process_id, view_instance_id);
-  GuestContentScriptMap::iterator iter = guest_content_script_map_.find(key);
+  auto iter = guest_content_script_map_.find(key);
 
   // Step 1: finds the entry in guest_content_script_map_ by the given |key|.
   // If there isn't any content script added for the given guest yet, insert an
@@ -71,22 +75,22 @@ void WebViewContentScriptManager::AddContentScripts(
 
   // Step 2: updates the guest_content_script_map_.
   ContentScriptMap& map = iter->second;
-  std::set<UserScript> scripts_to_delete;
-  for (const UserScript& script : scripts) {
-    auto map_iter = map.find(script.name());
+  std::set<UserScriptIDPair> to_delete;
+  for (const std::unique_ptr<UserScript>& script : *scripts) {
+    auto map_iter = map.find(script->name());
     // If a content script has the same name as the new one, remove the old
     // script first, and insert the new one.
     if (map_iter != map.end()) {
-      scripts_to_delete.insert(map_iter->second);
+      to_delete.insert(map_iter->second);
       map.erase(map_iter);
     }
-    map.insert(std::pair<std::string, UserScript>(script.name(), script));
-    ids_to_add.insert(script.id());
+    map.insert(std::pair<std::string, UserScriptIDPair>(
+        script->name(), UserScriptIDPair(script->id(), script->host_id())));
+    ids_to_add.insert(script->id());
   }
 
-  if (!scripts_to_delete.empty()) {
-    master->RemoveScripts(scripts_to_delete);
-  }
+  if (!to_delete.empty())
+    master->RemoveScripts(to_delete);
 
   // Step 3: makes WebViewContentScriptManager become an observer of the
   // |loader| for scripts loaded event.
@@ -96,8 +100,8 @@ void WebViewContentScriptManager::AddContentScripts(
     user_script_loader_observer_.Add(loader);
 
   // Step 4: adds new scripts to the master.
-  master->AddScripts(scripts, embedder_process_id,
-                     render_view_host->GetRoutingID());
+  master->AddScripts(std::move(scripts), embedder_process_id,
+                     render_frame_host->GetRoutingID());
 
   // Step 5: creates an entry in |webview_host_id_map_| for the given
   // |embedder_process_id| and |view_instance_id| if it doesn't exist.
@@ -105,16 +109,10 @@ void WebViewContentScriptManager::AddContentScripts(
   if (host_it == webview_host_id_map_.end())
     webview_host_id_map_.insert(std::make_pair(key, host_id));
 
-  // Step 6: updates WebViewRenderState in the IO thread.
-  // It is safe to use base::Unretained(WebViewRendererState::GetInstance())
-  // since WebViewRendererState::GetInstance() always returns a Singleton of
-  // WebViewRendererState.
+  // Step 6: updates WebViewRenderState.
   if (!ids_to_add.empty()) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO, FROM_HERE,
-        base::Bind(&WebViewRendererState::AddContentScriptIDs,
-                   base::Unretained(WebViewRendererState::GetInstance()),
-                   embedder_process_id, view_instance_id, ids_to_add));
+    WebViewRendererState::GetInstance()->AddContentScriptIDs(
+        embedder_process_id, view_instance_id, ids_to_add);
   }
 }
 
@@ -144,8 +142,7 @@ void WebViewContentScriptManager::RemoveContentScripts(
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   GuestMapKey key = std::pair<int, int>(embedder_process_id, view_instance_id);
-  GuestContentScriptMap::iterator script_map_iter =
-      guest_content_script_map_.find(key);
+  auto script_map_iter = guest_content_script_map_.find(key);
   if (script_map_iter == guest_content_script_map_.end())
     return;
 
@@ -154,13 +151,13 @@ void WebViewContentScriptManager::RemoveContentScripts(
           ->GetDeclarativeUserScriptMasterByID(host_id);
   CHECK(master);
 
-  // We need to update WebViewRenderState in the IO thread if the guest exists.
+  // We need to update WebViewRenderState.
   std::set<int> ids_to_delete;
-  std::set<UserScript> scripts_to_delete;
+  std::set<UserScriptIDPair> scripts_to_delete;
 
   // Step 1: removes content scripts from |master| and updates
   // |guest_content_script_map_|.
-  std::map<std::string, UserScript>& map = script_map_iter->second;
+  std::map<std::string, UserScriptIDPair>& map = script_map_iter->second;
   // If the |script_name_list| is empty, all the content scripts added by the
   // guest will be removed; otherwise, removes the scripts in the
   // |script_name_list|.
@@ -168,17 +165,17 @@ void WebViewContentScriptManager::RemoveContentScripts(
     auto it = map.begin();
     while (it != map.end()) {
       scripts_to_delete.insert(it->second);
-      ids_to_delete.insert(it->second.id());
+      ids_to_delete.insert(it->second.id);
       map.erase(it++);
     }
   } else {
     for (const std::string& name : script_name_list) {
-      ContentScriptMap::iterator iter = map.find(name);
+      auto iter = map.find(name);
       if (iter == map.end())
         continue;
-      const UserScript& script = iter->second;
-      ids_to_delete.insert(script.id());
-      scripts_to_delete.insert(script);
+      const UserScriptIDPair& id_pair = iter->second;
+      ids_to_delete.insert(id_pair.id);
+      scripts_to_delete.insert(id_pair);
       map.erase(iter);
     }
   }
@@ -193,13 +190,10 @@ void WebViewContentScriptManager::RemoveContentScripts(
   // Step 3: removes content scripts from master.
   master->RemoveScripts(scripts_to_delete);
 
-  // Step 4: updates WebViewRenderState in the IO thread.
+  // Step 4: updates WebViewRenderState.
   if (!ids_to_delete.empty()) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO, FROM_HERE,
-        base::Bind(&WebViewRendererState::RemoveContentScriptIDs,
-                   base::Unretained(WebViewRendererState::GetInstance()),
-                   embedder_process_id, view_instance_id, ids_to_delete));
+    WebViewRendererState::GetInstance()->RemoveContentScriptIDs(
+        embedder_process_id, view_instance_id, ids_to_delete);
   }
 }
 
@@ -214,19 +208,19 @@ std::set<int> WebViewContentScriptManager::GetContentScriptIDSet(
   if (iter == guest_content_script_map_.end())
     return ids;
   const ContentScriptMap& map = iter->second;
-  for (const auto& pair : map)
-    ids.insert(pair.second.id());
+  for (const auto& id_pair : map)
+    ids.insert(id_pair.second.id);
 
   return ids;
 }
 
 void WebViewContentScriptManager::SignalOnScriptsLoaded(
-    const base::Closure& callback) {
+    base::OnceClosure callback) {
   if (!user_script_loader_observer_.IsObservingSources()) {
-    callback.Run();
+    std::move(callback).Run();
     return;
   }
-  pending_scripts_loading_callbacks_.push_back(callback);
+  pending_scripts_loading_callbacks_.push_back(std::move(callback));
 }
 
 void WebViewContentScriptManager::OnScriptsLoaded(UserScriptLoader* loader) {
@@ -244,7 +238,7 @@ void WebViewContentScriptManager::RunCallbacksIfReady() {
   if (user_script_loader_observer_.IsObservingSources())
     return;
   for (auto& callback : pending_scripts_loading_callbacks_)
-    callback.Run();
+    std::move(callback).Run();
   pending_scripts_loading_callbacks_.clear();
 }
 

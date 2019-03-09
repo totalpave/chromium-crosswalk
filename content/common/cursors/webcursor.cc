@@ -4,10 +4,12 @@
 
 #include "content/common/cursors/webcursor.h"
 
+#include <algorithm>
+
 #include "base/logging.h"
 #include "base/pickle.h"
 #include "build/build_config.h"
-#include "third_party/WebKit/public/platform/WebImage.h"
+#include "third_party/blink/public/platform/web_image.h"
 
 using blink::WebCursorInfo;
 
@@ -15,9 +17,7 @@ static const int kMaxCursorDimension = 1024;
 
 namespace content {
 
-WebCursor::WebCursor()
-    : type_(WebCursorInfo::TypePointer),
-      custom_scale_(1) {
+WebCursor::WebCursor() : type_(WebCursorInfo::kTypePointer), custom_scale_(1) {
   InitPlatformData();
 }
 
@@ -86,14 +86,13 @@ bool WebCursor::Deserialize(base::PickleIterator* iter) {
 
   type_ = type;
 
-  if (type == WebCursorInfo::TypeCustom) {
+  if (type == WebCursorInfo::kTypeCustom) {
     if (size_x > 0 && size_y > 0) {
       // The * 4 is because the expected format is an array of RGBA pixel
       // values.
       if (size_x * size_y * 4 != data_len) {
-        LOG(WARNING) << "WebCursor's data length and image size mismatch: "
-                     << size_x << "x" << size_y << "x4 != "
-                     << data_len;
+        DLOG(WARNING) << "WebCursor's data length and image size mismatch: "
+                      << size_x << "x" << size_y << "x4 != " << data_len;
         return false;
       }
 
@@ -111,29 +110,25 @@ bool WebCursor::Deserialize(base::PickleIterator* iter) {
       }
     }
   }
-  return DeserializePlatformData(iter);
+  return true;
 }
 
-bool WebCursor::Serialize(base::Pickle* pickle) const {
-  if (!pickle->WriteInt(type_) ||
-      !pickle->WriteInt(hotspot_.x()) ||
-      !pickle->WriteInt(hotspot_.y()) ||
-      !pickle->WriteInt(custom_size_.width()) ||
-      !pickle->WriteInt(custom_size_.height()) ||
-      !pickle->WriteFloat(custom_scale_))
-    return false;
+void WebCursor::Serialize(base::Pickle* pickle) const {
+  pickle->WriteInt(type_);
+  pickle->WriteInt(hotspot_.x());
+  pickle->WriteInt(hotspot_.y());
+  pickle->WriteInt(custom_size_.width());
+  pickle->WriteInt(custom_size_.height());
+  pickle->WriteFloat(custom_scale_);
 
-  const char* data = NULL;
+  const char* data = nullptr;
   if (!custom_data_.empty())
     data = &custom_data_[0];
-  if (!pickle->WriteData(data, custom_data_.size()))
-    return false;
-
-  return SerializePlatformData(pickle);
+  pickle->WriteData(data, custom_data_.size());
 }
 
 bool WebCursor::IsCustom() const {
-  return type_ == WebCursorInfo::TypeCustom;
+  return type_ == WebCursorInfo::kTypeCustom;
 }
 
 bool WebCursor::IsEqual(const WebCursor& other) const {
@@ -150,7 +145,7 @@ bool WebCursor::IsEqual(const WebCursor& other) const {
 }
 
 void WebCursor::Clear() {
-  type_ = WebCursorInfo::TypePointer;
+  type_ = WebCursorInfo::kTypePointer;
   hotspot_.set_x(0);
   hotspot_.set_y(0);
   custom_size_.set_width(0);
@@ -180,7 +175,7 @@ void WebCursor::CreateCustomData(const SkBitmap& bitmap,
     return;
 
   // Fill custom_data directly with the NativeImage pixels.
-  custom_data->resize(bitmap.getSize());
+  custom_data->resize(bitmap.computeByteSize());
   if (!custom_data->empty()) {
     //This will divide color values by alpha (un-premultiply) if necessary
     SkImageInfo dstInfo = bitmap.info().makeAlphaType(kUnpremul_SkAlphaType);

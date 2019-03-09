@@ -4,19 +4,20 @@
 
 package org.chromium.components.gcm_driver;
 
-import android.content.Context;
-import android.os.AsyncTask;
-import android.os.Bundle;
+import android.os.SystemClock;
 
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.VisibleForTesting;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.task.AsyncTask;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Set;
 
 /**
  * This class is the Java counterpart to the C++ GCMDriverAndroid class.
@@ -30,32 +31,52 @@ public class GCMDriver {
     private static final String TAG = "GCMDriver";
 
     // The instance of GCMDriver currently owned by a C++ GCMDriverAndroid, if any.
-    private static GCMDriver sInstance = null;
+    private static GCMDriver sInstance;
 
     private long mNativeGCMDriverAndroid;
-    private final Context mContext;
     private GoogleCloudMessagingSubscriber mSubscriber;
 
-    private GCMDriver(long nativeGCMDriverAndroid, Context context) {
+    private GCMDriver(long nativeGCMDriverAndroid) {
         mNativeGCMDriverAndroid = nativeGCMDriverAndroid;
-        mContext = context;
-        mSubscriber = new GoogleCloudMessagingV2(context);
+        mSubscriber = new GoogleCloudMessagingV2();
     }
 
     /**
      * Create a GCMDriver object, which is owned by GCMDriverAndroid
      * on the C++ side.
+     *  @param nativeGCMDriverAndroid The C++ object that owns us.
      *
-     * @param nativeGCMDriverAndroid The C++ object that owns us.
-     * @param context The app context.
      */
     @CalledByNative
-    private static GCMDriver create(long nativeGCMDriverAndroid,
-                                    Context context) {
+    private static GCMDriver create(long nativeGCMDriverAndroid) {
         if (sInstance != null) {
             throw new IllegalStateException("Already instantiated");
         }
-        sInstance = new GCMDriver(nativeGCMDriverAndroid, context);
+        sInstance = new GCMDriver(nativeGCMDriverAndroid);
+        // Don't bother to read the stored messages unless there are actually
+        // messages persisted on disk. Calling
+        // LazySubscriptionsManager.hasPersistedMessages() should be a cheap way
+        // to avoid unnecessary disk reads.
+        if (LazySubscriptionsManager.hasPersistedMessages()) {
+            long time = SystemClock.elapsedRealtime();
+            Set<String> lazySubscriptionIds = LazySubscriptionsManager.getLazySubscriptionIds();
+            for (String id : lazySubscriptionIds) {
+                GCMMessage[] messages = LazySubscriptionsManager.readMessages(id);
+                for (GCMMessage message : messages) {
+                    dispatchMessage(message);
+                }
+                LazySubscriptionsManager.deletePersistedMessagesForSubscriptionId(id);
+            }
+            LazySubscriptionsManager.storeHasPersistedMessages(/*hasPersistedMessages=*/false);
+
+            long duration = SystemClock.elapsedRealtime() - time;
+            // Call RecordHistogram.recordTimesHistogram() on a background thread to avoid expensive
+            // JNI calls in the critical path.
+            PostTask.postTask(TaskTraits.BEST_EFFORT_MAY_BLOCK, () -> {
+                RecordHistogram.recordTimesHistogram(
+                        "PushMessaging.TimeToReadPersistedMessages", duration);
+            });
+        }
         return sInstance;
     }
 
@@ -72,9 +93,9 @@ public class GCMDriver {
 
     @CalledByNative
     private void register(final String appId, final String senderId) {
-        new AsyncTask<Void, Void, String>() {
+        new AsyncTask<String>() {
             @Override
-            protected String doInBackground(Void... voids) {
+            protected String doInBackground() {
                 try {
                     String subtype = appId;
                     String registrationId = mSubscriber.subscribe(senderId, subtype, null);
@@ -89,14 +110,15 @@ public class GCMDriver {
                 nativeOnRegisterFinished(mNativeGCMDriverAndroid, appId, registrationId,
                                          !registrationId.isEmpty());
             }
-        }.execute();
+        }
+                .executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
     @CalledByNative
     private void unregister(final String appId, final String senderId) {
-        new AsyncTask<Void, Void, Boolean>() {
+        new AsyncTask<Boolean>() {
             @Override
-            protected Boolean doInBackground(Void... voids) {
+            protected Boolean doInBackground() {
                 try {
                     String subtype = appId;
                     mSubscriber.unsubscribe(senderId, subtype, null);
@@ -111,40 +133,21 @@ public class GCMDriver {
             protected void onPostExecute(Boolean success) {
                 nativeOnUnregisterFinished(mNativeGCMDriverAndroid, appId, success);
             }
-        }.execute();
+        }
+                .executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
     // The caller of this function is responsible for ensuring the browser process is initialized.
-    public static void onMessageReceived(String appId, String senderId, Bundle extras) {
-        // TODO(johnme): Store message and redeliver later if Chrome is killed before delivery.
+    public static void dispatchMessage(GCMMessage message) {
         ThreadUtils.assertOnUiThread();
+
         if (sInstance == null) {
-            // Change of behaviour, throw exception instead of failing silently with Log.e.
             throw new RuntimeException("Failed to instantiate GCMDriver.");
         }
-        final String bundleSubtype = "subtype";
-        final String bundleSenderId = "from";
-        final String bundleCollapseKey = "collapse_key";
-        final String bundleRawData = "rawData";
-        final String bundleGcmplex = "com.google.ipc.invalidation.gcmmplex.";
 
-        String collapseKey = extras.getString(bundleCollapseKey);  // May be null.
-        byte[] rawData = extras.getByteArray(bundleRawData);  // May be null.
-
-        List<String> dataKeysAndValues = new ArrayList<String>();
-        for (String key : extras.keySet()) {
-            // TODO(johnme): Check there aren't other keys that we need to exclude.
-            if (key.equals(bundleSubtype) || key.equals(bundleSenderId)
-                    || key.equals(bundleCollapseKey) || key.equals(bundleRawData)
-                    || key.startsWith(bundleGcmplex))
-                continue;
-            dataKeysAndValues.add(key);
-            dataKeysAndValues.add(extras.getString(key));
-        }
-
-        sInstance.nativeOnMessageReceived(sInstance.mNativeGCMDriverAndroid,
-                appId, senderId, collapseKey, rawData,
-                dataKeysAndValues.toArray(new String[dataKeysAndValues.size()]));
+        sInstance.nativeOnMessageReceived(sInstance.mNativeGCMDriverAndroid, message.getAppId(),
+                message.getSenderId(), message.getCollapseKey(), message.getRawData(),
+                message.getDataKeysAndValuesArray());
     }
 
     @VisibleForTesting

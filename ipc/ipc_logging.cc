@@ -4,7 +4,7 @@
 
 #include "ipc/ipc_logging.h"
 
-#ifdef IPC_MESSAGE_LOG_ENABLED
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
 #define IPC_MESSAGE_MACROS_LOG_ENABLED
 #endif
 
@@ -25,14 +25,13 @@
 #include "build/build_config.h"
 #include "ipc/ipc_message_utils.h"
 #include "ipc/ipc_sender.h"
-#include "ipc/ipc_switches.h"
 #include "ipc/ipc_sync_message.h"
 
 #if defined(OS_POSIX)
 #include <unistd.h>
 #endif
 
-#ifdef IPC_MESSAGE_LOG_ENABLED
+#if BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)
 
 using base::Time;
 
@@ -123,7 +122,7 @@ void Logging::OnReceivedLoggingMessage(const Message& message) {
   }
 }
 
-void Logging::OnSendMessage(Message* message, const std::string& channel_id) {
+void Logging::OnSendMessage(Message* message) {
   if (!Enabled())
     return;
 
@@ -135,8 +134,7 @@ void Logging::OnSendMessage(Message* message, const std::string& channel_id) {
     // This is actually the delayed reply to a sync message.  Create a string
     // of the output parameters, add it to the LogData that was earlier stashed
     // with the reply, and log the result.
-    GenerateLogData("", *message, data, true);
-    data->channel = channel_id;
+    GenerateLogData(*message, data, true);
     Log(*data);
     delete data;
     message->set_sync_log_data(NULL);
@@ -152,8 +150,7 @@ void Logging::OnPreDispatchMessage(const Message& message) {
   message.set_received_time(Time::Now().ToInternalValue());
 }
 
-void Logging::OnPostDispatchMessage(const Message& message,
-                                    const std::string& channel_id) {
+void Logging::OnPostDispatchMessage(const Message& message) {
   if (!Enabled() ||
       !message.sent_time() ||
       !message.received_time() ||
@@ -161,13 +158,13 @@ void Logging::OnPostDispatchMessage(const Message& message,
     return;
 
   LogData data;
-  GenerateLogData(channel_id, message, &data, true);
+  GenerateLogData(message, &data, true);
 
   if (main_thread_->BelongsToCurrentThread()) {
     Log(data);
   } else {
     main_thread_->PostTask(
-        FROM_HERE, base::Bind(&Logging::Log, base::Unretained(this), data));
+        FROM_HERE, base::BindOnce(&Logging::Log, base::Unretained(this), data));
   }
 }
 
@@ -181,7 +178,7 @@ void Logging::GetMessageText(uint32_t type, std::string* name,
   if (it == log_function_map_->end()) {
     if (name) {
       *name = "[UNKNOWN MSG ";
-      *name += base::IntToString(type);
+      *name += base::NumberToString(type);
       *name += " ]";
     }
     return;
@@ -237,7 +234,8 @@ void Logging::Log(const LogData& data) {
       if (!queue_invoke_later_pending_) {
         queue_invoke_later_pending_ = true;
         base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-            FROM_HERE, base::Bind(&Logging::OnSendLogs, base::Unretained(this)),
+            FROM_HERE,
+            base::BindOnce(&Logging::OnSendLogs, base::Unretained(this)),
             base::TimeDelta::FromMilliseconds(kLogSendDelayMs));
       }
     }
@@ -256,8 +254,7 @@ void Logging::Log(const LogData& data) {
         (Time::FromInternalValue(data.dispatch) -
          Time::FromInternalValue(data.sent)).InSecondsF();
     fprintf(stderr,
-            "ipc %s %d %s %s%s %s%s\n  %18.5f %s%18.5f %s%18.5f%s\n",
-            data.channel.c_str(),
+            "ipc %d %s %s%s %s%s\n  %18.5f %s%18.5f %s%18.5f%s\n",
             data.routing_id,
             data.flags.c_str(),
             ANSIEscape(sender_ ? ANSI_COLOR_BLUE : ANSI_COLOR_CYAN),
@@ -274,8 +271,7 @@ void Logging::Log(const LogData& data) {
   }
 }
 
-void GenerateLogData(const std::string& channel, const Message& message,
-                     LogData* data, bool get_params) {
+void GenerateLogData(const Message& message, LogData* data, bool get_params) {
   if (message.is_reply()) {
     // "data" should already be filled in.
     std::string params;
@@ -302,7 +298,6 @@ void GenerateLogData(const std::string& channel, const Message& message,
     Logging::GetMessageText(message.type(), &message_name, &message,
                             get_params ? &params : NULL);
 
-    data->channel = channel;
     data->routing_id = message.routing_id();
     data->type = message.type();
     data->flags = flags;
@@ -316,4 +311,4 @@ void GenerateLogData(const std::string& channel, const Message& message,
 
 }
 
-#endif  // IPC_MESSAGE_LOG_ENABLED
+#endif  // BUILDFLAG(IPC_MESSAGE_LOG_ENABLED)

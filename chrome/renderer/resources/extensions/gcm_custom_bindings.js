@@ -4,7 +4,7 @@
 
 // Custom binding for the GCM API.
 
-var binding = require('binding').Binding.create('gcm');
+var binding = apiBridge || require('binding').Binding.create('gcm');
 var forEach = require('utils').forEach;
 
 binding.registerCustomHook(function(bindingsAPI) {
@@ -21,9 +21,9 @@ binding.registerCustomHook(function(bindingsAPI) {
 
         var lowerCasedProperty = property.toLowerCase();
         // Issue an error for forbidden prefixes of property names.
-        if (lowerCasedProperty.indexOf("goog.") == 0 ||
-            lowerCasedProperty.indexOf("google") == 0 ||
-            property.indexOf("collapse_key") == 0) {
+        if (lowerCasedProperty.startsWith("goog.") ||
+            lowerCasedProperty.startsWith("google") ||
+            property.startsWith("collapse_key")) {
           throw new Error("Invalid data key: " + property);
         }
 
@@ -41,4 +41,5 @@ binding.registerCustomHook(function(bindingsAPI) {
     });
 });
 
-exports.$set('binding', binding.generate());
+if (!apiBridge)
+  exports.$set('binding', binding.generate());

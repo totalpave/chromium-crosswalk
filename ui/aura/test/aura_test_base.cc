@@ -4,25 +4,32 @@
 
 #include "ui/aura/test/aura_test_base.h"
 
-#include "ui/aura/client/window_tree_client.h"
-#include "ui/aura/test/aura_test_helper.h"
+#include "base/command_line.h"
+#include "ui/aura/client/window_parenting_client.h"
+#include "ui/aura/mus/property_utils.h"
+#include "ui/aura/mus/window_tree_client.h"
+#include "ui/aura/mus/window_tree_host_mus.h"
+#include "ui/aura/test/aura_test_context_factory.h"
 #include "ui/aura/test/test_window_delegate.h"
+#include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
 #include "ui/base/ime/input_method_initializer.h"
 #include "ui/base/material_design/material_design_controller.h"
-#include "ui/base/test/material_design_controller_test_api.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/base/ui_base_switches.h"
+#include "ui/base/ui_base_switches_util.h"
 #include "ui/compositor/test/context_factories_for_test.h"
 #include "ui/events/event_dispatcher.h"
-#include "ui/events/event_processor.h"
+#include "ui/events/event_sink.h"
 #include "ui/events/gesture_detection/gesture_configuration.h"
 
 namespace aura {
 namespace test {
 
 AuraTestBase::AuraTestBase()
-    : setup_called_(false),
-      teardown_called_(false) {
-}
+    : scoped_task_environment_(
+          base::test::ScopedTaskEnvironment::MainThreadType::UI),
+      window_tree_client_delegate_(this) {}
 
 AuraTestBase::~AuraTestBase() {
   CHECK(setup_called_)
@@ -34,9 +41,6 @@ AuraTestBase::~AuraTestBase() {
 void AuraTestBase::SetUp() {
   setup_called_ = true;
   testing::Test::SetUp();
-  // ContentTestSuiteBase might have already initialized
-  // MaterialDesignController in unit_tests suite.
-  ui::test::MaterialDesignControllerTestAPI::Uninitialize();
   ui::MaterialDesignController::Initialize();
   ui::InitializeInputMethodForTesting();
   ui::GestureConfiguration* gesture_config =
@@ -67,18 +71,26 @@ void AuraTestBase::SetUp() {
   gesture_config->set_semi_long_press_time_in_ms(400);
   gesture_config->set_show_press_delay_in_ms(5);
   gesture_config->set_swipe_enabled(true);
-  gesture_config->set_tab_scrub_activation_delay_in_ms(200);
   gesture_config->set_two_finger_tap_enabled(true);
   gesture_config->set_velocity_tracker_strategy(
       ui::VelocityTracker::Strategy::LSQ2_RESTRICTED);
 
   // The ContextFactory must exist before any Compositors are created.
-  bool enable_pixel_output = false;
-  ui::ContextFactory* context_factory =
-      ui::InitializeContextFactoryForTests(enable_pixel_output);
+  ui::ContextFactory* context_factory = nullptr;
+  ui::ContextFactoryPrivate* context_factory_private = nullptr;
+  if (env_mode_ == Env::Mode::MUS) {
+    mus_context_factory_ = std::make_unique<AuraTestContextFactory>();
+    context_factory = mus_context_factory_.get();
+  } else {
+    const bool enable_pixel_output = false;
+    ui::InitializeContextFactoryForTests(enable_pixel_output, &context_factory,
+                                         &context_factory_private);
+  }
 
-  helper_.reset(new AuraTestHelper(&message_loop_));
-  helper_->SetUp(context_factory);
+  helper_ = std::make_unique<AuraTestHelper>();
+  if (env_mode_ == Env::Mode::MUS)
+    helper_->EnableMusWithTestWindowTree(window_tree_client_delegate_);
+  helper_->SetUp(context_factory, context_factory_private);
 }
 
 void AuraTestBase::TearDown() {
@@ -96,15 +108,26 @@ void AuraTestBase::TearDown() {
 
 Window* AuraTestBase::CreateNormalWindow(int id, Window* parent,
                                          WindowDelegate* delegate) {
-  Window* window = new Window(
-      delegate ? delegate :
-      test::TestWindowDelegate::CreateSelfDestroyingDelegate());
-  window->set_id(id);
-  window->Init(ui::LAYER_TEXTURED);
-  parent->AddChild(window);
-  window->SetBounds(gfx::Rect(0, 0, 100, 100));
-  window->Show();
-  return window;
+  return CreateTestWindowWithDelegateAndType(
+      delegate ? delegate
+               : test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+      client::WINDOW_TYPE_UNKNOWN, id, gfx::Rect(0, 0, 100, 100), parent,
+      /* show_on_creation */ true);
+}
+
+void AuraTestBase::EnableMusWithTestWindowTree() {
+  DCHECK(!setup_called_);
+  env_mode_ = Env::Mode::MUS;
+}
+
+void AuraTestBase::DeleteWindowTreeClient() {
+  DCHECK_EQ(env_mode_, Env::Mode::MUS);
+  helper_->DeleteWindowTreeClient();
+}
+
+void AuraTestBase::ConfigureEnvMode(Env::Mode mode) {
+  DCHECK(!setup_called_);
+  env_mode_ = mode;
 }
 
 void AuraTestBase::RunAllPendingInMessageLoop() {
@@ -116,10 +139,48 @@ void AuraTestBase::ParentWindow(Window* window) {
 }
 
 bool AuraTestBase::DispatchEventUsingWindowDispatcher(ui::Event* event) {
-  ui::EventDispatchDetails details =
-      event_processor()->OnEventFromSource(event);
+  ui::EventDispatchDetails details = event_sink()->OnEventFromSource(event);
   CHECK(!details.dispatcher_destroyed);
   return event->handled();
+}
+
+ws::mojom::WindowTreeClient* AuraTestBase::window_tree_client() {
+  return helper_->window_tree_client();
+}
+
+void AuraTestBase::OnEmbed(
+    std::unique_ptr<WindowTreeHostMus> window_tree_host) {}
+
+void AuraTestBase::OnUnembed(Window* root) {}
+
+void AuraTestBase::OnEmbedRootDestroyed(WindowTreeHostMus* window_tree_host) {}
+
+void AuraTestBase::OnLostConnection(WindowTreeClient* client) {}
+
+PropertyConverter* AuraTestBase::GetPropertyConverter() {
+  return &property_converter_;
+}
+
+AuraTestBaseWithType::AuraTestBaseWithType() {}
+
+AuraTestBaseWithType::~AuraTestBaseWithType() {
+  DCHECK(setup_called_);
+}
+
+void AuraTestBaseWithType::SetUp() {
+  DCHECK(!setup_called_);
+  setup_called_ = true;
+  ConfigureEnvMode(GetParam());
+  AuraTestBase::SetUp();
+}
+
+AuraTestBaseMus::AuraTestBaseMus() {}
+
+AuraTestBaseMus::~AuraTestBaseMus() {}
+
+void AuraTestBaseMus::SetUp() {
+  ConfigureEnvMode(Env::Mode::MUS);
+  AuraTestBase::SetUp();
 }
 
 }  // namespace test

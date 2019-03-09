@@ -7,26 +7,31 @@
 #include <utility>
 #include <vector>
 
-#include "chrome/browser/net/spdyproxy/data_reduction_proxy_chrome_settings.h"
-#include "chrome/browser/net/spdyproxy/data_reduction_proxy_chrome_settings_factory.h"
+#include "base/bind.h"
+#include "chrome/browser/data_reduction_proxy/data_reduction_proxy_chrome_settings.h"
+#include "chrome/browser/data_reduction_proxy/data_reduction_proxy_chrome_settings_factory.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_compression_stats.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_service.h"
 #include "components/data_reduction_proxy/proto/data_store.pb.h"
+#include "content/public/browser/browser_thread.h"
 
 namespace extensions {
 
-AsyncExtensionFunction::ResponseAction
+ExtensionFunction::ResponseAction
 DataReductionProxyClearDataSavingsFunction::Run() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   data_reduction_proxy::DataReductionProxySettings* settings =
       DataReductionProxyChromeSettingsFactory::GetForBrowserContext(
           browser_context());
-  settings->data_reduction_proxy_service()->compression_stats()->
-      ClearDataSavingStatistics();
+  settings->data_reduction_proxy_service()
+      ->compression_stats()
+      ->ClearDataSavingStatistics(
+          data_reduction_proxy::DataReductionProxySavingsClearedReason::
+              USER_ACTION_EXTENSION);
   return RespondNow(NoArguments());
 }
 
-AsyncExtensionFunction::ResponseAction
+ExtensionFunction::ResponseAction
 DataReductionProxyGetDataUsageFunction::Run() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   data_reduction_proxy::DataReductionProxySettings* settings =
@@ -48,9 +53,9 @@ void DataReductionProxyGetDataUsageFunction::ReplyWithDataUsage(
   for (const auto& data_usage_bucket : *data_usage) {
     std::unique_ptr<base::ListValue> connection_usage_list(
         new base::ListValue());
-    for (auto connection_usage : data_usage_bucket.connection_usage()) {
+    for (const auto& connection_usage : data_usage_bucket.connection_usage()) {
       std::unique_ptr<base::ListValue> site_usage_list(new base::ListValue());
-      for (auto site_usage : connection_usage.site_usage()) {
+      for (const auto& site_usage : connection_usage.site_usage()) {
         std::unique_ptr<base::DictionaryValue> usage(
             new base::DictionaryValue());
         usage->SetString("hostname", site_usage.hostname());

@@ -39,9 +39,11 @@ testCases.push({
                                'app_bindings', function response() { });
   },
   expected_activity: [
-    'app.GetDetails',
-    'app.GetIsInstalled',
-    'app.getInstallState'
+    // These API calls show up differently depending on whether native bindings
+    // are enabled.
+    /app\.[gG]etDetails/,
+    /app\.[gG]etIsInstalled/,
+    /app\.(getI|i)nstallState/,
   ]
 });
 testCases.push({
@@ -56,8 +58,11 @@ testCases.push({
     chrome.runtime.sendMessage(FRIEND_EXTENSION_ID,
                                'message_self', function response() { });
   },
-  expected_activity: [
+  expected_activity_js: [
     'runtime.connect',
+    'runtime.sendMessage'
+  ],
+  expected_activity_native: [
     'runtime.sendMessage'
   ]
 });
@@ -66,8 +71,11 @@ testCases.push({
     chrome.runtime.sendMessage(FRIEND_EXTENSION_ID,
                                'message_other', function response() { });
   },
-  expected_activity: [
+  expected_activity_js: [
     'runtime.connect',
+    'runtime.sendMessage'
+  ],
+  expected_activity_native: [
     'runtime.sendMessage'
   ]
 });
@@ -174,11 +182,20 @@ testCases.push({
     chrome.runtime.sendMessage(FRIEND_EXTENSION_ID,
                                'api_tab_updated', function response() { });
   },
-  expected_activity: [
+  expected_activity_js: [
     'tabs.onUpdated',
     'tabs.onUpdated',
     'tabs.onUpdated',
     'tabs.connect',
+    'tabs.sendMessage',
+    'tabs.executeScript',
+    'tabs.executeScript',
+    'tabs.remove'
+  ],
+  expected_activity_native: [
+    'tabs.onUpdated',
+    'tabs.onUpdated',
+    'tabs.onUpdated',
     'tabs.sendMessage',
     'tabs.executeScript',
     'tabs.executeScript',
@@ -192,12 +209,22 @@ testCases.push({
                                function response() { });
   },
   is_incognito: true,
-  expected_activity: [
+  expected_activity_js: [
     'windows.create',
     'tabs.onUpdated',
     'tabs.onUpdated',
     'tabs.onUpdated',
     'tabs.connect',
+    'tabs.sendMessage',
+    'tabs.executeScript',
+    'tabs.executeScript',
+    'tabs.remove'
+  ],
+  expected_activity_native: [
+    'windows.create',
+    'tabs.onUpdated',
+    'tabs.onUpdated',
+    'tabs.onUpdated',
     'tabs.sendMessage',
     'tabs.executeScript',
     'tabs.executeScript',
@@ -244,8 +271,6 @@ var domExpectedActivity = [
     'Storage.getItem',
     'Storage.removeItem',
     'Storage.clear',
-    // Cache access
-    'Window.applicationCache',
     // Web database access
     'Window.openDatabase',
     // Canvas access
@@ -482,7 +507,11 @@ chrome.activityLogPrivate.onExtensionActivity.addListener(
         expectedCall = testCase.expected_activity[callIndx];
       }
       console.log('Logged:' + apiCall + ' Expected:' + expectedCall);
-      chrome.test.assertEq(expectedCall, apiCall);
+      // Allow either a RegExp or a strict string comparison.
+      if (expectedCall instanceof RegExp)
+        chrome.test.assertTrue(expectedCall.test(apiCall));
+      else
+        chrome.test.assertEq(expectedCall, apiCall);
 
       // Check that no real URLs are logged in incognito-mode tests.  Ignore
       // the initial call to windows.create opening the tab.
@@ -505,32 +534,45 @@ chrome.activityLogPrivate.onExtensionActivity.addListener(
 );
 
 function setupTestCasesAndRun() {
-  chrome.runtime.getPlatformInfo(function(info) {
-    var tests = [];
-    for (var i = 0; i < testCases.length; i++) {
-      // Ignore test case if disabled for this OS.
-      if (testCases[i].disabled != undefined &&
-          info.os in testCases[i].disabled &&
-          testCases[i].disabled[info.os]) {
-        console.log('Test case disabled for this OS: ' + info.os);
-        continue;
-      }
-
-      // Add the test case to the enabled list and set the expected activity
-      // appriorate for this OS.
-      if (testCases[i].func != undefined) {
-        tests.push(testCases[i].func);
-        var enabledTestCase = testCases[i];
-        var activityListForOS = 'expected_activity_' + info.os;
-        if (activityListForOS in enabledTestCase) {
-          console.log('Expecting OS specific activity for: ' + info.os);
-          enabledTestCase.expected_activity =
-              enabledTestCase[activityListForOS];
+  chrome.test.getConfig(function(config) {
+    chrome.runtime.getPlatformInfo(function(info) {
+      var tests = [];
+      for (var i = 0; i < testCases.length; i++) {
+        // Ignore test case if disabled for this OS.
+        if (testCases[i].disabled != undefined &&
+            info.os in testCases[i].disabled &&
+            testCases[i].disabled[info.os]) {
+          console.log('Test case disabled for this OS: ' + info.os);
+          continue;
         }
-        enabledTestCases.push(enabledTestCase);
+
+        // Add the test case to the enabled list and set the expected activity
+        // appriorate for this OS.
+        if (testCases[i].func != undefined) {
+          tests.push(testCases[i].func);
+          var enabledTestCase = testCases[i];
+          var activityListForOS = 'expected_activity_' + info.os;
+          if (activityListForOS in enabledTestCase) {
+            console.log('Expecting OS specific activity for: ' + info.os);
+            enabledTestCase.expected_activity =
+                enabledTestCase[activityListForOS];
+          } else if ('expected_activity_js' in enabledTestCase) {
+            // Some tests have different activity depending on whether native
+            // bindings are being used. This is in the case of the extension
+            // using the sendMessage() API. With JS bindings, this is
+            // implemented using connect(), so both API calls are seen. With
+            // native bindings, we fix this, and only the sendMessage call is
+            // seen.
+            var key = config.nativeCrxBindingsEnabled ?
+                'expected_activity_native' : 'expected_activity_js';
+            enabledTestCase.expected_activity = enabledTestCase[key];
+          }
+
+          enabledTestCases.push(enabledTestCase);
+        }
       }
-    }
-    chrome.test.runTests(tests);
+      chrome.test.runTests(tests);
+    });
   });
 }
 

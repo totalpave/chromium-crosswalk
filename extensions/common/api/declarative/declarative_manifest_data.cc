@@ -7,49 +7,34 @@
 #include <stddef.h>
 
 #include "base/macros.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "extensions/common/api/declarative/declarative_constants.h"
 #include "extensions/common/manifest_constants.h"
-
-using base::UTF8ToUTF16;
-using base::StringPrintf;
 
 namespace extensions {
 
 namespace {
-
-const char* ValueTypeToString(const base::Value* value) {
-  const base::Value::Type type = value->GetType();
-  static const char* strings[] = {"null",
-                                  "boolean",
-                                  "integer",
-                                  "double",
-                                  "string",
-                                  "binary",
-                                  "dictionary",
-                                  "list"};
-  CHECK(static_cast<size_t>(type) < arraysize(strings));
-  return strings[type];
-}
 
 class ErrorBuilder {
  public:
   explicit ErrorBuilder(base::string16* error) : error_(error) {}
 
   // Appends a literal string |error|.
-  void Append(const char* error) {
-    if (error_->length())
-      error_->append(UTF8ToUTF16("; "));
-    error_->append(UTF8ToUTF16(error));
+  void Append(base::StringPiece error) {
+    if (!error_->empty())
+      error_->append(base::ASCIIToUTF16("; "));
+    error_->append(base::UTF8ToUTF16(error));
   }
 
   // Appends a string |error| with the first %s replaced by |sub|.
-  void Append(const char* error, const char* sub) {
-    Append(base::StringPrintf(error, sub).c_str());
+  void Append(base::StringPiece error, base::StringPiece sub) {
+    Append(base::StringPrintf(error.data(), sub.data()));
   }
 
  private:
-  base::string16* error_;
+  base::string16* const error_;
   DISALLOW_COPY_AND_ASSIGN(ErrorBuilder);
 };
 
@@ -58,15 +43,15 @@ class ErrorBuilder {
 // type of rule/condition, while the internal format uses a "instanceType" key
 // for this. This function walks through all the conditions and rules to swap
 // the manifest key for the internal key.
-bool ConvertManifestRule(const linked_ptr<DeclarativeManifestData::Rule>& rule,
+bool ConvertManifestRule(const DeclarativeManifestData::Rule& rule,
                          ErrorBuilder* error_builder) {
   auto convert_list =
-      [error_builder](std::vector<std::unique_ptr<base::Value>>& list) {
+      [error_builder](const std::vector<std::unique_ptr<base::Value>>& list) {
         for (const std::unique_ptr<base::Value>& value : list) {
           base::DictionaryValue* dictionary = nullptr;
           if (!value->GetAsDictionary(&dictionary)) {
             error_builder->Append("expected dictionary, got %s",
-                                  ValueTypeToString(value.get()));
+                                  base::Value::GetTypeName(value->type()));
             return false;
           }
           std::string type;
@@ -74,12 +59,14 @@ bool ConvertManifestRule(const linked_ptr<DeclarativeManifestData::Rule>& rule,
             error_builder->Append("'type' is required and must be a string");
             return false;
           }
+          if (type == declarative_content_constants::kLegacyShowAction)
+            type = declarative_content_constants::kShowAction;
           dictionary->Remove("type", nullptr);
           dictionary->SetString("instanceType", type);
         }
         return true;
       };
-  return convert_list(rule->actions) && convert_list(rule->conditions);
+  return convert_list(rule.actions) && convert_list(rule.conditions);
 }
 
 }  // namespace
@@ -139,19 +126,15 @@ std::unique_ptr<DeclarativeManifestData> DeclarativeManifestData::FromValue(
   const base::ListValue* list = nullptr;
   if (!value.GetAsList(&list)) {
     error_builder.Append("'event_rules' expected list, got %s",
-                         ValueTypeToString(&value));
+                         base::Value::GetTypeName(value.type()));
     return std::unique_ptr<DeclarativeManifestData>();
   }
 
-  for (size_t i = 0; i < list->GetSize(); ++i) {
+  for (const auto& element : *list) {
     const base::DictionaryValue* dict = nullptr;
-    if (!list->GetDictionary(i, &dict)) {
-      const base::Value* value = nullptr;
-      if (list->Get(i, &value))
-        error_builder.Append("expected dictionary, got %s",
-                             ValueTypeToString(value));
-      else
-        error_builder.Append("expected dictionary");
+    if (!element.GetAsDictionary(&dict)) {
+      error_builder.Append("expected dictionary, got %s",
+                           base::Value::GetTypeName(element.type()));
       return std::unique_ptr<DeclarativeManifestData>();
     }
     std::string event;
@@ -160,8 +143,8 @@ std::unique_ptr<DeclarativeManifestData> DeclarativeManifestData::FromValue(
       return std::unique_ptr<DeclarativeManifestData>();
     }
 
-    linked_ptr<Rule> rule(new Rule());
-    if (!Rule::Populate(*dict, rule.get())) {
+    Rule rule;
+    if (!Rule::Populate(*dict, &rule)) {
       error_builder.Append("rule failed to populate");
       return std::unique_ptr<DeclarativeManifestData>();
     }
@@ -169,14 +152,26 @@ std::unique_ptr<DeclarativeManifestData> DeclarativeManifestData::FromValue(
     if (!ConvertManifestRule(rule, &error_builder))
       return std::unique_ptr<DeclarativeManifestData>();
 
-    result->event_rules_map_[event].push_back(rule);
+    result->event_rules_map_[event].push_back(std::move(rule));
   }
   return result;
 }
 
-std::vector<linked_ptr<DeclarativeManifestData::Rule>>&
+std::vector<DeclarativeManifestData::Rule>
 DeclarativeManifestData::RulesForEvent(const std::string& event) {
-  return event_rules_map_[event];
+  const auto& rules = event_rules_map_[event];
+  std::vector<DeclarativeManifestData::Rule> result;
+  result.reserve(rules.size());
+  for (const auto& rule : rules) {
+    // TODO(rdevlin.cronin): It would be nice if we could have the RulesRegistry
+    // reference the rules owned here, but the ownership issues are a bit
+    // tricky. Revisit this.
+    std::unique_ptr<base::DictionaryValue> rule_value = rule.ToValue();
+    std::unique_ptr<DeclarativeManifestData::Rule> rule_copy =
+        DeclarativeManifestData::Rule::FromValue(*rule_value);
+    result.push_back(std::move(*rule_copy));
+  }
+  return result;
 }
 
 }  // namespace extensions

@@ -10,7 +10,7 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_weak_ref.h"
 #include "base/bind.h"
-#include "base/id_map.h"
+#include "base/containers/id_map.h"
 #include "base/macros.h"
 #include "cc/resources/ui_resource_client.h"
 #include "ui/gfx/geometry/size.h"
@@ -18,14 +18,12 @@
 
 namespace cc {
 class Layer;
-class UIResourceLayer;
 }
 
 namespace ui {
 class ResourceManager;
 }
 
-namespace chrome {
 namespace android {
 
 class DecorationTitle;
@@ -35,7 +33,8 @@ class DecorationTitle;
 // the Java class.
 class LayerTitleCache {
  public:
-  static LayerTitleCache* FromJavaObject(jobject jobj);
+  static LayerTitleCache* FromJavaObject(
+      const base::android::JavaRef<jobject>& jobj);
 
   LayerTitleCache(JNIEnv* env,
                   jobject jobj,
@@ -75,7 +74,7 @@ class LayerTitleCache {
  private:
   virtual ~LayerTitleCache();
 
-  IDMap<DecorationTitle, IDMapOwnPointer> layer_cache_;
+  base::IDMap<std::unique_ptr<DecorationTitle>> layer_cache_;
 
   JavaObjectWeakGlobalRef weak_java_title_cache_;
   int fade_width_;
@@ -90,9 +89,6 @@ class LayerTitleCache {
   DISALLOW_COPY_AND_ASSIGN(LayerTitleCache);
 };
 
-bool RegisterLayerTitleCache(JNIEnv* env);
-
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_ANDROID_COMPOSITOR_LAYER_TITLE_CACHE_H_

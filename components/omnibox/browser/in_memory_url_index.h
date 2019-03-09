@@ -20,8 +20,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string16.h"
 #include "base/task/cancelable_task_tracker.h"
-#include "base/threading/sequenced_worker_pool.h"
 #include "base/threading/thread_checker.h"
+#include "base/trace_event/memory_dump_provider.h"
 #include "components/history/core/browser/history_db_task.h"
 #include "components/history/core/browser/history_service_observer.h"
 #include "components/history/core/browser/history_types.h"
@@ -29,6 +29,7 @@
 #include "components/omnibox/browser/scored_history_match.h"
 #include "components/search_engines/template_url_service.h"
 
+class FakeAutocompleteProviderClient;
 class HistoryQuickProviderTest;
 
 namespace base {
@@ -40,13 +41,10 @@ namespace bookmarks {
 class BookmarkModel;
 }
 
-namespace in_memory_url_index {
-class InMemoryURLIndexCacheItem;
-}
-
 namespace history {
 class HistoryDatabase;
 class HistoryService;
+class HQPPerfTestOnePopularURL;
 }
 
 class URLIndexPrivateData;
@@ -74,7 +72,8 @@ typedef std::set<std::string> SchemeSet;
 // multi-char16 instance.
 class InMemoryURLIndex : public KeyedService,
                          public history::HistoryServiceObserver,
-                         public base::SupportsWeakPtr<InMemoryURLIndex> {
+                         public base::SupportsWeakPtr<InMemoryURLIndex>,
+                         public base::trace_event::MemoryDumpProvider {
  public:
   // Defines an abstract class which is notified upon completion of restoring
   // the index's private data either by reading from the cache file or by
@@ -107,7 +106,6 @@ class InMemoryURLIndex : public KeyedService,
   InMemoryURLIndex(bookmarks::BookmarkModel* bookmark_model,
                    history::HistoryService* history_service,
                    TemplateURLService* template_url_service,
-                   base::SequencedWorkerPool* worker_pool,
                    const base::FilePath& history_dir,
                    const SchemeSet& client_schemes_to_whitelist);
   ~InMemoryURLIndex() override;
@@ -147,7 +145,9 @@ class InMemoryURLIndex : public KeyedService,
   }
 
  private:
+  friend class ::FakeAutocompleteProviderClient;
   friend class ::HistoryQuickProviderTest;
+  friend class history::HQPPerfTestOnePopularURL;
   friend class InMemoryURLIndexTest;
   friend class InMemoryURLIndexCacheTest;
   FRIEND_TEST_ALL_PREFIXES(InMemoryURLIndexTest, ExpireRow);
@@ -243,12 +243,14 @@ class InMemoryURLIndex : public KeyedService,
   void OnURLsModified(history::HistoryService* history_service,
                       const history::URLRows& changed_urls) override;
   void OnURLsDeleted(history::HistoryService* history_service,
-                     bool all_history,
-                     bool expired,
-                     const history::URLRows& deleted_rows,
-                     const std::set<GURL>& favicon_urls) override;
+                     const history::DeletionInfo& deletion_info) override;
   void OnHistoryServiceLoaded(
       history::HistoryService* history_service) override;
+
+  // MemoryDumpProvider:
+  bool OnMemoryDump(
+      const base::trace_event::MemoryDumpArgs& args,
+      base::trace_event::ProcessMemoryDump* process_memory_dump) override;
 
   // Sets the directory wherein the cache file will be maintained.
   // For unit test usage only.
@@ -293,9 +295,8 @@ class InMemoryURLIndex : public KeyedService,
   RestoreCacheObserver* restore_cache_observer_;
   SaveCacheObserver* save_cache_observer_;
 
-  // Task runner from the worker pool, used for operations which require disk
-  // access.
-  scoped_refptr<base::SequencedTaskRunner> task_runner_;
+  // Task runner used for operations which require disk access.
+  const scoped_refptr<base::SequencedTaskRunner> task_runner_;
 
   base::CancelableTaskTracker private_data_tracker_;
   base::CancelableTaskTracker cache_reader_tracker_;

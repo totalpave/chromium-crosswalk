@@ -1,8 +1,8 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// Copyright 2015 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
-// A ChromeView that implements one download on the Download shelf.
+// A view that implements one download on the Download shelf.
 // Each DownloadItemView contains an application icon, a text label
 // indicating the download's file name, a text label indicating the
 // download's status (such as the number of bytes downloaded so far)
@@ -13,8 +13,8 @@
 // DownloadController that receives / writes data which lives in the
 // Renderer.
 
-#ifndef CHROME_BROWSER_UI_VIEWS_DOWNLOAD_DOWNLOAD_ITEM_VIEW_H__
-#define CHROME_BROWSER_UI_VIEWS_DOWNLOAD_DOWNLOAD_ITEM_VIEW_H__
+#ifndef CHROME_BROWSER_UI_VIEWS_DOWNLOAD_DOWNLOAD_ITEM_VIEW_H_
+#define CHROME_BROWSER_UI_VIEWS_DOWNLOAD_DOWNLOAD_ITEM_VIEW_H_
 
 #include <memory>
 #include <string>
@@ -25,22 +25,19 @@
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/download/download_item_model.h"
+#include "chrome/browser/download/download_commands.h"
+#include "chrome/browser/download/download_ui_model.h"
 #include "chrome/browser/icon_manager.h"
-#include "content/public/browser/download_item.h"
+#include "components/download/public/common/download_item.h"
 #include "content/public/browser/download_manager.h"
 #include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/font_list.h"
+#include "ui/views/animation/ink_drop_host_view.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/controls/button/button.h"
-#include "ui/views/view.h"
 
 class DownloadShelfView;
 class DownloadShelfContextMenuView;
-
-namespace extensions {
-class ExperienceSamplingEvent;
-}
 
 namespace gfx {
 class Image;
@@ -48,18 +45,27 @@ class ImageSkia;
 class SlideAnimation;
 }
 
-namespace views {
-class Label;
-class LabelButton;
+namespace ui {
+class ThemeProvider;
 }
 
-class DownloadItemView : public views::ButtonListener,
-                         public views::View,
+namespace views {
+class ImageButton;
+class Label;
+class MdTextButton;
+}
+
+// Represents a single download item on the download shelf. Encompasses an icon,
+// text, malicious download warnings, etc.
+class DownloadItemView : public views::InkDropHostView,
+                         public views::ButtonListener,
                          public views::ContextMenuController,
-                         public content::DownloadItem::Observer,
+                         public DownloadUIModel::Observer,
                          public gfx::AnimationDelegate {
  public:
-  DownloadItemView(content::DownloadItem* download, DownloadShelfView* parent);
+  DownloadItemView(DownloadUIModel::DownloadUIModelPtr download,
+                   DownloadShelfView* parent,
+                   views::View* accessible_alert);
   ~DownloadItemView() override;
 
   // Timer callback for handling animations
@@ -67,96 +73,135 @@ class DownloadItemView : public views::ButtonListener,
   void StartDownloadProgress();
   void StopDownloadProgress();
 
-  // IconManager::Client interface.
+  // Returns the base color for text on this download item, based on |theme|.
+  static SkColor GetTextColorForThemeProvider(const ui::ThemeProvider* theme);
+
   void OnExtractIconComplete(gfx::Image* icon);
 
-  // Returns the DownloadItem model object belonging to this item.
-  content::DownloadItem* download() { return model_.download(); }
+  // Returns the DownloadUIModel object belonging to this item.
+  DownloadUIModel* model() { return model_.get(); }
 
-  // DownloadItem::Observer methods
-  void OnDownloadUpdated(content::DownloadItem* download) override;
-  void OnDownloadOpened(content::DownloadItem* download) override;
-  void OnDownloadDestroyed(content::DownloadItem* download) override;
+  // Submits download to download feedback service if the user has approved and
+  // the download is suitable for submission, then apply |download_command|.
+  // If user hasn't seen SBER opt-in text before, show SBER opt-in dialog first.
+  void MaybeSubmitDownloadToFeedbackService(
+      DownloadCommands::Command download_command);
 
-  // Overridden from views::View:
+  // DownloadUIModel::Observer:
+  void OnDownloadUpdated() override;
+  void OnDownloadOpened() override;
+  void OnDownloadDestroyed() override;
+
+  // views::View:
   void Layout() override;
-  gfx::Size GetPreferredSize() const override;
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
+  gfx::Size CalculatePreferredSize() const override;
   bool OnMousePressed(const ui::MouseEvent& event) override;
   bool OnMouseDragged(const ui::MouseEvent& event) override;
   void OnMouseReleased(const ui::MouseEvent& event) override;
   void OnMouseCaptureLost() override;
-  void OnMouseMoved(const ui::MouseEvent& event) override;
-  void OnMouseExited(const ui::MouseEvent& event) override;
   bool OnKeyPressed(const ui::KeyEvent& event) override;
   bool GetTooltipText(const gfx::Point& p,
                       base::string16* tooltip) const override;
-  void GetAccessibleState(ui::AXViewState* state) override;
-  void OnThemeChanged() override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
 
-  // Overridden from ui::EventHandler:
+  // view::InkDropHostView:
+  void OnInkDropCreated() override;
+  SkColor GetInkDropBaseColor() const override;
+
+  // ui::EventHandler:
   void OnGestureEvent(ui::GestureEvent* event) override;
 
-  // Overridden from views::ContextMenuController.
+  // views::ContextMenuController.
   void ShowContextMenuForView(View* source,
                               const gfx::Point& point,
                               ui::MenuSourceType source_type) override;
 
-  // ButtonListener implementation.
+  // views::ButtonListener:
   void ButtonPressed(views::Button* sender, const ui::Event& event) override;
 
   // gfx::AnimationDelegate implementation.
   void AnimationProgressed(const gfx::Animation* animation) override;
 
  protected:
-  // Overridden from views::View:
+  // views::View:
   void OnPaint(gfx::Canvas* canvas) override;
-  void OnPaintBackground(gfx::Canvas* canvas) override;
   void OnFocus() override;
   void OnBlur() override;
+  void AddedToWidget() override;
+  void OnThemeChanged() override;
 
  private:
-  enum State {
-    NORMAL = 0,
-    HOT,
-    PUSHED
-  };
+  FRIEND_TEST_ALL_PREFIXES(DownloadItemViewDangerousDownloadLabelTest,
+                           AdjustTextAndGetSize);
+
+  enum State { NORMAL = 0, HOT, PUSHED };
 
   enum Mode {
-    NORMAL_MODE = 0,        // Showing download item.
-    DANGEROUS_MODE,         // Displaying the dangerous download warning.
-    MALICIOUS_MODE          // Displaying the malicious download warning.
+    NORMAL_MODE = 0,  // Showing download item.
+    DANGEROUS_MODE,   // Displaying the dangerous download warning.
+    MALICIOUS_MODE    // Displaying the malicious download warning.
   };
 
-  // The image set associated with the part containing the icon and text.
-  struct BodyImageSet {
-    gfx::ImageSkia* top_left;
-    gfx::ImageSkia* left;
-    gfx::ImageSkia* bottom_left;
-    gfx::ImageSkia* top;
-    gfx::ImageSkia* center;
-    gfx::ImageSkia* bottom;
-    gfx::ImageSkia* top_right;
-    gfx::ImageSkia* right;
-    gfx::ImageSkia* bottom_right;
-  };
+  static constexpr int kTextWidth = 140;
 
-  // The image set associated with the drop-down button on the right.
-  struct DropDownImageSet {
-    gfx::ImageSkia* top;
-    gfx::ImageSkia* center;
-    gfx::ImageSkia* bottom;
-  };
+  // Vertical padding between filename and status text.
+  static constexpr int kVerticalTextPadding = 1;
+
+  static constexpr int kTooltipMaxWidth = 800;
+
+  // Padding before the icon and at end of the item.
+  static constexpr int kStartPadding = 12;
+  static constexpr int kEndPadding = 6;
+
+  // Horizontal padding between progress indicator and filename/status text.
+  static constexpr int kProgressTextPadding = 8;
+
+  // The space between the Save and Discard buttons when prompting for a
+  // dangerous download.
+  static constexpr int kSaveDiscardButtonPadding = 5;
+
+  // The touchable space around the dropdown button's icon.
+  static constexpr int kDropdownBorderWidth = 10;
+
+  // The space on the right side of the dangerous download label.
+  static constexpr int kLabelPadding = 8;
+
+  // Height/width of the warning icon, also in dp.
+  static constexpr int kWarningIconSize = 24;
+
+  // How long the 'download complete' animation should last for.
+  static constexpr int kCompleteAnimationDurationMs = 2500;
+
+  // How long the 'download interrupted' animation should last for.
+  static constexpr int kInterruptedAnimationDurationMs = 2500;
+
+  // How long we keep the item disabled after the user clicked it to open the
+  // downloaded item.
+  static constexpr int kDisabledOnOpenDuration = 3000;
 
   void OpenDownload();
 
   // Submits the downloaded file to the safebrowsing download feedback service.
-  // Returns whether submission was successful. On successful submission,
-  // |this| and the DownloadItem will have been deleted.
-  bool SubmitDownloadToFeedbackService();
+  // Returns whether submission was successful. Applies |download_command|, if
+  // submission fails.
+  bool SubmitDownloadToFeedbackService(
+      DownloadCommands::Command download_command);
 
   // If the user has |enabled| uploading, calls SubmitDownloadToFeedbackService.
-  // Otherwise, it simply removes the DownloadItem without uploading.
-  void PossiblySubmitDownloadToFeedbackService(bool enabled);
+  // Otherwise, apply |download_command|.
+  void SubmitDownloadWhenFeedbackServiceEnabled(
+      DownloadCommands::Command download_command,
+      bool feedback_enabled);
+
+  // This function calculates the vertical coordinate to draw the file name text
+  // relative to local bounds.
+  int GetYForFilenameText() const;
+
+  // Painting of various download item bits.
+  void DrawStatusText(gfx::Canvas* canvas);
+  void DrawFilename(gfx::Canvas* canvas);
+  void DrawIcon(gfx::Canvas* canvas);
 
   void LoadIcon();
   void LoadIconIfItemPathChanged();
@@ -164,28 +209,24 @@ class DownloadItemView : public views::ButtonListener,
   // Update the button colors based on the current theme.
   void UpdateColorsFromTheme();
 
+  void UpdateDropdownButton();
+
   // Shows the context menu at the specified location. |point| is in the view's
   // coordinate system.
-  void ShowContextMenuImpl(const gfx::Point& point,
+  void ShowContextMenuImpl(const gfx::Rect& rect,
                            ui::MenuSourceType source_type);
 
   // Common code for handling pointer events (i.e. mouse or gesture).
   void HandlePressEvent(const ui::LocatedEvent& event, bool active_event);
   void HandleClickEvent(const ui::LocatedEvent& event, bool active_event);
 
-  // Convenience method to paint the 3 vertical images (bottom, middle, top)
-  // that form the background.
-  void PaintImages(gfx::Canvas* canvas,
-                    const gfx::ImageSkia* top_image,
-                    const gfx::ImageSkia* center_image,
-                    const gfx::ImageSkia* bottom_image,
-                    int x,
-                    int y,
-                    int height,
-                    int width);
-
   // Sets the state and triggers a repaint.
-  void SetState(State body_state, State drop_down_state);
+  void SetDropdownState(State new_state);
+
+  // Configures the InkDrop. e.g. disables highlight when in dangerous mode.
+  void ConfigureInkDrop();
+
+  void SetMode(Mode mode);
 
   // Whether we are in the dangerous mode.
   bool IsShowingWarningDialog() const {
@@ -198,9 +239,13 @@ class DownloadItemView : public views::ButtonListener,
   // Reverts from dangerous mode to normal download mode.
   void ClearWarningDialog();
 
-  // Start displaying the dangerous download warning or the malicious download
+  // Starts displaying the dangerous download warning or the malicious download
   // warning.
   void ShowWarningDialog();
+
+  // Returns the current warning icon (should only be called when the view is
+  // actually showing a warning).
+  gfx::ImageSkia GetWarningIcon();
 
   // Sets |size| with the size of the Save and Discard buttons (they have the
   // same size).
@@ -211,61 +256,77 @@ class DownloadItemView : public views::ButtonListener,
   // and simply returned on subsequent calls.
   void SizeLabelToMinWidth();
 
+  // Given a multiline |label|, decides whether it should be displayed on one
+  // line (if short), or broken across two lines.  In the latter case,
+  // linebreaks near the middle of the string and sets the label's text
+  // accordingly.  Returns the preferred size for the label.
+  static gfx::Size AdjustTextAndGetSize(views::Label* label);
+
   // Reenables the item after it has been disabled when a user clicked it to
   // open the downloaded file.
   void Reenable();
 
   // Releases drop down button after showing a context menu.
-  void ReleaseDropDown();
-
-  // Given |x|, returns whether |x| is within the x coordinate range of
-  // the drop-down button or not.
-  bool InDropDownButtonXCoordinateRange(int x);
+  void ReleaseDropdown();
 
   // Update the accessible name to reflect the current state of the control,
   // so that screenreaders can access the filename, status text, and
-  // dangerous download warning message (if any).
+  // dangerous download warning message (if any). The name will be presented
+  // when the download item receives focus.
   void UpdateAccessibleName();
 
-  // Update the location of the drop down button.
-  void UpdateDropDownButtonPosition();
+  // Update accessible status text.
+  // If |is_last_update| is false, then a timer is used to notify screen readers
+  // to speak the alert text on a regular interval. If |is_last_update| is true,
+  // then the screen reader is notified of the request to speak the alert
+  // immediately, and any running timer is ended.
+  void UpdateAccessibleAlert(const base::string16& alert, bool is_last_update);
+
+  // Get the accessible alert text for a download that is currently in progress.
+  base::string16 GetInProgressAccessibleAlertText();
+
+  // Callback for |accessible_update_timer_|, or can be used to ask a screen
+  // reader to speak the current alert immediately.
+  void AnnounceAccessibleAlert();
 
   // Show/Hide/Reset |animation| based on the state transition specified by
   // |from| and |to|.
-  void AnimateStateTransition(State from, State to,
+  void AnimateStateTransition(State from,
+                              State to,
                               gfx::SlideAnimation* animation);
 
   // Callback for |progress_timer_|.
   void ProgressTimerFired();
 
-  // The different images used for the background.
-  BodyImageSet normal_body_image_set_;
-  BodyImageSet hot_body_image_set_;
-  BodyImageSet pushed_body_image_set_;
-  BodyImageSet dangerous_mode_body_image_set_;
-  BodyImageSet malicious_mode_body_image_set_;
-  DropDownImageSet normal_drop_down_image_set_;
-  DropDownImageSet hot_drop_down_image_set_;
-  DropDownImageSet pushed_drop_down_image_set_;
+  // Returns the base text color.
+  SkColor GetTextColor() const;
 
-  // The warning icon showns for dangerous downloads.
-  const gfx::ImageSkia* warning_icon_;
+  // Returns a slightly dimmed version of the base text color.
+  SkColor GetDimmedTextColor() const;
+
+  // Returns the status text to show in the notification.
+  base::string16 GetStatusText() const;
 
   // The download shelf that owns us.
   DownloadShelfView* shelf_;
 
+  // The focus ring for this Button.
+  std::unique_ptr<views::FocusRing> focus_ring_;
+
   // Elements of our particular download
   base::string16 status_text_;
 
-  // The font list used to print the file name and status.
+  // The font list used to print the file name and warning text.
   gfx::FontList font_list_;
+
+  // The font list used to print the status text below the file name.
+  gfx::FontList status_font_list_;
 
   // The tooltip.  Only displayed when not showing a warning dialog.
   base::string16 tooltip_text_;
 
   // The current state (normal, hot or pushed) of the body and drop-down.
-  State body_state_;
-  State drop_down_state_;
+  State dropdown_state_;
 
   // Mode of the download item view.
   Mode mode_;
@@ -277,19 +338,6 @@ class DownloadItemView : public views::ButtonListener,
   // Keeps the amount of time spent already animating. Used to keep track of
   // total active time for downloads of unknown size.
   base::TimeDelta previous_progress_elapsed_;
-
-  // The left and right x coordinates of the drop-down button.
-  int drop_down_x_left_;
-  int drop_down_x_right_;
-
-  // Used when we are showing the menu to show the drop-down as pressed.
-  bool drop_down_pressed_;
-
-  // The height of the box formed by the background images and its labels.
-  int box_height_;
-
-  // The y coordinate of the box formed by the background images and its labels.
-  int box_y_;
 
   // Whether we are dragging the download button.
   bool dragging_;
@@ -304,11 +352,7 @@ class DownloadItemView : public views::ButtonListener,
   base::CancelableTaskTracker cancelable_task_tracker_;
 
   // A model class to control the status text we display.
-  DownloadItemModel model_;
-
-  // Hover animations for our body and drop buttons.
-  std::unique_ptr<gfx::SlideAnimation> body_hover_animation_;
-  std::unique_ptr<gfx::SlideAnimation> drop_hover_animation_;
+  DownloadUIModel::DownloadUIModelPtr model_;
 
   // Animation for download complete.
   std::unique_ptr<gfx::SlideAnimation> complete_animation_;
@@ -317,8 +361,11 @@ class DownloadItemView : public views::ButtonListener,
   base::RepeatingTimer progress_timer_;
 
   // Dangerous mode buttons.
-  views::LabelButton* save_button_;
-  views::LabelButton* discard_button_;
+  views::MdTextButton* save_button_;
+  views::MdTextButton* discard_button_;
+
+  // The drop down button.
+  views::ImageButton* dropdown_button_;
 
   // Dangerous mode label.
   views::Label* dangerous_download_label_;
@@ -341,14 +388,21 @@ class DownloadItemView : public views::ButtonListener,
   // The name of this view as reported to assistive technology.
   base::string16 accessible_name_;
 
+  // A hidden view for accessible status alerts, that are spoken by screen
+  // readers when a download changes state.
+  views::View* accessible_alert_;
+
+  // A timer for accessible alerts that helps reduce the number of similar
+  // messages spoken in a short period of time.
+  base::RepeatingTimer accessible_alert_timer_;
+
+  // Force the reading of the current alert text the next time it updates.
+  bool announce_accessible_alert_soon_;
+
   // The icon loaded in the download shelf is based on the file path of the
   // item.  Store the path used, so that we can detect a change in the path
   // and reload the icon.
   base::FilePath last_download_item_path_;
-
-  // ExperienceSampling: This tracks dangerous/malicious downloads warning UI
-  // and the user's decisions about it.
-  std::unique_ptr<extensions::ExperienceSamplingEvent> sampling_event_;
 
   // Method factory used to delay reenabling of the item when opening the
   // downloaded file.
@@ -357,4 +411,4 @@ class DownloadItemView : public views::ButtonListener,
   DISALLOW_COPY_AND_ASSIGN(DownloadItemView);
 };
 
-#endif  // CHROME_BROWSER_UI_VIEWS_DOWNLOAD_DOWNLOAD_ITEM_VIEW_H__
+#endif  // CHROME_BROWSER_UI_VIEWS_DOWNLOAD_DOWNLOAD_ITEM_VIEW_H_

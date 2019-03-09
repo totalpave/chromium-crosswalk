@@ -7,12 +7,16 @@
 #include <stdint.h>
 
 #include <cmath>
+#include <memory>
 #include <utility>
+#include <vector>
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/memory/scoped_vector.h"
 #include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/run_loop.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/timer/timer.h"
@@ -76,7 +80,7 @@ class TestVideoRendererTest : public testing::Test {
   std::unique_ptr<base::RunLoop> run_loop_;
 
   // Used to set timeouts and delays.
-  std::unique_ptr<base::Timer> timer_;
+  base::OneShotTimer timer_;
 
   // Manages the decoder and process generated video packets.
   std::unique_ptr<TestVideoRenderer> test_video_renderer_;
@@ -115,13 +119,12 @@ class TestVideoRendererTest : public testing::Test {
   DISALLOW_COPY_AND_ASSIGN(TestVideoRendererTest);
 };
 
-TestVideoRendererTest::TestVideoRendererTest()
-    : timer_(new base::Timer(true, false)) {}
+TestVideoRendererTest::TestVideoRendererTest() {}
 
-TestVideoRendererTest::~TestVideoRendererTest() {}
+TestVideoRendererTest::~TestVideoRendererTest() = default;
 
 void TestVideoRendererTest::SetUp() {
-  if (!base::MessageLoop::current()) {
+  if (!base::MessageLoopCurrent::Get()) {
     // Create a temporary message loop if the current thread does not already
     // have one.
     message_loop_.reset(new base::MessageLoop);
@@ -140,26 +143,25 @@ void TestVideoRendererTest::TestVideoPacketProcessing(int screen_width,
       CreateDesktopFrameWithGradient(screen_width, screen_height);
   EXPECT_TRUE(original_frame);
 
-  std::unique_ptr<VideoPacket> packet =
-      encoder_->Encode(*original_frame.get(), 0);
+  std::unique_ptr<VideoPacket> packet = encoder_->Encode(*original_frame.get());
 
   DCHECK(!run_loop_ || !run_loop_->running());
-  DCHECK(!timer_->IsRunning());
+  DCHECK(!timer_.IsRunning());
   run_loop_.reset(new base::RunLoop());
 
   // Set an extremely long time: 10 min to prevent bugs from hanging the system.
   // NOTE: We've seen cases which take up to 1 min to process a packet, so an
   // extremely long time as 10 min is chosen to avoid being variable/flaky.
-  timer_->Start(FROM_HERE, base::TimeDelta::FromMinutes(10),
-                run_loop_->QuitClosure());
+  timer_.Start(FROM_HERE, base::TimeDelta::FromMinutes(10),
+               run_loop_->QuitClosure());
 
   // Wait for the video packet to be processed and rendered to buffer.
   test_video_renderer_->ProcessVideoPacket(std::move(packet),
                                            run_loop_->QuitClosure());
 
   run_loop_->Run();
-  EXPECT_TRUE(timer_->IsRunning());
-  timer_->Stop();
+  EXPECT_TRUE(timer_.IsRunning());
+  timer_.Stop();
   run_loop_.reset();
 
   std::unique_ptr<webrtc::DesktopFrame> buffer_copy =
@@ -177,14 +179,14 @@ bool TestVideoRendererTest::SendPacketAndWaitForMatch(
     const webrtc::DesktopRect& expected_rect,
     const RGBValue& expected_average_color) {
   DCHECK(!run_loop_ || !run_loop_->running());
-  DCHECK(!timer_->IsRunning());
+  DCHECK(!timer_.IsRunning());
   run_loop_.reset(new base::RunLoop());
 
   // Set an extremely long time: 10 min to prevent bugs from hanging the system.
   // NOTE: We've seen cases which take up to 1 min to process a packet, so an
   // extremely long time as 10 min is chosen to avoid being variable/flaky.
-  timer_->Start(FROM_HERE, base::TimeDelta::FromMinutes(10),
-                run_loop_->QuitClosure());
+  timer_.Start(FROM_HERE, base::TimeDelta::FromMinutes(10),
+               run_loop_->QuitClosure());
 
   // Set expected image pattern.
   test_video_renderer_->ExpectAverageColorInRect(
@@ -195,22 +197,22 @@ bool TestVideoRendererTest::SendPacketAndWaitForMatch(
 
   // Post first test packet: |packet|.
   test_video_renderer_->ProcessVideoPacket(std::move(packet),
-                                           base::Bind(&base::DoNothing));
+                                           base::DoNothing());
 
   // Second packet: |packet_copy| is posted, and |second_packet_done_callback|
   // will always be posted back to main thread, however, whether it will be
   // called depends on whether the expected pattern is matched or not.
   bool second_packet_done_is_called = false;
-  base::Closure second_packet_done_callback =
-      base::Bind(&ProcessPacketDoneHandler, run_loop_->QuitClosure(),
-                 &second_packet_done_is_called);
+  base::OnceClosure second_packet_done_callback =
+      base::BindOnce(&ProcessPacketDoneHandler, run_loop_->QuitClosure(),
+                     &second_packet_done_is_called);
 
-  test_video_renderer_->ProcessVideoPacket(std::move(packet_copy),
-                                           second_packet_done_callback);
+  test_video_renderer_->ProcessVideoPacket(
+      std::move(packet_copy), std::move(second_packet_done_callback));
 
   run_loop_->Run();
-  EXPECT_TRUE(timer_->IsRunning());
-  timer_->Stop();
+  EXPECT_TRUE(timer_.IsRunning());
+  timer_.Stop();
   run_loop_.reset();
 
   // if expected image pattern is matched, the QuitClosure of |run_loop_| will
@@ -233,7 +235,7 @@ void TestVideoRendererTest::TestImagePatternMatch(
       CreateDesktopFrameWithGradient(screen_width, screen_height);
   RGBValue expected_average_color =
       CalculateAverageColorValueForFrame(frame.get(), expected_rect);
-  std::unique_ptr<VideoPacket> packet = encoder_->Encode(*frame.get(), 0);
+  std::unique_ptr<VideoPacket> packet = encoder_->Encode(*frame.get());
 
   if (expect_to_match) {
     EXPECT_TRUE(SendPacketAndWaitForMatch(std::move(packet), expected_rect,
@@ -400,20 +402,17 @@ TEST_F(TestVideoRendererTest, VerifyMultipleVideoProcessing) {
   // more than one task on the video decode thread, while not too large to wait
   // for too long for the unit test to complete.
   const int task_num = 20;
-  ScopedVector<VideoPacket> video_packets;
+  std::vector<std::unique_ptr<VideoPacket>> video_packets;
   for (int i = 0; i < task_num; ++i) {
     std::unique_ptr<webrtc::DesktopFrame> original_frame =
         CreateDesktopFrameWithGradient(kDefaultScreenWidthPx,
                                        kDefaultScreenHeightPx);
-    video_packets.push_back(encoder_->Encode(*original_frame.get(), 0));
+    video_packets.push_back(encoder_->Encode(*original_frame.get()));
   }
 
-  for (int i = 0; i < task_num; ++i) {
-    // Transfer ownership of video packet.
-    VideoPacket* packet = video_packets[i];
-    video_packets[i] = nullptr;
-    test_video_renderer_->ProcessVideoPacket(base::WrapUnique(packet),
-                                             base::Bind(&base::DoNothing));
+  for (auto& packet : video_packets) {
+    test_video_renderer_->ProcessVideoPacket(std::move(packet),
+                                             base::DoNothing());
   }
 }
 
@@ -451,11 +450,11 @@ TEST_F(TestVideoRendererTest, VerifySetExpectedImagePattern) {
 
   // Set expected image pattern.
   test_video_renderer_->ExpectAverageColorInRect(
-      kDefaultExpectedRect, black_color, base::Bind(&base::DoNothing));
+      kDefaultExpectedRect, black_color, base::DoNothing());
 
   // Post test video packet.
-  test_video_renderer_->ProcessVideoPacket(encoder_->Encode(*frame.get(), 0),
-                                           base::Bind(&base::DoNothing));
+  test_video_renderer_->ProcessVideoPacket(encoder_->Encode(*frame.get()),
+                                           base::DoNothing());
 }
 
 // Verify correct image pattern can be matched for VP8.

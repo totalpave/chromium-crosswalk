@@ -8,17 +8,22 @@
 #include "net/cert/x509_certificate.h"
 #include "net/test/test_certificate_data.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/platform_test.h"
 
 namespace web {
 
-TEST(CertPolicyTest, Policy) {
+using CertPolicyTest = PlatformTest;
+
+TEST_F(CertPolicyTest, Policy) {
   scoped_refptr<net::X509Certificate> google_cert(
       net::X509Certificate::CreateFromBytes(
           reinterpret_cast<const char*>(google_der), sizeof(google_der)));
+  ASSERT_TRUE(google_cert);
 
   scoped_refptr<net::X509Certificate> webkit_cert(
       net::X509Certificate::CreateFromBytes(
           reinterpret_cast<const char*>(webkit_der), sizeof(webkit_der)));
+  ASSERT_TRUE(webkit_cert);
 
   CertPolicy policy;
 

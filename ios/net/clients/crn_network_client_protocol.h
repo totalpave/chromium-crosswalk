@@ -56,7 +56,7 @@ typedef base::Callback<void(bool auth_ok,
 // clients have the opportunity to modify the request at this time.
 - (void)didCreateNativeRequest:(net::URLRequest*)nativeRequest;
 
-// Called when an authentication challenge represented by |authInfo| is recieved
+// Called when an authentication challenge represented by |authInfo| is received
 // from |nativeRequest|.
 // Clients that won't handle the challenge should forward this call down the
 // client stack.
@@ -66,7 +66,7 @@ typedef base::Callback<void(bool auth_ok,
 // |callback|'s first parameter is a boolean that indicates if authentication
 // was successful.
 // If authentication was successful, |callback|'s second and third parameters
-// are username and password; if unsuccesful they are empty strings.
+// are username and password; if unsuccessful they are empty strings.
 - (void)didRecieveAuthChallenge:(net::AuthChallengeInfo*)authInfo
                   nativeRequest:(const net::URLRequest&)nativeRequest
                        callback:(const network_client::AuthCallback&)callback;
@@ -74,12 +74,6 @@ typedef base::Callback<void(bool auth_ok,
 // Called when a request is terminated, signalling that any outstanding
 // authentication requests should cancel.
 - (void)cancelAuthRequest;
-
-// If |underlyingClient| is not nil, the protocol is responsible for calling it.
-// If the protocol is only listening for network events, it should simply
-// forward all the calls to the underlying client.
-// Called from the IO thread.
-- (void)setUnderlyingClient:(id<CRNNetworkClientProtocol>)underlyingClient;
 @end
 
 #endif  // IOS_NET_CLIENTS_CRN_NETWORK_CLIENT_PROTOCOL_H_

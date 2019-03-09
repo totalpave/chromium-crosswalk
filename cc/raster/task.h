@@ -7,10 +7,11 @@
 
 #include <stdint.h>
 
+#include <string>
 #include <vector>
 
 #include "base/memory/ref_counted.h"
-#include "cc/base/cc_export.h"
+#include "cc/cc_export.h"
 
 namespace cc {
 class Task;
@@ -38,6 +39,7 @@ class Task;
 //    └─────────┘         ╚══════════╝
 class CC_EXPORT TaskState {
  public:
+  bool IsNew() const;
   bool IsScheduled() const;
   bool IsRunning() const;
   bool IsFinished() const;
@@ -52,6 +54,8 @@ class CC_EXPORT TaskState {
   void DidStart();
   void DidFinish();
   void DidCancel();
+
+  std::string ToString() const;
 
  private:
   friend class Task;
@@ -73,6 +77,8 @@ class CC_EXPORT Task : public base::RefCountedThreadSafe<Task> {
   typedef std::vector<scoped_refptr<Task>> Vector;
 
   TaskState& state() { return state_; }
+  void set_frame_number(int64_t frame_number) { frame_number_ = frame_number; }
+  int64_t frame_number() { return frame_number_; }
 
   // Subclasses should implement this method. RunOnWorkerThread may be called
   // on any thread, and subclasses are responsible for locking and thread
@@ -87,6 +93,7 @@ class CC_EXPORT Task : public base::RefCountedThreadSafe<Task> {
 
  private:
   TaskState state_;
+  int64_t frame_number_ = -1;
 };
 
 // A task dependency graph describes the order in which to execute a set
@@ -98,22 +105,25 @@ class CC_EXPORT Task : public base::RefCountedThreadSafe<Task> {
 // category. A TaskGraphRunner implementation may chose to prioritize certain
 // categories over others, regardless of the individual priorities of tasks.
 struct CC_EXPORT TaskGraph {
-  struct Node {
+  struct CC_EXPORT Node {
     typedef std::vector<Node> Vector;
 
-    Node(Task* task,
+    Node(scoped_refptr<Task> task,
          uint16_t category,
          uint16_t priority,
-         uint32_t dependencies)
-        : task(task),
-          category(category),
-          priority(priority),
-          dependencies(dependencies) {}
+         uint32_t dependencies);
+    Node(Node&& other);
+    ~Node();
 
-    Task* task;
+    Node& operator=(Node&& other) = default;
+
+    scoped_refptr<Task> task;
     uint16_t category;
     uint16_t priority;
     uint32_t dependencies;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(Node);
   };
 
   struct Edge {
@@ -127,7 +137,7 @@ struct CC_EXPORT TaskGraph {
   };
 
   TaskGraph();
-  TaskGraph(const TaskGraph& other);
+  TaskGraph(TaskGraph&& other);
   ~TaskGraph();
 
   void Swap(TaskGraph* other);
@@ -135,6 +145,9 @@ struct CC_EXPORT TaskGraph {
 
   Node::Vector nodes;
   Edge::Vector edges;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(TaskGraph);
 };
 
 }  // namespace cc

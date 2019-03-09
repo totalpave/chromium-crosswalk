@@ -16,17 +16,9 @@
 #include "base/memory/ref_counted.h"
 #include "ppapi/c/pp_instance.h"
 
-class Profile;
-
-namespace content {
-class BrowserPpapiHost;
-}
-
 namespace user_prefs {
 class PrefRegistrySyncable;
 }
-
-namespace chrome {
 
 // This class allows asynchronously fetching a unique device ID. The callback
 // passed in when calling Start() will be called when the ID has been fetched
@@ -60,8 +52,8 @@ class DeviceIDFetcher : public base::RefCountedThreadSafe<DeviceIDFetcher> {
                          const std::string& machine_id);
 
   // Legacy method used to get the device ID for ChromeOS.
-  void LegacyComputeOnBlockingPool(const base::FilePath& profile_path,
-                                   const std::string& salt);
+  void LegacyComputeAsync(const base::FilePath& profile_path,
+                          const std::string& salt);
 
   // Runs the callback passed into Start() on the IO thread with the device ID
   // or the empty string on failure.
@@ -79,7 +71,5 @@ class DeviceIDFetcher : public base::RefCountedThreadSafe<DeviceIDFetcher> {
 
   DISALLOW_COPY_AND_ASSIGN(DeviceIDFetcher);
 };
-
-}  // namespace chrome
 
 #endif  // CHROME_BROWSER_RENDERER_HOST_PEPPER_DEVICE_ID_FETCHER_H_

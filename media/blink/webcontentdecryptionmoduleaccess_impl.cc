@@ -25,8 +25,8 @@ static void CreateCdm(
   // If |client| is gone (due to the frame getting destroyed), it is
   // impossible to create the CDM, so fail.
   if (!client) {
-    result->completeWithError(
-        blink::WebContentDecryptionModuleExceptionInvalidStateError, 0,
+    result->CompleteWithError(
+        blink::kWebContentDecryptionModuleExceptionInvalidStateError, 0,
         "Failed to create CDM.");
     return;
   }
@@ -58,25 +58,31 @@ WebContentDecryptionModuleAccessImpl::WebContentDecryptionModuleAccessImpl(
       client_(client) {
 }
 
-WebContentDecryptionModuleAccessImpl::~WebContentDecryptionModuleAccessImpl() {
+WebContentDecryptionModuleAccessImpl::~WebContentDecryptionModuleAccessImpl() =
+    default;
+
+blink::WebString WebContentDecryptionModuleAccessImpl::GetKeySystem() {
+  return key_system_;
 }
 
 blink::WebMediaKeySystemConfiguration
-WebContentDecryptionModuleAccessImpl::getConfiguration() {
+WebContentDecryptionModuleAccessImpl::GetConfiguration() {
   return configuration_;
 }
 
-void WebContentDecryptionModuleAccessImpl::createContentDecryptionModule(
-    blink::WebContentDecryptionModuleResult result) {
+void WebContentDecryptionModuleAccessImpl::CreateContentDecryptionModule(
+    blink::WebContentDecryptionModuleResult result,
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
   // This method needs to run asynchronously, as it may need to load the CDM.
   // As this object's lifetime is controlled by MediaKeySystemAccess on the
   // blink side, copy all values needed by CreateCdm() in case the blink object
   // gets garbage-collected.
   std::unique_ptr<blink::WebContentDecryptionModuleResult> result_copy(
       new blink::WebContentDecryptionModuleResult(result));
-  base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&CreateCdm, client_, key_system_, security_origin_,
-                            cdm_config_, base::Passed(&result_copy)));
+  task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(&CreateCdm, client_, key_system_, security_origin_,
+                     cdm_config_, base::Passed(&result_copy)));
 }
 
 }  // namespace media

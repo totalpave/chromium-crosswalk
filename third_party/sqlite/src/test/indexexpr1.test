@@ -18,7 +18,7 @@ source $testdir/tester.tcl
 do_execsql_test indexexpr1-100 {
   CREATE TABLE t1(a,b,c);
   INSERT INTO t1(a,b,c)
-      /*  123456789 123456789 123456789 123456789 123456789 123456789 */ 
+      /*  123456789 123456789 123456789 123456789 123456789 123456789 */
   VALUES('In_the_beginning_was_the_Word',1,1),
         ('and_the_Word_was_with_God',1,2),
         ('and_the_Word_was_God',1,3),
@@ -181,12 +181,12 @@ do_execsql_test indexexpr1-260eqp {
 
 
 do_catchsql_test indexexpr1-300 {
-  CREATE TABLE t2(a,b,c);
+  CREATE TABLE t2(a,b,c); INSERT INTO t2 VALUES(1,2,3);
   CREATE INDEX t2x1 ON t2(a,b+random());
 } {1 {non-deterministic functions prohibited in index expressions}}
 do_catchsql_test indexexpr1-301 {
-  CREATE INDEX t2x1 ON t2(a+julianday('now'));
-} {1 {non-deterministic functions prohibited in index expressions}}
+  CREATE INDEX t2x1 ON t2(julianday('now',a));
+} {1 {non-deterministic function in index expression or CHECK constraint}}
 do_catchsql_test indexexpr1-310 {
   CREATE INDEX t2x2 ON t2(a,b+(SELECT 15));
 } {1 {subqueries prohibited in index expressions}}
@@ -322,6 +322,128 @@ do_execsql_test indexexpr1-1010 {
   UPDATE t0 SET b=88 WHERE (a in(0,1))=1;
   SELECT *, '|' FROM t0 ORDER BY +a;
 } {0 88 2 | 2 99 4 | 5 99 7 |}
+
+# 2016-10-10
+# Make sure indexes on expressions skip over initial NULL values in the
+# index as they are suppose to do.
+# Ticket https://www.sqlite.org/src/tktview/4baa46491212947
+#
+do_execsql_test indexexpr1-1100 {
+  DROP TABLE IF EXISTS t1;
+  CREATE TABLE t1(a);
+  INSERT INTO t1 VALUES(NULL),(1);
+  SELECT '1:', typeof(a), a FROM t1 WHERE a<10;
+  SELECT '2:', typeof(a), a FROM t1 WHERE a+0<10;
+  CREATE INDEX t1x1 ON t1(a);
+  CREATE INDEX t1x2 ON t1(a+0);
+  SELECT '3:', typeof(a), a FROM t1 WHERE a<10;
+  SELECT '4:', typeof(a), a FROM t1 WHERE a+0<10;
+} {1: integer 1 2: integer 1 3: integer 1 4: integer 1}
+
+do_execsql_test indexexpr1-1200 {
+  CREATE TABLE t10(a int, b int, c int, d int);
+  INSERT INTO t10(a, b, c, d) VALUES(0, 0, 2, 2);
+  INSERT INTO t10(a, b, c, d) VALUES(0, 0, 0, 0);
+  INSERT INTO t10(a, b, c, d) VALUES(0, 0, 1, 1);
+  INSERT INTO t10(a, b, c, d) VALUES(1, 1, 1, 1);
+  INSERT INTO t10(a, b, c, d) VALUES(1, 1, 0, 0);
+  INSERT INTO t10(a, b, c, d) VALUES(2, 2, 0, 0);
+
+  SELECT a+b, c+d FROM t10 ORDER BY a+b, c+d;
+} {
+  0 0 0 2 0 4 2 0 2 2 4 0
+}
+do_execsql_test indexexpr1-1200.1 {
+  CREATE INDEX t10_ab ON t10(a+b);
+}
+do_execsql_test indexexpr1-1200.2 {
+  SELECT a+b, c+d FROM t10 ORDER BY a+b, c+d;
+} {
+  0 0 0 2 0 4 2 0 2 2 4 0
+}
+do_execsql_test indexexpr1-1200.3 {
+  CREATE INDEX t10_abcd ON t10(a+b,c+d);
+}
+do_execsql_test indexexpr1-1200.4 {
+  SELECT a+b, c+d FROM t10 ORDER BY a+b, c+d;
+} {
+  0 0 0 2 0 4 2 0 2 2 4 0
+}
+
+# Ticket https://www.sqlite.org/src/tktview/eb703ba7b50c1a
+# Incorrect result using an index on an expression with a collating function
+#
+do_execsql_test indexexpr1-1300.1 {
+  CREATE TABLE t1300(a INTEGER PRIMARY KEY, b);
+  INSERT INTO t1300 VALUES(1,'coffee'),(2,'COFFEE'),(3,'stress'),(4,'STRESS');
+  CREATE INDEX t1300bexpr ON t1300( substr(b,4) );
+  SELECT a FROM t1300 WHERE substr(b,4)='ess' COLLATE nocase ORDER BY +a;
+} {3 4}
+
+# Ticket https://sqlite.org/src/tktview/aa98619a
+# Assertion fault using an index on a constant
+#
+do_execsql_test indexexpr1-1400 {
+  CREATE TABLE t1400(x TEXT);
+  CREATE INDEX t1400x ON t1400(1);  -- Index on a constant
+  SELECT 1 IN (SELECT 2) FROM t1400;
+} {}
+do_execsql_test indexexpr1-1410 {
+  INSERT INTO t1400 VALUES('a'),('b');
+  SELECT 1 IN (SELECT 2) FROM t1400;
+} {0 0}
+do_execsql_test indexexpr1-1420 {
+  SELECT 1 IN (SELECT 2 UNION ALL SELECT 1) FROM t1400;
+} {1 1}
+do_execsql_test indexexpr1-1430 {
+  DROP INDEX t1400x;
+  CREATE INDEX t1400x ON t1400(abs(15+3));
+  SELECT abs(15+3) IN (SELECT 17 UNION ALL SELECT 18) FROM t1;
+} {1 1}
+
+# 2018-01-02 ticket https://sqlite.org/src/info/dc3f932f5a147771
+# A REPLACE into a table that uses an index on an expression causes
+# an assertion fault.  Problem discovered by OSSFuzz.
+#
+do_execsql_test indexexpr1-1500 {
+  CREATE TABLE t1500(a INT PRIMARY KEY, b INT UNIQUE);
+  CREATE INDEX t1500ab ON t1500(a*b);
+  INSERT INTO t1500(a,b) VALUES(1,2);
+  REPLACE INTO t1500(a,b) VALUES(1,3);  -- formerly caused assertion fault
+  SELECT * FROM t1500;
+} {1 3}
+
+# 2018-01-03 OSSFuzz discovers another test case for the same problem
+# above.
+#
+do_execsql_test indexexpr-1510 {
+  DROP TABLE IF EXISTS t1;
+  CREATE TABLE t1(a PRIMARY KEY,b UNIQUE);
+  REPLACE INTO t1 VALUES(2, 1);
+  REPLACE INTO t1 SELECT 6,1;
+  CREATE INDEX t1aa ON t1(a-a);
+  REPLACE INTO t1 SELECT a, randomblob(a) FROM t1
+} {}
+
+# 2018-01-31 https://www.sqlite.org/src/tktview/343634942dd54ab57b702411
+# When an index on an expression depends on the string representation of
+# a numeric table column, trouble can arise since there are multiple
+# string that can map to the same numeric value.  (Ex: 123, 0123, 000123).
+#
+do_execsql_test indexexpr-1600 {
+  DROP TABLE IF EXISTS t1;
+  CREATE TABLE t1 (a INTEGER, b);
+  CREATE INDEX idx1 ON t1 (lower(a));
+  INSERT INTO t1 VALUES('0001234',3);
+  PRAGMA integrity_check;
+} {ok}
+do_execsql_test indexexpr-1610 {
+  INSERT INTO t1 VALUES('1234',0),('001234',2),('01234',1);
+  SELECT b FROM t1 WHERE lower(a)='1234' ORDER BY +b;
+} {0 1 2 3}
+do_execsql_test indexexpr-1620 {
+  SELECT b FROM t1 WHERE lower(a)='01234' ORDER BY +b;
+} {}
 
 
 finish_test

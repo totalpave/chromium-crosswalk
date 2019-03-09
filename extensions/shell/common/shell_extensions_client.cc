@@ -4,36 +4,24 @@
 
 #include "extensions/shell/common/shell_extensions_client.h"
 
+#include <memory>
+#include <string>
+
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/macros.h"
-#include "extensions/common/api/generated_schemas.h"
-#include "extensions/common/common_manifest_handlers.h"
+#include "components/version_info/version_info.h"
+#include "content/public/common/user_agent.h"
+#include "extensions/common/core_extensions_api_provider.h"
 #include "extensions/common/extension_urls.h"
-#include "extensions/common/features/api_feature.h"
-#include "extensions/common/features/base_feature_provider.h"
-#include "extensions/common/features/behavior_feature.h"
-#include "extensions/common/features/json_feature_provider_source.h"
-#include "extensions/common/features/manifest_feature.h"
-#include "extensions/common/features/permission_feature.h"
 #include "extensions/common/features/simple_feature.h"
-#include "extensions/common/manifest_handler.h"
 #include "extensions/common/permissions/permission_message_provider.h"
-#include "extensions/common/permissions/permissions_info.h"
-#include "extensions/common/permissions/permissions_provider.h"
 #include "extensions/common/url_pattern_set.h"
-#include "extensions/shell/common/api/generated_schemas.h"
-#include "grit/app_shell_resources.h"
-#include "grit/extensions_resources.h"
+#include "extensions/shell/common/shell_extensions_api_provider.h"
 
 namespace extensions {
 
 namespace {
-
-template <class FeatureClass>
-SimpleFeature* CreateFeature() {
-  return new FeatureClass;
-}
 
 // TODO(jamescook): Refactor ChromePermissionsMessageProvider so we can share
 // code. For now, this implementation does nothing.
@@ -48,8 +36,13 @@ class ShellPermissionMessageProvider : public PermissionMessageProvider {
     return PermissionMessages();
   }
 
-  bool IsPrivilegeIncrease(const PermissionSet& old_permissions,
-                           const PermissionSet& new_permissions,
+  PermissionMessages GetPowerfulPermissionMessages(
+      const PermissionIDSet& permissions) const override {
+    return PermissionMessages();
+  }
+
+  bool IsPrivilegeIncrease(const PermissionSet& granted_permissions,
+                           const PermissionSet& requested_permissions,
                            Manifest::Type extension_type) const override {
     // Ensure we implement this before shipping.
     CHECK(false);
@@ -66,25 +59,27 @@ class ShellPermissionMessageProvider : public PermissionMessageProvider {
   DISALLOW_COPY_AND_ASSIGN(ShellPermissionMessageProvider);
 };
 
-base::LazyInstance<ShellPermissionMessageProvider>
+base::LazyInstance<ShellPermissionMessageProvider>::DestructorAtExit
     g_permission_message_provider = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
 ShellExtensionsClient::ShellExtensionsClient()
-    : extensions_api_permissions_(ExtensionsAPIPermissions()) {
+    : webstore_base_url_(extension_urls::kChromeWebstoreBaseURL),
+      webstore_update_url_(extension_urls::kChromeWebstoreUpdateURL) {
+  AddAPIProvider(std::make_unique<CoreExtensionsAPIProvider>());
+  AddAPIProvider(std::make_unique<ShellExtensionsAPIProvider>());
 }
 
 ShellExtensionsClient::~ShellExtensionsClient() {
 }
 
 void ShellExtensionsClient::Initialize() {
-  RegisterCommonManifestHandlers();
-  ManifestHandler::FinalizeRegistration();
   // TODO(jamescook): Do we need to whitelist any extensions?
-
-  PermissionsInfo::GetInstance()->AddProvider(extensions_api_permissions_);
 }
+
+void ShellExtensionsClient::InitializeWebStoreUrls(
+    base::CommandLine* command_line) {}
 
 const PermissionMessageProvider&
 ShellExtensionsClient::GetPermissionMessageProvider() const {
@@ -94,50 +89,6 @@ ShellExtensionsClient::GetPermissionMessageProvider() const {
 
 const std::string ShellExtensionsClient::GetProductName() {
   return "app_shell";
-}
-
-std::unique_ptr<FeatureProvider> ShellExtensionsClient::CreateFeatureProvider(
-    const std::string& name) const {
-  std::unique_ptr<FeatureProvider> provider;
-  std::unique_ptr<JSONFeatureProviderSource> source(
-      CreateFeatureProviderSource(name));
-  if (name == "api") {
-    provider.reset(new BaseFeatureProvider(source->dictionary(),
-                                           CreateFeature<APIFeature>));
-  } else if (name == "manifest") {
-    provider.reset(new BaseFeatureProvider(source->dictionary(),
-                                           CreateFeature<ManifestFeature>));
-  } else if (name == "permission") {
-    provider.reset(new BaseFeatureProvider(source->dictionary(),
-                                           CreateFeature<PermissionFeature>));
-  } else if (name == "behavior") {
-    provider.reset(new BaseFeatureProvider(source->dictionary(),
-                                           CreateFeature<BehaviorFeature>));
-  } else {
-    NOTREACHED();
-  }
-  return provider;
-}
-
-std::unique_ptr<JSONFeatureProviderSource>
-ShellExtensionsClient::CreateFeatureProviderSource(
-    const std::string& name) const {
-  std::unique_ptr<JSONFeatureProviderSource> source(
-      new JSONFeatureProviderSource(name));
-  if (name == "api") {
-    source->LoadJSON(IDR_EXTENSION_API_FEATURES);
-    source->LoadJSON(IDR_SHELL_EXTENSION_API_FEATURES);
-  } else if (name == "manifest") {
-    source->LoadJSON(IDR_EXTENSION_MANIFEST_FEATURES);
-  } else if (name == "permission") {
-    source->LoadJSON(IDR_EXTENSION_PERMISSION_FEATURES);
-  } else if (name == "behavior") {
-    source->LoadJSON(IDR_EXTENSION_BEHAVIOR_FEATURES);
-  } else {
-    NOTREACHED();
-    source.reset();
-  }
-  return source;
 }
 
 void ShellExtensionsClient::FilterHostPermissions(
@@ -167,28 +118,8 @@ URLPatternSet ShellExtensionsClient::GetPermittedChromeSchemeHosts(
 
 bool ShellExtensionsClient::IsScriptableURL(const GURL& url,
                                             std::string* error) const {
-  NOTIMPLEMENTED();
+  // No restrictions on URLs.
   return true;
-}
-
-bool ShellExtensionsClient::IsAPISchemaGenerated(
-    const std::string& name) const {
-  return api::GeneratedSchemas::IsGenerated(name) ||
-         shell::api::ShellGeneratedSchemas::IsGenerated(name);
-}
-
-base::StringPiece ShellExtensionsClient::GetAPISchema(
-    const std::string& name) const {
-  // Schema for app_shell-only APIs.
-  if (shell::api::ShellGeneratedSchemas::IsGenerated(name))
-    return shell::api::ShellGeneratedSchemas::Get(name);
-
-  // Core extensions APIs.
-  return api::GeneratedSchemas::Get(name);
-}
-
-void ShellExtensionsClient::RegisterAPISchemaResources(
-    ExtensionAPI* api) const {
 }
 
 bool ShellExtensionsClient::ShouldSuppressFatalErrors() const {
@@ -198,12 +129,12 @@ bool ShellExtensionsClient::ShouldSuppressFatalErrors() const {
 void ShellExtensionsClient::RecordDidSuppressFatalError() {
 }
 
-std::string ShellExtensionsClient::GetWebstoreBaseURL() const {
-  return extension_urls::kChromeWebstoreBaseURL;
+const GURL& ShellExtensionsClient::GetWebstoreBaseURL() const {
+  return webstore_base_url_;
 }
 
-std::string ShellExtensionsClient::GetWebstoreUpdateURL() const {
-  return extension_urls::kChromeWebstoreUpdateURL;
+const GURL& ShellExtensionsClient::GetWebstoreUpdateURL() const {
+  return webstore_update_url_;
 }
 
 bool ShellExtensionsClient::IsBlacklistUpdateURL(const GURL& url) const {

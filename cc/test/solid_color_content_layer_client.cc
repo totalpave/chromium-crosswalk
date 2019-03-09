@@ -6,11 +6,8 @@
 
 #include <stddef.h>
 
-#include "cc/playback/display_item_list_settings.h"
-#include "cc/playback/drawing_display_item.h"
-#include "third_party/skia/include/core/SkCanvas.h"
-#include "third_party/skia/include/core/SkPaint.h"
-#include "third_party/skia/include/core/SkPictureRecorder.h"
+#include "cc/paint/paint_flags.h"
+#include "cc/paint/paint_op_buffer.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/skia_util.h"
@@ -24,39 +21,30 @@ gfx::Rect SolidColorContentLayerClient::PaintableRegion() {
 scoped_refptr<DisplayItemList>
 SolidColorContentLayerClient::PaintContentsToDisplayList(
     PaintingControlSetting painting_control) {
-  SkPictureRecorder recorder;
-  gfx::Rect clip(PaintableRegion());
-  sk_sp<SkCanvas> canvas =
-      sk_ref_sp(recorder.beginRecording(gfx::RectToSkRect(clip)));
+  auto display_list = base::MakeRefCounted<DisplayItemList>();
+  display_list->StartPaint();
+  display_list->push<SaveOp>();
 
-  canvas->clear(SK_ColorTRANSPARENT);
+  SkRect clip = gfx::RectToSkRect(PaintableRegion());
+  display_list->push<ClipRectOp>(clip, SkClipOp::kIntersect, false);
+  SkColor color = SK_ColorTRANSPARENT;
+  display_list->push<DrawColorOp>(color, SkBlendMode::kSrc);
 
   if (border_size_ != 0) {
-    SkPaint paint;
-    paint.setStyle(SkPaint::kFill_Style);
-    paint.setColor(border_color_);
-    canvas->drawRect(
-        SkRect::MakeXYWH(clip.x(), clip.y(), clip.width(), clip.height()),
-        paint);
+    PaintFlags flags;
+    flags.setStyle(PaintFlags::kFill_Style);
+    flags.setColor(border_color_);
+    display_list->push<DrawRectOp>(clip, flags);
   }
 
-  SkPaint paint;
-  paint.setStyle(SkPaint::kFill_Style);
-  paint.setColor(color_);
-  canvas->drawRect(
-      SkRect::MakeXYWH(clip.x() + border_size_, clip.y() + border_size_,
-                       clip.width() - 2 * border_size_,
-                       clip.height() - 2 * border_size_),
-      paint);
+  PaintFlags flags;
+  flags.setStyle(PaintFlags::kFill_Style);
+  flags.setColor(color_);
+  display_list->push<DrawRectOp>(clip.makeInset(border_size_, border_size_),
+                                 flags);
 
-  DisplayItemListSettings settings;
-  settings.use_cached_picture = false;
-  scoped_refptr<DisplayItemList> display_list =
-      DisplayItemList::Create(clip, settings);
-
-  display_list->CreateAndAppendItem<DrawingDisplayItem>(
-      clip, recorder.finishRecordingAsPicture());
-
+  display_list->push<RestoreOp>();
+  display_list->EndPaintOfUnpaired(PaintableRegion());
   display_list->Finalize();
   return display_list;
 }

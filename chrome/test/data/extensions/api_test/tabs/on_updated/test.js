@@ -47,14 +47,15 @@ chrome.test.runTests([
     chrome.tabs.create({ url: getURL('browserThenRendererInitiated/a.html') });
   },
 
-  function newTab() {
+  function chromeUrls() {
     // Test for crbug.com/27208.
     expect([
-      { status: 'loading', url: 'chrome://newtab/' },
+      { status: 'loading', url: 'chrome://chrome-urls/' },
+      { title : "Chrome URLs" },
       { status: 'complete' }
     ]);
 
-    chrome.tabs.create({ url: 'chrome://newtab/' });
+    chrome.tabs.create({ url: 'chrome://chrome-urls/' });
   },
 
   /*

@@ -4,9 +4,17 @@
 
 package org.chromium.android_webview;
 
+import android.content.Context;
+import android.net.Uri;
+
+import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
+import org.chromium.base.task.PostTask;
+import org.chromium.content_public.browser.UiThreadTaskTraits;
+
+import java.util.List;
 
 /**
  * Implementations of various static methods, and also a home for static
@@ -19,7 +27,10 @@ public class AwContentsStatics {
 
     private static String sUnreachableWebDataUrl;
 
-    private static boolean sRecordFullDocument = false;
+    private static boolean sRecordFullDocument;
+
+    private static final String sSafeBrowsingWarmUpHelper =
+            "com.android.webview.chromium.SafeBrowsingWarmUpHelper";
 
     /**
      * Return the client certificate lookup table.
@@ -66,10 +77,6 @@ public class AwContentsStatics {
         return sRecordFullDocument;
     }
 
-    public static void setLegacyCacheRemovalDelayForTest(long timeoutMs) {
-        nativeSetLegacyCacheRemovalDelayForTest(timeoutMs);
-    }
-
     public static String getProductVersion() {
         return nativeGetProductVersion();
     }
@@ -79,13 +86,67 @@ public class AwContentsStatics {
         nativeSetServiceWorkerIoThreadClient(ioThreadClient, browserContext);
     }
 
+    @CalledByNative
+    private static void safeBrowsingWhitelistAssigned(Callback<Boolean> callback, boolean success) {
+        if (callback == null) return;
+        callback.onResult(success);
+    }
+
+    public static void setSafeBrowsingWhitelist(List<String> urls, Callback<Boolean> callback) {
+        String[] urlArray = urls.toArray(new String[urls.size()]);
+        if (callback == null) {
+            callback = b -> {
+            };
+        }
+        nativeSetSafeBrowsingWhitelist(urlArray, callback);
+    }
+
+    @SuppressWarnings("NoContextGetApplicationContext")
+    public static void initSafeBrowsing(Context context, final Callback<Boolean> callback) {
+        // Wrap the callback to make sure we always invoke it on the UI thread, as guaranteed by the
+        // API.
+        Callback<Boolean> wrapperCallback = b -> {
+            if (callback != null) {
+                PostTask.runOrPostTask(UiThreadTaskTraits.DEFAULT, () -> callback.onResult(b));
+            }
+        };
+
+        PlatformServiceBridge.getInstance().warmUpSafeBrowsing(
+                context.getApplicationContext(), wrapperCallback);
+    }
+
+    public static Uri getSafeBrowsingPrivacyPolicyUrl() {
+        return Uri.parse(nativeGetSafeBrowsingPrivacyPolicyUrl());
+    }
+
+    public static void setCheckClearTextPermitted(boolean permitted) {
+        nativeSetCheckClearTextPermitted(permitted);
+    }
+
+    /**
+     * Return the first substring consisting of the address of a physical location.
+     * @see {@link android.webkit.WebView#findAddress(String)}
+     *
+     * @param addr The string to search for addresses.
+     * @return the address, or if no address is found, return null.
+     */
+    public static String findAddress(String addr) {
+        if (addr == null) {
+            throw new NullPointerException("addr is null");
+        }
+        return FindAddress.findAddress(addr);
+    }
+
     //--------------------------------------------------------------------------------------------
     //  Native methods
     //--------------------------------------------------------------------------------------------
+    private static native String nativeGetSafeBrowsingPrivacyPolicyUrl();
     private static native void nativeClearClientCertPreferences(Runnable callback);
     private static native String nativeGetUnreachableWebDataUrl();
-    private static native void nativeSetLegacyCacheRemovalDelayForTest(long timeoutMs);
     private static native String nativeGetProductVersion();
     private static native void nativeSetServiceWorkerIoThreadClient(
             AwContentsIoThreadClient ioThreadClient, AwBrowserContext browserContext);
+    private static native void nativeSetSafeBrowsingWhitelist(
+            String[] urls, Callback<Boolean> callback);
+    private static native void nativeSetCheckClearTextPermitted(boolean permitted);
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2016 The Chromium Authors. All rights reserved.
+// Copyright 2016 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -25,7 +25,8 @@ class RefreshTokenRevoker : public GaiaAuthConsumer {
   void Revoke(const std::string& token);
 
   // Called when token is revoked.
-  void OnOAuth2RevokeTokenCompleted() override;
+  void OnOAuth2RevokeTokenCompleted(
+      GaiaAuthConsumer::TokenRevocationStatus status) override;
 
  private:
   GaiaAuthFetcher gaia_fetcher_;

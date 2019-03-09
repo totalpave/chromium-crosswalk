@@ -9,10 +9,12 @@
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/policy/core/common/cloud/cloud_policy_service.h"
 
 namespace policy {
 
@@ -57,17 +59,22 @@ const int64_t CloudPolicyRefreshScheduler::kRefreshDelayMaxMs =
 CloudPolicyRefreshScheduler::CloudPolicyRefreshScheduler(
     CloudPolicyClient* client,
     CloudPolicyStore* store,
-    const scoped_refptr<base::SequencedTaskRunner>& task_runner)
+    CloudPolicyService* service,
+    const scoped_refptr<base::SequencedTaskRunner>& task_runner,
+    network::NetworkConnectionTrackerGetter network_connection_tracker_getter)
     : client_(client),
       store_(store),
+      service_(service),
       task_runner_(task_runner),
+      network_connection_tracker_(network_connection_tracker_getter.Run()),
       error_retry_delay_ms_(kInitialErrorRetryDelayMs),
       refresh_delay_ms_(kDefaultRefreshDelayMs),
       invalidations_available_(false),
-      creation_time_(base::Time::NowFromSystemTime()) {
+      creation_time_(base::Time::NowFromSystemTime()),
+      weak_factory_(this) {
   client_->AddObserver(this);
   store_->AddObserver(this);
-  net::NetworkChangeNotifier::AddIPAddressObserver(this);
+  network_connection_tracker_->AddNetworkConnectionObserver(this);
 
   UpdateLastRefreshFromPolicy();
   ScheduleRefresh();
@@ -76,17 +83,37 @@ CloudPolicyRefreshScheduler::CloudPolicyRefreshScheduler(
 CloudPolicyRefreshScheduler::~CloudPolicyRefreshScheduler() {
   store_->RemoveObserver(this);
   client_->RemoveObserver(this);
-  net::NetworkChangeNotifier::RemoveIPAddressObserver(this);
+  if (network_connection_tracker_)
+    network_connection_tracker_->RemoveNetworkConnectionObserver(this);
 }
 
-void CloudPolicyRefreshScheduler::SetRefreshDelay(int64_t refresh_delay) {
+void CloudPolicyRefreshScheduler::SetDesiredRefreshDelay(
+    int64_t refresh_delay) {
   refresh_delay_ms_ = std::min(std::max(refresh_delay, kRefreshDelayMinMs),
                                kRefreshDelayMaxMs);
   ScheduleRefresh();
 }
 
+int64_t CloudPolicyRefreshScheduler::GetActualRefreshDelay() const {
+  // Returns the refresh delay, possibly modified/lengthened due to the presence
+  // of invalidations (we don't have to poll as often if we have policy
+  // invalidations because policy invalidations provide for timely refreshes.
+  if (invalidations_available_) {
+    // If policy invalidations are available then periodic updates are done at
+    // a much lower rate; otherwise use the |refresh_delay_ms_| value.
+    return std::max(refresh_delay_ms_, kWithInvalidationsRefreshDelayMs);
+  } else {
+    return refresh_delay_ms_;
+  }
+}
+
 void CloudPolicyRefreshScheduler::RefreshSoon() {
-  RefreshNow();
+  // If the client isn't registered, there is nothing to do.
+  if (!client_->is_registered())
+    return;
+
+  is_scheduled_for_soon_ = true;
+  RefreshAfter(0);
 }
 
 void CloudPolicyRefreshScheduler::SetInvalidationServiceAvailability(
@@ -113,7 +140,7 @@ void CloudPolicyRefreshScheduler::OnPolicyFetched(CloudPolicyClient* client) {
   error_retry_delay_ms_ = kInitialErrorRetryDelayMs;
 
   // Schedule the next refresh.
-  last_refresh_ = base::Time::NowFromSystemTime();
+  UpdateLastRefresh();
   ScheduleRefresh();
 }
 
@@ -122,7 +149,7 @@ void CloudPolicyRefreshScheduler::OnRegistrationStateChanged(
   error_retry_delay_ms_ = kInitialErrorRetryDelayMs;
 
   // The client might have registered, so trigger an immediate refresh.
-  RefreshNow();
+  RefreshSoon();
 }
 
 void CloudPolicyRefreshScheduler::OnClientError(CloudPolicyClient* client) {
@@ -130,7 +157,7 @@ void CloudPolicyRefreshScheduler::OnClientError(CloudPolicyClient* client) {
   DeviceManagementStatus status = client_->status();
 
   // Schedule an error retry if applicable.
-  last_refresh_ = base::Time::NowFromSystemTime();
+  UpdateLastRefresh();
   ScheduleRefresh();
 
   // Update the retry delay.
@@ -158,9 +185,40 @@ void CloudPolicyRefreshScheduler::OnStoreError(CloudPolicyStore* store) {
   // error is required. NB: Changes to is_managed fire OnStoreLoaded().
 }
 
-void CloudPolicyRefreshScheduler::OnIPAddressChanged() {
-  if (client_->status() == DM_STATUS_REQUEST_FAILED)
+void CloudPolicyRefreshScheduler::OnConnectionChanged(
+    network::mojom::ConnectionType type) {
+  if (type == network::mojom::ConnectionType::CONNECTION_NONE)
+    return;
+
+  if (client_->status() == DM_STATUS_REQUEST_FAILED) {
     RefreshSoon();
+    return;
+  }
+
+  // If this is triggered by the device wake-up event, the scheduled refresh
+  // that is in the queue is off because it's based on TimeTicks. Check when the
+  // the next refresh should happen based on system time, and if this provides
+  // shorter delay then re-schedule the next refresh. It has to happen sooner,
+  // according to delay based on system time. If we have no information about
+  // the last refresh based on system time, there's nothing we can do in
+  // applying the above logic.
+  if (last_refresh_.is_null() || !client_->is_registered())
+    return;
+
+  const base::TimeDelta refresh_delay =
+      base::TimeDelta::FromMilliseconds(GetActualRefreshDelay());
+  const base::TimeDelta system_delta =
+      std::max(last_refresh_ + refresh_delay - base::Time::NowFromSystemTime(),
+               base::TimeDelta());
+  const base::TimeDelta ticks_delta =
+      last_refresh_ticks_ + refresh_delay - base::TimeTicks::Now();
+  if (ticks_delta > system_delta)
+    RefreshAfter(system_delta.InMilliseconds());
+}
+
+void CloudPolicyRefreshScheduler::set_last_refresh_for_testing(
+    base::Time last_refresh) {
+  last_refresh_ = last_refresh;
 }
 
 void CloudPolicyRefreshScheduler::UpdateLastRefreshFromPolicy() {
@@ -171,7 +229,7 @@ void CloudPolicyRefreshScheduler::UpdateLastRefreshFromPolicy() {
   // that assumption ever breaks, the proper thing to do probably is to move the
   // |last_refresh_| bookkeeping to CloudPolicyClient.
   if (!client_->responses().empty()) {
-    last_refresh_ = base::Time::NowFromSystemTime();
+    UpdateLastRefresh();
     return;
   }
 
@@ -198,9 +256,9 @@ void CloudPolicyRefreshScheduler::UpdateLastRefreshFromPolicy() {
   // fetching again on startup; the Android logic differs from the desktop in
   // this aspect.
   if (store_->has_policy() && store_->policy()->has_timestamp()) {
-    last_refresh_ =
-        base::Time::UnixEpoch() +
-        base::TimeDelta::FromMilliseconds(store_->policy()->timestamp());
+    last_refresh_ = base::Time::FromJavaTime(store_->policy()->timestamp());
+    last_refresh_ticks_ = base::TimeTicks::Now() +
+                          (last_refresh_ - base::Time::NowFromSystemTime());
   }
 #else
   // If there is a cached non-managed response, make sure to only re-query the
@@ -208,46 +266,42 @@ void CloudPolicyRefreshScheduler::UpdateLastRefreshFromPolicy() {
   // immediate refresh is intentional.
   if (store_->has_policy() && store_->policy()->has_timestamp() &&
       !store_->is_managed()) {
-    last_refresh_ =
-        base::Time::UnixEpoch() +
-        base::TimeDelta::FromMilliseconds(store_->policy()->timestamp());
+    last_refresh_ = base::Time::FromJavaTime(store_->policy()->timestamp());
+    last_refresh_ticks_ = base::TimeTicks::Now() +
+                          (last_refresh_ - base::Time::NowFromSystemTime());
   }
 #endif
-}
-
-void CloudPolicyRefreshScheduler::RefreshNow() {
-  last_refresh_ = base::Time();
-  ScheduleRefresh();
 }
 
 void CloudPolicyRefreshScheduler::ScheduleRefresh() {
   // If the client isn't registered, there is nothing to do.
   if (!client_->is_registered()) {
-    refresh_callback_.Cancel();
+    CancelRefresh();
     return;
   }
 
-  // If policy invalidations are available then periodic updates are done at
-  // a much lower rate; otherwise use the |refresh_delay_ms_| value.
-  int64_t refresh_delay_ms = invalidations_available_
-                                 ? kWithInvalidationsRefreshDelayMs
-                                 : refresh_delay_ms_;
+  // Ignore the refresh request if there's a request scheduled for soon.
+  if (is_scheduled_for_soon_) {
+    DCHECK(!refresh_callback_.IsCancelled());
+    return;
+  }
 
   // If there is a registration, go by the client's status. That will tell us
   // what the appropriate refresh delay should be.
   switch (client_->status()) {
     case DM_STATUS_SUCCESS:
       if (store_->is_managed())
-        RefreshAfter(refresh_delay_ms);
+        RefreshAfter(GetActualRefreshDelay());
       else
         RefreshAfter(kUnmanagedRefreshDelayMs);
       return;
     case DM_STATUS_SERVICE_ACTIVATION_PENDING:
     case DM_STATUS_SERVICE_POLICY_NOT_FOUND:
-      RefreshAfter(refresh_delay_ms);
+      RefreshAfter(GetActualRefreshDelay());
       return;
     case DM_STATUS_REQUEST_FAILED:
     case DM_STATUS_TEMPORARY_UNAVAILABLE:
+    case DM_STATUS_CANNOT_SIGN_REQUEST:
       RefreshAfter(error_retry_delay_ms_);
       return;
     case DM_STATUS_REQUEST_INVALID:
@@ -263,8 +317,12 @@ void CloudPolicyRefreshScheduler::ScheduleRefresh() {
     case DM_STATUS_SERVICE_MISSING_LICENSES:
     case DM_STATUS_SERVICE_DEPROVISIONED:
     case DM_STATUS_SERVICE_DOMAIN_MISMATCH:
+    case DM_STATUS_SERVICE_CONSUMER_ACCOUNT_WITH_PACKAGED_LICENSE:
       // Need a re-registration, no use in retrying.
-      refresh_callback_.Cancel();
+      CancelRefresh();
+      return;
+    case DM_STATUS_SERVICE_ARC_DISABLED:
+      // This doesn't occur during policy refresh, don't change the schedule.
       return;
   }
 
@@ -273,13 +331,18 @@ void CloudPolicyRefreshScheduler::ScheduleRefresh() {
 }
 
 void CloudPolicyRefreshScheduler::PerformRefresh() {
+  CancelRefresh();
+
   if (client_->is_registered()) {
     // Update |last_refresh_| so another fetch isn't triggered inadvertently.
-    last_refresh_ = base::Time::NowFromSystemTime();
+    UpdateLastRefresh();
 
-    // The result of this operation will be reported through a callback, at
-    // which point the next refresh will be scheduled.
-    client_->FetchPolicy();
+    // The result of this operation will be reported through OnPolicyFetched()
+    // and OnPolicyRefreshed() callbacks. Next refresh will be scheduled in
+    // OnPolicyFetched().
+    service_->RefreshPolicy(
+        base::BindRepeating(&CloudPolicyRefreshScheduler::OnPolicyRefreshed,
+                            base::Unretained(this)));
     return;
   }
 
@@ -289,17 +352,39 @@ void CloudPolicyRefreshScheduler::PerformRefresh() {
 }
 
 void CloudPolicyRefreshScheduler::RefreshAfter(int delta_ms) {
-  base::TimeDelta delta(base::TimeDelta::FromMilliseconds(delta_ms));
-  refresh_callback_.Cancel();
+  const base::TimeDelta delta(base::TimeDelta::FromMilliseconds(delta_ms));
 
-  // Schedule the callback.
-  base::TimeDelta delay =
+  // Schedule the callback, calculating the delay based on both, system time
+  // and TimeTicks, whatever comes up to become earlier update. This is done to
+  // make sure the refresh is not delayed too much when the system time moved
+  // backward after the last refresh.
+  const base::TimeDelta system_delay =
       std::max((last_refresh_ + delta) - base::Time::NowFromSystemTime(),
                base::TimeDelta());
+  const base::TimeDelta time_ticks_delay =
+      std::max((last_refresh_ticks_ + delta) - base::TimeTicks::Now(),
+               base::TimeDelta());
+  const base::TimeDelta delay = std::min(system_delay, time_ticks_delay);
   refresh_callback_.Reset(
       base::Bind(&CloudPolicyRefreshScheduler::PerformRefresh,
                  base::Unretained(this)));
   task_runner_->PostDelayedTask(FROM_HERE, refresh_callback_.callback(), delay);
+}
+
+void CloudPolicyRefreshScheduler::CancelRefresh() {
+  refresh_callback_.Cancel();
+  is_scheduled_for_soon_ = false;
+}
+
+void CloudPolicyRefreshScheduler::UpdateLastRefresh() {
+  last_refresh_ = base::Time::NowFromSystemTime();
+  last_refresh_ticks_ = base::TimeTicks::Now();
+}
+
+void CloudPolicyRefreshScheduler::OnPolicyRefreshed(bool success) {
+  // Next policy fetch is scheduled in OnPolicyFetched() callback.
+  VLOG(1) << "Scheduled policy refresh "
+          << (success ? "successful" : "unsuccessful");
 }
 
 }  // namespace policy

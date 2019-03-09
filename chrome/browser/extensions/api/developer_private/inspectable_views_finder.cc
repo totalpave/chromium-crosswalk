@@ -4,7 +4,9 @@
 
 #include "chrome/browser/extensions/api/developer_private/inspectable_views_finder.h"
 
-#include "chrome/browser/extensions/extension_util.h"
+#include <set>
+
+#include "chrome/browser/devtools/chrome_devtools_manager_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/developer_private.h"
 #include "content/public/browser/render_frame_host.h"
@@ -13,6 +15,7 @@
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/extension_host.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/constants.h"
@@ -68,12 +71,6 @@ InspectableViewsFinder::View InspectableViewsFinder::ConstructView(
     case VIEW_TYPE_EXTENSION_POPUP:
       view.type = api::developer_private::VIEW_TYPE_EXTENSION_POPUP;
       break;
-    case VIEW_TYPE_LAUNCHER_PAGE:
-      view.type = api::developer_private::VIEW_TYPE_LAUNCHER_PAGE;
-      break;
-    case VIEW_TYPE_PANEL:
-      view.type = api::developer_private::VIEW_TYPE_PANEL;
-      break;
     case VIEW_TYPE_TAB_CONTENTS:
       view.type = api::developer_private::VIEW_TYPE_TAB_CONTENTS;
       break;
@@ -87,6 +84,8 @@ InspectableViewsFinder::ViewList InspectableViewsFinder::GetViewsForExtension(
     const Extension& extension,
     bool is_enabled) {
   ViewList result;
+  if (!ChromeDevToolsManagerDelegate::AllowInspection(profile_, &extension))
+    return result;
   GetViewsForExtensionForProfile(
       extension, profile_, is_enabled, false, &result);
   if (profile_->HasOffTheRecordProfile()) {
@@ -193,10 +192,10 @@ void InspectableViewsFinder::GetAppWindowViewsForExtension(
     if (url.is_empty())
       url = window->initial_url();
 
-    content::RenderProcessHost* process = web_contents->GetRenderProcessHost();
-    result->push_back(ConstructView(
-        url, process->GetID(), web_contents->GetMainFrame()->GetRoutingID(),
-        false, false, GetViewType(web_contents)));
+    content::RenderFrameHost* main_frame = web_contents->GetMainFrame();
+    result->push_back(ConstructView(url, main_frame->GetProcess()->GetID(),
+                                    main_frame->GetRoutingID(), false, false,
+                                    GetViewType(web_contents)));
   }
 }
 

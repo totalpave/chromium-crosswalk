@@ -4,12 +4,16 @@
 
 #include "base/bind.h"
 #include "base/test/launcher/unit_test_launcher.h"
+#include "mojo/core/embedder/embedder.h"
 #include "ui/compositor/test/test_suite.h"
 
 int main(int argc, char** argv) {
   ui::test::CompositorTestSuite test_suite(argc, argv);
 
+  mojo::core::Init();
+
   return base::LaunchUnitTests(
-      argc, argv, base::Bind(&ui::test::CompositorTestSuite::Run,
-                             base::Unretained(&test_suite)));
+      argc, argv,
+      base::BindOnce(&ui::test::CompositorTestSuite::Run,
+                     base::Unretained(&test_suite)));
 }

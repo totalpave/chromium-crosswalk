@@ -6,7 +6,7 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "components/proximity_auth/cryptauth/proto/securemessage.pb.h"
+#include "chromeos/services/device_sync/proto/securemessage.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace chromeos {

@@ -7,8 +7,9 @@
 #include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
@@ -19,7 +20,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/browser_side_navigation_policy.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_client.h"
@@ -27,6 +27,7 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/common/api/app_runtime.h"
 #include "extensions/common/api/app_window.h"
 #include "extensions/common/features/simple_feature.h"
 #include "extensions/common/image_util.h"
@@ -44,37 +45,47 @@ namespace Create = app_window::Create;
 namespace extensions {
 
 namespace app_window_constants {
-const char kInvalidWindowId[] =
+constexpr char kInvalidWindowId[] =
     "The window id can not be more than 256 characters long.";
-const char kInvalidColorSpecification[] =
+constexpr char kInvalidColorSpecification[] =
     "The color specification could not be parsed.";
-const char kColorWithFrameNone[] = "Windows with no frame cannot have a color.";
-const char kInactiveColorWithoutColor[] =
+constexpr char kColorWithFrameNone[] =
+    "Windows with no frame cannot have a color.";
+constexpr char kInactiveColorWithoutColor[] =
     "frame.inactiveColor must be used with frame.color.";
-const char kConflictingBoundsOptions[] =
+constexpr char kConflictingBoundsOptions[] =
     "The $1 property cannot be specified for both inner and outer bounds.";
-const char kAlwaysOnTopPermission[] =
+constexpr char kAlwaysOnTopPermission[] =
     "The \"app.window.alwaysOnTop\" permission is required.";
-const char kInvalidUrlParameter[] =
+constexpr char kInvalidUrlParameter[] =
     "The URL used for window creation must be local for security reasons.";
-const char kAlphaEnabledWrongChannel[] =
+constexpr char kAlphaEnabledWrongChannel[] =
     "The alphaEnabled option requires dev channel or newer.";
-const char kAlphaEnabledMissingPermission[] =
+constexpr char kAlphaEnabledMissingPermission[] =
     "The alphaEnabled option requires app.window.alpha permission.";
-const char kAlphaEnabledNeedsFrameNone[] =
+constexpr char kAlphaEnabledNeedsFrameNone[] =
     "The alphaEnabled option can only be used with \"frame: 'none'\".";
-const char kImeWindowMissingPermission[] =
+constexpr char kImeWindowMissingPermission[] =
     "Extensions require the \"app.window.ime\" permission to create windows.";
-const char kImeOptionIsNotSupported[] =
+constexpr char kImeOptionIsNotSupported[] =
     "The \"ime\" option is not supported for platform app.";
 #if !defined(OS_CHROMEOS)
-const char kImeWindowUnsupportedPlatform[] =
+constexpr char kImeWindowUnsupportedPlatform[] =
     "The \"ime\" option can only be used on ChromeOS.";
 #else
-const char kImeWindowMustBeImeWindowOrPanel[] =
-    "IME extensions must create ime window ( with \"ime: true\" and "
-    "\"frame: 'none'\") or panel window (with \"type: panel\").";
+constexpr char kImeWindowMustBeImeWindow[] =
+    "IME extensions must create an IME window ( with \"ime: true\" and "
+    "\"frame: 'none'\"). Panels are no longer supported for IME extensions.";
 #endif
+constexpr char kShowInShelfWindowKeyNotSet[] =
+    "The \"showInShelf\" option requires the \"id\" option to be set.";
+constexpr char kLockScreenActionRequiresLockScreenContext[] =
+    "The lockScreenAction option requires lock screen app context.";
+constexpr char kLockScreenActionRequiresLockScreenPermission[] =
+    "The lockScreenAction option requires lockScreen permission.";
+constexpr char kAppWindowCreationFailed[] = "Failed to create the app window.";
+constexpr char kPrematureWindowClose[] =
+    "App window is closed before ready to commit first navigation.";
 }  // namespace app_window_constants
 
 const char kNoneFrameOption[] = "none";
@@ -127,10 +138,10 @@ void CopyBoundsSpec(const app_window::BoundsSpecification* input_spec,
 
 AppWindowCreateFunction::AppWindowCreateFunction() {}
 
-bool AppWindowCreateFunction::RunAsync() {
+ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
   // Don't create app window if the system is shutting down.
   if (ExtensionsBrowserClient::Get()->IsShuttingDown())
-    return false;
+    return RespondNow(Error(kUnknownErrorDoNotUse));
 
   std::unique_ptr<Create::Params> params(Create::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params.get());
@@ -145,8 +156,7 @@ bool AppWindowCreateFunction::RunAsync() {
       url = absolute;
     } else {
       // Show error when url passed isn't local.
-      error_ = app_window_constants::kInvalidUrlParameter;
-      return false;
+      return RespondNow(Error(app_window_constants::kInvalidUrlParameter));
     }
   }
 
@@ -159,10 +169,8 @@ bool AppWindowCreateFunction::RunAsync() {
     if (options->id.get()) {
       // TODO(mek): use URL if no id specified?
       // Limit length of id to 256 characters.
-      if (options->id->length() > 256) {
-        error_ = app_window_constants::kInvalidWindowId;
-        return false;
-      }
+      if (options->id->length() > 256)
+        return RespondNow(Error(app_window_constants::kInvalidWindowId));
 
       create_params.window_key = *options->id;
 
@@ -187,8 +195,8 @@ bool AppWindowCreateFunction::RunAsync() {
             frame_id = existing_frame->GetRoutingID();
           }
 
-          if (!options->hidden.get() || !*options->hidden.get()) {
-            if (options->focused.get() && !*options->focused.get())
+          if (!options->hidden.get() || !*options->hidden) {
+            if (options->focused.get() && !*options->focused)
               existing_window->Show(AppWindow::SHOW_INACTIVE);
             else
               existing_window->Show(AppWindow::SHOW_ACTIVE);
@@ -196,62 +204,54 @@ bool AppWindowCreateFunction::RunAsync() {
 
           std::unique_ptr<base::DictionaryValue> result(
               new base::DictionaryValue);
-          result->Set("frameId", new base::FundamentalValue(frame_id));
+          result->SetInteger("frameId", frame_id);
           existing_window->GetSerializedState(result.get());
           result->SetBoolean("existingWindow", true);
-          SetResult(std::move(result));
-          SendResponse(true);
-          return true;
+          return RespondNow(OneArgument(std::move(result)));
         }
       }
     }
 
-    if (!GetBoundsSpec(*options, &create_params, &error_))
-      return false;
+    std::string error;
+    if (!GetBoundsSpec(*options, &create_params, &error))
+      return RespondNow(Error(error));
 
     if (options->type == app_window::WINDOW_TYPE_PANEL) {
-#if defined(OS_CHROMEOS)
-      // Panels for v2 apps are only supported on Chrome OS.
-      create_params.window_type = AppWindow::WINDOW_TYPE_PANEL;
-#else
       WriteToConsole(content::CONSOLE_MESSAGE_LEVEL_WARNING,
-                     "Panels are not supported on this platform");
-#endif
+                     "Panels are no longer supported.");
     }
 
-    if (!GetFrameOptions(*options, &create_params))
-      return false;
+    if (!GetFrameOptions(*options, &create_params, &error))
+      return RespondNow(Error(error));
 
     if (extension()->GetType() == Manifest::TYPE_EXTENSION) {
       // Whitelisted IME extensions are allowed to use this API to create IME
       // specific windows to show accented characters or suggestions.
       if (!extension()->permissions_data()->HasAPIPermission(
               APIPermission::kImeWindowEnabled)) {
-        error_ = app_window_constants::kImeWindowMissingPermission;
-        return false;
+        return RespondNow(
+            Error(app_window_constants::kImeWindowMissingPermission));
       }
 
 #if !defined(OS_CHROMEOS)
       // IME window is only supported on ChromeOS.
-      error_ = app_window_constants::kImeWindowUnsupportedPlatform;
-      return false;
+      return RespondNow(
+          Error(app_window_constants::kImeWindowUnsupportedPlatform));
 #else
       // IME extensions must create ime window (with "ime: true" and
-      // "frame: none") or panel window (with "type: panel").
+      // "frame: none").
       if (options->ime.get() && *options->ime.get() &&
           create_params.frame == AppWindow::FRAME_NONE) {
         create_params.is_ime_window = true;
-      } else if (options->type == app_window::WINDOW_TYPE_PANEL) {
-        create_params.window_type = AppWindow::WINDOW_TYPE_PANEL;
       } else {
-        error_ = app_window_constants::kImeWindowMustBeImeWindowOrPanel;
-        return false;
+        return RespondNow(
+            Error(app_window_constants::kImeWindowMustBeImeWindow));
       }
 #endif  // OS_CHROMEOS
     } else {
       if (options->ime.get()) {
-        error_ = app_window_constants::kImeOptionIsNotSupported;
-        return false;
+        return RespondNow(
+            Error(app_window_constants::kImeOptionIsNotSupported));
       }
     }
 
@@ -274,19 +274,19 @@ bool AppWindowCreateFunction::RunAsync() {
         "0F585FB1D0FDFBEBCE1FEB5E9DFFB6DA476B8C9B"
       };
       if (AppWindowClient::Get()->IsCurrentChannelOlderThanDev() &&
-          !SimpleFeature::IsIdInArray(
-              extension_id(), kWhitelist, arraysize(kWhitelist))) {
-        error_ = app_window_constants::kAlphaEnabledWrongChannel;
-        return false;
+          !SimpleFeature::IsIdInArray(extension_id(), kWhitelist,
+                                      base::size(kWhitelist))) {
+        return RespondNow(
+            Error(app_window_constants::kAlphaEnabledWrongChannel));
       }
       if (!extension()->permissions_data()->HasAPIPermission(
               APIPermission::kAlphaEnabled)) {
-        error_ = app_window_constants::kAlphaEnabledMissingPermission;
-        return false;
+        return RespondNow(
+            Error(app_window_constants::kAlphaEnabledMissingPermission));
       }
       if (create_params.frame != AppWindow::FRAME_NONE) {
-        error_ = app_window_constants::kAlphaEnabledNeedsFrameNone;
-        return false;
+        return RespondNow(
+            Error(app_window_constants::kAlphaEnabledNeedsFrameNone));
       }
 #if defined(USE_AURA)
       create_params.alpha_enabled = *options->alpha_enabled;
@@ -297,53 +297,101 @@ bool AppWindowCreateFunction::RunAsync() {
     }
 
     if (options->hidden.get())
-      create_params.hidden = *options->hidden.get();
+      create_params.hidden = *options->hidden;
 
     if (options->resizable.get())
-      create_params.resizable = *options->resizable.get();
+      create_params.resizable = *options->resizable;
 
     if (options->always_on_top.get()) {
-      create_params.always_on_top = *options->always_on_top.get();
+      create_params.always_on_top = *options->always_on_top;
 
       if (create_params.always_on_top &&
           !extension()->permissions_data()->HasAPIPermission(
               APIPermission::kAlwaysOnTopWindows)) {
-        error_ = app_window_constants::kAlwaysOnTopPermission;
-        return false;
+        return RespondNow(Error(app_window_constants::kAlwaysOnTopPermission));
       }
     }
 
     if (options->focused.get())
-      create_params.focused = *options->focused.get();
+      create_params.focused = *options->focused;
 
     if (options->visible_on_all_workspaces.get()) {
       create_params.visible_on_all_workspaces =
-          *options->visible_on_all_workspaces.get();
+          *options->visible_on_all_workspaces;
     }
 
-    if (options->type != app_window::WINDOW_TYPE_PANEL) {
-      switch (options->state) {
-        case app_window::STATE_NONE:
-        case app_window::STATE_NORMAL:
-          break;
-        case app_window::STATE_FULLSCREEN:
-          create_params.state = ui::SHOW_STATE_FULLSCREEN;
-          break;
-        case app_window::STATE_MAXIMIZED:
-          create_params.state = ui::SHOW_STATE_MAXIMIZED;
-          break;
-        case app_window::STATE_MINIMIZED:
-          create_params.state = ui::SHOW_STATE_MINIMIZED;
-          break;
+    if (options->show_in_shelf.get()) {
+      create_params.show_in_shelf = *options->show_in_shelf.get();
+
+      if (create_params.show_in_shelf && create_params.window_key.empty()) {
+        return RespondNow(
+            Error(app_window_constants::kShowInShelfWindowKeyNotSet));
       }
     }
+
+    if (options->icon.get()) {
+      // First, check if the window icon URL is a valid global URL.
+      create_params.window_icon_url = GURL(*options->icon.get());
+
+      // If the URL is not global, check for a valid extension local URL.
+      if (!create_params.window_icon_url.is_valid()) {
+        create_params.window_icon_url =
+            extension()->GetResourceURL(*options->icon.get());
+      }
+    }
+
+    switch (options->state) {
+      case app_window::STATE_NONE:
+      case app_window::STATE_NORMAL:
+        break;
+      case app_window::STATE_FULLSCREEN:
+        create_params.state = ui::SHOW_STATE_FULLSCREEN;
+        break;
+      case app_window::STATE_MAXIMIZED:
+        create_params.state = ui::SHOW_STATE_MAXIMIZED;
+        break;
+      case app_window::STATE_MINIMIZED:
+        create_params.state = ui::SHOW_STATE_MINIMIZED;
+        break;
+    }
+  }
+
+  api::app_runtime::ActionType action_type = api::app_runtime::ACTION_TYPE_NONE;
+  if (options &&
+      options->lock_screen_action != api::app_runtime::ACTION_TYPE_NONE) {
+    if (source_context_type() != Feature::LOCK_SCREEN_EXTENSION_CONTEXT) {
+      return RespondNow(Error(
+          app_window_constants::kLockScreenActionRequiresLockScreenContext));
+    }
+
+    if (!extension()->permissions_data()->HasAPIPermission(
+            APIPermission::kLockScreen)) {
+      return RespondNow(Error(
+          app_window_constants::kLockScreenActionRequiresLockScreenPermission));
+    }
+
+    action_type = options->lock_screen_action;
+    create_params.show_on_lock_screen = true;
   }
 
   create_params.creator_process_id =
       render_frame_host()->GetProcess()->GetID();
 
-  AppWindow* app_window =
-      AppWindowClient::Get()->CreateAppWindow(browser_context(), extension());
+  AppWindow* app_window = nullptr;
+  if (action_type == api::app_runtime::ACTION_TYPE_NONE) {
+    app_window =
+        AppWindowClient::Get()->CreateAppWindow(browser_context(), extension());
+  } else {
+    app_window = AppWindowClient::Get()->CreateAppWindowForLockScreenAction(
+        browser_context(), extension(), action_type);
+  }
+
+  // App window client might refuse to create an app window, e.g. when the app
+  // attempts to create a lock screen action handler window when the action was
+  // not requested.
+  if (!app_window)
+    return RespondNow(Error(app_window_constants::kAppWindowCreationFailed));
+
   app_window->Init(url, new AppWindowContentsImpl(app_window),
                    render_frame_host(), create_params);
 
@@ -359,32 +407,41 @@ bool AppWindowCreateFunction::RunAsync() {
     frame_id = created_frame->GetRoutingID();
 
   std::unique_ptr<base::DictionaryValue> result(new base::DictionaryValue);
-  result->Set("frameId", new base::FundamentalValue(frame_id));
-  result->Set("id", new base::StringValue(app_window->window_key()));
+  result->SetInteger("frameId", frame_id);
+  result->SetString("id", app_window->window_key());
   app_window->GetSerializedState(result.get());
-  SetResult(std::move(result));
+  ResponseValue result_arg = OneArgument(std::move(result));
 
   if (AppWindowRegistry::Get(browser_context())
           ->HadDevToolsAttached(app_window->web_contents())) {
     AppWindowClient::Get()->OpenDevToolsWindow(
         app_window->web_contents(),
-        base::Bind(&AppWindowCreateFunction::SendResponse, this, true));
-    return true;
+        base::Bind(&AppWindowCreateFunction::Respond, this,
+                   base::Passed(&result_arg)));
+    // OpenDevToolsWindow might have already responded.
+    return did_respond() ? AlreadyResponded() : RespondLater();
   }
 
-  // PlzNavigate: delay sending the response until the newly created window has
-  // been told to navigate, and blink has been correctly initialized in the
-  // renderer.
-  if (content::IsBrowserSideNavigationEnabled()) {
-    app_window->SetOnFirstCommitCallback(
-        base::Bind(&AppWindowCreateFunction::SendResponse, this, true));
-    return true;
+  // Delay sending the response until the newly created window has been told to
+  // navigate, and blink has been correctly initialized in the renderer.
+  // SetOnFirstCommitOrWindowClosedCallback() will respond asynchronously.
+  app_window->SetOnFirstCommitOrWindowClosedCallback(base::Bind(
+      &AppWindowCreateFunction::OnAppWindowReadyToCommitFirstNavigationOrClosed,
+      this, base::Passed(&result_arg)));
+  return RespondLater();
+}
+
+void AppWindowCreateFunction::OnAppWindowReadyToCommitFirstNavigationOrClosed(
+    ResponseValue result_arg,
+    bool ready_to_commit) {
+  DCHECK(!did_respond());
+
+  if (!ready_to_commit) {
+    Respond(Error(app_window_constants::kPrematureWindowClose));
+    return;
   }
 
-  SendResponse(true);
-  app_window->WindowEventsReady();
-
-  return true;
+  Respond(std::move(result_arg));
 }
 
 bool AppWindowCreateFunction::GetBoundsSpec(
@@ -455,33 +512,33 @@ bool AppWindowCreateFunction::GetBoundsSpec(
     // This will be preserved as apps may be relying on this behavior.
 
     if (options.default_width.get())
-      params->content_spec.bounds.set_width(*options.default_width.get());
+      params->content_spec.bounds.set_width(*options.default_width);
     if (options.default_height.get())
-      params->content_spec.bounds.set_height(*options.default_height.get());
+      params->content_spec.bounds.set_height(*options.default_height);
     if (options.default_left.get())
-      params->window_spec.bounds.set_x(*options.default_left.get());
+      params->window_spec.bounds.set_x(*options.default_left);
     if (options.default_top.get())
-      params->window_spec.bounds.set_y(*options.default_top.get());
+      params->window_spec.bounds.set_y(*options.default_top);
 
     if (options.width.get())
-      params->content_spec.bounds.set_width(*options.width.get());
+      params->content_spec.bounds.set_width(*options.width);
     if (options.height.get())
-      params->content_spec.bounds.set_height(*options.height.get());
+      params->content_spec.bounds.set_height(*options.height);
     if (options.left.get())
-      params->window_spec.bounds.set_x(*options.left.get());
+      params->window_spec.bounds.set_x(*options.left);
     if (options.top.get())
-      params->window_spec.bounds.set_y(*options.top.get());
+      params->window_spec.bounds.set_y(*options.top);
 
     if (options.bounds.get()) {
       app_window::ContentBounds* bounds = options.bounds.get();
       if (bounds->width.get())
-        params->content_spec.bounds.set_width(*bounds->width.get());
+        params->content_spec.bounds.set_width(*bounds->width);
       if (bounds->height.get())
-        params->content_spec.bounds.set_height(*bounds->height.get());
+        params->content_spec.bounds.set_height(*bounds->height);
       if (bounds->left.get())
-        params->window_spec.bounds.set_x(*bounds->left.get());
+        params->window_spec.bounds.set_x(*bounds->left);
       if (bounds->top.get())
-        params->window_spec.bounds.set_y(*bounds->top.get());
+        params->window_spec.bounds.set_y(*bounds->top);
     }
 
     gfx::Size& minimum_size = params->content_spec.minimum_size;
@@ -509,7 +566,8 @@ AppWindow::Frame AppWindowCreateFunction::GetFrameFromString(
 
 bool AppWindowCreateFunction::GetFrameOptions(
     const app_window::CreateWindowOptions& options,
-    AppWindow::CreateParams* create_params) {
+    AppWindow::CreateParams* create_params,
+    std::string* error) {
   if (!options.frame)
     return true;
 
@@ -525,14 +583,14 @@ bool AppWindowCreateFunction::GetFrameOptions(
 
   if (options.frame->as_frame_options->color.get()) {
     if (create_params->frame != AppWindow::FRAME_CHROME) {
-      error_ = app_window_constants::kColorWithFrameNone;
+      *error = app_window_constants::kColorWithFrameNone;
       return false;
     }
 
     if (!image_util::ParseHexColorString(
             *options.frame->as_frame_options->color,
             &create_params->active_frame_color)) {
-      error_ = app_window_constants::kInvalidColorSpecification;
+      *error = app_window_constants::kInvalidColorSpecification;
       return false;
     }
 
@@ -543,7 +601,7 @@ bool AppWindowCreateFunction::GetFrameOptions(
       if (!image_util::ParseHexColorString(
               *options.frame->as_frame_options->inactive_color,
               &create_params->inactive_frame_color)) {
-        error_ = app_window_constants::kInvalidColorSpecification;
+        *error = app_window_constants::kInvalidColorSpecification;
         return false;
       }
     }
@@ -552,7 +610,7 @@ bool AppWindowCreateFunction::GetFrameOptions(
   }
 
   if (options.frame->as_frame_options->inactive_color.get()) {
-    error_ = app_window_constants::kInactiveColorWithoutColor;
+    *error = app_window_constants::kInactiveColorWithoutColor;
     return false;
   }
 

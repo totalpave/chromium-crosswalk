@@ -5,23 +5,28 @@
 #ifndef COMPONENTS_OMNIBOX_BROWSER_AUTOCOMPLETE_PROVIDER_CLIENT_H_
 #define COMPONENTS_OMNIBOX_BROWSER_AUTOCOMPLETE_PROVIDER_CLIENT_H_
 
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "base/memory/ref_counted.h"
 #include "base/strings/string16.h"
 #include "components/history/core/browser/keyword_id.h"
 #include "components/history/core/browser/top_sites.h"
-#include "components/metrics/proto/omnibox_event.pb.h"
 #include "components/omnibox/browser/keyword_extensions_delegate.h"
 #include "components/omnibox/browser/shortcuts_backend.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
 
 class AutocompleteController;
 struct AutocompleteMatch;
 class AutocompleteClassifier;
 class AutocompleteSchemeClassifier;
+class ContextualSuggestionsService;
+class DocumentSuggestionsService;
 class GURL;
 class InMemoryURLIndex;
 class KeywordProvider;
+class OmniboxPedalProvider;
 class PrefService;
 class ShortcutsBackend;
 
@@ -34,18 +39,18 @@ class HistoryService;
 class URLDatabase;
 }
 
-namespace net {
-class URLRequestContextGetter;
+namespace network {
+class SharedURLLoaderFactory;
 }
 
-class SearchTermsData;
 class TemplateURLService;
 
 class AutocompleteProviderClient {
  public:
   virtual ~AutocompleteProviderClient() {}
 
-  virtual net::URLRequestContextGetter* GetRequestContext() = 0;
+  virtual scoped_refptr<network::SharedURLLoaderFactory>
+  GetURLLoaderFactory() = 0;
   virtual PrefService* GetPrefs() = 0;
   virtual const AutocompleteSchemeClassifier& GetSchemeClassifier() const = 0;
   virtual AutocompleteClassifier* GetAutocompleteClassifier() = 0;
@@ -56,7 +61,11 @@ class AutocompleteProviderClient {
   virtual InMemoryURLIndex* GetInMemoryURLIndex() = 0;
   virtual TemplateURLService* GetTemplateURLService() = 0;
   virtual const TemplateURLService* GetTemplateURLService() const = 0;
-  virtual const SearchTermsData& GetSearchTermsData() const = 0;
+  virtual ContextualSuggestionsService* GetContextualSuggestionsService(
+      bool create_if_necessary) const = 0;
+  virtual DocumentSuggestionsService* GetDocumentSuggestionsService(
+      bool create_if_necessary) const = 0;
+  virtual OmniboxPedalProvider* GetPedalProvider() const = 0;
   virtual scoped_refptr<ShortcutsBackend> GetShortcutsBackend() = 0;
   virtual scoped_refptr<ShortcutsBackend> GetShortcutsBackendIfExists() = 0;
   virtual std::unique_ptr<KeywordExtensionsDelegate>
@@ -68,7 +77,7 @@ class AutocompleteProviderClient {
 
   // The embedder's representation of the |about| URL scheme for builtin URLs
   // (e.g., |chrome| for Chrome).
-  virtual std::string GetEmbedderRepresentationOfAboutScheme() = 0;
+  virtual std::string GetEmbedderRepresentationOfAboutScheme() const = 0;
 
   // The set of built-in URLs considered worth suggesting as autocomplete
   // suggestions to the user.  Some built-in URLs, e.g. hidden URLs that
@@ -82,10 +91,25 @@ class AutocompleteProviderClient {
   // most commonly-used URLs from that set.
   virtual std::vector<base::string16> GetBuiltinsToProvideAsUserTypes() = 0;
 
+  // The timestamp for the last visit of the page being displayed in the current
+  // tab.
+  virtual base::Time GetCurrentVisitTimestamp() const = 0;
+
   virtual bool IsOffTheRecord() const = 0;
   virtual bool SearchSuggestEnabled() const = 0;
 
-  virtual bool TabSyncEnabledAndUnencrypted() const = 0;
+  // Returns whether personalized URL data collection is enabled.  I.e.,
+  // the user has consented to have URLs recorded keyed by their Google account.
+  // In this case, the user has agreed to share browsing data with Google and so
+  // this state can be used to govern features such as sending the current page
+  // URL with omnibox suggest requests.
+  virtual bool IsPersonalizedUrlDataCollectionActive() const = 0;
+
+  // This function returns true if the user is signed in.
+  virtual bool IsAuthenticated() const = 0;
+
+  // Determines whether sync is enabled.
+  virtual bool IsSyncActive() const = 0;
 
   // Given some string |text| that the user wants to use for navigation,
   // determines how it should be interpreted.
@@ -105,6 +129,12 @@ class AutocompleteProviderClient {
 
   virtual void PrefetchImage(const GURL& url) = 0;
 
+  // Sends a hint to the service worker context that navigation to
+  // |desination_url| is likely, unless the current profile is in incognito
+  // mode. On platforms where this is supported, the service worker lookup can
+  // be expensive so this method should only be called once per input session.
+  virtual void StartServiceWorker(const GURL& destination_url) {}
+
   // Called by |controller| when its results have changed and all providers are
   // done processing the autocomplete request. At the //chrome level, this
   // callback results in firing the
@@ -118,6 +148,15 @@ class AutocompleteProviderClient {
   // Called after creation of |keyword_provider| to allow the client to
   // configure the provider if desired.
   virtual void ConfigureKeywordProvider(KeywordProvider* keyword_provider) {}
+
+  // Called to find out if there is an open tab with the given URL within the
+  // current profile. |input| can be null; match is more precise (e.g. scheme
+  // presence) if provided.
+  virtual bool IsTabOpenWithURL(const GURL& url,
+                                const AutocompleteInput* input) = 0;
+
+  // Returns whether any browser update is ready.
+  virtual bool IsBrowserUpdateAvailable() const;
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_AUTOCOMPLETE_PROVIDER_CLIENT_H_

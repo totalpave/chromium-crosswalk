@@ -35,8 +35,7 @@
 #include "google_apis/drive/drive_api_error_codes.h"
 #include "google_apis/drive/drive_api_parser.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 
 namespace sync_file_system {
 namespace drive_backend {
@@ -60,7 +59,7 @@ class LocalToRemoteSyncerTest : public testing::Test {
 
   void SetUp() override {
     ASSERT_TRUE(database_dir_.CreateUniqueTempDir());
-    in_memory_env_.reset(leveldb::NewMemEnv(leveldb::Env::Default()));
+    in_memory_env_ = leveldb_chrome::NewMemEnv("LocalToRemoteSyncerTest");
 
     std::unique_ptr<FakeDriveServiceWrapper> fake_drive_service(
         new FakeDriveServiceWrapper);
@@ -75,16 +74,14 @@ class LocalToRemoteSyncerTest : public testing::Test {
     context_.reset(new SyncEngineContext(
         std::move(fake_drive_service), std::move(drive_uploader),
         nullptr /* task_logger */, base::ThreadTaskRunnerHandle::Get(),
-        base::ThreadTaskRunnerHandle::Get(), nullptr /* worker_pool */));
+        base::ThreadTaskRunnerHandle::Get()));
     context_->SetRemoteChangeProcessor(remote_change_processor_.get());
 
     RegisterSyncableFileSystem();
 
     sync_task_manager_.reset(new SyncTaskManager(
         base::WeakPtr<SyncTaskManager::Client>(),
-        10 /* maximum_background_task */,
-        base::ThreadTaskRunnerHandle::Get(),
-        nullptr /* worker_pool */));
+        10 /* maximum_background_task */, base::ThreadTaskRunnerHandle::Get()));
     sync_task_manager_->Initialize(SYNC_STATUS_OK);
   }
 
@@ -97,10 +94,8 @@ class LocalToRemoteSyncerTest : public testing::Test {
   }
 
   void InitializeMetadataDatabase() {
-    SyncEngineInitializer* initializer =
-        new SyncEngineInitializer(context_.get(),
-                                  database_dir_.path(),
-                                  in_memory_env_.get());
+    SyncEngineInitializer* initializer = new SyncEngineInitializer(
+        context_.get(), database_dir_.GetPath(), in_memory_env_.get());
     SyncStatusCode status = SYNC_STATUS_UNKNOWN;
 
     sync_task_manager_->ScheduleSyncTask(
@@ -212,10 +207,10 @@ class LocalToRemoteSyncerTest : public testing::Test {
     return status;
   }
 
-  ScopedVector<google_apis::FileResource>
+  std::vector<std::unique_ptr<google_apis::FileResource>>
   GetResourceEntriesForParentAndTitle(const std::string& parent_folder_id,
                                       const std::string& title) {
-    ScopedVector<google_apis::FileResource> entries;
+    std::vector<std::unique_ptr<google_apis::FileResource>> entries;
     EXPECT_EQ(google_apis::HTTP_SUCCESS,
               fake_drive_helper_->SearchByTitle(
                   parent_folder_id, title, &entries));
@@ -224,7 +219,7 @@ class LocalToRemoteSyncerTest : public testing::Test {
 
   std::string GetFileIDForParentAndTitle(const std::string& parent_folder_id,
                                          const std::string& title) {
-    ScopedVector<google_apis::FileResource> entries =
+    std::vector<std::unique_ptr<google_apis::FileResource>> entries =
         GetResourceEntriesForParentAndTitle(parent_folder_id, title);
     if (entries.size() != 1)
       return std::string();
@@ -235,7 +230,7 @@ class LocalToRemoteSyncerTest : public testing::Test {
       const std::string& parent_folder_id,
       const std::string& title,
       test_util::FileResourceKind kind) {
-    ScopedVector<google_apis::FileResource> entries;
+    std::vector<std::unique_ptr<google_apis::FileResource>> entries;
     EXPECT_EQ(google_apis::HTTP_SUCCESS,
               fake_drive_helper_->SearchByTitle(
                   parent_folder_id, title, &entries));
@@ -245,7 +240,7 @@ class LocalToRemoteSyncerTest : public testing::Test {
 
   void VerifyFileDeletion(const std::string& parent_folder_id,
                           const std::string& title) {
-    ScopedVector<google_apis::FileResource> entries;
+    std::vector<std::unique_ptr<google_apis::FileResource>> entries;
     EXPECT_EQ(google_apis::HTTP_SUCCESS,
               fake_drive_helper_->SearchByTitle(
                   parent_folder_id, title, &entries));
@@ -379,7 +374,7 @@ TEST_F(LocalToRemoteSyncerTest, Conflict_CreateFileOnFolder) {
       URL(kOrigin, "foo")));
 
   // There should exist both file and folder on remote.
-  ScopedVector<google_apis::FileResource> entries =
+  std::vector<std::unique_ptr<google_apis::FileResource>> entries =
       GetResourceEntriesForParentAndTitle(app_root, "foo");
   ASSERT_EQ(2u, entries.size());
   EXPECT_EQ(test_util::RESOURCE_KIND_FOLDER,
@@ -404,7 +399,7 @@ TEST_F(LocalToRemoteSyncerTest, Conflict_CreateFolderOnFile) {
       URL(kOrigin, "foo")));
 
   // There should exist both file and folder on remote.
-  ScopedVector<google_apis::FileResource> entries =
+  std::vector<std::unique_ptr<google_apis::FileResource>> entries =
       GetResourceEntriesForParentAndTitle(app_root, "foo");
   ASSERT_EQ(2u, entries.size());
   EXPECT_EQ(test_util::RESOURCE_KIND_FILE,
@@ -429,7 +424,7 @@ TEST_F(LocalToRemoteSyncerTest, Conflict_CreateFileOnFile) {
       URL(kOrigin, "foo")));
 
   // There should exist both files on remote.
-  ScopedVector<google_apis::FileResource> entries =
+  std::vector<std::unique_ptr<google_apis::FileResource>> entries =
       GetResourceEntriesForParentAndTitle(app_root, "foo");
   ASSERT_EQ(2u, entries.size());
   EXPECT_EQ(test_util::RESOURCE_KIND_FILE,
@@ -461,7 +456,7 @@ TEST_F(LocalToRemoteSyncerTest, Conflict_UpdateDeleteOnFile) {
                  SYNC_FILE_TYPE_FILE),
       URL(kOrigin, "foo")));
 
-  ScopedVector<google_apis::FileResource> entries =
+  std::vector<std::unique_ptr<google_apis::FileResource>> entries =
       GetResourceEntriesForParentAndTitle(app_root, "foo");
   ASSERT_EQ(1u, entries.size());
   EXPECT_EQ(test_util::RESOURCE_KIND_FILE,
@@ -491,7 +486,7 @@ TEST_F(LocalToRemoteSyncerTest, Conflict_CreateDeleteOnFile) {
                  SYNC_FILE_TYPE_FILE),
       URL(kOrigin, "foo")));
 
-  ScopedVector<google_apis::FileResource> entries =
+  std::vector<std::unique_ptr<google_apis::FileResource>> entries =
       GetResourceEntriesForParentAndTitle(app_root, "foo");
   ASSERT_EQ(1u, entries.size());
   EXPECT_EQ(test_util::RESOURCE_KIND_FILE,
@@ -514,7 +509,7 @@ TEST_F(LocalToRemoteSyncerTest, Conflict_CreateFolderOnFolder) {
                  SYNC_FILE_TYPE_DIRECTORY),
       URL(kOrigin, "foo")));
 
-  ScopedVector<google_apis::FileResource> entries =
+  std::vector<std::unique_ptr<google_apis::FileResource>> entries =
       GetResourceEntriesForParentAndTitle(app_root, "foo");
   ASSERT_EQ(2u, entries.size());
   EXPECT_EQ(test_util::RESOURCE_KIND_FOLDER,

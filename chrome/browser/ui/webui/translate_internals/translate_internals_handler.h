@@ -18,13 +18,11 @@
 #include "content/public/common/webplugininfo.h"
 
 namespace translate {
-struct LanguageDetectionDetails;
 struct TranslateErrorDetails;
 struct TranslateEventDetails;
 }
 
 namespace base {
-class DictionaryValue;
 class ListValue;
 class Value;
 }
@@ -60,6 +58,11 @@ class TranslateInternalsHandler : public content::WebUIMessageHandler,
   // Handles the Javascript message 'removePrefItem'. This message is sent
   // when UI requests to remove an item in the preference.
   void OnRemovePrefItem(const base::ListValue* args);
+
+  // Handles the JavaScript message 'setRecentTargetLanguage'. This message is
+  // sent when the UI requests to change the 'translate_recent_target'
+  // preference.
+  void OnSetRecentTargetLanguage(const base::ListValue* args);
 
   // Handles the Javascript message 'overrideCountry'. This message is sent
   // when UI requests to override the stored country.

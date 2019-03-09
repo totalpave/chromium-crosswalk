@@ -4,29 +4,27 @@
 
 #include "ash/shelf/shelf_locking_manager.h"
 
-#include "ash/common/session/session_state_delegate.h"
 #include "ash/shelf/shelf.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/test/shelf_test_api.h"
 
 namespace ash {
-namespace test {
+namespace {
 
 // Tests the shelf behavior when the screen or session is locked.
-class ShelfLockingManagerTest : public ash::test::AshTestBase {
+class ShelfLockingManagerTest : public AshTestBase {
  public:
-  ShelfLockingManagerTest() {}
+  ShelfLockingManagerTest() = default;
 
   ShelfLockingManager* GetShelfLockingManager() {
-    return ShelfTestAPI(Shelf::ForPrimaryDisplay()).shelf_locking_manager();
+    return GetPrimaryShelf()->GetShelfLockingManagerForTesting();
   }
 
   void SetScreenLocked(bool locked) {
     GetShelfLockingManager()->OnLockStateChanged(locked);
   }
 
-  void SetSessionState(SessionStateDelegate::SessionState state) {
-    GetShelfLockingManager()->SessionStateChanged(state);
+  void SetSessionState(session_manager::SessionState state) {
+    GetShelfLockingManager()->OnSessionStateChanged(state);
   }
 
  private:
@@ -35,7 +33,7 @@ class ShelfLockingManagerTest : public ash::test::AshTestBase {
 
 // Makes sure shelf alignment is correct for lock screen.
 TEST_F(ShelfLockingManagerTest, AlignmentLockedWhileScreenLocked) {
-  Shelf* shelf = Shelf::ForPrimaryDisplay();
+  Shelf* shelf = GetPrimaryShelf();
   EXPECT_EQ(SHELF_ALIGNMENT_BOTTOM, shelf->alignment());
 
   shelf->SetAlignment(SHELF_ALIGNMENT_LEFT);
@@ -49,26 +47,26 @@ TEST_F(ShelfLockingManagerTest, AlignmentLockedWhileScreenLocked) {
 
 // Makes sure shelf alignment is correct for login and add user screens.
 TEST_F(ShelfLockingManagerTest, AlignmentLockedWhileSessionLocked) {
-  Shelf* shelf = Shelf::ForPrimaryDisplay();
+  Shelf* shelf = GetPrimaryShelf();
   EXPECT_EQ(SHELF_ALIGNMENT_BOTTOM, shelf->alignment());
 
   shelf->SetAlignment(SHELF_ALIGNMENT_RIGHT);
   EXPECT_EQ(SHELF_ALIGNMENT_RIGHT, shelf->alignment());
 
-  SetSessionState(SessionStateDelegate::SESSION_STATE_LOGIN_PRIMARY);
+  SetSessionState(session_manager::SessionState::LOGIN_PRIMARY);
   EXPECT_EQ(SHELF_ALIGNMENT_BOTTOM_LOCKED, shelf->alignment());
-  SetSessionState(SessionStateDelegate::SESSION_STATE_ACTIVE);
+  SetSessionState(session_manager::SessionState::ACTIVE);
   EXPECT_EQ(SHELF_ALIGNMENT_RIGHT, shelf->alignment());
 
-  SetSessionState(SessionStateDelegate::SESSION_STATE_LOGIN_SECONDARY);
+  SetSessionState(session_manager::SessionState::LOGIN_SECONDARY);
   EXPECT_EQ(SHELF_ALIGNMENT_BOTTOM_LOCKED, shelf->alignment());
-  SetSessionState(SessionStateDelegate::SESSION_STATE_ACTIVE);
+  SetSessionState(session_manager::SessionState::ACTIVE);
   EXPECT_EQ(SHELF_ALIGNMENT_RIGHT, shelf->alignment());
 }
 
 // Makes sure shelf alignment changes are stored, not set, while locked.
 TEST_F(ShelfLockingManagerTest, AlignmentChangesDeferredWhileLocked) {
-  Shelf* shelf = Shelf::ForPrimaryDisplay();
+  Shelf* shelf = GetPrimaryShelf();
   EXPECT_EQ(SHELF_ALIGNMENT_BOTTOM, shelf->alignment());
 
   SetScreenLocked(true);
@@ -79,5 +77,5 @@ TEST_F(ShelfLockingManagerTest, AlignmentChangesDeferredWhileLocked) {
   EXPECT_EQ(SHELF_ALIGNMENT_RIGHT, shelf->alignment());
 }
 
-}  // namespace test
+}  // namespace
 }  // namespace ash

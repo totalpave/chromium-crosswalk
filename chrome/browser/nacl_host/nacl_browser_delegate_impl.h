@@ -11,8 +11,9 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "components/nacl/browser/nacl_browser_delegate.h"
+#include "extensions/buildflags/buildflags.h"
 
-#if defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "base/memory/ref_counted.h"
 #include "extensions/common/url_pattern.h"
 
@@ -44,13 +45,16 @@ class NaClBrowserDelegateImpl : public NaClBrowserDelegate {
                              base::FilePath* file_path) override;
   void SetDebugPatterns(const std::string& debug_patterns) override;
   bool URLMatchesDebugPatterns(const GURL& manifest_url) override;
-  content::BrowserPpapiHost::OnKeepaliveCallback GetOnKeepaliveCallback()
-      override;
   bool IsNonSfiModeAllowed(const base::FilePath& profile_directory,
                            const GURL& manifest_url) override;
 
  private:
-#if defined(ENABLE_EXTENSIONS)
+  // Creates a NaCl infobar and delegate for the given render process and view
+  // IDs.  Should be called on the UI thread.
+  static void CreateInfoBarOnUiThread(int render_process_id,
+                                      int render_view_id);
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   scoped_refptr<extensions::InfoMap> GetExtensionInfoMap(
       const base::FilePath& profile_directory);
   std::vector<URLPattern> debug_patterns_;

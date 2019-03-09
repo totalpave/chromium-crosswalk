@@ -25,6 +25,7 @@
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/style/platform_style.h"
 #include "ui/views/view.h"
 
 using base::ASCIIToUTF16;
@@ -85,6 +86,14 @@ class FindInPageTest : public InProcessBrowserTest {
     return details;
   }
 
+  FindNotificationDetails WaitForFinalFindResult() {
+    while (true) {
+      auto details = WaitForFindResult();
+      if (details.final_update())
+        return details;
+    }
+  }
+
  private:
   DISALLOW_COPY_AND_ASSIGN(FindInPageTest);
 };
@@ -106,7 +115,8 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, CrashEscHandlers) {
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
   // Select tab A.
-  browser()->tab_strip_model()->ActivateTabAt(0, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      0, {TabStripModel::GestureType::kOther});
 
   // Close tab B.
   browser()->tab_strip_model()->CloseWebContentsAt(1,
@@ -183,32 +193,41 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, ButtonsDoNotAlterFocus) {
 
   // Clicking the next and previous buttons should not alter the focused view.
   ClickOnView(next_button);
-  EXPECT_EQ(2, WaitForFindResult().active_match_ordinal());
+  EXPECT_EQ(2, WaitForFinalFindResult().active_match_ordinal());
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
   ClickOnView(previous_button);
-  EXPECT_EQ(1, WaitForFindResult().active_match_ordinal());
+  EXPECT_EQ(1, WaitForFinalFindResult().active_match_ordinal());
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
   // Tapping the next and previous buttons should not alter the focused view.
   TapOnView(next_button);
-  EXPECT_EQ(2, WaitForFindResult().active_match_ordinal());
+  EXPECT_EQ(2, WaitForFinalFindResult().active_match_ordinal());
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
   TapOnView(previous_button);
-  EXPECT_EQ(1, WaitForFindResult().active_match_ordinal());
+  EXPECT_EQ(1, WaitForFinalFindResult().active_match_ordinal());
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
   // The same should be true even when the previous button is focused.
   previous_button->RequestFocus();
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_PREVIOUS_BUTTON));
   ClickOnView(next_button);
-  EXPECT_EQ(2, WaitForFindResult().active_match_ordinal());
+  EXPECT_EQ(2, WaitForFinalFindResult().active_match_ordinal());
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_PREVIOUS_BUTTON));
   TapOnView(next_button);
-  EXPECT_EQ(3, WaitForFindResult().active_match_ordinal());
+  EXPECT_EQ(3, WaitForFinalFindResult().active_match_ordinal());
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_PREVIOUS_BUTTON));
 }
 
 IN_PROC_BROWSER_TEST_F(FindInPageTest, ButtonsDisabledWithoutText) {
+  if (browser()
+          ->GetFindBarController()
+          ->find_bar()
+          ->HasGlobalFindPasteboard()) {
+    // The presence of a global find pasteboard does not guarantee the find bar
+    // will be empty on launch.
+    return;
+  }
+
   ASSERT_TRUE(embedded_test_server()->Start());
   // Make sure Chrome is in the foreground, otherwise sending input
   // won't do anything and the test will hang.
@@ -227,15 +246,7 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, ButtonsDisabledWithoutText) {
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_CLOSE_BUTTON));
 }
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(USE_AURA)
-// TODO(erg): linux_aura bringup: http://crbug.com/163931
-#define MAYBE_FocusRestore DISABLED_FocusRestore
-#else
-#define MAYBE_FocusRestore FocusRestore
-#endif
-
-// Flaky because the test server fails to start? See: http://crbug.com/96594.
-IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_FocusRestore) {
+IN_PROC_BROWSER_TEST_F(FindInPageTest, FocusRestore) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   GURL url = embedded_test_server()->GetURL("/title1.html");
@@ -279,10 +290,16 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_FocusRestore) {
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_OMNIBOX));
 }
 
-// TODO(phajdan.jr): Disabling due to possible timing issues on XP
-// interactive_ui_tests.
-// http://crbug.com/311363
-IN_PROC_BROWSER_TEST_F(FindInPageTest, DISABLED_SelectionRestoreOnTabSwitch) {
+// Flaky on Windows. https://crbug.com/792313
+#if defined(OS_WIN)
+#define MAYBE_SelectionRestoreOnTabSwitch DISABLED_SelectionRestoreOnTabSwitch
+#else
+#define MAYBE_SelectionRestoreOnTabSwitch SelectionRestoreOnTabSwitch
+#endif
+IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_SelectionRestoreOnTabSwitch) {
+  // Mac intentionally changes selection on focus.
+  if (views::PlatformStyle::kTextfieldScrollsToStartOnFocusChange)
+    return;
   ASSERT_TRUE(embedded_test_server()->Start());
 
   // Make sure Chrome is in the foreground, otherwise sending input
@@ -341,25 +358,20 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, DISABLED_SelectionRestoreOnTabSwitch) {
   EXPECT_EQ(ASCIIToUTF16("de"), GetFindBarSelectedText());
 
   // Select tab A. Find bar should select "bc".
-  browser()->tab_strip_model()->ActivateTabAt(0, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      0, {TabStripModel::GestureType::kOther});
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
   EXPECT_EQ(ASCIIToUTF16("bc"), GetFindBarSelectedText());
 
   // Select tab B. Find bar should select "de".
-  browser()->tab_strip_model()->ActivateTabAt(1, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      1, {TabStripModel::GestureType::kOther});
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
   EXPECT_EQ(ASCIIToUTF16("de"), GetFindBarSelectedText());
 }
 
-#if defined(OS_LINUX) && !defined(OS_CHROMEOS) && defined(USE_AURA)
-// TODO(erg): linux_aura bringup: http://crbug.com/163931
-#define MAYBE_FocusRestoreOnTabSwitch DISABLED_FocusRestoreOnTabSwitch
-#else
-#define MAYBE_FocusRestoreOnTabSwitch FocusRestoreOnTabSwitch
-#endif
-
-// Flaky because the test server fails to start? See: http://crbug.com/96594.
-IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_FocusRestoreOnTabSwitch) {
+IN_PROC_BROWSER_TEST_F(FindInPageTest, FocusRestoreOnTabSwitch) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   ASSERT_TRUE(embedded_test_server()->Start());
 
   // First we navigate to our test page (tab A).
@@ -390,19 +402,24 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_FocusRestoreOnTabSwitch) {
   ui_test_utils::FindInPage(
       browser()->tab_strip_model()->GetActiveWebContents(),
       ASCIIToUTF16("b"), true, false, NULL, NULL);
-  EXPECT_EQ(ASCIIToUTF16("b"), GetFindBarSelectedText());
+  // Mac intentionally changes selection on focus.
+  if (!views::PlatformStyle::kTextfieldScrollsToStartOnFocusChange)
+    EXPECT_EQ(ASCIIToUTF16("b"), GetFindBarSelectedText());
 
   // Set focus away from the Find bar (to the Location bar).
   chrome::FocusLocationBar(browser());
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_OMNIBOX));
 
   // Select tab A. Find bar should get focus.
-  browser()->tab_strip_model()->ActivateTabAt(0, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      0, {TabStripModel::GestureType::kOther});
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
-  EXPECT_EQ(ASCIIToUTF16("a"), GetFindBarSelectedText());
+  if (!views::PlatformStyle::kTextfieldScrollsToStartOnFocusChange)
+    EXPECT_EQ(ASCIIToUTF16("a"), GetFindBarSelectedText());
 
   // Select tab B. Location bar should get focus.
-  browser()->tab_strip_model()->ActivateTabAt(1, true);
+  browser()->tab_strip_model()->ActivateTabAt(
+      1, {TabStripModel::GestureType::kOther});
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_OMNIBOX));
 }
 
@@ -498,7 +515,7 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_PasteWithoutTextChange) {
   EXPECT_EQ(ASCIIToUTF16("a"), GetFindBarText());
 
   // Reload the page to clear the matching result.
-  chrome::Reload(browser(), CURRENT_TAB);
+  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
 
   // Focus the Find bar again to make sure the text is selected.
   browser()->GetFindBarController()->Show();
@@ -527,11 +544,13 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_PasteWithoutTextChange) {
   EXPECT_TRUE(details.number_of_matches() > 0);
 }
 
-#if defined(OS_WIN)
-// TODO(phajdan.jr): Disabling due to possible timing issues on XP
-// interactive_ui_tests.
-// http://crbug.com/311363
-IN_PROC_BROWSER_TEST_F(FindInPageTest, DISABLED_CtrlEnter) {
+// Slow flakiness on Linux. crbug.com/803743
+#if defined(OS_LINUX)
+#define MAYBE_CtrlEnter DISABLED_CtrlEnter
+#else
+#define MAYBE_CtrlEnter CtrlEnter
+#endif
+IN_PROC_BROWSER_TEST_F(FindInPageTest, MAYBE_CtrlEnter) {
   ui_test_utils::NavigateToURL(browser(),
                                GURL("data:text/html,This is some text with a "
                                     "<a href=\"about:blank\">link</a>."));
@@ -558,4 +577,3 @@ IN_PROC_BROWSER_TEST_F(FindInPageTest, DISABLED_CtrlEnter) {
 
   observer.Wait();
 }
-#endif

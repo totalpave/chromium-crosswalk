@@ -70,11 +70,6 @@ class ExtensionFunctionDispatcher
     virtual ~Delegate() {}
   };
 
-  // Override a previously registered function. Returns true if successful,
-  // false if no such function was registered.
-  static bool OverrideFunction(const std::string& name,
-                               ExtensionFunctionFactory factory);
-
   // Dispatches an IO-thread extension function. Only used for specific
   // functions that must be handled on the IO-thread.
   static void DispatchOnIOThread(
@@ -101,7 +96,9 @@ class ExtensionFunctionDispatcher
 
   // Called when an ExtensionFunction is done executing, after it has sent
   // a response (if any) to the extension.
-  void OnExtensionFunctionCompleted(const Extension* extension);
+  void OnExtensionFunctionCompleted(const Extension* extension,
+                                    bool is_from_service_worker,
+                                    const char* name);
 
   // See the Delegate class for documentation on these methods.
   // TODO(devlin): None of these belong here. We should kill
@@ -173,7 +170,8 @@ class ExtensionFunctionDispatcher
   // This map doesn't own either the keys or the values. When a RenderFrameHost
   // instance goes away, the corresponding entry in this map (if exists) will be
   // removed.
-  typedef std::map<content::RenderFrameHost*, UIThreadResponseCallbackWrapper*>
+  typedef std::map<content::RenderFrameHost*,
+                   std::unique_ptr<UIThreadResponseCallbackWrapper>>
       UIThreadResponseCallbackWrapperMap;
   UIThreadResponseCallbackWrapperMap ui_thread_response_callback_wrappers_;
 

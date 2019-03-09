@@ -15,6 +15,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 
+class GURL;
+
 namespace translate {
 
 class TranslateScriptTest;
@@ -24,12 +26,10 @@ class TranslateScript {
  public:
   typedef base::Callback<void(bool, const std::string&)> RequestCallback;
 
-  static const int kFetcherId = 0;
-
   TranslateScript();
   virtual ~TranslateScript();
 
-  // Returns the feched the translate script.
+  // Returns the fetched translate script.
   const std::string& data() { return data_; }
 
   // Used by unit-tests to override some defaults:
@@ -43,8 +43,12 @@ class TranslateScript {
   void Clear() { data_.clear(); }
 
   // Fetches the JS translate script (the script that is injected in the page
-  // to translate it).
-  void Request(const RequestCallback& callback);
+  // to translate it). |is_incognito| is used during the fetch to determine
+  // which variations headers to add.
+  void Request(const RequestCallback& callback, bool is_incognito);
+
+  // Returns the URL to be used to load the translate script.
+  static GURL GetTranslateScriptURL();
 
  private:
   friend class TranslateScriptTest;
@@ -72,13 +76,17 @@ class TranslateScript {
   static const char kJavascriptLoaderCallbackQueryValue[];
 
   // The callback when the script is fetched or a server error occured.
-  void OnScriptFetchComplete(int id, bool success, const std::string& data);
+  void OnScriptFetchComplete(bool success, const std::string& data);
 
   // URL fetcher to fetch the translate script.
   std::unique_ptr<TranslateURLFetcher> fetcher_;
 
   // The JS injected in the page to do the translation.
   std::string data_;
+
+  // The starting time of fetching the translate script.
+  // Number of milliseconds since the epoch.
+  double script_fetch_start_time_;
 
   // Delay after which the translate script is fetched again from the translate
   // server.

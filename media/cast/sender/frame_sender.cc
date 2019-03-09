@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/trace_event/trace_event.h"
@@ -19,12 +21,15 @@ namespace media {
 namespace cast {
 namespace {
 
-const int kMinSchedulingDelayMs = 1;
-const int kNumAggressiveReportsSentAtStart = 100;
+constexpr int kNumAggressiveReportsSentAtStart = 100;
+constexpr base::TimeDelta kMinSchedulingDelay =
+    base::TimeDelta::FromMilliseconds(1);
+constexpr base::TimeDelta kReceiverProcessTime =
+    base::TimeDelta::FromMilliseconds(250);
 
 // The additional number of frames that can be in-flight when input exceeds the
 // maximum frame rate.
-const int kMaxFrameBurst = 5;
+constexpr int kMaxFrameBurst = 5;
 
 }  // namespace
 
@@ -34,7 +39,7 @@ const int kMaxFrameBurst = 5;
 FrameSender::RtcpClient::RtcpClient(base::WeakPtr<FrameSender> frame_sender)
     : frame_sender_(frame_sender) {}
 
-FrameSender::RtcpClient::~RtcpClient() {}
+FrameSender::RtcpClient::~RtcpClient() = default;
 
 void FrameSender::RtcpClient::OnReceivedCastMessage(
     const RtcpCastMessage& cast_message) {
@@ -53,32 +58,28 @@ void FrameSender::RtcpClient::OnReceivedPli() {
 }
 
 FrameSender::FrameSender(scoped_refptr<CastEnvironment> cast_environment,
-                         bool is_audio,
                          CastTransport* const transport_sender,
-                         int rtp_timebase,
-                         uint32_t ssrc,
-                         double max_frame_rate,
-                         base::TimeDelta min_playout_delay,
-                         base::TimeDelta max_playout_delay,
-                         base::TimeDelta animated_playout_delay,
+                         const FrameSenderConfig& config,
                          CongestionControl* congestion_control)
     : cast_environment_(cast_environment),
       transport_sender_(transport_sender),
-      ssrc_(ssrc),
-      min_playout_delay_(min_playout_delay.is_zero() ? max_playout_delay
-                                                     : min_playout_delay),
-      max_playout_delay_(max_playout_delay),
-      animated_playout_delay_(animated_playout_delay.is_zero()
-                                  ? max_playout_delay
-                                  : animated_playout_delay),
+      ssrc_(config.sender_ssrc),
+      min_playout_delay_(config.min_playout_delay.is_zero()
+                             ? config.max_playout_delay
+                             : config.min_playout_delay),
+      max_playout_delay_(config.max_playout_delay),
+      animated_playout_delay_(config.animated_playout_delay.is_zero()
+                                  ? config.max_playout_delay
+                                  : config.animated_playout_delay),
       send_target_playout_delay_(false),
-      max_frame_rate_(max_frame_rate),
+      max_frame_rate_(config.max_frame_rate),
       num_aggressive_rtcp_reports_sent_(0),
       duplicate_ack_counter_(0),
       congestion_control_(congestion_control),
       picture_lost_at_receiver_(false),
-      rtp_timebase_(rtp_timebase),
-      is_audio_(is_audio),
+      rtp_timebase_(config.rtp_timebase),
+      is_audio_(config.rtp_payload_type <= RtpPayloadType::AUDIO_LAST),
+      max_ack_delay_(config.max_playout_delay),
       weak_factory_(this) {
   DCHECK(transport_sender_);
   DCHECK_GT(rtp_timebase_, 0);
@@ -87,22 +88,31 @@ FrameSender::FrameSender(scoped_refptr<CastEnvironment> cast_environment,
   // case today.
   VLOG(1) << SENDER_SSRC << "min latency "
           << min_playout_delay_.InMilliseconds() << "max latency "
-          << max_playout_delay.InMilliseconds() << "animated latency "
-          << animated_playout_delay.InMilliseconds();
+          << max_playout_delay_.InMilliseconds() << "animated latency "
+          << animated_playout_delay_.InMilliseconds();
   SetTargetPlayoutDelay(animated_playout_delay_);
-  send_target_playout_delay_ = false;
+
+  CastTransportRtpConfig transport_config;
+  transport_config.ssrc = config.sender_ssrc;
+  transport_config.feedback_ssrc = config.receiver_ssrc;
+  transport_config.rtp_payload_type = config.rtp_payload_type;
+  transport_config.aes_key = config.aes_key;
+  transport_config.aes_iv_mask = config.aes_iv_mask;
+
+  transport_sender->InitializeStream(
+      transport_config,
+      std::make_unique<FrameSender::RtcpClient>(weak_factory_.GetWeakPtr()));
 }
 
-FrameSender::~FrameSender() {
-}
+FrameSender::~FrameSender() = default;
 
 void FrameSender::ScheduleNextRtcpReport() {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
 
   cast_environment_->PostDelayedTask(
       CastEnvironment::MAIN, FROM_HERE,
-      base::Bind(&FrameSender::SendRtcpReport, weak_factory_.GetWeakPtr(),
-                 true),
+      base::BindRepeating(&FrameSender::SendRtcpReport,
+                          weak_factory_.GetWeakPtr(), true),
       base::TimeDelta::FromMilliseconds(kRtcpReportIntervalMs));
 }
 
@@ -131,9 +141,12 @@ void FrameSender::SendRtcpReport(bool schedule_future_reports) {
     ScheduleNextRtcpReport();
 }
 
-void FrameSender::OnMeasuredRoundTripTime(base::TimeDelta rtt) {
-  DCHECK(rtt > base::TimeDelta());
-  current_round_trip_time_ = rtt;
+void FrameSender::OnMeasuredRoundTripTime(base::TimeDelta round_trip_time) {
+  DCHECK_GT(round_trip_time, base::TimeDelta());
+  current_round_trip_time_ = round_trip_time;
+  max_ack_delay_ = 2 * std::max(current_round_trip_time_, base::TimeDelta()) +
+                   kReceiverProcessTime;
+  max_ack_delay_ = std::min(max_ack_delay_, target_playout_delay_);
 }
 
 void FrameSender::SetTargetPlayoutDelay(
@@ -150,6 +163,7 @@ void FrameSender::SetTargetPlayoutDelay(
           << target_playout_delay_.InMilliseconds() << " ms to "
           << new_target_playout_delay.InMilliseconds() << " ms.";
   target_playout_delay_ = new_target_playout_delay;
+  max_ack_delay_ = std::min(max_ack_delay_, target_playout_delay_);
   send_target_playout_delay_ = true;
   congestion_control_->UpdateTargetPlayoutDelay(target_playout_delay_);
 }
@@ -159,7 +173,7 @@ void FrameSender::ResendCheck() {
   DCHECK(!last_send_time_.is_null());
   const base::TimeDelta time_since_last_send =
       cast_environment_->Clock()->NowTicks() - last_send_time_;
-  if (time_since_last_send > target_playout_delay_) {
+  if (time_since_last_send > max_ack_delay_) {
     if (latest_acked_frame_id_ == last_sent_frame_id_) {
       // Last frame acked, no point in doing anything
     } else {
@@ -175,14 +189,12 @@ void FrameSender::ScheduleNextResendCheck() {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
   DCHECK(!last_send_time_.is_null());
   base::TimeDelta time_to_next =
-      last_send_time_ - cast_environment_->Clock()->NowTicks() +
-      target_playout_delay_;
-  time_to_next = std::max(
-      time_to_next, base::TimeDelta::FromMilliseconds(kMinSchedulingDelayMs));
+      last_send_time_ - cast_environment_->Clock()->NowTicks() + max_ack_delay_;
+  time_to_next = std::max(time_to_next, kMinSchedulingDelay);
   cast_environment_->PostDelayedTask(
-      CastEnvironment::MAIN,
-      FROM_HERE,
-      base::Bind(&FrameSender::ResendCheck, weak_factory_.GetWeakPtr()),
+      CastEnvironment::MAIN, FROM_HERE,
+      base::BindRepeating(&FrameSender::ResendCheck,
+                          weak_factory_.GetWeakPtr()),
       time_to_next);
 }
 
@@ -248,6 +260,7 @@ void FrameSender::SendEncodedFrame(
       cancel_sending_frames.push_back(id);
     }
     transport_sender_->CancelSendingFrames(ssrc_, cancel_sending_frames);
+    OnCancelSendingFrames();
   }
 
   last_send_time_ = cast_environment_->Clock()->NowTicks();
@@ -319,6 +332,8 @@ void FrameSender::SendEncodedFrame(
                            encoded_frame->rtp_timestamp.lower_32_bits());
   transport_sender_->InsertFrame(ssrc_, *encoded_frame);
 }
+
+void FrameSender::OnCancelSendingFrames() {}
 
 void FrameSender::OnReceivedCastFeedback(const RtcpCastMessage& cast_feedback) {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::MAIN));
@@ -413,6 +428,7 @@ void FrameSender::OnReceivedCastFeedback(const RtcpCastMessage& cast_feedback) {
           current_round_trip_time_.InMicroseconds());
     } while (latest_acked_frame_id_ < cast_feedback.ack_frame_id);
     transport_sender_->CancelSendingFrames(ssrc_, frames_to_cancel);
+    OnCancelSendingFrames();
   }
 }
 

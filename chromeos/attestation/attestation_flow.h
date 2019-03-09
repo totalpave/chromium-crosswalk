@@ -9,10 +9,12 @@
 #include <string>
 
 #include "base/callback_forward.h"
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chromeos/attestation/attestation_constants.h"
-#include "chromeos/chromeos_export.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "chromeos/dbus/attestation_constants.h"
 #include "chromeos/dbus/dbus_method_call_status.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
 
@@ -31,10 +33,10 @@ class CryptohomeClient;
 namespace attestation {
 
 // Interface for access to the Privacy CA server.
-class CHROMEOS_EXPORT ServerProxy {
+class COMPONENT_EXPORT(CHROMEOS_ATTESTATION) ServerProxy {
  public:
-  typedef base::Callback<void(bool success,
-                              const std::string& data)> DataCallback;
+  typedef base::Callback<void(bool success, const std::string& data)>
+      DataCallback;
   virtual ~ServerProxy();
   virtual void SendEnrollRequest(const std::string& request,
                                  const DataCallback& on_response) = 0;
@@ -46,21 +48,59 @@ class CHROMEOS_EXPORT ServerProxy {
 // Implements the message flow for Chrome OS attestation tasks.  Generally this
 // consists of coordinating messages between the Chrome OS attestation service
 // and the Chrome OS Privacy CA server.  Sample usage:
+//
 //    AttestationFlow flow(AsyncMethodCaller::GetInstance(),
 //                         DBusThreadManager::Get().GetCryptohomeClient(),
 //                         std::move(my_server_proxy));
 //    AttestationFlow::CertificateCallback callback = base::Bind(&MyCallback);
 //    flow.GetCertificate(ENTERPRISE_USER_CERTIFICATE, false, callback);
-class CHROMEOS_EXPORT AttestationFlow {
+//
+// This class is not thread safe.
+class COMPONENT_EXPORT(CHROMEOS_ATTESTATION) AttestationFlow {
  public:
-  typedef base::Callback<void(bool success,
-                              const std::string& pem_certificate_chain)>
+  typedef base::RepeatingCallback<
+      void(AttestationStatus status, const std::string& pem_certificate_chain)>
       CertificateCallback;
+
+  // Returns the attestation key type for a given |certificate_profile|.
+  //
+  // Parameters
+  //   certificate_profile - Specifies what kind of certificate the key is for.
+  static AttestationKeyType GetKeyTypeForProfile(
+      AttestationCertificateProfile certificate_profile);
+
+  // Returns the name of the key for a given certificate profile. The
+  // |request_origin| parameter is for PROFILE_CONTENT_PROTECTION_CERTIFICATE
+  // profiles and is ignored for other profiles.
+  //
+  // Parameters
+  //   certificate_profile - Specifies what kind of certificate the key is for.
+  //   request_origin - For content protection profiles, certificate requests
+  //                    are origin-specific.  This string must uniquely identify
+  //                    the origin of the request.
+  static std::string GetKeyNameForProfile(
+      AttestationCertificateProfile certificate_profile,
+      const std::string& request_origin);
 
   AttestationFlow(cryptohome::AsyncMethodCaller* async_caller,
                   CryptohomeClient* cryptohome_client,
                   std::unique_ptr<ServerProxy> server_proxy);
   virtual ~AttestationFlow();
+
+  // Sets the timeout for attestation to be ready.
+  void set_ready_timeout(base::TimeDelta ready_timeout) {
+    ready_timeout_ = ready_timeout;
+  }
+  // Gets the timeout for attestation to be ready.
+  base::TimeDelta ready_timeout() const { return ready_timeout_; }
+
+  // Sets the retry delay.
+  void set_retry_delay(base::TimeDelta retry_delay) {
+    retry_delay_ = retry_delay;
+  }
+
+  // Returns the retry delay.
+  base::TimeDelta retry_delay() { return retry_delay_; }
 
   // Gets an attestation certificate for a hardware-protected key.  If a key for
   // the given profile does not exist, it will be generated and a certificate
@@ -89,7 +129,19 @@ class CHROMEOS_EXPORT AttestationFlow {
                               const CertificateCallback& callback);
 
  private:
-  // Asynchronously initiates the attestation enrollment flow.
+  // Asynchronously waits for attestation to be ready and start enrollment once
+  // it is. If attestation is not ready by the time the flow's timeout is
+  // reached, fail.
+  //
+  // Parameters
+  //   retries_left - Number of retries left (-1 for infinite retries).
+  //   on_failure - Called if any failure occurs.
+  //   next_task - Called on successful enrollment.
+  void WaitForAttestationReadyAndStartEnroll(base::TimeTicks end_time,
+                                             const base::Closure& on_failure,
+                                             const base::Closure& next_task);
+
+  // Called when attestation is prepared, to start the actual enrollment flow.
   //
   // Parameters
   //   on_failure - Called if any failure occurs.
@@ -191,6 +243,16 @@ class CHROMEOS_EXPORT AttestationFlow {
                                        bool success,
                                        const std::string& data);
 
+  // Called after cryptohome finishes processing of a certificate request.
+  //
+  // Parameters
+  //   callback - Called when the operation completes.
+  //   success - The status of request finishing.
+  //   data - The certificate data in PEM format.
+  void OnCertRequestFinished(const CertificateCallback& callback,
+                             bool success,
+                             const std::string& data);
+
   // Gets an existing certificate from the attestation daemon.
   //
   // Parameters
@@ -203,9 +265,24 @@ class CHROMEOS_EXPORT AttestationFlow {
                               const std::string& key_name,
                               const CertificateCallback& callback);
 
+  // Checks whether attestation is ready. If it is, runs |next_task|. If not,
+  // reschedules a check after a delay unless we are out of retry time, in
+  // which case we run |on_failure|.
+  //
+  // Parameters
+  //   end_time - The time at or past which we give up retrying.
+  //   on_failure - Called if any failure occurs or after we give up retrying.
+  //   next_task - Called when attestation is ready.
+  void CheckAttestationReadyAndReschedule(base::TimeTicks end_time,
+                                          const base::Closure& on_failure,
+                                          const base::Closure& next_task);
+
   cryptohome::AsyncMethodCaller* async_caller_;
   CryptohomeClient* cryptohome_client_;
   std::unique_ptr<ServerProxy> server_proxy_;
+
+  base::TimeDelta ready_timeout_;
+  base::TimeDelta retry_delay_;
 
   base::WeakPtrFactory<AttestationFlow> weak_factory_;
 

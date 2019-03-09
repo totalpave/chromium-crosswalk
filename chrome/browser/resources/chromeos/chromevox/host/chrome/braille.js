@@ -63,19 +63,45 @@ cvox.ChromeBraille.prototype.write = function(params) {
   this.updateLastContentId_();
   var outParams = params.toJson();
 
-  var message = {'target': 'BRAILLE',
-                 'action': 'write',
-                 'params': outParams,
-                 'contentId' : this.lastContentId_};
+  var message = {
+    'target': 'BRAILLE',
+    'action': 'write',
+    'params': outParams,
+    'contentId': this.lastContentId_
+  };
 
   cvox.ExtensionBridge.send(message);
 };
 
 
+/** @override */
+cvox.ChromeBraille.prototype.writeRawImage = function(imageDataUrl) {
+  // Do Nothing.
+};
+
+
+/** @override */
+cvox.ChromeBraille.prototype.freeze = function() {
+  // Do Nothing.
+};
+
+
+/** @override */
+cvox.ChromeBraille.prototype.thaw = function() {
+  // Do Nothing.
+};
+
+
+/** @override */
+cvox.ChromeBraille.prototype.getDisplayState = function() {
+  return {available: false, textRowCount: 0, textColumnCount: 0};
+};
+
+
 /** @private */
 cvox.ChromeBraille.prototype.updateLastContentId_ = function() {
-  this.lastContentId_ = cvox.ExtensionBridge.uniqueId() + '.' +
-      this.nextLocalId_++;
+  this.lastContentId_ =
+      cvox.ExtensionBridge.uniqueId() + '.' + this.nextLocalId_++;
 };
 
 
@@ -86,8 +112,7 @@ cvox.ChromeBraille.prototype.updateLastContentId_ = function() {
  *                                  if available.
  * @private
  */
-cvox.ChromeBraille.prototype.onKeyEvent_ = function(brailleEvt,
-                                                                content) {
+cvox.ChromeBraille.prototype.onKeyEvent_ = function(brailleEvt, content) {
   var command = cvox.ChromeVoxUserCommands.commands[brailleEvt.command];
   if (command) {
     command({event: brailleEvt, content: content});

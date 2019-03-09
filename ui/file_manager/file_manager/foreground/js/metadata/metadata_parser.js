@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 /**
- * @param {MetadataDispatcher} parent Parent object.
+ * @param {MetadataParserLogger} parent Parent object.
  * @param {string} type Parser type.
  * @param {RegExp} urlFilter RegExp to match URLs.
  * @constructor
@@ -38,8 +38,9 @@ MetadataParser.prototype.log = function(var_args) {
  * @param {...(Object|string)} var_args Arguments.
  */
 MetadataParser.prototype.vlog = function(var_args) {
-  if (this.verbose)
+  if (this.verbose) {
     this.parent_.log.apply(this.parent_, arguments);
+  }
 };
 
 /**
@@ -60,12 +61,12 @@ MetadataParser.prototype.createDefaultMetadata = function() {
  * @param {function(File, ByteReader)} callback Callback to invoke.
  * @param {function(string)} onError Error handler.
  */
-MetadataParser.readFileBytes = function(file, begin, end, callback, onError) {
-  var fileReader = new FileReader();
-  fileReader.onerror = function(event) {
+MetadataParser.readFileBytes = (file, begin, end, callback, onError) => {
+  const fileReader = new FileReader();
+  fileReader.onerror = event => {
     onError(event.type);
   };
-  fileReader.onloadend = function() {
+  fileReader.onloadend = () => {
     callback(file, new ByteReader(
         /** @type {ArrayBuffer} */ (fileReader.result)));
   };
@@ -74,7 +75,7 @@ MetadataParser.readFileBytes = function(file, begin, end, callback, onError) {
 
 /**
  * Base class for image metadata parsers.
- * @param {MetadataDispatcher} parent Parent object.
+ * @param {MetadataParserLogger} parent Parent object.
  * @param {string} type Image type.
  * @param {RegExp} urlFilter RegExp to match URLs.
  * @constructor

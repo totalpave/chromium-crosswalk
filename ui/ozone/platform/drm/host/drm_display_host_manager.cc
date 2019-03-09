@@ -10,30 +10,30 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/post_task.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/threading/worker_pool.h"
 #include "ui/display/types/display_snapshot.h"
 #include "ui/events/ozone/device/device_event.h"
 #include "ui/events/ozone/device/device_manager.h"
-#include "ui/ozone/common/display_util.h"
 #include "ui/ozone/platform/drm/common/drm_util.h"
 #include "ui/ozone/platform/drm/host/drm_device_handle.h"
 #include "ui/ozone/platform/drm/host/drm_display_host.h"
 #include "ui/ozone/platform/drm/host/drm_native_display_delegate.h"
+#include "ui/ozone/platform/drm/host/drm_overlay_manager_host.h"
 #include "ui/ozone/platform/drm/host/gpu_thread_adapter.h"
 
 namespace ui {
 
 namespace {
 
-typedef base::Callback<void(const base::FilePath&,
-                            const base::FilePath&,
-                            std::unique_ptr<DrmDeviceHandle>)>
+typedef base::OnceCallback<void(const base::FilePath&,
+                                const base::FilePath&,
+                                std::unique_ptr<DrmDeviceHandle>)>
     OnOpenDeviceReplyCallback;
 
 const char kDefaultGraphicsCardPattern[] = "/dev/dri/card%d";
@@ -53,17 +53,16 @@ base::FilePath MapDevPathToSysPath(const base::FilePath& device_path) {
       base::FilePath("/sys/class/drm").Append(device_path.BaseName()));
 }
 
-void OpenDeviceOnWorkerThread(
-    const base::FilePath& device_path,
-    const scoped_refptr<base::TaskRunner>& reply_runner,
-    const OnOpenDeviceReplyCallback& callback) {
+void OpenDeviceAsync(const base::FilePath& device_path,
+                     const scoped_refptr<base::TaskRunner>& reply_runner,
+                     OnOpenDeviceReplyCallback callback) {
   base::FilePath sys_path = MapDevPathToSysPath(device_path);
 
   std::unique_ptr<DrmDeviceHandle> handle(new DrmDeviceHandle());
   handle->Initialize(device_path, sys_path);
-  reply_runner->PostTask(FROM_HERE,
-                         base::Bind(callback, device_path, sys_path,
-                                    base::Passed(std::move(handle))));
+  reply_runner->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), device_path, sys_path,
+                                std::move(handle)));
 }
 
 base::FilePath GetPrimaryDisplayCardPath() {
@@ -112,9 +111,11 @@ class FindDrmDisplayHostById {
 DrmDisplayHostManager::DrmDisplayHostManager(
     GpuThreadAdapter* proxy,
     DeviceManager* device_manager,
+    DrmOverlayManagerHost* overlay_manager,
     InputControllerEvdev* input_controller)
     : proxy_(proxy),
       device_manager_(device_manager),
+      overlay_manager_(overlay_manager),
       input_controller_(input_controller),
       primary_graphics_card_path_(GetPrimaryDisplayCardPath()),
       weak_ptr_factory_(this) {
@@ -133,6 +134,10 @@ DrmDisplayHostManager::DrmDisplayHostManager(
       LOG(FATAL) << "Failed to open primary graphics card";
       return;
     }
+    if (overlay_manager) {
+      overlay_manager->set_supports_overlays(
+          primary_drm_device_handle_->has_atomic_capabilities());
+    }
     drm_devices_[primary_graphics_card_path_] =
         primary_graphics_card_path_sysfs;
   }
@@ -141,21 +146,23 @@ DrmDisplayHostManager::DrmDisplayHostManager(
   proxy_->RegisterHandlerForDrmDisplayHostManager(this);
   proxy_->AddGpuThreadObserver(this);
 
-  ScopedVector<HardwareDisplayControllerInfo> display_infos =
-      GetAvailableDisplayControllerInfos(primary_drm_device_handle_->fd());
+  const auto& display_infos = GetAvailableDisplayControllerInfos(
+      primary_drm_device_handle_->fd(), nullptr);
   has_dummy_display_ = !display_infos.empty();
-  for (size_t i = 0; i < display_infos.size(); ++i) {
-    displays_.push_back(base::WrapUnique(new DrmDisplayHost(
-        proxy_, CreateDisplaySnapshotParams(
-                    display_infos[i], primary_drm_device_handle_->fd(),
-                    primary_drm_device_handle_->sys_path(), 0, gfx::Point()),
-        true /* is_dummy */)));
+  for (const auto& display_info : display_infos) {
+    displays_.push_back(std::make_unique<DrmDisplayHost>(
+        proxy_,
+        CreateDisplaySnapshot(
+            display_info.get(), primary_drm_device_handle_->fd(),
+            primary_drm_device_handle_->sys_path(), 0, gfx::Point()),
+        true /* is_dummy */));
   }
 }
 
 DrmDisplayHostManager::~DrmDisplayHostManager() {
   device_manager_->RemoveObserver(this);
   proxy_->UnRegisterHandlerForDrmDisplayHostManager();
+  proxy_->RemoveGpuThreadObserver(this);
 }
 
 DrmDisplayHost* DrmDisplayHostManager::GetDisplay(int64_t display_id) {
@@ -178,20 +185,20 @@ void DrmDisplayHostManager::RemoveDelegate(DrmNativeDisplayDelegate* delegate) {
 }
 
 void DrmDisplayHostManager::TakeDisplayControl(
-    const DisplayControlCallback& callback) {
+    display::DisplayControlCallback callback) {
   if (display_control_change_pending_) {
     LOG(ERROR) << "TakeDisplayControl called while change already pending";
-    callback.Run(false);
+    std::move(callback).Run(false);
     return;
   }
 
   if (!display_externally_controlled_) {
     LOG(ERROR) << "TakeDisplayControl called while display already owned";
-    callback.Run(true);
+    std::move(callback).Run(true);
     return;
   }
 
-  take_display_control_callback_ = callback;
+  take_display_control_callback_ = std::move(callback);
   display_control_change_pending_ = true;
 
   if (!proxy_->GpuTakeDisplayControl())
@@ -199,21 +206,21 @@ void DrmDisplayHostManager::TakeDisplayControl(
 }
 
 void DrmDisplayHostManager::RelinquishDisplayControl(
-    const DisplayControlCallback& callback) {
+    display::DisplayControlCallback callback) {
   if (display_control_change_pending_) {
     LOG(ERROR)
         << "RelinquishDisplayControl called while change already pending";
-    callback.Run(false);
+    std::move(callback).Run(false);
     return;
   }
 
   if (display_externally_controlled_) {
     LOG(ERROR) << "RelinquishDisplayControl called while display not owned";
-    callback.Run(true);
+    std::move(callback).Run(true);
     return;
   }
 
-  relinquish_display_control_callback_ = callback;
+  relinquish_display_control_callback_ = std::move(callback);
   display_control_change_pending_ = true;
 
   if (!proxy_->GpuRelinquishDisplayControl())
@@ -221,11 +228,11 @@ void DrmDisplayHostManager::RelinquishDisplayControl(
 }
 
 void DrmDisplayHostManager::UpdateDisplays(
-    const GetDisplaysCallback& callback) {
-  get_displays_callback_ = callback;
+    display::GetDisplaysCallback callback) {
+  get_displays_callback_ = std::move(callback);
   if (!proxy_->GpuRefreshNativeDisplays()) {
+    RunUpdateDisplaysCallback(std::move(get_displays_callback_));
     get_displays_callback_.Reset();
-    RunUpdateDisplaysCallback(callback);
   }
 }
 
@@ -246,20 +253,23 @@ void DrmDisplayHostManager::ProcessEvent() {
     switch (event.action_type) {
       case DeviceEvent::ADD:
         if (drm_devices_.find(event.path) == drm_devices_.end()) {
-          task_pending_ = base::WorkerPool::PostTask(
+          base::PostTaskWithTraits(
               FROM_HERE,
-              base::Bind(&OpenDeviceOnWorkerThread, event.path,
-                         base::ThreadTaskRunnerHandle::Get(),
-                         base::Bind(&DrmDisplayHostManager::OnAddGraphicsDevice,
-                                    weak_ptr_factory_.GetWeakPtr())),
-              false /* task_is_slow */);
+              {base::MayBlock(),
+               base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+              base::BindOnce(
+                  &OpenDeviceAsync, event.path,
+                  base::ThreadTaskRunnerHandle::Get(),
+                  base::BindOnce(&DrmDisplayHostManager::OnAddGraphicsDevice,
+                                 weak_ptr_factory_.GetWeakPtr())));
+          task_pending_ = true;
         }
         break;
       case DeviceEvent::CHANGE:
         task_pending_ = base::ThreadTaskRunnerHandle::Get()->PostTask(
             FROM_HERE,
-            base::Bind(&DrmDisplayHostManager::OnUpdateGraphicsDevice,
-                       weak_ptr_factory_.GetWeakPtr()));
+            base::BindOnce(&DrmDisplayHostManager::OnUpdateGraphicsDevice,
+                           weak_ptr_factory_.GetWeakPtr()));
         break;
       case DeviceEvent::REMOVE:
         DCHECK(event.path != primary_graphics_card_path_)
@@ -268,8 +278,8 @@ void DrmDisplayHostManager::ProcessEvent() {
         if (it != drm_devices_.end()) {
           task_pending_ = base::ThreadTaskRunnerHandle::Get()->PostTask(
               FROM_HERE,
-              base::Bind(&DrmDisplayHostManager::OnRemoveGraphicsDevice,
-                         weak_ptr_factory_.GetWeakPtr(), it->second));
+              base::BindOnce(&DrmDisplayHostManager::OnRemoveGraphicsDevice,
+                             weak_ptr_factory_.GetWeakPtr(), it->second));
           drm_devices_.erase(it);
         }
         break;
@@ -283,8 +293,7 @@ void DrmDisplayHostManager::OnAddGraphicsDevice(
     std::unique_ptr<DrmDeviceHandle> handle) {
   if (handle->IsValid()) {
     drm_devices_[dev_path] = sys_path;
-    proxy_->GpuAddGraphicsDevice(sys_path,
-                                 base::FileDescriptor(handle->PassFD()));
+    proxy_->GpuAddGraphicsDevice(sys_path, handle->PassFD());
     NotifyDisplayDelegate();
   }
 
@@ -306,6 +315,32 @@ void DrmDisplayHostManager::OnRemoveGraphicsDevice(
   ProcessEvent();
 }
 
+void DrmDisplayHostManager::OnGpuProcessLaunched() {
+  std::unique_ptr<DrmDeviceHandle> handle =
+      std::move(primary_drm_device_handle_);
+  {
+    base::ThreadRestrictions::ScopedAllowIO allow_io;
+
+    drm_devices_.clear();
+    drm_devices_[primary_graphics_card_path_] =
+        MapDevPathToSysPath(primary_graphics_card_path_);
+
+    if (!handle) {
+      handle = std::make_unique<DrmDeviceHandle>();
+      if (!handle->Initialize(primary_graphics_card_path_,
+                              drm_devices_[primary_graphics_card_path_]))
+        LOG(FATAL) << "Failed to open primary graphics card";
+    }
+  }
+
+  // Send the primary device first since this is used to initialize graphics
+  // state.
+  if (!proxy_->GpuAddGraphicsDevice(drm_devices_[primary_graphics_card_path_],
+                                    handle->PassFD())) {
+    LOG(ERROR) << "Failed to add primary graphics device.";
+  }
+}
+
 void DrmDisplayHostManager::OnGpuThreadReady() {
   // If in the middle of a configuration, just respond with the old list of
   // displays. This is fine, since after the DRM resources are initialized and
@@ -315,8 +350,9 @@ void DrmDisplayHostManager::OnGpuThreadReady() {
   if (!get_displays_callback_.is_null()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&DrmDisplayHostManager::RunUpdateDisplaysCallback,
-                   weak_ptr_factory_.GetWeakPtr(), get_displays_callback_));
+        base::BindOnce(&DrmDisplayHostManager::RunUpdateDisplaysCallback,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       std::move(get_displays_callback_)));
     get_displays_callback_.Reset();
   }
 
@@ -328,28 +364,6 @@ void DrmDisplayHostManager::OnGpuThreadReady() {
   if (!relinquish_display_control_callback_.is_null())
     GpuRelinquishedDisplayControl(false);
 
-  std::unique_ptr<DrmDeviceHandle> handle =
-      std::move(primary_drm_device_handle_);
-  {
-    base::ThreadRestrictions::ScopedAllowIO allow_io;
-
-    drm_devices_.clear();
-    drm_devices_[primary_graphics_card_path_] =
-        MapDevPathToSysPath(primary_graphics_card_path_);
-
-    if (!handle) {
-      handle.reset(new DrmDeviceHandle());
-      if (!handle->Initialize(primary_graphics_card_path_,
-                              drm_devices_[primary_graphics_card_path_]))
-        LOG(FATAL) << "Failed to open primary graphics card";
-    }
-  }
-
-  // Send the primary device first since this is used to initialize graphics
-  // state.
-  proxy_->GpuAddGraphicsDevice(drm_devices_[primary_graphics_card_path_],
-                               base::FileDescriptor(handle->PassFD()));
-
   device_manager_->ScanDevices(this);
   NotifyDisplayDelegate();
 }
@@ -357,17 +371,19 @@ void DrmDisplayHostManager::OnGpuThreadReady() {
 void DrmDisplayHostManager::OnGpuThreadRetired() {}
 
 void DrmDisplayHostManager::GpuHasUpdatedNativeDisplays(
-    const std::vector<DisplaySnapshot_Params>& params) {
+    const std::vector<DisplaySnapshot_Params>& params_vector) {
+  if (delegate_)
+    delegate_->OnDisplaySnapshotsInvalidated();
   std::vector<std::unique_ptr<DrmDisplayHost>> old_displays;
   displays_.swap(old_displays);
-  for (size_t i = 0; i < params.size(); ++i) {
+  for (const auto& params : params_vector) {
     auto it = std::find_if(old_displays.begin(), old_displays.end(),
-                           FindDrmDisplayHostById(params[i].display_id));
+                           FindDrmDisplayHostById(params.display_id));
     if (it == old_displays.end()) {
-      displays_.push_back(base::WrapUnique(
-          new DrmDisplayHost(proxy_, params[i], false /* is_dummy */)));
+      displays_.push_back(std::make_unique<DrmDisplayHost>(
+          proxy_, CreateDisplaySnapshot(params), false /* is_dummy */));
     } else {
-      (*it)->UpdateDisplaySnapshot(params[i]);
+      (*it)->UpdateDisplaySnapshot(CreateDisplaySnapshot(params));
       displays_.push_back(std::move(*it));
       old_displays.erase(it);
     }
@@ -376,8 +392,9 @@ void DrmDisplayHostManager::GpuHasUpdatedNativeDisplays(
   if (!get_displays_callback_.is_null()) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
-        base::Bind(&DrmDisplayHostManager::RunUpdateDisplaysCallback,
-                   weak_ptr_factory_.GetWeakPtr(), get_displays_callback_));
+        base::BindOnce(&DrmDisplayHostManager::RunUpdateDisplaysCallback,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       std::move(get_displays_callback_)));
     get_displays_callback_.Reset();
   }
 }
@@ -385,15 +402,19 @@ void DrmDisplayHostManager::GpuHasUpdatedNativeDisplays(
 void DrmDisplayHostManager::GpuConfiguredDisplay(int64_t display_id,
                                                  bool status) {
   DrmDisplayHost* display = GetDisplay(display_id);
-  if (display)
+  if (display) {
     display->OnDisplayConfigured(status);
-  else
+
+    if (overlay_manager_)
+      overlay_manager_->ResetCache();
+  } else {
     LOG(ERROR) << "Couldn't find display with id=" << display_id;
+  }
 }
 
 void DrmDisplayHostManager::GpuReceivedHDCPState(int64_t display_id,
                                                  bool status,
-                                                 HDCPState state) {
+                                                 display::HDCPState state) {
   DrmDisplayHost* display = GetDisplay(display_id);
   if (display)
     display->OnHDCPStateReceived(status, state);
@@ -425,7 +446,8 @@ void DrmDisplayHostManager::GpuTookDisplayControl(bool status) {
   }
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(take_display_control_callback_, status));
+      FROM_HERE,
+      base::BindOnce(std::move(take_display_control_callback_), status));
   take_display_control_callback_.Reset();
   display_control_change_pending_ = false;
 }
@@ -445,18 +467,19 @@ void DrmDisplayHostManager::GpuRelinquishedDisplayControl(bool status) {
   }
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(relinquish_display_control_callback_, status));
+      FROM_HERE,
+      base::BindOnce(std::move(relinquish_display_control_callback_), status));
   relinquish_display_control_callback_.Reset();
   display_control_change_pending_ = false;
 }
 
 void DrmDisplayHostManager::RunUpdateDisplaysCallback(
-    const GetDisplaysCallback& callback) const {
-  std::vector<DisplaySnapshot*> snapshots;
+    display::GetDisplaysCallback callback) const {
+  std::vector<display::DisplaySnapshot*> snapshots;
   for (const auto& display : displays_)
     snapshots.push_back(display->snapshot());
 
-  callback.Run(snapshots);
+  std::move(callback).Run(snapshots);
 }
 
 void DrmDisplayHostManager::NotifyDisplayDelegate() const {

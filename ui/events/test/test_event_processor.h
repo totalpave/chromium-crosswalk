@@ -30,12 +30,15 @@ class TestEventProcessor : public EventProcessor {
     should_processing_occur_ = occur;
   }
 
+  EventTarget* GetRoot();
   void SetRoot(std::unique_ptr<EventTarget> root);
   void Reset();
 
   // EventProcessor:
   bool CanDispatchToTarget(EventTarget* target) override;
-  EventTarget* GetRootTarget() override;
+  EventTarget* GetInitialEventTarget(Event* event) override;
+  EventTarget* GetRootForEvent(Event* event) override;
+  EventTargeter* GetDefaultEventTargeter() override;
   EventDispatchDetails OnEventFromSource(Event* event) override;
   void OnEventProcessingStarted(Event* event) override;
   void OnEventProcessingFinished(Event* event) override;

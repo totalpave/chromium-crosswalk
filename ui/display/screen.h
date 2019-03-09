@@ -53,24 +53,35 @@ class DISPLAY_EXPORT Screen {
   virtual int GetNumDisplays() const = 0;
 
   // Returns the list of displays that are currently available.
-  virtual std::vector<display::Display> GetAllDisplays() const = 0;
+  virtual const std::vector<Display>& GetAllDisplays() const = 0;
 
   // Returns the display nearest the specified window.
   // If the window is NULL or the window is not rooted to a display this will
   // return the primary display.
-  virtual display::Display GetDisplayNearestWindow(
-      gfx::NativeView view) const = 0;
+  virtual Display GetDisplayNearestWindow(gfx::NativeWindow window) const = 0;
+
+  // Returns the display nearest the specified view. It may still use the window
+  // that contains the view (i.e. if a window is spread over two displays,
+  // the location of the view within that window won't influence the result).
+  virtual Display GetDisplayNearestView(gfx::NativeView view) const;
 
   // Returns the display nearest the specified point. |point| should be in DIPs.
-  virtual display::Display GetDisplayNearestPoint(
-      const gfx::Point& point) const = 0;
+  virtual Display GetDisplayNearestPoint(const gfx::Point& point) const = 0;
 
   // Returns the display that most closely intersects the provided bounds.
-  virtual display::Display GetDisplayMatching(
-      const gfx::Rect& match_rect) const = 0;
+  virtual Display GetDisplayMatching(const gfx::Rect& match_rect) const = 0;
 
-  // Returns the primary display.
-  virtual display::Display GetPrimaryDisplay() const = 0;
+  // Returns the primary display. It is guaranteed that this will return a
+  // display with a valid display ID even if there is no display connected.
+  // A real display will be reported via DisplayObserver when it is connected.
+  virtual Display GetPrimaryDisplay() const = 0;
+
+  // Returns a suggested display to use when creating a new window. On most
+  // platforms just returns the primary display.
+  Display GetDisplayForNewWindows() const;
+
+  // Sets the suggested display to use when creating a new window.
+  void SetDisplayForNewWindows(int64_t display_id);
 
   // Adds/Removes display observers.
   virtual void AddObserver(DisplayObserver* observer) = 0;
@@ -88,7 +99,16 @@ class DISPLAY_EXPORT Screen {
   virtual gfx::Rect DIPToScreenRectInWindow(gfx::NativeView view,
                                             const gfx::Rect& dip_rect) const;
 
+  // Returns true if the display with |display_id| is found and returns that
+  // display in |display|. Otherwise returns false and |display| remains
+  // untouched.
+  bool GetDisplayWithDisplayId(int64_t display_id, Display* display) const;
+
  private:
+  static gfx::NativeWindow GetWindowForView(gfx::NativeView view);
+
+  int64_t display_id_for_new_windows_;
+
   DISALLOW_COPY_AND_ASSIGN(Screen);
 };
 

@@ -27,8 +27,7 @@
 #include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/url_pattern_set.h"
-
-class SkBitmap;
+#include "ui/gfx/image/image.h"
 
 namespace content {
 class BrowserContext;
@@ -45,8 +44,8 @@ class StateStore;
 // Represents a menu item added by an extension.
 class MenuItem {
  public:
-  // A list of MenuItems.
-  typedef std::vector<MenuItem*> List;
+  using List = std::vector<MenuItem*>;
+  using OwnedList = std::vector<std::unique_ptr<MenuItem>>;
 
   // Key used to identify which extension a menu item belongs to.  A menu item
   // can also belong to a <webview>, in which case |webview_embedder_process_id|
@@ -146,7 +145,7 @@ class MenuItem {
 
     std::unique_ptr<base::Value> ToValue() const {
       return std::unique_ptr<base::Value>(
-          new base::FundamentalValue(static_cast<int>(value_)));
+          new base::Value(static_cast<int>(value_)));
     }
 
     bool Populate(const base::Value& value) {
@@ -164,6 +163,7 @@ class MenuItem {
   MenuItem(const Id& id,
            const std::string& title,
            bool checked,
+           bool visible,
            bool enabled,
            Type type,
            const ContextList& contexts);
@@ -175,13 +175,14 @@ class MenuItem {
     return id_.extension_key.extension_id;
   }
   const std::string& title() const { return title_; }
-  const List& children() { return children_; }
+  const OwnedList& children() { return children_; }
   const Id& id() const { return id_; }
   Id* parent_id() const { return parent_id_.get(); }
   int child_count() const { return children_.size(); }
   const ContextList& contexts() const { return contexts_; }
   Type type() const { return type_; }
   bool checked() const { return checked_; }
+  bool visible() const { return visible_; }
   bool enabled() const { return enabled_; }
   const URLPatternSet& document_url_patterns() const {
     return document_url_patterns_;
@@ -194,12 +195,13 @@ class MenuItem {
   void set_title(const std::string& new_title) { title_ = new_title; }
   void set_contexts(ContextList contexts) { contexts_ = contexts; }
   void set_type(Type type) { type_ = type; }
+  void set_visible(bool visible) { visible_ = visible; }
   void set_enabled(bool enabled) { enabled_ = enabled; }
   void set_document_url_patterns(const URLPatternSet& patterns) {
-    document_url_patterns_ = patterns;
+    document_url_patterns_ = patterns.Clone();
   }
   void set_target_url_patterns(const URLPatternSet& patterns) {
-    target_url_patterns_ = patterns;
+    target_url_patterns_ = patterns.Clone();
   }
 
   // Returns the title with any instances of %s replaced by |selection|. The
@@ -214,10 +216,10 @@ class MenuItem {
   std::unique_ptr<base::DictionaryValue> ToValue() const;
 
   // Returns a new MenuItem created from |value|, or NULL if there is
-  // an error. The caller takes ownership of the MenuItem.
-  static MenuItem* Populate(const std::string& extension_id,
-                            const base::DictionaryValue& value,
-                            std::string* error);
+  // an error.
+  static std::unique_ptr<MenuItem> Populate(const std::string& extension_id,
+                                            const base::DictionaryValue& value,
+                                            std::string* error);
 
   // Sets any document and target URL patterns from |properties|.
   bool PopulateURLPatterns(std::vector<std::string>* document_url_patterns,
@@ -227,12 +229,11 @@ class MenuItem {
  protected:
   friend class MenuManager;
 
-  // Takes ownership of |item| and sets its parent_id_.
-  void AddChild(MenuItem* item);
+  // Adds |item| and sets its parent_id_.
+  void AddChild(std::unique_ptr<MenuItem> item);
 
-  // Takes the child item from this parent. The item is returned and the caller
-  // then owns the pointer.
-  MenuItem* ReleaseChild(const Id& child_id, bool recursive);
+  // Removes the child item from this parent and returns it.
+  std::unique_ptr<MenuItem> ReleaseChild(const Id& child_id, bool recursive);
 
   // Recursively appends all descendant items (children, grandchildren, etc.)
   // to the output |list|.
@@ -254,6 +255,9 @@ class MenuItem {
   // This should only be true for items of type CHECKBOX or RADIO.
   bool checked_;
 
+  // If the item is visible (shown or hidden) in the menu.
+  bool visible_;
+
   // If the item is enabled or not.
   bool enabled_;
 
@@ -273,7 +277,7 @@ class MenuItem {
   URLPatternSet target_url_patterns_;
 
   // Any children this item may have.
-  List children_;
+  OwnedList children_;
 
   DISALLOW_COPY_AND_ASSIGN(MenuItem);
 };
@@ -301,17 +305,19 @@ class MenuManager : public content::NotificationObserver,
   // items (added via AddChildItem); although those can be reached via the
   // top-level items' children. A view can then decide how to display these,
   // including whether to put them into a submenu if there are more than 1.
-  const MenuItem::List* MenuItems(const MenuItem::ExtensionKey& extension_key);
+  const MenuItem::OwnedList* MenuItems(
+      const MenuItem::ExtensionKey& extension_key);
 
   // Adds a top-level menu item for an extension, requiring the |extension|
-  // pointer so it can load the icon for the extension. Takes ownership of
-  // |item|. Returns a boolean indicating success or failure.
-  bool AddContextItem(const Extension* extension, MenuItem* item);
+  // pointer so it can load the icon for the extension. Returns a boolean
+  // indicating success or failure.
+  bool AddContextItem(const Extension* extension,
+                      std::unique_ptr<MenuItem> item);
 
-  // Add an item as a child of another item which has been previously added, and
-  // takes ownership of |item|. Returns a boolean indicating success or failure.
+  // Add an item as a child of another item which has been previously added.
+  // Returns a boolean indicating success or failure.
   bool AddChildItem(const MenuItem::Id& parent_id,
-                    MenuItem* child);
+                    std::unique_ptr<MenuItem> child);
 
   // Makes existing item with |child_id| a child of the item with |parent_id|.
   // If the child item was already a child of another parent, this will remove
@@ -345,10 +351,10 @@ class MenuManager : public content::NotificationObserver,
                       const content::ContextMenuParams& params,
                       const MenuItem::Id& menu_item_id);
 
-  // This returns a bitmap of width/height kFaviconSize, loaded either from an
+  // This returns a image of width/height kFaviconSize, loaded either from an
   // entry specified in the extension's 'icon' section of the manifest, or a
   // default extension icon.
-  const SkBitmap& GetIconForExtension(const std::string& extension_id);
+  gfx::Image GetIconForExtension(const std::string& extension_id);
 
   // content::NotificationObserver implementation.
   void Observe(int type,
@@ -360,7 +366,7 @@ class MenuManager : public content::NotificationObserver,
                          const Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
 
   // Stores the menu items for the extension in the state storage.
   void WriteToStorage(const Extension* extension,
@@ -385,15 +391,14 @@ class MenuManager : public content::NotificationObserver,
   // Make sure that there is only one radio item selected at once in any run.
   // If there are no radio items selected, then the first item in the run
   // will get selected. If there are multiple radio items selected, then only
-  // the last one will get selcted.
-  void SanitizeRadioList(const MenuItem::List& item_list);
+  // the last one will get selected.
+  void SanitizeRadioListsInMenu(const MenuItem::OwnedList& item_list);
 
   // Returns true if item is a descendant of an item with id |ancestor_id|.
   bool DescendantOf(MenuItem* item, const MenuItem::Id& ancestor_id);
 
   // We keep items organized by mapping ExtensionKey to a list of items.
-  typedef std::map<MenuItem::ExtensionKey, MenuItem::List> MenuItemMap;
-  MenuItemMap context_items_;
+  std::map<MenuItem::ExtensionKey, MenuItem::OwnedList> context_items_;
 
   // This lets us make lookup by id fast. It maps id to MenuItem* for
   // all items the menu manager knows about, including all children of top-level

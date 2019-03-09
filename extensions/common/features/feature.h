@@ -8,7 +8,9 @@
 #include <set>
 #include <string>
 
+#include "base/strings/string_piece.h"
 #include "base/values.h"
+#include "extensions/common/hashed_extension_id.h"
 #include "extensions/common/manifest.h"
 
 class GURL;
@@ -22,34 +24,22 @@ class Extension;
 // express requirements for where it can be accessed, and supports testing
 // support for those requirements. If platforms are not specified, then feature
 // is available on all platforms.
+//
+// See //chrome/common/extensions/api/_features.md for a description of feature
+// usage and types.
 class Feature {
  public:
   // The JavaScript contexts the feature is supported in.
   enum Context {
     UNSPECIFIED_CONTEXT,
-
-    // A context in a privileged extension process.
     BLESSED_EXTENSION_CONTEXT,
-
-    // A context in an unprivileged extension process.
     UNBLESSED_EXTENSION_CONTEXT,
-
-    // A context from a content script.
     CONTENT_SCRIPT_CONTEXT,
-
-    // A normal web page. This should have an associated URL matching pattern.
     WEB_PAGE_CONTEXT,
-
-    // A web page context which has been blessed by the user. Typically this
-    // will be via the installation of a hosted app, so this may host an
-    // extension. This is not affected by the URL matching pattern.
     BLESSED_WEB_PAGE_CONTEXT,
-
-    // A page within webui.
     WEBUI_CONTEXT,
-
-    // A context belonging to a service worker.
     SERVICE_WORKER_CONTEXT,
+    LOCK_SCREEN_EXTENSION_CONTEXT,
   };
 
   // The platforms the feature is supported in.
@@ -73,6 +63,7 @@ class Feature {
     INVALID_PLATFORM,
     INVALID_MIN_MANIFEST_VERSION,
     INVALID_MAX_MANIFEST_VERSION,
+    INVALID_SESSION_TYPE,
     NOT_PRESENT,
     UNSUPPORTED_CHANNEL,
     FOUND_IN_BLACKLIST,
@@ -102,7 +93,13 @@ class Feature {
   virtual ~Feature();
 
   const std::string& name() const { return name_; }
-  void set_name(const std::string& name) { name_ = name; }
+  // Note that this arg is passed as a StringPiece to avoid a lot of bloat from
+  // inlined std::string code.
+  void set_name(base::StringPiece name);
+  const std::string& alias() const { return alias_; }
+  void set_alias(base::StringPiece alias);
+  const std::string& source() const { return source_; }
+  void set_source(base::StringPiece source);
   bool no_parent() const { return no_parent_; }
 
   // Gets the platform the code is currently running on.
@@ -113,14 +110,14 @@ class Feature {
 
   // Returns true if the feature is available to be parsed into a new extension
   // manifest.
-  Availability IsAvailableToManifest(const std::string& extension_id,
+  Availability IsAvailableToManifest(const HashedExtensionId& hashed_id,
                                      Manifest::Type type,
                                      Manifest::Location location,
                                      int manifest_version) const {
-    return IsAvailableToManifest(extension_id, type, location, manifest_version,
+    return IsAvailableToManifest(hashed_id, type, location, manifest_version,
                                  GetCurrentPlatform());
   }
-  virtual Availability IsAvailableToManifest(const std::string& extension_id,
+  virtual Availability IsAvailableToManifest(const HashedExtensionId& hashed_id,
                                              Manifest::Type type,
                                              Manifest::Location location,
                                              int manifest_version,
@@ -141,11 +138,6 @@ class Feature {
                                             const GURL& url,
                                             Platform platform) const = 0;
 
-  virtual std::string GetAvailabilityMessage(AvailabilityResult result,
-                                             Manifest::Type type,
-                                             const GURL& url,
-                                             Context context) const = 0;
-
   // Returns true if the feature is available to the current environment,
   // without needing to know information about an Extension or any other
   // contextual information. Typically used when the Feature is purely
@@ -155,13 +147,15 @@ class Feature {
   // relies on an Extension now - maybe it will, one day, so if there's an
   // Extension available (or a runtime context, etc) then use the more targeted
   // method instead.
-  Availability IsAvailableToEnvironment() const;
+  virtual Availability IsAvailableToEnvironment() const = 0;
 
-  virtual bool IsIdInBlacklist(const std::string& extension_id) const = 0;
-  virtual bool IsIdInWhitelist(const std::string& extension_id) const = 0;
+  virtual bool IsIdInBlocklist(const HashedExtensionId& hashed_id) const = 0;
+  virtual bool IsIdInAllowlist(const HashedExtensionId& hashed_id) const = 0;
 
  protected:
   std::string name_;
+  std::string alias_;
+  std::string source_;
   bool no_parent_;
 };
 

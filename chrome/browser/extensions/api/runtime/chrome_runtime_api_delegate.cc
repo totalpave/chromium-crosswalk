@@ -9,11 +9,13 @@
 #include <utility>
 #include <vector>
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -33,12 +35,14 @@
 #include "extensions/browser/warning_set.h"
 #include "extensions/common/api/runtime.h"
 #include "extensions/common/constants.h"
+#include "extensions/common/manifest.h"
 #include "net/base/backoff_entry.h"
 
 #if defined(OS_CHROMEOS)
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power_manager_client.h"
 #include "components/user_manager/user_manager.h"
+#include "third_party/cros_system_api/dbus/service_constants.h"
 #endif
 
 using extensions::Extension;
@@ -57,9 +61,16 @@ const char kUpdateFound[] = "update_available";
 // itself, the reload is considered suspiciously fast.
 const int kFastReloadTime = 10000;
 
+// Same as above, but we shorten the fast reload interval for unpacked
+// extensions for ease of testing.
+const int kUnpackedFastReloadTime = 1000;
+
 // After this many suspiciously fast consecutive reloads, an extension will get
 // disabled.
 const int kFastReloadCount = 5;
+
+// Same as above, but we increase the fast reload count for unpacked extensions.
+const int kUnpackedFastReloadCount = 30;
 
 // A holder class for the policy we use for exponential backoff of update check
 // requests.
@@ -78,7 +89,8 @@ class BackoffPolicy {
 // We use a LazyInstance since one of the the policy values references an
 // extern symbol, which would cause a static initializer to be generated if we
 // just declared the policy struct as a static variable.
-base::LazyInstance<BackoffPolicy> g_backoff_policy = LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<BackoffPolicy>::DestructorAtExit g_backoff_policy =
+    LAZY_INSTANCE_INITIALIZER;
 
 BackoffPolicy::BackoffPolicy() {
   policy_ = {
@@ -113,7 +125,7 @@ const net::BackoffEntry::Policy* BackoffPolicy::Get() {
   return &g_backoff_policy.Get().policy_;
 }
 
-base::TickClock* g_test_clock = nullptr;
+const base::TickClock* g_test_clock = nullptr;
 
 }  // namespace
 
@@ -148,7 +160,7 @@ ChromeRuntimeAPIDelegate::~ChromeRuntimeAPIDelegate() {
 
 // static
 void ChromeRuntimeAPIDelegate::set_tick_clock_for_tests(
-    base::TickClock* clock) {
+    const base::TickClock* clock) {
   g_test_clock = clock;
 }
 
@@ -169,24 +181,28 @@ void ChromeRuntimeAPIDelegate::RemoveUpdateObserver(
   }
 }
 
-base::Version ChromeRuntimeAPIDelegate::GetPreviousExtensionVersion(
-    const Extension* extension) {
-  // Get the previous version to check if this is an upgrade.
-  ExtensionService* service =
-      ExtensionSystem::Get(browser_context_)->extension_service();
-  const Extension* old = service->GetExtensionById(extension->id(), true);
-  if (old)
-    return *old->version();
-  return base::Version();
-}
-
 void ChromeRuntimeAPIDelegate::ReloadExtension(
     const std::string& extension_id) {
+  const Extension* extension =
+      extensions::ExtensionRegistry::Get(browser_context_)
+          ->GetInstalledExtension(extension_id);
+  int fast_reload_time = kFastReloadTime;
+  int fast_reload_count = kFastReloadCount;
+
+  // If an extension is unpacked, we allow for a faster reload interval
+  // and more fast reload attempts before terminating the extension.
+  // This is intended to facilitate extension testing for developers.
+  if (extensions::Manifest::IsUnpackedLocation(extension->location())) {
+    fast_reload_time = kUnpackedFastReloadTime;
+    fast_reload_count = kUnpackedFastReloadCount;
+  }
+
   std::pair<base::TimeTicks, int>& reload_info =
       last_reload_time_[extension_id];
-  base::TimeTicks now = base::TimeTicks::Now();
+  base::TimeTicks now =
+      g_test_clock ? g_test_clock->NowTicks() : base::TimeTicks::Now();
   if (reload_info.first.is_null() ||
-      (now - reload_info.first).InMilliseconds() > kFastReloadTime) {
+      (now - reload_info.first).InMilliseconds() > fast_reload_time) {
     reload_info.second = 0;
   } else {
     reload_info.second++;
@@ -199,31 +215,35 @@ void ChromeRuntimeAPIDelegate::ReloadExtension(
                            reload_info.second);
   reload_info.first = now;
 
-  ExtensionService* service =
+  extensions::ExtensionService* service =
       ExtensionSystem::Get(browser_context_)->extension_service();
-  if (reload_info.second >= kFastReloadCount) {
+
+  if (reload_info.second >= fast_reload_count) {
     // Unloading an extension clears all warnings, so first terminate the
     // extension, and then add the warning. Since this is called from an
     // extension function unloading the extension has to be done
     // asynchronously. Fortunately PostTask guarentees FIFO order so just
     // post both tasks.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&ExtensionService::TerminateExtension,
-                              service->AsWeakPtr(), extension_id));
+        FROM_HERE,
+        base::BindOnce(&extensions::ExtensionService::TerminateExtension,
+                       service->AsWeakPtr(), extension_id));
     extensions::WarningSet warnings;
     warnings.insert(
         extensions::Warning::CreateReloadTooFrequentWarning(
             extension_id));
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&extensions::WarningService::NotifyWarningsOnUI,
-                              browser_context_, warnings));
+        FROM_HERE,
+        base::BindOnce(&extensions::WarningService::NotifyWarningsOnUI,
+                       browser_context_, warnings));
   } else {
     // We can't call ReloadExtension directly, since when this method finishes
     // it tries to decrease the reference count for the extension, which fails
     // if the extension has already been reloaded; so instead we post a task.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(&ExtensionService::ReloadExtension,
-                              service->AsWeakPtr(), extension_id));
+        FROM_HERE,
+        base::BindOnce(&extensions::ExtensionService::ReloadExtension,
+                       service->AsWeakPtr(), extension_id));
   }
 }
 
@@ -231,7 +251,7 @@ bool ChromeRuntimeAPIDelegate::CheckForUpdates(
     const std::string& extension_id,
     const UpdateCheckCallback& callback) {
   ExtensionSystem* system = ExtensionSystem::Get(browser_context_);
-  ExtensionService* service = system->extension_service();
+  extensions::ExtensionService* service = system->extension_service();
   ExtensionUpdater* updater = service->updater();
   if (!updater) {
     return false;
@@ -243,8 +263,8 @@ bool ChromeRuntimeAPIDelegate::CheckForUpdates(
   // return a status of throttled.
   if (info.backoff->ShouldRejectRequest() || info.callbacks.size() >= 10) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE,
-        base::Bind(callback, UpdateCheckResult(true, kUpdateThrottled, "")));
+        FROM_HERE, base::BindOnce(callback, UpdateCheckResult(
+                                                true, kUpdateThrottled, "")));
   } else {
     info.callbacks.push_back(callback);
     updater->CheckExtensionSoon(
@@ -258,13 +278,15 @@ void ChromeRuntimeAPIDelegate::OpenURL(const GURL& uninstall_url) {
   Profile* profile = Profile::FromBrowserContext(browser_context_);
   Browser* browser = chrome::FindLastActiveWithProfile(profile);
   if (!browser)
-    browser = new Browser(Browser::CreateParams(profile));
+    browser = Browser::Create(Browser::CreateParams(profile, false));
+  if (!browser)
+    return;
 
-  chrome::NavigateParams params(
-      browser, uninstall_url, ui::PAGE_TRANSITION_CLIENT_REDIRECT);
-  params.disposition = NEW_FOREGROUND_TAB;
+  NavigateParams params(browser, uninstall_url,
+                        ui::PAGE_TRANSITION_CLIENT_REDIRECT);
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
   params.user_gesture = false;
-  chrome::Navigate(&params);
+  Navigate(&params);
 }
 
 bool ChromeRuntimeAPIDelegate::GetPlatformInfo(PlatformInfo* info) {
@@ -291,6 +313,10 @@ bool ChromeRuntimeAPIDelegate::GetPlatformInfo(PlatformInfo* info) {
     info->arch = extensions::api::runtime::PLATFORM_ARCH_X86_32;
   } else if (strcmp(arch, "x64") == 0) {
     info->arch = extensions::api::runtime::PLATFORM_ARCH_X86_64;
+  } else if (strcmp(arch, "mipsel") == 0) {
+    info->arch = extensions::api::runtime::PLATFORM_ARCH_MIPS;
+  } else if (strcmp(arch, "mips64el") == 0) {
+    info->arch = extensions::api::runtime::PLATFORM_ARCH_MIPS64;
   } else {
     NOTREACHED();
     return false;
@@ -303,6 +329,10 @@ bool ChromeRuntimeAPIDelegate::GetPlatformInfo(PlatformInfo* info) {
     info->nacl_arch = extensions::api::runtime::PLATFORM_NACL_ARCH_X86_32;
   } else if (strcmp(nacl_arch, "x86-64") == 0) {
     info->nacl_arch = extensions::api::runtime::PLATFORM_NACL_ARCH_X86_64;
+  } else if (strcmp(nacl_arch, "mips32") == 0) {
+    info->nacl_arch = extensions::api::runtime::PLATFORM_NACL_ARCH_MIPS;
+  } else if (strcmp(nacl_arch, "mips64") == 0) {
+    info->nacl_arch = extensions::api::runtime::PLATFORM_NACL_ARCH_MIPS64;
   } else {
     NOTREACHED();
     return false;
@@ -314,9 +344,8 @@ bool ChromeRuntimeAPIDelegate::GetPlatformInfo(PlatformInfo* info) {
 bool ChromeRuntimeAPIDelegate::RestartDevice(std::string* error_message) {
 #if defined(OS_CHROMEOS)
   if (user_manager::UserManager::Get()->IsLoggedInAsKioskApp()) {
-    chromeos::DBusThreadManager::Get()
-        ->GetPowerManagerClient()
-        ->RequestRestart();
+    chromeos::PowerManagerClient::Get()->RequestRestart(
+        power_manager::REQUEST_RESTART_OTHER, "chrome.runtime API");
     return true;
   }
 #endif
@@ -324,12 +353,11 @@ bool ChromeRuntimeAPIDelegate::RestartDevice(std::string* error_message) {
   return false;
 }
 
-bool ChromeRuntimeAPIDelegate::OpenOptionsPage(const Extension* extension) {
-  Profile* profile = Profile::FromBrowserContext(browser_context_);
-  Browser* browser = chrome::FindLastActiveWithProfile(profile);
-  if (!browser)
-    return false;
-  return extensions::ExtensionTabUtil::OpenOptionsPage(extension, browser);
+bool ChromeRuntimeAPIDelegate::OpenOptionsPage(
+    const Extension* extension,
+    content::BrowserContext* browser_context) {
+  return extensions::ExtensionTabUtil::OpenOptionsPageFromAPI(extension,
+                                                              browser_context);
 }
 
 void ChromeRuntimeAPIDelegate::Observe(
@@ -337,9 +365,10 @@ void ChromeRuntimeAPIDelegate::Observe(
     const content::NotificationSource& source,
     const content::NotificationDetails& details) {
   DCHECK_EQ(extensions::NOTIFICATION_EXTENSION_UPDATE_FOUND, type);
-  using UpdateDetails = const std::pair<std::string, Version>;
+  using UpdateDetails = const std::pair<std::string, base::Version>;
   const std::string& id = content::Details<UpdateDetails>(details)->first;
-  const Version& version = content::Details<UpdateDetails>(details)->second;
+  const base::Version& version =
+      content::Details<UpdateDetails>(details)->second;
   if (version.IsValid()) {
     CallUpdateCallbacks(
         id, UpdateCheckResult(true, kUpdateFound, version.GetString()));
@@ -361,7 +390,7 @@ void ChromeRuntimeAPIDelegate::OnExtensionInstalled(
 void ChromeRuntimeAPIDelegate::UpdateCheckComplete(
     const std::string& extension_id) {
   ExtensionSystem* system = ExtensionSystem::Get(browser_context_);
-  ExtensionService* service = system->extension_service();
+  extensions::ExtensionService* service = system->extension_service();
   const Extension* update = service->GetPendingExtensionUpdate(extension_id);
   UpdateCheckInfo& info = update_check_info_[extension_id];
 

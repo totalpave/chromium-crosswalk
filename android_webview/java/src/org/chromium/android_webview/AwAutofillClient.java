@@ -4,15 +4,16 @@
 
 package org.chromium.android_webview;
 
-import android.view.ViewGroup;
+import android.content.Context;
+import android.view.View;
 
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
-import org.chromium.content.browser.ContentViewCore;
+import org.chromium.components.autofill.AutofillDelegate;
+import org.chromium.components.autofill.AutofillPopup;
+import org.chromium.components.autofill.AutofillSuggestion;
 import org.chromium.ui.DropdownItem;
-import org.chromium.ui.autofill.AutofillDelegate;
-import org.chromium.ui.autofill.AutofillPopup;
-import org.chromium.ui.autofill.AutofillSuggestion;
+import org.chromium.ui.base.WindowAndroid;
 
 /**
  * Java counterpart to the AwAutofillClient. This class is owned by AwContents and has
@@ -23,8 +24,7 @@ public class AwAutofillClient {
 
     private final long mNativeAwAutofillClient;
     private AutofillPopup mAutofillPopup;
-    private ViewGroup mContainerView;
-    private ContentViewCore mContentViewCore;
+    private Context mContext;
 
     @CalledByNative
     public static AwAutofillClient create(long nativeClient) {
@@ -35,34 +35,43 @@ public class AwAutofillClient {
         mNativeAwAutofillClient = nativeAwAutofillClient;
     }
 
-    public void init(ContentViewCore contentViewCore) {
-        mContentViewCore = contentViewCore;
-        mContainerView = contentViewCore.getContainerView();
+    public void init(Context context) {
+        mContext = context;
     }
 
     @CalledByNative
-    private void showAutofillPopup(float x, float y, float width, float height,
-            boolean isRtl, AutofillSuggestion[] suggestions) {
-
-        if (mContentViewCore == null) return;
+    private void showAutofillPopup(View anchorView, boolean isRtl,
+            AutofillSuggestion[] suggestions) {
 
         if (mAutofillPopup == null) {
-            mAutofillPopup = new AutofillPopup(
-                mContentViewCore.getContext(),
-                mContentViewCore.getViewAndroidDelegate(),
-                new AutofillDelegate() {
+            if (WindowAndroid.activityFromContext(mContext) == null) {
+                nativeDismissed(mNativeAwAutofillClient);
+                return;
+            }
+            try {
+                mAutofillPopup = new AutofillPopup(mContext, anchorView, new AutofillDelegate() {
                     @Override
-                    public void dismissed() { }
+                    public void dismissed() {
+                        nativeDismissed(mNativeAwAutofillClient);
+                    }
                     @Override
                     public void suggestionSelected(int listIndex) {
                         nativeSuggestionSelected(mNativeAwAutofillClient, listIndex);
                     }
                     @Override
-                    public void deleteSuggestion(int listIndex) { }
+                    public void deleteSuggestion(int listIndex) {}
+
+                    @Override
+                    public void accessibilityFocusCleared() {}
                 });
+            } catch (RuntimeException e) {
+                // Deliberately swallowing exception because bad fraemwork implementation can
+                // throw exceptions in ListPopupWindow constructor.
+                nativeDismissed(mNativeAwAutofillClient);
+                return;
+            }
         }
-        mAutofillPopup.setAnchorRect(x, y, width, height);
-        mAutofillPopup.filterAndShow(suggestions, isRtl);
+        mAutofillPopup.filterAndShow(suggestions, isRtl, false);
     }
 
     @CalledByNative
@@ -87,10 +96,12 @@ public class AwAutofillClient {
     @CalledByNative
     private static void addToAutofillSuggestionArray(AutofillSuggestion[] array, int index,
             String name, String label, int uniqueId) {
-        array[index] =
-                new AutofillSuggestion(name, label, DropdownItem.NO_ICON, uniqueId, false, false);
+        array[index] = new AutofillSuggestion(name, label, DropdownItem.NO_ICON,
+                false /* isIconAtLeft */, uniqueId, false /* isDeletable */,
+                false /* isMultilineLabel */, false /* isBoldLabel */);
     }
 
+    private native void nativeDismissed(long nativeAwAutofillClient);
     private native void nativeSuggestionSelected(long nativeAwAutofillClient,
             int position);
 }

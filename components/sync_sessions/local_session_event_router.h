@@ -10,7 +10,7 @@
 #include "base/macros.h"
 #include "url/gurl.h"
 
-namespace browser_sync {
+namespace sync_sessions {
 
 class SyncedTabDelegate;
 
@@ -21,6 +21,11 @@ class SyncedTabDelegate;
 class LocalSessionEventHandler {
  public:
   virtual ~LocalSessionEventHandler() {}
+
+  // Called when asynchronous session restore has completed. On Android, this
+  // can be called multiple times (e.g. transition from a CCT without tabbed
+  // window to actually starting a tabbed activity).
+  virtual void OnSessionRestoreComplete() = 0;
 
   // A local navigation event took place that affects the synced session
   // for this instance of Chrome.
@@ -58,6 +63,6 @@ class LocalSessionEventRouter {
   DISALLOW_COPY_AND_ASSIGN(LocalSessionEventRouter);
 };
 
-}  // namespace browser_sync
+}  // namespace sync_sessions
 
 #endif  // COMPONENTS_SYNC_SESSIONS_LOCAL_SESSION_EVENT_ROUTER_H_

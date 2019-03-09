@@ -13,6 +13,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "ppapi/proxy/interface_proxy.h"
 #include "ppapi/proxy/ppapi_proxy_export.h"
@@ -57,7 +58,7 @@ class PPAPI_PROXY_EXPORT MessageLoopResource : public MessageLoopShared {
 
  private:
   struct TaskInfo {
-    tracked_objects::Location from_here;
+    base::Location from_here;
     base::Closure closure;
     int64_t delay_ms;
   };
@@ -72,11 +73,14 @@ class PPAPI_PROXY_EXPORT MessageLoopResource : public MessageLoopShared {
   // NOTE: The given closure will be run *WITHOUT* acquiring the Proxy lock.
   //       This only makes sense for user code and completely thread-safe
   //       proxy operations (e.g., MessageLoop::QuitClosure).
-  void PostClosure(const tracked_objects::Location& from_here,
+  void PostClosure(const base::Location& from_here,
                    const base::Closure& closure,
                    int64_t delay_ms) override;
   base::SingleThreadTaskRunner* GetTaskRunner() override;
   bool CurrentlyHandlingBlockingMessage() override;
+
+  // Quits |run_loop_|. Must be called from the thread that runs the RunLoop.
+  void QuitRunLoopWhenIdle();
 
   // TLS destructor function.
   static void ReleaseMessageLoop(void* value);
@@ -87,6 +91,9 @@ class PPAPI_PROXY_EXPORT MessageLoopResource : public MessageLoopShared {
   // Any time we post tasks, we should post them using task_runner_.
   std::unique_ptr<base::MessageLoop> loop_;
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+
+  // RunLoop currently on the stack.
+  base::RunLoop* run_loop_ = nullptr;
 
   // Number of invocations of Run currently on the stack.
   int nested_invocations_;
@@ -114,7 +121,7 @@ class PPAPI_PROXY_EXPORT MessageLoopResource : public MessageLoopShared {
 class PPB_MessageLoop_Proxy : public InterfaceProxy {
  public:
   explicit PPB_MessageLoop_Proxy(Dispatcher* dispatcher);
-  virtual ~PPB_MessageLoop_Proxy();
+  ~PPB_MessageLoop_Proxy() override;
 
   static const PPB_MessageLoop_1_0* GetInterface();
 

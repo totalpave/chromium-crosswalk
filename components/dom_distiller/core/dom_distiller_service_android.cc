@@ -13,6 +13,7 @@
 #include "jni/DomDistillerService_jni.h"
 
 using base::android::ConvertUTF8ToJavaString;
+using base::android::JavaParamRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace dom_distiller {
@@ -52,10 +53,6 @@ jlong DomDistillerServiceAndroid::GetDistilledPagePrefsPtr(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj) {
   return reinterpret_cast<intptr_t>(service_->GetDistilledPagePrefs());
-}
-
-bool DomDistillerServiceAndroid::Register(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace android

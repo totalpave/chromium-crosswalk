@@ -6,15 +6,16 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/ui/webui/chromeos/login/oobe_ui.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/login/localized_values_builder.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/notification_service.h"
-#include "grit/components_strings.h"
 
 namespace {
 
@@ -24,17 +25,16 @@ const char kJsScreenPath[] = "login.KioskEnableScreen";
 
 namespace chromeos {
 
-KioskEnableScreenHandler::KioskEnableScreenHandler()
-    : BaseScreenHandler(kJsScreenPath),
-      delegate_(NULL),
-      show_on_init_(false),
-      is_configurable_(false),
+KioskEnableScreenHandler::KioskEnableScreenHandler(
+    JSCallsContainer* js_calls_container)
+    : BaseScreenHandler(kScreenId, js_calls_container),
       weak_ptr_factory_(this) {
+  set_call_js_prefix(kJsScreenPath);
 }
 
 KioskEnableScreenHandler::~KioskEnableScreenHandler() {
   if (delegate_)
-    delegate_->OnActorDestroyed(this);
+    delegate_->OnViewDestroyed(this);
 }
 
 void KioskEnableScreenHandler::Show() {
@@ -58,7 +58,7 @@ void KioskEnableScreenHandler::OnGetConsumerKioskAutoLaunchStatus(
     return;
   }
 
-  ShowScreen(OobeScreen::SCREEN_KIOSK_ENABLE);
+  ShowScreen(kScreenId);
 
   content::NotificationService::current()->Notify(
       chrome::NOTIFICATION_KIOSK_ENABLE_WARNING_VISIBLE,
@@ -134,7 +134,7 @@ void KioskEnableScreenHandler::OnEnableConsumerKioskAutoLaunch(
   if (!success)
     LOG(WARNING) << "Consumer kiosk mode can't be enabled!";
 
-  CallJS("onCompleted", success);
+  CallJS("login.KioskEnableScreen.onCompleted", success);
   if (success) {
     content::NotificationService::current()->Notify(
         chrome::NOTIFICATION_KIOSK_ENABLED,

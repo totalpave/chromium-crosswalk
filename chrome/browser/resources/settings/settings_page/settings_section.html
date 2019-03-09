@@ -1,6 +1,7 @@
 <link rel="import" href="chrome://resources/html/polymer.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/neon-animation/neon-animation-runner-behavior.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/paper-styles/shadow.html">
+
+<link rel="import" href="chrome://resources/cr_elements/shared_vars_css.html">
+<link rel="import" href="chrome://resources/html/util.html">
 
 <dom-module id="settings-section">
   <template>
@@ -8,49 +9,34 @@
       :host {
         display: flex;
         flex-direction: column;
+        /* Margin so the box-shadow isn't clipped during animations. */
+        margin-inline-end: 3px;
+        margin-inline-start: 3px;
+        outline: none;
         position: relative;
-      }
-
-      #header {
-        margin-bottom: 12px;
       }
 
       #header .title {
-        color: var(--paper-grey-600);
-        font-size: 13px;
-        font-weight: 500;
-        margin-top: var(--settings-page-vertical-margin);
+        @apply --cr-card-external-title;
       }
 
-      #card {
-        @apply(--shadow-elevation-2dp);
-        background-color: white;
+      :host(:not(.expanded)) #card {
+        @apply --cr-card-elevation;
+        background-color: var(--cr-card-background-color);
+        border-radius: var(--cr-card-border-radius);
         flex: 1;
-        overflow: hidden;
       }
 
-      :host(.expanded) {
-        margin-bottom: 0;
-      }
-
-      :host(.expanded) #header {
+      :host([hidden-by-search]) {
         display: none;
-      }
-
-      :host(.frozen) #card {
-        position: fixed;
-        width: 100%;
-      }
-
-      :host(.expanded.frozen) #card {
-        position: relative;
       }
     </style>
     <div id="header">
-      <div class="title">{{pageTitle}}</div>
+      <h2 class="title"
+          aria-hidden$="[[getTitleHiddenStatus_(pageTitle)]]">[[pageTitle]]</h2>
     </div>
     <div id="card">
-      <content id="content"></content>
+      <slot></slot>
     </div>
   </template>
   <script src="settings_section.js"></script>

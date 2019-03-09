@@ -6,15 +6,11 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "base/bind.h"
-#include "base/location.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "base/single_thread_task_runner.h"
-#include "base/threading/thread_task_runner_handle.h"
-#include "chrome/browser/chromeos/attestation/attestation_signed_data.pb.h"
 #include "chrome/browser/chromeos/attestation/fake_certificate.h"
 #include "chrome/browser/chromeos/attestation/platform_verification_flow.h"
 #include "chrome/browser/chromeos/login/users/mock_user_manager.h"
@@ -23,16 +19,17 @@
 #include "chrome/common/pref_names.h"
 #include "chromeos/attestation/mock_attestation_flow.h"
 #include "chromeos/cryptohome/mock_async_method_caller.h"
+#include "chromeos/dbus/attestation/attestation.pb.h"
 #include "chromeos/dbus/fake_cryptohome_client.h"
 #include "chromeos/settings/cros_settings_names.h"
-#include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using testing::_;
 using testing::DoAll;
 using testing::Invoke;
 using testing::Return;
-using testing::SetArgumentPointee;
+using testing::SetArgPointee;
 using testing::StrictMock;
 using testing::WithArgs;
 
@@ -97,48 +94,12 @@ class FakeDelegate : public PlatformVerificationFlow::Delegate {
   DISALLOW_COPY_AND_ASSIGN(FakeDelegate);
 };
 
-class CustomFakeCryptohomeClient : public FakeCryptohomeClient {
- public:
-  CustomFakeCryptohomeClient() : call_status_(DBUS_METHOD_CALL_SUCCESS),
-                                 attestation_enrolled_(true),
-                                 attestation_prepared_(true) {}
-  void TpmAttestationIsEnrolled(
-      const BoolDBusMethodCallback& callback) override {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(callback, call_status_, attestation_enrolled_));
-  }
-
-  void TpmAttestationIsPrepared(
-      const BoolDBusMethodCallback& callback) override {
-    base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(callback, call_status_, attestation_prepared_));
-  }
-
-  void set_call_status(DBusMethodCallStatus call_status) {
-    call_status_ = call_status;
-  }
-
-  void set_attestation_enrolled(bool attestation_enrolled) {
-    attestation_enrolled_ = attestation_enrolled;
-  }
-
-  void set_attestation_prepared(bool attestation_prepared) {
-    attestation_prepared_ = attestation_prepared;
-  }
-
- private:
-  DBusMethodCallStatus call_status_;
-  bool attestation_enrolled_;
-  bool attestation_prepared_;
-};
-
 }  // namespace
 
 class PlatformVerificationFlowTest : public ::testing::Test {
  public:
   PlatformVerificationFlowTest()
-      : ui_thread_(content::BrowserThread::UI, &message_loop_),
-        certificate_success_(true),
+      : certificate_status_(ATTESTATION_SUCCESS),
         fake_certificate_index_(0),
         sign_challenge_success_(true),
         result_(PlatformVerificationFlow::INTERNAL_ERROR) {}
@@ -154,7 +115,7 @@ class PlatformVerificationFlowTest : public ::testing::Test {
     callback_ = base::Bind(&PlatformVerificationFlowTest::FakeChallengeCallback,
                            base::Unretained(this));
 
-    settings_helper_.ReplaceProvider(kAttestationForContentProtectionEnabled);
+    settings_helper_.ReplaceDeviceSettingsProviderWithStub();
     settings_helper_.SetBoolean(kAttestationForContentProtectionEnabled, true);
   }
 
@@ -188,15 +149,15 @@ class PlatformVerificationFlowTest : public ::testing::Test {
         (fake_certificate_index_ < fake_certificate_list_.size()) ?
             fake_certificate_list_[fake_certificate_index_] : kTestCertificate;
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(callback, certificate_success_, certificate));
+        FROM_HERE, base::BindOnce(callback, certificate_status_, certificate));
     ++fake_certificate_index_;
   }
 
   void FakeSignChallenge(
       const cryptohome::AsyncMethodCaller::DataCallback& callback) {
     base::ThreadTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::Bind(callback, sign_challenge_success_,
-                              CreateFakeResponseProto()));
+        FROM_HERE, base::BindOnce(callback, sign_challenge_success_,
+                                  CreateFakeResponseProto()));
   }
 
   void FakeChallengeCallback(PlatformVerificationFlow::Result result,
@@ -219,17 +180,16 @@ class PlatformVerificationFlowTest : public ::testing::Test {
   }
 
  protected:
-  base::MessageLoopForUI message_loop_;
-  content::TestBrowserThread ui_thread_;
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
   StrictMock<MockAttestationFlow> mock_attestation_flow_;
   cryptohome::MockAsyncMethodCaller mock_async_caller_;
-  CustomFakeCryptohomeClient fake_cryptohome_client_;
+  chromeos::FakeCryptohomeClient fake_cryptohome_client_;
   FakeDelegate fake_delegate_;
   ScopedCrosSettingsTestHelper settings_helper_;
   scoped_refptr<PlatformVerificationFlow> verifier_;
 
   // Controls result of FakeGetCertificate.
-  bool certificate_success_;
+  AttestationStatus certificate_status_;
   std::vector<std::string> fake_certificate_list_;
   size_t fake_certificate_index_;
 
@@ -268,8 +228,16 @@ TEST_F(PlatformVerificationFlowTest, FeatureDisabledByPolicy) {
   EXPECT_EQ(PlatformVerificationFlow::POLICY_REJECTED, result_);
 }
 
-TEST_F(PlatformVerificationFlowTest, NotVerified) {
-  certificate_success_ = false;
+TEST_F(PlatformVerificationFlowTest, NotVerifiedDueToUnspeciedFailure) {
+  certificate_status_ = ATTESTATION_UNSPECIFIED_FAILURE;
+  ExpectAttestationFlow();
+  verifier_->ChallengePlatformKey(NULL, kTestID, kTestChallenge, callback_);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(PlatformVerificationFlow::PLATFORM_NOT_VERIFIED, result_);
+}
+
+TEST_F(PlatformVerificationFlowTest, NotVerifiedDueToBadRequestFailure) {
+  certificate_status_ = ATTESTATION_SERVER_BAD_REQUEST_FAILURE;
   ExpectAttestationFlow();
   verifier_->ChallengePlatformKey(NULL, kTestID, kTestChallenge, callback_);
   base::RunLoop().RunUntilIdle();
@@ -285,7 +253,7 @@ TEST_F(PlatformVerificationFlowTest, ChallengeSigningError) {
 }
 
 TEST_F(PlatformVerificationFlowTest, DBusFailure) {
-  fake_cryptohome_client_.set_call_status(DBUS_METHOD_CALL_FAILURE);
+  fake_cryptohome_client_.SetServiceIsAvailable(false);
   verifier_->ChallengePlatformKey(NULL, kTestID, kTestChallenge, callback_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(PlatformVerificationFlow::INTERNAL_ERROR, result_);
@@ -396,8 +364,8 @@ TEST_F(PlatformVerificationFlowTest, UnsupportedMode) {
 }
 
 TEST_F(PlatformVerificationFlowTest, AttestationNotPrepared) {
-  fake_cryptohome_client_.set_attestation_enrolled(false);
-  fake_cryptohome_client_.set_attestation_prepared(false);
+  fake_cryptohome_client_.set_tpm_attestation_is_enrolled(false);
+  fake_cryptohome_client_.set_tpm_attestation_is_prepared(false);
   verifier_->ChallengePlatformKey(NULL, kTestID, kTestChallenge, callback_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(PlatformVerificationFlow::PLATFORM_NOT_VERIFIED, result_);

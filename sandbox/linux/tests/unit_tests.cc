@@ -17,7 +17,6 @@
 #include "base/debug/leak_annotations.h"
 #include "base/files/file_util.h"
 #include "base/posix/eintr_wrapper.h"
-#include "base/third_party/valgrind/valgrind.h"
 #include "build/build_config.h"
 #include "sandbox/linux/tests/unit_tests.h"
 
@@ -74,10 +73,6 @@ bool IsArchitectureArm() {
   return false;
 #endif
 }
-
-// TODO(jln): figure out why base/.../dynamic_annotations.h's
-// RunningOnValgrind() cannot link.
-bool IsRunningOnValgrind() { return RUNNING_ON_VALGRIND; }
 
 static const int kExpectedValue = 42;
 static const int kIgnoreThisTest = 43;
@@ -140,16 +135,7 @@ void UnitTests::RunTestInProcess(SandboxTestRunner* test_runner,
   // We need to fork(), so we can't be multi-threaded, as threads could hold
   // locks.
   int num_threads = CountThreads();
-#if !defined(THREAD_SANITIZER)
   const int kNumExpectedThreads = 1;
-#else
-  // Under TSAN, there is a special helper thread. It should be completely
-  // invisible to our testing, so we ignore it. It should be ok to fork()
-  // with this thread. It's currently buggy, but it's the best we can do until
-  // there is a way to delay the start of the thread
-  // (https://code.google.com/p/thread-sanitizer/issues/detail?id=19).
-  const int kNumExpectedThreads = 2;
-#endif
 
   // The kernel is at liberty to wake a thread id futex before updating /proc.
   // If another test running in the same process has stopped a thread, it may
@@ -182,18 +168,26 @@ void UnitTests::RunTestInProcess(SandboxTestRunner* test_runner,
     SANDBOX_ASSERT(!close(fds[0]));
     SANDBOX_ASSERT(!close(fds[1]));
 
-    // Don't set a timeout if running on Valgrind, since it's generally much
-    // slower.
-    if (!IsRunningOnValgrind()) {
 #if !defined(OS_NACL_NONSFI)
-      SetProcessTimeout(GetSubProcessTimeoutTimeInSeconds());
+    SetProcessTimeout(GetSubProcessTimeoutTimeInSeconds());
 #endif
-    }
 
     // Disable core files. They are not very useful for our individual test
     // cases.
     struct rlimit no_core = {0};
     setrlimit(RLIMIT_CORE, &no_core);
+
+#if defined(OS_ANDROID)
+    // On Android Oreo and higher, the system applies a seccomp filter to all
+    // processes. It has its own SIGSYS handler that is un-hooked here in the
+    // test child process, so that the Chromium handler can be used. This
+    // is performed by SeccompStarterAndroid in normal builds.
+    signal(SIGSYS, SIG_DFL);
+    // In addition, libsigchain will install a SEGV handler that is normally
+    // used for JVM fault handling. Reset it so that the test SEGV failures
+    // are interpreted correctly.
+    signal(SIGSEGV, SIG_DFL);
+#endif
 
     test_runner->Run();
     if (test_runner->ShouldCheckForLeaks()) {
@@ -258,8 +252,11 @@ void UnitTests::DeathSuccess(int status, const std::string& msg, const void*) {
   ASSERT_TRUE(subprocess_terminated_normally) << details;
   int subprocess_exit_status = WEXITSTATUS(status);
   ASSERT_EQ(kExpectedValue, subprocess_exit_status) << details;
+#if !defined(LEAK_SANITIZER)
+  // LSan may print warnings to stdout, breaking this expectation.
   bool subprocess_exited_but_printed_messages = !msg.empty();
   EXPECT_FALSE(subprocess_exited_but_printed_messages) << details;
+#endif
 }
 
 void UnitTests::DeathSuccessAllowNoise(int status,
@@ -288,14 +285,14 @@ void UnitTests::DeathMessage(int status,
   bool subprocess_exited_without_matching_message =
       msg.find(expected_msg) == std::string::npos;
 
-// In official builds CHECK messages are dropped, so look for SIGABRT or SIGILL.
+// In official builds CHECK messages are dropped, look for SIGABRT or SIGTRAP.
 // See https://crbug.com/437312 and https://crbug.com/612507.
 #if defined(OFFICIAL_BUILD) && defined(NDEBUG) && !defined(OS_ANDROID)
   if (subprocess_exited_without_matching_message) {
-    static const char kSigIllegalMessage[] = "Received signal 4";
+    static const char kSigTrapMessage[] = "Received signal 5";
     static const char kSigAbortMessage[] = "Received signal 6";
     subprocess_exited_without_matching_message =
-        msg.find(kSigIllegalMessage) == std::string::npos &&
+        msg.find(kSigTrapMessage) == std::string::npos &&
         msg.find(kSigAbortMessage) == std::string::npos;
   }
 #endif

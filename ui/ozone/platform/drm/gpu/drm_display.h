@@ -18,13 +18,16 @@
 
 typedef struct _drmModeModeInfo drmModeModeInfo;
 
+namespace display {
+class DisplaySnapshot;
+struct GammaRampRGBEntry;
+}
+
 namespace ui {
 
 class DrmDevice;
 class HardwareDisplayControllerInfo;
 class ScreenManager;
-
-struct GammaRampRGBEntry;
 
 class DrmDisplay {
  public:
@@ -36,23 +39,30 @@ class DrmDisplay {
   scoped_refptr<DrmDevice> drm() const { return drm_; }
   uint32_t crtc() const { return crtc_; }
   uint32_t connector() const { return connector_; }
+  void UpdateForTesting(uint32_t connector_id, uint32_t crtc_id) {
+    connector_ = connector_id;
+    crtc_ = crtc_id;
+  }
   const std::vector<drmModeModeInfo>& modes() const { return modes_; }
 
-  DisplaySnapshot_Params Update(HardwareDisplayControllerInfo* info,
-                                size_t device_index);
+  std::unique_ptr<display::DisplaySnapshot> Update(
+      HardwareDisplayControllerInfo* info,
+      size_t device_index);
 
   bool Configure(const drmModeModeInfo* mode, const gfx::Point& origin);
-  bool GetHDCPState(HDCPState* state);
-  bool SetHDCPState(HDCPState state);
-  void SetColorCorrection(const std::vector<GammaRampRGBEntry>& degamma_lut,
-                          const std::vector<GammaRampRGBEntry>& gamma_lut,
-                          const std::vector<float>& correction_matrix);
+  bool GetHDCPState(display::HDCPState* state);
+  bool SetHDCPState(display::HDCPState state);
+  void SetColorMatrix(const std::vector<float>& color_matrix);
+  void SetBackgroundColor(const uint64_t background_color);
+  void SetGammaCorrection(
+      const std::vector<display::GammaRampRGBEntry>& degamma_lut,
+      const std::vector<display::GammaRampRGBEntry>& gamma_lut);
 
  private:
   ScreenManager* screen_manager_;  // Not owned.
 
   int64_t display_id_ = -1;
-  scoped_refptr<DrmDevice> drm_;
+  const scoped_refptr<DrmDevice> drm_;
   uint32_t crtc_ = 0;
   uint32_t connector_ = 0;
   std::vector<drmModeModeInfo> modes_;

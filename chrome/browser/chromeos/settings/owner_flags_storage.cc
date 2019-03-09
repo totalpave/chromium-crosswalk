@@ -7,7 +7,6 @@
 #include "base/command_line.h"
 #include "base/values.h"
 #include "chrome/browser/about_flags.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "components/flags_ui/flags_ui_pref_names.h"
@@ -37,7 +36,7 @@ bool OwnerFlagsStorage::SetFlags(const std::set<std::string>& flags) {
   for (base::CommandLine::StringVector::const_iterator it =
            switches.begin() + 1;
        it != switches.end(); ++it) {
-    experiments_list.Append(new base::StringValue(*it));
+    experiments_list.AppendString(*it);
   }
   owner_settings_service_->Set(kStartUpFlags, experiments_list);
 

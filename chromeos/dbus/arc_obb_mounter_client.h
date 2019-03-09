@@ -10,8 +10,8 @@
 #include <string>
 
 #include "base/callback_forward.h"
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 #include "chromeos/dbus/dbus_client.h"
 #include "chromeos/dbus/dbus_method_call_status.h"
 
@@ -21,7 +21,7 @@ namespace chromeos {
 // which mounts OBB (opaque binary blob - https://goo.gl/ja8aN1) files.
 // All method should be called from the origin thread (UI thread) which
 // initializes the DBusThreadManager instance.
-class CHROMEOS_EXPORT ArcObbMounterClient : public DBusClient {
+class COMPONENT_EXPORT(CHROMEOS_DBUS) ArcObbMounterClient : public DBusClient {
  public:
   ArcObbMounterClient();
   ~ArcObbMounterClient() override;
@@ -35,11 +35,11 @@ class CHROMEOS_EXPORT ArcObbMounterClient : public DBusClient {
   virtual void MountObb(const std::string& obb_file,
                         const std::string& mount_path,
                         int32_t owner_gid,
-                        const VoidDBusMethodCallback& callback) = 0;
+                        VoidDBusMethodCallback callback) = 0;
 
   // Unmounts the OBB mounted at the specified path.
   virtual void UnmountObb(const std::string& mount_path,
-                          const VoidDBusMethodCallback& callback) = 0;
+                          VoidDBusMethodCallback callback) = 0;
 };
 
 }  // namespace chromeos

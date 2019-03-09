@@ -11,7 +11,19 @@ Polymer({
       observer: 'onDisabledChanged_',
     },
 
-    buttonText: String
+    buttonText: {
+      type: String,
+      value: '',
+    }
+  },
+
+  /** @public */
+  reset: function() {
+    var inputs = this.getInputs_();
+    for (i = 0; i < inputs.length; ++i) {
+      inputs[i].value = '';
+      inputs[i].isInvalid = false;
+    }
   },
 
   submit: function() {

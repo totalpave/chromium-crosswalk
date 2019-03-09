@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.compositor.scene_layer;
 
-import android.graphics.Rect;
-
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.chrome.browser.compositor.LayerTitleCache;
 import org.chromium.chrome.browser.compositor.layouts.components.LayoutTab;
@@ -15,17 +13,11 @@ import org.chromium.chrome.browser.fullscreen.ChromeFullscreenManager;
 /**
  * A SceneLayer to render a static tab.
  */
-@JNINamespace("chrome::android")
+@JNINamespace("android")
 public class StaticTabSceneLayer extends SceneLayer {
     // NOTE: If you use SceneLayer's native pointer here, the JNI generator will try to
     // downcast using reinterpret_cast<>. We keep a separate pointer to avoid it.
     private long mNativePtr;
-
-    private final int mResToolbarControlContainer;
-
-    public StaticTabSceneLayer(int resToolbarControlContainer) {
-        mResToolbarControlContainer = resToolbarControlContainer;
-    }
 
     /**
      * Update {@link StaticTabSceneLayer} with the given parameters.
@@ -37,7 +29,7 @@ public class StaticTabSceneLayer extends SceneLayer {
      * @param fullscreenManager The FullscreenManager.
      * @param layoutTab         The LayoutTab.
      */
-    public void update(float dpToPx, Rect contentViewport, LayerTitleCache layerTitleCache,
+    public void update(float dpToPx, LayerTitleCache layerTitleCache,
             TabContentManager tabContentManager, ChromeFullscreenManager fullscreenManager,
             LayoutTab layoutTab) {
         if (layoutTab == null) {
@@ -46,14 +38,11 @@ public class StaticTabSceneLayer extends SceneLayer {
 
         float contentOffset =
                 fullscreenManager != null ? fullscreenManager.getContentOffset() : 0.f;
+        float x = layoutTab.getRenderX() * dpToPx;
+        float y = contentOffset + layoutTab.getRenderY() * dpToPx;
 
-        // TODO(dtrainor, clholgat): remove "* dpToPx" once the native part is fully supporting dp.
-        nativeUpdateTabLayer(mNativePtr, contentViewport.left, contentViewport.top,
-                contentViewport.width(), contentViewport.height(), tabContentManager,
-                layoutTab.getId(), mResToolbarControlContainer, layoutTab.canUseLiveTexture(),
-                layoutTab.getBackgroundColor(), layoutTab.getRenderX() * dpToPx,
-                layoutTab.getRenderY() * dpToPx, layoutTab.getScaledContentWidth() * dpToPx,
-                layoutTab.getScaledContentHeight() * dpToPx, contentOffset,
+        nativeUpdateTabLayer(mNativePtr, tabContentManager, layoutTab.getId(),
+                layoutTab.canUseLiveTexture(), layoutTab.getBackgroundColor(), x, y,
                 layoutTab.getStaticToViewBlend(), layoutTab.getSaturation(),
                 layoutTab.getBrightness());
     }
@@ -73,10 +62,8 @@ public class StaticTabSceneLayer extends SceneLayer {
     }
 
     private native long nativeInit();
-    private native void nativeUpdateTabLayer(long nativeStaticTabSceneLayer, float contentViewportX,
-            float contentViewportY, float contentViewportWidth, float contentViewportHeight,
-            TabContentManager tabContentManager, int id, int toolbarResourceId,
-            boolean canUseLiveLayer, int backgroundColor, float x, float y, float width,
-            float height, float contentOffsetY, float staticToViewBlend, float saturation,
+    private native void nativeUpdateTabLayer(long nativeStaticTabSceneLayer,
+            TabContentManager tabContentManager, int id, boolean canUseLiveLayer,
+            int backgroundColor, float x, float y, float staticToViewBlend, float saturation,
             float brightness);
 }

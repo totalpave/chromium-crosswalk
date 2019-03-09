@@ -5,16 +5,23 @@
 #import "ios/chrome/browser/metrics/previous_session_info.h"
 
 #include "base/logging.h"
-#include "base/mac/scoped_nsobject.h"
 #include "base/strings/sys_string_conversions.h"
 #include "components/version_info/version_info.h"
 #import "ios/chrome/browser/metrics/previous_session_info_private.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace {
 
 // Key in the NSUserDefaults for a string value that stores the version of the
 // last session.
 NSString* const kLastRanVersion = @"LastRanVersion";
+
+// Key in the NSUserDefaults for a string value that stores the language of the
+// last session.
+NSString* const kLastRanLanguage = @"LastRanLanguage";
 
 }  // namespace
 
@@ -31,6 +38,7 @@ NSString* const kDidSeeMemoryWarningShortlyBeforeTerminating =
 // Redefined to be read-write.
 @property(nonatomic, assign) BOOL didSeeMemoryWarningShortlyBeforeTerminating;
 @property(nonatomic, assign) BOOL isFirstSessionAfterUpgrade;
+@property(nonatomic, assign) BOOL isFirstSessionAfterLanguageChange;
 
 @end
 
@@ -40,6 +48,8 @@ NSString* const kDidSeeMemoryWarningShortlyBeforeTerminating =
 @synthesize didSeeMemoryWarningShortlyBeforeTerminating =
     _didSeeMemoryWarningShortlyBeforeTerminating;
 @synthesize isFirstSessionAfterUpgrade = _isFirstSessionAfterUpgrade;
+@synthesize isFirstSessionAfterLanguageChange =
+    _isFirstSessionAfterLanguageChange;
 
 // Singleton PreviousSessionInfo.
 static PreviousSessionInfo* gSharedInstance = nil;
@@ -58,12 +68,16 @@ static PreviousSessionInfo* gSharedInstance = nil;
         base::SysUTF8ToNSString(version_info::GetVersionNumber());
     gSharedInstance.isFirstSessionAfterUpgrade =
         ![lastRanVersion isEqualToString:currentVersion];
+
+    NSString* lastRanLanguage = [defaults stringForKey:kLastRanLanguage];
+    NSString* currentLanguage = [[NSLocale preferredLanguages] objectAtIndex:0];
+    gSharedInstance.isFirstSessionAfterLanguageChange =
+        ![lastRanLanguage isEqualToString:currentLanguage];
   }
   return gSharedInstance;
 }
 
 + (void)resetSharedInstanceForTesting {
-  [gSharedInstance release];
   gSharedInstance = nil;
 }
 
@@ -78,6 +92,10 @@ static PreviousSessionInfo* gSharedInstance = nil;
   NSString* currentVersion =
       base::SysUTF8ToNSString(version_info::GetVersionNumber());
   [defaults setObject:currentVersion forKey:kLastRanVersion];
+
+  // Set the new language.
+  NSString* currentLanguage = [[NSLocale preferredLanguages] objectAtIndex:0];
+  [defaults setObject:currentLanguage forKey:kLastRanLanguage];
 
   // Clear the memory warning flag.
   [defaults

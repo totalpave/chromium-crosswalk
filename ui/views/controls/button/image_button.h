@@ -11,26 +11,26 @@
 #include "base/macros.h"
 #include "ui/base/layout.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/views/controls/button/custom_button.h"
+#include "ui/views/controls/button/button.h"
 
 namespace views {
-
-class Painter;
 
 // An image button.
 // Note that this type of button is not focusable by default and will not be
 // part of the focus chain, unless in accessibility mode. Call
 // SetFocusForPlatform() to make it part of the focus chain.
-class VIEWS_EXPORT ImageButton : public CustomButton {
+class VIEWS_EXPORT ImageButton : public Button {
  public:
   static const char kViewClassName[];
 
+  // An enum describing the horizontal alignment of images on Buttons.
   enum HorizontalAlignment {
     ALIGN_LEFT = 0,
     ALIGN_CENTER,
     ALIGN_RIGHT
   };
 
+  // An enum describing the vertical alignment of images on Buttons.
   enum VerticalAlignment {
     ALIGN_TOP = 0,
     ALIGN_MIDDLE,
@@ -44,18 +44,25 @@ class VIEWS_EXPORT ImageButton : public CustomButton {
   virtual const gfx::ImageSkia& GetImage(ButtonState state) const;
 
   // Set the image the button should use for the provided state.
-  virtual void SetImage(ButtonState state, const gfx::ImageSkia* image);
+  void SetImage(ButtonState state, const gfx::ImageSkia* image);
+
+  // As above, but takes a const ref. TODO(estade): all callers should be
+  // updated to use this version, and then the implementations can be
+  // consolidated.
+  virtual void SetImage(ButtonState state, const gfx::ImageSkia& image);
 
   // Set the background details.
-  void SetBackground(SkColor color,
-                     const gfx::ImageSkia* image,
-                     const gfx::ImageSkia* mask);
+  void SetBackgroundImage(SkColor color,
+                          const gfx::ImageSkia* image,
+                          const gfx::ImageSkia* mask);
 
   // Sets how the image is laid out within the button's bounds.
   void SetImageAlignment(HorizontalAlignment h_align,
                          VerticalAlignment v_align);
 
-  void SetFocusPainter(std::unique_ptr<Painter> focus_painter);
+  // Sets how the background is laid out within the button's bounds.
+  void SetBackgroundImageAlignment(HorizontalAlignment h_align,
+                                   VerticalAlignment v_align);
 
   // The minimum size of the contents (not including the border). The contents
   // will be at least this size, but may be larger if the image itself is
@@ -69,14 +76,13 @@ class VIEWS_EXPORT ImageButton : public CustomButton {
   }
 
   // Overridden from View:
-  gfx::Size GetPreferredSize() const override;
   const char* GetClassName() const override;
-  void OnPaint(gfx::Canvas* canvas) override;
+  gfx::Size CalculatePreferredSize() const override;
+  views::PaintInfo::ScaleType GetPaintScaleType() const override;
 
  protected:
-  // Overridden from View:
-  void OnFocus() override;
-  void OnBlur() override;
+  // Overridden from Button:
+  void PaintButtonContents(gfx::Canvas* canvas) override;
 
   // Returns the image to paint. This is invoked from paint and returns a value
   // from images.
@@ -84,8 +90,6 @@ class VIEWS_EXPORT ImageButton : public CustomButton {
 
   // Updates button background for |scale_factor|.
   void UpdateButtonBackground(ui::ScaleFactor scale_factor);
-
-  Painter* focus_painter() { return focus_painter_.get(); }
 
   // The images used to render the different states of this button.
   gfx::ImageSkia images_[STATE_COUNT];
@@ -97,22 +101,30 @@ class VIEWS_EXPORT ImageButton : public CustomButton {
   FRIEND_TEST_ALL_PREFIXES(ImageButtonTest, ImagePositionWithBorder);
   FRIEND_TEST_ALL_PREFIXES(ImageButtonTest, LeftAlignedMirrored);
   FRIEND_TEST_ALL_PREFIXES(ImageButtonTest, RightAlignedMirrored);
+  FRIEND_TEST_ALL_PREFIXES(ImageButtonTest, ImagePositionWithBackground);
+
+  FRIEND_TEST_ALL_PREFIXES(ImageButtonFactoryTest, CreateVectorImageButton);
 
   // Returns the correct position of the image for painting.
-  gfx::Point ComputeImagePaintPosition(const gfx::ImageSkia& image);
+  const gfx::Point ComputeImagePaintPosition(const gfx::ImageSkia& image,
+                                             HorizontalAlignment h_alignment,
+                                             VerticalAlignment v_alignment);
 
   // Image alignment.
   HorizontalAlignment h_alignment_;
   VerticalAlignment v_alignment_;
   gfx::Size minimum_image_size_;
 
+  // Background alignment. If these are not set, the background image uses the
+  // image alignment.
+  base::Optional<HorizontalAlignment> h_background_alignment_;
+  base::Optional<VerticalAlignment> v_background_alignment_;
+
   // Whether we draw our resources horizontally flipped. This can happen in the
   // linux titlebar, where image resources were designed to be flipped so a
   // small curved corner in the close button designed to fit into the frame
   // resources.
   bool draw_image_mirrored_;
-
-  std::unique_ptr<Painter> focus_painter_;
 
   DISALLOW_COPY_AND_ASSIGN(ImageButton);
 };
@@ -142,12 +154,14 @@ class VIEWS_EXPORT ToggleImageButton : public ImageButton {
 
   // Overridden from ImageButton:
   const gfx::ImageSkia& GetImage(ButtonState state) const override;
-  void SetImage(ButtonState state, const gfx::ImageSkia* image) override;
+  void SetImage(ButtonState state, const gfx::ImageSkia& image) override;
 
   // Overridden from View:
   bool GetTooltipText(const gfx::Point& p,
                       base::string16* tooltip) const override;
-  void GetAccessibleState(ui::AXViewState* state) override;
+  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
+
+  bool toggled_for_testing() const;
 
  private:
   // The parent class's images_ member is used for the current images,

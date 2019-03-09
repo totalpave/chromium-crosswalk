@@ -89,6 +89,8 @@ class NexeLoadManager {
   bool RequestNaClManifest(const std::string& url);
   void ProcessNaClManifest(const std::string& program_url);
 
+  void CloseTrustedPluginChannel();
+
   // URL resolution support.
   // plugin_base_url is the URL used for resolving relative URLs used in
   // src="...".
@@ -104,9 +106,6 @@ class NexeLoadManager {
   // Returns true if the MIME type for this plugin matches the type for PNaCl,
   // false otherwise.
   bool IsPNaCl() const;
-
-  // Returns true if dev interfaces are enabled for this plugin.
-  bool DevInterfacesEnabled() const;
 
   // Returns the time that the work for PNaCl translation began.
   base::Time pnacl_start_time() const { return pnacl_start_time_; }

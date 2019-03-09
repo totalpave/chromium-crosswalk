@@ -4,20 +4,27 @@
 
 #include "chrome/browser/ui/views/tab_dialogs_views.h"
 
-#include "base/memory/ptr_util.h"
+#include <memory>
+#include <utility>
+
+#include "build/build_config.h"
 #include "chrome/browser/ui/passwords/manage_passwords_bubble_model.h"
 #include "chrome/browser/ui/views/collected_cookies_views.h"
 #include "chrome/browser/ui/views/hung_renderer_view.h"
-#include "chrome/browser/ui/views/passwords/manage_passwords_bubble_view.h"
-#include "chrome/browser/ui/views/sync/profile_signin_confirmation_dialog_views.h"
-#include "chrome/browser/ui/views/validation_message_bubble_view.h"
+#include "chrome/browser/ui/views/passwords/password_bubble_view_base.h"
 #include "content/public/browser/web_contents.h"
+
+#if !defined(OS_CHROMEOS)
+#include "chrome/browser/ui/views/sync/profile_signin_confirmation_dialog_views.h"
+#endif
 
 // static
 void TabDialogs::CreateForWebContents(content::WebContents* contents) {
   DCHECK(contents);
-  if (!FromWebContents(contents))
-    contents->SetUserData(UserDataKey(), new TabDialogsViews(contents));
+  if (!FromWebContents(contents)) {
+    contents->SetUserData(UserDataKey(),
+                          std::make_unique<TabDialogsViews>(contents));
+  }
 }
 
 TabDialogsViews::TabDialogsViews(content::WebContents* contents)
@@ -37,47 +44,51 @@ void TabDialogsViews::ShowCollectedCookies() {
   new CollectedCookiesViews(web_contents_);
 }
 
-void TabDialogsViews::ShowHungRendererDialog() {
-  HungRendererDialogView::Show(web_contents_);
+void TabDialogsViews::ShowHungRendererDialog(
+    content::RenderWidgetHost* render_widget_host,
+    base::RepeatingClosure hang_monitor_restarter) {
+  HungRendererDialogView::Show(web_contents_, render_widget_host,
+                               std::move(hang_monitor_restarter));
 }
 
-void TabDialogsViews::HideHungRendererDialog() {
-  HungRendererDialogView::Hide(web_contents_);
+void TabDialogsViews::HideHungRendererDialog(
+    content::RenderWidgetHost* render_widget_host) {
+  HungRendererDialogView::Hide(web_contents_, render_widget_host);
+}
+
+bool TabDialogsViews::IsShowingHungRendererDialog() {
+  return HungRendererDialogView::GetInstance();
 }
 
 void TabDialogsViews::ShowProfileSigninConfirmation(
     Browser* browser,
     Profile* profile,
     const std::string& username,
-    ui::ProfileSigninConfirmationDelegate* delegate) {
-  ProfileSigninConfirmationDialogViews::ShowDialog(
-      browser, profile, username, delegate);
+    std::unique_ptr<ui::ProfileSigninConfirmationDelegate> delegate) {
+#if !defined(OS_CHROMEOS)
+  ProfileSigninConfirmationDialogViews::ShowDialog(browser, profile, username,
+                                                   std::move(delegate));
+#else
+  NOTREACHED();
+#endif
 }
 
 void TabDialogsViews::ShowManagePasswordsBubble(bool user_action) {
-  if (ManagePasswordsBubbleView::manage_password_bubble()) {
+  if (PasswordBubbleViewBase::manage_password_bubble()) {
     // The bubble is currently shown for some other tab. We should close it now
     // and open for |web_contents_|.
-    ManagePasswordsBubbleView::CloseCurrentBubble();
+    PasswordBubbleViewBase::CloseCurrentBubble();
   }
-  ManagePasswordsBubbleView::ShowBubble(
-      web_contents_, user_action ? ManagePasswordsBubbleView::USER_GESTURE
-                                 : ManagePasswordsBubbleView::AUTOMATIC);
+  PasswordBubbleViewBase::ShowBubble(
+      web_contents_, user_action ? LocationBarBubbleDelegateView::USER_GESTURE
+                                 : LocationBarBubbleDelegateView::AUTOMATIC);
 }
 
 void TabDialogsViews::HideManagePasswordsBubble() {
-  if (!ManagePasswordsBubbleView::manage_password_bubble())
+  PasswordBubbleViewBase* bubble =
+      PasswordBubbleViewBase::manage_password_bubble();
+  if (!bubble)
     return;
-  content::WebContents* bubble_web_contents =
-      ManagePasswordsBubbleView::manage_password_bubble()->web_contents();
-  if (web_contents_ == bubble_web_contents)
-    ManagePasswordsBubbleView::CloseCurrentBubble();
-}
-
-base::WeakPtr<ValidationMessageBubble> TabDialogsViews::ShowValidationMessage(
-    const gfx::Rect& anchor_in_root_view,
-    const base::string16& main_text,
-    const base::string16& sub_text) {
-  return (new ValidationMessageBubbleView(
-      web_contents_, anchor_in_root_view, main_text, sub_text))->AsWeakPtr();
+  if (bubble->GetWebContents() == web_contents_)
+    PasswordBubbleViewBase::CloseCurrentBubble();
 }

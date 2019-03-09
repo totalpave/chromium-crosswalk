@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_FEEDBACK_SYSTEM_LOGS_LOG_SOURCES_MEMORY_DETAILS_LOG_SOURCE_H_
 
 #include "base/macros.h"
-#include "chrome/browser/feedback/system_logs/system_logs_fetcher_base.h"
+#include "components/feedback/system_logs/system_logs_source.h"
 
 namespace system_logs {
 
@@ -17,7 +17,7 @@ class MemoryDetailsLogSource : public SystemLogsSource {
   ~MemoryDetailsLogSource() override;
 
   // SystemLogsSource override.
-  void Fetch(const SysLogsSourceCallback& request) override;
+  void Fetch(SysLogsSourceCallback request) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MemoryDetailsLogSource);

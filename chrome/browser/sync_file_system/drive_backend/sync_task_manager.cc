@@ -60,16 +60,13 @@ bool SyncTaskManager::PendingTaskComparator::operator()(
 SyncTaskManager::SyncTaskManager(
     base::WeakPtr<Client> client,
     size_t maximum_background_task,
-    const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    const scoped_refptr<base::SequencedWorkerPool>& worker_pool)
+    const scoped_refptr<base::SequencedTaskRunner>& task_runner)
     : client_(client),
       maximum_background_task_(maximum_background_task),
       pending_task_seq_(0),
       task_token_seq_(SyncTaskToken::kMinimumBackgroundTaskTokenID),
       task_runner_(task_runner),
-      worker_pool_(worker_pool),
-      weak_ptr_factory_(this) {
-}
+      weak_ptr_factory_(this) {}
 
 SyncTaskManager::~SyncTaskManager() {
   weak_ptr_factory_.InvalidateWeakPtrs();
@@ -79,7 +76,7 @@ SyncTaskManager::~SyncTaskManager() {
 }
 
 void SyncTaskManager::Initialize(SyncStatusCode status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   DCHECK(!token_);
   NotifyTaskDone(
       SyncTaskToken::CreateForForegroundTask(
@@ -87,24 +84,22 @@ void SyncTaskManager::Initialize(SyncStatusCode status) {
       status);
 }
 
-void SyncTaskManager::ScheduleTask(
-    const tracked_objects::Location& from_here,
-    const Task& task,
-    Priority priority,
-    const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+void SyncTaskManager::ScheduleTask(const base::Location& from_here,
+                                   const Task& task,
+                                   Priority priority,
+                                   const SyncStatusCallback& callback) {
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   ScheduleSyncTask(from_here,
                    std::unique_ptr<SyncTask>(new SyncTaskAdapter(task)),
                    priority, callback);
 }
 
-void SyncTaskManager::ScheduleSyncTask(
-    const tracked_objects::Location& from_here,
-    std::unique_ptr<SyncTask> task,
-    Priority priority,
-    const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+void SyncTaskManager::ScheduleSyncTask(const base::Location& from_here,
+                                       std::unique_ptr<SyncTask> task,
+                                       Priority priority,
+                                       const SyncStatusCallback& callback) {
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   std::unique_ptr<SyncTaskToken> token(GetToken(from_here, callback));
   if (!token) {
@@ -118,11 +113,10 @@ void SyncTaskManager::ScheduleSyncTask(
   RunTask(std::move(token), std::move(task));
 }
 
-bool SyncTaskManager::ScheduleTaskIfIdle(
-        const tracked_objects::Location& from_here,
-        const Task& task,
-        const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+bool SyncTaskManager::ScheduleTaskIfIdle(const base::Location& from_here,
+                                         const Task& task,
+                                         const SyncStatusCallback& callback) {
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   return ScheduleSyncTaskIfIdle(
       from_here, std::unique_ptr<SyncTask>(new SyncTaskAdapter(task)),
@@ -130,10 +124,10 @@ bool SyncTaskManager::ScheduleTaskIfIdle(
 }
 
 bool SyncTaskManager::ScheduleSyncTaskIfIdle(
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     std::unique_ptr<SyncTask> task,
     const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   std::unique_ptr<SyncTaskToken> token(GetToken(from_here, callback));
   if (!token)
@@ -192,7 +186,7 @@ void SyncTaskManager::UpdateTaskBlocker(
 }
 
 bool SyncTaskManager::IsRunningTask(int64_t token_id) const {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   // If the client is gone, all task should be aborted.
   if (!client_)
@@ -201,20 +195,17 @@ bool SyncTaskManager::IsRunningTask(int64_t token_id) const {
   if (token_id == SyncTaskToken::kForegroundTaskTokenID)
     return true;
 
-  return ContainsKey(running_background_tasks_, token_id);
+  return running_background_tasks_.find(token_id) !=
+         running_background_tasks_.end();
 }
 
 void SyncTaskManager::DetachFromSequence() {
   sequence_checker_.DetachFromSequence();
 }
 
-bool SyncTaskManager::ShouldTrackTaskToken() const {
-  return !worker_pool_ || !worker_pool_->IsShutdownInProgress();
-}
-
 void SyncTaskManager::NotifyTaskDoneBody(std::unique_ptr<SyncTaskToken> token,
                                          SyncStatusCode status) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   DCHECK(token);
 
   DVLOG(3) << "NotifyTaskDone: " << "finished with status=" << status
@@ -240,7 +231,8 @@ void SyncTaskManager::NotifyTaskDoneBody(std::unique_ptr<SyncTaskToken> token,
     token_ = std::move(token);
     task = std::move(running_foreground_task_);
   } else {
-    task = running_background_tasks_.take_and_erase(token->token_id());
+    task = std::move(running_background_tasks_[token->token_id()]);
+    running_background_tasks_.erase(token->token_id());
   }
 
   // Acquire the token to prevent a new task to jump into the queue.
@@ -260,8 +252,8 @@ void SyncTaskManager::NotifyTaskDoneBody(std::unique_ptr<SyncTaskToken> token,
   // making the call-chaing longer.
   task_runner_->PostTask(
       FROM_HERE,
-      base::Bind(&SyncTaskManager::MaybeStartNextForegroundTask,
-                 weak_ptr_factory_.GetWeakPtr(), base::Passed(&token)));
+      base::BindOnce(&SyncTaskManager::MaybeStartNextForegroundTask,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(token)));
 }
 
 void SyncTaskManager::UpdateTaskBlockerBody(
@@ -270,7 +262,7 @@ void SyncTaskManager::UpdateTaskBlockerBody(
     std::unique_ptr<TaskLogger::TaskLog> task_log,
     std::unique_ptr<TaskBlocker> task_blocker,
     const Continuation& continuation) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   // Run the task directly if the parallelization is disabled.
   if (!maximum_background_task_) {
@@ -335,7 +327,7 @@ void SyncTaskManager::UpdateTaskBlockerBody(
   if (background_task_token) {
     background_task_token->set_task_blocker(std::move(task_blocker));
   } else {
-    tracked_objects::Location from_here = foreground_task_token->location();
+    base::Location from_here = foreground_task_token->location();
     SyncStatusCallback callback = foreground_task_token->callback();
     foreground_task_token->clear_callback();
 
@@ -343,8 +335,8 @@ void SyncTaskManager::UpdateTaskBlockerBody(
         weak_ptr_factory_.GetWeakPtr(), task_runner_.get(), task_token_seq_++,
         std::move(task_blocker));
     background_task_token->UpdateTask(from_here, callback);
-    running_background_tasks_.set(background_task_token->token_id(),
-                                  std::move(running_foreground_task_));
+    running_background_tasks_[background_task_token->token_id()] =
+        std::move(running_foreground_task_);
   }
 
   token_ = std::move(foreground_task_token);
@@ -354,9 +346,9 @@ void SyncTaskManager::UpdateTaskBlockerBody(
 }
 
 std::unique_ptr<SyncTaskToken> SyncTaskManager::GetToken(
-    const tracked_objects::Location& from_here,
+    const base::Location& from_here,
     const SyncStatusCallback& callback) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (!token_)
     return nullptr;
@@ -366,14 +358,14 @@ std::unique_ptr<SyncTaskToken> SyncTaskManager::GetToken(
 
 void SyncTaskManager::PushPendingTask(
     const base::Closure& closure, Priority priority) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   pending_tasks_.push(PendingTask(closure, priority, pending_task_seq_++));
 }
 
 void SyncTaskManager::RunTask(std::unique_ptr<SyncTaskToken> token,
                               std::unique_ptr<SyncTask> task) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
   DCHECK(!running_foreground_task_);
 
   running_foreground_task_ = std::move(task);
@@ -382,7 +374,7 @@ void SyncTaskManager::RunTask(std::unique_ptr<SyncTaskToken> token,
 
 void SyncTaskManager::MaybeStartNextForegroundTask(
     std::unique_ptr<SyncTaskToken> token) {
-  DCHECK(sequence_checker_.CalledOnValidSequencedThread());
+  DCHECK(sequence_checker_.CalledOnValidSequence());
 
   if (token) {
     DCHECK(!token_);

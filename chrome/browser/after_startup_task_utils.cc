@@ -7,79 +7,100 @@
 #include <memory>
 #include <utility>
 
+#include "base/containers/circular_deque.h"
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/process/process_info.h"
+#include "base/process/process.h"
 #include "base/rand_util.h"
-#include "base/synchronization/cancellation_flag.h"
+#include "base/sequence_checker.h"
+#include "base/synchronization/atomic_flag.h"
+#include "base/task/post_task.h"
 #include "base/task_runner.h"
-#include "base/tracked_objects.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/page_visibility_state.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+#include "ui/views/linux_ui/linux_ui.h"
+#endif
+
 using content::BrowserThread;
 using content::WebContents;
 using content::WebContentsObserver;
-using StartupCompleteFlag = base::CancellationFlag;
 
 namespace {
 
 struct AfterStartupTask {
-  AfterStartupTask(const tracked_objects::Location& from_here,
+  AfterStartupTask(const base::Location& from_here,
                    const scoped_refptr<base::TaskRunner>& task_runner,
-                   const base::Closure& task)
-      : from_here(from_here), task_runner(task_runner), task(task) {}
+                   base::OnceClosure task)
+      : from_here(from_here), task_runner(task_runner), task(std::move(task)) {}
   ~AfterStartupTask() {}
 
-  const tracked_objects::Location from_here;
+  const base::Location from_here;
   const scoped_refptr<base::TaskRunner> task_runner;
-  const base::Closure task;
+  base::OnceClosure task;
 };
 
 // The flag may be read on any thread, but must only be set on the UI thread.
-base::LazyInstance<StartupCompleteFlag>::Leaky g_startup_complete_flag;
+base::LazyInstance<base::AtomicFlag>::Leaky g_startup_complete_flag;
 
 // The queue may only be accessed on the UI thread.
-base::LazyInstance<std::deque<AfterStartupTask*>>::Leaky g_after_startup_tasks;
+base::LazyInstance<base::circular_deque<AfterStartupTask*>>::Leaky
+    g_after_startup_tasks;
+
+bool g_schedule_tasks_with_delay = true;
 
 bool IsBrowserStartupComplete() {
   // Be sure to initialize the LazyInstance on the main thread since the flag
   // may only be set on it's initializing thread.
-  if (g_startup_complete_flag == nullptr)
+  if (!g_startup_complete_flag.IsCreated())
     return false;
   return g_startup_complete_flag.Get().IsSet();
 }
 
 void RunTask(std::unique_ptr<AfterStartupTask> queued_task) {
   // We're careful to delete the caller's |task| on the target runner's thread.
-  DCHECK(queued_task->task_runner->RunsTasksOnCurrentThread());
-  queued_task->task.Run();
+  DCHECK(queued_task->task_runner->RunsTasksInCurrentSequence());
+  std::move(queued_task->task).Run();
 }
 
 void ScheduleTask(std::unique_ptr<AfterStartupTask> queued_task) {
   // Spread their execution over a brief time.
-  const int kMinDelaySec = 0;
-  const int kMaxDelaySec = 10;
+  constexpr int kMinDelaySec = 0;
+  constexpr int kMaxDelaySec = 10;
   scoped_refptr<base::TaskRunner> target_runner = queued_task->task_runner;
-  tracked_objects::Location from_here = queued_task->from_here;
+  base::Location from_here = queued_task->from_here;
+  int delay_in_seconds = g_schedule_tasks_with_delay
+                             ? base::RandInt(kMinDelaySec, kMaxDelaySec)
+                             : 0;
   target_runner->PostDelayedTask(
-      from_here, base::Bind(&RunTask, base::Passed(std::move(queued_task))),
-      base::TimeDelta::FromSeconds(base::RandInt(kMinDelaySec, kMaxDelaySec)));
+      from_here, base::BindOnce(&RunTask, std::move(queued_task)),
+      base::TimeDelta::FromSeconds(delay_in_seconds));
 }
 
 void QueueTask(std::unique_ptr<AfterStartupTask> queued_task) {
+  DCHECK(queued_task);
+
+  // Use CHECK instead of DCHECK to crash earlier. See http://crbug.com/711167
+  // for details.
+  CHECK(queued_task->task);
+
   if (!BrowserThread::CurrentlyOn(BrowserThread::UI)) {
-    BrowserThread::PostTask(
-        BrowserThread::UI, FROM_HERE,
-        base::Bind(QueueTask, base::Passed(std::move(queued_task))));
+    // Posted with USER_VISIBLE priority to avoid this becoming an after startup
+    // task itself.
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::UI, base::TaskPriority::USER_VISIBLE},
+        base::BindOnce(QueueTask, std::move(queued_task)));
     return;
   }
 
@@ -95,9 +116,9 @@ void QueueTask(std::unique_ptr<AfterStartupTask> queued_task) {
 void SetBrowserStartupIsComplete() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 #if defined(OS_MACOSX) || defined(OS_WIN) || defined(OS_LINUX)
-  // CurrentProcessInfo::CreationTime() is not available on all platforms.
+  // Process::Current().CreationTime() is not available on all platforms.
   const base::Time process_creation_time =
-      base::CurrentProcessInfo::CreationTime();
+      base::Process::Current().CreationTime();
   if (!process_creation_time.is_null()) {
     UMA_HISTOGRAM_LONG_TIMES("Startup.AfterStartupTaskDelayedUntilTime",
                              base::Time::Now() - process_creation_time);
@@ -109,24 +130,32 @@ void SetBrowserStartupIsComplete() {
   for (AfterStartupTask* queued_task : g_after_startup_tasks.Get())
     ScheduleTask(base::WrapUnique(queued_task));
   g_after_startup_tasks.Get().clear();
+  g_after_startup_tasks.Get().shrink_to_fit();
 
-  // The shrink_to_fit() method is not available for all of our build targets.
-  std::deque<AfterStartupTask*>(g_after_startup_tasks.Get())
-      .swap(g_after_startup_tasks.Get());
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+  // Make sure we complete the startup notification sequence, or launchers will
+  // get confused by not receiving the expected message from the main process.
+  views::LinuxUI* linux_ui = views::LinuxUI::instance();
+  if (linux_ui)
+    linux_ui->NotifyWindowManagerStartupComplete();
+#endif
 }
 
 // Observes the first visible page load and sets the startup complete
 // flag accordingly.
-class StartupObserver : public WebContentsObserver, public base::NonThreadSafe {
+class StartupObserver : public WebContentsObserver {
  public:
   StartupObserver() : weak_factory_(this) {}
-  ~StartupObserver() override { DCHECK(IsBrowserStartupComplete()); }
+  ~StartupObserver() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    DCHECK(IsBrowserStartupComplete());
+  }
 
   void Start();
 
  private:
   void OnStartupComplete() {
-    DCHECK(CalledOnValidThread());
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     SetBrowserStartupIsComplete();
     delete this;
   }
@@ -143,13 +172,14 @@ class StartupObserver : public WebContentsObserver, public base::NonThreadSafe {
   void DidFailLoad(content::RenderFrameHost* render_frame_host,
                    const GURL& validated_url,
                    int error_code,
-                   const base::string16& error_description,
-                   bool was_ignored_by_handler) override {
+                   const base::string16& error_description) override {
     if (!render_frame_host->GetParent())
       OnStartupComplete();
   }
 
   void WebContentsDestroyed() override { OnStartupComplete(); }
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   base::WeakPtrFactory<StartupObserver> weak_factory_;
 
@@ -167,7 +197,7 @@ void StartupObserver::Start() {
     contents = browser->tab_strip_model()->GetActiveWebContents();
     if (contents && contents->GetMainFrame() &&
         contents->GetMainFrame()->GetVisibilityState() ==
-            blink::WebPageVisibilityStateVisible) {
+            content::PageVisibilityState::kVisible) {
       break;
     }
   }
@@ -185,13 +215,36 @@ void StartupObserver::Start() {
   delay = base::TimeDelta::FromMinutes(kLongerDelayMins);
 #endif  // !defined(OS_ANDROID)
 
-  BrowserThread::PostDelayedTask(BrowserThread::UI, FROM_HERE,
-                                 base::Bind(&StartupObserver::OnFailsafeTimeout,
-                                            weak_factory_.GetWeakPtr()),
-                                 delay);
+  base::PostDelayedTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&StartupObserver::OnFailsafeTimeout,
+                     weak_factory_.GetWeakPtr()),
+      delay);
 }
 
 }  // namespace
+
+AfterStartupTaskUtils::Runner::Runner(
+    scoped_refptr<base::TaskRunner> destination_runner)
+    : destination_runner_(std::move(destination_runner)) {
+  DCHECK(destination_runner_);
+}
+
+AfterStartupTaskUtils::Runner::~Runner() = default;
+
+bool AfterStartupTaskUtils::Runner::PostDelayedTask(
+    const base::Location& from_here,
+    base::OnceClosure task,
+    base::TimeDelta delay) {
+  DCHECK(delay.is_zero());
+  AfterStartupTaskUtils::PostTask(from_here, destination_runner_,
+                                  std::move(task));
+  return true;
+}
+
+bool AfterStartupTaskUtils::Runner::RunsTasksInCurrentSequence() const {
+  return destination_runner_->RunsTasksInCurrentSequence();
+}
 
 void AfterStartupTaskUtils::StartMonitoringStartup() {
   // The observer is self-deleting.
@@ -199,16 +252,16 @@ void AfterStartupTaskUtils::StartMonitoringStartup() {
 }
 
 void AfterStartupTaskUtils::PostTask(
-    const tracked_objects::Location& from_here,
-    const scoped_refptr<base::TaskRunner>& task_runner,
-    const base::Closure& task) {
+    const base::Location& from_here,
+    const scoped_refptr<base::TaskRunner>& destination_runner,
+    base::OnceClosure task) {
   if (IsBrowserStartupComplete()) {
-    task_runner->PostTask(from_here, task);
+    destination_runner->PostTask(from_here, std::move(task));
     return;
   }
 
   std::unique_ptr<AfterStartupTask> queued_task(
-      new AfterStartupTask(from_here, task_runner, task));
+      new AfterStartupTask(from_here, destination_runner, std::move(task)));
   QueueTask(std::move(queued_task));
 }
 
@@ -230,4 +283,9 @@ void AfterStartupTaskUtils::UnsafeResetForTesting() {
     return;
   g_startup_complete_flag.Get().UnsafeResetForTesting();
   DCHECK(!IsBrowserStartupComplete());
+}
+
+// static
+void AfterStartupTaskUtils::DisableScheduleTaskDelayForTesting() {
+  g_schedule_tasks_with_delay = false;
 }

@@ -1,6 +1,6 @@
-# Piranha Plant members.
-perkj@chromium.org
-tommi@chromium.org
-
-# To be able to roll new libjingle releases.
+orphis@chromium.org
 sergeyu@chromium.org
+
+per-file rtc_video_*=file://media/gpu/OWNERS
+
+# COMPONENT: Blink>WebRTC

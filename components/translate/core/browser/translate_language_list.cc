@@ -12,7 +12,7 @@
 #include "base/json/json_reader.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
@@ -142,11 +142,6 @@ const char* const kDefaultSupportedLanguages[] = {
 // Constant URL string to fetch server supporting language list.
 const char kLanguageListFetchPath[] = "translate_a/l?client=chrome";
 
-// Used in kTranslateScriptURL to request supporting languages list including
-// "alpha languages".
-const char kAlphaLanguageQueryName[] = "alpha";
-const char kAlphaLanguageQueryValue[] = "1";
-
 // Represent if the language list updater is disabled.
 bool update_is_disabled = false;
 
@@ -156,35 +151,35 @@ const int kMaxRetryOn5xx = 5;
 }  // namespace
 
 const char TranslateLanguageList::kTargetLanguagesKey[] = "tl";
-const char TranslateLanguageList::kAlphaLanguagesKey[] = "al";
 
 TranslateLanguageList::TranslateLanguageList()
     : resource_requests_allowed_(false), request_pending_(false) {
   // We default to our hard coded list of languages in
-  // |kDefaultSupportedLanguages|. This list will be overriden by a server
-  // providing supported langauges list.
-  for (size_t i = 0; i < arraysize(kDefaultSupportedLanguages); ++i)
-    all_supported_languages_.insert(kDefaultSupportedLanguages[i]);
+  // |kDefaultSupportedLanguages|. This list will be overridden by a server
+  // providing supported languages list.
+  for (size_t i = 0; i < base::size(kDefaultSupportedLanguages); ++i)
+    supported_languages_.insert(kDefaultSupportedLanguages[i]);
 
   if (update_is_disabled)
     return;
 
-  language_list_fetcher_.reset(new TranslateURLFetcher(kFetcherId));
+  language_list_fetcher_.reset(new TranslateURLFetcher);
   language_list_fetcher_->set_max_retry_on_5xx(kMaxRetryOn5xx);
 }
 
 TranslateLanguageList::~TranslateLanguageList() {}
 
 void TranslateLanguageList::GetSupportedLanguages(
+    bool translate_allowed,
     std::vector<std::string>* languages) {
   DCHECK(languages && languages->empty());
-  std::set<std::string>::const_iterator iter = all_supported_languages_.begin();
-  for (; iter != all_supported_languages_.end(); ++iter)
+  auto iter = supported_languages_.begin();
+  for (; iter != supported_languages_.end(); ++iter)
     languages->push_back(*iter);
 
   // Update language lists if they are not updated after Chrome was launched
   // for later requests.
-  if (!update_is_disabled && language_list_fetcher_.get())
+  if (translate_allowed && !update_is_disabled && language_list_fetcher_.get())
     RequestLanguageList();
 }
 
@@ -202,11 +197,7 @@ std::string TranslateLanguageList::GetLanguageCode(
 }
 
 bool TranslateLanguageList::IsSupportedLanguage(const std::string& language) {
-  return all_supported_languages_.count(language) != 0;
-}
-
-bool TranslateLanguageList::IsAlphaLanguage(const std::string& language) {
-  return alpha_languages_.count(language) != 0;
+  return supported_languages_.count(language) != 0;
 }
 
 GURL TranslateLanguageList::TranslateLanguageUrl() {
@@ -230,18 +221,18 @@ void TranslateLanguageList::RequestLanguageList() {
     GURL url = TranslateLanguageUrl();
     url = AddHostLocaleToUrl(url);
     url = AddApiKeyToUrl(url);
-    url = net::AppendQueryParameter(
-        url, kAlphaLanguageQueryName, kAlphaLanguageQueryValue);
 
     std::string message = base::StringPrintf(
-        "Language list including alpha languages fetch starts (URL: %s)",
-        url.spec().c_str());
+        "Language list fetch starts (URL: %s)", url.spec().c_str());
     NotifyEvent(__LINE__, message);
 
     bool result = language_list_fetcher_->Request(
         url,
-        base::Bind(&TranslateLanguageList::OnLanguageListFetchComplete,
-                   base::Unretained(this)));
+        base::BindOnce(&TranslateLanguageList::OnLanguageListFetchComplete,
+                       base::Unretained(this)),
+        // Use the strictest mode for request headers, since incognito state is
+        // not known.
+        /*is_incognito=*/true);
     if (!result)
       NotifyEvent(__LINE__, "Request is omitted due to retry limit");
   }
@@ -260,13 +251,20 @@ TranslateLanguageList::RegisterEventCallback(const EventCallback& callback) {
   return callback_list_.Add(callback);
 }
 
+bool TranslateLanguageList::HasOngoingLanguageListLoadingForTesting() {
+  return language_list_fetcher_->state() == TranslateURLFetcher::REQUESTING;
+}
+
+GURL TranslateLanguageList::LanguageFetchURLForTesting() {
+  return AddApiKeyToUrl(AddHostLocaleToUrl(TranslateLanguageUrl()));
+}
+
 // static
 void TranslateLanguageList::DisableUpdate() {
   update_is_disabled = true;
 }
 
 void TranslateLanguageList::OnLanguageListFetchComplete(
-    int id,
     bool success,
     const std::string& data) {
   if (!success) {
@@ -281,8 +279,6 @@ void TranslateLanguageList::OnLanguageListFetchComplete(
   }
 
   NotifyEvent(__LINE__, "Language list is updated");
-
-  DCHECK_EQ(kFetcherId, id);
 
   bool parsed_correctly = SetSupportedLanguages(data);
   language_list_fetcher_.reset();
@@ -301,27 +297,26 @@ bool TranslateLanguageList::SetSupportedLanguages(
   // The format is in JSON as:
   // {
   //   "sl": {"XX": "LanguageName", ...},
-  //   "tl": {"XX": "LanguageName", ...},
-  //   "al": {"XX": 1, ...}
+  //   "tl": {"XX": "LanguageName", ...}
   // }
-  // Where "tl" and "al" are set in kTargetLanguagesKey and kAlphaLanguagesKey.
-  std::unique_ptr<base::Value> json_value =
-      base::JSONReader::Read(language_list, base::JSON_ALLOW_TRAILING_COMMAS);
+  // Where "tl" is set in kTargetLanguagesKey.
+  std::unique_ptr<base::Value> json_value = base::JSONReader::ReadDeprecated(
+      language_list, base::JSON_ALLOW_TRAILING_COMMAS);
 
-  if (json_value == NULL || !json_value->IsType(base::Value::TYPE_DICTIONARY)) {
+  if (!json_value || !json_value->is_dict()) {
     NotifyEvent(__LINE__, "Language list is invalid");
     NOTREACHED();
     return false;
   }
   // The first level dictionary contains three sub-dict, first for source
   // languages and second for target languages, we want to use the target
-  // languages. The last is for alpha languages.
+  // languages.
   base::DictionaryValue* language_dict =
       static_cast<base::DictionaryValue*>(json_value.get());
-  base::DictionaryValue* target_languages = NULL;
+  base::DictionaryValue* target_languages = nullptr;
   if (!language_dict->GetDictionary(TranslateLanguageList::kTargetLanguagesKey,
                                     &target_languages) ||
-      target_languages == NULL) {
+      target_languages == nullptr) {
     NotifyEvent(__LINE__, "Target languages are not found in the response");
     NOTREACHED();
     return false;
@@ -331,7 +326,7 @@ bool TranslateLanguageList::SetSupportedLanguages(
       TranslateDownloadManager::GetInstance()->application_locale();
 
   // Now we can clear language list.
-  all_supported_languages_.clear();
+  supported_languages_.clear();
   std::string message;
   // ... and replace it with the values we just fetched from the server.
   for (base::DictionaryValue::Iterator iter(*target_languages);
@@ -342,33 +337,13 @@ bool TranslateLanguageList::SetSupportedLanguages(
       TranslateBrowserMetrics::ReportUndisplayableLanguage(lang);
       continue;
     }
-    all_supported_languages_.insert(lang);
+    supported_languages_.insert(lang);
     if (message.empty())
       message += lang;
     else
       message += ", " + lang;
   }
   NotifyEvent(__LINE__, message);
-
-  // Get the alpha languages. The "al" parameter could be abandoned.
-  base::DictionaryValue* alpha_languages = NULL;
-  if (!language_dict->GetDictionary(TranslateLanguageList::kAlphaLanguagesKey,
-                                    &alpha_languages) ||
-      alpha_languages == NULL) {
-    // Return true since alpha language part is optional.
-    return true;
-  }
-
-  // We assume that the alpha languages are included in the above target
-  // languages, and don't use UMA or NotifyEvent.
-  alpha_languages_.clear();
-  for (base::DictionaryValue::Iterator iter(*alpha_languages);
-       !iter.IsAtEnd(); iter.Advance()) {
-    const std::string& lang = iter.key();
-    if (!l10n_util::IsLocaleNameTranslated(lang.c_str(), locale))
-      continue;
-    alpha_languages_.insert(lang);
-  }
   return true;
 }
 

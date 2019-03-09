@@ -10,28 +10,36 @@
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_loop.h"
 #include "base/observer_list.h"
-#include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringize_macros.h"
+#include "base/test/mock_callback.h"
+#include "base/test/scoped_mock_time_message_loop_task_runner.h"
 #include "remoting/base/constants.h"
 #include "remoting/base/rsa_key_pair.h"
 #include "remoting/base/test_rsa_key_pair.h"
+#include "remoting/host/host_details.h"
+#include "remoting/protocol/errors.h"
 #include "remoting/signaling/iq_sender.h"
 #include "remoting/signaling/mock_signal_strategy.h"
+#include "remoting/signaling/signaling_address.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/webrtc/libjingle/xmllite/xmlelement.h"
-#include "third_party/webrtc/libjingle/xmpp/constants.h"
+#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
+#include "third_party/libjingle_xmpp/xmpp/constants.h"
 
-using buzz::QName;
-using buzz::XmlElement;
+using jingle_xmpp::QName;
+using jingle_xmpp::XmlElement;
 
 using testing::_;
 using testing::Invoke;
 using testing::NotNull;
 using testing::Return;
 using testing::SaveArg;
+using testing::DeleteArg;
 
 namespace remoting {
+
+using protocol::ErrorCode;
 
 namespace {
 const char kTestBotJid[] = "remotingunittest@bot.talk.google.com";
@@ -48,18 +56,14 @@ ACTION_P(RemoveListener, list) {
   list->RemoveObserver(arg0);
 }
 
-class MockCallback {
- public:
-  MOCK_METHOD3(OnResponse, void(const std::string& support_id,
-                                const base::TimeDelta& lifetime,
-                                const std::string& error_message));
-};
-
 }  // namespace
 
 class RegisterSupportHostRequestTest : public testing::Test {
  public:
  protected:
+  RegisterSupportHostRequestTest()
+      : signal_strategy_(SignalingAddress(kTestJid)) {}
+
   void SetUp() override {
     key_pair_ = RsaKeyPair::FromString(kTestRsaKeyPair);
     ASSERT_TRUE(key_pair_.get());
@@ -68,25 +72,41 @@ class RegisterSupportHostRequestTest : public testing::Test {
         .WillRepeatedly(AddListener(&signal_strategy_listeners_));
     EXPECT_CALL(signal_strategy_, RemoveListener(NotNull()))
         .WillRepeatedly(RemoveListener(&signal_strategy_listeners_));
-    EXPECT_CALL(signal_strategy_, GetLocalJid())
-        .WillRepeatedly(Return(kTestJid));
   }
 
   base::MessageLoop message_loop_;
+  base::ScopedMockTimeMessageLoopTaskRunner mock_time_task_runner_;
   MockSignalStrategy signal_strategy_;
-  base::ObserverList<SignalStrategy::Listener, true> signal_strategy_listeners_;
+  base::ObserverList<SignalStrategy::Listener, true>::Unchecked
+      signal_strategy_listeners_;
   scoped_refptr<RsaKeyPair> key_pair_;
-  MockCallback callback_;
+  base::MockCallback<RegisterSupportHostRequest::RegisterCallback> callback_;
 };
+
+TEST_F(RegisterSupportHostRequestTest, Timeout) {
+  std::unique_ptr<RegisterSupportHostRequest> request(
+      new RegisterSupportHostRequest(&signal_strategy_, key_pair_, kTestBotJid,
+                                     callback_.Get()));
+  EXPECT_CALL(signal_strategy_, GetNextId()).WillOnce(Return(kStanzaId));
+  EXPECT_CALL(signal_strategy_, SendStanzaPtr(NotNull()))
+      .WillOnce(DoAll(DeleteArg<0>(), Return(true)));
+
+  request->OnSignalStrategyStateChange(SignalStrategy::CONNECTED);
+
+  // Generate response and verify that callback is called.
+  EXPECT_CALL(callback_, Run("", base::TimeDelta::FromSeconds(0),
+                             ErrorCode::SIGNALING_TIMEOUT));
+
+  mock_time_task_runner_->FastForwardBy(base::TimeDelta::FromSeconds(15));
+}
 
 TEST_F(RegisterSupportHostRequestTest, Send) {
   // |iq_request| is freed by RegisterSupportHostRequest.
   int64_t start_time = static_cast<int64_t>(base::Time::Now().ToDoubleT());
 
   std::unique_ptr<RegisterSupportHostRequest> request(
-      new RegisterSupportHostRequest(
-          &signal_strategy_, key_pair_, kTestBotJid,
-          base::Bind(&MockCallback::OnResponse, base::Unretained(&callback_))));
+      new RegisterSupportHostRequest(&signal_strategy_, key_pair_, kTestBotJid,
+                                     callback_.Get()));
 
   XmlElement* sent_iq = nullptr;
   EXPECT_CALL(signal_strategy_, GetNextId())
@@ -95,15 +115,15 @@ TEST_F(RegisterSupportHostRequestTest, Send) {
       .WillOnce(DoAll(SaveArg<0>(&sent_iq), Return(true)));
 
   request->OnSignalStrategyStateChange(SignalStrategy::CONNECTED);
-  base::RunLoop().RunUntilIdle();
+  mock_time_task_runner_->RunUntilIdle();
 
   // Verify format of the query.
   std::unique_ptr<XmlElement> stanza(sent_iq);
   ASSERT_TRUE(stanza != nullptr);
 
-  EXPECT_EQ(stanza->Attr(buzz::QName(std::string(), "to")),
+  EXPECT_EQ(stanza->Attr(jingle_xmpp::QName(std::string(), "to")),
             std::string(kTestBotJid));
-  EXPECT_EQ(stanza->Attr(buzz::QName(std::string(), "type")), "set");
+  EXPECT_EQ(stanza->Attr(jingle_xmpp::QName(std::string(), "type")), "set");
 
   EXPECT_EQ(QName(kChromotingXmlNamespace, "register-support-host"),
             stanza->FirstElement()->Name());
@@ -121,6 +141,18 @@ TEST_F(RegisterSupportHostRequestTest, Send) {
   EXPECT_LE(start_time, time);
   EXPECT_GE(now, time);
 
+  XmlElement* host_version = stanza->FirstElement()->FirstNamed(
+      QName(kChromotingXmlNamespace, "host-version"));
+  EXPECT_EQ(STRINGIZE(VERSION), host_version->BodyText());
+
+  XmlElement* host_os_name = stanza->FirstElement()->FirstNamed(
+      QName(kChromotingXmlNamespace, "host-os-name"));
+  EXPECT_EQ(GetHostOperatingSystemName(), host_os_name->BodyText());
+
+  XmlElement* host_os_version = stanza->FirstElement()->FirstNamed(
+      QName(kChromotingXmlNamespace, "host-os-version"));
+  EXPECT_EQ(GetHostOperatingSystemVersion(), host_os_version->BodyText());
+
   scoped_refptr<RsaKeyPair> key_pair = RsaKeyPair::FromString(kTestRsaKeyPair);
   ASSERT_TRUE(key_pair.get());
 
@@ -129,11 +161,10 @@ TEST_F(RegisterSupportHostRequestTest, Send) {
   EXPECT_EQ(expected_signature, signature->BodyText());
 
   // Generate response and verify that callback is called.
-  EXPECT_CALL(callback_, OnResponse(kSupportId,
-                                    base::TimeDelta::FromSeconds(300),
-                                    ""));
+  EXPECT_CALL(callback_, Run(kSupportId, base::TimeDelta::FromSeconds(300),
+                             ErrorCode::OK));
 
-  std::unique_ptr<XmlElement> response(new XmlElement(buzz::QN_IQ));
+  std::unique_ptr<XmlElement> response(new XmlElement(jingle_xmpp::QN_IQ));
   response->AddAttr(QName(std::string(), "from"), kTestBotJid);
   response->AddAttr(QName(std::string(), "type"), "result");
   response->AddAttr(QName(std::string(), "id"), kStanzaId);
@@ -153,16 +184,13 @@ TEST_F(RegisterSupportHostRequestTest, Send) {
   result->AddElement(support_id_lifetime);
 
   int consumed = 0;
-  base::ObserverListBase<SignalStrategy::Listener>::Iterator it(
-      &signal_strategy_listeners_);
-  SignalStrategy::Listener* listener;
-  while ((listener = it.GetNext()) != nullptr) {
-    if (listener->OnSignalStrategyIncomingStanza(response.get()))
+  for (auto& listener : signal_strategy_listeners_) {
+    if (listener.OnSignalStrategyIncomingStanza(response.get()))
       consumed++;
   }
   EXPECT_EQ(1, consumed);
 
-  base::RunLoop().RunUntilIdle();
+  mock_time_task_runner_->RunUntilIdle();
 }
 
 }  // namespace remoting

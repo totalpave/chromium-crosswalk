@@ -42,9 +42,11 @@ const Extension* TestExtensionService::GetPendingExtensionUpdate(
   return NULL;
 }
 
-void TestExtensionService::FinishDelayedInstallation(
-    const std::string& extension_id) {
+bool TestExtensionService::FinishDelayedInstallationIfReady(
+    const std::string& extension_id,
+    bool install_immediately) {
   ADD_FAILURE();
+  return false;
 }
 
 bool TestExtensionService::IsExtensionEnabled(
@@ -66,11 +68,6 @@ bool TestExtensionService::is_ready() {
   return false;
 }
 
-base::SequencedTaskRunner* TestExtensionService::GetFileTaskRunner() {
-  ADD_FAILURE();
-  return NULL;
-}
-
 void TestExtensionService::AddExtension(const Extension* extension) {
   ADD_FAILURE();
 }
@@ -81,7 +78,7 @@ void TestExtensionService::AddComponentExtension(const Extension* extension) {
 
 void TestExtensionService::UnloadExtension(
     const std::string& extension_id,
-    extensions::UnloadedExtensionInfo::Reason reason) {
+    extensions::UnloadedExtensionReason reason) {
   ADD_FAILURE();
 }
 

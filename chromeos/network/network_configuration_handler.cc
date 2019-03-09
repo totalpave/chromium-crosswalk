@@ -7,11 +7,13 @@
 #include <stddef.h>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/format_macros.h"
 #include "base/guid.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
@@ -60,6 +62,15 @@ void SetNetworkProfileErrorCallback(
       error_callback, dbus_error_name, dbus_error_message);
 }
 
+void ManagerSetPropertiesErrorCallback(
+    const network_handler::ErrorCallback& error_callback,
+    const std::string& dbus_error_name,
+    const std::string& dbus_error_message) {
+  network_handler::ShillErrorCallbackFunction(
+      "ShillManagerClient.SetProperties Failed", std::string(), error_callback,
+      dbus_error_name, dbus_error_message);
+}
+
 void LogConfigProperties(const std::string& desc,
                          const std::string& path,
                          const base::DictionaryValue& properties) {
@@ -72,27 +83,39 @@ void LogConfigProperties(const std::string& desc,
   }
 }
 
+// Returns recognized dbus error names or |default_error_name|.
+// TODO(stevenjb): Expand this list and update
+// network_element::AddErrorLocalizedStrings.
+std::string GetErrorName(const std::string& dbus_error_name,
+                         const std::string& default_error_name) {
+  if (dbus_error_name == shill::kErrorResultInvalidPassphrase)
+    return dbus_error_name;
+  return default_error_name;
+}
+
 }  // namespace
 
 // Helper class to request from Shill the profile entries associated with a
 // Service and delete the service from each profile. Triggers either
 // |callback| on success or |error_callback| on failure, and calls
 // |handler|->ProfileEntryDeleterCompleted() on completion to delete itself.
-class NetworkConfigurationHandler::ProfileEntryDeleter
-    : public base::SupportsWeakPtr<ProfileEntryDeleter> {
+class NetworkConfigurationHandler::ProfileEntryDeleter {
  public:
   ProfileEntryDeleter(NetworkConfigurationHandler* handler,
                       const std::string& service_path,
                       const std::string& guid,
-                      NetworkConfigurationObserver::Source source,
                       const base::Closure& callback,
                       const network_handler::ErrorCallback& error_callback)
       : owner_(handler),
         service_path_(service_path),
         guid_(guid),
-        source_(source),
         callback_(callback),
-        error_callback_(error_callback) {}
+        error_callback_(error_callback),
+        weak_ptr_factory_(this) {}
+
+  void RestrictToProfilePath(const std::string& profile_path) {
+    restrict_to_profile_path_ = profile_path;
+  }
 
   void Run() {
     DBusThreadManager::Get()
@@ -100,7 +123,7 @@ class NetworkConfigurationHandler::ProfileEntryDeleter
         ->GetLoadableProfileEntries(
             dbus::ObjectPath(service_path_),
             base::Bind(&ProfileEntryDeleter::GetProfileEntriesToDeleteCallback,
-                       AsWeakPtr()));
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
  private:
@@ -111,7 +134,7 @@ class NetworkConfigurationHandler::ProfileEntryDeleter
       InvokeErrorCallback(service_path_, error_callback_,
                           "GetLoadableProfileEntriesFailed");
       // ProfileEntryDeleterCompleted will delete this.
-      owner_->ProfileEntryDeleterCompleted(service_path_, guid_, source_,
+      owner_->ProfileEntryDeleterCompleted(service_path_, guid_,
                                            false /* failed */);
       return;
     }
@@ -131,16 +154,27 @@ class NetworkConfigurationHandler::ProfileEntryDeleter
                        << entry_path;
         continue;
       }
+
+      if (!restrict_to_profile_path_.empty() &&
+          profile_path != restrict_to_profile_path_) {
+        NET_LOG(DEBUG) << "Skip deleting Profile Entry: " << profile_path
+                       << ": " << entry_path << " - removal is restricted to "
+                       << restrict_to_profile_path_ << " profile";
+        continue;
+      }
+
       NET_LOG(DEBUG) << "Delete Profile Entry: " << profile_path << ": "
                      << entry_path;
       profile_delete_entries_[profile_path] = entry_path;
       DBusThreadManager::Get()->GetShillProfileClient()->DeleteEntry(
           dbus::ObjectPath(profile_path), entry_path,
           base::Bind(&ProfileEntryDeleter::ProfileEntryDeletedCallback,
-                     AsWeakPtr(), profile_path, entry_path),
-          base::Bind(&ProfileEntryDeleter::ShillErrorCallback, AsWeakPtr(),
-                     profile_path, entry_path));
+                     weak_ptr_factory_.GetWeakPtr(), profile_path, entry_path),
+          base::Bind(&ProfileEntryDeleter::ShillErrorCallback,
+                     weak_ptr_factory_.GetWeakPtr(), profile_path, entry_path));
     }
+
+    RunCallbackIfDone();
   }
 
   void ProfileEntryDeletedCallback(const std::string& profile_path,
@@ -148,13 +182,18 @@ class NetworkConfigurationHandler::ProfileEntryDeleter
     NET_LOG(DEBUG) << "Profile Entry Deleted: " << profile_path << ": "
                    << entry;
     profile_delete_entries_.erase(profile_path);
+
+    RunCallbackIfDone();
+  }
+
+  void RunCallbackIfDone() {
     if (!profile_delete_entries_.empty())
       return;
     // Run the callback if this is the last pending deletion.
     if (!callback_.is_null())
       callback_.Run();
     // ProfileEntryDeleterCompleted will delete this.
-    owner_->ProfileEntryDeleterCompleted(service_path_, guid_, source_,
+    owner_->ProfileEntryDeleterCompleted(service_path_, guid_,
                                          true /* success */);
   }
 
@@ -168,19 +207,23 @@ class NetworkConfigurationHandler::ProfileEntryDeleter
         dbus_error_name, dbus_error_message);
     // Delete this even if there are pending deletions; any callbacks will
     // safely become no-ops (by invalidating the WeakPtrs).
-    owner_->ProfileEntryDeleterCompleted(service_path_, guid_, source_,
+    owner_->ProfileEntryDeleterCompleted(service_path_, guid_,
                                          false /* failed */);
   }
 
   NetworkConfigurationHandler* owner_;  // Unowned
   std::string service_path_;
+  // Non empty if the service has to be removed only from a single profile. This
+  // value is the profile path of the profile in question.
+  std::string restrict_to_profile_path_;
   std::string guid_;
-  NetworkConfigurationObserver::Source source_;
   base::Closure callback_;
   network_handler::ErrorCallback error_callback_;
 
   // Map of pending profile entry deletions, indexed by profile path.
   std::map<std::string, std::string> profile_delete_entries_;
+
+  base::WeakPtrFactory<ProfileEntryDeleter> weak_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ProfileEntryDeleter);
 };
@@ -202,16 +245,29 @@ void NetworkConfigurationHandler::GetShillProperties(
     const network_handler::DictionaryResultCallback& callback,
     const network_handler::ErrorCallback& error_callback) {
   NET_LOG(USER) << "GetShillProperties: " << service_path;
+
+  const NetworkState* network_state =
+      network_state_handler_->GetNetworkState(service_path);
+  if (network_state &&
+      (NetworkTypePattern::Tether().MatchesType(network_state->type()) ||
+       network_state->IsDefaultCellular())) {
+    // This is a Tether network or a Cellular network with no Service.
+    // Provide properties from NetworkState.
+    base::DictionaryValue dictionary;
+    network_state->GetStateProperties(&dictionary);
+    callback.Run(service_path, dictionary);
+    return;
+  }
   DBusThreadManager::Get()->GetShillServiceClient()->GetProperties(
       dbus::ObjectPath(service_path),
       base::Bind(&NetworkConfigurationHandler::GetPropertiesCallback,
-                 AsWeakPtr(), callback, error_callback, service_path));
+                 weak_ptr_factory_.GetWeakPtr(), callback, error_callback,
+                 service_path));
 }
 
 void NetworkConfigurationHandler::SetShillProperties(
     const std::string& service_path,
     const base::DictionaryValue& shill_properties,
-    NetworkConfigurationObserver::Source source,
     const base::Closure& callback,
     const network_handler::ErrorCallback& error_callback) {
   if (shill_properties.empty()) {
@@ -231,21 +287,23 @@ void NetworkConfigurationHandler::SetShillProperties(
     const NetworkState* network_state =
         network_state_handler_->GetNetworkState(service_path);
     guid = network_state ? network_state->guid() : base::GenerateGUID();
-    properties_to_set->SetStringWithoutPathExpansion(shill::kGuidProperty,
-                                                     guid);
+    properties_to_set->SetKey(shill::kGuidProperty, base::Value(guid));
   }
 
   LogConfigProperties("SetProperty", service_path, *properties_to_set);
+
+  // Clear error state when setting Shill properties.
+  network_state_handler_->ClearLastErrorForNetwork(service_path);
 
   std::unique_ptr<base::DictionaryValue> properties_copy(
       properties_to_set->DeepCopy());
   DBusThreadManager::Get()->GetShillServiceClient()->SetProperties(
       dbus::ObjectPath(service_path), *properties_to_set,
       base::Bind(&NetworkConfigurationHandler::SetPropertiesSuccessCallback,
-                 AsWeakPtr(), service_path, base::Passed(&properties_copy),
-                 source, callback),
+                 weak_ptr_factory_.GetWeakPtr(), service_path,
+                 base::Passed(&properties_copy), callback),
       base::Bind(&NetworkConfigurationHandler::SetPropertiesErrorCallback,
-                 AsWeakPtr(), service_path, error_callback));
+                 weak_ptr_factory_.GetWeakPtr(), service_path, error_callback));
 
   // If we set the StaticIPConfig property, request an IP config refresh
   // after calling SetProperties.
@@ -271,14 +329,13 @@ void NetworkConfigurationHandler::ClearShillProperties(
   DBusThreadManager::Get()->GetShillServiceClient()->ClearProperties(
       dbus::ObjectPath(service_path), names,
       base::Bind(&NetworkConfigurationHandler::ClearPropertiesSuccessCallback,
-                 AsWeakPtr(), service_path, names, callback),
+                 weak_ptr_factory_.GetWeakPtr(), service_path, names, callback),
       base::Bind(&NetworkConfigurationHandler::ClearPropertiesErrorCallback,
-                 AsWeakPtr(), service_path, error_callback));
+                 weak_ptr_factory_.GetWeakPtr(), service_path, error_callback));
 }
 
 void NetworkConfigurationHandler::CreateShillConfiguration(
     const base::DictionaryValue& shill_properties,
-    NetworkConfigurationObserver::Source source,
     const network_handler::ServiceResultCallback& callback,
     const network_handler::ErrorCallback& error_callback) {
   ShillManagerClient* manager =
@@ -289,12 +346,6 @@ void NetworkConfigurationHandler::CreateShillConfiguration(
 
   std::string network_id =
       shill_property_util::GetNetworkIdFromProperties(shill_properties);
-
-  if (NetworkTypePattern::Ethernet().MatchesType(type)) {
-    InvokeErrorCallback(network_id, error_callback,
-                        "ConfigureServiceForProfile: Invalid type: " + type);
-    return;
-  }
 
   std::unique_ptr<base::DictionaryValue> properties_to_set(
       shill_properties.DeepCopy());
@@ -311,8 +362,7 @@ void NetworkConfigurationHandler::CreateShillConfiguration(
   properties_to_set->GetStringWithoutPathExpansion(shill::kGuidProperty, &guid);
   if (guid.empty()) {
     guid = base::GenerateGUID();
-    properties_to_set->SetStringWithoutPathExpansion(
-        ::onc::network_config::kGUID, guid);
+    properties_to_set->SetKey(shill::kGuidProperty, base::Value(guid));
   }
 
   LogConfigProperties("Configure", type, *properties_to_set);
@@ -321,21 +371,43 @@ void NetworkConfigurationHandler::CreateShillConfiguration(
       properties_to_set->DeepCopy());
   manager->ConfigureServiceForProfile(
       dbus::ObjectPath(profile_path), *properties_to_set,
-      base::Bind(&NetworkConfigurationHandler::RunCreateNetworkCallback,
-                 AsWeakPtr(), profile_path, source,
+      base::Bind(&NetworkConfigurationHandler::ConfigurationCompleted,
+                 weak_ptr_factory_.GetWeakPtr(), profile_path,
                  base::Passed(&properties_copy), callback),
-      base::Bind(&network_handler::ShillErrorCallbackFunction,
-                 "Config.CreateConfiguration Failed", "", error_callback));
+      base::Bind(&NetworkConfigurationHandler::ConfigurationFailed,
+                 weak_ptr_factory_.GetWeakPtr(), error_callback));
 }
 
 void NetworkConfigurationHandler::RemoveConfiguration(
     const std::string& service_path,
-    NetworkConfigurationObserver::Source source,
+    const base::Closure& callback,
+    const network_handler::ErrorCallback& error_callback) {
+  RemoveConfigurationFromProfile(service_path, "", callback, error_callback);
+}
+
+void NetworkConfigurationHandler::RemoveConfigurationFromCurrentProfile(
+    const std::string& service_path,
+    const base::Closure& callback,
+    const network_handler::ErrorCallback& error_callback) {
+  const NetworkState* network_state =
+      network_state_handler_->GetNetworkState(service_path);
+
+  if (!network_state || network_state->profile_path().empty()) {
+    InvokeErrorCallback(service_path, error_callback, "NetworkNotConfigured");
+    return;
+  }
+  RemoveConfigurationFromProfile(service_path, network_state->profile_path(),
+                                 callback, error_callback);
+}
+
+void NetworkConfigurationHandler::RemoveConfigurationFromProfile(
+    const std::string& service_path,
+    const std::string& profile_path,
     const base::Closure& callback,
     const network_handler::ErrorCallback& error_callback) {
   // Service.Remove is not reliable. Instead, request the profile entries
   // for the service and remove each entry.
-  if (ContainsKey(profile_entry_deleters_, service_path)) {
+  if (base::ContainsKey(profile_entry_deleters_, service_path)) {
     InvokeErrorCallback(service_path, error_callback,
                         "RemoveConfigurationInProgress");
     return;
@@ -346,40 +418,79 @@ void NetworkConfigurationHandler::RemoveConfiguration(
       network_state_handler_->GetNetworkState(service_path);
   if (network_state)
     guid = network_state->guid();
-  NET_LOG(USER) << "Remove Configuration: " << service_path;
+  NET_LOG(USER) << "Remove Configuration: " << service_path
+                << " from profiles: "
+                << (!profile_path.empty() ? profile_path : "all");
   ProfileEntryDeleter* deleter = new ProfileEntryDeleter(
-      this, service_path, guid, source, callback, error_callback);
-  profile_entry_deleters_[service_path] = deleter;
+      this, service_path, guid, callback, error_callback);
+  if (!profile_path.empty())
+    deleter->RestrictToProfilePath(profile_path);
+  profile_entry_deleters_[service_path] = base::WrapUnique(deleter);
   deleter->Run();
 }
 
 void NetworkConfigurationHandler::SetNetworkProfile(
     const std::string& service_path,
     const std::string& profile_path,
-    NetworkConfigurationObserver::Source source,
     const base::Closure& callback,
     const network_handler::ErrorCallback& error_callback) {
   NET_LOG(USER) << "SetNetworkProfile: " << service_path << ": "
                 << profile_path;
-  base::StringValue profile_path_value(profile_path);
+  base::Value profile_path_value(profile_path);
   DBusThreadManager::Get()->GetShillServiceClient()->SetProperty(
       dbus::ObjectPath(service_path), shill::kProfileProperty,
       profile_path_value,
       base::Bind(&NetworkConfigurationHandler::SetNetworkProfileCompleted,
-                 AsWeakPtr(), service_path, profile_path, source, callback),
+                 weak_ptr_factory_.GetWeakPtr(), service_path, profile_path,
+                 callback),
       base::Bind(&SetNetworkProfileErrorCallback, service_path, profile_path,
                  error_callback));
+}
+
+void NetworkConfigurationHandler::SetManagerProperty(
+    const std::string& property_name,
+    const base::Value& value,
+    const base::Closure& callback,
+    const network_handler::ErrorCallback& error_callback) {
+  NET_LOG(USER) << "SetManagerProperty: " << property_name << ": " << value;
+  DBusThreadManager::Get()->GetShillManagerClient()->SetProperty(
+      property_name, value, callback,
+      base::Bind(&ManagerSetPropertiesErrorCallback, error_callback));
+}
+
+// NetworkStateHandlerObserver methods
+void NetworkConfigurationHandler::NetworkListChanged() {
+  for (auto iter = configure_callbacks_.begin();
+       iter != configure_callbacks_.end();) {
+    const std::string& service_path = iter->first;
+    const NetworkState* state =
+        network_state_handler_->GetNetworkStateFromServicePath(service_path,
+                                                               true);
+    if (!state) {
+      NET_LOG(ERROR) << "Configured network not in list: " << service_path;
+      ++iter;
+      continue;
+    }
+    network_handler::ServiceResultCallback& callback = iter->second;
+    callback.Run(service_path, state->guid());
+    iter = configure_callbacks_.erase(iter);
+  }
+}
+
+void NetworkConfigurationHandler::OnShuttingDown() {
+  network_state_handler_->RemoveObserver(this, FROM_HERE);
+  network_state_handler_ = nullptr;
 }
 
 // NetworkConfigurationHandler Private methods
 
 NetworkConfigurationHandler::NetworkConfigurationHandler()
-    : network_state_handler_(NULL) {
-}
+    : network_state_handler_(nullptr), weak_ptr_factory_(this) {}
 
 NetworkConfigurationHandler::~NetworkConfigurationHandler() {
-  STLDeleteContainerPairSecondPointers(profile_entry_deleters_.begin(),
-                                       profile_entry_deleters_.end());
+  // Make sure that this has been removed as a NetworkStateHandler observer.
+  if (network_state_handler_)
+    OnShuttingDown();
 }
 
 void NetworkConfigurationHandler::Init(
@@ -387,57 +498,60 @@ void NetworkConfigurationHandler::Init(
     NetworkDeviceHandler* network_device_handler) {
   network_state_handler_ = network_state_handler;
   network_device_handler_ = network_device_handler;
+
+  // Observer is removed in OnShuttingDown() observer override.
+  network_state_handler_->AddObserver(this, FROM_HERE);
 }
 
-void NetworkConfigurationHandler::RunCreateNetworkCallback(
+void NetworkConfigurationHandler::ConfigurationFailed(
+    const network_handler::ErrorCallback& error_callback,
+    const std::string& dbus_error_name,
+    const std::string& dbus_error_message) {
+  std::string error_name =
+      GetErrorName(dbus_error_name, "Config.CreateConfiguration Failed");
+  network_handler::ShillErrorCallbackFunction(
+      error_name, "", error_callback, dbus_error_name, dbus_error_message);
+}
+
+void NetworkConfigurationHandler::ConfigurationCompleted(
     const std::string& profile_path,
-    NetworkConfigurationObserver::Source source,
     std::unique_ptr<base::DictionaryValue> configure_properties,
     const network_handler::ServiceResultCallback& callback,
     const dbus::ObjectPath& service_path) {
-  if (!callback.is_null()) {
-    std::string guid;
-    configure_properties->GetStringWithoutPathExpansion(
-        ::onc::network_config::kGUID, &guid);
-    DCHECK(!guid.empty());
-    callback.Run(service_path.value(), guid);
-  }
-  FOR_EACH_OBSERVER(NetworkConfigurationObserver, observers_,
-                    OnConfigurationCreated(service_path.value(), profile_path,
-                                           *configure_properties, source));
-  // This may also get called when CreateConfiguration is used to update an
-  // existing configuration, so request a service update just in case.
-  // TODO(pneubeck): Separate 'Create' and 'Update' calls and only trigger
-  // this on an update.
+  // Shill should send a network list update, but to ensure that Shill sends
+  // the newly configured properties immediately, request an update here.
   network_state_handler_->RequestUpdateForNetwork(service_path.value());
+
+  if (callback.is_null())
+    return;
+
+  // |configure_callbacks_| will get triggered when NetworkStateHandler
+  // notifies this that a state list update has occurred. |service_path|
+  // is unique per configuration. In the unlikely case that an existing
+  // configuration is reconfigured twice without a NetworkStateHandler update,
+  // (the UI should prevent that) the first callback will not get called.
+  configure_callbacks_[service_path.value()] = callback;
 }
 
 void NetworkConfigurationHandler::ProfileEntryDeleterCompleted(
     const std::string& service_path,
     const std::string& guid,
-    NetworkConfigurationObserver::Source source,
     bool success) {
   if (success) {
-    FOR_EACH_OBSERVER(NetworkConfigurationObserver, observers_,
-                      OnConfigurationRemoved(service_path, guid, source));
+    for (auto& observer : observers_)
+      observer.OnConfigurationRemoved(service_path, guid);
   }
-  std::map<std::string, ProfileEntryDeleter*>::iterator iter =
-      profile_entry_deleters_.find(service_path);
+  auto iter = profile_entry_deleters_.find(service_path);
   DCHECK(iter != profile_entry_deleters_.end());
-  delete iter->second;
   profile_entry_deleters_.erase(iter);
 }
 
 void NetworkConfigurationHandler::SetNetworkProfileCompleted(
     const std::string& service_path,
     const std::string& profile_path,
-    NetworkConfigurationObserver::Source source,
     const base::Closure& callback) {
   if (!callback.is_null())
     callback.Run();
-  FOR_EACH_OBSERVER(
-      NetworkConfigurationObserver, observers_,
-      OnConfigurationProfileChanged(service_path, profile_path, source));
 }
 
 void NetworkConfigurationHandler::GetPropertiesCallback(
@@ -462,7 +576,7 @@ void NetworkConfigurationHandler::GetPropertiesCallback(
   std::string name =
       shill_property_util::GetNameFromProperties(service_path, properties);
   if (!name.empty())
-    properties_copy->SetStringWithoutPathExpansion(shill::kNameProperty, name);
+    properties_copy->SetKey(shill::kNameProperty, base::Value(name));
 
   // Get the GUID property from NetworkState if it is not set in Shill.
   std::string guid;
@@ -471,8 +585,8 @@ void NetworkConfigurationHandler::GetPropertiesCallback(
     const NetworkState* network_state =
         network_state_handler_->GetNetworkState(service_path);
     if (network_state) {
-      properties_copy->SetStringWithoutPathExpansion(
-          ::onc::network_config::kGUID, network_state->guid());
+      properties_copy->SetKey(::onc::network_config::kGUID,
+                              base::Value(network_state->guid()));
     }
   }
 
@@ -482,7 +596,6 @@ void NetworkConfigurationHandler::GetPropertiesCallback(
 void NetworkConfigurationHandler::SetPropertiesSuccessCallback(
     const std::string& service_path,
     std::unique_ptr<base::DictionaryValue> set_properties,
-    NetworkConfigurationObserver::Source source,
     const base::Closure& callback) {
   if (!callback.is_null())
     callback.Run();
@@ -491,9 +604,6 @@ void NetworkConfigurationHandler::SetPropertiesSuccessCallback(
   if (!network_state)
     return;  // Network no longer exists, do not notify or request update.
 
-  FOR_EACH_OBSERVER(NetworkConfigurationObserver, observers_,
-                    OnPropertiesSet(service_path, network_state->guid(),
-                                    *set_properties, source));
   network_state_handler_->RequestUpdateForNetwork(service_path);
 }
 
@@ -502,9 +612,11 @@ void NetworkConfigurationHandler::SetPropertiesErrorCallback(
     const network_handler::ErrorCallback& error_callback,
     const std::string& dbus_error_name,
     const std::string& dbus_error_message) {
-  network_handler::ShillErrorCallbackFunction(
-      "Config.SetProperties Failed", service_path, error_callback,
-      dbus_error_name, dbus_error_message);
+  std::string error_name =
+      GetErrorName(dbus_error_name, "Config.SetProperties Failed");
+  network_handler::ShillErrorCallbackFunction(error_name, service_path,
+                                              error_callback, dbus_error_name,
+                                              dbus_error_message);
   // Some properties may have changed so request an update regardless.
   network_state_handler_->RequestUpdateForNetwork(service_path);
 }
@@ -555,7 +667,7 @@ void NetworkConfigurationHandler::RequestRefreshIPConfigs(
   if (!network_state || network_state->device_path().empty())
     return;
   network_device_handler_->RequestRefreshIPConfigs(
-      network_state->device_path(), base::Bind(&base::DoNothing),
+      network_state->device_path(), base::DoNothing(),
       network_handler::ErrorCallback());
 }
 

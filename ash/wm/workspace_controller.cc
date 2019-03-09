@@ -6,28 +6,23 @@
 
 #include <utility>
 
-#include "ash/aura/wm_window_aura.h"
-#include "ash/common/shell_window_ids.h"
-#include "ash/common/wm/window_state.h"
-#include "ash/common/wm/workspace/workspace_layout_manager.h"
-#include "ash/common/wm/workspace/workspace_layout_manager_backdrop_delegate.h"
-#include "ash/common/wm/workspace/workspace_layout_manager_delegate.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/root_window_controller.h"
-#include "ash/shelf/shelf_layout_manager.h"
+#include "ash/shelf/shelf.h"
 #include "ash/shell.h"
-#include "ash/wm/window_animations.h"
-#include "ash/wm/window_state_aura.h"
-#include "ash/wm/window_util.h"
+#include "ash/wm/fullscreen_window_finder.h"
+#include "ash/wm/mru_window_tracker.h"
+#include "ash/wm/overview/overview_controller.h"
+#include "ash/wm/window_state.h"
+#include "ash/wm/wm_window_animations.h"
+#include "ash/wm/workspace/backdrop_controller.h"
+#include "ash/wm/workspace/backdrop_delegate.h"
 #include "ash/wm/workspace/workspace_event_handler.h"
-#include "base/memory/ptr_util.h"
-#include "ui/aura/client/aura_constants.h"
+#include "ash/wm/workspace/workspace_layout_manager.h"
 #include "ui/aura/window.h"
-#include "ui/aura/window_event_dispatcher.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
-#include "ui/wm/core/visibility_controller.h"
 #include "ui/wm/core/window_animations.h"
-#include "ui/wm/public/activation_client.h"
 
 namespace ash {
 namespace {
@@ -36,99 +31,74 @@ namespace {
 // animation (when logging in).
 const int kInitialPauseTimeMS = 750;
 
-// Returns true if there are visible docked windows in the same screen as the
-// |shelf|.
-bool IsDockedAreaVisible(const ShelfLayoutManager* shelf) {
-  return shelf->dock_bounds().width() > 0;
-}
+// The duration of the animation that occurs on first login.
+const int kInitialAnimationDurationMS = 200;
 
 }  // namespace
 
-WorkspaceController::WorkspaceController(
-    aura::Window* viewport,
-    std::unique_ptr<wm::WorkspaceLayoutManagerDelegate> delegate)
+WorkspaceController::WorkspaceController(aura::Window* viewport)
     : viewport_(viewport),
-      shelf_(NULL),
-      event_handler_(new WorkspaceEventHandler),
-      layout_manager_(new WorkspaceLayoutManager(WmWindowAura::Get(viewport),
-                                                 std::move(delegate))) {
-  SetWindowVisibilityAnimationTransition(viewport_, ::wm::ANIMATE_NONE);
-
-  WmWindowAura::Get(viewport_)->SetLayoutManager(
-      base::WrapUnique(layout_manager_));
-  viewport_->AddPreTargetHandler(event_handler_.get());
+      event_handler_(std::make_unique<WorkspaceEventHandler>(viewport)),
+      layout_manager_(new WorkspaceLayoutManager(viewport)) {
+  viewport_->AddObserver(this);
+  ::wm::SetWindowVisibilityAnimationTransition(viewport_, ::wm::ANIMATE_NONE);
+  viewport_->SetLayoutManager(layout_manager_);
 }
 
 WorkspaceController::~WorkspaceController() {
-  viewport_->SetLayoutManager(NULL);
-  viewport_->RemovePreTargetHandler(event_handler_.get());
+  if (!viewport_)
+    return;
+
+  viewport_->RemoveObserver(this);
+  viewport_->SetLayoutManager(nullptr);
 }
 
 wm::WorkspaceWindowState WorkspaceController::GetWindowState() const {
-  if (!shelf_)
+  if (!viewport_)
     return wm::WORKSPACE_WINDOW_STATE_DEFAULT;
-  const aura::Window* topmost_fullscreen_window =
-      GetRootWindowController(viewport_->GetRootWindow())
-          ->GetWindowForFullscreenMode();
-  if (topmost_fullscreen_window &&
-      !wm::GetWindowState(topmost_fullscreen_window)->ignored_by_shelf()) {
+
+  // Always use DEFAULT state in overview mode so that work area stays
+  // the same regardles of the window we have.
+  // The |overview_controller| can be null during shutdown.
+  if (Shell::Get()->overview_controller() &&
+      Shell::Get()->overview_controller()->IsSelecting()) {
+    return wm::WORKSPACE_WINDOW_STATE_DEFAULT;
+  }
+
+  const aura::Window* fullscreen = wm::GetWindowForFullscreenMode(viewport_);
+  if (fullscreen)
     return wm::WORKSPACE_WINDOW_STATE_FULL_SCREEN;
+
+  auto mru_list =
+      Shell::Get()->mru_window_tracker()->BuildWindowListIgnoreModal();
+
+  for (aura::Window* window : mru_list) {
+    if (window->GetRootWindow() != viewport_->GetRootWindow())
+      continue;
+    wm::WindowState* window_state = wm::GetWindowState(window);
+    if (window->layer() && !window->layer()->GetTargetVisibility())
+      continue;
+    if (window_state->IsMaximized())
+      return wm::WORKSPACE_WINDOW_STATE_MAXIMIZED;
   }
-
-  // These are the container ids of containers which may contain windows that
-  // may overlap the launcher shelf and affect its transparency.
-  const int kWindowContainerIds[] = {
-      kShellWindowId_DefaultContainer, kShellWindowId_DockedContainer,
-  };
-  const gfx::Rect shelf_bounds(shelf_->GetIdealBounds());
-  bool window_overlaps_launcher = false;
-  for (size_t idx = 0; idx < arraysize(kWindowContainerIds); idx++) {
-    const aura::Window* container = Shell::GetContainer(
-        viewport_->GetRootWindow(), kWindowContainerIds[idx]);
-    const aura::Window::Windows& windows(container->children());
-    for (aura::Window::Windows::const_iterator i = windows.begin();
-         i != windows.end(); ++i) {
-      wm::WindowState* window_state = wm::GetWindowState(*i);
-      if (window_state->ignored_by_shelf())
-        continue;
-      ui::Layer* layer = (*i)->layer();
-      if (!layer->GetTargetVisibility())
-        continue;
-      if (window_state->IsMaximized()) {
-        return wm::WORKSPACE_WINDOW_STATE_MAXIMIZED;
-      }
-      if (!window_overlaps_launcher &&
-          ((*i)->bounds().Intersects(shelf_bounds))) {
-        window_overlaps_launcher = true;
-      }
-    }
-  }
-
-  return (window_overlaps_launcher || IsDockedAreaVisible(shelf_))
-             ? wm::WORKSPACE_WINDOW_STATE_WINDOW_OVERLAPS_SHELF
-             : wm::WORKSPACE_WINDOW_STATE_DEFAULT;
-}
-
-void WorkspaceController::SetShelf(ShelfLayoutManager* shelf) {
-  shelf_ = shelf;
+  return wm::WORKSPACE_WINDOW_STATE_DEFAULT;
 }
 
 void WorkspaceController::DoInitialAnimation() {
   viewport_->Show();
 
-  viewport_->layer()->SetOpacity(0.0f);
-  SetTransformForScaleAnimation(viewport_->layer(),
-                                LAYER_SCALE_ANIMATION_ABOVE);
+  ui::Layer* layer = viewport_->layer();
+  layer->SetOpacity(0.0f);
+  SetTransformForScaleAnimation(layer, LAYER_SCALE_ANIMATION_ABOVE);
 
   // In order for pause to work we need to stop animations.
-  viewport_->layer()->GetAnimator()->StopAnimating();
+  layer->GetAnimator()->StopAnimating();
 
   {
-    ui::ScopedLayerAnimationSettings settings(
-        viewport_->layer()->GetAnimator());
+    ui::ScopedLayerAnimationSettings settings(layer->GetAnimator());
 
     settings.SetPreemptionStrategy(ui::LayerAnimator::ENQUEUE_NEW_ANIMATION);
-    viewport_->layer()->GetAnimator()->SchedulePauseForProperties(
+    layer->GetAnimator()->SchedulePauseForProperties(
         base::TimeDelta::FromMilliseconds(kInitialPauseTimeMS),
         ui::LayerAnimationElement::TRANSFORM |
             ui::LayerAnimationElement::OPACITY |
@@ -136,15 +106,24 @@ void WorkspaceController::DoInitialAnimation() {
             ui::LayerAnimationElement::VISIBILITY);
     settings.SetTweenType(gfx::Tween::EASE_OUT);
     settings.SetTransitionDuration(
-        base::TimeDelta::FromMilliseconds(kCrossFadeDurationMS));
-    viewport_->layer()->SetTransform(gfx::Transform());
-    viewport_->layer()->SetOpacity(1.0f);
+        base::TimeDelta::FromMilliseconds(kInitialAnimationDurationMS));
+    layer->SetTransform(gfx::Transform());
+    layer->SetOpacity(1.0f);
   }
 }
 
-void WorkspaceController::SetMaximizeBackdropDelegate(
-    std::unique_ptr<WorkspaceLayoutManagerBackdropDelegate> delegate) {
-  layout_manager_->SetMaximizeBackdropDelegate(std::move(delegate));
+void WorkspaceController::SetBackdropDelegate(
+    std::unique_ptr<BackdropDelegate> delegate) {
+  layout_manager_->SetBackdropDelegate(std::move(delegate));
+}
+
+void WorkspaceController::OnWindowDestroying(aura::Window* window) {
+  DCHECK_EQ(window, viewport_);
+  viewport_->RemoveObserver(this);
+  viewport_ = nullptr;
+  // Destroy |event_handler_| too as it depends upon |window|.
+  event_handler_.reset();
+  layout_manager_ = nullptr;
 }
 
 }  // namespace ash

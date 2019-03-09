@@ -9,8 +9,9 @@
 #include <string>
 
 #include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
-#include "chromeos/chromeos_switches.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/shill_device_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -22,8 +23,8 @@ namespace {
 
 class TestObserver : public NetworkSmsHandler::Observer {
  public:
-  TestObserver() {}
-  ~TestObserver() override {}
+  TestObserver() = default;
+  ~TestObserver() override = default;
 
   void MessageReceived(const base::DictionaryValue& message) override {
     std::string text;
@@ -50,8 +51,10 @@ class TestObserver : public NetworkSmsHandler::Observer {
 
 class NetworkSmsHandlerTest : public testing::Test {
  public:
-  NetworkSmsHandlerTest() {}
-  ~NetworkSmsHandlerTest() override {}
+  NetworkSmsHandlerTest()
+      : scoped_task_environment_(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI) {}
+  ~NetworkSmsHandlerTest() override = default;
 
   void SetUp() override {
     // Append '--sms-test-messages' to the command line to tell
@@ -77,7 +80,7 @@ class NetworkSmsHandlerTest : public testing::Test {
     test_observer_.reset(new TestObserver());
     network_sms_handler_->AddObserver(test_observer_.get());
     network_sms_handler_->RequestUpdate(true);
-    message_loop_.RunUntilIdle();
+    base::RunLoop().RunUntilIdle();
   }
 
   void TearDown() override {
@@ -87,7 +90,7 @@ class NetworkSmsHandlerTest : public testing::Test {
   }
 
  protected:
-  base::MessageLoopForUI message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   std::unique_ptr<NetworkSmsHandler> network_sms_handler_;
   std::unique_ptr<TestObserver> test_observer_;
 };
@@ -106,7 +109,7 @@ TEST_F(NetworkSmsHandlerTest, SmsHandlerDbusStub) {
   // Test for messages delivered by signals.
   test_observer_->ClearMessages();
   network_sms_handler_->RequestUpdate(false);
-  message_loop_.RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
   EXPECT_GE(test_observer_->message_count(), 1);
   EXPECT_NE(messages.find(kMessage1), messages.end());
 }

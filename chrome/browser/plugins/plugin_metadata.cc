@@ -6,10 +6,9 @@
 
 #include <stddef.h>
 
-#include <algorithm>
-
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/stl_util.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_util.h"
 #include "content/public/common/webplugininfo.h"
@@ -19,6 +18,7 @@ const char PluginMetadata::kAdobeReaderGroupName[] = "Adobe Reader";
 const char PluginMetadata::kJavaGroupName[] = "Java(TM)";
 const char PluginMetadata::kQuickTimeGroupName[] = "QuickTime Player";
 const char PluginMetadata::kShockwaveGroupName[] = "Adobe Shockwave Player";
+const char PluginMetadata::kAdobeFlashPlayerGroupName[] = "Adobe Flash Player";
 const char PluginMetadata::kRealPlayerGroupName[] = "RealPlayer";
 const char PluginMetadata::kSilverlightGroupName[] = "Silverlight";
 const char PluginMetadata::kWindowsMediaPlayerGroupName[] =
@@ -45,7 +45,7 @@ PluginMetadata::PluginMetadata(const std::string& identifier,
 PluginMetadata::~PluginMetadata() {
 }
 
-void PluginMetadata::AddVersion(const Version& version,
+void PluginMetadata::AddVersion(const base::Version& version,
                                 SecurityStatus status) {
   DCHECK(versions_.find(version) == versions_.end());
   versions_[version] = status;
@@ -60,8 +60,13 @@ void PluginMetadata::AddMatchingMimeType(const std::string& mime_type) {
 }
 
 bool PluginMetadata::HasMimeType(const std::string& mime_type) const {
-  return std::find(all_mime_types_.begin(), all_mime_types_.end(), mime_type) !=
-      all_mime_types_.end();
+  return base::ContainsValue(all_mime_types_, mime_type);
+}
+
+bool PluginMetadata::IsPluginDeprecated() const {
+  // TODO(crbug/918427): this is a placeholder behavior; please replace once
+  // the metadata standard for blocking plugins has been finalized.
+  return plugin_url().is_empty();
 }
 
 bool PluginMetadata::MatchesPlugin(const content::WebPluginInfo& plugin) {
@@ -105,14 +110,13 @@ PluginMetadata::SecurityStatus PluginMetadata::GetSecurityStatus(
     return SECURITY_STATUS_REQUIRES_AUTHORIZATION;
   }
 
-  Version version;
+  base::Version version;
   content::WebPluginInfo::CreateVersionFromString(plugin.version, &version);
   if (!version.IsValid())
-    version = Version("0");
+    version = base::Version("0");
 
   // |lower_bound| returns the latest version that is not newer than |version|.
-  std::map<Version, SecurityStatus, VersionComparator>::const_iterator it =
-      versions_.lower_bound(version);
+  auto it = versions_.lower_bound(version);
   // If there is at least one version defined, everything older than the oldest
   // defined version is considered out-of-date.
   if (it == versions_.end())
@@ -121,8 +125,8 @@ PluginMetadata::SecurityStatus PluginMetadata::GetSecurityStatus(
   return it->second;
 }
 
-bool PluginMetadata::VersionComparator::operator() (const Version& lhs,
-                                                    const Version& rhs) const {
+bool PluginMetadata::VersionComparator::operator() (
+    const base::Version& lhs, const base::Version& rhs) const {
   // Keep versions ordered by newest (biggest) first.
   return lhs.CompareTo(rhs) > 0;
 }

@@ -16,12 +16,13 @@
 #include "base/macros.h"
 #include "extensions/renderer/native_handler.h"
 #include "extensions/renderer/object_backed_native_handler.h"
-#include "gin/modules/module_registry_observer.h"
+#include "extensions/renderer/script_injection_callback.h"
 #include "v8/include/v8.h"
 
 namespace extensions {
 
 class ScriptContext;
+class SourceMap;
 
 // A module system for JS similar to node.js' require() function.
 // Each module has three variables in the global scope:
@@ -39,17 +40,8 @@ class ScriptContext;
 // Note that a ModuleSystem must be used only in conjunction with a single
 // v8::Context.
 // TODO(koz): Rename this to JavaScriptModuleSystem.
-class ModuleSystem : public ObjectBackedNativeHandler,
-                     public gin::ModuleRegistryObserver {
+class ModuleSystem : public ObjectBackedNativeHandler {
  public:
-  class SourceMap {
-   public:
-    virtual ~SourceMap() {}
-    virtual v8::Local<v8::Value> GetSource(v8::Isolate* isolate,
-                                           const std::string& name) const = 0;
-    virtual bool Contains(const std::string& name) const = 0;
-  };
-
   class ExceptionHandler {
    public:
     explicit ExceptionHandler(ScriptContext* context) : context_(context) {}
@@ -79,6 +71,9 @@ class ModuleSystem : public ObjectBackedNativeHandler,
   ModuleSystem(ScriptContext* context, const SourceMap* source_map);
   ~ModuleSystem() override;
 
+  // ObjectBackedNativeHandler:
+  void AddRoutes() override;
+
   // Require the specified module. This is the equivalent of calling
   // require('module_name') from the loaded JS files.
   v8::MaybeLocal<v8::Object> Require(const std::string& module_name);
@@ -90,17 +85,25 @@ class ModuleSystem : public ObjectBackedNativeHandler,
                                  v8::Local<v8::String> name);
 
   // Calls the specified method exported by the specified module. This is
-  // equivalent to calling require('module_name').method_name() from JS.
-  v8::Local<v8::Value> CallModuleMethod(const std::string& module_name,
-                                        const std::string& method_name);
-  v8::Local<v8::Value> CallModuleMethod(
+  // equivalent to calling require('module_name').method_name() from JS. Note:
+  // this may result in asynchronous execution if javascript is presently
+  // disabled.
+  // TODO(devlin): Rename this to just CallModuleMethod()?
+  void CallModuleMethodSafe(const std::string& module_name,
+                            const std::string& method_name);
+  void CallModuleMethodSafe(const std::string& module_name,
+                            const std::string& method_name,
+                            std::vector<v8::Local<v8::Value>>* args);
+  void CallModuleMethodSafe(const std::string& module_name,
+                            const std::string& method_name,
+                            int argc,
+                            v8::Local<v8::Value> argv[]);
+  void CallModuleMethodSafe(
       const std::string& module_name,
       const std::string& method_name,
-      std::vector<v8::Local<v8::Value>>* args);
-  v8::Local<v8::Value> CallModuleMethod(const std::string& module_name,
-                                        const std::string& method_name,
-                                        int argc,
-                                        v8::Local<v8::Value> argv[]);
+      int argc,
+      v8::Local<v8::Value> argv[],
+      const ScriptInjectionCallback::CompleteCallback& callback);
 
   // Register |native_handler| as a potential target for requireNative(), so
   // calls to requireNative(|name|) from JS will return a new object created by
@@ -112,9 +115,6 @@ class ModuleSystem : public ObjectBackedNativeHandler,
   // instead of using a registered native handler. This can be used in unit
   // tests to mock out native modules.
   void OverrideNativeHandlerForTest(const std::string& name);
-
-  // Executes |code| in the current context with |name| as the filename.
-  void RunString(const std::string& code, const std::string& name);
 
   // Make |object|.|field| lazily evaluate to the result of
   // require(|module_name|)[|module_field|].
@@ -146,6 +146,19 @@ class ModuleSystem : public ObjectBackedNativeHandler,
     exception_handler_ = std::move(handler);
   }
 
+  // Called when a native binding is created in order to run any custom binding
+  // code to set up various hooks.
+  // TODO(devlin): We can get rid of this once we convert all our custom
+  // bindings.
+  void OnNativeBindingCreated(const std::string& api_name,
+                              v8::Local<v8::Value> api_bridge_value);
+
+  void SetGetInternalAPIHook(v8::Local<v8::FunctionTemplate> get_internal_api);
+
+  using JSBindingUtilGetter =
+      base::Callback<void(v8::Local<v8::Context>, v8::Local<v8::Value>*)>;
+  void SetJSBindingUtilGetter(const JSBindingUtilGetter& getter);
+
  protected:
   friend class ModuleSystemTestEnvironment;
   friend class ScriptContext;
@@ -168,7 +181,12 @@ class ModuleSystem : public ObjectBackedNativeHandler,
   void HandleException(const v8::TryCatch& try_catch);
 
   void RequireForJs(const v8::FunctionCallbackInfo<v8::Value>& args);
-  v8::Local<v8::Value> RequireForJsInner(v8::Local<v8::String> module_name);
+
+  // Returns the module with the given |module_name|. If |create| is true, the
+  // module will be loaded if it hasn't been already. Otherwise, the module
+  // will only be returned if it has already been loaded.
+  v8::Local<v8::Value> RequireForJsInner(v8::Local<v8::String> module_name,
+                                         bool create);
 
   typedef v8::MaybeLocal<v8::Object>(ModuleSystem::*RequireFunction)(
       const std::string&);
@@ -190,9 +208,9 @@ class ModuleSystem : public ObjectBackedNativeHandler,
       const std::string& native_name);
   void RequireNative(const v8::FunctionCallbackInfo<v8::Value>& args);
 
-  // Return a promise for a requested module.
   // |args[0]| - the name of a module.
-  void RequireAsync(const v8::FunctionCallbackInfo<v8::Value>& args);
+  // This method directly executes the script in the current scope.
+  void LoadScript(const v8::FunctionCallbackInfo<v8::Value>& args);
 
   // Wraps |source| in a (function(define, require, requireNative, ...) {...}).
   v8::Local<v8::String> WrapSource(v8::Local<v8::String> source);
@@ -202,21 +220,18 @@ class ModuleSystem : public ObjectBackedNativeHandler,
 
   // Loads and runs a Javascript module.
   v8::Local<v8::Value> LoadModule(const std::string& module_name);
-
-  // Invoked when a module is loaded in response to a requireAsync call.
-  // Resolves |resolver| with |value|.
-  void OnModuleLoaded(
-      std::unique_ptr<v8::Global<v8::Promise::Resolver>> resolver,
-      v8::Local<v8::Value> value);
-
-  // gin::ModuleRegistryObserver overrides.
-  void OnDidAddPendingModule(
-      const std::string& id,
-      const std::vector<std::string>& dependencies) override;
+  v8::Local<v8::Value> LoadModuleWithNativeAPIBridge(
+      const std::string& module_name,
+      v8::Local<v8::Value> api_object);
 
   // Marks any existing NativeHandler named |name| as clobbered.
   // See |clobbered_native_handlers_|.
   void ClobberExistingNativeHandler(const std::string& name);
+
+  // Returns the v8::Function associated with the given module and method name.
+  // This will *not* load a module if it hasn't been loaded already.
+  v8::Local<v8::Function> GetModuleFunction(const std::string& module_name,
+                                            const std::string& method_name);
 
   ScriptContext* context_;
 
@@ -245,7 +260,17 @@ class ModuleSystem : public ObjectBackedNativeHandler,
   // can be later Invalidated. It should only happen in tests.
   std::vector<std::unique_ptr<NativeHandler>> clobbered_native_handlers_;
 
-  base::WeakPtrFactory<ModuleSystem> weak_factory_;
+  // The template to be used for retrieving an internal API.
+  v8::Eternal<v8::FunctionTemplate> get_internal_api_;
+
+  JSBindingUtilGetter js_binding_util_getter_;
+
+  // The set of modules that we've attempted to load.
+  std::set<std::string> loaded_modules_;
+
+  // Whether to lazily initialize native handlers on first access. We do this
+  // when native bindings are enabled.
+  bool lazily_initialize_handlers_;
 
   DISALLOW_COPY_AND_ASSIGN(ModuleSystem);
 };

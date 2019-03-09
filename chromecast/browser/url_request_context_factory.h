@@ -5,9 +5,17 @@
 #ifndef CHROMECAST_BROWSER_URL_REQUEST_CONTEXT_FACTORY_H_
 #define CHROMECAST_BROWSER_URL_REQUEST_CONTEXT_FACTORY_H_
 
+#include <memory>
+
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/content_browser_client.h"
 #include "net/http/http_network_session.h"
+
+class PrefProxyConfigTracker;
+
+namespace base {
+class FilePath;
+}
 
 namespace net {
 class CookieStore;
@@ -67,13 +75,13 @@ class URLRequestContextFactory {
 
   void InitializeSystemContextDependencies();
   void InitializeMainContextDependencies(
-      net::HttpTransactionFactory* factory,
       content::ProtocolHandlerMap* protocol_handlers,
       content::URLRequestInterceptorScopedVector request_interceptors);
   void InitializeMediaContextDependencies(net::HttpTransactionFactory* factory);
 
-  void PopulateNetworkSessionParams(bool ignore_certificate_errors,
-                                    net::HttpNetworkSession::Params* params);
+  void PopulateNetworkSessionParams(
+      bool ignore_certificate_errors,
+      net::HttpNetworkSession::Params* session_params);
 
   // These are called by the RequestContextGetters to create each
   // RequestContext.
@@ -81,9 +89,16 @@ class URLRequestContextFactory {
   net::URLRequestContext* CreateSystemRequestContext();
   net::URLRequestContext* CreateMediaRequestContext();
   net::URLRequestContext* CreateMainRequestContext(
-      content::BrowserContext* browser_context,
+      const base::FilePath& cookie_path,
       content::ProtocolHandlerMap* protocol_handlers,
       content::URLRequestInterceptorScopedVector request_interceptors);
+
+  // Helper function for configuring the settings of URLRequestContext
+  void ConfigureURLRequestContext(
+      net::URLRequestContext* context,
+      const std::unique_ptr<net::URLRequestJobFactory>& job_factory,
+      const std::unique_ptr<net::CookieStore>& cookie_store,
+      const std::unique_ptr<CastNetworkDelegate>& network_delegate);
 
   scoped_refptr<net::URLRequestContextGetter> system_getter_;
   scoped_refptr<net::URLRequestContextGetter> media_getter_;
@@ -100,12 +115,12 @@ class URLRequestContextFactory {
   std::unique_ptr<net::HostResolver> host_resolver_;
   std::unique_ptr<net::ChannelIDService> channel_id_service_;
   std::unique_ptr<net::CertVerifier> cert_verifier_;
-  scoped_refptr<net::SSLConfigService> ssl_config_service_;
+  std::unique_ptr<net::SSLConfigService> ssl_config_service_;
   std::unique_ptr<net::TransportSecurityState> transport_security_state_;
   std::unique_ptr<net::CTVerifier> cert_transparency_verifier_;
   std::unique_ptr<net::CTPolicyEnforcer> ct_policy_enforcer_;
   std::unique_ptr<net::ProxyConfigService> proxy_config_service_;
-  std::unique_ptr<net::ProxyService> proxy_service_;
+  std::unique_ptr<net::ProxyResolutionService> proxy_resolution_service_;
   std::unique_ptr<net::HttpAuthHandlerFactory> http_auth_handler_factory_;
   std::unique_ptr<net::HttpServerProperties> http_server_properties_;
   std::unique_ptr<net::HttpUserAgentSettings> http_user_agent_settings_;
@@ -120,6 +135,8 @@ class URLRequestContextFactory {
 
   bool media_dependencies_initialized_;
   std::unique_ptr<net::HttpTransactionFactory> media_transaction_factory_;
+
+  std::unique_ptr<PrefProxyConfigTracker> pref_proxy_config_tracker_impl_;
 
   net::NetLog* net_log_;
 };

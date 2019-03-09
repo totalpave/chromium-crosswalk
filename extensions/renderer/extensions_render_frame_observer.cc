@@ -6,12 +6,16 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
 #include "content/public/renderer/render_frame.h"
+#include "content/public/renderer/render_view.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension_messages.h"
 #include "extensions/common/stack_frame.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_view.h"
 
 namespace extensions {
 
@@ -40,15 +44,15 @@ StackTrace GetStackTraceFromMessage(base::string16* message,
 
   if (message->find(base::UTF8ToUTF16(kStackFrameDelimiter)) !=
           base::string16::npos) {
-    base::SplitStringUsingSubstr(*message,
-                                 base::UTF8ToUTF16(kStackFrameDelimiter),
-                                 &pieces);
+    pieces = base::SplitStringUsingSubstr(
+        *message, base::UTF8ToUTF16(kStackFrameDelimiter),
+        base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
     *message = pieces[0];
     index = 1;
   } else if (!stack_trace.empty()) {
-    base::SplitStringUsingSubstr(stack_trace,
-                                 base::UTF8ToUTF16(kStackFrameDelimiter),
-                                 &pieces);
+    pieces = base::SplitStringUsingSubstr(
+        stack_trace, base::UTF8ToUTF16(kStackFrameDelimiter),
+        base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   }
 
   // If we got a stack trace, parse each frame from the text.
@@ -75,11 +79,33 @@ StackTrace GetStackTraceFromMessage(base::string16* message,
 }  // namespace
 
 ExtensionsRenderFrameObserver::ExtensionsRenderFrameObserver(
-    content::RenderFrame* render_frame)
-    : content::RenderFrameObserver(render_frame) {
+    content::RenderFrame* render_frame,
+    service_manager::BinderRegistry* registry)
+    : content::RenderFrameObserver(render_frame),
+      webview_visually_deemphasized_(false) {
+  registry->AddInterface(
+      base::Bind(&ExtensionsRenderFrameObserver::BindAppWindowRequest,
+                 base::Unretained(this)));
 }
 
 ExtensionsRenderFrameObserver::~ExtensionsRenderFrameObserver() {
+}
+
+void ExtensionsRenderFrameObserver::BindAppWindowRequest(
+    mojom::AppWindowRequest request) {
+  bindings_.AddBinding(this, std::move(request));
+}
+
+void ExtensionsRenderFrameObserver::SetVisuallyDeemphasized(bool deemphasized) {
+  if (webview_visually_deemphasized_ == deemphasized)
+    return;
+
+  webview_visually_deemphasized_ = deemphasized;
+
+  SkColor color =
+      deemphasized ? SkColorSetARGB(178, 0, 0, 0) : SK_ColorTRANSPARENT;
+  render_frame()->GetRenderView()->GetWebView()->SetMainFrameOverlayColor(
+      color);
 }
 
 void ExtensionsRenderFrameObserver::DetailedConsoleMessageAdded(
@@ -88,6 +114,12 @@ void ExtensionsRenderFrameObserver::DetailedConsoleMessageAdded(
     const base::string16& stack_trace_string,
     uint32_t line_number,
     int32_t severity_level) {
+  if (severity_level <
+      static_cast<int32_t>(extension_misc::kMinimumSeverityToReportError)) {
+    // We don't report certain low-severity errors.
+    return;
+  }
+
   base::string16 trimmed_message = message;
   StackTrace stack_trace = GetStackTraceFromMessage(
       &trimmed_message,

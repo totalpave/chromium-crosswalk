@@ -6,6 +6,9 @@
 
 #include <stdint.h>
 
+#include <memory>
+
+#include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/task_runner_util.h"
@@ -23,9 +26,9 @@ class TruncateOperationTest : public OperationTestBase {
   void SetUp() override {
     OperationTestBase::SetUp();
 
-    operation_.reset(new TruncateOperation(
-        blocking_task_runner(), delegate(), scheduler(),
-        metadata(), cache(), temp_dir()));
+    operation_ = std::make_unique<TruncateOperation>(
+        blocking_task_runner(), delegate(), scheduler(), metadata(), cache(),
+        temp_dir());
   }
 
   std::unique_ptr<TruncateOperation> operation_;
@@ -45,7 +48,7 @@ TEST_F(TruncateOperationTest, Truncate) {
       file_in_root,
       1,  // Truncate to 1 byte.
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   base::FilePath local_path;
@@ -57,7 +60,7 @@ TEST_F(TruncateOperationTest, Truncate) {
                  base::Unretained(cache()),
                  GetLocalId(file_in_root), &local_path),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   ASSERT_EQ(FILE_ERROR_OK, error);
 
   // The local file should be truncated.
@@ -80,7 +83,7 @@ TEST_F(TruncateOperationTest, NegativeSize) {
       file_in_root,
       -1,  // Truncate to "-1" byte.
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_INVALID_OPERATION, error);
 }
 
@@ -93,7 +96,7 @@ TEST_F(TruncateOperationTest, HostedDocument) {
       file_in_root,
       1,  // Truncate to 1 byte.
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_INVALID_OPERATION, error);
 }
 
@@ -108,7 +111,7 @@ TEST_F(TruncateOperationTest, Extend) {
       file_in_root,
       file_size + 10,  // Extend to 10 bytes.
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   EXPECT_EQ(FILE_ERROR_OK, error);
 
   base::FilePath local_path;
@@ -120,7 +123,7 @@ TEST_F(TruncateOperationTest, Extend) {
                  base::Unretained(cache()),
                  GetLocalId(file_in_root), &local_path),
       google_apis::test_util::CreateCopyResultCallback(&error));
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   ASSERT_EQ(FILE_ERROR_OK, error);
 
   // The local file should be truncated.

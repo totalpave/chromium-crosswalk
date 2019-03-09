@@ -8,15 +8,13 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "content/browser/background_sync/background_sync_context.h"
+#include "content/browser/background_sync/background_sync_context_impl.h"
 
 namespace content {
 
-class TestBackgroundSyncManager;
-
-// A BackgroundSyncContext for use in unit tests, primarily to create a test
+// A BackgroundSyncContextImpl for use in unit tests, primarily to create a test
 // BackgroundSyncManager.
-class TestBackgroundSyncContext : public BackgroundSyncContext {
+class TestBackgroundSyncContext : public BackgroundSyncContextImpl {
  public:
   TestBackgroundSyncContext() = default;
 

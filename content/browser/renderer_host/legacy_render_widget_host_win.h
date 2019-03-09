@@ -5,30 +5,33 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_LEGACY_RENDER_WIDGET_HOST_WIN_H_
 #define CONTENT_BROWSER_RENDERER_HOST_LEGACY_RENDER_WIDGET_HOST_WIN_H_
 
-#include <atlbase.h>
 #include <atlcrack.h>
-#include <atlwin.h>
 #include <oleacc.h>
+#include <wrl/client.h>
 
 #include <memory>
 
 #include "base/macros.h"
-#include "base/win/scoped_comptr.h"
+#include "base/win/atl.h"
 #include "content/common/content_export.h"
+#include "ui/compositor/compositor_animation_observer.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/native_widget_types.h"
 
-namespace gfx {
+namespace ui {
+class AXFragmentRootWin;
+class AXSystemCaretWin;
+class DirectManipulationHelper;
+class WindowEventTarget;
 namespace win {
 class DirectManipulationHelper;
 }  // namespace win
-}  // namespace gfx
-
-namespace ui {
-class WindowEventTarget;
-}
+}  // namespace ui
 
 namespace content {
 class RenderWidgetHostViewAura;
+
+class DirectManipulationBrowserTest;
 
 // Reasons for the existence of this class outlined below:-
 // 1. Some screen readers expect every tab / every unique web content container
@@ -55,14 +58,15 @@ class RenderWidgetHostViewAura;
 // HWND instead of the DesktopWindowTreeHostWin.
 class CONTENT_EXPORT LegacyRenderWidgetHostHWND
     : public ATL::CWindowImpl<LegacyRenderWidgetHostHWND,
-                              NON_EXPORTED_BASE(ATL::CWindow),
-                              ATL::CWinTraits<WS_CHILD> > {
+                              ATL::CWindow,
+                              ATL::CWinTraits<WS_CHILD>> {
  public:
-  DECLARE_WND_CLASS_EX(L"Chrome_RenderWidgetHostHWND", CS_DBLCLKS, 0);
+  DECLARE_WND_CLASS_EX(L"Chrome_RenderWidgetHostHWND", CS_DBLCLKS, 0)
 
   typedef ATL::CWindowImpl<LegacyRenderWidgetHostHWND,
-                           NON_EXPORTED_BASE(ATL::CWindow),
-                           ATL::CWinTraits<WS_CHILD> > Base;
+                           ATL::CWindow,
+                           ATL::CWinTraits<WS_CHILD>>
+      Base;
 
   // Creates and returns an instance of the LegacyRenderWidgetHostHWND class on
   // successful creation of a child window parented to the parent window passed
@@ -83,6 +87,11 @@ class CONTENT_EXPORT LegacyRenderWidgetHostHWND
     MESSAGE_HANDLER_EX(WM_MOUSEACTIVATE, OnMouseActivate)
     MESSAGE_HANDLER_EX(WM_SETCURSOR, OnSetCursor)
     MESSAGE_HANDLER_EX(WM_TOUCH, OnTouch)
+    MESSAGE_HANDLER_EX(WM_POINTERDOWN, OnPointer)
+    MESSAGE_HANDLER_EX(WM_POINTERUPDATE, OnPointer)
+    MESSAGE_HANDLER_EX(WM_POINTERUP, OnPointer)
+    MESSAGE_HANDLER_EX(WM_POINTERENTER, OnPointer)
+    MESSAGE_HANDLER_EX(WM_POINTERLEAVE, OnPointer)
     MESSAGE_HANDLER_EX(WM_HSCROLL, OnScroll)
     MESSAGE_HANDLER_EX(WM_VSCROLL, OnScroll)
     MESSAGE_HANDLER_EX(WM_NCHITTEST, OnNCHitTest)
@@ -91,6 +100,7 @@ class CONTENT_EXPORT LegacyRenderWidgetHostHWND
     MESSAGE_HANDLER_EX(WM_NCCALCSIZE, OnNCCalcSize)
     MESSAGE_HANDLER_EX(WM_SIZE, OnSize)
     MESSAGE_HANDLER_EX(WM_WINDOWPOSCHANGED, OnWindowPosChanged)
+    MESSAGE_HANDLER_EX(DM_POINTERHITTEST, OnPointerHitTest)
   END_MSG_MAP()
 
   HWND hwnd() { return m_hWnd; }
@@ -100,7 +110,7 @@ class CONTENT_EXPORT LegacyRenderWidgetHostHWND
   void UpdateParent(HWND parent);
   HWND GetParent();
 
-  IAccessible* window_accessible() { return window_accessible_.get(); }
+  IAccessible* window_accessible() { return window_accessible_.Get(); }
 
   // Functions to show and hide the window.
   void Show();
@@ -115,10 +125,19 @@ class CONTENT_EXPORT LegacyRenderWidgetHostHWND
     host_ = host;
   }
 
+  // DirectManipulation needs to poll for new events every frame while finger
+  // gesturing on touchpad.
+  void PollForNextEvent();
+
+  // Return the root accessible object for either MSAA or UI Automation.
+  gfx::NativeViewAccessible GetOrCreateWindowRootAccessible();
+
  protected:
   void OnFinalMessage(HWND hwnd) override;
 
  private:
+  friend class DirectManipulationBrowserTest;
+
   explicit LegacyRenderWidgetHostHWND(HWND parent);
   ~LegacyRenderWidgetHostHWND() override;
 
@@ -135,6 +154,7 @@ class CONTENT_EXPORT LegacyRenderWidgetHostHWND
   LRESULT OnMouseRange(UINT message, WPARAM w_param, LPARAM l_param,
                        BOOL& handled);
   LRESULT OnMouseActivate(UINT message, WPARAM w_param, LPARAM l_param);
+  LRESULT OnPointer(UINT message, WPARAM w_param, LPARAM l_param);
   LRESULT OnTouch(UINT message, WPARAM w_param, LPARAM l_param);
   LRESULT OnScroll(UINT message, WPARAM w_param, LPARAM l_param);
   LRESULT OnNCHitTest(UINT message, WPARAM w_param, LPARAM l_param);
@@ -146,18 +166,33 @@ class CONTENT_EXPORT LegacyRenderWidgetHostHWND
   LRESULT OnSize(UINT message, WPARAM w_param, LPARAM l_param);
   LRESULT OnWindowPosChanged(UINT message, WPARAM w_param, LPARAM l_param);
 
-  base::win::ScopedComPtr<IAccessible> window_accessible_;
+  LRESULT OnPointerHitTest(UINT message, WPARAM w_param, LPARAM l_param);
+
+  void CreateAnimationObserver();
+
+  void DestroyAnimationObserver();
+
+  Microsoft::WRL::ComPtr<IAccessible> window_accessible_;
 
   // Set to true if we turned on mouse tracking.
   bool mouse_tracking_enabled_;
 
   RenderWidgetHostViewAura* host_;
 
+  // Some assistive software need to track the location of the caret.
+  std::unique_ptr<ui::AXSystemCaretWin> ax_system_caret_;
+
+  // Implements IRawElementProviderFragmentRoot when UIA is enabled
+  std::unique_ptr<ui::AXFragmentRootWin> ax_fragment_root_;
+
   // This class provides functionality to register the legacy window as a
   // Direct Manipulation consumer. This allows us to support smooth scroll
   // in Chrome on Windows 10.
-  std::unique_ptr<gfx::win::DirectManipulationHelper>
+  std::unique_ptr<ui::win::DirectManipulationHelper>
       direct_manipulation_helper_;
+
+  std::unique_ptr<ui::CompositorAnimationObserver>
+      compositor_animation_observer_;
 
   DISALLOW_COPY_AND_ASSIGN(LegacyRenderWidgetHostHWND);
 };

@@ -9,7 +9,6 @@
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
 
-namespace media {
 namespace midi {
 
 namespace {
@@ -79,7 +78,7 @@ UsbMidiDescriptorParser::UsbMidiDescriptorParser()
       current_endpoint_address_(0),
       current_cable_number_(0) {}
 
-UsbMidiDescriptorParser::~UsbMidiDescriptorParser() {}
+UsbMidiDescriptorParser::~UsbMidiDescriptorParser() = default;
 
 bool UsbMidiDescriptorParser::Parse(UsbMidiDevice* device,
                                     const uint8_t* data,
@@ -257,10 +256,8 @@ bool UsbMidiDescriptorParser::ParseCSEndpoint(const uint8_t* data,
 
   for (size_t i = 0; i < num_jacks; ++i) {
     uint8_t jack = data[kSizeForEmptyJacks + i];
-    std::vector<UsbMidiJack>::iterator it =
-        std::find_if(incomplete_jacks_.begin(),
-                     incomplete_jacks_.end(),
-                     JackMatcher(jack));
+    auto it = std::find_if(incomplete_jacks_.begin(), incomplete_jacks_.end(),
+                           JackMatcher(jack));
     if (it == incomplete_jacks_.end()) {
       DVLOG(1) << "A non-existing MIDI jack is associated.";
       return false;
@@ -287,4 +284,3 @@ void UsbMidiDescriptorParser::Clear() {
 }
 
 }  // namespace midi
-}  // namespace media

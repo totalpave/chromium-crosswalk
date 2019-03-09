@@ -48,7 +48,8 @@ bool IncognitoHandler::Parse(Extension* extension, base::string16* error) {
           ? IncognitoInfo::Mode::SPLIT
           : IncognitoInfo::Mode::SPANNING;
   if (!extension->manifest()->HasKey(keys::kIncognito)) {
-    extension->SetManifestData(keys::kIncognito, new IncognitoInfo(mode));
+    extension->SetManifestData(keys::kIncognito,
+                               std::make_unique<IncognitoInfo>(mode));
     return true;
   }
 
@@ -69,7 +70,8 @@ bool IncognitoHandler::Parse(Extension* extension, base::string16* error) {
     return false;
   }
 
-  extension->SetManifestData(keys::kIncognito, new IncognitoInfo(mode));
+  extension->SetManifestData(keys::kIncognito,
+                             std::make_unique<IncognitoInfo>(mode));
   return true;
 }
 
@@ -77,8 +79,9 @@ bool IncognitoHandler::AlwaysParseForType(Manifest::Type type) const {
   return true;
 }
 
-const std::vector<std::string> IncognitoHandler::Keys() const {
-  return SingleKey(keys::kIncognito);
+base::span<const char* const> IncognitoHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kIncognito};
+  return kKeys;
 }
 
 }  // namespace extensions

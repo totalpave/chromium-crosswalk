@@ -5,14 +5,13 @@
 package org.chromium.chromoting;
 
 import android.content.Context;
-import android.content.res.Resources;
 import android.text.TextUtils;
-
-import org.chromium.base.Log;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import org.chromium.base.Log;
 
 import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
@@ -32,6 +31,9 @@ public class HostInfo {
     public final boolean isOnline;
     public final String hostOfflineReason;
     public final Date updatedTime;
+    public final String hostVersion;
+    public final String hostOs;
+    public final String hostOsVersion;
 
     private final ArrayList<String> mTokenUrlPatterns;
 
@@ -47,7 +49,7 @@ public class HostInfo {
 
     public HostInfo(String name, String id, String jabberId, String publicKey,
             ArrayList<String> tokenUrlPatterns, boolean isOnline, String hostOfflineReason,
-            String updatedTime) {
+            String updatedTime, String hostVersion, String hostOs, String hostOsVersion) {
         this.name = name;
         this.id = id;
         this.jabberId = jabberId;
@@ -55,6 +57,9 @@ public class HostInfo {
         this.mTokenUrlPatterns = tokenUrlPatterns;
         this.isOnline = isOnline;
         this.hostOfflineReason = hostOfflineReason;
+        this.hostVersion = hostVersion;
+        this.hostOs = hostOs;
+        this.hostOsVersion = hostOsVersion;
 
         ParsePosition parsePosition = new ParsePosition(0);
         SimpleDateFormat format = new SimpleDateFormat(RFC_3339_FORMAT, Locale.US);
@@ -68,18 +73,45 @@ public class HostInfo {
         this.updatedTime = updatedTimeCandidate;
     }
 
+    private int getHostOfflineReasonResourceId(String reason) {
+        switch (reason) {
+            case "initialization_failed":
+                return R.string.offline_reason_initialization_failed;
+            case "invalid_host_configuration":
+                return R.string.offline_reason_invalid_host_configuration;
+            case "invalid_host_id":
+                return R.string.offline_reason_invalid_host_id;
+            case "invalid_oauth_credentials":
+                return R.string.offline_reason_invalid_oauth_credentials;
+            case "invalid_host_domain":
+                return R.string.offline_reason_invalid_host_domain;
+            case "login_screen_not_supported":
+                return R.string.offline_reason_login_screen_not_supported;
+            case "policy_read_error":
+                return R.string.offline_reason_policy_read_error;
+            case "policy_change_requires_restart":
+                return R.string.offline_reason_policy_change_requires_restart;
+            case "success_exit":
+                return R.string.offline_reason_success_exit;
+            case "username_mismatch":
+                return R.string.offline_reason_username_mismatch;
+            case "x_server_retries_exceeded":
+                return R.string.offline_reason_x_server_retries_exceeded;
+            case "session_retries_exceeded":
+                return R.string.offline_reason_session_retries_exceeded;
+            case "host_retries_exceeded":
+                return R.string.offline_reason_host_retries_exceeded;
+            default:
+                return R.string.offline_reason_unknown;
+        }
+    }
+
     public String getHostOfflineReasonText(Context context) {
         if (TextUtils.isEmpty(hostOfflineReason)) {
             return context.getString(R.string.host_offline_tooltip);
         }
-        try {
-            String resourceName = "offline_reason_" + hostOfflineReason.toLowerCase(Locale.ENGLISH);
-            int resourceId = context.getResources().getIdentifier(
-                    resourceName, "string", context.getPackageName());
-            return context.getString(resourceId);
-        } catch (Resources.NotFoundException ignored) {
-            return context.getString(R.string.offline_reason_unknown, hostOfflineReason);
-        }
+        return context.getString(
+                getHostOfflineReasonResourceId(hostOfflineReason.toLowerCase(Locale.ENGLISH)));
     }
 
     public ArrayList<String> getTokenUrlPatterns() {
@@ -103,6 +135,7 @@ public class HostInfo {
         return new HostInfo(json.getString("hostName"), json.getString("hostId"),
                 json.optString("jabberId"), json.optString("publicKey"), tokenUrlPatterns,
                 json.optString("status").equals("ONLINE"), json.optString("hostOfflineReason"),
-                json.optString("updatedTime"));
+                json.optString("updatedTime"), json.optString("hostVersion"),
+                json.optString("hostOs"), json.optString("hostOsVersion"));
     }
 }

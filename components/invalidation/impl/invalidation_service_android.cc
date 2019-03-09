@@ -14,26 +14,28 @@
 
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
+using base::android::JavaRef;
+using base::android::JavaParamRef;
 
 namespace invalidation {
 
-InvalidationServiceAndroid::InvalidationServiceAndroid(jobject context)
-    : invalidator_state_(syncer::INVALIDATIONS_ENABLED),
-      logger_() {
-  DCHECK(CalledOnValidThread());
+InvalidationServiceAndroid::InvalidationServiceAndroid()
+    : invalidator_state_(syncer::INVALIDATIONS_ENABLED), logger_() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jobject> local_java_ref =
-      Java_InvalidationService_create(env,
-          context,
-          reinterpret_cast<intptr_t>(this));
+      Java_InvalidationService_create(env, reinterpret_cast<intptr_t>(this));
   java_ref_.Reset(env, local_java_ref.obj());
+  logger_.OnStateChange(invalidator_state_);
 }
 
-InvalidationServiceAndroid::~InvalidationServiceAndroid() { }
+InvalidationServiceAndroid::~InvalidationServiceAndroid() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+}
 
 void InvalidationServiceAndroid::RegisterInvalidationHandler(
     syncer::InvalidationHandler* handler) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   invalidator_registrar_.RegisterHandler(handler);
   logger_.OnRegistration(handler->GetOwnerName());
 }
@@ -41,7 +43,7 @@ void InvalidationServiceAndroid::RegisterInvalidationHandler(
 bool InvalidationServiceAndroid::UpdateRegisteredInvalidationIds(
     syncer::InvalidationHandler* handler,
     const syncer::ObjectIdSet& ids) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   JNIEnv* env = base::android::AttachCurrentThread();
   DCHECK(env);
 
@@ -61,10 +63,8 @@ bool InvalidationServiceAndroid::UpdateRegisteredInvalidationIds(
   }
 
   Java_InvalidationService_setRegisteredObjectIds(
-      env,
-      java_ref_.obj(),
-      base::android::ToJavaIntArray(env, sources).obj(),
-      base::android::ToJavaArrayOfStrings(env, names).obj());
+      env, java_ref_, base::android::ToJavaIntArray(env, sources),
+      base::android::ToJavaArrayOfStrings(env, names));
 
   logger_.OnUpdateIds(invalidator_registrar_.GetSanitizedHandlersIdsMap());
   return true;
@@ -72,30 +72,29 @@ bool InvalidationServiceAndroid::UpdateRegisteredInvalidationIds(
 
 void InvalidationServiceAndroid::UnregisterInvalidationHandler(
     syncer::InvalidationHandler* handler) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   invalidator_registrar_.UnregisterHandler(handler);
   logger_.OnUnregistration(handler->GetOwnerName());
 }
 
 syncer::InvalidatorState
 InvalidationServiceAndroid::GetInvalidatorState() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return invalidator_state_;
 }
 
 std::string InvalidationServiceAndroid::GetInvalidatorClientId() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   JNIEnv* env = base::android::AttachCurrentThread();
   DCHECK(env);
 
   // Ask the Java code to for the invalidator ID it's currently using.
   base::android::ScopedJavaLocalRef<_jbyteArray*> id_bytes_java =
-      Java_InvalidationService_getInvalidatorClientId(env, java_ref_.obj());
+      Java_InvalidationService_getInvalidatorClientId(env, java_ref_);
 
   // Convert it into a more convenient format for C++.
-  std::vector<uint8_t> id_bytes;
-  base::android::JavaByteArrayToByteVector(env, id_bytes_java.obj(), &id_bytes);
-  std::string id(id_bytes.begin(), id_bytes.end());
+  std::string id;
+  base::android::JavaByteArrayToString(env, id_bytes_java, &id);
 
   return id;
 }
@@ -108,13 +107,9 @@ void InvalidationServiceAndroid::RequestDetailedStatus(
     base::Callback<void(const base::DictionaryValue&)> return_callback) const {
 }
 
-IdentityProvider* InvalidationServiceAndroid::GetIdentityProvider() {
-  return NULL;
-}
-
 void InvalidationServiceAndroid::TriggerStateChangeForTest(
     syncer::InvalidatorState state) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   invalidator_state_ = state;
   invalidator_registrar_.UpdateInvalidatorState(invalidator_state_);
 }
@@ -166,11 +161,6 @@ void InvalidationServiceAndroid::Invalidate(
   invalidator_registrar_.DispatchInvalidationsToHandlers(
       object_invalidation_map);
   logger_.OnInvalidation(object_invalidation_map);
-}
-
-// static
-bool InvalidationServiceAndroid::RegisterJni(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }
 
 }  // namespace invalidation

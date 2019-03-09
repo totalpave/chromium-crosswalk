@@ -32,6 +32,21 @@ namespace media {
 //   thread.
 class MediaResourceTracker {
  public:
+  // Helper class to manage media resource usage count.
+  // Create an instance of this class when a media resource is created.
+  // Delete the instance *after* the media resource is deleted.
+  // This class is not thread-safe. It must be created and deleted on
+  // |MediaResourceTracker::media_task_runner_|.
+  class ScopedUsage {
+   public:
+    ScopedUsage(MediaResourceTracker* tracker);
+    ~ScopedUsage();
+
+   private:
+    MediaResourceTracker* tracker_;
+    DISALLOW_COPY_AND_ASSIGN(ScopedUsage);
+  };
+
   MediaResourceTracker(
       const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner,
       const scoped_refptr<base::SingleThreadTaskRunner>& media_task_runner);
@@ -47,7 +62,7 @@ class MediaResourceTracker {
   // (3) Calls completion_cb
   // Must be called on UI thread.  Only one Finalize request may be in flight
   // at a time. |completion_cb| must not be null.
-  void FinalizeMediaLib(const base::Closure& completion_cb);
+  void FinalizeMediaLib(base::OnceClosure completion_cb);
 
   // Shutdown process:
   // (1) Waits for usage count to drop to zero
@@ -69,7 +84,7 @@ class MediaResourceTracker {
 
   // Tasks posted to media thread
   void CallInitializeOnMediaThread();
-  void MaybeCallFinalizeOnMediaThread(const base::Closure& completion_cb);
+  void MaybeCallFinalizeOnMediaThread(base::OnceClosure completion_cb);
   void MaybeCallFinalizeOnMediaThreadAndDeleteSelf();
   void CallFinalizeOnMediaThread();
 
@@ -80,7 +95,7 @@ class MediaResourceTracker {
   // Accessed on media thread + ctor
   size_t media_use_count_;
   bool media_lib_initialized_;
-  base::Closure finalize_completion_cb_;
+  base::OnceClosure finalize_completion_cb_;
   bool delete_on_finalize_;
 
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;

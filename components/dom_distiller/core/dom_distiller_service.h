@@ -11,17 +11,12 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "components/dom_distiller/core/article_entry.h"
 #include "components/dom_distiller/core/distilled_page_prefs.h"
 #include "components/dom_distiller/core/distiller_page.h"
 
 class GURL;
-
-namespace syncer {
-class SyncableService;
-}
 
 namespace dom_distiller {
 
@@ -42,8 +37,6 @@ class DomDistillerServiceInterface {
  public:
   typedef base::Callback<void(bool)> ArticleAvailableCallback;
   virtual ~DomDistillerServiceInterface() {}
-
-  virtual syncer::SyncableService* GetSyncableService() const = 0;
 
   // Distill the article at |url| and add the resulting entry to the DOM
   // distiller list. |article_cb| is always invoked, and the bool argument to it
@@ -124,7 +117,6 @@ class DomDistillerService : public DomDistillerServiceInterface {
   ~DomDistillerService() override;
 
   // DomDistillerServiceInterface implementation.
-  syncer::SyncableService* GetSyncableService() const override;
   const std::string AddToList(
       const GURL& url,
       std::unique_ptr<DistillerPage> distiller_page,
@@ -177,7 +169,7 @@ class DomDistillerService : public DomDistillerServiceInterface {
   std::unique_ptr<DistillerPageFactory> distiller_page_factory_;
   std::unique_ptr<DistilledPagePrefs> distilled_page_prefs_;
 
-  typedef ScopedVector<TaskTracker> TaskList;
+  typedef std::vector<std::unique_ptr<TaskTracker>> TaskList;
   TaskList tasks_;
 
   DISALLOW_COPY_AND_ASSIGN(DomDistillerService);

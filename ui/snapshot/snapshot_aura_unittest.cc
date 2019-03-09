@@ -9,8 +9,13 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
+#include "base/run_loop.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/test/test_simple_task_runner.h"
+#include "base/win/windows_version.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkPixelRef.h"
 #include "ui/aura/test/aura_test_helper.h"
 #include "ui/aura/test/test_screen.h"
 #include "ui/aura/test/test_window_delegate.h"
@@ -25,7 +30,6 @@
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size_conversions.h"
-#include "ui/gfx/gfx_paths.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/transform.h"
 #include "ui/gl/gl_implementation.h"
@@ -94,15 +98,21 @@ class SnapshotAuraTest : public testing::Test {
   void SetUp() override {
     testing::Test::SetUp();
 
+    scoped_task_environment_ =
+        std::make_unique<base::test::ScopedTaskEnvironment>(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI);
+
     // The ContextFactory must exist before any Compositors are created.
     // Snapshot test tests real drawing and readback, so needs pixel output.
     bool enable_pixel_output = true;
-    ui::ContextFactory* context_factory =
-        ui::InitializeContextFactoryForTests(enable_pixel_output);
+    ui::ContextFactory* context_factory = nullptr;
+    ui::ContextFactoryPrivate* context_factory_private = nullptr;
 
-    helper_.reset(
-        new aura::test::AuraTestHelper(base::MessageLoopForUI::current()));
-    helper_->SetUp(context_factory);
+    ui::InitializeContextFactoryForTests(enable_pixel_output, &context_factory,
+                                         &context_factory_private);
+
+    helper_.reset(new aura::test::AuraTestHelper());
+    helper_->SetUp(context_factory, context_factory_private);
     new ::wm::DefaultActivationClient(helper_->root_window());
   }
 
@@ -112,6 +122,7 @@ class SnapshotAuraTest : public testing::Test {
     helper_->RunAllPendingInMessageLoop();
     helper_->TearDown();
     ui::TerminateContextFactoryForTests();
+    scoped_task_environment_.reset();
     testing::Test::TearDown();
   }
 
@@ -137,28 +148,14 @@ class SnapshotAuraTest : public testing::Test {
     aura::Window::ConvertRectToTarget(
         test_window(), root_window(), &source_rect);
 
-    scoped_refptr<base::TestSimpleTaskRunner> task_runner(
-        new base::TestSimpleTaskRunner());
     scoped_refptr<SnapshotHolder> holder(new SnapshotHolder);
     ui::GrabWindowSnapshotAsync(
-        root_window(),
-        source_rect,
-        task_runner,
+        root_window(), source_rect,
         base::Bind(&SnapshotHolder::SnapshotCallback, holder));
 
-    // Wait for copy response.
-    WaitForDraw();
-    // Run internal snapshot callback to scale/rotate response image.
-    task_runner->RunUntilIdle();
-    // Run SnapshotHolder callback.
-    helper_->RunAllPendingInMessageLoop();
-
-    if (holder->completed())
-      return holder->image();
-
-    // Callback never called.
-    NOTREACHED();
-    return gfx::Image();
+    holder->WaitForSnapshot();
+    DCHECK(holder->completed());
+    return holder->image();
   }
 
  private:
@@ -166,15 +163,14 @@ class SnapshotAuraTest : public testing::Test {
    public:
     SnapshotHolder() : completed_(false) {}
 
-    void SnapshotCallback(scoped_refptr<base::RefCountedBytes> png_data) {
+    void SnapshotCallback(gfx::Image image) {
       DCHECK(!completed_);
-      image_ = gfx::Image::CreateFrom1xPNGBytes(&(png_data->data()[0]),
-                                                png_data->size());
+      image_ = image;
       completed_ = true;
+      run_loop_.Quit();
     }
-    bool completed() const {
-      return completed_;
-    };
+    void WaitForSnapshot() { run_loop_.Run(); }
+    bool completed() const { return completed_; }
     const gfx::Image& image() const { return image_; }
 
    private:
@@ -182,10 +178,12 @@ class SnapshotAuraTest : public testing::Test {
 
     virtual ~SnapshotHolder() {}
 
+    base::RunLoop run_loop_;
     gfx::Image image_;
     bool completed_;
   };
 
+  std::unique_ptr<base::test::ScopedTaskEnvironment> scoped_task_environment_;
   std::unique_ptr<aura::test::AuraTestHelper> helper_;
   std::unique_ptr<aura::Window> test_window_;
   std::unique_ptr<TestPaintingWindowDelegate> delegate_;
@@ -194,7 +192,19 @@ class SnapshotAuraTest : public testing::Test {
   DISALLOW_COPY_AND_ASSIGN(SnapshotAuraTest);
 };
 
-TEST_F(SnapshotAuraTest, FullScreenWindow) {
+#if defined(OS_WIN) && !defined(NDEBUG)
+// https://crbug.com/852512
+#define MAYBE_FullScreenWindow DISABLED_FullScreenWindow
+#else
+#define MAYBE_FullScreenWindow FullScreenWindow
+#endif
+TEST_F(SnapshotAuraTest, MAYBE_FullScreenWindow) {
+#if defined(OS_WIN)
+  // TODO(https://crbug.com/850556): Make work on Win10.
+  base::win::Version version = base::win::GetVersion();
+  if (version >= base::win::VERSION_WIN10)
+    return;
+#endif
   SetupTestWindow(root_window()->bounds());
   WaitForDraw();
 
@@ -205,6 +215,12 @@ TEST_F(SnapshotAuraTest, FullScreenWindow) {
 }
 
 TEST_F(SnapshotAuraTest, PartialBounds) {
+#if defined(OS_WIN)
+  // TODO(https://crbug.com/850556): Make work on Win10.
+  base::win::Version version = base::win::GetVersion();
+  if (version >= base::win::VERSION_WIN10)
+    return;
+#endif
   gfx::Rect test_bounds(100, 100, 300, 200);
   SetupTestWindow(test_bounds);
   WaitForDraw();
@@ -215,6 +231,12 @@ TEST_F(SnapshotAuraTest, PartialBounds) {
 }
 
 TEST_F(SnapshotAuraTest, Rotated) {
+#if defined(OS_WIN)
+  // TODO(https://crbug.com/850556): Make work on Win10.
+  base::win::Version version = base::win::GetVersion();
+  if (version >= base::win::VERSION_WIN10)
+    return;
+#endif
   test_screen()->SetDisplayRotation(display::Display::ROTATE_90);
 
   gfx::Rect test_bounds(100, 100, 300, 200);
@@ -227,7 +249,13 @@ TEST_F(SnapshotAuraTest, Rotated) {
 }
 
 TEST_F(SnapshotAuraTest, UIScale) {
-  const float kUIScale = 1.25f;
+#if defined(OS_WIN)
+  // TODO(https://crbug.com/850556): Make work on Win10.
+  base::win::Version version = base::win::GetVersion();
+  if (version >= base::win::VERSION_WIN10)
+    return;
+#endif
+  const float kUIScale = 0.5f;
   test_screen()->SetUIScale(kUIScale);
 
   gfx::Rect test_bounds(100, 100, 300, 200);
@@ -236,14 +264,21 @@ TEST_F(SnapshotAuraTest, UIScale) {
 
   // Snapshot always captures the physical pixels.
   gfx::SizeF snapshot_size(test_bounds.size());
+  snapshot_size.Scale(1 / kUIScale);
 
   gfx::Image snapshot = GrabSnapshotForTestWindow();
   EXPECT_EQ(gfx::ToRoundedSize(snapshot_size).ToString(),
             snapshot.Size().ToString());
-  EXPECT_EQ(0u, GetFailedPixelsCount(snapshot));
+  EXPECT_EQ(0u, GetFailedPixelsCountWithScaleFactor(snapshot, 1 / kUIScale));
 }
 
 TEST_F(SnapshotAuraTest, DeviceScaleFactor) {
+#if defined(OS_WIN)
+  // TODO(https://crbug.com/850556): Make work on Win10.
+  base::win::Version version = base::win::GetVersion();
+  if (version >= base::win::VERSION_WIN10)
+    return;
+#endif
   test_screen()->SetDeviceScaleFactor(2.0f);
 
   gfx::Rect test_bounds(100, 100, 150, 100);
@@ -261,7 +296,13 @@ TEST_F(SnapshotAuraTest, DeviceScaleFactor) {
 }
 
 TEST_F(SnapshotAuraTest, RotateAndUIScale) {
-  const float kUIScale = 1.25f;
+#if defined(OS_WIN)
+  // TODO(https://crbug.com/850556): Make work on Win10.
+  base::win::Version version = base::win::GetVersion();
+  if (version >= base::win::VERSION_WIN10)
+    return;
+#endif
+  const float kUIScale = 0.5f;
   test_screen()->SetUIScale(kUIScale);
   test_screen()->SetDisplayRotation(display::Display::ROTATE_90);
 
@@ -271,16 +312,23 @@ TEST_F(SnapshotAuraTest, RotateAndUIScale) {
 
   // Snapshot always captures the physical pixels.
   gfx::SizeF snapshot_size(test_bounds.size());
+  snapshot_size.Scale(1 / kUIScale);
 
   gfx::Image snapshot = GrabSnapshotForTestWindow();
   EXPECT_EQ(gfx::ToRoundedSize(snapshot_size).ToString(),
             snapshot.Size().ToString());
-  EXPECT_EQ(0u, GetFailedPixelsCount(snapshot));
+  EXPECT_EQ(0u, GetFailedPixelsCountWithScaleFactor(snapshot, 1 / kUIScale));
 }
 
 TEST_F(SnapshotAuraTest, RotateAndUIScaleAndScaleFactor) {
+#if defined(OS_WIN)
+  // TODO(https://crbug.com/850556): Make work on Win10.
+  base::win::Version version = base::win::GetVersion();
+  if (version >= base::win::VERSION_WIN10)
+    return;
+#endif
   test_screen()->SetDeviceScaleFactor(2.0f);
-  const float kUIScale = 1.25f;
+  const float kUIScale = 0.5f;
   test_screen()->SetUIScale(kUIScale);
   test_screen()->SetDisplayRotation(display::Display::ROTATE_90);
 
@@ -290,12 +338,12 @@ TEST_F(SnapshotAuraTest, RotateAndUIScaleAndScaleFactor) {
 
   // Snapshot always captures the physical pixels.
   gfx::SizeF snapshot_size(test_bounds.size());
-  snapshot_size.Scale(2.0f);
+  snapshot_size.Scale(2.0f / kUIScale);
 
   gfx::Image snapshot = GrabSnapshotForTestWindow();
   EXPECT_EQ(gfx::ToRoundedSize(snapshot_size).ToString(),
             snapshot.Size().ToString());
-  EXPECT_EQ(0u, GetFailedPixelsCountWithScaleFactor(snapshot, 2));
+  EXPECT_EQ(0u, GetFailedPixelsCountWithScaleFactor(snapshot, 2 / kUIScale));
 }
 
 }  // namespace ui

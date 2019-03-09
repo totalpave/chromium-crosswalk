@@ -9,13 +9,14 @@
 
 namespace extensions {
 
-class Extension;
-
 class LazyBackgroundPageNativeHandler : public ObjectBackedNativeHandler {
  public:
   explicit LazyBackgroundPageNativeHandler(ScriptContext* context);
   void IncrementKeepaliveCount(const v8::FunctionCallbackInfo<v8::Value>& args);
   void DecrementKeepaliveCount(const v8::FunctionCallbackInfo<v8::Value>& args);
+
+  // ObjectBackedNativeHandler:
+  void AddRoutes() override;
 };
 
 }  // namespace extensions

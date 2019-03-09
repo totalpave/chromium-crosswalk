@@ -33,11 +33,11 @@ void BlacklistStateFetcherMock::Request(const std::string& id,
   ++request_count_;
 
   BlacklistState result = NOT_BLACKLISTED;
-  if (ContainsKey(states_, id))
+  if (base::ContainsKey(states_, id))
     result = states_[id];
 
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                              base::Bind(callback, result));
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(callback, result));
 }
 
 void BlacklistStateFetcherMock::SetState(const std::string& id,
@@ -77,6 +77,7 @@ void TestBlacklist::Attach(Blacklist* blacklist) {
 
 void TestBlacklist::Detach() {
   blacklist_->ResetBlacklistStateFetcherForTest();
+  blacklist_->ResetDatabaseUpdatedListenerForTest();
 }
 
 void TestBlacklist::SetBlacklistState(const std::string& extension_id,

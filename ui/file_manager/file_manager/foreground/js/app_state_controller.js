@@ -28,20 +28,54 @@ function AppStateController(dialogType) {
    * @private
    */
   this.viewOptions_ = null;
-};
+
+  /**
+   * Preferred sort field of file list. This will be ignored in the Recent
+   * folder, since it always uses descendant order of date-mofidied.
+   * @private {string}
+   */
+  this.fileListSortField_ = AppStateController.DEFAULT_SORT_FIELD;
+
+  /**
+   * Preferred sort direction of file list. This will be ignored in the Recent
+   * folder, since it always uses descendant order of date-mofidied.
+   * @private {string}
+   */
+  this.fileListSortDirection_ = AppStateController.DEFAULT_SORT_DIRECTION;
+}
+
+/**
+ * Default sort field of the file list.
+ * @const {string}
+ */
+AppStateController.DEFAULT_SORT_FIELD = 'modificationTime';
+
+/**
+ * Default sort direction of the file list.
+ * @const {string}
+ */
+AppStateController.DEFAULT_SORT_DIRECTION = 'desc';
 
 /**
  * @return {Promise}
  */
 AppStateController.prototype.loadInitialViewOptions = function() {
   // Load initial view option.
-  return new Promise(function(fulfill) {
-    chrome.storage.local.get(this.viewOptionStorageKey_, fulfill);
-  }.bind(this)).then(function(values) {
+  return new Promise((fulfill, reject) => {
+    chrome.storage.local.get(this.viewOptionStorageKey_, values => {
+      if (chrome.runtime.lastError) {
+        reject('Failed to load view options: ' +
+            chrome.runtime.lastError.message);
+      } else {
+        fulfill(values);
+      }
+    });
+  }).then(values => {
     this.viewOptions_ = {};
-    var value = values[this.viewOptionStorageKey_];
-    if (!value)
+    const value = values[this.viewOptionStorageKey_];
+    if (!value) {
       return;
+    }
 
     // Load the global default options.
     try {
@@ -50,12 +84,16 @@ AppStateController.prototype.loadInitialViewOptions = function() {
 
     // Override with window-specific options.
     if (window.appState && window.appState.viewOptions) {
-      for (var key in window.appState.viewOptions) {
-        if (window.appState.viewOptions.hasOwnProperty(key))
+      for (const key in window.appState.viewOptions) {
+        if (window.appState.viewOptions.hasOwnProperty(key)) {
           this.viewOptions_[key] = window.appState.viewOptions[key];
+        }
       }
     }
-  }.bind(this));
+  }).catch(error => {
+    this.viewOptions_ = {};
+    console.error(error);
+  });
 };
 
 /**
@@ -72,17 +110,26 @@ AppStateController.prototype.initialize = function(ui, directoryModel) {
   ui.listContainer.table.addEventListener(
       'column-resize-end', this.saveViewOptions.bind(this));
   directoryModel.getFileList().addEventListener(
-      'permuted', this.saveViewOptions.bind(this));
+      'sorted', this.onFileListSorted_.bind(this));
+  directoryModel.getFileFilter().addEventListener(
+      'changed', this.onFileFilterChanged_.bind(this));
   directoryModel.addEventListener(
       'directory-changed', this.onDirectoryChanged_.bind(this));
 
   // Restore preferences.
   this.ui_.setCurrentListType(
       this.viewOptions_.listType || ListContainer.ListType.DETAIL);
-  this.ui_.setDetailsVisibility(!!this.viewOptions_.detailsVisibility);
+  if (this.viewOptions_.sortField) {
+    this.fileListSortField_ = this.viewOptions_.sortField;
+  }
+  if (this.viewOptions_.sortDirection) {
+    this.fileListSortDirection_ = this.viewOptions_.sortDirection;
+  }
   this.directoryModel_.getFileList().sort(
-      this.viewOptions_.sortField || 'modificationTime',
-      this.viewOptions_.sortDirection || 'desc');
+      this.fileListSortField_, this.fileListSortDirection_);
+  if (this.viewOptions_.isAllAndroidFoldersVisible) {
+    this.directoryModel_.getFileFilter().setAllAndroidFoldersVisible(true);
+  }
   if (this.viewOptions_.columnConfig) {
     this.ui_.listContainer.table.columnModel.restoreColumnConfig(
         this.viewOptions_.columnConfig);
@@ -93,40 +140,95 @@ AppStateController.prototype.initialize = function(ui, directoryModel) {
  * Saves current view option.
  */
 AppStateController.prototype.saveViewOptions = function() {
-  var sortStatus = this.directoryModel_.getFileList().sortStatus;
-  var prefs = {
-    sortField: sortStatus.field,
-    sortDirection: sortStatus.direction,
+  const prefs = {
+    sortField: this.fileListSortField_,
+    sortDirection: this.fileListSortDirection_,
     columnConfig: {},
     listType: this.ui_.listContainer.currentListType,
-    /**
-     * TODO(ryoh): Simplify this line after we finally implement details panel.
-     */
-    detailsVisibility: this.ui_.detailsContainer &&
-        this.ui_.detailsContainer.visible || false
+    isAllAndroidFoldersVisible:
+        this.directoryModel_.getFileFilter().isAllAndroidFoldersVisible()
   };
-  var cm = this.ui_.listContainer.table.columnModel;
+  const cm = this.ui_.listContainer.table.columnModel;
   prefs.columnConfig = cm.exportColumnConfig();
   // Save the global default.
-  var items = {};
+  const items = {};
   items[this.viewOptionStorageKey_] = JSON.stringify(prefs);
-  chrome.storage.local.set(items);
+  chrome.storage.local.set(items, () => {
+    if (chrome.runtime.lastError) {
+      console.error(
+          'Failed to save view options: ' + chrome.runtime.lastError.message);
+    }
+  });
 
   // Save the window-specific preference.
   if (window.appState) {
     window.appState.viewOptions = prefs;
-    util.saveAppState();
+    appUtil.saveAppState();
   }
 };
 
 /**
  * @private
  */
-AppStateController.prototype.onDirectoryChanged_ = function() {
+AppStateController.prototype.onFileListSorted_ = function() {
+  const currentDirectory = this.directoryModel_.getCurrentDirEntry();
+  if (!currentDirectory) {
+    return;
+  }
+
+  // Update preferred sort field and direction only when the current directory
+  // is not Recent folder.
+  if (!util.isRecentRoot(currentDirectory)) {
+    const currentSortStatus = this.directoryModel_.getFileList().sortStatus;
+    this.fileListSortField_ = currentSortStatus.field;
+    this.fileListSortDirection_ = currentSortStatus.direction;
+  }
+  this.saveViewOptions();
+};
+
+/**
+ * @private
+ */
+AppStateController.prototype.onFileFilterChanged_ = function() {
+  const isAllAndroidFoldersVisible =
+      this.directoryModel_.getFileFilter().isAllAndroidFoldersVisible();
+  if (this.viewOptions_.isAllAndroidFoldersVisible !==
+      isAllAndroidFoldersVisible) {
+    this.viewOptions_.isAllAndroidFoldersVisible = isAllAndroidFoldersVisible;
+    this.saveViewOptions();
+  }
+};
+
+/**
+ * @param {Event} event
+ * @private
+ */
+AppStateController.prototype.onDirectoryChanged_ = function(event) {
+  if (!event.newDirEntry) {
+    return;
+  }
+
+  // Sort the file list by:
+  // 1) 'date-mofidied' and 'desc' order on Recent folder.
+  // 2) preferred field and direction on other folders.
+  const isOnRecent = util.isRecentRoot(event.newDirEntry);
+  const isOnRecentBefore =
+      event.previousDirEntry && util.isRecentRoot(event.previousDirEntry);
+  if (isOnRecent != isOnRecentBefore) {
+    if (isOnRecent) {
+      this.directoryModel_.getFileList().sort(
+          AppStateController.DEFAULT_SORT_FIELD,
+          AppStateController.DEFAULT_SORT_DIRECTION);
+    } else {
+      this.directoryModel_.getFileList().sort(
+          this.fileListSortField_, this.fileListSortDirection_);
+    }
+  }
+
   // TODO(mtomasz): Consider remembering the selection.
-  util.updateAppState(
+  appUtil.updateAppState(
       this.directoryModel_.getCurrentDirEntry() ?
-          this.directoryModel_.getCurrentDirEntry().toURL() : '',
-      '' /* selectionURL */,
-      '' /* opt_param */);
+          this.directoryModel_.getCurrentDirEntry().toURL() :
+          '',
+      '' /* selectionURL */, '' /* opt_param */);
 };

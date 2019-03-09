@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/macros.h"
@@ -94,6 +95,15 @@ class AddressValidator {
   // Invokes |load_rules_listener| when the loading has finished.
   virtual void LoadRules(const std::string& region_code);
 
+  // Returns the list of sub-regions (recorded as sub-keys) of the region
+  // (recorded as rule) indicated by |region_code|, while the device language
+  // is set to |language|. So, if the |region_code| is
+  // a country code, sub-region means the country's admin area.
+  // This function should be called when the rules are loaded.
+  virtual std::vector<std::pair<std::string, std::string>> GetRegionSubKeys(
+      const std::string& region_code,
+      const std::string& language);
+
   // Validates the |address| and populates |problems| with the validation
   // problems, filtered according to the |filter| parameter.
   //
@@ -135,11 +145,14 @@ class AddressValidator {
       size_t suggestion_limit,
       std::vector< ::i18n::addressinput::AddressData>* suggestions) const;
 
-  // Canonicalizes the administrative area in |address_data|. For example,
-  // "texas" changes to "TX". Returns true on success, otherwise leaves
-  // |address_data| alone and returns false.
-  virtual bool CanonicalizeAdministrativeArea(
+  // Normalizes the |address_data|. For example, "texas" changes to "TX".
+  // Returns true on success, otherwise leaves |address_data| alone and returns
+  // false.
+  virtual bool NormalizeAddress(
       ::i18n::addressinput::AddressData* address) const;
+
+  // Returns whether the rules associated with the |region_code| are loaded.
+  virtual bool AreRulesLoadedForRegion(const std::string& region_code);
 
  protected:
   // Constructor used only for MockAddressValidator.

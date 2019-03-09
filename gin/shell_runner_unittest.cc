@@ -5,7 +5,8 @@
 #include "gin/shell_runner.h"
 
 #include "base/compiler_specific.h"
-#include "base/message_loop/message_loop.h"
+#include "base/test/scoped_task_environment.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "gin/array_buffer.h"
 #include "gin/converter.h"
 #include "gin/public/isolate_holder.h"
@@ -24,7 +25,7 @@ using v8::String;
 namespace gin {
 
 TEST(RunnerTest, Run) {
-  base::MessageLoop message_loop;
+  base::test::ScopedTaskEnvironment scoped_task_environment;
   std::string source = "this.result = 'PASS';\n";
 
 #ifdef V8_USE_EXTERNAL_STARTUP_DATA
@@ -33,9 +34,9 @@ TEST(RunnerTest, Run) {
 #endif
 
   gin::IsolateHolder::Initialize(gin::IsolateHolder::kStrictMode,
-                                 gin::IsolateHolder::kStableV8Extras,
                                  gin::ArrayBufferAllocator::SharedInstance());
-  gin::IsolateHolder instance;
+  gin::IsolateHolder instance(base::ThreadTaskRunnerHandle::Get(),
+                              gin::IsolateHolder::IsolateType::kTest);
 
   ShellRunnerDelegate delegate;
   Isolate* isolate = instance.isolate();
@@ -44,8 +45,11 @@ TEST(RunnerTest, Run) {
   runner.Run(source, "test_data.js");
 
   std::string result;
-  EXPECT_TRUE(Converter<std::string>::FromV8(isolate,
-      runner.global()->Get(StringToV8(isolate, "result")),
+  EXPECT_TRUE(Converter<std::string>::FromV8(
+      isolate,
+      runner.global()
+          ->Get(isolate->GetCurrentContext(), StringToV8(isolate, "result"))
+          .ToLocalChecked(),
       &result));
   EXPECT_EQ("PASS", result);
 }

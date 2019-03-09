@@ -8,11 +8,22 @@
 #include <string>
 
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
+#include "build/buildflag.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/signin/core/browser/signin_buildflags.h"
+#include "components/signin/core/browser/signin_metrics.h"
 #include "google_apis/gaia/oauth2_token_service.h"
 #include "google_apis/gaia/oauth2_token_service_delegate.h"
 #include "net/base/backoff_entry.h"
+
+#include <memory>
+
+namespace identity {
+class IdentityManager;
+}
+
+class PrefService;
+class PrefRegistrySimple;
 
 // ProfileOAuth2TokenService is a KeyedService that retrieves
 // OAuth2 access tokens for a given set of scopes using the OAuth2 login
@@ -32,8 +43,13 @@ class ProfileOAuth2TokenService : public OAuth2TokenService,
                                   public OAuth2TokenService::Observer,
                                   public KeyedService {
  public:
-  ProfileOAuth2TokenService(OAuth2TokenServiceDelegate* delegate);
+  ProfileOAuth2TokenService(
+      PrefService* user_prefs,
+      std::unique_ptr<OAuth2TokenServiceDelegate> delegate);
   ~ProfileOAuth2TokenService() override;
+
+  // Registers per-profile prefs.
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   // KeyedService implementation.
   void Shutdown() override;
@@ -41,28 +57,77 @@ class ProfileOAuth2TokenService : public OAuth2TokenService,
   // Loads credentials from a backing persistent store to make them available
   // after service is used between profile restarts.
   //
-  // Only call this method if there is at least one account connected to the
-  // profile, otherwise startup will cause unneeded work on the IO thread. The
-  // primary account is specified with the |primary_account_id| argument. If
-  // empty, no credentials will be loaded. For a regular profile, the primary
-  // account id comes from SigninManager. For a supervised user, the id comes
-  // from SupervisedUserService.
-  virtual void LoadCredentials(const std::string& primary_account_id);
+  // The primary account is specified with the |primary_account_id| argument.
+  // For a regular profile, the primary account id comes from SigninManager.
+  // For a supervised user, the id comes from SupervisedUserService.
+  void LoadCredentials(const std::string& primary_account_id);
+
+  // Returns true iff all credentials have been loaded from disk.
+  bool AreAllCredentialsLoaded();
+
+  // Returns true if LoadCredentials finished with no errors.
+  bool HasLoadCredentialsFinishedWithNoErrors();
 
   // Updates a |refresh_token| for an |account_id|. Credentials are persisted,
   // and available through |LoadCredentials| after service is restarted.
-  virtual void UpdateCredentials(const std::string& account_id,
-                                 const std::string& refresh_token);
+  void UpdateCredentials(
+      const std::string& account_id,
+      const std::string& refresh_token,
+      signin_metrics::SourceForRefreshTokenOperation source =
+          signin_metrics::SourceForRefreshTokenOperation::kUnknown);
 
-  virtual void RevokeCredentials(const std::string& account_id);
+  void RevokeCredentials(
+      const std::string& account_id,
+      signin_metrics::SourceForRefreshTokenOperation source =
+          signin_metrics::SourceForRefreshTokenOperation::kUnknown);
+
+  // Revokes all credentials.
+  void RevokeAllCredentials(
+      signin_metrics::SourceForRefreshTokenOperation source =
+          signin_metrics::SourceForRefreshTokenOperation::kUnknown);
 
   // Returns a pointer to its instance of net::BackoffEntry or nullptr if there
   // is no such instance.
   const net::BackoffEntry* GetDelegateBackoffEntry();
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  // Removes the credentials associated to account_id from the internal storage,
+  // and moves them to |to_service|. The credentials are not revoked on the
+  // server, but the OnRefreshTokenRevoked() notification is sent to the
+  // observers.
+  void ExtractCredentials(ProfileOAuth2TokenService* to_service,
+                          const std::string& account_id);
+#endif
+
+  void set_all_credentials_loaded_for_testing(bool loaded) {
+    all_credentials_loaded_ = loaded;
+  }
+
+  // Exposes the ability to update auth errors to tests.
+  void UpdateAuthErrorForTesting(const std::string& account_id,
+                                 const GoogleServiceAuthError& error) {
+    UpdateAuthError(account_id, error);
+  }
+
  private:
+  friend class identity::IdentityManager;
+
+  // OAuth2TokenService::Observer implementation.
   void OnRefreshTokenAvailable(const std::string& account_id) override;
   void OnRefreshTokenRevoked(const std::string& account_id) override;
+  void OnRefreshTokensLoaded() override;
+
+  // Creates a new device ID if there are no accounts, or if the current device
+  // ID is empty.
+  void RecreateDeviceIdIfNeeded();
+
+  PrefService* user_prefs_;
+
+  // Whether all credentials have been loaded.
+  bool all_credentials_loaded_;
+
+  signin_metrics::SourceForRefreshTokenOperation update_refresh_token_source_ =
+      signin_metrics::SourceForRefreshTokenOperation::kUnknown;
 
   DISALLOW_COPY_AND_ASSIGN(ProfileOAuth2TokenService);
 };

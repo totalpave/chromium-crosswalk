@@ -5,9 +5,14 @@
 #include <stddef.h>
 
 #include "base/bind.h"
+#include "base/bind_helpers.h"
+#include "base/callback.h"
 #include "base/command_line.h"
 #include "base/macros.h"
+#include "base/run_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind_test_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/password_manager/password_store_factory.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
@@ -22,9 +27,12 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/autofill/core/common/password_form.h"
+#include "components/keep_alive_registry/keep_alive_types.h"
+#include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/password_manager/core/browser/password_store.h"
 #include "components/password_manager/core/browser/password_store_consumer.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/browsing_data_remover.h"
 #include "content/public/test/test_utils.h"
 
 #if defined(OS_CHROMEOS)
@@ -32,7 +40,7 @@
 #include "chrome/browser/chromeos/profiles/profile_helper.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
-#include "chromeos/chromeos_switches.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #endif
 
@@ -56,8 +64,83 @@ void ProfileCreationComplete(Profile* profile, Profile::CreateStatus status) {
   EXPECT_EQ(chrome::GetBrowserCount(profile), 0U);
   EXPECT_EQ(chrome::GetTotalBrowserCount(), 1U);
   if (status == Profile::CREATE_STATUS_INITIALIZED)
-    base::MessageLoop::current()->QuitWhenIdle();
+    base::RunLoop::QuitCurrentWhenIdleDeprecated();
 }
+
+// An observer that returns back to test code after one or more profiles was
+// deleted. It also create ScopedKeepAlive object to prevent browser shutdown
+// started in case browser has become windowless.
+class MultipleProfileDeletionObserver
+    : public ProfileAttributesStorage::Observer {
+ public:
+  explicit MultipleProfileDeletionObserver(size_t expected_count)
+      : expected_count_(expected_count),
+        profiles_created_count_(0),
+        profiles_data_removed_count_(0) {
+    EXPECT_GT(expected_count_, 0u);
+    ProfileManager* profile_manager = g_browser_process->profile_manager();
+    profile_manager->GetProfileAttributesStorage().AddObserver(this);
+
+    base::Callback<void(const base::Closure&)> would_complete_callback =
+        base::Bind(&MultipleProfileDeletionObserver::
+                       OnBrowsingDataRemoverWouldComplete,
+                   base::Unretained(this));
+    for (Profile* profile : profile_manager->GetLoadedProfiles()) {
+      content::BrowserContext::GetBrowsingDataRemover(profile)
+          ->SetWouldCompleteCallbackForTesting(would_complete_callback);
+    }
+  }
+
+  ~MultipleProfileDeletionObserver() override {
+    g_browser_process->profile_manager()->GetProfileAttributesStorage().
+        RemoveObserver(this);
+  }
+
+  void Wait() {
+    keep_alive_ = std::make_unique<ScopedKeepAlive>(
+        KeepAliveOrigin::PROFILE_HELPER, KeepAliveRestartOption::DISABLED);
+    loop_.Run();
+  }
+
+ private:
+  void OnProfileWillBeRemoved(const base::FilePath& profile_path) override {
+    profiles_created_count_++;
+    MaybeQuit();
+  }
+
+  // TODO(https://crbug.com/704601): remove this code when bug is fixed.
+  void OnBrowsingDataRemoverWouldComplete(
+      const base::Closure& continue_to_completion) {
+    continue_to_completion.Run();
+    profiles_data_removed_count_++;
+    MaybeQuit();
+  }
+
+  void MaybeQuit() {
+    DLOG(INFO) << profiles_created_count_
+               << " profiles removed, and "
+               << profiles_data_removed_count_
+               << " profile data removed of expected "
+               << expected_count_;
+    if (profiles_created_count_ < expected_count_ ||
+        profiles_data_removed_count_ < expected_count_)
+      return;
+
+    EXPECT_EQ(expected_count_, profiles_created_count_);
+    EXPECT_EQ(expected_count_, profiles_data_removed_count_);
+
+    keep_alive_.reset();
+    loop_.Quit();
+  }
+
+  base::RunLoop loop_;
+  std::unique_ptr<ScopedKeepAlive> keep_alive_;
+  size_t expected_count_;
+  size_t profiles_created_count_;
+  size_t profiles_data_removed_count_;
+
+  DISALLOW_COPY_AND_ASSIGN(MultipleProfileDeletionObserver);
+};
 
 void EphemeralProfileCreationComplete(Profile* profile,
                                       Profile::CreateStatus status) {
@@ -98,7 +181,7 @@ class PasswordStoreConsumerVerifier
     : public password_manager::PasswordStoreConsumer {
  public:
   void OnGetPasswordStoreResults(
-      ScopedVector<autofill::PasswordForm> results) override {
+      std::vector<std::unique_ptr<autofill::PasswordForm>> results) override {
     password_entries_.swap(results);
     run_loop_.Quit();
   }
@@ -107,26 +190,31 @@ class PasswordStoreConsumerVerifier
     run_loop_.Run();
   }
 
-  const std::vector<autofill::PasswordForm*>& GetPasswords() const {
-    return password_entries_.get();
+  const std::vector<std::unique_ptr<autofill::PasswordForm>>& GetPasswords()
+      const {
+    return password_entries_;
   }
 
  private:
   base::RunLoop run_loop_;
-  ScopedVector<autofill::PasswordForm> password_entries_;
+  std::vector<std::unique_ptr<autofill::PasswordForm>> password_entries_;
 };
 
-static base::FilePath GetFirstNonSigninProfile(
-    ProfileAttributesStorage& storage) {
+base::FilePath GetFirstNonSigninNonLockScreenAppProfile(
+    ProfileAttributesStorage* storage) {
   std::vector<ProfileAttributesEntry*> entries =
-      storage.GetAllProfilesAttributesSortedByName();
+      storage->GetAllProfilesAttributesSortedByName();
 #if defined(OS_CHROMEOS)
   const base::FilePath signin_path =
       chromeos::ProfileHelper::GetSigninProfileDir();
+  const base::FilePath lock_screen_apps_path =
+      chromeos::ProfileHelper::GetLockScreenAppProfilePath();
+
   for (ProfileAttributesEntry* entry : entries) {
     base::FilePath profile_path = entry->GetPath();
-    if (profile_path != signin_path)
+    if (profile_path != signin_path && profile_path != lock_screen_apps_path) {
       return profile_path;
+    }
   }
   return base::FilePath();
 #else
@@ -151,7 +239,8 @@ class ProfileManagerBrowserTest : public InProcessBrowserTest {
   }
 };
 
-#if defined(OS_MACOSX)
+// CrOS multi-profiles implementation is too different for these tests.
+#if !defined(OS_CHROMEOS)
 
 // Delete single profile and make sure a new one is created.
 IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeleteSingletonProfile) {
@@ -167,14 +256,13 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeleteSingletonProfile) {
   base::FilePath singleton_profile_path =
       storage.GetAllProfilesAttributes().front()->GetPath();
   EXPECT_FALSE(singleton_profile_path.empty());
-  base::RunLoop run_loop;
-  profile_manager->ScheduleProfileForDeletion(
-      singleton_profile_path,
-      base::Bind(&OnUnblockOnProfileCreation, &run_loop));
+  MultipleProfileDeletionObserver profile_deletion_observer(1u);
+  profile_manager->ScheduleProfileForDeletion(singleton_profile_path,
+                                              base::DoNothing());
 
   // Run the message loop until the profile is actually deleted (as indicated
   // by the callback above being called).
-  run_loop.Run();
+  profile_deletion_observer.Wait();
 
   // Make sure a new profile was created automatically.
   EXPECT_EQ(1u, storage.GetNumberOfProfiles());
@@ -193,10 +281,42 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeleteSingletonProfile) {
   EXPECT_EQ(last_used_profile_name, observer.last_used_profile_name());
 }
 
-// Delete all profiles in a multi profile setup and make sure a new one is
-// created.
-// Crashes/CHECKs. See crbug.com/104851
-IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DISABLED_DeleteAllProfiles) {
+// Delete inactive profile in a multi profile setup and make sure current
+// browser is not affected.
+IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeleteInactiveProfile) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  ProfileAttributesStorage& storage =
+      profile_manager->GetProfileAttributesStorage();
+  base::FilePath current_profile_path = browser()->profile()->GetPath();
+
+  // Create an additional profile.
+  base::FilePath new_path = profile_manager->GenerateNextProfileDirectoryPath();
+  base::RunLoop run_loop;
+  profile_manager->CreateProfileAsync(
+      new_path, base::Bind(&OnUnblockOnProfileCreation, &run_loop),
+      base::string16(), std::string());
+  run_loop.Run();
+
+  ASSERT_EQ(2u, storage.GetNumberOfProfiles());
+
+  // Delete inactive profile.
+  MultipleProfileDeletionObserver profile_deletion_observer(1u);
+  profile_manager->ScheduleProfileForDeletion(new_path, base::DoNothing());
+  profile_deletion_observer.Wait();
+
+  // Make sure there only preexisted profile left.
+  EXPECT_EQ(1u, storage.GetNumberOfProfiles());
+  EXPECT_EQ(current_profile_path,
+            storage.GetAllProfilesAttributes().front()->GetPath());
+
+  // Make sure that last used profile preference is set correctly.
+  Profile* last_used = ProfileManager::GetLastUsedProfile();
+  EXPECT_EQ(current_profile_path, last_used->GetPath());
+}
+
+// Delete current profile in a multi profile setup and make sure an existing one
+// is loaded.
+IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeleteCurrentProfile) {
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   ProfileAttributesStorage& storage =
       profile_manager->GetProfileAttributesStorage();
@@ -206,7 +326,39 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DISABLED_DeleteAllProfiles) {
   base::RunLoop run_loop;
   profile_manager->CreateProfileAsync(
       new_path, base::Bind(&OnUnblockOnProfileCreation, &run_loop),
-      base::string16(), std::string(), std::string());
+      base::string16(), std::string());
+  run_loop.Run();
+
+  ASSERT_EQ(2u, storage.GetNumberOfProfiles());
+
+  // Delete current profile.
+  MultipleProfileDeletionObserver profile_deletion_observer(1u);
+  profile_manager->ScheduleProfileForDeletion(browser()->profile()->GetPath(),
+                                              base::DoNothing());
+  profile_deletion_observer.Wait();
+
+  // Make sure a profile created earlier become the only profile.
+  EXPECT_EQ(1u, storage.GetNumberOfProfiles());
+  EXPECT_EQ(new_path, storage.GetAllProfilesAttributes().front()->GetPath());
+
+  // Make sure that last used profile preference is set correctly.
+  Profile* last_used = ProfileManager::GetLastUsedProfile();
+  EXPECT_EQ(new_path, last_used->GetPath());
+}
+
+// Delete all profiles in a multi profile setup and make sure a new one is
+// created.
+IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeleteAllProfiles) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  ProfileAttributesStorage& storage =
+      profile_manager->GetProfileAttributesStorage();
+
+  // Create an additional profile.
+  base::FilePath new_path = profile_manager->GenerateNextProfileDirectoryPath();
+  base::RunLoop run_loop;
+  profile_manager->CreateProfileAsync(
+      new_path, base::Bind(&OnUnblockOnProfileCreation, &run_loop),
+      base::string16(), std::string());
 
   // Run the message loop to allow profile creation to take place; the loop is
   // terminated by OnUnblockOnProfileCreation when the profile is created.
@@ -215,19 +367,18 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DISABLED_DeleteAllProfiles) {
   ASSERT_EQ(2u, storage.GetNumberOfProfiles());
 
   // Delete all profiles.
+  MultipleProfileDeletionObserver profile_deletion_observer(2u);
   std::vector<ProfileAttributesEntry*> entries =
       storage.GetAllProfilesAttributes();
   std::vector<base::FilePath> old_profile_paths;
   for (ProfileAttributesEntry* entry : entries) {
     base::FilePath profile_path = entry->GetPath();
     EXPECT_FALSE(profile_path.empty());
-    profile_manager->ScheduleProfileForDeletion(
-        profile_path, ProfileManager::CreateCallback());
+    profile_manager->ScheduleProfileForDeletion(profile_path,
+                                                base::DoNothing());
     old_profile_paths.push_back(profile_path);
   }
-
-  // Spin things so deletion can take place.
-  content::RunAllPendingInMessageLoop();
+  profile_deletion_observer.Wait();
 
   // Make sure a new profile was created automatically.
   EXPECT_EQ(1u, storage.GetNumberOfProfiles());
@@ -240,7 +391,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DISABLED_DeleteAllProfiles) {
   Profile* last_used = ProfileManager::GetLastUsedProfile();
   EXPECT_EQ(new_profile_path, last_used->GetPath());
 }
-#endif  // OS_MACOSX
+#endif  // !defined(OS_CHROMEOS)
 
 #if defined(OS_CHROMEOS)
 
@@ -260,7 +411,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerCrOSBrowserTest, GetLastUsedProfile) {
   EXPECT_TRUE(last_used_profile != NULL);
 
   base::FilePath profile_path;
-  PathService::Get(chrome::DIR_USER_DATA, &profile_path);
+  base::PathService::Get(chrome::DIR_USER_DATA, &profile_path);
 
   profile_path = profile_path.AppendASCII(
       std::string(chrome::kProfileDirPrefix) + "test-user-hash");
@@ -279,11 +430,9 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest,
 
   // Create a profile, make sure callback is invoked before any callbacks are
   // invoked (so they can do things like sign in the profile, etc).
-  ProfileManager::CreateMultiProfileAsync(
-      base::string16(),  // name
-      std::string(),  // icon url
-      base::Bind(ProfileCreationComplete),
-      std::string());
+  ProfileManager::CreateMultiProfileAsync(base::string16(),  // name
+                                          std::string(),     // icon url
+                                          base::Bind(ProfileCreationComplete));
   // Wait for profile to finish loading.
   content::RunMessageLoop();
   EXPECT_EQ(profile_manager->GetNumberOfProfiles(), 2U);
@@ -297,8 +446,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest,
   }
 }
 
-IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest,
-                       SwitchToProfile) {
+IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, SwitchToProfile) {
   // If multiprofile mode is not enabled, you can't switch between profiles.
   if (!profiles::IsMultipleProfilesEnabled())
     return;
@@ -307,7 +455,8 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest,
   ProfileAttributesStorage& storage =
       profile_manager->GetProfileAttributesStorage();
   size_t initial_profile_count = profile_manager->GetNumberOfProfiles();
-  base::FilePath path_profile1 = GetFirstNonSigninProfile(storage);
+  base::FilePath path_profile1 =
+      GetFirstNonSigninNonLockScreenAppProfile(&storage);
 
   ASSERT_NE(0U, initial_profile_count);
   EXPECT_EQ(1U, chrome::GetTotalBrowserCount());
@@ -318,7 +467,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest,
   base::RunLoop run_loop;
   profile_manager->CreateProfileAsync(
       path_profile2, base::Bind(&OnUnblockOnProfileCreation, &run_loop),
-      base::string16(), std::string(), std::string());
+      base::string16(), std::string());
 
   // Run the message loop to allow profile creation to take place; the loop is
   // terminated by OnUnblockOnProfileCreation when the profile is created.
@@ -367,7 +516,8 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, MAYBE_EphemeralProfile) {
   ProfileAttributesStorage& storage =
       profile_manager->GetProfileAttributesStorage();
   size_t initial_profile_count = profile_manager->GetNumberOfProfiles();
-  base::FilePath path_profile1 = GetFirstNonSigninProfile(storage);
+  base::FilePath path_profile1 =
+      GetFirstNonSigninNonLockScreenAppProfile(&storage);
 
   ASSERT_NE(0U, initial_profile_count);
   EXPECT_EQ(1U, chrome::GetTotalBrowserCount());
@@ -376,9 +526,8 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, MAYBE_EphemeralProfile) {
   base::FilePath path_profile2 =
       profile_manager->GenerateNextProfileDirectoryPath();
   profile_manager->CreateProfileAsync(
-      path_profile2,
-      base::Bind(&EphemeralProfileCreationComplete),
-      base::string16(), std::string(), std::string());
+      path_profile2, base::Bind(&EphemeralProfileCreationComplete),
+      base::string16(), std::string());
 
   // Spin to allow profile creation to take place.
   content::RunMessageLoop();
@@ -416,8 +565,16 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, MAYBE_EphemeralProfile) {
 }
 
 // The test makes sense on those platforms where the keychain exists.
-#if !defined(OS_WIN) && !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
-IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeletePasswords) {
+#if !defined(OS_WIN) && !defined(OS_CHROMEOS)
+
+// Suddenly started failing on Linux, see http://crbug.com/660488.
+#if defined(OS_LINUX)
+#define MAYBE_DeletePasswords DISABLED_DeletePasswords
+#else
+#define MAYBE_DeletePasswords DeletePasswords
+#endif
+
+IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, MAYBE_DeletePasswords) {
   Profile* profile = ProfileManager::GetActiveUserProfile();
   ASSERT_TRUE(profile);
 
@@ -427,7 +584,6 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeletePasswords) {
   form.signon_realm = "http://accounts.google.com/";
   form.username_value = base::ASCIIToUTF16("my_username");
   form.password_value = base::ASCIIToUTF16("my_password");
-  form.ssl_valid = false;
   form.preferred = true;
   form.blacklisted_by_user = false;
 
@@ -445,7 +601,8 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeletePasswords) {
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   base::RunLoop run_loop;
   profile_manager->ScheduleProfileForDeletion(
-      profile->GetPath(), base::Bind(&OnUnblockOnProfileCreation, &run_loop));
+      profile->GetPath(),
+      base::BindLambdaForTesting([&run_loop](Profile*) { run_loop.Quit(); }));
   run_loop.Run();
 
   PasswordStoreConsumerVerifier verify_delete;
@@ -453,7 +610,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagerBrowserTest, DeletePasswords) {
   verify_delete.Wait();
   EXPECT_EQ(0u, verify_delete.GetPasswords().size());
 }
-#endif  // !defined(OS_WIN) && !defined(OS_ANDROID) && !defined(OS_CHROMEOS)
+#endif  // !defined(OS_WIN) && !defined(OS_CHROMEOS)
 
 // Tests Profile::HasOffTheRecordProfile, Profile::IsValidProfile and the
 // profile counts in ProfileManager with respect to the creation and destruction

@@ -8,13 +8,13 @@
 #include <stdint.h>
 
 #include <memory>
+#include <unordered_map>
 
 #include "base/macros.h"
-#include "components/prefs/pref_member.h"
 
-namespace devtools_http_handler {
-class DevToolsHttpHandler;
-}
+namespace content {
+class WebContents;
+}  // namespace content
 
 namespace chromecast {
 namespace shell {
@@ -26,15 +26,23 @@ class RemoteDebuggingServer {
   explicit RemoteDebuggingServer(bool start_immediately);
   ~RemoteDebuggingServer();
 
+  // Allows this WebContents to be debugged.
+  void EnableWebContentsForDebugging(content::WebContents* web_contents);
+
+  // Disables remote debugging for this web contents.
+  void DisableWebContentsForDebugging(content::WebContents* web_contents);
+
  private:
-  // Called when pref_enabled_ is changed.
-  void OnEnabledChanged();
+  CastDevToolsManagerDelegate* GetDevtoolsDelegate();
+  void StartIfNeeded();
+  void StopIfNeeded();
 
-  std::unique_ptr<devtools_http_handler::DevToolsHttpHandler>
-      devtools_http_handler_;
-
-  BooleanPrefMember pref_enabled_;
+  class WebContentsObserver;
+  std::unordered_map<content::WebContents*,
+                     std::unique_ptr<WebContentsObserver>>
+      observers_;
   uint16_t port_;
+  bool is_started_;
 
   DISALLOW_COPY_AND_ASSIGN(RemoteDebuggingServer);
 };

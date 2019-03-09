@@ -39,11 +39,10 @@ struct EsParserMpeg1Audio::Mpeg1AudioFrame {
 EsParserMpeg1Audio::EsParserMpeg1Audio(
     const NewAudioConfigCB& new_audio_config_cb,
     const EmitBufferCB& emit_buffer_cb,
-    const scoped_refptr<MediaLog>& media_log)
+    MediaLog* media_log)
     : media_log_(media_log),
       new_audio_config_cb_(new_audio_config_cb),
-      emit_buffer_cb_(emit_buffer_cb) {
-}
+      emit_buffer_cb_(emit_buffer_cb) {}
 
 EsParserMpeg1Audio::~EsParserMpeg1Audio() {
 }
@@ -60,10 +59,10 @@ bool EsParserMpeg1Audio::ParseFromEsQueue() {
     // Get the PTS & the duration of this access unit.
     TimingDesc current_timing_desc =
         GetTimingDescriptor(mpeg1audio_frame.queue_offset);
-    if (current_timing_desc.pts != kNoTimestamp())
+    if (current_timing_desc.pts != kNoTimestamp)
       audio_timestamp_helper_->SetBaseTimestamp(current_timing_desc.pts);
 
-    if (audio_timestamp_helper_->base_timestamp() == kNoTimestamp()) {
+    if (audio_timestamp_helper_->base_timestamp() == kNoTimestamp) {
       DVLOG(1) << "Skipping audio frame with unknown timestamp";
       SkipMpeg1AudioFrame(mpeg1audio_frame);
       continue;
@@ -79,11 +78,9 @@ bool EsParserMpeg1Audio::ParseFromEsQueue() {
     // TODO(wolenetz/acolwell): Validate and use a common cross-parser TrackId
     // type and allow multiple audio tracks. See https://crbug.com/341581.
     scoped_refptr<StreamParserBuffer> stream_parser_buffer =
-        StreamParserBuffer::CopyFrom(
-            mpeg1audio_frame.data,
-            mpeg1audio_frame.size,
-            is_key_frame,
-            DemuxerStream::AUDIO, 0);
+        StreamParserBuffer::CopyFrom(mpeg1audio_frame.data,
+                                     mpeg1audio_frame.size, is_key_frame,
+                                     DemuxerStream::AUDIO, kMp2tAudioTrackId);
     stream_parser_buffer->set_timestamp(current_pts);
     stream_parser_buffer->set_duration(frame_duration);
     emit_buffer_cb_.Run(stream_parser_buffer);
@@ -174,12 +171,18 @@ bool EsParserMpeg1Audio::UpdateAudioConfiguration(
       kCodecMP3, kSampleFormatS16, header.channel_layout, header.sample_rate,
       EmptyExtraData(), Unencrypted());
 
+  if (!audio_decoder_config.IsValidConfig()) {
+    DVLOG(1) << "Invalid config: "
+             << audio_decoder_config.AsHumanReadableString();
+    return false;
+  }
+
   if (!audio_decoder_config.Matches(last_audio_decoder_config_)) {
     DVLOG(1) << "Sampling frequency: " << header.sample_rate;
     DVLOG(1) << "Channel layout: " << header.channel_layout;
     // Reset the timestamp helper to use a new time scale.
     if (audio_timestamp_helper_ &&
-        audio_timestamp_helper_->base_timestamp() != kNoTimestamp()) {
+        audio_timestamp_helper_->base_timestamp() != kNoTimestamp) {
       base::TimeDelta base_timestamp = audio_timestamp_helper_->GetTimestamp();
       audio_timestamp_helper_.reset(
         new AudioTimestampHelper(header.sample_rate));

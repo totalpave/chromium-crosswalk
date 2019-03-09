@@ -10,10 +10,11 @@
 #include <map>
 #include <string>
 
+#include "base/bind.h"
+#include "base/bind_helpers.h"
 #include "base/command_line.h"
 #include "base/guid.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
@@ -21,47 +22,48 @@
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "base/time/time.h"
+#include "base/time/default_clock.h"
+#include "base/time/default_tick_clock.h"
 #include "content/browser/bad_message.h"
 #include "content/browser/child_process_security_policy_impl.h"
-#include "content/browser/message_port_message_filter.h"
-#include "content/browser/message_port_service.h"
-#include "content/browser/service_worker/embedded_worker_instance.h"
-#include "content/browser/service_worker/embedded_worker_registry.h"
-#include "content/browser/service_worker/embedded_worker_status.h"
-#include "content/browser/service_worker/service_worker_client_utils.h"
+#include "content/browser/service_worker/payment_handler_support.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
-#include "content/browser/service_worker/service_worker_metrics.h"
+#include "content/browser/service_worker/service_worker_installed_scripts_sender.h"
 #include "content/browser/service_worker/service_worker_registration.h"
-#include "content/common/service_worker/embedded_worker_messages.h"
-#include "content/common/service_worker/service_worker_messages.h"
-#include "content/common/service_worker/service_worker_type_converters.h"
 #include "content/common/service_worker/service_worker_utils.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
-#include "content/public/browser/render_process_host.h"
+#include "content/public/browser/page_navigator.h"
 #include "content/public/common/content_client.h"
-#include "content/public/common/content_switches.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/result_codes.h"
-#include "mojo/common/common_type_converters.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
+#include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
+#include "third_party/blink/public/common/service_worker/service_worker_type_converters.h"
+#include "third_party/blink/public/common/service_worker/service_worker_utils.h"
+#include "third_party/blink/public/mojom/service_worker/embedded_worker.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_error_type.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_installed_scripts_manager.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_object.mojom.h"
+#include "third_party/blink/public/web/web_console_message.h"
 
 namespace content {
-
-using StatusCallback = ServiceWorkerVersion::StatusCallback;
-
 namespace {
 
+// Timeout for an installed worker to start.
+constexpr base::TimeDelta kStartInstalledWorkerTimeout =
+    base::TimeDelta::FromSeconds(60);
+
+// Timeout for a request to be handled.
+constexpr base::TimeDelta kRequestTimeout = base::TimeDelta::FromMinutes(5);
+
 // Time to wait until stopping an idle worker.
-const int kIdleWorkerTimeoutSeconds = 30;
+constexpr base::TimeDelta kIdleWorkerTimeout = base::TimeDelta::FromSeconds(30);
 
 // Default delay for scheduled update.
-const int kUpdateDelaySeconds = 1;
-
-// Timeout for waiting for a response to a ping.
-const int kPingTimeoutSeconds = 30;
+constexpr base::TimeDelta kUpdateDelay = base::TimeDelta::FromSeconds(1);
 
 const char kClaimClientsStateErrorMesage[] =
     "Only the active worker can claim clients.";
@@ -69,9 +71,15 @@ const char kClaimClientsStateErrorMesage[] =
 const char kClaimClientsShutdownErrorMesage[] =
     "Failed to claim clients due to Service Worker system shutdown.";
 
-void RunSoon(const base::Closure& callback) {
+const char kNotRespondingErrorMesage[] = "Service Worker is not responding.";
+const char kForceUpdateInfoMessage[] =
+    "Service Worker was updated because \"Update on reload\" was "
+    "checked in the DevTools Application panel.";
+
+void RunSoon(base::OnceClosure callback) {
   if (!callback.is_null())
-    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE, callback);
+    base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
+                                                  std::move(callback));
 }
 
 template <typename CallbackArray, typename Arg>
@@ -80,101 +88,28 @@ void RunCallbacks(ServiceWorkerVersion* version,
                   const Arg& arg) {
   CallbackArray callbacks;
   callbacks.swap(*callbacks_ptr);
-  for (const auto& callback : callbacks)
-    callback.Run(arg);
+  for (auto& callback : callbacks)
+    std::move(callback).Run(arg);
 }
 
-void RunStartWorkerCallback(
-    const StatusCallback& callback,
-    scoped_refptr<ServiceWorkerRegistration> protect,
-    ServiceWorkerStatusCode status) {
-  callback.Run(status);
-}
-
-// A callback adapter to start a |task| after StartWorker.
-void RunTaskAfterStartWorker(
-    base::WeakPtr<ServiceWorkerVersion> version,
-    const StatusCallback& error_callback,
-    const base::Closure& task,
-    ServiceWorkerStatusCode status) {
-  if (status != SERVICE_WORKER_OK) {
-    if (!error_callback.is_null())
-      error_callback.Run(status);
-    return;
-  }
-  if (version->running_status() != EmbeddedWorkerStatus::RUNNING) {
+// An adapter to run a |callback| after StartWorker.
+void RunCallbackAfterStartWorker(base::WeakPtr<ServiceWorkerVersion> version,
+                                 ServiceWorkerVersion::StatusCallback callback,
+                                 blink::ServiceWorkerStatusCode status) {
+  if (status == blink::ServiceWorkerStatusCode::kOk &&
+      version->running_status() != EmbeddedWorkerStatus::RUNNING) {
     // We've tried to start the worker (and it has succeeded), but
     // it looks it's not running yet.
     NOTREACHED() << "The worker's not running after successful StartWorker";
-    if (!error_callback.is_null())
-      error_callback.Run(SERVICE_WORKER_ERROR_START_WORKER_FAILED);
+    std::move(callback).Run(
+        blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed);
     return;
   }
-  task.Run();
-}
-
-void KillEmbeddedWorkerProcess(int process_id, ResultCode code) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  RenderProcessHost* render_process_host =
-      RenderProcessHost::FromID(process_id);
-  if (render_process_host->GetHandle() != base::kNullProcessHandle) {
-    bad_message::ReceivedBadMessage(render_process_host,
-                                    bad_message::SERVICE_WORKER_BAD_URL);
-  }
+  std::move(callback).Run(status);
 }
 
 void ClearTick(base::TimeTicks* time) {
   *time = base::TimeTicks();
-}
-
-void RestartTick(base::TimeTicks* time) {
-  *time = base::TimeTicks().Now();
-}
-
-bool RequestExpired(const base::TimeTicks& expiration) {
-  if (expiration.is_null())
-    return false;
-  return base::TimeTicks().Now() >= expiration;
-}
-
-base::TimeDelta GetTickDuration(const base::TimeTicks& time) {
-  if (time.is_null())
-    return base::TimeDelta();
-  return base::TimeTicks().Now() - time;
-}
-
-bool IsInstalled(ServiceWorkerVersion::Status status) {
-  switch (status) {
-    case ServiceWorkerVersion::NEW:
-    case ServiceWorkerVersion::INSTALLING:
-    case ServiceWorkerVersion::REDUNDANT:
-      return false;
-    case ServiceWorkerVersion::INSTALLED:
-    case ServiceWorkerVersion::ACTIVATING:
-    case ServiceWorkerVersion::ACTIVATED:
-      return true;
-  }
-  NOTREACHED() << "Unexpected status: " << status;
-  return false;
-}
-
-std::string VersionStatusToString(ServiceWorkerVersion::Status status) {
-  switch (status) {
-    case ServiceWorkerVersion::NEW:
-      return "new";
-    case ServiceWorkerVersion::INSTALLING:
-      return "installing";
-    case ServiceWorkerVersion::INSTALLED:
-      return "installed";
-    case ServiceWorkerVersion::ACTIVATING:
-      return "activating";
-    case ServiceWorkerVersion::ACTIVATED:
-      return "activated";
-    case ServiceWorkerVersion::REDUNDANT:
-      return "redundant";
-  }
-  NOTREACHED() << status;
-  return std::string();
 }
 
 const int kInvalidTraceId = -1;
@@ -190,146 +125,159 @@ int NextTraceId() {
   return trace_id;
 }
 
+void OnConnectionError(base::WeakPtr<EmbeddedWorkerInstance> embedded_worker) {
+  if (!embedded_worker)
+    return;
+
+  switch (embedded_worker->status()) {
+    case EmbeddedWorkerStatus::STARTING:
+    case EmbeddedWorkerStatus::RUNNING:
+      // In this case the disconnection might be happening because of sudden
+      // renderer shutdown like crash.
+      embedded_worker->Detach();
+      break;
+    case EmbeddedWorkerStatus::STOPPING:
+    case EmbeddedWorkerStatus::STOPPED:
+      // Do nothing
+      break;
+  }
+}
+
+void OnOpenWindowFinished(
+    blink::mojom::ServiceWorkerHost::OpenNewTabCallback callback,
+    blink::ServiceWorkerStatusCode status,
+    blink::mojom::ServiceWorkerClientInfoPtr client_info) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  const bool success = (status == blink::ServiceWorkerStatusCode::kOk);
+  base::Optional<std::string> error_msg;
+  if (!success) {
+    DCHECK(!client_info);
+    error_msg.emplace("Something went wrong while trying to open the window.");
+  }
+  std::move(callback).Run(success, std::move(client_info), error_msg);
+}
+
+void DidShowPaymentHandlerWindow(
+    const GURL& url,
+    const base::WeakPtr<ServiceWorkerContextCore>& context,
+    blink::mojom::ServiceWorkerHost::OpenPaymentHandlerWindowCallback callback,
+    bool success,
+    int render_process_id,
+    int render_frame_id) {
+  if (success) {
+    service_worker_client_utils::DidNavigate(
+        context, url.GetOrigin(),
+        base::BindOnce(&OnOpenWindowFinished, std::move(callback)),
+        render_process_id, render_frame_id);
+  } else {
+    OnOpenWindowFinished(std::move(callback),
+                         blink::ServiceWorkerStatusCode::kErrorFailed,
+                         nullptr /* client_info */);
+  }
+}
+
+void DidGetClients(
+    blink::mojom::ServiceWorkerHost::GetClientsCallback callback,
+    std::unique_ptr<service_worker_client_utils::ServiceWorkerClientPtrs>
+        clients) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  std::move(callback).Run(std::move(*clients));
+}
+
+void DidNavigateClient(
+    blink::mojom::ServiceWorkerHost::NavigateClientCallback callback,
+    const GURL& url,
+    blink::ServiceWorkerStatusCode status,
+    blink::mojom::ServiceWorkerClientInfoPtr client) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  const bool success = (status == blink::ServiceWorkerStatusCode::kOk);
+  base::Optional<std::string> error_msg;
+  if (!success) {
+    DCHECK(!client);
+    error_msg.emplace("Cannot navigate to URL: " + url.spec());
+  }
+  std::move(callback).Run(success, std::move(client), error_msg);
+}
+
 }  // namespace
 
-const int ServiceWorkerVersion::kTimeoutTimerDelaySeconds = 30;
-const int ServiceWorkerVersion::kStartInstalledWorkerTimeoutSeconds = 60;
-const int ServiceWorkerVersion::kStartNewWorkerTimeoutMinutes = 5;
-const int ServiceWorkerVersion::kRequestTimeoutMinutes = 5;
-const int ServiceWorkerVersion::kStopWorkerTimeoutSeconds = 5;
+constexpr base::TimeDelta ServiceWorkerVersion::kTimeoutTimerDelay;
+constexpr base::TimeDelta ServiceWorkerVersion::kStartNewWorkerTimeout;
+constexpr base::TimeDelta ServiceWorkerVersion::kStopWorkerTimeout;
 
-class ServiceWorkerVersion::Metrics {
- public:
-  using EventType = ServiceWorkerMetrics::EventType;
-  explicit Metrics(ServiceWorkerVersion* owner) : owner_(owner) {}
-  ~Metrics() {
-    if (owner_->should_exclude_from_uma_)
-      return;
-    for (const auto& ev : event_stats_) {
-      ServiceWorkerMetrics::RecordEventHandledRatio(
-          ev.first, ev.second.handled_events, ev.second.fired_events);
-    }
-  }
+void ServiceWorkerVersion::RestartTick(base::TimeTicks* time) const {
+  *time = tick_clock_->NowTicks();
+}
 
-  void RecordEventHandledStatus(EventType event, bool handled) {
-    event_stats_[event].fired_events++;
-    if (handled)
-      event_stats_[event].handled_events++;
-  }
+bool ServiceWorkerVersion::RequestExpired(
+    const base::TimeTicks& expiration) const {
+  if (expiration.is_null())
+    return false;
+  return tick_clock_->NowTicks() >= expiration;
+}
 
- private:
-  struct EventStat {
-    size_t fired_events = 0;
-    size_t handled_events = 0;
-  };
-
-  ServiceWorkerVersion* owner_;
-  std::map<EventType, EventStat> event_stats_;
-
-  DISALLOW_COPY_AND_ASSIGN(Metrics);
-};
-
-// A controller for periodically sending a ping to the worker to see
-// if the worker is not stalling.
-class ServiceWorkerVersion::PingController {
- public:
-  explicit PingController(ServiceWorkerVersion* version) : version_(version) {}
-  ~PingController() {}
-
-  void Activate() { ping_state_ = PINGING; }
-
-  void Deactivate() {
-    ClearTick(&ping_time_);
-    ping_state_ = NOT_PINGING;
-  }
-
-  void OnPongReceived() { ClearTick(&ping_time_); }
-
-  bool IsTimedOut() { return ping_state_ == PING_TIMED_OUT; }
-
-  // Checks ping status. This is supposed to be called periodically.
-  // This may call:
-  // - OnPingTimeout() if the worker hasn't reponded within a certain period.
-  // - PingWorker() if we're running ping timer and can send next ping.
-  void CheckPingStatus() {
-    if (GetTickDuration(ping_time_) >
-        base::TimeDelta::FromSeconds(kPingTimeoutSeconds)) {
-      ping_state_ = PING_TIMED_OUT;
-      version_->OnPingTimeout();
-      return;
-    }
-
-    // Check if we want to send a next ping.
-    if (ping_state_ != PINGING || !ping_time_.is_null())
-      return;
-
-    if (version_->PingWorker() != SERVICE_WORKER_OK) {
-      // TODO(falken): Maybe try resending Ping a few times first?
-      ping_state_ = PING_TIMED_OUT;
-      version_->OnPingTimeout();
-      return;
-    }
-    RestartTick(&ping_time_);
-  }
-
-  void SimulateTimeoutForTesting() {
-    version_->PingWorker();
-    ping_state_ = PING_TIMED_OUT;
-    version_->OnPingTimeout();
-  }
-
- private:
-  enum PingState { NOT_PINGING, PINGING, PING_TIMED_OUT };
-  ServiceWorkerVersion* version_;  // Not owned.
-  base::TimeTicks ping_time_;
-  PingState ping_state_ = NOT_PINGING;
-  DISALLOW_COPY_AND_ASSIGN(PingController);
-};
+base::TimeDelta ServiceWorkerVersion::GetTickDuration(
+    const base::TimeTicks& time) const {
+  if (time.is_null())
+    return base::TimeDelta();
+  return tick_clock_->NowTicks() - time;
+}
 
 ServiceWorkerVersion::ServiceWorkerVersion(
     ServiceWorkerRegistration* registration,
     const GURL& script_url,
+    blink::mojom::ScriptType script_type,
     int64_t version_id,
     base::WeakPtr<ServiceWorkerContextCore> context)
     : version_id_(version_id),
       registration_id_(registration->id()),
       script_url_(script_url),
-      scope_(registration->pattern()),
+      script_origin_(url::Origin::Create(script_url_)),
+      scope_(registration->scope()),
+      script_type_(script_type),
+      fetch_handler_existence_(FetchHandlerExistence::UNKNOWN),
+      site_for_uma_(ServiceWorkerMetrics::SiteFromURL(scope_)),
+      binding_(this),
       context_(context),
       script_cache_map_(this, context),
-      ping_controller_(new PingController(this)),
-      should_exclude_from_uma_(
-          ServiceWorkerMetrics::ShouldExcludeURLFromHistogram(scope_)),
+      tick_clock_(base::DefaultTickClock::GetInstance()),
+      clock_(base::DefaultClock::GetInstance()),
+      ping_controller_(this),
+      validator_(std::make_unique<blink::TrialTokenValidator>()),
       weak_factory_(this) {
-  DCHECK_NE(kInvalidServiceWorkerVersionId, version_id);
+  DCHECK_NE(blink::mojom::kInvalidServiceWorkerVersionId, version_id);
   DCHECK(context_);
   DCHECK(registration);
   DCHECK(script_url_.is_valid());
+  embedded_worker_ = std::make_unique<EmbeddedWorkerInstance>(this);
+  embedded_worker_->AddObserver(this);
   context_->AddLiveVersion(this);
-  embedded_worker_ = context_->embedded_worker_registry()->CreateWorker();
-  embedded_worker_->AddListener(this);
 }
 
 ServiceWorkerVersion::~ServiceWorkerVersion() {
+  // TODO(falken): Investigate whether this can be removed. The destructor used
+  // to be more complicated and could result in various methods being called.
   in_dtor_ = true;
 
   // Record UMA if the worker was trying to start. One way we get here is if the
   // user closed the tab before the SW could start up.
   if (!start_callbacks_.empty()) {
     // RecordStartWorkerResult must be the first element of start_callbacks_.
-    StatusCallback record_start_worker_result = start_callbacks_[0];
+    StatusCallback record_start_worker_result = std::move(start_callbacks_[0]);
     start_callbacks_.clear();
-    record_start_worker_result.Run(SERVICE_WORKER_ERROR_ABORT);
+    std::move(record_start_worker_result)
+        .Run(blink::ServiceWorkerStatusCode::kErrorAbort);
   }
 
   if (context_)
     context_->RemoveLiveVersion(version_id_);
 
-  if (running_status() == EmbeddedWorkerStatus::STARTING ||
-      running_status() == EmbeddedWorkerStatus::RUNNING) {
-    embedded_worker_->Stop();
-  }
-  embedded_worker_->RemoveListener(this);
+  embedded_worker_->RemoveObserver(this);
+}
+
+void ServiceWorkerVersion::SetNavigationPreloadState(
+    const blink::mojom::NavigationPreloadState& state) {
+  navigation_preload_state_ = state;
 }
 
 void ServiceWorkerVersion::SetStatus(Status status) {
@@ -339,27 +287,62 @@ void ServiceWorkerVersion::SetStatus(Status status) {
   TRACE_EVENT2("ServiceWorker", "ServiceWorkerVersion::SetStatus", "Script URL",
                script_url_.spec(), "New Status", VersionStatusToString(status));
 
+  // |fetch_handler_existence_| must be set before setting the status to
+  // INSTALLED,
+  // ACTIVATING or ACTIVATED.
+  DCHECK(fetch_handler_existence_ != FetchHandlerExistence::UNKNOWN ||
+         !(status == INSTALLED || status == ACTIVATING || status == ACTIVATED));
+
   status_ = status;
-  if (skip_waiting_ && status_ == ACTIVATED) {
-    for (int request_id : pending_skip_waiting_requests_)
-      DidSkipWaiting(request_id);
-    pending_skip_waiting_requests_.clear();
+  if (skip_waiting_) {
+    switch (status_) {
+      case NEW:
+        // |skip_waiting_| should not be set before the version is NEW.
+        NOTREACHED();
+        return;
+      case INSTALLING:
+        // Do nothing until INSTALLED time.
+        break;
+      case INSTALLED:
+        // Start recording the time when the version is trying to skip waiting.
+        RestartTick(&skip_waiting_time_);
+        break;
+      case ACTIVATING:
+        // Do nothing until ACTIVATED time.
+        break;
+      case ACTIVATED:
+        // Resolve skip waiting promises.
+        ClearTick(&skip_waiting_time_);
+        for (SkipWaitingCallback& callback : pending_skip_waiting_requests_) {
+          std::move(callback).Run(true);
+        }
+        pending_skip_waiting_requests_.clear();
+        break;
+      case REDUNDANT:
+        // Fail any pending skip waiting requests since this version is dead.
+        for (SkipWaitingCallback& callback : pending_skip_waiting_requests_) {
+          std::move(callback).Run(false);
+        }
+        pending_skip_waiting_requests_.clear();
+        break;
+    }
   }
 
   // OnVersionStateChanged() invokes updates of the status using state
-  // change IPC at ServiceWorkerHandle (for JS-land on renderer process) and
+  // change IPC at ServiceWorkerObjectHost (for JS-land on renderer process) and
   // ServiceWorkerContextCore (for devtools and serviceworker-internals).
   // This should be done before using the new status by
   // |status_change_callbacks_| which sends the IPC for resolving the .ready
   // property.
   // TODO(shimazu): Clarify the dependency of OnVersionStateChanged and
   // |status_change_callbacks_|
-  FOR_EACH_OBSERVER(Listener, listeners_, OnVersionStateChanged(this));
+  for (auto& observer : observers_)
+    observer.OnVersionStateChanged(this);
 
-  std::vector<base::Closure> callbacks;
+  std::vector<base::OnceClosure> callbacks;
   callbacks.swap(status_change_callbacks_);
-  for (const auto& callback : callbacks)
-    callback.Run();
+  for (auto& callback : callbacks)
+    std::move(callback).Run();
 
   if (status == INSTALLED)
     embedded_worker_->OnWorkerVersionInstalled();
@@ -368,34 +351,56 @@ void ServiceWorkerVersion::SetStatus(Status status) {
 }
 
 void ServiceWorkerVersion::RegisterStatusChangeCallback(
-    const base::Closure& callback) {
-  status_change_callbacks_.push_back(callback);
+    base::OnceClosure callback) {
+  status_change_callbacks_.push_back(std::move(callback));
 }
 
 ServiceWorkerVersionInfo ServiceWorkerVersion::GetInfo() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   ServiceWorkerVersionInfo info(
-      running_status(), status(), script_url(), registration_id(), version_id(),
-      embedded_worker()->process_id(), embedded_worker()->thread_id(),
+      running_status(), status(), fetch_handler_existence(), script_url(),
+      registration_id(), version_id(), embedded_worker()->process_id(),
+      embedded_worker()->thread_id(),
       embedded_worker()->worker_devtools_agent_route_id());
   for (const auto& controllee : controllee_map_) {
     const ServiceWorkerProviderHost* host = controllee.second;
     info.clients.insert(std::make_pair(
         host->client_uuid(),
-        ServiceWorkerVersionInfo::ClientInfo(
-            host->process_id(), host->route_id(), host->provider_type())));
+        ServiceWorkerClientInfo(host->process_id(), host->route_id(),
+                                host->web_contents_getter(),
+                                host->provider_type())));
   }
+
+  info.script_response_time = script_response_time_for_devtools_;
   if (!main_script_http_info_)
     return info;
-  info.script_response_time = main_script_http_info_->response_time;
+  // If the service worker hasn't started, then |main_script_http_info_| is not
+  // set, so we use |script_response_time_for_devtools_| to populate |info|. If
+  // the worker has started, this value should match with the timestamp stored
+  // in |main_script_http_info_|.
+  DCHECK_EQ(info.script_response_time, main_script_http_info_->response_time);
+
   if (main_script_http_info_->headers)
     main_script_http_info_->headers->GetLastModifiedValue(
         &info.script_last_modified);
   return info;
 }
 
+void ServiceWorkerVersion::set_fetch_handler_existence(
+    FetchHandlerExistence existence) {
+  DCHECK_EQ(fetch_handler_existence_, FetchHandlerExistence::UNKNOWN);
+  DCHECK_NE(existence, FetchHandlerExistence::UNKNOWN);
+  fetch_handler_existence_ = existence;
+  if (site_for_uma_ != ServiceWorkerMetrics::Site::OTHER)
+    return;
+  if (existence == FetchHandlerExistence::EXISTS)
+    site_for_uma_ = ServiceWorkerMetrics::Site::WITH_FETCH_HANDLER;
+  else
+    site_for_uma_ = ServiceWorkerMetrics::Site::WITHOUT_FETCH_HANDLER;
+}
+
 void ServiceWorkerVersion::StartWorker(ServiceWorkerMetrics::EventType purpose,
-                                       const StatusCallback& callback) {
+                                       StatusCallback callback) {
   TRACE_EVENT_INSTANT2(
       "ServiceWorker", "ServiceWorkerVersion::StartWorker (instant)",
       TRACE_EVENT_SCOPE_THREAD, "Script", script_url_.spec(), "Purpose",
@@ -407,59 +412,96 @@ void ServiceWorkerVersion::StartWorker(ServiceWorkerMetrics::EventType purpose,
   if (!context_) {
     RecordStartWorkerResult(purpose, status_, kInvalidTraceId,
                             is_browser_startup_complete,
-                            SERVICE_WORKER_ERROR_ABORT);
-    RunSoon(base::Bind(callback, SERVICE_WORKER_ERROR_ABORT));
+                            blink::ServiceWorkerStatusCode::kErrorAbort);
+    RunSoon(base::BindOnce(std::move(callback),
+                           blink::ServiceWorkerStatusCode::kErrorAbort));
     return;
   }
   if (is_redundant()) {
     RecordStartWorkerResult(purpose, status_, kInvalidTraceId,
                             is_browser_startup_complete,
-                            SERVICE_WORKER_ERROR_REDUNDANT);
-    RunSoon(base::Bind(callback, SERVICE_WORKER_ERROR_REDUNDANT));
+                            blink::ServiceWorkerStatusCode::kErrorRedundant);
+    RunSoon(base::BindOnce(std::move(callback),
+                           blink::ServiceWorkerStatusCode::kErrorRedundant));
     return;
   }
-
-  // Check that the worker is allowed to start on the given scope. Since this
-  // worker might not be used for a specific frame/process, use -1.
-  // resource_context() can return null in unit tests.
-  if (context_->wrapper()->resource_context() &&
-      !GetContentClient()->browser()->AllowServiceWorker(
-          scope_, scope_, context_->wrapper()->resource_context(), -1, -1)) {
+  if (!IsStartWorkerAllowed()) {
     RecordStartWorkerResult(purpose, status_, kInvalidTraceId,
                             is_browser_startup_complete,
-                            SERVICE_WORKER_ERROR_DISALLOWED);
-    RunSoon(base::Bind(callback, SERVICE_WORKER_ERROR_DISALLOWED));
+                            blink::ServiceWorkerStatusCode::kErrorDisallowed);
+    RunSoon(base::BindOnce(std::move(callback),
+                           blink::ServiceWorkerStatusCode::kErrorDisallowed));
     return;
   }
 
   // Ensure the live registration during starting worker so that the worker can
-  // get associated with it in SWDispatcherHost::OnSetHostedVersionId().
+  // get associated with it in
+  // ServiceWorkerProviderHost::CompleteStartWorkerPreparation.
   context_->storage()->FindRegistrationForId(
       registration_id_, scope_.GetOrigin(),
-      base::Bind(&ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker,
-                 weak_factory_.GetWeakPtr(), purpose, status_,
-                 is_browser_startup_complete, callback));
+      base::BindOnce(
+          &ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker,
+          weak_factory_.GetWeakPtr(), purpose, status_,
+          is_browser_startup_complete, std::move(callback)));
 }
 
-void ServiceWorkerVersion::StopWorker(const StatusCallback& callback) {
+void ServiceWorkerVersion::StopWorker(base::OnceClosure callback) {
   TRACE_EVENT_INSTANT2("ServiceWorker",
                        "ServiceWorkerVersion::StopWorker (instant)",
                        TRACE_EVENT_SCOPE_THREAD, "Script", script_url_.spec(),
                        "Status", VersionStatusToString(status_));
 
-  if (running_status() == EmbeddedWorkerStatus::STOPPED) {
-    RunSoon(base::Bind(callback, SERVICE_WORKER_OK));
-    return;
+  switch (running_status()) {
+    case EmbeddedWorkerStatus::STARTING:
+    case EmbeddedWorkerStatus::RUNNING:
+      embedded_worker_->Stop();
+      if (running_status() == EmbeddedWorkerStatus::STOPPED) {
+        RunSoon(std::move(callback));
+        return;
+      }
+      stop_callbacks_.push_back(std::move(callback));
+      return;
+    case EmbeddedWorkerStatus::STOPPING:
+      stop_callbacks_.push_back(std::move(callback));
+      return;
+    case EmbeddedWorkerStatus::STOPPED:
+      RunSoon(std::move(callback));
+      return;
+  }
+  NOTREACHED();
+}
+
+void ServiceWorkerVersion::TriggerIdleTerminationAsap() {
+  needs_to_be_terminated_asap_ = true;
+  endpoint()->SetIdleTimerDelayToZero();
+}
+
+bool ServiceWorkerVersion::OnRequestTermination() {
+  if (running_status() == EmbeddedWorkerStatus::STOPPING)
+    return true;
+  DCHECK_EQ(EmbeddedWorkerStatus::RUNNING, running_status());
+
+  worker_is_idle_on_renderer_ = true;
+
+  // Determine if the worker can be terminated.
+  bool will_be_terminated = HasNoWork();
+  if (embedded_worker_->devtools_attached()) {
+    // Basically the service worker won't be terminated if DevTools is attached.
+    // But when activation is happening and this worker needs to be terminated
+    // asap, it'll be terminated.
+    will_be_terminated = needs_to_be_terminated_asap_;
   }
 
-  if (stop_callbacks_.empty()) {
-    ServiceWorkerStatusCode status = embedded_worker_->Stop();
-    if (status != SERVICE_WORKER_OK) {
-      RunSoon(base::Bind(callback, status));
-      return;
-    }
+  if (will_be_terminated) {
+    embedded_worker_->Stop();
+  } else {
+    // The worker needs to run more. The worker should start handling queued
+    // events dispatched to the worker directly (e.g. FetchEvent for
+    // subresources).
+    worker_is_idle_on_renderer_ = false;
   }
-  stop_callbacks_.push_back(callback);
+
+  return will_be_terminated;
 }
 
 void ServiceWorkerVersion::ScheduleUpdate() {
@@ -475,11 +517,10 @@ void ServiceWorkerVersion::ScheduleUpdate() {
 
   // Protect |this| until the timer fires, since we may be stopping
   // and soon no one might hold a reference to us.
-  context_->ProtectVersion(make_scoped_refptr(this));
-  update_timer_.Start(FROM_HERE,
-                      base::TimeDelta::FromSeconds(kUpdateDelaySeconds),
-                      base::Bind(&ServiceWorkerVersion::StartUpdate,
-                                 weak_factory_.GetWeakPtr()));
+  context_->ProtectVersion(base::WrapRefCounted(this));
+  update_timer_.Start(FROM_HERE, kUpdateDelay,
+                      base::BindOnce(&ServiceWorkerVersion::StartUpdate,
+                                     weak_factory_.GetWeakPtr()));
 }
 
 void ServiceWorkerVersion::StartUpdate() {
@@ -487,8 +528,8 @@ void ServiceWorkerVersion::StartUpdate() {
     return;
   context_->storage()->FindRegistrationForId(
       registration_id_, scope_.GetOrigin(),
-      base::Bind(&ServiceWorkerVersion::FoundRegistrationForUpdate,
-                 weak_factory_.GetWeakPtr()));
+      base::BindOnce(&ServiceWorkerVersion::FoundRegistrationForUpdate,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void ServiceWorkerVersion::DeferScheduledUpdate() {
@@ -498,156 +539,272 @@ void ServiceWorkerVersion::DeferScheduledUpdate() {
 
 int ServiceWorkerVersion::StartRequest(
     ServiceWorkerMetrics::EventType event_type,
-    const StatusCallback& error_callback) {
-  return StartRequestWithCustomTimeout(
-      event_type, error_callback,
-      base::TimeDelta::FromMinutes(kRequestTimeoutMinutes), KILL_ON_TIMEOUT);
+    StatusCallback error_callback) {
+  return StartRequestWithCustomTimeout(event_type, std::move(error_callback),
+                                       kRequestTimeout, KILL_ON_TIMEOUT);
 }
 
 int ServiceWorkerVersion::StartRequestWithCustomTimeout(
     ServiceWorkerMetrics::EventType event_type,
-    const StatusCallback& error_callback,
+    StatusCallback error_callback,
     const base::TimeDelta& timeout,
     TimeoutBehavior timeout_behavior) {
-  OnBeginEvent();
   DCHECK_EQ(EmbeddedWorkerStatus::RUNNING, running_status())
       << "Can only start a request with a running worker.";
   DCHECK(event_type == ServiceWorkerMetrics::EventType::INSTALL ||
          event_type == ServiceWorkerMetrics::EventType::ACTIVATE ||
          event_type == ServiceWorkerMetrics::EventType::MESSAGE ||
+         event_type == ServiceWorkerMetrics::EventType::EXTERNAL_REQUEST ||
+         event_type == ServiceWorkerMetrics::EventType::LONG_RUNNING_MESSAGE ||
          status() == ACTIVATED)
       << "Event of type " << static_cast<int>(event_type)
       << " can only be dispatched to an active worker: " << status();
 
-  PendingRequest<StatusCallback>* request = new PendingRequest<StatusCallback>(
-      error_callback, base::TimeTicks::Now(), event_type);
-  int request_id = custom_requests_.Add(request);
+  // |context_| is needed for some bookkeeping. If there's no context, the
+  // request will be aborted soon, so don't bother aborting the request directly
+  // here, and just skip this bookkeeping.
+  if (context_) {
+    if (event_type == ServiceWorkerMetrics::EventType::LONG_RUNNING_MESSAGE)
+      embedded_worker_->AbortLifetimeTracking();
+
+    if (event_type != ServiceWorkerMetrics::EventType::INSTALL &&
+        event_type != ServiceWorkerMetrics::EventType::ACTIVATE &&
+        event_type != ServiceWorkerMetrics::EventType::MESSAGE) {
+      // Reset the self-update delay iff this is not an event that can triggered
+      // by a service worker itself. Otherwise, service workers can use update()
+      // to keep running forever via install and activate events, or
+      // postMessage() between themselves to reset the delay via message event.
+      // postMessage() resets the delay in ServiceWorkerObjectHost, iff it
+      // didn't come from a service worker.
+      ServiceWorkerRegistration* registration =
+          context_->GetLiveRegistration(registration_id_);
+      DCHECK(registration) << "running workers should have a live registration";
+      registration->set_self_update_delay(base::TimeDelta());
+    }
+  }
+
+  auto request = std::make_unique<InflightRequest>(
+      std::move(error_callback), clock_->Now(), tick_clock_->NowTicks(),
+      event_type);
+  InflightRequest* request_rawptr = request.get();
+  int request_id = inflight_requests_.Add(std::move(request));
   TRACE_EVENT_ASYNC_BEGIN2("ServiceWorker", "ServiceWorkerVersion::Request",
-                           request, "Request id", request_id, "Event type",
+                           request_rawptr, "Request id", request_id,
+                           "Event type",
                            ServiceWorkerMetrics::EventTypeToString(event_type));
-  base::TimeTicks expiration_time = base::TimeTicks::Now() + timeout;
-  requests_.push(
-      RequestInfo(request_id, event_type, expiration_time, timeout_behavior));
+
+  base::TimeTicks expiration_time = tick_clock_->NowTicks() + timeout;
+  bool is_inserted = false;
+  std::set<InflightRequestTimeoutInfo>::iterator iter;
+  std::tie(iter, is_inserted) = request_timeouts_.emplace(
+      request_id, event_type, expiration_time, timeout_behavior);
+  DCHECK(is_inserted);
+  request_rawptr->timeout_iter = iter;
+  if (expiration_time > max_request_expiration_time_)
+    max_request_expiration_time_ = expiration_time;
+
+  // S13nServiceWorker:
+  // Even if the worker is in the idle state, the new event which is about to
+  // be dispatched will reset the idle status. That means the worker can receive
+  // events directly from any clients, so we cannot trigger OnNoWork after this
+  // point.
+  worker_is_idle_on_renderer_ = false;
   return request_id;
 }
 
+bool ServiceWorkerVersion::StartExternalRequest(
+    const std::string& request_uuid) {
+  if (running_status() == EmbeddedWorkerStatus::STARTING)
+    return pending_external_requests_.insert(request_uuid).second;
+
+  // It's possible that the renderer is lying or the version started stopping
+  // right around the time of the IPC.
+  if (running_status() != EmbeddedWorkerStatus::RUNNING)
+    return false;
+
+  if (external_request_uuid_to_request_id_.count(request_uuid) > 0u)
+    return false;
+
+  int request_id =
+      StartRequest(ServiceWorkerMetrics::EventType::EXTERNAL_REQUEST,
+                   base::BindOnce(&ServiceWorkerVersion::CleanUpExternalRequest,
+                                  this, request_uuid));
+  external_request_uuid_to_request_id_[request_uuid] = request_id;
+  return true;
+}
+
 bool ServiceWorkerVersion::FinishRequest(int request_id, bool was_handled) {
-  PendingRequest<StatusCallback>* request = custom_requests_.Lookup(request_id);
+  InflightRequest* request = inflight_requests_.Lookup(request_id);
   if (!request)
     return false;
-  // TODO(kinuko): Record other event statuses too.
-  metrics_->RecordEventHandledStatus(request->event_type, was_handled);
+  if (event_recorder_)
+    event_recorder_->RecordEventHandledStatus(request->event_type);
   ServiceWorkerMetrics::RecordEventDuration(
-      request->event_type, base::TimeTicks::Now() - request->start_time,
+      request->event_type, tick_clock_->NowTicks() - request->start_time_ticks,
       was_handled);
 
   RestartTick(&idle_time_);
   TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::Request",
                          request, "Handled", was_handled);
-  custom_requests_.Remove(request_id);
-  if (!HasWork())
-    FOR_EACH_OBSERVER(Listener, listeners_, OnNoWork(this));
+  request_timeouts_.erase(request->timeout_iter);
+  inflight_requests_.Remove(request_id);
 
+  if (!HasWorkInBrowser())
+    OnNoWorkInBrowser();
   return true;
+}
+
+bool ServiceWorkerVersion::FinishExternalRequest(
+    const std::string& request_uuid) {
+  if (running_status() == EmbeddedWorkerStatus::STARTING)
+    return pending_external_requests_.erase(request_uuid) > 0u;
+
+  // It's possible that the renderer is lying or the version started stopping
+  // right around the time of the IPC.
+  if (running_status() != EmbeddedWorkerStatus::RUNNING)
+    return false;
+
+  auto iter = external_request_uuid_to_request_id_.find(request_uuid);
+  if (iter != external_request_uuid_to_request_id_.end()) {
+    int request_id = iter->second;
+    external_request_uuid_to_request_id_.erase(iter);
+    return FinishRequest(request_id, true);
+  }
+
+  // It is possible that the request was cancelled or timed out before and we
+  // won't find it in |external_request_uuid_to_request_id_|.
+  // Return true so we don't kill the process.
+  return true;
+}
+
+ServiceWorkerVersion::SimpleEventCallback
+ServiceWorkerVersion::CreateSimpleEventCallback(int request_id) {
+  // The weak reference to |this| is safe because storage of the callbacks, the
+  // inflight responses of blink::mojom::ServiceWorker messages, is owned by
+  // |this|.
+  return base::BindOnce(&ServiceWorkerVersion::OnSimpleEventFinished,
+                        base::Unretained(this), request_id);
 }
 
 void ServiceWorkerVersion::RunAfterStartWorker(
     ServiceWorkerMetrics::EventType purpose,
-    const base::Closure& task,
-    const StatusCallback& error_callback) {
+    StatusCallback callback) {
   if (running_status() == EmbeddedWorkerStatus::RUNNING) {
     DCHECK(start_callbacks_.empty());
-    task.Run();
+    std::move(callback).Run(blink::ServiceWorkerStatusCode::kOk);
     return;
   }
   StartWorker(purpose,
-              base::Bind(&RunTaskAfterStartWorker, weak_factory_.GetWeakPtr(),
-                         error_callback, task));
-}
-
-void ServiceWorkerVersion::DispatchEvent(const std::vector<int>& request_ids,
-                                         const IPC::Message& message) {
-  DCHECK_EQ(EmbeddedWorkerStatus::RUNNING, running_status());
-
-  const ServiceWorkerStatusCode status = embedded_worker_->SendMessage(message);
-
-  for (int request_id : request_ids) {
-    PendingRequest<StatusCallback>* request =
-        custom_requests_.Lookup(request_id);
-    DCHECK(request) << "Invalid request id";
-    DCHECK(!request->is_dispatched)
-        << "Request already dispatched an IPC event";
-    if (status != SERVICE_WORKER_OK) {
-      RunSoon(base::Bind(request->callback, status));
-      custom_requests_.Remove(request_id);
-    } else {
-      request->is_dispatched = true;
-    }
-  }
+              base::BindOnce(&RunCallbackAfterStartWorker,
+                             weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void ServiceWorkerVersion::AddControllee(
     ServiceWorkerProviderHost* provider_host) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
   const std::string& uuid = provider_host->client_uuid();
   CHECK(!provider_host->client_uuid().empty());
-  DCHECK(!ContainsKey(controllee_map_, uuid));
+  DCHECK(!base::ContainsKey(controllee_map_, uuid));
+
   controllee_map_[uuid] = provider_host;
+
+  embedded_worker_->UpdateForegroundPriority();
+
   // Keep the worker alive a bit longer right after a new controllee is added.
   RestartTick(&idle_time_);
-  FOR_EACH_OBSERVER(Listener, listeners_,
-                    OnControlleeAdded(this, provider_host));
+  ClearTick(&no_controllees_time_);
+
+  ServiceWorkerRegistration* registration =
+      context_->GetLiveRegistration(registration_id_);
+  if (registration) {
+    registration->set_self_update_delay(base::TimeDelta());
+  }
+
+  // Notify observers asynchronously for consistency with RemoveControllee.
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ServiceWorkerVersion::NotifyControlleeAdded,
+                     weak_factory_.GetWeakPtr(), uuid,
+                     ServiceWorkerClientInfo(
+                         provider_host->process_id(), provider_host->route_id(),
+                         provider_host->web_contents_getter(),
+                         provider_host->provider_type())));
 }
 
-void ServiceWorkerVersion::RemoveControllee(
-    ServiceWorkerProviderHost* provider_host) {
-  const std::string& uuid = provider_host->client_uuid();
-  DCHECK(ContainsKey(controllee_map_, uuid));
-  controllee_map_.erase(uuid);
-  FOR_EACH_OBSERVER(Listener, listeners_,
-                    OnControlleeRemoved(this, provider_host));
-  if (!HasControllee())
-    FOR_EACH_OBSERVER(Listener, listeners_, OnNoControllees(this));
+void ServiceWorkerVersion::RemoveControllee(const std::string& client_uuid) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK(base::ContainsKey(controllee_map_, client_uuid));
+  controllee_map_.erase(client_uuid);
+
+  embedded_worker_->UpdateForegroundPriority();
+
+  // Notify observers asynchronously since this gets called during
+  // ServiceWorkerProviderHost's destructor, and we don't want observers to do
+  // work during that.
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(&ServiceWorkerVersion::NotifyControlleeRemoved,
+                                weak_factory_.GetWeakPtr(), client_uuid));
 }
 
-void ServiceWorkerVersion::AddStreamingURLRequestJob(
-    const ServiceWorkerURLRequestJob* request_job) {
-  DCHECK(streaming_url_request_jobs_.find(request_job) ==
-         streaming_url_request_jobs_.end());
-  streaming_url_request_jobs_.insert(request_job);
+void ServiceWorkerVersion::OnStreamResponseStarted() {
+  CHECK_LT(inflight_stream_response_count_, std::numeric_limits<int>::max());
+  inflight_stream_response_count_++;
 }
 
-void ServiceWorkerVersion::RemoveStreamingURLRequestJob(
-    const ServiceWorkerURLRequestJob* request_job) {
-  streaming_url_request_jobs_.erase(request_job);
-  if (!HasWork())
-    FOR_EACH_OBSERVER(Listener, listeners_, OnNoWork(this));
+void ServiceWorkerVersion::OnStreamResponseFinished() {
+  DCHECK_GT(inflight_stream_response_count_, 0);
+  inflight_stream_response_count_--;
+  if (!blink::ServiceWorkerUtils::IsServicificationEnabled() &&
+      !HasWorkInBrowser()) {
+    OnNoWorkInBrowser();
+  }
 }
 
-void ServiceWorkerVersion::AddListener(Listener* listener) {
-  listeners_.AddObserver(listener);
+void ServiceWorkerVersion::AddObserver(Observer* observer) {
+  observers_.AddObserver(observer);
 }
 
-void ServiceWorkerVersion::RemoveListener(Listener* listener) {
-  listeners_.RemoveObserver(listener);
+void ServiceWorkerVersion::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
 }
 
-void ServiceWorkerVersion::ReportError(ServiceWorkerStatusCode status,
+void ServiceWorkerVersion::ReportError(blink::ServiceWorkerStatusCode status,
                                        const std::string& status_message) {
   if (status_message.empty()) {
-    OnReportException(base::UTF8ToUTF16(ServiceWorkerStatusToString(status)),
-                      -1, -1, GURL());
+    OnReportException(
+        base::UTF8ToUTF16(blink::ServiceWorkerStatusToString(status)), -1, -1,
+        GURL());
   } else {
     OnReportException(base::UTF8ToUTF16(status_message), -1, -1, GURL());
   }
 }
 
+void ServiceWorkerVersion::ReportForceUpdateToDevTools() {
+  embedded_worker_->AddMessageToConsole(
+      blink::mojom::ConsoleMessageLevel::kWarning, kForceUpdateInfoMessage);
+}
+
 void ServiceWorkerVersion::SetStartWorkerStatusCode(
-    ServiceWorkerStatusCode status) {
+    blink::ServiceWorkerStatusCode status) {
   start_worker_status_ = status;
 }
 
 void ServiceWorkerVersion::Doom() {
+  // Protect |this| because NotifyControllerLost() and Stop() callees
+  // may drop references to |this|.
+  scoped_refptr<ServiceWorkerVersion> protect(this);
+
+  // Tell controllees that this version is dead. Each controllee will call
+  // ServiceWorkerVersion::RemoveControllee(), so be careful with iterators.
+  auto iter = controllee_map_.begin();
+  while (iter != controllee_map_.end()) {
+    ServiceWorkerProviderHost* host = iter->second;
+    ++iter;
+    host->NotifyControllerLost();
+  }
+  // Any controllee this version had should have removed itself.
   DCHECK(!HasControllee());
+
   SetStatus(REDUNDANT);
   if (running_status() == EmbeddedWorkerStatus::STARTING ||
       running_status() == EmbeddedWorkerStatus::RUNNING) {
@@ -663,8 +820,42 @@ void ServiceWorkerVersion::Doom() {
   context_->storage()->PurgeResources(resources);
 }
 
+void ServiceWorkerVersion::SetToPauseAfterDownload(base::OnceClosure callback) {
+  // TODO(asamidoi): Support pause after download in module workers.
+  DCHECK_EQ(blink::mojom::ScriptType::kClassic, script_type_);
+  pause_after_download_callback_ = std::move(callback);
+}
+
+void ServiceWorkerVersion::SetToNotPauseAfterDownload() {
+  pause_after_download_callback_.Reset();
+}
+
+void ServiceWorkerVersion::OnMainScriptLoaded() {
+  // If this startup isn't paused the service worker after the script load,
+  // there is nothing to do. We already called InitializeGlobalScope() in
+  // StartWorkerInternal().
+  if (!pause_after_download_callback_)
+    return;
+  // If the script load was successful, unpause the worker by calling
+  // InitializeGlobalScope(). Otherwise, keep it paused and the original
+  // caller of StartWorker() is expected to terminate the worker.
+  net::URLRequestStatus status = script_cache_map()->main_script_status();
+  if (status.is_success())
+    InitializeGlobalScope();
+  // The callback can destroy |this|, so protect it first.
+  auto protect = base::WrapRefCounted(this);
+  std::move(pause_after_download_callback_).Run();
+}
+
+void ServiceWorkerVersion::SetValidOriginTrialTokens(
+    const blink::TrialTokenValidator::FeatureToTokensMap& tokens) {
+  origin_trial_tokens_ = validator_->GetValidTokens(
+      url::Origin::Create(scope()), tokens, clock_->Now());
+}
+
 void ServiceWorkerVersion::SetDevToolsAttached(bool attached) {
-  embedded_worker()->set_devtools_attached(attached);
+  embedded_worker()->SetDevToolsAttached(attached);
+
   if (stop_when_devtools_detached_ && !attached) {
     DCHECK_EQ(REDUNDANT, status());
     if (running_status() == EmbeddedWorkerStatus::STARTING ||
@@ -696,20 +887,46 @@ void ServiceWorkerVersion::SetDevToolsAttached(bool attached) {
   }
 
   // Reactivate request timeouts, setting them all to the same expiration time.
-  SetAllRequestExpirations(
-      base::TimeTicks::Now() +
-      base::TimeDelta::FromMinutes(kRequestTimeoutMinutes));
+  SetAllRequestExpirations(tick_clock_->NowTicks() + kRequestTimeout);
 }
 
 void ServiceWorkerVersion::SetMainScriptHttpResponseInfo(
     const net::HttpResponseInfo& http_info) {
+  script_response_time_for_devtools_ = http_info.response_time;
   main_script_http_info_.reset(new net::HttpResponseInfo(http_info));
-  FOR_EACH_OBSERVER(Listener, listeners_,
-                    OnMainScriptHttpResponseInfoSet(this));
+
+  // Updates |origin_trial_tokens_| if it is not set yet. This happens when:
+  //  1) The worker is a new one.
+  //  OR
+  //  2) The worker is an existing one but the entry in ServiceWorkerDatabase
+  //     was written by old version Chrome (< M56), so |origin_trial_tokens|
+  //     wasn't set in the entry.
+  if (!origin_trial_tokens_) {
+    origin_trial_tokens_ = validator_->GetValidTokensFromHeaders(
+        url::Origin::Create(scope()), http_info.headers.get(), clock_->Now());
+  }
+
+  for (auto& observer : observers_)
+    observer.OnMainScriptHttpResponseInfoSet(this);
 }
 
 void ServiceWorkerVersion::SimulatePingTimeoutForTesting() {
-  ping_controller_->SimulateTimeoutForTesting();
+  ping_controller_.SimulateTimeoutForTesting();
+}
+
+void ServiceWorkerVersion::SetTickClockForTesting(
+    const base::TickClock* tick_clock) {
+  tick_clock_ = tick_clock;
+}
+
+void ServiceWorkerVersion::SetClockForTesting(base::Clock* clock) {
+  clock_ = clock;
+}
+
+bool ServiceWorkerVersion::HasNoWork() const {
+  if (!blink::ServiceWorkerUtils::IsServicificationEnabled())
+    return !HasWorkInBrowser();
+  return !HasWorkInBrowser() && worker_is_idle_on_renderer_;
 }
 
 const net::HttpResponseInfo*
@@ -717,7 +934,7 @@ ServiceWorkerVersion::GetMainScriptHttpResponseInfo() {
   return main_script_http_info_.get();
 }
 
-ServiceWorkerVersion::RequestInfo::RequestInfo(
+ServiceWorkerVersion::InflightRequestTimeoutInfo::InflightRequestTimeoutInfo(
     int id,
     ServiceWorkerMetrics::EventType event_type,
     const base::TimeTicks& expiration,
@@ -727,59 +944,64 @@ ServiceWorkerVersion::RequestInfo::RequestInfo(
       expiration(expiration),
       timeout_behavior(timeout_behavior) {}
 
-ServiceWorkerVersion::RequestInfo::~RequestInfo() {
+ServiceWorkerVersion::InflightRequestTimeoutInfo::
+    ~InflightRequestTimeoutInfo() {}
+
+bool ServiceWorkerVersion::InflightRequestTimeoutInfo::operator<(
+    const InflightRequestTimeoutInfo& other) const {
+  if (expiration == other.expiration)
+    return id < other.id;
+  return expiration < other.expiration;
 }
 
-bool ServiceWorkerVersion::RequestInfo::operator>(
-    const RequestInfo& other) const {
-  return expiration > other.expiration;
-}
-
-template <typename CallbackType>
-ServiceWorkerVersion::PendingRequest<CallbackType>::PendingRequest(
-    const CallbackType& callback,
-    const base::TimeTicks& time,
+ServiceWorkerVersion::InflightRequest::InflightRequest(
+    StatusCallback callback,
+    base::Time time,
+    const base::TimeTicks& time_ticks,
     ServiceWorkerMetrics::EventType event_type)
-    : callback(callback), start_time(time), event_type(event_type) {}
+    : error_callback(std::move(callback)),
+      start_time(time),
+      start_time_ticks(time_ticks),
+      event_type(event_type) {}
 
-ServiceWorkerVersion::BaseMojoServiceWrapper::BaseMojoServiceWrapper(
-    ServiceWorkerVersion* worker,
-    const char* service_name)
-    : worker_(worker), service_name_(service_name) {}
+ServiceWorkerVersion::InflightRequest::~InflightRequest() {}
 
-ServiceWorkerVersion::BaseMojoServiceWrapper::~BaseMojoServiceWrapper() {
-  IDMap<PendingRequest<StatusCallback>, IDMapOwnPointer>::iterator iter(
-      &worker_->custom_requests_);
-  while (!iter.IsAtEnd()) {
-    PendingRequest<StatusCallback>* request = iter.GetCurrentValue();
-    if (request->mojo_service == service_name_) {
-      TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::Request",
-                             request, "Error", "Service Disconnected");
-      request->callback.Run(SERVICE_WORKER_ERROR_FAILED);
-      worker_->custom_requests_.Remove(iter.GetCurrentKey());
-    }
-    iter.Advance();
-  }
-}
-
-void ServiceWorkerVersion::OnThreadStarted() {
+void ServiceWorkerVersion::OnScriptEvaluationStart() {
   DCHECK_EQ(EmbeddedWorkerStatus::STARTING, running_status());
   // Activate ping/pong now that JavaScript execution will start.
-  ping_controller_->Activate();
+  ping_controller_.Activate();
 }
 
 void ServiceWorkerVersion::OnStarting() {
-  FOR_EACH_OBSERVER(Listener, listeners_, OnRunningStateChanged(this));
+  for (auto& observer : observers_)
+    observer.OnRunningStateChanged(this);
 }
 
-void ServiceWorkerVersion::OnStarted() {
+void ServiceWorkerVersion::OnStarted(
+    blink::mojom::ServiceWorkerStartStatus start_status) {
   DCHECK_EQ(EmbeddedWorkerStatus::RUNNING, running_status());
   RestartTick(&idle_time_);
 
+  // TODO(falken): This maps kAbruptCompletion to kErrorScriptEvaluated, which
+  // most start callbacks will consider to be a failure. But the worker thread
+  // is running, and the spec considers it a success, so the callbacks should
+  // change to treat kErrorScriptEvaluated as success, or use
+  // ServiceWorkerStartStatus directly.
+  blink::ServiceWorkerStatusCode status =
+      mojo::ConvertTo<blink::ServiceWorkerStatusCode>(start_status);
+
   // Fire all start callbacks.
   scoped_refptr<ServiceWorkerVersion> protect(this);
-  RunCallbacks(this, &start_callbacks_, SERVICE_WORKER_OK);
-  FOR_EACH_OBSERVER(Listener, listeners_, OnRunningStateChanged(this));
+  FinishStartWorker(status);
+  for (auto& observer : observers_)
+    observer.OnRunningStateChanged(this);
+
+  if (!pending_external_requests_.empty()) {
+    std::set<std::string> pending_external_requests;
+    std::swap(pending_external_requests_, pending_external_requests);
+    for (const std::string& request_uuid : pending_external_requests)
+      StartExternalRequest(request_uuid);
+  }
 }
 
 void ServiceWorkerVersion::OnStopping() {
@@ -793,9 +1015,9 @@ void ServiceWorkerVersion::OnStopping() {
   // Shorten the interval so stalling in stopped can be fixed quickly. Once the
   // worker stops, the timer is disabled. The interval will be reset to normal
   // when the worker starts up again.
-  SetTimeoutTimerInterval(
-      base::TimeDelta::FromSeconds(kStopWorkerTimeoutSeconds));
-  FOR_EACH_OBSERVER(Listener, listeners_, OnRunningStateChanged(this));
+  SetTimeoutTimerInterval(kStopWorkerTimeout);
+  for (auto& observer : observers_)
+    observer.OnRunningStateChanged(this);
 }
 
 void ServiceWorkerVersion::OnStopped(EmbeddedWorkerStatus old_status) {
@@ -817,14 +1039,9 @@ void ServiceWorkerVersion::OnDetached(EmbeddedWorkerStatus old_status) {
   OnStoppedInternal(old_status);
 }
 
-void ServiceWorkerVersion::OnScriptLoaded() {
-  if (IsInstalled(status()))
-    UMA_HISTOGRAM_BOOLEAN("ServiceWorker.ScriptLoadSuccess", true);
-}
-
-void ServiceWorkerVersion::OnScriptLoadFailed() {
-  if (IsInstalled(status()))
-    UMA_HISTOGRAM_BOOLEAN("ServiceWorker.ScriptLoadSuccess", false);
+void ServiceWorkerVersion::OnRegisteredToDevToolsManager() {
+  for (auto& observer : observers_)
+    observer.OnDevToolsRoutingIdChanged(this);
 }
 
 void ServiceWorkerVersion::OnReportException(
@@ -832,161 +1049,369 @@ void ServiceWorkerVersion::OnReportException(
     int line_number,
     int column_number,
     const GURL& source_url) {
-  FOR_EACH_OBSERVER(
-      Listener,
-      listeners_,
-      OnErrorReported(
-          this, error_message, line_number, column_number, source_url));
-}
-
-void ServiceWorkerVersion::OnReportConsoleMessage(int source_identifier,
-                                                  int message_level,
-                                                  const base::string16& message,
-                                                  int line_number,
-                                                  const GURL& source_url) {
-  FOR_EACH_OBSERVER(Listener,
-                    listeners_,
-                    OnReportConsoleMessage(this,
-                                           source_identifier,
-                                           message_level,
-                                           message,
-                                           line_number,
-                                           source_url));
-}
-
-bool ServiceWorkerVersion::OnMessageReceived(const IPC::Message& message) {
-  bool handled = true;
-  IPC_BEGIN_MESSAGE_MAP(ServiceWorkerVersion, message)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_GetClient, OnGetClient)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_GetClients,
-                        OnGetClients)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_OpenWindow,
-                        OnOpenWindow)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_SetCachedMetadata,
-                        OnSetCachedMetadata)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_ClearCachedMetadata,
-                        OnClearCachedMetadata)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_PostMessageToClient,
-                        OnPostMessageToClient)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_FocusClient,
-                        OnFocusClient)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_NavigateClient, OnNavigateClient)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_SkipWaiting,
-                        OnSkipWaiting)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_ClaimClients,
-                        OnClaimClients)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_Pong, OnPongFromWorker)
-    IPC_MESSAGE_HANDLER(ServiceWorkerHostMsg_RegisterForeignFetchScopes,
-                        OnRegisterForeignFetchScopes)
-    IPC_MESSAGE_UNHANDLED(handled = false)
-  IPC_END_MESSAGE_MAP()
-  return handled;
-}
-
-void ServiceWorkerVersion::OnStartSentAndScriptEvaluated(
-    ServiceWorkerStatusCode status) {
-  if (status != SERVICE_WORKER_OK) {
-    scoped_refptr<ServiceWorkerVersion> protect(this);
-    RunCallbacks(this, &start_callbacks_,
-                 DeduceStartWorkerFailureReason(status));
+  for (auto& observer : observers_) {
+    observer.OnErrorReported(this, error_message, line_number, column_number,
+                             source_url);
   }
 }
 
-void ServiceWorkerVersion::OnGetClient(int request_id,
-                                       const std::string& client_uuid) {
-  if (!context_)
+void ServiceWorkerVersion::OnReportConsoleMessage(
+    int source_identifier,
+    blink::mojom::ConsoleMessageLevel message_level,
+    const base::string16& message,
+    int line_number,
+    const GURL& source_url) {
+  for (auto& observer : observers_) {
+    observer.OnReportConsoleMessage(this, source_identifier, message_level,
+                                    message, line_number, source_url);
+  }
+}
+
+void ServiceWorkerVersion::OnStartSent(blink::ServiceWorkerStatusCode status) {
+  if (status != blink::ServiceWorkerStatusCode::kOk) {
+    scoped_refptr<ServiceWorkerVersion> protect(this);
+    FinishStartWorker(DeduceStartWorkerFailureReason(status));
+  }
+}
+
+void ServiceWorkerVersion::SetCachedMetadata(const GURL& url,
+                                             const std::vector<uint8_t>& data) {
+  int64_t callback_id = tick_clock_->NowTicks().ToInternalValue();
+  TRACE_EVENT_ASYNC_BEGIN1("ServiceWorker",
+                           "ServiceWorkerVersion::SetCachedMetadata",
+                           callback_id, "URL", url.spec());
+  script_cache_map_.WriteMetadata(
+      url, data,
+      base::Bind(&ServiceWorkerVersion::OnSetCachedMetadataFinished,
+                 weak_factory_.GetWeakPtr(), callback_id, data.size()));
+}
+
+void ServiceWorkerVersion::ClearCachedMetadata(const GURL& url) {
+  int64_t callback_id = tick_clock_->NowTicks().ToInternalValue();
+  TRACE_EVENT_ASYNC_BEGIN1("ServiceWorker",
+                           "ServiceWorkerVersion::ClearCachedMetadata",
+                           callback_id, "URL", url.spec());
+  script_cache_map_.ClearMetadata(
+      url, base::Bind(&ServiceWorkerVersion::OnClearCachedMetadataFinished,
+                      weak_factory_.GetWeakPtr(), callback_id));
+}
+
+void ServiceWorkerVersion::ClaimClients(ClaimClientsCallback callback) {
+  if (status_ != ACTIVATING && status_ != ACTIVATED) {
+    std::move(callback).Run(blink::mojom::ServiceWorkerErrorType::kState,
+                            std::string(kClaimClientsStateErrorMesage));
     return;
-  TRACE_EVENT_ASYNC_BEGIN1("ServiceWorker", "ServiceWorkerVersion::OnGetClient",
-                           request_id, "client_uuid", client_uuid);
+  }
+  if (!context_) {
+    std::move(callback).Run(blink::mojom::ServiceWorkerErrorType::kAbort,
+                            std::string(kClaimClientsShutdownErrorMesage));
+    return;
+  }
+
+  ServiceWorkerRegistration* registration =
+      context_->GetLiveRegistration(registration_id_);
+  // Registration must be kept alive by ServiceWorkerGlobalScope#registration.
+  if (!registration) {
+    mojo::ReportBadMessage("ClaimClients: No live registration");
+    // ReportBadMessage() will kill the renderer process, but Mojo complains if
+    // the callback is not run. Just run it with nonsense arguments.
+    std::move(callback).Run(blink::mojom::ServiceWorkerErrorType::kUnknown,
+                            std::string());
+    return;
+  }
+
+  registration->ClaimClients();
+  std::move(callback).Run(blink::mojom::ServiceWorkerErrorType::kNone,
+                          base::nullopt);
+}
+
+void ServiceWorkerVersion::GetClients(
+    blink::mojom::ServiceWorkerClientQueryOptionsPtr options,
+    GetClientsCallback callback) {
+  service_worker_client_utils::GetClients(
+      weak_factory_.GetWeakPtr(), std::move(options),
+      base::BindOnce(&DidGetClients, std::move(callback)));
+}
+
+void ServiceWorkerVersion::GetClient(const std::string& client_uuid,
+                                     GetClientCallback callback) {
+  if (!context_) {
+    // The promise will be resolved to 'undefined'.
+    std::move(callback).Run(nullptr);
+    return;
+  }
   ServiceWorkerProviderHost* provider_host =
       context_->GetProviderHostByClientID(client_uuid);
   if (!provider_host ||
-      provider_host->document_url().GetOrigin() != script_url_.GetOrigin()) {
+      provider_host->url().GetOrigin() != script_url_.GetOrigin()) {
     // The promise will be resolved to 'undefined'.
-    OnGetClientFinished(request_id, ServiceWorkerClientInfo());
+    // Note that we don't BadMessage here since Clients#get() can be passed an
+    // arbitrary UUID. The BadMessages for the origin mismatches below are
+    // appropriate because the UUID is taken directly from a Client object so we
+    // expect it to be valid.
+    std::move(callback).Run(nullptr);
     return;
   }
-  service_worker_client_utils::GetClient(
-      provider_host, base::Bind(&ServiceWorkerVersion::OnGetClientFinished,
-                                weak_factory_.GetWeakPtr(), request_id));
-}
-
-void ServiceWorkerVersion::OnGetClientFinished(
-    int request_id,
-    const ServiceWorkerClientInfo& client_info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::OnGetClient",
-                         request_id, "client_type", client_info.client_type);
-
-  // When Clients.get() is called on the script evaluation phase, the running
-  // status can be STARTING here.
-  if (running_status() != EmbeddedWorkerStatus::STARTING &&
-      running_status() != EmbeddedWorkerStatus::RUNNING) {
+  if (!provider_host->is_execution_ready()) {
+    provider_host->AddExecutionReadyCallback(
+        base::BindOnce(&ServiceWorkerVersion::GetClientInternal, this,
+                       client_uuid, std::move(callback)));
     return;
   }
-
-  embedded_worker_->SendMessage(
-      ServiceWorkerMsg_DidGetClient(request_id, client_info));
+  service_worker_client_utils::GetClient(provider_host, std::move(callback));
 }
 
-void ServiceWorkerVersion::OnGetClients(
-    int request_id,
-    const ServiceWorkerClientQueryOptions& options) {
-  TRACE_EVENT_ASYNC_BEGIN2(
-      "ServiceWorker", "ServiceWorkerVersion::OnGetClients", request_id,
-      "client_type", options.client_type, "include_uncontrolled",
-      options.include_uncontrolled);
-  service_worker_client_utils::GetClients(
-      weak_factory_.GetWeakPtr(), options,
-      base::Bind(&ServiceWorkerVersion::OnGetClientsFinished,
-                 weak_factory_.GetWeakPtr(), request_id));
+void ServiceWorkerVersion::GetClientInternal(const std::string& client_uuid,
+                                             GetClientCallback callback) {
+  ServiceWorkerProviderHost* provider_host =
+      context_->GetProviderHostByClientID(client_uuid);
+  if (!provider_host || !provider_host->is_execution_ready()) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+  service_worker_client_utils::GetClient(provider_host, std::move(callback));
 }
 
-void ServiceWorkerVersion::OnGetClientsFinished(int request_id,
-                                                ServiceWorkerClients* clients) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::OnGetClients",
-                         request_id, "The number of clients", clients->size());
+void ServiceWorkerVersion::OpenNewTab(const GURL& url,
+                                      OpenNewTabCallback callback) {
+  OpenWindow(url, service_worker_client_utils::WindowType::NEW_TAB_WINDOW,
+             std::move(callback));
+}
 
-  // When Clients.matchAll() is called on the script evaluation phase, the
-  // running status can be STARTING here.
-  if (running_status() != EmbeddedWorkerStatus::STARTING &&
-      running_status() != EmbeddedWorkerStatus::RUNNING) {
+void ServiceWorkerVersion::OpenPaymentHandlerWindow(
+    const GURL& url,
+    OpenPaymentHandlerWindowCallback callback) {
+  // Just respond failure if we are shutting down.
+  if (!context_) {
+    std::move(callback).Run(
+        false /* success */, nullptr /* client */,
+        std::string("The service worker system is shutting down."));
     return;
   }
 
-  embedded_worker_->SendMessage(
-      ServiceWorkerMsg_DidGetClients(request_id, *clients));
+  PaymentHandlerSupport::ShowPaymentHandlerWindow(
+      url, context_.get(),
+      base::BindOnce(&DidShowPaymentHandlerWindow, url, context_),
+      base::BindOnce(
+          &ServiceWorkerVersion::OpenWindow, weak_factory_.GetWeakPtr(), url,
+          service_worker_client_utils::WindowType::PAYMENT_HANDLER_WINDOW),
+      std::move(callback));
 }
 
-void ServiceWorkerVersion::OnSimpleEventResponse(
-    int request_id,
-    blink::WebServiceWorkerEventResult result) {
-  // Copy error callback before calling FinishRequest.
-  PendingRequest<StatusCallback>* request = custom_requests_.Lookup(request_id);
-  DCHECK(request) << "Invalid request id";
-  StatusCallback callback = request->callback;
-
-  FinishRequest(request_id,
-                result == blink::WebServiceWorkerEventResultCompleted);
-
-  ServiceWorkerStatusCode status = SERVICE_WORKER_OK;
-  if (result == blink::WebServiceWorkerEventResultRejected)
-    status = SERVICE_WORKER_ERROR_EVENT_WAITUNTIL_REJECTED;
-  callback.Run(status);
-}
-
-void ServiceWorkerVersion::OnOpenWindow(int request_id, GURL url) {
-  // Just abort if we are shutting down.
+void ServiceWorkerVersion::PostMessageToClient(
+    const std::string& client_uuid,
+    blink::TransferableMessage message) {
   if (!context_)
     return;
+  ServiceWorkerProviderHost* provider_host =
+      context_->GetProviderHostByClientID(client_uuid);
+  if (!provider_host) {
+    // The client may already have been closed, just ignore.
+    return;
+  }
+  if (provider_host->url().GetOrigin() != script_url_.GetOrigin()) {
+    mojo::ReportBadMessage(
+        "Received Client#postMessage() request for a cross-origin client.");
+    binding_.Close();
+    return;
+  }
+  if (!provider_host->is_execution_ready()) {
+    // It's subtle why this ReportBadMessage is correct. Consider the
+    // sequence:
+    // 1. Page does ServiceWorker.postMessage().
+    // 2. Service worker does onmessage = (evt) => {evt.source.postMessage()};.
+    //
+    // The IPC sequence is:
+    // 1. Page sends NotifyExecutionReady() to its ServiceWorkerContainerHost
+    //    once created.
+    // 2. Page sends PostMessageToServiceWorker() to the object's
+    //    ServiceWorkerObjectHost.
+    // 3. Service worker sends PostMessageToClient() to its ServiceWorkerHost.
+    //
+    // It's guaranteed that 1. arrives before 2., since the
+    // ServiceWorkerObjectHost must have been sent over
+    // ServiceWorkerContainerHost (using Register, GetRegistrationForReady), so
+    // they are associated. After that 3. occurs and we get here and are
+    // guaranteed execution ready the above ordering.
+    //
+    // The above reasoning would break if there is a way for a page to get a
+    // ServiceWorkerObjectHost not associated with its
+    // ServiceWorkerContainerHost. If that world should occur, we should queue
+    // the message instead of crashing.
+    mojo::ReportBadMessage(
+        "Received Client#postMessage() request for a reserved client.");
+    binding_.Close();
+    return;
+  }
+  provider_host->PostMessageToClient(this, std::move(message));
+}
+
+void ServiceWorkerVersion::FocusClient(const std::string& client_uuid,
+                                       FocusClientCallback callback) {
+  if (!context_) {
+    std::move(callback).Run(nullptr /* client */);
+    return;
+  }
+  ServiceWorkerProviderHost* provider_host =
+      context_->GetProviderHostByClientID(client_uuid);
+  if (!provider_host) {
+    // The client may already have been closed, just fail.
+    std::move(callback).Run(nullptr /* client */);
+    return;
+  }
+  if (provider_host->url().GetOrigin() != script_url_.GetOrigin()) {
+    mojo::ReportBadMessage(
+        "Received WindowClient#focus() request for a cross-origin client.");
+    binding_.Close();
+    return;
+  }
+  if (provider_host->client_type() !=
+      blink::mojom::ServiceWorkerClientType::kWindow) {
+    // focus() should be called only for WindowClient.
+    mojo::ReportBadMessage(
+        "Received WindowClient#focus() request for a non-window client.");
+    binding_.Close();
+    return;
+  }
+
+  service_worker_client_utils::FocusWindowClient(provider_host,
+                                                 std::move(callback));
+}
+
+void ServiceWorkerVersion::NavigateClient(const std::string& client_uuid,
+                                          const GURL& url,
+                                          NavigateClientCallback callback) {
+  if (!context_) {
+    std::move(callback).Run(
+        false /* success */, nullptr /* client */,
+        std::string("The service worker system is shutting down."));
+    return;
+  }
+
+  if (!url.is_valid() || !base::IsValidGUID(client_uuid)) {
+    mojo::ReportBadMessage(
+        "Received unexpected invalid URL/UUID from renderer process.");
+    binding_.Close();
+    return;
+  }
+
+  // Reject requests for URLs that the process is not allowed to access. It's
+  // possible to receive such requests since the renderer-side checks are
+  // slightly different. For example, the view-source scheme will not be
+  // filtered out by Blink.
+  if (!ChildProcessSecurityPolicyImpl::GetInstance()->CanRequestURL(
+          embedded_worker_->process_id(), url)) {
+    std::move(callback).Run(
+        false /* success */, nullptr /* client */,
+        "The service worker is not allowed to access URL: " + url.spec());
+    return;
+  }
+
+  ServiceWorkerProviderHost* provider_host =
+      context_->GetProviderHostByClientID(client_uuid);
+  if (!provider_host) {
+    std::move(callback).Run(false /* success */, nullptr /* client */,
+                            std::string("The client was not found."));
+    return;
+  }
+  if (provider_host->url().GetOrigin() != script_url_.GetOrigin()) {
+    mojo::ReportBadMessage(
+        "Received WindowClient#navigate() request for a cross-origin client.");
+    binding_.Close();
+    return;
+  }
+  if (provider_host->client_type() !=
+      blink::mojom::ServiceWorkerClientType::kWindow) {
+    // navigate() should be called only for WindowClient.
+    mojo::ReportBadMessage(
+        "Received WindowClient#navigate() request for a non-window client.");
+    binding_.Close();
+    return;
+  }
+  if (provider_host->controller() != this) {
+    std::move(callback).Run(
+        false /* success */, nullptr /* client */,
+        std::string(
+            "This service worker is not the client's active service worker."));
+    return;
+  }
+
+  service_worker_client_utils::NavigateClient(
+      url, script_url_, provider_host->process_id(), provider_host->frame_id(),
+      context_, base::BindOnce(&DidNavigateClient, std::move(callback), url));
+}
+
+void ServiceWorkerVersion::SkipWaiting(SkipWaitingCallback callback) {
+  skip_waiting_ = true;
+
+  // Per spec, resolve the skip waiting promise now if activation won't be
+  // triggered here. The ActivateWaitingVersionWhenReady() call below only
+  // triggers it if we're in INSTALLED state. So if we're not in INSTALLED
+  // state, resolve the promise now. Even if we're in INSTALLED state, there are
+  // still cases where ActivateWaitingVersionWhenReady() won't trigger the
+  // activation. In that case, it's a slight spec violation to not resolve now,
+  // but we'll eventually resolve the promise in SetStatus().
+  if (status_ != INSTALLED) {
+    std::move(callback).Run(true);
+    return;
+  }
+
+  if (!context_) {
+    std::move(callback).Run(false);
+    return;
+  }
+  ServiceWorkerRegistration* registration =
+      context_->GetLiveRegistration(registration_id_);
+  // TODO(leonhsl): Here we should be guaranteed a registration since
+  // ServiceWorkerGlobalScope#registration should be keeping the registration
+  // alive currently. So we need to confirm and remove this nullable check
+  // later.
+  if (!registration) {
+    std::move(callback).Run(false);
+    return;
+  }
+  if (skip_waiting_time_.is_null())
+    RestartTick(&skip_waiting_time_);
+  pending_skip_waiting_requests_.push_back(std::move(callback));
+  if (pending_skip_waiting_requests_.size() == 1)
+    registration->ActivateWaitingVersionWhenReady();
+}
+
+void ServiceWorkerVersion::OnSetCachedMetadataFinished(int64_t callback_id,
+                                                       size_t size,
+                                                       int result) {
+  TRACE_EVENT_ASYNC_END1("ServiceWorker",
+                         "ServiceWorkerVersion::SetCachedMetadata", callback_id,
+                         "result", result);
+  for (auto& observer : observers_)
+    observer.OnCachedMetadataUpdated(this, size);
+}
+
+void ServiceWorkerVersion::OnClearCachedMetadataFinished(int64_t callback_id,
+                                                         int result) {
+  TRACE_EVENT_ASYNC_END1("ServiceWorker",
+                         "ServiceWorkerVersion::ClearCachedMetadata",
+                         callback_id, "result", result);
+  for (auto& observer : observers_)
+    observer.OnCachedMetadataUpdated(this, 0);
+}
+
+void ServiceWorkerVersion::OpenWindow(
+    GURL url,
+    service_worker_client_utils::WindowType type,
+    OpenNewTabCallback callback) {
+  // Just respond failure if we are shutting down.
+  if (!context_) {
+    std::move(callback).Run(
+        false /* success */, nullptr /* client */,
+        std::string("The service worker system is shutting down."));
+    return;
+  }
 
   if (!url.is_valid()) {
-    DVLOG(1) << "Received unexpected invalid URL from renderer process.";
-    BrowserThread::PostTask(BrowserThread::UI, FROM_HERE,
-                            base::Bind(&KillEmbeddedWorkerProcess,
-                                       embedded_worker_->process_id(),
-                                       RESULT_CODE_KILLED_BAD_MESSAGE));
+    mojo::ReportBadMessage(
+        "Received unexpected invalid URL from renderer process.");
+    binding_.Close();
     return;
   }
 
@@ -1001,292 +1426,109 @@ void ServiceWorkerVersion::OnOpenWindow(int request_id, GURL url) {
   // filtered out by Blink.
   if (!ChildProcessSecurityPolicyImpl::GetInstance()->CanRequestURL(
           embedded_worker_->process_id(), url)) {
-    embedded_worker_->SendMessage(ServiceWorkerMsg_OpenWindowError(
-        request_id, url.spec() + " cannot be opened."));
+    std::move(callback).Run(false /* success */, nullptr /* client */,
+                            url.spec() + " cannot be opened.");
     return;
   }
 
   service_worker_client_utils::OpenWindow(
-      url, script_url_, embedded_worker_->process_id(), context_,
-      base::Bind(&ServiceWorkerVersion::OnOpenWindowFinished,
-                 weak_factory_.GetWeakPtr(), request_id));
+      url, script_url_, embedded_worker_->embedded_worker_id(),
+      embedded_worker_->process_id(), context_, type,
+      base::BindOnce(&OnOpenWindowFinished, std::move(callback)));
 }
 
-void ServiceWorkerVersion::OnOpenWindowFinished(
+bool ServiceWorkerVersion::HasWorkInBrowser() const {
+  return !inflight_requests_.IsEmpty() || inflight_stream_response_count_ > 0 ||
+         !start_callbacks_.empty();
+}
+
+void ServiceWorkerVersion::OnSimpleEventFinished(
     int request_id,
-    ServiceWorkerStatusCode status,
-    const ServiceWorkerClientInfo& client_info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  if (running_status() != EmbeddedWorkerStatus::RUNNING)
+    blink::mojom::ServiceWorkerEventStatus status) {
+  InflightRequest* request = inflight_requests_.Lookup(request_id);
+  // |request| will be null when the request has been timed out.
+  if (!request)
     return;
+  // Copy error callback before calling FinishRequest.
+  StatusCallback callback = std::move(request->error_callback);
 
-  if (status != SERVICE_WORKER_OK) {
-    embedded_worker_->SendMessage(ServiceWorkerMsg_OpenWindowError(
-        request_id, "Something went wrong while trying to open the window."));
-    return;
-  }
+  FinishRequest(request_id,
+                status == blink::mojom::ServiceWorkerEventStatus::COMPLETED);
 
-  embedded_worker_->SendMessage(
-      ServiceWorkerMsg_OpenWindowResponse(request_id, client_info));
+  std::move(callback).Run(
+      mojo::ConvertTo<blink::ServiceWorkerStatusCode>(status));
 }
 
-void ServiceWorkerVersion::OnSetCachedMetadata(const GURL& url,
-                                               const std::vector<char>& data) {
-  int64_t callback_id = base::TimeTicks::Now().ToInternalValue();
-  TRACE_EVENT_ASYNC_BEGIN1("ServiceWorker",
-                           "ServiceWorkerVersion::OnSetCachedMetadata",
-                           callback_id, "URL", url.spec());
-  script_cache_map_.WriteMetadata(
-      url, data, base::Bind(&ServiceWorkerVersion::OnSetCachedMetadataFinished,
-                            weak_factory_.GetWeakPtr(), callback_id));
+void ServiceWorkerVersion::CountFeature(blink::mojom::WebFeature feature) {
+  if (!used_features_.insert(feature).second)
+    return;
+  for (auto provider_host_by_uuid : controllee_map_)
+    provider_host_by_uuid.second->CountFeature(feature);
 }
 
-void ServiceWorkerVersion::OnSetCachedMetadataFinished(int64_t callback_id,
-                                                       int result) {
-  TRACE_EVENT_ASYNC_END1("ServiceWorker",
-                         "ServiceWorkerVersion::OnSetCachedMetadata",
-                         callback_id, "result", result);
-  FOR_EACH_OBSERVER(Listener, listeners_, OnCachedMetadataUpdated(this));
+// static
+bool ServiceWorkerVersion::IsInstalled(ServiceWorkerVersion::Status status) {
+  switch (status) {
+    case ServiceWorkerVersion::NEW:
+    case ServiceWorkerVersion::INSTALLING:
+    case ServiceWorkerVersion::REDUNDANT:
+      return false;
+    case ServiceWorkerVersion::INSTALLED:
+    case ServiceWorkerVersion::ACTIVATING:
+    case ServiceWorkerVersion::ACTIVATED:
+      return true;
+  }
+  NOTREACHED() << "Unexpected status: " << status;
+  return false;
 }
 
-void ServiceWorkerVersion::OnClearCachedMetadata(const GURL& url) {
-  int64_t callback_id = base::TimeTicks::Now().ToInternalValue();
-  TRACE_EVENT_ASYNC_BEGIN1("ServiceWorker",
-                           "ServiceWorkerVersion::OnClearCachedMetadata",
-                           callback_id, "URL", url.spec());
-  script_cache_map_.ClearMetadata(
-      url, base::Bind(&ServiceWorkerVersion::OnClearCachedMetadataFinished,
-                      weak_factory_.GetWeakPtr(), callback_id));
+// static
+std::string ServiceWorkerVersion::VersionStatusToString(
+    ServiceWorkerVersion::Status status) {
+  switch (status) {
+    case ServiceWorkerVersion::NEW:
+      return "new";
+    case ServiceWorkerVersion::INSTALLING:
+      return "installing";
+    case ServiceWorkerVersion::INSTALLED:
+      return "installed";
+    case ServiceWorkerVersion::ACTIVATING:
+      return "activating";
+    case ServiceWorkerVersion::ACTIVATED:
+      return "activated";
+    case ServiceWorkerVersion::REDUNDANT:
+      return "redundant";
+  }
+  NOTREACHED() << status;
+  return std::string();
 }
 
-void ServiceWorkerVersion::OnClearCachedMetadataFinished(int64_t callback_id,
-                                                         int result) {
-  TRACE_EVENT_ASYNC_END1("ServiceWorker",
-                         "ServiceWorkerVersion::OnClearCachedMetadata",
-                         callback_id, "result", result);
-  FOR_EACH_OBSERVER(Listener, listeners_, OnCachedMetadataUpdated(this));
+void ServiceWorkerVersion::IncrementPendingUpdateHintCount() {
+  DCHECK(blink::ServiceWorkerUtils::IsServicificationEnabled());
+  pending_update_hint_count_++;
 }
 
-void ServiceWorkerVersion::OnPostMessageToClient(
-    const std::string& client_uuid,
-    const base::string16& message,
-    const std::vector<int>& sent_message_ports) {
-  if (!context_)
-    return;
-  TRACE_EVENT1("ServiceWorker",
-               "ServiceWorkerVersion::OnPostMessageToDocument",
-               "Client id", client_uuid);
-  ServiceWorkerProviderHost* provider_host =
-      context_->GetProviderHostByClientID(client_uuid);
-  if (!provider_host) {
-    // The client may already have been closed, just ignore.
-    return;
-  }
-  if (provider_host->document_url().GetOrigin() != script_url_.GetOrigin()) {
-    // The client does not belong to the same origin as this ServiceWorker,
-    // possibly due to timing issue or bad message.
-    return;
-  }
-  provider_host->PostMessageToClient(this, message, sent_message_ports);
-}
-
-void ServiceWorkerVersion::OnFocusClient(int request_id,
-                                         const std::string& client_uuid) {
-  if (!context_)
-    return;
-  TRACE_EVENT2("ServiceWorker",
-               "ServiceWorkerVersion::OnFocusClient",
-               "Request id", request_id,
-               "Client id", client_uuid);
-  ServiceWorkerProviderHost* provider_host =
-      context_->GetProviderHostByClientID(client_uuid);
-  if (!provider_host) {
-    // The client may already have been closed, just ignore.
-    return;
-  }
-  if (provider_host->document_url().GetOrigin() != script_url_.GetOrigin()) {
-    // The client does not belong to the same origin as this ServiceWorker,
-    // possibly due to timing issue or bad message.
-    return;
-  }
-  if (provider_host->client_type() != blink::WebServiceWorkerClientTypeWindow) {
-    // focus() should be called only for WindowClient. This may happen due to
-    // bad message.
-    return;
-  }
-
-  service_worker_client_utils::FocusWindowClient(
-      provider_host, base::Bind(&ServiceWorkerVersion::OnFocusClientFinished,
-                                weak_factory_.GetWeakPtr(), request_id));
-}
-
-void ServiceWorkerVersion::OnFocusClientFinished(
-    int request_id,
-    const ServiceWorkerClientInfo& client_info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  if (running_status() != EmbeddedWorkerStatus::RUNNING)
-    return;
-
-  embedded_worker_->SendMessage(
-      ServiceWorkerMsg_FocusClientResponse(request_id, client_info));
-}
-
-void ServiceWorkerVersion::OnNavigateClient(int request_id,
-                                            const std::string& client_uuid,
-                                            const GURL& url) {
-  if (!context_)
-    return;
-
-  TRACE_EVENT2("ServiceWorker", "ServiceWorkerVersion::OnNavigateClient",
-               "Request id", request_id, "Client id", client_uuid);
-
-  if (!url.is_valid() || !base::IsValidGUID(client_uuid)) {
-    DVLOG(1) << "Received unexpected invalid URL/UUID from renderer process.";
-    BrowserThread::PostTask(
-        BrowserThread::UI, FROM_HERE,
-        base::Bind(&KillEmbeddedWorkerProcess, embedded_worker_->process_id(),
-                   RESULT_CODE_KILLED_BAD_MESSAGE));
-    return;
-  }
-
-  // Reject requests for URLs that the process is not allowed to access. It's
-  // possible to receive such requests since the renderer-side checks are
-  // slightly different. For example, the view-source scheme will not be
-  // filtered out by Blink.
-  if (!ChildProcessSecurityPolicyImpl::GetInstance()->CanRequestURL(
-          embedded_worker_->process_id(), url)) {
-    embedded_worker_->SendMessage(
-        ServiceWorkerMsg_NavigateClientError(request_id, url));
-    return;
-  }
-
-  ServiceWorkerProviderHost* provider_host =
-      context_->GetProviderHostByClientID(client_uuid);
-  if (!provider_host || provider_host->active_version() != this) {
-    embedded_worker_->SendMessage(
-        ServiceWorkerMsg_NavigateClientError(request_id, url));
-    return;
-  }
-
-  service_worker_client_utils::NavigateClient(
-      url, script_url_, provider_host->process_id(), provider_host->frame_id(),
-      context_, base::Bind(&ServiceWorkerVersion::OnNavigateClientFinished,
-                           weak_factory_.GetWeakPtr(), request_id));
-}
-
-void ServiceWorkerVersion::OnNavigateClientFinished(
-    int request_id,
-    ServiceWorkerStatusCode status,
-    const ServiceWorkerClientInfo& client_info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-
-  if (running_status() != EmbeddedWorkerStatus::RUNNING)
-    return;
-
-  if (status != SERVICE_WORKER_OK) {
-    embedded_worker_->SendMessage(
-        ServiceWorkerMsg_NavigateClientError(request_id, GURL()));
-    return;
-  }
-
-  embedded_worker_->SendMessage(
-      ServiceWorkerMsg_NavigateClientResponse(request_id, client_info));
-}
-
-void ServiceWorkerVersion::OnSkipWaiting(int request_id) {
-  skip_waiting_ = true;
-  if (status_ != INSTALLED)
-    return DidSkipWaiting(request_id);
-
-  if (!context_)
-    return;
-  ServiceWorkerRegistration* registration =
-      context_->GetLiveRegistration(registration_id_);
-  if (!registration)
-    return;
-  pending_skip_waiting_requests_.push_back(request_id);
-  if (pending_skip_waiting_requests_.size() == 1)
-    registration->ActivateWaitingVersionWhenReady();
-}
-
-void ServiceWorkerVersion::DidSkipWaiting(int request_id) {
-  if (running_status() == EmbeddedWorkerStatus::STARTING ||
-      running_status() == EmbeddedWorkerStatus::RUNNING) {
-    embedded_worker_->SendMessage(ServiceWorkerMsg_DidSkipWaiting(request_id));
-  }
-}
-
-void ServiceWorkerVersion::OnClaimClients(int request_id) {
-  if (status_ != ACTIVATING && status_ != ACTIVATED) {
-    embedded_worker_->SendMessage(ServiceWorkerMsg_ClaimClientsError(
-        request_id, blink::WebServiceWorkerError::ErrorTypeState,
-        base::ASCIIToUTF16(kClaimClientsStateErrorMesage)));
-    return;
-  }
-  if (context_) {
-    if (ServiceWorkerRegistration* registration =
-            context_->GetLiveRegistration(registration_id_)) {
-      registration->ClaimClients();
-      embedded_worker_->SendMessage(
-          ServiceWorkerMsg_DidClaimClients(request_id));
-      return;
-    }
-  }
-
-  embedded_worker_->SendMessage(ServiceWorkerMsg_ClaimClientsError(
-      request_id, blink::WebServiceWorkerError::ErrorTypeAbort,
-      base::ASCIIToUTF16(kClaimClientsShutdownErrorMesage)));
+void ServiceWorkerVersion::DecrementPendingUpdateHintCount() {
+  DCHECK(blink::ServiceWorkerUtils::IsServicificationEnabled());
+  DCHECK_GT(pending_update_hint_count_, 0);
+  pending_update_hint_count_--;
+  if (pending_update_hint_count_ == 0)
+    ScheduleUpdate();
 }
 
 void ServiceWorkerVersion::OnPongFromWorker() {
-  ping_controller_->OnPongReceived();
-}
-
-void ServiceWorkerVersion::OnRegisterForeignFetchScopes(
-    const std::vector<GURL>& sub_scopes,
-    const std::vector<url::Origin>& origins) {
-  DCHECK(status() == INSTALLING || status() == REDUNDANT) << status();
-  // Renderer should have already verified all these urls are inside the
-  // worker's scope, but verify again here on the browser process side.
-  GURL origin = scope_.GetOrigin();
-  std::string scope_path = scope_.path();
-  for (const GURL& url : sub_scopes) {
-    if (!url.is_valid() || url.GetOrigin() != origin ||
-        !base::StartsWith(url.path(), scope_path,
-                          base::CompareCase::SENSITIVE)) {
-      DVLOG(1) << "Received unexpected invalid URL from renderer process.";
-      BrowserThread::PostTask(
-          BrowserThread::UI, FROM_HERE,
-          base::Bind(&KillEmbeddedWorkerProcess, embedded_worker_->process_id(),
-                     RESULT_CODE_KILLED_BAD_MESSAGE));
-      return;
-    }
-  }
-  for (const url::Origin& url : origins) {
-    if (url.unique()) {
-      DVLOG(1) << "Received unexpected unique origin from renderer process.";
-      BrowserThread::PostTask(
-          BrowserThread::UI, FROM_HERE,
-          base::Bind(&KillEmbeddedWorkerProcess, embedded_worker_->process_id(),
-                     RESULT_CODE_KILLED_BAD_MESSAGE));
-      return;
-    }
-  }
-  set_foreign_fetch_scopes(sub_scopes);
-  set_foreign_fetch_origins(origins);
+  ping_controller_.OnPongReceived();
 }
 
 void ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker(
     ServiceWorkerMetrics::EventType purpose,
     Status prestart_status,
     bool is_browser_startup_complete,
-    const StatusCallback& callback,
-    ServiceWorkerStatusCode status,
-    const scoped_refptr<ServiceWorkerRegistration>& registration) {
+    StatusCallback callback,
+    blink::ServiceWorkerStatusCode status,
+    scoped_refptr<ServiceWorkerRegistration> registration) {
   scoped_refptr<ServiceWorkerRegistration> protect = registration;
-  if (status == SERVICE_WORKER_ERROR_NOT_FOUND) {
+  if (status == blink::ServiceWorkerStatusCode::kErrorNotFound) {
     // When the registration has already been deleted from the storage but its
     // active worker is still controlling clients, the event should be
     // dispatched on the worker. However, the storage cannot find the
@@ -1294,20 +1536,23 @@ void ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker(
     protect = context_->GetLiveRegistration(registration_id_);
     if (protect) {
       DCHECK(protect->is_deleted());
-      status = SERVICE_WORKER_OK;
+      status = blink::ServiceWorkerStatusCode::kOk;
     }
   }
-  if (status != SERVICE_WORKER_OK) {
+  if (status != blink::ServiceWorkerStatusCode::kOk) {
     RecordStartWorkerResult(purpose, prestart_status, kInvalidTraceId,
                             is_browser_startup_complete, status);
-    RunSoon(base::Bind(callback, SERVICE_WORKER_ERROR_START_WORKER_FAILED));
+    RunSoon(base::BindOnce(
+        std::move(callback),
+        blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed));
     return;
   }
   if (is_redundant()) {
     RecordStartWorkerResult(purpose, prestart_status, kInvalidTraceId,
                             is_browser_startup_complete,
-                            SERVICE_WORKER_ERROR_REDUNDANT);
-    RunSoon(base::Bind(callback, SERVICE_WORKER_ERROR_REDUNDANT));
+                            blink::ServiceWorkerStatusCode::kErrorRedundant);
+    RunSoon(base::BindOnce(std::move(callback),
+                           blink::ServiceWorkerStatusCode::kErrorRedundant));
     return;
   }
 
@@ -1315,7 +1560,8 @@ void ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker(
 
   switch (running_status()) {
     case EmbeddedWorkerStatus::RUNNING:
-      RunSoon(base::Bind(callback, SERVICE_WORKER_OK));
+      RunSoon(base::BindOnce(std::move(callback),
+                             blink::ServiceWorkerStatusCode::kOk));
       return;
     case EmbeddedWorkerStatus::STARTING:
       DCHECK(!start_callbacks_.empty());
@@ -1328,17 +1574,24 @@ void ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker(
             "ServiceWorker", "ServiceWorkerVersion::StartWorker", trace_id,
             "Script", script_url_.spec(), "Purpose",
             ServiceWorkerMetrics::EventTypeToString(purpose));
+        DCHECK(!start_worker_first_purpose_);
+        start_worker_first_purpose_ = purpose;
         start_callbacks_.push_back(
-            base::Bind(&ServiceWorkerVersion::RecordStartWorkerResult,
-                       weak_factory_.GetWeakPtr(), purpose, prestart_status,
-                       trace_id, is_browser_startup_complete));
+            base::BindOnce(&ServiceWorkerVersion::RecordStartWorkerResult,
+                           weak_factory_.GetWeakPtr(), purpose, prestart_status,
+                           trace_id, is_browser_startup_complete));
       }
       break;
   }
 
   // Keep the live registration while starting the worker.
-  start_callbacks_.push_back(
-      base::Bind(&RunStartWorkerCallback, callback, protect));
+  start_callbacks_.push_back(base::BindOnce(
+      [](StatusCallback callback,
+         scoped_refptr<ServiceWorkerRegistration> protect,
+         blink::ServiceWorkerStatusCode status) {
+        std::move(callback).Run(status);
+      },
+      std::move(callback), protect));
 
   if (running_status() == EmbeddedWorkerStatus::STOPPED)
     StartWorkerInternal();
@@ -1346,25 +1599,81 @@ void ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker(
 }
 
 void ServiceWorkerVersion::StartWorkerInternal() {
+  DCHECK(context_);
   DCHECK_EQ(EmbeddedWorkerStatus::STOPPED, running_status());
+  DCHECK(inflight_requests_.IsEmpty());
+  DCHECK(request_timeouts_.empty());
 
-  DCHECK(!metrics_);
-  metrics_.reset(new Metrics(this));
+  // TODO(falken): Figure out why |start_worker_first_purpose_| can be null
+  // here. Probably there is a bug with restarting the worker in
+  // OnStoppedInternal, despite the comment below about not clearing it.
+  if (start_worker_first_purpose_) {
+    if (!ServiceWorkerMetrics::ShouldExcludeSiteFromHistogram(site_for_uma_) &&
+        *start_worker_first_purpose_ ==
+            ServiceWorkerMetrics::EventType::NAVIGATION_HINT) {
+      DCHECK(!event_recorder_);
+      event_recorder_ =
+          std::make_unique<ServiceWorkerMetrics::ScopedEventRecorder>();
+    }
+  }
+  // We don't clear |start_worker_first_purpose_| here but clear in
+  // FinishStartWorker. This is because StartWorkerInternal may be called
+  // again from OnStoppedInternal if StopWorker is called before OnStarted.
 
   StartTimeoutTimer();
+  worker_is_idle_on_renderer_ = false;
+  needs_to_be_terminated_asap_ = false;
 
-  std::unique_ptr<EmbeddedWorkerMsg_StartWorker_Params> params(
-      new EmbeddedWorkerMsg_StartWorker_Params());
+  auto provider_info =
+      blink::mojom::ServiceWorkerProviderInfoForStartWorker::New();
+  provider_host_ = ServiceWorkerProviderHost::PreCreateForController(
+      context(), base::WrapRefCounted(this), &provider_info);
+
+  auto params = blink::mojom::EmbeddedWorkerStartParams::New();
   params->service_worker_version_id = version_id_;
   params->scope = scope_;
   params->script_url = script_url_;
+  params->script_type = script_type_;
+  params->user_agent = GetContentClient()->browser()->GetUserAgent();
   params->is_installed = IsInstalled(status_);
-  params->pause_after_download = pause_after_download_;
+  params->pause_after_download = pause_after_download();
+
+  if (IsInstalled(status())) {
+    DCHECK(!params->pause_after_download);
+    DCHECK(!installed_scripts_sender_);
+    installed_scripts_sender_ =
+        std::make_unique<ServiceWorkerInstalledScriptsSender>(this);
+    params->installed_scripts_info =
+        installed_scripts_sender_->CreateInfoAndBind();
+    installed_scripts_sender_->Start();
+  }
+
+  params->service_worker_request = mojo::MakeRequest(&service_worker_ptr_);
+  // TODO(horo): These CHECKs are for debugging crbug.com/759938.
+  CHECK(service_worker_ptr_.is_bound());
+  CHECK(params->service_worker_request.is_pending());
+  service_worker_ptr_.set_connection_error_handler(
+      base::BindOnce(&OnConnectionError, embedded_worker_->AsWeakPtr()));
+  binding_.Close();
+  binding_.Bind(mojo::MakeRequest(&service_worker_host_));
+  // Initialize the global scope now if the worker won't be paused. Otherwise,
+  // delay initialization until the main script is loaded.
+  if (!pause_after_download())
+    InitializeGlobalScope();
+
+  // S13nServiceWorker:
+  if (!controller_request_.is_pending()) {
+    DCHECK(!controller_ptr_.is_bound());
+    controller_request_ = mojo::MakeRequest(&controller_ptr_);
+  }
+  params->controller_request = std::move(controller_request_);
+
+  params->provider_info = std::move(provider_info);
 
   embedded_worker_->Start(
       std::move(params),
-      base::Bind(&ServiceWorkerVersion::OnStartSentAndScriptEvaluated,
-                 weak_factory_.GetWeakPtr()));
+      base::BindOnce(&ServiceWorkerVersion::OnStartSent,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void ServiceWorkerVersion::StartTimeoutTimer() {
@@ -1382,12 +1691,11 @@ void ServiceWorkerVersion::StartTimeoutTimer() {
   // The worker is starting up and not yet idle.
   ClearTick(&idle_time_);
 
-  // Ping will be activated in OnScriptLoaded.
-  ping_controller_->Deactivate();
+  // Ping will be activated in OnScriptEvaluationStart.
+  ping_controller_.Deactivate();
 
-  timeout_timer_.Start(FROM_HERE,
-                       base::TimeDelta::FromSeconds(kTimeoutTimerDelaySeconds),
-                       this, &ServiceWorkerVersion::OnTimeoutTimer);
+  timeout_timer_.Start(FROM_HERE, kTimeoutTimerDelay, this,
+                       &ServiceWorkerVersion::OnTimeoutTimer);
 }
 
 void ServiceWorkerVersion::StopTimeoutTimer() {
@@ -1412,9 +1720,10 @@ void ServiceWorkerVersion::SetTimeoutTimerInterval(base::TimeDelta interval) {
 }
 
 void ServiceWorkerVersion::OnTimeoutTimer() {
-  DCHECK(running_status() == EmbeddedWorkerStatus::STARTING ||
-         running_status() == EmbeddedWorkerStatus::RUNNING ||
-         running_status() == EmbeddedWorkerStatus::STOPPING)
+  // TODO(horo): This CHECK is for debugging crbug.com/759938.
+  CHECK(running_status() == EmbeddedWorkerStatus::STARTING ||
+        running_status() == EmbeddedWorkerStatus::RUNNING ||
+        running_status() == EmbeddedWorkerStatus::STOPPING)
       << static_cast<int>(running_status());
 
   if (!context_)
@@ -1423,22 +1732,25 @@ void ServiceWorkerVersion::OnTimeoutTimer() {
   MarkIfStale();
 
   // Stopping the worker hasn't finished within a certain period.
-  if (GetTickDuration(stop_time_) >
-      base::TimeDelta::FromSeconds(kStopWorkerTimeoutSeconds)) {
+  if (GetTickDuration(stop_time_) > kStopWorkerTimeout) {
     DCHECK_EQ(EmbeddedWorkerStatus::STOPPING, running_status());
     if (IsInstalled(status())) {
       ServiceWorkerMetrics::RecordWorkerStopped(
           ServiceWorkerMetrics::StopStatus::TIMEOUT);
     }
-    ReportError(SERVICE_WORKER_ERROR_TIMEOUT, "DETACH_STALLED_IN_STOPPING");
+    ReportError(blink::ServiceWorkerStatusCode::kErrorTimeout,
+                "DETACH_STALLED_IN_STOPPING");
 
     // Detach the worker. Remove |this| as a listener first; otherwise
     // OnStoppedInternal might try to restart before the new worker
-    // is created.
-    embedded_worker_->RemoveListener(this);
+    // is created. Also, protect |this|, since swapping out the
+    // EmbeddedWorkerInstance could destroy our ServiceWorkerProviderHost
+    // which could in turn destroy |this|.
+    scoped_refptr<ServiceWorkerVersion> protect_this(this);
+    embedded_worker_->RemoveObserver(this);
     embedded_worker_->Detach();
-    embedded_worker_ = context_->embedded_worker_registry()->CreateWorker();
-    embedded_worker_->AddListener(this);
+    embedded_worker_ = std::make_unique<EmbeddedWorkerInstance>(this);
+    embedded_worker_->AddObserver(this);
 
     // Call OnStoppedInternal to fail callbacks and possibly restart.
     OnStoppedInternal(EmbeddedWorkerStatus::STOPPING);
@@ -1447,24 +1759,22 @@ void ServiceWorkerVersion::OnTimeoutTimer() {
 
   // Trigger update if worker is stale and we waited long enough for it to go
   // idle.
-  if (GetTickDuration(stale_time_) >
-      base::TimeDelta::FromMinutes(kRequestTimeoutMinutes)) {
+  if (GetTickDuration(stale_time_) > kRequestTimeout) {
     ClearTick(&stale_time_);
     if (!update_timer_.IsRunning())
       ScheduleUpdate();
   }
 
   // Starting a worker hasn't finished within a certain period.
-  const base::TimeDelta start_limit =
-      IsInstalled(status())
-          ? base::TimeDelta::FromSeconds(kStartInstalledWorkerTimeoutSeconds)
-          : base::TimeDelta::FromMinutes(kStartNewWorkerTimeoutMinutes);
+  const base::TimeDelta start_limit = IsInstalled(status())
+                                          ? kStartInstalledWorkerTimeout
+                                          : kStartNewWorkerTimeout;
   if (GetTickDuration(start_time_) > start_limit) {
     DCHECK(running_status() == EmbeddedWorkerStatus::STARTING ||
            running_status() == EmbeddedWorkerStatus::STOPPING)
         << static_cast<int>(running_status());
     scoped_refptr<ServiceWorkerVersion> protect(this);
-    RunCallbacks(this, &start_callbacks_, SERVICE_WORKER_ERROR_TIMEOUT);
+    FinishStartWorker(blink::ServiceWorkerStatusCode::kErrorTimeout);
     if (running_status() == EmbeddedWorkerStatus::STARTING)
       embedded_worker_->Stop();
     return;
@@ -1472,16 +1782,17 @@ void ServiceWorkerVersion::OnTimeoutTimer() {
 
   // Requests have not finished before their expiration.
   bool stop_for_timeout = false;
-  while (!requests_.empty()) {
-    RequestInfo info = requests_.top();
+  auto timeout_iter = request_timeouts_.begin();
+  while (timeout_iter != request_timeouts_.end()) {
+    const InflightRequestTimeoutInfo& info = *timeout_iter;
     if (!RequestExpired(info.expiration))
       break;
-    if (MaybeTimeOutRequest(info)) {
+    if (MaybeTimeoutRequest(info)) {
       stop_for_timeout =
           stop_for_timeout || info.timeout_behavior == KILL_ON_TIMEOUT;
       ServiceWorkerMetrics::RecordEventTimeout(info.event_type);
     }
-    requests_.pop();
+    timeout_iter = request_timeouts_.erase(timeout_iter);
   }
   if (stop_for_timeout && running_status() != EmbeddedWorkerStatus::STOPPING)
     embedded_worker_->Stop();
@@ -1492,46 +1803,37 @@ void ServiceWorkerVersion::OnTimeoutTimer() {
     return;
 
   // The worker has been idle for longer than a certain period.
-  if (GetTickDuration(idle_time_) >
-      base::TimeDelta::FromSeconds(kIdleWorkerTimeoutSeconds)) {
-    StopWorkerIfIdle();
+  // S13nServiceWorker: The idle timer is implemented on the renderer, so we can
+  // skip this check.
+  if (!blink::ServiceWorkerUtils::IsServicificationEnabled() &&
+      GetTickDuration(idle_time_) > kIdleWorkerTimeout) {
+    if (HasNoWork())
+      embedded_worker_->StopIfNotAttachedToDevTools();
     return;
   }
 
   // Check ping status.
-  ping_controller_->CheckPingStatus();
+  ping_controller_.CheckPingStatus();
 }
 
-ServiceWorkerStatusCode ServiceWorkerVersion::PingWorker() {
-  DCHECK(running_status() == EmbeddedWorkerStatus::STARTING ||
-         running_status() == EmbeddedWorkerStatus::RUNNING);
-  return embedded_worker_->SendMessage(ServiceWorkerMsg_Ping());
+void ServiceWorkerVersion::PingWorker() {
+  // TODO(horo): This CHECK is for debugging crbug.com/759938.
+  CHECK(running_status() == EmbeddedWorkerStatus::STARTING ||
+        running_status() == EmbeddedWorkerStatus::RUNNING);
+  // base::Unretained here is safe because endpoint() is owned by
+  // |this|.
+  endpoint()->Ping(base::BindOnce(&ServiceWorkerVersion::OnPongFromWorker,
+                                  base::Unretained(this)));
 }
 
 void ServiceWorkerVersion::OnPingTimeout() {
   DCHECK(running_status() == EmbeddedWorkerStatus::STARTING ||
          running_status() == EmbeddedWorkerStatus::RUNNING);
-  // TODO(falken): Show a message to the developer that the SW was stopped due
-  // to timeout (crbug.com/457968). Also, change the error code to
-  // SERVICE_WORKER_ERROR_TIMEOUT.
-  StopWorkerIfIdle();
-}
-
-void ServiceWorkerVersion::StopWorkerIfIdle() {
-  if (HasWork() && !ping_controller_->IsTimedOut())
-    return;
-  if (running_status() == EmbeddedWorkerStatus::STOPPED ||
-      running_status() == EmbeddedWorkerStatus::STOPPING ||
-      !stop_callbacks_.empty()) {
-    return;
-  }
-
-  embedded_worker_->StopIfIdle();
-}
-
-bool ServiceWorkerVersion::HasWork() const {
-  return !custom_requests_.IsEmpty() || !streaming_url_request_jobs_.empty() ||
-         !start_callbacks_.empty();
+  // TODO(falken): Change the error code to
+  // blink::ServiceWorkerStatusCode::kErrorTimeout.
+  embedded_worker_->AddMessageToConsole(
+      blink::mojom::ConsoleMessageLevel::kVerbose, kNotRespondingErrorMesage);
+  embedded_worker_->StopIfNotAttachedToDevTools();
 }
 
 void ServiceWorkerVersion::RecordStartWorkerResult(
@@ -1539,11 +1841,11 @@ void ServiceWorkerVersion::RecordStartWorkerResult(
     Status prestart_status,
     int trace_id,
     bool is_browser_startup_complete,
-    ServiceWorkerStatusCode status) {
+    blink::ServiceWorkerStatusCode status) {
   if (trace_id != kInvalidTraceId) {
     TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::StartWorker",
                            trace_id, "Status",
-                           ServiceWorkerStatusToString(status));
+                           blink::ServiceWorkerStatusToString(status));
   }
   base::TimeTicks start_time = start_time_;
   ClearTick(&start_time_);
@@ -1551,19 +1853,21 @@ void ServiceWorkerVersion::RecordStartWorkerResult(
   if (context_ && IsInstalled(prestart_status))
     context_->UpdateVersionFailureCount(version_id_, status);
 
+  if (installed_scripts_sender_) {
+    ServiceWorkerMetrics::RecordInstalledScriptsSenderStatus(
+        installed_scripts_sender_->last_finished_reason());
+  }
   ServiceWorkerMetrics::RecordStartWorkerStatus(status, purpose,
                                                 IsInstalled(prestart_status));
 
-  if (status == SERVICE_WORKER_OK && !start_time.is_null() &&
+  if (status == blink::ServiceWorkerStatusCode::kOk && !start_time.is_null() &&
       !skip_recording_startup_time_) {
     ServiceWorkerMetrics::RecordStartWorkerTime(
         GetTickDuration(start_time), IsInstalled(prestart_status),
-        ServiceWorkerMetrics::GetStartSituation(
-            is_browser_startup_complete, embedded_worker_->is_new_process()),
-        purpose);
+        embedded_worker_->start_situation(), purpose);
   }
 
-  if (status != SERVICE_WORKER_ERROR_TIMEOUT)
+  if (status != blink::ServiceWorkerStatusCode::kErrorTimeout)
     return;
   EmbeddedWorkerInstance::StartingPhase phase =
       EmbeddedWorkerInstance::NOT_STARTING;
@@ -1587,49 +1891,58 @@ void ServiceWorkerVersion::RecordStartWorkerResult(
                             EmbeddedWorkerInstance::STARTING_PHASE_MAX_VALUE);
 }
 
-bool ServiceWorkerVersion::MaybeTimeOutRequest(const RequestInfo& info) {
-  PendingRequest<StatusCallback>* request = custom_requests_.Lookup(info.id);
+bool ServiceWorkerVersion::MaybeTimeoutRequest(
+    const InflightRequestTimeoutInfo& info) {
+  InflightRequest* request = inflight_requests_.Lookup(info.id);
   if (!request)
     return false;
 
   TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::Request",
                          request, "Error", "Timeout");
-  request->callback.Run(SERVICE_WORKER_ERROR_TIMEOUT);
-  custom_requests_.Remove(info.id);
+  std::move(request->error_callback)
+      .Run(blink::ServiceWorkerStatusCode::kErrorTimeout);
+  inflight_requests_.Remove(info.id);
   return true;
 }
 
 void ServiceWorkerVersion::SetAllRequestExpirations(
     const base::TimeTicks& expiration) {
-  RequestInfoPriorityQueue new_requests;
-  while (!requests_.empty()) {
-    RequestInfo info = requests_.top();
-    info.expiration = expiration;
-    new_requests.push(info);
-    requests_.pop();
+  std::set<InflightRequestTimeoutInfo> new_timeouts;
+  for (const auto& info : request_timeouts_) {
+    bool is_inserted = false;
+    std::set<InflightRequestTimeoutInfo>::iterator iter;
+    std::tie(iter, is_inserted) = new_timeouts.emplace(
+        info.id, info.event_type, expiration, info.timeout_behavior);
+    DCHECK(is_inserted);
+    InflightRequest* request = inflight_requests_.Lookup(info.id);
+    DCHECK(request);
+    request->timeout_iter = iter;
   }
-  requests_ = new_requests;
+  request_timeouts_.swap(new_timeouts);
 }
 
-ServiceWorkerStatusCode ServiceWorkerVersion::DeduceStartWorkerFailureReason(
-    ServiceWorkerStatusCode default_code) {
-  if (ping_controller_->IsTimedOut())
-    return SERVICE_WORKER_ERROR_TIMEOUT;
+blink::ServiceWorkerStatusCode
+ServiceWorkerVersion::DeduceStartWorkerFailureReason(
+    blink::ServiceWorkerStatusCode default_code) {
+  if (ping_controller_.IsTimedOut())
+    return blink::ServiceWorkerStatusCode::kErrorTimeout;
 
-  if (start_worker_status_ != SERVICE_WORKER_OK)
+  if (start_worker_status_ != blink::ServiceWorkerStatusCode::kOk)
     return start_worker_status_;
 
   const net::URLRequestStatus& main_script_status =
       script_cache_map()->main_script_status();
   if (main_script_status.status() != net::URLRequestStatus::SUCCESS) {
+    if (net::IsCertificateError(main_script_status.error()))
+      return blink::ServiceWorkerStatusCode::kErrorSecurity;
     switch (main_script_status.error()) {
       case net::ERR_INSECURE_RESPONSE:
       case net::ERR_UNSAFE_REDIRECT:
-        return SERVICE_WORKER_ERROR_SECURITY;
+        return blink::ServiceWorkerStatusCode::kErrorSecurity;
       case net::ERR_ABORTED:
-        return SERVICE_WORKER_ERROR_ABORT;
+        return blink::ServiceWorkerStatusCode::kErrorAbort;
       default:
-        return SERVICE_WORKER_ERROR_NETWORK;
+        return blink::ServiceWorkerStatusCode::kErrorNetwork;
     }
   }
 
@@ -1646,15 +1959,14 @@ void ServiceWorkerVersion::MarkIfStale() {
   if (!registration || registration->active_version() != this)
     return;
   base::TimeDelta time_since_last_check =
-      base::Time::Now() - registration->last_update_check();
-  if (time_since_last_check >
-      base::TimeDelta::FromHours(kServiceWorkerScriptMaxCacheAgeInHours))
+      clock_->Now() - registration->last_update_check();
+  if (time_since_last_check > kServiceWorkerScriptMaxCacheAge)
     RestartTick(&stale_time_);
 }
 
 void ServiceWorkerVersion::FoundRegistrationForUpdate(
-    ServiceWorkerStatusCode status,
-    const scoped_refptr<ServiceWorkerRegistration>& registration) {
+    blink::ServiceWorkerStatusCode status,
+    scoped_refptr<ServiceWorkerRegistration> registration) {
   if (!context_)
     return;
 
@@ -1664,7 +1976,8 @@ void ServiceWorkerVersion::FoundRegistrationForUpdate(
     is_update_scheduled_ = false;
   }
 
-  if (status != SERVICE_WORKER_OK || registration->active_version() != this)
+  if (status != blink::ServiceWorkerStatusCode::kOk ||
+      registration->active_version() != this)
     return;
   context_->UpdateServiceWorker(registration.get(),
                                 false /* force_bypass_cache */);
@@ -1676,12 +1989,24 @@ void ServiceWorkerVersion::OnStoppedInternal(EmbeddedWorkerStatus old_status) {
   if (!in_dtor_)
     protect = this;
 
-  DCHECK(metrics_);
-  metrics_.reset();
+  event_recorder_.reset();
 
-  bool should_restart = !is_redundant() && !start_callbacks_.empty() &&
-                        (old_status != EmbeddedWorkerStatus::STARTING) &&
-                        !in_dtor_ && !ping_controller_->IsTimedOut();
+  // |start_callbacks_| can be non-empty if a start worker request arrived while
+  // the worker was stopping. The worker must be restarted to fulfill the
+  // request.
+  bool should_restart = !start_callbacks_.empty();
+  if (is_redundant() || in_dtor_) {
+    // This worker will be destroyed soon.
+    should_restart = false;
+  } else if (ping_controller_.IsTimedOut()) {
+    // This worker exhausted its time to run, don't let it restart.
+    should_restart = false;
+  } else if (old_status == EmbeddedWorkerStatus::STARTING) {
+    // This worker unexpectedly stopped because start failed.  Attempting to
+    // restart on start failure could cause an endless loop of start attempts,
+    // so don't try to restart now.
+    should_restart = false;
+  }
 
   if (!stop_time_.is_null()) {
     TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::StopWorker",
@@ -1692,56 +2017,185 @@ void ServiceWorkerVersion::OnStoppedInternal(EmbeddedWorkerStatus old_status) {
   StopTimeoutTimer();
 
   // Fire all stop callbacks.
-  RunCallbacks(this, &stop_callbacks_, SERVICE_WORKER_OK);
+  std::vector<base::OnceClosure> callbacks;
+  callbacks.swap(stop_callbacks_);
+  for (auto& callback : callbacks)
+    std::move(callback).Run();
 
   if (!should_restart) {
     // Let all start callbacks fail.
-    RunCallbacks(this, &start_callbacks_,
-                 DeduceStartWorkerFailureReason(
-                     SERVICE_WORKER_ERROR_START_WORKER_FAILED));
+    FinishStartWorker(DeduceStartWorkerFailureReason(
+        blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed));
   }
 
   // Let all message callbacks fail (this will also fire and clear all
   // callbacks for events).
   // TODO(kinuko): Consider if we want to add queue+resend mechanism here.
-  IDMap<PendingRequest<StatusCallback>, IDMapOwnPointer>::iterator iter(
-      &custom_requests_);
+  base::IDMap<std::unique_ptr<InflightRequest>>::iterator iter(
+      &inflight_requests_);
   while (!iter.IsAtEnd()) {
     TRACE_EVENT_ASYNC_END1("ServiceWorker", "ServiceWorkerVersion::Request",
                            iter.GetCurrentValue(), "Error", "Worker Stopped");
-    iter.GetCurrentValue()->callback.Run(SERVICE_WORKER_ERROR_FAILED);
+    std::move(iter.GetCurrentValue()->error_callback)
+        .Run(blink::ServiceWorkerStatusCode::kErrorFailed);
     iter.Advance();
   }
-  custom_requests_.Clear();
+  inflight_requests_.Clear();
+  request_timeouts_.clear();
+  external_request_uuid_to_request_id_.clear();
+  service_worker_ptr_.reset();
+  controller_ptr_.reset();
+  DCHECK(!controller_request_.is_pending());
+  installed_scripts_sender_.reset();
+  binding_.Close();
+  pending_external_requests_.clear();
+  worker_is_idle_on_renderer_ = true;
 
-  // Close all mojo services. This will also fire and clear all callbacks
-  // for messages that are still outstanding for those services.
-  mojo_services_.clear();
-
-  // TODO(falken): Call SWURLRequestJob::ClearStream here?
-  streaming_url_request_jobs_.clear();
-
-  FOR_EACH_OBSERVER(Listener, listeners_, OnRunningStateChanged(this));
-  if (should_restart)
+  for (auto& observer : observers_)
+    observer.OnRunningStateChanged(this);
+  if (should_restart) {
     StartWorkerInternal();
-  else if (!HasWork())
-    FOR_EACH_OBSERVER(Listener, listeners_, OnNoWork(this));
+  } else if (!HasWorkInBrowser()) {
+    OnNoWorkInBrowser();
+  }
 }
 
-void ServiceWorkerVersion::OnMojoConnectionError(const char* service_name) {
-  // Simply deleting the service will cause error callbacks to be called from
-  // the destructor of the MojoServiceWrapper instance.
-  mojo_services_.erase(service_name);
+void ServiceWorkerVersion::FinishStartWorker(
+    blink::ServiceWorkerStatusCode status) {
+  start_worker_first_purpose_ = base::nullopt;
+  RunCallbacks(this, &start_callbacks_, status);
 }
 
-void ServiceWorkerVersion::OnBeginEvent() {
-  if (should_exclude_from_uma_ ||
-      running_status() != EmbeddedWorkerStatus::RUNNING ||
-      idle_time_.is_null()) {
+void ServiceWorkerVersion::CleanUpExternalRequest(
+    const std::string& request_uuid,
+    blink::ServiceWorkerStatusCode status) {
+  if (status == blink::ServiceWorkerStatusCode::kOk)
+    return;
+  external_request_uuid_to_request_id_.erase(request_uuid);
+}
+
+void ServiceWorkerVersion::OnNoWorkInBrowser() {
+  DCHECK(!HasWorkInBrowser());
+  if (!blink::ServiceWorkerUtils::IsServicificationEnabled()) {
+    for (auto& observer : observers_)
+      observer.OnNoWork(this);
     return;
   }
-  ServiceWorkerMetrics::RecordTimeBetweenEvents(base::TimeTicks::Now() -
-                                                idle_time_);
+
+  DCHECK(blink::ServiceWorkerUtils::IsServicificationEnabled());
+  if (worker_is_idle_on_renderer_) {
+    for (auto& observer : observers_)
+      observer.OnNoWork(this);
+  }
+}
+
+bool ServiceWorkerVersion::IsStartWorkerAllowed() const {
+  // Check that the worker is allowed on this origin. It's possible a
+  // worker was previously allowed and installed, but later the embedder's
+  // policy or binary changed to disallow this origin.
+  if (!ServiceWorkerUtils::AllOriginsMatchAndCanAccessServiceWorkers(
+          {script_url_})) {
+    return false;
+  }
+
+  // Check that the worker is allowed on the given scope. It's possible a worker
+  // was previously allowed and installed, but later content settings changed to
+  // disallow this scope. Since this worker might not be used for a specific
+  // tab, pass a null callback as WebContents getter.
+  // resource_context() can return null in unit tests.
+  if ((context_->wrapper()->resource_context() &&
+       !GetContentClient()->browser()->AllowServiceWorker(
+           scope_, scope_, context_->wrapper()->resource_context(),
+           base::NullCallback()))) {
+    return false;
+  }
+
+  return true;
+}
+
+void ServiceWorkerVersion::NotifyControlleeAdded(
+    const std::string& uuid,
+    const ServiceWorkerClientInfo& info) {
+  for (auto& observer : observers_)
+    observer.OnControlleeAdded(this, uuid, info);
+}
+
+void ServiceWorkerVersion::NotifyControlleeRemoved(const std::string& uuid) {
+  // The observers can destroy |this|, so protect it first.
+  // TODO(falken): Make OnNoControllees an explicit call to our registration
+  // instead of an observer callback, if it has dangerous side-effects like
+  // destroying the caller.
+  auto protect = base::WrapRefCounted(this);
+  for (auto& observer : observers_)
+    observer.OnControlleeRemoved(this, uuid);
+  if (!HasControllee()) {
+    RestartTick(&no_controllees_time_);
+    for (auto& observer : observers_)
+      observer.OnNoControllees(this);
+  }
+}
+
+void ServiceWorkerVersion::set_compared_script_info_map(
+    std::map<GURL, ServiceWorkerUpdateChecker::ComparedScriptInfo>
+        compared_script_info_map) {
+  compared_script_info_map_ = std::move(compared_script_info_map);
+}
+
+const std::map<GURL, ServiceWorkerUpdateChecker::ComparedScriptInfo>&
+ServiceWorkerVersion::compared_script_info_map() const {
+  return compared_script_info_map_;
+}
+
+std::unique_ptr<ServiceWorkerSingleScriptUpdateChecker::PausedState>
+ServiceWorkerVersion::TakePausedStateOfChangedScript(const GURL& script_url) {
+  return std::move(compared_script_info_map_[script_url].paused_state);
+}
+
+bool ServiceWorkerVersion::ShouldRequireForegroundPriority(
+    int worker_process_id) const {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  if (!base::FeatureList::IsEnabled(features::kServiceWorkerForegroundPriority))
+    return false;
+
+  // Currently FetchEvents are the only type of event we need to really process
+  // at foreground priority.  If the service worker does not have a FetchEvent
+  // handler then we can always allow it to go to the background.
+  if (fetch_handler_existence_ != FetchHandlerExistence::EXISTS)
+    return false;
+
+  // Keep the service worker at foreground priority if its controlling clients
+  // from a different process.  In this situation we are likely to need to
+  // quickly service FetchEvents when the worker's process does not have any
+  // visible windows and would have otherwise been moved to the background.
+  //
+  // Ideally we would check the visibility of all clients as well, but that
+  // would also require triggering additional checks on every visibility
+  // change of all clients.  That would add a lot of complexity and its
+  // unclear we need to pay that cost yet.  This may get easier once the
+  // service worker code runs on the UI thread directly. (crbug.com/824858)
+  //
+  // For now the requirement for cross-process clients should filter out most
+  // service workers.  The impact of foreground service workers is further
+  // limited by the automatic shutdown mechanism.
+  for (const auto& controllee : controllee_map_) {
+    const ServiceWorkerProviderHost* host = controllee.second;
+    if (host->process_id() != worker_process_id)
+      return true;
+  }
+  return false;
+}
+
+void ServiceWorkerVersion::InitializeGlobalScope() {
+  DCHECK(service_worker_host_);
+  scoped_refptr<ServiceWorkerRegistration> registration =
+      base::WrapRefCounted(context_->GetLiveRegistration(registration_id_));
+  // The registration must exist since we keep a reference to it during
+  // service worker startup.
+  DCHECK(registration);
+  service_worker_ptr_->InitializeGlobalScope(
+      std::move(service_worker_host_),
+      provider_host_->CreateServiceWorkerRegistrationObjectInfo(
+          std::move(registration)));
 }
 
 }  // namespace content

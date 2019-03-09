@@ -8,46 +8,52 @@
 #include "base/single_thread_task_runner.h"
 #include "cc/trees/layer_tree_host.h"
 #include "cc/trees/proxy.h"
+#include "cc/trees/render_frame_metadata_observer.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
 
 namespace cc {
-
+class PaintWorkletLayerPainter;
 class FakeProxy : public Proxy {
  public:
   FakeProxy() : layer_tree_host_(nullptr) {}
 
   void SetLayerTreeHost(LayerTreeHost* host);
 
-  void FinishAllRendering() override {}
   bool IsStarted() const override;
   bool CommitToActiveTree() const override;
-  void SetOutputSurface(OutputSurface* output_surface) override {}
-  void ReleaseOutputSurface() override;
+  void SetLayerTreeFrameSink(
+      LayerTreeFrameSink* layer_tree_frame_sink) override {}
+  void ReleaseLayerTreeFrameSink() override {}
   void SetVisible(bool visible) override {}
-  const RendererCapabilities& GetRendererCapabilities() const override;
   void SetNeedsAnimate() override {}
   void SetNeedsUpdateLayers() override {}
   void SetNeedsCommit() override {}
   void SetNeedsRedraw(const gfx::Rect& damage_rect) override {}
   void SetNextCommitWaitsForActivation() override {}
+  bool RequestedAnimatePending() override;
   void NotifyInputThrottledUntilCommit() override {}
-  void SetDeferCommits(bool defer_commits) override {}
-  void MainThreadHasStoppedFlinging() override {}
-  bool BeginMainFrameRequested() const override;
+  void SetDeferMainFrameUpdate(bool defer_main_frame_update) override {}
+  void StartDeferringCommits(base::TimeDelta timeout) override {}
+  void StopDeferringCommits() override {}
   bool CommitRequested() const override;
-  void Start(
-      std::unique_ptr<BeginFrameSource> external_begin_frame_source) override {}
+  void Start() override {}
   void Stop() override {}
   void SetMutator(std::unique_ptr<LayerTreeMutator> mutator) override;
+  void SetPaintWorkletLayerPainter(
+      std::unique_ptr<PaintWorkletLayerPainter> painter) override;
   bool SupportsImplScrolling() const override;
   bool MainFrameWillHappenForTesting() override;
-  void UpdateTopControlsState(TopControlsState constraints,
-                              TopControlsState current,
-                              bool animate) override {}
-
-  virtual RendererCapabilities& GetRendererCapabilities();
+  void UpdateBrowserControlsState(BrowserControlsState constraints,
+                                  BrowserControlsState current,
+                                  bool animate) override {}
+  void RequestBeginMainFrameNotExpected(bool new_state) override {}
+  void SetURLForUkm(const GURL& url) override {}
+  void ClearHistory() override {}
+  void SetRenderFrameObserver(
+      std::unique_ptr<RenderFrameMetadataObserver> observer) override {}
+  uint32_t GenerateChildSurfaceSequenceNumberSync() override;
 
  private:
-  RendererCapabilities capabilities_;
   LayerTreeHost* layer_tree_host_;
 };
 

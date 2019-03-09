@@ -26,24 +26,22 @@ class DistillerNativeJavaScript {
 
  private:
   // Add a function to the provided object.
-  template<typename Sig>
-  void BindFunctionToObject(v8::Local<v8::Object> javascript_object,
+  template <typename Sig>
+  void BindFunctionToObject(v8::Isolate* isolate,
+                            v8::Local<v8::Object> javascript_object,
                             const std::string& name,
                             const base::Callback<Sig> callback);
   // Make sure the mojo service is connected.
   void EnsureServiceConnected();
-
-  // Native code for "distiller.echo" in JavaScript. This simply returns the
-  // provided string.
-  std::string DistillerEcho(const std::string& message);
 
   content::RenderFrame* render_frame_;
   mojom::DistillerJavaScriptServicePtr distiller_js_service_;
 };
 
 // static
-v8::Local<v8::Object> GetOrCreateDistillerObject(v8::Isolate* isolate,
-                                                 v8::Local<v8::Object> global);
+v8::Local<v8::Object> GetOrCreateDistillerObject(
+    v8::Isolate* isolate,
+    v8::Local<v8::Context> context);
 
 }  // namespace dom_distiller
 

@@ -10,8 +10,8 @@
 #include <memory>
 
 #include "base/files/file_path.h"
+#include "base/files/scoped_file.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "ui/events/ozone/evdev/event_converter_evdev.h"
 #include "ui/events/ozone/evdev/event_device_info.h"
 
@@ -42,7 +42,7 @@ class EventReaderLibevdevCros : public EventConverterEvdev {
     virtual void OnLibEvdevCrosStopped(Evdev* evdev, EventStateRec* state) = 0;
   };
 
-  EventReaderLibevdevCros(int fd,
+  EventReaderLibevdevCros(base::ScopedFD fd,
                           const base::FilePath& path,
                           int id,
                           const EventDeviceInfo& devinfo,

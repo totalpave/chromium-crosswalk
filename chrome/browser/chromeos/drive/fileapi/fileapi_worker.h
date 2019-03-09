@@ -26,6 +26,7 @@
 #include "base/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "components/drive/file_errors.h"
+#include "components/services/filesystem/public/interfaces/types.mojom.h"
 #include "storage/browser/blob/scoped_file.h"
 
 namespace base {
@@ -50,10 +51,11 @@ typedef base::Callback<
 typedef base::Callback<
     void(base::File::Error result,
          const base::File::Info& file_info)> GetFileInfoCallback;
-typedef base::Callback<
-    void(base::File::Error result,
-         const std::vector<storage::DirectoryEntry>& file_list,
-         bool has_more)> ReadDirectoryCallback;
+typedef base::RepeatingCallback<void(
+    base::File::Error result,
+    std::vector<filesystem::mojom::DirectoryEntry> file_list,
+    bool has_more)>
+    ReadDirectoryCallback;
 typedef base::Callback<void(base::File::Error result,
                             const base::File::Info& file_info,
                             const base::FilePath& snapshot_file_path,

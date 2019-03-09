@@ -86,6 +86,22 @@ bool WebviewInfo::IsResourceWebviewAccessible(
   return false;
 }
 
+// static
+bool WebviewInfo::HasWebviewAccessibleResources(
+    const Extension& extension,
+    const std::string& partition_id) {
+  const WebviewInfo* webview_info = static_cast<const WebviewInfo*>(
+      extension.GetManifestData(keys::kWebviewAccessibleResources));
+  if (!webview_info)
+    return false;
+
+  for (const auto& item : webview_info->partition_items_) {
+    if (item->Matches(partition_id))
+      return true;
+  }
+  return false;
+}
+
 void WebviewInfo::AddPartitionItem(std::unique_ptr<PartitionItem> item) {
   partition_items_.push_back(std::move(item));
 }
@@ -99,79 +115,85 @@ WebviewHandler::~WebviewHandler() {
 bool WebviewHandler::Parse(Extension* extension, base::string16* error) {
   std::unique_ptr<WebviewInfo> info(new WebviewInfo(extension->id()));
 
-  const base::DictionaryValue* dict_value = NULL;
+  const base::Value* dict_value = nullptr;
   if (!extension->manifest()->GetDictionary(keys::kWebview,
                                             &dict_value)) {
     *error = base::ASCIIToUTF16(errors::kInvalidWebview);
     return false;
   }
 
-  const base::ListValue* partition_list = NULL;
-  if (!dict_value->GetList(keys::kWebviewPartitions, &partition_list)) {
+  const base::Value* partition_list = dict_value->FindKeyOfType(
+      keys::kWebviewPartitions, base::Value::Type::LIST);
+  if (partition_list == nullptr) {
     *error = base::ASCIIToUTF16(errors::kInvalidWebviewPartitionsList);
     return false;
   }
 
   // The partition list must have at least one entry.
-  if (partition_list->GetSize() == 0) {
+  const base::Value::ListStorage& partition_list_storage =
+      partition_list->GetList();
+  if (partition_list_storage.empty()) {
     *error = base::ASCIIToUTF16(errors::kInvalidWebviewPartitionsList);
     return false;
   }
 
-  for (size_t i = 0; i < partition_list->GetSize(); ++i) {
-    const base::DictionaryValue* partition = NULL;
-    if (!partition_list->GetDictionary(i, &partition)) {
+  for (size_t i = 0; i < partition_list_storage.size(); ++i) {
+    if (!partition_list_storage[i].is_dict()) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          errors::kInvalidWebviewPartition, base::SizeTToString(i));
+          errors::kInvalidWebviewPartition, base::NumberToString(i));
       return false;
     }
 
-    std::string partition_pattern;
-    if (!partition->GetString(keys::kWebviewName, &partition_pattern)) {
+    const base::Value* webview_name = partition_list_storage[i].FindKeyOfType(
+        keys::kWebviewName, base::Value::Type::STRING);
+    if (webview_name == nullptr) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          errors::kInvalidWebviewPartitionName, base::SizeTToString(i));
+          errors::kInvalidWebviewPartitionName, base::NumberToString(i));
       return false;
     }
+    const std::string& partition_pattern = webview_name->GetString();
 
-    const base::ListValue* url_list = NULL;
-    if (!partition->GetList(keys::kWebviewAccessibleResources,
-                            &url_list)) {
+    const base::Value* url_list = partition_list_storage[i].FindKeyOfType(
+        keys::kWebviewAccessibleResources, base::Value::Type::LIST);
+    if (url_list == nullptr) {
       *error = base::ASCIIToUTF16(
           errors::kInvalidWebviewAccessibleResourcesList);
       return false;
     }
 
     // The URL list should have at least one entry.
-    if (url_list->GetSize() == 0) {
+    const base::Value::ListStorage& url_list_storage = url_list->GetList();
+    if (url_list_storage.empty()) {
       *error = base::ASCIIToUTF16(
           errors::kInvalidWebviewAccessibleResourcesList);
       return false;
     }
 
-    std::unique_ptr<PartitionItem> partition_item(
-        new PartitionItem(partition_pattern));
+    auto partition_item = std::make_unique<PartitionItem>(partition_pattern);
 
-    for (size_t i = 0; i < url_list->GetSize(); ++i) {
-      std::string relative_path;
-      if (!url_list->GetString(i, &relative_path)) {
+    for (size_t i = 0; i < url_list_storage.size(); ++i) {
+      if (!url_list_storage[i].is_string()) {
         *error = ErrorUtils::FormatErrorMessageUTF16(
-            errors::kInvalidWebviewAccessibleResource, base::SizeTToString(i));
+            errors::kInvalidWebviewAccessibleResource, base::NumberToString(i));
         return false;
       }
-      URLPattern pattern(URLPattern::SCHEME_EXTENSION,
-                         Extension::GetResourceURL(extension->url(),
-                                                   relative_path).spec());
-      partition_item->AddPattern(pattern);
+      partition_item->AddPattern(
+          URLPattern(URLPattern::SCHEME_EXTENSION,
+                     Extension::GetResourceURL(extension->url(),
+                                               url_list_storage[i].GetString())
+                         .spec()));
     }
     info->AddPartitionItem(std::move(partition_item));
   }
 
-  extension->SetManifestData(keys::kWebviewAccessibleResources, info.release());
+  extension->SetManifestData(keys::kWebviewAccessibleResources,
+                             std::move(info));
   return true;
 }
 
-const std::vector<std::string> WebviewHandler::Keys() const {
-  return SingleKey(keys::kWebview);
+base::span<const char* const> WebviewHandler::Keys() const {
+  static constexpr const char* kKeys[] = {keys::kWebview};
+  return kKeys;
 }
 
 }  // namespace extensions

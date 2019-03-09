@@ -33,14 +33,15 @@ class MESSAGE_CENTER_EXPORT DesktopPopupAlignmentDelegate
 
   // Overridden from PopupAlignmentDelegate:
   int GetToastOriginX(const gfx::Rect& toast_bounds) const override;
-  int GetBaseLine() const override;
-  int GetWorkAreaBottom() const override;
+  int GetBaseline() const override;
+  gfx::Rect GetWorkArea() const override;
   bool IsTopDown() const override;
   bool IsFromLeft() const override;
-  void RecomputeAlignment(const display::Display& display) override;
+  bool RecomputeAlignment(const display::Display& display) override;
   void ConfigureWidgetInitParamsForContainer(
       views::Widget* widget,
       views::Widget::InitParams* init_params) override;
+  bool IsPrimaryDisplayForNotification() const override;
 
  private:
   friend class test::MessagePopupCollectionTest;
@@ -52,6 +53,8 @@ class MESSAGE_CENTER_EXPORT DesktopPopupAlignmentDelegate
     POPUP_ALIGNMENT_RIGHT = 1 << 3,
   };
 
+  void UpdatePrimaryDisplay();
+
   // Overridden from display::DisplayObserver:
   void OnDisplayAdded(const display::Display& new_display) override;
   void OnDisplayRemoved(const display::Display& old_display) override;
@@ -59,7 +62,7 @@ class MESSAGE_CENTER_EXPORT DesktopPopupAlignmentDelegate
                                uint32_t metrics) override;
 
   int32_t alignment_;
-  int64_t display_id_;
+  int64_t primary_display_id_;
   display::Screen* screen_;
   gfx::Rect work_area_;
 

@@ -2,68 +2,64 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef NET_QUIC_TOOLS_QUIC_SIMPLE_SERVER_PACKET_WRITER_H_
-#define NET_QUIC_TOOLS_QUIC_SIMPLE_SERVER_PACKET_WRITER_H_
+#ifndef NET_TOOLS_QUIC_QUIC_SIMPLE_SERVER_PACKET_WRITER_H_
+#define NET_TOOLS_QUIC_QUIC_SIMPLE_SERVER_PACKET_WRITER_H_
 
 #include <stddef.h>
 
 #include "base/callback.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "net/base/ip_endpoint.h"
-#include "net/quic/quic_connection.h"
-#include "net/quic/quic_packet_writer.h"
-#include "net/quic/quic_protocol.h"
+#include "net/third_party/quic/core/quic_connection.h"
+#include "net/third_party/quic/core/quic_packet_writer.h"
+#include "net/third_party/quic/core/quic_packets.h"
 
+namespace quic {
+class QuicDispatcher;
+}  // namespace quic
 namespace net {
-
-class IPAddress;
-class QuicBlockedWriterInterface;
 class UDPServerSocket;
+}  // namespace net
+namespace quic {
 struct WriteResult;
-
+}  // namespace quic
+namespace net {
 
 // Chrome specific packet writer which uses a UDPServerSocket for writing
 // data.
-class QuicSimpleServerPacketWriter : public QuicPacketWriter {
+class QuicSimpleServerPacketWriter : public quic::QuicPacketWriter {
  public:
-  typedef base::Callback<void(WriteResult)> WriteCallback;
+  typedef base::Callback<void(quic::WriteResult)> WriteCallback;
 
   QuicSimpleServerPacketWriter(UDPServerSocket* socket,
-                               QuicBlockedWriterInterface* blocked_writer);
+                               quic::QuicDispatcher* dispatcher);
   ~QuicSimpleServerPacketWriter() override;
 
-  // Use this method to write packets rather than WritePacket:
-  // QuicSimpleServerPacketWriter requires a callback to exist for every
-  // write, which will be called once the write completes.
-  virtual WriteResult WritePacketWithCallback(const char* buffer,
-                                              size_t buf_len,
-                                              const IPAddress& self_address,
-                                              const IPEndPoint& peer_address,
-                                              PerPacketOptions* options,
-                                              WriteCallback callback);
+  quic::WriteResult WritePacket(const char* buffer,
+                                size_t buf_len,
+                                const quic::QuicIpAddress& self_address,
+                                const quic::QuicSocketAddress& peer_address,
+                                quic::PerPacketOptions* options) override;
 
   void OnWriteComplete(int rv);
 
-  // QuicPacketWriter implementation:
-  bool IsWriteBlockedDataBuffered() const override;
+  // quic::QuicPacketWriter implementation:
   bool IsWriteBlocked() const override;
   void SetWritable() override;
-  QuicByteCount GetMaxPacketSize(const IPEndPoint& peer_address) const override;
-
- protected:
-  // Do not call WritePacket on its own -- use WritePacketWithCallback
-  WriteResult WritePacket(const char* buffer,
-                          size_t buf_len,
-                          const IPAddress& self_address,
-                          const IPEndPoint& peer_address,
-                          PerPacketOptions* options) override;
+  quic::QuicByteCount GetMaxPacketSize(
+      const quic::QuicSocketAddress& peer_address) const override;
+  bool SupportsReleaseTime() const override;
+  bool IsBatchMode() const override;
+  char* GetNextWriteLocation(
+      const quic::QuicIpAddress& self_address,
+      const quic::QuicSocketAddress& peer_address) override;
+  quic::WriteResult Flush() override;
 
  private:
   UDPServerSocket* socket_;
 
   // To be notified after every successful asynchronous write.
-  QuicBlockedWriterInterface* blocked_writer_;
+  quic::QuicDispatcher* dispatcher_;
 
   // To call once the write completes.
   WriteCallback callback_;
@@ -78,4 +74,4 @@ class QuicSimpleServerPacketWriter : public QuicPacketWriter {
 
 }  // namespace net
 
-#endif  // NET_QUIC_TOOLS_QUIC_SIMPLE_SERVER_PACKET_WRITER_H_
+#endif  // NET_TOOLS_QUIC_QUIC_SIMPLE_SERVER_PACKET_WRITER_H_

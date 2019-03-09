@@ -16,7 +16,6 @@ class PrefRegistrySimple;
 
 namespace content {
 class RenderProcessHost;
-class WebContents;
 }
 
 namespace metrics {
@@ -58,7 +57,7 @@ class CastStabilityMetricsProvider
   // content::BrowserChildProcessObserver implementation:
   void BrowserChildProcessCrashed(
       const content::ChildProcessData& data,
-      int exit_code) override;
+      const content::ChildProcessTerminationInfo& info) override;
 
   // Records a renderer process crash.
   void LogRendererCrash(content::RenderProcessHost* host,

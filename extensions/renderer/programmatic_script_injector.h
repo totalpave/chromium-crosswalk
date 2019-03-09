@@ -23,8 +23,8 @@ namespace extensions {
 // A ScriptInjector to handle tabs.executeScript().
 class ProgrammaticScriptInjector : public ScriptInjector {
  public:
-  ProgrammaticScriptInjector(const ExtensionMsg_ExecuteCode_Params& params,
-                             content::RenderFrame* render_frame);
+  explicit ProgrammaticScriptInjector(
+      const ExtensionMsg_ExecuteCode_Params& params);
   ~ProgrammaticScriptInjector() override;
 
  private:
@@ -32,19 +32,27 @@ class ProgrammaticScriptInjector : public ScriptInjector {
   UserScript::InjectionType script_type() const override;
   bool ShouldExecuteInMainWorld() const override;
   bool IsUserGesture() const override;
+  base::Optional<CSSOrigin> GetCssOrigin() const override;
+  const base::Optional<std::string> GetInjectionKey() const override;
   bool ExpectsResults() const override;
-  bool ShouldInjectJs(UserScript::RunLocation run_location) const override;
-  bool ShouldInjectCss(UserScript::RunLocation run_location) const override;
-  PermissionsData::AccessType CanExecuteOnFrame(
+  bool ShouldInjectJs(
+      UserScript::RunLocation run_location,
+      const std::set<std::string>& executing_scripts) const override;
+  bool ShouldInjectCss(
+      UserScript::RunLocation run_location,
+      const std::set<std::string>& injected_stylesheets) const override;
+  PermissionsData::PageAccess CanExecuteOnFrame(
       const InjectionHost* injection_host,
       blink::WebLocalFrame* web_frame,
-      int tab_id) const override;
+      int tab_id) override;
   std::vector<blink::WebScriptSource> GetJsSources(
-      UserScript::RunLocation run_location) const override;
-  std::vector<std::string> GetCssSources(
-      UserScript::RunLocation run_location) const override;
-  void GetRunInfo(ScriptsRunInfo* scripts_run_info,
-                  UserScript::RunLocation run_location) const override;
+      UserScript::RunLocation run_location,
+      std::set<std::string>* executing_scripts,
+      size_t* num_injected_js_scripts) const override;
+  std::vector<blink::WebString> GetCssSources(
+      UserScript::RunLocation run_location,
+      std::set<std::string>* injected_stylesheets,
+      size_t* num_injected_stylesheets) const override;
   void OnInjectionComplete(std::unique_ptr<base::Value> execution_result,
                            UserScript::RunLocation run_location,
                            content::RenderFrame* render_frame) override;
@@ -53,9 +61,6 @@ class ProgrammaticScriptInjector : public ScriptInjector {
 
   // Whether it is safe to include information about the URL in error messages.
   bool CanShowUrlInError() const;
-
-  // Return the run location for this injector.
-  UserScript::RunLocation GetRunLocation() const;
 
   // Notify the browser that the script was injected (or never will be), and
   // send along any results or errors.

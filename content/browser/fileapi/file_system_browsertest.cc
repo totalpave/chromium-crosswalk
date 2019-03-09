@@ -10,9 +10,11 @@
 #include "base/location.h"
 #include "base/memory/ref_counted.h"
 #include "base/single_thread_task_runner.h"
+#include "base/task/post_task.h"
 #include "base/test/thread_test_helper.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_switches.h"
@@ -26,8 +28,8 @@ using storage::QuotaManager;
 
 namespace content {
 
-// This browser test is aimed towards exercising the FileAPI bindings and
-// the actual implementation that lives in the browser side.
+// This browser test is aimed towards exercising the File System API bindings
+// and the actual implementation that lives in the browser side.
 class FileSystemBrowserTest : public ContentBrowserTest {
  public:
   FileSystemBrowserTest() {}
@@ -55,29 +57,27 @@ class FileSystemBrowserTest : public ContentBrowserTest {
 class FileSystemBrowserTestWithLowQuota : public FileSystemBrowserTest {
  public:
   void SetUpOnMainThread() override {
-    const int kInitialQuotaKilobytes = 5000;
-    const int kTemporaryStorageQuotaMaxSize =
-        kInitialQuotaKilobytes * 1024 * QuotaManager::kPerHostTemporaryPortion;
-    SetTempQuota(
-        kTemporaryStorageQuotaMaxSize,
-        BrowserContext::GetDefaultStoragePartition(
-            shell()->web_contents()->GetBrowserContext())->GetQuotaManager());
+    SetLowQuota(BrowserContext::GetDefaultStoragePartition(
+                    shell()->web_contents()->GetBrowserContext())
+                    ->GetQuotaManager());
   }
 
-  static void SetTempQuota(int64_t bytes, scoped_refptr<QuotaManager> qm) {
+  static void SetLowQuota(scoped_refptr<QuotaManager> qm) {
     if (!BrowserThread::CurrentlyOn(BrowserThread::IO)) {
-      BrowserThread::PostTask(
-          BrowserThread::IO, FROM_HERE,
-          base::Bind(&FileSystemBrowserTestWithLowQuota::SetTempQuota, bytes,
-                     qm));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::IO},
+          base::BindOnce(&FileSystemBrowserTestWithLowQuota::SetLowQuota, qm));
       return;
     }
     DCHECK_CURRENTLY_ON(BrowserThread::IO);
-    qm->SetTemporaryGlobalOverrideQuota(bytes, storage::QuotaCallback());
-    // Don't return until the quota has been set.
-    scoped_refptr<base::ThreadTestHelper> helper(new base::ThreadTestHelper(
-        BrowserThread::GetMessageLoopProxyForThread(BrowserThread::DB).get()));
-    ASSERT_TRUE(helper->Run());
+    // These sizes must correspond with expectations in html and js.
+    const int kMeg = 1000 * 1024;
+    storage::QuotaSettings settings;
+    settings.pool_size = 25 * kMeg;
+    settings.per_host_quota = 5 * kMeg;
+    settings.must_remain_available = 100 * kMeg;
+    settings.refresh_interval = base::TimeDelta::Max();
+    qm->SetQuotaSettings(settings);
   }
 };
 

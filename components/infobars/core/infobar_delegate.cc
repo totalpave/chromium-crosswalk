@@ -5,14 +5,14 @@
 #include "components/infobars/core/infobar_delegate.h"
 
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "components/infobars/core/infobar.h"
 #include "components/infobars/core/infobar_manager.h"
-#include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/vector_icons_public.h"
+#include "ui/gfx/vector_icon_types.h"
 
-#if !defined(OS_MACOSX) && !defined(OS_IOS) && !defined(OS_ANDROID)
+#if !defined(OS_IOS) && !defined(OS_ANDROID)
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/paint_vector_icon.h"
 #endif
@@ -29,34 +29,29 @@ InfoBarDelegate::InfoBarAutomationType
   return UNKNOWN_INFOBAR;
 }
 
-InfoBarDelegate::Type InfoBarDelegate::GetInfoBarType() const {
-  return WARNING_TYPE;
-}
-
 int InfoBarDelegate::GetIconId() const {
   return kNoIconID;
 }
 
-gfx::VectorIconId InfoBarDelegate::GetVectorIconId() const {
-  return gfx::VectorIconId::VECTOR_ICON_NONE;
+const gfx::VectorIcon& InfoBarDelegate::GetVectorIcon() const {
+  static base::NoDestructor<gfx::VectorIcon> empty_icon;
+  return *empty_icon;
 }
 
 gfx::Image InfoBarDelegate::GetIcon() const {
-#if !defined(OS_MACOSX) && !defined(OS_IOS) && !defined(OS_ANDROID)
-  if (ui::MaterialDesignController::IsModeMaterial()) {
-    gfx::VectorIconId vector_id = GetVectorIconId();
-    if (vector_id != gfx::VectorIconId::VECTOR_ICON_NONE) {
-      return gfx::Image(gfx::CreateVectorIcon(vector_id, 16,
-                                              GetInfoBarType() == WARNING_TYPE
-                                                  ? SkColorSetRGB(0xFF, 0x67, 0)
-                                                  : gfx::kGoogleBlue500));
-    }
+#if !defined(OS_IOS) && !defined(OS_ANDROID)
+  const gfx::VectorIcon& vector_icon = GetVectorIcon();
+  if (!vector_icon.is_empty()) {
+    return gfx::Image(
+        gfx::CreateVectorIcon(vector_icon, 20, gfx::kGoogleBlue500));
   }
 #endif
 
   int icon_id = GetIconId();
-  return icon_id == kNoIconID ? gfx::Image() :
-      ResourceBundle::GetSharedInstance().GetNativeImageNamed(icon_id);
+  return icon_id == kNoIconID
+             ? gfx::Image()
+             : ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(
+                   icon_id);
 }
 
 bool InfoBarDelegate::EqualsDelegate(InfoBarDelegate* delegate) const {
@@ -94,10 +89,6 @@ NativeAppInfoBarDelegate* InfoBarDelegate::AsNativeAppInfoBarDelegate() {
   return nullptr;
 }
 
-PermissionInfobarDelegate* InfoBarDelegate::AsPermissionInfobarDelegate() {
-  return nullptr;
-}
-
 PopupBlockedInfoBarDelegate* InfoBarDelegate::AsPopupBlockedInfoBarDelegate() {
   return nullptr;
 }
@@ -127,13 +118,8 @@ translate::TranslateInfoBarDelegate*
 }
 
 #if defined(OS_ANDROID)
-MediaStreamInfoBarDelegateAndroid*
-InfoBarDelegate::AsMediaStreamInfoBarDelegateAndroid() {
-  return nullptr;
-}
-
-MediaThrottleInfoBarDelegate*
-    InfoBarDelegate::AsMediaThrottleInfoBarDelegate() {
+offline_pages::OfflinePageInfoBarDelegate*
+InfoBarDelegate::AsOfflinePageInfoBarDelegate() {
   return nullptr;
 }
 #endif

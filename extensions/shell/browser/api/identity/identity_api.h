@@ -45,7 +45,7 @@ class IdentityGetAuthTokenFunction : public UIThreadExtensionFunction,
                                      public OAuth2TokenService::Consumer,
                                      public OAuth2MintTokenFlow::Delegate {
  public:
-  DECLARE_EXTENSION_FUNCTION("identity.getAuthToken", UNKNOWN);
+  DECLARE_EXTENSION_FUNCTION("identity.getAuthToken", UNKNOWN)
 
   IdentityGetAuthTokenFunction();
 
@@ -59,9 +59,9 @@ class IdentityGetAuthTokenFunction : public UIThreadExtensionFunction,
   ResponseAction Run() override;
 
   // OAuth2TokenService::Consumer:
-  void OnGetTokenSuccess(const OAuth2TokenService::Request* request,
-                         const std::string& access_token,
-                         const base::Time& expiration_time) override;
+  void OnGetTokenSuccess(
+      const OAuth2TokenService::Request* request,
+      const OAuth2AccessTokenConsumer::TokenResponse& token_response) override;
   void OnGetTokenFailure(const OAuth2TokenService::Request* request,
                          const GoogleServiceAuthError& error) override;
 

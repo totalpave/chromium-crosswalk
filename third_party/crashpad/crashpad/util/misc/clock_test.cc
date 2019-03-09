@@ -14,13 +14,13 @@
 
 #include "util/misc/clock.h"
 
-#include <stdint.h>
 #include <sys/types.h>
 
 #include <algorithm>
 
+#include "base/format_macros.h"
 #include "base/logging.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "gtest/gtest.h"
 
@@ -71,7 +71,7 @@ void TestSleepNanoseconds(uint64_t nanoseconds) {
 }
 
 TEST(Clock, SleepNanoseconds) {
-  const uint64_t kTestData[] = {
+  static constexpr uint64_t kTestData[] = {
       0,
       1,
       static_cast<uint64_t>(1E3),  // 1 microsecond
@@ -83,10 +83,10 @@ TEST(Clock, SleepNanoseconds) {
       static_cast<uint64_t>(5E7),  // 50 milliseconds
   };
 
-  for (size_t index = 0; index < arraysize(kTestData); ++index) {
+  for (size_t index = 0; index < base::size(kTestData); ++index) {
     const uint64_t nanoseconds = kTestData[index];
-    SCOPED_TRACE(
-        base::StringPrintf("index %zu, nanoseconds %llu", index, nanoseconds));
+    SCOPED_TRACE(base::StringPrintf(
+        "index %zu, nanoseconds %" PRIu64, index, nanoseconds));
 
     TestSleepNanoseconds(nanoseconds);
   }

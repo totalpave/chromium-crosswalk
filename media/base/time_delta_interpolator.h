@@ -24,7 +24,7 @@ class MEDIA_EXPORT TimeDeltaInterpolator {
   // Constructs an interpolator initialized to zero with a rate of 1.0.
   //
   // |tick_clock| is used for sampling wall clock time for interpolating.
-  explicit TimeDeltaInterpolator(base::TickClock* tick_clock);
+  explicit TimeDeltaInterpolator(const base::TickClock* tick_clock);
   ~TimeDeltaInterpolator();
 
   bool interpolating() { return interpolating_; }
@@ -40,6 +40,7 @@ class MEDIA_EXPORT TimeDeltaInterpolator {
   base::TimeDelta StopInterpolating();
 
   // Sets a new rate at which to interpolate.
+  // The default rate is 0.
   //
   // |tick_clock| will be queried for a new reference time value.
   void SetPlaybackRate(double playback_rate);
@@ -49,7 +50,9 @@ class MEDIA_EXPORT TimeDeltaInterpolator {
   //
   // |upper_bound| is typically the media timestamp of the last audio frame
   // buffered by the audio hardware.
-  void SetBounds(base::TimeDelta lower_bound, base::TimeDelta upper_bound);
+  void SetBounds(base::TimeDelta lower_bound,
+                 base::TimeDelta upper_bound,
+                 base::TimeTicks capture_time);
 
   // Sets the upper bound used for interpolation. Note that if |upper_bound| is
   // less than what was previously set via SetTime(), then all future calls
@@ -60,7 +63,7 @@ class MEDIA_EXPORT TimeDeltaInterpolator {
   base::TimeDelta GetInterpolatedTime();
 
  private:
-  base::TickClock* const tick_clock_;
+  const base::TickClock* const tick_clock_;
 
   bool interpolating_;
 

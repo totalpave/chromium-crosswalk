@@ -4,6 +4,7 @@
 
 #include "media/cdm/external_clear_key_test_helper.h"
 
+#include "base/debug/leak_annotations.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/native_library.h"
@@ -20,8 +21,6 @@ namespace media {
 #define STRINGIFY(X) #X
 #define MAKE_STRING(X) STRINGIFY(X)
 
-const char kClearKeyCdmBaseDirectory[] = "ClearKeyCdm";
-
 ExternalClearKeyTestHelper::ExternalClearKeyTestHelper() {
   LoadLibrary();
 }
@@ -34,11 +33,11 @@ void ExternalClearKeyTestHelper::LoadLibrary() {
   // Determine the location of the CDM. It is expected to be in the same
   // directory as the current module.
   base::FilePath cdm_base_path;
-  ASSERT_TRUE(PathService::Get(base::DIR_MODULE, &cdm_base_path));
+  ASSERT_TRUE(base::PathService::Get(base::DIR_MODULE, &cdm_base_path));
   cdm_base_path = cdm_base_path.Append(
       GetPlatformSpecificDirectory(kClearKeyCdmBaseDirectory));
   library_path_ = cdm_base_path.AppendASCII(
-      base::GetNativeLibraryName(kClearKeyCdmLibraryName));
+      base::GetLoadableModuleName(kClearKeyCdmLibraryName));
   ASSERT_TRUE(base::PathExists(library_path_)) << library_path_.value();
 
   // Now load the CDM library.
@@ -51,6 +50,14 @@ void ExternalClearKeyTestHelper::LoadLibrary() {
   InitializeCdmFunc initialize_cdm_func = reinterpret_cast<InitializeCdmFunc>(
       library_.GetFunctionPointer(MAKE_STRING(INITIALIZE_CDM_MODULE)));
   ASSERT_TRUE(initialize_cdm_func) << "No INITIALIZE_CDM_MODULE in library";
+
+  // Loading and unloading this library leaks all static allocations; previously
+  // these were suppressed by a similar annotation in base::LazyInstance. With
+  // the switch to thread-safe statics, we lost the annotation.
+  //
+  // TODO(xhwang): Investigate if we are actually leaking memory during the
+  // normal process by which Chrome uses this library. http://crbug.com/691132.
+  ANNOTATE_SCOPED_MEMORY_LEAK;
   initialize_cdm_func();
 }
 

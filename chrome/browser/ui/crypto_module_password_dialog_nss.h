@@ -11,34 +11,31 @@
 #include "base/callback_forward.h"
 #include "base/memory/ref_counted.h"
 #include "chrome/browser/ui/crypto_module_password_dialog.h"
+#include "crypto/scoped_nss_types.h"
 #include "net/base/host_port_pair.h"
 #include "ui/gfx/native_widget_types.h"
 
-namespace net {
-class CryptoModule;
-typedef std::vector<scoped_refptr<CryptoModule> > CryptoModuleList;
-class X509Certificate;
-}
+typedef struct CERTCertificateStr CERTCertificate;
 
 namespace chrome {
 
 // Asynchronously unlock |modules|, if necessary. |callback| is called when
 // done (regardless if any modules were successfully unlocked or not).  Should
 // only be called on UI thread.
-void UnlockSlotsIfNecessary(const net::CryptoModuleList& modules,
+void UnlockSlotsIfNecessary(std::vector<crypto::ScopedPK11Slot> modules,
                             CryptoModulePasswordReason reason,
                             const net::HostPortPair& server,
                             gfx::NativeWindow parent,
-                            const base::Closure& callback);
+                            base::OnceClosure callback);
 
 // Asynchronously unlock the |cert|'s module, if necessary. |callback| is
 // called when done (regardless if module was successfully unlocked or not).
 // Should only be called on UI thread.
-void UnlockCertSlotIfNecessary(net::X509Certificate* cert,
+void UnlockCertSlotIfNecessary(CERTCertificate* cert,
                                CryptoModulePasswordReason reason,
                                const net::HostPortPair& server,
                                gfx::NativeWindow parent,
-                               const base::Closure& callback);
+                               base::OnceClosure callback);
 
 }  // namespace chrome
 

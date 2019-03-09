@@ -8,10 +8,11 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/string16.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
@@ -45,17 +46,6 @@ const char kBackgroundTabDisposition[] = "newBackgroundTab";
 // Pref key for omnibox.setDefaultSuggestion.
 const char kOmniboxDefaultSuggestion[] = "omnibox_default_suggestion";
 
-#if defined(OS_LINUX)
-static const int kOmniboxIconPaddingLeft = 2;
-static const int kOmniboxIconPaddingRight = 2;
-#elif defined(OS_MACOSX)
-static const int kOmniboxIconPaddingLeft = 0;
-static const int kOmniboxIconPaddingRight = 2;
-#else
-static const int kOmniboxIconPaddingLeft = 0;
-static const int kOmniboxIconPaddingRight = 0;
-#endif
-
 std::unique_ptr<omnibox::SuggestResult> GetOmniboxDefaultSuggestion(
     Profile* profile,
     const std::string& extension_id) {
@@ -85,10 +75,11 @@ bool SetOmniboxDefaultSuggestion(
   std::unique_ptr<base::DictionaryValue> dict = suggestion.ToValue();
   // Add the content field so that the dictionary can be used to populate an
   // omnibox::SuggestResult.
-  dict->SetWithoutPathExpansion(kSuggestionContent, new base::StringValue(""));
-  prefs->UpdateExtensionPref(extension_id,
-                             kOmniboxDefaultSuggestion,
-                             dict.release());
+  dict->SetWithoutPathExpansion(
+      kSuggestionContent,
+      std::make_unique<base::Value>(base::Value::Type::STRING));
+  prefs->UpdateExtensionPref(extension_id, kOmniboxDefaultSuggestion,
+                             std::move(dict));
 
   return true;
 }
@@ -105,10 +96,9 @@ std::string GetTemplateURLStringForExtension(const std::string& extension_id) {
 // static
 void ExtensionOmniboxEventRouter::OnInputStarted(
     Profile* profile, const std::string& extension_id) {
-  std::unique_ptr<Event> event(new Event(
+  auto event = std::make_unique<Event>(
       events::OMNIBOX_ON_INPUT_STARTED, omnibox::OnInputStarted::kEventName,
-      base::WrapUnique(new base::ListValue())));
-  event->restrict_to_browser_context = profile;
+      std::make_unique<base::ListValue>(), profile);
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
 }
@@ -122,14 +112,13 @@ bool ExtensionOmniboxEventRouter::OnInputChanged(
           extension_id, omnibox::OnInputChanged::kEventName))
     return false;
 
-  std::unique_ptr<base::ListValue> args(new base::ListValue());
-  args->Set(0, new base::StringValue(input));
-  args->Set(1, new base::FundamentalValue(suggest_id));
+  auto args(std::make_unique<base::ListValue>());
+  args->Set(0, std::make_unique<base::Value>(input));
+  args->Set(1, std::make_unique<base::Value>(suggest_id));
 
-  std::unique_ptr<Event> event(new Event(events::OMNIBOX_ON_INPUT_CHANGED,
-                                         omnibox::OnInputChanged::kEventName,
-                                         std::move(args)));
-  event->restrict_to_browser_context = profile;
+  auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_CHANGED,
+                                       omnibox::OnInputChanged::kEventName,
+                                       std::move(args), profile);
   event_router->DispatchEventToExtension(extension_id, std::move(event));
   return true;
 }
@@ -150,19 +139,18 @@ void ExtensionOmniboxEventRouter::OnInputEntered(
   extensions::TabHelper::FromWebContents(web_contents)->
       active_tab_permission_granter()->GrantIfRequested(extension);
 
-  std::unique_ptr<base::ListValue> args(new base::ListValue());
-  args->Set(0, new base::StringValue(input));
-  if (disposition == NEW_FOREGROUND_TAB)
-    args->Set(1, new base::StringValue(kForegroundTabDisposition));
-  else if (disposition == NEW_BACKGROUND_TAB)
-    args->Set(1, new base::StringValue(kBackgroundTabDisposition));
+  auto args(std::make_unique<base::ListValue>());
+  args->Set(0, std::make_unique<base::Value>(input));
+  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB)
+    args->Set(1, std::make_unique<base::Value>(kForegroundTabDisposition));
+  else if (disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB)
+    args->Set(1, std::make_unique<base::Value>(kBackgroundTabDisposition));
   else
-    args->Set(1, new base::StringValue(kCurrentTabDisposition));
+    args->Set(1, std::make_unique<base::Value>(kCurrentTabDisposition));
 
-  std::unique_ptr<Event> event(new Event(events::OMNIBOX_ON_INPUT_ENTERED,
-                                         omnibox::OnInputEntered::kEventName,
-                                         std::move(args)));
-  event->restrict_to_browser_context = profile;
+  auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_ENTERED,
+                                       omnibox::OnInputEntered::kEventName,
+                                       std::move(args), profile);
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
 
@@ -175,12 +163,26 @@ void ExtensionOmniboxEventRouter::OnInputEntered(
 // static
 void ExtensionOmniboxEventRouter::OnInputCancelled(
     Profile* profile, const std::string& extension_id) {
-  std::unique_ptr<Event> event(new Event(
+  auto event = std::make_unique<Event>(
       events::OMNIBOX_ON_INPUT_CANCELLED, omnibox::OnInputCancelled::kEventName,
-      base::WrapUnique(new base::ListValue())));
-  event->restrict_to_browser_context = profile;
+      std::make_unique<base::ListValue>(), profile);
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
+}
+
+void ExtensionOmniboxEventRouter::OnDeleteSuggestion(
+    Profile* profile,
+    const std::string& extension_id,
+    const std::string& suggestion_text) {
+  auto args(std::make_unique<base::ListValue>());
+  args->Set(0, std::make_unique<base::Value>(suggestion_text));
+
+  auto event = std::make_unique<Event>(events::OMNIBOX_ON_DELETE_SUGGESTION,
+                                       omnibox::OnDeleteSuggestion::kEventName,
+                                       std::move(args), profile);
+
+  EventRouter::Get(profile)->DispatchEventToExtension(extension_id,
+                                                      std::move(event));
 }
 
 OmniboxAPI::OmniboxAPI(content::BrowserContext* context)
@@ -195,10 +197,7 @@ OmniboxAPI::OmniboxAPI(content::BrowserContext* context)
   }
 
   // Use monochrome icons for Omnibox icons.
-  omnibox_popup_icon_manager_.set_monochrome(true);
   omnibox_icon_manager_.set_monochrome(true);
-  omnibox_icon_manager_.set_padding(gfx::Insets(0, kOmniboxIconPaddingLeft,
-                                                0, kOmniboxIconPaddingRight));
 }
 
 void OmniboxAPI::Shutdown() {
@@ -208,12 +207,12 @@ void OmniboxAPI::Shutdown() {
 OmniboxAPI::~OmniboxAPI() {
 }
 
-static base::LazyInstance<BrowserContextKeyedAPIFactory<OmniboxAPI> >
-    g_factory = LAZY_INSTANCE_INITIALIZER;
+static base::LazyInstance<BrowserContextKeyedAPIFactory<OmniboxAPI>>::
+    DestructorAtExit g_omnibox_api_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<OmniboxAPI>* OmniboxAPI::GetFactoryInstance() {
-  return g_factory.Pointer();
+  return g_omnibox_api_factory.Pointer();
 }
 
 // static
@@ -226,15 +225,14 @@ void OmniboxAPI::OnExtensionLoaded(content::BrowserContext* browser_context,
   const std::string& keyword = OmniboxInfo::GetKeyword(extension);
   if (!keyword.empty()) {
     // Load the omnibox icon so it will be ready to display in the URL bar.
-    omnibox_popup_icon_manager_.LoadIcon(profile_, extension);
     omnibox_icon_manager_.LoadIcon(profile_, extension);
-
     if (url_service_) {
       url_service_->Load();
       if (url_service_->loaded()) {
         url_service_->RegisterOmniboxKeyword(
-            extension->id(), extension->name(), keyword,
-            GetTemplateURLStringForExtension(extension->id()));
+            extension->id(), extension->short_name(), keyword,
+            GetTemplateURLStringForExtension(extension->id()),
+            ExtensionPrefs::Get(profile_)->GetInstallTime(extension->id()));
       } else {
         pending_extensions_.insert(extension);
       }
@@ -244,7 +242,7 @@ void OmniboxAPI::OnExtensionLoaded(content::BrowserContext* browser_context,
 
 void OmniboxAPI::OnExtensionUnloaded(content::BrowserContext* browser_context,
                                      const Extension* extension,
-                                     UnloadedExtensionInfo::Reason reason) {
+                                     UnloadedExtensionReason reason) {
   if (!OmniboxInfo::GetKeyword(extension).empty() && url_service_) {
     if (url_service_->loaded()) {
       url_service_->RemoveExtensionControlledTURL(
@@ -256,23 +254,17 @@ void OmniboxAPI::OnExtensionUnloaded(content::BrowserContext* browser_context,
 }
 
 gfx::Image OmniboxAPI::GetOmniboxIcon(const std::string& extension_id) {
-  return gfx::Image::CreateFrom1xBitmap(
-      omnibox_icon_manager_.GetIcon(extension_id));
-}
-
-gfx::Image OmniboxAPI::GetOmniboxPopupIcon(const std::string& extension_id) {
-  return gfx::Image::CreateFrom1xBitmap(
-      omnibox_popup_icon_manager_.GetIcon(extension_id));
+  return omnibox_icon_manager_.GetIcon(extension_id);
 }
 
 void OmniboxAPI::OnTemplateURLsLoaded() {
   // Register keywords for pending extensions.
   template_url_sub_.reset();
-  for (PendingExtensions::const_iterator i(pending_extensions_.begin());
-       i != pending_extensions_.end(); ++i) {
+  for (const auto* i : pending_extensions_) {
     url_service_->RegisterOmniboxKeyword(
-        (*i)->id(), (*i)->name(), OmniboxInfo::GetKeyword(*i),
-        GetTemplateURLStringForExtension((*i)->id()));
+        i->id(), i->short_name(), OmniboxInfo::GetKeyword(i),
+        GetTemplateURLStringForExtension(i->id()),
+        ExtensionPrefs::Get(profile_)->GetInstallTime(i->id()));
   }
   pending_extensions_.clear();
 }
@@ -284,33 +276,35 @@ void BrowserContextKeyedAPIFactory<OmniboxAPI>::DeclareFactoryDependencies() {
   DependsOn(TemplateURLServiceFactory::GetInstance());
 }
 
-bool OmniboxSendSuggestionsFunction::RunSync() {
+ExtensionFunction::ResponseAction OmniboxSendSuggestionsFunction::Run() {
   std::unique_ptr<SendSuggestions::Params> params(
       SendSuggestions::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
 
   content::NotificationService::current()->Notify(
       extensions::NOTIFICATION_EXTENSION_OMNIBOX_SUGGESTIONS_READY,
-      content::Source<Profile>(GetProfile()->GetOriginalProfile()),
+      content::Source<Profile>(
+          Profile::FromBrowserContext(browser_context())->GetOriginalProfile()),
       content::Details<SendSuggestions::Params>(params.get()));
 
-  return true;
+  return RespondNow(NoArguments());
 }
 
-bool OmniboxSetDefaultSuggestionFunction::RunSync() {
+ExtensionFunction::ResponseAction OmniboxSetDefaultSuggestionFunction::Run() {
   std::unique_ptr<SetDefaultSuggestion::Params> params(
       SetDefaultSuggestion::Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
 
-  if (SetOmniboxDefaultSuggestion(
-          GetProfile(), extension_id(), params->suggestion)) {
+  Profile* profile = Profile::FromBrowserContext(browser_context());
+  if (SetOmniboxDefaultSuggestion(profile, extension_id(),
+                                  params->suggestion)) {
     content::NotificationService::current()->Notify(
         extensions::NOTIFICATION_EXTENSION_OMNIBOX_DEFAULT_SUGGESTION_CHANGED,
-        content::Source<Profile>(GetProfile()->GetOriginalProfile()),
+        content::Source<Profile>(profile->GetOriginalProfile()),
         content::NotificationService::NoDetails());
   }
 
-  return true;
+  return RespondNow(NoArguments());
 }
 
 // This function converts style information populated by the JSON schema
@@ -368,7 +362,7 @@ void ApplyDefaultSuggestionForExtensionKeyword(
     const TemplateURL* keyword,
     const base::string16& remaining_input,
     AutocompleteMatch* match) {
-  DCHECK(keyword->GetType() == TemplateURL::OMNIBOX_API_EXTENSION);
+  DCHECK(keyword->type() == TemplateURL::OMNIBOX_API_EXTENSION);
 
   std::unique_ptr<omnibox::SuggestResult> suggestion(
       GetOmniboxDefaultSuggestion(profile, keyword->GetExtensionId()));

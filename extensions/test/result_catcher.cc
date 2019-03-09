@@ -4,6 +4,7 @@
 
 #include "extensions/test/result_catcher.h"
 
+#include "base/run_loop.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/notification_types.h"
@@ -30,7 +31,7 @@ bool ResultCatcher::GetNextResult() {
   // empty.
   if (results_.empty()) {
     base::RunLoop run_loop;
-    quit_closure_ = content::GetQuitTaskForRunLoop(&run_loop);
+    quit_closure_ = content::GetDeferredQuitTaskForRunLoop(&run_loop);
     content::RunThisRunLoop(&run_loop);
     quit_closure_ = base::Closure();
   }

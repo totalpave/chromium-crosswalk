@@ -28,21 +28,20 @@
 #include "base/message_loop/message_loop.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/posix/global_descriptors.h"
-#include "base/posix/unix_domain_socket_linux.h"
+#include "base/posix/unix_domain_socket.h"
 #include "base/process/kill.h"
 #include "base/process/process_handle.h"
 #include "base/rand_util.h"
 #include "build/build_config.h"
 #include "components/nacl/common/nacl_switches.h"
 #include "components/nacl/loader/sandbox_linux/nacl_sandbox_linux.h"
-#include "content/public/common/content_descriptors.h"
-#include "content/public/common/send_zygote_child_ping_linux.h"
-#include "content/public/common/zygote_fork_delegate_linux.h"
-#include "ipc/ipc_descriptors.h"
-#include "ipc/ipc_switches.h"
-#include "mojo/edk/embedder/embedder.h"
+#include "mojo/core/embedder/embedder.h"
 #include "sandbox/linux/services/credentials.h"
 #include "sandbox/linux/services/namespace_sandbox.h"
+#include "services/service_manager/embedder/descriptors.h"
+#include "services/service_manager/embedder/switches.h"
+#include "services/service_manager/zygote/common/send_zygote_child_ping_linux.h"
+#include "services/service_manager/zygote/common/zygote_fork_delegate_linux.h"
 
 #if defined(OS_NACL_NONSFI)
 #include "components/nacl/loader/nonsfi/nonsfi_listener.h"
@@ -88,14 +87,14 @@ void BecomeNaClLoader(base::ScopedFD browser_fd,
   // In Non-SFI mode, it's important to close any non-expected IPC channels.
   CHECK(uses_nonsfi_mode);
   // The low-level kSandboxIPCChannel is used by renderers and NaCl for
-  // various operations. See the LinuxSandbox::METHOD_* methods. NaCl uses
-  // LinuxSandbox::METHOD_MAKE_SHARED_MEMORY_SEGMENT in SFI mode, so this
+  // various operations. See the SandboxLinux::METHOD_* methods. NaCl uses
+  // SandboxLinux::METHOD_MAKE_SHARED_MEMORY_SEGMENT in SFI mode, so this
   // should only be closed in Non-SFI mode.
   // This file descriptor is insidiously used by a number of APIs. Closing it
   // could lead to difficult to debug issues. Instead of closing it, replace
   // it with a dummy.
-  const int sandbox_ipc_channel =
-      base::GlobalDescriptors::kBaseDescriptor + kSandboxIPCChannel;
+  const int sandbox_ipc_channel = base::GlobalDescriptors::kBaseDescriptor +
+                                  service_manager::kSandboxIPCChannel;
 
   ReplaceFDWithDummy(sandbox_ipc_channel);
 
@@ -116,11 +115,11 @@ void BecomeNaClLoader(base::ScopedFD browser_fd,
   nacl_sandbox->SealLayerOneSandbox();
   nacl_sandbox->CheckSandboxingStateWithPolicy();
 
-  base::GlobalDescriptors::GetInstance()->Set(kPrimaryIPCChannel,
+  base::GlobalDescriptors::GetInstance()->Set(service_manager::kMojoIPCChannel,
                                               browser_fd.release());
 
   // The Mojo EDK must be initialized before using IPC.
-  mojo::edk::Init();
+  mojo::core::Init();
 
   base::MessageLoopForIO main_message_loop;
 #if defined(OS_NACL_NONSFI)
@@ -144,19 +143,19 @@ void ChildNaClLoaderInit(std::vector<base::ScopedFD> child_fds,
                          nacl::NaClSandbox* nacl_sandbox,
                          const std::string& channel_id) {
   DCHECK(child_fds.size() >
-         std::max(content::ZygoteForkDelegate::kPIDOracleFDIndex,
-                  content::ZygoteForkDelegate::kBrowserFDIndex));
+         std::max(service_manager::ZygoteForkDelegate::kPIDOracleFDIndex,
+                  service_manager::ZygoteForkDelegate::kBrowserFDIndex));
 
   // Ping the PID oracle socket.
-  CHECK(content::SendZygoteChildPing(
-      child_fds[content::ZygoteForkDelegate::kPIDOracleFDIndex].get()));
+  CHECK(service_manager::SendZygoteChildPing(
+      child_fds[service_manager::ZygoteForkDelegate::kPIDOracleFDIndex].get()));
 
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-      switches::kProcessChannelID, channel_id);
+      service_manager::switches::kServiceRequestChannelToken, channel_id);
 
   // Save the browser socket and close the rest.
-  base::ScopedFD browser_fd(
-      std::move(child_fds[content::ZygoteForkDelegate::kBrowserFDIndex]));
+  base::ScopedFD browser_fd(std::move(
+      child_fds[service_manager::ZygoteForkDelegate::kBrowserFDIndex]));
   child_fds.clear();
 
   BecomeNaClLoader(std::move(browser_fd), system_info, uses_nonsfi_mode,
@@ -184,7 +183,7 @@ bool HandleForkRequest(std::vector<base::ScopedFD> child_fds,
     return false;
   }
 
-  if (content::ZygoteForkDelegate::kNumPassedFDs != child_fds.size()) {
+  if (service_manager::ZygoteForkDelegate::kNumPassedFDs != child_fds.size()) {
     LOG(ERROR) << "nacl_helper: unexpected number of fds, got "
         << child_fds.size();
     return false;
@@ -411,21 +410,8 @@ static size_t CheckReservedAtZero() {
 // Do not install the SIGSEGV handler in ASan. This should make the NaCl
 // platform qualification test pass.
 // detect_odr_violation=0: http://crbug.com/376306
-static const char kAsanDefaultOptionsNaCl[] =
-    "handle_segv=0:detect_odr_violation=0";
-
-// Override the default ASan options for the NaCl helper.
-// __asan_default_options should not be instrumented, because it is called
-// before ASan is initialized.
-extern "C"
-__attribute__((no_sanitize_address))
-// The function isn't referenced from the executable itself. Make sure it isn't
-// stripped by the linker.
-__attribute__((used))
-__attribute__((visibility("default")))
-const char* __asan_default_options() {
-  return kAsanDefaultOptionsNaCl;
-}
+extern const char* kAsanDefaultOptionsNaCl;
+const char* kAsanDefaultOptionsNaCl = "handle_segv=0:detect_odr_violation=0";
 #endif
 
 int main(int argc, char* argv[]) {

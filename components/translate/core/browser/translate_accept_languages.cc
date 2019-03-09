@@ -7,11 +7,12 @@
 #include <stddef.h>
 
 #include "base/bind.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "components/language/core/common/language_util.h"
 #include "components/prefs/pref_service.h"
 #include "components/translate/core/browser/translate_download_manager.h"
-#include "components/translate/core/common/translate_util.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace translate {
@@ -37,26 +38,20 @@ TranslateAcceptLanguages::~TranslateAcceptLanguages() {
 // static
 bool TranslateAcceptLanguages::CanBeAcceptLanguage(
     const std::string& language) {
+  SCOPED_UMA_HISTOGRAM_TIMER("Translate.AcceptLanguages.CanBeAcceptDuration");
+
   std::string accept_language = language;
-  translate::ToChromeLanguageSynonym(&accept_language);
+  language::ToChromeLanguageSynonym(&accept_language);
 
   const std::string locale =
       TranslateDownloadManager::GetInstance()->application_locale();
-  std::vector<std::string> accept_language_codes;
-  l10n_util::GetAcceptLanguagesForLocale(locale, &accept_language_codes);
 
-  if (std::find(accept_language_codes.begin(),
-                accept_language_codes.end(),
-                accept_language) != accept_language_codes.end()) {
-    return true;
-  }
-
-  return false;
+  return l10n_util::IsLanguageAccepted(locale, accept_language);
 }
 
 bool TranslateAcceptLanguages::IsAcceptLanguage(const std::string& language) {
   std::string accept_language = language;
-  translate::ToChromeLanguageSynonym(&accept_language);
+  language::ToChromeLanguageSynonym(&accept_language);
   return accept_languages_.find(accept_language) != accept_languages_.end();
 }
 

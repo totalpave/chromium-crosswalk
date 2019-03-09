@@ -12,8 +12,8 @@
 
 #include "base/macros.h"
 #include "base/memory/aligned_memory.h"
-#include "base/memory/ref_counted.h"
-#include "media/base/media_export.h"
+#include "media/base/audio_sample_types.h"
+#include "media/base/media_shmem_export.h"
 
 namespace media {
 class AudioParameters;
@@ -25,9 +25,7 @@ class AudioParameters;
 // methods. AudioBus guarantees that it allocates memory such that float array
 // for each channel is aligned by AudioBus::kChannelAlignment bytes and it
 // requires the same for memory passed to its Wrap...() factory methods.
-// TODO(chfremer): There are currently no unit tests involving CreateWrapper and
-// SetChannelData, so we need to add them.
-class MEDIA_EXPORT AudioBus {
+class MEDIA_SHMEM_EXPORT AudioBus {
  public:
   // Guaranteed alignment of each channel's data; use 16-byte alignment for easy
   // SSE optimizations.
@@ -58,6 +56,12 @@ class MEDIA_EXPORT AudioBus {
                                               void* data);
   static std::unique_ptr<AudioBus> WrapMemory(const AudioParameters& params,
                                               void* data);
+  static std::unique_ptr<const AudioBus> WrapReadOnlyMemory(int channels,
+                                                            int frames,
+                                                            const void* data);
+  static std::unique_ptr<const AudioBus> WrapReadOnlyMemory(
+      const AudioParameters& params,
+      const void* data);
 
   // Based on the given number of channels and frames, calculates the minimum
   // required size in bytes of a contiguous block of memory to be passed to
@@ -71,6 +75,19 @@ class MEDIA_EXPORT AudioBus {
   // these methods when using a factory method other than CreateWrapper().
   void SetChannelData(int channel, float* data);
   void set_frames(int frames);
+
+  // Methods for compressed bitstream formats. The data size may not be equal to
+  // the capacity of the AudioBus. Also, the frame count may not be equal to the
+  // capacity of the AudioBus. Thus, we need extra methods to access the real
+  // data size and frame count for bitstream formats.
+  bool is_bitstream_format() const { return is_bitstream_format_; }
+  void set_is_bitstream_format(bool is_bitstream_format) {
+    is_bitstream_format_ = is_bitstream_format;
+  }
+  size_t GetBitstreamDataSize() const;
+  void SetBitstreamDataSize(size_t data_size);
+  int GetBitstreamFrames() const;
+  void SetBitstreamFrames(int frames);
 
   // Overwrites the sample values stored in this AudioBus instance with values
   // from a given interleaved |source_buffer| with expected layout
@@ -210,6 +227,13 @@ class MEDIA_EXPORT AudioBus {
   // Contiguous block of channel memory.
   std::unique_ptr<float, base::AlignedFreeDeleter> data_;
 
+  // Whether the data is compressed bitstream or not.
+  bool is_bitstream_format_ = false;
+  // The data size for a compressed bitstream.
+  size_t bitstream_data_size_ = 0;
+  // The PCM frame count for a compressed bitstream.
+  int bitstream_frames_ = 0;
+
   // One float pointer per channel pointing to a contiguous block of memory for
   // that channel. If the memory is owned by this instance, this will
   // point to the memory in |data_|. Otherwise, it may point to memory provided
@@ -305,24 +329,6 @@ void AudioBus::CopyConvertFromAudioBusToInterleavedTarget(
     }
   }
 }
-
-// RefCounted version of AudioBus. This is not meant for general use. Only use
-// this when your lifetime requirements make it impossible to use an
-// AudioBus scoped_ptr.
-class MEDIA_EXPORT AudioBusRefCounted
-    : public media::AudioBus,
-      public base::RefCountedThreadSafe<AudioBusRefCounted> {
- public:
-  static scoped_refptr<AudioBusRefCounted> Create(int channels, int frames);
-
- private:
-  friend class base::RefCountedThreadSafe<AudioBusRefCounted>;
-
-  AudioBusRefCounted(int channels, int frames);
-  ~AudioBusRefCounted() override;
-
-  DISALLOW_COPY_AND_ASSIGN(AudioBusRefCounted);
-};
 
 }  // namespace media
 

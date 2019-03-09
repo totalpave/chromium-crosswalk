@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/ash/launcher/multi_profile_browser_status_monitor.h"
 
-#include "ash/shelf/shelf_util.h"
+#include "ash/public/cpp/shelf_item.h"
+#include "ash/public/cpp/window_properties.h"
+#include "base/stl_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/launcher/chrome_launcher_controller.h"
@@ -13,21 +15,15 @@
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/settings_window_manager.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "components/strings/grit/components_strings.h"
-#include "grit/ash_resources.h"
-#include "grit/generated_resources.h"
-#include "ui/base/l10n/l10n_util.h"
+#include "ui/aura/window.h"
 
 MultiProfileBrowserStatusMonitor::MultiProfileBrowserStatusMonitor(
     ChromeLauncherController* launcher_controller)
     : BrowserStatusMonitor(launcher_controller),
-      launcher_controller_(launcher_controller) {
-}
+      launcher_controller_(launcher_controller) {}
 
-MultiProfileBrowserStatusMonitor::~MultiProfileBrowserStatusMonitor() {
-}
+MultiProfileBrowserStatusMonitor::~MultiProfileBrowserStatusMonitor() {}
 
 void MultiProfileBrowserStatusMonitor::ActiveUserChanged(
     const std::string& user_email) {
@@ -45,54 +41,24 @@ void MultiProfileBrowserStatusMonitor::ActiveUserChanged(
   BrowserList* browser_list = BrowserList::GetInstance();
 
   // Remove old (tabbed V1) applications.
-  for (BrowserList::const_iterator it = browser_list->begin();
-       it != browser_list->end(); ++it) {
-    Browser* browser = *it;
-    if (!browser->is_app() &&
-        browser->is_type_tabbed() &&
+  for (Browser* browser : *browser_list) {
+    if (!browser->is_app() && browser->is_type_tabbed() &&
         !multi_user_util::IsProfileFromActiveUser(browser->profile())) {
       for (int i = 0; i < browser->tab_strip_model()->count(); ++i) {
         launcher_controller_->UpdateAppState(
-            browser->tab_strip_model()->GetWebContentsAt(i),
-            ChromeLauncherController::APP_STATE_REMOVED);
+            browser->tab_strip_model()->GetWebContentsAt(i), true /*remove*/);
       }
     }
   }
 
   // Handle apps in browser tabs: Add new (tabbed V1) applications.
-  for (BrowserList::const_iterator it = browser_list->begin();
-       it != browser_list->end(); ++it) {
-    Browser* browser = *it;
-    if (!browser->is_app() &&
-        browser->is_type_tabbed() &&
+  for (Browser* browser : *browser_list) {
+    if (!browser->is_app() && browser->is_type_tabbed() &&
         multi_user_util::IsProfileFromActiveUser(browser->profile())) {
-      int active_index = browser->tab_strip_model()->active_index();
       for (int i = 0; i < browser->tab_strip_model()->count(); ++i) {
         launcher_controller_->UpdateAppState(
-            browser->tab_strip_model()->GetWebContentsAt(i),
-            browser->window()->IsActive() && i == active_index ?
-                ChromeLauncherController::APP_STATE_WINDOW_ACTIVE :
-                ChromeLauncherController::APP_STATE_INACTIVE);
+            browser->tab_strip_model()->GetWebContentsAt(i), false /*remove*/);
       }
-    }
-  }
-
-  // Remove settings window icons not associated with this profile and create
-  // icons for windows associated with the current profile.
-  for (BrowserList::const_iterator it = browser_list->begin();
-       it != browser_list->end(); ++it) {
-    Browser* browser = *it;
-    if (!chrome::SettingsWindowManager::GetInstance()->IsSettingsBrowser(
-            browser)) {
-      continue;
-    }
-    if (multi_user_util::IsProfileFromActiveUser(browser->profile())) {
-      ash::SetShelfItemDetailsForDialogWindow(
-      browser->window()->GetNativeWindow(),
-        IDR_ASH_SHELF_ICON_SETTINGS,
-        l10n_util::GetStringUTF16(IDS_SETTINGS_TITLE));
-    } else {
-      ash::ClearShelfItemDetailsForWindow(browser->window()->GetNativeWindow());
     }
   }
 
@@ -103,8 +69,7 @@ void MultiProfileBrowserStatusMonitor::ActiveUserChanged(
 
 void MultiProfileBrowserStatusMonitor::AddV1AppToShelf(Browser* browser) {
   DCHECK(browser->is_type_popup() && browser->is_app());
-  DCHECK(std::find(app_list_.begin(), app_list_.end(), browser) ==
-             app_list_.end());
+  DCHECK(!base::ContainsValue(app_list_, browser));
   app_list_.push_back(browser);
   if (multi_user_util::IsProfileFromActiveUser(browser->profile())) {
     BrowserStatusMonitor::AddV1AppToShelf(browser);
@@ -127,8 +92,7 @@ void MultiProfileBrowserStatusMonitor::ConnectV1AppToLauncher(
   // (launcher item) and add the content (launcher item status).
   BrowserStatusMonitor::AddV1AppToShelf(browser);
   launcher_controller_->UpdateAppState(
-      browser->tab_strip_model()->GetActiveWebContents(),
-      ChromeLauncherController::APP_STATE_INACTIVE);
+      browser->tab_strip_model()->GetActiveWebContents(), false /*remove*/);
 }
 
 void MultiProfileBrowserStatusMonitor::DisconnectV1AppFromLauncher(
@@ -136,7 +100,6 @@ void MultiProfileBrowserStatusMonitor::DisconnectV1AppFromLauncher(
   // Removing a V1 app from the launcher requires to remove the content and
   // the launcher item.
   launcher_controller_->UpdateAppState(
-      browser->tab_strip_model()->GetActiveWebContents(),
-      ChromeLauncherController::APP_STATE_REMOVED);
+      browser->tab_strip_model()->GetActiveWebContents(), true /*remove*/);
   BrowserStatusMonitor::RemoveV1AppFromShelf(browser);
 }

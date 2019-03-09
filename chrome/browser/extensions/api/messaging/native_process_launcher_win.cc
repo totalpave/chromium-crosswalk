@@ -146,13 +146,13 @@ bool NativeProcessLauncher::LaunchNativeProcess(
   base::string16 command_line_string = command_line.GetCommandLineString();
 
   base::string16 command = base::StringPrintf(
-      L"%ls /c %ls < %ls > %ls", comspec.get(), command_line_string.c_str(),
+      L"%ls /d /c %ls < %ls > %ls", comspec.get(), command_line_string.c_str(),
       in_pipe_name.c_str(), out_pipe_name.c_str());
 
   base::LaunchOptions options;
   options.start_hidden = true;
   options.current_directory = command_line.GetProgram().DirName();
-  base::Process cmd_process = base::LaunchProcess(command.c_str(), options);
+  base::Process cmd_process = base::LaunchProcess(command, options);
   if (!cmd_process.IsValid()) {
     LOG(ERROR) << "Error launching process "
                << command_line.GetProgram().MaybeAsASCII();
@@ -171,8 +171,8 @@ bool NativeProcessLauncher::LaunchNativeProcess(
   }
 
   *process = std::move(cmd_process);
-  *read_file = base::File::CreateForAsyncHandle(stdout_pipe.Take());
-  *write_file = base::File::CreateForAsyncHandle(stdin_pipe.Take());
+  *read_file = base::File(stdout_pipe.Take(), true /* async */);
+  *write_file = base::File(stdin_pipe.Take(), true /* async */);
 
   return true;
 }

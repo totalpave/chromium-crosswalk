@@ -6,13 +6,19 @@
 #define COMPONENTS_SIGNIN_CORE_BROWSER_TEST_SIGNIN_CLIENT_H_
 
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "base/callback_forward.h"
 #include "base/compiler_specific.h"
-#include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "components/signin/core/browser/signin_client.h"
-#include "net/url_request/url_request_test_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "services/network/test/test_url_loader_factory.h"
 
 class PrefService;
 
@@ -33,50 +39,41 @@ class TestSigninClient : public SigninClient {
   // once there is a unit test that requires it.
   PrefService* GetPrefs() override;
 
-  // Returns a pointer to a loaded database.
-  scoped_refptr<TokenWebData> GetDatabase() override;
-
-  // Returns true.
-  bool CanRevokeCredentials() override;
-
-  // Returns empty string.
-  std::string GetSigninScopedDeviceId() override;
-
-  // Does nothing.
-  void OnSignedOut() override;
-
-  // Trace that this was called.
-  void PostSignedIn(const std::string& account_id,
-                    const std::string& username,
-                    const std::string& password) override;
-
-  std::string get_signed_in_password() { return signed_in_password_; }
+  // Allow or disallow continuation of sign-out depending on value of
+  // |is_signout_allowed_|;
+  void PreSignOut(
+      base::OnceCallback<void(SignoutDecision)> on_signout_decision_reached,
+      signin_metrics::ProfileSignout signout_source_metric) override;
 
   // Returns the empty string.
   std::string GetProductVersion() override;
 
-  // Returns a TestURLRequestContextGetter or an manually provided
-  // URLRequestContextGetter.
-  net::URLRequestContextGetter* GetURLRequestContext() override;
+  // Wraps the test_url_loader_factory().
+  scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
 
-  // For testing purposes, can override the TestURLRequestContextGetter created
-  // in the default constructor.
-  void SetURLRequestContext(net::URLRequestContextGetter* request_context);
+  network::mojom::CookieManager* GetCookieManager() override;
+  void set_cookie_manager(
+      std::unique_ptr<network::mojom::CookieManager> cookie_manager) {
+    cookie_manager_ = std::move(cookie_manager);
+  }
 
-  // Returns true.
-  bool ShouldMergeSigninCredentialsIntoCookieJar() override;
-
-  // Registers |callback| and returns the subscription.
-  // Note that |callback| will never be called.
-  std::unique_ptr<SigninClient::CookieChangedSubscription>
-  AddCookieChangedCallback(
-      const GURL& url,
-      const std::string& name,
-      const net::CookieStore::CookieChangedCallback& callback) override;
+  network::TestURLLoaderFactory* test_url_loader_factory() {
+    return &test_url_loader_factory_;
+  }
 
   void set_are_signin_cookies_allowed(bool value) {
     are_signin_cookies_allowed_ = value;
   }
+
+  void set_is_signout_allowed(bool value) { is_signout_allowed_ = value; }
+
+  bool is_ready_for_dice_migration() { return is_ready_for_dice_migration_; }
+
+  // When |value| is true, network calls posted through DelayNetworkCall() are
+  // delayed indefinitely.
+  // When |value| is false, all pending calls are unblocked, and new calls are
+  // executed immediately.
+  void SetNetworkCallsDelayed(bool value);
 
   // SigninClient overrides:
   bool IsFirstRun() const override;
@@ -86,24 +83,26 @@ class TestSigninClient : public SigninClient {
       content_settings::Observer* observer) override;
   void RemoveContentSettingsObserver(
       content_settings::Observer* observer) override;
-  void DelayNetworkCall(const base::Closure& callback) override;
-  GaiaAuthFetcher* CreateGaiaAuthFetcher(
+  void DelayNetworkCall(base::OnceClosure callback) override;
+  std::unique_ptr<GaiaAuthFetcher> CreateGaiaAuthFetcher(
       GaiaAuthConsumer* consumer,
-      const std::string& source,
-      net::URLRequestContextGetter* getter) override;
-
-  // Loads the token database.
-  void LoadTokenDatabase();
+      gaia::GaiaSource source,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+      override;
+  void PreGaiaLogout(base::OnceClosure callback) override;
+  void SetReadyForDiceMigration(bool ready) override;
 
  private:
-  base::ScopedTempDir temp_dir_;
-  scoped_refptr<net::URLRequestContextGetter> request_context_;
-  scoped_refptr<TokenWebData> database_;
-  PrefService* pref_service_;
-  bool are_signin_cookies_allowed_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
 
-  // Pointer to be filled by PostSignedIn.
-  std::string signed_in_password_;
+  PrefService* pref_service_;
+  std::unique_ptr<network::mojom::CookieManager> cookie_manager_;
+  bool are_signin_cookies_allowed_;
+  bool network_calls_delayed_;
+  bool is_signout_allowed_;
+  bool is_ready_for_dice_migration_;
+
+  std::vector<base::OnceClosure> delayed_network_calls_;
 
   DISALLOW_COPY_AND_ASSIGN(TestSigninClient);
 };

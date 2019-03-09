@@ -5,11 +5,20 @@
 #include "content/browser/devtools/browser_devtools_agent_host.h"
 
 #include "base/bind.h"
-#include "content/browser/devtools/devtools_protocol_handler.h"
+#include "base/guid.h"
+#include "base/json/json_reader.h"
+#include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
+#include "base/single_thread_task_runner.h"
+#include "content/browser/devtools/devtools_session.h"
 #include "content/browser/devtools/protocol/browser_handler.h"
+#include "content/browser/devtools/protocol/fetch_handler.h"
 #include "content/browser/devtools/protocol/io_handler.h"
 #include "content/browser/devtools/protocol/memory_handler.h"
+#include "content/browser/devtools/protocol/protocol.h"
+#include "content/browser/devtools/protocol/security_handler.h"
 #include "content/browser/devtools/protocol/system_info_handler.h"
+#include "content/browser/devtools/protocol/target_handler.h"
 #include "content/browser/devtools/protocol/tethering_handler.h"
 #include "content/browser/devtools/protocol/tracing_handler.h"
 #include "content/browser/frame_host/frame_tree_node.h"
@@ -19,44 +28,75 @@ namespace content {
 scoped_refptr<DevToolsAgentHost> DevToolsAgentHost::CreateForBrowser(
     scoped_refptr<base::SingleThreadTaskRunner> tethering_task_runner,
     const CreateServerSocketCallback& socket_callback) {
-  return new BrowserDevToolsAgentHost(tethering_task_runner, socket_callback);
+  return new BrowserDevToolsAgentHost(
+      tethering_task_runner, socket_callback, false);
+}
+
+scoped_refptr<DevToolsAgentHost> DevToolsAgentHost::CreateForDiscovery() {
+  CreateServerSocketCallback null_callback;
+  return new BrowserDevToolsAgentHost(nullptr, std::move(null_callback), true);
+}
+
+namespace {
+std::set<BrowserDevToolsAgentHost*>& BrowserDevToolsAgentHostInstances() {
+  static base::NoDestructor<std::set<BrowserDevToolsAgentHost*>> instances;
+  return *instances;
+}
+}  // namespace
+
+// static
+const std::set<BrowserDevToolsAgentHost*>&
+BrowserDevToolsAgentHost::Instances() {
+  return BrowserDevToolsAgentHostInstances();
 }
 
 BrowserDevToolsAgentHost::BrowserDevToolsAgentHost(
     scoped_refptr<base::SingleThreadTaskRunner> tethering_task_runner,
-    const CreateServerSocketCallback& socket_callback)
-    : browser_handler_(new devtools::browser::BrowserHandler()),
-      io_handler_(new devtools::io::IOHandler(GetIOContext())),
-      memory_handler_(new devtools::memory::MemoryHandler()),
-      system_info_handler_(new devtools::system_info::SystemInfoHandler()),
-      tethering_handler_(
-          new devtools::tethering::TetheringHandler(socket_callback,
-                                                    tethering_task_runner)),
-      tracing_handler_(new devtools::tracing::TracingHandler(
-          devtools::tracing::TracingHandler::Browser,
-          FrameTreeNode::kFrameTreeNodeInvalidId,
-          GetIOContext())),
-      protocol_handler_(new DevToolsProtocolHandler(this)) {
-  DevToolsProtocolDispatcher* dispatcher = protocol_handler_->dispatcher();
-  dispatcher->SetBrowserHandler(browser_handler_.get());
-  dispatcher->SetIOHandler(io_handler_.get());
-  dispatcher->SetMemoryHandler(memory_handler_.get());
-  dispatcher->SetSystemInfoHandler(system_info_handler_.get());
-  dispatcher->SetTetheringHandler(tethering_handler_.get());
-  dispatcher->SetTracingHandler(tracing_handler_.get());
+    const CreateServerSocketCallback& socket_callback,
+    bool only_discovery)
+    : DevToolsAgentHostImpl(base::GenerateGUID()),
+      tethering_task_runner_(tethering_task_runner),
+      socket_callback_(socket_callback),
+      only_discovery_(only_discovery) {
+  NotifyCreated();
+  BrowserDevToolsAgentHostInstances().insert(this);
 }
 
 BrowserDevToolsAgentHost::~BrowserDevToolsAgentHost() {
+  BrowserDevToolsAgentHostInstances().erase(this);
 }
 
-void BrowserDevToolsAgentHost::Attach() {
+bool BrowserDevToolsAgentHost::AttachSession(DevToolsSession* session) {
+  if (!session->client()->MayAttachToBrowser())
+    return false;
+
+  session->SetBrowserOnly(true);
+  session->AddHandler(std::make_unique<protocol::TargetHandler>(
+      protocol::TargetHandler::AccessMode::kBrowser, GetId(),
+      GetRendererChannel(), session->GetRootSession()));
+  if (only_discovery_)
+    return true;
+
+  session->AddHandler(std::make_unique<protocol::BrowserHandler>());
+  session->AddHandler(std::make_unique<protocol::IOHandler>(GetIOContext()));
+  session->AddHandler(std::make_unique<protocol::FetchHandler>(GetIOContext()));
+  session->AddHandler(std::make_unique<protocol::MemoryHandler>());
+  session->AddHandler(std::make_unique<protocol::SecurityHandler>());
+  session->AddHandler(std::make_unique<protocol::SystemInfoHandler>());
+  if (tethering_task_runner_) {
+    session->AddHandler(std::make_unique<protocol::TetheringHandler>(
+        socket_callback_, tethering_task_runner_));
+  }
+  session->AddHandler(std::make_unique<protocol::TracingHandler>(
+      nullptr, GetIOContext(), session->client()->UsesBinaryProtocol()));
+  return true;
 }
 
-void BrowserDevToolsAgentHost::Detach() {
+void BrowserDevToolsAgentHost::DetachSession(DevToolsSession* session) {
 }
 
-DevToolsAgentHost::Type BrowserDevToolsAgentHost::GetType() {
-  return TYPE_BROWSER;
+std::string BrowserDevToolsAgentHost::GetType() {
+  return kTypeBrowser;
 }
 
 std::string BrowserDevToolsAgentHost::GetTitle() {
@@ -75,10 +115,7 @@ bool BrowserDevToolsAgentHost::Close() {
   return false;
 }
 
-bool BrowserDevToolsAgentHost::DispatchProtocolMessage(
-    const std::string& message) {
-  protocol_handler_->HandleMessage(session_id(), message);
-  return true;
+void BrowserDevToolsAgentHost::Reload() {
 }
 
 }  // content

@@ -68,11 +68,6 @@ void TemplateURLServiceClientImpl::AddKeywordGeneratedVisit(const GURL& url) {
   }
 }
 
-void TemplateURLServiceClientImpl::RestoreExtensionInfoIfNecessary(
-    TemplateURL* template_url) {
-  // iOS does not supports extension, nothing to do.
-}
-
 void TemplateURLServiceClientImpl::OnURLVisited(
     history::HistoryService* history_service,
     ui::PageTransition transition,

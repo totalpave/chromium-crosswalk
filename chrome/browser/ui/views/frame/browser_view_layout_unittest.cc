@@ -11,18 +11,14 @@
 #include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 class MockBrowserViewLayoutDelegate : public BrowserViewLayoutDelegate {
  public:
   explicit MockBrowserViewLayoutDelegate(views::View* contents_web_view)
-      : contents_web_view_(contents_web_view),
-        tab_strip_visible_(true),
-        toolbar_visible_(true),
-        bookmark_bar_visible_(true),
-        download_shelf_needs_layout_(false) {
-  }
+      : contents_web_view_(contents_web_view) {}
   ~MockBrowserViewLayoutDelegate() override {}
 
   void set_download_shelf_needs_layout(bool layout) {
@@ -37,6 +33,12 @@ class MockBrowserViewLayoutDelegate : public BrowserViewLayoutDelegate {
   void set_bookmark_bar_visible(bool visible) {
     bookmark_bar_visible_ = visible;
   }
+  void set_top_controls_slide_enabled(bool enabled) {
+    top_controls_slide_enabled_ = enabled;
+  }
+  void set_top_controls_shown_ratio(float ratio) {
+    top_controls_shown_ratio_ = ratio;
+  }
 
   // BrowserViewLayout::Delegate overrides:
   views::View* GetContentsWebView() const override {
@@ -46,7 +48,7 @@ class MockBrowserViewLayoutDelegate : public BrowserViewLayoutDelegate {
   gfx::Rect GetBoundsForTabStripInBrowserView() const override {
     return gfx::Rect();
   }
-  int GetTopInsetInBrowserView(bool restored) const override { return 0; }
+  int GetTopInsetInBrowserView() const override { return 0; }
   int GetThemeBackgroundXInset() const override { return 0; }
   bool IsToolbarVisible() const override { return toolbar_visible_; }
   bool IsBookmarkBarVisible() const override { return bookmark_bar_visible_; }
@@ -57,49 +59,45 @@ class MockBrowserViewLayoutDelegate : public BrowserViewLayoutDelegate {
   ExclusiveAccessBubbleViews* GetExclusiveAccessBubble() const override {
     return nullptr;
   }
+  bool IsTopControlsSlideBehaviorEnabled() const override {
+    return top_controls_slide_enabled_;
+  }
+  float GetTopControlsSlideBehaviorShownRatio() const override {
+    return top_controls_shown_ratio_;
+  }
 
  private:
   views::View* contents_web_view_;
-  bool tab_strip_visible_;
-  bool toolbar_visible_;
-  bool bookmark_bar_visible_;
-  bool download_shelf_needs_layout_;
+  bool tab_strip_visible_ = true;
+  bool toolbar_visible_ = true;
+  bool bookmark_bar_visible_ = true;
+  bool download_shelf_needs_layout_ = false;
+  bool top_controls_slide_enabled_ = false;
+  float top_controls_shown_ratio_ = 1.f;
 
   DISALLOW_COPY_AND_ASSIGN(MockBrowserViewLayoutDelegate);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 
-// A simple view that prefers an initial size.
-class MockView : public views::View {
- public:
-  explicit MockView(gfx::Size initial_size)
-      : size_(initial_size) {
-    SetBoundsRect(gfx::Rect(gfx::Point(), size_));
-  }
-  ~MockView() override {}
-
-  // views::View overrides:
-  gfx::Size GetPreferredSize() const override { return size_; }
-
- private:
-  gfx::Size size_;
-
-  DISALLOW_COPY_AND_ASSIGN(MockView);
-};
+views::View* CreateFixedSizeView(const gfx::Size& size) {
+  auto* view = new views::View;
+  view->SetPreferredSize(size);
+  view->SizeToPreferredSize();
+  return view;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 
 class MockImmersiveModeController : public ImmersiveModeController {
  public:
-  MockImmersiveModeController() {}
+  MockImmersiveModeController() : ImmersiveModeController(Type::STUB) {}
   ~MockImmersiveModeController() override {}
 
   // ImmersiveModeController overrides:
   void Init(BrowserView* browser_view) override {}
   void SetEnabled(bool enabled) override {}
   bool IsEnabled() const override { return false; }
-  bool ShouldHideTabIndicators() const override { return false; }
   bool ShouldHideTopViews() const override { return false; }
   bool IsRevealed() const override { return false; }
   int GetTopContainerVerticalOffset(
@@ -112,7 +110,8 @@ class MockImmersiveModeController : public ImmersiveModeController {
   }
   void OnFindBarVisibleBoundsChanged(
       const gfx::Rect& new_visible_bounds) override {}
-  void SetupForTest() override {}
+  bool ShouldStayImmersiveAfterExitingFullscreen() override { return true; }
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override {}
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MockImmersiveModeController);
@@ -135,41 +134,41 @@ class BrowserViewLayoutTest : public BrowserWithTestWindowTest {
 
   BrowserViewLayout* layout() { return layout_.get(); }
   MockBrowserViewLayoutDelegate* delegate() { return delegate_; }
-  MockView* root_view() { return root_view_.get(); }
-  MockView* top_container() { return top_container_; }
+  views::View* root_view() { return root_view_.get(); }
+  views::View* top_container() { return top_container_; }
   TabStrip* tab_strip() { return tab_strip_; }
-  MockView* toolbar() { return toolbar_; }
+  views::View* toolbar() { return toolbar_; }
   InfoBarContainerView* infobar_container() { return infobar_container_; }
-  MockView* contents_container() { return contents_container_; }
+  views::View* contents_container() { return contents_container_; }
 
   // BrowserWithTestWindowTest overrides:
   void SetUp() override {
     BrowserWithTestWindowTest::SetUp();
 
-    root_view_.reset(new MockView(gfx::Size(800, 600)));
+    root_view_.reset(CreateFixedSizeView(gfx::Size(800, 600)));
 
     immersive_mode_controller_.reset(new MockImmersiveModeController);
 
-    top_container_ = new MockView(gfx::Size(800, 60));
-    tab_strip_ = new TabStrip(nullptr);
+    top_container_ = CreateFixedSizeView(gfx::Size(800, 60));
+    tab_strip_ = new TabStrip(std::unique_ptr<TabStripController>());
     top_container_->AddChildView(tab_strip_);
-    toolbar_ = new MockView(gfx::Size(800, 30));
+    toolbar_ = CreateFixedSizeView(gfx::Size(800, 30));
     top_container_->AddChildView(toolbar_);
     root_view_->AddChildView(top_container_);
 
     infobar_container_ = new InfoBarContainerView(nullptr);
     root_view_->AddChildView(infobar_container_);
 
-    contents_web_view_ = new MockView(gfx::Size(800, 600));
-    devtools_web_view_ = new MockView(gfx::Size(800, 600));
+    contents_web_view_ = CreateFixedSizeView(gfx::Size(800, 600));
+    devtools_web_view_ = CreateFixedSizeView(gfx::Size(800, 600));
     devtools_web_view_->SetVisible(false);
 
-    contents_container_ = new MockView(gfx::Size(800, 600));
+    contents_container_ = CreateFixedSizeView(gfx::Size(800, 600));
     contents_container_->AddChildView(devtools_web_view_);
     contents_container_->AddChildView(contents_web_view_);
-    ContentsLayoutManager* contents_layout_manager =
-        new ContentsLayoutManager(devtools_web_view_, contents_web_view_);
-    contents_container_->SetLayoutManager(contents_layout_manager);
+    contents_container_->SetLayoutManager(
+        std::make_unique<ContentsLayoutManager>(devtools_web_view_,
+                                                contents_web_view_));
 
     root_view_->AddChildView(contents_container_);
 
@@ -184,23 +183,22 @@ class BrowserViewLayoutTest : public BrowserWithTestWindowTest {
                   toolbar_,
                   infobar_container_,
                   contents_container_,
-                  contents_layout_manager,
                   immersive_mode_controller_.get());
   }
 
  private:
   std::unique_ptr<BrowserViewLayout> layout_;
   MockBrowserViewLayoutDelegate* delegate_;  // Owned by |layout_|.
-  std::unique_ptr<MockView> root_view_;
+  std::unique_ptr<views::View> root_view_;
 
   // Views owned by |root_view_|.
-  MockView* top_container_;
+  views::View* top_container_;
   TabStrip* tab_strip_;
-  MockView* toolbar_;
+  views::View* toolbar_;
   InfoBarContainerView* infobar_container_;
-  MockView* contents_container_;
-  MockView* contents_web_view_;
-  MockView* devtools_web_view_;
+  views::View* contents_container_;
+  views::View* contents_web_view_;
+  views::View* devtools_web_view_;
 
   std::unique_ptr<MockImmersiveModeController> immersive_mode_controller_;
 
@@ -211,7 +209,7 @@ class BrowserViewLayoutTest : public BrowserWithTestWindowTest {
 TEST_F(BrowserViewLayoutTest, BrowserViewLayout) {
   EXPECT_TRUE(layout()->browser());
   EXPECT_TRUE(layout()->GetWebContentsModalDialogHost());
-  EXPECT_FALSE(layout()->InfobarVisible());
+  EXPECT_FALSE(layout()->IsInfobarVisible());
 }
 
 // Test the core layout functions.
@@ -243,7 +241,8 @@ TEST_F(BrowserViewLayoutTest, Layout) {
 }
 
 TEST_F(BrowserViewLayoutTest, LayoutDownloadShelf) {
-  std::unique_ptr<MockView> download_shelf(new MockView(gfx::Size(800, 50)));
+  std::unique_ptr<views::View> download_shelf(
+      CreateFixedSizeView(gfx::Size(800, 50)));
   layout()->set_download_shelf(download_shelf.get());
 
   // If download shelf doesn't need layout, it doesn't move the bottom edge.
@@ -257,4 +256,31 @@ TEST_F(BrowserViewLayoutTest, LayoutDownloadShelf) {
   EXPECT_EQ(450, layout()->LayoutDownloadShelf(kBottom));
   EXPECT_TRUE(download_shelf->visible());
   EXPECT_EQ("0,450 0x50", download_shelf->bounds().ToString());
+}
+
+TEST_F(BrowserViewLayoutTest, LayoutContentsWithTopControlsSlideBehavior) {
+  // Top controls are fully shown.
+  delegate()->set_tab_strip_visible(false);
+  delegate()->set_toolbar_visible(true);
+  delegate()->set_top_controls_slide_enabled(true);
+  delegate()->set_top_controls_shown_ratio(1.f);
+  layout()->Layout(root_view());
+  EXPECT_EQ("0,0 800x30", top_container()->bounds().ToString());
+  EXPECT_EQ("0,0 800x30", toolbar()->bounds().ToString());
+  EXPECT_EQ("0,30 800x570", contents_container()->bounds().ToString());
+
+  // Top controls are half shown, half hidden.
+  delegate()->set_top_controls_shown_ratio(0.5f);
+  layout()->Layout(root_view());
+  EXPECT_EQ("0,0 800x30", top_container()->bounds().ToString());
+  EXPECT_EQ("0,0 800x30", toolbar()->bounds().ToString());
+  EXPECT_EQ("0,30 800x570", contents_container()->bounds().ToString());
+
+  // Top controls are fully hidden. the contents are expanded in height by an
+  // amount equal to the top controls height.
+  delegate()->set_top_controls_shown_ratio(0.f);
+  layout()->Layout(root_view());
+  EXPECT_EQ("0,-30 800x30", top_container()->bounds().ToString());
+  EXPECT_EQ("0,0 800x30", toolbar()->bounds().ToString());
+  EXPECT_EQ("0,0 800x600", contents_container()->bounds().ToString());
 }

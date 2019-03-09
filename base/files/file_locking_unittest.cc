@@ -11,6 +11,7 @@
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
 
@@ -21,6 +22,10 @@ namespace {
 
 // Flag for the parent to share a temp dir to the child.
 const char kTempDirFlag[] = "temp-dir";
+
+// Flags to control how the process locks the file.
+const char kFileLockShared[] = "file-lock-shared";
+const char kFileLockExclusive[] = "file-lock-exclusive";
 
 // Flags to control how the subprocess unlocks the file.
 const char kFileUnlock[] = "file-unlock";
@@ -88,11 +93,18 @@ MULTIPROCESS_TEST_MAIN(ChildMain) {
   const FilePath temp_path = command_line->GetSwitchValuePath(kTempDirFlag);
   CHECK(base::DirectoryExists(temp_path));
 
+  const bool use_shared_lock = command_line->HasSwitch(kFileLockShared);
+  const bool use_exclusive_lock = command_line->HasSwitch(kFileLockExclusive);
+  CHECK_NE(use_shared_lock, use_exclusive_lock);
+
+  const File::LockMode mode =
+      use_exclusive_lock ? File::LockMode::kExclusive : File::LockMode::kShared;
+
   // Immediately lock the file.
   File file(temp_path.AppendASCII(kLockFile),
             File::FLAG_OPEN | File::FLAG_READ | File::FLAG_WRITE);
   CHECK(file.IsValid());
-  CHECK_EQ(File::FILE_OK, file.Lock());
+  CHECK_EQ(File::FILE_OK, file.Lock(mode));
   CHECK(SignalEvent(temp_path, kSignalLockFileLocked));
 
   if (command_line->HasSwitch(kFileUnlock)) {
@@ -120,7 +132,7 @@ MULTIPROCESS_TEST_MAIN(ChildMain) {
 
 class FileLockingTest : public testing::Test {
  public:
-  FileLockingTest() {}
+  FileLockingTest() = default;
 
  protected:
   void SetUp() override {
@@ -129,32 +141,40 @@ class FileLockingTest : public testing::Test {
     // Setup the temp dir and the lock file.
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     lock_file_.Initialize(
-        temp_dir_.path().AppendASCII(kLockFile),
+        temp_dir_.GetPath().AppendASCII(kLockFile),
         File::FLAG_CREATE | File::FLAG_READ | File::FLAG_WRITE);
     ASSERT_TRUE(lock_file_.IsValid());
   }
 
   bool SignalEvent(const char* signal_file) {
-    return ::SignalEvent(temp_dir_.path(), signal_file);
+    return ::SignalEvent(temp_dir_.GetPath(), signal_file);
   }
 
   bool WaitForEventOrTimeout(const char* signal_file) {
-    return ::WaitForEventWithTimeout(temp_dir_.path(), signal_file,
+    return ::WaitForEventWithTimeout(temp_dir_.GetPath(), signal_file,
                                      TestTimeouts::action_timeout());
   }
 
-  // Start a child process set to use the specified unlock action, and wait for
-  // it to lock the file.
-  void StartChildAndSignalLock(const char* unlock_action) {
+  // Start a child process set to use the specified locking mode and unlock
+  // action, and wait for it to lock the file.
+  void StartChildAndSignalLock(File::LockMode lock_mode,
+                               const char* unlock_action) {
     // Create a temporary dir and spin up a ChildLockExit subprocess against it.
-    const FilePath temp_path = temp_dir_.path();
+    const FilePath temp_path = temp_dir_.GetPath();
     base::CommandLine child_command_line(
         base::GetMultiProcessTestChildBaseCommandLine());
     child_command_line.AppendSwitchPath(kTempDirFlag, temp_path);
     child_command_line.AppendSwitch(unlock_action);
-    lock_child_ =
-        base::SpawnMultiProcessTestChild(ChildMainString, child_command_line,
-                                         base::LaunchOptions());
+    switch (lock_mode) {
+      case File::LockMode::kExclusive:
+        child_command_line.AppendSwitch(kFileLockExclusive);
+        break;
+      case File::LockMode::kShared:
+        child_command_line.AppendSwitch(kFileLockShared);
+        break;
+    }
+    lock_child_ = base::SpawnMultiProcessTestChild(
+        ChildMainString, child_command_line, base::LaunchOptions());
     ASSERT_TRUE(lock_child_.IsValid());
 
     // Wait for the child to lock the file.
@@ -165,8 +185,8 @@ class FileLockingTest : public testing::Test {
   void ExitChildCleanly() {
     ASSERT_TRUE(SignalEvent(kSignalExit));
     int rv = -1;
-    ASSERT_TRUE(lock_child_.WaitForExitWithTimeout(
-        TestTimeouts::action_timeout(), &rv));
+    ASSERT_TRUE(WaitForMultiprocessTestChildExit(
+        lock_child_, TestTimeouts::action_timeout(), &rv));
     ASSERT_EQ(0, rv);
   }
 
@@ -179,48 +199,107 @@ class FileLockingTest : public testing::Test {
 };
 
 // Test that locks are released by Unlock().
-TEST_F(FileLockingTest, LockAndUnlock) {
-  StartChildAndSignalLock(kFileUnlock);
+TEST_F(FileLockingTest, LockAndUnlockExclusive) {
+  StartChildAndSignalLock(File::LockMode::kExclusive, kFileUnlock);
 
-  ASSERT_NE(File::FILE_OK, lock_file_.Lock());
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
   ASSERT_TRUE(SignalEvent(kSignalLockFileUnlock));
   ASSERT_TRUE(WaitForEventOrTimeout(kSignalLockFileUnlocked));
-  ASSERT_EQ(File::FILE_OK, lock_file_.Lock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+
+  ExitChildCleanly();
+}
+TEST_F(FileLockingTest, LockAndUnlockShared) {
+  StartChildAndSignalLock(File::LockMode::kShared, kFileUnlock);
+
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_TRUE(SignalEvent(kSignalLockFileUnlock));
+  ASSERT_TRUE(WaitForEventOrTimeout(kSignalLockFileUnlocked));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
   ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
 
   ExitChildCleanly();
 }
 
 // Test that locks are released on Close().
-TEST_F(FileLockingTest, UnlockOnClose) {
-  StartChildAndSignalLock(kCloseUnlock);
+TEST_F(FileLockingTest, UnlockOnCloseExclusive) {
+  StartChildAndSignalLock(File::LockMode::kExclusive, kCloseUnlock);
 
-  ASSERT_NE(File::FILE_OK, lock_file_.Lock());
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
   ASSERT_TRUE(SignalEvent(kSignalLockFileClose));
   ASSERT_TRUE(WaitForEventOrTimeout(kSignalLockFileClosed));
-  ASSERT_EQ(File::FILE_OK, lock_file_.Lock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+
+  ExitChildCleanly();
+}
+TEST_F(FileLockingTest, UnlockOnCloseShared) {
+  StartChildAndSignalLock(File::LockMode::kShared, kCloseUnlock);
+
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_TRUE(SignalEvent(kSignalLockFileClose));
+  ASSERT_TRUE(WaitForEventOrTimeout(kSignalLockFileClosed));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
   ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
 
   ExitChildCleanly();
 }
 
 // Test that locks are released on exit.
-TEST_F(FileLockingTest, UnlockOnExit) {
-  StartChildAndSignalLock(kExitUnlock);
+TEST_F(FileLockingTest, UnlockOnExitExclusive) {
+  StartChildAndSignalLock(File::LockMode::kExclusive, kExitUnlock);
 
-  ASSERT_NE(File::FILE_OK, lock_file_.Lock());
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
   ExitChildCleanly();
-  ASSERT_EQ(File::FILE_OK, lock_file_.Lock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+}
+TEST_F(FileLockingTest, UnlockOnExitShared) {
+  StartChildAndSignalLock(File::LockMode::kShared, kExitUnlock);
+
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ExitChildCleanly();
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
   ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
 }
 
 // Test that killing the process releases the lock.  This should cover crashing.
-TEST_F(FileLockingTest, UnlockOnTerminate) {
+// Flaky on Android (http://crbug.com/747518)
+#if defined(OS_ANDROID)
+#define MAYBE_UnlockOnTerminate DISABLED_UnlockOnTerminate
+#else
+#define MAYBE_UnlockOnTerminate UnlockOnTerminate
+#endif
+TEST_F(FileLockingTest, MAYBE_UnlockOnTerminate) {
   // The child will wait for an exit which never arrives.
-  StartChildAndSignalLock(kExitUnlock);
+  StartChildAndSignalLock(File::LockMode::kExclusive, kExitUnlock);
 
-  ASSERT_NE(File::FILE_OK, lock_file_.Lock());
-  ASSERT_TRUE(lock_child_.Terminate(0, true));
-  ASSERT_EQ(File::FILE_OK, lock_file_.Lock());
+  ASSERT_NE(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
+  ASSERT_TRUE(TerminateMultiProcessTestChild(lock_child_, 0, true));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kShared));
+  ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
+  ASSERT_EQ(File::FILE_OK, lock_file_.Lock(File::LockMode::kExclusive));
   ASSERT_EQ(File::FILE_OK, lock_file_.Unlock());
 }

@@ -10,13 +10,15 @@
 #include "extensions/renderer/object_backed_native_handler.h"
 
 namespace extensions {
-class Dispatcher;
 
 // Implements custom bindings for the guestViewInternal API.
 class GuestViewInternalCustomBindings : public ObjectBackedNativeHandler {
  public:
   explicit GuestViewInternalCustomBindings(ScriptContext* context);
   ~GuestViewInternalCustomBindings() override;
+
+  // ObjectBackedNativeHandler:
+  void AddRoutes() override;
 
  private:
   // ResetMapEntry is called as a callback to SetWeak(). It resets the
@@ -90,6 +92,11 @@ class GuestViewInternalCustomBindings : public ObjectBackedNativeHandler {
   // triggered by a user gesture and we get to this point if embedder allows
   // the fullscreen request to proceed.
   void RunWithGesture(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
+
+  // Runs a JavaScript function that may use window.customElements.define
+  // with whitelisted custom element names.
+  void AllowGuestViewElementDefinition(
       const v8::FunctionCallbackInfo<v8::Value>& args);
 };
 

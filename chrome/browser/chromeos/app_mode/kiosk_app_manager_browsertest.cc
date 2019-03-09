@@ -9,13 +9,15 @@
 #include <memory>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
 #include "base/path_service.h"
+#include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
@@ -30,6 +32,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "chromeos/settings/cros_settings_names.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "content/public/test/test_utils.h"
@@ -48,14 +51,14 @@ namespace {
 // data into local fs. V2 app reads and verifies the data.
 // Webstore data json is in
 //   chrome/test/data/chromeos/app_mode/webstore/inlineinstall/
-//       detail/bmbpicmpniaclbbpdkfglgipkkebnbjf
+//       detail/abbjjkefakmllanciinhgjgjamdmlbdg
 // The version 1.0.0 installed is in
 //   chrome/test/data/chromeos/app_mode/webstore/downloads/
-//       bmbpicmpniaclbbpdkfglgipkkebnbjf.crx
+//       abbjjkefakmllanciinhgjgjamdmlbdg.crx
 // The version 2.0.0 crx is in
 //   chrome/test/data/chromeos/app_mode/webstore/downloads/
-//       bmbpicmpniaclbbpdkfglgipkkebnbjf_v2_read_and_verify_data.crx
-const char kTestLocalFsKioskApp[] = "bmbpicmpniaclbbpdkfglgipkkebnbjf";
+//       abbjjkefakmllanciinhgjgjamdmlbdg_v2_read_and_verify_data.crx
+const char kTestLocalFsKioskApp[] = "abbjjkefakmllanciinhgjgjamdmlbdg";
 const char kTestLocalFsKioskAppName[] = "Kiosk App With Local Data";
 
 // Helper KioskAppManager::GetConsumerKioskAutoLaunchStatusCallback
@@ -79,11 +82,10 @@ void ConsumerKioskModeLockCheck(
   runner_quit_task.Run();
 }
 
-// Helper EnterpriseInstallAttributes::LockResultCallback implementation.
-void OnEnterpriseDeviceLock(
-    policy::EnterpriseInstallAttributes::LockResult* out_locked,
-    const base::Closure& runner_quit_task,
-    policy::EnterpriseInstallAttributes::LockResult in_locked) {
+// Helper InstallAttributes::LockResultCallback implementation.
+void OnEnterpriseDeviceLock(InstallAttributes::LockResult* out_locked,
+                            const base::Closure& runner_quit_task,
+                            InstallAttributes::LockResult in_locked) {
   LOG(INFO) << "Enterprise lock  = " << in_locked;
   *out_locked = in_locked;
   runner_quit_task.Run();
@@ -229,7 +231,7 @@ class KioskAppManagerTest : public InProcessBrowserTest {
   // InProcessBrowserTest overrides:
   void SetUp() override {
     base::FilePath test_data_dir;
-    PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
+    base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
     embedded_test_server()->ServeFilesFromDirectory(test_data_dir);
 
     // Don't spin up the IO thread yet since no threads are allowed while
@@ -242,30 +244,24 @@ class KioskAppManagerTest : public InProcessBrowserTest {
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    InProcessBrowserTest::SetUpCommandLine(command_line);
-
     // Initialize fake_cws_ to setup web store gallery.
     fake_cws_->Init(embedded_test_server());
   }
 
   void SetUpOnMainThread() override {
-    InProcessBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
 
     // Start the accept thread as the sandbox host process has already been
     // spawned.
     embedded_test_server()->StartAcceptingConnections();
 
-    settings_helper_.ReplaceProvider(kAccountsPrefDeviceLocalAccounts);
+    settings_helper_.ReplaceDeviceSettingsProviderWithStub();
     owner_settings_service_ =
         settings_helper_.CreateOwnerSettingsService(browser()->profile());
   }
 
-  void TearDownOnMainThread() override { settings_helper_.RestoreProvider(); }
-
-  void SetUpInProcessBrowserTestFixture() override {
-    InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
-
-    host_resolver()->AddRule("*", "127.0.0.1");
+  void TearDownOnMainThread() override {
+    settings_helper_.RestoreRealDeviceSettingsProvider();
   }
 
   std::string GetAppIds() const {
@@ -283,17 +279,18 @@ class KioskAppManagerTest : public InProcessBrowserTest {
   }
 
   // Locks device for enterprise.
-  policy::EnterpriseInstallAttributes::LockResult LockDeviceForEnterprise() {
-    std::unique_ptr<policy::EnterpriseInstallAttributes::LockResult>
-        lock_result(new policy::EnterpriseInstallAttributes::LockResult(
-            policy::EnterpriseInstallAttributes::LOCK_NOT_READY));
+  InstallAttributes::LockResult LockDeviceForEnterprise() {
+    std::unique_ptr<InstallAttributes::LockResult> lock_result =
+        std::make_unique<InstallAttributes::LockResult>(
+            InstallAttributes::LOCK_NOT_READY);
     scoped_refptr<content::MessageLoopRunner> runner =
         new content::MessageLoopRunner;
     policy::BrowserPolicyConnectorChromeOS* connector =
         g_browser_process->platform_part()->browser_policy_connector_chromeos();
     connector->GetInstallAttributes()->LockDevice(
-        "user@domain.com",
         policy::DEVICE_MODE_ENTERPRISE,
+        "domain.com",
+        std::string(),  // realm
         "device-id",
         base::Bind(
             &OnEnterpriseDeviceLock, lock_result.get(), runner->QuitClosure()));
@@ -306,7 +303,7 @@ class KioskAppManagerTest : public InProcessBrowserTest {
                       const std::string& icon_file_name,
                       const std::string& required_platform_version) {
     base::FilePath test_dir;
-    ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_dir));
+    ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_dir));
     base::FilePath data_dir = test_dir.AppendASCII("chromeos/app_mode/");
 
     // Copy the icon file to temp dir for using because ClearAppData test
@@ -323,7 +320,7 @@ class KioskAppManagerTest : public InProcessBrowserTest {
     PrefService* local_state = g_browser_process->local_state();
     DictionaryPrefUpdate dict_update(local_state,
                                      KioskAppManager::kKioskDictionaryName);
-    dict_update->Set(KioskAppManager::kKeyApps, apps_dict.release());
+    dict_update->Set(KioskAppDataBase::kKeyApps, std::move(apps_dict));
 
     // Make the app appear in device settings.
     base::ListValue device_local_accounts;
@@ -331,14 +328,12 @@ class KioskAppManagerTest : public InProcessBrowserTest {
     // Fake an account id. Note this needs to match GenerateKioskAppAccountId
     // in kiosk_app_manager.cc to make SetAutoLaunchApp work with the
     // existing app entry created here.
-    entry->SetStringWithoutPathExpansion(kAccountsPrefDeviceLocalAccountsKeyId,
-                                         app_id + "@kiosk-apps");
-    entry->SetIntegerWithoutPathExpansion(
-        kAccountsPrefDeviceLocalAccountsKeyType,
-        policy::DeviceLocalAccount::TYPE_KIOSK_APP);
-    entry->SetStringWithoutPathExpansion(
-        kAccountsPrefDeviceLocalAccountsKeyKioskAppId,
-        app_id);
+    entry->SetKey(kAccountsPrefDeviceLocalAccountsKeyId,
+                  base::Value(app_id + "@kiosk-apps"));
+    entry->SetKey(kAccountsPrefDeviceLocalAccountsKeyType,
+                  base::Value(policy::DeviceLocalAccount::TYPE_KIOSK_APP));
+    entry->SetKey(kAccountsPrefDeviceLocalAccountsKeyKioskAppId,
+                  base::Value(app_id));
     device_local_accounts.Append(std::move(entry));
     owner_settings_service_->Set(kAccountsPrefDeviceLocalAccounts,
                                  device_local_accounts);
@@ -394,7 +389,8 @@ class KioskAppManagerTest : public InProcessBrowserTest {
     EXPECT_EQ(expected_required_platform_version, required_platform_version);
 
     base::FilePath expected_icon_path;
-    ASSERT_TRUE(PathService::Get(chrome::DIR_USER_DATA, &expected_icon_path));
+    ASSERT_TRUE(
+        base::PathService::Get(chrome::DIR_USER_DATA, &expected_icon_path));
     expected_icon_path =
         expected_icon_path.AppendASCII(KioskAppManager::kIconCacheDir)
             .AppendASCII(app_id)
@@ -418,15 +414,21 @@ class KioskAppManagerTest : public InProcessBrowserTest {
     base::FilePath crx_path;
     std::string crx_version;
     EXPECT_TRUE(GetCachedCrx(id, &crx_path, &crx_version));
-    EXPECT_TRUE(base::PathExists(crx_path));
+    {
+      base::ScopedAllowBlockingForTesting allow_io;
+      EXPECT_TRUE(base::PathExists(crx_path));
+    }
     EXPECT_EQ(expected_version, crx_version);
     // Verify the original crx file is identical to the cached file.
     base::FilePath test_data_dir;
-    PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
+    base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
     std::string src_file_path_str =
         std::string("chromeos/app_mode/webstore/downloads/") + crx_file_name;
     base::FilePath src_file_path = test_data_dir.Append(src_file_path_str);
-    EXPECT_TRUE(base::PathExists(src_file_path));
+    {
+      base::ScopedAllowBlockingForTesting allow_io;
+      EXPECT_TRUE(base::PathExists(src_file_path));
+    }
     EXPECT_TRUE(base::ContentsEqual(src_file_path, crx_path));
 
     CheckAppDataAndCache(id, expected_app_name,
@@ -436,7 +438,9 @@ class KioskAppManagerTest : public InProcessBrowserTest {
   // Copies the given file into temp dir and returns the full path
   // of the copied file.
   base::FilePath CopyFileToTempDir(const base::FilePath& file) {
-    base::FilePath target_file = temp_dir_.path().Append(file.BaseName());
+    base::FilePath target_file = temp_dir_.GetPath().Append(file.BaseName());
+
+    base::ScopedAllowBlockingForTesting allow_io;
     CHECK(base::CopyFile(file, target_file));
     return target_file;
   }
@@ -462,7 +466,7 @@ class KioskAppManagerTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, Basic) {
   // Add a couple of apps. Use "fake_app_x" that do not have data on the test
   // server to avoid pending data loads that could be lingering on tear down and
-  // cause DCHECK failure in utility_process_host_impl.cc.
+  // cause DCHECK failure in utility_process_host.cc.
   manager()->AddApp("fake_app_1", owner_settings_service_.get());
   manager()->AddApp("fake_app_2", owner_settings_service_.get());
   EXPECT_EQ("fake_app_1,fake_app_2", GetAppIds());
@@ -540,7 +544,7 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, ClearAppData) {
   const base::DictionaryValue* dict =
       local_state->GetDictionary(KioskAppManager::kKioskDictionaryName);
   const base::DictionaryValue* apps_dict;
-  EXPECT_TRUE(dict->GetDictionary(KioskAppManager::kKeyApps, &apps_dict));
+  EXPECT_TRUE(dict->GetDictionary(KioskAppDataBase::kKeyApps, &apps_dict));
   EXPECT_TRUE(apps_dict->HasKey("app_1"));
 
   manager()->ClearAppData("app_1");
@@ -571,7 +575,7 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateAppDataFromProfile) {
 }
 
 IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateAppDataFromCrx) {
-  const char kAppId[] = "ajoggoflpgplnnjkjamcmbepjdjdnpdp";
+  const char kAppId[] = "iiigpodgfihagabpagjehoocpakbnclp";
   const char kAppName[] = "Test Kiosk App";
 
   SetExistingApp(kAppId, kAppName, "red16x16.png", "");
@@ -589,19 +593,19 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateAppDataFromCrx) {
 
   // Copy test crx file to temp dir because the cache moves the file.
   base::FilePath test_dir;
-  ASSERT_TRUE(PathService::Get(chrome::DIR_TEST_DATA, &test_dir));
+  ASSERT_TRUE(base::PathService::Get(chrome::DIR_TEST_DATA, &test_dir));
   base::FilePath data_dir =
       test_dir.AppendASCII("chromeos/app_mode/webstore/downloads/");
   base::FilePath crx_file = data_dir.AppendASCII(
-      "ajoggoflpgplnnjkjamcmbepjdjdnpdp_v2_required_platform_version_added."
+      "iiigpodgfihagabpagjehoocpakbnclp_v2_required_platform_version_added."
       "crx");
   crx_file = CopyFileToTempDir(crx_file);
 
   ExternalCachePutWaiter put_waiter;
   manager()->PutValidatedExternalExtension(
       kAppId, crx_file, "2.0.0",
-      base::Bind(&ExternalCachePutWaiter::OnPutExtension,
-                 base::Unretained(&put_waiter)));
+      base::BindOnce(&ExternalCachePutWaiter::OnPutExtension,
+                     base::Unretained(&put_waiter)));
   put_waiter.Wait();
   ASSERT_TRUE(put_waiter.success());
 
@@ -619,7 +623,8 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateAppDataFromCrx) {
   CheckAppData(kAppId, kAppName, "1234");
 }
 
-IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, BadApp) {
+// Flaky: https://crbug.com/837195
+IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, DISABLED_BadApp) {
   AppDataLoadWaiter waiter(manager(), 2);
   manager()->AddApp("unknown_app", owner_settings_service_.get());
   waiter.Wait();
@@ -682,15 +687,21 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, RemoveApp) {
   base::FilePath crx_path;
   std::string version;
   EXPECT_TRUE(GetCachedCrx(kTestLocalFsKioskApp, &crx_path, &version));
-  EXPECT_TRUE(base::PathExists(crx_path));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_TRUE(base::PathExists(crx_path));
+  }
   EXPECT_EQ("1.0.0", version);
 
   // Remove the app now.
   manager()->RemoveApp(kTestLocalFsKioskApp, owner_settings_service_.get());
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   manager()->GetApps(&apps);
   ASSERT_EQ(0u, apps.size());
-  EXPECT_FALSE(base::PathExists(crx_path));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_FALSE(base::PathExists(crx_path));
+  }
   EXPECT_FALSE(GetCachedCrx(kTestLocalFsKioskApp, &crx_path, &version));
 }
 
@@ -703,14 +714,16 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateApp) {
   base::FilePath crx_path;
   std::string version;
   EXPECT_TRUE(GetCachedCrx(kTestLocalFsKioskApp, &crx_path, &version));
-  EXPECT_TRUE(base::PathExists(crx_path));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_TRUE(base::PathExists(crx_path));
+  }
   EXPECT_EQ("1.0.0", version);
 
   // Update to version 2.
   fake_cws()->SetUpdateCrx(
       kTestLocalFsKioskApp,
-      "bmbpicmpniaclbbpdkfglgipkkebnbjf_v2_read_and_verify_data.crx",
-      "2.0.0");
+      "abbjjkefakmllanciinhgjgjamdmlbdg_v2_read_and_verify_data.crx", "2.0.0");
   AppDataLoadWaiter waiter(manager(), 1);
   UpdateAppData();
   waiter.Wait();
@@ -723,14 +736,20 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateApp) {
   std::string new_version;
   EXPECT_TRUE(GetCachedCrx(kTestLocalFsKioskApp, &new_crx_path, &new_version));
   EXPECT_EQ("2.0.0", new_version);
-  EXPECT_TRUE(base::PathExists(new_crx_path));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_TRUE(base::PathExists(new_crx_path));
+  }
   // Get original version 2 source download crx file path.
   base::FilePath test_data_dir;
-  PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
+  base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
   base::FilePath v2_file_path = test_data_dir.Append(FILE_PATH_LITERAL(
       "chromeos/app_mode/webstore/downloads/"
-      "bmbpicmpniaclbbpdkfglgipkkebnbjf_v2_read_and_verify_data.crx"));
-  EXPECT_TRUE(base::PathExists(v2_file_path));
+      "abbjjkefakmllanciinhgjgjamdmlbdg_v2_read_and_verify_data.crx"));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_TRUE(base::PathExists(v2_file_path));
+  }
   EXPECT_TRUE(base::ContentsEqual(v2_file_path, new_crx_path));
 }
 
@@ -743,14 +762,16 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateAndRemoveApp) {
   base::FilePath v1_crx_path;
   std::string version;
   EXPECT_TRUE(GetCachedCrx(kTestLocalFsKioskApp, &v1_crx_path, &version));
-  EXPECT_TRUE(base::PathExists(v1_crx_path));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_TRUE(base::PathExists(v1_crx_path));
+  }
   EXPECT_EQ("1.0.0", version);
 
   // Update to version 2.
   fake_cws()->SetUpdateCrx(
       kTestLocalFsKioskApp,
-      "bmbpicmpniaclbbpdkfglgipkkebnbjf_v2_read_and_verify_data.crx",
-      "2.0.0");
+      "abbjjkefakmllanciinhgjgjamdmlbdg_v2_read_and_verify_data.crx", "2.0.0");
   AppDataLoadWaiter waiter(manager(), 1);
   UpdateAppData();
   waiter.Wait();
@@ -764,95 +785,102 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, UpdateAndRemoveApp) {
   EXPECT_TRUE(GetCachedCrx(kTestLocalFsKioskApp, &v2_crx_path, &new_version));
   EXPECT_EQ("2.0.0", new_version);
   // Verify both v1 and v2 crx files exist.
-  EXPECT_TRUE(base::PathExists(v1_crx_path));
-  EXPECT_TRUE(base::PathExists(v2_crx_path));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_TRUE(base::PathExists(v1_crx_path));
+    EXPECT_TRUE(base::PathExists(v2_crx_path));
+  }
 
   // Remove the app now.
   manager()->RemoveApp(kTestLocalFsKioskApp, owner_settings_service_.get());
-  content::RunAllBlockingPoolTasksUntilIdle();
+  content::RunAllTasksUntilIdle();
   manager()->GetApps(&apps);
   ASSERT_EQ(0u, apps.size());
   // Verify both v1 and v2 crx files are removed.
-  EXPECT_FALSE(base::PathExists(v1_crx_path));
-  EXPECT_FALSE(base::PathExists(v2_crx_path));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    EXPECT_FALSE(base::PathExists(v1_crx_path));
+    EXPECT_FALSE(base::PathExists(v2_crx_path));
+  }
   EXPECT_FALSE(GetCachedCrx(kTestLocalFsKioskApp, &v2_crx_path, &version));
 }
 
 IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, EnableConsumerKiosk) {
-  std::unique_ptr<KioskAppManager::ConsumerKioskAutoLaunchStatus> status(
-      new KioskAppManager::ConsumerKioskAutoLaunchStatus(
-          KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED));
-  std::unique_ptr<bool> locked(new bool(false));
+  // Consumer kiosk is disabled by default. Enable it for test.
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      switches::kEnableConsumerKiosk);
+
+  KioskAppManager::ConsumerKioskAutoLaunchStatus status =
+      KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED;
+  bool locked = false;
 
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
-  manager()->GetConsumerKioskAutoLaunchStatus(
-      base::Bind(&ConsumerKioskAutoLaunchStatusCheck,
-                 status.get(),
-                 runner->QuitClosure()));
+  manager()->GetConsumerKioskAutoLaunchStatus(base::Bind(
+      &ConsumerKioskAutoLaunchStatusCheck, &status, runner->QuitClosure()));
   runner->Run();
-  EXPECT_EQ(*status.get(),
-            KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_CONFIGURABLE);
+  EXPECT_EQ(status, KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_CONFIGURABLE);
 
   scoped_refptr<content::MessageLoopRunner> runner2 =
       new content::MessageLoopRunner;
   manager()->EnableConsumerKioskAutoLaunch(
-      base::Bind(&ConsumerKioskModeLockCheck,
-                 locked.get(),
-                 runner2->QuitClosure()));
+      base::Bind(&ConsumerKioskModeLockCheck, &locked, runner2->QuitClosure()));
   runner2->Run();
-  EXPECT_TRUE(*locked.get());
+  EXPECT_TRUE(locked);
 
   scoped_refptr<content::MessageLoopRunner> runner3 =
       new content::MessageLoopRunner;
-  manager()->GetConsumerKioskAutoLaunchStatus(
-      base::Bind(&ConsumerKioskAutoLaunchStatusCheck,
-                 status.get(),
-                 runner3->QuitClosure()));
+  manager()->GetConsumerKioskAutoLaunchStatus(base::Bind(
+      &ConsumerKioskAutoLaunchStatusCheck, &status, runner3->QuitClosure()));
   runner3->Run();
-  EXPECT_EQ(*status.get(),
-            KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_ENABLED);
+  EXPECT_EQ(status, KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_ENABLED);
+}
+
+IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, ConsumerKioskDisabled) {
+  KioskAppManager::ConsumerKioskAutoLaunchStatus status =
+      KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_CONFIGURABLE;
+
+  scoped_refptr<content::MessageLoopRunner> runner =
+      new content::MessageLoopRunner;
+  manager()->GetConsumerKioskAutoLaunchStatus(base::Bind(
+      &ConsumerKioskAutoLaunchStatusCheck, &status, runner->QuitClosure()));
+  runner->Run();
+  EXPECT_EQ(status, KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED);
 }
 
 IN_PROC_BROWSER_TEST_F(KioskAppManagerTest,
                        PreventEnableConsumerKioskForEnterprise) {
-  // First, lock the device as enterprise.
-  EXPECT_EQ(LockDeviceForEnterprise(),
-            policy::EnterpriseInstallAttributes::LOCK_SUCCESS);
+  // Consumer kiosk is disabled by default. Enable it for test.
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      switches::kEnableConsumerKiosk);
 
-  std::unique_ptr<KioskAppManager::ConsumerKioskAutoLaunchStatus> status(
-      new KioskAppManager::ConsumerKioskAutoLaunchStatus(
-          KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED));
-  std::unique_ptr<bool> locked(new bool(true));
+  // Lock the device as enterprise.
+  EXPECT_EQ(LockDeviceForEnterprise(), InstallAttributes::LOCK_SUCCESS);
+
+  KioskAppManager::ConsumerKioskAutoLaunchStatus status =
+      KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED;
+  bool locked = true;
 
   scoped_refptr<content::MessageLoopRunner> runner =
       new content::MessageLoopRunner;
-  manager()->GetConsumerKioskAutoLaunchStatus(
-      base::Bind(&ConsumerKioskAutoLaunchStatusCheck,
-                 status.get(),
-                 runner->QuitClosure()));
+  manager()->GetConsumerKioskAutoLaunchStatus(base::Bind(
+      &ConsumerKioskAutoLaunchStatusCheck, &status, runner->QuitClosure()));
   runner->Run();
-  EXPECT_EQ(*status.get(),
-            KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED);
+  EXPECT_EQ(status, KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED);
 
   scoped_refptr<content::MessageLoopRunner> runner2 =
       new content::MessageLoopRunner;
   manager()->EnableConsumerKioskAutoLaunch(
-      base::Bind(&ConsumerKioskModeLockCheck,
-                 locked.get(),
-                 runner2->QuitClosure()));
+      base::Bind(&ConsumerKioskModeLockCheck, &locked, runner2->QuitClosure()));
   runner2->Run();
-  EXPECT_FALSE(*locked.get());
+  EXPECT_FALSE(locked);
 
   scoped_refptr<content::MessageLoopRunner> runner3 =
       new content::MessageLoopRunner;
-  manager()->GetConsumerKioskAutoLaunchStatus(
-      base::Bind(&ConsumerKioskAutoLaunchStatusCheck,
-                 status.get(),
-                 runner3->QuitClosure()));
+  manager()->GetConsumerKioskAutoLaunchStatus(base::Bind(
+      &ConsumerKioskAutoLaunchStatusCheck, &status, runner3->QuitClosure()));
   runner3->Run();
-  EXPECT_EQ(*status.get(),
-            KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED);
+  EXPECT_EQ(status, KioskAppManager::CONSUMER_KIOSK_AUTO_LAUNCH_DISABLED);
 }
 
 IN_PROC_BROWSER_TEST_F(KioskAppManagerTest,
@@ -922,7 +950,7 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, IsPlatformCompliantWithApp) {
       {"1234.1.1", false}, {"1234.1.3", false},
   };
 
-  for (size_t i = 0; i < arraysize(kTestCases); ++i) {
+  for (size_t i = 0; i < base::size(kTestCases); ++i) {
     scoped_refptr<extensions::Extension> app = MakeKioskApp(
         "App Name", "1.0", kAppId, kTestCases[i].required_platform_version);
     EXPECT_EQ(kTestCases[i].expected_compliant,
@@ -933,7 +961,7 @@ IN_PROC_BROWSER_TEST_F(KioskAppManagerTest, IsPlatformCompliantWithApp) {
 
   // If an app is not auto launched with zero delay, it is always compliant.
   const char kNoneAutoLaucnhedAppId[] = "none_auto_launch_app_id";
-  for (size_t i = 0; i < arraysize(kTestCases); ++i) {
+  for (size_t i = 0; i < base::size(kTestCases); ++i) {
     scoped_refptr<extensions::Extension> app =
         MakeKioskApp("App Name", "1.0", kNoneAutoLaucnhedAppId,
                      kTestCases[i].required_platform_version);

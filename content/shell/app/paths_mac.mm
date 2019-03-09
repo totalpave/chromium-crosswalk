@@ -4,6 +4,7 @@
 
 #include "content/shell/app/paths_mac.h"
 
+#include "base/base_paths.h"
 #include "base/mac/bundle_locations.h"
 #include "base/mac/foundation_util.h"
 #include "base/path_service.h"
@@ -14,7 +15,7 @@ namespace {
 base::FilePath GetContentsPath() {
   // Start out with the path to the running executable.
   base::FilePath path;
-  PathService::Get(base::FILE_EXE, &path);
+  base::PathService::Get(base::FILE_EXE, &path);
 
   // Up to Contents.
   if (base::mac::IsBackgroundOnlyProcess()) {
@@ -44,6 +45,12 @@ void OverrideFrameworkBundlePath() {
   base::mac::SetOverrideFrameworkBundlePath(helper_path);
 }
 
+void OverrideOuterBundlePath() {
+  base::FilePath path = GetContentsPath().DirName();
+
+  base::mac::SetOverrideOuterBundlePath(path);
+}
+
 void OverrideChildProcessPath() {
   base::FilePath helper_path =
       GetFrameworksPath().Append("Content Shell Helper.app")
@@ -51,7 +58,18 @@ void OverrideChildProcessPath() {
                                             .Append("MacOS")
                                             .Append("Content Shell Helper");
 
-  PathService::Override(content::CHILD_PROCESS_EXE, helper_path);
+  base::PathService::Override(content::CHILD_PROCESS_EXE, helper_path);
+}
+
+void OverrideSourceRootPath() {
+  // The base implementation to get base::DIR_SOURCE_ROOT assumes the current
+  // process path is the top level app path, not a nested one.
+  //
+  // Going up 5 levels is needed, since frameworks path looks something like
+  // src/out/foo/Content Shell.app/Contents/Framework/
+  base::PathService::Override(
+      base::DIR_SOURCE_ROOT,
+      GetFrameworksPath().DirName().DirName().DirName().DirName().DirName());
 }
 
 base::FilePath GetResourcesPakFilePath() {

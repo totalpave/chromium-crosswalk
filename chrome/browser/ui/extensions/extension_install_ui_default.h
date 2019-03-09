@@ -21,7 +21,7 @@ class ExtensionInstallUIDefault : public extensions::ExtensionInstallUI {
   ~ExtensionInstallUIDefault() override;
 
   // ExtensionInstallUI:
-  void OnInstallSuccess(const extensions::Extension* extension,
+  void OnInstallSuccess(scoped_refptr<const extensions::Extension> extension,
                         const SkBitmap* icon) override;
   void OnInstallFailure(const extensions::CrxInstallError& error) override;
   void SetUseAppInstalledBubble(bool use_bubble) override;
@@ -34,10 +34,6 @@ class ExtensionInstallUIDefault : public extensions::ExtensionInstallUI {
 
   // Whether or not to show the default UI after completing the installation.
   bool skip_post_install_ui_;
-
-  // Used to undo theme installation.
-  std::string previous_theme_id_;
-  bool previous_using_system_theme_;
 
   // Whether to show an installed bubble on app install, or use the default
   // action of opening a new tab page.

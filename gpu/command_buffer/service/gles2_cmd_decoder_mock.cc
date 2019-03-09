@@ -4,27 +4,23 @@
 
 #include "gpu/command_buffer/service/gles2_cmd_decoder_mock.h"
 
-#include "gpu/command_buffer/common/gles2_cmd_utils.h"
+#include "gpu/command_buffer/common/context_creation_attribs.h"
 
 namespace gpu {
 namespace gles2 {
 
-MockGLES2Decoder::MockGLES2Decoder()
-    : GLES2Decoder() {
-  ON_CALL(*this, GetCommandName(testing::_))
-      .WillByDefault(testing::Return(""));
+MockGLES2Decoder::MockGLES2Decoder(
+    CommandBufferServiceBase* command_buffer_service,
+    Outputter* outputter)
+    : GLES2Decoder(command_buffer_service, outputter), weak_ptr_factory_(this) {
   ON_CALL(*this, MakeCurrent())
       .WillByDefault(testing::Return(true));
 }
 
-MockGLES2Decoder::~MockGLES2Decoder() {}
+MockGLES2Decoder::~MockGLES2Decoder() = default;
 
-error::Error MockGLES2Decoder::FakeDoCommands(unsigned int num_commands,
-                                              const void* buffer,
-                                              int num_entries,
-                                              int* entries_processed) {
-  return AsyncAPIInterface::DoCommands(
-      num_commands, buffer, num_entries, entries_processed);
+base::WeakPtr<DecoderContext> MockGLES2Decoder::AsWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
 }
 
 }  // namespace gles2

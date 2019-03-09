@@ -4,12 +4,22 @@
 
 package org.chromium.net.urlconnection;
 
-import android.test.suitebuilder.annotation.SmallTest;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+import android.support.test.filters.SmallTest;
+
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
-import org.chromium.net.CronetTestBase;
+import org.chromium.net.CronetTestRule;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.net.SocketTimeoutException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -19,18 +29,24 @@ import java.util.concurrent.ThreadFactory;
 /**
  * Tests the MessageLoop implementation.
  */
-public class MessageLoopTest extends CronetTestBase {
+@RunWith(BaseJUnit4ClassRunner.class)
+public class MessageLoopTest {
+    @Rule
+    public final CronetTestRule mTestRule = new CronetTestRule();
+
     private Thread mTestThread;
     private final ExecutorService mExecutorService =
             Executors.newSingleThreadExecutor(new ExecutorThreadFactory());
     private class ExecutorThreadFactory implements ThreadFactory {
+        @Override
         public Thread newThread(Runnable r) {
             mTestThread = new Thread(r);
             return mTestThread;
         }
     }
-    private boolean mFailed = false;
+    private boolean mFailed;
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     public void testInterrupt() throws Exception {
@@ -63,7 +79,7 @@ public class MessageLoopTest extends CronetTestBase {
                     loop.loop();
                     fail();
                 } catch (Exception e) {
-                    if (!(e instanceof IllegalStateException)) {
+                    if (!(e instanceof InterruptedIOException)) {
                         fail();
                     }
                 }
@@ -71,6 +87,7 @@ public class MessageLoopTest extends CronetTestBase {
         }).get();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     public void testTaskFailed() throws Exception {
@@ -111,7 +128,7 @@ public class MessageLoopTest extends CronetTestBase {
                     loop.loop();
                     fail();
                 } catch (Exception e) {
-                    if (!(e instanceof IllegalStateException)) {
+                    if (!(e instanceof NullPointerException)) {
                         fail();
                     }
                 }
@@ -119,6 +136,7 @@ public class MessageLoopTest extends CronetTestBase {
         }).get();
     }
 
+    @Test
     @SmallTest
     @Feature({"Cronet"})
     public void testLoopWithTimeout() throws Exception {

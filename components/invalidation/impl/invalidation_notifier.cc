@@ -36,30 +36,36 @@ InvalidationNotifier::InvalidationNotifier(
       invalidation_listener_(std::move(network_channel)) {}
 
 InvalidationNotifier::~InvalidationNotifier() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
 void InvalidationNotifier::RegisterHandler(InvalidationHandler* handler) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   registrar_.RegisterHandler(handler);
 }
 
 bool InvalidationNotifier::UpdateRegisteredIds(InvalidationHandler* handler,
                                                const ObjectIdSet& ids) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!registrar_.UpdateRegisteredIds(handler, ids))
     return false;
   invalidation_listener_.UpdateRegisteredIds(registrar_.GetAllRegisteredIds());
   return true;
 }
 
+bool InvalidationNotifier::UpdateRegisteredIds(InvalidationHandler* handler,
+                                               const TopicSet& ids) {
+  NOTREACHED();
+  return false;
+}
+
 void InvalidationNotifier::UnregisterHandler(InvalidationHandler* handler) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   registrar_.UnregisterHandler(handler);
 }
 
 InvalidatorState InvalidationNotifier::GetInvalidatorState() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return registrar_.GetInvalidatorState();
 }
 
@@ -82,18 +88,18 @@ void InvalidationNotifier::UpdateCredentials(
 
 void InvalidationNotifier::RequestDetailedStatus(
     base::Callback<void(const base::DictionaryValue&)> callback) const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   invalidation_listener_.RequestDetailedStatus(callback);
 }
 
 void InvalidationNotifier::OnInvalidate(
     const ObjectIdInvalidationMap& invalidation_map) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   registrar_.DispatchInvalidationsToHandlers(invalidation_map);
 }
 
 void InvalidationNotifier::OnInvalidatorStateChange(InvalidatorState state) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   registrar_.UpdateInvalidatorState(state);
 }
 

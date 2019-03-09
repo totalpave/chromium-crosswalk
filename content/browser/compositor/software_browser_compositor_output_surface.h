@@ -10,14 +10,7 @@
 #include "build/build_config.h"
 #include "content/browser/compositor/browser_compositor_output_surface.h"
 #include "content/common/content_export.h"
-
-namespace cc {
-class SoftwareOutputDevice;
-}
-
-namespace ui {
-class CompositorVSyncManager;
-}
+#include "ui/latency/latency_tracker.h"
 
 namespace content {
 
@@ -25,28 +18,37 @@ class CONTENT_EXPORT SoftwareBrowserCompositorOutputSurface
     : public BrowserCompositorOutputSurface {
  public:
   SoftwareBrowserCompositorOutputSurface(
-      std::unique_ptr<cc::SoftwareOutputDevice> software_device,
-      const scoped_refptr<ui::CompositorVSyncManager>& vsync_manager,
-      cc::SyntheticBeginFrameSource* begin_frame_source);
+      std::unique_ptr<viz::SoftwareOutputDevice> software_device,
+      const UpdateVSyncParametersCallback& update_vsync_parameters_callback);
 
   ~SoftwareBrowserCompositorOutputSurface() override;
 
   // OutputSurface implementation.
-  void SwapBuffers(cc::CompositorFrame frame) override;
+  void BindToClient(viz::OutputSurfaceClient* client) override;
+  void EnsureBackbuffer() override;
+  void DiscardBackbuffer() override;
   void BindFramebuffer() override;
+  void SetDrawRectangle(const gfx::Rect& draw_rectangle) override;
+  void Reshape(const gfx::Size& size,
+               float device_scale_factor,
+               const gfx::ColorSpace& color_space,
+               bool has_alpha,
+               bool use_stencil) override;
+  void SwapBuffers(viz::OutputSurfaceFrame frame) override;
+  bool IsDisplayedAsOverlayPlane() const override;
+  unsigned GetOverlayTextureId() const override;
+  gfx::BufferFormat GetOverlayBufferFormat() const override;
   uint32_t GetFramebufferCopyTextureFormat() override;
+  unsigned UpdateGpuFence() override;
 
  private:
-  // BrowserCompositorOutputSurface implementation.
-  void OnGpuSwapBuffersCompleted(
-      const std::vector<ui::LatencyInfo>& latency_info,
-      gfx::SwapResult result,
-      const gpu::GpuProcessHostedCALayerTreeParamsMac* params_mac) override;
+  void SwapBuffersCallback(const std::vector<ui::LatencyInfo>& latency_info);
+  void UpdateVSyncCallback(const base::TimeTicks timebase,
+                           const base::TimeDelta interval);
 
-#if defined(OS_MACOSX)
-  void SetSurfaceSuspendedForRecycle(bool suspended) override;
-#endif
-
+  viz::OutputSurfaceClient* client_ = nullptr;
+  base::TimeDelta refresh_interval_;
+  ui::LatencyTracker latency_tracker_;
   base::WeakPtrFactory<SoftwareBrowserCompositorOutputSurface> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(SoftwareBrowserCompositorOutputSurface);

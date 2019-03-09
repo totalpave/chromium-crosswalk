@@ -5,9 +5,10 @@
 #include <stdint.h>
 #include <utility>
 
-#include "base/message_loop/message_loop.h"
+#include "base/bind.h"
 #include "base/run_loop.h"
 #include "mojo/public/cpp/bindings/binding.h"
+#include "mojo/public/cpp/bindings/tests/bindings_test_base.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "mojo/public/interfaces/bindings/tests/sample_import.mojom.h"
 #include "mojo/public/interfaces/bindings/tests/sample_interfaces.mojom.h"
@@ -22,32 +23,27 @@ class ProviderImpl : public sample::Provider {
   explicit ProviderImpl(InterfaceRequest<sample::Provider> request)
       : binding_(this, std::move(request)) {}
 
-  void EchoString(const String& a,
-                  const EchoStringCallback& callback) override {
-    EchoStringCallback callback_copy;
-    // Make sure operator= is used.
-    callback_copy = callback;
-    callback_copy.Run(a);
+  void EchoString(const std::string& a, EchoStringCallback callback) override {
+    std::move(callback).Run(a);
   }
 
-  void EchoStrings(const String& a,
-                   const String& b,
-                   const EchoStringsCallback& callback) override {
-    callback.Run(a, b);
+  void EchoStrings(const std::string& a,
+                   const std::string& b,
+                   EchoStringsCallback callback) override {
+    std::move(callback).Run(a, b);
   }
 
-  void EchoMessagePipeHandle(
-      ScopedMessagePipeHandle a,
-      const EchoMessagePipeHandleCallback& callback) override {
-    callback.Run(std::move(a));
+  void EchoMessagePipeHandle(ScopedMessagePipeHandle a,
+                             EchoMessagePipeHandleCallback callback) override {
+    std::move(callback).Run(std::move(a));
   }
 
-  void EchoEnum(sample::Enum a, const EchoEnumCallback& callback) override {
-    callback.Run(a);
+  void EchoEnum(sample::Enum a, EchoEnumCallback callback) override {
+    std::move(callback).Run(a);
   }
 
-  void EchoInt(int32_t a, const EchoIntCallback& callback) override {
-    callback.Run(a);
+  void EchoInt(int32_t a, EchoIntCallback callback) override {
+    std::move(callback).Run(a);
   }
 
   Binding<sample::Provider> binding_;
@@ -55,16 +51,16 @@ class ProviderImpl : public sample::Provider {
 
 void RecordString(std::string* storage,
                   const base::Closure& closure,
-                  String str) {
+                  const std::string& str) {
   *storage = str;
   closure.Run();
 }
 
 void RecordStrings(std::string* storage,
                    const base::Closure& closure,
-                   String a,
-                   String b) {
-  *storage = a.get() + b.get();
+                   const std::string& a,
+                   const std::string& b) {
+  *storage = a + b;
   closure.Run();
 }
 
@@ -82,24 +78,21 @@ void RecordEnum(sample::Enum* storage,
   closure.Run();
 }
 
-class RequestResponseTest : public testing::Test {
+class RequestResponseTest : public BindingsTestBase {
  public:
   RequestResponseTest() {}
-  ~RequestResponseTest() override { loop_.RunUntilIdle(); }
+  ~RequestResponseTest() override { base::RunLoop().RunUntilIdle(); }
 
-  void PumpMessages() { loop_.RunUntilIdle(); }
-
- private:
-  base::MessageLoop loop_;
+  void PumpMessages() { base::RunLoop().RunUntilIdle(); }
 };
 
-TEST_F(RequestResponseTest, EchoString) {
+TEST_P(RequestResponseTest, EchoString) {
   sample::ProviderPtr provider;
-  ProviderImpl provider_impl(GetProxy(&provider));
+  ProviderImpl provider_impl(MakeRequest(&provider));
 
   std::string buf;
   base::RunLoop run_loop;
-  provider->EchoString(String::From("hello"),
+  provider->EchoString("hello",
                        base::Bind(&RecordString, &buf, run_loop.QuitClosure()));
 
   run_loop.Run();
@@ -107,24 +100,23 @@ TEST_F(RequestResponseTest, EchoString) {
   EXPECT_EQ(std::string("hello"), buf);
 }
 
-TEST_F(RequestResponseTest, EchoStrings) {
+TEST_P(RequestResponseTest, EchoStrings) {
   sample::ProviderPtr provider;
-  ProviderImpl provider_impl(GetProxy(&provider));
+  ProviderImpl provider_impl(MakeRequest(&provider));
 
   std::string buf;
   base::RunLoop run_loop;
-  provider->EchoStrings(
-      String::From("hello"), String::From(" world"),
-      base::Bind(&RecordStrings, &buf, run_loop.QuitClosure()));
+  provider->EchoStrings("hello", " world", base::Bind(&RecordStrings, &buf,
+                                                      run_loop.QuitClosure()));
 
   run_loop.Run();
 
   EXPECT_EQ(std::string("hello world"), buf);
 }
 
-TEST_F(RequestResponseTest, EchoMessagePipeHandle) {
+TEST_P(RequestResponseTest, EchoMessagePipeHandle) {
   sample::ProviderPtr provider;
-  ProviderImpl provider_impl(GetProxy(&provider));
+  ProviderImpl provider_impl(MakeRequest(&provider));
 
   MessagePipe pipe2;
   base::RunLoop run_loop;
@@ -140,9 +132,9 @@ TEST_F(RequestResponseTest, EchoMessagePipeHandle) {
   EXPECT_EQ(std::string("hello"), value);
 }
 
-TEST_F(RequestResponseTest, EchoEnum) {
+TEST_P(RequestResponseTest, EchoEnum) {
   sample::ProviderPtr provider;
-  ProviderImpl provider_impl(GetProxy(&provider));
+  ProviderImpl provider_impl(MakeRequest(&provider));
 
   sample::Enum value;
   base::RunLoop run_loop;
@@ -152,6 +144,8 @@ TEST_F(RequestResponseTest, EchoEnum) {
 
   EXPECT_EQ(sample::Enum::VALUE, value);
 }
+
+INSTANTIATE_MOJO_BINDINGS_TEST_SUITE_P(RequestResponseTest);
 
 }  // namespace
 }  // namespace test

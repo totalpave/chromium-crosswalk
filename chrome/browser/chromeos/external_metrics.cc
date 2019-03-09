@@ -7,21 +7,25 @@
 #include <stddef.h>
 
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "base/bind.h"
+#include "base/command_line.h"
 #include "base/metrics/histogram.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/statistics_recorder.h"
-#include "chrome/browser/browser_process.h"
+#include "base/metrics/user_metrics.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/metrics/chromeos_metrics_provider.h"
-#include "components/metrics/metrics_service.h"
+#include "chromeos/constants/chromeos_switches.h"
 #include "components/metrics/serialization/metric_sample.h"
 #include "components/metrics/serialization/serialization_utils.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/user_metrics.h"
 
-using base::UserMetricsAction;
 using content::BrowserThread;
 
 namespace chromeos {
@@ -46,13 +50,30 @@ bool CheckLinearValues(const std::string& name, int maximum) {
   return CheckValues(name, 1, maximum, maximum + 1);
 }
 
+// The file from which externally-reported metrics are read.
+constexpr char kEventsFilePath[] = "/var/lib/metrics/uma-events";
+
+// Default interval between externally-reported metrics being collected.
+constexpr base::TimeDelta kDefaultCollectionInterval =
+    base::TimeDelta::FromSeconds(30);
+
 }  // namespace
 
-// The interval between external metrics collections in seconds
-static const int kExternalMetricsCollectionIntervalSeconds = 30;
-const char kEventsFilePath[] = "/var/lib/metrics/uma-events";
-
-ExternalMetrics::ExternalMetrics() : uma_events_file_(kEventsFilePath) {
+ExternalMetrics::ExternalMetrics()
+    : uma_events_file_(kEventsFilePath),
+      collection_interval_(kDefaultCollectionInterval) {
+  const std::string flag_value =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kExternalMetricsCollectionInterval);
+  if (!flag_value.empty()) {
+    int seconds = -1;
+    if (base::StringToInt(flag_value, &seconds) && seconds > 0) {
+      collection_interval_ = base::TimeDelta::FromSeconds(seconds);
+    } else {
+      LOG(WARNING) << "Ignoring bad value \"" << flag_value << "\" in --"
+                   << switches::kExternalMetricsCollectionInterval;
+    }
+  }
 }
 
 ExternalMetrics::~ExternalMetrics() {}
@@ -70,14 +91,13 @@ scoped_refptr<ExternalMetrics> ExternalMetrics::CreateForTesting(
 }
 
 void ExternalMetrics::RecordActionUI(const std::string& action_string) {
-  content::RecordComputedAction(action_string);
+  base::RecordComputedAction(action_string);
 }
 
 void ExternalMetrics::RecordAction(const std::string& action) {
-  BrowserThread::PostTask(
-      BrowserThread::UI,
-      FROM_HERE,
-      base::Bind(&ExternalMetrics::RecordActionUI, this, action));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&ExternalMetrics::RecordActionUI, this, action));
 }
 
 void ExternalMetrics::RecordCrashUI(const std::string& crash_kind) {
@@ -85,9 +105,9 @@ void ExternalMetrics::RecordCrashUI(const std::string& crash_kind) {
 }
 
 void ExternalMetrics::RecordCrash(const std::string& crash_kind) {
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&ExternalMetrics::RecordCrashUI, this, crash_kind));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&ExternalMetrics::RecordCrashUI, this, crash_kind));
 }
 
 void ExternalMetrics::RecordHistogram(const metrics::MetricSample& sample) {
@@ -98,13 +118,8 @@ void ExternalMetrics::RecordHistogram(const metrics::MetricSample& sample) {
     return;
   }
 
-  base::HistogramBase* counter =
-      base::Histogram::FactoryGet(sample.name(),
-                                  sample.min(),
-                                  sample.max(),
-                                  sample.bucket_count(),
-                                  base::Histogram::kUmaTargetedHistogramFlag);
-  counter->Add(sample.sample());
+  base::UmaHistogramCustomCounts(sample.name(), sample.sample(), sample.min(),
+                                 sample.max(), sample.bucket_count());
 }
 
 void ExternalMetrics::RecordLinearHistogram(
@@ -114,31 +129,21 @@ void ExternalMetrics::RecordLinearHistogram(
     DLOG(ERROR) << "Invalid linear histogram: " << sample.name();
     return;
   }
-  base::HistogramBase* counter = base::LinearHistogram::FactoryGet(
-      sample.name(),
-      1,
-      sample.max(),
-      sample.max() + 1,
-      base::Histogram::kUmaTargetedHistogramFlag);
-  counter->Add(sample.sample());
+  base::UmaHistogramExactLinear(sample.name(), sample.sample(), sample.max());
 }
 
 void ExternalMetrics::RecordSparseHistogram(
     const metrics::MetricSample& sample) {
   CHECK_EQ(metrics::MetricSample::SPARSE_HISTOGRAM, sample.type());
-  base::HistogramBase* counter = base::SparseHistogram::FactoryGet(
-      sample.name(), base::HistogramBase::kUmaTargetedHistogramFlag);
-  counter->Add(sample.sample());
+  base::UmaHistogramSparse(sample.name(), sample.sample());
 }
 
 int ExternalMetrics::CollectEvents() {
-  ScopedVector<metrics::MetricSample> samples;
+  std::vector<std::unique_ptr<metrics::MetricSample>> samples;
   metrics::SerializationUtils::ReadAndTruncateMetricsFromFile(uma_events_file_,
                                                               &samples);
 
-  for (ScopedVector<metrics::MetricSample>::iterator it = samples.begin();
-       it != samples.end();
-       ++it) {
+  for (auto it = samples.begin(); it != samples.end(); ++it) {
     const metrics::MetricSample& sample = **it;
 
     // Do not use the UMA_HISTOGRAM_... macros here.  They cache the Histogram
@@ -171,11 +176,11 @@ void ExternalMetrics::CollectEventsAndReschedule() {
 }
 
 void ExternalMetrics::ScheduleCollector() {
-  bool result = BrowserThread::GetBlockingPool()->PostDelayedWorkerTask(
-      FROM_HERE,
-      base::Bind(&chromeos::ExternalMetrics::CollectEventsAndReschedule, this),
-      base::TimeDelta::FromSeconds(kExternalMetricsCollectionIntervalSeconds));
-  DCHECK(result);
+  base::PostDelayedTaskWithTraits(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&chromeos::ExternalMetrics::CollectEventsAndReschedule,
+                     this),
+      collection_interval_);
 }
 
 }  // namespace chromeos

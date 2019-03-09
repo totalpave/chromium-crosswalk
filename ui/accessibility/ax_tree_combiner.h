@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "ui/accessibility/ax_export.h"
+#include "ui/accessibility/ax_tree_id_registry.h"
 #include "ui/accessibility/ax_tree_update.h"
-#include "ui/gfx/transform.h"
 
 namespace ui {
 
@@ -19,8 +19,7 @@ namespace ui {
 //
 // Since node IDs are relative to each ID, it has to renumber all of the IDs
 // and update all of the attributes that reference IDs of other nodes to
-// ensure they point to the right node. It also applies transformations to
-// local bounding rectangles to make them global.
+// ensure they point to the right node.
 //
 // It also makes sure the final combined tree points to the correct focused
 // node across all of the trees based on the focused tree ID of the root tree.
@@ -35,17 +34,16 @@ class AX_EXPORT AXTreeCombiner {
   const AXTreeUpdate& combined() { return combined_; }
 
  private:
-  int32_t MapId(int32_t tree_id, int32_t node_id);
+  int32_t MapId(AXTreeID tree_id, int32_t node_id);
 
   void ProcessTree(const AXTreeUpdate* tree);
 
   std::vector<ui::AXTreeUpdate> trees_;
-  int32_t root_tree_id_ = -1;
+  AXTreeID root_tree_id_;
   int32_t next_id_ = 1;
-  std::map<int32_t, const AXTreeUpdate*> tree_id_map_;
-  std::map<std::pair<int32_t, int32_t>, int32_t> tree_id_node_id_map_;
+  std::map<AXTreeID, const AXTreeUpdate*> tree_id_map_;
+  std::map<std::pair<AXTreeID, int32_t>, int32_t> tree_id_node_id_map_;
   AXTreeUpdate combined_;
-  gfx::Transform transform_;
 };
 
 

@@ -4,66 +4,31 @@
 
 #include "net/ssl/ssl_config_service.h"
 
-#include "base/lazy_instance.h"
-#include "base/synchronization/lock.h"
+#include <tuple>
+
 #include "net/ssl/ssl_config_service_defaults.h"
 
 namespace net {
 
+namespace {
+
+// Checks if the config-service managed fields in two SSLConfigs are the same.
+bool SSLConfigsAreEqual(const net::SSLConfig& config1,
+                        const net::SSLConfig& config2) {
+  return std::tie(config1.version_min, config1.version_max,
+                  config1.disabled_cipher_suites, config1.channel_id_enabled,
+                  config1.false_start_enabled, config1.require_ecdhe) ==
+         std::tie(config2.version_min, config2.version_max,
+                  config2.disabled_cipher_suites, config2.channel_id_enabled,
+                  config2.false_start_enabled, config2.require_ecdhe);
+}
+
+}  // namespace
+
 SSLConfigService::SSLConfigService()
-    : observer_list_(base::ObserverList<Observer>::NOTIFY_EXISTING_ONLY) {
-}
+    : observer_list_(base::ObserverListPolicy::EXISTING_ONLY) {}
 
-// GlobalSSLObject holds a reference to a global SSL object, such as the
-// CRLSet or the EVCertsWhitelist. It simply wraps a lock  around a
-// scoped_refptr so that getting a reference doesn't race with
-// updating the global object.
-template <class T>
-class GlobalSSLObject {
- public:
-  void Set(const scoped_refptr<T>& new_ssl_object) {
-    base::AutoLock locked(lock_);
-    ssl_object_ = new_ssl_object;
-  }
-
-  scoped_refptr<T> Get() const {
-    base::AutoLock locked(lock_);
-    return ssl_object_;
-  }
-
- private:
-  scoped_refptr<T> ssl_object_;
-  mutable base::Lock lock_;
-};
-
-typedef GlobalSSLObject<CRLSet> GlobalCRLSet;
-typedef GlobalSSLObject<ct::EVCertsWhitelist> GlobalEVCertsWhitelist;
-
-base::LazyInstance<GlobalCRLSet>::Leaky g_crl_set = LAZY_INSTANCE_INITIALIZER;
-base::LazyInstance<GlobalEVCertsWhitelist>::Leaky g_ev_whitelist =
-    LAZY_INSTANCE_INITIALIZER;
-
-// static
-void SSLConfigService::SetCRLSet(scoped_refptr<CRLSet> crl_set) {
-  // Note: this can be called concurently with GetCRLSet().
-  g_crl_set.Get().Set(crl_set);
-}
-
-// static
-scoped_refptr<CRLSet> SSLConfigService::GetCRLSet() {
-  return g_crl_set.Get().Get();
-}
-
-// static
-void SSLConfigService::SetEVCertsWhitelist(
-    scoped_refptr<ct::EVCertsWhitelist> ev_whitelist) {
-  g_ev_whitelist.Get().Set(ev_whitelist);
-}
-
-// static
-scoped_refptr<ct::EVCertsWhitelist> SSLConfigService::GetEVCertsWhitelist() {
-  return g_ev_whitelist.Get().Get();
-}
+SSLConfigService::~SSLConfigService() = default;
 
 void SSLConfigService::AddObserver(Observer* observer) {
   observer_list_.AddObserver(observer);
@@ -74,27 +39,21 @@ void SSLConfigService::RemoveObserver(Observer* observer) {
 }
 
 void SSLConfigService::NotifySSLConfigChange() {
-  FOR_EACH_OBSERVER(Observer, observer_list_, OnSSLConfigChanged());
+  for (auto& observer : observer_list_)
+    observer.OnSSLConfigChanged();
 }
 
-SSLConfigService::~SSLConfigService() {
+bool SSLConfigService::SSLConfigsAreEqualForTesting(
+    const net::SSLConfig& config1,
+    const net::SSLConfig& config2) {
+  return SSLConfigsAreEqual(config1, config2);
 }
 
-void SSLConfigService::ProcessConfigUpdate(const SSLConfig& orig_config,
-                                           const SSLConfig& new_config) {
-  bool config_changed =
-      (orig_config.rev_checking_enabled != new_config.rev_checking_enabled) ||
-      (orig_config.rev_checking_required_local_anchors !=
-       new_config.rev_checking_required_local_anchors) ||
-      (orig_config.version_min != new_config.version_min) ||
-      (orig_config.version_max != new_config.version_max) ||
-      (orig_config.disabled_cipher_suites !=
-       new_config.disabled_cipher_suites) ||
-      (orig_config.channel_id_enabled != new_config.channel_id_enabled) ||
-      (orig_config.false_start_enabled != new_config.false_start_enabled) ||
-      (orig_config.require_ecdhe != new_config.require_ecdhe);
-
-  if (config_changed)
+void SSLConfigService::ProcessConfigUpdate(const SSLConfig& old_config,
+                                           const SSLConfig& new_config,
+                                           bool force_notification) {
+  // Do nothing if the configuration hasn't changed.
+  if (!SSLConfigsAreEqual(old_config, new_config) || force_notification)
     NotifySSLConfigChange();
 }
 

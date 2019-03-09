@@ -8,23 +8,19 @@
 #include <stddef.h>
 
 #include <memory>
+#include <vector>
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/optional.h"
 #include "base/scoped_observer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_bar_bubble_delegate.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/size.h"
-
-namespace extensions {
-class Extension;
-class ExtensionMessageBubbleController;
-}
 
 namespace user_prefs {
 class PrefRegistrySyncable;
@@ -52,6 +48,9 @@ class ToolbarActionViewController;
 class ToolbarActionsBar : public ToolbarActionsModel::Observer,
                           public TabStripModelObserver {
  public:
+  using ToolbarActions =
+      std::vector<std::unique_ptr<ToolbarActionViewController>>;
+
   // A struct to contain the platform settings.
   struct PlatformSettings {
     PlatformSettings();
@@ -62,9 +61,6 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
     int item_spacing;
     // The number of icons per row in the overflow menu.
     int icons_per_overflow_menu_row;
-    // Whether or not the overflow menu is displayed as a chevron (this is being
-    // phased out).
-    bool chevron_enabled;
   };
 
   // The type of drag that occurred in a drag-and-drop operation.
@@ -79,7 +75,6 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
 
   enum HighlightType {
     HIGHLIGHT_NONE,
-    HIGHLIGHT_INFO,
     HIGHLIGHT_WARNING,
   };
 
@@ -88,32 +83,32 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
                     ToolbarActionsBar* main_bar);
   ~ToolbarActionsBar() override;
 
-  // Returns the width of a browser action icon, optionally including the
-  // following padding.
-  static int IconWidth(bool include_padding);
-
-  // Returns the height of a browser action icon.
-  static int IconHeight();
-
   // Registers profile preferences.
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
-  // Returns the preferred size for the toolbar; this does *not* reflect any
+  // Returns the size of the area where the action icon resides.
+  static gfx::Size GetIconAreaSize();
+
+  // Returns the size of ToolbarActionView.
+  gfx::Size GetViewSize() const;
+
+  // Returns the default/full size for the toolbar; this does *not* reflect any
   // animations that may be running.
-  gfx::Size GetPreferredSize() const;
+  gfx::Size GetFullSize() const;
 
   // Returns the [minimum|maximum] possible width for the toolbar.
-  int GetMinimumWidth() const;
+  virtual int GetMinimumWidth() const;
   int GetMaximumWidth() const;
 
   // Returns the width for the given number of icons.
-  int IconCountToWidth(int icons) const;
+  int IconCountToWidth(size_t icons) const;
 
   // Returns the number of icons that can fit within the given width.
   size_t WidthToIconCount(int width) const;
 
-  // Returns the number of icons that should be displayed if space allows.
-  size_t GetIconCount() const;
+  // Returns the number of icons that should be displayed if space allows. Can
+  // be overridden by children to impose a smaller limit on the number of icons.
+  virtual size_t GetIconCount() const;
 
   // Returns the starting index (inclusive) for displayable icons.
   size_t GetStartIndexInBounds() const;
@@ -164,9 +159,9 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
   // the new width is |width|.
   void OnResizeComplete(int width);
 
-  // Notifies the ToolbarActionsBar that the user has started a drag-and-drop
-  // sequence.
-  void OnDragStarted();
+  // Notifies the ToolbarActionsBar that the user has started dragging the
+  // action at index |index_of_dragged_item|.
+  void OnDragStarted(size_t index_of_dragged_item);
 
   // Notifies the ToolbarActionsBar that a drag-and-drop sequence ended. This
   // may not coincide with OnDragDrop(), since the view may be dropped somewhere
@@ -181,6 +176,10 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
   void OnDragDrop(int dragged_index,
                   int dropped_index,
                   DragType drag_type);
+
+  // The index of the action currently being dragged, or |base::nullopt| if
+  // no drag is in progress. Should only be called on the main bar.
+  const base::Optional<size_t> IndexOfDraggedItem() const;
 
   // Notifies the ToolbarActionsBar that the delegate finished animating.
   void OnAnimationEnded();
@@ -225,11 +224,14 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
   void ShowToolbarActionBubbleAsync(
       std::unique_ptr<ToolbarActionsBarBubbleDelegate> bubble);
 
+  // Closes the overflow menu, if it was open. Returns whether or not the
+  // overflow menu was closed.
+  bool CloseOverflowMenuIfOpen();
+
   // Returns the underlying toolbar actions, but does not order them. Primarily
   // for use in testing.
-  const std::vector<ToolbarActionViewController*>& toolbar_actions_unordered()
-      const {
-    return toolbar_actions_.get();
+  const ToolbarActions& toolbar_actions_unordered() const {
+    return toolbar_actions_;
   }
   bool enabled() const { return model_ != nullptr; }
   bool suppress_layout() const { return suppress_layout_; }
@@ -245,11 +247,15 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
     return platform_settings_;
   }
   ToolbarActionViewController* popup_owner() { return popup_owner_; }
-  ToolbarActionViewController* popped_out_action() {
+  ToolbarActionViewController* popped_out_action() const {
     return popped_out_action_;
   }
   bool in_overflow_mode() const { return main_bar_ != nullptr; }
   bool is_showing_bubble() const { return is_showing_bubble_; }
+
+  bool is_drag_in_progress() const {
+    return index_of_dragged_item_ != base::nullopt;
+  }
 
   ToolbarActionsBarDelegate* delegate_for_test() { return delegate_; }
 
@@ -261,26 +267,36 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
       int time_in_seconds);
 
  private:
-  using ToolbarActions = ScopedVector<ToolbarActionViewController>;
+  // Returns the insets by which the icon area bounds (See GetIconAreaRect())
+  // are insetted. This defines the amount of paddings around the icon area.
+  virtual gfx::Insets GetIconAreaInsets() const;
+
+  // Returns the number of icons that can fit within the given width.
+  size_t WidthToIconCountUnclamped(int width) const;
 
   // ToolbarActionsModel::Observer:
-  void OnToolbarActionAdded(const ToolbarActionsModel::ToolbarItem& item,
+  void OnToolbarActionAdded(const ToolbarActionsModel::ActionId& action_id,
                             int index) override;
-  void OnToolbarActionRemoved(const std::string& action_id) override;
-  void OnToolbarActionMoved(const std::string& action_id, int index) override;
-  void OnToolbarActionUpdated(const std::string& action_id) override;
+  void OnToolbarActionRemoved(
+      const ToolbarActionsModel::ActionId& action_id) override;
+  void OnToolbarActionMoved(const ToolbarActionsModel::ActionId& action_id,
+                            int index) override;
+  void OnToolbarActionLoadFailed() override;
+  void OnToolbarActionUpdated(
+      const ToolbarActionsModel::ActionId& action_id) override;
   void OnToolbarVisibleCountChanged() override;
   void OnToolbarHighlightModeChanged(bool is_highlighting) override;
   void OnToolbarModelInitialized() override;
 
   // TabStripModelObserver:
-  void TabInsertedAt(content::WebContents* contents,
-                     int index,
-                     bool foreground) override;
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override;
 
   // Resizes the delegate (if necessary) to the preferred size using the given
-  // |tween_type| and optionally suppressing the chevron.
-  void ResizeDelegate(gfx::Tween::Type tween_type, bool suppress_chevron);
+  // |tween_type|.
+  void ResizeDelegate(gfx::Tween::Type tween_type);
 
   // Returns the action for the given |id|, if one exists.
   ToolbarActionViewController* GetActionForId(const std::string& action_id);
@@ -300,7 +316,7 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
   ToolbarActionsBarDelegate* delegate_;
 
   // The associated browser.
-  Browser* browser_;
+  Browser* const browser_;
 
   // The observed toolbar model.
   ToolbarActionsModel* model_;
@@ -309,7 +325,7 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
   // is the main bar.
   ToolbarActionsBar* main_bar_;
 
-  // Platform-specific settings for dimensions and the overflow chevron.
+  // Platform-specific settings for dimensions.
   PlatformSettings platform_settings_;
 
   // The toolbar actions.
@@ -340,9 +356,6 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
   // bubble. This is only ever true for the main bar.
   bool should_check_extension_bubble_;
 
-  // Whether or not the user is in the middle of a drag-and-drop operation.
-  bool is_drag_in_progress_;
-
   // The action, if any, which is currently "popped out" of the overflow in
   // order to show a popup.
   ToolbarActionViewController* popped_out_action_;
@@ -362,9 +375,13 @@ class ToolbarActionsBar : public ToolbarActionsModel::Observer,
   // True if a bubble is currently being shown.
   bool is_showing_bubble_;
 
+  // The index of the action currently being dragged, or |base::nullopt| if
+  // no drag is in progress.
+  base::Optional<size_t> index_of_dragged_item_;
+
   ScopedObserver<TabStripModel, TabStripModelObserver> tab_strip_observer_;
 
-  base::ObserverList<ToolbarActionsBarObserver> observers_;
+  base::ObserverList<ToolbarActionsBarObserver>::Unchecked observers_;
 
   base::WeakPtrFactory<ToolbarActionsBar> weak_ptr_factory_;
 

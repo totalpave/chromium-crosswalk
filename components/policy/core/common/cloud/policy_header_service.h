@@ -9,21 +9,16 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/policy_export.h"
-
-namespace base {
-class SequencedTaskRunner;
-}
+#include "url/gurl.h"
 
 namespace policy {
 
-class PolicyHeaderIOHelper;
-
-// Per-profile service used to generate PolicyHeaderIOHelper objects, and
-// keep them up to date as policy changes.
+// Per-profile service used to keep track of policy changes.
 // TODO(atwilson): Move to components/policy once CloudPolicyStore is moved.
 class POLICY_EXPORT PolicyHeaderService : public CloudPolicyStore::Observer {
  public:
@@ -32,31 +27,33 @@ class POLICY_EXPORT PolicyHeaderService : public CloudPolicyStore::Observer {
   // outlive this object.
   PolicyHeaderService(const std::string& server_url,
                       const std::string& verification_key_hash,
-                      CloudPolicyStore* user_policy_store,
-                      CloudPolicyStore* device_policy_store);
+                      CloudPolicyStore* user_policy_store);
   ~PolicyHeaderService() override;
 
-  // Creates a PolicyHeaderIOHelper object to be run on the IO thread and
-  // add policy headers to outgoing requests. The caller takes ownership of
-  // this object and must ensure it outlives ProfileHeaderService (in practice,
-  // this is called by ProfileIOData, which is shutdown *after* all
-  // ProfileKeyedServices are shutdown).
-  std::unique_ptr<PolicyHeaderIOHelper> CreatePolicyHeaderIOHelper(
-      scoped_refptr<base::SequencedTaskRunner> task_runner);
+  // Update navigation request headers with the policy header if the URL matches
+  // |server_url_|.
+  // Note: To avoid depending on content/public, a callback is used here.
+  // It correspond to NavigationHandle::SetRequestHeader(). It is called
+  // synchronously.
+  using AddHeaderFunction =
+      base::OnceCallback<void(const std::string& /* header_name*/,
+                              const std::string& /* header_value */)>;
+  void AddPolicyHeaders(const GURL& url, AddHeaderFunction add_header) const;
 
   // Overridden CloudPolicyStore::Observer methods:
   void OnStoreLoaded(CloudPolicyStore* store) override;
   void OnStoreError(CloudPolicyStore* store) override;
 
-  // Returns a list of all PolicyHeaderIOHelpers created by this object.
-  std::vector<PolicyHeaderIOHelper*> GetHelpersForTest();
+  // Test-only routines used to inject the server URL/headers at runtime.
+  void SetHeaderForTest(const std::string& new_header);
+  void SetServerURLForTest(const std::string& server_url);
 
  private:
   // Generate a policy header based on the currently loaded policy.
   std::string CreateHeaderValue();
 
-  // Weak pointer to created PolicyHeaderIOHelper objects.
-  std::vector<PolicyHeaderIOHelper*> helpers_;
+  // The current policy header value.
+  std::string policy_header_;
 
   // URL of the policy server.
   std::string server_url_;
@@ -64,9 +61,8 @@ class POLICY_EXPORT PolicyHeaderService : public CloudPolicyStore::Observer {
   // Identifier for the verification key this Chrome instance is using.
   std::string verification_key_hash_;
 
-  // Weak pointers to User-/Device-level policy stores.
+  // Weak pointer to the User-level policy store.
   CloudPolicyStore* user_policy_store_;
-  CloudPolicyStore* device_policy_store_;
 
   DISALLOW_COPY_AND_ASSIGN(PolicyHeaderService);
 };

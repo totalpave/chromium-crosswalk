@@ -1,13 +1,15 @@
 include_rules = [
-  "+components/google/core/browser",
+  "+components/google/core",
   "+components/history/core/browser",
   "+components/metrics",
   "+components/prefs",
   "+components/rappor",
   "+components/ssl_errors",
+  "+components/strings/grit/components_strings.h",
+  "+components/grit/components_resources.h",
   "+components/url_formatter",
-  "+grit/components_strings.h",
   "+net/base",
+  "+net/cert",
   "+net/ssl",
   "+ui/base"
 ]

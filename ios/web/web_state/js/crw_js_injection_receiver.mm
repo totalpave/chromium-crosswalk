@@ -5,22 +5,20 @@
 #import "ios/web/public/web_state/js/crw_js_injection_receiver.h"
 
 #include "base/logging.h"
-#import "base/mac/scoped_nsobject.h"
 #import "ios/web/public/web_state/js/crw_js_injection_evaluator.h"
 #import "ios/web/public/web_state/js/crw_js_injection_manager.h"
 
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
 @implementation CRWJSInjectionReceiver {
   // Used to evaluate JavaScripts.
-  id<CRWJSInjectionEvaluator> _evaluator;
+  __weak id<CRWJSInjectionEvaluator> _evaluator;
 
   // Map from a CRWJSInjectionManager class to its instance created for this
   // receiver.
-  base::scoped_nsobject<NSMutableDictionary> _managers;
-}
-
-- (id)init {
-  NOTREACHED();
-  return [super init];
+  NSMutableDictionary* _managers;
 }
 
 - (id)initWithEvaluator:(id<CRWJSInjectionEvaluator>)evaluator {
@@ -28,7 +26,7 @@
   self = [super init];
   if (self) {
     _evaluator = evaluator;
-    _managers.reset([[NSMutableDictionary alloc] init]);
+    _managers = [[NSMutableDictionary alloc] init];
   }
   return self;
 }
@@ -36,20 +34,13 @@
 #pragma mark -
 #pragma mark CRWJSInjectionEvaluatorMethods
 
-- (void)evaluateJavaScript:(NSString*)script
-       stringResultHandler:(web::JavaScriptCompletion)handler {
-  [_evaluator evaluateJavaScript:script stringResultHandler:handler];
-}
-
 - (void)executeJavaScript:(NSString*)script
         completionHandler:(web::JavaScriptResultBlock)completionHandler {
   [_evaluator executeJavaScript:script completionHandler:completionHandler];
 }
 
-- (BOOL)scriptHasBeenInjectedForClass:(Class)jsInjectionManagerClass
-                       presenceBeacon:(NSString*)beacon {
-  return [_evaluator scriptHasBeenInjectedForClass:jsInjectionManagerClass
-                                    presenceBeacon:beacon];
+- (BOOL)scriptHasBeenInjectedForClass:(Class)injectionManagerClass {
+  return [_evaluator scriptHasBeenInjectedForClass:injectionManagerClass];
 }
 
 - (void)injectScript:(NSString*)script forClass:(Class)jsInjectionManagerClass {
@@ -61,15 +52,12 @@
   CRWJSInjectionManager* manager =
       [_managers objectForKey:jsInjectionManagerClass];
   if (!manager) {
-    base::scoped_nsobject<CRWJSInjectionManager> newManager(
-        [[jsInjectionManagerClass alloc] initWithReceiver:self]);
+    CRWJSInjectionManager* newManager =
+        [[jsInjectionManagerClass alloc] initWithReceiver:self];
     [_managers setObject:newManager forKey:jsInjectionManagerClass];
     manager = newManager;
   }
   DCHECK(manager);
-  for (Class depedencyClass in [manager directDependencies]) {
-    [self instanceOfClass:depedencyClass];
-  }
   return manager;
 }
 
@@ -77,6 +65,6 @@
 
 @implementation CRWJSInjectionReceiver (Testing)
 - (NSDictionary*)managers {
-  return _managers.get();
+  return _managers;
 }
 @end

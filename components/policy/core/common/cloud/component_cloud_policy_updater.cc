@@ -6,6 +6,9 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include <memory>
+#include <string>
 #include <utility>
 
 #include "base/bind.h"
@@ -15,8 +18,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "components/policy/core/common/cloud/component_cloud_policy_store.h"
 #include "components/policy/core/common/cloud/external_policy_data_fetcher.h"
-#include "policy/proto/chrome_extension_policy.pb.h"
-#include "policy/proto/device_management_backend.pb.h"
+#include "components/policy/proto/chrome_extension_policy.pb.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace em = enterprise_management;
 
@@ -33,6 +36,12 @@ const int64_t kPolicyDataMaxSize = 5 * 1024 * 1024;
 // Tha maximum number of policy data fetches to run in parallel.
 const int64_t kMaxParallelPolicyDataFetches = 2;
 
+std::string NamespaceToKey(const PolicyNamespace& ns) {
+  const std::string domain = base::NumberToString(ns.domain);
+  const std::string size = base::NumberToString(domain.size());
+  return size + ":" + domain + ":" + ns.component_id;
+}
+
 }  // namespace
 
 ComponentCloudPolicyUpdater::ComponentCloudPolicyUpdater(
@@ -48,30 +57,33 @@ ComponentCloudPolicyUpdater::~ComponentCloudPolicyUpdater() {
 }
 
 void ComponentCloudPolicyUpdater::UpdateExternalPolicy(
+    const PolicyNamespace& ns,
     std::unique_ptr<em::PolicyFetchResponse> response) {
   // Keep a serialized copy of |response|, to cache it later.
   // The policy is also rejected if it exceeds the maximum size.
   std::string serialized_response;
-  if (!response->SerializeToString(&serialized_response) ||
-      serialized_response.size() > kPolicyProtoMaxSize) {
+  if (!response->SerializeToString(&serialized_response)) {
+    LOG(ERROR) << "Failed to serialize policy fetch response.";
+    return;
+  }
+  if (serialized_response.size() > kPolicyProtoMaxSize) {
+    LOG(ERROR) << "Policy fetch response too large: "
+               << serialized_response.size() << " bytes (max "
+               << kPolicyProtoMaxSize << ").";
     return;
   }
 
   // Validate the policy before doing anything else.
-  PolicyNamespace ns;
+  auto policy_data = std::make_unique<em::PolicyData>();
   em::ExternalPolicyData data;
-  if (!store_->ValidatePolicy(std::move(response), &ns, &data)) {
-    LOG(ERROR) << "Failed to validate component policy fetched from DMServer";
+  if (!store_->ValidatePolicy(ns, std::move(response), policy_data.get(),
+                              &data)) {
     return;
   }
 
   // Maybe the data for this hash has already been downloaded and cached.
   const std::string& cached_hash = store_->GetCachedHash(ns);
   if (!cached_hash.empty() && data.secure_hash() == cached_hash)
-    return;
-
-  // TODO(joaodasilva): implement the other two auth methods.
-  if (data.download_auth_method() != em::ExternalPolicyData::NONE)
     return;
 
   const std::string key = NamespaceToKey(ns);
@@ -88,25 +100,16 @@ void ComponentCloudPolicyUpdater::UpdateExternalPolicy(
     // request is already pending for the component, it will be canceled.
     external_policy_data_updater_.FetchExternalData(
         key,
-        ExternalPolicyDataUpdater::Request(data.download_url(),
-                                           data.secure_hash(),
-                                           kPolicyDataMaxSize),
+        ExternalPolicyDataUpdater::Request(
+            data.download_url(), data.secure_hash(), kPolicyDataMaxSize),
         base::Bind(&ComponentCloudPolicyStore::Store, base::Unretained(store_),
-                   ns,
-                   serialized_response,
+                   ns, serialized_response, base::Owned(policy_data.release()),
                    data.secure_hash()));
   }
 }
 
 void ComponentCloudPolicyUpdater::CancelUpdate(const PolicyNamespace& ns) {
   external_policy_data_updater_.CancelExternalDataFetch(NamespaceToKey(ns));
-}
-
-std::string ComponentCloudPolicyUpdater::NamespaceToKey(
-    const PolicyNamespace& ns) {
-  const std::string domain = base::IntToString(ns.domain);
-  const std::string size = base::SizeTToString(domain.size());
-  return size + ":" + domain + ":" + ns.component_id;
 }
 
 }  // namespace policy

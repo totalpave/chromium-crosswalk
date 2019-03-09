@@ -6,22 +6,26 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
-#include "base/message_loop/message_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/sequenced_worker_pool_owner.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/rlz/rlz_tracker_delegate.h"
 #include "net/url_request/url_request_test_util.h"
 #include "rlz/test/rlz_test_helpers.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if defined(OS_IOS)
 #include "ui/base/device_form_factor.h"
+#endif
+
+#if defined(OS_CHROMEOS)
+#include "chromeos/system/fake_statistics_provider.h"
 #endif
 
 using testing::AssertionResult;
@@ -34,8 +38,7 @@ namespace {
 class TestRLZTrackerDelegate : public RLZTrackerDelegate {
  public:
   TestRLZTrackerDelegate()
-      : worker_pool_owner_(1, "TestRLZTracker"),
-        request_context_getter_(new net::TestURLRequestContextGetter(
+      : request_context_getter_(new net::TestURLRequestContextGetter(
             base::ThreadTaskRunnerHandle::Get())) {}
 
   void set_brand(const char* brand) { brand_override_ = brand; }
@@ -69,12 +72,10 @@ class TestRLZTrackerDelegate : public RLZTrackerDelegate {
 
   bool IsOnUIThread() override { return true; }
 
-  base::SequencedWorkerPool* GetBlockingPool() override {
-    return worker_pool_owner_.pool().get();
-  }
-
-  net::URLRequestContextGetter* GetRequestContext() override {
-    return request_context_getter_.get();
+  scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory()
+      override {
+    NOTIMPLEMENTED() << "If this is called, it needs an implementation.";
+    return nullptr;
   }
 
   bool GetBrand(std::string* brand) override {
@@ -109,8 +110,10 @@ class TestRLZTrackerDelegate : public RLZTrackerDelegate {
     on_homepage_search_callback_ = callback;
   }
 
+  // A speculative fix for https://crbug.com/907379.
+  bool ShouldUpdateExistingAccessPointRlz() override { return false; }
+
  private:
-  base::SequencedWorkerPoolOwner worker_pool_owner_;
   scoped_refptr<net::URLRequestContextGetter> request_context_getter_;
 
   std::string brand_override_;
@@ -257,10 +260,15 @@ class RlzLibTest : public testing::Test {
   void ExpectRlzPingSent(bool expected);
   void ExpectReactivationRlzPingSent(bool expected);
 
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
   TestRLZTrackerDelegate* delegate_;
   std::unique_ptr<TestRLZTracker> tracker_;
   RlzLibTestNoMachineStateHelper m_rlz_test_helper_;
+
+#if defined(OS_CHROMEOS)
+  std::unique_ptr<chromeos::system::FakeStatisticsProvider>
+      statistics_provider_;
+#endif
 };
 
 void RlzLibTest::SetUp() {
@@ -275,6 +283,16 @@ void RlzLibTest::SetUp() {
   // is pretty much a no-op.
   SetMainBrand("TEST");
   SetReactivationBrand("");
+
+#if defined(OS_CHROMEOS)
+  statistics_provider_ =
+      std::make_unique<chromeos::system::FakeStatisticsProvider>();
+  chromeos::system::StatisticsProvider::SetTestProvider(
+      statistics_provider_.get());
+  statistics_provider_->SetMachineStatistic(
+      chromeos::system::kShouldSendRlzPingKey,
+      chromeos::system::kShouldSendRlzPingValueTrue);
+#endif  // defined(OS_CHROMEOS)
 }
 
 void RlzLibTest::TearDown() {
@@ -282,6 +300,10 @@ void RlzLibTest::TearDown() {
   tracker_.reset();
   testing::Test::TearDown();
   m_rlz_test_helper_.TearDown();
+
+#if defined(OS_CHROMEOS)
+  chromeos::system::StatisticsProvider::SetTestProvider(nullptr);
+#endif  // defined(OS_CHROMEOS)
 }
 
 void RlzLibTest::SetMainBrand(const char* brand) {
@@ -312,7 +334,7 @@ void RlzLibTest::InvokeDelayedInit() {
 
 void RlzLibTest::ExpectEventRecorded(const char* event_name, bool expected) {
   char cgi[rlz_lib::kMaxCgiLength];
-  GetProductEventsAsCgi(rlz_lib::CHROME, cgi, arraysize(cgi));
+  GetProductEventsAsCgi(rlz_lib::CHROME, cgi, base::size(cgi));
   if (expected) {
     EXPECT_STR_CONTAINS(cgi, event_name);
   } else {
@@ -323,13 +345,13 @@ void RlzLibTest::ExpectEventRecorded(const char* event_name, bool expected) {
 void RlzLibTest::ExpectRlzPingSent(bool expected) {
   std::string brand;
   delegate_->GetBrand(&brand);
-  EXPECT_EQ(expected, tracker_->was_ping_sent_for_brand(brand.c_str()));
+  EXPECT_EQ(expected, tracker_->was_ping_sent_for_brand(brand));
 }
 
 void RlzLibTest::ExpectReactivationRlzPingSent(bool expected) {
   std::string brand;
   delegate_->GetReactivationBrand(&brand);
-  EXPECT_EQ(expected, tracker_->was_ping_sent_for_brand(brand.c_str()));
+  EXPECT_EQ(expected, tracker_->was_ping_sent_for_brand(brand));
 }
 
 // The events that affect the different RLZ scenarios are the following:
@@ -895,6 +917,9 @@ TEST_F(RlzLibTest, GetAccessPointRlzIsCached) {
   EXPECT_STREQ(kOmniboxRlzString, base::UTF16ToUTF8(rlz).c_str());
 }
 
+#if !defined(OS_CHROMEOS)
+  // By design, on Chrome OS the RLZ string can only be set once.  Once set,
+  // pings cannot change int.
 TEST_F(RlzLibTest, PingUpdatesRlzCache) {
   // Set dummy RLZ string.
   rlz_lib::SetAccessPointRlz(RLZTracker::ChromeOmnibox(), kOmniboxRlzString);
@@ -950,6 +975,7 @@ TEST_F(RlzLibTest, PingUpdatesRlzCache) {
   EXPECT_STREQ(kNewAppListRlzString, base::UTF16ToUTF8(rlz).c_str());
 #endif  // !defined(OS_IOS)
 }
+#endif  // !defined(OS_CHROMEOS)
 
 // TODO(thakis): Reactivation doesn't exist on Mac yet.
 TEST_F(RlzLibTest, ReactivationNonOrganicNonOrganic) {
@@ -1004,6 +1030,42 @@ TEST_F(RlzLibTest, ClearRlzState) {
 
   RLZTracker::ClearRlzState();
 
+  ExpectEventRecorded(OmniboxFirstSearch(), false);
+}
+
+TEST_F(RlzLibTest, DoNotRecordEventUnlessShouldSendRlzPingKeyIsTrue) {
+  // Verify the event is recorded when |kShouldSendRlzPingKey| is true.
+  std::string should_send_rlz_ping_value;
+  ASSERT_TRUE(statistics_provider_->GetMachineStatistic(
+      chromeos::system::kShouldSendRlzPingKey, &should_send_rlz_ping_value));
+  ASSERT_EQ(should_send_rlz_ping_value,
+            chromeos::system::kShouldSendRlzPingValueTrue);
+  RLZTracker::RecordProductEvent(rlz_lib::CHROME, RLZTracker::ChromeOmnibox(),
+                                 rlz_lib::FIRST_SEARCH);
+  ExpectEventRecorded(OmniboxFirstSearch(), true);
+
+  // Verify the event is not recorded when |kShouldSendRlzPingKey| is false.
+  RLZTracker::ClearRlzState();
+  ExpectEventRecorded(OmniboxFirstSearch(), false);
+  statistics_provider_->SetMachineStatistic(
+      chromeos::system::kShouldSendRlzPingKey,
+      chromeos::system::kShouldSendRlzPingValueFalse);
+  ASSERT_TRUE(statistics_provider_->GetMachineStatistic(
+      chromeos::system::kShouldSendRlzPingKey, &should_send_rlz_ping_value));
+  ASSERT_EQ(should_send_rlz_ping_value,
+            chromeos::system::kShouldSendRlzPingValueFalse);
+  RLZTracker::RecordProductEvent(rlz_lib::CHROME, RLZTracker::ChromeOmnibox(),
+                                 rlz_lib::FIRST_SEARCH);
+  ExpectEventRecorded(OmniboxFirstSearch(), false);
+
+  // Verify the event is not recorded when |kShouldSendRlzPingKey| does not
+  // exist.
+  statistics_provider_->ClearMachineStatistic(
+      chromeos::system::kShouldSendRlzPingKey);
+  ASSERT_FALSE(statistics_provider_->GetMachineStatistic(
+      chromeos::system::kShouldSendRlzPingKey, &should_send_rlz_ping_value));
+  RLZTracker::RecordProductEvent(rlz_lib::CHROME, RLZTracker::ChromeOmnibox(),
+                                 rlz_lib::FIRST_SEARCH);
   ExpectEventRecorded(OmniboxFirstSearch(), false);
 }
 #endif  // defined(OS_CHROMEOS)

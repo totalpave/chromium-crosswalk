@@ -5,6 +5,7 @@
 #ifndef MOJO_PUBLIC_CPP_BINDINGS_ASSOCIATED_INTERFACE_REQUEST_H_
 #define MOJO_PUBLIC_CPP_BINDINGS_ASSOCIATED_INTERFACE_REQUEST_H_
 
+#include <string>
 #include <utility>
 
 #include "base/macros.h"
@@ -22,11 +23,15 @@ class AssociatedInterfaceRequest {
   AssociatedInterfaceRequest() {}
   AssociatedInterfaceRequest(decltype(nullptr)) {}
 
+  explicit AssociatedInterfaceRequest(ScopedInterfaceEndpointHandle handle)
+      : handle_(std::move(handle)) {}
+
   // Takes the interface endpoint handle from another
   // AssociatedInterfaceRequest.
   AssociatedInterfaceRequest(AssociatedInterfaceRequest&& other) {
     handle_ = std::move(other.handle_);
   }
+
   AssociatedInterfaceRequest& operator=(AssociatedInterfaceRequest&& other) {
     if (this != &other)
       handle_ = std::move(other.handle_);
@@ -45,13 +50,9 @@ class AssociatedInterfaceRequest {
   // handle.
   bool is_pending() const { return handle_.is_valid(); }
 
-  void Bind(ScopedInterfaceEndpointHandle handle) {
-    handle_ = std::move(handle);
-  }
+  explicit operator bool() const { return handle_.is_valid(); }
 
-  ScopedInterfaceEndpointHandle PassHandle() {
-    return std::move(handle_);
-  }
+  ScopedInterfaceEndpointHandle PassHandle() { return std::move(handle_); }
 
   const ScopedInterfaceEndpointHandle& handle() const { return handle_; }
 
@@ -64,21 +65,15 @@ class AssociatedInterfaceRequest {
     return !is_pending() && !other.is_pending();
   }
 
+  void ResetWithReason(uint32_t custom_reason, const std::string& description) {
+    handle_.ResetWithReason(custom_reason, description);
+  }
+
  private:
   ScopedInterfaceEndpointHandle handle_;
 
   DISALLOW_COPY_AND_ASSIGN(AssociatedInterfaceRequest);
 };
-
-// Makes an AssociatedInterfaceRequest bound to the specified associated
-// endpoint.
-template <typename Interface>
-AssociatedInterfaceRequest<Interface> MakeAssociatedRequest(
-    ScopedInterfaceEndpointHandle handle) {
-  AssociatedInterfaceRequest<Interface> request;
-  request.Bind(std::move(handle));
-  return request;
-}
 
 }  // namespace mojo
 

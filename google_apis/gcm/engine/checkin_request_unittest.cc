@@ -6,10 +6,12 @@
 
 #include <string>
 
+#include "base/bind.h"
 #include "google_apis/gcm/engine/checkin_request.h"
 #include "google_apis/gcm/engine/gcm_request_test_base.h"
 #include "google_apis/gcm/monitoring/fake_gcm_stats_recorder.h"
 #include "google_apis/gcm/protocol/checkin.pb.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace gcm {
 
@@ -36,15 +38,17 @@ class CheckinRequestTest : public GCMRequestTestBase {
   CheckinRequestTest();
   ~CheckinRequestTest() override;
 
-  void FetcherCallback(
-      const checkin_proto::AndroidCheckinResponse& response);
+  void FetcherCallback(net::HttpStatusCode response_code,
+                       const checkin_proto::AndroidCheckinResponse& response);
 
   void CreateRequest(uint64_t android_id, uint64_t security_token);
 
-  void SetResponseScenario(ResponseScenario response_scenario);
+  void SetResponseScenarioAndComplete(ResponseScenario response_scenario);
 
  protected:
   bool callback_called_;
+  net::HttpStatusCode response_code_ =
+      net::HTTP_CONTINUE;  // Something that's not used in tests.
   uint64_t android_id_;
   uint64_t security_token_;
   int checkin_device_type_;
@@ -63,8 +67,10 @@ CheckinRequestTest::CheckinRequestTest()
 CheckinRequestTest::~CheckinRequestTest() {}
 
 void CheckinRequestTest::FetcherCallback(
+    net::HttpStatusCode response_code,
     const checkin_proto::AndroidCheckinResponse& checkin_response) {
   callback_called_ = true;
+  response_code_ = response_code;
   if (checkin_response.has_android_id())
     android_id_ = checkin_response.android_id();
   if (checkin_response.has_security_token())
@@ -91,12 +97,9 @@ void CheckinRequestTest::CreateRequest(uint64_t android_id,
   // Then create a request with that protobuf and specified android_id,
   // security_token.
   request_.reset(new CheckinRequest(
-      GURL(kCheckinURL),
-      request_info,
-      GetBackoffPolicy(),
+      GURL(kCheckinURL), request_info, GetBackoffPolicy(),
       base::Bind(&CheckinRequestTest::FetcherCallback, base::Unretained(this)),
-      url_request_context_getter(),
-      &recorder_));
+      url_loader_factory(), &recorder_));
 
   // Setting android_id_ and security_token_ to blank value, not used elsewhere
   // in the tests.
@@ -105,7 +108,7 @@ void CheckinRequestTest::CreateRequest(uint64_t android_id,
   security_token_ = kBlankSecurityToken;
 }
 
-void CheckinRequestTest::SetResponseScenario(
+void CheckinRequestTest::SetResponseScenarioAndComplete(
     ResponseScenario response_scenario) {
   checkin_proto::AndroidCheckinResponse response;
   response.set_stats_ok(true);
@@ -123,7 +126,7 @@ void CheckinRequestTest::SetResponseScenario(
 
   std::string response_string;
   response.SerializeToString(&response_string);
-  SetResponse(net::HTTP_OK, response_string);
+  SetResponseForURLAndComplete(kCheckinURL, net::HTTP_OK, response_string);
 }
 
 TEST_F(CheckinRequestTest, FetcherDataAndURL) {
@@ -131,12 +134,11 @@ TEST_F(CheckinRequestTest, FetcherDataAndURL) {
   request_->Start();
 
   // Get data sent by request.
-  net::TestURLFetcher* fetcher = GetFetcher();
-  ASSERT_TRUE(fetcher);
-  EXPECT_EQ(GURL(kCheckinURL), fetcher->GetOriginalURL());
+  std::string upload_data;
+  ASSERT_TRUE(GetUploadDataForURL(kCheckinURL, &upload_data));
 
   checkin_proto::AndroidCheckinRequest request_proto;
-  request_proto.ParseFromString(fetcher->upload_data());
+  request_proto.ParseFromString(upload_data);
   EXPECT_EQ(kAndroidId, static_cast<uint64_t>(request_proto.id()));
   EXPECT_EQ(kSecurityToken, request_proto.security_token());
   EXPECT_EQ(chrome_build_proto_.platform(),
@@ -163,15 +165,12 @@ TEST_F(CheckinRequestTest, ResponseBodyEmpty) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponse(net::HTTP_OK, std::string());
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kCheckinURL, net::HTTP_OK, std::string());
   EXPECT_FALSE(callback_called_);
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(net::HTTP_OK, response_code_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
 }
@@ -180,15 +179,13 @@ TEST_F(CheckinRequestTest, ResponseBodyCorrupted) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponse(net::HTTP_OK, "Corrupted response body");
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kCheckinURL, net::HTTP_OK,
+                               "Corrupted response body");
   EXPECT_FALSE(callback_called_);
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(net::HTTP_OK, response_code_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
 }
@@ -197,10 +194,10 @@ TEST_F(CheckinRequestTest, ResponseHttpStatusUnauthorized) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponse(net::HTTP_UNAUTHORIZED, std::string());
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kCheckinURL, net::HTTP_UNAUTHORIZED,
+                               std::string());
   EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(net::HTTP_UNAUTHORIZED, response_code_);
   EXPECT_EQ(kBlankAndroidId, android_id_);
   EXPECT_EQ(kBlankSecurityToken, security_token_);
 }
@@ -209,10 +206,10 @@ TEST_F(CheckinRequestTest, ResponseHttpStatusBadRequest) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponse(net::HTTP_BAD_REQUEST, std::string());
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kCheckinURL, net::HTTP_BAD_REQUEST,
+                               std::string());
   EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(net::HTTP_BAD_REQUEST, response_code_);
   EXPECT_EQ(kBlankAndroidId, android_id_);
   EXPECT_EQ(kBlankSecurityToken, security_token_);
 }
@@ -221,15 +218,13 @@ TEST_F(CheckinRequestTest, ResponseHttpStatusNotOK) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponse(net::HTTP_INTERNAL_SERVER_ERROR, std::string());
-  CompleteFetch();
-
+  SetResponseForURLAndComplete(kCheckinURL, net::HTTP_INTERNAL_SERVER_ERROR,
+                               std::string());
   EXPECT_FALSE(callback_called_);
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
+  EXPECT_EQ(net::HTTP_OK, response_code_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
 }
@@ -238,14 +233,10 @@ TEST_F(CheckinRequestTest, ResponseMissingAndroidId) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponseScenario(MISSING_ANDROID_ID);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(MISSING_ANDROID_ID);
   EXPECT_FALSE(callback_called_);
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
@@ -255,14 +246,10 @@ TEST_F(CheckinRequestTest, ResponseMissingSecurityToken) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponseScenario(MISSING_SECURITY_TOKEN);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(MISSING_SECURITY_TOKEN);
   EXPECT_FALSE(callback_called_);
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
@@ -272,14 +259,10 @@ TEST_F(CheckinRequestTest, AndroidIdEqualsZeroInResponse) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponseScenario(ANDROID_ID_IS_ZER0);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(ANDROID_ID_IS_ZER0);
   EXPECT_FALSE(callback_called_);
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
@@ -289,14 +272,10 @@ TEST_F(CheckinRequestTest, SecurityTokenEqualsZeroInResponse) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponseScenario(SECURITY_TOKEN_IS_ZERO);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(SECURITY_TOKEN_IS_ZERO);
   EXPECT_FALSE(callback_called_);
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
@@ -306,9 +285,7 @@ TEST_F(CheckinRequestTest, SuccessfulFirstTimeCheckin) {
   CreateRequest(0u, 0u);
   request_->Start();
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);
@@ -318,9 +295,7 @@ TEST_F(CheckinRequestTest, SuccessfulSubsequentCheckin) {
   CreateRequest(kAndroidId, kSecurityToken);
   request_->Start();
 
-  SetResponseScenario(VALID_RESPONSE);
-  CompleteFetch();
-
+  SetResponseScenarioAndComplete(VALID_RESPONSE);
   EXPECT_TRUE(callback_called_);
   EXPECT_EQ(kAndroidId, android_id_);
   EXPECT_EQ(kSecurityToken, security_token_);

@@ -11,7 +11,6 @@
 #include "base/base64url.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/macros.h"
 #include "base/stl_util.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/stringprintf.h"
@@ -40,11 +39,11 @@ namespace {
 
 // Web Crypto equivalent usage mask for JWK 'use' = 'enc'.
 const blink::WebCryptoKeyUsageMask kJwkEncUsage =
-    blink::WebCryptoKeyUsageEncrypt | blink::WebCryptoKeyUsageDecrypt |
-    blink::WebCryptoKeyUsageWrapKey | blink::WebCryptoKeyUsageUnwrapKey;
+    blink::kWebCryptoKeyUsageEncrypt | blink::kWebCryptoKeyUsageDecrypt |
+    blink::kWebCryptoKeyUsageWrapKey | blink::kWebCryptoKeyUsageUnwrapKey;
 // Web Crypto equivalent usage mask for JWK 'use' = 'sig'.
 const blink::WebCryptoKeyUsageMask kJwkSigUsage =
-    blink::WebCryptoKeyUsageSign | blink::WebCryptoKeyUsageVerify;
+    blink::kWebCryptoKeyUsageSign | blink::kWebCryptoKeyUsageVerify;
 
 // Checks that the "ext" member of the JWK is consistent with
 // "expected_extractable".
@@ -69,18 +68,18 @@ struct JwkToWebCryptoUsageMapping {
 // values". While this is not required for spec compliance,
 // it makes the ordering of key_ops match that of WebCrypto's Key.usages.
 const JwkToWebCryptoUsageMapping kJwkWebCryptoUsageMap[] = {
-    {"encrypt", blink::WebCryptoKeyUsageEncrypt},
-    {"decrypt", blink::WebCryptoKeyUsageDecrypt},
-    {"sign", blink::WebCryptoKeyUsageSign},
-    {"verify", blink::WebCryptoKeyUsageVerify},
-    {"deriveKey", blink::WebCryptoKeyUsageDeriveKey},
-    {"deriveBits", blink::WebCryptoKeyUsageDeriveBits},
-    {"wrapKey", blink::WebCryptoKeyUsageWrapKey},
-    {"unwrapKey", blink::WebCryptoKeyUsageUnwrapKey}};
+    {"encrypt", blink::kWebCryptoKeyUsageEncrypt},
+    {"decrypt", blink::kWebCryptoKeyUsageDecrypt},
+    {"sign", blink::kWebCryptoKeyUsageSign},
+    {"verify", blink::kWebCryptoKeyUsageVerify},
+    {"deriveKey", blink::kWebCryptoKeyUsageDeriveKey},
+    {"deriveBits", blink::kWebCryptoKeyUsageDeriveBits},
+    {"wrapKey", blink::kWebCryptoKeyUsageWrapKey},
+    {"unwrapKey", blink::kWebCryptoKeyUsageUnwrapKey}};
 
 bool JwkKeyOpToWebCryptoUsage(const std::string& key_op,
                               blink::WebCryptoKeyUsage* usage) {
-  for (size_t i = 0; i < arraysize(kJwkWebCryptoUsageMap); ++i) {
+  for (size_t i = 0; i < base::size(kJwkWebCryptoUsageMap); ++i) {
     if (kJwkWebCryptoUsageMap[i].jwk_key_op == key_op) {
       *usage = kJwkWebCryptoUsageMap[i].webcrypto_usage;
       return true;
@@ -93,7 +92,7 @@ bool JwkKeyOpToWebCryptoUsage(const std::string& key_op,
 std::unique_ptr<base::ListValue> CreateJwkKeyOpsFromWebCryptoUsages(
     blink::WebCryptoKeyUsageMask usages) {
   std::unique_ptr<base::ListValue> jwk_key_ops(new base::ListValue());
-  for (size_t i = 0; i < arraysize(kJwkWebCryptoUsageMap); ++i) {
+  for (size_t i = 0; i < base::size(kJwkWebCryptoUsageMap); ++i) {
     if (usages & kJwkWebCryptoUsageMap[i].webcrypto_usage)
       jwk_key_ops->AppendString(kJwkWebCryptoUsageMap[i].jwk_key_op);
   }
@@ -136,7 +135,7 @@ Status GetWebCryptoUsagesFromJwkKeyOps(const base::ListValue* key_ops,
 Status VerifyUsages(const JwkReader& jwk,
                     blink::WebCryptoKeyUsageMask expected_usages) {
   // JWK "key_ops" (optional) --> usages parameter
-  base::ListValue* jwk_key_ops_value = NULL;
+  const base::ListValue* jwk_key_ops_value = nullptr;
   bool has_jwk_key_ops;
   Status status =
       jwk.GetOptionalList("key_ops", &jwk_key_ops_value, &has_jwk_key_ops);
@@ -197,16 +196,17 @@ Status JwkReader::Init(const CryptoData& bytes,
   base::StringPiece json_string(reinterpret_cast<const char*>(bytes.bytes()),
                                 bytes.byte_length());
 
-  std::unique_ptr<base::Value> value = base::JSONReader::Read(json_string);
-  base::DictionaryValue* dict_value = NULL;
+  {
+    // Limit the visibility for |value| as it is moved to |dict_| (via
+    // |dict_value|) once it has been loaded successfully.
+    base::Optional<base::Value> value = base::JSONReader::Read(json_string);
+    base::DictionaryValue* dict_value = nullptr;
 
-  if (!value.get() || !value->GetAsDictionary(&dict_value) || !dict_value)
-    return Status::ErrorJwkNotDictionary();
+    if (!value.has_value() || !value.value().GetAsDictionary(&dict_value))
+      return Status::ErrorJwkNotDictionary();
 
-  // Release |value|, as ownership will be transferred to |dict| via
-  // |dict_value|, which points to the same object as |value|.
-  ignore_result(value.release());
-  dict_.reset(dict_value);
+    dict_ = std::move(*dict_value);
+  }
 
   // JWK "kty". Exit early if this required JWK parameter is missing.
   std::string kty;
@@ -236,13 +236,13 @@ Status JwkReader::Init(const CryptoData& bytes,
 }
 
 bool JwkReader::HasMember(const std::string& member_name) const {
-  return dict_->HasKey(member_name);
+  return dict_.HasKey(member_name);
 }
 
 Status JwkReader::GetString(const std::string& member_name,
                             std::string* result) const {
-  base::Value* value = NULL;
-  if (!dict_->Get(member_name, &value))
+  const base::Value* value = nullptr;
+  if (!dict_.Get(member_name, &value))
     return Status::ErrorJwkMemberMissing(member_name);
   if (!value->GetAsString(result))
     return Status::ErrorJwkMemberWrongType(member_name, "string");
@@ -253,8 +253,8 @@ Status JwkReader::GetOptionalString(const std::string& member_name,
                                     std::string* result,
                                     bool* member_exists) const {
   *member_exists = false;
-  base::Value* value = NULL;
-  if (!dict_->Get(member_name, &value))
+  const base::Value* value = nullptr;
+  if (!dict_.Get(member_name, &value))
     return Status::Success();
 
   if (!value->GetAsString(result))
@@ -265,11 +265,11 @@ Status JwkReader::GetOptionalString(const std::string& member_name,
 }
 
 Status JwkReader::GetOptionalList(const std::string& member_name,
-                                  base::ListValue** result,
+                                  const base::ListValue** result,
                                   bool* member_exists) const {
   *member_exists = false;
-  base::Value* value = NULL;
-  if (!dict_->Get(member_name, &value))
+  const base::Value* value = nullptr;
+  if (!dict_.Get(member_name, &value))
     return Status::Success();
 
   if (!value->GetAsList(result))
@@ -319,8 +319,8 @@ Status JwkReader::GetOptionalBool(const std::string& member_name,
                                   bool* result,
                                   bool* member_exists) const {
   *member_exists = false;
-  base::Value* value = NULL;
-  if (!dict_->Get(member_name, &value))
+  const base::Value* value = nullptr;
+  if (!dict_.Get(member_name, &value))
     return Status::Success();
 
   if (!value->GetAsBoolean(result))
@@ -353,7 +353,7 @@ JwkWriter::JwkWriter(const std::string& algorithm,
                      const std::string& kty) {
   if (!algorithm.empty())
     dict_.SetString("alg", algorithm);
-  dict_.Set("key_ops", CreateJwkKeyOpsFromWebCryptoUsages(usages).release());
+  dict_.Set("key_ops", CreateJwkKeyOpsFromWebCryptoUsages(usages));
   dict_.SetBoolean("ext", extractable);
   dict_.SetString("kty", kty);
 }

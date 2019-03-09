@@ -4,358 +4,259 @@
 
 package org.chromium.chrome.browser.download;
 
-import android.content.Context;
-import android.content.Intent;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
 import android.content.SharedPreferences;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.IBinder;
-import android.test.ServiceTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.support.test.annotation.UiThreadTest;
+import android.support.test.filters.SmallTest;
+import android.support.test.rule.UiThreadTestRule;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TestRule;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.AdvancedMockContext;
+import org.chromium.base.test.params.ParameterAnnotations.ClassParameter;
+import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
+import org.chromium.base.test.params.ParameterSet;
+import org.chromium.base.test.params.ParameterizedRunner;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.ChromeFeatureList;
+import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
+import org.chromium.chrome.test.util.browser.Features;
+import org.chromium.components.offline_items_collection.ContentId;
+import org.chromium.components.offline_items_collection.LegacyHelpers;
+import org.chromium.components.offline_items_collection.OfflineItem.Progress;
+import org.chromium.components.offline_items_collection.OfflineItemProgressUnit;
+import org.chromium.components.offline_items_collection.PendingState;
 
-import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 /**
  * Tests of {@link DownloadNotificationService}.
  */
-public class DownloadNotificationServiceTest extends
-        ServiceTestCase<MockDownloadNotificationService> {
-    private static final int MILLIS_PER_SECOND = 1000;
+@RunWith(ParameterizedRunner.class)
+@UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
+public class DownloadNotificationServiceTest {
+    private static final ContentId ID1 =
+            LegacyHelpers.buildLegacyContentId(false, UUID.randomUUID().toString());
+    private static final ContentId ID2 =
+            LegacyHelpers.buildLegacyContentId(false, UUID.randomUUID().toString());
+    private static final ContentId ID3 =
+            LegacyHelpers.buildLegacyContentId(false, UUID.randomUUID().toString());
 
-    private static class MockDownloadManagerService extends DownloadManagerService {
-        final List<DownloadItem> mDownloads = new ArrayList<DownloadItem>();
+    @ClassParameter
+    private static List<ParameterSet> sClassParams = Arrays.asList(
+            new ParameterSet().value(false, false).name("GenericStatus"),
+            new ParameterSet().value(true, false).name("EnableDescriptivePendingStatusOnly"),
+            new ParameterSet().value(false, true).name("EnableDescriptiveFailStatusOnly"),
+            new ParameterSet().value(true, true).name("EnableDescriptivePendingAndFailStatus"));
 
-        public MockDownloadManagerService(Context context) {
-            super(context, null, getTestHandler(), 1000);
-        }
+    @Rule
+    public TestRule mFeaturesProcessor = new Features.JUnitProcessor();
 
-        @Override
-        protected void init() {}
+    @Rule
+    public UiThreadTestRule mUiThreadTestRule = new UiThreadTestRule();
 
-        @Override
-        protected void resumeDownload(DownloadItem item, boolean hasUserGesture) {
-            mDownloads.add(item);
-        }
+    private MockDownloadNotificationService mDownloadNotificationService;
+    private DownloadForegroundServiceManagerTest
+            .MockDownloadForegroundServiceManager mDownloadForegroundServiceManager;
+    private DownloadSharedPreferenceHelper mDownloadSharedPreferenceHelper;
+
+    private final boolean mEnableOfflinePagesDescriptivePendingStatus;
+    private final boolean mEnableOfflinePagesDescriptiveFailStatus;
+
+    public DownloadNotificationServiceTest(boolean enableOfflinePagesDescriptivePendingStatus,
+            boolean enableOfflinePagesDescriptiveFailStatus) {
+        mEnableOfflinePagesDescriptivePendingStatus = enableOfflinePagesDescriptivePendingStatus;
+        mEnableOfflinePagesDescriptiveFailStatus = enableOfflinePagesDescriptiveFailStatus;
     }
 
-    private static class MockDownloadResumptionScheduler extends DownloadResumptionScheduler {
-        boolean mScheduled;
-
-        public MockDownloadResumptionScheduler(Context context) {
-            super(context);
-        }
-
-        @Override
-        public void schedule(boolean allowMeteredConnection) {
-            mScheduled = true;
-        }
-
-        @Override
-        public void cancelTask() {
-            mScheduled = false;
-        }
+    private static DownloadSharedPreferenceEntry buildEntryStringWithGuid(ContentId contentId,
+            int notificationId, String fileName, boolean metered, boolean autoResume) {
+        return new DownloadSharedPreferenceEntry(
+                contentId, notificationId, false, metered, fileName, autoResume, false);
     }
 
-    public DownloadNotificationServiceTest() {
-        super(MockDownloadNotificationService.class);
+    @Before
+    public void setUp() {
+        if (mEnableOfflinePagesDescriptivePendingStatus) {
+            Features.getInstance().enable(
+                    ChromeFeatureList.OFFLINE_PAGES_DESCRIPTIVE_PENDING_STATUS);
+        } else {
+            Features.getInstance().disable(
+                    ChromeFeatureList.OFFLINE_PAGES_DESCRIPTIVE_PENDING_STATUS);
+        }
+        if (mEnableOfflinePagesDescriptiveFailStatus) {
+            Features.getInstance().enable(ChromeFeatureList.OFFLINE_PAGES_DESCRIPTIVE_FAIL_STATUS);
+        } else {
+            Features.getInstance().disable(ChromeFeatureList.OFFLINE_PAGES_DESCRIPTIVE_FAIL_STATUS);
+        }
+        DownloadNotificationService.clearResumptionAttemptLeft();
+        mDownloadNotificationService = new MockDownloadNotificationService();
+        mDownloadForegroundServiceManager =
+                new DownloadForegroundServiceManagerTest.MockDownloadForegroundServiceManager();
+        mDownloadNotificationService.setDownloadForegroundServiceManager(
+                mDownloadForegroundServiceManager);
+        mDownloadSharedPreferenceHelper = DownloadSharedPreferenceHelper.getInstance();
     }
 
-    @Override
-    protected void setupService() {
-        super.setupService();
-    }
-
-    @Override
-    protected void tearDown() throws Exception {
-        super.setupService();
+    @After
+    public void tearDown() {
+        DownloadNotificationService.clearResumptionAttemptLeft();
         SharedPreferences sharedPrefs = ContextUtils.getAppSharedPreferences();
         SharedPreferences.Editor editor = sharedPrefs.edit();
-        editor.remove(DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS);
+        editor.remove(DownloadSharedPreferenceHelper.KEY_PENDING_DOWNLOAD_NOTIFICATIONS);
         editor.apply();
-        super.tearDown();
     }
 
-    private void startNotificationService() {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                Intent intent = new Intent(getService(), MockDownloadNotificationService.class);
-                startService(intent);
-            }
-        });
-    }
-
-    private DownloadNotificationService bindNotificationService() {
-        Intent intent = new Intent(getService(), MockDownloadNotificationService.class);
-        IBinder service = bindService(intent);
-        return ((DownloadNotificationService.LocalBinder) service).getService();
-    }
-
-    private static Handler getTestHandler() {
-        HandlerThread handlerThread = new HandlerThread("handlerThread");
-        handlerThread.start();
-        return new Handler(handlerThread.getLooper());
-    }
-
-    private void resumeAllDownloads(final DownloadNotificationService service) throws Exception {
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                service.resumeAllPendingDownloads();
-            }
-        });
-    }
-
-    /**
-     * Tests that creating the service without launching chrome will do nothing if there is no
-     * ongoing download.
-     */
+    @Test
     @SmallTest
+    @UiThreadTest
     @Feature({"Download"})
-    public void testPausingWithoutOngoingDownloads() {
-        setupService();
-        startNotificationService();
-        assertTrue(getService().isPaused());
-        assertTrue(getService().getNotificationIds().isEmpty());
+    public void testBasicDownloadFlow() {
+        // Download is in-progress.
+        mDownloadNotificationService.notifyDownloadProgress(ID1, "test",
+                new Progress(1, 100L, OfflineItemProgressUnit.PERCENTAGE), 100L, 1L, 1L, true, true,
+                false, null, null, false);
+        mDownloadForegroundServiceManager.onServiceConnected();
+
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        int notificationId1 = mDownloadNotificationService.getLastNotificationId();
+        assertTrue(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertTrue(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
+
+        // Download is paused.
+        mDownloadNotificationService.notifyDownloadPaused(ID1, "test", true /* isResumable*/,
+                false /* isAutoResumable */, true, false, null, null, false, false, false,
+                PendingState.NOT_PENDING);
+
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        assertFalse(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertFalse(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
+
+        // Download is again in-progress.
+        mDownloadNotificationService.notifyDownloadProgress(ID1, "test",
+                new Progress(20, 100L, OfflineItemProgressUnit.PERCENTAGE), 100L, 1L, 1L, true,
+                true, false, null, null, false);
+        mDownloadForegroundServiceManager.onServiceConnected();
+
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        assertTrue(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertTrue(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
+
+        // Download is successful.
+        mDownloadNotificationService.notifyDownloadSuccessful(
+                ID1, "", "test", 1L, true, true, true, null, "", false, "", 0);
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        assertFalse(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertFalse(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
     }
 
-    /**
-     * Tests that download resumption task is scheduled when notification service is started
-     * without any download action.
-     */
+    @Test
     @SmallTest
+    @UiThreadTest
     @Feature({"Download"})
-    public void testResumptionScheduledWithoutDownloadOperationIntent() throws Exception {
-        MockDownloadResumptionScheduler scheduler = new MockDownloadResumptionScheduler(
-                getSystemContext().getApplicationContext());
-        DownloadResumptionScheduler.setDownloadResumptionScheduler(scheduler);
-        setupService();
-        Set<String> notifications = new HashSet<String>();
-        notifications.add(new DownloadSharedPreferenceEntry(1, true, true,
-                UUID.randomUUID().toString(), "test1").getSharedPreferenceString());
-        SharedPreferences sharedPrefs = ContextUtils.getAppSharedPreferences();
-        SharedPreferences.Editor editor = sharedPrefs.edit();
-        editor.putStringSet(
-                DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS, notifications);
-        editor.apply();
-        startNotificationService();
-        assertTrue(scheduler.mScheduled);
+    public void testDownloadPendingAndCancelled() {
+        // Download is in-progress.
+        mDownloadNotificationService.notifyDownloadProgress(ID1, "test",
+                new Progress(1, 100L, OfflineItemProgressUnit.PERCENTAGE), 100L, 1L, 1L, true, true,
+                false, null, null, false);
+        mDownloadForegroundServiceManager.onServiceConnected();
+
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        int notificationId1 = mDownloadNotificationService.getLastNotificationId();
+        assertTrue(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertTrue(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
+
+        // Download is interrupted and now is pending.
+        mDownloadNotificationService.notifyDownloadPaused(ID1, "test", true /* isResumable */,
+                true /* isAutoResumable */, true, false, null, null, false, false, false,
+                PendingState.PENDING_NETWORK);
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        assertTrue(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertFalse(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
+
+        // Download is cancelled.
+        mDownloadNotificationService.notifyDownloadCanceled(ID1, false);
+
+        assertEquals(0, mDownloadNotificationService.getNotificationIds().size());
+        assertFalse(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertFalse(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
     }
 
-    /**
-     * Tests that download resumption task is not scheduled when notification service is started
-     * with a download action.
-     */
+    @Test
     @SmallTest
+    @UiThreadTest
     @Feature({"Download"})
-    public void testResumptionNotScheduledWithDownloadOperationIntent() {
-        MockDownloadResumptionScheduler scheduler = new MockDownloadResumptionScheduler(
-                getSystemContext().getApplicationContext());
-        DownloadResumptionScheduler.setDownloadResumptionScheduler(scheduler);
-        setupService();
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                Intent intent = new Intent(getService(), MockDownloadNotificationService.class);
-                intent.setAction(DownloadNotificationService.ACTION_DOWNLOAD_RESUME_ALL);
-                startService(intent);
-            }
-        });
-        assertFalse(scheduler.mScheduled);
+    public void testDownloadInterruptedAndFailed() {
+        // Download is in-progress.
+        mDownloadNotificationService.notifyDownloadProgress(ID1, "test",
+                new Progress(1, 100L, OfflineItemProgressUnit.PERCENTAGE), 100L, 1L, 1L, true, true,
+                false, null, null, false);
+        mDownloadForegroundServiceManager.onServiceConnected();
+
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        int notificationId1 = mDownloadNotificationService.getLastNotificationId();
+        assertTrue(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertTrue(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
+
+        // Download is interrupted but because it is not resumable, fails.
+        mDownloadNotificationService.notifyDownloadPaused(ID1, "test", false /* isResumable*/,
+                true /* isAutoResumable */, true, false, null, null, false, false, false,
+                PendingState.PENDING_NETWORK);
+        assertEquals(1, mDownloadNotificationService.getNotificationIds().size());
+        assertFalse(mDownloadForegroundServiceManager.mDownloadUpdateQueue.containsKey(
+                notificationId1));
+        assertFalse(mDownloadNotificationService.mDownloadsInProgress.contains(ID1));
     }
 
-    /**
-     * Tests that creating the service without launching chrome will pause all ongoing downloads.
-     */
+    @Test
     @SmallTest
+    @UiThreadTest
     @Feature({"Download"})
-    public void testPausingWithOngoingDownloads() {
-        setupService();
-        Context mockContext = new AdvancedMockContext(getSystemContext());
-        getService().setContext(mockContext);
-        Set<String> notifications = new HashSet<String>();
-        notifications.add(new DownloadSharedPreferenceEntry(1, true, true,
-                UUID.randomUUID().toString(), "test1").getSharedPreferenceString());
-        notifications.add(new DownloadSharedPreferenceEntry(2, true, true,
-                UUID.randomUUID().toString(), "test2").getSharedPreferenceString());
-        SharedPreferences sharedPrefs =
-                ContextUtils.getAppSharedPreferences();
-        SharedPreferences.Editor editor = sharedPrefs.edit();
-        editor.putStringSet(
-                DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS, notifications);
-        editor.apply();
-        startNotificationService();
-        assertTrue(getService().isPaused());
-        assertEquals(2, getService().getNotificationIds().size());
-        assertTrue(getService().getNotificationIds().contains(1));
-        assertTrue(getService().getNotificationIds().contains(2));
-        assertTrue(
-                sharedPrefs.contains(DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS));
-    }
+    @DisabledTest(message = "https://crbug.com/837298")
+    public void testResumeAllPendingDownloads() {
+        // Queue a few pending downloads.
+        mDownloadSharedPreferenceHelper.addOrReplaceSharedPreferenceEntry(
+                buildEntryStringWithGuid(ID1, 3, "success", false, true));
+        mDownloadSharedPreferenceHelper.addOrReplaceSharedPreferenceEntry(
+                buildEntryStringWithGuid(ID2, 4, "failed", true, true));
+        mDownloadSharedPreferenceHelper.addOrReplaceSharedPreferenceEntry(
+                buildEntryStringWithGuid(ID3, 5, "nonresumable", true, false));
 
-    /**
-     * Tests adding and cancelling notifications.
-     */
-    @SmallTest
-    @Feature({"Download"})
-    public void testAddingAndCancelingNotifications() {
-        setupService();
-        Context mockContext = new AdvancedMockContext(getSystemContext());
-        getService().setContext(mockContext);
-        Set<String> notifications = new HashSet<String>();
-        String guid1 = UUID.randomUUID().toString();
-        notifications.add(new DownloadSharedPreferenceEntry(3, true, true, guid1, "success")
-                .getSharedPreferenceString());
-        String guid2 = UUID.randomUUID().toString();
-        notifications.add(new DownloadSharedPreferenceEntry(4, true, true, guid2, "failed")
-                .getSharedPreferenceString());
-        SharedPreferences sharedPrefs = ContextUtils.getAppSharedPreferences();
-        SharedPreferences.Editor editor = sharedPrefs.edit();
-        editor.putStringSet(
-                DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS, notifications);
-        editor.apply();
-        startNotificationService();
-        assertEquals(2, getService().getNotificationIds().size());
-        assertTrue(getService().getNotificationIds().contains(3));
-        assertTrue(getService().getNotificationIds().contains(4));
-
-        DownloadNotificationService service = bindNotificationService();
-        String guid3 = UUID.randomUUID().toString();
-        service.notifyDownloadProgress(guid3, "test", 1, 1L, 1L, true, true);
-        assertEquals(3, getService().getNotificationIds().size());
-        int lastNotificationId = getService().getLastAddedNotificationId();
-        Set<String> entries = DownloadManagerService.getStoredDownloadInfo(
-                sharedPrefs, DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS);
-        assertEquals(3, entries.size());
-
-        service.notifyDownloadSuccessful(guid1, "success", null);
-        entries = DownloadManagerService.getStoredDownloadInfo(
-                sharedPrefs, DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS);
-        assertEquals(2, entries.size());
-
-        service.notifyDownloadFailed(guid2, "failed");
-        entries = DownloadManagerService.getStoredDownloadInfo(
-                sharedPrefs, DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS);
-        assertEquals(1, entries.size());
-
-        service.notifyDownloadCanceled(guid3);
-        assertEquals(2, getService().getNotificationIds().size());
-        assertFalse(getService().getNotificationIds().contains(lastNotificationId));
-    }
-
-    /**
-     * Tests that notification is updated if download success comes without any prior progress.
-     */
-    @SmallTest
-    @Feature({"Download"})
-    public void testDownloadSuccessNotification() {
-        setupService();
-        startNotificationService();
-        DownloadNotificationService service = bindNotificationService();
-        String guid = UUID.randomUUID().toString();
-        service.notifyDownloadSuccessful(guid, "test", null);
-        assertEquals(1, getService().getNotificationIds().size());
-    }
-
-    /**
-     * Tests resume all pending downloads.
-     */
-    @SmallTest
-    @Feature({"Download"})
-    public void testResumeAllPendingDownloads() throws Exception {
-        setupService();
-        Context mockContext = new AdvancedMockContext(getSystemContext());
-        getService().setContext(mockContext);
-        Set<String> notifications = new HashSet<String>();
-        String guid1 = UUID.randomUUID().toString();
-        notifications.add(new DownloadSharedPreferenceEntry(3, true, false, guid1, "success")
-                .getSharedPreferenceString());
-        String guid2 = UUID.randomUUID().toString();
-        notifications.add(new DownloadSharedPreferenceEntry(4, true, true, guid2, "failed")
-                .getSharedPreferenceString());
-        SharedPreferences sharedPrefs = ContextUtils.getAppSharedPreferences();
-        SharedPreferences.Editor editor = sharedPrefs.edit();
-        editor.putStringSet(
-                DownloadNotificationService.PENDING_DOWNLOAD_NOTIFICATIONS, notifications);
-        editor.apply();
-        startNotificationService();
-        DownloadNotificationService service = bindNotificationService();
+        // Resume pending downloads when network is metered.
         DownloadManagerService.disableNetworkListenerForTest();
-
-        final MockDownloadManagerService manager =
-                new MockDownloadManagerService(getSystemContext().getApplicationContext());
-        ThreadUtils.runOnUiThreadBlocking(new Runnable() {
-            @Override
-            public void run() {
-                DownloadManagerService.setDownloadManagerService(manager);
-            }
-        });
         DownloadManagerService.setIsNetworkMeteredForTest(true);
-        resumeAllDownloads(service);
-        assertEquals(1, manager.mDownloads.size());
-        assertEquals(manager.mDownloads.get(0).getDownloadInfo().getDownloadGuid(), guid2);
+        mDownloadNotificationService.resumeAllPendingDownloads();
 
-        manager.mDownloads.clear();
+        assertEquals(1, mDownloadNotificationService.mResumedDownloads.size());
+        assertEquals(ID2.id, mDownloadNotificationService.mResumedDownloads.get(0));
+
+        // Resume pending downloads when network is not metered.
+        mDownloadNotificationService.mResumedDownloads.clear();
         DownloadManagerService.setIsNetworkMeteredForTest(false);
-        resumeAllDownloads(service);
-        assertEquals(1, manager.mDownloads.size());
-        assertEquals(manager.mDownloads.get(0).getDownloadInfo().getDownloadGuid(), guid1);
-    }
+        mDownloadNotificationService.resumeAllPendingDownloads();
+        assertEquals(1, mDownloadNotificationService.mResumedDownloads.size());
 
-    @SmallTest
-    @Feature({"Download"})
-    public void testParseDownloadNotifications() {
-        String uuid = UUID.randomUUID().toString();
-        String notification =
-                DownloadSharedPreferenceEntry.VERSION + ",1,0,1," + uuid + ",test.pdf";
-        DownloadSharedPreferenceEntry entry =
-                DownloadSharedPreferenceEntry.parseFromString(notification);
-        assertEquals(1, entry.notificationId);
-        assertEquals("test.pdf", entry.fileName);
-        assertFalse(entry.isResumable);
-        assertEquals(uuid, entry.downloadGuid);
-
-        notification = DownloadSharedPreferenceEntry.VERSION + ",2,1,1," + uuid + ",test,2.pdf";
-        entry = DownloadSharedPreferenceEntry.parseFromString(notification);
-        assertEquals(2, entry.notificationId);
-        assertEquals("test,2.pdf", entry.fileName);
-        assertTrue(entry.isResumable);
-        assertEquals(uuid, entry.downloadGuid);
-    }
-
-    @SmallTest
-    @Feature({"Download"})
-    public void testFormatRemainingTime() {
-        Context context = getSystemContext().getApplicationContext();
-        assertEquals("0 secs left", DownloadNotificationService.formatRemainingTime(context, 0));
-        assertEquals("1 sec left", DownloadNotificationService.formatRemainingTime(
-                context, MILLIS_PER_SECOND));
-        assertEquals("1 min left", DownloadNotificationService.formatRemainingTime(context,
-                DownloadNotificationService.SECONDS_PER_MINUTE * MILLIS_PER_SECOND));
-        assertEquals("2 mins left", DownloadNotificationService.formatRemainingTime(context,
-                149 * MILLIS_PER_SECOND));
-        assertEquals("3 mins left", DownloadNotificationService.formatRemainingTime(context,
-                150 * MILLIS_PER_SECOND));
-        assertEquals("1 hour left", DownloadNotificationService.formatRemainingTime(context,
-                DownloadNotificationService.SECONDS_PER_HOUR * MILLIS_PER_SECOND));
-        assertEquals("2 hours left", DownloadNotificationService.formatRemainingTime(context,
-                149 * DownloadNotificationService.SECONDS_PER_MINUTE * MILLIS_PER_SECOND));
-        assertEquals("3 hours left", DownloadNotificationService.formatRemainingTime(context,
-                150 * DownloadNotificationService.SECONDS_PER_MINUTE * MILLIS_PER_SECOND));
-        assertEquals("1 day left", DownloadNotificationService.formatRemainingTime(context,
-                DownloadNotificationService.SECONDS_PER_DAY * MILLIS_PER_SECOND));
-        assertEquals("2 days left", DownloadNotificationService.formatRemainingTime(context,
-                59 * DownloadNotificationService.SECONDS_PER_HOUR * MILLIS_PER_SECOND));
-        assertEquals("3 days left", DownloadNotificationService.formatRemainingTime(context,
-                60 * DownloadNotificationService.SECONDS_PER_HOUR * MILLIS_PER_SECOND));
+        mDownloadSharedPreferenceHelper.removeSharedPreferenceEntry(ID1);
+        mDownloadSharedPreferenceHelper.removeSharedPreferenceEntry(ID2);
+        mDownloadSharedPreferenceHelper.removeSharedPreferenceEntry(ID3);
     }
 }

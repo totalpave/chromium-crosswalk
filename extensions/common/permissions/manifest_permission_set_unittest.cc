@@ -2,65 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "extensions/common/permissions/manifest_permission_set.h"
+
 #include "base/pickle.h"
 #include "base/values.h"
-#include "extensions/common/permissions/manifest_permission.h"
-#include "extensions/common/permissions/manifest_permission_set.h"
+#include "extensions/common/permissions/mock_manifest_permission.h"
 #include "ipc/ipc_message.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace extensions {
 
-class MockManifestPermission : public ManifestPermission {
- public:
-  MockManifestPermission(const std::string& name)
-      : name_(name) {
-  }
-
-  std::string name() const override { return name_; }
-
-  std::string id() const override { return name(); }
-
-  PermissionIDSet GetPermissions() const override { return PermissionIDSet(); }
-
-  bool FromValue(const base::Value* value) override { return true; }
-
-  std::unique_ptr<base::Value> ToValue() const override {
-    return base::Value::CreateNullValue();
-  }
-
-  ManifestPermission* Diff(const ManifestPermission* rhs) const override {
-    const MockManifestPermission* other =
-        static_cast<const MockManifestPermission*>(rhs);
-    EXPECT_EQ(name_, other->name_);
-    return NULL;
-  }
-
-  ManifestPermission* Union(const ManifestPermission* rhs) const override {
-    const MockManifestPermission* other =
-        static_cast<const MockManifestPermission*>(rhs);
-    EXPECT_EQ(name_, other->name_);
-    return new MockManifestPermission(name_);
-  }
-
-  ManifestPermission* Intersect(const ManifestPermission* rhs) const override {
-    const MockManifestPermission* other =
-        static_cast<const MockManifestPermission*>(rhs);
-    EXPECT_EQ(name_, other->name_);
-    return new MockManifestPermission(name_);
-  }
-
- private:
-  std::string name_;
-};
-
 TEST(ManifestPermissionSetTest, General) {
   ManifestPermissionSet set;
-  set.insert(new MockManifestPermission("p1"));
-  set.insert(new MockManifestPermission("p2"));
-  set.insert(new MockManifestPermission("p3"));
-  set.insert(new MockManifestPermission("p4"));
-  set.insert(new MockManifestPermission("p5"));
+  set.insert(std::make_unique<MockManifestPermission>("p1"));
+  set.insert(std::make_unique<MockManifestPermission>("p2"));
+  set.insert(std::make_unique<MockManifestPermission>("p3"));
+  set.insert(std::make_unique<MockManifestPermission>("p4"));
+  set.insert(std::make_unique<MockManifestPermission>("p5"));
 
   EXPECT_EQ(set.find("p1")->id(), "p1");
   EXPECT_TRUE(set.find("p10") == set.end());
@@ -80,15 +38,15 @@ TEST(ManifestPermissionSetTest, CreateUnion) {
   ManifestPermissionSet expected_permissions;
   ManifestPermissionSet result;
 
-  ManifestPermission* permission = new MockManifestPermission("p3");
+  auto permission = std::make_unique<MockManifestPermission>("p3");
 
   // Union with an empty set.
-  permissions1.insert(new MockManifestPermission("p1"));
-  permissions1.insert(new MockManifestPermission("p2"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p1"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p2"));
   permissions1.insert(permission->Clone());
-  expected_permissions.insert(new MockManifestPermission("p1"));
-  expected_permissions.insert(new MockManifestPermission("p2"));
-  expected_permissions.insert(permission);
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p1"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p2"));
+  expected_permissions.insert(std::move(permission));
 
   ManifestPermissionSet::Union(permissions1, permissions2, &result);
 
@@ -102,27 +60,27 @@ TEST(ManifestPermissionSetTest, CreateUnion) {
   EXPECT_EQ(expected_permissions, result);
 
   // Now use a real second set.
-  permissions2.insert(new MockManifestPermission("p1"));
-  permissions2.insert(new MockManifestPermission("p2"));
-  permissions2.insert(new MockManifestPermission("p33"));
-  permissions2.insert(new MockManifestPermission("p4"));
-  permissions2.insert(new MockManifestPermission("p5"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p1"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p2"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p33"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p4"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p5"));
 
-  expected_permissions.insert(new MockManifestPermission("p1"));
-  expected_permissions.insert(new MockManifestPermission("p2"));
-  expected_permissions.insert(new MockManifestPermission("p3"));
-  expected_permissions.insert(new MockManifestPermission("p4"));
-  expected_permissions.insert(new MockManifestPermission("p5"));
-  expected_permissions.insert(new MockManifestPermission("p33"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p1"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p2"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p3"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p4"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p5"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p33"));
 
   ManifestPermissionSet::Union(permissions1, permissions2, &result);
 
   {
     ManifestPermissionSet set1;
-    set1.insert(new MockManifestPermission("p1"));
-    set1.insert(new MockManifestPermission("p2"));
+    set1.insert(std::make_unique<MockManifestPermission>("p1"));
+    set1.insert(std::make_unique<MockManifestPermission>("p2"));
     ManifestPermissionSet set2;
-    set2.insert(new MockManifestPermission("p3"));
+    set2.insert(std::make_unique<MockManifestPermission>("p3"));
 
     EXPECT_FALSE(set1.Contains(set2));
     EXPECT_FALSE(set2.Contains(set1));
@@ -145,9 +103,9 @@ TEST(ManifestPermissionSetTest, CreateIntersection) {
   ManifestPermissionSet result;
 
   // Intersection with an empty set.
-  permissions1.insert(new MockManifestPermission("p1"));
-  permissions1.insert(new MockManifestPermission("p2"));
-  permissions1.insert(new MockManifestPermission("p3"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p1"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p2"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p3"));
 
   ManifestPermissionSet::Intersection(permissions1, permissions2, &result);
   EXPECT_TRUE(permissions1.Contains(result));
@@ -161,13 +119,13 @@ TEST(ManifestPermissionSetTest, CreateIntersection) {
   EXPECT_EQ(expected_permissions, result);
 
   // Now use a real second set.
-  permissions2.insert(new MockManifestPermission("p1"));
-  permissions2.insert(new MockManifestPermission("p3"));
-  permissions2.insert(new MockManifestPermission("p4"));
-  permissions2.insert(new MockManifestPermission("p5"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p1"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p3"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p4"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p5"));
 
-  expected_permissions.insert(new MockManifestPermission("p1"));
-  expected_permissions.insert(new MockManifestPermission("p3"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p1"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p3"));
 
   ManifestPermissionSet::Intersection(permissions1, permissions2, &result);
 
@@ -188,22 +146,22 @@ TEST(ManifestPermissionSetTest, CreateDifference) {
   ManifestPermissionSet result;
 
   // Difference with an empty set.
-  permissions1.insert(new MockManifestPermission("p1"));
-  permissions1.insert(new MockManifestPermission("p2"));
-  permissions1.insert(new MockManifestPermission("p3"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p1"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p2"));
+  permissions1.insert(std::make_unique<MockManifestPermission>("p3"));
 
   ManifestPermissionSet::Difference(permissions1, permissions2, &result);
 
   EXPECT_EQ(permissions1, result);
 
   // Now use a real second set.
-  permissions2.insert(new MockManifestPermission("p1"));
-  permissions2.insert(new MockManifestPermission("p2"));
-  permissions2.insert(new MockManifestPermission("p4"));
-  permissions2.insert(new MockManifestPermission("p5"));
-  permissions2.insert(new MockManifestPermission("p6"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p1"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p2"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p4"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p5"));
+  permissions2.insert(std::make_unique<MockManifestPermission>("p6"));
 
-  expected_permissions.insert(new MockManifestPermission("p3"));
+  expected_permissions.insert(std::make_unique<MockManifestPermission>("p3"));
 
   ManifestPermissionSet::Difference(permissions1, permissions2, &result);
 

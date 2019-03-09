@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/location.h"
 #include "base/macros.h"
@@ -28,8 +29,7 @@
 #include "extensions/common/extension_set.h"
 #include "extensions/common/value_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/leveldatabase/src/helpers/memenv/memenv.h"
-#include "third_party/leveldatabase/src/include/leveldb/env.h"
+#include "third_party/leveldatabase/leveldb_chrome.h"
 
 namespace sync_file_system {
 namespace drive_backend {
@@ -39,8 +39,8 @@ namespace {
 const char kAppID[] = "app_id";
 
 void EmptyTask(SyncStatusCode status, const SyncStatusCallback& callback) {
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                base::Bind(callback, status));
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(callback, status));
 }
 
 }  // namespace
@@ -66,7 +66,7 @@ class MockExtensionService : public TestExtensionService {
   ~MockExtensionService() override {}
 
   void AddExtension(const extensions::Extension* extension) override {
-    extensions_.Insert(make_scoped_refptr(extension));
+    extensions_.Insert(base::WrapRefCounted(extension));
   }
 
   const extensions::Extension* GetInstalledExtension(
@@ -88,7 +88,7 @@ class MockExtensionService : public TestExtensionService {
     if (!IsExtensionEnabled(extension_id))
       return;
     const extensions::Extension* extension = extensions_.GetByID(extension_id);
-    disabled_extensions_.Insert(make_scoped_refptr(extension));
+    disabled_extensions_.Insert(base::WrapRefCounted(extension));
   }
 
  private:
@@ -106,7 +106,7 @@ class SyncWorkerTest : public testing::Test,
 
   void SetUp() override {
     ASSERT_TRUE(profile_dir_.CreateUniqueTempDir());
-    in_memory_env_.reset(leveldb::NewMemEnv(leveldb::Env::Default()));
+    in_memory_env_ = leveldb_chrome::NewMemEnv("SyncWorkerTest");
 
     extension_service_.reset(new MockExtensionService);
     std::unique_ptr<drive::DriveServiceInterface> fake_drive_service(
@@ -117,13 +117,11 @@ class SyncWorkerTest : public testing::Test,
             std::move(fake_drive_service), nullptr /* drive_uploader */,
             nullptr /* task_logger */,
             base::ThreadTaskRunnerHandle::Get() /* ui_task_runner */,
-            base::ThreadTaskRunnerHandle::Get() /* worker_task_runner */,
-            nullptr /* worker_pool */));
+            base::ThreadTaskRunnerHandle::Get() /* worker_task_runner */));
 
-    sync_worker_.reset(new SyncWorker(
-        profile_dir_.path(),
-        extension_service_->AsWeakPtr(),
-        in_memory_env_.get()));
+    sync_worker_.reset(new SyncWorker(profile_dir_.GetPath(),
+                                      extension_service_->AsWeakPtr(),
+                                      in_memory_env_.get()));
     sync_worker_->Initialize(std::move(sync_engine_context));
 
     sync_worker_->SetSyncEnabled(true);

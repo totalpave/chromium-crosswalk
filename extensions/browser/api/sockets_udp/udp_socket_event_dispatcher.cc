@@ -6,7 +6,10 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/lazy_instance.h"
+#include "base/task/post_task.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "extensions/browser/api/socket/udp_socket.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extensions_browser_client.h"
@@ -18,8 +21,8 @@ namespace api {
 using content::BrowserThread;
 
 static base::LazyInstance<
-    BrowserContextKeyedAPIFactory<UDPSocketEventDispatcher> > g_factory =
-    LAZY_INSTANCE_INITIALIZER;
+    BrowserContextKeyedAPIFactory<UDPSocketEventDispatcher>>::DestructorAtExit
+    g_factory = LAZY_INSTANCE_INITIALIZER;
 
 // static
 BrowserContextKeyedAPIFactory<UDPSocketEventDispatcher>*
@@ -104,6 +107,7 @@ void UDPSocketEventDispatcher::ReceiveCallback(
     const ReceiveParams& params,
     int bytes_read,
     scoped_refptr<net::IOBuffer> io_buffer,
+    bool socket_destroying,
     const std::string& address,
     uint16_t port) {
   DCHECK_CURRENTLY_ON(params.thread_id);
@@ -128,10 +132,9 @@ void UDPSocketEventDispatcher::ReceiveCallback(
 
     // Post a task to delay the read until the socket is available, as
     // calling StartReceive at this point would error with ERR_IO_PENDING.
-    BrowserThread::PostTask(
-        params.thread_id,
-        FROM_HERE,
-        base::Bind(&UDPSocketEventDispatcher::StartReceive, params));
+    base::PostTaskWithTraits(
+        FROM_HERE, {params.thread_id},
+        base::BindOnce(&UDPSocketEventDispatcher::StartReceive, params));
   } else if (bytes_read == net::ERR_IO_PENDING) {
     // This happens when resuming a socket which already had an
     // active "recv" callback.
@@ -151,12 +154,14 @@ void UDPSocketEventDispatcher::ReceiveCallback(
                   sockets_udp::OnReceiveError::kEventName, std::move(args)));
     PostEvent(params, std::move(event));
 
-    // Since we got an error, the socket is now "paused" until the application
-    // "resumes" it.
-    ResumableUDPSocket* socket =
-        params.sockets->Get(params.extension_id, params.socket_id);
-    if (socket) {
-      socket->set_paused(true);
+    // Do not try to access |socket| when we are destroying it.
+    if (!socket_destroying) {
+      // Since we got an error, the socket is now "paused" until the application
+      // "resumes" it.
+      ResumableUDPSocket* socket =
+          params.sockets->Get(params.extension_id, params.socket_id);
+      if (socket)
+        socket->set_paused(true);
     }
   }
 }
@@ -166,10 +171,10 @@ void UDPSocketEventDispatcher::PostEvent(const ReceiveParams& params,
                                          std::unique_ptr<Event> event) {
   DCHECK_CURRENTLY_ON(params.thread_id);
 
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&DispatchEvent, params.browser_context_id, params.extension_id,
-                 base::Passed(std::move(event))));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&DispatchEvent, params.browser_context_id,
+                     params.extension_id, std::move(event)));
 }
 
 /*static*/

@@ -6,7 +6,7 @@
 #include "base/bind_helpers.h"
 #include "base/location.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
@@ -14,6 +14,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/content_test_utils.h"
 #include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -38,7 +39,9 @@ class TestWebDialogView : public views::WebDialogView {
   TestWebDialogView(content::BrowserContext* context,
                     ui::WebDialogDelegate* delegate,
                     bool* observed_destroy)
-      : views::WebDialogView(context, delegate, new ChromeWebContentsHandler),
+      : views::WebDialogView(context,
+                             delegate,
+                             std::make_unique<ChromeWebContentsHandler>()),
         should_quit_on_size_change_(false),
         observed_destroy_(observed_destroy) {
     EXPECT_FALSE(*observed_destroy_);
@@ -61,8 +64,7 @@ class TestWebDialogView : public views::WebDialogView {
       // loop.
       base::ThreadTaskRunnerHandle::Get()->PostTask(
           FROM_HERE,
-          base::Bind(&base::MessageLoop::QuitWhenIdle,
-                     base::Unretained(base::MessageLoop::current())));
+          base::BindOnce(&base::RunLoop::QuitCurrentWhenIdleDeprecated));
     }
 
     last_size_ = bounds.size();
@@ -131,9 +133,10 @@ IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, MAYBE_SizeWindow) {
   set_bounds.set_width(400);
   set_bounds.set_height(300);
 
-  // WebDialogView ignores the WebContents* |source| argument to MoveContents.
-  // We could pass view_->web_contents(), but it's not relevant for the test.
-  view_->MoveContents(nullptr, set_bounds);
+  // WebDialogView ignores the WebContents* |source| argument to
+  // SetContentsBounds. We could pass view_->web_contents(), but it's not
+  // relevant for the test.
+  view_->SetContentsBounds(nullptr, set_bounds);
   content::RunMessageLoop();  // TestWebDialogView will quit.
   actual_bounds = view_->GetWidget()->GetClientAreaBoundsInScreen();
   EXPECT_EQ(set_bounds, actual_bounds);
@@ -149,7 +152,7 @@ IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, MAYBE_SizeWindow) {
   set_bounds.set_width(550);
   set_bounds.set_height(250);
 
-  view_->MoveContents(nullptr, set_bounds);
+  view_->SetContentsBounds(nullptr, set_bounds);
   content::RunMessageLoop();  // TestWebDialogView will quit.
   actual_bounds = view_->GetWidget()->GetClientAreaBoundsInScreen();
   EXPECT_EQ(set_bounds, actual_bounds);
@@ -168,7 +171,7 @@ IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, MAYBE_SizeWindow) {
 
   set_bounds.set_size(min_size);
 
-  view_->MoveContents(nullptr, set_bounds);
+  view_->SetContentsBounds(nullptr, set_bounds);
   content::RunMessageLoop();  // TestWebDialogView will quit.
   actual_bounds = view_->GetWidget()->GetClientAreaBoundsInScreen();
   EXPECT_EQ(set_bounds, actual_bounds);
@@ -183,7 +186,7 @@ IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, MAYBE_SizeWindow) {
   // Check to make sure we can't get to 0x0. First expand beyond the minimum
   // size that was set above so that TestWebDialogView has a change to pick up.
   set_bounds.set_height(250);
-  view_->MoveContents(nullptr, set_bounds);
+  view_->SetContentsBounds(nullptr, set_bounds);
   content::RunMessageLoop();  // TestWebDialogView will quit.
   actual_bounds = view_->GetWidget()->GetClientAreaBoundsInScreen();
   EXPECT_EQ(set_bounds, actual_bounds);
@@ -192,7 +195,7 @@ IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, MAYBE_SizeWindow) {
   set_bounds.set_width(0);
   set_bounds.set_height(0);
 
-  view_->MoveContents(nullptr, set_bounds);
+  view_->SetContentsBounds(nullptr, set_bounds);
   content::RunMessageLoop();  // TestWebDialogView will quit.
   actual_bounds = view_->GetWidget()->GetClientAreaBoundsInScreen();
   EXPECT_EQ(min_size, actual_bounds.size());
@@ -222,7 +225,7 @@ IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, MAYBE_SizeWindow) {
 IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, CloseParentWindow) {
   // Open a second browser window so we don't trigger shutdown.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(url::kAboutBlankURL), NEW_WINDOW,
+      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_WINDOW,
       ui_test_utils::BROWSER_TEST_NONE);
 
   // TestWebDialogDelegate defaults to window-modal, so closing the browser
@@ -237,4 +240,9 @@ IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, CloseParentWindow) {
   content::RunAllPendingInMessageLoop();
   EXPECT_TRUE(web_dialog_delegate_destroyed_);
   EXPECT_TRUE(web_dialog_view_destroyed_);
+}
+
+// Test that key event is translated to a text input properly.
+IN_PROC_BROWSER_TEST_F(WebDialogBrowserTest, TextInputViaKeyEvent) {
+  TestTextInputViaKeyEvent(view_->web_contents());
 }

@@ -11,13 +11,26 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/single_thread_task_runner.h"
 #include "content/renderer/media/webrtc/peer_connection_dependency_factory.h"
-#include "third_party/webrtc/api/mediaconstraintsinterface.h"
-#include "third_party/webrtc/api/mediastreaminterface.h"
+#include "third_party/webrtc/api/media_stream_interface.h"
 
 namespace content {
 
 typedef std::set<webrtc::ObserverInterface*> ObserverSet;
+
+class MockWebRtcAudioSource : public webrtc::AudioSourceInterface {
+ public:
+  MockWebRtcAudioSource(bool is_remote);
+  void RegisterObserver(webrtc::ObserverInterface* observer) override;
+  void UnregisterObserver(webrtc::ObserverInterface* observer) override;
+
+  SourceState state() const override;
+  bool remote() const override;
+
+ private:
+  const bool is_remote_;
+};
 
 class MockWebRtcAudioTrack : public webrtc::AudioTrackInterface {
  public:
@@ -44,7 +57,7 @@ class MockWebRtcAudioTrack : public webrtc::AudioTrackInterface {
 
  private:
   std::string id_;
-  scoped_refptr<webrtc::VideoTrackSourceInterface> source_;
+  scoped_refptr<webrtc::AudioSourceInterface> source_;
   bool enabled_;
   TrackState state_;
   ObserverSet observers_;
@@ -55,9 +68,9 @@ class MockWebRtcVideoTrack : public webrtc::VideoTrackInterface {
   static scoped_refptr<MockWebRtcVideoTrack> Create(const std::string& id);
   MockWebRtcVideoTrack(const std::string& id,
                        webrtc::VideoTrackSourceInterface* source);
-  void AddOrUpdateSink(rtc::VideoSinkInterface<cricket::VideoFrame>* sink,
+  void AddOrUpdateSink(rtc::VideoSinkInterface<webrtc::VideoFrame>* sink,
                        const rtc::VideoSinkWants& wants) override;
-  void RemoveSink(rtc::VideoSinkInterface<cricket::VideoFrame>* sink) override;
+  void RemoveSink(rtc::VideoSinkInterface<webrtc::VideoFrame>* sink) override;
   webrtc::VideoTrackSourceInterface* GetSource() const override;
 
   std::string kind() const override;
@@ -80,18 +93,18 @@ class MockWebRtcVideoTrack : public webrtc::VideoTrackInterface {
   bool enabled_;
   TrackState state_;
   ObserverSet observers_;
-  rtc::VideoSinkInterface<cricket::VideoFrame>* sink_;
+  rtc::VideoSinkInterface<webrtc::VideoFrame>* sink_;
 };
 
 class MockMediaStream : public webrtc::MediaStreamInterface {
  public:
-  explicit MockMediaStream(const std::string& label);
+  explicit MockMediaStream(const std::string& id);
 
   bool AddTrack(webrtc::AudioTrackInterface* track) override;
   bool AddTrack(webrtc::VideoTrackInterface* track) override;
   bool RemoveTrack(webrtc::AudioTrackInterface* track) override;
   bool RemoveTrack(webrtc::VideoTrackInterface* track) override;
-  std::string label() const override;
+  std::string id() const override;
   webrtc::AudioTrackVector GetAudioTracks() override;
   webrtc::VideoTrackVector GetVideoTracks() override;
   rtc::scoped_refptr<webrtc::AudioTrackInterface> FindAudioTrack(
@@ -107,7 +120,7 @@ class MockMediaStream : public webrtc::MediaStreamInterface {
  private:
   void NotifyObservers();
 
-  std::string label_;
+  std::string id_;
   webrtc::AudioTrackVector audio_track_vector_;
   webrtc::VideoTrackVector video_track_vector_;
 
@@ -124,20 +137,15 @@ class MockPeerConnectionDependencyFactory
 
   scoped_refptr<webrtc::PeerConnectionInterface> CreatePeerConnection(
       const webrtc::PeerConnectionInterface::RTCConfiguration& config,
-      blink::WebFrame* frame,
+      blink::WebLocalFrame* frame,
       webrtc::PeerConnectionObserver* observer) override;
-  WebRtcVideoCapturerAdapter* CreateVideoCapturer(
-      bool is_screen_capture) override;
-  scoped_refptr<webrtc::VideoTrackSourceInterface> CreateVideoSource(
-      cricket::VideoCapturer* capturer) override;
+  scoped_refptr<webrtc::VideoTrackSourceInterface> CreateVideoTrackSourceProxy(
+      webrtc::VideoTrackSourceInterface* source) override;
   scoped_refptr<webrtc::MediaStreamInterface> CreateLocalMediaStream(
       const std::string& label) override;
   scoped_refptr<webrtc::VideoTrackInterface> CreateLocalVideoTrack(
       const std::string& id,
       webrtc::VideoTrackSourceInterface* source) override;
-  scoped_refptr<webrtc::VideoTrackInterface> CreateLocalVideoTrack(
-      const std::string& id,
-      cricket::VideoCapturer* capturer) override;
   webrtc::SessionDescriptionInterface* CreateSessionDescription(
       const std::string& type,
       const std::string& sdp,
@@ -150,8 +158,14 @@ class MockPeerConnectionDependencyFactory
   scoped_refptr<base::SingleThreadTaskRunner> GetWebRtcSignalingThread()
       const override;
 
+  // If |fail| is true, subsequent calls to CreateSessionDescription will
+  // return nullptr. This can be used to fake a blob of SDP that fails to be
+  // parsed.
+  void SetFailToCreateSessionDescription(bool fail);
+
  private:
   base::Thread signaling_thread_;
+  bool fail_to_create_session_description_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(MockPeerConnectionDependencyFactory);
 };

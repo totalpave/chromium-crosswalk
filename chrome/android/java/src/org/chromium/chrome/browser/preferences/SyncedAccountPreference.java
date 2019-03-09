@@ -11,9 +11,11 @@ import android.text.TextUtils;
 import android.util.AttributeSet;
 
 import org.chromium.chrome.R;
-import org.chromium.sync.AndroidSyncSettings;
-import org.chromium.sync.signin.AccountManagerHelper;
-import org.chromium.sync.signin.ChromeSigninController;
+import org.chromium.components.signin.AccountManagerFacade;
+import org.chromium.components.signin.ChromeSigninController;
+import org.chromium.components.sync.AndroidSyncSettings;
+
+import java.util.List;
 
 /**
  * A preference that displays the account currently being synced and allows the user to choose a new
@@ -40,23 +42,22 @@ public class SyncedAccountPreference extends ListPreference {
     }
 
     private void updateAccountsList() {
-        boolean syncEnabled = AndroidSyncSettings.isSyncEnabled(getContext());
+        boolean syncEnabled = AndroidSyncSettings.get().isSyncEnabled();
         if (!syncEnabled) {
             setEnabled(false);
             // Don't return at this point, we still want the preference to display the currently
             // signed in account
         }
 
-        Account[] accounts = AccountManagerHelper.get(getContext()).getGoogleAccounts();
-        String[] accountNames = new String[accounts.length];
-        String[] accountValues = new String[accounts.length];
+        List<Account> accounts = AccountManagerFacade.get().tryGetGoogleAccounts();
+        String[] accountNames = new String[accounts.size()];
+        String[] accountValues = new String[accounts.size()];
 
-        String signedInAccountName =
-                ChromeSigninController.get(getContext()).getSignedInAccountName();
+        String signedInAccountName = ChromeSigninController.get().getSignedInAccountName();
         String signedInSettingsKey = "";
 
-        for (int i = 0; i < accounts.length; ++i) {
-            Account account = accounts[i];
+        for (int i = 0; i < accounts.size(); ++i) {
+            Account account = accounts.get(i);
             accountNames[i] = account.name;
             accountValues[i] = account.name;
             boolean isPrimaryAccount = TextUtils.equals(account.name, signedInAccountName);

@@ -4,27 +4,33 @@
 
 #include "chrome/browser/chromeos/policy/fake_device_cloud_policy_initializer.h"
 
+#include <memory>
+
 #include "base/memory/ref_counted.h"
 #include "base/sequenced_task_runner.h"
+#include "chromeos/attestation/mock_attestation_flow.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
 
 namespace policy {
 
 FakeDeviceCloudPolicyInitializer::FakeDeviceCloudPolicyInitializer()
     : DeviceCloudPolicyInitializer(
-          NULL,  // local_state
-          NULL,  // enterprise_service
-          NULL,  // consumer_service
+          nullptr,  // local_state
+          nullptr,  // enterprise_service
           // background_task_runner
-          scoped_refptr<base::SequencedTaskRunner>(NULL),
-          NULL,  // install_attributes
-          NULL,  // state_keys_broker
-          NULL,  // device_store
-          NULL),  // manager
+          scoped_refptr<base::SequencedTaskRunner>(nullptr),
+          nullptr,  // install_attributes
+          nullptr,  // state_keys_broker
+          nullptr,  // device_store
+          nullptr,  // manager
+          nullptr,  // async_caller
+          std::make_unique<chromeos::attestation::MockAttestationFlow>(),
+          nullptr),  // statistics_provider
       was_start_enrollment_called_(false),
-      enrollment_status_(EnrollmentStatus::ForStatus(
-          EnrollmentStatus::STATUS_SUCCESS)) {
-}
+      enrollment_status_(
+          EnrollmentStatus::ForStatus(EnrollmentStatus::SUCCESS)) {}
+
+FakeDeviceCloudPolicyInitializer::~FakeDeviceCloudPolicyInitializer() = default;
 
 void FakeDeviceCloudPolicyInitializer::Init() {
 }
@@ -32,16 +38,19 @@ void FakeDeviceCloudPolicyInitializer::Init() {
 void FakeDeviceCloudPolicyInitializer::Shutdown() {
 }
 
-void FakeDeviceCloudPolicyInitializer::StartEnrollment(
-    ManagementMode management_mode,
+void FakeDeviceCloudPolicyInitializer::PrepareEnrollment(
     DeviceManagementService* device_management_service,
-    chromeos::OwnerSettingsServiceChromeOS* owner_settings_service,
+    chromeos::ActiveDirectoryJoinDelegate* ad_join_delegate,
     const EnrollmentConfig& enrollment_config,
-    const std::string& auth_token,
-    const AllowedDeviceModes& allowed_modes,
+    std::unique_ptr<DMAuth> auth,
     const EnrollmentCallback& enrollment_callback) {
+  enrollment_callback_ = enrollment_callback;
+}
+
+void FakeDeviceCloudPolicyInitializer::StartEnrollment() {
+  if (enrollment_callback_)
+    enrollment_callback_.Run(enrollment_status_);
   was_start_enrollment_called_ = true;
-  enrollment_callback.Run(enrollment_status_);
 }
 
 }  // namespace policy

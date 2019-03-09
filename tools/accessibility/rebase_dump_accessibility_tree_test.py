@@ -14,120 +14,135 @@ It assumes that you've already uploaded a change and the try jobs have finished.
 It collects all of the results from try jobs on all platforms and updates the
 expectation files locally. From there you can run 'git diff' to make sure all
 of the changes look reasonable, then upload the change for code review.
+
+Optional argument: patchset number, otherwise will default to latest patchset
 """
 
+import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib
-
-# Load BeautifulSoup. It's checked into two places in the Chromium tree.
-sys.path.append(
-    'third_party/trace-viewer/third_party/tvcm/third_party/beautifulsoup')
-from BeautifulSoup import BeautifulSoup
+import urlparse
 
 # The location of the DumpAccessibilityTree html test files and expectations.
 TEST_DATA_PATH = os.path.join(os.getcwd(), 'content/test/data/accessibility')
+
+# Colors for easier debugging.
+# TODO check environment  to determine whether terminal is rich or interactive.
+BRIGHT_COLOR = '\033[93m'
+NORMAL_COLOR = '\033[0m'
 
 # A global that keeps track of files we've already updated, so we don't
 # bother to update the same file twice.
 completed_files = set()
 
-def GitClIssue():
-  '''Retrieve the current issue number as a string.'''
-  result = os.popen('git cl issue').read()
-  # Returns string like: 'Issue number: 12345 (https://...)'
-  return result.split()[2]
+def Fix(line):
+  if line[:3] == '@@@':
+    try:
+      line = re.search('[^@]@([^@]*)@@@', line).group(1)
+    except:
+      pass
+  # For Android tests:
+  if line[:2] == 'I ':
+    try:
+      line = re.search('I  \d+\.\d+s run_tests_on_device\([0-9a-f]+\)  (.*)',
+                       line).group(1)
+    except:
+      pass
+  return line
 
-def ParseFailure(name, url):
-  '''Parse given the name of a failing trybot and the url of its build log.'''
-
-  # Figure out the platform.
-  if name.find('android') >= 0:
-    platform_suffix = '-expected-android.txt'
-  elif name.find('mac') >= 0:
-    platform_suffix = '-expected-mac.txt'
-  elif name.find('win') >= 0:
-    platform_suffix = '-expected-win.txt'
-  else:
-    return
-
-  # Read the content_browsertests log file.
-  data = None
-  lines = None
-  urls = []
-  for url_suffix in [
-      '/steps/content_browsertests%20(with%20patch)/logs/stdio/text',
-      '/steps/content_browsertests/logs/stdio/text']:
-    urls.append(url + url_suffix)
-  for url in urls:
-    response = urllib.urlopen(url)
-    if response.getcode() == 200:
-      data = response.read()
-      lines = data.splitlines()
-      break
-
-  if not data:
-    return
-
-  # Parse the log file for failing tests and overwrite the expected
-  # result file locally with the actual results from the log.
-  test_name = None
+def ParseLog(logdata):
+  '''Parse the log file for failing tests and overwrite the expected
+     result file locally with the actual results from the log.'''
+  lines = logdata.splitlines()
+  test_file = None
+  expected_file = None
   start = None
-  filename = None
   for i in range(len(lines)):
-    line = lines[i]
-    if line[:12] == '[ RUN      ]':
-      test_name = line[13:]
-    if test_name and line[:8] == 'Testing:':
-      filename = re.search('content.test.*accessibility.(.*)', line).group(1)
-    if test_name and line == 'Actual':
+    line = Fix(lines[i])
+    if line.find('Testing:') >= 0:
+      test_file = re.search(
+          'content.test.*accessibility.([^@]*)', line).group(1)
+      expected_file = None
+      start = None
+    if line.find('Expected output:') >= 0:
+      expected_file = re.search(
+          'content.test.*accessibility.([^@]*)', line).group(1)
+    if line == 'Actual':
       start = i + 2
-    if start and test_name and filename and line[:12] == '[  FAILED  ]':
-      # Get the path to the html file.
-      dst_fullpath = os.path.join(TEST_DATA_PATH, filename)
-      # Strip off .html and replace it with the platform expected suffix.
-      dst_fullpath = dst_fullpath[:-5] + platform_suffix
+    if start and test_file and expected_file and line.find('End-of-file') >= 0:
+      dst_fullpath = os.path.join(TEST_DATA_PATH, expected_file)
       if dst_fullpath in completed_files:
         continue
 
-      actual = [line for line in lines[start : i - 1] if line]
+      actual = [Fix(line) for line in lines[start : i] if line]
       fp = open(dst_fullpath, 'w')
       fp.write('\n'.join(actual))
       fp.close()
-      print dst_fullpath
+      print "* %s" % os.path.relpath(dst_fullpath)
       completed_files.add(dst_fullpath)
       start = None
-      test_name = None
-      filename = None
-
-def ParseTrybots(data):
-  '''Parse the code review page to find links to try bots.'''
-  soup = BeautifulSoup(data)
-  failures = soup.findAll(
-      'a',
-      { "class" : "build-result build-status-color-failure" })
-  print 'Found %d trybots that failed' % len(failures)
-  for f in failures:
-    name = f.text.replace('&nbsp;', '')
-    url = f['href']
-    ParseFailure(name, url)
+      test_file = None
+      expected_file = None
 
 def Run():
   '''Main. Get the issue number and parse the code review page.'''
   if len(sys.argv) == 2:
-    issue = sys.argv[1]
+    patchSetArg = '--patchset=%s' % sys.argv[1]
   else:
-    issue = GitClIssue()
+    patchSetArg = '';
 
-  url = 'https://codereview.chromium.org/%s' % issue
-  print 'Fetching issue from %s' % url
-  response = urllib.urlopen(url)
-  if response.getcode() != 200:
-    print 'Error code %d accessing url: %s' % (response.getcode(), url)
-  data = response.read()
-  ParseTrybots(data)
+  (_, tmppath) = tempfile.mkstemp()
+  print 'Temp file: %s' % tmppath
+  os.system('git cl try-results --json %s %s' % (tmppath, patchSetArg))
+
+  try_result = open(tmppath).read()
+  if len(try_result) < 1000:
+    print 'Did not seem to get try bot data.'
+    print try_result
+    return
+
+  data = json.loads(try_result)
+  os.unlink(tmppath)
+
+  #print(json.dumps(data, indent=4))
+
+  for builder in data:
+    print builder['builder_name'], builder['result']
+    if builder['result'] == 'FAILURE':
+      logdog_tokens = [
+          'chromium',
+          'buildbucket',
+          'cr-buildbucket.appspot.com',
+          builder['buildbucket_id'],
+          '+',
+          'steps',
+          '**']
+      logdog_path = '/'.join(logdog_tokens)
+      logdog_query = 'cit logdog query -results 999 -path "%s"' % logdog_path
+      print (BRIGHT_COLOR + '=> %s' + NORMAL_COLOR) % logdog_query
+      steps = os.popen(logdog_query).readlines()
+      a11y_step = None
+      for step in steps:
+        if (step.find('/content_browsertests') >= 0 and
+            step.find('with_patch') >= 0 and
+            step.find('trigger') == -1 and
+            step.find('swarming.summary') == -1 and
+            step.find('step_metadata') == -1 and
+            step.find('Upload') == -1):
+
+          a11y_step = step.rstrip()
+          logdog_cat = 'cit logdog cat -raw "chromium%s"' % a11y_step
+          # A bit noisy but useful for debugging.
+          # print (BRIGHT_COLOR + '=> %s' + NORMAL_COLOR) % logdog_cat
+          output = os.popen(logdog_cat).read()
+          ParseLog(output)
+      if not a11y_step:
+        print 'No content_browsertests (with patch) step found'
+        continue
 
 if __name__ == '__main__':
   sys.exit(Run())

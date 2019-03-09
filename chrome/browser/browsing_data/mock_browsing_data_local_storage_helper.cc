@@ -4,10 +4,13 @@
 
 #include "chrome/browser/browsing_data/mock_browsing_data_local_storage_helper.h"
 
+#include <utility>
+
 #include "base/callback.h"
 #include "base/logging.h"
 #include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 MockBrowsingDataLocalStorageHelper::MockBrowsingDataLocalStorageHelper(
     Profile* profile)
@@ -17,36 +20,37 @@ MockBrowsingDataLocalStorageHelper::MockBrowsingDataLocalStorageHelper(
 MockBrowsingDataLocalStorageHelper::~MockBrowsingDataLocalStorageHelper() {
 }
 
-void MockBrowsingDataLocalStorageHelper::StartFetching(
-    const FetchCallback& callback) {
+void MockBrowsingDataLocalStorageHelper::StartFetching(FetchCallback callback) {
   ASSERT_FALSE(callback.is_null());
   ASSERT_TRUE(callback_.is_null());
-  callback_ = callback;
+  callback_ = std::move(callback);
 }
 
 void MockBrowsingDataLocalStorageHelper::DeleteOrigin(
-    const GURL& origin) {
-  ASSERT_FALSE(callback_.is_null());
-  ASSERT_TRUE(ContainsKey(origins_, origin));
+    const url::Origin& origin,
+    base::OnceClosure callback) {
+  ASSERT_TRUE(base::ContainsKey(origins_, origin));
   last_deleted_origin_ = origin;
   origins_[origin] = false;
+  std::move(callback).Run();
 }
 
 void MockBrowsingDataLocalStorageHelper::AddLocalStorageSamples() {
   const GURL kOrigin1("http://host1:1/");
   const GURL kOrigin2("http://host2:2/");
-  response_.push_back(
-      BrowsingDataLocalStorageHelper::LocalStorageInfo(
-          kOrigin1, 1, base::Time()));
-  origins_[kOrigin1] = true;
-  response_.push_back(
-      BrowsingDataLocalStorageHelper::LocalStorageInfo(
-          kOrigin2, 2, base::Time()));
-  origins_[kOrigin2] = true;
+  AddLocalStorageForOrigin(url::Origin::Create(kOrigin1), 1);
+  AddLocalStorageForOrigin(url::Origin::Create(kOrigin2), 2);
+}
+
+void MockBrowsingDataLocalStorageHelper::AddLocalStorageForOrigin(
+    const url::Origin& origin,
+    size_t size) {
+  response_.emplace_back(origin, size, base::Time());
+  origins_[origin] = true;
 }
 
 void MockBrowsingDataLocalStorageHelper::Notify() {
-  callback_.Run(response_);
+  std::move(callback_).Run(response_);
 }
 
 void MockBrowsingDataLocalStorageHelper::Reset() {

@@ -80,6 +80,8 @@ public class BookmarkWidgetProvider extends AppWidgetProvider {
      * Refreshes all Chrome Bookmark widgets.
      */
     public static void refreshAllWidgets(Context context) {
+        if (AppWidgetManager.getInstance(context) == null) return;
+
         context.sendBroadcast(new Intent(
                 getBookmarkAppWidgetUpdateAction(context),
                 null, context, BookmarkThumbnailWidgetProvider.class));

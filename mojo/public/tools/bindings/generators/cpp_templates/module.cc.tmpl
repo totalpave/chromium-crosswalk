@@ -8,6 +8,10 @@
 {%-   set variant_path = module.path -%}
 {%- endif %}
 
+{%- set header_guard_for_jumbo = "%s_JUMBO_H_"|format(
+        variant_path|upper|replace("/","_")|replace(".","_")|
+            replace("-", "_")) %}
+
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-private-field"
@@ -25,23 +29,31 @@
 #include <utility>
 
 #include "base/logging.h"
-#include "base/trace_event/trace_event.h"
-#include "mojo/public/cpp/bindings/lib/map_data_internal.h"
-#include "mojo/public/cpp/bindings/lib/message_builder.h"
+#include "base/run_loop.h"
+#include "mojo/public/cpp/bindings/lib/message_internal.h"
 #include "mojo/public/cpp/bindings/lib/serialization_util.h"
+#include "mojo/public/cpp/bindings/lib/unserialized_message_context.h"
 #include "mojo/public/cpp/bindings/lib/validate_params.h"
 #include "mojo/public/cpp/bindings/lib/validation_context.h"
 #include "mojo/public/cpp/bindings/lib/validation_errors.h"
-#include "mojo/public/cpp/bindings/lib/validation_util.h"
 #include "mojo/public/interfaces/bindings/interface_control_messages.mojom.h"
+
+#include "{{module.path}}-params-data.h"
+#include "{{module.path}}-shared-message-ids.h"
+
+#include "{{variant_path}}-import-headers.h"
 
 {%- if for_blink %}
 #include "mojo/public/cpp/bindings/lib/wtf_serialization.h"
 {%- endif %}
 
+{# This is include guard for jumbo build. #}
+#ifndef {{header_guard_for_jumbo}}
+#define {{header_guard_for_jumbo}}
 {%- for header in extra_traits_headers %}
 #include "{{header}}"
 {%- endfor %}
+#endif
 
 {%- for namespace in namespaces_as_array %}
 namespace {{namespace}} {
@@ -52,75 +64,18 @@ namespace {{variant}} {
 
 {#--- Constants #}
 {%- for constant in module.constants %}
-{%-   if not constant.kind|is_integral_kind %}
-const {{constant.kind|cpp_pod_type}} {{constant.name}} = {{constant|constant_value}};
+{%-   if constant.kind|is_string_kind %}
+const char {{constant.name}}[] = {{constant|constant_value}};
 {%-   endif %}
 {%- endfor %}
-
-namespace internal {
-namespace {
-
-#pragma pack(push, 1)
-
-{#--- Interface parameter definitions #}
-{%- for interface in interfaces %}
-{%-   for method in interface.methods %}
-{%-     set method_name = "k%s_%s_Name"|format(interface.name, method.name) %}
-const uint32_t {{method_name}} = {{method.ordinal}};
-{%      set struct = method.param_struct %}
-{%      include "struct_declaration.tmpl" %}
-{%-     include "struct_definition.tmpl" %}
-{%-     if method.response_parameters != None %}
-{%-       set struct = method.response_param_struct %}
-{%        include "struct_declaration.tmpl" %}
-{%-       include "struct_definition.tmpl" %}
-{%-     endif %}
-{%-   endfor %}
-{%- endfor %}
-
-#pragma pack(pop)
-
-}  // namespace
-
-{#--- Struct definitions #}
-{%  for struct in structs %}
-{%-   if not struct|is_native_only_kind %}
-{%-     include "struct_definition.tmpl" %}
-{%-   endif %}
-{%- endfor %}
-
-{#--- Union definitions #}
-{%  for union in unions %}
-{%-   include "union_definition.tmpl" %}
-{%- endfor %}
-
-}  // namespace internal
-
-namespace {
-
-{#--- Interface parameter data view definitions #}
-{%- for interface in interfaces %}
-{%-   for method in interface.methods %}
-{%      set struct = method.param_struct %}
-{%      include "struct_data_view_declaration.tmpl" %}
-{%      include "struct_data_view_definition.tmpl" %}
-{%-     if method.response_parameters != None %}
-{%-       set struct = method.response_param_struct %}
-{%        include "struct_data_view_declaration.tmpl" %}
-{%        include "struct_data_view_definition.tmpl" %}
-{%-     endif %}
-{%-   endfor %}
-{%- endfor %}
-
-}  // namespace
 
 {#--- Struct Constants #}
 {%- for struct in structs %}
 {%-   for constant in struct.constants %}
-{%-     if constant.kind|is_integral_kind %}
-const {{constant.kind|cpp_pod_type}} {{struct.name}}::{{constant.name}};
+{%-     if constant.kind|is_string_kind %}
+const char {{struct.name}}::{{constant.name}}[] = {{constant|constant_value}};
 {%-     else %}
-const {{constant.kind|cpp_pod_type}} {{struct.name}}::{{constant.name}} = {{constant|constant_value}};
+constexpr {{constant.kind|cpp_pod_type}} {{struct.name}}::{{constant.name}};
 {%-     endif %}
 {%-   endfor %}
 {%- endfor %}
@@ -129,7 +84,6 @@ const {{constant.kind|cpp_pod_type}} {{struct.name}}::{{constant.name}} = {{cons
 {%- for struct in structs %}
 {%-   if not struct|is_native_only_kind %}
 {%-     include "wrapper_class_definition.tmpl" %}
-{%-     include "struct_data_view_definition.tmpl" %}
 {%-   endif %}
 {%- endfor %}
 
@@ -155,17 +109,16 @@ namespace mojo {
 {#--- Struct Serialization Helpers -#}
 {%  for struct in structs %}
 {%-   if not struct|is_native_only_kind %}
-{%      include "struct_serialization_definition.tmpl" %}
+{%      include "struct_traits_definition.tmpl" %}
 {%-   endif %}
 {%- endfor %}
 
 {#--- Union Serialization Helpers #}
 {%- for union in unions %}
-{%-   include "union_serialization_definition.tmpl" %}
+{%-   include "union_traits_definition.tmpl" %}
 {%- endfor %}
 
 }  // namespace mojo
-
 
 #if defined(__clang__)
 #pragma clang diagnostic pop

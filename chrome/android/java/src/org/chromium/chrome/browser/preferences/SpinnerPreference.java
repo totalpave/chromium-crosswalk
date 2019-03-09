@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.preferences;
 
 import android.content.Context;
+import android.content.res.TypedArray;
 import android.preference.Preference;
 import android.util.AttributeSet;
 import android.view.View;
@@ -24,24 +25,52 @@ public class SpinnerPreference extends Preference {
     private ArrayAdapter<Object> mAdapter;
     private int mSelectedIndex;
     private View mView;
+    private final boolean mSingleLine;
 
     /**
      * Constructor for inflating from XML.
      */
     public SpinnerPreference(Context context, AttributeSet attrs) {
         super(context, attrs);
-        setLayoutResource(R.layout.preference_spinner);
+        TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.SpinnerPreference);
+        mSingleLine = a.getBoolean(R.styleable.SpinnerPreference_singleLine, false);
+        a.recycle();
+        if (mSingleLine) {
+            setLayoutResource(R.layout.preference_spinner_single_line);
+        } else {
+            setLayoutResource(R.layout.preference_spinner);
+        }
     }
 
     /**
      * Provides a list of arbitrary objects to be shown in the spinner. Visually, each option will
-     * be presented as its toString() text.
+     * be presented as its toString() text. Alternative to {@link #setAdapter(ArrayAdapter, int)}.
+     *
      * @param options The options to be shown in the spinner.
      * @param selectedIndex Index of the initially selected option.
      */
     public void setOptions(Object[] options, int selectedIndex) {
-        mAdapter = new ArrayAdapter<Object>(
-                getContext(), android.R.layout.simple_spinner_item, options);
+        int itemLayout;
+        if (mSingleLine) {
+            itemLayout = R.layout.preference_spinner_single_line_item;
+        } else {
+            itemLayout = android.R.layout.simple_spinner_item;
+        }
+        mAdapter = new ArrayAdapter<>(getContext(), itemLayout, options);
+        mAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        mSelectedIndex = selectedIndex;
+    }
+
+    /**
+     * Provides an adapter containing objects to be shown in the spinner. Alternatively, a list of
+     * objects to be shown may be provided in {@link #setOptions(Object[], int)}. It is expected
+     * that only one of these methods will be called.
+     *
+     * @param arrayAdapter  The array adapter to use.
+     * @param selectedIndex The index of the selected item.
+     */
+    public void setAdapter(ArrayAdapter<Object> arrayAdapter, int selectedIndex) {
+        mAdapter = arrayAdapter;
         mAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         mSelectedIndex = selectedIndex;
     }
@@ -50,7 +79,10 @@ public class SpinnerPreference extends Preference {
      * @return The currently selected option.
      */
     public Object getSelectedOption() {
-        if (mSpinner == null) return null;
+        if (mSpinner == null) {
+            // Use the adapter directly if the view hasn't been created yet.
+            return mAdapter.getItem(mSelectedIndex);
+        }
         return mSpinner.getSelectedItem();
     }
 

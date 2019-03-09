@@ -4,6 +4,7 @@
 
 #include "base/files/file_path.h"
 #include "base/path_service.h"
+#include "components/update_client/updater_state.h"
 #include "components/update_client/utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -14,7 +15,7 @@ namespace {
 
 base::FilePath MakeTestFilePath(const char* file) {
   base::FilePath path;
-  PathService::Get(base::DIR_SOURCE_ROOT, &path);
+  base::PathService::Get(base::DIR_SOURCE_ROOT, &path);
   return path.AppendASCII("components/test/data/update_client")
       .AppendASCII(file);
 }
@@ -22,20 +23,6 @@ base::FilePath MakeTestFilePath(const char* file) {
 }  // namespace
 
 namespace update_client {
-
-TEST(UpdateClientUtils, BuildProtocolRequest_DownloadPreference) {
-  const string emptystr;
-
-  // Verifies that an empty |download_preference| is not serialized.
-  const string request_no_dlpref = BuildProtocolRequest(
-      emptystr, emptystr, emptystr, emptystr, emptystr, emptystr, emptystr);
-  EXPECT_EQ(string::npos, request_no_dlpref.find(" dlpref="));
-
-  // Verifies that |download_preference| is serialized.
-  const string request_with_dlpref = BuildProtocolRequest(
-      emptystr, emptystr, emptystr, emptystr, "some pref", emptystr, emptystr);
-  EXPECT_NE(string::npos, request_with_dlpref.find(" dlpref=\"some pref\""));
-}
 
 TEST(UpdateClientUtils, VerifyFileHash256) {
   EXPECT_TRUE(VerifyFileHash256(
@@ -80,6 +67,18 @@ TEST(UpdateClientUtils, IsValidBrand) {
   EXPECT_FALSE(IsValidBrand(std::string("\xaa")));   // Has non-ASCII char.
 }
 
+TEST(UpdateClientUtils, GetCrxComponentId) {
+  static const uint8_t kHash[16] = {
+      0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+      0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+  };
+  CrxComponent component;
+  component.pk_hash.assign(kHash, kHash + sizeof(kHash));
+
+  EXPECT_EQ(std::string("abcdefghijklmnopabcdefghijklmnop"),
+            GetCrxComponentID(component));
+}
+
 // Tests that the name of an InstallerAttribute matches ^[-_=a-zA-Z0-9]{1,256}$
 TEST(UpdateClientUtils, IsValidInstallerAttributeName) {
   // Test the length boundaries.
@@ -94,14 +93,14 @@ TEST(UpdateClientUtils, IsValidInstallerAttributeName) {
 
   const char* const valid_names[] = {"A", "Z", "a", "a-b", "A_B",
                                      "z", "0", "9", "-_"};
-  for (const auto& name : valid_names)
+  for (const char* name : valid_names)
     EXPECT_TRUE(IsValidInstallerAttribute(
         make_pair(std::string(name), std::string("value"))));
 
   const char* const invalid_names[] = {
       "",   "a=1", " name", "name ", "na me", "<name", "name>",
       "\"", "\\",  "\xaa",  ".",     ",",     ";",     "+"};
-  for (const auto& name : invalid_names)
+  for (const char* name : invalid_names)
     EXPECT_FALSE(IsValidInstallerAttribute(
         make_pair(std::string(name), std::string("value"))));
 }
@@ -119,13 +118,13 @@ TEST(UpdateClientUtils, IsValidInstallerAttributeValue) {
 
   const char* const valid_values[] = {"",  "a=1", "A", "Z",      "a",
                                       "z", "0",   "9", "-.,;+_="};
-  for (const auto& value : valid_values)
+  for (const char* value : valid_values)
     EXPECT_TRUE(IsValidInstallerAttribute(
         make_pair(std::string("name"), std::string(value))));
 
   const char* const invalid_values[] = {" ap", "ap ", "a p", "<ap",
                                         "ap>", "\"",  "\\",  "\xaa"};
-  for (const auto& value : invalid_values)
+  for (const char* value : invalid_values)
     EXPECT_FALSE(IsValidInstallerAttribute(
         make_pair(std::string("name"), std::string(value))));
 }
@@ -159,6 +158,34 @@ TEST(UpdateClientUtils, RemoveUnsecureUrls) {
   urls.assign(std::begin(test5), std::end(test5));
   RemoveUnsecureUrls(&urls);
   EXPECT_EQ(0u, urls.size());
+}
+
+TEST(UpdateClientUtils, ToInstallerResult) {
+  enum EnumA {
+    ENTRY0 = 10,
+    ENTRY1 = 20,
+  };
+
+  enum class EnumB {
+    ENTRY0 = 0,
+    ENTRY1,
+  };
+
+  const auto result1 = ToInstallerResult(EnumA::ENTRY0);
+  EXPECT_EQ(110, result1.error);
+  EXPECT_EQ(0, result1.extended_error);
+
+  const auto result2 = ToInstallerResult(ENTRY1, 10000);
+  EXPECT_EQ(120, result2.error);
+  EXPECT_EQ(10000, result2.extended_error);
+
+  const auto result3 = ToInstallerResult(EnumB::ENTRY0);
+  EXPECT_EQ(100, result3.error);
+  EXPECT_EQ(0, result3.extended_error);
+
+  const auto result4 = ToInstallerResult(EnumB::ENTRY1, 20000);
+  EXPECT_EQ(101, result4.error);
+  EXPECT_EQ(20000, result4.extended_error);
 }
 
 }  // namespace update_client

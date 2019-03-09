@@ -11,8 +11,9 @@
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/memory/ptr_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#include <windows.h>
 
 class LzmaFileAllocatorTest : public testing::Test {
  protected:
@@ -32,7 +33,7 @@ DWORD LzmaFileAllocatorTest::GetMemoryType(void* address) {
 }
 
 TEST_F(LzmaFileAllocatorTest, ReadAndWriteWithMultipleSizeTest) {
-  const char kSampleExpectedCharacter = 'a';
+  static const char kSampleExpectedCharacter = 'a';
   SYSTEM_INFO sysinfo;
   ::GetSystemInfo(&sysinfo);
   EXPECT_GT(sysinfo.dwPageSize, 0U);
@@ -41,10 +42,10 @@ TEST_F(LzmaFileAllocatorTest, ReadAndWriteWithMultipleSizeTest) {
                         sysinfo.dwPageSize + 1};
 
   for (size_t size : size_list) {
-    LzmaFileAllocator allocator(temp_dir_.path());
+    LzmaFileAllocator allocator(temp_dir_.GetPath());
     char* s = reinterpret_cast<char*>(IAlloc_Alloc(&allocator, size));
     std::fill_n(s, size, kSampleExpectedCharacter);
-    char* ret = std::find_if(s, s + size, [&kSampleExpectedCharacter](char c) {
+    char* ret = std::find_if(s, s + size, [](char c) {
       return c != kSampleExpectedCharacter;
     });
     EXPECT_EQ(s + size, ret);
@@ -55,7 +56,7 @@ TEST_F(LzmaFileAllocatorTest, ReadAndWriteWithMultipleSizeTest) {
 }
 
 TEST_F(LzmaFileAllocatorTest, SizeIsZeroTest) {
-  LzmaFileAllocator allocator(temp_dir_.path());
+  LzmaFileAllocator allocator(temp_dir_.GetPath());
   char* s = reinterpret_cast<char*>(IAlloc_Alloc(&allocator, 0));
   EXPECT_EQ(s, nullptr);
 
@@ -64,7 +65,7 @@ TEST_F(LzmaFileAllocatorTest, SizeIsZeroTest) {
 
 TEST_F(LzmaFileAllocatorTest, DeleteAfterCloseTest) {
   std::unique_ptr<LzmaFileAllocator> allocator =
-      base::WrapUnique(new LzmaFileAllocator(temp_dir_.path()));
+      std::make_unique<LzmaFileAllocator>(temp_dir_.GetPath());
   base::FilePath file_path = allocator->mapped_file_path_;
   ASSERT_TRUE(base::PathExists(file_path));
   allocator.reset();
@@ -72,7 +73,7 @@ TEST_F(LzmaFileAllocatorTest, DeleteAfterCloseTest) {
 }
 
 TEST_F(LzmaFileAllocatorTest, ErrorAndFallbackTest) {
-  LzmaFileAllocator allocator(temp_dir_.path());
+  LzmaFileAllocator allocator(temp_dir_.GetPath());
   allocator.mapped_file_.Close();
   char* s = reinterpret_cast<char*>(IAlloc_Alloc(&allocator, 10));
   EXPECT_NE(nullptr, s);
@@ -80,4 +81,18 @@ TEST_F(LzmaFileAllocatorTest, ErrorAndFallbackTest) {
   EXPECT_EQ(static_cast<DWORD>(MEM_PRIVATE), GetMemoryType(s));
 
   IAlloc_Free(&allocator, s);
+}
+
+TEST_F(LzmaFileAllocatorTest, IsAddressMappedTest) {
+  LzmaFileAllocator allocator(temp_dir_.GetPath());
+  size_t size = 10;
+  uintptr_t address =
+      reinterpret_cast<uintptr_t>(IAlloc_Alloc(&allocator, size));
+  ASSERT_TRUE(allocator.IsAddressMapped(address));
+  ASSERT_TRUE(allocator.IsAddressMapped(address + 1));
+  ASSERT_TRUE(allocator.IsAddressMapped(address + 9));
+  ASSERT_FALSE(allocator.IsAddressMapped(address + 10));
+  ASSERT_FALSE(allocator.IsAddressMapped(address + 11));
+  ASSERT_FALSE(allocator.IsAddressMapped(address - 1));
+  IAlloc_Free(&allocator, reinterpret_cast<void*>(address));
 }

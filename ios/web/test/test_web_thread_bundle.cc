@@ -4,97 +4,54 @@
 
 #include "ios/web/public/test/test_web_thread_bundle.h"
 
-#include "base/message_loop/message_loop.h"
+#include <memory>
+
 #include "base/run_loop.h"
 #include "ios/web/public/test/test_web_thread.h"
 #include "ios/web/web_thread_impl.h"
 
 namespace web {
 
-TestWebThreadBundle::TestWebThreadBundle() {
-  Init(TestWebThreadBundle::DEFAULT);
-}
-
-TestWebThreadBundle::TestWebThreadBundle(int options) {
+TestWebThreadBundle::TestWebThreadBundle(int options)
+    : base::test::ScopedTaskEnvironment(
+          options == IO_MAINLOOP ? MainThreadType::IO : MainThreadType::UI) {
   Init(options);
 }
 
 TestWebThreadBundle::~TestWebThreadBundle() {
-  // To avoid memory leaks, ensure that any tasks posted to the blocking pool
-  // via PostTaskAndReply are able to reply back to the originating thread, by
-  // flushing the blocking pool while the browser threads still exist.
-  base::RunLoop().RunUntilIdle();
-  WebThreadImpl::FlushThreadPoolHelperForTesting();
-
   // To ensure a clean teardown, each thread's message loop must be flushed
-  // just before the thread is destroyed. But destroying a fake thread does not
+  // just before the thread is destroyed. But stopping a fake thread does not
   // automatically flush the message loop, so do it manually.
   // See http://crbug.com/247525 for discussion.
   base::RunLoop().RunUntilIdle();
-  io_thread_.reset();
+  io_thread_->Stop();
   base::RunLoop().RunUntilIdle();
-  cache_thread_.reset();
+  ui_thread_->Stop();
   base::RunLoop().RunUntilIdle();
-  file_user_blocking_thread_.reset();
-  base::RunLoop().RunUntilIdle();
-  file_thread_.reset();
-  base::RunLoop().RunUntilIdle();
-  db_thread_.reset();
-  base::RunLoop().RunUntilIdle();
-  // This is the point at which the thread pool is normally shut down. So flush
-  // it again in case any shutdown tasks have been posted to the pool from the
-  // threads above.
-  WebThreadImpl::FlushThreadPoolHelperForTesting();
-  base::RunLoop().RunUntilIdle();
-  ui_thread_.reset();
-  base::RunLoop().RunUntilIdle();
+
+  // This is required to ensure that all remaining MessageLoop and TaskScheduler
+  // tasks run in an atomic step. This is a bit different than production where
+  // the main thread is not flushed after it's done running but this approach is
+  // preferred in unit tests as running more tasks can merely uncover more
+  // issues (e.g. if a bad tasks is posted but never blocked upon it could make
+  // a test flaky whereas by flushing, the test will always fail).
+  RunUntilIdle();
+
+  WebThreadImpl::ResetTaskExecutorForTesting();
 }
 
 void TestWebThreadBundle::Init(int options) {
-  if (options & TestWebThreadBundle::IO_MAINLOOP) {
-    message_loop_.reset(new base::MessageLoopForIO());
-  } else {
-    message_loop_.reset(new base::MessageLoopForUI());
-  }
+  WebThreadImpl::CreateTaskExecutor();
 
-  ui_thread_.reset(new TestWebThread(WebThread::UI, message_loop_.get()));
-
-  if (options & TestWebThreadBundle::REAL_DB_THREAD) {
-    db_thread_.reset(new TestWebThread(WebThread::DB));
-    db_thread_->Start();
-  } else {
-    db_thread_.reset(new TestWebThread(WebThread::DB, message_loop_.get()));
-  }
-
-  if (options & TestWebThreadBundle::REAL_FILE_THREAD) {
-    file_thread_.reset(new TestWebThread(WebThread::FILE));
-    file_thread_->Start();
-  } else {
-    file_thread_.reset(new TestWebThread(WebThread::FILE, message_loop_.get()));
-  }
-
-  if (options & TestWebThreadBundle::REAL_FILE_USER_BLOCKING_THREAD) {
-    file_user_blocking_thread_.reset(
-        new TestWebThread(WebThread::FILE_USER_BLOCKING));
-    file_user_blocking_thread_->Start();
-  } else {
-    file_user_blocking_thread_.reset(
-        new TestWebThread(WebThread::FILE_USER_BLOCKING, message_loop_.get()));
-  }
-
-  if (options & TestWebThreadBundle::REAL_CACHE_THREAD) {
-    cache_thread_.reset(new TestWebThread(WebThread::CACHE));
-    cache_thread_->Start();
-  } else {
-    cache_thread_.reset(
-        new TestWebThread(WebThread::CACHE, message_loop_.get()));
-  }
+  ui_thread_ =
+      std::make_unique<TestWebThread>(WebThread::UI, GetMainThreadTaskRunner());
 
   if (options & TestWebThreadBundle::REAL_IO_THREAD) {
-    io_thread_.reset(new TestWebThread(WebThread::IO));
+    io_thread_ = std::make_unique<TestWebThread>(WebThread::IO);
     io_thread_->StartIOThread();
   } else {
-    io_thread_.reset(new TestWebThread(WebThread::IO, message_loop_.get()));
+    io_thread_ = std::make_unique<TestWebThread>(WebThread::IO,
+                                                 GetMainThreadTaskRunner());
   }
 }
 

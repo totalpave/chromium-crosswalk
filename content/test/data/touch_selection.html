@@ -24,7 +24,7 @@ function get_point_inside(element) {
   var rect = element.getBoundingClientRect();
   var point = {
     x: rect.left + 8,
-    y: (rect.top + rect.bottom) / 2
+    y: rect.top + 8
   };
   window.domAutomationController.send(JSON.stringify(point));
 }
@@ -35,10 +35,6 @@ function get_point_inside_text() {
 
 function get_point_inside_textfield() {
   get_point_inside(document.getElementById('textfield'));
-}
-
-function empty_textfield() {
-  document.getElementById('textfield').value = "";
 }
 
 </script>

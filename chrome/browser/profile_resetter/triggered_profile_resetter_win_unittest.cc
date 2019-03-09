@@ -26,11 +26,12 @@ using base::win::RegKey;
 class TriggeredProfileResetterTest : public testing::Test {
  protected:
   void SetUp() override {
-    override_manager_.OverrideRegistry(HKEY_CURRENT_USER);
+    ASSERT_NO_FATAL_FAILURE(
+        override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
 
     // Activate the triggered reset field trial for these tests.
-    field_trial_list_.reset(
-        new base::FieldTrialList(new metrics::SHA1EntropyProvider("foo")));
+    field_trial_list_.reset(new base::FieldTrialList(
+        std::make_unique<variations::SHA1EntropyProvider>("foo")));
     base::FieldTrial* trial = base::FieldTrialList::CreateFieldTrial(
         "TriggeredResetFieldTrial", "On");
     trial->group();

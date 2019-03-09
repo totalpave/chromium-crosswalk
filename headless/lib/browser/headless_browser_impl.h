@@ -8,44 +8,64 @@
 #include "headless/public/headless_browser.h"
 
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "headless/lib/browser/headless_web_contents_impl.h"
+#include "base/memory/weak_ptr.h"
+#include "base/single_thread_task_runner.h"
+#include "headless/lib/browser/headless_devtools_manager_delegate.h"
+#include "headless/public/headless_devtools_target.h"
+#include "headless/public/headless_export.h"
 
-namespace aura {
-class WindowTreeHost;
+namespace ui {
+class Compositor;
+}  // namespace ui
 
-namespace client {
-class WindowTreeClient;
-}
-}
+namespace gfx {
+class Rect;
+}  // namespace gfx
 
 namespace headless {
 
-class HeadlessBrowserContext;
+class HeadlessBrowserContextImpl;
 class HeadlessBrowserMainParts;
+class HeadlessRequestContextManager;
+class HeadlessWebContentsImpl;
 
-class HeadlessBrowserImpl : public HeadlessBrowser {
+extern const base::FilePath::CharType kDefaultProfileName[];
+
+// Exported for tests.
+class HEADLESS_EXPORT HeadlessBrowserImpl : public HeadlessBrowser,
+                                            public HeadlessDevToolsTarget {
  public:
   HeadlessBrowserImpl(
-      const base::Callback<void(HeadlessBrowser*)>& on_start_callback,
+      base::OnceCallback<void(HeadlessBrowser*)> on_start_callback,
       HeadlessBrowser::Options options);
   ~HeadlessBrowserImpl() override;
 
   // HeadlessBrowser implementation:
-  HeadlessWebContents::Builder CreateWebContentsBuilder() override;
   HeadlessBrowserContext::Builder CreateBrowserContextBuilder() override;
-  HeadlessWebContents* CreateWebContents(const GURL& initial_url,
-                                         const gfx::Size& size) override;
   scoped_refptr<base::SingleThreadTaskRunner> BrowserMainThread()
-      const override;
-  scoped_refptr<base::SingleThreadTaskRunner> BrowserFileThread()
       const override;
 
   void Shutdown() override;
 
-  std::vector<HeadlessWebContents*> GetAllWebContents() override;
+  std::vector<HeadlessBrowserContext*> GetAllBrowserContexts() override;
+  HeadlessWebContents* GetWebContentsForDevToolsAgentHostId(
+      const std::string& devtools_agent_host_id) override;
+  HeadlessBrowserContext* GetBrowserContextForId(
+      const std::string& id) override;
+  void SetDefaultBrowserContext(
+      HeadlessBrowserContext* browser_context) override;
+  HeadlessBrowserContext* GetDefaultBrowserContext() override;
+  HeadlessDevToolsTarget* GetDevToolsTarget() override;
+  std::unique_ptr<HeadlessDevToolsChannel> CreateDevToolsChannel() override;
+
+  // HeadlessDevToolsTarget implementation:
+  void AttachClient(HeadlessDevToolsClient* client) override;
+  void DetachClient(HeadlessDevToolsClient* client) override;
+  bool IsAttached() override;
 
   void set_browser_main_parts(HeadlessBrowserMainParts* browser_main_parts);
   HeadlessBrowserMainParts* browser_main_parts() const;
@@ -54,27 +74,39 @@ class HeadlessBrowserImpl : public HeadlessBrowser {
 
   HeadlessBrowser::Options* options() { return &options_; }
 
-  HeadlessWebContents* CreateWebContents(HeadlessWebContents::Builder* builder);
-  HeadlessWebContentsImpl* RegisterWebContents(
-      std::unique_ptr<HeadlessWebContentsImpl> web_contents);
+  HeadlessBrowserContext* CreateBrowserContext(
+      HeadlessBrowserContext::Builder* builder);
+  // Close given |browser_context| and delete it
+  // (all web contents associated with it go away too).
+  void DestroyBrowserContext(HeadlessBrowserContextImpl* browser_context);
 
-  // Close given |web_contents| and delete it.
-  void DestroyWebContents(HeadlessWebContentsImpl* web_contents);
+  HeadlessWebContentsImpl* GetWebContentsForWindowId(const int window_id);
 
-  // Customize the options used by this headless browser instance. Note that
-  // options which take effect before the message loop has been started (e.g.,
-  // custom message pumps) cannot be set via this method.
-  void SetOptionsForTesting(HeadlessBrowser::Options options);
+  base::WeakPtr<HeadlessBrowserImpl> GetWeakPtr();
+
+  // All the methods that begin with Platform need to be implemented by the
+  // platform specific headless implementation.
+  // Helper for one time initialization of application
+  void PlatformInitialize();
+  void PlatformStart();
+  void PlatformInitializeWebContents(HeadlessWebContentsImpl* web_contents);
+  void PlatformSetWebContentsBounds(HeadlessWebContentsImpl* web_contents,
+                                    const gfx::Rect& bounds);
+  ui::Compositor* PlatformGetCompositor(HeadlessWebContentsImpl* web_contents);
 
  protected:
-  base::Callback<void(HeadlessBrowser*)> on_start_callback_;
+  base::OnceCallback<void(HeadlessBrowser*)> on_start_callback_;
   HeadlessBrowser::Options options_;
   HeadlessBrowserMainParts* browser_main_parts_;  // Not owned.
-  std::unique_ptr<aura::WindowTreeHost> window_tree_host_;
-  std::unique_ptr<aura::client::WindowTreeClient> window_tree_client_;
 
-  std::unordered_map<HeadlessWebContents*, std::unique_ptr<HeadlessWebContents>>
-      web_contents_;
+  base::flat_map<std::string, std::unique_ptr<HeadlessBrowserContextImpl>>
+      browser_contexts_;
+  HeadlessBrowserContext* default_browser_context_;  // Not owned.
+
+  scoped_refptr<content::DevToolsAgentHost> agent_host_;
+  std::unique_ptr<HeadlessRequestContextManager>
+      system_request_context_manager_;
+  base::WeakPtrFactory<HeadlessBrowserImpl> weak_ptr_factory_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(HeadlessBrowserImpl);

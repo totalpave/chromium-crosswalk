@@ -17,7 +17,6 @@
 #include "media/midi/usb_midi_device.h"
 #include "media/midi/usb_midi_export.h"
 
-namespace media {
 namespace midi {
 
 class USB_MIDI_EXPORT UsbMidiDeviceAndroid : public UsbMidiDevice {
@@ -41,8 +40,6 @@ class USB_MIDI_EXPORT UsbMidiDeviceAndroid : public UsbMidiDevice {
               jint endpoint_number,
               const base::android::JavaParamRef<jbyteArray>& data);
 
-  static bool RegisterUsbMidiDevice(JNIEnv* env);
-
  private:
   void GetDescriptorsInternal();
   void InitDeviceInfo();
@@ -62,6 +59,5 @@ class USB_MIDI_EXPORT UsbMidiDeviceAndroid : public UsbMidiDevice {
 };
 
 }  // namespace midi
-}  // namespace media
 
 #endif  // MEDIA_MIDI_USB_MIDI_DEVICE_ANDROID_H_

@@ -7,10 +7,10 @@
 
 #include <stdint.h>
 
+#include <map>
 #include <memory>
-#include <set>
-#include <stack>
 
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
@@ -23,13 +23,11 @@ class IOBufferWithSize;
 
 namespace storage {
 class FileStreamReader;
-class ShareableFileReference;
 enum class FlushPolicy;
 }
 
 namespace storage {
 
-class CopyOrMoveFileValidator;
 class FileStreamWriter;
 
 // A delegate class for recursive copy or move operations.
@@ -37,9 +35,9 @@ class CopyOrMoveOperationDelegate
     : public RecursiveOperationDelegate {
  public:
   class CopyOrMoveImpl;
-  typedef FileSystemOperation::CopyProgressCallback CopyProgressCallback;
-  typedef FileSystemOperation::CopyOrMoveOption CopyOrMoveOption;
-  typedef FileSystemOperation::ErrorBehavior ErrorBehavior;
+  using CopyProgressCallback = FileSystemOperation::CopyProgressCallback;
+  using CopyOrMoveOption = FileSystemOperation::CopyOrMoveOption;
+  using ErrorBehavior = FileSystemOperation::ErrorBehavior;
 
   enum OperationType {
     OPERATION_COPY,
@@ -48,19 +46,18 @@ class CopyOrMoveOperationDelegate
 
   // Helper to copy a file by reader and writer streams.
   // Export for testing.
-  class STORAGE_EXPORT StreamCopyHelper {
+  class COMPONENT_EXPORT(STORAGE_BROWSER) StreamCopyHelper {
    public:
     StreamCopyHelper(
         std::unique_ptr<storage::FileStreamReader> reader,
         std::unique_ptr<FileStreamWriter> writer,
         FlushPolicy flush_policy,
         int buffer_size,
-        const FileSystemOperation::CopyFileProgressCallback&
-            file_progress_callback,
+        FileSystemOperation::CopyFileProgressCallback file_progress_callback,
         const base::TimeDelta& min_progress_callback_invocation_span);
     ~StreamCopyHelper();
 
-    void Run(const StatusCallback& callback);
+    void Run(StatusCallback callback);
 
     // Requests cancelling. After the cancelling is done, |callback| passed to
     // Run will be called.
@@ -68,23 +65,22 @@ class CopyOrMoveOperationDelegate
 
    private:
     // Reads the content from the |reader_|.
-    void Read(const StatusCallback& callback);
-    void DidRead(const StatusCallback& callback, int result);
+    void Read();
+    void DidRead(int result);
 
     // Writes the content in |buffer| to |writer_|.
-    void Write(const StatusCallback& callback,
-               scoped_refptr<net::DrainableIOBuffer> buffer);
-    void DidWrite(const StatusCallback& callback,
-                  scoped_refptr<net::DrainableIOBuffer> buffer, int result);
+    void Write(scoped_refptr<net::DrainableIOBuffer> buffer);
+    void DidWrite(scoped_refptr<net::DrainableIOBuffer> buffer, int result);
 
     // Flushes the written content in |writer_|.
-    void Flush(const StatusCallback& callback, bool is_eof);
-    void DidFlush(const StatusCallback& callback, bool is_eof, int result);
+    void Flush(bool is_eof);
+    void DidFlush(bool is_eof, int result);
 
     std::unique_ptr<storage::FileStreamReader> reader_;
     std::unique_ptr<FileStreamWriter> writer_;
     const FlushPolicy flush_policy_;
     FileSystemOperation::CopyFileProgressCallback file_progress_callback_;
+    StatusCallback completion_callback_;
     scoped_refptr<net::IOBufferWithSize> io_buffer_;
     int64_t num_copied_bytes_;
     int64_t previous_flush_offset_;
@@ -102,18 +98,17 @@ class CopyOrMoveOperationDelegate
                               CopyOrMoveOption option,
                               ErrorBehavior error_behavior,
                               const CopyProgressCallback& progress_callback,
-                              const StatusCallback& callback);
+                              StatusCallback callback);
   ~CopyOrMoveOperationDelegate() override;
 
   // RecursiveOperationDelegate overrides:
   void Run() override;
   void RunRecursively() override;
-  void ProcessFile(const FileSystemURL& url,
-                   const StatusCallback& callback) override;
+  void ProcessFile(const FileSystemURL& url, StatusCallback callback) override;
   void ProcessDirectory(const FileSystemURL& url,
-                        const StatusCallback& callback) override;
+                        StatusCallback callback) override;
   void PostProcessDirectory(const FileSystemURL& url,
-                            const StatusCallback& callback) override;
+                            StatusCallback callback) override;
 
  protected:
   void OnCancel() override;
@@ -121,31 +116,32 @@ class CopyOrMoveOperationDelegate
  private:
   void DidCopyOrMoveFile(const FileSystemURL& src_url,
                          const FileSystemURL& dest_url,
-                         const StatusCallback& callback,
+                         StatusCallback callback,
                          CopyOrMoveImpl* impl,
                          base::File::Error error);
-  void DidTryRemoveDestRoot(const StatusCallback& callback,
-                            base::File::Error error);
+  void DidTryRemoveDestRoot(StatusCallback callback, base::File::Error error);
   void ProcessDirectoryInternal(const FileSystemURL& src_url,
                                 const FileSystemURL& dest_url,
-                                const StatusCallback& callback);
+                                StatusCallback callback);
   void DidCreateDirectory(const FileSystemURL& src_url,
                           const FileSystemURL& dest_url,
-                          const StatusCallback& callback,
+                          StatusCallback callback,
                           base::File::Error error);
-  void PostProcessDirectoryAfterGetMetadata(
-      const FileSystemURL& src_url,
-      const StatusCallback& callback,
-      base::File::Error error,
-      const base::File::Info& file_info);
+  void PostProcessDirectoryAfterGetMetadata(const FileSystemURL& src_url,
+                                            StatusCallback callback,
+                                            base::File::Error error,
+                                            const base::File::Info& file_info);
   void PostProcessDirectoryAfterTouchFile(const FileSystemURL& src_url,
-                                          const StatusCallback& callback,
+                                          StatusCallback callback,
                                           base::File::Error error);
-  void DidRemoveSourceForMove(const StatusCallback& callback,
-                              base::File::Error error);
+  void DidRemoveSourceForMove(StatusCallback callback, base::File::Error error);
 
   void OnCopyFileProgress(const FileSystemURL& src_url, int64_t size);
   FileSystemURL CreateDestURL(const FileSystemURL& src_url) const;
+
+#if DCHECK_IS_ON()
+  bool did_run_ = false;
+#endif
 
   FileSystemURL src_root_;
   FileSystemURL dest_root_;
@@ -156,7 +152,7 @@ class CopyOrMoveOperationDelegate
   CopyProgressCallback progress_callback_;
   StatusCallback callback_;
 
-  std::set<CopyOrMoveImpl*> running_copy_set_;
+  std::map<CopyOrMoveImpl*, std::unique_ptr<CopyOrMoveImpl>> running_copy_set_;
   base::WeakPtrFactory<CopyOrMoveOperationDelegate> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(CopyOrMoveOperationDelegate);

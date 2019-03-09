@@ -3,16 +3,47 @@
 // found in the LICENSE file.
 
 /**
+ * @fileoverview This file should contain utility functions used only by the
+ * files app. Other shared utility functions can be found in base/*_util.js,
+ * which allows finer-grained control over introducing dependencies.
+ */
+
+/**
  * Namespace for utility functions.
  */
-var util = {};
+const util = {};
+
+/**
+ * @param {!chrome.fileManagerPrivate.IconSet} iconSet Set of icons.
+ * @return {string} CSS value.
+ */
+util.iconSetToCSSBackgroundImageValue = iconSet => {
+  let lowDpiPart = null;
+  let highDpiPart = null;
+  if (iconSet.icon16x16Url) {
+    lowDpiPart = 'url(' + iconSet.icon16x16Url + ') 1x';
+  }
+  if (iconSet.icon32x32Url) {
+    highDpiPart = 'url(' + iconSet.icon32x32Url + ') 2x';
+  }
+
+  if (lowDpiPart && highDpiPart) {
+    return '-webkit-image-set(' + lowDpiPart + ', ' + highDpiPart + ')';
+  } else if (lowDpiPart) {
+    return '-webkit-image-set(' + lowDpiPart + ')';
+  } else if (highDpiPart) {
+    return '-webkit-image-set(' + highDpiPart + ')';
+  }
+
+  return 'none';
+};
 
 /**
  * @param {string} name File error name.
  * @return {string} Translated file error string.
  */
-util.getFileErrorString = function(name) {
-  var candidateMessageFragment;
+util.getFileErrorString = name => {
+  let candidateMessageFragment;
   switch (name) {
     case 'NotFoundError':
       candidateMessageFragment = 'NOT_FOUND';
@@ -68,8 +99,8 @@ Object.freeze(util.FileError);
  * @param {string} str String to escape.
  * @return {string} Escaped string.
  */
-util.htmlEscape = function(str) {
-  return str.replace(/[<>&]/g, function(entity) {
+util.htmlEscape = str => {
+  return str.replace(/[<>&]/g, entity => {
     switch (entity) {
       case '<': return '&lt;';
       case '>': return '&gt;';
@@ -82,8 +113,8 @@ util.htmlEscape = function(str) {
  * @param {string} str String to unescape.
  * @return {string} Unescaped string.
  */
-util.htmlUnescape = function(str) {
-  return str.replace(/&(lt|gt|amp);/g, function(entity) {
+util.htmlUnescape = str => {
+  return str.replace(/&(lt|gt|amp);/g, entity => {
     switch (entity) {
       case '&lt;': return '<';
       case '&gt;': return '>';
@@ -101,9 +132,9 @@ util.htmlUnescape = function(str) {
  * @param {function(DOMError)} errorCallback Callback invoked when an error
  *     is found.
  */
-util.rename = function(entry, newName, successCallback, errorCallback) {
-  entry.getParent(function(parentEntry) {
-    var parent = /** @type {!DirectoryEntry} */ (parentEntry);
+util.rename = (entry, newName, successCallback, errorCallback) => {
+  entry.getParent(parentEntry => {
+    const parent = /** @type {!DirectoryEntry} */ (parentEntry);
 
     // Before moving, we need to check if there is an existing entry at
     // parent/newName, since moveTo will overwrite it.
@@ -113,11 +144,11 @@ util.rename = function(entry, newName, successCallback, errorCallback) {
     // assuming the unsafe period is very short.
     (entry.isFile ? parent.getFile : parent.getDirectory).call(
         parent, newName, {create: false},
-        function(entry) {
+        entry => {
           // The entry with the name already exists.
           errorCallback(util.createDOMError(util.FileError.PATH_EXISTS_ERR));
         },
-        function(error) {
+        error => {
           if (error.name != util.FileError.NOT_FOUND_ERR) {
             // Unexpected error is found.
             errorCallback(error);
@@ -132,14 +163,15 @@ util.rename = function(entry, newName, successCallback, errorCallback) {
 
 /**
  * Converts DOMError of util.rename to error message.
- * @param {!DOMError} error
+ * @param {DOMError} error
  * @param {!Entry} entry
  * @param {string} newName
  * @return {string}
  */
-util.getRenameErrorMessage = function(error, entry, newName) {
-  if (error.name == util.FileError.PATH_EXISTS_ERR ||
-      error.name == util.FileError.TYPE_MISMATCH_ERR) {
+util.getRenameErrorMessage = (error, entry, newName) => {
+  if (error &&
+      (error.name == util.FileError.PATH_EXISTS_ERR ||
+       error.name == util.FileError.TYPE_MISMATCH_ERR)) {
     // Check the existing entry is file or not.
     // 1) If the entry is a file:
     //   a) If we get PATH_EXISTS_ERR, a file exists.
@@ -167,11 +199,12 @@ util.getRenameErrorMessage = function(error, entry, newName) {
  * @param {function()} onSuccess The success callback.
  * @param {function(DOMError)} onError The error callback.
  */
-util.removeFileOrDirectory = function(entry, onSuccess, onError) {
-  if (entry.isDirectory)
+util.removeFileOrDirectory = (entry, onSuccess, onError) => {
+  if (entry.isDirectory) {
     entry.removeRecursively(onSuccess, onError);
-  else
+  } else {
     entry.remove(onSuccess, onError);
+  }
 };
 
 /**
@@ -181,9 +214,9 @@ util.removeFileOrDirectory = function(entry, onSuccess, onError) {
  * @param {number} bytes The number of bytes.
  * @return {string} Localized string.
  */
-util.bytesToString = function(bytes) {
+util.bytesToString = bytes => {
   // Translation identifiers for size units.
-  var UNITS = ['SIZE_BYTES',
+  const UNITS = ['SIZE_BYTES',
                'SIZE_KB',
                'SIZE_MB',
                'SIZE_GB',
@@ -191,19 +224,19 @@ util.bytesToString = function(bytes) {
                'SIZE_PB'];
 
   // Minimum values for the units above.
-  var STEPS = [0,
+  const STEPS = [0,
                Math.pow(2, 10),
                Math.pow(2, 20),
                Math.pow(2, 30),
                Math.pow(2, 40),
                Math.pow(2, 50)];
 
-  var str = function(n, u) {
+  const str = (n, u) => {
     return strf(u, n.toLocaleString());
   };
 
-  var fmt = function(s, u) {
-    var rounded = Math.round(bytes / s * 10) / 10;
+  const fmt = (s, u) => {
+    const rounded = Math.round(bytes / s * 10) / 10;
     return str(rounded, u);
   };
 
@@ -214,17 +247,18 @@ util.bytesToString = function(bytes) {
 
   // Up to 1MB is displayed as rounded up number of KBs.
   if (bytes < STEPS[2]) {
-    var rounded = Math.ceil(bytes / STEPS[1]);
+    const rounded = Math.ceil(bytes / STEPS[1]);
     return str(rounded, UNITS[1]);
   }
 
   // This loop index is used outside the loop if it turns out |bytes|
   // requires the largest unit.
-  var i;
+  let i;
 
   for (i = 2 /* MB */; i < UNITS.length - 1; i++) {
-    if (bytes < STEPS[i + 1])
+    if (bytes < STEPS[i + 1]) {
       return fmt(STEPS[i], UNITS[i]);
+    }
   }
 
   return fmt(STEPS[i], UNITS[i]);
@@ -237,7 +271,7 @@ util.bytesToString = function(bytes) {
  * @param {Event} event The keyboard event.
  * @return {string} Modifiers.
  */
-util.getKeyModifiers = function(event) {
+util.getKeyModifiers = event => {
   return (event.ctrlKey ? 'Ctrl-' : '') +
          (event.altKey ? 'Alt-' : '') +
          (event.shiftKey ? 'Shift-' : '') +
@@ -258,7 +292,7 @@ util.Transform;
  * @param {util.Transform} transform Transform object,
  *                           contains scaleX, scaleY and rotate90 properties.
  */
-util.applyTransform = function(element, transform) {
+util.applyTransform = (element, transform) => {
   // The order of rotate and scale matters.
   element.style.transform =
       transform ? 'rotate(' + transform.rotate90 * 90 + 'deg)' +
@@ -272,11 +306,11 @@ util.applyTransform = function(element, transform) {
  * @param {string} url Filesystem URL.
  * @return {?string} The path.
  */
-util.extractFilePath = function(url) {
-  var match =
+util.extractFilePath = url => {
+  const match =
       /^filesystem:[\w-]*:\/\/[\w]*\/(external|persistent|temporary)(\/.*)$/.
       exec(url);
-  var path = match && match[2];
+  const path = match && match[2];
   if (!path) return null;
   return decodeURIComponent(path);
 };
@@ -289,10 +323,11 @@ util.extractFilePath = function(url) {
  * @param {string=} opt_tag Element tag, DIV is omitted.
  * @return {!HTMLElement} Newly created element.
  */
-util.createChild = function(parent, opt_className, opt_tag) {
-  var child = parent.ownerDocument.createElement(opt_tag || 'div');
-  if (opt_className)
+util.createChild = (parent, opt_className, opt_tag) => {
+  const child = parent.ownerDocument.createElement(opt_tag || 'div');
+  if (opt_className) {
     child.className = opt_className;
+  }
   parent.appendChild(child);
   return /** @type {!HTMLElement} */ (child);
 };
@@ -302,35 +337,13 @@ util.createChild = function(parent, opt_className, opt_tag) {
  * returns it.
  * @param {string} query Query for the element.
  * @param {function(new: T, ...)} type Type used to decorate.
- * @private
  * @template T
  * @return {!T} Decorated element.
  */
-util.queryDecoratedElement = function(query, type) {
-  var element = queryRequiredElement(query);
+util.queryDecoratedElement = (query, type) => {
+  const element = queryRequiredElement(query);
   cr.ui.decorate(element, type);
   return element;
-};
-
-/**
- * Updates the app state.
- *
- * @param {?string} currentDirectoryURL Currently opened directory as an URL.
- *     If null the value is left unchanged.
- * @param {?string} selectionURL Currently selected entry as an URL. If null the
- *     value is left unchanged.
- * @param {string|Object=} opt_param Additional parameters, to be stored. If
- *     null, then left unchanged.
- */
-util.updateAppState = function(currentDirectoryURL, selectionURL, opt_param) {
-  window.appState = window.appState || {};
-  if (opt_param !== undefined && opt_param !== null)
-    window.appState.params = opt_param;
-  if (currentDirectoryURL !== null)
-    window.appState.currentDirectoryURL = currentDirectoryURL;
-  if (selectionURL !== null)
-    window.appState.selectionURL = selectionURL;
-  util.saveAppState();
 };
 
 /**
@@ -361,201 +374,42 @@ function strf(id, var_args) {
 }
 
 /**
- * @return {boolean} True if Files.app is running as an open files or a select
- *     folder dialog. False otherwise.
+ * @return {boolean} True if the Files app is running as an open files or a
+ *     select folder dialog. False otherwise.
  */
-util.runningInBrowser = function() {
+util.runningInBrowser = () => {
   return !window.appID;
-};
-
-/**
- * Attach page load handler.
- * @param {function()} handler Application-specific load handler.
- */
-util.addPageLoadHandler = function(handler) {
-  document.addEventListener('DOMContentLoaded', function() {
-    handler();
-  });
-};
-
-/**
- * Save app launch data to the local storage.
- */
-util.saveAppState = function() {
-  if (!window.appState)
-    return;
-  var items = {};
-
-  items[window.appID] = JSON.stringify(window.appState);
-  chrome.storage.local.set(items);
-};
-
-/**
- *  AppCache is a persistent timestamped key-value storage backed by
- *  HTML5 local storage.
- *
- *  It is not designed for frequent access. In order to avoid costly
- *  localStorage iteration all data is kept in a single localStorage item.
- *  There is no in-memory caching, so concurrent access is _almost_ safe.
- *
- *  TODO(kaznacheev) Reimplement this based on Indexed DB.
- */
-util.AppCache = function() {};
-
-/**
- * Local storage key.
- */
-util.AppCache.KEY = 'AppCache';
-
-/**
- * Max number of items.
- */
-util.AppCache.CAPACITY = 100;
-
-/**
- * Default lifetime.
- */
-util.AppCache.LIFETIME = 30 * 24 * 60 * 60 * 1000;  // 30 days.
-
-/**
- * @param {string} key Key.
- * @param {function(number)} callback Callback accepting a value.
- */
-util.AppCache.getValue = function(key, callback) {
-  util.AppCache.read_(function(map) {
-    var entry = map[key];
-    callback(entry && entry.value);
-  });
-};
-
-/**
- * Updates the cache.
- *
- * @param {string} key Key.
- * @param {?(string|number)} value Value. Remove the key if value is null.
- * @param {number=} opt_lifetime Maximum time to keep an item (in milliseconds).
- */
-util.AppCache.update = function(key, value, opt_lifetime) {
-  util.AppCache.read_(function(map) {
-    if (value != null) {
-      map[key] = {
-        value: value,
-        expire: Date.now() + (opt_lifetime || util.AppCache.LIFETIME)
-      };
-    } else if (key in map) {
-      delete map[key];
-    } else {
-      return;  // Nothing to do.
-    }
-    util.AppCache.cleanup_(map);
-    util.AppCache.write_(map);
-  });
-};
-
-/**
- * @param {function(Object)} callback Callback accepting a map of timestamped
- *   key-value pairs.
- * @private
- */
-util.AppCache.read_ = function(callback) {
-  chrome.storage.local.get(util.AppCache.KEY, function(values) {
-    var json = values[util.AppCache.KEY];
-    if (json) {
-      try {
-        callback(/** @type {Object} */ (JSON.parse(json)));
-      } catch (e) {
-        // The local storage item somehow got messed up, start fresh.
-      }
-    }
-    callback({});
-  });
-};
-
-/**
- * @param {Object} map A map of timestamped key-value pairs.
- * @private
- */
-util.AppCache.write_ = function(map) {
-  var items = {};
-  items[util.AppCache.KEY] = JSON.stringify(map);
-  chrome.storage.local.set(items);
-};
-
-/**
- * Remove over-capacity and obsolete items.
- *
- * @param {Object} map A map of timestamped key-value pairs.
- * @private
- */
-util.AppCache.cleanup_ = function(map) {
-  // Sort keys by ascending timestamps.
-  var keys = [];
-  for (var key in map) {
-    if (map.hasOwnProperty(key))
-      keys.push(key);
-  }
-  keys.sort(function(a, b) { return map[a].expire - map[b].expire; });
-
-  var cutoff = Date.now();
-
-  var obsolete = 0;
-  while (obsolete < keys.length &&
-         map[keys[obsolete]].expire < cutoff) {
-    obsolete++;
-  }
-
-  var overCapacity = Math.max(0, keys.length - util.AppCache.CAPACITY);
-
-  var itemsToDelete = Math.max(obsolete, overCapacity);
-  for (var i = 0; i != itemsToDelete; i++) {
-    delete map[keys[i]];
-  }
-};
-
-/**
- * Returns true if the board of the device matches the given prefix.
- * @param {string} boardPrefix The board prefix to match against.
- *     (ex. "x86-mario". Prefix is used as the actual board name comes with
- *     suffix like "x86-mario-something".
- * @return {boolean} True if the board of the device matches the given prefix.
- */
-util.boardIs = function(boardPrefix) {
-  // The board name should be lower-cased, but making it case-insensitive for
-  // backward compatibility just in case.
-  var board = str('CHROMEOS_RELEASE_BOARD');
-  var pattern = new RegExp('^' + boardPrefix, 'i');
-  return board.match(pattern) != null;
 };
 
 /**
  * Adds an isFocused method to the current window object.
  */
-util.addIsFocusedMethod = function() {
-  var focused = true;
+util.addIsFocusedMethod = () => {
+  let focused = true;
 
-  window.addEventListener('focus', function() {
+  window.addEventListener('focus', () => {
     focused = true;
   });
 
-  window.addEventListener('blur', function() {
+  window.addEventListener('blur', () => {
     focused = false;
   });
 
   /**
    * @return {boolean} True if focused.
    */
-  window.isFocused = function() {
+  window.isFocused = () => {
     return focused;
   };
 };
 
 /**
- * Checks, if the Files.app's window is in a full screen mode.
+ * Checks, if the Files app's window is in a full screen mode.
  *
  * @param {chrome.app.window.AppWindow} appWindow App window to be maximized.
  * @return {boolean} True if the full screen mode is enabled.
  */
-util.isFullScreen = function(appWindow) {
+util.isFullScreen = appWindow => {
   if (appWindow) {
     return appWindow.isFullscreen();
   } else {
@@ -571,12 +425,13 @@ util.isFullScreen = function(appWindow) {
  * @param {chrome.app.window.AppWindow} appWindow App window to be maximized.
  * @param {boolean} enabled True for enabling, false for disabling.
  */
-util.toggleFullScreen = function(appWindow, enabled) {
+util.toggleFullScreen = (appWindow, enabled) => {
   if (appWindow) {
-    if (enabled)
+    if (enabled) {
       appWindow.fullscreen();
-    else
+    } else {
       appWindow.restore();
+    }
     return;
   }
 
@@ -621,11 +476,118 @@ Object.freeze(util.EntryChangedKind);
 
 /**
  * Obtains whether an entry is fake or not.
- * @param {(!Entry|!FakeEntry)} entry Entry or a fake entry.
+ * @param {(!Entry|!FilesAppEntry)} entry Entry or a fake entry.
  * @return {boolean} True if the given entry is fake.
+ * @suppress {missingProperties} Closure compiler doesn't allow to call isNative
+ * on Entry which is native and thus doesn't define this property, however we
+ * handle undefined accordingly.
+ * TODO(lucmult): Remove @suppress once all entries are sub-type of
+ * FilesAppEntry.
  */
-util.isFakeEntry = function(entry) {
-  return !('getParent' in entry);
+util.isFakeEntry = entry => {
+  return (
+      entry.getParent === undefined ||
+      (entry.isNativeType !== undefined && !entry.isNativeType));
+};
+
+/**
+ * Obtains whether an entry is the root directory of a Team Drive.
+ * @param {Entry|FilesAppEntry} entry Entry or a fake entry.
+ * @return {boolean} True if the given entry is root of a Team Drive.
+ */
+util.isTeamDriveRoot = entry => {
+  if (entry === null) {
+    return false;
+  }
+  if (!entry.fullPath) {
+    return false;
+  }
+  const tree = entry.fullPath.split('/');
+  return tree.length == 3 && util.isTeamDriveEntry(entry);
+};
+
+/**
+ * Obtains whether an entry is the grand root directory of Team Drives.
+ * @param {(!Entry|!FakeEntry)} entry Entry or a fake entry.
+ * @return {boolean} True if the given entry is the grand root of Team Drives.
+ */
+util.isTeamDrivesGrandRoot = entry => {
+  if (!entry.fullPath) {
+    return false;
+  }
+  const tree = entry.fullPath.split('/');
+  return tree.length == 2 && util.isTeamDriveEntry(entry);
+};
+
+/**
+ * Obtains whether an entry is descendant of the Team Drives directory.
+ * @param {!Entry|!FilesAppEntry} entry Entry or a fake entry.
+ * @return {boolean} True if the given entry is under Team Drives.
+ */
+util.isTeamDriveEntry = entry => {
+  if (!entry.fullPath) {
+    return false;
+  }
+  const tree = entry.fullPath.split('/');
+  return tree[0] == '' &&
+      tree[1] == VolumeManagerCommon.TEAM_DRIVES_DIRECTORY_NAME;
+};
+
+/**
+ * Extracts Team Drive name from entry path.
+ * @param {(!Entry|!FakeEntry)} entry Entry or a fake entry.
+ * @return {string} The name of Team Drive. Empty string if |entry| is not
+ *     under Team Drives.
+ */
+util.getTeamDriveName = entry => {
+  if (!entry.fullPath || !util.isTeamDriveEntry(entry)) {
+    return '';
+  }
+  const tree = entry.fullPath.split('/');
+  if (tree.length < 3) {
+    return '';
+  }
+  return tree[2];
+};
+
+/**
+ * Returns true if the given entry is the root folder of recent files.
+ * @param {!Entry|!FilesAppEntry} entry Entry or a fake entry.
+ * @returns {boolean}
+ */
+util.isRecentRoot = entry => {
+  return util.isFakeEntry(entry) &&
+      entry.rootType == VolumeManagerCommon.RootType.RECENT;
+};
+
+/**
+ * Obtains whether an entry is the root directory of a Computer.
+ * @param {Entry|FilesAppEntry} entry Entry or a fake entry.
+ * @return {boolean} True if the given entry is root of a Computer.
+ */
+util.isComputersRoot = entry => {
+  if (entry === null) {
+    return false;
+  }
+  if (!entry.fullPath) {
+    return false;
+  }
+  const tree = entry.fullPath.split('/');
+  return tree.length == 3 && util.isComputersEntry(entry);
+};
+
+/**
+ * Obtains whether an entry is descendant of the My Computers directory.
+ * @param {!Entry|!FilesAppEntry} entry Entry or a fake entry.
+ * @return {boolean} True if the given entry is under My Computers.
+ */
+util.isComputersEntry = entry => {
+  if (!entry.fullPath) {
+    return false;
+  }
+  const tree = entry.fullPath.split('/');
+  return tree[0] == '' &&
+      tree[1] == VolumeManagerCommon.COMPUTERS_DIRECTORY_NAME;
 };
 
 /**
@@ -633,25 +595,33 @@ util.isFakeEntry = function(entry) {
  * FileError except that it does not have the deprecated FileError.code member.
  *
  * @param {string} name Error name for the file error.
+ * @param {string=} opt_message optional message.
  * @return {DOMError} DOMError instance
  */
-util.createDOMError = function(name) {
-  return new util.UserDOMError(name);
+util.createDOMError = (name, opt_message) => {
+  return new util.UserDOMError(name, opt_message);
 };
 
 /**
  * Creates a DOMError-like object to be used in place of returning file errors.
  *
  * @param {string} name Error name for the file error.
+ * @param {string=} opt_message Optional message for this error.
  * @extends {DOMError}
  * @constructor
  */
-util.UserDOMError = function(name) {
+util.UserDOMError = function(name, opt_message) {
   /**
    * @type {string}
    * @private
    */
   this.name_ = name;
+
+  /**
+   * @type {string}
+   * @private
+   */
+  this.message_ = opt_message || '';
   Object.freeze(this);
 };
 
@@ -659,23 +629,59 @@ util.UserDOMError.prototype = {
   /**
    * @return {string} File error name.
    */
-  get name() { return this.name_;
-  }
+  get name() {
+    return this.name_;
+  },
+  /**
+   * @return {string} Error message.
+   */
+  get message() {
+    return this.message_;
+  },
 };
 
 /**
  * Compares two entries.
- * @param {Entry|FakeEntry} entry1 The entry to be compared. Can be a fake.
- * @param {Entry|FakeEntry} entry2 The entry to be compared. Can be a fake.
+ * @param {Entry|FilesAppEntry} entry1 The entry to be compared. Can
+ * be a fake.
+ * @param {Entry|FilesAppEntry} entry2 The entry to be compared. Can
+ * be a fake.
  * @return {boolean} True if the both entry represents a same file or
  *     directory. Returns true if both entries are null.
  */
-util.isSameEntry = function(entry1, entry2) {
-  if (!entry1 && !entry2)
+util.isSameEntry = (entry1, entry2) => {
+  if (!entry1 && !entry2) {
     return true;
-  if (!entry1 || !entry2)
+  }
+  if (!entry1 || !entry2) {
     return false;
+  }
   return entry1.toURL() === entry2.toURL();
+};
+
+/**
+ * Compares two entry arrays.
+ * @param {Array<!Entry>} entries1 The entry array to be compared.
+ * @param {Array<!Entry>} entries2 The entry array to be compared.
+ * @return {boolean} True if the both arrays contain same files or directories
+ *     in the same order. Returns true if both arrays are null.
+ */
+util.isSameEntries = (entries1, entries2) => {
+  if (!entries1 && !entries2) {
+    return true;
+  }
+  if (!entries1 || !entries2) {
+    return false;
+  }
+  if (entries1.length !== entries2.length) {
+    return false;
+  }
+  for (let i = 0; i < entries1.length; i++) {
+    if (!util.isSameEntry(entries1[i], entries2[i])) {
+      return false;
+    }
+  }
+  return true;
 };
 
 /**
@@ -685,12 +691,34 @@ util.isSameEntry = function(entry1, entry2) {
  * @return {boolean} True if the both file systems are equal. Also, returns true
  *     if both file systems are null.
  */
-util.isSameFileSystem = function(fileSystem1, fileSystem2) {
-  if (!fileSystem1 && !fileSystem2)
+util.isSameFileSystem = (fileSystem1, fileSystem2) => {
+  if (!fileSystem1 && !fileSystem2) {
     return true;
-  if (!fileSystem1 || !fileSystem2)
+  }
+  if (!fileSystem1 || !fileSystem2) {
     return false;
+  }
   return util.isSameEntry(fileSystem1.root, fileSystem2.root);
+};
+
+/**
+ * Checks if given two entries are in the same directory.
+ * @param {!Entry} entry1
+ * @param {!Entry} entry2
+ * @return {boolean} True if given entries are in the same directory.
+ */
+util.isSiblingEntry = (entry1, entry2) => {
+  const path1 = entry1.fullPath.split('/');
+  const path2 = entry2.fullPath.split('/');
+  if (path1.length != path2.length) {
+    return false;
+  }
+  for (let i = 0; i < path1.length - 1; i++) {
+    if (path1[i] != path2[i]) {
+      return false;
+    }
+  }
+  return true;
 };
 
 /**
@@ -702,41 +730,93 @@ util.collator = new Intl.Collator(
 
 /**
  * Compare by name. The 2 entries must be in same directory.
- * @param {Entry} entry1 First entry.
- * @param {Entry} entry2 Second entry.
+ * @param {Entry|FilesAppEntry} entry1 First entry.
+ * @param {Entry|FilesAppEntry} entry2 Second entry.
  * @return {number} Compare result.
  */
-util.compareName = function(entry1, entry2) {
+util.compareName = (entry1, entry2) => {
   return util.collator.compare(entry1.name, entry2.name);
 };
 
 /**
- * Compare by path.
- * @param {Entry} entry1 First entry.
- * @param {Entry} entry2 Second entry.
+ * Compare by label (i18n name). The 2 entries must be in same directory.
+ * @param {EntryLocation} locationInfo
+ * @param {!Entry|!FilesAppEntry} entry1 First entry.
+ * @param {!Entry|!FilesAppEntry} entry2 Second entry.
  * @return {number} Compare result.
  */
-util.comparePath = function(entry1, entry2) {
+util.compareLabel = (locationInfo, entry1, entry2) => {
+  return util.collator.compare(
+      util.getEntryLabel(locationInfo, entry1),
+      util.getEntryLabel(locationInfo, entry2));
+};
+
+/**
+ * Compare by path.
+ * @param {Entry|FilesAppEntry} entry1 First entry.
+ * @param {Entry|FilesAppEntry} entry2 Second entry.
+ * @return {number} Compare result.
+ */
+util.comparePath = (entry1, entry2) => {
   return util.collator.compare(entry1.fullPath, entry2.fullPath);
+};
+
+/**
+ * @param {EntryLocation} locationInfo
+ * @param {!Array<Entry|FilesAppEntry>} bottomEntries entries that should be
+ * grouped in the bottom, used for sorting Linux and Play files entries after
+ * other folders in MyFiles.
+ * return {function(Entry|FilesAppEntry, Entry|FilesAppEntry) to compare entries
+ * by name.
+ */
+util.compareLabelAndGroupBottomEntries = (locationInfo, bottomEntries) => {
+  const childrenMap = new Map();
+  bottomEntries.forEach((entry) => {
+    childrenMap.set(entry.toURL(), entry);
+  });
+
+  /**
+   * Compare entries putting entries from |bottomEntries| in the bottom and
+   * sort by name within entries that are the same type in regards to
+   * |bottomEntries|.
+   * @param {Entry|FilesAppEntry} entry1 First entry.
+   * @param {Entry|FilesAppEntry} entry2 First entry.
+   */
+  function compare_(entry1, entry2) {
+    // Bottom entry here means Linux or Play files, which should appear after
+    // all native entries.
+    const isBottomlEntry1 = childrenMap.has(entry1.toURL()) ? 1 : 0;
+    const isBottomlEntry2 = childrenMap.has(entry2.toURL()) ? 1 : 0;
+
+    // When there are the same type, just compare by label.
+    if (isBottomlEntry1 === isBottomlEntry2) {
+      return util.compareLabel(locationInfo, entry1, entry2);
+    }
+
+    return isBottomlEntry1 - isBottomlEntry2;
+  }
+
+  return compare_;
 };
 
 /**
  * Checks if {@code entry} is an immediate child of {@code directory}.
  *
  * @param {Entry} entry The presumptive child.
- * @param {DirectoryEntry|FakeEntry} directory The presumptive parent.
- * @return {!Promise.<boolean>} Resolves with true if {@code directory} is
+ * @param {DirectoryEntry|FilesAppEntry} directory The presumptive
+ *     parent.
+ * @return {!Promise<boolean>} Resolves with true if {@code directory} is
  *     parent of {@code entry}.
  */
-util.isChildEntry = function(entry, directory) {
+util.isChildEntry = (entry, directory) => {
   return new Promise(
-      function(resolve, reject) {
+      (resolve, reject) => {
         if (!entry || !directory) {
           resolve(false);
         }
 
         entry.getParent(
-            function(parent) {
+            parent => {
               resolve(util.isSameEntry(parent, directory));
             },
             reject);
@@ -747,28 +827,68 @@ util.isChildEntry = function(entry, directory) {
  * Checks if the child entry is a descendant of another entry. If the entries
  * point to the same file or directory, then returns false.
  *
- * @param {!DirectoryEntry|!FakeEntry} ancestorEntry The ancestor directory
- *     entry. Can be a fake.
- * @param {!Entry|!FakeEntry} childEntry The child entry. Can be a fake.
+ * @param {!DirectoryEntry|!FilesAppEntry} ancestorEntry The ancestor
+ *     directory entry. Can be a fake.
+ * @param {!Entry|!FilesAppEntry} childEntry The child entry. Can be a fake.
  * @return {boolean} True if the child entry is contained in the ancestor path.
  */
-util.isDescendantEntry = function(ancestorEntry, childEntry) {
-  if (!ancestorEntry.isDirectory)
+util.isDescendantEntry = (ancestorEntry, childEntry) => {
+  if (!ancestorEntry.isDirectory) {
     return false;
-  if (!util.isSameFileSystem(ancestorEntry.filesystem, childEntry.filesystem))
+  }
+
+  // For EntryList and VolumeEntry they can contain entries from different
+  // files systems, so we should check its getUIChildren.
+  const entryList = util.toEntryList(ancestorEntry);
+  if (entryList.getUIChildren) {
+    // VolumeEntry has to check to root entry descendant entry.
+    const nativeEntry = entryList.getNativeEntry();
+    if (nativeEntry &&
+        util.isSameFileSystem(nativeEntry.filesystem, childEntry.filesystem)) {
+      return util.isDescendantEntry(
+          /** @type {!DirectoryEntry} */ (nativeEntry), childEntry);
+    }
+
+    return entryList.getUIChildren().some(ancestorChild => {
+      if (util.isSameEntry(ancestorChild, childEntry)) {
+        return true;
+      }
+
+      // root entry might not be resolved yet.
+      const volumeEntry =
+          /** @type {DirectoryEntry} */ (ancestorChild.getNativeEntry());
+      return volumeEntry &&
+          (util.isSameEntry(volumeEntry, childEntry) ||
+           util.isDescendantEntry(volumeEntry, childEntry));
+    });
+  }
+
+  if (!util.isSameFileSystem(ancestorEntry.filesystem, childEntry.filesystem)) {
     return false;
-  if (util.isSameEntry(ancestorEntry, childEntry))
+  }
+  if (util.isSameEntry(ancestorEntry, childEntry)) {
     return false;
-  if (util.isFakeEntry(ancestorEntry) || util.isFakeEntry(childEntry))
+  }
+  if (util.isFakeEntry(ancestorEntry) || util.isFakeEntry(childEntry)) {
     return false;
+  }
 
   // Check if the ancestor's path with trailing slash is a prefix of child's
   // path.
-  var ancestorPath = ancestorEntry.fullPath;
-  if (ancestorPath.slice(-1) !== '/')
+  let ancestorPath = ancestorEntry.fullPath;
+  if (ancestorPath.slice(-1) !== '/') {
     ancestorPath += '/';
+  }
   return childEntry.fullPath.indexOf(ancestorPath) === 0;
 };
+
+/**
+ * The last URL with visitURL().
+ *
+ * @type {string}
+ * @private
+ */
+util.lastVisitedURL;
 
 /**
  * Visit the URL.
@@ -776,17 +896,28 @@ util.isDescendantEntry = function(ancestorEntry, childEntry) {
  * If the browser is opening, the url is opened in a new tag, otherwise the url
  * is opened in a new window.
  *
- * @param {string} url URL to visit.
+ * @param {!string} url URL to visit.
  */
-util.visitURL = function(url) {
+util.visitURL = url => {
+  util.lastVisitedURL = url;
   window.open(url);
 };
+
+/**
+ * Return the last URL visited with visitURL().
+ *
+ * @return {string} The last URL visited.
+ */
+util.getLastVisitedURL = () => {
+  return util.lastVisitedURL;
+};
+
 
 /**
  * Returns normalized current locale, or default locale - 'en'.
  * @return {string} Current locale
  */
-util.getCurrentLocaleOrDefault = function() {
+util.getCurrentLocaleOrDefault = () => {
   // chrome.i18n.getMessage('@@ui_locale') can't be used in packed app.
   // Instead, we pass it from C++-side with strings.
   return str('UI_LOCALE') || 'en';
@@ -797,8 +928,8 @@ util.getCurrentLocaleOrDefault = function() {
  * @param {Array<Entry>} entries Input array of entries.
  * @return {!Array<string>} Output array of URLs.
  */
-util.entriesToURLs = function(entries) {
-  return entries.map(function(entry) {
+util.entriesToURLs = entries => {
+  return entries.map(entry => {
     // When building background.js, cachedUrl is not refered other than here.
     // Thus closure compiler raises an error if we refer the property like
     // entry.cachedUrl.
@@ -815,23 +946,24 @@ util.entriesToURLs = function(entries) {
  * @return {Promise} Promise fulfilled with the object that has entries property
  *     and failureUrls property. The promise is never rejected.
  */
-util.URLsToEntries = function(urls, opt_callback) {
-  var promises = urls.map(function(url) {
+util.URLsToEntries = (urls, opt_callback) => {
+  const promises = urls.map(url => {
     return new Promise(window.webkitResolveLocalFileSystemURL.bind(null, url)).
-        then(function(entry) {
+        then(entry => {
           return {entry: entry};
-        }, function(failureUrl) {
+        }, failureUrl => {
           // Not an error. Possibly, the file is not accessible anymore.
           console.warn('Failed to resolve the file with url: ' + url + '.');
           return {failureUrl: url};
         });
   });
-  var resultPromise = Promise.all(promises).then(function(results) {
-    var entries = [];
-    var failureUrls = [];
-    for (var i = 0; i < results.length; i++) {
-      if ('entry' in results[i])
+  const resultPromise = Promise.all(promises).then(results => {
+    const entries = [];
+    const failureUrls = [];
+    for (let i = 0; i < results.length; i++) {
+      if ('entry' in results[i]) {
         entries.push(results[i].entry);
+      }
       if ('failureUrl' in results[i]) {
         failureUrls.push(results[i].failureUrl);
       }
@@ -845,9 +977,9 @@ util.URLsToEntries = function(urls, opt_callback) {
   // Invoke the callback. If opt_callback is specified, resultPromise is still
   // returned and fulfilled with a result.
   if (opt_callback) {
-    resultPromise.then(function(result) {
+    resultPromise.then(result => {
       opt_callback(result.entries, result.failureUrls);
-    }).catch(function(error) {
+    }).catch(error => {
       console.error(
           'util.URLsToEntries is failed.',
           error.stack ? error.stack : error);
@@ -862,10 +994,10 @@ util.URLsToEntries = function(urls, opt_callback) {
  *
  * @param {string} url
  *
- * @return {!Promise.<!Entry>} Promise Resolves with the corresponding
+ * @return {!Promise<!Entry>} Promise Resolves with the corresponding
  *     {!Entry} if possible, else rejects.
  */
-util.urlToEntry = function(url) {
+util.urlToEntry = url => {
   return new Promise(
       window.webkitResolveLocalFileSystemURL.bind(null, url));
 };
@@ -873,54 +1005,15 @@ util.urlToEntry = function(url) {
 /**
  * Returns whether the window is teleported or not.
  * @param {Window} window Window.
- * @return {Promise.<boolean>} Whether the window is teleported or not.
+ * @return {Promise<boolean>} Whether the window is teleported or not.
  */
-util.isTeleported = function(window) {
-  return new Promise(function(onFulfilled) {
+util.isTeleported = window => {
+  return new Promise(onFulfilled => {
     window.chrome.fileManagerPrivate.getProfiles(
-        function(profiles, currentId, displayedId) {
+        (profiles, currentId, displayedId) => {
           onFulfilled(currentId !== displayedId);
         });
   });
-};
-
-/**
- * Sets up and shows the alert to inform a user the task is opened in the
- * desktop of the running profile.
- *
- * TODO(hirono): Move the function from the util namespace.
- * @param {cr.ui.dialogs.AlertDialog} alertDialog Alert dialog to be shown.
- * @param {Array<Entry>} entries List of opened entries.
- */
-util.showOpenInOtherDesktopAlert = function(alertDialog, entries) {
-  if (!entries.length)
-    return;
-  chrome.fileManagerPrivate.getProfiles(
-      function(profiles, currentId, displayedId) {
-        // Find strings.
-        var displayName;
-        for (var i = 0; i < profiles.length; i++) {
-          if (profiles[i].profileId === currentId) {
-            displayName = profiles[i].displayName;
-            break;
-          }
-        }
-        if (!displayName) {
-          console.warn('Display name is not found.');
-          return;
-        }
-
-        var title = entries.length > 1 ?
-            entries[0].name + '\u2026' /* ellipsis */ : entries[0].name;
-        var message = strf(entries.length > 1 ?
-                           'OPEN_IN_OTHER_DESKTOP_MESSAGE_PLURAL' :
-                           'OPEN_IN_OTHER_DESKTOP_MESSAGE',
-                           displayName,
-                           currentId);
-
-        // Show the dialog.
-        alertDialog.showWithTitle(title, message, null, null, null);
-      }.bind(this));
 };
 
 /**
@@ -929,10 +1022,11 @@ util.showOpenInOtherDesktopAlert = function(alertDialog, entries) {
  *
  * @param {string} message Test message to send.
  */
-util.testSendMessage = function(message) {
-  var test = chrome.test || window.top.chrome.test;
-  if (test)
+util.testSendMessage = message => {
+  const test = chrome.test || window.top.chrome.test;
+  if (test) {
     test.sendMessage(message);
+  }
 };
 
 /**
@@ -948,13 +1042,14 @@ util.testSendMessage = function(message) {
  * @param {string} path Path to be extracted.
  * @return {Array<string>} Filename and extension of the given path.
  */
-util.splitExtension = function(path) {
-  var dotPosition = path.lastIndexOf('.');
-  if (dotPosition <= path.lastIndexOf('/'))
+util.splitExtension = path => {
+  let dotPosition = path.lastIndexOf('.');
+  if (dotPosition <= path.lastIndexOf('/')) {
     dotPosition = -1;
+  }
 
-  var filename = dotPosition != -1 ? path.substr(0, dotPosition) : path;
-  var extension = dotPosition != -1 ? path.substr(dotPosition) : '';
+  const filename = dotPosition != -1 ? path.substr(0, dotPosition) : path;
+  const extension = dotPosition != -1 ? path.substr(dotPosition) : '';
   return [filename, extension];
 };
 
@@ -963,42 +1058,89 @@ util.splitExtension = function(path) {
  * @param {!EntryLocation} locationInfo Location info.
  * @return {string} The localized name.
  */
-util.getRootTypeLabel = function(locationInfo) {
+util.getRootTypeLabel = locationInfo => {
   switch (locationInfo.rootType) {
     case VolumeManagerCommon.RootType.DOWNLOADS:
-      return str('DOWNLOADS_DIRECTORY_LABEL');
+      return locationInfo.volumeInfo.label;
     case VolumeManagerCommon.RootType.DRIVE:
       return str('DRIVE_MY_DRIVE_LABEL');
+    case VolumeManagerCommon.RootType.TEAM_DRIVE:
+    // |locationInfo| points to either the root directory of an individual Team
+    // Drive or subdirectory under it, but not the Team Drives grand directory.
+    // Every Team Drive and its subdirectories always have individual names
+    // (locationInfo.hasFixedLabel is false). So getRootTypeLabel() is only used
+    // by LocationLine.show() to display the ancestor name in the location line
+    // like this:
+    //   Team Drives > ABC Team Drive > Folder1
+    //   ^^^^^^^^^^^
+    // By this reason, we return the label of the Team Drives grand root here.
+    case VolumeManagerCommon.RootType.TEAM_DRIVES_GRAND_ROOT:
+      return str('DRIVE_TEAM_DRIVES_LABEL');
+    case VolumeManagerCommon.RootType.COMPUTER:
+    case VolumeManagerCommon.RootType.COMPUTERS_GRAND_ROOT:
+      return str('DRIVE_COMPUTERS_LABEL');
     case VolumeManagerCommon.RootType.DRIVE_OFFLINE:
       return str('DRIVE_OFFLINE_COLLECTION_LABEL');
     case VolumeManagerCommon.RootType.DRIVE_SHARED_WITH_ME:
       return str('DRIVE_SHARED_WITH_ME_COLLECTION_LABEL');
     case VolumeManagerCommon.RootType.DRIVE_RECENT:
       return str('DRIVE_RECENT_COLLECTION_LABEL');
+    case VolumeManagerCommon.RootType.DRIVE_FAKE_ROOT:
+      return str('DRIVE_DIRECTORY_LABEL');
+    case VolumeManagerCommon.RootType.RECENT:
+      return str('RECENT_ROOT_LABEL');
+    case VolumeManagerCommon.RootType.CROSTINI:
+      return str('LINUX_FILES_ROOT_LABEL');
+    case VolumeManagerCommon.RootType.MY_FILES:
+      return str('MY_FILES_ROOT_LABEL');
+    case VolumeManagerCommon.RootType.MEDIA_VIEW:
+      const mediaViewRootType =
+          VolumeManagerCommon.getMediaViewRootTypeFromVolumeId(
+              locationInfo.volumeInfo.volumeId);
+      switch (mediaViewRootType) {
+        case VolumeManagerCommon.MediaViewRootType.IMAGES:
+          return str('MEDIA_VIEW_IMAGES_ROOT_LABEL');
+        case VolumeManagerCommon.MediaViewRootType.VIDEOS:
+          return str('MEDIA_VIEW_VIDEOS_ROOT_LABEL');
+        case VolumeManagerCommon.MediaViewRootType.AUDIO:
+          return str('MEDIA_VIEW_AUDIO_ROOT_LABEL');
+      }
+      console.error('Unsupported media view root type: ' + mediaViewRootType);
+      return locationInfo.volumeInfo.label;
     case VolumeManagerCommon.RootType.DRIVE_OTHER:
     case VolumeManagerCommon.RootType.ARCHIVE:
     case VolumeManagerCommon.RootType.REMOVABLE:
     case VolumeManagerCommon.RootType.MTP:
     case VolumeManagerCommon.RootType.PROVIDED:
+    case VolumeManagerCommon.RootType.ANDROID_FILES:
+    case VolumeManagerCommon.RootType.DOCUMENTS_PROVIDER:
       return locationInfo.volumeInfo.label;
     default:
       console.error('Unsupported root type: ' + locationInfo.rootType);
       return locationInfo.volumeInfo.label;
   }
-}
+};
 
 /**
- * Returns the localized name of the entry.
+ * Returns the localized/i18n name of the entry.
  *
  * @param {EntryLocation} locationInfo
- * @param {!Entry} entry The entry to be retrieve the name of.
- * @return {?string} The localized name.
+ * @param {!Entry|!FilesAppEntry} entry The entry to be retrieve the name of.
+ * @return {string} The localized name.
  */
-util.getEntryLabel = function(locationInfo, entry) {
-  if (locationInfo && locationInfo.isRootEntry)
+util.getEntryLabel = (locationInfo, entry) => {
+  if (locationInfo && locationInfo.hasFixedLabel) {
     return util.getRootTypeLabel(locationInfo);
-  else
-    return entry.name;
+  }
+
+  // Special case for MyFiles/Downloads.
+  if (locationInfo && util.isMyFilesVolumeEnabled() &&
+      locationInfo.rootType == VolumeManagerCommon.RootType.DOWNLOADS &&
+      entry.fullPath == '/Downloads') {
+    return str('DOWNLOADS_DIRECTORY_LABEL');
+  }
+
+  return entry.name;
 };
 
 /**
@@ -1009,9 +1151,24 @@ util.getEntryLabel = function(locationInfo, entry) {
  * @param {string} dropEffect The effect to be checked.
  * @return {boolean} True if |dropEffect| is included in |effectAllowed|.
  */
-util.isDropEffectAllowed = function(effectAllowed, dropEffect) {
+util.isDropEffectAllowed = (effectAllowed, dropEffect) => {
   return effectAllowed === 'all' ||
       effectAllowed.toLowerCase().indexOf(dropEffect) !== -1;
+};
+
+/**
+ * Checks if the specified character is printable ASCII.
+ *
+ * @param {string} character The input character.
+ * @return {boolean} True if |character| is printable ASCII, else false.
+ */
+util.isPrintable = character => {
+  if (character.length != 1) {
+    return false;
+  }
+
+  const charCode = character.charCodeAt(0);
+  return charCode >= 32 && charCode <= 126;
 };
 
 /**
@@ -1031,43 +1188,97 @@ util.isDropEffectAllowed = function(effectAllowed, dropEffect) {
  * @return {Promise} Promise fulfilled on success, or rejected with the error
  *     message.
  */
-util.validateFileName = function(parentEntry, name, filterHiddenOn) {
-  var testResult = /[\/\\\<\>\:\?\*\"\|]/.exec(name);
-  var msg;
-  if (testResult)
+util.validateFileName = (parentEntry, name, filterHiddenOn) => {
+  const testResult = /[\/\\\<\>\:\?\*\"\|]/.exec(name);
+  let msg;
+  if (testResult) {
     return Promise.reject(strf('ERROR_INVALID_CHARACTER', testResult[0]));
-  else if (/^\s*$/i.test(name))
+  } else if (/^\s*$/i.test(name)) {
     return Promise.reject(str('ERROR_WHITESPACE_NAME'));
-  else if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(name))
+  } else if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(name)) {
     return Promise.reject(str('ERROR_RESERVED_NAME'));
-  else if (filterHiddenOn && /\.crdownload$/i.test(name))
+  } else if (filterHiddenOn && /\.crdownload$/i.test(name)) {
     return Promise.reject(str('ERROR_RESERVED_NAME'));
-  else if (filterHiddenOn && name[0] == '.')
+  } else if (filterHiddenOn && name[0] == '.') {
     return Promise.reject(str('ERROR_HIDDEN_NAME'));
+  }
 
-  return new Promise(function(fulfill, reject) {
+  return new Promise((fulfill, reject) => {
     chrome.fileManagerPrivate.validatePathNameLength(
-        parentEntry,
-        name,
-        function(valid) {
-          if (valid)
+        parentEntry, name, valid => {
+          if (valid) {
             fulfill(null);
-          else
+          } else {
             reject(str('ERROR_LONG_NAME'));
+          }
         });
   });
 };
 
 /**
- * Adds a foregorund listener to the background page components.
- * The lisner will be removed when the foreground window is closed.
- * @param {!cr.EventTarget} target
+ * Verifies the user entered name for external drive to be
+ * renamed to. Name restrictions must correspond to the target filesystem
+ * restrictions.
+ *
+ * It also verifies that name length is in the limits of the filesystem.
+ *
+ * @param {string} name New external drive name.
+ * @param {!VolumeInfo} volumeInfo
+ * @return {Promise} Promise fulfilled on success, or rejected with the error
+ *     message.
+ */
+util.validateExternalDriveName = (name, volumeInfo) => {
+  // Verify if entered name for external drive respects restrictions provided by
+  // the target filesystem
+
+  const fileSystem = volumeInfo.diskFileSystemType;
+  const nameLength = name.length;
+
+  // Verify length for the target file system type
+  if (fileSystem == VolumeManagerCommon.FileSystemType.VFAT &&
+      nameLength >
+          VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.VFAT) {
+    return Promise.reject(strf(
+        'ERROR_EXTERNAL_DRIVE_LONG_NAME',
+        VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.VFAT));
+  } else if (
+      fileSystem == VolumeManagerCommon.FileSystemType.EXFAT &&
+      nameLength >
+          VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.EXFAT) {
+    return Promise.reject(strf(
+        'ERROR_EXTERNAL_DRIVE_LONG_NAME',
+        VolumeManagerCommon.FileSystemTypeVolumeNameLengthLimit.EXFAT));
+  }
+
+  // Checks if name contains only printable ASCII (from ' ' to '~')
+  for (let i = 0; i < nameLength; i++) {
+    if (!util.isPrintable(name[i])) {
+      return Promise.reject(
+          strf('ERROR_EXTERNAL_DRIVE_INVALID_CHARACTER', name[i]));
+    }
+  }
+
+  const containsForbiddenCharacters =
+      /[\*\?\.\,\;\:\/\\\|\+\=\<\>\[\]\"\'\t]/.exec(name);
+  if (containsForbiddenCharacters) {
+    return Promise.reject(strf(
+        'ERROR_EXTERNAL_DRIVE_INVALID_CHARACTER',
+        containsForbiddenCharacters[0]));
+  }
+
+  return Promise.resolve();
+};
+
+/**
+ * Adds a foreground listener to the background page components.
+ * The listener will be removed when the foreground window is closed.
+ * @param {!EventTarget} target
  * @param {string} type
  * @param {Function} handler
  */
-util.addEventListenerToBackgroundComponent = function(target, type, handler) {
+util.addEventListenerToBackgroundComponent = (target, type, handler) => {
   target.addEventListener(type, handler);
-  window.addEventListener('pagehide', function() {
+  window.addEventListener('pagehide', () => {
     target.removeEventListener(type, handler);
   });
 };
@@ -1075,9 +1286,10 @@ util.addEventListenerToBackgroundComponent = function(target, type, handler) {
 /**
  * Checks if an API call returned an error, and if yes then prints it.
  */
-util.checkAPIError = function() {
-  if (chrome.runtime.lastError)
+util.checkAPIError = () => {
+  if (chrome.runtime.lastError) {
     console.error(chrome.runtime.lastError.message);
+  }
 };
 
 /**
@@ -1085,8 +1297,8 @@ util.checkAPIError = function() {
  * @param {number} ms The delay in milliseconds.
  * @return {!Promise}
  */
-util.delay = function(ms) {
-  return new Promise(function(resolve) {
+util.delay = ms => {
+  return new Promise(resolve => {
     setTimeout(resolve, ms);
   });
 };
@@ -1099,11 +1311,210 @@ util.delay = function(ms) {
  * @param {string=} opt_message Error message for the timeout.
  * @return {!Promise} A promise which can be rejected by timeout.
  */
-util.timeoutPromise = function(promise, ms, opt_message) {
+util.timeoutPromise = (promise, ms, opt_message) => {
   return Promise.race([
     promise,
-    util.delay(ms).then(function() {
+    util.delay(ms).then(() => {
       throw new Error(opt_message || 'Operation timed out.');
     })
   ]);
+};
+
+/**
+ * Retrieves all entries inside the given |rootEntry|.
+ * @param {!DirectoryEntry} rootEntry
+ * @param {function(!Array<!Entry>)} entriesCallback Called when some chunk of
+ *     entries are read. This can be called a couple of times until the
+ *     completion.
+ * @param {function()} successCallback Called when the read is completed.
+ * @param {function(DOMError)} errorCallback Called when an error occurs.
+ * @param {function():boolean} shouldStop Callback to check if the read process
+ *     should stop or not. When this callback is called and it returns true,
+ *     the remaining recursive reads will be aborted.
+ * @param {number=} opt_maxDepth Max depth to delve directories recursively.
+ *     If 0 is specified, only the rootEntry will be read. If -1 is specified
+ *     or opt_maxDepth is unspecified, the depth of recursion is unlimited.
+ */
+util.readEntriesRecursively = (
+  rootEntry,
+  entriesCallback,
+  successCallback,
+  errorCallback,
+  shouldStop,
+  opt_maxDepth
+) => {
+  let numRunningTasks = 0;
+  let error = null;
+  const maxDepth = opt_maxDepth === undefined ? -1 : opt_maxDepth;
+  const maybeRunCallback = () => {
+    if (numRunningTasks === 0) {
+      if (shouldStop()) {
+        errorCallback(util.createDOMError(util.FileError.ABORT_ERR));
+      } else if (error) {
+        errorCallback(error);
+      } else {
+        successCallback();
+      }
+    }
+  };
+  const processEntry = (entry, depth) => {
+    const onError = fileError => {
+      if (!error) {
+        error = fileError;
+      }
+      numRunningTasks--;
+      maybeRunCallback();
+    };
+    const onSuccess = entries => {
+      if (shouldStop() || error || entries.length === 0) {
+        numRunningTasks--;
+        maybeRunCallback();
+        return;
+      }
+      entriesCallback(entries);
+      for (let i = 0; i < entries.length; i++) {
+        if (entries[i].isDirectory && (maxDepth === -1 || depth < maxDepth)) {
+          processEntry(entries[i], depth + 1);
+        }
+      }
+      // Read remaining entries.
+      reader.readEntries(onSuccess, onError);
+    };
+
+    numRunningTasks++;
+    const reader = entry.createReader();
+    reader.readEntries(onSuccess, onError);
+  };
+
+  processEntry(rootEntry, 0);
+};
+
+/**
+ * Do not remove or modify.  Used in vm.CrostiniFiles tast tests at:
+ * https://chromium.googlesource.com/chromiumos/platform/tast-tests
+ *
+ * Get all entries for the given volume.
+ * @param {!VolumeInfo} volumeInfo
+ * @return {!Promise<Object<Entry>>} all entries keyed by fullPath.
+ */
+util.getEntries = volumeInfo => {
+  const root = volumeInfo.fileSystem.root;
+  return new Promise((resolve, reject) => {
+    const allEntries = {'/': root};
+    function entriesCallback(someEntries) {
+      someEntries.forEach(entry => {
+        allEntries[entry.fullPath] = entry;
+      });
+    }
+    function successCallback() {
+      resolve(allEntries);
+    }
+    util.readEntriesRecursively(
+        root, entriesCallback, successCallback, reject, () => false);
+  });
+};
+
+/**
+ * Executes a functions only when the context is not the incognito one in a
+ * regular session.
+ * @param {function()} callback
+ */
+util.doIfPrimaryContext = callback => {
+  chrome.fileManagerPrivate.getProfiles((profiles) => {
+    if ((profiles[0] && profiles[0].profileId == '$guest') ||
+        !chrome.extension.inIncognitoContext) {
+      callback();
+    }
+  });
+};
+
+/**
+ * Casts an Entry to a FilesAppEntry, to access a FilesAppEntry-specific
+ * property without Closure compiler complaining.
+ * TODO(lucmult): Wrap Entry in a FilesAppEntry derived class and remove
+ * this function. https://crbug.com/835203.
+ * @param {Entry|FilesAppEntry} entry
+ * @return {FilesAppEntry}
+ */
+util.toFilesAppEntry = entry => {
+  return /** @type {FilesAppEntry} */ (entry);
+};
+
+/**
+ * Casts an Entry to a EntryList, to access a FilesAppEntry-specific
+ * property without Closure compiler complaining.
+ * @param {Entry|FilesAppEntry} entry
+ * @return {EntryList}
+ */
+util.toEntryList = entry => {
+  return /** @type {EntryList} */ (entry);
+};
+
+/**
+ * Returns true if entry is FileSystemEntry or FileSystemDirectoryEntry, it
+ * returns false if it's FakeEntry or any one of the FilesAppEntry types.
+ * TODO(lucmult): Wrap Entry in a FilesAppEntry derived class and remove
+ * this function. https://crbug.com/835203.
+ * @param {Entry|FilesAppEntry} entry
+ * @return {boolean}
+ */
+util.isNativeEntry = entry => {
+  entry = util.toFilesAppEntry(entry);
+  // Only FilesAppEntry types has |type_name| attribute.
+  return entry.type_name === undefined;
+};
+
+/**
+ * For FilesAppEntry types that wraps a native entry, returns the native entry
+ * to be able to send to fileManagerPrivate API.
+ * @param {Entry|FilesAppEntry} entry
+ * @return {Entry|FilesAppEntry}
+ */
+util.unwrapEntry = entry => {
+  if (!entry) {
+    return entry;
+  }
+
+  const nativeEntry = entry.getNativeEntry && entry.getNativeEntry();
+  if (nativeEntry) {
+    return nativeEntry;
+  }
+
+  return entry;
+};
+
+/** @return {boolean} */
+util.isMyFilesVolumeEnabled = () => {
+  return loadTimeData.valueExists('MY_FILES_VOLUME_ENABLED') &&
+      loadTimeData.getBoolean('MY_FILES_VOLUME_ENABLED');
+};
+
+/**
+ * Used for logs and debugging. It tries to tell what type is the entry, its
+ * path and URL.
+ *
+ * @param {Entry|FilesAppEntry} entry
+ * @return {string}
+ */
+util.entryDebugString = (entry) => {
+  if (entry === null) {
+    return 'entry is null';
+  }
+  if (entry === undefined) {
+    return 'entry is undefined';
+  }
+  let typeName = '';
+  if (entry.constructor && entry.constructor.name) {
+    typeName = entry.constructor.name;
+  } else {
+    typeName = Object.prototype.toString.call(entry);
+  }
+  let entryDescription = '(' + typeName + ') ';
+  if (entry.fullPath) {
+    entryDescription = entryDescription + entry.fullPath + ' ';
+  }
+  if (entry.toURL) {
+    entryDescription = entryDescription + entry.toURL();
+  }
+  return entryDescription;
 };

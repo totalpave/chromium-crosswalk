@@ -8,85 +8,69 @@ cr.define('settings_search', function() {
    * for allowing tests to know when a method was called, as well as
    * specifying mock responses.
    *
-   * @constructor
    * @implements {settings.SearchEnginesBrowserProxy}
-   * @extends {settings.TestBrowserProxy}
    */
-  var TestSearchEnginesBrowserProxy = function() {
-    settings.TestBrowserProxy.call(this, [
-      'getSearchEnginesList',
-      'removeSearchEngine',
-      'searchEngineEditCancelled',
-      'searchEngineEditCompleted',
-      'searchEngineEditStarted',
-      'setDefaultSearchEngine',
-      'validateSearchEngineInput',
-      'manageExtension',
-      'disableExtension',
-    ]);
+  class TestSearchEnginesBrowserProxy extends TestBrowserProxy {
+    constructor() {
+      super([
+        'getSearchEnginesList',
+        'removeSearchEngine',
+        'searchEngineEditCancelled',
+        'searchEngineEditCompleted',
+        'searchEngineEditStarted',
+        'setDefaultSearchEngine',
+        'validateSearchEngineInput',
+      ]);
 
-    /** @private {!SearchEnginesInfo} */
-    this.searchEnginesInfo_ = {defaults: [], others: [], extensions: []};
-  };
-
-  TestSearchEnginesBrowserProxy.prototype = {
-    __proto__: settings.TestBrowserProxy.prototype,
+      /** @private {!SearchEnginesInfo} */
+      this.searchEnginesInfo_ = {defaults: [], others: [], extensions: []};
+    }
 
     /** @override */
-    setDefaultSearchEngine: function(modelIndex) {
+    setDefaultSearchEngine(modelIndex) {
       this.methodCalled('setDefaultSearchEngine', modelIndex);
-    },
+    }
 
     /** @override */
-    removeSearchEngine: function(modelIndex) {
+    removeSearchEngine(modelIndex) {
       this.methodCalled('removeSearchEngine', modelIndex);
-    },
+    }
 
     /** @override */
-    searchEngineEditStarted: function(modelIndex) {
+    searchEngineEditStarted(modelIndex) {
       this.methodCalled('searchEngineEditStarted', modelIndex);
-    },
+    }
 
     /** @override */
-    searchEngineEditCancelled: function() {
+    searchEngineEditCancelled() {
       this.methodCalled('searchEngineEditCancelled');
-    },
+    }
 
     /** @override */
-    searchEngineEditCompleted: function(searchEngine, keyword, queryUrl) {
+    searchEngineEditCompleted(searchEngine, keyword, queryUrl) {
       this.methodCalled('searchEngineEditCompleted');
-    },
+    }
+
+    /** @override */
+    getSearchEnginesList() {
+      this.methodCalled('getSearchEnginesList');
+      return Promise.resolve(this.searchEnginesInfo_);
+    }
+
+    /** @override */
+    validateSearchEngineInput(fieldName, fieldValue) {
+      this.methodCalled('validateSearchEngineInput');
+      return Promise.resolve(true);
+    }
 
     /**
      * Sets the response to be returned by |getSearchEnginesList|.
-     * @param {!SearchEnginesInfo}
+     * @param {!SearchEnginesInfo} searchEnginesInfo
      */
-    setSearchEnginesInfo: function(searchEnginesInfo) {
+    setSearchEnginesInfo(searchEnginesInfo) {
       this.searchEnginesInfo_ = searchEnginesInfo;
-    },
-
-    /** @override */
-    getSearchEnginesList: function() {
-      this.methodCalled('getSearchEnginesList');
-      return Promise.resolve(this.searchEnginesInfo_);
-    },
-
-    /** @override */
-    validateSearchEngineInput: function(fieldName, fieldValue) {
-      this.methodCalled('validateSearchEngineInput');
-      return Promise.resolve(true);
-    },
-
-    /** @override */
-    manageExtension: function(extensionId) {
-      this.methodCalled('manageExtension', extensionId);
-    },
-
-    /** @override */
-    disableExtension: function(extensionId) {
-      this.methodCalled('disableExtension', extensionId);
-    },
-  };
+    }
+  }
 
   /**
    * @param {boolean} canBeDefault
@@ -100,13 +84,13 @@ cr.define('settings_search', function() {
       canBeEdited: canBeEdited,
       canBeRemoved: canBeRemoved,
       default: false,
-      displayName: "Google",
-      iconURL: "http://www.google.com/favicon.ico",
+      displayName: 'Google',
+      iconURL: 'http://www.google.com/favicon.ico',
       isOmniboxExtension: false,
-      keyword: "google.com",
+      keyword: 'google.com',
       modelIndex: 0,
-      name: "Google",
-      url: "https://search.foo.com/search?p=%s",
+      name: 'Google',
+      url: 'https://search.foo.com/search?p=%s',
       urlLocked: false,
     };
   }

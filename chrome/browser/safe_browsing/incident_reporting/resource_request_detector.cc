@@ -6,11 +6,13 @@
 
 #include <utility>
 
-#include "base/memory/ptr_util.h"
+#include "base/bind.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/incident_reporting/incident_receiver.h"
 #include "chrome/browser/safe_browsing/incident_reporting/resource_request_incident.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
+#include "components/safe_browsing/proto/csd.pb.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -62,22 +64,28 @@ class ResourceRequestDetectorClient
   using ResourceRequestIncidentMessage =
       ClientIncidentReport::IncidentData::ResourceRequestIncident;
 
-  typedef base::Callback<void(std::unique_ptr<ResourceRequestIncidentMessage>)>
-      OnResultCallback;
+  using OnResultCallback =
+      base::OnceCallback<void(std::unique_ptr<ResourceRequestIncidentMessage>)>;
 
-  ResourceRequestDetectorClient(
+  static void Start(
       const GURL& resource_url,
       const scoped_refptr<SafeBrowsingDatabaseManager>& database_manager,
-      const OnResultCallback& callback)
-      : database_manager_(database_manager)
-      , callback_(callback) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::IO, FROM_HERE,
-        base::Bind(&ResourceRequestDetectorClient::StartCheck, this,
-                   resource_url));
+      OnResultCallback callback) {
+    auto client = base::WrapRefCounted(new ResourceRequestDetectorClient(
+        std::move(database_manager), std::move(callback)));
+    base::PostTaskWithTraits(
+        FROM_HERE, {content::BrowserThread::IO},
+        base::BindOnce(&ResourceRequestDetectorClient::StartCheck, client,
+                       resource_url));
   }
 
  private:
+  ResourceRequestDetectorClient(
+      scoped_refptr<SafeBrowsingDatabaseManager> database_manager,
+      OnResultCallback callback)
+      : database_manager_(std::move(database_manager)),
+        callback_(std::move(callback)) {}
+
   friend class base::RefCountedThreadSafe<ResourceRequestDetectorClient>;
   ~ResourceRequestDetectorClient() override {}
 
@@ -105,9 +113,9 @@ class ResourceRequestDetectorClient
           new ResourceRequestIncidentMessage());
       incident_data->set_type(ResourceRequestIncidentMessage::TYPE_PATTERN);
       incident_data->set_digest(threat_hash);
-      content::BrowserThread::PostTask(
-          content::BrowserThread::UI, FROM_HERE,
-          base::Bind(callback_, base::Passed(&incident_data)));
+      base::PostTaskWithTraits(
+          FROM_HERE, {content::BrowserThread::UI},
+          base::BindOnce(std::move(callback_), std::move(incident_data)));
     }
     Release();  // Balanced in StartCheck.
   }
@@ -125,7 +133,7 @@ ResourceRequestInfo ResourceRequestDetector::GetRequestInfo(
     const net::URLRequest* request) {
   ResourceRequestInfo info;
   info.url = request->url();
-  const content::ResourceRequestInfo* request_info =
+  content::ResourceRequestInfo* request_info =
       content::ResourceRequestInfo::ForRequest(request);
   info.resource_type = request_info->GetResourceType();
   content::ResourceRequestInfo::GetRenderFrameForRequest(
@@ -153,11 +161,11 @@ void ResourceRequestDetector::ProcessResourceRequest(
   if (request->resource_type == content::RESOURCE_TYPE_SUB_FRAME ||
       request->resource_type == content::RESOURCE_TYPE_SCRIPT ||
       request->resource_type == content::RESOURCE_TYPE_OBJECT) {
-    new ResourceRequestDetectorClient(
+    ResourceRequestDetectorClient::Start(
         request->url, database_manager_,
-        base::Bind(&ResourceRequestDetector::ReportIncidentOnUIThread,
-                   weak_ptr_factory_.GetWeakPtr(), request->render_process_id,
-                   request->render_frame_id));
+        base::BindOnce(&ResourceRequestDetector::ReportIncidentOnUIThread,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       request->render_process_id, request->render_frame_id));
   }
 }
 
@@ -181,8 +189,8 @@ void ResourceRequestDetector::ReportIncidentOnUIThread(
       incident_data->set_origin(host_url.GetOrigin().spec());
 
     incident_receiver_->AddIncidentForProfile(
-        profile, base::WrapUnique(
-                     new ResourceRequestIncident(std::move(incident_data))));
+        profile,
+        std::make_unique<ResourceRequestIncident>(std::move(incident_data)));
   }
 }
 

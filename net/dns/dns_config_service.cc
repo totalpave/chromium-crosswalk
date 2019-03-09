@@ -4,86 +4,12 @@
 
 #include "net/dns/dns_config_service.h"
 
+#include <string>
+
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/values.h"
-#include "net/base/ip_endpoint.h"
-#include "net/base/ip_pattern.h"
 
 namespace net {
-
-// Default values are taken from glibc resolv.h except timeout which is set to
-// |kDnsDefaultTimeoutMs|.
-DnsConfig::DnsConfig()
-    : unhandled_options(false),
-      append_to_multi_label_name(true),
-      randomize_ports(false),
-      ndots(1),
-      timeout(base::TimeDelta::FromMilliseconds(kDnsDefaultTimeoutMs)),
-      attempts(2),
-      rotate(false),
-      edns0(false),
-      use_local_ipv6(false) {}
-
-DnsConfig::DnsConfig(const DnsConfig& other) = default;
-
-DnsConfig::~DnsConfig() {}
-
-bool DnsConfig::Equals(const DnsConfig& d) const {
-  return EqualsIgnoreHosts(d) && (hosts == d.hosts);
-}
-
-bool DnsConfig::EqualsIgnoreHosts(const DnsConfig& d) const {
-  return (nameservers == d.nameservers) &&
-         (search == d.search) &&
-         (unhandled_options == d.unhandled_options) &&
-         (append_to_multi_label_name == d.append_to_multi_label_name) &&
-         (ndots == d.ndots) &&
-         (timeout == d.timeout) &&
-         (attempts == d.attempts) &&
-         (rotate == d.rotate) &&
-         (edns0 == d.edns0) &&
-         (use_local_ipv6 == d.use_local_ipv6);
-}
-
-void DnsConfig::CopyIgnoreHosts(const DnsConfig& d) {
-  nameservers = d.nameservers;
-  search = d.search;
-  unhandled_options = d.unhandled_options;
-  append_to_multi_label_name = d.append_to_multi_label_name;
-  ndots = d.ndots;
-  timeout = d.timeout;
-  attempts = d.attempts;
-  rotate = d.rotate;
-  edns0 = d.edns0;
-  use_local_ipv6 = d.use_local_ipv6;
-}
-
-std::unique_ptr<base::Value> DnsConfig::ToValue() const {
-  std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
-
-  base::ListValue* list = new base::ListValue();
-  for (size_t i = 0; i < nameservers.size(); ++i)
-    list->AppendString(nameservers[i].ToString());
-  dict->Set("nameservers", list);
-
-  list = new base::ListValue();
-  for (size_t i = 0; i < search.size(); ++i)
-    list->AppendString(search[i]);
-  dict->Set("search", list);
-
-  dict->SetBoolean("unhandled_options", unhandled_options);
-  dict->SetBoolean("append_to_multi_label_name", append_to_multi_label_name);
-  dict->SetInteger("ndots", ndots);
-  dict->SetDouble("timeout", timeout.InSecondsF());
-  dict->SetInteger("attempts", attempts);
-  dict->SetBoolean("rotate", rotate);
-  dict->SetBoolean("edns0", edns0);
-  dict->SetBoolean("use_local_ipv6", use_local_ipv6);
-  dict->SetInteger("num_hosts", hosts.size());
-
-  return std::move(dict);
-}
 
 DnsConfigService::DnsConfigService()
     : watch_failed_(false),
@@ -93,10 +19,11 @@ DnsConfigService::DnsConfigService()
       last_sent_empty_(true) {}
 
 DnsConfigService::~DnsConfigService() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 }
 
 void DnsConfigService::ReadConfig(const CallbackType& callback) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(!callback.is_null());
   DCHECK(callback_.is_null());
   callback_ = callback;
@@ -104,7 +31,7 @@ void DnsConfigService::ReadConfig(const CallbackType& callback) {
 }
 
 void DnsConfigService::WatchConfig(const CallbackType& callback) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(!callback.is_null());
   DCHECK(callback_.is_null());
   callback_ = callback;
@@ -113,7 +40,7 @@ void DnsConfigService::WatchConfig(const CallbackType& callback) {
 }
 
 void DnsConfigService::InvalidateConfig() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   base::TimeTicks now = base::TimeTicks::Now();
   if (!last_invalidate_config_time_.is_null()) {
     UMA_HISTOGRAM_LONG_TIMES("AsyncDNS.ConfigNotifyInterval",
@@ -127,7 +54,7 @@ void DnsConfigService::InvalidateConfig() {
 }
 
 void DnsConfigService::InvalidateHosts() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   base::TimeTicks now = base::TimeTicks::Now();
   if (!last_invalidate_hosts_time_.is_null()) {
     UMA_HISTOGRAM_LONG_TIMES("AsyncDNS.HostsNotifyInterval",
@@ -141,7 +68,7 @@ void DnsConfigService::InvalidateHosts() {
 }
 
 void DnsConfigService::OnConfigRead(const DnsConfig& config) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(config.IsValid());
 
   bool changed = false;
@@ -162,7 +89,7 @@ void DnsConfigService::OnConfigRead(const DnsConfig& config) {
 }
 
 void DnsConfigService::OnHostsRead(const DnsHosts& hosts) {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   bool changed = false;
   if (hosts != dns_config_.hosts) {
@@ -182,7 +109,7 @@ void DnsConfigService::OnHostsRead(const DnsHosts& hosts) {
 }
 
 void DnsConfigService::StartTimer() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   if (last_sent_empty_) {
     DCHECK(!timer_.IsRunning());
     return;  // No need to withdraw again.
@@ -207,7 +134,7 @@ void DnsConfigService::StartTimer() {
 }
 
 void DnsConfigService::OnTimeout() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(!last_sent_empty_);
   // Indicate that even if there is no change in On*Read, we will need to
   // update the receiver when the config becomes complete.
@@ -233,4 +160,3 @@ void DnsConfigService::OnCompleteConfig() {
 }
 
 }  // namespace net
-

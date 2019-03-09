@@ -4,9 +4,10 @@
 
 #include "ios/web/public/referrer_util.h"
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "ios/web/public/referrer.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "testing/platform_test.h"
 #include "url/gurl.h"
 
 namespace {
@@ -23,11 +24,13 @@ const char* const kTestUrls[] = {
 
 namespace web {
 
+using ReferrerUtilTest = PlatformTest;
+
 // Tests that no matter what the transition and policy, the result is always
 // stripped of things that should not be in a referrer (e.g., passwords).
-TEST(ReferrerUtilTest, ReferrerSanitization) {
-  for (unsigned int source = 0; source < arraysize(kTestUrls); ++source) {
-    for (unsigned int dest = 0; dest < arraysize(kTestUrls); ++dest) {
+TEST_F(ReferrerUtilTest, ReferrerSanitization) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 0; dest < base::size(kTestUrls); ++dest) {
       for (unsigned int policy = 0; policy <= ReferrerPolicyLast; ++policy) {
         Referrer referrer(GURL(kTestUrls[source]),
                           static_cast<ReferrerPolicy>(policy));
@@ -41,9 +44,9 @@ TEST(ReferrerUtilTest, ReferrerSanitization) {
 }
 
 // Tests that the Always policy works as expected.
-TEST(ReferrerUtilTest, AlwaysPolicy) {
-  for (unsigned int source = 0; source < arraysize(kTestUrls); ++source) {
-    for (unsigned int dest = 1; dest < arraysize(kTestUrls); ++dest) {
+TEST_F(ReferrerUtilTest, AlwaysPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
       GURL source_url(kTestUrls[source]);
       GURL dest_url(kTestUrls[dest]);
       Referrer referrer(source_url, ReferrerPolicyAlways);
@@ -57,9 +60,9 @@ TEST(ReferrerUtilTest, AlwaysPolicy) {
 
 // Tests that the Default policy works as expected, and matches
 // NoReferrerWhenDowngrade.
-TEST(ReferrerUtilTest, DefaultPolicy) {
-  for (unsigned int source = 0; source < arraysize(kTestUrls); ++source) {
-    for (unsigned int dest = 1; dest < arraysize(kTestUrls); ++dest) {
+TEST_F(ReferrerUtilTest, DefaultPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
       GURL source_url(kTestUrls[source]);
       GURL dest_url(kTestUrls[dest]);
       Referrer referrer(source_url, ReferrerPolicyDefault);
@@ -80,9 +83,9 @@ TEST(ReferrerUtilTest, DefaultPolicy) {
 }
 
 // Tests that the Never policy works as expected.
-TEST(ReferrerUtilTest, NeverPolicy) {
-  for (unsigned int source = 0; source < arraysize(kTestUrls); ++source) {
-    for (unsigned int dest = 1; dest < arraysize(kTestUrls); ++dest) {
+TEST_F(ReferrerUtilTest, NeverPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
       GURL source_url(kTestUrls[source]);
       GURL dest_url(kTestUrls[dest]);
       Referrer referrer(source_url, ReferrerPolicyNever);
@@ -95,9 +98,9 @@ TEST(ReferrerUtilTest, NeverPolicy) {
 }
 
 // Tests that the Origin policy works as expected.
-TEST(ReferrerUtilTest, OriginPolicy) {
-  for (unsigned int source = 0; source < arraysize(kTestUrls); ++source) {
-    for (unsigned int dest = 1; dest < arraysize(kTestUrls); ++dest) {
+TEST_F(ReferrerUtilTest, OriginPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
       GURL source_url(kTestUrls[source]);
       GURL dest_url(kTestUrls[dest]);
       Referrer referrer(source_url, ReferrerPolicyOrigin);
@@ -110,9 +113,9 @@ TEST(ReferrerUtilTest, OriginPolicy) {
 }
 
 // Tests that the OriginWhenCrossOrigin policy works as expected.
-TEST(ReferrerUtilTest, OriginWhenCrossOriginPolicy) {
-  for (unsigned int source = 0; source < arraysize(kTestUrls); ++source) {
-    for (unsigned int dest = 1; dest < arraysize(kTestUrls); ++dest) {
+TEST_F(ReferrerUtilTest, OriginWhenCrossOriginPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
       GURL source_url(kTestUrls[source]);
       GURL dest_url(kTestUrls[dest]);
       Referrer referrer(source_url, ReferrerPolicyOriginWhenCrossOrigin);
@@ -128,8 +131,67 @@ TEST(ReferrerUtilTest, OriginWhenCrossOriginPolicy) {
   }
 }
 
+// Tests that the same-origin policy works as expected.
+TEST_F(ReferrerUtilTest, SameOriginPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
+      GURL source_url(kTestUrls[source]);
+      GURL dest_url(kTestUrls[dest]);
+      Referrer referrer(source_url, ReferrerPolicySameOrigin);
+      std::string value = ReferrerHeaderValueForNavigation(dest_url, referrer);
+
+      // Full URL for the same origin, and nothing for all other cases.
+      if (source_url.GetOrigin() == dest_url.GetOrigin())
+        EXPECT_EQ(source_url.GetAsReferrer().spec(), value);
+      else
+        EXPECT_EQ(std::string(), value);
+    }
+  }
+}
+
+// Tests that the strict-origin policy works as expected.
+TEST_F(ReferrerUtilTest, StrictOriginPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
+      GURL source_url(kTestUrls[source]);
+      GURL dest_url(kTestUrls[dest]);
+      Referrer referrer(source_url, ReferrerPolicyStrictOrigin);
+      std::string value = ReferrerHeaderValueForNavigation(dest_url, referrer);
+
+      // No referrer when downgrading, and origin otherwise.
+      if (source_url.SchemeIsCryptographic() &&
+          !dest_url.SchemeIsCryptographic())
+        EXPECT_EQ("", value);
+      else
+        EXPECT_EQ(source_url.GetOrigin().spec(), value);
+    }
+  }
+}
+
+// Tests that the strict-origin-when-cross-origin policy works as expected.
+TEST_F(ReferrerUtilTest, StrictOriginWhenCrossOriginPolicy) {
+  for (unsigned int source = 0; source < base::size(kTestUrls); ++source) {
+    for (unsigned int dest = 1; dest < base::size(kTestUrls); ++dest) {
+      GURL source_url(kTestUrls[source]);
+      GURL dest_url(kTestUrls[dest]);
+      Referrer referrer(source_url, ReferrerPolicyStrictOriginWhenCrossOrigin);
+      std::string value = ReferrerHeaderValueForNavigation(dest_url, referrer);
+
+      // No referrer when downgrading, origin when cross-origin but not
+      // downgrading, and full referrer otherwise.
+      if (source_url.SchemeIsCryptographic() &&
+          !dest_url.SchemeIsCryptographic())
+        EXPECT_EQ("", value);
+      else if (source_url.GetOrigin() == dest_url.GetOrigin())
+        EXPECT_EQ(source_url.GetAsReferrer().spec(), value);
+      else
+        EXPECT_EQ(source_url.GetOrigin().spec(), value);
+    }
+  }
+}
+
 // Tests that PolicyForNavigation gives the right values.
-TEST(ReferrerUtilTest, PolicyForNavigation) {
+TEST_F(ReferrerUtilTest, PolicyForNavigation) {
   // The request and destination URLs are unused in the current implementation,
   // so use a dummy value.
   GURL dummy_url;
@@ -143,35 +205,33 @@ TEST(ReferrerUtilTest, PolicyForNavigation) {
     // incorrect mappings.
     switch (net_request_policy) {
       case net::URLRequest::
-          REDUCE_REFERRER_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN:
-        // Nothing currently maps to this policy on iOS.
-        FAIL();
-        break;
-      case net::URLRequest::ORIGIN_ONLY_ON_TRANSITION_CROSS_ORIGIN:
-        EXPECT_EQ(ReferrerPolicyOriginWhenCrossOrigin, policy);
-        break;
-      case net::URLRequest::NEVER_CLEAR_REFERRER:
-        // This request policy should be used when the referrer policy is always
-        // the same regardless of source and destination.
-        EXPECT_TRUE(policy == ReferrerPolicyAlways ||
-                    policy == ReferrerPolicyNever ||
-                    policy == ReferrerPolicyOrigin);
-        break;
-      case net::URLRequest::
           CLEAR_REFERRER_ON_TRANSITION_FROM_SECURE_TO_INSECURE:
         // This corresponds directly to ReferrerPolicyNoReferrerWhenDowngrade,
         // which is also how Default works on iOS.
         EXPECT_TRUE(policy == ReferrerPolicyDefault ||
                     policy == ReferrerPolicyNoReferrerWhenDowngrade);
         break;
+      case net::URLRequest::
+          REDUCE_REFERRER_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN:
+        EXPECT_EQ(ReferrerPolicyStrictOriginWhenCrossOrigin, policy);
+        break;
+      case net::URLRequest::ORIGIN_ONLY_ON_TRANSITION_CROSS_ORIGIN:
+        EXPECT_EQ(ReferrerPolicyOriginWhenCrossOrigin, policy);
+        break;
+      case net::URLRequest::NEVER_CLEAR_REFERRER:
+        EXPECT_EQ(ReferrerPolicyAlways, policy);
+        break;
       case net::URLRequest::ORIGIN:
-        EXPECT_TRUE(policy == ReferrerPolicyOrigin);
+        EXPECT_EQ(ReferrerPolicyOrigin, policy);
+        break;
+      case net::URLRequest::CLEAR_REFERRER_ON_TRANSITION_CROSS_ORIGIN:
+        EXPECT_EQ(ReferrerPolicySameOrigin, policy);
+        break;
+      case net::URLRequest::ORIGIN_CLEAR_ON_TRANSITION_FROM_SECURE_TO_INSECURE:
+        EXPECT_EQ(ReferrerPolicyStrictOrigin, policy);
         break;
       case net::URLRequest::NO_REFERRER:
-        EXPECT_TRUE(policy == ReferrerPolicyNever);
-        break;
-      case net::URLRequest::MAX_REFERRER_POLICY:
-        FAIL();
+        EXPECT_EQ(ReferrerPolicyNever, policy);
         break;
     }
   }
@@ -179,7 +239,7 @@ TEST(ReferrerUtilTest, PolicyForNavigation) {
 
 // Tests that all the strings corresponding to web::ReferrerPolicy values are
 // correctly handled.
-TEST(ReferrerUtilTest, PolicyFromString) {
+TEST_F(ReferrerUtilTest, PolicyFromString) {
   // The ordering here must match web::ReferrerPolicy; this makes the test
   // simpler, at the cost of needing to re-order if the enum is re-ordered.
   const char* const kPolicyStrings[] = {
@@ -189,6 +249,9 @@ TEST(ReferrerUtilTest, PolicyFromString) {
       "no-referrer",
       "origin",
       "origin-when-cross-origin",
+      "same-origin",
+      "strict-origin",
+      "strict-origin-when-cross-origin",
   };
   // Test that all the values are supported.
   for (int i = 0; i < ReferrerPolicyLast; ++i) {
@@ -200,7 +263,7 @@ TEST(ReferrerUtilTest, PolicyFromString) {
   // Verify that if something is added to the enum, its string value gets added
   // to the mapping function.
   EXPECT_EQ(ReferrerPolicyLast + 1,
-            static_cast<int>(arraysize(kPolicyStrings)));
+            static_cast<int>(base::size(kPolicyStrings)));
 
   // Test the legacy policy names.
   EXPECT_EQ(ReferrerPolicyNever, ReferrerPolicyFromString("never"));
@@ -210,9 +273,9 @@ TEST(ReferrerUtilTest, PolicyFromString) {
             ReferrerPolicyFromString("default"));
   EXPECT_EQ(ReferrerPolicyAlways, ReferrerPolicyFromString("always"));
 
-  // Test that invalid values map to Never.
-  EXPECT_EQ(ReferrerPolicyNever, ReferrerPolicyFromString(""));
-  EXPECT_EQ(ReferrerPolicyNever, ReferrerPolicyFromString("made-up"));
+  // Test that invalid values map to Default.
+  EXPECT_EQ(ReferrerPolicyDefault, ReferrerPolicyFromString(""));
+  EXPECT_EQ(ReferrerPolicyDefault, ReferrerPolicyFromString("made-up"));
 }
 
 }  // namespace web

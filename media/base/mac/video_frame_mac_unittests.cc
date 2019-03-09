@@ -10,7 +10,6 @@
 
 #include "base/bind.h"
 #include "base/callback_helpers.h"
-#include "media/base/mac/corevideo_glue.h"
 #include "media/base/video_frame.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
@@ -68,9 +67,9 @@ TEST(VideoFrameMac, CheckFormats) {
   const FormatPair format_pairs[] = {
       {PIXEL_FORMAT_I420, kCVPixelFormatType_420YpCbCr8Planar},
       {PIXEL_FORMAT_YV12, 0},
-      {PIXEL_FORMAT_YV16, 0},
-      {PIXEL_FORMAT_YV12A, 0},
-      {PIXEL_FORMAT_YV24, 0},
+      {PIXEL_FORMAT_I422, 0},
+      {PIXEL_FORMAT_I420A, 0},
+      {PIXEL_FORMAT_I444, 0},
   };
 
   gfx::Size size(kWidth, kHeight);
@@ -112,11 +111,9 @@ TEST(VideoFrameMac, CheckLifetime) {
 TEST(VideoFrameMac, CheckWrapperFrame) {
   const FormatPair format_pairs[] = {
       {PIXEL_FORMAT_I420, kCVPixelFormatType_420YpCbCr8Planar},
-      {PIXEL_FORMAT_NV12,
-       CoreVideoGlue::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange},
+      {PIXEL_FORMAT_NV12, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange},
   };
 
-  const gfx::Size size(kWidth, kHeight);
   for (const auto& format_pair : format_pairs) {
     base::ScopedCFTypeRef<CVPixelBufferRef> pb;
     CVPixelBufferCreate(nullptr, kWidth, kHeight, format_pair.corevideo,
@@ -125,7 +122,7 @@ TEST(VideoFrameMac, CheckWrapperFrame) {
 
     auto frame = VideoFrame::WrapCVPixelBuffer(pb.get(), kTimestamp);
     ASSERT_TRUE(frame.get());
-    EXPECT_EQ(pb.get(), frame->cv_pixel_buffer());
+    EXPECT_EQ(pb.get(), frame->CvPixelBuffer());
     EXPECT_EQ(format_pair.chrome, frame->format());
 
     frame = nullptr;

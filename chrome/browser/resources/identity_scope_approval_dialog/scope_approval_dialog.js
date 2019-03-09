@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-var webview;
+let webview;
 
 /**
  * Points the webview to the starting URL of a scope authorization
@@ -20,17 +20,20 @@ function loadAuthUrlAndShowWindow(url, win) {
   });
 
   // Request a customized view from GAIA.
-  webview.request.onBeforeSendHeaders.addListener(function(details) {
-    headers = details.requestHeaders || [];
-    headers.push({'name': 'X-Browser-View',
-                  'value': 'embedded'});
-    return { requestHeaders: headers };
-  }, {
-    urls: ['https://accounts.google.com/*'],
-  }, ['blocking', 'requestHeaders']);
+  webview.request.onBeforeSendHeaders.addListener(
+      function(details) {
+        headers = details.requestHeaders || [];
+        headers.push({'name': 'X-Browser-View', 'value': 'embedded'});
+        return {requestHeaders: headers};
+      },
+      {
+        urls: ['https://accounts.google.com/*'],
+      },
+      ['blocking', 'requestHeaders']);
 
-  if (url.toLowerCase().indexOf('https://accounts.google.com/') != 0)
+  if (!url.toLowerCase().startsWith('https://accounts.google.com/')) {
     document.querySelector('.titlebar').classList.add('titlebar-border');
+  }
 
   webview.src = url;
   if (win) {
@@ -51,4 +54,3 @@ document.addEventListener('DOMContentLoaded', function() {
     document.title = strings['window-title'];
   });
 });
-

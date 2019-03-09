@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/android/profiles/profile_downloader_android.h"
-
 #include <stddef.h>
 
 #include "base/android/jni_android.h"
@@ -17,13 +15,16 @@
 #include "chrome/browser/profiles/profile_downloader.h"
 #include "chrome/browser/profiles/profile_downloader_delegate.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/signin/account_tracker_service_factory.h"
-#include "components/signin/core/browser/account_tracker_service.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "jni/ProfileDownloader_jni.h"
+#include "services/identity/public/cpp/identity_manager.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/image/image_skia.h"
+
+using base::android::JavaParamRef;
+using base::android::ScopedJavaLocalRef;
 
 namespace {
 
@@ -75,7 +76,6 @@ class AccountInfoRetriever : public ProfileDownloaderDelegate {
 
   void OnProfileDownloadSuccess(
       ProfileDownloader* downloader) override {
-
     base::string16 full_name = downloader->GetProfileFullName();
     base::string16 given_name = downloader->GetProfileGivenName();
     SkBitmap bitmap = downloader->GetProfilePicture();
@@ -85,11 +85,9 @@ class AccountInfoRetriever : public ProfileDownloaderDelegate {
 
     JNIEnv* env = base::android::AttachCurrentThread();
     Java_ProfileDownloader_onProfileDownloadSuccess(
-        env,
-        base::android::ConvertUTF8ToJavaString(env, email_).obj(),
-        base::android::ConvertUTF16ToJavaString(env, full_name).obj(),
-        base::android::ConvertUTF16ToJavaString(env, given_name).obj(),
-        jbitmap.obj());
+        env, base::android::ConvertUTF8ToJavaString(env, email_),
+        base::android::ConvertUTF16ToJavaString(env, full_name),
+        base::android::ConvertUTF16ToJavaString(env, given_name), jbitmap);
     Shutdown();
   }
 
@@ -124,9 +122,9 @@ class AccountInfoRetriever : public ProfileDownloaderDelegate {
 }  // namespace
 
 // static
-ScopedJavaLocalRef<jstring> GetCachedFullNameForPrimaryAccount(
+ScopedJavaLocalRef<jstring>
+JNI_ProfileDownloader_GetCachedFullNameForPrimaryAccount(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jobject>& jprofile) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(jprofile);
 
@@ -141,9 +139,9 @@ ScopedJavaLocalRef<jstring> GetCachedFullNameForPrimaryAccount(
 }
 
 // static
-ScopedJavaLocalRef<jstring> GetCachedGivenNameForPrimaryAccount(
+ScopedJavaLocalRef<jstring>
+JNI_ProfileDownloader_GetCachedGivenNameForPrimaryAccount(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jobject>& jprofile) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(jprofile);
 
@@ -158,9 +156,9 @@ ScopedJavaLocalRef<jstring> GetCachedGivenNameForPrimaryAccount(
 }
 
 // static
-ScopedJavaLocalRef<jobject> GetCachedAvatarForPrimaryAccount(
+ScopedJavaLocalRef<jobject>
+JNI_ProfileDownloader_GetCachedAvatarForPrimaryAccount(
     JNIEnv* env,
-    const JavaParamRef<jclass>& clazz,
     const JavaParamRef<jobject>& jprofile) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(jprofile);
 
@@ -170,8 +168,8 @@ ScopedJavaLocalRef<jobject> GetCachedAvatarForPrimaryAccount(
           GetProfileAttributesWithPath(profile->GetPath(), &entry)) {
     gfx::Image avatar_image = entry->GetAvatarIcon();
     if (!avatar_image.IsEmpty() &&
-        avatar_image.Width() > profiles::kAvatarIconWidth &&
-        avatar_image.Height() > profiles::kAvatarIconHeight &&
+        avatar_image.Width() > profiles::kAvatarIconSize &&
+        avatar_image.Height() > profiles::kAvatarIconSize &&
         avatar_image.AsImageSkia().bitmap()) {
       jbitmap = gfx::ConvertToJavaBitmap(avatar_image.AsImageSkia().bitmap());
     }
@@ -181,35 +179,28 @@ ScopedJavaLocalRef<jobject> GetCachedAvatarForPrimaryAccount(
 }
 
 // static
-void StartFetchingAccountInfoFor(JNIEnv* env,
-                                 const JavaParamRef<jclass>& clazz,
-                                 const JavaParamRef<jobject>& jprofile,
-                                 const JavaParamRef<jstring>& jemail,
-                                 jint image_side_pixels,
-                                 jboolean is_pre_signin) {
+void JNI_ProfileDownloader_StartFetchingAccountInfoFor(
+    JNIEnv* env,
+    const JavaParamRef<jobject>& jprofile,
+    const JavaParamRef<jstring>& jemail,
+    jint image_side_pixels,
+    jboolean is_pre_signin) {
   Profile* profile = ProfileAndroid::FromProfileAndroid(jprofile);
   const std::string email =
       base::android::ConvertJavaStringToUTF8(env, jemail);
-  AccountTrackerService* account_tracker_service =
-      AccountTrackerServiceFactory::GetForProfile(profile);
 
-  AccountInfo account_info =
-      account_tracker_service->FindAccountInfoByEmail(email);
+  auto maybe_account_info =
+      IdentityManagerFactory::GetForProfile(profile)
+          ->FindAccountInfoForAccountWithRefreshTokenByEmailAddress(email);
 
-  if (account_info.account_id.empty()) {
-      LOG(ERROR) << "Attempted to get AccountInfo for account not in the "
-          << "AccountTrackerService";
-      return;
+  if (!maybe_account_info.has_value()) {
+    LOG(ERROR) << "Attempted to get AccountInfo for account not in the "
+               << "IdentityManager";
+    return;
   }
 
-  AccountInfoRetriever* retriever = new AccountInfoRetriever(
-      profile,
-      account_tracker_service->FindAccountInfoByEmail(email).account_id, email,
-      image_side_pixels, is_pre_signin);
+  AccountInfoRetriever* retriever =
+      new AccountInfoRetriever(profile, maybe_account_info.value().account_id,
+                               email, image_side_pixels, is_pre_signin);
   retriever->Start();
-}
-
-// static
-bool RegisterProfileDownloader(JNIEnv* env) {
-  return RegisterNativesImpl(env);
 }

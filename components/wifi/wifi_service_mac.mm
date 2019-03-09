@@ -8,14 +8,17 @@
 #import <netinet/in.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 
+#include <utility>
+
 #include "base/bind.h"
 #include "base/mac/foundation_util.h"
 #include "base/mac/scoped_cftyperef.h"
 #include "base/mac/scoped_nsobject.h"
 #include "base/mac/sdk_forward_declarations.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/values.h"
 #include "components/onc/onc_constants.h"
 #include "components/wifi/network_properties.h"
 #include "crypto/apple_keychain.h"
@@ -156,12 +159,13 @@ WiFiServiceMac::WiFiServiceMac() : wlan_observer_(nil) {
 }
 
 WiFiServiceMac::~WiFiServiceMac() {
+  UnInitialize();
 }
 
 void WiFiServiceMac::Initialize(
   scoped_refptr<base::SequencedTaskRunner> task_runner) {
   task_runner_.swap(task_runner);
-  interface_.reset([[CWInterface interface] retain]);
+  interface_.reset([[[CWWiFiClient sharedWiFiClient] interface] retain]);
   if (!interface_) {
     DVLOG(1) << "Failed to initialize default interface.";
     return;
@@ -222,7 +226,7 @@ void WiFiServiceMac::SetProperties(
     existing_properties->MergeDictionary(properties.get());
   } else {
     network_properties_.SetWithoutPathExpansion(network_guid,
-                                                properties.release());
+                                                std::move(properties));
   }
 }
 
@@ -242,8 +246,7 @@ void WiFiServiceMac::CreateNetwork(
     *error = kErrorInvalidData;
     return;
   }
-  network_properties_.SetWithoutPathExpansion(guid,
-                                              properties.release());
+  network_properties_.SetWithoutPathExpansion(guid, std::move(properties));
   *network_guid = guid;
 }
 
@@ -264,7 +267,7 @@ void WiFiServiceMac::GetVisibleNetworks(const std::string& network_type,
        ++it) {
     std::unique_ptr<base::DictionaryValue> network(
         it->ToValue(!include_details));
-    network_list->Append(network.release());
+    network_list->Append(std::move(network));
   }
 }
 
@@ -362,14 +365,9 @@ void WiFiServiceMac::GetKeyFromSystem(const std::string& network_guid,
   UInt32 password_length = 0;
   void *password_data = NULL;
   crypto::AppleKeychain keychain;
-  OSStatus status = keychain.FindGenericPassword(NULL,
-                                                 strlen(kAirPortServiceName),
-                                                 kAirPortServiceName,
-                                                 network_guid.length(),
-                                                 network_guid.c_str(),
-                                                 &password_length,
-                                                 &password_data,
-                                                 NULL);
+  OSStatus status = keychain.FindGenericPassword(
+      strlen(kAirPortServiceName), kAirPortServiceName, network_guid.length(),
+      network_guid.c_str(), &password_length, &password_data, NULL);
   if (status != errSecSuccess) {
     *error = kErrorNotFound;
     return;
@@ -378,7 +376,7 @@ void WiFiServiceMac::GetKeyFromSystem(const std::string& network_guid,
   if (password_data) {
     *key_data = std::string(reinterpret_cast<char*>(password_data),
                             password_length);
-    keychain.ItemFreeContent(NULL, password_data);
+    keychain.ItemFreeContent(password_data);
   }
 }
 
@@ -403,8 +401,8 @@ void WiFiServiceMac::SetEventObservers(
             DVLOG(1) << "Received CWSSIDDidChangeNotification";
             task_runner_->PostTask(
                 FROM_HERE,
-                base::Bind(&WiFiServiceMac::OnWlanObserverNotification,
-                           base::Unretained(this)));
+                base::BindOnce(&WiFiServiceMac::OnWlanObserverNotification,
+                               base::Unretained(this)));
     };
 
     wlan_observer_ = [[NSNotificationCenter defaultCenter]
@@ -604,7 +602,8 @@ void WiFiServiceMac::NotifyNetworkListChanged(const NetworkList& networks) {
   }
 
   event_task_runner_->PostTask(
-      FROM_HERE, base::Bind(network_list_changed_observer_, current_networks));
+      FROM_HERE,
+      base::BindOnce(network_list_changed_observer_, current_networks));
 }
 
 void WiFiServiceMac::NotifyNetworkChanged(const std::string& network_guid) {
@@ -614,7 +613,7 @@ void WiFiServiceMac::NotifyNetworkChanged(const std::string& network_guid) {
   DVLOG(1) << "NotifyNetworkChanged: " << network_guid;
   NetworkGuidList changed_networks(1, network_guid);
   event_task_runner_->PostTask(
-      FROM_HERE, base::Bind(networks_changed_observer_, changed_networks));
+      FROM_HERE, base::BindOnce(networks_changed_observer_, changed_networks));
 }
 
 // static

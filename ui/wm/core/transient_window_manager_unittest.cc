@@ -7,14 +7,13 @@
 #include <utility>
 
 #include "base/macros.h"
-#include "ui/aura/client/window_tree_client.h"
+#include "ui/aura/client/window_parenting_client.h"
 #include "ui/aura/test/aura_test_base.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
 #include "ui/wm/core/transient_window_observer.h"
 #include "ui/wm/core/window_util.h"
-#include "ui/wm/core/wm_state.h"
 
 using aura::Window;
 
@@ -75,22 +74,12 @@ class TransientWindowManagerTest : public aura::test::AuraTestBase {
   TransientWindowManagerTest() {}
   ~TransientWindowManagerTest() override {}
 
-  void SetUp() override {
-    AuraTestBase::SetUp();
-    wm_state_.reset(new wm::WMState);
-  }
-
-  void TearDown() override {
-    wm_state_.reset();
-    AuraTestBase::TearDown();
-  }
-
  protected:
   // Creates a transient window that is transient to |parent|.
   Window* CreateTransientChild(int id, Window* parent) {
     Window* window = new Window(NULL);
     window->set_id(id);
-    window->SetType(ui::wm::WINDOW_TYPE_NORMAL);
+    window->SetType(aura::client::WINDOW_TYPE_NORMAL);
     window->Init(ui::LAYER_TEXTURED);
     AddTransientChild(parent, window);
     aura::client::ParentWindowWithContext(window, root_window(), gfx::Rect());
@@ -98,8 +87,6 @@ class TransientWindowManagerTest : public aura::test::AuraTestBase {
   }
 
  private:
-  std::unique_ptr<wm::WMState> wm_state_;
-
   DISALLOW_COPY_AND_ASSIGN(TransientWindowManagerTest);
 };
 
@@ -162,7 +149,8 @@ TEST_F(TransientWindowManagerTest, TransientChildren) {
   // When the parent_controls_visibility is true, TransientWindowManager
   // controls the children's visibility. It stays invisible even if
   // Window::Show() is called, and gets shown when the parent becomes visible.
-  wm::TransientWindowManager::Get(w2)->set_parent_controls_visibility(true);
+  wm::TransientWindowManager::GetOrCreate(w2)->set_parent_controls_visibility(
+      true);
   w1->Hide();
   EXPECT_FALSE(w2->IsVisible());
   w2->Show();
@@ -448,7 +436,8 @@ TEST_F(TransientWindowManagerTest, TransientWindowObserverNotified) {
   std::unique_ptr<Window> w1(CreateTestWindowWithId(1, parent.get()));
 
   TestTransientWindowObserver test_observer;
-  TransientWindowManager::Get(parent.get())->AddObserver(&test_observer);
+  TransientWindowManager::GetOrCreate(parent.get())
+      ->AddObserver(&test_observer);
 
   AddTransientChild(parent.get(), w1.get());
   EXPECT_EQ(1, test_observer.add_count());
@@ -458,7 +447,8 @@ TEST_F(TransientWindowManagerTest, TransientWindowObserverNotified) {
   EXPECT_EQ(1, test_observer.add_count());
   EXPECT_EQ(1, test_observer.remove_count());
 
-  TransientWindowManager::Get(parent.get())->RemoveObserver(&test_observer);
+  TransientWindowManager::GetOrCreate(parent.get())
+      ->RemoveObserver(&test_observer);
 }
 
 }  // namespace wm

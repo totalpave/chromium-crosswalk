@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/callback.h"
 #include "base/macros.h"
@@ -25,13 +26,9 @@ class DictionaryValue;
 
 namespace dbus {
 
-class Bus;
-class ErrorResponse;
 class MessageWriter;
 class MethodCall;
-class ObjectPath;
 class ObjectProxy;
-class Response;
 class Signal;
 
 }  // namespace dbus
@@ -94,11 +91,7 @@ class ShillClientHelper {
 
   // Calls a method without results.
   void CallVoidMethod(dbus::MethodCall* method_call,
-                      const VoidDBusMethodCallback& callback);
-
-  // Calls a method with an object path result.
-  void CallObjectPathMethod(dbus::MethodCall* method_call,
-                            const ObjectPathDBusMethodCallback& callback);
+                      VoidDBusMethodCallback callback);
 
   // Calls a method with an object path result where there is an error callback.
   void CallObjectPathMethodWithErrorCallback(
@@ -175,8 +168,8 @@ class ShillClientHelper {
   ReleasedCallback released_callback_;
   int active_refs_;
   PropertyChangedHandler property_changed_handler_;
-  base::ObserverList<ShillPropertyChangedObserver, true /* check_empty */>
-      observer_list_;
+  base::ObserverList<ShillPropertyChangedObserver,
+                     true /* check_empty */>::Unchecked observer_list_;
   std::vector<std::string> interfaces_to_be_monitored_;
 
   // Note: This should remain the last member so it'll be destroyed and

@@ -191,6 +191,8 @@ void TestLookup(const char* name, KeyboardLayoutEngine* engine) {
        'A'},
       {DomCode::US_A, EF_CONTROL_DOWN, DomKey::Constant<'a'>::Character,
        VKEY_A, 1},
+      {DomCode::LAUNCH_ASSISTANT, EF_NONE, DomKey::LAUNCH_ASSISTANT,
+       VKEY_ASSISTANT, 0},
   };
 
   KeyboardLayoutEngineManager::SetKeyboardLayoutEngine(
@@ -222,7 +224,8 @@ TEST(LayoutEngineTest, Lookup) {
   XkbEvdevCodes xkb_evdev_code_converter;
   XkbKeyboardLayoutEngine* xkb_engine =
       new XkbKeyboardLayoutEngine(xkb_evdev_code_converter);
-  xkb_engine->SetKeymapFromStringForTest(kUsLayoutXkbKeymap);
+  xkb_engine->SetCurrentLayoutFromBuffer(kUsLayoutXkbKeymap,
+                                         strlen(kUsLayoutXkbKeymap));
   TestLookup("XkbKeyboardLayoutEngine", xkb_engine);
 }
 

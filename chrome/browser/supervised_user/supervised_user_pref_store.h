@@ -35,6 +35,7 @@ class SupervisedUserPrefStore : public PrefStore,
   // PrefStore overrides:
   bool GetValue(const std::string& key,
                 const base::Value** value) const override;
+  std::unique_ptr<base::DictionaryValue> GetValues() const override;
   void AddObserver(PrefStore::Observer* observer) override;
   void RemoveObserver(PrefStore::Observer* observer) override;
   bool HasObservers() const override;
@@ -57,7 +58,7 @@ class SupervisedUserPrefStore : public PrefStore,
 
   std::unique_ptr<PrefValueMap> prefs_;
 
-  base::ObserverList<PrefStore::Observer, true> observers_;
+  base::ObserverList<PrefStore::Observer, true>::Unchecked observers_;
 };
 
 #endif  // CHROME_BROWSER_SUPERVISED_USER_SUPERVISED_USER_PREF_STORE_H_

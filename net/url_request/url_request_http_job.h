@@ -18,14 +18,11 @@
 #include "base/time/time.h"
 #include "net/base/auth.h"
 #include "net/base/completion_callback.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/net_error_details.h"
 #include "net/base/net_export.h"
-#include "net/base/sdch_manager.h"
-#include "net/cookies/cookie_store.h"
-#include "net/filter/filter.h"
 #include "net/http/http_request_info.h"
 #include "net/socket/connection_attempts.h"
-#include "net/url_request/url_request_backoff_manager.h"
 #include "net/url_request/url_request_job.h"
 #include "net/url_request/url_request_throttler_entry_interface.h"
 
@@ -39,7 +36,6 @@ class HttpUserAgentSettings;
 class ProxyInfo;
 class SSLPrivateKey;
 class UploadDataStream;
-class URLRequestContext;
 
 // A URLRequestJob subclass that is built on top of HttpTransaction. It
 // provides an implementation for both HTTP and HTTPS.
@@ -48,6 +44,9 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   static URLRequestJob* Factory(URLRequest* request,
                                 NetworkDelegate* network_delegate,
                                 const std::string& scheme);
+
+  void SetRequestHeadersCallback(RequestHeadersCallback callback) override;
+  void SetResponseHeadersCallback(ResponseHeadersCallback callback) override;
 
  protected:
   URLRequestHttpJob(URLRequest* request,
@@ -61,6 +60,7 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   void Start() override;
   void Kill() override;
   void GetConnectionAttempts(ConnectionAttempts* out) const override;
+  std::unique_ptr<SourceStream> SetUpSourceStream() override;
 
   RequestPriority priority() const {
     return priority_;
@@ -74,11 +74,6 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
 
   typedef base::RefCountedData<bool> SharedBoolean;
 
-  class HttpFilterContext;
-
-  // Shadows URLRequestJob's version of this method.
-  void NotifyBeforeNetworkStart(bool* defer);
-
   // Shadows URLRequestJob's version of this method so we can grab cookies.
   void NotifyHeadersComplete();
 
@@ -87,16 +82,9 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   void AddExtraHeaders();
   void AddCookieHeaderAndStart();
   void SaveCookiesAndNotifyHeadersComplete(int result);
-  void FetchResponseCookies(std::vector<std::string>* cookies);
-
-  // Processes a Backoff header, if one exists.
-  void ProcessBackoffHeader();
 
   // Processes the Strict-Transport-Security header, if one exists.
   void ProcessStrictTransportSecurityHeader();
-
-  // Processes the Public-Key-Pins header, if one exists.
-  void ProcessPublicKeyPinsHeader();
 
   // Processes the Expect-CT header, if one exists. This header
   // indicates that the server wants the user agent to send a report
@@ -117,25 +105,23 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   void SetUpload(UploadDataStream* upload) override;
   void SetExtraRequestHeaders(const HttpRequestHeaders& headers) override;
   LoadState GetLoadState() const override;
-  UploadProgress GetUploadProgress() const override;
   bool GetMimeType(std::string* mime_type) const override;
   bool GetCharset(std::string* charset) override;
   void GetResponseInfo(HttpResponseInfo* info) override;
   void GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const override;
-  bool GetRemoteEndpoint(IPEndPoint* endpoint) const override;
+  bool GetTransactionRemoteEndpoint(IPEndPoint* endpoint) const override;
   int GetResponseCode() const override;
   void PopulateNetErrorDetails(NetErrorDetails* details) const override;
-  std::unique_ptr<Filter> SetupFilter() const override;
   bool CopyFragmentOnRedirect(const GURL& location) const override;
   bool IsSafeRedirect(const GURL& location) override;
   bool NeedsAuth() override;
   void GetAuthChallengeInfo(scoped_refptr<AuthChallengeInfo>*) override;
   void SetAuth(const AuthCredentials& credentials) override;
   void CancelAuth() override;
-  void ContinueWithCertificate(X509Certificate* client_cert,
-                               SSLPrivateKey* client_private_key) override;
+  void ContinueWithCertificate(
+      scoped_refptr<X509Certificate> client_cert,
+      scoped_refptr<SSLPrivateKey> client_private_key) override;
   void ContinueDespiteLastError() override;
-  void ResumeNetworkStart() override;
   int ReadRawData(IOBuffer* buf, int buf_size) override;
   void StopCaching() override;
   bool GetFullRequestHeaders(HttpRequestHeaders* headers) const override;
@@ -144,14 +130,13 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   void DoneReading() override;
   void DoneReadingRedirectResponse() override;
 
-  HostPortPair GetSocketAddress() const override;
+  IPEndPoint GetResponseRemoteEndpoint() const override;
   void NotifyURLRequestDestroyed() override;
 
   void RecordTimer();
   void ResetTimer();
 
   void UpdatePacketReadTimes() override;
-  void RecordPacketStats(FilterContext::StatisticSelector statistic) const;
 
   // Starts the transaction if extensions using the webrequest API do not
   // object.
@@ -165,8 +150,14 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   void DoneWithRequest(CompletionCause reason);
 
   // Callback functions for Cookie Monster
-  void SetCookieHeaderAndStart(const CookieList& cookie_list);
-  void DoStartTransaction();
+  void SetCookieHeaderAndStart(const CookieList& cookie_list,
+                               const CookieStatusList& excluded_list);
+
+  // Another Cookie Monster callback
+  void OnSetCookieResult(std::string cookie_string,
+                         CanonicalCookie::CookieInclusionStatus status);
+  int num_cookie_lines_left_;
+  std::vector<CookieLineWithStatus> cs_status_list_;
 
   // Some servers send the body compressed, but specify the content length as
   // the uncompressed size. If this is the case, we return true in order
@@ -189,9 +180,6 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   AuthState server_auth_state_;
   AuthCredentials auth_credentials_;
 
-  CompletionCallback start_callback_;
-  CompletionCallback notify_before_headers_sent_callback_;
-
   bool read_in_progress_;
 
   std::unique_ptr<HttpTransaction> transaction_;
@@ -199,16 +187,6 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   // This is used to supervise traffic and enforce exponential
   // back-off. May be NULL.
   scoped_refptr<URLRequestThrottlerEntryInterface> throttling_entry_;
-
-  // A handle to the SDCH dictionaries that were advertised in this request.
-  // May be null.
-  std::unique_ptr<SdchManager::DictionarySet> dictionaries_advertised_;
-
-  // For SDCH latency experiments, when we are able to do SDCH, we may enable
-  // either an SDCH latency test xor a pass through test. The following bools
-  // indicate what we decided on for this instance.
-  bool sdch_test_activated_;  // Advertising a dictionary for sdch.
-  bool sdch_test_control_;    // Not even accepting-content sdch.
 
   // For recording of stats, we need to remember if this is cached content.
   bool is_cached_content_;
@@ -246,10 +224,6 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
   // When the transaction finished reading the request headers.
   base::TimeTicks receive_headers_end_;
 
-  std::unique_ptr<HttpFilterContext> filter_context_;
-
-  CompletionCallback on_headers_received_callback_;
-
   // We allow the network delegate to modify a copy of the response headers.
   // This prevents modifications of headers that are shared with the underlying
   // layers of the network stack.
@@ -269,14 +243,15 @@ class NET_EXPORT_PRIVATE URLRequestHttpJob : public URLRequestJob {
 
   const HttpUserAgentSettings* http_user_agent_settings_;
 
-  URLRequestBackoffManager* backoff_manager_;
-
   // Keeps track of total received bytes over the network from transactions used
   // by this job that have already been destroyed.
   int64_t total_received_bytes_from_previous_transactions_;
   // Keeps track of total sent bytes over the network from transactions used by
   // this job that have already been destroyed.
   int64_t total_sent_bytes_from_previous_transactions_;
+
+  RequestHeadersCallback request_headers_callback_;
+  ResponseHeadersCallback response_headers_callback_;
 
   base::WeakPtrFactory<URLRequestHttpJob> weak_factory_;
 

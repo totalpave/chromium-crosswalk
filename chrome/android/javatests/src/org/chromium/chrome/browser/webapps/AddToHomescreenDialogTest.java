@@ -4,53 +4,82 @@
 
 package org.chromium.chrome.browser.webapps;
 
+import android.app.Activity;
 import android.content.DialogInterface;
+import android.support.test.filters.SmallTest;
 import android.support.v7.app.AlertDialog;
-import android.test.suitebuilder.annotation.SmallTest;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RetryOnFailure;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.test.ChromeActivityTestCaseBase;
+import org.chromium.chrome.browser.ChromeSwitches;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 
 /**
  * Tests org.chromium.chrome.browser.webapps.AddToHomescreenDialog by verifying
  * that the calling the show() method actually shows the dialog and checks that
  * some expected elements inside the dialog are present.
  *
- * This is mostly intended as a smoke test because the dialog isn't used in
- * Chromium for the moment.
+ * This is mostly intended as a smoke test.
  */
-public class AddToHomescreenDialogTest extends ChromeActivityTestCaseBase<ChromeActivity> {
-    public AddToHomescreenDialogTest() {
-        super(ChromeActivity.class);
+@RunWith(ChromeJUnit4ClassRunner.class)
+@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
+        // Preconnect causes issues with the single-threaded Java test server.
+        "--disable-features=NetworkPrediction"})
+public class AddToHomescreenDialogTest {
+    @Rule
+    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
+            new ChromeActivityTestRule<>(ChromeActivity.class);
+
+    private static class MockAddToHomescreenManager extends AddToHomescreenManager {
+        public MockAddToHomescreenManager(Activity activity, Tab tab) {
+            super(activity, tab);
+        }
+
+        @Override
+        public void addToHomescreen(String userRequestedTitle) {}
     }
 
-    @Override
-    public void startMainActivity() throws InterruptedException {
-        startMainActivityOnBlankPage();
+    @Before
+    public void setUp() throws InterruptedException {
+        mActivityTestRule.startMainActivityOnBlankPage();
     }
 
+    @Test
     @SmallTest
     @Feature("{Webapp}")
+    @RetryOnFailure
     public void testSmoke() throws InterruptedException {
         ThreadUtils.runOnUiThreadBlocking(new Runnable() {
             @Override
             public void run() {
-                assertNull(AddToHomescreenDialog.getCurrentDialogForTest());
+                AddToHomescreenDialog dialog =
+                        new AddToHomescreenDialog(mActivityTestRule.getActivity(),
+                                new MockAddToHomescreenManager(mActivityTestRule.getActivity(),
+                                        mActivityTestRule.getActivity().getActivityTab()));
+                dialog.show();
 
-                AddToHomescreenDialog.show(getActivity(), getActivity().getActivityTab());
-                AlertDialog dialog = AddToHomescreenDialog.getCurrentDialogForTest();
-                assertNotNull(dialog);
+                AlertDialog alertDialog = dialog.getAlertDialogForTesting();
+                Assert.assertNotNull(alertDialog);
 
-                assertTrue(dialog.isShowing());
+                Assert.assertTrue(alertDialog.isShowing());
 
-                assertNotNull(dialog.findViewById(R.id.spinny));
-                assertNotNull(dialog.findViewById(R.id.icon));
-                assertNotNull(dialog.findViewById(R.id.text));
-                assertNotNull(dialog.getButton(DialogInterface.BUTTON_POSITIVE));
-                assertNotNull(dialog.getButton(DialogInterface.BUTTON_NEGATIVE));
+                Assert.assertNotNull(alertDialog.findViewById(R.id.spinny));
+                Assert.assertNotNull(alertDialog.findViewById(R.id.icon));
+                Assert.assertNotNull(alertDialog.findViewById(R.id.text));
+                Assert.assertNotNull(alertDialog.getButton(DialogInterface.BUTTON_POSITIVE));
+                Assert.assertNotNull(alertDialog.getButton(DialogInterface.BUTTON_NEGATIVE));
             }
         });
     }

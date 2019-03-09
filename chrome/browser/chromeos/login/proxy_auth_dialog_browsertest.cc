@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
@@ -15,10 +16,10 @@
 #include "chrome/browser/ui/login/login_handler.h"
 #include "chrome/browser/ui/webui/chromeos/login/oobe_ui.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/chrome_switches.h"
 #include "content/public/browser/notification_details.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/spawned_test_server/spawned_test_server.h"
@@ -61,11 +62,10 @@ class ProxyAuthDialogWaiter : public content::WindowedNotificationObserver {
 class ProxyAuthOnUserBoardScreenTest : public LoginManagerTest {
  public:
   ProxyAuthOnUserBoardScreenTest()
-      : LoginManagerTest(true /* should_launch_browser */),
+      : LoginManagerTest(true /* should_launch_browser */,
+                         true /* should_initialize_webui */),
         proxy_server_(net::SpawnedTestServer::TYPE_BASIC_AUTH_PROXY,
-                      net::SpawnedTestServer::kLocalhost,
-                      base::FilePath()) {
-  }
+                      base::FilePath()) {}
 
   ~ProxyAuthOnUserBoardScreenTest() override {}
 
@@ -88,24 +88,14 @@ class ProxyAuthOnUserBoardScreenTest : public LoginManagerTest {
 
 IN_PROC_BROWSER_TEST_F(ProxyAuthOnUserBoardScreenTest,
                        PRE_ProxyAuthDialogOnUserBoardScreen) {
-  RegisterUser("test-user@gmail.com");
+  RegisterUser(
+      AccountId::FromUserEmailGaiaId("test-user@gmail.com", "1234567890"));
   StartupUtils::MarkOobeCompleted();
 }
 
-// Times out under MSan, and is flaky for ASan: https://crbug.com/481651
-#if defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER)
-#define MAYBE_ProxyAuthDialogOnUserBoardScreen \
-  DISABLED_ProxyAuthDialogOnUserBoardScreen
-#else
-#define MAYBE_ProxyAuthDialogOnUserBoardScreen ProxyAuthDialogOnUserBoardScreen
-#endif
+// Flaky: https://crbug.com/481651 and https://crbug.com/772072
 IN_PROC_BROWSER_TEST_F(ProxyAuthOnUserBoardScreenTest,
-                       MAYBE_ProxyAuthDialogOnUserBoardScreen) {
-  LoginDisplayHost* login_display_host = LoginDisplayHost::default_host();
-  WebUILoginView* web_ui_login_view = login_display_host->GetWebUILoginView();
-  OobeUI* oobe_ui =
-      static_cast<OobeUI*>(web_ui_login_view->GetWebUI()->GetController());
-
+                       DISABLED_ProxyAuthDialogOnUserBoardScreen) {
   {
     OobeScreenWaiter screen_waiter(OobeScreen::SCREEN_ACCOUNT_PICKER);
     ProxyAuthDialogWaiter auth_dialog_waiter;
@@ -119,14 +109,15 @@ IN_PROC_BROWSER_TEST_F(ProxyAuthOnUserBoardScreenTest,
   {
     OobeScreenWaiter screen_waiter(OobeScreen::SCREEN_GAIA_SIGNIN);
     ProxyAuthDialogWaiter auth_dialog_waiter;
-    ASSERT_TRUE(content::ExecuteScript(oobe_ui->web_ui()->GetWebContents(),
-                                       "window.domAutomationController.send(!!("
-                                       "$('add-user-button').click()"
-                                       "));"));
+    ASSERT_TRUE(content::ExecuteScript(
+        LoginDisplayHost::default_host()->GetOobeWebContents(),
+        "$('add-user-button').click()"));
     screen_waiter.Wait();
     auth_dialog_waiter.Wait();
     ASSERT_TRUE(auth_dialog_waiter.login_handler());
+    auth_dialog_waiter.login_handler()->CancelAuth();
   }
+  base::RunLoop().RunUntilIdle();
 }
 
 }  // namespace chromeos

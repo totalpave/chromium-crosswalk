@@ -18,9 +18,13 @@
 #include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequenced_task_runner.h"
+#include "base/threading/thread_checker.h"
+#include "net/base/ip_endpoint.h"
+#include "net/base/proxy_server.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_fetcher_factory.h"
 #include "net/url_request/url_request_status.h"
 #include "url/gurl.h"
@@ -29,12 +33,14 @@ namespace net {
 
 // Changes URLFetcher's Factory for the lifetime of the object.
 // Note that this scoper cannot be nested (to make it even harder to misuse).
-class ScopedURLFetcherFactory : public base::NonThreadSafe {
+class ScopedURLFetcherFactory {
  public:
   explicit ScopedURLFetcherFactory(URLFetcherFactory* factory);
   virtual ~ScopedURLFetcherFactory();
 
  private:
+  THREAD_CHECKER(thread_checker_);
+
   DISALLOW_COPY_AND_ASSIGN(ScopedURLFetcherFactory);
 };
 
@@ -45,10 +51,9 @@ class ScopedURLFetcherFactory : public base::NonThreadSafe {
 // the callback method when appropriate. In this way it's easy to mock a
 // URLFetcher.
 // Typical usage:
-//   // TestURLFetcher requires a MessageLoop.
-//   MessageLoop message_loop;
-//   // And an IO thread to release URLRequestContextGetter in URLFetcher::Core.
-//   BrowserThreadImpl io_thread(BrowserThread::IO, &message_loop);
+//   // TestURLFetcher requires a MessageLoop and an IO thread to release
+//   // URLRequestContextGetter in URLFetcher::Core.
+//   TestBrowserThreadBundle thread_bundle_;
 //   // Create factory (it automatically sets itself as URLFetcher's factory).
 //   TestURLFetcherFactory factory;
 //   // Do something that triggers creation of a URLFetcher.
@@ -107,6 +112,7 @@ class TestURLFetcher : public URLFetcher {
                            bool is_last_chunk) override;
   void SetLoadFlags(int load_flags) override;
   int GetLoadFlags() const override;
+  void SetAllowCredentials(bool allow_credentials) override {}
   void SetReferrer(const std::string& referrer) override;
   void SetReferrerPolicy(URLRequest::ReferrerPolicy referrer_policy) override;
   void SetExtraRequestHeaders(
@@ -114,7 +120,7 @@ class TestURLFetcher : public URLFetcher {
   void AddExtraRequestHeader(const std::string& header_line) override;
   void SetRequestContext(
       URLRequestContextGetter* request_context_getter) override;
-  void SetInitiatorURL(const GURL& initiator) override;
+  void SetInitiator(const base::Optional<url::Origin>& initiator) override;
   void SetURLRequestUserData(
       const void* key,
       const CreateDataCallback& create_data_callback) override;
@@ -132,7 +138,8 @@ class TestURLFetcher : public URLFetcher {
   void SaveResponseWithWriter(
       std::unique_ptr<URLFetcherResponseWriter> response_writer) override;
   HttpResponseHeaders* GetResponseHeaders() const override;
-  HostPortPair GetSocketAddress() const override;
+  IPEndPoint GetSocketAddress() const override;
+  const ProxyServer& ProxyServerUsed() const override;
   bool WasFetchedViaProxy() const override;
   bool WasCached() const override;
   // Only valid when the response was set via SetResponseString().
@@ -227,6 +234,7 @@ class TestURLFetcher : public URLFetcher {
   std::string fake_response_string_;
   base::FilePath fake_response_file_path_;
   bool write_response_file_;
+  ProxyServer fake_proxy_server_;
   bool fake_was_fetched_via_proxy_;
   bool fake_was_cached_;
   int64_t fake_response_bytes_;
@@ -255,7 +263,8 @@ class TestURLFetcherFactory : public URLFetcherFactory,
       int id,
       const GURL& url,
       URLFetcher::RequestType request_type,
-      URLFetcherDelegate* d) override;
+      URLFetcherDelegate* d,
+      NetworkTrafficAnnotationTag traffic_annotation) override;
   TestURLFetcher* GetFetcherByID(int id) const;
   void RemoveFetcherFromMap(int id);
   void SetDelegateForTests(TestURLFetcherDelegateForTests* delegate_for_tests);
@@ -417,7 +426,8 @@ class FakeURLFetcherFactory : public URLFetcherFactory,
       int id,
       const GURL& url,
       URLFetcher::RequestType request_type,
-      URLFetcherDelegate* d) override;
+      URLFetcherDelegate* d,
+      NetworkTrafficAnnotationTag traffic_annotation) override;
 
   // Sets the fake response for a given URL. The |response_data| may be empty.
   // The |response_code| may be any HttpStatusCode. For instance, HTTP_OK will
@@ -470,7 +480,8 @@ class URLFetcherImplFactory : public URLFetcherFactory {
       int id,
       const GURL& url,
       URLFetcher::RequestType request_type,
-      URLFetcherDelegate* d) override;
+      URLFetcherDelegate* d,
+      NetworkTrafficAnnotationTag traffic_annotation) override;
 };
 
 }  // namespace net

@@ -8,7 +8,11 @@
 
 #include "base/logging.h"
 #include "components/metrics/metrics_provider.h"
-#include "components/sync_sessions/synced_window_delegates_getter.h"
+#import "ios/public/provider/chrome/browser/mailto/mailto_handler_provider.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 namespace ios {
 
@@ -24,30 +28,23 @@ ChromeBrowserProvider* GetChromeBrowserProvider() {
   return g_chrome_browser_provider;
 }
 
-ChromeBrowserProvider::~ChromeBrowserProvider() {}
-
 // A dummy implementation of ChromeBrowserProvider.
 
-ChromeBrowserProvider::ChromeBrowserProvider() {}
+ChromeBrowserProvider::ChromeBrowserProvider()
+    : mailto_handler_provider_(std::make_unique<MailtoHandlerProvider>()) {}
 
-void ChromeBrowserProvider::AssertBrowserContextKeyedFactoriesBuilt() {}
-
-void ChromeBrowserProvider::RegisterProfilePrefs(
-    user_prefs::PrefRegistrySyncable* registry) {}
-
-ProfileOAuth2TokenServiceIOSProvider*
-ChromeBrowserProvider::GetProfileOAuth2TokenServiceIOSProvider() {
-  return nullptr;
+ChromeBrowserProvider::~ChromeBrowserProvider() {
+  for (auto& observer : observer_list_)
+    observer.OnChromeBrowserProviderWillBeDestroyed();
 }
 
-UpdatableResourceProvider*
-ChromeBrowserProvider::GetUpdatableResourceProvider() {
-  return nullptr;
-}
+void ChromeBrowserProvider::AppendSwitchesFromExperimentalSettings(
+    NSUserDefaults* experimental_settings,
+    base::CommandLine* command_line) const {}
 
-InfoBarViewPlaceholder ChromeBrowserProvider::CreateInfoBarView(
-    CGRect frame,
-    InfoBarViewDelegate* delegate) {
+void ChromeBrowserProvider::Initialize() const {}
+
+SigninErrorProvider* ChromeBrowserProvider::GetSigninErrorProvider() {
   return nullptr;
 }
 
@@ -55,11 +52,10 @@ SigninResourcesProvider* ChromeBrowserProvider::GetSigninResourcesProvider() {
   return nullptr;
 }
 
-ChromeIdentityService* ChromeBrowserProvider::GetChromeIdentityService() {
-  return nullptr;
-}
+void ChromeBrowserProvider::SetChromeIdentityServiceForTesting(
+    std::unique_ptr<ChromeIdentityService> service) {}
 
-LiveTabContextProvider* ChromeBrowserProvider::GetLiveTabContextProvider() {
+ChromeIdentityService* ChromeBrowserProvider::GetChromeIdentityService() {
   return nullptr;
 }
 
@@ -68,46 +64,81 @@ ChromeBrowserProvider::GetGeolocationUpdaterProvider() {
   return nullptr;
 }
 
-std::string ChromeBrowserProvider::DataReductionProxyAvailability() {
-  return "default";
-}
-
-std::string ChromeBrowserProvider::GetDistributionBrandCode() {
-  return std::string();
-}
-
-void ChromeBrowserProvider::SetUIViewAlphaWithAnimation(UIView* view,
-                                                        float alpha) {}
-
-autofill::CardUnmaskPromptView*
-ChromeBrowserProvider::CreateCardUnmaskPromptView(
-    autofill::CardUnmaskPromptController* controller) {
-  return nullptr;
-}
-
 std::string ChromeBrowserProvider::GetRiskData() {
   return std::string();
 }
 
-bool ChromeBrowserProvider::IsOffTheRecordSessionActive() {
-  return false;
+UITextField<TextFieldStyling>* ChromeBrowserProvider::CreateStyledTextField(
+    CGRect frame) const {
+  return nil;
 }
 
-void ChromeBrowserProvider::GetFaviconForURL(
-    ios::ChromeBrowserState* browser_state,
-    const GURL& page_url,
-    const std::vector<int>& desired_sizes_in_pixel,
-    const favicon_base::FaviconResultsCallback& callback) const {}
+void ChromeBrowserProvider::InitializeCastService(
+    TabModel* main_tab_model) const {}
 
-bool ChromeBrowserProvider::IsSafeBrowsingEnabled(
-    const base::Closure& on_update_callback) {
-  return false;
-}
+void ChromeBrowserProvider::AttachTabHelpers(web::WebState* web_state,
+                                             Tab* tab) const {}
 
-std::unique_ptr<browser_sync::SyncedWindowDelegatesGetter>
-ChromeBrowserProvider::CreateSyncedWindowDelegatesGetter(
-    ios::ChromeBrowserState* browser_state) {
+VoiceSearchProvider* ChromeBrowserProvider::GetVoiceSearchProvider() const {
   return nullptr;
+}
+
+AppDistributionProvider* ChromeBrowserProvider::GetAppDistributionProvider()
+    const {
+  return nullptr;
+}
+
+id<LogoVendor> ChromeBrowserProvider::CreateLogoVendor(
+    ios::ChromeBrowserState* browser_state,
+    id<UrlLoader> loader) const {
+  return nil;
+}
+
+OmahaServiceProvider* ChromeBrowserProvider::GetOmahaServiceProvider() const {
+  return nullptr;
+}
+
+UserFeedbackProvider* ChromeBrowserProvider::GetUserFeedbackProvider() const {
+  return nullptr;
+}
+
+SpotlightProvider* ChromeBrowserProvider::GetSpotlightProvider() const {
+  return nullptr;
+}
+
+FullscreenProvider* ChromeBrowserProvider::GetFullscreenProvider() const {
+  return nullptr;
+}
+
+BrowserURLRewriterProvider*
+ChromeBrowserProvider::GetBrowserURLRewriterProvider() const {
+  return nullptr;
+}
+
+MailtoHandlerProvider* ChromeBrowserProvider::GetMailtoHandlerProvider() const {
+  return mailto_handler_provider_.get();
+}
+
+BrandedImageProvider* ChromeBrowserProvider::GetBrandedImageProvider() const {
+  return nullptr;
+}
+
+void ChromeBrowserProvider::HideModalViewStack() const {}
+
+void ChromeBrowserProvider::LogIfModalViewsArePresented() const {}
+
+void ChromeBrowserProvider::AddObserver(Observer* observer) {
+  observer_list_.AddObserver(observer);
+}
+
+void ChromeBrowserProvider::RemoveObserver(Observer* observer) {
+  observer_list_.RemoveObserver(observer);
+}
+
+void ChromeBrowserProvider::FireChromeIdentityServiceDidChange(
+    ChromeIdentityService* new_service) {
+  for (auto& observer : observer_list_)
+    observer.OnChromeIdentityServiceDidChange(new_service);
 }
 
 }  // namespace ios

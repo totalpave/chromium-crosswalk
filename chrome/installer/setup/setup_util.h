@@ -9,18 +9,17 @@
 #ifndef CHROME_INSTALLER_SETUP_SETUP_UTIL_H_
 #define CHROME_INSTALLER_SETUP_SETUP_UTIL_H_
 
-#include <windows.h>
 #include <stdint.h>
 
+#include <memory>
+#include <string>
 #include <vector>
 
-#include "base/macros.h"
+#include "base/optional.h"
 #include "base/strings/string16.h"
-#include "base/win/scoped_handle.h"
-#include "chrome/installer/util/browser_distribution.h"
+#include "base/time/time.h"
+#include "chrome/installer/util/lzma_util.h"
 #include "chrome/installer/util/util_constants.h"
-
-class AppRegistrationData;
 
 namespace base {
 class CommandLine;
@@ -32,8 +31,19 @@ namespace installer {
 
 class InstallationState;
 class InstallerState;
-class ProductState;
 class MasterPreferences;
+
+extern const char kUnPackNTSTATUSMetricsName[];
+extern const char kUnPackResultMetricsName[];
+extern const char kUnPackStatusMetricsName[];
+
+// The name of consumers of UnPackArchive which is used to publish metrics.
+enum UnPackConsumer {
+  CHROME_ARCHIVE_PATCH,
+  COMPRESSED_CHROME_ARCHIVE,
+  SETUP_EXE_PATCH,
+  UNCOMPRESSED_CHROME_ARCHIVE,
+};
 
 // Applies a patch file to source file using Courgette. Returns 0 in case of
 // success. In case of errors, it returns kCourgetteErrorOffset + a Courgette
@@ -50,10 +60,17 @@ int BsdiffPatchFiles(const base::FilePath& src,
                      const base::FilePath& patch,
                      const base::FilePath& dest);
 
+// Applies a patch file to source file using Zucchini. Returns 0 in case of
+// success. In case of errors, it returns kZucchiniErrorOffset + a Zucchini
+// status code, as defined in components/zucchini/zucchini.h
+int ZucchiniPatchFiles(const base::FilePath& src,
+                       const base::FilePath& patch,
+                       const base::FilePath& dest);
+
 // Find the version of Chrome from an install source directory.
 // Chrome_path should contain at least one version folder.
 // Returns the maximum version found or NULL if no version is found.
-Version* GetMaxVersionFromArchiveDir(const base::FilePath& chrome_path);
+base::Version* GetMaxVersionFromArchiveDir(const base::FilePath& chrome_path);
 
 // Returns the uncompressed archive of the installed version that serves as the
 // source for patching.  If |desired_version| is valid, only the path to that
@@ -72,28 +89,10 @@ base::FilePath FindArchiveToPatch(const InstallationState& original_state,
 bool DeleteFileFromTempProcess(const base::FilePath& path,
                                uint32_t delay_before_delete_ms);
 
-// Returns true if the product |type| will be installed after the current
-// setup.exe instance have carried out installation / uninstallation, at
-// the level specified by |installer_state|.
-// This function only returns meaningful results for install and update
-// operations if called after CheckPreInstallConditions (see setup_main.cc).
-bool WillProductBePresentAfterSetup(
-    const installer::InstallerState& installer_state,
-    const installer::InstallationState& machine_state,
-    BrowserDistribution::Type type);
-
 // Drops the process down to background processing mode on supported OSes if it
 // was launched below the normal process priority. Returns true when background
 // procesing mode is entered.
 bool AdjustProcessPriority();
-
-// Makes registry adjustments to migrate the Google Update state of |to_migrate|
-// from multi-install to single-install. This includes copying the usagestats
-// value and adjusting the ap values of all multi-install products.
-void MigrateGoogleUpdateStateMultiToSingle(
-    bool system_level,
-    BrowserDistribution::Type to_migrate,
-    const installer::InstallationState& machine_state);
 
 // Returns true if |install_status| represents a successful uninstall code.
 bool IsUninstallSuccess(InstallStatus install_status);
@@ -105,9 +104,7 @@ bool ContainsUnsupportedSwitch(const base::CommandLine& cmd_line);
 bool IsProcessorSupported();
 
 // Returns the "...\\Commands\\|name|" registry key for a product's |reg_data|.
-base::string16 GetRegistrationDataCommandKey(
-    const AppRegistrationData& reg_data,
-    const wchar_t* name);
+base::string16 GetCommandKey(const wchar_t* name);
 
 // Deletes all values and subkeys of the key |path| under |root|, preserving
 // the keys named in |keys_to_preserve| (each of which must be an ASCII string).
@@ -117,44 +114,65 @@ void DeleteRegistryKeyPartial(
     const base::string16& path,
     const std::vector<base::string16>& keys_to_preserve);
 
-// Converts a product GUID into a SQuished gUID that is used for MSI installer
-// registry entries.
-base::string16 GuidToSquid(const base::string16& guid);
-
 // Returns true if downgrade is allowed by installer data.
 bool IsDowngradeAllowed(const MasterPreferences& prefs);
 
-// Returns true if Chrome has been run within the last 28 days.
-bool IsChromeActivelyUsed(const InstallerState& installer_state);
+// Returns the age (in days) of the installation based on the creation time of
+// its installation directory, or -1 in case of error.
+int GetInstallAge(const InstallerState& installer_state);
 
-// This class will enable the privilege defined by |privilege_name| on the
-// current process' token. The privilege will be disabled upon the
-// ScopedTokenPrivilege's destruction (unless it was already enabled when the
-// ScopedTokenPrivilege object was constructed).
-// Some privileges might require admin rights to be enabled (check is_enabled()
-// to know whether |privilege_name| was successfully enabled).
-class ScopedTokenPrivilege {
- public:
-  explicit ScopedTokenPrivilege(const wchar_t* privilege_name);
-  ~ScopedTokenPrivilege();
+// Records UMA metrics for unpack result.
+void RecordUnPackMetrics(UnPackStatus unpack_status,
+                         int32_t status,
+                         DWORD lzma_result,
+                         UnPackConsumer consumer);
 
-  // Always returns true unless the privilege could not be enabled.
-  bool is_enabled() const { return is_enabled_; }
+// Register Chrome's EventLog message provider dll.
+void RegisterEventLogProvider(const base::FilePath& install_directory,
+                              const base::Version& version);
 
- private:
-  // Always true unless the privilege could not be enabled.
-  bool is_enabled_;
+// De-register Chrome's EventLog message provider dll.
+void DeRegisterEventLogProvider();
 
-  // A scoped handle to the current process' token. This will be closed
-  // preemptively should enabling the privilege fail in the constructor.
-  base::win::ScopedHandle token_;
+// Returns true if the now-deprecated multi-install binaries are registered as
+// an installed product with Google Update.
+bool AreBinariesInstalled(const InstallerState& installer_state);
 
-  // The previous state of the privilege this object is responsible for. As set
-  // by AdjustTokenPrivileges() upon construction.
-  TOKEN_PRIVILEGES previous_privileges_;
+// Removes leftover bits from features that have been removed from the product.
+void DoLegacyCleanups(const InstallerState& installer_state,
+                      InstallStatus install_status);
 
-  DISALLOW_IMPLICIT_CONSTRUCTORS(ScopedTokenPrivilege);
-};
+// Returns the time of the start of the console user's Windows logon session, or
+// a null time in case of error.
+base::Time GetConsoleSessionStartTime();
+
+// Returns a DM token decoded from the base-64 |encoded_token|, or null in case
+// of a decoding error.  The returned DM token is an opaque binary blob and
+// should not be treated as an ASCII or UTF-8 string.
+base::Optional<std::string> DecodeDMTokenSwitchValue(
+    const base::string16& encoded_token);
+
+// Saves a DM token to a global location on the machine accessible to all
+// install modes of the browser (i.e., stable and all three side-by-side modes).
+bool StoreDMToken(const std::string& token);
+
+// Returns the file path to notification_helper.exe (in |version| directory).
+base::FilePath GetNotificationHelperPath(const base::FilePath& target_path,
+                                         const base::Version& version);
+
+// Returns the file path to elevation_service.exe (in |version| directory).
+base::FilePath GetElevationServicePath(const base::FilePath& target_path,
+                                       const base::Version& version);
+
+// Returns the Elevation Service GUID prefixed with |prefix|.
+base::string16 GetElevationServiceGuid(base::StringPiece16 prefix);
+
+// Return the elevation service registry paths.
+base::string16 GetElevationServiceClsidRegistryPath();
+base::string16 GetElevationServiceAppidRegistryPath();
+base::string16 GetElevationServiceIid(base::StringPiece16 prefix);
+base::string16 GetElevationServiceIidRegistryPath();
+base::string16 GetElevationServiceTypeLibRegistryPath();
 
 }  // namespace installer
 

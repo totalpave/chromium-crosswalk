@@ -6,99 +6,57 @@
 
 #include <utility>
 
-#include "base/lazy_instance.h"
 #include "base/macros.h"
+#include "base/memory/ptr_util.h"
 #include "base/path_service.h"
 #include "build/build_config.h"
-#include "services/catalog/public/cpp/resource_loader.h"
-#include "services/shell/public/cpp/connector.h"
+#include "services/service_manager/public/cpp/connector.h"
 #include "ui/aura/env.h"
 #include "ui/base/ime/input_method_initializer.h"
 #include "ui/base/material_design/material_design_controller.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_paths.h"
-#include "ui/views/views_delegate.h"
-
-#if defined(OS_LINUX) && !defined(OS_ANDROID)
-#include "components/font_service/public/cpp/font_loader.h"
-#endif
+#include "ui/views/mus/mus_client.h"
+#include "ui/views/mus/mus_views_delegate.h"
 
 namespace views {
 
-namespace {
+AuraInit::InitParams::InitParams() : resource_file("views_mus_resources.pak") {}
 
-std::set<std::string> GetResourcePaths(const std::string& resource_file) {
-  std::set<std::string> paths;
-  paths.insert(resource_file);
-  return paths;
+AuraInit::InitParams::~InitParams() = default;
+
+AuraInit::AuraInit() {
+  if (!ViewsDelegate::GetInstance())
+    views_delegate_ = std::make_unique<MusViewsDelegate>();
 }
 
-class MusViewsDelegate : public ViewsDelegate {
- public:
-  MusViewsDelegate() {}
-  ~MusViewsDelegate() override {}
+AuraInit::~AuraInit() = default;
 
- private:
-#if defined(OS_WIN)
-  HICON GetSmallWindowIcon() const override { return nullptr; }
-#endif
-  void OnBeforeWidgetInit(
-      Widget::InitParams* params,
-      internal::NativeWidgetDelegate* delegate) override {}
+// static
+std::unique_ptr<AuraInit> AuraInit::Create(const InitParams& params) {
+  // Using 'new' to access a non-public constructor. go/totw/134
+  std::unique_ptr<AuraInit> aura_init = base::WrapUnique(new AuraInit());
+  if (!aura_init->Init(params))
+    aura_init.reset();
+  return aura_init;
+}
 
-  DISALLOW_COPY_AND_ASSIGN(MusViewsDelegate);
-};
+bool AuraInit::Init(const InitParams& params) {
+  env_ = aura::Env::CreateInstance(aura::Env::Mode::MUS);
 
-}  // namespace
-
-AuraInit::AuraInit(shell::Connector* connector,
-                   const std::string& resource_file)
-    : resource_file_(resource_file),
-      env_(aura::Env::CreateInstance()),
-      views_delegate_(new MusViewsDelegate) {
+  MusClient::InitParams mus_params;
+  mus_params.connector = params.connector;
+  mus_params.identity = params.identity;
+  mus_params.io_task_runner = params.io_task_runner;
+  mus_params.create_wm_state = true;
+  mus_params.use_accessibility_host = params.use_accessibility_host;
+  mus_client_ = std::make_unique<MusClient>(mus_params);
   ui::MaterialDesignController::Initialize();
-  InitializeResources(connector);
+
+  DCHECK(ui::ResourceBundle::HasSharedInstance());
 
   ui::InitializeInputMethodForTesting();
-}
-
-AuraInit::~AuraInit() {
-#if defined(OS_LINUX) && !defined(OS_ANDROID)
-  if (font_loader_.get()) {
-    SkFontConfigInterface::SetGlobal(nullptr);
-    // FontLoader is ref counted. We need to explicitly shutdown the background
-    // thread, otherwise the background thread may be shutdown after the app is
-    // torn down, when we're in a bad state.
-    font_loader_->Shutdown();
-  }
-#endif
-}
-
-void AuraInit::InitializeResources(shell::Connector* connector) {
-  if (ui::ResourceBundle::HasSharedInstance())
-    return;
-  catalog::ResourceLoader loader;
-  filesystem::mojom::DirectoryPtr directory;
-  connector->ConnectToInterface("mojo:catalog", &directory);
-  CHECK(loader.OpenFiles(std::move(directory),
-        GetResourcePaths(resource_file_)));
-  ui::RegisterPathProvider();
-  base::File pak_file = loader.TakeFile(resource_file_);
-  base::File pak_file_2 = pak_file.Duplicate();
-  ui::ResourceBundle::InitSharedInstanceWithPakFileRegion(
-      std::move(pak_file), base::MemoryMappedFile::Region::kWholeFile);
-  ui::ResourceBundle::GetSharedInstance().AddDataPackFromFile(
-      std::move(pak_file_2), ui::SCALE_FACTOR_100P);
-
-// Initialize the skia font code to go ask fontconfig underneath.
-#if defined(OS_LINUX) && !defined(OS_ANDROID)
-  font_loader_ = sk_make_sp<font_service::FontLoader>(connector);
-  SkFontConfigInterface::SetGlobal(font_loader_.get());
-#endif
-
-  // There is a bunch of static state in gfx::Font, by running this now,
-  // before any other apps load, we ensure all the state is set up.
-  gfx::Font();
+  return true;
 }
 
 }  // namespace views

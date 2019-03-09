@@ -12,26 +12,30 @@
 
 #include "base/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "media/blink/active_loader.h"
 #include "media/blink/media_blink_export.h"
 #include "media/blink/multibuffer.h"
 #include "media/blink/url_index.h"
-#include "third_party/WebKit/public/platform/WebURLLoader.h"
-#include "third_party/WebKit/public/platform/WebURLLoaderClient.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
-#include "third_party/WebKit/public/web/WebFrame.h"
+#include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/public/web/web_associated_url_loader_client.h"
+#include "third_party/blink/public/web/web_frame.h"
 #include "url/gurl.h"
+
+namespace blink {
+class WebAssociatedURLLoader;
+}  // namespace blink
 
 namespace media {
 
 class MEDIA_BLINK_EXPORT ResourceMultiBufferDataProvider
-    : NON_EXPORTED_BASE(public MultiBuffer::DataProvider),
-      NON_EXPORTED_BASE(public blink::WebURLLoaderClient) {
+    : public MultiBuffer::DataProvider,
+      public blink::WebAssociatedURLLoaderClient {
  public:
   // NUmber of times we'll retry if the connection fails.
   enum { kMaxRetries = 30 };
 
-  ResourceMultiBufferDataProvider(UrlData* url_data, MultiBufferBlockId pos);
+  ResourceMultiBufferDataProvider(UrlData* url_data,
+                                  MultiBufferBlockId pos,
+                                  bool is_client_audio_element);
   ~ResourceMultiBufferDataProvider() override;
 
   // Virtual for testing purposes.
@@ -44,36 +48,26 @@ class MEDIA_BLINK_EXPORT ResourceMultiBufferDataProvider
   scoped_refptr<DataBuffer> Read() override;
   void SetDeferred(bool defer) override;
 
-  // blink::WebURLLoaderClient implementation.
-  void willFollowRedirect(
-      blink::WebURLLoader* loader,
-      blink::WebURLRequest& newRequest,
-      const blink::WebURLResponse& redirectResponse) override;
-  void didSendData(blink::WebURLLoader* loader,
-                   unsigned long long bytesSent,
-                   unsigned long long totalBytesToBeSent) override;
-  void didReceiveResponse(blink::WebURLLoader* loader,
-                          const blink::WebURLResponse& response) override;
-  void didDownloadData(blink::WebURLLoader* loader,
-                       int data_length,
-                       int encoded_data_length) override;
-  void didReceiveData(blink::WebURLLoader* loader,
-                      const char* data,
-                      int data_length,
-                      int encoded_data_length) override;
-  void didReceiveCachedMetadata(blink::WebURLLoader* loader,
-                                const char* data,
-                                int dataLength) override;
-  void didFinishLoading(blink::WebURLLoader* loader,
-                        double finishTime,
-                        int64_t total_encoded_data_length) override;
-  void didFail(blink::WebURLLoader* loader, const blink::WebURLError&) override;
+  // blink::WebAssociatedURLLoaderClient implementation.
+  bool WillFollowRedirect(
+      const blink::WebURL& new_url,
+      const blink::WebURLResponse& redirect_response) override;
+  void DidSendData(uint64_t bytesSent, uint64_t totalBytesToBeSent) override;
+  void DidReceiveResponse(const blink::WebURLResponse& response) override;
+  void DidDownloadData(uint64_t data_length) override;
+  void DidReceiveData(const char* data, int data_length) override;
+  void DidReceiveCachedMetadata(const char* data, int dataLength) override;
+  void DidFinishLoading() override;
+  void DidFail(const blink::WebURLError&) override;
 
   // Use protected instead of private for testing purposes.
  protected:
   friend class MultibufferDataSourceTest;
   friend class ResourceMultiBufferDataProviderTest;
   friend class MockBufferedDataSource;
+
+  // Callback used when we're asked to fetch data after the end of the file.
+  void Terminate();
 
   // Parse a Content-Range header into its component pieces and return true if
   // each of the expected elements was found & parsed correctly.
@@ -110,20 +104,25 @@ class MEDIA_BLINK_EXPORT ResourceMultiBufferDataProvider
 
   // Copy of url_data_->cors_mode()
   // const to make it obvious that redirects cannot change it.
-  const UrlData::CORSMode cors_mode_;
+  const UrlData::CorsMode cors_mode_;
 
   // The origin for the initial request.
   // const to make it obvious that redirects cannot change it.
   const GURL origin_;
 
-  // Keeps track of an active WebURLLoader and associated state.
-  std::unique_ptr<ActiveLoader> active_loader_;
-
-  // Injected WebURLLoader instance for testing purposes.
-  std::unique_ptr<blink::WebURLLoader> test_loader_;
+  // Keeps track of an active WebAssociatedURLLoader.
+  // Only valid while loading resource.
+  std::unique_ptr<blink::WebAssociatedURLLoader> active_loader_;
 
   // When we encounter a redirect, this is the source of the redirect.
   GURL redirects_to_;
+
+  // If the server tries to gives us more bytes than we want, this how
+  // many bytes we need to discard before we get to the right place.
+  uint64_t bytes_to_discard_ = 0;
+
+  // Is the client an audio element?
+  bool is_client_audio_element_ = false;
 
   base::WeakPtrFactory<ResourceMultiBufferDataProvider> weak_factory_;
 };

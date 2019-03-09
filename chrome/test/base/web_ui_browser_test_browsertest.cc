@@ -59,7 +59,7 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserExpectFailTest, TestFailsFast) {
   AddLibrary(base::FilePath(FILE_PATH_LITERAL("sample_downloads.js")));
   ui_test_utils::NavigateToURL(browser(), GURL(chrome::kChromeUIDownloadsURL));
   EXPECT_FATAL_FAILURE(RunJavascriptTestNoReturn("DISABLED_BogusFunctionName"),
-                       "WebUITestHandler::JavaScriptComplete");
+                       "GetAsBoolean(&run_test_succeeded_)");
 }
 
 // Test that bogus javascript fails fast - no timeout waiting for result.
@@ -67,8 +67,15 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserExpectFailTest, TestRuntimeErrorFailsFast) {
   AddLibrary(base::FilePath(FILE_PATH_LITERAL("runtime_error.js")));
   ui_test_utils::NavigateToURL(browser(), GURL(kDummyURL));
   EXPECT_FATAL_FAILURE(RunJavascriptTestNoReturn("TestRuntimeErrorFailsFast"),
-                       "WebUITestHandler::JavaScriptComplete");
+                       "GetAsBoolean(&run_test_succeeded_)");
 }
+
+// Test times out in debug builds: https://crbug.com/902310
+#ifndef NDEBUG
+#define MAYBE_TestFailsAsyncFast DISABLED_TestFailsAsyncFast
+#else
+#define MAYBE_TestFailsAsyncFast TestFailsAsyncFast
+#endif
 
 // Test that bogus javascript fails async test fast as well - no timeout waiting
 // for result.
@@ -77,7 +84,7 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserExpectFailTest, TestFailsAsyncFast) {
   ui_test_utils::NavigateToURL(browser(), GURL(chrome::kChromeUIDownloadsURL));
   EXPECT_FATAL_FAILURE(
       RunJavascriptAsyncTestNoReturn("DISABLED_BogusFunctionName"),
-      "WebUITestHandler::JavaScriptComplete");
+      "GetAsBoolean(&run_test_succeeded_)");
 }
 
 // Tests that the async framework works.
@@ -90,12 +97,12 @@ class WebUIBrowserAsyncTest : public WebUIBrowserTest {
 
   // Starts a failing test.
   void RunTestFailsAssert() {
-    RunJavascriptFunction("runAsync", new base::StringValue("testFailsAssert"));
+    RunJavascriptFunction("runAsync", base::Value("testFailsAssert"));
   }
 
   // Starts a passing test.
   void RunTestPasses() {
-    RunJavascriptFunction("runAsync", new base::StringValue("testPasses"));
+    RunJavascriptFunction("runAsync", base::Value("testPasses"));
   }
 
  protected:
@@ -112,18 +119,22 @@ class WebUIBrowserAsyncTest : public WebUIBrowserTest {
 
    private:
     void RegisterMessages() override {
-      web_ui()->RegisterMessageCallback("startAsyncTest",
-          base::Bind(&AsyncWebUIMessageHandler::HandleStartAsyncTest,
-                     base::Unretained(this)));
-      web_ui()->RegisterMessageCallback("testContinues",
-          base::Bind(&AsyncWebUIMessageHandler::HandleTestContinues,
-                     base::Unretained(this)));
-      web_ui()->RegisterMessageCallback("testFails",
-          base::Bind(&AsyncWebUIMessageHandler::HandleTestFails,
-                     base::Unretained(this)));
-      web_ui()->RegisterMessageCallback("testPasses",
-          base::Bind(&AsyncWebUIMessageHandler::HandleTestPasses,
-                     base::Unretained(this)));
+      web_ui()->RegisterMessageCallback(
+          "startAsyncTest",
+          base::BindRepeating(&AsyncWebUIMessageHandler::HandleStartAsyncTest,
+                              base::Unretained(this)));
+      web_ui()->RegisterMessageCallback(
+          "testContinues",
+          base::BindRepeating(&AsyncWebUIMessageHandler::HandleTestContinues,
+                              base::Unretained(this)));
+      web_ui()->RegisterMessageCallback(
+          "testFails",
+          base::BindRepeating(&AsyncWebUIMessageHandler::HandleTestFails,
+                              base::Unretained(this)));
+      web_ui()->RegisterMessageCallback(
+          "testPasses",
+          base::BindRepeating(&AsyncWebUIMessageHandler::HandleTestPasses,
+                              base::Unretained(this)));
     }
 
     // Starts the test in |list_value|[0] with the runAsync wrapper.
@@ -165,8 +176,8 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserAsyncTest, TestSyncOkTestFail) {
 // message). (Async version).
 IN_PROC_BROWSER_TEST_F(WebUIBrowserAsyncTest, TestAsyncFailsAssert) {
   EXPECT_CALL(message_handler_, HandleTestFails(::testing::_));
-  ASSERT_FALSE(RunJavascriptAsyncTest(
-      "startAsyncTest", new base::StringValue("testFailsAssert")));
+  ASSERT_FALSE(
+      RunJavascriptAsyncTest("startAsyncTest", base::Value("testFailsAssert")));
 }
 
 // Test that expectations continue the function, but fail the test.
@@ -174,8 +185,8 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserAsyncTest, TestAsyncFailsExpect) {
   ::testing::InSequence s;
   EXPECT_CALL(message_handler_, HandleTestContinues(::testing::_));
   EXPECT_CALL(message_handler_, HandleTestFails(::testing::_));
-  ASSERT_FALSE(RunJavascriptAsyncTest(
-      "startAsyncTest", new base::StringValue("testFailsExpect")));
+  ASSERT_FALSE(
+      RunJavascriptAsyncTest("startAsyncTest", base::Value("testFailsExpect")));
 }
 
 // Test that test continues and passes. (Sync version).
@@ -191,8 +202,8 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserAsyncTest, TestAsyncPasses) {
   EXPECT_CALL(message_handler_, HandleTestPasses(::testing::_))
       .WillOnce(::testing::InvokeWithoutArgs(
           this, &WebUIBrowserAsyncTest::TestDone));
-  ASSERT_TRUE(RunJavascriptAsyncTest(
-      "startAsyncTest", new base::StringValue("testPasses")));
+  ASSERT_TRUE(
+      RunJavascriptAsyncTest("startAsyncTest", base::Value("testPasses")));
 }
 
 // Test that two tests pass.
@@ -206,8 +217,8 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserAsyncTest, TestAsyncPassPass) {
   EXPECT_CALL(message_handler_, HandleTestPasses(::testing::_))
       .WillOnce(::testing::InvokeWithoutArgs(
           this, &WebUIBrowserAsyncTest::TestDone));
-  ASSERT_TRUE(RunJavascriptAsyncTest(
-      "startAsyncTest", new base::StringValue("testPasses")));
+  ASSERT_TRUE(
+      RunJavascriptAsyncTest("startAsyncTest", base::Value("testPasses")));
 }
 
 // Test that first test passes; second fails.
@@ -218,8 +229,8 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserAsyncTest, TestAsyncPassThenFail) {
       .WillOnce(::testing::InvokeWithoutArgs(
           this, &WebUIBrowserAsyncTest::RunTestFailsAssert));
   EXPECT_CALL(message_handler_, HandleTestFails(::testing::_));
-  ASSERT_FALSE(RunJavascriptAsyncTest(
-      "startAsyncTest", new base::StringValue("testPasses")));
+  ASSERT_FALSE(
+      RunJavascriptAsyncTest("startAsyncTest", base::Value("testPasses")));
 }
 
 // Test that testDone() with failure first then sync pass still fails.
@@ -231,7 +242,7 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserAsyncTest, TestAsyncDoneFailFirstSyncPass) {
   // Call runAsync directly instead of deferring through startAsyncTest. It will
   // call testDone() on failure, then return.
   ASSERT_FALSE(RunJavascriptAsyncTest(
-      "runAsync", new base::StringValue("testAsyncDoneFailFirstSyncPass")));
+      "runAsync", base::Value("testAsyncDoneFailFirstSyncPass")));
 }
 
 // Test that calling testDone during RunJavascriptAsyncTest still completes

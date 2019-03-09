@@ -7,6 +7,8 @@
 
 #include "base/macros.h"
 #include "chrome/browser/android/location_settings.h"
+#include "components/location/android/location_settings_dialog_context.h"
+#include "components/location/android/location_settings_dialog_outcome.h"
 
 // Mock implementation of LocationSettings for unit tests.
 class MockLocationSettings : public LocationSettings {
@@ -14,17 +16,28 @@ class MockLocationSettings : public LocationSettings {
   MockLocationSettings();
   ~MockLocationSettings() override;
 
-  static void SetLocationStatus(bool master, bool google_apps);
+  static void SetLocationStatus(bool has_android_location_permission,
+                                bool is_system_location_setting_enabled);
+  static void SetCanPromptForAndroidPermission(bool can_prompt);
+  static void SetLocationSettingsDialogStatus(
+      bool enabled,
+      LocationSettingsDialogOutcome outcome);
+  static bool HasShownLocationSettingsDialog();
+  static void ClearHasShownLocationSettingsDialog();
 
-  bool CanSitesRequestLocationPermission(
+  static void SetAsyncLocationSettingsDialog();
+  static void ResolveAsyncLocationSettingsDialog();
+
+  // LocationSettings implementation:
+  bool HasAndroidLocationPermission() override;
+  bool CanPromptForAndroidLocationPermission(
       content::WebContents* web_contents) override;
-
-  bool IsMasterLocationSettingEnabled();
-  bool IsGoogleAppsLocationSettingEnabled();
-
- private:
-  static bool master_location_enabled;
-  static bool google_apps_location_enabled;
+  bool IsSystemLocationSettingEnabled() override;
+  bool CanPromptToEnableSystemLocationSetting() override;
+  void PromptToEnableSystemLocationSetting(
+      const LocationSettingsDialogContext prompt_context,
+      content::WebContents* web_contents,
+      LocationSettingsDialogOutcomeCallback callback) override;
 
   DISALLOW_COPY_AND_ASSIGN(MockLocationSettings);
 };

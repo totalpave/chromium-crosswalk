@@ -76,6 +76,10 @@ IN_PROC_BROWSER_TEST_F(WebstoreReinstallerBrowserTest, TestWebstoreReinstall) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
   ASSERT_TRUE(registry->enabled_extensions().GetByID(kTestExtensionId));
 
+  // WebstoreReinstaller expects corrupted extension.
+  extension_service()->DisableExtension(kTestExtensionId,
+                                        disable_reason::DISABLE_CORRUPTED);
+
   content::WebContents* active_web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   ASSERT_TRUE(active_web_contents);
@@ -85,32 +89,26 @@ IN_PROC_BROWSER_TEST_F(WebstoreReinstallerBrowserTest, TestWebstoreReinstall) {
 
   // Create and run a WebstoreReinstaller.
   base::RunLoop run_loop;
-  scoped_refptr<WebstoreReinstaller> reinstaller(
-      new WebstoreReinstaller(
-          active_web_contents,
-          kTestExtensionId,
-          base::Bind(&WebstoreReinstallerBrowserTest::OnInstallCompletion,
-                     base::Unretained(this),
-                     run_loop.QuitClosure())));
+  scoped_refptr<WebstoreReinstaller> reinstaller(new WebstoreReinstaller(
+      active_web_contents, kTestExtensionId,
+      base::BindOnce(&WebstoreReinstallerBrowserTest::OnInstallCompletion,
+                     base::Unretained(this), run_loop.QuitClosure())));
   reinstaller->BeginReinstall();
   run_loop.Run();
 
   // We should have failed, and the old extension should still be present.
   EXPECT_FALSE(last_install_result());
-  extension = registry->enabled_extensions().GetByID(kTestExtensionId);
+  extension = registry->disabled_extensions().GetByID(kTestExtensionId);
   ASSERT_TRUE(extension.get());
   EXPECT_EQ(kExtensionName, extension->name());
 
   // Now accept the repair prompt.
   AutoAcceptInstall();
   base::RunLoop run_loop2;
-  reinstaller =
-      new WebstoreReinstaller(
-          active_web_contents,
-          kTestExtensionId,
-          base::Bind(&WebstoreReinstallerBrowserTest::OnInstallCompletion,
-                     base::Unretained(this),
-                     run_loop2.QuitClosure()));
+  reinstaller = new WebstoreReinstaller(
+      active_web_contents, kTestExtensionId,
+      base::BindOnce(&WebstoreReinstallerBrowserTest::OnInstallCompletion,
+                     base::Unretained(this), run_loop2.QuitClosure()));
   reinstaller->BeginReinstall();
   run_loop2.Run();
 

@@ -4,45 +4,54 @@
 
 #include "components/subresource_filter/core/browser/subresource_filter_features_test_support.h"
 
-#include <map>
 #include <memory>
+#include <ostream>
+#include <string>
+#include <utility>
 
-#include "base/metrics/field_trial.h"
-#include "components/subresource_filter/core/browser/subresource_filter_features.h"
-#include "components/variations/variations_associated_data.h"
-#include "testing/gtest/include/gtest/gtest.h"
+#include "base/json/json_writer.h"
+#include "base/memory/ref_counted.h"
+#include "base/strings/string_util.h"
+#include "base/trace_event/traced_value.h"
+#include "base/values.h"
 
 namespace subresource_filter {
 namespace testing {
 
-namespace {
-const char kTestFieldTrialName[] = "FieldTrialNameShouldNotMatter";
-const char kTestExperimentGroupName[] = "GroupNameShouldNotMatter";
-}  // namespace
+// ScopedSubresourceFilterConfigurator ----------------------------------------
 
-ScopedSubresourceFilterFeatureToggle::ScopedSubresourceFilterFeatureToggle(
-    base::FeatureList::OverrideState feature_state,
-    const std::string& maximum_activation_state) {
-  base::FeatureList::ClearInstanceForTesting();
-  variations::testing::ClearAllVariationParams();
+ScopedSubresourceFilterConfigurator::ScopedSubresourceFilterConfigurator(
+    scoped_refptr<ConfigurationList> configs_list)
+    : original_config_(GetAndSetActivateConfigurations(configs_list)) {}
 
-  std::map<std::string, std::string> variation_params;
-  variation_params[kActivationStateParameterName] = maximum_activation_state;
-  EXPECT_TRUE(variations::AssociateVariationParams(
-      kTestFieldTrialName, kTestExperimentGroupName, variation_params));
+ScopedSubresourceFilterConfigurator::ScopedSubresourceFilterConfigurator(
+    Configuration config)
+    : ScopedSubresourceFilterConfigurator(
+          std::vector<Configuration>(1, std::move(config))) {}
 
-  base::FieldTrial* field_trial = base::FieldTrialList::CreateFieldTrial(
-      kTestFieldTrialName, kTestExperimentGroupName);
+ScopedSubresourceFilterConfigurator::ScopedSubresourceFilterConfigurator(
+    std::vector<Configuration> configs)
+    : ScopedSubresourceFilterConfigurator(
+          base::MakeRefCounted<ConfigurationList>(std::move(configs))) {}
 
-  std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
-  feature_list->RegisterFieldTrialOverride(kSafeBrowsingSubresourceFilter.name,
-                                           feature_state, field_trial);
-  base::FeatureList::SetInstance(std::move(feature_list));
+ScopedSubresourceFilterConfigurator::~ScopedSubresourceFilterConfigurator() {
+  GetAndSetActivateConfigurations(std::move(original_config_));
 }
 
-ScopedSubresourceFilterFeatureToggle::~ScopedSubresourceFilterFeatureToggle() {
-  variations::testing::ClearAllVariationParams();
-  base::FeatureList::ClearInstanceForTesting();
+void ScopedSubresourceFilterConfigurator::ResetConfiguration(
+    scoped_refptr<ConfigurationList> configs_list) {
+  GetAndSetActivateConfigurations(configs_list);
+}
+
+void ScopedSubresourceFilterConfigurator::ResetConfiguration(
+    Configuration config) {
+  ResetConfiguration(std::vector<Configuration>(1, std::move(config)));
+}
+
+void ScopedSubresourceFilterConfigurator::ResetConfiguration(
+    std::vector<Configuration> config) {
+  ResetConfiguration(
+      base::MakeRefCounted<ConfigurationList>(std::move(config)));
 }
 
 }  // namespace testing

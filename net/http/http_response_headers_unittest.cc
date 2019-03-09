@@ -10,11 +10,14 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <unordered_set>
 
 #include "base/pickle.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/http/http_byte_range.h"
+#include "net/http/http_util.h"
+#include "net/log/net_log_capture_mode.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -92,6 +95,40 @@ class CommonHttpResponseHeadersTest
       public ::testing::WithParamInterface<TestData> {
 };
 
+// Returns a simple text serialization of the given
+// |HttpResponseHeaders|. This is used by tests to verify that an
+// |HttpResponseHeaders| matches an expectation string.
+//
+//  * One line per header, written as:
+//        HEADER_NAME: HEADER_VALUE\n
+//  * The original case of header names is preserved.
+//  * Whitespace around head names/values is stripped.
+//  * Repeated headers are not aggregated.
+//  * Headers are listed in their original order.
+std::string ToSimpleString(const scoped_refptr<HttpResponseHeaders>& parsed) {
+  std::string result = parsed->GetStatusLine() + "\n";
+
+  size_t iter = 0;
+  std::string name;
+  std::string value;
+  while (parsed->EnumerateHeaderLines(&iter, &name, &value)) {
+    std::string new_line = name + ": " + value + "\n";
+
+    // Verify that |name| and |value| do not contain ':' or '\n' (if they did
+    // it would make this serialized format ambiguous).
+    if (std::count(new_line.begin(), new_line.end(), '\n') != 1 ||
+        std::count(new_line.begin(), new_line.end(), ':') != 1) {
+      ADD_FAILURE() << "Unexpected characters in the header name or value: "
+                    << new_line;
+      return result;
+    }
+
+    result += new_line;
+  }
+
+  return result;
+}
+
 TEST_P(CommonHttpResponseHeadersTest, TestCommon) {
   const TestData test = GetParam();
 
@@ -99,10 +136,9 @@ TEST_P(CommonHttpResponseHeadersTest, TestCommon) {
   HeadersToRaw(&raw_headers);
   std::string expected_headers(test.expected_headers);
 
-  std::string headers;
   scoped_refptr<HttpResponseHeaders> parsed(
       new HttpResponseHeaders(raw_headers));
-  parsed->GetNormalizedHeaders(&headers);
+  std::string headers = ToSimpleString(parsed);
 
   // Transform to readable output format (so it's easier to see diffs).
   std::replace(headers.begin(), headers.end(), ' ', '_');
@@ -126,7 +162,8 @@ TestData response_headers_tests[] = {
 
      "HTTP/1.1 202 Accepted\n"
      "Content-TYPE: text/html; charset=utf-8\n"
-     "Set-Cookie: a, b\n",
+     "Set-Cookie: a\n"
+     "Set-Cookie: b\n",
 
      HttpVersion(1, 1), 202, "Accepted"},
     {// Normalize leading whitespace.
@@ -137,7 +174,8 @@ TestData response_headers_tests[] = {
      "Set-Cookie:   b \n",
 
      "HTTP/1.1 202 Accepted\n"
-     "Set-Cookie: a, b\n",
+     "Set-Cookie: a\n"
+     "Set-Cookie: b\n",
 
      HttpVersion(1, 1), 202, "Accepted"},
     {// Keep whitespace within status text.
@@ -243,29 +281,31 @@ TestData response_headers_tests[] = {
      "HTTP/1.0 200 OK\n",
 
      HttpVersion(1, 0), 200, "OK"},
-    {// Consolidate Set-Cookie headers.
+    {// Has multiple Set-Cookie headers.
      "HTTP/1.1 200 OK\n"
      "Set-Cookie: x=1\n"
      "Set-Cookie: y=2\n",
 
      "HTTP/1.1 200 OK\n"
-     "Set-Cookie: x=1, y=2\n",
+     "Set-Cookie: x=1\n"
+     "Set-Cookie: y=2\n",
 
      HttpVersion(1, 1), 200, "OK"},
-    {// Consolidate cache-control headers.
+    {// Has multiple cache-control headers.
      "HTTP/1.1 200 OK\n"
      "Cache-control: private\n"
      "cache-Control: no-store\n",
 
      "HTTP/1.1 200 OK\n"
-     "Cache-control: private, no-store\n",
+     "Cache-control: private\n"
+     "cache-Control: no-store\n",
 
      HttpVersion(1, 1), 200, "OK"},
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        CommonHttpResponseHeadersTest,
-                        testing::ValuesIn(response_headers_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         CommonHttpResponseHeadersTest,
+                         testing::ValuesIn(response_headers_tests));
 
 struct PersistData {
   HttpResponseHeaders::PersistOptions options;
@@ -291,9 +331,7 @@ TEST_P(PersistenceTest, Persist) {
   base::PickleIterator iter(pickle);
   scoped_refptr<HttpResponseHeaders> parsed2(new HttpResponseHeaders(&iter));
 
-  std::string h2;
-  parsed2->GetNormalizedHeaders(&h2);
-  EXPECT_EQ(std::string(test.expected_headers), h2);
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed2));
 }
 
 const struct PersistData persistence_tests[] = {
@@ -303,7 +341,8 @@ const struct PersistData persistence_tests[] = {
      "cache-Control:no-store\n",
 
      "HTTP/1.1 200 OK\n"
-     "Cache-control: private, no-store\n"},
+     "Cache-control: private\n"
+     "cache-Control: no-store\n"},
     {HttpResponseHeaders::PERSIST_SANS_HOP_BY_HOP,
      "HTTP/1.1 200 OK\n"
      "connection: keep-alive\n"
@@ -391,8 +430,9 @@ const struct PersistData persistence_tests[] = {
      "Foo: 3\n",
 
      "HTTP/1.1 200 OK\n"
-     "Foo: 1, 3\n"
-     "Bar: 2\n"},
+     "Foo: 1\n"
+     "Bar: 2\n"
+     "Foo: 3\n"},
     // Header name appears twice, separated by another header (type 2).
     {HttpResponseHeaders::PERSIST_ALL,
      "HTTP/1.1 200 OK\n"
@@ -401,8 +441,9 @@ const struct PersistData persistence_tests[] = {
      "Foo: 4\n",
 
      "HTTP/1.1 200 OK\n"
-     "Foo: 1, 3, 4\n"
-     "Bar: 2\n"},
+     "Foo: 1, 3\n"
+     "Bar: 2\n"
+     "Foo: 4\n"},
     // Test filtering of cookie headers.
     {HttpResponseHeaders::PERSIST_SANS_COOKIES,
      "HTTP/1.1 200 OK\n"
@@ -413,6 +454,16 @@ const struct PersistData persistence_tests[] = {
 
      "HTTP/1.1 200 OK\n"
      "Bar: 1\n"},
+    {HttpResponseHeaders::PERSIST_SANS_COOKIES,
+     "HTTP/1.1 200 OK\n"
+     "Set-Cookie: foo=bar\n"
+     "Foo: 2\n"
+     "Clear-Site-Data: { \"types\" : [ \"cookies\" ] }\n"
+     "Bar: 3\n",
+
+     "HTTP/1.1 200 OK\n"
+     "Foo: 2\n"
+     "Bar: 3\n"},
     // Test LWS at the end of a header.
     {HttpResponseHeaders::PERSIST_ALL,
      "HTTP/1.1 200 OK\n"
@@ -444,28 +495,37 @@ const struct PersistData persistence_tests[] = {
      "Bar: 1\n"},
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        PersistenceTest,
-                        testing::ValuesIn(persistence_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         PersistenceTest,
+                         testing::ValuesIn(persistence_tests));
 
 TEST(HttpResponseHeadersTest, EnumerateHeader_Coalesced) {
   // Ensure that commas in quoted strings are not regarded as value separators.
   // Ensure that whitespace following a value is trimmed properly.
   std::string headers =
       "HTTP/1.1 200 OK\n"
-      "Cache-control:private , no-cache=\"set-cookie,server\" \n"
-      "cache-Control: no-store\n";
+      "Cache-control:,,private , no-cache=\"set-cookie,server\",\n"
+      "cache-Control: no-store\n"
+      "cache-Control:\n";
   HeadersToRaw(&headers);
   scoped_refptr<HttpResponseHeaders> parsed(new HttpResponseHeaders(headers));
 
   size_t iter = 0;
   std::string value;
-  EXPECT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
+  ASSERT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
+  EXPECT_EQ("", value);
+  ASSERT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
+  EXPECT_EQ("", value);
+  ASSERT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
   EXPECT_EQ("private", value);
-  EXPECT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
+  ASSERT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
   EXPECT_EQ("no-cache=\"set-cookie,server\"", value);
-  EXPECT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
+  ASSERT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
+  EXPECT_EQ("", value);
+  ASSERT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
   EXPECT_EQ("no-store", value);
+  ASSERT_TRUE(parsed->EnumerateHeader(&iter, "cache-control", &value));
+  EXPECT_EQ("", value);
   EXPECT_FALSE(parsed->EnumerateHeader(&iter, "cache-control", &value));
 }
 
@@ -630,6 +690,7 @@ TEST_P(ContentTypeTest, GetMimeType) {
   EXPECT_EQ(test.all_content_type, value);
 }
 
+// clang-format off
 const ContentTypeTestData mimetype_tests[] = {
   { "HTTP/1.1 200 OK\n"
     "Content-type: text/html\n",
@@ -673,14 +734,15 @@ const ContentTypeTestData mimetype_tests[] = {
     "text/html", true,
     "utf-8", true,
     "text/html;charset=utf-8, text/html" },
-  // Test single quotes.
+  // Regression test for https://crbug.com/772350:
+  // Single quotes are not delimiters but must be treated as part of charset.
   { "HTTP/1.1 200 OK\n"
     "Content-type: text/html;charset='utf-8'\n"
     "Content-type: text/html\n",
     "text/html", true,
-    "utf-8", true,
+    "'utf-8'", true,
     "text/html;charset='utf-8', text/html" },
-  // Last charset wins if matching content-type.
+  // First charset wins if matching content-type.
   { "HTTP/1.1 200 OK\n"
     "Content-type: text/html;charset=utf-8\n"
     "Content-type: text/html;charset=iso-8859-1\n",
@@ -706,11 +768,11 @@ const ContentTypeTestData mimetype_tests[] = {
     "text/html", true,
     "", false,
     "text/html;charset=" },
-  // Multiple charsets, last one wins.
+  // Multiple charsets, first one wins.
   { "HTTP/1.1 200 OK\n"
     "Content-type: text/html;charset=utf-8; charset=iso-8859-1\n",
     "text/html", true,
-    "iso-8859-1", true,
+    "utf-8", true,
     "text/html;charset=utf-8; charset=iso-8859-1" },
   // Multiple params.
   { "HTTP/1.1 200 OK\n"
@@ -725,16 +787,16 @@ const ContentTypeTestData mimetype_tests[] = {
     "text/html ; charset=utf-8 ; bar=iso-8859-1" },
   // Comma embeded in quotes.
   { "HTTP/1.1 200 OK\n"
-    "Content-type: text/html ; charset='utf-8,text/plain' ;\n",
+    "Content-type: text/html ; charset=\"utf-8,text/plain\" ;\n",
     "text/html", true,
     "utf-8,text/plain", true,
-    "text/html ; charset='utf-8,text/plain' ;" },
+    "text/html ; charset=\"utf-8,text/plain\" ;" },
   // Charset with leading spaces.
   { "HTTP/1.1 200 OK\n"
-    "Content-type: text/html ; charset= 'utf-8' ;\n",
+    "Content-type: text/html ; charset= \"utf-8\" ;\n",
     "text/html", true,
     "utf-8", true,
-    "text/html ; charset= 'utf-8' ;" },
+    "text/html ; charset= \"utf-8\" ;" },
   // Media type comments in mime-type.
   { "HTTP/1.1 200 OK\n"
     "Content-type: text/html (html)\n",
@@ -760,10 +822,11 @@ const ContentTypeTestData mimetype_tests[] = {
     "", false,
     "*/*" },
 };
+// clang-format on
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        ContentTypeTest,
-                        testing::ValuesIn(mimetype_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         ContentTypeTest,
+                         testing::ValuesIn(mimetype_tests));
 
 struct RequiresValidationTestData {
   const char* headers;
@@ -779,9 +842,12 @@ TEST_P(RequiresValidationTest, RequiresValidation) {
   const RequiresValidationTestData test = GetParam();
 
   base::Time request_time, response_time, current_time;
-  base::Time::FromString("Wed, 28 Nov 2007 00:40:09 GMT", &request_time);
-  base::Time::FromString("Wed, 28 Nov 2007 00:40:12 GMT", &response_time);
-  base::Time::FromString("Wed, 28 Nov 2007 00:45:20 GMT", &current_time);
+  ASSERT_TRUE(
+      base::Time::FromString("Wed, 28 Nov 2007 00:40:09 GMT", &request_time));
+  ASSERT_TRUE(
+      base::Time::FromString("Wed, 28 Nov 2007 00:40:12 GMT", &response_time));
+  ASSERT_TRUE(
+      base::Time::FromString("Wed, 28 Nov 2007 00:45:20 GMT", &current_time));
 
   std::string headers(test.headers);
   HeadersToRaw(&headers);
@@ -793,198 +859,172 @@ TEST_P(RequiresValidationTest, RequiresValidation) {
 }
 
 const struct RequiresValidationTestData requires_validation_tests[] = {
-  // No expiry info: expires immediately.
-  { "HTTP/1.1 200 OK\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // No expiry info: expires immediately.
-  { "HTTP/1.1 200 OK\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // Valid for a little while.
-  { "HTTP/1.1 200 OK\n"
-    "cache-control: max-age=10000\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Expires in the future.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "expires: Wed, 28 Nov 2007 01:00:00 GMT\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Already expired.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "expires: Wed, 28 Nov 2007 00:00:00 GMT\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // Max-age trumps expires.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "expires: Wed, 28 Nov 2007 00:00:00 GMT\n"
-    "cache-control: max-age=10000\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Last-modified heuristic: modified a while ago.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  { "HTTP/1.1 203 Non-Authoritative Information\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  { "HTTP/1.1 206 Partial Content\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Last-modified heuristic: modified recently.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "last-modified: Wed, 28 Nov 2007 00:40:10 GMT\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  { "HTTP/1.1 203 Non-Authoritative Information\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "last-modified: Wed, 28 Nov 2007 00:40:10 GMT\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  { "HTTP/1.1 206 Partial Content\n"
-  "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "last-modified: Wed, 28 Nov 2007 00:40:10 GMT\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // Cached permanent redirect.
-  { "HTTP/1.1 301 Moved Permanently\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Another cached permanent redirect.
-  { "HTTP/1.1 308 Permanent Redirect\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Cached redirect: not reusable even though by default it would be.
-  { "HTTP/1.1 300 Multiple Choices\n"
-    "Cache-Control: no-cache\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // Cached forever by default.
-  { "HTTP/1.1 410 Gone\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Cached temporary redirect: not reusable.
-  { "HTTP/1.1 302 Found\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // Cached temporary redirect: reusable.
-  { "HTTP/1.1 302 Found\n"
-    "cache-control: max-age=10000\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Cache-control: max-age=N overrides expires: date in the past.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "expires: Wed, 28 Nov 2007 00:20:11 GMT\n"
-    "cache-control: max-age=10000\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // Cache-control: no-store overrides expires: in the future.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "expires: Wed, 29 Nov 2007 00:40:11 GMT\n"
-    "cache-control: no-store,private,no-cache=\"foo\"\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // Pragma: no-cache overrides last-modified heuristic.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
-    "pragma: no-cache\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // max-age has expired, needs synchronous revalidation
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "cache-control: max-age=300\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // max-age has expired, stale-while-revalidate has not, eligible for
-  // asynchronous revalidation
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "cache-control: max-age=300, stale-while-revalidate=3600\n"
-    "\n",
-    VALIDATION_ASYNCHRONOUS
-  },
-  // max-age and stale-while-revalidate have expired, needs synchronous
-  // revalidation
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "cache-control: max-age=300, stale-while-revalidate=5\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // max-age is 0, stale-while-revalidate is large enough to permit
-  // asynchronous revalidation
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "cache-control: max-age=0, stale-while-revalidate=360\n"
-    "\n",
-    VALIDATION_ASYNCHRONOUS
-  },
-  // stale-while-revalidate must not override no-cache or similar directives.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "cache-control: no-cache, stale-while-revalidate=360\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
-  // max-age has not expired, so no revalidation is needed.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "cache-control: max-age=3600, stale-while-revalidate=3600\n"
-    "\n",
-    VALIDATION_NONE
-  },
-  // must-revalidate overrides stale-while-revalidate, so synchronous validation
-  // is needed.
-  { "HTTP/1.1 200 OK\n"
-    "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
-    "cache-control: must-revalidate, max-age=300, stale-while-revalidate=3600\n"
-    "\n",
-    VALIDATION_SYNCHRONOUS
-  },
+    // No expiry info: expires immediately.
+    {"HTTP/1.1 200 OK\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // No expiry info: expires immediately.
+    {"HTTP/1.1 200 OK\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // Valid for a little while.
+    {"HTTP/1.1 200 OK\n"
+     "cache-control: max-age=10000\n"
+     "\n",
+     VALIDATION_NONE},
+    // Expires in the future.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "expires: Wed, 28 Nov 2007 01:00:00 GMT\n"
+     "\n",
+     VALIDATION_NONE},
+    // Already expired.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "expires: Wed, 28 Nov 2007 00:00:00 GMT\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // Max-age trumps expires.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "expires: Wed, 28 Nov 2007 00:00:00 GMT\n"
+     "cache-control: max-age=10000\n"
+     "\n",
+     VALIDATION_NONE},
+    // Last-modified heuristic: modified a while ago.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
+     "\n",
+     VALIDATION_NONE},
+    {"HTTP/1.1 203 Non-Authoritative Information\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
+     "\n",
+     VALIDATION_NONE},
+    {"HTTP/1.1 206 Partial Content\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
+     "\n",
+     VALIDATION_NONE},
+    // Last-modified heuristic: modified recently.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "last-modified: Wed, 28 Nov 2007 00:40:10 GMT\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    {"HTTP/1.1 203 Non-Authoritative Information\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "last-modified: Wed, 28 Nov 2007 00:40:10 GMT\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    {"HTTP/1.1 206 Partial Content\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "last-modified: Wed, 28 Nov 2007 00:40:10 GMT\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // Cached permanent redirect.
+    {"HTTP/1.1 301 Moved Permanently\n"
+     "\n",
+     VALIDATION_NONE},
+    // Another cached permanent redirect.
+    {"HTTP/1.1 308 Permanent Redirect\n"
+     "\n",
+     VALIDATION_NONE},
+    // Cached redirect: not reusable even though by default it would be.
+    {"HTTP/1.1 300 Multiple Choices\n"
+     "Cache-Control: no-cache\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // Cached forever by default.
+    {"HTTP/1.1 410 Gone\n"
+     "\n",
+     VALIDATION_NONE},
+    // Cached temporary redirect: not reusable.
+    {"HTTP/1.1 302 Found\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // Cached temporary redirect: reusable.
+    {"HTTP/1.1 302 Found\n"
+     "cache-control: max-age=10000\n"
+     "\n",
+     VALIDATION_NONE},
+    // Cache-control: max-age=N overrides expires: date in the past.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "expires: Wed, 28 Nov 2007 00:20:11 GMT\n"
+     "cache-control: max-age=10000\n"
+     "\n",
+     VALIDATION_NONE},
+    // Cache-control: no-store overrides expires: in the future.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "expires: Wed, 29 Nov 2007 00:40:11 GMT\n"
+     "cache-control: no-store,private,no-cache=\"foo\"\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // Pragma: no-cache overrides last-modified heuristic.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "last-modified: Wed, 27 Nov 2007 08:00:00 GMT\n"
+     "pragma: no-cache\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // max-age has expired, needs synchronous revalidation
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "cache-control: max-age=300\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // max-age has expired, stale-while-revalidate has not, eligible for
+    // asynchronous revalidation
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "cache-control: max-age=300, stale-while-revalidate=3600\n"
+     "\n",
+     VALIDATION_ASYNCHRONOUS},
+    // max-age and stale-while-revalidate have expired, needs synchronous
+    // revalidation
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "cache-control: max-age=300, stale-while-revalidate=5\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // max-age is 0, stale-while-revalidate is large enough to permit
+    // asynchronous revalidation
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "cache-control: max-age=0, stale-while-revalidate=360\n"
+     "\n",
+     VALIDATION_ASYNCHRONOUS},
+    // stale-while-revalidate must not override no-cache or similar directives.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "cache-control: no-cache, stale-while-revalidate=360\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
+    // max-age has not expired, so no revalidation is needed.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "cache-control: max-age=3600, stale-while-revalidate=3600\n"
+     "\n",
+     VALIDATION_NONE},
+    // must-revalidate overrides stale-while-revalidate, so synchronous
+    // validation
+    // is needed.
+    {"HTTP/1.1 200 OK\n"
+     "date: Wed, 28 Nov 2007 00:40:11 GMT\n"
+     "cache-control: must-revalidate, max-age=300, "
+     "stale-while-revalidate=3600\n"
+     "\n",
+     VALIDATION_SYNCHRONOUS},
 
-  // TODO(darin): Add many many more tests here.
+    // TODO(darin): Add many many more tests here.
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        RequiresValidationTest,
-                        testing::ValuesIn(requires_validation_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         RequiresValidationTest,
+                         testing::ValuesIn(requires_validation_tests));
 
 struct UpdateTestData {
   const char* orig_headers;
@@ -1012,95 +1052,116 @@ TEST_P(UpdateTest, Update) {
 
   parsed->Update(*new_parsed.get());
 
-  std::string resulting_headers;
-  parsed->GetNormalizedHeaders(&resulting_headers);
-  EXPECT_EQ(std::string(test.expected_headers), resulting_headers);
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed));
 }
 
 const UpdateTestData update_tests[] = {
-  { "HTTP/1.1 200 OK\n",
+    {"HTTP/1.1 200 OK\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "connection: keep-alive\n"
-    "Cache-control: max-age=10000\n",
+     "HTTP/1/1 304 Not Modified\n"
+     "connection: keep-alive\n"
+     "Cache-control: max-age=10000\n",
 
-    "HTTP/1.1 200 OK\n"
-    "Cache-control: max-age=10000\n"
-  },
-  { "HTTP/1.1 200 OK\n"
-    "Foo: 1\n"
-    "Cache-control: private\n",
+     "HTTP/1.1 200 OK\n"
+     "Cache-control: max-age=10000\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Foo: 1\n"
+     "Cache-control: private\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "connection: keep-alive\n"
-    "Cache-control: max-age=10000\n",
+     "HTTP/1/1 304 Not Modified\n"
+     "connection: keep-alive\n"
+     "Cache-control: max-age=10000\n",
 
-    "HTTP/1.1 200 OK\n"
-    "Cache-control: max-age=10000\n"
-    "Foo: 1\n"
-  },
-  { "HTTP/1.1 200 OK\n"
-    "Foo: 1\n"
-    "Cache-control: private\n",
+     "HTTP/1.1 200 OK\n"
+     "Cache-control: max-age=10000\n"
+     "Foo: 1\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Foo: 1\n"
+     "Cache-control: private\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "connection: keep-alive\n"
-    "Cache-CONTROL: max-age=10000\n",
+     "HTTP/1/1 304 Not Modified\n"
+     "connection: keep-alive\n"
+     "Cache-CONTROL: max-age=10000\n",
 
-    "HTTP/1.1 200 OK\n"
-    "Cache-CONTROL: max-age=10000\n"
-    "Foo: 1\n"
-  },
-  { "HTTP/1.1 200 OK\n"
-    "Content-Length: 450\n",
+     "HTTP/1.1 200 OK\n"
+     "Cache-CONTROL: max-age=10000\n"
+     "Foo: 1\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Content-Length: 450\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "connection: keep-alive\n"
-    "Cache-control:      max-age=10001   \n",
+     "HTTP/1/1 304 Not Modified\n"
+     "connection: keep-alive\n"
+     "Cache-control:      max-age=10001   \n",
 
-    "HTTP/1.1 200 OK\n"
-    "Cache-control: max-age=10001\n"
-    "Content-Length: 450\n"
-  },
-  { "HTTP/1.1 200 OK\n"
-    "X-Frame-Options: DENY\n",
+     "HTTP/1.1 200 OK\n"
+     "Cache-control: max-age=10001\n"
+     "Content-Length: 450\n"},
+    {
+        "HTTP/1.1 200 OK\n"
+        "X-Frame-Options: DENY\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "X-Frame-Options: ALLOW\n",
+        "HTTP/1/1 304 Not Modified\n"
+        "X-Frame-Options: ALLOW\n",
 
-    "HTTP/1.1 200 OK\n"
-    "X-Frame-Options: DENY\n",
-  },
-  { "HTTP/1.1 200 OK\n"
-    "X-WebKit-CSP: default-src 'none'\n",
+        "HTTP/1.1 200 OK\n"
+        "X-Frame-Options: DENY\n",
+    },
+    {
+        "HTTP/1.1 200 OK\n"
+        "X-WebKit-CSP: default-src 'none'\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "X-WebKit-CSP: default-src *\n",
+        "HTTP/1/1 304 Not Modified\n"
+        "X-WebKit-CSP: default-src *\n",
 
-    "HTTP/1.1 200 OK\n"
-    "X-WebKit-CSP: default-src 'none'\n",
-  },
-  { "HTTP/1.1 200 OK\n"
-    "X-XSS-Protection: 1\n",
+        "HTTP/1.1 200 OK\n"
+        "X-WebKit-CSP: default-src 'none'\n",
+    },
+    {
+        "HTTP/1.1 200 OK\n"
+        "X-XSS-Protection: 1\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "X-XSS-Protection: 0\n",
+        "HTTP/1/1 304 Not Modified\n"
+        "X-XSS-Protection: 0\n",
 
-    "HTTP/1.1 200 OK\n"
-    "X-XSS-Protection: 1\n",
-  },
-  { "HTTP/1.1 200 OK\n",
+        "HTTP/1.1 200 OK\n"
+        "X-XSS-Protection: 1\n",
+    },
+    {"HTTP/1.1 200 OK\n",
 
-    "HTTP/1/1 304 Not Modified\n"
-    "X-Content-Type-Options: nosniff\n",
+     "HTTP/1/1 304 Not Modified\n"
+     "X-Content-Type-Options: nosniff\n",
 
-    "HTTP/1.1 200 OK\n"
-  },
+     "HTTP/1.1 200 OK\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Content-Encoding: identity\n"
+     "Content-Length: 100\n"
+     "Content-Type: text/html\n"
+     "Content-Security-Policy: default-src 'none'\n",
+
+     "HTTP/1/1 304 Not Modified\n"
+     "Content-Encoding: gzip\n"
+     "Content-Length: 200\n"
+     "Content-Type: text/xml\n"
+     "Content-Security-Policy: default-src 'self'\n",
+
+     "HTTP/1.1 200 OK\n"
+     "Content-Security-Policy: default-src 'self'\n"
+     "Content-Encoding: identity\n"
+     "Content-Length: 100\n"
+     "Content-Type: text/html\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Content-Location: /example_page.html\n",
+
+     "HTTP/1/1 304 Not Modified\n"
+     "Content-Location: /not_example_page.html\n",
+
+     "HTTP/1.1 200 OK\n"
+     "Content-Location: /example_page.html\n"},
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        UpdateTest,
-                        testing::ValuesIn(update_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         UpdateTest,
+                         testing::ValuesIn(update_tests));
 
 struct EnumerateHeaderTestData {
   const char* headers;
@@ -1133,32 +1194,32 @@ TEST_P(EnumerateHeaderLinesTest, EnumerateHeaderLines) {
 }
 
 const EnumerateHeaderTestData enumerate_header_tests[] = {
-  { "HTTP/1.1 200 OK\n",
+    {"HTTP/1.1 200 OK\n",
 
-    ""
-  },
-  { "HTTP/1.1 200 OK\n"
-    "Foo: 1\n",
+     ""},
+    {"HTTP/1.1 200 OK\n"
+     "Foo: 1\n",
 
-    "Foo: 1\n"
-  },
-  { "HTTP/1.1 200 OK\n"
-    "Foo: 1\n"
-    "Bar: 2\n"
-    "Foo: 3\n",
+     "Foo: 1\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Foo: 1\n"
+     "Bar: 2\n"
+     "Foo: 3\n",
 
-    "Foo: 1\nBar: 2\nFoo: 3\n"
-  },
-  { "HTTP/1.1 200 OK\n"
-    "Foo: 1, 2, 3\n",
+     "Foo: 1\nBar: 2\nFoo: 3\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Foo: 1, 2, 3\n",
 
-    "Foo: 1, 2, 3\n"
-  },
+     "Foo: 1, 2, 3\n"},
+    {"HTTP/1.1 200 OK\n"
+     "Foo: ,, 1,, 2, 3,, \n",
+
+     "Foo: ,, 1,, 2, 3,,\n"},
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        EnumerateHeaderLinesTest,
-                        testing::ValuesIn(enumerate_header_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         EnumerateHeaderLinesTest,
+                         testing::ValuesIn(enumerate_header_tests));
 
 struct IsRedirectTestData {
   const char* headers;
@@ -1243,9 +1304,9 @@ const IsRedirectTestData is_redirect_tests[] = {
   },
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        IsRedirectTest,
-                        testing::ValuesIn(is_redirect_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         IsRedirectTest,
+                         testing::ValuesIn(is_redirect_tests));
 
 struct ContentLengthTestData {
   const char* headers;
@@ -1320,9 +1381,9 @@ const ContentLengthTestData content_length_tests[] = {
      -1},
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        GetContentLengthTest,
-                        testing::ValuesIn(content_length_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         GetContentLengthTest,
+                         testing::ValuesIn(content_length_tests));
 
 struct ContentRangeTestData {
   const char* headers;
@@ -1337,7 +1398,7 @@ class ContentRangeTest
       public ::testing::WithParamInterface<ContentRangeTestData> {
 };
 
-TEST_P(ContentRangeTest, GetContentRange) {
+TEST_P(ContentRangeTest, GetContentRangeFor206) {
   const ContentRangeTestData test = GetParam();
 
   std::string headers(test.headers);
@@ -1347,9 +1408,8 @@ TEST_P(ContentRangeTest, GetContentRange) {
   int64_t first_byte_position;
   int64_t last_byte_position;
   int64_t instance_size;
-  bool return_value = parsed->GetContentRange(&first_byte_position,
-                                              &last_byte_position,
-                                              &instance_size);
+  bool return_value = parsed->GetContentRangeFor206(
+      &first_byte_position, &last_byte_position, &instance_size);
   EXPECT_EQ(test.expected_return_value, return_value);
   EXPECT_EQ(test.expected_first_byte_position, first_byte_position);
   EXPECT_EQ(test.expected_last_byte_position, last_byte_position);
@@ -1362,105 +1422,22 @@ const ContentRangeTestData content_range_tests[] = {
      "Content-Range:",
      false, -1, -1, -1},
     {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: megabytes 0-10/50",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: 0-10/50",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: Bytes 0-50/51",
-     true, 0, 50, 51},
-    {"HTTP/1.1 206 Partial Content\n"
      "Content-Range: bytes 0-50/51",
      true, 0, 50, 51},
     {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes\t0-50/51",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range:     bytes 0-50/51",
-     true, 0, 50, 51},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range:     bytes    0    -   50  \t / \t51",
-     true, 0, 50, 51},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0\t-\t50\t/\t51\t",
-     true, 0, 50, 51},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range:   \tbytes\t\t\t 0\t-\t50\t/\t51\t",
-     true, 0, 50, 51},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: \t   bytes \t  0    -   50   /   5   1",
-     false, 0, 50, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: \t   bytes \t  0    -   5 0   /   51",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
      "Content-Range: bytes 50-0/51",
-     false, 50, 0, -1},
-    {"HTTP/1.1 416 Requested range not satisfiable\n"
-     "Content-Range: bytes * /*",
      false, -1, -1, -1},
     {"HTTP/1.1 416 Requested range not satisfiable\n"
-     "Content-Range: bytes *   /    *   ",
+     "Content-Range: bytes */*",
      false, -1, -1, -1},
     {"HTTP/1.1 206 Partial Content\n"
      "Content-Range: bytes 0-50/*",
-     false, 0, 50, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-50  /    * ",
-     false, 0, 50, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-10000000000/10000000001",
-     true, 0, 10000000000ll, 10000000001ll},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-10000000000/10000000000",
-     false, 0, 10000000000ll, 10000000000ll},
-    // 64 bit wraparound.
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0 - 9223372036854775807 / 100",
-     false, 0, std::numeric_limits<int64_t>::max(), 100},
-    // 64 bit wraparound.
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0 - 100 / -9223372036854775808",
-     false, 0, 100, std::numeric_limits<int64_t>::min()},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes */50",
-     false, -1, -1, 50},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-50/10",
-     false, 0, 50, 10},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 40-50/45",
-     false, 40, 50, 45},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-50/-10",
-     false, 0, 50, -10},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-0/1",
-     true, 0, 0, 1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-40000000000000000000/40000000000000000001",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 1-/100",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes -/100",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes -1/100",
-     false, -1, -1, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes 0-1233/*",
-     false, 0, 1233, -1},
-    {"HTTP/1.1 206 Partial Content\n"
-     "Content-Range: bytes -123 - -1/100",
      false, -1, -1, -1},
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        ContentRangeTest,
-                        testing::ValuesIn(content_range_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         ContentRangeTest,
+                         testing::ValuesIn(content_range_tests));
 
 struct KeepAliveTestData {
   const char* headers;
@@ -1626,9 +1603,9 @@ const KeepAliveTestData keepalive_tests[] = {
   },
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        IsKeepAliveTest,
-                        testing::ValuesIn(keepalive_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         IsKeepAliveTest,
+                         testing::ValuesIn(keepalive_tests));
 
 struct HasStrongValidatorsTestData {
   const char* headers;
@@ -1696,9 +1673,9 @@ const HasStrongValidatorsTestData strong_validators_tests[] = {
   }
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        HasStrongValidatorsTest,
-                        testing::ValuesIn(strong_validators_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         HasStrongValidatorsTest,
+                         testing::ValuesIn(strong_validators_tests));
 
 TEST(HttpResponseHeadersTest, HasValidatorsNone) {
   std::string headers("HTTP/1.1 200 OK");
@@ -1734,6 +1711,64 @@ TEST(HttpResponseHeadersTest, HasValidatorsWeakEtag) {
   EXPECT_TRUE(parsed->HasValidators());
 }
 
+TEST(HttpResponseHeadersTest, GetNormalizedHeaderWithEmptyValues) {
+  std::string headers(
+      "HTTP/1.1 200 OK\n"
+      "a:\n"
+      "b: \n"
+      "c:*\n"
+      "d: *\n"
+      "e:    \n"
+      "a: \n"
+      "b:*\n"
+      "c:\n"
+      "d:*\n"
+      "a:\n");
+  HeadersToRaw(&headers);
+  auto parsed = base::MakeRefCounted<HttpResponseHeaders>(headers);
+  std::string value;
+
+  EXPECT_TRUE(parsed->GetNormalizedHeader("a", &value));
+  EXPECT_EQ(value, ", , ");
+  EXPECT_TRUE(parsed->GetNormalizedHeader("b", &value));
+  EXPECT_EQ(value, ", *");
+  EXPECT_TRUE(parsed->GetNormalizedHeader("c", &value));
+  EXPECT_EQ(value, "*, ");
+  EXPECT_TRUE(parsed->GetNormalizedHeader("d", &value));
+  EXPECT_EQ(value, "*, *");
+  EXPECT_TRUE(parsed->GetNormalizedHeader("e", &value));
+  EXPECT_EQ(value, "");
+  EXPECT_FALSE(parsed->GetNormalizedHeader("f", &value));
+}
+
+TEST(HttpResponseHeadersTest, GetNormalizedHeaderWithCommas) {
+  std::string headers(
+      "HTTP/1.1 200 OK\n"
+      "a: foo, bar\n"
+      "b: , foo, bar,\n"
+      "c: ,,,\n"
+      "d:  ,  ,  ,  \n"
+      "e:\t,\t,\t,\t\n"
+      "a: ,");
+  HeadersToRaw(&headers);
+  auto parsed = base::MakeRefCounted<HttpResponseHeaders>(headers);
+  std::string value;
+
+  // TODO(mmenke): "Normalized" headers probably should preserve the
+  // leading/trailing whitespace from the original headers.
+  ASSERT_TRUE(parsed->GetNormalizedHeader("a", &value));
+  EXPECT_EQ("foo, bar, ,", value);
+  ASSERT_TRUE(parsed->GetNormalizedHeader("b", &value));
+  EXPECT_EQ(", foo, bar,", value);
+  ASSERT_TRUE(parsed->GetNormalizedHeader("c", &value));
+  EXPECT_EQ(",,,", value);
+  ASSERT_TRUE(parsed->GetNormalizedHeader("d", &value));
+  EXPECT_EQ(",  ,  ,", value);
+  ASSERT_TRUE(parsed->GetNormalizedHeader("e", &value));
+  EXPECT_EQ(",\t,\t,", value);
+  EXPECT_FALSE(parsed->GetNormalizedHeader("f", &value));
+}
+
 struct AddHeaderTestData {
   const char* orig_headers;
   const char* new_header;
@@ -1756,9 +1791,7 @@ TEST_P(AddHeaderTest, AddHeader) {
   std::string new_header(test.new_header);
   parsed->AddHeader(new_header);
 
-  std::string resulting_headers;
-  parsed->GetNormalizedHeaders(&resulting_headers);
-  EXPECT_EQ(std::string(test.expected_headers), resulting_headers);
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed));
 }
 
 const AddHeaderTestData add_header_tests[] = {
@@ -1786,9 +1819,9 @@ const AddHeaderTestData add_header_tests[] = {
   },
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        AddHeaderTest,
-                        testing::ValuesIn(add_header_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         AddHeaderTest,
+                         testing::ValuesIn(add_header_tests));
 
 struct RemoveHeaderTestData {
   const char* orig_headers;
@@ -1812,9 +1845,7 @@ TEST_P(RemoveHeaderTest, RemoveHeader) {
   std::string name(test.to_remove);
   parsed->RemoveHeader(name);
 
-  std::string resulting_headers;
-  parsed->GetNormalizedHeaders(&resulting_headers);
-  EXPECT_EQ(std::string(test.expected_headers), resulting_headers);
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed));
 }
 
 const RemoveHeaderTestData remove_header_tests[] = {
@@ -1842,9 +1873,71 @@ const RemoveHeaderTestData remove_header_tests[] = {
   },
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        RemoveHeaderTest,
-                        testing::ValuesIn(remove_header_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         RemoveHeaderTest,
+                         testing::ValuesIn(remove_header_tests));
+
+struct RemoveHeadersTestData {
+  const char* orig_headers;
+  const char* to_remove[2];
+  const char* expected_headers;
+};
+
+class RemoveHeadersTest
+    : public HttpResponseHeadersTest,
+      public ::testing::WithParamInterface<RemoveHeadersTestData> {};
+
+TEST_P(RemoveHeadersTest, RemoveHeaders) {
+  const RemoveHeadersTestData test = GetParam();
+
+  std::string orig_headers(test.orig_headers);
+  HeadersToRaw(&orig_headers);
+  scoped_refptr<HttpResponseHeaders> parsed(
+      new HttpResponseHeaders(orig_headers));
+
+  std::unordered_set<std::string> to_remove;
+  for (auto* header : test.to_remove) {
+    if (header)
+      to_remove.insert(header);
+  }
+  parsed->RemoveHeaders(to_remove);
+
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed));
+}
+
+const RemoveHeadersTestData remove_headers_tests[] = {
+    {"HTTP/1.1 200 OK\n"
+     "connection: keep-alive\n"
+     "Cache-control: max-age=10000\n"
+     "Content-Length: 450\n",
+
+     {"Content-Length", "CACHE-control"},
+
+     "HTTP/1.1 200 OK\n"
+     "connection: keep-alive\n"},
+
+    {"HTTP/1.1 200 OK\n"
+     "connection: keep-alive\n"
+     "Content-Length: 450\n",
+
+     {"foo", "bar"},
+
+     "HTTP/1.1 200 OK\n"
+     "connection: keep-alive\n"
+     "Content-Length: 450\n"},
+
+    {"HTTP/1.1 404 Kinda not OK\n"
+     "connection: keep-alive  \n",
+
+     {},
+
+     "HTTP/1.1 404 Kinda not OK\n"
+     "connection: keep-alive\n"},
+};
+
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         RemoveHeadersTest,
+                         testing::ValuesIn(remove_headers_tests));
 
 struct RemoveIndividualHeaderTestData {
   const char* orig_headers;
@@ -1870,9 +1963,7 @@ TEST_P(RemoveIndividualHeaderTest, RemoveIndividualHeader) {
   std::string value(test.to_remove_value);
   parsed->RemoveHeaderLine(name, value);
 
-  std::string resulting_headers;
-  parsed->GetNormalizedHeaders(&resulting_headers);
-  EXPECT_EQ(std::string(test.expected_headers), resulting_headers);
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed));
 }
 
 const RemoveIndividualHeaderTestData remove_individual_header_tests[] = {
@@ -1947,9 +2038,9 @@ const RemoveIndividualHeaderTestData remove_individual_header_tests[] = {
   },
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        RemoveIndividualHeaderTest,
-                        testing::ValuesIn(remove_individual_header_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         RemoveIndividualHeaderTest,
+                         testing::ValuesIn(remove_individual_header_tests));
 
 struct ReplaceStatusTestData {
   const char* orig_headers;
@@ -1973,9 +2064,7 @@ TEST_P(ReplaceStatusTest, ReplaceStatus) {
   std::string name(test.new_status);
   parsed->ReplaceStatusLine(name);
 
-  std::string resulting_headers;
-  parsed->GetNormalizedHeaders(&resulting_headers);
-  EXPECT_EQ(std::string(test.expected_headers), resulting_headers);
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed));
 }
 
 const ReplaceStatusTestData replace_status_tests[] = {
@@ -2013,9 +2102,9 @@ const ReplaceStatusTestData replace_status_tests[] = {
   },
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        ReplaceStatusTest,
-                        testing::ValuesIn(replace_status_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         ReplaceStatusTest,
+                         testing::ValuesIn(replace_status_tests));
 
 struct UpdateWithNewRangeTestData {
   const char* orig_headers;
@@ -2038,18 +2127,15 @@ TEST_P(UpdateWithNewRangeTest, UpdateWithNewRange) {
   scoped_refptr<HttpResponseHeaders> parsed(
       new HttpResponseHeaders(orig_headers + '\0'));
   int64_t content_size = parsed->GetContentLength();
-  std::string resulting_headers;
 
   // Update headers without replacing status line.
   parsed->UpdateWithNewRange(range, content_size, false);
-  parsed->GetNormalizedHeaders(&resulting_headers);
-  EXPECT_EQ(std::string(test.expected_headers), resulting_headers);
+  EXPECT_EQ(std::string(test.expected_headers), ToSimpleString(parsed));
 
   // Replace status line too.
   parsed->UpdateWithNewRange(range, content_size, true);
-  parsed->GetNormalizedHeaders(&resulting_headers);
   EXPECT_EQ(std::string(test.expected_headers_with_replaced_status),
-            resulting_headers);
+            ToSimpleString(parsed));
 }
 
 const UpdateWithNewRangeTestData update_range_tests[] = {
@@ -2077,35 +2163,9 @@ const UpdateWithNewRangeTestData update_range_tests[] = {
   },
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeaders,
-                        UpdateWithNewRangeTest,
-                        testing::ValuesIn(update_range_tests));
-
-TEST(HttpResponseHeadersTest, ToNetLogParamAndBackAgain) {
-  std::string headers("HTTP/1.1 404\n"
-                      "Content-Length: 450\n"
-                      "Connection: keep-alive\n");
-  HeadersToRaw(&headers);
-  scoped_refptr<HttpResponseHeaders> parsed(new HttpResponseHeaders(headers));
-
-  std::unique_ptr<base::Value> event_param(parsed->NetLogCallback(
-      NetLogCaptureMode::IncludeCookiesAndCredentials()));
-  scoped_refptr<HttpResponseHeaders> recreated;
-
-  ASSERT_TRUE(
-      HttpResponseHeaders::FromNetLogParam(event_param.get(), &recreated));
-  ASSERT_TRUE(recreated.get());
-  EXPECT_EQ(parsed->GetHttpVersion(), recreated->GetHttpVersion());
-  EXPECT_EQ(parsed->response_code(), recreated->response_code());
-  EXPECT_EQ(parsed->GetContentLength(), recreated->GetContentLength());
-  EXPECT_EQ(parsed->IsKeepAlive(), recreated->IsKeepAlive());
-
-  std::string normalized_parsed;
-  parsed->GetNormalizedHeaders(&normalized_parsed);
-  std::string normalized_recreated;
-  parsed->GetNormalizedHeaders(&normalized_recreated);
-  EXPECT_EQ(normalized_parsed, normalized_recreated);
-}
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         UpdateWithNewRangeTest,
+                         testing::ValuesIn(update_range_tests));
 
 TEST_F(HttpResponseHeadersCacheControlTest, AbsentMaxAgeReturnsFalse) {
   InitializeHeadersWithCacheControl("nocache");
@@ -2184,9 +2244,9 @@ const MaxAgeTestData max_age_tests[] = {
      std::numeric_limits<int64_t>::max()},  // Overflow int64_t.
 };
 
-INSTANTIATE_TEST_CASE_P(HttpResponseHeadersCacheControl,
-                        MaxAgeEdgeCasesTest,
-                        testing::ValuesIn(max_age_tests));
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeadersCacheControl,
+                         MaxAgeEdgeCasesTest,
+                         testing::ValuesIn(max_age_tests));
 
 TEST_F(HttpResponseHeadersCacheControlTest,
        AbsentStaleWhileRevalidateReturnsFalse) {
@@ -2217,6 +2277,69 @@ TEST_F(HttpResponseHeadersCacheControlTest,
       "stale-while-revalidate=1,stale-while-revalidate=7200");
   EXPECT_EQ(TimeDelta::FromSeconds(1), GetStaleWhileRevalidateValue());
 }
+
+struct GetCurrentAgeTestData {
+  const char* headers;
+  const char* request_time;
+  const char* response_time;
+  const char* current_time;
+  const int expected_age;
+};
+
+class GetCurrentAgeTest
+    : public HttpResponseHeadersTest,
+      public ::testing::WithParamInterface<GetCurrentAgeTestData> {
+};
+
+TEST_P(GetCurrentAgeTest, GetCurrentAge) {
+  const GetCurrentAgeTestData test = GetParam();
+
+  base::Time request_time, response_time, current_time;
+  ASSERT_TRUE(base::Time::FromString(test.request_time, &request_time));
+  ASSERT_TRUE(base::Time::FromString(test.response_time, &response_time));
+  ASSERT_TRUE(base::Time::FromString(test.current_time, &current_time));
+
+  std::string headers(test.headers);
+  HeadersToRaw(&headers);
+  scoped_refptr<HttpResponseHeaders> parsed(new HttpResponseHeaders(headers));
+
+  base::TimeDelta age =
+      parsed->GetCurrentAge(request_time, response_time, current_time);
+  EXPECT_EQ(test.expected_age, age.InSeconds());
+}
+
+const struct GetCurrentAgeTestData get_current_age_tests[] = {
+    // Without Date header.
+    {"HTTP/1.1 200 OK\n"
+     "Age: 2",
+     "Fri, 20 Jan 2011 10:40:08 GMT", "Fri, 20 Jan 2011 10:40:12 GMT",
+     "Fri, 20 Jan 2011 10:40:14 GMT", 8},
+    // Without Age header.
+    {"HTTP/1.1 200 OK\n"
+     "Date: Fri, 20 Jan 2011 10:40:10 GMT\n",
+     "Fri, 20 Jan 2011 10:40:08 GMT", "Fri, 20 Jan 2011 10:40:12 GMT",
+     "Fri, 20 Jan 2011 10:40:14 GMT", 6},
+    // date_value > response_time with Age header.
+    {"HTTP/1.1 200 OK\n"
+     "Date: Fri, 20 Jan 2011 10:40:14 GMT\n"
+     "Age: 2\n",
+     "Fri, 20 Jan 2011 10:40:08 GMT", "Fri, 20 Jan 2011 10:40:12 GMT",
+     "Fri, 20 Jan 2011 10:40:14 GMT", 8},
+     // date_value > response_time without Age header.
+     {"HTTP/1.1 200 OK\n"
+     "Date: Fri, 20 Jan 2011 10:40:14 GMT\n",
+     "Fri, 20 Jan 2011 10:40:08 GMT", "Fri, 20 Jan 2011 10:40:12 GMT",
+     "Fri, 20 Jan 2011 10:40:14 GMT", 6},
+    // apparent_age > corrected_age_value
+    {"HTTP/1.1 200 OK\n"
+     "Date: Fri, 20 Jan 2011 10:40:07 GMT\n"
+     "Age: 0\n",
+     "Fri, 20 Jan 2011 10:40:08 GMT", "Fri, 20 Jan 2011 10:40:12 GMT",
+     "Fri, 20 Jan 2011 10:40:14 GMT", 7}};
+
+INSTANTIATE_TEST_SUITE_P(HttpResponseHeaders,
+                         GetCurrentAgeTest,
+                         testing::ValuesIn(get_current_age_tests));
 
 }  // namespace
 

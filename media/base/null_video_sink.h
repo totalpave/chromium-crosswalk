@@ -35,9 +35,10 @@ class MEDIA_EXPORT NullVideoSink : public VideoRendererSink {
   // VideoRendererSink implementation.
   void Start(RenderCallback* callback) override;
   void Stop() override;
-  void PaintSingleFrame(const scoped_refptr<VideoFrame>& frame) override;
+  void PaintSingleFrame(const scoped_refptr<VideoFrame>& frame,
+                        bool repaint_duplicate_frame) override;
 
-  void set_tick_clock_for_testing(base::TickClock* tick_clock) {
+  void set_tick_clock_for_testing(const base::TickClock* tick_clock) {
     tick_clock_ = tick_clock;
   }
 
@@ -52,11 +53,13 @@ class MEDIA_EXPORT NullVideoSink : public VideoRendererSink {
     background_render_ = is_background_rendering;
   }
 
+  void set_clockless(bool clockless) { clockless_ = clockless; }
+
  private:
   // Task that periodically calls Render() to consume video data.
   void CallRender();
 
-  const bool clockless_;
+  bool clockless_;
   const base::TimeDelta interval_;
   const NewFrameCB new_frame_cb_;
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
@@ -75,11 +78,10 @@ class MEDIA_EXPORT NullVideoSink : public VideoRendererSink {
   base::TimeTicks current_render_time_;
 
   // Allow for an injectable tick clock for testing.
-  base::DefaultTickClock default_tick_clock_;
   base::TimeTicks last_now_;
 
-  // If specified, used instead of |default_tick_clock_|.
-  base::TickClock* tick_clock_;
+  // If specified, used instead of a DefaultTickClock.
+  const base::TickClock* tick_clock_;
 
   // If set, called when Stop() is called.
   base::Closure stop_cb_;

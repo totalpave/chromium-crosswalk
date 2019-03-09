@@ -4,12 +4,15 @@
 
 #include "ios/chrome/browser/signin/signin_error_controller_factory.h"
 
+#include <utility>
+
 #include "base/memory/ptr_util.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/keyed_service/ios/browser_state_dependency_manager.h"
 #include "components/signin/core/browser/signin_error_controller.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
+#include "ios/chrome/browser/signin/identity_manager_factory.h"
 
 namespace ios {
 
@@ -22,13 +25,15 @@ SigninErrorController* SigninErrorControllerFactory::GetForBrowserState(
 
 // static
 SigninErrorControllerFactory* SigninErrorControllerFactory::GetInstance() {
-  return base::Singleton<SigninErrorControllerFactory>::get();
+  static base::NoDestructor<SigninErrorControllerFactory> instance;
+  return instance.get();
 }
 
 SigninErrorControllerFactory::SigninErrorControllerFactory()
     : BrowserStateKeyedServiceFactory(
           "SigninErrorController",
           BrowserStateDependencyManager::GetInstance()) {
+  DependsOn(IdentityManagerFactory::GetInstance());
 }
 
 SigninErrorControllerFactory::~SigninErrorControllerFactory() {
@@ -37,7 +42,11 @@ SigninErrorControllerFactory::~SigninErrorControllerFactory() {
 std::unique_ptr<KeyedService>
 SigninErrorControllerFactory::BuildServiceInstanceFor(
     web::BrowserState* context) const {
-  return base::WrapUnique(new SigninErrorController);
+  ChromeBrowserState* chrome_browser_state =
+      ChromeBrowserState::FromBrowserState(context);
+  return std::make_unique<SigninErrorController>(
+      SigninErrorController::AccountMode::ANY_ACCOUNT,
+      IdentityManagerFactory::GetForBrowserState(chrome_browser_state));
 }
 
 }  // namespace ios

@@ -4,17 +4,18 @@
 
 #include "chrome/installer/util/beacons.h"
 
-#include "base/base_paths.h"
-#include "base/memory/scoped_vector.h"
-#include "base/path_service.h"
-#include "base/test/scoped_path_override.h"
+#include <memory>
+#include <tuple>
+
 #include "base/test/test_reg_util_win.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
 #include "base/win/registry.h"
 #include "base/win/win_util.h"
-#include "chrome/installer/util/browser_distribution.h"
-#include "chrome/installer/util/test_app_registration_data.h"
+#include "chrome/install_static/install_details.h"
+#include "chrome/install_static/install_modes.h"
+#include "chrome/install_static/test/scoped_install_details.h"
+#include "chrome/installer/util/install_util.h"
 #include "chrome/installer/util/util_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -36,23 +37,28 @@ class BeaconTest : public ::testing::TestWithParam<
       : beacon_type_(::testing::get<0>(GetParam())),
         beacon_scope_(::testing::get<1>(GetParam())),
         system_install_(::testing::get<2>(GetParam())),
-        beacon_(kBeaconName,
-                beacon_type_,
-                beacon_scope_,
-                system_install_,
-                app_registration_data_) {
+        scoped_install_details_(system_install_),
+        beacon_(kBeaconName, beacon_type_, beacon_scope_) {}
+
+  void SetUp() override {
     // Override the registry so that tests can freely push state to it.
-    registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER);
-    registry_override_manager_.OverrideRegistry(HKEY_LOCAL_MACHINE);
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_LOCAL_MACHINE));
   }
 
-  TestAppRegistrationData app_registration_data_;
+  BeaconType beacon_type() const { return beacon_type_; }
+  BeaconScope beacon_scope() const { return beacon_scope_; }
+  bool system_install() const { return system_install_; }
+  Beacon* beacon() { return &beacon_; }
+
+ private:
   BeaconType beacon_type_;
   BeaconScope beacon_scope_;
   bool system_install_;
+  install_static::ScopedInstallDetails scoped_install_details_;
   Beacon beacon_;
-
- private:
   registry_util::RegistryOverrideManager registry_override_manager_;
 };
 
@@ -61,16 +67,16 @@ const base::char16 BeaconTest::kBeaconName[] = L"TestBeacon";
 
 // Nothing in the regsitry, so the beacon should not exist.
 TEST_P(BeaconTest, GetNonExistant) {
-  ASSERT_TRUE(beacon_.Get().is_null());
+  ASSERT_TRUE(beacon()->Get().is_null());
 }
 
 // Updating and then getting the beacon should return a value, and that it is
 // within range.
 TEST_P(BeaconTest, UpdateAndGet) {
   base::Time before(base::Time::Now());
-  beacon_.Update();
+  beacon()->Update();
   base::Time after(base::Time::Now());
-  base::Time beacon_time(beacon_.Get());
+  base::Time beacon_time(beacon()->Get());
   ASSERT_FALSE(beacon_time.is_null());
   ASSERT_LE(before, beacon_time);
   ASSERT_GE(after, beacon_time);
@@ -79,39 +85,42 @@ TEST_P(BeaconTest, UpdateAndGet) {
 // Tests that updating a first beacon only updates it the first time, but doing
 // so for a last beacon always updates.
 TEST_P(BeaconTest, UpdateTwice) {
-  beacon_.Update();
-  base::Time beacon_time(beacon_.Get());
+  beacon()->Update();
+  base::Time beacon_time(beacon()->Get());
 
   base::PlatformThread::Sleep(TestTimeouts::tiny_timeout());
 
-  beacon_.Update();
-  if (beacon_type_ == BeaconType::FIRST) {
-    ASSERT_EQ(beacon_time, beacon_.Get());
+  beacon()->Update();
+  if (beacon_type() == BeaconType::FIRST) {
+    ASSERT_EQ(beacon_time, beacon()->Get());
   } else {
-    ASSERT_NE(beacon_time, beacon_.Get());
+    ASSERT_NE(beacon_time, beacon()->Get());
   }
 }
 
 // Tests that the beacon is written into the proper location in the registry.
 TEST_P(BeaconTest, Location) {
-  beacon_.Update();
-  HKEY right_root = system_install_ ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
-  HKEY wrong_root = system_install_ ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
+  beacon()->Update();
+  const install_static::InstallDetails& install_details =
+      install_static::InstallDetails::Get();
+  HKEY right_root = system_install() ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+  HKEY wrong_root = system_install() ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
   base::string16 right_key;
   base::string16 wrong_key;
   base::string16 value_name;
 
-  if (beacon_scope_ == BeaconScope::PER_INSTALL || !system_install_) {
+  if (beacon_scope() == BeaconScope::PER_INSTALL || !system_install()) {
     value_name = kBeaconName;
-    right_key = app_registration_data_.GetStateKey();
-    wrong_key = app_registration_data_.GetStateMediumKey();
+    right_key = install_details.GetClientStateKeyPath();
+    wrong_key = install_details.GetClientStateMediumKeyPath();
   } else {
     ASSERT_TRUE(base::win::GetUserSidString(&value_name));
     right_key =
-        app_registration_data_.GetStateMediumKey() + L"\\" + kBeaconName;
-    wrong_key = app_registration_data_.GetStateKey();
+        install_details.GetClientStateMediumKeyPath() + L"\\" + kBeaconName;
+    wrong_key = install_details.GetClientStateKeyPath();
   }
 
+#if defined(GOOGLE_CHROME_BUILD)
   // Keys should not exist in the wrong root or in the right root but wrong key.
   ASSERT_FALSE(base::win::RegKey(wrong_root, right_key.c_str(),
                                  KEY_READ).Valid()) << right_key;
@@ -119,6 +128,17 @@ TEST_P(BeaconTest, Location) {
                                  KEY_READ).Valid()) << wrong_key;
   ASSERT_FALSE(base::win::RegKey(right_root, wrong_key.c_str(),
                                  KEY_READ).Valid()) << wrong_key;
+#else
+  // The tests above are skipped for Chromium builds because they fail for two
+  // reasons:
+  // - ClientState and ClientStateMedium are both Software\Chromium.
+  // - the registry override manager does its virtualization into
+  //   Software\Chromium, so it always exists.
+
+  // Silence unused variable warnings.
+  ignore_result(wrong_root);
+#endif
+
   // The right key should exist.
   base::win::RegKey key(right_root, right_key.c_str(), KEY_READ);
   ASSERT_TRUE(key.Valid()) << right_key;
@@ -127,151 +147,113 @@ TEST_P(BeaconTest, Location) {
 }
 
 // Run the tests for all combinations of beacon type, scope, and install level.
-INSTANTIATE_TEST_CASE_P(BeaconTest,
-                        BeaconTest,
-                        Combine(Values(BeaconType::FIRST, BeaconType::LAST),
-                                Values(BeaconScope::PER_USER,
-                                       BeaconScope::PER_INSTALL),
-                                Bool()));
-
-enum class DistributionVariant {
-  SYSTEM_LEVEL,
-  USER_LEVEL,
-  SXS,
-};
+INSTANTIATE_TEST_SUITE_P(BeaconTest,
+                         BeaconTest,
+                         Combine(Values(BeaconType::FIRST, BeaconType::LAST),
+                                 Values(BeaconScope::PER_USER,
+                                        BeaconScope::PER_INSTALL),
+                                 Bool()));
 
 class DefaultBrowserBeaconTest
-    : public ::testing::TestWithParam<DistributionVariant> {
+    : public ::testing::TestWithParam<
+          std::tuple<install_static::InstallConstantIndex, const char*>> {
  protected:
-  using Super = ::testing::TestWithParam<DistributionVariant>;
-
-  DefaultBrowserBeaconTest()
-      : system_install_(GetParam() == DistributionVariant::SYSTEM_LEVEL),
-        chrome_sxs_(GetParam() == DistributionVariant::SXS),
-        chrome_exe_(GetChromePathForParams()),
-        distribution_(nullptr) {}
+  using Super = ::testing::TestWithParam<
+      std::tuple<install_static::InstallConstantIndex, const char*>>;
 
   void SetUp() override {
     Super::SetUp();
 
-    // Override FILE_EXE so that various InstallUtil functions will consider
-    // this to be a user/system Chrome or Chrome SxS.
-    path_overrides_.push_back(new base::ScopedPathOverride(
-        base::FILE_EXE, chrome_exe_, true /* is_absolute */,
-        false /* !create */));
+    install_static::InstallConstantIndex mode_index;
+    const char* level;
+    std::tie(mode_index, level) = GetParam();
 
-    // Override these paths with their own values so that they can be found
-    // after the registry override manager is in place. Getting them would
-    // otherwise fail since the underlying calls to the OS need to see the real
-    // contents of the registry.
-    static const int kPathKeys[] = {
-        base::DIR_PROGRAM_FILES,
-        base::DIR_PROGRAM_FILESX86,
-        base::DIR_LOCAL_APP_DATA,
-    };
-    for (int key : kPathKeys) {
-      base::FilePath temp;
-      PathService::Get(key, &temp);
-      path_overrides_.push_back(new base::ScopedPathOverride(key, temp));
-    }
+    system_install_ = (std::string(level) != "user");
 
+    // Configure InstallDetails for the test.
+    scoped_install_details_ =
+        std::make_unique<install_static::ScopedInstallDetails>(system_install_,
+                                                               mode_index);
     // Override the registry so that tests can freely push state to it.
-    registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER);
-    registry_override_manager_.OverrideRegistry(HKEY_LOCAL_MACHINE);
-
-    distribution_ = BrowserDistribution::GetDistribution();
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_LOCAL_MACHINE));
   }
 
-  bool system_install_;
-  bool chrome_sxs_;
-  base::FilePath chrome_exe_;
-  BrowserDistribution* distribution_;
+  bool system_install_ = false;
 
  private:
-  base::FilePath GetChromePathForParams() const {
-    base::FilePath chrome_exe;
-    int dir_key = base::DIR_LOCAL_APP_DATA;
-
-    if (system_install_) {
-#if defined(_WIN64)
-      static const int kSystemKey = base::DIR_PROGRAM_FILESX86;
-#else
-      static const int kSystemKey = base::DIR_PROGRAM_FILES;
-#endif
-      dir_key = kSystemKey;
-    }
-    PathService::Get(dir_key, &chrome_exe);
-#if defined(GOOGLE_CHROME_BUILD)
-    chrome_exe = chrome_exe.Append(installer::kGoogleChromeInstallSubDir1);
-    if (chrome_sxs_) {
-      chrome_exe = chrome_exe.Append(
-          base::string16(installer::kGoogleChromeInstallSubDir2) +
-          installer::kSxSSuffix);
-    } else {
-      chrome_exe = chrome_exe.Append(installer::kGoogleChromeInstallSubDir2);
-    }
-#else
-    chrome_exe = chrome_exe.AppendASCII("Chromium");
-#endif
-    chrome_exe = chrome_exe.Append(installer::kInstallBinaryDir);
-    return chrome_exe.Append(installer::kChromeExe);
-  }
-
-  ScopedVector<base::ScopedPathOverride> path_overrides_;
+  std::unique_ptr<install_static::ScopedInstallDetails> scoped_install_details_;
   registry_util::RegistryOverrideManager registry_override_manager_;
 };
 
 // Tests that the default browser beacons work as expected.
 TEST_P(DefaultBrowserBeaconTest, All) {
-  std::unique_ptr<Beacon> last_was_default(MakeLastWasDefaultBeacon(
-      system_install_, distribution_->GetAppRegistrationData()));
-  std::unique_ptr<Beacon> first_not_default(MakeFirstNotDefaultBeacon(
-      system_install_, distribution_->GetAppRegistrationData()));
+  std::unique_ptr<Beacon> last_was_default(MakeLastWasDefaultBeacon());
+  std::unique_ptr<Beacon> first_not_default(MakeFirstNotDefaultBeacon());
 
   ASSERT_TRUE(last_was_default->Get().is_null());
   ASSERT_TRUE(first_not_default->Get().is_null());
 
   // Chrome is not default.
-  UpdateDefaultBrowserBeaconWithState(chrome_exe_, distribution_,
-                                      ShellUtil::NOT_DEFAULT);
+  UpdateDefaultBrowserBeaconWithState(ShellUtil::NOT_DEFAULT);
   ASSERT_TRUE(last_was_default->Get().is_null());
   ASSERT_FALSE(first_not_default->Get().is_null());
 
   // Then it is.
-  UpdateDefaultBrowserBeaconWithState(chrome_exe_, distribution_,
-                                      ShellUtil::IS_DEFAULT);
+  UpdateDefaultBrowserBeaconWithState(ShellUtil::IS_DEFAULT);
   ASSERT_FALSE(last_was_default->Get().is_null());
   ASSERT_TRUE(first_not_default->Get().is_null());
 
   // It still is.
-  UpdateDefaultBrowserBeaconWithState(chrome_exe_, distribution_,
-                                      ShellUtil::IS_DEFAULT);
+  UpdateDefaultBrowserBeaconWithState(ShellUtil::IS_DEFAULT);
   ASSERT_FALSE(last_was_default->Get().is_null());
   ASSERT_TRUE(first_not_default->Get().is_null());
 
   // Now it's not again.
-  UpdateDefaultBrowserBeaconWithState(chrome_exe_, distribution_,
-                                      ShellUtil::NOT_DEFAULT);
+  UpdateDefaultBrowserBeaconWithState(ShellUtil::NOT_DEFAULT);
   ASSERT_FALSE(last_was_default->Get().is_null());
   ASSERT_FALSE(first_not_default->Get().is_null());
 
   // And it still isn't.
-  UpdateDefaultBrowserBeaconWithState(chrome_exe_, distribution_,
-                                      ShellUtil::NOT_DEFAULT);
+  UpdateDefaultBrowserBeaconWithState(ShellUtil::NOT_DEFAULT);
   ASSERT_FALSE(last_was_default->Get().is_null());
   ASSERT_FALSE(first_not_default->Get().is_null());
 }
 
-INSTANTIATE_TEST_CASE_P(SystemLevelChrome,
-                        DefaultBrowserBeaconTest,
-                        Values(DistributionVariant::SYSTEM_LEVEL));
-INSTANTIATE_TEST_CASE_P(UserLevelChrome,
-                        DefaultBrowserBeaconTest,
-                        Values(DistributionVariant::USER_LEVEL));
-#if 0 && defined(GOOGLE_CHROME_BUILD)
-// Disabled for now since InstallUtil::IsChromeSxSProcess makes this impossible.
-INSTANTIATE_TEST_CASE_P(ChromeSxS, DefaultBrowserBeaconTest,
-                        Values(DistributionVariant::SXS));
-#endif
+#if defined(GOOGLE_CHROME_BUILD)
+// Stable supports user and system levels.
+INSTANTIATE_TEST_SUITE_P(
+    Stable,
+    DefaultBrowserBeaconTest,
+    testing::Combine(testing::Values(install_static::STABLE_INDEX),
+                     testing::Values("user", "system")));
+// Beta supports user and system levels.
+INSTANTIATE_TEST_SUITE_P(
+    Beta,
+    DefaultBrowserBeaconTest,
+    testing::Combine(testing::Values(install_static::BETA_INDEX),
+                     testing::Values("user", "system")));
+// Dev supports user and system levels.
+INSTANTIATE_TEST_SUITE_P(
+    Dev,
+    DefaultBrowserBeaconTest,
+    testing::Combine(testing::Values(install_static::DEV_INDEX),
+                     testing::Values("user", "system")));
+// Canary is only at user level.
+INSTANTIATE_TEST_SUITE_P(
+    Canary,
+    DefaultBrowserBeaconTest,
+    testing::Combine(testing::Values(install_static::CANARY_INDEX),
+                     testing::Values("user")));
+#else   // GOOGLE_CHROME_BUILD
+// Chromium supports user and system levels.
+INSTANTIATE_TEST_SUITE_P(
+    Chromium,
+    DefaultBrowserBeaconTest,
+    testing::Combine(testing::Values(install_static::CHROMIUM_INDEX),
+                     testing::Values("user", "system")));
+#endif  // GOOGLE_CHROME_BUILD
 
 }  // namespace installer_util

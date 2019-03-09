@@ -4,14 +4,14 @@
 
 #include "extensions/browser/api/system_memory/memory_info_provider.h"
 
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 
 namespace extensions {
 
 using api::system_memory::MemoryInfo;
 
 // Static member intialization.
-base::LazyInstance<scoped_refptr<MemoryInfoProvider> >
+base::LazyInstance<scoped_refptr<MemoryInfoProvider>>::DestructorAtExit
     MemoryInfoProvider::provider_ = LAZY_INSTANCE_INITIALIZER;
 
 MemoryInfoProvider::MemoryInfoProvider() {

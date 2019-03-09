@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "net/der/parse_values.h"
+
 #include <tuple>
 
 #include "base/logging.h"
-#include "base/numerics/safe_math.h"
-#include "net/der/parse_values.h"
 
 namespace net {
 
@@ -276,6 +276,10 @@ bool ParseBitString(const Input& in, BitString* out) {
 
   *out = BitString(bytes, unused_bits);
   return true;
+}
+
+bool GeneralizedTime::InUTCTimeRange() const {
+  return 1950 <= year && year < 2050;
 }
 
 bool operator<(const GeneralizedTime& lhs, const GeneralizedTime& rhs) {

@@ -9,12 +9,10 @@
 #include "chrome/browser/extensions/api/identity/extension_token_key.h"
 #include "chrome/browser/extensions/api/identity/web_auth_flow.h"
 #include "extensions/common/manifest_handlers/oauth2_manifest_handler.h"
-#include "google_apis/gaia/ubertoken_fetcher.h"
-#include "net/http/http_cache.h"
+#include "google_apis/gaia/google_service_auth_error.h"
 
-namespace net {
-class HttpNetworkSession;
-class TrivialURLRequestContextGetter;
+namespace signin {
+class UbertokenFetcher;
 }
 
 namespace extensions {
@@ -43,7 +41,7 @@ namespace extensions {
 // filtered out because of its unusual protocol scheme, so
 // GaiaWebAuthFlow pulls it out of the window title instead.
 
-class GaiaWebAuthFlow : public UbertokenConsumer, public WebAuthFlow::Delegate {
+class GaiaWebAuthFlow : public WebAuthFlow::Delegate {
  public:
   enum Failure {
     WINDOW_CLOSED,  // Window closed by user.
@@ -75,9 +73,9 @@ class GaiaWebAuthFlow : public UbertokenConsumer, public WebAuthFlow::Delegate {
   // Starts the flow by fetching an ubertoken. Can override for testing.
   virtual void Start();
 
-  // UbertokenConsumer implementation:
-  void OnUbertokenSuccess(const std::string& token) override;
-  void OnUbertokenFailure(const GoogleServiceAuthError& error) override;
+  // Ubertoken fetch completion callback.
+  void OnUbertokenFetchComplete(GoogleServiceAuthError error,
+                                const std::string& token);
 
   // WebAuthFlow::Delegate implementation.
   void OnAuthFlowFailure(WebAuthFlow::Failure failure) override;
@@ -120,9 +118,7 @@ class GaiaWebAuthFlow : public UbertokenConsumer, public WebAuthFlow::Delegate {
   std::string redirect_scheme_;
   std::string redirect_path_prefix_;
   GURL auth_url_;
-
-  std::unique_ptr<IOHelper> io_helper_;
-  std::unique_ptr<UbertokenFetcher> ubertoken_fetcher_;
+  std::unique_ptr<signin::UbertokenFetcher> ubertoken_fetcher_;
   std::unique_ptr<WebAuthFlow> web_flow_;
   scoped_refptr<net::TrivialURLRequestContextGetter> context_getter_;
 

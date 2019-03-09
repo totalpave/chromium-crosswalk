@@ -20,6 +20,7 @@
 #include "base/values.h"
 #include "chrome/browser/extensions/activity_log/activity_actions.h"
 #include "chrome/browser/extensions/activity_log/activity_database.h"
+#include "chrome/browser/extensions/activity_log/activity_log_task_runner.h"
 #include "chrome/common/extensions/api/activity_log_private.h"
 #include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"
@@ -28,12 +29,12 @@ class Profile;
 class GURL;
 
 namespace base {
+class Clock;
 class FilePath;
 }
 
 namespace extensions {
 
-class Extension;
 
 // An abstract class for processing and summarizing activity log data.
 // Subclasses will generally store data in an SQLite database (the
@@ -80,7 +81,7 @@ class ActivityLogPolicy {
   virtual void ProcessAction(scoped_refptr<Action> action) = 0;
 
   // For unit testing only.
-  void SetClockForTesting(std::unique_ptr<base::Clock> clock);
+  void SetClockForTesting(base::Clock* clock);
 
   // A collection of methods that are useful for implementing policies.  These
   // are all static methods; the ActivityLogPolicy::Util class cannot be
@@ -120,12 +121,6 @@ class ActivityLogPolicy {
                                           int64_t* early_bound,
                                           int64_t* late_bound);
 
-    // Deletes obsolete database tables from an activity log database.  This
-    // can be used in InitDatabase() methods of ActivityLogDatabasePolicy
-    // subclasses to clean up data from old versions of the activity logging
-    // code.  Returns true on success, false on database error.
-    static bool DropObsoleteTables(sql::Connection* db);
-
    private:
     DISALLOW_IMPLICIT_CONSTRUCTORS(Util);
   };
@@ -144,7 +139,7 @@ class ActivityLogPolicy {
   // Support for a mock clock for testing purposes.  This is used by ReadData
   // to determine the date for "today" when when interpreting date ranges to
   // fetch.  This has no effect on batching of writes to the database.
-  std::unique_ptr<base::Clock> testing_clock_;
+  base::Clock* testing_clock_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(ActivityLogPolicy);
 };
@@ -177,7 +172,7 @@ class ActivityLogDatabasePolicy : public ActivityLogPolicy,
       const std::string& page_url,
       const std::string& arg_url,
       const int days_ago,
-      const base::Callback<void(std::unique_ptr<Action::ActionVector>)>&
+      base::OnceCallback<void(std::unique_ptr<Action::ActionVector>)>
           callback) = 0;
 
   // Remove actions (rows) which IDs are in the action_ids array.
@@ -198,27 +193,21 @@ class ActivityLogDatabasePolicy : public ActivityLogPolicy,
   // separate thread.
   template<typename DatabaseType, typename DatabaseFunc>
   void ScheduleAndForget(DatabaseType db, DatabaseFunc func) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::DB,
-        FROM_HERE,
-        base::Bind(func, base::Unretained(db)));
+    GetActivityLogTaskRunner()->PostTask(
+        FROM_HERE, base::BindOnce(func, base::Unretained(db)));
   }
 
   template<typename DatabaseType, typename DatabaseFunc, typename ArgA>
   void ScheduleAndForget(DatabaseType db, DatabaseFunc func, ArgA a) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::DB,
-        FROM_HERE,
-        base::Bind(func, base::Unretained(db), a));
+    GetActivityLogTaskRunner()->PostTask(
+        FROM_HERE, base::BindOnce(func, base::Unretained(db), a));
   }
 
   template<typename DatabaseType, typename DatabaseFunc,
       typename ArgA, typename ArgB>
   void ScheduleAndForget(DatabaseType db, DatabaseFunc func, ArgA a, ArgB b) {
-    content::BrowserThread::PostTask(
-        content::BrowserThread::DB,
-        FROM_HERE,
-        base::Bind(func, base::Unretained(db), a, b));
+    GetActivityLogTaskRunner()->PostTask(
+        FROM_HERE, base::BindOnce(func, base::Unretained(db), a, b));
   }
 
   // Access to the underlying ActivityDatabase.
@@ -227,7 +216,7 @@ class ActivityLogDatabasePolicy : public ActivityLogPolicy,
   // Access to the SQL connection in the ActivityDatabase.  This should only be
   // called from the database thread.  May return NULL if the database is not
   // valid.
-  sql::Connection* GetDatabaseConnection() const;
+  sql::Database* GetDatabaseConnection() const;
 
  private:
   // See the comments for the ActivityDatabase class for a discussion of how

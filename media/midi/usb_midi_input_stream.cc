@@ -9,7 +9,6 @@
 #include "base/logging.h"
 #include "media/midi/usb_midi_device.h"
 
-namespace media {
 namespace midi {
 
 UsbMidiInputStream::JackUniqueKey::JackUniqueKey(UsbMidiDevice* device,
@@ -38,7 +37,7 @@ bool UsbMidiInputStream::JackUniqueKey::operator<(
 UsbMidiInputStream::UsbMidiInputStream(Delegate* delegate)
     : delegate_(delegate) {}
 
-UsbMidiInputStream::~UsbMidiInputStream() {}
+UsbMidiInputStream::~UsbMidiInputStream() = default;
 
 void UsbMidiInputStream::Add(const UsbMidiJack& jack) {
   JackUniqueKey key(jack.device,
@@ -89,4 +88,3 @@ void UsbMidiInputStream::ProcessOnePacket(UsbMidiDevice* device,
 }
 
 }  // namespace midi
-}  // namespace media

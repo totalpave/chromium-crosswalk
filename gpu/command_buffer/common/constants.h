@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "build/build_config.h"
+
 namespace gpu {
 
 typedef int32_t CommandBufferOffset;
@@ -68,17 +70,14 @@ const int32_t kInvalidSharedMemoryId = -1;
 // Common Command Buffer shared memory transfer buffer ID.
 const int32_t kCommandBufferSharedMemoryId = 4;
 
-// The size to set for the program cache.
-const size_t kDefaultMaxProgramCacheMemoryBytes = 6 * 1024 * 1024;
-
 // Namespace used to separate various command buffer types.
 enum CommandBufferNamespace : int8_t {
   INVALID = -1,
 
   GPU_IO,
   IN_PROCESS,
-  MOJO,
-  MOJO_LOCAL,
+  VIZ_SKIA_OUTPUT_SURFACE,
+  VIZ_SKIA_OUTPUT_SURFACE_NON_DDL,
 
   NUM_COMMAND_BUFFER_NAMESPACES
 };

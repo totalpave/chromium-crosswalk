@@ -7,20 +7,21 @@
 #include <vector>
 
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
 #include "chromecast/base/pref_names.h"
 #include "chromecast/browser/cast_browser_process.h"
 #include "chromecast/browser/metrics/cast_metrics_service_client.h"
 #include "components/metrics/metrics_service.h"
-#include "components/metrics/proto/system_profile.pb.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/child_process_data.h"
+#include "content/public/browser/child_process_termination_info.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_process_host.h"
+#include "third_party/metrics_proto/system_profile.pb.h"
 
 namespace chromecast {
 namespace metrics {
@@ -135,13 +136,12 @@ void CastStabilityMetricsProvider::Observe(
     const content::NotificationDetails& details) {
   switch (type) {
     case content::NOTIFICATION_RENDERER_PROCESS_CLOSED: {
-      content::RenderProcessHost::RendererClosedDetails* process_details =
-          content::Details<content::RenderProcessHost::RendererClosedDetails>(
-              details).ptr();
+      content::ChildProcessTerminationInfo* termination_info =
+          content::Details<content::ChildProcessTerminationInfo>(details).ptr();
       content::RenderProcessHost* host =
           content::Source<content::RenderProcessHost>(source).ptr();
-      LogRendererCrash(
-          host, process_details->status, process_details->exit_code);
+      LogRendererCrash(host, termination_info->status,
+                       termination_info->exit_code);
       break;
     }
 
@@ -157,7 +157,7 @@ void CastStabilityMetricsProvider::Observe(
 
 void CastStabilityMetricsProvider::BrowserChildProcessCrashed(
     const content::ChildProcessData& data,
-    int exit_code) {
+    const content::ChildProcessTerminationInfo& info) {
   IncrementPrefValue(prefs::kStabilityChildProcessCrashCount);
 }
 
@@ -169,8 +169,8 @@ void CastStabilityMetricsProvider::LogRendererCrash(
       status == base::TERMINATION_STATUS_ABNORMAL_TERMINATION) {
     IncrementPrefValue(prefs::kStabilityRendererCrashCount);
 
-    UMA_HISTOGRAM_SPARSE_SLOWLY("CrashExitCodes.Renderer",
-                                MapCrashExitCodeForHistogram(exit_code));
+    base::UmaHistogramSparse("CrashExitCodes.Renderer",
+                             MapCrashExitCodeForHistogram(exit_code));
     UMA_HISTOGRAM_ENUMERATION("BrowserRenderProcessHost.ChildCrashes",
                               RENDERER_TYPE_RENDERER, RENDERER_TYPE_COUNT);
   } else if (status == base::TERMINATION_STATUS_PROCESS_WAS_KILLED) {

@@ -6,15 +6,15 @@
 
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/memory/ptr_util.h"
 #include "base/test/values_test_util.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate.h"
 #include "chrome/browser/extensions/api/declarative_content/content_predicate_evaluator.h"
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/test/base/testing_profile.h"
-#include "content/public/browser/navigation_details.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/frame_navigate_params.h"
+#include "content/public/test/mock_navigation_handle.h"
+#include "content/public/test/test_renderer_host.h"
 #include "extensions/common/extension.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -57,7 +57,7 @@ class TestPredicateEvaluator : public ContentPredicateEvaluator {
       const base::Value& value,
       std::string* error) override {
     RequestEvaluationIfSpecified();
-    return base::WrapUnique(new TestPredicate(this));
+    return std::make_unique<TestPredicate>(this);
   }
 
   void TrackPredicates(
@@ -77,8 +77,7 @@ class TestPredicateEvaluator : public ContentPredicateEvaluator {
 
   void OnWebContentsNavigation(
       content::WebContents* contents,
-      const content::LoadCommittedDetails& details,
-      const content::FrameNavigateParams& params) override {
+      content::NavigationHandle* navigation_handle) override {
     RequestEvaluationIfSpecified();
   }
 
@@ -137,6 +136,9 @@ class DeclarativeChromeContentRulesRegistryTest : public testing::Test {
  private:
   TestExtensionEnvironment env_;
 
+  // Must come after |env_| so only one UI MessageLoop is created.
+  content::RenderViewHostTestEnabler rvh_enabler_;
+
   DISALLOW_COPY_AND_ASSIGN(DeclarativeChromeContentRulesRegistryTest);
 };
 
@@ -151,14 +153,16 @@ TEST_F(DeclarativeChromeContentRulesRegistryTest, ActiveRulesDoesntGrow) {
 
   std::unique_ptr<content::WebContents> tab = env()->MakeTab();
   registry->MonitorWebContentsForRuleEvaluation(tab.get());
-  registry->DidNavigateMainFrame(tab.get(), content::LoadCommittedDetails(),
-                                 content::FrameNavigateParams());
+  content::MockNavigationHandle navigation_handle;
+  navigation_handle.set_has_committed(true);
+
+  registry->DidFinishNavigation(tab.get(), &navigation_handle);
   EXPECT_EQ(0u, registry->GetActiveRulesCountForTesting());
 
   // Add a rule.
-  linked_ptr<api::events::Rule> rule(new api::events::Rule);
+  api::events::Rule rule;
   api::events::Rule::Populate(
-      *base::test::ParseJson(
+      *base::test::ParseJsonDeprecated(
           "{\n"
           "  \"id\": \"rule1\",\n"
           "  \"priority\": 100,\n"
@@ -168,19 +172,17 @@ TEST_F(DeclarativeChromeContentRulesRegistryTest, ActiveRulesDoesntGrow) {
           "      \"test_predicate\": []\n"
           "    }],\n"
           "  \"actions\": [\n"
-          "    { \"instanceType\": \"declarativeContent.ShowPageAction\" }\n"
+          "    { \"instanceType\": \"declarativeContent.ShowAction\" }\n"
           "  ]\n"
           "}"),
-      rule.get());
-  std::vector<linked_ptr<api::events::Rule>> rules;
-  rules.push_back(rule);
+      &rule);
+  std::vector<const api::events::Rule*> rules({&rule});
 
-  const Extension* extension = env()->MakeExtension(*base::test::ParseJson(
-      "{\"page_action\": {}}"));
+  const Extension* extension = env()->MakeExtension(
+      *base::test::ParseJsonDeprecated("{\"page_action\": {}}"));
   registry->AddRulesImpl(extension->id(), rules);
 
-  registry->DidNavigateMainFrame(tab.get(), content::LoadCommittedDetails(),
-                                 content::FrameNavigateParams());
+  registry->DidFinishNavigation(tab.get(), &navigation_handle);
   EXPECT_EQ(0u, registry->GetActiveRulesCountForTesting());
 
   evaluator->RequestImmediateEvaluation(tab.get(), true);
@@ -191,13 +193,14 @@ TEST_F(DeclarativeChromeContentRulesRegistryTest, ActiveRulesDoesntGrow) {
   EXPECT_EQ(0u, registry->GetActiveRulesCountForTesting());
 
   tab = env()->MakeTab();
+  content::MockNavigationHandle navigation_handle2;
+  navigation_handle2.set_has_committed(true);
   registry->MonitorWebContentsForRuleEvaluation(tab.get());
   evaluator->RequestImmediateEvaluation(tab.get(), true);
   EXPECT_EQ(1u, registry->GetActiveRulesCountForTesting());
 
   evaluator->RequestEvaluationOnNextOperation(tab.get(), false);
-  registry->DidNavigateMainFrame(tab.get(), content::LoadCommittedDetails(),
-                                 content::FrameNavigateParams());
+  registry->DidFinishNavigation(tab.get(), &navigation_handle2);
   EXPECT_EQ(0u, registry->GetActiveRulesCountForTesting());
 }
 

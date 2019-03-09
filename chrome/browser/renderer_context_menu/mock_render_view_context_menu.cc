@@ -47,16 +47,6 @@ void MockRenderViewContextMenu::ExecuteCommand(int command_id,
   observer_->ExecuteCommand(command_id);
 }
 
-void MockRenderViewContextMenu::MenuWillShow(ui::SimpleMenuModel* source) {}
-
-void MockRenderViewContextMenu::MenuClosed(ui::SimpleMenuModel* source) {}
-
-bool MockRenderViewContextMenu::GetAcceleratorForCommandId(
-    int command_id,
-    ui::Accelerator* accelerator) {
-  return false;
-}
-
 void MockRenderViewContextMenu::AddMenuItem(int command_id,
                                             const base::string16& title) {
   MockMenuItem item;
@@ -147,10 +137,37 @@ void MockRenderViewContextMenu::UpdateMenuIcon(int command_id,
          << " command_id: " << command_id;
 }
 
+void MockRenderViewContextMenu::RemoveMenuItem(int command_id) {}
+
+void MockRenderViewContextMenu::RemoveAdjacentSeparators() {}
+
 void MockRenderViewContextMenu::AddSpellCheckServiceItem(bool is_checked) {
   AddCheckItem(
       IDC_CONTENT_CONTEXT_SPELLING_TOGGLE,
       l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_SPELLING_ASK_GOOGLE));
+}
+
+void MockRenderViewContextMenu::AddAccessibilityLabelsServiceItem(
+    bool is_checked) {
+  // TODO(katie): Is there a way not to repeat this logic from
+  // render_view_context_menu.cc?
+  if (is_checked) {
+    AddCheckItem(IDC_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_TOGGLE,
+                 l10n_util::GetStringUTF16(
+                     IDS_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_MENU_OPTION));
+  } else {
+    ui::SimpleMenuModel accessibility_labels_submenu_model_(this);
+    accessibility_labels_submenu_model_.AddItemWithStringId(
+        IDC_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_TOGGLE,
+        IDS_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_SEND);
+    accessibility_labels_submenu_model_.AddItemWithStringId(
+        IDC_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_TOGGLE_ONCE,
+        IDS_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_SEND_ONCE);
+    AddSubMenu(IDC_CONTENT_CONTEXT_ACCESSIBILITY_LABELS,
+               l10n_util::GetStringUTF16(
+                   IDS_CONTENT_CONTEXT_ACCESSIBILITY_LABELS_MENU_OPTION),
+               &accessibility_labels_submenu_model_);
+  }
 }
 
 content::RenderViewHost* MockRenderViewContextMenu::GetRenderViewHost() const {

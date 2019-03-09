@@ -7,7 +7,9 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/logging.h"
+#include "base/task/post_task.h"
 #include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/sync_file_system/local/local_file_change_tracker.h"
 #include "chrome/browser/sync_file_system/local/local_file_sync_context.h"
@@ -15,6 +17,7 @@
 #include "chrome/browser/sync_file_system/sync_file_system_service.h"
 #include "chrome/browser/sync_file_system/sync_file_system_service_factory.h"
 #include "chrome/browser/sync_file_system/syncable_file_system_util.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_service.h"
 #include "storage/browser/fileapi/file_stream_reader.h"
@@ -33,7 +36,7 @@ bool CalledOnUIThread() {
   // Ensure that these methods are called on the UI thread, except for unittests
   // where a UI thread might not have been created.
   return BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-         !BrowserThread::IsMessageLoopValid(BrowserThread::UI);
+         !BrowserThread::IsThreadInitialized(BrowserThread::UI);
 }
 
 }  // namespace
@@ -87,9 +90,10 @@ SyncFileSystemBackend::~SyncFileSystemBackend() {
 }
 
 // static
-SyncFileSystemBackend* SyncFileSystemBackend::CreateForTesting() {
+std::unique_ptr<SyncFileSystemBackend>
+SyncFileSystemBackend::CreateForTesting() {
   DCHECK(CalledOnUIThread());
-  SyncFileSystemBackend* backend = new SyncFileSystemBackend(nullptr);
+  auto backend = std::make_unique<SyncFileSystemBackend>(nullptr);
   backend->skip_initialize_syncfs_service_for_testing_ = true;
   return backend;
 }
@@ -112,24 +116,22 @@ void SyncFileSystemBackend::Initialize(storage::FileSystemContext* context) {
 
 void SyncFileSystemBackend::ResolveURL(const storage::FileSystemURL& url,
                                        storage::OpenFileSystemMode mode,
-                                       const OpenFileSystemCallback& callback) {
+                                       OpenFileSystemCallback callback) {
   DCHECK(CanHandleType(url.type()));
 
   if (skip_initialize_syncfs_service_for_testing_) {
-    GetDelegate()->OpenFileSystem(url.origin(),
-                                  url.type(),
-                                  mode,
-                                  callback,
-                                  GetSyncableFileSystemRootURI(url.origin()));
+    GetDelegate()->OpenFileSystem(
+        url.origin().GetURL(), url.type(), mode, std::move(callback),
+        GetSyncableFileSystemRootURI(url.origin().GetURL()));
     return;
   }
 
   // It is safe to pass Unretained(this) since |context_| owns it.
-  SyncStatusCallback initialize_callback =
-      base::Bind(&SyncFileSystemBackend::DidInitializeSyncFileSystemService,
-                 base::Unretained(this), base::RetainedRef(context_),
-                 url.origin(), url.type(), mode, callback);
-  InitializeSyncFileSystemService(url.origin(), initialize_callback);
+  SyncStatusCallback initialize_callback = base::Bind(
+      &SyncFileSystemBackend::DidInitializeSyncFileSystemService,
+      base::Unretained(this), base::RetainedRef(context_),
+      url.origin().GetURL(), url.type(), mode, base::Passed(&callback));
+  InitializeSyncFileSystemService(url.origin().GetURL(), initialize_callback);
 }
 
 storage::AsyncFileUtil* SyncFileSystemBackend::GetAsyncFileUtil(
@@ -268,10 +270,10 @@ void SyncFileSystemBackend::InitializeSyncFileSystemService(
   if (!BrowserThread::CurrentlyOn(BrowserThread::UI)) {
     DCHECK_CURRENTLY_ON(BrowserThread::IO);
     // It is safe to pass Unretained(this) (see comments in OpenFileSystem()).
-    BrowserThread::PostTask(
-        BrowserThread::UI, FROM_HERE,
-        base::Bind(&SyncFileSystemBackend::InitializeSyncFileSystemService,
-                   base::Unretained(this), origin_url, callback));
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::UI},
+        base::BindOnce(&SyncFileSystemBackend::InitializeSyncFileSystemService,
+                       base::Unretained(this), origin_url, callback));
     return;
   }
 
@@ -292,29 +294,30 @@ void SyncFileSystemBackend::DidInitializeSyncFileSystemService(
     const GURL& origin_url,
     storage::FileSystemType type,
     storage::OpenFileSystemMode mode,
-    const OpenFileSystemCallback& callback,
+    OpenFileSystemCallback callback,
     SyncStatusCode status) {
   // Repost to switch from UI thread to IO thread.
   if (!BrowserThread::CurrentlyOn(BrowserThread::IO)) {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
     // It is safe to pass Unretained(this) since |context| owns it.
-    BrowserThread::PostTask(
-        BrowserThread::IO, FROM_HERE,
-        base::Bind(&SyncFileSystemBackend::DidInitializeSyncFileSystemService,
-                   base::Unretained(this), base::RetainedRef(context),
-                   origin_url, type, mode, callback, status));
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(
+            &SyncFileSystemBackend::DidInitializeSyncFileSystemService,
+            base::Unretained(this), base::RetainedRef(context), origin_url,
+            type, mode, std::move(callback), status));
     return;
   }
 
   if (status != sync_file_system::SYNC_STATUS_OK) {
-    callback.Run(GURL(), std::string(),
-                 SyncStatusCodeToFileError(status));
+    std::move(callback).Run(GURL(), std::string(),
+                            SyncStatusCodeToFileError(status));
     return;
   }
 
-  callback.Run(GetSyncableFileSystemRootURI(origin_url),
-               GetFileSystemName(origin_url, type),
-               base::File::FILE_OK);
+  std::move(callback).Run(GetSyncableFileSystemRootURI(origin_url),
+                          GetFileSystemName(origin_url, type),
+                          base::File::FILE_OK);
 }
 
 }  // namespace sync_file_system

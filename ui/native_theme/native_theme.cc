@@ -6,6 +6,8 @@
 
 #include <cstring>
 
+#include "base/command_line.h"
+#include "ui/base/ui_base_switches.h"
 #include "ui/native_theme/native_theme_observer.h"
 
 namespace ui {
@@ -35,8 +37,8 @@ void NativeTheme::RemoveObserver(NativeThemeObserver* observer) {
 }
 
 void NativeTheme::NotifyObservers() {
-  FOR_EACH_OBSERVER(NativeThemeObserver, native_theme_observers_,
-                    OnNativeThemeUpdated(this));
+  for (NativeThemeObserver& observer : native_theme_observers_)
+    observer.OnNativeThemeUpdated(this);
 }
 
 NativeTheme::NativeTheme()
@@ -46,5 +48,21 @@ NativeTheme::NativeTheme()
 }
 
 NativeTheme::~NativeTheme() {}
+
+bool NativeTheme::SystemDarkModeEnabled() const {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kForceDarkMode);
+}
+
+CaptionStyle NativeTheme::GetSystemCaptionStyle() const {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          ::switches::kForceCaptionStyle)) {
+    return CaptionStyle::FromSpec(
+        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            switches::kForceCaptionStyle));
+  }
+
+  return CaptionStyle::FromSystemSettings();
+}
 
 }  // namespace ui

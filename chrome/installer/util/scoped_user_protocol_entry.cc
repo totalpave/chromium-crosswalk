@@ -11,7 +11,7 @@
 #include "chrome/installer/util/shell_util.h"
 
 ScopedUserProtocolEntry::ScopedUserProtocolEntry(const wchar_t* protocol) {
-  entries_.push_back(new RegistryEntry(
+  entries_.push_back(std::make_unique<RegistryEntry>(
       base::FilePath(ShellUtil::kRegClasses).Append(protocol).value(),
       ShellUtil::kRegUrlProtocol, base::string16()));
   if (!entries_.back()->KeyExistsInRegistry(RegistryEntry::LOOK_IN_HKCU) &&

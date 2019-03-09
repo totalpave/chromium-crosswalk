@@ -8,11 +8,12 @@
 
 #include <string>
 
+#include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "base/win/win_util.h"
 #include "chrome/common/chrome_switches.h"
 #include "content/public/common/content_switches.h"
@@ -27,7 +28,7 @@ void AppendHandleSwitch(const std::string& switch_name,
                         HANDLE handle,
                         base::CommandLine* command_line) {
   command_line->AppendSwitchASCII(
-      switch_name, base::UintToString(base::win::HandleToUint32(handle)));
+      switch_name, base::NumberToString(base::win::HandleToUint32(handle)));
 }
 
 uint32_t ReadUintSwitch(const base::CommandLine& command_line,
@@ -150,14 +151,20 @@ base::CommandLine GenerateChromeWatcherCommandLine(
   command_line.AppendSwitchASCII(switches::kProcessType,
                                  switches::kWatcherProcess);
   command_line.AppendSwitchASCII(kMainThreadIdSwitch,
-                                 base::UintToString(main_thread_id));
+                                 base::NumberToString(main_thread_id));
   AppendHandleSwitch(kOnIninitializedEventHandleSwitch, on_initialized_event,
                      &command_line);
   AppendHandleSwitch(kParentHandleSwitch, parent_process, &command_line);
 
-#if defined(OS_WIN)
   command_line.AppendArg(switches::kPrefetchArgumentWatcher);
-#endif  // defined(OS_WIN)
+
+  // Copy over logging switches.
+  static const char* const kSwitchNames[] = {switches::kEnableLogging,
+                                             switches::kV, switches::kVModule};
+  base::CommandLine current_command_line =
+      *base::CommandLine::ForCurrentProcess();
+  command_line.CopySwitchesFrom(current_command_line, kSwitchNames,
+                                base::size(kSwitchNames));
 
   return command_line;
 }

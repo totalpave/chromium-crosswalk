@@ -13,14 +13,13 @@
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "media/audio/audio_io.h"
-#include "media/audio/fake_audio_worker.h"
 #include "media/base/audio_parameters.h"
+#include "media/base/fake_audio_worker.h"
 
 namespace media {
 
 class AudioBus;
 class AudioManagerBase;
-class SimpleSource;
 
 // This class acts as a fake audio input stream. The default is to generate a
 // beeping sound unless --use-file-for-fake-audio-capture=<file> is specified,
@@ -42,6 +41,7 @@ class MEDIA_EXPORT FakeAudioInputStream
   bool IsMuted() override;
   bool SetAutomaticGainControl(bool enabled) override;
   bool GetAutomaticGainControl() override;
+  void SetOutputDeviceForAec(const std::string& output_device_id) override;
 
   // Generate one beep sound. This method is called by FakeVideoCaptureDevice to
   // test audio/video synchronization. This is a static method because
@@ -55,13 +55,17 @@ class MEDIA_EXPORT FakeAudioInputStream
   // input stream.
   static void BeepOnce();
 
+  // Set the muted state for _all_ FakeAudioInputStreams. The value is global,
+  // so it can be set before any FakeAudioInputStreams have been created.
+  static void SetGlobalMutedState(bool is_muted);
+
  private:
   FakeAudioInputStream(AudioManagerBase* manager,
                        const AudioParameters& params);
   ~FakeAudioInputStream() override;
 
   std::unique_ptr<AudioOutputStream::AudioSourceCallback> ChooseSource();
-  void ReadAudioFromSource();
+  void ReadAudioFromSource(base::TimeTicks ideal_time, base::TimeTicks now);
 
   AudioManagerBase* audio_manager_;
   AudioInputCallback* callback_;

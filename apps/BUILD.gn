@@ -4,30 +4,28 @@
 
 import("//build/config/features.gni")
 import("//build/config/ui.gni")
+import("//extensions/buildflags/buildflags.gni")
 
 assert(!is_android && !is_ios)
+assert(enable_extensions,
+       "Cannot depend on extensions because enable_extensions=false.")
 
 static_library("apps") {
-  sources = [
+  sources = []
+
+  sources += [
     "app_lifetime_monitor.cc",
     "app_lifetime_monitor.h",
     "app_lifetime_monitor_factory.cc",
     "app_lifetime_monitor_factory.h",
-    "app_load_service.cc",
-    "app_load_service.h",
-    "app_load_service_factory.cc",
-    "app_load_service_factory.h",
     "app_restore_service.cc",
     "app_restore_service.h",
     "app_restore_service_factory.cc",
     "app_restore_service_factory.h",
     "browser_context_keyed_service_factories.cc",
     "browser_context_keyed_service_factories.h",
-    "custom_launcher_page_contents.cc",
-    "custom_launcher_page_contents.h",
     "launcher.cc",
     "launcher.h",
-    "metrics_names.h",
     "saved_files_service.cc",
     "saved_files_service.h",
     "saved_files_service_factory.cc",
@@ -39,40 +37,28 @@ static_library("apps") {
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   deps = [
-    "//chrome/app/theme:theme_resources",
-    "//chrome/browser/extensions",
-    "//chrome/common/extensions/api:api",
-    "//components/web_modal",
-    "//skia",
+    "//components/keyed_service/content",
+    "//content/public/browser",
+    "//content/public/common",
+    "//extensions/browser",
+    "//extensions/common",
+    "//extensions/common/api",
   ]
 
   if (is_chromeos) {
-    #deps += [ "browser_chromeos" ]  TODO(GYP)
+    deps += [ "//components/user_manager" ]
   }
+}
 
-  if (!enable_extensions) {
-    # When extensions are disabled, only the sizer file below is included.
-    deps -= [
-      "//chrome/browser/extensions",
-      "//chrome/common/extensions/api:api",
-    ]
-    sources = []
-  }
+static_library("test_support") {
+  testonly = true
+  sources = [
+    "test/app_window_waiter.cc",
+    "test/app_window_waiter.h",
+  ]
 
-  if (toolkit_views) {
-    sources += [
-      "ui/views/app_window_frame_view.cc",
-      "ui/views/app_window_frame_view.h",
-    ]
-    deps += [
-      "//ui/strings",
-      "//ui/views",
-    ]
-    if (enable_extensions) {
-      deps += [ "//extensions/browser" ]
-    }
-  }
-
-  # TODO(jschuh): crbug.com/167187 fix size_t to int truncations.
-  configs += [ "//build/config/compiler:no_size_t_to_int_warning" ]
+  public_deps = [
+    "//content/public/browser",
+    "//extensions/browser",
+  ]
 }

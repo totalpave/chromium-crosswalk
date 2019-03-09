@@ -8,7 +8,7 @@
 
 #include <string>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -103,7 +103,7 @@ class StackedTabStripLayoutTest : public testing::Test {
     for (int i = 0; i < view_model_.view_size(); ++i) {
       if (!result.empty())
         result += " ";
-      result += base::IntToString(view_model_.ideal_bounds(i).x());
+      result += base::NumberToString(view_model_.ideal_bounds(i).x());
     }
     return result;
   }
@@ -115,18 +115,11 @@ class StackedTabStripLayoutTest : public testing::Test {
         result += " ";
       if (i == active_index)
         result += "[";
-      result += base::IntToString(view_model_.ideal_bounds(i).x());
+      result += base::NumberToString(view_model_.ideal_bounds(i).x());
       if (i == active_index)
         result += "]";
     }
     return result;
-  }
-
-  void Validate(int active_index, int max_width) {
-    // Make sure none of the tabs are more than 90 apart
-    // (tab_size(100) + padding (-10)).
-    for (int j = 1; j < view_model_.view_size(); ++j)
-      EXPECT_LE(ideal_x(j) - ideal_x(j - 1), max_width - 100);
   }
 
   int ideal_x(int index) const {
@@ -151,9 +144,8 @@ TEST_F(StackedTabStripLayoutTest, ValidateInitialLayout) {
   for (int i = 120; i < 600; ++i) {
     for (int j = 0; j < 12; ++j) {
       Reset(&layout, 0, i, 0, j);
-      Validate(j, i);
-      if (HasNonfatalFailure())
-        return;
+      for (int k = 1; k < view_model_.view_size(); ++k)
+        EXPECT_LE(ideal_x(k) - ideal_x(k - 1), 90);
     }
   }
 }
@@ -173,7 +165,7 @@ TEST_F(StackedTabStripLayoutTest, InitialLayout) {
     { 0, 300, 100, 10, 1, 0, 6, "", "0 1 2 3 4 20 110 200" },
     { 0, 300, 100, 10, 1, 0, 4, "", "0 1 2 3 4 94 184 199 200" },
   };
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i]);
     EXPECT_EQ(test_data[i].expected_bounds, BoundsString()) << " at " << i;
   }
@@ -257,9 +249,31 @@ TEST_F(StackedTabStripLayoutTest, DragActiveTabExisting) {
     // Drags one past as far to the left as the tab goes. Should keep pulling
     // in the rightmost tab.
     { { 0, 240, 100, 10, 2, 0, 1, "0 90 140", "0 2 91" }, -89 },
+
+    //
+    // The following set of tests create six tabs with the third selected.
+    //
+    // The x-position of the third tab is at its maximum, and the second tab is
+    // stacked underneath. Dragging to the left moves the second tab to the
+    // stack at the left-hand side of the tab strip.
+    { { 0, 150, 100, 10, 2, 0, 2, "0 42 44 46 48 50", "0 2 43 46 48 50" }, -1 },
+    { { 0, 150, 100, 10, 2, 0, 2, "0 20 44 46 48 50", "0 2 41 46 48 50" }, -3 },
+    // The x-position of the third tab is not at its maximum. Dragging to the
+    // left moves the second and third tabs by the same delta.
+    { { 0, 150, 100, 10, 2, 0, 2, "0 25 35 46 48 50", "0 20 30 46 48 50" },
+      -5 },
+    // min x, fourth is flush against right side
+    // The x-position of the third tab is at its minimum, and the fourth tab is
+    // stacked underneath. Dragging to the right moves the fourth and fifth tabs
+    // to the stack at the right-hand side of the tab strip.
+    { { 0, 150, 100, 10, 2, 0, 2, "0 2 4 6 25 50", "0 2 11 46 48 50" }, 7 },
+    { { 0, 150, 100, 10, 2, 0, 2, "0 2 4 9 25 50", "0 2 7 46 48 50" }, 3 },
+    // The x-position of the third tab is not at its minimum. Dragging to the
+    // right moves the third, fourth, and fifth tabs by the same delta.
+    { { 0, 150, 100, 10, 2, 0, 2, "0 2 10 16 25 50", "0 2 11 17 26 50" }, 1 },
   };
 
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i].common_data);
     layout_->DragActiveTab(test_data[i].delta);
     EXPECT_EQ(test_data[i].common_data.expected_bounds, BoundsString()) <<
@@ -282,7 +296,7 @@ TEST_F(StackedTabStripLayoutTest, SizeToFit) {
     { 0, 240, 100, 10, 2, 0, 1, "0 49 89 140", "0 49 89 139" },
   };
 
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i]);
     SetBoundsFromString(test_data[i].expected_bounds);
     layout_->SizeToFit();
@@ -300,15 +314,38 @@ TEST_F(StackedTabStripLayoutTest, AddTab) {
     bool add_active;
     bool add_pinned;
   } test_data[] = {
-    // Adding a background tab test cases.
     { { 0, 300, 100, 10, 2, 0, 1, "0 90 180 198 200", "0 16 106 196 198 200"},
       3, false, false },
+
+    // If the active tab is in its leftmost position and it is not possible
+    // for all of the tabs between the active tab and the newly-added tab
+    // (inclusive) to be shown, then a stack should form to the right of
+    // the active tab.
+    { { 0, 284, 100, 10, 2, 0, 2, "0 2 4 94 184", "0 2 4 6 94 184"},
+      5, false, false },
     { { 0, 300, 100, 10, 2, 0, 1, "0 90 180 198 200", "0 2 4 20 110 200"},
       5, false, false },
+
     { { 0, 300, 100, 10, 2, 0, 1, "0 90 180 198 200", "0 90 180 196 198 200"},
       2, false, false },
-    { { 0, 300, 100, 10, 2, 0, 1, "0 90 180 198 200", "0 2 4 94 184 200"},
-      0, false, false },
+
+    // Add to the end of the tab strip. All tabs between the active tab and the
+    // newly-added tab (inclusive) should be fully visible (indices 3-5 in the
+    // resulting tab strip) and tabs to the left of the active tab should be
+    // stacked at the left side of the tab strip rather than immediately to the
+    // left of the active tab.
+    { { 0, 300, 100, 10, 2, 0, 3, "0 90 180 198 200", "0 2 4 20 110 200"},
+      5, false, false },
+
+    // If it is possible for all of the tabs between the active tab and the
+    // newly-added tab (inclusive) to be fully visible without changing the
+    // position of the active tab, then do not do so.
+    { { 0, 378, 100, 10, 2, 0, 2, "0 2 4 94 184 274 276 278",
+                                  "0 2 4 94 184 272 274 276 278"},
+      3, false, false },
+    { { 0, 378, 100, 10, 2, 0, 2, "0 2 4 94 184 274 276 278",
+                                  "0 2 4 94 184 272 274 276 278"},
+      4, false, false },
 
     { { 4, 200, 100, 10, 2, 1, 2, "0 4 10 100", "0 0 8 10 100"},
       1, false, true },
@@ -335,7 +372,7 @@ TEST_F(StackedTabStripLayoutTest, AddTab) {
     { { 0, 200, 100, 10, 2, 0, 2, "0 2 10 100", "0 90 96 98 100"},
       0, true, false },
   };
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i].common_data);
     int add_types = 0;
     if (test_data[i].add_active)
@@ -392,7 +429,7 @@ TEST_F(StackedTabStripLayoutTest, RemoveTab) {
     { { 0, 200, 100, 10, 2, 0, 0, "0 90 94 96 98 100", "0 90 94 96 100" },
       5, 0 },
   };
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i].common_data);
     int old_x = view_model_.ideal_bounds(test_data[i].remove_index).x();
     view_model_.Remove(test_data[i].remove_index);
@@ -409,24 +446,84 @@ TEST_F(StackedTabStripLayoutTest, SetWidth) {
     CommonTestData common_data;
     int new_width;
   } test_data[] = {
-    { { 0, 500, 100, 10, 2, 0, 4, "0 90 180 270 360 400",
-                                  "0 90 180 196 198 200"}, 300 },
 
-    // Verifies a bug in AdjustTrailingStackedTabs().
+    // No change in layout if SetWidth() is called with current width.
+    { { 0, 500, 100, 10, 2, 0, 4, "", "0 90 180 270 360 400"}, 500 },
+
+    // No change in layout if stacking is initially not required and the tab
+    // strip width is increased.
+    { { 0, 500, 100, 10, 2, 0, 2, "", "0 90 180"}, 550 },
+
+    // For an initially non-stacked tab strip whose width is being decreased,
+    // only start to stack once the width becomes narrow enough.
+    { { 0, 500, 100, 10, 2, 0, 2, "", "0 90 180"}, 400 },
+    { { 0, 500, 100, 10, 2, 0, 2, "0 90 180", "0 10 100"}, 200 },
+
+    // Increase a stacked tabstrip width enough so that stacking is no longer
+    // required.
+    { { 0, 200, 100, 10, 2, 0, 2, "0 10 100", "0 90 180"}, 400 },
+
+    // Verifies a bug in AdjustTrailingStackedTabs(). See crbug.com/125127.
     { { 0, 103, 100, 10, 2, 0, 0, "", "0 2"}, 102 },
 
-    { { 8, 250, 100, 10, 2, 2, 2, "0 4 8 98 148 150", "0 4 8 98 160 250"},
+    // Tests with pinned tabs.
+    { { 8, 250, 100, 10, 2, 2, 2, "0 4 8 98 148 150", "0 4 8 98 188 250"},
       350 },
     { { 8, 250, 100, 10, 2, 2, 2, "0 4 8 98 148 150", "0 4 8 96 98 100"}, 200 },
 
-    { { 0, 250, 100, 10, 2, 0, 2, "0 40 90 120 150", "0 40 90 98 100"}, 200 },
-    { { 0, 250, 100, 10, 2, 0, 2, "0 2 60 150", "0 2 60 100"}, 200 },
-    { { 0, 250, 100, 10, 2, 0, 2, "0 40 120 150", "0 40 98 100"}, 200 },
+    // Decrease the width of the tabstrip by a small enough amount such that
+    // tabs to the right of the active tab form a stack and the positions of
+    // all other tabs remain the same.
+    { { 0, 500, 100, 10, 2, 0, 4, "0 90 180 270 360 400",
+                                  "0 90 180 270 360 390"}, 490},
+    { { 0, 500, 100, 10, 2, 0, 0, "0 90 180 270 360 400",
+                                  "0 90 180 196 198 200"}, 300},
+    { { 0, 500, 100, 10, 2, 0, 2, "0 90 180 270 360 400",
+                                  "0 90 180 270 298 300"}, 400},
 
-    { { 0, 200, 100, 10, 2, 0, 2, "0 2 10 100", "0 2 60 150"}, 250 },
-    { { 0, 200, 100, 10, 2, 0, 2, "0 2 4 10 100", "0 2 20 110 200"}, 300 },
+    // Decrease the width of the tabstrip by a large enough amount such that
+    // all tabs to the right of the active tab stack, the active tab changes
+    // position, and the tabs to the left of the active tab start to stack.
+    { { 0, 500, 100, 10, 2, 0, 4, "0 90 180 270 360 400",
+                                  "0 2 18 108 198 200"}, 300 },
+    { { 0, 500, 100, 10, 2, 0, 5, "0 90 180 270 360 400",
+                                  "0 2 18 108 198 288"}, 388 },
+    { { 0, 500, 100, 10, 2, 0, 2, "0 90 180 270 360 400",
+                                  "0 54 144 146 148 150"}, 250 },
+
+    // Increase the width of the tabstrip by a small enough amount such that
+    // the tabs to the right of the active start to become exposed and the rest
+    // of the tabs do not change position.
+    { { 0, 350, 100, 10, 2, 0, 2, "0 20 110 200 250",
+                                  "0 20 110 200 260"}, 360 },
+    { { 0, 350, 100, 10, 2, 0, 2, "0 20 110 200 250",
+                                  "0 20 110 200 290"}, 390 },
+    { { 0, 110, 100, 10, 2, 0, 3, "0 2 4 6 8 10",
+                                  "0 2 4 6 48 50"}, 150 },
+    { { 0, 110, 100, 10, 2, 0, 3, "0 2 4 6 8 10",
+                                  "0 2 4 6 96 110"}, 210 },
+
+    // Increase the width of the tabstrip by a large enough amount such that
+    // all tabs to the right of the active tab are fully exposed, the active
+    // tab changes position, and the tabs to the left of the active tab start
+    // to become exposed.
+    { { 0, 350, 100, 10, 2, 0, 2, "0 20 110 200 250",
+                                  "0 30 120 210 300"}, 400 },
+    { { 0, 110, 100, 10, 2, 0, 3, "0 2 4 6 8 10",
+                                  "0 2 4 94 184 274"}, 374 },
+    { { 0, 110, 100, 10, 2, 0, 3, "0 2 4 6 8 10",
+                                  "0 2 5 95 185 275"}, 375 },
+    { { 0, 110, 100, 10, 2, 0, 3, "0 2 4 6 8 10",
+                                  "0 40 130 220 310 400"}, 500 },
+
+    // If a stack has formed somewhere other than at the very beginning or
+    // very end of the tabstrip (possible as a result of a gesture overscroll),
+    // then re-adjust stacking to the ends of the tabstrip upon a tabstrip
+    // width change.
+    { { 0, 200, 100, 10, 2, 0, 2, "0 90 92 100", "0 2 78 80"}, 180 },
+
   };
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i].common_data);
     layout_->SetWidth(test_data[i].new_width);
     EXPECT_EQ(test_data[i].common_data.expected_bounds, BoundsString()) <<
@@ -447,7 +544,7 @@ TEST_F(StackedTabStripLayoutTest, SetActiveIndex) {
     { { 4, 250, 100, 10, 2, 1, 2, "0 4 8 98 148 150", "0 4 94 146 148 150"},
       0 },
   };
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i].common_data);
     layout_->SetActiveIndex(test_data[i].new_index);
     EXPECT_EQ(test_data[i].common_data.expected_bounds, BoundsString()) <<
@@ -492,7 +589,7 @@ TEST_F(StackedTabStripLayoutTest, MoveTab) {
     { { 0, 200, 100, 10, 2, 0, 4, "0 2 4 6 96 98 100", "0 2 4 6 8 10 100" },
       0, 6, 6, 0, 0 },
   };
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i].common_data);
     view_model_.MoveViewOnly(test_data[i].from, test_data[i].to);
     for (int j = 0; j < test_data[i].new_pinned_tab_count; ++j) {
@@ -557,7 +654,7 @@ TEST_F(StackedTabStripLayoutTest, SetActiveTabLocation) {
     // Location can be honored.
     { { 0, 300, 100, 10, 2, 0, 3, "", "0 2 4 40 130 198 200" }, 40 },
   };
-  for (size_t i = 0; i < arraysize(test_data); ++i) {
+  for (size_t i = 0; i < base::size(test_data); ++i) {
     CreateLayout(test_data[i].common_data);
     layout_->SetActiveTabLocation(test_data[i].location);
     EXPECT_EQ(test_data[i].common_data.expected_bounds, BoundsString()) <<

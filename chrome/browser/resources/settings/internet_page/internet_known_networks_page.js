@@ -10,10 +10,12 @@
 Polymer({
   is: 'settings-internet-known-networks-page',
 
+  behaviors: [CrPolicyNetworkBehavior],
+
   properties: {
     /**
      * The type of networks to list.
-     * @type {chrome.networkingPrivate.NetworkType}
+     * @type {CrOnc.Type}
      */
     networkType: {
       type: String,
@@ -21,64 +23,44 @@ Polymer({
     },
 
     /**
-     * The maximum height in pixels for the list of networks.
-     */
-    maxHeight: {
-      type: Number,
-      value: 500
-    },
-
-    /**
-     * List of all network state data for the network type.
-     * @type {!Array<!CrOnc.NetworkStateProperties>}
-     */
-    networkStateList: {
-      type: Array,
-      value: function() { return []; }
-    },
-
-    /**
      * Interface for networkingPrivate calls, passed from internet_page.
      * @type {NetworkingPrivate}
      */
-    networkingPrivate: {
-      type: Object,
+    networkingPrivate: Object,
+
+    /**
+     * List of all network state data for the network type.
+     * @private {!Array<!CrOnc.NetworkStateProperties>}
+     */
+    networkStateList_: {
+      type: Array,
+      value: function() {
+        return [];
+      }
     },
+
+    /** @private */
+    showAddPreferred_: Boolean,
+
+    /** @private */
+    showRemovePreferred_: Boolean,
+
+    /**
+     * We always show 'Forget' since we do not know whether or not to enable
+     * it until we fetch the managed properties, and we do not want an empty
+     * menu.
+     * @private
+     */
+    enableForget_: Boolean,
   },
 
-  /**
-   * Listener function for chrome.networkingPrivate.onNetworksChanged event.
-   * @type {function(!Array<string>)}
-   * @private
-   */
-  networksChangedListener_: function() {},
+  listeners: {'network-list-changed': 'refreshNetworks_'},
 
-  /** @override */
-  attached: function() {
-    this.networksChangedListener_ = this.onNetworksChangedEvent_.bind(this);
-    this.networkingPrivate.onNetworksChanged.addListener(
-        this.networksChangedListener_);
-  },
+  /** @private {string} */
+  selectedGuid_: '',
 
-  /** @override */
-  detached: function() {
-    this.networkingPrivate.onNetworksChanged.removeListener(
-        this.networksChangedListener_);
-  },
-
-  /**
-   * Polymer type changed method.
-   */
+  /** @private */
   networkTypeChanged_: function() {
-    this.refreshNetworks_();
-  },
-
-  /**
-   * networkingPrivate.onNetworksChanged event callback.
-   * @param {!Array<string>} networkIds The list of changed network GUIDs.
-   * @private
-   */
-  onNetworksChangedEvent_: function(networkIds) {
     this.refreshNetworks_();
   },
 
@@ -88,50 +70,127 @@ Polymer({
    * @private
    */
   refreshNetworks_: function() {
-    if (!this.networkType)
+    if (!this.networkType) {
       return;
-    var filter = {
+    }
+    const filter = {
       networkType: this.networkType,
       visible: false,
       configured: true
     };
-    this.networkingPrivate.getNetworks(
-        filter,
-        function(states) { this.networkStateList = states; }.bind(this));
+    this.networkingPrivate.getNetworks(filter, states => {
+      this.networkStateList_ = states;
+    });
   },
 
   /**
-   * Event triggered when a cr-network-list item is selected.
-   * @param {!{detail: !CrOnc.NetworkStateProperties}} event
+   * @param {!CrOnc.NetworkStateProperties} state
+   * @return {boolean}
    * @private
    */
-  onListItemSelected_: function(event) {
-    this.fire('show-detail', event.detail);
+  networkIsPreferred_: function(state) {
+    // Currently we treat NetworkStateProperties.Priority as a boolean.
+    return state.Priority > 0;
   },
 
   /**
-   * Event triggered when a cr-network-list item 'remove' button is pressed.
-   * @param {!{detail: !CrOnc.NetworkStateProperties}} event
+   * @param {!CrOnc.NetworkStateProperties} networkState
+   * @return {boolean}
    * @private
    */
-  onRemove_: function(event) {
-    var state = event.detail;
-    if (!state.GUID)
-      return;
-    this.networkingPrivate.forgetNetwork(state.GUID);
+  networkIsNotPreferred_: function(networkState) {
+    return networkState.Priority == 0;
   },
 
   /**
-   * Event triggered when a cr-network-list item 'preferred' button is toggled.
-   * @param {!{detail: !CrOnc.NetworkStateProperties}} event
+   * @return {boolean}
    * @private
    */
-  onTogglePreferred_: function(event) {
-    var state = event.detail;
-    if (!state.GUID)
-      return;
-    var preferred = state.Priority > 0;
-    var onc = {Priority: preferred ? 0 : 1};
-    this.networkingPrivate.setProperties(state.GUID, onc);
+  havePreferred_: function() {
+    return this.networkStateList_.find(
+               state => this.networkIsPreferred_(state)) !== undefined;
+  },
+
+  /**
+   * @return {boolean}
+   * @private
+   */
+  haveNotPreferred_: function() {
+    return this.networkStateList_.find(
+               state => this.networkIsNotPreferred_(state)) !== undefined;
+  },
+
+  /**
+   * @param {!Event} event
+   * @private
+   */
+  onMenuButtonTap_: function(event) {
+    const button = /** @type {!HTMLElement} */ (event.target);
+    this.selectedGuid_ =
+        /** @type {!{model: !{item: !CrOnc.NetworkStateProperties}}} */ (event)
+            .model.item.GUID;
+    // We need to make a round trip to Chrome in order to retrieve the managed
+    // properties for the network. The delay is not noticeable (~5ms) and is
+    // preferable to initiating a query for every known network at load time.
+    this.networkingPrivate.getManagedProperties(
+        this.selectedGuid_, properties => {
+          if (chrome.runtime.lastError || !properties) {
+            console.error(
+                'Unexpected error: ' + chrome.runtime.lastError.message);
+            return;
+          }
+          const preferred = button.hasAttribute('preferred');
+          if (this.isNetworkPolicyEnforced(properties.Priority)) {
+            this.showAddPreferred_ = false;
+            this.showRemovePreferred_ = false;
+          } else {
+            this.showAddPreferred_ = !preferred;
+            this.showRemovePreferred_ = preferred;
+          }
+          this.enableForget_ = !this.isPolicySource(properties.Source);
+          /** @type {!CrActionMenuElement} */ (this.$.dotsMenu).showAt(button);
+        });
+    event.stopPropagation();
+  },
+
+  /** @private */
+  onRemovePreferredTap_: function() {
+    this.networkingPrivate.setProperties(this.selectedGuid_, {Priority: 0});
+    /** @type {!CrActionMenuElement} */ (this.$.dotsMenu).close();
+  },
+
+  /** @private */
+  onAddPreferredTap_: function() {
+    this.networkingPrivate.setProperties(this.selectedGuid_, {Priority: 1});
+    /** @type {!CrActionMenuElement} */ (this.$.dotsMenu).close();
+  },
+
+  /** @private */
+  onForgetTap_: function() {
+    this.networkingPrivate.forgetNetwork(this.selectedGuid_);
+    /** @type {!CrActionMenuElement} */ (this.$.dotsMenu).close();
+  },
+
+  /**
+   * Fires a 'show-details' event with an item containing a |networkStateList_|
+   * entry in the event model.
+   * @param {!Event} event
+   * @private
+   */
+  fireShowDetails_: function(event) {
+    const state =
+        /** @type {!{model: !{item: !CrOnc.NetworkStateProperties}}} */ (event)
+            .model.item;
+    this.fire('show-detail', state);
+    event.stopPropagation();
+  },
+
+  /**
+   * Make sure events in embedded components do not propagate to onDetailsTap_.
+   * @param {!Event} event
+   * @private
+   */
+  doNothing_: function(event) {
+    event.stopPropagation();
   },
 });

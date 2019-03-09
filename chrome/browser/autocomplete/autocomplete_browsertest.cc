@@ -4,12 +4,15 @@
 
 #include <stddef.h>
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/format_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/trace_event/memory_dump_manager.h"
 #include "build/build_config.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
+#include "chrome/browser/autocomplete/in_memory_url_index_factory.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/unpacked_installer.h"
@@ -29,7 +32,6 @@
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/metrics/proto/omnibox_event.pb.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
@@ -39,6 +41,7 @@
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
 
 namespace {
 
@@ -55,7 +58,7 @@ base::string16 AutocompleteResultAsString(const AutocompleteResult& result) {
 
 }  // namespace
 
-class AutocompleteBrowserTest : public ExtensionBrowserTest {
+class AutocompleteBrowserTest : public extensions::ExtensionBrowserTest {
  protected:
   void WaitForTemplateURLServiceToLoad() {
     search_test_utils::WaitForTemplateURLServiceToLoad(
@@ -95,7 +98,7 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, Basic) {
   // TODO(phajdan.jr): check state of IsSelectAll when it's consistent across
   // platforms.
 
-  location_bar->FocusLocation(true);
+  location_bar->FocusLocation();
 
   EXPECT_FALSE(location_bar->GetDestinationURL().is_valid());
   EXPECT_EQ(base::UTF8ToUTF16(url::kAboutBlankURL), omnibox_view->GetText());
@@ -142,15 +145,17 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, MAYBE_Autocomplete) {
 
   {
     omnibox_view->model()->SetInputInProgress(true);
-    autocomplete_controller->Start(AutocompleteInput(
-        base::ASCIIToUTF16("chrome"), base::string16::npos, std::string(),
-        GURL(), metrics::OmniboxEventProto::NTP, true, false, true, false,
-        false, ChromeAutocompleteSchemeClassifier(browser()->profile())));
+    AutocompleteInput input(
+        base::ASCIIToUTF16("chrome"), metrics::OmniboxEventProto::NTP,
+        ChromeAutocompleteSchemeClassifier(browser()->profile()));
+    input.set_prevent_inline_autocomplete(true);
+    input.set_want_asynchronous_matches(false);
+    autocomplete_controller->Start(input);
 
     EXPECT_TRUE(autocomplete_controller->done());
     EXPECT_FALSE(location_bar->GetDestinationURL().is_valid());
     EXPECT_TRUE(omnibox_view->GetText().empty());
-    EXPECT_TRUE(omnibox_view->IsSelectAll());
+    EXPECT_FALSE(omnibox_view->IsSelectAll());
     const AutocompleteResult& result = autocomplete_controller->result();
     ASSERT_GE(result.size(), 1U) << AutocompleteResultAsString(result);
     AutocompleteMatch match = result.match_at(0);
@@ -329,4 +334,56 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, FocusSearch) {
 
     omnibox_view->RevertAll();
   }
+
+  // Calling FocusSearch() when the permanent URL is showing should result in an
+  // empty query string.
+  {
+    FocusSearchCheckPreconditions();
+
+    omnibox_model->ResetDisplayTexts();
+    EXPECT_EQ(base::ASCIIToUTF16(url::kAboutBlankURL), omnibox_view->GetText());
+
+    location_bar->FocusSearch();
+    EXPECT_FALSE(location_bar->GetDestinationURL().is_valid());
+    EXPECT_EQ(base::string16(), omnibox_view->GetText());
+    EXPECT_EQ(default_search_keyword, omnibox_model->keyword());
+    EXPECT_FALSE(omnibox_model->is_keyword_hint());
+    EXPECT_TRUE(omnibox_model->is_keyword_selected());
+
+    omnibox_view->RevertAll();
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, MemoryTracing) {
+  auto* in_memory_url_index = InMemoryURLIndexFactory::GetForProfile(profile());
+  auto* autocomplete_controller = GetAutocompleteController();
+
+  const std::vector<std::string> expected_names{
+      base::StringPrintf("omnibox/in_memory_url_index/0x%" PRIXPTR,
+                         reinterpret_cast<uintptr_t>(in_memory_url_index)),
+      base::StringPrintf("omnibox/autocomplete_controller/0x%" PRIXPTR,
+                         reinterpret_cast<uintptr_t>(autocomplete_controller))};
+
+  auto OnMemoryDumpDone =
+      [](const std::vector<std::string>& expected_names, base::OnceClosure quit,
+         bool success, uint64_t dump_guid,
+         std::unique_ptr<base::trace_event::ProcessMemoryDump> pmd) {
+        ASSERT_TRUE(success);
+
+        const auto& allocator_dumps = pmd->allocator_dumps();
+        for (const auto& expected_dump_name : expected_names)
+          EXPECT_TRUE(allocator_dumps.count(expected_dump_name));
+
+        std::move(quit).Run();
+      };
+
+  base::RunLoop run_loop;
+  base::trace_event::MemoryDumpRequestArgs args{
+      1 /* dump_guid*/, base::trace_event::MemoryDumpType::EXPLICITLY_TRIGGERED,
+      base::trace_event::MemoryDumpLevelOfDetail::BACKGROUND};
+
+  base::trace_event::MemoryDumpManager::GetInstance()->CreateProcessDump(
+      args, base::BindRepeating(OnMemoryDumpDone, expected_names,
+                                run_loop.QuitClosure()));
+  run_loop.Run();
 }

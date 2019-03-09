@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/tab_helper.h"
 
+#include "base/run_loop.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_with_install.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,12 +22,12 @@ TEST_F(ExtensionServiceTestWithInstall, TabHelperClearsExtensionOnUnload) {
   TabHelper::CreateForWebContents(web_contents.get());
   TabHelper* tab_helper = TabHelper::FromWebContents(web_contents.get());
   tab_helper->SetExtensionApp(extension);
-  EXPECT_EQ(extension, tab_helper->extension_app());
+  EXPECT_EQ(extension->id(), tab_helper->GetAppId());
   EXPECT_TRUE(tab_helper->is_app());
   service()->UnloadExtension(extension->id(),
-                             UnloadedExtensionInfo::REASON_UNDEFINED);
+                             UnloadedExtensionReason::UNDEFINED);
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(nullptr, tab_helper->extension_app());
+  EXPECT_EQ(ExtensionId(), tab_helper->GetAppId());
 }
 
 }  // namespace extensions

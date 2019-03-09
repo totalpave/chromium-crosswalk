@@ -7,6 +7,7 @@
 #include <avrt.h>
 #include <mmreg.h>
 #include <mmsystem.h>
+#include <objbase.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <windows.h>
@@ -16,9 +17,10 @@
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/synchronization/lock.h"
+#include "remoting/host/win/default_audio_device_change_detector.h"
 
 namespace {
-const int kChannels = 2;
 const int kBytesPerSample = 2;
 const int kBitsPerSample = kBytesPerSample * 8;
 // Conversion factor from 100ns to 1ms.
@@ -36,50 +38,83 @@ const int kMinTimerInterval = 30;
 // Upper bound for the timer precision error, in milliseconds.
 // Timers are supposed to be accurate to 20ms, so we use 30ms to be safe.
 const int kMaxExpectedTimerLag = 30;
+
 }  // namespace
 
 namespace remoting {
 
 AudioCapturerWin::AudioCapturerWin()
     : sampling_rate_(AudioPacket::SAMPLING_RATE_INVALID),
-      silence_detector_(kSilenceThreshold),
+      volume_filter_(kSilenceThreshold),
       last_capture_error_(S_OK) {
-    thread_checker_.DetachFromThread();
+  thread_checker_.DetachFromThread();
 }
 
 AudioCapturerWin::~AudioCapturerWin() {
   DCHECK(thread_checker_.CalledOnValidThread());
-  if (audio_client_) {
-    audio_client_->Stop();
-  }
+  Deinitialize();
 }
 
 bool AudioCapturerWin::Start(const PacketCapturedCallback& callback) {
-  DCHECK(!audio_capture_client_.get());
-  DCHECK(!audio_client_.get());
-  DCHECK(!mm_device_.get());
-  DCHECK(!audio_volume_.get());
+  callback_ = callback;
+
+  if (!Initialize()) {
+    return false;
+  }
+
+  // Initialize the capture timer and start capturing. Note, this timer won't
+  // be reset or restarted in ResetAndInitialize() function. Which means we
+  // expect the audio_device_period_ is a system wide configuration, it would
+  // not be changed with the default audio device.
+  capture_timer_.reset(new base::RepeatingTimer());
+  capture_timer_->Start(FROM_HERE, audio_device_period_, this,
+                        &AudioCapturerWin::DoCapture);
+  return true;
+}
+
+bool AudioCapturerWin::ResetAndInitialize() {
+  Deinitialize();
+  if (!Initialize()) {
+    Deinitialize();
+    return false;
+  }
+  return true;
+}
+
+void AudioCapturerWin::Deinitialize() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  wave_format_ex_.Reset(nullptr);
+  default_device_detector_.reset();
+  audio_capture_client_.Reset();
+  if (audio_client_) {
+    audio_client_->Stop();
+  }
+  audio_client_.Reset();
+  mm_device_.Reset();
+}
+
+bool AudioCapturerWin::Initialize() {
+  DCHECK(!audio_capture_client_.Get());
+  DCHECK(!audio_client_.Get());
+  DCHECK(!mm_device_.Get());
   DCHECK(static_cast<PWAVEFORMATEX>(wave_format_ex_) == nullptr);
   DCHECK(thread_checker_.CalledOnValidThread());
 
-  callback_ = callback;
-
-  // Initialize the capture timer.
-  capture_timer_.reset(new base::RepeatingTimer());
-
   HRESULT hr = S_OK;
-
-  base::win::ScopedComPtr<IMMDeviceEnumerator> mm_device_enumerator;
-  hr = mm_device_enumerator.CreateInstance(__uuidof(MMDeviceEnumerator));
+  Microsoft::WRL::ComPtr<IMMDeviceEnumerator> mm_device_enumerator;
+  hr = ::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                          IID_PPV_ARGS(&mm_device_enumerator));
   if (FAILED(hr)) {
     LOG(ERROR) << "Failed to create IMMDeviceEnumerator. Error " << hr;
     return false;
   }
 
+  default_device_detector_.reset(
+      new DefaultAudioDeviceChangeDetector(mm_device_enumerator));
+
   // Get the audio endpoint.
-  hr = mm_device_enumerator->GetDefaultAudioEndpoint(eRender,
-                                                     eConsole,
-                                                     mm_device_.Receive());
+  hr = mm_device_enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
+                                                     mm_device_.GetAddressOf());
   if (FAILED(hr)) {
     LOG(ERROR) << "Failed to get IMMDevice. Error " << hr;
     return false;
@@ -89,7 +124,7 @@ bool AudioCapturerWin::Start(const PacketCapturedCallback& callback) {
   hr = mm_device_->Activate(__uuidof(IAudioClient),
                             CLSCTX_ALL,
                             nullptr,
-                            audio_client_.ReceiveVoid());
+                            &audio_client_);
   if (FAILED(hr)) {
     LOG(ERROR) << "Failed to get an IAudioClient. Error " << hr;
     return false;
@@ -115,58 +150,50 @@ bool AudioCapturerWin::Start(const PacketCapturedCallback& callback) {
     return false;
   }
 
-  // Set the wave format
-  switch (wave_format_ex_->wFormatTag) {
-    case WAVE_FORMAT_IEEE_FLOAT:
-      // Intentional fall-through.
-    case WAVE_FORMAT_PCM:
-      if (!AudioCapturer::IsValidSampleRate(wave_format_ex_->nSamplesPerSec)) {
-        LOG(ERROR) << "Host sampling rate is neither 44.1 kHz nor 48 kHz.";
-        return false;
-      }
-      sampling_rate_ = static_cast<AudioPacket::SamplingRate>(
-          wave_format_ex_->nSamplesPerSec);
+  if (wave_format_ex_->wFormatTag != WAVE_FORMAT_IEEE_FLOAT &&
+      wave_format_ex_->wFormatTag != WAVE_FORMAT_PCM &&
+      wave_format_ex_->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
+    LOG(ERROR) << "Failed to force 16-bit PCM";
+    return false;
+  }
 
-      wave_format_ex_->wFormatTag = WAVE_FORMAT_PCM;
-      wave_format_ex_->nChannels = kChannels;
-      wave_format_ex_->wBitsPerSample = kBitsPerSample;
-      wave_format_ex_->nBlockAlign = kChannels * kBytesPerSample;
-      wave_format_ex_->nAvgBytesPerSec =
-          sampling_rate_ * kChannels * kBytesPerSample;
-      break;
-    case WAVE_FORMAT_EXTENSIBLE: {
-      PWAVEFORMATEXTENSIBLE wave_format_extensible =
-          reinterpret_cast<WAVEFORMATEXTENSIBLE*>(
-          static_cast<WAVEFORMATEX*>(wave_format_ex_));
-      if (IsEqualGUID(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
-                      wave_format_extensible->SubFormat)) {
-        if (!AudioCapturer::IsValidSampleRate(
-                wave_format_extensible->Format.nSamplesPerSec)) {
-          LOG(ERROR) << "Host sampling rate is neither 44.1 kHz nor 48 kHz.";
-          return false;
-        }
-        sampling_rate_ = static_cast<AudioPacket::SamplingRate>(
-            wave_format_extensible->Format.nSamplesPerSec);
+  if (!AudioCapturer::IsValidSampleRate(wave_format_ex_->nSamplesPerSec)) {
+    LOG(ERROR) << "Host sampling rate is neither 44.1 kHz nor 48 kHz. "
+               << wave_format_ex_->nSamplesPerSec;
+    return false;
+  }
 
-        wave_format_extensible->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-        wave_format_extensible->Samples.wValidBitsPerSample = kBitsPerSample;
+  // We support from mono to 7.1. This check should be consistent with
+  // AudioPacket::Channels.
+  if (wave_format_ex_->nChannels > 8 || wave_format_ex_->nChannels <= 0) {
+    LOG(ERROR) << "Unsupported channels " << wave_format_ex_->nChannels;
+    return false;
+  }
 
-        wave_format_extensible->Format.nChannels = kChannels;
-        wave_format_extensible->Format.nSamplesPerSec = sampling_rate_;
-        wave_format_extensible->Format.wBitsPerSample = kBitsPerSample;
-        wave_format_extensible->Format.nBlockAlign =
-            kChannels * kBytesPerSample;
-        wave_format_extensible->Format.nAvgBytesPerSec =
-            sampling_rate_ * kChannels * kBytesPerSample;
-      } else {
-        LOG(ERROR) << "Failed to force 16-bit samples";
-        return false;
-      }
-      break;
-    }
-    default:
-      LOG(ERROR) << "Failed to force 16-bit PCM";
+  sampling_rate_ = static_cast<AudioPacket::SamplingRate>(
+      wave_format_ex_->nSamplesPerSec);
+
+  wave_format_ex_->wBitsPerSample = kBitsPerSample;
+  wave_format_ex_->nBlockAlign = wave_format_ex_->nChannels * kBytesPerSample;
+  wave_format_ex_->nAvgBytesPerSec =
+      sampling_rate_ * wave_format_ex_->nBlockAlign;
+
+  if (wave_format_ex_->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+    PWAVEFORMATEXTENSIBLE wave_format_extensible =
+        reinterpret_cast<WAVEFORMATEXTENSIBLE*>(
+        static_cast<WAVEFORMATEX*>(wave_format_ex_));
+    if (!IsEqualGUID(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
+                     wave_format_extensible->SubFormat) &&
+        !IsEqualGUID(KSDATAFORMAT_SUBTYPE_PCM,
+                     wave_format_extensible->SubFormat)) {
+      LOG(ERROR) << "Failed to force 16-bit samples";
       return false;
+    }
+
+    wave_format_extensible->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+    wave_format_extensible->Samples.wValidBitsPerSample = kBitsPerSample;
+  } else {
+    wave_format_ex_->wFormatTag = WAVE_FORMAT_PCM;
   }
 
   // Initialize the IAudioClient.
@@ -184,8 +211,7 @@ bool AudioCapturerWin::Start(const PacketCapturedCallback& callback) {
   }
 
   // Get an IAudioCaptureClient.
-  hr = audio_client_->GetService(__uuidof(IAudioCaptureClient),
-                                 audio_capture_client_.ReceiveVoid());
+  hr = audio_client_->GetService(IID_PPV_ARGS(&audio_capture_client_));
   if (FAILED(hr)) {
     LOG(ERROR) << "Failed to get an IAudioCaptureClient. Error " << hr;
     return false;
@@ -198,91 +224,27 @@ bool AudioCapturerWin::Start(const PacketCapturedCallback& callback) {
     return false;
   }
 
-  // Initialize IAudioEndpointVolume.
-  // TODO(zijiehe): Do we need to control per process volume?
-  hr = mm_device_->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
-                            audio_volume_.ReceiveVoid());
-  if (FAILED(hr)) {
-    LOG(ERROR) << "Failed to get an IAudioEndpointVolume. Error " << hr;
-    return false;
-  }
+  volume_filter_.ActivateBy(mm_device_.Get());
+  volume_filter_.Initialize(sampling_rate_, wave_format_ex_->nChannels);
 
-  silence_detector_.Reset(sampling_rate_, kChannels);
-
-  // Start capturing.
-  capture_timer_->Start(FROM_HERE,
-                        audio_device_period_,
-                        this,
-                        &AudioCapturerWin::DoCapture);
   return true;
 }
 
-float AudioCapturerWin::GetAudioLevel() {
-  BOOL mute;
-  HRESULT hr = audio_volume_->GetMute(&mute);
-  if (FAILED(hr)) {
-    LOG(ERROR) << "Failed to get mute status from IAudioEndpointVolume, error "
-               << hr;
-    return 1;
-  }
-  if (mute) {
-    return 0;
-  }
-
-  float level;
-  hr = audio_volume_->GetMasterVolumeLevelScalar(&level);
-  if (FAILED(hr) || level > 1) {
-    LOG(ERROR) << "Failed to get master volume from IAudioEndpointVolume, "
-                  "error "
-               << hr;
-    return 1;
-  }
-  if (level < 0) {
-    return 0;
-  }
-  return level;
-}
-
-void AudioCapturerWin::ProcessSamples(uint8_t* data, size_t frames) {
-  if (frames == 0) {
-    return;
-  }
-
-  int16_t* samples = reinterpret_cast<int16_t*>(data);
-  static_assert(sizeof(samples[0]) == kBytesPerSample,
-                "expect 16 bits per sample");
-  size_t sample_count = frames * kChannels;
-  if (silence_detector_.IsSilence(samples, sample_count)) {
-    return;
-  }
-
-  // Windows API does not provide volume adjusted audio sample as Linux does.
-  // So we need to manually apply volume to the samples.
-  float level = GetAudioLevel();
-  if (level == 0) {
-    return;
-  }
-
-  if (level < 1) {
-    int32_t level_int = static_cast<int32_t>(level * 65536);
-    for (size_t i = 0; i < sample_count; i++) {
-      samples[i] = (static_cast<int32_t>(samples[i]) * level_int) >> 16;
-    }
-  }
-
-  std::unique_ptr<AudioPacket> packet(new AudioPacket());
-  packet->add_data(data, frames * wave_format_ex_->nBlockAlign);
-  packet->set_encoding(AudioPacket::ENCODING_RAW);
-  packet->set_sampling_rate(sampling_rate_);
-  packet->set_bytes_per_sample(AudioPacket::BYTES_PER_SAMPLE_2);
-  packet->set_channels(AudioPacket::CHANNELS_STEREO);
-
-  callback_.Run(std::move(packet));
+bool AudioCapturerWin::is_initialized() const {
+  // All Com components should be initialized / deinitialized together.
+  return !!audio_client_;
 }
 
 void AudioCapturerWin::DoCapture() {
   DCHECK(AudioCapturer::IsValidSampleRate(sampling_rate_));
   DCHECK(thread_checker_.CalledOnValidThread());
+
+  if (!is_initialized() || default_device_detector_->GetAndReset()) {
+    if (!ResetAndInitialize()) {
+      // Initialization failed, we should wait for next DoCapture call.
+      return;
+    }
+  }
 
   // Fetch all packets from the audio capture endpoint buffer.
   HRESULT hr = S_OK;
@@ -304,7 +266,22 @@ void AudioCapturerWin::DoCapture() {
     if (FAILED(hr))
       break;
 
-    ProcessSamples(data, frames);
+    if (volume_filter_.Apply(reinterpret_cast<int16_t*>(data), frames)) {
+      std::unique_ptr<AudioPacket> packet(new AudioPacket());
+      packet->add_data(data, frames * wave_format_ex_->nBlockAlign);
+      packet->set_encoding(AudioPacket::ENCODING_RAW);
+      packet->set_sampling_rate(sampling_rate_);
+      packet->set_bytes_per_sample(AudioPacket::BYTES_PER_SAMPLE_2);
+      // Only the count of channels is taken into account now, we should also
+      // consider dwChannelMask.
+      // TODO(zijiehe): Convert dwChannelMask to layout and pass it to
+      // AudioPump. So the stream can be downmixed properly with both number and
+      // layouts of speakers.
+      packet->set_channels(static_cast<AudioPacket::Channels>(
+          wave_format_ex_->nChannels));
+
+      callback_.Run(std::move(packet));
+    }
 
     hr = audio_capture_client_->ReleaseBuffer(frames);
     if (FAILED(hr))

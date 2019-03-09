@@ -9,15 +9,14 @@
 #include <algorithm>
 #include <cmath>
 
+#include "base/metrics/user_metrics.h"
 #include "components/prefs/pref_service.h"
 #include "components/zoom/page_zoom_constants.h"
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/render_view_host.h"
-#include "content/public/browser/user_metrics.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/page_zoom.h"
-#include "content/public/common/renderer_preferences.h"
 
 using base::UserMetricsAction;
 
@@ -86,7 +85,7 @@ void PageZoom::Zoom(content::WebContents* web_contents,
   if (zoom == content::PAGE_ZOOM_RESET) {
     zoom_controller->SetZoomLevel(default_zoom_level);
     web_contents->SetPageScale(1.f);
-    content::RecordAction(UserMetricsAction("ZoomNormal"));
+    base::RecordAction(UserMetricsAction("ZoomNormal"));
     return;
   }
 
@@ -97,18 +96,17 @@ void PageZoom::Zoom(content::WebContents* web_contents,
   if (zoom == content::PAGE_ZOOM_OUT) {
     // Iterate through the zoom levels in reverse order to find the next
     // lower level based on the current zoom level for this page.
-    for (std::vector<double>::reverse_iterator i = zoom_levels.rbegin();
-         i != zoom_levels.rend(); ++i) {
+    for (auto i = zoom_levels.rbegin(); i != zoom_levels.rend(); ++i) {
       double zoom_level = *i;
       if (content::ZoomValuesEqual(zoom_level, current_zoom_level))
         continue;
       if (zoom_level < current_zoom_level) {
         zoom_controller->SetZoomLevel(zoom_level);
-        content::RecordAction(UserMetricsAction("ZoomMinus"));
+        base::RecordAction(UserMetricsAction("ZoomMinus"));
         return;
       }
     }
-    content::RecordAction(UserMetricsAction("ZoomMinus_AtMinimum"));
+    base::RecordAction(UserMetricsAction("ZoomMinus_AtMinimum"));
   } else {
     // Iterate through the zoom levels in normal order to find the next
     // higher level based on the current zoom level for this page.
@@ -119,11 +117,11 @@ void PageZoom::Zoom(content::WebContents* web_contents,
         continue;
       if (zoom_level > current_zoom_level) {
         zoom_controller->SetZoomLevel(zoom_level);
-        content::RecordAction(UserMetricsAction("ZoomPlus"));
+        base::RecordAction(UserMetricsAction("ZoomPlus"));
         return;
       }
     }
-    content::RecordAction(UserMetricsAction("ZoomPlus_AtMaximum"));
+    base::RecordAction(UserMetricsAction("ZoomPlus_AtMaximum"));
   }
 }
 

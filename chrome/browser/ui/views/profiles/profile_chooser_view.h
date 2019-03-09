@@ -13,57 +13,51 @@
 #include "base/macros.h"
 #include "chrome/browser/profiles/avatar_menu.h"
 #include "chrome/browser/profiles/avatar_menu_observer.h"
-#include "chrome/browser/profiles/profile_metrics.h"
+#include "chrome/browser/sync/sync_ui_util.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/profile_chooser_constants.h"
+#include "chrome/browser/ui/views/profiles/dice_accounts_menu.h"
+#include "chrome/browser/ui/views/profiles/profile_menu_view_base.h"
 #include "components/signin/core/browser/signin_header_helper.h"
-#include "content/public/browser/web_contents_delegate.h"
-#include "google_apis/gaia/oauth2_token_service.h"
-#include "ui/views/bubble/bubble_dialog_delegate.h"
-#include "ui/views/controls/button/button.h"
-#include "ui/views/controls/link_listener.h"
-#include "ui/views/controls/styled_label_listener.h"
-#include "ui/views/controls/textfield/textfield_controller.h"
-
-class EditableProfilePhoto;
-class EditableProfileName;
-
-namespace gfx {
-class Image;
-}
+#include "services/identity/public/cpp/identity_manager.h"
 
 namespace views {
-class GridLayout;
-class ImageButton;
-class Link;
 class LabelButton;
 }
 
 class Browser;
+class DiceSigninButtonView;
+class HoverButton;
+
+// TODO(https://crbug.com/934689): Separation of providing content for different
+// menus and the UI effort to view it between this class and
+// |ProfileMenuViewBase| is in progress.
 
 // This bubble view is displayed when the user clicks on the avatar button.
 // It displays a list of profiles and allows users to switch between profiles.
-class ProfileChooserView : public content::WebContentsDelegate,
-                           public views::BubbleDialogDelegateView,
+class ProfileChooserView : public ProfileMenuViewBase,
+                           public AvatarMenuObserver,
                            public views::ButtonListener,
                            public views::LinkListener,
-                           public views::StyledLabelListener,
-                           public views::TextfieldController,
-                           public AvatarMenuObserver,
-                           public OAuth2TokenService::Observer {
+                           public identity::IdentityManager::Observer {
  public:
   // Shows the bubble if one is not already showing.  This allows us to easily
   // make a button toggle the bubble on and off when clicked: we unconditionally
   // call this function when the button is clicked and if the bubble isn't
   // showing it will appear while if it is showing, nothing will happen here and
   // the existing bubble will auto-close due to focus loss.
+  // There are 2 ways to position the Bubble, if |anchor_button| is set, then
+  // |parent_window| and |anchor_rect| are ignored. Otherwise, |parent_window|
+  // and |anchor_rect| have to be set.
   static void ShowBubble(
       profiles::BubbleViewMode view_mode,
-      profiles::TutorialMode tutorial_mode,
       const signin::ManageAccountsParams& manage_accounts_params,
       signin_metrics::AccessPoint access_point,
-      views::View* anchor_view,
-      Browser* browser);
+      views::Button* anchor_button,
+      gfx::NativeView parent_window,
+      const gfx::Rect& anchor_rect,
+      Browser* browser,
+      bool is_source_keyboard);
   static bool IsShowing();
   static void Hide();
 
@@ -72,26 +66,23 @@ class ProfileChooserView : public content::WebContentsDelegate,
 
   typedef std::vector<size_t> Indexes;
   typedef std::map<views::Button*, int> ButtonIndexes;
-  typedef std::map<views::Button*, std::string> AccountButtonIndexes;
 
-  ProfileChooserView(views::View* anchor_view,
+  ProfileChooserView(views::Button* anchor_button,
+                     const gfx::Rect& anchor_rect,
+                     gfx::NativeView parent_window,
                      Browser* browser,
                      profiles::BubbleViewMode view_mode,
-                     profiles::TutorialMode tutorial_mode,
                      signin::GAIAServiceType service_type,
-                     signin_metrics::AccessPoint access_point);
+                     signin_metrics::AccessPoint access_point,
+                     bool is_source_keyboard);
   ~ProfileChooserView() override;
 
   // views::BubbleDialogDelegateView:
   void Init() override;
-  void OnNativeThemeChanged(const ui::NativeTheme* native_theme) override;
   void WindowClosing() override;
-  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+  void OnWidgetClosing(views::Widget* widget) override;
   views::View* GetInitiallyFocusedView() override;
-  int GetDialogButtons() const override;
-
-  // content::WebContentsDelegate:
-  bool HandleContextMenu(const content::ContextMenuParams& params) override;
+  base::string16 GetAccessibleWindowTitle() const override;
 
   // views::ButtonListener:
   void ButtonPressed(views::Button* sender, const ui::Event& event) override;
@@ -99,21 +90,12 @@ class ProfileChooserView : public content::WebContentsDelegate,
   // views::LinkListener:
   void LinkClicked(views::Link* sender, int event_flags) override;
 
-  // views::StyledLabelListener:
-  void StyledLabelLinkClicked(views::StyledLabel* label,
-                              const gfx::Range& range,
-                              int event_flags) override;
-
-  // views::TextfieldController:
-  bool HandleKeyEvent(views::Textfield* sender,
-                      const ui::KeyEvent& key_event) override;
-
   // AvatarMenuObserver:
   void OnAvatarMenuChanged(AvatarMenu* avatar_menu) override;
 
-  // OAuth2TokenService::Observer overrides.
-  void OnRefreshTokenAvailable(const std::string& account_id) override;
-  void OnRefreshTokenRevoked(const std::string& account_id) override;
+  // identity::IdentityManager::Observer overrides.
+  void OnRefreshTokenUpdatedForAccount(
+      const CoreAccountInfo& account_info) override;
 
   static ProfileChooserView* profile_bubble_;
 
@@ -129,18 +111,14 @@ class ProfileChooserView : public content::WebContentsDelegate,
                 AvatarMenu* avatar_menu);
   void ShowViewFromMode(profiles::BubbleViewMode mode);
 
+  // Focuses the first profile button in the menu list.
+  void FocusFirstProfileButton();
+
   // Creates the profile chooser view.
   views::View* CreateProfileChooserView(AvatarMenu* avatar_menu);
 
-  // Populates |layout| with only a list of the profiles available to
-  // switch to.
-  void PopulateMinimalProfileChooserView(views::GridLayout* layout,
-                                         AvatarMenu* avatar_menu);
-
-  // Populates |layout| with all the elements of the Avatar Menu (current user
-  // bubble, options buttons, tutorials).
-  void PopulateCompleteProfileChooserView(views::GridLayout* layout,
-                                          AvatarMenu* avatar_menu);
+  // Creates the incognito window count view.
+  views::View* CreateIncognitoWindowCountView();
 
   // Creates the main profile card for the profile |avatar_item|. |is_guest|
   // is used to determine whether to show any Sign in/Sign out/Manage accounts
@@ -148,140 +126,90 @@ class ProfileChooserView : public content::WebContentsDelegate,
   views::View* CreateCurrentProfileView(
       const AvatarMenu::Item& avatar_item,
       bool is_guest);
-  views::View* CreateMaterialDesignCurrentProfileView(
-      const AvatarMenu::Item& avatar_item,
-      bool is_guest);
   views::View* CreateGuestProfileView();
-  views::View* CreateOtherProfilesView(const Indexes& avatars_to_show);
   views::View* CreateOptionsView(bool display_lock, AvatarMenu* avatar_menu);
   views::View* CreateSupervisedUserDisclaimerView();
+  views::View* CreateAutofillHomeView();
 
-  // Account Management view for the profile |avatar_item|.
-  views::View* CreateCurrentProfileAccountsView(
-      const AvatarMenu::Item& avatar_item);
-  void CreateAccountButton(views::GridLayout* layout,
-                           const std::string& account_id,
-                           bool is_primary_account,
-                           bool reauth_required,
-                           int width);
+  // Creates the DICE UI view to sign in and turn on sync. It includes an
+  // illustration, a promo and a button.
+  views::View* CreateDiceSigninView();
 
-  // Creates a webview showing the gaia signin page.
-  views::View* CreateGaiaSigninView(views::View** signin_content_view);
+  // Creates a header for signin and sync error surfacing for the user menu.
+  views::View* CreateSyncErrorViewIfNeeded(const AvatarMenu::Item& avatar_item);
 
-  // Creates a view to confirm account removal for |account_id_to_remove_|.
-  views::View* CreateAccountRemovalView();
-
-  // Removes the currently selected account and attempts to restart Chrome.
-  void RemoveAccount();
-
-  // Close the tutorial card.
-  void DismissTutorial();
-
-  // Creates a tutorial card to introduce an upgrade user to the new avatar
-  // menu. |avatar_item| refers to the current profile.
-  views::View* CreateWelcomeUpgradeTutorialView(
-      const AvatarMenu::Item& avatar_item);
-
-  // Creates a tutorial card to have the user confirm the last Chrome signin,
-  // Chrome sync will be delayed until the user either dismisses the tutorial,
-  // or configures sync through the "Settings" link.
-  views::View* CreateSigninConfirmationView();
-
-  // Creates a tutorial card to show the errors in the last Chrome signin.
-  views::View* CreateSigninErrorView();
-
-  // Creates a tutorial card telling the user about right-click user switching.
-  views::View* CreateRightClickTutorialView();
-
-  views::View* CreateTutorialViewIfNeeded(const AvatarMenu::Item& item);
-
-  // Creates a tutorial card. If |stack_button| is true, places the button above
-  // the link otherwise places both on the same row with the link left aligned
-  // and button right aligned. The method sets |link| to point to the newly
-  // create link, |button| to the newly created button, and |tutorial_mode_| to
-  // the given |tutorial_mode|.
-  views::View*  CreateTutorialView(
-      profiles::TutorialMode tutorial_mode,
-      const base::string16& title_text,
-      const base::string16& content_text,
-      const base::string16& link_text,
-      const base::string16& button_text,
-      bool stack_button,
-      views::Link** link,
-      views::LabelButton** button,
-      views::ImageButton** close_button);
-
-  // Create a view that shows various options for an upgrade user who is not
-  // the same person as the currently signed in user.
-  views::View* CreateSwitchUserView();
+  // Creates a view showing the profile associated with |avatar_item| and an
+  // error button below.
+  views::View* CreateDiceSyncErrorView(const AvatarMenu::Item& avatar_item,
+                                       sync_ui_util::AvatarSyncErrorType error,
+                                       int button_string_id);
 
   bool ShouldShowGoIncognito() const;
 
   // Clean-up done after an action was performed in the ProfileChooser.
   void PostActionPerformed(ProfileMetrics::ProfileDesktopMenu action_performed);
 
+  // Callbacks for DiceAccountsMenu.
+  void EnableSync(const base::Optional<AccountInfo>& account);
+  void SignOutAllWebAccounts();
+
+  // Methods to keep track of the number of times the Dice sign-in promo has
+  // been shown.
+  int GetDiceSigninPromoShowCount() const;
+  void IncrementDiceSigninPromoShowCount();
+
   std::unique_ptr<AvatarMenu> avatar_menu_;
-  Browser* browser_;
 
   // Other profiles used in the "fast profile switcher" view.
   ButtonIndexes open_other_profile_indexes_map_;
 
-  // Buttons associated with the current profile.
-  AccountButtonIndexes delete_account_button_map_;
-  AccountButtonIndexes reauth_account_button_map_;
-
-  // Links and buttons displayed in the tutorial card.
-  views::LabelButton* tutorial_sync_settings_ok_button_;
-  views::Link* tutorial_sync_settings_link_;
-  views::LabelButton* tutorial_see_whats_new_button_;
-  views::Link* tutorial_not_you_link_;
-  views::Link* tutorial_learn_more_link_;
-  views::ImageButton* tutorial_close_button_;
+  // Button in the signin/sync error header on top of the desktop user menu.
+  views::LabelButton* sync_error_button_;
 
   // Links and buttons displayed in the active profile card.
   views::Link* manage_accounts_link_;
+  views::LabelButton* manage_accounts_button_;
   views::LabelButton* signin_current_profile_button_;
-  views::LabelButton* auth_error_email_button_;
+  HoverButton* sync_to_another_account_button_;
+  views::LabelButton* signin_with_gaia_account_button_;
 
-  // The profile name and photo in the active profile card. Owned by the
-  // views hierarchy.
-  EditableProfilePhoto* current_profile_photo_;
-  EditableProfileName* current_profile_name_;
+  // For material design user menu, the active profile card owns the profile
+  // name and photo.
+  views::LabelButton* current_profile_card_;
 
   // Action buttons.
+  views::LabelButton* first_profile_button_;
   views::LabelButton* guest_profile_button_;
   views::LabelButton* users_button_;
   views::LabelButton* go_incognito_button_;
   views::LabelButton* lock_button_;
   views::LabelButton* close_all_windows_button_;
   views::Link* add_account_link_;
+  views::LabelButton* passwords_button_;
+  views::LabelButton* credit_cards_button_;
+  views::LabelButton* addresses_button_;
+  views::LabelButton* signout_button_;
 
-  // Buttons displayed in the gaia signin view.
-  views::ImageButton* gaia_signin_cancel_button_;
-
-  // Links and buttons displayed in the account removal view.
-  views::LabelButton* remove_account_button_;
-  views::ImageButton* account_removal_cancel_button_;
-
-  // Buttons in the switch user view.
-  views::LabelButton* add_person_button_;
-  views::LabelButton* disconnect_button_;
-  views::ImageButton* switch_user_cancel_button_;
-
-  // Records the account id to remove.
-  std::string account_id_to_remove_;
+  // View for the signin/turn-on-sync button in the dice promo.
+  DiceSigninButtonView* dice_signin_button_view_;
 
   // Active view mode.
   profiles::BubbleViewMode view_mode_;
-
-  // The current tutorial mode.
-  profiles::TutorialMode tutorial_mode_;
 
   // The GAIA service type provided in the response header.
   signin::GAIAServiceType gaia_service_type_;
 
   // The current access point of sign in.
   const signin_metrics::AccessPoint access_point_;
+
+  // Accounts that are presented in the enable sync promo.
+  std::vector<AccountInfo> dice_sync_promo_accounts_;
+
+  // Accounts submenu that is shown when |sync_to_another_account_button_| is
+  // pressed.
+  std::unique_ptr<DiceAccountsMenu> dice_accounts_menu_;
+
+  const bool dice_enabled_;
 
   DISALLOW_COPY_AND_ASSIGN(ProfileChooserView);
 };

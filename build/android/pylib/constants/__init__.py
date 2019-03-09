@@ -15,6 +15,7 @@ import os
 import subprocess
 
 import devil.android.sdk.keyevent
+from devil.android.constants import chrome
 from devil.android.sdk import version_codes
 from devil.constants import exit_codes
 
@@ -26,92 +27,50 @@ DIR_SOURCE_ROOT = os.environ.get('CHECKOUT_SOURCE_ROOT',
     os.path.abspath(os.path.join(os.path.dirname(__file__),
                                  os.pardir, os.pardir, os.pardir, os.pardir)))
 
-PackageInfo = collections.namedtuple('PackageInfo',
-    ['package', 'activity', 'cmdline_file', 'devtools_socket'])
-
-PACKAGE_INFO = {
-    'chrome_document': PackageInfo(
-        'com.google.android.apps.chrome.document',
-        'com.google.android.apps.chrome.document.ChromeLauncherActivity',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'chrome': PackageInfo(
-        'com.google.android.apps.chrome',
-        'com.google.android.apps.chrome.Main',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'chrome_beta': PackageInfo(
-        'com.chrome.beta',
-        'com.google.android.apps.chrome.Main',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'chrome_stable': PackageInfo(
-        'com.android.chrome',
-        'com.google.android.apps.chrome.Main',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'chrome_dev': PackageInfo(
-        'com.chrome.dev',
-        'com.google.android.apps.chrome.Main',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'chrome_canary': PackageInfo(
-        'com.chrome.canary',
-        'com.google.android.apps.chrome.Main',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'chrome_work': PackageInfo(
-        'com.chrome.work',
-        'com.google.android.apps.chrome.Main',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'chromium': PackageInfo(
-        'org.chromium.chrome',
-        'com.google.android.apps.chrome.Main',
-        '/data/local/chrome-command-line',
-        'chrome_devtools_remote'),
-    'legacy_browser': PackageInfo(
+PACKAGE_INFO = dict(chrome.PACKAGE_INFO)
+PACKAGE_INFO.update({
+    'legacy_browser': chrome.PackageInfo(
         'com.google.android.browser',
         'com.android.browser.BrowserActivity',
         None,
         None),
-    'chromecast_shell': PackageInfo(
+    'chromecast_shell': chrome.PackageInfo(
         'com.google.android.apps.mediashell',
         'com.google.android.apps.mediashell.MediaShellActivity',
-        '/data/local/tmp/castshell-command-line',
+        'castshell-command-line',
         None),
-    'content_shell': PackageInfo(
-        'org.chromium.content_shell_apk',
-        'org.chromium.content_shell_apk.ContentShellActivity',
-        '/data/local/tmp/content-shell-command-line',
-        None),
-    'android_webview_shell': PackageInfo(
+    'android_webview_shell': chrome.PackageInfo(
         'org.chromium.android_webview.shell',
         'org.chromium.android_webview.shell.AwShellActivity',
-        '/data/local/tmp/android-webview-command-line',
+        'android-webview-command-line',
         None),
-    'gtest': PackageInfo(
+    'gtest': chrome.PackageInfo(
         'org.chromium.native_test',
         'org.chromium.native_test.NativeUnitTestActivity',
-        '/data/local/tmp/chrome-native-tests-command-line',
+        'chrome-native-tests-command-line',
         None),
-    'components_browsertests': PackageInfo(
+    'components_browsertests': chrome.PackageInfo(
         'org.chromium.components_browsertests_apk',
         ('org.chromium.components_browsertests_apk' +
          '.ComponentsBrowserTestsActivity'),
-        '/data/local/tmp/chrome-native-tests-command-line',
+        'chrome-native-tests-command-line',
         None),
-    'content_browsertests': PackageInfo(
+    'content_browsertests': chrome.PackageInfo(
         'org.chromium.content_browsertests_apk',
         'org.chromium.content_browsertests_apk.ContentBrowserTestsActivity',
-        '/data/local/tmp/chrome-native-tests-command-line',
+        'chrome-native-tests-command-line',
         None),
-    'chromedriver_webview_shell': PackageInfo(
+    'chromedriver_webview_shell': chrome.PackageInfo(
         'org.chromium.chromedriver_webview_shell',
         'org.chromium.chromedriver_webview_shell.Main',
         None,
         None),
-}
+    'android_webview_cts': chrome.PackageInfo(
+        'com.android.webview',
+        'com.android.cts.webkit.WebViewStartupCtsActivity',
+        'webview-command-line',
+        None),
+})
 
 
 # Ports arrangement for various test servers used in Chrome for Android.
@@ -141,19 +100,14 @@ DEVICE_PERF_OUTPUT_DIR = (
 
 SCREENSHOTS_DIR = os.path.join(DIR_SOURCE_ROOT, 'out_screenshots')
 
-ANDROID_SDK_VERSION = version_codes.MARSHMALLOW
-ANDROID_SDK_BUILD_TOOLS_VERSION = '23.0.1'
+ANDROID_SDK_VERSION = version_codes.OREO_MR1
+ANDROID_SDK_BUILD_TOOLS_VERSION = '27.0.3'
 ANDROID_SDK_ROOT = os.path.join(DIR_SOURCE_ROOT,
                                 'third_party', 'android_tools', 'sdk')
 ANDROID_SDK_TOOLS = os.path.join(ANDROID_SDK_ROOT,
                                  'build-tools', ANDROID_SDK_BUILD_TOOLS_VERSION)
 ANDROID_NDK_ROOT = os.path.join(DIR_SOURCE_ROOT,
-                                'third_party', 'android_tools', 'ndk')
-
-PROGUARD_SCRIPT_PATH = os.path.join(
-    ANDROID_SDK_ROOT, 'tools', 'proguard', 'bin', 'proguard.sh')
-
-PROGUARD_ROOT = os.path.join(DIR_SOURCE_ROOT, 'third_party', 'proguard')
+                                'third_party', 'android_ndk')
 
 BAD_DEVICES_JSON = os.path.join(DIR_SOURCE_ROOT,
                                 os.environ.get('CHROMIUM_OUT_DIR', 'out'),
@@ -164,105 +118,154 @@ UPSTREAM_FLAKINESS_SERVER = 'test-results.appspot.com'
 # TODO(jbudorick): Remove once unused.
 DEVICE_LOCAL_PROPERTIES_PATH = '/data/local.prop'
 
+# Configure ubsan to print stack traces in the format understood by "stack" so
+# that they will be symbolized, and disable signal handlers because they
+# interfere with the breakpad and sandbox tests.
+# This value is duplicated in
+# base/android/java/src/org/chromium/base/library_loader/LibraryLoader.java
+UBSAN_OPTIONS = (
+    'print_stacktrace=1 stack_trace_format=\'#%n pc %o %m\' '
+    'handle_segv=0 handle_sigbus=0 handle_sigfpe=0')
+
 # TODO(jbudorick): Rework this into testing/buildbot/
 PYTHON_UNIT_TEST_SUITES = {
-  'pylib_py_unittests': {
-    'path': os.path.join(DIR_SOURCE_ROOT, 'build', 'android'),
-    'test_modules': [
-      'devil.android.device_utils_test',
-      'devil.android.md5sum_test',
-      'devil.utils.cmd_helper_test',
-      'pylib.results.json_results_test',
-      'pylib.utils.proguard_test',
-    ]
-  },
-  'gyp_py_unittests': {
-    'path': os.path.join(DIR_SOURCE_ROOT, 'build', 'android', 'gyp'),
-    'test_modules': [
-      'java_cpp_enum_tests',
-      'java_google_api_keys_tests',
-    ]
-  },
+    'pylib_py_unittests': {
+        'path':
+        os.path.join(DIR_SOURCE_ROOT, 'build', 'android'),
+        'test_modules': [
+            'devil.android.device_utils_test',
+            'devil.android.md5sum_test',
+            'devil.utils.cmd_helper_test',
+            'pylib.results.json_results_test',
+            'pylib.utils.proguard_test',
+        ]
+    },
+    'gyp_py_unittests': {
+        'path':
+        os.path.join(DIR_SOURCE_ROOT, 'build', 'android', 'gyp'),
+        'test_modules': [
+            'java_cpp_enum_tests',
+            'java_cpp_strings_tests',
+            'java_google_api_keys_tests',
+            'extract_unwind_tables_tests',
+        ]
+    },
 }
 
 LOCAL_MACHINE_TESTS = ['junit', 'python']
-VALID_ENVIRONMENTS = ['local', 'remote_device']
+VALID_ENVIRONMENTS = ['local']
 VALID_TEST_TYPES = ['gtest', 'instrumentation', 'junit', 'linker', 'monkey',
-                    'perf', 'python', 'uirobot']
+                    'perf', 'python']
 VALID_DEVICE_TYPES = ['Android', 'iOS']
 
 
-def GetBuildType():
-  try:
-    return os.environ['BUILDTYPE']
-  except KeyError:
-    raise EnvironmentError(
-        'The BUILDTYPE environment variable has not been set')
-
-
 def SetBuildType(build_type):
+  """Set the BUILDTYPE environment variable.
+
+  NOTE: Using this function is deprecated, in favor of SetOutputDirectory(),
+        it is still maintained for a few scripts that typically call it
+        to implement their --release and --debug command-line options.
+
+        When writing a new script, consider supporting an --output-dir or
+        --chromium-output-dir option instead, and calling SetOutputDirectory()
+        instead.
+
+  NOTE: If CHROMIUM_OUTPUT_DIR if defined, or if SetOutputDirectory() was
+  called previously, this will be completely ignored.
+  """
+  chromium_output_dir = os.environ.get('CHROMIUM_OUTPUT_DIR')
+  if chromium_output_dir:
+    logging.warning(
+        'SetBuildType("%s") ignored since CHROMIUM_OUTPUT_DIR is already '
+        'defined as (%s)', build_type, chromium_output_dir)
   os.environ['BUILDTYPE'] = build_type
 
 
-def SetBuildDirectory(build_directory):
-  os.environ['CHROMIUM_OUT_DIR'] = build_directory
-
-
 def SetOutputDirectory(output_directory):
+  """Set the Chromium output directory.
+
+  This must be called early by scripts that rely on GetOutDirectory() or
+  CheckOutputDirectory(). Typically by providing an --output-dir or
+  --chromium-output-dir option.
+  """
   os.environ['CHROMIUM_OUTPUT_DIR'] = output_directory
 
 
-def GetOutDirectory(build_type=None):
-  """Returns the out directory where the output binaries are built.
+# The message that is printed when the Chromium output directory cannot
+# be found. Note that CHROMIUM_OUT_DIR and BUILDTYPE are not mentioned
+# intentionally to encourage the use of CHROMIUM_OUTPUT_DIR instead.
+_MISSING_OUTPUT_DIR_MESSAGE = '\
+The Chromium output directory could not be found. Please use an option such as \
+--output-directory to provide it (see --help for details). Otherwise, \
+define the CHROMIUM_OUTPUT_DIR environment variable.'
 
-  Args:
-    build_type: Build type, generally 'Debug' or 'Release'. Defaults to the
-      globally set build type environment variable BUILDTYPE.
+
+def GetOutDirectory():
+  """Returns the Chromium build output directory.
+
+  NOTE: This is determined in the following way:
+    - From a previous call to SetOutputDirectory()
+    - Otherwise, from the CHROMIUM_OUTPUT_DIR env variable, if it is defined.
+    - Otherwise, from the current Chromium source directory, and a previous
+      call to SetBuildType() or the BUILDTYPE env variable, in combination
+      with the optional CHROMIUM_OUT_DIR env variable.
   """
   if 'CHROMIUM_OUTPUT_DIR' in os.environ:
     return os.path.abspath(os.path.join(
         DIR_SOURCE_ROOT, os.environ.get('CHROMIUM_OUTPUT_DIR')))
 
+  build_type = os.environ.get('BUILDTYPE')
+  if not build_type:
+    raise EnvironmentError(_MISSING_OUTPUT_DIR_MESSAGE)
+
   return os.path.abspath(os.path.join(
       DIR_SOURCE_ROOT, os.environ.get('CHROMIUM_OUT_DIR', 'out'),
-      GetBuildType() if build_type is None else build_type))
+      build_type))
 
 
 def CheckOutputDirectory():
-  """Checks that CHROMIUM_OUT_DIR or CHROMIUM_OUTPUT_DIR is set.
+  """Checks that the Chromium output directory is set, or can be found.
 
-  If neither are set, but the current working directory is a build directory,
-  then CHROMIUM_OUTPUT_DIR is set to the current working directory.
+  If it is not already set, this will also perform a little auto-detection:
+
+    - If the current directory contains a build.ninja file, use it as
+      the output directory.
+
+    - If CHROME_HEADLESS is defined in the environment (e.g. on a bot),
+      look if there is a single output directory under DIR_SOURCE_ROOT/out/,
+      and if so, use it as the output directory.
 
   Raises:
     Exception: If no output directory is detected.
   """
   output_dir = os.environ.get('CHROMIUM_OUTPUT_DIR')
-  out_dir = os.environ.get('CHROMIUM_OUT_DIR')
-  if not output_dir and not out_dir:
-    # If CWD is an output directory, then assume it's the desired one.
-    if os.path.exists('build.ninja'):
-      output_dir = os.getcwd()
-      SetOutputDirectory(output_dir)
-    elif os.environ.get('CHROME_HEADLESS'):
-      # When running on bots, see if the output directory is obvious.
-      dirs = glob.glob(os.path.join(DIR_SOURCE_ROOT, 'out', '*', 'build.ninja'))
-      if len(dirs) == 1:
-        SetOutputDirectory(dirs[0])
-      else:
-        raise Exception('Neither CHROMIUM_OUTPUT_DIR nor CHROMIUM_OUT_DIR '
-                        'has been set. CHROME_HEADLESS detected, but multiple '
-                        'out dirs exist: %r' % dirs)
-    else:
-      raise Exception('Neither CHROMIUM_OUTPUT_DIR nor CHROMIUM_OUT_DIR '
-                      'has been set')
+  if output_dir:
+    return
 
+  build_type = os.environ.get('BUILDTYPE')
+  if build_type and len(build_type) > 1:
+    return
 
-# TODO(jbudorick): Convert existing callers to AdbWrapper.GetAdbPath() and
-# remove this.
-def GetAdbPath():
-  from devil.android.sdk import adb_wrapper
-  return adb_wrapper.AdbWrapper.GetAdbPath()
+  # If CWD is an output directory, then assume it's the desired one.
+  if os.path.exists('build.ninja'):
+    output_dir = os.getcwd()
+    SetOutputDirectory(output_dir)
+    return
+
+  # When running on bots, see if the output directory is obvious.
+  # TODO(http://crbug.com/833808): Get rid of this by ensuring bots always set
+  # CHROMIUM_OUTPUT_DIR correctly.
+  if os.environ.get('CHROME_HEADLESS'):
+    dirs = glob.glob(os.path.join(DIR_SOURCE_ROOT, 'out', '*', 'build.ninja'))
+    if len(dirs) == 1:
+      SetOutputDirectory(dirs[0])
+      return
+
+    raise Exception(
+        'Chromium output directory not set, and CHROME_HEADLESS detected. ' +
+        'However, multiple out dirs exist: %r' % dirs)
+
+  raise Exception(_MISSING_OUTPUT_DIR_MESSAGE)
 
 
 # Exit codes

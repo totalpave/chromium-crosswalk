@@ -30,11 +30,11 @@ class DrmCursorProxy {
                          const std::vector<SkBitmap>& bitmaps,
                          const gfx::Point& point,
                          int frame_delay_ms) = 0;
-  // Moves the cursor in |window| to |point|
+  // Moves the cursor in |window| to |point|.
   virtual void Move(gfx::AcceleratedWidget window, const gfx::Point& point) = 0;
 
   // Initialize EvdevThread-specific state.
-  virtual void InitializeOnEvdev() = 0;
+  virtual void InitializeOnEvdevIfNecessary() = 0;
 };
 
 // DrmCursor manages all cursor state and semantics.
@@ -43,9 +43,10 @@ class DrmCursor : public CursorDelegateEvdev {
   explicit DrmCursor(DrmWindowHostManager* window_manager);
   ~DrmCursor() override;
 
-  // Sets or resets the DrmProxy |proxy|. If |proxy| is set, the DrmCursor uses
-  // it to communicate to the GPU process or thread.
-  void SetDrmCursorProxy(DrmCursorProxy* proxy);
+  // Sets or the DrmProxy |proxy|. If |proxy| is set, the DrmCursor uses
+  // it to communicate to the GPU process or thread. Returns the previous
+  // value.
+  void SetDrmCursorProxy(std::unique_ptr<DrmCursorProxy> proxy);
   void ResetDrmCursorProxy();
 
   // Change the cursor over the specifed window.
@@ -110,7 +111,7 @@ class DrmCursor : public CursorDelegateEvdev {
   // The bounds that the cursor is confined to in |window|.
   gfx::Rect confined_bounds_;
 
-  DrmWindowHostManager* window_manager_;  // Not owned.
+  DrmWindowHostManager* const window_manager_;  // Not owned.
 
   std::unique_ptr<DrmCursorProxy> proxy_;
 

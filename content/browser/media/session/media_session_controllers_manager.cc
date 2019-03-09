@@ -4,50 +4,47 @@
 
 #include "content/browser/media/session/media_session_controllers_manager.h"
 
-#include "base/command_line.h"
-#include "content/browser/media/session/media_session.h"
 #include "content/browser/media/session/media_session_controller.h"
-#include "content/browser/media/session/media_session_observer.h"
 #include "media/base/media_switches.h"
+#include "services/media_session/public/cpp/features.h"
 
 namespace content {
 
 namespace {
 
-bool IsDefaultMediaSessionEnabled() {
-#if defined(OS_ANDROID)
-  return true;
-#else
-  return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      switches::kEnableDefaultMediaSession);
-#endif
+bool IsMediaSessionEnabled() {
+  return base::FeatureList::IsEnabled(
+             media_session::features::kMediaSessionService) ||
+         base::FeatureList::IsEnabled(media::kInternalMediaSession);
 }
 
-}  // anonymous namespace
+}  // namespace
 
 MediaSessionControllersManager::MediaSessionControllersManager(
     MediaWebContentsObserver* media_web_contents_observer)
-    : media_web_contents_observer_(media_web_contents_observer) {
-}
+    : media_web_contents_observer_(media_web_contents_observer) {}
 
 MediaSessionControllersManager::~MediaSessionControllersManager() = default;
 
 void MediaSessionControllersManager::RenderFrameDeleted(
     RenderFrameHost* render_frame_host) {
-  if (!IsDefaultMediaSessionEnabled())
+  if (!IsMediaSessionEnabled())
     return;
 
   for (auto it = controllers_map_.begin(); it != controllers_map_.end();) {
-    if (it->first.first == render_frame_host)
+    if (it->first.render_frame_host == render_frame_host)
       it = controllers_map_.erase(it);
     else
       ++it;
   }
 }
 
-bool MediaSessionControllersManager::RequestPlay(const MediaPlayerId& id,
-    bool has_audio, bool is_remote, base::TimeDelta duration) {
-  if (!IsDefaultMediaSessionEnabled())
+bool MediaSessionControllersManager::RequestPlay(
+    const MediaPlayerId& id,
+    bool has_audio,
+    bool is_remote,
+    media::MediaContentType media_content_type) {
+  if (!IsMediaSessionEnabled())
     return true;
 
   // Since we don't remove session instances on pause, there may be an existing
@@ -58,7 +55,7 @@ bool MediaSessionControllersManager::RequestPlay(const MediaPlayerId& id,
   // controller. A later playback attempt will create a new controller.
   auto it = controllers_map_.find(id);
   if (it != controllers_map_.end()) {
-    if (it->second->Initialize(has_audio, is_remote, duration))
+    if (it->second->Initialize(has_audio, is_remote, media_content_type))
       return true;
     controllers_map_.erase(it);
     return false;
@@ -67,7 +64,7 @@ bool MediaSessionControllersManager::RequestPlay(const MediaPlayerId& id,
   std::unique_ptr<MediaSessionController> controller(
       new MediaSessionController(id, media_web_contents_observer_));
 
-  if (!controller->Initialize(has_audio, is_remote, duration))
+  if (!controller->Initialize(has_audio, is_remote, media_content_type))
     return false;
 
   controllers_map_[id] = std::move(controller);
@@ -75,7 +72,7 @@ bool MediaSessionControllersManager::RequestPlay(const MediaPlayerId& id,
 }
 
 void MediaSessionControllersManager::OnPause(const MediaPlayerId& id) {
-  if (!IsDefaultMediaSessionEnabled())
+  if (!IsMediaSessionEnabled())
     return;
 
   auto it = controllers_map_.find(id);
@@ -86,9 +83,17 @@ void MediaSessionControllersManager::OnPause(const MediaPlayerId& id) {
 }
 
 void MediaSessionControllersManager::OnEnd(const MediaPlayerId& id) {
-  if (!IsDefaultMediaSessionEnabled())
+  if (!IsMediaSessionEnabled())
     return;
   controllers_map_.erase(id);
+}
+
+void MediaSessionControllersManager::WebContentsMutedStateChanged(bool muted) {
+  if (!IsMediaSessionEnabled())
+    return;
+
+  for (auto& entry : controllers_map_)
+    entry.second->WebContentsMutedStateChanged(muted);
 }
 
 }  // namespace content

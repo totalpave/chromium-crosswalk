@@ -9,14 +9,14 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 
 #include "base/callback.h"
 #include "base/logging.h"
 #include "base/strings/string16.h"
-#include "base/tuple.h"
 #include "base/values.h"
+#include "components/account_id/account_id.h"
 #include "components/login/login_export.h"
-#include "components/signin/core/account_id/account_id.h"
 
 namespace login {
 
@@ -53,12 +53,12 @@ inline bool GetArg(const base::ListValue* args, size_t index, T* out_value) {
   return ParseValue(value, out_value);
 }
 
-base::FundamentalValue LOGIN_EXPORT MakeValue(bool v);
-base::FundamentalValue LOGIN_EXPORT MakeValue(int v);
-base::FundamentalValue LOGIN_EXPORT MakeValue(double v);
-base::StringValue LOGIN_EXPORT MakeValue(const std::string& v);
-base::StringValue LOGIN_EXPORT MakeValue(const base::string16& v);
-base::StringValue LOGIN_EXPORT MakeValue(const AccountId& v);
+base::Value LOGIN_EXPORT MakeValue(bool v);
+base::Value LOGIN_EXPORT MakeValue(int v);
+base::Value LOGIN_EXPORT MakeValue(double v);
+base::Value LOGIN_EXPORT MakeValue(const std::string& v);
+base::Value LOGIN_EXPORT MakeValue(const base::string16& v);
+base::Value LOGIN_EXPORT MakeValue(const AccountId& v);
 
 template <typename T>
 inline const T& MakeValue(const T& v) {
@@ -86,7 +86,7 @@ typename UnwrapConstRef<Arg>::Type ParseArg(const base::ListValue* args) {
 template <typename... Args, size_t... Ns>
 inline void DispatchToCallback(const base::Callback<void(Args...)>& callback,
                                const base::ListValue* args,
-                               base::IndexSequence<Ns...> indexes) {
+                               std::index_sequence<Ns...> indexes) {
   DCHECK(args);
   DCHECK_EQ(sizeof...(Args), args->GetSize());
 
@@ -96,8 +96,7 @@ inline void DispatchToCallback(const base::Callback<void(Args...)>& callback,
 template <typename... Args>
 void CallbackWrapper(const base::Callback<void(Args...)>& callback,
                      const base::ListValue* args) {
-  DispatchToCallback(callback, args,
-                     base::MakeIndexSequence<sizeof...(Args)>());
+  DispatchToCallback(callback, args, std::index_sequence_for<Args...>());
 }
 
 

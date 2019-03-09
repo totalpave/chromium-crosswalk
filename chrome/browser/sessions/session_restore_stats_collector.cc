@@ -7,9 +7,13 @@
 #include <string>
 #include <utility>
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/default_tick_clock.h"
+#include "chrome/browser/engagement/site_engagement_service.h"
+#include "chrome/browser/profiles/profile.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/notification_service.h"
 #include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_widget_host.h"
@@ -98,9 +102,7 @@ SessionRestoreStatsCollector::TabLoaderStats::TabLoaderStats()
     : tab_count(0u),
       tabs_deferred(0u),
       tabs_load_started(0u),
-      tabs_loaded(0u),
-      parallel_tab_loads(0u) {
-}
+      tabs_loaded(0u) {}
 
 SessionRestoreStatsCollector::TabState::TabState(
     NavigationController* controller)
@@ -129,22 +131,44 @@ SessionRestoreStatsCollector::~SessionRestoreStatsCollector() {
 
 void SessionRestoreStatsCollector::TrackTabs(
     const std::vector<SessionRestoreDelegate::RestoredTab>& tabs) {
-  DCHECK(!done_tracking_non_deferred_tabs_);
+  // Anytime new tabs are added, they are immediately "non deferred".
+  done_tracking_non_deferred_tabs_ = false;
 
   // If this is the first call to TrackTabs then start observing events.
   if (tab_loader_stats_.tab_count == 0) {
     registrar_.Add(
-        this, content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE,
+        this,
+        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES,
         content::NotificationService::AllSources());
   }
 
+  const base::TimeTicks now = base::TimeTicks::Now();
   tab_loader_stats_.tab_count += tabs.size();
   waiting_for_load_tab_count_ += tabs.size();
   for (const auto& tab : tabs) {
-    TabState* tab_state =
-        RegisterForNotifications(&tab.contents()->GetController());
-    // Active tabs have already started loading.
-    if (tab.is_active())
+    // Report the time since the tab was active. If the tab is visible the
+    // last active time is right now, so report zero.
+    base::TimeDelta time_since_active;
+    if (tab.contents()->GetVisibility() != content::Visibility::VISIBLE)
+      time_since_active = now - tab.contents()->GetLastActiveTime();
+    reporting_delegate_->ReportTabTimeSinceActive(time_since_active);
+
+    // Get the active navigation entry. Restored tabs should always have one.
+    auto* controller = &tab.contents()->GetController();
+    auto* nav_entry =
+        controller->GetEntryAtIndex(controller->GetCurrentEntryIndex());
+    DCHECK(nav_entry);
+
+    // Report the site engagement score for the restored tab.
+    auto* engagement_svc = SiteEngagementService::Get(
+        Profile::FromBrowserContext(tab.contents()->GetBrowserContext()));
+    double engagement =
+        engagement_svc->GetDetails(nav_entry->GetURL()).total_score;
+    reporting_delegate_->ReportTabSiteEngagementScore(engagement);
+
+    TabState* tab_state = RegisterForNotifications(controller);
+    // The tab might already be loading if it is active in a visible window.
+    if (!controller->NeedsReload())
       MarkTabAsLoading(tab_state);
   }
 }
@@ -175,6 +199,10 @@ void SessionRestoreStatsCollector::DeferTab(NavigationController* tab) {
   }
 
   reporting_delegate_->ReportTabDeferred();
+}
+
+void SessionRestoreStatsCollector::OnWillLoadNextTab(bool timeout) {
+  UMA_HISTOGRAM_BOOLEAN("SessionRestore.TabLoadTimeout", timeout);
 }
 
 void SessionRestoreStatsCollector::Observe(
@@ -244,7 +272,8 @@ void SessionRestoreStatsCollector::Observe(
 
       break;
     }
-    case content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE: {
+    case content::
+        NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES: {
       // This notification is across all tabs in the browser so notifications
       // will arrive for tabs that the collector is not explicitly tracking.
 
@@ -274,7 +303,8 @@ void SessionRestoreStatsCollector::Observe(
         // mechanism is no longer needed.
         registrar_.Remove(
             this,
-            content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE,
+            content::
+                NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES,
             content::NotificationService::AllSources());
 
         // Remove any tabs that have loaded. These were only being kept around
@@ -285,7 +315,7 @@ void SessionRestoreStatsCollector::Observe(
           if (tab_state.loading_state == TAB_IS_LOADED)
             loaded_tabs.push_back(tab_state.controller);
         }
-        for (auto& tab : loaded_tabs)
+        for (auto* tab : loaded_tabs)
           RemoveTab(tab);
       }
       break;
@@ -340,7 +370,8 @@ void SessionRestoreStatsCollector::RemoveTab(NavigationController* tab) {
   if (tabs_tracked_.size() == deferred_tab_count_ && !got_first_paint_) {
     got_first_paint_ = true;
     registrar_.Remove(
-        this, content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_BACKING_STORE,
+        this,
+        content::NOTIFICATION_RENDER_WIDGET_HOST_DID_UPDATE_VISUAL_PROPERTIES,
         content::NotificationService::AllSources());
   }
 }
@@ -373,7 +404,7 @@ SessionRestoreStatsCollector::GetTabState(NavigationController* tab) {
 SessionRestoreStatsCollector::TabState*
 SessionRestoreStatsCollector::GetTabState(RenderWidgetHost* tab) {
   for (auto& pair : tabs_tracked_) {
-    auto rwh = GetRenderWidgetHost(pair.first);
+    auto* rwh = GetRenderWidgetHost(pair.first);
     if (rwh == tab)
       return &pair.second;
   }
@@ -397,11 +428,8 @@ void SessionRestoreStatsCollector::MarkTabAsLoading(TabState* tab_state) {
   tab_state->loading_state = TAB_IS_LOADING;
   ++loading_tab_count_;
 
-  if (!done_tracking_non_deferred_tabs_) {
+  if (!done_tracking_non_deferred_tabs_)
     ++tab_loader_stats_.tabs_load_started;
-    tab_loader_stats_.parallel_tab_loads =
-        std::max(tab_loader_stats_.parallel_tab_loads, loading_tab_count_);
-  }
 }
 
 void SessionRestoreStatsCollector::ReleaseIfDoneTracking() {
@@ -516,9 +544,6 @@ void SessionRestoreStatsCollector::UmaStatsReportingDelegate::
         base::Histogram::kUmaTargetedHistogramFlag);
     counter_for_count->AddTime(tab_loader_stats.non_deferred_tabs_loaded);
   }
-
-  UMA_HISTOGRAM_COUNTS_100("SessionRestore.ParallelTabLoads",
-                           tab_loader_stats.parallel_tab_loads);
 }
 
 void SessionRestoreStatsCollector::UmaStatsReportingDelegate::
@@ -536,4 +561,20 @@ void SessionRestoreStatsCollector::UmaStatsReportingDelegate::
     ReportDeferredTabLoaded() {
   EmitUmaSessionRestoreTabActionEvent(
       SESSION_RESTORE_TAB_ACTIONS_UMA_DEFERRED_TAB_LOADED);
+}
+
+void SessionRestoreStatsCollector::UmaStatsReportingDelegate::
+    ReportTabTimeSinceActive(base::TimeDelta elapsed) {
+  UMA_HISTOGRAM_CUSTOM_TIMES("SessionRestore.RestoredTab.TimeSinceActive",
+                             elapsed, base::TimeDelta::FromSeconds(10),
+                             base::TimeDelta::FromDays(7), 100);
+}
+
+void SessionRestoreStatsCollector::UmaStatsReportingDelegate::
+    ReportTabSiteEngagementScore(double engagement) {
+  // This metric uses the same reporting format (no rounding, histogram shape)
+  // as the equivalent SiteEngagementService.EngagementScore. See
+  // site_engagement_metrics.cc for details.
+  UMA_HISTOGRAM_COUNTS_100("SessionRestore.RestoredTab.SiteEngagementScore",
+                           engagement);
 }

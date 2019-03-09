@@ -21,6 +21,7 @@ const char kAPILoadDataInvalidBaseURL[] = "Invalid base URL \"%s\".";
 const char kAPILoadDataInvalidVirtualURL[] = "Invalid virtual URL \"%s\".";
 
 // Events.
+const char kEventAudioStateChanged[] = "webViewInternal.onAudioStateChanged";
 const char kEventClose[] = "webViewInternal.onClose";
 const char kEventConsoleMessage[] = "webViewInternal.onConsoleMessage";
 const char kEventContentLoad[] = "webViewInternal.onContentLoad";
@@ -60,6 +61,7 @@ const char kEventSendHeaders[] = "webViewInternal.onSendHeaders";
 const char kWebViewEventPrefix[] = "webViewInternal.";
 
 // Parameters/properties on events.
+const char kAudible[] = "audible";
 const char kContextMenuItems[] = "items";
 const char kDefaultPromptText[] = "defaultPromptText";
 const char kFindSearchText[] = "searchText";
@@ -138,6 +140,8 @@ const uint32_t WEB_VIEW_REMOVE_DATA_MASK_FILE_SYSTEMS = 1 << 3;
 const uint32_t WEB_VIEW_REMOVE_DATA_MASK_INDEXEDDB = 1 << 4;
 const uint32_t WEB_VIEW_REMOVE_DATA_MASK_LOCAL_STORAGE = 1 << 5;
 const uint32_t WEB_VIEW_REMOVE_DATA_MASK_WEBSQL = 1 << 6;
+const uint32_t WEB_VIEW_REMOVE_DATA_MASK_SESSION_COOKIES = 1 << 7;
+const uint32_t WEB_VIEW_REMOVE_DATA_MASK_PERSISTENT_COOKIES = 1 << 8;
 
 // Other.
 const char kWebViewContentScriptManagerKeyName[] =

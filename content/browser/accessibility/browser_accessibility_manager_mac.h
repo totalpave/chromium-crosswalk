@@ -23,7 +23,6 @@ class CONTENT_EXPORT BrowserAccessibilityManagerMac
     : public BrowserAccessibilityManager {
  public:
   BrowserAccessibilityManagerMac(
-      NSView* parent_view,
       const ui::AXTreeUpdate& initial_tree,
       BrowserAccessibilityDelegate* delegate,
       BrowserAccessibilityFactory* factory = new BrowserAccessibilityFactory());
@@ -35,25 +34,26 @@ class CONTENT_EXPORT BrowserAccessibilityManagerMac
   BrowserAccessibility* GetFocus() override;
 
   // Implementation of BrowserAccessibilityManager.
-  void NotifyAccessibilityEvent(
-      BrowserAccessibilityEvent::Source source,
-      ui::AXEvent event_type,
-      BrowserAccessibility* node) override;
+  void FireFocusEvent(BrowserAccessibility* node) override;
+  void FireBlinkEvent(ax::mojom::Event event_type,
+                      BrowserAccessibility* node) override;
+  void FireGeneratedEvent(ui::AXEventGenerator::Event event_type,
+                          BrowserAccessibility* node) override;
 
   void OnAccessibilityEvents(
-      const std::vector<AXEventNotificationDetails>& details) override;
+      const AXEventNotificationDetails& details) override;
 
-  NSView* parent_view() { return parent_view_; }
+  id GetParentView();
+  id GetWindow();
 
  private:
-  // AXTreeDelegate methods.
-  void OnNodeDataWillChange(ui::AXTree* tree,
-                            const ui::AXNodeData& old_node_data,
-                            const ui::AXNodeData& new_node_data) override;
-  void OnAtomicUpdateFinished(
-      ui::AXTree* tree,
-      bool root_changed,
-      const std::vector<ui::AXTreeDelegate::Change>& changes) override;
+  void FireNativeMacNotification(NSString* mac_notification,
+                                 BrowserAccessibility* node);
+
+  // AXTreeObserver methods.
+  void OnAtomicUpdateFinished(ui::AXTree* tree,
+                              bool root_changed,
+                              const std::vector<Change>& changes) override;
 
   // Returns an autoreleased object.
   NSDictionary* GetUserInfoForSelectedTextChangedNotification();
@@ -64,16 +64,14 @@ class CONTENT_EXPORT BrowserAccessibilityManagerMac
       const base::string16& deleted_text,
       const base::string16& inserted_text) const;
 
+  // Keeps track of any edits that have been made by the user during a tree
+  // update. Used by NSAccessibilityValueChangedNotification.
+  // Maps AXNode IDs to value attribute changes.
+  std::map<int32_t, AXTextEdit> text_edits_;
+
   // This gives BrowserAccessibilityManager::Create access to the class
   // constructor.
   friend class BrowserAccessibilityManager;
-
-  NSView* parent_view_;
-
-  // Keeps track of any edits that have been made by the user during a tree
-  // update. Used by NSAccessibilityValueChangedNotification.
-  // Maps AXNode IDs to name or value attribute changes.
-  std::map<int32_t, base::string16> text_edits_;
 
   DISALLOW_COPY_AND_ASSIGN(BrowserAccessibilityManagerMac);
 };

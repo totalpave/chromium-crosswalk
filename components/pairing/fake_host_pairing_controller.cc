@@ -80,13 +80,15 @@ void FakeHostPairingController::ChangeStage(Stage new_stage) {
   if (current_stage_ == new_stage)
     return;
   current_stage_ = new_stage;
-  FOR_EACH_OBSERVER(Observer, observers_, PairingStageChanged(new_stage));
+  for (Observer& observer : observers_)
+    observer.PairingStageChanged(new_stage);
 }
 
 void FakeHostPairingController::ChangeStageLater(Stage new_stage) {
   base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE, base::Bind(&FakeHostPairingController::ChangeStage,
-                            base::Unretained(this), new_stage),
+      FROM_HERE,
+      base::BindOnce(&FakeHostPairingController::ChangeStage,
+                     base::Unretained(this), new_stage),
       async_duration_);
 }
 
@@ -139,6 +141,10 @@ void FakeHostPairingController::OnEnrollmentStatusChanged(
 void FakeHostPairingController::SetPermanentId(
     const std::string& permanent_id) {
 }
+
+void FakeHostPairingController::SetErrorCodeAndMessage(
+    int error_code,
+    const std::string& error_message) {}
 
 void FakeHostPairingController::Reset() {
 }

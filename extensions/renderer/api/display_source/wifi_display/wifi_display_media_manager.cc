@@ -4,10 +4,11 @@
 
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_media_manager.h"
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/rand_util.h"
 #include "base/task_runner_util.h"
-#include "content/public/common/service_registry.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "content/public/renderer/media_stream_utils.h"
 #include "content/public/renderer/media_stream_video_sink.h"
 #include "content/public/renderer/render_thread.h"
@@ -16,6 +17,7 @@
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_elementary_stream_info.h"
 #include "extensions/renderer/api/display_source/wifi_display/wifi_display_media_pipeline.h"
 #include "media/base/bind_to_current_loop.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 
 namespace extensions {
 
@@ -34,7 +36,7 @@ const char kErrorMediaPipelineFailure[] =
 class WiFiDisplayAudioSink {
  public:
   WiFiDisplayAudioSink(const blink::WebMediaStreamTrack& track,
-                       content::MediaStreamAudioSink* delegate)
+                       blink::WebMediaStreamAudioSink* delegate)
       : track_(track), delegate_(delegate), sink_added_(false) {}
 
   ~WiFiDisplayAudioSink() { Stop(); }
@@ -54,7 +56,7 @@ class WiFiDisplayAudioSink {
 
  private:
   blink::WebMediaStreamTrack track_;
-  content::MediaStreamAudioSink* delegate_;
+  blink::WebMediaStreamAudioSink* delegate_;
   bool sink_added_;
 };
 
@@ -86,20 +88,20 @@ WiFiDisplayMediaManager::WiFiDisplayMediaManager(
     const blink::WebMediaStreamTrack& video_track,
     const blink::WebMediaStreamTrack& audio_track,
     const std::string& sink_ip_address,
-    content::ServiceRegistry* service_registry,
+    service_manager::InterfaceProvider* interface_provider,
     const ErrorCallback& error_callback)
-  : video_track_(video_track),
-    audio_track_(audio_track),
-    service_registry_(service_registry),
-    sink_ip_address_(sink_ip_address),
-    player_(nullptr),
-    io_task_runner_(content::RenderThread::Get()->GetIOMessageLoopProxy()),
-    error_callback_(error_callback),
-    is_playing_(false),
-    is_initialized_(false),
-    weak_factory_(this) {
+    : video_track_(video_track),
+      audio_track_(audio_track),
+      interface_provider_(interface_provider),
+      sink_ip_address_(sink_ip_address),
+      player_(nullptr),
+      io_task_runner_(content::RenderThread::Get()->GetIOTaskRunner()),
+      error_callback_(error_callback),
+      is_playing_(false),
+      is_initialized_(false),
+      weak_factory_(this) {
   DCHECK(!video_track.isNull() || !audio_track.isNull());
-  DCHECK(service_registry_);
+  DCHECK(interface_provider_);
   DCHECK(!error_callback_.is_null());
 }
 
@@ -431,9 +433,9 @@ wds::AudioCodec WiFiDisplayMediaManager::GetOptimalAudioFormat() const {
 
 void WiFiDisplayMediaManager::SendIDRPicture() {
   DCHECK(player_);
-  io_task_runner_->PostTask(FROM_HERE,
-      base::Bind(&WiFiDisplayMediaPipeline::RequestIDRPicture,
-                 base::Unretained(player_)));
+  io_task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&WiFiDisplayMediaPipeline::RequestIDRPicture,
+                                base::Unretained(player_)));
 }
 
 std::string WiFiDisplayMediaManager::GetSessionId() const {
@@ -452,10 +454,10 @@ void WiFiDisplayMediaManager::OnPlayerCreated(
      &WiFiDisplayMediaManager::OnMediaPipelineInitialized,
      weak_factory_.GetWeakPtr());
 
-  io_task_runner_->PostTask(FROM_HERE,
-      base::Bind(&WiFiDisplayMediaPipeline::Initialize,
-                 base::Unretained(player_),
-                 media::BindToCurrentLoop(completion_callback)));
+  io_task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&WiFiDisplayMediaPipeline::Initialize,
+                                base::Unretained(player_),
+                                media::BindToCurrentLoop(completion_callback)));
 }
 
 void WiFiDisplayMediaManager::OnMediaPipelineInitialized(bool success) {
@@ -474,7 +476,7 @@ void WiFiDisplayMediaManager::OnMediaPipelineInitialized(bool success) {
 // Note: invoked on IO thread
 void WiFiDisplayMediaManager::RegisterMediaService(
     const scoped_refptr<base::SingleThreadTaskRunner>& main_runner,
-    WiFiDisplayMediaServiceRequest request,
+    mojom::WiFiDisplayMediaServiceRequest request,
     const base::Closure& on_completed) {
   auto connect_service_callback =
       base::Bind(&WiFiDisplayMediaManager::ConnectToRemoteService,
@@ -486,9 +488,9 @@ void WiFiDisplayMediaManager::RegisterMediaService(
 }
 
 void WiFiDisplayMediaManager::ConnectToRemoteService(
-    WiFiDisplayMediaServiceRequest request) {
+    mojom::WiFiDisplayMediaServiceRequest request) {
   DCHECK(content::RenderThread::Get());
-  service_registry_->ConnectToRemoteService(std::move(request));
+  interface_provider_->GetInterface(std::move(request));
 }
 
 }  // namespace extensions

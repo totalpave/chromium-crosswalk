@@ -18,6 +18,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string16.h"
 #include "base/threading/thread_checker.h"
+#include "build/build_config.h"
 #include "extensions/common/permissions/permission_message.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/image/image.h"
@@ -54,18 +55,19 @@ class ExtensionInstallPrompt {
   enum PromptType {
     UNSET_PROMPT_TYPE = -1,
     INSTALL_PROMPT = 0,
-    INLINE_INSTALL_PROMPT,
-    BUNDLE_INSTALL_PROMPT_DEPRECATED,
-    RE_ENABLE_PROMPT,
-    PERMISSIONS_PROMPT,
-    EXTERNAL_INSTALL_PROMPT,
-    POST_INSTALL_PERMISSIONS_PROMPT,
-    LAUNCH_PROMPT_DEPRECATED,
-    REMOTE_INSTALL_PROMPT,
-    REPAIR_PROMPT,
-    DELEGATED_PERMISSIONS_PROMPT,
-    DELEGATED_BUNDLE_PERMISSIONS_PROMPT_DEPRECATED,
-    NUM_PROMPT_TYPES
+    // INLINE_INSTALL_PROMPT_DEPRECATED = 1,
+    // BUNDLE_INSTALL_PROMPT_DEPRECATED = 2,
+    RE_ENABLE_PROMPT = 3,
+    PERMISSIONS_PROMPT = 4,
+    EXTERNAL_INSTALL_PROMPT = 5,
+    POST_INSTALL_PERMISSIONS_PROMPT = 6,
+    // LAUNCH_PROMPT_DEPRECATED = 7,
+    REMOTE_INSTALL_PROMPT = 8,
+    REPAIR_PROMPT = 9,
+    DELEGATED_PERMISSIONS_PROMPT = 10,
+    // DELEGATED_BUNDLE_PERMISSIONS_PROMPT_DEPRECATED = 11,
+    NUM_PROMPT_TYPES = 12,
+    WEBSTORE_WIDGET_PROMPT = 13,
   };
 
   // The last prompt type to display; only used for testing.
@@ -74,20 +76,9 @@ class ExtensionInstallPrompt {
   // Enumeration for permissions and retained files details.
   enum DetailsType {
     PERMISSIONS_DETAILS = 0,
-    WITHHELD_PERMISSIONS_DETAILS,
     RETAINED_FILES_DETAILS,
     RETAINED_DEVICES_DETAILS,
   };
-
-  // This enum is used to differentiate regular and withheld permissions for
-  // segregation in the install prompt.
-  enum PermissionsType {
-    REGULAR_PERMISSIONS = 0,
-    WITHHELD_PERMISSIONS,
-    ALL_PERMISSIONS,
-  };
-
-  static std::string PromptTypeToString(PromptType type);
 
   // Extra information needed to display an installation or uninstallation
   // prompt. Gets populated with raw data and exposes getters for formatted
@@ -98,8 +89,7 @@ class ExtensionInstallPrompt {
     explicit Prompt(PromptType type);
     ~Prompt();
 
-    void SetPermissions(const extensions::PermissionMessages& permissions,
-                        PermissionsType permissions_type);
+    void AddPermissions(const extensions::PermissionMessages& permissions);
     void SetIsShowingDetails(DetailsType type,
                              size_t index,
                              bool is_showing_details);
@@ -109,7 +99,6 @@ class ExtensionInstallPrompt {
                          int rating_count);
 
     PromptType type() const { return type_; }
-    void set_type(PromptType type) { type_ = type; }
 
     // Getters for UI element labels.
     base::string16 GetDialogTitle() const;
@@ -117,14 +106,11 @@ class ExtensionInstallPrompt {
     // Returns the empty string when there should be no "accept" button.
     base::string16 GetAcceptButtonLabel() const;
     base::string16 GetAbortButtonLabel() const;
-    base::string16 GetPermissionsHeading(
-        PermissionsType permissions_type) const;
+    base::string16 GetPermissionsHeading() const;
     base::string16 GetRetainedFilesHeading() const;
     base::string16 GetRetainedDevicesHeading() const;
 
     bool ShouldShowPermissions() const;
-
-    bool ShouldUseTabModalDialog() const;
 
     // Getters for webstore metadata. Only populated when the type is
     // INLINE_INSTALL_PROMPT, EXTERNAL_INSTALL_PROMPT, or REPAIR_PROMPT.
@@ -137,13 +123,10 @@ class ExtensionInstallPrompt {
     void AppendRatingStars(StarAppender appender, void* data) const;
     base::string16 GetRatingCount() const;
     base::string16 GetUserCount() const;
-    size_t GetPermissionCount(PermissionsType permissions_type) const;
-    size_t GetPermissionsDetailsCount(PermissionsType permissions_type) const;
-    base::string16 GetPermission(size_t index,
-                                 PermissionsType permissions_type) const;
-    base::string16 GetPermissionsDetails(
-        size_t index,
-        PermissionsType permissions_type) const;
+    size_t GetPermissionCount() const;
+    size_t GetPermissionsDetailsCount() const;
+    base::string16 GetPermission(size_t index) const;
+    base::string16 GetPermissionsDetails(size_t index) const;
     bool GetIsShowingDetails(DetailsType type, size_t index) const;
     size_t GetRetainedFileCount() const;
     base::string16 GetRetainedFile(size_t index) const;
@@ -174,6 +157,9 @@ class ExtensionInstallPrompt {
     const gfx::Image& icon() const { return icon_; }
     void set_icon(const gfx::Image& icon) { icon_ = icon; }
 
+    double average_rating() const { return average_rating_; }
+    int rating_count() const { return rating_count_; }
+
     bool has_webstore_data() const { return has_webstore_data_; }
 
    private:
@@ -190,22 +176,13 @@ class ExtensionInstallPrompt {
 
     bool ShouldDisplayRevokeButton() const;
 
-    // Returns the InstallPromptPermissions corresponding to
-    // |permissions_type|.
-    InstallPromptPermissions& GetPermissionsForType(
-        PermissionsType permissions_type);
-    const InstallPromptPermissions& GetPermissionsForType(
-        PermissionsType permissions_type) const;
-
     bool ShouldDisplayRevokeFilesButton() const;
 
-    PromptType type_;
+    const PromptType type_;
 
     // Permissions that are being requested (may not be all of an extension's
     // permissions if only additional ones are being requested)
     InstallPromptPermissions prompt_permissions_;
-    // Permissions that will be withheld upon install.
-    InstallPromptPermissions withheld_prompt_permissions_;
 
     bool is_showing_details_for_retained_files_;
     bool is_showing_details_for_retained_devices_;
@@ -259,10 +236,6 @@ class ExtensionInstallPrompt {
   // Callback to show the default extension install dialog.
   // The implementations of this function are platform-specific.
   static ShowDialogCallback GetDefaultShowDialogCallback();
-
-  // Callback to show the Views extension install dialog. Don't use this; it is
-  // a temporary hack for MacViews.
-  static ShowDialogCallback GetViewsShowDialogCallback();
 
   // Returns the appropriate prompt type for the given |extension|.
   // TODO(devlin): This method is yucky - callers probably only care about one
@@ -328,8 +301,9 @@ class ExtensionInstallPrompt {
       const ShowDialogCallback& show_dialog_callback);
 
   // Installation was successful. This is declared virtual for testing.
-  virtual void OnInstallSuccess(const extensions::Extension* extension,
-                                SkBitmap* icon);
+  virtual void OnInstallSuccess(
+      scoped_refptr<const extensions::Extension> extension,
+      SkBitmap* icon);
 
   // Installation failed. This is declared virtual for testing.
   virtual void OnInstallFailure(const extensions::CrxInstallError& error);
@@ -360,7 +334,7 @@ class ExtensionInstallPrompt {
   SkBitmap icon_;
 
   // The extension we are showing the UI for.
-  const extensions::Extension* extension_;
+  scoped_refptr<const extensions::Extension> extension_;
 
   // A custom set of permissions to show in the install prompt instead of the
   // extension's active permissions.

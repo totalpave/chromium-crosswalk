@@ -2,11 +2,15 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/jumbo.gni")
 import("//build/config/ui.gni")
 import("//testing/test.gni")
 
-component("native_theme") {
+jumbo_component("native_theme") {
   sources = [
+    "caption_style.cc",
+    "caption_style.h",
+    "caption_style_win.cc",
     "common_theme.cc",
     "common_theme.h",
     "native_theme.cc",
@@ -15,40 +19,35 @@ component("native_theme") {
     "native_theme_android.h",
     "native_theme_base.cc",
     "native_theme_base.h",
-    "native_theme_dark_win.cc",
-    "native_theme_dark_win.h",
+    "native_theme_export.h",
+    "native_theme_features.cc",
+    "native_theme_features.h",
     "native_theme_mac.h",
     "native_theme_mac.mm",
     "native_theme_observer.cc",
     "native_theme_observer.h",
-    "native_theme_switches.cc",
-    "native_theme_switches.h",
-    "native_theme_win.cc",
-    "native_theme_win.h",
   ]
 
-  if (use_aura) {
+  if (use_aura || toolkit_views) {
     sources += [
       "native_theme_aura.cc",
       "native_theme_aura.h",
       "native_theme_dark_aura.cc",
       "native_theme_dark_aura.h",
+      "overlay_scrollbar_constants_aura.h",
     ]
-
-    if (is_win) {
-      sources += [
-        "native_theme_aurawin.cc",
-        "native_theme_aurawin.h",
-      ]
-    }
   }
 
   defines = [ "NATIVE_THEME_IMPLEMENTATION" ]
 
+  public_deps = [
+    "//skia",
+  ]
+
   deps = [
     "//base",
     "//base/third_party/dynamic_annotations",
-    "//skia",
+    "//cc/paint",
     "//ui/base",
     "//ui/display",
     "//ui/gfx",
@@ -58,11 +57,48 @@ component("native_theme") {
 
   if (is_mac) {
     libs = [
-      "AppKit.framework",
-      "ApplicationServices.framework",  # Temporary hack around https://crbug.com/620127. Remove after https://crbug.com/622481 is fixed.
       "CoreGraphics.framework",
+      "AppKit.framework",
     ]
   }
+}
+
+if (is_win) {
+  jumbo_component("native_theme_browser") {
+    defines = [ "NATIVE_THEME_IMPLEMENTATION" ]
+
+    # These files cannot work in the renderer on Windows.
+    sources = [
+      "native_theme_win.cc",
+      "native_theme_win.h",
+    ]
+
+    deps = [
+      ":native_theme",
+      "//base",
+      "//cc/paint",
+      "//ui/base",
+      "//ui/display",
+      "//ui/gfx",
+    ]
+  }
+} else {
+  jumbo_source_set("native_theme_browser") {
+  }
+}
+
+jumbo_source_set("test_support") {
+  testonly = true
+
+  deps = [
+    ":native_theme",
+    "//base",
+  ]
+
+  sources = [
+    "test_native_theme.cc",
+    "test_native_theme.h",
+  ]
 }
 
 test("native_theme_unittests") {
@@ -76,12 +112,17 @@ test("native_theme_unittests") {
     sources += [ "native_theme_mac_unittest.cc" ]
   }
 
+  if (is_win) {
+    sources += [ "caption_style_win_unittest.cc" ]
+  }
+
   deps = [
     ":native_theme",
     "//base/test:run_all_unittests",
     "//base/test:test_support",
-    "//skia:skia",
+    "//skia",
     "//testing/gtest",
+    "//ui/base",
     "//ui/gfx/geometry:geometry",
   ]
 }

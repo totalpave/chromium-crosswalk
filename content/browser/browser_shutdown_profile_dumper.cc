@@ -4,6 +4,7 @@
 
 #include "content/browser/browser_shutdown_profile_dumper.h"
 
+#include "base/bind.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -21,10 +22,7 @@ namespace content {
 
 BrowserShutdownProfileDumper::BrowserShutdownProfileDumper(
     const base::FilePath& dump_file_name)
-    : dump_file_name_(dump_file_name),
-      blocks_(0),
-      dump_file_(NULL) {
-}
+    : dump_file_name_(dump_file_name), blocks_(0), dump_file_(nullptr) {}
 
 BrowserShutdownProfileDumper::~BrowserShutdownProfileDumper() {
   WriteTracesToDisc();
@@ -63,9 +61,9 @@ void BrowserShutdownProfileDumper::WriteTracesToDisc() {
   base::Thread flush_thread("browser_shutdown_trace_event_flush");
   flush_thread.Start();
   flush_thread.task_runner()->PostTask(
-      FROM_HERE, base::Bind(&BrowserShutdownProfileDumper::EndTraceAndFlush,
-                            base::Unretained(this),
-                            base::Unretained(&flush_complete_event)));
+      FROM_HERE, base::BindOnce(&BrowserShutdownProfileDumper::EndTraceAndFlush,
+                                base::Unretained(this),
+                                base::Unretained(&flush_complete_event)));
 
   bool original_wait_allowed = base::ThreadRestrictions::SetWaitAllowed(true);
   flush_complete_event.Wait();
@@ -144,7 +142,7 @@ void BrowserShutdownProfileDumper::CloseFile() {
   if (!dump_file_)
     return;
   base::CloseFile(dump_file_);
-  dump_file_ = NULL;
+  dump_file_ = nullptr;
 }
 
 }  // namespace content

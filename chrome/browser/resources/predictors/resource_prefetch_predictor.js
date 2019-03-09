@@ -12,7 +12,7 @@ function requestResourcePrefetchPredictorDb() {
 /**
  * Callback from backend with the database contents. Sets up some globals and
  * calls to create the UI.
- * @param {Dictionary} database Information about ResourcePrefetchPredictor
+ * @param {Object} database Information about ResourcePrefetchPredictor
  *     including the database as a flattened list, a boolean indicating if the
  *     system is enabled.
  */
@@ -31,7 +31,7 @@ function truncateString(str) {
 
 /**
  * Updates the table from the database.
- * @param {Dictionary} database Information about ResourcePrefetchPredictor
+ * @param {Object} database Information about ResourcePrefetchPredictor
  *     including the database as a flattened list, a boolean indicating if the
  *     system is enabled and the current hit weight.
  */
@@ -40,63 +40,58 @@ function updateResourcePrefetchPredictorDbView(database) {
     $('rpp_enabled').style.display = 'none';
     $('rpp_disabled').style.display = 'block';
     return;
-  } else {
-    $('rpp_enabled').style.display = 'block';
-    $('rpp_disabled').style.display = 'none';
   }
 
-  var hasUrlData = database.url_db && database.url_db.length > 0;
-  var hasHostData = database.host_db && database.host_db.length > 0;
+  $('rpp_enabled').style.display = 'block';
+  $('rpp_disabled').style.display = 'none';
 
-  if (hasUrlData)
-    renderCacheData($('rpp_url_body'), database.url_db);
-  if (hasHostData)
-    renderCacheData($('rpp_host_body'), database.host_db);
+  const hasOriginData = database.origin_db && database.origin_db.length > 0;
+
+  if (hasOriginData) {
+    renderOriginData($('rpp_origin_body'), database.origin_db);
+  }
 }
 
 /**
- * Renders cache data for URL or host based data.
+ * Renders the content of the predictor origin table.
  * @param {HTMLElement} body element of table to render into.
- * @param {Dictionary} database to render.
+ * @param {Object} database to render.
  */
-function renderCacheData(body, database) {
+function renderOriginData(body, database) {
   body.textContent = '';
-  for (var i = 0; i < database.length; ++i) {
-    var main = database[i];
-
-    for (var j = 0; j < main.resources.length; ++j) {
-      var resource = main.resources[j];
-      var row = document.createElement('tr');
+  for (const main of database) {
+    for (let j = 0; j < main.origins.length; ++j) {
+      const origin = main.origins[j];
+      const row = document.createElement('tr');
 
       if (j == 0) {
-        var t = document.createElement('td');
-        t.rowSpan = main.resources.length;
-        t.textContent = truncateString(main.main_frame_url);
-        t.className = 'last';
+        const t = document.createElement('td');
+        t.rowSpan = main.origins.length;
+        t.textContent = truncateString(main.main_frame_host);
         row.appendChild(t);
       }
 
-      if (j == main.resources.length - 1)
-        row.className = 'last';
-
+      row.className = 'action-none';
       row.appendChild(document.createElement('td')).textContent =
-          truncateString(resource.resource_url);
+          truncateString(origin.origin);
       row.appendChild(document.createElement('td')).textContent =
-          resource.resource_type;
+          origin.number_of_hits;
       row.appendChild(document.createElement('td')).textContent =
-          resource.number_of_hits;
+          origin.number_of_misses;
       row.appendChild(document.createElement('td')).textContent =
-          resource.number_of_misses;
+          origin.consecutive_misses;
       row.appendChild(document.createElement('td')).textContent =
-          resource.consecutive_misses;
+          origin.position;
       row.appendChild(document.createElement('td')).textContent =
-          resource.position;
+          origin.always_access_network;
       row.appendChild(document.createElement('td')).textContent =
-          resource.score;
+          origin.accessed_network;
+      row.appendChild(document.createElement('td')).textContent =
+          origin.score;
       body.appendChild(row);
     }
   }
 }
 
-document.addEventListener('DOMContentLoaded',
-                          requestResourcePrefetchPredictorDb);
+document.addEventListener(
+    'DOMContentLoaded', requestResourcePrefetchPredictorDb);

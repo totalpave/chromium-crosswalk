@@ -3,8 +3,6 @@
 // found in the LICENSE file.
 //
 // This is the base class for an object that send frames to a receiver.
-// TODO(hclam): Refactor such that there is no separate AudioSender vs.
-// VideoSender, and the functionality of both is rolled into this class.
 
 #ifndef MEDIA_CAST_SENDER_FRAME_SENDER_H_
 #define MEDIA_CAST_SENDER_FRAME_SENDER_H_
@@ -15,6 +13,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "media/cast/cast_config.h"
 #include "media/cast/cast_environment.h"
 #include "media/cast/net/cast_transport.h"
 #include "media/cast/net/rtcp/rtcp_defines.h"
@@ -28,14 +27,8 @@ struct SenderEncodedFrame;
 class FrameSender {
  public:
   FrameSender(scoped_refptr<CastEnvironment> cast_environment,
-              bool is_audio,
               CastTransport* const transport_sender,
-              int rtp_timebase,
-              uint32_t ssrc,
-              double max_frame_rate,
-              base::TimeDelta min_playout_delay,
-              base::TimeDelta max_playout_delay,
-              base::TimeDelta animated_playout_delay,
+              const FrameSenderConfig& config,
               CongestionControl* congestion_control);
   virtual ~FrameSender();
 
@@ -60,6 +53,9 @@ class FrameSender {
   // Returns the duration of the data in the encoder's backlog plus the duration
   // of sent, unacknowledged frames.
   virtual base::TimeDelta GetInFlightMediaDuration() const = 0;
+
+  // One or more frames were canceled.
+  virtual void OnCancelSendingFrames();
 
  protected:
   class RtcpClient : public RtcpObserver {
@@ -99,7 +95,7 @@ class FrameSender {
 
  protected:
   // Schedule and execute periodic checks for re-sending packets.  If no
-  // acknowledgements have been received for "too long," AudioSender will
+  // acknowledgements have been received for "too long," FrameSender will
   // speculatively re-send certain packets of an unacked frame to kick-start
   // re-transmission.  This is a last resort tactic to prevent the session from
   // getting stuck after a long outage.
@@ -169,7 +165,7 @@ class FrameSender {
   // Counts the number of duplicate ACK that are being received.  When this
   // number reaches a threshold, the sender will take this as a sign that the
   // receiver hasn't yet received the first packet of the next frame.  In this
-  // case, VideoSender will trigger a re-send of the next frame.
+  // case, FrameSender will trigger a re-send of the next frame.
   int duplicate_ack_counter_;
 
   // This object controls how we change the bitrate to make sure the
@@ -192,6 +188,10 @@ class FrameSender {
   const int rtp_timebase_;
 
   const bool is_audio_;
+
+  // This is the maximum delay that the sender should get ack from receiver.
+  // Otherwise, sender will call ResendForKickstart().
+  base::TimeDelta max_ack_delay_;
 
   // Ring buffers to keep track of recent frame timestamps (both in terms of
   // local reference time and RTP media time).  These should only be accessed

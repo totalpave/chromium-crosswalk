@@ -7,16 +7,10 @@
 
 #include "base/android/base_jni_onload.h"
 
-namespace chrome {
 namespace android {
 
-bool OnJNIOnLoadRegisterJNI(
-    JavaVM* vm,
-    base::android::RegisterCallback callback);
-
-bool OnJNIOnLoadInit(base::android::InitCallback callback);
+bool OnJNIOnLoadInit();
 
 }  // namespace android
-}  // namespace chrome
 
 #endif  // CHROME_APP_ANDROID_CHROME_JNI_ONLOAD_H_

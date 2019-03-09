@@ -6,15 +6,13 @@
 #define EXTENSIONS_COMMON_CONSTANTS_H_
 
 #include "base/files/file_path.h"
+#include "base/logging.h"
 #include "ui/base/layout.h"
 
 namespace extensions {
 
 // Scheme we serve extension content from.
 extern const char kExtensionScheme[];
-
-// Canonical schemes you can use as input to GURL.SchemeIs().
-extern const char kExtensionResourceScheme[];
 
 // The name of the manifest inside an extension.
 extern const base::FilePath::CharType kManifestFilename[];
@@ -38,6 +36,9 @@ extern const base::FilePath::CharType kVerifiedContentsFilename[];
 // Name of the computed hashes file within the metadata folder.
 extern const base::FilePath::CharType kComputedHashesFilename[];
 
+// Name of the indexed ruleset file for the Declarative Net Request API.
+extern const base::FilePath::CharType kIndexedRulesetFilename[];
+
 // The name of the directory inside the profile where extensions are
 // installed to.
 extern const char kInstallDirectoryName[];
@@ -45,9 +46,6 @@ extern const char kInstallDirectoryName[];
 // The name of a temporary directory to install an extension into for
 // validation before finalizing install.
 extern const char kTempExtensionName[];
-
-// The file to write our decoded images to, relative to the extension_path.
-extern const char kDecodedImagesFilename[];
 
 // The file to write our decoded message catalogs to, relative to the
 // extension_path.
@@ -107,11 +105,25 @@ extern const char kMimeTypePng[];
 // The extension id of the Web Store component application.
 extern const char kWebStoreAppId[];
 
+// The key used for signing some pieces of data from the webstore.
+extern const uint8_t kWebstoreSignaturesPublicKey[];
+extern const size_t kWebstoreSignaturesPublicKeySize;
+
+// Thread identifier for the main renderer thread (as opposed to a service
+// worker thread).
+// This is the default thread id used for extension event listeners registered
+// from a non-service worker context
+extern const int kMainThreadId;
+
 // Enumeration of possible app launch sources.
+// This should be kept in sync with LaunchSource in
+// extensions/common/api/app_runtime.idl, and GetLaunchSourceEnum() in
+// extensions/browser/api/app_runtime/app_runtime_api.cc.
 // Note the enumeration is used in UMA histogram so entries
 // should not be re-ordered or removed.
 enum AppLaunchSource {
-  SOURCE_UNTRACKED = 0,
+  SOURCE_NONE,
+  SOURCE_UNTRACKED,
   SOURCE_APP_LAUNCHER,
   SOURCE_NEW_TAB_PAGE,
   SOURCE_RELOAD,
@@ -131,7 +143,8 @@ enum AppLaunchSource {
   SOURCE_CHROME_INTERNAL,
   SOURCE_TEST,
   SOURCE_INSTALLED_NOTIFICATION,
-
+  SOURCE_CONTEXT_MENU,
+  SOURCE_ARC,
   NUM_APP_LAUNCH_SOURCES
 };
 
@@ -158,7 +171,7 @@ enum LaunchType {
 // histograms and preferences.
 enum LaunchContainer {
   LAUNCH_CONTAINER_WINDOW,
-  LAUNCH_CONTAINER_PANEL,
+  LAUNCH_CONTAINER_PANEL_DEPRECATED,
   LAUNCH_CONTAINER_TAB,
   // For platform apps, which don't actually have a container (they just get a
   // "onLaunched" event).
@@ -166,9 +179,16 @@ enum LaunchContainer {
   NUM_LAUNCH_CONTAINERS
 };
 
+// The origin of injected CSS.
+enum CSSOrigin { CSS_ORIGIN_AUTHOR, CSS_ORIGIN_USER };
+static const CSSOrigin CSS_ORIGIN_LAST = CSS_ORIGIN_USER;
+
 }  // namespace extensions
 
 namespace extension_misc {
+
+// Matches chrome.tabs.TAB_ID_NONE.
+const int kUnknownTabId = -1;
 
 // Matches chrome.windows.WINDOW_ID_NONE.
 const int kUnknownWindowId = -1;
@@ -176,8 +196,6 @@ const int kUnknownWindowId = -1;
 // Matches chrome.windows.WINDOW_ID_CURRENT.
 const int kCurrentWindowId = -2;
 
-// NOTE: If you change this list, you should also change kExtensionIconSizes
-// in cc file.
 enum ExtensionIcons {
   EXTENSION_ICON_GIGANTOR = 512,
   EXTENSION_ICON_EXTRA_LARGE = 256,
@@ -185,10 +203,15 @@ enum ExtensionIcons {
   EXTENSION_ICON_MEDIUM = 48,
   EXTENSION_ICON_SMALL = 32,
   EXTENSION_ICON_SMALLISH = 24,
-  EXTENSION_ICON_ACTION = 19,
   EXTENSION_ICON_BITTY = 16,
   EXTENSION_ICON_INVALID = 0,
 };
+
+// The extension id of the ChromeVox extension.
+extern const char kChromeVoxExtensionId[];
+
+// The extension id of the feedback component extension.
+extern const char kFeedbackExtensionId[];
 
 // The extension id of the PDF extension.
 extern const char kPdfExtensionId[];
@@ -205,11 +228,58 @@ extern const char kQuickOfficeExtensionId[];
 // The extension id used for testing mimeHandlerPrivate.
 extern const char kMimeHandlerPrivateTestExtensionId[];
 
+// The extension id of the Camera application.
+extern const char kCameraAppId[];
+
+// The extension id of the Chrome component application.
+extern const char kChromeAppId[];
+
+// The extension id of the Files Manager application.
+extern const char kFilesManagerAppId[];
+
+// The extension id of the Google Keep application.
+extern const char kGoogleKeepAppId[];
+
+// The extension id of the Youtube application.
+extern const char kYoutubeAppId[];
+
+// The extension id of the genius (Get Help) app.
+extern const char kGeniusAppId[];
+
+#if defined(OS_CHROMEOS)
+// The extension id of the default Demo Mode Highlights app.
+extern const char kHighlightsAppId[];
+
+// The extension id of an alternate Demo Mode Highlights app.
+extern const char kHighlightsAlt1AppId[];
+
+// The extension id of an alternate Demo Mode Highlights app.
+extern const char kHighlightsAlt2AppId[];
+
+// The extension id of the default Demo Mode screensaver app.
+extern const char kScreensaverAppId[];
+
+// The extension id of an alternate Demo Mode screensaver app.
+extern const char kScreensaverAlt1AppId[];
+
+// The extension id of an alternate Demo Mode screensaver app.
+extern const char kScreensaverAlt2AppId[];
+#endif
+
 // The extension id for the production version of Hangouts.
 extern const char kProdHangoutsExtensionId[];
 
 // Extension ids used by Hangouts.
 extern const char* const kHangoutsExtensionIds[6];
+
+// Error message when enterprise policy blocks scripting of webpage.
+extern const char kPolicyBlockedScripting[];
+
+// The default block size for hashing used in content verification.
+extern const int kContentVerificationDefaultBlockSize;
+
+// The minimum severity of a log or error in order to report it to the browser.
+extern const logging::LogSeverity kMinimumSeverityToReportError;
 
 }  // namespace extension_misc
 

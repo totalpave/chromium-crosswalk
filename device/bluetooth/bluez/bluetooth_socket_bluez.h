@@ -6,11 +6,11 @@
 #define DEVICE_BLUETOOTH_BLUEZ_BLUETOOTH_SOCKET_BLUEZ_H_
 
 #include <memory>
-#include <queue>
 #include <string>
 
+#include "base/containers/queue.h"
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
+#include "base/sequenced_task_runner.h"
 #include "dbus/object_path.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_export.h"
@@ -19,10 +19,6 @@
 #include "device/bluetooth/bluetooth_uuid.h"
 #include "device/bluetooth/dbus/bluetooth_profile_manager_client.h"
 #include "device/bluetooth/dbus/bluetooth_profile_service_provider.h"
-
-namespace dbus {
-class FileDescriptor;
-}  // namespace dbus
 
 namespace bluez {
 
@@ -114,7 +110,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothSocketBlueZ
   void Released() override;
   void NewConnection(
       const dbus::ObjectPath& device_path,
-      std::unique_ptr<dbus::FileDescriptor> fd,
+      base::ScopedFD fd,
       const bluez::BluetoothProfileServiceProvider::Delegate::Options& options,
       const ConfirmationCallback& callback) override;
   void RequestDisconnection(const dbus::ObjectPath& device_path,
@@ -128,7 +124,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothSocketBlueZ
   // connection and set up the underlying net::TCPSocket() for it.
   void DoNewConnection(
       const dbus::ObjectPath& device_path,
-      std::unique_ptr<dbus::FileDescriptor> fd,
+      base::ScopedFD fd,
       const bluez::BluetoothProfileServiceProvider::Delegate::Options& options,
       const ConfirmationCallback& callback);
 
@@ -142,8 +138,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothSocketBlueZ
   // Method run on the socket thread with a valid file descriptor |fd|, once
   // complete calls |callback| on the UI thread with an appropriate argument
   // indicating success or failure.
-  void DoConnect(std::unique_ptr<dbus::FileDescriptor> fd,
-                 const ConfirmationCallback& callback);
+  void DoConnect(base::ScopedFD fd, const ConfirmationCallback& callback);
 
   // Method run to clean-up a listening socket.
   void DoCloseListening();
@@ -185,13 +180,13 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothSocketBlueZ
     ~ConnectionRequest();
 
     dbus::ObjectPath device_path;
-    std::unique_ptr<dbus::FileDescriptor> fd;
+    base::ScopedFD fd;
     bluez::BluetoothProfileServiceProvider::Delegate::Options options;
     ConfirmationCallback callback;
     bool accepting;
     bool cancelled;
   };
-  std::queue<linked_ptr<ConnectionRequest>> connection_request_queue_;
+  base::queue<std::unique_ptr<ConnectionRequest>> connection_request_queue_;
 
   DISALLOW_COPY_AND_ASSIGN(BluetoothSocketBlueZ);
 };

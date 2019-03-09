@@ -8,12 +8,33 @@
 #include <limits.h>
 
 #include <cstring>
+#include <unordered_map>
+#include <vector>
 
+#include "base/big_endian.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "build/build_config.h"
 #include "net/base/address_list.h"
+#include "net/base/url_util.h"
+#include "net/dns/public/dns_protocol.h"
+#include "net/third_party/uri_template/uri_template.h"
+#include "url/url_canon.h"
+
+namespace {
+
+// RFC 1035, section 2.3.4: labels 63 octets or less.
+// Section 3.1: Each label is represented as a one octet length field followed
+// by that number of octets.
+const int kMaxLabelLength = 63;
+
+// RFC 1035, section 4.1.4: the first two bits of a 16-bit name pointer are
+// ones.
+const uint16_t kFlagNamePointer = 0xc000;
+
+}  // namespace
 
 #if defined(OS_POSIX)
 #include <netinet/in.h>
@@ -34,10 +55,10 @@ namespace net {
 // Based on DJB's public domain code.
 bool DNSDomainFromDot(const base::StringPiece& dotted, std::string* out) {
   const char* buf = dotted.data();
-  unsigned n = dotted.size();
-  char label[63];
+  size_t n = dotted.size();
+  char label[kMaxLabelLength];
   size_t labellen = 0; /* <= sizeof label */
-  char name[255];
+  char name[dns_protocol::kMaxNameLength];
   size_t namelen = 0; /* <= sizeof name */
   char ch;
 
@@ -60,6 +81,9 @@ bool DNSDomainFromDot(const base::StringPiece& dotted, std::string* out) {
     }
     if (labellen >= sizeof label)
       return false;
+    if (!IsValidHostLabelCharacter(ch, labellen == 0)) {
+      return false;
+    }
     label[labellen++] = ch;
   }
 
@@ -75,12 +99,22 @@ bool DNSDomainFromDot(const base::StringPiece& dotted, std::string* out) {
 
   if (namelen + 1 > sizeof name)
     return false;
-  if (namelen == 0) // Empty names e.g. "", "." are not valid.
+  if (namelen == 0)  // Empty names e.g. "", "." are not valid.
     return false;
   name[namelen++] = 0;  // This is the root label (of length 0).
 
   *out = std::string(name, namelen);
   return true;
+}
+
+bool IsValidDNSDomain(const base::StringPiece& dotted) {
+  std::string dns_formatted;
+  return DNSDomainFromDot(dotted, &dns_formatted);
+}
+
+bool IsValidHostLabelCharacter(char c, bool is_first_char) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || (!is_first_char && c == '-') || c == '_';
 }
 
 std::string DNSDomainToString(const base::StringPiece& domain) {
@@ -91,7 +125,7 @@ std::string DNSDomainToString(const base::StringPiece& domain) {
     if (domain[i] < 0)
       return std::string();
 #endif
-    if (domain[i] > 63)
+    if (domain[i] > kMaxLabelLength)
       return std::string();
 
     if (i)
@@ -105,55 +139,11 @@ std::string DNSDomainToString(const base::StringPiece& domain) {
   return ret;
 }
 
-bool HaveOnlyLoopbackAddresses() {
-#if defined(OS_ANDROID)
-  return android::HaveOnlyLoopbackAddresses();
-#elif defined(OS_NACL)
-  NOTIMPLEMENTED();
-  return false;
-#elif defined(OS_POSIX)
-  struct ifaddrs* interface_addr = NULL;
-  int rv = getifaddrs(&interface_addr);
-  if (rv != 0) {
-    DVLOG(1) << "getifaddrs() failed with errno = " << errno;
-    return false;
-  }
-
-  bool result = true;
-  for (struct ifaddrs* interface = interface_addr;
-       interface != NULL;
-       interface = interface->ifa_next) {
-    if (!(IFF_UP & interface->ifa_flags))
-      continue;
-    if (IFF_LOOPBACK & interface->ifa_flags)
-      continue;
-    const struct sockaddr* addr = interface->ifa_addr;
-    if (!addr)
-      continue;
-    if (addr->sa_family == AF_INET6) {
-      // Safe cast since this is AF_INET6.
-      const struct sockaddr_in6* addr_in6 =
-          reinterpret_cast<const struct sockaddr_in6*>(addr);
-      const struct in6_addr* sin6_addr = &addr_in6->sin6_addr;
-      if (IN6_IS_ADDR_LOOPBACK(sin6_addr) || IN6_IS_ADDR_LINKLOCAL(sin6_addr))
-        continue;
-    }
-    if (addr->sa_family != AF_INET6 && addr->sa_family != AF_INET)
-      continue;
-
-    result = false;
-    break;
-  }
-  freeifaddrs(interface_addr);
-  return result;
-#elif defined(OS_WIN)
-  // TODO(wtc): implement with the GetAdaptersAddresses function.
-  NOTIMPLEMENTED();
-  return false;
-#else
-  NOTIMPLEMENTED();
-  return false;
-#endif  // defined(various platforms)
+std::string GetURLFromTemplateWithoutParameters(const string& server_template) {
+  std::string url_string;
+  std::unordered_map<string, string> parameters;
+  uri_template::Expand(server_template, parameters, &url_string);
+  return url_string;
 }
 
 #if !defined(OS_NACL)
@@ -206,12 +196,21 @@ AddressListDeltaType FindAddressListDeltaType(const AddressList& a,
       if (a[i] == b[j]) {
         any_match = true;
         this_match = true;
+        // If there is no match before, and the current match, this means
+        // DELTA_OVERLAP.
+        if (any_missing)
+          return DELTA_OVERLAP;
       } else if (i == j) {
         pairwise_mismatch = true;
       }
     }
-    if (!this_match)
+    if (!this_match) {
       any_missing = true;
+      // If any match has occurred before, then there is no need to compare the
+      // remaining addresses. This means DELTA_OVERLAP.
+      if (any_match)
+        return DELTA_OVERLAP;
+    }
   }
 
   if (same_size && !pairwise_mismatch)
@@ -222,6 +221,46 @@ AddressListDeltaType FindAddressListDeltaType(const AddressList& a,
     return DELTA_OVERLAP;
   else
     return DELTA_DISJOINT;
+}
+
+std::string CreateNamePointer(uint16_t offset) {
+  DCHECK_LE(offset, 0x3fff);
+  offset |= kFlagNamePointer;
+  char buf[2];
+  base::WriteBigEndian(buf, offset);
+  return std::string(buf, sizeof(buf));
+}
+
+uint16_t DnsQueryTypeToQtype(DnsQueryType dns_query_type) {
+  switch (dns_query_type) {
+    case DnsQueryType::UNSPECIFIED:
+      NOTREACHED();
+      return 0;
+    case DnsQueryType::A:
+      return dns_protocol::kTypeA;
+    case DnsQueryType::AAAA:
+      return dns_protocol::kTypeAAAA;
+    case DnsQueryType::TXT:
+      return dns_protocol::kTypeTXT;
+    case DnsQueryType::PTR:
+      return dns_protocol::kTypePTR;
+    case DnsQueryType::SRV:
+      return dns_protocol::kTypeSRV;
+  }
+}
+
+DnsQueryType AddressFamilyToDnsQueryType(AddressFamily address_family) {
+  switch (address_family) {
+    case ADDRESS_FAMILY_UNSPECIFIED:
+      return DnsQueryType::UNSPECIFIED;
+    case ADDRESS_FAMILY_IPV4:
+      return DnsQueryType::A;
+    case ADDRESS_FAMILY_IPV6:
+      return DnsQueryType::AAAA;
+    default:
+      NOTREACHED();
+      return DnsQueryType::UNSPECIFIED;
+  }
 }
 
 }  // namespace net

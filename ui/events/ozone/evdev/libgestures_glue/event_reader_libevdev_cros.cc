@@ -9,7 +9,6 @@
 #include <linux/input.h>
 #include <utility>
 
-#include "base/message_loop/message_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
@@ -20,24 +19,25 @@ namespace {
 
 std::string FormatLog(const char* fmt, va_list args) {
   std::string msg = base::StringPrintV(fmt, args);
-  if (!msg.empty() && msg[msg.size() - 1] == '\n')
-    msg.erase(msg.end() - 1, msg.end());
+  if (!msg.empty() && msg.back() == '\n')
+    msg.pop_back();
   return msg;
 }
 
 }  // namespace
 
 EventReaderLibevdevCros::EventReaderLibevdevCros(
-    int fd,
+    base::ScopedFD fd,
     const base::FilePath& path,
     int id,
     const EventDeviceInfo& devinfo,
     std::unique_ptr<Delegate> delegate)
-    : EventConverterEvdev(fd,
+    : EventConverterEvdev(fd.get(),
                           path,
                           id,
                           devinfo.device_type(),
                           devinfo.name(),
+                          devinfo.phys(),
                           devinfo.vendor_id(),
                           devinfo.product_id()),
       has_keyboard_(devinfo.HasKeyboard()),
@@ -53,7 +53,7 @@ EventReaderLibevdevCros::EventReaderLibevdevCros(
   evdev_.log_udata = this;
   evdev_.syn_report = OnSynReport;
   evdev_.syn_report_udata = this;
-  evdev_.fd = fd;
+  evdev_.fd = fd.release();
 
   memset(&evstate_, 0, sizeof(evstate_));
   evdev_.evstate = &evstate_;
@@ -65,9 +65,8 @@ EventReaderLibevdevCros::EventReaderLibevdevCros(
 }
 
 EventReaderLibevdevCros::~EventReaderLibevdevCros() {
-  DCHECK(!watching_);
+  Stop();
   EvdevClose(&evdev_);
-  fd_ = -1;
 }
 
 EventReaderLibevdevCros::Delegate::~Delegate() {}
@@ -111,7 +110,7 @@ void EventReaderLibevdevCros::OnSynReport(void* data,
                                           EventStateRec* evstate,
                                           struct timeval* tv) {
   EventReaderLibevdevCros* reader = static_cast<EventReaderLibevdevCros*>(data);
-  if (!reader->enabled_)
+  if (!reader->IsEnabled())
     return;
 
   reader->delegate_->OnLibEvdevCrosEvent(&reader->evdev_, evstate, *tv);
@@ -129,7 +128,7 @@ void EventReaderLibevdevCros::OnLogMessage(void* data,
   else if (level >= LOGLEVEL_WARNING)
     LOG(WARNING) << "libevdev: " << FormatLog(fmt, args);
   else
-    VLOG(3) << "libevdev: " << FormatLog(fmt, args);
+    DVLOG(3) << "libevdev: " << FormatLog(fmt, args);
   va_end(args);
 }
 

@@ -9,12 +9,13 @@
 #include "base/logging.h"
 // TODO(slan): Find a replacement for LibcurlWrapper in Chromium to remove the
 // breakpad dependency.
-#include "breakpad/src/common/linux/libcurl_wrapper.h"
+#include "third_party/breakpad/breakpad/src/common/linux/libcurl_wrapper.h"
 
 namespace chromecast {
 namespace {
 
-// Keep these in sync with "//breakpad/src/client/mac/sender/uploader.mm"
+// Keep these in sync with
+// //third_party/breakpad/breakpad/src/client/mac/sender/uploader.mm
 const char kProdKey[] = "prod";
 const char kVerKey[] = "ver";
 const char kGuidKey[] = "guid";
@@ -34,14 +35,14 @@ CastCrashdumpData::~CastCrashdumpData() {
 }
 
 CastCrashdumpUploader::CastCrashdumpUploader(const CastCrashdumpData& data)
-    : CastCrashdumpUploader(data, new google_breakpad::LibcurlWrapper()) {
-  // This instance of libcurlwrapper will leak.
-}
+    : CastCrashdumpUploader(
+          data,
+          std::make_unique<google_breakpad::LibcurlWrapper>()) {}
 
 CastCrashdumpUploader::CastCrashdumpUploader(
     const CastCrashdumpData& data,
-    google_breakpad::LibcurlWrapper* http_layer)
-    : http_layer_(http_layer), data_(data) {
+    std::unique_ptr<google_breakpad::LibcurlWrapper> http_layer)
+    : http_layer_(std::move(http_layer)), data_(data) {
   DCHECK(http_layer_);
 }
 

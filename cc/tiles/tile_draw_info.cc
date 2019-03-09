@@ -4,32 +4,51 @@
 
 #include "cc/tiles/tile_draw_info.h"
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "cc/base/math_util.h"
 
 namespace cc {
 
-TileDrawInfo::TileDrawInfo()
-    : mode_(RESOURCE_MODE),
-      solid_color_(SK_ColorWHITE),
-      resource_(nullptr),
-      contents_swizzled_(false),
-      was_ever_ready_to_draw_(false),
-      was_ever_used_to_draw_(false),
-      was_a_prepaint_tile_(false) {}
-
+TileDrawInfo::TileDrawInfo() = default;
 TileDrawInfo::~TileDrawInfo() {
   DCHECK(!resource_);
-  if (was_ever_ready_to_draw_ && was_a_prepaint_tile_) {
-    UMA_HISTOGRAM_BOOLEAN("Renderer4.ReadyToDrawTileDrawStatus",
-                          was_ever_used_to_draw_);
-  }
 }
 
 void TileDrawInfo::AsValueInto(base::trace_event::TracedValue* state) const {
   state->SetBoolean("is_solid_color", mode_ == SOLID_COLOR_MODE);
   state->SetBoolean("is_transparent",
                     mode_ == SOLID_COLOR_MODE && !SkColorGetA(solid_color_));
+}
+
+void TileDrawInfo::SetResource(ResourcePool::InUsePoolResource resource,
+                               bool resource_is_checker_imaged,
+                               bool contents_swizzled,
+                               bool is_premultiplied) {
+  DCHECK(!resource_);
+  DCHECK(resource);
+
+  mode_ = RESOURCE_MODE;
+  is_resource_ready_to_draw_ = false;
+  resource_is_checker_imaged_ = resource_is_checker_imaged;
+  contents_swizzled_ = contents_swizzled;
+  is_premultiplied_ = is_premultiplied;
+  resource_ = std::move(resource);
+}
+
+const ResourcePool::InUsePoolResource& TileDrawInfo::GetResource() {
+  DCHECK_EQ(mode_, RESOURCE_MODE);
+  DCHECK(resource_);
+  return resource_;
+}
+
+ResourcePool::InUsePoolResource TileDrawInfo::TakeResource() {
+  DCHECK_EQ(mode_, RESOURCE_MODE);
+  DCHECK(resource_);
+  is_resource_ready_to_draw_ = false;
+  resource_is_checker_imaged_ = false;
+  contents_swizzled_ = false;
+  is_premultiplied_ = false;
+  return std::move(resource_);
 }
 
 }  // namespace cc

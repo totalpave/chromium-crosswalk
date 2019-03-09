@@ -5,27 +5,23 @@
 import("//build/config/crypto.gni")
 import("//build/config/features.gni")
 import("//build/config/sysroot.gni")
-
-gypi_values = exec_script("//build/gypi_to_gn.py",
-                          [ rebase_path("../chrome_utility.gypi") ],
-                          "scope",
-                          [ "../chrome_utility.gypi" ])
-
-# Provides a way for the utility library to push ldflags to dependents.
-config("utility_ldflags") {
-  if (is_mac && safe_browsing_mode == 1) {
-    libs = [ "bz2" ]
-  }
-}
+import("//chrome/common/features.gni")
+import("//chromeos/assistant/assistant.gni")
+import("//device/vr/buildflags/buildflags.gni")
+import("//extensions/buildflags/buildflags.gni")
+import("//printing/buildflags/buildflags.gni")
 
 static_library("utility") {
-  sources = rebase_path(gypi_values.chrome_utility_sources, ".", "..")
+  sources = [
+    "chrome_content_utility_client.cc",
+    "chrome_content_utility_client.h",
+  ]
+
   defines = []
   configs += [
     "//build/config:precompiled_headers",
     "//build/config/compiler:wexit_time_destructors",
   ]
-  all_dependent_configs = [ ":utility_ldflags" ]
 
   public_deps = []
   deps = [
@@ -34,43 +30,98 @@ static_library("utility") {
     "//chrome:strings",
     "//chrome/common",
     "//chrome/common:mojo_bindings",
-    "//components/safe_json/utility",
+    "//chrome/services/noop:lib",
+    "//chrome/services/noop/public/cpp",
+    "//components/mirroring/mojom:constants",
+    "//components/mirroring/service:mirroring_service",
     "//components/search_engines",
+    "//components/services/heap_profiling",
+    "//components/services/heap_profiling/public/cpp",
+    "//components/services/unzip:lib",
     "//components/strings",
     "//components/url_formatter",
     "//content/public/child",
     "//content/public/common",
     "//content/public/utility",
-    "//courgette:courgette_lib",
+    "//device/vr/buildflags",
+    "//extensions/buildflags",
+    "//ipc",
     "//media",
     "//net:net_with_v8",
-    "//services/shell/public/cpp",
+    "//printing/buildflags",
+    "//services/network:network_service",
+    "//services/service_manager/public/cpp",
     "//skia",
     "//sql",
     "//third_party/libxml",
+    "//third_party/zlib/google:zip",
+    "//ui/base:buildflags",
   ]
 
   if (!is_android) {
+    sources += [
+      "importer/bookmark_html_reader.cc",
+      "importer/bookmark_html_reader.h",
+      "importer/bookmarks_file_importer.cc",
+      "importer/bookmarks_file_importer.h",
+      "importer/edge_database_reader_win.cc",
+      "importer/edge_database_reader_win.h",
+      "importer/edge_importer_win.cc",
+      "importer/edge_importer_win.h",
+      "importer/external_process_importer_bridge.cc",
+      "importer/external_process_importer_bridge.h",
+      "importer/favicon_reencode.cc",
+      "importer/favicon_reencode.h",
+      "importer/firefox_importer.cc",
+      "importer/firefox_importer.h",
+      "importer/ie_importer_win.cc",
+      "importer/ie_importer_win.h",
+      "importer/importer.cc",
+      "importer/importer.h",
+      "importer/importer_creator.cc",
+      "importer/importer_creator.h",
+      "importer/nss_decryptor.cc",
+      "importer/nss_decryptor.h",
+      "importer/nss_decryptor_mac.h",
+      "importer/nss_decryptor_mac.mm",
+      "importer/nss_decryptor_win.cc",
+      "importer/nss_decryptor_win.h",
+      "importer/profile_import_impl.cc",
+      "importer/profile_import_impl.h",
+      "importer/profile_import_service.cc",
+      "importer/profile_import_service.h",
+      "importer/safari_importer.h",
+      "importer/safari_importer.mm",
+    ]
     deps += [
       "//chrome/common:mojo_bindings",
-      "//net:net_utility_services",
+      "//chrome/common/importer:interfaces",
+      "//components/autofill/core/common",
+      "//components/services/patch:lib",
+      "//services/data_decoder:lib",
+      "//services/proxy_resolver:lib",
     ]
-    sources +=
-        rebase_path(gypi_values.chrome_utility_importer_sources, ".", "..")
   }
 
   if (enable_extensions) {
+    sources += [
+      "image_writer/disk_unmounter_mac.cc",
+      "image_writer/disk_unmounter_mac.h",
+      "image_writer/error_messages.cc",
+      "image_writer/error_messages.h",
+      "image_writer/image_writer.cc",
+      "image_writer/image_writer.h",
+      "image_writer/image_writer_handler.cc",
+      "image_writer/image_writer_handler.h",
+      "image_writer/image_writer_mac.cc",
+      "image_writer/image_writer_win.cc",
+    ]
     deps += [
       "//chrome/common/extensions/api",
-      "//extensions/utility",
+      "//chrome/services/removable_storage_writer:lib",
     ]
 
     public_deps += [ "//chrome/common/extensions/api" ]
-
-    sources +=
-        rebase_path(gypi_values.chrome_utility_extensions_sources, ".", "..")
-    sources +=
-        rebase_path(gypi_values.chrome_utility_shared_media_sources, ".", "..")
 
     # Prevent wininet from loading in the renderer. http://crbug.com/460679
     if (is_win) {
@@ -79,16 +130,43 @@ static_library("utility") {
       # Add ESE library for Edge Import support.
       libs = [ "esent.lib" ]
       ldflags += [ "/DELAYLOAD:esent.dll" ]
+
+      deps += [
+        "//chrome/services/util_win:lib",
+        "//chrome/services/wifi_util_win:lib",
+      ]
     }
 
     if (is_win || is_mac) {
-      sources +=
-          rebase_path(gypi_values.chrome_utility_win_mac_media_gallery_sources,
-                      ".",
-                      "..")
       deps += [ "//components/wifi" ]
     } else {
       sources += [ "image_writer/image_writer_stub.cc" ]
+    }
+  }
+
+  if (is_chromeos) {
+    sources += [
+      "mash_service_factory.cc",
+      "mash_service_factory.h",
+    ]
+    deps += [
+      "//ash",
+      "//ash/components/shortcut_viewer:lib",
+      "//ash/components/shortcut_viewer/public/mojom",
+      "//ash/components/tap_visualizer:lib",
+      "//ash/components/tap_visualizer/public/mojom",
+      "//chrome/services/file_util:lib",
+      "//chromeos/assistant:buildflags",
+      "//chromeos/services/ime:lib",
+      "//chromeos/services/ime/public/mojom",
+      "//services/ws/public/mojom",
+    ]
+
+    if (enable_cros_libassistant) {
+      deps += [
+        "//chromeos/services/assistant/audio_decoder:lib",
+        "//chromeos/services/assistant/public/mojom",
+      ]
     }
   }
 
@@ -103,41 +181,68 @@ static_library("utility") {
     ]
   }
 
-  if (enable_print_preview || (enable_basic_printing && is_win)) {
-    deps += [ "//pdf" ]
-  } else {
-    sources -= [
-      "printing_handler.cc",
-      "printing_handler.h",
+  if (enable_basic_printing) {
+    deps += [
+      "//components/services/pdf_compositor/public/cpp:factory",
+      "//components/services/pdf_compositor/public/interfaces",
     ]
+
+    if (is_chromeos) {
+      deps += [
+        "//chrome/services/cups_ipp_parser:lib",
+        "//chrome/services/cups_ipp_parser/public/mojom:mojom",
+      ]
+    }
+  }
+
+  if (enable_print_preview) {
+    deps += [ "//chrome/services/printing:lib" ]
+
+    if (is_win) {
+      sources += [
+        "printing_handler.cc",
+        "printing_handler.h",
+      ]
+    }
   }
 
   if (safe_browsing_mode == 1) {
-    sources +=
-        rebase_path(gypi_values.chrome_utility_safe_browsing_sources, ".", "..")
-    deps += [ "//third_party/zlib" ]
+    deps += [ "//chrome/services/file_util:lib" ]
+    if (is_mac) {
+      deps += [ "//chrome/utility/safe_browsing/mac" ]
+    }
+  }
+
+  if (is_android || enable_extensions) {
+    deps += [ "//chrome/services/media_gallery_util:lib" ]
+  }
+
+  if (enable_isolated_xr_service) {
+    deps += [
+      "//chrome/services/isolated_xr_device:lib",
+      "//device/vr/public/mojom",
+    ]
+  }
+
+  if (enable_simple_browser_service_out_of_process) {
+    deps += [
+      "//services/content/simple_browser",
+      "//services/content/simple_browser/public/mojom",
+    ]
   }
 }
 
-if (is_mac) {
-  import("//testing/libfuzzer/fuzzer_test.gni")
-  fuzzer_test("safe_browsing_dmg_fuzzer") {
+if (!is_android) {
+  source_set("profile_import_manifest") {
     sources = [
-      "safe_browsing/mac/convert_big_endian.h",
-      "safe_browsing/mac/fuzzer.cc",
-      "safe_browsing/mac/hfs.cc",
-      "safe_browsing/mac/hfs.h",
-      "safe_browsing/mac/read_stream.cc",
-      "safe_browsing/mac/read_stream.h",
-      "safe_browsing/mac/udif.cc",
-      "safe_browsing/mac/udif.h",
+      "importer/profile_import_manifest.cc",
+      "importer/profile_import_manifest.h",
     ]
-
-    additional_configs = [ ":utility_ldflags" ]
 
     deps = [
       "//base",
-      "//third_party/zlib",
+      "//chrome/common/importer:interfaces",
+      "//services/service_manager/public/cpp",
     ]
   }
 }

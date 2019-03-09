@@ -8,9 +8,7 @@
 
 login.createScreen('ConfirmPasswordScreen', 'confirm-password', function() {
   return {
-    EXTERNAL_API: [
-      'show'
-    ],
+    EXTERNAL_API: ['show'],
 
     confirmPasswordForm_: null,
 
@@ -24,18 +22,26 @@ login.createScreen('ConfirmPasswordScreen', 'confirm-password', function() {
     decorate: function() {
       this.confirmPasswordForm_ = $('saml-confirm-password');
       this.confirmPasswordForm_.addEventListener('cancel', function(e) {
-          Oobe.showScreen({id: SCREEN_ACCOUNT_PICKER});
-          Oobe.resetSigninUI(true);
+        Oobe.showScreen({id: SCREEN_ACCOUNT_PICKER});
+        Oobe.resetSigninUI(true);
       });
       this.confirmPasswordForm_.addEventListener('passwordEnter', function(e) {
         this.callback_(e.detail.password);
       }.bind(this));
     },
 
+    /**
+     * Returns default event target element.
+     * @type {Object}
+     */
+    get defaultControl() {
+      return $('saml-confirm-password');
+    },
+
     /** @override */
     onBeforeShow: function(data) {
-      $('login-header-bar').signinUIState =
-          SIGNIN_UI_STATE.SAML_PASSWORD_CONFIRM;
+      Oobe.getInstance().setSigninUIState(
+          SIGNIN_UI_STATE.SAML_PASSWORD_CONFIRM);
     },
 
     /** @override */
@@ -51,18 +57,20 @@ login.createScreen('ConfirmPasswordScreen', 'confirm-password', function() {
     /**
      * Shows the confirm password screen.
      * @param {string} email The authenticated user's e-mail.
+     * @param {boolean} manualPasswordInput True if no password has been
+     *     scrapped and the user needs to set one manually for the device.
      * @param {number} attemptCount Number of attempts tried, starting at 0.
      * @param {function(string)} callback The callback to be invoked when the
      *     screen is dismissed.
      */
-    show: function(email, attemptCount, callback) {
+    show: function(email, manualPasswordInput, attemptCount, callback) {
       this.callback_ = callback;
       this.confirmPasswordForm_.reset();
       this.confirmPasswordForm_.email = email;
+      this.confirmPasswordForm_.manualInput = manualPasswordInput;
       if (attemptCount > 0)
         this.confirmPasswordForm_.invalidate();
       Oobe.showScreen({id: SCREEN_CONFIRM_PASSWORD});
-      $('progress-dots').hidden = true;
     }
   };
 });

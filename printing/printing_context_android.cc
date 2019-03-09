@@ -11,6 +11,7 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/files/file.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
@@ -20,20 +21,19 @@
 #include "printing/print_job_constants.h"
 #include "printing/units.h"
 #include "third_party/icu/source/i18n/unicode/ulocdata.h"
+#include "ui/android/window_android.h"
+
+using base::android::JavaParamRef;
+using base::android::JavaRef;
+using base::android::ScopedJavaLocalRef;
+
+namespace printing {
 
 namespace {
 
-// 1 inch in mils.
-const int kInchToMil = 1000;
-
-inline int Round(double x) {
-  return static_cast<int>(x + 0.5);
-}
-
 // Sets the page sizes for a |PrintSettings| object.  |width| and |height|
 // arguments should be in device units.
-void SetSizes(
-    printing::PrintSettings* settings, int dpi, int width, int height) {
+void SetSizes(PrintSettings* settings, int dpi, int width, int height) {
   gfx::Size physical_size_device_units(width, height);
   // Assume full page is printable for now.
   gfx::Rect printable_area_device_units(0, 0, width, height);
@@ -45,23 +45,19 @@ void SetSizes(
 }
 
 void GetPageRanges(JNIEnv* env,
-                   jintArray int_arr,
-                   printing::PageRanges& range_vector) {
+                   const JavaRef<jintArray>& int_arr,
+                   PageRanges* range_vector) {
   std::vector<int> pages;
   base::android::JavaIntArrayToIntVector(env, int_arr, &pages);
-  for (std::vector<int>::const_iterator it = pages.begin();
-      it != pages.end();
-      ++it) {
-    printing::PageRange range;
-    range.from = *it;
-    range.to = *it;
-    range_vector.push_back(range);
+  for (int page : pages) {
+    PageRange range;
+    range.from = page;
+    range.to = page;
+    range_vector->push_back(range);
   }
 }
 
 }  // namespace
-
-namespace printing {
 
 // static
 std::unique_ptr<PrintingContext> PrintingContext::Create(Delegate* delegate) {
@@ -69,9 +65,20 @@ std::unique_ptr<PrintingContext> PrintingContext::Create(Delegate* delegate) {
 }
 
 // static
-void PrintingContextAndroid::PdfWritingDone(int fd, bool success) {
+void PrintingContextAndroid::PdfWritingDone(int page_count) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_PrintingContext_pdfWritingDone(env, fd, success);
+  Java_PrintingContext_pdfWritingDone(env, page_count);
+}
+
+// static
+void PrintingContextAndroid::SetPendingPrint(
+    ui::WindowAndroid* window,
+    const ScopedJavaLocalRef<jobject>& printable,
+    int render_process_id,
+    int render_frame_id) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_PrintingContext_setPendingPrint(env, window->GetJavaObject(), printable,
+                                       render_process_id, render_frame_id);
 }
 
 PrintingContextAndroid::PrintingContextAndroid(Delegate* delegate)
@@ -86,9 +93,9 @@ void PrintingContextAndroid::AskUserForSettings(
     int max_pages,
     bool has_selection,
     bool is_scripted,
-    const PrintSettingsCallback& callback) {
+    PrintSettingsCallback callback) {
   // This method is always run in the UI thread.
-  callback_ = callback;
+  callback_ = std::move(callback);
 
   JNIEnv* env = base::android::AttachCurrentThread();
   if (j_printing_context_.is_null()) {
@@ -98,11 +105,10 @@ void PrintingContextAndroid::AskUserForSettings(
   }
 
   if (is_scripted) {
-    Java_PrintingContext_showPrintDialog(env, j_printing_context_.obj());
+    Java_PrintingContext_showPrintDialog(env, j_printing_context_);
   } else {
-    Java_PrintingContext_pageCountEstimationDone(env,
-                                                 j_printing_context_.obj(),
-                                                 max_pages);
+    Java_PrintingContext_askUserForSettings(env, j_printing_context_,
+                                            max_pages);
   }
 }
 
@@ -110,42 +116,53 @@ void PrintingContextAndroid::AskUserForSettingsReply(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj,
     jboolean success) {
+  DCHECK(callback_);
   if (!success) {
     // TODO(cimamoglu): Differentiate between FAILED And CANCEL.
-    callback_.Run(FAILED);
+    std::move(callback_).Run(FAILED);
     return;
   }
 
   // We use device name variable to store the file descriptor.  This is hacky
   // but necessary. Since device name is not necessary for the upstream
   // printing code for Android, this is harmless.
-  int fd = Java_PrintingContext_getFileDescriptor(env,
-                                                  j_printing_context_.obj());
-  settings_.set_device_name(base::IntToString16(fd));
+  // TODO(thestig): See if the call to set_device_name() can be removed.
+  fd_ = Java_PrintingContext_getFileDescriptor(env, j_printing_context_);
+  DCHECK(is_file_descriptor_valid());
+  settings_.set_device_name(base::NumberToString16(fd_));
 
   ScopedJavaLocalRef<jintArray> intArr =
-      Java_PrintingContext_getPages(env, j_printing_context_.obj());
-  if (intArr.obj() != NULL) {
+      Java_PrintingContext_getPages(env, j_printing_context_);
+  if (!intArr.is_null()) {
     PageRanges range_vector;
-    GetPageRanges(env, intArr.obj(), range_vector);
+    GetPageRanges(env, intArr, &range_vector);
     settings_.set_ranges(range_vector);
   }
 
-  int dpi = Java_PrintingContext_getDpi(env, j_printing_context_.obj());
-  int width = Java_PrintingContext_getWidth(env, j_printing_context_.obj());
-  int height = Java_PrintingContext_getHeight(env, j_printing_context_.obj());
-  width = Round(ConvertUnitDouble(width, kInchToMil, 1.0) * dpi);
-  height = Round(ConvertUnitDouble(height, kInchToMil, 1.0) * dpi);
+  int dpi = Java_PrintingContext_getDpi(env, j_printing_context_);
+  int width = Java_PrintingContext_getWidth(env, j_printing_context_);
+  int height = Java_PrintingContext_getHeight(env, j_printing_context_);
+  width = ConvertUnit(width, kMilsPerInch, dpi);
+  height = ConvertUnit(height, kMilsPerInch, dpi);
   SetSizes(&settings_, dpi, width, height);
 
-  callback_.Run(OK);
+  std::move(callback_).Run(OK);
 }
 
 void PrintingContextAndroid::ShowSystemDialogDone(
     JNIEnv* env,
     const JavaParamRef<jobject>& obj) {
+  DCHECK(callback_);
   // Settings are not updated, callback is called only to unblock javascript.
-  callback_.Run(CANCEL);
+  std::move(callback_).Run(CANCEL);
+}
+
+void PrintingContextAndroid::PrintDocument(const MetafilePlayer& metafile) {
+  DCHECK(is_file_descriptor_valid());
+
+  base::File file(fd_);
+  metafile.SaveTo(&file);
+  file.TakePlatformFile();
 }
 
 PrintingContext::Result PrintingContextAndroid::UseDefaultSettings() {
@@ -177,8 +194,7 @@ gfx::Size PrintingContextAndroid::GetPdfPaperSizeDeviceUnits() {
   } else {
     // ulocdata_getPaperSize returns the width and height in mm.
     // Convert this to pixels based on the dpi.
-    float multiplier = 100 * settings_.device_units_per_inch();
-    multiplier /= kHundrethsMMPerInch;
+    float multiplier = settings_.device_units_per_inch() / kMicronsPerMil;
     width *= multiplier;
     height *= multiplier;
   }
@@ -193,15 +209,6 @@ PrintingContext::Result PrintingContextAndroid::UpdatePrinterSettings(
   DCHECK(!in_print_job_);
 
   // Intentional No-op.
-
-  return OK;
-}
-
-PrintingContext::Result PrintingContextAndroid::InitWithSettings(
-    const PrintSettings& settings) {
-  DCHECK(!in_print_job_);
-
-  settings_ = settings;
 
   return OK;
 }
@@ -252,14 +259,9 @@ void PrintingContextAndroid::ReleaseContext() {
   // Intentional No-op.
 }
 
-gfx::NativeDrawingContext PrintingContextAndroid::context() const {
+printing::NativeDrawingContext PrintingContextAndroid::context() const {
   // Intentional No-op.
-  return NULL;
-}
-
-// static
-bool PrintingContextAndroid::RegisterPrintingContext(JNIEnv* env) {
-   return RegisterNativesImpl(env);
+  return nullptr;
 }
 
 }  // namespace printing

@@ -5,23 +5,25 @@
 #include <tuple>
 
 #include "base/macros.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "content/common/view_messages.h"
 #include "content/public/test/mock_render_thread.h"
 #include "content/renderer/media/render_media_log.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
 
 namespace content {
 
 class RenderMediaLogTest : public testing::Test {
  public:
   RenderMediaLogTest()
-      : log_(new RenderMediaLog(GURL("http://foo.com"))),
-        tick_clock_(new base::SimpleTestTickClock()),
+      : log_(GURL("http://foo.com"),
+             blink::scheduler::GetSingleThreadTaskRunnerForTesting()),
         task_runner_(new base::TestMockTimeTaskRunner()) {
-    log_->SetTickClockForTesting(std::unique_ptr<base::TickClock>(tick_clock_));
-    log_->SetTaskRunnerForTesting(task_runner_);
+    log_.SetTickClockForTesting(&tick_clock_);
+    log_.SetTaskRunnerForTesting(task_runner_);
   }
 
   ~RenderMediaLogTest() override {
@@ -29,13 +31,13 @@ class RenderMediaLogTest : public testing::Test {
   }
 
   void AddEvent(media::MediaLogEvent::Type type) {
-    log_->AddEvent(log_->CreateEvent(type));
+    log_.AddEvent(log_.CreateEvent(type));
     // AddEvent() could post. Run the task runner to make sure it's executed.
     task_runner_->RunUntilIdle();
   }
 
   void Advance(base::TimeDelta delta) {
-    tick_clock_->Advance(delta);
+    tick_clock_.Advance(delta);
     task_runner_->FastForwardBy(delta);
   }
 
@@ -55,10 +57,10 @@ class RenderMediaLogTest : public testing::Test {
   }
 
  private:
-  base::MessageLoop message_loop_;
+  base::test::ScopedTaskEnvironment task_environment_;
   MockRenderThread render_thread_;
-  scoped_refptr<RenderMediaLog> log_;
-  base::SimpleTestTickClock* tick_clock_;  // Owned by |log_|.
+  base::SimpleTestTickClock tick_clock_;
+  RenderMediaLog log_;
   scoped_refptr<base::TestMockTimeTaskRunner> task_runner_;
 
   DISALLOW_COPY_AND_ASSIGN(RenderMediaLogTest);
@@ -100,15 +102,15 @@ TEST_F(RenderMediaLogTest, EventSentWithoutDelayAfterIpcInterval) {
   EXPECT_EQ(2, message_count());
 }
 
-TEST_F(RenderMediaLogTest, BufferedExtents) {
+TEST_F(RenderMediaLogTest, DurationChanged) {
   AddEvent(media::MediaLogEvent::LOAD);
   AddEvent(media::MediaLogEvent::SEEK);
 
   // This event is handled separately and should always appear last regardless
   // of how many times we see it.
-  AddEvent(media::MediaLogEvent::BUFFERED_EXTENTS_CHANGED);
-  AddEvent(media::MediaLogEvent::BUFFERED_EXTENTS_CHANGED);
-  AddEvent(media::MediaLogEvent::BUFFERED_EXTENTS_CHANGED);
+  AddEvent(media::MediaLogEvent::DURATION_SET);
+  AddEvent(media::MediaLogEvent::DURATION_SET);
+  AddEvent(media::MediaLogEvent::DURATION_SET);
 
   EXPECT_EQ(0, message_count());
   Advance(base::TimeDelta::FromMilliseconds(1000));
@@ -120,7 +122,7 @@ TEST_F(RenderMediaLogTest, BufferedExtents) {
   ASSERT_EQ(3u, events.size());
   EXPECT_EQ(media::MediaLogEvent::LOAD, events[0].type);
   EXPECT_EQ(media::MediaLogEvent::SEEK, events[1].type);
-  EXPECT_EQ(media::MediaLogEvent::BUFFERED_EXTENTS_CHANGED, events[2].type);
+  EXPECT_EQ(media::MediaLogEvent::DURATION_SET, events[2].type);
 }
 
 }  // namespace content

@@ -16,10 +16,6 @@ class ContentsLayoutManager : public views::LayoutManager {
   ContentsLayoutManager(views::View* devtools_view, views::View* contents_view);
   ~ContentsLayoutManager() override;
 
-  // Sets the active top margin; both devtools_view and contents_view will be
-  // pushed down vertically by |margin|.
-  void SetActiveTopMargin(int margin);
-
   // Sets the contents resizing strategy.
   void SetContentsResizingStrategy(
       const DevToolsContentsResizingStrategy& strategy);
@@ -28,7 +24,6 @@ class ContentsLayoutManager : public views::LayoutManager {
   void Layout(views::View* host) override;
   gfx::Size GetPreferredSize(const views::View* host) const override;
   void Installed(views::View* host) override;
-  void Uninstalled(views::View* host) override;
 
  private:
   views::View* devtools_view_;
@@ -37,7 +32,6 @@ class ContentsLayoutManager : public views::LayoutManager {
   views::View* host_;
 
   DevToolsContentsResizingStrategy strategy_;
-  int active_top_margin_;
 
   DISALLOW_COPY_AND_ASSIGN(ContentsLayoutManager);
 };

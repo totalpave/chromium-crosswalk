@@ -17,13 +17,13 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "content/public/test/test_browser_thread_bundle.h"
-#include "content/public/test/test_file_system_options.h"
 #include "google_apis/drive/test_util.h"
 #include "storage/browser/fileapi/external_mount_points.h"
 #include "storage/browser/fileapi/file_system_backend.h"
 #include "storage/browser/fileapi/file_system_context.h"
 #include "storage/browser/fileapi/file_system_url.h"
 #include "storage/browser/fileapi/isolated_context.h"
+#include "storage/browser/test/test_file_system_options.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace drive {
@@ -110,8 +110,8 @@ TEST_F(ProfileRelatedFileSystemUtilTest, ExtractProfileFromPath) {
                           "/special/drive-" + user1_id_hash)));
   EXPECT_EQ(profile2, ExtractProfileFromPath(base::FilePath::FromUTF8Unsafe(
                           "/special/drive-" + user2_id_hash + "/root/xxx")));
-  EXPECT_EQ(NULL, ExtractProfileFromPath(base::FilePath::FromUTF8Unsafe(
-                      "/special/non-drive-path")));
+  EXPECT_EQ(nullptr, ExtractProfileFromPath(base::FilePath::FromUTF8Unsafe(
+                         "/special/non-drive-path")));
 }
 
 TEST_F(ProfileRelatedFileSystemUtilTest, ExtractDrivePathFromFileSystemUrl) {
@@ -127,11 +127,11 @@ TEST_F(ProfileRelatedFileSystemUtilTest, ExtractDrivePathFromFileSystemUrl) {
       new storage::FileSystemContext(
           base::ThreadTaskRunnerHandle::Get().get(),
           base::ThreadTaskRunnerHandle::Get().get(), mount_points.get(),
-          NULL,  // special_storage_policy
-          NULL,  // quota_manager_proxy,
-          ScopedVector<storage::FileSystemBackend>(),
+          nullptr,  // special_storage_policy
+          nullptr,  // quota_manager_proxy,
+          std::vector<std::unique_ptr<storage::FileSystemBackend>>(),
           std::vector<storage::URLRequestAutoMountHandler>(),
-          temp_dir_.path(),  // partition_path
+          temp_dir_.GetPath(),  // partition_path
           content::CreateAllowFileAccessOptions()));
 
   // Type:"external" + virtual_path:"drive/foo/bar" resolves to "drive/foo/bar".
@@ -158,7 +158,7 @@ TEST_F(ProfileRelatedFileSystemUtilTest, ExtractDrivePathFromFileSystemUrl) {
   // Type:"external" + virtual_path:"Downloads/foo" is not a Drive path.
   mount_points->RegisterFileSystem(
       "Downloads", storage::kFileSystemTypeNativeLocal,
-      storage::FileSystemMountOption(), temp_dir_.path());
+      storage::FileSystemMountOption(), temp_dir_.GetPath());
   EXPECT_EQ(
       base::FilePath(),
       ExtractDrivePathFromFileSystemUrl(context->CrackURL(GURL(

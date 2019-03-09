@@ -12,10 +12,6 @@
 #include "chrome/browser/apps/app_shim/app_shim_host_manager_mac.h"
 #include "chrome/browser/browser_process_platform_part_base.h"
 
-namespace apps {
-class ExtensionAppShimHandler;
-}
-
 class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase {
  public:
   BrowserProcessPlatformPart();
@@ -23,7 +19,7 @@ class BrowserProcessPlatformPart : public BrowserProcessPlatformPartBase {
 
   // Overridden from BrowserProcessPlatformPartBase:
   void StartTearDown() override;
-  void AttemptExit() override;
+  void AttemptExit(bool try_to_quit_application) override;
   void PreMainMessageLoopRun() override;
 
   AppShimHostManager* app_shim_host_manager();

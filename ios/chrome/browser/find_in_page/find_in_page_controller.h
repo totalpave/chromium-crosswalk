@@ -18,21 +18,15 @@ class WebState;
 extern NSString* const kFindBarTextFieldWillBecomeFirstResponderNotification;
 extern NSString* const kFindBarTextFieldDidResignFirstResponderNotification;
 
-@protocol FindInPageControllerDelegate<NSObject>
-// Informs the delegate when the scroll position is about to be changed on the
-// page.
-- (void)willAdjustScrollPosition;
-@end
-
 @interface FindInPageController : NSObject
 
+// Find In Page model.
+@property(nonatomic, readonly, strong) FindInPageModel* findInPageModel;
+
 // Designated initializer.
-- (id)initWithWebState:(web::WebState*)webState
-              delegate:(id<FindInPageControllerDelegate>)delegate;
+- (id)initWithWebState:(web::WebState*)webState;
 // Inject the find in page scripts into the web state.
 - (void)initFindInPage;
-// Find In Page model. TODO(justincohen) consider using find_tab_helper.cc.
-- (FindInPageModel*)findInPageModel;
 // Is Find In Page available right now (given the state of the WebState)?
 - (BOOL)canFindInPage;
 // Find |query| in page, update model with results of find. Calls
@@ -63,6 +57,11 @@ extern NSString* const kFindBarTextFieldDidResignFirstResponderNotification;
 
 // Instructs the controller to detach itself from the web state.
 - (void)detachFromWebState;
+
+// Sets the search term to |string|. Stored until the application quit.
++ (void)setSearchTerm:(NSString*)string;
+// The search term, stored until the application quit.
++ (NSString*)searchTerm;
 @end
 
 #endif  // IOS_CHROME_BROWSER_FIND_IN_PAGE_FIND_IN_PAGE_CONTROLLER_H_

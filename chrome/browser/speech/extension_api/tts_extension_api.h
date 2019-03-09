@@ -8,15 +8,15 @@
 #include <string>
 
 #include "chrome/browser/extensions/chrome_extension_function.h"
-#include "chrome/browser/speech/tts_controller.h"
+#include "content/public/browser/tts_controller.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 
 namespace content {
 class BrowserContext;
 }
 
-const char *TtsEventTypeToString(TtsEventType event_type);
-TtsEventType TtsEventTypeFromString(const std::string& str);
+const char* TtsEventTypeToString(content::TtsEventType event_type);
+content::TtsEventType TtsEventTypeFromString(const std::string& str);
 
 namespace extensions {
 
@@ -27,38 +27,38 @@ class TtsSpeakFunction : public ChromeAsyncExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("tts.speak", TTS_SPEAK)
 };
 
-class TtsStopSpeakingFunction : public ChromeSyncExtensionFunction {
+class TtsStopSpeakingFunction : public UIThreadExtensionFunction {
  private:
   ~TtsStopSpeakingFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tts.stop", TTS_STOP)
 };
 
-class TtsPauseFunction : public ChromeSyncExtensionFunction {
+class TtsPauseFunction : public UIThreadExtensionFunction {
  private:
   ~TtsPauseFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tts.pause", TTS_PAUSE)
 };
 
-class TtsResumeFunction : public ChromeSyncExtensionFunction {
+class TtsResumeFunction : public UIThreadExtensionFunction {
  private:
   ~TtsResumeFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tts.resume", TTS_RESUME)
 };
 
-class TtsIsSpeakingFunction : public ChromeSyncExtensionFunction {
+class TtsIsSpeakingFunction : public UIThreadExtensionFunction {
  private:
   ~TtsIsSpeakingFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tts.isSpeaking", TTS_ISSPEAKING)
 };
 
-class TtsGetVoicesFunction : public ChromeSyncExtensionFunction {
+class TtsGetVoicesFunction : public UIThreadExtensionFunction {
  private:
   ~TtsGetVoicesFunction() override {}
-  bool RunSync() override;
+  ResponseAction Run() override;
   DECLARE_EXTENSION_FUNCTION("tts.getVoices", TTS_GETVOICES)
 };
 

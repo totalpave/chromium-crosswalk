@@ -15,6 +15,7 @@
 #include "chrome/service/cloud_print/connector_settings.h"
 #include "chrome/service/cloud_print/print_system.h"
 #include "chrome/service/cloud_print/printer_job_handler.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace cloud_print {
 
@@ -39,7 +40,10 @@ class CloudPrintConnector
      virtual ~Client() {}
   };
 
-  CloudPrintConnector(Client* client, const ConnectorSettings& settings);
+  CloudPrintConnector(Client* client,
+                      const ConnectorSettings& settings,
+                      const net::PartialNetworkTrafficAnnotationTag&
+                          partial_traffic_annotation);
 
   bool Start();
   void Stop();
@@ -60,11 +64,10 @@ class CloudPrintConnector
 
   // Prototype for a response handler.
   typedef CloudPrintURLFetcher::ResponseAction (
-      CloudPrintConnector::*ResponseHandler)(
-      const net::URLFetcher* source,
-      const GURL& url,
-      const base::DictionaryValue* json_data,
-      bool succeeded);
+      CloudPrintConnector::*ResponseHandler)(const net::URLFetcher* source,
+                                             const GURL& url,
+                                             const base::Value& json_data,
+                                             bool succeeded);
 
   enum PendingTaskType {
     PENDING_PRINTERS_NONE,
@@ -101,7 +104,7 @@ class CloudPrintConnector
   CloudPrintURLFetcher::ResponseAction HandleJSONData(
       const net::URLFetcher* source,
       const GURL& url,
-      const base::DictionaryValue* json_data,
+      const base::Value& json_data,
       bool succeeded) override;
   CloudPrintURLFetcher::ResponseAction OnRequestAuthError() override;
   std::string GetAuthHeader() override;
@@ -110,25 +113,25 @@ class CloudPrintConnector
   CloudPrintURLFetcher::ResponseAction HandlePrinterListResponse(
       const net::URLFetcher* source,
       const GURL& url,
-      const base::DictionaryValue* json_data,
+      const base::Value& json_data,
       bool succeeded);
 
   CloudPrintURLFetcher::ResponseAction HandlePrinterListResponseSettingsUpdate(
       const net::URLFetcher* source,
       const GURL& url,
-      const base::DictionaryValue* json_data,
+      const base::Value& json_data,
       bool succeeded);
 
   CloudPrintURLFetcher::ResponseAction HandlePrinterDeleteResponse(
       const net::URLFetcher* source,
       const GURL& url,
-      const base::DictionaryValue* json_data,
+      const base::Value& json_data,
       bool succeeded);
 
   CloudPrintURLFetcher::ResponseAction HandleRegisterPrinterResponse(
       const net::URLFetcher* source,
       const GURL& url,
-      const base::DictionaryValue* json_data,
+      const base::Value& json_data,
       bool succeeded);
   // End response handlers
 
@@ -150,9 +153,9 @@ class CloudPrintConnector
   bool RemovePrinterFromList(const std::string& printer_name,
                              printing::PrinterList* printer_list);
 
-  void InitJobHandlerForPrinter(const base::DictionaryValue* printer_data);
+  void InitJobHandlerForPrinter(const base::Value& printer_data);
 
-  void UpdateSettingsFromPrintersList(const base::DictionaryValue* json_data);
+  void UpdateSettingsFromPrintersList(const base::Value& json_data);
 
   void AddPendingAvailableTask();
   void AddPendingDeleteTask(const std::string& id);
@@ -198,6 +201,9 @@ class CloudPrintConnector
   scoped_refptr<CloudPrintURLFetcher> request_;
   // The CloudPrintURLFetcher instance for the user message request.
   scoped_refptr<CloudPrintURLFetcher> user_message_request_;
+  // Partial network traffic annotation for network requests.
+  const net::PartialNetworkTrafficAnnotationTag partial_traffic_annotation_;
+
   base::WeakPtrFactory<CloudPrintConnector> stats_ptr_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(CloudPrintConnector);

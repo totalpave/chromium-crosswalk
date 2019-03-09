@@ -12,10 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef CRASHPAD_UTIL_WIN_NT_INTERNALS_H_
+#define CRASHPAD_UTIL_WIN_NT_INTERNALS_H_
+
 #include <windows.h>
 #include <winternl.h>
 
 #include "util/win/process_structs.h"
+
+// Copied from ntstatus.h because um/winnt.h conflicts with general inclusion of
+// ntstatus.h.
+#define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
+#define STATUS_BUFFER_TOO_SMALL ((NTSTATUS)0xC0000023L)
+#define STATUS_PROCESS_IS_TERMINATING ((NTSTATUS)0xC000010AL)
 
 namespace crashpad {
 
@@ -35,11 +44,6 @@ NtCreateThreadEx(PHANDLE thread_handle,
                  SIZE_T stack_size,
                  SIZE_T maximum_stack_size,
                  PVOID /*PPS_ATTRIBUTE_LIST*/ attribute_list);
-
-// Copied from ntstatus.h because um/winnt.h conflicts with general inclusion of
-// ntstatus.h.
-#define STATUS_BUFFER_TOO_SMALL ((NTSTATUS)0xC0000023L)
-#define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
 
 // winternal.h defines THREADINFOCLASS, but not all members.
 enum { ThreadBasicInformation = 0 };
@@ -75,10 +79,7 @@ NTSTATUS NtSuspendProcess(HANDLE handle);
 
 NTSTATUS NtResumeProcess(HANDLE handle);
 
-// From https://msdn.microsoft.com/en-us/library/bb432428(VS.85).aspx and
-// http://processhacker.sourceforge.net/doc/struct___r_t_l___u_n_l_o_a_d___e_v_e_n_t___t_r_a_c_e.html
-#define RTL_UNLOAD_EVENT_TRACE_NUMBER 64
-
+// From https://msdn.microsoft.com/library/cc678403.aspx.
 template <class Traits>
 struct RTL_UNLOAD_EVENT_TRACE {
   typename Traits::Pointer BaseAddress;
@@ -87,14 +88,12 @@ struct RTL_UNLOAD_EVENT_TRACE {
   ULONG TimeDateStamp;
   ULONG CheckSum;
   WCHAR ImageName[32];
-  ULONG Version0;
-  union {
-    ULONG Version1;
-    typename Traits::Pad alignment_for_x64;
-  };
 };
 
-template <class Traits>
-RTL_UNLOAD_EVENT_TRACE<Traits>* RtlGetUnloadEventTrace();
+void RtlGetUnloadEventTraceEx(ULONG** element_size,
+                              ULONG** element_count,
+                              void** event_trace);
 
 }  // namespace crashpad
+
+#endif  // CRASHPAD_UTIL_WIN_NT_INTERNALS_H_

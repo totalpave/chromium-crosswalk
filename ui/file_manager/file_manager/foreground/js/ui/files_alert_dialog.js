@@ -8,14 +8,14 @@
  * @constructor
  * @extends {cr.ui.dialogs.AlertDialog}
  */
-var FilesAlertDialog = function(parentNode) {
+const FilesAlertDialog = function(parentNode) {
   cr.ui.dialogs.AlertDialog.call(this, parentNode);
 };
 
 FilesAlertDialog.prototype.__proto__ = cr.ui.dialogs.AlertDialog.prototype;
 
 /**
- * @private
+ * @protected
  * @override
  */
 FilesAlertDialog.prototype.initDom_ = function() {

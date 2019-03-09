@@ -14,14 +14,8 @@
 #include "content/public/browser/interstitial_page_delegate.h"
 #include "url/gurl.h"
 
-class LoginHandler;
-
 namespace content {
 class WebContents;
-}
-
-namespace net {
-class AuthChallengeInfo;
 }
 
 // Placeholder interstitial for HTTP login prompts. This interstitial makes the
@@ -29,11 +23,11 @@ class AuthChallengeInfo;
 class LoginInterstitialDelegate : public content::InterstitialPageDelegate {
  public:
   // Interstitial type, used in tests.
-  static content::InterstitialPageDelegate::TypeID kTypeForTesting;
+  static const content::InterstitialPageDelegate::TypeID kTypeForTesting;
 
   LoginInterstitialDelegate(content::WebContents* web_contents,
                             const GURL& request_url,
-                            base::Closure& callback);
+                            base::OnceClosure callback);
 
   ~LoginInterstitialDelegate() override;
 
@@ -49,7 +43,7 @@ class LoginInterstitialDelegate : public content::InterstitialPageDelegate {
   std::string GetHTMLContents() override;
 
  private:
-  base::Closure callback_;
+  base::OnceClosure callback_;
   content::InterstitialPage* interstitial_page_;
   base::WeakPtrFactory<LoginInterstitialDelegate> weak_ptr_factory_;
 

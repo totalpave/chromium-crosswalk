@@ -7,87 +7,92 @@
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/values.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "content/public/browser/notification_source.h"
 #include "content/public/browser/web_ui.h"
 
 #if defined(OS_CHROMEOS)
-#include "ash/desktop_background/user_wallpaper_delegate.h"
-#include "ash/shell.h"
+#include "chrome/browser/ui/ash/wallpaper_controller_client.h"
 #endif
 
 namespace settings {
 
 AppearanceHandler::AppearanceHandler(content::WebUI* webui)
-    : profile_(Profile::FromWebUI(webui)) {
-}
+    : profile_(Profile::FromWebUI(webui)), weak_ptr_factory_(this) {}
 
 AppearanceHandler::~AppearanceHandler() {}
 
+void AppearanceHandler::OnJavascriptAllowed() {}
+void AppearanceHandler::OnJavascriptDisallowed() {}
+
 void AppearanceHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
-      "resetTheme",
-      base::Bind(&AppearanceHandler::HandleResetTheme, base::Unretained(this)));
+      "useDefaultTheme",
+      base::BindRepeating(&AppearanceHandler::HandleUseDefaultTheme,
+                          base::Unretained(this)));
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
   web_ui()->RegisterMessageCallback(
-      "getResetThemeEnabled",
-      base::Bind(&AppearanceHandler::HandleGetResetThemeEnabled,
-                 base::Unretained(this)));
+      "useSystemTheme",
+      base::BindRepeating(&AppearanceHandler::HandleUseSystemTheme,
+                          base::Unretained(this)));
+#endif
 #if defined(OS_CHROMEOS)
   web_ui()->RegisterMessageCallback(
       "openWallpaperManager",
-      base::Bind(&AppearanceHandler::HandleOpenWallpaperManager,
-                 base::Unretained(this)));
+      base::BindRepeating(&AppearanceHandler::HandleOpenWallpaperManager,
+                          base::Unretained(this)));
+
+  web_ui()->RegisterMessageCallback(
+      "isWallpaperSettingVisible",
+      base::BindRepeating(&AppearanceHandler::IsWallpaperSettingVisible,
+                          base::Unretained(this)));
+
+  web_ui()->RegisterMessageCallback(
+      "isWallpaperPolicyControlled",
+      base::BindRepeating(&AppearanceHandler::IsWallpaperPolicyControlled,
+                          base::Unretained(this)));
 #endif
 }
 
-void AppearanceHandler::OnJavascriptAllowed() {
-  registrar_.Add(this, chrome::NOTIFICATION_BROWSER_THEME_CHANGED,
-                 content::Source<ThemeService>(
-                     ThemeServiceFactory::GetForProfile(profile_)));
-}
-
-void AppearanceHandler::OnJavascriptDisallowed() {
-  registrar_.RemoveAll();
-}
-
-void AppearanceHandler::Observe(
-    int type,
-    const content::NotificationSource& source,
-    const content::NotificationDetails& details) {
-  DCHECK_EQ(chrome::NOTIFICATION_BROWSER_THEME_CHANGED, type);
-
-  CallJavascriptFunction("cr.webUIListenerCallback",
-                         base::StringValue("reset-theme-enabled-changed"),
-                         base::FundamentalValue(ResetThemeEnabled()));
-}
-
-void AppearanceHandler::HandleResetTheme(const base::ListValue* /*args*/) {
+void AppearanceHandler::HandleUseDefaultTheme(const base::ListValue* args) {
   ThemeServiceFactory::GetForProfile(profile_)->UseDefaultTheme();
 }
 
-bool AppearanceHandler::ResetThemeEnabled() const {
-  // TODO(jhawkins): Handle native/system theme button.
-  return !ThemeServiceFactory::GetForProfile(profile_)->UsingDefaultTheme();
+#if defined(OS_LINUX) && !defined(OS_CHROMEOS)
+void AppearanceHandler::HandleUseSystemTheme(const base::ListValue* args) {
+  if (profile_->IsSupervised())
+    NOTREACHED();
+  else
+    ThemeServiceFactory::GetForProfile(profile_)->UseSystemTheme();
 }
-
-void AppearanceHandler::HandleGetResetThemeEnabled(
-    const base::ListValue* args) {
-  AllowJavascript();
-
-  CHECK_EQ(1U, args->GetSize());
-  const base::Value* callback_id;
-  CHECK(args->Get(0, &callback_id));
-  ResolveJavascriptCallback(*callback_id,
-                            base::FundamentalValue(ResetThemeEnabled()));
-}
+#endif
 
 #if defined(OS_CHROMEOS)
+void AppearanceHandler::IsWallpaperSettingVisible(const base::ListValue* args) {
+  CHECK_EQ(args->GetSize(), 1U);
+  WallpaperControllerClient::Get()->ShouldShowWallpaperSetting(
+      base::Bind(&AppearanceHandler::ResolveCallback,
+                 weak_ptr_factory_.GetWeakPtr(), args->GetList()[0].Clone()));
+}
+
+void AppearanceHandler::IsWallpaperPolicyControlled(
+    const base::ListValue* args) {
+  CHECK_EQ(args->GetSize(), 1U);
+  WallpaperControllerClient::Get()->IsActiveUserWallpaperControlledByPolicy(
+      base::Bind(&AppearanceHandler::ResolveCallback,
+                 weak_ptr_factory_.GetWeakPtr(), args->GetList()[0].Clone()));
+}
+
 void AppearanceHandler::HandleOpenWallpaperManager(
-    const base::ListValue* /*args*/) {
-  ash::Shell::GetInstance()->user_wallpaper_delegate()->OpenSetWallpaperPage();
+    const base::ListValue* args) {
+  WallpaperControllerClient::Get()->OpenWallpaperPickerIfAllowed();
+}
+
+void AppearanceHandler::ResolveCallback(const base::Value& callback_id,
+                                        bool result) {
+  AllowJavascript();
+  ResolveJavascriptCallback(callback_id, base::Value(result));
 }
 #endif
 

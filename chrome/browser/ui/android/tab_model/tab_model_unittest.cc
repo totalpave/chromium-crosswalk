@@ -25,12 +25,10 @@ class TabModelAndroidProfileMock : public TestingProfile {
   MOCK_METHOD0(GetOffTheRecordProfile, Profile*());
   MOCK_METHOD0(HasOffTheRecordProfile, bool());
 };
-}  // namespace
 
 class TestTabModel : public TabModel {
  public:
-  explicit TestTabModel(Profile* profile)
-    : TabModel(profile) {}
+  explicit TestTabModel(Profile* profile) : TabModel(profile, false) {}
 
   int GetTabCount() const override { return 0; }
   int GetActiveIndex() const override { return 0; }
@@ -44,10 +42,14 @@ class TestTabModel : public TabModel {
     return NULL;
   }
   bool IsSessionRestoreInProgress() const override { return false; }
+  bool IsCurrentModel() const override { return false; }
   TabAndroid* GetTabAt(int index) const override { return NULL; }
   void SetActiveIndex(int index) override {}
   void CloseTabAt(int index) override {}
+  void AddObserver(TabModelObserver* observer) override {}
+  void RemoveObserver(TabModelObserver* observer) override {}
 };
+}  // namespace
 
 TEST_F(TabModelTest, TestProfileHandling) {
   // Construct TabModel with standard Profile.

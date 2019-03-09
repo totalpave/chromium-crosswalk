@@ -5,12 +5,14 @@
 #include "components/bookmarks/browser/bookmark_utils.h"
 
 #include <stddef.h>
+
+#include <memory>
 #include <utility>
 #include <vector>
 
-#include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_task_environment.h"
 #include "build/build_config.h"
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_model.h"
@@ -19,15 +21,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
-
-#if defined(USE_GLIB) && defined(USE_X11)
-
-#include <memory>
-
-#include "ui/events/platform/x11/x11_event_source_glib.h"  // nogncheck
-#include "ui/gfx/x/x11_types.h"                            // nogncheck
-
-#endif  // defined(USE_GLIB) && defined(USE_X11)
 
 using base::ASCIIToUTF16;
 using std::string;
@@ -39,11 +32,10 @@ class BookmarkUtilsTest : public testing::Test,
                           public BaseBookmarkModelObserver {
  public:
   BookmarkUtilsTest()
-      : grouped_changes_beginning_count_(0), grouped_changes_ended_count_(0) {
-#if defined(USE_GLIB) && defined(USE_X11)
-    event_source_.reset(new ui::X11EventSourceGlib(gfx::GetXDisplay()));
-#endif  // defined(USE_GLIB) && defined(USE_X11)
-  }
+      : scoped_task_environment_(
+            base::test::ScopedTaskEnvironment::MainThreadType::UI),
+        grouped_changes_beginning_count_(0),
+        grouped_changes_ended_count_(0) {}
 
   ~BookmarkUtilsTest() override {}
 
@@ -81,16 +73,11 @@ class BookmarkUtilsTest : public testing::Test,
     ++grouped_changes_ended_count_;
   }
 
+  // Clipboard requires a message loop.
+  base::test::ScopedTaskEnvironment scoped_task_environment_;
+
   int grouped_changes_beginning_count_;
   int grouped_changes_ended_count_;
-
-  // Clipboard requires a message loop.
-  base::MessageLoopForUI loop_;
-#if defined(USE_GLIB) && defined(USE_X11)
-  // On Linux, Clipboard also depends on an event source being present, to get
-  // the timestamp.
-  std::unique_ptr<ui::X11EventSourceGlib> event_source_;
-#endif  // defined(USE_GLIB) && defined(USE_X11)
 
   DISALLOW_COPY_AND_ASSIGN(BookmarkUtilsTest);
 };
@@ -253,23 +240,23 @@ TEST_F(BookmarkUtilsTest, GetBookmarksMatchingPropertiesConjunction) {
                                                &query.url, &query.title};
 
   // Test two fields matching.
-  for (size_t i = 0; i < arraysize(fields); i++) {
+  for (size_t i = 0; i < base::size(fields); i++) {
     std::unique_ptr<base::string16> original_value(fields[i]->release());
     GetBookmarksMatchingProperties(model.get(), query, 100, &nodes);
     ASSERT_EQ(1U, nodes.size());
     EXPECT_TRUE(nodes[0] == node1);
     nodes.clear();
-    fields[i]->reset(original_value.release());
+    *fields[i] = std::move(original_value);
   }
 
   // Test two fields matching with one non-matching field.
-  for (size_t i = 0; i < arraysize(fields); i++) {
+  for (size_t i = 0; i < base::size(fields); i++) {
     std::unique_ptr<base::string16> original_value(fields[i]->release());
     fields[i]->reset(new base::string16(ASCIIToUTF16("fjdkslafjkldsa")));
     GetBookmarksMatchingProperties(model.get(), query, 100, &nodes);
     ASSERT_EQ(0U, nodes.size());
     nodes.clear();
-    fields[i]->reset(original_value.release());
+    *fields[i] = std::move(original_value);
   }
 }
 
@@ -435,9 +422,9 @@ TEST_F(BookmarkUtilsTest, MAYBE_CutToClipboard) {
 TEST_F(BookmarkUtilsTest, PasteNonEditableNodes) {
   // Load a model with an extra node that is not editable.
   std::unique_ptr<TestBookmarkClient> client(new TestBookmarkClient());
-  BookmarkPermanentNode* extra_node = new BookmarkPermanentNode(100);
   BookmarkPermanentNodeList extra_nodes;
-  extra_nodes.push_back(extra_node);
+  extra_nodes.push_back(std::make_unique<BookmarkPermanentNode>(100));
+  BookmarkPermanentNode* extra_node = extra_nodes.back().get();
   client->SetExtraNodesToLoad(std::move(extra_nodes));
 
   std::unique_ptr<BookmarkModel> model(
@@ -586,9 +573,9 @@ TEST_F(BookmarkUtilsTest, CloneFolderResetsNonClonedKey) {
 TEST_F(BookmarkUtilsTest, RemoveAllBookmarks) {
   // Load a model with an extra node that is not editable.
   std::unique_ptr<TestBookmarkClient> client(new TestBookmarkClient());
-  BookmarkPermanentNode* extra_node = new BookmarkPermanentNode(100);
   BookmarkPermanentNodeList extra_nodes;
-  extra_nodes.push_back(extra_node);
+  extra_nodes.push_back(std::make_unique<BookmarkPermanentNode>(100));
+  BookmarkPermanentNode* extra_node = extra_nodes.back().get();
   client->SetExtraNodesToLoad(std::move(extra_nodes));
 
   std::unique_ptr<BookmarkModel> model(

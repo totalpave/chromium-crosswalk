@@ -7,32 +7,35 @@
 
 #include <string>
 
-#include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/scoped_observer.h"
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "components/history/core/browser/history_service_observer.h"
-#include "components/sync_driver/frontend_data_type_controller.h"
+#include "components/sync/driver/frontend_data_type_controller.h"
 
-namespace browser_sync {
+namespace syncer {
+class SyncApiComponentFactory;
+class SyncService;
+}  // namespace syncer
+
+namespace sync_bookmarks {
 
 // A class that manages the startup and shutdown of bookmark sync.
-class BookmarkDataTypeController : public FrontendDataTypeController,
+class BookmarkDataTypeController : public syncer::FrontendDataTypeController,
                                    public bookmarks::BaseBookmarkModelObserver,
                                    public history::HistoryServiceObserver {
  public:
+  // |dump_stack| is called when an unrecoverable error occurs.
   BookmarkDataTypeController(
-      const scoped_refptr<base::SingleThreadTaskRunner>& ui_thread,
-      const base::Closure& error_callback,
-      sync_driver::SyncClient* sync_client);
-
-  // FrontendDataTypeController:
-  syncer::ModelType type() const override;
-
- private:
+      const base::RepeatingClosure& dump_stack,
+      syncer::SyncService* sync_service,
+      bookmarks::BookmarkModel* bookmark_model,
+      history::HistoryService* history_service,
+      syncer::SyncApiComponentFactory* component_factory);
   ~BookmarkDataTypeController() override;
 
-  // FrontendDataTypeController:
+ private:
+  // syncer::FrontendDataTypeController:
   bool StartModels() override;
   void CleanUpState() override;
   void CreateSyncComponents() override;
@@ -52,6 +55,10 @@ class BookmarkDataTypeController : public FrontendDataTypeController,
   void HistoryServiceBeingDeleted(
       history::HistoryService* history_service) override;
 
+  bookmarks::BookmarkModel* const bookmark_model_;
+  history::HistoryService* const history_service_;
+  syncer::SyncApiComponentFactory* const component_factory_;
+
   ScopedObserver<history::HistoryService, history::HistoryServiceObserver>
       history_service_observer_;
   ScopedObserver<bookmarks::BookmarkModel, BaseBookmarkModelObserver>
@@ -60,6 +67,6 @@ class BookmarkDataTypeController : public FrontendDataTypeController,
   DISALLOW_COPY_AND_ASSIGN(BookmarkDataTypeController);
 };
 
-}  // namespace browser_sync
+}  // namespace sync_bookmarks
 
 #endif  // COMPONENTS_SYNC_BOOKMARKS_BOOKMARK_DATA_TYPE_CONTROLLER_H__

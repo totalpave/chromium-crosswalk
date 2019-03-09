@@ -12,7 +12,9 @@
 #include "base/macros.h"
 #include "components/app_modal/native_app_modal_dialog.h"
 
+namespace app_modal {
 class JavaScriptAppModalDialog;
+}
 
 class JavascriptAppModalDialogAndroid
     : public app_modal::NativeAppModalDialog {
@@ -42,8 +44,6 @@ class JavascriptAppModalDialogAndroid
                                bool suppress_js_dialogs);
 
   const base::android::ScopedJavaGlobalRef<jobject>& GetDialogObject() const;
-
-  static bool RegisterJavascriptAppModalDialog(JNIEnv* env);
 
  private:
   // The object deletes itself.

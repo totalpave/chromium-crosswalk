@@ -11,7 +11,9 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "media/base/media_export.h"
 #include "media/base/media_log.h"
+#include "media/formats/webm/webm_colour_parser.h"
 #include "media/formats/webm/webm_parser.h"
 
 namespace media {
@@ -19,9 +21,9 @@ class EncryptionScheme;
 class VideoDecoderConfig;
 
 // Helper class used to parse a Video element inside a TrackEntry element.
-class WebMVideoClient : public WebMParserClient {
+class MEDIA_EXPORT WebMVideoClient : public WebMParserClient {
  public:
-  explicit WebMVideoClient(const scoped_refptr<MediaLog>& media_log);
+  explicit WebMVideoClient(MediaLog* media_log);
   ~WebMVideoClient() override;
 
   // Reset this object's state so it can process a new video track element.
@@ -40,12 +42,16 @@ class WebMVideoClient : public WebMParserClient {
                         VideoDecoderConfig* config);
 
  private:
+  friend class WebMVideoClientTest;
+
   // WebMParserClient implementation.
+  WebMParserClient* OnListStart(int id) override;
+  bool OnListEnd(int id) override;
   bool OnUInt(int id, int64_t val) override;
   bool OnBinary(int id, const uint8_t* data, int size) override;
   bool OnFloat(int id, double val) override;
 
-  scoped_refptr<MediaLog> media_log_;
+  MediaLog* media_log_;
   int64_t pixel_width_;
   int64_t pixel_height_;
   int64_t crop_bottom_;
@@ -56,6 +62,9 @@ class WebMVideoClient : public WebMParserClient {
   int64_t display_height_;
   int64_t display_unit_;
   int64_t alpha_mode_;
+
+  WebMColourParser colour_parser_;
+  bool colour_parsed_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(WebMVideoClient);
 };

@@ -10,6 +10,8 @@
 
 goog.provide('cvox.ChromeVoxPrefs');
 
+goog.require('ConsoleTts');
+goog.require('EventStreamLogger');
 goog.require('cvox.ChromeVox');
 goog.require('cvox.ExtensionBridge');
 goog.require('cvox.KeyMap');
@@ -60,27 +62,91 @@ cvox.ChromeVoxPrefs = function() {
  */
 cvox.ChromeVoxPrefs.DEFAULT_PREFS = {
   'active': true,
+  'audioStrategy': 'audioNormal',
+  'autoRead': false,
   'brailleCaptions': false,
+  'brailleSideBySide': true,
+  'brailleTableType': 'brailleTable8',
+  'brailleTable6': 'en-UEB-g2',
+  'brailleTable8': 'en-US-comp8',
   // TODO(dtseng): Leaking state about multiple key maps here until we have a
   // class to manage multiple key maps. Also, this doesn't belong as a pref;
   // should just store in local storage.
-  'currentKeyMap' : cvox.KeyMap.DEFAULT_KEYMAP,
+  'currentKeyMap': cvox.KeyMap.DEFAULT_KEYMAP,
   'cvoxKey': '',
+  'enableBrailleLogging': false,
+  'enableEarconLogging': false,
+  'enableSpeechLogging': false,
   'earcons': true,
+  'enableEventStreamLogging': false,
   'focusFollowsMouse': false,
   'granularity': undefined,
-  'outputContextFirst': false,
+  'languageSwitching': false,
   'position': '{}',
+  'siteSpecificEnhancements': true,
   'siteSpecificScriptBase':
       'https://ssl.gstatic.com/accessibility/javascript/ext/',
   'siteSpecificScriptLoader':
       'https://ssl.gstatic.com/accessibility/javascript/ext/loader.js',
+  'speakTextUnderMouse': false,
   'sticky': false,
   'typingEcho': 0,
   'useIBeamCursor': cvox.ChromeVox.isMac,
+  'useClassic': false,
   'useVerboseMode': true,
-  'siteSpecificEnhancements': true,
-  'useNext': false
+
+  // eventStreamFilters
+  'activedescendantchanged': true,
+  'alert': true,
+  'ariaAttributeChanged': true,
+  'autocorrectionOccured': true,
+  'blur': true,
+  'checkedStateChanged': true,
+  'childrenChanged': true,
+  'clicked': true,
+  'documentSelectionChanged': true,
+  'documentTitleChanged': true,
+  'expandedChanged': true,
+  'focus': true,
+  'focusContext': true,
+  'imageFrameUpdated': true,
+  'hide': true,
+  'hitTestResult': true,
+  'hover': true,
+  'invalidStatusChanged': true,
+  'layoutComplete': true,
+  'liveRegionCreated': true,
+  'liveRegionChanged': true,
+  'loadComplete': true,
+  'locationChanged': true,
+  'mediaStartedPlaying': true,
+  'mediaStoppedPlaying': true,
+  'menuEnd': true,
+  'menuListItemSelected': true,
+  'menuListValueChanged': true,
+  'menuPopupEnd': true,
+  'menuPopupStart': true,
+  'menuStart': true,
+  'mouseCanceled': true,
+  'mouseDragged': true,
+  'mouseMoved': true,
+  'mousePressed': true,
+  'mouseReleased': true,
+  'rowCollapsed': true,
+  'rowCountChanged': true,
+  'rowExpanded': true,
+  'scrollPositionChanged': true,
+  'scrolledToAnchor': true,
+  'selectedChildrenChanged': true,
+  'selection': true,
+  'selectionAdd': true,
+  'selectionRemove': true,
+  'show': true,
+  'stateChanged': true,
+  'textChanged': true,
+  'textSelectionChanged': true,
+  'treeChanged': true,
+  'valueChanged': true
 };
 
 
@@ -106,7 +172,7 @@ cvox.ChromeVoxPrefs.prototype.init = function(pullFromLocalStorage) {
  * Switches to another key map.
  * @param {string} selectedKeyMap The id of the keymap in
  * cvox.KeyMap.AVAIABLE_KEYMAP_INFO.
-*/
+ */
 cvox.ChromeVoxPrefs.prototype.switchToKeyMap = function(selectedKeyMap) {
   // Switching key maps potentially affects the key codes that involve
   // sequencing. Without resetting this list, potentially stale key
@@ -179,8 +245,8 @@ cvox.ChromeVoxPrefs.prototype.resetKeys = function() {
  * @param {boolean} sendPrefs Whether to send the prefs.
  * @param {boolean} sendKeyBindings Whether to send the key bindings.
  */
-cvox.ChromeVoxPrefs.prototype.sendPrefsToAllTabs =
-    function(sendPrefs, sendKeyBindings) {
+cvox.ChromeVoxPrefs.prototype.sendPrefsToAllTabs = function(
+    sendPrefs, sendKeyBindings) {
   var context = this;
   var message = {};
   if (sendPrefs) {
@@ -206,9 +272,8 @@ cvox.ChromeVoxPrefs.prototype.sendPrefsToAllTabs =
  * @param {Port} port The port representing the connection to a content script.
  */
 cvox.ChromeVoxPrefs.prototype.sendPrefsToPort = function(port) {
-  port.postMessage({
-    'keyBindings': this.keyMap_.toJSON(),
-    'prefs': this.getPrefs()});
+  port.postMessage(
+      {'keyBindings': this.keyMap_.toJSON(), 'prefs': this.getPrefs()});
 };
 
 
@@ -222,6 +287,27 @@ cvox.ChromeVoxPrefs.prototype.setPref = function(key, value) {
     localStorage[key] = value;
     this.sendPrefsToAllTabs(true, false);
   }
+};
+
+/** @enum {string} */
+cvox.ChromeVoxPrefs.loggingPrefs = {
+  SPEECH: 'enableSpeechLogging',
+  BRAILLE: 'enableBrailleLogging',
+  EARCON: 'enableEarconLogging',
+  EVENT: 'enableEventStreamLogging',
+};
+
+/**
+ * Set the value of a pref of logging options.
+ * @param {cvox.ChromeVoxPrefs.loggingPrefs} key The pref key.
+ * @param {boolean} value The new value of the pref.
+ */
+cvox.ChromeVoxPrefs.prototype.setLoggingPrefs = function(key, value) {
+  localStorage[key] = value;
+  if (key == 'enableSpeechLogging')
+    ConsoleTts.getInstance().setEnabled(value);
+  else if (key == 'enableEventStreamLogging')
+    EventStreamLogger.instance.notifyEventStreamFilterChangedAll(value);
 };
 
 /**

@@ -4,12 +4,10 @@
 
 #include "chrome/browser/sync/sync_error_notifier_factory_ash.h"
 
-#include "ash/shell.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/profile_sync_service_factory.h"
 #include "chrome/browser/sync/sync_error_notifier_ash.h"
-#include "components/browser_sync/browser/profile_sync_service.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 
 SyncErrorNotifierFactory::SyncErrorNotifierFactory()
@@ -35,20 +33,12 @@ SyncErrorNotifierFactory* SyncErrorNotifierFactory::GetInstance() {
 
 KeyedService* SyncErrorNotifierFactory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
-  if (!ash::Shell::HasInstance())
-    return NULL;
-
   Profile* profile = static_cast<Profile*>(context);
-  ProfileSyncService* profile_sync_service =
+  syncer::SyncService* sync_service =
       ProfileSyncServiceFactory::GetForProfile(profile);
 
-  if (!profile_sync_service)
-    return NULL;
+  if (!sync_service)
+    return nullptr;
 
-  SyncErrorController* sync_error_controller =
-      profile_sync_service->sync_error_controller();
-  if (!sync_error_controller)
-    return NULL;
-
-  return new SyncErrorNotifier(sync_error_controller, profile);
+  return new SyncErrorNotifier(sync_service, profile);
 }

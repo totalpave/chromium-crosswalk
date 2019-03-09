@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "ui/base/ime/dummy_input_method.h"
+#include "build/build_config.h"
 #include "ui/events/event.h"
 
 namespace ui {
@@ -22,10 +23,12 @@ void DummyInputMethod::OnFocus() {
 void DummyInputMethod::OnBlur() {
 }
 
-bool DummyInputMethod::OnUntranslatedIMEMessage(const base::NativeEvent& event,
+#if defined(OS_WIN)
+bool DummyInputMethod::OnUntranslatedIMEMessage(const MSG event,
                                                 NativeEventResult* result) {
   return false;
 }
+#endif
 
 void DummyInputMethod::SetFocusedTextInputClient(TextInputClient* client) {
 }
@@ -37,7 +40,9 @@ TextInputClient* DummyInputMethod::GetTextInputClient() const {
   return NULL;
 }
 
-void DummyInputMethod::DispatchKeyEvent(ui::KeyEvent* event) {
+ui::EventDispatchDetails DummyInputMethod::DispatchKeyEvent(
+    ui::KeyEvent* event) {
+  return ui::EventDispatchDetails();
 }
 
 void DummyInputMethod::OnTextInputTypeChanged(const TextInputClient* client) {
@@ -52,8 +57,8 @@ void DummyInputMethod::CancelComposition(const TextInputClient* client) {
 void DummyInputMethod::OnInputLocaleChanged() {
 }
 
-std::string DummyInputMethod::GetInputLocale() {
-  return std::string();
+bool DummyInputMethod::IsInputLocaleCJK() const {
+  return false;
 }
 
 TextInputType DummyInputMethod::GetTextInputType() const {
@@ -76,13 +81,21 @@ bool DummyInputMethod::IsCandidatePopupOpen() const {
   return false;
 }
 
-void DummyInputMethod::ShowImeIfNeeded() {
+bool DummyInputMethod::GetClientShouldDoLearning() {
+  return false;
 }
+
+void DummyInputMethod::ShowVirtualKeyboardIfEnabled() {}
 
 void DummyInputMethod::AddObserver(InputMethodObserver* observer) {
 }
 
 void DummyInputMethod::RemoveObserver(InputMethodObserver* observer) {
+}
+
+InputMethodKeyboardController*
+DummyInputMethod::GetInputMethodKeyboardController() {
+  return nullptr;
 }
 
 const std::vector<std::unique_ptr<KeyEvent>>&

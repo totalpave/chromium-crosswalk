@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef EXTENSIONS_BROWSER_SERVICE_WORKER_MANAGER_H_
+#define EXTENSIONS_BROWSER_SERVICE_WORKER_MANAGER_H_
+
 #include "base/macros.h"
 #include "base/scoped_observer.h"
 #include "extensions/browser/extension_registry_observer.h"
@@ -24,7 +27,7 @@ class ServiceWorkerManager : public ExtensionRegistryObserver {
   // ExtensionRegistryObserver:
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
                            const Extension* extension,
-                           UnloadedExtensionInfo::Reason reason) override;
+                           UnloadedExtensionReason reason) override;
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const Extension* extension,
                               extensions::UninstallReason reason) override;
@@ -38,3 +41,5 @@ class ServiceWorkerManager : public ExtensionRegistryObserver {
 };
 
 }  // namespace extensions
+
+#endif  // EXTENSIONS_BROWSER_SERVICE_WORKER_MANAGER_H_

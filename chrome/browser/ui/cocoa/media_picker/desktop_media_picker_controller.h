@@ -13,8 +13,8 @@
 #include "base/callback.h"
 #import "base/mac/scoped_nsobject.h"
 #include "base/strings/string16.h"
-#include "chrome/browser/media/desktop_media_list.h"
-#include "chrome/browser/media/desktop_media_picker.h"
+#include "chrome/browser/media/webrtc/desktop_media_list.h"
+#include "chrome/browser/media/webrtc/desktop_media_picker.h"
 #import "chrome/browser/ui/cocoa/media_picker/desktop_media_picker_bridge.h"
 
 // A controller for the Desktop Media Picker. Presents the user with a list of
@@ -47,9 +47,7 @@
   // Provides source information (including thumbnails) to fill up the array of
   // |screenItems_|, |windowItems_| and |tabItems_|, and to render in
   // |screenBrowser_|, |windowBrowser_| and |tabBrowser_|.
-  std::unique_ptr<DesktopMediaList> screenList_;
-  std::unique_ptr<DesktopMediaList> windowList_;
-  std::unique_ptr<DesktopMediaList> tabList_;
+  std::vector<std::unique_ptr<DesktopMediaList>> sourceLists_;
 
   // To be called with the user selection.
   DesktopMediaPicker::DoneCallback doneCallback_;
@@ -71,18 +69,14 @@
 // Designated initializer.
 // To show the dialog, use |NSWindowController|'s |showWindow:|.
 // |callback| will be called to report the user's selection.
-// |appName| will be used to format the dialog's title and the label, where it
-// appears as the initiator of the request.
-// |targetName| will be used to format the dialog's label and appear as the
-// consumer of the requested stream.
-- (id)initWithScreenList:(std::unique_ptr<DesktopMediaList>)screenList
-              windowList:(std::unique_ptr<DesktopMediaList>)windowList
-                 tabList:(std::unique_ptr<DesktopMediaList>)tabList
-                  parent:(NSWindow*)parent
-                callback:(const DesktopMediaPicker::DoneCallback&)callback
-                 appName:(const base::string16&)appName
-              targetName:(const base::string16&)targetName
-            requestAudio:(bool)requestAudio;
+// |params| will be used to customize the dialog. |params.app_name| will be used
+// to format the dialog's title and the label, where it appears as the initiator
+// of the request. |params.target_name| will be used to format the dialog's
+// label and appear as the consumer of the requested stream.
+- (id)initWithSourceLists:
+          (std::vector<std::unique_ptr<DesktopMediaList>>)sourceLists
+                 callback:(const DesktopMediaPicker::DoneCallback&)callback
+                   params:(const DesktopMediaPicker::Params&)params;
 
 @end
 

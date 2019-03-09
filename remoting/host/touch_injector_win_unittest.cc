@@ -63,7 +63,7 @@ MATCHER_P(EqualsPointerTouchInfoFlag, id_to_flag_map, "") {
   for (size_t i = 0; i < id_to_flag_map.size(); ++i) {
     const POINTER_TOUCH_INFO* touch_info = arg + i;
     const uint32_t id = touch_info->pointerInfo.pointerId;
-    if (!ContainsKey(id_to_flag_map, id))
+    if (!base::ContainsKey(id_to_flag_map, id))
       return false;
 
     if (id_to_flag_map.find(id)->second != touch_info->pointerInfo.pointerFlags)
@@ -76,7 +76,7 @@ class TouchInjectorWinDelegateMock : public TouchInjectorWinDelegate {
  public:
   TouchInjectorWinDelegateMock()
       : TouchInjectorWinDelegate(nullptr, nullptr, nullptr) {}
-  ~TouchInjectorWinDelegateMock() override {};
+  ~TouchInjectorWinDelegateMock() override {}
 
   MOCK_METHOD2(InitializeTouchInjection, BOOL(UINT32 max_count, DWORD dw_mode));
   MOCK_METHOD2(InjectTouchInput,

@@ -8,10 +8,9 @@
 #include <string>
 
 #include "base/compiler_specific.h"
+#include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/message_loop/message_loop.h"
-#include "chromeos/chromeos_export.h"
 #include "net/url_request/test_url_fetcher_factory.h"
 #include "net/url_request/url_request_status.h"
 #include "url/gurl.h"
@@ -69,6 +68,9 @@ class SuccessFetcher : public net::TestURLFetcher {
   void Start() override;
 
  private:
+  void RunDelegate();
+
+  base::WeakPtrFactory<SuccessFetcher> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(SuccessFetcher);
 };
 

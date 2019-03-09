@@ -11,8 +11,6 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "base/memory/linked_ptr.h"
-#include "base/message_loop/message_loop.h"
 #include "base/threading/thread.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/api/networking_private/networking_private_delegate.h"
@@ -22,20 +20,19 @@ class Bus;
 class ObjectPath;
 class ObjectProxy;
 class Response;
-};
+}  // namespace dbus
 
 namespace extensions {
 
 // Linux NetworkingPrivateDelegate implementation.
 class NetworkingPrivateLinux : public NetworkingPrivateDelegate {
  public:
-  typedef std::map<base::string16, linked_ptr<base::DictionaryValue>>
-      NetworkMap;
+  using NetworkMap =
+      std::map<base::string16, std::unique_ptr<base::DictionaryValue>>;
 
   typedef std::vector<std::string> GuidList;
 
-  explicit NetworkingPrivateLinux(
-      std::unique_ptr<VerifyDelegate> verify_delegate);
+  NetworkingPrivateLinux();
 
   // NetworkingPrivateDelegate
   void GetProperties(const std::string& guid,
@@ -49,6 +46,7 @@ class NetworkingPrivateLinux : public NetworkingPrivateDelegate {
                 const FailureCallback& failure_callback) override;
   void SetProperties(const std::string& guid,
                      std::unique_ptr<base::DictionaryValue> properties,
+                     bool allow_set_shared_config,
                      const VoidCallback& success_callback,
                      const FailureCallback& failure_callback) override;
   void CreateNetwork(bool shared,
@@ -56,6 +54,7 @@ class NetworkingPrivateLinux : public NetworkingPrivateDelegate {
                      const StringCallback& success_callback,
                      const FailureCallback& failure_callback) override;
   void ForgetNetwork(const std::string& guid,
+                     bool allow_forget_shared_config,
                      const VoidCallback& success_callback,
                      const FailureCallback& failure_callback) override;
   void GetNetworks(const std::string& network_type,
@@ -92,12 +91,18 @@ class NetworkingPrivateLinux : public NetworkingPrivateDelegate {
                            const std::string& new_pin,
                            const VoidCallback& success_callback,
                            const FailureCallback& failure_callback) override;
-
+  void SelectCellularMobileNetwork(
+      const std::string& guid,
+      const std::string& network_id,
+      const VoidCallback& success_callback,
+      const FailureCallback& failure_callback) override;
   std::unique_ptr<base::ListValue> GetEnabledNetworkTypes() override;
   std::unique_ptr<DeviceStateList> GetDeviceStateList() override;
+  std::unique_ptr<base::DictionaryValue> GetGlobalPolicy() override;
+  std::unique_ptr<base::DictionaryValue> GetCertificateLists() override;
   bool EnableNetworkType(const std::string& type) override;
   bool DisableNetworkType(const std::string& type) override;
-  bool RequestScan() override;
+  bool RequestScan(const std::string& type) override;
   void AddObserver(NetworkingPrivateDelegateObserver* observer) override;
   void RemoveObserver(NetworkingPrivateDelegateObserver* observer) override;
 
@@ -218,7 +223,7 @@ class NetworkingPrivateLinux : public NetworkingPrivateDelegate {
   // all active connections then checks if the device matches the requested
   // device, then gets the access point associated with the connection.
   // Returns false if there is an error getting the connected access point.
-  bool GetConnectedAccessPoint(dbus::ObjectPath device_path,
+  bool GetConnectedAccessPoint(const dbus::ObjectPath& device_path,
                                dbus::ObjectPath* access_point_path);
 
   // Given a path to an active connection gets the path to the device
@@ -267,7 +272,7 @@ class NetworkingPrivateLinux : public NetworkingPrivateDelegate {
   // Holds the current mapping of known networks. Only access on |dbus_thread_|.
   std::unique_ptr<NetworkMap> network_map_;
   // Observers to Network Events.
-  base::ObserverList<NetworkingPrivateDelegateObserver>
+  base::ObserverList<NetworkingPrivateDelegateObserver>::Unchecked
       network_events_observers_;
 
   DISALLOW_COPY_AND_ASSIGN(NetworkingPrivateLinux);

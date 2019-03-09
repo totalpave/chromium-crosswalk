@@ -4,6 +4,8 @@
 
 #include "components/sessions/content/content_live_tab.h"
 
+#include <memory>
+
 #include "base/memory/ptr_util.h"
 #include "components/sessions/content/content_platform_specific_tab_data.h"
 
@@ -18,7 +20,7 @@ ContentLiveTab* ContentLiveTab::GetForWebContents(
     content::WebContents* contents) {
   if (!contents->GetUserData(kContentLiveTabWebContentsUserDataKey)) {
     contents->SetUserData(kContentLiveTabWebContentsUserDataKey,
-                          new ContentLiveTab(contents));
+                          base::WrapUnique(new ContentLiveTab(contents)));
   }
 
   return static_cast<ContentLiveTab*>(contents->GetUserData(
@@ -44,12 +46,12 @@ int ContentLiveTab::GetPendingEntryIndex() {
 
 sessions::SerializedNavigationEntry ContentLiveTab::GetEntryAtIndex(int index) {
   return sessions::ContentSerializedNavigationBuilder::FromNavigationEntry(
-      index, *navigation_controller().GetEntryAtIndex(index));
+      index, navigation_controller().GetEntryAtIndex(index));
 }
 
 sessions::SerializedNavigationEntry ContentLiveTab::GetPendingEntry() {
   return sessions::ContentSerializedNavigationBuilder::FromNavigationEntry(
-      GetPendingEntryIndex(), *navigation_controller().GetPendingEntry());
+      GetPendingEntryIndex(), navigation_controller().GetPendingEntry());
 }
 
 int ContentLiveTab::GetEntryCount() {
@@ -58,15 +60,11 @@ int ContentLiveTab::GetEntryCount() {
 
 std::unique_ptr<sessions::PlatformSpecificTabData>
 ContentLiveTab::GetPlatformSpecificTabData() {
-  return base::WrapUnique(
-      new sessions::ContentPlatformSpecificTabData(web_contents()));
+  return std::make_unique<sessions::ContentPlatformSpecificTabData>(
+      web_contents());
 }
 
-void ContentLiveTab::LoadIfNecessary() {
-  navigation_controller().LoadIfNecessary();
-}
-
-const std::string& ContentLiveTab::GetUserAgentOverride() const {
+const std::string& ContentLiveTab::GetUserAgentOverride() {
   return web_contents()->GetUserAgentOverride();
 }
 

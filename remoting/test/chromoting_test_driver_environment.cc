@@ -10,22 +10,23 @@
 #include "base/bind.h"
 #include "base/logging.h"
 #include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_loop_current.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "remoting/test/access_token_fetcher.h"
 #include "remoting/test/host_list_fetcher.h"
-#include "remoting/test/refresh_token_store.h"
+#include "remoting/test/test_token_storage.h"
 
 namespace remoting {
 namespace test {
 
 ChromotingTestDriverEnvironment* g_chromoting_shared_data = nullptr;
 
-ChromotingTestDriverEnvironment::EnvironmentOptions::EnvironmentOptions() {
-}
+ChromotingTestDriverEnvironment::EnvironmentOptions::EnvironmentOptions() =
+    default;
 
-ChromotingTestDriverEnvironment::EnvironmentOptions::~EnvironmentOptions() {
-}
+ChromotingTestDriverEnvironment::EnvironmentOptions::~EnvironmentOptions() =
+    default;
 
 ChromotingTestDriverEnvironment::ChromotingTestDriverEnvironment(
     const EnvironmentOptions& options)
@@ -34,15 +35,12 @@ ChromotingTestDriverEnvironment::ChromotingTestDriverEnvironment(
       user_name_(options.user_name),
       pin_(options.pin),
       refresh_token_file_path_(options.refresh_token_file_path),
-      test_access_token_fetcher_(nullptr),
-      test_refresh_token_store_(nullptr),
-      test_host_list_fetcher_(nullptr) {
+      use_test_environment_(options.use_test_environment) {
   DCHECK(!user_name_.empty());
   DCHECK(!host_name_.empty());
 }
 
-ChromotingTestDriverEnvironment::~ChromotingTestDriverEnvironment() {
-}
+ChromotingTestDriverEnvironment::~ChromotingTestDriverEnvironment() = default;
 
 bool ChromotingTestDriverEnvironment::Initialize(
     const std::string& auth_code) {
@@ -50,22 +48,22 @@ bool ChromotingTestDriverEnvironment::Initialize(
     return true;
   }
 
-  if (!base::MessageLoop::current()) {
+  if (!base::MessageLoopCurrent::Get()) {
     message_loop_.reset(new base::MessageLoopForIO);
   }
 
-  // If a unit test has set |test_refresh_token_store_| then we should use it
+  // If a unit test has set |test_test_token_storage_| then we should use it
   // below.  Note that we do not want to destroy the test object.
-  std::unique_ptr<RefreshTokenStore> temporary_refresh_token_store;
-  RefreshTokenStore* refresh_token_store = test_refresh_token_store_;
-  if (!refresh_token_store) {
-    temporary_refresh_token_store =
-        RefreshTokenStore::OnDisk(user_name_, refresh_token_file_path_);
-    refresh_token_store = temporary_refresh_token_store.get();
+  std::unique_ptr<TestTokenStorage> temporary_test_token_storage;
+  TestTokenStorage* test_token_storage = test_test_token_storage_;
+  if (!test_token_storage) {
+    temporary_test_token_storage =
+        TestTokenStorage::OnDisk(user_name_, refresh_token_file_path_);
+    test_token_storage = temporary_test_token_storage.get();
   }
 
   // Check to see if we have a refresh token stored for this user.
-  refresh_token_ = refresh_token_store->FetchRefreshToken();
+  refresh_token_ = test_token_storage->FetchRefreshToken();
   if (refresh_token_.empty()) {
     // This isn't necessarily an error as this might be a first run scenario.
     VLOG(2) << "No refresh token stored for " << user_name_;
@@ -88,12 +86,10 @@ bool ChromotingTestDriverEnvironment::Initialize(
 }
 
 void ChromotingTestDriverEnvironment::DisplayHostList() {
-  const char kHostAvailabilityFormatString[] = "%-45s%-15s%-35s";
+  const char kHostAvailabilityFormatString[] = "%-25s%-15s%-35s\n";
 
-  LOG(INFO) << base::StringPrintf(kHostAvailabilityFormatString,
-                                  "Host Name", "Host Status", "Host JID");
-  LOG(INFO) << base::StringPrintf(kHostAvailabilityFormatString,
-                                  "---------", "-----------", "--------");
+  printf(kHostAvailabilityFormatString, "Host Name", "Host Status", "Host JID");
+  printf(kHostAvailabilityFormatString, "---------", "-----------", "--------");
 
   std::string status;
   for (const HostInfo& host_info : host_list_) {
@@ -106,31 +102,34 @@ void ChromotingTestDriverEnvironment::DisplayHostList() {
       status = "UNKNOWN";
     }
 
-    LOG(INFO) << base::StringPrintf(
-        kHostAvailabilityFormatString, host_info.host_name.c_str(),
-        status.c_str(), host_info.host_jid.c_str());
+    printf(kHostAvailabilityFormatString, host_info.host_name.c_str(),
+           status.c_str(), host_info.host_jid.c_str());
   }
 }
 
-bool ChromotingTestDriverEnvironment::WaitForHostOnline(
-    const std::string& host_jid,
-    const std::string& host_name) {
+bool ChromotingTestDriverEnvironment::WaitForHostOnline() {
   if (host_list_.empty()) {
     RetrieveHostList();
   }
+
+  DisplayHostList();
 
   // Refresh the |host_list_| periodically to check if expected JID is online.
   const base::TimeDelta kTotalTimeInSeconds = base::TimeDelta::FromSeconds(60);
   const base::TimeDelta kSleepTimeInSeconds = base::TimeDelta::FromSeconds(5);
   const int kMaxIterations = kTotalTimeInSeconds / kSleepTimeInSeconds;
 
-  int num_iterations = 0;
-  while (num_iterations < kMaxIterations) {
+  for (int iterations = 0; iterations < kMaxIterations; iterations++) {
+    if (!FindHostInHostList()) {
+      LOG(WARNING) << "Host '" << host_name_ << "' with JID '" << host_jid_
+                   << "' not found in host list.";
+      return false;
+    }
+
     if (host_info_.IsReadyForConnection()) {
-      if (num_iterations > 0) {
+      if (iterations > 0) {
         VLOG(0) << "Host online after: "
-                << num_iterations * kSleepTimeInSeconds.InSeconds()
-                << " seconds.";
+                << iterations * kSleepTimeInSeconds.InSeconds() << " seconds.";
       }
       return true;
     }
@@ -138,12 +137,29 @@ bool ChromotingTestDriverEnvironment::WaitForHostOnline(
     // Wait a while before refreshing host list.
     base::PlatformThread::Sleep(kSleepTimeInSeconds);
     RefreshHostList();
-    ++num_iterations;
   }
 
-  LOG(ERROR) << "Host with JID '" << host_jid << "' still not online after "
-             << num_iterations * kSleepTimeInSeconds.InSeconds() << " seconds.";
+  LOG(ERROR) << "Host '" << host_name_ << "' with JID '" << host_jid_
+             << "' still not online after "
+             << kMaxIterations * kSleepTimeInSeconds.InSeconds() << " seconds.";
   return false;
+}
+
+bool ChromotingTestDriverEnvironment::FindHostInHostList() {
+  bool host_found = false;
+  for (HostInfo& host_info : host_list_) {
+    // The JID is optional so we consider an empty string to be a '*' match.
+    bool host_jid_match =
+        host_jid_.empty() || (host_jid_ == host_info.host_jid);
+    bool host_name_match = host_name_ == host_info.host_name;
+
+    if (host_name_match && host_jid_match) {
+      host_info_ = host_info;
+      host_found = true;
+      break;
+    }
+  }
+  return host_found;
 }
 
 void ChromotingTestDriverEnvironment::SetAccessTokenFetcherForTest(
@@ -153,11 +169,11 @@ void ChromotingTestDriverEnvironment::SetAccessTokenFetcherForTest(
   test_access_token_fetcher_ = access_token_fetcher;
 }
 
-void ChromotingTestDriverEnvironment::SetRefreshTokenStoreForTest(
-    RefreshTokenStore* refresh_token_store) {
-  DCHECK(refresh_token_store);
+void ChromotingTestDriverEnvironment::SetTestTokenStorageForTest(
+    TestTokenStorage* test_token_storage) {
+  DCHECK(test_token_storage);
 
-  test_refresh_token_store_ = refresh_token_store;
+  test_test_token_storage_ = test_token_storage;
 }
 
 void ChromotingTestDriverEnvironment::SetHostListFetcherForTest(
@@ -225,17 +241,17 @@ bool ChromotingTestDriverEnvironment::RetrieveAccessToken(
   // receive a refresh token, then we should let the user know and exit.
   if (!auth_code.empty()) {
     if (!refresh_token_.empty()) {
-      // If a unit test has set |test_refresh_token_store_| then we should use
+      // If a unit test has set |test_test_token_storage_| then we should use
       // it below.  Note that we do not want to destroy the test object.
-      std::unique_ptr<RefreshTokenStore> temporary_refresh_token_store;
-      RefreshTokenStore* refresh_token_store = test_refresh_token_store_;
-      if (!refresh_token_store) {
-        temporary_refresh_token_store =
-            RefreshTokenStore::OnDisk(user_name_, refresh_token_file_path_);
-        refresh_token_store = temporary_refresh_token_store.get();
+      std::unique_ptr<TestTokenStorage> temporary_test_token_storage;
+      TestTokenStorage* test_token_storage = test_test_token_storage_;
+      if (!test_token_storage) {
+        temporary_test_token_storage =
+            TestTokenStorage::OnDisk(user_name_, refresh_token_file_path_);
+        test_token_storage = temporary_test_token_storage.get();
       }
 
-      if (!refresh_token_store->StoreRefreshToken(refresh_token_)) {
+      if (!test_token_storage->StoreRefreshToken(refresh_token_)) {
         // If we failed to persist the refresh token, then we should let the
         // user sort out the issue before continuing.
         return false;
@@ -294,7 +310,10 @@ bool ChromotingTestDriverEnvironment::RetrieveHostList() {
       base::Bind(&ChromotingTestDriverEnvironment::OnHostListRetrieved,
                  base::Unretained(this), run_loop.QuitClosure());
 
-  host_list_fetcher->RetrieveHostlist(access_token_, host_list_callback);
+  host_list_fetcher->RetrieveHostlist(
+      access_token_,
+      use_test_environment_ ? kHostListTestRequestUrl : kHostListProdRequestUrl,
+      host_list_callback);
 
   run_loop.Run();
 
@@ -305,28 +324,7 @@ bool ChromotingTestDriverEnvironment::RetrieveHostList() {
     return false;
   }
 
-  DisplayHostList();
-  for (HostInfo& host_info : host_list_) {
-    // The JID is optional so we consider an empty string to be a '*' match.
-    bool host_jid_match =
-        host_jid_.empty() || (host_jid_ == host_info.host_jid);
-    bool host_name_match = host_name_ == host_info.host_name;
-
-    if (host_name_match && host_jid_match) {
-      host_info_ = host_info;
-
-      if (host_info.IsReadyForConnection()) {
-        return true;
-      } else {
-        LOG(WARNING) << "Host '" << host_name_ << "' with JID '" << host_jid_
-                     << "' not online.";
-        return false;
-      }
-    }
-  }
-  LOG(WARNING) << "Host '" << host_name_ << "' with JID '" << host_jid_
-               << "' not found in host list.";
-  return false;
+  return true;
 }
 
 void ChromotingTestDriverEnvironment::OnHostListRetrieved(

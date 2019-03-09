@@ -11,10 +11,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "third_party/cros_system_api/dbus/update_engine/dbus-constants.h"
 
-namespace message_center {
-class MessageCenter;
-}
-
 namespace chromeos {
 
 // EolNotification is created when user logs in. It is
@@ -22,6 +18,9 @@ namespace chromeos {
 // and show notification accordingly.
 class EolNotification final {
  public:
+  // Returns true if the eol notification needs to be displayed.
+  static bool ShouldShowEolNotification();
+
   explicit EolNotification(Profile* profile);
   ~EolNotification();
 
@@ -34,9 +33,6 @@ class EolNotification final {
 
   // Create or updates the notfication.
   void Update();
-
-  // Returns messages that applys to this eol status.
-  base::string16 GetEolMessage();
 
   // Profile which is associated with the EndOfLife notification.
   Profile* const profile_;

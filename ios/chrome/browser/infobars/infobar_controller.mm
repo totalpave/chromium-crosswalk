@@ -7,68 +7,58 @@
 #include <memory>
 
 #include "base/logging.h"
-#import "ios/public/provider/chrome/browser/ui/infobar_view_protocol.h"
+#include "ios/chrome/browser/infobars/infobar_controller_delegate.h"
 
-@interface InfoBarController () {
-  base::scoped_nsobject<UIView<InfoBarViewProtocol>> _infoBarView;
-}
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
+
+@interface InfoBarController ()
 @end
 
 @implementation InfoBarController
-@synthesize delegate = _delegate;
 
-- (instancetype)initWithDelegate:(InfoBarViewDelegate*)delegate {
+@synthesize view = _view;
+@synthesize delegate = _delegate;
+@synthesize infoBarDelegate = _infoBarDelegate;
+@synthesize presented = _presented;
+
+#pragma mark - Public
+
+- (instancetype)initWithInfoBarDelegate:
+    (infobars::InfoBarDelegate*)infoBarDelegate {
   self = [super init];
   if (self) {
-    DCHECK(delegate);
-    _delegate = delegate;
+    _infoBarDelegate = infoBarDelegate;
+    _presented = NO;
+    _view = [self infobarView];
   }
   return self;
 }
 
-- (instancetype)init {
-  NOTREACHED();
-  return nil;
-}
-
 - (void)dealloc {
-  [_infoBarView removeFromSuperview];
-  [super dealloc];
-}
-
-- (int)barHeight {
-  return CGRectGetHeight([_infoBarView frame]);
-}
-
-- (void)layoutForDelegate:(infobars::InfoBarDelegate*)delegate
-                    frame:(CGRect)bounds {
-  DCHECK(!_infoBarView);
-  _infoBarView = [self viewForDelegate:delegate frame:bounds];
-}
-
-- (base::scoped_nsobject<UIView<InfoBarViewProtocol>>)
-    viewForDelegate:(infobars::InfoBarDelegate*)delegate
-              frame:(CGRect)bounds {
-  // Must be overriden in subclasses.
-  NOTREACHED();
-  return _infoBarView;
-}
-
-- (void)onHeightsRecalculated:(int)newHeight {
-  [_infoBarView setVisibleHeight:newHeight];
-}
-
-- (UIView<InfoBarViewProtocol>*)view {
-  return _infoBarView;
+  [_view removeFromSuperview];
 }
 
 - (void)removeView {
-  [_infoBarView removeFromSuperview];
+  [_view removeFromSuperview];
 }
 
 - (void)detachView {
-  [_infoBarView resetDelegate];
   _delegate = nullptr;
+  _infoBarDelegate = nullptr;
+}
+
+#pragma mark - Protected
+
+- (UIView*)infobarView {
+  NOTREACHED() << "Must be overriden in subclasses.";
+  return _view;
+}
+
+- (BOOL)shouldIgnoreUserInteraction {
+  // Ignore user interaction if view is already detached or is about to.
+  return !_delegate || !_delegate->IsOwned() || !_infoBarDelegate;
 }
 
 @end

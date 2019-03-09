@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "base/bind.h"
 #include "base/cancelable_callback.h"
 #include "base/logging.h"
 #include "base/macros.h"
@@ -41,29 +42,30 @@ class AudioStreamHandler::AudioStreamContainer
     : public AudioOutputStream::AudioSourceCallback {
  public:
   explicit AudioStreamContainer(std::unique_ptr<WavAudioHandler> wav_audio)
-      : started_(false),
+      : audio_manager_(AudioManager::Get()),
+        started_(false),
         stream_(NULL),
         cursor_(0),
         delayed_stop_posted_(false),
         wav_audio_(std::move(wav_audio)) {
+    DCHECK(audio_manager_);
     DCHECK(wav_audio_);
   }
 
   ~AudioStreamContainer() override {
-    DCHECK(AudioManager::Get()->GetTaskRunner()->BelongsToCurrentThread());
+    DCHECK(audio_manager_->GetTaskRunner()->BelongsToCurrentThread());
   }
 
   void Play() {
-    DCHECK(AudioManager::Get()->GetTaskRunner()->BelongsToCurrentThread());
+    DCHECK(audio_manager_->GetTaskRunner()->BelongsToCurrentThread());
 
     if (!stream_) {
       const AudioParameters params(
           AudioParameters::AUDIO_PCM_LOW_LATENCY,
           GuessChannelLayout(wav_audio_->num_channels()),
-          wav_audio_->sample_rate(), wav_audio_->bits_per_sample(),
-          kDefaultFrameCount);
-      stream_ = AudioManager::Get()->MakeAudioOutputStreamProxy(params,
-                                                                std::string());
+          wav_audio_->sample_rate(), kDefaultFrameCount);
+      stream_ =
+          audio_manager_->MakeAudioOutputStreamProxy(params, std::string());
       if (!stream_ || !stream_->Open()) {
         LOG(ERROR) << "Failed to open an output stream.";
         return;
@@ -98,7 +100,8 @@ class AudioStreamHandler::AudioStreamContainer
   }
 
   void Stop() {
-    DCHECK(AudioManager::Get()->GetTaskRunner()->BelongsToCurrentThread());
+    DCHECK(audio_manager_->GetTaskRunner()->BelongsToCurrentThread());
+
     StopStream();
     if (stream_)
       stream_->Close();
@@ -109,9 +112,10 @@ class AudioStreamHandler::AudioStreamContainer
  private:
   // AudioOutputStream::AudioSourceCallback overrides:
   // Following methods could be called from *ANY* thread.
-  int OnMoreData(AudioBus* dest,
-                 uint32_t /* total_bytes_delay */,
-                 uint32_t /* frames_skipped */) override {
+  int OnMoreData(base::TimeDelta /* delay */,
+                 base::TimeTicks /* delay_timestamp */,
+                 int /* prior_frames_skipped */,
+                 AudioBus* dest) override {
     base::AutoLock al(state_lock_);
     size_t bytes_written = 0;
 
@@ -120,9 +124,8 @@ class AudioStreamHandler::AudioStreamContainer
       if (delayed_stop_posted_)
         return 0;
       delayed_stop_posted_ = true;
-      AudioManager::Get()->GetTaskRunner()->PostDelayedTask(
-          FROM_HERE,
-          stop_closure_.callback(),
+      audio_manager_->GetTaskRunner()->PostDelayedTask(
+          FROM_HERE, stop_closure_.callback(),
           base::TimeDelta::FromMilliseconds(kKeepAliveMs));
       return 0;
     }
@@ -130,15 +133,15 @@ class AudioStreamHandler::AudioStreamContainer
     return dest->frames();
   }
 
-  void OnError(AudioOutputStream* /* stream */) override {
+  void OnError() override {
     LOG(ERROR) << "Error during system sound reproduction.";
-    AudioManager::Get()->GetTaskRunner()->PostTask(
+    audio_manager_->GetTaskRunner()->PostTask(
         FROM_HERE,
-        base::Bind(&AudioStreamContainer::Stop, base::Unretained(this)));
+        base::BindOnce(&AudioStreamContainer::Stop, base::Unretained(this)));
   }
 
   void StopStream() {
-    DCHECK(AudioManager::Get()->GetTaskRunner()->BelongsToCurrentThread());
+    DCHECK(audio_manager_->GetTaskRunner()->BelongsToCurrentThread());
 
     if (stream_ && started_) {
       // Do not hold the |state_lock_| while stopping the output stream.
@@ -151,6 +154,7 @@ class AudioStreamHandler::AudioStreamContainer
   }
 
   // Must only be accessed on the AudioManager::GetTaskRunner() thread.
+  AudioManager* const audio_manager_;
   bool started_;
   AudioOutputStream* stream_;
 
@@ -178,10 +182,9 @@ AudioStreamHandler::AudioStreamHandler(const base::StringPiece& wav_data) {
     return;
   }
 
-  const AudioParameters params(
-      AudioParameters::AUDIO_PCM_LOW_LATENCY,
-      GuessChannelLayout(wav_audio->num_channels()), wav_audio->sample_rate(),
-      wav_audio->bits_per_sample(), kDefaultFrameCount);
+  const AudioParameters params(AudioParameters::AUDIO_PCM_LOW_LATENCY,
+                               GuessChannelLayout(wav_audio->num_channels()),
+                               wav_audio->sample_rate(), kDefaultFrameCount);
   if (!params.IsValid()) {
     LOG(ERROR) << "Audio params are invalid.";
     return;
@@ -193,47 +196,46 @@ AudioStreamHandler::AudioStreamHandler(const base::StringPiece& wav_data) {
 }
 
 AudioStreamHandler::~AudioStreamHandler() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (IsInitialized()) {
     AudioManager::Get()->GetTaskRunner()->PostTask(
-        FROM_HERE, base::Bind(&AudioStreamContainer::Stop,
-                              base::Unretained(stream_.get())));
+        FROM_HERE, base::BindOnce(&AudioStreamContainer::Stop,
+                                  base::Unretained(stream_.get())));
     AudioManager::Get()->GetTaskRunner()->DeleteSoon(FROM_HERE,
                                                      stream_.release());
   }
 }
 
 bool AudioStreamHandler::IsInitialized() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return !!stream_;
 }
 
 bool AudioStreamHandler::Play() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!IsInitialized())
     return false;
 
   AudioManager::Get()->GetTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(base::IgnoreResult(&AudioStreamContainer::Play),
-                 base::Unretained(stream_.get())));
+      FROM_HERE, base::BindOnce(base::IgnoreResult(&AudioStreamContainer::Play),
+                                base::Unretained(stream_.get())));
   return true;
 }
 
 void AudioStreamHandler::Stop() {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!IsInitialized())
     return;
 
   AudioManager::Get()->GetTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&AudioStreamContainer::Stop, base::Unretained(stream_.get())));
+      FROM_HERE, base::BindOnce(&AudioStreamContainer::Stop,
+                                base::Unretained(stream_.get())));
 }
 
 base::TimeDelta AudioStreamHandler::duration() const {
-  DCHECK(CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return duration_;
 }
 

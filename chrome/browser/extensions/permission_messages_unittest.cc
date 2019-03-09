@@ -7,9 +7,10 @@
 #include <memory>
 #include <utility>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/permissions_test_util.h"
 #include "chrome/browser/extensions/permissions_updater.h"
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/common/extensions/permissions/chrome_permission_message_provider.h"
@@ -26,7 +27,6 @@
 #include "extensions/common/permissions/permissions_info.h"
 #include "extensions/common/permissions/usb_device_permission.h"
 #include "extensions/common/permissions/usb_device_permission_data.h"
-#include "extensions/common/test_util.h"
 #include "extensions/common/value_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -56,13 +56,10 @@ class PermissionMessagesUnittest : public testing::Test {
   void CreateAndInstallExtensionWithPermissions(
       std::unique_ptr<base::ListValue> required_permissions,
       std::unique_ptr<base::ListValue> optional_permissions) {
-    app_ = test_util::BuildExtension(ExtensionBuilder())
-               .MergeManifest(
-                   DictionaryBuilder()
-                       .Set("permissions", std::move(required_permissions))
-                       .Set("optional_permissions",
-                            std::move(optional_permissions))
-                       .Build())
+    app_ = ExtensionBuilder("Test")
+               .SetManifestKey("permissions", std::move(required_permissions))
+               .SetManifestKey("optional_permissions",
+                               std::move(optional_permissions))
                .SetID(crx_file::id_util::GenerateId("extension"))
                .SetLocation(Manifest::INTERNAL)
                .Build();
@@ -83,9 +80,9 @@ class PermissionMessagesUnittest : public testing::Test {
   }
 
   void GrantOptionalPermissions() {
-    PermissionsUpdater perms_updater(env_.profile());
-    perms_updater.AddPermissions(
-        app_.get(), PermissionsParser::GetOptionalPermissions(app_.get()));
+    permissions_test_util::GrantOptionalPermissionsAndWaitForCompletion(
+        env_.profile(), *app_,
+        PermissionsParser::GetOptionalPermissions(app_.get()));
   }
 
   std::vector<base::string16> active_permissions() {
@@ -266,7 +263,7 @@ TEST_F(USBDevicePermissionMessagesTest, SingleDevice) {
 
     std::unique_ptr<base::ListValue> permission_list(new base::ListValue());
     permission_list->Append(
-        UsbDevicePermissionData(0x02ad, 0x138c, -1).ToValue());
+        UsbDevicePermissionData(0x02ad, 0x138c, -1, -1).ToValue());
 
     UsbDevicePermission permission(
         PermissionsInfo::GetInstance()->GetByID(APIPermission::kUsbDevice));
@@ -281,7 +278,7 @@ TEST_F(USBDevicePermissionMessagesTest, SingleDevice) {
 
     std::unique_ptr<base::ListValue> permission_list(new base::ListValue());
     permission_list->Append(
-        UsbDevicePermissionData(0x02ad, 0x138d, -1).ToValue());
+        UsbDevicePermissionData(0x02ad, 0x138d, -1, -1).ToValue());
 
     UsbDevicePermission permission(
         PermissionsInfo::GetInstance()->GetByID(APIPermission::kUsbDevice));
@@ -296,7 +293,7 @@ TEST_F(USBDevicePermissionMessagesTest, SingleDevice) {
 
     std::unique_ptr<base::ListValue> permission_list(new base::ListValue());
     permission_list->Append(
-        UsbDevicePermissionData(0x02ae, 0x138d, -1).ToValue());
+        UsbDevicePermissionData(0x02ae, 0x138d, -1, -1).ToValue());
 
     UsbDevicePermission permission(
         PermissionsInfo::GetInstance()->GetByID(APIPermission::kUsbDevice));
@@ -319,19 +316,19 @@ TEST_F(USBDevicePermissionMessagesTest, MultipleDevice) {
   // Prepare data set
   std::unique_ptr<base::ListValue> permission_list(new base::ListValue());
   permission_list->Append(
-      UsbDevicePermissionData(0x02ad, 0x138c, -1).ToValue());
+      UsbDevicePermissionData(0x02ad, 0x138c, -1, -1).ToValue());
   // This device's product ID is not in Chrome's database.
   permission_list->Append(
-      UsbDevicePermissionData(0x02ad, 0x138d, -1).ToValue());
+      UsbDevicePermissionData(0x02ad, 0x138d, -1, -1).ToValue());
   // This additional unknown product will be collapsed into the entry above.
   permission_list->Append(
-      UsbDevicePermissionData(0x02ad, 0x138e, -1).ToValue());
+      UsbDevicePermissionData(0x02ad, 0x138e, -1, -1).ToValue());
   // This device's vendor ID is not in Chrome's database.
   permission_list->Append(
-      UsbDevicePermissionData(0x02ae, 0x138d, -1).ToValue());
+      UsbDevicePermissionData(0x02ae, 0x138d, -1, -1).ToValue());
   // This additional unknown vendor will be collapsed into the entry above.
   permission_list->Append(
-      UsbDevicePermissionData(0x02af, 0x138d, -1).ToValue());
+      UsbDevicePermissionData(0x02af, 0x138d, -1, -1).ToValue());
 
   UsbDevicePermission permission(
       PermissionsInfo::GetInstance()->GetByID(APIPermission::kUsbDevice));
@@ -342,7 +339,7 @@ TEST_F(USBDevicePermissionMessagesTest, MultipleDevice) {
   EXPECT_EQ(base::ASCIIToUTF16(kMessage), messages.front().message());
   const std::vector<base::string16>& submessages =
       messages.front().submessages();
-  ASSERT_EQ(arraysize(kDetails), submessages.size());
+  ASSERT_EQ(base::size(kDetails), submessages.size());
   for (size_t i = 0; i < submessages.size(); i++)
     EXPECT_EQ(base::ASCIIToUTF16(kDetails[i]), submessages[i]);
 }

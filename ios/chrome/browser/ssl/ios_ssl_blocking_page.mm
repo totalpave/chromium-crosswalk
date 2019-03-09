@@ -7,24 +7,25 @@
 #include <utility>
 
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/security_interstitials/core/metrics_helper.h"
 #include "components/security_interstitials/core/ssl_error_ui.h"
-#include "grit/components_strings.h"
+#include "components/strings/grit/components_strings.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
 #include "ios/chrome/browser/interstitials/ios_chrome_controller_client.h"
 #include "ios/chrome/browser/interstitials/ios_chrome_metrics_helper.h"
-#include "ios/chrome/grit/ios_strings.h"
-#include "ios/public/provider/chrome/browser/browser_constants.h"
-#include "ios/web/public/cert_store.h"
 #import "ios/web/public/navigation_item.h"
 #include "ios/web/public/ssl_status.h"
-#include "ios/web/public/web_state/web_state.h"
+#import "ios/web/public/web_state/web_state.h"
 #include "net/base/net_errors.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
+
+#if !defined(__has_feature) || !__has_feature(objc_arc)
+#error "This file requires ARC support."
+#endif
 
 using security_interstitials::SSLErrorUI;
 
@@ -37,11 +38,6 @@ enum SSLExpirationAndDecision {
   NOT_EXPIRED_AND_DO_NOT_PROCEED,
   END_OF_SSL_EXPIRATION_AND_DECISION,
 };
-
-// Rappor prefix, which is used for both overridable and non-overridable
-// interstitials so we don't leak the "overridable" bit.
-const char kDeprecatedSSLRapporPrefix[] = "ssl2";
-const char kSSLRapporPrefix[] = "ssl3";
 
 void RecordSSLExpirationPageEventState(bool expired_but_previously_allowed,
                                        bool proceed,
@@ -66,45 +62,47 @@ void RecordSSLExpirationPageEventState(bool expired_but_previously_allowed,
         END_OF_SSL_EXPIRATION_AND_DECISION);
   }
 }
+
+IOSChromeMetricsHelper* CreateMetricsHelper(web::WebState* web_state,
+                                            const GURL& request_url,
+                                            bool overridable) {
+  // Set up the metrics helper for the SSLErrorUI.
+  security_interstitials::MetricsHelper::ReportDetails reporting_info;
+  reporting_info.metric_prefix =
+      overridable ? "ssl_overridable" : "ssl_nonoverridable";
+  return new IOSChromeMetricsHelper(web_state, request_url, reporting_info);
+}
+
 }  // namespace
 
 // Note that we always create a navigation entry with SSL errors.
 // No error happening loading a sub-resource triggers an interstitial so far.
-IOSSSLBlockingPage::IOSSSLBlockingPage(
-    web::WebState* web_state,
-    int cert_error,
-    const net::SSLInfo& ssl_info,
-    const GURL& request_url,
-    int options_mask,
-    const base::Time& time_triggered,
-    const base::Callback<void(bool)>& callback)
+IOSSSLBlockingPage::IOSSSLBlockingPage(web::WebState* web_state,
+                                       int cert_error,
+                                       const net::SSLInfo& ssl_info,
+                                       const GURL& request_url,
+                                       int options_mask,
+                                       const base::Time& time_triggered,
+                                       base::OnceCallback<void(bool)> callback)
     : IOSSecurityInterstitialPage(web_state, request_url),
-      callback_(callback),
+      callback_(std::move(callback)),
       ssl_info_(ssl_info),
       overridable_(IsOverridable(options_mask)),
       expired_but_previously_allowed_(
           (options_mask & SSLErrorUI::EXPIRED_BUT_PREVIOUSLY_ALLOWED) != 0),
-      controller_(new IOSChromeControllerClient(web_state)) {
+      controller_(new IOSChromeControllerClient(
+          web_state,
+          base::WrapUnique(CreateMetricsHelper(web_state,
+                                               request_url,
+                                               IsOverridable(options_mask))))) {
   // Override prefs for the SSLErrorUI.
   if (overridable_)
     options_mask |= SSLErrorUI::SOFT_OVERRIDE_ENABLED;
   else
     options_mask &= ~SSLErrorUI::SOFT_OVERRIDE_ENABLED;
 
-  // Set up the metrics helper for the SSLErrorUI.
-  security_interstitials::MetricsHelper::ReportDetails reporting_info;
-  reporting_info.metric_prefix =
-      overridable_ ? "ssl_overridable" : "ssl_nonoverridable";
-  reporting_info.rappor_prefix = kSSLRapporPrefix;
-  reporting_info.deprecated_rappor_prefix = kDeprecatedSSLRapporPrefix;
-  reporting_info.rappor_report_type = rappor::LOW_FREQUENCY_UMA_RAPPOR_TYPE;
-  reporting_info.deprecated_rappor_report_type = rappor::UMA_RAPPOR_TYPE;
-  IOSChromeMetricsHelper* ios_chrome_metrics_helper =
-      new IOSChromeMetricsHelper(web_state, request_url, reporting_info);
-  controller_->set_metrics_helper(base::WrapUnique(ios_chrome_metrics_helper));
-
   ssl_error_ui_.reset(new SSLErrorUI(request_url, cert_error, ssl_info,
-                                     options_mask, time_triggered,
+                                     options_mask, time_triggered, GURL(),
                                      controller_.get()));
 
   // Creating an interstitial without showing (e.g. from chrome://interstitials)
@@ -132,27 +130,6 @@ void IOSSSLBlockingPage::AfterShow() {
 void IOSSSLBlockingPage::PopulateInterstitialStrings(
     base::DictionaryValue* load_time_data) const {
   ssl_error_ui_->PopulateStringsForHTML(load_time_data);
-  // Spoofing attempts have a custom message on iOS.
-  // This code will no longer be necessary once UIWebView is gone.
-  if (ssl_info_.cert->subject().GetDisplayName() == ios::kSpoofingAttemptFlag) {
-    load_time_data->SetString(
-        "errorCode", base::string16(base::ASCIIToUTF16("Unverified URL")));
-    load_time_data->SetString(
-        "tabTitle", l10n_util::GetStringUTF16(
-                        IDS_IOS_INTERSTITIAL_HEADING_SPOOFING_ATTEMPT_ERROR));
-    load_time_data->SetString(
-        "heading", l10n_util::GetStringUTF16(
-                       IDS_IOS_INTERSTITIAL_HEADING_SPOOFING_ATTEMPT_ERROR));
-    load_time_data->SetString(
-        "primaryParagraph",
-        l10n_util::GetStringUTF16(
-            IDS_IOS_INTERSTITIAL_SUMMARY_SPOOFING_ATTEMPT_ERROR));
-    load_time_data->SetString(
-        "explanationParagraph",
-        l10n_util::GetStringUTF16(
-            IDS_IOS_INTERSTITIAL_DETAILS_SPOOFING_ATTEMPT_ERROR));
-    load_time_data->SetString("finalParagraph", base::string16());
-  }
 }
 
 // This handles the commands sent from the interstitial JavaScript.
@@ -167,7 +144,7 @@ void IOSSSLBlockingPage::CommandReceived(const std::string& command) {
   bool retval = base::StringToInt(command, &cmd);
   DCHECK(retval);
   ssl_error_ui_->HandleCommand(
-      static_cast<security_interstitials::SecurityInterstitialCommands>(cmd));
+      static_cast<security_interstitials::SecurityInterstitialCommand>(cmd));
 }
 
 void IOSSSLBlockingPage::OnProceed() {
@@ -176,8 +153,7 @@ void IOSSSLBlockingPage::OnProceed() {
 
   // Accepting the certificate resumes the loading of the page.
   DCHECK(!callback_.is_null());
-  callback_.Run(true);
-  callback_.Reset();
+  std::move(callback_).Run(true);
 }
 
 void IOSSSLBlockingPage::OnDontProceed() {
@@ -195,8 +171,7 @@ void IOSSSLBlockingPage::OverrideItem(web::NavigationItem* item) {
   // On iOS cert may be null when it is not provided by API callback or can not
   // be parsed.
   if (ssl_info_.cert) {
-    item->GetSSL().cert_id = web::CertStore::GetInstance()->StoreCert(
-        ssl_info_.cert.get(), web_state()->GetCertGroupId());
+    item->GetSSL().certificate = ssl_info_.cert;
   }
 }
 
@@ -207,14 +182,11 @@ void IOSSSLBlockingPage::NotifyDenyCertificate() {
   if (callback_.is_null())
     return;
 
-  callback_.Run(false);
-  callback_.Reset();
+  std::move(callback_).Run(false);
 }
 
 // static
 bool IOSSSLBlockingPage::IsOverridable(int options_mask) {
-  const bool is_overridable =
-      (options_mask & SSLErrorUI::SOFT_OVERRIDE_ENABLED) &&
-      !(options_mask & SSLErrorUI::STRICT_ENFORCEMENT);
-  return is_overridable;
+  return (options_mask & SSLErrorUI::SOFT_OVERRIDE_ENABLED) &&
+         !(options_mask & SSLErrorUI::STRICT_ENFORCEMENT);
 }

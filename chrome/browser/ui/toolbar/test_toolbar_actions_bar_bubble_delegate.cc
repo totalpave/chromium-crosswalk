@@ -26,11 +26,18 @@ class TestToolbarActionsBarBubbleDelegate::DelegateImpl
   base::string16 GetItemListText() override { return parent_->item_list_; }
   base::string16 GetActionButtonText() override { return parent_->action_; }
   base::string16 GetDismissButtonText() override { return parent_->dismiss_; }
-  base::string16 GetLearnMoreButtonText() override {
-    return parent_->learn_more_;
+  ui::DialogButton GetDefaultDialogButton() override {
+    return parent_->default_button_;
+  }
+  std::unique_ptr<ToolbarActionsBarBubbleDelegate::ExtraViewInfo>
+  GetExtraViewInfo() override {
+    if (parent_->info_)
+      return std::make_unique<ToolbarActionsBarBubbleDelegate::ExtraViewInfo>(
+          *parent_->info_);
+    return nullptr;
   }
   std::string GetAnchorActionId() override { return std::string(); }
-  void OnBubbleShown() override {
+  void OnBubbleShown(const base::Closure& close_bubble_callback) override {
     CHECK(!parent_->shown_);
     parent_->shown_ = true;
   }
@@ -52,8 +59,8 @@ TestToolbarActionsBarBubbleDelegate::TestToolbarActionsBarBubbleDelegate(
       heading_(heading),
       body_(body),
       action_(action),
-      close_on_deactivate_(true) {
-}
+      default_button_(ui::DIALOG_BUTTON_NONE),
+      close_on_deactivate_(true) {}
 
 TestToolbarActionsBarBubbleDelegate::~TestToolbarActionsBarBubbleDelegate() {
   // If the bubble didn't close, it means that it still owns the DelegateImpl,

@@ -4,25 +4,23 @@
 
 #include "ui/gfx/gpu_memory_buffer.h"
 
+#include "ui/gfx/generic_shared_memory_id.h"
+
 namespace gfx {
 
-base::trace_event::MemoryAllocatorDumpGuid GetGpuMemoryBufferGUIDForTracing(
-    uint64_t tracing_process_id,
-    GpuMemoryBufferId buffer_id) {
-  // TODO(ericrk): Currently this function just wraps
-  // GetGenericSharedMemoryGUIDForTracing, we may want to special case this if
-  // the GPU memory buffer is not backed by shared memory.
-  return gfx::GetGenericSharedMemoryGUIDForTracing(tracing_process_id,
-                                                   buffer_id);
-}
-
 GpuMemoryBufferHandle::GpuMemoryBufferHandle()
-    : type(EMPTY_BUFFER), id(0), handle(base::SharedMemory::NULLHandle()) {
-}
+    : type(EMPTY_BUFFER), id(0), offset(0), stride(0) {}
 
-GpuMemoryBufferHandle::GpuMemoryBufferHandle(
-    const GpuMemoryBufferHandle& other) = default;
+// TODO(crbug.com/863011): Reset |type| and possibly the handles on the
+// moved-from object.
+GpuMemoryBufferHandle::GpuMemoryBufferHandle(GpuMemoryBufferHandle&& other) =
+    default;
 
-GpuMemoryBufferHandle::~GpuMemoryBufferHandle() {}
+GpuMemoryBufferHandle& GpuMemoryBufferHandle::operator=(
+    GpuMemoryBufferHandle&& other) = default;
+
+GpuMemoryBufferHandle::~GpuMemoryBufferHandle() = default;
+
+void GpuMemoryBuffer::SetColorSpace(const gfx::ColorSpace& color_space) {}
 
 }  // namespace gfx

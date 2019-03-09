@@ -6,15 +6,18 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "content/browser/download/download_file_factory.h"
-#include "content/browser/download/download_file_impl.h"
-#include "content/browser/download/download_item_impl.h"
+#include "base/path_service.h"
+#include "base/run_loop.h"
+#include "base/task/post_task.h"
 #include "content/browser/download/download_manager_impl.h"
 #include "content/browser/download/drag_download_file.h"
 #include "content/browser/download/drag_download_util.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
+#include "content/public/common/content_paths.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
@@ -22,7 +25,6 @@
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_browser_context.h"
 #include "content/shell/browser/shell_download_manager_delegate.h"
-#include "device/power_save_blocker/power_save_blocker.h"
 #include "net/test/url_request/url_request_mock_http_job.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -41,7 +43,7 @@ class MockDownloadFileObserver : public ui::DownloadFileObserver {
   MOCK_METHOD0(OnDownloadAborted, void());
 
  private:
-  virtual ~MockDownloadFileObserver() {}
+  ~MockDownloadFileObserver() override {}
 
   DISALLOW_COPY_AND_ASSIGN(MockDownloadFileObserver);
 };
@@ -52,9 +54,9 @@ class DragDownloadFileTest : public ContentBrowserTest {
   ~DragDownloadFileTest() override {}
 
   void Succeed() {
-    BrowserThread::PostTask(
-        BrowserThread::UI, FROM_HERE,
-        base::MessageLoopForUI::current()->QuitWhenIdleClosure());
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::UI},
+        base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
   }
 
   void FailFast() {
@@ -69,19 +71,14 @@ class DragDownloadFileTest : public ContentBrowserTest {
             shell()->web_contents()->GetBrowserContext()
             ->GetDownloadManagerDelegate());
     delegate->SetDownloadBehaviorForTesting(downloads_directory());
-  }
-
-  void SetUpServer() {
-    base::FilePath mock_base(GetTestFilePath("download", ""));
-    BrowserThread::PostTask(
-        BrowserThread::IO, FROM_HERE,
-        base::Bind(
-            &net::URLRequestMockHTTPJob::AddUrlHandlers, mock_base,
-            make_scoped_refptr(content::BrowserThread::GetBlockingPool())));
+    base::FilePath test_data_dir;
+    ASSERT_TRUE(base::PathService::Get(content::DIR_TEST_DATA, &test_data_dir));
+    embedded_test_server()->ServeFilesFromDirectory(test_data_dir);
+    ASSERT_TRUE(embedded_test_server()->Start());
   }
 
   const base::FilePath& downloads_directory() const {
-    return downloads_directory_.path();
+    return downloads_directory_.GetPath();
   }
 
  private:
@@ -93,7 +90,8 @@ class DragDownloadFileTest : public ContentBrowserTest {
 IN_PROC_BROWSER_TEST_F(DragDownloadFileTest, DragDownloadFileTest_NetError) {
   base::FilePath name(downloads_directory().AppendASCII(
       "DragDownloadFileTest_NetError.txt"));
-  GURL url(net::URLRequestMockHTTPJob::GetMockUrl("download-test.lib"));
+  GURL url = embedded_test_server()->GetURL("/download/download-test.lib");
+  ASSERT_TRUE(embedded_test_server()->ShutdownAndWaitUntilComplete());
   Referrer referrer;
   std::string referrer_encoding;
   scoped_refptr<DragDownloadFile> file(
@@ -112,10 +110,9 @@ IN_PROC_BROWSER_TEST_F(DragDownloadFileTest, DragDownloadFileTest_NetError) {
 IN_PROC_BROWSER_TEST_F(DragDownloadFileTest, DragDownloadFileTest_Complete) {
   base::FilePath name(downloads_directory().AppendASCII(
         "DragDownloadFileTest_Complete.txt"));
-  GURL url(net::URLRequestMockHTTPJob::GetMockUrl("download-test.lib"));
+  GURL url = embedded_test_server()->GetURL("/download/download-test.lib");
   Referrer referrer;
   std::string referrer_encoding;
-  SetUpServer();
   scoped_refptr<DragDownloadFile> file(new DragDownloadFile(
       name, base::File(), url, referrer,
       referrer_encoding, shell()->web_contents()));

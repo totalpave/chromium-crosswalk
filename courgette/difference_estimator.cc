@@ -12,7 +12,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "base/containers/hash_tables.h"
+#include <unordered_set>
+
 #include "base/macros.h"
 
 namespace courgette {
@@ -60,7 +61,7 @@ class DifferenceEstimator::Base {
 
  private:
   Region region_;
-  base::hash_set<size_t> hashes_;
+  std::unordered_set<size_t> hashes_;
 
   friend class DifferenceEstimator;
   DISALLOW_COPY_AND_ASSIGN(Base);
@@ -78,7 +79,7 @@ class DifferenceEstimator::Subject {
   DISALLOW_COPY_AND_ASSIGN(Subject);
 };
 
-DifferenceEstimator::DifferenceEstimator() {}
+DifferenceEstimator::DifferenceEstimator() = default;
 
 DifferenceEstimator::~DifferenceEstimator() {
   for (size_t i = 0;  i < owned_bases_.size();  ++i)

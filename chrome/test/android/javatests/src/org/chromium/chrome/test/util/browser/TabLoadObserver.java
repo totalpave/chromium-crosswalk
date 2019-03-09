@@ -6,15 +6,18 @@ package org.chromium.chrome.test.util.browser;
 
 import android.text.TextUtils;
 
-import junit.framework.Assert;
+import org.junit.Assert;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.content.browser.test.util.CallbackHelper;
-import org.chromium.content.browser.test.util.Criteria;
-import org.chromium.content.browser.test.util.CriteriaHelper;
+import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.test.util.Coordinates;
+import org.chromium.content_public.browser.test.util.Criteria;
+import org.chromium.content_public.browser.test.util.CriteriaHelper;
+import org.chromium.ui.base.PageTransition;
 
 import java.util.Locale;
 
@@ -43,17 +46,17 @@ public class TabLoadObserver extends EmptyTabObserver {
     }
 
     @Override
-    public void onLoadStarted(Tab tab, boolean toDifferentDocument) {
+    public void onPageLoadStarted(Tab tab, String url) {
         mTabLoadStartedCallback.notifyCalled();
     }
 
     @Override
-    public void onPageLoadFinished(Tab tab) {
+    public void onPageLoadFinished(Tab tab, String url) {
         mTabLoadFinishedCallback.notifyCalled();
     }
 
     @Override
-    public void onCrash(Tab tab, boolean sadTabShown) {
+    public void onCrash(Tab tab) {
         Assert.fail("Tab crashed; test results will be invalid.  Failing.");
     }
 
@@ -63,10 +66,20 @@ public class TabLoadObserver extends EmptyTabObserver {
      * @param url URL to load and wait for.
      */
     public void fullyLoadUrl(final String url) throws Exception {
+        fullyLoadUrl(url, PageTransition.LINK);
+    }
+
+    /**
+     * Loads the given URL and waits for it to complete.
+     *
+     * @param url            URL to load and wait for.
+     * @param transitionType the transition type to use.
+     */
+    public void fullyLoadUrl(final String url, final int transitionType) throws Exception {
         ThreadUtils.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                mTab.loadUrl(new LoadUrlParams(url));
+                mTab.loadUrl(new LoadUrlParams(url, transitionType));
             }
         });
         assertLoaded();
@@ -78,11 +91,12 @@ public class TabLoadObserver extends EmptyTabObserver {
     public void assertLoaded() throws Exception {
         mTabLoadStartedCallback.waitForCallback(0, 1);
         mTabLoadFinishedCallback.waitForCallback(0, 1);
+        final Coordinates coord = Coordinates.createFor(mTab.getWebContents());
 
         CriteriaHelper.pollUiThread(new Criteria() {
             @Override
             public boolean isSatisfied() {
-                if (!mTab.isLoadingAndRenderingDone()) {
+                if (!ChromeTabUtils.isLoadingAndRenderingDone(mTab)) {
                     updateFailureReason("load and rendering never completed");
                     return false;
                 }
@@ -97,12 +111,12 @@ public class TabLoadObserver extends EmptyTabObserver {
                 }
 
                 if (mExpectedScale != null) {
-                    if (mTab.getContentViewCore() == null) {
-                        updateFailureReason("tab has no content view core");
+                    if (mTab.getWebContents() == null) {
+                        updateFailureReason("tab has no web contents");
                         return false;
                     }
 
-                    float scale = mTab.getContentViewCore().getScale();
+                    float scale = coord.getPageScaleFactor();
                     if (Math.abs(mExpectedScale - scale) >= FLOAT_EPSILON) {
                         updateFailureReason(String.format(
                                 Locale.ENGLISH,

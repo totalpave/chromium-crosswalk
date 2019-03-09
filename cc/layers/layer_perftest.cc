@@ -5,11 +5,13 @@
 #include "cc/layers/layer.h"
 
 #include "base/threading/thread_task_runner_handle.h"
-#include "cc/debug/lap_timer.h"
+#include "base/timer/lap_timer.h"
+#include "cc/animation/animation_host.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
 #include "cc/test/fake_layer_tree_host.h"
 #include "cc/test/fake_layer_tree_host_client.h"
 #include "cc/test/fake_layer_tree_host_impl.h"
+#include "cc/test/stub_layer_tree_host_single_thread_client.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/perf/perf_test.h"
@@ -24,20 +26,18 @@ static const int kTimeCheckInterval = 10;
 class LayerPerfTest : public testing::Test {
  public:
   LayerPerfTest()
-      : host_impl_(&task_runner_provider_,
-                   &shared_bitmap_manager_,
-                   &task_graph_runner_),
-        fake_client_(FakeLayerTreeHostClient::DIRECT_3D),
+      : host_impl_(&task_runner_provider_, &task_graph_runner_),
         timer_(kWarmupRuns,
                base::TimeDelta::FromMilliseconds(kTimeLimitMillis),
                kTimeCheckInterval) {}
 
  protected:
   void SetUp() override {
-    layer_tree_host_ =
-        FakeLayerTreeHost::Create(&fake_client_, &task_graph_runner_);
+    animation_host_ = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
+    layer_tree_host_ = FakeLayerTreeHost::Create(
+        &fake_client_, &task_graph_runner_, animation_host_.get());
     layer_tree_host_->InitializeSingleThreaded(
-        &fake_client_, base::ThreadTaskRunnerHandle::Get(), nullptr);
+        &single_thread_client_, base::ThreadTaskRunnerHandle::Get());
   }
 
   void TearDown() override {
@@ -46,13 +46,14 @@ class LayerPerfTest : public testing::Test {
   }
 
   FakeImplTaskRunnerProvider task_runner_provider_;
-  TestSharedBitmapManager shared_bitmap_manager_;
   TestTaskGraphRunner task_graph_runner_;
   FakeLayerTreeHostImpl host_impl_;
 
+  StubLayerTreeHostSingleThreadClient single_thread_client_;
   FakeLayerTreeHostClient fake_client_;
+  std::unique_ptr<AnimationHost> animation_host_;
   std::unique_ptr<FakeLayerTreeHost> layer_tree_host_;
-  LapTimer timer_;
+  base::LapTimer timer_;
 };
 
 TEST_F(LayerPerfTest, PushPropertiesTo) {
@@ -78,8 +79,6 @@ TEST_F(LayerPerfTest, PushPropertiesTo) {
     test_layer->SetDoubleSided(double_sided);
     test_layer->SetHideLayerAndSubtree(hide_layer_and_subtree);
     test_layer->SetMasksToBounds(masks_to_bounds);
-    test_layer->SetScrollClipLayerId(scrollable ? test_layer->id()
-                                                : Layer::INVALID_ID);
     test_layer->PushPropertiesTo(impl_layer.get());
 
     transform_origin_z += 0.01f;

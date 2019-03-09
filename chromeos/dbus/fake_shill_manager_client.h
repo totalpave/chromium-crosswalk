@@ -5,23 +5,22 @@
 #ifndef CHROMEOS_DBUS_FAKE_SHILL_MANAGER_CLIENT_H_
 #define CHROMEOS_DBUS_FAKE_SHILL_MANAGER_CLIENT_H_
 
+#include <map>
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
+#include "base/component_export.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
+#include "base/values.h"
 #include "chromeos/dbus/shill_manager_client.h"
-
-namespace net {
-class IPEndPoint;
-}
 
 namespace chromeos {
 
 // A fake implementation of ShillManagerClient. This works in close coordination
 // with FakeShillServiceClient. FakeShillDeviceClient, and
 // FakeShillProfileClient, and is not intended to be used independently.
-class CHROMEOS_EXPORT FakeShillManagerClient
+class COMPONENT_EXPORT(CHROMEOS_DBUS) FakeShillManagerClient
     : public ShillManagerClient,
       public ShillManagerClient::TestInterface {
  public:
@@ -60,20 +59,11 @@ class CHROMEOS_EXPORT FakeShillManagerClient
   void GetService(const base::DictionaryValue& properties,
                   const ObjectPathCallback& callback,
                   const ErrorCallback& error_callback) override;
-  void VerifyDestination(const VerificationProperties& properties,
-                         const BooleanCallback& callback,
-                         const ErrorCallback& error_callback) override;
-  void VerifyAndEncryptCredentials(
-      const VerificationProperties& properties,
-      const std::string& service_path,
-      const StringCallback& callback,
-      const ErrorCallback& error_callback) override;
-  void VerifyAndEncryptData(const VerificationProperties& properties,
-                            const std::string& data,
-                            const StringCallback& callback,
-                            const ErrorCallback& error_callback) override;
   void ConnectToBestServices(const base::Closure& callback,
                              const ErrorCallback& error_callback) override;
+  void SetNetworkThrottlingStatus(const NetworkThrottlingStatus& status,
+                                  const base::Closure& callback,
+                                  const ErrorCallback& error_callback) override;
 
   ShillManagerClient::TestInterface* GetTestInterface() override;
 
@@ -101,6 +91,8 @@ class CHROMEOS_EXPORT FakeShillManagerClient
   void SetupDefaultEnvironment() override;
   int GetInteractiveDelay() const override;
   void SetBestServiceToConnect(const std::string& service_path) override;
+  const NetworkThrottlingStatus& GetNetworkThrottlingStatus() override;
+  bool GetFastTransitionStatus() override;
 
   // Constants used for testing.
   static const char kFakeEthernetNetworkGuid[];
@@ -116,7 +108,8 @@ class CHROMEOS_EXPORT FakeShillManagerClient
   void SetTechnologyEnabled(const std::string& type,
                             const base::Closure& callback,
                             bool enabled);
-  base::ListValue* GetEnabledServiceList(const std::string& property) const;
+  std::unique_ptr<base::ListValue> GetEnabledServiceList(
+      const std::string& property) const;
   void ScanCompleted(const std::string& device_path,
                      const base::Closure& callback);
 
@@ -143,17 +136,26 @@ class CHROMEOS_EXPORT FakeShillManagerClient
   // Initial state for fake services.
   std::map<std::string, std::string> shill_initial_state_map_;
 
+  // Carrier for fake cellular service.
+  std::string cellular_carrier_;
+
+  // URL used for cellular activation.
+  std::string cellular_olp_;
+
   // Technology type for fake cellular service.
   std::string cellular_technology_;
 
   // Roaming state for fake cellular service.
   std::string roaming_state_;
 
+  // Current network throttling status.
+  NetworkThrottlingStatus network_throttling_status_ = {false, 0, 0};
+
   typedef std::map<std::string, base::Value*> ShillPropertyMap;
   typedef std::map<std::string, ShillPropertyMap> DevicePropertyMap;
   DevicePropertyMap shill_device_property_map_;
 
-  base::ObserverList<ShillPropertyChangedObserver> observer_list_;
+  base::ObserverList<ShillPropertyChangedObserver>::Unchecked observer_list_;
 
   // Track the default service for signaling Manager.DefaultService.
   std::string default_service_;

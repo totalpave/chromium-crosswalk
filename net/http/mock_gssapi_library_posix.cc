@@ -229,13 +229,11 @@ MockGSSAPILibrary::SecurityContextQuery::SecurityContextQuery(
 MockGSSAPILibrary::SecurityContextQuery::SecurityContextQuery(
     const SecurityContextQuery& other) = default;
 
-MockGSSAPILibrary::SecurityContextQuery::~SecurityContextQuery() {}
+MockGSSAPILibrary::SecurityContextQuery::~SecurityContextQuery() = default;
 
-MockGSSAPILibrary::MockGSSAPILibrary() {
-}
+MockGSSAPILibrary::MockGSSAPILibrary() = default;
 
-MockGSSAPILibrary::~MockGSSAPILibrary() {
-}
+MockGSSAPILibrary::~MockGSSAPILibrary() = default;
 
 void MockGSSAPILibrary::ExpectSecurityContext(
     const std::string& expected_package,
@@ -477,7 +475,10 @@ OM_uint32 MockGSSAPILibrary::inquire_context(
   return GSS_S_COMPLETE;
 }
 
+const std::string& MockGSSAPILibrary::GetLibraryNameForTesting() {
+  return library_name_;
+}
+
 }  // namespace test
 
 }  // namespace net
-

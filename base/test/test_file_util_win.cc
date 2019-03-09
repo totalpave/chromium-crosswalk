@@ -4,19 +4,23 @@
 
 #include "base/test/test_file_util.h"
 
-#include <windows.h>
 #include <aclapi.h>
-#include <shlwapi.h>
 #include <stddef.h>
+#include <wchar.h>
+#include <windows.h>
 
+#include <memory>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/threading/platform_thread.h"
 #include "base/win/scoped_handle.h"
+#include "base/win/shlwapi.h"
 
 namespace base {
 
@@ -27,42 +31,6 @@ struct PermissionInfo {
   ACL dacl;
 };
 
-// Deny |permission| on the file |path|, for the current user.
-bool DenyFilePermission(const FilePath& path, DWORD permission) {
-  PACL old_dacl;
-  PSECURITY_DESCRIPTOR security_descriptor;
-  if (GetNamedSecurityInfo(const_cast<wchar_t*>(path.value().c_str()),
-                           SE_FILE_OBJECT,
-                           DACL_SECURITY_INFORMATION, NULL, NULL, &old_dacl,
-                           NULL, &security_descriptor) != ERROR_SUCCESS) {
-    return false;
-  }
-
-  EXPLICIT_ACCESS change;
-  change.grfAccessPermissions = permission;
-  change.grfAccessMode = DENY_ACCESS;
-  change.grfInheritance = 0;
-  change.Trustee.pMultipleTrustee = NULL;
-  change.Trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE;
-  change.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
-  change.Trustee.TrusteeType = TRUSTEE_IS_USER;
-  change.Trustee.ptstrName = const_cast<wchar_t*>(L"CURRENT_USER");
-
-  PACL new_dacl;
-  if (SetEntriesInAcl(1, &change, old_dacl, &new_dacl) != ERROR_SUCCESS) {
-    LocalFree(security_descriptor);
-    return false;
-  }
-
-  DWORD rc = SetNamedSecurityInfo(const_cast<wchar_t*>(path.value().c_str()),
-                                  SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                                  NULL, NULL, new_dacl, NULL);
-  LocalFree(security_descriptor);
-  LocalFree(new_dacl);
-
-  return rc == ERROR_SUCCESS;
-}
-
 // Gets a blob indicating the permission information for |path|.
 // |length| is the length of the blob.  Zero on failure.
 // Returns the blob pointer, or NULL on failure.
@@ -71,10 +39,9 @@ void* GetPermissionInfo(const FilePath& path, size_t* length) {
   *length = 0;
   PACL dacl = NULL;
   PSECURITY_DESCRIPTOR security_descriptor;
-  if (GetNamedSecurityInfo(const_cast<wchar_t*>(path.value().c_str()),
-                           SE_FILE_OBJECT,
-                           DACL_SECURITY_INFORMATION, NULL, NULL, &dacl,
-                           NULL, &security_descriptor) != ERROR_SUCCESS) {
+  if (GetNamedSecurityInfo(as_wcstr(path.value()), SE_FILE_OBJECT,
+                           DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL,
+                           &security_descriptor) != ERROR_SUCCESS) {
     return NULL;
   }
   DCHECK(dacl != NULL);
@@ -98,7 +65,7 @@ bool RestorePermissionInfo(const FilePath& path, void* info, size_t length) {
 
   PermissionInfo* perm = reinterpret_cast<PermissionInfo*>(info);
 
-  DWORD rc = SetNamedSecurityInfo(const_cast<wchar_t*>(path.value().c_str()),
+  DWORD rc = SetNamedSecurityInfo(const_cast<wchar_t*>(as_wcstr(path.value())),
                                   SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
                                   NULL, NULL, &perm->dacl, NULL);
   LocalFree(perm->security_descriptor);
@@ -107,6 +74,13 @@ bool RestorePermissionInfo(const FilePath& path, void* info, size_t length) {
   delete [] char_array;
 
   return rc == ERROR_SUCCESS;
+}
+
+std::unique_ptr<wchar_t[]> ToCStr(const std::basic_string<wchar_t>& str) {
+  size_t size = str.size() + 1;
+  std::unique_ptr<wchar_t[]> ptr = std::make_unique<wchar_t[]>(size);
+  wcsncpy(ptr.get(), str.c_str(), size);
+  return ptr;
 }
 
 }  // namespace
@@ -130,9 +104,15 @@ bool DieFileDie(const FilePath& file, bool recurse) {
   return false;
 }
 
+void SyncPageCacheToDisk() {
+  // Approximating this with noop. The proper implementation would require
+  // administrator privilege:
+  // https://docs.microsoft.com/en-us/windows/desktop/api/FileAPI/nf-fileapi-flushfilebuffers
+}
+
 bool EvictFileFromSystemCache(const FilePath& file) {
-  base::win::ScopedHandle file_handle(
-      CreateFile(file.value().c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,
+  win::ScopedHandle file_handle(
+      CreateFile(as_wcstr(file.value()), GENERIC_READ | GENERIC_WRITE, 0, NULL,
                  OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, NULL));
   if (!file_handle.IsValid())
     return false;
@@ -149,47 +129,40 @@ bool EvictFileFromSystemCache(const FilePath& file) {
   return true;
 }
 
-// Checks if the volume supports Alternate Data Streams. This is required for
-// the Zone Identifier implementation.
-bool VolumeSupportsADS(const FilePath& path) {
-  wchar_t drive[MAX_PATH] = {0};
-  wcscpy_s(drive, MAX_PATH, path.value().c_str());
+// Deny |permission| on the file |path|, for the current user.
+bool DenyFilePermission(const FilePath& path, DWORD permission) {
+  PACL old_dacl;
+  PSECURITY_DESCRIPTOR security_descriptor;
 
-  if (!PathStripToRootW(drive))
+  std::unique_ptr<TCHAR[]> path_ptr = ToCStr(as_wcstr(path.value()));
+  if (GetNamedSecurityInfo(path_ptr.get(), SE_FILE_OBJECT,
+                           DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                           &old_dacl, nullptr,
+                           &security_descriptor) != ERROR_SUCCESS) {
     return false;
-
-  DWORD fs_flags = 0;
-  if (!GetVolumeInformationW(drive, NULL, 0, 0, NULL, &fs_flags, NULL, 0))
-    return false;
-
-  if (fs_flags & FILE_NAMED_STREAMS)
-    return true;
-
-  return false;
-}
-
-// Return whether the ZoneIdentifier is correctly set to "Internet" (3)
-// Only returns a valid result when called from same process as the
-// one that (was supposed to have) set the zone identifier.
-bool HasInternetZoneIdentifier(const FilePath& full_path) {
-  FilePath zone_path(full_path.value() + L":Zone.Identifier");
-  std::string zone_path_contents;
-  if (!ReadFileToString(zone_path, &zone_path_contents))
-    return false;
-
-  std::vector<std::string> lines = SplitString(
-      zone_path_contents, "\n", TRIM_WHITESPACE, SPLIT_WANT_ALL);
-  switch (lines.size()) {
-    case 3:
-      // optional empty line at end of file:
-      if (!lines[2].empty())
-        return false;
-      // fall through:
-    case 2:
-      return lines[0] == "[ZoneTransfer]" && lines[1] == "ZoneId=3";
-    default:
-      return false;
   }
+
+  std::unique_ptr<TCHAR[]> current_user = ToCStr(std::wstring(L"CURRENT_USER"));
+  EXPLICIT_ACCESS new_access = {
+      permission,
+      DENY_ACCESS,
+      0,
+      {nullptr, NO_MULTIPLE_TRUSTEE, TRUSTEE_IS_NAME, TRUSTEE_IS_USER,
+       current_user.get()}};
+
+  PACL new_dacl;
+  if (SetEntriesInAcl(1, &new_access, old_dacl, &new_dacl) != ERROR_SUCCESS) {
+    LocalFree(security_descriptor);
+    return false;
+  }
+
+  DWORD rc = SetNamedSecurityInfo(path_ptr.get(), SE_FILE_OBJECT,
+                                  DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                                  new_dacl, nullptr);
+  LocalFree(security_descriptor);
+  LocalFree(new_dacl);
+
+  return rc == ERROR_SUCCESS;
 }
 
 bool MakeFileUnreadable(const FilePath& path) {

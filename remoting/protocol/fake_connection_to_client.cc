@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "remoting/codec/video_encoder.h"
+#include "remoting/protocol/audio_source.h"
+#include "remoting/protocol/audio_stream.h"
 #include "remoting/protocol/session.h"
 #include "remoting/protocol/video_frame_pump.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
@@ -15,11 +17,12 @@ namespace remoting {
 namespace protocol {
 
 FakeVideoStream::FakeVideoStream() : weak_factory_(this) {}
-FakeVideoStream::~FakeVideoStream() {}
+FakeVideoStream::~FakeVideoStream() = default;
+
+void FakeVideoStream::SetEventTimestampsSource(
+    scoped_refptr<InputEventTimestampsSource> event_timestamps_source) {}
 
 void FakeVideoStream::Pause(bool pause) {}
-
-void FakeVideoStream::OnInputEventReceived(int64_t event_timestamp) {}
 
 void FakeVideoStream::SetLosslessEncode(bool want_lossless) {}
 
@@ -29,6 +32,8 @@ void FakeVideoStream::SetObserver(Observer* observer) {
   observer_ = observer;
 }
 
+void FakeVideoStream::SelectSource(int id) {}
+
 base::WeakPtr<FakeVideoStream> FakeVideoStream::GetWeakPtr() {
   return weak_factory_.GetWeakPtr();
 }
@@ -36,7 +41,7 @@ base::WeakPtr<FakeVideoStream> FakeVideoStream::GetWeakPtr() {
 FakeConnectionToClient::FakeConnectionToClient(std::unique_ptr<Session> session)
     : session_(std::move(session)) {}
 
-FakeConnectionToClient::~FakeConnectionToClient() {}
+FakeConnectionToClient::~FakeConnectionToClient() = default;
 
 void FakeConnectionToClient::SetEventHandler(EventHandler* event_handler) {
   event_handler_ = event_handler;
@@ -62,8 +67,10 @@ std::unique_ptr<VideoStream> FakeConnectionToClient::StartVideoStream(
   return std::move(result);
 }
 
-AudioStub* FakeConnectionToClient::audio_stub() {
-  return audio_stub_;
+std::unique_ptr<AudioStream> FakeConnectionToClient::StartAudioStream(
+    std::unique_ptr<AudioSource> audio_source) {
+  NOTIMPLEMENTED();
+  return nullptr;
 }
 
 ClientStub* FakeConnectionToClient::client_stub() {
@@ -76,14 +83,12 @@ void FakeConnectionToClient::Disconnect(ErrorCode disconnect_error) {
   is_connected_ = false;
   disconnect_error_ = disconnect_error;
   if (event_handler_)
-    event_handler_->OnConnectionClosed(this, disconnect_error_);
+    event_handler_->OnConnectionClosed(disconnect_error_);
 }
 
 Session* FakeConnectionToClient::session() {
   return session_.get();
 }
-
-void FakeConnectionToClient::OnInputEventReceived(int64_t timestamp) {}
 
 void FakeConnectionToClient::set_clipboard_stub(ClipboardStub* clipboard_stub) {
   clipboard_stub_ = clipboard_stub;

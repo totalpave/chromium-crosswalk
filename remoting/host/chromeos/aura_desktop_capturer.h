@@ -9,9 +9,9 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "third_party/webrtc/modules/desktop_capture/screen_capturer.h"
+#include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
 
-namespace cc {
+namespace viz {
 class CopyOutputResult;
 }  // namespace cc
 
@@ -32,13 +32,15 @@ class AuraDesktopCapturer : public webrtc::DesktopCapturer {
 
   // webrtc::DesktopCapturer implementation.
   void Start(webrtc::DesktopCapturer::Callback* callback) override;
-  void Capture(const webrtc::DesktopRegion& region) override;
+  void CaptureFrame() override;
+  bool GetSourceList(SourceList* sources) override;
+  bool SelectSource(SourceId id) override;
 
  private:
   friend class AuraDesktopCapturerTest;
 
   // Called when a copy of the layer is captured.
-  void OnFrameCaptured(std::unique_ptr<cc::CopyOutputResult> result);
+  void OnFrameCaptured(std::unique_ptr<viz::CopyOutputResult> result);
 
   // Points to the callback passed to webrtc::DesktopCapturer::Start().
   webrtc::DesktopCapturer::Callback* callback_;

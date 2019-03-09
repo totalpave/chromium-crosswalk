@@ -8,8 +8,8 @@
 #include "base/files/file.h"
 #include "base/macros.h"
 #include "build/build_config.h"
-#include "ipc/ipc_export.h"
 #include "ipc/ipc_message_attachment.h"
+#include "ipc/ipc_message_support_export.h"
 #include "mojo/public/cpp/system/handle.h"
 
 namespace IPC {
@@ -20,16 +20,12 @@ namespace internal {
 // This can hold any type of transferrable Mojo handle (i.e. message pipe, data
 // pipe, etc), but the receiver is expected to know what type of handle to
 // expect.
-class IPC_EXPORT MojoHandleAttachment : public MessageAttachment {
+class IPC_MESSAGE_SUPPORT_EXPORT MojoHandleAttachment
+    : public MessageAttachment {
  public:
   explicit MojoHandleAttachment(mojo::ScopedHandle handle);
 
   Type GetType() const override;
-
-#if defined(OS_POSIX)
-  // Should not be called.
-  base::PlatformFile TakePlatformFile() override;
-#endif  // OS_POSIX
 
   // Returns the owning handle transferring the ownership.
   mojo::ScopedHandle TakeHandle();

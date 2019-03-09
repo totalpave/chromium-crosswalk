@@ -8,16 +8,19 @@
 #include <memory>
 #include <string>
 
+#include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string16.h"
 #include "base/time/time.h"
+#include "components/translate/content/common/translate.mojom.h"
 #include "components/translate/core/common/translate_errors.h"
 #include "content/public/renderer/render_frame_observer.h"
+#include "mojo/public/cpp/bindings/binding.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "url/gurl.h"
 
 namespace blink {
-class WebDocument;
 class WebLocalFrame;
 }
 
@@ -25,12 +28,12 @@ namespace translate {
 
 // This class deals with page translation.
 // There is one TranslateHelper per RenderView.
-class TranslateHelper : public content::RenderFrameObserver {
+class TranslateHelper : public content::RenderFrameObserver,
+                        public mojom::Page {
  public:
-  explicit TranslateHelper(content::RenderFrame* render_frame,
-                           int world_id,
-                           int extension_group,
-                           const std::string& extension_scheme);
+  TranslateHelper(content::RenderFrame* render_frame,
+                  int world_id,
+                  const std::string& extension_scheme);
   ~TranslateHelper() override;
 
   // Informs us that the page's text has been extracted.
@@ -41,15 +44,16 @@ class TranslateHelper : public content::RenderFrameObserver {
   // this URL loads, this is the time to prepare for it.
   void PrepareForUrl(const GURL& url);
 
- protected:
-  // The following methods are protected so they can be overridden in
-  // unit-tests.
-  void OnTranslatePage(int page_seq_no,
-                       const std::string& translate_script,
-                       const std::string& source_lang,
-                       const std::string& target_lang);
-  void OnRevertTranslation(int page_seq_no);
+  // mojom::Page implementation.
+  void Translate(
+      const std::string& translate_script,
+      network::mojom::URLLoaderFactoryPtr loader_factory_for_translate_script,
+      const std::string& source_lang,
+      const std::string& target_lang,
+      TranslateCallback callback) override;
+  void RevertTranslation() override;
 
+ protected:
   // Returns true if the translate library is available, meaning the JavaScript
   // has already been injected in that page.
   virtual bool IsTranslateLibAvailable();
@@ -63,6 +67,9 @@ class TranslateHelper : public content::RenderFrameObserver {
   // Returns true if the translation script has reported an error performing the
   // translation.
   virtual bool HasTranslationFailed();
+
+  // Returns the error code generated in translate library.
+  virtual int64_t GetErrorCode();
 
   // Starts the translation by calling the translate library.  This method
   // should only be called when the translate script has been injected in the
@@ -98,16 +105,30 @@ class TranslateHelper : public content::RenderFrameObserver {
   // run successfully. Otherwise, returns 0.0.
   virtual double ExecuteScriptAndGetDoubleResult(const std::string& script);
 
+  // Executes the JavaScript code in |script| in the main frame of RenderView.
+  // and returns the integer value returned by the script evaluation if the
+  // script was run successfully. Otherwise, returns 0.
+  virtual int64_t ExecuteScriptAndGetIntegerResult(const std::string& script);
+
  private:
+  FRIEND_TEST_ALL_PREFIXES(TranslateHelperTest, TestBuildTranslationScript);
+
   // Converts language code to the one used in server supporting list.
   static void ConvertLanguageCodeSynonym(std::string* code);
 
-  // RenderFrameObserver implementation.
-  bool OnMessageReceived(const IPC::Message& message) override;
-  void OnDestruct() override;
+  // Builds the translation JS used to translate from source_lang to
+  // target_lang.
+  static std::string BuildTranslationScript(const std::string& source_lang,
+                                            const std::string& target_lang);
 
-  // Informs us that the page's text has been extracted.
-  void PageCapturedImpl(int page_seq_no, const base::string16& contents);
+  const mojom::ContentTranslateDriverPtr& GetTranslateHandler();
+
+  // Cleanups all states and pending callbacks associated with the current
+  // running page translation.
+  void ResetPage();
+
+  // RenderFrameObserver implementation.
+  void OnDestruct() override;
 
   // Cancels any translation that is currently being performed.  This does not
   // revert existing translations.
@@ -116,11 +137,11 @@ class TranslateHelper : public content::RenderFrameObserver {
   // Checks if the current running page translation is finished or errored and
   // notifies the browser accordingly.  If the translation has not terminated,
   // posts a task to check again later.
-  void CheckTranslateStatus(int page_seq_no);
+  void CheckTranslateStatus();
 
   // Called by TranslatePage to do the actual translation.  |count| is used to
   // limit the number of retries.
-  void TranslatePageImpl(int page_seq_no, int count);
+  void TranslatePageImpl(int count);
 
   // Sends a message to the browser to notify it that the translation failed
   // with |error|.
@@ -130,12 +151,8 @@ class TranslateHelper : public content::RenderFrameObserver {
   // if the page is being closed.
   blink::WebLocalFrame* GetMainFrame();
 
-  // An ever-increasing sequence number of the current page, used to match up
-  // translation requests with responses.
-  int page_seq_no_;
-
   // The states associated with the current translation.
-  bool translation_pending_;
+  TranslateCallback translate_callback_pending_;
   std::string source_lang_;
   std::string target_lang_;
 
@@ -146,11 +163,20 @@ class TranslateHelper : public content::RenderFrameObserver {
   // The world ID to use for script execution.
   int world_id_;
 
-  // The extension group.
-  int extension_group_;
-
   // The URL scheme for translate extensions.
   std::string extension_scheme_;
+
+  // The task runner responsible for the translation task, freezing it
+  // when the frame is backgrounded.
+  scoped_refptr<base::SingleThreadTaskRunner> translate_task_runner_;
+
+  // The Mojo pipe for communication with the browser process. Due to a
+  // refactor, the other end of the pipe is now attached to a
+  // LanguageDetectionTabHelper (which implements the ContentTranslateDriver
+  // Mojo interface).
+  mojom::ContentTranslateDriverPtr translate_handler_;
+
+  mojo::Binding<mojom::Page> binding_;
 
   // Method factory used to make calls to TranslatePageImpl.
   base::WeakPtrFactory<TranslateHelper> weak_method_factory_;

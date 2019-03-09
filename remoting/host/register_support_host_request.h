@@ -12,12 +12,13 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "remoting/base/rsa_key_pair.h"
+#include "remoting/protocol/errors.h"
 #include "remoting/signaling/signal_strategy.h"
 #include "testing/gtest/include/gtest/gtest_prod.h"
 
-namespace buzz {
+namespace jingle_xmpp {
 class XmlElement;
-}  // namespace buzz
+}  // namespace jingle_xmpp
 
 namespace base {
 class TimeDelta;
@@ -39,7 +40,8 @@ class RegisterSupportHostRequest : public SignalStrategy::Listener {
   // is an error message if the request failed, or null if it succeeded.
   typedef base::Callback<void(const std::string&,
                               const base::TimeDelta&,
-                              const std::string&)> RegisterCallback;
+                              protocol::ErrorCode error_code)>
+      RegisterCallback;
 
   // |signal_strategy| and |key_pair| must outlive this
   // object. |callback| is called when registration response is
@@ -56,23 +58,24 @@ class RegisterSupportHostRequest : public SignalStrategy::Listener {
 
   // HostStatusObserver implementation.
   void OnSignalStrategyStateChange(SignalStrategy::State state) override;
-  bool OnSignalStrategyIncomingStanza(const buzz::XmlElement* stanza) override;
+  bool OnSignalStrategyIncomingStanza(const jingle_xmpp::XmlElement* stanza) override;
 
  private:
   void DoSend();
 
-  std::unique_ptr<buzz::XmlElement> CreateRegistrationRequest(
+  std::unique_ptr<jingle_xmpp::XmlElement> CreateRegistrationRequest(
       const std::string& jid);
-  std::unique_ptr<buzz::XmlElement> CreateSignature(const std::string& jid);
+  std::unique_ptr<jingle_xmpp::XmlElement> CreateSignature(const std::string& jid);
 
-  void ProcessResponse(IqRequest* request, const buzz::XmlElement* response);
-  void ParseResponse(const buzz::XmlElement* response,
-                     std::string* support_id, base::TimeDelta* lifetime,
-                     std::string* error_message);
+  void ProcessResponse(IqRequest* request, const jingle_xmpp::XmlElement* response);
+  void ParseResponse(const jingle_xmpp::XmlElement* response,
+                     std::string* support_id,
+                     base::TimeDelta* lifetime,
+                     protocol::ErrorCode* error_code);
 
-  void CallCallback(
-      const std::string& support_id, base::TimeDelta lifetime,
-      const std::string& error_message);
+  void CallCallback(const std::string& support_id,
+                    base::TimeDelta lifetime,
+                    protocol::ErrorCode error_code);
 
   SignalStrategy* signal_strategy_;
   scoped_refptr<RsaKeyPair> key_pair_;

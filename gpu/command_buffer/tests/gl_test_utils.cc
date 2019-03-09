@@ -11,68 +11,69 @@
 #include <memory>
 #include <string>
 
-#include "base/strings/stringize_macros.h"
-#include "base/strings/stringprintf.h"
+#include "base/command_line.h"
+#include "base/stl_util.h"
+#include "gpu/command_buffer/common/gles2_cmd_utils.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
+#include "gpu/config/gpu_info_collector.h"
+#include "gpu/config/gpu_preferences.h"
+#include "gpu/config/gpu_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gl/init/gl_factory.h"
+
+#if defined(OS_LINUX)
+#include "ui/gl/gl_image_native_pixmap.h"
+#endif
+
+namespace gpu {
 
 // GCC requires these declarations, but MSVC requires they not be present.
 #ifndef COMPILER_MSVC
 const uint8_t GLTestHelper::kCheckClearValue;
 #endif
 
-// Compiles a fragment shader for sampling out of a texture of |size| bound to
-// |target| and checks for compilation errors.
-GLuint LoadFragmentShader(unsigned target, const gfx::Size& size) {
-  // clang-format off
-  const char kFragmentShader[] = STRINGIZE(
-    uniform SamplerType a_texture;
-    varying vec2 v_texCoord;
-    void main() {
-      gl_FragColor = TextureLookup(a_texture, v_texCoord * TextureScale);
+bool GLTestHelper::InitializeGL(gl::GLImplementation gl_impl) {
+  if (gl_impl == gl::GLImplementation::kGLImplementationNone) {
+    if (!gl::init::InitializeGLNoExtensionsOneOff())
+      return false;
+  } else {
+    if (!gl::init::InitializeGLOneOffImplementation(
+            gl_impl,
+            false,  // fallback_to_software_gl
+            false,  // gpu_service_logging
+            false,  // disable_gl_drawing
+            false   // init_extensions
+            )) {
+      return false;
     }
-  );
-  const char kShaderFloatPrecision[] = STRINGIZE(
-    precision mediump float;
-  );
-  // clang-format on
-
-  switch (target) {
-    case GL_TEXTURE_2D:
-      return GLTestHelper::LoadShader(
-          GL_FRAGMENT_SHADER,
-          base::StringPrintf("%s\n"
-                             "#define SamplerType sampler2D\n"
-                             "#define TextureLookup texture2D\n"
-                             "#define TextureScale vec2(1.0, 1.0)\n"
-                             "%s",
-                             kShaderFloatPrecision,
-                             kFragmentShader)
-              .c_str());
-    case GL_TEXTURE_RECTANGLE_ARB:
-      return GLTestHelper::LoadShader(
-          GL_FRAGMENT_SHADER,
-          base::StringPrintf("%s\n"
-                             "#extension GL_ARB_texture_rectangle : require\n"
-                             "#define SamplerType sampler2DRect\n"
-                             "#define TextureLookup texture2DRect\n"
-                             "#define TextureScale vec2(%f, %f)\n"
-                             "%s",
-                             kShaderFloatPrecision,
-                             static_cast<double>(size.width()),
-                             static_cast<double>(size.height()),
-                             kFragmentShader)
-              .c_str());
-    default:
-      NOTREACHED();
-      return 0;
   }
+
+  gpu::GPUInfo gpu_info;
+  gpu::CollectGraphicsInfoForTesting(&gpu_info);
+  gpu::GLManager::g_gpu_feature_info = gpu::ComputeGpuFeatureInfo(
+      gpu_info, gpu::GpuPreferences(), base::CommandLine::ForCurrentProcess(),
+      nullptr  // needs_more_info
+      );
+
+  gl::init::SetDisabledExtensionsPlatform(
+      gpu::GLManager::g_gpu_feature_info.disabled_extensions);
+  return gl::init::InitializeExtensionSettingsOneOffPlatform();
+}
+
+bool GLTestHelper::InitializeGLDefault() {
+  return GLTestHelper::InitializeGL(
+      gl::GLImplementation::kGLImplementationNone);
 }
 
 bool GLTestHelper::HasExtension(const char* extension) {
-  std::string extensions(
-      reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS)));
-  return extensions.find(extension) != std::string::npos;
+  // Pad with an extra space to ensure that |extension| is not a substring of
+  // another extension.
+  std::string extensions =
+      std::string(reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS))) +
+      " ";
+  std::string extension_padded = std::string(extension) + " ";
+  return extensions.find(extension_padded) != std::string::npos;
 }
 
 bool GLTestHelper::CheckGLError(const char* msg, int line) {
@@ -89,7 +90,7 @@ bool GLTestHelper::CheckGLError(const char* msg, int line) {
 GLuint GLTestHelper::CompileShader(GLenum type, const char* shaderSrc) {
   GLuint shader = glCreateShader(type);
   // Load the shader source
-  glShaderSource(shader, 1, &shaderSrc, NULL);
+  glShaderSource(shader, 1, &shaderSrc, nullptr);
   // Compile the shader
   glCompileShader(shader);
 
@@ -161,19 +162,29 @@ GLuint GLTestHelper::SetupUnitQuad(GLint position_location) {
   GLuint vbo = 0;
   glGenBuffers(1, &vbo);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
-  static float vertices[] = {
-      1.0f,  1.0f,
-     -1.0f,  1.0f,
-     -1.0f, -1.0f,
-      1.0f,  1.0f,
-     -1.0f, -1.0f,
-      1.0f, -1.0f,
+  static const float vertices[] = {
+      1.0f, 1.0f, -1.0f, 1.0f,  -1.0f, -1.0f,
+      1.0f, 1.0f, -1.0f, -1.0f, 1.0f,  -1.0f,
   };
   glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
   glEnableVertexAttribArray(position_location);
   glVertexAttribPointer(position_location, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
   return vbo;
+}
+
+std::vector<GLuint> GLTestHelper::SetupIndexedUnitQuad(
+    GLint position_location) {
+  GLuint array_buffer = SetupUnitQuad(position_location);
+  static const uint8_t indices[] = {0, 1, 2, 3, 4, 5};
+  GLuint index_buffer = 0;
+  glGenBuffers(1, &index_buffer);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, 6, indices, GL_STATIC_DRAW);
+  std::vector<GLuint> buffers(2);
+  buffers[0] = array_buffer;
+  buffers[1] = index_buffer;
+  return buffers;
 }
 
 GLuint GLTestHelper::SetupColorsForUnitQuad(
@@ -199,7 +210,8 @@ bool GLTestHelper::CheckPixels(GLint x,
                                GLsizei width,
                                GLsizei height,
                                GLint tolerance,
-                               const uint8_t* color) {
+                               const uint8_t* color,
+                               const uint8_t* mask) {
   GLsizei size = width * height * 4;
   std::unique_ptr<uint8_t[]> pixels(new uint8_t[size]);
   memset(pixels.get(), kCheckClearValue, size);
@@ -213,7 +225,7 @@ bool GLTestHelper::CheckPixels(GLint x,
         uint8_t expected = color[jj];
         int diff = actual - expected;
         diff = diff < 0 ? -diff: diff;
-        if (diff > tolerance) {
+        if ((!mask || mask[jj]) && diff > tolerance) {
           EXPECT_EQ(expected, actual) << " at " << (xx + x) << ", " << (yy + y)
                                       << " channel " << jj;
           ++bad_count;
@@ -269,7 +281,7 @@ struct BitmapInfoHeader{
 bool GLTestHelper::SaveBackbufferAsBMP(
     const char* filename, int width, int height) {
   FILE* fp = fopen(filename, "wb");
-  EXPECT_TRUE(fp != NULL);
+  EXPECT_TRUE(fp != nullptr);
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   int num_pixels = width * height;
   int size = num_pixels * 4;
@@ -312,34 +324,160 @@ bool GLTestHelper::SaveBackbufferAsBMP(
   return true;
 }
 
-void GLTestHelper::DrawTextureQuad(GLenum target, const gfx::Size& size) {
-  // clang-format off
-  const char kVertexShader[] = STRINGIZE(
-    attribute vec2 a_position;
-    varying vec2 v_texCoord;
-    void main() {
-      gl_Position = vec4(a_position.x, a_position.y, 0.0, 1.0);
-      v_texCoord = (a_position + vec2(1.0, 1.0)) * 0.5;
-    }
-  );
-  // clang-format on
-
-  // Setup program.
-  GLuint vertex_shader =
-      GLTestHelper::LoadShader(GL_VERTEX_SHADER, kVertexShader);
-  GLuint fragment_shader = LoadFragmentShader(target, size);
-  GLuint program = GLTestHelper::SetupProgram(vertex_shader, fragment_shader);
+void GLTestHelper::DrawTextureQuad(const GLenum texture_target,
+                                   const char* vertex_src,
+                                   const char* fragment_src,
+                                   const char* position_name,
+                                   const char* sampler_name,
+                                   const char* face_name) {
+  GLuint program = GLTestHelper::LoadProgram(vertex_src, fragment_src);
   EXPECT_NE(program, 0u);
   glUseProgram(program);
 
-  GLint sampler_location = glGetUniformLocation(program, "a_texture");
+  GLint position_loc = glGetAttribLocation(program, position_name);
+  GLint sampler_location = glGetUniformLocation(program, sampler_name);
+  ASSERT_NE(position_loc, -1);
   ASSERT_NE(sampler_location, -1);
+  GLint face_loc = -1;
+  if (gpu::gles2::GLES2Util::GLFaceTargetToTextureTarget(texture_target) ==
+      GL_TEXTURE_CUBE_MAP) {
+    ASSERT_NE(face_name, nullptr);
+    face_loc = glGetUniformLocation(program, face_name);
+    ASSERT_NE(face_loc, -1);
+    glUniform1i(face_loc, texture_target);
+  }
 
-  GLuint vertex_buffer = GLTestHelper::SetupUnitQuad(sampler_location);
+  GLuint vertex_buffer = GLTestHelper::SetupUnitQuad(position_loc);
+  ASSERT_NE(vertex_buffer, 0u);
+  glActiveTexture(GL_TEXTURE0);
+  glUniform1i(sampler_location, 0);
+
   glDrawArrays(GL_TRIANGLES, 0, 6);
 
-  glDeleteShader(vertex_shader);
-  glDeleteShader(fragment_shader);
   glDeleteProgram(program);
   glDeleteBuffers(1, &vertex_buffer);
 }
+
+GpuCommandBufferTestEGL::GpuCommandBufferTestEGL() : gl_reinitialized_(false) {}
+
+GpuCommandBufferTestEGL::~GpuCommandBufferTestEGL() {}
+
+bool GpuCommandBufferTestEGL::InitializeEGLGLES2(int width, int height) {
+  if (gl::GetGLImplementation() !=
+      gl::GLImplementation::kGLImplementationEGLGLES2) {
+    const auto impls = gl::init::GetAllowedGLImplementations();
+    if (!base::ContainsValue(impls,
+          gl::GLImplementation::kGLImplementationEGLGLES2)) {
+      LOG(INFO) << "Skip test, implementation EGLGLES2 is not available";
+      return false;
+    }
+
+    gpu::GPUInfo gpu_info;
+    gpu::CollectContextGraphicsInfo(&gpu_info, gpu::GpuPreferences());
+    // See crbug.com/822716, the ATI proprietary driver has eglGetProcAddress
+    // but eglInitialize crashes with x11.
+    if (gpu_info.gl_vendor.find("ATI Technologies Inc.") != std::string::npos) {
+      LOG(INFO) << "Skip test, ATI proprietary driver crashes with egl/x11";
+      return false;
+    }
+
+    gl_reinitialized_ = true;
+    gl::init::ShutdownGL(false /* due_to_fallback */);
+    if (!GLTestHelper::InitializeGL(
+            gl::GLImplementation::kGLImplementationEGLGLES2)) {
+      LOG(INFO) << "Skip test, failed to initialize EGLGLES2";
+      return false;
+    }
+  }
+
+  DCHECK_EQ(gl::GLImplementation::kGLImplementationEGLGLES2,
+            gl::GetGLImplementation());
+
+  // Make the GL context current now to get all extensions.
+  GLManager::Options options;
+  options.size = gfx::Size(width, height);
+  gl_.Initialize(options);
+  gl_.MakeCurrent();
+
+  bool result =
+      gl::init::GetGLWindowSystemBindingInfo(&window_system_binding_info_);
+  DCHECK(result);
+
+  egl_extensions_ =
+      gfx::MakeExtensionSet(window_system_binding_info_.extensions);
+  gl_extensions_ =
+      gfx::MakeExtensionSet(gl::GetGLExtensionsFromCurrentContext());
+
+  return true;
+}
+
+void GpuCommandBufferTestEGL::RestoreGLDefault() {
+  gl_.Destroy();
+
+  if (gl_reinitialized_) {
+    gl::init::ShutdownGL(false /* due_to_fallback */);
+    GLTestHelper::InitializeGLDefault();
+  }
+
+  gl_reinitialized_ = false;
+  gl_extensions_.clear();
+  egl_extensions_.clear();
+  window_system_binding_info_ = gl::GLWindowSystemBindingInfo();
+}
+
+#if defined(OS_LINUX)
+scoped_refptr<gl::GLImageNativePixmap>
+GpuCommandBufferTestEGL::CreateGLImageNativePixmap(gfx::BufferFormat format,
+                                                   gfx::Size size,
+                                                   uint8_t* pixels) const {
+  // Upload raw pixels to a new GL texture.
+  GLuint tex_client_id = 0;
+  glGenTextures(1, &tex_client_id);
+  DCHECK_NE(0u, tex_client_id);
+  glBindTexture(GL_TEXTURE_2D, tex_client_id);
+  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size.width(), size.height(), 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+  // Make sure the texture exists in the service side.
+  glFinish();
+
+  // This works because the test run in a similar mode as In-Process-GPU.
+  unsigned int tex_service_id = 0;
+  gl_.decoder()->GetServiceTextureId(tex_client_id, &tex_service_id);
+  EXPECT_NE(0u, tex_service_id);
+
+  // Create an EGLImage from the real texture id.
+  auto image = base::MakeRefCounted<gl::GLImageNativePixmap>(size, format);
+  bool result = image->InitializeFromTexture(tex_service_id);
+  DCHECK(result);
+
+  // The test will own the EGLImage no need to keep a reference on the GL
+  // texture after returning from this function. This is covered by the
+  // EGL_KHR_image_base.txt specification, i.e. the underlying memory remains
+  // allocated as long as there is at least one sibling (like ref count).
+  glDeleteTextures(1, &tex_client_id);
+
+  return image;
+}
+
+gfx::NativePixmapHandle GpuCommandBufferTestEGL::CreateNativePixmapHandle(
+    gfx::BufferFormat format,
+    gfx::Size size,
+    uint8_t* pixels) {
+  scoped_refptr<gl::GLImageNativePixmap> image =
+      CreateGLImageNativePixmap(format, size, pixels);
+  EXPECT_TRUE(image);
+  EXPECT_EQ(size, image->GetSize());
+
+  // Export the EGLImage as dmabuf fds
+  // The test will own the dmabuf fds so no need to keep a reference on the
+  // EGLImage after returning from this function.
+  return image->ExportHandle();
+}
+#endif
+
+}  // namespace gpu

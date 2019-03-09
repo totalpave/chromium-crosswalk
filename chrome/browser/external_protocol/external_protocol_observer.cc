@@ -8,8 +8,6 @@
 
 using content::WebContents;
 
-DEFINE_WEB_CONTENTS_USER_DATA_KEY(ExternalProtocolObserver);
-
 ExternalProtocolObserver::ExternalProtocolObserver(WebContents* web_contents)
     : content::WebContentsObserver(web_contents) {
 }
@@ -20,6 +18,8 @@ ExternalProtocolObserver::~ExternalProtocolObserver() {
 void ExternalProtocolObserver::DidGetUserInteraction(
     const blink::WebInputEvent::Type type) {
   // Ignore scroll events for allowing external protocol launch.
-  if (type != blink::WebInputEvent::GestureScrollBegin)
+  if (type != blink::WebInputEvent::kGestureScrollBegin)
     ExternalProtocolHandler::PermitLaunchUrl();
 }
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(ExternalProtocolObserver)

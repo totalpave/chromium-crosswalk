@@ -28,8 +28,10 @@ class FaviconDriver {
   void AddObserver(FaviconDriverObserver* observer);
   void RemoveObserver(FaviconDriverObserver* observer);
 
-  // Initiates loading the favicon for the specified url.
-  virtual void FetchFavicon(const GURL& url) = 0;
+  // Initiates loading the favicon for the specified url. |is_same_document|
+  // is true for cases where this page URL follows a navigation within the same
+  // document (e.g. fragment navigation).
+  virtual void FetchFavicon(const GURL& page_url, bool is_same_document) = 0;
 
   // Returns the favicon for this tab, or IDR_DEFAULT_FAVICON if the tab does
   // not have a favicon. The default implementation uses the current navigation
@@ -40,38 +42,9 @@ class FaviconDriver {
   // Returns true if we have the favicon for the page.
   virtual bool FaviconIsValid() const = 0;
 
-  // Starts the download for the given favicon. When finished, the driver
-  // will call OnDidDownloadFavicon() with the results.
-  // Returns the unique id of the download request. The id will be passed
-  // in OnDidDownloadFavicon().
-  // Bitmaps with pixel sizes larger than |max_bitmap_size| are filtered out
-  // from the bitmap results. If there are no bitmap results <=
-  // |max_bitmap_size|, the smallest bitmap is resized to |max_bitmap_size| and
-  // is the only result. A |max_bitmap_size| of 0 means unlimited.
-  virtual int StartDownload(const GURL& url, int max_bitmap_size) = 0;
-
-  // Returns whether the user is operating in an off-the-record context.
-  virtual bool IsOffTheRecord() = 0;
-
-  // Returns whether |url| is bookmarked.
-  virtual bool IsBookmarked(const GURL& url) = 0;
-
   // Returns the URL of the current page, if any. Returns an invalid URL
   // otherwise.
   virtual GURL GetActiveURL() = 0;
-
-  // Notifies the driver that the favicon image has been updated.
-  // See comment for FaviconDriverObserver::OnFaviconUpdated() for more details.
-  virtual void OnFaviconUpdated(
-      const GURL& page_url,
-      FaviconDriverObserver::NotificationIconType notification_icon_type,
-      const GURL& icon_url,
-      bool icon_url_changed,
-      const gfx::Image& image) = 0;
-
-  // Returns whether the driver is waiting for a download to complete or for
-  // data from the FaviconService. Reserved for testing.
-  virtual bool HasPendingTasksForTest() = 0;
 
  protected:
   FaviconDriver();
@@ -84,9 +57,8 @@ class FaviconDriver {
     bool icon_url_changed,
     const gfx::Image& image);
 
-
  private:
-  base::ObserverList<FaviconDriverObserver> observer_list_;
+  base::ObserverList<FaviconDriverObserver>::Unchecked observer_list_;
 
   DISALLOW_COPY_AND_ASSIGN(FaviconDriver);
 };

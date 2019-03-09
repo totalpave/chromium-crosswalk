@@ -8,8 +8,9 @@
 #include <sys/resource.h>
 
 #include "base/files/file_util.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/posix/can_lower_nice_to.h"
+#include "base/process/internal_linux.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
@@ -60,46 +61,50 @@ struct CGroups {
         foreground_type == FILE_SYSTEM_CGROUP &&
         background_type == FILE_SYSTEM_CGROUP;
   }
-};
 
-base::LazyInstance<CGroups> g_cgroups = LAZY_INSTANCE_INITIALIZER;
+  static CGroups& Get() {
+    static auto& groups = *new CGroups;
+    return groups;
+  }
+};
 #else
 const int kBackgroundPriority = 5;
 #endif  // defined(OS_CHROMEOS)
 
-struct CheckForNicePermission {
-  CheckForNicePermission() : can_reraise_priority(false) {
-    // We won't be able to raise the priority if we don't have the right rlimit.
-    // The limit may be adjusted in /etc/security/limits.conf for PAM systems.
-    struct rlimit rlim;
-    if ((getrlimit(RLIMIT_NICE, &rlim) == 0) &&
-        (20 - kForegroundPriority) <= static_cast<int>(rlim.rlim_cur)) {
-        can_reraise_priority = true;
-    }
-  };
-
-  bool can_reraise_priority;
-};
-
 }  // namespace
+
+Time Process::CreationTime() const {
+  int64_t start_ticks = is_current()
+                            ? internal::ReadProcSelfStatsAndGetFieldAsInt64(
+                                  internal::VM_STARTTIME)
+                            : internal::ReadProcStatsAndGetFieldAsInt64(
+                                  Pid(), internal::VM_STARTTIME);
+  if (!start_ticks)
+    return Time();
+  TimeDelta start_offset = internal::ClockTicksToTimeDelta(start_ticks);
+  Time boot_time = internal::GetBootTime();
+  if (boot_time.is_null())
+    return Time();
+  return Time(boot_time + start_offset);
+}
 
 // static
 bool Process::CanBackgroundProcesses() {
 #if defined(OS_CHROMEOS)
-  if (g_cgroups.Get().enabled)
+  if (CGroups::Get().enabled)
     return true;
 #endif  // defined(OS_CHROMEOS)
 
-  static LazyInstance<CheckForNicePermission> check_for_nice_permission =
-      LAZY_INSTANCE_INITIALIZER;
-  return check_for_nice_permission.Get().can_reraise_priority;
+  static const bool can_reraise_priority =
+      internal::CanLowerNiceTo(kForegroundPriority);
+  return can_reraise_priority;
 }
 
 bool Process::IsProcessBackgrounded() const {
   DCHECK(IsValid());
 
 #if defined(OS_CHROMEOS)
-  if (g_cgroups.Get().enabled) {
+  if (CGroups::Get().enabled) {
     // Used to allow reading the process priority from proc on thread launch.
     base::ThreadRestrictions::ScopedAllowIO allow_io;
     std::string proc;
@@ -118,11 +123,10 @@ bool Process::SetProcessBackgrounded(bool background) {
   DCHECK(IsValid());
 
 #if defined(OS_CHROMEOS)
-  if (g_cgroups.Get().enabled) {
+  if (CGroups::Get().enabled) {
     std::string pid = IntToString(process_);
-    const base::FilePath file =
-        background ?
-            g_cgroups.Get().background_file : g_cgroups.Get().foreground_file;
+    const base::FilePath file = background ? CGroups::Get().background_file
+                                           : CGroups::Get().foreground_file;
     return base::WriteFile(file, pid.c_str(), pid.size()) > 0;
   }
 #endif  // defined(OS_CHROMEOS)

@@ -4,21 +4,20 @@
 
 package org.chromium.chrome.browser.services;
 
-import android.content.Context;
-
 import org.chromium.base.Callback;
-import org.chromium.chrome.browser.ChromeApplication;
+import org.chromium.chrome.browser.AppHooks;
 import org.chromium.chrome.browser.childaccounts.ChildAccountService;
+import org.chromium.components.signin.ChildAccountStatus;
 
 /**
  * A helper for Android EDU and child account checks.
  * Usage:
  * new AndroidEduAndChildAccountHelper() { override onParametersReady() }.start(appContext).
  */
-public abstract class AndroidEduAndChildAccountHelper extends Callback<Boolean>
-        implements AndroidEduOwnerCheckCallback {
+public abstract class AndroidEduAndChildAccountHelper
+        implements Callback<Integer>, AndroidEduOwnerCheckCallback {
     private Boolean mIsAndroidEduDevice;
-    private Boolean mHasChildAccount;
+    private @ChildAccountStatus.Status Integer mChildAccountStatus;
     // Abbreviated to < 20 chars.
     private static final String TAG = "EduChildHelper";
 
@@ -30,24 +29,23 @@ public abstract class AndroidEduAndChildAccountHelper extends Callback<Boolean>
         return mIsAndroidEduDevice;
     }
 
-    /** @return Whether the device has a child account. */
-    public boolean hasChildAccount() {
-        return mHasChildAccount;
+    /** @return The status of the device regarding child accounts. */
+    public @ChildAccountStatus.Status int getChildAccountStatus() {
+        return mChildAccountStatus;
     }
 
     /**
      * Starts fetching the Android EDU and child accounts information.
      * Calls onParametersReady() once the information is fetched.
-     * @param appContext The application context.
      */
-    public void start(Context appContext) {
-        ChildAccountService.checkHasChildAccount(appContext, this);
-        ((ChromeApplication) appContext).checkIsAndroidEduDevice(this);
+    public void start() {
+        ChildAccountService.checkChildAccountStatus(this);
+        AppHooks.get().checkIsAndroidEduDevice(this);
         // TODO(aruslan): Should we start a watchdog to kill if Child/Edu stuff takes too long?
     }
 
     private void checkDone() {
-        if (mIsAndroidEduDevice == null || mHasChildAccount == null) return;
+        if (mIsAndroidEduDevice == null || mChildAccountStatus == null) return;
         onParametersReady();
     }
 
@@ -58,10 +56,10 @@ public abstract class AndroidEduAndChildAccountHelper extends Callback<Boolean>
         checkDone();
     }
 
-    // Callback<Boolean>:
+    // Callback<Integer>:
     @Override
-    public void onResult(Boolean hasChildAccount) {
-        mHasChildAccount = hasChildAccount;
+    public void onResult(@ChildAccountStatus.Status Integer status) {
+        mChildAccountStatus = status;
         checkDone();
     }
 }

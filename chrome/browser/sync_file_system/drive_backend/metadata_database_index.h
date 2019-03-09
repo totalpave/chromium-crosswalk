@@ -11,13 +11,12 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
-#include "base/containers/hash_tables.h"
-#include "base/containers/scoped_ptr_hash_map.h"
 #include "base/hash.h"
 #include "base/macros.h"
-#include "base/memory/scoped_vector.h"
 #include "chrome/browser/sync_file_system/drive_backend/metadata_database_index_interface.h"
 #include "chrome/browser/sync_file_system/drive_backend/tracker_id_set.h"
 
@@ -32,7 +31,7 @@ class ServiceMetadata;
 }  // namespace drive_backend
 }  // namespace sync_file_system
 
-namespace BASE_HASH_NAMESPACE {
+namespace std {
 
 template<> struct hash<sync_file_system::drive_backend::ParentIDAndTitle> {
   std::size_t operator()(
@@ -41,7 +40,7 @@ template<> struct hash<sync_file_system::drive_backend::ParentIDAndTitle> {
   }
 };
 
-}  // namespace BASE_HASH_NAMESPACE
+}  // namespace std
 
 namespace sync_file_system {
 namespace drive_backend {
@@ -49,8 +48,8 @@ namespace drive_backend {
 struct DatabaseContents {
   DatabaseContents();
   ~DatabaseContents();
-  ScopedVector<FileMetadata> file_metadata;
-  ScopedVector<FileTracker> file_trackers;
+  std::vector<std::unique_ptr<FileMetadata>> file_metadata;
+  std::vector<std::unique_ptr<FileTracker>> file_trackers;
 };
 
 // Maintains indexes of MetadataDatabase on memory.
@@ -104,16 +103,15 @@ class MetadataDatabaseIndex : public MetadataDatabaseIndexInterface {
   std::vector<std::string> GetAllMetadataIDs() const override;
 
  private:
-  typedef base::ScopedPtrHashMap<std::string, std::unique_ptr<FileMetadata>>
+  typedef std::unordered_map<std::string, std::unique_ptr<FileMetadata>>
       MetadataByID;
-  typedef base::ScopedPtrHashMap<int64_t, std::unique_ptr<FileTracker>>
-      TrackerByID;
-  typedef base::hash_map<std::string, TrackerIDSet> TrackerIDsByFileID;
-  typedef base::hash_map<std::string, TrackerIDSet> TrackerIDsByTitle;
+  typedef std::unordered_map<int64_t, std::unique_ptr<FileTracker>> TrackerByID;
+  typedef std::unordered_map<std::string, TrackerIDSet> TrackerIDsByFileID;
+  typedef std::unordered_map<std::string, TrackerIDSet> TrackerIDsByTitle;
   typedef std::map<int64_t, TrackerIDsByTitle> TrackerIDsByParentAndTitle;
-  typedef base::hash_map<std::string, int64_t> TrackerIDByAppID;
-  typedef base::hash_set<std::string> FileIDSet;
-  typedef base::hash_set<ParentIDAndTitle> PathSet;
+  typedef std::unordered_map<std::string, int64_t> TrackerIDByAppID;
+  typedef std::unordered_set<std::string> FileIDSet;
+  typedef std::unordered_set<ParentIDAndTitle> PathSet;
   typedef std::set<int64_t> DirtyTrackers;
 
   friend class MetadataDatabaseTest;

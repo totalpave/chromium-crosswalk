@@ -5,52 +5,67 @@
 #ifndef NET_CERT_INTERNAL_TRUST_STORE_H_
 #define NET_CERT_INTERNAL_TRUST_STORE_H_
 
-#include <unordered_map>
 #include <vector>
 
 #include "base/memory/ref_counted.h"
-#include "base/strings/string_piece.h"
 #include "net/base/net_export.h"
+#include "net/cert/internal/cert_issuer_source.h"
+#include "net/cert/internal/parsed_certificate.h"
 
 namespace net {
 
-namespace der {
-class Input;
-}
+enum class CertificateTrustType {
+  // This certificate is explicitly blacklisted (distrusted).
+  DISTRUSTED,
 
-class ParsedCertificate;
+  // The trustedness of this certificate is unknown (inherits trust from
+  // its issuer).
+  UNSPECIFIED,
 
-// A very simple implementation of a TrustStore, which contains a set of
-// trusted certificates.
-// TODO(mattm): convert this into an interface, provide implementations that
-// interface with OS trust store.
-class NET_EXPORT TrustStore {
+  // This certificate is a trust anchor (as defined by RFC 5280). The only
+  // fields in the certificate that are meaningful are its name and SPKI.
+  TRUSTED_ANCHOR,
+
+  // This certificate is a trust anchor, and additionally some of the fields in
+  // the certificate (other than name and SPKI) should be used during the
+  // verification process. See VerifyCertificateChain() for details on how
+  // constraints are applied.
+  TRUSTED_ANCHOR_WITH_CONSTRAINTS,
+};
+
+// Describes the level of trust in a certificate. See CertificateTrustType for
+// details.
+//
+// TODO(eroman): Right now this is just a glorified wrapper around an enum...
+struct NET_EXPORT CertificateTrust {
+  static CertificateTrust ForTrustAnchor();
+  static CertificateTrust ForTrustAnchorEnforcingConstraints();
+  static CertificateTrust ForUnspecified();
+  static CertificateTrust ForDistrusted();
+
+  bool IsTrustAnchor() const;
+  bool IsDistrusted() const;
+  bool HasUnspecifiedTrust() const;
+
+  CertificateTrustType type = CertificateTrustType::UNSPECIFIED;
+};
+
+// Interface for finding intermediates / trust anchors, and testing the
+// trustedness of certificates.
+class NET_EXPORT TrustStore : public CertIssuerSource {
  public:
   TrustStore();
-  ~TrustStore();
 
-  // Empties the trust store, resetting it to original state.
-  void Clear();
+  // Writes the trustedness of |cert| into |*trust|. Both |cert| and |trust|
+  // must be non-null.
+  virtual void GetTrust(const scoped_refptr<ParsedCertificate>& cert,
+                        CertificateTrust* trust) const = 0;
 
-  // Adds a trusted certificate to the store.
-  void AddTrustedCertificate(scoped_refptr<ParsedCertificate> anchor);
-
-  // Returns the trust anchors that match |name| in |*matches|, if any.
-  void FindTrustAnchorsByNormalizedName(
-      const der::Input& normalized_name,
-      std::vector<scoped_refptr<ParsedCertificate>>* matches) const;
-
-  // Returns true if |cert| matches a certificate in the TrustStore.
-  bool IsTrustedCertificate(const ParsedCertificate* cert) const
-      WARN_UNUSED_RESULT;
+  // Disable async issuers for TrustStore, as it isn't needed.
+  void AsyncGetIssuersOf(const ParsedCertificate* cert,
+                         std::unique_ptr<Request>* out_req) final;
 
  private:
-  // Multimap from normalized subject -> ParsedCertificate.
-  std::unordered_multimap<base::StringPiece,
-                          scoped_refptr<ParsedCertificate>,
-                          base::StringPieceHash>
-      anchors_;
-
   DISALLOW_COPY_AND_ASSIGN(TrustStore);
 };
 

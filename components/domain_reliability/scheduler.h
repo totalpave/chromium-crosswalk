@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "base/callback.h"
-#include "base/memory/scoped_vector.h"
 #include "base/time/time.h"
 #include "components/domain_reliability/domain_reliability_export.h"
 #include "components/domain_reliability/uploader.h"
@@ -23,7 +22,6 @@ class Value;
 
 namespace domain_reliability {
 
-struct DomainReliabilityConfig;
 class MockableTime;
 
 // Determines when an upload should be scheduled. A domain's config will
@@ -85,13 +83,6 @@ class DOMAIN_RELIABILITY_EXPORT DomainReliabilityScheduler {
   // uploaded.
   base::TimeTicks first_beacon_time() const { return first_beacon_time_; }
 
-  // Gets the time until the next upload attempt on the last collector used.
-  // This will be 0 if the upload was a success; it does not take into account
-  // minimum_upload_delay and maximum_upload_delay.
-  base::TimeDelta last_collector_retry_delay() const {
-    return last_collector_retry_delay_;
-  }
-
  private:
   void MaybeScheduleUpload();
 
@@ -103,7 +94,7 @@ class DOMAIN_RELIABILITY_EXPORT DomainReliabilityScheduler {
   Params params_;
   ScheduleUploadCallback callback_;
   net::BackoffEntry::Policy backoff_policy_;
-  ScopedVector<net::BackoffEntry> collectors_;
+  std::vector<std::unique_ptr<net::BackoffEntry>> collectors_;
 
   // Whether there are beacons that have not yet been uploaded. Set when a
   // beacon arrives or an upload fails, and cleared when an upload starts.
@@ -129,10 +120,6 @@ class DOMAIN_RELIABILITY_EXPORT DomainReliabilityScheduler {
   // first_beacon_time_ saved during uploads.  Restored if upload fails.
   base::TimeTicks old_first_beacon_time_;
 
-  // Time until the next upload attempt on the last collector used. (Saved for
-  // histograms in Context.)
-  base::TimeDelta last_collector_retry_delay_;
-
   // Extra bits to return in GetWebUIData.
   base::TimeTicks scheduled_min_time_;
   base::TimeTicks scheduled_max_time_;
@@ -142,6 +129,8 @@ class DOMAIN_RELIABILITY_EXPORT DomainReliabilityScheduler {
   base::TimeTicks last_upload_end_time_;
   size_t last_upload_collector_index_;
   bool last_upload_success_;
+
+  DISALLOW_COPY_AND_ASSIGN(DomainReliabilityScheduler);
 };
 
 }  // namespace domain_reliability

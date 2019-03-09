@@ -11,108 +11,77 @@
 
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "content/browser/devtools/protocol/devtools_protocol_dispatcher.h"
+#include "content/browser/devtools/protocol/devtools_domain_handler.h"
+#include "content/browser/devtools/protocol/service_worker.h"
 #include "content/browser/devtools/service_worker_devtools_agent_host.h"
 #include "content/browser/devtools/service_worker_devtools_manager.h"
-#include "content/browser/service_worker/service_worker_context_observer.h"
+#include "content/browser/service_worker/service_worker_context_core_observer.h"
 #include "content/browser/service_worker/service_worker_info.h"
-#include "content/public/browser/devtools_agent_host.h"
-#include "content/public/browser/devtools_agent_host_client.h"
-
-// Windows headers will redefine SendMessage.
-#ifdef SendMessage
-#undef SendMessage
-#endif
 
 namespace content {
 
+class BrowserContext;
 class RenderFrameHostImpl;
 class ServiceWorkerContextWatcher;
 class ServiceWorkerContextWrapper;
+class StoragePartitionImpl;
 
-namespace devtools {
-namespace service_worker {
+namespace protocol {
 
-class ServiceWorkerHandler : public DevToolsAgentHostClient,
-                             public ServiceWorkerDevToolsManager::Observer {
+class ServiceWorkerHandler : public DevToolsDomainHandler,
+                             public ServiceWorker::Backend {
  public:
-  typedef DevToolsProtocolClient::Response Response;
-
   ServiceWorkerHandler();
   ~ServiceWorkerHandler() override;
 
-  void SetRenderFrameHost(RenderFrameHostImpl* render_frame_host);
-  void SetClient(std::unique_ptr<Client> client);
-  void UpdateHosts();
-  void Detached();
+  void Wire(UberDispatcher* dispatcher) override;
+  void SetRenderer(int process_host_id,
+                   RenderFrameHostImpl* frame_host) override;
 
-  // Protocol 'service worker' domain implementation.
-  Response Enable();
-  Response Disable();
-  Response SendMessage(const std::string& worker_id,
-                       const std::string& message);
-  Response Stop(const std::string& worker_id);
-  Response Unregister(const std::string& scope_url);
-  Response StartWorker(const std::string& scope_url);
-  Response SkipWaiting(const std::string& scope_url);
-  Response StopWorker(const std::string& version_id);
-  Response UpdateRegistration(const std::string& scope_url);
-  Response InspectWorker(const std::string& version_id);
-  Response SetForceUpdateOnPageLoad(bool force_update_on_page_load);
+  Response Enable() override;
+  Response Disable() override;
+  Response Unregister(const std::string& scope_url) override;
+  Response StartWorker(const std::string& scope_url) override;
+  Response SkipWaiting(const std::string& scope_url) override;
+  Response StopWorker(const std::string& version_id) override;
+  void StopAllWorkers(
+      std::unique_ptr<StopAllWorkersCallback> callback) override;
+  Response UpdateRegistration(const std::string& scope_url) override;
+  Response InspectWorker(const std::string& version_id) override;
+  Response SetForceUpdateOnPageLoad(bool force_update_on_page_load) override;
   Response DeliverPushMessage(const std::string& origin,
                               const std::string& registration_id,
-                              const std::string& data);
+                              const std::string& data) override;
   Response DispatchSyncEvent(const std::string& origin,
                              const std::string& registration_id,
                              const std::string& tag,
-                             bool last_chance);
-  Response GetTargetInfo(const std::string& target_id,
-                         scoped_refptr<TargetInfo>* target_info);
-  Response ActivateTarget(const std::string& target_id);
-
-  // WorkerDevToolsManager::Observer implementation.
-  void WorkerCreated(ServiceWorkerDevToolsAgentHost* host) override;
-  void WorkerReadyForInspection(ServiceWorkerDevToolsAgentHost* host) override;
-  void WorkerVersionInstalled(ServiceWorkerDevToolsAgentHost* host) override;
-  void WorkerVersionDoomed(ServiceWorkerDevToolsAgentHost* host) override;
-  void WorkerDestroyed(ServiceWorkerDevToolsAgentHost* host) override;
+                             bool last_chance) override;
 
  private:
-  // DevToolsAgentHostClient overrides.
-  void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
-                               const std::string& message) override;
-  void AgentHostClosed(DevToolsAgentHost* agent_host,
-                       bool replaced_with_another_client) override;
-
-  void ReportWorkerCreated(ServiceWorkerDevToolsAgentHost* host);
-  void ReportWorkerTerminated(ServiceWorkerDevToolsAgentHost* host);
-
   void OnWorkerRegistrationUpdated(
       const std::vector<ServiceWorkerRegistrationInfo>& registrations);
   void OnWorkerVersionUpdated(
       const std::vector<ServiceWorkerVersionInfo>& registrations);
   void OnErrorReported(int64_t registration_id,
                        int64_t version_id,
-                       const ServiceWorkerContextObserver::ErrorInfo& info);
+                       const ServiceWorkerContextCoreObserver::ErrorInfo& info);
 
   void OpenNewDevToolsWindow(int process_id, int devtools_agent_route_id);
   void ClearForceUpdate();
 
   scoped_refptr<ServiceWorkerContextWrapper> context_;
-  std::unique_ptr<Client> client_;
-  ServiceWorkerDevToolsAgentHost::Map attached_hosts_;
+  std::unique_ptr<ServiceWorker::Frontend> frontend_;
   bool enabled_;
-  std::set<GURL> urls_;
   scoped_refptr<ServiceWorkerContextWatcher> context_watcher_;
-  RenderFrameHostImpl* render_frame_host_;
+  BrowserContext* browser_context_;
+  StoragePartitionImpl* storage_partition_;
 
   base::WeakPtrFactory<ServiceWorkerHandler> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(ServiceWorkerHandler);
 };
 
-}  // namespace service_worker
-}  // namespace devtools
+}  // namespace protocol
 }  // namespace content
 
 #endif  // CONTENT_BROWSER_DEVTOOLS_PROTOCOL_SERVICE_WORKER_HANDLER_H_

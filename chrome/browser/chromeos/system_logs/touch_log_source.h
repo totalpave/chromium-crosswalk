@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_CHROMEOS_SYSTEM_LOGS_TOUCH_LOG_SOURCE_H_
 
 #include "base/macros.h"
-#include "chrome/browser/feedback/system_logs/system_logs_fetcher_base.h"
+#include "components/feedback/system_logs/system_logs_source.h"
 
 namespace system_logs {
 
@@ -17,7 +17,7 @@ class TouchLogSource : public SystemLogsSource {
 
  private:
   // Overridden from SystemLogsSource:
-  void Fetch(const SysLogsSourceCallback& callback) override;
+  void Fetch(SysLogsSourceCallback callback) override;
 
   DISALLOW_COPY_AND_ASSIGN(TouchLogSource);
 };

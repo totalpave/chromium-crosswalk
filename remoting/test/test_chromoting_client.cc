@@ -6,17 +6,16 @@
 
 #include <string>
 #include <utility>
-#include <vector>
 
+#include "base/bind.h"
 #include "base/logging.h"
-#include "base/memory/ptr_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "jingle/glue/thread_wrapper.h"
 #include "net/base/request_priority.h"
 #include "net/socket/client_socket_factory.h"
 #include "remoting/base/chromium_url_request.h"
 #include "remoting/base/url_request_context_getter.h"
-#include "remoting/client/audio_player.h"
+#include "remoting/client/audio/audio_player.h"
 #include "remoting/client/chromoting_client.h"
 #include "remoting/client/client_context.h"
 #include "remoting/protocol/chromium_port_allocator_factory.h"
@@ -29,13 +28,15 @@
 #include "remoting/signaling/xmpp_signal_strategy.h"
 #include "remoting/test/connection_setup_info.h"
 #include "remoting/test/test_video_renderer.h"
+#include "services/network/test/test_shared_url_loader_factory.h"
 
 namespace remoting {
 namespace test {
 
 namespace {
 const char kXmppHostName[] = "talk.google.com";
-const int kXmppPortNumber = 5222;
+const int kProdXmppPortNumber = 5222;
+const int kTestXmppPortNumber = 19316;
 
 // Used as the TokenFetcherCallback for App Remoting sessions.
 void FetchThirdPartyToken(
@@ -76,14 +77,17 @@ TestChromotingClient::~TestChromotingClient() {
 }
 
 void TestChromotingClient::StartConnection(
+    bool use_test_api_values,
     const ConnectionSetupInfo& connection_setup_info) {
   // Required to establish a connection to the host.
   jingle_glue::JingleThreadWrapper::EnsureForCurrentMessageLoop();
 
   scoped_refptr<URLRequestContextGetter> request_context_getter;
-  request_context_getter = new URLRequestContextGetter(
-      base::ThreadTaskRunnerHandle::Get(),   // network_runner
-      base::ThreadTaskRunnerHandle::Get());  // file_runner
+  request_context_getter =
+      new URLRequestContextGetter(base::ThreadTaskRunnerHandle::Get());
+
+  auto test_shared_url_loader_factory =
+      base::MakeRefCounted<network::TestSharedURLLoaderFactory>();
 
   client_context_.reset(new ClientContext(base::ThreadTaskRunnerHandle::Get()));
 
@@ -105,8 +109,9 @@ void TestChromotingClient::StartConnection(
   if (!signal_strategy_) {
     XmppSignalStrategy::XmppServerConfig xmpp_server_config;
     xmpp_server_config.host = kXmppHostName;
-    xmpp_server_config.port = kXmppPortNumber;
-    xmpp_server_config.use_tls = true;
+    xmpp_server_config.port =
+        use_test_api_values ? kTestXmppPortNumber : kProdXmppPortNumber;
+    xmpp_server_config.use_tls = !use_test_api_values;
     xmpp_server_config.username = connection_setup_info.user_name;
     xmpp_server_config.auth_token = connection_setup_info.access_token;
 
@@ -122,9 +127,9 @@ void TestChromotingClient::StartConnection(
   scoped_refptr<protocol::TransportContext> transport_context(
       new protocol::TransportContext(
           signal_strategy_.get(),
-          base::WrapUnique(new protocol::ChromiumPortAllocatorFactory()),
-          base::WrapUnique(
-              new ChromiumUrlRequestFactory(request_context_getter)),
+          std::make_unique<protocol::ChromiumPortAllocatorFactory>(),
+          std::make_unique<ChromiumUrlRequestFactory>(
+              test_shared_url_loader_factory),
           network_settings, protocol::TransportRole::CLIENT));
 
   protocol::ClientAuthenticationConfig client_auth_config;
@@ -198,16 +203,16 @@ void TestChromotingClient::OnConnectionState(
   connection_error_code_ = error_code;
   connection_to_host_state_ = state;
 
-  FOR_EACH_OBSERVER(RemoteConnectionObserver, connection_observers_,
-                    ConnectionStateChanged(state, error_code));
+  for (auto& observer : connection_observers_)
+    observer.ConnectionStateChanged(state, error_code);
 }
 
 void TestChromotingClient::OnConnectionReady(bool ready) {
   VLOG(1) << "TestChromotingClient::OnConnectionReady("
           << "ready:" << ready << ") Called";
 
-  FOR_EACH_OBSERVER(RemoteConnectionObserver, connection_observers_,
-                    ConnectionReady(ready));
+  for (auto& observer : connection_observers_)
+    observer.ConnectionReady(ready);
 }
 
 void TestChromotingClient::OnRouteChanged(
@@ -218,16 +223,16 @@ void TestChromotingClient::OnRouteChanged(
           << "route:" << protocol::TransportRoute::GetTypeString(route.type)
           << ") Called";
 
-  FOR_EACH_OBSERVER(RemoteConnectionObserver, connection_observers_,
-                    RouteChanged(channel_name, route));
+  for (auto& observer : connection_observers_)
+    observer.RouteChanged(channel_name, route);
 }
 
 void TestChromotingClient::SetCapabilities(const std::string& capabilities) {
   VLOG(1) << "TestChromotingClient::SetCapabilities("
           << "capabilities: " << capabilities << ") Called";
 
-  FOR_EACH_OBSERVER(RemoteConnectionObserver, connection_observers_,
-                    CapabilitiesSet(capabilities));
+  for (auto& observer : connection_observers_)
+    observer.CapabilitiesSet(capabilities);
 }
 
 void TestChromotingClient::SetPairingResponse(
@@ -237,8 +242,8 @@ void TestChromotingClient::SetPairingResponse(
           << "shared_secret: " << pairing_response.shared_secret()
           << ") Called";
 
-  FOR_EACH_OBSERVER(RemoteConnectionObserver, connection_observers_,
-                    PairingResponseSet(pairing_response));
+  for (auto& observer : connection_observers_)
+    observer.PairingResponseSet(pairing_response);
 }
 
 void TestChromotingClient::DeliverHostMessage(
@@ -247,8 +252,8 @@ void TestChromotingClient::DeliverHostMessage(
           << "type: " << message.type() << ", "
           << "data: " << message.data() << ") Called";
 
-  FOR_EACH_OBSERVER(RemoteConnectionObserver, connection_observers_,
-                    HostMessageReceived(message));
+  for (auto& observer : connection_observers_)
+    observer.HostMessageReceived(message);
 }
 
 void TestChromotingClient::SetDesktopSize(const webrtc::DesktopSize& size,

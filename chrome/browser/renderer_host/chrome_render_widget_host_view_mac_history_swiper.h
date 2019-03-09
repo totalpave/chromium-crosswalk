@@ -2,14 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROME_BROWSER_RENDERER_HOST_CHROME_RENDER_WIDGET_HOST_VIEW_MAC_HISTORY_SWIPER_
-#define CHROME_BROWSER_RENDERER_HOST_CHROME_RENDER_WIDGET_HOST_VIEW_MAC_HISTORY_SWIPER_
+#ifndef CHROME_BROWSER_RENDERER_HOST_CHROME_RENDER_WIDGET_HOST_VIEW_MAC_HISTORY_SWIPER_H_
+#define CHROME_BROWSER_RENDERER_HOST_CHROME_RENDER_WIDGET_HOST_VIEW_MAC_HISTORY_SWIPER_H_
 
 #import <Cocoa/Cocoa.h>
 
 namespace blink {
 class WebGestureEvent;
 class WebMouseWheelEvent;
+}
+
+namespace ui {
+struct DidOverscrollParams;
 }
 
 @class HistorySwiper;
@@ -162,6 +166,10 @@ enum RecognitionState {
   // This variables defaults to NO for new gestures.
   BOOL firstScrollUnconsumed_;
 
+  // Whether the overscroll has been triggered by renderer and is not disabled
+  // by CSSOverscrollBehavior.
+  BOOL overscrollTriggeredByRenderer_;
+
   // Whether we have received a gesture scroll begin and are awiting on the
   // first gesture scroll update to deteremine of the event was consumed by
   // the renderer.
@@ -185,6 +193,20 @@ enum RecognitionState {
 - (void)rendererHandledGestureScrollEvent:(const blink::WebGestureEvent&)event
                                  consumed:(BOOL)consumed;
 
+// This is called whenever an overscroll event is generated on the renderer
+// side. This is called before InputEventAck. For an overscroll event, the
+// ack_result of "unconsumed" will trigger the swipe navigation. However, the
+// renderer can plumb the value of overscroll_behavior by DidOverscroll,
+// to prevent the swipe navigation before the ack_result arrives.
+// This code makes the assumption that the DidOverscroll() event arrives
+// before InputEventAcks of GestureScrollUpdate/GestureScrollEnd
+// (GestureScrollBegin does not trigger history_swiper) are returned from the
+// renderer. As such, it's safe to just set a flag and prevent history swipe
+// from starting.
+// If this assumption ever becomes false, we will need to update the logic of
+// this method to cancel any ongoing history swipes.
+- (void)onOverscrolled:(const ui::DidOverscrollParams&)params;
+
 // The event passed in is a gesture event, and has touch data associated with
 // the trackpad.
 // Once the method -[NSEvent trackSwipeEventWithOptions:...] is invoked, the
@@ -198,12 +220,6 @@ enum RecognitionState {
 - (void)beginGestureWithEvent:(NSEvent*)event;
 - (void)endGestureWithEvent:(NSEvent*)event;
 
-// These methods control whether a given view is allowed to rubberband in the
-// given direction. This is inversely related to whether the view is allowed to
-// 2-finger history swipe in the given direction.
-- (BOOL)canRubberbandLeft:(NSView*)view;
-- (BOOL)canRubberbandRight:(NSView*)view;
-
 // Designated initializer.
 - (id)initWithDelegate:(id<HistorySwiperDelegate>)delegate;
 
@@ -216,4 +232,4 @@ enum RecognitionState {
 + (void)resetMagicMouseState;
 @end
 
-#endif // CHROME_BROWSER_RENDERER_HOST_CHROME_RENDER_WIDGET_HOST_VIEW_MAC_HISTORY_SWIPER_
+#endif // CHROME_BROWSER_RENDERER_HOST_CHROME_RENDER_WIDGET_HOST_VIEW_MAC_HISTORY_SWIPER_H_

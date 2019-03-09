@@ -6,17 +6,18 @@
 #define CHROME_BROWSER_PRINTING_BACKGROUND_PRINTING_MANAGER_H_
 
 #include <map>
+#include <memory>
 #include <set>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/threading/non_thread_safe.h"
+#include "base/sequence_checker.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
 
 namespace content {
-class RenderProcessHost;
 class WebContents;
+class BrowserContext;
 }
 
 namespace printing {
@@ -25,11 +26,9 @@ namespace printing {
 // The hidden WebContents are no longer part of any Browser / TabStripModel.
 // The WebContents started life as a ConstrainedWebDialog.
 // They get deleted when the printing finishes.
-class BackgroundPrintingManager : public base::NonThreadSafe,
-                                  public content::NotificationObserver {
+class BackgroundPrintingManager : public content::NotificationObserver {
  public:
   class Observer;
-  typedef std::map<content::WebContents*, Observer*> WebContentsObserverMap;
 
   BackgroundPrintingManager();
   ~BackgroundPrintingManager() override;
@@ -37,13 +36,20 @@ class BackgroundPrintingManager : public base::NonThreadSafe,
   // Takes ownership of |preview_dialog| and deletes it when |preview_dialog|
   // finishes printing. This removes |preview_dialog| from its ConstrainedDialog
   // and hides it from the user.
-  void OwnPrintPreviewDialog(content::WebContents* preview_dialog);
+  void OwnPrintPreviewDialog(
+      std::unique_ptr<content::WebContents> preview_dialog);
 
   // Returns true if |printing_contents_map_| contains |preview_dialog|.
   bool HasPrintPreviewDialog(content::WebContents* preview_dialog);
 
   // Let others see the list of background printing contents.
   std::set<content::WebContents*> CurrentContentSet();
+
+  // Delete all preview contents that are associated with |browser_context|.
+  void DeletePreviewContentsForBrowserContext(
+      content::BrowserContext* browser_context);
+
+  void OnPrintRequestCancelled(content::WebContents* preview_dialog);
 
  private:
   // content::NotificationObserver overrides:
@@ -55,10 +61,25 @@ class BackgroundPrintingManager : public base::NonThreadSafe,
   void DeletePreviewContents(content::WebContents* preview_contents);
 
   // A map from print preview WebContentses (managed by
-  // BackgroundPrintingManager) to the Observers that observe them.
-  WebContentsObserverMap printing_contents_map_;
+  // BackgroundPrintingManager) to the Observers that observe them and the owned
+  // version of the WebContents.
+  struct PrintingContents {
+    PrintingContents();
+    ~PrintingContents();
+    PrintingContents(PrintingContents&&);
+    PrintingContents& operator=(PrintingContents&&);
+
+    std::unique_ptr<content::WebContents> contents;
+    std::unique_ptr<Observer> observer;
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(PrintingContents);
+  };
+  std::map<content::WebContents*, PrintingContents> printing_contents_map_;
 
   content::NotificationRegistrar registrar_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   DISALLOW_COPY_AND_ASSIGN(BackgroundPrintingManager);
 };

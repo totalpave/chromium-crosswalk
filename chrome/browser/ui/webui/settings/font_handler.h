@@ -31,7 +31,7 @@ class Profile;
 
 namespace settings {
 
-// Handle OS font list, font preference settings and character encoding.
+// Handle OS font list and font preference settings.
 class FontHandler : public SettingsPageUIHandler,
                     public extensions::ExtensionRegistryObserver {
  public:
@@ -46,10 +46,9 @@ class FontHandler : public SettingsPageUIHandler,
   // ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const extensions::Extension* extension) override;
-  void OnExtensionUnloaded(
-      content::BrowserContext* browser_context,
-      const extensions::Extension* extension,
-      extensions::UnloadedExtensionInfo::Reason reason) override;
+  void OnExtensionUnloaded(content::BrowserContext* browser_context,
+                           const extensions::Extension* extension,
+                           extensions::UnloadedExtensionReason reason) override;
 
  private:
   // Handler for script asking for font information.

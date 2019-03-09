@@ -10,19 +10,17 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/macros.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/threading/non_thread_safe.h"
-#include "base/time/time.h"
-#include "net/base/completion_callback.h"
+#include "base/task_runner.h"
+#include "base/threading/thread_checker.h"
+#include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
 #include "net/ssl/channel_id_store.h"
-
-namespace base {
-class TaskRunner;
-}  // namespace base
 
 namespace crypto {
 class ECPrivateKey;
@@ -31,14 +29,9 @@ class ECPrivateKey;
 namespace net {
 
 class ChannelIDServiceJob;
-class ChannelIDServiceWorker;
 
 // A class for creating and fetching Channel IDs.
-
-// Inherits from NonThreadSafe in order to use the function
-// |CalledOnValidThread|.
-class NET_EXPORT ChannelIDService
-    : NON_EXPORTED_BASE(public base::NonThreadSafe) {
+class NET_EXPORT ChannelIDService {
  public:
   class NET_EXPORT Request {
    public:
@@ -56,33 +49,28 @@ class NET_EXPORT ChannelIDService
     friend class ChannelIDServiceJob;
 
     void RequestStarted(ChannelIDService* service,
-                        base::TimeTicks request_start,
-                        const CompletionCallback& callback,
+                        CompletionOnceCallback callback,
                         std::unique_ptr<crypto::ECPrivateKey>* key,
                         ChannelIDServiceJob* job);
 
     void Post(int error, std::unique_ptr<crypto::ECPrivateKey> key);
 
     ChannelIDService* service_;
-    base::TimeTicks request_start_;
-    CompletionCallback callback_;
+    CompletionOnceCallback callback_;
     std::unique_ptr<crypto::ECPrivateKey>* key_;
     ChannelIDServiceJob* job_;
   };
 
-  // Password used on EncryptedPrivateKeyInfo data stored in EC private_key
-  // values.  (This is not used to provide any security, but to workaround NSS
-  // being unable to import unencrypted PrivateKeyInfo for EC keys.)
-  static const char kEPKIPassword[];
-
-  // This object owns |channel_id_store|.  |task_runner| will
-  // be used to post channel ID generation worker tasks.  The tasks are
-  // safe for use with WorkerPool and SequencedWorkerPool::CONTINUE_ON_SHUTDOWN.
-  ChannelIDService(
-      ChannelIDStore* channel_id_store,
-      const scoped_refptr<base::TaskRunner>& task_runner);
+  // This object owns |channel_id_store|.
+  explicit ChannelIDService(ChannelIDStore* channel_id_store);
 
   ~ChannelIDService();
+
+  // Sets the TaskRunner to use for asynchronous operations.
+  void set_task_runner_for_testing(
+      scoped_refptr<base::TaskRunner> task_runner) {
+    task_runner_ = std::move(task_runner);
+  }
 
   // Returns the domain to be used for |host|.  The domain is the
   // "registry controlled domain", or the "ETLD + 1" where one exists, or
@@ -103,7 +91,7 @@ class NET_EXPORT ChannelIDService
   // |*out_req| will be initialized with a handle to the async request.
   int GetOrCreateChannelID(const std::string& host,
                            std::unique_ptr<crypto::ECPrivateKey>* key,
-                           const CompletionCallback& callback,
+                           CompletionOnceCallback callback,
                            Request* out_req);
 
   // Fetches the channel ID for the specified host if one exists.
@@ -123,7 +111,7 @@ class NET_EXPORT ChannelIDService
   // |*out_req| will be initialized with a handle to the async request.
   int GetChannelID(const std::string& host,
                    std::unique_ptr<crypto::ECPrivateKey>* key,
-                   const CompletionCallback& callback,
+                   CompletionOnceCallback callback,
                    Request* out_req);
 
   // Returns the backing ChannelIDStore.
@@ -134,7 +122,7 @@ class NET_EXPORT ChannelIDService
   int GetUniqueID() const { return id_; }
 
   // Public only for unit testing.
-  int channel_id_count();
+  size_t channel_id_count();
   uint64_t requests() const { return requests_; }
   uint64_t key_store_hits() const { return key_store_hits_; }
   uint64_t inflight_joins() const { return inflight_joins_; }
@@ -152,25 +140,24 @@ class NET_EXPORT ChannelIDService
                     const std::string& server_identifier,
                     std::unique_ptr<crypto::ECPrivateKey> key);
 
-  // Searches for an in-flight request for the same domain. If found,
-  // attaches to the request and returns true. Returns false if no in-flight
-  // request is found.
-  bool JoinToInFlightRequest(const base::TimeTicks& request_start,
-                             const std::string& domain,
+  // Searches for an in-flight request for the same domain. If found, attaches
+  // to the request, consumes |*callback|, and returns true.  Otherwise does not
+  // consume |*callback| and returns false.
+  bool JoinToInFlightRequest(const std::string& domain,
                              std::unique_ptr<crypto::ECPrivateKey>* key,
                              bool create_if_missing,
-                             const CompletionCallback& callback,
+                             CompletionOnceCallback* callback,
                              Request* out_req);
 
-  // Looks for the channel ID for |domain| in this service's store.
-  // Returns OK if it can be found synchronously, ERR_IO_PENDING if the
-  // result cannot be obtained synchronously, or a network error code on
-  // failure (including failure to find a channel ID of |domain|).
-  int LookupChannelID(const base::TimeTicks& request_start,
-                      const std::string& domain,
+  // Looks for the channel ID for |domain| in this service's store.  Returns OK
+  // if it can be found synchronously, ERR_IO_PENDING if the result cannot be
+  // obtained synchronously, or a different network error code on failure
+  // (including failure to find a channel ID of |domain|).  Consumes |*callback|
+  // if and only if ERR_IO_PENDING is returned.
+  int LookupChannelID(const std::string& domain,
                       std::unique_ptr<crypto::ECPrivateKey>* key,
                       bool create_if_missing,
-                      const CompletionCallback& callback,
+                      CompletionOnceCallback* callback,
                       Request* out_req);
 
   std::unique_ptr<ChannelIDStore> channel_id_store_;
@@ -179,12 +166,14 @@ class NET_EXPORT ChannelIDService
 
   // inflight_ maps from a server to an active generation which is taking
   // place.
-  std::map<std::string, ChannelIDServiceJob*> inflight_;
+  std::map<std::string, std::unique_ptr<ChannelIDServiceJob>> inflight_;
 
   uint64_t requests_;
   uint64_t key_store_hits_;
   uint64_t inflight_joins_;
   uint64_t workers_created_;
+
+  THREAD_CHECKER(thread_checker_);
 
   base::WeakPtrFactory<ChannelIDService> weak_ptr_factory_;
 

@@ -18,18 +18,13 @@
 
 #include "build/build_config.h"
 
+#include "rlz/lib/rlz_api.h"
 #include "rlz/lib/rlz_enums.h"
-
-#if defined(OS_WIN)
-#define RLZ_LIB_API __cdecl
-#else
-#define RLZ_LIB_API
-#endif
 
 // Define one of
 // + RLZ_NETWORK_IMPLEMENTATION_WIN_INET: Uses win inet to send financial pings.
 // + RLZ_NETWORK_IMPLEMENTATION_CHROME_NET: Uses chrome's network stack to send
-//   financial pings. rlz_lib::SetURLRequestContext() must be called before
+//   financial pings. rlz_lib::SetURLLoaderFactory() must be called before
 //   any calls to SendFinancialPing().
 #if defined(RLZ_NETWORK_IMPLEMENTATION_WIN_INET) && \
     defined(RLZ_NETWORK_IMPLEMENTATION_CHROME_NET)
@@ -46,9 +41,11 @@
 #endif
 
 #if defined(RLZ_NETWORK_IMPLEMENTATION_CHROME_NET)
-namespace net {
-class URLRequestContextGetter;
-}  // namespace net
+namespace network {
+namespace mojom {
+class URLLoaderFactory;
+}  // namespace mojom
+}  // namespace network
 #endif
 
 namespace rlz_lib {
@@ -77,15 +74,10 @@ const size_t kMaxRlzLength = 64;
 const size_t kMaxDccLength = 128;
 // The maximum length of a CGI string in bytes.
 const size_t kMaxCgiLength = 2048;
-// The maximum length of a ping response we will parse in bytes. If the response
-// is bigger, please break it up into separate calls.
-const size_t kMaxPingResponseLength = 0x4000;  // 16K
 
 #if defined(RLZ_NETWORK_IMPLEMENTATION_CHROME_NET)
-// Set the URLRequestContextGetter used by SendFinancialPing(). The IO message
-// loop returned by this context will be used for the IO done by
-// SendFinancialPing().
-bool RLZ_LIB_API SetURLRequestContext(net::URLRequestContextGetter* context);
+// Set the URLLoaderFactory used by SendFinancialPing().
+bool RLZ_LIB_API SetURLLoaderFactory(network::mojom::URLLoaderFactory* factory);
 #endif
 
 // RLZ storage functions.
@@ -145,6 +137,13 @@ bool RLZ_LIB_API GetAccessPointRlz(AccessPoint point, char* rlz,
 // Access: HKCU write.
 bool RLZ_LIB_API SetAccessPointRlz(AccessPoint point, const char* new_rlz);
 
+// Use |brand| to replace the brand code contained in existing access point RLZ
+// strings found in the RLZ data file. Return true if at least one access point
+// RLZ string is updated, otherwise return false (and the function is a no-op).
+// See https://crbug.com/846033.
+// Access: HKCU write.
+bool RLZ_LIB_API UpdateExistingAccessPointRlz(const std::string& brand);
+
 // Financial Server pinging functions.
 // These functions deal with pinging the RLZ financial server and parsing and
 // acting upon the response. Clients should SendFinancialPing() to avoid needing
@@ -177,15 +176,6 @@ bool RLZ_LIB_API FormFinancialPingRequest(Product product,
                                           char* request,
                                           size_t request_buffer_size);
 
-// Checks if a ping response is valid - ie. it has a checksum line which
-// is the CRC-32 checksum of the message uptil the checksum. If
-// checksum_idx is not NULL, it will get the index of the checksum, i.e. -
-// the effective end of the message.
-// Access: No restrictions.
-bool RLZ_LIB_API IsPingResponseValid(const char* response,
-                                     int* checksum_idx);
-
-
 // Complex helpers built on top of other functions.
 
 // Parses the responses from the financial server and updates product state
@@ -199,7 +189,7 @@ bool RLZ_LIB_API ParseFinancialPingResponse(Product product,
 // This ping method should be called daily. (More frequent calls will fail).
 // Also, if there are no events, the call will succeed only once a week.
 //
-// If RLZ_NETWORK_IMPLEMENTATION_CHROME_NET is set, SetURLRequestContext() needs
+// If RLZ_NETWORK_IMPLEMENTATION_CHROME_NET is set, SetURLLoaderFactory() needs
 // to be called before calling this function.
 //
 // product            : The product to ping for.

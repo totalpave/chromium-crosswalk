@@ -5,39 +5,31 @@
 #ifndef UI_GL_GL_GL_API_IMPLEMENTATION_H_
 #define UI_GL_GL_GL_API_IMPLEMENTATION_H_
 
+#include <memory>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_export.h"
+#include "ui/gl/gl_workarounds.h"
 
-namespace base {
-class CommandLine;
-}
-namespace gpu {
-namespace gles2 {
-class GLES2Decoder;
-}
-}
 namespace gl {
 
-class GLContext;
-class GLSurface;
 struct GLVersionInfo;
 
-void InitializeStaticGLBindingsGL();
-void InitializeDynamicGLBindingsGL(GLContext* context);
-void InitializeDebugGLBindingsGL();
-void InitializeNullDrawGLBindingsGL();
-// TODO(danakj): Remove this when all test suites are using null-draw.
-bool HasInitializedNullDrawGLBindingsGL();
-bool SetNullDrawGLBindingsEnabledGL(bool enabled);
-void ClearGLBindingsGL();
-void SetGLToRealGLApi();
-void SetGLApi(GLApi* api);
-void SetGLApiToNoContext();
-GLApi* GetCurrentGLApi();
-const GLVersionInfo* GetGLVersionInfo();
+GL_EXPORT GLenum GetInternalFormat(const GLVersionInfo* version,
+                                   GLenum internal_format);
+
+GL_EXPORT void InitializeStaticGLBindingsGL();
+GL_EXPORT void ClearBindingsGL();
+
+GL_EXPORT void InitializeDebugGLBindingsGL();
+bool GetDebugGLBindingsInitializedGL();
+
+bool SetNullDrawGLBindingsEnabled(bool enabled);
+bool GetNullDrawBindingsEnabled();
+
+void SetCurrentGL(CurrentGL* current);
 
 class GL_EXPORT GLApiBase : public GLApi {
  public:
@@ -60,27 +52,92 @@ class GL_EXPORT RealGLApi : public GLApiBase {
   RealGLApi();
   ~RealGLApi() override;
   void Initialize(DriverGL* driver);
-  void InitializeWithCommandLine(DriverGL* driver,
-                                 base::CommandLine* command_line);
+  void SetDisabledExtensions(const std::string& disabled_extensions) override;
 
   void glGetIntegervFn(GLenum pname, GLint* params) override;
   const GLubyte* glGetStringFn(GLenum name) override;
   const GLubyte* glGetStringiFn(GLenum name, GLuint index) override;
 
-  void InitializeFilteredExtensions();
+  void glTexImage2DFn(GLenum target,
+                      GLint level,
+                      GLint internalformat,
+                      GLsizei width,
+                      GLsizei height,
+                      GLint border,
+                      GLenum format,
+                      GLenum type,
+                      const void* pixels) override;
+
+  void glTexSubImage2DFn(GLenum target,
+                         GLint level,
+                         GLint xoffset,
+                         GLint yoffset,
+                         GLsizei width,
+                         GLsizei height,
+                         GLenum format,
+                         GLenum type,
+                         const void* pixels) override;
+
+  void glTexStorage2DEXTFn(GLenum target,
+                           GLsizei levels,
+                           GLenum internalformat,
+                           GLsizei width,
+                           GLsizei height) override;
+
+  void glRenderbufferStorageEXTFn(GLenum target,
+                                  GLenum internalformat,
+                                  GLsizei width,
+                                  GLsizei height) override;
+
+  void glRenderbufferStorageMultisampleEXTFn(GLenum target,
+                                             GLsizei samples,
+                                             GLenum internalformat,
+                                             GLsizei width,
+                                             GLsizei height) override;
+
+  void glRenderbufferStorageMultisampleFn(GLenum target,
+                                          GLsizei samples,
+                                          GLenum internalformat,
+                                          GLsizei width,
+                                          GLsizei height) override;
+
+  void glReadPixelsFn(GLint x,
+                      GLint y,
+                      GLsizei width,
+                      GLsizei height,
+                      GLenum format,
+                      GLenum type,
+                      void* pixels) override;
+
+  void glClearFn(GLbitfield mask) override;
+  void glClearColorFn(GLclampf red,
+                      GLclampf green,
+                      GLclampf blue,
+                      GLclampf alpha) override;
+  void glDrawArraysFn(GLenum mode, GLint first, GLsizei count) override;
+  void glDrawElementsFn(GLenum mode,
+                        GLsizei count,
+                        GLenum type,
+                        const void* indices) override;
+
+  void glClearDepthFn(GLclampd depth) override;
+  void glDepthRangeFn(GLclampd z_near, GLclampd z_far) override;
+
+  void set_gl_workarounds(const GLWorkarounds& workarounds);
+  void set_version(std::unique_ptr<GLVersionInfo> version);
+  void ClearCachedGLExtensions();
 
  private:
-  void glFinishFn() override;
-  void glFlushFn() override;
+  // Compute |filtered_exts_| & |filtered_exts_str_| from |disabled_ext_|.
+  void InitializeFilteredExtensionsIfNeeded();
 
-  // Filtered GL_EXTENSIONS we return to glGetString(i) calls.
   std::vector<std::string> disabled_exts_;
+  // Filtered GL_EXTENSIONS we return to glGetString(i) calls.
   std::vector<std::string> filtered_exts_;
   std::string filtered_exts_str_;
 
-#if DCHECK_IS_ON()
-  bool filtered_exts_initialized_;
-#endif
+  GLWorkarounds gl_workarounds_;
+  std::unique_ptr<GLVersionInfo> version_;
 };
 
 // Inserts a TRACE for every GL call.
@@ -88,6 +145,21 @@ class TraceGLApi : public GLApi {
  public:
   TraceGLApi(GLApi* gl_api) : gl_api_(gl_api) { }
   ~TraceGLApi() override;
+
+  // Include the auto-generated part of this class. We split this because
+  // it means we can easily edit the non-auto generated parts right here in
+  // this file instead of having to edit some template or the code generator.
+  #include "gl_bindings_api_autogen_gl.h"
+
+ private:
+  GLApi* gl_api_;
+};
+
+// Logs debug information for every GL call.
+class DebugGLApi : public GLApi {
+ public:
+  DebugGLApi(GLApi* gl_api);
+  ~DebugGLApi() override;
 
   // Include the auto-generated part of this class. We split this because
   // it means we can easily edit the non-auto generated parts right here in
@@ -108,39 +180,6 @@ class NoContextGLApi : public GLApi {
   // it means we can easily edit the non-auto generated parts right here in
   // this file instead of having to edit some template or the code generator.
   #include "gl_bindings_api_autogen_gl.h"
-};
-
-// Implementents the GL API using co-operative state restoring.
-// Assumes there is only one real GL context and that multiple virtual contexts
-// are implemented above it. Restores the needed state from the current context.
-class VirtualGLApi : public GLApiBase {
- public:
-  VirtualGLApi();
-  ~VirtualGLApi() override;
-  void Initialize(DriverGL* driver, GLContext* real_context);
-
-  // Sets the current virutal context.
-  bool MakeCurrent(GLContext* virtual_context, GLSurface* surface);
-
-  void OnReleaseVirtuallyCurrent(GLContext* virtual_context);
-
- private:
-  // Overridden functions from GLApiBase
-  void glGetIntegervFn(GLenum pname, GLint* params) override;
-  const GLubyte* glGetStringFn(GLenum name) override;
-  const GLubyte* glGetStringiFn(GLenum name, GLuint index) override;
-  void glFinishFn() override;
-  void glFlushFn() override;
-
-  // The real context we're running on.
-  GLContext* real_context_;
-
-  // The current virtual context.
-  GLContext* current_context_;
-
-  // The supported extensions being advertised for this virtual context.
-  std::string extensions_;
-  std::vector<std::string> extensions_vec_;
 };
 
 }  // namespace gl

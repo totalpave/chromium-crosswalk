@@ -8,10 +8,12 @@
 #include "base/command_line.h"
 #include "base/location.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/timer/elapsed_timer.h"
 #include "chrome/browser/extensions/unpacked_installer.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/common/content_switches.h"
@@ -19,10 +21,7 @@
 #include "extensions/browser/process_manager.h"
 #include "extensions/common/switches.h"
 
-
 namespace {
-// Command line argument to specify CRX extension location.
-const char kExtensionCrx[] = "extension-crx";
 // Command line argument to specify unpacked extension location.
 const char kExtensionUnpacked[] = "extension-unpacked";
 }  // namespace
@@ -33,10 +32,7 @@ namespace media_router {
 MediaRouterBaseBrowserTest::MediaRouterBaseBrowserTest()
     : extension_load_event_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                             base::WaitableEvent::InitialState::NOT_SIGNALED),
-      extension_host_created_(false),
-      feature_override_(extensions::FeatureSwitch::media_router(), true) {
-  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-      switches::kEnableExperimentalWebPlatformFeatures, "Presentation");
+      extension_host_created_(false) {
 }
 
 MediaRouterBaseBrowserTest::~MediaRouterBaseBrowserTest() {
@@ -44,6 +40,9 @@ MediaRouterBaseBrowserTest::~MediaRouterBaseBrowserTest() {
 
 void MediaRouterBaseBrowserTest::SetUp() {
   ParseCommandLine();
+  // The integration and E2E tests depend on the WebUI Cast dialog, so the Views
+  // dialog must be disabled.
+  feature_list_.InitAndEnableFeature(features::kViewsCastDialog);
   ExtensionBrowserTest::SetUp();
 }
 
@@ -53,8 +52,8 @@ void MediaRouterBaseBrowserTest::TearDown() {
 
 void MediaRouterBaseBrowserTest::SetUpOnMainThread() {
   ExtensionBrowserTest::SetUpOnMainThread();
-  extensions::ProcessManager* process_manager =
-      extensions::ProcessManager::Get(browser()->profile());
+  extensions::ProcessManager* process_manager = extensions::ProcessManager::Get(
+      browser()->profile()->GetOriginalProfile());
   DCHECK(process_manager);
   process_manager->AddObserver(this);
   InstallAndEnableMRExtension();
@@ -71,12 +70,8 @@ void MediaRouterBaseBrowserTest::TearDownOnMainThread() {
 }
 
 void MediaRouterBaseBrowserTest::InstallAndEnableMRExtension() {
-  if (is_unpacked()) {
-    const extensions::Extension* extension = LoadExtension(extension_unpacked_);
-    extension_id_ = extension->id();
-  } else {
-    NOTIMPLEMENTED();
-  }
+  const extensions::Extension* extension = LoadExtension(extension_unpacked_);
+  extension_id_ = extension->id();
 }
 
 void MediaRouterBaseBrowserTest::UninstallMRExtension() {
@@ -120,23 +115,25 @@ void MediaRouterBaseBrowserTest::OnBackgroundHostCreated(
 void MediaRouterBaseBrowserTest::ParseCommandLine() {
   DVLOG(0) << "ParseCommandLine";
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-
-  extension_crx_ = command_line->GetSwitchValuePath(kExtensionCrx);
   extension_unpacked_ = command_line->GetSwitchValuePath(kExtensionUnpacked);
 
-  // Check if there is mr_extension folder under PRODUCT_DIR folder.
-  if (extension_crx_.empty() && extension_unpacked_.empty()) {
+  // No extension provided. Use the default component extension in Chromium.
+  if (extension_unpacked_.empty()) {
     base::FilePath base_dir;
-    ASSERT_TRUE(PathService::Get(base::DIR_MODULE, &base_dir));
-    base::FilePath extension_path =
-        base_dir.Append(FILE_PATH_LITERAL("mr_extension/"));
+    ASSERT_TRUE(base::PathService::Get(base::DIR_MODULE, &base_dir));
+    base::FilePath extension_path = base_dir.Append(FILE_PATH_LITERAL(
+        "gen/chrome/browser/resources/media_router/extension"));
     if (PathExists(extension_path)) {
       extension_unpacked_ = extension_path;
     }
   }
 
-  // Exactly one of these two arguments should be provided.
-  ASSERT_NE(extension_crx_.empty(), extension_unpacked_.empty());
+  // An unpacked component extension must be provided.
+  ASSERT_FALSE(extension_unpacked_.empty());
+}
+
+Browser* MediaRouterBaseBrowserTest::browser() {
+  return ExtensionBrowserTest::browser();
 }
 
 }  // namespace media_router

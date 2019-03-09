@@ -66,7 +66,7 @@ static int fts3auxConnectMethod(
   char const *zFts3;              /* Name of fts3 table */
   int nDb;                        /* Result of strlen(zDb) */
   int nFts3;                      /* Result of strlen(zFts3) */
-  int nByte;                      /* Bytes of space to allocate here */
+  sqlite3_int64 nByte;            /* Bytes of space to allocate here */
   int rc;                         /* value returned by declare_vtab() */
   Fts3auxTable *p;                /* Virtual table object to return */
 
@@ -79,11 +79,11 @@ static int fts3auxConnectMethod(
   */
   if( argc!=4 && argc!=5 ) goto bad_args;
 
-  zDb = argv[1]; 
+  zDb = argv[1];
   nDb = (int)strlen(zDb);
   if( argc==5 ){
     if( nDb==4 && 0==sqlite3_strnicmp("temp", zDb, 4) ){
-      zDb = argv[3]; 
+      zDb = argv[3];
       nDb = (int)strlen(zDb);
       zFts3 = argv[4];
     }else{
@@ -98,7 +98,7 @@ static int fts3auxConnectMethod(
   if( rc!=SQLITE_OK ) return rc;
 
   nByte = sizeof(Fts3auxTable) + sizeof(Fts3Table) + nDb + nFts3 + 2;
-  p = (Fts3auxTable *)sqlite3_malloc(nByte);
+  p = (Fts3auxTable *)sqlite3_malloc64(nByte);
   if( !p ) return SQLITE_NOMEM;
   memset(p, 0, nByte);
 
@@ -147,7 +147,7 @@ static int fts3auxDisconnectMethod(sqlite3_vtab *pVtab){
 ** xBestIndex - Analyze a WHERE and ORDER BY clause.
 */
 static int fts3auxBestIndexMethod(
-  sqlite3_vtab *pVTab, 
+  sqlite3_vtab *pVTab,
   sqlite3_index_info *pInfo
 ){
   int i;
@@ -160,14 +160,14 @@ static int fts3auxBestIndexMethod(
   UNUSED_PARAMETER(pVTab);
 
   /* This vtab delivers always results in "ORDER BY term ASC" order. */
-  if( pInfo->nOrderBy==1 
-   && pInfo->aOrderBy[0].iColumn==0 
+  if( pInfo->nOrderBy==1
+   && pInfo->aOrderBy[0].iColumn==0
    && pInfo->aOrderBy[0].desc==0
   ){
     pInfo->orderByConsumed = 1;
   }
 
-  /* Search for equality and range constraints on the "term" column. 
+  /* Search for equality and range constraints on the "term" column.
   ** And equality constraints on the hidden "languageid" column. */
   for(i=0; i<pInfo->nConstraint; i++){
     if( pInfo->aConstraint[i].usable ){
@@ -248,11 +248,11 @@ static int fts3auxCloseMethod(sqlite3_vtab_cursor *pCursor){
 static int fts3auxGrowStatArray(Fts3auxCursor *pCsr, int nSize){
   if( nSize>pCsr->nStat ){
     struct Fts3auxColstats *aNew;
-    aNew = (struct Fts3auxColstats *)sqlite3_realloc(pCsr->aStat, 
+    aNew = (struct Fts3auxColstats *)sqlite3_realloc64(pCsr->aStat,
         sizeof(struct Fts3auxColstats) * nSize
     );
     if( aNew==0 ) return SQLITE_NOMEM;
-    memset(&aNew[pCsr->nStat], 0, 
+    memset(&aNew[pCsr->nStat], 0,
         sizeof(struct Fts3auxColstats) * (nSize - pCsr->nStat)
     );
     pCsr->aStat = aNew;
@@ -312,8 +312,8 @@ static int fts3auxNextMethod(sqlite3_vtab_cursor *pCursor){
 
         /* State 1. In this state we are expecting either a 1, indicating
         ** that the following integer will be a column number, or the
-        ** start of a position list for column 0.  
-        ** 
+        ** start of a position list for column 0.
+        **
         ** The only difference between state 1 and state 2 is that if the
         ** integer encountered in state 1 is not 0 or 1, then we need to
         ** increment the column 0 "nDoc" count for this term.
@@ -416,17 +416,17 @@ static int fts3auxFilterMethod(
     assert( (iEq==0 && iGe==-1) || (iEq==-1 && iGe==0) );
     if( zStr ){
       pCsr->filter.zTerm = sqlite3_mprintf("%s", zStr);
-      pCsr->filter.nTerm = sqlite3_value_bytes(apVal[0]);
       if( pCsr->filter.zTerm==0 ) return SQLITE_NOMEM;
+      pCsr->filter.nTerm = (int)strlen(pCsr->filter.zTerm);
     }
   }
 
   if( iLe>=0 ){
     pCsr->zStop = sqlite3_mprintf("%s", sqlite3_value_text(apVal[iLe]));
-    pCsr->nStop = sqlite3_value_bytes(apVal[iLe]);
     if( pCsr->zStop==0 ) return SQLITE_NOMEM;
+    pCsr->nStop = (int)strlen(pCsr->zStop);
   }
-  
+
   if( iLangid>=0 ){
     iLangVal = sqlite3_value_int(apVal[iLangid]);
 
@@ -539,7 +539,8 @@ int sqlite3Fts3InitAux(sqlite3 *db){
      0,                           /* xRename       */
      0,                           /* xSavepoint    */
      0,                           /* xRelease      */
-     0                            /* xRollbackTo   */
+     0,                           /* xRollbackTo   */
+     0                            /* xShadowName   */
   };
   int rc;                         /* Return code */
 

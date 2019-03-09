@@ -9,12 +9,12 @@
 #include <set>
 #include <string>
 
-#include "base/callback.h"
-#include "base/compiler_specific.h"
 #include "base/memory/singleton.h"
 #include "base/observer_list.h"
+#include "base/observer_list_types.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "content/public/browser/devtools_agent_host_observer.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace content {
@@ -29,27 +29,28 @@ class AppWindow;
 
 // The AppWindowRegistry tracks the AppWindows for all platform apps for a
 // particular browser context.
-class AppWindowRegistry : public KeyedService {
+class AppWindowRegistry : public KeyedService,
+                          public content::DevToolsAgentHostObserver {
  public:
-  class Observer {
+  class Observer : public base::CheckedObserver {
    public:
-    // Called just after a app window was added.
+    // Called just after an app window was added.
     virtual void OnAppWindowAdded(AppWindow* app_window);
-    // Called when the window icon changes.
-    virtual void OnAppWindowIconChanged(AppWindow* app_window);
-    // Called just after a app window was removed.
+    // Called just after an app window was removed.
     virtual void OnAppWindowRemoved(AppWindow* app_window);
-    // Called just after a app window was hidden. This is different from
+    // Called just after an app window was hidden. This is different from
     // window visibility as a minimize does not hide a window, but does make
     // it not visible.
     virtual void OnAppWindowHidden(AppWindow* app_window);
-    // Called just after a app window was shown.
+    // Called just after an app window was shown.
+    // |was_hidden| will be true if the app window was considered hidden or if
+    // it had not been shown before.
     virtual void OnAppWindowShown(AppWindow* app_window, bool was_hidden);
-    // Called just after a app window was activated.
+    // Called just after an app window was activated.
     virtual void OnAppWindowActivated(AppWindow* app_window);
 
    protected:
-    virtual ~Observer();
+    ~Observer() override;
   };
 
   typedef std::list<AppWindow*> AppWindowList;
@@ -65,7 +66,6 @@ class AppWindowRegistry : public KeyedService {
   static AppWindowRegistry* Get(content::BrowserContext* context);
 
   void AddAppWindow(AppWindow* app_window);
-  void AppWindowIconChanged(AppWindow* app_window);
   // Called by |app_window| when it is activated.
   void AppWindowActivated(AppWindow* app_window);
   void AppWindowHidden(AppWindow* app_window);
@@ -73,6 +73,7 @@ class AppWindowRegistry : public KeyedService {
   void RemoveAppWindow(AppWindow* app_window);
 
   void AddObserver(Observer* observer);
+  bool HasObserver(const Observer* observer) const;
   void RemoveObserver(Observer* observer);
 
   // Returns a set of windows owned by the application identified by app_id.
@@ -125,9 +126,6 @@ class AppWindowRegistry : public KeyedService {
         content::BrowserContext* context) const override;
   };
 
- protected:
-  void OnDevToolsStateChanged(content::DevToolsAgentHost*, bool attached);
-
  private:
   // Ensures the specified |app_window| is included in |app_windows_|.
   // Otherwise adds |app_window| to the back of |app_windows_|.
@@ -144,12 +142,19 @@ class AppWindowRegistry : public KeyedService {
   // WebContents is not for a AppWindow, return an empty string.
   std::string GetWindowKeyForWebContents(
       content::WebContents* web_contents) const;
+  std::string GetWindowKeyForAgentHost(
+      content::DevToolsAgentHost* agent_host) const;
+
+  // content::DevToolsAgentHostObserver overrides.
+  void DevToolsAgentHostAttached(
+      content::DevToolsAgentHost* agent_host) override;
+  void DevToolsAgentHostDetached(
+      content::DevToolsAgentHost* agent_host) override;
 
   content::BrowserContext* context_;
   AppWindowList app_windows_;
   InspectedWindowSet inspected_windows_;
   base::ObserverList<Observer> observers_;
-  base::Callback<void(content::DevToolsAgentHost*, bool)> devtools_callback_;
 };
 
 }  // namespace extensions

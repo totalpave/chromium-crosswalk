@@ -7,16 +7,15 @@
 #include <stdint.h>
 
 #include "base/bind.h"
-#include "content/public/child/v8_value_converter.h"
+#include "content/public/renderer/v8_value_converter.h"
+#include "extensions/renderer/extension_bindings_system.h"
 #include "extensions/renderer/script_context.h"
-#include "third_party/WebKit/public/platform/WebMediaStream.h"
-#include "third_party/WebKit/public/platform/WebMediaStreamTrack.h"
-#include "third_party/WebKit/public/web/WebDOMMediaStreamTrack.h"
+#include "third_party/blink/public/platform/web_media_stream.h"
+#include "third_party/blink/public/platform/web_media_stream_track.h"
+#include "third_party/blink/public/web/web_dom_media_stream_track.h"
 #include "v8/include/v8.h"
 
 namespace extensions {
-
-using content::V8ValueConverter;
 
 namespace {
 const char kErrorNotSupported[] = "Not supported";
@@ -26,18 +25,24 @@ const char kSessionAlreadyTerminating[] = "The session is already terminating";
 const char kSessionNotFound[] = "Session not found";
 }  // namespace
 
-DisplaySourceCustomBindings::DisplaySourceCustomBindings(ScriptContext* context)
+DisplaySourceCustomBindings::DisplaySourceCustomBindings(
+    ScriptContext* context,
+    ExtensionBindingsSystem* bindings_system)
     : ObjectBackedNativeHandler(context),
-      weak_factory_(this) {
-  RouteFunction("StartSession", "displaySource",
-                base::Bind(&DisplaySourceCustomBindings::StartSession,
-                           weak_factory_.GetWeakPtr()));
-  RouteFunction("TerminateSession", "displaySource",
-                base::Bind(&DisplaySourceCustomBindings::TerminateSession,
-                           weak_factory_.GetWeakPtr()));
-}
+      bindings_system_(bindings_system),
+      weak_factory_(this) {}
 
-DisplaySourceCustomBindings::~DisplaySourceCustomBindings() {
+DisplaySourceCustomBindings::~DisplaySourceCustomBindings() {}
+
+void DisplaySourceCustomBindings::AddRoutes() {
+  RouteHandlerFunction(
+      "StartSession", "displaySource",
+      base::BindRepeating(&DisplaySourceCustomBindings::StartSession,
+                          weak_factory_.GetWeakPtr()));
+  RouteHandlerFunction(
+      "TerminateSession", "displaySource",
+      base::BindRepeating(&DisplaySourceCustomBindings::TerminateSession,
+                          weak_factory_.GetWeakPtr()));
 }
 
 void DisplaySourceCustomBindings::Invalidate() {
@@ -50,20 +55,18 @@ namespace {
 
 v8::Local<v8::Value> GetChildValue(v8::Local<v8::Object> value,
                                    const std::string& key_name,
-                                   v8::Isolate* isolate) {
-  v8::Local<v8::Array> property_names(value->GetOwnPropertyNames());
-  for (uint32_t i = 0; i < property_names->Length(); ++i) {
-    v8::Local<v8::Value> key(property_names->Get(i));
-    if (key_name == *v8::String::Utf8Value(key)) {
-      v8::TryCatch try_catch(isolate);
-      v8::Local<v8::Value> child_v8 = value->Get(key);
-      if (try_catch.HasCaught()) {
-        return v8::Null(isolate);
-      }
-      return child_v8;
-    }
+                                   v8::Local<v8::Context> context) {
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::TryCatch try_catch(isolate);
+  v8::Local<v8::String> key;
+  v8::Local<v8::Value> child_value;
+  if (v8::String::NewFromUtf8(isolate, key_name.c_str(),
+                              v8::NewStringType::kNormal)
+          .ToLocal(&key) &&
+      value->HasOwnProperty(context, key).FromMaybe(false) &&
+      value->Get(context, key).ToLocal(&child_value)) {
+    return child_value;
   }
-
   return v8::Null(isolate);
 }
 
@@ -80,27 +83,32 @@ void DisplaySourceCustomBindings::StartSession(
   CHECK(args[0]->IsObject());
 
   v8::Isolate* isolate = context()->isolate();
+  v8::Local<v8::Context> v8_context = context()->v8_context();
   v8::Local<v8::Object> start_info = args[0].As<v8::Object>();
 
   v8::Local<v8::Value> sink_id_val =
-      GetChildValue(start_info, "sinkId", isolate);
+      GetChildValue(start_info, "sinkId", v8_context);
   CHECK(sink_id_val->IsInt32());
-  const int sink_id = sink_id_val->ToInt32(isolate)->Value();
+  const int sink_id = sink_id_val.As<v8::Int32>()->Value();
   if (GetDisplaySession(sink_id)) {
-    isolate->ThrowException(v8::Exception::Error(v8::String::NewFromUtf8(
-        isolate, kSessionAlreadyStarted)));
+    isolate->ThrowException(v8::Exception::Error(
+        v8::String::NewFromUtf8(isolate, kSessionAlreadyStarted,
+                                v8::NewStringType::kNormal)
+            .ToLocalChecked()));
     return;
   }
 
   v8::Local<v8::Value> video_stream_val =
-      GetChildValue(start_info, "videoTrack", isolate);
+      GetChildValue(start_info, "videoTrack", v8_context);
   v8::Local<v8::Value> audio_stream_val =
-      GetChildValue(start_info, "audioTrack", isolate);
+      GetChildValue(start_info, "audioTrack", v8_context);
 
   if ((video_stream_val->IsNull() || video_stream_val->IsUndefined()) &&
       (audio_stream_val->IsNull() || audio_stream_val->IsUndefined())) {
     isolate->ThrowException(v8::Exception::Error(
-        v8::String::NewFromUtf8(isolate, kInvalidStreamArgs)));
+        v8::String::NewFromUtf8(isolate, kInvalidStreamArgs,
+                                v8::NewStringType::kNormal)
+            .ToLocalChecked()));
     return;
   }
 
@@ -108,35 +116,37 @@ void DisplaySourceCustomBindings::StartSession(
 
   if (!video_stream_val->IsNull() && !video_stream_val->IsUndefined()) {
     CHECK(video_stream_val->IsObject());
-    video_track =
-        blink::WebDOMMediaStreamTrack::fromV8Value(
-            video_stream_val).component();
-    if (video_track.isNull()) {
+    video_track = blink::WebDOMMediaStreamTrack::FromV8Value(video_stream_val)
+                      .Component();
+    if (video_track.IsNull()) {
       isolate->ThrowException(v8::Exception::Error(
-          v8::String::NewFromUtf8(isolate, kInvalidStreamArgs)));
+          v8::String::NewFromUtf8(isolate, kInvalidStreamArgs,
+                                  v8::NewStringType::kNormal)
+              .ToLocalChecked()));
       return;
     }
   }
   if (!audio_stream_val->IsNull() && !audio_stream_val->IsUndefined()) {
     CHECK(audio_stream_val->IsObject());
-    audio_track =
-        blink::WebDOMMediaStreamTrack::fromV8Value(
-            audio_stream_val).component();
-    if (audio_track.isNull()) {
+    audio_track = blink::WebDOMMediaStreamTrack::FromV8Value(audio_stream_val)
+                      .Component();
+    if (audio_track.IsNull()) {
       isolate->ThrowException(v8::Exception::Error(
-          v8::String::NewFromUtf8(isolate, kInvalidStreamArgs)));
+          v8::String::NewFromUtf8(isolate, kInvalidStreamArgs,
+                                  v8::NewStringType::kNormal)
+              .ToLocalChecked()));
       return;
     }
   }
 
   std::unique_ptr<DisplaySourceAuthInfo> auth_info;
   v8::Local<v8::Value> auth_info_v8_val =
-      GetChildValue(start_info, "authenticationInfo", isolate);
+      GetChildValue(start_info, "authenticationInfo", v8_context);
   if (!auth_info_v8_val->IsNull()) {
     CHECK(auth_info_v8_val->IsObject());
-    std::unique_ptr<V8ValueConverter> converter(V8ValueConverter::create());
-    std::unique_ptr<base::Value> auth_info_val(
-        converter->FromV8Value(auth_info_v8_val, context()->v8_context()));
+    std::unique_ptr<base::Value> auth_info_val =
+        content::V8ValueConverter::Create()->FromV8Value(
+            auth_info_v8_val, context()->v8_context());
     CHECK(auth_info_val);
     auth_info = DisplaySourceAuthInfo::FromValue(*auth_info_val);
   }
@@ -153,8 +163,10 @@ void DisplaySourceCustomBindings::StartSession(
   std::unique_ptr<DisplaySourceSession> session =
       DisplaySourceSessionFactory::CreateSession(session_params);
   if (!session) {
-    isolate->ThrowException(v8::Exception::Error(v8::String::NewFromUtf8(
-        isolate, kErrorNotSupported)));
+    isolate->ThrowException(v8::Exception::Error(
+        v8::String::NewFromUtf8(isolate, kErrorNotSupported,
+                                v8::NewStringType::kNormal)
+            .ToLocalChecked()));
     return;
   }
 
@@ -182,11 +194,13 @@ void DisplaySourceCustomBindings::TerminateSession(
   CHECK(args[0]->IsInt32());
 
   v8::Isolate* isolate = context()->isolate();
-  int sink_id = args[0]->ToInt32(args.GetIsolate())->Value();
+  int sink_id = args[0].As<v8::Int32>()->Value();
   DisplaySourceSession* session = GetDisplaySession(sink_id);
   if (!session) {
-    isolate->ThrowException(v8::Exception::Error(v8::String::NewFromUtf8(
-        isolate, kSessionNotFound)));
+    isolate->ThrowException(
+        v8::Exception::Error(v8::String::NewFromUtf8(isolate, kSessionNotFound,
+                                                     v8::NewStringType::kNormal)
+                                 .ToLocalChecked()));
     return;
   }
 
@@ -195,14 +209,18 @@ void DisplaySourceCustomBindings::TerminateSession(
   if (state == DisplaySourceSession::Establishing) {
     // 'session started' callback has not yet been invoked.
     // This session is not existing for the user.
-    isolate->ThrowException(v8::Exception::Error(
-        v8::String::NewFromUtf8(isolate, kSessionNotFound)));
+    isolate->ThrowException(
+        v8::Exception::Error(v8::String::NewFromUtf8(isolate, kSessionNotFound,
+                                                     v8::NewStringType::kNormal)
+                                 .ToLocalChecked()));
     return;
   }
 
   if (state == DisplaySourceSession::Terminating) {
-    isolate->ThrowException(v8::Exception::Error(v8::String::NewFromUtf8(
-        isolate, kSessionAlreadyTerminating)));
+    isolate->ThrowException(v8::Exception::Error(
+        v8::String::NewFromUtf8(isolate, kSessionAlreadyTerminating,
+                                v8::NewStringType::kNormal)
+            .ToLocalChecked()));
     return;
   }
 
@@ -230,10 +248,12 @@ void DisplaySourceCustomBindings::OnCallCompleted(
   if (success)
     callback_args[1] = v8::Null(isolate);
   else
-    callback_args[1] = v8::String::NewFromUtf8(isolate, error_message.c_str());
+    callback_args[1] = v8::String::NewFromUtf8(isolate, error_message.c_str(),
+                                               v8::NewStringType::kNormal)
+                           .ToLocalChecked();
 
-  module_system->CallModuleMethod("displaySource", "callCompletionCallback", 2,
-                                  callback_args);
+  module_system->CallModuleMethodSafe("displaySource", "callCompletionCallback",
+                                      2, callback_args);
 }
 
 void DisplaySourceCustomBindings::OnSessionStarted(
@@ -250,36 +270,26 @@ void DisplaySourceCustomBindings::OnSessionStarted(
 }
 
 void DisplaySourceCustomBindings::DispatchSessionTerminated(int sink_id) const {
-  v8::Isolate* isolate = context()->isolate();
-  v8::HandleScope handle_scope(isolate);
-  v8::Context::Scope context_scope(context()->v8_context());
-  v8::Local<v8::Array> event_args = v8::Array::New(isolate, 1);
-  event_args->Set(0, v8::Integer::New(isolate, sink_id));
-  context()->DispatchEvent("displaySource.onSessionTerminated", event_args);
+  base::ListValue event_args;
+  event_args.AppendInteger(sink_id);
+  bindings_system_->DispatchEventInContext("displaySource.onSessionTerminated",
+                                           &event_args, nullptr, context());
 }
 
 void DisplaySourceCustomBindings::DispatchSessionError(
     int sink_id,
     DisplaySourceErrorType type,
     const std::string& message) const {
-  v8::Isolate* isolate = context()->isolate();
-  v8::HandleScope handle_scope(isolate);
-  v8::Context::Scope context_scope(context()->v8_context());
-
   api::display_source::ErrorInfo error_info;
   error_info.type = type;
   if (!message.empty())
     error_info.description.reset(new std::string(message));
 
-  std::unique_ptr<V8ValueConverter> converter(V8ValueConverter::create());
-  v8::Local<v8::Value> info_arg =
-      converter->ToV8Value(error_info.ToValue().get(),
-                           context()->v8_context());
-
-  v8::Local<v8::Array> event_args = v8::Array::New(isolate, 2);
-  event_args->Set(0, v8::Integer::New(isolate, sink_id));
-  event_args->Set(1, info_arg);
-  context()->DispatchEvent("displaySource.onSessionErrorOccured", event_args);
+  base::ListValue event_args;
+  event_args.AppendInteger(sink_id);
+  event_args.Append(error_info.ToValue());
+  bindings_system_->DispatchEventInContext(
+      "displaySource.onSessionErrorOccured", &event_args, nullptr, context());
 }
 
 DisplaySourceSession* DisplaySourceCustomBindings::GetDisplaySession(

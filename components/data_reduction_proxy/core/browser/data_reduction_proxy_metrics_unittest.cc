@@ -9,15 +9,17 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
+#include "base/test/scoped_task_environment.h"
 #include "base/time/time.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_config_test_utils.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_test_utils.h"
 #include "components/data_reduction_proxy/core/common/data_reduction_proxy_params_test_utils.h"
+#include "components/data_reduction_proxy/core/common/data_reduction_proxy_server.h"
 #include "net/base/load_flags.h"
-#include "net/log/net_log.h"
-#include "net/proxy/proxy_server.h"
-#include "net/proxy/proxy_service.h"
+#include "net/base/proxy_server.h"
+#include "net/proxy_resolution/proxy_resolution_service.h"
 #include "net/socket/socket_test_util.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -28,15 +30,16 @@ namespace data_reduction_proxy {
 
 TEST(ChromeNetworkDailyDataSavingMetricsTest,
      GetDataReductionProxyRequestType) {
-  base::MessageLoopForIO message_loop;
+  base::test::ScopedTaskEnvironment task_environment{
+      base::test::ScopedTaskEnvironment::MainThreadType::IO};
   std::unique_ptr<DataReductionProxyTestContext> test_context =
       DataReductionProxyTestContext::Builder()
-          .WithParamsFlags(DataReductionProxyParams::kAllowed)
-          .WithParamsDefinitions(TestDataReductionProxyParams::HAS_ORIGIN)
           .Build();
   TestDataReductionProxyConfig* config = test_context->config();
+  config->test_params()->UseNonSecureProxiesForHttp();
 
-  net::ProxyServer origin = config->test_params()->proxies_for_http().front();
+  net::ProxyServer origin =
+      config->test_params()->proxies_for_http().front().proxy_server();
   net::ProxyConfig data_reduction_proxy_config;
   data_reduction_proxy_config.proxy_rules().ParseFromString(
       "http=" + origin.host_port_pair().ToString() + ",direct://");
@@ -64,24 +67,40 @@ TEST(ChromeNetworkDailyDataSavingMetricsTest,
       {
           GURL("http://foo.com"), net::ProxyServer::Direct(),
           base::TimeDelta::FromSeconds(1), net::LOAD_NORMAL,
-          "HTTP/1.1 200 OK\r\n\r\n", SHORT_BYPASS,
+          "HTTP/1.1 200 OK\r\n\r\n", DIRECT_HTTP,
       },
       {
           GURL("http://foo.com"), net::ProxyServer::Direct(),
           base::TimeDelta::FromSeconds(1), net::LOAD_NORMAL,
-          "HTTP/1.1 304 Not Modified\r\n\r\n", SHORT_BYPASS,
+          "HTTP/1.1 304 Not Modified\r\n\r\n", DIRECT_HTTP,
       },
       {
           GURL("http://foo.com"), net::ProxyServer::Direct(),
           base::TimeDelta::FromMinutes(60), net::LOAD_NORMAL,
-          "HTTP/1.1 200 OK\r\n\r\n", LONG_BYPASS,
+          "HTTP/1.1 200 OK\r\n\r\n", DIRECT_HTTP,
       },
       {
           GURL("http://foo.com"), net::ProxyServer::Direct(),
           base::TimeDelta::FromMinutes(60), net::LOAD_NORMAL,
-          "HTTP/1.1 304 Not Modified\r\n\r\n", LONG_BYPASS,
+          "HTTP/1.1 304 Not Modified\r\n\r\n", DIRECT_HTTP,
       },
-      // Requests with LOAD_BYPASS_PROXY (e.g. block-once) should be classified
+      {
+          GURL("http://foo.com"), origin, base::TimeDelta::FromSeconds(1),
+          net::LOAD_NORMAL, "HTTP/1.1 200 OK\r\n\r\n", SHORT_BYPASS,
+      },
+      {
+          GURL("http://foo.com"), origin, base::TimeDelta::FromSeconds(1),
+          net::LOAD_NORMAL, "HTTP/1.1 304 Not Modified\r\n\r\n", SHORT_BYPASS,
+      },
+      {
+          GURL("http://foo.com"), origin, base::TimeDelta::FromMinutes(60),
+          net::LOAD_NORMAL, "HTTP/1.1 200 OK\r\n\r\n", LONG_BYPASS,
+      },
+      {
+          GURL("http://foo.com"), origin, base::TimeDelta::FromMinutes(60),
+          net::LOAD_NORMAL, "HTTP/1.1 304 Not Modified\r\n\r\n", LONG_BYPASS,
+      },  // Requests with LOAD_BYPASS_PROXY (e.g. block-once) should be
+          // classified
       // as SHORT_BYPASS.
       {
           GURL("http://foo.com"), net::ProxyServer::Direct(), base::TimeDelta(),
@@ -102,12 +121,12 @@ TEST(ChromeNetworkDailyDataSavingMetricsTest,
           base::TimeDelta(), net::LOAD_NORMAL, "HTTP/1.1 200 OK\r\n\r\n",
           SHORT_BYPASS,
       },
-      // Responses that seem like they should have come through the Data
-      // Reduction Proxy, but did not, should be classified as UNKNOWN_TYPE.
       {
           GURL("http://foo.com"), net::ProxyServer::Direct(), base::TimeDelta(),
-          net::LOAD_NORMAL, "HTTP/1.1 200 OK\r\n\r\n", UNKNOWN_TYPE,
+          net::LOAD_NORMAL, "HTTP/1.1 200 OK\r\n\r\n", DIRECT_HTTP,
       },
+      // Responses that seem like they should have come through the Data
+      // Reduction Proxy, but did not, should be classified as UNKNOWN_TYPE.
       {
           GURL("http://foo.com"), origin, base::TimeDelta(), net::LOAD_NORMAL,
           "HTTP/1.1 200 OK\r\n\r\n", UNKNOWN_TYPE,
@@ -151,11 +170,12 @@ TEST(ChromeNetworkDailyDataSavingMetricsTest,
     net::TestURLRequestContext context(true);
     net::MockClientSocketFactory mock_socket_factory;
     context.set_client_socket_factory(&mock_socket_factory);
-    // Set the |proxy_service| to use |test_case.proxy_server| for requests.
-    std::unique_ptr<net::ProxyService> proxy_service(
-        net::ProxyService::CreateFixedFromPacResult(
-            test_case.proxy_server.ToPacString()));
-    context.set_proxy_service(proxy_service.get());
+    // Set the |proxy_resolution_service| to use |test_case.proxy_server| for requests.
+    std::unique_ptr<net::ProxyResolutionService> proxy_resolution_service(
+        net::ProxyResolutionService::CreateFixedFromPacResult(
+            test_case.proxy_server.ToPacString(),
+            TRAFFIC_ANNOTATION_FOR_TESTS));
+    context.set_proxy_resolution_service(proxy_resolution_service.get());
     context.Init();
 
     // Create a fake URLRequest and fill it with the appropriate response
@@ -169,12 +189,12 @@ TEST(ChromeNetworkDailyDataSavingMetricsTest,
         MockRead(net::SYNCHRONOUS, net::OK),
     };
     net::StaticSocketDataProvider socket_data_provider(
-        mock_reads, arraysize(mock_reads), nullptr, 0);
+        mock_reads, base::span<net::MockWrite>());
     mock_socket_factory.AddSocketDataProvider(&socket_data_provider);
 
     net::TestDelegate delegate;
-    std::unique_ptr<net::URLRequest> request =
-        context.CreateRequest(test_case.url, net::IDLE, &delegate);
+    std::unique_ptr<net::URLRequest> request = context.CreateRequest(
+        test_case.url, net::IDLE, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
     request->SetLoadFlags(test_case.load_flags);
     request->Start();
     test_context->RunUntilIdle();
@@ -184,10 +204,9 @@ TEST(ChromeNetworkDailyDataSavingMetricsTest,
       net::ProxyInfo proxy_info;
       proxy_info.UseProxyList(
           data_reduction_proxy_config.proxy_rules().proxies_for_http);
-      EXPECT_TRUE(context.proxy_service()->MarkProxiesAsBadUntil(
+      EXPECT_TRUE(context.proxy_resolution_service()->MarkProxiesAsBadUntil(
           proxy_info, test_case.bypass_duration,
-          std::vector<net::ProxyServer>(),
-          net::BoundNetLog::Make(context.net_log(), net::NetLog::SOURCE_NONE)));
+          std::vector<net::ProxyServer>(), net::NetLogWithSource()));
     }
 
     EXPECT_EQ(test_case.expected_request_type,

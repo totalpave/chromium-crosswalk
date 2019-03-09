@@ -17,11 +17,7 @@
 
 #include "base/memory/ref_counted.h"
 #include "content/common/content_export.h"
-#include "content/common/media/media_stream_options.h"
-
-namespace base {
-class SingleThreadTaskRunner;
-}
+#include "third_party/blink/public/common/mediastream/media_stream_request.h"
 
 namespace content {
 
@@ -41,18 +37,17 @@ enum { kInvalidMediaCaptureSessionId = 0xFFFFFFFF };
 class CONTENT_EXPORT MediaStreamProviderListener {
  public:
   // Called by a MediaStreamProvider when a stream has been opened.
-  virtual void Opened(MediaStreamType stream_type, int capture_session_id) = 0;
+  virtual void Opened(blink::MediaStreamType stream_type,
+                      int capture_session_id) = 0;
 
   // Called by a MediaStreamProvider when a stream has been closed.
-  virtual void Closed(MediaStreamType stream_type, int capture_session_id) = 0;
-
-  // Called by a MediaStreamProvider when available devices has been enumerated.
-  virtual void DevicesEnumerated(MediaStreamType stream_type,
-                                 const StreamDeviceInfoArray& devices) = 0;
+  virtual void Closed(blink::MediaStreamType stream_type,
+                      int capture_session_id) = 0;
 
   // Called by a MediaStreamProvider when the device has been aborted due to
   // device error.
-  virtual void Aborted(MediaStreamType stream_type, int capture_session_id) = 0;
+  virtual void Aborted(blink::MediaStreamType stream_type,
+                       int capture_session_id) = 0;
 
  protected:
   virtual ~MediaStreamProviderListener() {}
@@ -62,19 +57,17 @@ class CONTENT_EXPORT MediaStreamProviderListener {
 class CONTENT_EXPORT MediaStreamProvider
     : public base::RefCountedThreadSafe<MediaStreamProvider> {
  public:
-  // Registers a listener and a device message loop.
-  virtual void Register(MediaStreamProviderListener* listener,
-                        const scoped_refptr<base::SingleThreadTaskRunner>&
-                            device_task_runner) = 0;
+  // Registers a listener.
+  virtual void RegisterListener(MediaStreamProviderListener* listener) = 0;
 
-  // Enumerates existing capture devices and calls |DevicesEnumerated|.
-  virtual void EnumerateDevices(MediaStreamType stream_type) = 0;
+  // Unregisters a previously registered listener.
+  virtual void UnregisterListener(MediaStreamProviderListener* listener) = 0;
 
   // Opens the specified device. The device is not started and it is still
   // possible for other applications to open the device before the device is
   // started. |Opened| is called when the device is opened.
   // kInvalidMediaCaptureSessionId is returned on error.
-  virtual int Open(const StreamDeviceInfo& device) = 0;
+  virtual int Open(const blink::MediaStreamDevice& device) = 0;
 
   // Closes the specified device and calls |Closed| when done.
   virtual void Close(int capture_session_id) = 0;

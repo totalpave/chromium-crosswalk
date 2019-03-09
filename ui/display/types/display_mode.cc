@@ -7,29 +7,27 @@
 #include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 
-namespace ui {
+namespace display {
 
 DisplayMode::DisplayMode(const gfx::Size& size,
                          bool interlaced,
                          float refresh_rate)
-    : size_(size),
-      is_interlaced_(interlaced),
-      refresh_rate_(refresh_rate) {}
+    : size_(size), refresh_rate_(refresh_rate), is_interlaced_(interlaced) {}
 
 DisplayMode::~DisplayMode() {}
 
 std::unique_ptr<DisplayMode> DisplayMode::Clone() const {
-  return base::WrapUnique(new DisplayMode(size_,
-                                          is_interlaced_,
-                                          refresh_rate_));
+  return base::WrapUnique(
+      new DisplayMode(size_, is_interlaced_, refresh_rate_));
 }
 
 std::string DisplayMode::ToString() const {
-  return base::StringPrintf("[%dx%d %srate=%f]",
-                            size_.width(),
-                            size_.height(),
-                            is_interlaced_ ? "interlaced " : "",
-                            refresh_rate_);
+  return base::StringPrintf("[%s %srate=%f]", size_.ToString().c_str(),
+                            is_interlaced_ ? "interlaced " : "", refresh_rate_);
 }
 
-}  // namespace ui
+void PrintTo(const DisplayMode& mode, std::ostream* os) {
+  *os << mode.ToString();
+}
+
+}  // namespace display

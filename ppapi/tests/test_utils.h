@@ -16,6 +16,8 @@
 
 namespace pp {
 class NetAddress;
+class URLLoader;
+class URLRequestInfo;
 }
 
 // Timeout to wait for some action to complete.
@@ -24,6 +26,9 @@ extern const int kActionTimeoutMs;
 const PPB_Testing_Private* GetTestingInterface();
 std::string ReportError(const char* method, int32_t error);
 void PlatformSleep(int duration_ms);
+
+// Returns the host and port of the current document's URL (Which is generally
+// served by an EmbeddedTestServer). Returns false on failure.
 bool GetLocalHostPort(PP_Instance instance, std::string* host, uint16_t* port);
 
 uint16_t ConvertFromNetEndian16(uint16_t x);
@@ -44,14 +49,14 @@ uint16_t GetPort(const pp::NetAddress& addr);
 // event to complete. For example, you can use it to wait for a callback on a
 // PPP interface, which will "Signal" the event and make the loop quit.
 // "Wait()" will return immediately if it has already been signalled. Otherwise,
-// it will run a nested message loop (using PPB_Testing.RunMessageLoop) and will
+// it will run a nested run loop (using PPB_Testing.RunMessageLoop) and will
 // return only after it has been signalled.
 // Example:
 //  std::string TestFullscreen::TestNormalToFullscreen() {
 //    pp::Fullscreen screen_mode(instance);
 //    screen_mode.SetFullscreen(true);
 //    SimulateUserGesture();
-//    // Let DidChangeView run in a nested message loop.
+//    // Let DidChangeView run in a nested run loop.
 //    nested_event_.Wait();
 //    Pass();
 //  }
@@ -68,7 +73,7 @@ class NestedEvent {
   explicit NestedEvent(PP_Instance instance)
       : instance_(instance), waiting_(false), signalled_(false) {
   }
-  // Run a nested message loop and wait until Signal() is called. If Signal()
+  // Run a nested run loop and wait until Signal() is called. If Signal()
   // has already been called, return immediately without running a nested loop.
   void Wait();
   // Signal the NestedEvent. If Wait() has been called, quit the message loop.
@@ -80,6 +85,7 @@ class NestedEvent {
 
   // Reset the NestedEvent so it can be used again.
   void Reset();
+
  private:
   void SignalOnMainThread();
   static void SignalThunk(void* async_event, int32_t result);
@@ -91,6 +97,30 @@ class NestedEvent {
   NestedEvent(const NestedEvent&);
   NestedEvent& operator=(const NestedEvent&);
 };
+
+// Returns a callback that does nothing, so can be invoked when the current
+// function is out of scope, unlike TestCompletionCallback.
+pp::CompletionCallback DoNothingCallback();
+
+template <typename OutputT>
+void DeleteStorage(void* user_data, int32_t flags) {
+  typename pp::CompletionCallbackWithOutput<OutputT>::OutputStorageType*
+      storage = reinterpret_cast<typename pp::CompletionCallbackWithOutput<
+          OutputT>::OutputStorageType*>(user_data);
+  delete storage;
+}
+
+// Same as DoNothingCallback(), but with an OutputStorageType, which it deletes
+// when the callback is invoked.
+template <typename OutputT>
+pp::CompletionCallbackWithOutput<OutputT> DoNothingCallbackWithOutput() {
+  typename pp::CompletionCallbackWithOutput<OutputT>::OutputStorageType*
+      storage = new
+      typename pp::CompletionCallbackWithOutput<OutputT>::OutputStorageType();
+  return pp::CompletionCallbackWithOutput<OutputT>(
+      &DeleteStorage<OutputT>, storage, PP_COMPLETIONCALLBACK_FLAG_OPTIONAL,
+      storage);
+}
 
 enum CallbackType { PP_REQUIRED, PP_OPTIONAL, PP_BLOCKING };
 class TestCompletionCallback {
@@ -312,9 +342,21 @@ class ScopedArrayBufferSizeSetter {
   ~ScopedArrayBufferSizeSetter() {
     interface_->SetMinimumArrayBufferSizeForShmem(instance_, 0);
   }
+
  private:
   const PPB_Testing_Private* interface_;
   PP_Instance instance_;
 };
+
+// Opens |request| in |loader| and returns the results of the URLRequest.  The
+// caller may provide the optional |response_body| argument to get the contents
+// of the body of the response to the URLRequest.
+//
+// Returns PP_OK upon success.
+int32_t OpenURLRequest(PP_Instance instance,
+                       pp::URLLoader* loader,
+                       const pp::URLRequestInfo& request,
+                       CallbackType callback_type,
+                       std::string* response_body);
 
 #endif  // PPAPI_TESTS_TEST_UTILS_H_

@@ -11,10 +11,12 @@
  *   size: string,
  *   filePath: string,
  *   lastAccessTime: number,
- *   accessCount: number
+ *   accessCount: number,
+ *   isExpired: string,
+ *   requestOrigin: string
  * }}
  */
-var OfflinePage;
+let OfflinePage;
 
 /**
  * @typedef {{
@@ -23,18 +25,20 @@ var OfflinePage;
  *   creationTime: number,
  *   id: string,
  *   namespace: string,
- *   lastAttempt: number
+ *   lastAttemptTime: number,
+ *   requestOrigin: string
  * }}
  */
-var SavePageRequest;
+let SavePageRequest;
 
 /**
  * @typedef {{
  *   modelIsLogging: boolean,
- *   queueIsLogging: boolean
+ *   queueIsLogging: boolean,
+ *   prefetchIsLogging: boolean
  * }}
  */
-var IsLogging;
+let IsLogging;
 
 cr.define('offlineInternals', function() {
   /** @interface */
@@ -56,18 +60,20 @@ cr.define('offlineInternals', function() {
     getRequestQueue: function() {},
 
     /**
-     * Deletes all the pages in stored pages.
-     * @return {!Promise<!string>} A promise firing when the pages are deleted.
-     */
-    deleteAllPages: function() {},
-
-    /**
      * Deletes a set of pages from stored pages
      * @param {!Array<string>} ids A list of page IDs to delete.
      * @return {!Promise<!string>} A promise firing when the selected
      *     pages are deleted.
      */
     deleteSelectedPages: function(ids) {},
+
+    /**
+     * Deletes a set of requests from the request queue
+     * @param {!Array<string>} ids A list of request IDs to delete.
+     * @return {!Promise<!string>} A promise firing when the selected
+     *     pages are deleted.
+     */
+    deleteSelectedRequests: function(ids) {},
 
     /**
      * Sets whether to record logs for stored pages.
@@ -82,6 +88,38 @@ cr.define('offlineInternals', function() {
     setRecordRequestQueue: function(shouldLog) {},
 
     /**
+     * Sets whether to record logs for prefetching.
+     * @param {boolean} shouldLog True if logging should be enabled.
+     */
+    setRecordPrefetchService: function(shouldLog) {},
+
+    /**
+     * Sets whether limitless prefetching is enabled.
+     * @param {boolean} enabled Whether to enable limitless prefetching.
+     */
+    setLimitlessPrefetchingEnabled: function(enabled) {},
+
+    /**
+     * Gets whether limitless prefetching is enabled.
+     * @return {!Promise<boolean>} Whether limitless prefetching is enabled
+     */
+    getLimitlessPrefetchingEnabled: function() {},
+
+    /**
+     * Sets the value to be sent with the prefetch testing header for
+     * GeneratePageBundle requests.
+     * @param {string} value Value to send with X-Offline-Prefetch-Testing.
+     */
+    setPrefetchTestingHeaderValue: function(value) {},
+
+    /**
+     * Gets the value of the prefetch testing header to be sent with
+     * GeneratePageBundle requests.
+     * @return {!Promise<string>} Header value.
+     */
+    getPrefetchTestingHeaderValue: function() {},
+
+    /**
      * Gets the currently recorded logs.
      * @return {!Promise<!Array<string>>} A promise firing when the
      *     logs are retrieved.
@@ -94,6 +132,63 @@ cr.define('offlineInternals', function() {
      *     is retrieved.
      */
     getLoggingState: function() {},
+
+    /**
+     * Adds the given url to the background loader queue.
+     * @param {string} url Url of the page to load later.
+     * @return {!Promise<boolean>} A promise firing after added to queue.
+     *     Promise will return true if url has been successfully added.
+     */
+    addToRequestQueue: function(url) {},
+
+    /**
+     * Gets the current network status in string form.
+     * @return {!Promise<string>} A promise firing when the network status
+     *     is retrieved.
+     */
+    getNetworkStatus: function() {},
+
+    /**
+     * Schedules the default NWake task.  The returned Promise will reject if
+     *     there is an error while scheduling.
+     * @return {!Promise<string>} A promise firing when the task has been
+     *     scheduled.
+     */
+    scheduleNwake: function() {},
+
+    /**
+     * Cancels NWake task.
+     * @return {!Promise} A promise firing when the task has been cancelled. The
+     *     returned Promise will reject if there is an error.
+     */
+    cancelNwake: function() {},
+
+    /**
+     * Shows the prefetching notification with an example origin.
+     * @return {!Promise<string>} A promise firing when the notification has
+     *   been shown.
+     */
+    showPrefetchNotification: function() {},
+
+    /**
+     * Sends and processes a request to generate page bundle.
+     * @param {string} urls A list of comma-separated URLs.
+     * @return {!Promise<string>} A string describing the result.
+     */
+    generatePageBundle: function(urls) {},
+
+    /**
+     * Sends and processes a request to get operation.
+     * @param {string} name Name of operation.
+     * @return {!Promise<string>} A string describing the result.
+     */
+    getOperation: function(name) {},
+
+    /**
+     * Downloads an archive.
+     * @param {string} name Name of archive to download.
+     */
+    downloadArchive: function(name) {},
   };
 
   /**
@@ -115,13 +210,13 @@ cr.define('offlineInternals', function() {
     },
 
     /** @override */
-    deleteAllPages: function() {
-      return cr.sendWithPromise('deleteAllPages');
+    deleteSelectedPages: function(ids) {
+      return cr.sendWithPromise('deleteSelectedPages', ids);
     },
 
     /** @override */
-    deleteSelectedPages: function(ids) {
-      return cr.sendWithPromise('deleteSelectedPages', ids);
+    deleteSelectedRequests: function(ids) {
+      return cr.sendWithPromise('deleteSelectedRequests', ids);
     },
 
     /** @override */
@@ -135,6 +230,31 @@ cr.define('offlineInternals', function() {
     },
 
     /** @override */
+    setRecordPrefetchService: function(shouldLog) {
+      chrome.send('setRecordPrefetchService', [shouldLog]);
+    },
+
+    /** @override */
+    setLimitlessPrefetchingEnabled: function(enabled) {
+      chrome.send('setLimitlessPrefetchingEnabled', [enabled]);
+    },
+
+    /** @override */
+    getLimitlessPrefetchingEnabled: function() {
+      return cr.sendWithPromise('getLimitlessPrefetchingEnabled');
+    },
+
+    /** @override */
+    setPrefetchTestingHeaderValue: function(value) {
+      chrome.send('setPrefetchTestingHeader', [value]);
+    },
+
+    /** @override */
+    getPrefetchTestingHeaderValue: function() {
+      return cr.sendWithPromise('getPrefetchTestingHeader');
+    },
+
+    /** @override */
     getEventLogs: function() {
       return cr.sendWithPromise('getEventLogs');
     },
@@ -142,7 +262,47 @@ cr.define('offlineInternals', function() {
     /** @override */
     getLoggingState: function() {
       return cr.sendWithPromise('getLoggingState');
-    }
+    },
+
+    /** @override */
+    addToRequestQueue: function(url) {
+      return cr.sendWithPromise('addToRequestQueue', url);
+    },
+
+    /** @override */
+    getNetworkStatus: function() {
+      return cr.sendWithPromise('getNetworkStatus');
+    },
+
+    /** @override */
+    scheduleNwake: function() {
+      return cr.sendWithPromise('scheduleNwake');
+    },
+
+    /** @override */
+    cancelNwake: function() {
+      return cr.sendWithPromise('cancelNwake');
+    },
+
+    /** @override */
+    showPrefetchNotification: function() {
+      return cr.sendWithPromise('showPrefetchNotification');
+    },
+
+    /** @override */
+    generatePageBundle: function(urls) {
+      return cr.sendWithPromise('generatePageBundle', urls);
+    },
+
+    /** @override */
+    getOperation: function(name) {
+      return cr.sendWithPromise('getOperation', name);
+    },
+
+    /** @override */
+    downloadArchive: function(name) {
+      chrome.send('downloadArchive', [name]);
+    },
   };
 
   return {

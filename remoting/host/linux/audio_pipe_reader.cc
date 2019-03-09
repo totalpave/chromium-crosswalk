@@ -12,6 +12,7 @@
 
 #include <utility>
 
+#include "base/bind.h"
 #include "base/logging.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/stl_util.h"
@@ -42,7 +43,8 @@ scoped_refptr<AudioPipeReader> AudioPipeReader::Create(
   scoped_refptr<AudioPipeReader> pipe_reader =
       new AudioPipeReader(task_runner, pipe_path);
   task_runner->PostTask(
-      FROM_HERE, base::Bind(&AudioPipeReader::StartOnAudioThread, pipe_reader));
+      FROM_HERE,
+      base::BindOnce(&AudioPipeReader::StartOnAudioThread, pipe_reader));
   return pipe_reader;
 }
 
@@ -54,22 +56,13 @@ AudioPipeReader::AudioPipeReader(
       observers_(new base::ObserverListThreadSafe<StreamObserver>()) {
 }
 
-AudioPipeReader::~AudioPipeReader() {}
+AudioPipeReader::~AudioPipeReader() = default;
 
 void AudioPipeReader::AddObserver(StreamObserver* observer) {
   observers_->AddObserver(observer);
 }
 void AudioPipeReader::RemoveObserver(StreamObserver* observer) {
   observers_->RemoveObserver(observer);
-}
-
-void AudioPipeReader::OnFileCanReadWithoutBlocking(int fd) {
-  DCHECK_EQ(fd, pipe_.GetPlatformFile());
-  StartTimer();
-}
-
-void AudioPipeReader::OnFileCanWriteWithoutBlocking(int fd) {
-  NOTREACHED();
 }
 
 void AudioPipeReader::StartOnAudioThread() {
@@ -115,7 +108,7 @@ void AudioPipeReader::TryOpenPipe() {
     }
   }
 
-  file_descriptor_watcher_.StopWatchingFileDescriptor();
+  pipe_watch_controller_.reset();
   timer_.Stop();
 
   pipe_ = std::move(new_pipe);
@@ -138,6 +131,8 @@ void AudioPipeReader::TryOpenPipe() {
 
 void AudioPipeReader::StartTimer() {
   DCHECK(task_runner_->BelongsToCurrentThread());
+  DCHECK(pipe_watch_controller_);
+  pipe_watch_controller_.reset();
   started_time_ = base::TimeTicks::Now();
   last_capture_position_ = 0;
   timer_.Start(FROM_HERE, capture_period_, this, &AudioPipeReader::DoCapture);
@@ -162,7 +157,7 @@ void AudioPipeReader::DoCapture() {
 
   while (pos < data.size()) {
     int read_result =
-        pipe_.ReadAtCurrentPos(string_as_array(&data) + pos, data.size() - pos);
+        pipe_.ReadAtCurrentPos(base::data(data) + pos, data.size() - pos);
     if (read_result > 0) {
       pos += read_result;
     } else {
@@ -202,9 +197,10 @@ void AudioPipeReader::DoCapture() {
 
 void AudioPipeReader::WaitForPipeReadable() {
   timer_.Stop();
-  base::MessageLoopForIO::current()->WatchFileDescriptor(
-      pipe_.GetPlatformFile(), false, base::MessageLoopForIO::WATCH_READ,
-      &file_descriptor_watcher_, this);
+  DCHECK(!pipe_watch_controller_);
+  pipe_watch_controller_ = base::FileDescriptorWatcher::WatchReadable(
+      pipe_.GetPlatformFile(),
+      base::Bind(&AudioPipeReader::StartTimer, base::Unretained(this)));
 }
 
 // static

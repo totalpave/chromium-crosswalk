@@ -5,18 +5,19 @@
 #ifndef CHROME_BROWSER_DOWNLOAD_DOWNLOAD_TARGET_DETERMINER_DELEGATE_H_
 #define CHROME_BROWSER_DOWNLOAD_DOWNLOAD_TARGET_DETERMINER_DELEGATE_H_
 
+#include <string>
+
 #include "base/callback_forward.h"
-
-#include "chrome/browser/download/download_path_reservation_tracker.h"
-#include "content/public/browser/download_danger_type.h"
-
-class ExtensionDownloadsEventRouter;
+#include "chrome/browser/download/download_confirmation_reason.h"
+#include "chrome/browser/download/download_confirmation_result.h"
+#include "components/download/public/common/download_danger_type.h"
+#include "components/download/public/common/download_path_reservation_tracker.h"
 
 namespace base {
 class FilePath;
 }
 
-namespace content {
+namespace download {
 class DownloadItem;
 }
 
@@ -32,23 +33,22 @@ class DownloadTargetDeterminerDelegate {
   // ignored.
   typedef base::Callback<void(
       const base::FilePath& new_virtual_path,
-      DownloadPathReservationTracker::FilenameConflictAction conflict_action)>
-  NotifyExtensionsCallback;
+      download::DownloadPathReservationTracker::FilenameConflictAction
+          conflict_action)>
+      NotifyExtensionsCallback;
 
-  // Callback to be invoked when ReserveVirtualPath() completes. If the path
-  // reservation is successful, then |successful| should be true and
-  // |reserved_path| should contain the reserved path. Otherwise, |successful|
-  // should be false. In the failure case, |reserved_path| is ignored.
-  typedef base::Callback<void(const base::FilePath& reserved_path,
-                              bool successful)> ReservedPathCallback;
+  // Callback to be invoked when ReserveVirtualPath() completes.
+  using ReservedPathCallback =
+      download::DownloadPathReservationTracker::ReservedPathCallback;
 
-  // Callback to be invoked when PromptUserForDownloadPath() completes.
+  // Callback to be invoked when RequestConfirmation() completes.
   // |virtual_path|: The path chosen by the user. If the user cancels the file
   //    selection, then this parameter will be the empty path. On Chrome OS,
   //    this path may contain virtual mount points if the user chose a virtual
   //    path (e.g. Google Drive).
-  typedef base::Callback<void(const base::FilePath& virtual_path)>
-  FileSelectedCallback;
+  typedef base::Callback<void(DownloadConfirmationResult,
+                              const base::FilePath& virtual_path)>
+      ConfirmationCallback;
 
   // Callback to be invoked when DetermineLocalPath() completes. The argument
   // should be the determined local path. It should be non-empty on success. If
@@ -59,8 +59,8 @@ class DownloadTargetDeterminerDelegate {
   // Callback to be invoked after CheckDownloadUrl() completes. The parameter to
   // the callback should indicate the danger type of the download based on the
   // results of the URL check.
-  typedef base::Callback<void(content::DownloadDangerType danger_type)>
-  CheckDownloadUrlCallback;
+  typedef base::Callback<void(download::DownloadDangerType danger_type)>
+      CheckDownloadUrlCallback;
 
   // Callback to be invoked after GetFileMimeType() completes. The parameter
   // should be the MIME type of the requested file. If no MIME type can be
@@ -70,7 +70,7 @@ class DownloadTargetDeterminerDelegate {
   // Notifies extensions of the impending filename determination. |virtual_path|
   // is the current suggested virtual path. The |callback| should be invoked to
   // indicate whether any extensions wish to override the path.
-  virtual void NotifyExtensions(content::DownloadItem* download,
+  virtual void NotifyExtensions(download::DownloadItem* download,
                                 const base::FilePath& virtual_path,
                                 const NotifyExtensionsCallback& callback) = 0;
 
@@ -88,36 +88,38 @@ class DownloadTargetDeterminerDelegate {
   //
   // |callback| should be invoked on completion with the results.
   virtual void ReserveVirtualPath(
-      content::DownloadItem* download,
+      download::DownloadItem* download,
       const base::FilePath& virtual_path,
       bool create_directory,
-      DownloadPathReservationTracker::FilenameConflictAction conflict_action,
+      download::DownloadPathReservationTracker::FilenameConflictAction
+          conflict_action,
       const ReservedPathCallback& callback) = 0;
 
   // Display a prompt to the user requesting that a download target be chosen.
   // Should invoke |callback| upon completion.
-  virtual void PromptUserForDownloadPath(
-      content::DownloadItem* download,
-      const base::FilePath& virtual_path,
-      const FileSelectedCallback& callback) = 0;
+  virtual void RequestConfirmation(download::DownloadItem* download,
+                                   const base::FilePath& virtual_path,
+                                   DownloadConfirmationReason reason,
+                                   const ConfirmationCallback& callback) = 0;
 
   // If |virtual_path| is not a local path, should return a possibly temporary
   // local path to use for storing the downloaded file. If |virtual_path| is
   // already local, then it should return the same path. |callback| should be
   // invoked to return the path.
-  virtual void DetermineLocalPath(content::DownloadItem* download,
+  virtual void DetermineLocalPath(download::DownloadItem* download,
                                   const base::FilePath& virtual_path,
                                   const LocalPathCallback& callback) = 0;
 
   // Check whether the download URL is malicious and invoke |callback| with a
   // suggested danger type for the download.
-  virtual void CheckDownloadUrl(content::DownloadItem* download,
+  virtual void CheckDownloadUrl(download::DownloadItem* download,
                                 const base::FilePath& virtual_path,
                                 const CheckDownloadUrlCallback& callback) = 0;
 
   // Get the MIME type for the given file.
   virtual void GetFileMimeType(const base::FilePath& path,
                                const GetFileMimeTypeCallback& callback) = 0;
+
  protected:
   virtual ~DownloadTargetDeterminerDelegate();
 };

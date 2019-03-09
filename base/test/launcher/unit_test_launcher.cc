@@ -4,6 +4,10 @@
 
 #include "base/test/launcher/unit_test_launcher.h"
 
+#include <map>
+#include <memory>
+#include <utility>
+
 #include "base/base_switches.h"
 #include "base/bind.h"
 #include "base/callback_helpers.h"
@@ -16,20 +20,24 @@
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/message_loop/message_loop.h"
+#include "base/sequence_checker.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/sys_info.h"
+#include "base/system/sys_info.h"
 #include "base/test/gtest_xml_util.h"
 #include "base/test/launcher/test_launcher.h"
 #include "base/test/test_switches.h"
 #include "base/test/test_timeouts.h"
-#include "base/third_party/dynamic_annotations/dynamic_annotations.h"
 #include "base/threading/thread_checker.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if defined(OS_POSIX)
+#include "base/files/file_descriptor_watcher_posix.h"
+#endif
 
 namespace base {
 
@@ -68,7 +76,9 @@ void PrintUsage() {
           " Other flags:\n"
           "  --test-launcher-filter-file=PATH\n"
           "    Like --gtest_filter, but read the test filter from PATH.\n"
+          "    Supports multiple filter paths separated by ';'.\n"
           "    One pattern per line; lines starting with '-' are exclusions.\n"
+          "    See also //testing/buildbot/filters/README.md file.\n"
           "\n"
           "  --test-launcher-batch-limit=N\n"
           "    Sets the limit of test batch to run in a single process to N.\n"
@@ -87,6 +97,11 @@ void PrintUsage() {
           "    Controls when full test output is printed.\n"
           "    auto means to print it when the test failed.\n"
           "\n"
+          "  --test-launcher-test-part-results-limit=N\n"
+          "    Sets the limit of failed EXPECT/ASSERT entries in the xml and\n"
+          "    JSON outputs per test to N (default N=10). Negative value \n"
+          "    will disable this limit.\n"
+          "\n"
           "  --test-launcher-total-shards=N\n"
           "    Sets the total number of shards to N.\n"
           "\n"
@@ -97,8 +112,7 @@ void PrintUsage() {
 
 class DefaultUnitTestPlatformDelegate : public UnitTestPlatformDelegate {
  public:
-  DefaultUnitTestPlatformDelegate() {
-  }
+  DefaultUnitTestPlatformDelegate() = default;
 
  private:
   // UnitTestPlatformDelegate:
@@ -107,31 +121,36 @@ class DefaultUnitTestPlatformDelegate : public UnitTestPlatformDelegate {
     return true;
   }
 
-  bool CreateTemporaryFile(base::FilePath* path) override {
+  bool CreateResultsFile(base::FilePath* path) override {
     if (!CreateNewTempDirectory(FilePath::StringType(), path))
       return false;
     *path = path->AppendASCII("test_results.xml");
     return true;
   }
 
+  bool CreateTemporaryFile(base::FilePath* path) override {
+    if (!temp_dir_.IsValid() && !temp_dir_.CreateUniqueTempDir())
+      return false;
+    return CreateTemporaryFileInDir(temp_dir_.GetPath(), path);
+  }
+
   CommandLine GetCommandLineForChildGTestProcess(
       const std::vector<std::string>& test_names,
-      const base::FilePath& output_file) override {
+      const base::FilePath& output_file,
+      const base::FilePath& flag_file) override {
     CommandLine new_cmd_line(*CommandLine::ForCurrentProcess());
 
-    CHECK(temp_dir_.IsValid() || temp_dir_.CreateUniqueTempDir());
-    FilePath temp_file;
-    CHECK(CreateTemporaryFileInDir(temp_dir_.path(), &temp_file));
+    CHECK(base::PathExists(flag_file));
+
     std::string long_flags(
         std::string("--") + kGTestFilterFlag + "=" +
         JoinString(test_names, ":"));
     CHECK_EQ(static_cast<int>(long_flags.size()),
-             WriteFile(temp_file,
-                       long_flags.data(),
+             WriteFile(flag_file, long_flags.data(),
                        static_cast<int>(long_flags.size())));
 
     new_cmd_line.AppendSwitchPath(switches::kTestLauncherOutput, output_file);
-    new_cmd_line.AppendSwitchPath(kGTestFlagfileFlag, temp_file);
+    new_cmd_line.AppendSwitchPath(kGTestFlagfileFlag, flag_file);
     new_cmd_line.AppendSwitch(kSingleProcessTestsFlag);
 
     return new_cmd_line;
@@ -172,14 +191,14 @@ bool GetSwitchValueAsInt(const std::string& switch_name, int* result) {
   return true;
 }
 
-int LaunchUnitTestsInternal(const RunTestSuiteCallback& run_test_suite,
-                            int default_jobs,
+int LaunchUnitTestsInternal(RunTestSuiteCallback run_test_suite,
+                            size_t parallel_jobs,
                             int default_batch_limit,
                             bool use_job_objects,
-                            const Closure& gtest_init) {
+                            OnceClosure gtest_init) {
 #if defined(OS_ANDROID)
   // We can't easily fork on Android, just run the test suite directly.
-  return run_test_suite.Run();
+  return std::move(run_test_suite).Run();
 #else
   bool force_single_process = false;
   if (CommandLine::ForCurrentProcess()->HasSwitch(
@@ -203,7 +222,7 @@ int LaunchUnitTestsInternal(const RunTestSuiteCallback& run_test_suite,
       CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kTestChildProcess) ||
       force_single_process) {
-    return run_test_suite.Run();
+    return std::move(run_test_suite).Run();
   }
 #endif
 
@@ -212,9 +231,9 @@ int LaunchUnitTestsInternal(const RunTestSuiteCallback& run_test_suite,
     return 0;
   }
 
-  base::TimeTicks start_time(base::TimeTicks::Now());
+  TimeTicks start_time(TimeTicks::Now());
 
-  gtest_init.Run();
+  std::move(gtest_init).Run();
   TestTimeouts::Initialize();
 
   int batch_limit = default_batch_limit;
@@ -229,15 +248,18 @@ int LaunchUnitTestsInternal(const RunTestSuiteCallback& run_test_suite,
   fflush(stdout);
 
   MessageLoopForIO message_loop;
+#if defined(OS_POSIX)
+  FileDescriptorWatcher file_descriptor_watcher(message_loop.task_runner());
+#endif
 
   DefaultUnitTestPlatformDelegate platform_delegate;
   UnitTestLauncherDelegate delegate(
       &platform_delegate, batch_limit, use_job_objects);
-  base::TestLauncher launcher(&delegate, default_jobs);
+  TestLauncher launcher(&delegate, parallel_jobs);
   bool success = launcher.Run();
 
   fprintf(stdout, "Tests took %" PRId64 " seconds.\n",
-          (base::TimeTicks::Now() - start_time).InSeconds());
+          (TimeTicks::Now() - start_time).InSeconds());
   fflush(stdout);
 
   return (success ? 0 : 1);
@@ -274,17 +296,17 @@ bool ProcessTestResults(
     // TODO(phajdan.jr): Check for duplicates and mismatches between
     // the results we got from XML file and tests we intended to run.
     std::map<std::string, TestResult> results_map;
-    for (size_t i = 0; i < test_results.size(); i++)
-      results_map[test_results[i].full_name] = test_results[i];
+    for (const auto& i : test_results)
+      results_map[i.full_name] = i;
 
     bool had_interrupted_test = false;
 
     // Results to be reported back to the test launcher.
     std::vector<TestResult> final_results;
 
-    for (size_t i = 0; i < test_names.size(); i++) {
-      if (ContainsKey(results_map, test_names[i])) {
-        TestResult test_result = results_map[test_names[i]];
+    for (const auto& i : test_names) {
+      if (ContainsKey(results_map, i)) {
+        TestResult test_result = results_map[i];
         if (test_result.status == TestResult::TEST_CRASH) {
           had_interrupted_test = true;
 
@@ -309,13 +331,13 @@ bool ProcessTestResults(
         test_result.output_snippet = GetTestOutputSnippet(test_result, output);
         final_results.push_back(test_result);
       } else if (had_interrupted_test) {
-        tests_to_relaunch->push_back(test_names[i]);
+        tests_to_relaunch->push_back(i);
       } else {
         // TODO(phajdan.jr): Explicitly pass the info that the test didn't
         // run for a mysterious reason.
-        LOG(ERROR) << "no test result for " << test_names[i];
+        LOG(ERROR) << "no test result for " << i;
         TestResult test_result;
-        test_result.full_name = test_names[i];
+        test_result.full_name = i;
         test_result.status = TestResult::TEST_UNKNOWN;
         test_result.output_snippet = GetTestOutputSnippet(test_result, output);
         final_results.push_back(test_result);
@@ -329,8 +351,8 @@ bool ProcessTestResults(
       return false;
 
     bool has_non_success_test = false;
-    for (size_t i = 0; i < final_results.size(); i++) {
-      if (final_results[i].status != TestResult::TEST_SUCCESS) {
+    for (const auto& i : final_results) {
+      if (i.status != TestResult::TEST_SUCCESS) {
         has_non_success_test = true;
         break;
       }
@@ -341,15 +363,14 @@ bool ProcessTestResults(
       // but the exit code was not zero. This can happen e.g. under memory
       // tools that report leaks this way. Mark all tests as a failure on exit,
       // and for more precise info they'd need to be retried serially.
-      for (size_t i = 0; i < final_results.size(); i++)
-        final_results[i].status = TestResult::TEST_FAILURE_ON_EXIT;
+      for (auto& i : final_results)
+        i.status = TestResult::TEST_FAILURE_ON_EXIT;
     }
 
-    for (size_t i = 0; i < final_results.size(); i++) {
+    for (auto& i : final_results) {
       // Fix the output snippet after possible changes to the test result.
-      final_results[i].output_snippet =
-          GetTestOutputSnippet(final_results[i], output);
-      test_launcher->OnTestFinished(final_results[i]);
+      i.output_snippet = GetTestOutputSnippet(i, output);
+      test_launcher->OnTestFinished(i);
       called_any_callback = true;
     }
   } else {
@@ -360,65 +381,167 @@ bool ProcessTestResults(
     fflush(stdout);
 
     // We do not have reliable details about test results (parsing test
-    // stdout is known to be unreliable), apply the executable exit code
-    // to all tests.
-    // TODO(phajdan.jr): Be smarter about this, e.g. retry each test
-    // individually.
-    for (size_t i = 0; i < test_names.size(); i++) {
+    // stdout is known to be unreliable).
+    if (test_names.size() == 1) {
+      // There is only one test. Try to determine status by exit code.
+      const std::string& test_name = test_names.front();
       TestResult test_result;
-      test_result.full_name = test_names[i];
-      test_result.status = TestResult::TEST_UNKNOWN;
+      test_result.full_name = test_name;
+
+      if (was_timeout) {
+        test_result.status = TestResult::TEST_TIMEOUT;
+      } else if (exit_code != 0) {
+        test_result.status = TestResult::TEST_FAILURE;
+      } else {
+        // It's strange case when test executed successfully,
+        // but we failed to read machine-readable report for it.
+        test_result.status = TestResult::TEST_UNKNOWN;
+      }
+
       test_launcher->OnTestFinished(test_result);
       called_any_callback = true;
+    } else {
+      // There is more than one test. Retry them individually.
+      for (const std::string& test_name : test_names)
+        tests_to_relaunch->push_back(test_name);
     }
   }
 
   return called_any_callback;
 }
 
-// TODO(phajdan.jr): Pass parameters directly with C++11 variadic templates.
-struct GTestCallbackState {
-  TestLauncher* test_launcher;
-  UnitTestPlatformDelegate* platform_delegate;
-  std::vector<std::string> test_names;
-  int launch_flags;
-  FilePath output_file;
+class UnitTestProcessLifetimeObserver : public ProcessLifetimeObserver {
+ public:
+  ~UnitTestProcessLifetimeObserver() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  }
+
+  TestLauncher* test_launcher() { return test_launcher_; }
+  UnitTestPlatformDelegate* platform_delegate() { return platform_delegate_; }
+  const std::vector<std::string>& test_names() { return test_names_; }
+  int launch_flags() { return launch_flags_; }
+  const FilePath& output_file() { return output_file_; }
+  const FilePath& flag_file() { return flag_file_; }
+
+ protected:
+  UnitTestProcessLifetimeObserver(TestLauncher* test_launcher,
+                                  UnitTestPlatformDelegate* platform_delegate,
+                                  const std::vector<std::string>& test_names,
+                                  int launch_flags,
+                                  const FilePath& output_file,
+                                  const FilePath& flag_file)
+      : ProcessLifetimeObserver(),
+        test_launcher_(test_launcher),
+        platform_delegate_(platform_delegate),
+        test_names_(test_names),
+        launch_flags_(launch_flags),
+        output_file_(output_file),
+        flag_file_(flag_file) {}
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+ private:
+  TestLauncher* const test_launcher_;
+  UnitTestPlatformDelegate* const platform_delegate_;
+  const std::vector<std::string> test_names_;
+  const int launch_flags_;
+  const FilePath output_file_;
+  const FilePath flag_file_;
+
+  DISALLOW_COPY_AND_ASSIGN(UnitTestProcessLifetimeObserver);
 };
 
-void GTestCallback(
-    const GTestCallbackState& callback_state,
+class ParallelUnitTestProcessLifetimeObserver
+    : public UnitTestProcessLifetimeObserver {
+ public:
+  ParallelUnitTestProcessLifetimeObserver(
+      TestLauncher* test_launcher,
+      UnitTestPlatformDelegate* platform_delegate,
+      const std::vector<std::string>& test_names,
+      int launch_flags,
+      const FilePath& output_file,
+      const FilePath& flag_file)
+      : UnitTestProcessLifetimeObserver(test_launcher,
+                                        platform_delegate,
+                                        test_names,
+                                        launch_flags,
+                                        output_file,
+                                        flag_file) {}
+  ~ParallelUnitTestProcessLifetimeObserver() override = default;
+
+ private:
+  // ProcessLifetimeObserver:
+  void OnCompleted(int exit_code,
+                   TimeDelta elapsed_time,
+                   bool was_timeout,
+                   const std::string& output) override;
+
+  DISALLOW_COPY_AND_ASSIGN(ParallelUnitTestProcessLifetimeObserver);
+};
+
+void ParallelUnitTestProcessLifetimeObserver::OnCompleted(
     int exit_code,
-    const TimeDelta& elapsed_time,
+    TimeDelta elapsed_time,
     bool was_timeout,
     const std::string& output) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   std::vector<std::string> tests_to_relaunch;
-  ProcessTestResults(callback_state.test_launcher, callback_state.test_names,
-                     callback_state.output_file, output, exit_code, was_timeout,
-                     &tests_to_relaunch);
+  ProcessTestResults(test_launcher(), test_names(), output_file(), output,
+                     exit_code, was_timeout, &tests_to_relaunch);
 
   if (!tests_to_relaunch.empty()) {
-    callback_state.platform_delegate->RelaunchTests(
-        callback_state.test_launcher,
-        tests_to_relaunch,
-        callback_state.launch_flags);
+    platform_delegate()->RelaunchTests(test_launcher(), tests_to_relaunch,
+                                       launch_flags());
   }
 
   // The temporary file's directory is also temporary.
-  DeleteFile(callback_state.output_file.DirName(), true);
+  DeleteFile(output_file().DirName(), true);
+  if (!flag_file().empty())
+    DeleteFile(flag_file(), false);
 }
 
-void SerialGTestCallback(
-    const GTestCallbackState& callback_state,
-    const std::vector<std::string>& test_names,
+class SerialUnitTestProcessLifetimeObserver
+    : public UnitTestProcessLifetimeObserver {
+ public:
+  SerialUnitTestProcessLifetimeObserver(
+      TestLauncher* test_launcher,
+      UnitTestPlatformDelegate* platform_delegate,
+      const std::vector<std::string>& test_names,
+      int launch_flags,
+      const FilePath& output_file,
+      const FilePath& flag_file,
+      std::vector<std::string>&& next_test_names)
+      : UnitTestProcessLifetimeObserver(test_launcher,
+                                        platform_delegate,
+                                        test_names,
+                                        launch_flags,
+                                        output_file,
+                                        flag_file),
+        next_test_names_(std::move(next_test_names)) {}
+  ~SerialUnitTestProcessLifetimeObserver() override = default;
+
+ private:
+  // ProcessLifetimeObserver:
+  void OnCompleted(int exit_code,
+                   TimeDelta elapsed_time,
+                   bool was_timeout,
+                   const std::string& output) override;
+
+  std::vector<std::string> next_test_names_;
+
+  DISALLOW_COPY_AND_ASSIGN(SerialUnitTestProcessLifetimeObserver);
+};
+
+void SerialUnitTestProcessLifetimeObserver::OnCompleted(
     int exit_code,
-    const TimeDelta& elapsed_time,
+    TimeDelta elapsed_time,
     bool was_timeout,
     const std::string& output) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   std::vector<std::string> tests_to_relaunch;
   bool called_any_callbacks =
-      ProcessTestResults(callback_state.test_launcher,
-                         callback_state.test_names, callback_state.output_file,
-                         output, exit_code, was_timeout, &tests_to_relaunch);
+      ProcessTestResults(test_launcher(), test_names(), output_file(), output,
+                         exit_code, was_timeout, &tests_to_relaunch);
 
   // There is only one test, there cannot be other tests to relaunch
   // due to a crash.
@@ -428,69 +551,67 @@ void SerialGTestCallback(
   DCHECK(called_any_callbacks);
 
   // The temporary file's directory is also temporary.
-  DeleteFile(callback_state.output_file.DirName(), true);
+  DeleteFile(output_file().DirName(), true);
+
+  if (!flag_file().empty())
+    DeleteFile(flag_file(), false);
 
   ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, Bind(&RunUnitTestsSerially, callback_state.test_launcher,
-                      callback_state.platform_delegate, test_names,
-                      callback_state.launch_flags));
+      FROM_HERE,
+      BindOnce(&RunUnitTestsSerially, test_launcher(), platform_delegate(),
+               std::move(next_test_names_), launch_flags()));
 }
 
 }  // namespace
 
 int LaunchUnitTests(int argc,
                     char** argv,
-                    const RunTestSuiteCallback& run_test_suite) {
+                    RunTestSuiteCallback run_test_suite) {
   CommandLine::Init(argc, argv);
-  return LaunchUnitTestsInternal(
-      run_test_suite,
-      SysInfo::NumberOfProcessors(),
-      kDefaultTestBatchLimit,
-      true,
-      Bind(&InitGoogleTestChar, &argc, argv));
+  size_t parallel_jobs = NumParallelJobs();
+  if (parallel_jobs == 0U) {
+    return 1;
+  }
+  return LaunchUnitTestsInternal(std::move(run_test_suite), parallel_jobs,
+                                 kDefaultTestBatchLimit, true,
+                                 BindOnce(&InitGoogleTestChar, &argc, argv));
 }
 
 int LaunchUnitTestsSerially(int argc,
                             char** argv,
-                            const RunTestSuiteCallback& run_test_suite) {
+                            RunTestSuiteCallback run_test_suite) {
   CommandLine::Init(argc, argv);
-  return LaunchUnitTestsInternal(
-      run_test_suite,
-      1,
-      kDefaultTestBatchLimit,
-      true,
-      Bind(&InitGoogleTestChar, &argc, argv));
+  return LaunchUnitTestsInternal(std::move(run_test_suite), 1U,
+                                 kDefaultTestBatchLimit, true,
+                                 BindOnce(&InitGoogleTestChar, &argc, argv));
 }
 
-int LaunchUnitTestsWithOptions(
-    int argc,
-    char** argv,
-    int default_jobs,
-    int default_batch_limit,
-    bool use_job_objects,
-    const RunTestSuiteCallback& run_test_suite) {
+int LaunchUnitTestsWithOptions(int argc,
+                               char** argv,
+                               size_t parallel_jobs,
+                               int default_batch_limit,
+                               bool use_job_objects,
+                               RunTestSuiteCallback run_test_suite) {
   CommandLine::Init(argc, argv);
-  return LaunchUnitTestsInternal(
-      run_test_suite,
-      default_jobs,
-      default_batch_limit,
-      use_job_objects,
-      Bind(&InitGoogleTestChar, &argc, argv));
+  return LaunchUnitTestsInternal(std::move(run_test_suite), parallel_jobs,
+                                 default_batch_limit, use_job_objects,
+                                 BindOnce(&InitGoogleTestChar, &argc, argv));
 }
 
 #if defined(OS_WIN)
 int LaunchUnitTests(int argc,
                     wchar_t** argv,
                     bool use_job_objects,
-                    const RunTestSuiteCallback& run_test_suite) {
+                    RunTestSuiteCallback run_test_suite) {
   // Windows CommandLine::Init ignores argv anyway.
   CommandLine::Init(argc, NULL);
-  return LaunchUnitTestsInternal(
-      run_test_suite,
-      SysInfo::NumberOfProcessors(),
-      kDefaultTestBatchLimit,
-      use_job_objects,
-      Bind(&InitGoogleTestWChar, &argc, argv));
+  size_t parallel_jobs = NumParallelJobs();
+  if (parallel_jobs == 0U) {
+    return 1;
+  }
+  return LaunchUnitTestsInternal(std::move(run_test_suite), parallel_jobs,
+                                 kDefaultTestBatchLimit, use_job_objects,
+                                 BindOnce(&InitGoogleTestWChar, &argc, argv));
 }
 #endif  // defined(OS_WIN)
 
@@ -502,35 +623,29 @@ void RunUnitTestsSerially(
   if (test_names.empty())
     return;
 
-  std::vector<std::string> new_test_names(test_names);
-  std::string test_name(new_test_names.back());
-  new_test_names.pop_back();
-
   // Create a dedicated temporary directory to store the xml result data
   // per run to ensure clean state and make it possible to launch multiple
   // processes in parallel.
-  base::FilePath output_file;
-  CHECK(platform_delegate->CreateTemporaryFile(&output_file));
+  FilePath output_file;
+  CHECK(platform_delegate->CreateResultsFile(&output_file));
+  FilePath flag_file;
+  platform_delegate->CreateTemporaryFile(&flag_file);
 
-  std::vector<std::string> current_test_names;
-  current_test_names.push_back(test_name);
+  auto observer = std::make_unique<SerialUnitTestProcessLifetimeObserver>(
+      test_launcher, platform_delegate,
+      std::vector<std::string>(1, test_names.back()), launch_flags, output_file,
+      flag_file,
+      std::vector<std::string>(test_names.begin(), test_names.end() - 1));
+
   CommandLine cmd_line(platform_delegate->GetCommandLineForChildGTestProcess(
-      current_test_names, output_file));
-
-  GTestCallbackState callback_state;
-  callback_state.test_launcher = test_launcher;
-  callback_state.platform_delegate = platform_delegate;
-  callback_state.test_names = current_test_names;
-  callback_state.launch_flags = launch_flags;
-  callback_state.output_file = output_file;
+      observer->test_names(), output_file, flag_file));
 
   TestLauncher::LaunchOptions launch_options;
   launch_options.flags = launch_flags;
   test_launcher->LaunchChildGTestProcess(
       cmd_line, platform_delegate->GetWrapperForChildGTestProcess(),
       TestTimeouts::test_launcher_timeout(), launch_options,
-      Bind(&SerialGTestCallback, callback_state, new_test_names),
-      TestLauncher::GTestProcessLaunchedCallback());
+      std::move(observer));
 }
 
 void RunUnitTestsBatch(
@@ -544,11 +659,17 @@ void RunUnitTestsBatch(
   // Create a dedicated temporary directory to store the xml result data
   // per run to ensure clean state and make it possible to launch multiple
   // processes in parallel.
-  base::FilePath output_file;
-  CHECK(platform_delegate->CreateTemporaryFile(&output_file));
+  FilePath output_file;
+  CHECK(platform_delegate->CreateResultsFile(&output_file));
+  FilePath flag_file;
+  platform_delegate->CreateTemporaryFile(&flag_file);
+
+  auto observer = std::make_unique<ParallelUnitTestProcessLifetimeObserver>(
+      test_launcher, platform_delegate, test_names, launch_flags, output_file,
+      flag_file);
 
   CommandLine cmd_line(platform_delegate->GetCommandLineForChildGTestProcess(
-      test_names, output_file));
+      test_names, output_file, flag_file));
 
   // Adjust the timeout depending on how many tests we're running
   // (note that e.g. the last batch of tests will be smaller).
@@ -556,22 +677,13 @@ void RunUnitTestsBatch(
   // depending on how many tests ran and how many remain.
   // Note: do NOT parse child's stdout to do that, it's known to be
   // unreliable (e.g. buffering issues can mix up the output).
-  base::TimeDelta timeout =
-      test_names.size() * TestTimeouts::test_launcher_timeout();
-
-  GTestCallbackState callback_state;
-  callback_state.test_launcher = test_launcher;
-  callback_state.platform_delegate = platform_delegate;
-  callback_state.test_names = test_names;
-  callback_state.launch_flags = launch_flags;
-  callback_state.output_file = output_file;
+  TimeDelta timeout = test_names.size() * TestTimeouts::test_launcher_timeout();
 
   TestLauncher::LaunchOptions options;
   options.flags = launch_flags;
   test_launcher->LaunchChildGTestProcess(
       cmd_line, platform_delegate->GetWrapperForChildGTestProcess(), timeout,
-      options, Bind(&GTestCallback, callback_state),
-      TestLauncher::GTestProcessLaunchedCallback());
+      options, std::move(observer));
 }
 
 UnitTestLauncherDelegate::UnitTestLauncherDelegate(
@@ -592,6 +704,14 @@ bool UnitTestLauncherDelegate::GetTests(std::vector<TestIdentifier>* output) {
   return platform_delegate_->GetTests(output);
 }
 
+bool UnitTestLauncherDelegate::WillRunTest(const std::string& test_case_name,
+                                           const std::string& test_name) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+
+  // There is no additional logic to disable specific tests.
+  return true;
+}
+
 bool UnitTestLauncherDelegate::ShouldRunTest(const std::string& test_case_name,
                                              const std::string& test_name) {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -608,8 +728,8 @@ size_t UnitTestLauncherDelegate::RunTests(
   int launch_flags = use_job_objects_ ? TestLauncher::USE_JOB_OBJECTS : 0;
 
   std::vector<std::string> batch;
-  for (size_t i = 0; i < test_names.size(); i++) {
-    batch.push_back(test_names[i]);
+  for (const auto& i : test_names) {
+    batch.push_back(i);
 
     // Use 0 to indicate unlimited batch size.
     if (batch.size() >= batch_limit_ && batch_limit_ != 0) {
@@ -628,8 +748,9 @@ size_t UnitTestLauncherDelegate::RetryTests(
     const std::vector<std::string>& test_names) {
   ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
-      Bind(&RunUnitTestsSerially, test_launcher, platform_delegate_, test_names,
-           use_job_objects_ ? TestLauncher::USE_JOB_OBJECTS : 0));
+      BindOnce(&RunUnitTestsSerially, test_launcher, platform_delegate_,
+               test_names,
+               use_job_objects_ ? TestLauncher::USE_JOB_OBJECTS : 0));
   return test_names.size();
 }
 

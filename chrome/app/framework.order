@@ -15,14 +15,11 @@
 # release modes.  It is not an error to list symbols in this file that will not
 # be present in each output variant.
 
-__ZnwmPv
-__ZdlPvS_
-
 # Provided by build/sanitizers/sanitizer_options.cc in ASan builds.
 ___asan_default_options
 
 # Entry point from the app mode loader.
-_ChromeAppModeStart_v4
+_ChromeAppModeStart_v5
 
 # _ChromeMain must be listed last.  That's the whole point of this file.
 _ChromeMain

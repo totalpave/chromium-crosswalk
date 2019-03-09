@@ -14,16 +14,19 @@
 
 #include "snapshot/mac/system_snapshot_mac.h"
 
+#include <stddef.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
-#include <time.h>
+
+#include <algorithm>
 
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "snapshot/cpu_context.h"
-#include "snapshot/mac/process_reader.h"
+#include "snapshot/mac/process_reader_mac.h"
+#include "snapshot/posix/timezone.h"
 #include "util/mac/mac_util.h"
 #include "util/numeric/in_range_cast.h"
 
@@ -101,7 +104,7 @@ SystemSnapshotMac::SystemSnapshotMac()
 SystemSnapshotMac::~SystemSnapshotMac() {
 }
 
-void SystemSnapshotMac::Initialize(ProcessReader* process_reader,
+void SystemSnapshotMac::Initialize(ProcessReaderMac* process_reader,
                                    const timeval* snapshot_time) {
   INITIALIZATION_STATE_SET_INITIALIZING(initialized_);
 
@@ -228,7 +231,7 @@ uint32_t SystemSnapshotMac::CPUX86Leaf7Features() const {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
 
 #if defined(ARCH_CPU_X86_FAMILY)
-  // The machdep.cpu.leaf7_feature_bits sysctl isn’t supported prior to Mac OS X
+  // The machdep.cpu.leaf7_feature_bits sysctl isn’t supported prior to OS X
   // 10.7, so read this by calling cpuid directly.
   //
   // machdep.cpu.max_basic could be used to check whether to read the leaf, but
@@ -345,54 +348,12 @@ void SystemSnapshotMac::TimeZone(DaylightSavingTimeStatus* dst_status,
                                  std::string* daylight_name) const {
   INITIALIZATION_STATE_DCHECK_VALID(initialized_);
 
-  tm local;
-  PCHECK(localtime_r(&snapshot_time_->tv_sec, &local)) << "localtime_r";
-
-  *standard_name = tzname[0];
-  if (daylight) {
-    // Scan forward and backward, one month at a time, looking for an instance
-    // when the observance of daylight saving time is different than it is in
-    // |local|.
-    long probe_gmtoff = local.tm_gmtoff;
-
-    const int kMonthDeltas[] =
-        { 0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6,
-          7, -7, 8, -8, 9, -9, 10, -10, 11, -11, 12, -12 };
-    for (size_t index = 0; index < arraysize(kMonthDeltas); ++index) {
-      // Look at the 15th day of each month at local noon. Set tm_isdst to -1 to
-      // avoid giving mktime() any hints about whether to consider daylight
-      // saving time in effect. mktime() accepts values of tm_mon that are
-      // outside of its normal range and behaves as expected: if tm_mon is -1,
-      // it references December of the preceding year, and if it is 12, it
-      // references January of the following year.
-      tm probe_tm = {};
-      probe_tm.tm_hour = 12;
-      probe_tm.tm_mday = 15;
-      probe_tm.tm_mon = local.tm_mon + kMonthDeltas[index];
-      probe_tm.tm_year = local.tm_year;
-      probe_tm.tm_isdst = -1;
-      if (mktime(&probe_tm) != -1 && probe_tm.tm_isdst != local.tm_isdst) {
-        probe_gmtoff = probe_tm.tm_gmtoff;
-        break;
-      }
-    }
-
-    *daylight_name = tzname[1];
-    if (!local.tm_isdst) {
-      *dst_status = kObservingStandardTime;
-      *standard_offset_seconds = local.tm_gmtoff;
-      *daylight_offset_seconds = probe_gmtoff;
-    } else {
-      *dst_status = kObservingDaylightSavingTime;
-      *standard_offset_seconds = probe_gmtoff;
-      *daylight_offset_seconds = local.tm_gmtoff;
-    }
-  } else {
-    *daylight_name = tzname[0];
-    *dst_status = kDoesNotObserveDaylightSavingTime;
-    *standard_offset_seconds = local.tm_gmtoff;
-    *daylight_offset_seconds = local.tm_gmtoff;
-  }
+  internal::TimeZone(*snapshot_time_,
+                     dst_status,
+                     standard_offset_seconds,
+                     daylight_offset_seconds,
+                     standard_name,
+                     daylight_name);
 }
 
 }  // namespace internal

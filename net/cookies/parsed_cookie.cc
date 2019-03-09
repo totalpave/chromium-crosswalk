@@ -45,7 +45,9 @@
 #include "net/cookies/parsed_cookie.h"
 
 #include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
+#include "net/http/http_util.h"
 
 namespace {
 
@@ -95,26 +97,6 @@ inline bool SeekBackPast(std::string::const_iterator* it,
   return *it == end;
 }
 
-// Validate whether |value| is a valid token according to [RFC7230],
-// Section 3.2.6.
-bool IsValidToken(const std::string& value) {
-  if (value.empty())
-    return false;
-
-  // Check that |value| has no separators.
-  std::string separators = "()<>@,;:\\\"/[]?={} \t";
-  if (value.find_first_of(separators) != std::string::npos)
-    return false;
-
-  // Check that |value| has no CTLs.
-  for (std::string::const_iterator i = value.begin(); i != value.end(); ++i) {
-    if ((*i >= 0 && *i <= 31) || *i >= 127)
-      return false;
-  }
-
-  return true;
-}
-
 // Validate value, which may be according to RFC 6265
 // cookie-value      = *cookie-octet / ( DQUOTE *cookie-octet DQUOTE )
 // cookie-octet      = %x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E
@@ -142,16 +124,6 @@ bool IsControlCharacter(unsigned char c) {
   return c <= 31;
 }
 
-bool IsValidCookieAttributeValue(const std::string& value) {
-  // The greatest common denominator of cookie attribute values is
-  // <any CHAR except CTLs or ";"> according to RFC 6265.
-  for (std::string::const_iterator i = value.begin(); i != value.end(); ++i) {
-    if (IsControlCharacter(*i) || *i == ';')
-      return false;
-  }
-  return true;
-}
-
 }  // namespace
 
 namespace net {
@@ -175,11 +147,10 @@ ParsedCookie::ParsedCookie(const std::string& cookie_line)
     SetupAttributes();
 }
 
-ParsedCookie::~ParsedCookie() {
-}
+ParsedCookie::~ParsedCookie() = default;
 
 bool ParsedCookie::IsValid() const {
-  return !pairs_.empty() && IsSameSiteAttributeValid();
+  return !pairs_.empty();
 }
 
 CookieSameSite ParsedCookie::SameSite() const {
@@ -195,7 +166,7 @@ CookiePriority ParsedCookie::Priority() const {
 }
 
 bool ParsedCookie::SetName(const std::string& name) {
-  if (!IsValidToken(name))
+  if (!name.empty() && !HttpUtil::IsToken(name))
     return false;
   if (pairs_.empty())
     pairs_.push_back(std::make_pair("", ""));
@@ -246,7 +217,7 @@ bool ParsedCookie::SetPriority(const std::string& priority) {
 
 std::string ParsedCookie::ToCookieLine() const {
   std::string out;
-  for (PairList::const_iterator it = pairs_.begin(); it != pairs_.end(); ++it) {
+  for (auto it = pairs_.begin(); it != pairs_.end(); ++it) {
     if (!out.empty())
       out.append("; ");
     out.append(it->first);
@@ -258,6 +229,7 @@ std::string ParsedCookie::ToCookieLine() const {
   return out;
 }
 
+// static
 std::string::const_iterator ParsedCookie::FindFirstTerminator(
     const std::string& s) {
   std::string::const_iterator end = s.end();
@@ -269,6 +241,7 @@ std::string::const_iterator ParsedCookie::FindFirstTerminator(
   return end;
 }
 
+// static
 bool ParsedCookie::ParseToken(std::string::const_iterator* it,
                               const std::string::const_iterator& end,
                               std::string::const_iterator* token_start,
@@ -305,6 +278,7 @@ bool ParsedCookie::ParseToken(std::string::const_iterator* it,
   return true;
 }
 
+// static
 void ParsedCookie::ParseValue(std::string::const_iterator* it,
                               const std::string::const_iterator& end,
                               std::string::const_iterator* value_start,
@@ -331,6 +305,7 @@ void ParsedCookie::ParseValue(std::string::const_iterator* it,
   }
 }
 
+// static
 std::string ParsedCookie::ParseTokenString(const std::string& token) {
   std::string::const_iterator it = token.begin();
   std::string::const_iterator end = FindFirstTerminator(token);
@@ -341,6 +316,7 @@ std::string ParsedCookie::ParseTokenString(const std::string& token) {
   return std::string();
 }
 
+// static
 std::string ParsedCookie::ParseValueString(const std::string& value) {
   std::string::const_iterator it = value.begin();
   std::string::const_iterator end = FindFirstTerminator(value);
@@ -348,6 +324,17 @@ std::string ParsedCookie::ParseValueString(const std::string& value) {
   std::string::const_iterator value_start, value_end;
   ParseValue(&it, end, &value_start, &value_end);
   return std::string(value_start, value_end);
+}
+
+// static
+bool ParsedCookie::IsValidCookieAttributeValue(const std::string& value) {
+  // The greatest common denominator of cookie attribute values is
+  // <any CHAR except CTLs or ";"> according to RFC 6265.
+  for (std::string::const_iterator i = value.begin(); i != value.end(); ++i) {
+    if (IsControlCharacter(*i) || *i == ';')
+      return false;
+  }
+  return true;
 }
 
 // Parse all token/value pairs and populate pairs_.
@@ -363,12 +350,26 @@ void ParsedCookie::ParseTokenValuePairs(const std::string& cookie_line) {
   // Then we can log any unexpected terminators.
   std::string::const_iterator end = FindFirstTerminator(cookie_line);
 
-  for (int pair_num = 0; pair_num < kMaxPairs && it != end; ++pair_num) {
+  // For an empty |cookie_line|, add an empty-key with an empty value, which
+  // has the effect of clearing any prior setting of the empty-key. This is done
+  // to match the behavior of other browsers. See https://crbug.com/601786.
+  if (it == end) {
+    pairs_.push_back(TokenValuePair("", ""));
+    return;
+  }
+
+  for (int pair_num = 0; it != end; ++pair_num) {
     TokenValuePair pair;
 
     std::string::const_iterator token_start, token_end;
-    if (!ParseToken(&it, end, &token_start, &token_end))
-      break;
+    if (!ParseToken(&it, end, &token_start, &token_end)) {
+      // Allow first token to be treated as empty-key if unparsable
+      if (pair_num != 0)
+        break;
+
+      // If parsing failed, start the value parsing at the very beginning.
+      token_start = start;
+    }
 
     if (it == end || *it != '=') {
       // We have a token-value, we didn't have any token name.
@@ -421,17 +422,11 @@ void ParsedCookie::ParseTokenValuePairs(const std::string& cookie_line) {
 }
 
 void ParsedCookie::SetupAttributes() {
-  // Ignore Set-Cookie directive where name and value are both empty.
-  if (pairs_[0].first.empty() && pairs_[0].second.empty()) {
-    pairs_.clear();
-    return;
-  }
-
   // We skip over the first token/value, the user supplied one.
   for (size_t i = 1; i < pairs_.size(); ++i) {
     if (pairs_[i].first == kPathTokenName) {
       path_index_ = i;
-    } else if (pairs_[i].first == kDomainTokenName) {
+    } else if (pairs_[i].first == kDomainTokenName && pairs_[i].second != "") {
       domain_index_ = i;
     } else if (pairs_[i].first == kExpiresTokenName) {
       expires_index_ = i;
@@ -474,7 +469,7 @@ bool ParsedCookie::SetBool(size_t* index, const std::string& key, bool value) {
 bool ParsedCookie::SetAttributePair(size_t* index,
                                     const std::string& key,
                                     const std::string& value) {
-  if (!(IsValidToken(key) && IsValidCookieAttributeValue(value)))
+  if (!(HttpUtil::IsToken(key) && IsValidCookieAttributeValue(value)))
     return false;
   if (!IsValid())
     return false;
@@ -497,17 +492,13 @@ void ParsedCookie::ClearAttributePair(size_t index) {
   size_t* indexes[] = {&path_index_,      &domain_index_,  &expires_index_,
                        &maxage_index_,    &secure_index_,  &httponly_index_,
                        &same_site_index_, &priority_index_};
-  for (size_t i = 0; i < arraysize(indexes); ++i) {
-    if (*indexes[i] == index)
-      *indexes[i] = 0;
-    else if (*indexes[i] > index)
-      --*indexes[i];
+  for (size_t* attribute_index : indexes) {
+    if (*attribute_index == index)
+      *attribute_index = 0;
+    else if (*attribute_index > index)
+      --(*attribute_index);
   }
   pairs_.erase(pairs_.begin() + index);
 }
 
-bool ParsedCookie::IsSameSiteAttributeValid() const {
-  return same_site_index_ == 0 || SameSite() != CookieSameSite::DEFAULT_MODE;
-}
-
-}  // namespace
+}  // namespace net

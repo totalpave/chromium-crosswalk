@@ -1,7 +1,6 @@
 {
-   "actionButtonHidden": false,
    "dependentExtensions": [  ],
-   "description": "__MSG_chrome_extension_description__",
+   "description": "The first extension that I made.",
    "disableReasons": {
       "corruptInstall": false,
       "suspiciousInstall": false,
@@ -12,7 +11,7 @@
       "isEnabled": false
    },
    "fileAccess": {
-      "isActive": false,
+      "isActive": true,
       "isEnabled": true
    },
    "homePage": {
@@ -25,16 +24,11 @@
       "isEnabled": true
    },
    "installWarnings": [  ],
-   "location": "UNKNOWN",
-   "locationText": "Not from Chrome Web Store.",
+   "location": "UNPACKED",
    "manifestErrors": [  ],
    "mustRemainInstalled": false,
-   "name": "__MSG_chrome_extension_name__",
+   "name": "My extension 1",
    "offlineEnabled": false,
-   "runOnAllUrls": {
-      "isActive": true,
-      "isEnabled": false
-   },
    "runtimeErrors": [  ],
    "runtimeWarnings": [  ],
    "state": "ENABLED",

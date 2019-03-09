@@ -13,25 +13,20 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "base/threading/thread_checker.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_metrics.h"
+#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "net/base/completion_callback.h"
 #include "net/base/layered_network_delegate.h"
-#include "net/proxy/proxy_retry_info.h"
+#include "net/proxy_resolution/proxy_retry_info.h"
 
 class GURL;
 
-namespace base {
-class Value;
-}
-
 namespace net {
-class HttpResponseHeaders;
 class HttpRequestHeaders;
 class NetworkDelegate;
 class ProxyConfig;
 class ProxyInfo;
-class ProxyServer;
-class ProxyService;
 class URLRequest;
 }
 
@@ -39,7 +34,6 @@ namespace data_reduction_proxy {
 class DataReductionProxyBypassStats;
 class DataReductionProxyConfig;
 class DataReductionProxyConfigurator;
-class DataReductionProxyExperimentsStats;
 class DataReductionProxyIOData;
 class DataReductionProxyRequestOptions;
 class DataUseGroupProvider;
@@ -49,10 +43,10 @@ class DataUseGroup;
 // This enum must remain synchronized with
 // DataReductionProxyLoFiTransformationType in
 // metrics/histograms/histograms.xml.
-enum LoFiTransformationType {
-  PREVIEW = 0,
-  NO_TRANSFORMATION_PREVIEW_REQUESTED,
-  LO_FI_TRANSFORMATION_TYPES_INDEX_BOUNDARY,
+enum LitePageTransformationType {
+  LITE_PAGE = 0,
+  NO_TRANSFORMATION_LITE_PAGE_REQUESTED,
+  LITE_PAGE_TRANSFORMATION_TYPES_INDEX_BOUNDARY,
 };
 
 // DataReductionProxyNetworkDelegate is a LayeredNetworkDelegate that wraps a
@@ -61,7 +55,7 @@ class DataReductionProxyNetworkDelegate : public net::LayeredNetworkDelegate {
  public:
   // Provides an additional proxy configuration that can be consulted after
   // proxy resolution. Used to get the Data Reduction Proxy config and give it
-  // to the OnResolveProxyHandler and RecordBytesHistograms.
+  // to the OnResolveProxyHandler and RecordBypassedBytesHistograms.
   typedef base::Callback<const net::ProxyConfig&()> ProxyConfigGetter;
 
   // Constructs a DataReductionProxyNetworkDelegate object with the given
@@ -83,18 +77,15 @@ class DataReductionProxyNetworkDelegate : public net::LayeredNetworkDelegate {
       DataReductionProxyIOData* io_data,
       DataReductionProxyBypassStats* bypass_stats);
 
-  // Creates a |Value| summary of the state of the network session. The caller
-  // is responsible for deleting the returned value.
-  base::Value* SessionNetworkStatsInfoToValue() const;
-
-  void SetDataUseGroupProvider(
-      std::unique_ptr<DataUseGroupProvider> data_use_group_provider);
-
  private:
-  // Resets if Lo-Fi has been used for the last main frame load to false.
-  void OnBeforeURLRequestInternal(net::URLRequest* request,
-                                  const net::CompletionCallback& callback,
-                                  GURL* new_url) override;
+  friend class DataReductionProxyTestContext;
+
+  // Called before an HTTP transaction is started. Allows the delegate to
+  // modify the Chrome-Proxy-Accept-Transform header to convey acceptable
+  // content transformations.
+  void OnBeforeStartTransactionInternal(
+      net::URLRequest* request,
+      net::HttpRequestHeaders* headers) override;
 
   // Called after connection. Allows the delegate to read/write
   // |headers| before they get sent out. |headers| is valid only until
@@ -105,28 +96,43 @@ class DataReductionProxyNetworkDelegate : public net::LayeredNetworkDelegate {
       const net::ProxyRetryInfoMap& proxy_retry_info,
       net::HttpRequestHeaders* headers) override;
 
+  // Called after a redirect response. Clears out persistent
+  // DataReductionProxyData from the URLRequest.
+  void OnBeforeRedirectInternal(net::URLRequest* request,
+                                const GURL& new_location) override;
+
   // Indicates that the URL request has been completed or failed.
   // |started| indicates whether the request has been started. If false,
   // some information like the socket address is not available.
   void OnCompletedInternal(net::URLRequest* request,
-                           bool started) override;
+                           bool started,
+                           int net_error) override;
+
+  // Checks if a LoFi or Lite Pages response was received and sets the state on
+  // DataReductionProxyData for |request|.
+  void OnHeadersReceivedInternal(
+      net::URLRequest* request,
+      const net::HttpResponseHeaders* original_response_headers,
+      scoped_refptr<net::HttpResponseHeaders>* override_response_headers,
+      GURL* allowed_unsafe_redirect_url) override;
 
   // Calculates actual data usage that went over the network at the HTTP layer
   // (e.g. not including network layer overhead) and estimates original data
-  // usage for |request|. Passing in -1 for |original_content_length| indicates
-  // that the original content length of the response could not be determined.
+  // usage for |request|.
   void CalculateAndRecordDataUsage(const net::URLRequest& request,
-                                   DataReductionProxyRequestType request_type,
-                                   int64_t original_content_length);
+                                   DataReductionProxyRequestType request_type);
 
   // Posts to the UI thread to UpdateContentLengthPrefs in the data reduction
   // proxy metrics and updates |received_content_length_| and
   // |original_content_length_|.
-  void AccumulateDataUsage(int64_t data_used,
-                           int64_t original_size,
-                           DataReductionProxyRequestType request_type,
-                           const scoped_refptr<DataUseGroup>& data_use_group,
-                           const std::string& mime_type);
+  void AccumulateDataUsage(
+      int64_t data_used,
+      int64_t original_size,
+      DataReductionProxyRequestType request_type,
+      const std::string& mime_type,
+      bool is_user_traffic,
+      data_use_measurement::DataUseUserData::DataUseContentType content_type,
+      int32_t service_hash_code);
 
   // Record information such as histograms related to the Content-Length of
   // |request|. |original_content_length| is the length of the resource if
@@ -136,9 +142,9 @@ class DataReductionProxyNetworkDelegate : public net::LayeredNetworkDelegate {
                            DataReductionProxyRequestType request_type,
                            int64_t original_content_length);
 
-  // Records UMA that counts how many pages were transformed by various Lo-Fi
-  // transformations.
-  void RecordLoFiTransformationType(LoFiTransformationType type);
+  // Records UMA that counts how many pages were transformed by various lite
+  // page transformations.
+  void RecordLitePageTransformationType(LitePageTransformationType type);
 
   // Returns whether |request| would have used the data reduction proxy server
   // if the holdback fieldtrial weren't enabled. |proxy_info| is the list of
@@ -148,11 +154,16 @@ class DataReductionProxyNetworkDelegate : public net::LayeredNetworkDelegate {
       const net::ProxyInfo& proxy_info,
       const net::ProxyRetryInfoMap& proxy_retry_info) const;
 
-  // Total size of all content that has been received over the network.
-  int64_t total_received_bytes_;
+  // May add chrome-proxy-ect header to |request_headers| if adding of
+  // chrome-proxy-ect is enabled via field trial and a valid estimate of
+  // network quality is available. This method should be called only when the
+  // resolved proxy for |request| is a data saver proxy.
+  void MaybeAddChromeProxyECTHeader(net::HttpRequestHeaders* request_headers,
+                                    const net::URLRequest& request) const;
 
-  // Total original size of all content before it was transferred.
-  int64_t total_original_received_bytes_;
+  // Removes the chrome-proxy-ect header from |request_headers|.
+  void RemoveChromeProxyECTHeader(
+      net::HttpRequestHeaders* request_headers) const;
 
   // All raw Data Reduction Proxy pointers must outlive |this|.
   DataReductionProxyConfig* data_reduction_proxy_config_;
@@ -165,7 +176,7 @@ class DataReductionProxyNetworkDelegate : public net::LayeredNetworkDelegate {
 
   const DataReductionProxyConfigurator* configurator_;
 
-  std::unique_ptr<DataUseGroupProvider> data_use_group_provider_;
+  base::ThreadChecker thread_checker_;
 
   DISALLOW_COPY_AND_ASSIGN(DataReductionProxyNetworkDelegate);
 };

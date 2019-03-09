@@ -8,7 +8,7 @@
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/installer/util/self_cleaning_temp_dir.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -25,11 +25,11 @@ std::string GetRandomFilename() {
   // seen the latter trivially repeat.
   EXPECT_NE(FALSE, CryptAcquireContext(&crypt_ctx, NULL, NULL, PROV_RSA_FULL,
                                         CRYPT_VERIFYCONTEXT));
-  EXPECT_NE(FALSE, CryptGenRandom(crypt_ctx, arraysize(data), &data[0]));
+  EXPECT_NE(FALSE, CryptGenRandom(crypt_ctx, base::size(data), &data[0]));
   EXPECT_NE(FALSE, CryptReleaseContext(crypt_ctx, 0));
 
   // Hexify the value.
-  std::string result(base::HexEncode(&data[0], arraysize(data)));
+  std::string result(base::HexEncode(&data[0], base::size(data)));
   EXPECT_EQ(8u, result.size());
 
   // Replace the first digit with the letter 'R' (for "random", get it?).
@@ -71,7 +71,8 @@ TEST_F(SelfCleaningTempDirTest, RemoveUnusedOnDelete) {
   EXPECT_TRUE(work_dir.CreateUniqueTempDir());
 
   // Make up some path under the temp dir.
-  base::FilePath parent_temp_dir(work_dir.path().Append(L"One").Append(L"Two"));
+  base::FilePath parent_temp_dir(
+      work_dir.GetPath().Append(L"One").Append(L"Two"));
   SelfCleaningTempDir temp_dir;
   EXPECT_TRUE(temp_dir.Initialize(parent_temp_dir, L"Three"));
   EXPECT_EQ(parent_temp_dir.Append(L"Three"), temp_dir.path());
@@ -92,7 +93,8 @@ TEST_F(SelfCleaningTempDirTest, TwoClients) {
   EXPECT_TRUE(work_dir.CreateUniqueTempDir());
 
   // Make up some path under the temp dir.
-  base::FilePath parent_temp_dir(work_dir.path().Append(L"One").Append(L"Two"));
+  base::FilePath parent_temp_dir(
+      work_dir.GetPath().Append(L"One").Append(L"Two"));
   SelfCleaningTempDir temp_dir1;
   SelfCleaningTempDir temp_dir2;
   // First client is created.
@@ -129,7 +131,8 @@ TEST_F(SelfCleaningTempDirTest, RemoveUnusedOnDestroy) {
   EXPECT_TRUE(work_dir.CreateUniqueTempDir());
 
   // Make up some path under the temp dir.
-  base::FilePath parent_temp_dir(work_dir.path().Append(L"One").Append(L"Two"));
+  base::FilePath parent_temp_dir(
+      work_dir.GetPath().Append(L"One").Append(L"Two"));
   {
     SelfCleaningTempDir temp_dir;
     EXPECT_TRUE(temp_dir.Initialize(parent_temp_dir, L"Three"));
@@ -154,16 +157,17 @@ TEST_F(SelfCleaningTempDirTest, LeaveUsedOnDestroy) {
   EXPECT_TRUE(work_dir.CreateUniqueTempDir());
 
   // Make up some path under the temp dir.
-  base::FilePath parent_temp_dir(work_dir.path().Append(L"One").Append(L"Two"));
+  base::FilePath parent_temp_dir(
+      work_dir.GetPath().Append(L"One").Append(L"Two"));
   {
     SelfCleaningTempDir temp_dir;
     EXPECT_TRUE(temp_dir.Initialize(parent_temp_dir, L"Three"));
     EXPECT_EQ(parent_temp_dir.Append(L"Three"), temp_dir.path());
     EXPECT_TRUE(base::DirectoryExists(temp_dir.path()));
     // Drop a file somewhere.
-    EXPECT_EQ(static_cast<int>(arraysize(kHiHon) - 1),
+    EXPECT_EQ(static_cast<int>(base::size(kHiHon) - 1),
               base::WriteFile(parent_temp_dir.AppendASCII(GetRandomFilename()),
-                              kHiHon, arraysize(kHiHon) - 1));
+                              kHiHon, base::size(kHiHon) - 1));
   }
   EXPECT_FALSE(base::DirectoryExists(parent_temp_dir.Append(L"Three")));
   EXPECT_TRUE(base::DirectoryExists(parent_temp_dir));

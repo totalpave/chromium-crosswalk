@@ -5,9 +5,8 @@
 #ifndef UI_BASE_MODELS_TREE_NODE_ITERATOR_H_
 #define UI_BASE_MODELS_TREE_NODE_ITERATOR_H_
 
-#include <stack>
-
 #include "base/callback.h"
+#include "base/containers/stack.h"
 #include "base/logging.h"
 #include "base/macros.h"
 
@@ -25,7 +24,7 @@ class TreeNodeIterator {
  public:
   typedef base::Callback<bool(NodeType*)> PruneCallback;
 
-  // This contructor accepts an optional filter function |prune| which could be
+  // This constructor accepts an optional filter function |prune| which could be
   // used to prune complete branches of the tree. The filter function will be
   // evaluated on each tree node and if it evaluates to true the node and all
   // its descendants will be skipped by the iterator.
@@ -57,7 +56,7 @@ class TreeNodeIterator {
   NodeType* Next() {
     if (!has_next()) {
       NOTREACHED();
-      return NULL;
+      return nullptr;
     }
 
     // There must always be a valid node in the current Position index.
@@ -90,13 +89,13 @@ class TreeNodeIterator {
   template <class PositionNodeType>
   struct Position {
     Position(PositionNodeType* node, int index) : node(node), index(index) {}
-    Position() : node(NULL), index(-1) {}
+    Position() : node(nullptr), index(-1) {}
 
     PositionNodeType* node;
     int index;
   };
 
-  std::stack<Position<NodeType> > positions_;
+  base::stack<Position<NodeType>> positions_;
   PruneCallback prune_;
 
   DISALLOW_COPY_AND_ASSIGN(TreeNodeIterator);

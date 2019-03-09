@@ -1,11 +1,10 @@
 # ARM - GO2001
 7daba42a115da37a463edc2fa6d2ab8e
 # ARM - MediaTek
-d9ce7c0ca4dd16e350e6df78f5d13a2e
-
-# Intel - Haswell
-9dc9c009b062f98691a6151e322c7df2
-# Intel - Broadwell
-f85e57dadd517b171109580a6ebd9b34
-#Intel - SKL
-67dd7a5db69123d325485a6ebecbd6c0
+4db6e435d694180354a6d763afb27894
+# ARM - RK3399
+82647609e45a19f8e22fd1880a9edf3d
+# Intel - VA_FILTER_SCALING_DEFAULT
+3533e744155fa94830151df0c15b8459
+# Intel - VA decode to NV12, EGLImage CSC
+919bee0d8a8278eeebb2c198a6b51455

@@ -37,7 +37,7 @@ std::unique_ptr<DeviceController> DeviceController::Create(
 }
 
 DeviceController::~DeviceController() {
-  DCHECK(construction_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(construction_task_runner_->RunsTasksInCurrentSequence());
 }
 
 void DeviceController::Start() {
@@ -55,8 +55,8 @@ DeviceController::DeviceController(std::unique_ptr<Socket> host_socket,
 
 void DeviceController::AcceptHostCommandSoon() {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&DeviceController::AcceptHostCommandInternal,
-                            base::Unretained(this)));
+      FROM_HERE, base::BindOnce(&DeviceController::AcceptHostCommandInternal,
+                                base::Unretained(this)));
 }
 
 void DeviceController::AcceptHostCommandInternal() {
@@ -79,9 +79,9 @@ void DeviceController::AcceptHostCommandInternal() {
     LOG(ERROR) << "Invalid command received.";
     return;
   }
-  const ListenersMap::iterator listener_it = listeners_.find(port);
-  DeviceListener* const listener = listener_it == listeners_.end()
-      ? static_cast<DeviceListener*>(NULL) : listener_it->second.get();
+  const auto listener_it = listeners_.find(port);
+  DeviceListener* const listener =
+      listener_it == listeners_.end() ? nullptr : listener_it->second.get();
   switch (command) {
     case command::LISTEN: {
       if (listener != NULL) {
@@ -100,9 +100,7 @@ void DeviceController::AcceptHostCommandInternal() {
       // call DeviceListener::listener_port() to retrieve the currently
       // allocated port to this new listener.
       const int listener_port = new_listener->listener_port();
-      listeners_.insert(
-          std::make_pair(listener_port,
-                         linked_ptr<DeviceListener>(new_listener.release())));
+      listeners_.emplace(listener_port, std::move(new_listener));
       LOG(INFO) << "Forwarding device port " << listener_port << " to host.";
       break;
     }
@@ -145,7 +143,7 @@ void DeviceController::DeleteListenerOnError(
     // ownership.
     return;
   }
-  DCHECK(controller->construction_task_runner_->RunsTasksOnCurrentThread());
+  DCHECK(controller->construction_task_runner_->RunsTasksInCurrentSequence());
   bool listener_did_exist = DeleteRefCountedValueInMap(
       listener->listener_port(), &controller->listeners_);
   DCHECK(listener_did_exist);

@@ -7,15 +7,15 @@
 
 #include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/values.h"
 #include "base/version.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/external_policy_loader.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/syncable_prefs/testing_pref_service_syncable.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/test_browser_thread.h"
+#include "content/public/test/test_browser_thread_bundle.h"
 #include "extensions/browser/external_install_info.h"
 #include "extensions/browser/external_provider_interface.h"
 #include "extensions/browser/pref_names.h"
@@ -29,16 +29,16 @@ namespace extensions {
 
 class ExternalPolicyLoaderTest : public testing::Test {
  public:
-  ExternalPolicyLoaderTest() : ui_thread_(BrowserThread::UI, &loop_) {
-  }
+  ExternalPolicyLoaderTest()
+      : test_browser_thread_bundle_(
+            content::TestBrowserThreadBundle::IO_MAINLOOP) {}
 
   ~ExternalPolicyLoaderTest() override {}
 
  private:
-  // We need these to satisfy BrowserThread::CurrentlyOn(BrowserThread::UI)
-  // checks in ExternalProviderImpl.
-  base::MessageLoopForIO loop_;
-  content::TestBrowserThread ui_thread_;
+  // Needed to satisfy BrowserThread::CurrentlyOn(BrowserThread::UI) checks in
+  // ExternalProviderImpl.
+  content::TestBrowserThreadBundle test_browser_thread_bundle_;
 };
 
 class MockExternalPolicyProviderVisitor
@@ -53,7 +53,7 @@ class MockExternalPolicyProviderVisitor
              const std::set<std::string>& expected_extensions) {
     profile_.reset(new TestingProfile);
     profile_->GetTestingPrefService()->SetManagedPref(
-        pref_names::kInstallForceList, policy_forcelist.DeepCopy());
+        pref_names::kInstallForceList, policy_forcelist.CreateDeepCopy());
     provider_.reset(new ExternalProviderImpl(
         this,
         new ExternalPolicyLoader(
@@ -85,7 +85,7 @@ class MockExternalPolicyProviderVisitor
 
     // Provider returns the correct location when asked.
     Manifest::Location location1;
-    std::unique_ptr<Version> version1;
+    std::unique_ptr<base::Version> version1;
     provider_->GetExtensionDetails(info.extension_id, &location1, &version1);
     EXPECT_EQ(Manifest::EXTERNAL_POLICY_DOWNLOAD, location1);
     EXPECT_FALSE(version1.get());
@@ -103,8 +103,8 @@ class MockExternalPolicyProviderVisitor
 
   void OnExternalProviderUpdateComplete(
       const ExternalProviderInterface* provider,
-      const ScopedVector<ExternalInstallInfoUpdateUrl>& update_url_extensions,
-      const ScopedVector<ExternalInstallInfoFile>& file_extensions,
+      const std::vector<ExternalInstallInfoUpdateUrl>& update_url_extensions,
+      const std::vector<ExternalInstallInfoFile>& file_extensions,
       const std::set<std::string>& removed_extensions) override {
     ADD_FAILURE() << "Only win registry provider is expected to call this.";
   }

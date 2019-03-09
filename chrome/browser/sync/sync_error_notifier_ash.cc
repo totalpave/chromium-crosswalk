@@ -4,17 +4,18 @@
 
 #include "chrome/browser/sync/sync_error_notifier_ash.h"
 
-#include "ash/common/system/system_notifier.h"
-#include "ash/shell.h"
-#include "ash/shell_delegate.h"
-#include "base/macros.h"
-#include "base/strings/string16.h"
+#include "ash/public/cpp/notification_utils.h"
+#include "ash/public/cpp/vector_icons/vector_icons.h"
+#include "base/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/notifications/notification.h"
-#include "chrome/browser/notifications/notification_ui_manager.h"
+#include "chrome/browser/chromeos/login/user_flow.h"
+#include "chrome/browser/chromeos/login/users/chrome_user_manager.h"
+#include "chrome/browser/notifications/notification_common.h"
+#include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/sync/sync_ui_util.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service.h"
@@ -22,72 +23,21 @@
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/signin/core/account_id/account_id.h"
-#include "grit/theme_resources.h"
+#include "chrome/grit/theme_resources.h"
+#include "components/account_id/account_id.h"
+#include "components/sync/driver/sync_service.h"
+#include "components/user_manager/user_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/message_center/notification.h"
-#include "ui/message_center/notification_delegate.h"
-
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/login/user_flow.h"
-#include "chrome/browser/chromeos/login/users/chrome_user_manager.h"
-#include "components/user_manager/user_manager.h"
-#endif
-
+#include "ui/message_center/public/cpp/notification.h"
+#include "ui/message_center/public/cpp/notification_delegate.h"
 
 namespace {
 
 const char kProfileSyncNotificationId[] = "chrome://settings/sync/";
 
-// A simple notification delegate for the sync setup button.
-class SyncNotificationDelegate : public NotificationDelegate {
- public:
-  SyncNotificationDelegate(const std::string& id,
-                           Profile* profile);
-
-  // NotificationDelegate:
-  void Click() override;
-  void ButtonClick(int button_index) override;
-  std::string id() const override;
-
- protected:
-  ~SyncNotificationDelegate() override;
-
- private:
-  void ShowSyncSetup();
-
-  // Unique id of the notification.
-  const std::string id_;
-
-  Profile* profile_;
-
-  DISALLOW_COPY_AND_ASSIGN(SyncNotificationDelegate);
-};
-
-SyncNotificationDelegate::SyncNotificationDelegate(
-    const std::string& id,
-    Profile* profile)
-    : id_(id),
-      profile_(profile) {
-}
-
-SyncNotificationDelegate::~SyncNotificationDelegate() {
-}
-void SyncNotificationDelegate::Click() {
-  ShowSyncSetup();
-}
-
-void SyncNotificationDelegate::ButtonClick(int button_index) {
-  ShowSyncSetup();
-}
-
-std::string SyncNotificationDelegate::id() const {
-  return id_;
-}
-
-void SyncNotificationDelegate::ShowSyncSetup() {
-  LoginUIService* login_ui = LoginUIServiceFactory::GetForProfile(profile_);
+void ShowSyncSetup(Profile* profile) {
+  LoginUIService* login_ui = LoginUIServiceFactory::GetForProfile(profile);
   if (login_ui->current_login_ui()) {
     // TODO(michaelpg): The LoginUI might be on an inactive desktop.
     // See crbug.com/354280.
@@ -95,48 +45,49 @@ void SyncNotificationDelegate::ShowSyncSetup() {
     return;
   }
 
-  chrome::ShowSettingsSubPageForProfile(profile_, chrome::kSyncSetupSubPage);
+  chrome::ShowSettingsSubPageForProfile(profile, chrome::kSyncSetupSubPage);
 }
 
-} // namespace
+}  // namespace
 
-SyncErrorNotifier::SyncErrorNotifier(SyncErrorController* controller,
+SyncErrorNotifier::SyncErrorNotifier(syncer::SyncService* sync_service,
                                      Profile* profile)
-    : error_controller_(controller),
-      profile_(profile) {
+    : sync_service_(sync_service),
+      profile_(profile),
+      notification_displayed_(false) {
   // Create a unique notification ID for this profile.
   notification_id_ =
       kProfileSyncNotificationId + profile_->GetProfileUserName();
 
-  error_controller_->AddObserver(this);
-  OnErrorChanged();
+  sync_service_->AddObserver(this);
+  OnStateChanged(sync_service_);
 }
 
 SyncErrorNotifier::~SyncErrorNotifier() {
-  DCHECK(!error_controller_)
-      << "SyncErrorNotifier::Shutdown() was not called";
+  DCHECK(!sync_service_) << "SyncErrorNotifier::Shutdown() was not called";
 }
 
 void SyncErrorNotifier::Shutdown() {
-  error_controller_->RemoveObserver(this);
-  error_controller_ = NULL;
+  sync_service_->RemoveObserver(this);
+  sync_service_ = nullptr;
 }
 
-void SyncErrorNotifier::OnErrorChanged() {
-  NotificationUIManager* notification_ui_manager =
-      g_browser_process->notification_ui_manager();
+void SyncErrorNotifier::OnStateChanged(syncer::SyncService* service) {
+  DCHECK_EQ(service, sync_service_);
 
-  // notification_ui_manager() may return NULL when shutting down.
-  if (!notification_ui_manager)
-    return;
-
-  if (!error_controller_->HasError()) {
-    g_browser_process->notification_ui_manager()->CancelById(
-        notification_id_, NotificationUIManager::GetProfileID(profile_));
+  if (sync_ui_util::ShouldShowPassphraseError(sync_service_) ==
+      notification_displayed_) {
     return;
   }
 
-#if defined(OS_CHROMEOS)
+  auto* display_service = NotificationDisplayService::GetForProfile(profile_);
+  if (!sync_ui_util::ShouldShowPassphraseError(sync_service_)) {
+    notification_displayed_ = false;
+    display_service->Close(NotificationHandler::Type::TRANSIENT,
+                           notification_id_);
+    return;
+  }
+
   if (user_manager::UserManager::IsInitialized()) {
     chromeos::UserFlow* user_flow =
         chromeos::ChromeUserManager::Get()->GetCurrentUserFlow();
@@ -147,24 +98,14 @@ void SyncErrorNotifier::OnErrorChanged() {
     if (!user_flow->ShouldLaunchBrowser())
       return;
   }
-#endif
 
-  // Keep the existing notification if there is one.
-  if (notification_ui_manager->FindById(
-          notification_id_, NotificationUIManager::GetProfileID(profile_)))
-    return;
-
-  // Add an accept button to launch the sync setup settings subpage.
-  message_center::RichNotificationData data;
-  data.buttons.push_back(message_center::ButtonInfo(
-      l10n_util::GetStringUTF16(IDS_SYNC_NOTIFICATION_ACCEPT)));
-
-  // Set the delegate for the notification's sync setup button.
-  SyncNotificationDelegate* delegate =
-      new SyncNotificationDelegate(notification_id_, profile_);
+  // Error state just got triggered. There shouldn't be previous notification.
+  // Let's display one.
+  DCHECK(!notification_displayed_ &&
+         sync_ui_util::ShouldShowPassphraseError(sync_service_));
 
   message_center::NotifierId notifier_id(
-      message_center::NotifierId::SYSTEM_COMPONENT,
+      message_center::NotifierType::SYSTEM_COMPONENT,
       kProfileSyncNotificationId);
 
   // Set |profile_id| for multi-user notification blocker.
@@ -172,14 +113,20 @@ void SyncErrorNotifier::OnErrorChanged() {
       multi_user_util::GetAccountIdFromProfile(profile_).GetUserEmail();
 
   // Add a new notification.
-  Notification notification(
-      message_center::NOTIFICATION_TYPE_SIMPLE,
-      l10n_util::GetStringUTF16(IDS_SYNC_ERROR_BUBBLE_VIEW_TITLE),
-      l10n_util::GetStringUTF16(IDS_SYNC_PASSPHRASE_ERROR_BUBBLE_VIEW_MESSAGE),
-      ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-          IDR_NOTIFICATION_ALERT),
-      notifier_id,
-      base::string16(),  // display_source
-      GURL(notification_id_), notification_id_, data, delegate);
-  notification_ui_manager->Add(notification, profile_);
+  std::unique_ptr<message_center::Notification> notification =
+      ash::CreateSystemNotification(
+          message_center::NOTIFICATION_TYPE_SIMPLE, notification_id_,
+          l10n_util::GetStringUTF16(IDS_SYNC_ERROR_BUBBLE_VIEW_TITLE),
+          l10n_util::GetStringUTF16(
+              IDS_SYNC_PASSPHRASE_ERROR_BUBBLE_VIEW_MESSAGE),
+          l10n_util::GetStringUTF16(IDS_SIGNIN_ERROR_DISPLAY_SOURCE),
+          GURL(notification_id_), notifier_id,
+          message_center::RichNotificationData(),
+          base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
+              base::BindRepeating(&ShowSyncSetup, profile_)),
+          ash::kNotificationWarningIcon,
+          message_center::SystemNotificationWarningLevel::WARNING);
+
+  display_service->Display(NotificationHandler::Type::TRANSIENT, *notification);
+  notification_displayed_ = true;
 }

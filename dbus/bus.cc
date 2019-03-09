@@ -6,11 +6,15 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
+#include "base/files/file_descriptor_watcher_posix.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/memory/weak_ptr.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/threading/scoped_blocking_call.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
@@ -42,14 +46,13 @@ const char kServiceNameOwnerChangeMatchRule[] =
 
 // The class is used for watching the file descriptor used for D-Bus
 // communication.
-class Watch : public base::MessagePumpLibevent::Watcher {
+class Watch {
  public:
-  explicit Watch(DBusWatch* watch)
-      : raw_watch_(watch) {
-    dbus_watch_set_data(raw_watch_, this, NULL);
+  explicit Watch(DBusWatch* watch) : raw_watch_(watch) {
+    dbus_watch_set_data(raw_watch_, this, nullptr);
   }
 
-  ~Watch() override { dbus_watch_set_data(raw_watch_, NULL, NULL); }
+  ~Watch() { dbus_watch_set_data(raw_watch_, nullptr, nullptr); }
 
   // Returns true if the underlying file descriptor is ready to be watched.
   bool IsReadyToBeWatched() {
@@ -59,62 +62,55 @@ class Watch : public base::MessagePumpLibevent::Watcher {
   // Starts watching the underlying file descriptor.
   void StartWatching() {
     const int file_descriptor = dbus_watch_get_unix_fd(raw_watch_);
-    const int flags = dbus_watch_get_flags(raw_watch_);
+    const unsigned int flags = dbus_watch_get_flags(raw_watch_);
 
-    base::MessageLoopForIO::Mode mode = base::MessageLoopForIO::WATCH_READ;
-    if ((flags & DBUS_WATCH_READABLE) && (flags & DBUS_WATCH_WRITABLE))
-      mode = base::MessageLoopForIO::WATCH_READ_WRITE;
-    else if (flags & DBUS_WATCH_READABLE)
-      mode = base::MessageLoopForIO::WATCH_READ;
-    else if (flags & DBUS_WATCH_WRITABLE)
-      mode = base::MessageLoopForIO::WATCH_WRITE;
-    else
-      NOTREACHED();
-
-    const bool persistent = true;  // Watch persistently.
-    const bool success = base::MessageLoopForIO::current()->WatchFileDescriptor(
-        file_descriptor, persistent, mode, &file_descriptor_watcher_, this);
-    CHECK(success) << "Unable to allocate memory";
+    // Using base::Unretained(this) is safe because watches are automatically
+    // canceled when |read_watcher_| and |write_watcher_| are destroyed.
+    if (flags & DBUS_WATCH_READABLE) {
+      read_watcher_ = base::FileDescriptorWatcher::WatchReadable(
+          file_descriptor,
+          base::Bind(&Watch::OnFileReady, base::Unretained(this),
+                     DBUS_WATCH_READABLE));
+    }
+    if (flags & DBUS_WATCH_WRITABLE) {
+      write_watcher_ = base::FileDescriptorWatcher::WatchWritable(
+          file_descriptor,
+          base::Bind(&Watch::OnFileReady, base::Unretained(this),
+                     DBUS_WATCH_WRITABLE));
+    }
   }
 
   // Stops watching the underlying file descriptor.
   void StopWatching() {
-    file_descriptor_watcher_.StopWatchingFileDescriptor();
+    read_watcher_.reset();
+    write_watcher_.reset();
   }
 
  private:
-  // Implement MessagePumpLibevent::Watcher.
-  void OnFileCanReadWithoutBlocking(int file_descriptor) override {
-    const bool success = dbus_watch_handle(raw_watch_, DBUS_WATCH_READABLE);
-    CHECK(success) << "Unable to allocate memory";
-  }
-
-  // Implement MessagePumpLibevent::Watcher.
-  void OnFileCanWriteWithoutBlocking(int file_descriptor) override {
-    const bool success = dbus_watch_handle(raw_watch_, DBUS_WATCH_WRITABLE);
-    CHECK(success) << "Unable to allocate memory";
+  void OnFileReady(unsigned int flags) {
+    CHECK(dbus_watch_handle(raw_watch_, flags)) << "Unable to allocate memory";
   }
 
   DBusWatch* raw_watch_;
-  base::MessagePumpLibevent::FileDescriptorWatcher file_descriptor_watcher_;
+  std::unique_ptr<base::FileDescriptorWatcher::Controller> read_watcher_;
+  std::unique_ptr<base::FileDescriptorWatcher::Controller> write_watcher_;
+
+  DISALLOW_COPY_AND_ASSIGN(Watch);
 };
 
 // The class is used for monitoring the timeout used for D-Bus method
 // calls.
-//
-// Unlike Watch, Timeout is a ref counted object, to ensure that |this| of
-// the object is is alive when HandleTimeout() is called. It's unlikely
-// but it may be possible that HandleTimeout() is called after
-// Bus::OnRemoveTimeout(). That's why we don't simply delete the object in
-// Bus::OnRemoveTimeout().
-class Timeout : public base::RefCountedThreadSafe<Timeout> {
+class Timeout {
  public:
   explicit Timeout(DBusTimeout* timeout)
-      : raw_timeout_(timeout),
-        monitoring_is_active_(false),
-        is_completed(false) {
-    dbus_timeout_set_data(raw_timeout_, this, NULL);
-    AddRef();  // Balanced on Complete().
+      : raw_timeout_(timeout), weak_ptr_factory_(this) {
+    // Associated |this| with the underlying DBusTimeout.
+    dbus_timeout_set_data(raw_timeout_, this, nullptr);
+  }
+
+  ~Timeout() {
+    // Remove the association between |this| and the |raw_timeout_|.
+    dbus_timeout_set_data(raw_timeout_, nullptr, nullptr);
   }
 
   // Returns true if the timeout is ready to be monitored.
@@ -126,54 +122,27 @@ class Timeout : public base::RefCountedThreadSafe<Timeout> {
   void StartMonitoring(Bus* bus) {
     bus->GetDBusTaskRunner()->PostDelayedTask(
         FROM_HERE,
-        base::Bind(&Timeout::HandleTimeout, this),
+        base::BindOnce(&Timeout::HandleTimeout, weak_ptr_factory_.GetWeakPtr()),
         GetInterval());
-    monitoring_is_active_ = true;
   }
 
   // Stops monitoring the timeout.
-  void StopMonitoring() {
-    // We cannot take back the delayed task we posted in
-    // StartMonitoring(), so we just mark the monitoring is inactive now.
-    monitoring_is_active_ = false;
-  }
+  void StopMonitoring() { weak_ptr_factory_.InvalidateWeakPtrs(); }
 
-  // Returns the interval.
   base::TimeDelta GetInterval() {
     return base::TimeDelta::FromMilliseconds(
         dbus_timeout_get_interval(raw_timeout_));
   }
 
-  // Cleans up the raw_timeout and marks that timeout is completed.
-  // See the class comment above for why we are doing this.
-  void Complete() {
-    dbus_timeout_set_data(raw_timeout_, NULL, NULL);
-    is_completed = true;
-    Release();
-  }
-
  private:
-  friend class base::RefCountedThreadSafe<Timeout>;
-  ~Timeout() {
-  }
-
-  // Handles the timeout.
-  void HandleTimeout() {
-    // If the timeout is marked completed, we should do nothing. This can
-    // occur if this function is called after Bus::OnRemoveTimeout().
-    if (is_completed)
-      return;
-    // Skip if monitoring is canceled.
-    if (!monitoring_is_active_)
-      return;
-
-    const bool success = dbus_timeout_handle(raw_timeout_);
-    CHECK(success) << "Unable to allocate memory";
-  }
+  // Calls DBus to handle the timeout.
+  void HandleTimeout() { CHECK(dbus_timeout_handle(raw_timeout_)); }
 
   DBusTimeout* raw_timeout_;
-  bool monitoring_is_active_;
-  bool is_completed;
+
+  base::WeakPtrFactory<Timeout> weak_ptr_factory_;
+
+  DISALLOW_COPY_AND_ASSIGN(Timeout);
 };
 
 }  // namespace
@@ -183,8 +152,7 @@ Bus::Options::Options()
     connection_type(PRIVATE) {
 }
 
-Bus::Options::~Options() {
-}
+Bus::Options::~Options() = default;
 
 Bus::Bus(const Options& options)
     : bus_type_(options.bus_type),
@@ -192,7 +160,7 @@ Bus::Bus(const Options& options)
       dbus_task_runner_(options.dbus_task_runner),
       on_shutdown_(base::WaitableEvent::ResetPolicy::AUTOMATIC,
                    base::WaitableEvent::InitialState::NOT_SIGNALED),
-      connection_(NULL),
+      connection_(nullptr),
       origin_thread_id_(base::PlatformThread::CurrentId()),
       async_operations_set_up_(false),
       shutdown_completed_(false),
@@ -269,9 +237,8 @@ bool Bus::RemoveObjectProxyWithOptions(const std::string& service_name,
     object_proxy_table_.erase(iter);
     // Object is present. Remove it now and Detach on the DBus thread.
     GetDBusTaskRunner()->PostTask(
-        FROM_HERE,
-        base::Bind(&Bus::RemoveObjectProxyInternal,
-                   this, object_proxy, callback));
+        FROM_HERE, base::BindOnce(&Bus::RemoveObjectProxyInternal, this,
+                                  object_proxy, callback));
     return true;
   }
   return false;
@@ -281,7 +248,7 @@ void Bus::RemoveObjectProxyInternal(scoped_refptr<ObjectProxy> object_proxy,
                                     const base::Closure& callback) {
   AssertOnDBusThread();
 
-  object_proxy.get()->Detach();
+  object_proxy->Detach();
 
   GetOriginTaskRunner()->PostTask(FROM_HERE, callback);
 }
@@ -320,9 +287,8 @@ void Bus::UnregisterExportedObject(const ObjectPath& object_path) {
   // SequencedTaskRunner, there is a guarantee that this will happen before any
   // future registration call.
   GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Bus::UnregisterExportedObjectInternal,
-                 this, exported_object));
+      FROM_HERE, base::BindOnce(&Bus::UnregisterExportedObjectInternal, this,
+                                exported_object));
 }
 
 void Bus::UnregisterExportedObjectInternal(
@@ -344,7 +310,7 @@ ObjectManager* Bus::GetObjectManager(const std::string& service_name,
   }
 
   scoped_refptr<ObjectManager> object_manager =
-      new ObjectManager(this, service_name, object_path);
+      ObjectManager::Create(this, service_name, object_path);
   object_manager_table_[key] = object_manager;
 
   return object_manager.get();
@@ -366,9 +332,8 @@ bool Bus::RemoveObjectManager(const std::string& service_name,
   object_manager_table_.erase(iter);
 
   GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Bus::RemoveObjectManagerInternal,
-                 this, object_manager, callback));
+      FROM_HERE, base::BindOnce(&Bus::RemoveObjectManagerInternal, this,
+                                object_manager, callback));
 
   return true;
 }
@@ -384,32 +349,26 @@ void Bus::RemoveObjectManagerInternal(
   // The ObjectManager has to be deleted on the origin thread since it was
   // created there.
   GetOriginTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Bus::RemoveObjectManagerInternalHelper,
-                 this, object_manager, callback));
+      FROM_HERE, base::BindOnce(&Bus::RemoveObjectManagerInternalHelper, this,
+                                object_manager, callback));
 }
 
 void Bus::RemoveObjectManagerInternalHelper(
       scoped_refptr<dbus::ObjectManager> object_manager,
       const base::Closure& callback) {
   AssertOnOriginThread();
-  DCHECK(object_manager.get());
+  DCHECK(object_manager);
 
   // Release the object manager and run the callback.
-  object_manager = NULL;
+  object_manager = nullptr;
   callback.Run();
-}
-
-void Bus::GetManagedObjects() {
-  for (ObjectManagerTable::iterator iter = object_manager_table_.begin();
-       iter != object_manager_table_.end(); ++iter) {
-    iter->second->GetManagedObjects();
-  }
 }
 
 bool Bus::Connect() {
   // dbus_bus_get_private() and dbus_bus_get() are blocking calls.
   AssertOnDBusThread();
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
 
   // Check if it's already initialized.
   if (connection_)
@@ -463,6 +422,8 @@ void Bus::ClosePrivateConnection() {
   AssertOnDBusThread();
   DCHECK_EQ(PRIVATE, connection_type_)
       << "non-private connection should not be closed";
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   dbus_connection_close(connection_);
 }
 
@@ -511,6 +472,9 @@ void Bus::ShutdownAndBlock() {
 
   // Private connection should be closed.
   if (connection_) {
+    base::ScopedBlockingCall scoped_blocking_call(
+        FROM_HERE, base::BlockingType::MAY_BLOCK);
+
     // Remove Disconnected watcher.
     ScopedDBusError error;
     RemoveFilterFunction(Bus::OnConnectionDisconnectedFilter, this);
@@ -522,20 +486,20 @@ void Bus::ShutdownAndBlock() {
     dbus_connection_unref(connection_);
   }
 
-  connection_ = NULL;
+  connection_ = nullptr;
   shutdown_completed_ = true;
 }
 
 void Bus::ShutdownOnDBusThreadAndBlock() {
   AssertOnOriginThread();
-  DCHECK(dbus_task_runner_.get());
+  DCHECK(dbus_task_runner_);
 
   GetDBusTaskRunner()->PostTask(
       FROM_HERE,
-      base::Bind(&Bus::ShutdownOnDBusThreadAndBlockInternal, this));
+      base::BindOnce(&Bus::ShutdownOnDBusThreadAndBlockInternal, this));
 
   // http://crbug.com/125222
-  base::ThreadRestrictions::ScopedAllowWait allow_wait;
+  base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_wait;
 
   // Wait until the shutdown is complete on the D-Bus thread.
   // The shutdown should not hang, but set timeout just in case.
@@ -551,9 +515,8 @@ void Bus::RequestOwnership(const std::string& service_name,
   AssertOnOriginThread();
 
   GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Bus::RequestOwnershipInternal,
-                 this, service_name, options, on_ownership_callback));
+      FROM_HERE, base::BindOnce(&Bus::RequestOwnershipInternal, this,
+                                service_name, options, on_ownership_callback));
 }
 
 void Bus::RequestOwnershipInternal(const std::string& service_name,
@@ -565,10 +528,8 @@ void Bus::RequestOwnershipInternal(const std::string& service_name,
   if (success)
     success = RequestOwnershipAndBlock(service_name, options);
 
-  GetOriginTaskRunner()->PostTask(FROM_HERE,
-                                  base::Bind(on_ownership_callback,
-                                             service_name,
-                                             success));
+  GetOriginTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(on_ownership_callback, service_name, success));
 }
 
 bool Bus::RequestOwnershipAndBlock(const std::string& service_name,
@@ -582,6 +543,8 @@ bool Bus::RequestOwnershipAndBlock(const std::string& service_name,
     return true;
   }
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   ScopedDBusError error;
   const int result = dbus_bus_request_name(connection_,
                                            service_name.c_str(),
@@ -598,7 +561,7 @@ bool Bus::RequestOwnershipAndBlock(const std::string& service_name,
 
 bool Bus::ReleaseOwnership(const std::string& service_name) {
   DCHECK(connection_);
-  // dbus_bus_request_name() is a blocking call.
+  // dbus_bus_release_name() is a blocking call.
   AssertOnDBusThread();
 
   // Check if we already own the service name.
@@ -609,6 +572,8 @@ bool Bus::ReleaseOwnership(const std::string& service_name) {
     return false;
   }
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   ScopedDBusError error;
   const int result = dbus_bus_release_name(connection_, service_name.c_str(),
                                            error.get());
@@ -634,27 +599,20 @@ bool Bus::SetUpAsyncOperations() {
   // be called when the incoming data is ready.
   ProcessAllIncomingDataIfAny();
 
-  bool success = dbus_connection_set_watch_functions(connection_,
-                                                     &Bus::OnAddWatchThunk,
-                                                     &Bus::OnRemoveWatchThunk,
-                                                     &Bus::OnToggleWatchThunk,
-                                                     this,
-                                                     NULL);
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+  bool success = dbus_connection_set_watch_functions(
+      connection_, &Bus::OnAddWatchThunk, &Bus::OnRemoveWatchThunk,
+      &Bus::OnToggleWatchThunk, this, nullptr);
   CHECK(success) << "Unable to allocate memory";
 
-  success = dbus_connection_set_timeout_functions(connection_,
-                                                  &Bus::OnAddTimeoutThunk,
-                                                  &Bus::OnRemoveTimeoutThunk,
-                                                  &Bus::OnToggleTimeoutThunk,
-                                                  this,
-                                                  NULL);
+  success = dbus_connection_set_timeout_functions(
+      connection_, &Bus::OnAddTimeoutThunk, &Bus::OnRemoveTimeoutThunk,
+      &Bus::OnToggleTimeoutThunk, this, nullptr);
   CHECK(success) << "Unable to allocate memory";
 
   dbus_connection_set_dispatch_status_function(
-      connection_,
-      &Bus::OnDispatchStatusChangedThunk,
-      this,
-      NULL);
+      connection_, &Bus::OnDispatchStatusChangedThunk, this, nullptr);
 
   async_operations_set_up_ = true;
 
@@ -667,6 +625,8 @@ DBusMessage* Bus::SendWithReplyAndBlock(DBusMessage* request,
   DCHECK(connection_);
   AssertOnDBusThread();
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   return dbus_connection_send_with_reply_and_block(
       connection_, request, timeout_ms, error);
 }
@@ -677,6 +637,8 @@ void Bus::SendWithReply(DBusMessage* request,
   DCHECK(connection_);
   AssertOnDBusThread();
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   const bool success = dbus_connection_send_with_reply(
       connection_, request, pending_call, timeout_ms);
   CHECK(success) << "Unable to allocate memory";
@@ -686,6 +648,8 @@ void Bus::Send(DBusMessage* request, uint32_t* serial) {
   DCHECK(connection_);
   AssertOnDBusThread();
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   const bool success = dbus_connection_send(connection_, request, serial);
   CHECK(success) << "Unable to allocate memory";
 }
@@ -704,8 +668,10 @@ void Bus::AddFilterFunction(DBusHandleMessageFunction filter_function,
     return;
   }
 
-  const bool success = dbus_connection_add_filter(
-      connection_, filter_function, user_data, NULL);
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+  const bool success = dbus_connection_add_filter(connection_, filter_function,
+                                                  user_data, nullptr);
   CHECK(success) << "Unable to allocate memory";
   filter_functions_added_.insert(filter_data_pair);
 }
@@ -725,6 +691,8 @@ void Bus::RemoveFilterFunction(DBusHandleMessageFunction filter_function,
     return;
   }
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   dbus_connection_remove_filter(connection_, filter_function, user_data);
   filter_functions_added_.erase(filter_data_pair);
 }
@@ -743,6 +711,8 @@ void Bus::AddMatch(const std::string& match_rule, DBusError* error) {
     return;
   }
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   dbus_bus_add_match(connection_, match_rule.c_str(), error);
   match_rules_added_[match_rule] = 1;
 }
@@ -758,6 +728,8 @@ bool Bus::RemoveMatch(const std::string& match_rule, DBusError* error) {
     return false;
   }
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   // The rule's counter is decremented and the rule is deleted when reachs 0.
   iter->second--;
   if (iter->second == 0) {
@@ -771,8 +743,29 @@ bool Bus::TryRegisterObjectPath(const ObjectPath& object_path,
                                 const DBusObjectPathVTable* vtable,
                                 void* user_data,
                                 DBusError* error) {
+  return TryRegisterObjectPathInternal(
+      object_path, vtable, user_data, error,
+      dbus_connection_try_register_object_path);
+}
+
+bool Bus::TryRegisterFallback(const ObjectPath& object_path,
+                              const DBusObjectPathVTable* vtable,
+                              void* user_data,
+                              DBusError* error) {
+  return TryRegisterObjectPathInternal(object_path, vtable, user_data, error,
+                                       dbus_connection_try_register_fallback);
+}
+
+bool Bus::TryRegisterObjectPathInternal(
+    const ObjectPath& object_path,
+    const DBusObjectPathVTable* vtable,
+    void* user_data,
+    DBusError* error,
+    TryRegisterObjectPathFunction* register_function) {
   DCHECK(connection_);
   AssertOnDBusThread();
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
 
   if (registered_object_paths_.find(object_path) !=
       registered_object_paths_.end()) {
@@ -780,12 +773,8 @@ bool Bus::TryRegisterObjectPath(const ObjectPath& object_path,
     return false;
   }
 
-  const bool success = dbus_connection_try_register_object_path(
-      connection_,
-      object_path.value().c_str(),
-      vtable,
-      user_data,
-      error);
+  const bool success = register_function(
+      connection_, object_path.value().c_str(), vtable, user_data, error);
   if (success)
     registered_object_paths_.insert(object_path);
   return success;
@@ -802,6 +791,8 @@ void Bus::UnregisterObjectPath(const ObjectPath& object_path) {
     return;
   }
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   const bool success = dbus_connection_unregister_object_path(
       connection_,
       object_path.value().c_str());
@@ -823,6 +814,9 @@ void Bus::ProcessAllIncomingDataIfAny() {
   if (!connection_)
     return;
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+
   // It is safe and necessary to call dbus_connection_get_dispatch_status even
   // if the connection is lost.
   if (dbus_connection_get_dispatch_status(connection_) ==
@@ -834,19 +828,19 @@ void Bus::ProcessAllIncomingDataIfAny() {
 }
 
 base::TaskRunner* Bus::GetDBusTaskRunner() {
-  if (dbus_task_runner_.get())
+  if (dbus_task_runner_)
     return dbus_task_runner_.get();
   else
     return GetOriginTaskRunner();
 }
 
 base::TaskRunner* Bus::GetOriginTaskRunner() {
-  DCHECK(origin_task_runner_.get());
+  DCHECK(origin_task_runner_);
   return origin_task_runner_.get();
 }
 
 bool Bus::HasDBusThread() {
-  return dbus_task_runner_.get() != NULL;
+  return dbus_task_runner_ != nullptr;
 }
 
 void Bus::AssertOnOriginThread() {
@@ -854,10 +848,8 @@ void Bus::AssertOnOriginThread() {
 }
 
 void Bus::AssertOnDBusThread() {
-  base::ThreadRestrictions::AssertIOAllowed();
-
-  if (dbus_task_runner_.get()) {
-    DCHECK(dbus_task_runner_->RunsTasksOnCurrentThread());
+  if (dbus_task_runner_) {
+    DCHECK(dbus_task_runner_->RunsTasksInCurrentSequence());
   } else {
     AssertOnOriginThread();
   }
@@ -908,8 +900,8 @@ void Bus::GetServiceOwner(const std::string& service_name,
   AssertOnOriginThread();
 
   GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Bus::GetServiceOwnerInternal, this, service_name, callback));
+      FROM_HERE, base::BindOnce(&Bus::GetServiceOwnerInternal, this,
+                                service_name, callback));
 }
 
 void Bus::GetServiceOwnerInternal(const std::string& service_name,
@@ -920,7 +912,7 @@ void Bus::GetServiceOwnerInternal(const std::string& service_name,
   if (Connect())
     service_owner = GetServiceOwnerAndBlock(service_name, SUPPRESS_ERRORS);
   GetOriginTaskRunner()->PostTask(FROM_HERE,
-                                  base::Bind(callback, service_owner));
+                                  base::BindOnce(callback, service_owner));
 }
 
 void Bus::ListenForServiceOwnerChange(
@@ -931,9 +923,8 @@ void Bus::ListenForServiceOwnerChange(
   DCHECK(!callback.is_null());
 
   GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Bus::ListenForServiceOwnerChangeInternal,
-                 this, service_name, callback));
+      FROM_HERE, base::BindOnce(&Bus::ListenForServiceOwnerChangeInternal, this,
+                                service_name, callback));
 }
 
 void Bus::ListenForServiceOwnerChangeInternal(
@@ -985,9 +976,8 @@ void Bus::UnlistenForServiceOwnerChange(
   DCHECK(!callback.is_null());
 
   GetDBusTaskRunner()->PostTask(
-      FROM_HERE,
-      base::Bind(&Bus::UnlistenForServiceOwnerChangeInternal,
-                 this, service_name, callback));
+      FROM_HERE, base::BindOnce(&Bus::UnlistenForServiceOwnerChangeInternal,
+                                this, service_name, callback));
 }
 
 void Bus::UnlistenForServiceOwnerChangeInternal(
@@ -1031,6 +1021,10 @@ std::string Bus::GetConnectionName() {
   return dbus_bus_get_unique_name(connection_);
 }
 
+bool Bus::IsConnected() {
+  return connection_ != nullptr;
+}
+
 dbus_bool_t Bus::OnAddWatch(DBusWatch* raw_watch) {
   AssertOnDBusThread();
 
@@ -1046,6 +1040,8 @@ dbus_bool_t Bus::OnAddWatch(DBusWatch* raw_watch) {
 void Bus::OnRemoveWatch(DBusWatch* raw_watch) {
   AssertOnDBusThread();
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   Watch* watch = static_cast<Watch*>(dbus_watch_get_data(raw_watch));
   delete watch;
   --num_pending_watches_;
@@ -1054,21 +1050,19 @@ void Bus::OnRemoveWatch(DBusWatch* raw_watch) {
 void Bus::OnToggleWatch(DBusWatch* raw_watch) {
   AssertOnDBusThread();
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   Watch* watch = static_cast<Watch*>(dbus_watch_get_data(raw_watch));
-  if (watch->IsReadyToBeWatched()) {
+  if (watch->IsReadyToBeWatched())
     watch->StartWatching();
-  } else {
-    // It's safe to call this if StartWatching() wasn't called, per
-    // message_pump_libevent.h.
+  else
     watch->StopWatching();
-  }
 }
 
 dbus_bool_t Bus::OnAddTimeout(DBusTimeout* raw_timeout) {
   AssertOnDBusThread();
 
-  // timeout will be deleted when raw_timeout is removed in
-  // OnRemoveTimeoutThunk().
+  // |timeout| will be deleted by OnRemoveTimeoutThunk().
   Timeout* timeout = new Timeout(raw_timeout);
   if (timeout->IsReadyToBeMonitored()) {
     timeout->StartMonitoring(this);
@@ -1080,14 +1074,18 @@ dbus_bool_t Bus::OnAddTimeout(DBusTimeout* raw_timeout) {
 void Bus::OnRemoveTimeout(DBusTimeout* raw_timeout) {
   AssertOnDBusThread();
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   Timeout* timeout = static_cast<Timeout*>(dbus_timeout_get_data(raw_timeout));
-  timeout->Complete();
+  delete timeout;
   --num_pending_timeouts_;
 }
 
 void Bus::OnToggleTimeout(DBusTimeout* raw_timeout) {
   AssertOnDBusThread();
 
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
   Timeout* timeout = static_cast<Timeout*>(dbus_timeout_get_data(raw_timeout));
   if (timeout->IsReadyToBeMonitored()) {
     timeout->StartMonitoring(this);
@@ -1105,9 +1103,8 @@ void Bus::OnDispatchStatusChanged(DBusConnection* connection,
   // dbus_connection_dispatch() inside DBusDispatchStatusFunction is
   // prohibited by the D-Bus library. Hence, we post a task here instead.
   // See comments for dbus_connection_set_dispatch_status_function().
-  GetDBusTaskRunner()->PostTask(FROM_HERE,
-                                base::Bind(&Bus::ProcessAllIncomingDataIfAny,
-                                           this));
+  GetDBusTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&Bus::ProcessAllIncomingDataIfAny, this));
 }
 
 void Bus::OnServiceOwnerChanged(DBusMessage* message) {
@@ -1144,7 +1141,7 @@ void Bus::OnServiceOwnerChanged(DBusMessage* message) {
   const std::vector<GetServiceOwnerCallback>& callbacks = it->second;
   for (size_t i = 0; i < callbacks.size(); ++i) {
     GetOriginTaskRunner()->PostTask(FROM_HERE,
-                                    base::Bind(callbacks[i], new_owner));
+                                    base::BindOnce(callbacks[i], new_owner));
   }
 }
 

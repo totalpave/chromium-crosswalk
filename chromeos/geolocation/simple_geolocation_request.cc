@@ -7,12 +7,15 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <memory>
 #include <string>
+#include <utility>
 
+#include "base/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/metrics/histogram.h"
-#include "base/metrics/sparse_histogram.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
@@ -23,8 +26,9 @@
 #include "net/base/escape.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_status_code.h"
-#include "net/url_request/url_request_context_getter.h"
 #include "net/url_request/url_request_status.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
 
 // Location resolve timeout is usually 1 minute, so 2 minutes with 50 buckets
 // should be enough.
@@ -39,30 +43,38 @@ namespace chromeos {
 
 namespace {
 
-// The full request text. (no parameters are supported by now)
-const char kSimpleGeolocationRequestBody[] = "{\"considerIp\": \"true\"}";
+// Used if sending location signals (WiFi APs, cell towers, etc) is disabled.
+constexpr char kSimpleGeolocationRequestBody[] = "{\"considerIp\": \"true\"}";
 
-// Request data
-const char kConsiderIp[] = "considerIp";
-const char kWifiAccessPoints[] = "wifiAccessPoints";
-
+// Geolocation request field keys:
+// Top-level request data fields.
+constexpr char kConsiderIp[] = "considerIp";
+constexpr char kWifiAccessPoints[] = "wifiAccessPoints";
+constexpr char kCellTowers[] = "cellTowers";
+// Shared Wifi and Cell Tower objects.
+constexpr char kAge[] = "age";
+constexpr char kSignalStrength[] = "signalStrength";
 // WiFi access point objects.
-const char kMacAddress[] = "macAddress";
-const char kSignalStrength[] = "signalStrength";
-const char kAge[] = "age";
-const char kChannel[] = "channel";
-const char kSignalToNoiseRatio[] = "signalToNoiseRatio";
+constexpr char kMacAddress[] = "macAddress";
+constexpr char kChannel[] = "channel";
+constexpr char kSignalToNoiseRatio[] = "signalToNoiseRatio";
+// Cell tower objects.
+constexpr char kCellId[] = "cellId";
+constexpr char kLocationAreaCode[] = "locationAreaCode";
+constexpr char kMobileCountryCode[] = "mobileCountryCode";
+constexpr char kMobileNetworkCode[] = "mobileNetworkCode";
 
-// Response data.
-const char kLocationString[] = "location";
-const char kLatString[] = "lat";
-const char kLngString[] = "lng";
-const char kAccuracyString[] = "accuracy";
+// Geolocation response field keys:
+constexpr char kLocationString[] = "location";
+constexpr char kLatString[] = "lat";
+constexpr char kLngString[] = "lng";
+constexpr char kAccuracyString[] = "accuracy";
+
 // Error object and its contents.
-const char kErrorString[] = "error";
+constexpr char kErrorString[] = "error";
 // "errors" array in "erorr" object is ignored.
-const char kCodeString[] = "code";
-const char kMessageString[] = "message";
+constexpr char kCodeString[] = "code";
+constexpr char kMessageString[] = "message";
 
 // We are using "sparse" histograms for the number of retry attempts,
 // so we need to explicitly limit maximum value (in case something goes wrong).
@@ -111,7 +123,7 @@ void RecordUmaEvent(SimpleGeolocationRequestEvent event) {
 }
 
 void RecordUmaResponseCode(int code) {
-  UMA_HISTOGRAM_SPARSE_SLOWLY("SimpleGeolocation.Request.ResponseCode", code);
+  base::UmaHistogramSparse("SimpleGeolocation.Request.ResponseCode", code);
 }
 
 // Slow geolocation resolve leads to bad user experience.
@@ -129,8 +141,8 @@ void RecordUmaResult(SimpleGeolocationRequestResult result, size_t retries) {
   UMA_HISTOGRAM_ENUMERATION("SimpleGeolocation.Request.Result",
                             result,
                             SIMPLE_GEOLOCATION_REQUEST_RESULT_COUNT);
-  UMA_HISTOGRAM_SPARSE_SLOWLY("SimpleGeolocation.Request.Retries",
-                              std::min(retries, kMaxRetriesValueInHistograms));
+  base::UmaHistogramSparse("SimpleGeolocation.Request.Retries",
+                           std::min(retries, kMaxRetriesValueInHistograms));
 }
 
 // Creates the request url to send to the server.
@@ -183,8 +195,8 @@ bool ParseServerResponse(const GURL& server_url,
   // Parse the response, ignoring comments.
   std::string error_msg;
   std::unique_ptr<base::Value> response_value =
-      base::JSONReader::ReadAndReturnError(response_body, base::JSON_PARSE_RFC,
-                                           NULL, &error_msg);
+      base::JSONReader::ReadAndReturnErrorDeprecated(
+          response_body, base::JSON_PARSE_RFC, NULL, &error_msg);
   if (response_value == NULL) {
     PrintGeolocationError(
         server_url, "JSONReader failed: " + error_msg, position);
@@ -197,7 +209,8 @@ bool ParseServerResponse(const GURL& server_url,
     PrintGeolocationError(
         server_url,
         "Unexpected response type : " +
-            base::StringPrintf("%u", response_value->GetType()),
+            base::StringPrintf(
+                "%u", static_cast<unsigned int>(response_value->type())),
         position);
     RecordUmaEvent(SIMPLE_GEOLOCATION_REQUEST_EVENT_RESPONSE_MALFORMED);
     return false;
@@ -276,7 +289,7 @@ bool GetGeolocationFromResponse(bool http_success,
   }
   if (status_code != net::HTTP_OK) {
     std::string message = "Returned error code ";
-    message += base::IntToString(status_code);
+    message += base::NumberToString(status_code);
     PrintGeolocationError(server_url, message, position);
     RecordUmaEvent(SIMPLE_GEOLOCATION_REQUEST_EVENT_RESPONSE_NOT_OK);
     return false;
@@ -288,15 +301,61 @@ bool GetGeolocationFromResponse(bool http_success,
 void ReportUmaHasWiFiAccessPoints(bool value) {
   UMA_HISTOGRAM_BOOLEAN("SimpleGeolocation.Request.HasWiFiAccessPoints", value);
 }
+void ReportUmaHasCellTowers(bool value) {
+  UMA_HISTOGRAM_BOOLEAN("SimpleGeolocation.Request.HasCellTowers", value);
+}
+
+// Helpers to reformat data into dictionaries for conversion to request JSON
+std::unique_ptr<base::DictionaryValue> CreateAccessPointDictionary(
+    WifiAccessPoint access_point) {
+  auto access_point_dictionary = std::make_unique<base::DictionaryValue>();
+
+  access_point_dictionary->SetKey(kMacAddress,
+                                  base::Value(access_point.mac_address));
+  access_point_dictionary->SetKey(kSignalStrength,
+                                  base::Value(access_point.signal_strength));
+  if (!access_point.timestamp.is_null()) {
+    access_point_dictionary->SetKey(
+        kAge,
+        base::Value(base::NumberToString(
+            (base::Time::Now() - access_point.timestamp).InMilliseconds())));
+  }
+
+  access_point_dictionary->SetKey(kChannel, base::Value(access_point.channel));
+  access_point_dictionary->SetKey(kSignalToNoiseRatio,
+                                  base::Value(access_point.signal_to_noise));
+
+  return access_point_dictionary;
+}
+
+std::unique_ptr<base::DictionaryValue> CreateCellTowerDictionary(
+    CellTower cell_tower) {
+  auto cell_tower_dictionary = std::make_unique<base::DictionaryValue>();
+  cell_tower_dictionary->SetKey(kCellId, base::Value(cell_tower.ci));
+  cell_tower_dictionary->SetKey(kLocationAreaCode, base::Value(cell_tower.lac));
+  cell_tower_dictionary->SetKey(kMobileCountryCode,
+                                base::Value(cell_tower.mcc));
+  cell_tower_dictionary->SetKey(kMobileNetworkCode,
+                                base::Value(cell_tower.mnc));
+
+  if (!cell_tower.timestamp.is_null()) {
+    cell_tower_dictionary->SetKey(
+        kAge,
+        base::Value(base::NumberToString(
+            (base::Time::Now() - cell_tower.timestamp).InMilliseconds())));
+  }
+  return cell_tower_dictionary;
+}
 
 }  // namespace
 
 SimpleGeolocationRequest::SimpleGeolocationRequest(
-    net::URLRequestContextGetter* url_context_getter,
+    scoped_refptr<network::SharedURLLoaderFactory> factory,
     const GURL& service_url,
     base::TimeDelta timeout,
-    std::unique_ptr<WifiAccessPointVector> wifi_data)
-    : url_context_getter_(url_context_getter),
+    std::unique_ptr<WifiAccessPointVector> wifi_data,
+    std::unique_ptr<CellTowerVector> cell_tower_data)
+    : shared_url_loader_factory_(std::move(factory)),
       service_url_(service_url),
       retry_sleep_on_server_error_(base::TimeDelta::FromSeconds(
           kResolveGeolocationRetrySleepOnServerErrorSeconds)),
@@ -304,7 +363,8 @@ SimpleGeolocationRequest::SimpleGeolocationRequest(
           kResolveGeolocationRetrySleepBadResponseSeconds)),
       timeout_(timeout),
       retries_(0),
-      wifi_data_(wifi_data.release()) {}
+      wifi_data_(wifi_data.release()),
+      cell_tower_data_(cell_tower_data.release()) {}
 
 SimpleGeolocationRequest::~SimpleGeolocationRequest() {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -320,43 +380,51 @@ SimpleGeolocationRequest::~SimpleGeolocationRequest() {
 }
 
 std::string SimpleGeolocationRequest::FormatRequestBody() const {
-  if (!wifi_data_) {
+  if (!wifi_data_)
     ReportUmaHasWiFiAccessPoints(false);
+
+  if (!cell_tower_data_)
+    ReportUmaHasCellTowers(false);
+
+  if (!cell_tower_data_ && !wifi_data_)
     return std::string(kSimpleGeolocationRequestBody);
-  }
 
   std::unique_ptr<base::DictionaryValue> request(new base::DictionaryValue);
-  request->SetBooleanWithoutPathExpansion(kConsiderIp, true);
+  request->SetKey(kConsiderIp, base::Value(true));
 
-  base::ListValue* wifi_access_points(new base::ListValue);
-  request->SetWithoutPathExpansion(kWifiAccessPoints, wifi_access_points);
-
-  for (const WifiAccessPoint& access_point : *wifi_data_) {
-    base::DictionaryValue* access_point_dictionary = new base::DictionaryValue;
-    wifi_access_points->Append(access_point_dictionary);
-
-    access_point_dictionary->SetStringWithoutPathExpansion(
-        kMacAddress, access_point.mac_address);
-    access_point_dictionary->SetIntegerWithoutPathExpansion(
-        kSignalStrength, access_point.signal_strength);
-    if (!access_point.timestamp.is_null()) {
-      access_point_dictionary->SetStringWithoutPathExpansion(
-          kAge,
-          base::Int64ToString(
-              (base::Time::Now() - access_point.timestamp).InMilliseconds()));
+  if (wifi_data_) {
+    auto wifi_access_points = std::make_unique<base::ListValue>();
+    for (const WifiAccessPoint& access_point : *wifi_data_) {
+      wifi_access_points->Append(CreateAccessPointDictionary(access_point));
     }
-
-    access_point_dictionary->SetIntegerWithoutPathExpansion(
-        kChannel, access_point.channel);
-    access_point_dictionary->SetIntegerWithoutPathExpansion(
-        kSignalToNoiseRatio, access_point.signal_to_noise);
+    request->SetWithoutPathExpansion(kWifiAccessPoints,
+                                     std::move(wifi_access_points));
   }
+
+  if (cell_tower_data_) {
+    auto cell_towers = std::make_unique<base::ListValue>();
+    for (const CellTower& cell_tower : *cell_tower_data_) {
+      cell_towers->Append(CreateCellTowerDictionary(cell_tower));
+    }
+    request->SetWithoutPathExpansion(kCellTowers, std::move(cell_towers));
+  }
+
   std::string result;
   if (!base::JSONWriter::Write(*request, &result)) {
-    ReportUmaHasWiFiAccessPoints(false);
+    // If there's no data for a network type, we will have already reported
+    // false above
+    if (wifi_data_)
+      ReportUmaHasWiFiAccessPoints(false);
+    if (cell_tower_data_)
+      ReportUmaHasCellTowers(false);
+
     return std::string(kSimpleGeolocationRequestBody);
   }
-  ReportUmaHasWiFiAccessPoints(wifi_data_->size());
+
+  if (wifi_data_)
+    ReportUmaHasWiFiAccessPoints(wifi_data_->size());
+  if (cell_tower_data_)
+    ReportUmaHasCellTowers(cell_tower_data_->size());
 
   return result;
 }
@@ -370,21 +438,24 @@ void SimpleGeolocationRequest::StartRequest() {
   VLOG(1) << "SimpleGeolocationRequest::StartRequest(): request body:\n"
           << request_body;
 
-  url_fetcher_ =
-      net::URLFetcher::Create(request_url_, net::URLFetcher::POST, this);
-  url_fetcher_->SetRequestContext(url_context_getter_.get());
-  url_fetcher_->SetUploadData("application/json", request_body);
-  url_fetcher_->SetLoadFlags(net::LOAD_BYPASS_CACHE |
-                             net::LOAD_DISABLE_CACHE |
-                             net::LOAD_DO_NOT_SAVE_COOKIES |
-                             net::LOAD_DO_NOT_SEND_COOKIES |
-                             net::LOAD_DO_NOT_SEND_AUTH_DATA);
+  auto request = std::make_unique<network::ResourceRequest>();
+  request->url = request_url_;
+  request->method = "POST";
+  request->load_flags = net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE;
+  request->allow_credentials = false;
+
+  simple_url_loader_ = network::SimpleURLLoader::Create(
+      std::move(request), NO_TRAFFIC_ANNOTATION_YET);
+  simple_url_loader_->AttachStringForUpload(request_body, "application/json");
 
   // Call test hook before asynchronous request actually starts.
   if (g_test_request_hook)
     g_test_request_hook->OnStart(this);
 
-  url_fetcher_->Start();
+  simple_url_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      shared_url_loader_factory_.get(),
+      base::BindOnce(&SimpleGeolocationRequest::OnSimpleURLLoaderComplete,
+                     base::Unretained(this)));
 }
 
 void SimpleGeolocationRequest::MakeRequest(const ResponseCallback& callback) {
@@ -413,25 +484,31 @@ void SimpleGeolocationRequest::Retry(bool server_error) {
       FROM_HERE, delay, this, &SimpleGeolocationRequest::StartRequest);
 }
 
-void SimpleGeolocationRequest::OnURLFetchComplete(
-    const net::URLFetcher* source) {
-  DCHECK_EQ(url_fetcher_.get(), source);
-
-  net::URLRequestStatus status = source->GetStatus();
-  int response_code = source->GetResponseCode();
+void SimpleGeolocationRequest::OnSimpleURLLoaderComplete(
+    std::unique_ptr<std::string> response_body) {
+  bool is_success = !!response_body;
+  int response_code = -1;
+  if (simple_url_loader_->ResponseInfo() &&
+      simple_url_loader_->ResponseInfo()->headers) {
+    response_code =
+        simple_url_loader_->ResponseInfo()->headers->response_code();
+  }
   RecordUmaResponseCode(response_code);
 
-  std::string data;
-  source->GetResponseAsString(&data);
   const bool parse_success = GetGeolocationFromResponse(
-      status.is_success(), response_code, data, source->GetURL(), &position_);
+      is_success, response_code, response_body ? *response_body : std::string(),
+      simple_url_loader_->GetFinalURL(), &position_);
+  // Note that SimpleURLLoader doesn't return a body for non-2xx
+  // responses by default.
   const bool server_error =
-      !status.is_success() || (response_code >= 500 && response_code < 600);
+      (!is_success && (response_code == -1 || response_code / 100 == 2)) ||
+      (response_code >= 500 && response_code < 600);
   const bool success = parse_success && position_.Valid();
-  url_fetcher_.reset();
+  simple_url_loader_.reset();
 
-  DVLOG(1) << "SimpleGeolocationRequest::OnURLFetchComplete(): position={"
-           << position_.ToString() << "}";
+  DVLOG(1)
+      << "SimpleGeolocationRequest::OnSimpleURLLoaderComplete(): position={"
+      << position_.ToString() << "}";
 
   if (!success) {
     Retry(server_error);
@@ -449,7 +526,7 @@ void SimpleGeolocationRequest::OnURLFetchComplete(
 void SimpleGeolocationRequest::ReplyAndDestroySelf(
     const base::TimeDelta elapsed,
     bool server_error) {
-  url_fetcher_.reset();
+  simple_url_loader_.reset();
   timeout_timer_.Stop();
   request_scheduled_.Stop();
 

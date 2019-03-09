@@ -1,6 +1,6 @@
 # Linux Profiling
 
-How to profile chromium on Linux.
+How to profile Chromium on Linux.
 
 See
 [Profiling Chromium and WebKit](https://sites.google.com/a/chromium.org/dev/developers/profiling-chromium-and-webkit)
@@ -55,16 +55,11 @@ This will use the previously captured data (`perf.data`).
 
 ### google-perftools
 
-google-perftools code is enabled when the `use_allocator` variable in gyp is set
+google-perftools code is enabled when the `use_allocator` gn variable is set
 to `tcmalloc` (currently the default). That will build the tcmalloc library,
 including the cpu profiling and heap profiling code into Chromium. In order to
 get stacktraces in release builds on 64 bit, you will need to build with some
-extra flags enabled by setting `profiling=1` in gyp.
-
-If the stack traces in your profiles are incomplete, this may be due to missing
-frame pointers in some of the libraries. A workaround is to use the
-`linux_keep_shadow_stacks=1` gyp option. This will keep a shadow stack using the
-`-finstrument-functions` option of gcc and consult the stack when unwinding.
+extra flags enabled by setting `enable_profiling = true` in args.gn
 
 In order to enable cpu profiling, run Chromium with the environment variable
 `CPUPROFILE` set to a filename.  For example:
@@ -160,37 +155,6 @@ work around this, turn off the sandbox (via `export CHROME_DEVEL_SANDBOX=`).
 
 For further information, please refer to
 http://google-perftools.googlecode.com/svn/trunk/doc/heapprofile.html.
-
-### Massif
-
-[Massif](http://valgrind.org/docs/manual/mc-manual.html) is a
-[Valgrind](http://www.chromium.org/developers/how-tos/using-valgrind)-based heap
-profiler. It is much slower than the heap profiler from google-perftools, but it
-may have some advantages. (In particular, it handles the multi-process
-executables well).
-
-First, you will need to build massif from valgrind-variant project yourself,
-it's [easy](http://code.google.com/p/valgrind-variant/wiki/HowTo).
-
-Then, make sure your chromium is built using the
-[valgrind instructions](http://www.chromium.org/developers/how-tos/using-valgrind).
-Now, you can run massif like this:
-
-```
-path-to-valgrind-variant/valgrind/inst/bin/valgrind \
-   --fullpath-after=/chromium/src/ \
-   --trace-children-skip=*npviewer*,/bin/uname,/bin/sh,/usr/bin/which,/bin/ps,/bin/grep,/usr/bin/linux32 \
-   --trace-children=yes \
-   --tool=massif \
-   out/Release/chrome --noerrdialogs --disable-hang-monitor --other-chrome-flags
-```
-
-The result will be stored in massif.out.PID files, which you can post-process
-with [ms_print](http://valgrind.org/docs/manual/mc-manual.html).
-
-TODO(kcc) sometimes when closing a tab the main process kills the tab process
-before massif completes writing it's log file. Need a flag that tells the main
-process to wait longer.
 
 ## Paint profiling
 

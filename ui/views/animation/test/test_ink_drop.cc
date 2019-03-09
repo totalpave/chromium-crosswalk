@@ -10,6 +10,8 @@ namespace test {
 TestInkDrop::TestInkDrop() : state_(InkDropState::HIDDEN), is_hovered_(false) {}
 TestInkDrop::~TestInkDrop() {}
 
+void TestInkDrop::HostSizeChanged(const gfx::Size& new_size) {}
+
 InkDropState TestInkDrop::GetTargetInkDropState() const {
   return state_;
 }
@@ -18,8 +20,16 @@ void TestInkDrop::AnimateToState(InkDropState ink_drop_state) {
   state_ = ink_drop_state;
 }
 
+void TestInkDrop::SetHoverHighlightFadeDurationMs(int duration_ms) {}
+
+void TestInkDrop::UseDefaultHoverHighlightFadeDuration() {}
+
 void TestInkDrop::SnapToActivated() {
   state_ = InkDropState::ACTIVATED;
+}
+
+void TestInkDrop::SnapToHidden() {
+  state_ = InkDropState::HIDDEN;
 }
 
 void TestInkDrop::SetHovered(bool is_hovered) {
@@ -27,6 +37,14 @@ void TestInkDrop::SetHovered(bool is_hovered) {
 }
 
 void TestInkDrop::SetFocused(bool is_focused) {}
+
+bool TestInkDrop::IsHighlightFadingInOrVisible() const {
+  return false;
+}
+
+void TestInkDrop::SetShowHighlightOnHover(bool show_highlight_on_hover) {}
+
+void TestInkDrop::SetShowHighlightOnFocus(bool show_highlight_on_focus) {}
 
 }  // namespace test
 }  // namespace views

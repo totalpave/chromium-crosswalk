@@ -7,10 +7,10 @@
 #include "base/bind.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/media/desktop_media_list_observer.h"
-#include "chrome/browser/media/fake_desktop_media_list.h"
-#import "chrome/browser/ui/cocoa/cocoa_test_helper.h"
+#include "chrome/browser/media/webrtc/desktop_media_list_observer.h"
+#include "chrome/browser/media/webrtc/fake_desktop_media_list.h"
 #import "chrome/browser/ui/cocoa/media_picker/desktop_media_picker_item.h"
+#import "chrome/browser/ui/cocoa/test/cocoa_test_helper.h"
 #include "content/public/test/test_browser_thread_bundle.h"
 #include "testing/gtest_mac.h"
 
@@ -78,23 +78,32 @@ class DesktopMediaPickerControllerTest : public CocoaTest {
   void SetUp() override {
     CocoaTest::SetUp();
 
-    screen_list_ = new FakeDesktopMediaList();
-    window_list_ = new FakeDesktopMediaList();
-    tab_list_ = new FakeDesktopMediaList();
+    std::vector<DesktopMediaID::Type> source_types = {
+        DesktopMediaID::TYPE_SCREEN, DesktopMediaID::TYPE_WINDOW,
+        DesktopMediaID::TYPE_WEB_CONTENTS};
+
+    screen_list_ = new FakeDesktopMediaList(DesktopMediaID::TYPE_SCREEN);
+    window_list_ = new FakeDesktopMediaList(DesktopMediaID::TYPE_WINDOW);
+    tab_list_ = new FakeDesktopMediaList(DesktopMediaID::TYPE_WEB_CONTENTS);
+
+    std::vector<std::unique_ptr<DesktopMediaList>> source_lists;
+    source_lists.push_back(std::unique_ptr<DesktopMediaList>(screen_list_));
+    source_lists.push_back(std::unique_ptr<DesktopMediaList>(window_list_));
+    source_lists.push_back(std::unique_ptr<DesktopMediaList>(tab_list_));
 
     DesktopMediaPicker::DoneCallback callback =
         base::Bind(&DesktopMediaPickerControllerTest::OnResult,
                    base::Unretained(this));
 
+    DesktopMediaPicker::Params params;
+    params.app_name = base::ASCIIToUTF16("Screenshare Test");
+    params.target_name = base::ASCIIToUTF16("https://foo.com");
+    params.request_audio = true;
+    params.approve_audio_by_default = true;
     controller_.reset([[DesktopMediaPickerController alloc]
-        initWithScreenList:std::unique_ptr<DesktopMediaList>(screen_list_)
-                windowList:std::unique_ptr<DesktopMediaList>(window_list_)
-                   tabList:std::unique_ptr<DesktopMediaList>(tab_list_)
-                    parent:nil
-                  callback:callback
-                   appName:base::ASCIIToUTF16("Screenshare Test")
-                targetName:base::ASCIIToUTF16("https://foo.com")
-              requestAudio:true]);
+        initWithSourceLists:std::move(source_lists)
+                   callback:callback
+                     params:params]);
   }
 
   void TearDown() override {
@@ -164,16 +173,26 @@ TEST_F(DesktopMediaPickerControllerTest, ShowAndDismiss) {
   EXPECT_TRUE([[items objectAtIndex:1] imageRepresentation] != nil);
 }
 
+TEST_F(DesktopMediaPickerControllerTest, CancelIsDefault) {
+  [controller_ showWindow:nil];
+  EXPECT_EQ([[controller_ window] defaultButtonCell],
+            [[controller_ cancelButton] cell]);
+}
+
 TEST_F(DesktopMediaPickerControllerTest, ClickShareScreen) {
   [controller_ showWindow:nil];
   ChangeType(DesktopMediaID::TYPE_SCREEN);
+
+  EXPECT_FALSE([[controller_ shareButton] isEnabled]);
   AddScreen(0);
   screen_list_->SetSourceThumbnail(0);
+  // Nothing should be selected automatically.
+  EXPECT_FALSE([[controller_ shareButton] isEnabled]);
+
   AddScreen(1);
   screen_list_->SetSourceThumbnail(1);
 
   EXPECT_EQ(2U, [[controller_ screenItems] count]);
-  EXPECT_FALSE([[controller_ shareButton] isEnabled]);
 
   NSIndexSet* index_set = [NSIndexSet indexSetWithIndex:1];
   [[controller_ screenBrowser] setSelectionIndexes:index_set
@@ -406,4 +425,22 @@ TEST_F(DesktopMediaPickerControllerTest, TabBrowserFocusAlgorithm) {
   ChangeType(DesktopMediaID::TYPE_WEB_CONTENTS);
   selected_index = [[browser selectedRowIndexes] firstIndex];
   EXPECT_EQ(1, [[items objectAtIndex:selected_index] sourceID].id);
+}
+
+TEST_F(DesktopMediaPickerControllerTest, SingleScreenNoLabel) {
+  [controller_ showWindow:nil];
+  ChangeType(DesktopMediaID::TYPE_SCREEN);
+
+  NSArray* items = [controller_ screenItems];
+
+  AddScreen(0);
+  screen_list_->SetSourceThumbnail(0);
+  EXPECT_EQ(1U, [items count]);
+  EXPECT_EQ(nil, [[items objectAtIndex:0] imageTitle]);
+
+  AddScreen(1);
+  screen_list_->SetSourceThumbnail(1);
+  EXPECT_EQ(2U, [items count]);
+  EXPECT_NE(nil, [[items objectAtIndex:0] imageTitle]);
+  EXPECT_NE(nil, [[items objectAtIndex:1] imageTitle]);
 }

@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.compositor.layouts;
 
 import android.graphics.Rect;
 
-import org.chromium.chrome.browser.compositor.layouts.components.LayoutTab;
 import org.chromium.ui.resources.ResourceManager;
 
 /**
@@ -27,7 +26,7 @@ public interface LayoutRenderHost {
     /**
      * Indicates that a previously rendered frame has been swapped to the OS.
      */
-    void onSwapBuffersCompleted(int pendingSwapBuffersCount);
+    void didSwapFrame(int pendingFrameCount);
 
     /**
      * Indicates that the rendering surface has just been created.
@@ -37,12 +36,7 @@ public interface LayoutRenderHost {
     /**
      * Indicates that the rendering surface has been resized.
      */
-    void onPhysicalBackingSizeChanged(int width, int height);
-
-    /**
-     * @return The number of actually drawn {@link LayoutTab}.
-     */
-    int getLayoutTabsDrawnCount();
+    void onSurfaceResized(int width, int height);
 
     /**
      * Pushes a debug rectangle that will be drawn.
@@ -58,31 +52,9 @@ public interface LayoutRenderHost {
     void loadPersitentTextureDataIfNeeded();
 
     /**
-     * @param rect Rect instance to be used to store the result and return. If null, it uses a new
-     *             Rect instance.
-     * @return The current visible viewport of the host (takes fullscreen into account).
-     */
-    Rect getVisibleViewport(Rect rect);
-
-    /**
      * @return The background color of the toolbar.
      */
-    int getTopControlsBackgroundColor();
-
-    /**
-     * @return The alpha value of the textbox in the toolbar.
-     */
-    float getTopControlsUrlBarAlpha();
-
-    /**
-     * @return Whether or not the toolbar is currently being faked.
-     */
-    boolean areTopControlsPermanentlyHidden();
-
-    /**
-     * @return The height of the top controls in pixels.
-     */
-    int getTopControlsHeightPixels();
+    int getBrowserControlsBackgroundColor();
 
     /**
      * @return The {@link ResourceManager}.

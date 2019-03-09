@@ -5,17 +5,17 @@
 #include "chrome/renderer/safe_browsing/phishing_classifier.h"
 
 #include <string>
+#include <utility>
 
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_task_runner_handle.h"
-#include "chrome/common/safe_browsing/csd.pb.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/renderer/safe_browsing/feature_extractor_clock.h"
 #include "chrome/renderer/safe_browsing/features.h"
@@ -23,14 +23,15 @@
 #include "chrome/renderer/safe_browsing/phishing_term_feature_extractor.h"
 #include "chrome/renderer/safe_browsing/phishing_url_feature_extractor.h"
 #include "chrome/renderer/safe_browsing/scorer.h"
+#include "components/safe_browsing/proto/csd.pb.h"
 #include "content/public/renderer/render_frame.h"
 #include "crypto/sha2.h"
-#include "third_party/WebKit/public/platform/WebURL.h"
-#include "third_party/WebKit/public/platform/WebURLRequest.h"
-#include "third_party/WebKit/public/web/WebDataSource.h"
-#include "third_party/WebKit/public/web/WebDocument.h"
-#include "third_party/WebKit/public/web/WebLocalFrame.h"
-#include "third_party/WebKit/public/web/WebView.h"
+#include "third_party/blink/public/platform/web_url.h"
+#include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_document_loader.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_view.h"
 #include "url/gurl.h"
 
 namespace safe_browsing {
@@ -42,8 +43,9 @@ namespace {
 // Used for UMA, do not reorder.
 enum SkipClassificationReason {
   CLASSIFICATION_PROCEED = 0,
-  SKIP_HTTPS = 1,
+  DEPRECATED_SKIP_HTTPS = 1,
   SKIP_NONE_GET = 2,
+  SKIP_SCHEME_NOT_SUPPORTED = 3,
   SKIP_REASON_MAX
 };
 
@@ -98,9 +100,8 @@ bool PhishingClassifier::is_ready() const {
   return scorer_ != NULL;
 }
 
-void PhishingClassifier::BeginClassification(
-    const base::string16* page_text,
-    const DoneCallback& done_callback) {
+void PhishingClassifier::BeginClassification(const base::string16* page_text,
+                                             DoneCallback done_callback) {
   DCHECK(is_ready());
 
   // The RenderView should have called CancelPendingClassification() before
@@ -111,34 +112,32 @@ void PhishingClassifier::BeginClassification(
   CancelPendingClassification();
 
   page_text_ = page_text;
-  done_callback_ = done_callback;
+  done_callback_ = std::move(done_callback);
 
   // For consistency, we always want to invoke the DoneCallback
   // asynchronously, rather than directly from this method.  To ensure that
   // this is the case, post a task to begin feature extraction on the next
   // iteration of the message loop.
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::Bind(&PhishingClassifier::BeginFeatureExtraction,
-                            weak_factory_.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&PhishingClassifier::BeginFeatureExtraction,
+                                weak_factory_.GetWeakPtr()));
 }
 
 void PhishingClassifier::BeginFeatureExtraction() {
   blink::WebLocalFrame* frame = render_frame_->GetWebFrame();
 
   // Check whether the URL is one that we should classify.
-  // Currently, we only classify http: URLs that are GET requests.
-  GURL url(frame->document().url());
-  if (!url.SchemeIs(url::kHttpScheme)) {
-    RecordReasonForSkippingClassificationToUMA(SKIP_HTTPS);
+  // Currently, we only classify http/https URLs that are GET requests.
+  GURL url(frame->GetDocument().Url());
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    RecordReasonForSkippingClassificationToUMA(SKIP_SCHEME_NOT_SUPPORTED);
     RunFailureCallback();
     return;
   }
 
-  blink::WebDataSource* ds = frame->dataSource();
-  if (!ds ||
-      !base::EqualsASCII(base::StringPiece16(ds->request().httpMethod()),
-                         "GET")) {
-    if (ds)
+  blink::WebDocumentLoader* document_loader = frame->GetDocumentLoader();
+  if (!document_loader || document_loader->HttpMethod().Ascii() != "GET") {
+    if (document_loader)
       RecordReasonForSkippingClassificationToUMA(SKIP_NONE_GET);
     RunFailureCallback();
     return;
@@ -154,9 +153,9 @@ void PhishingClassifier::BeginFeatureExtraction() {
   // DOM feature extraction can take awhile, so it runs asynchronously
   // in several chunks of work and invokes the callback when finished.
   dom_extractor_->ExtractFeatures(
-      frame->document(), features_.get(),
-      base::Bind(&PhishingClassifier::DOMExtractionFinished,
-                 base::Unretained(this)));
+      frame->GetDocument(), features_.get(),
+      base::BindOnce(&PhishingClassifier::DOMExtractionFinished,
+                     base::Unretained(this)));
 }
 
 void PhishingClassifier::CancelPendingClassification() {
@@ -175,11 +174,9 @@ void PhishingClassifier::DOMExtractionFinished(bool success) {
     // Term feature extraction can take awhile, so it runs asynchronously
     // in several chunks of work and invokes the callback when finished.
     term_extractor_->ExtractFeatures(
-        page_text_,
-        features_.get(),
-        shingle_hashes_.get(),
-        base::Bind(&PhishingClassifier::TermExtractionFinished,
-                   base::Unretained(this)));
+        page_text_, features_.get(), shingle_hashes_.get(),
+        base::BindOnce(&PhishingClassifier::TermExtractionFinished,
+                       base::Unretained(this)));
   } else {
     RunFailureCallback();
   }
@@ -194,21 +191,18 @@ void PhishingClassifier::TermExtractionFinished(bool success) {
     FeatureMap hashed_features;
     ClientPhishingRequest verdict;
     verdict.set_model_version(scorer_->model_version());
-    verdict.set_url(main_frame->document().url().string().utf8());
-    for (base::hash_map<std::string, double>::const_iterator it =
-             features_->features().begin();
-         it != features_->features().end(); ++it) {
-      DVLOG(2) << "Feature: " << it->first << " = " << it->second;
+    verdict.set_url(main_frame->GetDocument().Url().GetString().Utf8());
+    for (const auto& it : features_->features()) {
+      DVLOG(2) << "Feature: " << it.first << " = " << it.second;
       bool result = hashed_features.AddRealFeature(
-          crypto::SHA256HashString(it->first), it->second);
+          crypto::SHA256HashString(it.first), it.second);
       DCHECK(result);
       ClientPhishingRequest::Feature* feature = verdict.add_feature_map();
-      feature->set_name(it->first);
-      feature->set_value(it->second);
+      feature->set_name(it.first);
+      feature->set_value(it.second);
     }
-    for (std::set<uint32_t>::const_iterator it = shingle_hashes_->begin();
-         it != shingle_hashes_->end(); ++it) {
-      verdict.add_shingle_hashes(*it);
+    for (const auto& it : *shingle_hashes_) {
+      verdict.add_shingle_hashes(it);
     }
     float score = static_cast<float>(scorer_->ComputeScore(hashed_features));
     verdict.set_client_score(score);
@@ -229,7 +223,7 @@ void PhishingClassifier::CheckNoPendingClassification() {
 }
 
 void PhishingClassifier::RunCallback(const ClientPhishingRequest& verdict) {
-  done_callback_.Run(verdict);
+  std::move(done_callback_).Run(verdict);
   Clear();
 }
 

@@ -7,34 +7,38 @@
 
 #include <string>
 
+#include "base/callback.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "chrome/browser/chromeos/login/screens/base_screen.h"
-#include "chrome/browser/chromeos/login/screens/kiosk_autolaunch_screen_actor.h"
+#include "chrome/browser/chromeos/login/screens/kiosk_autolaunch_screen_view.h"
 
 namespace chromeos {
 
 // Representation independent class that controls screen showing auto launch
 // warning to users.
 class KioskAutolaunchScreen : public BaseScreen,
-                              public KioskAutolaunchScreenActor::Delegate {
+                              public KioskAutolaunchScreenView::Delegate {
  public:
+  enum class Result { COMPLETED, CANCELED };
+
+  using ScreenExitCallback = base::RepeatingCallback<void(Result result)>;
   KioskAutolaunchScreen(BaseScreenDelegate* base_screen_delegate,
-                        KioskAutolaunchScreenActor* actor);
+                        KioskAutolaunchScreenView* view,
+                        const ScreenExitCallback& exit_callback);
   ~KioskAutolaunchScreen() override;
 
   // BaseScreen implementation:
-  void PrepareToShow() override {}
   void Show() override;
   void Hide() override {}
-  std::string GetName() const override;
 
   // KioskAutolaunchScreenActor::Delegate implementation:
   void OnExit(bool confirmed) override;
-  void OnActorDestroyed(KioskAutolaunchScreenActor* actor) override;
+  void OnViewDestroyed(KioskAutolaunchScreenView* view) override;
 
  private:
-  KioskAutolaunchScreenActor* actor_;
+  KioskAutolaunchScreenView* view_;
+  ScreenExitCallback exit_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(KioskAutolaunchScreen);
 };

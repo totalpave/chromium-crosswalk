@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-#include "base/macros.h"
+#include "base/stl_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace crx_file {
@@ -30,12 +30,22 @@ TEST(IDUtilTest, GenerateID) {
       0x0f, 0x02, 0x03, 0x01, 0x00, 0x01};
   std::string extension_id =
       GenerateId(std::string(reinterpret_cast<const char*>(&public_key_info[0]),
-                             arraysize(public_key_info)));
+                             base::size(public_key_info)));
   EXPECT_EQ("melddjfinppjdikinhbgehiennejpfhp", extension_id);
+
+  EXPECT_EQ("daibjpdaanagajckigeiigphanababab",
+            GenerateIdFromHash(public_key_info, sizeof(public_key_info)));
 
   EXPECT_EQ("jpignaibiiemhngfjkcpokkamffknabf", GenerateId("test"));
 
   EXPECT_EQ("ncocknphbhhlhkikpnnlmbcnbgdempcd", GenerateId("_"));
+
+  EXPECT_EQ("a", GenerateIdFromHex("_"));
+
+  EXPECT_EQ(
+      "bjbdkfoakgmkndalgpadobhgbhhoanhongcmfnghaakjmggnkffgnhmdpfngkeho",
+      GenerateIdFromHex(
+          "1913a5e0a6cad30b6f03e176177e0d7ed62c5d6700a9c66da556d7c3f5d6a47e"));
 
   EXPECT_EQ(
       "jimneklojkjdibfkgiiophfhjhbdgcfi",

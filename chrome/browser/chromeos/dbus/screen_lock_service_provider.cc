@@ -4,8 +4,6 @@
 
 #include "chrome/browser/chromeos/dbus/screen_lock_service_provider.h"
 
-#include "ash/shell.h"
-#include "ash/wm/lock_state_controller.h"
 #include "base/bind.h"
 #include "chrome/browser/chromeos/login/lock/screen_locker.h"
 #include "dbus/bus.h"
@@ -15,37 +13,34 @@
 namespace chromeos {
 
 ScreenLockServiceProvider::ScreenLockServiceProvider()
-    : weak_ptr_factory_(this) {
-}
+    : weak_ptr_factory_(this) {}
 
-ScreenLockServiceProvider::~ScreenLockServiceProvider() {}
+ScreenLockServiceProvider::~ScreenLockServiceProvider() = default;
 
 void ScreenLockServiceProvider::Start(
     scoped_refptr<dbus::ExportedObject> exported_object) {
   exported_object->ExportMethod(
-      kLibCrosServiceInterface,
-      kLockScreen,
-      base::Bind(&ScreenLockServiceProvider::LockScreen,
-                 weak_ptr_factory_.GetWeakPtr()),
-      base::Bind(&ScreenLockServiceProvider::OnExported,
-                 weak_ptr_factory_.GetWeakPtr()));
+      kScreenLockServiceInterface, kScreenLockServiceShowLockScreenMethod,
+      base::BindRepeating(&ScreenLockServiceProvider::ShowLockScreen,
+                          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(&ScreenLockServiceProvider::OnExported,
+                          weak_ptr_factory_.GetWeakPtr()));
 }
 
 void ScreenLockServiceProvider::OnExported(const std::string& interface_name,
                                            const std::string& method_name,
                                            bool success) {
   if (!success) {
-    LOG(ERROR) << "Failed to export " << interface_name << "."
-               << method_name;
+    LOG(ERROR) << "Failed to export " << interface_name << "." << method_name;
   }
 }
 
-void ScreenLockServiceProvider::LockScreen(
+void ScreenLockServiceProvider::ShowLockScreen(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
-  // Please add any additional logic to ScreenLocker::HandleLockScreenRequest()
-  // instead of placing it here.
-  ScreenLocker::HandleLockScreenRequest();
+  // Please add any additional logic to
+  // ScreenLocker::HandleShowLockScreenRequest() instead of placing it here.
+  ScreenLocker::HandleShowLockScreenRequest();
   response_sender.Run(dbus::Response::FromMethodCall(method_call));
 }
 

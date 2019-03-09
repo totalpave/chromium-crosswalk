@@ -4,57 +4,180 @@
 
 #include "build/build_config.h"
 
+#include "base/task/post_task.h"
 #include "content/browser/download/save_file_manager.h"
+#include "content/public/browser/browser_task_traits.h"
 
 #include "base/bind.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
-#include "base/threading/thread.h"
+#include "components/download/public/common/download_task_runner.h"
+#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/download/save_file.h"
 #include "content/browser/download/save_package.h"
-#include "content/browser/loader/resource_dispatcher_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/resource_context.h"
+#include "content/public/browser/storage_partition.h"
+#include "content/public/common/previews_state.h"
 #include "net/base/io_buffer.h"
+#include "net/base/load_flags.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/url_request/url_request.h"
+#include "net/url_request/url_request_context.h"
+#include "net/url_request/url_request_job_factory.h"
+#include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/cpp/simple_url_loader_stream_consumer.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "url/gurl.h"
 
 namespace content {
 
-SaveFileManager::SaveFileManager() {}
+namespace {
+
+// Pointer to the singleton SaveFileManager instance.
+static SaveFileManager* g_save_file_manager = nullptr;
+
+}  // namespace
+
+class SaveFileManager::SimpleURLLoaderHelper
+    : public network::SimpleURLLoaderStreamConsumer {
+ public:
+  static std::unique_ptr<SimpleURLLoaderHelper> CreateAndStartDownload(
+      std::unique_ptr<network::ResourceRequest> resource_request,
+      SaveItemId save_item_id,
+      SavePackageId save_package_id,
+      int render_process_id,
+      int render_frame_routing_id,
+      const net::NetworkTrafficAnnotationTag& annotation_tag,
+      network::mojom::URLLoaderFactory* url_loader_factory,
+      SaveFileManager* save_file_manager) {
+    return std::unique_ptr<SimpleURLLoaderHelper>(new SimpleURLLoaderHelper(
+        std::move(resource_request), save_item_id, save_package_id,
+        render_process_id, render_frame_routing_id, annotation_tag,
+        url_loader_factory, save_file_manager));
+  }
+
+  ~SimpleURLLoaderHelper() override = default;
+
+ private:
+  SimpleURLLoaderHelper(
+      std::unique_ptr<network::ResourceRequest> resource_request,
+      SaveItemId save_item_id,
+      SavePackageId save_package_id,
+      int render_process_id,
+      int render_frame_routing_id,
+      const net::NetworkTrafficAnnotationTag& annotation_tag,
+      network::mojom::URLLoaderFactory* url_loader_factory,
+      SaveFileManager* save_file_manager)
+      : save_file_manager_(save_file_manager),
+        save_item_id_(save_item_id),
+        save_package_id_(save_package_id) {
+    GURL url = resource_request->url;
+    url_loader_ = network::SimpleURLLoader::Create(std::move(resource_request),
+                                                   annotation_tag);
+    // We can use Unretained below as |url_loader_| is owned by |this|, so the
+    // callback won't be invoked if |this| gets deleted.
+    url_loader_->SetOnResponseStartedCallback(base::BindOnce(
+        &SimpleURLLoaderHelper::OnResponseStarted, base::Unretained(this), url,
+        render_process_id, render_frame_routing_id));
+    url_loader_->DownloadAsStream(url_loader_factory, this);
+  }
+
+  void OnResponseStarted(GURL url,
+                         int render_process_id,
+                         int render_frame_routing_id,
+                         const GURL& final_url,
+                         const network::ResourceResponseHead& response_head) {
+    std::string content_disposition;
+    if (response_head.headers) {
+      response_head.headers->GetNormalizedHeader("Content-Disposition",
+                                                 &content_disposition);
+    }
+
+    auto info = std::make_unique<SaveFileCreateInfo>(
+        url, final_url, save_item_id_, save_package_id_, render_process_id,
+        render_frame_routing_id, content_disposition);
+    download::GetDownloadTaskRunner()->PostTask(
+        FROM_HERE, base::BindOnce(&SaveFileManager::StartSave,
+                                  save_file_manager_, std::move(info)));
+  }
+
+  // network::SimpleURLLoaderStreamConsumer implementation:
+  void OnDataReceived(base::StringPiece string_piece,
+                      base::OnceClosure resume) override {
+    // TODO(jcivelli): we should make threading sane and avoid copying
+    // |string_piece| bytes.
+    download::GetDownloadTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&SaveFileManager::UpdateSaveProgress, save_file_manager_,
+                       save_item_id_, string_piece.as_string()));
+    std::move(resume).Run();
+  }
+
+  void OnComplete(bool success) override {
+    download::GetDownloadTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&SaveFileManager::SaveFinished, save_file_manager_,
+                       save_item_id_, save_package_id_, success));
+  }
+
+  void OnRetry(base::OnceClosure start_retry) override {
+    // Retries are not enabled.
+    NOTREACHED();
+  }
+
+  SaveFileManager* save_file_manager_;
+  SaveItemId save_item_id_;
+  SavePackageId save_package_id_;
+  std::unique_ptr<network::SimpleURLLoader> url_loader_;
+
+  DISALLOW_COPY_AND_ASSIGN(SimpleURLLoaderHelper);
+};
+
+SaveFileManager::SaveFileManager() {
+  DCHECK(g_save_file_manager == nullptr);
+  g_save_file_manager = this;
+}
 
 SaveFileManager::~SaveFileManager() {
   // Check for clean shutdown.
   DCHECK(save_file_map_.empty());
+  DCHECK(g_save_file_manager);
+  g_save_file_manager = nullptr;
+}
+
+// static
+SaveFileManager* SaveFileManager::Get() {
+  return g_save_file_manager;
 }
 
 // Called during the browser shutdown process to clean up any state (open files,
 // timers) that live on the saving thread (file thread).
 void SaveFileManager::Shutdown() {
-  BrowserThread::PostTask(
-      BrowserThread::FILE, FROM_HERE,
-      base::Bind(&SaveFileManager::OnShutdown, this));
+  download::GetDownloadTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&SaveFileManager::OnShutdown, this));
 }
 
 // Stop file thread operations.
 void SaveFileManager::OnShutdown() {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
-  STLDeleteValues(&save_file_map_);
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
+  save_file_map_.clear();
 }
 
 SaveFile* SaveFileManager::LookupSaveFile(SaveItemId save_item_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
-  SaveFileMap::iterator it = save_file_map_.find(save_item_id);
-  return it == save_file_map_.end() ? nullptr : it->second;
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
+  auto it = save_file_map_.find(save_item_id);
+  return it == save_file_map_.end() ? nullptr : it->second.get();
 }
 
 // Look up a SavePackage according to a save id.
 SavePackage* SaveFileManager::LookupPackage(SaveItemId save_item_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  SavePackageMap::iterator it = packages_.find(save_item_id);
+  auto it = packages_.find(save_item_id);
   if (it != packages_.end())
     return it->second;
   return nullptr;
@@ -70,6 +193,7 @@ void SaveFileManager::SaveURL(SaveItemId save_item_id,
                               SaveFileCreateInfo::SaveFileSource save_source,
                               const base::FilePath& file_full_path,
                               ResourceContext* context,
+                              StoragePartition* storage_partition,
                               SavePackage* save_package) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
@@ -80,23 +204,59 @@ void SaveFileManager::SaveURL(SaveItemId save_item_id,
   // Register a saving job.
   if (save_source == SaveFileCreateInfo::SAVE_FILE_FROM_NET) {
     DCHECK(url.is_valid());
+    // Starts the actual download.
+    if (!ChildProcessSecurityPolicyImpl::GetInstance()->CanRequestURL(
+            render_process_host_id, url)) {
+      download::GetDownloadTaskRunner()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&SaveFileManager::SaveFinished, this, save_item_id,
+                         save_package->id(), /*success=*/false));
+      return;
+    }
 
-    BrowserThread::PostTask(
-        BrowserThread::IO, FROM_HERE,
-        base::Bind(&SaveFileManager::OnSaveURL, this, url, referrer,
-                   save_item_id, save_package->id(), render_process_host_id,
-                   render_view_routing_id, render_frame_routing_id, context));
+    net::NetworkTrafficAnnotationTag traffic_annotation =
+        net::DefineNetworkTrafficAnnotation("save_file_manager", R"(
+        semantics {
+          sender: "Save File"
+          description: "Saving url to local file."
+          trigger:
+            "User clicks on 'Save link as...' context menu command to save a "
+            "link."
+          data: "None."
+          destination: WEBSITE
+        }
+        policy {
+          cookies_allowed: YES
+          cookies_store: "user"
+          setting:
+            "This feature cannot be disable by settings. The request is made "
+            "only if user chooses 'Save link as...' in context menu."
+          policy_exception_justification: "Not implemented."
+        })");
+
+    auto request = std::make_unique<network::ResourceRequest>();
+    request->url = url;
+    request->referrer = referrer.url;
+    request->priority = net::DEFAULT_PRIORITY;
+    request->load_flags = net::LOAD_SKIP_CACHE_VALIDATION;
+
+    url_loader_helpers_[save_item_id] =
+        SimpleURLLoaderHelper::CreateAndStartDownload(
+            std::move(request), save_item_id, save_package->id(),
+            render_process_host_id, render_frame_routing_id, traffic_annotation,
+            storage_partition->GetURLLoaderFactoryForBrowserProcess().get(),
+            this);
   } else {
     // We manually start the save job.
-    SaveFileCreateInfo* info = new SaveFileCreateInfo(
+    auto info = std::make_unique<SaveFileCreateInfo>(
         file_full_path, url, save_item_id, save_package->id(),
         render_process_host_id, render_frame_routing_id, save_source);
 
     // Since the data will come from render process, so we need to start
     // this kind of save job by ourself.
-    BrowserThread::PostTask(
-        BrowserThread::FILE, FROM_HERE,
-        base::Bind(&SaveFileManager::StartSave, this, info));
+    download::GetDownloadTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&SaveFileManager::StartSave, this, std::move(info)));
   }
 }
 
@@ -109,7 +269,7 @@ void SaveFileManager::RemoveSaveFile(SaveItemId save_item_id,
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   // A save page job (SavePackage) can only have one manager,
   // so remove it if it exists.
-  SavePackageMap::iterator it = packages_.find(save_item_id);
+  auto it = packages_.find(save_item_id);
   if (it != packages_.end())
     packages_.erase(it);
 }
@@ -135,18 +295,17 @@ SavePackage* SaveFileManager::GetSavePackageFromRenderIds(
 void SaveFileManager::DeleteDirectoryOrFile(const base::FilePath& full_path,
                                             bool is_dir) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  BrowserThread::PostTask(
-      BrowserThread::FILE, FROM_HERE,
-      base::Bind(&SaveFileManager::OnDeleteDirectoryOrFile,
-          this, full_path, is_dir));
+  download::GetDownloadTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&SaveFileManager::OnDeleteDirectoryOrFile, this,
+                                full_path, is_dir));
 }
 
 void SaveFileManager::SendCancelRequest(SaveItemId save_item_id) {
   // Cancel the request which has specific save id.
   DCHECK(!save_item_id.is_null());
-  BrowserThread::PostTask(
-      BrowserThread::FILE, FROM_HERE,
-      base::Bind(&SaveFileManager::CancelSave, this, save_item_id));
+  download::GetDownloadTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SaveFileManager::CancelSave, this, save_item_id));
 }
 
 // Notifications sent from the IO thread and run on the file thread:
@@ -154,22 +313,23 @@ void SaveFileManager::SendCancelRequest(SaveItemId save_item_id) {
 // The IO thread created |info|, but the file thread (this method) uses it
 // to create a SaveFile which will hold and finally destroy |info|. It will
 // then passes |info| to the UI thread for reporting saving status.
-void SaveFileManager::StartSave(SaveFileCreateInfo* info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+void SaveFileManager::StartSave(std::unique_ptr<SaveFileCreateInfo> info) {
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
   DCHECK(info);
   // No need to calculate hash.
-  SaveFile* save_file = new SaveFile(info, false);
+  auto save_file =
+      std::make_unique<SaveFile>(std::move(info), /*calculate_hash=*/false);
 
   // TODO(phajdan.jr): We should check the return value and handle errors here.
   save_file->Initialize();
 
-  DCHECK(!LookupSaveFile(info->save_item_id));
-  save_file_map_[info->save_item_id] = save_file;
-  info->path = save_file->FullPath();
+  const SaveFileCreateInfo& save_file_create_info = save_file->create_info();
+  DCHECK(!LookupSaveFile(save_file->save_item_id()));
+  save_file_map_[save_file->save_item_id()] = std::move(save_file);
 
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&SaveFileManager::OnStartSave, this, *info));
+  base::PostTaskWithTraits(FROM_HERE, {BrowserThread::UI},
+                           base::BindOnce(&SaveFileManager::OnStartSave, this,
+                                          save_file_create_info));
 }
 
 // We do forward an update to the UI thread here, since we do not use timer to
@@ -177,20 +337,19 @@ void SaveFileManager::StartSave(SaveFileCreateInfo* info) {
 // thread). We may receive a few more updates before the IO thread gets the
 // cancel message. We just delete the data since the SaveFile has been deleted.
 void SaveFileManager::UpdateSaveProgress(SaveItemId save_item_id,
-                                         net::IOBuffer* data,
-                                         int data_len) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+                                         const std::string& data) {
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
   SaveFile* save_file = LookupSaveFile(save_item_id);
   if (save_file) {
     DCHECK(save_file->InProgress());
 
-    DownloadInterruptReason reason =
-        save_file->AppendDataToFile(data->data(), data_len);
-    BrowserThread::PostTask(
-        BrowserThread::UI, FROM_HERE,
-        base::Bind(&SaveFileManager::OnUpdateSaveProgress, this,
-                   save_file->save_item_id(), save_file->BytesSoFar(),
-                   reason == DOWNLOAD_INTERRUPT_REASON_NONE));
+    download::DownloadInterruptReason reason =
+        save_file->AppendDataToFile(data.data(), data.size());
+    base::PostTaskWithTraits(
+        FROM_HERE, {BrowserThread::UI},
+        base::BindOnce(&SaveFileManager::OnUpdateSaveProgress, this,
+                       save_file->save_item_id(), save_file->BytesSoFar(),
+                       reason == download::DOWNLOAD_INTERRUPT_REASON_NONE));
   }
 }
 
@@ -199,32 +358,28 @@ void SaveFileManager::UpdateSaveProgress(SaveItemId save_item_id,
 void SaveFileManager::SaveFinished(SaveItemId save_item_id,
                                    SavePackageId save_package_id,
                                    bool is_success) {
-  DVLOG(20) << " " << __FUNCTION__ << "()"
-            << " save_item_id = " << save_item_id
+  DVLOG(20) << __func__ << "() save_item_id = " << save_item_id
             << " save_package_id = " << save_package_id
             << " is_success = " << is_success;
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
 
   int64_t bytes_so_far = 0;
   SaveFile* save_file = LookupSaveFile(save_item_id);
-  if (save_file != nullptr) {
+  // Note that we might not have a save_file: canceling starts on the download
+  // thread but the load is canceled on the UI thread. The request might finish
+  // while thread hoping.
+  if (save_file) {
     DCHECK(save_file->InProgress());
-    DVLOG(20) << " " << __FUNCTION__ << "()"
-              << " save_file = " << save_file->DebugString();
+    DVLOG(20) << __func__ << "() save_file = " << save_file->DebugString();
     bytes_so_far = save_file->BytesSoFar();
     save_file->Finish();
     save_file->Detach();
-  } else {
-    // We got called before StartSave - this should only happen if
-    // ResourceHandler failed before it got a chance to parse headers
-    // and metadata.
-    DCHECK(!is_success);
   }
 
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&SaveFileManager::OnSaveFinished, this, save_item_id,
-                 bytes_so_far, is_success));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&SaveFileManager::OnSaveFinished, this, save_item_id,
+                     bytes_so_far, is_success));
 }
 
 // Notifications sent from the file thread and run on the UI thread.
@@ -258,32 +413,10 @@ void SaveFileManager::OnSaveFinished(SaveItemId save_item_id,
                                      int64_t bytes_so_far,
                                      bool is_success) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  ClearURLLoader(save_item_id);
   SavePackage* package = LookupPackage(save_item_id);
   if (package)
     package->SaveFinished(save_item_id, bytes_so_far, is_success);
-}
-
-// Notifications sent from the UI thread and run on the IO thread.
-
-void SaveFileManager::OnSaveURL(const GURL& url,
-                                const Referrer& referrer,
-                                SaveItemId save_item_id,
-                                SavePackageId save_package_id,
-                                int render_process_host_id,
-                                int render_view_routing_id,
-                                int render_frame_routing_id,
-                                ResourceContext* context) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  ResourceDispatcherHostImpl::Get()->BeginSaveFile(
-      url, referrer, save_item_id, save_package_id, render_process_host_id,
-      render_view_routing_id, render_frame_routing_id, context);
-}
-
-void SaveFileManager::ExecuteCancelSaveRequest(int render_process_id,
-                                               int request_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  ResourceDispatcherHostImpl::Get()->CancelRequest(
-      render_process_id, request_id);
 }
 
 // Notifications sent from the UI thread and run on the file thread.
@@ -294,10 +427,10 @@ void SaveFileManager::ExecuteCancelSaveRequest(int render_process_id,
 // sent from the UI thread, the saving job may have already completed and
 // won't exist in our map.
 void SaveFileManager::CancelSave(SaveItemId save_item_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
-  SaveFileMap::iterator it = save_file_map_.find(save_item_id);
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
+  auto it = save_file_map_.find(save_item_id);
   if (it != save_file_map_.end()) {
-    SaveFile* save_file = it->second;
+    std::unique_ptr<SaveFile> save_file = std::move(it->second);
 
     if (!save_file->InProgress()) {
       // We've won a race with the UI thread--we finished the file before
@@ -306,26 +439,27 @@ void SaveFileManager::CancelSave(SaveItemId save_item_id) {
       base::DeleteFile(save_file->FullPath(), false);
     } else if (save_file->save_source() ==
                SaveFileCreateInfo::SAVE_FILE_FROM_NET) {
-      // If the data comes from the net IO thread and hasn't completed
-      // yet, then forward the cancel message to IO thread & cancel the
-      // save locally.  If the data doesn't come from the IO thread,
-      // we can ignore the message.
-      BrowserThread::PostTask(
-          BrowserThread::IO, FROM_HERE,
-          base::Bind(&SaveFileManager::ExecuteCancelSaveRequest, this,
-              save_file->render_process_id(), save_file->request_id()));
+      base::PostTaskWithTraits(
+          FROM_HERE, {BrowserThread::UI},
+          base::BindOnce(&SaveFileManager::ClearURLLoader, this, save_item_id));
     }
 
     // Whatever the save file is complete or not, just delete it.  This
     // will delete the underlying file if InProgress() is true.
     save_file_map_.erase(it);
-    delete save_file;
   }
+}
+
+void SaveFileManager::ClearURLLoader(SaveItemId save_item_id) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  auto url_loader_iter = url_loader_helpers_.find(save_item_id);
+  if (url_loader_iter != url_loader_helpers_.end())
+    url_loader_helpers_.erase(url_loader_iter);
 }
 
 void SaveFileManager::OnDeleteDirectoryOrFile(const base::FilePath& full_path,
                                               bool is_dir) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
   DCHECK(!full_path.empty());
 
   base::DeleteFile(full_path, is_dir);
@@ -336,7 +470,7 @@ void SaveFileManager::RenameAllFiles(const FinalNamesMap& final_names,
                                      int render_process_id,
                                      int render_frame_routing_id,
                                      SavePackageId save_package_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
 
   if (!resource_dir.empty() && !base::PathExists(resource_dir))
     base::CreateDirectory(resource_dir);
@@ -345,20 +479,20 @@ void SaveFileManager::RenameAllFiles(const FinalNamesMap& final_names,
     SaveItemId save_item_id = i.first;
     const base::FilePath& final_name = i.second;
 
-    SaveFileMap::iterator it = save_file_map_.find(save_item_id);
+    auto it = save_file_map_.find(save_item_id);
     if (it != save_file_map_.end()) {
-      SaveFile* save_file = it->second;
+      SaveFile* save_file = it->second.get();
       DCHECK(!save_file->InProgress());
       save_file->Rename(final_name);
-      delete save_file;
       save_file_map_.erase(it);
     }
   }
 
-  BrowserThread::PostTask(
-      BrowserThread::UI, FROM_HERE,
-      base::Bind(&SaveFileManager::OnFinishSavePageJob, this, render_process_id,
-                 render_frame_routing_id, save_package_id));
+  base::PostTaskWithTraits(
+      FROM_HERE, {BrowserThread::UI},
+      base::BindOnce(&SaveFileManager::OnFinishSavePageJob, this,
+                     render_process_id, render_frame_routing_id,
+                     save_package_id));
 }
 
 void SaveFileManager::OnFinishSavePageJob(int render_process_id,
@@ -375,15 +509,14 @@ void SaveFileManager::OnFinishSavePageJob(int render_process_id,
 
 void SaveFileManager::RemoveSavedFileFromFileMap(
     const std::vector<SaveItemId>& save_item_ids) {
-  DCHECK_CURRENTLY_ON(BrowserThread::FILE);
+  DCHECK(download::GetDownloadTaskRunner()->RunsTasksInCurrentSequence());
 
   for (const SaveItemId save_item_id : save_item_ids) {
-    SaveFileMap::iterator it = save_file_map_.find(save_item_id);
+    auto it = save_file_map_.find(save_item_id);
     if (it != save_file_map_.end()) {
-      SaveFile* save_file = it->second;
+      SaveFile* save_file = it->second.get();
       DCHECK(!save_file->InProgress());
       base::DeleteFile(save_file->FullPath(), false);
-      delete save_file;
       save_file_map_.erase(it);
     }
   }

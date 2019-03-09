@@ -8,17 +8,13 @@
 #include <set>
 #include <string>
 
-namespace blink {
-class WebFrame;
-}
-
 namespace extensions {
 class Dispatcher;
-class Extension;
+class ExtensionBindingsSystem;
 class ModuleSystem;
+class NativeExtensionBindingsSystem;
 class ResourceBundleSourceMap;
 class ScriptContext;
-class URLPatternSet;
 
 // Base class and default implementation for an extensions::Dispacher delegate.
 // DispatcherDelegate can be used to override and extend the behavior of the
@@ -27,31 +23,30 @@ class DispatcherDelegate {
  public:
   virtual ~DispatcherDelegate() {}
 
-  // Initializes origin permissions for a newly created extension context.
-  virtual void InitOriginPermissions(const Extension* extension,
-                                     bool is_extension_active) {}
-
   // Includes additional native handlers in a ScriptContext's ModuleSystem.
   virtual void RegisterNativeHandlers(Dispatcher* dispatcher,
                                       ModuleSystem* module_system,
+                                      ExtensionBindingsSystem* bindings_system,
                                       ScriptContext* context) {}
 
   // Includes additional source resources into the resource map.
   virtual void PopulateSourceMap(ResourceBundleSourceMap* source_map) {}
 
-  // Requires additional modules within an extension context's module system.
-  virtual void RequireAdditionalModules(ScriptContext* context,
-                                        bool is_within_platform_app) {}
+  // Requires modules for defining <webview> within an extension context's
+  // module system.
+  virtual void RequireWebViewModules(ScriptContext* context);
 
   // Allows the delegate to respond to an updated set of active extensions in
   // the Dispatcher.
   virtual void OnActiveExtensionsUpdated(
       const std::set<std::string>& extension_ids) {}
 
-  // Sets the current Chrome channel.
-  // TODO(rockot): This doesn't belong in a generic extensions system interface.
-  // See http://crbug.com/368431.
-  virtual void SetChannel(int channel) {}
+  // Allows the delegate to add any additional custom bindings or types to the
+  // native bindings system. This will only be called if --native-crx-bindings
+  // is enabled.
+  virtual void InitializeBindingsSystem(
+      Dispatcher* dispatcher,
+      NativeExtensionBindingsSystem* bindings_system) {}
 };
 
 }  // namespace extensions

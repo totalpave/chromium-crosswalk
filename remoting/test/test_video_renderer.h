@@ -41,14 +41,15 @@ class TestVideoRenderer : public protocol::VideoRenderer,
 
   // VideoRenderer interface.
   bool Initialize(const ClientContext& client_context,
-                  protocol::PerformanceTracker* perf_tracker) override;
+                  protocol::FrameStatsConsumer* stats_consumer) override;
   void OnSessionConfig(const protocol::SessionConfig& config) override;
   protocol::VideoStub* GetVideoStub() override;
   protocol::FrameConsumer* GetFrameConsumer() override;
+  protocol::FrameStatsConsumer* GetFrameStatsConsumer() override;
 
   // protocol::VideoStub interface.
   void ProcessVideoPacket(std::unique_ptr<VideoPacket> video_packet,
-                          const base::Closure& done) override;
+                          base::OnceClosure done) override;
 
   // Initialize a decoder to decode video packets.
   void SetCodecForDecoding(const protocol::ChannelConfig::Codec codec);

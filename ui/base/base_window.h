@@ -6,14 +6,13 @@
 #define UI_BASE_BASE_WINDOW_H_
 
 #include "base/compiler_specific.h"
+#include "build/build_config.h"
 #include "ui/base/ui_base_types.h"  // WindowShowState
 #include "ui/gfx/native_widget_types.h"
 
 namespace gfx {
 class Rect;
 }
-
-class SkRegion;
 
 namespace ui {
 
@@ -57,6 +56,9 @@ class UI_BASE_EXPORT BaseWindow {
 
   // Hides the window.
   virtual void Hide() = 0;
+
+  // Returns whether the window is visible.
+  virtual bool IsVisible() const = 0;
 
   // Show the window, but do not activate it. Does nothing if window
   // is already visible.

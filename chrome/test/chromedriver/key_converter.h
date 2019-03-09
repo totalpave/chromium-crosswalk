@@ -9,17 +9,11 @@
 #include <string>
 
 #include "base/strings/string16.h"
+#include "base/values.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 struct KeyEvent;
 class Status;
-
-// Convenience functions for creating |KeyEvent|s. Used by unittests.
-KeyEvent CreateKeyDownEvent(ui::KeyboardCode key_code, int modifiers);
-KeyEvent CreateKeyUpEvent(ui::KeyboardCode key_code, int modifiers);
-KeyEvent CreateCharEvent(const std::string& unmodified_text,
-                         const std::string& modified_text,
-                         int modifiers);
 
 // Converts keys into appropriate |KeyEvent|s. This will do a best effort
 // conversion. However, if the input is invalid it will return a status with
@@ -30,5 +24,10 @@ Status ConvertKeysToKeyEvents(const base::string16& keys,
                               bool release_modifiers,
                               int* modifiers,
                               std::list<KeyEvent>* key_events);
+
+Status ConvertKeyActionToKeyEvent(const base::DictionaryValue* action_object,
+                                  base::DictionaryValue* input_state,
+                                  bool is_key_down,
+                                  std::vector<KeyEvent>* client_key_events);
 
 #endif  // CHROME_TEST_CHROMEDRIVER_KEY_CONVERTER_H_

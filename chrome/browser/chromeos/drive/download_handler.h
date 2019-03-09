@@ -10,25 +10,27 @@
 #include "base/callback_forward.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/download/all_download_item_notifier.h"
+#include "components/download/content/public/all_download_item_notifier.h"
 #include "components/drive/file_errors.h"
 #include "content/public/browser/download_manager_delegate.h"
 
 class Profile;
 
 namespace content {
-class DownloadItem;
 class DownloadManager;
+}
+
+namespace download {
+class DownloadItem;
 }
 
 namespace drive {
 
 class FileSystemInterface;
-class ResourceEntry;
 
 // Observes downloads to temporary local drive folder. Schedules these
 // downloads for upload to drive service.
-class DownloadHandler : public AllDownloadItemNotifier::Observer {
+class DownloadHandler : public download::AllDownloadItemNotifier::Observer {
  public:
   explicit DownloadHandler(FileSystemInterface* file_system);
   ~DownloadHandler() override;
@@ -53,28 +55,27 @@ class DownloadHandler : public AllDownloadItemNotifier::Observer {
 
   void SubstituteDriveDownloadPath(
       const base::FilePath& drive_path,
-      content::DownloadItem* download,
+      download::DownloadItem* download,
       const SubstituteDriveDownloadPathCallback& callback);
 
   // Sets drive path, for example, '/special/drive/MyFolder/MyFile',
   // to external data in |download|. Also sets display name and
   // makes |download| a temporary.
   void SetDownloadParams(const base::FilePath& drive_path,
-                         content::DownloadItem* download);
+                         download::DownloadItem* download);
 
   // Gets the target drive path from external data in |download|.
-  base::FilePath GetTargetPath(const content::DownloadItem* download);
+  base::FilePath GetTargetPath(const download::DownloadItem* download);
 
   // Gets the downloaded drive cache file path from external data in |download|.
-  base::FilePath GetCacheFilePath(const content::DownloadItem* download);
+  base::FilePath GetCacheFilePath(const download::DownloadItem* download);
 
   // Checks if there is a Drive upload associated with |download|
-  bool IsDriveDownload(const content::DownloadItem* download);
+  bool IsDriveDownload(const download::DownloadItem* download);
 
   // Checks a file corresponding to the download item exists in Drive.
-  void CheckForFileExistence(
-      const content::DownloadItem* download,
-      const content::CheckForFileExistenceCallback& callback);
+  void CheckForFileExistence(const download::DownloadItem* download,
+                             content::CheckForFileExistenceCallback callback);
 
   // Calculates request space for |downloads|.
   int64_t CalculateRequestSpace(
@@ -94,9 +95,9 @@ class DownloadHandler : public AllDownloadItemNotifier::Observer {
  private:
   // AllDownloadItemNotifier::Observer overrides:
   void OnDownloadCreated(content::DownloadManager* manager,
-                         content::DownloadItem* download) override;
+                         download::DownloadItem* download) override;
   void OnDownloadUpdated(content::DownloadManager* manager,
-                         content::DownloadItem* download) override;
+                         download::DownloadItem* download) override;
 
   // Removes the download.
   void RemoveDownload(void* manager_id, int id);
@@ -108,7 +109,7 @@ class DownloadHandler : public AllDownloadItemNotifier::Observer {
 
   // Starts the upload of a downloaded/downloading file.
   void UploadDownloadItem(content::DownloadManager* manager,
-                          content::DownloadItem* download);
+                          download::DownloadItem* download);
 
   // Sets |cache_file_path| as user data of the download item specified by |id|.
   void SetCacheFilePath(void* manager_id,
@@ -124,8 +125,8 @@ class DownloadHandler : public AllDownloadItemNotifier::Observer {
   FileSystemInterface* file_system_;  // Owned by DriveIntegrationService.
 
   // Observe the DownloadManager for new downloads.
-  std::unique_ptr<AllDownloadItemNotifier> notifier_;
-  std::unique_ptr<AllDownloadItemNotifier> notifier_incognito_;
+  std::unique_ptr<download::AllDownloadItemNotifier> notifier_;
+  std::unique_ptr<download::AllDownloadItemNotifier> notifier_incognito_;
 
   // Temporary download location directory.
   base::FilePath drive_tmp_download_path_;
